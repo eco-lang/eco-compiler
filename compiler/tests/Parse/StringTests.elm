@@ -17,6 +17,15 @@ says the literal is not multi-line.
     the single escape `\uFFFF`.
   - `\u{10000}`, the first code point above U+FFFF, becomes `\uD800\uDC00`.
 
+Character literals (`Compiler.Parse.String.character`) hold exactly one
+character, which may be one above U+FFFF, two UTF-16 units in the source
+(eco 0.2.0 rejected `'😀'`; eco-bugs.md number 9, plans/kg-reported-bugs.md
+step 3):
+
+  - `'😀'` is accepted and keeps its source text;
+  - `'\u{1F600}'` becomes the surrogate pair escape `\uD83D\uDE00`;
+  - `'ab'` and `'😀😀'` hold two characters and are rejected.
+
 Among what is not tested: multi-line literals, the other escapes, malformed or
 out-of-range `\u{...}` escapes and the errors they produce, and literals with
 any text around the escape.
@@ -56,6 +65,33 @@ suite =
               )
                 |> Test.test "\\u{10000}"
             ]
+        , Test.describe "character"
+            [ (\_ ->
+                character "'😀'"
+                    |> Expect.equal (Ok "😀")
+              )
+                |> Test.test "'😀'"
+            , (\_ ->
+                character "'\\u{1F600}'"
+                    |> Expect.equal (Ok "\\uD83D\\uDE00")
+              )
+                |> Test.test "'\\u{1F600}'"
+            , (\_ ->
+                character "'a'"
+                    |> Expect.equal (Ok "a")
+              )
+                |> Test.test "'a'"
+            , (\_ ->
+                character "'ab'"
+                    |> Expect.equal (Err ())
+              )
+                |> Test.test "'ab'"
+            , (\_ ->
+                character "'😀😀'"
+                    |> Expect.equal (Err ())
+              )
+                |> Test.test "'😀😀'"
+            ]
         ]
 
 
@@ -66,3 +102,11 @@ leaves input unconsumed.
 singleString : String -> Result () ( String, Bool )
 singleString =
     P.fromByteString (S.string (\_ _ -> ()) (\_ _ _ -> ())) (\_ _ -> ())
+
+
+{-| Parses the given text as one complete character literal, returning its
+escaped text, or `Err ()` if it fails to parse or leaves input unconsumed.
+-}
+character : String -> Result () String
+character =
+    P.fromByteString (S.character (\_ _ -> ()) (\_ _ _ -> ())) (\_ _ -> ())

@@ -6,6 +6,8 @@
 //     ( colorDepth, columns, rows ) from TIOCGWINSZ and the B.5 colour
 //     heuristic (NO_COLOR / TERM=dumb → 1; FORCE_COLOR=0/1/2/3 → 1/4/8/24;
 //     COLORTERM truecolor/24bit → 24; TERM *256color → 8; otherwise 4).
+//   * isTerminal — isatty on the given standard stream's fd (0, 1 or 2;
+//     plans/kg-reported-bugs.md step 5).
 //   * setStdInRawMode — termios on fd 0 (a no-op unless it is a terminal).
 //     The original mode is saved on first use and restored by an atexit
 //     handler. While raw mode is on, this kernel holds an INTERNAL
@@ -191,6 +193,11 @@ HPointer terminalGetConfigurationBody(HPointer) {
         "eco/system: Terminal.getConfiguration is not supported on Windows yet");
 }
 
+HPointer terminalIsTerminalBody(HPointer) {
+    ::Eco::Kernel::reportFatal(
+        "eco/system: Terminal.isTerminal is not supported on Windows yet");
+}
+
 HPointer terminalSetStdInRawModeBody(HPointer) {
     ::Eco::Kernel::reportFatal(
         "eco/system: Terminal.setStdInRawMode is not supported on Windows yet");
@@ -215,6 +222,15 @@ HPointer terminalGetConfigurationBody(HPointer /*captured*/) {
             alloc::boxed(alloc::tuple3(alloc::unboxedInt(depth), alloc::unboxedInt(columns),
                                        alloc::unboxedInt(rows), 0x15)),
             /*is_boxed=*/true));
+    )
+}
+
+// isTerminal : Int -> Task Never Bool  — payload: the file descriptor, a boxed Int.
+HPointer terminalIsTerminalBody(HPointer captured) {
+    ECO_SYSTEM_BODY_GUARD(Never,
+        int fd = static_cast<int>(
+            static_cast<ElmInt*>(Allocator::instance().resolve(captured))->value);
+        return succeed(::isatty(fd) ? alloc::elmTrue() : alloc::elmFalse());
     )
 }
 

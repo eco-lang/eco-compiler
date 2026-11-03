@@ -489,7 +489,7 @@ HPtr Elm_Kernel_Http_pair(HPtr key, HPtr value);
 HPtr Elm_Kernel_Http_toTask(HPtr router, HPtr resultToTask, HPtr request);
 HPtr Elm_Kernel_Http_expect(HPtr type, HPtr toBody, HPtr toValue);
 HPtr Elm_Kernel_Http_mapExpect(HPtr closure, HPtr expectVal);
-HPtr Elm_Kernel_Http_bytesToBlob(HPtr bytes, HPtr mimeType);
+HPtr Elm_Kernel_Http_bytesToBlob(HPtr mimeType, HPtr bytes);
 HPtr Elm_Kernel_Http_toDataView(HPtr bytes);
 HPtr Elm_Kernel_Http_toFormData(HPtr parts);
 
@@ -498,7 +498,7 @@ HPtr Elm_Kernel_Http_toFormData(HPtr parts);
 //===----------------------------------------------------------------------===//
 
 HPtr Elm_Kernel_Bytes_width(HPtr bytes);
-HPtr Elm_Kernel_Bytes_getHostEndianness();
+HPtr Elm_Kernel_Bytes_getHostEndianness(HPtr le, HPtr be);
 int64_t Elm_Kernel_Bytes_getStringWidth(HPtr str);
 HPtr Elm_Kernel_Bytes_encode(HPtr encoder);
 HPtr Elm_Kernel_Bytes_decode(HPtr decoder, HPtr bytes);

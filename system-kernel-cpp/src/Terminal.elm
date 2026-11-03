@@ -1,5 +1,6 @@
 effect module Terminal where { subscription = MySub } exposing
     ( Configuration, Size, configuration
+    , StandardStream(..), isTerminal
     , setStdinRawMode, setTitle
     , onResize
     )
@@ -14,8 +15,9 @@ A _terminal_ here is a standard stream connected to a terminal device rather
 than to a file or a pipe. `configuration` and `setTitle` act on stdout, and
 `setStdinRawMode` on stdin: `configuration` gives `Nothing` and the other two
 do nothing when that stream is not a terminal. There is therefore no setup
-step, and none of the tasks can fail. `configuration` is how a program finds
-out whether stdout is a terminal.
+step, and none of the tasks can fail. `isTerminal` tells whether any one of
+the three standard streams is a terminal, for instance to decide whether to
+colour what a program writes to stderr.
 
 On the native backend on Windows, running any of these tasks, or subscribing
 with `onResize`, stops the program with a fatal error saying it is not
@@ -25,6 +27,11 @@ supported there yet.
 ## Configuration
 
 @docs Configuration, Size, configuration
+
+
+## Standard streams
+
+@docs StandardStream, isTerminal
 
 
 ## Commands
@@ -97,6 +104,39 @@ configuration =
                     { colorDepth = colorDepth, columns = columns, rows = rows }
                 )
             )
+
+
+{-| One of the process's three standard streams, which `System.Environment`
+holds as `stdin`, `stdout` and `stderr`.
+-}
+type StandardStream
+    = Stdin
+    | Stdout
+    | Stderr
+
+
+{-| Tells whether a standard stream is a terminal, rather than a file, a pipe or
+`/dev/null`.
+
+A program that colours its output can ask this of the stream it writes to: a
+program run as `prog 2> errors.log` has a terminal on stdout but not on stderr.
+It asks the operating system again each time it is run.
+
+-}
+isTerminal : StandardStream -> Task x Bool
+isTerminal stream =
+    kIsTerminal
+        (case stream of
+            Stdin ->
+                0
+
+            Stdout ->
+                1
+
+            Stderr ->
+                2
+        )
+        |> Task.mapError never
 
 
 {-| Switches stdin into raw mode with `True`, and back to its original mode with
@@ -259,6 +299,14 @@ or `Nothing` when stdout is not a terminal.
 kGetConfiguration : Task Never (Maybe ( Int, Int, Int ))
 kGetConfiguration =
     Eco.Kernel.Terminal.getConfiguration
+
+
+{-| Produces a task that tells whether the standard stream with the given file
+descriptor (0 stdin, 1 stdout, 2 stderr) is a terminal.
+-}
+kIsTerminal : Int -> Task Never Bool
+kIsTerminal =
+    Eco.Kernel.Terminal.isTerminal
 
 
 {-| Produces a task that switches stdin into raw mode or back to its original

@@ -16,9 +16,11 @@ import BinaryFormat
 import BinaryTrees
 import Brainfuck
 import BytesCodec
+import BytesRows
 import Crc32
 import CsvParser
 import CsvSplit
+import DecodedSnapshot
 import DictAlgebra
 import DictKeys
 import DictOps
@@ -43,6 +45,7 @@ import Life
 import ListFilter
 import ListFold
 import ListMap
+import ListOrigin
 import Lru
 import Mandelbrot
 import MatMul
@@ -263,6 +266,21 @@ bench name =
 
         "lexer" ->
             Just Lexer.bench
+
+        "list-walk-map" ->
+            Just ListOrigin.benchMap
+
+        "list-walk-take" ->
+            Just ListOrigin.benchTake
+
+        "bytes-f32-rows" ->
+            Just BytesRows.benchF32
+
+        "bytes-u8-rows" ->
+            Just BytesRows.benchU8
+
+        "decoded-snapshot" ->
+            Just DecodedSnapshot.bench
 
         _ ->
             Nothing

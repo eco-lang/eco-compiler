@@ -8,7 +8,7 @@ from type aliases.
 
 -}
 
--- CHECK: result: { count = 42, bold = True }
+-- CHECK: result: { bold = True, count = 42 }
 
 import Html exposing (text)
 

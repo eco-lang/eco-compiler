@@ -19,7 +19,9 @@
 // the ones before it. Every workload checks its own result (see Bench.elm); if a check fails on
 // any backend the script exits with status 1. Times are medians in milliseconds after the warm-up
 // runs. eco times itself with Time.now (1 ms resolution); the official elm build is timed with
-// process.hrtime. The table goes to stdout and every figure to build/results.json.
+// process.hrtime. Where /usr/bin/time exists (Linux), each process's peak resident set size is
+// measured too; the table shows it for the official elm build and eco native. The table goes to
+// stdout and every figure to build/results.json.
 
 import fs from "node:fs";
 import path from "node:path";
@@ -157,8 +159,17 @@ fs.writeFileSync(ecoJsLauncher, "require('./bench.js').Elm.Bench.init();\n");
 // Run an eco build of Bench.elm and parse the JSON document it prints. Its stdout may carry other
 // text after the document (a development build of eco prints GC statistics at exit), so read the
 // document from its opening `{` line to its closing `}` line.
+//
+// Where GNU time is available the process runs under it, and its peak resident set size in KiB
+// comes back as `peakKiB` (null elsewhere). It covers the whole process: start-up, the warm-up
+// runs and the timed runs.
+const gnuTime = process.platform === "linux" && fs.existsSync("/usr/bin/time") ? "/usr/bin/time" : null;
+const rssFile = path.join(build, "peak-rss.txt");
+
 function runJson(command, commandArgs, label) {
-  const r = spawnSync(command, commandArgs, { cwd: dir, encoding: "utf8", maxBuffer: 1 << 26 });
+  const [cmd, cmdArgs] = gnuTime ? [gnuTime, ["-f", "%M", "-o", rssFile, command, ...commandArgs]] : [command, commandArgs];
+  if (gnuTime) fs.rmSync(rssFile, { force: true });
+  const r = spawnSync(cmd, cmdArgs, { cwd: dir, encoding: "utf8", maxBuffer: 1 << 26 });
   if (r.error) fail(`cannot run ${label}: ${r.error.message} (build it first, without --no-build)`);
   const lines = r.stdout.split("\n");
   const start = lines.indexOf("{");
@@ -171,14 +182,15 @@ function runJson(command, commandArgs, label) {
     process.stderr.write(r.stderr);
     fail(`${label} failed (exit status ${r.status})`);
   }
-  return JSON.parse(lines.slice(start, end + 1).join("\n"));
+  const peak = gnuTime && fs.existsSync(rssFile) ? Number(fs.readFileSync(rssFile, "utf8").trim().split("\n").pop()) : NaN;
+  return { ...JSON.parse(lines.slice(start, end + 1).join("\n")), peakKiB: Number.isFinite(peak) ? peak : null };
 }
 
 const timing = ["--warmup", String(opts.warmup), "--runs", String(opts.runs)];
 
 function runEco(command, prefix, w, label) {
   const report = runJson(command, [...prefix, "--json", ...timing, `${w.name}=${w.size}`], `${label} ${w.name}`);
-  return report.workloads[0];
+  return { ...report.workloads[0], peakKiB: report.peakKiB };
 }
 
 function runElm(w) {
@@ -199,6 +211,7 @@ const chosen = opts.selected.length
     })
   : all.map((w) => ({ name: w.name, size: w.size }));
 
+const mib = (kib) => (kib == null ? null : Math.round(kib / 102.4) / 10);
 const problems = [];
 const rows = [];
 for (const w of chosen) {
@@ -215,18 +228,25 @@ for (const w of chosen) {
     elm: e?.medianMs ?? null,
     ecoJs: js?.medianMs ?? null,
     ecoNative: n.medianMs,
+    elmPeakMiB: mib(e?.peakKiB),
+    ecoJsPeakMiB: mib(js?.peakKiB),
+    ecoNativePeakMiB: mib(n.peakKiB),
   });
 }
 
 // ---- report ----------------------------------------------------------------------------------
 
 const fmt = (x) => (x == null ? "-" : x.toFixed(x < 10 ? 2 : 1)).padStart(11);
+const fmtMiB = (x) => (x == null ? "-" : x.toFixed(0)).padStart(10);
 const ratio = (r) => (r.elm == null || r.ecoNative === 0 ? "-" : `${(r.elm / r.ecoNative).toFixed(1)}x`).padStart(15);
-console.log(`\nwarmup ${opts.warmup}, runs ${opts.runs}, one process per workload and backend; median ms, lower is better\n`);
-console.log("workload".padEnd(16) + "size".padStart(9) + "check".padStart(7) + "elm".padStart(11) + "eco-js".padStart(11) + "eco-native".padStart(11) + "native vs elm".padStart(15));
-console.log("-".repeat(80));
+const memory = gnuTime ? "; peak RSS in MiB per process (start-up, warm-up and timed runs)" : "";
+console.log(`\nwarmup ${opts.warmup}, runs ${opts.runs}, one process per workload and backend; median ms, lower is better${memory}\n`);
+const memHead = gnuTime ? "elm MiB".padStart(10) + "native MiB".padStart(11) : "";
+console.log("workload".padEnd(18) + "size".padStart(9) + "check".padStart(7) + "elm".padStart(11) + "eco-js".padStart(11) + "eco-native".padStart(11) + "native vs elm".padStart(15) + memHead);
+console.log("-".repeat(82 + (gnuTime ? 21 : 0)));
 for (const r of rows) {
-  console.log(r.name.padEnd(16) + String(r.size).padStart(9) + (r.ok ? "ok" : "WRONG").padStart(7) + fmt(r.elm) + fmt(r.ecoJs) + fmt(r.ecoNative) + ratio(r));
+  const mem = gnuTime ? fmtMiB(r.elmPeakMiB) + fmtMiB(r.ecoNativePeakMiB).padStart(11) : "";
+  console.log(r.name.padEnd(18) + String(r.size).padStart(9) + (r.ok ? "ok" : "WRONG").padStart(7) + fmt(r.elm) + fmt(r.ecoJs) + fmt(r.ecoNative) + ratio(r) + mem);
 }
 fs.writeFileSync(path.join(build, "results.json"), JSON.stringify({ warmup: opts.warmup, runs: opts.runs, workloads: rows }, null, 2) + "\n");
 console.log(`\nwrote ${path.relative(process.cwd(), path.join(build, "results.json")) || "build/results.json"}`);

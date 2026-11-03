@@ -52,11 +52,18 @@ HPointer saveStateBody(HPointer captured) {
     return succeedUnit();
 }
 
+// With nothing saved, the state is JSON `null`, as the doc and the JS twin
+// (`_Runtime_replState = null`) say: `Json.Encode.null`, the ENC_NULL encoder
+// constant (null-cons tag 0, JsonExports.cpp), which `Json.Decode.null`
+// accepts. It used to be the Empty constant (`Nothing`'s word), which is not a
+// JSON Value (plans/kg-reported-bugs.md, open items).
+constexpr u16 JSON_ENC_NULL = 0;
+
 HPointer loadStateBody(HPointer /*captured*/) {
     if (s_hasState) {
         return succeed(s_savedState);
     }
-    return succeed(Elm::alloc::nothing());
+    return succeed(Elm::hpFromBits(Elm::nullConsWordFor(JSON_ENC_NULL)));
 }
 
 } // anonymous namespace

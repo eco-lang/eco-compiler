@@ -10,6 +10,7 @@
 #include "allocator/StringOps.hpp"
 #include "allocator/RootSet.hpp"
 #include "allocator/RuntimeExports.h"
+#include "platform/Scheduler.hpp"
 #include <cassert>
 #include <cstdint>
 #include <cstring>
@@ -296,10 +297,17 @@ HPtr Elm_Kernel_Bytes_width(HPtr bytes) {
     return HPtr::fromBits(static_cast<uint64_t>(elm_bytebuffer_len(bytes.toBits())));
 }
 
-HPtr Elm_Kernel_Bytes_getHostEndianness() {
+// getHostEndianness : Endianness -> Endianness -> Task x Endianness, called by
+// elm/bytes as `Elm.Kernel.Bytes.getHostEndianness LE BE`: a task that
+// succeeds with the first argument on a little-endian host and the second on a
+// big-endian one. It took no arguments and returned a raw word before
+// (plans/kg-reported-bugs.md step 1, kernel audit). No IO, so no binding.
+HPtr Elm_Kernel_Bytes_getHostEndianness(HPtr le, HPtr be) {
     uint16_t test = 1;
     bool isLE = (*reinterpret_cast<uint8_t*>(&test) == 1);
-    return HPtr::fromBits(isLE ? 0 : 1);
+    HPointer result = Export::decode((isLE ? le : be).toBits());
+    return HPtr::fromBits(Export::encode(
+        Elm::Platform::Scheduler::instance().taskSucceed(result)));
 }
 
 int64_t Elm_Kernel_Bytes_getStringWidth(HPtr str) {

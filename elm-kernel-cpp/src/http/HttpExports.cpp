@@ -190,6 +190,23 @@ static inline void* resolveOrNull(HPointer hp) {
     return Allocator::instance().resolve(hp);
 }
 
+// The bytes of a request body or multipart value: the UTF-8 of a String
+// (stringBody, jsonBody, stringPart), or the raw bytes of a Bytes value
+// (bytesBody, the bytes of a bytesPart). The Empty constant is both the empty
+// String and the empty Bytes, and gives "". A `File` (fileBody, filePart) only
+// comes from a browser, so none reaches the native kernel; it gives "".
+// Reads only: no allocation.
+static std::string bodyBytes(HPointer content) {
+    void* obj = resolveOrNull(content);
+    if (!obj) return "";
+    if (Elm::alloc::isByteBuffer(obj)) {  // any of the three Bytes forms
+        return std::string(reinterpret_cast<const char*>(Elm::alloc::byteBufferData(obj)),
+                           Elm::alloc::byteBufferLength(obj));
+    }
+    if (Elm::alloc::isString(obj)) return Elm::StringOps::toStdString(obj);
+    return "";
+}
+
 // HTTP status code -> a short reason phrase (curl does not surface it).
 const char* reasonPhrase(long code) {
     switch (code) {
@@ -208,45 +225,59 @@ const char* reasonPhrase(long code) {
     }
 }
 
-// Build an elm/core `Dict String String` from the response headers. The Dict
-// is only ever READ by user code (Dict.get/toList), which ignores node colour,
-// so we build a valid BST (left-empty, right-chain over keys sorted ascending)
-// without red-black balancing. std::map gives sorted, dedup (last-wins) keys.
+// Build an elm/core `Dict String String` from the response headers: a valid
+// red-black tree, as `Dict.insert` and `Dict.remove` pattern-match on node
+// colours (Dict.elm `NColor = Red | Black`, so Red is null-cons 0 and Black 1).
+// It used to be a right-leaning chain with `()` as every colour, which broke
+// `remove` (plans/kg-reported-bugs.md step 1, kernel audit). std::map gives
+// sorted, dedup (last-wins) keys; the tree is built balanced from them: every
+// level but the deepest is full, the deepest level's nodes are Red and every
+// other node is Black, so each path has the same number of Black nodes and no
+// Red node has a Red child. The root is Black.
 HPointer rbEmpty() {
     std::vector<Unboxable> v;
     return custom(CTOR_DICT_RBEMPTY, v, 0);
 }
 
+namespace {
+
+constexpr u16 DICT_RED = 0;
+constexpr u16 DICT_BLACK = 1;
+
+// The subtree holding `entries[lo, hi)`, at depth `depth` (the root is 1) of a
+// tree whose deepest level is `height`.
+HPointer buildHeadersTree(const std::vector<std::pair<std::string, std::string>>& entries,
+                          size_t lo, size_t hi, int depth, int height) {
+    if (lo >= hi) return rbEmpty();
+    size_t mid = lo + (hi - lo) / 2;
+    HPointer left = buildHeadersTree(entries, lo, mid, depth + 1, height);
+    Elm::StackRootGuard gl(&left);
+    HPointer right = buildHeadersTree(entries, mid + 1, hi, depth + 1, height);
+    Elm::StackRootGuard gr(&right);
+    HPointer key = allocStringFromUTF8(entries[mid].first);
+    Elm::StackRootGuard gk(&key);
+    HPointer val = allocStringFromUTF8(entries[mid].second);
+    Elm::StackRootGuard gv(&val);
+    bool red = depth == height && depth > 1;
+    std::vector<Unboxable> colour;
+    std::vector<Unboxable> fields(5);
+    fields[0].p = custom(red ? DICT_RED : DICT_BLACK, colour, 0);  // null-cons constant
+    fields[1].p = key;
+    fields[2].p = val;
+    fields[3].p = left;
+    fields[4].p = right;
+    return custom(CTOR_DICT_RBNODE, fields, 0);
+}
+
+} // namespace
+
 HPointer buildHeadersDict(const std::vector<std::pair<std::string, std::string>>& hdrs) {
     std::map<std::string, std::string> sorted;
     for (auto& kv : hdrs) sorted[kv.first] = kv.second;
-
-    HPointer tree = rbEmpty();
-    Elm::StackRootGuard treeRoot(&tree);
-    for (auto it = sorted.rbegin(); it != sorted.rend(); ++it) {
-        HPointer key = allocStringFromUTF8(it->first);
-        HPointer val = listNil();
-        {
-            Elm::StackRootGuard g(&key);
-            val = allocStringFromUTF8(it->second);
-        }
-        HPointer left = listNil();
-        {
-            Elm::StackRootGuard g({&key, &val});
-            left = rbEmpty();
-        }
-        // RBNode color k v left right; colour is read-only-irrelevant here so a
-        // Unit placeholder is fine (never pattern-matched without rebalancing).
-        Elm::StackRootGuard g({&key, &val, &left});
-        std::vector<Unboxable> fields(5);
-        fields[0].p = unit();
-        fields[1].p = key;
-        fields[2].p = val;
-        fields[3].p = left;
-        fields[4].p = tree;
-        tree = custom(CTOR_DICT_RBNODE, fields, 0);
-    }
-    return tree;
+    std::vector<std::pair<std::string, std::string>> entries(sorted.begin(), sorted.end());
+    int height = 0;
+    for (size_t n = entries.size(); n > 0; n /= 2) height++;
+    return buildHeadersTree(entries, 0, entries.size(), 1, height);
 }
 
 // Build the Metadata record { headers, statusCode, statusText, url }.
@@ -578,8 +609,10 @@ ExtractedRequest extractRequest(HPointer requestHP) {
         Custom* body = static_cast<Custom*>(bodyPtr);
         if (body->ctor == BODY_PAIR) {
             out.pod.contentType = elmStringToUTF8(encodeHP(body->values[0].p));
-            // content is usually a String (stringBody/jsonBody). multipartBody
-            // wraps a BODY_FORM here; serialise it to multipart/form-data.
+            // content is a String (stringBody/jsonBody) or Bytes (bytesBody).
+            // multipartBody wraps a BODY_FORM here; serialise it to
+            // multipart/form-data. Every body used to be read as a String, so
+            // a bytesBody sent garbage (plans/kg-reported-bugs.md, open items).
             HPointer content = body->values[1].p;
             void* cp = resolveOrNull(content);
             bool isForm = cp && static_cast<Header*>(cp)->tag == Tag_Custom &&
@@ -594,17 +627,32 @@ ExtractedRequest extractRequest(HPointer requestHP) {
                     if (partPtr) {
                         Custom* part = static_cast<Custom*>(partPtr);  // pair [key, value]
                         std::string key = elmStringToUTF8(encodeHP(part->values[0].p));
-                        std::string val = elmStringToUTF8(encodeHP(part->values[1].p));
+                        HPointer value = part->values[1].p;
+                        void* vp = resolveOrNull(value);
                         mp += "--" + boundary + "\r\n";
-                        mp += "Content-Disposition: form-data; name=\"" + key + "\"\r\n\r\n";
-                        mp += val + "\r\n";
+                        if (vp && static_cast<Header*>(vp)->tag == Tag_Custom &&
+                            static_cast<Custom*>(vp)->ctor == BODY_BLOB) {
+                            // bytesPart: a Blob of [bytes, mime], sent as a
+                            // browser sends a Blob appended to a FormData.
+                            Custom* blob = static_cast<Custom*>(vp);
+                            std::string mime = elmStringToUTF8(encodeHP(blob->values[1].p));
+                            mp += "Content-Disposition: form-data; name=\"" + key +
+                                  "\"; filename=\"blob\"\r\n";
+                            mp += "Content-Type: " +
+                                  (mime.empty() ? std::string("application/octet-stream") : mime) +
+                                  "\r\n\r\n";
+                            mp += bodyBytes(blob->values[0].p) + "\r\n";
+                        } else {
+                            mp += "Content-Disposition: form-data; name=\"" + key + "\"\r\n\r\n";
+                            mp += bodyBytes(value) + "\r\n";
+                        }
                     }
                 }
                 mp += "--" + boundary + "--\r\n";
                 out.pod.body = mp;
                 out.pod.contentType = "multipart/form-data; boundary=" + boundary;
             } else {
-                out.pod.body = elmStringToUTF8(encodeHP(content));
+                out.pod.body = bodyBytes(content);
             }
         }
     }
@@ -910,8 +958,9 @@ HPtr Elm_Kernel_Http_mapExpect(HPtr closure, HPtr expectVal) {
     return HPtr::fromBits(Export::encode(custom(EXPECT_CTOR, v, 0)));
 }
 
-// bytesToBlob : String -> Bytes -> Body content  (Phase-2 multipart helper)
-HPtr Elm_Kernel_Http_bytesToBlob(HPtr bytes, HPtr mimeType) {
+// bytesToBlob : String -> Bytes -> Body content  (Phase-2 multipart helper),
+// called by elm/http as `bytesToBlob mime bytes`. The blob is [bytes, mime].
+HPtr Elm_Kernel_Http_bytesToBlob(HPtr mimeType, HPtr bytes) {
     HPointer bytesHP = Export::decode(bytes.toBits());
     HPointer mimeHP  = Export::decode(mimeType.toBits());
     Elm::StackRootGuard g(&bytesHP, &mimeHP);

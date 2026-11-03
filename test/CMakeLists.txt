@@ -33,6 +33,10 @@ foreach(pkg IN LISTS ELM_TEST_PACKAGES)
     set(_shadow "${CMAKE_BINARY_DIR}/test/${pkg}")
     file(MAKE_DIRECTORY ${_shadow})
     file(COPY ${CMAKE_CURRENT_SOURCE_DIR}/${pkg}/elm.json DESTINATION ${_shadow})
+    # Re-run the configure step when a package's elm.json changes, so both shadow
+    # copies (here and in the AOT loop below) never keep stale dependencies.
+    set_property(DIRECTORY APPEND PROPERTY
+            CMAKE_CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/${pkg}/elm.json)
     eco_create_dir_link(${CMAKE_CURRENT_SOURCE_DIR}/${pkg}/src ${_shadow}/src)
     # `cmake --build build --target clean` wipes the per-package eco-stuff
     # and elm-stuff caches (compiler-managed, regenerated on next run). The

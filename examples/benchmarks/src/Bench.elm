@@ -41,9 +41,11 @@ import BinaryFormat
 import BinaryTrees
 import Brainfuck
 import BytesCodec
+import BytesRows
 import Crc32
 import CsvParser
 import CsvSplit
+import DecodedSnapshot
 import DictAlgebra
 import DictKeys
 import DictOps
@@ -69,6 +71,7 @@ import Life
 import ListFilter
 import ListFold
 import ListMap
+import ListOrigin
 import Lru
 import Mandelbrot
 import MatMul
@@ -175,6 +178,11 @@ workloads =
     , Workload "json-encode" "Encode.encode 0 and 4 of size nested objects" JsonEncode.bench 7000 Nothing
     , Workload "csv-parser" "elm/parser CSV: size documents of 400 rows" CsvParser.bench 340 Nothing
     , Workload "lexer" "elm/parser lexer: size documents of 600 tokens" Lexer.bench 125 Nothing
+    , Workload "list-walk-map" "dot product walked size times over a List Float from List.map" ListOrigin.benchMap 160000 Nothing
+    , Workload "list-walk-take" "the same over an equal list from List.take" ListOrigin.benchTake 160000 Nothing
+    , Workload "bytes-f32-rows" "encode and decode size rows of 384 float32s, a loop per row" BytesRows.benchF32 1000 Nothing
+    , Workload "bytes-u8-rows" "the same with unsignedInt8s" BytesRows.benchU8 1200 Nothing
+    , Workload "decoded-snapshot" "decode size records into a Dict String of records, all live" DecodedSnapshot.bench 5500 Nothing
     ]
 
 
@@ -335,7 +343,7 @@ median sorted =
 
 row : String -> String -> String -> String -> String -> String
 row name size check med fastest =
-    String.padRight 14 ' ' name
+    String.padRight 17 ' ' name
         ++ String.padLeft 9 ' ' size
         ++ String.padLeft 7 ' ' check
         ++ String.padLeft 11 ' ' med
@@ -464,7 +472,7 @@ listWorkloads env options =
 
     else
         workloads
-            |> List.map (\w -> String.padRight 14 ' ' w.name ++ String.padLeft 9 ' ' (String.fromInt w.size) ++ "  " ++ w.about)
+            |> List.map (\w -> String.padRight 17 ' ' w.name ++ String.padLeft 9 ' ' (String.fromInt w.size) ++ "  " ++ w.about)
             |> String.join "\n"
             |> (\listing -> Stream.logLine listing env.stdout)
 

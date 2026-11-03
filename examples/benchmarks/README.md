@@ -28,8 +28,10 @@ Each workload checks itself as strongly as it can, at whatever size it runs:
   array-build (closed-form rotations), csv-split and csv-parser (the generator's sums),
   string-append, string-join and string-concat (length and checksum combined from the pieces),
   binary-format (the round trip and every chunk's CRC), json-dict (the generator's sums),
-  json-encode (both texts' lengths from the value, and the round trip) and lexer (the
-  generator's token counts). spectral-norm must lie within `6 / n^3` of its limit (a bound
+  json-encode (both texts' lengths from the value, and the round trip), lexer (the
+  generator's token counts), list-walk-map and list-walk-take (the dot products recomputed with
+  `Int`s), bytes-f32-rows and bytes-u8-rows (the generated rows) and decoded-snapshot (the
+  generator's totals, recomputed with `Int`s). spectral-norm must lie within `6 / n^3` of its limit (a bound
   measured with a C program from 1 to 5,500).
 - Exactly against a table that covers every feasible size: fannkuch-redux (1-12 items, from the
   standard C algorithm), nsieve (2-14, from a separate sieve), n-queens (up to 18, OEIS
@@ -63,7 +65,14 @@ Needs `eco`, `elm` (0.19.1) and `node` on the PATH:
 The table shows, per workload, the median time in milliseconds on the official compiler's
 JavaScript (`elm`), eco's JavaScript (`eco-js`) and eco's native code (`eco-native`), and how many
 times faster eco native is than `elm`. If a workload's check fails on any backend, `run.mjs`
-exits with status 1. All figures also go to `build/results.json`. Set `ECO` or `ELM` to use
+exits with status 1. Where `/usr/bin/time` exists (Linux), each process's peak resident set
+size is measured too, covering start-up, the warm-up and the timed runs; the table shows it for
+`elm` and `eco-native`. All figures also go to `build/results.json`.
+
+Some workloads come in pairs that do the same work in two ways, so the ratio between them is
+the figure to watch: bytes-static and bytes-dynamic, and list-walk-map and list-walk-take (a list
+built by `List.map` against an equal one built by `List.take`). decoded-snapshot is mostly
+about its peak RSS. Set `ECO` or `ELM` to use
 binaries that are not on the PATH.
 
 `run.mjs` runs each workload on each backend in a process of its own, so a workload's timings do

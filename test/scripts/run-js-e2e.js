@@ -10,8 +10,9 @@
 //
 // Projects (default: all, in this order; projectSpecs below):
 //   eco-system       test/eco-system, compiled with --local-package eco/system=<repo>/system-kernel-cpp
-//   elm-conformance  test/elm-conformance, stock elm/core only: the Elm-vs-eco conformance tests,
-//                    which the native harness runs too. Compiled programs get the mode guard
+//   elm-conformance  test/elm-conformance, stock elm packages only (elm/core, elm/json,
+//                    elm/regex): the Elm-vs-eco conformance tests, which the native harness
+//                    runs too. Compiled programs get the mode guard
 //                    (patchModeGuard), and `-- SKIP-JS:` is a failure there.
 // For every <project>/src/*.elm with a top-level `main`:
 //   1. The test project (elm.json + src/*.elm) is mirrored into <build>/test/js-e2e/<name>/project

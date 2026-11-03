@@ -428,7 +428,7 @@ static void* timeSubMapEvaluator(void* args[]) {
     values[0].f = interval;
     values[1].p = composedTagger;
 
-    HPointer newSub = custom(CTOR_TIME_EVERY, values, 0b01);  // interval unboxed
+    HPointer newSub = custom(CTOR_TIME_EVERY, values, 0b10);  // interval: Float kind
     return reinterpret_cast<void*>(encodeHP(newSub));
 }
 

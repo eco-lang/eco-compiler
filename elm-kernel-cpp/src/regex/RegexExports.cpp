@@ -78,7 +78,7 @@ srell::regex* getCompiledRegex(uint64_t regexEnc) {
 
 // Helper: Create a Match record
 // Match = { match : String, index : Int, number : Int, submatches : List (Maybe String) }
-// Fields in canonical order: index, match, number, submatches
+// Fields in the compiler's layout order: index, number, match, submatches
 HPointer createMatch(const std::string& matchStr, int64_t index, int64_t number,
                      const std::vector<std::pair<bool, std::string>>& submatches) {
     // Root submatchList (built across the loop's allocs) and matchStrHP
@@ -105,44 +105,63 @@ HPointer createMatch(const std::string& matchStr, int64_t index, int64_t number,
         submatchList = cons(boxed(submatchValue), submatchList, true);
     }
 
-    // Create record: fields in canonical order (index, match, number, submatches)
+    // Create record in the compiler's layout (computeRecordLayout, Types.elm):
+    // unboxed fields first, then boxed ones, each group sorted by name, so
+    // Match { index, match, number, submatches } is (index, number, match,
+    // submatches). Alphabetical order here made `.match` read the Int 1 as a
+    // pointer (plans/kg-reported-bugs.md step 1).
     matchStrHP = utf8ToElmString(matchStr);
 
     std::vector<Unboxable> fields(4);
     fields[0].i = index;                    // index (Int) - unboxed
-    fields[1].p = matchStrHP;               // match (String) - boxed
-    fields[2].i = number;                   // number (Int) - unboxed
+    fields[1].i = number;                   // number (Int) - unboxed
+    fields[2].p = matchStrHP;               // match (String) - boxed
     fields[3].p = submatchList;             // submatches (List) - boxed
 
-    // Unboxed mask: bit 0 = index unboxed, bit 2 = number unboxed
-    // Fields 1 and 3 are boxed (strings/lists)
-    u64 unboxedMask = 0b0101;  // bits 0 and 2 are set
+    // Slot kinds, 2 bits per slot: slots 0 and 1 are Int (01), 2 and 3 boxed.
+    u64 unboxedMask = 0b0101;
 
     // record() roots all boxed entries of `fields` internally before alloc.
     return record(fields, unboxedMask);
 }
 
-// Helper: Calculate byte offset to character index in UTF-8
-int64_t byteOffsetToCharIndex(const std::string& str, size_t byteOffset) {
-    int64_t charIndex = 0;
-    size_t i = 0;
-    while (i < byteOffset && i < str.size()) {
-        unsigned char c = static_cast<unsigned char>(str[i]);
-        if ((c & 0x80) == 0) {
-            i += 1;
-        } else if ((c & 0xE0) == 0xC0) {
-            i += 2;
-        } else if ((c & 0xF0) == 0xE0) {
-            i += 3;
-        } else if ((c & 0xF8) == 0xF0) {
-            i += 4;
-        } else {
-            i += 1;  // Invalid byte, skip
+// Converts byte offsets in a UTF-8 string to UTF-16 code unit indexes, the unit
+// of Elm's `Match.index` (and of `String.length` and `String.slice`): a 4-byte
+// sequence (a code point above U+FFFF) is two units, any other one. Offsets must
+// be asked for in non-decreasing order, as a match iterator yields them; each
+// call carries on from the last, so a whole scan is linear.
+class Utf16Index {
+public:
+    explicit Utf16Index(const std::string& str) : str_(str) {}
+
+    int64_t at(size_t byteOffset) {
+        while (byte_ < byteOffset && byte_ < str_.size()) {
+            unsigned char c = static_cast<unsigned char>(str_[byte_]);
+            if ((c & 0x80) == 0) {
+                byte_ += 1;
+                units_ += 1;
+            } else if ((c & 0xE0) == 0xC0) {
+                byte_ += 2;
+                units_ += 1;
+            } else if ((c & 0xF0) == 0xE0) {
+                byte_ += 3;
+                units_ += 1;
+            } else if ((c & 0xF8) == 0xF0) {
+                byte_ += 4;
+                units_ += 2;
+            } else {
+                byte_ += 1;  // Invalid byte, skip
+                units_ += 1;
+            }
         }
-        ++charIndex;
+        return units_;
     }
-    return charIndex;
-}
+
+private:
+    const std::string& str_;
+    size_t byte_ = 0;
+    int64_t units_ = 0;
+};
 
 } // anonymous namespace
 
@@ -159,8 +178,10 @@ HPtr Elm_Kernel_Regex_never() {
         values[1].i = 0;   // caseInsensitive = false
         values[2].i = 0;   // multiline = false
 
-        // All fields are unboxed (plain integers, not heap pointers)
-        HPointer regex = custom(CTOR_REGEX, values, 0b111);
+        // All three fields are Ints: kind 01 in each 2-bit slot. It was 0b111,
+        // which made them Char, Int and boxed (plans/kg-reported-bugs.md
+        // step 1, kernel audit).
+        HPointer regex = custom(CTOR_REGEX, values, 0x15);
         return HPtr::fromBits(Export::encode(regex));
     } catch (...) {
         return HPtr::fromBits(Export::encode(nothing()));
@@ -208,7 +229,7 @@ HPtr Elm_Kernel_Regex_fromStringWith(HPtr options, HPtr pattern) {
         values[1].i = caseInsensitive ? 1 : 0;
         values[2].i = multiline ? 1 : 0;
 
-        HPointer regex = custom(CTOR_REGEX, values, 0b111);
+        HPointer regex = custom(CTOR_REGEX, values, 0x15);  // three Ints
         HPointer result = just(boxed(regex), true);
         return HPtr::fromBits(Export::encode(result));
     } catch (const srell::regex_error&) {
@@ -260,6 +281,7 @@ HPtr Elm_Kernel_Regex_findAtMost(int64_t n, HPtr regex, HPtr str) {
     // there are (Elm::alloc::RootedSlots, plans/kernel-root-stack-bounded-rooting.md).
     Elm::alloc::RootedSlots matches;
     int64_t matchNum = 0;
+    Utf16Index utf16Index(strUtf8);
 
     try {
         auto begin = srell::sregex_iterator(strUtf8.begin(), strUtf8.end(), *re);
@@ -271,8 +293,7 @@ HPtr Elm_Kernel_Regex_findAtMost(int64_t n, HPtr regex, HPtr str) {
             const srell::smatch& match = *it;
 
             std::string matchStr = match.str();
-            size_t byteOffset = static_cast<size_t>(match.position());
-            int64_t charIndex = byteOffsetToCharIndex(strUtf8, byteOffset);
+            int64_t charIndex = utf16Index.at(static_cast<size_t>(match.position()));
 
             // Build submatches (skip index 0 which is the full match)
             std::vector<std::pair<bool, std::string>> submatches;
@@ -327,6 +348,7 @@ HPtr Elm_Kernel_Regex_replaceAtMost(int64_t n, HPtr regex, HPtr closure, HPtr st
     std::string result;
     size_t lastEnd = 0;
     int64_t matchNum = 0;
+    Utf16Index utf16Index(strUtf8);
 
     try {
         auto begin = srell::sregex_iterator(strUtf8.begin(), strUtf8.end(), *re);
@@ -344,7 +366,7 @@ HPtr Elm_Kernel_Regex_replaceAtMost(int64_t n, HPtr regex, HPtr closure, HPtr st
 
             // Build Match record for callback
             std::string matchStr = match.str();
-            int64_t charIndex = byteOffsetToCharIndex(strUtf8, matchStart);
+            int64_t charIndex = utf16Index.at(matchStart);
 
             std::vector<std::pair<bool, std::string>> submatches;
             for (size_t i = 1; i < match.size(); ++i) {

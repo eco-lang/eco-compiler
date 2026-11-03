@@ -21,6 +21,13 @@ uint64_t Eco_Kernel_Terminal_getConfiguration() {
     )
 }
 
+// isTerminal : Int -> Task Never Bool  — the Int is the file descriptor (0, 1 or 2).
+uint64_t Eco_Kernel_Terminal_isTerminal(int64_t fd) {
+    ECO_KERNEL_GUARD(
+        return enc(makeBinding<terminalIsTerminalBody>(alloc::allocInt(fd)));
+    )
+}
+
 // setStdInRawMode : Bool -> Task Never ()
 uint64_t Eco_Kernel_Terminal_setStdInRawMode(uint64_t toggle) {
     ECO_KERNEL_GUARD(

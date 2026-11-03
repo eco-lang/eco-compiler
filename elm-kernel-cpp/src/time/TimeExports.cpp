@@ -304,8 +304,10 @@ HPtr Elm_Kernel_Time_setInterval(double intervalMs, HPtr task) {
     values[0].f = intervalMs;                   // interval in milliseconds (unboxed)
     values[1].p = Export::decode(task.toBits()); // tagger closure (boxed)
 
-    // Field 0 is unboxed (Float), field 1 is boxed (Closure)
-    HPointer sub = custom(CTOR_TIME_EVERY, values, 0b01);
+    // Slot kinds, 2 bits per slot: field 0 is a Float (10), field 1 boxed. It was
+    // 0b01 (Int), which only the native manager's direct `.f` reads tolerated
+    // (plans/kg-reported-bugs.md step 1, kernel audit).
+    HPointer sub = custom(CTOR_TIME_EVERY, values, 0b10);
     return HPtr::fromBits(Export::encode(sub));
 }
 

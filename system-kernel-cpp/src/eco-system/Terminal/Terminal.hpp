@@ -19,6 +19,7 @@
 namespace Eco::System {
 
 HPointer terminalGetConfigurationBody(HPointer captured);
+HPointer terminalIsTerminalBody(HPointer captured);
 HPointer terminalSetStdInRawModeBody(HPointer captured);
 HPointer terminalSetTitleBody(HPointer captured);
 

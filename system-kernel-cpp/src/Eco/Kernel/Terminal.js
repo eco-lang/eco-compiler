@@ -12,6 +12,7 @@ import Maybe exposing (Just, Nothing)
 //     stdout and stderr (native: fds 1, 0, 2; Node cannot size fd 0 without opening a
 //     second stream on it). The colour depth is the B.5 heuristic, as native (not
 //     Node's getColorDepth, which also looks at CI variables and TERM tables).
+//   * isTerminal — tty.isatty on the given standard stream's fd (0, 1 or 2), as native.
 //   * setStdInRawMode — process.stdin.setRawMode when fd 0 is a terminal, otherwise a
 //     no-op. Node itself restores the terminal at exit and when SIGINT / SIGTERM end
 //     the process (its ResetStdio), which is the native atexit + signal-listener rule.
@@ -90,6 +91,15 @@ var _Terminal_getConfiguration = __Scheduler_binding(function(callback)
 	var size = _Terminal_size() || [0, 0];
 	callback(__Scheduler_succeed(__Maybe_Just(__Utils_Tuple3(_Terminal_colorDepth(), size[0], size[1]))));
 });
+
+// isTerminal : Int -> Task Never Bool  — the Int is the file descriptor (0, 1 or 2).
+var _Terminal_isTerminal = function(fd)
+{
+	return __Scheduler_binding(function(callback)
+	{
+		callback(__Scheduler_succeed(_Terminal_isatty(fd)));
+	});
+};
 
 // setStdInRawMode : Bool -> Task Never ()
 var _Terminal_setStdInRawMode = function(on)

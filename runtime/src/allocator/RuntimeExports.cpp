@@ -3894,10 +3894,30 @@ static void print_typed_value(uint64_t value, uint32_t type_id, int depth) {
 
         Record* record = static_cast<Record*>(ptr);
         uint32_t actual_size = record->header.size;
+        uint32_t shown = std::min(actual_size, field_count);
+
+        // Elm prints a record's fields sorted by name, but the slots are in layout order
+        // (unboxed fields first, computeRecordLayout), so visit them in name order. Field
+        // names are ASCII identifiers, so strcmp is Elm's order.
+        std::vector<uint32_t> order(shown);
+        for (uint32_t i = 0; i < shown; i++) order[i] = i;
+        auto nameOf = [&](uint32_t i) -> const char* {
+            if (!g_type_graph->fields || !g_type_graph->strings ||
+                first_field + i >= g_type_graph->field_count) return nullptr;
+            uint32_t n = g_type_graph->fields[first_field + i].name_index;
+            return n < g_type_graph->string_count ? g_type_graph->strings[n] : nullptr;
+        };
+        bool named = true;
+        for (uint32_t i = 0; i < shown; i++) named = named && nameOf(i) != nullptr;
+        if (named) {
+            std::sort(order.begin(), order.end(),
+                      [&](uint32_t a, uint32_t b) { return std::strcmp(nameOf(a), nameOf(b)) < 0; });
+        }
 
         output_text("{ ");
-        for (uint32_t i = 0; i < actual_size && i < field_count; i++) {
-            if (i > 0) output_text(", ");
+        for (uint32_t k = 0; k < shown; k++) {
+            uint32_t i = order[k];
+            if (k > 0) output_text(", ");
 
             if (g_type_graph->fields && first_field + i < g_type_graph->field_count) {
                 const Elm::EcoFieldInfo* field = &g_type_graph->fields[first_field + i];

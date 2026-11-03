@@ -16,6 +16,8 @@ forms, an Array's elements printed by their type (and an Array of more than 32, 
 -- CHECK: record: "{ age = 3, name = \"x\" }"
 -- CHECK: record nested: "{ a = { b = [1,2] }, c = (1,2) }"
 -- CHECK: record empty: "{}"
+-- CHECK: record unboxed fields last: "{ active = True, code = 'c', label = \"x\", size = 2, zoom = 1.5 }"
+-- CHECK: record in list: "[{ a = \"1\", b = 1 },{ a = \"2\", b = 2 }]"
 -- CHECK: just int: "Just 1"
 -- CHECK: just neg: "Just -1"
 -- CHECK: just just: "Just (Just 1)"
@@ -120,6 +122,8 @@ report =
         , ( "record", show { name = "x", age = 3 } )
         , ( "record nested", show { a = { b = [ 1, 2 ] }, c = ( 1, 2 ) } )
         , ( "record empty", show {} )
+        , ( "record unboxed fields last", show { label = "x", size = 2, active = True, zoom = 1.5, code = 'c' } )
+        , ( "record in list", show (List.map (\n -> { b = n, a = String.fromInt n }) [ 1, 2 ]) )
         , ( "just int", show (Just 1) )
         , ( "just neg", show (Just -1) )
         , ( "just just", show (Just (Just 1)) )
