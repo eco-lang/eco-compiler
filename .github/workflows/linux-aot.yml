@@ -89,9 +89,17 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Free disk space
+        # The Docker builds run close to the runner's disk limit; a scheduled
+        # run on 2026-11-03 failed in "Build eco-dev image" with "No space left
+        # on device". None of these preinstalled SDKs and tool caches is used
+        # here (Node and Python come from the images, not hostedtoolcache).
         run: |
+          df -h /
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
-            /opt/hostedtoolcache/CodeQL /usr/local/share/boost || true
+            /opt/hostedtoolcache /usr/local/share/boost \
+            /usr/local/share/powershell /usr/local/share/chromium \
+            /usr/local/lib/node_modules /usr/share/swift || true
+          sudo docker image prune --all --force || true
           df -h /
 
       - name: Restore LLVM debian base image (from linux-llvm-build-debian)
@@ -113,11 +121,18 @@ jobs:
           echo "Loading cached $img ..."
           gunzip -c /tmp/eco-llvm-debian.tar.gz | docker load
           docker image ls "$img"
+          # The image now lives in the Docker store; the multi-GB tarball is
+          # dead weight (a cache hit, so actions/cache has nothing to save).
+          rm -f /tmp/eco-llvm-debian.tar.gz
+          df -h /
 
       - name: Build eco-dev image
         # INSTALL_TLA=0: CI runs no TLA+ model checks (they are local gates),
         # so skip the JRE, the TLA+ jars and Apalache (~240 MB of downloads).
-        run: docker build --build-arg INSTALL_TLA=0 -f docker/eco-dev.Dockerfile -t eco-dev .
+        run: |
+          docker build --build-arg INSTALL_TLA=0 -f docker/eco-dev.Dockerfile -t eco-dev .
+          docker builder prune --force
+          df -h /
 
       - name: Restore ccache
         # Restore only: branch runs read master's newest ccache and never save
@@ -227,9 +242,17 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Free disk space
+        # The Docker builds run close to the runner's disk limit; a scheduled
+        # run on 2026-11-03 failed in "Build eco-dev image" with "No space left
+        # on device". None of these preinstalled SDKs and tool caches is used
+        # here (Node and Python come from the images, not hostedtoolcache).
         run: |
+          df -h /
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
-            /opt/hostedtoolcache/CodeQL /usr/local/share/boost || true
+            /opt/hostedtoolcache /usr/local/share/boost \
+            /usr/local/share/powershell /usr/local/share/chromium \
+            /usr/local/lib/node_modules /usr/share/swift || true
+          sudo docker image prune --all --force || true
           df -h /
 
       - name: Restore LLVM debian base image (from linux-llvm-build-debian)
@@ -251,11 +274,18 @@ jobs:
           echo "Loading cached $img ..."
           gunzip -c /tmp/eco-llvm-debian.tar.gz | docker load
           docker image ls "$img"
+          # The image now lives in the Docker store; the multi-GB tarball is
+          # dead weight (a cache hit, so actions/cache has nothing to save).
+          rm -f /tmp/eco-llvm-debian.tar.gz
+          df -h /
 
       - name: Build eco-dev image
         # INSTALL_TLA=0: CI runs no TLA+ model checks (they are local gates),
         # so skip the JRE, the TLA+ jars and Apalache (~240 MB of downloads).
-        run: docker build --build-arg INSTALL_TLA=0 -f docker/eco-dev.Dockerfile -t eco-dev .
+        run: |
+          docker build --build-arg INSTALL_TLA=0 -f docker/eco-dev.Dockerfile -t eco-dev .
+          docker builder prune --force
+          df -h /
 
       - name: Restore ccache
         # Restore only: branch runs read master's newest ccache and never save
@@ -377,9 +407,17 @@ jobs:
           echo "Building eco $v"
 
       - name: Free disk space
+        # The Docker builds run close to the runner's disk limit; a scheduled
+        # run on 2026-11-03 failed in "Build eco-dev image" with "No space left
+        # on device". None of these preinstalled SDKs and tool caches is used
+        # here (Node and Python come from the images, not hostedtoolcache).
         run: |
+          df -h /
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
-            /opt/hostedtoolcache/CodeQL /usr/local/share/boost || true
+            /opt/hostedtoolcache /usr/local/share/boost \
+            /usr/local/share/powershell /usr/local/share/chromium \
+            /usr/local/lib/node_modules /usr/share/swift || true
+          sudo docker image prune --all --force || true
           df -h /
 
       - name: Restore LLVM alpine base image (from linux-llvm-build-alpine)
@@ -401,6 +439,10 @@ jobs:
           echo "Loading cached $img ..."
           gunzip -c /tmp/eco-llvm-alpine.tar.gz | docker load
           docker image ls "$img"
+          # The image now lives in the Docker store; the multi-GB tarball is
+          # dead weight (a cache hit, so actions/cache has nothing to save).
+          rm -f /tmp/eco-llvm-alpine.tar.gz
+          df -h /
           # Publish to the local registry so the docker-container buildx builder
           # (which can't see the host daemon store) can resolve it as a base.
           docker tag "$img" "localhost:5000/$img"
