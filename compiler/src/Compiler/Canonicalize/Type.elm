@@ -33,14 +33,14 @@ giving the type scheme of an annotation.
 -}
 
 import Basics.Extra exposing (flip)
-import Compiler.AST.Canonical as Can
-import Compiler.AST.Source as Src
+import Compiler.Canonicalize.Dups as Dups
 import Compiler.Canonicalize.Environment as Env
-import Compiler.Canonicalize.Environment.Dups as Dups
-import Compiler.Data.HeapLimits as HeapLimits
-import Compiler.Data.Name as Name exposing (Name)
-import Compiler.Reporting.Annotation as A
-import Compiler.Reporting.Error.Canonicalize as Error
+import Compiler.Canonicalize.Error as Error
+import Compiler.Core.Annotation as A
+import Compiler.Core.Name as Name exposing (Name)
+import Compiler.IR.Canonical as Can
+import Compiler.IR.Runtime.HeapLimits as HeapLimits
+import Compiler.IR.Source as Src
 import Compiler.Reporting.Result as ReportingResult
 import Dict exposing (Dict)
 

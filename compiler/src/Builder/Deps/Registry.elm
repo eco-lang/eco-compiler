@@ -64,7 +64,7 @@ import Bytes.Encode
 import Compiler.Elm.Package as Pkg
 import Compiler.Elm.Version as V
 import Compiler.Json.Decode as D
-import Compiler.Parse.Primitives as P
+import Compiler.Lexer.Primitives as P
 import Dict exposing (Dict)
 import Eco.File
 import System.IO as IO

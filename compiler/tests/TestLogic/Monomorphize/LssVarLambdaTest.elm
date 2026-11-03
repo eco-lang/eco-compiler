@@ -6,12 +6,12 @@ arrows. Without the first test, a change that left such a position
 unresolved or unknown in this fixture's registry rows would go unnoticed.
 
 A lambda-set annotation (`Mono.LambdaSetAnno`, owned by
-`Compiler.AST.Monomorphized`) on an arrow says which function values can flow
+`Compiler.IR.Mono`) on an arrow says which function values can flow
 through it: `LSet` exactly the listed members, `LPartial` at least them,
 `LVar` not yet determined, `LTop` unknown. A registry row holds the type of
 one specialization of a global; a lambda has no row of its own, so the set of
 the function it returns is recorded with its closure node, in the type of its
-body. The settle pass `settleVarLambda` of `Compiler.MonoSolver.Monomorphize`
+body. The settle pass `settleVarLambda` of `Compiler.Monomorphize.Solver.Monomorphize`
 copies such sets from closure nodes into `LVar` positions of registry rows. It
 writes a position only when the merged evidence for it holds no `LTop` or
 `LVar`, every member of the enclosing set has a recorded closure, and those
@@ -60,8 +60,6 @@ optimization.
 -}
 
 import Array
-import Compiler.AST.Monomorphized as Mono
-import Compiler.AST.Source as Src
 import Compiler.AST.SourceBuilder
     exposing
         ( binopsExpr
@@ -75,8 +73,10 @@ import Compiler.AST.SourceBuilder
         , tVar
         , varExpr
         )
-import Compiler.Eco.Config as Config
-import Compiler.Monomorphize.MonoTraverse as MonoTraverse
+import Compiler.Config as Config
+import Compiler.IR.Mono as Mono
+import Compiler.IR.Mono.Traverse as MonoTraverse
+import Compiler.IR.Source as Src
 import Dict
 import Expect
 import Test exposing (Test)

@@ -32,7 +32,7 @@ expression, by an argument, a pattern or a `let`.
 `addLocals` adds local names, and it is where shadowing is checked.
 
 The environment is built elsewhere: `Compiler.Canonicalize.Environment.Foreign`
-builds it from the imports, and `Compiler.Canonicalize.Environment.Local` adds
+builds it from the imports, and `Compiler.Canonicalize.LocalEnvironment` adds
 the module's own declarations.
 
 
@@ -62,15 +62,15 @@ the module's own declarations.
 
 -}
 
-import Compiler.AST.Canonical as Can
-import Compiler.AST.Utils.Binop as Binop
-import Compiler.Data.Index as Index
-import Compiler.Data.Name as Name exposing (Name)
-import Compiler.Data.OneOrMore as OneOrMore
+import Compiler.Canonicalize.Error as Error
+import Compiler.Core.Annotation as A
+import Compiler.Core.Index as Index
+import Compiler.Core.Name as Name exposing (Name)
 import Compiler.Elm.ModuleName exposing (Canonical)
-import Compiler.Reporting.Annotation as A
-import Compiler.Reporting.Error.Canonicalize as Error
+import Compiler.IR.Canonical as Can
+import Compiler.IR.Source.Binop as Binop
 import Compiler.Reporting.Result as ReportingResult
+import Data.OneOrMore as OneOrMore
 import Data.Set as EverySet
 import Dict exposing (Dict)
 

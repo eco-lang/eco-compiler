@@ -100,7 +100,7 @@ fan-in and duplication (07).
 
 ## 3. Flow audit of every pass after type checking
 
-The audit was read-only, against defaults (`Compiler/Eco/Config.elm:517-556`). Paths are under
+The audit was read-only, against defaults (`Compiler/Config.elm:517-556`). Paths are under
 `compiler/src/Compiler/`.
 
 | Pass | Flow | Evidence and notes |

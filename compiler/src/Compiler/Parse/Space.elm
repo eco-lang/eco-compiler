@@ -50,11 +50,11 @@ the JavaScript stack.
 
 -}
 
-import Compiler.AST.Snippet as Snippet
-import Compiler.AST.Source as Src
-import Compiler.Parse.Primitives as P exposing (Col, Row)
-import Compiler.Reporting.Annotation as A
-import Compiler.Reporting.Error.Syntax as E
+import Compiler.Core.Annotation as A
+import Compiler.Core.Snippet as Snippet
+import Compiler.IR.Source as Src
+import Compiler.Lexer.Primitives as P exposing (Col, Row)
+import Compiler.Parse.Error as E
 
 
 

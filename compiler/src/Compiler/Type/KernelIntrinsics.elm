@@ -64,7 +64,7 @@ outside them cannot add to it.
 `Compiler.Type.Solve.srcTypeToVariable` turns an annotation's variables into
 solver variables by name: one whose name starts with `number`, `comparable`,
 `appendable` or `compappend` becomes a constrained variable, as
-`Compiler.Data.Name.isNumberType` and its siblings describe. This makes a type
+`Compiler.Core.Name.isNumberType` and its siblings describe. This makes a type
 such as `number -> String` expressible, and also makes an ordinary variable
 given such a name by accident a constrained one. The rows name their variables
 `a`.
@@ -75,7 +75,7 @@ given such a name by accident a constrained one. The rows name their variables
 The table is keyed by (prefix, home, name), where the prefix is `Elm` or `Eco`,
 because one home and name can be two different kernels. `Elm.Kernel.File.size`
 returns a file's size as an `Int`, while `Eco.Kernel.File.size` returns a task;
-one annotation cannot fit both. `Compiler.MonoSolver.KernelSetFacts` and
+one annotation cannot fit both. `Compiler.Monomorphize.Solver.KernelSetFacts` and
 `Compiler.Type.KernelTypes` key their tables by (home, name) only.
 
 
@@ -98,9 +98,9 @@ one annotation cannot fit both. `Compiler.MonoSolver.KernelSetFacts` and
 
 -}
 
-import Compiler.AST.Canonical as Can
-import Compiler.Data.Name exposing (Name)
+import Compiler.Core.Name exposing (Name)
 import Compiler.Elm.ModuleName as ModuleName
+import Compiler.IR.Canonical as Can
 import Dict exposing (Dict)
 
 

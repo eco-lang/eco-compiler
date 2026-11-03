@@ -37,7 +37,7 @@ G1** for Phase 5 (the RC-optimization track); it does **not** gate Phases
 `mono.validate` / `ECO_INLINE_REPORT`; never referenced in `Config.hash`,
 so flag-off caches are unaffected). Five wiring edits + one fold helper:
 
-- `compiler/src/Compiler/Eco/Config.elm` — `MonoConfig.borrowCensus0 : Bool` field (+ `default.mono` = `False`, + `monoDecoder` env-only pass-through).
+- `compiler/src/Compiler/Config.elm` — `MonoConfig.borrowCensus0 : Bool` field (+ `default.mono` = `False`, + `monoDecoder` env-only pass-through).
 - `compiler/src/Builder/Eco/Config.elm` — `ECO_BORROW_CENSUS0=1|true|yes` override (`applyBorrowCensus0Override`, modelled on `applyValidateOverride`).
 - `compiler/src/Builder/Generate.elm` — thread the flag through `runGlobalOptPhase` (widened with a 2nd `Bool`); after GlobalOpt, when set, emit one stderr `borrow census0: …` line via the existing house side-channel idiom, `Task.map (\_ -> result)` (graph-inert). The fold is `borrowCensus0Line : Mono.MonoGraph -> String` (+ throwaway `Census0` alias), placed beside `abiCensusLines`.
 
@@ -442,7 +442,7 @@ bodies). All view / slice / rope / split-header forms excluded (§4).
 
 ## 8. Files changed
 
-- `compiler/src/Compiler/Eco/Config.elm` — `MonoConfig.borrowCensus0` field + default + decoder.
+- `compiler/src/Compiler/Config.elm` — `MonoConfig.borrowCensus0` field + default + decoder.
 - `compiler/src/Builder/Eco/Config.elm` — `ECO_BORROW_CENSUS0` env override + `applyBorrowCensus0Override`.
 - `compiler/src/Builder/Generate.elm` — flag threading + `borrowCensus0Line` fold + `Census0` alias + imports (`Array`, `MonoTraverse`).
 - `runtime/src/allocator/NurserySpace.cpp` — `assertHeaderPreservedAcrossCopy` + snapshot/calls in `evacuate`, `evacuateJitPtr`, `evacuateListSpine` (all `#if ECO_HEAP_VALIDATE`).
@@ -525,7 +525,7 @@ Perceus-op ceilings.
 ### Files added (B1 + B2)
 - `compiler/src/Compiler/GlobalOpt/Borrow/{Lifetime,Dsu,Rty,Constrain,Solve}.elm` + `Borrow.elm`
 - `compiler/tests/Compiler/GlobalOpt/Borrow/{SkelFuzz,LifetimeTest,DsuTest}.elm`
-- edits: `Compiler/Eco/Config.elm`, `Builder/Eco/Config.elm`, `Builder/Generate.elm`, `Compiler/GlobalOpt/MonoGlobalOptimize.elm`, `design_docs/invariants.csv` (BORROW_001)
+- edits: `Compiler/Config.elm`, `Builder/Eco/Config.elm`, `Builder/Generate.elm`, `Compiler/MonoOpt/GlobalOptimize.elm`, `design_docs/invariants.csv` (BORROW_001)
 
 ---
 
@@ -650,7 +650,7 @@ sigs don't yet benefit from lambda routing — only the census recovery
 does), and `resultLts` arg-return coupling (still `[]`).
 
 ### Files added (B3.5)
-- `compiler/src/Compiler/GlobalOpt/Borrow/LssFacts.elm`
+- `compiler/src/Compiler/MonoOpt/Borrow/LssFacts.elm`
 - edits: `Borrow.elm` (build facts + per-member lambda sigs + census-pass routing), `Borrow/Constrain.elm` (`Env.lssFacts`, closure-branch `query`, `constrainClosureForSig`), `design_docs/invariants.csv` (BORROW_006)
 
 ### §11a — Standalone-member routing (U4.1, as-built 2026-07-26)
@@ -694,7 +694,7 @@ analysis is now **complete**: every LSS member kind routes; no
 (bailouts 0, maxIter 3, sigMissReads 0).
 
 ### Files added/changed (U4.1 standalone routing)
-- edits: `Compiler/AST/Monomorphized.elm` (`MemberOrigin(..)` + `MonoGraph.lssMemberOrigins`), `MonoSolver/Monomorphize.elm` (`buildMemberOrigins`), `Monomorphize/Monomorphize.elm` + `Monomorphize/Prune.elm` + `GlobalOpt/MonoInlineSimplify.elm` (thread the field), `Borrow/LssFacts.elm` (origins/globalIndex/sigs + standalone adapters), `Borrow/Sig.elm` (`uniformSigTy`), `Borrow.elm` (`buildGlobalIndex`, assemble full facts), `TestLogic/GlobalOpt/{CafDedupe,CafHoist}Test.elm` (fixture field)
+- edits: `Compiler/IR/Mono.elm` (`MemberOrigin(..)` + `MonoGraph.lssMemberOrigins`), `MonoSolver/Monomorphize.elm` (`buildMemberOrigins`), `Monomorphize/Monomorphize.elm` + `Monomorphize/Prune.elm` + `GlobalOpt/MonoInlineSimplify.elm` (thread the field), `Borrow/LssFacts.elm` (origins/globalIndex/sigs + standalone adapters), `Borrow/Sig.elm` (`uniformSigTy`), `Borrow.elm` (`buildGlobalIndex`, assemble full facts), `TestLogic/GlobalOpt/{CafDedupe,CafHoist}Test.elm` (fixture field)
 
 ---
 

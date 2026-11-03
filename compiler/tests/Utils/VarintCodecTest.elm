@@ -11,7 +11,7 @@ when another byte follows. `sintV` writes a possibly negative Int by first
 mapping it to a non-negative one by _zigzag_ (0, -1, 1, -2, ... become 0, 1, 2,
 3, ...) and then writing that with `uintV`, so a number of small magnitude is
 short whatever its sign. `int64` writes any Int in a fixed eight bytes. A fourth
-pair, `regionEncoderV` and `regionDecoderV` of `Compiler.Reporting.Annotation`,
+pair, `regionEncoderV` and `regionDecoderV` of `Compiler.Core.Annotation`,
 writes a source region as four of these varints: the start row, start column
 and end column with `uintV`, and the end row as a `sintV` difference from the
 start row.
@@ -51,7 +51,7 @@ expected values; `uintV` on values above 2^32 - 1 or below 0; the width of
 import Bytes
 import Bytes.Decode
 import Bytes.Encode
-import Compiler.Reporting.Annotation as A
+import Compiler.Core.Annotation as A
 import Expect
 import Fuzz
 import Test exposing (Test)

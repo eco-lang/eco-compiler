@@ -1,7 +1,7 @@
 module Compiler.Parse.Pattern exposing (term, expression)
 
 {-| Parses Elm patterns, the left-hand sides that take values apart, into the
-source AST of `Compiler.AST.Source`, keeping the comments written among them.
+source AST of `Compiler.IR.Source`, keeping the comments written among them.
 
 Patterns come in two sizes, and the module exposes one parser for each. A
 _term_ is atomic, so a term can sit next to other terms without parentheses. Records, tuples and
@@ -16,7 +16,7 @@ Two forms are refused with their own errors: a float (`E.PFloat`), and an
 underscore followed by name characters (`E.PWildcardNotVar`), since a wildcard
 cannot carry a name.
 
-Comments are kept in the `C1` and `C2` wrappers that `Compiler.AST.Source`
+Comments are kept in the `C1` and `C2` wrappers that `Compiler.IR.Source`
 defines; which side of a pattern each group lies on is noted at each parser.
 The comments between a constructor's arguments are not kept.
 
@@ -27,16 +27,17 @@ The comments between a constructor's arguments are not kept.
 
 -}
 
-import Compiler.AST.Source as Src
-import Compiler.Data.Name as Name
-import Compiler.Parse.Keyword as Keyword
+import Compiler.Core.Annotation as A
+import Compiler.Core.Name as Name
+import Compiler.IR.Source as Src
+import Compiler.Lexer.Identifier as Identifier
+import Compiler.Lexer.Keyword as Keyword
+import Compiler.Lexer.Primitives as P
+import Compiler.Parse.Error as E
 import Compiler.Parse.Number as Number
-import Compiler.Parse.Primitives as P
 import Compiler.Parse.Space as Space
 import Compiler.Parse.String as String
 import Compiler.Parse.Variable as Var
-import Compiler.Reporting.Annotation as A
-import Compiler.Reporting.Error.Syntax as E
 
 
 
@@ -158,10 +159,10 @@ wildcard =
                     newCol =
                         st.col + 1
                 in
-                if Var.getInnerWidth st.src newPos st.end > 0 then
+                if Identifier.getInnerWidth st.src newPos st.end > 0 then
                     let
                         ( badPos, badCol ) =
-                            Var.chompInnerChars st.src newPos st.end newCol
+                            Identifier.chompInnerChars st.src newPos st.end newCol
                     in
                     P.Cerr st.row st.col (E.PWildcardNotVar (Name.fromPtr st.src st.pos badPos) (badCol - st.col))
 

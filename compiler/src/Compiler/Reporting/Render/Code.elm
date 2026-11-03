@@ -12,7 +12,7 @@ wording.
 
 The source is held as a `Source`, its lines numbered from 1, made from the
 whole text by `toSource`. Rows and columns here are the parser's, as
-`Compiler.Reporting.Annotation` describes: both count from 1, and a region's end
+`Compiler.Core.Annotation` describes: both count from 1, and a region's end
 is the position just after its last character.
 
 A _snippet_ is the excerpt as drawn: the lines of a region, each behind a gutter
@@ -41,10 +41,10 @@ gutter of each of its lines. There is no syntax highlighting.
 
 -}
 
-import Compiler.Parse.Primitives exposing (Col, Row)
-import Compiler.Parse.Symbol exposing (binopCharSet)
-import Compiler.Parse.Variable as Var
-import Compiler.Reporting.Annotation as A
+import Compiler.Core.Annotation as A
+import Compiler.Lexer.Identifier as Identifier
+import Compiler.Lexer.Primitives exposing (Col, Row)
+import Compiler.Lexer.Symbol exposing (binopCharSet)
 import Compiler.Reporting.Doc as D exposing (Doc)
 import Data.Set as EverySet
 import Prelude
@@ -333,7 +333,7 @@ renderPair source region1 region2 =
 {-| What kind of text starts at a position in the source, as `whatIsNext`
 classifies it.
 
-`Keyword` carries a reserved word, as `Compiler.Parse.Variable.isReservedWord`
+`Keyword` carries a reserved word, as `Compiler.Lexer.Identifier.isReservedWord`
 decides.
 
 `Operator` carries operator characters, starting with the one at the position.
@@ -421,7 +421,7 @@ detectKeywords c rest =
         name =
             String.fromChar c ++ cs
     in
-    if Var.isReservedWord name then
+    if Identifier.isReservedWord name then
         Keyword name
 
     else
@@ -453,7 +453,7 @@ isInner char =
 
 
 {-| Returns whether `char` is one of the characters operators are made of, as
-`Compiler.Parse.Symbol.binopCharSet` lists them.
+`Compiler.Lexer.Symbol.binopCharSet` lists them.
 -}
 isSymbol : Char -> Bool
 isSymbol char =

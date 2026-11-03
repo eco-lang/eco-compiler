@@ -43,9 +43,9 @@ the variables of an alias's arguments, and those of a `Filled` alias's body.
 -}
 
 import Array
-import Compiler.AST.Canonical as Can
-import Compiler.Data.Name as Name exposing (Name)
-import Compiler.Reporting.Annotation as A
+import Compiler.Core.Annotation as A
+import Compiler.Core.Name as Name exposing (Name)
+import Compiler.IR.Canonical as Can
 import Compiler.Type.PostSolve as PostSolve
 import Data.Map as Dict
 import Data.Set as EverySet

@@ -48,7 +48,7 @@ Re-prioritized order: **H0 measure → H1 beta completion → H2 HOF-aware inlin
 | GlobalOpt P5 `annotateCallStaging` | `:150` |
 | MLIR codegen | `Generate/MLIR/*` |
 
-### Inliner facts (`Compiler/GlobalOpt/MonoInlineSimplify.elm`)
+### Inliner facts (`Compiler/MonoOpt/InlineSimplify.elm`)
 
 - Cost model: leaves 1; Let/Destruct 2; If 2+…; List/Record/Tuple/Case 3+…; **Closure/Call/TailCall 5+contents** (`:509–516`). Threshold 10, `maxPerFunction` 1000, `fixpointIterations` 4 (`Config.elm:141–146`).
 - Whitelist bypasses the threshold entirely (`:620–625`); built-in list is Bytes-API only (`defaultWhitelist:218–292`); config `inline.whitelist` is additive, `inline.blacklist` subtractive; config changes invalidate `d.dat` via `configHash` (`Config.elm:273` includes `thr=`/`wl=`).
@@ -56,13 +56,13 @@ Re-prioritized order: **H0 measure → H1 beta completion → H2 HOF-aware inlin
 - Guards that must survive any change: recursion SCC guard (`:602`), kernel-ref partial-app guard (`:2122–2140`, protects specialized kernel ABI), `MonoTailCall` never inlined (`:957`), partial-app rebuild widens head annotation to `LTop` (`:1213` — known precision loss).
 - The Phase-5 exponential from the old `wrapInLets`-chain hazard is **mitigated**: `sourceArityForExpr` (`MonoGlobalOptimize.elm:1474`) extends a memoized `varSourceArity` env via `extendSourceArityEnv` (`:1617–1629`) instead of re-annotating. Deep let chains are linear now; keep as a watch item, not a blocker.
 
-### Stamping / fast dispatch (`Compiler/GlobalOpt/AbiCloning.elm`, `Generate/MLIR/Expr.elm`)
+### Stamping / fast dispatch (`Compiler/MonoOpt/AbiCloning.elm`, `Generate/MLIR/Expr.elm`)
 
 - AbiCloning stamps `callInfo.fastEvaluator/captureAbi/closureKind` on singleton-set call sites via a representative instance (`stampCall:950–989`; `MemberInfo:140`, `LayoutGroup:152`, `siteFingerprint:176`). Stats: `dispatchUpgraded / declinedBlocked / declinedNoInstance / declinedShape / declinedAbiMismatch` (`:69–96`), printed at `Generate.elm:1239–1254`.
 - Codegen: stamped calls emit `eco.papExtend` carrying `_fast_evaluator` + `_capture_abi` (`Expr.elm:1652`, `generateFastDispatchCall:1687–1769`); C++ lowering projects captures from the closure and calls the fast clone `<name>$cap` whose signature is `(captures…, params…) → result` (`EcoToLLVMClosures.cpp`, `Lambdas.elm:234`). **The closure object at a stamped site is only a capture container** — that is what elision exploits.
 - Self-compile census (LSS on): `dispatchUpgraded=3140`, `declinedShape≈7542` (shape-class: PAP consumption, layout mismatch — *not* budget-class).
 
-### Config & flags (`Compiler/Eco/Config.elm`)
+### Config & flags (`Compiler/Config.elm`)
 
 - `InlineConfig { threshold=10, whitelist=[], blacklist=[], maxPerFunction=1000, fixpointIterations=4 }` (`:110–146`).
 - `LssConfig { enabled=False, keyed=False, maxSetSize=8, maxSpecsPerGlobal=64, report=False }` (`:83–101`). LSS M1–M4 are implemented and were gated green (E2E 1584/1584 across subst/solver/LSS=1/keyed), but **both flags default off**.
@@ -805,7 +805,7 @@ also correctly refused).
 implementation-ready, U2b needs a short design pass.**
 
 *The shape.* `IO a = State -> (State, a)` (a TYPE ALIAS —
-`System/TypeCheck/IO.elm:108`). `andThen f ma = \s0 -> …` returns a
+`Compiler/Type/State/IO.elm:108`). `andThen f ma = \s0 -> …` returns a
 lambda; mono-uncurry flattens it so the spec's ENTIRE body is one
 `papCreate` of an arity-3 lambda capturing `(ma, f)`
 (`System_TypeCheck_IO_andThen_$_10041` in the self-compile IR). The
@@ -859,7 +859,7 @@ directly and are closure-free); `andThen`/`pure`/`apply` are not.
   census delta, not wall time, is the primary gate (wall time reported
   alongside).
 - **U1 (optional source A/B, cheap data)**: hand-eta-expand `andThen` in
-  `System/TypeCheck/IO.elm` (one line, matches the module's existing
+  `Compiler/Type/State/IO.elm` (one line, matches the module's existing
   style), self-compile, census. This is NOT the general fix (moves
   allocs from lambdas to PAPs at escaping sites) but calibrates how far
   source discipline alone goes — useful input to the U2b go/no-go.
@@ -902,7 +902,7 @@ miniature TypeCheck.IO — keep as the pin; flag-off it must print
      translation with `result type mismatch: '!llvm.ptr<1>' != 'i64'`.
      **FIXED 2026-07-15** — and the producer was NOT the
      peelCallResult/demand-flattening family guessed here, but
-     `generateTailFunc` (`Compiler/Generate/MLIR/Functions.elm`), which
+     `generateTailFunc` (`Compiler/GenerateMlir/Functions.elm`), which
      typed a tail-recursive spec's return via `Mono.decomposeFunctionType`
      — dropping EVERY arrow arg down to the leaf. A staged-result def has
      fewer value params than arrow args, so the returned CLOSURE collapsed
@@ -1164,7 +1164,7 @@ Implementation:
    param-callee (apR) exclusion arm untouched — it composes.
 3. **Config plumbing.** Add `inline.raiseAppliedShareMin : Int`
    (percent, 0–100; Int avoids Float in config+hash) to
-   `Compiler/Eco/Config.elm` and an `ECO_ARITY_RAISE_MIN_APPLIED` env
+   `Compiler/Config.elm` and an `ECO_ARITY_RAISE_MIN_APPLIED` env
    override in `Builder/Eco/Config.elm` (pattern:
    `applyLoopifyOverride` :316). **Join the compile-cache hash token**
    next to `ar=1`, or threshold changes silently reuse stale artifacts.

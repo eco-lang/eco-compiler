@@ -68,7 +68,6 @@ catalogue.
 
 -}
 
-import Compiler.AST.Source as Src
 import Compiler.AST.SourceBuilder
     exposing
         ( binopsExpr
@@ -90,6 +89,7 @@ import Compiler.AST.SourceBuilder
         , tType
         , varExpr
         )
+import Compiler.IR.Source as Src
 import Dict
 import Expect
 import Mlir.Mlir exposing (MlirAttr(..), MlirOp)

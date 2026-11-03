@@ -1,12 +1,12 @@
 module TestLogic.Monomorphize.LssDirectedFlowTest exposing (suite)
 
-{-| Tests for `Compiler.MonoSolver.Store.resolveSlotMembers`, which reads the
+{-| Tests for `Compiler.Monomorphize.Solver.Store.resolveSlotMembers`, which reads the
 members of a lambda-set slot that has inclusion edges to other slots. Without
 them, a resolver that loops on a cycle of edges, misses a reachable ⊤, or drops
 the members of a source could go unnoticed.
 
 A lambda-set slot is a union-find point whose content is a lambda set, as
-`Compiler.AST.TypeVars.LambdaSet` describes. Three kinds of content matter here.
+`Compiler.IR.Typed.TypeVars.LambdaSet` describes. Three kinds of content matter here.
 `LsMembers` holds known member ids. `LsTop` is ⊤, meaning the members are not
 known. `LsFrom members sources` holds the slot's own members plus one edge per
 source slot, each edge saying that this slot includes every member of that
@@ -50,16 +50,16 @@ would be the same if D were visited twice.
 
 -}
 
-import Compiler.AST.Intern as Intern
-import Compiler.AST.TypeIds as TypeIds
-import Compiler.AST.TypeVars as Vars
-import Compiler.MonoSolver.Engine as Engine
-import Compiler.MonoSolver.Store as Store
+import Compiler.Core.TypeIds as TypeIds
+import Compiler.IR.Mono.Intern as Intern
+import Compiler.IR.Typed.TypeVars as Vars
+import Compiler.Monomorphize.Solver.Engine as Engine
+import Compiler.Monomorphize.Solver.Store as Store
+import Compiler.Type.State.IO as IO
 import Compiler.Type.Type as Type
 import Compiler.Type.UnionFind as UF
 import Dict
 import Expect
-import System.TypeCheck.IO as IO
 import Test exposing (Test)
 
 

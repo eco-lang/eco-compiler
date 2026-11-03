@@ -26,7 +26,7 @@ function and is evaluated only when that is called. Ordering then takes two
 phases.
 
 Phase one groups the values by every name each body uses, direct or delayed,
-into strongly connected components (as `Compiler.Graph` defines them). A value
+into strongly connected components (as `Data.Graph` defines them). A value
 in no cycle becomes `Can.Declare`, and a cyclic group becomes `Can.DeclareRec`,
 which type inference checks together. The result is in dependency order, not
 source order.
@@ -50,29 +50,29 @@ another directly is an error.
 
 -}
 
-import Compiler.AST.Canonical as Can
-import Compiler.AST.Source as Src
+import Compiler.Canonicalize.Dups as Dups
 import Compiler.Canonicalize.Effects as Effects
 import Compiler.Canonicalize.Environment as Env
-import Compiler.Canonicalize.Environment.Dups as Dups
 import Compiler.Canonicalize.Environment.Foreign as Foreign
-import Compiler.Canonicalize.Environment.Local as Local
+import Compiler.Canonicalize.Error as Error
 import Compiler.Canonicalize.Expression as Expr
 import Compiler.Canonicalize.Ids as Ids
+import Compiler.Canonicalize.LocalEnvironment as Local
 import Compiler.Canonicalize.Pattern as Pattern
 import Compiler.Canonicalize.Type as Type
-import Compiler.Data.Index as Index
-import Compiler.Data.Name as Name exposing (Name)
-import Compiler.Elm.Interface as I
+import Compiler.Core.Annotation as A
+import Compiler.Core.Index as Index
+import Compiler.Core.Name as Name exposing (Name)
 import Compiler.Elm.ModuleName as ModuleName
 import Compiler.Elm.Package as Pkg
-import Compiler.Graph as Graph
-import Compiler.Reporting.Annotation as A
-import Compiler.Reporting.Error.Canonicalize as Error
+import Compiler.IR.Canonical as Can
+import Compiler.IR.Canonical.Interface as I
+import Compiler.IR.Source as Src
 import Compiler.Reporting.Result as ReportingResult
 import Compiler.Reporting.Warning as W
+import Data.Graph as Graph
 import Dict exposing (Dict)
-import Utils.Crash exposing (crash)
+import System.Crash exposing (crash)
 
 
 
@@ -305,7 +305,7 @@ type alias NodeTwo =
 with the id state after it, numbering its nodes from `idState`.
 
 It throws `TooLarge` when the definition has more parameters than
-`Compiler.Data.HeapLimits.maxStageArity`. A top-level definition captures
+`Compiler.IR.Runtime.HeapLimits.maxStageArity`. A top-level definition captures
 nothing, so its parameters alone decide this.
 
 -}

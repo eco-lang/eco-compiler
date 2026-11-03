@@ -19,20 +19,20 @@ and `subMap` if it manages subscriptions. The header names the type that
 represents its commands, its subscriptions, or both, and each named type must
 be one of the custom types passed in.
 
-Problems are reported as `Compiler.Reporting.Error.Canonicalize` errors, with
+Problems are reported as `Compiler.Canonicalize.Error` errors, with
 the error-collecting behaviour of the `Compiler.Reporting.Result` combinators.
 
 -}
 
-import Compiler.AST.Canonical as Can
-import Compiler.AST.Source as Src
-import Compiler.AST.Utils.Type as Type
 import Compiler.Canonicalize.Environment as Env
+import Compiler.Canonicalize.Error as Error
 import Compiler.Canonicalize.Type as Type
-import Compiler.Data.Name as Name exposing (Name)
+import Compiler.Core.Annotation as A
+import Compiler.Core.Name as Name exposing (Name)
 import Compiler.Elm.ModuleName as ModuleName
-import Compiler.Reporting.Annotation as A
-import Compiler.Reporting.Error.Canonicalize as Error
+import Compiler.IR.Canonical as Can
+import Compiler.IR.Canonical.Alias as Type
+import Compiler.IR.Source as Src
 import Compiler.Reporting.Result as ReportingResult
 import Dict exposing (Dict)
 

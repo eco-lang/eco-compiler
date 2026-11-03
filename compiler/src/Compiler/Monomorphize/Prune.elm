@@ -19,7 +19,7 @@ for a spec that was never emitted.
 There are two entry points over one shared rebuild. `pruneUnreachableSpecs`
 runs right after monomorphization over the graph's own `callEdges`, and while
 copying the live nodes it also _closes_ them: every residual number variable
-(see `Compiler.AST.Monomorphized.resolveNumberType`) becomes `MInt`, and
+(see `Compiler.IR.Mono.resolveNumberType`) becomes `MInt`, and
 `ctorShapes` is recomputed from the closed nodes. `pruneAfterInline` runs after
 inlining, re-collects the edges from the current bodies, does no closing, and
 leaves the graph's `callEdges` holding only the edges inside a strongly
@@ -30,15 +30,15 @@ connected component (`restrictToSccEdges`).
 -}
 
 import Array exposing (Array)
-import Compiler.AST.Monomorphized as Mono
-import Compiler.AST.TypeEnv as TypeEnv
-import Compiler.Data.BitSet as BitSet exposing (BitSet)
-import Compiler.Graph as Graph
+import Compiler.IR.Mono as Mono
+import Compiler.IR.Mono.Traverse as Traverse
+import Compiler.IR.Typed.TypeEnv as TypeEnv
 import Compiler.Monomorphize.Analysis as Analysis
-import Compiler.Monomorphize.MonoTraverse as Traverse
 import Compiler.Monomorphize.State as State
+import Data.BitSet as BitSet exposing (BitSet)
+import Data.Graph as Graph
 import Dict
-import Utils.Crash
+import System.Crash
 
 
 {-| Returns the set of SpecIds reachable over `edges` from the roots: `main`'s
@@ -149,7 +149,7 @@ pruneUnreachableWith edges closer (Mono.MonoGraph record) =
 use after inlining, which can leave a spec with no remaining reference.
 
 The edges are collected afresh from the current bodies
-(`Compiler.Monomorphize.MonoTraverse.collectSpecEdges`), not taken from
+(`Compiler.IR.Mono.Traverse.collectSpecEdges`), not taken from
 `callEdges`, which may be empty or stale once bodies have been rewritten. No
 type is closed, and `ctorShapes` is kept as it is: removing nodes only leaves
 the map with entries no live node looks up. The result's `callEdges` holds only
@@ -301,7 +301,7 @@ pruneUnreachableSpecs mvarEnv globalTypeEnv ((Mono.MonoGraph record) as graph) =
                 in
                 -- The check walks the same positions as the close, so it cannot see a type anyNodeType misses.
                 if Traverse.anyNodeType hasResidualType closed then
-                    Utils.Crash.crash "MONO_002: residual number var survived the closing pass (Prune)"
+                    System.Crash.crash "MONO_002: residual number var survived the closing pass (Prune)"
 
                 else
                     closed

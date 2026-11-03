@@ -8,7 +8,7 @@ because both are constructors of the same type.
 
 A lambda-set annotation sits on a function arrow in a `MonoType` and records
 which functions a value of that type may be, each named by an integer member id.
-`Compiler.AST.Monomorphized` owns the annotation type and its rules. The four
+`Compiler.IR.Mono` owns the annotation type and its rules. The four
 forms used here are `LSet`, exactly the listed members; `LPartial`, a lower
 bound; `LVar`, a set not yet known; and `LTop`, an unknown set, written here
 with the constant `topPoison`. The fixtures are these annotations built by hand,
@@ -47,7 +47,7 @@ base; and `unionAnno` of two `LSet`s.
 
 -}
 
-import Compiler.AST.Monomorphized as Mono
+import Compiler.IR.Mono as Mono
 import Expect
 import Test exposing (Test)
 

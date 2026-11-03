@@ -26,18 +26,18 @@ The type `List` is in scope before any import is read.
 
 -}
 
-import Compiler.AST.Canonical as Can
-import Compiler.AST.Source as Src
 import Compiler.Canonicalize.Environment as Env
-import Compiler.Data.Name as Name exposing (Name)
-import Compiler.Elm.Interface as I
+import Compiler.Canonicalize.Error as Error
+import Compiler.Core.Annotation as A
+import Compiler.Core.Name as Name exposing (Name)
 import Compiler.Elm.ModuleName as ModuleName
 import Compiler.Elm.Package as Pkg
-import Compiler.Reporting.Annotation as A
-import Compiler.Reporting.Error.Canonicalize as Error
+import Compiler.IR.Canonical as Can
+import Compiler.IR.Canonical.Interface as I
+import Compiler.IR.Source as Src
 import Compiler.Reporting.Result as ReportingResult
 import Dict exposing (Dict)
-import Utils.Crash exposing (crash)
+import System.Crash exposing (crash)
 import Utils.Main as Utils
 
 
@@ -61,7 +61,7 @@ When `home` belongs to a kernel package, imports of kernel modules
 -}
 createInitialEnv : ModuleName.Canonical -> Dict ModuleName.Raw I.Interface -> List Src.Import -> FResult i w Env.Env
 createInitialEnv home ifaces imports =
-    Utils.foldM (addImport ifaces) emptyState (toSafeImports home imports)
+    ReportingResult.foldM (addImport ifaces) emptyState (toSafeImports home imports)
         |> ReportingResult.map
             (\{ vars, types, ctors, binops, q_vars, q_types, q_ctors } ->
                 Env.Env home
@@ -246,7 +246,7 @@ addImport ifaces state (Src.Import ( _, A.At _ name ) maybeAlias ( _, exposing_ 
             ReportingResult.ok (State vs2 ts2 cs2 bs2 qvs2 qts2 qcs2)
 
         Src.Explicit (A.At _ exposedList) ->
-            Utils.foldM
+            ReportingResult.foldM
                 (addExposedValue home vars rawTypeInfo iface.binops)
                 (State state.vars state.types state.ctors state.binops qvs2 qts2 qcs2)
                 (List.map Src.c2Value exposedList)

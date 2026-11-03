@@ -52,9 +52,9 @@ chained-access programs, record update, record patterns and type annotations.
 
 -}
 
-import Compiler.AST.Source as Src
 import Compiler.AST.SourceBuilder as B exposing (makeModule)
-import Compiler.Data.Name exposing (Name)
+import Compiler.Core.Name exposing (Name)
+import Compiler.IR.Source as Src
 import Expect exposing (Expectation)
 import Fuzz exposing (Fuzzer)
 import SourceIR.Fuzz.TypedExpr as TE

@@ -143,8 +143,8 @@ Two distinct, easily-conflated architectures:
 The counter-argument is "the Elm frontend already inlines, so LLVM IPO is
 redundant." **It is not**, on inspection:
 
-- The frontend inliner (`Compiler.GlobalOpt.MonoInlineSimplify`) runs at Mono-IR
-  level with a **cost threshold of 10** (`Compiler/Eco/Config.elm:74`) and
+- The frontend inliner (`Compiler.MonoOpt.InlineSimplify`) runs at Mono-IR
+  level with a **cost threshold of 10** (`Compiler/Config.elm:74`) and
   explicitly *before* closure/PAP lowering ("runs after monomorphization and before
   MLIR generation … before it becomes ECO closures/PAPs"). So it does only
   small-callee, first-order inlining and **cannot touch** the closure-apply / PAP /

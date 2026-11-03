@@ -7,8 +7,8 @@ the wrong number of operands or results, fails a test.
 The code generator reads a field of a record with an `eco.project.record` op.
 Its one operand is the record, its one result is the field, and its
 `field_index` attribute is the field's position in the record's layout, which
-`Compiler.Generate.MLIR.Types` decides. The op is built only by
-`Compiler.Generate.MLIR.Ops.ecoProjectRecord`, which always gives it one
+`Compiler.GenerateMlir.Types` decides. The op is built only by
+`Compiler.GenerateMlir.Ops.ecoProjectRecord`, which always gives it one
 operand, one result and an integer `field_index`, so on generated code only
 the non-negative `field_index` check could fail.
 
@@ -34,7 +34,7 @@ type, and that every record field read uses this op.
 
 -}
 
-import Compiler.AST.Source as Src
+import Compiler.IR.Source as Src
 import Expect exposing (Expectation)
 import Mlir.Mlir exposing (MlirModule, MlirOp)
 import TestLogic.Generate.CodeGen.Invariants

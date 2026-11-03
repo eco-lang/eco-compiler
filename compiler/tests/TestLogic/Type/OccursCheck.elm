@@ -28,8 +28,8 @@ to `Can.Type` cannot contain one. Acceptance is what that expectation checks.
 
 -}
 
-import Compiler.AST.Source as Src
-import Compiler.Data.Name exposing (Name)
+import Compiler.Core.Name exposing (Name)
+import Compiler.IR.Source as Src
 import Expect
 import TestLogic.TestPipeline as Pipeline
 import TestLogic.Type.TypeCheckErrors as TypeCheckErrors

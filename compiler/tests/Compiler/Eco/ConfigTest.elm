@@ -1,7 +1,7 @@
 module Compiler.Eco.ConfigTest exposing (suite)
 
 {-| Tests that a `mono` object in `eco-config.json` which sets some of its keys
-but not `engine` keeps the monomorphizer engine of `Compiler.Eco.Config.default`.
+but not `engine` keeps the monomorphizer engine of `Compiler.Config.default`.
 
 `Config.decoder` treats the file as a partial override of `default`, so a
 missing key keeps its default value. Without these tests, a fallback for a
@@ -24,7 +24,7 @@ unrecognized engine string, and every setting other than `mono.engine`.
 
 -}
 
-import Compiler.Eco.Config as Config
+import Compiler.Config as Config
 import Compiler.Json.Decode as D
 import Expect
 import Test exposing (Test)

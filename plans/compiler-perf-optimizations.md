@@ -49,8 +49,8 @@ A set of targeted performance improvements to the Elm compiler backend, addressi
 `SpecializationRegistry.mapping` uses `Dict (List String) (List String) SpecId` keyed by string-serialized spec keys via `toComparableSpecKey`. This allocates intermediate string lists on every lookup — a major cost in monomorphization.
 
 ### Files
-- `compiler/src/Compiler/AST/Monomorphized.elm` (type alias changes)
-- `compiler/src/Compiler/Monomorphize/Registry.elm` (getOrCreateSpecId, emptyRegistry)
+- `compiler/src/Compiler/IR/Mono.elm` (type alias changes)
+- `compiler/src/Compiler/IR/Mono/Registry.elm` (getOrCreateSpecId, emptyRegistry)
 
 ### Constraint (Q1 resolved)
 `Data.Map` wraps Elm's core `Dict` and requires a `k -> comparable` conversion function on every `get`/`insert`/`member` call. There is **no way** to use a custom comparator — you must produce a `comparable` (e.g., `List String`). So `toComparableSpecKey` cannot be eliminated entirely from the Dict path.
@@ -90,8 +90,8 @@ Since we cannot avoid a comparable key for `Data.Map`, the optimization must foc
 `reverseMapping` is a `Dict Int (Global, MonoType, Maybe LambdaId)` keyed by dense `SpecId`s. Dict overhead is unnecessary for dense integer indices.
 
 ### Files
-- `compiler/src/Compiler/AST/Monomorphized.elm`
-- `compiler/src/Compiler/Monomorphize/Registry.elm`
+- `compiler/src/Compiler/IR/Mono.elm`
+- `compiler/src/Compiler/IR/Mono/Registry.elm`
 - Callers of `registry.reverseMapping` (e.g. `MonoGlobalOptimize.specHome`)
 
 ### Approach
@@ -116,8 +116,8 @@ Since we cannot avoid a comparable key for `Data.Map`, the optimization must foc
 `Graph.buildGraphs` does `Array.set` per edge in inner loops, causing persistent-array copy overhead that shows up as `Array.setHelp` in profiles. Same pattern in `MonoInlineSimplify.buildCallGraph`.
 
 ### Files
-- `compiler/src/Compiler/Graph.elm`
-- `compiler/src/Compiler/GlobalOpt/MonoInlineSimplify.elm`
+- `compiler/src/Data/Graph.elm`
+- `compiler/src/Compiler/MonoOpt/InlineSimplify.elm`
 
 ### Approach
 1. In `Graph.buildGraphs`: accumulate edges in `Dict Int (List Int)` for both forward and reverse adjacency, then convert to `Array (List Int)` in one pass via `Dict.foldl` into `Array.repeat n [] |> set per vertex`
@@ -127,11 +127,11 @@ Since we cannot avoid a comparable key for `Data.Map`, the optimization must foc
 
 ### Scope (Q2 resolved)
 Only two sites construct `IntGraph` or call `stronglyConnCompInt`:
-1. **`Compiler.Graph`** — internal definition + `fromAdjacency`
+1. **`Data.Graph`** — internal definition + `fromAdjacency`
 2. **`MonoInlineSimplify.buildCallGraph`** — builds its own `{ fwd, trans, selfLoops, size }` record and calls `Graph.stronglyConnCompInt`
 
 No other modules construct `IntGraph`. So changes to `IntGraph` construction only require updating:
-- `Compiler.Graph.stronglyConnCompInt` / `fromAdjacency` (internal)
+- `Data.Graph.stronglyConnCompInt` / `fromAdjacency` (internal)
 - `MonoInlineSimplify.buildCallGraph`'s `buildResult` record literal and its `stronglyConnCompInt` call site
 
 Everything else uses the generic `stronglyConnComp` / `stronglyConnCompR` APIs and is insulated.
@@ -198,7 +198,7 @@ Phase B (fusing ProducerInfo + StagingGraph) **is worth it**, with a pragmatic a
 ### Files
 - `compiler/src/Compiler/Monomorphize/TypeSubst.elm`
 - `compiler/src/Compiler/PostSolve.elm`
-- `compiler/src/Compiler/Monomorphize/Specialize.elm`
+- `compiler/src/Compiler/Monomorphize/Subst/Specialize.elm`
 
 ### Approach
 
@@ -260,8 +260,8 @@ Two viable approaches, **neither requires changing `specializeExpr`'s signature*
 
 ### Files
 - `compiler/src/Compiler/Monomorphize/State.elm`
-- `compiler/src/Compiler/AST/Monomorphized.elm`
-- `compiler/src/Compiler/Data/BitSet.elm`
+- `compiler/src/Compiler/IR/Mono.elm`
+- `compiler/src/Data/BitSet.elm`
 
 ### Approach
 
@@ -298,7 +298,7 @@ Full replacement of `nodes` Dict with Array is possible in principle but invasiv
 `CallEnv` uses `Dict String Name` for `varCallModel` and `varSourceArity`. These Dicts are updated per-expression during call annotation, using string keys.
 
 ### Files
-- `compiler/src/Compiler/GlobalOpt/MonoGlobalOptimize.elm`
+- `compiler/src/Compiler/MonoOpt/GlobalOptimize.elm`
 
 ### Approach
 1. At the start of each `MonoNode` processing, collect all variable names (params, let-bindings, destructs) into a `VarIndexEnv : Dict String Name Int` mapping names to dense indices 0..N-1
@@ -336,7 +336,7 @@ Full replacement of `nodes` Dict with Array is possible in principle but invasiv
 `mkCaseRegionFromDecider` crashes with "non-yield terminator with empty resultVar" when `generateLeafWithJumps` passes through a terminated branch that doesn't end with `eco.yield`.
 
 ### Files
-- `compiler/src/Compiler/Generate/MLIR/Expr.elm`
+- `compiler/src/Compiler/GenerateMlir/Expr.elm`
 - Test harness (new benchmark)
 
 ### Approach

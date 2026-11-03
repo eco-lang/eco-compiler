@@ -1,13 +1,13 @@
 module Compiler.Generate.HtmlLeadingLinesTest exposing (suite)
 
-{-| Without this test, `Compiler.Generate.Html.sandwich` could gain or lose a
+{-| Without this test, `Compiler.GenerateJs.Html.sandwich` could gain or lose a
 line before the embedded JavaScript while `Html.leadingLines` stayed the same,
 and every source-map line for a generated HTML page would be off by the
 difference without anything failing.
 
 `leadingLines` counts lines from the end of the `<script>` tag, not from the top
 of the page; why that is the right origin is stated in its docstring in
-`Compiler.Generate.Html`. This test checks the count against that origin.
+`Compiler.GenerateJs.Html`. This test checks the count against that origin.
 
 The fixture is one call to `sandwich` with the module name `"Main"` and a
 JavaScript text whose first line is `marker` and whose second line is
@@ -23,7 +23,7 @@ rest of the page after the JavaScript, and any source map itself.
 
 -}
 
-import Compiler.Generate.Html as Html
+import Compiler.GenerateJs.Html as Html
 import Expect
 import Test exposing (Test, describe, test)
 

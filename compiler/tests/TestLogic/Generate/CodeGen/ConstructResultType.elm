@@ -5,7 +5,7 @@ it a single result of type `!eco.value`, the type of a boxed value. This module
 checks that rule on the MLIR generated for a test program.
 
 A _construct op_ is any op whose name starts with `eco.construct.`.
-`Compiler.Generate.MLIR.Ops` has them for list cells, 2- and 3-tuples, records
+`Compiler.GenerateMlir.Ops` has them for list cells, 2- and 3-tuples, records
 and custom-type values. Each one found is reported as a violation, in the sense
 of `TestLogic.Generate.CodeGen.Invariants`, if it has a number of results other
 than one, or if its one result has a type other than `!eco.value`. Nothing else
@@ -15,7 +15,7 @@ about the op is checked: not its operands, not its attributes.
 
 -}
 
-import Compiler.AST.Source as Src
+import Compiler.IR.Source as Src
 import Expect exposing (Expectation)
 import Mlir.Mlir exposing (MlirModule, MlirOp, MlirType(..))
 import TestLogic.Generate.CodeGen.Invariants

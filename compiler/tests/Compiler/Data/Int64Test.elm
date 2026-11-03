@@ -1,6 +1,6 @@
 module Compiler.Data.Int64Test exposing (suite)
 
-{-| Tests for `Compiler.Data.Int64`, run under the JavaScript backend that
+{-| Tests for `Data.Int64`, run under the JavaScript backend that
 elm-test runs on, where an `Int` is a double.
 
 `fromLiteral` reads decimal and `0x` literal text modulo 2^64 as two's
@@ -12,7 +12,7 @@ it. `hostIs64` is `False` here.
 
 -}
 
-import Compiler.Data.Int64 as Int64
+import Data.Int64 as Int64
 import Expect
 import Test exposing (Test)
 
@@ -25,7 +25,7 @@ lit text expected =
 
 suite : Test
 suite =
-    Test.describe "Compiler.Data.Int64"
+    Test.describe "Data.Int64"
         [ lit "0xFFFFFFFFC0000000" (Just -1073741824)
         , lit "0xFFFFFFFF80000000" (Just -2147483648)
         , lit "0xFFFFFFFF00000000" (Just -4294967296)

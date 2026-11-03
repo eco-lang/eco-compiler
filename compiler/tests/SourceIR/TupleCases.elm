@@ -35,7 +35,6 @@ holding a `Float`, a `Char`, a function or a custom type value.
 
 -}
 
-import Compiler.AST.Source as Src
 import Compiler.AST.SourceBuilder
     exposing
         ( intExpr
@@ -47,6 +46,7 @@ import Compiler.AST.SourceBuilder
         , tupleExpr
         )
 import Compiler.BulkCheck exposing (TestCase, bulkCheck)
+import Compiler.IR.Source as Src
 import Expect exposing (Expectation)
 import Test exposing (Test)
 

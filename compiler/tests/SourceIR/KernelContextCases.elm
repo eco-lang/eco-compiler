@@ -35,9 +35,9 @@ call inside an annotated definition, and kernels outside
 
 -}
 
-import Compiler.AST.Source as Src
 import Compiler.AST.SourceBuilder exposing (callExpr, define, intExpr, lambdaExpr, letExpr, makeKernelModule, pVar, qualVarExpr, varExpr)
 import Compiler.BulkCheck exposing (TestCase, bulkCheck)
+import Compiler.IR.Source as Src
 import Expect exposing (Expectation)
 import Test exposing (Test)
 

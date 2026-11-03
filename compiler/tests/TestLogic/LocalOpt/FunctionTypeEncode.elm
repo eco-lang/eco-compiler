@@ -6,7 +6,7 @@ own type disagrees with its parameters or its body, for instance one with
 fewer arrows than it has parameters, would leave typed optimization unnoticed.
 
 A _function expression_ is a `Function` or `TrackedFunction` in the
-typed-optimized IR (`Compiler.AST.TypedOptimized`). It carries its parameters,
+typed-optimized IR (`Compiler.IR.Typed.Optimized`). It carries its parameters,
 each with its type, its body, and in its `Meta` the type of the function as a
 whole. An _arrow_ is one `Can.TLambda` layer of that type, so a function of
 two parameters needs a type of the shape `a -> (b -> r)`.
@@ -40,11 +40,11 @@ Among what is not tested:
 
 -}
 
-import Compiler.AST.Canonical as Can
-import Compiler.AST.Source as Src
-import Compiler.AST.TypedOptimized as TOpt
-import Compiler.Data.Name exposing (Name)
+import Compiler.Core.Name exposing (Name)
 import Compiler.Elm.ModuleName as ModuleName
+import Compiler.IR.Canonical as Can
+import Compiler.IR.Source as Src
+import Compiler.IR.Typed.Optimized as TOpt
 import Data.Map
 import Dict
 import Expect

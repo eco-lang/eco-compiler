@@ -24,10 +24,10 @@ monomorphic. A function argument is never polymorphic.
 
 -}
 
-import Compiler.AST.Canonical as Can
-import Compiler.AST.Source as Src
-import Compiler.Data.Name exposing (Name)
-import Compiler.Reporting.Error.Type as TypeError
+import Compiler.Core.Name exposing (Name)
+import Compiler.IR.Canonical as Can
+import Compiler.IR.Source as Src
+import Compiler.Type.Error as TypeError
 import Dict
 import Expect
 import TestLogic.TestPipeline as Pipeline

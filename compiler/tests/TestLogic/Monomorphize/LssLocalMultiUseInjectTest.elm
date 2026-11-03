@@ -55,8 +55,6 @@ and anything after monomorphization, such as whether a call is devirtualized.
 -}
 
 import Array
-import Compiler.AST.Monomorphized as Mono
-import Compiler.AST.Source as Src
 import Compiler.AST.SourceBuilder
     exposing
         ( binopsExpr
@@ -74,8 +72,10 @@ import Compiler.AST.SourceBuilder
         , tupleExpr
         , varExpr
         )
-import Compiler.Eco.Config as Config
-import Compiler.Monomorphize.MonoTraverse as MonoTraverse
+import Compiler.Config as Config
+import Compiler.IR.Mono as Mono
+import Compiler.IR.Mono.Traverse as MonoTraverse
+import Compiler.IR.Source as Src
 import Dict
 import Expect
 import Test exposing (Test)

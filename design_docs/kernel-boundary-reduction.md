@@ -5,7 +5,7 @@
 > backend optimization work and no longer describe the current compiler or runtime; code
 > anchors and section references may also have drifted. Treat the numbers as the state on
 > 2026-08-13 only. For the current kernel boundary see `design_docs/theory/kernels/` and
-> `compiler/src/Compiler/GlobalOpt/KernelFacts.elm`.
+> `compiler/src/Compiler/IR/Kernel/Facts.elm`.
 
 **State of the kernel boundary as of 2026-08-13**, after the kernel-opt series
 (items 01–14; full ledger `benchmarks/kernel-opt.md` Runs D–S + DONE;
@@ -221,7 +221,7 @@ rank the surface the same way:
 
 Everything below is landed and default-on unless stated otherwise.
 
-### 3.1 The facts table — `Compiler.GlobalOpt.KernelFacts` (KERNEL_FACTS_001)
+### 3.1 The facts table — `Compiler.IR.Kernel.Facts` (KERNEL_FACTS_001)
 
 52 audited rows keyed by mono `(home, name)`; the single source of per-kernel
 semantic facts: call-time effect, GC-allocation class, `cppAlloc`, HOF bit

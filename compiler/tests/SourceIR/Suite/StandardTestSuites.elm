@@ -23,7 +23,7 @@ same kind of expectation but are left out of this list.
 
 -}
 
-import Compiler.AST.Source as Src
+import Compiler.IR.Source as Src
 import Expect exposing (Expectation)
 import SourceIR.AccessorFuzzCases as AccessorFuzzCases
 import SourceIR.AccessorScopingCases as AccessorScopingCases

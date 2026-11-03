@@ -1,6 +1,6 @@
 module TestLogic.GlobalOpt.EtaExpandTest exposing (suite)
 
-{-| Tests for `Compiler.GlobalOpt.PreMono.EtaExpand`, the pass that gives a
+{-| Tests for `Compiler.PreMono.EtaExpand`, the pass that gives a
 definition, or a lambda passed as an argument, the extra parameters its type
 declares. Without them, the pass could stop expanding where it should, or start
 expanding where it must not, unnoticed.
@@ -95,7 +95,6 @@ the expanded graph can still be monomorphized.
 
 -}
 
-import Compiler.AST.Source as Src
 import Compiler.AST.SourceBuilder
     exposing
         ( AliasDef
@@ -119,11 +118,12 @@ import Compiler.AST.SourceBuilder
         , tVar
         , varExpr
         )
-import Compiler.AST.TypeIds as TypeIds
-import Compiler.AST.TypedOptimized as TOpt
-import Compiler.Data.Name exposing (Name)
-import Compiler.Eco.Config as Config
-import Compiler.GlobalOpt.PreMono.EtaExpand as EtaExpand
+import Compiler.Config as Config
+import Compiler.Core.Name exposing (Name)
+import Compiler.Core.TypeIds as TypeIds
+import Compiler.IR.Source as Src
+import Compiler.IR.Typed.Optimized as TOpt
+import Compiler.PreMono.EtaExpand as EtaExpand
 import Data.Map
 import Dict as CoreDict
 import Expect

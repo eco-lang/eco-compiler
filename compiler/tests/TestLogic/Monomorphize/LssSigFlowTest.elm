@@ -8,11 +8,11 @@ devirtualized to a direct call, or a set that mixes two parameters' members,
 which loses precision without failing anything.
 
 A _lambda set_ is the annotation on an arrow of a `MonoType`: the function
-values, by member id, that can reach that arrow. `Compiler.AST.Monomorphized`
+values, by member id, that can reach that arrow. `Compiler.IR.Mono`
 owns its meaning (`LambdaSetAnno`). What matters here is that an `LSet` lists
 its members and is read as complete, an `LTop` has been widened, and an `LVar`
 is an arrow nothing was written to. _Signature set flow_ is the part of the
-solver's signature inference (`Compiler.MonoSolver.LssInfer`) that connects the
+solver's signature inference (`Compiler.Monomorphize.Solver.LssInfer`) that connects the
 flow inside a definition's body to the arrows of its annotation, so that a
 caller receives the members the body contributes. Three of that module's terms
 are used below:
@@ -79,8 +79,6 @@ annotations, which the size checks of tests 1a and 7 do not count as a match.
 -}
 
 import Array
-import Compiler.AST.Monomorphized as Mono
-import Compiler.AST.Source as Src
 import Compiler.AST.SourceBuilder
     exposing
         ( TypedDef
@@ -102,7 +100,9 @@ import Compiler.AST.SourceBuilder
         , tupleExpr
         , varExpr
         )
-import Compiler.Eco.Config as Config
+import Compiler.Config as Config
+import Compiler.IR.Mono as Mono
+import Compiler.IR.Source as Src
 import Expect
 import Test exposing (Test)
 import TestLogic.TestPipeline as Pipeline

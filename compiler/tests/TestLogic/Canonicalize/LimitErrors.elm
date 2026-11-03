@@ -8,7 +8,7 @@ module TestLogic.Canonicalize.LimitErrors exposing
 otherwise go unchecked until a too-large function reached code generation.
 
 Canonicalization rejects a function or lambda whose parameters exceed
-`Compiler.Data.HeapLimits.maxStageArity`, and a lambda or local function whose
+`Compiler.IR.Runtime.HeapLimits.maxStageArity`, and a lambda or local function whose
 parameters plus captured variables exceed it, with a located `TooLarge` error;
 `Compiler.Canonicalize.Expression` owns the rule. This module provides the
 expectations that check it, given a source module built by the caller.
@@ -29,15 +29,15 @@ Warnings are ignored.
 
 -}
 
-import Compiler.AST.Source as Src
+import Compiler.Canonicalize.Error as CanError
 import Compiler.Canonicalize.Module as Canonicalize
-import Compiler.Data.OneOrMore as OneOrMore
 import Compiler.Elm.Interface.Basic as Basic
+import Compiler.IR.Source as Src
 import Compiler.Reporting.Doc as D
-import Compiler.Reporting.Error.Canonicalize as CanError
 import Compiler.Reporting.Render.Code as Code
 import Compiler.Reporting.Report as Report
 import Compiler.Reporting.Result as Result
+import Data.OneOrMore as OneOrMore
 import Expect
 
 

@@ -4,7 +4,7 @@ module TestLogic.Generate.CodeGen.CaseTermination exposing (expectCaseTerminatio
 alternative with `eco.yield`, and with no other terminator.
 
 An `eco.case` is an MLIR operation that runs one of several alternatives, each
-a region of its own. As `Compiler.Generate.MLIR.Ops` describes, it is not a
+a region of its own. As `Compiler.GenerateMlir.Ops` describes, it is not a
 terminator but an operation with results, and an alternative supplies the values
 of those results by ending in an `eco.yield`. Under the rule checked here,
 `eco.yield` is the only terminator allowed at the end of any block in an
@@ -20,7 +20,7 @@ Only the blocks of the alternative's own region are looked at here; an
 
 -}
 
-import Compiler.AST.Source as Src
+import Compiler.IR.Source as Src
 import Expect exposing (Expectation)
 import Mlir.Mlir exposing (MlirBlock, MlirModule, MlirOp, MlirRegion(..))
 import OrderedDict

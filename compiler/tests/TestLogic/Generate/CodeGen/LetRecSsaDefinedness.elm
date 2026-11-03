@@ -9,7 +9,7 @@ result of an op or as an argument of a block; the function's parameters are the
 arguments of its first region's entry block.
 
 The check is aimed at recursive `let` groups. When the code generator
-(`Compiler.Generate.MLIR.Expr`) compiles one, it gives each bound name a
+(`Compiler.GenerateMlir.Expr`) compiles one, it gives each bound name a
 placeholder SSA name before compiling the definitions, so that a closure built
 for one binding can capture a sibling by that name. Ordinarily, when the op
 that produces a binding's value is among the ops compiled for that binding,
@@ -29,7 +29,7 @@ a name is defined only once; and any op outside a top-level `func.func`.
 
 -}
 
-import Compiler.AST.Source as Src
+import Compiler.IR.Source as Src
 import Expect exposing (Expectation)
 import Mlir.Mlir exposing (MlirBlock, MlirModule, MlirOp, MlirRegion(..))
 import OrderedDict

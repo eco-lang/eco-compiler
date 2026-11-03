@@ -56,11 +56,11 @@ group; blocked members; and the `Char` and capture-layout checks.
 -}
 
 import Array
-import Compiler.AST.Monomorphized as Mono
-import Compiler.Data.BitSet as BitSet
+import Compiler.Core.Annotation as A
 import Compiler.Elm.ModuleName as ModuleName
-import Compiler.GlobalOpt.AbiCloning as AbiCloning
-import Compiler.Reporting.Annotation as A
+import Compiler.IR.Mono as Mono
+import Compiler.MonoOpt.AbiCloning as AbiCloning
+import Data.BitSet as BitSet
 import Dict
 import Expect
 import Test exposing (Test)
@@ -196,7 +196,7 @@ flatClosure uid mid paramTys body =
 {-| Returns a curried type of `n` stages, each taking one `Int`, that ends in
 `ret`. The outermost arrow carries `headAnno` and the inner ones
 `Mono.topLegacy`, a widened (top) annotation. This is the
-one-parameter-per-stage shape that `Compiler.MonoSolver.Store` builds when it
+one-parameter-per-stage shape that `Compiler.Monomorphize.Solver.Store` builds when it
 classifies a function type.
 -}
 curried : Mono.LambdaSetAnno -> Int -> Mono.MonoType -> Mono.MonoType

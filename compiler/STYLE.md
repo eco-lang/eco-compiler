@@ -76,7 +76,7 @@ Only use nested TEA for N similar components with independent state and effects.
 - **Records**: Multi-line with fields aligned, leading commas
 
 ```elm
-module Compiler.AST.Canonical exposing
+module Compiler.IR.Canonical exposing
     ( Module(..), ModuleData, Exports(..)
     , Expr, ExprInfo, Expr_(..)
     )

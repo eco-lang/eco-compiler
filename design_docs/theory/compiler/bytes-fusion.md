@@ -45,7 +45,7 @@ type EncoderNode
     | EOpaque Mono.MonoExpr
 ```
 
-From `compiler/src/Compiler/Generate/MLIR/BytesFusion/Reify.elm`. Notice that every leaf holds an expression: only the structure is read, never the values. Signed and unsigned writes of the same width share one node, because they write the same bytes. The loop carries the element's type so that emission can read each list element at its real type; without it, a loop over records reads its elements at the wrong type. `EOpaque` is the leaf for a part that could not be read.
+From `compiler/src/Compiler/GenerateMlir/BytesFusion/Reify.elm`. Notice that every leaf holds an expression: only the structure is read, never the values. Signed and unsigned writes of the same width share one node, because they write the same bytes. The loop carries the element's type so that emission can read each list element at its real type; without it, a loop over records reads its elements at the wrong type. `EOpaque` is the leaf for a part that could not be read.
 
 ## Encoders: size first, then one buffer
 
@@ -141,12 +141,12 @@ Related documents: [mlir-generation.md](mlir-generation.md) (the emitter layerin
 
 Code:
 
-- `compiler/src/Compiler/Generate/MLIR/BytesFusion/Reify.elm`: recognition, the node types (`EncoderNode`, `DecoderNode`), `reifyEncoderWith`, `reifyEncoderHelp`, `reifyLoop`, and conversion to the middle form (`nodesToOps`, `decoderNodeToOps`).
-- `compiler/src/Compiler/Generate/MLIR/BytesFusion/LoopIR.elm`: the operation and width types (`Op`, `DecoderOp`, `WidthExpr`, `simplifyWidth`).
-- `compiler/src/Compiler/Generate/MLIR/BytesFusion/Emit.elm`: emission to `bf` and `scf` (`emitDecoderOpsNested`, `addNodeWidth`).
-- `compiler/src/Compiler/Generate/MLIR/Expr.elm`: `generateSaturatedCallFusionGate`, `tryBytesEncodeFusion`, `tryEncoderFusionWithBindings`, `tryInlinedDecodeFusion`, `bfExprCompiler`, and the kernel fallbacks in `generateSaturatedCallNoFusion`.
-- `compiler/src/Compiler/GlobalOpt/MonoInlineSimplify.elm`: `defaultWhitelist`, `buildBodyLookup`.
-- `compiler/src/Compiler/Eco/Config.elm`: `BytesFusionConfig` (`bytesFusion.enabled`, hash token `bf=`).
+- `compiler/src/Compiler/GenerateMlir/BytesFusion/Reify.elm`: recognition, the node types (`EncoderNode`, `DecoderNode`), `reifyEncoderWith`, `reifyEncoderHelp`, `reifyLoop`, and conversion to the middle form (`nodesToOps`, `decoderNodeToOps`).
+- `compiler/src/Compiler/GenerateMlir/BytesFusion/LoopIR.elm`: the operation and width types (`Op`, `DecoderOp`, `WidthExpr`, `simplifyWidth`).
+- `compiler/src/Compiler/GenerateMlir/BytesFusion/Emit.elm`: emission to `bf` and `scf` (`emitDecoderOpsNested`, `addNodeWidth`).
+- `compiler/src/Compiler/GenerateMlir/Expr.elm`: `generateSaturatedCallFusionGate`, `tryBytesEncodeFusion`, `tryEncoderFusionWithBindings`, `tryInlinedDecodeFusion`, `bfExprCompiler`, and the kernel fallbacks in `generateSaturatedCallNoFusion`.
+- `compiler/src/Compiler/MonoOpt/InlineSimplify.elm`: `defaultWhitelist`, `buildBodyLookup`.
+- `compiler/src/Compiler/Config.elm`: `BytesFusionConfig` (`bytesFusion.enabled`, hash token `bf=`).
 - `runtime/src/codegen/BF/BFOps.td`: the dialect and `!bf.cursor`; `runtime/src/codegen/Passes/BFToLLVM.cpp`: `BFToLLVM`, including the rebuilding of cursors across points that may collect (`CursorGCSafety`).
 - `runtime/src/allocator/ElmBytesRuntime.h`, `runtime/src/allocator/ElmBytesRuntime.cpp`: the helper interface (`elm_alloc_bytebuffer`, `elm_utf8_decode`, the buffer and UTF-8 helpers).
 - `elm-kernel-cpp/src/bytes/BytesExports.cpp`: `elm_encoder_size`, `elm_encoder_write_into`, and the kernel `Elm_Kernel_Bytes_encode` and `Elm_Kernel_Bytes_decode` used as the fallback.

@@ -30,7 +30,7 @@ token: the name in angle brackets, with each space turned into a hyphen, as in
 
 -}
 
-import Compiler.Reporting.Suggest as Suggest
+import Compiler.Core.Suggest as Suggest
 import Levenshtein
 import List.Extra as List
 import Prelude
@@ -356,7 +356,7 @@ toCommandList exeName commands =
 {-| Prints that there is no command called `unknown` and exits with code 1.
 
 The message suggests every name in `knowns` whose distance from `unknown`, as
-`Compiler.Reporting.Suggest.rank` measures it, is at most 3, closest first, and
+`Compiler.Core.Suggest.rank` measures it, is at most 3, closest first, and
 tells the user to run the executable with no arguments for more hints.
 
 -}

@@ -18,7 +18,7 @@ can read.
 Type inference works on type variables that are points of a union-find store
 (`Compiler.Type.UnionFind`), not on named variables as they appear in source.
 Two variables found to be equal are joined into one class, and what is known
-about the class is held in a descriptor on its root (`Compiler.AST.TypeVars`).
+about the class is held in a descriptor on its root (`Compiler.IR.Typed.TypeVars`).
 A `Constraint` says what must hold, a `Type` is a type built over such
 variables, and the solver turns both into classes and joins them.
 
@@ -78,7 +78,7 @@ visited.
 # Converting solved variables
 
 Each conversion first collects the names the variables already carry, then
-converts the variable under a naming scope (`System.TypeCheck.IO.withFreshNames`)
+converts the variable under a naming scope (`Compiler.Type.State.IO.withFreshNames`)
 seeded with those names, in which every generated name is new. Converting
 changes the store in three ways. A variable without a name has the generated
 name written into its descriptor. A user's variable whose name another, distinct
@@ -92,19 +92,19 @@ does not see their names.
 -}
 
 import Array exposing (Array)
-import Compiler.AST.Canonical as Can
-import Compiler.AST.TypeVars as Vars exposing (Content(..), Descriptor, FlatType(..), Mark(..), SuperType(..), Variable)
-import Compiler.AST.Utils.Type as Type
-import Compiler.Data.Name as Name exposing (Name)
+import Compiler.Core.Annotation as A
+import Compiler.Core.Name as Name exposing (Name)
 import Compiler.Elm.ModuleName as ModuleName
-import Compiler.Reporting.Annotation as A
-import Compiler.Reporting.Error.Type as E
-import Compiler.Type.Error as ET
+import Compiler.IR.Canonical as Can
+import Compiler.IR.Canonical.Alias as Type
+import Compiler.IR.Typed.TypeVars as Vars exposing (Content(..), Descriptor, FlatType(..), Mark(..), SuperType(..), Variable)
+import Compiler.Type.Error as E
+import Compiler.Type.ErrorType as ET
+import Compiler.Type.State.IO as IO exposing (IO, NameState)
 import Compiler.Type.UnionFind as UF
 import Dict exposing (Dict)
 import Maybe.Extra as Maybe
-import System.TypeCheck.IO as IO exposing (IO, NameState)
-import Utils.Crash exposing (crash)
+import System.Crash exposing (crash)
 
 
 
@@ -413,7 +413,7 @@ unnamedFlexSuper super =
 
 A name that starts with `number`, `comparable`, `appendable` or `compappend`
 gives a flex variable constrained by that super-type, as
-`Compiler.Data.Name.isNumberType` and its neighbours decide.
+`Compiler.Core.Name.isNumberType` and its neighbours decide.
 
 -}
 nameToFlex : Name -> IO Variable
@@ -1003,7 +1003,7 @@ getFreshVarName =
             )
 
 
-{-| Returns the first name from `Compiler.Data.Name.fromTypeVariableScheme index`
+{-| Returns the first name from `Compiler.Core.Name.fromTypeVariableScheme index`
 onwards that is not in `taken`, the index after it, and `taken` with it added.
 -}
 getFreshVarNameHelp : Int -> Dict Name () -> ( Name, Int, Dict Name () )
@@ -1083,7 +1083,7 @@ getFreshSuper prefix getter setter =
             )
 
 
-{-| Returns the first name from `Compiler.Data.Name.fromTypeVariable prefix index`
+{-| Returns the first name from `Compiler.Core.Name.fromTypeVariable prefix index`
 onwards that is not in `taken`, the index after it, and `taken` with it added.
 -}
 getFreshSuperHelp : Name -> Int -> Dict Name () -> ( Name, Int, Dict Name () )

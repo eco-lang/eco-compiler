@@ -17,10 +17,10 @@ annotations; only per-expression types are lost.
 
 -}
 
-import Compiler.AST.Canonical as Can
+import Compiler.IR.Canonical as Can
 import Compiler.Type.Constrain.Typed.Module as Typed
+import Compiler.Type.State.IO exposing (IO)
 import Compiler.Type.Type exposing (Constraint)
-import System.TypeCheck.IO exposing (IO)
 
 
 {-| Returns the constraint for a module with node recording off; see

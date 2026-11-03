@@ -13,7 +13,7 @@ Cumulative: dispatch **−43.1 %**, allocation **−18.5 %** (−1.96 e9 objects
 −75 GB), wall **−13.2 %**. P4–P7 open; see §9 and §10.**
 
 Successor to the caller-side dispatch census recorded in memory
-(`dispatch-source-census-io-monad`). Target: `System.TypeCheck.IO` and its hot
+(`dispatch-source-census-io-monad`). Target: `Compiler.Type.State.IO` and its hot
 callers, chiefly `Compiler/Type/UnionFind.elm`.
 
 **Note on §1–§8:** written BEFORE the work; they are the plan as proposed. §9
@@ -30,7 +30,7 @@ A caller-side census of a solver+LSS self-compile (`eco-new` compiling
 
 | source subsystem | dispatches | % | est. wall |
 |---|---:|---:|---:|
-| **System.TypeCheck.IO monad** | **1,414,130,404** | **55.3 %** | **67.4 s** |
+| **Compiler.Type.State.IO monad** | **1,414,130,404** | **55.3 %** | **67.4 s** |
 | Dict/Set folds + maps | 376,022,103 | 14.7 % | 17.9 s |
 | other compiled Elm | 354,053,899 | 13.8 % | 16.9 s |
 | kernel C++ / runtime | 106,202,007 | 4.2 % | 5.1 s |
@@ -57,12 +57,12 @@ get ((IO.Pt ref) as point) =
         IO.Root _ desc -> IO.pure desc
         IO.Chain (IO.Pt ref1) -> IORef.readPointCell ref1 |> IO.andThen (\cell1 -> …))
 
--- Data/IORef.elm — NOTE: `s` is returned UNCHANGED
+-- Compiler/Type/State/IORef.elm — NOTE: `s` is returned UNCHANGED
 readPointCell ref =
     \s -> case Array.get ref s.ioRefsPoint of
             Just cell -> ( s, cell )
 
--- System/TypeCheck/IO.elm
+-- Compiler/Type/State/IO.elm
 type alias IO a = State -> ( State, a )
 andThen f ma = \s0 -> let ( s1, a ) = ma s0 in f a s1     -- returns a CLOSURE
 map fn ma s0 = let ( s1, a ) = ma s0 in ( s1, fn a )      -- already eta-expanded
@@ -114,7 +114,7 @@ through the JS path (`--target eco-boot` + a JS self-compile), not only
 **C2 — NO compiler special-casing of the compiler's own internals.** (User
 directive, 2026-09-05.) Editing `UnionFind.elm`/`IO.elm` is just writing better
 Elm and is fine. But a compiler PASS must never recognise
-`System.TypeCheck.IO.andThen` by name, or any other eco-internal symbol. Eco is a
+`Compiler.Type.State.IO.andThen` by name, or any other eco-internal symbol. Eco is a
 general-purpose Elm compiler; effort spent teaching it about its own libraries is
 wasted and does nothing for user code. Any rewrite in §6 must be expressible as a
 **general code shape** that fires on any `andThen`/`map`-like function over any
@@ -188,7 +188,7 @@ at the phase boundary.
 
 ### P6. A real mutable store (deepest, optional)
 
-`Data.Vector.Mutable` is a misnomer — it is `Array.set` on a **persistent** array
+`Compiler.Type.State.Vector.Mutable` is a misnomer — it is `Array.set` on a **persistent** array
 inside an IORef. A genuinely linear/mutable array removes the path-copying as
 well as the threading, attacking allocation as well as dispatch. Large change;
 only after P1–P5 have been measured.
@@ -308,7 +308,7 @@ than altering statically-known calls.
 - **P1**: `UnionFind.elm`'s bodies rewritten in direct state-passing style —
   `freshS`/`reprS`/`getS`/`setS`/`modifyS`/`unionS`/`equivalentS` taking `State`
   as an ordinary parameter, plus `redundantQ : State -> Point -> Bool`, the one
-  genuinely pure query. `Data.IORef` gained `readPointCellS` / `writePointCellS`
+  genuinely pure query. `Compiler.Type.State.IORef` gained `readPointCellS` / `writePointCellS`
   / `newPointCellS`, and its `IO` forms are now defined in terms of them.
 - **Zero caller churn**: the `IO`-shaped exports were kept as thin wrappers, so
   `Unify`, `Occurs`, `Type`, `Solve` and `Instantiate` were not touched. The

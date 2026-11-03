@@ -39,20 +39,20 @@ name.
 
 -}
 
-import Compiler.AST.Source as Src
-import Compiler.AST.Utils.Binop as Binop
-import Compiler.Data.Name exposing (Name)
+import Compiler.Core.Annotation as A
+import Compiler.Core.Name exposing (Name)
+import Compiler.IR.Source as Src
+import Compiler.IR.Source.Binop as Binop
+import Compiler.Lexer.Keyword as Keyword
+import Compiler.Lexer.Primitives as P
+import Compiler.Lexer.Symbol as Symbol
+import Compiler.Parse.Error as E
 import Compiler.Parse.Expression as Expr
-import Compiler.Parse.Keyword as Keyword
 import Compiler.Parse.Number as Number
 import Compiler.Parse.Pattern as Pattern
-import Compiler.Parse.Primitives as P
 import Compiler.Parse.Space as Space
-import Compiler.Parse.Symbol as Symbol
 import Compiler.Parse.Type as Type
 import Compiler.Parse.Variable as Var
-import Compiler.Reporting.Annotation as A
-import Compiler.Reporting.Error.Syntax as E
 
 
 

@@ -8,7 +8,7 @@ as it has parameters.
 The subject is the _typed local graph_, the `TOpt.LocalGraph` that
 `TestLogic.TestPipeline.runToTypedOpt` builds for one test program: a map
 from global to node, in which the nodes for its definitions hold
-`Compiler.AST.TypedOptimized` expressions. Every such expression carries its
+`Compiler.IR.Typed.Optimized` expressions. Every such expression carries its
 type in its `Meta`, as a `Can.Type` rather than a `Maybe`, so a type cannot be
 missing; what can go wrong is its shape. The monomorphizer turns a named type
 applied to the wrong number of arguments into a wrong layout rather than an
@@ -36,13 +36,13 @@ effect managers).
 
 -}
 
-import Compiler.AST.Canonical as Can
-import Compiler.AST.Source as Src
-import Compiler.AST.TypedOptimized as TOpt
-import Compiler.Data.Name exposing (Name)
-import Compiler.Elm.Interface as I
+import Compiler.Core.Name exposing (Name)
 import Compiler.Elm.Interface.Basic as Basic
 import Compiler.Elm.ModuleName as ModuleName
+import Compiler.IR.Canonical as Can
+import Compiler.IR.Canonical.Interface as I
+import Compiler.IR.Source as Src
+import Compiler.IR.Typed.Optimized as TOpt
 import Data.Map
 import Dict exposing (Dict)
 import Expect

@@ -105,8 +105,8 @@ Parent: [eco.md](../../../THEORY.md). Children: [elm-kernel.md](elm-kernel.md), 
 
 Code and documents:
 
-- `compiler/src/Compiler/Generate/MLIR/KernelAbi.elm`: symbol naming, typed variant selection (`kernelInstanceSymbol`) and the per-use calling convention (`monoTypeToAbi`).
-- `compiler/src/Compiler/GlobalOpt/KernelFacts.elm`: the audited facts table; `splitSymbol` relies on equal prefix lengths.
+- `compiler/src/Compiler/GenerateMlir/KernelAbi.elm`: symbol naming, typed variant selection (`kernelInstanceSymbol`) and the per-use calling convention (`monoTypeToAbi`).
+- `compiler/src/Compiler/IR/Kernel/Facts.elm`: the audited facts table; `splitSymbol` relies on equal prefix lengths.
 - `compiler/src/Compiler/Type/KernelIntrinsics.elm`, `compiler/src/Compiler/Type/KernelTypes.elm`: kernel types. These, `KernelFacts` and `KernelSetFacts` key a kernel by prefix, home and name, because elm/core, elm/file and elm/http share the homes `File`, `Http` and `Process` with eco/kernel (SD-16).
 - `test/scripts/check-kernel-license-manifest.sh`: the hash manifest for the evidence behind kernel types, checked in the default build. `test/scripts/check-kernel-homes.sh`: rejects `eco/system` kernel homes that collide with others, run by the `full` target.
 - `elm-kernel-cpp/src/KernelExports.h`, `elm-kernel-cpp/src/ExportHelpers.hpp`, `elm-kernel-cpp/src/core/ListExports.cpp`: the Elm kernel pattern, heap helpers and the generic closure call.

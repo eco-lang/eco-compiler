@@ -30,7 +30,7 @@ module Compiler.AST.CanonicalBuilder exposing
 the Canonical AST can be given exactly the tree a test wants without running the
 parser and canonicalizer to produce it.
 
-The Canonical AST is the tree `Compiler.AST.Canonical` defines: every reference
+The Canonical AST is the tree `Compiler.IR.Canonical` defines: every reference
 to a top-level, imported or kernel value names the module it comes from, and
 every expression and pattern carries an integer id beside its node. This module
 builds a subset of that tree: expressions (`Int` literals, lists, pairs,
@@ -52,16 +52,16 @@ Every module built here is named `Test`, belongs to the `elm/core` package and
 exports everything.
 
 Function types are built with `Can.tLambda`, so their arrows carry no arrow
-identity, as `Compiler.AST.Canonical` describes for `tLambda`.
+identity, as `Compiler.IR.Canonical` describes for `tLambda`.
 
 -}
 
-import Compiler.AST.Canonical as Can
-import Compiler.AST.Source as Src
-import Compiler.Data.Name as Name exposing (Name)
+import Compiler.Core.Annotation as A
+import Compiler.Core.Name as Name exposing (Name)
 import Compiler.Elm.ModuleName as ModuleName
 import Compiler.Elm.Package as Pkg
-import Compiler.Reporting.Annotation as A
+import Compiler.IR.Canonical as Can
+import Compiler.IR.Source as Src
 import Dict exposing (Dict)
 
 

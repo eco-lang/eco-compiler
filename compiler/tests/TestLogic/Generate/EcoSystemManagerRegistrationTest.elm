@@ -30,14 +30,13 @@ eco/system modules, and the streaming writers.
 -}
 
 import Array
-import Compiler.AST.Monomorphized as Mono
-import Compiler.Data.BitSet as BitSet
-import Compiler.Eco.Config as Config
+import Compiler.Config as Config
 import Compiler.Elm.ModuleName as ModuleName
 import Compiler.Elm.Package as Pkg
-import Compiler.Generate.MLIR.Backend as Backend
-import Compiler.Generate.Mode as Mode
-import Compiler.Monomorphize.Registry as Registry
+import Compiler.GenerateMlir.Backend as Backend
+import Compiler.IR.Mono as Mono
+import Compiler.IR.Mono.Registry as Registry
+import Data.BitSet as BitSet
 import Dict
 import Expect
 import Test exposing (Test)
@@ -187,7 +186,7 @@ generate leaves withFlags =
                 , lssBlockedMembers = Dict.empty
                 }
     in
-    Backend.generateProgram Config.default (Mode.Dev Nothing) graph
+    Backend.generateProgram Config.default graph
 
 
 

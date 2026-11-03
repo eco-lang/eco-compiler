@@ -60,7 +60,6 @@ checker's solved variables rather than from names.
 
 -}
 
-import Compiler.AST.Canonical as Can
 import Compiler.AST.CanonicalBuilder
     exposing
         ( boolType
@@ -72,15 +71,16 @@ import Compiler.AST.CanonicalBuilder
         , tFunc
         , varType
         )
-import Compiler.AST.Monomorphized as Mono
-import Compiler.AST.TypeIds as TypeIds
-import Compiler.AST.TypeVars as Vars
-import Compiler.Data.Id as Id
-import Compiler.Data.Name exposing (Name)
+import Compiler.Core.Id as Id
+import Compiler.Core.Name exposing (Name)
+import Compiler.Core.TypeIds as TypeIds
 import Compiler.Elm.ModuleName as ModuleName
-import Compiler.Monomorphize.AssignMVarIds as AssignMVarIds
+import Compiler.IR.Canonical as Can
+import Compiler.IR.Mono as Mono
+import Compiler.IR.Typed.TypeVars as Vars
 import Compiler.Monomorphize.KernelAbi as KernelAbi
 import Compiler.Monomorphize.State as State
+import Compiler.PreMono.AssignMVarIds as AssignMVarIds
 import Dict
 import Expect
 import Test exposing (Test)

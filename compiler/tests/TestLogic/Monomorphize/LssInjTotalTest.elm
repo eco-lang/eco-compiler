@@ -2,7 +2,7 @@ module TestLogic.Monomorphize.LssInjTotalTest exposing (suite)
 
 {-| Lambda-set inference should give a function value a member id at each
 arrow it can be called through. An arrow it leaves unwritten reads back as
-`LVar`, meaning not yet determined (see `Compiler.MonoSolver.Store`), and a
+`LVar`, meaning not yet determined (see `Compiler.Monomorphize.Solver.Store`), and a
 singleton `LSet`, a set with exactly one member, names a single function value
 for the arrow. These tests check two kinds of position, one holding a later
 stage of a partial application and one holding an accessor passed as an
@@ -10,7 +10,7 @@ argument. Tests 1 and 3 assert that every annotation found at their position
 is a singleton.
 
 A lambda-set annotation (`Mono.LambdaSetAnno`, described in
-`Compiler.AST.Monomorphized`) names the function values that can flow through
+`Compiler.IR.Mono`) names the function values that can flow through
 an arrow, as integer member ids. A deep partial application is one that still
 needs more than one argument, such as `add3 10`: calling it with one argument
 gives another partial application, which has an arrow of its own.
@@ -53,8 +53,6 @@ Among what is not tested: which member the singletons in test 1 hold; the
 -}
 
 import Array
-import Compiler.AST.Monomorphized as Mono
-import Compiler.AST.Source as Src
 import Compiler.AST.SourceBuilder
     exposing
         ( accessorExpr
@@ -68,7 +66,9 @@ import Compiler.AST.SourceBuilder
         , tType
         , varExpr
         )
-import Compiler.Eco.Config as Config
+import Compiler.Config as Config
+import Compiler.IR.Mono as Mono
+import Compiler.IR.Source as Src
 import Dict
 import Expect
 import Test exposing (Test)

@@ -45,7 +45,7 @@ Among what is not tested:
 
 -}
 
-import Compiler.AST.Source as Src
+import Compiler.IR.Source as Src
 import Dict exposing (Dict)
 import Expect exposing (Expectation)
 import Mlir.Mlir exposing (MlirAttr(..), MlirModule, MlirOp, MlirType(..))

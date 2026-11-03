@@ -1,9 +1,7 @@
 module Compiler.Monomorphize.KernelAbi exposing
     ( KernelAbiMode(..), deriveKernelAbiMode
     , canTypeToMonoType_preserveVars, remapEcoVarsFresh
-    , suffixSelectingKernels, comparePair
     , freeVarIds
-    , alwaysPolymorphicModules, hasAnyFreeVar
     )
 
 {-| A kernel function is implemented in C++, not in Elm, so the types it is
@@ -19,25 +17,27 @@ The rule rests on one distinction. A kernel whose canonical type has no type
 variable (e.g. `Basics.modBy : Int -> Int -> Int`) has one signature, and its
 ABI is simply its type after call-site substitution. A kernel with a type
 variable (e.g. `List.cons : a -> List a -> List a`), or any kernel of a module
-in `alwaysPolymorphicModules`, has one boxed root implementation shared by every
+in `Compiler.IR.Kernel.Abi.alwaysPolymorphicModules`, has one boxed root implementation shared by every
 instantiation, so its ABI turns each type variable into `MVar _ CEcoValue`.
 `deriveKernelAbiMode` makes that choice and `canTypeToMonoType_preserveVars`
 builds the boxed ABI.
 
 The exception is _suffix selection_: a few kernels also have C++ variants
 specialized to `Int`, `Float` or `Char`, named with an `_Int`, `_Float` or
-`_Char` suffix. `suffixSelectingKernels` lists the kernels for which a caller
+`_Char` suffix. `Compiler.IR.Kernel.Abi.suffixSelectingKernels` lists the kernels for which a caller
 may keep the concrete call-site type, so that the variant can be picked. How
 the mode and the set combine is decided by the callers
-(`Compiler.Monomorphize.Specialize.deriveKernelAbiType` and the kernel ABI
-derivation in `Compiler.MonoSolver.Translate`), not here.
+(`Compiler.Monomorphize.Subst.Specialize.deriveKernelAbiType` and the kernel ABI
+derivation in `Compiler.Monomorphize.Solver.Translate`), not here.
 
 The rest of the module is support: finding the free type variables of a
-canonical type, and renumbering the boxed variables of an ABI.
+canonical type, and renumbering the boxed variables of an ABI. The tables of
+kernels, and the test for a type variable, are in `Compiler.IR.Kernel.Abi`, so
+that the passes before monomorphization can use them.
 
 This module is backend-neutral: it speaks only of `MonoType`. Choosing the C
 symbol and the MLIR types of a kernel instantiation is the job of
-`Compiler.Generate.MLIR.KernelAbi`.
+`Compiler.GenerateMlir.KernelAbi`.
 
 
 # ABI Mode Selection
@@ -50,26 +50,21 @@ symbol and the MLIR types of a kernel instantiation is the job of
 @docs canTypeToMonoType_preserveVars, remapEcoVarsFresh
 
 
-# Suffix-Selecting Kernels
-
-@docs suffixSelectingKernels, comparePair
-
-
 # Free Type Variables
 
 @docs freeVarIds
-@docs alwaysPolymorphicModules, hasAnyFreeVar
 
 -}
 
-import Compiler.AST.Canonical as Can
-import Compiler.AST.Monomorphized as Mono
-import Compiler.AST.TypeIds exposing (MVarId)
-import Compiler.Data.Id as Id
-import Compiler.Data.Name exposing (Name)
+import Compiler.Core.Id as Id
+import Compiler.Core.Name exposing (Name)
+import Compiler.Core.TypeIds exposing (MVarId)
 import Compiler.Elm.ModuleName as ModuleName
+import Compiler.IR.Canonical as Can
+import Compiler.IR.Kernel.Abi as Abi
+import Compiler.IR.Mono as Mono
 import Compiler.Monomorphize.State exposing (MVarEnv)
-import Data.Set as EverySet exposing (EverySet)
+import Data.Set as EverySet
 import Dict
 import Set exposing (Set)
 
@@ -97,16 +92,16 @@ type KernelAbiMode
 
 
 {-| Returns the ABI mode for the kernel `( home, name )` with canonical type
-`canFuncType`: `PreserveVars` when `home` is in `alwaysPolymorphicModules` or
+`canFuncType`: `PreserveVars` when `home` is in `Compiler.IR.Kernel.Abi.alwaysPolymorphicModules` or
 the type has any free type variable, and `UseSubstitution` otherwise. The
 kernel's name is not consulted.
 -}
 deriveKernelAbiMode : ( String, String ) -> Can.Type MVarId -> KernelAbiMode
 deriveKernelAbiMode ( home, _ ) canFuncType =
-    if EverySet.member List.singleton home alwaysPolymorphicModules then
+    if EverySet.member List.singleton home Abi.alwaysPolymorphicModules then
         PreserveVars
 
-    else if not (hasAnyFreeVar canFuncType) then
+    else if not (Abi.hasAnyFreeVar canFuncType) then
         UseSubstitution
 
     else
@@ -115,108 +110,8 @@ deriveKernelAbiMode ( home, _ ) canFuncType =
 
 
 -- ============================================================================
--- CONSTANTS
--- ============================================================================
-
-
-{-| The kernels, as `( home, name )` pairs, for which a call site may keep its
-concrete call-site type instead of the boxed ABI that
-`canTypeToMonoType_preserveVars` builds. The exact condition is the callers'. A kernel outside
-this set never reaches its `_Int`, `_Float` or `_Char` variant, because by the
-time the symbol is chosen the element type is already `CEcoValue`.
-
-Two kinds of kernel are listed. Element-aware container kernels (`List.cons`,
-`Json.wrap`, the `JsArray` element kernels, `MVar.put`) use the concrete element
-type. Primitive-specialized kernels (the `Utils` comparisons, `Basics.add`,
-`sub`, `mul` and `pow`, `String.fromNumber`) have per-type C++ variants.
-
-The symbol choice is `Compiler.Generate.MLIR.KernelAbi`'s; where no variant
-matches the types (e.g. `Utils.compare` at `String`) the boxed root symbol is
-used.
-
--}
-suffixSelectingKernels : EverySet (List String) ( String, String )
-suffixSelectingKernels =
-    EverySet.fromList comparePair
-        [ ( "List", "cons" )
-        , ( "Utils", "compare" )
-        , ( "Utils", "equal" )
-        , ( "Utils", "notEqual" )
-        , ( "Utils", "lt" )
-        , ( "Utils", "le" )
-        , ( "Utils", "gt" )
-        , ( "Utils", "ge" )
-        , ( "Json", "wrap" )
-        , ( "JsArray", "singleton" )
-        , ( "JsArray", "push" )
-        , ( "JsArray", "unsafeSet" )
-        , ( "MVar", "put" )
-        , ( "Basics", "add" )
-        , ( "Basics", "sub" )
-        , ( "Basics", "mul" )
-        , ( "Basics", "pow" )
-        , ( "String", "fromNumber" )
-        ]
-
-
-{-| The modules whose kernels always get `PreserveVars`, even when the kernel's
-type has no type variable. The one member is `Debug`.
--}
-alwaysPolymorphicModules : EverySet (List String) String
-alwaysPolymorphicModules =
-    EverySet.fromList List.singleton [ "Debug" ]
-
-
-{-| Returns the key under which a `( home, name )` pair is stored in an
-`EverySet`, the two strings as a list.
--}
-comparePair : ( String, String ) -> List String
-comparePair ( a, b ) =
-    [ a, b ]
-
-
-
--- ============================================================================
 -- FREE TYPE VARIABLES
 -- ============================================================================
-
-
-{-| Returns whether `canType` has any type variable, stopping at the first one
-found. It counts exactly what `freeVarIds` collects, including a record's
-extension variable and both the body and the arguments of a holey alias, so
-`hasAnyFreeVar t == not (List.isEmpty (freeVarIds t []))`.
--}
-hasAnyFreeVar : Can.Type MVarId -> Bool
-hasAnyFreeVar canType =
-    case canType of
-        Can.TVar _ ->
-            True
-
-        Can.TLambda _ from to ->
-            hasAnyFreeVar from || hasAnyFreeVar to
-
-        Can.TType _ _ args ->
-            List.any hasAnyFreeVar args
-
-        Can.TRecord fields maybeExt ->
-            case maybeExt of
-                Just _ ->
-                    True
-
-                Nothing ->
-                    List.any (\( _, Can.FieldType _ t ) -> hasAnyFreeVar t) (Dict.toList fields)
-
-        Can.TTuple a b rest ->
-            List.any hasAnyFreeVar (a :: b :: rest)
-
-        Can.TUnit ->
-            False
-
-        Can.TAlias _ _ _ (Can.Filled inner) ->
-            hasAnyFreeVar inner
-
-        Can.TAlias _ _ args (Can.Holey inner) ->
-            hasAnyFreeVar inner || List.any (\( _, t ) -> hasAnyFreeVar t) args
 
 
 {-| Adds the type variables of `canType` that are not in `acc` to the front of

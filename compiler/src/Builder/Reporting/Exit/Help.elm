@@ -11,7 +11,7 @@ for a person to read, or as a JSON object for a program such as an editor.
 A report is one of two kinds. Most are a titled message, optionally about one
 file, which this module lays out under a cyan bar of dashes naming the title and
 the file. The other kind holds the errors of modules that failed to compile, and
-for those the layout and the JSON both come from `Compiler.Reporting.Error`.
+for those the layout and the JSON both come from `Builder.Reporting.ModuleError`.
 
 The output functions write a document to standard output or standard error, with
 its colours as ANSI escape sequences when that stream is a terminal, as
@@ -34,9 +34,9 @@ its colours as ANSI escape sequences when that stream is a terminal, as
 
 -}
 
+import Builder.Reporting.ModuleError as ModuleError
 import Compiler.Json.Encode as E
 import Compiler.Reporting.Doc as D
-import Compiler.Reporting.Error as Error
 import Maybe.Extra as Maybe
 import System.IO as IO
 import Task exposing (Task)
@@ -56,7 +56,7 @@ one, and the message.
 
 -}
 type Report
-    = CompilerReport String Error.Module (List Error.Module)
+    = CompilerReport String ModuleError.Module (List ModuleError.Module)
     | Report String (Maybe String) D.Doc
 
 
@@ -89,7 +89,7 @@ jsonReport =
 the project root, against which the modules' paths are shown in the terminal
 layout.
 -}
-compilerReport : String -> Error.Module -> List Error.Module -> Report
+compilerReport : String -> ModuleError.Module -> List ModuleError.Module -> Report
 compilerReport =
     CompilerReport
 
@@ -103,14 +103,14 @@ compilerReport =
 A titled report becomes a cyan bar, an empty line, the message, and a trailing
 empty line. The bar reads `-- TITLE ----- path` and is padded with dashes to
 80 columns, with at least one dash however long the title and path are. A report of failing modules
-is laid out as `Compiler.Reporting.Error.toDoc` describes.
+is laid out as `Builder.Reporting.ModuleError.toDoc` describes.
 
 -}
 reportToDoc : Report -> D.Doc
 reportToDoc report_ =
     case report_ of
         CompilerReport root e es ->
-            Error.toDoc root e es
+            ModuleError.toDoc root e es
 
         Report title maybePath message ->
             let
@@ -147,7 +147,7 @@ reportToDoc report_ =
 {-| Encodes a report as JSON.
 
 A report of failing modules becomes `{"type": "compile-errors", "errors": [...]}`,
-one entry per module as `Compiler.Reporting.Error.toJson` gives it; the project
+one entry per module as `Builder.Reporting.ModuleError.toJson` gives it; the project
 root is not included. A titled report becomes `{"type": "error", ...}` with its
 `path` (`null` when it has none), `title` and `message`, the message encoded as
 `Compiler.Reporting.Doc.encode` describes.
@@ -159,7 +159,7 @@ reportToJson report_ =
         CompilerReport _ e es ->
             E.object
                 [ ( "type", E.string "compile-errors" )
-                , ( "errors", E.list Error.toJson (e :: es) )
+                , ( "errors", E.list ModuleError.toJson (e :: es) )
                 ]
 
         Report title maybePath message ->

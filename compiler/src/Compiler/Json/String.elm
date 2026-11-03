@@ -4,7 +4,7 @@ module Compiler.Json.String exposing (fromSnippet, fromName, fromComment)
 rather than as a `String`. This module turns each into a plain `String`.
 
 A _snippet_ names a piece of a source text by its position in the whole text,
-as `Compiler.AST.Snippet` describes, so the text of the piece is a slice of that
+as `Compiler.Core.Snippet` describes, so the text of the piece is a slice of that
 whole text. A name is already a `String`.
 
 None of these functions escapes or unescapes anything. `fromSnippet` returns the
@@ -16,9 +16,9 @@ the result.
 
 -}
 
-import Compiler.AST.Snippet as Snippet
-import Compiler.Data.Name as Name
-import Compiler.Parse.Primitives as P
+import Compiler.Core.Name as Name
+import Compiler.Core.Snippet as Snippet
+import Compiler.Lexer.Primitives as P
 
 
 

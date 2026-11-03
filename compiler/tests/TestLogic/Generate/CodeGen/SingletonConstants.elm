@@ -8,7 +8,7 @@ accept.
 
 An _embedded constant_ is an `eco.constant` op, which takes no operands and
 says which value it is by its integer `kind` attribute alone. Which values get
-one, and which kind each gets, is decided by `Compiler.Generate.MLIR.Ops` and
+one, and which kind each gets, is decided by `Compiler.GenerateMlir.Ops` and
 its callers.
 
 `expectSingletonConstants` compiles a source module to MLIR and fails if
@@ -16,7 +16,7 @@ compilation fails or if any of these is found among the module's ops, at any
 depth:
 
   - an `eco.constant` with no integer `kind`, or with a kind other than the
-    three `Compiler.Generate.MLIR.Ops` emits, which match the runtime's
+    three `Compiler.GenerateMlir.Ops` emits, which match the runtime's
     constant codes: 0 for False, 1 for True, and 2 for the single empty
     constant that Unit, the empty record, the empty list, `Nothing` and the
     empty string all share;
@@ -37,7 +37,7 @@ any other name, such as `eco.make.custom`.
 
 -}
 
-import Compiler.AST.Source as Src
+import Compiler.IR.Source as Src
 import Expect exposing (Expectation)
 import Mlir.Mlir exposing (MlirModule, MlirOp)
 import TestLogic.Generate.CodeGen.Invariants
@@ -66,7 +66,7 @@ expectSingletonConstants srcModule =
 
 
 {-| The `kind` values an `eco.constant` may carry: 0 (False), 1 (True) and 2
-(the shared empty constant), as `Compiler.Generate.MLIR.Ops` emits them.
+(the shared empty constant), as `Compiler.GenerateMlir.Ops` emits them.
 -}
 knownSingletonKinds : List Int
 knownSingletonKinds =

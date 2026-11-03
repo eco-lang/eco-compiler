@@ -1,7 +1,7 @@
 ---
 status: partial
 updated: 2026-10-27
-remaining: "3c F4 JS Builder still accumulates revBuilders by String ++ (Compiler/Generate/JavaScript/Builder.elm); 4b F27 specIdToFuncName is still recomputed and not cached in Context; Phase 5 not done: 5a collectVarTypes still a separate walk (Monomorphize/Closure.elm), 5b MonoInlineSimplify fixpoint still uses exprEqual structural comparison, 5c batched substitutions, 5d integer Union-Find keys, 5e integer MonoType dict keys (toComparableMonoType still used). Phase 6 (F3, F5-F8, F12, F18, F20-F23) is deferred by the plan itself."
+remaining: "3c F4 JS Builder still accumulates revBuilders by String ++ (Compiler/GenerateJs/Builder.elm); 4b F27 specIdToFuncName is still recomputed and not cached in Context; Phase 5 not done: 5a collectVarTypes still a separate walk (Monomorphize/Closure.elm), 5b MonoInlineSimplify fixpoint still uses exprEqual structural comparison, 5c batched substitutions, 5d integer Union-Find keys, 5e integer MonoType dict keys (toComparableMonoType still used). Phase 6 (F3, F5-F8, F12, F18, F20-F23) is deferred by the plan itself."
 ---
 
 # Compiler Memory Efficiency Improvements
@@ -28,21 +28,21 @@ This plan addresses 25 memory inefficiency findings across the Elm compiler sour
 | File | Line(s) | Context |
 |------|---------|---------|
 | `compiler/src/Compiler/GlobalOpt/MonoTraverse.elm` | 162, 608 | `traverseList` — shared traversal helper used by all GlobalOpt consumers |
-| `compiler/src/Compiler/GlobalOpt/MonoInlineSimplify.elm` | 776, 790, 807, 839, 879, 898, 912, 1032, 1684, 1698, 1715, 1729, 1769, 1788, 1802 | Rewrite/simplify fold accumulators |
+| `compiler/src/Compiler/MonoOpt/InlineSimplify.elm` | 776, 790, 807, 839, 879, 898, 912, 1032, 1684, 1698, 1715, 1729, 1769, 1788, 1802 | Rewrite/simplify fold accumulators |
 | `compiler/src/Compiler/LocalOpt/Typed/Names.elm` | 412 | `traverse` — shared monadic traversal |
 | `compiler/src/Compiler/LocalOpt/Erased/Names.elm` | 354 | `traverse` — same pattern, erased variant |
 | `compiler/src/Compiler/LocalOpt/Typed/NormalizeLambdaBoundaries.elm` | 832 | Fresh-name fold |
-| `compiler/src/Compiler/Generate/MLIR/Lambdas.elm` | 57 | Lambda dedup fold |
+| `compiler/src/Compiler/GenerateMlir/Lambdas.elm` | 57 | Lambda dedup fold |
 | `compiler/src/Common/Format/Render/Box.elm` | 2995, 2998 | Type formatting |
 
 **Additionally, the MLIR codegen has ~13 `accOps ++ nodeOps` sites (list-append in folds):**
 
 | File | Line(s) |
 |------|---------|
-| `compiler/src/Compiler/Generate/MLIR/Backend.elm` | 68, 94 |
-| `compiler/src/Compiler/Generate/MLIR/Expr.elm` | 846, 860, 891, 1342, 2720, 2768, 4104, 4118 |
-| `compiler/src/Compiler/Generate/MLIR/Functions.elm` | 496, 988 |
-| `compiler/src/Compiler/Generate/MLIR/Lambdas.elm` | 71 |
+| `compiler/src/Compiler/GenerateMlir/Backend.elm` | 68, 94 |
+| `compiler/src/Compiler/GenerateMlir/Expr.elm` | 846, 860, 891, 1342, 2720, 2768, 4104, 4118 |
+| `compiler/src/Compiler/GenerateMlir/Functions.elm` | 496, 988 |
+| `compiler/src/Compiler/GenerateMlir/Lambdas.elm` | 71 |
 
 **Fix:** Replace `acc ++ [x]` with `x :: acc` and add `List.reverse` at the end. For `accOps ++ nodeOps` (chunk append), use `List.reverse nodeOps ++ accOps` and reverse at the end, or accumulate chunks into `List (List Op)` and `List.concat (List.reverse chunks)`.
 
@@ -172,7 +172,7 @@ Option B (moderate): Keep the current structure but provide documentation that t
 
 **Problem:** `BuilderData.revBuilders` is a `String` that grows by appending (`revBuilders ++ ascii`). Every append copies the entire accumulated output. For JS output of size N, total allocation is O(N^2).
 
-**File:** `compiler/src/Compiler/Generate/JavaScript/Builder.elm` line 1081-1087
+**File:** `compiler/src/Compiler/GenerateJs/Builder.elm` line 1081-1087
 
 **Fix:** Change `revBuilders : String` to `revBuilders : List String` (reversed chunks). All append operations become `newChunk :: revBuilders` (O(1)). At finalization, join with `String.concat (List.reverse revBuilders)` (O(N)).
 
@@ -198,7 +198,7 @@ Functions to modify:
 
 **Problem:** Every `PCtor` in `Can.Pattern` embeds a complete `Can.Union` definition (all constructors, type variables, etc.), even though pattern compilation only needs the constructor name and index.
 
-**File:** `compiler/src/Compiler/AST/Canonical.elm` lines 233-244
+**File:** `compiler/src/Compiler/IR/Canonical.elm` lines 233-244
 
 **Fix options:**
 
@@ -216,7 +216,7 @@ Option B: Use a reference/key into a shared union table instead of embedding.
 
 **Problem:** `VarForeign`, `VarCtor`, `VarOperator`, and `Binop` in `Can.Expr` embed a full `Can.Annotation` (which includes a `Can.Type` tree). This duplicates type information that's also available in the module's annotation table.
 
-**File:** `compiler/src/Compiler/AST/Canonical.elm` lines 130-139
+**File:** `compiler/src/Compiler/IR/Canonical.elm` lines 130-139
 
 **Recommendation:** Defer. Same rationale as Finding 5 — pervasive AST shape change.
 
@@ -226,7 +226,7 @@ Option B: Use a reference/key into a shared union table instead of embedding.
 
 **Problem:** Every variant of `TOpt.Expr` carries a `Can.Type` field. After the typed optimization phase converts types to `MonoType`, these `Can.Type` values are no longer needed, but they remain alive as long as any `TOpt.Expr` reference exists.
 
-**File:** `compiler/src/Compiler/AST/TypedOptimized.elm`
+**File:** `compiler/src/Compiler/IR/Typed/Optimized.elm`
 
 **Recommendation:** Defer. The `Can.Type` is integral to how the typed optimization phase works. Removing it would require a phase-split architecture where a post-typed-opt pass strips types.
 
@@ -268,7 +268,7 @@ Option B: Use a reference/key into a shared union table instead of embedding.
 
 **Problem:** The `dce` function in `MonoInlineSimplify.elm` traverses the entire `MonoExpr` tree and rebuilds every node, but never eliminates anything. The comment says "Most DCE is handled by let simplification / This pass handles any remaining cases" — but the code has no elimination logic; it's a pure identity traversal.
 
-**File:** `compiler/src/Compiler/GlobalOpt/MonoInlineSimplify.elm` lines 2225-2284
+**File:** `compiler/src/Compiler/MonoOpt/InlineSimplify.elm` lines 2225-2284
 
 **Fix:** Delete the `dce` function. Remove all call sites (search for `dce ` in the file).
 
@@ -282,9 +282,9 @@ Option B: Use a reference/key into a shared union table instead of embedding.
 
 ### Finding 11: `collectVarTypes` redundant full walk
 
-**Problem:** In `Compiler/Monomorphize/Closure.elm`, `computeClosureCaptures` performs two full expression walks: first `findFreeLocals` to find free variables, then `collectVarTypes` to look up their types. The type information could be collected during the first walk.
+**Problem:** In `Compiler/IR/Mono/Closure.elm`, `computeClosureCaptures` performs two full expression walks: first `findFreeLocals` to find free variables, then `collectVarTypes` to look up their types. The type information could be collected during the first walk.
 
-**File:** `compiler/src/Compiler/Monomorphize/Closure.elm`
+**File:** `compiler/src/Compiler/IR/Mono/Closure.elm`
 
 **Fix:** Merge `collectVarTypes` into `findFreeLocals` so that free variables are collected with their types in a single pass.
 
@@ -306,7 +306,7 @@ Option B: Use a reference/key into a shared union table instead of embedding.
 
 **Problem:** Every `Dict` lookup keyed by `MonoType` calls `toComparableMonoType` to serialize the type into a `List String`. This is called on every specialization lookup, creating substantial garbage.
 
-**File:** `compiler/src/Compiler/AST/Monomorphized.elm` line 703-705
+**File:** `compiler/src/Compiler/IR/Mono.elm` line 703-705
 
 **Fix options:**
 
@@ -324,7 +324,7 @@ Option B: Use a different Dict key strategy (e.g., assign integer IDs to MonoTyp
 
 **Problem:** `forceCNumberToInt` traverses the entire `MonoType` tree and rebuilds every node, even when no `CNumber` vars are present (the common case).
 
-**File:** `compiler/src/Compiler/AST/Monomorphized.elm` lines 251-293
+**File:** `compiler/src/Compiler/IR/Mono.elm` lines 251-293
 
 **Fix:** Add an early-exit check: if the node is a primitive (`MInt`, `MFloat`, `MBool`, `MChar`, `MString`, `MUnit`), return it directly (the code already does this, but it allocates fresh constructors). For compound nodes, check if children actually changed before allocating a new parent:
 
@@ -345,7 +345,7 @@ MList elemType ->
 
 **Problem:** Every MLIR name is passed through 14 `String.replace` calls, each scanning the full string. For names with no special characters (the vast majority), this is 14 wasted full-string scans.
 
-**File:** `compiler/src/Compiler/Generate/MLIR/Names.elm` lines 25-40
+**File:** `compiler/src/Compiler/GenerateMlir/Names.elm` lines 25-40
 
 **Fix:** Add a fast-path check:
 
@@ -481,7 +481,7 @@ intersection _keyComparison (D dict1) (D dict2) =
 
 **Problem:** `FreeVars` is `Dict String Name ()` — a set encoded as a map-to-unit, incurring one `()` allocation per entry.
 
-**File:** `compiler/src/Compiler/AST/Canonical.elm` line 273
+**File:** `compiler/src/Compiler/IR/Canonical.elm` line 273
 
 **Fix:** Change to `Data.Set.EverySet String Name` (or if Finding 18 is implemented, the improved `EverySet`).
 
@@ -511,7 +511,7 @@ intersection _keyComparison (D dict1) (D dict2) =
 
 **Problem:** `exprEqual` in `MonoInlineSimplify.elm` (line 599) uses deep structural comparison to detect fixpoint convergence. For large ASTs, this is expensive.
 
-**File:** `compiler/src/Compiler/GlobalOpt/MonoInlineSimplify.elm` line 599
+**File:** `compiler/src/Compiler/MonoOpt/InlineSimplify.elm` line 599
 
 **Fix options:**
 
@@ -529,7 +529,7 @@ Option B: Track a "changed" boolean during the rewrite pass and stop iterating w
 
 **Problem:** In `MonoInlineSimplify.elm`, `substituteAll` (line 1048) applies substitutions one binding at a time, each traversing the full AST. For K bindings and an AST of size N, this is O(K*N).
 
-**File:** `compiler/src/Compiler/GlobalOpt/MonoInlineSimplify.elm` line 1048-1055
+**File:** `compiler/src/Compiler/MonoOpt/InlineSimplify.elm` line 1048-1055
 
 **Fix:** Collect all substitutions into a `Dict` first, then do a single AST traversal applying all substitutions at once. This reduces O(K*N) to O(N).
 
@@ -564,7 +564,7 @@ indentPad n =
 
 **Problem:** The same `specId` may be referenced multiple times during codegen, but `specIdToFuncName` recomputes the mangled name each time (including calling `sanitizeName` with its 14 `String.replace` calls).
 
-**File:** `compiler/src/Compiler/Generate/MLIR/Expr.elm` lines 250-259
+**File:** `compiler/src/Compiler/GenerateMlir/Expr.elm` lines 250-259
 
 **Fix:** Cache computed names in the `Context` record. On first lookup, compute and store; on subsequent lookups, return cached value.
 

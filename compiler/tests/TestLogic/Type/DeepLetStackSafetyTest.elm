@@ -31,16 +31,16 @@ and the types the solver infers.
 
 -}
 
-import Compiler.AST.Canonical as Can
-import Compiler.AST.Source as Src
 import Compiler.AST.SourceBuilder as SB
 import Compiler.Canonicalize.Module as Canonicalize
 import Compiler.Elm.Interface.Basic as Basic
+import Compiler.IR.Canonical as Can
+import Compiler.IR.Source as Src
 import Compiler.Reporting.Result as Result
 import Compiler.Type.Constrain.Erased.Module as ErasedConstrain
 import Compiler.Type.Solve as Solve
+import Compiler.Type.State.IO as IO
 import Expect
-import System.TypeCheck.IO as IO
 import Test exposing (Test)
 
 

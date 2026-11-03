@@ -5,7 +5,7 @@ as a function value one lambda-set member per layout it is used at.
 
 A lambda set is the annotation on a function type naming the function values
 that can flow through it, its members, each numbered by an interned member id
-(`Compiler.MonoSolver.Engine` owns the numbering). A slot is the member list of
+(`Compiler.Monomorphize.Solver.Engine` owns the numbering). A slot is the member list of
 one arrow's set. An arrow's layout is its type with the lambda-set annotations
 in it disregarded, so two arrows that differ only in their sets share a layout.
 
@@ -61,8 +61,6 @@ fold of `myId`'s own root lambda, which interns keys of the same shape.
 -}
 
 import Array
-import Compiler.AST.Monomorphized as Mono
-import Compiler.AST.Source as Src
 import Compiler.AST.SourceBuilder
     exposing
         ( TypedDef
@@ -77,11 +75,13 @@ import Compiler.AST.SourceBuilder
         , tVar
         , varExpr
         )
-import Compiler.AST.TypeIds as TypeIds
-import Compiler.AST.TypedOptimized as TOpt
-import Compiler.Eco.Config as Config
+import Compiler.Config as Config
+import Compiler.Core.TypeIds as TypeIds
 import Compiler.Elm.ModuleName as ModuleName
-import Compiler.MonoSolver.Engine as Engine
+import Compiler.IR.Mono as Mono
+import Compiler.IR.Source as Src
+import Compiler.IR.Typed.Optimized as TOpt
+import Compiler.Monomorphize.Solver.Engine as Engine
 import Dict
 import Expect
 import Test exposing (Test)

@@ -21,7 +21,7 @@ Audit date: 2026-08-09. Repo root `/work`. All paths absolute.
 
 2. **There is NO purity/effect metadata for kernel functions today.** The only
    per-kernel metadata table in the compiler is
-   `/work/compiler/src/Compiler/GlobalOpt/Borrow/KernelSigs.elm` (33 entries),
+   `/work/compiler/src/Compiler/MonoOpt/Borrow/KernelSigs.elm` (33 entries),
    and its axis is **retention/aliasing, not purity**: it records
    `{ params : List ParamMode, resultAliases : List Int }` where
    `ParamMode = PBorrowed | POwned` (`KernelSigs.elm:35-53`). `Crash.crash`
@@ -276,7 +276,7 @@ Minimum viable new op = **4 edits, no new files**:
    in the appropriate `EcoToLLVM*.cpp`, plus one line in that file's
    `populate…Patterns` list (e.g. `EcoToLLVMArith.cpp:1133`).
 3. **Elm-side emission** — an `Intrinsic` constructor in
-   `/work/compiler/src/Compiler/Generate/MLIR/Intrinsics.elm` (add to `type Intrinsic`
+   `/work/compiler/src/Compiler/GenerateMlir/Intrinsics.elm` (add to `type Intrinsic`
    at `:26-53`, `intrinsicResultMlirType` at `:70+`, the per-module dispatch under
    `kernelIntrinsic` at `:312-334`, and `generateIntrinsicOp`).
 4. **Nothing for MLIR bytecode.** The Elm-side writer is generic and string-keyed
@@ -314,7 +314,7 @@ self-host gate every codegen change must pass.
 > for the ~120 ops already marked `[Pure]`.
 
 **Elm/Mono level** — `globalOptimizeWithStats`
-(`/work/compiler/src/Compiler/GlobalOpt/MonoGlobalOptimize.elm:128`), driven from
+(`/work/compiler/src/Compiler/MonoOpt/GlobalOptimize.elm:128`), driven from
 `/work/compiler/src/Builder/Generate.elm:829`. Passes: `MonoInlineSimplify`,
 `Staging`, `AbiCloning`, `CafHoist`/`CafCensus`/`CafDedupe`, `ListCombinators`,
 `Borrow`. A pre-mono typed pass lives at `/work/compiler/src/Compiler/LocalOpt/Typed/`
@@ -324,7 +324,7 @@ self-host gate every codegen change must pass.
 **How a kernel call is represented in the mono IR.** There is **no dedicated
 `KernelCall`/`Extern`/`Foreign` expression node.** A kernel call is an ordinary
 `MonoCall` whose callee is a `MonoVarKernel` leaf
-(`/work/compiler/src/Compiler/AST/Monomorphized.elm:1505-1512`):
+(`/work/compiler/src/Compiler/IR/Mono.elm:1505-1512`):
 
 ```elm
     | MonoVarKernel Region Name Name Name MonoType -- kernel prefix, home, name, type
@@ -358,7 +358,7 @@ nothing else. Same shape in `/work/eco-kernel-cpp/CMakeLists.txt`.
 
 **And the MLIR side deliberately strips every attribute.** A kernel is emitted by
 the Elm compiler as a `func.func` stub with `is_kernel = true`
-(`/work/compiler/src/Compiler/Generate/MLIR/Functions.elm:1958-2006`). It is
+(`/work/compiler/src/Compiler/GenerateMlir/Functions.elm:1958-2006`). It is
 lowered by `KernelFuncOpLowering`
 (`/work/runtime/src/codegen/Passes/EcoToLLVMFunc.cpp:26-95`) to:
 
@@ -383,7 +383,7 @@ compiled, and LLVM is nonetheless blind to it.**
 
 **Elm-side inlining is blocked for a different, structural reason.**
 `MonoInlineSimplify` only fires on `MonoCall _ (MonoVarGlobal _ specId _) …`
-(`/work/compiler/src/Compiler/GlobalOpt/MonoInlineSimplify.elm:2460`); a
+(`/work/compiler/src/Compiler/MonoOpt/InlineSimplify.elm:2460`); a
 `MonoVarKernel` callee falls through to the generic "rewrite children" arm at
 `:2544-2552`. There is no body to substitute. Two knock-on effects worth noting:
 
@@ -511,7 +511,7 @@ this fact)"* — a v2 item on both sides, built on neither.
 purity check at all.** Two CAF passes deduplicate *closed* subtrees by structural
 equality, and both admit kernel calls:
 
-- **`CafHoist`** (`/work/compiler/src/Compiler/GlobalOpt/CafHoist.elm:157, 314-360`)
+- **`CafHoist`** (`/work/compiler/src/Compiler/MonoOpt/CafHoist.elm:157, 314-360`)
   hoists any maximal closed subexpression into a once-per-process CAF.
   `candidateKind` (`:921-925`) admits **any** `MonoCall`, kernel calls included.
   Its entire effect model is one literal string comparison
@@ -523,12 +523,12 @@ equality, and both admit kernel calls:
   The other exclusions (`skippedScalar` for `MInt`/`MFloat`/`MChar` via `valueAbi`
   `:958-975`, `skippedFnType` `:982`, bytes) are ABI/codegen-hazard filters, not
   semantic ones.
-- **`CafDedupe`** (`/work/compiler/src/Compiler/GlobalOpt/CafDedupe.elm:67, 144-190`)
+- **`CafDedupe`** (`/work/compiler/src/Compiler/MonoOpt/CafDedupe.elm:67, 144-190`)
   merges structurally identical nullary specs by region-zeroed `==` (`:113-116`) —
   **no purity check whatsoever**. Two CAF specs whose bodies are the same kernel
   call are merged into one evaluation.
 
-Both are default-off (`/work/compiler/src/Compiler/Eco/Config.elm:321`,
+Both are default-off (`/work/compiler/src/Compiler/Config.elm:321`,
 `hoist = { enabled = False, … }`). This is worth flagging on its own: the compiler
 already *assumes* kernel purity in two passes, on the strength of
 `home == "Debug"` — a much weaker basis than the classification a purity table
@@ -545,16 +545,16 @@ generational **tracing** collector, so there is no RC to eliminate and the kerne
 boundary blocks nothing here.
 
 **Borrow inference is where the kernel boundary bites, and it is census-only.**
-`/work/compiler/src/Compiler/GlobalOpt/Borrow/KernelSigs.elm` supplies per-kernel
+`/work/compiler/src/Compiler/MonoOpt/Borrow/KernelSigs.elm` supplies per-kernel
 `{ params : List ParamMode, resultAliases : List Int }` for **33** kernels
 (`:54-167`). Two consumers:
 
-- `/work/compiler/src/Compiler/GlobalOpt/Borrow/Constrain.elm:884` — the
+- `/work/compiler/src/Compiler/MonoOpt/Borrow/Constrain.elm:884` — the
   `MonoVarKernel` call arm calls `KernelSigs.lookup`; `:1078 applyKernelSig`,
   `:1101 applyKernelParams` map `PBorrowed` → `addSeedsOfRTy` and `POwned` →
   `ownEverything` + `escSeedAll`. **On a miss it calls `poisonArgs … RKernel`** and
   bumps `kernelDefaultedHeapCalls` / `kernelDefaultedNames`.
-- `/work/compiler/src/Compiler/GlobalOpt/Borrow/LssFacts.elm:244` — same lookup for
+- `/work/compiler/src/Compiler/MonoOpt/Borrow/LssFacts.elm:244` — same lookup for
   `Mono.OriginKernel`; **on a miss, `Poison PUnresolved`**.
 
 So yes: **an unlisted kernel forces the maximally conservative "owned / escapes /
@@ -567,7 +567,7 @@ Crash.crash=461 JsArray.foldl=322 …`). `:1060-1080` estimates ~2–3K recovera
 sites and flags *"kernel-allowlist growth is untracked as a deliverable"*.
 
 Two further caveats: the whole oracle is **off by default**
-(`/work/compiler/src/Compiler/Eco/Config.elm:323`:
+(`/work/compiler/src/Compiler/Config.elm:323`:
 `borrow = { enabled = False, reify = ROff, report = False, validate = False, oracleOpt = False }`; `oracleOpt` since removed),
 and its output type `OracleFacts` (`Borrow/Facts.elm:35-46`) is keyed by
 `SpecId`/LSS-member and currently has **no consumer** — `Generate/MLIR/Context.elm:242,316,353`
@@ -594,7 +594,7 @@ store it and nothing reads `borrowedParamsOf`.
 **There is no Elm-level constant folder at all.** A repo-wide grep for
 `constFold` / `foldConstant` / `evalPrim` / `simplifyPrim` / `partial.?eval` over
 `/work/compiler/src` finds exactly one hit, and it is unrelated:
-`/work/compiler/src/Compiler/Generate/MLIR/BytesFusion/LoopIR.elm:134`
+`/work/compiler/src/Compiler/GenerateMlir/BytesFusion/LoopIR.elm:134`
 `simplifyWidth`, an integer-width arithmetic simplifier inside the bytes-fusion
 loop IR (`WAdd (WConst a) (WConst b) -> WConst (a + b)`). It never touches Elm
 expressions. The only literal-driven simplification in the whole mono pipeline is
@@ -623,7 +623,7 @@ Exhaustive search of `compiler/src/` and `runtime/src/codegen/` for `isPure`,
 
 ### B.6.1 The compiler's only effect judgement: `isPureExpr`
 
-`/work/compiler/src/Compiler/GlobalOpt/MonoInlineSimplify.elm:5099-5191`. Header
+`/work/compiler/src/Compiler/MonoOpt/InlineSimplify.elm:5099-5191`. Header
 comment verbatim (`:5099-5101`): *"Check if an expression is pure (no side effects).
 We're conservative here — only eliminate bindings we're certain are pure. Function
 calls might have side effects (like Debug.log), so we don't eliminate them."*
@@ -654,8 +654,8 @@ expression because `betaReduce`/`tryInlineCall` always let-bind arguments
 (`:2952`, `:4663`), so the duplication question never arises.
 
 **A second effect flag exists and is dead.** `specHasEffects : BitSet`
-(`/work/compiler/src/Compiler/AST/Monomorphized.elm:1401`) is computed by
-`nodeHasEffects` (`/work/compiler/src/Compiler/Monomorphize/Monomorphize.elm:582-611`),
+(`/work/compiler/src/Compiler/IR/Mono.elm:1401`) is computed by
+`nodeHasEffects` (`/work/compiler/src/Compiler/Monomorphize/Subst/Monomorphize.elm:582-611`),
 which tests only `MonoVarKernel _ _ "Debug" _ _`. It has **no consumers** —
 `MonoInlineSimplify.elm:902` explicitly discards it (`specHasEffects = BitSet.empty`),
 confirmed by `/work/design_docs/theory/pass_global_optimization_theory.md:171`.
@@ -671,20 +671,20 @@ What *does* exist, and its shape:
 
 | Table | File:line | Shape | Entries | Axis |
 |---|---|---|---|---|
-| **`KernelSigs.table`** | `/work/compiler/src/Compiler/GlobalOpt/Borrow/KernelSigs.elm:35-53, 54-167` | `Dict (Name, Name) { params : List ParamMode, resultAliases : List Int }`, `ParamMode = PBorrowed \| POwned` | **33** | **retention/aliasing — NOT purity** |
+| **`KernelSigs.table`** | `/work/compiler/src/Compiler/MonoOpt/Borrow/KernelSigs.elm:35-53, 54-167` | `Dict (Name, Name) { params : List ParamMode, resultAliases : List Int }`, `ParamMode = PBorrowed \| POwned` | **33** | **retention/aliasing — NOT purity** |
 | `suffixSelectingKernels` | `/work/compiler/src/Compiler/Monomorphize/KernelAbi.elm:145-192` | `EverySet (String, String)` | 18 | ABI symbol selection |
 | `alwaysPolymorphicModules` | `.../Monomorphize/KernelAbi.elm:200-202` | `EverySet String` | 1 (`"Debug"`) | ABI |
-| `kernelBackendAbiPolicy` | `/work/compiler/src/Compiler/Generate/MLIR/KernelAbi.elm:59-92` | `String -> String -> KernelBackendAbiPolicy` | constant `ElmDerived` (table retired) | ABI |
+| `kernelBackendAbiPolicy` | `/work/compiler/src/Compiler/GenerateMlir/KernelAbi.elm:59-92` | `String -> String -> KernelBackendAbiPolicy` | constant `ElmDerived` (table retired) | ABI |
 | `KernelTypeEnv` | `/work/compiler/src/Compiler/Type/KernelTypes.elm:43-44` | `Dict (Name, Name) (Can.Type Name)` | runtime-populated | types |
-| `kernelIntrinsic` | `/work/compiler/src/Compiler/Generate/MLIR/Intrinsics.elm:312-334` | `Name -> Name -> List MonoType -> MonoType -> Maybe Intrinsic` | ~85 `Just` arms | which kernels bypass the call |
-| `listShuntKernels` | `/work/compiler/src/Compiler/Generate/MLIR/Functions.elm:298-305` | `Dict Name Int` | 5 | chunked-list shunt |
-| `defaultWhitelist` | `/work/compiler/src/Compiler/GlobalOpt/MonoInlineSimplify.elm:951-1010` | `List String` (qualified Elm names) | ~45 | inline-cost bypass (Elm fns, not kernels) |
+| `kernelIntrinsic` | `/work/compiler/src/Compiler/GenerateMlir/Intrinsics.elm:312-334` | `Name -> Name -> List MonoType -> MonoType -> Maybe Intrinsic` | ~85 `Just` arms | which kernels bypass the call |
+| `listShuntKernels` | `/work/compiler/src/Compiler/GenerateMlir/Functions.elm:298-305` | `Dict Name Int` | 5 | chunked-list shunt |
+| `defaultWhitelist` | `/work/compiler/src/Compiler/MonoOpt/InlineSimplify.elm:951-1010` | `List String` (qualified Elm names) | ~45 | inline-cost bypass (Elm fns, not kernels) |
 | runtime gc-leaf list | `/work/runtime/src/codegen/Passes/EcoToLLVMRuntime.cpp:126-152` | 92 `/*gcLeaf=*/true` of 146 `getOrCreateFunc` decls | 92 | GC-freeness of **runtime helpers**, zero kernels |
 | `elm_kernel_functions.csv` | `/work/design_docs/elm_kernel_functions.csv` | CSV: `Package,Kernel Function` | 415 rows | **documentation only — no property columns** |
 
 Two one-off purity assertions, both hand-written and non-tabular:
 
-1. **`kernelDevirtArity`** — `/work/compiler/src/Compiler/MonoSolver/Translate.elm:1854-1868`,
+1. **`kernelDevirtArity`** — `/work/compiler/src/Compiler/Monomorphize/Solver/Translate.elm:1854-1868`,
    doc comment verbatim: *"Kernels have no annotation to arity-check against and may
    be effectful, so the whitelist is the soundness boundary: each entry must be pure
    (a plain allocator/value function) and pins its exact arity here."* The whitelist
@@ -754,11 +754,11 @@ Three separate escape hatches exist for reasoning across the kernel boundary, an
 all three have the same shape: **a human hand-transcribes one kernel's semantics
 into an Elm table, with C++ file:line citations, one kernel at a time.**
 
-1. `/work/compiler/src/Compiler/GlobalOpt/Borrow/KernelSigs.elm` — 33 entries,
+1. `/work/compiler/src/Compiler/MonoOpt/Borrow/KernelSigs.elm` — 33 entries,
    borrow/aliasing axis, each row anchored to a C++ export line.
-2. `/work/compiler/src/Compiler/MonoSolver/Translate.elm:1852-1868` — **1 entry**
+2. `/work/compiler/src/Compiler/Monomorphize/Solver/Translate.elm:1852-1868` — **1 entry**
    (`List.cons`), purity+arity axis, whitelist is explicitly *"the soundness boundary"*.
-3. `/work/compiler/src/Compiler/Generate/MLIR/Intrinsics.elm:312-334` — ~85 arms,
+3. `/work/compiler/src/Compiler/GenerateMlir/Intrinsics.elm:312-334` — ~85 arms,
    "replace the call with a dialect op" axis.
 
 Plus one prose classification enforced by review only

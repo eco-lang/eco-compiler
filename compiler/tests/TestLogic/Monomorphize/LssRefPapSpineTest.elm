@@ -17,13 +17,13 @@ arrow, so `/a0/r` is the value left after applying the argument once.
 
 Passing a two-argument global `g` by reference writes `g`'s own member on the
 head arrow of the reference's type, which is the argument passed at `/a0`. The
-reference-spine walk (`injectPapSuccessors` in `Compiler.MonoSolver.LssInfer`)
+reference-spine walk (`injectPapSuccessors` in `Compiler.Monomorphize.Solver.LssInfer`)
 also writes, at each depth `d` from 1 up to one less than `g`'s declared arity,
 the number of parameters its definition names, the member keyed `p|g|d`, which
 names `g` applied to `d` arguments. The partial application `g 1` is given the member
 keyed `p|g|1` by a different path, which writes it on the head arrow of the
 value it produces. Both paths take the id from
-`Compiler.MonoSolver.Engine.papMemberIdFor`, which interns the key, so the same
+`Compiler.Monomorphize.Solver.Engine.papMemberIdFor`, which interns the key, so the same
 key gives the same id.
 
 The fixture defines `plus2 : Int -> Int -> Int` and three callers that take a
@@ -53,8 +53,6 @@ global optimization.
 -}
 
 import Array
-import Compiler.AST.Monomorphized as Mono
-import Compiler.AST.Source as Src
 import Compiler.AST.SourceBuilder
     exposing
         ( binopsExpr
@@ -66,7 +64,9 @@ import Compiler.AST.SourceBuilder
         , tType
         , varExpr
         )
-import Compiler.Eco.Config as Config
+import Compiler.Config as Config
+import Compiler.IR.Mono as Mono
+import Compiler.IR.Source as Src
 import Dict
 import Expect
 import Test exposing (Test)

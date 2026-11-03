@@ -36,9 +36,9 @@ name collides with another variable's, and the types of kernel references.
 -}
 
 import Array
-import Compiler.AST.Canonical as Can
-import Compiler.AST.Source as Src
-import Compiler.Data.Name exposing (Name)
+import Compiler.Core.Name exposing (Name)
+import Compiler.IR.Canonical as Can
+import Compiler.IR.Source as Src
 import Data.Map as DataMap
 import Data.Set as EverySet exposing (EverySet)
 import Expect

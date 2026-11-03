@@ -9,7 +9,7 @@
 # KernelSetFacts key rows by (prefix, home, name) (plans/kernel-table-prefix-keys.md). So the
 # eco/kernel homes File, Http and Process, which elm/file, elm/http and elm/core also have, are
 # safe there. What still keys by home alone are the hard-coded elm/core dispatches
-# (Generate/MLIR/Intrinsics, both KernelAbi modules, BytesFusion/Reify), which match kernels by
+# (GenerateMlir/Intrinsics, both KernelAbi modules, BytesFusion/Reify), which match kernels by
 # (home, name) and none of which names a shared home today. A new shared home must be added to
 # SHARED_ELM_ECO deliberately, after checking those dispatches for its home.
 # Scans the repository only.
@@ -28,8 +28,8 @@ trap 'rm -rf "$tmp"' EXIT
         | grep -E -v 'ECO_SYSTEM_MODS|CACHE' | sed 's/set(ECO_[A-Z_]*//' | tr ' ' '\n'
     # Homes named in the compiler's fact tables: ( "Home", "name" ) keys.
     grep -h -o -E '\( *"[A-Z][A-Za-z0-9]*" *, *"[a-z]' \
-        "$root/compiler/src/Compiler/GlobalOpt/KernelFacts.elm" \
-        "$root/compiler/src/Compiler/MonoSolver/KernelSetFacts.elm" \
+        "$root/compiler/src/Compiler/IR/Kernel/Facts.elm" \
+        "$root/compiler/src/Compiler/Monomorphize/Solver/KernelSetFacts.elm" \
         | sed -E 's/\( *"([A-Za-z0-9]*)".*/\1/'
     # C symbol prefixes in the two existing kernel trees.
     grep -r -h -o -E '(Elm|Eco)_Kernel_[A-Z][A-Za-z0-9]*_' \

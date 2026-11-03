@@ -36,17 +36,17 @@ the `Names.Tracker` it runs in.
 -}
 
 import Basics.Extra exposing (flip)
-import Compiler.AST.Canonical as Can
-import Compiler.AST.TypedOptimized as TOpt
-import Compiler.AST.Utils.Type as Type
-import Compiler.Data.Index as Index
-import Compiler.Data.IndexName as IndexName
-import Compiler.Data.Name as Name exposing (Name)
+import Compiler.Core.Annotation as A
+import Compiler.Core.Index as Index
+import Compiler.Core.IndexName as IndexName
+import Compiler.Core.Name as Name exposing (Name)
 import Compiler.Elm.ModuleName as ModuleName
+import Compiler.IR.Canonical as Can
+import Compiler.IR.Canonical.Alias as Type
+import Compiler.IR.Typed.Optimized as TOpt
 import Compiler.LocalOpt.Typed.Names as Names
-import Compiler.Reporting.Annotation as A
 import Dict exposing (Dict)
-import Utils.Crash exposing (crash)
+import System.Crash exposing (crash)
 
 
 

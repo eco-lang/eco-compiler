@@ -8,8 +8,8 @@ The code generator builds a non-empty record with an `eco.construct.record` op.
 Its operands are exactly the field values, and `field_count` says how many
 there are. The empty record is
 never constructed this way: it is an `eco.constant`. Both choices are made in
-`Compiler.Generate.MLIR.Expr`, and the op is built only by
-`Compiler.Generate.MLIR.Ops.ecoConstructRecord`.
+`Compiler.GenerateMlir.Expr`, and the op is built only by
+`Compiler.GenerateMlir.Ops.ecoConstructRecord`.
 
 The program is supplied by the caller and compiled with
 `TestLogic.TestPipeline.runToMlir`, the production pipeline.
@@ -32,7 +32,7 @@ that no construction has a count of 0).
 
 -}
 
-import Compiler.AST.Source as Src
+import Compiler.IR.Source as Src
 import Expect exposing (Expectation)
 import Mlir.Mlir exposing (MlirModule, MlirOp)
 import TestLogic.Generate.CodeGen.Invariants

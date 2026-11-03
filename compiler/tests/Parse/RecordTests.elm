@@ -34,11 +34,11 @@ access, comments inside the braces, and indentation errors.
 
 -}
 
-import Compiler.AST.Source as Src
+import Compiler.Core.Annotation as A
+import Compiler.IR.Source as Src
+import Compiler.Lexer.Primitives as P
+import Compiler.Parse.Error as E
 import Compiler.Parse.Expression exposing (expression)
-import Compiler.Parse.Primitives as P
-import Compiler.Reporting.Annotation as A
-import Compiler.Reporting.Error.Syntax as E
 import Expect
 import Test exposing (Test)
 

@@ -2,7 +2,7 @@ module TestLogic.Monomorphize.LssHonestSourcesTest exposing (suite)
 
 {-| A lambda-set resolution that carries members but passes through a source
 nothing has written would read back as a complete set when it is not. These
-tests pin the honest-sources rule of `Compiler.MonoSolver.Store`, which widens
+tests pin the honest-sources rule of `Compiler.Monomorphize.Solver.Store`, which widens
 such a resolution to top, and the counters that record it.
 
 A lambda-set slot lists, as integer member ids, the functions that may reach
@@ -58,18 +58,18 @@ counted; and how a zonk reads a resolution back.
 
 -}
 
-import Compiler.AST.Intern as Intern
-import Compiler.AST.TypeIds as TypeIds
-import Compiler.AST.TypeVars as Vars
-import Compiler.AST.TypedOptimized as TOpt
+import Compiler.Core.TypeIds as TypeIds
 import Compiler.Elm.ModuleName as ModuleName
-import Compiler.MonoSolver.Engine as Engine
-import Compiler.MonoSolver.Store as Store
+import Compiler.IR.Mono.Intern as Intern
+import Compiler.IR.Typed.Optimized as TOpt
+import Compiler.IR.Typed.TypeVars as Vars
+import Compiler.Monomorphize.Solver.Engine as Engine
+import Compiler.Monomorphize.Solver.Store as Store
+import Compiler.Type.State.IO as IO
 import Compiler.Type.Type as Type
 import Compiler.Type.UnionFind as UF
 import Dict
 import Expect
-import System.TypeCheck.IO as IO
 import Test exposing (Test)
 
 

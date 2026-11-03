@@ -44,26 +44,26 @@ The result is the environment of names captured where the tree says
 -}
 
 import Array exposing (Array)
-import Compiler.AST.Canonical as Can
-import Compiler.AST.TypeVars as Vars exposing (Content, Descriptor, Mark, Variable)
-import Compiler.Data.Name as Name exposing (Name)
-import Compiler.Data.NonEmptyList as NE
-import Compiler.Reporting.Annotation as A
+import Compiler.Core.Annotation as A
+import Compiler.Core.Name as Name exposing (Name)
+import Compiler.IR.Canonical as Can
+import Compiler.IR.Typed.TypeVars as Vars exposing (Content, Descriptor, Mark, Variable)
 import Compiler.Reporting.Doc as Doc
-import Compiler.Reporting.Error.Type as Error
 import Compiler.Reporting.Render.Type as RT
 import Compiler.Reporting.Render.Type.Localizer as L
-import Compiler.Type.Error as ET
+import Compiler.Type.Error as Error
+import Compiler.Type.ErrorType as ET
 import Compiler.Type.Occurs as Occurs
+import Compiler.Type.State.IO as IO exposing (IO)
+import Compiler.Type.State.IORef exposing (IORef)
+import Compiler.Type.State.Vector as Vector
+import Compiler.Type.State.Vector.Mutable as MVector
 import Compiler.Type.Type as Type exposing (Constraint(..), Type, nextMark)
 import Compiler.Type.Unify as Unify
 import Compiler.Type.UnionFind as UF
-import Data.IORef exposing (IORef)
-import Data.Vector as Vector
-import Data.Vector.Mutable as MVector
+import Data.NonEmptyList as NE
 import Dict exposing (Dict)
-import System.TypeCheck.IO as IO exposing (IO)
-import Utils.Crash exposing (crash)
+import System.Crash exposing (crash)
 import Utils.Main as Utils
 
 

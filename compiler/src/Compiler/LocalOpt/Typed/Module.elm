@@ -59,21 +59,21 @@ crashes the compiler.
 
 -}
 
-import Compiler.AST.Canonical as Can
-import Compiler.AST.TypeVars as Vars
-import Compiler.AST.TypedCanonical as TCan exposing (ExprTypes, ExprVars)
-import Compiler.AST.TypedOptimized as TOpt
-import Compiler.AST.Utils.Type as Type
 import Compiler.Canonicalize.Effects as Effects
-import Compiler.Data.Name as Name exposing (Name)
-import Compiler.Elm.EcoEnvironment as EcoEnvironment
+import Compiler.Core.Annotation as A
+import Compiler.Core.Name as Name exposing (Name)
 import Compiler.Elm.ModuleName as ModuleName
+import Compiler.IR.Canonical as Can
+import Compiler.IR.Canonical.Alias as Type
+import Compiler.IR.Runtime.EcoEnvironment as EcoEnvironment
+import Compiler.IR.Typed.Canonical as TCan exposing (ExprTypes, ExprVars)
+import Compiler.IR.Typed.Optimized as TOpt
+import Compiler.IR.Typed.TypeVars as Vars
+import Compiler.LocalOpt.Error as E
 import Compiler.LocalOpt.Typed.Expression as Expr
 import Compiler.LocalOpt.Typed.Names as Names
 import Compiler.LocalOpt.Typed.NormalizeLambdaBoundaries as LambdaNorm
 import Compiler.LocalOpt.Typed.Port as Port
-import Compiler.Reporting.Annotation as A
-import Compiler.Reporting.Error.Main as E
 import Compiler.Reporting.Result as ReportingResult
 import Compiler.Reporting.Warning as W
 import Compiler.Type.KernelTypes as KernelTypes
@@ -81,7 +81,7 @@ import Compiler.Type.SolverRoots as SolverRoots
 import Data.Map
 import Data.Set as EverySet exposing (EverySet)
 import Dict exposing (Dict)
-import Utils.Crash
+import System.Crash
 
 
 
@@ -413,7 +413,7 @@ addPort home annotations name port_ graph =
                             t
 
                         Nothing ->
-                            Utils.Crash.crash "Module.addPort: Incoming no annotation"
+                            System.Crash.crash "Module.addPort: Incoming no annotation"
 
                 ( deps, fields, decoder ) =
                     Names.run (Port.toDecoder payload)
@@ -433,7 +433,7 @@ addPort home annotations name port_ graph =
                             t
 
                         Nothing ->
-                            Utils.Crash.crash "Module.addPort: Outgoing no annotation"
+                            System.Crash.crash "Module.addPort: Outgoing no annotation"
 
                 ( deps, fields, encoder ) =
                     Names.run (Port.toEncoder payload)
@@ -659,7 +659,7 @@ addDefNode home annotations exprTypes exprVars kernelEnv annotationVars region n
                     t
 
                 Nothing ->
-                    Utils.Crash.crash "Module.addDefNode: no annotation"
+                    System.Crash.crash "Module.addDefNode: no annotation"
 
         bodyTvar : Maybe Vars.Variable
         bodyTvar =
@@ -847,7 +847,7 @@ addRecDef home annotations exprTypes exprVars kernelEnv annotationVars cycle (St
                             t
 
                         Nothing ->
-                            Utils.Crash.crash "Module.addCycleDef: Def no annotation"
+                            System.Crash.crash "Module.addCycleDef: Def no annotation"
             in
             case args of
                 [] ->
@@ -867,7 +867,7 @@ addRecDef home annotations exprTypes exprVars kernelEnv annotationVars cycle (St
                             t
 
                         Nothing ->
-                            Utils.Crash.crash "Module.addCycleDef: TypedDef no annotation"
+                            System.Crash.crash "Module.addCycleDef: TypedDef no annotation"
             in
             case typedArgs of
                 [] ->
@@ -892,7 +892,7 @@ findAnnotation name annotations =
             ann
 
         Nothing ->
-            Utils.Crash.crash ("findAnnotation: " ++ name ++ " not found")
+            System.Crash.crash ("findAnnotation: " ++ name ++ " not found")
 
 
 {-| Returns the field use counts of `a` and `b` added together, name by name.

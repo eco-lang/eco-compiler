@@ -14,7 +14,7 @@ extern placeholder and another function with the same base name is a real
 definition.
 
 An _extern placeholder_ is the `func.func` that
-`Compiler.Generate.MLIR.Functions.generateExtern` emits for a `MonoExtern` node
+`Compiler.GenerateMlir.Functions.generateExtern` emits for a `MonoExtern` node
 of the monomorphized graph: a body that only returns a default value, standing
 in for an implementation the linker provides. It is recognised through the
 graph, not by the shape of its body, so a real function whose body happens to
@@ -23,7 +23,7 @@ by the `_$_<SpecId>` suffix of its symbol; one that is not, such as a kernel
 declaration, is never a placeholder.
 
 The _base name_ of a symbol is the part before its last `_$_`, or the whole
-symbol when it has none. `Compiler.Generate.MLIR.Functions` names a
+symbol when it has none. `Compiler.GenerateMlir.Functions` names a
 specialized function with its module-qualified name, then `_$_`, then a
 specialization id, so functions that share a base name are specializations of
 one source function.
@@ -35,8 +35,8 @@ An `eco.call` with no `callee` attribute is not checked.
 -}
 
 import Array
-import Compiler.AST.Monomorphized as Mono
-import Compiler.AST.Source as Src
+import Compiler.IR.Mono as Mono
+import Compiler.IR.Source as Src
 import Dict exposing (Dict)
 import Expect exposing (Expectation)
 import Mlir.Mlir exposing (MlirModule, MlirOp)

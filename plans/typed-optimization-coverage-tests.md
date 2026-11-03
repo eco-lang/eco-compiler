@@ -507,7 +507,7 @@ New test case files must be integrated into all test logic aggregators that use 
 | 1 | Compiler.Canonicalize.GlobalNames | GlobalNamesTest.elm | `expectGlobalNamesQualified`, `expectGlobalNamesQualifiedCanonical` |
 | 2 | Compiler.Canonicalize.IdAssignment | IdAssignmentTest.elm | `expectUniqueIds`, `expectUniqueIdsCanonical` |
 | 3 | Compiler.Generate.CEcoValueLayout | CEcoValueLayoutTest.elm | `expectValidCEcoValueLayout` |
-| 4 | Compiler.Generate.CodeGen.GenerateMLIR | GenerateMLIRTest.elm | `expectMLIRGeneration` |
+| 4 | Compiler.GenerateJs.CodeGen.GenerateMLIR | GenerateMLIRTest.elm | `expectMLIRGeneration` |
 | 5 | Compiler.Generate.MonoFunctionArity | MonoFunctionArityTest.elm | `expectFunctionArityMatches` |
 | 6 | Compiler.Generate.MonoGraphIntegrity | MonoGraphIntegrityTest.elm | `expectCallableMonoNodes`, `expectMonoGraphClosed`, `expectMonoGraphComplete`, `expectSpecRegistryComplete` |
 | 7 | Compiler.Generate.MonoLayoutIntegrity | MonoLayoutIntegrityTest.elm | `expectCtorLayoutsConsistent`, `expectLayoutsCanonical`, `expectRecordAccessMatchesLayout`, `expectRecordTupleLayoutsComplete` |

@@ -74,8 +74,8 @@ between concurrent tasks, built from MVars by `Utils.Main`.
 import Eco.Console
 import Eco.File
 import Eco.IO.Error as IOErr exposing (IOError)
+import System.Crash exposing (crash)
 import Task exposing (Task)
-import Utils.Crash exposing (crash)
 
 
 
@@ -260,7 +260,7 @@ isTerminal (Handle fd) =
 crashing the program when it fails.
 
 The crash message is `"IO error: "` followed by the error as
-`Eco.IO.Error.toString` renders it, and the crash is `Utils.Crash.crash`.
+`Eco.IO.Error.toString` renders it, and the crash is `System.Crash.crash`.
 
 -}
 crashOnError : Task IOError a -> Task Never a

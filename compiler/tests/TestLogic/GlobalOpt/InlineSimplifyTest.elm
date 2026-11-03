@@ -1,13 +1,13 @@
 module TestLogic.GlobalOpt.InlineSimplifyTest exposing (suite)
 
-{-| Tests for `Compiler.GlobalOpt.InlineSimplify`, the inliner that runs on the
+{-| Tests for `Compiler.PreMono.InlineSimplify`, the inliner that runs on the
 typed global graph before monomorphization.
 
 The pass is off by default in a build, and none of the `TestPipeline` stages
 runs it, so without these tests a change that stopped it finding anything to
 inline, made it inline the self-recursive fixture, or made it ignore its size
 threshold would go unnoticed. What a candidate is, and which globals are refused, is
-described in `Compiler.GlobalOpt.InlineSimplify`. In brief, a _candidate_ is a
+described in `Compiler.PreMono.InlineSimplify`. In brief, a _candidate_ is a
 top-level function the pass is willing to inline, and the pass reports what it
 did as a `Metrics` record of counters.
 
@@ -47,7 +47,6 @@ see as a body, and the repeated rounds.
 
 -}
 
-import Compiler.AST.Source as Src
 import Compiler.AST.SourceBuilder
     exposing
         ( TypedDef
@@ -60,10 +59,11 @@ import Compiler.AST.SourceBuilder
         , tType
         , varExpr
         )
-import Compiler.AST.TypeIds as TypeIds
-import Compiler.AST.TypedOptimized as TOpt
-import Compiler.Eco.Config as Config
-import Compiler.GlobalOpt.InlineSimplify as InlineSimplify
+import Compiler.Config as Config
+import Compiler.Core.TypeIds as TypeIds
+import Compiler.IR.Source as Src
+import Compiler.IR.Typed.Optimized as TOpt
+import Compiler.PreMono.InlineSimplify as InlineSimplify
 import Data.Map
 import Dict
 import Expect
@@ -219,7 +219,7 @@ inlineConfig =
     { defaultInline | preMono = True }
 
 
-{-| The default inline configuration from `Compiler.Eco.Config`.
+{-| The default inline configuration from `Compiler.Config`.
 -}
 defaultInline : Config.InlineConfig
 defaultInline =

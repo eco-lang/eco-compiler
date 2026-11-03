@@ -60,13 +60,13 @@ import Builder.Reporting.Exit as Exit
 import Builder.Reporting.Exit.Help as Help
 import Bytes.Decode
 import Bytes.Encode
-import Compiler.Data.Name as Name
-import Compiler.Data.NonEmptyList as NE
+import Compiler.Core.Name as Name
 import Compiler.Elm.ModuleName as ModuleName
 import Compiler.Elm.Package as Pkg
 import Compiler.Elm.Version as V
 import Compiler.Json.Encode as Encode
 import Compiler.Reporting.Doc as D
+import Data.NonEmptyList as NE
 import System.Exit as Exit
 import System.IO as IO exposing (MVar)
 import Task exposing (Task)

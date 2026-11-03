@@ -40,8 +40,8 @@ later ones are dropped.
 
 -}
 
-import Compiler.AST.Canonical as Can
-import Compiler.Data.Name exposing (Name)
+import Compiler.Core.Name exposing (Name)
+import Compiler.IR.Canonical as Can
 import Dict exposing (Dict)
 
 

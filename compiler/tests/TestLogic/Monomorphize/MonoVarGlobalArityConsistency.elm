@@ -55,8 +55,8 @@ Among what is not checked:
 -}
 
 import Array
-import Compiler.AST.Monomorphized as Mono
-import Compiler.AST.Source as Src
+import Compiler.IR.Mono as Mono
+import Compiler.IR.Source as Src
 import Expect
 import TestLogic.TestPipeline as Pipeline
 

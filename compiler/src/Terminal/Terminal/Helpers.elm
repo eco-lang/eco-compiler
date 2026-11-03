@@ -37,10 +37,10 @@ the network.
 
 import Builder.Deps.Registry as Registry
 import Builder.Stuff as Stuff
+import Compiler.Core.Suggest as Suggest
 import Compiler.Elm.Package as Pkg
 import Compiler.Elm.Version as V
-import Compiler.Parse.Primitives as P
-import Compiler.Reporting.Suggest as Suggest
+import Compiler.Lexer.Primitives as P
 import Dict
 import System.IO exposing (FilePath)
 import Task exposing (Task)
@@ -176,7 +176,7 @@ exampleElmFiles _ =
 Its suggestions are every package name in the cached registry that starts with
 what has been typed, and none when no registry is cached. Its examples are up to
 four registry names closest to what has been typed, ignoring case, as
-`Compiler.Reporting.Suggest.sort` orders them, or `elm/json`, `elm/http` and
+`Compiler.Core.Suggest.sort` orders them, or `elm/json`, `elm/http` and
 `elm/random` when no registry is cached. Both read the registry from the
 package cache, whose directory is created if it is missing.
 

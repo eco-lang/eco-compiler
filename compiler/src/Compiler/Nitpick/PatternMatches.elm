@@ -48,19 +48,19 @@ checked, which makes that impossible.
 
 import Bytes.Decode
 import Bytes.Encode
-import Compiler.AST.Canonical as Can
-import Compiler.Data.Index as Index
-import Compiler.Data.Name as Name
-import Compiler.Data.NonEmptyList as NE
+import Compiler.Core.Annotation as A
+import Compiler.Core.Index as Index
+import Compiler.Core.Name as Name
 import Compiler.Elm.ModuleName as ModuleName
-import Compiler.Reporting.Annotation as A
+import Compiler.IR.Canonical as Can
 import Data.Map
+import Data.NonEmptyList as NE
 import Dict exposing (Dict)
 import List.Extra as List
 import Prelude
+import System.Crash exposing (crash)
 import Utils.Bytes.Decode as BD
 import Utils.Bytes.Encode as BE
-import Utils.Crash exposing (crash)
 import Utils.Main as Utils
 
 

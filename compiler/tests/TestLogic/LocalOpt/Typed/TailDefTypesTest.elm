@@ -44,8 +44,6 @@ of more than one definition, and the erased optimizer.
 
 -}
 
-import Compiler.AST.Canonical as Can
-import Compiler.AST.Source as Src
 import Compiler.AST.SourceBuilder
     exposing
         ( binopsExpr
@@ -62,8 +60,10 @@ import Compiler.AST.SourceBuilder
         , tType
         , varExpr
         )
-import Compiler.AST.TypedOptimized as TOpt
-import Compiler.Data.Name as Name exposing (Name)
+import Compiler.Core.Name as Name exposing (Name)
+import Compiler.IR.Canonical as Can
+import Compiler.IR.Source as Src
+import Compiler.IR.Typed.Optimized as TOpt
 import Data.Map
 import Dict exposing (Dict)
 import Expect exposing (Expectation)

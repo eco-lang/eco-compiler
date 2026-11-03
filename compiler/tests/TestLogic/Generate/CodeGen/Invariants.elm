@@ -39,7 +39,7 @@ and `i32`, the types an Int, a Float and a Char have when stored unboxed.
 `isEcoPrimitive` adds `i1`, the type a Bool has in SSA operand context, such as
 the result of an `eco.unbox`; at function boundaries and in heap objects a Bool
 is `!eco.value`. Which values are unboxed where is decided by
-`Compiler.Generate.MLIR.Types`.
+`Compiler.GenerateMlir.Types`.
 
 
 # Violation Tracking
@@ -453,7 +453,7 @@ typesMatch t1 t2 =
 
 {-| The names of the ops `isValidTerminator` accepts at the end of a block.
 
-`eco.case` is not among them: `Compiler.Generate.MLIR.Ops` describes it as a
+`eco.case` is not among them: `Compiler.GenerateMlir.Ops` describes it as a
 value-producing expression, not a terminator.
 
 -}

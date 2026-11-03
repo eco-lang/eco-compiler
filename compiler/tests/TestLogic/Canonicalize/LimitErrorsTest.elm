@@ -45,10 +45,10 @@ arity.
 
 -}
 
-import Compiler.AST.Source as Src
 import Compiler.AST.SourceBuilder as SB
-import Compiler.Data.HeapLimits as HeapLimits
-import Compiler.Reporting.Error.Canonicalize as CanError
+import Compiler.Canonicalize.Error as CanError
+import Compiler.IR.Runtime.HeapLimits as HeapLimits
+import Compiler.IR.Source as Src
 import Expect
 import Test exposing (Test)
 import TestLogic.Canonicalize.LimitErrors

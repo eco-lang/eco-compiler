@@ -1,6 +1,6 @@
 // Source map `sources` drop the package of each module (eco make --sourcemaps).
 //
-// Compiler.Generate.JavaScript.SourceMap.mappingsToJson writes each source as the
+// Compiler.GenerateJs.SourceMap.mappingsToJson writes each source as the
 // bare module name of its ModuleName.Canonical. An application module named
 // `Elm.JsArray` and elm/core's internal `Elm.JsArray` are two different modules,
 // but the source map lists both as "Elm.JsArray", so a consumer that keys

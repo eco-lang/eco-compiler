@@ -10,7 +10,7 @@ date. Functions are named as well, because lines drift.
 
 Three tracks, each split into steps that are measured one at a time:
 
-- **Track H: an `Array`-backed hash table used only by `Compiler.AST.Intern`.** H0 fixes a leak in
+- **Track H: an `Array`-backed hash table used only by `Compiler.IR.Mono.Intern`.** H0 fixes a leak in
   Intern's widen memo. H1 adds `Data.HashTable` and moves both Intern tables onto it.
   `Data.HashMap` and every other caller are left alone.
 - **Track G: stop hashing and string-rendering `TOpt.Global` keys on the solver's hot paths.** G0
@@ -64,7 +64,7 @@ new series baseline.
 
 ## 1. Findings that shape the design
 
-### 1.1 Intern's tables (`compiler/src/Compiler/AST/Intern.elm`)
+### 1.1 Intern's tables (`compiler/src/Compiler/IR/Mono/Intern.elm`)
 
 - **Two tables.** Both are `HashMap`s in each of the `Intern` and `ReadOnly` constructors
   (`Intern.elm:72-75`):
@@ -121,7 +121,7 @@ list with `==`. Its length has never been measured. H0 removes it. The plan's or
 filter leaves (`plans/lss-compile-time-optimizations.md:5415-5423`); the version that shipped does
 not.
 
-### 1.3 Hash properties (`Compiler/AST/Monomorphized.elm`)
+### 1.3 Hash properties (`Compiler/IR/Mono.elm`)
 
 - **Range.** `specHashOf` (351-369) is in `[0, 2^26)` for composites and is 1–7 for leaves. It is
   never negative.
@@ -266,7 +266,7 @@ Track G and C3.0 interleaved anywhere. C3a comes last because it is the likelies
 
 ## 3. H0: leaves and `MVar` bypass the widen memo
 
-**File:** `compiler/src/Compiler/AST/Intern.elm`.
+**File:** `compiler/src/Compiler/IR/Mono/Intern.elm`.
 
 1. Rename the current `widenSets` body (448-471) to `widenSetsMemo`, keeping its doc comment,
    including the "deliberate divergence" paragraph.
@@ -349,7 +349,7 @@ module Data.HashTable exposing
     )
 
 {-| An insert-only hash table on a persistent `Array` of chains, built for ONE
-caller: `Compiler.AST.Intern`. Everything else uses `Data.HashMap`, and must:
+caller: `Compiler.IR.Mono.Intern`. Everything else uses `Data.HashMap`, and must:
 step 17 (`benchmarks/lss-compile-opt-loop.md:861`) measured an array table
 LOSING across the compiler's many small maps. This one pays off only for a big,
 long-lived, probe-heavy table that is created once.
@@ -586,7 +586,7 @@ Notes for the implementer:
 - **Leave `Data.HashMap` untouched.**
 - **Keep the module doc's "one caller" paragraph.** It is the guard against a second step 17.
 
-### 4.3 `compiler/src/Compiler/AST/Intern.elm` changes
+### 4.3 `compiler/src/Compiler/IR/Mono/Intern.elm` changes
 
 1. **Imports.** Replace `import Data.HashMap as HashMap` with
    `import Data.HashTable as HashTable exposing (HashTable)`.
@@ -704,7 +704,7 @@ discovers it; there is no central list). Model it on `HashMapTest.elm` and use t
 
 ## 5. G0: `signatureFor` builds `gkey` only when it needs it
 
-**File:** `compiler/src/Compiler/MonoSolver/LssInfer.elm`.
+**File:** `compiler/src/Compiler/Monomorphize/Solver/LssInfer.elm`.
 
 1. **`signatureFor` (81-113).** Delete the `let gkey = TOpt.toComparableGlobal global in` at
    82-85. The two uses move into their branches:
@@ -1130,7 +1130,7 @@ new test passing on both hosts.
 `insert`, `get`, `getBy`, `member`, `remove`, `size`, `isEmpty`, `foldl`, `map`, `toList`,
 `values`, `fromList`. It adds `Stats` and `stats` for census and tests. **None of its callers
 changes:**
-- `Compiler.AST.Monomorphized`, the `LayoutMap`, `SpecMap` and `SpecKeyMap` wrappers;
+- `Compiler.IR.Mono`, the `LayoutMap`, `SpecMap` and `SpecKeyMap` wrappers;
 - `Engine`, `LssInfer`, `Monomorphize`, `Store` and `Translate` under `MonoSolver/`;
 - `GlobalTable`, if G1 has landed;
 - two test files.
@@ -1648,7 +1648,7 @@ to reclassify it.
 
 **Precondition:** H1 and C1 are both kept.
 
-**The change** (`compiler/src/Compiler/AST/Intern.elm`) is H1's §4.3 in reverse, onto the new
+**The change** (`compiler/src/Compiler/IR/Mono/Intern.elm`) is H1's §4.3 in reverse, onto the new
 `HashMap`:
 1. Import `Data.HashMap as HashMap` in place of `Data.HashTable`.
 2. Type the `Intern` and `ReadOnly` tables as `HashMap.HashMap`.
@@ -1707,7 +1707,7 @@ self**; its ceiling is below the loop's resolution.
 - `Package.isKernel` includes the `eco` author (`Elm/Package.elm:124-126`).
 - Canonicalize accepts any kernel-prefixed name in a kernel package
   (`Canonicalize/Expression.elm:1431-1436`).
-- A kernel that is not in the package crawls as `SKernelForeign` (`Builder/Elm/Details.elm:1695-1702`).
+- A kernel that is not in the package crawls as `SKernelForeign` (`Builder/Deps/Details.elm:1695-1702`).
 - JS resolves kernels by short name (`GraphAssembly.elm:103-105`). The precedent is `MVar.js`
   importing `Eco.Kernel.Scheduler`.
 - Such calls inherit JsArray's C symbols, KernelFacts rows, KernelSetFacts `Transports` rows and
@@ -1754,7 +1754,7 @@ and `callsBack = HofNo`.
 - In LLVM 21.1.8, `default<O2>` (which includes `aggressive-instcombine`) recognises only the
   classic SWAR with full-width masks and a final multiply as `ctpop`. This was checked with the
   toolchain's `opt` on test IR.
-- The JS-safe forms are not recognised: 32-bit masks on i64, or `Compiler/Data/BitSet.elm:101-118`'s
+- The JS-safe forms are not recognised: 32-bit masks on i64, or `Data/BitSet.elm:101-118`'s
   multiply-free version.
 - The dev tier (O1) does not run the pass at all.
 - So a kernel is the only way to get the native instruction without a new op.
@@ -1778,7 +1778,7 @@ and `callsBack = HofNo`.
   - `test/CMakeLists.txt:165-256` (force-load).
 - **Operational:**
   - `rm -rf ~/.eco/0.1.1/packages/eco/kernel`. The seeded package copy is not refreshed by edits
-    (`Builder/Elm/Details.elm:948-985`).
+    (`Builder/Deps/Details.elm:948-985`).
   - Re-run the CMake configure, because the `KERNEL_SOURCES` glob has no `CONFIGURE_DEPENDS`
     (`compiler/CMakeLists.txt:252-255`).
 
@@ -1797,7 +1797,7 @@ and `callsBack = HofNo`.
    - only read the string through its `HPtr`.
 
    If either fails the audit, stop: the documentation is wrong, not the facts table.
-2. **Add two rows** to `compiler/src/Compiler/GlobalOpt/KernelFacts.elm`, next to the other
+2. **Add two rows** to `compiler/src/Compiler/IR/Kernel/Facts.elm`, next to the other
    audited-pure rows:
    ```elm
    ( ( "Hash", "stringWithSeed" ), { auditedPure | gcAlloc = GcNone, evidence = "eco-kernel-cpp/src/eco-kernel/HashExports.cpp:8" } )
@@ -1956,7 +1956,7 @@ map =
 
 **`eco-kernel-cpp/elm.json`:** add `"Eco.NodeArray"` to `exposed-modules`.
 
-**Codegen** (`compiler/src/Compiler/Generate/MLIR/Intrinsics.elm`, `arrayElementType` at 873-883):
+**Codegen** (`compiler/src/Compiler/GenerateMlir/Intrinsics.elm`, `arrayElementType` at 873-883):
 - Add an arm for `Mono.MCustom _ home "NodeArray" [ elt ]` that returns `Just elt` **only when
   `home` is the canonical `eco/kernel` module `Eco.NodeArray`**. Build it the way `Elm/Package.elm`
   builds the `eco` author, so an unrelated user type named `NodeArray` is not misread.
@@ -2194,7 +2194,7 @@ Additions for this plan:
     are stale (for example `Step` no longer returns `Result`).
   - Mark step 17 (§2 row at 336, spec at 7853) "not retried as specified; the Intern-only variant
     is this plan's H1, and the all-HashMaps variant is Track C (CHAMP with a small form)".
-- **`Compiler/AST/Intern.elm` module docs** (§4.3 item 11), and the `Data.HashTable` module doc.
+- **`Compiler/IR/Mono/Intern.elm` module docs** (§4.3 item 11), and the `Data.HashTable` module doc.
   If C2 is kept, delete the latter along with the module.
 - **`Data.HashMap` module doc** (§10.4), and `Data.Bits32`'s doc, which carries the three
   host-width rules.

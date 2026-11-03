@@ -110,13 +110,13 @@ fast-dispatch targets).
   (catalogue F-38/F-41; `Monomorphize.elm:5086-5120`).
 - **After GlobalOpt, devirtualization breaks it when specs are attributed to their *definition*
   module.** AbiCloning fast-dispatch stamps and post-settle devirt turn a generic instance's
-  closure calls into direct calls back into its requester. Example: a `Compiler.Parse.Primitives`
+  closure calls into direct calls back into its requester. Example: a `Compiler.Lexer.Primitives`
   combinator instance calls `Compiler.Parse.Expression` code that called it, giving a 176-spec
   SCC. At module level the program becomes a single 287-module SCC.
 - **Requester ownership restores the property almost exactly: 2 cross-owner SCCs remain.**
   - Both come from one lambda *identity* shared by two specs in different modules. For example,
-    `Terminal_Main_lambda_9344`, created from both `Compiler.Elm.Docs.bytesUnionDecoder` and
-    `Compiler.Elm.Compiler.Type.bytesDecoder`, is emitted once and defined by whichever spec
+    `Terminal_Main_lambda_9344`, created from both `Compiler.Docs.bytesUnionDecoder` and
+    `Compiler.Docs.Type.bytesDecoder`, is emitted once and defined by whichever spec
     drains it first (G-43).
   - Giving each owner its own copy removes them.
 - **The naive union collapses the whole program into one SCC.** As soon as any part of D runs

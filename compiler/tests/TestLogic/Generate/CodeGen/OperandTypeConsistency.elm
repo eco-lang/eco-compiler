@@ -35,7 +35,7 @@ compared with the definition that comes last in the function.
 
 -}
 
-import Compiler.AST.Source as Src
+import Compiler.IR.Source as Src
 import Dict
 import Expect exposing (Expectation)
 import Mlir.Mlir exposing (MlirBlock, MlirModule, MlirOp, MlirRegion(..), MlirType(..))

@@ -25,7 +25,7 @@ the width of `Bitwise`. Under JavaScript, Elm's `Bitwise` operations work on
 32-bit integers, so a value can be shifted into place beside its length bits
 only while it fits in 28 bits. Every value at or above 2^28 is written in the
 9-byte form instead, where the value is not shifted left beside length bits
-but split into two unsigned 32-bit words (`Compiler.Data.Int64.toWords`). That
+but split into two unsigned 32-bit words (`Data.Int64.toWords`). That
 split is exact for every value the host holds exactly: natively every `Int`,
 and under JavaScript every whole number within the 64-bit range. A negative
 value is also written in the 9-byte form, as its 64-bit two's complement.
@@ -42,7 +42,7 @@ small magnitude stay small: 0, -1, 1, -2, 2 become 0, 1, 2, 3, 4.
 import Bitwise
 import Bytes
 import Bytes.Encode as BE
-import Compiler.Data.Int64 as Int64
+import Data.Int64 as Int64
 
 
 {-| Creates an encoder that writes `value` as a PrefixVarInt.

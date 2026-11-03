@@ -8,10 +8,10 @@ how it was written, and this module scans both kinds.
 literal, which must hold exactly one character. Both accept the escapes `\n`,
 `\r`, `\t`, `\"`, `\'`, `\\` and `\u{...}`, where the braces hold four to six
 hexadecimal digits naming a code point no greater than `10FFFF`. Any other
-escape is an error of the `Escape` type in `Compiler.Reporting.Error.Syntax`.
+escape is an error of the `Escape` type in `Compiler.Parse.Error`.
 
 The result is the literal's escaped text, not the value it denotes, in the form
-`Compiler.Elm.String` describes. An escape written in the source stays as
+`Compiler.IR.Source.StringLiteral` describes. An escape written in the source stays as
 written, so `\n` remains two characters. A few things are rewritten as escapes:
 a bare `'` in a string becomes `\'`, a bare `"` in a character literal becomes
 `\"`, a raw newline or carriage return inside `"""` becomes `\n` or `\r`, and
@@ -29,10 +29,10 @@ where it occurs.
 
 -}
 
-import Compiler.Elm.String as ES
+import Compiler.IR.Source.StringLiteral as ES
+import Compiler.Lexer.Primitives as P exposing (Col, Parser(..), Row)
+import Compiler.Parse.Error as E
 import Compiler.Parse.Number as Number
-import Compiler.Parse.Primitives as P exposing (Col, Parser(..), Row)
-import Compiler.Reporting.Error.Syntax as E
 
 
 

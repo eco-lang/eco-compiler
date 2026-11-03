@@ -24,9 +24,9 @@ Among what is not checked: the substitution engine's graph, which
 -}
 
 import Array
-import Compiler.AST.Monomorphized as Mono
-import Compiler.AST.Source as Src
-import Compiler.Monomorphize.MonoTraverse as MonoTraverse
+import Compiler.IR.Mono as Mono
+import Compiler.IR.Mono.Traverse as MonoTraverse
+import Compiler.IR.Source as Src
 import Dict
 import Expect
 import TestLogic.TestPipeline as Pipeline

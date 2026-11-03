@@ -19,7 +19,7 @@ output checked against `mlir-opt`):
 import Dict
 import Expect
 import Mlir.Loc
-import Mlir.Mlir exposing (MlirAttr(..), MlirBlock, MlirOp, MlirRegion(..), MlirType(..))
+import Mlir.Mlir exposing (MlirAttr(..), MlirOp, MlirRegion(..), MlirType(..))
 import Mlir.Pretty as Pretty
 import OrderedDict
 import Test exposing (Test)

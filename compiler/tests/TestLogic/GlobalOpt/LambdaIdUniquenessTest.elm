@@ -18,9 +18,9 @@ default.
 -}
 
 import Array
-import Compiler.AST.Monomorphized as Mono
-import Compiler.Data.BitSet as BitSet
 import Compiler.Elm.ModuleName as ModuleName
+import Compiler.IR.Mono as Mono
+import Data.BitSet as BitSet
 import Dict
 import Expect
 import SourceIR.Suite.StandardTestSuites as StandardTestSuites

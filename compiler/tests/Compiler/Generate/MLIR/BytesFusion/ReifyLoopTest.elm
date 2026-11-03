@@ -1,7 +1,7 @@
 module Compiler.Generate.MLIR.BytesFusion.ReifyLoopTest exposing (suite)
 
 {-| Tests for the `Bytes.Decode.loop` arm of
-`Compiler.Generate.MLIR.BytesFusion.Reify.reifyDecoder`.
+`Compiler.GenerateMlir.BytesFusion.Reify.reifyDecoder`.
 
 elm/bytes declares
 
@@ -50,16 +50,16 @@ produces is not reached here.
 -}
 
 import Array
-import Compiler.AST.Monomorphized as Mono
 import Compiler.Elm.ModuleName as ModuleName
 import Compiler.Elm.Package as Pkg
-import Compiler.Generate.MLIR.BytesFusion.LoopIR as IR
-import Compiler.Generate.MLIR.BytesFusion.Reify as Reify
-import Compiler.Monomorphize.MonoTraverse as MonoTraverse
-import Compiler.Monomorphize.Registry as Registry
+import Compiler.GenerateMlir.BytesFusion.LoopIR as IR
+import Compiler.GenerateMlir.BytesFusion.Reify as Reify
+import Compiler.IR.Mono as Mono
+import Compiler.IR.Mono.Registry as Registry
+import Compiler.IR.Mono.Traverse as MonoTraverse
 import Compiler.Parse.Module as Parse
 import Dict
-import Expect exposing (Expectation)
+import Expect
 import Test exposing (Test)
 import TestLogic.TestPipeline as Pipeline
 

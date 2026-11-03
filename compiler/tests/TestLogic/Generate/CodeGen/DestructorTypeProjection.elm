@@ -17,7 +17,7 @@ field's specialised type. This module calls
 that pair a _spurious unbox_: an `eco.unbox` with one operand and one result,
 whose result type is unboxable and whose operand is the result of an
 `eco.project.custom`. Every Int, Float and Char constructor field is stored
-unboxed whatever its index (`Compiler.Generate.MLIR.Types.computeCtorLayout`
+unboxed whatever its index (`Compiler.GenerateMlir.Types.computeCtorLayout`
 has no index cap, HEAP\_019), so the rule applies at every `field_index`.
 
 `expectDestructorTypeProjection` compiles a source module and fails when the
@@ -33,7 +33,7 @@ same function. An operand that no op in the function defines, such as a
 function or block argument, is never reported.
 
 `checkRecordFieldProjection` checks records for a _raw read of a boxed field_:
-given the `Compiler.Generate.MLIR.Types.RecordLayout` of the record type, it
+given the `Compiler.GenerateMlir.Types.RecordLayout` of the record type, it
 reports every `eco.project.record` from a heap object of a field the layout
 stores boxed whose result is an unboxable primitive (reading a boxed pointer as
 a primitive loads the pointer's bits). Because it reads the layout from `Types`
@@ -57,8 +57,8 @@ a type error, since an `eco.unbox` result is a primitive.
 
 -}
 
-import Compiler.AST.Source as Src
-import Compiler.Generate.MLIR.Types as Types
+import Compiler.GenerateMlir.Types as Types
+import Compiler.IR.Source as Src
 import Dict
 import Expect exposing (Expectation)
 import Mlir.Mlir exposing (MlirModule, MlirOp, MlirType(..))

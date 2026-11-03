@@ -123,8 +123,8 @@ Two families:
 
 ### Phase 1: Core Infrastructure (no IR changes)
 
-**Step 1.1: Create `Compiler.Data.Id`**
-- New file: `compiler/src/Compiler/Data/Id.elm`
+**Step 1.1: Create `Compiler.Core.Id`**
+- New file: `compiler/src/Compiler/Core/Id.elm`
 - Define `type Id a = Id Int`, `toInt`, `IdSupply`/`initialSupply`/`fresh`
 - Define `IdSet a` (wrapping `Set Int`): `emptySet`, `setInsert`, `setMember`, `setToList`, `setFromList`, `setSize`, `setUnion`, `setDiff`
 - Define `IdDict a v` (wrapping `Dict Int v`): `emptyDict`, `dictInsert`, `dictGet`, `dictRemove`, `dictMember`, `dictFoldl`, `dictMap`, `dictKeys`, `dictValues`, `dictToList`, `dictFromList`, `dictSize`, `dictUnion`, `dictIntersectWith`, `dictDiff`
@@ -149,7 +149,7 @@ Two families:
 ### Phase 2: Type Variables (`TVarId`)
 
 **Step 2.1: Define `TVarId` in Canonical**
-- In `Compiler/AST/Canonical.elm`: add `type TVarPh = TVarPh`, `type alias TVarId = Id.Id TVarPh`
+- In `Compiler/IR/Canonical.elm`: add `type TVarPh = TVarPh`, `type alias TVarId = Id.Id TVarPh`
 - Change `Type`: `TVar Name` -> `TVar TVarId`
 - Change `FreeVars`: `Dict Name ()` -> `Dict TVarId Name` (maps ID to display name)
 - Change `Annotation`: `Forall FreeVars Type` (unchanged shape, new FreeVars type)
@@ -182,7 +182,7 @@ Two families:
 ### Phase 3: Local Variables (`LocalVarId`)
 
 **Step 3.1: Define `LocalVarId` in Canonical**
-- In `Compiler/AST/Canonical.elm`: add `type LocalVarPh = LocalVarPh`, `type alias LocalVarId = Id.Id LocalVarPh`
+- In `Compiler/IR/Canonical.elm`: add `type LocalVarPh = LocalVarPh`, `type alias LocalVarId = Id.Id LocalVarPh`
 - Change `Expr_`: `VarLocal Name` -> `VarLocal LocalVarId`
 - Change `Pattern_`: `PVar Name` -> `PVar LocalVarId`, `PAlias Pattern Name` -> `PAlias Pattern LocalVarId`
 - Change `Def`: `Def (A.Located Name)` -> `Def (A.Located LocalVarId)`, same for `TypedDef`
@@ -197,16 +197,16 @@ Two families:
 - Update pattern canonicalization similarly
 
 **Step 3.3: Propagate to Optimized IR**
-- `Compiler/AST/Optimized.elm`: `VarLocal Name` -> `VarLocal LocalVarId`, `Root Name` -> `Root LocalVarId`, `Field Name Path` -> keep as `Name` for now (fields are Phase 4)
+- `Compiler/IR/Optimized.elm`: `VarLocal Name` -> `VarLocal LocalVarId`, `Root Name` -> `Root LocalVarId`, `Field Name Path` -> keep as `Name` for now (fields are Phase 4)
 - Update `Def`, `TailDef`, `Function`, `TrackedFunction`, `TailCall`, `Case`, `Destruct`
 - Update all optimization passes in `Compiler/LocalOpt/` and `Compiler/GlobalOpt/`
 
 **Step 3.4: Propagate to TypedOptimized IR**
-- `Compiler/AST/TypedOptimized.elm`: mirror Optimized changes with `LocalVarId`
+- `Compiler/IR/Typed/Optimized.elm`: mirror Optimized changes with `LocalVarId`
 - Update `TOpt.Expr`, `TOpt.Def`, `TOpt.Path`
 
 **Step 3.5: Propagate to Monomorphized IR**
-- `Compiler/AST/Monomorphized.elm`: `MonoVarLocal Name MonoType` -> `MonoVarLocal LocalVarId MonoType`
+- `Compiler/IR/Mono.elm`: `MonoVarLocal Name MonoType` -> `MonoVarLocal LocalVarId MonoType`
 - Update `MonoDef`, `MonoPath`, closure captures
 - `MonoInlineSimplify.elm`: `countUsages`, `inlineVar`, `substitute` all switch from `Name` to `LocalVarId`
 
@@ -217,7 +217,7 @@ Two families:
 ### Phase 4: Record Fields (`FieldId`)
 
 **Step 4.1: Define `FieldId` in Canonical**
-- In `Compiler/AST/Canonical.elm`: add `type FieldPh = FieldPh`, `type alias FieldId = Id.Id FieldPh`
+- In `Compiler/IR/Canonical.elm`: add `type FieldPh = FieldPh`, `type alias FieldId = Id.Id FieldPh`
 - Add `FieldTable` (= `InternTable FieldPh Name`) to module data
 - Per D5: `FieldId` supply is per-compilation (cross-module), so `FieldTable` lives in `AllIdSupplies` context
 - Change `TRecord`: `Dict.Dict Name FieldType` -> `Dict.Dict FieldId FieldType` (per D3: `Dict Int` ordering is deterministic)
@@ -320,7 +320,7 @@ Two families:
 - `Compiler/LocalOpt/Erased/Expression.elm`: `Cycle` from `EverySet String Name` to `IdSet GlobalPh`
 
 **Step 7.2: Duplicate tracker**
-- `Compiler/Canonicalize/Environment/Dups.elm`: `Tracker value` from `Dict Name (OneOrMore (Info value))` to parametric `Tracker id value = IdDict id (OneOrMore (Info value))`
+- `Compiler/Canonicalize/Dups.elm`: `Tracker value` from `Dict Name (OneOrMore (Info value))` to parametric `Tracker id value = IdDict id (OneOrMore (Info value))`
 - Instantiate per use site: `Tracker LocalVarPh value`, `Tracker FieldPh value`, `Tracker TypeNamePh value`
 
 **Step 7.3: Localizer / exposing sets**

@@ -13,7 +13,7 @@ just deletes the package from its dependencies and test dependencies, and
 solves nothing.
 
 Applying a plan writes the new `elm.json` and then checks that the project's
-dependencies can be installed, through `Builder.Elm.Details.verifyInstall`. If
+dependencies can be installed, through `Builder.Deps.Details.verifyInstall`. If
 that check fails, the old `elm.json` is written back.
 
 Errors are not returned: `Builder.Reporting.attempt` reports them on standard
@@ -28,9 +28,9 @@ output.
 -}
 
 import Builder.BackgroundWriter as BW
+import Builder.Deps.Details as Details
 import Builder.Deps.Registry as Registry
 import Builder.Deps.Solver as Solver
-import Builder.Elm.Details as Details
 import Builder.Elm.Outline as Outline
 import Builder.Reporting as Reporting
 import Builder.Reporting.Exit as Exit

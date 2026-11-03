@@ -15,7 +15,7 @@ through it can be devirtualized. A constructor's
 _registry row_ is one of its `( Global, MonoType )` entries in the graph's
 `reverseMapping`, one per specialization.
 
-Once specialization finishes, `Compiler.MonoSolver.Monomorphize` settles
+Once specialization finishes, `Compiler.Monomorphize.Solver.Monomorphize` settles
 constructor rows from their sibling rows. Its pass that fills a variable
 slot on a constructor row from the sets of the sibling rows does so under a
 completeness rule of its own, and it heals rows that carry `LTop` with
@@ -49,8 +49,6 @@ arrows or on types other than functions.
 -}
 
 import Array
-import Compiler.AST.Monomorphized as Mono
-import Compiler.AST.Source as Src
 import Compiler.AST.SourceBuilder
     exposing
         ( binopsExpr
@@ -67,7 +65,9 @@ import Compiler.AST.SourceBuilder
         , tVar
         , varExpr
         )
-import Compiler.Eco.Config as Config
+import Compiler.Config as Config
+import Compiler.IR.Mono as Mono
+import Compiler.IR.Source as Src
 import Expect
 import Test exposing (Test)
 import TestLogic.TestPipeline as Pipeline

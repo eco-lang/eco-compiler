@@ -49,8 +49,8 @@ poisons the next append. The seeds that make strings UTF-16 in the first place a
 | `String.fromList` | `core/String.cpp:46` | builds `u16` from a Char list, always UTF-16 |
 | `String.cons` | `String.cpp:38` / `StringOps.hpp:1219` | snapshots to u16, always UTF-16 |
 | `unescapeString` | `compiler/src/Mlir/Bytecode/StringTable.elm:276-321` | **unconditionally** `toList`s + `fromList`-rebuilds *every* string in the bytecode string table — converting the entire string section to UTF-16 before encoding |
-| escape-bearing literals | `Compiler/Elm/String.elm:64-103` `writeChunks`/`writeCode` | `mba ++ "\\" ++ String.fromChar w` flips the accumulator to UTF-16 |
-| flex-var names | `Compiler/Data/Name.elm:266-295` `fromTypeVariableScheme` | seeds `"a"…"z"` via `fromChar`; persists into annotations → typed artifacts → every later name append |
+| escape-bearing literals | `Compiler/IR/Source/StringLiteral.elm:64-103` `writeChunks`/`writeCode` | `mba ++ "\\" ++ String.fromChar w` flips the accumulator to UTF-16 |
+| flex-var names | `Compiler/Core/Name.elm:266-295` `fromTypeVariableScheme` | seeds `"a"…"z"` via `fromChar`; persists into annotations → typed artifacts → every later name append |
 | `sepBy '.'`/`'_'` | `Name.elm:357-359` | `String.join (String.fromChar sep)` — a 1-unit UTF-16 separator makes both operands widen (this is the entire split/join-mixed 27,601 row: avg 1.0 unit = the separator) |
 
 Compiler-side string assembly (mono-specialization symbol mangling, attr/type dedup keys

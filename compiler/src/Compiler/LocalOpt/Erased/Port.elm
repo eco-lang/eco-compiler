@@ -44,17 +44,17 @@ kernel module a codec refers to, and the record fields it uses, as
 -}
 
 import Basics.Extra exposing (flip)
-import Compiler.AST.Canonical as Can
-import Compiler.AST.Optimized as Opt
-import Compiler.AST.Utils.Type as Type
-import Compiler.Data.Index as Index
-import Compiler.Data.IndexName as IndexName
-import Compiler.Data.Name as Name exposing (Name)
+import Compiler.Core.Annotation as A
+import Compiler.Core.Index as Index
+import Compiler.Core.IndexName as IndexName
+import Compiler.Core.Name as Name exposing (Name)
 import Compiler.Elm.ModuleName as ModuleName
+import Compiler.IR.Canonical as Can
+import Compiler.IR.Canonical.Alias as Type
+import Compiler.IR.Optimized as Opt
 import Compiler.LocalOpt.Erased.Names as Names
-import Compiler.Reporting.Annotation as A
 import Dict exposing (Dict)
-import Utils.Crash exposing (crash)
+import System.Crash exposing (crash)
 
 
 

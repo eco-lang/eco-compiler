@@ -26,7 +26,6 @@ module Utils.Main exposing
     , maybeEncoder, maybeMapM
     , nonEmptyListTraverse
     , sequenceListMaybe, sequenceNonemptyListResult
-    , foldM
     , dictFromListWith, dictInsertWith, dictIntersectionWith, dictIntersectionWithKey, dictMapMaybe, dictSequenceResult, dictSequenceMaybe, dictTraverse, dictTraverseWithKey, dictTraverseResult, dictTraverseWithKeyResult, dictUnionWith, dictMapM__, dictFromKeysA
     )
 
@@ -66,7 +65,7 @@ non-empty lists and `Compiler.Reporting.Result`, most of them traversals. Those
 that take a function giving a `Task` perform the tasks one after another, in
 the order each docstring gives. `find`, `dictFind`, `mapFindMin`,
 `listMaximum`, `foldl1_` and `foldr1` crash the program, through
-`Utils.Crash.crash`, on a missing key or an empty input.
+`System.Crash.crash`, on a missing key or an empty input.
 
 The types `FilePath`, `MVar`, `ChItem`, `Stream` and `LockSharedExclusive` used
 here are defined in `System.IO`.
@@ -167,11 +166,6 @@ here are defined in `System.IO`.
 @docs sequenceListMaybe, sequenceNonemptyListResult
 
 
-# Indexed Operations
-
-@docs foldM
-
-
 # Stdlib Dict Utilities
 
 @docs dictFromListWith, dictInsertWith, dictIntersectionWith, dictIntersectionWithKey, dictMapMaybe, dictSequenceResult, dictSequenceMaybe, dictTraverse, dictTraverseWithKey, dictTraverseResult, dictTraverseWithKeyResult, dictUnionWith, dictMapM__, dictFromKeysA
@@ -181,9 +175,8 @@ here are defined in `System.IO`.
 import Basics.Extra exposing (flip)
 import Bytes.Decode
 import Bytes.Encode
-import Compiler.Data.NonEmptyList as NE
-import Compiler.Reporting.Result as ReportingResult
 import Data.Map as Map
+import Data.NonEmptyList as NE
 import Dict exposing (Dict)
 import Eco.Env
 import Eco.File
@@ -193,12 +186,12 @@ import Eco.Runtime
 import Maybe.Extra as Maybe
 import Prelude
 import Process
+import System.Crash exposing (crash)
 import System.IO as IO exposing (ChItem(..), FilePath, LockSharedExclusive(..), MVar(..), Stream)
 import Task exposing (Task)
 import Time
 import Utils.Bytes.Decode as BD
 import Utils.Bytes.Encode as BE
-import Utils.Crash exposing (crash)
 import Utils.Task.Extra as Task
 
 
@@ -329,15 +322,6 @@ mapFindMin dict =
 
         _ ->
             crash "Error: empty map has no minimal element"
-
-
-{-| Returns the result of folding `f` over the list from the left, starting from
-`b`. The steps are joined with `Compiler.Reporting.Result.andThen`, so a step
-that fails ends the fold, and the elements after it are never given to `f`.
--}
-foldM : (b -> a -> ReportingResult.RResult info warnings error b) -> b -> List a -> ReportingResult.RResult info warnings error b
-foldM f b =
-    List.foldl (\a -> ReportingResult.andThen (\acc -> f acc a)) (ReportingResult.ok b)
 
 
 {-| Returns the values in the `Just`s, in order, or `Nothing` if any element is

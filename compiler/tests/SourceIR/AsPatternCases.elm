@@ -44,7 +44,6 @@ alias in an annotated definition, and an alias whose use fails to type-check
 
 -}
 
-import Compiler.AST.Source as Src
 import Compiler.AST.SourceBuilder
     exposing
         ( callExpr
@@ -72,6 +71,7 @@ import Compiler.AST.SourceBuilder
         , varExpr
         )
 import Compiler.BulkCheck exposing (TestCase, bulkCheck)
+import Compiler.IR.Source as Src
 import Expect exposing (Expectation)
 import Test exposing (Test)
 

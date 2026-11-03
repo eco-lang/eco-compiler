@@ -5,7 +5,7 @@ module Text.PrettyPrint.ANSI.LeijenTest exposing (suite)
 
   - `hcatHelp`'s `[ doc ] -> doc` case discards the accumulator, so `hcat`
     keeps only the last document (`hcat [a, b, c]` renders `"c"`). This reaches
-    `Compiler.Reporting.Error.Pattern`, which prints list patterns with `hcat`.
+    `Compiler.Nitpick.Error`, which prints list patterns with `hcat`.
   - `renderPretty` writes no reset between adjacent styled strings nor after a
     final styled string, so the terminal stays styled after the output.
 

@@ -1,0 +1,18 @@
+{
+  "version": 1,
+  "automatically created by": "elm-review suppress",
+  "learn more": "elm-review suppress --help",
+  "suppressions": [
+    { "count": 5, "filePath": "tests/TestLogic/TestPipeline.elm" },
+    { "count": 3, "filePath": "src/Compiler/IR/Mono.elm" },
+    { "count": 2, "filePath": "src/Compiler/Monomorphize/Solver/Monomorphize.elm" },
+    { "count": 2, "filePath": "src/Compiler/Monomorphize/Subst/Monomorphize.elm" },
+    { "count": 1, "filePath": "src/Compiler/MonoOpt/GenCallCensus.elm" },
+    { "count": 1, "filePath": "src/Compiler/MonoOpt/GlobalOptimize.elm" },
+    { "count": 1, "filePath": "src/Compiler/Pipeline/Steps.elm" },
+    { "count": 1, "filePath": "tests/TestLogic/Canonicalize/DependencySCC.elm" },
+    { "count": 1, "filePath": "tests/TestLogic/Generate/CodeGen/DestructorTypeProjection.elm" },
+    { "count": 1, "filePath": "tests/TestLogic/Reporting/CompileReport.elm" },
+    { "count": 1, "filePath": "tests/TestLogic/Type/TypeCheckErrors.elm" }
+  ]
+}

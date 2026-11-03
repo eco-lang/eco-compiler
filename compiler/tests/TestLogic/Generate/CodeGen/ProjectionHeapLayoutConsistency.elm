@@ -41,9 +41,9 @@ Among what is not checked:
 -}
 
 import Array
-import Compiler.AST.Monomorphized as Mono
-import Compiler.AST.Source as Src
-import Compiler.Generate.MLIR.Types as Types
+import Compiler.GenerateMlir.Types as Types
+import Compiler.IR.Mono as Mono
+import Compiler.IR.Source as Src
 import Expect exposing (Expectation)
 import TestLogic.TestPipeline exposing (runToMlir)
 
@@ -80,22 +80,18 @@ expectProjectionHeapLayoutConsistency srcModule =
 -}
 checkListElemConsistency : Mono.MonoGraph -> List String
 checkListElemConsistency (Mono.MonoGraph data) =
-    let
-        callIssues =
-            Array.foldl
-                (\maybeNode ( specId, acc ) ->
-                    case maybeNode of
-                        Nothing ->
-                            ( specId + 1, acc )
+    Array.foldl
+        (\maybeNode ( specId, acc ) ->
+            case maybeNode of
+                Nothing ->
+                    ( specId + 1, acc )
 
-                        Just node ->
-                            ( specId + 1, checkNode specId data.registry node ++ acc )
-                )
-                ( 0, [] )
-                data.nodes
-                |> Tuple.second
-    in
-    callIssues
+                Just node ->
+                    ( specId + 1, checkNode specId data.registry node ++ acc )
+        )
+        ( 0, [] )
+        data.nodes
+        |> Tuple.second
 
 
 {-| Returns the call check's problems in the body of one node, each labelled

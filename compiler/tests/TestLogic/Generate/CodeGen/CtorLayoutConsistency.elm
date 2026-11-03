@@ -11,8 +11,8 @@ attributes describe the value: the integers `tag`, the constructor's index, and
 stored, boxed (0) or as one of the unboxed kinds (1 Int, 2 Float, 3 Char). The reference
 these are compared with comes from the monomorphized graph's constructor
 shapes. A shape gives a constructor's name, tag and field types, and
-`Compiler.Generate.MLIR.Types.computeCtorLayout` turns it into a layout, whose
-kinds `Compiler.Generate.MLIR.Types.ctorSlotKinds` gives. A constructor name and tag together
+`Compiler.GenerateMlir.Types.computeCtorLayout` turns it into a layout, whose
+kinds `Compiler.GenerateMlir.Types.ctorSlotKinds` gives. A constructor name and tag together
 can still occur in more than one shape (across the specialisations of one type,
 or two types with a same-named constructor), so the pair stands for a list of
 layouts.
@@ -33,7 +33,7 @@ Among what is not tested:
     kinds belong to another specialisation of the same constructor passes.
   - An op whose constructor name has no shape in the graph, which is skipped.
     This happens for a constructor only a kernel fusion builds, such as the
-    `Just` that `Compiler.Generate.MLIR.BytesFusion.Emit` wraps a decoded
+    `Just` that `Compiler.GenerateMlir.BytesFusion.Emit` wraps a decoded
     value in.
   - The op's operands.
   - Any op other than `eco.construct.custom`. In particular, a custom value
@@ -44,10 +44,10 @@ Among what is not tested:
 
 -}
 
-import Compiler.AST.Monomorphized as Mono
-import Compiler.AST.Source as Src
-import Compiler.Data.Name as Name
-import Compiler.Generate.MLIR.Types as Types
+import Compiler.Core.Name as Name
+import Compiler.GenerateMlir.Types as Types
+import Compiler.IR.Mono as Mono
+import Compiler.IR.Source as Src
 import Dict
 import Expect exposing (Expectation)
 import Mlir.Mlir exposing (MlirAttr(..), MlirModule, MlirOp)

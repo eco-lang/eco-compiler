@@ -21,10 +21,10 @@ gathers.
 to a program's own constructors: `type Tri = True | False | Unknown` matched
 by a `case` must dispatch exactly as the same program with the constructors
 renamed `Yes | No | Unknown`, so the `tags` of every `eco.case` must be the
-same in both. It guards `Compiler.Data.CtorTag.isEmbeddedConstantCtor` (used by
-`Compiler.Generate.MLIR.Patterns.testToTagInt`, the emitters in
-`Compiler.Generate.MLIR.Functions` and the spec maps in
-`Compiler.Generate.MLIR.Backend`), which must recognise `True`, `False` and
+same in both. It guards `Compiler.IR.Runtime.CtorTag.isEmbeddedConstantCtor` (used by
+`Compiler.GenerateMlir.Patterns.testToTagInt`, the emitters in
+`Compiler.GenerateMlir.Functions` and the spec maps in
+`Compiler.GenerateMlir.Backend`), which must recognise `True`, `False` and
 `Nothing` by home module as well as name: matched by bare name, both user
 constructors got the reserved constant tag and the case could not tell them
 apart.
@@ -40,7 +40,6 @@ Among what is not tested:
 
 -}
 
-import Compiler.AST.Source as Src
 import Compiler.AST.SourceBuilder
     exposing
         ( TypedDef
@@ -57,6 +56,7 @@ import Compiler.AST.SourceBuilder
         , tType
         , varExpr
         )
+import Compiler.IR.Source as Src
 import Expect exposing (Expectation)
 import Mlir.Mlir exposing (MlirAttr(..), MlirModule)
 import SourceIR.Suite.StandardTestSuites as StandardTestSuites

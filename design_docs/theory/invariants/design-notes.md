@@ -119,5 +119,5 @@ Parent: [invariants-and-design.md](invariants-and-design.md).
 - `design_docs/caf-memoization-design.md`, `design_docs/utf8-string-encoding-investigation.md`, `design_docs/fused-bytes-compilation.md`, `design_docs/array-optimisation.md`, `design_docs/kernel-boundary-reduction.md`, `design_docs/debug-log-ordering-policy.md`.
 - `design_docs/backend-parallel-optimization.md`, `design_docs/mlir-level-partitioning-whole-program-steps.md`, `design_docs/converge-pipelines.md`, `design_docs/lld-in-eco.md`, `design_docs/distribution.md`.
 - `design_docs/kernel-closure-lookthrough.md`, `design_docs/explicit-meta-structures.md`, `design_docs/incremental-builds/README.md`.
-- `compiler/src/Compiler/Eco/Config.elm`: the defaults that say which adopted compiler designs run. `compiler/src/Compiler/MonoSolver/`, `compiler/src/Compiler/GlobalOpt/`: where they live.
+- `compiler/src/Compiler/Config.elm`: the defaults that say which adopted compiler designs run. `compiler/src/Compiler/MonoSolver/`, `compiler/src/Compiler/GlobalOpt/`: where they live.
 - `runtime/src/codegen/Passes/` (`EcoGCStrategy.cpp`, `EcoToLLVMValueAgg.cpp`), `runtime/src/codegen/EcoBackend.cpp`, `runtime/src/allocator/`, `runtime/src/platform/Scheduler.cpp`: where adopted back-end and runtime designs live.

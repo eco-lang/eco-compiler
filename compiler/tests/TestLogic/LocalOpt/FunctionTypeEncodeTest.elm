@@ -6,7 +6,7 @@ parameters, cannot leave typed optimization unnoticed in any of the standard
 test programs.
 
 A _function expression_ is a `Function` or `TrackedFunction` in the
-typed-optimized IR (`Compiler.AST.TypedOptimized`), and it carries the type of
+typed-optimized IR (`Compiler.IR.Typed.Optimized`), and it carries the type of
 the function as a whole.
 
 The fixture is the standard catalogue of `SourceIR` test programs, as

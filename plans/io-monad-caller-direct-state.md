@@ -100,7 +100,7 @@ in
 | `Compiler/Type/Instantiate` | 1 | 4 | 7 | 2 |
 
 After the 2026-09-08 module split (`Compiler.Type.Vars` + `Canonical` to
-`ModuleName`), `System.TypeCheck.IO` has **20 importers, 12 of them monadic** —
+`ModuleName`), `Compiler.Type.State.IO` has **20 importers, 12 of them monadic** —
 down from 88. The surface above is now the whole of it.
 
 ## 5. Constraints, in order of how much they hurt if ignored

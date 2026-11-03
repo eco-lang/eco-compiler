@@ -68,8 +68,6 @@ or kept.
 -}
 
 import Array
-import Compiler.AST.Monomorphized as Mono
-import Compiler.AST.Source as Src
 import Compiler.AST.SourceBuilder
     exposing
         ( binopsExpr
@@ -84,11 +82,13 @@ import Compiler.AST.SourceBuilder
         , tType
         , varExpr
         )
-import Compiler.Data.BitSet as BitSet
-import Compiler.Eco.Config as Config
-import Compiler.GlobalOpt.MonoInlineSimplify as MonoInlineSimplify
-import Compiler.Graph as Graph
+import Compiler.Config as Config
+import Compiler.IR.Mono as Mono
+import Compiler.IR.Source as Src
+import Compiler.MonoOpt.InlineSimplify as MonoInlineSimplify
 import Compiler.Monomorphize.Prune as Prune
+import Data.BitSet as BitSet
+import Data.Graph as Graph
 import Expect
 import Fuzz
 import Test exposing (Test)

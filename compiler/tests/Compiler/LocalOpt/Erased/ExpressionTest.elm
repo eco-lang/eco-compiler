@@ -20,9 +20,9 @@ The check: the erased-optimized node of `count` (below) contains a
 
 -}
 
-import Compiler.AST.Optimized as Opt
-import Compiler.AST.Source as Src
 import Compiler.AST.SourceBuilder exposing (makeModule, unitExpr)
+import Compiler.IR.Optimized as Opt
+import Compiler.IR.Source as Src
 import Compiler.LocalOpt.Erased.Module as ErasedOptimize
 import Compiler.Parse.Module as M
 import Compiler.Reporting.Result as RResult

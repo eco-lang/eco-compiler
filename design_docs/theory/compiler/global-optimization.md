@@ -88,7 +88,7 @@ The phase runs after regrouping so that its stamps describe the closure types th
 
 ### A record on every call
 
-The last phase computes a call record for every call, in one place. MLIR generation reads the record instead of looking up call shapes in its own context. This is the record, from `compiler/src/Compiler/AST/Monomorphized.elm`, trimmed to the fields discussed here:
+The last phase computes a call record for every call, in one place. MLIR generation reads the record instead of looking up call shapes in its own context. This is the record, from `compiler/src/Compiler/IR/Mono.elm`, trimmed to the fields discussed here:
 
 ```elm
 type alias CallInfo =
@@ -189,19 +189,19 @@ Parent: [compiler.md](compiler.md). Related: [monomorphization.md](monomorphizat
 Code:
 
 - `compiler/src/Compiler/Pipeline/Steps.elm`: the step order (`preMono`, `inline`, `prune`, `globalOpt`, `cse`, `dedupe`, `hoist`) and the validators `checkMinted`, `checkPruned`, `checkClosureStaging` and `checkStageArity`.
-- `compiler/src/Compiler/Eco/Config.elm`: `default`, which says what is on.
-- `compiler/src/Compiler/GlobalOpt/PreMono/AliasForward.elm`, `PreMono/EtaExpand.elm`, `PreMono/Fresh.elm` (`freshenCopy`, `mintNewNode`, `assertMinted`) and `PreMono/LiftClosedArgs.elm` (a count only): the passes before monomorphization.
-- `compiler/src/Compiler/GlobalOpt/InlineSimplify.elm`: the inliner before monomorphization, off.
-- `compiler/src/Compiler/GlobalOpt/MonoInlineSimplify.elm`: `optimize`, `initRewriteCtx` (candidates), `tryInlineCall` and `loopify`.
+- `compiler/src/Compiler/Config.elm`: `default`, which says what is on.
+- `compiler/src/Compiler/PreMono/AliasForward.elm`, `PreMono/EtaExpand.elm`, `PreMono/Fresh.elm` (`freshenCopy`, `mintNewNode`, `assertMinted`) and `PreMono/LiftClosedArgs.elm` (a count only): the passes before monomorphization.
+- `compiler/src/Compiler/PreMono/InlineSimplify.elm`: the inliner before monomorphization, off.
+- `compiler/src/Compiler/MonoOpt/InlineSimplify.elm`: `optimize`, `initRewriteCtx` (candidates), `tryInlineCall` and `loopify`.
 - `compiler/src/Compiler/Monomorphize/Prune.elm`: `pruneAfterInline`.
-- `compiler/src/Compiler/GlobalOpt/MonoGlobalOptimize.elm`: `globalOptimizeWithStats`, `wrapTopLevelCallables`, `annotateCallStaging`, `computeCallInfo` and `closureBodyStageArities`.
-- `compiler/src/Compiler/GlobalOpt/Staging.elm`: `regroup`.
-- `compiler/src/Compiler/GlobalOpt/AbiCloning.elm`: `abiCloningPass`, `stampCall` and `postSettleTarget`.
-- `compiler/src/Compiler/AST/Monomorphized.elm`: `CallInfo` and `CallKind`.
-- `compiler/src/Compiler/GlobalOpt/KernelFacts.elm`: the kernel table and `validationErrors`.
-- `compiler/src/Compiler/GlobalOpt/CsePurity.elm`, `MapTemplate.elm`, `MonoReturnArity.elm` and `ListCombinators.elm`: read-only analyses.
-- `compiler/src/Compiler/GlobalOpt/MonoCse.elm`, `CafHoist.elm`, `CafDedupe.elm` and `Borrow.elm`: off by default.
-- `compiler/src/Compiler/GlobalOpt/CafCensus.elm`, `CseCensus.elm` and `GenCallCensus.elm`: counting passes.
+- `compiler/src/Compiler/MonoOpt/GlobalOptimize.elm`: `globalOptimizeWithStats`, `wrapTopLevelCallables`, `annotateCallStaging`, `computeCallInfo` and `closureBodyStageArities`.
+- `compiler/src/Compiler/MonoOpt/Staging.elm`: `regroup`.
+- `compiler/src/Compiler/MonoOpt/AbiCloning.elm`: `abiCloningPass`, `stampCall` and `postSettleTarget`.
+- `compiler/src/Compiler/IR/Mono.elm`: `CallInfo` and `CallKind`.
+- `compiler/src/Compiler/IR/Kernel/Facts.elm`: the kernel table and `validationErrors`.
+- `compiler/src/Compiler/MonoOpt/CsePurity.elm`, `MapTemplate.elm`, `MonoReturnArity.elm` and `ListCombinators.elm`: read-only analyses.
+- `compiler/src/Compiler/MonoOpt/Cse.elm`, `CafHoist.elm`, `CafDedupe.elm` and `Borrow.elm`: off by default.
+- `compiler/src/Compiler/MonoOpt/CafCensus.elm`, `CseCensus.elm` and `GenCallCensus.elm`: counting passes.
 - `test/elm/src/CombinatorRefIdentityBugTest.elm`: the devirtualization miscompile as a test.
 
 Invariants (`design_docs/invariants.csv`):
@@ -209,7 +209,7 @@ Invariants (`design_docs/invariants.csv`):
 - GOPT_001: closure staging after regrouping.
 - GOPT_003: a join has known stages only when every branch agrees.
 - GOPT_010 to GOPT_016: the fields of the call record.
-- LSS_008, LSS_017, LSS_018, LSS_025: the lambda-set facts and licenses the stamp phase reads. The representative license and fingerprint fence themselves are stated in `compiler/src/Compiler/GlobalOpt/AbiCloning.elm`.
+- LSS_008, LSS_017, LSS_018, LSS_025: the lambda-set facts and licenses the stamp phase reads. The representative license and fingerprint fence themselves are stated in `compiler/src/Compiler/MonoOpt/AbiCloning.elm`.
 - MONO_029: layouts agree across views of a value.
 - CGEN_052, CGEN_060, CGEN_069: the remaining-arity check, the generic fallback, and call records after code motion.
 - HEAP_078: the closure arity limit.

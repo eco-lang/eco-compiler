@@ -56,10 +56,10 @@ definitions sharing one kernel at different types each keep their own.
 -}
 
 import Array exposing (Array)
-import Compiler.AST.Canonical as Can
-import Compiler.Data.Name as Name exposing (Name)
+import Compiler.Core.Annotation as A
+import Compiler.Core.Name as Name exposing (Name)
 import Compiler.Elm.ModuleName as ModuleName
-import Compiler.Reporting.Annotation as A
+import Compiler.IR.Canonical as Can
 import Compiler.Type.KernelTypes as KernelTypes
 import Data.Map
 import Dict exposing (Dict)

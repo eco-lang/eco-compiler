@@ -1,6 +1,6 @@
 module Compiler.GlobalOpt.KernelFactsTest exposing (suite)
 
-{-| `Compiler.GlobalOpt.KernelFacts` is a hand-written table of facts about the
+{-| `Compiler.IR.Kernel.Facts` is a hand-written table of facts about the
 kernel functions it lists, and it is plain data: no type stops a row from
 contradicting itself, and no type notices when an edit to a row changes an
 answer that an optimiser reads. These tests catch a row that fails the table's
@@ -9,7 +9,7 @@ below.
 
 A _gc-leaf_ kernel is one for which `KernelFacts.gcLeafEligible` holds: its row
 says it neither allocates on the Eco heap nor can call back into Elm. The
-_borrow shim_ is `Compiler.GlobalOpt.Borrow.KernelSigs.lookup`, which gives the
+_borrow shim_ is `Compiler.MonoOpt.Borrow.KernelSigs.lookup`, which gives the
 borrow analysis its per-kernel signatures by reading the table, and which
 answers nothing for a row whose `params` list is empty.
 
@@ -59,8 +59,8 @@ whether any row is true of the C++ kernel it describes.
 
 -}
 
-import Compiler.GlobalOpt.Borrow.KernelSigs as KernelSigs
-import Compiler.GlobalOpt.KernelFacts as KF
+import Compiler.IR.Kernel.Facts as KF
+import Compiler.MonoOpt.Borrow.KernelSigs as KernelSigs
 import Expect
 import Test exposing (Test)
 

@@ -45,7 +45,6 @@ a port or subscribes to one.
 
 -}
 
-import Compiler.AST.Source as Src
 import Compiler.AST.SourceBuilder
     exposing
         ( PortDef
@@ -60,7 +59,8 @@ import Compiler.AST.SourceBuilder
         , tVar
         )
 import Compiler.BulkCheck exposing (TestCase, bulkCheck)
-import Compiler.Reporting.Annotation as A
+import Compiler.Core.Annotation as A
+import Compiler.IR.Source as Src
 import Expect exposing (Expectation)
 import Test exposing (Test)
 

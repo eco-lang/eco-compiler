@@ -5,7 +5,7 @@ handling a `Maybe` case that cannot occur.
 
 `head`, `init` and `last` are partial functions named after those in Haskell's
 `Prelude`: each is defined only on a non-empty list. On an empty list each
-aborts through `Utils.Crash.crash`, with a message of the form
+aborts through `System.Crash.crash`, with a message of the form
 `*** Exception: Prelude.<name>: empty list`, instead of returning. Nothing
 here checks the non-emptiness in advance; it is the caller's promise, and a
 broken promise is a crash, not an error the caller can handle.
@@ -15,7 +15,7 @@ broken promise is a crash, not an error the caller can handle.
 -}
 
 import List.Extra as List
-import Utils.Crash exposing (crash)
+import System.Crash exposing (crash)
 
 
 {-| Returns the first element of `items`, aborting if `items` is empty.

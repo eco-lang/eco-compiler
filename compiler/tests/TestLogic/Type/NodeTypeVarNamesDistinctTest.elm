@@ -3,7 +3,7 @@ module TestLogic.Type.NodeTypeVarNamesDistinctTest exposing (suite)
 {-| Within one top-level definition, one type variable name in the solver's
 node types must stand for one solver variable, because monomorphization
 identifies type variables by name within a definition
-(`Compiler.Monomorphize.AssignMVarIds.ensureBinder`). If two different
+(`Compiler.PreMono.AssignMVarIds.ensureBinder`). If two different
 variables shared a name there, a let-bound helper could be specialized at the
 type of an unrelated variable.
 
@@ -43,10 +43,10 @@ across definitions, and the generated MLIR.
 -}
 
 import Array
-import Compiler.AST.Canonical as Can
-import Compiler.AST.Source as Src
 import Compiler.AST.SourceBuilder as SB
-import Compiler.Reporting.Annotation as A
+import Compiler.Core.Annotation as A
+import Compiler.IR.Canonical as Can
+import Compiler.IR.Source as Src
 import Compiler.Type.SolverRoots as SolverRoots
 import Data.Map as DMap
 import Dict

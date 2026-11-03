@@ -28,7 +28,7 @@ native executable through the in-process NativeDriver):
 1. cold (cache deleted);
 2. warm with no change;
 3. warm with a one-module edit: a string literal inside a function body of
-   `Compiler/Generate/MLIR/Names.elm`, so the interface is unchanged;
+   `Compiler/GenerateMlir/Names.elm`, so the interface is unchanged;
 4. warm again;
 5. edit again;
 6. cold again.

@@ -6,7 +6,7 @@ generation (invariant MONO\_002).
 
 This is the check invariant MONO\_021 names. MONO\_021 once asked that no
 `CEcoValue` variable be left in the types of user functions and closures; it
-now states the opposite, by design: as `Compiler.AST.Monomorphized` describes
+now states the opposite, by design: as `Compiler.IR.Mono` describes
 `Constraint`, a `CEcoValue` variable stands for a value that is always boxed
 and may reach code generation, and type variables nothing fixes keep one. The
 only forbidden residual is a `CNumber` variable (MONO\_002):
@@ -35,8 +35,8 @@ optimization.
 -}
 
 import Array
-import Compiler.AST.Monomorphized as Mono
-import Compiler.AST.Source as Src
+import Compiler.IR.Mono as Mono
+import Compiler.IR.Source as Src
 import Dict
 import Expect exposing (Expectation)
 import TestLogic.TestPipeline as Pipeline

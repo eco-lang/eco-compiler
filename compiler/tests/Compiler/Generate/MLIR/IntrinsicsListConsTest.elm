@@ -7,7 +7,7 @@ call to the `List.cons` kernel can be replaced by an inline list construction
 The head slot type decides how the head is stored in the list cell: unboxed as
 `i64`, `f64` or `i32`, or boxed as `!eco.value`. The heads given a primitive slot
 here (Int, Float and Char) are the heads for which
-`Compiler.Generate.MLIR.KernelAbi` calls the `_Int`, `_Float` and `_Char`
+`Compiler.GenerateMlir.KernelAbi` calls the `_Int`, `_Float` and `_Char`
 variants of the `List.cons` kernel. A head that is an unsettled `number` type
 variable gets neither a primitive slot here nor a suffixed variant there.
 Without these tests, a change to the classifier that accepted a shape, or chose
@@ -17,7 +17,7 @@ intrinsic.
 
 The classifier is reached through the exposed `kernelIntrinsic`, with the home
 `"List"` and the name `"cons"`, the same entry point code generation calls. It
-classifies by types alone. `Compiler.Generate.MLIR.Expr` then applies
+classifies by types alone. `Compiler.GenerateMlir.Expr` then applies
 the `list.consIntrinsic` configuration flag and a check that a primitive head
 slot is fed by an operand of that same type or a boxed one, before emitting
 anything; neither is exercised here.
@@ -47,10 +47,10 @@ variable, and every other kernel the classifier handles.
 
 -}
 
-import Compiler.AST.Monomorphized as Mono
-import Compiler.AST.TypeIds as TypeIds
-import Compiler.Generate.MLIR.Types as Types
-import Compiler.GlobalOpt.KernelIntrinsics as KernelIntrinsics
+import Compiler.Core.TypeIds as TypeIds
+import Compiler.GenerateMlir.Types as Types
+import Compiler.IR.Kernel.Intrinsics as KernelIntrinsics
+import Compiler.IR.Mono as Mono
 import Expect
 import Test exposing (Test, describe, test)
 

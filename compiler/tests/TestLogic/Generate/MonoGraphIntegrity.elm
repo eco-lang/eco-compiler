@@ -1,9 +1,9 @@
 module TestLogic.Generate.MonoGraphIntegrity exposing
     ( expectCallableMonoNodes
-    , localVarScopingChecks
     , expectMonoGraphClosed
     , expectMonoGraphComplete
     , expectSpecRegistryComplete
+    , localVarScopingChecks
     )
 
 {-| Structural checks on the monomorphized program graph, written as
@@ -49,9 +49,9 @@ constructors.
 -}
 
 import Array
-import Compiler.AST.Monomorphized as Mono
-import Compiler.AST.Source as Src
-import Compiler.Monomorphize.MonoTraverse as MonoTraverse
+import Compiler.IR.Mono as Mono
+import Compiler.IR.Mono.Traverse as MonoTraverse
+import Compiler.IR.Source as Src
 import Data.HashMap as HashMap
 import Data.Set as Set exposing (EverySet)
 import Dict

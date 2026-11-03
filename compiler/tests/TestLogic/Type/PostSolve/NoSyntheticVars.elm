@@ -21,7 +21,7 @@ that fails to canonicalize or type check fails with the pipeline's message.
 -}
 
 import Array
-import Compiler.AST.Source as Src
+import Compiler.IR.Source as Src
 import Data.Set as EverySet
 import Expect
 import TestLogic.Type.PostSolve.CompileThroughPostSolve as Compile

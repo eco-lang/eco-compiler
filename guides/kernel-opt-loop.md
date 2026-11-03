@@ -88,7 +88,7 @@ The file from the 2026-08 run was deleted on 2026-10-26. That run's results are 
 - **Every `file:line` anchor in the plans drifts as items land.** Re-verify each anchor by
   reading the file before you edit it. Do not trust a line number that a sibling item has
   already moved.
-- **`Compiler/Eco/Config.elm`'s decoder is positional.** Items 01/03/04/05/06/08/11/12/13 all
+- **`Compiler/Config.elm`'s decoder is positional.** Items 01/03/04/05/06/08/11/12/13 all
   append a LAST alias field. The second and later landers must re-check lockstep across the
   four sites — record alias, `default`, `decoder` (`D.apply` order), `hash` token — or the
   config silently decodes into the wrong field.

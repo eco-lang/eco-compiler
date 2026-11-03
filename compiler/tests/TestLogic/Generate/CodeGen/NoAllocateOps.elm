@@ -20,7 +20,7 @@ engine), since `runToMlir` is the production pipeline.
 
 -}
 
-import Compiler.AST.Source as Src
+import Compiler.IR.Source as Src
 import Expect exposing (Expectation)
 import Mlir.Mlir exposing (MlirModule)
 import TestLogic.Generate.CodeGen.Invariants

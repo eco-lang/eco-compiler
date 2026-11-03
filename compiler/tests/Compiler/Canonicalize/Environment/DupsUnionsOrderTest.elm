@@ -1,6 +1,6 @@
 module Compiler.Canonicalize.Environment.DupsUnionsOrderTest exposing (suite)
 
-{-| Reproduces a bug in `Compiler.Canonicalize.Environment.Dups.unions`: it folds
+{-| Reproduces a bug in `Compiler.Canonicalize.Dups.unions`: it folds
 with `List.foldl union Dict.empty`, which evaluates `union tracker acc`, so a
 later tracker's occurrences come before an earlier one's. `detect` then reports
 the later occurrence as the first region of a duplicate error (e.g.
@@ -12,11 +12,11 @@ the fix.
 
 -}
 
-import Compiler.Canonicalize.Environment.Dups as Dups
-import Compiler.Data.OneOrMore as OneOrMore
-import Compiler.Reporting.Annotation as A
-import Compiler.Reporting.Error.Canonicalize as Error
+import Compiler.Canonicalize.Dups as Dups
+import Compiler.Canonicalize.Error as Error
+import Compiler.Core.Annotation as A
 import Compiler.Reporting.Result as R
+import Data.OneOrMore as OneOrMore
 import Expect
 import Test exposing (Test)
 

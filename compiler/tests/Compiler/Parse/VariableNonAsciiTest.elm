@@ -5,7 +5,7 @@ module Compiler.Parse.VariableNonAsciiTest exposing (suite)
 `getInnerWidthHelp`). They once decoded a character 0xC0-0xF7 together with the
 following characters as if they were UTF-8 continuation bytes (read with
 `P.unsafeIndex`, ignoring `end`) and then applied elm/core's ASCII-only
-`Char.isLower`. They now classify the code point with `Compiler.Parse.Unicode`,
+`Char.isLower`. They now classify the code point with `Compiler.Lexer.Unicode`,
 as upstream Elm does. Pinned here:
 
   - `café` is one identifier (upstream Elm accepts Unicode letters);
@@ -17,7 +17,7 @@ More cases are in `Compiler.Parse.VariableUnicodeExtraTest`.
 
 -}
 
-import Compiler.Parse.Primitives as P
+import Compiler.Lexer.Primitives as P
 import Compiler.Parse.Variable as Var
 import Expect
 import Test exposing (Test)

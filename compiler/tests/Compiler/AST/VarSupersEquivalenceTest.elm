@@ -9,11 +9,11 @@ apart.
 
 A _super_ is the constraint class a name implies by its prefix: number,
 comparable, appendable or compappend. Any name that starts with one of those
-words implies it, so `number1` and `numbers!` imply number; `Compiler.Data.Name`
+words implies it, so `number1` and `numbers!` imply number; `Compiler.Core.Name`
 owns these prefix tests. `varSupersOfType` runs `Can.collectStringsFromType`
 with the `StringTable.collectSupers` collector, which keeps only the strings
 `isSuperName` accepts, and maps each kept string with the private `superOfName`
-in `Compiler.AST.TypedOptimized`. The reference, `reference`, runs the same
+in `Compiler.IR.Typed.Optimized`. The reference, `reference`, runs the same
 traversal with `StringTable.collectAll`, which keeps every string, and maps the
 result with `mirrorSuper`, a copy of `superOfName`.
 
@@ -51,12 +51,12 @@ Among what is not tested:
 
 -}
 
-import Compiler.AST.Canonical as Can
-import Compiler.AST.StringTable as StringTable
-import Compiler.AST.TypeIds as TypeIds
-import Compiler.AST.TypedOptimized as TOpt
-import Compiler.Data.Name as N exposing (Name)
+import Compiler.Core.Name as N exposing (Name)
+import Compiler.Core.StringTable as StringTable
+import Compiler.Core.TypeIds as TypeIds
 import Compiler.Elm.ModuleName as ModuleName
+import Compiler.IR.Canonical as Can
+import Compiler.IR.Typed.Optimized as TOpt
 import Dict
 import Expect
 import Fuzz exposing (Fuzzer)
@@ -85,7 +85,7 @@ home =
 `"Comparable"`, `"Appendable"` or `"CompAppend"`, or `Nothing` if it implies
 none.
 
-It is a copy of the private `superOfName` in `Compiler.AST.TypedOptimized`,
+It is a copy of the private `superOfName` in `Compiler.IR.Typed.Optimized`,
 written as text so that it can be compared with `actual`.
 
 -}

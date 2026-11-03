@@ -8,7 +8,7 @@ type with a _lambda set_. An `LSet` annotation lists, each by an interned
 integer _member id_, the functions a value of that type may be. If the
 instances shared one id, a call through that lambda would see a singleton set
 `LSet [m]` standing for closures with different bodies, and
-`Compiler.GlobalOpt.AbiCloning`, whose fingerprint check declines a set whose
+`Compiler.MonoOpt.AbiCloning`, whose fingerprint check declines a set whose
 closures differ, would leave the call as a generic dispatch.
 
 A let-bound function that the solver engine meets at more than one type is
@@ -31,7 +31,7 @@ lambda to the top-level `apply`, called once with `hashA` and once with
 `hashB`. Tests 1 to 4 run the pipeline through `TestLogic.TestPipeline`'s
 solver engine with LSS on and no global optimization. Tests 2 to 4 run it
 twice, once with an instance cap of 1, which tags no instance, and once with
-the default cap from `Compiler.Eco.Config.defaultLss`; test 1 runs only the
+the default cap from `Compiler.Config.defaultLss`; test 1 runs only the
 cap-1 arm. Member ids are interned integers whose values depend on the order
 of interning, so the tests compare how many there are, not which they are.
 
@@ -61,7 +61,7 @@ The tests are numbered 1 to 4 and 6 to 8; there is no test 5.
     now composes ordinal 0 under a tagged instance. It needs a full engine
     state, which tests cannot build, so the test reads the graph instead.
 
-Among what is not tested: whether `Compiler.GlobalOpt.AbiCloning` stamps the
+Among what is not tested: whether `Compiler.MonoOpt.AbiCloning` stamps the
 calls once the ids are split; which closure carries the shared or split id;
 caps other than 1 and the default; let-bound functions nested inside one
 another, except in test 8; and a lambda that is refused a tag
@@ -70,8 +70,6 @@ because it is folded onto its global's own member id.
 -}
 
 import Array
-import Compiler.AST.Monomorphized as Mono
-import Compiler.AST.Source as Src
 import Compiler.AST.SourceBuilder
     exposing
         ( binopsExpr
@@ -86,9 +84,11 @@ import Compiler.AST.SourceBuilder
         , tType
         , varExpr
         )
-import Compiler.Eco.Config as Config
-import Compiler.MonoSolver.Engine as Engine
-import Compiler.Monomorphize.MonoTraverse as MonoTraverse
+import Compiler.Config as Config
+import Compiler.IR.Mono as Mono
+import Compiler.IR.Mono.Traverse as MonoTraverse
+import Compiler.IR.Source as Src
+import Compiler.Monomorphize.Solver.Engine as Engine
 import Expect
 import Test exposing (Test)
 import TestLogic.TestPipeline as Pipeline
@@ -215,7 +215,7 @@ suite =
                 in
                 Expect.equal 3 (List.length (distinct innerTags))
         , Test.test "8. nested instances — outer 0/inner 1 and outer 1/inner 0 must not share a member id" <|
-            -- Guards `Compiler.MonoSolver.Engine.localInstanceTagFor`: if
+            -- Guards `Compiler.Monomorphize.Solver.Engine.localInstanceTagFor`: if
             -- ordinal 0 kept the enclosing tag under a tagged instance,
             -- (outer 0, inner 1) and (outer 1, inner 0) would both run under
             -- `mixTag 0 1` and mint the same member for one source lambda.

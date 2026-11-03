@@ -32,12 +32,12 @@ Among what is not checked:
 
 -}
 
-import Compiler.AST.Canonical as Can
-import Compiler.AST.Source as Src
-import Compiler.AST.TypeIds as TypeIds
-import Compiler.AST.Utils.Type as TypeUtils
-import Compiler.Data.Name exposing (Name)
-import Compiler.Reporting.Annotation as A
+import Compiler.Core.Annotation as A
+import Compiler.Core.Name exposing (Name)
+import Compiler.Core.TypeIds as TypeIds
+import Compiler.IR.Canonical as Can
+import Compiler.IR.Canonical.Alias as TypeUtils
+import Compiler.IR.Source as Src
 import Dict
 import Expect
 import Set

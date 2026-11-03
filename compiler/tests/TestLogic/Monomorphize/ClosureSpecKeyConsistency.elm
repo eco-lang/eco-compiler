@@ -48,9 +48,9 @@ key type is.
 -}
 
 import Array
-import Compiler.AST.Monomorphized as Mono
-import Compiler.AST.Source as Src
-import Compiler.Data.Id as Id
+import Compiler.Core.Id as Id
+import Compiler.IR.Mono as Mono
+import Compiler.IR.Source as Src
 import Dict
 import Expect exposing (Expectation)
 import TestLogic.TestPipeline as Pipeline

@@ -32,21 +32,21 @@ carries only the number of errors.
 
 -}
 
-import Compiler.AST.Canonical as Can
-import Compiler.AST.Source as Src
 import Compiler.Canonicalize.Module as Canonicalize
-import Compiler.Data.Name as Name exposing (Name)
-import Compiler.Data.NonEmptyList as NE
-import Compiler.Data.OneOrMore as OneOrMore
+import Compiler.Core.Name as Name exposing (Name)
 import Compiler.Elm.Interface.Basic as Basic
+import Compiler.IR.Canonical as Can
+import Compiler.IR.Source as Src
 import Compiler.Reporting.Result as RResult
 import Compiler.Type.Constrain.Typed.Module as ConstrainTyped
 import Compiler.Type.KernelTypes as KernelTypes
 import Compiler.Type.PostSolve as PostSolve
 import Compiler.Type.Solve as Solve
+import Compiler.Type.State.IO as IO
+import Data.NonEmptyList as NE
+import Data.OneOrMore as OneOrMore
 import Data.Set as EverySet
 import Dict
-import System.TypeCheck.IO as IO
 import TestLogic.TestPipeline as Pipeline
 
 

@@ -3,7 +3,7 @@ module Compiler.Reporting.DocHcatTest exposing (suite)
 {-| Reproduces a bug in `Compiler.Reporting.Doc.hcat` (passed through from
 `Text.PrettyPrint.ANSI.Leijen.hcat`): for two or more documents it returns only
 the last one instead of concatenating them, so callers such as the finite-list
-printing in `Compiler.Reporting.Error.Pattern` lose content.
+printing in `Compiler.Nitpick.Error` lose content.
 
 Fixed 2026-10-28 (plans/review-bug-triage-fixes.md, Part 5); the tests pin
 the fix.

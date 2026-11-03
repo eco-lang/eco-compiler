@@ -3,7 +3,7 @@ module TestLogic.Type.PostSolve.Determinism exposing (expectDeterministicTypes)
 {-| Test logic for the invariant that type inference is deterministic: the same
 program, compiled twice, gets the same types.
 
-The type checker runs as a `System.TypeCheck.IO` action over a store of cells,
+The type checker runs as a `Compiler.Type.State.IO` action over a store of cells,
 through `IO.unsafePerformIO`. If its result depended on anything but its input,
 the same program could get different types from two runs, and without this
 check nothing would notice.
@@ -23,9 +23,9 @@ the kernel type environment of the two runs; and whether a run in another proces
 -}
 
 import Array
-import Compiler.AST.Canonical as Can
-import Compiler.AST.Source as Src
-import Compiler.Data.Name exposing (Name)
+import Compiler.Core.Name exposing (Name)
+import Compiler.IR.Canonical as Can
+import Compiler.IR.Source as Src
 import Dict
 import Expect
 import TestLogic.TestPipeline as Pipeline

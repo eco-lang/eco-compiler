@@ -12,7 +12,7 @@ The fixture is two global graphs, each built from `Opt.empty` by
 `GA.addOptKernel` with one kernel module holding a single JavaScript chunk, a
 comment naming its package and module, so that the chunks of the merged graph
 show which kernels survived. `packageKernelGraph` passes the whole module name,
-as `Builder.Elm.Details.addLocalOptGraph` does; the key it gets is the one
+as `Builder.Deps.Details.addLocalOptGraph` does; the key it gets is the one
 `Opt.toKernelGlobal` describes.
 
 The test establishes:
@@ -27,8 +27,8 @@ the two kernels' definitions.
 -}
 
 import Builder.GraphAssembly as GA
-import Compiler.AST.Optimized as Opt
-import Compiler.Elm.Kernel as K
+import Compiler.IR.Kernel.Chunk as K
+import Compiler.IR.Optimized as Opt
 import Data.Map
 import Expect
 import Test exposing (Test, describe, test)
@@ -36,7 +36,7 @@ import Test exposing (Test, describe, test)
 
 {-| The kernel graph of one package holding the kernel module `moduleName`,
 with `marker` as its one JavaScript chunk, registered the way
-`Builder.Elm.Details.addLocalOptGraph` registers it.
+`Builder.Deps.Details.addLocalOptGraph` registers it.
 -}
 packageKernelGraph : String -> String -> Opt.GlobalGraph
 packageKernelGraph moduleName marker =

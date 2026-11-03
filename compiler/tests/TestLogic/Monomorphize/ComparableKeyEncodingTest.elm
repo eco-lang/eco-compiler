@@ -4,7 +4,7 @@ module TestLogic.Monomorphize.ComparableKeyEncodingTest exposing (suite)
 key equalities that must agree with them, or to the hash-consing table built on
 the hashes, can change which types the compiler treats as the same, and so
 which specializations it creates, without a compile error. These tests pin all
-four. The hash-consing table is `Compiler.AST.Intern`: when it already holds a
+four. The hash-consing table is `Compiler.IR.Mono.Intern`: when it already holds a
 composite type `==` to the one given, `Intern.hashCons` hands back that stored
 copy, so that equal types can share one object.
 
@@ -17,7 +17,7 @@ A `MonoType` has two keys. Its _specialization key_ is the string
 `Mono.toComparableMonoType` builds, which writes each arrow's lambda-set
 annotation. Its _layout key_ is the same string with every arrow written `A(`,
 whatever its annotation. The rules of the encoding belong to
-`Compiler.AST.Monomorphized`. That module builds only the specialization key as
+`Compiler.IR.Mono`. That module builds only the specialization key as
 a string; `eqKeyLayout` and `layoutHashOf` work on the type directly. So this
 module carries its own encoder, `referenceKey`, written with an explicit work
 stack rather than the recursion `toComparableMonoType` uses: `referenceKey True`
@@ -80,11 +80,11 @@ hit carried over from an earlier `Intern.widenSets` call, and
 -}
 
 import Bitwise
-import Compiler.AST.Intern as Intern
-import Compiler.AST.Monomorphized as Mono exposing (Constraint(..), LambdaSetAnno(..), MonoType(..))
-import Compiler.AST.TypeIds as TypeIds exposing (MVarId)
-import Compiler.Data.Id as Id
+import Compiler.Core.Id as Id
+import Compiler.Core.TypeIds as TypeIds exposing (MVarId)
 import Compiler.Elm.ModuleName as ModuleName
+import Compiler.IR.Mono as Mono exposing (Constraint(..), LambdaSetAnno(..), MonoType(..))
+import Compiler.IR.Mono.Intern as Intern
 import Dict
 import Expect
 import Test exposing (Test)

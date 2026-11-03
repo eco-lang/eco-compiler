@@ -2,7 +2,7 @@ module Builder.Eco.Config exposing (load)
 
 {-| The compiler's tuning settings can be set per project, in a file, and per
 run, in the environment, and this module gathers both into one `EcoConfig`.
-`Compiler.Eco.Config` owns that type: what each setting means, its default, and
+`Compiler.Config` owns that type: what each setting means, its default, and
 which settings put a token in the `Config.hash` cache key.
 
 The settings come from two places, applied in this order. The first is a JSON
@@ -29,7 +29,7 @@ read first, so a per-field value wins.
 -}
 
 import Builder.Reporting.Exit as Exit
-import Compiler.Eco.Config as Config exposing (EcoConfig, InlineConfig)
+import Compiler.Config as Config exposing (EcoConfig, InlineConfig)
 import Compiler.Json.Decode as D
 import Eco.File
 import System.IO as IO exposing (FilePath)

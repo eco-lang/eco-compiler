@@ -28,8 +28,8 @@ of ending the process, `exitWith` crashes the program.
 -}
 
 import Eco.Process
+import System.Crash exposing (crash)
 import Task exposing (Task)
-import Utils.Crash exposing (crash)
 
 
 {-| How a process ended, or is to end, as its exit code.

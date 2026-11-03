@@ -9,11 +9,11 @@ that takes ownership of it.
 A _lambda-set member_ is a number naming one function value, and the graph can
 hold several closures that are all instances of the same member. A parameter
 is _borrowed_ when the callee does not take ownership of the argument.
-`Compiler.GlobalOpt.Borrow.deriveFacts` stores one borrow signature per member.
+`Compiler.MonoOpt.Borrow.deriveFacts` stores one borrow signature per member.
 When the member has one instance, or all its instances have the same
-`Compiler.GlobalOpt.AbiCloning.instanceFingerprint`, that signature is the
+`Compiler.MonoOpt.AbiCloning.instanceFingerprint`, that signature is the
 first instance's. Otherwise it is the _meet_ of all of them, in which a
-parameter is borrowed only if every instance borrows it. `Compiler.GlobalOpt.Borrow`
+parameter is borrowed only if every instance borrows it. `Compiler.MonoOpt.Borrow`
 owns this rule.
 
 Each reading is taken by `borrowedOf`, which builds a graph whose only node is
@@ -22,7 +22,7 @@ one member `member` and takes one `String` parameter, `x`. Its body is either
 `owningBody`, which returns `x`, or `borrowingBody`, which ignores `x` and
 returns a string literal. `borrowedOf` runs `deriveFacts` on the graph and
 reads the member's wholly borrowed parameters (as
-`Compiler.GlobalOpt.Borrow.Facts` defines them) with
+`Compiler.MonoOpt.Borrow.Facts` defines them) with
 `Facts.borrowedParamsOfLambda`. The last test takes two readings, each on its
 own graph, and compares them.
 
@@ -48,12 +48,12 @@ took the meet.
 -}
 
 import Array
-import Compiler.AST.Monomorphized as Mono
-import Compiler.Data.BitSet as BitSet
+import Compiler.Core.Annotation as A
 import Compiler.Elm.ModuleName as ModuleName
-import Compiler.GlobalOpt.Borrow as Borrow
-import Compiler.GlobalOpt.Borrow.Facts as Facts
-import Compiler.Reporting.Annotation as A
+import Compiler.IR.Mono as Mono
+import Compiler.MonoOpt.Borrow as Borrow
+import Compiler.MonoOpt.Borrow.Facts as Facts
+import Data.BitSet as BitSet
 import Dict
 import Expect
 import Set

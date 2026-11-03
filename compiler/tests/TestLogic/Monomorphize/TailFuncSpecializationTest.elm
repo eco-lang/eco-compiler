@@ -40,8 +40,6 @@ global optimization.
 -}
 
 import Array
-import Compiler.AST.Monomorphized as Mono
-import Compiler.AST.Source as Src
 import Compiler.AST.SourceBuilder
     exposing
         ( binopsExpr
@@ -54,6 +52,8 @@ import Compiler.AST.SourceBuilder
         , tType
         , varExpr
         )
+import Compiler.IR.Mono as Mono
+import Compiler.IR.Source as Src
 import Expect exposing (Expectation)
 import Test exposing (Test)
 import TestLogic.TestPipeline as Pipeline

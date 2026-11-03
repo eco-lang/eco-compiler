@@ -4,7 +4,7 @@ module TestLogic.Generate.CodeGen.JoinpointUniqueId exposing (expectJoinpointUni
 an `eco.joinpoint` op (a loop head, identified within its function by an
 integer `id`) and an `eco.jump` that re-enters one by `id`; two joinpoints with
 the same `id` would make a jump ambiguous. The code generator does not use that
-pair for tail recursion: `Compiler.Generate.MLIR.TailRec` lowers every
+pair for tail recursion: `Compiler.GenerateMlir.TailRec` lowers every
 self-tail-recursive function (a `MonoTailFunc`) to an `scf.while` loop. So a
 check of joinpoint ids alone finds nothing to check on generated MLIR; this
 module checks the lowering that is generated, and keeps the id check for any
@@ -17,7 +17,7 @@ joinpoint that does appear.
     `MonoTailCall`, when the module has a top-level `func.func` named for it
     (`sym_name` ending in `_$_<SpecId>`): that function holds no `scf.while`
     (the tail call was not lowered to a loop), or holds an `eco.jump` (the
-    code generator emits none: `Compiler.Generate.MLIR.Expr.generateExpr`
+    code generator emits none: `Compiler.GenerateMlir.Expr.generateExpr`
     crashes on a `MonoTailCall` that `TailRec` did not lower);
   - within any top-level `func.func`, an `eco.joinpoint` with no integer `id`,
     or one whose `id` an earlier joinpoint of the same function already has.
@@ -31,9 +31,9 @@ checks every `eco.jump` against its enclosing joinpoints.
 -}
 
 import Array
-import Compiler.AST.Monomorphized as Mono
-import Compiler.AST.Source as Src
-import Compiler.Monomorphize.MonoTraverse as MonoTraverse
+import Compiler.IR.Mono as Mono
+import Compiler.IR.Mono.Traverse as MonoTraverse
+import Compiler.IR.Source as Src
 import Dict
 import Expect exposing (Expectation)
 import Mlir.Mlir exposing (MlirModule, MlirOp)

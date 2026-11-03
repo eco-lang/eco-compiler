@@ -23,7 +23,7 @@ block as the entry block or by its position in the region.
 
 -}
 
-import Compiler.AST.Source as Src
+import Compiler.IR.Source as Src
 import Expect exposing (Expectation)
 import Mlir.Mlir exposing (MlirBlock, MlirModule, MlirOp, MlirRegion)
 import TestLogic.Generate.CodeGen.Invariants

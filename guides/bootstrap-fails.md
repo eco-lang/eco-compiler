@@ -72,7 +72,7 @@ latency unchanged. Remaining gating issue is bootstrap throughput
 
 **Stage:** 7 (native self-compile)
 **Symptom:** `Eco crash: Error on unsafeIndex!` from
-`Compiler.Parse.Primitives.unsafeIndex`. The 9811-character
+`Compiler.Lexer.Primitives.unsafeIndex`. The 9811-character
 `Tag_String` source code for the first module being parsed
 (Terminal.Bump) is read correctly for ~94,339 calls, then a major
 GC fires between calls 94,339 and 94,340 and the cell at the same

@@ -22,12 +22,12 @@ with a nested `Chain` that has the same failure), and a wider one becomes a
 -}
 
 import Array exposing (Array)
-import Compiler.AST.Canonical as Can
-import Compiler.AST.Optimized as Opt
-import Compiler.Data.Name as Name
+import Compiler.Core.Name as Name
+import Compiler.IR.Canonical as Can
+import Compiler.IR.Optimized as Opt
 import Compiler.LocalOpt.Erased.DecisionTree as DT
 import Prelude
-import Utils.Crash exposing (crash)
+import System.Crash exposing (crash)
 
 
 

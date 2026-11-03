@@ -65,7 +65,6 @@ references.
 
 -}
 
-import Compiler.AST.Source as Src
 import Compiler.AST.SourceBuilder
     exposing
         ( AliasDef
@@ -109,6 +108,7 @@ import Compiler.AST.SourceBuilder
         , updateExpr
         , varExpr
         )
+import Compiler.IR.Source as Src
 import Expect exposing (Expectation)
 import Test exposing (Test)
 

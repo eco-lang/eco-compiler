@@ -31,19 +31,19 @@ constrained as the frames are folded back up.
 
 -}
 
-import Compiler.AST.Canonical as Can
-import Compiler.AST.TypeVars as Vars
-import Compiler.Data.Index as Index
-import Compiler.Data.Name as Name
+import Compiler.Core.Annotation as A
+import Compiler.Core.Index as Index
+import Compiler.Core.Name as Name
 import Compiler.Elm.ModuleName as ModuleName
-import Compiler.Reporting.Annotation as A
-import Compiler.Reporting.Error.Type as E
+import Compiler.IR.Canonical as Can
+import Compiler.IR.Typed.TypeVars as Vars
 import Compiler.Type.Constrain.Common as Common exposing (State(..), extractVarFromType, getType, patternNeedsConstraint, patternToCategory)
 import Compiler.Type.Constrain.Typed.NodeIds as NodeIds
+import Compiler.Type.Error as E
 import Compiler.Type.Instantiate as Instantiate
+import Compiler.Type.State.IO as IO exposing (IO)
 import Compiler.Type.Type as Type exposing (Type)
 import Dict exposing (Dict)
-import System.TypeCheck.IO as IO exposing (IO)
 
 
 

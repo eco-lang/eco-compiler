@@ -56,7 +56,7 @@ box (`indent`, `prefix`, `addSuffix`) and turn a box into text (`render`).
 import Basics.Extra exposing (flip)
 import Prelude
 import Result.Extra as Result
-import Utils.Crash exposing (crash)
+import System.Crash exposing (crash)
 import Utils.Main as Utils
 
 

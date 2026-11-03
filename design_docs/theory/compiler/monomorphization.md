@@ -64,7 +64,7 @@ leafKeyTag mt =
             0
 ```
 
-From `compiler/src/Compiler/AST/Monomorphized.elm`, used by the key equality `eqKeySpec`. Notice that the variable's number never reaches the key, and that an open number gets Int's tag. Function arrows also compare their lambda-set annotations, described below.
+From `compiler/src/Compiler/IR/Mono.elm`, used by the key equality `eqKeySpec`. Notice that the variable's number never reaches the key, and that an open number gets Int's tag. Function arrows also compare their lambda-set annotations, described below.
 
 The output types have only two kinds of open variable. One is an undecided `number`, which must never reach code generation. The other is every other variable, including those constrained to `comparable` or `appendable`: their values are always boxed, so the class never changes a layout and needs no defaulting. The class still matters while solving. The store loads such a variable with its class, and the unifier checks it against the same Char, String and List types the type checker uses.
 
@@ -103,7 +103,7 @@ enqueueSpec (keyed path) on key K:
   hit, join changes stored type      -> markDirty (re-run in a drain-end round)
 ```
 
-Pseudocode of `drain` and `processItem` in `compiler/src/Compiler/MonoSolver/Monomorphize.elm`, with the enqueue in `MonoSolver/Engine.elm` and the interning in `Monomorphize/Registry.elm`. Notice three things. The reset replaces all per-item state, so nothing typed in one item survives into the next. A repeated demand never re-translates on the spot: a specialization whose stored type widens is marked and re-run in whole rounds once the list is empty. And a watchdog trip is acted on only between items.
+Pseudocode of `drain` and `processItem` in `compiler/src/Compiler/Monomorphize/Solver/Monomorphize.elm`, with the enqueue in `MonoSolver/Engine.elm` and the interning in `Monomorphize/Registry.elm`. Notice three things. The reset replaces all per-item state, so nothing typed in one item survives into the next. A repeated demand never re-translates on the spot: a specialization whose stored type widens is marked and re-run in whole rounds once the list is empty. And a watchdog trip is acted on only between items.
 
 ## When the consumer decides the type
 
@@ -209,17 +209,17 @@ Parent: [compiler.md](compiler.md). Sibling that runs inside this pass: [lambda-
 Code:
 
 - `compiler/src/Compiler/Pipeline/Steps.elm`: preparation, the pre-pass rewrites, the pass, its checks, inlining and pruning; `checkMinted`.
-- `compiler/src/Compiler/Eco/Config.elm`: `MonoConfig`, `LssConfig`, `Config.default` (`EngineSolver`) and `monoDecoder`, whose `D.optionalField "engine" D.string "subst"` makes a `mono` object without `engine` select `EngineSubst`. `compiler/src/Builder/Eco/Config.elm`: the `ECO_MONO_ENGINE=subst|solver|diff` override.
-- `compiler/src/Compiler/MonoSolver/Monomorphize.elm`: the driver (seeds, `drain`, `processItem`, `specializeNodeSaturating`, assembly).
-- `compiler/src/Compiler/MonoSolver/Engine.elm`: engine state `S`, `resetItem`, `enqueueSpec`, the watchdog check, `harvestSuperTableExcept`, the field-cap comments.
-- `compiler/src/Compiler/MonoSolver/Store.elm`: loading, `unifyStrictS`, `unifyBestEffortS`, `zonkToMono`.
-- `compiler/src/Compiler/MonoSolver/Zonk.elm`: classifying a canonical type into a `MonoType` without a store.
-- `compiler/src/Compiler/MonoSolver/Translate.elm`: translation, `connectTypes`, `demandUnifyRoot`, number and local splitting, kernel signatures, `kernelDevirtShapeOk`.
-- `compiler/src/Compiler/MonoSolver/Diff.elm`: the comparison mode.
-- `compiler/src/Compiler/Monomorphize/Registry.elm`, `compiler/src/Compiler/Monomorphize/Prune.elm`: interning, joins, `watchdogAdvice`, reachability, `pruneUnreachableSpecs` (number closing) and `pruneAfterInline`.
+- `compiler/src/Compiler/Config.elm`: `MonoConfig`, `LssConfig`, `Config.default` (`EngineSolver`) and `monoDecoder`, whose `D.optionalField "engine" D.string "subst"` makes a `mono` object without `engine` select `EngineSubst`. `compiler/src/Builder/Eco/Config.elm`: the `ECO_MONO_ENGINE=subst|solver|diff` override.
+- `compiler/src/Compiler/Monomorphize/Solver/Monomorphize.elm`: the driver (seeds, `drain`, `processItem`, `specializeNodeSaturating`, assembly).
+- `compiler/src/Compiler/Monomorphize/Solver/Engine.elm`: engine state `S`, `resetItem`, `enqueueSpec`, the watchdog check, `harvestSuperTableExcept`, the field-cap comments.
+- `compiler/src/Compiler/Monomorphize/Solver/Store.elm`: loading, `unifyStrictS`, `unifyBestEffortS`, `zonkToMono`.
+- `compiler/src/Compiler/Monomorphize/Solver/Zonk.elm`: classifying a canonical type into a `MonoType` without a store.
+- `compiler/src/Compiler/Monomorphize/Solver/Translate.elm`: translation, `connectTypes`, `demandUnifyRoot`, number and local splitting, kernel signatures, `kernelDevirtShapeOk`.
+- `compiler/src/Compiler/Monomorphize/Diff.elm`: the comparison mode.
+- `compiler/src/Compiler/IR/Mono/Registry.elm`, `compiler/src/Compiler/Monomorphize/Prune.elm`: interning, joins, `watchdogAdvice`, reachability, `pruneUnreachableSpecs` (number closing) and `pruneAfterInline`.
 - `compiler/src/Compiler/Monomorphize/ValidateLimits.elm`, `compiler/src/Compiler/Monomorphize/ValidateLayout.elm`: the post-pass checks.
-- `compiler/src/Compiler/AST/Monomorphized.elm`: `MonoType`, `Constraint`, `leafKeyTag`, `eqKeySpec`, `LambdaSetAnno`, `SpecKey`, `CtorShape`.
-- `compiler/src/Compiler/Monomorphize/Specialize.elm`, `compiler/src/Compiler/Monomorphize/TypeSubst.elm`: the substitution engine.
+- `compiler/src/Compiler/IR/Mono.elm`: `MonoType`, `Constraint`, `leafKeyTag`, `eqKeySpec`, `LambdaSetAnno`, `SpecKey`, `CtorShape`.
+- `compiler/src/Compiler/Monomorphize/Subst/Specialize.elm`, `compiler/src/Compiler/Monomorphize/TypeSubst.elm`: the substitution engine.
 - `compiler/src/Compiler/Type/Unify.elm`: the unifier shared with the type checker.
 - `compiler/CMakeLists.txt`: the self-compilation stage that pins the substitution engine.
 

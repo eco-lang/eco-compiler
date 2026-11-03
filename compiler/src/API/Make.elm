@@ -1,11 +1,11 @@
-module API.Make exposing (run, Flags(..))
+module API.Make exposing (Flags(..), run)
 
 {-| Compiles one Elm file for a caller that wants the result back as a value
 rather than as a file on disk.
 
 `run` builds the file in the project around the current directory and returns
 a single HTML page as a string: the generated JavaScript, wrapped by
-`Compiler.Generate.Html.sandwich` so that the page starts the program in the
+`Compiler.GenerateJs.Html.sandwich` so that the page starts the program in the
 one module that defines `main`. The JavaScript back end is the only one used
 here, and HTML is the only output.
 
@@ -16,22 +16,22 @@ module defines `main`, or more than one does, crashes the process instead.
 
 import Builder.BackgroundWriter as BW
 import Builder.Build as Build
+import Builder.Deps.Details as Details
 import Builder.Deps.Registry as Registry
 import Builder.Eco.FEStats as FEStats
-import Builder.Elm.Details as Details
 import Builder.Generate as Generate
 import Builder.Reporting as Reporting
 import Builder.Reporting.Exit as Exit
 import Builder.Stuff as Stuff
-import Compiler.AST.Optimized as Opt
-import Compiler.Data.NonEmptyList as NE
 import Compiler.Elm.ModuleName as ModuleName
-import Compiler.Generate.CodeGen as CodeGen
-import Compiler.Generate.Html as Html
+import Compiler.GenerateJs.CodeGen as CodeGen
+import Compiler.GenerateJs.Html as Html
+import Compiler.IR.Optimized as Opt
+import Data.NonEmptyList as NE
 import Maybe.Extra as Maybe
+import System.Crash exposing (crash)
 import System.IO exposing (FilePath)
 import Task exposing (Task)
-import Utils.Crash exposing (crash)
 import Utils.Task.Extra as Task
 
 

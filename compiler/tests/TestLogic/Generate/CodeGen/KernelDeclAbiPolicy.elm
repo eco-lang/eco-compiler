@@ -5,7 +5,7 @@ the generated MLIR declares kernels as top-level `func.func` ops marked
 `is_kernel`. This module checks the types on those declarations against the
 backend ABI policy (KERN\_006).
 
-`Compiler.Generate.MLIR.KernelAbi.kernelBackendAbiPolicy` is `ElmDerived` for
+`Compiler.GenerateMlir.KernelAbi.kernelBackendAbiPolicy` is `ElmDerived` for
 every kernel: each parameter and the result get `Types.monoTypeToAbi` of their
 Mono type. That function only ever yields `i64` (Int), `f64` (Float), `i32`
 (Char) or `!eco.value` (everything else, Bool included, REP\_ABI\_001). So
@@ -31,8 +31,8 @@ unsuffixed kernel's types match the Mono types at its call sites (that is
 
 -}
 
-import Compiler.AST.Source as Src
-import Compiler.Generate.MLIR.KernelAbi exposing (KernelBackendAbiPolicy(..), kernelBackendAbiPolicy)
+import Compiler.GenerateMlir.KernelAbi exposing (KernelBackendAbiPolicy(..), kernelBackendAbiPolicy)
+import Compiler.IR.Source as Src
 import Expect exposing (Expectation)
 import Mlir.Mlir exposing (MlirModule, MlirOp, MlirType(..))
 import TestLogic.Generate.CodeGen.Invariants

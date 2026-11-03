@@ -8,7 +8,7 @@ Destructuring on the typed path depends on two stages agreeing about a name.
 The typed optimizer (`Compiler.LocalOpt.Typed.Expression`) turns
 `let ( a, b ) = e in body` into a `let` that binds `e` to a generated name,
 around one destructor per variable, each reading its part from that name. The
-substitution-engine monomorphizer (`Compiler.Monomorphize.Specialize`) crashes
+substitution-engine monomorphizer (`Compiler.Monomorphize.Subst.Specialize`) crashes
 if that name is not in its variable environment when it reaches a destructor.
 It also treats a `let` binding that is not itself a function, but whose type
 contains one together with an unresolved type variable, differently from
@@ -45,7 +45,6 @@ observes.
 
 -}
 
-import Compiler.AST.Source as Src
 import Compiler.AST.SourceBuilder
     exposing
         ( TypedDef
@@ -75,6 +74,7 @@ import Compiler.AST.SourceBuilder
         , varExpr
         )
 import Compiler.BulkCheck exposing (TestCase, bulkCheck)
+import Compiler.IR.Source as Src
 import Expect exposing (Expectation)
 import Test exposing (Test)
 

@@ -171,7 +171,7 @@ After tier 3, assert MONO_027: no `MonoAccessorValue` in reachable expressions.
 ### Step 1: Add `MonoAccessorValue` to the IR [DONE]
 
 **Files:**
-- `compiler/src/Compiler/AST/Monomorphized.elm`
+- `compiler/src/Compiler/IR/Mono.elm`
 
 **Changes:**
 1. Add `MonoAccessorValue Region Name MonoType` variant to the `MonoExpr` type (after `MonoUnit`).
@@ -189,7 +189,7 @@ recurse/propagate; MLIR codegen crashes with a diagnostic message.
 ### Step 3: Change accessor introduction in `specializeExpr` [DONE]
 
 **Files:**
-- `compiler/src/Compiler/Monomorphize/Specialize.elm`
+- `compiler/src/Compiler/Monomorphize/Subst/Specialize.elm`
 - `compiler/src/Compiler/MonoDirect/Specialize.elm`
 
 **Changes:** Use `ResolveAccessorValues.accessorTypeNeedsDefer` to decide:
@@ -295,7 +295,7 @@ This is the final safety net.
 ### Step 5: Wire the pass into the worklist loop [DONE]
 
 **Files:**
-- `compiler/src/Compiler/Monomorphize/Monomorphize.elm`
+- `compiler/src/Compiler/Monomorphize/Subst/Monomorphize.elm`
 - `compiler/src/Compiler/MonoDirect/Monomorphize.elm`
 
 After `specializeNode` produces a `MonoNode`, call `ResolveAccessorValues.rewriteNode`

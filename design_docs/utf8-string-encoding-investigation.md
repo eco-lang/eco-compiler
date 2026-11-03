@@ -623,7 +623,7 @@ Tracing `"hello"` through the compiler:
 
 1. Source files are UTF-8; the parser stores the literal in the AST.
 2. Monomorphized IR carries it as `LStr String`
-   (`Compiler/AST/Monomorphized.elm:607`).
+   (`Compiler/IR/Mono.elm:607`).
 3. MLIR generation emits `eco.string_literal` with a **StringAttr — which is
    UTF-8 by MLIR definition** (`Expr.elm:527-541` → `Ops.ecoStringLiteral`).
    The MLIR bytecode string section stores these bytes (with the

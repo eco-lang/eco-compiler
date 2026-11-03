@@ -9,9 +9,9 @@ this module decides which checks to make and in what order, for the erased
 
 The value a `case` examines is the _scrutinee_. A _path_ names one part of it,
 such as the second field of a tuple or the argument of a constructor, as
-`Compiler.AST.DecisionTree.Path` describes. A _test_ is a question about the
+`Compiler.IR.DecisionTree.Path` describes. A _test_ is a question about the
 value at a path, such as whether it was built with a particular constructor or
-equals a particular literal, as `Compiler.AST.DecisionTree.Test` describes.
+equals a particular literal, as `Compiler.IR.DecisionTree.Test` describes.
 `compile` takes the patterns of one `case`, each paired with the index of its
 branch, and returns a `DecisionTree`: a tree of tests whose leaves name the
 branch to take.
@@ -38,15 +38,15 @@ parts, and an alias pattern `p as x` by `p` and the variable `x`.
 
 -}
 
-import Compiler.AST.Canonical as Can
-import Compiler.AST.DecisionTree.Path as Path
-import Compiler.AST.DecisionTree.Test as Test
-import Compiler.Data.Index as Index
-import Compiler.Elm.String as ES
-import Compiler.Reporting.Annotation as A
+import Compiler.Core.Annotation as A
+import Compiler.Core.Index as Index
+import Compiler.IR.Canonical as Can
+import Compiler.IR.DecisionTree.Path as Path
+import Compiler.IR.DecisionTree.Test as Test
+import Compiler.IR.Source.StringLiteral as ES
 import Data.Set as EverySet
 import Prelude
-import Utils.Crash exposing (crash)
+import System.Crash exposing (crash)
 import Utils.Main as Utils
 
 
@@ -95,14 +95,14 @@ type DecisionTree
     | Decision Path (List ( Test, DecisionTree )) (Maybe DecisionTree)
 
 
-{-| A question about the value at one path, as `Compiler.AST.DecisionTree.Test`
+{-| A question about the value at one path, as `Compiler.IR.DecisionTree.Test`
 describes. This is another name for that type, not a new one.
 -}
 type alias Test =
     Test.Test
 
 
-{-| How to reach one part of the scrutinee, as `Compiler.AST.DecisionTree.Path`
+{-| How to reach one part of the scrutinee, as `Compiler.IR.DecisionTree.Path`
 describes. This is another name for that type, not a new one.
 -}
 type alias Path =

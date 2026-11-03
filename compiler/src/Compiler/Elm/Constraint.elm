@@ -54,7 +54,7 @@ constraint does not decode.
 import Compiler.Elm.Version as V
 import Compiler.Json.Decode as D exposing (Decoder)
 import Compiler.Json.Encode as E exposing (Value)
-import Compiler.Parse.Primitives as P exposing (Col, Row)
+import Compiler.Lexer.Primitives as P exposing (Col, Row)
 
 
 
@@ -272,12 +272,14 @@ not only `Compiler.Elm.Version.elmCompiler`. So a package that needs
 The test is that the constraint's intersection with `0.19.0 <= v < 0.20.0` is
 not empty. An intersection whose two versions are equal is empty unless both of
 its bounds are inclusive.
+
 -}
 goodElm : Constraint -> Bool
 goodElm constraint =
     case intersect constraint (untilNextMinor (V.Version 0 19 0)) of
         Just (Range r) ->
-            V.compare r.lower r.upper == LT
+            V.compare r.lower r.upper
+                == LT
                 || (r.lowerOp == LessOrEqual && r.upperOp == LessOrEqual)
 
         Nothing ->

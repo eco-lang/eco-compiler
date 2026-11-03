@@ -4,7 +4,7 @@ module SourceIR.TailRecLetRecClosureCases exposing (expectSuite)
 inside one of its branches, a local function that calls itself.
 
 A function that calls itself in tail position is compiled by the MLIR back end
-as a loop (`Compiler.Generate.MLIR.TailRec`), and a `let` met in the loop body
+as a loop (`Compiler.GenerateMlir.TailRec`), and a `let` met in the loop body
 goes through that module's own let step, which sets up the names the `let`
 binds before each definition is compiled. A local function defined there must
 be able to refer to its own name from inside its body. This module builds
@@ -37,7 +37,6 @@ local functions that call each other.
 
 -}
 
-import Compiler.AST.Source as Src
 import Compiler.AST.SourceBuilder
     exposing
         ( TypedDef
@@ -62,6 +61,7 @@ import Compiler.AST.SourceBuilder
         , varExpr
         )
 import Compiler.BulkCheck exposing (TestCase, bulkCheck)
+import Compiler.IR.Source as Src
 import Expect exposing (Expectation)
 import Test exposing (Test)
 

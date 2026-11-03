@@ -2,11 +2,11 @@ module TestLogic.Generate.CodeGen.E2V2StagedDispatchTest exposing (suite)
 
 {-| Checks that global optimization stamps a closure call that supplies more
 arguments than the called lambda's first stage takes. When
-`Compiler.GlobalOpt.AbiCloning` declines to stamp a call, it leaves the call
+`Compiler.MonoOpt.AbiCloning` declines to stamp a call, it leaves the call
 unchanged and reports no error, so without this test a lost stamp would go
 unnoticed.
 
-A _stamp_ is what `Compiler.GlobalOpt.AbiCloning` writes into the `CallInfo`
+A _stamp_ is what `Compiler.MonoOpt.AbiCloning` writes into the `CallInfo`
 of a call whose callee lambda-set specialization has narrowed to a single
 function value: it sets the call's `fastEvaluator` and `captureAbi`. A curried
 lambda such as `\a -> \b -> e` takes its arguments in stages, one per lambda,
@@ -34,7 +34,7 @@ lambda-set specialization on, then the inliner and global optimization):
 The call `f 10 (...)` is the over-applied site, and the curried lambda is the
 only function value passed for `f`. The recursion is deliberately not a tail
 call, so `applyStaged` is not compiled as a tail function; the inliner's
-loopification in `Compiler.GlobalOpt.MonoInlineSimplify` considers only tail
+loopification in `Compiler.MonoOpt.InlineSimplify` considers only tail
 functions.
 
 The one test passes when some call in a node of the optimized graph has a
@@ -49,8 +49,6 @@ the MLIR back end emits a staged call.
 -}
 
 import Array
-import Compiler.AST.Monomorphized as Mono
-import Compiler.AST.Source as Src
 import Compiler.AST.SourceBuilder
     exposing
         ( TypedDef
@@ -65,7 +63,9 @@ import Compiler.AST.SourceBuilder
         , tType
         , varExpr
         )
-import Compiler.Monomorphize.MonoTraverse as MonoTraverse
+import Compiler.IR.Mono as Mono
+import Compiler.IR.Mono.Traverse as MonoTraverse
+import Compiler.IR.Source as Src
 import Expect
 import Test exposing (Test)
 import TestLogic.TestPipeline as Pipeline

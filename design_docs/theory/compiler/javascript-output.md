@@ -23,7 +23,7 @@ type alias CodeGen =
     }
 ```
 
-From `compiler/src/Compiler/Generate/CodeGen.elm`. The interface takes the erased `Opt` graph and the list of entry points. The cut part holds two entry points for the interactive loop. Because the graph's type is fixed in the record, a JavaScript back end cannot be handed typed data by accident. Its result is text. The MLIR generator has no such interface: the build streams it through the generator's own writer (`Compiler.Generate.MLIR.Backend`), and the test harnesses call the generator's functions directly.
+From `compiler/src/Compiler/GenerateJs/CodeGen.elm`. The interface takes the erased `Opt` graph and the list of entry points. The cut part holds two entry points for the interactive loop. Because the graph's type is fixed in the record, a JavaScript back end cannot be handed typed data by accident. Its result is text. The MLIR generator has no such interface: the build streams it through the generator's own writer (`Compiler.GenerateMlir.Backend`), and the test harnesses call the generator's functions directly.
 
 The adapter that puts the stock generator behind the interface is a few lines long. The build driver wraps it in three drivers, one per mode, that load the cached erased objects, assemble the graph and the entry points, and read module sources when source maps are wanted. Both targets share the rest of the build driver instead of each carrying a fork of it.
 
@@ -86,14 +86,14 @@ Parent: [compiler.md](compiler.md).
 
 Code:
 
-- `compiler/src/Compiler/Generate/CodeGen.elm`: the `CodeGen` interface and the text `Output`.
-- `compiler/src/Compiler/Generate/CodeGen/JavaScript.elm`: the adapter to the stock generator.
-- `compiler/src/Compiler/Generate/JavaScript.elm`: the graph walk, the helpers, kernel chunks, the closing `EXTRA GUIDA CORE` block (`_Utils_TupleN` and its `_Debug_toAnsiString` wrapper), REPL output and source maps.
-- `compiler/src/Compiler/Generate/JavaScript/Expression.elm`: lowering of each expression.
-- `compiler/src/Compiler/Generate/JavaScript/Name.elm`: identifier choice, including `fromKernel` (Elm kernel modules, `_Module_name`) and `fromEcoKernel` (Eco kernel modules, `_Eco_Module_name`).
-- `compiler/src/Compiler/Generate/JavaScript/Builder.elm`, `SourceMap.elm`, `Functions.elm`: printing, source maps, and the `F2`..`F9` and `A2`..`A9` helpers.
-- `compiler/src/Compiler/Generate/Mode.elm`: `Dev (Maybe Types)` and `Prod ShortFieldNames`.
-- `compiler/src/Compiler/Generate/Html.elm`: the HTML page (`sandwich`). It tells the source map that two lines precede the JavaScript (`leadingLines`) but writes more than two, so source-map line numbers for HTML output are likely off by the difference.
+- `compiler/src/Compiler/GenerateJs/CodeGen.elm`: the `CodeGen` interface and the text `Output`.
+- `compiler/src/Compiler/GenerateJs.elm`: the adapter to the stock generator.
+- `compiler/src/Compiler/GenerateJs/Generate.elm`: the graph walk, the helpers, kernel chunks, the closing `EXTRA GUIDA CORE` block (`_Utils_TupleN` and its `_Debug_toAnsiString` wrapper), REPL output and source maps.
+- `compiler/src/Compiler/GenerateJs/Expression.elm`: lowering of each expression.
+- `compiler/src/Compiler/GenerateJs/Name.elm`: identifier choice, including `fromKernel` (Elm kernel modules, `_Module_name`) and `fromEcoKernel` (Eco kernel modules, `_Eco_Module_name`).
+- `compiler/src/Compiler/GenerateJs/Builder.elm`, `SourceMap.elm`, `Functions.elm`: printing, source maps, and the `F2`..`F9` and `A2`..`A9` helpers.
+- `compiler/src/Compiler/GenerateJs/Mode.elm`: `Dev (Maybe Types)` and `Prod ShortFieldNames`.
+- `compiler/src/Compiler/GenerateJs/Html.elm`: the HTML page (`sandwich`). It tells the source map that two lines precede the JavaScript (`leadingLines`) but writes more than two, so source-map line numbers for HTML output are likely off by the difference.
 - `compiler/src/Builder/Generate.elm`: `javascriptBackend` and the `debug`, `dev` and `prod` drivers.
 - `compiler/src/Terminal/Make.elm`: output selection (`parseOutput`, `handleArtifacts`) and the `--output`, `--debug`, `--optimize` and `--sourcemaps` options. `compiler/src/API/Make.elm`: the HTML path for the JSON entry point.
 - `compiler/review/src/EnforceBoundaries.elm`: the layer rule that keeps generation downstream of earlier phases.

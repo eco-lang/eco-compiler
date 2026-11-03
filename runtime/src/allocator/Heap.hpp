@@ -383,7 +383,7 @@ inline u64 nullConsWordFor(u32 idx) {
 // values and so has no declaration index of its own (HEAP_029).
 //
 // The compiler tags case branches on such values with the same number, so it must equal
-// `Compiler.Data.CtorTag.constantTag` in the compiler and `value_enc::ConstantTag` in codegen;
+// `Compiler.IR.Runtime.CtorTag.constantTag` in the compiler and `value_enc::ConstantTag` in codegen;
 // check-ctor-tags.sh checks that.
 #define CONSTANT_TAG 0xFFFD
 

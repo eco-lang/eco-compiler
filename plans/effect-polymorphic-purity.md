@@ -32,7 +32,7 @@ and F-2 (the LSS budget) remain independent items.
 
 ## Problem statement — three measured defects, one root
 
-`CsePurity.analyze` (`compiler/src/Compiler/GlobalOpt/CsePurity.elm:87-150`)
+`CsePurity.analyze` (`compiler/src/Compiler/MonoOpt/CsePurity.elm:87-150`)
 computes a `Set Int` of safe SpecIds by a poison-propagation fixpoint whose
 `scanBody` (`:175-198`) treats the application of a function-typed **local**
 (parameter or capture) as invisible: `MonoVarLocal` contributes neither poison
@@ -96,21 +96,21 @@ nor a call edge. Three defects follow, all confirmed on the self-compile
 
 ## Files touched
 
-- `compiler/src/Compiler/GlobalOpt/CsePurity.elm` — reworked in place: the
+- `compiler/src/Compiler/MonoOpt/CsePurity.elm` — reworked in place: the
   conditional lattice, transfer function, union-graph SCC fixpoint,
   member layer, instantiation API. The legacy `analyze` path is preserved
   verbatim (renamed `analyzeLegacy`) behind the flag. Module doc rewritten;
   the false bodiless-arm comment replaced with the measured evidence.
-- `compiler/src/Compiler/GlobalOpt/KernelFacts.elm` — the `hofParams` axis:
+- `compiler/src/Compiler/IR/Kernel/Facts.elm` — the `hofParams` axis:
   stored field, `HofMode` type, V9/V10 validation rules, 11 audited rows.
-- `compiler/src/Compiler/GlobalOpt/MonoCse.elm` +
-  `compiler/src/Compiler/GlobalOpt/CseCensus.elm` — oracle construction and
+- `compiler/src/Compiler/MonoOpt/Cse.elm` +
+  `compiler/src/Compiler/MonoOpt/CseCensus.elm` — oracle construction and
   the `admit` twins move to the new API in lockstep; the CSE_001 Float-reach
   refusal lands here (Phase 3.1).
-- `compiler/src/Compiler/GlobalOpt/MapTemplate.elm` — `debugFreedom`,
+- `compiler/src/Compiler/MonoOpt/MapTemplate.elm` — `debugFreedom`,
   `scanLambdaBody`, `applyTargetOk` deleted; licence queries the oracle;
   counters re-plumbed (see Phase 3).
-- `compiler/src/Compiler/Eco/Config.elm` — flag `condPurity : Bool` (default
+- `compiler/src/Compiler/Config.elm` — flag `condPurity : Bool` (default
   ON at landing) + conditional hash token `condp=1` (see Flag & rollback;
   **not `cpur` — that token is TAKEN** by kernel-opt-12's `callPurityAttrs`,
   `Config.elm:726`). Registration follows the house 5-point checklist

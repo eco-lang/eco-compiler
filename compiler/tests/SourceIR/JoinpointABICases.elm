@@ -78,12 +78,11 @@ polymorphic.
 -}
 
 import Array
-import Compiler.AST.Monomorphized as Mono
-import Compiler.AST.Source as Src
 import Compiler.AST.SourceBuilder
     exposing
         ( TypedDef
         , UnionDef
+        , accessExpr
         , binopsExpr
         , boolExpr
         , callExpr
@@ -103,15 +102,16 @@ import Compiler.AST.SourceBuilder
         , pList
         , pRecord
         , pVar
+        , qualVarExpr
         , recordExpr
         , tLambda
         , tRecord
         , tType
         , varExpr
-        , accessExpr
-        , qualVarExpr
         )
 import Compiler.BulkCheck exposing (TestCase, bulkCheck)
+import Compiler.IR.Mono as Mono
+import Compiler.IR.Source as Src
 import Expect exposing (Expectation)
 import Test exposing (Test)
 import TestLogic.TestPipeline exposing (runToGlobalOpt)
@@ -127,7 +127,7 @@ suite =
 
 
 {-| Creates an expectation that `TestLogic.TestPipeline.runToGlobalOpt`, whose
-global optimizer includes `Compiler.GlobalOpt.Staging`, succeeds on `srcModule`
+global optimizer includes `Compiler.MonoOpt.Staging`, succeeds on `srcModule`
 and gives an optimized graph with a `main` and a node array that is not empty.
 -}
 expectGlobalOpt : Src.Module -> Expectation

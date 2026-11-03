@@ -35,7 +35,6 @@ character comparisons outside a `case`.
 
 -}
 
-import Compiler.AST.Source as Src
 import Compiler.AST.SourceBuilder
     exposing
         ( TypedDef
@@ -51,6 +50,7 @@ import Compiler.AST.SourceBuilder
         , tType
         , varExpr
         )
+import Compiler.IR.Source as Src
 import Expect exposing (Expectation)
 import Test exposing (Test)
 import TestLogic.Generate.CodeGen.CmpiPredicateAttr exposing (expectCmpiPredicateAttr, expectCmpiPresentWithPredicate)

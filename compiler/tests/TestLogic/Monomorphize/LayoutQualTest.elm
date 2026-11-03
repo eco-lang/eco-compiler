@@ -89,8 +89,6 @@ the values of the ids the fixtures' lambdas get; and the generated code.
 -}
 
 import Array
-import Compiler.AST.Monomorphized as Mono
-import Compiler.AST.Source as Src
 import Compiler.AST.SourceBuilder
     exposing
         ( TypedDef
@@ -105,11 +103,13 @@ import Compiler.AST.SourceBuilder
         , tType
         , varExpr
         )
-import Compiler.Data.Id as Id
-import Compiler.Eco.Config as Config
+import Compiler.Config as Config
+import Compiler.Core.Id as Id
 import Compiler.Elm.ModuleName as ModuleName
-import Compiler.MonoSolver.Engine as Engine
-import Compiler.Monomorphize.MonoTraverse as MonoTraverse
+import Compiler.IR.Mono as Mono
+import Compiler.IR.Mono.Traverse as MonoTraverse
+import Compiler.IR.Source as Src
+import Compiler.Monomorphize.Solver.Engine as Engine
 import Dict
 import Expect
 import Test exposing (Test)
@@ -660,7 +660,7 @@ layout, so `mid` has two specs, and each mints its own copy of the inner
 lambda. The two specs have equal widened keys, so the two copies are keyed
 alike, although they capture different functions `f`. Whether a call through
 the id minted under that key may be dispatched directly is left to
-`Compiler.GlobalOpt.AbiCloning`, and is not tested here.
+`Compiler.MonoOpt.AbiCloning`, and is not tested here.
 
 -}
 splitModule : Src.Module

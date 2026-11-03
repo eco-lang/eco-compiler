@@ -10,7 +10,7 @@ A _local graph_ is what compiling one module yields: its definitions as nodes
 keyed by global name, its record field counts and, on the typed path, its type
 information. A _global graph_ is the same information for any number of modules
 merged together. Both come in two kinds, the erased graphs of
-`Compiler.AST.Optimized` and the typed graphs of `Compiler.AST.TypedOptimized`,
+`Compiler.IR.Optimized` and the typed graphs of `Compiler.IR.Typed.Optimized`,
 and each kind has its own functions here. A kernel module is added to an erased
 global graph from its parsed chunks rather than from a local graph, by
 `addOptKernel`.
@@ -34,11 +34,11 @@ graph's `main` is not carried into the global graph.
 
 -}
 
-import Compiler.AST.Optimized as Opt
-import Compiler.AST.TypedOptimized as TOpt
-import Compiler.Data.Name as Name exposing (Name)
-import Compiler.Elm.Kernel as K
+import Compiler.Core.Name as Name exposing (Name)
 import Compiler.Elm.ModuleName as ModuleName
+import Compiler.IR.Kernel.Chunk as K
+import Compiler.IR.Optimized as Opt
+import Compiler.IR.Typed.Optimized as TOpt
 import Data.Map
 import Data.Set as EverySet
 import Dict

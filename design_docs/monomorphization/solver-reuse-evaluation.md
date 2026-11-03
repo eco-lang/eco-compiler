@@ -4,7 +4,7 @@
 machinery (TypeSubst.elm and friends) with the type checker's solver, so that
 one load-bearing engine understands Elm's type space. Sources: full reads of
 `Compiler/Type/{Solve,Unify,UnionFind,Instantiate,Occurs,SolverSnapshot,
-SolverRoots,Type,PostSolve}.elm` and `System/TypeCheck/IO.elm`; the
+SolverRoots,Type,PostSolve}.elm` and `Compiler/Type/State/IO.elm`; the
 TypedOptimized IR and its binary codecs; `design_docs/hm-solver-reuse.md`;
 the eleven `plans/*monodirect*.md` documents; and a code-level post-mortem of
 the deleted MonoDirect experiment (recovered from the public mirror at
@@ -241,7 +241,7 @@ untouched.
 
 ### 5.1 The solver is cleanly re-entrant (better than Roc's, for this purpose)
 
-- `type alias IO a = State -> (State, a)` (`System/TypeCheck/IO.elm:132`);
+- `type alias IO a = State -> (State, a)` (`Compiler/Type/State/IO.elm:132`);
   `State` is six fields: the three union-find arrays (weights, pointInfo,
   descriptors), the rank-pool backing array, a name-supply (used only by
   annotation/error rendering), and constraint-gen node ids. **No ambient

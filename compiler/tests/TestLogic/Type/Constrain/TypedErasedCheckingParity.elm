@@ -47,27 +47,27 @@ Among what is not checked:
 -}
 
 import Array
-import Compiler.AST.Canonical as Can
-import Compiler.AST.Source as Src
-import Compiler.AST.TypeVars as Vars
+import Compiler.Canonicalize.Error as CanError
 import Compiler.Canonicalize.Module as Canonicalize
-import Compiler.Data.Name as Name exposing (Name)
-import Compiler.Data.NonEmptyList as NE
-import Compiler.Data.OneOrMore as OneOrMore
+import Compiler.Core.Annotation as A
+import Compiler.Core.Name as Name exposing (Name)
 import Compiler.Elm.Interface.Basic as Basic
-import Compiler.Reporting.Annotation as A
-import Compiler.Reporting.Error.Canonicalize as CanError
-import Compiler.Reporting.Error.Type as TypeError
+import Compiler.IR.Canonical as Can
+import Compiler.IR.Source as Src
+import Compiler.IR.Typed.TypeVars as Vars
 import Compiler.Reporting.Result as Result
 import Compiler.Type.Constrain.Erased.Module as ConstrainErased
 import Compiler.Type.Constrain.Typed.Module as ConstrainTyped
-import Compiler.Type.Error as T
+import Compiler.Type.Error as TypeError
+import Compiler.Type.ErrorType as T
 import Compiler.Type.Solve as Solve
+import Compiler.Type.State.IO as IO
 import Data.Map
+import Data.NonEmptyList as NE
+import Data.OneOrMore as OneOrMore
 import Dict exposing (Dict)
 import Expect
 import Set exposing (Set)
-import System.TypeCheck.IO as IO
 
 
 {-| Returns a one-line description of a canonicalization error for a failure

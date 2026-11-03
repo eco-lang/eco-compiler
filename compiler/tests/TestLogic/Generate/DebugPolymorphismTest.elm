@@ -42,10 +42,10 @@ since nothing is run.
 -}
 
 import Array
-import Compiler.AST.Monomorphized as Mono
-import Compiler.AST.Source as Src
 import Compiler.AST.SourceBuilder as SB
-import Compiler.Monomorphize.MonoTraverse as MonoTraverse
+import Compiler.IR.Mono as Mono
+import Compiler.IR.Mono.Traverse as MonoTraverse
+import Compiler.IR.Source as Src
 import Expect
 import Test exposing (Test)
 import TestLogic.Generate.DebugPolymorphism exposing (expectDebugPolymorphismResolved)

@@ -9,7 +9,7 @@ type, to a node by its id, so two nodes given the same id would have that
 information mixed up.
 
 A _node id_ is the `id` in the `{ id, node }` record that wraps every
-expression and pattern in `Compiler.AST.Canonical`. `Compiler.Canonicalize.Ids`
+expression and pattern in `Compiler.IR.Canonical`. `Compiler.Canonicalize.Ids`
 describes how ids are handed out. What matters here is that expressions and
 patterns draw from one counter, so an expression and a pattern should not share
 an id either, and that the counter starts at 0, so no id canonicalization
@@ -42,15 +42,15 @@ Among what is not tested:
 
 -}
 
-import Compiler.AST.Canonical as Can
-import Compiler.AST.Source as Src
+import Compiler.Canonicalize.Error as CanError
 import Compiler.Canonicalize.Module as Canonicalize
-import Compiler.Data.OneOrMore as OneOrMore
+import Compiler.Core.Annotation as A
 import Compiler.Elm.Interface.Basic as Basic
-import Compiler.Reporting.Annotation as A
-import Compiler.Reporting.Error.Canonicalize as CanError
+import Compiler.IR.Canonical as Can
+import Compiler.IR.Source as Src
 import Compiler.Reporting.Result as Result
 import Data.Map as DMap
+import Data.OneOrMore as OneOrMore
 import Dict
 import Expect
 import Set

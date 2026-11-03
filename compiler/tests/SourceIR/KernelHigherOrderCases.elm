@@ -56,9 +56,9 @@ Among what is not tested: `(==)` partially applied directly, and the library
 
 -}
 
-import Compiler.AST.Source as Src
 import Compiler.AST.SourceBuilder exposing (binopsExpr, boolExpr, callExpr, define, intExpr, lambdaExpr, letExpr, listExpr, makeKernelModule, makeModule, opExpr, pVar, qualVarExpr, strExpr, tupleExpr, varExpr)
 import Compiler.BulkCheck exposing (TestCase, bulkCheck)
+import Compiler.IR.Source as Src
 import Expect exposing (Expectation)
 import Test exposing (Test)
 

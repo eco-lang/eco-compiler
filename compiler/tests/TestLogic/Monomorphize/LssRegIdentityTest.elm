@@ -16,7 +16,7 @@ after one argument, and so on.
 The stamp rests on one fact. A specialization is registered under its global
 as well as its type, so a value at depth `d` of the stored type is that global
 applied to `d` arguments, whatever the rest of the program does.
-`Compiler.MonoSolver.Translate.stampSelfSpine` therefore writes a singleton
+`Compiler.Monomorphize.Solver.Translate.stampSelfSpine` therefore writes a singleton
 `LSet` at each depth of the stored type's spine, up to the global's declared
 arity and at least the head arrow, wherever the annotation is not already an
 `LSet`, which it leaves as it is. Some globals, such as raw kernels, effect
@@ -62,8 +62,6 @@ Among what is not tested:
 -}
 
 import Array
-import Compiler.AST.Monomorphized as Mono
-import Compiler.AST.Source as Src
 import Compiler.AST.SourceBuilder
     exposing
         ( binopsExpr
@@ -78,7 +76,9 @@ import Compiler.AST.SourceBuilder
         , tType
         , varExpr
         )
-import Compiler.Eco.Config as Config
+import Compiler.Config as Config
+import Compiler.IR.Mono as Mono
+import Compiler.IR.Source as Src
 import Dict
 import Expect
 import Test exposing (Test)

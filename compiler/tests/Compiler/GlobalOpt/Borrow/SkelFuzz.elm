@@ -12,7 +12,7 @@ module Compiler.GlobalOpt.Borrow.SkelFuzz exposing
     )
 
 {-| A brute-force model of when a resource is dead, against which the lifetime
-lattice in `Compiler.GlobalOpt.Borrow.Lifetime` can be checked. The lattice
+lattice in `Compiler.MonoOpt.Borrow.Lifetime` can be checked. The lattice
 answers its questions symbolically, from a `Lifetime` built by joining paths;
 this module answers the same questions by listing every way a small piece of
 code can run and looking at each one. It holds no tests itself.
@@ -50,7 +50,7 @@ the skeleton and a live set alone does not determine them. `allSkels` and
 
 -}
 
-import Compiler.GlobalOpt.Borrow.Lifetime as L exposing (Lifetime, Path, Step(..))
+import Compiler.MonoOpt.Borrow.Lifetime as L exposing (Lifetime, Path, Step(..))
 import Fuzz exposing (Fuzzer)
 
 

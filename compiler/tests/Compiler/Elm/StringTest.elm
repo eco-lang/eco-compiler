@@ -1,6 +1,6 @@
 module Compiler.Elm.StringTest exposing (suite)
 
-{-| Regression tests for `Compiler.Elm.String`.
+{-| Regression tests for `Compiler.IR.Source.StringLiteral`.
 
 `fromChunks` on the code point U+FFFF: the surrogate-pair test used to be
 `code < 0xFFFF`, so `CodePoint 0xFFFF` (from the source escape `\u{FFFF}`)
@@ -14,14 +14,14 @@ key of `ab` differs from that of `a,b`.
 
 -}
 
-import Compiler.Elm.String as ES
+import Compiler.IR.Source.StringLiteral as ES
 import Expect
 import Test exposing (Test)
 
 
 suite : Test
 suite =
-    Test.describe "Compiler.Elm.String.fromChunks"
+    Test.describe "Compiler.IR.Source.StringLiteral.fromChunks"
         [ Test.test "CodePoint 0xFFFF is one BMP escape" <|
             \_ ->
                 ES.fromChunks "" [ ES.CodePoint 0xFFFF ]

@@ -91,13 +91,13 @@ canonical names, and constants naming particular modules of `elm/core`,
 
 import Bytes.Decode
 import Bytes.Encode
-import Compiler.AST.StringTable as StringTable exposing (StringTable)
-import Compiler.Data.Name as Name exposing (Name)
+import Compiler.Core.Name as Name exposing (Name)
+import Compiler.Core.StringTable as StringTable exposing (StringTable)
 import Compiler.Elm.Package as Pkg
 import Compiler.Json.Decode as D
 import Compiler.Json.Encode as E
-import Compiler.Parse.Primitives as P
-import Compiler.Parse.Variable as Var
+import Compiler.Lexer.Identifier as Identifier
+import Compiler.Lexer.Primitives as P
 import Utils.Bytes.Decode as BD
 import Utils.Bytes.Encode as BE
 
@@ -176,7 +176,7 @@ encode =
 
 The whole text between the quotes, with escape sequences not decoded, must be
 upper-case identifiers joined by single dots, and must take fewer than 256
-units of position as `Compiler.Parse.Primitives` counts them. When the text is
+units of position as `Compiler.Lexer.Primitives` counts them. When the text is
 not a valid name, the error is the row and column, in the whole file, where
 reading stopped.
 
@@ -236,7 +236,7 @@ chompStart src pos end col =
     let
         width : Int
         width =
-            Var.getUpperWidth src pos end
+            Identifier.getUpperWidth src pos end
     in
     if width == 0 then
         ( False, pos, col )
@@ -267,7 +267,7 @@ chompInner src pos end col =
 
             width : Int
             width =
-                Var.getInnerWidthHelp src pos end word
+                Identifier.getInnerWidthHelp src pos end word
         in
         if width == 0 then
             if word == '.' then
@@ -538,7 +538,7 @@ each string written through `st` as `StringTable.string` writes it.
 
 Every string must be in `st`, unless its index width is 0, as
 `StringTable.disabled`'s is; what happens to a missing one is described in
-`Compiler.AST.StringTable`.
+`Compiler.Core.StringTable`.
 
 `collectStringsFromCanonical` gives a collector the strings this writes.
 

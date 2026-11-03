@@ -6,7 +6,7 @@ stage that mishandles that kind of expression can be caught on a program that
 holds little else.
 
 The module is named after `specializeExpr` in
-`Compiler.Monomorphize.Specialize`, the substitution engine's expression
+`Compiler.Monomorphize.Subst.Specialize`, the substitution engine's expression
 specializer, and `suite` runs the programs through monomorphization on that
 engine.
 
@@ -41,7 +41,6 @@ Among what is not tested: no case uses `Debug`. No case checks the value
 
 -}
 
-import Compiler.AST.Source as Src
 import Compiler.AST.SourceBuilder
     exposing
         ( TypedDef
@@ -67,6 +66,7 @@ import Compiler.AST.SourceBuilder
         , varExpr
         )
 import Compiler.BulkCheck exposing (TestCase, bulkCheck)
+import Compiler.IR.Source as Src
 import Expect exposing (Expectation)
 import Test exposing (Test)
 import TestLogic.TestPipeline exposing (expectMonomorphization)

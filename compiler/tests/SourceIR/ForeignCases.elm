@@ -39,7 +39,6 @@ compares the annotations with the real `Basics`.
 
 -}
 
-import Compiler.AST.Canonical as Can
 import Compiler.AST.CanonicalBuilder
     exposing
         ( callExpr
@@ -57,6 +56,7 @@ import Compiler.AST.CanonicalBuilder
 import Compiler.BulkCheck exposing (TestCase, bulkCheck)
 import Compiler.Elm.ModuleName as ModuleName
 import Compiler.Elm.Package as Pkg
+import Compiler.IR.Canonical as Can
 import Expect exposing (Expectation)
 import Test exposing (Test)
 

@@ -1,6 +1,6 @@
 module Parse.PrimitivesTests exposing (suite)
 
-{-| Tests for `Compiler.Parse.Primitives.getCharWidth` and `codePointAt`, the
+{-| Tests for `Compiler.Lexer.Primitives.getCharWidth` and `codePointAt`, the
 number of UTF-16 code units a character occupies in an Elm string.
 
 The parser's positions are indexes into the source string counted in UTF-16
@@ -35,12 +35,12 @@ lone surrogate.
 
 -}
 
-import Compiler.Parse.Primitives as P
+import Compiler.Lexer.Primitives as P
 import Expect
 import Test exposing (Test)
 
 
-{-| The test tree for `Compiler.Parse.Primitives`, holding one test per
+{-| The test tree for `Compiler.Lexer.Primitives`, holding one test per
 character under `getCharWidth`.
 -}
 suite : Test

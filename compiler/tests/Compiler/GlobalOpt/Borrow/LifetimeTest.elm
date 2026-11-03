@@ -1,6 +1,6 @@
 module Compiler.GlobalOpt.Borrow.LifetimeTest exposing (suite)
 
-{-| Tests for `Compiler.GlobalOpt.Borrow.Lifetime`, the lattice from which
+{-| Tests for `Compiler.MonoOpt.Borrow.Lifetime`, the lattice from which
 borrow inference decides whether a resource is dead at a point. They guard
 against `endsBefore` reporting a resource dead while it is still live,
 `onBoundary` missing or inventing a last use, and `join` and `leq` ceasing to
@@ -60,8 +60,8 @@ from `leq`.
 
 -}
 
-import Compiler.GlobalOpt.Borrow.Lifetime as L exposing (Life(..), Lifetime(..), Path, Step(..))
 import Compiler.GlobalOpt.Borrow.SkelFuzz as SF exposing (Skel)
+import Compiler.MonoOpt.Borrow.Lifetime as L exposing (Life(..), Lifetime(..), Path, Step(..))
 import Expect
 import Fuzz exposing (Fuzzer)
 import Set

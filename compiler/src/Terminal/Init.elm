@@ -48,12 +48,12 @@ import Builder.Reporting as Reporting
 import Builder.Reporting.Exit as Exit
 import Builder.Reporting.Exit.Help as Help
 import Builder.Stuff as Stuff
-import Compiler.Data.NonEmptyList as NE
 import Compiler.Elm.Constraint as Con
 import Compiler.Elm.Licenses as Licenses
 import Compiler.Elm.Package as Pkg
 import Compiler.Elm.Version as V
 import Compiler.Reporting.Doc as D
+import Data.NonEmptyList as NE
 import Dict exposing (Dict)
 import System.IO as IO
 import Task exposing (Task)

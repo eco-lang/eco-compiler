@@ -37,21 +37,21 @@ empty answer counts as yes.
 import Builder.BackgroundWriter as BW
 import Builder.Build as Build
 import Builder.Deps.Bump as Bump
+import Builder.Deps.Details as Details
 import Builder.Deps.Diff as Diff
 import Builder.Deps.Registry as Registry
 import Builder.Eco.FEStats as FEStats
-import Builder.Elm.Details as Details
 import Builder.Elm.Outline as Outline
 import Builder.Http as Http
 import Builder.Reporting as Reporting
 import Builder.Reporting.Exit as Exit
 import Builder.Reporting.Exit.Help as Help
 import Builder.Stuff as Stuff
-import Compiler.Data.NonEmptyList as NE
-import Compiler.Elm.Docs as Docs
+import Compiler.Docs as Docs
 import Compiler.Elm.Magnitude as M
 import Compiler.Elm.Version as V
 import Compiler.Reporting.Doc as D
+import Data.NonEmptyList as NE
 import Prelude
 import System.IO as IO exposing (FilePath)
 import Task exposing (Task)

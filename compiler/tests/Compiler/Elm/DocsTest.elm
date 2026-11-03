@@ -1,6 +1,6 @@
 module Compiler.Elm.DocsTest exposing (suite)
 
-{-| Regression test for `Compiler.Elm.Docs.checkNames`, pinning a bug fixed
+{-| Regression test for `Compiler.Docs.checkNames`, pinning a bug fixed
 2026-10-28 (plans/review-bug-triage-fixes.md, Part 5).
 
 `checkNames` folds the exposed names and the `@docs` names with `Dict.merge`,
@@ -17,11 +17,11 @@ no default imports (`Basic.testIfaces` lacks `Debug`, `Platform`, ...).
 -}
 
 import Compiler.Canonicalize.Module as Canonicalize
-import Compiler.Elm.Docs as Docs
+import Compiler.Docs as Docs
+import Compiler.Docs.Error as EDocs
 import Compiler.Elm.Interface.Basic as Basic
 import Compiler.Elm.Package as Pkg
 import Compiler.PackageCompilation as PC
-import Compiler.Reporting.Error.Docs as EDocs
 import Compiler.Reporting.Result as RResult
 import Expect
 import Test exposing (Test)
@@ -51,7 +51,7 @@ z =
 
 suite : Test
 suite =
-    Test.describe "Compiler.Elm.Docs.fromModule name checks"
+    Test.describe "Compiler.Docs.fromModule name checks"
         [ Test.test "an earlier @docs/exposing disagreement is reported even when the last name is fine" <|
             \_ ->
                 case PC.parseModule Pkg.core source of

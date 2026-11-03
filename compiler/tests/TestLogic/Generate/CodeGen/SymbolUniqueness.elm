@@ -18,7 +18,7 @@ and whether every name that is referred to is defined somewhere is not checked.
 
 -}
 
-import Compiler.AST.Source as Src
+import Compiler.IR.Source as Src
 import Dict
 import Expect exposing (Expectation)
 import Mlir.Mlir exposing (MlirModule, MlirOp)

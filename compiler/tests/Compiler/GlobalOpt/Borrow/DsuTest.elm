@@ -1,6 +1,6 @@
 module Compiler.GlobalOpt.Borrow.DsuTest exposing (suite)
 
-{-| Tests for `Compiler.GlobalOpt.Borrow.Dsu`, the union-find that borrow
+{-| Tests for `Compiler.MonoOpt.Borrow.Dsu`, the union-find that borrow
 inference uses to group integer keys into classes. None of its operations
 returns a `Maybe` or a `Result`, so a wrong `union` or `find` would silently
 put keys in the wrong class; these tests check the operations directly.
@@ -47,7 +47,7 @@ array after `grow`, and which of two roots `union` keeps.
 -}
 
 import Array
-import Compiler.GlobalOpt.Borrow.Dsu as Dsu exposing (Dsu)
+import Compiler.MonoOpt.Borrow.Dsu as Dsu exposing (Dsu)
 import Dict exposing (Dict)
 import Expect
 import Fuzz exposing (Fuzzer)

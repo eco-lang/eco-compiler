@@ -51,9 +51,9 @@ qualified constructors `Basics.True` and `Basics.False`.
 
 -}
 
-import Compiler.AST.Source as Src
 import Compiler.AST.SourceBuilder as B
-import Compiler.Data.Name exposing (Name)
+import Compiler.Core.Name exposing (Name)
+import Compiler.IR.Source as Src
 import Fuzz exposing (Fuzzer)
 
 

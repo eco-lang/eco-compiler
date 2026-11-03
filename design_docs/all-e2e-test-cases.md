@@ -1729,7 +1729,7 @@ NOTE: This bug only manifests in Stage 6 (eco-boot-native MLIR parsing/verificat
 The JIT test infrastructure may not catch it because it handles the missing predicate
 differently. The elm-test CmpiPredicateAttrTest catches it at the MLIR generation level.
 
-See: compiler/src/Compiler/Generate/MLIR/Patterns.elm line 205
+See: compiler/src/Compiler/GenerateMlir/Patterns.elm line 205
 -}
 
 -- CHECK: result: "comma"

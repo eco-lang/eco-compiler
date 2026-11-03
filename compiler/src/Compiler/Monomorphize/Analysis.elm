@@ -11,7 +11,7 @@ table from a monomorphized graph.
 
 A _ctor shape_ is one constructor of one instantiation of a custom type: its
 name, its runtime tag, and the `MonoType` of each of its fields. The tag is the
-one `Compiler.Data.CtorTag.effective` gives.
+one `Compiler.IR.Runtime.CtorTag.effective` gives.
 
 `computeCtorShapesForGraph` works in two steps. It first walks every node of the
 graph, its types, expressions, closure captures and parameters, destructuring
@@ -32,19 +32,19 @@ step that other modules use as well.
 -}
 
 import Array exposing (Array)
-import Compiler.AST.Canonical as Can
-import Compiler.AST.Monomorphized as Mono
-import Compiler.AST.TypeEnv as TypeEnv
-import Compiler.AST.TypeIds as TypeIds
-import Compiler.Data.CtorTag as CtorTag
-import Compiler.Data.Id as Id
-import Compiler.Data.Name exposing (Name)
+import Compiler.Core.Id as Id
+import Compiler.Core.Name exposing (Name)
+import Compiler.Core.TypeIds as TypeIds
 import Compiler.Elm.ModuleName as ModuleName
+import Compiler.IR.Canonical as Can
+import Compiler.IR.Mono as Mono
+import Compiler.IR.Runtime.CtorTag as CtorTag
+import Compiler.IR.Typed.TypeEnv as TypeEnv
 import Compiler.Monomorphize.State as State exposing (MVarEnv, Substitution)
 import Compiler.Monomorphize.TypeSubst as TypeSubst
 import Data.Map
 import Dict
-import Utils.Crash
+import System.Crash
 
 
 
@@ -486,7 +486,7 @@ mentions only its own formals and the arguments are converted with the outer
 `nameToId`.
 
 Arrows are built with `Can.tLambda`, so they carry no arrow identity. A type
-from here must not be loaded into a `Compiler.MonoSolver.Store`; the store
+from here must not be loaded into a `Compiler.Monomorphize.Solver.Store`; the store
 treats an unstamped arrow as always new and shares nothing for it.
 
 -}
@@ -499,7 +499,7 @@ convertCanTypeNameToMVarId nameToId canType =
                     Can.TVar mvarId
 
                 Nothing ->
-                    Utils.Crash.crash "Analysis" "convertCanTypeNameToMVarId" ("Unbound type variable: " ++ name)
+                    System.Crash.crash "Analysis" "convertCanTypeNameToMVarId" ("Unbound type variable: " ++ name)
 
         Can.TLambda _ from to ->
             Can.tLambda (convertCanTypeNameToMVarId nameToId from) (convertCanTypeNameToMVarId nameToId to)
@@ -577,7 +577,7 @@ computeCtorShapesForGraph globalTypeEnv nodes =
                 Mono.MCustom _ canonical typeName monoArgs ->
                     case lookupUnion globalTypeEnv canonical typeName of
                         Nothing ->
-                            Utils.Crash.crash
+                            System.Crash.crash
                                 ("Missing union for ctor shape: "
                                     ++ ModuleName.toComparableCanonical canonical
                                     ++ "."

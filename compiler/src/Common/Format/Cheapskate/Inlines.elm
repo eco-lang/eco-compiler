@@ -88,7 +88,7 @@ import Common.Format.Cheapskate.ParserCombinators
 import Common.Format.Cheapskate.Types exposing (HtmlTagType(..), Inline(..), Inlines, LinkTarget(..), ReferenceMap)
 import Common.Format.Cheapskate.Util exposing (isEscapable, isWhitespace, nfb, nfbChar, scanSpaces, scanSpnl)
 import Set exposing (Set)
-import Utils.Crash exposing (crash)
+import System.Crash exposing (crash)
 
 
 {-| A parser for one HTML tag, returning its kind and its text exactly as

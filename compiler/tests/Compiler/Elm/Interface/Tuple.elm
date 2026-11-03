@@ -5,7 +5,7 @@ that test programs calling tuple functions can be canonicalized and type
 checked without elm/core's `Tuple` module being compiled.
 
 An interface is what a compiled module offers to the modules that import it, as
-`Compiler.Elm.Interface` describes. This one is homed in elm/core and declares
+`Compiler.IR.Canonical.Interface` describes. This one is homed in elm/core and declares
 six values, `pair`, `first`, `second`, `mapFirst`, `mapSecond` and `mapBoth`,
 all on two-element tuples. It declares no union types, aliases or operators.
 
@@ -17,10 +17,10 @@ arrows are built with `Can.tLambda`, so each is built with a `NoArrow` slot.
 
 -}
 
-import Compiler.AST.Canonical as Can
-import Compiler.Data.Name exposing (Name)
-import Compiler.Elm.Interface as I
+import Compiler.Core.Name exposing (Name)
 import Compiler.Elm.Package as Pkg
+import Compiler.IR.Canonical as Can
+import Compiler.IR.Canonical.Interface as I
 import Dict exposing (Dict)
 
 

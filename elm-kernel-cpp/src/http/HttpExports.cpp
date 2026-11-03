@@ -72,7 +72,7 @@ static constexpr u16 RESP_BAD_STATUS   = 3;
 static constexpr u16 RESP_GOOD_STATUS  = 4;
 
 // Dict ctor tags (must match CTOR_DICT_RBNODE in
-// elm-kernel-cpp/src/core/Utils.cpp and Compiler.Data.CtorTag).
+// elm-kernel-cpp/src/core/Utils.cpp and Compiler.IR.Runtime.CtorTag).
 //   RBNode_elm_builtin NColor k v left right   (fields 0..4; reserved 0xFFFF)
 //   RBEmpty_elm_builtin                         (no fields; plain declaration
 //                                               index 1 — embedded null-cons

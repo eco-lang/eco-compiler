@@ -6,7 +6,7 @@ under two member ids, and an annotation that should name one function would
 name two.
 
 Under lambda-set specialization each function arrow of a monomorphized type
-carries an annotation, a `Compiler.AST.Monomorphized.LambdaSetAnno`, saying
+carries an annotation, a `Compiler.IR.Mono.LambdaSetAnno`, saying
 which function values can arrive there. An `LSet` lists them as _member ids_,
 integers that each name one function value, and a one-member `LSet`, a
 _singleton_, is what lets a call go straight to a known function. `LTop` means
@@ -19,12 +19,12 @@ is a lambda, which is given a member id when it is translated, and a reference
 to `double` used as a value is given the global's own standalone member id.
 Under the _root-member fold_ the lambda at the root of a top-level definition
 takes the global's standalone id instead of one of its own, so both ways give
-the same id. `Compiler.MonoSolver.Engine` (`lambdaInstanceMemberId`) owns the
+the same id. `Compiler.Monomorphize.Solver.Engine` (`lambdaInstanceMemberId`) owns the
 fold. Two of its limits matter here. A definition that is an alias of a kernel
-is not folded (`Compiler.MonoSolver.Translate`), because references to such an
-alias carry the kernel's own member id (`Compiler.MonoSolver.LssInfer`). And
+is not folded (`Compiler.Monomorphize.Solver.Translate`), because references to such an
+alias carry the kernel's own member id (`Compiler.Monomorphize.Solver.LssInfer`). And
 the folded id is written on the definition's head only, with
-partial-application members at the deeper arrows (`Compiler.MonoSolver.LssInfer`),
+partial-application members at the deeper arrows (`Compiler.Monomorphize.Solver.LssInfer`),
 because the folded id names the whole function, not what is left of it after
 an argument.
 
@@ -62,8 +62,6 @@ type; and arrows deeper than depth 1.
 -}
 
 import Array
-import Compiler.AST.Monomorphized as Mono
-import Compiler.AST.Source as Src
 import Compiler.AST.SourceBuilder
     exposing
         ( binopsExpr
@@ -78,7 +76,9 @@ import Compiler.AST.SourceBuilder
         , tType
         , varExpr
         )
-import Compiler.Eco.Config as Config
+import Compiler.Config as Config
+import Compiler.IR.Mono as Mono
+import Compiler.IR.Source as Src
 import Dict
 import Expect
 import Test exposing (Test)

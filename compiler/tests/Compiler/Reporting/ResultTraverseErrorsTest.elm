@@ -16,9 +16,9 @@ the fix.
 
 -}
 
-import Compiler.Data.OneOrMore as OneOrMore
 import Compiler.Reporting.Result as R
 import Data.Map as DataMap
+import Data.OneOrMore as OneOrMore
 import Expect
 import Test exposing (Test)
 

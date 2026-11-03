@@ -21,9 +21,9 @@ compile.
 
 import Common.Format.Box as Box
 import Common.Format.Render.Box as Render
+import Compiler.Lexer.Primitives as P
+import Compiler.Parse.Error as E
 import Compiler.Parse.Module as M
-import Compiler.Parse.Primitives as P
-import Compiler.Reporting.Error.Syntax as E
 
 
 {-| Returns `src`, a module of a project of `projectType`, reformatted.

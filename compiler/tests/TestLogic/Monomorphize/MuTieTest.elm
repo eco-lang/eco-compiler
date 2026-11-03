@@ -17,7 +17,7 @@ the call can key a new specialization of the same function. If translating that
 one minted the lambda under a different qualifier, that member could key a
 third, and so on. The Elm type stays `Int -> Int` throughout; only the member
 ids differ. This cycle is the _qualification spiral_. Two things in
-`Compiler.MonoSolver.Engine` stop it. Two specializations that differ only in
+`Compiler.Monomorphize.Solver.Engine` stop it. Two specializations that differ only in
 their lambda sets, with both widened types recorded, give the lambda the same
 id. And where the id the specialization's demand already carries for the same
 lambda differs from the one the mint would give, the _μ-tie_ reuses the
@@ -55,8 +55,6 @@ with the default unlimited budget, and the substitution engine.
 -}
 
 import Array
-import Compiler.AST.Monomorphized as Mono
-import Compiler.AST.Source as Src
 import Compiler.AST.SourceBuilder
     exposing
         ( TypedDef
@@ -71,7 +69,9 @@ import Compiler.AST.SourceBuilder
         , tType
         , varExpr
         )
-import Compiler.Eco.Config as Config
+import Compiler.Config as Config
+import Compiler.IR.Mono as Mono
+import Compiler.IR.Source as Src
 import Dict
 import Expect
 import Test exposing (Test)

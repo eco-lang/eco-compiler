@@ -8,14 +8,14 @@ parameter without a lambda set would go unnoticed.
 Under lambda-set specialization (LSS), each function arrow in a `MonoType`
 carries a `LambdaSetAnno`: the function values, called members, that can flow
 through that arrow. `LSet` lists the members, and `LVar` marks a slot that
-nothing has written; `Compiler.AST.Monomorphized` describes the other forms.
+nothing has written; `Compiler.IR.Mono` describes the other forms.
 Partially applying a global `X` to `k` arguments makes a member of its own,
 whose key is `p|X|k`. A parameter of type `x -> Int -> Int` has two arrows:
 its head, taking the `x`, and the result arrow `Int -> Int` inside it. The
 first parameter is written `/a0` and the result arrow inside it `/a0/r`.
 
 The module is named for `settleVarSuccessors` in
-`Compiler.MonoSolver.Monomorphize`, a pass that can fill an `LVar` result
+`Compiler.Monomorphize.Solver.Monomorphize`, a pass that can fill an `LVar` result
 arrow under an `LSet` arrow with partial-application successors of that
 arrow's members, and does so only when every member has such a successor
 within its global's declared arity. It writes only into an `LVar` slot, and
@@ -54,8 +54,6 @@ Among what is not tested:
 -}
 
 import Array
-import Compiler.AST.Monomorphized as Mono
-import Compiler.AST.Source as Src
 import Compiler.AST.SourceBuilder
     exposing
         ( binopsExpr
@@ -68,7 +66,9 @@ import Compiler.AST.SourceBuilder
         , tVar
         , varExpr
         )
-import Compiler.Eco.Config as Config
+import Compiler.Config as Config
+import Compiler.IR.Mono as Mono
+import Compiler.IR.Source as Src
 import Dict
 import Expect
 import Test exposing (Test)

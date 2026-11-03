@@ -6,7 +6,7 @@ lambda-set annotations of the definition it refers to. A use left with ⊤ where
 its definition has a set is still sound, only less precise, so the compiled
 program would not show the loss.
 
-A lambda-set annotation, defined in `Compiler.AST.Monomorphized`, says which
+A lambda-set annotation, defined in `Compiler.IR.Mono`, says which
 function values can flow through an arrow of a function type; an `LSet` lists
 the ones that can flow, and ⊤ means the analysis could not bound the set. The
 solver translates the body of a `let` that binds a function before the function
@@ -16,7 +16,7 @@ translated, once for each type the function is used at, giving one definition
 per instance (`f`, `f$1`, ...), or once at its declared type if it is unused; a
 tail-recursive function gets a single definition. Copying each instance's
 annotations onto its uses is _use enrichment_, and `flushLocalMultiEnrich` in
-`Compiler.MonoSolver.Translate` does it. What matters here is that a
+`Compiler.Monomorphize.Solver.Translate` does it. What matters here is that a
 let-function in the body of another hands its enrichment to the enclosing one,
 so that the outermost does it for all of them in a single walk of its body. The
 fixtures are nesting shapes that this walk has to get right.
@@ -61,8 +61,6 @@ right-hand side; names bound by a `MonoTailDef` or by destructuring.
 -}
 
 import Array
-import Compiler.AST.Monomorphized as Mono
-import Compiler.AST.Source as Src
 import Compiler.AST.SourceBuilder
     exposing
         ( binopsExpr
@@ -82,8 +80,10 @@ import Compiler.AST.SourceBuilder
         , tupleExpr
         , varExpr
         )
-import Compiler.Eco.Config as Config
-import Compiler.Monomorphize.MonoTraverse as MonoTraverse
+import Compiler.Config as Config
+import Compiler.IR.Mono as Mono
+import Compiler.IR.Mono.Traverse as MonoTraverse
+import Compiler.IR.Source as Src
 import Dict
 import Expect
 import Test exposing (Test)

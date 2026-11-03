@@ -27,9 +27,9 @@ types, such as `Maybe`, are not checked for.
 
 -}
 
-import Compiler.AST.Monomorphized as Mono
-import Compiler.AST.Source as Src
-import Compiler.Data.Name as Name
+import Compiler.Core.Name as Name
+import Compiler.IR.Mono as Mono
+import Compiler.IR.Source as Src
 import Expect exposing (Expectation)
 import Mlir.Mlir exposing (MlirModule, MlirOp)
 import Set exposing (Set)

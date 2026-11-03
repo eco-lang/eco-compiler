@@ -18,7 +18,7 @@ that node's type. It also keeps, under each annotated definition's name, the
 solver variables that stand for type variables of that definition's annotation.
 
 The record lives in the type checker's state, as the `NodeIdState` that
-`System.TypeCheck.IO` defines and describes, so each recording operation is an
+`Compiler.Type.State.IO` defines and describes, so each recording operation is an
 `IO ()` action and nothing else has to be threaded through constraint
 generation. That state carries a `recording` flag. With it off, every recording
 operation here leaves the state unchanged, so constraints can be generated
@@ -52,11 +52,11 @@ negative node id is never recorded.
 -}
 
 import Array exposing (Array)
-import Compiler.AST.TypeVars as Vars
-import Compiler.Data.Name as Name
+import Compiler.Core.Name as Name
+import Compiler.IR.Typed.TypeVars as Vars
+import Compiler.Type.State.IO as IO exposing (IO)
 import Data.Set as EverySet
 import Dict
-import System.TypeCheck.IO as IO exposing (IO)
 
 
 {-| Solver variables for the type variables of annotated definitions, keyed by
@@ -89,7 +89,7 @@ type alias NodeVarMap =
 {-| The node-id record kept in the type checker's state while constraints are
 generated.
 
-This is another name for `System.TypeCheck.IO.NodeIdState`, whose docstring
+This is another name for `Compiler.Type.State.IO.NodeIdState`, whose docstring
 describes its fields.
 
 -}

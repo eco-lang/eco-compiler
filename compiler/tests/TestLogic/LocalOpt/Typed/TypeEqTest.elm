@@ -34,9 +34,9 @@ Among what is not tested:
 
 -}
 
-import Compiler.AST.Canonical as Can
-import Compiler.Data.Name exposing (Name)
+import Compiler.Core.Name exposing (Name)
 import Compiler.Elm.ModuleName as ModuleName
+import Compiler.IR.Canonical as Can
 import Dict
 import Expect
 import Test exposing (Test)

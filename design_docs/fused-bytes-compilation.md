@@ -358,9 +358,9 @@ Insert:
 # D. Compiler frontend: recognizing and compiling Bytes.Encode / Bytes.Decode
 
 Your original design introduces a Loop IR in Elm and then emits bf MLIR . In ECO, the correct place is *inside the MLIR backend*, because that’s where you can replace the normal call-lowering with a specialized emission path.
-The MLIR backend modules are enumerated in your docs , with expression lowering in `Compiler/Generate/MLIR/Expr.elm` .
+The MLIR backend modules are enumerated in your docs , with expression lowering in `Compiler/GenerateMlir/Expr.elm` .
 ## D1) Add Loop IR modules in the compiler
-### Create: `compiler/src/Compiler/Generate/MLIR/BytesFusion/LoopIR.elm`
+### Create: `compiler/src/Compiler/GenerateMlir/BytesFusion/LoopIR.elm`
 
 Port your Loop IR almost exactly (minor namespace tweaks). Keep it untyped if that matches your MonoGraph representation.
 Minimum:
@@ -384,7 +384,7 @@ Responsibilities:
 Same idea for decoders.
 **Write-up:** Keeping LoopIR in Elm makes it testable without MLIR and matches the architecture you outlined .
 ## D2) Implement recognition: intercept `Bytes.Encode.encode` / `Bytes.Decode.decode`
-### Modify: `compiler/src/Compiler/Generate/MLIR/Expr.elm` 
+### Modify: `compiler/src/Compiler/GenerateMlir/Expr.elm` 
 
 Find the function that lowers calls (often something like `lowerCall` / `genCall`).
 Add a “fast path” before the generic call emission:
@@ -425,7 +425,7 @@ Do the same for `Bytes.Decode.decode`.
 ### Create: `compiler/src/Compiler/Generate/MLIR/BytesFusion/EmitBF.elm`
 
 This module should:
-- create bf ops using whatever builder infrastructure you already have in `Compiler/Generate/MLIR/Ops.elm` .
+- create bf ops using whatever builder infrastructure you already have in `Compiler/GenerateMlir/Ops.elm` .
 - If `Ops.elm` does not currently support custom dialect ops, add minimal generic op builder support.
 
 You will need:
@@ -443,7 +443,7 @@ You will need:
 - Return `Nothing` or `Result` according to Elm semantics (see below).
 
 This matches your design recommendation .
-- create bf ops using whatever builder infrastructure you already have in `Compiler/Generate/MLIR/Ops.elm` .
+- create bf ops using whatever builder infrastructure you already have in `Compiler/GenerateMlir/Ops.elm` .
 - If `Ops.elm` does not currently support custom dialect ops, add minimal generic op builder support.
 
 You will need:
@@ -461,7 +461,7 @@ You will need:
 - Return `Nothing` or `Result` according to Elm semantics (see below).
 
 This matches your design recommendation .
-- create bf ops using whatever builder infrastructure you already have in `Compiler/Generate/MLIR/Ops.elm` .
+- create bf ops using whatever builder infrastructure you already have in `Compiler/GenerateMlir/Ops.elm` .
 - If `Ops.elm` does not currently support custom dialect ops, add minimal generic op builder support.
 
 You will need:
@@ -479,7 +479,7 @@ You will need:
 - Return `Nothing` or `Result` according to Elm semantics (see below).
 
 This matches your design recommendation .
-- create bf ops using whatever builder infrastructure you already have in `Compiler/Generate/MLIR/Ops.elm` .
+- create bf ops using whatever builder infrastructure you already have in `Compiler/GenerateMlir/Ops.elm` .
 - If `Ops.elm` does not currently support custom dialect ops, add minimal generic op builder support.
 
 You will need:
@@ -497,7 +497,7 @@ You will need:
 - Return `Nothing` or `Result` according to Elm semantics (see below).
 
 This matches your design recommendation .
-- create bf ops using whatever builder infrastructure you already have in `Compiler/Generate/MLIR/Ops.elm` .
+- create bf ops using whatever builder infrastructure you already have in `Compiler/GenerateMlir/Ops.elm` .
 - If `Ops.elm` does not currently support custom dialect ops, add minimal generic op builder support.
 
 You will need:
@@ -515,7 +515,7 @@ You will need:
 - Return `Nothing` or `Result` according to Elm semantics (see below).
 
 This matches your design recommendation .
-- create bf ops using whatever builder infrastructure you already have in `Compiler/Generate/MLIR/Ops.elm` .
+- create bf ops using whatever builder infrastructure you already have in `Compiler/GenerateMlir/Ops.elm` .
 - If `Ops.elm` does not currently support custom dialect ops, add minimal generic op builder support.
 
 You will need:
@@ -613,7 +613,7 @@ Your original phase plan is good ; here it is rewritten to match repo structure 
    - `BytesFusion/LoopIR.elm`
    - `BytesFusion/Encode.elm`
    - `BytesFusion/EmitBF.elm`
-   - intercept in `Compiler/Generate/MLIR/Expr.elm`
+   - intercept in `Compiler/GenerateMlir/Expr.elm`
 ### Test
 - Add an end-to-end test that encodes a known structure and compares bytes to expected constants.
 - Use the existing JIT test harness mentioned in your plan .
@@ -647,13 +647,13 @@ This is the “all code changes needed” list in one place.
 - `runtime/src/codegen/Passes.h`: register pass factory (edit) 
 - `runtime/src/codegen/EcoPipeline.cpp`: run BFToLLVM in the pipeline (edit)
 ## Compiler (Elm) new modules
-- `compiler/src/Compiler/Generate/MLIR/BytesFusion/LoopIR.elm` (new)
+- `compiler/src/Compiler/GenerateMlir/BytesFusion/LoopIR.elm` (new)
 - `compiler/src/Compiler/Generate/MLIR/BytesFusion/Encode.elm` (new)
 - `compiler/src/Compiler/Generate/MLIR/BytesFusion/Decode.elm` (new, phase 2)
 - `compiler/src/Compiler/Generate/MLIR/BytesFusion/EmitBF.elm` (new)
 ## Compiler modifications
-- `compiler/src/Compiler/Generate/MLIR/Expr.elm`: intercept and lower encode/decode using BytesFusion 
-- Potentially `compiler/src/Compiler/Generate/MLIR/Ops.elm`: add ability to emit bf ops if you don’t already have a generic op builder
+- `compiler/src/Compiler/GenerateMlir/Expr.elm`: intercept and lower encode/decode using BytesFusion 
+- Potentially `compiler/src/Compiler/GenerateMlir/Ops.elm`: add ability to emit bf ops if you don’t already have a generic op builder
 ---
 # H. Open integration questions (answered with recommended choices)
 
@@ -670,7 +670,7 @@ Implement LoopIR in **Elm** first (compiler side) because:
 - you can unit-test LoopIR generation without MLIR.
 
 4) **How to intercept Bytes.Encode.encode?**  
-Intercept in `Compiler/Generate/MLIR/Expr.elm` during call lowering (fast path). This avoids having to thread a new “kernel recognition” mechanism through monomorphization.
+Intercept in `Compiler/GenerateMlir/Expr.elm` during call lowering (fast path). This avoids having to thread a new “kernel recognition” mechanism through monomorphization.
 
 5) **Bytes support status**  
 Kernel stubs exist but real implementation is not done . ByteFusion becomes the real implementation path for many programs, while you can keep kernel stubs as fallback.
@@ -689,7 +689,7 @@ Implement LoopIR in **Elm** first (compiler side) because:
 - you can unit-test LoopIR generation without MLIR.
 
 4) **How to intercept Bytes.Encode.encode?**  
-Intercept in `Compiler/Generate/MLIR/Expr.elm` during call lowering (fast path). This avoids having to thread a new “kernel recognition” mechanism through monomorphization.
+Intercept in `Compiler/GenerateMlir/Expr.elm` during call lowering (fast path). This avoids having to thread a new “kernel recognition” mechanism through monomorphization.
 
 5) **Bytes support status**  
 Kernel stubs exist but real implementation is not done . ByteFusion becomes the real implementation path for many programs, while you can keep kernel stubs as fallback.
@@ -708,7 +708,7 @@ Implement LoopIR in **Elm** first (compiler side) because:
 - you can unit-test LoopIR generation without MLIR.
 
 4) **How to intercept Bytes.Encode.encode?**  
-Intercept in `Compiler/Generate/MLIR/Expr.elm` during call lowering (fast path). This avoids having to thread a new “kernel recognition” mechanism through monomorphization.
+Intercept in `Compiler/GenerateMlir/Expr.elm` during call lowering (fast path). This avoids having to thread a new “kernel recognition” mechanism through monomorphization.
 
 5) **Bytes support status**  
 Kernel stubs exist but real implementation is not done . ByteFusion becomes the real implementation path for many programs, while you can keep kernel stubs as fallback.
@@ -718,15 +718,15 @@ Start with portable bytewise stores/loads (safe alignment) as you recommended . 
 ---
 
 If you upload (or paste) the contents of these specific files:
-- `compiler/src/Compiler/Generate/MLIR/Expr.elm`
-- `compiler/src/Compiler/Generate/MLIR/Ops.elm`
+- `compiler/src/Compiler/GenerateMlir/Expr.elm`
+- `compiler/src/Compiler/GenerateMlir/Ops.elm`
 - `runtime/src/codegen/EcoPipeline.cpp`
 - `runtime/src/codegen/RuntimeSymbols.cpp`
 - `runtime/src/allocator/BytesOps.hpp` / `Heap.hpp` (bytes/string parts)
 
 …I can turn the above into *exact* patch-style diffs (with precise function names and minimal intrusion), rather than the small amount of “connect this into your existing macro/pipeline” extrapolation.
-- `compiler/src/Compiler/Generate/MLIR/Expr.elm`
-- `compiler/src/Compiler/Generate/MLIR/Ops.elm`
+- `compiler/src/Compiler/GenerateMlir/Expr.elm`
+- `compiler/src/Compiler/GenerateMlir/Ops.elm`
 - `runtime/src/codegen/EcoPipeline.cpp`
 - `runtime/src/codegen/RuntimeSymbols.cpp`
 - `runtime/src/allocator/BytesOps.hpp` / `Heap.hpp` (bytes/string parts)

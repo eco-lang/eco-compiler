@@ -6,7 +6,7 @@ module TestLogic.GlobalOpt.LambdaIdUniqueness exposing
 {-| `MONO_019` says that within one `MonoGraph` each `lambdaId` names one logical
 lambda: no two `MonoClosure` nodes share a `lambdaId`. Code generation emits a
 nested closure as a function named after its `lambdaId`
-(`Compiler.Generate.MLIR.Expr.lambdaIdToString`), so two closures sharing one
+(`Compiler.GenerateMlir.Expr.lambdaIdToString`), so two closures sharing one
 would be two functions under one symbol. This module holds the check for that,
 run on the graphs a test program goes through.
 
@@ -18,8 +18,8 @@ checks three graphs from that one run:
   - the graph after the global optimizer (`optimizedMonoGraph`), which is the
     one the invariant is stated for, since the inliner copies closure bodies
     and must give each copy a fresh `lambdaId`;
-  - that graph after `Compiler.GlobalOpt.CafHoist.run` at the settings
-    `Compiler.Eco.Config.default` gives it, though hoisting is off by default,
+  - that graph after `Compiler.MonoOpt.CafHoist.run` at the settings
+    `Compiler.Config.default` gives it, though hoisting is off by default,
     because the pass moves closures into new specs.
 
 It fails with one line per `lambdaId` found more than once in a graph, naming
@@ -39,11 +39,11 @@ twice, since an expression tree reaches each node once.
 -}
 
 import Array
-import Compiler.AST.Monomorphized as Mono
-import Compiler.AST.Source as Src
-import Compiler.Eco.Config as Config
+import Compiler.Config as Config
 import Compiler.Elm.ModuleName as ModuleName
-import Compiler.GlobalOpt.CafHoist as CafHoist
+import Compiler.IR.Mono as Mono
+import Compiler.IR.Source as Src
+import Compiler.MonoOpt.CafHoist as CafHoist
 import Dict exposing (Dict)
 import Expect
 import TestLogic.TestPipeline as Pipeline

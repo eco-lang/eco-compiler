@@ -229,47 +229,47 @@ Parsing classes (inputs are trimmed and lower-cased unless stated otherwise):
 
 ### 3. `eco-config.json` keys and compile-time defaults
 
-`Compiler.Eco.Config.default` is at `compiler/src/Compiler/Eco/Config.elm:650-724`; the decoder is at `:731-937`. Every JSON field is optional and merges over the default; unknown keys, including `version`, are ignored. The env vars in §2 override these values.
+`Compiler.Config.default` is at `compiler/src/Compiler/Config.elm:650-724`; the decoder is at `:731-937`. Every JSON field is optional and merges over the default; unknown keys, including `version`, are ignored. The env vars in §2 override these values.
 
 | Name | Values / default | Effect | Source |
 |---|---|---|---|
-| `inline.{preMonoThreshold,postMonoThreshold,etaThreshold}` | int; 10 / 10 / 10 | Per-pass size budgets | compiler/src/Compiler/Eco/Config.elm:790-792 |
-| `inline.whitelist` / `inline.blacklist` | string list; [] / [] | Whitelist is added to the built-in `defaultWhitelist` (MonoInlineSimplify.elm:990, Bytes.Encode primitives and similar); blacklist is subtracted | compiler/src/Compiler/Eco/Config.elm:793-794 |
-| `inline.maxPerFunction` | int; 1000 | Maximum inlines per function | compiler/src/Compiler/Eco/Config.elm:795 |
-| `inline.{pre,post}MonoFixpointIterations` | int; 4 / 4 | Round counts | compiler/src/Compiler/Eco/Config.elm:796-797 |
-| `inline.hofThreshold` | int; 25 | HOF budget | compiler/src/Compiler/Eco/Config.elm:798 |
-| `inline.loopify` / `arityRaise` / `raiseAppliedShareMin` | true / false / 0 | See the matching env rows | compiler/src/Compiler/Eco/Config.elm:799-801 |
-| `inline.partialHof` / `preserveSets` / `pruneDead` | false / true / true | See the matching env rows | compiler/src/Compiler/Eco/Config.elm:802-804 |
-| `inline.preMono` / `postMono` / `etaExpand` / `aliasForward` | false / true / true / true | Pass switches | compiler/src/Compiler/Eco/Config.elm:805-807,816 |
-| `inline.etaOnly` / `inline.report` | [] / false | Debug | compiler/src/Compiler/Eco/Config.elm:808-809 |
-| `inline.kernelFactsDce` / `kernelCostClasses` | true / true | Kernel-opt-11 | compiler/src/Compiler/Eco/Config.elm:810-811 |
-| `inline.kernelCost{Inline,GcLeaf,Alloc,Hof}` | 1 / 4 / 8 / 20 | Kernel call cost vector | compiler/src/Compiler/Eco/Config.elm:812-815 |
-| `bytesFusion.enabled` | bool; true | **JSON-only (no env var).** Bytes encoder/decoder fusion in MLIR codegen | compiler/src/Compiler/Eco/Config.elm:822; compiler/src/Compiler/Generate/MLIR/Expr.elm:3279 |
-| `logicalTypes.customMaxFields` | int; 8, clamped to [1,24] with a stderr warning | **JSON-only.** Maximum fields for unboxed-aggregate single-ctor custom types | compiler/src/Compiler/Eco/Config.elm:845,963 |
-| `cafMemo.{enabled,census,dedupe}` | true / false / false | CAF memoization | compiler/src/Compiler/Eco/Config.elm:828-830 |
-| `cafMemo.hoist.{enabled,minNodes,maxHoists}` | false / 3 / 8192 | CAF hoisting | compiler/src/Compiler/Eco/Config.elm:837-839 |
-| `mono.engine` | `subst\|solver\|diff`; built-in default `solver` | Engine. **Quirk: if the `mono` object is present but has no `engine`, the decoder's fallback string is `"subst"`, so the engine silently becomes subst.** An unknown string gives solver | compiler/src/Compiler/Eco/Config.elm:899 |
-| `mono.lss.{enabled,maxSetSize,maxSpecsPerGlobal,report,qCensus,arrowCensus}` | true / 0 / 0 / false / false / false | LSS knobs | compiler/src/Compiler/Eco/Config.elm:919-927 |
-| `mono.lss.instanceQualMaxInstances` / `mono.lss.census` | 8 / false | Stamp config | compiler/src/Compiler/Eco/Config.elm:936-937 |
-| `mono.limits.{specTypeNodes,specBreadth}` | 400000 / 50000 | Watchdogs | compiler/src/Compiler/Eco/Config.elm:909-910 |
-| `borrow.{enabled,reify,report,validate}` | false / `"off"` (`off\|rc`) / false / false | Borrow. **`validate` is JSON-only** | compiler/src/Compiler/Eco/Config.elm:735-738 |
-| `list.{chunks,consIntrinsic,mapTemplate}` | true / true / false | `list.report` is env-only | compiler/src/Compiler/Eco/Config.elm:769-771 |
-| `cse.{enabled,minCost,maxPerDef}` | false / 5 / 64 | `cse.report` is env-only | compiler/src/Compiler/Eco/Config.elm:782-784 |
-| `aggPromote`, `ctorInline`, `sretResults`, `psplitParams`, `sretFresh`, `sretTailFuncs`, `stringLengthOp`, `appendSplit`, `stringOrderIntrinsic`, `valueEq`, `kernelGcLeaf`, `callPurityAttrs` | bool; all true | Top-level feature switches (see the env rows) | compiler/src/Compiler/Eco/Config.elm:741-752 |
-| (env-only fields) `mono.diffDump`, `mono.validate` | false | Only the env vars can set these | compiler/src/Compiler/Eco/Config.elm:893-894 |
+| `inline.{preMonoThreshold,postMonoThreshold,etaThreshold}` | int; 10 / 10 / 10 | Per-pass size budgets | compiler/src/Compiler/Config.elm:790-792 |
+| `inline.whitelist` / `inline.blacklist` | string list; [] / [] | Whitelist is added to the built-in `defaultWhitelist` (MonoInlineSimplify.elm:990, Bytes.Encode primitives and similar); blacklist is subtracted | compiler/src/Compiler/Config.elm:793-794 |
+| `inline.maxPerFunction` | int; 1000 | Maximum inlines per function | compiler/src/Compiler/Config.elm:795 |
+| `inline.{pre,post}MonoFixpointIterations` | int; 4 / 4 | Round counts | compiler/src/Compiler/Config.elm:796-797 |
+| `inline.hofThreshold` | int; 25 | HOF budget | compiler/src/Compiler/Config.elm:798 |
+| `inline.loopify` / `arityRaise` / `raiseAppliedShareMin` | true / false / 0 | See the matching env rows | compiler/src/Compiler/Config.elm:799-801 |
+| `inline.partialHof` / `preserveSets` / `pruneDead` | false / true / true | See the matching env rows | compiler/src/Compiler/Config.elm:802-804 |
+| `inline.preMono` / `postMono` / `etaExpand` / `aliasForward` | false / true / true / true | Pass switches | compiler/src/Compiler/Config.elm:805-807,816 |
+| `inline.etaOnly` / `inline.report` | [] / false | Debug | compiler/src/Compiler/Config.elm:808-809 |
+| `inline.kernelFactsDce` / `kernelCostClasses` | true / true | Kernel-opt-11 | compiler/src/Compiler/Config.elm:810-811 |
+| `inline.kernelCost{Inline,GcLeaf,Alloc,Hof}` | 1 / 4 / 8 / 20 | Kernel call cost vector | compiler/src/Compiler/Config.elm:812-815 |
+| `bytesFusion.enabled` | bool; true | **JSON-only (no env var).** Bytes encoder/decoder fusion in MLIR codegen | compiler/src/Compiler/Config.elm:822; compiler/src/Compiler/GenerateMlir/Expr.elm:3279 |
+| `logicalTypes.customMaxFields` | int; 8, clamped to [1,24] with a stderr warning | **JSON-only.** Maximum fields for unboxed-aggregate single-ctor custom types | compiler/src/Compiler/Config.elm:845,963 |
+| `cafMemo.{enabled,census,dedupe}` | true / false / false | CAF memoization | compiler/src/Compiler/Config.elm:828-830 |
+| `cafMemo.hoist.{enabled,minNodes,maxHoists}` | false / 3 / 8192 | CAF hoisting | compiler/src/Compiler/Config.elm:837-839 |
+| `mono.engine` | `subst\|solver\|diff`; built-in default `solver` | Engine. **Quirk: if the `mono` object is present but has no `engine`, the decoder's fallback string is `"subst"`, so the engine silently becomes subst.** An unknown string gives solver | compiler/src/Compiler/Config.elm:899 |
+| `mono.lss.{enabled,maxSetSize,maxSpecsPerGlobal,report,qCensus,arrowCensus}` | true / 0 / 0 / false / false / false | LSS knobs | compiler/src/Compiler/Config.elm:919-927 |
+| `mono.lss.instanceQualMaxInstances` / `mono.lss.census` | 8 / false | Stamp config | compiler/src/Compiler/Config.elm:936-937 |
+| `mono.limits.{specTypeNodes,specBreadth}` | 400000 / 50000 | Watchdogs | compiler/src/Compiler/Config.elm:909-910 |
+| `borrow.{enabled,reify,report,validate}` | false / `"off"` (`off\|rc`) / false / false | Borrow. **`validate` is JSON-only** | compiler/src/Compiler/Config.elm:735-738 |
+| `list.{chunks,consIntrinsic,mapTemplate}` | true / true / false | `list.report` is env-only | compiler/src/Compiler/Config.elm:769-771 |
+| `cse.{enabled,minCost,maxPerDef}` | false / 5 / 64 | `cse.report` is env-only | compiler/src/Compiler/Config.elm:782-784 |
+| `aggPromote`, `ctorInline`, `sretResults`, `psplitParams`, `sretFresh`, `sretTailFuncs`, `stringLengthOp`, `appendSplit`, `stringOrderIntrinsic`, `valueEq`, `kernelGcLeaf`, `callPurityAttrs` | bool; all true | Top-level feature switches (see the env rows) | compiler/src/Compiler/Config.elm:741-752 |
+| (env-only fields) `mono.diffDump`, `mono.validate` | false | Only the env vars can set these | compiler/src/Compiler/Config.elm:893-894 |
 
 Hard-coded source constants that behave like tuning knobs but have no switch:
 
 | Name | Values / default | Effect | Source |
 |---|---|---|---|
 | Registry TTL | 30 min | How long before registry.dat is re-fetched; `--refresh-registry` bypasses it | compiler/src/Builder/Deps/Registry.elm:94 |
-| `maxJoinRounds` | 100 | LSS_010 flush-round cap; the compile fails loudly beyond it | compiler/src/Compiler/MonoSolver/Monomorphize.elm:4108 |
-| `maxSaturationPasses` | 5 | Stale-read re-translation cap | compiler/src/Compiler/MonoSolver/Monomorphize.elm:4510 |
-| `maxIterConst` | 20 | Borrow fixpoint iteration cap | compiler/src/Compiler/GlobalOpt/Borrow.elm:126 |
-| `maxTypedSlots` | 26 | MLIR typed-slot cap (containers: 32 Record / 24 Custom) | compiler/src/Compiler/Generate/MLIR/Types.elm:488 |
-| `ctorTypedSlotCap` | 24 | AbiCloning copy of the constructor typed-slot bound | compiler/src/Compiler/GlobalOpt/AbiCloning.elm:3002 |
-| `fingerprintDepth` | 4 | AbiCloning layout-fingerprint depth | compiler/src/Compiler/GlobalOpt/AbiCloning.elm:288 |
-| `nullConsCapacity` | 1023 | Maximum constructor index for embedded null-constructor constants | compiler/src/Compiler/Data/CtorTag.elm:89 |
+| `maxJoinRounds` | 100 | LSS_010 flush-round cap; the compile fails loudly beyond it | compiler/src/Compiler/Monomorphize/Solver/Monomorphize.elm:4108 |
+| `maxSaturationPasses` | 5 | Stale-read re-translation cap | compiler/src/Compiler/Monomorphize/Solver/Monomorphize.elm:4510 |
+| `maxIterConst` | 20 | Borrow fixpoint iteration cap | compiler/src/Compiler/MonoOpt/Borrow.elm:126 |
+| `maxTypedSlots` | 26 | MLIR typed-slot cap (containers: 32 Record / 24 Custom) | compiler/src/Compiler/GenerateMlir/Types.elm:488 |
+| `ctorTypedSlotCap` | 24 | AbiCloning copy of the constructor typed-slot bound | compiler/src/Compiler/MonoOpt/AbiCloning.elm:3002 |
+| `fingerprintDepth` | 4 | AbiCloning layout-fingerprint depth | compiler/src/Compiler/MonoOpt/AbiCloning.elm:288 |
+| `nullConsCapacity` | 1023 | Maximum constructor index for embedded null-constructor constants | compiler/src/Compiler/IR/Runtime/CtorTag.elm:89 |
 | `topSlowCap` | 5 | `--stats`: number of slowest modules listed | compiler/src/Builder/Eco/FEStats.elm:155 |
 
 ## C++ backend tools and native driver

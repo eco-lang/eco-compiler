@@ -1,9 +1,9 @@
 module Compiler.Generate.MLIR.KernelAbiTest exposing (suite)
 
 {-| Tests that pin the C symbol and the MLIR argument and result types that
-`Compiler.Generate.MLIR.KernelAbi.deriveKernelInstanceAbi` chooses for one use
+`Compiler.GenerateMlir.KernelAbi.deriveKernelInstanceAbi` chooses for one use
 of a kernel function. Where the code generator routes a kernel call through
-`Compiler.Generate.MLIR.Context.registerKernelInstance`, it declares and calls
+`Compiler.GenerateMlir.Context.registerKernelInstance`, it declares and calls
 the kernel with that choice, so a change to it changes which C function
 generated code calls, or the MLIR type a value is passed to it in. These tests
 make such a change visible for the cases below.
@@ -13,11 +13,11 @@ kernels, `"Eco"` for `Eco.Kernel.*` ones), the kernel's home module and name,
 and the monomorphic types of its arguments and result. The symbol is
 `<prefix>_Kernel_<home>_<name>`, with an `_Int`, `_Float` or `_Char` suffix for
 the combinations of kernel and argument types that
-`Compiler.Generate.MLIR.KernelAbi` lists. The unsuffixed form is called here
+`Compiler.GenerateMlir.KernelAbi` lists. The unsuffixed form is called here
 the boxed root symbol. The ABI type of each argument and of the result is its
 MLIR type at the kernel boundary: `i64` for `Int`, `f64` for `Float`, `i32`
 for `Char`, and `!eco.value` for every other type these tests use, as
-`Compiler.Generate.MLIR.Types.monoTypeToAbi` gives it. An argument or result
+`Compiler.GenerateMlir.Types.monoTypeToAbi` gives it. An argument or result
 passed as `!eco.value` is called boxed here, and one passed as `i64`, `f64` or
 `i32` unboxed.
 
@@ -70,9 +70,9 @@ type.
 
 -}
 
-import Compiler.AST.Monomorphized as Mono
 import Compiler.Elm.ModuleName as ModuleName
-import Compiler.Generate.MLIR.KernelAbi as KernelAbi
+import Compiler.GenerateMlir.KernelAbi as KernelAbi
+import Compiler.IR.Mono as Mono
 import Expect
 import Mlir.Mlir as Mlir
 import Test exposing (Test, describe, test)
@@ -80,7 +80,7 @@ import Test exposing (Test, describe, test)
 
 {-| The kernel ABI tests, in groups by the kernels they cover. The outer label
 names `Compiler.Monomorphize.KernelAbi`, but every test calls
-`Compiler.Generate.MLIR.KernelAbi.deriveKernelInstanceAbi`.
+`Compiler.GenerateMlir.KernelAbi.deriveKernelInstanceAbi`.
 -}
 suite : Test
 suite =

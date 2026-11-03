@@ -1,6 +1,6 @@
 module Parse.ModuleTests exposing (suite)
 
-{-| A test that pins the whole `Compiler.AST.Source.Module` that
+{-| A test that pins the whole `Compiler.IR.Source.Module` that
 `Compiler.Parse.Module.fromByteString` produces for one small module, so that a
 change to the regions the parser records for a module header, an import, or a
 simple value declaration, or to which default imports it adds to an application
@@ -25,7 +25,7 @@ The one test, "Hello!", checks with a single `Expect.equal` that the result is
     `import` line, with no declaration doc comments.
   - The imports: the eleven default imports, each with the zero region, from
     `Platform.Sub` first to `Basics` last, which is the reverse of the order in
-    `Compiler.Elm.Compiler.Imports.defaults`, followed by the `Html` import with
+    `Compiler.Parse.DefaultImports.defaults`, followed by the `Html` import with
     its source regions.
   - The single value `main`, with no arguments and no annotation, whose body is
     `text` applied to the string literal `"Hello!"`, and no unions, aliases,
@@ -39,9 +39,9 @@ that fails to parse or fails the module checks.
 
 -}
 
-import Compiler.AST.Source as S
+import Compiler.Core.Annotation as A
+import Compiler.IR.Source as S
 import Compiler.Parse.Module as M
-import Compiler.Reporting.Annotation as A
 import Expect
 import Test exposing (Test)
 

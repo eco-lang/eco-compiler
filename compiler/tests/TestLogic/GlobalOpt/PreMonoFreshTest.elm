@@ -1,6 +1,6 @@
 module TestLogic.GlobalOpt.PreMonoFreshTest exposing (suite)
 
-{-| Tests for `Compiler.GlobalOpt.PreMono.Fresh`, which gives identity to the
+{-| Tests for `Compiler.PreMono.Fresh`, which gives identity to the
 code a pre-monomorphization pass copies or creates.
 
 When those passes run, every lambda already carries a source-lambda id
@@ -9,7 +9,7 @@ every type variable a program-wide id (`MVarId`), all handed out from the
 supplies of an `AssignMVarIds.GlobalMVarState`, the _allocator_. Taking the
 next id from a supply is called _minting_. A copy that keeps its original's
 ids, or a copied type variable that loses its `number` constraint, raises no
-error where it happens; `Compiler.GlobalOpt.PreMono.Fresh` states what a kept
+error where it happens; `Compiler.PreMono.Fresh` states what a kept
 id leads to.
 
 The fixtures are typed-optimized expressions built by hand, not compiled from
@@ -56,15 +56,15 @@ than a single `Define`.
 
 -}
 
-import Compiler.AST.Canonical as Can
-import Compiler.AST.TypeIds as TypeIds
-import Compiler.AST.TypeVars as Vars
-import Compiler.AST.TypedOptimized as TOpt
-import Compiler.Data.Id as Id
+import Compiler.Core.Annotation as A
+import Compiler.Core.Id as Id
+import Compiler.Core.TypeIds as TypeIds
 import Compiler.Elm.ModuleName as ModuleName
-import Compiler.GlobalOpt.PreMono.Fresh as Fresh
-import Compiler.Monomorphize.AssignMVarIds as AssignMVarIds
-import Compiler.Reporting.Annotation as A
+import Compiler.IR.Canonical as Can
+import Compiler.IR.Typed.Optimized as TOpt
+import Compiler.IR.Typed.TypeVars as Vars
+import Compiler.PreMono.AssignMVarIds as AssignMVarIds
+import Compiler.PreMono.Fresh as Fresh
 import Data.Map as DMap
 import Data.Set as EverySet
 import Dict

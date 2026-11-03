@@ -34,7 +34,7 @@ enclose it:
 
 A type-class variable is one whose name starts with `number`, `comparable`,
 `appendable` or `compappend`. The test is a prefix match, the same one
-`Compiler.Data.Name.isNumberType` and its siblings make.
+`Compiler.Core.Name.isNumberType` and its siblings make.
 
 Only a node whose whole type is a bare type variable can fail. A structured
 type such as `List a` passes whatever variables it contains.
@@ -48,9 +48,9 @@ inside them are.
 -}
 
 import Array exposing (Array)
-import Compiler.AST.Canonical as Can
-import Compiler.Data.Name as Name exposing (Name)
-import Compiler.Reporting.Annotation as A
+import Compiler.Core.Annotation as A
+import Compiler.Core.Name as Name exposing (Name)
+import Compiler.IR.Canonical as Can
 import Data.Map as DMap
 import Dict exposing (Dict)
 import Set exposing (Set)

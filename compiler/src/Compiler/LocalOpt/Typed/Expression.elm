@@ -6,15 +6,15 @@ module Compiler.LocalOpt.Typed.Expression exposing
 
 {-| Monomorphization needs to know the type of every expression it specializes,
 and this module lowers one expression of a definition into the typed optimized
-AST of `Compiler.AST.TypedOptimized` with that type attached.
+AST of `Compiler.IR.Typed.Optimized` with that type attached.
 
 Every node it builds carries a _meta_: the node's `Can.Type`, and where one is
 known, its _solver variable_, the type checker's variable for that expression.
 Both come from two tables indexed by canonical node id, _exprTypes_ (each
 expression's or pattern's solved type) and _exprVars_ (its solver variable), as
-`Compiler.AST.TypedCanonical` describes. The typed canonical AST wraps only a
+`Compiler.IR.Typed.Canonical` describes. The typed canonical AST wraps only a
 definition's top expression, so each sub-expression is wrapped with
-`Compiler.TypedCanonical.Build.toTypedExpr` as it is reached. A type missing
+`Compiler.Type.TypedCanonical.toTypedExpr` as it is reached. A type missing
 from a table, a local name not in scope, or a top-level name with no annotation
 crashes the compiler; there is no error value.
 
@@ -54,24 +54,24 @@ full set of arguments are `TailCall`s.
 -}
 
 import Array
-import Compiler.AST.Canonical as Can
-import Compiler.AST.TypeVars as Vars
-import Compiler.AST.TypedCanonical as TCan exposing (ExprTypes, ExprVars)
-import Compiler.AST.TypedOptimized as TOpt
-import Compiler.AST.Utils.Shader as Shader
-import Compiler.AST.Utils.Type as Type
-import Compiler.Data.Index as Index
-import Compiler.Data.Name as Name exposing (Name)
+import Compiler.Core.Annotation as A
+import Compiler.Core.Index as Index
+import Compiler.Core.Name as Name exposing (Name)
 import Compiler.Elm.ModuleName as ModuleName
+import Compiler.IR.Canonical as Can
+import Compiler.IR.Canonical.Alias as Type
+import Compiler.IR.Source.Shader as Shader
+import Compiler.IR.Typed.Canonical as TCan exposing (ExprTypes, ExprVars)
+import Compiler.IR.Typed.Optimized as TOpt
+import Compiler.IR.Typed.TypeVars as Vars
 import Compiler.LocalOpt.Typed.Case as Case
 import Compiler.LocalOpt.Typed.Names as Names
-import Compiler.Reporting.Annotation as A
 import Compiler.Type.KernelTypes as KernelTypes
-import Compiler.TypedCanonical.Build as TCanBuild
+import Compiler.Type.TypedCanonical as TCanBuild
 import Data.Map
 import Data.Set as EverySet exposing (EverySet)
 import Dict exposing (Dict)
-import Utils.Crash
+import System.Crash
 import Utils.Main as Utils
 
 
@@ -852,7 +852,7 @@ lookupAnnotationType name annotations =
             tipe
 
         Nothing ->
-            Utils.Crash.crash "Expression.lookupAnnotationType: no annotation"
+            System.Crash.crash "Expression.lookupAnnotationType: no annotation"
 
 
 
@@ -1106,7 +1106,7 @@ getDefNameAndType exprTypes def =
                                     t
 
                                 Nothing ->
-                                    Utils.Crash.crash "Expression.extractDefNameAndType: arg type"
+                                    System.Crash.crash "Expression.extractDefNameAndType: arg type"
                         )
                         args
 
@@ -1116,7 +1116,7 @@ getDefNameAndType exprTypes def =
                             t
 
                         Nothing ->
-                            Utils.Crash.crash "Expression.extractDefNameAndType: body type"
+                            System.Crash.crash "Expression.extractDefNameAndType: body type"
             in
             ( name, buildFunctionType argTypes bodyType )
 
@@ -1451,7 +1451,7 @@ optimization) or an id with no type.
 lookupPatternType : ExprTypes -> Int -> String -> Can.Type Name
 lookupPatternType exprTypes patId location =
     if patId < 0 then
-        Utils.Crash.crash (location ++ ": synthetic")
+        System.Crash.crash (location ++ ": synthetic")
 
     else
         case Array.get patId exprTypes |> Maybe.andThen identity of
@@ -1459,7 +1459,7 @@ lookupPatternType exprTypes patId location =
                 t
 
             Nothing ->
-                Utils.Crash.crash (location ++ ": not in exprTypes")
+                System.Crash.crash (location ++ ": not in exprTypes")
 
 
 {-| Returns the solver variable of the pattern with id `patId`, or `Nothing`
@@ -1607,7 +1607,7 @@ destructHelpWithType exprTypes exprVars maybeParentPatId maybeType path (A.At re
                                             t
 
                                         Nothing ->
-                                            Utils.Crash.crash ("Expression.destructHelpWithType: PRecord field " ++ name ++ " not in type")
+                                            System.Crash.crash ("Expression.destructHelpWithType: PRecord field " ++ name ++ " not in type")
 
                                 _ ->
                                     lookupPatternType exprTypes effectivePatId ("Expression.destructHelpWithType: PRecord " ++ name)
@@ -1653,7 +1653,7 @@ destructHelpWithType exprTypes exprVars maybeParentPatId maybeType path (A.At re
                             )
 
         Can.PTuple _ _ _ ->
-            Utils.Crash.crash "Expression.destructHelpWithType: PTuple with more than 3 elements is not supported in Elm"
+            System.Crash.crash "Expression.destructHelpWithType: PTuple with more than 3 elements is not supported in Elm"
 
         Can.PList [] ->
             Names.pure revDs
@@ -1694,7 +1694,7 @@ destructHelpWithType exprTypes exprVars maybeParentPatId maybeType path (A.At re
                                     Just t
 
                                 Nothing ->
-                                    Utils.Crash.crash
+                                    System.Crash.crash
                                         ("destructHelpWithType PCtor singleton: Pattern ID "
                                             ++ String.fromInt patternId
                                             ++ " not found in exprTypes for constructor "
@@ -1775,7 +1775,7 @@ destructCtorArg exprTypes exprVars ctorName path revDs (Can.PatternCtorArg index
                     Just t
 
                 Nothing ->
-                    Utils.Crash.crash
+                    System.Crash.crash
                         ("destructCtorArg: Pattern ID "
                             ++ String.fromInt patternId
                             ++ " not found in exprTypes for constructor "

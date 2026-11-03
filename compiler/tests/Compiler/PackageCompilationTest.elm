@@ -52,13 +52,13 @@ and any source that fails to compile.
 
 -}
 
-import Compiler.AST.Source as Src
-import Compiler.Elm.Interface as I
 import Compiler.Elm.Interface.Basic as Basic
 import Compiler.Elm.ModuleName as ModuleName
 import Compiler.Elm.Package as Pkg
 import Compiler.Elm.Source.Array as ArraySource
 import Compiler.Elm.Source.JsArray as JsArraySource
+import Compiler.IR.Canonical.Interface as I
+import Compiler.IR.Source as Src
 import Compiler.PackageCompilation as PC
 import Dict exposing (Dict)
 import Expect
@@ -366,7 +366,7 @@ typedPathwayTests =
 
                     Ok results ->
                         case List.filter (\r -> r.moduleName == "Array") results of
-                            [ arrayResult ] ->
+                            [ _ ] ->
                                 expectMonomorphizeAll results arrayEntries
 
                             _ ->

@@ -8,7 +8,7 @@ The input is `Compiler.Parse.Module.Module`, the parser's record before any
 checking, because it still holds the comments around the header, between the
 imports and between the top-level declarations. Inside each declaration, every
 syntax node carries the comments the parser found next to it, in the comment
-groups `Compiler.AST.Source` defines, and the formatters here print them back
+groups `Compiler.IR.Source` defines, and the formatters here print them back
 in place.
 
 Formatting happens in two steps. `formatModu` first converts the parsed module
@@ -54,21 +54,21 @@ import Common.Format.Cheapskate.Types exposing (Block(..), Blocks, Doc(..), Link
 import Common.Format.ImportInfo as ImportInfo exposing (ImportInfo)
 import Common.Format.Render.ElmStructure as ElmStructure
 import Common.Format.Render.Markdown as Markdown
-import Compiler.AST.Snippet as Snippet
-import Compiler.AST.Source as Src
-import Compiler.AST.Utils.Binop as Binop
-import Compiler.AST.Utils.Shader as Shader
-import Compiler.Data.Name exposing (Name)
+import Compiler.Core.Annotation as A
+import Compiler.Core.Name exposing (Name)
+import Compiler.Core.Snippet as Snippet
+import Compiler.IR.Source as Src
+import Compiler.IR.Source.Binop as Binop
+import Compiler.IR.Source.Shader as Shader
+import Compiler.Lexer.Primitives as P
 import Compiler.Parse.Declaration as Decl
 import Compiler.Parse.Expression as Expr
 import Compiler.Parse.Module as M
-import Compiler.Parse.Primitives as P
-import Compiler.Reporting.Annotation as A
 import Data.Map as Map exposing (Dict)
 import Data.Set as EverySet exposing (EverySet)
 import Hex
 import Maybe.Extra as Maybe
-import Utils.Crash exposing (crash)
+import System.Crash exposing (crash)
 
 
 {-| The formatter's model of a whole module.

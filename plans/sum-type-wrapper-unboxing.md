@@ -33,9 +33,9 @@ classifying the comparable-key work.
 
 ## 0. The gap, precisely
 
-`Can.CtorOpts` (`compiler/src/Compiler/AST/Canonical.elm:413`) has exactly
+`Can.CtorOpts` (`compiler/src/Compiler/IR/Canonical.elm:413`) has exactly
 three cases, assigned by `toOpts`
-(`compiler/src/Compiler/Canonicalize/Environment/Local.elm:526`):
+(`compiler/src/Compiler/Canonicalize/LocalEnvironment.elm:526`):
 
 ```elm
 toOpts ctors =
@@ -98,7 +98,7 @@ not pretend otherwise.
 admission test is a hard-coded name match:
 
 ```elm
--- compiler/src/Compiler/Data/CtorTag.elm:68
+-- compiler/src/Compiler/IR/Runtime/CtorTag.elm:68
 isEmbeddedConstantCtor name =
     name == "Nothing" || name == "True" || name == "False"
 ```

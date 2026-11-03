@@ -34,7 +34,7 @@ whose MLIR has no `eco.dbg` op carrying `arg_type_ids` passes.
 
 -}
 
-import Compiler.AST.Source as Src
+import Compiler.IR.Source as Src
 import Expect exposing (Expectation)
 import Mlir.Mlir exposing (MlirAttr(..), MlirModule, MlirOp)
 import TestLogic.Generate.CodeGen.Invariants

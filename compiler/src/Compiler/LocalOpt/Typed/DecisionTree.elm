@@ -11,7 +11,7 @@ The value a `case` matches on is its _scrutinee_. A _decision tree_ examines
 the scrutinee one part at a time: each inner node names a position in the
 scrutinee, a `Path`, and branches on a `Test` of the value found there, and
 each leaf names the `case` branch that matches. Paths and tests are defined in
-`Compiler.AST.DecisionTree.TypedPath` and `Compiler.AST.DecisionTree.Test`.
+`Compiler.IR.DecisionTree.TypedPath` and `Compiler.IR.DecisionTree.Test`.
 
 `Compiler.LocalOpt.Erased.DecisionTree` builds the same trees by the same
 algorithm for the pipeline that carries no types. The difference is the path:
@@ -45,15 +45,15 @@ fallback as one edge.
 
 -}
 
-import Compiler.AST.Canonical as Can
-import Compiler.AST.DecisionTree.Test as Test
-import Compiler.AST.DecisionTree.TypedPath as TypedPath
-import Compiler.Data.Index as Index
-import Compiler.Elm.String as ES
-import Compiler.Reporting.Annotation as A
+import Compiler.Core.Annotation as A
+import Compiler.Core.Index as Index
+import Compiler.IR.Canonical as Can
+import Compiler.IR.DecisionTree.Test as Test
+import Compiler.IR.DecisionTree.TypedPath as TypedPath
+import Compiler.IR.Source.StringLiteral as ES
 import Data.Set as EverySet
 import Prelude
-import Utils.Crash exposing (crash)
+import System.Crash exposing (crash)
 import Utils.Main as Utils
 
 
@@ -106,14 +106,14 @@ type DecisionTree
 
 
 {-| A question a `Decision` node asks about the value at its path. This is
-another name for `Compiler.AST.DecisionTree.Test.Test`, which describes it.
+another name for `Compiler.IR.DecisionTree.Test.Test`, which describes it.
 -}
 type alias Test =
     Test.Test
 
 
 {-| The kind of container a path step takes a field from. This is another
-name for `Compiler.AST.DecisionTree.TypedPath.ContainerHint`, which describes
+name for `Compiler.IR.DecisionTree.TypedPath.ContainerHint`, which describes
 it.
 -}
 type alias ContainerHint =
@@ -121,7 +121,7 @@ type alias ContainerHint =
 
 
 {-| A position in the scrutinee, as the steps that reach it. This is another
-name for `Compiler.AST.DecisionTree.TypedPath.Path`, which describes it.
+name for `Compiler.IR.DecisionTree.TypedPath.Path`, which describes it.
 -}
 type alias Path =
     TypedPath.Path

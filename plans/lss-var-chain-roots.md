@@ -667,7 +667,7 @@ implies.
 **§8.2 / ORDER 5 — SHIPPABLE. 597 writes, 587 of them k1.** Landing
 squarely on the monadic-continuation family: `andThen` var 2,093 → 1,765
 (−328, k1 +320), `foldr` −43, `map` −38, `foldl` −27, `pure` −22 — the
-same `System.TypeCheck.IO` chain §11 identified as ≈44–50 % of generic
+same `Compiler.Type.State.IO` chain §11 identified as ≈44–50 % of generic
 dispatch (coverage there has never converted to a dispatch win while
 GAP-6 binds, so this is a completeness gain, not a perf claim).
 
@@ -1293,7 +1293,7 @@ shape probe) answers AR-F6/F7.**
 **Mechanism 1 (`lss.flowConnect`, env `ECO_MONO_LSS_FLOW_CONNECT`,
 token `lssFC=`, default OFF):**
 
-1. `Compiler/Eco/Config.elm` + `Builder/Eco/Config.elm`: flag, default
+1. `Compiler/Config.elm` + `Builder/Eco/Config.elm`: flag, default
    False, decoder field, hash token, env override (the varLambda
    boilerplate exactly).
 2. `Translate.elm` `ArgStash`: add `StashParam IO.Variable`. In

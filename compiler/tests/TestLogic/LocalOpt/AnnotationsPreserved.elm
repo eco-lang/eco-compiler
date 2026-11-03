@@ -31,9 +31,9 @@ program must define `testValue` and `main` is among the names checked.
 
 -}
 
-import Compiler.AST.Source as Src
-import Compiler.AST.TypedOptimized as TOpt
-import Compiler.Data.Name exposing (Name)
+import Compiler.Core.Name exposing (Name)
+import Compiler.IR.Source as Src
+import Compiler.IR.Typed.Optimized as TOpt
 import Data.Map
 import Dict
 import Expect

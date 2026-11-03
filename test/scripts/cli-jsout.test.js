@@ -34,7 +34,7 @@ main =
         }
 `;
 
-// Bug (fixed): Compiler.Elm.String wrote code point U+FFFF as a (bogus) surrogate pair '\uD7FF\uDFFF'
+// Bug (fixed): Compiler.IR.Source.StringLiteral wrote code point U+FFFF as a (bogus) surrogate pair '\uD7FF\uDFFF'
 // because its test was `code < 0xFFFF` instead of `<=`. A user's "\u{FFFF}" literal then had
 // String.length 2 and String.toList gave one char 55295. Unit test: compiler/tests/Compiler/Elm/StringTest.elm.
 test("string literal \\u{FFFF} compiles to a one-code-unit JS string", () => {

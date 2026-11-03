@@ -757,7 +757,7 @@
   ```elm
   _ =
       if Mono.containsAnyMVar monoType && not (Mono.containsCEcoMVar monoType) then
-          Utils.Crash.crash ...
+          System.Crash.crash ...
       else ()
   ```
   This traverses the type twice (`containsAnyMVar` + `containsCEcoMVar`) on every

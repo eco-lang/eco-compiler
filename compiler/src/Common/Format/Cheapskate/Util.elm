@@ -63,7 +63,7 @@ Most of the file's length is the table of Unicode punctuation behind
 
 import Common.Format.Cheapskate.ParserCombinators exposing (Parser, andThen, char, column, count, endOfInput, getPosition, map, notFollowedBy, option, return, scan, skip, skipWhile)
 import List.Extra as List
-import Utils.Crash exposing (crash)
+import System.Crash exposing (crash)
 
 
 {-| Joins the lines into one string with a newline between each pair and none

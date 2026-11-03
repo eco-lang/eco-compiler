@@ -39,9 +39,9 @@ exponent with no digits, and `precedence`.
 
 -}
 
+import Compiler.Lexer.Primitives as P
+import Compiler.Parse.Error as E
 import Compiler.Parse.Number as N
-import Compiler.Parse.Primitives as P
-import Compiler.Reporting.Error.Syntax as E
 import Expect
 import Test exposing (Test)
 

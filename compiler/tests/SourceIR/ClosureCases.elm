@@ -4,7 +4,7 @@ module SourceIR.ClosureCases exposing (expectSuite, suite)
 that the compiler's handling of closures meets a range of capture shapes.
 
 A closure is a function value together with the variables it refers to but does
-not bind, its _captures_. During monomorphization `Compiler.Monomorphize.Closure`
+not bind, its _captures_. During monomorphization `Compiler.IR.Mono.Closure`
 finds each closure's free variables and a type for each one. A variable it
 misses is not carried by the closure, and one it finds but cannot type makes
 `computeClosureCaptures` crash. The shapes below vary where a captured variable
@@ -76,7 +76,6 @@ captures of `Char`.
 
 -}
 
-import Compiler.AST.Source as Src
 import Compiler.AST.SourceBuilder
     exposing
         ( TypedDef
@@ -114,6 +113,7 @@ import Compiler.AST.SourceBuilder
         , varExpr
         )
 import Compiler.BulkCheck exposing (TestCase, bulkCheck)
+import Compiler.IR.Source as Src
 import Expect exposing (Expectation)
 import Test exposing (Test)
 import TestLogic.TestPipeline exposing (expectMonomorphization)

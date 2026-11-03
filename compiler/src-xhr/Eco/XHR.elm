@@ -33,7 +33,7 @@ is an error code string such as `"ENOENT"`. Such a reply fails with the tag
 whose body is not a JSON object with a string `error` field, a network error
 and a bad URL each fail with tag 0, path `""` and a message naming the op.
 
-Two cases crash the program, through `Utils.Crash.crash`, instead of failing the
+Two cases crash the program, through `System.Crash.crash`, instead of failing the
 task. A 2xx reply that `stringTask`, `jsonTask` or `bytesTask` cannot decode
 crashes, with a message naming the op. And `orCrash` turns a task that can fail
 into one that cannot, by crashing on any `Failure`, so a task built with it
@@ -52,8 +52,8 @@ import Eco.IO.Error as IOErr
 import Http
 import Json.Decode as Decode
 import Json.Encode as Encode
+import System.Crash exposing (crash)
 import Task exposing (Task)
-import Utils.Crash exposing (crash)
 
 
 {-| The failure tuple `( tag, path, message )` that an eco-io request fails

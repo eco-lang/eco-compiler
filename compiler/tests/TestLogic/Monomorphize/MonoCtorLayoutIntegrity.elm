@@ -10,7 +10,7 @@ A _constructor shape_ (`Mono.CtorShape`) is a constructor's name, its tag, and
 the types of its fields after monomorphization; the graph's `ctorShapes`
 table holds a list of shapes for each custom type, keyed by layout (lambda-set
 annotations ignored). Code generation builds a constructor's heap layout from
-its shape alone (`Compiler.Generate.MLIR.Types.computeCtorLayout`), so a shape
+its shape alone (`Compiler.GenerateMlir.Types.computeCtorLayout`), so a shape
 that disagrees with the type it is listed under, or with a node that builds
 the constructor, gives the heap object the wrong layout.
 
@@ -40,10 +40,10 @@ pattern match on one; and the graph after global optimization.
 -}
 
 import Array
-import Compiler.AST.Canonical as Can
-import Compiler.AST.Monomorphized as Mono
-import Compiler.AST.Source as Src
-import Compiler.AST.TypeEnv as TypeEnv
+import Compiler.IR.Canonical as Can
+import Compiler.IR.Mono as Mono
+import Compiler.IR.Source as Src
+import Compiler.IR.Typed.TypeEnv as TypeEnv
 import Compiler.Monomorphize.Analysis as Analysis
 import Expect exposing (Expectation)
 import TestLogic.TestPipeline as Pipeline

@@ -1,6 +1,6 @@
 module Compiler.Parse.Expression exposing (expression)
 
-{-| Parses Elm expressions into the source AST of `Compiler.AST.Source`, keeping
+{-| Parses Elm expressions into the source AST of `Compiler.IR.Source`, keeping
 the comments found between their parts.
 
 `expression` is the one entry point. An expression is a `let`, `if` or `case`
@@ -39,20 +39,20 @@ token against that position.
 
 -}
 
-import Compiler.AST.Source as Src
-import Compiler.Data.Name as Name
-import Compiler.Parse.Keyword as Keyword
+import Compiler.Core.Annotation as A
+import Compiler.Core.Name as Name
+import Compiler.IR.Source as Src
+import Compiler.Lexer.Keyword as Keyword
+import Compiler.Lexer.Primitives as P
+import Compiler.Lexer.Symbol as Symbol
+import Compiler.Parse.Error as E
 import Compiler.Parse.Number as Number
 import Compiler.Parse.Pattern as Pattern
-import Compiler.Parse.Primitives as P
 import Compiler.Parse.Shader as Shader
 import Compiler.Parse.Space as Space
 import Compiler.Parse.String as String
-import Compiler.Parse.Symbol as Symbol
 import Compiler.Parse.Type as Type
 import Compiler.Parse.Variable as Var
-import Compiler.Reporting.Annotation as A
-import Compiler.Reporting.Error.Syntax as E
 
 
 

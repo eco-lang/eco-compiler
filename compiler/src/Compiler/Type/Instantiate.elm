@@ -31,11 +31,11 @@ is converted with a map from those names to the converted arguments instead.
 
 -}
 
-import Compiler.AST.Canonical as Can
-import Compiler.Data.Name exposing (Name)
+import Compiler.Core.Name exposing (Name)
+import Compiler.IR.Canonical as Can
+import Compiler.Type.State.IO as IO exposing (IO)
 import Compiler.Type.Type exposing (Type(..))
 import Dict
-import System.TypeCheck.IO as IO exposing (IO)
 import Utils.Main as Utils
 
 

@@ -42,7 +42,6 @@ definitions or in definitions that take arguments.
 
 -}
 
-import Compiler.AST.Canonical as Can
 import Compiler.AST.CanonicalBuilder
     exposing
         ( callExpr
@@ -58,6 +57,7 @@ import Compiler.AST.CanonicalBuilder
         , varLocalExpr
         )
 import Compiler.BulkCheck exposing (TestCase, bulkCheck)
+import Compiler.IR.Canonical as Can
 import Expect exposing (Expectation)
 import Test exposing (Test)
 
@@ -189,7 +189,7 @@ varKernelUtilsTuple2 expectFn _ =
 `Elm.Kernel.Basics.pi`.
 
 The case's label refers to the MLIR back end, where
-`Compiler.GlobalOpt.KernelIntrinsics` has a float-constant intrinsic for
+`Compiler.IR.Kernel.Intrinsics` has a float-constant intrinsic for
 `Basics.pi`.
 
 -}
@@ -207,7 +207,7 @@ varKernelBasicsPi expectFn _ =
 `Elm.Kernel.Basics.add`, referenced without being called.
 
 The case's label refers to the MLIR back end, where
-`Compiler.GlobalOpt.KernelIntrinsics` has intrinsics for calls of `Basics.add`, a
+`Compiler.IR.Kernel.Intrinsics` has intrinsics for calls of `Basics.add`, a
 kernel function that takes arguments.
 
 -}

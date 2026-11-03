@@ -6,7 +6,7 @@
 
 ### Fix 1: Char escape decoding in MLIR codegen (CRITICAL — was blocking Stage 6)
 
-**File:** `compiler/src/Compiler/Generate/MLIR/Patterns.elm`
+**File:** `compiler/src/Compiler/GenerateMlir/Patterns.elm`
 
 **Problem:** `testToTagInt` for `IsChr` patterns took the first character of the
 stored string. But char patterns with escape sequences (like `'\n'`, `'\t'`,
@@ -21,7 +21,7 @@ chars produced tag value 92 (backslash), creating duplicate case values in
 
 ### Fix 2: Generate `eco.case` instead of `scf.if` for if-then-else (CRITICAL — was blocking Stage 6)
 
-**File:** `compiler/src/Compiler/Generate/MLIR/Expr.elm` (lines ~3119-3145)
+**File:** `compiler/src/Compiler/GenerateMlir/Expr.elm` (lines ~3119-3145)
 
 **Problem:** The Elm compiler generated `scf.if` for normal if-then-else.
 When a branch contained a string case (`eco.case` with `case_kind="str"`),
@@ -174,7 +174,7 @@ The GC pressure comes from Dict operations and traversals, not from MonoDtPath a
 One extra field per call node, negligible. Not visible in profiling.
 
 ### Issue 4: MonoTraverse foldExprAccFirst PAP elimination — FIXED
-**File:** `compiler/src/Compiler/Monomorphize/MonoTraverse.elm`
+**File:** `compiler/src/Compiler/IR/Mono/Traverse.elm`
 
 **Problem:** `foldExprAccFirst` passed `foldExprAccFirst f` (a partial application)
 to `foldExprChildren`. Inside `foldExprChildren`, every recursive call resolved this
@@ -278,7 +278,7 @@ Total cost is O(total_ops) which is optimal.
 
 **Category:** Inefficient algorithm (quadratic list append)
 
-**Files:** `compiler/src/Compiler/Generate/MLIR/Expr.elm` (41 occurrences of `++ [`)
+**Files:** `compiler/src/Compiler/GenerateMlir/Expr.elm` (41 occurrences of `++ [`)
 
 **Problem:** Throughout MLIR code generation, ops lists are accumulated using
 `List.reverse result.ops ++ accOps` inside `List.foldl`. Each iteration reverses
@@ -352,7 +352,7 @@ Risk/complexity too high.
 
 **Category:** Unnecessary rebuilding (no identity tracking)
 
-**File:** `compiler/src/Compiler/GlobalOpt/MonoInlineSimplify.elm`
+**File:** `compiler/src/Compiler/MonoOpt/InlineSimplify.elm`
 
 **Problem:** The `rewriteExpr` function (line ~730) and its helpers
 (`rewriteExprs`, `rewriteCaptures`, `rewriteBranches`, `rewriteCaseBranches`,
@@ -434,7 +434,7 @@ modules).
 
 **Category:** Missing early exit
 
-**File:** `compiler/src/Compiler/GlobalOpt/Staging.elm`
+**File:** `compiler/src/Compiler/MonoOpt/Staging.elm`
 
 **Problem:** `analyzeAndSolveStaging` unconditionally runs 4 sub-passes
 (computeProducerInfo → buildStagingGraph → solveStagingGraph → applyStagingSolution)
@@ -457,7 +457,7 @@ first-order functions.
 
 **Category:** Unnecessary intermediate allocation
 
-**File:** `compiler/src/Compiler/GlobalOpt/MonoInlineSimplify.elm` (28 occurrences)
+**File:** `compiler/src/Compiler/MonoOpt/InlineSimplify.elm` (28 occurrences)
 
 **Problem:** `computeCost`, `countUsages`, and `countClosures` all use
 `List.sum (List.map f items)` which allocates an intermediate list of Ints
@@ -485,7 +485,7 @@ that dominates. Not visible in profiling.
 
 **Category:** Redundant traversals (can be fused)
 
-**File:** `compiler/src/Compiler/GlobalOpt/MonoInlineSimplify.elm` (lines ~197-345)
+**File:** `compiler/src/Compiler/MonoOpt/InlineSimplify.elm` (lines ~197-345)
 
 **Problem:** Building the call graph requires 3 separate passes over the
 nodes array:
@@ -515,7 +515,7 @@ O(n) where n = node count, not a bottleneck.
 
 **Category:** Unnecessary conversion
 
-**File:** `compiler/src/Compiler/GlobalOpt/MonoInlineSimplify.elm` (lines ~67-106)
+**File:** `compiler/src/Compiler/MonoOpt/InlineSimplify.elm` (lines ~67-106)
 
 **Problem:** The optimizer converts `Array → List` (line 71), processes with
 `List.foldl` (lines 89-103), then converts back `List → Array` via
@@ -653,7 +653,7 @@ the overhead is negligible. Not visible in profiling.
 
 **Category:** Redundant traversals
 
-**File:** `compiler/src/Compiler/GlobalOpt/MonoGlobalOptimize.elm` (lines ~1214-1239)
+**File:** `compiler/src/Compiler/MonoOpt/GlobalOptimize.elm` (lines ~1214-1239)
 
 **Problem:** For `MonoClosure` nodes, the code does:
 1. `List.map` over captures to annotate each capture expression
@@ -679,7 +679,7 @@ for small k. Not visible in profiling.
 
 **Category:** Unnecessary conversion
 
-**File:** `compiler/src/Compiler/Generate/MLIR/Expr.elm` (lines ~3484-3485)
+**File:** `compiler/src/Compiler/GenerateMlir/Expr.elm` (lines ~3484-3485)
 
 **Problem:** Capture names are deduplicated via `Set.fromList |> Set.toList`
 which is O(n log n) for the conversion to Set, then O(n) for toList. The
@@ -705,7 +705,7 @@ Called during monomorphization closure analysis only, not in hot MLIR generation
 
 **Category:** Redundant traversals / unnecessary intermediate lists
 
-**File:** `compiler/src/Compiler/Monomorphize/Closure.elm` (lines ~265-330)
+**File:** `compiler/src/Compiler/IR/Mono/Closure.elm` (lines ~265-330)
 
 **Problem:** `findFreeLocals` uses `List.concatMap` heavily, which creates
 intermediate lists at every level of the AST. For each expression node,
@@ -775,7 +775,7 @@ but is fundamental work that can't be cached cheaply.
 
 **Category:** Unnecessary work (repeated computation)
 
-**File:** `compiler/src/Compiler/Monomorphize/Specialize.elm`
+**File:** `compiler/src/Compiler/Monomorphize/Subst/Specialize.elm`
 
 **Problem:** The scheme cache (`schemeCache`) memoizes per-global-function
 metadata, but individual type substitutions are recomputed each time a
@@ -860,7 +860,7 @@ check itself (does graph have closures?) requires a traversal.
 
 **Category:** Missing early exits
 
-**File:** `compiler/src/Compiler/GlobalOpt/MonoGlobalOptimize.elm` (lines ~107-131)
+**File:** `compiler/src/Compiler/MonoOpt/GlobalOptimize.elm` (lines ~107-131)
 
 **Problem:** `globalOptimize` runs 5 sequential phases unconditionally:
 1. `wrapTopLevelCallables` — wraps function values in closures
@@ -915,7 +915,7 @@ the end of expression generation, not in loops. Cost is O(total_ops) not O(n²).
 
 **Category:** Inefficient algorithm (quadratic list append)
 
-**File:** `compiler/src/Compiler/Generate/MLIR/Patterns.elm` (9 occurrences of `++ [`)
+**File:** `compiler/src/Compiler/GenerateMlir/Patterns.elm` (9 occurrences of `++ [`)
 
 **Problem:** Pattern match code generation uses the same `++ [op]` append
 pattern as Expr.elm. Decision trees can be deep and wide, so the ops lists
@@ -937,7 +937,7 @@ would benefit most.
 
 **Category:** Inefficient algorithm (quadratic list append)
 
-**File:** `compiler/src/Compiler/Generate/MLIR/TailRec.elm` (20 occurrences of `++ [`)
+**File:** `compiler/src/Compiler/GenerateMlir/TailRec.elm` (20 occurrences of `++ [`)
 
 **Problem:** Tail recursion lowering generates loop structures with phi nodes,
 branch ops, and yield ops. The ops list is built with `++ [op]` appending.
@@ -960,7 +960,7 @@ MonoDirect/Specialize.elm. Impact below measurement threshold.
 
 **Category:** Unnecessary intermediate allocation
 
-**File:** `compiler/src/Compiler/Monomorphize/Specialize.elm` (lines ~2958-2962, 3002-3006)
+**File:** `compiler/src/Compiler/Monomorphize/Subst/Specialize.elm` (lines ~2958-2962, 3002-3006)
 
 **Problem:**
 ```elm
@@ -990,7 +990,7 @@ The `sumBy` optimization (Issue 16) already reduced their allocation pressure.
 
 **Category:** Redundant traversals / code duplication
 
-**File:** `compiler/src/Compiler/GlobalOpt/MonoInlineSimplify.elm`
+**File:** `compiler/src/Compiler/MonoOpt/InlineSimplify.elm`
 
 **Problem:** Three functions (`computeCost` lines ~391-424, `countUsages`
 lines ~2094-2163, `countClosures` lines ~2439-2496) all perform full recursive
@@ -1016,7 +1016,7 @@ inlining.
 
 ### Issue 36: toComparableGlobal returns List String instead of String — FIXED
 
-**Files:** `compiler/src/Compiler/AST/TypedOptimized.elm`, `compiler/src/Compiler/Elm/ModuleName.elm`, + 15 more
+**Files:** `compiler/src/Compiler/IR/Typed/Optimized.elm`, `compiler/src/Compiler/Elm/ModuleName.elm`, + 15 more
 
 **Problem:** `toComparableGlobal` returned `List String` (4 elements), `toComparableCanonical`
 returned `List String` (3 elements). Used as Dict keys in monomorphization hot path.
@@ -1035,7 +1035,7 @@ across 18 files to use `String` comparable.
 
 ### Issue 37: MVarEnv constraints Dict Int → Array — FIXED
 
-**Files:** `compiler/src/Compiler/Monomorphize/State.elm`, `compiler/src/Compiler/Monomorphize/AssignMVarIds.elm`, `compiler/src/Compiler/Type/SolverSnapshot.elm`
+**Files:** `compiler/src/Compiler/Monomorphize/State.elm`, `compiler/src/Compiler/PreMono/AssignMVarIds.elm`, `compiler/src/Compiler/Type/SolverSnapshot.elm`
 
 **Problem:** `MVarEnv.constraints` used `Dict Int Mono.Constraint` keyed by sequential integer IDs.
 Each `lookupConstraint` did `Dict.get (Id.toComparable mvarId)` — O(log n) tree traversal.

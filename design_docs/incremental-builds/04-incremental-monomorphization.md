@@ -25,7 +25,7 @@
 
 ## 1. What already fits
 
-- **Demand-driven discovery.** The solver engine is the default (`Compiler/Eco/Config.elm:542`).
+- **Demand-driven discovery.** The solver engine is the default (`Compiler/Config.elm:542`).
   It seeds `main` and the flags decoder (`MonoSolver/Monomorphize.elm:103-160`) and drains a LIFO
   worklist (`Engine.elm:2197-2214`, `Monomorphize.elm:4039-4113`).
 - **Per-item isolation.** `resetItem` gives every work item a fresh store, memo and var env

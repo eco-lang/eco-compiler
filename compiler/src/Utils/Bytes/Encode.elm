@@ -26,7 +26,7 @@ on the JavaScript back end. Integers have three encodings: `int` writes a
 64-bit float, `int64` writes two 32-bit words, and `uintV` and `sintV` write a
 _varint_, which is shorter for smaller numbers.
 
-`Compiler.GlobalOpt.MonoInlineSimplify` names most of these encoders, as strings,
+`Compiler.MonoOpt.InlineSimplify` names most of these encoders, as strings,
 in its list of functions inlined whatever their size, so renaming one loses
 that exemption and reports no error.
 
@@ -50,9 +50,9 @@ that exemption and reports no error.
 
 import Bytes
 import Bytes.Encode as BE
-import Compiler.Data.NonEmptyList as NE
-import Compiler.Data.OneOrMore exposing (OneOrMore(..))
 import Data.Map as EveryDict
+import Data.NonEmptyList as NE
+import Data.OneOrMore exposing (OneOrMore(..))
 import Data.Set as EverySet exposing (EverySet)
 import Dict
 

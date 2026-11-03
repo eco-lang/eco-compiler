@@ -94,8 +94,8 @@ immediately followed by `y` and `x |> plus y` puts a space between them.
 
 -}
 
-import Compiler.Data.Index as Index
-import Compiler.Data.Name exposing (Name)
+import Compiler.Core.Index as Index
+import Compiler.Core.Name exposing (Name)
 import Compiler.Elm.Package as Pkg
 import Compiler.Elm.Version as V
 import Compiler.Json.Encode as E

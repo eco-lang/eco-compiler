@@ -6,10 +6,10 @@ Scope: every symbol declared in `elm-kernel-cpp/src/KernelExports.h` lines 25–
 **Method.** Implementations read in full:
 `elm-kernel-cpp/src/core/{Basics,Bitwise,Char,Utils}.{hpp,cpp}` and
 `{Basics,Bitwise,Char,Utils}Exports.cpp`; intrinsic coverage from
-`compiler/src/Compiler/Generate/MLIR/Intrinsics.elm`, op set from
+`compiler/src/Compiler/GenerateMlir/Intrinsics.elm`, op set from
 `runtime/src/codegen/Ops.td`, actual lowering from
 `runtime/src/codegen/Passes/EcoToLLVMArith.cpp`, symbol selection from
-`compiler/src/Compiler/Generate/MLIR/KernelAbi.elm` + `Expr.elm`.
+`compiler/src/Compiler/GenerateMlir/KernelAbi.elm` + `Expr.elm`.
 
 **Liveness evidence.** Exhaustive `grep -how` for all 80 `Elm_Kernel_*` symbols over the
 990 generated `.mlir` files under `/work/build` (compiler self-compile

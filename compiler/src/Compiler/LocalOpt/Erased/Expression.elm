@@ -6,7 +6,7 @@ module Compiler.LocalOpt.Erased.Expression exposing
 
 {-| Code generation wants a smaller language than the one canonicalization
 produces, and this module lowers one canonical expression into the type-erased
-optimized AST of `Compiler.AST.Optimized`.
+optimized AST of `Compiler.IR.Optimized`.
 
 Four things happen during the lowering. Every global, kernel module, constructor
 and record field the expression refers to is recorded in the `Names.Tracker` the
@@ -43,15 +43,15 @@ caller.
 
 -}
 
-import Compiler.AST.Canonical as Can
-import Compiler.AST.Optimized as Opt
-import Compiler.AST.Utils.Shader as Shader
-import Compiler.Data.Index as Index
-import Compiler.Data.Name as Name
+import Compiler.Core.Annotation as A
+import Compiler.Core.Index as Index
+import Compiler.Core.Name as Name
 import Compiler.Elm.ModuleName as ModuleName
+import Compiler.IR.Canonical as Can
+import Compiler.IR.Optimized as Opt
+import Compiler.IR.Source.Shader as Shader
 import Compiler.LocalOpt.Erased.Case as Case
 import Compiler.LocalOpt.Erased.Names as Names
-import Compiler.Reporting.Annotation as A
 import Data.Map
 import Data.Set as EverySet exposing (EverySet)
 import Utils.Main as Utils

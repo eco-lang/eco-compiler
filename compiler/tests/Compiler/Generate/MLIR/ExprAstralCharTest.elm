@@ -1,6 +1,6 @@
 module Compiler.Generate.MLIR.ExprAstralCharTest exposing (suite)
 
-{-| Regression test for `Compiler.Generate.MLIR.Expr`: a Char literal above
+{-| Regression test for `Compiler.GenerateMlir.Expr`: a Char literal above
 0xFFFF is emitted as its full code point.
 
 A Char literal above 0xFFFF (a `\u{1F600}` escape, stored by the parser as a

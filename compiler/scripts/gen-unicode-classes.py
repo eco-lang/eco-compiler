@@ -1,7 +1,7 @@
-"""Generates compiler/src/Compiler/Parse/Unicode.elm, the Unicode letter
+"""Generates compiler/src/Compiler/Lexer/Unicode.elm, the Unicode letter
 classes the parser uses for identifiers beyond ASCII.
 
-    python3 compiler/scripts/gen-unicode-classes.py > compiler/src/Compiler/Parse/Unicode.elm
+    python3 compiler/scripts/gen-unicode-classes.py > compiler/src/Compiler/Lexer/Unicode.elm
 
 Its output is already in elm-format's layout.
 
@@ -32,7 +32,7 @@ def emit(name, doc, rs):
 '''
 U=ranges({'Lu','Lt'}); L=ranges({'Ll'}); A=ranges({'Lu','Ll','Lt','Lm','Lo'})
 print(len(U),len(L),len(A),file=sys.stderr)
-print(f'''module Compiler.Parse.Unicode exposing (isUpper, isLower, isAlpha)
+print(f'''module Compiler.Lexer.Unicode exposing (isUpper, isLower, isAlpha)
 
 {{-| Unicode letter classes for code points at or above U+0080, as GHC's
 `Data.Char` gives them and as upstream Elm's `Parse.Variable` uses them:

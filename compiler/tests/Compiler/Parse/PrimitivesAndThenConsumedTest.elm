@@ -1,6 +1,6 @@
 module Compiler.Parse.PrimitivesAndThenConsumedTest exposing (suite)
 
-{-| Pins `Compiler.Parse.Primitives.andThen` after consumption: when the first
+{-| Pins `Compiler.Lexer.Primitives.andThen` after consumption: when the first
 parser consumed input (`Cok`) and the second fails without consuming (`Eerr`),
 the result is promoted to `Cerr`, so an enclosing `oneOf` does not try its next
 alternative from the original position once input was consumed. This matches
@@ -9,7 +9,7 @@ continuation, and `loop` and `inContext` here. Before the fix the `Eerr` was
 passed on as it was.
 -}
 
-import Compiler.Parse.Primitives as P
+import Compiler.Lexer.Primitives as P
 import Expect
 import Test exposing (Test)
 

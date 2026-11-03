@@ -35,7 +35,7 @@ provides each, and `nearbyNames` picks, from a list of names, the few closest
 to a given one.
 
 The binary codecs write the author and then the project as two strings. The `S`
-variants write them through a `StringTable`, as `Compiler.AST.StringTable`
+variants write them through a `StringTable`, as `Compiler.Core.StringTable`
 describes; the others write them inline.
 
 
@@ -82,10 +82,10 @@ describes; the others write them inline.
 
 import Bytes.Decode
 import Bytes.Encode
-import Compiler.AST.StringTable as StringTable exposing (StringTable)
+import Compiler.Core.StringTable as StringTable exposing (StringTable)
 import Compiler.Json.Decode as D
 import Compiler.Json.Encode as E
-import Compiler.Parse.Primitives as P exposing (Col, Row)
+import Compiler.Lexer.Primitives as P exposing (Col, Row)
 import Dict exposing (Dict)
 import Levenshtein
 
@@ -607,7 +607,7 @@ nameDecoder =
 `st` as `StringTable.string` writes a string.
 
 Both strings must be in `st`, unless it is `StringTable.disabled`; what happens
-to a missing string is described in `Compiler.AST.StringTable`.
+to a missing string is described in `Compiler.Core.StringTable`.
 
 -}
 nameEncoderS : StringTable -> Name -> Bytes.Encode.Encoder

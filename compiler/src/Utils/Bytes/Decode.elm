@@ -28,7 +28,7 @@ as `False`, and `maybe` reads any tag other than 0 as `Just`.
 Beyond the decoders, the module has `map6` and `map8`, because `Bytes.Decode`
 stops at `map5`, and `lazy`, for a decoder defined in terms of itself.
 
-`Compiler.GlobalOpt.MonoInlineSimplify` names most of these decoders as strings
+`Compiler.MonoOpt.InlineSimplify` names most of these decoders as strings
 in its list of functions inlined regardless of size, so a renamed one silently
 loses that exemption.
 
@@ -62,9 +62,9 @@ loses that exemption.
 
 import Bytes
 import Bytes.Decode as BD
-import Compiler.Data.NonEmptyList as NE
-import Compiler.Data.OneOrMore as OneOrMore exposing (OneOrMore)
 import Data.Map as EveryDict
+import Data.NonEmptyList as NE
+import Data.OneOrMore as OneOrMore exposing (OneOrMore)
 import Data.Set as EverySet exposing (EverySet)
 import Dict
 

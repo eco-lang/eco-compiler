@@ -1,6 +1,6 @@
 module Compiler.AST.TypeTableTest exposing (suite)
 
-{-| Tests for `Compiler.AST.TypeTable`, the table of distinct types that a typed
+{-| Tests for `Compiler.IR.Typed.TypeTable`, the table of distinct types that a typed
 artifact stores once per file and refers to by id. Without them, a change that
 merged two types the table must keep apart, or that broke the table's encoding,
 could make a cached artifact decode to the wrong types or not decode at all.
@@ -52,12 +52,12 @@ import Array
 import Bytes
 import Bytes.Decode as BD
 import Bytes.Encode as BE
-import Compiler.AST.Canonical as Can
-import Compiler.AST.StringTable as StringTable exposing (StringTable)
-import Compiler.AST.TypeIds as TypeIds
-import Compiler.AST.TypeTable as TypeTable
-import Compiler.Data.Name exposing (Name)
+import Compiler.Core.Name exposing (Name)
+import Compiler.Core.StringTable as StringTable exposing (StringTable)
+import Compiler.Core.TypeIds as TypeIds
 import Compiler.Elm.ModuleName as ModuleName
+import Compiler.IR.Canonical as Can
+import Compiler.IR.Typed.TypeTable as TypeTable
 import Dict
 import Expect
 import Fuzz exposing (Fuzzer)

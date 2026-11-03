@@ -6,7 +6,7 @@ module Compiler.AST.CanonicalCodecTest exposing (suite)
 `exprDecoder` reads them as located names (`A.locatedDecoder BD.string`,
 region first). So a `FieldUpdate` whose value is a record literal, encoded with
 the public `Can.fieldUpdateEncoder` (used by the type-error codec in
-Compiler.Reporting.Error.Type for RecordUpdateKeys), does not round-trip.
+Compiler.Type.Error for RecordUpdateKeys), does not round-trip.
 
 Fixed 2026-10-28 (plans/review-bug-triage-fixes.md, Part 5); the tests pin
 the fix.
@@ -15,8 +15,8 @@ the fix.
 
 import Bytes.Decode
 import Bytes.Encode
-import Compiler.AST.Canonical as Can
-import Compiler.Reporting.Annotation as A
+import Compiler.Core.Annotation as A
+import Compiler.IR.Canonical as Can
 import Data.Map
 import Expect
 import Test exposing (Test)

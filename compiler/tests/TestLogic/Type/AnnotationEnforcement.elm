@@ -29,8 +29,8 @@ canonicalization warnings, which are discarded.
 
 -}
 
-import Compiler.AST.Source as Src
-import Compiler.Data.Name exposing (Name)
+import Compiler.Core.Name exposing (Name)
+import Compiler.IR.Source as Src
 import Expect
 import TestLogic.Type.TypeCheckErrors as TypeCheckErrors
 

@@ -64,18 +64,18 @@ reverse order, followed by the file's own imports in source order.
 
 -}
 
-import Compiler.AST.Source as Src
-import Compiler.Data.Name as Name
-import Compiler.Elm.Compiler.Imports as Imports
+import Compiler.Core.Annotation as A
+import Compiler.Core.Name as Name
 import Compiler.Elm.Package as Pkg
+import Compiler.IR.Source as Src
+import Compiler.Lexer.Keyword as Keyword
+import Compiler.Lexer.Primitives as P exposing (Col, Row)
+import Compiler.Lexer.Symbol as Symbol
 import Compiler.Parse.Declaration as Decl
-import Compiler.Parse.Keyword as Keyword
-import Compiler.Parse.Primitives as P exposing (Col, Row)
+import Compiler.Parse.DefaultImports as Imports
+import Compiler.Parse.Error as E
 import Compiler.Parse.Space as Space
-import Compiler.Parse.Symbol as Symbol
 import Compiler.Parse.Variable as Var
-import Compiler.Reporting.Annotation as A
-import Compiler.Reporting.Error.Syntax as E
 
 
 

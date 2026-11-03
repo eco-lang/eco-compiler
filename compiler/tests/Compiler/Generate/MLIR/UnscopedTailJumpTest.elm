@@ -2,7 +2,7 @@ module Compiler.Generate.MLIR.UnscopedTailJumpTest exposing (suite)
 
 {-| An `eco.jump` is only valid inside an `eco.joinpoint` it targets (rule
 `CGEN_030`), and the code generator emits no `eco.joinpoint`. A tail call
-therefore has to be lowered as a loop by `Compiler.Generate.MLIR.TailRec`, and
+therefore has to be lowered as a loop by `Compiler.GenerateMlir.TailRec`, and
 `Expr.generateExpr` crashes on any `MonoTailCall` that reaches it instead of
 emitting a jump. These tests guard both sides of that arrangement: that the
 crash explains itself, and that ordinary tail-recursive programs never reach
@@ -29,8 +29,8 @@ an `scf.while`.
 
 -}
 
-import Compiler.AST.Source as Src
-import Compiler.Generate.MLIR.Expr as Expr
+import Compiler.GenerateMlir.Expr as Expr
+import Compiler.IR.Source as Src
 import Expect exposing (Expectation)
 import SourceIR.LocalTailRecCases as LocalTailRecCases
 import SourceIR.TailRecCaseCases as TailRecCaseCases

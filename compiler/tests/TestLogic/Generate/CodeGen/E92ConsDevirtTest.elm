@@ -10,8 +10,8 @@ With lambda-set specialization on, the solver engine records on each function
 type the set of function values that can flow there, its _lambda set_.
 _Devirtualization_ replaces a call through a variable whose lambda set has a
 single member by a direct call of that member. For a kernel member,
-`Compiler.MonoSolver.Translate` does this only for a kernel that
-`Compiler.GlobalOpt.KernelFacts` registers, at a call that supplies exactly
+`Compiler.Monomorphize.Solver.Translate` does this only for a kernel that
+`Compiler.IR.Kernel.Facts` registers, at a call that supplies exactly
 the registered number of arguments, and only when no residual `number` type
 variable appears in the call's types. `List.cons` is registered with two
 arguments, and its tail and result must not be an unboxed scalar.
@@ -57,8 +57,6 @@ the substitution engine.
 -}
 
 import Array
-import Compiler.AST.Monomorphized as Mono
-import Compiler.AST.Source as Src
 import Compiler.AST.SourceBuilder
     exposing
         ( TypedDef
@@ -74,8 +72,10 @@ import Compiler.AST.SourceBuilder
         , tType
         , varExpr
         )
-import Compiler.AST.TypedOptimized as TOpt
-import Compiler.Monomorphize.MonoTraverse as MonoTraverse
+import Compiler.IR.Mono as Mono
+import Compiler.IR.Mono.Traverse as MonoTraverse
+import Compiler.IR.Source as Src
+import Compiler.IR.Typed.Optimized as TOpt
 import Data.Map
 import Expect
 import Test exposing (Test)

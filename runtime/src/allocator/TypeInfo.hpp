@@ -68,7 +68,7 @@ enum class EcoConstraintKind : uint8_t {
 /**
  * Which primitive Elm type a `Primitive` type is.
  *
- * The values are numbered as in the compiler's `Compiler.Generate.MLIR.TypeTable.primKindToTag`, so the order is
+ * The values are numbered as in the compiler's `Compiler.GenerateMlir.TypeTable.primKindToTag`, so the order is
  * fixed.
  */
 enum class EcoPrimKind : uint8_t {

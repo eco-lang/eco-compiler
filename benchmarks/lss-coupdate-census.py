@@ -1,7 +1,7 @@
 import re,sys,glob,collections
 SF=set("worklist nodes inProgress scheduled dirtySpecs dirtyList specCountByGlobal registry ports lambdaCounter superTable nextMVarId lssSignatures lssInProgress lssMemberTable nextMemberId lssStats monoMemo nodeResolution intern env currentGlobal store memo revMemo varEnv numberMulti localMulti derivedDestructors localCanTypes itemAux".split())
 groups=collections.Counter(); perfield=collections.Counter(); sites=[]
-for f in sorted(glob.glob('compiler/src/Compiler/MonoSolver/*.elm')):
+for f in sorted(glob.glob('compiler/src/Compiler/Monomorphize/Solver/*.elm')):
     src=open(f).read()
     for m in re.finditer(r'\{\s*([A-Za-z_][A-Za-z0-9_]*)\s*\|',src):
         i=m.end(); depth=1; j=i

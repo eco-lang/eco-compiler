@@ -39,10 +39,10 @@ same local variable (the source has no such call).
 
 -}
 
-import Compiler.AST.Source as Src
 import Compiler.AST.SourceBuilder exposing (makeModule, unitExpr)
-import Compiler.AST.TypedOptimized as TOpt
-import Compiler.Data.Name exposing (Name)
+import Compiler.Core.Name exposing (Name)
+import Compiler.IR.Source as Src
+import Compiler.IR.Typed.Optimized as TOpt
 import Compiler.Parse.Module as M
 import Data.Map
 import Expect

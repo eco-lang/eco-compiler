@@ -6,7 +6,7 @@ only in the code generated for a `case`.
 
 A _fan-out_ is a decision-tree node that tests one value. Each edge carries a
 `DtTest.Test`, and a fallback branch takes every value no edge matches. When the
-general fan-out lowering in `Compiler.Generate.MLIR.Expr` or `TailRec` builds an
+general fan-out lowering in `Compiler.GenerateMlir.Expr` or `TailRec` builds an
 `eco.case` for a fan-out on anything but strings, each alternative carries an
 integer tag: an edge's tag is `Patterns.testToTagInt` of its test, and the
 fallback's tag is `computeFallbackTag` of all the edge tests. For an `IsInt`
@@ -38,8 +38,8 @@ negative or repeated tags; the two-edge lists `[IsBool True, IsBool False]` and
 
 -}
 
-import Compiler.AST.DecisionTree.Test as DtTest
-import Compiler.Generate.MLIR.Patterns as Patterns
+import Compiler.GenerateMlir.Patterns as Patterns
+import Compiler.IR.DecisionTree.Test as DtTest
 import Expect
 import Test exposing (Test, describe, test)
 
@@ -49,7 +49,7 @@ answers, small sets of integer tags, and large integer literals.
 -}
 suite : Test
 suite =
-    describe "Compiler.Generate.MLIR.Patterns.computeFallbackTag"
+    describe "Compiler.GenerateMlir.Patterns.computeFallbackTag"
         [ describe "two-way fast paths"
             [ test "IsBool True -> 0 (the False tag)" <|
                 \_ -> Expect.equal 0 (Patterns.computeFallbackTag [ DtTest.IsBool True ])

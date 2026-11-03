@@ -25,7 +25,7 @@ without consulting the solver. Otherwise the solver
 whose entry is added, changed or removed.
 
 Once the user approves, or `--yes` was given, the new `elm.json` is written and
-`Builder.Elm.Details.verifyInstall` checks that the project's dependencies can
+`Builder.Deps.Details.verifyInstall` checks that the project's dependencies can
 be built. If they cannot, the old `elm.json` is written back and the error is
 reported.
 
@@ -42,9 +42,9 @@ reported.
 -}
 
 import Builder.BackgroundWriter as BW
+import Builder.Deps.Details as Details
 import Builder.Deps.Registry as Registry
 import Builder.Deps.Solver as Solver
-import Builder.Elm.Details as Details
 import Builder.Elm.Outline as Outline
 import Builder.Reporting as Reporting
 import Builder.Reporting.Exit as Exit

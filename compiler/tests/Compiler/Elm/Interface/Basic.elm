@@ -7,7 +7,7 @@ stand-ins for those interfaces by hand and collects them in `testIfaces`.
 
 An interface is what a compiled module offers its importers: its values with
 their type annotations, its unions, its aliases and its operators, together
-with the package the module belongs to (`Compiler.Elm.Interface`). `testIfaces`
+with the package the module belongs to (`Compiler.IR.Canonical.Interface`). `testIfaces`
 keys each interface by module name, and the canonicalizer pairs that name with
 the interface's package to give the module's home. A test module can import
 only the modules named there: importing any other module crashes
@@ -26,7 +26,7 @@ modules `Compiler.Elm.Interface.List`, `.Maybe`, `.JsArray`, `.Bitwise`,
 Every annotation built here quantifies over all the type variables in its
 type. Where elm/core uses a constrained type variable, the annotation uses one
 named `number`, `comparable` or `appendable`; the type checker knows the
-constraint from the name alone, as `Compiler.Data.Name` describes.
+constraint from the name alone, as `Compiler.Core.Name` describes.
 
 These interfaces are not elm/core 1.0.5 or elm/json, and a test that passes
 against them says nothing about the places where they differ:
@@ -39,11 +39,8 @@ against them says nothing about the places where they differ:
 
 -}
 
-import Compiler.AST.Canonical as Can
-import Compiler.AST.Utils.Binop as Binop
-import Compiler.Data.Index as Index
-import Compiler.Data.Name exposing (Name)
-import Compiler.Elm.Interface as I
+import Compiler.Core.Index as Index
+import Compiler.Core.Name exposing (Name)
 import Compiler.Elm.Interface.Bitwise as BitwiseInterface
 import Compiler.Elm.Interface.Bytes as BytesInterface
 import Compiler.Elm.Interface.Html as HtmlInterface
@@ -53,6 +50,9 @@ import Compiler.Elm.Interface.Maybe as MaybeInterface
 import Compiler.Elm.Interface.Tuple as TupleInterface
 import Compiler.Elm.ModuleName as ModuleName
 import Compiler.Elm.Package as Pkg
+import Compiler.IR.Canonical as Can
+import Compiler.IR.Canonical.Interface as I
+import Compiler.IR.Source.Binop as Binop
 import Dict exposing (Dict)
 
 

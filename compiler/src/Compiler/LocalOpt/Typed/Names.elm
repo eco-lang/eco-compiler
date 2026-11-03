@@ -63,17 +63,17 @@ return the optimized expression that stands for it.
 
 -}
 
-import Compiler.AST.Canonical as Can
-import Compiler.AST.TypeVars as Vars
-import Compiler.AST.TypedOptimized as TOpt
-import Compiler.Data.Index as Index
-import Compiler.Data.Name as Name exposing (Name)
+import Compiler.Core.Annotation as A
+import Compiler.Core.Index as Index
+import Compiler.Core.Name as Name exposing (Name)
 import Compiler.Elm.ModuleName as ModuleName
-import Compiler.Reporting.Annotation as A
+import Compiler.IR.Canonical as Can
+import Compiler.IR.Typed.Optimized as TOpt
+import Compiler.IR.Typed.TypeVars as Vars
 import Control.Loop exposing (Step(..))
 import Data.Set as EverySet exposing (EverySet)
 import Dict exposing (Dict)
-import Utils.Crash exposing (crash)
+import System.Crash exposing (crash)
 
 
 
@@ -87,6 +87,7 @@ count of each record field name, and the local type environment.
 Values are built with `pure`, `generate`, the `register*` functions and
 `lookupLocalType`, combined with `map`, `andThen`, `traverse` and
 `withVarTypes`, and executed with `run`.
+
 -}
 type Tracker a
     = Tracker

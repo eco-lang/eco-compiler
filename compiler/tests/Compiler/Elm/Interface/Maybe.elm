@@ -5,7 +5,7 @@ can use `Maybe`, `Just` and `Nothing` without elm/core being compiled.
 
 An interface is what canonicalization and type checking know about a module
 that is imported: its values, union types, aliases and operators, as
-`Compiler.Elm.Interface` describes. This one declares the union `Maybe a`,
+`Compiler.IR.Canonical.Interface` describes. This one declares the union `Maybe a`,
 exported open so that its constructors are visible, and nothing else.
 
 It differs from the real module in one way a test can notice: it has no
@@ -15,11 +15,11 @@ with the constructors numbered in declaration order.
 
 -}
 
-import Compiler.AST.Canonical as Can
-import Compiler.Data.Index as Index
-import Compiler.Data.Name exposing (Name)
-import Compiler.Elm.Interface as I
+import Compiler.Core.Index as Index
+import Compiler.Core.Name exposing (Name)
 import Compiler.Elm.Package as Pkg
+import Compiler.IR.Canonical as Can
+import Compiler.IR.Canonical.Interface as I
 import Dict exposing (Dict)
 
 

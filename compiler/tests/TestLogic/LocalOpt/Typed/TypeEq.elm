@@ -31,9 +31,9 @@ substituted for its parameters, record extension variables included; a
 
 -}
 
-import Compiler.AST.Canonical as Can
-import Compiler.Data.Name as Name exposing (Name)
+import Compiler.Core.Name as Name exposing (Name)
 import Compiler.Elm.ModuleName as ModuleName
+import Compiler.IR.Canonical as Can
 import Dict exposing (Dict)
 
 

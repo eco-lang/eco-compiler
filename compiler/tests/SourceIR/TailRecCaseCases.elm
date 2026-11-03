@@ -7,7 +7,7 @@ each.
 A tail call is a call whose result is the calling function's own result, with
 nothing left to do after it. The MLIR back end compiles a function that makes a
 tail call to itself to a loop rather than to a chain of calls, as
-`Compiler.Generate.MLIR.TailRec` describes. When the function's body is a
+`Compiler.GenerateMlir.TailRec` describes. When the function's body is a
 `case`, each step of that loop is itself a `case`: a branch ending in the tail
 call sets up the arguments of the next iteration, a branch ending in a value
 finishes the loop with it, and the variables a branch's pattern binds are
@@ -45,7 +45,6 @@ expectation runs, and nothing here checks it.
 
 -}
 
-import Compiler.AST.Source as Src
 import Compiler.AST.SourceBuilder
     exposing
         ( TypedDef
@@ -73,6 +72,7 @@ import Compiler.AST.SourceBuilder
         , varExpr
         )
 import Compiler.BulkCheck exposing (TestCase, bulkCheck)
+import Compiler.IR.Source as Src
 import Expect exposing (Expectation)
 import Test exposing (Test)
 

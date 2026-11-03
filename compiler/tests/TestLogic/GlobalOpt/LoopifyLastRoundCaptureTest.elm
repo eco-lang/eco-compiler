@@ -6,7 +6,7 @@ the capture renaming described below, a closure whose body names a variable
 that is neither its parameter nor its capture would reach MLIR codegen, which
 fails on the unbound name.
 
-`Compiler.GlobalOpt.MonoInlineSimplify.loopifyCall` binds each local capture
+`Compiler.MonoOpt.InlineSimplify.loopifyCall` binds each local capture
 of a qualifying lambda literal to a fresh name in a `let` outside the loop and
 substitutes that name into the lambda's body. The rebuilt lambda captures the
 fresh names, so it is well scoped even if no later round beta-reduces it. The
@@ -39,7 +39,6 @@ default, the loopify count for `nestedModule`, and codegen of the result.
 
 -}
 
-import Compiler.AST.Source as Src
 import Compiler.AST.SourceBuilder
     exposing
         ( TypedDef
@@ -61,9 +60,10 @@ import Compiler.AST.SourceBuilder
         , tVar
         , varExpr
         )
-import Compiler.AST.Monomorphized as Mono
-import Compiler.Eco.Config as Config
-import Compiler.GlobalOpt.MonoInlineSimplify as MonoInlineSimplify
+import Compiler.Config as Config
+import Compiler.IR.Mono as Mono
+import Compiler.IR.Source as Src
+import Compiler.MonoOpt.InlineSimplify as MonoInlineSimplify
 import Expect
 import Test exposing (Test)
 import TestLogic.Generate.MonoGraphIntegrity as Integrity

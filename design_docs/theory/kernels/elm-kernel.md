@@ -143,7 +143,7 @@ Code:
 - `elm-kernel-cpp/vendor/`: nlohmann/json and SRELL. HTTP uses libcurl with OpenSSL. `elm-kernel-cpp/LIBRARY_DEPENDENCIES.md` is the catalog written before implementation and names other libraries.
 - `runtime/src/allocator/`: string, list and bytes operations, allocation and roots.
 - `runtime/src/platform/TaskBinding.hpp`, `runtime/src/platform/Liveness.hpp`, `EffectManagerRegistry.cpp`: task bindings, holds and effect manager registration.
-- `compiler/src/Compiler/Generate/MLIR/KernelAbi.elm` (`deriveKernelInstanceAbi`), `compiler/src/Compiler/GlobalOpt/KernelFacts.elm`, `compiler/src/Compiler/MonoSolver/KernelSetFacts.elm`: the compiler's half of the contract.
+- `compiler/src/Compiler/GenerateMlir/KernelAbi.elm` (`deriveKernelInstanceAbi`), `compiler/src/Compiler/IR/Kernel/Facts.elm`, `compiler/src/Compiler/Monomorphize/Solver/KernelSetFacts.elm`: the compiler's half of the contract.
 - `compiler/src/Compiler/MonoSolver/kernel-license-manifest.txt`, `test/scripts/check-kernel-license-manifest.sh`: the hash manifest.
 - `test/scripts/check-kernel-homes.sh`: keeps `eco/system` kernel homes from colliding with Elm's.
 - Tests: `test/kernel/` (C++ unit); `test/elm-core`, `test/elm-json`, `test/elm-bytes`, `test/elm-parser`, `test/elm-regex`, `test/elm-time`, `test/elm-url`, `test/elm-http`, `test/elm-html` (end to end, one per package).

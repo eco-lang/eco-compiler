@@ -1,7 +1,7 @@
 module TestLogic.Generate.CodeGen.CaseNotTerminatorTest exposing (suite)
 
 {-| An `eco.case` op yields SSA values and belongs among a block's body ops, as
-`Compiler.Generate.MLIR.Ops` describes, but a block keeps its body ops and its
+`Compiler.GenerateMlir.Ops` describes, but a block keeps its body ops and its
 terminator (the op that ends it) in separate fields, and nothing in the Elm
 types of `Mlir.Mlir` stops an `eco.case` being put in the terminator's place.
 These tests look for generated MLIR in which that has happened, over the whole

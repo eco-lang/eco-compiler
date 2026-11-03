@@ -5,7 +5,7 @@ monomorphization decides how a value is laid out at run time (MONO\_003 with
 MONO\_002).
 
 After monomorphization a `MonoType` can still contain a type variable, an
-`MVar`, with one of two constraints (`Compiler.AST.Monomorphized`,
+`MVar`, with one of two constraints (`Compiler.IR.Mono`,
 `Constraint`). A `CEcoValue` variable stands for a value the back end always
 holds as a boxed `eco.value`, so it can sit anywhere, a constructor field or a
 function parameter included, without deciding a layout or a calling
@@ -23,7 +23,7 @@ far as monomorphization (`TestLogic.TestPipeline.runToMono`) and reports every
   - each constructor node's field types, and the field types of every shape in
     the graph's `ctorShapes`;
   - the type of every expression in a node's body, as
-    `Compiler.Monomorphize.MonoTraverse.foldExpr` visits them (the inline
+    `Compiler.IR.Mono.Traverse.foldExpr` visits them (the inline
     leaves of a `case`'s decision tree included), the parameter types of each
     closure and let-bound tail definition, and the type of each destructor.
 
@@ -37,9 +37,9 @@ where a `CEcoValue` variable appears (which MONO\_003 allows anywhere).
 -}
 
 import Array
-import Compiler.AST.Monomorphized as Mono
-import Compiler.AST.Source as Src
-import Compiler.Monomorphize.MonoTraverse as MonoTraverse
+import Compiler.IR.Mono as Mono
+import Compiler.IR.Mono.Traverse as MonoTraverse
+import Compiler.IR.Source as Src
 import Dict
 import Expect
 import TestLogic.TestPipeline as Pipeline

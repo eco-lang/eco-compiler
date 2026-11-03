@@ -64,8 +64,8 @@ op of a given name with an expected list.
 
 -}
 
-import Compiler.AST.Source as Src
-import Compiler.Data.HeapLimits as HeapLimits
+import Compiler.IR.Runtime.HeapLimits as HeapLimits
+import Compiler.IR.Source as Src
 import Dict
 import Expect exposing (Expectation)
 import Mlir.Mlir exposing (MlirAttr(..), MlirModule, MlirOp, MlirType(..))

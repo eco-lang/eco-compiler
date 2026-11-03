@@ -5,7 +5,7 @@ module Compiler.Parse.Type exposing
 
 {-| Type annotations, alias bodies, port types and the variants of custom types
 are all written in Elm's type syntax, and this module parses that syntax into
-`Compiler.AST.Source` types.
+`Compiler.IR.Source` types.
 
 A type is built from _terms_ and two ways of combining them. A term is a type
 that needs no parentheses to be an argument: a type variable, a type name with
@@ -43,13 +43,13 @@ accepted; their arity is not limited here.
 
 -}
 
-import Compiler.AST.Source as Src
-import Compiler.Data.Name exposing (Name)
-import Compiler.Parse.Primitives as P
+import Compiler.Core.Annotation as A
+import Compiler.Core.Name exposing (Name)
+import Compiler.IR.Source as Src
+import Compiler.Lexer.Primitives as P
+import Compiler.Parse.Error as E
 import Compiler.Parse.Space as Space
 import Compiler.Parse.Variable as Var
-import Compiler.Reporting.Annotation as A
-import Compiler.Reporting.Error.Syntax as E
 
 
 

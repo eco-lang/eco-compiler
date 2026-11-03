@@ -61,7 +61,6 @@ says anything beyond the check of test 6.
 
 -}
 
-import Compiler.AST.Source as Src
 import Compiler.AST.SourceBuilder
     exposing
         ( callExpr
@@ -74,6 +73,7 @@ import Compiler.AST.SourceBuilder
         , tType
         , varExpr
         )
+import Compiler.IR.Source as Src
 import Compiler.Type.KernelIntrinsics as KernelIntrinsics
 import Expect
 import Test exposing (Test)

@@ -33,7 +33,7 @@ Among what is not checked:
 
 -}
 
-import Compiler.AST.Source as Src
+import Compiler.IR.Source as Src
 import Dict exposing (Dict)
 import Expect exposing (Expectation)
 import Mlir.Mlir exposing (MlirBlock, MlirModule, MlirOp, MlirRegion(..), MlirType(..))

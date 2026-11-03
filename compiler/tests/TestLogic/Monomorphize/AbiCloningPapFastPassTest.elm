@@ -60,7 +60,7 @@ What the tests establish:
     `plans/wide-object-tail-kind-words.md`), a constructor of any width is
     callable like a function, so the site is stamped. It asserts one stamp and
     no `declinedNoInstance`. Today it fails (bug B9): the guard in
-    `Compiler.GlobalOpt.AbiCloning` treats a constructor as callable only up
+    `Compiler.MonoOpt.AbiCloning` treats a constructor as callable only up
     to 24 fields, so `stampedPapGlobal` is 0.
 
 The decline reasons in the test names (`papAmbiguous`, `papNonFn`, `papChar`,
@@ -75,11 +75,11 @@ member; the sentinel for a spec id other than 1.
 -}
 
 import Array
-import Compiler.AST.Monomorphized as Mono
-import Compiler.Data.BitSet as BitSet
+import Compiler.Core.Annotation as A
 import Compiler.Elm.ModuleName as ModuleName
-import Compiler.GlobalOpt.AbiCloning as AbiCloning
-import Compiler.Reporting.Annotation as A
+import Compiler.IR.Mono as Mono
+import Compiler.MonoOpt.AbiCloning as AbiCloning
+import Data.BitSet as BitSet
 import Dict
 import Expect
 import Test exposing (Test)

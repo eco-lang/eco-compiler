@@ -33,7 +33,7 @@ Among what is not tested:
 
 -}
 
-import Compiler.AST.Source as Src
+import Compiler.IR.Source as Src
 import Expect
 import SourceIR.Suite.StandardTestSuites as StandardTestSuites
 import Test exposing (Test)

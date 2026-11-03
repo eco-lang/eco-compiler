@@ -74,7 +74,7 @@ The examples in the docstrings show each layout's shapes, one-line form first.
 -}
 
 import Common.Format.Box as Box exposing (Box)
-import Utils.Crash exposing (crash)
+import System.Crash exposing (crash)
 
 
 {-| Returns `first` and `rest` on one line separated by spaces when all are

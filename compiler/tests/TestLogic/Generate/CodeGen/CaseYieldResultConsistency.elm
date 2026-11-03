@@ -22,7 +22,7 @@ whether every block ends with one is a separate rule, checked by
 
 -}
 
-import Compiler.AST.Source as Src
+import Compiler.IR.Source as Src
 import Expect exposing (Expectation)
 import Mlir.Mlir exposing (MlirBlock, MlirModule, MlirOp, MlirRegion(..), MlirType)
 import OrderedDict

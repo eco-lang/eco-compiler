@@ -25,9 +25,9 @@ the current op. It reports each jump that:
     joinpoint's parameter type at the same position.
 
 The code generator lowers tail recursion to `scf.while` loops
-(`Compiler.Generate.MLIR.TailRec`) and emits no `eco.joinpoint`, so on generated
+(`Compiler.GenerateMlir.TailRec`) and emits no `eco.joinpoint`, so on generated
 MLIR every `eco.jump` is reported. No code generator code emits one:
-`Compiler.Generate.MLIR.Expr.generateExpr` crashes on a `MonoTailCall` that
+`Compiler.GenerateMlir.Expr.generateExpr` crashes on a `MonoTailCall` that
 `TailRec` did not lower (SD-12), rather than jumping to a joinpoint that does
 not exist.
 
@@ -38,7 +38,7 @@ Among what is not checked: jumps and joinpoints outside a top-level
 
 -}
 
-import Compiler.AST.Source as Src
+import Compiler.IR.Source as Src
 import Dict exposing (Dict)
 import Expect exposing (Expectation)
 import Mlir.Mlir exposing (MlirModule, MlirOp, MlirRegion(..), MlirType)

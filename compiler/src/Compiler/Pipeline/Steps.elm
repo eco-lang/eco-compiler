@@ -60,33 +60,33 @@ under `mono.validate`.
 -}
 
 import Array
-import Compiler.AST.Monomorphized as Mono
-import Compiler.AST.TypeEnv as TypeEnv
-import Compiler.AST.TypedOptimized as TOpt
-import Compiler.Data.Name exposing (Name)
-import Compiler.Eco.Config as Config
+import Compiler.Config as Config
+import Compiler.Core.Name exposing (Name)
 import Compiler.Elm.ModuleName as ModuleName
-import Compiler.GlobalOpt.CafCensus as CafCensus
-import Compiler.GlobalOpt.CafDedupe as CafDedupe
-import Compiler.GlobalOpt.CafHoist as CafHoist
-import Compiler.GlobalOpt.CseCensus as CseCensus
-import Compiler.GlobalOpt.FloatMinMax as FloatMinMax
-import Compiler.GlobalOpt.InlineSimplify as InlineSimplify
-import Compiler.GlobalOpt.MonoCse as MonoCse
-import Compiler.GlobalOpt.MonoGlobalOptimize as MonoGlobalOptimize
-import Compiler.GlobalOpt.MonoInlineSimplify as MonoInlineSimplify
-import Compiler.GlobalOpt.PreMono.AliasForward as AliasForward
-import Compiler.GlobalOpt.PreMono.EtaExpand as EtaExpand
-import Compiler.GlobalOpt.PreMono.Fresh as Fresh
-import Compiler.GlobalOpt.Staging as Staging
-import Compiler.MonoSolver.Diff as MonoDiff
-import Compiler.MonoSolver.Monomorphize as MonoSolver
-import Compiler.Monomorphize.EntryPrep as EntryPrep
-import Compiler.Monomorphize.MonoTraverse as MonoTraverse
-import Compiler.Monomorphize.Monomorphize as Monomorphize
+import Compiler.IR.Mono as Mono
+import Compiler.IR.Mono.Traverse as MonoTraverse
+import Compiler.IR.Typed.Optimized as TOpt
+import Compiler.IR.Typed.TypeEnv as TypeEnv
+import Compiler.MonoOpt.CafCensus as CafCensus
+import Compiler.MonoOpt.CafDedupe as CafDedupe
+import Compiler.MonoOpt.CafHoist as CafHoist
+import Compiler.MonoOpt.Cse as MonoCse
+import Compiler.MonoOpt.CseCensus as CseCensus
+import Compiler.MonoOpt.FloatMinMax as FloatMinMax
+import Compiler.MonoOpt.GlobalOptimize as MonoGlobalOptimize
+import Compiler.MonoOpt.InlineSimplify as MonoInlineSimplify
+import Compiler.MonoOpt.Staging as Staging
+import Compiler.Monomorphize.Diff as MonoDiff
 import Compiler.Monomorphize.Prune as Prune
+import Compiler.Monomorphize.Solver.Monomorphize as MonoSolver
+import Compiler.Monomorphize.Subst.Monomorphize as Monomorphize
 import Compiler.Monomorphize.ValidateLayout as ValidateLayout
 import Compiler.Monomorphize.ValidateLimits as ValidateLimits
+import Compiler.PreMono.AliasForward as AliasForward
+import Compiler.PreMono.EntryPrep as EntryPrep
+import Compiler.PreMono.EtaExpand as EtaExpand
+import Compiler.PreMono.Fresh as Fresh
+import Compiler.PreMono.InlineSimplify as InlineSimplify
 
 
 
@@ -96,7 +96,7 @@ import Compiler.Monomorphize.ValidateLimits as ValidateLimits
 
 
 {-| Returns the `( useSolverRoots, censusOn )` flags that id assignment
-(`Compiler.Monomorphize.EntryPrep.assign`) takes for the configured engine.
+(`Compiler.PreMono.EntryPrep.assign`) takes for the configured engine.
 
 The solver engine gets `True` and `mono.lss.arrowCensus`. The subst and diff
 engines get `( False, False )`.
@@ -116,11 +116,11 @@ assignFlagsFor ecoConfig =
 
 
 {-| Returns the typed graph with its ids assigned and, when `main` is a
-`Program`, its flags decoder added, as `Compiler.Monomorphize.EntryPrep.assign`
+`Program`, its flags decoder added, as `Compiler.PreMono.EntryPrep.assign`
 describes.
 
 Ids exist from here on, so a pre-mono pass that creates or copies a node must
-mint fresh ids for it through `Compiler.GlobalOpt.PreMono.Fresh`.
+mint fresh ids for it through `Compiler.PreMono.Fresh`.
 
 -}
 prepare : Config.EcoConfig -> TOpt.GlobalGraph Name -> EntryPrep.Assigned
@@ -166,13 +166,13 @@ each pass's metrics.
 
 The passes run in this order, each on the output of the one before:
 
-  - Alias forwarding (`Compiler.GlobalOpt.PreMono.AliasForward`), which points
+  - Alias forwarding (`Compiler.PreMono.AliasForward`), which points
     references to a definition that only names another global at that global.
     It runs first because η-expansion reads a callee's declared arity, and
     after forwarding that is the target's arity.
-  - η-expansion to declared arity (`Compiler.GlobalOpt.PreMono.EtaExpand`).
+  - η-expansion to declared arity (`Compiler.PreMono.EtaExpand`).
     It runs before the inliner, so that the inliner sees saturated calls.
-  - The pre-mono inliner (`Compiler.GlobalOpt.InlineSimplify`), run only when
+  - The pre-mono inliner (`Compiler.PreMono.InlineSimplify`), run only when
     `inline.preMono` is on.
 
 Alias forwarding runs when `inline.aliasForward` or `inline.report` is on, and
@@ -226,7 +226,7 @@ preMono ecoConfig assignedRaw =
 
 {-| Under `mono.validate`, checks the bodies of the `Define`, `TrackedDefine`
 and port nodes for missing or repeated lambda and arrow ids, with
-`Compiler.GlobalOpt.PreMono.Fresh.assertMinted`. Returns `Ok ()` when
+`Compiler.PreMono.Fresh.assertMinted`. Returns `Ok ()` when
 `mono.validate` is off.
 
 A repeated id is the failure this exists for: a copy that kept its ids leaves
@@ -255,7 +255,7 @@ using the engine `mono.engine` selects, together with the LSS census text.
 
 `EngineSubst` and `EngineSolver` each run one engine. `EngineDiff` runs both
 and fails if their outputs differ; it does not use `mono.limits` or
-`mono.lss` (see `Compiler.MonoSolver.Diff`). The census is present only when
+`mono.lss` (see `Compiler.Monomorphize.Diff`). The census is present only when
 the solver engine ran and produced one, which `mono.lss.report` controls.
 
 -}
@@ -327,7 +327,7 @@ checkLayout ecoConfig g =
 
 
 {-| Returns the graph after the post-monomorphization inliner
-(`Compiler.GlobalOpt.MonoInlineSimplify`), with its metrics, or the graph
+(`Compiler.MonoOpt.InlineSimplify`), with its metrics, or the graph
 unchanged and empty metrics when `inline.postMono` is off.
 
 Two list options add names to the inliner's blacklist, because generation
@@ -401,7 +401,7 @@ prune ecoConfig inlinedGraph =
 closed: that every specialization a live node references is itself live.
 Returns `Ok ()` when either flag is off.
 
-The references are collected by `Compiler.Monomorphize.MonoTraverse.collectSpecEdges`,
+The references are collected by `Compiler.IR.Mono.Traverse.collectSpecEdges`,
 the same collector the prune walks, so it catches a prune that removed a
 specialization still referenced through a shape the collector sees; a
 reference shape the collector misses goes undetected here too. The `Err`
@@ -496,7 +496,7 @@ type alias GlobalOptResult =
     }
 
 
-{-| Returns the graph after `Compiler.GlobalOpt.MonoGlobalOptimize` global
+{-| Returns the graph after `Compiler.MonoOpt.GlobalOptimize` global
 optimization, with its statistics, under the configuration's
 `mono.lss.stamp.census`, `mono.stagingReport`, `borrow` and `list.mapTemplate`
 settings.
@@ -512,7 +512,7 @@ globalOptCore ecoConfig simplifiedGraph =
 
 
 {-| Returns the graph after common subexpression elimination of pure calls
-(`Compiler.GlobalOpt.MonoCse`) when `cse.enabled` is on, and starts the
+(`Compiler.MonoOpt.Cse`) when `cse.enabled` is on, and starts the
 `GlobalOptResult` with the global optimization statistics it is given.
 
 Under `cse.report`, the CSE census is taken of the input graph, before
@@ -553,7 +553,7 @@ cse ecoConfig ( goGraph, goStats ) =
 
 
 {-| Returns the graph with structurally identical nullary specializations
-merged (`Compiler.GlobalOpt.CafDedupe`) when `cafMemo.dedupe` is on, recording
+merged (`Compiler.MonoOpt.CafDedupe`) when `cafMemo.dedupe` is on, recording
 the statistics in the result.
 
 Under `cafMemo.census`, the CAF census is then taken of the deduplicated
@@ -583,7 +583,7 @@ dedupe ecoConfig ( cseGraph, carry ) =
     ( optimizedGraph, { carry | dedupeStats = dedupeStats, cafCensusPre = cafCensusPre } )
 
 
-{-| Returns the graph after CAF hoisting (`Compiler.GlobalOpt.CafHoist`) when
+{-| Returns the graph after CAF hoisting (`Compiler.MonoOpt.CafHoist`) when
 `cafMemo.hoist.enabled` is on, recording the statistics in the result.
 -}
 hoist : Config.EcoConfig -> ( Mono.MonoGraph, GlobalOptResult ) -> ( Mono.MonoGraph, GlobalOptResult )
@@ -619,7 +619,7 @@ globalOpt ecoConfig g =
 
 {-| Under `mono.validate`, returns the graph unchanged or `Err` with every
 violation that
-`Compiler.GlobalOpt.Staging.checkClosureStaging` finds: a closure or tail
+`Compiler.MonoOpt.Staging.checkClosureStaging` finds: a closure or tail
 function whose parameter count differs from its type's first stage. Returns
 the graph unchanged when `mono.validate` is off.
 -}

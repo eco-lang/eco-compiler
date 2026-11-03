@@ -28,7 +28,7 @@
 > `SpecKey Global MonoType` (no `Maybe LambdaId` axis); lambda sets are carried
 > on the arrows of `MonoType` itself and the spec key tells arrows apart by
 > them. Since commit `9d4c39bc`, both MonoType keys treat `MVar _ CNumber` as
-> `MInt` (see the `Compiler.AST.Monomorphized` module doc), so Axiom 2 below is
+> `MInt` (see the `Compiler.IR.Mono` module doc), so Axiom 2 below is
 > corrected accordingly.
 
 ---

@@ -86,46 +86,44 @@ module was compiled against.
 
 import Array exposing (Array)
 import Builder.GraphAssembly as GA
-import Compiler.AST.Canonical as Can
-import Compiler.AST.Monomorphized as Mono
-import Compiler.AST.Optimized as Opt
-import Compiler.AST.Source as Src
-import Compiler.AST.TypeEnv as TypeEnv
-import Compiler.AST.TypeVars as Vars
-import Compiler.AST.TypedCanonical as TCan
-import Compiler.AST.TypedOptimized as TOpt
+import Compiler.Canonicalize.Error as CanonicalizeError
 import Compiler.Canonicalize.Module as Canonicalize
-import Compiler.Data.Name as Name exposing (Name)
-import Compiler.Data.NonEmptyList as NE
-import Compiler.Data.OneOrMore as OneOrMore
-import Compiler.Eco.Config as Config
-import Compiler.Elm.Interface as I
+import Compiler.Core.Annotation as A
+import Compiler.Core.Name as Name exposing (Name)
 import Compiler.Elm.Interface.Basic as Basic
 import Compiler.Elm.ModuleName as ModuleName
 import Compiler.Elm.Package as Pkg
-import Compiler.Generate.MLIR.Backend as MLIR
-import Compiler.Generate.Mode as Mode
+import Compiler.GenerateMlir.Backend as MLIR
+import Compiler.IR.Canonical as Can
+import Compiler.IR.Canonical.Interface as I
+import Compiler.IR.Mono as Mono
+import Compiler.IR.Optimized as Opt
+import Compiler.IR.Source as Src
+import Compiler.IR.Typed.Canonical as TCan
+import Compiler.IR.Typed.Optimized as TOpt
+import Compiler.IR.Typed.TypeEnv as TypeEnv
+import Compiler.IR.Typed.TypeVars as Vars
 import Compiler.LocalOpt.Erased.Module as Optimize
+import Compiler.LocalOpt.Error as MainError
 import Compiler.LocalOpt.Typed.Module as TypedOptimize
 import Compiler.Nitpick.PatternMatches as PatternMatches
+import Compiler.Parse.Error as Syntax
 import Compiler.Parse.Module as Parse
 import Compiler.Pipeline.Steps as Steps
-import Compiler.Reporting.Annotation as A
-import Compiler.Reporting.Error.Canonicalize as CanonicalizeError
-import Compiler.Reporting.Error.Main as MainError
-import Compiler.Reporting.Error.Syntax as Syntax
-import Compiler.Reporting.Error.Type as TypeError
 import Compiler.Reporting.Result as RResult
 import Compiler.Type.Constrain.Erased.Module as TypeErased
 import Compiler.Type.Constrain.Typed.Module as TypeTyped
+import Compiler.Type.Error as TypeError
 import Compiler.Type.KernelTypes as KernelTypes
 import Compiler.Type.PostSolve as PostSolve
 import Compiler.Type.Solve as Type
 import Compiler.Type.SolverRoots as SolverRoots
-import Compiler.TypedCanonical.Build as TCanBuild
+import Compiler.Type.State.IO as TypeCheck
+import Compiler.Type.TypedCanonical as TCanBuild
 import Data.Map
+import Data.NonEmptyList as NE
+import Data.OneOrMore as OneOrMore
 import Dict exposing (Dict)
-import System.TypeCheck.IO as TypeCheck
 import TestLogic.TestPipeline as Pipeline
 
 
@@ -638,7 +636,7 @@ generateMLIR monoGraph =
         simplified =
             Steps.prune cfg (Tuple.first (Steps.inline cfg monoGraph))
     in
-    MLIR.generateProgram cfg (Mode.Dev Nothing) (Tuple.first (Steps.globalOpt cfg simplified))
+    MLIR.generateProgram cfg (Tuple.first (Steps.globalOpt cfg simplified))
 
 
 {-| Monomorphizes `results` from `entry` as `monomorphize` does and returns the

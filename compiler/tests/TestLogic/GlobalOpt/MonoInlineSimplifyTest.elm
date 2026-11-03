@@ -1,7 +1,7 @@
 module TestLogic.GlobalOpt.MonoInlineSimplifyTest exposing (suite)
 
 {-| Tests for the post-monomorphization inliner,
-`Compiler.GlobalOpt.MonoInlineSimplify.optimize`, run on its own, outside a
+`Compiler.MonoOpt.InlineSimplify.optimize`, run on its own, outside a
 build: that it does the rewrite each small fixture is built for, and that over
 the standard catalogue its output keeps two structural invariants.
 
@@ -37,8 +37,6 @@ and the exact values of the counters.
 -}
 
 import Array
-import Compiler.AST.Monomorphized as Mono
-import Compiler.AST.Source as Src
 import Compiler.AST.SourceBuilder
     exposing
         ( TypedDef
@@ -53,9 +51,11 @@ import Compiler.AST.SourceBuilder
         , tType
         , varExpr
         )
-import Compiler.Eco.Config as Config
-import Compiler.GlobalOpt.MonoInlineSimplify as MonoInlineSimplify
-import Compiler.Monomorphize.MonoTraverse as MonoTraverse
+import Compiler.Config as Config
+import Compiler.IR.Mono as Mono
+import Compiler.IR.Mono.Traverse as MonoTraverse
+import Compiler.IR.Source as Src
+import Compiler.MonoOpt.InlineSimplify as MonoInlineSimplify
 import Expect
 import SourceIR.Suite.StandardTestSuites as StandardTestSuites
 import Test exposing (Test)

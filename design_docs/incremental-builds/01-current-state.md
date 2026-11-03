@@ -20,7 +20,7 @@ Each module has these files under `eco-stuff/<ver>[/<builddir>]/` (`Builder/Stuf
 
 Beside them are `d.dat` (build state and per-module `Local` records), `i.dat` and `o.dat`. Each
 package has a `typed-artifacts.dat` under `~/.eco/<ver>/packages/...`
-(`Builder/Elm/Details.elm:337-353`).
+(`Builder/Deps/Details.elm:337-353`).
 
 ### Project-level invalidation
 
@@ -29,7 +29,7 @@ The cached `Details` is discarded and rebuilt with no locals in three cases
 - the `elm.json` mtime changes;
 - the typed/untyped form flips;
 - `Config.hash` changes. That hash is a token string such as `cthk=N` or `lchunks=1`
-  (`Compiler/Eco/Config.elm:885`).
+  (`Compiler/Config.elm:885`).
 
 So any change to an artifact-affecting flag means a cold rebuild.
 

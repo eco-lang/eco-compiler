@@ -271,7 +271,7 @@ unit before it was built.
 - **Do not let this become a shipped-binary cost.** Everything here lives
   under `ENABLE_GC_STATS` / an env flag, output-only, excluded from the
   artifact hash (the `mono.validate` / `borrowCensus0` precedent in
-  `compiler/src/Compiler/Eco/Config.elm:110-111`).
+  `compiler/src/Compiler/Config.elm:110-111`).
 - **Do not re-derive allocation numbers from this instrumentation.** The
   inline-alloc blind spot still applies to the allocation side; only the
   retention side is clean. Keep the two clearly labelled in the dump.

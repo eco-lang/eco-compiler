@@ -11,7 +11,7 @@ three to the interfaces that test programs are canonicalized against.
 
 An interface is what a compiled module offers the modules that import it: an
 annotation for each exported value, and its exported types, as
-`Compiler.Elm.Interface` describes. Each interface here is assembled directly
+`Compiler.IR.Canonical.Interface` describes. Each interface here is assembled directly
 from canonical types, with elm/bytes as its home package. A type whose
 constructors elm/bytes keeps hidden (`Bytes`, `Encoder`, `Decoder`) is a closed
 union with no constructors. `Endianness` and `Step` are open unions, so a test
@@ -33,12 +33,12 @@ that elm/bytes 1.0.8 gives it.
 
 -}
 
-import Compiler.AST.Canonical as Can
-import Compiler.Data.Index as Index
-import Compiler.Data.Name exposing (Name)
-import Compiler.Elm.Interface as I
+import Compiler.Core.Index as Index
+import Compiler.Core.Name exposing (Name)
 import Compiler.Elm.ModuleName as ModuleName
 import Compiler.Elm.Package as Pkg
+import Compiler.IR.Canonical as Can
+import Compiler.IR.Canonical.Interface as I
 import Dict exposing (Dict)
 
 

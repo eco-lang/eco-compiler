@@ -8,7 +8,7 @@ module Compiler.Generate.MLIR.BytesFusion.EmitReadUtf8OkTest exposing (suite)
 only checks that enough bytes remain, so if the emitter dropped `ok` an invalid
 string would still decode to `Just` and nothing else would notice. Here
 `Emit.emitFusedDecoder` is driven directly with hand-built Loop IR (the
-decoder operations of `Compiler.Generate.MLIR.BytesFusion.LoopIR`) and a stub
+decoder operations of `Compiler.GenerateMlir.BytesFusion.LoopIR`) and a stub
 expression compiler.
 
   - `ReadUtf8` with its length given by an expression: the emitted ops contain a
@@ -21,13 +21,12 @@ return `Nothing`; the emitted MLIR is not run.
 -}
 
 import Array
-import Compiler.AST.Monomorphized as Mono
-import Compiler.Generate.MLIR.BytesFusion.Emit as Emit
-import Compiler.Generate.MLIR.BytesFusion.LoopIR as IR
-import Compiler.Generate.MLIR.Context as Context exposing (Context)
-import Compiler.Generate.MLIR.Ops as Ops
-import Compiler.Generate.Mode as Mode
-import Compiler.Monomorphize.Registry as Registry
+import Compiler.GenerateMlir.BytesFusion.Emit as Emit
+import Compiler.GenerateMlir.BytesFusion.LoopIR as IR
+import Compiler.GenerateMlir.Context as Context exposing (Context)
+import Compiler.GenerateMlir.Ops as Ops
+import Compiler.IR.Mono as Mono
+import Compiler.IR.Mono.Registry as Registry
 import Data.HashMap as HashMap
 import Expect exposing (Expectation)
 import Mlir.Mlir exposing (MlirOp, MlirRegion(..), MlirType(..))
@@ -85,7 +84,7 @@ stubCompile _ ctx =
 -}
 freshContext : Context
 freshContext =
-    Context.initContext (Mode.Dev Nothing) Registry.emptyRegistry Array.empty HashMap.empty
+    Context.initContext Registry.emptyRegistry Array.empty HashMap.empty
 
 
 {-| Emits a fused decoder for `decoderOps` and passes if it contains at least one

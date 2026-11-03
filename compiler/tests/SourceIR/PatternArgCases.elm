@@ -54,7 +54,7 @@ The programs, group by group, in the order they run:
   - Custom type patterns: `getId (Person id _)` and `getAge (Person _ age)` on
     `type Person = Person Int Int`, and `unbox (Box x)` on `type Box = Box Int`.
     `Box` has one constructor with one argument, the shape that
-    `Compiler.Canonicalize.Environment.Local` gives the `Unbox` representation;
+    `Compiler.Canonicalize.LocalEnvironment` gives the `Unbox` representation;
     `Person` has two arguments and does not get it.
 
 Among what is not tested: `as` patterns, character patterns, a constructor of
@@ -63,7 +63,6 @@ arguments of `let`-bound functions.
 
 -}
 
-import Compiler.AST.Source as Src
 import Compiler.AST.SourceBuilder
     exposing
         ( TypedDef
@@ -99,6 +98,7 @@ import Compiler.AST.SourceBuilder
         , varExpr
         )
 import Compiler.BulkCheck exposing (TestCase, bulkCheck)
+import Compiler.IR.Source as Src
 import Expect exposing (Expectation)
 import Test exposing (Test)
 

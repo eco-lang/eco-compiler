@@ -1,6 +1,6 @@
 module TestLogic.Monomorphize.AbiCloningFenceTest exposing (suite)
 
-{-| Tests for the body check in `Compiler.GlobalOpt.AbiCloning` that stops a
+{-| Tests for the body check in `Compiler.MonoOpt.AbiCloning` that stops a
 call from being stamped with the code of the wrong closure.
 
 The AbiCloning pass looks at calls whose callee's lambda set names exactly one
@@ -53,11 +53,11 @@ its census switch off.
 -}
 
 import Array
-import Compiler.AST.Monomorphized as Mono
-import Compiler.Data.BitSet as BitSet
+import Compiler.Core.Annotation as A
 import Compiler.Elm.ModuleName as ModuleName
-import Compiler.GlobalOpt.AbiCloning as AbiCloning
-import Compiler.Reporting.Annotation as A
+import Compiler.IR.Mono as Mono
+import Compiler.MonoOpt.AbiCloning as AbiCloning
+import Data.BitSet as BitSet
 import Dict
 import Expect
 import Test exposing (Test)

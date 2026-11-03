@@ -17,7 +17,7 @@ message itself. The message is a `Doc`, the document type of
 
 -}
 
-import Compiler.Reporting.Annotation as A
+import Compiler.Core.Annotation as A
 import Compiler.Reporting.Doc as D
 
 

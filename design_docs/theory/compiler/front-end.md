@@ -27,7 +27,7 @@ type alias ExprTypes =
     Array (Maybe (Can.Type Name))
 ```
 
-`ExprInfo` is from `compiler/src/Compiler/AST/Canonical.elm`, where each canonical expression is a located `ExprInfo`. `NodeVarMap` is from `compiler/src/Compiler/Type/Constrain/Typed/NodeIds.elm` and `ExprTypes` from `compiler/src/Compiler/AST/TypedCanonical.elm`. Notice that both tables are ordinary arrays indexed by the node's number, and nothing in the types ties an entry to its node. A number that was never recorded reads back as `Nothing`, which the typed path treats as a compiler bug. Any kind of node added to the tree must therefore take a number and have its variable recorded, or the table has a hole.
+`ExprInfo` is from `compiler/src/Compiler/IR/Canonical.elm`, where each canonical expression is a located `ExprInfo`. `NodeVarMap` is from `compiler/src/Compiler/Type/Constrain/Typed/NodeIds.elm` and `ExprTypes` from `compiler/src/Compiler/IR/Typed/Canonical.elm`. Notice that both tables are ordinary arrays indexed by the node's number, and nothing in the types ties an entry to its node. A number that was never recorded reads back as `Nothing`, which the typed path treats as a compiler bug. Any kind of node added to the tree must therefore take a number and have its variable recorded, or the table has a hole.
 
 Expressions and patterns draw their numbers from one counter per module. A separate counter for each produces the same number for an expression and a pattern, and the tables then mix the two up. The counter is per module because each module is compiled on its own; numbers are unique within a module and mean nothing across modules.
 
@@ -107,18 +107,18 @@ Parent: [compiler.md](compiler.md). Related: [local-optimization.md](local-optim
 Code:
 
 - `compiler/src/Compiler/Compile.elm`: phase order on the erased and typed paths.
-- `compiler/src/Compiler/Parse/Primitives.elm`, `compiler/src/Compiler/AST/Source.elm`: parser combinators and the source tree.
-- `compiler/src/Compiler/Canonicalize/Module.elm`, `Expression.elm`, `Ids.elm`; `compiler/src/Compiler/AST/Canonical.elm` (`ExprInfo`): name resolution and node numbering.
+- `compiler/src/Compiler/Lexer/Primitives.elm`, `compiler/src/Compiler/IR/Source.elm`: parser combinators and the source tree.
+- `compiler/src/Compiler/Canonicalize/Module.elm`, `Expression.elm`, `Ids.elm`; `compiler/src/Compiler/IR/Canonical.elm` (`ExprInfo`): name resolution and node numbering.
 - `compiler/src/Compiler/Type/Constrain/Typed/Expression.elm`, `NodeIds.elm` (`NodeVarMap`, `recordNodeVar`), `compiler/src/Compiler/Type/Constrain/Erased/Module.elm`: the single constraint generator and its recording.
 - `compiler/src/Compiler/Type/Solve.elm`, `Unify.elm`, `UnionFind.elm`, `Occurs.elm`, `SolverSnapshot.elm`: the solver.
 - `compiler/src/Compiler/Type/PostSolve.elm`, `SolverRoots.elm`, `KernelTypes.elm`, `KernelIntrinsics.elm`: the repair step, solver roots and kernel typing.
-- `compiler/src/Compiler/AST/TypedCanonical.elm` (`ExprTypes`): the typed canonical module.
+- `compiler/src/Compiler/IR/Typed/Canonical.elm` (`ExprTypes`): the typed canonical module.
 - `compiler/src/Compiler/Nitpick/PatternMatches.elm`, `compiler/src/Compiler/Nitpick/Debug.elm`: the pattern checks and the `Debug` check.
 - `compiler/src/Compiler/Reporting/Result.elm`: error accumulation.
-- `compiler/src/Compiler/Elm/EcoEnvironment.elm`: recognition of Eco's system package.
-- `compiler/src/Compiler/Data/Id.elm`, `compiler/src/Compiler/AST/TypeIds.elm`: typed integer ids (`MVarId`, `SrcLambdaId`, `ArrowId`, `ArrowSlot`).
-- `compiler/src/Compiler/Data/HeapLimits.elm`, `compiler/src/Compiler/Data/CtorTag.elm`: numbers mirrored by hand from `runtime/src/allocator/Heap.hpp`.
-- `compiler/src/Compiler/AST/StringTable.elm`, `TypeTable.elm`, `Intern.elm`; `compiler/src/Compiler/AST/TypedOptimized.elm` (`typedGraphFormatVersion`): compact typed files.
+- `compiler/src/Compiler/IR/Runtime/EcoEnvironment.elm`: recognition of Eco's system package.
+- `compiler/src/Compiler/Core/Id.elm`, `compiler/src/Compiler/Core/TypeIds.elm`: typed integer ids (`MVarId`, `SrcLambdaId`, `ArrowId`, `ArrowSlot`).
+- `compiler/src/Compiler/IR/Runtime/HeapLimits.elm`, `compiler/src/Compiler/IR/Runtime/CtorTag.elm`: numbers mirrored by hand from `runtime/src/allocator/Heap.hpp`.
+- `compiler/src/Compiler/Core/StringTable.elm`, `TypeTable.elm`, `Intern.elm`; `compiler/src/Compiler/IR/Typed/Optimized.elm` (`typedGraphFormatVersion`): compact typed files.
 - `compiler/review/src/EnforceBoundaries.elm`: the layer rule.
 
 Documents:

@@ -16,8 +16,8 @@ package `eco/example`, against the stand-in interfaces of
 `Compiler.Elm.Interface.Basic.testIfaces`), giving `BadNames`, and the type
 checker of the erased path, giving `BadTypes` with the module's localizer. The
 first phase that fails gives the
-`Compiler.Reporting.Error.Error`, whose reports are laid out as the terminal
-shows them, by `Compiler.Reporting.Error.toDoc` for a module at
+`Compiler.Error.Error`, whose reports are laid out as the terminal
+shows them, by `Builder.Reporting.ModuleError.toDoc` for a module at
 `/project/src/Main.elm` and the root `/project`, and rendered without colour by
 `Compiler.Reporting.Doc.toString`.
 
@@ -26,19 +26,20 @@ A module that compiles gives the text `"no error"`.
 -}
 
 import Builder.File as File
-import Compiler.AST.Source as Src
+import Builder.Reporting.ModuleError as ModuleError
 import Compiler.AST.SourceBuilder exposing (makeModule, unitExpr)
 import Compiler.Canonicalize.Module as Canonicalize
 import Compiler.Elm.Interface.Basic as Basic
+import Compiler.Error as Error
+import Compiler.IR.Source as Src
 import Compiler.Parse.Module as M
 import Compiler.Reporting.Doc as D
-import Compiler.Reporting.Error as Error
 import Compiler.Reporting.Render.Type.Localizer as Localizer
 import Compiler.Reporting.Result as ReportingResult
 import Compiler.Type.Constrain.Erased.Module as TypeErased
 import Compiler.Type.Solve as Type
+import Compiler.Type.State.IO as TypeCheck
 import Expect
-import System.TypeCheck.IO as TypeCheck
 import Time
 
 
@@ -72,7 +73,7 @@ reportOf source =
             "no error"
 
         Err err ->
-            Error.toDoc "/project"
+            ModuleError.toDoc "/project"
                 { name = "Main"
                 , absolutePath = "/project/src/Main.elm"
                 , modificationTime = File.Time (Time.millisToPosix 0)

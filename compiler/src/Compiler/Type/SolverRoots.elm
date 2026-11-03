@@ -12,7 +12,7 @@ of that store, taken after solving, and records those answers in data that
 does outlive it.
 
 The store and its terms, _point_, _class_ and _root_, are described in
-`Compiler.AST.TypeVars`, and the snapshot in `Compiler.Type.SolverSnapshot`. Two
+`Compiler.IR.Typed.TypeVars`, and the snapshot in `Compiler.Type.SolverSnapshot`. Two
 variables the solver unified are in one class and resolve to one root, so
 replacing every variable by its root gives each class one identity. A root is a
 point of the store the snapshot was taken from, and means nothing apart from
@@ -35,7 +35,7 @@ The module produces three things from a snapshot.
     matched with a variable whose root holds an alias gets the alias's root,
     not that of the function type the alias expands to, so two arrows the
     solver unified can get different indices.
-    `Compiler.AST.TypeIds.ArrowSlot` says what the index means, and that it
+    `Compiler.Core.TypeIds.ArrowSlot` says what the index means, and that it
     means something only together with its module.
 
 The last two rest on a _lockstep walk_, which descends a `Can.Type` and a
@@ -60,10 +60,10 @@ alias.
 -}
 
 import Array exposing (Array)
-import Compiler.AST.Canonical as Can
-import Compiler.AST.TypeIds as TypeIds
-import Compiler.AST.TypeVars as Vars
-import Compiler.Data.Name as Name
+import Compiler.Core.Name as Name
+import Compiler.Core.TypeIds as TypeIds
+import Compiler.IR.Canonical as Can
+import Compiler.IR.Typed.TypeVars as Vars
 import Compiler.Type.SolverSnapshot as SolverSnapshot exposing (SolverState)
 import Dict exposing (Dict)
 
@@ -308,7 +308,7 @@ with the arguments of the solver's alias; if the two lists differ in length,
 the arguments beyond the shorter one are dropped from the result.
 
 The index means something only together with the module whose solve produced
-it, as `Compiler.AST.TypeIds.ArrowSlot` describes.
+it, as `Compiler.Core.TypeIds.ArrowSlot` describes.
 
 -}
 stampArrowRoots : SolverState -> Can.Type Name.Name -> Vars.Variable -> Can.Type Name.Name

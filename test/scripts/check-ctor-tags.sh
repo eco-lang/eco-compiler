@@ -1,7 +1,7 @@
 #!/bin/sh
 # check-ctor-tags.sh — fail if the compiler's reserved constructor-tag numbers drift from the runtime's.
 #
-# SD-18: compiler/src/Compiler/Data/CtorTag.elm hard-codes three numbers that must equal the C++
+# SD-18: compiler/src/Compiler/IR/Runtime/CtorTag.elm hard-codes three numbers that must equal the C++
 # runtime's (its module doc: "Nothing in the compiler checks that they agree"):
 #   dictRBNode       == CTOR_DICT_RBNODE  (elm-kernel-cpp core/Utils.cpp, http/HttpExports.cpp)
 #   constantTag      == CONSTANT_TAG      (runtime/src/allocator/Heap.hpp)
@@ -19,7 +19,7 @@ fail=0
 # elm_const NAME: the literal on the line after "NAME =" in CtorTag.elm.
 elm_const() {
     awk -v n="$1" '$0 ~ "^" n " =$" {getline; print $1; exit}' \
-        "$root/compiler/src/Compiler/Data/CtorTag.elm"
+        "$root/compiler/src/Compiler/IR/Runtime/CtorTag.elm"
 }
 
 # cpp_const FILE REGEX: the first number after the matched name (#define X v / X = v;).

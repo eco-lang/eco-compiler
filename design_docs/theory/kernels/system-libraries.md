@@ -157,7 +157,7 @@ Code and documents:
 - `eco-kernel-cpp/src/Eco/`, `eco-kernel-cpp/src/eco-kernel/File.cpp`, `TaskBinding.hpp`, `KernelHelpers.hpp`, `ExportHelpers.hpp`: the `eco/kernel` pattern (`makeBinding`, `makeAsyncBinding`).
 - `compiler/src-xhr/Eco/`: the stock-Elm implementation of the `Eco.*` modules.
 - `runtime/src/platform/Liveness.hpp` (`LivenessHold`), `TaskBinding.hpp`, `Spawn.hpp`: runtime pieces these libraries use. Setting `ECO_LIVENESS_REPORT=1` prints the holds still open.
-- `compiler/src/Compiler/Generate/MLIR/Functions.elm` (`ecoSystemManagers`, manager registration), `compiler/src/Compiler/Elm/EcoEnvironment.elm` (environment flags), `compiler/src/Compiler/Elm/Package.elm` (`isKernel`: which packages may hold kernels).
+- `compiler/src/Compiler/GenerateMlir/Functions.elm` (`ecoSystemManagers`, manager registration), `compiler/src/Compiler/IR/Runtime/EcoEnvironment.elm` (environment flags), `compiler/src/Compiler/Elm/Package.elm` (`isKernel`: which packages may hold kernels).
 - `examples/src/`, `examples/benchmarks/`: example programs and benchmarks.
 - `plans/eco-system-library.md` sections 2 and 3.2 to 3.4: the library's threading and rooting rules. `plans/native-http-client.md`: a proposed replacement for libcurl, not built.
 - Tests: `test/eco-kernel/`, `test/eco-system/` (the specification; `-- SKIP-JS:` and `-- LINUX-ONLY:` directives), `test/eco-system-core/`, `test/conformance/`.

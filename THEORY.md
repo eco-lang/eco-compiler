@@ -127,7 +127,7 @@ Code and documents:
 
 - `Readme.md`, `docs/getting-started.md`, `docs/bootstrap.md`, `docs/options.md`: what Eco is, how it builds itself, and every setting.
 - `compiler/src/Terminal/Make.elm`: output dispatch by file name, the choice between the typed and erased paths, and the hand-off to the native back end.
-- `compiler/src/Compiler/Pipeline/Steps.elm`, `compiler/src/Compiler/Eco/Config.elm`: the shared whole-program step list and its switches (`aggPromote`, `sretResults` and the others).
+- `compiler/src/Compiler/Pipeline/Steps.elm`, `compiler/src/Compiler/Config.elm`: the shared whole-program step list and its switches (`aggPromote`, `sretResults` and the others).
 - `runtime/src/codegen/Ops.td`: the eco dialect and its verifiers.
 - `runtime/src/codegen/EcoNativeDriver.cpp`, `runtime/src/codegen/EcoNativeAPI.h`, `eco-kernel-cpp/src/eco-kernel/NativeDriver.cpp`, `runtime/src/codegen/eco_entry.cpp`: the in-process back end, its C interface, the kernel that calls it, and the program entry point.
 - `runtime/src/codegen/EcoBackend.h`: the fixed CPU targets (x86-64-v3, apple-m1).

@@ -1,6 +1,6 @@
 module TestLogic.GlobalOpt.CafDedupeTest exposing (suite)
 
-{-| Tests for `Compiler.GlobalOpt.CafDedupe`, the pass that merges top-level
+{-| Tests for `Compiler.MonoOpt.CafDedupe`, the pass that merges top-level
 `MonoDefine` definitions whose types are equal and whose bodies are equal apart
 from source regions. Without them, a change to the pass could merge two
 definitions that differ, leave a reference pointing at a definition it has
@@ -49,11 +49,11 @@ exact round count; and whether the canonical spec's body is unchanged.
 -}
 
 import Array
-import Compiler.AST.Monomorphized as Mono
-import Compiler.Data.BitSet as BitSet
+import Compiler.Core.Annotation as A
 import Compiler.Elm.ModuleName as ModuleName
-import Compiler.GlobalOpt.CafDedupe as CafDedupe
-import Compiler.Reporting.Annotation as A
+import Compiler.IR.Mono as Mono
+import Compiler.MonoOpt.CafDedupe as CafDedupe
+import Data.BitSet as BitSet
 import Dict
 import Expect
 import Test exposing (Test)

@@ -8,7 +8,7 @@ operator's generic scheme type.
 global reference must be typed from the operands' types and the result type,
 not with the operator's annotation as written: for `*`, `number -> number ->
 number`, whose `number` is `Basics.mul`'s own scheme variable. Type variables
-are identified by NAME within a scope (`Compiler.Monomorphize.AssignMVarIds`
+are identified by NAME within a scope (`Compiler.PreMono.AssignMVarIds`
 keeps one id per name within a scope, such as a definition's own type
 variables), so when the enclosing definition's scheme also has a `number`, the
 operator's `number` would be taken for it.
@@ -17,7 +17,7 @@ In `wrapInt x = ( x * 1, 4 * 2 * 2 )` with `wrapInt 2.5`, a scheme-typed
 reference would give every `*` the type of `x`, so under the substitution
 engine (`ECO_MONO_ENGINE=subst`) the `*` of the Int chain `4 * 2 * 2` would be
 specialized at `Float -> Float -> Float`. With alias forwarding
-(`Compiler.GlobalOpt.PreMono.AliasForward`, default on) the reference would be
+(`Compiler.PreMono.AliasForward`, default on) the reference would be
 forwarded to `Elm.Kernel.Basics.mul` with that type, and code generation would
 abort with a kernel signature mismatch for `Elm_Kernel_Basics_mul_Float`.
 
@@ -48,18 +48,18 @@ as arguments (`Can.VarOperator`) are not exercised.
 -}
 
 import Array
-import Compiler.AST.Canonical as Can
-import Compiler.AST.Monomorphized as Mono
-import Compiler.AST.Source as Src
 import Compiler.AST.SourceBuilder as SB
-import Compiler.AST.TypedOptimized as TOpt
-import Compiler.Data.Name exposing (Name)
-import Compiler.Eco.Config as Config
+import Compiler.Config as Config
+import Compiler.Core.Annotation as A
+import Compiler.Core.Name exposing (Name)
 import Compiler.Elm.ModuleName as ModuleName
-import Compiler.GlobalOpt.PreMono.AliasForward as AliasForward
-import Compiler.Monomorphize.EntryPrep as EntryPrep
-import Compiler.Monomorphize.Monomorphize as Monomorphize
-import Compiler.Reporting.Annotation as A
+import Compiler.IR.Canonical as Can
+import Compiler.IR.Mono as Mono
+import Compiler.IR.Source as Src
+import Compiler.IR.Typed.Optimized as TOpt
+import Compiler.Monomorphize.Subst.Monomorphize as Monomorphize
+import Compiler.PreMono.AliasForward as AliasForward
+import Compiler.PreMono.EntryPrep as EntryPrep
 import Data.Map
 import Data.Set
 import Expect

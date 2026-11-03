@@ -5,7 +5,7 @@ so that a compiler stage meets each of them with `Float` arguments or results.
 
 The MLIR back end can turn a call to a `Basics` operation into an intrinsic,
 chosen by the operation's name and its monomorphized argument types in the
-private `basicsIntrinsic` of `Compiler.GlobalOpt.KernelIntrinsics`. That function
+private `basicsIntrinsic` of `Compiler.IR.Kernel.Intrinsics`. That function
 gives an intrinsic for every operation these programs call, at the types they
 call it at, except two: its `logBase` row gives none, and it has no row for
 `clamp`. These cases give each operation a small program that calls it at
@@ -54,7 +54,6 @@ Among what is not tested:
 
 -}
 
-import Compiler.AST.Source as Src
 import Compiler.AST.SourceBuilder
     exposing
         ( TypedDef
@@ -72,6 +71,7 @@ import Compiler.AST.SourceBuilder
         , varExpr
         )
 import Compiler.BulkCheck exposing (TestCase, bulkCheck)
+import Compiler.IR.Source as Src
 import Expect exposing (Expectation)
 import Test exposing (Test)
 import TestLogic.TestPipeline exposing (expectMonomorphization)

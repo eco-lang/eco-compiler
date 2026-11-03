@@ -1,6 +1,6 @@
 module TestLogic.GlobalOpt.AliasForwardTest exposing (suite)
 
-{-| Tests for `Compiler.GlobalOpt.PreMono.AliasForward`, the pass that runs
+{-| Tests for `Compiler.PreMono.AliasForward`, the pass that runs
 before monomorphization and rewrites references to alias definitions so that
 they name what the alias names. `TestLogic.TestPipeline` runs no
 pre-monomorphization pass, so the pipeline tests built on it do not exercise
@@ -14,7 +14,7 @@ one: for instance the flags decoder is not, nor is a definition in a recursive
 group, nor one whose body is a `Debug` function. The second kind is a _kernel
 alias_. To _forward_ a reference is to replace a reference to the alias with
 one to its target. Which references the pass forwards and which it keeps is
-stated in `Compiler.GlobalOpt.PreMono.AliasForward`.
+stated in `Compiler.PreMono.AliasForward`.
 
 Each fixture is a module named `Test` of annotated top-level definitions (and,
 in one fixture, a type alias), with a `testValue` that uses the definitions
@@ -85,7 +85,6 @@ anything about the flag-off graph beyond `testValue`'s callees, and the
 
 -}
 
-import Compiler.AST.Source as Src
 import Compiler.AST.SourceBuilder
     exposing
         ( AliasDef
@@ -103,12 +102,13 @@ import Compiler.AST.SourceBuilder
         , tVar
         , varExpr
         )
-import Compiler.AST.TypeIds as TypeIds
-import Compiler.AST.TypedOptimized as TOpt
-import Compiler.Data.Name exposing (Name)
-import Compiler.Eco.Config as Config
-import Compiler.GlobalOpt.PreMono.AliasForward as AliasForward
-import Compiler.Monomorphize.EntryPrep as EntryPrep
+import Compiler.Config as Config
+import Compiler.Core.Name exposing (Name)
+import Compiler.Core.TypeIds as TypeIds
+import Compiler.IR.Source as Src
+import Compiler.IR.Typed.Optimized as TOpt
+import Compiler.PreMono.AliasForward as AliasForward
+import Compiler.PreMono.EntryPrep as EntryPrep
 import Data.Map
 import Data.Set as EverySet
 import Dict as CoreDict

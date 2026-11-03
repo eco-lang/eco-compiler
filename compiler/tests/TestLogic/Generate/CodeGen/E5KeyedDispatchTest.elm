@@ -11,10 +11,10 @@ naming which function values can flow through it. _Keying_ is how the solver
 engine registers a specialisation of a global when lambda-set specialisation
 is on and the global is under its specialisation budget: the registry key is
 the demanded type with its lambda sets included, as
-`Compiler.MonoSolver.Engine` describes, so two calls at the same type that pass
+`Compiler.Monomorphize.Solver.Engine` describes, so two calls at the same type that pass
 different lambdas can get separate specialisations. _Stamping_ is AbiCloning
 writing a `fastEvaluator`, a lambda id naming the one function value the callee
-must be, into a call's `CallInfo`; `Compiler.GlobalOpt.AbiCloning` stamps a
+must be, into a call's `CallInfo`; `Compiler.MonoOpt.AbiCloning` stamps a
 call only when its callee's lambda set has exactly one member.
 
 The fixture is a module with two annotated values:
@@ -60,8 +60,6 @@ Among what is not tested:
 -}
 
 import Array
-import Compiler.AST.Monomorphized as Mono
-import Compiler.AST.Source as Src
 import Compiler.AST.SourceBuilder
     exposing
         ( TypedDef
@@ -76,7 +74,9 @@ import Compiler.AST.SourceBuilder
         , tType
         , varExpr
         )
-import Compiler.Monomorphize.MonoTraverse as MonoTraverse
+import Compiler.IR.Mono as Mono
+import Compiler.IR.Mono.Traverse as MonoTraverse
+import Compiler.IR.Source as Src
 import Expect
 import Test exposing (Test)
 import TestLogic.TestPipeline as Pipeline
@@ -205,7 +205,7 @@ calls anywhere in the graph's nodes, including calls nested inside closures and
 `let` definitions.
 
 A stamp on a partial application of a global carries a sentinel lambda id
-rather than a closure's own (see `Compiler.GlobalOpt.AbiCloning`), and is
+rather than a closure's own (see `Compiler.MonoOpt.AbiCloning`), and is
 counted like any other.
 
 -}

@@ -74,9 +74,7 @@ import Builder.Reporting.Exit as Exit
 import Builder.Stuff as Stuff
 import Bytes.Decode
 import Bytes.Encode
-import Compiler.Data.Name as Name
-import Compiler.Data.NonEmptyList as NE
-import Compiler.Data.OneOrMore as OneOrMore
+import Compiler.Core.Name as Name
 import Compiler.Elm.Constraint as Con
 import Compiler.Elm.Licenses as Licenses
 import Compiler.Elm.ModuleName as ModuleName
@@ -84,8 +82,10 @@ import Compiler.Elm.Package as Pkg
 import Compiler.Elm.Version as V
 import Compiler.Json.Decode as D
 import Compiler.Json.Encode as E
-import Compiler.Parse.Primitives as P
+import Compiler.Lexer.Primitives as P
 import Data.Map as DataMap
+import Data.NonEmptyList as NE
+import Data.OneOrMore as OneOrMore
 import Dict exposing (Dict)
 import System.IO exposing (FilePath)
 import Task exposing (Task)

@@ -7,7 +7,7 @@ not go unnoticed.
 
 A _lambda set_ is the annotation on each arrow of a monomorphized type, a
 `Mono.LambdaSetAnno`, saying which functions a value of that type can be.
-`Compiler.AST.Monomorphized` owns what each form means. Here, a _singleton_ is
+`Compiler.IR.Mono` owns what each form means. Here, a _singleton_ is
 an `LSet` with exactly one member and a _2-set_ is an `LSet` with exactly two;
 `LTop`, `LVar` and `LPartial` are neither, whatever they carry.
 
@@ -45,8 +45,6 @@ monomorphization.
 -}
 
 import Array
-import Compiler.AST.Monomorphized as Mono
-import Compiler.AST.Source as Src
 import Compiler.AST.SourceBuilder
     exposing
         ( accessExpr
@@ -65,8 +63,10 @@ import Compiler.AST.SourceBuilder
         , tType
         , varExpr
         )
-import Compiler.Eco.Config as Config
-import Compiler.Monomorphize.MonoTraverse as Traverse
+import Compiler.Config as Config
+import Compiler.IR.Mono as Mono
+import Compiler.IR.Mono.Traverse as Traverse
+import Compiler.IR.Source as Src
 import Dict
 import Expect
 import Test exposing (Test)

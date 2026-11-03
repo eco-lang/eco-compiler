@@ -5,7 +5,7 @@ terminator slot of a block, the place for the op that ends the block.
 
 An `eco.case` chooses one of its regions, the alternatives, by the value of its
 scrutinee, and its SSA results are the values that alternative yields. It is
-an ordinary op of a block's body, as `Compiler.Generate.MLIR.Ops` describes.
+an ordinary op of a block's body, as `Compiler.GenerateMlir.Ops` describes.
 An `MlirBlock` keeps its body ops and its terminator in separate fields, so
 nothing in the types stops an `eco.case` being placed in the wrong one.
 
@@ -22,7 +22,7 @@ Among what is not tested: what ends each alternative of an `eco.case`, and an
 
 -}
 
-import Compiler.AST.Source as Src
+import Compiler.IR.Source as Src
 import Expect exposing (Expectation)
 import Mlir.Mlir exposing (MlirBlock, MlirModule, MlirOp, MlirRegion(..))
 import OrderedDict

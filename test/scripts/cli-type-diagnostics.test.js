@@ -26,7 +26,7 @@ function make(main) {
 const HEAD = "module Main exposing (main)\n\nimport Html\n\n\n";
 const MAIN = 'main =\n    Html.text "a"\n';
 
-// Compiler.Reporting.Error.Canonicalize.aliasToUnionDoc folds the alias parameters with the flipped
+// Compiler.Canonicalize.Error.aliasToUnionDoc folds the alias parameters with the flipped
 // `D.plus` (`List.foldr D.plus (D.fromChars "=") args`), so the suggested `type` declaration for a
 // directly recursive alias `Tree a b` is printed as `type  Tree = b a` instead of Elm's `type Tree a b =`.
 test("a recursive alias suggestion declares its parameters before the =", () => {
@@ -36,7 +36,7 @@ test("a recursive alias suggestion declares its parameters before the =", () => 
   assert.match(out, /^ {4}type Tree a b =$/m, out);
 });
 
-// System.TypeCheck.IO.foldrM folds from the HEAD of the list (it is a foldlM), while Haskell's foldrM,
+// Compiler.Type.State.IO.foldrM folds from the HEAD of the list (it is a foldlM), while Haskell's foldrM,
 // which Compiler.Type.Type.getVarNames was ported from, visits the LAST element first. So for the
 // right side `( Maybe a, a )` of the failed `==` below, getVarNames meets `Nothing`'s instantiated
 // flex var (named `a`) before the annotation's rigid `a`, and addName renames the RIGID variable to

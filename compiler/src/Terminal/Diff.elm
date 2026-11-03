@@ -32,27 +32,27 @@ one for each changed module listing its added, removed and changed declarations.
 import Basics.Extra exposing (flip)
 import Builder.BackgroundWriter as BW
 import Builder.Build as Build
+import Builder.Deps.Details as Details exposing (Details(..))
 import Builder.Deps.Diff as DD exposing (Changes(..), ModuleChanges(..), PackageChanges(..))
 import Builder.Deps.Registry as Registry
 import Builder.Eco.FEStats as FEStats
-import Builder.Elm.Details as Details exposing (Details(..))
 import Builder.Elm.Outline as Outline
 import Builder.Http as Http
 import Builder.Reporting as Reporting
 import Builder.Reporting.Exit as Exit
 import Builder.Reporting.Exit.Help as Help
 import Builder.Stuff as Stuff
-import Compiler.AST.Utils.Binop as Binop
-import Compiler.Data.Name as Name
-import Compiler.Data.NonEmptyList as NE
-import Compiler.Elm.Compiler.Type as Type
-import Compiler.Elm.Docs as Docs
+import Compiler.Core.Name as Name
+import Compiler.Docs as Docs
+import Compiler.Docs.Type as Type
 import Compiler.Elm.Magnitude as M
 import Compiler.Elm.Package as Pkg
 import Compiler.Elm.Version as V
+import Compiler.IR.Source.Binop as Binop
 import Compiler.Reporting.Doc as D
 import Compiler.Reporting.Render.Type as Type
 import Compiler.Reporting.Render.Type.Localizer as L
+import Data.NonEmptyList as NE
 import Dict
 import Task exposing (Task)
 import Utils.Task.Extra as Task

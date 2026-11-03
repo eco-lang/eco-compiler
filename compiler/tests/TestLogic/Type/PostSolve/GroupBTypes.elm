@@ -23,9 +23,9 @@ would otherwise hide.
 -}
 
 import Array
-import Compiler.AST.Canonical as Can
-import Compiler.AST.Source as Src
-import Compiler.Data.Name exposing (Name)
+import Compiler.Core.Name exposing (Name)
+import Compiler.IR.Canonical as Can
+import Compiler.IR.Source as Src
 import Expect
 import TestLogic.TestPipeline as Pipeline
 import TestLogic.Type.PostSolve.PostSolveInvariantHelpers as Helpers

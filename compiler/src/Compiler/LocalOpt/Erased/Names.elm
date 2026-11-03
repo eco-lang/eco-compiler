@@ -56,12 +56,12 @@ in order.
 
 -}
 
-import Compiler.AST.Canonical as Can
-import Compiler.AST.Optimized as Opt
-import Compiler.Data.Index as Index
-import Compiler.Data.Name as Name exposing (Name)
+import Compiler.Core.Annotation as A
+import Compiler.Core.Index as Index
+import Compiler.Core.Name as Name exposing (Name)
 import Compiler.Elm.ModuleName as ModuleName
-import Compiler.Reporting.Annotation as A
+import Compiler.IR.Canonical as Can
+import Compiler.IR.Optimized as Opt
 import Control.Loop exposing (Step(..))
 import Data.Map as DataMap
 import Data.Set as EverySet exposing (EverySet)

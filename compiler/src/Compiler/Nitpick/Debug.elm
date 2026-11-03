@@ -4,7 +4,7 @@ module Compiler.Nitpick.Debug exposing (hasDebugUses)
 can reject it.
 
 A use of a `Debug` function survives optimization as a `VarDebug` expression
-(see `Compiler.AST.Optimized`). `hasDebugUses` searches one module's local
+(see `Compiler.IR.Optimized`). `hasDebugUses` searches one module's local
 graph for such an expression, looking inside every definition, port, recursive
 group, nested expression and pattern-match decision tree. Nothing else counts:
 kernel references, shaders and the nodes that carry no expression are never
@@ -17,9 +17,9 @@ reported.
 
 -}
 
-import Compiler.AST.Optimized as Opt
-import Compiler.Data.Map.Utils as Map
+import Compiler.IR.Optimized as Opt
 import Data.Map as EveryDict
+import Data.Map.Utils as Map
 import Dict
 
 

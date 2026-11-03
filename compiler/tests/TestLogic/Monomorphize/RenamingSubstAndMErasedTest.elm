@@ -6,7 +6,7 @@ that the programs' annotations fix.
 
 The programs are monomorphized with `TestLogic.TestPipeline.runToMonoStage5`,
 the bootstrap Stage 5 pipeline, which uses the substitution engine
-(`Compiler.Monomorphize.Monomorphize`), not the solver engine the compiler uses
+(`Compiler.Monomorphize.Subst.Monomorphize`), not the solver engine the compiler uses
 by default. A _number variable_ is an
 `MVar _ CNumber`, a type variable constrained to `number` that has not been
 resolved; it must not reach code generation. An `MVar _ CEcoValue` is an
@@ -46,8 +46,6 @@ than the positions listed.
 -}
 
 import Array
-import Compiler.AST.Monomorphized as Mono
-import Compiler.AST.Source as Src
 import Compiler.AST.SourceBuilder
     exposing
         ( accessExpr
@@ -71,8 +69,10 @@ import Compiler.AST.SourceBuilder
         , tupleExpr
         , varExpr
         )
-import Compiler.AST.TypeIds as TypeIds
-import Compiler.Monomorphize.MonoTraverse as MonoTraverse
+import Compiler.Core.TypeIds as TypeIds
+import Compiler.IR.Mono as Mono
+import Compiler.IR.Mono.Traverse as MonoTraverse
+import Compiler.IR.Source as Src
 import Expect exposing (Expectation)
 import Test exposing (Test)
 import TestLogic.Monomorphize.NoCEcoValueInUserFunctions as NoNumberVars

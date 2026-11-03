@@ -1,0 +1,119 @@
+module Compiler.GenerateJs.Functions exposing (functions)
+
+{-| The JavaScript definitions of the helpers through which a compiled Elm
+program creates and calls functions of two to nine arguments.
+
+An Elm function of several arguments is curried: applying it to fewer arguments
+than it takes gives back a function waiting for the rest. The helpers keep that
+behaviour while letting a call that supplies every argument pass them all to
+the underlying JavaScript function at once, rather than one closure at a time.
+Generated code refers to the helpers by name, and `functions` is the JavaScript
+text that defines them.
+
+`F2` to `F9` each take an ordinary JavaScript function of that many parameters
+and return its curried form: a chain of one-argument closures that ends by
+calling the original with all the arguments. Through the helper `F`, the
+outermost closure also carries two properties, `a`, the number of parameters,
+and `f`, the original function.
+
+`A2` to `A9` each apply a function to that many arguments. When the function's
+`a` equals the number of arguments, they call its `f` with all of them at once.
+Otherwise they apply the arguments one at a time, which gives the right result
+for a function with no `a`, for one that takes more arguments than are given,
+and for one that takes fewer and returns another function.
+
+Only the outermost closure carries `a` and `f`. A partial application of a
+wrapped function is a plain closure, so a later call to it applies its
+arguments one at a time. There are no helpers for one argument or for more
+than nine.
+
+@docs functions
+
+-}
+
+
+{-| The JavaScript source text declaring the functions `F`, `F2` to `F9` and
+`A2` to `A9`. It starts and ends with line breaks, so it can be joined directly
+between other statements.
+-}
+functions : String
+functions =
+    """
+
+function F(arity, fun, wrapper) {
+  wrapper.a = arity;
+  wrapper.f = fun;
+  return wrapper;
+}
+
+function F2(fun) {
+  return F(2, fun, function(a) { return function(b) { return fun(a,b); }; })
+}
+function F3(fun) {
+  return F(3, fun, function(a) {
+    return function(b) { return function(c) { return fun(a, b, c); }; };
+  });
+}
+function F4(fun) {
+  return F(4, fun, function(a) { return function(b) { return function(c) {
+    return function(d) { return fun(a, b, c, d); }; }; };
+  });
+}
+function F5(fun) {
+  return F(5, fun, function(a) { return function(b) { return function(c) {
+    return function(d) { return function(e) { return fun(a, b, c, d, e); }; }; }; };
+  });
+}
+function F6(fun) {
+  return F(6, fun, function(a) { return function(b) { return function(c) {
+    return function(d) { return function(e) { return function(f) {
+    return fun(a, b, c, d, e, f); }; }; }; }; };
+  });
+}
+function F7(fun) {
+  return F(7, fun, function(a) { return function(b) { return function(c) {
+    return function(d) { return function(e) { return function(f) {
+    return function(g) { return fun(a, b, c, d, e, f, g); }; }; }; }; }; };
+  });
+}
+function F8(fun) {
+  return F(8, fun, function(a) { return function(b) { return function(c) {
+    return function(d) { return function(e) { return function(f) {
+    return function(g) { return function(h) {
+    return fun(a, b, c, d, e, f, g, h); }; }; }; }; }; }; };
+  });
+}
+function F9(fun) {
+  return F(9, fun, function(a) { return function(b) { return function(c) {
+    return function(d) { return function(e) { return function(f) {
+    return function(g) { return function(h) { return function(i) {
+    return fun(a, b, c, d, e, f, g, h, i); }; }; }; }; }; }; }; };
+  });
+}
+
+function A2(fun, a, b) {
+  return fun.a === 2 ? fun.f(a, b) : fun(a)(b);
+}
+function A3(fun, a, b, c) {
+  return fun.a === 3 ? fun.f(a, b, c) : fun(a)(b)(c);
+}
+function A4(fun, a, b, c, d) {
+  return fun.a === 4 ? fun.f(a, b, c, d) : fun(a)(b)(c)(d);
+}
+function A5(fun, a, b, c, d, e) {
+  return fun.a === 5 ? fun.f(a, b, c, d, e) : fun(a)(b)(c)(d)(e);
+}
+function A6(fun, a, b, c, d, e, f) {
+  return fun.a === 6 ? fun.f(a, b, c, d, e, f) : fun(a)(b)(c)(d)(e)(f);
+}
+function A7(fun, a, b, c, d, e, f, g) {
+  return fun.a === 7 ? fun.f(a, b, c, d, e, f, g) : fun(a)(b)(c)(d)(e)(f)(g);
+}
+function A8(fun, a, b, c, d, e, f, g, h) {
+  return fun.a === 8 ? fun.f(a, b, c, d, e, f, g, h) : fun(a)(b)(c)(d)(e)(f)(g)(h);
+}
+function A9(fun, a, b, c, d, e, f, g, h, i) {
+  return fun.a === 9 ? fun.f(a, b, c, d, e, f, g, h, i) : fun(a)(b)(c)(d)(e)(f)(g)(h)(i);
+}
+
+"""

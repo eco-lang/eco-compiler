@@ -97,18 +97,18 @@ types and type aliases, since no module in the corpus declares any.
 -}
 
 import Bitwise
-import Compiler.AST.Canonical as Can
 import Compiler.AST.CanonicalBuilder as CB
-import Compiler.AST.Source as Src
 import Compiler.AST.SourceBuilder as SB
 import Compiler.Canonicalize.Module as Canonicalize
+import Compiler.Core.Annotation as A
 import Compiler.Elm.Interface.Basic as Basic
-import Compiler.Reporting.Annotation as A
+import Compiler.IR.Canonical as Can
+import Compiler.IR.Source as Src
 import Compiler.Reporting.Result as Result
 import Compiler.Type.Constrain.Erased.Module as ErasedConstrain
 import Compiler.Type.Constrain.Typed.Module as ConstrainTyped
+import Compiler.Type.State.IO as IO
 import Expect
-import System.TypeCheck.IO as IO
 import Test exposing (Test)
 
 

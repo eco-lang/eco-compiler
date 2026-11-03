@@ -50,7 +50,7 @@ index outside the set; and `member` on an index outside the set.
 
 -}
 
-import Compiler.Data.BitSet as BitSet
+import Data.BitSet as BitSet
 import Expect
 import Test exposing (Test)
 

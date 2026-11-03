@@ -114,7 +114,7 @@ Parent: [compiler.md](compiler.md).
 Code:
 
 - `compiler/src/Terminal/Main.elm`, `compiler/src/Terminal/Make.elm`: the command line, flags, output dispatch and the native handoff through `Eco.NativeDriver.lowerAndLink`. `compiler/src/API/Main.elm`: the JSON entry point.
-- `compiler/src/Builder/Elm/Details.elm`: project details, dependency solving, package builds and cache validity (`needsTypedOpt`).
+- `compiler/src/Builder/Deps/Details.elm`: project details, dependency solving, package builds and cache validity (`needsTypedOpt`).
 - `compiler/src/Builder/Build.elm`: crawl (`crawlWithTime`), parallel compile, the reuse checks (`checkDepsHelp`, `handleCachedWithArtifactCheck`), early cutoff (`RSame`, `RNew`), `fromExposed`, `fromPaths`, `OneShot`.
 - `compiler/src/Builder/Generate.elm`: typed artifact loading, the call into `Compiler.Pipeline.Steps`, streaming MLIR output, and the JavaScript drivers.
 - `compiler/src/Builder/Stuff.elm`: `eco-stuff/<version>` paths, the `*WithBuildDir` helpers, `withRootLockBuildDir`, `writeBytesAtomic`, `bundledPackages`. Per-module files `.eci` (interface), `.eco` (untyped), `.ecot` (typed); package files `artifacts.dat` and `typed-artifacts.dat` under `~/.eco/<version>/packages/`.

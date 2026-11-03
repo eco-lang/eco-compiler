@@ -1,47 +1,27 @@
 module Compiler.Parse.Variable exposing
     ( Upper(..)
     , lower, upper, moduleName, foreignUpper, foreignAlpha
-    , isReservedWord
-    , chompInnerChars
-    , getInnerWidth, getInnerWidthHelp, getUpperWidth
     )
 
-{-| This module decides what counts as a name in Elm source, and holds the
-parsers that read one.
+{-| This module holds the parsers that read a name in Elm source. What counts
+as a name, character by character, is decided in `Compiler.Lexer.Identifier`.
 
 An _identifier_ is a first character followed by any number of _inner
 characters_. The first character is a lower-case letter for the name of a
 value, and an upper-case letter for the name of a type, a constructor or one
-part of a module name. An inner character is a letter, an ASCII digit or `_`. A
-_qualified_ name is preceded by its _home_, the name of a module, written as
-upper-case identifiers each followed by a dot, as in `List.map` or
-`Json.Decode.Decoder`. The parsers with `foreign` in their names read a name
-that may be qualified.
+part of a module name. A _qualified_ name is preceded by its _home_, the name
+of a module, written as upper-case identifiers each followed by a dot, as in
+`List.map` or `Json.Decode.Decoder`. The parsers with `foreign` in their names
+read a name that may be qualified.
 
-A lower-case identifier may not be a _reserved word_: `if`, `then`, `else`,
-`case`, `of`, `let`, `in`, `type`, `module`, `where`, `import`, `exposing`, `as`
-or `port`. Only an unqualified name is checked against them.
+A lower-case identifier may not be a reserved word
+(`Compiler.Lexer.Identifier.isReservedWord`). Only an unqualified name is
+checked against them.
 
 Each parser is written directly as a function on the parser state, with
-positions and columns as `Compiler.Parse.Primitives` describes them. Every
+positions and columns as `Compiler.Lexer.Primitives` describes them. Every
 failure is reported with `Eerr`, as having consumed nothing, except a dot in a
 module name that is not followed by an upper-case identifier, which is `Cerr`.
-
-Most of the file is the character tests, which give a character's _width_: how
-many units of the position it takes as part of an identifier, or 0 when it
-cannot be one. An ASCII character is tested directly, and has a width of 1 when
-it is allowed in that place. Any other character is classified by its Unicode
-code point, as upstream Elm does with GHC's `Data.Char`: the first character of
-an upper-case identifier must be an upper-case or title-case letter (categories
-Lu, Lt), of a lower-case identifier a lower-case letter (Ll), and an inner
-character any letter (Lu, Ll, Lt, Lm, Lo). So `Été` and `naïve` are names, a
-CJK letter (Lo) may continue a name but not start one, and a non-ASCII digit is
-not an inner character. The tables are in `Compiler.Parse.Unicode`, since
-elm/core's `Char.isUpper`, `Char.isLower` and `Char.isAlpha` accept only ASCII.
-`Compiler.Parse.Primitives.codePointAt` joins a surrogate pair, so a character
-above U+FFFF has a width of 2 on either host, and a lone surrogate is not an
-identifier character. Nothing at or past the end of the input is read, and
-whatever its width, an identifier character advances the column by one.
 
 
 # Variable Types
@@ -53,24 +33,12 @@ whatever its width, an identifier character advances the column by one.
 
 @docs lower, upper, moduleName, foreignUpper, foreignAlpha
 
-
-# Reserved Words
-
-@docs isReservedWord
-
-
-# Character Utilities
-
-@docs chompInnerChars
-@docs getInnerWidth, getInnerWidthHelp, getUpperWidth
-
 -}
 
-import Compiler.AST.Source as Src
-import Compiler.Data.Name as Name exposing (Name)
-import Compiler.Parse.Primitives as P exposing (Col, Row)
-import Compiler.Parse.Unicode as Unicode
-import Data.Set as EverySet exposing (EverySet)
+import Compiler.Core.Name as Name exposing (Name)
+import Compiler.IR.Source as Src
+import Compiler.Lexer.Identifier as Identifier
+import Compiler.Lexer.Primitives as P exposing (Col, Row)
 
 
 
@@ -87,7 +55,7 @@ upper toError =
         \(P.State st) ->
             let
                 ( newPos, newCol ) =
-                    chompUpper st.src st.pos st.end st.col
+                    Identifier.chompUpper st.src st.pos st.end st.col
             in
             if newPos == st.pos then
                 P.Eerr st.row st.col toError
@@ -115,7 +83,7 @@ lower toError =
         \(P.State st) ->
             let
                 ( newPos, newCol ) =
-                    chompLower st.src st.pos st.end st.col
+                    Identifier.chompLower st.src st.pos st.end st.col
             in
             if newPos == st.pos then
                 P.Eerr st.row st.col toError
@@ -126,7 +94,7 @@ lower toError =
                     name =
                         Name.fromPtr st.src st.pos newPos
                 in
-                if isReservedWord name then
+                if Identifier.isReservedWord name then
                     P.Eerr st.row st.col toError
 
                 else
@@ -136,36 +104,6 @@ lower toError =
                             P.State { st | pos = newPos, col = newCol }
                     in
                     P.Cok name newState
-
-
-{-| Returns whether `name` is one of the reserved words, which `lower` refuses
-as an identifier.
--}
-isReservedWord : Name.Name -> Bool
-isReservedWord name =
-    EverySet.member identity name reservedWords
-
-
-{-| The reserved words: the lower-case identifiers that `lower` refuses.
--}
-reservedWords : EverySet String Name
-reservedWords =
-    EverySet.fromList identity
-        [ "if"
-        , "then"
-        , "else"
-        , "case"
-        , "of"
-        , "let"
-        , "in"
-        , "type"
-        , "module"
-        , "where"
-        , "import"
-        , "exposing"
-        , "as"
-        , "port"
-        ]
 
 
 
@@ -188,7 +126,7 @@ moduleName toError =
         \(P.State st) ->
             let
                 ( pos1, col1 ) =
-                    chompUpper st.src st.pos st.end st.col
+                    Identifier.chompUpper st.src st.pos st.end st.col
             in
             if st.pos == pos1 then
                 P.Eerr st.row st.col toError
@@ -238,7 +176,7 @@ moduleNameHelp src pos end col =
                 pos + 1
 
             ( newPos, newCol ) =
-                chompUpper src pos1 end (col + 1)
+                Identifier.chompUpper src pos1 end (col + 1)
         in
         if pos1 == newPos then
             ( Bad, newPos, newCol )
@@ -322,7 +260,7 @@ foreignUpperHelp : String -> Int -> Int -> Col -> ( Int, Int, Col )
 foreignUpperHelp src pos end col =
     let
         ( newPos, newCol ) =
-            chompUpper src pos end col
+            Identifier.chompUpper src pos end col
     in
     if pos == newPos then
         ( pos, pos, col )
@@ -373,7 +311,7 @@ foreignAlpha toError =
                         P.State { st | pos = alphaEnd, col = newCol }
                 in
                 if alphaStart == st.pos then
-                    if isReservedWord name then
+                    if Identifier.isReservedWord name then
                         P.Eerr st.row st.col toError
 
                     else
@@ -397,7 +335,7 @@ foreignAlphaHelp : String -> Int -> Int -> Col -> ( ( Int, Int ), ( Col, Src.Var
 foreignAlphaHelp src pos end col =
     let
         ( lowerPos, lowerCol ) =
-            chompLower src pos end col
+            Identifier.chompLower src pos end col
     in
     if pos < lowerPos then
         ( ( pos, lowerPos ), ( lowerCol, Src.LowVar ) )
@@ -405,7 +343,7 @@ foreignAlphaHelp src pos end col =
     else
         let
             ( upperPos, upperCol ) =
-                chompUpper src pos end col
+                Identifier.chompUpper src pos end col
         in
         if pos == upperPos then
             ( ( pos, pos ), ( col, Src.CapVar ) )
@@ -427,198 +365,3 @@ foreignAlphaHelp src pos end col =
 isDot : String -> Int -> Int -> Bool
 isDot src pos end =
     pos < end && P.unsafeIndex src pos == '.'
-
-
-
--- ====== UPPER CHARS ======
-
-
-{-| Returns the position and column just after the upper-case identifier that
-starts at `pos`, or `pos` and `col` themselves when none starts there.
--}
-chompUpper : String -> Int -> Int -> Col -> ( Int, Col )
-chompUpper src pos end col =
-    let
-        width : Int
-        width =
-            getUpperWidth src pos end
-    in
-    if width == 0 then
-        ( pos, col )
-
-    else
-        chompInnerChars src (pos + width) end (col + 1)
-
-
-{-| Returns the width of the first character of an upper-case identifier at
-`pos`: 1 for `A` to `Z` or another upper-case or title-case letter in the Basic
-Multilingual Plane, 2 for one above U+FFFF, and 0 when there is none, including
-at or past `end`.
--}
-getUpperWidth : String -> Int -> Int -> Int
-getUpperWidth src pos end =
-    if pos < end then
-        getUpperWidthHelp src pos end (P.unsafeIndex src pos)
-
-    else
-        0
-
-
-{-| Returns the width `getUpperWidth` gives, where `pos < end` and `word` is the
-character at `pos` in `src`.
--}
-getUpperWidthHelp : String -> Int -> Int -> Char -> Int
-getUpperWidthHelp src pos end word =
-    let
-        code : Int
-        code =
-            Char.toCode word
-    in
-    if code >= 0x41 {- A -} && code <= 0x5A {- Z -} then
-        1
-
-    else if code < 0x80 then
-        0
-
-    else
-        nonAsciiWidth Unicode.isUpper src pos end code
-
-
-
--- ====== LOWER CHARS ======
-
-
-{-| Returns the position and column just after the lower-case identifier that
-starts at `pos`, or `pos` and `col` themselves when none starts there. It does
-not check for reserved words.
--}
-chompLower : String -> Int -> Int -> Col -> ( Int, Col )
-chompLower src pos end col =
-    let
-        width : Int
-        width =
-            getLowerWidth src pos end
-    in
-    if width == 0 then
-        ( pos, col )
-
-    else
-        chompInnerChars src (pos + width) end (col + 1)
-
-
-{-| Returns the width of the first character of a lower-case identifier at
-`pos`: 1 for `a` to `z` or another lower-case letter in the Basic Multilingual
-Plane, 2 for one above U+FFFF, and 0 when there is none, including at or past
-`end`.
--}
-getLowerWidth : String -> Int -> Int -> Int
-getLowerWidth src pos end =
-    if pos < end then
-        getLowerWidthHelp src pos end (P.unsafeIndex src pos)
-
-    else
-        0
-
-
-{-| Returns the width `getLowerWidth` gives, where `pos < end` and `word` is the
-character at `pos` in `src`.
--}
-getLowerWidthHelp : String -> Int -> Int -> Char -> Int
-getLowerWidthHelp src pos end word =
-    let
-        code : Int
-        code =
-            Char.toCode word
-    in
-    if code >= 0x61 {- a -} && code <= 0x7A {- z -} then
-        1
-
-    else if code < 0x80 then
-        0
-
-    else
-        nonAsciiWidth Unicode.isLower src pos end code
-
-
-
--- ====== INNER CHARS ======
-
-
-{-| Returns the position and column just after the run of inner characters that
-starts at `pos`, which is `pos` and `col` themselves when the run is empty.
--}
-chompInnerChars : String -> Int -> Int -> Col -> ( Int, Col )
-chompInnerChars src pos end col =
-    let
-        width : Int
-        width =
-            getInnerWidth src pos end
-    in
-    if width == 0 then
-        ( pos, col )
-
-    else
-        chompInnerChars src (pos + width) end (col + 1)
-
-
-{-| Returns the width of the inner character at `pos`: 1 for an ASCII letter, an
-ASCII digit, `_` or another letter in the Basic Multilingual Plane, 2 for a
-letter above U+FFFF, and 0 when there is none, including at or past `end`.
--}
-getInnerWidth : String -> Int -> Int -> Int
-getInnerWidth src pos end =
-    if pos < end then
-        getInnerWidthHelp src pos end (P.unsafeIndex src pos)
-
-    else
-        0
-
-
-{-| Returns the width `getInnerWidth` gives, where `pos < end` and `word` must
-be the character at `pos` in `src`. Nothing at or past `end` is read.
--}
-getInnerWidthHelp : String -> Int -> Int -> Char -> Int
-getInnerWidthHelp src pos end word =
-    let
-        code : Int
-        code =
-            Char.toCode word
-    in
-    if code >= 0x61 {- a -} && code <= 0x7A {- z -} then
-        1
-
-    else if code >= 0x41 {- A -} && code <= 0x5A {- Z -} then
-        1
-
-    else if code >= 0x30 {- 0 -} && code <= 0x39 {- 9 -} then
-        1
-
-    else if code == 0x5F {- _ -} then
-        1
-
-    else if code < 0x80 then
-        0
-
-    else
-        nonAsciiWidth Unicode.isAlpha src pos end code
-
-
-
--- ====== NON-ASCII CHARACTERS ======
-
-
-{-| Returns the width of the non-ASCII character at `pos`, whose `Char` as
-`P.unsafeIndex` returned it has code `code`, when `isClass` accepts its code
-point, and 0 when it does not.
--}
-nonAsciiWidth : (Int -> Bool) -> String -> Int -> Int -> Int -> Int
-nonAsciiWidth isClass src pos end code =
-    let
-        ( cp, width ) =
-            P.codePointAt src pos end code
-    in
-    if isClass cp then
-        width
-
-    else
-        0

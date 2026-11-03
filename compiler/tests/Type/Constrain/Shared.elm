@@ -35,19 +35,19 @@ Most of this module is the expression-id walk over the canonical AST.
 -}
 
 import Array
-import Compiler.AST.Canonical as Can
-import Compiler.AST.TypeVars as Vars
-import Compiler.Data.Name as Name exposing (Name)
-import Compiler.Data.NonEmptyList as NE
-import Compiler.Reporting.Annotation as A
+import Compiler.Core.Annotation as A
+import Compiler.Core.Name as Name exposing (Name)
+import Compiler.IR.Canonical as Can
+import Compiler.IR.Typed.TypeVars as Vars
 import Compiler.Type.Constrain.Erased.Module as ConstrainErased
 import Compiler.Type.Constrain.Typed.Module as ConstrainTyped
 import Compiler.Type.Solve as Solve
+import Compiler.Type.State.IO as IO
 import Data.Map
+import Data.NonEmptyList as NE
 import Dict exposing (Dict)
 import Expect
 import Set exposing (Set)
-import System.TypeCheck.IO as IO
 
 
 

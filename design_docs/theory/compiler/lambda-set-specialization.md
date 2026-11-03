@@ -29,7 +29,7 @@ type LambdaSet
     | LsFrom (List Int) (List Variable)
 ```
 
-From `compiler/src/Compiler/AST/TypeVars.elm`. Notice that members are bare integers, so a member is an identity and nothing more. The integer on ⊤ only records where the widening came from. The sources in the third form are other store slots, and they are followed only when the slot is read back, so the order in which edges arrive does not matter. The edges exist because some flows go one way: a value passed into a slot adds to that slot's set without making the two sets equal, which a unification would do.
+From `compiler/src/Compiler/IR/Typed/TypeVars.elm`. Notice that members are bare integers, so a member is an identity and nothing more. The integer on ⊤ only records where the widening came from. The sources in the third form are other store slots, and they are followed only when the slot is read back, so the order in which edges arrive does not matter. The edges exist because some flows go one way: a value passed into a slot adds to that slot's set without making the two sets equal, which a unification would do.
 
 The unifier module is shared with the type checker and has the arms for these forms. Unifying two arrows that carry slots unifies the slots, and an arrow without a slot counts as one whose slot is unconstrained. Unifying two set values is a total join: the sorted union, with ⊤ absorbing everything. The type checker never creates an arrow with a slot, so only monomorphization's store reaches these arms and type checking is unchanged. Set unification never fails, and that is what lets every connection monomorphization makes join sets as well as types. Most of those connections are best effort and roll back on a type mismatch, so a set mismatch that could also fail would need a recovery path of its own.
 
@@ -86,7 +86,7 @@ Eco, for each demanded item (G, T) popped by mono's drain:
 after the drain: dirty join rounds, then the five settle passes
 ```
 
-The paper half summarizes sections 4 to 6 of the paper. The Eco half follows `compiler/src/Compiler/MonoSolver/Translate.elm` and the drain in `compiler/src/Compiler/MonoSolver/Monomorphize.elm`. In the code's terms, to zonk a slot is to read it back as an annotation, and the settle passes, described under reading a slot back, write the sets that only the finished program shows. Notice that the signature lookup is the bottom-up half and the annotated demand is the top-down half, and that nothing passes a set parameter from caller to callee.
+The paper half summarizes sections 4 to 6 of the paper. The Eco half follows `compiler/src/Compiler/Monomorphize/Solver/Translate.elm` and the drain in `compiler/src/Compiler/Monomorphize/Solver/Monomorphize.elm`. In the code's terms, to zonk a slot is to read it back as an annotation, and the settle passes, described under reading a slot back, write the sets that only the finished program shows. Notice that the signature lookup is the bottom-up half and the annotated demand is the top-down half, and that nothing passes a set parameter from caller to callee.
 
 Where the paper's caller supplies a set argument to fill a callee's parameter, an Eco caller reads the callee's type back with the sets its arguments carry and files that type as a demand. When that demand is translated, its annotations are written into the callee's fresh store before the body is walked, so the callee's body is solved with the caller's concrete sets already present. A different set gives a different key, and so a different specialization, which is the paper's "one copy per set argument". Because demands start at `main`, specialization still runs top-down from the entry point.
 
@@ -116,7 +116,7 @@ signatureFor g:
     memoize every member's signature; remove members from lssInProgress
 ```
 
-Checked against `compiler/src/Compiler/MonoSolver/LssInfer.elm`. Notice three things. Nothing reads the item being translated, its demand or its specialization number, so a signature depends only on its unit's definitions. Callees are resolved before the scratch store opens, so scratch stores never nest, and within the part of the program that demands reach, signatures are built callees first, in the paper's dependency order. And the members of a recursive group load into one shared store, so a reference to the group hits the group's own slots. That is the paper's provisional self-type rule: it rules out recursion that changes a set from one call to the next, and it is what makes signature inference terminate.
+Checked against `compiler/src/Compiler/Monomorphize/Solver/LssInfer.elm`. Notice three things. Nothing reads the item being translated, its demand or its specialization number, so a signature depends only on its unit's definitions. Callees are resolved before the scratch store opens, so scratch stores never nest, and within the part of the program that demands reach, signatures are built callees first, in the paper's dependency order. And the members of a recursive group load into one shared store, so a reference to the group hits the group's own slots. That is the paper's provisional self-type rule: it rules out recursion that changes a set from one call to the next, and it is what makes signature inference terminate.
 
 The walk over a body adds only set facts: members where function values are created, callee signatures at calls, kernel boundaries, and joins at lets. Each sub-walk also reports whether it saw everything that can flow out of it. Where a branch joins a value the walk could not see in full, the joining slot becomes ⊤ instead of keeping a set that looks complete and is not.
 
@@ -206,15 +206,15 @@ Parent: [compiler.md](compiler.md). Runs inside: [monomorphization.md](monomorph
 
 Code:
 
-- `compiler/src/Compiler/MonoSolver/LssInfer.elm`: `signatureFor`, `inferUnit`, `resolveUnit`, `preResolveCallees`, `inferUnitInScratch`, `walkExpr` and its honesty classes (`WpHonest`, `WpOpaque`, `WpSelf`, `WpNone`), `applyFacts`, `kernelCallBoundary`, member injection.
-- `compiler/src/Compiler/MonoSolver/KernelSetFacts.elm`: the license table (`TypeFaithful` with scopes `Inert`, `Transports`, `TransportsAs`; `Positional`; `factFor`, `licenseApplies`). `compiler/src/Compiler/MonoSolver/kernel-license-manifest.txt` and `test/scripts/check-kernel-license-manifest.sh`, run by the `kernel-license-check` target in `ALL` (root `CMakeLists.txt`).
-- `compiler/src/Compiler/MonoSolver/Store.elm`: `loadTypeC` (set slots, the per-arrow memo `arrowMemo`), `zonkSetSlot`, `resolveSlotMembers`.
-- `compiler/src/Compiler/MonoSolver/Engine.elm`: `ArrowFact`, `LssSignature`, member interning, `withScratchStore`, `enqueueSpecKeyed`. `LssSignature.residual` is computed and read nowhere; it is what remains of the inclusion-constraint path.
-- `compiler/src/Compiler/MonoSolver/Translate.elm`: `translateGlobalCallSlow`, `instantiateLss`, `instantiateWithSignature`, `demandUnifyRoot`, `devirtDirectTarget`, `poisonKernelArrowsThen`, `specializeCycle`.
-- `compiler/src/Compiler/MonoSolver/Monomorphize.elm`: `drain`, the dirty rounds (`maxJoinRounds`) and the settle passes (`settleVarCtorRows`, `settleCtorRows`, `settleVarSuccessors`, `settleVarLambda`).
-- `compiler/src/Compiler/Type/Unify.elm` (the `FunL` and `LambdaSet1` arms) and `compiler/src/Compiler/AST/TypeVars.elm` (`FlatType`, `LambdaSet`).
-- `compiler/src/Compiler/AST/Monomorphized.elm`: `LambdaSetAnno` (`LTop`, `LVar`, `LSet`, `LPartial`) and `unionAnno`.
-- `compiler/src/Compiler/Eco/Config.elm`: `LssConfig` (`enabled`, `maxSetSize`, `maxSpecsPerGlobal`, `stamp.maxInstances`, and the report switches `report`, `qCensus`, `arrowCensus`, `stamp.census`); `ECO_MONO_LSS*` environment overrides.
+- `compiler/src/Compiler/Monomorphize/Solver/LssInfer.elm`: `signatureFor`, `inferUnit`, `resolveUnit`, `preResolveCallees`, `inferUnitInScratch`, `walkExpr` and its honesty classes (`WpHonest`, `WpOpaque`, `WpSelf`, `WpNone`), `applyFacts`, `kernelCallBoundary`, member injection.
+- `compiler/src/Compiler/Monomorphize/Solver/KernelSetFacts.elm`: the license table (`TypeFaithful` with scopes `Inert`, `Transports`, `TransportsAs`; `Positional`; `factFor`, `licenseApplies`). `compiler/src/Compiler/MonoSolver/kernel-license-manifest.txt` and `test/scripts/check-kernel-license-manifest.sh`, run by the `kernel-license-check` target in `ALL` (root `CMakeLists.txt`).
+- `compiler/src/Compiler/Monomorphize/Solver/Store.elm`: `loadTypeC` (set slots, the per-arrow memo `arrowMemo`), `zonkSetSlot`, `resolveSlotMembers`.
+- `compiler/src/Compiler/Monomorphize/Solver/Engine.elm`: `ArrowFact`, `LssSignature`, member interning, `withScratchStore`, `enqueueSpecKeyed`. `LssSignature.residual` is computed and read nowhere; it is what remains of the inclusion-constraint path.
+- `compiler/src/Compiler/Monomorphize/Solver/Translate.elm`: `translateGlobalCallSlow`, `instantiateLss`, `instantiateWithSignature`, `demandUnifyRoot`, `devirtDirectTarget`, `poisonKernelArrowsThen`, `specializeCycle`.
+- `compiler/src/Compiler/Monomorphize/Solver/Monomorphize.elm`: `drain`, the dirty rounds (`maxJoinRounds`) and the settle passes (`settleVarCtorRows`, `settleCtorRows`, `settleVarSuccessors`, `settleVarLambda`).
+- `compiler/src/Compiler/Type/Unify.elm` (the `FunL` and `LambdaSet1` arms) and `compiler/src/Compiler/IR/Typed/TypeVars.elm` (`FlatType`, `LambdaSet`).
+- `compiler/src/Compiler/IR/Mono.elm`: `LambdaSetAnno` (`LTop`, `LVar`, `LSet`, `LPartial`) and `unionAnno`.
+- `compiler/src/Compiler/Config.elm`: `LssConfig` (`enabled`, `maxSetSize`, `maxSpecsPerGlobal`, `stamp.maxInstances`, and the report switches `report`, `qCensus`, `arrowCensus`, `stamp.census`); `ECO_MONO_LSS*` environment overrides.
 
 Documents:
 

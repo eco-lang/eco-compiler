@@ -1288,7 +1288,7 @@ endif()
 # ============================================================================
 # LSS_022 kernel parametricity license -- rot guard
 #
-# A `TypeFaithful` row in Compiler/MonoSolver/KernelSetFacts.elm asserts a
+# A `TypeFaithful` row in Compiler/Monomorphize/Solver/KernelSetFacts.elm asserts a
 # property of a C++ BODY, and on the strength of it the monomorphizer stops
 # poisoning that kernel's arrow positions. Edit the body, and the assertion
 # can become false with nothing failing -- the symptom is a wrong fast-dispatch
@@ -1310,13 +1310,13 @@ endif()
 # the check is what catches that case.
 # ============================================================================
 set(KERNEL_LICENSE_MANIFEST
-        "${CMAKE_SOURCE_DIR}/compiler/src/Compiler/MonoSolver/kernel-license-files.csv")
+        "${CMAKE_SOURCE_DIR}/compiler/src/Compiler/Monomorphize/Solver/kernel-license-files.csv")
 set(KERNEL_LICENSE_CHECKER
         "${CMAKE_SOURCE_DIR}/test/scripts/check-kernel-license-manifest.sh")
 set(KERNEL_LICENSE_DEPS
         "${KERNEL_LICENSE_CHECKER}"
-        "${CMAKE_SOURCE_DIR}/compiler/src/Compiler/MonoSolver/KernelSetFacts.elm"
-        "${CMAKE_SOURCE_DIR}/compiler/src/Compiler/MonoSolver/kernel-license-audit.csv"
+        "${CMAKE_SOURCE_DIR}/compiler/src/Compiler/Monomorphize/Solver/KernelSetFacts.elm"
+        "${CMAKE_SOURCE_DIR}/compiler/src/Compiler/Monomorphize/Solver/kernel-license-audit.csv"
         # The intrinsic ANNOTATION table is the same species of claim about C++
         # (plans/kernel-intrinsic-annotations.md) and the checker harvests it
         # alongside the license table, so it is an input here too.
@@ -1493,8 +1493,12 @@ add_custom_target(check
     COMMAND python3 ${CMAKE_SOURCE_DIR}/test/scripts/check-root-bounded.py ${CMAKE_SOURCE_DIR}
     # Large bodies only through the accessors, never resolved (plans/large-object-space.md D4).
     COMMAND sh ${CMAKE_SOURCE_DIR}/test/scripts/check-large-body-access.sh ${CMAKE_SOURCE_DIR}
-    # Reserved ctor tags in Compiler.Data.CtorTag must equal the runtime's (SD-18).
+    # Reserved ctor tags in Compiler.IR.Runtime.CtorTag must equal the runtime's (SD-18).
     COMMAND sh ${CMAKE_SOURCE_DIR}/test/scripts/check-ctor-tags.sh ${CMAKE_SOURCE_DIR}
+    # No two sibling folders of the compiler source depend on each other, under either reading
+    # (plans/compiler-source-tree-reorganization.md, rule 4).
+    COMMAND python3 ${CMAKE_SOURCE_DIR}/compiler/scripts/check-folder-cycles.py ${CMAKE_SOURCE_DIR}/compiler/src
+    COMMAND python3 ${CMAKE_SOURCE_DIR}/compiler/scripts/check-folder-cycles.py ${CMAKE_SOURCE_DIR}/compiler/src --merge
     COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR}
     COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR} --target test
     COMMAND sh -c "${CMAKE_BINARY_DIR}/test/test $\${TEST_FILTER:+--filter \"$$TEST_FILTER\"}"
@@ -1571,8 +1575,12 @@ add_custom_target(full
     # Large bodies only through the accessors, never resolved (plans/large-object-space.md D4).
     COMMAND sh ${CMAKE_SOURCE_DIR}/test/scripts/check-large-body-access.sh ${CMAKE_SOURCE_DIR}
     COMMAND sh ${CMAKE_SOURCE_DIR}/test/scripts/check-kernel-homes.sh ${CMAKE_SOURCE_DIR}
-    # Reserved ctor tags in Compiler.Data.CtorTag must equal the runtime's (SD-18).
+    # Reserved ctor tags in Compiler.IR.Runtime.CtorTag must equal the runtime's (SD-18).
     COMMAND sh ${CMAKE_SOURCE_DIR}/test/scripts/check-ctor-tags.sh ${CMAKE_SOURCE_DIR}
+    # No two sibling folders of the compiler source depend on each other, under either reading
+    # (plans/compiler-source-tree-reorganization.md, rule 4).
+    COMMAND python3 ${CMAKE_SOURCE_DIR}/compiler/scripts/check-folder-cycles.py ${CMAKE_SOURCE_DIR}/compiler/src
+    COMMAND python3 ${CMAKE_SOURCE_DIR}/compiler/scripts/check-folder-cycles.py ${CMAKE_SOURCE_DIR}/compiler/src --merge
     ${_full_casemap_check}
     COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR} --target clean
     COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR}

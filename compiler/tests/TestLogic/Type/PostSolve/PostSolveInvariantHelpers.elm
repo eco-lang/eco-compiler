@@ -30,10 +30,10 @@ type variables in scope at a node from the annotations around it, and
 -}
 
 import Array exposing (Array)
-import Compiler.AST.Canonical as Can
-import Compiler.Data.Name as Name exposing (Name)
+import Compiler.Core.Annotation as A
+import Compiler.Core.Name as Name exposing (Name)
 import Compiler.Elm.ModuleName as ModuleName
-import Compiler.Reporting.Annotation as A
+import Compiler.IR.Canonical as Can
 import Data.Map
 import Data.Set as EverySet exposing (EverySet)
 import Dict

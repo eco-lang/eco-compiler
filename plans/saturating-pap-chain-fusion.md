@@ -42,8 +42,8 @@ lssDecoder =
 ```
 
 `D.pure LssConfig : Decoder x (Bool -> Bool -> List String -> … -> LssConfig)` — the payload is
-a curried PAP of a 30-field record constructor, threaded stage by stage. `Compiler/Eco/Config.elm`
-has **114 `D.apply` sites**; `Compiler/Elm/Docs.elm` and `Builder/Elm/Outline.elm` have 14 each.
+a curried PAP of a 30-field record constructor, threaded stage by stage. `Compiler/Config.elm`
+has **114 `D.apply` sites**; `Compiler/Docs.elm` and `Builder/Elm/Outline.elm` have 14 each.
 
 `Compiler/Json/Decode.elm`:
 
@@ -372,7 +372,7 @@ through constructors") turns out to be the whole problem rather than a caveat.
 ### 8.6 Host inventory, and a correction to §1.3
 
 Callers of `Decode.apply` specs, by stage count: `Eco.Config` **114**, `Builder.Elm.Outline` 14
-(`appDecoder` 6, `pkgDecoder` 8), `Compiler.Elm.Docs` 16. So 114 of ~144 stages (79 %) are the
+(`appDecoder` 6, `pkgDecoder` 8), `Compiler.Docs` 16. So 114 of ~144 stages (79 %) are the
 config decoder.
 
 **Correction to §1.3:** "the staircase executes zero times" is right for the `Eco.Config` chains

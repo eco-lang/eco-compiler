@@ -3,7 +3,7 @@ module Compiler.AST.StringTableTest exposing (suite)
 {-| Tests that a string table, written out as a preamble and read back, decodes
 string references to the strings they were encoded from.
 
-A string table, from `Compiler.AST.StringTable`, lists every distinct string
+A string table, from `Compiler.Core.StringTable`, lists every distinct string
 once, and the encoded body refers to a string by its index in that list. Each
 index is written in a fixed number of bytes, the table's width, which `build`
 chooses from the number of strings. If `tableDecoder` and `tableEncoder`
@@ -43,7 +43,7 @@ import Array
 import Bytes
 import Bytes.Decode as BD
 import Bytes.Encode as BE
-import Compiler.AST.StringTable as StringTable
+import Compiler.Core.StringTable as StringTable
 import Expect
 import Set
 import Test exposing (Test)

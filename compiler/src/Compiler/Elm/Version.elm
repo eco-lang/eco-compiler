@@ -76,7 +76,7 @@ import Bytes.Decode
 import Bytes.Encode
 import Compiler.Json.Decode as D
 import Compiler.Json.Encode as E
-import Compiler.Parse.Primitives as P exposing (Col, Row)
+import Compiler.Lexer.Primitives as P exposing (Col, Row)
 import Utils.Bytes.Decode as BD
 import Utils.Bytes.Encode as BE
 

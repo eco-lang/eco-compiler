@@ -134,7 +134,7 @@ import Common.Format.RWS as RWS exposing (RWS)
 import Dict
 import List.Extra as List
 import Set exposing (Set)
-import Utils.Crash exposing (crash)
+import System.Crash exposing (crash)
 
 
 

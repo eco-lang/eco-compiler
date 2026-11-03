@@ -46,7 +46,6 @@ under `suite`, the bootstrap Stage 5 (substitution engine) pipeline, since
 
 -}
 
-import Compiler.AST.Source as Src
 import Compiler.AST.SourceBuilder
     exposing
         ( AliasDef
@@ -70,6 +69,7 @@ import Compiler.AST.SourceBuilder
         , varExpr
         )
 import Compiler.BulkCheck exposing (TestCase, bulkCheck)
+import Compiler.IR.Source as Src
 import Expect exposing (Expectation)
 import Test exposing (Test)
 import TestLogic.TestPipeline exposing (expectMonomorphization)
@@ -370,7 +370,7 @@ field, takes it out again, and matches it against `True` and `False`:
 
 The program passes the `Bool` through a constructor field and a function
 argument and result, places where the MLIR back end represents a `Bool` boxed
-rather than as an `i1`, as `Compiler.Generate.MLIR.Types` describes. Whether
+rather than as an `i1`, as `Compiler.GenerateMlir.Types` describes. Whether
 that representation is checked depends on `expectFn`.
 
 -}

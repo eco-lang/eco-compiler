@@ -38,9 +38,9 @@ tell apart from a real mismatch.
 -}
 
 import Array
-import Compiler.AST.Monomorphized as Mono
-import Compiler.Data.Name exposing (Name)
-import Compiler.Monomorphize.MonoTraverse as Traverse
+import Compiler.Core.Name exposing (Name)
+import Compiler.IR.Mono as Mono
+import Compiler.IR.Mono.Traverse as Traverse
 import Dict
 
 

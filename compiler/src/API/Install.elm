@@ -7,7 +7,7 @@ The work has two steps. First a _plan_ is made from the project's `elm.json`:
 the outline as it should be after the install, or the finding that the package
 is already a direct dependency. Then the plan is applied: the new outline is
 written and the dependencies are verified and built with
-`Builder.Elm.Details.verifyInstall`; if that fails, the old outline is written
+`Builder.Deps.Details.verifyInstall`; if that fails, the old outline is written
 back.
 
 A package that the outline already names somewhere else is _promoted_: moved
@@ -26,9 +26,9 @@ of plain text is printed to standard output.
 -}
 
 import Builder.BackgroundWriter as BW
+import Builder.Deps.Details as Details
 import Builder.Deps.Registry as Registry
 import Builder.Deps.Solver as Solver
-import Builder.Elm.Details as Details
 import Builder.Elm.Outline as Outline
 import Builder.Reporting as Reporting
 import Builder.Reporting.Exit as Exit

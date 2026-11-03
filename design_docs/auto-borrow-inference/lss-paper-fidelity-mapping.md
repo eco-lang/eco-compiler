@@ -552,8 +552,8 @@ is PARKED rather than pending:
    the upper-bound sibling measures are 0 on both arms, over a real multi-use
    population (371 sf-on / 2,018 sf-off bindings used more than once, tails to 12
    uses). At the HOF/continuation specs that carry the mass (`List.foldrHelper`,
-   `Bytes.Decode.andThen`, `Compiler.Parse.Primitives.andThen`,
-   `System.TypeCheck.IO.andThen`) the `letEnv` entry is a `bindParamsFromSpine`
+   `Bytes.Decode.andThen`, `Compiler.Lexer.Primitives.andThen`,
+   `Compiler.Type.State.IO.andThen`) the `letEnv` entry is a `bindParamsFromSpine`
    PARAM whose slot is an unconstrained variable — their ⊤ is **GAP-2's empty
    signature channel**, which per-use separation cannot reach. (b)
    `localMultiBypass` re-measures 455 (frozen 469) and stays E4a's.

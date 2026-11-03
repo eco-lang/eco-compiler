@@ -88,9 +88,9 @@ import Compiler.Elm.Package as Pkg
 import Compiler.Elm.Version as V
 import Compiler.Json.Decode as D
 import Dict exposing (Dict)
+import System.Crash exposing (crash)
 import System.IO as IO
 import Task exposing (Task)
-import Utils.Crash exposing (crash)
 import Utils.Main as Utils
 
 

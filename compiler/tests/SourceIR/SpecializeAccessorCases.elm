@@ -7,7 +7,7 @@ An accessor `.field` has the type `{ r | field : a } -> a`: it works on any
 record that has `field`, and the extension variable `r` stands for whatever
 other fields the record has. To specialise an accessor, monomorphization needs
 the full record type it is applied to, so at each use that type has to be
-found. In the substitution engine (`Compiler.Monomorphize.Specialize`) an
+found. In the substitution engine (`Compiler.Monomorphize.Subst.Specialize`) an
 accessor passed as a call argument takes its record type from the parameter it
 is passed for. A standalone accessor, such as one in a tuple or a `case` branch,
 is specialised from its own type, or, when that type is not yet a closed record
@@ -54,7 +54,6 @@ look at how any accessor was specialised, and it evaluates no program's result.
 
 -}
 
-import Compiler.AST.Source as Src
 import Compiler.AST.SourceBuilder
     exposing
         ( AliasDef
@@ -88,6 +87,7 @@ import Compiler.AST.SourceBuilder
         , varExpr
         )
 import Compiler.BulkCheck exposing (TestCase, bulkCheck)
+import Compiler.IR.Source as Src
 import Expect exposing (Expectation)
 import Test exposing (Test)
 import TestLogic.TestPipeline exposing (expectMonomorphization)

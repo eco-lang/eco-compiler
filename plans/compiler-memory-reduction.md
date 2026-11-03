@@ -258,7 +258,7 @@ grows proportionally to program size.
 
 ### P2-4: Fix `NonEmptyList.cons` naming and latent ordering bug
 
-**Problem:** `NonEmptyList.cons` (`compiler/src/Compiler/Data/NonEmptyList.elm:54-55`) is
+**Problem:** `NonEmptyList.cons` (`compiler/src/Data/NonEmptyList.elm:54-55`) is
 **misnamed**. Despite the name `cons`, it appends to the end (snoc):
 ```elm
 cons a (Nonempty b bs) =

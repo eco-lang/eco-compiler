@@ -35,7 +35,7 @@ The fixture, written as Elm source:
         applyPartial (\a b -> a * 100 + b * 10 + step) 2 3
 
 `applyPartial` calls itself, and the post-monomorphization inliner
-(`Compiler.GlobalOpt.MonoInlineSimplify`) does not inline a recursive
+(`Compiler.MonoOpt.InlineSimplify`) does not inline a recursive
 specialization. Nor does it copy `applyPartial`'s body into the caller
 (loopification), because the only call of `f` in that body is the partial
 application `f 10`. So `f` stays a parameter that receives the lambda. The
@@ -58,7 +58,7 @@ The three steps are rules of `Compiler.MonoSolver`:
     definition are copied onto the uses. This gives the callee `g` in `g acc`
     and `g 1` its singleton head.
 
-The stamp is set by `Compiler.GlobalOpt.AbiCloning`, which can stamp a call
+The stamp is set by `Compiler.MonoOpt.AbiCloning`, which can stamp a call
 whose callee it identifies as a partial application holding `k` arguments
 with `fastPapPrefix = Just k` in its `Mono.CallInfo`, whose docstring owns the
 field's meaning. For `g acc` and `g 1`, `k` is 1.
@@ -85,8 +85,6 @@ generated for the call; and the value `testValue` computes.
 -}
 
 import Array
-import Compiler.AST.Monomorphized as Mono
-import Compiler.AST.Source as Src
 import Compiler.AST.SourceBuilder
     exposing
         ( TypedDef
@@ -103,7 +101,9 @@ import Compiler.AST.SourceBuilder
         , tType
         , varExpr
         )
-import Compiler.Monomorphize.MonoTraverse as MonoTraverse
+import Compiler.IR.Mono as Mono
+import Compiler.IR.Mono.Traverse as MonoTraverse
+import Compiler.IR.Source as Src
 import Expect
 import Test exposing (Test)
 import TestLogic.TestPipeline as Pipeline

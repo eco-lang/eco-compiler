@@ -1204,7 +1204,7 @@ Revisit trigger: dynamic per-site heat evidence or the tier-2 work
 changing the economics.
 
 > **SUPERSEDED same day (2026-08-04, later user decision): ALL SIX
-> flags are DEFAULT-ON** (`Compiler/Eco/Config.elm default`), including
+> flags are DEFAULT-ON** (`Compiler/Config.elm default`), including
 > `srtf` with its measured ~+4% self-compile wall regression and
 > `sretf` (measured neutral) — explicitly accepted. Each flag's env var
 > `=0` disables individually; explicitly-disabled configs hash exactly

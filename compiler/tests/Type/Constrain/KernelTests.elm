@@ -56,7 +56,6 @@ as the whole body of an annotated definition.
 
 -}
 
-import Compiler.AST.Canonical as Can
 import Compiler.AST.CanonicalBuilder
     exposing
         ( callExpr
@@ -78,6 +77,7 @@ import Compiler.AST.CanonicalBuilder
         , varLocalExpr
         , varType
         )
+import Compiler.IR.Canonical as Can
 import Fuzz
 import Test exposing (Test)
 import Type.Constrain.Shared exposing (expectEquivalentTypeChecking)

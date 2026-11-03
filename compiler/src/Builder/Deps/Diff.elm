@@ -8,7 +8,7 @@ module Builder.Deps.Diff exposing
 module works that out by comparing the API of two versions.
 
 The API of a version is its documentation, the `docs.json` describing every
-exposed module, type, value and operator (`Compiler.Elm.Docs`). `getDocs` fetches
+exposed module, type, value and operator (`Compiler.Docs`). `getDocs` fetches
 it for one version. `diff` compares two of them, and `toMagnitude` reduces the
 comparison to a _magnitude_, the class of change in `Compiler.Elm.Magnitude`:
 MAJOR when something was removed or changed, MINOR when something was only added,
@@ -54,9 +54,9 @@ import Builder.File as File
 import Builder.Http as Http
 import Builder.Reporting.Exit as Exit exposing (DocsProblem(..))
 import Builder.Stuff as Stuff
-import Compiler.Data.Name as Name
-import Compiler.Elm.Compiler.Type as Type
-import Compiler.Elm.Docs as Docs
+import Compiler.Core.Name as Name
+import Compiler.Docs as Docs
+import Compiler.Docs.Type as Type
 import Compiler.Elm.Magnitude as M
 import Compiler.Elm.ModuleName as ModuleName
 import Compiler.Elm.Package as Pkg
@@ -445,7 +445,7 @@ compatibleVars ( old, new ) =
 
 
 {-| The kind of constraint a type variable's name puts on it, as
-`Compiler.Data.Name` reads it from the name's prefix. `Var` is an unconstrained
+`Compiler.Core.Name` reads it from the name's prefix. `Var` is an unconstrained
 variable.
 -}
 type TypeVarCategory

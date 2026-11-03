@@ -1,20 +1,20 @@
 module Compiler.AST.DecisionTree.TestKeyTest exposing (suite)
 
-{-| Tests for `Compiler.AST.DecisionTree.Test.testToComparable` on `Char` and
+{-| Tests for `Compiler.IR.DecisionTree.Test.testToComparable` on `Char` and
 `String` literal tests, which are keyed by the value the literal denotes, not
 by its escaped text. Keyed by text, `'a'` and `'\u{0061}'` became two tests and
 the generated `eco.case` carried the tag 97 twice
 (test/elm/src/CaseCharEscapedDuplicateTest.elm).
 -}
 
-import Compiler.AST.DecisionTree.Test as DT
+import Compiler.IR.DecisionTree.Test as DT
 import Expect
 import Test exposing (Test)
 
 
 suite : Test
 suite =
-    Test.describe "Compiler.AST.DecisionTree.Test.testToComparable"
+    Test.describe "Compiler.IR.DecisionTree.Test.testToComparable"
         [ Test.test "'a' and '\\u0061' share a key" <|
             \_ ->
                 DT.testToComparable (DT.IsChr "\\u0061")

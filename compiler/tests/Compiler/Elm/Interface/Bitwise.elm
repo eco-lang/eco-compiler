@@ -9,11 +9,11 @@ declares no types, aliases or operators.
 
 -}
 
-import Compiler.AST.Canonical as Can
-import Compiler.Data.Name exposing (Name)
-import Compiler.Elm.Interface as I
+import Compiler.Core.Name exposing (Name)
 import Compiler.Elm.ModuleName as ModuleName
 import Compiler.Elm.Package as Pkg
+import Compiler.IR.Canonical as Can
+import Compiler.IR.Canonical.Interface as I
 import Dict exposing (Dict)
 
 

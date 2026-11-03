@@ -78,7 +78,7 @@ A field always stays at `values[k]`, and the tail words carry kinds only. The re
 
 ## Layouts come from the type
 
-A layout is a pure function of the value's specialized type, recomputed at every site that builds or reads an object. The functions live in `compiler/src/Compiler/Generate/MLIR/Types.elm`, and the expression emitter, the pattern compiler, the type table, the tail-recursion emitter, the logical-type strings and the code generator's driver all call them. No layout table is stored anywhere. Monomorphization supplies only each constructor's shape (its name, tag and field types). Layouts are computed in code generation because the MLIR back end owns the decision of what to unbox, and a pure function gives every builder and every reader the same answer with no table to keep in step. That needs one condition from specialization: every view of one runtime value has a type with the same layout.
+A layout is a pure function of the value's specialized type, recomputed at every site that builds or reads an object. The functions live in `compiler/src/Compiler/GenerateMlir/Types.elm`, and the expression emitter, the pattern compiler, the type table, the tail-recursion emitter, the logical-type strings and the code generator's driver all call them. No layout table is stored anywhere. Monomorphization supplies only each constructor's shape (its name, tag and field types). Layouts are computed in code generation because the MLIR back end owns the decision of what to unbox, and a pure function gives every builder and every reader the same answer with no table to keep in step. That needs one condition from specialization: every view of one runtime value has a type with the same layout.
 
 Records, constructors and tuples each have their own ordering rule, and lists and closures have fixed shapes.
 
@@ -172,10 +172,10 @@ The validator asserts run only in heap-validating or Debug builds, and the point
 
 Code:
 
-- `compiler/src/Compiler/Generate/MLIR/Types.elm`: `monoTypeToOperand`, `canUnbox`, `computeRecordLayout`, `computeCtorLayout`, `computeTupleLayout`, the slot kinds.
-- `compiler/src/Compiler/AST/MonoAbi.elm`: `monoTypeToAbi`.
-- `compiler/src/Compiler/Generate/MLIR/Expr.elm`: `boxToEcoValue`, `boxToMatchSignatureTyped`, `boxArgsForClosureBoundary`, `boxArgsToEvaluatorParams`, `coerceResultToType`. `Patterns.elm`: `generateMonoPathHelper` (projection then unbox).
-- `compiler/src/Compiler/Data/CtorTag.elm`: which constructors embed, and `constantTag`.
+- `compiler/src/Compiler/GenerateMlir/Types.elm`: `monoTypeToOperand`, `canUnbox`, `computeRecordLayout`, `computeCtorLayout`, `computeTupleLayout`, the slot kinds.
+- `compiler/src/Compiler/IR/Mono/Abi.elm`: `monoTypeToAbi`.
+- `compiler/src/Compiler/GenerateMlir/Expr.elm`: `boxToEcoValue`, `boxToMatchSignatureTyped`, `boxArgsForClosureBoundary`, `boxArgsToEvaluatorParams`, `coerceResultToType`. `Patterns.elm`: `generateMonoPathHelper` (projection then unbox).
+- `compiler/src/Compiler/IR/Runtime/CtorTag.elm`: which constructors embed, and `constantTag`.
 - `runtime/src/allocator/Heap.hpp`: `Header`, `HPointer`, `Constant`, `isConstantBits`, `hpBits`, `hpToAddr`, `isEmptyBits`, `nullConsWordFor`, `HPOINTER_ADDRESS_LIMIT`, `CONSTANT_TAG`, the slot-kind accessors `customSlotKind`, `recordSlotKind`, `closureSlotKind`.
 - `runtime/src/codegen/Passes/EcoToLLVMHeap.cpp`: `BoxOpLowering`, `UnboxOpLowering`, the `static_assert`s on the encoding.
 - `runtime/src/codegen/Passes/EcoToLLVMInternal.h`: `value_enc`, the storage-boundary helpers (`heapStoreValueToI64`, `closureLoadI64ToValue`, `caseScrutineeToI64`).

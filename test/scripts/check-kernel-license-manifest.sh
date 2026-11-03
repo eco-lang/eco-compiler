@@ -70,7 +70,7 @@ if [ -z "$ROOT" ] || [ ! -d "$ROOT" ]; then
     exit 2
 fi
 
-DIR="$ROOT/compiler/src/Compiler/MonoSolver"
+DIR="$ROOT/compiler/src/Compiler/Monomorphize/Solver"
 FACTS="$DIR/KernelSetFacts.elm"
 INTRINSICS="$ROOT/compiler/src/Compiler/Type/KernelIntrinsics.elm"
 FILES_CSV="$DIR/kernel-license-files.csv"

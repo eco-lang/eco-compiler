@@ -22,8 +22,8 @@ What the tests establish:
 
 -}
 
-import Compiler.AST.Source as Src
 import Compiler.AST.SourceBuilder as SB
+import Compiler.IR.Source as Src
 import Expect
 import SourceIR.Suite.StandardTestSuites as StandardTestSuites
 import Test exposing (Test)

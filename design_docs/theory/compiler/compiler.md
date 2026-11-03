@@ -147,11 +147,11 @@ Code:
 
 - `compiler/src/Compiler/Compile.elm`: the per-module driver, `compile` for the erased path and `compileTyped` for the typed path, including root normalization, PostSolve, the arrow-root stamping (`SolverRoots.stampArrowRoots`) and the erased stub (`Opt.typedPathStub`).
 - `compiler/src/Compiler/Type/Constrain/Erased/Module.elm`: the erased entry point, a wrapper that runs the typed constraint generator with recording off.
-- `compiler/src/Compiler/TypedCanonical/Build.elm`, `compiler/src/Compiler/AST/TypedCanonical.elm`: the join of solved types onto the canonical program by node id.
+- `compiler/src/Compiler/Type/TypedCanonical.elm`, `compiler/src/Compiler/IR/Typed/Canonical.elm`: the join of solved types onto the canonical program by node id.
 - `compiler/src/Compiler/Pipeline/Steps.elm`: the step list (`prepare`, `preMono`, `monomorphize`, `inline`, `prune`, `globalOpt`), the global optimization steps (`globalOptCore`, `cse`, `dedupe`, `hoist`, composed by `globalOpt`) and the validators (`checkMinted`, `checkStageArity`, `checkLayout`, `checkPruned`, `checkClosureStaging`).
-- `compiler/src/Compiler/Eco/Config.elm`: the `EcoConfig` record, `default`, the `eco-config.json` decoder and `hash`. `compiler/src/Builder/Eco/Config.elm` reads the file and the `ECO_*` environment overrides.
-- `compiler/src/Terminal/Make.elm` (`shouldUseTypedOpt`, `graphHasMain`), `compiler/src/Builder/Generate.elm` (`buildMonoGraphFromMerged`, `monoPipelineFrom`), `compiler/src/Builder/Elm/Details.elm` (`hasTypedOpt`, `configChanged`): the choice of path, the running of the steps and the cache checks.
-- `compiler/src/Compiler/Graph.elm`: stack-safe strongly connected components.
+- `compiler/src/Compiler/Config.elm`: the `EcoConfig` record, `default`, the `eco-config.json` decoder and `hash`. `compiler/src/Builder/Eco/Config.elm` reads the file and the `ECO_*` environment overrides.
+- `compiler/src/Terminal/Make.elm` (`shouldUseTypedOpt`, `graphHasMain`), `compiler/src/Builder/Generate.elm` (`buildMonoGraphFromMerged`, `monoPipelineFrom`), `compiler/src/Builder/Deps/Details.elm` (`hasTypedOpt`, `configChanged`): the choice of path, the running of the steps and the cache checks.
+- `compiler/src/Data/Graph.elm`: stack-safe strongly connected components.
 - `compiler/review/src/ReviewConfig.elm`, `compiler/review/src/EnforceBoundaries.elm`: the layer order and its enforcement.
 - `test/scripts/check-test-pipeline-production.sh`: the guard that keeps the harnesses (`tests/TestLogic/TestPipeline.elm`, `tests/Compiler/PackageCompilation.elm`) on the shared step list.
 - `compiler/CMakeLists.txt`: the self-compilation stage that pins `ECO_MONO_ENGINE=subst`.

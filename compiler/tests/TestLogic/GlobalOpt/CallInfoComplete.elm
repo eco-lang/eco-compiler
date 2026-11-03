@@ -8,7 +8,7 @@ optimizer has run, without generating any code.
 
 A _staged_ call (one whose `callModel` is `StageCurried`) applies a function
 value that takes its arguments in stages, each stage a group of parameters.
-Its `CallInfo`, as `Compiler.AST.Monomorphized` defines it, records the
+Its `CallInfo`, as `Compiler.IR.Mono` defines it, records the
 callee's _stage arities_ (`stageArities`, the parameter count of each stage),
 the arity the global optimizer records for the callee value at this call
 (`initialRemaining`), which is 0 when it has found no producer for the callee,
@@ -48,8 +48,8 @@ for a callee with a producer whose recorded arity is 0 or less.
 -}
 
 import Array
-import Compiler.AST.Monomorphized as Mono
-import Compiler.AST.Source as Src
+import Compiler.IR.Mono as Mono
+import Compiler.IR.Source as Src
 import Expect
 import TestLogic.TestPipeline as Pipeline
 

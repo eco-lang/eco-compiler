@@ -9,7 +9,7 @@ When a `case` is lowered to an `eco.case` op, its alternatives are placed in
 that op's regions (or those of nested `eco.case` ops), and an SSA value defined
 inside one region cannot be used outside it. The code generator tracks which
 values are in scope through `varMappings` and `definedSsaVars` in
-`Compiler.Generate.MLIR.Context`. `ctxForSiblingRegion` sets both back to their
+`Compiler.GenerateMlir.Context`. `ctxForSiblingRegion` sets both back to their
 state just before the `eco.case` op at the start of each alternative after the
 first. `ctxAfterBranchOp` sets `varMappings` back to that state after the
 `case`, and `definedSsaVars` to that state plus the result variables of the
@@ -21,7 +21,7 @@ GC-root operands, which the code generator no longer emits.
 
 A `case` that reaches MLIR generation as a case, and whose decision tree tests
 its scrutinee, is lowered by the decision-tree code of
-`Compiler.Generate.MLIR.Expr` as a chain of tests or a fan-out, each with a
+`Compiler.GenerateMlir.Expr` as a chain of tests or a fan-out, each with a
 Bool form and a general one (`generateChainForBoolADTWithJumps`,
 `generateChainGeneralWithJumps`, `generateBoolFanOutWithJumps`,
 `generateFanOutGeneralWithJumps`). Which of the four a program reaches depends
@@ -50,7 +50,6 @@ other than `::`.
 
 -}
 
-import Compiler.AST.Source as Src
 import Compiler.AST.SourceBuilder
     exposing
         ( TypedDef
@@ -71,6 +70,7 @@ import Compiler.AST.SourceBuilder
         , varExpr
         )
 import Compiler.BulkCheck exposing (TestCase, bulkCheck)
+import Compiler.IR.Source as Src
 import Expect exposing (Expectation)
 import Test exposing (Test)
 

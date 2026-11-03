@@ -31,14 +31,14 @@ canonicalizes against have no `Debug` module. The check: after
 
 -}
 
-import Compiler.AST.Canonical as Can
-import Compiler.AST.DecisionTree.Test as DT
-import Compiler.AST.DecisionTree.TypedPath as DTPath
-import Compiler.AST.TypedOptimized as TOpt
-import Compiler.Data.Name exposing (Name)
+import Compiler.Core.Annotation as A
+import Compiler.Core.Name exposing (Name)
 import Compiler.Elm.ModuleName as ModuleName
+import Compiler.IR.Canonical as Can
+import Compiler.IR.DecisionTree.Test as DT
+import Compiler.IR.DecisionTree.TypedPath as DTPath
+import Compiler.IR.Typed.Optimized as TOpt
 import Compiler.LocalOpt.Typed.NormalizeLambdaBoundaries as NLB
-import Compiler.Reporting.Annotation as A
 import Data.Map
 import Data.Set
 import Dict

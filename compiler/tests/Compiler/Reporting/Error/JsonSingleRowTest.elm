@@ -1,6 +1,6 @@
 module Compiler.Reporting.Error.JsonSingleRowTest exposing (suite)
 
-{-| Reproduces a bug in `Compiler.Reporting.Error.Json.expectationToReport`: it
+{-| Reproduces a bug in `Builder.Reporting.Exit.JsonError.expectationToReport`: it
 binds `region = if sr == er then crash "region" else A.Region start start`, so
 any `Expecting` problem whose value lies on one row (the usual scalar case,
 e.g. a number in elm.json where a string is wanted) crashes the compiler
@@ -12,10 +12,10 @@ the fix.
 -}
 
 import Builder.Reporting.Exit.Help as Help
+import Builder.Reporting.Exit.JsonError as Json
+import Compiler.Core.Annotation as A
 import Compiler.Json.Decode as Decode
-import Compiler.Reporting.Annotation as A
 import Compiler.Reporting.Doc as D
-import Compiler.Reporting.Error.Json as Json
 import Expect
 import Test exposing (Test)
 

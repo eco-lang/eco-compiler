@@ -19,7 +19,7 @@ reference.
 For the kernel modules `Basics`, `Bitwise`, `Utils`, `JsArray`, `List`, `Char`
 and `String`, the MLIR back end may emit a call as an inline operation, an
 _intrinsic_, instead of a call into the kernel, choosing by the argument and
-result types (`Compiler.Generate.MLIR.Intrinsics.kernelIntrinsic`). Because the
+result types (`Compiler.GenerateMlir.Intrinsics.kernelIntrinsic`). Because the
 choice depends on those types, many functions here are called once with `Int`
 and once with `Float` arguments.
 
@@ -74,7 +74,6 @@ arguments of a custom type other than `Bool`, which no case passes.
 
 -}
 
-import Compiler.AST.Source as Src
 import Compiler.AST.SourceBuilder
     exposing
         ( boolExpr
@@ -93,6 +92,7 @@ import Compiler.AST.SourceBuilder
         , varExpr
         )
 import Compiler.BulkCheck exposing (TestCase, bulkCheck)
+import Compiler.IR.Source as Src
 import Expect exposing (Expectation)
 import Test exposing (Test)
 
@@ -626,7 +626,7 @@ stringCases expectFn =
 arguments are `Int` literals, not the encoder, decoder and bytes the real
 kernels take. The MLIR back end gives a call of either kernel with these
 argument counts a path of its own, where it may attempt bytes fusion
-(`Compiler.Generate.MLIR.Expr`).
+(`Compiler.GenerateMlir.Expr`).
 -}
 bytesCases : (Src.Module -> Expectation) -> List TestCase
 bytesCases expectFn =

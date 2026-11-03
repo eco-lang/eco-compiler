@@ -45,9 +45,9 @@ and `childrenOf` both skip, since the expected count comes from `childrenOf`.
 
 -}
 
-import Compiler.AST.Monomorphized as Mono
-import Compiler.Monomorphize.MonoTraverse as MonoTraverse
-import Compiler.Reporting.Annotation as A
+import Compiler.Core.Annotation as A
+import Compiler.IR.Mono as Mono
+import Compiler.IR.Mono.Traverse as MonoTraverse
 import Expect
 import Test exposing (Test)
 

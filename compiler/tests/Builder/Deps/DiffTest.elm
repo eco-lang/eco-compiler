@@ -8,7 +8,7 @@ Changing opaque `type Foo a` to `type Foo a b` was judged a PATCH though every
 -}
 
 import Builder.Deps.Diff as Diff
-import Compiler.Elm.Docs as Docs
+import Compiler.Docs as Docs
 import Compiler.Elm.Magnitude as M
 import Dict
 import Expect

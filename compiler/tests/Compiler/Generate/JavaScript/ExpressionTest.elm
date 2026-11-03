@@ -1,7 +1,7 @@
 module Compiler.Generate.JavaScript.ExpressionTest exposing (suite)
 
 {-| Regression tests for bugs, since fixed, in
-`Compiler.Generate.JavaScript.Expression`.
+`Compiler.GenerateJs.Expression`.
 
   - An infinite Float literal (`1e400`) printed as `Infinity`, passed the
     whole-number test, and was emitted as `Infinity.0`, which is not JavaScript.
@@ -15,13 +15,13 @@ module Compiler.Generate.JavaScript.ExpressionTest exposing (suite)
 
 -}
 
-import Compiler.AST.Optimized as Opt
+import Compiler.Core.Annotation as A
 import Compiler.Elm.ModuleName as ModuleName
 import Compiler.Elm.Package as Pkg
-import Compiler.Generate.JavaScript.Builder as JS
-import Compiler.Generate.JavaScript.Expression as Expr
-import Compiler.Generate.Mode as Mode
-import Compiler.Reporting.Annotation as A
+import Compiler.GenerateJs.Builder as JS
+import Compiler.GenerateJs.Expression as Expr
+import Compiler.GenerateJs.Mode as Mode
+import Compiler.IR.Optimized as Opt
 import Expect
 import Test exposing (Test, describe, test)
 
@@ -42,7 +42,7 @@ render expr =
 
 suite : Test
 suite =
-    describe "Compiler.Generate.JavaScript.Expression"
+    describe "Compiler.GenerateJs.Expression"
         [ test "an infinite Float literal is not emitted as Infinity.0" <|
             \_ ->
                 render (Opt.Float A.zero (1 / 0))

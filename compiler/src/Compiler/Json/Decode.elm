@@ -88,14 +88,14 @@ The second half of the file is the parser.
 
 -}
 
-import Compiler.AST.Snippet as Snippet
-import Compiler.Data.NonEmptyList as NE
+import Compiler.Core.Annotation as A
+import Compiler.Core.Snippet as Snippet
 import Compiler.Json.String as Json
-import Compiler.Parse.Keyword as K
-import Compiler.Parse.Primitives as P exposing (Col, Row)
-import Compiler.Reporting.Annotation as A
+import Compiler.Lexer.Keyword as K
+import Compiler.Lexer.Primitives as P exposing (Col, Row)
+import Data.NonEmptyList as NE
 import Dict
-import Utils.Crash exposing (crash)
+import System.Crash exposing (crash)
 
 
 
@@ -611,7 +611,7 @@ findField key pairs_ =
 gives the result of the first that succeeds. When all fail, the problem is a
 `OneOf` holding all of theirs.
 
-Given an empty list, the decoder crashes, through `Utils.Crash`, when it is run.
+Given an empty list, the decoder crashes, through `System.Crash`, when it is run.
 
 -}
 oneOf : List (Decoder x a) -> Decoder x a
@@ -725,7 +725,7 @@ type alias AST =
 An `Array` holds its elements and an `Object` its entries in the order the file
 gives them, an object's duplicates kept. Each key, like the text of a `String`,
 is a snippet naming where the text between the quotes lies in the file, as
-`Compiler.AST.Snippet` describes; the text is kept as written, escapes not
+`Compiler.Core.Snippet` describes; the text is kept as written, escapes not
 decoded. `Int` holds the number read. `TRUE`, `FALSE` and `NULL` are the three
 literal words.
 
@@ -776,7 +776,7 @@ read as a whole number, and the error is whatever the text after it causes.
 a key after a comma, a colon, a comma or `}`, and a comma or `]`. Each is
 reported where the missing token was looked for: once an object or array has
 read its opening bracket, `P.andThen` reports a later failure as having read
-input (see `Compiler.Parse.Primitives`), so no enclosing `oneOf` replaces it
+input (see `Compiler.Lexer.Primitives`), so no enclosing `oneOf` replaces it
 with `Start`.
 
 -}

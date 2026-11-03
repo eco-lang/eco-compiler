@@ -23,10 +23,10 @@ whether an entry agrees with the kernel's real type.
 -}
 
 import Array
-import Compiler.AST.Canonical as Can
-import Compiler.AST.Source as Src
-import Compiler.Data.Name exposing (Name)
-import Compiler.Reporting.Annotation as A
+import Compiler.Core.Annotation as A
+import Compiler.Core.Name exposing (Name)
+import Compiler.IR.Canonical as Can
+import Compiler.IR.Source as Src
 import Compiler.Type.KernelTypes as KernelTypes
 import Expect
 import TestLogic.TestPipeline as Pipeline

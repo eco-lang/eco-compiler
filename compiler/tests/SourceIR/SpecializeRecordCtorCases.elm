@@ -6,7 +6,7 @@ particular, meets records as constructor arguments.
 
 When a pattern takes an argument out of a constructor, monomorphization types
 that argument from the type of the value being matched. The substitution
-engine, in `Compiler.Monomorphize.Specialize`, requires that type to be a custom
+engine, in `Compiler.Monomorphize.Subst.Specialize`, requires that type to be a custom
 type and crashes on any other. In six of the eight programs the record a
 constructor takes has a field holding a custom-type value, which is matched in
 turn, so the patterns alternate between custom types and records on the way
@@ -55,7 +55,6 @@ a record reached through a constructor of a type from another module.
 
 -}
 
-import Compiler.AST.Source as Src
 import Compiler.AST.SourceBuilder
     exposing
         ( AliasDef
@@ -78,6 +77,7 @@ import Compiler.AST.SourceBuilder
         , varExpr
         )
 import Compiler.BulkCheck exposing (TestCase, bulkCheck)
+import Compiler.IR.Source as Src
 import Expect exposing (Expectation)
 import Test exposing (Test)
 import TestLogic.TestPipeline exposing (expectMonomorphization)

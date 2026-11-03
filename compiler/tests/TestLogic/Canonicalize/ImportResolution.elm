@@ -34,13 +34,13 @@ that import is reached, rather than failing the expectation.
 
 -}
 
-import Compiler.AST.Canonical as Can
-import Compiler.AST.Source as Src
-import Compiler.Data.Index as Index
-import Compiler.Elm.Interface as I
+import Compiler.Core.Annotation as A
+import Compiler.Core.Index as Index
 import Compiler.Elm.Interface.Basic as Basic
 import Compiler.Elm.ModuleName as ModuleName
-import Compiler.Reporting.Annotation as A
+import Compiler.IR.Canonical as Can
+import Compiler.IR.Canonical.Interface as I
+import Compiler.IR.Source as Src
 import Data.Map as DMap
 import Dict
 import Expect

@@ -8,7 +8,7 @@ A kernel is a function implemented by the runtime rather than compiled from
 Elm. The generated MLIR declares each kernel it uses as a top-level `func.func`
 marked `is_kernel`, and `TestLogic.Generate.CodeGen.KernelDeclAbiPolicy`
 checks those declarations against the `ElmDerived` backend ABI policy that
-`Compiler.Generate.MLIR.KernelAbi.kernelBackendAbiPolicy` assigns to every
+`Compiler.GenerateMlir.KernelAbi.kernelBackendAbiPolicy` assigns to every
 kernel: every parameter and result type is `i64`, `f64`, `i32` or
 `!eco.value`, there is one result, and a `_Int`/`_Float`/`_Char` instance
 symbol has a parameter of that primitive type.

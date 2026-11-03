@@ -1,6 +1,6 @@
 module TestLogic.Monomorphize.KernelLicenseTest exposing (suite)
 
-{-| Tests for the kernel license table in `Compiler.MonoSolver.KernelSetFacts`,
+{-| Tests for the kernel license table in `Compiler.Monomorphize.Solver.KernelSetFacts`,
 where a wrong entry can miscompile a program. They check that a licensed call to
 `List.cons` can leave a function-typed position with a single known function,
 that the table refuses the kernels it must refuse, and that `licenseApplies` refuses an occurrence whose type the license
@@ -89,9 +89,6 @@ and a `TransportsAs` row whose kernel has no intrinsic annotation, which test
 -}
 
 import Array
-import Compiler.AST.Canonical as Can
-import Compiler.AST.Monomorphized as Mono
-import Compiler.AST.Source as Src
 import Compiler.AST.SourceBuilder
     exposing
         ( binopsExpr
@@ -105,9 +102,12 @@ import Compiler.AST.SourceBuilder
         , tType
         , varExpr
         )
-import Compiler.Eco.Config as Config
+import Compiler.Config as Config
 import Compiler.Elm.ModuleName as ModuleName
-import Compiler.MonoSolver.KernelSetFacts as KernelSetFacts
+import Compiler.IR.Canonical as Can
+import Compiler.IR.Mono as Mono
+import Compiler.IR.Source as Src
+import Compiler.Monomorphize.Solver.KernelSetFacts as KernelSetFacts
 import Compiler.Type.KernelIntrinsics as KernelIntrinsics
 import Dict
 import Expect
@@ -496,7 +496,7 @@ cString =
 
 {-| Answers `False` for every type variable, so that `licenseApplies` treats
 every variable as able to hold a function. The solver's own calls pass
-`Compiler.MonoSolver.Engine.isScalarVar` instead, which answers `True` for a
+`Compiler.Monomorphize.Solver.Engine.isScalarVar` instead, which answers `True` for a
 `number` or `comparable` variable.
 -}
 noScalars : String -> Bool
@@ -772,7 +772,7 @@ tListOf el =
 `testValue` is `consInc []`.
 
 `inc` is the call's argument itself, not an element of a list literal.
-`Compiler.MonoSolver.Translate.injectArgLambdaMember`, which gives a call's
+`Compiler.Monomorphize.Solver.Translate.injectArgLambdaMember`, which gives a call's
 parameter the member of the function passed to it, adds a global's member when
 the argument expression is that global, and adds nothing for a list literal.
 

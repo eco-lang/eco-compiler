@@ -17,10 +17,10 @@ When a `case` branch binds a constructor's function-typed field to a variable,
 the solver engine first types the variable from its canonical type alone, which
 puts ⊤ on the arrows written in that type. It then recovers sets in two places:
 from the type of the value being destructured, followed down to the field (in
-`Compiler.MonoSolver.Translate`, the private `specializeDestructor`), and, once
+`Compiler.Monomorphize.Solver.Translate`, the private `specializeDestructor`), and, once
 every work item is done, for each constructor registry entry still carrying ⊤,
 from the union of all entries of that constructor (in
-`Compiler.MonoSolver.Monomorphize`, the private `settleCtorRows`). The first
+`Compiler.Monomorphize.Solver.Monomorphize`, the private `settleCtorRows`). The first
 merge, and the building of that union, use `Mono.enrichAnnotations`; the union
 is written into each entry with `Mono.enrichAnnotationsTopOnly`, which leaves
 an `LVar` position of the entry as it is.
@@ -58,8 +58,6 @@ or record, and the substitution engine.
 -}
 
 import Array
-import Compiler.AST.Monomorphized as Mono
-import Compiler.AST.Source as Src
 import Compiler.AST.SourceBuilder
     exposing
         ( binopsExpr
@@ -76,7 +74,9 @@ import Compiler.AST.SourceBuilder
         , tVar
         , varExpr
         )
-import Compiler.Eco.Config as Config
+import Compiler.Config as Config
+import Compiler.IR.Mono as Mono
+import Compiler.IR.Source as Src
 import Expect
 import Test exposing (Test)
 import TestLogic.TestPipeline as Pipeline

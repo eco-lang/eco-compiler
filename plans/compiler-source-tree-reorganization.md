@@ -1,5 +1,5 @@
 ---
-status: not-started
+status: done
 updated: 2026-11-03
 ---
 
@@ -548,6 +548,57 @@ layout.
   - `Generate.MLIR.Expr`, `Patterns` and `TailRec` and `Monomorphize.Specialize`
     import `LocalOpt.Typed.DecisionTree` only for its `Test` alias and could import
     `AST.DecisionTree.Test`.
+
+## Outcome (2026-11-03)
+
+Done. All 143 module moves (the 142 in the tables plus `Elm/Kernel` → `Parse/Kernel`)
+and the two data files are at their new paths, and the six splits and edits of step 1
+are made. Git cannot run in the container worktree used, so the work was done in one
+pass, with a tarball snapshot for rollback, instead of one commit per table.
+
+Gates, all green: the XHR build; `elm-tests` 14,577 of 14,577 and the eco/system 918;
+`full` (native E2E 2,585 of 2,585, JS E2E 229, node-addon, driver CLI); `bootstrap`
+(JS fixed point 4b, native fixed point 8c, unified binary 9b); the kernel-license,
+kernel-homes and ctor-tag checks; `check-folder-cycles.py` reports 0 cycles with and
+without `--merge`, and now runs in `check` and `full`.
+
+Differences from the plan:
+
+- **`IR/Kernel/Abi` also holds `hasAnyFreeVar`**, because `PreMono.AliasForward` calls
+  it as well as the two tables. So the module imports `IR.Canonical` and
+  `Core.TypeIds`, not nothing from the compiler; `Monomorphize.KernelAbi` keeps the
+  ABI mode and the type builders.
+- **`IR/Kernel/Chunk` also holds `countFields`**, which works on chunks only and is
+  used by `Builder.GraphAssembly`.
+- **`Compiler.Error` also holds `errorEncoder` and `errorDecoder`**, beside the union.
+- **`Mode` was removed from all five MLIR entry points**, including
+  `streamMlirToWriter` and `streamMlirBytecode`, and from `Builder.Generate`'s
+  `MonoBuildResult`, not only the three the plan named.
+- **The rewrite drops the `(?!\.[A-Z])` rule.** That rule also skipped qualified
+  references such as `Compiler.AST.Canonical.Expr`, so the rewrite uses longest-first
+  matching instead (every submodule of a moved module moves too). Twelve test modules
+  that live under an old prefix (`tests/Compiler/Elm/Interface/*`,
+  `tests/Compiler/GlobalOpt/Borrow/*`, `Compiler.Generate.JavaScript.ExpressionTest`)
+  keep their names, as the plan says test modules do.
+- **Review was already failing at `ac0896c0`** (42 errors, all unused-code findings).
+  The hygiene ones that are plainly safe were fixed. The 31 left, unused entry points
+  such as `Subst.Monomorphize.monomorphize`, unused parameters, the `I16` MLIR type
+  and an unused `elm.json` dependency, are recorded in `compiler/review/suppressed/`,
+  so `npm run review` passes and any new error fails it. Deciding those is left open.
+- **The layer stack also has a bottom `libraries` layer** (`Data`, `Utils`, `System`,
+  `Text`, `Control`, `Prelude`, `Codec`, `Mlir`) and a top `driver` layer (`Builder`,
+  `API`, `Terminal`, `Common`), so rule 6 and "no `Compiler.*` imports `Builder`" are
+  enforced too. The branch rule is `compiler/review/src/NoCrossBranchImports.elm`.
+  Both rules ignore `tests/`, whose module names do not follow the layers. A negative
+  control (a `PreMono` → `GenerateJs` import and a `Core` → `IR` import) fails review.
+- **Prose:** living docs (`design_docs/` outside `experiments/`, `docs/`, `guides/`,
+  `THEORY.md`, the invariants CSV, and plans not yet done) use the new names, and so do
+  the C++ comments. The two in `elm-kernel-cpp` (`core/Utils.cpp`,
+  `http/HttpExports.cpp`) are in licensed kernel files, so their kernels were re-audited
+  (comment only, no code change) and the manifest was updated.
+
+Still outside this repository: `www-eco-lang/kg` (`kg/src/Kg/Stages.elm`) needs the new
+module names.
 
 ## Appendix A: `check-folder-cycles.py`
 

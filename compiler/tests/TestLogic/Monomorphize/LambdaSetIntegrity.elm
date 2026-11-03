@@ -5,7 +5,7 @@ lambda set its own type claims for it.
 
 A _lambda set_ is the annotation on the arrow of a function type that names
 the function values, its _members_, that can flow through that arrow
-(`Compiler.AST.Monomorphized` defines the annotations). An `LSet` claims that
+(`Compiler.IR.Mono` defines the annotations). An `LSet` claims that
 its member list is complete, and later passes act on that claim: a call
 through a set with one member can be stamped for a direct call to that member.
 A closure whose own member id is missing from the `LSet` on its type is a
@@ -42,10 +42,10 @@ Among what is not checked:
 -}
 
 import Array
-import Compiler.AST.Monomorphized as Mono
-import Compiler.AST.Source as Src
-import Compiler.Data.Id as Id
-import Compiler.Monomorphize.MonoTraverse as MonoTraverse
+import Compiler.Core.Id as Id
+import Compiler.IR.Mono as Mono
+import Compiler.IR.Mono.Traverse as MonoTraverse
+import Compiler.IR.Source as Src
 import Expect
 import TestLogic.TestPipeline as Pipeline
 

@@ -80,14 +80,14 @@ points that write back into the solver state.
 -}
 
 import Array
-import Compiler.AST.Canonical as Can
-import Compiler.AST.Monomorphized as Mono
-import Compiler.AST.TypeIds as TypeIds
-import Compiler.AST.TypeVars as Vars
-import Compiler.Data.Id as Id
+import Compiler.Core.Id as Id
+import Compiler.Core.TypeIds as TypeIds
 import Compiler.Elm.ModuleName as ModuleName
-import Compiler.MonoSolver.Engine as Engine
-import Compiler.MonoSolver.Store as Store
+import Compiler.IR.Canonical as Can
+import Compiler.IR.Mono as Mono
+import Compiler.IR.Typed.TypeVars as Vars
+import Compiler.Monomorphize.Solver.Engine as Engine
+import Compiler.Monomorphize.Solver.Store as Store
 import Compiler.Type.UnionFind as UF
 import Data.HashMap as HashMap
 import Dict
@@ -303,7 +303,7 @@ suite =
                 \() ->
                     let
                         c0 =
-                            Store.testLoadCtx True Dict.empty (Engine.freshStore)
+                            Store.testLoadCtx True Dict.empty Engine.freshStore
 
                         ( _, c1 ) =
                             Store.loadTypeC Dict.empty groundAlias c0
@@ -322,7 +322,7 @@ suite =
                 \() ->
                     let
                         c0 =
-                            Store.testLoadCtx True Dict.empty (Engine.freshStore)
+                            Store.testLoadCtx True Dict.empty Engine.freshStore
 
                         ( p1, c1 ) =
                             Store.loadTypeC Dict.empty groundAlias c0
@@ -339,7 +339,7 @@ suite =
                 \() ->
                     let
                         c0 =
-                            Store.testLoadCtx True Dict.empty (Engine.freshStore)
+                            Store.testLoadCtx True Dict.empty Engine.freshStore
 
                         ( _, c1 ) =
                             Store.loadTypeC Dict.empty arrowAlias c0
@@ -361,7 +361,7 @@ suite =
                 \() ->
                     let
                         c0 =
-                            Store.testLoadCtx True Dict.empty (Engine.freshStore)
+                            Store.testLoadCtx True Dict.empty Engine.freshStore
 
                         ( _, c1 ) =
                             Store.loadTypeC Dict.empty (boxOf 1 intType) c0
@@ -382,7 +382,7 @@ suite =
                 \() ->
                     let
                         c0 =
-                            Store.testLoadCtx True Dict.empty (Engine.freshStore)
+                            Store.testLoadCtx True Dict.empty Engine.freshStore
 
                         ( _, c1 ) =
                             Store.loadTypeC Dict.empty groundAlias c0

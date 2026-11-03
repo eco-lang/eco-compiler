@@ -37,12 +37,12 @@ by name.
 
 -}
 
-import Compiler.AST.Source as Src
+import Compiler.Canonicalize.Error as CanError
 import Compiler.Canonicalize.Module as Canonicalize
-import Compiler.Data.OneOrMore as OneOrMore
 import Compiler.Elm.Interface.Basic as Basic
-import Compiler.Reporting.Error.Canonicalize as CanError
+import Compiler.IR.Source as Src
 import Compiler.Reporting.Result as Result
+import Data.OneOrMore as OneOrMore
 import Expect
 
 

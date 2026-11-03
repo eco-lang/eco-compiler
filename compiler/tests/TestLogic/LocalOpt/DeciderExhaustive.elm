@@ -6,7 +6,7 @@ module TestLogic.LocalOpt.DeciderExhaustive exposing
 {-| Structural checks on the decision trees the typed optimizer builds for
 `case` expressions.
 
-In the typed optimized IR (`Compiler.AST.TypedOptimized`) a `case` holds a
+In the typed optimized IR (`Compiler.IR.Typed.Optimized`) a `case` holds a
 _decider_, a tree of tests on the value being matched, and a list of _jump
 targets_, branches kept beside the tree because more than one leaf leads to
 them. A `Leaf` holds the chosen branch, either inline or as `Jump i`, the
@@ -14,7 +14,7 @@ number of a jump target. A `Chain` runs a list of tests, each at a _path_, and
 continues in one subtree if all of them pass and in the other if not. A
 `FanOut` switches on the value at one path, with a subtree per test and a
 fallback subtree. A path is the steps from the matched value to a part of it
-(`Compiler.AST.DecisionTree.TypedPath`), so a nested pattern becomes tests at
+(`Compiler.IR.DecisionTree.TypedPath`), so a nested pattern becomes tests at
 longer paths.
 
 Both expectations take one source module, run it to typed optimization, fail
@@ -47,13 +47,13 @@ match the scrutinee's type, and that each leaf selects the branch the source
 
 -}
 
-import Compiler.AST.DecisionTree.Test as DT
-import Compiler.AST.DecisionTree.TypedPath as DT
-import Compiler.AST.Source as Src
-import Compiler.AST.TypedOptimized as TOpt
-import Compiler.Data.Index as Index
-import Compiler.Data.Name exposing (Name)
+import Compiler.Core.Index as Index
+import Compiler.Core.Name exposing (Name)
 import Compiler.Elm.ModuleName as ModuleName
+import Compiler.IR.DecisionTree.Test as DT
+import Compiler.IR.DecisionTree.TypedPath as DT
+import Compiler.IR.Source as Src
+import Compiler.IR.Typed.Optimized as TOpt
 import Data.Map
 import Dict
 import Expect

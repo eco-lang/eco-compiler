@@ -27,7 +27,7 @@ type Expr id
     ...
 ```
 
-From `compiler/src/Compiler/AST/TypedOptimized.elm`. Notice that the metadata is the last argument of every variant, so any rewrite that builds a node must supply both halves. The variable is optional in the type, but monomorphization depends on it for function-typed definitions and references.
+From `compiler/src/Compiler/IR/Typed/Optimized.elm`. Notice that the metadata is the last argument of every variant, so any rewrite that builds a node must supply both halves. The variable is optional in the type, but monomorphization depends on it for function-typed definitions and references.
 
 The commonest way to break the metadata is to give a function-typed definition the variable of its body instead of the variable of the whole function. A local function used in several places must carry its full function type and variable, or monomorphization crashes or specializes it wrongly. The phase recovers the right variable from the binding that introduces the name. That lookup by name is unambiguous because name resolution forbids shadowing. Tail-call definitions carry a variable for the same reason.
 
@@ -143,7 +143,7 @@ Code:
 - `compiler/src/Compiler/LocalOpt/Typed/Case.elm`, `DecisionTree.elm`: pattern compilation, `Inline` and `Jump` branches, `ContainerHint`.
 - `compiler/src/Compiler/LocalOpt/Typed/Names.elm`: the tracker that collects dependencies and fields.
 - `compiler/src/Compiler/LocalOpt/Typed/Port.elm`: port and flags codecs.
-- `compiler/src/Compiler/AST/TypedOptimized.elm`: the typed optimized form (`TOpt`), `Meta`, `LocalGraph`.
+- `compiler/src/Compiler/IR/Typed/Optimized.elm`: the typed optimized form (`TOpt`), `Meta`, `LocalGraph`.
 - `compiler/src/Compiler/LocalOpt/Erased/`: the untyped copy, used by `Compiler.Compile.compile`.
 
 Invariants (`design_docs/invariants.csv`):

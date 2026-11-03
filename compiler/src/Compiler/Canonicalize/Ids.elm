@@ -8,7 +8,7 @@ its own, so that later phases can attach information, such as an inferred type,
 to one node by that number.
 
 That number is the node's _node id_: the `id` in the `{ id, node }` record that
-wraps each expression and pattern in `Compiler.AST.Canonical`. This module is
+wraps each expression and pattern in `Compiler.IR.Canonical`. This module is
 only the counter that hands the numbers out. `initialIdState` starts it at 0,
 and `allocId` returns the current number and moves the counter on by one.
 Expressions and patterns draw from the same counter, so they share one space of

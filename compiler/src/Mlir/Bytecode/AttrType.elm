@@ -61,7 +61,7 @@ import Bitwise
 import Bytes
 import Bytes.Decode as BD
 import Bytes.Encode as BE
-import Compiler.Data.Int64 as Int64
+import Data.Int64 as Int64
 import Dict exposing (Dict)
 import Mlir.Bytecode.DialectSection as DialectSection exposing (DialectRegistry)
 import Mlir.Bytecode.StringTable as StringTable exposing (StringTable)
@@ -1002,7 +1002,7 @@ denseElemBytes ty =
 
 
 {-| One dense array element `v` in `w` bytes, little-endian two's complement.
-An 8-byte element carries all 64 bits (`Compiler.Data.Int64.toWords`); the
+An 8-byte element carries all 64 bits (`Data.Int64.toWords`); the
 common case of a value in [0, 2^31) skips the split.
 -}
 encodeDenseElem : Int -> Int -> BE.Encoder

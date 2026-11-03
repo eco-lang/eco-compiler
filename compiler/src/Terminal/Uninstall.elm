@@ -22,7 +22,7 @@ dependencies and the test dependencies. Nothing is solved, so the plan is that
 one removal, shown as a constraint.
 
 Once the plan is accepted, the new `elm.json` is written and the dependencies
-are verified with `Builder.Elm.Details.verifyInstall`. If verification fails,
+are verified with `Builder.Deps.Details.verifyInstall`. If verification fails,
 the old `elm.json` is written back. Every error ends the program through
 `Builder.Reporting.attempt`, which prints the report and exits with failure.
 
@@ -39,9 +39,9 @@ the old `elm.json` is written back. Every error ends the program through
 -}
 
 import Builder.BackgroundWriter as BW
+import Builder.Deps.Details as Details
 import Builder.Deps.Registry as Registry
 import Builder.Deps.Solver as Solver
-import Builder.Elm.Details as Details
 import Builder.Elm.Outline as Outline
 import Builder.Reporting as Reporting
 import Builder.Reporting.Exit as Exit

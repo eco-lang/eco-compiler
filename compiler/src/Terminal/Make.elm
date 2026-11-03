@@ -75,25 +75,25 @@ the parsers for the flags' values.
 
 import Builder.BackgroundWriter as BW
 import Builder.Build as Build
+import Builder.Deps.Details as Details
 import Builder.Deps.Registry as Registry
 import Builder.Eco.Config as EcoConfigLoader
 import Builder.Eco.FEStats as FEStats
-import Builder.Elm.Details as Details
 import Builder.File as File
 import Builder.GcPoints as GcPoints
 import Builder.Generate as Generate
 import Builder.Reporting as Reporting
 import Builder.Reporting.Exit as Exit
 import Builder.Stuff as Stuff
-import Compiler.AST.Optimized as Opt
-import Compiler.AST.TypedOptimized as TOpt
-import Compiler.Data.Name exposing (Name)
-import Compiler.Data.NonEmptyList as NE
-import Compiler.Eco.Config as Config
+import Compiler.Config as Config
+import Compiler.Core.Name exposing (Name)
 import Compiler.Elm.ModuleName as ModuleName
 import Compiler.Elm.Package as Pkg
-import Compiler.Generate.CodeGen as CodeGen
-import Compiler.Generate.Html as Html
+import Compiler.GenerateJs.CodeGen as CodeGen
+import Compiler.GenerateJs.Html as Html
+import Compiler.IR.Optimized as Opt
+import Compiler.IR.Typed.Optimized as TOpt
+import Data.NonEmptyList as NE
 import Eco.NativeDriver
 import Maybe.Extra as Maybe
 import System.IO exposing (FilePath)
@@ -785,7 +785,7 @@ getNoMain modules root =
 erased graph and, on a typed build, its typed graph.
 
 Either graph having a `main` counts. On the typed path the erased graph is the
-stub `Compiler.AST.Optimized.typedPathStub` describes, whose `main` only
+stub `Compiler.IR.Optimized.typedPathStub` describes, whose `main` only
 records that one exists. That marker is what survives a graph being written and
 read back, since the typed graph's codec drops `main`.
 

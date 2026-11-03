@@ -15,7 +15,7 @@ only if it matches one on the list exactly, including case. The list has no
 not.
 
 When an identifier is not accepted, four identifiers from the list are offered
-as suggestions: those nearest to it as `Compiler.Reporting.Suggest` measures
+as suggestions: those nearest to it as `Compiler.Core.Suggest` measures
 nearness. The given string is compared both with each identifier and with each
 full name, so a near miss on either finds the license, and the same identifier
 can be suggested twice.
@@ -26,9 +26,9 @@ can be suggested twice.
 
 -}
 
+import Compiler.Core.Suggest as Suggest
 import Compiler.Json.Decode as D
 import Compiler.Json.Encode as E
-import Compiler.Reporting.Suggest as Suggest
 import Dict exposing (Dict)
 
 
@@ -67,7 +67,7 @@ identifier.
 
 A string that matches no identifier on the list exactly, including case, fails
 with `toError` applied to four suggested identifiers. They are the identifiers
-nearest to the string as `Compiler.Reporting.Suggest` measures it, comparing
+nearest to the string as `Compiler.Core.Suggest` measures it, comparing
 the string with both the identifiers and the licenses' full names, so the same
 identifier can appear twice. A JSON value that is not a string fails as
 `Compiler.Json.Decode.string` does, without `toError`.

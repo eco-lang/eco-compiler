@@ -3,7 +3,7 @@ module TestLogic.Generate.CodeGen.CEcoValueLoweringTest exposing (suite)
 {-| A type variable that monomorphization leaves with the `CEcoValue`
 constraint stands for a value that is always boxed, and code generation is
 expected to give it the MLIR type `!eco.value` (see `Constraint` in
-`Compiler.AST.Monomorphized`). This suite runs the checker for that rule,
+`Compiler.IR.Mono`). This suite runs the checker for that rule,
 `TestLogic.Generate.CodeGen.CEcoValueLowering.expectCEcoValueLowering`, on
 every program of the standard catalogue. It checks the signature of each
 generated function against its monomorphized node: a `CEcoValue` parameter or

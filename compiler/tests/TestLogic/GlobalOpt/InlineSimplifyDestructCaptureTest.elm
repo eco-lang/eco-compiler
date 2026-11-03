@@ -1,7 +1,7 @@
 module TestLogic.GlobalOpt.InlineSimplifyDestructCaptureTest exposing (suite)
 
 {-| Tests that the pre-monomorphization inliner,
-`Compiler.GlobalOpt.InlineSimplify`, renames the destructuring binders of a
+`Compiler.PreMono.InlineSimplify`, renames the destructuring binders of a
 body it copies into a caller. It is there to catch an inliner that renames
 `let` binders but copies a destructuring binder unchanged, which gives the
 caller two binders of one name.
@@ -42,7 +42,6 @@ Among what is not tested:
 
 -}
 
-import Compiler.AST.Source as Src
 import Compiler.AST.SourceBuilder
     exposing
         ( TypedDef
@@ -61,12 +60,13 @@ import Compiler.AST.SourceBuilder
         , tupleExpr
         , varExpr
         )
-import Compiler.AST.TypeIds as TypeIds
-import Compiler.AST.TypedOptimized as TOpt
-import Compiler.Data.Name exposing (Name)
-import Compiler.Eco.Config as Config
-import Compiler.GlobalOpt.InlineSimplify as InlineSimplify
-import Compiler.Reporting.Annotation as A
+import Compiler.Config as Config
+import Compiler.Core.Annotation as A
+import Compiler.Core.Name exposing (Name)
+import Compiler.Core.TypeIds as TypeIds
+import Compiler.IR.Source as Src
+import Compiler.IR.Typed.Optimized as TOpt
+import Compiler.PreMono.InlineSimplify as InlineSimplify
 import Data.Map
 import Expect
 import Test exposing (Test)

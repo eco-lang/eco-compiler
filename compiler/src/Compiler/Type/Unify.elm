@@ -7,7 +7,7 @@ module Compiler.Type.Unify exposing
 this module solves one equation at a time: it decides whether two variables can
 stand for the same type and, if they can, makes them one.
 
-A variable is a point of the store, as `Compiler.AST.TypeVars` describes, and
+A variable is a point of the store, as `Compiler.IR.Typed.TypeVars` describes, and
 points known to be equal form a class with one shared descriptor, as
 `Compiler.Type.UnionFind` describes. To _unify_ two points is to compare the
 contents of their two classes and, when they agree, join the classes under a
@@ -82,15 +82,15 @@ as the attempt left it.
 
 -}
 
-import Compiler.AST.TypeVars as Vars
-import Compiler.Data.Name as Name
+import Compiler.Core.Name as Name
 import Compiler.Elm.ModuleName as ModuleName
-import Compiler.Type.Error as Error
+import Compiler.IR.Typed.TypeVars as Vars
+import Compiler.Type.ErrorType as Error
 import Compiler.Type.Occurs as Occurs
+import Compiler.Type.State.IO as IO exposing (IO)
 import Compiler.Type.Type as Type
 import Compiler.Type.UnionFind as UF
 import Dict exposing (Dict)
-import System.TypeCheck.IO as IO exposing (IO)
 
 
 

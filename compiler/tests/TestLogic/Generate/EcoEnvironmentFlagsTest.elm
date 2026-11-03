@@ -3,7 +3,7 @@ module TestLogic.Generate.EcoEnvironmentFlagsTest exposing (suite)
 {-| An eco/system program's flags are `System.Environment`, which cannot be
 decoded from JSON, so the compiler must recognise such a `main` and give it
 eco/system's own environment decoder instead. These tests check that
-recognition, `Compiler.Elm.EcoEnvironment.isEnvironmentFlags`, which owns the
+recognition, `Compiler.IR.Runtime.EcoEnvironment.isEnvironmentFlags`, which owns the
 rule; a mistake there would either hand an eco/system program a JSON decoder
 or take the JSON decoder away from an ordinary program.
 
@@ -30,10 +30,11 @@ Among what is not tested: a `Program` with a different number of arguments, a
 arguments.
 
 -}
-import Compiler.AST.Canonical as Can
-import Compiler.Elm.EcoEnvironment as EcoEnvironment
+
 import Compiler.Elm.ModuleName as ModuleName
 import Compiler.Elm.Package as Pkg
+import Compiler.IR.Canonical as Can
+import Compiler.IR.Runtime.EcoEnvironment as EcoEnvironment
 import Dict
 import Expect
 import Test exposing (Test)

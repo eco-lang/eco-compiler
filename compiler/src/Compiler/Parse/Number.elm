@@ -22,11 +22,11 @@ why `number` alone deals with rows, columns and the parser state.
 Two rules decide most of the errors. A literal must not run straight into a
 character that could continue a name: `12abc` or `1_000` is a `NumberEnd` error,
 not the number `12` followed by a name. What counts as such a character is
-whatever `Compiler.Parse.Variable.getInnerWidthHelp` accepts inside a name. And
+whatever `Compiler.Lexer.Identifier.getInnerWidthHelp` accepts inside a name. And
 a literal starting with `0` may only be `0` itself, a fraction such as `0.5`, or
 a hexadecimal literal, so `007` is a `NumberNoLeadingZero` error and `0e5` a
 `NumberEnd` error. The errors are the `Number` type of
-`Compiler.Reporting.Error.Syntax`.
+`Compiler.Parse.Error`.
 
 `precedence`, which reads the single digit of an `infix` declaration, is here
 because it is the one other parser that reads a digit.
@@ -48,11 +48,11 @@ because it is the one other parser that reads a digit.
 
 -}
 
-import Compiler.AST.Utils.Binop as Binop
-import Compiler.Data.Int64 as Int64
-import Compiler.Parse.Primitives as P exposing (Col, Row)
-import Compiler.Parse.Variable as Var
-import Compiler.Reporting.Error.Syntax as E
+import Compiler.IR.Source.Binop as Binop
+import Compiler.Lexer.Identifier as Identifier
+import Compiler.Lexer.Primitives as P exposing (Col, Row)
+import Compiler.Parse.Error as E
+import Data.Int64 as Int64
 
 
 
@@ -61,11 +61,11 @@ import Compiler.Reporting.Error.Syntax as E
 
 {-| Returns whether `word`, the character at `pos`, is one that may continue a
 name, which a number must not run into: an ASCII letter, a digit, `_`, or a
-character `Compiler.Parse.Variable.getInnerWidthHelp` accepts beyond ASCII.
+character `Compiler.Lexer.Identifier.getInnerWidthHelp` accepts beyond ASCII.
 -}
 isDirtyEnd : String -> Int -> Int -> Char -> Bool
 isDirtyEnd src pos end word =
-    Var.getInnerWidthHelp src pos end word > 0
+    Identifier.getInnerWidthHelp src pos end word > 0
 
 
 {-| Returns whether a character is one of the ASCII digits `0` to `9`.
@@ -89,7 +89,7 @@ way it was written.
 
 The value of an `Int` is its digits taken modulo 2^64 and read as two's
 complement, so `0xFFFFFFFFFFFFFFFF` and `18446744073709551615` are both `-1`
-(`Compiler.Data.Int64`). Under the JavaScript-hosted compiler a value that needs
+(`Data.Int64`). Under the JavaScript-hosted compiler a value that needs
 more than 53 significant bits cannot be held exactly, and `number` reports it as
 a `NumberInexactOnHost` error rather than rounding it. The value of a `Float` is
 `String.toFloat` of the text.

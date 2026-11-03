@@ -2,7 +2,7 @@ module TestLogic.Generate.CodeGen.BooleanConstantsTest exposing (suite)
 
 {-| A Bool in generated MLIR is a raw `i1` only in SSA operand context; in a heap
 object, in a closure capture and at a function boundary it is boxed as
-`!eco.value`, as `Compiler.Generate.MLIR.Types` describes. These tests make an
+`!eco.value`, as `Compiler.GenerateMlir.Types` describes. These tests make an
 `i1` passed into an op that builds a heap object or a closure, or that crosses a
 call boundary, fail a test instead of going unnoticed.
 

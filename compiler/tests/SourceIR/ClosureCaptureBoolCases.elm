@@ -5,7 +5,7 @@ and programs that choose between two closures at one call site.
 
 In the native back end a `Bool` has two forms: `i1` as an SSA operand, and
 `!eco.value`, a boxed value, at function and closure boundaries, as
-`Compiler.Generate.MLIR.Types` describes. A `Bool` parameter of a
+`Compiler.GenerateMlir.Types` describes. A `Bool` parameter of a
 tail-recursive function and a `Bool` captured by a closure are both at such a
 boundary, and inside the function each is the condition of an `if`, where the
 `Bool` is an operand. These programs give a pipeline stage those shapes,
@@ -56,7 +56,6 @@ Among what is not tested:
 
 -}
 
-import Compiler.AST.Source as Src
 import Compiler.AST.SourceBuilder
     exposing
         ( binopsExpr
@@ -76,6 +75,7 @@ import Compiler.AST.SourceBuilder
         , varExpr
         )
 import Compiler.BulkCheck exposing (TestCase, bulkCheck)
+import Compiler.IR.Source as Src
 import Expect exposing (Expectation)
 import Test exposing (Test)
 

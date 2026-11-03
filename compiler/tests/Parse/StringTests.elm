@@ -3,7 +3,7 @@ module Parse.StringTests exposing (suite)
 {-| Tests for how a `\u{...}` escape in a string literal comes out of the
 parser. `Compiler.Parse.String.string` keeps a literal in its escaped source
 form rather than decoding it, and it rewrites each `\u{...}` escape as one or
-two four-digit `\uXXXX` escapes, as `Compiler.Elm.String.fromChunks` writes
+two four-digit `\uXXXX` escapes, as `Compiler.IR.Source.StringLiteral.fromChunks` writes
 them. These tests pin the exact text that rewriting produces for four escapes.
 
 Each test parses a complete single-line string literal, quotes included, and
@@ -32,7 +32,7 @@ any text around the escape.
 
 -}
 
-import Compiler.Parse.Primitives as P
+import Compiler.Lexer.Primitives as P
 import Compiler.Parse.String as S
 import Expect
 import Test exposing (Test)

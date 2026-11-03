@@ -13,7 +13,7 @@ a test rather than left for code generation.
 
 The _monomorphized graph_ is the program after each polymorphic definition
 has been specialized to the types it is used at
-(`Compiler.AST.Monomorphized.MonoGraph`). Code generation computes the heap
+(`Compiler.IR.Mono.MonoGraph`). Code generation computes the heap
 layout of a record or tuple from its type alone, so the type carried by each
 construction must describe exactly what is built. The graph's `ctorShapes`
 table holds, for each custom type in the graph, the list of that type's
@@ -47,7 +47,7 @@ What the expectations establish:
     a record type holding every updated field.
   - `expectCtorLayoutsConsistent`: in every `ctorShapes` entry, the
     constructor at position `i` of the list has the tag
-    `Compiler.Data.CtorTag.effective` gives it: `i`, except for elm/core's
+    `Compiler.IR.Runtime.CtorTag.effective` gives it: `i`, except for elm/core's
     `Dict.RBNode_elm_builtin`, which has a reserved tag.
   - `expectLayoutsCanonical` (MONO\_014): every record and tuple type in the
     graph, at any depth, carries the packed hash that `Mono.mRecord` /
@@ -61,11 +61,11 @@ after global optimization.
 -}
 
 import Array
-import Compiler.AST.Monomorphized as Mono
-import Compiler.AST.Source as Src
-import Compiler.Data.CtorTag as CtorTag
-import Compiler.Data.Index as Index
-import Compiler.Monomorphize.MonoTraverse as MonoTraverse
+import Compiler.Core.Index as Index
+import Compiler.IR.Mono as Mono
+import Compiler.IR.Mono.Traverse as MonoTraverse
+import Compiler.IR.Runtime.CtorTag as CtorTag
+import Compiler.IR.Source as Src
 import Dict
 import Expect
 import TestLogic.TestPipeline as Pipeline

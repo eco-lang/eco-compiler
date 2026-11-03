@@ -29,18 +29,18 @@ The check: the one type error is a `BadExpr` of category `String`.
 
 -}
 
-import Compiler.AST.Source as Src
 import Compiler.AST.SourceBuilder exposing (makeModule, unitExpr)
 import Compiler.Canonicalize.Module as Canonicalize
-import Compiler.Data.NonEmptyList as NE
 import Compiler.Elm.Interface.Basic as Basic
+import Compiler.IR.Source as Src
 import Compiler.Parse.Module as M
-import Compiler.Reporting.Error.Type as ErrT
 import Compiler.Reporting.Result as RResult
 import Compiler.Type.Constrain.Typed.Module as ConstrainTyped
+import Compiler.Type.Error as ErrT
 import Compiler.Type.Solve as Solve
+import Compiler.Type.State.IO as IO
+import Data.NonEmptyList as NE
 import Expect
-import System.TypeCheck.IO as IO
 import Test exposing (Test)
 
 

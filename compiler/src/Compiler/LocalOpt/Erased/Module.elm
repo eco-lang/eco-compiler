@@ -44,31 +44,31 @@ the dependencies and field counts are collected by the tracker in
 
 -}
 
-import Compiler.AST.Canonical as Can
-import Compiler.AST.Optimized as Opt
-import Compiler.AST.Utils.Type as Type
 import Compiler.Canonicalize.Effects as Effects
-import Compiler.Data.Name as Name exposing (Name)
-import Compiler.Elm.EcoEnvironment as EcoEnvironment
+import Compiler.Core.Annotation as A
+import Compiler.Core.Name as Name exposing (Name)
 import Compiler.Elm.ModuleName as ModuleName
+import Compiler.IR.Canonical as Can
+import Compiler.IR.Canonical.Alias as Type
+import Compiler.IR.Optimized as Opt
+import Compiler.IR.Runtime.EcoEnvironment as EcoEnvironment
 import Compiler.LocalOpt.Erased.Expression as Expr
 import Compiler.LocalOpt.Erased.Names as Names
 import Compiler.LocalOpt.Erased.Port as Port
-import Compiler.Reporting.Annotation as A
-import Compiler.Reporting.Error.Main as E
+import Compiler.LocalOpt.Error as E
 import Compiler.Reporting.Result as ReportingResult
 import Compiler.Reporting.Warning as W
 import Data.Map
 import Data.Set as EverySet exposing (EverySet)
 import Dict exposing (Dict)
-import Utils.Crash exposing (crash)
+import System.Crash exposing (crash)
 
 
 
 -- ====== Optimization ======
 
 
-{-| The outcome of optimizing a module: the result, or a `Compiler.Reporting.Error.Main`
+{-| The outcome of optimizing a module: the result, or a `Compiler.LocalOpt.Error`
 error, with warnings of type `w` collected either way.
 -}
 type alias MResult i w a =

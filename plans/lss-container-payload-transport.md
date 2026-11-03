@@ -287,7 +287,7 @@ drops the home), so every per-global `var` ranking in this arc — §1.5's inclu
 
 ```
 List.map 906   Task.map 457   Bytes.Decode.map 425   Combine.map 221   Result.map 199
-Maybe.map 187  System.TypeCheck.IO.map 127   Dict.map 101   Reporting.Result.map 100  …
+Maybe.map 187  Compiler.Type.State.IO.map 127   Dict.map 101   Reporting.Result.map 100  …
 ```
 
 **The qualified global IS recoverable offline**: 39,923 of 40,453 specs (98.7 %) carry a
@@ -347,8 +347,8 @@ populations that want completely different answers:
 | `elm/core:List.foldrHelper` `/a0` | 900 | 0 | 30 | 0 | **96.8 %** | 29 |
 | `elm/core:List.map` `/a0` | 857 | 0 | 49 | 0 | **94.6 %** | 49 |
 | `elm/core:Dict.foldl` `/a0` | 348 | 0 | 40 | 0 | **89.7 %** | 40 |
-| `eco/compiler:Compiler.MonoSolver.Engine.andThen` `/a0/r` | 143 | 0 | 22 | 0 | **86.7 %** | 22 |
-| `eco/compiler:System.TypeCheck.IO.andThen` `/a0/r` | 237 | 1 | 66 | 11 | **75.6 %** | 66 |
+| `eco/compiler:Compiler.Monomorphize.Solver.Engine.andThen` `/a0/r` | 143 | 0 | 22 | 0 | **86.7 %** | 22 |
+| `eco/compiler:Compiler.Type.State.IO.andThen` `/a0/r` | 237 | 1 | 66 | 11 | **75.6 %** | 66 |
 
 **Population B — the decoder chain, where var is the norm or the only answer.**
 
@@ -501,11 +501,11 @@ probe. It is corroborated independently by the end-state `pos|` census: the same
 | cell | events | no member | dominant miss |
 |---|---:|---:|---|
 | `List.foldrHelper` `/a0` | 2,793 | 90 (3.2 %) | **`local`/flex 90 — zero `call` args at this cell** |
-| `Compiler.MonoSolver.Engine.andThen` `/a0` | 175 | 5 (2.9 %) | `call` 5 (100 %) |
+| `Compiler.Monomorphize.Solver.Engine.andThen` `/a0` | 175 | 5 (2.9 %) | `call` 5 (100 %) |
 | `List.foldl` `/a0` | 3,780 | 168 (4.4 %) | `local`/flex 81, `call` 61, `lm` 26 |
 | `Dict.foldl` `/a0` | 825 | 85 (10.3 %) | `lm` 42, `local`/flex 40, `call` 3 |
 | `List.foldr` `/a0` | 1,334 | 149 (11.2 %) | `call` 114, `lm` 35 |
-| `System.TypeCheck.IO.andThen` `/a0` | 375 | 45 (12.0 %) | `call` 45 (100 %) |
+| `Compiler.Type.State.IO.andThen` `/a0` | 375 | 45 (12.0 %) | `call` 45 (100 %) |
 | `List.map` `/a0` | 1,408 | 255 (18.1 %) | `call` 177, `lm` 73, `local`/flex 5 |
 
 So §8.4's "why did THIS spec miss what its siblings got" has three answers, not one, and their
@@ -518,9 +518,9 @@ args that arrive un-enriched** (`foldrHelper` is 100 % this, `Elm.JsArray.foldl`
 Top cells losing a call-result argument:
 
 ```
-Compiler.Parse.Primitives.Cerr   /a2  278     System.TypeCheck.IO.andThen  /a1  247
+Compiler.Lexer.Primitives.Cerr   /a2  278     Compiler.Type.State.IO.andThen  /a1  247
 elm/core:Task.andThen            /a0  246     elm/core:List.map            /a0  177
-Compiler.MonoSolver.Engine.andThen /a1 159    System.TypeCheck.IO.map      /a1  127
+Compiler.Monomorphize.Solver.Engine.andThen /a1 159    Compiler.Type.State.IO.map      /a1  127
 elm/core:Basics.composeR    /a1 125 /a0 116   elm/bytes:Bytes.Decode.loop  /a1  121
 Utils.Bytes.Encode.list          /a0  119     elm/core:List.foldr          /a0  114
 Combine.map /a0 113   List.any /a0 106   Maybe.map /a0 87   Task.onError /a0 83
@@ -608,7 +608,7 @@ And the arrow-interior class shows the same two holes one level in:
 
 The `fn` interior figure is the interesting one: `flowConnect` (default-on) writes a lambda
 literal's translated type back, so its interior SHOULD be delivered — and it is, for lambdas
-whose body builds the result. At `System.TypeCheck.IO.andThen` `/a0`: head `mem` 329/329, `/r`
+whose body builds the result. At `Compiler.Type.State.IO.andThen` `/a0`: head `mem` 329/329, `/r`
 `mem` 131 vs `flex` 198. The 198 are lambdas whose body RETURNS A CALL (`\x -> andThen … m`,
 `\x -> someIO x`): the write-back is only as good as the body's result type, and the body's
 result is a call result. That is the same hole as the `call` row, one level inside a lambda.
@@ -1145,7 +1145,7 @@ self-compile compiles it). Wall 8:39, RSS 14.8 GB.
 | kind | events | `mem` | `flex` | `⊤` | reading |
 |---|---:|---:|---:|---:|---|
 | `param` | 17,428 | 16,120 (92 %) | 1,024 | 284 | heads 95 % `mem`: the demand DOES deliver parameters' sets. Flex heads 435 (`foldrHelper a0` 90, `List.foldl a0` 78, `Dict.foldl a0` 40 …) are the enclosing spec's `f` handed on to a fold — a CHAIN whose roots are the rows below, not a class of their own |
-| **`destr`** | **2,580** | 99 | 0 | **2,481 (96 %)** | **F3's real target.** Head 1,259 + interior 1,198 + container 24. 1,198 of the 1,259 heads (95 %) are ONE shape in ONE module: `Compiler.Parse.Primitives` — `Cerr a2` 580, `Eerr a2` 574, `toErr a2` 40 |
+| **`destr`** | **2,580** | 99 | 0 | **2,481 (96 %)** | **F3's real target.** Head 1,259 + interior 1,198 + container 24. 1,198 of the 1,259 heads (95 %) are ONE shape in ONE module: `Compiler.Lexer.Primitives` — `Cerr a2` 580, `Eerr a2` 574, `toErr a2` 40 |
 | `letMulti` | 260 | 2 | 258 | 0 | a local-multi function referenced INSIDE ITS OWN instance re-translation (`Array.foldl.helper` passing `helper` to `JsArray.foldl`): the stack is already popped, `varEnv` no longer binds it (`enrich\|unbound` 257 ≈ 258) — F2's second sub-class |
 | `let` | 75 | 15 | 0 | 60 | all 60 at container depth (E12 on a literal RHS — F4's domain) |
 | `tailFn` | 40 | 0 | 0 | 40 | local tail-def bound from `classifyAs tkClassLet` (Translate.elm:6283) |
@@ -1162,7 +1162,7 @@ the two bold kinds — 430 positions, 46 % of all ⊤.
 
 #### 12.9.2 What the destructure class IS (read at the source)
 
-`Compiler/Parse/Primitives.elm`: `type PStep x a = Cok a State | Eok a State | Cerr Row Col
+`Compiler/Lexer/Primitives.elm`: `type PStep x a = Cok a State | Eok a State | Cerr Row Col
 (Row -> Col -> x) | Eerr Row Col (Row -> Col -> x)`, and the combinators re-wrap a step:
 
     case parseA s of                                   -- root = a CALL result of type PStep x a

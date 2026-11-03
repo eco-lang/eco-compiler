@@ -10,10 +10,10 @@
 
 | # | Module | Symbol / region | Coverage | Status | Notes |
 |---|--------|----------------|----------|--------|-------|
-| 1 | Compiler.GlobalOpt.AbiCloning | `computeCaptureAbi`, `collectFromExpr`, `collectFromDef`, `recordCallAbis` | 0% | FIXED | Removed 4 dead internal functions + unused `Dict` import. `abiCloningPass` kept as no-op stub. |
-| 2 | Compiler.Monomorphize.MonoTraverse | `mapExpr`, `mapDef`, `mapDecider`, `mapChoice`, `mapExprChildren` | 0% | FIXED | Removed 5 dead map functions (4 public + `mapExprChildren` helper). `traverse*` and `fold*` families retained. |
+| 1 | Compiler.MonoOpt.AbiCloning | `computeCaptureAbi`, `collectFromExpr`, `collectFromDef`, `recordCallAbis` | 0% | FIXED | Removed 4 dead internal functions + unused `Dict` import. `abiCloningPass` kept as no-op stub. |
+| 2 | Compiler.IR.Mono.Traverse | `mapExpr`, `mapDef`, `mapDecider`, `mapChoice`, `mapExprChildren` | 0% | FIXED | Removed 5 dead map functions (4 public + `mapExprChildren` helper). `traverse*` and `fold*` families retained. |
 | 3 | Compiler.Type.SolverSnapshot | `fromSolveResult`, `withLocalUnification`, `specializeFunction`, `specializeChained`, `specializeChainedWithSubst`, `LocalView` + 20 helpers | 0% | FIXED | Removed 5 exported functions, 1 type alias, and ~20 internal helpers (walkAndUnify, monoTypeToVar, buildLocalView, etc.). Kept `resolveVariable`, `SolverState`, `SolverSnapshot`, `TypeVar`. Removed 10 unused imports. |
-| 4 | Compiler.Generate.MLIR.Expr | `boxArgsWithMlirTypes` | 0% | FIXED | Removed function and its entry in the exposing clause. |
+| 4 | Compiler.GenerateMlir.Expr | `boxArgsWithMlirTypes` | 0% | FIXED | Removed function and its entry in the exposing clause. |
 
 ## Deep Candidates (dead branches / unreachable crashes inside live functions)
 
@@ -36,15 +36,15 @@ or restructuring code so an impossible case falls out of the type system.
 | Module | Why not dead |
 |--------|-------------|
 | Compiler.Type.SolverRoots | All 4 exports called from Compile.elm; 0% coverage = untested typed-compilation path |
-| Compiler.Type.Error | All exports called from error reporting / Unify; low coverage = error paths rarely exercised |
-| Compiler.Generate.MLIR.Backend | `backend` is test-only but `streamMlirToWriter`/`streamMlirBytecode` are production; low coverage = streaming paths undertested |
-| Compiler.Generate.MLIR.BytesFusion.Reify | All functions have internal callers; low coverage = many encoder/decoder patterns untested |
-| Compiler.Generate.MLIR.BytesFusion.Emit | All functions have internal callers; low coverage = many emit paths untested |
-| Compiler.Generate.MLIR.Functions | `generateClosureFuncWithClones`, `generateManagerLeaf` are called internally |
-| Compiler.Generate.MLIR.Patterns | `hexDigitToInt`, `boxPrimitive` are called internally |
-| Compiler.GlobalOpt.MonoGlobalOptimize | All 36 internal helpers have callers |
-| Compiler.GlobalOpt.MonoInlineSimplify | All 74 internal helpers have callers |
-| Compiler.GlobalOpt.Staging.Rewriter | All 14 internal helpers have callers |
+| Compiler.Type.ErrorType | All exports called from error reporting / Unify; low coverage = error paths rarely exercised |
+| Compiler.GenerateMlir.Backend | `backend` is test-only but `streamMlirToWriter`/`streamMlirBytecode` are production; low coverage = streaming paths undertested |
+| Compiler.GenerateMlir.BytesFusion.Reify | All functions have internal callers; low coverage = many encoder/decoder patterns untested |
+| Compiler.GenerateMlir.BytesFusion.Emit | All functions have internal callers; low coverage = many emit paths untested |
+| Compiler.GenerateMlir.Functions | `generateClosureFuncWithClones`, `generateManagerLeaf` are called internally |
+| Compiler.GenerateMlir.Patterns | `hexDigitToInt`, `boxPrimitive` are called internally |
+| Compiler.MonoOpt.GlobalOptimize | All 36 internal helpers have callers |
+| Compiler.MonoOpt.InlineSimplify | All 74 internal helpers have callers |
+| Compiler.MonoOpt.Staging.Rewriter | All 14 internal helpers have callers |
 | Compiler.Monomorphize.KernelAbi | All uncovered functions are called internally |
-| Compiler.Monomorphize.Monomorphize | All uncovered functions are called internally |
+| Compiler.Monomorphize.Subst.Monomorphize | All uncovered functions are called internally |
 | Compiler.Monomorphize.State | `lookupVarHelp` is called from `lookupVar` |

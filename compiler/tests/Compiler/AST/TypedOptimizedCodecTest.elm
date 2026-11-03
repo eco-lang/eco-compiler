@@ -1,18 +1,18 @@
 module Compiler.AST.TypedOptimizedCodecTest exposing (suite)
 
 {-| The build writes typed-optimized graphs to disk as bytes and reads them
-back (`Builder.Build` a module's local graph, `Builder.Elm.Details` a package's
+back (`Builder.Build` a module's local graph, `Builder.Deps.Details` a package's
 global graph), so a decoder that does not read back what its encoder wrote
 would give a later build something other than the graph that was saved. These
-tests run the graph codecs of `Compiler.AST.TypedOptimized` over many small
+tests run the graph codecs of `Compiler.IR.Typed.Optimized` over many small
 programs to check for that.
 
 An encoded graph begins with a format-version byte, then a _string table_, the
 distinct strings the rest of the encoding refers to by index (see
-`Compiler.AST.StringTable`), then a _type table_, the distinct types it refers
-to by id (see `Compiler.AST.TypeTable`), and then the graph itself. A type
+`Compiler.Core.StringTable`), then a _type table_, the distinct types it refers
+to by id (see `Compiler.IR.Typed.TypeTable`), and then the graph itself. A type
 variable is _constrained_ when its name starts with `number`, `comparable`,
-`appendable` or `compappend`, as `Compiler.Data.Name` tests it.
+`appendable` or `compappend`, as `Compiler.Core.Name` tests it.
 `TOpt.computeVarSupers` maps every name collected from a local graph that starts
 with one of those words, type variable or not, to its constraint.
 
@@ -59,12 +59,12 @@ import Builder.GraphAssembly as GA
 import Bytes exposing (Bytes)
 import Bytes.Decode as BD
 import Bytes.Encode as BE
-import Compiler.AST.Canonical as Can
-import Compiler.AST.Source as Src
-import Compiler.AST.StringTable as StringTable
-import Compiler.AST.TypeTable as TypeTable
-import Compiler.AST.TypedOptimized as TOpt
-import Compiler.Data.Name as N exposing (Name)
+import Compiler.Core.Name as N exposing (Name)
+import Compiler.Core.StringTable as StringTable
+import Compiler.IR.Canonical as Can
+import Compiler.IR.Source as Src
+import Compiler.IR.Typed.Optimized as TOpt
+import Compiler.IR.Typed.TypeTable as TypeTable
 import Data.Map
 import Dict
 import Expect exposing (Expectation)

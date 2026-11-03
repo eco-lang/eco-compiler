@@ -55,15 +55,15 @@ deep source.
 -}
 
 import Array
-import Compiler.AST.Canonical as Can
 import Compiler.AST.CanonicalBuilder as CB
-import Compiler.Data.Name exposing (Name)
+import Compiler.Core.Annotation as A
+import Compiler.Core.Name exposing (Name)
 import Compiler.Elm.ModuleName as ModuleName
-import Compiler.Reporting.Annotation as A
+import Compiler.IR.Canonical as Can
 import Compiler.Type.Constrain.Typed.Module as ConstrainTyped
+import Compiler.Type.State.IO as IO
 import Compiler.Type.Type as Type
 import Expect
-import System.TypeCheck.IO as IO
 import Test exposing (Test)
 
 

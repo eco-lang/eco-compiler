@@ -5,7 +5,7 @@ the `Char` side the type `i32`, so that a conversion or comparison emitted with
 some other width is caught (CGEN\_015).
 
 The code generator's type for a `Char` is `i32`
-(`Compiler.Generate.MLIR.Types.ecoChar`), and for an `Int` it is `i64`. An
+(`Compiler.GenerateMlir.Types.ecoChar`), and for an `Int` it is `i64`. An
 operand's type here is its _defined_ type: the type of the op result or block
 argument that introduces the SSA name within the enclosing top-level op
 (`TestLogic.Generate.CodeGen.Invariants.typeEnvOfOp`), not the op's
@@ -26,7 +26,7 @@ result types of the comparisons.
 
 -}
 
-import Compiler.AST.Source as Src
+import Compiler.IR.Source as Src
 import Dict
 import Expect exposing (Expectation)
 import Mlir.Mlir exposing (MlirModule, MlirOp, MlirType(..))

@@ -10,7 +10,7 @@ that arrow) at every arrow, and a function the local is passed to would then
 be specialized with ⊤ at that arrow, unnoticed, since the program still
 compiles.
 
-For locals like the two in these fixtures, `Compiler.MonoSolver.Translate`
+For locals like the two in these fixtures, `Compiler.Monomorphize.Solver.Translate`
 first classifies the local's type as the type checker gives it, and every
 arrow written in that type carries `LTop tkClassLet` (`tkClassParam` for a
 tail-def's parameters). The fixtures' types have no type variables; one already bound in the solver's
@@ -47,8 +47,6 @@ and the substitution engine.
 -}
 
 import Array
-import Compiler.AST.Monomorphized as Mono
-import Compiler.AST.Source as Src
 import Compiler.AST.SourceBuilder
     exposing
         ( binopsExpr
@@ -66,7 +64,9 @@ import Compiler.AST.SourceBuilder
         , tupleExpr
         , varExpr
         )
-import Compiler.Eco.Config as Config
+import Compiler.Config as Config
+import Compiler.IR.Mono as Mono
+import Compiler.IR.Source as Src
 import Expect
 import Test exposing (Test)
 import TestLogic.TestPipeline as Pipeline

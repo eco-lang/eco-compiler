@@ -37,7 +37,6 @@ optimizer has split its type, though its flattened arity is 3.
 
 -}
 
-import Compiler.AST.Source as Src
 import Compiler.AST.SourceBuilder
     exposing
         ( binopsExpr
@@ -51,6 +50,7 @@ import Compiler.AST.SourceBuilder
         , tType
         , varExpr
         )
+import Compiler.IR.Source as Src
 import SourceIR.Suite.StandardTestSuites as StandardTestSuites
 import Test exposing (Test)
 import TestLogic.Generate.MonoFunctionArity exposing (expectFunctionArityMatches)

@@ -9,14 +9,14 @@ A Bool has two representations in the MLIR the code generator emits. In SSA
 operand context it is `i1`, a one-bit integer, which is what an `eco.case`
 with `case_kind` `"bool"` branches on. In a heap object, in a closure capture
 and at a function boundary it is `!eco.value`, a boxed value (True and False
-are embedded constants, HEAP\_010). `Compiler.Generate.MLIR.Types` decides which
+are embedded constants, HEAP\_010). `Compiler.GenerateMlir.Types` decides which
 representation applies where.
 
 `expectBooleanConstants` compiles a program to MLIR and fails, with one line
 per violation, on either of two kinds:
 
   - A True or False `eco.constant`, recognised by its integer `kind` attribute
-    (1 for True, 0 for False, as `Compiler.Generate.MLIR.Ops.ecoConstantTrue`
+    (1 for True, 0 for False, as `Compiler.GenerateMlir.Ops.ecoConstantTrue`
     and `ecoConstantFalse` build it), whose results are not exactly one
     `!eco.value`.
   - An operand of type `i1` given to an op that crosses a heap, closure or
@@ -34,7 +34,7 @@ Among what is not checked: an `i1` stored inside an SSA aggregate that
 
 -}
 
-import Compiler.AST.Source as Src
+import Compiler.IR.Source as Src
 import Dict
 import Expect exposing (Expectation)
 import Mlir.Mlir exposing (MlirModule, MlirOp, MlirType(..))

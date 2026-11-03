@@ -18,14 +18,14 @@ What the check establishes:
 Among what is not tested: ops nested inside other ops' regions are not
 searched; that a type table is present at all, or what it contains; and the
 MLIR the build emits, since `runToMlir` generates its module with
-`Compiler.Generate.MLIR.Backend.generateMlirModule` rather than the build's
+`Compiler.GenerateMlir.Backend.generateMlirModule` rather than the build's
 streaming writers.
 
 @docs expectTypeTableUniqueness
 
 -}
 
-import Compiler.AST.Source as Src
+import Compiler.IR.Source as Src
 import Expect exposing (Expectation)
 import Mlir.Mlir exposing (MlirModule)
 import TestLogic.Generate.CodeGen.Invariants

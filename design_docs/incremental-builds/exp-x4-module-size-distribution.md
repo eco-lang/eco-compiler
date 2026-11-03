@@ -62,16 +62,16 @@ back-end latency to be about 1 s?
 
 | Unit | CPU (s) | Functions | LLVM insts | Source lines |
 |---|---:|---:|---:|---:|
-| Compiler.Parse.Primitives | 27.5 | 4,111 | 180,630 | 780 |
+| Compiler.Lexer.Primitives | 27.5 | 4,111 | 180,630 | 780 |
 | Compiler.Parse.Shader | 22.1 | 5,213 | 125,108 | 317 |
-| Compiler.Reporting.Error.Syntax | 22.0 | 1,663 | 157,954 | 12,701 |
+| Compiler.Parse.Error | 22.0 | 1,663 | 157,954 | 12,701 |
 | Utils.Main | 15.2 | 2,403 | 81,362 | 1,749 |
-| Compiler.MonoSolver.Monomorphize | 12.2 | 1,252 | 65,205 | 5,156 |
-| Compiler.MonoSolver.Translate | 11.0 | 1,001 | 52,069 | 7,633 |
+| Compiler.Monomorphize.Solver.Monomorphize | 12.2 | 1,252 | 65,205 | 5,156 |
+| Compiler.Monomorphize.Solver.Translate | 11.0 | 1,001 | 52,069 | 7,633 |
 | Data.Map | 10.8 | 1,195 | 52,780 | 260 |
-| Compiler.AST.Source | 10.5 | 1,820 | 55,470 | 2,120 |
-| Compiler.Generate.MLIR.BytesFusion.Emit | 10.3 | 116 | 43,576 | 2,711 |
-| Builder.Elm.Details | 9.1 | 2,124 | 53,791 | 2,451 |
+| Compiler.IR.Source | 10.5 | 1,820 | 55,470 | 2,120 |
+| Compiler.GenerateMlir.BytesFusion.Emit | 10.3 | 116 | 43,576 | 2,711 |
+| Builder.Deps.Details | 9.1 | 2,124 | 53,791 | 2,451 |
 
 ### Units under definition attribution (`module`, 327 units)
 
@@ -92,7 +92,7 @@ back-end latency to be about 1 s?
 
 1. **Source-module size is a poor proxy for back-end cost.** The cost is in the *specializations
    a module owns*, not its source lines.
-   - `Compiler.Parse.Primitives` (780 lines) and `Compiler.Parse.Shader` (317 lines) are among the
+   - `Compiler.Lexer.Primitives` (780 lines) and `Compiler.Parse.Shader` (317 lines) are among the
      most expensive units, because they own thousands of instances of parser-combinator generics.
    - `Reporting.Error.Syntax` is expensive simply because it is huge (12.7k lines).
    - Any splitting rule must use an instruction-count or op-count estimate, as plan 06 already

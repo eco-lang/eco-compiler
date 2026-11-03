@@ -3,7 +3,7 @@ module Compiler.Reporting.Result exposing
     , ok, throw, warn, run
     , map, apply, andThen
     , traverse, indexedTraverse, mapTraverseWithKey
-    , loop
+    , loop, foldM
     )
 
 {-| A compiler pass that checks a whole module should report every problem it
@@ -18,7 +18,7 @@ passes it along. The warnings are passed along in the same way, and `warn`,
 the one function here that adds to them, takes them to be a list of
 `Compiler.Reporting.Warning.Warning`. No function in this module discards the
 info or warnings when a computation fails. Errors are held in a
-`Compiler.Data.OneOrMore`, so a failure always carries at least one.
+`Data.OneOrMore`, so a failure always carries at least one.
 
 Whether a failure stops the computation depends on how its steps are combined.
 `apply` and `traverse` run every step, even after one has failed, and join the
@@ -54,14 +54,14 @@ its warnings and an ordinary `Result`.
 
 # Loops
 
-@docs loop
+@docs loop, foldM
 
 -}
 
-import Compiler.Data.Index as Index
-import Compiler.Data.OneOrMore as OneOrMore
+import Compiler.Core.Index as Index
 import Compiler.Reporting.Warning as Warning
 import Data.Map as DataMap
+import Data.OneOrMore as OneOrMore
 
 
 
@@ -359,3 +359,12 @@ collectAllHelp func xs i w acc =
                             Err es ->
                                 Err (OneOrMore.more es e)
                         )
+
+
+{-| Returns the result of folding `f` over the list from the left, starting from
+`b`. The steps are joined with `andThen`, so a step that fails ends the fold,
+and the elements after it are never given to `f`.
+-}
+foldM : (b -> a -> RResult info warnings error b) -> b -> List a -> RResult info warnings error b
+foldM f b =
+    List.foldl (\a -> andThen (\acc -> f acc a)) (ok b)

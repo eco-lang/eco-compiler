@@ -41,9 +41,9 @@ that does not match a refutable argument pattern.
 
 -}
 
-import Compiler.AST.Source as Src
 import Compiler.AST.SourceBuilder exposing (binopsExpr, boolExpr, callExpr, caseExpr, define, ifExpr, intExpr, lambdaExpr, letExpr, listExpr, makeModuleWithDefs, pAnything, pInt, pList, pRecord, pTuple, pVar, recordExpr, strExpr, tuple3Expr, tupleExpr, varExpr)
 import Compiler.BulkCheck exposing (TestCase, bulkCheck)
+import Compiler.IR.Source as Src
 import Expect exposing (Expectation)
 import Test exposing (Test)
 

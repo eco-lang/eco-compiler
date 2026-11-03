@@ -46,16 +46,16 @@ result can be used inside a computation that keeps something else there.
 
 -}
 
-import Compiler.AST.Canonical as Can
-import Compiler.AST.Source as Src
+import Compiler.Canonicalize.Dups as Dups
 import Compiler.Canonicalize.Environment as Env
-import Compiler.Canonicalize.Environment.Dups as Dups
+import Compiler.Canonicalize.Error as Error
 import Compiler.Canonicalize.Ids as Ids
-import Compiler.Data.Index as Index
-import Compiler.Data.Name as Name exposing (Name)
+import Compiler.Core.Annotation as A
+import Compiler.Core.Index as Index
+import Compiler.Core.Name as Name exposing (Name)
 import Compiler.Elm.ModuleName as ModuleName
-import Compiler.Reporting.Annotation as A
-import Compiler.Reporting.Error.Canonicalize as Error
+import Compiler.IR.Canonical as Can
+import Compiler.IR.Source as Src
 import Compiler.Reporting.Result as ReportingResult
 import Dict exposing (Dict)
 

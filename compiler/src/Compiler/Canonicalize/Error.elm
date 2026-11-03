@@ -1,0 +1,2568 @@
+module Compiler.Canonicalize.Error exposing
+    ( Error(..), TooLargeWhat(..)
+    , BadArityContext(..), DuplicatePatternContext(..), VarKind(..)
+    , InvalidPayload(..), PortProblem(..), PossibleNames
+    , toReport
+    , errorEncoder, errorDecoder
+    , invalidPayloadEncoder, invalidPayloadDecoder
+    )
+
+{-| Every problem the canonicalizer finds is a value of `Error`, and this module
+defines those errors and the message a person reads for each.
+
+Canonicalization is the compiler phase that turns the parsed source AST into the
+canonical AST. It resolves each name to the module that defines it, and checks
+what can be checked before types are known: duplicate definitions, the exposing
+lists of the module and its imports, the types of ports, values defined in terms
+of themselves, and the type variables of type declarations. Each way this can
+fail is one constructor of `Error`. The other types here are details that some
+constructors carry.
+
+Most of the module is `toReport`, which turns one error into a
+`Compiler.Reporting.Report.Report`: a title naming the kind of problem, the
+region it concerns, and a message built around a snippet of the source. Where a
+name could not be found, the message offers the nearest names that do exist,
+ordered by `Compiler.Core.Suggest.sort` and cut to the first four (two for
+an operator).
+
+The rest is a binary codec for `Error`. An error is written as a one-byte tag,
+its constructor's position in the declaration of `Error` (0 to 37), followed by
+its fields, and an unknown tag fails to decode. `TooLarge`, added later, is
+declared beside `Shadowing` but takes the next free tag, 38, so the older tags
+keep their values. The tags are written as literals, so reordering or inserting
+a constructor changes the format.
+
+
+# Errors
+
+@docs Error, TooLargeWhat
+
+
+# Supporting Types
+
+@docs BadArityContext, DuplicatePatternContext, VarKind
+@docs InvalidPayload, PortProblem, PossibleNames
+
+
+# Reporting
+
+@docs toReport
+
+
+# Serialization
+
+@docs errorEncoder, errorDecoder
+@docs invalidPayloadEncoder, invalidPayloadDecoder
+
+-}
+
+import Bytes.Decode
+import Bytes.Encode
+import Compiler.Core.Annotation as A
+import Compiler.Core.Index as Index
+import Compiler.Core.Name as Name exposing (Name)
+import Compiler.Core.Suggest as Suggest
+import Compiler.Elm.ModuleName as ModuleName
+import Compiler.IR.Canonical as Can
+import Compiler.IR.Source as Src
+import Compiler.Reporting.Doc as D
+import Compiler.Reporting.Render.Code as Code
+import Compiler.Reporting.Render.Type as RT
+import Compiler.Reporting.Report as Report
+import Data.OneOrMore as OneOrMore exposing (OneOrMore)
+import Data.Set as EverySet exposing (EverySet)
+import Dict exposing (Dict)
+import Utils.Bytes.Decode as BD
+import Utils.Bytes.Encode as BE
+
+
+
+-- ====== CANONICALIZATION ERRORS ======
+
+
+{-| A problem found during canonicalization, carrying what its report needs.
+Most constructors carry the region of the offending code and the names
+involved.
+
+`DuplicateDecl`, `DuplicateType`, `DuplicateCtor`, `DuplicateBinop`,
+`DuplicateField`, `DuplicateAliasArg`, `DuplicateUnionArg`, `DuplicatePattern`,
+`ExportDuplicate` and `Shadowing` carry two regions, both places where one name
+is defined or exposed, and their reports show both and are located at the
+second. In `Shadowing` the first is the binding already in scope and the second
+is the new binding that reuses its name.
+
+`AnnotationTooShort` is a definition with more arguments than its type
+annotation has arrows for. Its index is the number of arguments the annotation
+allows, and its `Int` is how many more the definition has.
+
+`AmbiguousVar`, `AmbiguousType`, `AmbiguousVariant` and `AmbiguousBinop` are a
+name that more than one import provides. The `Maybe Name` is the qualifier
+written before the name, `Nothing` when there is none; an operator never has
+one. The last two fields together are the candidate home modules, so there are
+at least two.
+
+`BadArity` is a type, or a variant in a pattern, applied to the wrong number of
+arguments. Its two `Int`s are the number expected, then the number given.
+
+`Binop` carries two operators of one chain that cannot be grouped without
+parentheses.
+
+`EffectNotFound` is an effect type named by an effect module for which the file
+defines no custom type. `EffectFunctionNotFound` is a function that the kind of
+effect module requires and the file does not define.
+
+`ExportNotFound` is an exposed name with no definition. It carries what kind of
+name it is and the names of that kind the module does define, from which the
+report draws its suggestions. `ExportOpenAlias` and `ImportOpenAlias` are a
+`(..)` written after a type alias, in the module's own exposing list and in an
+import's. `ImportCtorByName` is a variant imported by name, and carries the
+variant and then the type it belongs to.
+
+`ImportNotFound` is an import of a module that cannot be found. No
+`Compiler.Canonicalize` module raises it, and its report ignores the list of
+modules it carries.
+
+`ImportExposingNotFound` is a name in an import's exposing list that the
+imported module does not expose. It carries that module and the names of that
+kind which it does expose. Its suggestions are ordered by closeness to the
+module's name, not to the missing name.
+
+`NotFoundVar`, `NotFoundType` and `NotFoundVariant` are a name that is not in
+scope, with its qualifier if one was written and the names to suggest from.
+`NotFoundBinop` is an operator that is not in scope, with the operators that
+are.
+
+`PatternHasRecordCtor` is the constructor of a record alias used in a pattern.
+
+`PortPayloadInvalid` is a port whose payload contains a type that cannot cross
+to JavaScript. It carries that part of the type, which the report does not
+show, and the reason. `PortTypeInvalid` is a port whose type has the wrong
+shape.
+
+`RecursiveAlias` is a type alias defined in terms of itself. It carries the
+alias's parameters and body, from which the report builds a suggested `type`
+declaration, and the other aliases on the cycle, empty when the alias refers to
+itself directly. `RecursiveDecl` and `RecursiveLet` are a value, at the top
+level or in a `let`, defined in terms of itself, with the other definitions on
+the cycle, empty when it refers to itself directly.
+
+`TooLarge` is a function, lambda or local function over one of Eco's heap
+limits (HEAP\_078), or a constructor, record type or record literal with more
+fields than a heap object holds (HEAP\_019). It carries the region to
+underline, what is too large, the actual count and the limit.
+
+`TupleLargerThanThree` is a tuple of more than three elements.
+
+`TypeVarsUnboundInUnion` is a custom type whose variants use type variables it
+does not declare. It carries the declared variables, then the undeclared ones,
+each with a region where it is used, the first split off so that there is
+always one. `TypeVarsMessedUpInAlias` is a type alias whose declared and used
+type variables differ. It carries the declared variables, then those declared
+but not used, then those used but not declared, each with a region.
+
+-}
+type Error
+    = AnnotationTooShort A.Region Name Index.ZeroBased Int
+    | AmbiguousVar A.Region (Maybe Name) Name ModuleName.Canonical (OneOrMore ModuleName.Canonical)
+    | AmbiguousType A.Region (Maybe Name) Name ModuleName.Canonical (OneOrMore ModuleName.Canonical)
+    | AmbiguousVariant A.Region (Maybe Name) Name ModuleName.Canonical (OneOrMore ModuleName.Canonical)
+    | AmbiguousBinop A.Region Name ModuleName.Canonical (OneOrMore ModuleName.Canonical)
+    | BadArity A.Region BadArityContext Name Int Int
+    | Binop A.Region Name Name
+    | DuplicateDecl Name A.Region A.Region
+    | DuplicateType Name A.Region A.Region
+    | DuplicateCtor Name A.Region A.Region
+    | DuplicateBinop Name A.Region A.Region
+    | DuplicateField Name A.Region A.Region
+    | DuplicateAliasArg Name Name A.Region A.Region
+    | DuplicateUnionArg Name Name A.Region A.Region
+    | DuplicatePattern DuplicatePatternContext Name A.Region A.Region
+    | EffectNotFound A.Region Name
+    | EffectFunctionNotFound A.Region Name
+    | ExportDuplicate Name A.Region A.Region
+    | ExportNotFound A.Region VarKind Name (List Name)
+    | ExportOpenAlias A.Region Name
+    | ImportCtorByName A.Region Name Name
+    | ImportNotFound A.Region Name (List ModuleName.Canonical)
+    | ImportOpenAlias A.Region Name
+    | ImportExposingNotFound A.Region ModuleName.Canonical Name (List Name)
+    | NotFoundVar A.Region (Maybe Name) Name PossibleNames
+    | NotFoundType A.Region (Maybe Name) Name PossibleNames
+    | NotFoundVariant A.Region (Maybe Name) Name PossibleNames
+    | NotFoundBinop A.Region Name (EverySet String Name)
+    | PatternHasRecordCtor A.Region Name
+    | PortPayloadInvalid A.Region Name (Can.Type Name) InvalidPayload
+    | PortTypeInvalid A.Region Name PortProblem
+    | RecursiveAlias A.Region Name (List Name) Src.Type (List Name)
+    | RecursiveDecl A.Region Name (List Name)
+    | RecursiveLet (A.Located Name) (List Name)
+    | Shadowing Name A.Region A.Region
+    | TooLarge A.Region TooLargeWhat Int Int
+    | TupleLargerThanThree A.Region
+    | TypeVarsUnboundInUnion A.Region Name (List Name) ( Name, A.Region ) (List ( Name, A.Region ))
+    | TypeVarsMessedUpInAlias A.Region Name (List Name) (List ( Name, A.Region )) (List ( Name, A.Region ))
+
+
+{-| What a `TooLarge` error is about. `TooManyParams` is a top-level or
+let-defined function with too many parameters, named; `TooManyLambdaParams` an
+anonymous function with too many parameters; and `TooManyClosureSlots` a local
+function (named) or anonymous function (`Nothing`) whose parameters plus
+captured variables exceed the closure stage arity. `TooManyCtorFields` is a
+custom type variant with more fields than a Custom object holds, and
+`TooManyRecordFields` a record type alias (named) or a record literal or record
+type annotation (`Nothing`) with more fields than a Record object holds.
+-}
+type TooLargeWhat
+    = TooManyParams Name
+    | TooManyLambdaParams
+    | TooManyClosureSlots (Maybe Name)
+    | TooManyCtorFields Name
+    | TooManyRecordFields (Maybe Name)
+
+
+{-| What was given the wrong number of arguments in a `BadArity` error: a type,
+or a variant in a pattern.
+-}
+type BadArityContext
+    = TypeArity
+    | PatternArity
+
+
+{-| Where one variable name was bound twice, which decides the wording of a
+`DuplicatePattern` report.
+
+`DPLambdaArgs` is the arguments of an anonymous function, and `DPFuncArgs` the
+arguments of the named function it carries. `DPCaseBranch` is the pattern of a
+`case` branch, `DPLetBinding` the definitions of one `let`, and `DPDestruct` a
+pattern that a `let` destructures.
+
+-}
+type DuplicatePatternContext
+    = DPLambdaArgs
+    | DPFuncArgs Name
+    | DPCaseBranch
+    | DPLetBinding
+    | DPDestruct
+
+
+{-| Why a type cannot cross between Elm and JavaScript.
+
+`ExtendedRecord` is a record type with a type variable standing for its other
+fields. `TypeVariable` carries the name of the variable. `UnsupportedType`
+carries the name of a type that is not allowed, or that is applied to arguments
+it may not have.
+
+-}
+type InvalidPayload
+    = ExtendedRecord
+    | Function
+    | TypeVariable Name
+    | UnsupportedType Name
+
+
+{-| What is wrong with the shape of a port's type, apart from its payload.
+
+`CmdNoArg` is an outgoing port, one whose result is a `Cmd`, that takes no
+argument, and `CmdExtraArgs` one that takes more than one, carrying how many.
+`CmdBadMsg` is an outgoing port whose `Cmd` is not applied to a type variable.
+`SubBad` is an incoming port whose type is not of the form
+`(payload -> msg) -> Sub msg`. `NotCmdOrSub` is a port whose result is neither
+a `Cmd` nor a `Sub` applied to one argument.
+
+-}
+type PortProblem
+    = CmdNoArg
+    | CmdExtraArgs Int
+    | CmdBadMsg
+    | SubBad
+    | NotCmdOrSub
+
+
+{-| The names in scope of the kind that could not be found, from which a
+`NotFoundVar`, `NotFoundType` or `NotFoundVariant` report draws its
+suggestions.
+
+`locals` are the names usable unqualified. `quals` maps each qualifier to the
+names usable after it.
+
+-}
+type alias PossibleNames =
+    { locals : EverySet String Name
+    , quals : Dict Name (EverySet String Name)
+    }
+
+
+
+-- ====== KIND ======
+
+
+{-| The kind of name an `ExportNotFound` error is about, which decides how the
+report describes and writes it. `BadPattern` is never raised.
+-}
+type VarKind
+    = BadOp
+    | BadVar
+    | BadPattern
+    | BadType
+
+
+{-| Returns the words that describe an exposed `name` of kind `kind`: the
+article, the noun for the kind, and the name as an exposing list writes it, in
+parentheses for an operator and in backquotes otherwise.
+-}
+toKindInfo : VarKind -> Name -> ( D.Doc, D.Doc, D.Doc )
+toKindInfo kind name =
+    case kind of
+        BadOp ->
+            ( D.fromChars "an"
+            , D.fromChars "operator"
+            , D.fromChars "("
+                |> D.a (D.fromName name)
+                |> D.a (D.fromChars ")")
+            )
+
+        BadVar ->
+            ( D.fromChars "a"
+            , D.fromChars "value"
+            , D.fromChars "`"
+                |> D.a (D.fromName name)
+                |> D.a (D.fromChars "`")
+            )
+
+        BadPattern ->
+            ( D.fromChars "a"
+            , D.fromChars "pattern"
+            , D.fromChars "`"
+                |> D.a (D.fromName name)
+                |> D.a (D.fromChars "`")
+            )
+
+        BadType ->
+            ( D.fromChars "a"
+            , D.fromChars "type"
+            , D.fromChars "`"
+                |> D.a (D.fromName name)
+                |> D.a (D.fromChars "`")
+            )
+
+
+
+-- ====== TO REPORT ======
+
+
+{-| Builds the report for `err`, quoting the lines of `source` it concerns.
+
+The report is located at the error's region, or at the second region for an
+error that carries two. Its list of suggestions holds the names the message
+offers in place of one that was not found, and for the unknown operators `===`,
+`!=` or `!==`, and `**` it holds the operators the message recommends instead.
+
+-}
+toReport : Code.Source -> Error -> Report.Report
+toReport source err =
+    case err of
+        AnnotationTooShort region name index leftovers ->
+            let
+                numTypeArgs : Int
+                numTypeArgs =
+                    Index.toMachine index
+
+                numDefArgs : Int
+                numDefArgs =
+                    numTypeArgs + leftovers
+            in
+            Report.report "BAD TYPE ANNOTATION" region [] <|
+                Code.toSnippet source
+                    region
+                    Nothing
+                    ( D.reflow
+                        ("The type annotation for `"
+                            ++ name
+                            ++ "` says it can accept "
+                            ++ D.args numTypeArgs
+                            ++ ", but the definition says it has "
+                            ++ D.args numDefArgs
+                            ++ ":"
+                        )
+                    , D.reflow
+                        ("Is the type annotation missing something? Should some argument"
+                            ++ (if leftovers == 1 then
+                                    ""
+
+                                else
+                                    "s"
+                               )
+                            ++ " be deleted? Maybe some parentheses are missing?"
+                        )
+                    )
+
+        AmbiguousVar region maybePrefix name h hs ->
+            ambiguousName source region maybePrefix name h hs "variable"
+
+        AmbiguousType region maybePrefix name h hs ->
+            ambiguousName source region maybePrefix name h hs "type"
+
+        AmbiguousVariant region maybePrefix name h hs ->
+            ambiguousName source region maybePrefix name h hs "variant"
+
+        AmbiguousBinop region name h hs ->
+            ambiguousName source region Nothing name h hs "operator"
+
+        BadArity region badArityContext name expected actual ->
+            let
+                thing : String
+                thing =
+                    case badArityContext of
+                        TypeArity ->
+                            "type"
+
+                        PatternArity ->
+                            "variant"
+            in
+            if actual < expected then
+                Report.report "TOO FEW ARGS" region [] <|
+                    Code.toSnippet source
+                        region
+                        Nothing
+                        ( D.reflow
+                            ("The `"
+                                ++ name
+                                ++ "` "
+                                ++ thing
+                                ++ " needs "
+                                ++ D.args expected
+                                ++ ", but I see "
+                                ++ String.fromInt actual
+                                ++ " instead:"
+                            )
+                        , D.reflow
+                            "What is missing? Are some parentheses misplaced?"
+                        )
+
+            else
+                Report.report "TOO MANY ARGS" region [] <|
+                    Code.toSnippet source
+                        region
+                        Nothing
+                        ( D.reflow
+                            ("The `"
+                                ++ name
+                                ++ "` "
+                                ++ thing
+                                ++ " needs "
+                                ++ D.args expected
+                                ++ ", but I see "
+                                ++ String.fromInt actual
+                                ++ " instead:"
+                            )
+                        , if actual - expected == 1 then
+                            D.fromChars "Which is the extra one? Maybe some parentheses are missing?"
+
+                          else
+                            D.fromChars "Which are the extra ones? Maybe some parentheses are missing?"
+                        )
+
+        Binop region op1 op2 ->
+            Report.report "INFIX PROBLEM" region [] <|
+                Code.toSnippet source
+                    region
+                    Nothing
+                    ( D.reflow
+                        ("You cannot mix (" ++ op1 ++ ") and (" ++ op2 ++ ") without parentheses.")
+                    , D.reflow
+                        "I do not know how to group these expressions. Add parentheses for me!"
+                    )
+
+        DuplicateDecl name r1 r2 ->
+            nameClash source r1 r2 <|
+                "This file has multiple `"
+                    ++ name
+                    ++ "` declarations."
+
+        DuplicateType name r1 r2 ->
+            nameClash source r1 r2 <|
+                "This file defines multiple `"
+                    ++ name
+                    ++ "` types."
+
+        DuplicateCtor name r1 r2 ->
+            nameClash source r1 r2 <|
+                "This file defines multiple `"
+                    ++ name
+                    ++ "` type constructors."
+
+        DuplicateBinop name r1 r2 ->
+            nameClash source r1 r2 <|
+                "This file defines multiple ("
+                    ++ name
+                    ++ ") operators."
+
+        DuplicateField name r1 r2 ->
+            nameClash source r1 r2 <|
+                "This record has multiple `"
+                    ++ name
+                    ++ "` fields."
+
+        DuplicateAliasArg typeName name r1 r2 ->
+            nameClash source r1 r2 <|
+                "The `"
+                    ++ typeName
+                    ++ "` type alias has multiple `"
+                    ++ name
+                    ++ "` type variables."
+
+        DuplicateUnionArg typeName name r1 r2 ->
+            nameClash source r1 r2 <|
+                "The `"
+                    ++ typeName
+                    ++ "` type has multiple `"
+                    ++ name
+                    ++ "` type variables."
+
+        DuplicatePattern context name r1 r2 ->
+            nameClash source r1 r2 <|
+                case context of
+                    DPLambdaArgs ->
+                        "This anonymous function has multiple `" ++ name ++ "` arguments."
+
+                    DPFuncArgs funcName ->
+                        "The `" ++ funcName ++ "` function has multiple `" ++ name ++ "` arguments."
+
+                    DPCaseBranch ->
+                        "This `case` pattern has multiple `" ++ name ++ "` variables."
+
+                    DPLetBinding ->
+                        "This `let` expression defines `" ++ name ++ "` more than once!"
+
+                    DPDestruct ->
+                        "This pattern contains multiple `" ++ name ++ "` variables."
+
+        EffectNotFound region name ->
+            Report.report "EFFECT PROBLEM" region [] <|
+                Code.toSnippet source
+                    region
+                    Nothing
+                    ( D.reflow
+                        ("You have declared that `" ++ name ++ "` is an effect type:")
+                    , D.reflow
+                        ("But I cannot find a custom type named `" ++ name ++ "` in this file!")
+                    )
+
+        EffectFunctionNotFound region name ->
+            Report.report "EFFECT PROBLEM" region [] <|
+                Code.toSnippet source
+                    region
+                    Nothing
+                    ( D.reflow
+                        ("This kind of effect module must define a `" ++ name ++ "` function.")
+                    , D.reflow
+                        ("But I cannot find `" ++ name ++ "` in this file!")
+                    )
+
+        ExportDuplicate name r1 r2 ->
+            let
+                messageThatEndsWithPunctuation : String
+                messageThatEndsWithPunctuation =
+                    "You are trying to expose `" ++ name ++ "` multiple times!"
+            in
+            Report.report "REDUNDANT EXPORT" r2 [] <|
+                Code.toPair source
+                    r1
+                    r2
+                    ( D.reflow messageThatEndsWithPunctuation
+                    , D.fromChars "Remove one of them and you should be all set!"
+                    )
+                    ( D.reflow (messageThatEndsWithPunctuation ++ " Once here:")
+                    , D.fromChars "And again right here:"
+                    , D.fromChars "Remove one of them and you should be all set!"
+                    )
+
+        ExportNotFound region kind rawName possibleNames ->
+            let
+                suggestions : List String
+                suggestions =
+                    Suggest.sort rawName identity possibleNames |> List.take 4
+            in
+            Report.report "UNKNOWN EXPORT" region suggestions <|
+                let
+                    ( a, thing, name ) =
+                        toKindInfo kind rawName
+                in
+                D.stack
+                    [ D.fillSep
+                        [ D.fromChars "You"
+                        , D.fromChars "are"
+                        , D.fromChars "trying"
+                        , D.fromChars "to"
+                        , D.fromChars "expose"
+                        , a
+                        , thing
+                        , D.fromChars "named"
+                        , name
+                        , D.fromChars "but"
+                        , D.fromChars "I"
+                        , D.fromChars "cannot"
+                        , D.fromChars "find"
+                        , D.fromChars "its"
+                        , D.fromChars "definition."
+                        ]
+                    , case List.map D.fromChars suggestions of
+                        [] ->
+                            D.reflow "I do not see any super similar names in this file. Is the definition missing?"
+
+                        [ alt ] ->
+                            D.fillSep
+                                [ D.fromChars "Maybe"
+                                , D.fromChars "you"
+                                , D.fromChars "want"
+                                , D.dullyellow alt
+                                , D.fromChars "instead?"
+                                ]
+
+                        alts ->
+                            D.stack
+                                [ D.fromChars "These names seem close though:"
+                                , List.map D.dullyellow alts |> D.vcat |> D.indent 4
+                                ]
+                    ]
+
+        ExportOpenAlias region name ->
+            Report.report "BAD EXPORT" region [] <|
+                Code.toSnippet source
+                    region
+                    Nothing
+                    ( D.reflow
+                        ("The (..) syntax is for exposing variants of a custom type. It cannot be used with a type alias like `"
+                            ++ name
+                            ++ "` though."
+                        )
+                    , D.reflow
+                        "Remove the (..) and you should be fine!"
+                    )
+
+        ImportCtorByName region ctor tipe ->
+            Report.report "BAD IMPORT" region [] <|
+                Code.toSnippet source
+                    region
+                    Nothing
+                    ( D.reflow
+                        ("You are trying to import the `"
+                            ++ ctor
+                            ++ "` variant by name:"
+                        )
+                    , D.fillSep
+                        [ D.fromChars "Try"
+                        , D.fromChars "importing"
+                        , D.green (D.fromName tipe |> D.a (D.fromChars "(..)"))
+                        , D.fromChars "instead."
+                        , D.fromChars "The"
+                        , D.fromChars "dots"
+                        , D.fromChars "mean"
+                        , D.fromChars "“expose"
+                        , D.fromChars "the"
+                        , D.fromName tipe
+                        , D.fromChars "type"
+                        , D.fromChars "and"
+                        , D.fromChars "all"
+                        , D.fromChars "its"
+                        , D.fromChars "variants"
+                        , D.fromChars "so"
+                        , D.fromChars "it"
+                        , D.fromChars "gives"
+                        , D.fromChars "you"
+                        , D.fromChars "access"
+                        , D.fromChars "to"
+                        , D.fromName ctor |> D.a (D.fromChars ".")
+                        ]
+                    )
+
+        ImportNotFound region name _ ->
+            Report.report "UNKNOWN IMPORT" region [] <|
+                Code.toSnippet source
+                    region
+                    Nothing
+                    ( D.reflow
+                        ("I could not find a `" ++ name ++ "` module to import!")
+                    , D.empty
+                    )
+
+        ImportOpenAlias region name ->
+            Report.report "BAD IMPORT" region [] <|
+                Code.toSnippet source
+                    region
+                    Nothing
+                    ( D.reflow
+                        ("The `" ++ name ++ "` type alias cannot be followed by (..) like this:")
+                    , D.reflow
+                        "Remove the (..) and it should work."
+                    )
+
+        ImportExposingNotFound region (ModuleName.Canonical _ home) value possibleNames ->
+            let
+                suggestions : List String
+                suggestions =
+                    Suggest.sort home identity possibleNames |> List.take 4
+            in
+            Report.report "BAD IMPORT" region suggestions <|
+                Code.toSnippet source
+                    region
+                    Nothing
+                    ( D.reflow
+                        ("The `"
+                            ++ home
+                            ++ "` module does not expose `"
+                            ++ value
+                            ++ "`:"
+                        )
+                    , case List.map D.fromChars suggestions of
+                        [] ->
+                            D.fromChars "I cannot find any super similar exposed names. Maybe it is private?"
+
+                        [ alt ] ->
+                            D.fillSep
+                                [ D.fromChars "Maybe"
+                                , D.fromChars "you"
+                                , D.fromChars "want"
+                                , D.dullyellow alt
+                                , D.fromChars "instead?"
+                                ]
+
+                        alts ->
+                            D.stack
+                                [ D.fromChars "These names seem close though:"
+                                , List.map D.dullyellow alts |> D.vcat |> D.indent 4
+                                ]
+                    )
+
+        NotFoundVar region prefix name possibleNames ->
+            notFound source region prefix name "variable" possibleNames
+
+        NotFoundType region prefix name possibleNames ->
+            notFound source region prefix name "type" possibleNames
+
+        NotFoundVariant region prefix name possibleNames ->
+            notFound source region prefix name "variant" possibleNames
+
+        NotFoundBinop region op locals ->
+            if op == "===" then
+                Report.report "UNKNOWN OPERATOR" region [ "==" ] <|
+                    Code.toSnippet source
+                        region
+                        Nothing
+                        ( D.fromChars "Elm does not have a (===) operator like JavaScript."
+                        , D.fromChars "Switch to (==) instead."
+                        )
+
+            else if op == "!=" || op == "!==" then
+                Report.report "UNKNOWN OPERATOR" region [ "/=" ] <|
+                    Code.toSnippet source
+                        region
+                        Nothing
+                        ( D.reflow
+                            "Elm uses a different name for the “not equal” operator:"
+                        , D.stack
+                            [ D.reflow "Switch to (/=) instead."
+                            , D.toSimpleNote
+                                ("Our (/=) operator is supposed to look like a real “not equal” sign (≠). I hope that history will remember ("
+                                    ++ op
+                                    ++ ") as a weird and temporary choice."
+                                )
+                            ]
+                        )
+
+            else if op == "**" then
+                Report.report "UNKNOWN OPERATOR" region [ "^", "*" ] <|
+                    Code.toSnippet source
+                        region
+                        Nothing
+                        ( D.reflow
+                            "I do not recognize the (**) operator:"
+                        , D.reflow
+                            "Switch to (^) for exponentiation. Or switch to (*) for multiplication."
+                        )
+
+            else if op == "%" then
+                Report.report "UNKNOWN OPERATOR" region [] <|
+                    Code.toSnippet source
+                        region
+                        Nothing
+                        ( D.reflow
+                            "Elm does not use (%) as the remainder operator:"
+                        , D.stack
+                            [ D.reflow
+                                "If you want the behavior of (%) like in JavaScript, switch to: <https://package.elm-lang.org/packages/elm/core/latest/Basics#remainderBy>"
+                            , D.reflow
+                                "If you want modular arithmetic like in math, switch to: <https://package.elm-lang.org/packages/elm/core/latest/Basics#modBy>"
+                            , D.reflow
+                                "The difference is how things work when negative numbers are involved."
+                            ]
+                        )
+
+            else
+                let
+                    suggestions : List String
+                    suggestions =
+                        Suggest.sort op identity (EverySet.toList locals) |> List.take 2
+
+                    format : D.Doc -> D.Doc
+                    format altOp =
+                        D.green
+                            (D.fromChars "("
+                                |> D.a altOp
+                                |> D.a (D.fromChars ")")
+                            )
+                in
+                Report.report "UNKNOWN OPERATOR" region suggestions <|
+                    Code.toSnippet source
+                        region
+                        Nothing
+                        ( D.reflow
+                            ("I do not recognize the (" ++ op ++ ") operator.")
+                        , D.fillSep
+                            ([ D.fromChars "Is"
+                             , D.fromChars "there"
+                             , D.fromChars "an"
+                             , D.fromChars "`import`"
+                             , D.fromChars "and"
+                             , D.fromChars "`exposing`"
+                             , D.fromChars "entry"
+                             , D.fromChars "for"
+                             , D.fromChars "it?"
+                             ]
+                                ++ (case List.map D.fromChars suggestions of
+                                        [] ->
+                                            []
+
+                                        alts ->
+                                            [ D.fromChars "Maybe", D.fromChars "you", D.fromChars "want" ]
+                                                ++ D.commaSep (D.fromChars "or") format alts
+                                                ++ [ D.fromChars "instead?" ]
+                                   )
+                            )
+                        )
+
+        PatternHasRecordCtor region name ->
+            Report.report "BAD PATTERN" region [] <|
+                Code.toSnippet source
+                    region
+                    Nothing
+                    ( D.reflow
+                        ("You can construct records by using `"
+                            ++ name
+                            ++ "` as a function, but it is not available in pattern matching like this:"
+                        )
+                    , D.reflow
+                        "I recommend matching the record as a variable and unpacking it later."
+                    )
+
+        PortPayloadInvalid region portName _ invalidPayload ->
+            let
+                formatDetails : ( String, D.Doc ) -> Report.Report
+                formatDetails ( aBadKindOfThing, elaboration ) =
+                    Report.report "PORT ERROR" region [] <|
+                        Code.toSnippet source
+                            region
+                            Nothing
+                            ( D.reflow
+                                ("The `" ++ portName ++ "` port is trying to transmit " ++ aBadKindOfThing ++ ":")
+                            , D.stack
+                                [ elaboration
+                                , D.link "Hint"
+                                    "Ports are not a traditional FFI, so if you have tons of annoying ports, definitely read"
+                                    "ports"
+                                    "to learn how they are meant to work. They require a different mindset!"
+                                ]
+                            )
+            in
+            formatDetails <|
+                case invalidPayload of
+                    ExtendedRecord ->
+                        ( "an extended record"
+                        , D.reflow
+                            "But the exact shape of the record must be known at compile time. No type variables!"
+                        )
+
+                    Function ->
+                        ( "a function"
+                        , D.reflow <|
+                            "But functions cannot be sent in and out ports. If we allowed functions in from JS "
+                                ++ "they may perform some side-effects. If we let functions out, they could produce "
+                                ++ "incorrect results because Elm optimizations assume there are no side-effects."
+                        )
+
+                    TypeVariable name ->
+                        ( "an unspecified type"
+                        , D.reflow <|
+                            "But type variables like `"
+                                ++ name
+                                ++ "` cannot flow through ports. I need to know exactly what type of data I am getting, "
+                                ++ "so I can guarantee that unexpected data cannot sneak in and crash the Elm program."
+                        )
+
+                    UnsupportedType name ->
+                        ( "a `" ++ name ++ "` value"
+                        , D.stack
+                            [ D.reflow "I cannot handle that. The types that CAN flow in and out of Elm include:"
+                            , D.indent 4 <|
+                                D.reflow
+                                    "Ints, Floats, Bools, Strings, Maybes, Lists, Arrays, tuples, records, JSON values, and Bytes."
+                            , D.reflow <|
+                                "Since JSON values can flow through, you can use JSON encoders and decoders to allow other types "
+                                    ++ "through as well. More advanced users often just do everything with encoders and decoders for more control and better errors."
+                            ]
+                        )
+
+        PortTypeInvalid region name portProblem ->
+            let
+                formatDetails : ( String, D.Doc ) -> Report.Report
+                formatDetails ( before, after ) =
+                    Report.report "BAD PORT" region [] <|
+                        Code.toSnippet source
+                            region
+                            Nothing
+                            ( D.reflow before
+                            , D.stack
+                                [ after
+                                , D.link "Hint"
+                                    "Read"
+                                    "ports"
+                                    "for more advice. For example, do not end up with one port per JS function!"
+                                ]
+                            )
+            in
+            formatDetails <|
+                case portProblem of
+                    CmdNoArg ->
+                        ( "The `" ++ name ++ "` port cannot be just a command."
+                        , D.reflow
+                            "It can be (() -> Cmd msg) if you just need to trigger a JavaScript function, but there is often a better way to set things up."
+                        )
+
+                    CmdExtraArgs n ->
+                        ( "The `" ++ name ++ "` port can only send ONE value out to JavaScript."
+                        , let
+                            theseItemsInSomething : String
+                            theseItemsInSomething =
+                                if n == 2 then
+                                    "both of these items into a tuple or record"
+
+                                else if n == 3 then
+                                    "these " ++ String.fromInt n ++ " items into a tuple or record"
+
+                                else
+                                    "these " ++ String.fromInt n ++ " items into a record"
+                          in
+                          ("You can put " ++ theseItemsInSomething ++ " to send them out though.") |> D.reflow
+                        )
+
+                    CmdBadMsg ->
+                        ( "The `" ++ name ++ "` port cannot send any messages to the `update` function."
+                        , D.reflow
+                            "It must produce a (Cmd msg) type. Notice the lower case `msg` type variable. The command will trigger some JS code, but it will not send anything particular back to Elm."
+                        )
+
+                    SubBad ->
+                        ( "There is something off about this `" ++ name ++ "` port declaration."
+                        , D.stack
+                            [ D.reflow
+                                "To receive messages from JavaScript, you need to define a port like this:"
+                            , ("port " ++ name ++ " : (Int -> msg) -> Sub msg") |> D.fromChars |> D.dullyellow |> D.indent 4
+                            , D.reflow <|
+                                "Now every time JS sends an `Int` to this port, it is converted to a `msg`. "
+                                    ++ "And if you subscribe, those `msg` values will be piped into your `update` function. "
+                                    ++ "The only thing you can customize here is the `Int` type."
+                            ]
+                        )
+
+                    NotCmdOrSub ->
+                        ( "I am confused about the `" ++ name ++ "` port declaration."
+                        , D.reflow
+                            "Ports need to produce a command (Cmd) or a subscription (Sub) but this is neither. I do not know how to handle this."
+                        )
+
+        RecursiveAlias region name args tipe others ->
+            aliasRecursionReport source region name args tipe others
+
+        RecursiveDecl region name names ->
+            let
+                makeTheory : String -> String -> D.Doc
+                makeTheory question details =
+                    (List.map (D.dullyellow << D.fromChars) (String.words question) ++ List.map D.fromChars (String.words details)) |> D.fillSep
+            in
+            (case names of
+                [] ->
+                    ( ("The `" ++ name ++ "` value is defined directly in terms of itself, causing an infinite loop.") |> D.reflow
+                    , D.stack
+                        [ makeTheory "Are you trying to mutate a variable?" <|
+                            "Elm does not have mutation, so when I see "
+                                ++ name
+                                ++ " defined in terms of "
+                                ++ name
+                                ++ ", I treat it as a recursive definition. Try giving the new value a new name!"
+                        , makeTheory "Maybe you DO want a recursive value?" <|
+                            "To define "
+                                ++ name
+                                ++ " we need to know what "
+                                ++ name
+                                ++ " is, so let's expand it. Wait, but now we need to know what "
+                                ++ name
+                                ++ " is, so let's expand it... This will keep going infinitely!"
+                        , D.link "Hint"
+                            "The root problem is often a typo in some variable name, but I recommend reading"
+                            "bad-recursion"
+                            "for more detailed advice, especially if you actually do need a recursive value."
+                        ]
+                    )
+
+                _ :: _ ->
+                    ( ("The `" ++ name ++ "` definition is causing a very tricky infinite loop.") |> D.reflow
+                    , D.stack
+                        [ ("The `" ++ name ++ "` value depends on itself through the following chain of definitions:") |> D.reflow
+                        , D.cycle 4 name names
+                        , D.link "Hint"
+                            "The root problem is often a typo in some variable name, but I recommend reading"
+                            "bad-recursion"
+                            "for more detailed advice, especially if you actually do want mutually recursive values."
+                        ]
+                    )
+            )
+                |> Code.toSnippet source region Nothing
+                |> Report.report "CYCLIC DEFINITION" region []
+
+        RecursiveLet (A.At region name) names ->
+            (case names of
+                [] ->
+                    let
+                        makeTheory : String -> String -> D.Doc
+                        makeTheory question details =
+                            D.fillSep <|
+                                List.map (D.dullyellow << D.fromChars) (String.words question)
+                                    ++ List.map D.fromChars (String.words details)
+                    in
+                    ( ("The `" ++ name ++ "` value is defined directly in terms of itself, causing an infinite loop.") |> D.reflow
+                    , D.stack
+                        [ makeTheory "Are you trying to mutate a variable?" <|
+                            "Elm does not have mutation, so when I see "
+                                ++ name
+                                ++ " defined in terms of "
+                                ++ name
+                                ++ ", I treat it as a recursive definition. Try giving the new value a new name!"
+                        , makeTheory "Maybe you DO want a recursive value?" <|
+                            "To define "
+                                ++ name
+                                ++ " we need to know what "
+                                ++ name
+                                ++ " is, so let's expand it. Wait, but now we need to know what "
+                                ++ name
+                                ++ " is, so let's expand it... This will keep going infinitely!"
+                        , D.link "Hint"
+                            "The root problem is often a typo in some variable name, but I recommend reading"
+                            "bad-recursion"
+                            "for more detailed advice, especially if you actually do need a recursive value."
+                        ]
+                    )
+
+                _ ->
+                    ( "I do not allow cyclic values in `let` expressions." |> D.reflow
+                    , D.stack
+                        [ ("The `" ++ name ++ "` value depends on itself through the following chain of definitions:") |> D.reflow
+                        , D.cycle 4 name names
+                        , D.link "Hint"
+                            "The root problem is often a typo in some variable name, but I recommend reading"
+                            "bad-recursion"
+                            "for more detailed advice, especially if you actually do want mutually recursive values."
+                        ]
+                    )
+            )
+                |> Code.toSnippet source region Nothing
+                |> Report.report "CYCLIC VALUE" region []
+
+        Shadowing name r1 r2 ->
+            let
+                advice : D.Doc
+                advice =
+                    D.stack
+                        [ "Think of a more helpful name for one of them and you should be all set!" |> D.reflow
+                        , D.link "Note" "Linters advise against shadowing, so Elm makes “best practices” the default. Read" "shadowing" "for more details on this choice."
+                        ]
+            in
+            Report.report "SHADOWING" r2 [] <|
+                Code.toPair source
+                    r1
+                    r2
+                    ( D.fromChars "These variables cannot have the same name:"
+                    , advice
+                    )
+                    ( ("The name `" ++ name ++ "` is first defined here:") |> D.reflow
+                    , D.fromChars "But then it is defined AGAIN over here:"
+                    , advice
+                    )
+
+        TooLarge region what actual limit ->
+            let
+                functionAdvice =
+                    "Pass the values in a record instead, or split the function into smaller ones."
+
+                fieldAdvice =
+                    "Split it into nested records or constructors."
+
+                ( ( title, subject, unit ), ( invariant, advice ) ) =
+                    case what of
+                        TooManyParams name ->
+                            ( ( "TOO MANY PARAMETERS", "The function `" ++ name ++ "`", "parameters" ), ( "HEAP_078", functionAdvice ) )
+
+                        TooManyLambdaParams ->
+                            ( ( "TOO MANY PARAMETERS", "This anonymous function", "parameters" ), ( "HEAP_078", functionAdvice ) )
+
+                        TooManyClosureSlots (Just name) ->
+                            ( ( "TOO MANY CAPTURED VARIABLES", "The local function `" ++ name ++ "`", "parameters and captured variables" ), ( "HEAP_078", functionAdvice ) )
+
+                        TooManyClosureSlots Nothing ->
+                            ( ( "TOO MANY CAPTURED VARIABLES", "This anonymous function", "parameters and captured variables" ), ( "HEAP_078", functionAdvice ) )
+
+                        TooManyCtorFields name ->
+                            ( ( "TOO MANY FIELDS", "The constructor `" ++ name ++ "`", "fields" ), ( "HEAP_019", fieldAdvice ) )
+
+                        TooManyRecordFields (Just name) ->
+                            ( ( "TOO MANY FIELDS", "The record type `" ++ name ++ "`", "fields" ), ( "HEAP_019", fieldAdvice ) )
+
+                        TooManyRecordFields Nothing ->
+                            ( ( "TOO MANY FIELDS", "This record", "fields" ), ( "HEAP_019", fieldAdvice ) )
+            in
+            Report.report title region [] <|
+                Code.toSnippet source
+                    region
+                    Nothing
+                    ( D.reflow
+                        (subject
+                            ++ " has "
+                            ++ String.fromInt actual
+                            ++ " "
+                            ++ unit
+                            ++ ", but Eco supports at most "
+                            ++ String.fromInt limit
+                            ++ " ("
+                            ++ invariant
+                            ++ ")."
+                        )
+                    , D.reflow advice
+                    )
+
+        TupleLargerThanThree region ->
+            Report.report "BAD TUPLE" region [] <|
+                Code.toSnippet source
+                    region
+                    Nothing
+                    ( D.fromChars "I only accept tuples with two or three items. This has too many:"
+                    , D.stack
+                        [ "I recommend switching to records. Each item will be named, and you can use the `point.x` syntax to access them." |> D.reflow
+                        , D.link "Note" "Read" "tuples" "for more comprehensive advice on working with large chunks of data in Elm."
+                        ]
+                    )
+
+        TypeVarsUnboundInUnion unionRegion typeName allVars unbound unbounds ->
+            unboundTypeVars source unionRegion [ D.fromChars "type" ] typeName allVars unbound unbounds
+
+        TypeVarsMessedUpInAlias aliasRegion typeName allVars unusedVars unboundVars ->
+            case ( unusedVars, unboundVars ) of
+                ( unused :: unuseds, [] ) ->
+                    let
+                        backQuote : Name -> D.Doc
+                        backQuote name =
+                            D.fromChars "`"
+                                |> D.a (D.fromName name)
+                                |> D.a (D.fromChars "`")
+
+                        allUnusedNames : List Name
+                        allUnusedNames =
+                            List.map Tuple.first unusedVars
+
+                        ( ( title, subRegion ), ( overview, stuff ) ) =
+                            case unuseds of
+                                [] ->
+                                    ( ( "UNUSED TYPE VARIABLE"
+                                      , Just (Tuple.second unused)
+                                      )
+                                    , ( [ D.fromChars "Type"
+                                        , D.fromChars "alias"
+                                        , backQuote typeName
+                                        , D.fromChars "does"
+                                        , D.fromChars "not"
+                                        , D.fromChars "use"
+                                        , D.fromChars "the"
+                                        , backQuote (Tuple.first unused)
+                                        , D.fromChars "type"
+                                        , D.fromChars "variable."
+                                        ]
+                                      , [ D.dullyellow (backQuote (Tuple.first unused)) ]
+                                      )
+                                    )
+
+                                _ :: _ ->
+                                    ( ( "UNUSED TYPE VARIABLES"
+                                      , Nothing
+                                      )
+                                    , ( [ D.fromChars "Type", D.fromChars "variables" ]
+                                            ++ D.commaSep (D.fromChars "and") identity (List.map D.fromName allUnusedNames)
+                                            ++ [ D.fromChars "are"
+                                               , D.fromChars "unused"
+                                               , D.fromChars "in"
+                                               , D.fromChars "the"
+                                               , backQuote typeName
+                                               , D.fromChars "definition."
+                                               ]
+                                      , D.commaSep (D.fromChars "and") D.dullyellow (List.map D.fromName allUnusedNames)
+                                      )
+                                    )
+                    in
+                    Report.report title aliasRegion [] <|
+                        Code.toSnippet source
+                            aliasRegion
+                            subRegion
+                            ( D.fillSep overview
+                            , D.stack
+                                [ D.fillSep <|
+                                    [ D.fromChars "I", D.fromChars "recommend", D.fromChars "removing" ]
+                                        ++ stuff
+                                        ++ [ D.fromChars "from", D.fromChars "the", D.fromChars "declaration,", D.fromChars "like", D.fromChars "this:" ]
+                                , ([ D.fromChars "type", D.fromChars "alias", D.green (D.fromName typeName) ]
+                                    ++ List.map D.fromName (List.filter (\var -> not (List.member var allUnusedNames)) allVars)
+                                    ++ [ D.fromChars "=", D.fromChars "..." ]
+                                  )
+                                    |> D.hsep
+                                    |> D.indent 4
+                                , D.reflow <|
+                                    "Why? Well, if I allowed `type alias Height a = Float` I would need to answer some weird questions. "
+                                        ++ "Is `Height Bool` the same as `Float`? Is `Height Bool` the same as `Height Int`? My solution is to not need to ask them!"
+                                ]
+                            )
+
+                ( [], unbound :: unbounds ) ->
+                    unboundTypeVars source aliasRegion [ D.fromChars "type", D.fromChars "alias" ] typeName allVars unbound unbounds
+
+                _ ->
+                    let
+                        unused : List Name
+                        unused =
+                            List.map Tuple.first unusedVars
+
+                        unbound : List Name
+                        unbound =
+                            List.map Tuple.first unboundVars
+
+                        theseAreUsed : List D.Doc
+                        theseAreUsed =
+                            case unbound of
+                                [ x ] ->
+                                    [ D.fromChars "Type"
+                                    , D.fromChars "variable"
+                                    , D.dullyellow
+                                        (D.fromChars "`"
+                                            |> D.a (D.fromName x)
+                                            |> D.a (D.fromChars "`")
+                                        )
+                                    , D.fromChars "appears"
+                                    , D.fromChars "in"
+                                    , D.fromChars "the"
+                                    , D.fromChars "definition,"
+                                    , D.fromChars "but"
+                                    , D.fromChars "I"
+                                    , D.fromChars "do"
+                                    , D.fromChars "not"
+                                    , D.fromChars "see"
+                                    , D.fromChars "it"
+                                    , D.fromChars "declared."
+                                    ]
+
+                                _ ->
+                                    [ D.fromChars "Type", D.fromChars "variables" ]
+                                        ++ D.commaSep (D.fromChars "and") D.dullyellow (List.map D.fromName unbound)
+                                        ++ [ D.fromChars "are"
+                                           , D.fromChars "used"
+                                           , D.fromChars "in"
+                                           , D.fromChars "the"
+                                           , D.fromChars "definition,"
+                                           , D.fromChars "but"
+                                           , D.fromChars "I"
+                                           , D.fromChars "do"
+                                           , D.fromChars "not"
+                                           , D.fromChars "see"
+                                           , D.fromChars "them"
+                                           , D.fromChars "declared."
+                                           ]
+
+                        butTheseAreUnused : List D.Doc
+                        butTheseAreUnused =
+                            case unused of
+                                [ x ] ->
+                                    [ D.fromChars "Likewise,"
+                                    , D.fromChars "type"
+                                    , D.fromChars "variable"
+                                    , D.dullyellow
+                                        (D.fromChars "`"
+                                            |> D.a (D.fromName x)
+                                            |> D.a (D.fromChars "`")
+                                        )
+                                    , D.fromChars "is"
+                                    , D.fromChars "delared,"
+                                    , D.fromChars "but"
+                                    , D.fromChars "not"
+                                    , D.fromChars "used."
+                                    ]
+
+                                _ ->
+                                    [ D.fromChars "Likewise,", D.fromChars "type", D.fromChars "variables" ]
+                                        ++ D.commaSep (D.fromChars "and") D.dullyellow (List.map D.fromName unused)
+                                        ++ [ D.fromChars "are", D.fromChars "delared,", D.fromChars "but", D.fromChars "not", D.fromChars "used." ]
+                    in
+                    Report.report "TYPE VARIABLE PROBLEMS" aliasRegion [] <|
+                        Code.toSnippet source
+                            aliasRegion
+                            Nothing
+                            ( ("Type alias `" ++ typeName ++ "` has some type variable problems.") |> D.reflow
+                            , D.stack
+                                [ (theseAreUsed ++ butTheseAreUnused) |> D.fillSep
+                                , "My guess is that a definition like this will work better:" |> D.reflow
+                                , ([ D.fromChars "type", D.fromChars "alias", D.fromName typeName ]
+                                    ++ List.map D.fromName (List.filter (\var -> not (List.member var unused)) allVars)
+                                    ++ List.map (D.green << D.fromName) unbound
+                                    ++ [ D.fromChars "=", D.fromChars "..." ]
+                                  )
+                                    |> D.hsep
+                                    |> D.indent 4
+                                ]
+                            )
+
+
+{-| Builds the report for a type declaration `typeName` that uses type
+variables it does not declare.
+
+`tipe` is the declaration's keyword or keywords, `type` or `type alias`, and
+`allVars` the variables it declares. The undeclared variables arrive as the
+first of them, with the region where it is used, followed by the rest. With
+only one, the snippet highlights where it is used. The suggested declaration
+adds every undeclared variable after the declared ones.
+
+-}
+unboundTypeVars : Code.Source -> A.Region -> List D.Doc -> Name.Name -> List Name.Name -> ( Name.Name, A.Region ) -> List ( Name.Name, A.Region ) -> Report.Report
+unboundTypeVars source declRegion tipe typeName allVars ( unboundVar, varRegion ) unboundVars =
+    let
+        backQuote : Name -> D.Doc
+        backQuote name =
+            D.fromChars "`"
+                |> D.a (D.fromName name)
+                |> D.a (D.fromChars "`")
+
+        ( title, subRegion, overview ) =
+            case List.map Tuple.first unboundVars of
+                [] ->
+                    ( "UNBOUND TYPE VARIABLE"
+                    , Just varRegion
+                    , [ D.fromChars "The", backQuote typeName ]
+                        ++ tipe
+                        ++ [ D.fromChars "uses"
+                           , D.fromChars "an"
+                           , D.fromChars "unbound"
+                           , D.fromChars "type"
+                           , D.fromChars "variable"
+                           , D.dullyellow (backQuote unboundVar)
+                           , D.fromChars "in"
+                           , D.fromChars "its"
+                           , D.fromChars "definition:"
+                           ]
+                    )
+
+                vars ->
+                    ( "UNBOUND TYPE VARIABLES"
+                    , Nothing
+                    , [ D.fromChars "Type", D.fromChars "variables" ]
+                        ++ D.commaSep (D.fromChars "and") D.dullyellow (D.fromName unboundVar :: List.map D.fromName vars)
+                        ++ [ D.fromChars "are"
+                           , D.fromChars "unbound"
+                           , D.fromChars "in"
+                           , D.fromChars "the"
+                           , backQuote typeName
+                           ]
+                        ++ tipe
+                        ++ [ D.fromChars "definition:" ]
+                    )
+    in
+    Report.report title declRegion [] <|
+        Code.toSnippet source
+            declRegion
+            subRegion
+            ( D.fillSep overview
+            , D.stack
+                [ D.reflow "You probably need to change the declaration to something like this:"
+                , (tipe
+                    ++ D.fromName typeName
+                    :: List.map D.fromName allVars
+                    ++ List.map (D.green << D.fromName) (unboundVar :: List.map Tuple.first unboundVars)
+                    ++ [ D.fromChars "=", D.fromChars "..." ]
+                  )
+                    |> D.hsep
+                    |> D.indent 4
+                , D.reflow <|
+                    "Why? Well, imagine one `"
+                        ++ typeName
+                        ++ "` where `"
+                        ++ unboundVar
+                        ++ "` is an Int and another where it is a Bool. When we explicitly list the type variables, the type checker can see that they are actually different types."
+                ]
+            )
+
+
+{-| Builds the report for one name defined twice, at `r1` and at `r2`, which
+opens with `messageThatEndsWithPunctuation` and is located at `r2`.
+-}
+nameClash : Code.Source -> A.Region -> A.Region -> String -> Report.Report
+nameClash source r1 r2 messageThatEndsWithPunctuation =
+    Report.report "NAME CLASH" r2 [] <|
+        Code.toPair source
+            r1
+            r2
+            ( D.reflow messageThatEndsWithPunctuation
+            , D.fromChars "How can I know which one you want? Rename one of them!"
+            )
+            ( D.reflow (messageThatEndsWithPunctuation ++ " One here:")
+            , D.fromChars "And another one here:"
+            , D.fromChars "How can I know which one you want? Rename one of them!"
+            )
+
+
+{-| Builds the report for `name`, a `thing` such as a variable or a type, which
+several imports provide.
+
+`h` and `hs` are the candidate home modules, listed sorted by
+`ModuleName.compareCanonical`. Without a qualifier each candidate is shown as
+`Home.name`. With qualifier `prefix`, each is shown as the import that would
+give it that qualifier: `import Home` when `prefix` is the module's name, and
+`import Home as prefix` otherwise.
+
+-}
+ambiguousName : Code.Source -> A.Region -> Maybe Name.Name -> Name.Name -> ModuleName.Canonical -> OneOrMore.OneOrMore ModuleName.Canonical -> String -> Report.Report
+ambiguousName source region maybePrefix name h hs thing =
+    let
+        possibleHomes : List ModuleName.Canonical
+        possibleHomes =
+            List.sortWith ModuleName.compareCanonical (h :: OneOrMore.destruct (::) hs)
+    in
+    (case maybePrefix of
+        Nothing ->
+            let
+                homeToYellowDoc : ModuleName.Canonical -> D.Doc
+                homeToYellowDoc (ModuleName.Canonical _ home) =
+                    D.dullyellow
+                        (D.fromName home
+                            |> D.a (D.fromChars ".")
+                            |> D.a (D.fromName name)
+                        )
+            in
+            ( D.reflow ("This usage of `" ++ name ++ "` is ambiguous:")
+            , D.stack
+                [ D.reflow <|
+                    "This name is exposed by "
+                        ++ String.fromInt (List.length possibleHomes)
+                        ++ " of your imports, so I am not sure which one to use:"
+                , D.vcat (List.map homeToYellowDoc possibleHomes) |> D.indent 4
+                , D.reflow <|
+                    "I recommend using qualified names for imported values. I also recommend having at most one "
+                        ++ "`exposing (..)` per file to make name clashes like this less common in the long run."
+                , D.link "Note" "Check out" "imports" "for more info on the import syntax."
+                ]
+            )
+
+        Just prefix ->
+            let
+                homeToYellowDoc : ModuleName.Canonical -> D.Doc
+                homeToYellowDoc (ModuleName.Canonical _ home) =
+                    if prefix == home then
+                        D.cyan (D.fromChars "import")
+                            |> D.plus (D.fromName home)
+
+                    else
+                        D.cyan (D.fromChars "import")
+                            |> D.plus (D.fromName home)
+                            |> D.plus (D.cyan (D.fromChars "as"))
+                            |> D.plus (D.fromName prefix)
+
+                eitherOrAny : String
+                eitherOrAny =
+                    if List.length possibleHomes == 2 then
+                        "either"
+
+                    else
+                        "any"
+            in
+            ( D.reflow ("This usage of `" ++ toQualString prefix name ++ "` is ambiguous.")
+            , D.stack
+                [ D.reflow <|
+                    "It could refer to a "
+                        ++ thing
+                        ++ " from "
+                        ++ eitherOrAny
+                        ++ " of these imports:"
+                , D.vcat (List.map homeToYellowDoc possibleHomes) |> D.indent 4
+                , D.reflowLink "Read" "imports" "to learn how to clarify which one you want."
+                ]
+            )
+    )
+        |> Code.toSnippet source region Nothing
+        |> Report.report "AMBIGUOUS NAME" region []
+
+
+{-| Builds the report for `name`, a `thing` such as a variable or a type, which
+is not in scope, written with the qualifier `maybePrefix` if it has one.
+
+The report offers up to four of the possible names nearest to the name as
+written, taking every name in `locals` and every name in `quals` written with
+its qualifier. Its advice depends on whether a qualifier was written and, if
+so, whether `quals` has an entry for it.
+
+-}
+notFound : Code.Source -> A.Region -> Maybe Name.Name -> Name.Name -> String -> PossibleNames -> Report.Report
+notFound source region maybePrefix name thing { locals, quals } =
+    let
+        givenName : Name
+        givenName =
+            Maybe.withDefault name (Maybe.map2 toQualString maybePrefix (Just name))
+
+        possibleNames : List String
+        possibleNames =
+            let
+                addQuals : Name -> EverySet String Name -> List String -> List String
+                addQuals prefix localSet allNames =
+                    EverySet.foldr (\x xs -> toQualString prefix x :: xs) allNames localSet
+            in
+            Dict.foldr addQuals (EverySet.toList locals) quals
+
+        nearbyNames : List String
+        nearbyNames =
+            List.take 4 (Suggest.sort givenName identity possibleNames)
+
+        toDetails : String -> String -> D.Doc
+        toDetails noSuggestionDetails yesSuggestionDetails =
+            case nearbyNames of
+                [] ->
+                    D.stack
+                        [ D.reflow noSuggestionDetails
+                        , D.link "Hint" "Read" "imports" "to see how `import` declarations work in Elm."
+                        ]
+
+                suggestions ->
+                    D.stack
+                        [ D.reflow yesSuggestionDetails
+                        , D.vcat (List.map D.dullyellow (List.map D.fromChars suggestions)) |> D.indent 4
+                        , D.link "Hint" "Read" "imports" "to see how `import` declarations work in Elm."
+                        ]
+    in
+    Report.report "NAMING ERROR" region nearbyNames <|
+        Code.toSnippet source
+            region
+            Nothing
+            ( D.reflow ("I cannot find a `" ++ givenName ++ "` " ++ thing ++ ":")
+            , case maybePrefix of
+                Nothing ->
+                    toDetails
+                        "Is there an `import` or `exposing` missing up top?"
+                        "These names seem close though:"
+
+                Just prefix ->
+                    case Dict.get prefix quals of
+                        Nothing ->
+                            toDetails
+                                ("I cannot find a `" ++ prefix ++ "` module. Is there an `import` for it?")
+                                ("I cannot find a `" ++ prefix ++ "` import. These names seem close though:")
+
+                        Just _ ->
+                            toDetails
+                                ("The `" ++ prefix ++ "` module does not expose a `" ++ name ++ "` " ++ thing ++ ".")
+                                ("The `" ++ prefix ++ "` module does not expose a `" ++ name ++ "` " ++ thing ++ ". These names seem close though:")
+            )
+
+
+{-| Returns `name` qualified by `prefix`, as `prefix.name`.
+-}
+toQualString : Name.Name -> Name.Name -> String
+toQualString prefix name =
+    prefix ++ "." ++ name
+
+
+
+-- ====== BAD ALIAS RECURSION ======
+
+
+{-| Builds the report for a type alias `name` defined in terms of itself.
+
+With `others` empty the alias refers to itself directly, and the report
+suggests the `type` declaration that `aliasToUnionDoc` builds from `args` and
+`tipe`. Otherwise it shows the cycle through `others` and asks for one of the
+aliases on it to become a `type`.
+
+-}
+aliasRecursionReport : Code.Source -> A.Region -> Name -> List Name -> Src.Type -> List Name -> Report.Report
+aliasRecursionReport source region name args tipe others =
+    case others of
+        [] ->
+            Report.report "ALIAS PROBLEM" region [] <|
+                Code.toSnippet source
+                    region
+                    Nothing
+                    ( D.fromChars "This type alias is recursive, forming an infinite type!"
+                    , D.stack
+                        [ D.reflow "When I expand a recursive type alias, it just keeps getting bigger and bigger. So dealiasing results in an infinitely large type! Try this instead:"
+                        , aliasToUnionDoc name args tipe |> D.indent 4
+                        , D.link "Hint" "This is kind of a subtle distinction. I suggested the naive fix, but I recommend reading" "recursive-alias" "for ideas on how to do better."
+                        ]
+                    )
+
+        _ ->
+            Report.report "ALIAS PROBLEM" region [] <|
+                Code.toSnippet source
+                    region
+                    Nothing
+                    ( D.fromChars "This type alias is part of a mutually recursive set of type aliases."
+                    , D.stack
+                        [ D.fromChars "It is part of this cycle of type aliases:"
+                        , D.cycle 4 name others
+                        , D.reflow "You need to convert at least one of these type aliases into a `type`."
+                        , D.link "Note" "Read" "recursive-alias" "to learn why this `type` vs `type alias` distinction matters. It is subtle but important!"
+                        ]
+                    )
+
+
+{-| Builds a `type` declaration named `name` with one variant, also named `name`,
+whose argument is the alias body `tipe`.
+
+The header declares the parameters `args` in order before the `=`, so that
+parameters `a b` print as `type Name a b =`, as upstream Elm prints it.
+
+-}
+aliasToUnionDoc : Name -> List Name -> Src.Type -> D.Doc
+aliasToUnionDoc name args tipe =
+    D.vcat
+        [ D.dullyellow <|
+            (D.fromChars "type"
+                |> D.plus (D.fromName name)
+                |> D.plus (List.foldr (\arg rest -> D.fromName arg |> D.plus rest) (D.fromChars "=") args)
+            )
+        , D.indent 4 (D.fromChars name) |> D.green
+        , D.indent 8 (RT.srcToDoc RT.App tipe) |> D.dullyellow
+        ]
+
+
+
+-- ====== ENCODERS and DECODERS ======
+
+
+{-| Encodes `error` as its tag, its position in the declaration of `Error`,
+followed by its fields.
+-}
+errorEncoder : Error -> Bytes.Encode.Encoder
+errorEncoder error =
+    case error of
+        AnnotationTooShort region name index leftovers ->
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 0
+                , A.regionEncoder region
+                , BE.string name
+                , Index.zeroBasedEncoder index
+                , BE.int leftovers
+                ]
+
+        AmbiguousVar region maybePrefix name h hs ->
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 1
+                , A.regionEncoder region
+                , BE.maybe BE.string maybePrefix
+                , BE.string name
+                , ModuleName.canonicalEncoder h
+                , BE.oneOrMore ModuleName.canonicalEncoder hs
+                ]
+
+        AmbiguousType region maybePrefix name h hs ->
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 2
+                , A.regionEncoder region
+                , BE.maybe BE.string maybePrefix
+                , BE.string name
+                , ModuleName.canonicalEncoder h
+                , BE.oneOrMore ModuleName.canonicalEncoder hs
+                ]
+
+        AmbiguousVariant region maybePrefix name h hs ->
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 3
+                , A.regionEncoder region
+                , BE.maybe BE.string maybePrefix
+                , BE.string name
+                , ModuleName.canonicalEncoder h
+                , BE.oneOrMore ModuleName.canonicalEncoder hs
+                ]
+
+        AmbiguousBinop region name h hs ->
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 4
+                , A.regionEncoder region
+                , BE.string name
+                , ModuleName.canonicalEncoder h
+                , BE.oneOrMore ModuleName.canonicalEncoder hs
+                ]
+
+        BadArity region badArityContext name expected actual ->
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 5
+                , A.regionEncoder region
+                , badArityContextEncoder badArityContext
+                , BE.string name
+                , BE.int expected
+                , BE.int actual
+                ]
+
+        Binop region op1 op2 ->
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 6
+                , A.regionEncoder region
+                , BE.string op1
+                , BE.string op2
+                ]
+
+        DuplicateDecl name r1 r2 ->
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 7
+                , BE.string name
+                , A.regionEncoder r1
+                , A.regionEncoder r2
+                ]
+
+        DuplicateType name r1 r2 ->
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 8
+                , BE.string name
+                , A.regionEncoder r1
+                , A.regionEncoder r2
+                ]
+
+        DuplicateCtor name r1 r2 ->
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 9
+                , BE.string name
+                , A.regionEncoder r1
+                , A.regionEncoder r2
+                ]
+
+        DuplicateBinop name r1 r2 ->
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 10
+                , BE.string name
+                , A.regionEncoder r1
+                , A.regionEncoder r2
+                ]
+
+        DuplicateField name r1 r2 ->
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 11
+                , BE.string name
+                , A.regionEncoder r1
+                , A.regionEncoder r2
+                ]
+
+        DuplicateAliasArg typeName name r1 r2 ->
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 12
+                , BE.string typeName
+                , BE.string name
+                , A.regionEncoder r1
+                , A.regionEncoder r2
+                ]
+
+        DuplicateUnionArg typeName name r1 r2 ->
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 13
+                , BE.string typeName
+                , BE.string name
+                , A.regionEncoder r1
+                , A.regionEncoder r2
+                ]
+
+        DuplicatePattern context name r1 r2 ->
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 14
+                , duplicatePatternContextEncoder context
+                , BE.string name
+                , A.regionEncoder r1
+                , A.regionEncoder r2
+                ]
+
+        EffectNotFound region name ->
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 15
+                , A.regionEncoder region
+                , BE.string name
+                ]
+
+        EffectFunctionNotFound region name ->
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 16
+                , A.regionEncoder region
+                , BE.string name
+                ]
+
+        ExportDuplicate name r1 r2 ->
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 17
+                , BE.string name
+                , A.regionEncoder r1
+                , A.regionEncoder r2
+                ]
+
+        ExportNotFound region kind rawName possibleNames ->
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 18
+                , A.regionEncoder region
+                , varKindEncoder kind
+                , BE.string rawName
+                , BE.list BE.string possibleNames
+                ]
+
+        ExportOpenAlias region name ->
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 19
+                , A.regionEncoder region
+                , BE.string name
+                ]
+
+        ImportCtorByName region ctor tipe ->
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 20
+                , A.regionEncoder region
+                , BE.string ctor
+                , BE.string tipe
+                ]
+
+        ImportNotFound region name suggestions ->
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 21
+                , A.regionEncoder region
+                , BE.string name
+                , BE.list ModuleName.canonicalEncoder suggestions
+                ]
+
+        ImportOpenAlias region name ->
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 22
+                , A.regionEncoder region
+                , BE.string name
+                ]
+
+        ImportExposingNotFound region home value possibleNames ->
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 23
+                , A.regionEncoder region
+                , ModuleName.canonicalEncoder home
+                , BE.string value
+                , BE.list BE.string possibleNames
+                ]
+
+        NotFoundVar region prefix name possibleNames ->
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 24
+                , A.regionEncoder region
+                , BE.maybe BE.string prefix
+                , BE.string name
+                , possibleNamesEncoder possibleNames
+                ]
+
+        NotFoundType region prefix name possibleNames ->
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 25
+                , A.regionEncoder region
+                , BE.maybe BE.string prefix
+                , BE.string name
+                , possibleNamesEncoder possibleNames
+                ]
+
+        NotFoundVariant region prefix name possibleNames ->
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 26
+                , A.regionEncoder region
+                , BE.maybe BE.string prefix
+                , BE.string name
+                , possibleNamesEncoder possibleNames
+                ]
+
+        NotFoundBinop region op locals ->
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 27
+                , A.regionEncoder region
+                , BE.string op
+                , BE.everySet BE.string locals
+                ]
+
+        PatternHasRecordCtor region name ->
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 28
+                , A.regionEncoder region
+                , BE.string name
+                ]
+
+        PortPayloadInvalid region portName badType invalidPayload ->
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 29
+                , A.regionEncoder region
+                , BE.string portName
+                , Can.typeEncoder badType
+                , invalidPayloadEncoder invalidPayload
+                ]
+
+        PortTypeInvalid region name portProblem ->
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 30
+                , A.regionEncoder region
+                , BE.string name
+                , portProblemEncoder portProblem
+                ]
+
+        RecursiveAlias region name args tipe others ->
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 31
+                , A.regionEncoder region
+                , BE.string name
+                , BE.list BE.string args
+                , Src.typeEncoder tipe
+                , BE.list BE.string others
+                ]
+
+        RecursiveDecl region name names ->
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 32
+                , A.regionEncoder region
+                , BE.string name
+                , BE.list BE.string names
+                ]
+
+        RecursiveLet name names ->
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 33
+                , A.locatedEncoder BE.string name
+                , BE.list BE.string names
+                ]
+
+        Shadowing name r1 r2 ->
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 34
+                , BE.string name
+                , A.regionEncoder r1
+                , A.regionEncoder r2
+                ]
+
+        TooLarge region what actual limit ->
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 38
+                , A.regionEncoder region
+                , tooLargeWhatEncoder what
+                , BE.int actual
+                , BE.int limit
+                ]
+
+        TupleLargerThanThree region ->
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 35
+                , A.regionEncoder region
+                ]
+
+        TypeVarsUnboundInUnion unionRegion typeName allVars unbound unbounds ->
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 36
+                , A.regionEncoder unionRegion
+                , BE.string typeName
+                , BE.list BE.string allVars
+                , BE.jsonPair BE.string A.regionEncoder unbound
+                , BE.list (BE.jsonPair BE.string A.regionEncoder) unbounds
+                ]
+
+        TypeVarsMessedUpInAlias aliasRegion typeName allVars unusedVars unboundVars ->
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 37
+                , A.regionEncoder aliasRegion
+                , BE.string typeName
+                , BE.list BE.string allVars
+                , BE.list (BE.jsonPair BE.string A.regionEncoder) unusedVars
+                , BE.list (BE.jsonPair BE.string A.regionEncoder) unboundVars
+                ]
+
+
+{-| A decoder for an `Error` as `errorEncoder` writes it. A tag outside 0 to 37
+fails.
+-}
+errorDecoder : Bytes.Decode.Decoder Error
+errorDecoder =
+    Bytes.Decode.unsignedInt8
+        |> Bytes.Decode.andThen
+            (\idx ->
+                case idx of
+                    0 ->
+                        Bytes.Decode.map4 AnnotationTooShort
+                            A.regionDecoder
+                            BD.string
+                            Index.zeroBasedDecoder
+                            BD.int
+
+                    1 ->
+                        Bytes.Decode.map5 AmbiguousVar
+                            A.regionDecoder
+                            (BD.maybe BD.string)
+                            BD.string
+                            ModuleName.canonicalDecoder
+                            (BD.oneOrMore ModuleName.canonicalDecoder)
+
+                    2 ->
+                        Bytes.Decode.map5 AmbiguousType
+                            A.regionDecoder
+                            (BD.maybe BD.string)
+                            BD.string
+                            ModuleName.canonicalDecoder
+                            (BD.oneOrMore ModuleName.canonicalDecoder)
+
+                    3 ->
+                        Bytes.Decode.map5 AmbiguousVariant
+                            A.regionDecoder
+                            (BD.maybe BD.string)
+                            BD.string
+                            ModuleName.canonicalDecoder
+                            (BD.oneOrMore ModuleName.canonicalDecoder)
+
+                    4 ->
+                        Bytes.Decode.map4 AmbiguousBinop
+                            A.regionDecoder
+                            BD.string
+                            ModuleName.canonicalDecoder
+                            (BD.oneOrMore ModuleName.canonicalDecoder)
+
+                    5 ->
+                        Bytes.Decode.map5 BadArity
+                            A.regionDecoder
+                            badArityContextDecoder
+                            BD.string
+                            BD.int
+                            BD.int
+
+                    6 ->
+                        Bytes.Decode.map3 Binop
+                            A.regionDecoder
+                            BD.string
+                            BD.string
+
+                    7 ->
+                        Bytes.Decode.map3 DuplicateDecl
+                            BD.string
+                            A.regionDecoder
+                            A.regionDecoder
+
+                    8 ->
+                        Bytes.Decode.map3 DuplicateType
+                            BD.string
+                            A.regionDecoder
+                            A.regionDecoder
+
+                    9 ->
+                        Bytes.Decode.map3 DuplicateCtor
+                            BD.string
+                            A.regionDecoder
+                            A.regionDecoder
+
+                    10 ->
+                        Bytes.Decode.map3 DuplicateBinop
+                            BD.string
+                            A.regionDecoder
+                            A.regionDecoder
+
+                    11 ->
+                        Bytes.Decode.map3 DuplicateField
+                            BD.string
+                            A.regionDecoder
+                            A.regionDecoder
+
+                    12 ->
+                        Bytes.Decode.map4 DuplicateAliasArg
+                            BD.string
+                            BD.string
+                            A.regionDecoder
+                            A.regionDecoder
+
+                    13 ->
+                        Bytes.Decode.map4 DuplicateUnionArg
+                            BD.string
+                            BD.string
+                            A.regionDecoder
+                            A.regionDecoder
+
+                    14 ->
+                        Bytes.Decode.map4 DuplicatePattern
+                            duplicatePatternContextDecoder
+                            BD.string
+                            A.regionDecoder
+                            A.regionDecoder
+
+                    15 ->
+                        Bytes.Decode.map2 EffectNotFound
+                            A.regionDecoder
+                            BD.string
+
+                    16 ->
+                        Bytes.Decode.map2 EffectFunctionNotFound
+                            A.regionDecoder
+                            BD.string
+
+                    17 ->
+                        Bytes.Decode.map3 ExportDuplicate
+                            BD.string
+                            A.regionDecoder
+                            A.regionDecoder
+
+                    18 ->
+                        Bytes.Decode.map4 ExportNotFound
+                            A.regionDecoder
+                            varKindDecoder
+                            BD.string
+                            (BD.list BD.string)
+
+                    19 ->
+                        Bytes.Decode.map2 ExportOpenAlias
+                            A.regionDecoder
+                            BD.string
+
+                    20 ->
+                        Bytes.Decode.map3 ImportCtorByName
+                            A.regionDecoder
+                            BD.string
+                            BD.string
+
+                    21 ->
+                        Bytes.Decode.map3 ImportNotFound
+                            A.regionDecoder
+                            BD.string
+                            (BD.list ModuleName.canonicalDecoder)
+
+                    22 ->
+                        Bytes.Decode.map2 ImportOpenAlias
+                            A.regionDecoder
+                            BD.string
+
+                    23 ->
+                        Bytes.Decode.map4 ImportExposingNotFound
+                            A.regionDecoder
+                            ModuleName.canonicalDecoder
+                            BD.string
+                            (BD.list BD.string)
+
+                    24 ->
+                        Bytes.Decode.map4 NotFoundVar
+                            A.regionDecoder
+                            (BD.maybe BD.string)
+                            BD.string
+                            possibleNamesDecoder
+
+                    25 ->
+                        Bytes.Decode.map4 NotFoundType
+                            A.regionDecoder
+                            (BD.maybe BD.string)
+                            BD.string
+                            possibleNamesDecoder
+
+                    26 ->
+                        Bytes.Decode.map4 NotFoundVariant
+                            A.regionDecoder
+                            (BD.maybe BD.string)
+                            BD.string
+                            possibleNamesDecoder
+
+                    27 ->
+                        Bytes.Decode.map3 NotFoundBinop
+                            A.regionDecoder
+                            BD.string
+                            (BD.everySet identity BD.string)
+
+                    28 ->
+                        Bytes.Decode.map2 PatternHasRecordCtor
+                            A.regionDecoder
+                            BD.string
+
+                    29 ->
+                        Bytes.Decode.map4 PortPayloadInvalid
+                            A.regionDecoder
+                            BD.string
+                            Can.typeDecoder
+                            invalidPayloadDecoder
+
+                    30 ->
+                        Bytes.Decode.map3 PortTypeInvalid
+                            A.regionDecoder
+                            BD.string
+                            portProblemDecoder
+
+                    31 ->
+                        Bytes.Decode.map5 RecursiveAlias
+                            A.regionDecoder
+                            BD.string
+                            (BD.list BD.string)
+                            Src.typeDecoder
+                            (BD.list BD.string)
+
+                    32 ->
+                        Bytes.Decode.map3 RecursiveDecl
+                            A.regionDecoder
+                            BD.string
+                            (BD.list BD.string)
+
+                    33 ->
+                        Bytes.Decode.map2 RecursiveLet
+                            (A.locatedDecoder BD.string)
+                            (BD.list BD.string)
+
+                    34 ->
+                        Bytes.Decode.map3 Shadowing
+                            BD.string
+                            A.regionDecoder
+                            A.regionDecoder
+
+                    35 ->
+                        Bytes.Decode.map TupleLargerThanThree A.regionDecoder
+
+                    36 ->
+                        Bytes.Decode.map5 TypeVarsUnboundInUnion
+                            A.regionDecoder
+                            BD.string
+                            (BD.list BD.string)
+                            (BD.jsonPair BD.string A.regionDecoder)
+                            (BD.list (BD.jsonPair BD.string A.regionDecoder))
+
+                    37 ->
+                        Bytes.Decode.map5 TypeVarsMessedUpInAlias
+                            A.regionDecoder
+                            BD.string
+                            (BD.list BD.string)
+                            (BD.list (BD.jsonPair BD.string A.regionDecoder))
+                            (BD.list (BD.jsonPair BD.string A.regionDecoder))
+
+                    38 ->
+                        Bytes.Decode.map4 TooLarge
+                            A.regionDecoder
+                            tooLargeWhatDecoder
+                            BD.int
+                            BD.int
+
+                    _ ->
+                        Bytes.Decode.fail
+            )
+
+
+{-| Encodes a `TooLargeWhat` as a one-byte tag (0 `TooManyParams`, 1
+`TooManyLambdaParams`, 2 `TooManyClosureSlots`, 3 `TooManyCtorFields`, 4
+`TooManyRecordFields`) followed by its name, if any.
+-}
+tooLargeWhatEncoder : TooLargeWhat -> Bytes.Encode.Encoder
+tooLargeWhatEncoder what =
+    case what of
+        TooManyParams name ->
+            Bytes.Encode.sequence [ Bytes.Encode.unsignedInt8 0, BE.string name ]
+
+        TooManyLambdaParams ->
+            Bytes.Encode.unsignedInt8 1
+
+        TooManyClosureSlots maybeName ->
+            Bytes.Encode.sequence [ Bytes.Encode.unsignedInt8 2, BE.maybe BE.string maybeName ]
+
+        TooManyCtorFields name ->
+            Bytes.Encode.sequence [ Bytes.Encode.unsignedInt8 3, BE.string name ]
+
+        TooManyRecordFields maybeName ->
+            Bytes.Encode.sequence [ Bytes.Encode.unsignedInt8 4, BE.maybe BE.string maybeName ]
+
+
+{-| Decodes a `TooLargeWhat` written by `tooLargeWhatEncoder`.
+-}
+tooLargeWhatDecoder : Bytes.Decode.Decoder TooLargeWhat
+tooLargeWhatDecoder =
+    Bytes.Decode.unsignedInt8
+        |> Bytes.Decode.andThen
+            (\tag ->
+                case tag of
+                    0 ->
+                        Bytes.Decode.map TooManyParams BD.string
+
+                    1 ->
+                        Bytes.Decode.succeed TooManyLambdaParams
+
+                    2 ->
+                        Bytes.Decode.map TooManyClosureSlots (BD.maybe BD.string)
+
+                    3 ->
+                        Bytes.Decode.map TooManyCtorFields BD.string
+
+                    4 ->
+                        Bytes.Decode.map TooManyRecordFields (BD.maybe BD.string)
+
+                    _ ->
+                        Bytes.Decode.fail
+            )
+
+
+{-| Encodes `badArityContext` as one byte, 0 for `TypeArity` and 1 for
+`PatternArity`.
+-}
+badArityContextEncoder : BadArityContext -> Bytes.Encode.Encoder
+badArityContextEncoder badArityContext =
+    Bytes.Encode.unsignedInt8
+        (case badArityContext of
+            TypeArity ->
+                0
+
+            PatternArity ->
+                1
+        )
+
+
+{-| A decoder for a `BadArityContext` as `badArityContextEncoder` writes it.
+Any other byte fails.
+-}
+badArityContextDecoder : Bytes.Decode.Decoder BadArityContext
+badArityContextDecoder =
+    Bytes.Decode.unsignedInt8
+        |> Bytes.Decode.andThen
+            (\idx ->
+                case idx of
+                    0 ->
+                        Bytes.Decode.succeed TypeArity
+
+                    1 ->
+                        Bytes.Decode.succeed PatternArity
+
+                    _ ->
+                        Bytes.Decode.fail
+            )
+
+
+{-| Encodes `duplicatePatternContext` as a tag byte, its position in the
+declaration, followed by the function name for `DPFuncArgs`.
+-}
+duplicatePatternContextEncoder : DuplicatePatternContext -> Bytes.Encode.Encoder
+duplicatePatternContextEncoder duplicatePatternContext =
+    case duplicatePatternContext of
+        DPLambdaArgs ->
+            Bytes.Encode.unsignedInt8 0
+
+        DPFuncArgs funcName ->
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 1
+                , BE.string funcName
+                ]
+
+        DPCaseBranch ->
+            Bytes.Encode.unsignedInt8 2
+
+        DPLetBinding ->
+            Bytes.Encode.unsignedInt8 3
+
+        DPDestruct ->
+            Bytes.Encode.unsignedInt8 4
+
+
+{-| A decoder for a `DuplicatePatternContext` as
+`duplicatePatternContextEncoder` writes it. An unknown tag fails.
+-}
+duplicatePatternContextDecoder : Bytes.Decode.Decoder DuplicatePatternContext
+duplicatePatternContextDecoder =
+    Bytes.Decode.unsignedInt8
+        |> Bytes.Decode.andThen
+            (\idx ->
+                case idx of
+                    0 ->
+                        Bytes.Decode.succeed DPLambdaArgs
+
+                    1 ->
+                        Bytes.Decode.map DPFuncArgs BD.string
+
+                    2 ->
+                        Bytes.Decode.succeed DPCaseBranch
+
+                    3 ->
+                        Bytes.Decode.succeed DPLetBinding
+
+                    4 ->
+                        Bytes.Decode.succeed DPDestruct
+
+                    _ ->
+                        Bytes.Decode.fail
+            )
+
+
+{-| Encodes `varKind` as one byte, its position in the declaration of `VarKind`.
+-}
+varKindEncoder : VarKind -> Bytes.Encode.Encoder
+varKindEncoder varKind =
+    Bytes.Encode.unsignedInt8
+        (case varKind of
+            BadOp ->
+                0
+
+            BadVar ->
+                1
+
+            BadPattern ->
+                2
+
+            BadType ->
+                3
+        )
+
+
+{-| A decoder for a `VarKind` as `varKindEncoder` writes it. Any other byte
+fails.
+-}
+varKindDecoder : Bytes.Decode.Decoder VarKind
+varKindDecoder =
+    Bytes.Decode.unsignedInt8
+        |> Bytes.Decode.andThen
+            (\idx ->
+                case idx of
+                    0 ->
+                        Bytes.Decode.succeed BadOp
+
+                    1 ->
+                        Bytes.Decode.succeed BadVar
+
+                    2 ->
+                        Bytes.Decode.succeed BadPattern
+
+                    3 ->
+                        Bytes.Decode.succeed BadType
+
+                    _ ->
+                        Bytes.Decode.fail
+            )
+
+
+{-| Encodes `possibleNames` as its `locals` followed by its `quals`.
+-}
+possibleNamesEncoder : PossibleNames -> Bytes.Encode.Encoder
+possibleNamesEncoder possibleNames =
+    Bytes.Encode.sequence
+        [ BE.everySet BE.string possibleNames.locals
+        , BE.stdDict BE.string (BE.everySet BE.string) possibleNames.quals
+        ]
+
+
+{-| A decoder for `PossibleNames` as `possibleNamesEncoder` writes them.
+-}
+possibleNamesDecoder : Bytes.Decode.Decoder PossibleNames
+possibleNamesDecoder =
+    Bytes.Decode.map2 PossibleNames
+        (BD.everySet identity BD.string)
+        (BD.stdDict BD.string (BD.everySet identity BD.string))
+
+
+{-| Encodes `invalidPayload` as a tag byte, its position in the declaration of
+`InvalidPayload`, followed by the name that `TypeVariable` and
+`UnsupportedType` carry.
+-}
+invalidPayloadEncoder : InvalidPayload -> Bytes.Encode.Encoder
+invalidPayloadEncoder invalidPayload =
+    case invalidPayload of
+        ExtendedRecord ->
+            Bytes.Encode.unsignedInt8 0
+
+        Function ->
+            Bytes.Encode.unsignedInt8 1
+
+        TypeVariable name ->
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 2
+                , BE.string name
+                ]
+
+        UnsupportedType name ->
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 3
+                , BE.string name
+                ]
+
+
+{-| A decoder for an `InvalidPayload` as `invalidPayloadEncoder` writes it. An
+unknown tag fails.
+-}
+invalidPayloadDecoder : Bytes.Decode.Decoder InvalidPayload
+invalidPayloadDecoder =
+    Bytes.Decode.unsignedInt8
+        |> Bytes.Decode.andThen
+            (\idx ->
+                case idx of
+                    0 ->
+                        Bytes.Decode.succeed ExtendedRecord
+
+                    1 ->
+                        Bytes.Decode.succeed Function
+
+                    2 ->
+                        Bytes.Decode.map TypeVariable BD.string
+
+                    3 ->
+                        Bytes.Decode.map UnsupportedType BD.string
+
+                    _ ->
+                        Bytes.Decode.fail
+            )
+
+
+{-| Encodes `portProblem` as a tag byte, its position in the declaration of
+`PortProblem`, followed by the count that `CmdExtraArgs` carries.
+-}
+portProblemEncoder : PortProblem -> Bytes.Encode.Encoder
+portProblemEncoder portProblem =
+    case portProblem of
+        CmdNoArg ->
+            Bytes.Encode.unsignedInt8 0
+
+        CmdExtraArgs n ->
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 1
+                , BE.int n
+                ]
+
+        CmdBadMsg ->
+            Bytes.Encode.unsignedInt8 2
+
+        SubBad ->
+            Bytes.Encode.unsignedInt8 3
+
+        NotCmdOrSub ->
+            Bytes.Encode.unsignedInt8 4
+
+
+{-| A decoder for a `PortProblem` as `portProblemEncoder` writes it. An unknown
+tag fails.
+-}
+portProblemDecoder : Bytes.Decode.Decoder PortProblem
+portProblemDecoder =
+    Bytes.Decode.unsignedInt8
+        |> Bytes.Decode.andThen
+            (\idx ->
+                case idx of
+                    0 ->
+                        Bytes.Decode.succeed CmdNoArg
+
+                    1 ->
+                        Bytes.Decode.map CmdExtraArgs BD.int
+
+                    2 ->
+                        Bytes.Decode.succeed CmdBadMsg
+
+                    3 ->
+                        Bytes.Decode.succeed SubBad
+
+                    4 ->
+                        Bytes.Decode.succeed NotCmdOrSub
+
+                    _ ->
+                        Bytes.Decode.fail
+            )

@@ -153,10 +153,10 @@ DS7–DS11 are new in v2, one per investigation question.
   solving machinery.** LSS's lattice lives inside solver-store `Point`
   content, joined by unification, demand-lazily, in-mono; borrow's is a
   directed flow lattice over a finished graph. The concrete reuse
-  inventory (§5.3): `Compiler.Graph` stack-safe SCCs, the
+  inventory (§5.3): `Data.Graph` stack-safe SCCs, the
   `buildCallGraph` dense-indexing scaffold (copied, keeping the SCC
   list), the Staging `UnionFind` DSU core (copied into `Borrow/Dsu`),
-  `Compiler.Data.BitSet`, the census/stats/report plumbing pattern, and
+  `Data.BitSet`, the census/stats/report plumbing pattern, and
   LssInfer's disciplines (memoized per-SCC signatures, re-entry guards,
   poison-on-mismatch totality, AbiCloning's first-order-recursion scale
   lesson). Roughly 40–50% of the pass skeleton exists; 0% of the core
@@ -483,7 +483,7 @@ rollout. They do **not** share a substrate:
 | Join mechanism | **unification** (`unifySlotWithSet`, `poisonArrowSets`) | **directed** `≥` propagation on a worklist; flows must never be unified (DS1) |
 | When | inside mono, demand-lazy, memoized per `TOpt.Cycle` | after GlobalOpt P5, whole-graph, reverse-topological SCC order |
 | Fixpoint driver | fixpoint-by-unification (no worklist at all) | explicit monotone worklist over finite lattices |
-| Units | front-end `TOpt.Cycle` nodes | `Compiler.Graph` SCCs over SpecId call edges |
+| Units | front-end `TOpt.Cycle` nodes | `Data.Graph` SCCs over SpecId call edges |
 
 Attempting to host borrow's directed lattice inside the solver store
 would repeat v0's mistake (DS1); attempting to run LSS post-mono is
@@ -494,9 +494,9 @@ pre-exists; the core solver is all new code.
 
 ### 5.2 What must NOT be shared
 
-- `Compiler.Type.UnionFind` / `System.TypeCheck.IO` — payload hard-wired
+- `Compiler.Type.UnionFind` / `Compiler.Type.State.IO` — payload hard-wired
   to the type-checker `Descriptor`, `Point`-keyed, IO-threaded (DS1).
-- `Compiler.MonoSolver.Store` and LssInfer's slot machinery — the LSS
+- `Compiler.Monomorphize.Solver.Store` and LssInfer's slot machinery — the LSS
   lattice literally lives inside solver descriptors.
 - The `Engine.S` `Step` monad — drags in the whole 20+-field solver
   state.
@@ -507,10 +507,10 @@ pre-exists; the core solver is all new code.
 
 Directly reusable as-is:
 
-- `Compiler.Graph.stronglyConnCompInt` (`Graph.elm:38`) — the mandated
+- `Data.Graph.stronglyConnCompInt` (`Graph.elm:38`) — the mandated
   stack-safe Kosaraju (explicit stacks + BitSet; written because library
   SCC blew the stack on this very graph).
-- `Compiler.Data.BitSet` for SpecId sets.
+- `Data.BitSet` for SpecId sets.
 - The census pattern (§13): pass returns `(graph, BorrowStats)`;
   `GlobalOptStats` gains a nested field; `runGlobalOptPhase` prints one
   gated stderr line; flag in `Config.elm` + `ECO_BORROW_REPORT` env
@@ -575,7 +575,7 @@ are targets, not caps):
 | `Borrow/LssFacts.elm` | LSet/srcLambda query API (§10) — B3.5 | 200 |
 | `Borrow/Check.elm` | post-reification linearity checker (§19.3) — B4 | 150 |
 
-Configuration (`Compiler/Eco/Config.elm`, decoded from `eco-config.json`
+Configuration (`Compiler/Config.elm`, decoded from `eco-config.json`
 with env overrides, following the `lss`/`inline` blocks):
 
 ```elm
@@ -977,7 +977,7 @@ To let borrow route standalone members, mono exports a compact reverse
 map that today it discards:
 
 ```elm
--- Compiler/AST/Monomorphized.elm
+-- Compiler/IR/Mono.elm
 type MemberOrigin
     = OriginGlobal Global         -- g| members (E9.2 kernel-alias folds already resolve to k|)
     | OriginKernel Name Name      -- k| members (home, name)
@@ -1188,7 +1188,7 @@ sized with data, not hope.
    GlobalOpt wrapper insertion may have staled; one cheap re-collecting
    fold beats trusting it.
 2. **SCCs**: dense-index live SpecIds (the `buildCallGraph` scaffold,
-   copied — §5.3) → `Compiler.Graph.stronglyConnCompInt` → process SCCs
+   copied — §5.3) → `Data.Graph.stronglyConnCompInt` → process SCCs
    in **reverse topological order** (callees first).
 3. **Per SCC**: initialize member sigs optimistically (params Borrowed
    with fresh α, results `LParams ∅`); run §8 + §9 per member; read back
@@ -1330,7 +1330,7 @@ none of it constrains B1–B3.5.*
 ### 14.1 New constructors
 
 ```elm
--- Compiler/AST/Monomorphized.elm
+-- Compiler/IR/Mono.elm
     | MonoRcDup Int MonoExpr      -- inc target's count by n, yield it
     | MonoRcDrop DropKind Name MonoExpr   -- drop binding at scope exit, yield body
 type DropKind = DropDec | DropFree      -- DropFree: statically unique (B5)
@@ -1767,14 +1767,14 @@ preserved by RC_004's scope). `RCElimination`'s description becomes
 - Solver-reuse evaluation (architecture pattern, kernel honesty):
   `design_docs/monomorphization/solver-reuse-evaluation.md`
 - Roc Perceus study: `design_docs/perceus_gc/{README,borrow,inc_dec}.md`
-- Mono IR: `compiler/src/Compiler/AST/Monomorphized.elm`
-- Pipeline: `compiler/src/Compiler/GlobalOpt/MonoGlobalOptimize.elm:125-152`,
+- Mono IR: `compiler/src/Compiler/IR/Mono.elm`
+- Pipeline: `compiler/src/Compiler/MonoOpt/GlobalOptimize.elm:125-152`,
   `compiler/src/Builder/Generate.elm` (`runGlobalOptPhase`)
 - LSS anatomy: `compiler/src/Compiler/MonoSolver/{LssInfer,Engine}.elm`,
-  `compiler/src/Compiler/GlobalOpt/AbiCloning.elm`
-- Shared infra: `compiler/src/Compiler/Graph.elm`,
+  `compiler/src/Compiler/MonoOpt/AbiCloning.elm`
+- Shared infra: `compiler/src/Data/Graph.elm`,
   `compiler/src/Compiler/GlobalOpt/Staging/UnionFind.elm`,
-  `compiler/src/Compiler/GlobalOpt/MonoInlineSimplify.elm`
+  `compiler/src/Compiler/MonoOpt/InlineSimplify.elm`
   (`buildCallGraph`)
 - Dialect ops: `runtime/src/codegen/Ops.td:2751-2842`; guard:
   `runtime/src/codegen/Passes/RCElimination.cpp`; pipeline:

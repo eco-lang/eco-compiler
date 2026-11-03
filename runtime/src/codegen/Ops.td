@@ -1250,7 +1250,7 @@ def Eco_CallOp : Eco_Op<"call", [
 
     Purity channel (kernel-opt-12). The discardable unit attribute
     `eco.cse_safe` is stamped at emission for direct calls whose
-    Compiler.GlobalOpt.KernelFacts row derives `droppable`
+    Compiler.IR.Kernel.Facts row derives `droppable`
     (cseSafe && totality == Total). It licenses exactly two transforms:
 
       * MERGE two identical calls that are in the same dominance scope;

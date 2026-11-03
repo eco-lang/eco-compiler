@@ -25,7 +25,7 @@ Among what is not tested: a name that is not a kernel module name, on which
 
 -}
 
-import Compiler.Data.Name as Name
+import Compiler.Core.Name as Name
 import Expect
 import Test exposing (Test)
 

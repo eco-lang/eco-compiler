@@ -87,13 +87,13 @@ a fresh id, so bindings made at one call site do not reach another.
 
 -}
 
-import Compiler.AST.Canonical as Can
-import Compiler.AST.Intern as Intern exposing (Intern)
-import Compiler.AST.Monomorphized as Mono
-import Compiler.AST.TypeIds exposing (MVarId)
-import Compiler.Data.Id as Id
-import Compiler.Data.Name exposing (Name)
+import Compiler.Core.Id as Id
+import Compiler.Core.Name exposing (Name)
+import Compiler.Core.TypeIds exposing (MVarId)
 import Compiler.Elm.ModuleName as ModuleName
+import Compiler.IR.Canonical as Can
+import Compiler.IR.Mono as Mono
+import Compiler.IR.Mono.Intern as Intern exposing (Intern)
 import Compiler.Monomorphize.State as State exposing (MVarEnv, SchemeInfo, Substitution)
 import Dict
 import Set exposing (Set)

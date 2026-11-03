@@ -247,7 +247,7 @@ run before any Elm code exists.
    `File_hWriteString(HPtr handle, …)`, `Console_write(HPtr handle, …)` all
    receive raw i64 (acknowledged in `File.cpp:631-633`). The *actual* ABI is
    derived from the monomorphized Elm type via
-   `monoTypeToAbi` (`compiler/src/Compiler/Generate/MLIR/Types.elm:158-175`,
+   `monoTypeToAbi` (`compiler/src/Compiler/GenerateMlir/Types.elm:158-175`,
    Task → `!eco.value`), so codegen is correct; only the header is wrong.
 
 8. **`design_docs/theory/kernel-task-deferral.md` is stale on its own exemption

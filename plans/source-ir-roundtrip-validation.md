@@ -33,7 +33,7 @@ Create a new module `tests/Compiler/Validation/SourceRoundtrip.elm`:
 ```elm
 module Compiler.Validation.SourceRoundtrip exposing (validateSourceModule)
 
-import Compiler.AST.Source as Src
+import Compiler.IR.Source as Src
 import Common.Format.Render as Render
 import Compiler.Parse.Module as Parse
 import Expect exposing (Expectation)

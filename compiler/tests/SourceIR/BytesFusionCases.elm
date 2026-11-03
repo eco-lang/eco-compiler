@@ -11,7 +11,7 @@ and what counts as passing, so what is established depends on the caller.
 The cases are named for _bytes fusion_: the MLIR back end's handling of a call
 that encodes with an elm/bytes encoder or decodes with an elm/bytes decoder,
 which it tries to compile from the structure of that encoder or decoder
-(`Compiler.Generate.MLIR.Expr`, `Compiler.Generate.MLIR.BytesFusion.Reify`).
+(`Compiler.GenerateMlir.Expr`, `Compiler.GenerateMlir.BytesFusion.Reify`).
 Only a call to `encode` or `decode` is such a call; most cases below build a
 bare encoder or decoder value instead.
 
@@ -52,7 +52,6 @@ Among what is not tested: a call to `Bytes.Decode.decode`, the `signedInt16`,
 
 -}
 
-import Compiler.AST.Source as Src
 import Compiler.AST.SourceBuilder
     exposing
         ( callExpr
@@ -68,6 +67,7 @@ import Compiler.AST.SourceBuilder
         , varExpr
         )
 import Compiler.BulkCheck exposing (TestCase, bulkCheck)
+import Compiler.IR.Source as Src
 import Expect exposing (Expectation)
 import Test exposing (Test)
 

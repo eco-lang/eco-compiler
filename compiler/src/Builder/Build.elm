@@ -8,7 +8,7 @@ module Builder.Build exposing
 
 {-| Compiles a project's own modules, reusing what earlier builds left on disk
 wherever it can. Packages are compiled elsewhere: this module starts from the
-project details that `Builder.Elm.Details` loads, which hold the dependencies'
+project details that `Builder.Deps.Details` loads, which hold the dependencies'
 interfaces and an entry for each project module recording what the last build
 that compiled it saw.
 
@@ -86,46 +86,48 @@ status, result and root MVars are dropped once their values have been read.
 -}
 
 import Basics.Extra exposing (flip)
+import Builder.Deps.Details as Details
 import Builder.Eco.FEStats as FEStats
-import Builder.Elm.Details as Details
 import Builder.Elm.Outline as Outline
 import Builder.File as File
 import Builder.Reporting as Reporting
 import Builder.Reporting.Exit as Exit
+import Builder.Reporting.ModuleError as ModuleError
 import Builder.Stuff as Stuff
 import Bytes.Decode
 import Bytes.Encode
-import Compiler.AST.Canonical as Can
-import Compiler.AST.Optimized as Opt
-import Compiler.AST.Source as Src
-import Compiler.AST.TypeEnv as TypeEnv
-import Compiler.AST.TypedModuleArtifact as TMod
-import Compiler.AST.TypedOptimized as TOpt
+import Compiler.Canonicalize.ImportError as Import
 import Compiler.Compile as Compile
-import Compiler.Data.Name as Name exposing (Name)
-import Compiler.Data.NonEmptyList as NE
-import Compiler.Data.OneOrMore as OneOrMore
-import Compiler.Elm.Docs as Docs
-import Compiler.Elm.Interface as I
-import Compiler.Elm.Kernel as Kernel
+import Compiler.Core.Annotation as A
+import Compiler.Core.Name as Name exposing (Name)
+import Compiler.Docs as Docs
+import Compiler.Docs.Error as EDocs
 import Compiler.Elm.ModuleName as ModuleName
 import Compiler.Elm.Package as Pkg
-import Compiler.Graph as Graph
+import Compiler.Error as Error
+import Compiler.IR.Canonical as Can
+import Compiler.IR.Canonical.Interface as I
+import Compiler.IR.Kernel.Chunk as Chunk
+import Compiler.IR.Optimized as Opt
+import Compiler.IR.Source as Src
+import Compiler.IR.Typed.ModuleArtifact as TMod
+import Compiler.IR.Typed.Optimized as TOpt
+import Compiler.IR.Typed.TypeEnv as TypeEnv
 import Compiler.Json.Encode as E
+import Compiler.Parse.Error as Syntax
+import Compiler.Parse.Kernel as Kernel
 import Compiler.Parse.Module as Parse
-import Compiler.Reporting.Annotation as A
-import Compiler.Reporting.Error as Error
-import Compiler.Reporting.Error.Docs as EDocs
-import Compiler.Reporting.Error.Import as Import
-import Compiler.Reporting.Error.Syntax as Syntax
+import Data.Graph as Graph
 import Data.Map
+import Data.NonEmptyList as NE
+import Data.OneOrMore as OneOrMore
 import Data.Set as EverySet
 import Dict exposing (Dict)
+import System.Crash exposing (crash)
 import System.IO exposing (FilePath, MVar(..))
 import Task exposing (Task)
 import Utils.Bytes.Decode as BD
 import Utils.Bytes.Encode as BE
-import Utils.Crash exposing (crash)
 import Utils.Main as Utils
 
 
@@ -501,7 +503,7 @@ type Artifacts
 
 `Fresh` is a module compiled in this build, including an outside root. It
 carries its interface and its erased graph, which on a typed build is the
-presence-only stub `Compiler.AST.Optimized` describes, and its typed graph and
+presence-only stub `Compiler.IR.Optimized` describes, and its typed graph and
 type environment, which are `Nothing` on an untyped build.
 
 `Cached` is a module reused from disk without compiling. Its `Bool` says
@@ -519,7 +521,7 @@ canonical module name.
 
 Modules that a direct dependency does not expose, and every module of an
 indirect dependency, have private interfaces holding only their types;
-`Builder.Elm.Details` decides which. This is a name for a `Data.Map.Dict`, not
+`Builder.Deps.Details` decides which. This is a name for a `Data.Map.Dict`, not
 a new type.
 
 -}
@@ -1004,7 +1006,7 @@ checkKernelExistsInDirs name pkg foreignHomes srcDirs =
                                 |> Task.map
                                     (\bytes ->
                                         case Kernel.fromByteString pkg foreignHomes bytes of
-                                            Just (Kernel.Content _ _) ->
+                                            Just (Chunk.Content _ _) ->
                                                 SKernel
 
                                             Nothing ->
@@ -1115,11 +1117,11 @@ type BResult
     | RSame Details.Local I.Interface Opt.LocalGraph (Maybe (TOpt.LocalGraph Name)) (Maybe TypeEnv.ModuleTypeEnv) (Maybe Docs.Module)
     | RCached Bool Details.BuildID (MVar CachedInterface)
     | RNotFound Import.Problem
-    | RProblem Error.Module
+    | RProblem ModuleError.Module
     | RBlocked
     | RForeign I.Interface
     | RKernel
-    | RKernelLocal (List Kernel.Chunk)
+    | RKernelLocal (List Chunk.Chunk)
 
 
 {-| The interface of a cached module, as far as this build has needed it.
@@ -1159,7 +1161,7 @@ checkModule ((Env envData) as env) foreigns resultsMVar name status =
                 Task.succeed (RNotFound importProblem)
 
             SBadSyntax path time source err ->
-                Error.BadSyntax err |> Error.Module name path time source |> RProblem |> Task.succeed
+                Error.BadSyntax err |> ModuleError.Module name path time source |> RProblem |> Task.succeed
 
             SForeign home ->
                 case Utils.find ModuleName.toComparableCanonical (ModuleName.Canonical home name) foreigns of
@@ -1252,10 +1254,10 @@ handleCachedDepsStatus ((Env envData) as env) resultDict root projectType name p
                     (\source ->
                         case Parse.fromByteString projectType source of
                             Ok (Src.Module srcData) ->
-                                Error.BadImports (toImportErrors env resultDict srcData.imports problems) |> Error.Module name path time source |> RProblem
+                                Error.BadImports (toImportErrors env resultDict srcData.imports problems) |> ModuleError.Module name path time source |> RProblem
 
                             Err err ->
-                                Error.BadSyntax err |> Error.Module name path time source |> RProblem
+                                Error.BadSyntax err |> ModuleError.Module name path time source |> RProblem
                     )
 
 
@@ -1332,7 +1334,7 @@ recompileCachedModule :
 recompileCachedModule env projectType name path time deps ifaces source =
     case Parse.fromByteString projectType source of
         Err err ->
-            Error.BadSyntax err |> Error.Module name path time source |> RProblem |> Task.succeed
+            Error.BadSyntax err |> ModuleError.Module name path time source |> RProblem |> Task.succeed
 
         Ok ((Src.Module srcData) as modul) ->
             let
@@ -1441,7 +1443,7 @@ makeImportError :
     -> NE.Nonempty ( ModuleName.Raw, Import.Problem )
     -> Task Never BResult
 makeImportError env resultDict name path time source imports problems =
-    Error.BadImports (toImportErrors env resultDict imports problems) |> Error.Module name path time source |> RProblem |> Task.succeed
+    Error.BadImports (toImportErrors env resultDict imports problems) |> ModuleError.Module name path time source |> RProblem |> Task.succeed
 
 
 
@@ -2004,12 +2006,12 @@ handleCompileResult :
 handleCompileResult key root maybeBuildDir cacheMode pkg buildID docsNeed path time deps main lastChange source modul maybeTypedObjects result =
     case result of
         Err err ->
-            Error.Module (Src.getName modul) path time source err |> RProblem |> Task.succeed
+            ModuleError.Module (Src.getName modul) path time source err |> RProblem |> Task.succeed
 
         Ok (Compile.Artifacts canonical annotations objects) ->
             case makeDocs docsNeed canonical of
                 Err err ->
-                    Error.Module (Src.getName modul) path time source (Error.BadDocs err) |> RProblem |> Task.succeed
+                    ModuleError.Module (Src.getName modul) path time source (Error.BadDocs err) |> RProblem |> Task.succeed
 
                 Ok docs ->
                     let
@@ -2203,12 +2205,12 @@ handleTypedCompileResult :
 handleTypedCompileResult key root maybeBuildDir cacheMode pkg buildID docsNeed path time deps main lastChange source modul result =
     case result of
         Err err ->
-            Error.Module (Src.getName modul) path time source err |> RProblem |> Task.succeed
+            ModuleError.Module (Src.getName modul) path time source err |> RProblem |> Task.succeed
 
         Ok (Compile.TypedArtifacts typedArtifacts) ->
             case makeDocs docsNeed typedArtifacts.canonical of
                 Err err ->
-                    Error.Module (Src.getName modul) path time source (Error.BadDocs err) |> RProblem |> Task.succeed
+                    ModuleError.Module (Src.getName modul) path time source (Error.BadDocs err) |> RProblem |> Task.succeed
 
                 Ok docs ->
                     let
@@ -2321,7 +2323,7 @@ finalizeExposed root docsGoal exposed results =
 
 {-| Adds a module's errors to `errors` when its result is `RProblem`.
 -}
-addErrors : BResult -> List Error.Module -> List Error.Module
+addErrors : BResult -> List ModuleError.Module -> List ModuleError.Module
 addErrors result errors =
     case result of
         RNew _ _ _ _ _ _ ->
@@ -2746,7 +2748,7 @@ name `???`.
 type RootStatus
     = SInside ModuleName.Raw
     | SOutsideOk Details.Local String Src.Module
-    | SOutsideErr Error.Module
+    | SOutsideErr ModuleError.Module
 
 
 {-| Crawls one root. An inside root is put into the status dict, replacing any
@@ -2800,7 +2802,7 @@ crawlRoot ((Env envData) as env) mvar root =
                                             crawlDeps env mvar deps (SOutsideOk local source modul)
 
                                         Err syntaxError ->
-                                            Error.Module "???" path time source (Error.BadSyntax syntaxError) |> SOutsideErr |> Task.succeed
+                                            ModuleError.Module "???" path time source (Error.BadSyntax syntaxError) |> SOutsideErr |> Task.succeed
                                 )
                     )
 
@@ -2826,7 +2828,7 @@ failed or a cached interface could not be read.
 type RootResult
     = RInside ModuleName.Raw
     | ROutsideOk ModuleName.Raw I.Interface Opt.LocalGraph (Maybe (TOpt.LocalGraph Name)) (Maybe TypeEnv.ModuleTypeEnv)
-    | ROutsideErr Error.Module
+    | ROutsideErr ModuleError.Module
     | ROutsideBlocked
 
 
@@ -2866,7 +2868,7 @@ checkRoot ((Env envData) as env) results rootStatus =
                                 Task.succeed ROutsideBlocked
 
                             DepsNotFound problems ->
-                                Error.BadImports (toImportErrors env results srcData.imports problems) |> Error.Module (Src.getName modul) localData.path localData.time source |> ROutsideErr |> Task.succeed
+                                Error.BadImports (toImportErrors env results srcData.imports problems) |> ModuleError.Module (Src.getName modul) localData.path localData.time source |> ROutsideErr |> Task.succeed
                     )
 
 
@@ -2897,7 +2899,7 @@ compileOutside (Env envData) (Details.Local localData) source ifaces modul =
                                     )
 
                         Err errors ->
-                            Error.Module name localData.path localData.time source errors |> ROutsideErr |> Task.succeed
+                            ModuleError.Module name localData.path localData.time source errors |> ROutsideErr |> Task.succeed
                 )
 
     else
@@ -2910,7 +2912,7 @@ compileOutside (Env envData) (Details.Local localData) source ifaces modul =
                                 |> Task.map (\_ -> ROutsideOk name (I.fromModule pkg canonical annotations) objects Nothing Nothing)
 
                         Err errors ->
-                            Error.Module name localData.path localData.time source errors |> ROutsideErr |> Task.succeed
+                            ModuleError.Module name localData.path localData.time source errors |> ROutsideErr |> Task.succeed
                 )
 
 
@@ -2959,10 +2961,10 @@ errors, and the errors otherwise. A blocked outside root is left out of the
 roots. The compiler crashes, with a message blaming a corrupted `eco-stuff/`
 directory, only when the first root is blocked and nothing has errors.
 -}
-gatherProblemsOrMains : Dict ModuleName.Raw BResult -> NE.Nonempty RootResult -> Result (NE.Nonempty Error.Module) (NE.Nonempty Root)
+gatherProblemsOrMains : Dict ModuleName.Raw BResult -> NE.Nonempty RootResult -> Result (NE.Nonempty ModuleError.Module) (NE.Nonempty Root)
 gatherProblemsOrMains results (NE.Nonempty rootResult rootResults) =
     let
-        addResult : RootResult -> ( List Error.Module, List Root ) -> ( List Error.Module, List Root )
+        addResult : RootResult -> ( List ModuleError.Module, List Root ) -> ( List ModuleError.Module, List Root )
         addResult result ( es, roots ) =
             case result of
                 RInside n ->
@@ -2977,7 +2979,7 @@ gatherProblemsOrMains results (NE.Nonempty rootResult rootResults) =
                 ROutsideBlocked ->
                     ( es, roots )
 
-        errors : List Error.Module
+        errors : List ModuleError.Module
         errors =
             Dict.foldr (\_ -> addErrors) [] results
     in
@@ -3125,7 +3127,7 @@ bResultEncoder bResult =
         RProblem e ->
             Bytes.Encode.sequence
                 [ Bytes.Encode.unsignedInt8 4
-                , Error.moduleEncoder e
+                , ModuleError.moduleEncoder e
                 ]
 
         RBlocked ->
@@ -3143,7 +3145,7 @@ bResultEncoder bResult =
         RKernelLocal chunks ->
             Bytes.Encode.sequence
                 [ Bytes.Encode.unsignedInt8 8
-                , BE.list Kernel.chunkEncoder chunks
+                , BE.list Chunk.chunkEncoder chunks
                 ]
 
 
@@ -3183,7 +3185,7 @@ bResultDecoder =
                         Bytes.Decode.map RNotFound Import.problemDecoder
 
                     4 ->
-                        Bytes.Decode.map RProblem Error.moduleDecoder
+                        Bytes.Decode.map RProblem ModuleError.moduleDecoder
 
                     5 ->
                         Bytes.Decode.succeed RBlocked
@@ -3195,7 +3197,7 @@ bResultDecoder =
                         Bytes.Decode.succeed RKernel
 
                     8 ->
-                        Bytes.Decode.map RKernelLocal (BD.list Kernel.chunkDecoder)
+                        Bytes.Decode.map RKernelLocal (BD.list Chunk.chunkDecoder)
 
                     _ ->
                         Bytes.Decode.fail
@@ -3322,7 +3324,7 @@ rootStatusEncoder rootStatus =
         SOutsideErr err ->
             Bytes.Encode.sequence
                 [ Bytes.Encode.unsignedInt8 2
-                , Error.moduleEncoder err
+                , ModuleError.moduleEncoder err
                 ]
 
 
@@ -3344,7 +3346,7 @@ rootStatusDecoder =
                             Src.moduleDecoder
 
                     2 ->
-                        Bytes.Decode.map SOutsideErr Error.moduleDecoder
+                        Bytes.Decode.map SOutsideErr ModuleError.moduleDecoder
 
                     _ ->
                         Bytes.Decode.fail
@@ -3389,7 +3391,7 @@ rootResultEncoder rootResult =
         ROutsideErr err ->
             Bytes.Encode.sequence
                 [ Bytes.Encode.unsignedInt8 2
-                , Error.moduleEncoder err
+                , ModuleError.moduleEncoder err
                 ]
 
         ROutsideBlocked ->
@@ -3416,7 +3418,7 @@ rootResultDecoder =
                             (BD.maybe TypeEnv.moduleTypeEnvDecoder)
 
                     2 ->
-                        Bytes.Decode.map ROutsideErr Error.moduleDecoder
+                        Bytes.Decode.map ROutsideErr ModuleError.moduleDecoder
 
                     3 ->
                         Bytes.Decode.succeed ROutsideBlocked
@@ -3455,7 +3457,7 @@ depDecoder =
 
 
 {-| A decoder for the dependency interfaces, or their absence, as
-`Builder.Elm.Details.loadInterfaces` puts them into their MVar.
+`Builder.Deps.Details.loadInterfaces` puts them into their MVar.
 -}
 maybeDependenciesDecoder : Bytes.Decode.Decoder (Maybe Dependencies)
 maybeDependenciesDecoder =

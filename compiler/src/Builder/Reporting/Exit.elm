@@ -120,23 +120,23 @@ corrupt and suggest deleting it.
 
 import Builder.Http as Http
 import Builder.Reporting.Exit.Help as Help
+import Builder.Reporting.Exit.JsonError as Json
+import Builder.Reporting.ModuleError as ModuleError
 import Bytes.Decode
 import Bytes.Encode
-import Compiler.Data.Name as N
-import Compiler.Data.NonEmptyList as NE
+import Compiler.Canonicalize.ImportError as Import
+import Compiler.Core.Annotation as A
+import Compiler.Core.Name as N
 import Compiler.Elm.Constraint as C
 import Compiler.Elm.ModuleName as ModuleName
 import Compiler.Elm.Package as Pkg
 import Compiler.Elm.Version as V
 import Compiler.Json.Decode as Decode
 import Compiler.Json.Encode as Encode
-import Compiler.Parse.Primitives exposing (Col, Row)
-import Compiler.Reporting.Annotation as A
+import Compiler.Lexer.Primitives exposing (Col, Row)
 import Compiler.Reporting.Doc as D
-import Compiler.Reporting.Error as Error
-import Compiler.Reporting.Error.Import as Import
-import Compiler.Reporting.Error.Json as Json
 import Compiler.Reporting.Render.Code as Code
+import Data.NonEmptyList as NE
 import Dict exposing (Dict)
 import Eco.IO.Error as IOErr exposing (IOError)
 import System.IO exposing (FilePath)
@@ -2479,7 +2479,7 @@ than with any module's code.
 
 -}
 type BuildProblem
-    = BuildBadModules FilePath Error.Module (List Error.Module)
+    = BuildBadModules FilePath ModuleError.Module (List ModuleError.Module)
     | BuildProjectProblem BuildProjectProblem
 
 
@@ -2935,8 +2935,8 @@ buildProblemEncoder buildProblem =
             Bytes.Encode.sequence
                 [ Bytes.Encode.unsignedInt8 0
                 , BE.string root
-                , Error.moduleEncoder e
-                , BE.list Error.moduleEncoder es
+                , ModuleError.moduleEncoder e
+                , BE.list ModuleError.moduleEncoder es
                 ]
 
         BuildProjectProblem problem ->
@@ -2957,8 +2957,8 @@ buildProblemDecoder =
                     0 ->
                         Bytes.Decode.map3 BuildBadModules
                             BD.string
-                            Error.moduleDecoder
-                            (BD.list Error.moduleDecoder)
+                            ModuleError.moduleDecoder
+                            (BD.list ModuleError.moduleDecoder)
 
                     1 ->
                         Bytes.Decode.map BuildProjectProblem buildProjectProblemDecoder

@@ -38,7 +38,8 @@ so a placeholder can still survive this pass.
 
 -}
 
-import Compiler.AST.Monomorphized as Mono
+import Compiler.Elm.ModuleName as ModuleName
+import Compiler.IR.Mono as Mono
     exposing
         ( Decider(..)
         , MonoChoice(..)
@@ -46,7 +47,6 @@ import Compiler.AST.Monomorphized as Mono
         , MonoExpr(..)
         , MonoType(..)
         )
-import Compiler.Elm.ModuleName as ModuleName
 import Dict exposing (Dict)
 
 

@@ -6,10 +6,10 @@ added §9.3 (pass ordering — AbiCloning after Staging, the wrapper identity
 rule, LSS_008) and §9.4 (staging retirement outlook).
 Code references verified against the tree as of MonoSolver
 runtime parity (plan rev 11, 2026-07-09): `Compiler/MonoSolver/*`,
-`Compiler/Type/{Unify,Occurs,Type,Solve}.elm`, `System/TypeCheck/IO.elm`,
+`Compiler/Type/{Unify,Occurs,Type,Solve}.elm`, `Compiler/Type/State/IO.elm`,
 `Compiler/AST/{Monomorphized,TypedOptimized,TypeIds}.elm`,
 `Compiler/Monomorphize/{AssignMVarIds,Prune}.elm`,
-`Compiler/GlobalOpt/*`, `Compiler/Eco/Config.elm`, `Builder/Generate.elm`.*
+`Compiler/GlobalOpt/*`, `Compiler/Config.elm`, `Builder/Generate.elm`.*
 
 *Basis: Brandon, Driscoll, Dai, Berkow, Milano — "Better Defunctionalization
 through Lambda Set Specialization" (PLDI 2023),
@@ -17,12 +17,12 @@ through Lambda Set Specialization" (PLDI 2023),
 Engine-choice justification: `lss-foundation-report.md`.*
 
 > **Status (Oct 2026): the config and set-content sketches below are out of
-> date; the code is authoritative.** `LssConfig` (`Compiler/Eco/Config.elm`)
+> date; the code is authoritative.** `LssConfig` (`Compiler/Config.elm`)
 > now defaults `enabled = True`, `maxSetSize = 0` and `maxSpecsPerGlobal = 0`
 > (zero means no limit), and has no `keyed` field: set keying became
 > unconditional under LSS (`ECO_MONO_LSS=keyed|unkeyed` are accepted as
 > no-ops). The set content is no longer `LambdaSet1 Bool Dict`: `FlatType`
-> (now in `Compiler/AST/TypeVars.elm`) has `LambdaSet1 LambdaSet` with
+> (now in `Compiler/IR/Typed/TypeVars.elm`) has `LambdaSet1 LambdaSet` with
 > `type LambdaSet = LsTop Int | LsMembers (List Int) | LsFrom (List Int)
 > (List Variable)` (⊤ carries a provenance code; `LsFrom` is LSS_023). Read
 > §2.1 and §4.1 as the v1 design.
@@ -95,7 +95,7 @@ LSS off (§5.4).
 
 ### 2.1 Config surface
 
-`Compiler/Eco/Config.elm` — extend `MonoConfig` (currently
+`Compiler/Config.elm` — extend `MonoConfig` (currently
 `{ engine, diffDump }`, `Config.elm:61`):
 
 ```elm
@@ -165,7 +165,7 @@ object. The universe has two producers:
 
 ### 3.1 The id type
 
-`Compiler/AST/TypeIds.elm`, following the existing phantom-`Id` pattern
+`Compiler/Core/TypeIds.elm`, following the existing phantom-`Id` pattern
 (`MVarPh`/`MVarId`):
 
 ```elm
@@ -198,7 +198,7 @@ construction sites across nine files (`grep "tvar = "`), and the field would
 be dead weight on every non-lambda node. The `Function` constructors have ~46
 construction/match sites total, concentrated where the change is meaningful.
 
-**Change.** `Compiler/AST/TypedOptimized.elm:160–161`:
+**Change.** `Compiler/IR/Typed/Optimized.elm:160–161`:
 
 ```elm
 -- before
@@ -227,8 +227,8 @@ untouched, decoder fills `Nothing`:
 No `.ecot` version bump: the wire format is unchanged.
 
 Producers (`Compiler/LocalOpt/Typed/{NormalizeLambdaBoundaries,Port,Module,
-Expression}.elm`, `Compiler/TypedCanonical/Build.elm`, plus the legacy
-engine's reconstructions in `Compiler/Monomorphize/Specialize.elm`) construct
+Expression}.elm`, `Compiler/Type/TypedCanonical.elm`, plus the legacy
+engine's reconstructions in `Compiler/Monomorphize/Subst/Specialize.elm`) construct
 with `Nothing` — a mechanical sweep guided by the compiler's exhaustiveness
 errors.
 
@@ -277,7 +277,7 @@ constantly; widening them to ⊤ would gut precision. They are globals with
 stable names, so they intern on demand in the engine (no tree tag needed):
 
 ```elm
--- Compiler/MonoSolver/Engine.elm
+-- Compiler/Monomorphize/Solver/Engine.elm
 {-| Member id for a non-lambda function value, interned by kind+identity.
 Keys: "g|home|name" (global function ref), "c|home|name" (ctor used as fn),
 "k|home|name" (kernel ref), "a|field" (accessor value). Ids come from the
@@ -321,7 +321,7 @@ Policy decisions bundled here:
 
 ### 4.1 Two new `FlatType` constructors
 
-`System/TypeCheck/IO.elm:639–645`:
+`Compiler/Type/State/IO.elm:639–645`:
 
 ```elm
 type FlatType
@@ -475,7 +475,7 @@ self-compile wall-time comparison flag-on vs flag-off (§11).
 
 ### 5.1 The annotation
 
-`Compiler/AST/Monomorphized.elm:202–214` — `MFunction` gains an annotation,
+`Compiler/IR/Mono.elm:202–214` — `MFunction` gains an annotation,
 in first position (so ignoring sites read `MFunction _ args ret`):
 
 ```elm
@@ -680,7 +680,7 @@ store and collapse only at readback.
 
 ---
 
-## 7. The inference layer: `Compiler/MonoSolver/LssInfer.elm` (new)
+## 7. The inference layer: `Compiler/Monomorphize/Solver/LssInfer.elm` (new)
 
 ### 7.1 Signature model
 
@@ -690,7 +690,7 @@ body (the paper's `Q ⇒ τ` for AT-Def-Ref). With id-only members this is
 small and flat:
 
 ```elm
-module Compiler.MonoSolver.LssInfer exposing
+module Compiler.Monomorphize.Solver.LssInfer exposing
     ( LssSignature, ArrowFact, signatureFor, sigTrivial )
 
 
@@ -1487,23 +1487,23 @@ semantics. Every knob's fallback is the fully-implemented `LTop` pipeline.
 
 | File | Change | Size |
 |---|---|---|
-| `System/TypeCheck/IO.elm` | +2 `FlatType` ctors, module-doc discipline | S |
+| `Compiler/Type/State/IO.elm` | +2 `FlatType` ctors, module-doc discipline | S |
 | `Compiler/Type/Unify.elm` | +4 `unifyStructure` arms (§4.2) | S |
 | `Compiler/Type/Occurs.elm`, `Type.elm`, `Solve.elm` | exhaustive-match arms (§4.3) | S |
-| `Compiler/AST/TypeIds.elm` | `SrcLambdaId` | S |
-| `Compiler/AST/TypedOptimized.elm` | `Function`/`TrackedFunction` field; decoder `(Function Nothing)` | S |
+| `Compiler/Core/TypeIds.elm` | `SrcLambdaId` | S |
+| `Compiler/IR/Typed/Optimized.elm` | `Function`/`TrackedFunction` field; decoder `(Function Nothing)` | S |
 | `Compiler/LocalOpt/Typed/*`, `TypedCanonical/Build.elm` | construct with `Nothing` (~25 sites) | S, mechanical |
-| `Compiler/Monomorphize/AssignMVarIds.elm` | `freshLamId` + stamps + `GlobalMVarState` fields | S |
-| `Compiler/AST/Monomorphized.elm` | `MFunction` anno, `LambdaSetAnno`, `widenSets`/`eqLayout`, comparable arm, `ClosureInfo.srcLambda` | M |
+| `Compiler/PreMono/AssignMVarIds.elm` | `freshLamId` + stamps + `GlobalMVarState` fields | S |
+| `Compiler/IR/Mono.elm` | `MFunction` anno, `LambdaSetAnno`, `widenSets`/`eqLayout`, comparable arm, `ClosureInfo.srcLambda` | M |
 | all 24 `MFunction` files | mechanical `LTop`/`_` sweep; rebuilders thread anno (§5.2) | M, mechanical |
-| `Compiler/MonoSolver/Store.elm` | `LoadCtx` fields, `TLambda` arm, `loadTypeIsolatedWithArrows`, zonk arms, `zonkSetSlot`, encode arm | M |
-| `Compiler/MonoSolver/Engine.elm` | S/Env fields, `memberIdFor`, budgeted `enqueueSpec`, stats | M |
-| `Compiler/MonoSolver/LssInfer.elm` | **new** — §7 (~450 lines incl. walk) | L |
-| `Compiler/MonoSolver/Translate.elm` | `specializeLambda`, `instantiateLss`, fast-path guard, poison hooks | M |
-| `Compiler/MonoSolver/Monomorphize.elm` | config param, initState wiring, report plumbing | S |
-| `Compiler/Eco/Config.elm`, `Builder/Eco/Config.elm`, `Builder/Generate.elm` | `LssConfig`, env overrides, entry plumbing | S |
-| `Compiler/MonoSolver/Diff.elm` | force-lss-off rule note (§5.4) | S |
-| `Compiler/GlobalOpt/AbiCloning.elm` | M3 — the singleton pass (§9.2) | M (M3) |
+| `Compiler/Monomorphize/Solver/Store.elm` | `LoadCtx` fields, `TLambda` arm, `loadTypeIsolatedWithArrows`, zonk arms, `zonkSetSlot`, encode arm | M |
+| `Compiler/Monomorphize/Solver/Engine.elm` | S/Env fields, `memberIdFor`, budgeted `enqueueSpec`, stats | M |
+| `Compiler/Monomorphize/Solver/LssInfer.elm` | **new** — §7 (~450 lines incl. walk) | L |
+| `Compiler/Monomorphize/Solver/Translate.elm` | `specializeLambda`, `instantiateLss`, fast-path guard, poison hooks | M |
+| `Compiler/Monomorphize/Solver/Monomorphize.elm` | config param, initState wiring, report plumbing | S |
+| `Compiler/Config.elm`, `Builder/Eco/Config.elm`, `Builder/Generate.elm` | `LssConfig`, env overrides, entry plumbing | S |
+| `Compiler/Monomorphize/Diff.elm` | force-lss-off rule note (§5.4) | S |
+| `Compiler/MonoOpt/AbiCloning.elm` | M3 — the singleton pass (§9.2) | M (M3) |
 | `Compiler/GlobalOpt/Staging/Rewriter.elm` | M3 — propagate `srcLambda` onto wrapper stages (§9.3, LSS_008); M3.5 — export `wrapperHome` for blocker classification | S (M3) |
 | `design_docs/invariants.csv` | §12 | S |
 

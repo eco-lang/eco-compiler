@@ -10,6 +10,7 @@ module TestLogic.TestPipeline exposing
     , expectMLIRGeneration
     , expectMonomorphization
     , interfaceAnnotations
+    , productionConfig
     , runSolverMonoWithLimits
     , runSolverMonoWithLimitsNoPreMono
     , runSolverMonoWithReport
@@ -25,11 +26,10 @@ module TestLogic.TestPipeline exposing
     , runToMono
     , runToMonoNoPreMono
     , runToMonoStage5
-    , productionConfig
-    , stage5Config
     , runToPostSolve
     , runToTypeCheck
     , runToTypedOpt
+    , stage5Config
     , stampLikeCompile
     )
 
@@ -99,39 +99,38 @@ than through `Compiler.Pipeline.Steps`.
 
 import Array exposing (Array)
 import Builder.GraphAssembly as GA
-import Compiler.AST.Canonical as Can
-import Compiler.AST.Monomorphized as Mono
-import Compiler.AST.Source as Src
-import Compiler.AST.TypeEnv as TypeEnv
-import Compiler.AST.TypeVars as Vars
-import Compiler.AST.TypedOptimized as TOpt
 import Compiler.Canonicalize.Module as Canonicalize
-import Compiler.Data.Name as Name exposing (Name)
-import Compiler.Data.NonEmptyList as NE
-import Compiler.Data.OneOrMore as OneOrMore
-import Compiler.Eco.Config as Config
-import Compiler.Elm.Interface as I
+import Compiler.Config as Config
+import Compiler.Core.Annotation as A
+import Compiler.Core.Name as Name exposing (Name)
 import Compiler.Elm.Interface.Basic as Basic
 import Compiler.Elm.ModuleName as ModuleName
-import Compiler.Generate.MLIR.Backend as MLIR
-import Compiler.Generate.Mode as Mode
+import Compiler.GenerateMlir.Backend as MLIR
+import Compiler.IR.Canonical as Can
+import Compiler.IR.Canonical.Interface as I
+import Compiler.IR.Mono as Mono
+import Compiler.IR.Source as Src
+import Compiler.IR.Typed.Optimized as TOpt
+import Compiler.IR.Typed.TypeEnv as TypeEnv
+import Compiler.IR.Typed.TypeVars as Vars
 import Compiler.LocalOpt.Typed.Module as TypedOptimize
-import Compiler.Monomorphize.EntryPrep as EntryPrep
 import Compiler.Pipeline.Steps as Steps
-import Compiler.Reporting.Annotation as A
+import Compiler.PreMono.EntryPrep as EntryPrep
 import Compiler.Reporting.Result as RResult
 import Compiler.Type.Constrain.Typed.Module as ConstrainTyped
 import Compiler.Type.KernelTypes as KernelTypes
 import Compiler.Type.PostSolve as PostSolve
 import Compiler.Type.Solve as Solve
 import Compiler.Type.SolverRoots as SolverRoots
-import Compiler.TypedCanonical.Build as TCanBuild
+import Compiler.Type.State.IO as IO
+import Compiler.Type.TypedCanonical as TCanBuild
 import Data.Map
+import Data.NonEmptyList as NE
+import Data.OneOrMore as OneOrMore
 import Data.Set
 import Dict exposing (Dict)
 import Expect
 import Mlir.Mlir exposing (MlirModule)
-import System.TypeCheck.IO as IO
 
 
 
@@ -232,7 +231,7 @@ type alias MonoArtifacts =
 {-| The cumulative artifacts of global optimization: the monomorphization
 artifacts plus `optimizedMonoGraph`, the result of running the
 post-monomorphization inliner and then
-`Compiler.GlobalOpt.MonoGlobalOptimize.globalOptimize` on `monoGraph`.
+`Compiler.MonoOpt.GlobalOptimize.globalOptimize` on `monoGraph`.
 
 `monoGraph` is the graph before both passes, from the engine of the runner's
 configuration.
@@ -512,7 +511,7 @@ stampLikeCompile input =
     }
 
 
-{-| The configuration of a default `eco make`: `Compiler.Eco.Config.default`
+{-| The configuration of a default `eco make`: `Compiler.Config.default`
 (the solver engine with lambda-set specialization, the pre-monomorphization
 passes, the post-inline prune). `runToMono`, `runToGlobalOpt` and `runToMlir`
 compile under it.
@@ -635,7 +634,7 @@ globalOptWith ecoConfig passes srcModule =
 
 
 {-| `globalOptWith`, then MLIR generation through the build's code generator
-context (`Compiler.Generate.MLIR.Backend.generateMlirModule ecoConfig`), in
+context (`Compiler.GenerateMlir.Backend.generateMlirModule ecoConfig`), in
 development mode, as `eco make` without `--optimize`.
 -}
 mlirWith : Config.EcoConfig -> PreMonoPasses -> Src.Module -> Result String MlirArtifacts
@@ -645,7 +644,7 @@ mlirWith ecoConfig passes srcModule =
             (\a ->
                 let
                     mlirModule =
-                        MLIR.generateMlirModule ecoConfig (Mode.Dev Nothing) a.optimizedMonoGraph
+                        MLIR.generateMlirModule ecoConfig a.optimizedMonoGraph
                 in
                 { canonical = a.canonical
                 , annotations = a.annotations
@@ -656,7 +655,7 @@ mlirWith ecoConfig passes srcModule =
                 , globalTypeEnv = a.globalTypeEnv
                 , monoGraph = a.optimizedMonoGraph
                 , mlirModule = mlirModule
-                , mlirOutput = MLIR.generateProgram ecoConfig (Mode.Dev Nothing) a.optimizedMonoGraph
+                , mlirOutput = MLIR.generateProgram ecoConfig a.optimizedMonoGraph
                 }
             )
 
@@ -874,7 +873,7 @@ the mock global graph: each is an eta-free alias of a kernel function, such as
 A dependency global with no node is not specialized from code; the
 substitution engine makes it a `MonoExtern`. The solver engine recognizes a
 global as a kernel alias only from such a node
-(`Compiler.MonoSolver.LssInfer.kernelAliasOf`), so these values get the node
+(`Compiler.Monomorphize.Solver.LssInfer.kernelAliasOf`), so these values get the node
 a build would have. `List.map2` gives tests a kernel alias one of whose
 arguments is a function.
 

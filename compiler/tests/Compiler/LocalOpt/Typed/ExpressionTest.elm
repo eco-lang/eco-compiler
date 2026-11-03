@@ -15,7 +15,12 @@ whole definition (not its result type)", so an annotated recursive `let`
 definition
 
     go : Int -> Int -> Int
-    go n acc = if n <= 0 then acc else go (n - 1) (acc + n)
+    go n acc =
+        if n <= 0 then
+            acc
+
+        else
+            go (n - 1) (acc + n)
 
 comes out of typed optimization as a `TailDef` typed `Int` instead of
 `Int -> Int -> Int`. The non-tail-recursive variant likewise gives a `Def`
@@ -26,11 +31,11 @@ parameters plus the arrows of the annotation's result.
 
 -}
 
-import Compiler.AST.Canonical as Can
-import Compiler.AST.Source as Src
 import Compiler.AST.SourceBuilder exposing (makeModule, unitExpr)
-import Compiler.AST.TypedOptimized as TOpt
-import Compiler.Data.Name exposing (Name)
+import Compiler.Core.Name exposing (Name)
+import Compiler.IR.Canonical as Can
+import Compiler.IR.Source as Src
+import Compiler.IR.Typed.Optimized as TOpt
 import Compiler.Parse.Module as M
 import Data.Map
 import Expect
@@ -95,8 +100,8 @@ parse source =
     case M.fromByteString M.Application source of
         Ok (Src.Module m) ->
             let
-                    (Src.Module template) =
-                        makeModule "unused" unitExpr
+                (Src.Module template) =
+                    makeModule "unused" unitExpr
             in
             Ok (Src.Module { m | imports = template.imports })
 

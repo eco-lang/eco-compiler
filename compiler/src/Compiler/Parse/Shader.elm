@@ -15,7 +15,7 @@ An input is recorded only when it is a top-level declaration of a single
 name, qualified `attribute`, `uniform` or `varying`, with one of the types
 `vec2`, `vec3`, `vec4`, `mat4`, `int`, `float`, `sampler2D` or `bool`. Every
 other declaration is ignored, without error. What the three kinds of input
-mean is stated in `Compiler.AST.Utils.Shader`.
+mean is stated in `Compiler.IR.Source.Shader`.
 
 A GLSL syntax error is reported as an Elm syntax error. The GLSL parser gives
 only a character offset into the cut-out text, so this module turns that offset
@@ -25,15 +25,15 @@ back into a row and column in the Elm file.
 
 -}
 
-import Compiler.AST.Source as Src
-import Compiler.AST.Utils.Shader as Shader
-import Compiler.Parse.Primitives as P exposing (Col, Parser, Row)
-import Compiler.Reporting.Annotation as A
-import Compiler.Reporting.Error.Syntax as E
+import Compiler.Core.Annotation as A
+import Compiler.IR.Source as Src
+import Compiler.IR.Source.Shader as Shader
+import Compiler.Lexer.Primitives as P exposing (Col, Parser, Row)
+import Compiler.Parse.Error as E
 import Data.Map as Dict
 import Language.GLSL.Parser as GLP
 import Language.GLSL.Syntax as GLS
-import Utils.Crash as Crash
+import System.Crash as Crash
 
 
 

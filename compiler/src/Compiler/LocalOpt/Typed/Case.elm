@@ -14,18 +14,18 @@ branch is placed once in the `Case`'s jump list and every leaf naming it holds
 a `Jump` to it. So no branch body is duplicated.
 
 The `TOpt.Decider` and `TOpt.Choice` types, and what the parts of a `Case`
-node are, are described in `Compiler.AST.TypedOptimized`.
+node are, are described in `Compiler.IR.Typed.Optimized`.
 
 -}
 
 import Array exposing (Array)
-import Compiler.AST.Canonical as Can
-import Compiler.AST.TypeVars as Vars
-import Compiler.AST.TypedOptimized as TOpt
-import Compiler.Data.Name as Name exposing (Name)
+import Compiler.Core.Name as Name exposing (Name)
+import Compiler.IR.Canonical as Can
+import Compiler.IR.Typed.Optimized as TOpt
+import Compiler.IR.Typed.TypeVars as Vars
 import Compiler.LocalOpt.Typed.DecisionTree as DT
 import Prelude
-import Utils.Crash exposing (crash)
+import System.Crash exposing (crash)
 
 
 

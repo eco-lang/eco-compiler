@@ -50,10 +50,10 @@ module's name. A localizer can be written to bytes and read back.
 
 import Bytes.Decode
 import Bytes.Encode
-import Compiler.AST.Source as Src
-import Compiler.Data.Name as Name exposing (Name)
+import Compiler.Core.Annotation as A
+import Compiler.Core.Name as Name exposing (Name)
 import Compiler.Elm.ModuleName as ModuleName
-import Compiler.Reporting.Annotation as A
+import Compiler.IR.Source as Src
 import Compiler.Reporting.Doc as D
 import Data.Set as EverySet exposing (EverySet)
 import Dict exposing (Dict)
@@ -132,7 +132,7 @@ localizer describes would write it. With `Home` standing for the module part of
   - If `Home` is imported with an explicit `exposing` list that does not name
     the type, and the type is `List` from `elm/core`'s `List` module, the result
     is still `List`. The default import of `List` exposes only `(::)`, as
-    `Compiler.Elm.Compiler.Imports` describes, so under that import it is this
+    `Compiler.Parse.DefaultImports` describes, so under that import it is this
     rule that prints `List` bare.
   - Otherwise the result is `Alias.name` when the import has an alias, and
     `Home.name` when it does not.
@@ -185,7 +185,7 @@ fromNames names =
 
 The module's own name counts as imported with `exposing (..)`, so its own types
 are printed bare. The imports are those in `Src.ModuleData.imports`, which
-begin with the default imports except in `elm/core`, as `Compiler.AST.Source`
+begin with the default imports except in `elm/core`, as `Compiler.IR.Source`
 describes.
 
 When one module is imported more than once, only the last import of it counts.

@@ -66,7 +66,7 @@ module Compiler.AST.SourceBuilder exposing
 can be given to the compiler stages that follow parsing without being written
 out as source text and parsed.
 
-The Source AST (`Compiler.AST.Source`) is what the parser produces. Besides the
+The Source AST (`Compiler.IR.Source`) is what the parser produces. Besides the
 syntax it holds every comment found around each node, which the formatter
 needs, and the region of every node, which error reports need. A program built
 here has neither: every comment slot is empty, and every region is `A.zero`,
@@ -99,13 +99,13 @@ its text exactly as given, while the parser keeps a literal in escaped source
 form (`Compiler.Parse.String`), so text that needs an escape must be passed
 already escaped. And every list is stored in the order given, while the parser
 stores a module's declarations and a record pattern's fields in reverse source
-order (`Compiler.Parse.Module`, `Compiler.AST.Source`).
+order (`Compiler.Parse.Module`, `Compiler.IR.Source`).
 
 -}
 
-import Compiler.AST.Source as Src
-import Compiler.Data.Name exposing (Name)
-import Compiler.Reporting.Annotation as A
+import Compiler.Core.Annotation as A
+import Compiler.Core.Name exposing (Name)
+import Compiler.IR.Source as Src
 
 
 

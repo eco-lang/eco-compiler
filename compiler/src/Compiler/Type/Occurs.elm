@@ -20,10 +20,10 @@ automatically.
 
 -}
 
-import Compiler.AST.TypeVars as Vars
+import Compiler.IR.Typed.TypeVars as Vars
+import Compiler.Type.State.IO as IO exposing (IO)
 import Compiler.Type.UnionFind as UF
 import Dict
-import System.TypeCheck.IO as IO exposing (IO)
 
 
 

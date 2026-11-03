@@ -48,7 +48,7 @@ each. A pattern on a one-constructor type is matched without a tag test: the
 typed optimizer reaches the field through a `TypedPath.Unbox` step
 (`Compiler.LocalOpt.Typed.DecisionTree`). Code generation stores such a field
 unboxed when it is an `Int`, `Float` or `Char`, and boxed otherwise, `Bool` and
-`String` included (`Compiler.Generate.MLIR.Types`). Each pair puts two such
+`String` included (`Compiler.GenerateMlir.Types`). Each pair puts two such
 types with different field types in one module: in five pairs one field is
 stored unboxed and the other boxed, in three both are unboxed, and in the
 `String`/`Bool` pair both are boxed. `testValue` is a pair that calls both
@@ -59,7 +59,6 @@ tuple patterns, and constructor patterns on a custom type with type parameters.
 
 -}
 
-import Compiler.AST.Source as Src
 import Compiler.AST.SourceBuilder
     exposing
         ( TypedDef
@@ -98,6 +97,7 @@ import Compiler.AST.SourceBuilder
         , varExpr
         )
 import Compiler.BulkCheck exposing (TestCase, bulkCheck)
+import Compiler.IR.Source as Src
 import Expect exposing (Expectation)
 import Test exposing (Test)
 

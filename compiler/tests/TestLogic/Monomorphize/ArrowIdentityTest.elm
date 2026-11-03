@@ -4,7 +4,7 @@ module TestLogic.Monomorphize.ArrowIdentityTest exposing (suite)
 lambda-set slot. Getting this wrong changes the lambda sets the solver
 computes: the sets of function values that can flow through each arrow.
 
-When lambda sets are on, `Compiler.MonoSolver.Store.loadTypeC` gives each
+When lambda sets are on, `Compiler.Monomorphize.Solver.Store.loadTypeC` gives each
 `TLambda` it loads a _slot_, a store Point that will hold the set of function
 values that can flow through that arrow. A `TLambda` carries an _ArrowId_, an
 identity stamped on it before monomorphization, or `Can.noArrow` when it is
@@ -13,7 +13,7 @@ so a second arrow with the same ArrowId can reuse that slot. Each load also
 records its slots, and once that list is reversed (as `loadInto` does) each
 arrow in the type has one _ordinal position_, in load order. How loads share
 Points, and which per-item state is cleared around a scratch store, is stated in
-`Compiler.MonoSolver.Store` and `Compiler.MonoSolver.Engine`. Three facts matter
+`Compiler.Monomorphize.Solver.Store` and `Compiler.Monomorphize.Solver.Engine`. Three facts matter
 here.
 
 1.  A memo hit still adds an ordinal position, so the positions count arrows,
@@ -65,23 +65,23 @@ Among what is not tested: which seed the four `Step`-typed load functions in
 `Store` pass and whether they write the memo back (`sharedLoadCtx`,
 `isolatedLoadCtx`, `writeBackShared`, `writeBackIsolated`); whether
 `Engine.withScratchStore` and the re-translation in
-`Compiler.MonoSolver.Translate` call `clearedAux` and `restoredAux`; that
+`Compiler.Monomorphize.Solver.Translate` call `clearedAux` and `restoredAux`; that
 `Engine.resetItem` installs `emptyItemAux`; the other store-scoped fields of
 `Engine.ItemAux`; and loads with lambda sets off.
 
 -}
 
 import Array
-import Compiler.AST.Canonical as Can
-import Compiler.AST.TypeIds as TypeIds
-import Compiler.AST.TypeVars as Vars
-import Compiler.Data.Id as Id
+import Compiler.Core.Id as Id
+import Compiler.Core.TypeIds as TypeIds
 import Compiler.Elm.ModuleName as ModuleName
-import Compiler.MonoSolver.Engine as Engine
-import Compiler.MonoSolver.Store as Store
+import Compiler.IR.Canonical as Can
+import Compiler.IR.Typed.TypeVars as Vars
+import Compiler.Monomorphize.Solver.Engine as Engine
+import Compiler.Monomorphize.Solver.Store as Store
+import Compiler.Type.State.IO as IO
 import Dict
 import Expect
-import System.TypeCheck.IO as IO
 import Test exposing (Test)
 
 
@@ -186,7 +186,7 @@ loadInto seedMemo canType store =
 -}
 loadFresh : Dict.Dict Int Vars.Variable -> Can.Type TypeIds.MVarId -> Loaded
 loadFresh seedMemo canType =
-    loadInto seedMemo canType (Engine.freshStore)
+    loadInto seedMemo canType Engine.freshStore
 
 
 {-| Returns a load's number of ordinal positions, its number of mints, and
@@ -253,7 +253,7 @@ isolationPins =
         \() ->
             let
                 a =
-                    loadInto Dict.empty (arrowWith firstId) (Engine.freshStore)
+                    loadInto Dict.empty (arrowWith firstId) Engine.freshStore
 
                 b =
                     loadInto Dict.empty (arrowWith firstId) a.store
@@ -263,7 +263,7 @@ isolationPins =
         \() ->
             let
                 a =
-                    loadInto Dict.empty (arrowWith firstId) (Engine.freshStore)
+                    loadInto Dict.empty (arrowWith firstId) Engine.freshStore
 
                 b =
                     loadInto a.memo (arrowWith firstId) a.store

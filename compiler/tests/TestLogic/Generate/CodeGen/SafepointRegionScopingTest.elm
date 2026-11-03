@@ -30,7 +30,7 @@ the operands the check examines are the ops' ordinary ones.
     out: a `case` bound by a `let`, followed by an allocation;
   - the fixture `tailRecFanOutAllocModule`, in which a self-tail-recursive
     function matches on a three-constructor type, aimed at the loop-step code
-    of `Compiler.Generate.MLIR.TailRec` that branches on a constructor tag
+    of `Compiler.GenerateMlir.TailRec` that branches on a constructor tag
     (`compileCaseFanOutStep`).
 
 Among what is not tested:
@@ -41,7 +41,6 @@ Among what is not tested:
 
 -}
 
-import Compiler.AST.Source as Src
 import Compiler.AST.SourceBuilder
     exposing
         ( TypedDef
@@ -60,6 +59,7 @@ import Compiler.AST.SourceBuilder
         , tType
         , varExpr
         )
+import Compiler.IR.Source as Src
 import SourceIR.CaseSafepointLeakCases as CaseSafepointLeakCases
 import SourceIR.IfLetSafepointCases as IfLetSafepointCases
 import SourceIR.Suite.StandardTestSuites as StandardTestSuites

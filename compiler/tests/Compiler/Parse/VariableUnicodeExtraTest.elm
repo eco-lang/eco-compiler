@@ -12,7 +12,8 @@ they also pin that a character advances the column by one whatever its width.
 
 -}
 
-import Compiler.Parse.Primitives as P
+import Compiler.Lexer.Identifier as Identifier
+import Compiler.Lexer.Primitives as P
 import Compiler.Parse.Variable as Var
 import Expect
 import Test exposing (Test)
@@ -78,10 +79,10 @@ suite =
                     |> Expect.notEqual (Ok "x\u{D800}")
         , Test.test "the inner width of a letter above U+FFFF is 2" <|
             \_ ->
-                Var.getInnerWidth "𝒜" 0 2
+                Identifier.getInnerWidth "𝒜" 0 2
                     |> Expect.equal 2
         , Test.test "a letter above U+FFFF cut in two by the end is not an inner character" <|
             \_ ->
-                Var.getInnerWidth "𝒜" 0 1
+                Identifier.getInnerWidth "𝒜" 0 1
                     |> Expect.equal 0
         ]

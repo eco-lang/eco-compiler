@@ -59,58 +59,56 @@ has its output.
 
 import Array
 import Builder.Build as Build
+import Builder.Deps.Details as Details
 import Builder.Eco.FEStats as FEStats
-import Builder.Elm.Details as Details
 import Builder.Elm.Outline as Outline
 import Builder.File as File
 import Builder.GraphAssembly as GA
 import Builder.Reporting.Exit as Exit
 import Builder.Stuff as Stuff
-import Compiler.AST.Monomorphized as Mono
-import Compiler.AST.Optimized as Opt
-import Compiler.AST.TypeEnv as TypeEnv
-import Compiler.AST.TypedModuleArtifact as TMod
-import Compiler.AST.TypedOptimized as TOpt
-import Compiler.Data.Name as N exposing (Name)
-import Compiler.Data.NonEmptyList as NE
-import Compiler.Eco.Config as Config
-import Compiler.Elm.Compiler.Type.Extract as Extract
-import Compiler.Elm.Interface as I
+import Compiler.Config as Config
+import Compiler.Core.Name as N exposing (Name)
+import Compiler.Docs.Type.Extract as Extract
 import Compiler.Elm.ModuleName as ModuleName
 import Compiler.Elm.Package as Pkg
-import Compiler.Generate.CodeGen as CodeGen
-import Compiler.Generate.CodeGen.JavaScript as JavaScript
-import Compiler.Generate.MLIR.Backend as MLIR
-import Compiler.Generate.MLIR.Names as MLIRNames
-import Compiler.Generate.Mode as Mode
-import Compiler.GlobalOpt.AbiCloning as AbiCloning
-import Compiler.GlobalOpt.Borrow as Borrow
-import Compiler.GlobalOpt.CafCensus as CafCensus
-import Compiler.GlobalOpt.CafDedupe as CafDedupe
-import Compiler.GlobalOpt.CafHoist as CafHoist
-import Compiler.GlobalOpt.CseCensus as CseCensus
-import Compiler.GlobalOpt.InlineSimplify as InlineSimplify
-import Compiler.GlobalOpt.ListCombinators as ListCombinators
-import Compiler.GlobalOpt.MapTemplate as MapTemplate
-import Compiler.GlobalOpt.MonoCse as MonoCse
-import Compiler.GlobalOpt.GenCallCensus as GenCallCensus
-import Compiler.GlobalOpt.MonoGlobalOptimize as MonoGlobalOptimize
-import Compiler.GlobalOpt.MonoInlineSimplify as MonoInlineSimplify
-import Compiler.GlobalOpt.PreMono.AliasForward as AliasForward
-import Compiler.GlobalOpt.PreMono.EtaExpand as EtaExpand
-import Compiler.GlobalOpt.PreMono.Fresh as Fresh
-import Compiler.GlobalOpt.PreMono.LiftClosedArgs as LiftClosedArgs
-import Compiler.MonoSolver.Diff as MonoDiff
-import Compiler.MonoSolver.Monomorphize as MonoSolver
-import Compiler.Monomorphize.EntryPrep as EntryPrep
-import Compiler.Monomorphize.MonoTraverse as MonoTraverse
-import Compiler.Monomorphize.Monomorphize as Monomorphize
+import Compiler.GenerateJs as JavaScript
+import Compiler.GenerateJs.CodeGen as CodeGen
+import Compiler.GenerateJs.Mode as Mode
+import Compiler.GenerateMlir.Backend as MLIR
+import Compiler.GenerateMlir.Names as MLIRNames
+import Compiler.IR.Canonical.Interface as I
+import Compiler.IR.Mono as Mono
+import Compiler.IR.Mono.Traverse as MonoTraverse
+import Compiler.IR.Optimized as Opt
+import Compiler.IR.Typed.ModuleArtifact as TMod
+import Compiler.IR.Typed.Optimized as TOpt
+import Compiler.IR.Typed.TypeEnv as TypeEnv
+import Compiler.MonoOpt.AbiCloning as AbiCloning
+import Compiler.MonoOpt.Borrow as Borrow
+import Compiler.MonoOpt.CafCensus as CafCensus
+import Compiler.MonoOpt.CafDedupe as CafDedupe
+import Compiler.MonoOpt.CafHoist as CafHoist
+import Compiler.MonoOpt.Cse as MonoCse
+import Compiler.MonoOpt.CseCensus as CseCensus
+import Compiler.MonoOpt.GenCallCensus as GenCallCensus
+import Compiler.MonoOpt.GlobalOptimize as MonoGlobalOptimize
+import Compiler.MonoOpt.InlineSimplify as MonoInlineSimplify
+import Compiler.MonoOpt.ListCombinators as ListCombinators
+import Compiler.MonoOpt.MapTemplate as MapTemplate
+import Compiler.Monomorphize.Diff as MonoDiff
 import Compiler.Monomorphize.Prune as Prune
+import Compiler.Monomorphize.Solver.Monomorphize as MonoSolver
+import Compiler.Monomorphize.Subst.Monomorphize as Monomorphize
 import Compiler.Monomorphize.ValidateLayout as ValidateLayout
-import Compiler.Monomorphize.ValidateLimits as ValidateLimits
 import Compiler.Nitpick.Debug as Nitpick
 import Compiler.Pipeline.Steps as Steps
+import Compiler.PreMono.AliasForward as AliasForward
+import Compiler.PreMono.EntryPrep as EntryPrep
+import Compiler.PreMono.EtaExpand as EtaExpand
+import Compiler.PreMono.InlineSimplify as InlineSimplify
+import Compiler.PreMono.LiftClosedArgs as LiftClosedArgs
 import Data.Map
+import Data.NonEmptyList as NE
 import Dict exposing (Dict)
 import System.IO exposing (FilePath, MVar)
 import Task exposing (Task)
@@ -123,7 +121,7 @@ import Utils.Task.Extra as Task
 -- ====== BACKENDS ======
 
 
-{-| The JavaScript code generation backend (`Compiler.Generate.CodeGen.JavaScript`).
+{-| The JavaScript code generation backend (`Compiler.GenerateJs`).
 -}
 javascriptBackend : CodeGen.CodeGen
 javascriptBackend =
@@ -766,12 +764,10 @@ streamLoadAndMergeCached remaining root maybeBuildDir graph env =
 -- ====== MONOMORPHIZED GENERATION ======
 
 
-{-| The monomorphized and optimized program, with the mode to generate MLIR from it
-in. The mode is always `Mode.Dev Nothing`.
+{-| The monomorphized and optimized program, ready for MLIR generation.
 -}
 type alias MonoBuildResult =
     { monoGraph : Mono.MonoGraph
-    , mode : Mode.Mode
     }
 
 
@@ -868,7 +864,7 @@ Under `inline.report` it writes a census line for each pre-mono pass, whatever
 that pass's own flag says. Alias forwarding and η-expansion with their flag off
 report what they would have rewritten, the pre-mono inliner with its flag off
 reports empty metrics, and the closed-lambda-argument census
-(`Compiler.GlobalOpt.PreMono.LiftClosedArgs`), which has no transform behind
+(`Compiler.PreMono.LiftClosedArgs`), which has no transform behind
 it, is taken of the graph after all three.
 
 -}
@@ -1035,6 +1031,7 @@ unchanged. It checks the result with `validatePruned`.
 
 Under `inline.report` it first writes the inline and prune census lines, taken
 of the pruned graph.
+
 -}
 pruneAndReportInline : Config.EcoConfig -> ( Mono.MonoGraph, MonoInlineSimplify.Metrics ) -> Task Exit.Generate Mono.MonoGraph
 pruneAndReportInline ecoConfig ( inlinedGraph, inlineMetrics ) =
@@ -1616,7 +1613,7 @@ globalOptHoistStep cfg dedupeResult =
 
 
 {-| Writes the global optimization census lines to stderr and returns the final
-graph with `Mode.Dev Nothing`.
+graph.
 
 The lines come in this order, each under its own flag: CAF dedupe statistics,
 CSE statistics, the CSE census, the pre-hoist CAF census, CAF hoist statistics,
@@ -1641,7 +1638,6 @@ globalOptReportStep cfg ( hoistedGraph, carry ) =
 
         result =
             { monoGraph = hoistedGraph
-            , mode = Mode.Dev Nothing
             }
 
         writeLnErr line =
@@ -2100,7 +2096,7 @@ writeMonoMlirStreaming :
 writeMonoMlirStreaming ecoConfig stats root maybeBuildDir localPackages details artifacts target =
     buildMonoGraph ecoConfig stats root maybeBuildDir localPackages details artifacts
         |> Task.andThen
-            (\{ monoGraph, mode } ->
+            (\{ monoGraph } ->
                 constThunkCensus ecoConfig monoGraph
                     |> Task.andThen
                         (\_ ->
@@ -2109,7 +2105,7 @@ writeMonoMlirStreaming ecoConfig stats root maybeBuildDir localPackages details 
                                 (\() ->
                                     File.withStreamingWriter target
                                         (\writeChunk ->
-                                            MLIR.streamMlirToWriter ecoConfig mode monoGraph writeChunk
+                                            MLIR.streamMlirToWriter ecoConfig monoGraph writeChunk
                                         )
                                         |> Task.mapError never
                                 )
@@ -2133,21 +2129,21 @@ writeMonoMlirStreamingBytecode :
 writeMonoMlirStreamingBytecode ecoConfig stats root maybeBuildDir localPackages details artifacts target =
     buildMonoGraph ecoConfig stats root maybeBuildDir localPackages details artifacts
         |> Task.andThen
-            (\{ monoGraph, mode } ->
+            (\{ monoGraph } ->
                 constThunkCensus ecoConfig monoGraph
                     |> Task.andThen
                         (\_ ->
                             FEStats.withPhaseLazy stats
                                 FEStats.PhaseMlir
                                 (\() ->
-                                    MLIR.streamMlirBytecode ecoConfig mode monoGraph target
+                                    MLIR.streamMlirBytecode ecoConfig monoGraph target
                                         |> Task.mapError never
                                 )
                         )
             )
 
 
-{-| Writes the constant-thunk census (`Compiler.Generate.MLIR.Backend.constThunkReport`)
+{-| Writes the constant-thunk census (`Compiler.GenerateMlir.Backend.constThunkReport`)
 to stderr when `constThunksReport` is on.
 -}
 constThunkCensus : Config.EcoConfig -> Mono.MonoGraph -> Task x ()

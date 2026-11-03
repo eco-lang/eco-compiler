@@ -24,7 +24,7 @@ fail because of bugs in `Compiler.Reporting.Render.Type`:
     `Int -> (Int -> R)` instead of `Int -> Int -> R`.
 
 The last case is not about `Render.Type`: the recursive-alias suggestion of
-`Compiler.Reporting.Error.Canonicalize.aliasToUnionDoc` prints the alias's
+`Compiler.Canonicalize.Error.aliasToUnionDoc` prints the alias's
 parameters after the `=` and in reverse (`type  R = b a`) instead of
 `type R a b =`.
 

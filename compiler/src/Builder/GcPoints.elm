@@ -5,7 +5,7 @@ before the native back end, which lowers and links the program, starts.
 
 The one thing here is the _pre-link collection_: a single major garbage
 collection, asked for through `Eco.GC.majorGC`, that `preLink` requests when
-the `Compiler.Eco.Config.GcConfig` settings ask for it. With the `report`
+the `Compiler.Config.GcConfig` settings ask for it. With the `report`
 setting on, it also writes one line describing the collection to standard
 error, in the format `render` produces. The report's values are only printed
 here; what they mean, and why nothing should decide anything by them, is in
@@ -19,7 +19,7 @@ referred to, so a collection that `preLink` asks for does not release it.
 
 -}
 
-import Compiler.Eco.Config as Config
+import Compiler.Config as Config
 import Eco.GC
 import System.IO as IO
 import Task exposing (Task)

@@ -33,7 +33,7 @@ uint64_t getOrderEQ() { return nullConsWordFor(ORDER_EQ); }
 uint64_t getOrderGT() { return nullConsWordFor(ORDER_GT); }
 
 // Reserved ctor tags for runtime-recognised types. Must match
-// `Compiler.Data.CtorTag` in the compiler.
+// `Compiler.IR.Runtime.CtorTag` in the compiler.
 //
 // `Dict.RBNode_elm_builtin` is tagged so the runtime can compare two Dicts by
 // content (in-order key/value traversal) instead of by the tree shape that

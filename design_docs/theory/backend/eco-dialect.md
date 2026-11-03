@@ -227,7 +227,7 @@ Code:
 - `runtime/src/allocator/Heap.hpp`: `CUSTOM_MAX_FIELDS`, `RECORD_MAX_FIELDS`, `CLOSURE_MAX_ARITY`, `NULL_CONS_MAX`.
 - `runtime/src/codegen/Passes/EcoGCPrepare.cpp`, `runtime/src/codegen/Passes/RCElimination.cpp`, `runtime/src/codegen/Passes/CheckEcoClosureCaptures.cpp`, `runtime/src/codegen/EcoPipeline.cpp`: allocation grouping and the purity marker, the placeholder check, the validation-only capture check, and when verification runs (`ECO_LOWERING_VALIDATION`, off by default).
 - `runtime/src/codegen/Passes/EcoPtrIntVerify.cpp`: the aggregate promotion before statepoint rewriting.
-- `compiler/src/Compiler/Eco/Config.elm` (`aggPromote`, `ctorInline`): the compiler's default aggregate output.
+- `compiler/src/Compiler/Config.elm` (`aggPromote`, `ctorInline`): the compiler's default aggregate output.
 - `test/codegen/*_rejected.mlir`, `test/codegen/invalid_*.mlir`, `test/codegen/call_purity_attr_*.mlir`, `test/codegen/value_*.mlir`: what the verifier accepts and rejects.
 - `compiler/tests/TestLogic/Generate/CodeGen/`: the tests that check tuple masks and list head kinds.
 

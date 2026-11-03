@@ -8,11 +8,11 @@ allow it to be released while still in use.
 
 The analysis tracks _resources_: one per heap position of a value's type,
 numbered from 0 within each definition. A scalar such as an `Int` has none, and
-a `List Int` has one. For each resource, `Compiler.GlobalOpt.Borrow.Solve`
+a `List Int` has one. For each resource, `Compiler.MonoOpt.Borrow.Solve`
 computes an approximate lifetime, `ltA`, the latest point at which the resource
-is live, as `Compiler.GlobalOpt.Borrow.Lifetime` describes. The point this test
+is live, as `Compiler.MonoOpt.Borrow.Lifetime` describes. The point this test
 asks about is the empty path, which is the end of the whole function body.
-`Compiler.GlobalOpt.Borrow.Constrain` seeds every resource of a `MonoTailCall`
+`Compiler.MonoOpt.Borrow.Constrain` seeds every resource of a `MonoTailCall`
 argument at that point (in the test's own messages, it is _escape-seeded_), so
 its `ltA` should reach the end of the body.
 
@@ -22,7 +22,7 @@ through `TestLogic.TestPipeline.runToGlobalOpt`, and `loop` is expected to come
 out as a `MonoTailFunc` whose body holds a `MonoTailCall`.
 
 The one test, `suite`, takes one `MonoTailFunc` whose tail calls have argument
-resources, analyses it with `Compiler.GlobalOpt.Borrow.analyzeDefForTest`, and
+resources, analyses it with `Compiler.MonoOpt.Borrow.analyzeDefForTest`, and
 checks:
 
   - that every tail-call argument resource has an `ltA` that is not `LEmpty`
@@ -45,12 +45,12 @@ or omits a release after a tail call.
 -}
 
 import Array
-import Compiler.AST.Monomorphized as Mono
-import Compiler.AST.Source as Src
 import Compiler.AST.SourceBuilder as B
-import Compiler.GlobalOpt.Borrow as Borrow
-import Compiler.GlobalOpt.Borrow.Lifetime as L exposing (Lifetime(..))
-import Compiler.GlobalOpt.Borrow.Solve as Solve
+import Compiler.IR.Mono as Mono
+import Compiler.IR.Source as Src
+import Compiler.MonoOpt.Borrow as Borrow
+import Compiler.MonoOpt.Borrow.Lifetime as L exposing (Lifetime(..))
+import Compiler.MonoOpt.Borrow.Solve as Solve
 import Expect
 import Test exposing (Test)
 import TestLogic.TestPipeline as Pipeline
@@ -146,7 +146,7 @@ fixtureModule =
 {-| Returns the test's expectation for the optimized graph `graph`.
 
 It collects the `MonoTailFunc` nodes, analyses each with
-`Compiler.GlobalOpt.Borrow.analyzeDefForTest`, and keeps those whose tail-call
+`Compiler.MonoOpt.Borrow.analyzeDefForTest`, and keeps those whose tail-call
 argument resources are not empty. Of those, it checks only the one with the
 highest `SpecId`, and fails if there is none. For that one, it expects both
 that no tail-call argument resource has an `ltA` that is `LEmpty` or that

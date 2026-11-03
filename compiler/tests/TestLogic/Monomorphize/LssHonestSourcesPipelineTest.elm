@@ -16,7 +16,7 @@ global can be _devirtualized_: a call through it becomes a direct call to that
 global.
 
 The rule these tests concern is the honest-sources rule of
-`Compiler.MonoSolver.Store`. A lambda-set slot may draw on other slots, its
+`Compiler.Monomorphize.Solver.Store`. A lambda-set slot may draw on other slots, its
 _sources_, and resolving it collects its own members and those of every slot
 reachable through them. A resolution that collects members and also passes
 through a source slot nothing has written is widened to ⊤ instead of being read
@@ -25,7 +25,7 @@ as a complete set. Such a resolution is a _mixed crossing_. The LSS report's
 `topMixedFlex=<signature side>/<demand side>`. The demand-side number counts
 the mixed crossings Store meets, and only while the report is on, as
 `runReport` arranges. The signature-side number counts a separate widening,
-made by `Compiler.MonoSolver.LssInfer` on some signature facts that cross an
+made by `Compiler.Monomorphize.Solver.LssInfer` on some signature facts that cross an
 unwritten source.
 
 The tests read annotations off _stored demand types_: the `MonoType` recorded in
@@ -73,8 +73,6 @@ generated code.
 -}
 
 import Array
-import Compiler.AST.Monomorphized as Mono
-import Compiler.AST.Source as Src
 import Compiler.AST.SourceBuilder
     exposing
         ( binopsExpr
@@ -89,7 +87,9 @@ import Compiler.AST.SourceBuilder
         , tType
         , varExpr
         )
-import Compiler.Eco.Config as Config
+import Compiler.Config as Config
+import Compiler.IR.Mono as Mono
+import Compiler.IR.Source as Src
 import Dict
 import Expect
 import Test exposing (Test)

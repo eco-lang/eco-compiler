@@ -1,6 +1,6 @@
 module TestLogic.GlobalOpt.BorrowConfigHashTest exposing (suite)
 
-{-| `Compiler.Eco.Config.hash` adds no token for any borrow setting: borrow
+{-| `Compiler.Config.hash` adds no token for any borrow setting: borrow
 inference returns the program unchanged, so a borrow setting cannot change the
 emitted code and must not split the build cache.
 
@@ -14,7 +14,7 @@ Among what is not tested: the `reify` setting, which is never varied, and
 
 -}
 
-import Compiler.Eco.Config as Config
+import Compiler.Config as Config
 import Expect
 import Test exposing (Test)
 

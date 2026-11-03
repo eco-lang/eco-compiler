@@ -6,7 +6,7 @@ of the same `let`, for pipeline-stage tests to run their checks over.
 Elm has no keyword for a recursive `let`. `Compiler.Canonicalize.Expression`
 works out which definitions of a `let` refer to one another and turns each
 such group, including a single definition that refers only to itself, into a
-`LetRec` node of `Compiler.AST.Canonical`; every other definition becomes an
+`LetRec` node of `Compiler.IR.Canonical`; every other definition becomes an
 ordinary `Let`, or a `LetDestruct` for a destructuring. These programs give a
 stage under test `LetRec` groups of one and of two functions, a recursive
 group inside a non-recursive function, and recursive functions that match
@@ -45,7 +45,6 @@ recursive definition with no arguments, which the canonicalizer rejects.
 
 -}
 
-import Compiler.AST.Source as Src
 import Compiler.AST.SourceBuilder
     exposing
         ( boolExpr
@@ -66,6 +65,7 @@ import Compiler.AST.SourceBuilder
         , varExpr
         )
 import Compiler.BulkCheck exposing (TestCase, bulkCheck)
+import Compiler.IR.Source as Src
 import Expect exposing (Expectation)
 import Test exposing (Test)
 

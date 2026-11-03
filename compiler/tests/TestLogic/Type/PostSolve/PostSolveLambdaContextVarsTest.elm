@@ -45,11 +45,11 @@ Among what is not tested:
 -}
 
 import Array
-import Compiler.AST.Canonical as Can
-import Compiler.AST.Source as Src
-import Compiler.Data.Name exposing (Name)
+import Compiler.Core.Name exposing (Name)
+import Compiler.IR.Canonical as Can
+import Compiler.IR.Source as Src
 import Compiler.Type.PostSolve as PostSolve
-import Data.Set as EverySet exposing (EverySet)
+import Data.Set as EverySet
 import Dict
 import Expect
 import SourceIR.Suite.StandardTestSuites as StandardTestSuites

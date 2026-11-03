@@ -1,6 +1,6 @@
 module TestLogic.Monomorphize.PostSettleDevirtTest exposing (suite)
 
-{-| Pins the post-settle devirtualization in `Compiler.GlobalOpt.AbiCloning`:
+{-| Pins the post-settle devirtualization in `Compiler.MonoOpt.AbiCloning`:
 the rewrite of a call through a known top-level function or constructor into a
 direct call of one specialization of it. Without these tests, a rewrite that
 skipped its arity guard, or chose the wrong specialization, would turn a call
@@ -67,11 +67,11 @@ change any outcome asserted here).
 -}
 
 import Array
-import Compiler.AST.Monomorphized as Mono
-import Compiler.Data.BitSet as BitSet
+import Compiler.Core.Annotation as A
 import Compiler.Elm.ModuleName as ModuleName
-import Compiler.GlobalOpt.AbiCloning as AbiCloning
-import Compiler.Reporting.Annotation as A
+import Compiler.IR.Mono as Mono
+import Compiler.MonoOpt.AbiCloning as AbiCloning
+import Data.BitSet as BitSet
 import Dict
 import Expect
 import Test exposing (Test)

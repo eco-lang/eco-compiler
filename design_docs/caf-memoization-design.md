@@ -22,9 +22,9 @@ The native backend **re-executes every CAF's RHS at every dynamic
 reference**:
 
 - A non-closure `MonoDefine` compiles to a nullary thunk `func.func`
-  (`Compiler/Generate/MLIR/Functions.elm:414`, `generateDefine`).
+  (`Compiler/GenerateMlir/Functions.elm:414`, `generateDefine`).
 - Every reference (`MonoVarGlobal` with an arity-0 signature) emits a direct
-  `eco.call` of that thunk (`Compiler/Generate/MLIR/Expr.elm:580`,
+  `eco.call` of that thunk (`Compiler/GenerateMlir/Expr.elm:580`,
   `generateVarGlobal`).
 - Nothing recovers this downstream: bare value references are explicitly
   left alone by the GlobalOpt inliner (`MonoInlineSimplify.elm:2650`; only
@@ -486,7 +486,7 @@ Measurement (M3):
   (dispatch-neutral to the digit). benchmarks/runtime-calls.md Run V.
   Revisit with the caller-side fast path or profile-guided selection.**
   **Mono census RUN (Jul 24 2026, `ECO_CAF_CENSUS=1` →
-  `Compiler/GlobalOpt/CafCensus.elm`, reported from `runGlobalOptPhase`
+  `Compiler/MonoOpt/CafCensus.elm`, reported from `runGlobalOptPhase`
   over the final graph; full report was /work/caf-mono-census.md):
   6,083 maximal closed subexpressions across 38,267 specs (~360× the
   strict source count — inlining multiplies, specialization closes),

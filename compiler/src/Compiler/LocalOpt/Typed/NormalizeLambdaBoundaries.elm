@@ -53,10 +53,10 @@ every parameter the region of the outer lambda's first parameter.
 
 -}
 
-import Compiler.AST.Canonical as Can
-import Compiler.AST.TypedOptimized as TOpt
-import Compiler.Data.Name as Name exposing (Name)
-import Compiler.Reporting.Annotation as A
+import Compiler.Core.Annotation as A
+import Compiler.Core.Name as Name exposing (Name)
+import Compiler.IR.Canonical as Can
+import Compiler.IR.Typed.Optimized as TOpt
 import Data.Map
 import Dict exposing (Dict)
 

@@ -6,7 +6,7 @@ module Compiler.Reporting.Error.TypeVariableNameReportTest exposing (suite)
 0.19.1 prints for the same program.
 
 Elm names the variables after `z` as `a1`, `b1`, ... (the number is the
-quotient of the variable's index by 26). `Compiler.Data.Name.fromTypeVariableScheme`
+quotient of the variable's index by 26). `Compiler.Core.Name.fromTypeVariableScheme`
 uses the index less its remainder instead, so they print as `a26`, `b26`, ...
 The expected text is copied from the report of `elm make` 0.19.1; today it fails.
 

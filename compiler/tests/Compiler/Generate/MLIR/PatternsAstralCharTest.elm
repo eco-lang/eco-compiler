@@ -1,6 +1,6 @@
 module Compiler.Generate.MLIR.PatternsAstralCharTest exposing (suite)
 
-{-| Regression test for `Compiler.Generate.MLIR.Patterns`: a Char pattern above
+{-| Regression test for `Compiler.GenerateMlir.Patterns`: a Char pattern above
 0xFFFF is matched against its full code point.
 
 A Char pattern above 0xFFFF (a `\u{1F600}` escape, stored by the parser as

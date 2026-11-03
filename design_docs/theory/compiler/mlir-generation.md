@@ -30,7 +30,7 @@ coerceResultToType ctx var actualTy expectedTy =
             "coerceResultToType: cannot coerce "
 ```
 
-From `compiler/src/Compiler/Generate/MLIR/Expr.elm`. The only conversions it knows are between a primitive and a boxed eco value, and between a boxed tuple and its value-only form. A 64-bit integer meeting a 64-bit float reaches the final `crash`, because two primitive types that disagree mean monomorphization produced a wrong type, and converting here would hide that.
+From `compiler/src/Compiler/GenerateMlir/Expr.elm`. The only conversions it knows are between a primitive and a boxed eco value, and between a boxed tuple and its value-only form. A 64-bit integer meeting a 64-bit float reaches the final `crash`, because two primitive types that disagree mean monomorphization produced a wrong type, and converting here would hide that.
 
 Code generation does make a few choices about the form of the output, such as emitting a constant's body in place of a call or giving a function a faster calling form. Each changes only what one reference or one function body emits, and none changes what the program computes.
 
@@ -134,7 +134,7 @@ cafMemoQualifies ctx expr monoType =
            )
 ```
 
-From `compiler/src/Compiler/Generate/MLIR/Functions.elm`. The test is on the ABI type, so a Bool constant qualifies (its ABI form is boxed) and an Int, Float or Char constant never does. Literal and unit bodies are skipped because the once-only check costs more than the body, and a closure is a function, not a value to compute. Ports are excluded separately: their definitions are generated with memoization turned off. The generator has no other exclusion, and `main` is not treated specially. An Int, Float or Char constant that is not folded is therefore a plain call to its thunk at every use.
+From `compiler/src/Compiler/GenerateMlir/Functions.elm`. The test is on the ABI type, so a Bool constant qualifies (its ABI form is boxed) and an Int, Float or Char constant never does. Literal and unit bodies are skipped because the once-only check costs more than the body, and a closure is a function, not a value to compute. Ports are excluded separately: their definitions are generated with memoization turned off. The generator has no other exclusion, and `main` is not treated specially. An Int, Float or Char constant that is not folded is therefore a plain call to its thunk at every use.
 
 ## Emitters layered on the core
 
@@ -216,15 +216,15 @@ Parent: [compiler.md](compiler.md). Related: [bytes-fusion.md](bytes-fusion.md),
 
 Code:
 
-- `compiler/src/Compiler/Generate/MLIR/Backend.elm`: entry points (`streamMlirBytecode`, `streamMlirToWriter`, the test-side `generateMlirModule`), `buildContext`, the batched streaming loop, and worker selection (`buildSretPromoted`, `buildPsplitPromoted`).
-- `compiler/src/Compiler/Generate/MLIR/Context.elm`: generation state, scope fields and accumulators, kernel registration (`registerKernelInstance`, `insertKernelDecl`).
-- `compiler/src/Compiler/Generate/MLIR/Types.elm`, `compiler/src/Compiler/AST/MonoAbi.elm`: the ABI, SSA and heap rules (`monoTypeToAbi`, `canUnbox`, `computeCtorLayout`).
-- `compiler/src/Compiler/Generate/MLIR/Expr.elm`: calls (`generateCall`), closures (`generateClosure`), case (`generateCase`), the boxing helpers (`coerceResultToType`, `boxArgsToEvaluatorParams`, `boxArgsForClosureBoundary`) and constant folding at a reference (`generateVarGlobal`, `generateConstThunkRef`).
-- `compiler/src/Compiler/Generate/MLIR/Functions.elm` (`generateNode`, `generateDefine`, `generateCtor`, `generateClosureFuncWithClones`, `cafMemoQualifies`), `Lambdas.elm`, `TailRec.elm` (`compileTailFuncToWhile`).
-- `compiler/src/Compiler/Generate/MLIR/Ops.elm`, `Patterns.elm`: operation builders, and field access along decision tree paths.
-- `compiler/src/Compiler/Generate/MLIR/Intrinsics.elm`, `ConstThunks.elm`, `LogicalTypes.elm`, `TypeTable.elm`, `Names.elm`: the layered emitters.
+- `compiler/src/Compiler/GenerateMlir/Backend.elm`: entry points (`streamMlirBytecode`, `streamMlirToWriter`, the test-side `generateMlirModule`), `buildContext`, the batched streaming loop, and worker selection (`buildSretPromoted`, `buildPsplitPromoted`).
+- `compiler/src/Compiler/GenerateMlir/Context.elm`: generation state, scope fields and accumulators, kernel registration (`registerKernelInstance`, `insertKernelDecl`).
+- `compiler/src/Compiler/GenerateMlir/Types.elm`, `compiler/src/Compiler/IR/Mono/Abi.elm`: the ABI, SSA and heap rules (`monoTypeToAbi`, `canUnbox`, `computeCtorLayout`).
+- `compiler/src/Compiler/GenerateMlir/Expr.elm`: calls (`generateCall`), closures (`generateClosure`), case (`generateCase`), the boxing helpers (`coerceResultToType`, `boxArgsToEvaluatorParams`, `boxArgsForClosureBoundary`) and constant folding at a reference (`generateVarGlobal`, `generateConstThunkRef`).
+- `compiler/src/Compiler/GenerateMlir/Functions.elm` (`generateNode`, `generateDefine`, `generateCtor`, `generateClosureFuncWithClones`, `cafMemoQualifies`), `Lambdas.elm`, `TailRec.elm` (`compileTailFuncToWhile`).
+- `compiler/src/Compiler/GenerateMlir/Ops.elm`, `Patterns.elm`: operation builders, and field access along decision tree paths.
+- `compiler/src/Compiler/GenerateMlir/Intrinsics.elm`, `ConstThunks.elm`, `LogicalTypes.elm`, `TypeTable.elm`, `Names.elm`: the layered emitters.
 - `compiler/src/Mlir/Mlir.elm`, `compiler/src/Mlir/Bytecode/StreamEncode.elm`, `compiler/src/Mlir/Bytecode/AttrType.elm`, `compiler/src/Mlir/Pretty.elm`: the generic model, the streaming writer and the text printer (selected by `--text-mlir`, or `ECO_TEXT_MLIR` in the test suite).
-- `compiler/src/Compiler/Generate/MLIR/TypeTable.elm` (`generateTypeTable`) and `Context.getOrCreateTypeIdForMonoType`; `runtime/src/allocator/TypeInfo.hpp` (`EcoTypeKind`, `EcoPrimKind`, `EcoTypeInfo`), `TypeTableOpLowering` in `runtime/src/codegen/Passes/EcoToLLVMGlobals.cpp` and `print_typed_value` in `runtime/src/allocator/RuntimeExports.cpp`: the debug type table and the five places a type kind is defined.
+- `compiler/src/Compiler/GenerateMlir/TypeTable.elm` (`generateTypeTable`) and `Context.getOrCreateTypeIdForMonoType`; `runtime/src/allocator/TypeInfo.hpp` (`EcoTypeKind`, `EcoPrimKind`, `EcoTypeInfo`), `TypeTableOpLowering` in `runtime/src/codegen/Passes/EcoToLLVMGlobals.cpp` and `print_typed_value` in `runtime/src/allocator/RuntimeExports.cpp`: the debug type table and the five places a type kind is defined.
 - `ConstThunkFoldTest` in the compiler tests: the pinned case of a spliced body that rebinds a caller's let name.
 - `runtime/src/codegen/EcoOps.cpp`, `runtime/src/codegen/Ops.td`: the verifiers and operation definitions. `EcoPAPSimplify.cpp`, `CheckEcoClosureCaptures.cpp`, `EcoToLLVMGlobals.cpp`, `EcoControlFlowToSCF` and `TypeInfo.hpp` hold the C++ assumptions listed above.
 

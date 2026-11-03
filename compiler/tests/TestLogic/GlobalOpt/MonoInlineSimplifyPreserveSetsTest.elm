@@ -1,7 +1,7 @@
 module TestLogic.GlobalOpt.MonoInlineSimplifyPreserveSetsTest exposing (suite)
 
 {-| Tests that `inline.preserveSets` stops the post-monomorphization inliner,
-`Compiler.GlobalOpt.MonoInlineSimplify`, from replacing a partial call with a
+`Compiler.MonoOpt.InlineSimplify`, from replacing a partial call with a
 new closure, and that the inliner counts each call it declines because of the
 option. Without them the option could stop working, or the count could stop
 counting.
@@ -64,7 +64,6 @@ afterwards.
 
 -}
 
-import Compiler.AST.Source as Src
 import Compiler.AST.SourceBuilder
     exposing
         ( TypedDef
@@ -82,8 +81,9 @@ import Compiler.AST.SourceBuilder
         , tType
         , varExpr
         )
-import Compiler.Eco.Config as Config
-import Compiler.GlobalOpt.MonoInlineSimplify as MonoInlineSimplify
+import Compiler.Config as Config
+import Compiler.IR.Source as Src
+import Compiler.MonoOpt.InlineSimplify as MonoInlineSimplify
 import Dict
 import Expect
 import Test exposing (Test)

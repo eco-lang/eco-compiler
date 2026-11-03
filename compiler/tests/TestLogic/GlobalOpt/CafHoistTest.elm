@@ -1,6 +1,6 @@
 module TestLogic.GlobalOpt.CafHoistTest exposing (suite)
 
-{-| Tests for `Compiler.GlobalOpt.CafHoist.run`, without which a change to
+{-| Tests for `Compiler.MonoOpt.CafHoist.run`, without which a change to
 which subexpressions the pass moves, to how it shares one new definition
 between equal ones, or to how it adds that definition to the graph would go
 unnoticed.
@@ -36,7 +36,7 @@ The tests establish:
     minted and nothing is replaced.
   - With room for no hoists, nothing is minted and `skippedBudget` is at
     least 1.
-  - OPT_DEBUG_ORDER_001, on a second fixture, `debugGraph`, with hoisting on
+  - OPT\_DEBUG\_ORDER\_001, on a second fixture, `debugGraph`, with hoisting on
     (minimum size 3, room for 100 hoists): a closed call of a global function
     that calls `Debug.log` is not hoisted, nor is one of a global that calls
     such a global, nor one of the `Debug.log` kernel itself. All three are
@@ -54,11 +54,11 @@ size does not match the node count; and the `origNodes` counter.
 -}
 
 import Array
-import Compiler.AST.Monomorphized as Mono
-import Compiler.Data.BitSet as BitSet
+import Compiler.Core.Annotation as A
 import Compiler.Elm.ModuleName as ModuleName
-import Compiler.GlobalOpt.CafHoist as CafHoist
-import Compiler.Reporting.Annotation as A
+import Compiler.IR.Mono as Mono
+import Compiler.MonoOpt.CafHoist as CafHoist
+import Data.BitSet as BitSet
 import Dict
 import Expect
 import Test exposing (Test)

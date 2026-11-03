@@ -44,22 +44,22 @@ in `E.BadMains`.
 -}
 
 import Array
-import Compiler.AST.Canonical as Can
-import Compiler.AST.Optimized as Opt
-import Compiler.AST.Source as Src
-import Compiler.AST.TypeEnv as TypeEnv
-import Compiler.AST.TypeVars as Vars
-import Compiler.AST.TypedCanonical as TCan
-import Compiler.AST.TypedOptimized as TOpt
 import Compiler.Canonicalize.Module as Canonicalize
-import Compiler.Data.Name as Name exposing (Name)
-import Compiler.Elm.Interface as I
+import Compiler.Core.Name as Name exposing (Name)
 import Compiler.Elm.ModuleName as ModuleName
 import Compiler.Elm.Package as Pkg
+import Compiler.Error as E
+import Compiler.IR.Canonical as Can
+import Compiler.IR.Canonical.Interface as I
+import Compiler.IR.Optimized as Opt
+import Compiler.IR.Source as Src
+import Compiler.IR.Typed.Canonical as TCan
+import Compiler.IR.Typed.Optimized as TOpt
+import Compiler.IR.Typed.TypeEnv as TypeEnv
+import Compiler.IR.Typed.TypeVars as Vars
 import Compiler.LocalOpt.Erased.Module as Optimize
 import Compiler.LocalOpt.Typed.Module as TypedOptimize
 import Compiler.Nitpick.PatternMatches as PatternMatches
-import Compiler.Reporting.Error as E
 import Compiler.Reporting.Render.Type.Localizer as Localizer
 import Compiler.Reporting.Result as ReportingResult
 import Compiler.Type.Constrain.Erased.Module as TypeErased
@@ -68,10 +68,10 @@ import Compiler.Type.KernelTypes as KernelTypes
 import Compiler.Type.PostSolve as PostSolve
 import Compiler.Type.Solve as Type
 import Compiler.Type.SolverRoots as SolverRoots
-import Compiler.TypedCanonical.Build as TCanBuild
+import Compiler.Type.State.IO as TypeCheck
+import Compiler.Type.TypedCanonical as TCanBuild
 import Dict
 import System.IO
-import System.TypeCheck.IO as TypeCheck
 import Task exposing (Task)
 import Utils.Main as Utils
 

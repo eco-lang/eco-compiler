@@ -51,8 +51,6 @@ specialization off, and `Mono.typeNodesWithin` on tuples and custom types.
 
 -}
 
-import Compiler.AST.Monomorphized as Mono
-import Compiler.AST.Source as Src
 import Compiler.AST.SourceBuilder
     exposing
         ( TypedDef
@@ -70,9 +68,11 @@ import Compiler.AST.SourceBuilder
         , tVar
         , varExpr
         )
-import Compiler.Eco.Config as Config
+import Compiler.Config as Config
 import Compiler.Elm.ModuleName as ModuleName
-import Compiler.Monomorphize.Registry as Registry
+import Compiler.IR.Mono as Mono
+import Compiler.IR.Mono.Registry as Registry
+import Compiler.IR.Source as Src
 import Dict
 import Expect exposing (Expectation)
 import Test exposing (Test)

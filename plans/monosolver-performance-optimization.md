@@ -546,7 +546,7 @@ stamps directly. Memo-HIT vars zonk the same Point either way. Hence: byte-ident
 
 ### Implementation
 
-**File: `compiler/src/Compiler/MonoSolver/Store.elm`** — add (and export) `classifyDirect`:
+**File: `compiler/src/Compiler/Monomorphize/Solver/Store.elm`** — add (and export) `classifyDirect`:
 
 ```elm
 {-| Read-only classification of a canonical type: structure is classified purely
@@ -965,7 +965,7 @@ cheap enough to do regardless; M2b has an explicit kill criterion).
 
 ## A5 — Remove `IO` trampolines (loop/Step → direct tail-recursion) — THE FIRST REAL WIN (2026-07-10)
 
-**Insight (user).** `System.TypeCheck.IO.loop` is already TCO'd to a while-loop (stack-safe), but the
+**Insight (user).** `Compiler.Type.State.IO.loop` is already TCO'd to a while-loop (stack-safe), but the
 loop-based iterators (`foldM`/`foldrM`/`traverseList`/`mapM_`/`traverseMapWithKey`) allocate ~4 EXTRA objects
 PER ELEMENT that direct tail-recursion avoids: the `Step` ctor (`Loop`/`Done`), the loop-state tuple, and the
 `map (\b -> Loop …)` closure — all ON TOP of the irreducible callback IO tuple + result cons. Unlike A1–A4
@@ -1017,7 +1017,7 @@ self-tail-recursion: solver `solveGo` + `constrainDeclsWithVars` + the 6 express
 (let/binop/cons/access = clean self-recursion; call/if = "two-phase" so the width-bounded arg/branch walk now
 returns a local `CallArgsOutcome`/`IfBranchesOutcome` the spine `go` inspects and self-tail-calls on — no
 trampoline, no mutual tail-recursion, stack-safe). With no `IO.loop` callers left, `type Step state a =
-Loop state | Done a` and `loop` were DELETED from `System.TypeCheck.IO`. GATED byte-identical: 6/6 fixed +
+Loop state | Done a` and `loop` were DELETED from `Compiler.Type.State.IO`. GATED byte-identical: 6/6 fixed +
 corpus 466/51/0 (mismatch set identical) — the entire constraint generator + solver typecheck all 517
 programs byte-for-byte. Final native A/B (full removal) pending below.
 

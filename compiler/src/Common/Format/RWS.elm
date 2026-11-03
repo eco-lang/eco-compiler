@@ -24,7 +24,7 @@ first and passes the state from the end of the list towards the start.
 -}
 
 import Dict exposing (Dict)
-import Utils.Crash exposing (crash)
+import System.Crash exposing (crash)
 
 
 {-| A computation that, given an environment and a state, returns its result,
@@ -159,7 +159,7 @@ replicateM n rws =
                 )
 
 
-{-| Aborts the program with the given message, through `Utils.Crash.crash`.
+{-| Aborts the program with the given message, through `System.Crash.crash`.
 
 The abort happens as soon as `error` is applied to its message, not when the
 computation it stands for is run.

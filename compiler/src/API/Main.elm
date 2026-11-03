@@ -44,12 +44,12 @@ import API.Install as Install
 import API.Make as Make
 import API.Uninstall as Uninstall
 import Builder.Reporting.Exit as Exit
+import Builder.Reporting.ModuleError as ModuleError
 import Compiler.Elm.Package as Pkg
 import Compiler.Json.Encode as E
+import Compiler.Lexer.Primitives as P
+import Compiler.Parse.Error as E
 import Compiler.Parse.Module as M
-import Compiler.Parse.Primitives as P
-import Compiler.Reporting.Error as Error
-import Compiler.Reporting.Error.Syntax as E
 import Compiler.Reporting.Render.Code as Code
 import Eco.Console
 import Eco.Env
@@ -127,7 +127,7 @@ app =
 
                                     error : Encode.Value
                                     error =
-                                        E.encodeUgly (Error.reportToJson (E.toReport source (E.ParseError err)))
+                                        E.encodeUgly (ModuleError.reportToJson (E.toReport source (E.ParseError err)))
                                             |> Decode.decodeString Decode.value
                                             |> Result.withDefault Encode.null
                                 in

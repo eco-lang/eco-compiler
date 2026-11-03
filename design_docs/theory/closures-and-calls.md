@@ -157,8 +157,8 @@ Code:
 - `runtime/src/codegen/Passes/EcoToLLVMClosures.cpp`: `getOrCreateWrapper`, `PapCreateOpLowering`, `PapExtendOpLowering` (`lowerGenericApply`, `lowerSegmentationUnknown` and the typed arms), `emitFastClosureCall`, `emitInlineClosureCall`, `getOrCreateEvalDesc`, `getOrCreateEvalDescForFunc` and `getOrCreateSatEntry`.
 - `runtime/src/codegen/EcoBackend.cpp`: `expandSatMarkers` and `runCapInlinePrepass`.
 - `runtime/src/allocator/NurserySpace.cpp`: closure tracing at `Tag_Closure`.
-- `compiler/src/Compiler/Generate/MLIR/Functions.elm`: `generateClosureFuncWithClones` and `generateGenericCloneFunc`. `Lambdas.elm` does the same for nested lambdas.
-- `compiler/src/Compiler/Generate/MLIR/Expr.elm`: `generateCall`, `generateGenericApply`, `generateUnknownSegmentationCall`, `generateFastDispatchCall`, `applyByStages` and `generateClosure`.
+- `compiler/src/Compiler/GenerateMlir/Functions.elm`: `generateClosureFuncWithClones` and `generateGenericCloneFunc`. `Lambdas.elm` does the same for nested lambdas.
+- `compiler/src/Compiler/GenerateMlir/Expr.elm`: `generateCall`, `generateGenericApply`, `generateUnknownSegmentationCall`, `generateFastDispatchCall`, `applyByStages` and `generateClosure`.
 - `runtime/src/codegen/Ops.td`: `eco.papCreate`, `eco.papCreateGroup`, `eco.papExtend` and `eco.project.closure`.
 
 Invariants (`design_docs/invariants.csv`):
@@ -166,7 +166,7 @@ Invariants (`design_docs/invariants.csv`):
 - GOPT_003, GOPT_016: staging preserves meaning; unprovable calls stay generic.
 - CGEN_052: a typed application's remaining arity is proven. CGEN_080: a stamp takes precedence over the call kind for closure values. CGEN_057: a kernel in closure position gets a back-end wrapper.
 - CGEN_059, CGEN_060: no boxing allocations in the IR for generic calls.
-- LSS_017, LSS_018, LSS_036: stamps only on provable single instances (AbiCloning's verbatim-copy license and fingerprint fence, `compiler/src/Compiler/GlobalOpt/AbiCloning.elm`).
+- LSS_017, LSS_018, LSS_036: stamps only on provable single instances (AbiCloning's verbatim-copy license and fingerprint fence, `compiler/src/Compiler/MonoOpt/AbiCloning.elm`).
 - RUNTIME_CLOSURE_004: over-application recurses through `eco_apply_closure_eval`.
 - REP_CLOSURE_001, FORBID_CLOSURE_001: only Int, Float and Char are raw in closures; Bool is boxed. REP_CLOSURE_002: arguments are converted to declared slot kinds.
 - HEAP_033: interned zero-capture closures. HEAP_034: closures are traced to `n_values`. HEAP_078: the 2047-parameter layout and every reader of it. HEAP_SNAPSHOT_001: published objects are never written.

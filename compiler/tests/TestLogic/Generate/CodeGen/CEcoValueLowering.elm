@@ -3,7 +3,7 @@ module TestLogic.Generate.CodeGen.CEcoValueLowering exposing (expectCEcoValueLow
 {-| A type variable that monomorphization leaves with the `CEcoValue`
 constraint stands for a value that is always boxed, and code generation must
 give it the MLIR type `!eco.value` (CGEN\_013, REP\_ABI\_001; see `Constraint` in
-`Compiler.AST.Monomorphized`), so that its concrete source type never affects a
+`Compiler.IR.Mono`), so that its concrete source type never affects a
 calling convention.
 
 The expectation compiles a program with `TestLogic.TestPipeline.runToMlir` and
@@ -33,8 +33,8 @@ and SSA values inside function bodies.
 -}
 
 import Array
-import Compiler.AST.Monomorphized as Mono
-import Compiler.AST.Source as Src
+import Compiler.IR.Mono as Mono
+import Compiler.IR.Source as Src
 import Dict
 import Expect exposing (Expectation)
 import Mlir.Mlir exposing (MlirModule, MlirOp, MlirType(..))

@@ -35,16 +35,16 @@ Among what is not checked:
 
 -}
 
-import Compiler.AST.Canonical as Can
-import Compiler.AST.Source as Src
+import Compiler.Canonicalize.Error as CanError
 import Compiler.Canonicalize.Module as Canonicalize
-import Compiler.Data.OneOrMore as OneOrMore
+import Compiler.Core.Annotation as A
 import Compiler.Elm.Interface.Basic as Basic
 import Compiler.Elm.ModuleName as ModuleName
-import Compiler.Reporting.Annotation as A
-import Compiler.Reporting.Error.Canonicalize as CanError
+import Compiler.IR.Canonical as Can
+import Compiler.IR.Source as Src
 import Compiler.Reporting.Result as Result
 import Data.Map as DMap
+import Data.OneOrMore as OneOrMore
 import Expect
 
 

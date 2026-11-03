@@ -60,18 +60,18 @@ unresolved number variable be closed to `Int`.
 -}
 
 import Array exposing (Array)
-import Compiler.AST.Canonical as Can
-import Compiler.AST.Intern as Intern exposing (Intern)
-import Compiler.AST.Monomorphized as Mono
-import Compiler.AST.TypeEnv as TypeEnv
-import Compiler.AST.TypeIds exposing (MVarId)
-import Compiler.AST.TypeVars as Vars
-import Compiler.AST.TypedOptimized as TOpt
-import Compiler.Data.BitSet as BitSet exposing (BitSet)
-import Compiler.Data.Id as Id
-import Compiler.Data.Name exposing (Name)
+import Compiler.Core.Id as Id
+import Compiler.Core.Name exposing (Name)
+import Compiler.Core.TypeIds exposing (MVarId)
 import Compiler.Elm.ModuleName as ModuleName
-import Compiler.Monomorphize.Registry as Registry
+import Compiler.IR.Canonical as Can
+import Compiler.IR.Mono as Mono
+import Compiler.IR.Mono.Intern as Intern exposing (Intern)
+import Compiler.IR.Mono.Registry as Registry
+import Compiler.IR.Typed.Optimized as TOpt
+import Compiler.IR.Typed.TypeEnv as TypeEnv
+import Compiler.IR.Typed.TypeVars as Vars
+import Data.BitSet as BitSet exposing (BitSet)
 import Data.Map as DataMap
 import Dict exposing (Dict)
 import Set

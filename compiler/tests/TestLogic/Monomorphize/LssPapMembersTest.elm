@@ -5,20 +5,20 @@ top-level function is passed to another function, the lambda-set solver does
 not describe the receiving position as holding fewer functions than it can.
 
 A _lambda set_ is the annotation on an arrow of a monomorphized type
-(`Compiler.AST.Monomorphized.LambdaSetAnno`) that says which functions, its
+(`Compiler.IR.Mono.LambdaSetAnno`) that says which functions, its
 _members_, can arrive at that position. `LSet` lists them, `LPartial` lists
 some of them as a lower bound, and `LTop` and `LVar` name none. A singleton
 `LSet` is the one form a later pass may read as "the function here is this
-one" (`Compiler.AST.Monomorphized.singletonHeadMember`), so a singleton that
+one" (`Compiler.IR.Mono.singletonHeadMember`), so a singleton that
 leaves out a function which really arrives can make a wrong program, not
 merely a slow one. Call such a set _falsely complete_.
 
 `addTo 7`, where `addTo` takes two parameters, is a _partial application_: a
 function value of type `Int -> Int` that is not the same function as `addTo`.
 The solver gives it its own member, distinct from `addTo`'s
-(`Compiler.MonoSolver.Engine.papMemberIdFor`). That member is registered as a
+(`Compiler.Monomorphize.Solver.Engine.papMemberIdFor`). That member is registered as a
 partial application, not a global, so the solver's direct-call rewrite never
-targets it (`Compiler.MonoSolver.Engine.standaloneMemberGlobal`).
+targets it (`Compiler.Monomorphize.Solver.Engine.standaloneMemberGlobal`).
 
 The fixtures are three modules built with `makeModuleWithTypedDefs`. Each
 defines `addTo a b = a + b` at `Int -> Int -> Int`, and its `testValue` passes
@@ -63,8 +63,6 @@ optimization is not run.
 -}
 
 import Array
-import Compiler.AST.Monomorphized as Mono
-import Compiler.AST.Source as Src
 import Compiler.AST.SourceBuilder
     exposing
         ( binopsExpr
@@ -78,7 +76,9 @@ import Compiler.AST.SourceBuilder
         , tType
         , varExpr
         )
-import Compiler.Eco.Config as Config
+import Compiler.Config as Config
+import Compiler.IR.Mono as Mono
+import Compiler.IR.Source as Src
 import Dict
 import Expect
 import Test exposing (Test)
@@ -335,7 +335,7 @@ named `target`, except the annotation on each type's outermost arrow.
 
 The solver stamps the own member of a global defined in the program, such as
 `useIt`, on that arrow wherever the annotation is not already an `LSet`
-(`Compiler.MonoSolver.Translate.stampSelfSpine`), and the resulting singleton
+(`Compiler.Monomorphize.Solver.Translate.stampSelfSpine`), and the resulting singleton
 is correct, so reading it would fail test 1 for a correct graph. The
 parameter the tests are about is below it. Skipping the outermost arrow alone
 suffices for a one-parameter global such as `useIt`; the deeper spine arrows

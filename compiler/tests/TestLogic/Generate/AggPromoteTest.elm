@@ -12,8 +12,8 @@ allocating it on the heap. It is allowed only when the binder does not
 _escape_: every use reads a field of the value rather than the value itself.
 Returning the value, passing it to a call or capturing it in a closure are
 escapes. The full rule, with its exceptions, belongs to
-`Compiler.Generate.MLIR.Expr.tupleBinderPromotable` and
-`Compiler.Generate.MLIR.Expr.aggBinderPromotableWith`, which these tests call.
+`Compiler.GenerateMlir.Expr.tupleBinderPromotable` and
+`Compiler.GenerateMlir.Expr.aggBinderPromotableWith`, which these tests call.
 
 The fixture is one source module, `fixtureModule`, with one function per
 scenario. Every test runs it through `TestLogic.TestPipeline.runToGlobalOpt`
@@ -64,10 +64,10 @@ generated.
 -}
 
 import Array
-import Compiler.AST.Monomorphized as Mono
-import Compiler.AST.Source as Src
 import Compiler.AST.SourceBuilder as B
-import Compiler.Generate.MLIR.Expr as Expr
+import Compiler.GenerateMlir.Expr as Expr
+import Compiler.IR.Mono as Mono
+import Compiler.IR.Source as Src
 import Dict
 import Expect
 import Set

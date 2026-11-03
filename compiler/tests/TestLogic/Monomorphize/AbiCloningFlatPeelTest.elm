@@ -8,7 +8,7 @@ parameters would give it the wrong list to compare.
 
 A function type is a chain of _stages_. Each `MFunction` carries a list of
 parameter types and a result, and the result may itself be an `MFunction`.
-`Compiler.MonoSolver.Store` turns each arrow of a source type into a stage of
+`Compiler.Monomorphize.Solver.Store` turns each arrow of a source type into a stage of
 one parameter, so a type such as `Int -> Float -> Char -> Int` has a first stage
 of one parameter even when the closure called through it takes all three at
 once. `AbiCloning` uses `peelStages` when a call site passes more arguments than
@@ -46,8 +46,8 @@ does with a peel.
 
 -}
 
-import Compiler.AST.Monomorphized as Mono
-import Compiler.GlobalOpt.AbiCloning as AbiCloning
+import Compiler.IR.Mono as Mono
+import Compiler.MonoOpt.AbiCloning as AbiCloning
 import Expect
 import Test exposing (Test)
 

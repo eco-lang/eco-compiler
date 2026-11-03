@@ -65,8 +65,6 @@ computes, since no program is run.
 
 -}
 
-import Compiler.AST.Monomorphized as Mono
-import Compiler.AST.Source as Src
 import Compiler.AST.SourceBuilder
     exposing
         ( TypedDef
@@ -88,7 +86,9 @@ import Compiler.AST.SourceBuilder
         , tVar
         , varExpr
         )
-import Compiler.Generate.MLIR.Types as Types
+import Compiler.GenerateMlir.Types as Types
+import Compiler.IR.Mono as Mono
+import Compiler.IR.Source as Src
 import Dict
 import Expect
 import Mlir.Mlir exposing (MlirType(..))
@@ -336,7 +336,7 @@ testPolymorphicFieldAtIndex24 =
 
 {-| The test that a record pattern reading field 27 of a record of 28 `Int`
 fields `f00` to `f27` projects it unboxed, as `i64`.
-`Compiler.Generate.MLIR.Types.computeRecordLayout` has no index cap, so every
+`Compiler.GenerateMlir.Types.computeRecordLayout` has no index cap, so every
 field is stored unboxed; field 27 is past the 26 slots the old Elm-side bitmap
 could describe (bug B3 of `plans/wide-object-tail-kind-words.md` read it raw
 while it was stored boxed). The program is

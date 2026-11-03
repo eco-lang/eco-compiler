@@ -5,7 +5,7 @@ runtime to hold, so that the build fails with a located error rather than a
 crash in the MLIR generator.
 
 A closure's _stage arity_ is its parameters plus its captured variables, and
-the runtime caps it at `Compiler.Data.HeapLimits.maxStageArity`.
+the runtime caps it at `Compiler.IR.Runtime.HeapLimits.maxStageArity`.
 Canonicalization rejects source functions over that limit, but specialization
 can turn one captured polymorphic local function into several captured
 specializations, so a closure can pass the limit only after monomorphization.
@@ -18,12 +18,12 @@ and a source position. The generator's own check of the same limit crashes.
 -}
 
 import Array
-import Compiler.AST.Monomorphized as Mono
-import Compiler.Data.HeapLimits as HeapLimits
+import Compiler.Core.Annotation as A
 import Compiler.Elm.ModuleName as ModuleName
-import Compiler.Monomorphize.Closure as Closure
-import Compiler.Monomorphize.MonoTraverse as Traverse
-import Compiler.Reporting.Annotation as A
+import Compiler.IR.Mono as Mono
+import Compiler.IR.Mono.Closure as Closure
+import Compiler.IR.Mono.Traverse as Traverse
+import Compiler.IR.Runtime.HeapLimits as HeapLimits
 
 
 {-| Returns one message per closure in `graph`, nested closures included,

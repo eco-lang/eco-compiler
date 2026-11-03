@@ -54,7 +54,7 @@ node takes its id when its chain is regrouped, after every operand, and `Let`,
 innermost first. Parentheses produce no node.
 
 Some expressions exceed what Eco's heap can represent (see
-`Compiler.Data.HeapLimits`) and are `TooLarge` errors: a record with more than
+`Compiler.IR.Runtime.HeapLimits`) and are `TooLarge` errors: a record with more than
 `maxRecordFields` fields, a function or lambda with more than `maxStageArity`
 parameters, and a closure whose parameters and captured locals together exceed
 `maxStageArity`. A tuple of more than three elements is a
@@ -79,25 +79,25 @@ parameters, and a closure whose parameters and captured locals together exceed
 -}
 
 import Basics.Extra exposing (flip)
-import Compiler.AST.Canonical as Can
-import Compiler.AST.Source as Src
-import Compiler.AST.Utils.Binop as Binop
-import Compiler.AST.Utils.Type as Type
+import Compiler.Canonicalize.Dups as Dups
 import Compiler.Canonicalize.Environment as Env
-import Compiler.Canonicalize.Environment.Dups as Dups
+import Compiler.Canonicalize.Error as Error
 import Compiler.Canonicalize.Ids as Ids
 import Compiler.Canonicalize.Pattern as Pattern
 import Compiler.Canonicalize.Type as Type
-import Compiler.Data.HeapLimits as HeapLimits
-import Compiler.Data.Index as Index
-import Compiler.Data.Name as Name exposing (Name)
+import Compiler.Core.Annotation as A
+import Compiler.Core.Index as Index
+import Compiler.Core.Name as Name exposing (Name)
 import Compiler.Elm.ModuleName as ModuleName
 import Compiler.Elm.Package as Pkg
-import Compiler.Graph as Graph
-import Compiler.Reporting.Annotation as A
-import Compiler.Reporting.Error.Canonicalize as Error
+import Compiler.IR.Canonical as Can
+import Compiler.IR.Canonical.Alias as Type
+import Compiler.IR.Runtime.HeapLimits as HeapLimits
+import Compiler.IR.Source as Src
+import Compiler.IR.Source.Binop as Binop
 import Compiler.Reporting.Result as ReportingResult
 import Compiler.Reporting.Warning as W
+import Data.Graph as Graph
 import Data.Map
 import Data.Set as EverySet
 import Dict exposing (Dict)

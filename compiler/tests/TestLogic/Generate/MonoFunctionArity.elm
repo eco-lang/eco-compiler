@@ -6,7 +6,7 @@ that pass a function more arguments than its type accepts. Without it, a
 monomorphized graph in which the two disagree would pass unnoticed to code
 generation.
 
-In the monomorphized IR (`Compiler.AST.Monomorphized`) a function type is an
+In the monomorphized IR (`Compiler.IR.Mono`) a function type is an
 `MFunction` holding a list of parameter types and a result type, and that
 result may itself be an `MFunction`. Each `MFunction` layer is a _stage_, and a
 type has two arities:
@@ -52,8 +52,8 @@ Among what is not checked:
 -}
 
 import Array
-import Compiler.AST.Monomorphized as Mono
-import Compiler.AST.Source as Src
+import Compiler.IR.Mono as Mono
+import Compiler.IR.Source as Src
 import Expect
 import TestLogic.TestPipeline as Pipeline
 

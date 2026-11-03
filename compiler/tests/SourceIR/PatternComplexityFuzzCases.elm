@@ -45,8 +45,8 @@ patterns in function arguments or `let` definitions.
 
 -}
 
-import Compiler.AST.Source as Src
 import Compiler.AST.SourceBuilder as B exposing (makeModule)
+import Compiler.IR.Source as Src
 import Expect exposing (Expectation)
 import Fuzz exposing (Fuzzer)
 import SourceIR.Fuzz.TypedExpr as TE

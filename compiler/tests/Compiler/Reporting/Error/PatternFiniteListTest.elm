@@ -1,6 +1,6 @@
 module Compiler.Reporting.Error.PatternFiniteListTest exposing (suite)
 
-{-| Reproduces two bugs in how `Compiler.Reporting.Error.Pattern` prints a
+{-| Reproduces two bugs in how `Compiler.Nitpick.Error` prints a
 missing finite-list pattern such as `[1, 2]`:
 
   - `delist` returns `FiniteList revEntries` without reversing it (the
@@ -14,11 +14,11 @@ the fix.
 
 -}
 
-import Compiler.AST.Canonical as Can
+import Compiler.Core.Annotation as A
+import Compiler.IR.Canonical as Can
+import Compiler.Nitpick.Error as Pattern
 import Compiler.Nitpick.PatternMatches as P
-import Compiler.Reporting.Annotation as A
 import Compiler.Reporting.Doc as D
-import Compiler.Reporting.Error.Pattern as Pattern
 import Compiler.Reporting.Render.Code as Code
 import Compiler.Reporting.Report as Report
 import Expect

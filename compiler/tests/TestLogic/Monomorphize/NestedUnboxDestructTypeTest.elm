@@ -20,10 +20,10 @@ Elm\_Kernel\_Basics\_add\_Float: existing (f64, f64 -> f64) vs new
 -}
 
 import Array
-import Compiler.AST.Monomorphized as Mono
-import Compiler.AST.Source as Src
 import Compiler.Elm.Package as Pkg
-import Compiler.Monomorphize.MonoTraverse as MonoTraverse
+import Compiler.IR.Mono as Mono
+import Compiler.IR.Mono.Traverse as MonoTraverse
+import Compiler.IR.Source as Src
 import Compiler.Parse.Module as Parse
 import Expect
 import Test exposing (Test)
