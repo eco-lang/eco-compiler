@@ -266,6 +266,14 @@ target_include_directories(ElmKernel_Regex PUBLIC
     ${VENDOR_INCLUDE_DIR}
 )
 target_compile_features(ElmKernel_Regex PUBLIC cxx_std_20)
+# Regex.replace calls the replacer through the extern "C" eco_apply_closure, and
+# an exception thrown out of it must propagate past the StackRootGuards that
+# root the closure, subject and match. Under MSVC-model /EHsc ("extern C
+# functions never throw") those guards' unwind cleanups may be dropped, so use
+# /EHs with /EHc- as ElmKernel_Bytes does.
+if(MSVC)
+    target_compile_options(ElmKernel_Regex PRIVATE /EHs /EHc-)
+endif()
 
 # Time module
 add_library(ElmKernel_Time STATIC
