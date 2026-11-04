@@ -8,8 +8,9 @@ watched directory. Correct: no event names `x`.
 
 It failed in inotify mode: the moved directory's watch descriptor kept its use with relative
 path `sub`, so the write outside the watch was reported as `moved sub/x` (and `changed sub/x`).
-Fixed: the MOVED_FROM of `sub` drops the watches of its tree. Poll mode passes. A 3 s deadline
-ends a failing run.
+Fixed: the MOVED_FROM of `sub` drops the watches of its tree. Poll mode passes. A 6 s deadline
+ends a failing run: `marker` is written about 1.9 s in, and poll mode (macOS) can take another
+second to see it, which a 3 s deadline missed on a slow macOS runner.
 
 -}
 
@@ -127,7 +128,7 @@ main =
                         , Cmd.batch
                             [ log model "watching"
                             , steps root other |> Task.attempt StepsDone
-                            , Process.sleep 3000 |> Task.perform (\_ -> Deadline)
+                            , Process.sleep 6000 |> Task.perform (\_ -> Deadline)
                             ]
                         )
 

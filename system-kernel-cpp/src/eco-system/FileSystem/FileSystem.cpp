@@ -24,6 +24,7 @@
 
 #if defined(_WIN32)
 #include <direct.h>
+#include <io.h>
 #else
 #include <pwd.h>
 #include <unistd.h>
@@ -32,6 +33,16 @@
 namespace Eco::System::Fs {
 
 namespace {
+
+/// Closes `fd`: `::close`, or the CRT's `::_close` on Windows, which has no POSIX `close`.
+int closeFd(int fd) {
+#if defined(_WIN32)
+    return ::_close(fd);
+#else
+    return ::close(fd);
+#endif
+}
+
 
 /// One open FileSystem handle: its fd, the operations on it submitted and not yet finished, and whether a close
 /// has been asked for, after which no new operation may start.
@@ -72,7 +83,7 @@ HandleTable& currentHandles() {
         if (t.generation != 0) {
             for (auto& [id, e] : t.entries) {
                 (void)id;
-                if (e.inFlight == 0 && !e.closing) ::close(e.fd);
+                if (e.inFlight == 0 && !e.closing) closeFd(e.fd);
             }
             t.entries.clear();
         }
@@ -203,7 +214,7 @@ HPointer fsCompleteOpen(PoolResult& pr) {
             t.entries.emplace(id, HandleEntry{static_cast<int>(r.n), 0, false});
             r.n = id;
         } catch (...) {
-            ::close(static_cast<int>(r.n));
+            closeFd(static_cast<int>(r.n));
             throw;
         }
     }

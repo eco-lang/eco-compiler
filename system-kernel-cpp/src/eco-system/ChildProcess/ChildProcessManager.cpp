@@ -25,7 +25,9 @@
 #include <cerrno>
 #include <vector>
 
-#ifndef _WIN32
+#if defined(_WIN32)
+#include <io.h>
+#else
 #include <signal.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -36,6 +38,15 @@ namespace Eco::System {
 namespace {
 
 using namespace ChildProcessManager;
+
+/// Closes `fd`: `::close`, or the CRT's `::_close` on Windows, which has no POSIX `close`.
+int closeFd(int fd) {
+#if defined(_WIN32)
+    return ::_close(fd);
+#else
+    return ::close(fd);
+#endif
+}
 
 // --- The Elm process that stands for a spawned child ------------------------
 
@@ -169,7 +180,7 @@ void handleSpawn(HPointer& router, const SpawnCmd& cmd, HPointer& onInit, HPoint
                 if (ids[k] != 0) discardReadable(ids[k]);
             }
             for (int fd : fds) {
-                if (fd >= 0) ::close(fd);
+                if (fd >= 0) closeFd(fd);
             }
             throw;
         }
