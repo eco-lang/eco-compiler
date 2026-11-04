@@ -49,10 +49,10 @@ init _ =
                         MV.put taskEnc m inner
                             |> Task.andThen (\_ -> MV.take taskDec m)
                     )
-                |> Task.andThen (\t -> t)
+                |> Task.andThen (\t -> Task.mapError never t)
                 |> Task.map (\v -> v == 99)
     in
-    ( Nothing, Task.perform GotResult task )
+    ( Nothing, Task.perform GotResult (task |> Task.onError (\_ -> Task.succeed False)) )
 
 
 update : Msg -> Model -> ( Model, Cmd Msg )

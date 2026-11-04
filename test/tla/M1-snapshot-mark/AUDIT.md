@@ -750,3 +750,38 @@ Change: comments and whitespace only, from the C++ re-commenting pass. The `Root
 Pin fired: region `runtime/src/allocator/ThreadLocalHeap.cpp` `TLH.majorGC` (**1b502d5256e8**).
 
 Change: the two `parent_->dumpHeapState("majorGC begin" / "majorGC end")` calls are now wrapped in `if (Allocator::heapTraceEnabled())`, as minorGC's and every other dump site are. `dumpHeapState` only reads counters and prints to stderr; with heap tracing compiled out (the default) `heapTraceEnabled()` is a constant false and the calls are dead. No atomic step, lock, shared location or memory order changed. **Verdict: no model change needed.**
+
+## 2026-11-04 — WPZ (plans/kernel-lib-bug-fixes.md D21): external root scanners registered once per heap generation (test/tla/README.md "The canary")
+
+Pin fired: grep `F.externalRoots` (M1). The code change alone gave new hash prefix `3907b4102a79`; with the
+grep's globs widened (below) the recorded hash prefix is **4c5ed5ff4c9e**.
+
+Change: `PortRuntime::ensureRuntimeHooks` now registers its "port-runtime" scanner once per heap generation
+(`roots.addExternalRootScanner(`, `roots` = `getRootSetSlow()`), and on a test-only heap reset first zeroes every
+port's `decoder` and `subs` word under `portsMutex_`. `Scheduler` (`syncHeapGeneration` / `resetForNewHeap`) and
+`PlatformRuntime::syncHeapGeneration` likewise drop their old-heap words and re-register their scanners when they
+first see a new generation; MVar, eco-kernel Runtime, Http and Time effect managers, the list scratch and
+eco/system's `Registry` do the same. Re-audit against M1:
+- No atomic step, GC lock, memory order or GC-shared heap location changed. `RootSet::addExternalRootScanner`
+  is unchanged; registration still runs on the one mutator thread (HEAP_007, CR-012 option F) outside any pause,
+  and every reader of the scanner vector (`forEachMajorRoot` at t0, the STW major, the minors' root phases) runs on
+  that thread or its helpers inside a pause. No scanner body calls a sync function, so no registration can happen
+  while the vector is being iterated (at a new generation the module's old scanner is already gone with the old
+  root set, `RootSet::reset`).
+- A scanner registered mid-cycle is a `cell[c]` that was `Nil` at t0 (`MC_Cell` is all `Nil`) and is written later
+  by `cellw`; every module registers before it stores a word (ports: `setIncomingSubs` now calls
+  `ensureRuntimeHooks` first; Runtime: `saveStateBody`). SATB needs nothing more: the stored value was reachable
+  at t0 or allocated after it. Lazy and mid-cycle registration is not new (Time, Http, list scratch, Registry
+  already did it).
+- Zeroing a decoder or clearing a module table is a `cellw` of `Nil`. A heap reset itself (`Allocator::reset`)
+  is outside M1, which models one heap generation.
+- The scanner bodies' locks (`portsMutex_`, `resumeMutex_`, `g_timerMutex`, `g_trackedMutex`) are unchanged
+  leaf locks; the reset paths take them without allocating.
+
+Canary row fix (found on the way): `F.externalRoots` did not glob `system-kernel-cpp/src`, so eco/system's
+`Registry::ensure` scanner (`Core/Registry.hpp`, changed by RESET-05) was never pinned. `footprint-greps.txt`
+now adds `system-kernel-cpp/src/*/*/*.cpp` and `*.hpp`; the census gains that one line. Its scanner is the same
+`cell` abstraction (per-generation, registered before any entry is stored).
+
+**Verdict: no model change needed.** `tla-check` not re-run (no spec or config change); the change is not in a
+traced path.

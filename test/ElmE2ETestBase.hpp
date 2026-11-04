@@ -16,6 +16,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cerrno>
 #include <csignal>
 #include <cstdio>
 #include <cstdlib>
@@ -36,7 +37,9 @@
 #include <vector>
 
 #if !defined(_WIN32)
+#include <fcntl.h>
 #include <sys/mman.h>
+#include <sys/resource.h>
 #include <unistd.h>
 #endif
 
@@ -993,6 +996,100 @@ inline std::optional<ElmE2EBase::StressFlags> decodeStressFlags(const std::strin
     return f;
 }
 
+// Child side of the `-- UNSETENV:` / `-- RLIMIT-FSIZE:` / `-- STDIN:` /
+// `-- STDIN-DELAY-MS:` directives (CheckPatterns.hpp), applied in the spawned
+// child before it runs the program. (`-- ENV:` is applied by the parent, in
+// the spawn environment.) Throws std::runtime_error on a malformed directive
+// or a failed call.
+namespace detail {
+
+#if !defined(_WIN32)
+// stdin becomes the read end of a pipe whose writer, a detached thread, waits
+// until the program starts, then `delayMs`, writes `text` and closes it. "The
+// program starts" is EcoRunner resetting the exit code to 0 just before it
+// calls `main` (after the JIT compile, which can take longer than the delay):
+// the exit code is set to a sentinel here and the thread polls for the reset.
+inline constexpr int kStdinDelayExitSentinel = -0x5eed1e;
+
+inline std::string redirectChildStdinDelayed(std::string text, long long delayMs) {
+    int p[2];
+#if defined(__linux__)
+    if (::pipe2(p, O_CLOEXEC) < 0) return std::string("pipe(stdin): ") + std::strerror(errno);
+#else
+    if (::pipe(p) < 0) return std::string("pipe(stdin): ") + std::strerror(errno);
+    (void)::fcntl(p[0], F_SETFD, FD_CLOEXEC);
+    (void)::fcntl(p[1], F_SETFD, FD_CLOEXEC);
+#endif
+    if (p[0] != STDIN_FILENO) {
+        if (::dup2(p[0], STDIN_FILENO) < 0) {
+            int e = errno;
+            ::close(p[0]);
+            ::close(p[1]);
+            return std::string("dup2(stdin): ") + std::strerror(e);
+        }
+        ::close(p[0]);
+    } else {
+        (void)::fcntl(STDIN_FILENO, F_SETFD, 0);
+    }
+    const int wfd = p[1];
+    eco_set_exit_code(kStdinDelayExitSentinel);
+    std::thread([wfd, text = std::move(text), delayMs] {
+        // At most 10 min for the compile; the child's watchdog is shorter.
+        for (int i = 0; i < 600000 && eco_get_exit_code() == kStdinDelayExitSentinel; i++)
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        std::this_thread::sleep_for(std::chrono::milliseconds(delayMs));
+        const char* data = text.data();
+        size_t left = text.size();
+        while (left > 0) {
+            ssize_t n = ::write(wfd, data, left);
+            if (n < 0 && errno == EINTR) continue;
+            if (n <= 0) break;   // reader gone (EPIPE; SIGPIPE is ignored)
+            data += n;
+            left -= static_cast<size_t>(n);
+        }
+        ::close(wfd);
+    }).detach();
+    return "";
+}
+#endif
+
+inline void applyChildDirectives(const std::string& elmContent, bool processMode) {
+    for (const auto& name : eco_test::extractUnsetenvDirectives(elmContent)) {
+#if defined(_WIN32)
+        _putenv_s(name.c_str(), "");
+#else
+        ::unsetenv(name.c_str());
+#endif
+    }
+    const auto fsize = eco_test::extractRlimitFsizeDirective(elmContent);
+    const auto stdinText = eco_test::extractStdinDirective(elmContent);
+    const auto delay = eco_test::extractStdinDelayMsDirective(elmContent);
+#if defined(_WIN32)
+    if (fsize) throw std::runtime_error("-- RLIMIT-FSIZE: is not supported on Windows");
+    if (stdinText || delay) throw std::runtime_error("-- STDIN: is not supported on Windows yet");
+    (void)processMode;
+#else
+    if (fsize) {
+        std::signal(SIGXFSZ, SIG_IGN);
+        struct rlimit rl;
+        rl.rlim_cur = rl.rlim_max = static_cast<rlim_t>(*fsize);
+        if (::setrlimit(RLIMIT_FSIZE, &rl) != 0)
+            throw std::runtime_error(std::string("setrlimit(RLIMIT_FSIZE): ") + std::strerror(errno));
+    }
+    // stdin: the null device, the `-- STDIN:` text, or the delayed pipe. In
+    // test mode it stays the spawn's null device unless a directive asks.
+    std::string err;
+    if (delay) {
+        err = redirectChildStdinDelayed(stdinText.value_or(std::string()), *delay);
+    } else if (processMode || stdinText) {
+        err = eco_test::redirectChildStdin(stdinText);
+    }
+    if (!err.empty()) throw std::runtime_error(err);
+#endif
+}
+
+} // namespace detail
+
 // Child side of runMlirTestsParallel (plans/spawn-not-fork.md Phase 3):
 // `--isolated-child <result> elm <test|process> <mlir> <elm> <flags>`, in a
 // freshly spawned process. Returns the child's exit status.
@@ -1024,14 +1121,7 @@ inline int runElmChild(const std::string& resultPath, const std::vector<std::str
         // program's exit status becomes the child's.
         int programExit = 1;
         try {
-#if !defined(_WIN32)
-            std::string err = eco_test::redirectChildStdin(
-                eco_test::extractStdinDirective(readFile(elmPath)));
-            if (!err.empty()) throw std::runtime_error(err);
-#else
-            if (eco_test::extractStdinDirective(readFile(elmPath)).has_value())
-                throw std::runtime_error("-- STDIN: is not supported on Windows yet");
-#endif
+            detail::applyChildDirectives(readFile(elmPath), /*processMode=*/true);
             programExit = runElmProgramForProcessCheck(mlirPath, elmPath, shared, flags);
             shared->passed = true;
             shared->completed = true;
@@ -1044,6 +1134,7 @@ inline int runElmChild(const std::string& resultPath, const std::vector<std::str
         status = shared->passed ? programExit : 1;
     } else {
         try {
+            detail::applyChildDirectives(readFile(elmPath), /*processMode=*/false);
             runElmTestFromMlir(mlirPath, elmPath, flags);
             shared->passed = true;
             shared->completed = true;
@@ -1129,6 +1220,9 @@ inline IsolatedTestRunner::ParallelTestSummary runMlirTestsParallel(
         }
     };
     const std::string flagsArg = encodeStressFlags(flags);
+    // A malformed child-environment directive (`-- ENV:` and friends,
+    // CheckPatterns.hpp): found in makeJob, reported by the verdict.
+    std::vector<std::string> directiveError(numTests);
 
     auto run = eco_test::runSpawnedChildren(
         testNames, sizeof(ElmSharedTestResult),
@@ -1141,12 +1235,34 @@ inline IsolatedTestRunner::ParallelTestSummary runMlirTestsParallel(
             const int testPort = eco_test::pickFreeTcpPort();
             if (testPort > 0) job.env.push_back({"ECO_TEST_PORT", std::to_string(testPort)});
 #endif
+            // `-- ENV:` lines, set at spawn so the child sees them from its
+            // start; `${VAR}` from the port above or our environment.
+            try {
+                const std::string content = readFile(elmPaths[i]);
+                std::vector<std::pair<std::string, std::string>> known(job.env.begin(), job.env.end());
+                for (auto& kv : eco_test::resolveEnvDirectives(content, known)) {
+                    bool replaced = false;
+                    for (auto& e : job.env)
+                        if (e.first == kv.first) { e.second = kv.second; replaced = true; }
+                    if (!replaced) job.env.push_back(kv);
+                }
+                // Parsed here too so a malformed one is reported precisely.
+                (void)eco_test::extractRlimitFsizeDirective(content);
+                (void)eco_test::extractStdinDelayMsDirective(content);
+            } catch (const std::exception& e) {
+                directiveError[i] = e.what();
+            }
             job.timeoutSeconds = childTimeoutSeconds;
             return job;
         },
         [&](size_t i, const eco_test::ChildOutcome& o) {
             eco_test::ChildVerdict v;
             v.output = o.output;
+            if (!directiveError[i].empty()) {
+                v.passed = false;
+                v.error = "bad test directive: " + directiveError[i];
+                return v;
+            }
             if (o.interrupted || o.timedOut || o.exit.signaled || !processMode[i]) {
                 v = eco_test::defaultVerdict<ElmSharedTestResult>(o, childTimeoutSeconds);
                 if (!o.interrupted && !o.timedOut && !o.exit.signaled) {

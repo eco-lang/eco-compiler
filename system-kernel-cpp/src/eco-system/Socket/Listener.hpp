@@ -92,7 +92,7 @@ public:
     // --- Reactor thread ------------------------------------------------------
 
     /// Returns how many connections this listener accepted in callback mode whose fd is not yet closed. Outside
-    /// callback mode it is 0.
+    /// callback mode it is 0. A test and diagnostic accessor: the kernel itself does not call it.
     int64_t openConnections() const { return open_; }
     /// Registers the listener with the reactor and starts watching its fd if accepting is allowed. Does nothing if the
     /// listener is closed or already registered, or if the reactor does not register it.

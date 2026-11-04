@@ -10,7 +10,8 @@
 // for a killed job whose child has exited, so that a process holding the pipes open cannot delay the result. Once
 // it has started, only the collector closes the two output pipes, and the wake pipe is closed when both the job
 // and the collector have dropped their `RunCollector`. `run` does not read through an `FdChannel`, because channel
-// results are delivered through the one channel dispatch the stream table owns.
+// results are delivered through the one channel dispatch the stream table owns. On Windows, where pipes cannot be
+// polled, the collector reads the two pipes with blocking reads, stderr on a second thread, and has no wake pipe.
 //
 // The runDuration timer is a closure parked with `Scheduler::parkResume`, whose token is scheduled on the
 // `TimerService`; when the timer fires the Scheduler calls the closure with the job id it captured. Both
@@ -30,6 +31,7 @@
 #include <cerrno>
 #include <cstring>
 #include <deque>
+#include <functional>
 #include <mutex>
 #include <thread>
 #include <utility>
@@ -40,6 +42,8 @@
 #include <signal.h>
 #include <sys/wait.h>
 #include <unistd.h>
+#else
+#include <io.h>
 #endif
 
 namespace Eco::System {
@@ -110,7 +114,7 @@ Registry<ChildJob>& childJobs() {
 ///
 /// It is held by `shared_ptr` from the job and from the collector, and its destructor closes the wake pipe's two
 /// ends, so the pipe lasts until both are done with it. It does not close `outFd` and `errFd`; the collector closes
-/// them, or `startCollector` when no collector starts, except on Windows.
+/// them, or `startCollector` when no collector starts. Windows has no wake pipe.
 struct RunCollector {
     int outFd = -1;
     int errFd = -1;
@@ -224,6 +228,52 @@ void collectRunOutput(std::shared_ptr<RunCollector> c) {
     if (c->errFd >= 0) ::close(c->errFd);
     postRunOutput(std::move(r));
 }
+#else
+/// Reads the CRT descriptor `fd` into `dst` until end of file, a read error, or `over` is set, then closes `fd`.
+/// Sets `over` once `dst` passes `maxBytes`, when that is not 0, so the other stream's reader stops after its next
+/// read too. Closing a stream as soon as it is done gives a child still writing to it a broken pipe rather than a
+/// full one.
+void drainRunPipe(int fd, std::string& dst, size_t maxBytes, std::atomic<bool>& over) {
+    std::vector<char> buf(64 * 1024);
+    while (!over.load(std::memory_order_relaxed)) {
+        int k = ::_read(fd, buf.data(), static_cast<unsigned>(buf.size()));
+        if (k > 0) {
+            dst.append(buf.data(), static_cast<size_t>(k));
+            if (maxBytes > 0 && dst.size() > maxBytes) over.store(true, std::memory_order_relaxed);
+        } else if (k == 0 || errno != EINTR) {
+            break;
+        }
+    }
+    ::_close(fd);
+}
+
+/// Runs one collector on Windows, where the pipes cannot be polled: reads stderr on a second thread and stdout on
+/// this one with blocking reads, each to end of file or until a stream passes `c->maxBytes`; then cuts each stream
+/// to `c->maxBytes` and posts what it read. If the second thread cannot be started, stderr is read after stdout.
+/// It cannot be told to stop: a killed run waits for its pipes to close. Runs on its own thread.
+void collectRunOutput(std::shared_ptr<RunCollector> c) {
+    RunOutput r;
+    r.jobId = c->jobId;
+    std::atomic<bool> over{false};
+    std::thread errReader;
+    bool errOnThread = false;
+    if (c->errFd >= 0) {
+        try {
+            errReader = std::thread(drainRunPipe, c->errFd, std::ref(r.err), c->maxBytes, std::ref(over));
+            errOnThread = true;
+        } catch (...) {
+        }
+    }
+    if (c->outFd >= 0) drainRunPipe(c->outFd, r.out, c->maxBytes, over);
+    if (errOnThread) errReader.join();
+    else if (c->errFd >= 0) drainRunPipe(c->errFd, r.err, c->maxBytes, over);
+    r.overflow = over.load();
+    if (c->maxBytes > 0) {
+        if (r.out.size() > c->maxBytes) r.out.resize(c->maxBytes);
+        if (r.err.size() > c->maxBytes) r.err.resize(c->maxBytes);
+    }
+    postRunOutput(std::move(r));
+}
 #endif
 
 // ---------------------------------------------------------------------------
@@ -239,22 +289,30 @@ void cancelTimer(uint64_t timerToken) {
 
 void advanceJob(int64_t jobId);
 
+/// Kills job `jobId` for a runDuration expiry or a killed run Task. If its child has not exited it kills the job,
+/// as `killJob` does. If the child has exited but a run's output is still open, as when a process the child started
+/// keeps the pipes open, it marks the run killed and advances it, so the collector is told to stop and the output
+/// stops being waited for; `advanceJob` may then complete and erase the job. Does nothing if there is no job
+/// `jobId`, or for a job whose exit and output are both in.
+void killRun(int64_t jobId) {
+    ChildJob* j = childJobs().find(jobId);
+    if (!j) return;
+    if (!j->exited) {
+        killJob(jobId);
+    } else if (j->kind == JobKind::Run && !j->outputDone) {
+        j->killed = true;
+        advanceJob(jobId);
+    }
+}
+
 /// Handles the expiry of a runDuration timer: the evaluator of the closure `makeTimerClosure` builds. `args[0]` is
 /// the job id, captured unboxed; `args[1]` is the Task the Scheduler passes, which is ignored. Returns the word for
-/// `()`.
-///
-/// If the job's child has not exited it kills the job. If the child has exited but a run's output is still open,
-/// it marks the run killed and advances it, so the output stops being waited for. A job that is gone is ignored.
+/// `()`. It kills the job with `killRun`; a job that is gone is ignored.
 void* runDurationEval(void* args[]) {
     int64_t jobId = static_cast<int64_t>(reinterpret_cast<uint64_t>(args[0]));
     if (ChildJob* j = childJobs().find(jobId)) {
         j->timerToken = 0;   // Fired: the Scheduler releases its hold, so cancelTimer must not.
-        if (!j->exited) {
-            killJob(jobId);
-        } else if (j->kind == JobKind::Run && !j->outputDone) {
-            j->killed = true;
-            advanceJob(jobId);
-        }
+        killRun(jobId);
     }
     return reinterpret_cast<void*>(enc(alloc::unit()));
 }
@@ -442,9 +500,8 @@ void runOutputDrain() {
     if (any) Scheduler::instance().drain();
 }
 
-/// Starts a collector thread for `col` and returns true, or returns false and sets `col`'s output fds to -1 if the
-/// wake pipe or the thread cannot be made. On POSIX the output pipes are then closed. On Windows it always returns
-/// false, without closing them.
+/// Starts a collector thread for `col` and returns true, or returns false, closing the output pipes and setting
+/// `col`'s output fds to -1, if the thread (or, on POSIX, the wake pipe) cannot be made.
 bool startCollector(const std::shared_ptr<RunCollector>& col) {
 #ifndef _WIN32
     if (makeCloexecPipe(col->wake, /*nonBlocking=*/true) == 0) {
@@ -456,18 +513,26 @@ bool startCollector(const std::shared_ptr<RunCollector>& col) {
     }
     if (col->outFd >= 0) ::close(col->outFd);
     if (col->errFd >= 0) ::close(col->errFd);
+#else
+    try {
+        std::thread(collectRunOutput, col).detach();
+        return true;
+    } catch (...) {
+    }
+    if (col->outFd >= 0) ::_close(col->outFd);
+    if (col->errFd >= 0) ::_close(col->errFd);
 #endif
     col->outFd = col->errFd = -1;
     return false;
 }
 
-/// Kills, as `killJob` does, the run job whose resume token is `token`, if there is one, and returns false. It is
+/// Kills, as `killRun` does, the run job whose resume token is `token`, if there is one, and returns false. It is
 /// the `CancelFn` of a run's kill handle; returning false leaves the hold to the job, which releases it when it
-/// completes.
+/// completes (at once, if the child has exited and only its output was still awaited).
 bool cancelRunByToken(uint64_t token) {
     for (auto& [id, job] : childJobs().map()) {
         if (job.kind == JobKind::Run && job.resumeToken == token) {
-            killJob(id);
+            killRun(id);   // may erase the job: the iterator is not used again
             return false;
         }
     }
@@ -475,6 +540,27 @@ bool cancelRunByToken(uint64_t token) {
 }
 
 } // namespace
+
+void abandonJob(int64_t jobId) {
+    ChildJob* j = childJobs().find(jobId);
+    if (!j) return;
+    uint64_t timerToken = j->timerToken;
+    j->timerToken = 0;
+#ifndef _WIN32
+    if (j->pid > 0) {
+        ::kill(static_cast<pid_t>(j->pid), SIGKILL);
+        int st;
+        while (::waitpid(static_cast<pid_t>(j->pid), &st, 0) < 0 && errno == EINTR) {}
+    }
+    if (j->collector && j->collector->wake[1] >= 0) {
+        unsigned char b = 1;
+        ssize_t r;
+        do { r = ::write(j->collector->wake[1], &b, 1); } while (r < 0 && errno == EINTR);
+    }
+#endif
+    childJobs().erase(jobId);   // `j` dangles from here.
+    cancelTimer(timerToken);
+}
 
 void ensureChildDrains() {
     static bool done = false;   // Unguarded: eco thread only.
@@ -486,21 +572,60 @@ void ensureChildDrains() {
     addDrainSource(&runOutputDrain, &runOutputReady);
 }
 
+#if ECO_TEST_HOOKS
+namespace {
+// The run fault hook; null unless a test installed one. Eco thread only.
+RunFaultHook gRunFaultHook = nullptr;
+// Calls the run fault hook, if any, for `site`.
+inline void runFaultPoint(RunFaultSite site) {
+    if (gRunFaultHook) gRunFaultHook(site);
+}
+} // namespace
+
+RunFaultHook setRunFaultHookForTest(RunFaultHook hook) {
+    RunFaultHook prev = gRunFaultHook;
+    gRunFaultHook = hook;
+    return prev;
+}
+#endif
+
 void startJobWatch(int64_t jobId, int64_t runDurationMs) {
     ensureChildDrains();
+    if (runDurationMs > kMaxRunDurationMs) runDurationMs = 0;   // beyond any timer: no limit
     HPointer timer = alloc::listNil();
     Elm::StackRootGuard g(&timer);
     if (runDurationMs > 0) timer = makeTimerClosure(jobId);   // Allocates, so before the job is looked up.
     ChildJob* j = childJobs().find(jobId);
     if (!j) return;
     int64_t pid = j->pid;
-    if (runDurationMs > 0) {
-        auto& s = Scheduler::instance();
-        uint64_t tt = s.parkResume(timer, HoldKind::Task, "ChildProcess.runDuration");
-        j->timerToken = tt;
-        TimerService::instance().schedule(static_cast<double>(runDurationMs), tt);
+    uint64_t tt = 0;
+    bool scheduled = false;
+    try {
+        if (runDurationMs > 0) {
+            auto& s = Scheduler::instance();
+            tt = s.parkResume(timer, HoldKind::Task, "ChildProcess.runDuration");
+            j->timerToken = tt;
+            TimerService::instance().schedule(static_cast<double>(runDurationMs), tt);
+            scheduled = true;
+        }
+#if ECO_TEST_HOOKS
+        runFaultPoint(RunFaultSite::BeforeWaitSubmit);
+#endif
+        WaitService::instance().submit(pid, static_cast<uint64_t>(jobId), WaitLane::EcoSystem);
+    } catch (...) {
+        // Nothing is watched: withdraw the timer, releasing its hold once, before the exception goes on.
+        if (tt != 0) {
+            if (ChildJob* jj = childJobs().find(jobId)) jj->timerToken = 0;
+            if (scheduled) {
+                cancelTimer(tt);
+            } else {
+                auto& s = Scheduler::instance();
+                (void)s.takePendingResume(tt);
+                s.releaseHold(tt);
+            }
+        }
+        throw;
     }
-    WaitService::instance().submit(pid, static_cast<uint64_t>(jobId), WaitLane::EcoSystem);
 }
 
 void killJob(int64_t jobId) {
@@ -591,18 +716,29 @@ HPointer childProcessRunBody(HPointer captured, HPointer resume) {
         col->jobId = jobId;
 
         // Park and hold before starting the collector and the wait. The job owns the hold, so `counted` stays
-        // false: on an exception the guard only takes the resume, and the hold is left to the job.
+        // false once the wait is submitted: on a later exception the guard only takes the resume, and the job,
+        // which still completes, releases the hold. Until then nothing would complete the job, so an exception
+        // abandons it and hands its hold to the guard, which releases it once, after failing the Task (LIVE_003).
         token = s.parkResume(resume, HoldKind::Task, "ChildProcess.run");
         {
             ChildJob* j = childJobs().find(jobId);
             j->resumeToken = token;
             j->hold = token;
         }
-        if (!startCollector(col)) {
-            // No collector: the output is empty, and the run completes on the exit alone.
-            if (ChildJob* j = childJobs().find(jobId)) j->outputDone = true;
+        try {
+            if (!startCollector(col)) {
+                // No collector: the output is empty, and the run completes on the exit alone.
+                if (ChildJob* j = childJobs().find(jobId)) j->outputDone = true;
+            }
+#if ECO_TEST_HOOKS
+            runFaultPoint(RunFaultSite::BeforeJobWatch);
+#endif
+            startJobWatch(jobId, runMs);
+        } catch (...) {
+            abandonJob(jobId);
+            counted = true;
+            throw;
         }
-        startJobWatch(jobId, runMs);
         return makeKillHandle(token, &cancelRunByToken);
     )
 }

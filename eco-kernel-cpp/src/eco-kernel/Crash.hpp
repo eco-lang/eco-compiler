@@ -18,7 +18,8 @@ namespace Eco::Kernel::Crash {
 /// `Backtrace (N frames):` and up to 64 native stack frames, and exits the process with status 1.
 ///
 /// `message` must be a String word, as `toString` requires. Where `<execinfo.h>` is not available, no frames are
-/// captured and N is 0. The exit runs the process's normal exit handlers. Never returns; the `uint64_t` return type
+/// captured and N is 0. The exit goes through `eco_terminate_process`, so on POSIX it runs the process's normal exit
+/// handlers and on Windows it ends the process with `TerminateProcess`, which runs none. Never returns; the `uint64_t` return type
 /// only matches the other kernel functions.
 uint64_t crash(uint64_t message);
 

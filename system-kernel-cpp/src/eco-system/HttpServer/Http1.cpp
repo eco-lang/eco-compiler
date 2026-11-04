@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cstring>
+#include <initializer_list>
 #include <utility>
 
 namespace Eco::System::HttpSrv {
@@ -65,24 +66,102 @@ bool isRegNameChar(char c) {
     return std::strchr("-._~!$&'()*+,;=", c) != nullptr && c != '\0';
 }
 
+/// Returns whether `c` is an RFC 3986 unreserved character.
+bool isUnreserved(char c) {
+    return std::isalnum(static_cast<unsigned char>(c)) || (c != '\0' && std::strchr("-._~", c) != nullptr);
+}
+
+/// Returns whether `s` is an RFC 3986 IPv4address: four dec-octets (0-255, no leading zero) separated by dots.
+bool validIpv4(const std::string& s) {
+    size_t i = 0;
+    for (int part = 0; part < 4; ++part) {
+        if (part > 0) {
+            if (i >= s.size() || s[i] != '.') return false;
+            ++i;
+        }
+        size_t b = i;
+        int v = 0;
+        while (i < s.size() && i - b < 3 && std::isdigit(static_cast<unsigned char>(s[i]))) v = v * 10 + (s[i++] - '0');
+        if (i == b || v > 255 || (i - b > 1 && s[b] == '0')) return false;
+    }
+    return i == s.size();
+}
+
+/// Adds to `count` the 16-bit pieces of `part`, a `:`-separated run of 1-4 hex digit groups whose last group may be
+/// an IPv4 address (two pieces) when `v4Last`, and returns whether `part` has that form. An empty `part` has none.
+bool ipv6Pieces(const std::string& part, bool v4Last, int& count) {
+    if (part.empty()) return true;
+    size_t b = 0;
+    for (;;) {
+        size_t e = part.find(':', b);
+        std::string g = part.substr(b, e == std::string::npos ? std::string::npos : e - b);
+        if (e == std::string::npos && v4Last && g.find('.') != std::string::npos) {
+            if (!validIpv4(g)) return false;
+            count += 2;
+            return true;
+        }
+        if (g.empty() || g.size() > 4) return false;
+        for (char c : g) {
+            if (!isHex(c)) return false;
+        }
+        ++count;
+        if (e == std::string::npos) return true;
+        b = e + 1;
+    }
+}
+
+/// Returns whether `s` is an RFC 3986 IPv6address: eight pieces, or fewer with one `::` standing for the rest.
+bool validIpv6(const std::string& s) {
+    size_t gap = s.find("::");
+    int n = 0;
+    if (gap == std::string::npos) return ipv6Pieces(s, true, n) && n == 8;
+    if (s.find("::", gap + 1) != std::string::npos) return false;
+    int m = 0;
+    return ipv6Pieces(s.substr(0, gap), false, n) && ipv6Pieces(s.substr(gap + 2), true, m) && n + m <= 7;
+}
+
+/// Returns whether `s`, the text between the brackets of a Host, is an RFC 3986 IP-literal: an IPvFuture
+/// (`v` 1*HEXDIG `.` 1*( unreserved / sub-delims / `:` )) or an IPv6 address optionally followed by an RFC 6874
+/// zone id (`%25` then 1*( unreserved / pct-encoded )).
+bool validIpLiteral(const std::string& s) {
+    if (s.empty()) return false;
+    if (s[0] == 'v' || s[0] == 'V') {
+        size_t dot = s.find('.');
+        if (dot == std::string::npos || dot < 2 || dot + 1 == s.size()) return false;
+        for (size_t k = 1; k < dot; ++k) {
+            if (!isHex(s[k])) return false;
+        }
+        for (size_t k = dot + 1; k < s.size(); ++k) {
+            if (!(isRegNameChar(s[k]) || s[k] == ':')) return false;
+        }
+        return true;
+    }
+    size_t pct = s.find('%');
+    if (pct == std::string::npos) return validIpv6(s);
+    if (s.compare(pct, 3, "%25") != 0 || pct + 3 == s.size()) return false;
+    for (size_t k = pct + 3; k < s.size();) {
+        if (s[k] == '%') {
+            if (k + 2 >= s.size() || !isHex(s[k + 1]) || !isHex(s[k + 2])) return false;
+            k += 3;
+        } else if (isUnreserved(s[k])) {
+            ++k;
+        } else {
+            return false;
+        }
+    }
+    return validIpv6(s.substr(0, pct));
+}
+
 /// Returns whether `h` is an acceptable Host value: a host, then optionally `:` and at most five digits.
 ///
-/// The host is either a bracketed literal containing a colon and only hex digits, `:`, `.`, `%` and reg-name
-/// characters, or a non-empty run of reg-name characters and %-escapes, which also covers IPv4 addresses. An empty
-/// value is refused.
+/// The host is either an IP-literal in brackets (`validIpLiteral`), or a non-empty run of reg-name characters and
+/// %-escapes, which also covers IPv4 addresses. An empty value is refused.
 bool validHost(const std::string& h) {
     if (h.empty()) return false;
     size_t i = 0;
     if (h[0] == '[') {
         size_t close = h.find(']');
-        if (close == std::string::npos || close < 2) return false;
-        bool colon = false;
-        for (size_t k = 1; k < close; ++k) {
-            char c = h[k];
-            if (c == ':') colon = true;
-            if (!(isHex(c) || c == ':' || c == '.' || c == '%' || isRegNameChar(c))) return false;
-        }
-        if (!colon) return false;
+        if (close == std::string::npos || !validIpLiteral(h.substr(1, close - 1))) return false;
         i = close + 1;
     } else {
         size_t n = 0;
@@ -119,6 +198,8 @@ constexpr const char k100Continue[] = "HTTP/1.1 100 Continue\r\n\r\n";
 } // namespace
 
 int64_t nextResponseKey() { return g_nextKey.fetch_add(1, std::memory_order_relaxed); }
+
+bool validHostValue(const std::string& h) { return validHost(h); }
 
 // ---------------------------------------------------------------------------
 // llhttp
@@ -211,7 +292,7 @@ int Http1Protocol::headersComplete() {
         errorStatus_ = 413;   // refused before a 100 Continue could be written
         return -1;
     }
-    if (expects > 0) {
+    if (expects > 0 && parser_.http_minor >= 1) {   // HTTP/1.0 knows no Expect (RFC 9110 §10.1.1): ignored
         if (expects > 1 || !iequals(trim(*expect, 0, expect->size()), "100-continue")) {
             errorStatus_ = 417;
             return -1;
@@ -332,7 +413,11 @@ void Http1Protocol::parse(Conn& c) {
 
 std::string Http1Protocol::absoluteUrl(const std::string& host) const {
     const std::string& target = url_;
-    if (target.rfind("http://", 0) == 0 || target.rfind("https://", 0) == 0) return target;
+    // The scheme is case-insensitive (RFC 3986 §3.1); it is delivered lower-cased, as `Url.fromString` needs.
+    for (const char* scheme : {"http://", "https://"}) {
+        size_t n = std::strlen(scheme);
+        if (target.size() >= n && iequals(target.substr(0, n), scheme)) return scheme + target.substr(n);
+    }
     std::string authority = host.empty() ? cfg_.fallbackAuthority : host;
     std::string path =
         !target.empty() && target[0] == '/' ? target : "/" + (target == "*" ? std::string() : target);

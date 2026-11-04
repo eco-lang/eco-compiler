@@ -14,23 +14,26 @@
 //   * WebSockets, keyed by a WebSocket id. An entry holds the codec (`WsCore`), the ids of its readable and
 //     writable stream (its two faces), and, once the WebSocket has ended, its `WsCloseInfo`. The entry outlives the
 //     end of the WebSocket so that `closed` can still answer; it is erased when it has ended, both faces have been
-//     destroyed, no `closed` task is parked on it and no subscription names it. Its `WsCloseInfo` is then kept in a
-//     first-in first-out list of the most recently erased WebSockets, bounded at 4096 entries.
+//     destroyed, no `closed` task is parked on it and no subscription names it. Its `WsCloseInfo` is then kept, with
+//     whether it was delivered to `OnClose` subscriptions, in a first-in first-out list of the most recently erased
+//     WebSockets, bounded at 4096 entries; an undelivered one is delivered from there to a later subscriber.
 //   * Pending dials, keyed by the dialling task's resume token, so that killing that task can cancel the dial.
 //
 // The tables hold no Elm heap pointers, only shared pointers, numbers, strings and Scheduler tokens, so they need no
 // root scanner. They belong to one heap generation (`currentHeapGeneration`, which changes when the Elm heap is
 // reset). The first access in a new generation resets them: the connections of handshakes are aborted, h2
-// handshakes abandoned, WebSockets that have not ended aborted, and pending dials cancelled, and only the
-// handshakes' peer holds are released. The close-handshake holds, the holds of parked `closed` tasks and the holds of
-// cancelled dials are not released by the reset.
+// handshakes abandoned, WebSockets that have not ended aborted, and pending dials cancelled. The holds the tables own
+// (handshake peer holds, close-handshake holds, parked `closed` tasks, cancelled dials) need no release: the scheduler
+// voided every hold of the old heap when it saw the new generation (D21 of plans/kernel-lib-bug-fixes.md).
 //
 // `ensureWsTables` registers a dispatch function for every `WsEvent::Kind`. A hold (`HoldToken`) is a Scheduler
 // liveness count that keeps the program running while it is held. For an event that answers a waiting task
 // (`Dialed`, `UpgradeRead`, `Opened`, `OpDone`, `PingDone`), the dispatch function resumes the task with the result
 // built from the event and releases the hold of the event's token. When the task was killed it releases the hold
 // all the same, and aborts what nobody will now receive: the connection of a `Dialed` or `UpgradeRead`, and the
-// WebSocket of an `Opened` that succeeded and still has an entry. `Closed` records the `WsCloseInfo`, releases the
+// WebSocket of an `Opened` that succeeded and still has an entry. An `Opened` that failed, or whose task was killed,
+// also discards the WebSocket's two stream pairs, which Elm never received, so that the pairs and the entry are
+// erased. `Closed` records the `WsCloseInfo`, releases the
 // close-handshake hold, resumes and releases every parked `closed` task, and reports the end to `wsManagerOnClosed`.
 // `HandshakeGone` releases a handshake's peer hold and leaves the entry in place.
 //
@@ -91,13 +94,20 @@ struct WsEntry {
     uint64_t outSeq = 0;                  ///< The sequence number of the last outgoing message stream opened.
 };
 
+/// The record of an erased WebSocket in the list of recently closed ones.
+struct WsRecentClose {
+    int64_t wsId = 0;
+    WsCloseInfo info;
+    bool delivered = false;   ///< Its end has been delivered to `OnClose` subscriptions (`WsEntry::closeDelivered`).
+};
+
 /// The three tables of the current heap generation, as the file comment describes, and the next ids to hand out.
 struct WsTables {
     std::unordered_map<int64_t, WsHandshakeEntry> handshakes;
     std::unordered_map<int64_t, WsEntry> sockets;
     std::unordered_map<uint64_t, std::shared_ptr<DialJob>> pendingDials;   ///< Keyed by the dialling task's token.
-    /// The `WsCloseInfo` of erased WebSockets, oldest first, at most 4096.
-    std::deque<std::pair<int64_t, WsCloseInfo>> recentlyClosed;
+    /// The records of erased WebSockets, oldest first, at most 4096.
+    std::deque<WsRecentClose> recentlyClosed;
     int64_t nextHsId = 1;   ///< The next handshake id, shared by every kind of handshake.
     int64_t nextWsId = 1;
     uint64_t gen = 0;       ///< The heap generation the tables belong to; meaningful once `init` is true.
@@ -133,6 +143,10 @@ int64_t wsTablesAddServerH2Handshake(std::shared_ptr<H2PendingUpgrade> h2, HoldT
 /// Returns the `WsCloseInfo` of WebSocket `wsId` if it is in the list of recently erased WebSockets, and a default
 /// (abnormal) `WsCloseInfo` otherwise. Searches the list linearly. Eco thread only.
 WsCloseInfo wsRecentCloseInfo(int64_t wsId);
+/// Returns the record of WebSocket `wsId` in the list of recently erased WebSockets, or null if it is not there.
+/// Searches the list linearly. The pointer is valid until the next entry is erased or the tables are reset. Eco
+/// thread only.
+WsRecentClose* wsRecentClose(int64_t wsId);
 
 /// Records that a local close of WebSocket `wsId` has started, by taking the close-handshake hold, which is
 /// released when the WebSocket ends. Does nothing if there is no such entry, it has already ended, or the hold is

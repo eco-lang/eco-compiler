@@ -89,7 +89,8 @@ struct AuxTable {
 };
 
 // Returns the `Aux` entries of the current heap generation, discarding all of them first if the generation has changed
-// since the last call. The holds of discarded entries are not released.
+// since the last call. The holds of discarded entries need no release: the scheduler voided every hold of the old heap
+// at the reset.
 std::map<int64_t, Aux>& aux() {
     static auto* t = new AuxTable();   // leaky
     uint64_t g = currentHeapGeneration();
@@ -183,19 +184,51 @@ void readerFn(int64_t, ChannelResult& r, void* ctx) {
     deliver(wsId, /*closes=*/false, arg);
 }
 
-// Delivers the end of WebSocket `wsId` to its close taggers as `( code, reason, clean )`, and marks it delivered,
-// unless it has not ended or was already delivered. It is marked delivered before any tagger runs.
-void deliverClose(int64_t wsId) {
-    WsEntry* e = findWs(wsId);
-    if (!e || !e->closed || e->closeDelivered) return;
-    e->closeDelivered = true;
-    WsCloseInfo info = e->info;   // Copied: the entry may be erased once Elm code runs.
+// Returns whether a delivery to the close taggers of WebSocket `wsId` would run any: an `OnClose` subscription names
+// it and `onEffects` has run.
+bool hasCloseTaggers(int64_t wsId) {
+    const Subs* s = subsOf(wsId);
+    return s && !s->closes.empty() && state().routerEnc != 0;
+}
+
+// Delivers `info` to the close taggers of WebSocket `wsId` as `( code, reason, clean )`.
+void deliverCloseInfo(int64_t wsId, const WsCloseInfo& info) {
     HPointer reason = alloc::listNil(), arg = alloc::listNil();
     Elm::StackRootGuard g(&reason, &arg);
     reason = alloc::allocStringFromUTF8(info.reason);
     arg = alloc::tuple3(alloc::unboxedInt(info.code), alloc::boxed(reason),
                         alloc::boxed(info.clean ? alloc::elmTrue() : alloc::elmFalse()), CLOSE_ARG_MASK);
     deliver(wsId, /*closes=*/true, arg);
+}
+
+// Delivers the end of WebSocket `wsId` to its close taggers, and marks it delivered, unless it has not ended, was
+// already delivered, or no tagger would run (a subscription dropped by an earlier delivery's Elm code leaves the close
+// held for a later subscriber). It is marked delivered before any tagger runs, so that a delivery started from
+// inside one does not deliver it again.
+void deliverClose(int64_t wsId) {
+    WsEntry* e = findWs(wsId);
+    if (!e || !e->closed || e->closeDelivered || !hasCloseTaggers(wsId)) return;
+    e->closeDelivered = true;
+    WsCloseInfo info = e->info;   // Copied: the entry may be erased once Elm code runs.
+    deliverCloseInfo(wsId, info);
+}
+
+// As `deliverClose`, for a WebSocket whose entry has been erased: delivers the close kept in its recently closed
+// record, if that has not been delivered, and marks the record delivered.
+void deliverRecentClose(int64_t wsId) {
+    if (findWs(wsId)) return;
+    WsRecentClose* r = wsRecentClose(wsId);
+    if (!r || r->delivered || !hasCloseTaggers(wsId)) return;
+    r->delivered = true;
+    WsCloseInfo info = r->info;   // Copied: the record may be dropped once Elm code runs.
+    deliverCloseInfo(wsId, info);
+}
+
+// Returns whether WebSocket `wsId` has no entry but an undelivered close in its recently closed record.
+bool recentCloseHeld(int64_t wsId) {
+    if (findWs(wsId)) return false;
+    const WsRecentClose* r = wsRecentClose(wsId);
+    return r && !r->delivered;
 }
 
 // Brings WebSocket `wsId` in line with its subscriptions, without calling Elm code: attaches the reader if a message
@@ -222,15 +255,17 @@ bool reconcile(int64_t wsId) {
         a.attached = false;
     }
     bool waiting = a.attached && !a.ended;
+    // A retired WebSocket's close not yet delivered is held for a close subscription as an entry's is.
+    bool recentHeld = hasClose && !e && recentCloseHeld(wsId);
     bool want = (hasMsg && e && (!e->closed || waiting)) ||
-                (hasClose && e && !(e->closed && e->closeDelivered));
+                (hasClose && e && !(e->closed && e->closeDelivered)) || recentHeld;
     if (want && a.hold == kNoHold) {
         a.hold = Scheduler::instance().acquireHold(HoldKind::Subscription, "WebSocket.subscription");
     } else if (!want && a.hold != kNoHold) {
         Scheduler::instance().releaseHold(a.hold);
         a.hold = kNoHold;
     }
-    bool held = hasClose && e && e->closed && !e->closeDelivered && !waiting;
+    bool held = (hasClose && e && e->closed && !e->closeDelivered && !waiting) || recentHeld;
     if (!hasMsg && !hasClose && !a.attached && a.hold == kNoHold) {
         table.erase(wsId);
         wsTablesRetire(wsId);
@@ -238,7 +273,8 @@ bool reconcile(int64_t wsId) {
     return held;
 }
 
-// Delivers every close that a close subscription is waiting for and that no reader holds back, and reconciles each
+// Delivers every close that a close subscription is waiting for and that no reader holds back, the closes kept for
+// retired WebSockets included, and reconciles each
 // WebSocket a close subscription names. It is the work `onEffects` asks the WebSocket event drain for.
 void deliverHeldCloses() {
     std::vector<int64_t> ids;
@@ -247,7 +283,11 @@ void deliverHeldCloses() {
     }
     for (int64_t id : ids) {
         WsEntry* e = findWs(id);
-        if (e && e->closed && !e->closeDelivered && !closeWaitsForReader(id)) deliverClose(id);
+        if (!e) {
+            deliverRecentClose(id);
+        } else if (e->closed && !e->closeDelivered && !closeWaitsForReader(id)) {
+            deliverClose(id);
+        }
         (void)reconcile(id);
     }
 }
@@ -273,7 +313,6 @@ void* onEffectsEval(void* args[]) {
     std::map<int64_t, Subs> wanted;
     for (alloc::ListCursor c(subs); !c.done(); c.next()) {
         void* obj = Allocator::instance().resolve(c.current().p);
-        if (!obj) continue;
         Custom* sub = static_cast<Custom*>(obj);
         if (sub->ctor != CTOR_ON_MESSAGE && sub->ctor != CTOR_ON_CLOSE) continue;
         Subs& s = wanted[sub->values[SUB_WS_FIELD].i];
@@ -330,7 +369,7 @@ void* subMapEval(void* args[]) {
     Elm::StackRootGuard g({&f, &sub, &old, &composed});
     {
         Custom* s = static_cast<Custom*>(Allocator::instance().resolve(sub));   // no allocation in scope
-        if (!s || (s->ctor != CTOR_ON_MESSAGE && s->ctor != CTOR_ON_CLOSE))
+        if (s->ctor != CTOR_ON_MESSAGE && s->ctor != CTOR_ON_CLOSE)
             return reinterpret_cast<void*>(enc(sub));
         ctor = s->ctor;
         wsId = s->values[SUB_WS_FIELD].i;

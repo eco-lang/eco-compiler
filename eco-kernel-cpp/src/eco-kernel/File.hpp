@@ -15,8 +15,8 @@
 //   written with forward slashes, on Windows too.
 // - A handle is the operating system's file descriptor, carried as an Int in the word's bits. Nothing here records
 //   which descriptors are open; a handle is valid until it is passed to `close`.
-// - The write operations differ in what they report. `writeString` and `writeBytes` report only a failure to open
-//   the file; `writeBytesAtomic` also reports a failure to write, close or rename it.
+// - Every write operation writes all of its data, continuing after a short write, and reports a failure to open,
+//   write or close the file; `writeBytesAtomic` also reports a failure to rename it.
 
 #ifndef ECO_FILE_HPP
 #define ECO_FILE_HPP
@@ -26,16 +26,18 @@
 namespace Eco::Kernel::File {
 
 /// Returns a Task that reads the file at `path` and succeeds with its contents as a String, taking the bytes as
-/// UTF-8. It fails when the file cannot be opened, sized or read in full.
+/// UTF-8. A file that is not regular or reports size 0 is read to its end. It fails when the file cannot be opened,
+/// sized or read, with `EISDIR` for a directory, and with `EFBIG` when it is larger than 4 GiB minus one byte.
 uint64_t readString(uint64_t path);
 /// Returns a Task that creates or truncates the file at `path`, writes `content` to it as UTF-8, and succeeds with
-/// Unit. The file is written in text mode. It fails only when the file cannot be opened.
+/// Unit. The bytes are written unchanged (binary mode, on Windows too). It fails when the file cannot be opened,
+/// written in full or closed.
 uint64_t writeString(uint64_t path, uint64_t content);
-/// Returns a Task that reads the file at `path` and succeeds with its contents as Bytes. It fails when the file
-/// cannot be opened, sized or read in full, and with `EFBIG` when it is larger than 4 GiB minus one byte.
+/// Returns a Task that reads the file at `path` and succeeds with its contents as Bytes. It reads and fails as
+/// `readString` does.
 uint64_t readBytes(uint64_t path);
 /// Returns a Task that creates or truncates the file at `path`, writes `bytes` to it, and succeeds with Unit. It
-/// fails only when the file cannot be opened.
+/// fails when the file cannot be opened, written in full or closed.
 uint64_t writeBytes(uint64_t path, uint64_t bytes);
 /// Returns a Task that writes `bytes` to a new temporary file beside `path`, renames it over `path`, and succeeds
 /// with Unit. It fails when the temporary file cannot be created, written, closed or renamed, and then removes the
@@ -65,10 +67,11 @@ uint64_t dirExists(uint64_t path);
 ///
 /// On Windows each directory is tried with `name` as given and then with `.exe`, `.cmd`, `.bat` and `.com` added,
 /// and a match is any regular file; `PATHEXT` is not read, and `Path` is read when `PATH` is not set. Elsewhere a
-/// match is any path the process may execute, as `access` with `X_OK` decides.
+/// match is a regular file the process may execute, as `access` with `X_OK` decides. An empty entry of `PATH` means
+/// the working directory, and a match there is `./<name>`.
 uint64_t findExecutable(uint64_t name);
 /// Returns a Task that succeeds with the names of the entries in the directory `path`, as a List of Strings in the
-/// order the directory yields them. It fails when the directory cannot be opened.
+/// order the directory yields them. It fails when the directory cannot be opened or read.
 uint64_t list(uint64_t path);
 /// Returns a Task that succeeds with the modification time of the file at `path` as an Int count of milliseconds
 /// since the Unix epoch, truncated to whole seconds on Windows. It fails when the file cannot be examined.
@@ -81,12 +84,13 @@ uint64_t getCwd();
 uint64_t setCwd(uint64_t path);
 /// Returns a Task that succeeds with `path` made absolute with symbolic links resolved. When that fails, for example
 /// because the path does not exist, it succeeds instead with `path` made absolute and lexically normalised, without
-/// resolving links. It does not fail with an error value.
+/// resolving links. It fails for the empty path (`ENOENT`) and when the path cannot be made absolute.
 uint64_t canonicalize(uint64_t path);
 /// Returns a Task that succeeds with the path of the per-user data directory for the application `name`, without
-/// creating it. The path is `$HOME/.<name>`; on macOS `$HOME/Library/Application Support/<name>`; on Windows
-/// `<name>` under the first of `APPDATA`, `USERPROFILE` and `HOME` that is set and not empty. It fails with a plain
-/// String when there is no such variable.
+/// creating it. The path is `<home>/.<name>`; on macOS `<home>/Library/Application Support/<name>`, where `<home>`
+/// is `HOME`, or the passwd entry's home directory when `HOME` is unset or empty; on Windows `<name>` under the first
+/// of `APPDATA`, `USERPROFILE` and `HOME` that is set and not empty. It fails, with `ENOENT` and an empty path, when
+/// no home directory is found.
 uint64_t appDataDir(uint64_t name);
 /// Returns a Task that creates the directory `path` and succeeds with Unit, creating missing parents too when the
 /// Bool `createParents` is True. A directory that already exists is not an error. It fails when the directory
@@ -98,12 +102,12 @@ uint64_t removeFile(uint64_t path);
 /// path that does not exist is not an error. It fails when something cannot be removed.
 uint64_t removeDir(uint64_t path);
 /// Returns a Task that writes `content` as UTF-8 to the file descriptor carried in `handle`'s bits and succeeds with
-/// Unit. It makes one write call, so a short write is neither retried nor reported. It fails, with an empty path in
-/// the error, when the write fails.
+/// Unit, writing on after a short write until all of `content` is written. It fails, with an empty path in the
+/// error, when a write fails.
 uint64_t hWriteString(uint64_t handle, uint64_t content);
 /// Returns a Task that creates the file at `path` if it does not exist, sets its modification time to now, and
-/// succeeds with Unit. A failure to create the file is not reported itself; the Task fails when the time cannot be
-/// set.
+/// succeeds with Unit. A failure to open an existing file is ignored; the Task fails when the time cannot be set,
+/// with the error of the create when the file could not be created.
 uint64_t touch(uint64_t path);
 
 } // namespace Eco::Kernel::File

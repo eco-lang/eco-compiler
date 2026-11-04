@@ -89,6 +89,9 @@ struct KeyEntry {
     bool parked = false;
     size_t parkedSize = 0;               ///< The request's `requestSize` while parked, else 0.
     RequestData req;                     ///< The request while parked, and after delivery only for an upgrade.
+    /// A tombstone: a delivered upgrade request whose connection closed before it was taken. It holds no hold,
+    /// request or connection.
+    bool gone = false;
 };
 
 /// The server and key tables of one heap generation.
@@ -115,9 +118,10 @@ void httpManagerDeliver(int64_t serverId, int64_t key, const RequestData& req) {
     if (g_hooks.deliver != nullptr) g_hooks.deliver(serverId, key, req);
 }
 
-/// Empties `t`, which holds an earlier heap's entries: it releases every key's hold and server's subscription hold,
-/// and asks the reactor to close each server's listener and abort its open connections. The holds of waiting
-/// closeServer tasks, and of respond tasks whose RespondDone is still to come, are not released.
+/// Empties `t`, which holds an earlier heap's entries: it asks the reactor to close each server's listener and abort
+/// its open connections. The scheduler voided every hold of the old heap at the reset (D21 of
+/// plans/kernel-lib-bug-fixes.md), those of waiting closeServer and respond tasks included, so the key and
+/// subscription releases below do nothing; they keep one release per hold the tables own.
 void resetTables(Tables& t) {
     for (auto& kv : t.keys) HoldRelease release(kv.second.hold);
     for (auto& kv : t.servers) {
@@ -184,6 +188,22 @@ void eraseKey(int64_t key) {
         }
     }
     t.keys.erase(it);
+}
+
+/// Handles a ConnGone event for `key`: a delivered upgrade request still waiting to be taken becomes a tombstone,
+/// releasing its hold, request and connection; any other key is erased.
+void onConnGone(int64_t key) {
+    KeyEntry* k = findKey(key);
+    if (!k) return;
+    if (k->parked || k->req.upgrade.empty() || k->gone) {
+        eraseKey(key);
+        return;
+    }
+    HoldRelease release(k->hold);
+    k->hold = kNoHold;
+    k->req = RequestData{};
+    k->conn.reset();
+    k->gone = true;
 }
 
 /// Asks the reactor to answer `key` on `conn` with `r`, asking for the connection to be closed
@@ -319,6 +339,14 @@ void onServerClosed(int64_t id) {
     ServerEntry e = std::move(*s);
     tables().servers.erase(id);
     HoldRelease subHold(e.subHold);
+    auto& keys = tables().keys;
+    for (auto it = keys.begin(); it != keys.end();) {   // the server's tombstones: nobody can take them now
+        if (it->second.gone && it->second.serverId == id) {
+            it = keys.erase(it);
+        } else {
+            ++it;
+        }
+    }
     for (int64_t key : e.parked) respond503(key);
     for (uint64_t token : e.closeTokens) {
         HoldRelease opHold(token);
@@ -346,7 +374,7 @@ void httpDrain() {
                 break;
             }
             case HttpEvent::Kind::ConnGone:
-                eraseKey(ev.key);
+                onConnGone(ev.key);
                 break;
             case HttpEvent::Kind::ServerClosed:
                 onServerClosed(ev.serverId);
@@ -419,6 +447,10 @@ int64_t httpTablesStartServer(int fd, std::shared_ptr<ServerConfig> cfg, int64_t
 bool httpTablesRespond(int64_t key, uint64_t token, ResponseData resp) {
     KeyEntry* k = findKey(key);
     if (!k) return false;
+    if (k->gone) {   // nobody to answer, as for an erased key
+        eraseKey(key);
+        return false;
+    }
     std::weak_ptr<Conn> conn = k->conn;
     eraseKey(key);
     submitResponse(std::move(conn), key, std::move(resp), /*forceClose=*/false, token);
@@ -460,16 +492,21 @@ bool httpTablesCloseServer(int64_t serverId, int64_t deadlineMs, uint64_t token)
     return true;
 }
 
-bool httpTablesTakeUpgrade(int64_t key, RequestData& out, std::weak_ptr<Conn>& conn, HoldToken& hold) {
+TakeUpgrade httpTablesTakeUpgrade(int64_t key, RequestData& out, std::weak_ptr<Conn>& conn, HoldToken& hold) {
     KeyEntry* k = findKey(key);
-    if (!k || k->parked || k->req.upgrade.empty()) return false;
+    if (!k) return TakeUpgrade::Refused;
+    if (k->gone) {
+        eraseKey(key);   // holds nothing
+        return TakeUpgrade::Gone;
+    }
+    if (k->parked || k->req.upgrade.empty()) return TakeUpgrade::Refused;
     out = std::move(k->req);
     conn = k->conn;
     // The hold moves to the caller, so eraseKey must not release it.
     hold = k->hold;
     k->hold = kNoHold;
     eraseKey(key);
-    return true;
+    return TakeUpgrade::Taken;
 }
 
 bool httpTablesPopEventForTest(HttpEvent& out) { return tryPop(out); }

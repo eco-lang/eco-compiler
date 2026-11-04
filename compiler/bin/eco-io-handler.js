@@ -240,6 +240,11 @@ function handleEcoIO(parsed, rawRespond) {
         process.stderr.write(content);
       } else if (streamHandles[handle]) {
         streamHandles[handle].stream.write(content);
+      } else {
+        // Not stdout, stderr or an open child stdin: fail rather than lose the
+        // data, as the kernels do (EBADF).
+        respond(500, ioErrorBody({ code: "EBADF", message: "console write: no such handle " + handle }));
+        break;
       }
       respond(200, "");
       break;
@@ -482,7 +487,13 @@ function handleEcoIO(parsed, rawRespond) {
     }
 
     case "File.getCwd": {
-      respond(200, JSON.stringify({ value: normalizePath(process.cwd()) }));
+      // process.cwd() throws (ENOENT) once the working directory was removed;
+      // the client's getCwd is a Task IOError, so report it as one.
+      try {
+        respond(200, JSON.stringify({ value: normalizePath(process.cwd()) }));
+      } catch (e) {
+        respond(500, ioErrorBody(e));
+      }
       break;
     }
 
@@ -497,18 +508,40 @@ function handleEcoIO(parsed, rawRespond) {
     }
 
     case "File.canonicalize": {
+      // The empty path fails (ENOENT), as in the native kernel.
+      if (args.path === "") {
+        respond(500, ioErrorBody({ code: "ENOENT", message: "could not canonicalize the empty path" }));
+        break;
+      }
       try {
         const resolved = fs.realpathSync(args.path);
         respond(200, JSON.stringify({ value: normalizePath(resolved) }));
       } catch (e) {
-        // Fall back to path.resolve if realpath fails
-        respond(200, JSON.stringify({ value: normalizePath(path.resolve(args.path)) }));
+        // Fall back to path.resolve if realpath fails; that throws when the
+        // working directory was removed.
+        try {
+          respond(200, JSON.stringify({ value: normalizePath(path.resolve(args.path)) }));
+        } catch (e2) {
+          respond(500, ioErrorBody(e2));
+        }
       }
       break;
     }
 
     case "File.appDataDir": {
-      const home = os.homedir();
+      // os.homedir() reads HOME, then the passwd entry, and may return "" or
+      // throw; with no home the client's Task IOError fails (ENOENT), as the
+      // native kernel does.
+      let home = "";
+      try {
+        home = os.homedir();
+      } catch (e) {
+        home = "";
+      }
+      if (!home && !(process.platform === "win32" && process.env.APPDATA)) {
+        respond(500, ioErrorBody({ code: "ENOENT", message: "cannot find a home directory: set HOME" }));
+        break;
+      }
       let dir;
       if (process.platform === "win32") {
         dir = path.join(process.env.APPDATA || home, args.name);
@@ -570,13 +603,10 @@ function handleEcoIO(parsed, rawRespond) {
 
     case "Process.spawnProcess": {
       try {
-        const { cmd, args: spawnArgs, stdin, stdout, stderr } = args;
+        const { cmd, args: spawnArgs, stdin } = args;
 
-        const stdioConfig = [
-          stdin === "pipe" ? "pipe" : "inherit",
-          stdout === "pipe" ? "pipe" : "inherit",
-          stderr === "pipe" ? "pipe" : "inherit",
-        ];
+        // Only stdin is configurable; the child always shares stdout/stderr.
+        const stdioConfig = [stdin === "pipe" ? "pipe" : "inherit", "inherit", "inherit"];
 
         spawnChild(cmd, spawnArgs, { stdio: stdioConfig }, respond, (child) => {
           const processHandle = registerChild(child);

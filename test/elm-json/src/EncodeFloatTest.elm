@@ -6,7 +6,7 @@ module EncodeFloatTest exposing (main)
     Decode.float intact.
 -}
 
--- CHECK: zero: "0.0"
+-- CHECK: zero: "0"
 -- CHECK: positive: "3.14"
 -- CHECK: negative: "-2.5"
 -- CHECK: small: "0.001"

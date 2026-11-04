@@ -53,7 +53,12 @@ Scheduler& Scheduler::instance() {
 }
 
 Scheduler::Scheduler() {
-    // The slow form initialises the calling thread's heap if it has none yet.
+    registerRootScanner();
+}
+
+void Scheduler::registerRootScanner() {
+    // The slow form initialises the calling thread's heap if it has none yet, which may start a generation, so
+    // the generation is read after it.
     Allocator::instance().getRootSetSlow().addExternalRootScanner(
         [this](RootSet::EvacuateFn evacuate) {
             for (auto& rp : runQueue_) {
@@ -70,10 +75,39 @@ Scheduler::Scheduler() {
             for (auto& [token, enc] : pendingResumes_) {
                 evacuate(enc);
             }
-        });
+        }, "scheduler");
+    heapGeneration_ = Allocator::instance().heapGeneration();
 }
 
+void Scheduler::resetForNewHeap() {
+    // The floors are raised before the counts are cleared, so that a release that sees a cleared count also
+    // sees its token voided.
+    {
+        std::lock_guard<std::mutex> lock(resumeMutex_);
+        pendingResumes_.clear();
+        resumeFloor_.store(nextResumeToken_.load());
+    }
+    {
+        std::lock_guard<std::mutex> g(holdsMutex_);
+        holdFloor_.store(nextHoldId_.load());
+        holds_.clear();
+        pendingAsync_.store(0);
+        hostHolds_.store(0);
+    }
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        runQueue_.clear();
+    }
+    latestProc_.clear();
+    keepResult_.clear();
+    finishedProc_.clear();
+    selfMsgHandlers_.clear();
+    registerRootScanner();
+}
+
+
 void Scheduler::registerLatestProcess(HPointer proc) {
+    syncHeapGeneration();
     void* ptr = resolveHP(proc);
     if (!ptr) return;
     u64 id = static_cast<Process*>(ptr)->id;
@@ -88,11 +122,13 @@ void Scheduler::updateLatestProcess(HPointer proc) {
 }
 
 void Scheduler::processKilled(u64 id) {
+    syncHeapGeneration();
     latestProc_.erase(id);
     selfMsgHandlers_.erase(id);
 }
 
 HPointer Scheduler::latestProcessById(u64 id) {
+    syncHeapGeneration();
     auto it = latestProc_.find(id);
     if (it == latestProc_.end()) return listNil();
     return decodeHP(it->second);
@@ -108,10 +144,12 @@ void Scheduler::processFinished(HPointer proc) {
 }
 
 void Scheduler::keepResultOnFinish(u64 id) {
+    syncHeapGeneration();
     keepResult_.insert(id);
 }
 
 HPointer Scheduler::takeFinishedProcess(u64 id) {
+    syncHeapGeneration();
     keepResult_.erase(id);
     auto it = finishedProc_.find(id);
     if (it == finishedProc_.end()) return listNil();
@@ -122,10 +160,12 @@ HPointer Scheduler::takeFinishedProcess(u64 id) {
 
 void Scheduler::registerSelfProcess(u64 procId,
                                     std::function<void(HPointer)> handler) {
+    syncHeapGeneration();
     selfMsgHandlers_[procId] = std::move(handler);
 }
 
 u64 Scheduler::registerPendingResume(HPointer resume) {
+    syncHeapGeneration();   // before the token is issued, so that a reset here does not void it
     u64 token = nextResumeToken_.fetch_add(1);
     std::lock_guard<std::mutex> lock(resumeMutex_);
     pendingResumes_[token] = encodeHP(resume);
@@ -133,6 +173,7 @@ u64 Scheduler::registerPendingResume(HPointer resume) {
 }
 
 HPointer Scheduler::takePendingResume(u64 token) {
+    syncHeapGeneration();
     std::lock_guard<std::mutex> lock(resumeMutex_);
     auto it = pendingResumes_.find(token);
     if (it == pendingResumes_.end()) return listNil();
@@ -533,6 +574,7 @@ HPointer Scheduler::killTask(HPointer procHP) {
 // ============================================================================
 
 void Scheduler::enqueue(HPointer proc) {
+    syncHeapGeneration();
     enqueueSerial_.fetch_add(1, std::memory_order_relaxed);
     {
         std::lock_guard<std::mutex> lock(mutex_);
@@ -620,6 +662,7 @@ ReleasedRing g_releasedHolds;
 }
 
 void Scheduler::drain() {
+    syncHeapGeneration();
     working_ = true;
     ++drainDepth_;
 
@@ -639,6 +682,7 @@ void Scheduler::drain() {
 }
 
 void Scheduler::runEventLoop() {
+    syncHeapGeneration();
     while (true) {
         drain();
 
@@ -1074,6 +1118,11 @@ void Scheduler::stepProcess(uint64_t procEncoded) {
 
 bool Scheduler::holdCensusEnabled() const { return kHoldCensus; }
 
+bool Scheduler::holdVoidedByReset(HoldToken t) const {
+    if (t & kFreeHoldBit) return (t & ((1ull << kHoldKindShift) - 1)) < holdFloor_.load();
+    return t < resumeFloor_.load();
+}
+
 void Scheduler::noteAcquire(HoldToken t, HoldKind kind, const char* site) {
     acquireSerial_.fetch_add(1, std::memory_order_relaxed);
     if (kind == HoldKind::Host) hostHolds_.fetch_add(1);
@@ -1092,6 +1141,7 @@ u64 Scheduler::parkResume(HPointer resume, HoldKind kind, const char* site) {
 }
 
 HoldToken Scheduler::acquireHold(HoldKind kind, const char* site) {
+    syncHeapGeneration();   // before the serial is issued, as in registerPendingResume
     u64 serial = nextHoldId_.fetch_add(1) & ((1ull << kHoldKindShift) - 1);
     HoldToken t = kFreeHoldBit
         | (static_cast<u64>(static_cast<uint8_t>(kind)) << kHoldKindShift) | serial;
@@ -1100,9 +1150,12 @@ HoldToken Scheduler::acquireHold(HoldKind kind, const char* site) {
 }
 
 void Scheduler::releaseHold(HoldToken t) {
+    syncHeapGeneration();
     if (kHoldCensus) {
         std::lock_guard<std::mutex> g(holdsMutex_);
         if (t == kNoHold) holdFatal("releaseHold(kNoHold)", t, nullptr);
+        // Under the census lock, which resetForNewHeap takes to void the census.
+        if (holdVoidedByReset(t)) return;
         auto it = holds_.find(t);
         if (it != holds_.end()) {
             g_releasedHolds.push(t, it->second.second);
@@ -1113,17 +1166,20 @@ void Scheduler::releaseHold(HoldToken t) {
             holdFatal("release of an unknown hold", t, nullptr);
         }
     }
+    if (!kHoldCensus && holdVoidedByReset(t)) return;
     if ((t & kFreeHoldBit) && freeHoldKind(t) == HoldKind::Host) hostHolds_.fetch_sub(1);
     decrementPendingAsync();
 }
 
 size_t Scheduler::liveHoldCount() {
+    syncHeapGeneration();
     if (!kHoldCensus) return 0;
     std::lock_guard<std::mutex> g(holdsMutex_);
     return holds_.size();
 }
 
 bool Scheduler::holdIsLive(HoldToken t) {
+    syncHeapGeneration();
     if (!kHoldCensus) return false;
     std::lock_guard<std::mutex> g(holdsMutex_);
     return holds_.count(t) != 0;
@@ -1141,6 +1197,7 @@ void Scheduler::noteHoldlessPark(const char* binding) {
 }
 
 void Scheduler::reportHolds(const char* why) {
+    syncHeapGeneration();
     if (!kHoldCensus) {
         std::fprintf(stderr, "eco: liveness report (%s): pendingAsync=%d (census off in this build)\n",
                      why, pendingAsync_.load());

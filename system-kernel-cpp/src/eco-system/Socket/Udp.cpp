@@ -9,12 +9,16 @@
 
 #include "eco-system/Socket/Udp.hpp"
 
+#include "eco-system/Core/IoReactor.hpp"
 #include "eco-system/Core/SysWorkPool.hpp"
+#include "eco-system/Socket/Socket.hpp"
 #include "eco-system/Socket/SocketTables.hpp"
+#include "eco-system/Socket/UdpManager.hpp"
 
 #include <algorithm>
 #include <cerrno>
 #include <cstring>
+#include <stdexcept>
 #include <utility>
 
 #ifndef _WIN32
@@ -415,8 +419,8 @@ HPointer buildDgramT(const SocketEvent& ev) {
         data = bb.hp;
     }
     HPointer text = alloc::allocStringFromUTF8(ev.remote.text);
-    from = alloc::tuple2(alloc::boxed(text), alloc::unboxedInt(ev.remote.port), 0x4);
-    return alloc::tuple2(alloc::boxed(data), alloc::boxed(from), 0);
+    from = alloc::tuple2(alloc::boxed(text), alloc::unboxedInt(ev.remote.port), UdpManager::DGRAM_FROM_MASK);
+    return alloc::tuple2(alloc::boxed(data), alloc::boxed(from), UdpManager::DGRAM_T_MASK);
 }
 
 /// Fails the task parked under `token` with the FErr `( code, message )` and returns true, or returns false if
@@ -657,6 +661,8 @@ HPointer udpBindBody(HPointer captured, HPointer resume) {
             ipv6Only = isElmTrue(st->c.p);
         }
         ensureUdpTables();
+        // Without the reactor the socket's handler would never run: a receive would park for ever (SOCK-15).
+        if (!socketIoAvailable()) return resumeNow(resume, socketIoUnavailable("bind"));
         auto& s = Scheduler::instance();
         token = s.parkResume(resume, HoldKind::Task, "Udp.bind");
         counted = true;
@@ -692,9 +698,10 @@ HPointer udpSendBody(HPointer captured, HPointer resume) {
             return resumeNow(resume, failFErr("ECANCELED", "send ECANCELED " + hostPort(address, port)));
         auto h = e->handler;
         uint64_t tok = startOp(resume, token, counted, "Udp.send");
-        reactor().submit([h, tok, address = std::move(address), port, data = std::move(data)]() mutable {
+        bool queued = reactor().submit([h, tok, address = std::move(address), port, data = std::move(data)]() mutable {
             h->send(tok, std::move(address), port, std::move(data));
         });
+        if (!queued) throw std::runtime_error("send: socket IO unavailable");   // the guard fails the Task
         return alloc::unit();
     )
 }
@@ -785,9 +792,10 @@ HPointer udpMembershipBody(HPointer captured, HPointer resume) {
         }
         auto h = e->handler;
         uint64_t tok = startOp(resume, token, counted, "Udp.membership");
-        reactor().submit([h, tok, join, group = std::move(group), iface = std::move(iface)]() mutable {
+        bool queued = reactor().submit([h, tok, join, group = std::move(group), iface = std::move(iface)]() mutable {
             h->membership(tok, join, std::move(group), std::move(iface));
         });
+        if (!queued) throw std::runtime_error("membership: socket IO unavailable");   // the guard fails the Task
         return alloc::unit();
     )
 }

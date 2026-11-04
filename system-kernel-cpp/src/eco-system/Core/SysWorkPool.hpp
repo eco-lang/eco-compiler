@@ -185,10 +185,21 @@ private:
 /// It may allocate on the GC heap. It may throw; `poolDrain` then uses the job's failure shape instead.
 using CompleteFn = HPointer (*)(PoolResult&);
 
+/// A job's hand-off: called on the eco thread with the job's token and result (a `PoolException` if `work` threw),
+/// before `poolDrain` looks at the task's resume. It returns true when it took the token over, having started further
+/// work under the same token: that work now owns the parked resume and the hold, so the drain neither resumes the task
+/// nor releases the hold. It returns false to have the drain finish the job as usual (resume with `complete`, or
+/// release only if the task was killed). It must tell a killed task apart itself, from its own record of the kill
+/// handle's cancel, since the drain has not yet taken the resume. If it throws, it took nothing over, and the task
+/// fails with the job's failure shape.
+using HandoffFn = bool (*)(uint64_t token, PoolResult&);
+
 /// The result a worker stores in place of the job's own when `work` throws, carrying the exception's
-/// message, or a fixed message for an exception not derived from `std::exception`.
+/// message, or a fixed message for an exception not derived from `std::exception`. The message is empty when
+/// the worker could not allocate a copy of it.
 ///
-/// `poolDrain` fails the task with the job's failure shape and this message, without calling `complete`.
+/// `poolDrain` fails the task with the job's failure shape and this message (for an empty one, "out of memory
+/// in kernel"), without calling `complete`.
 struct PoolException {
     std::string what;
 };
@@ -205,8 +216,9 @@ struct PoolException {
 class SysWorkPool {
 public:
     /// Returns the pool, creating it and starting its workers on the first call. The first call must be
-    /// made on the eco thread, since creating the pool binds `Scheduler::instance()`. If a worker thread
-    /// cannot be started, the first call throws `std::system_error`.
+    /// made on the eco thread, since creating the pool binds `Scheduler::instance()`. If some but not all
+    /// worker threads can be started, the pool runs with those that started and says so once on stderr. If
+    /// none can be started, the call throws `std::system_error`, and the next call tries again.
     static SysWorkPool& instance();
 
     /// Queues a job for `token`, a resume token whose resume the caller has parked and whose hold it has
@@ -219,6 +231,10 @@ public:
     /// the process. The first call also adds `poolDrain` to the eco/system async source.
     void submit(uint64_t token, std::function<PoolResult()> work,
                 CompleteFn complete, ErrShape shape = ErrShape::FErr);
+    /// Queues a job as the other overload does, whose result is first offered to `handoff` (see `HandoffFn`), so that
+    /// a two-step operation can start its second step under the same token, with no Task in between to be killed.
+    void submit(uint64_t token, std::function<PoolResult()> work,
+                CompleteFn complete, ErrShape shape, HandoffFn handoff);
 
     /// Removes the job for `token` if no worker has started it, and returns whether it removed one. A job
     /// that is running or finished is left alone. Suited to be the `CancelFn` given to `makeKillHandle`:
@@ -236,6 +252,8 @@ public:
         CompleteFn complete = nullptr;
         /// The failure shape for a `PoolException` result or a throwing `complete`.
         ErrShape shape = ErrShape::FErr;
+        /// The job's hand-off, or null for none.
+        HandoffFn handoff = nullptr;
     };
 
     /// Moves the oldest finished job into `out` and returns true, or returns false, leaving `out`
@@ -245,8 +263,22 @@ public:
     bool hasReady() const { return readyCount_.load(std::memory_order_acquire) > 0; }
 
     /// Returns the number of worker threads: the smaller of 4 and `std::thread::hardware_concurrency()`,
-    /// or 1 when that reports 0.
+    /// or 1 when that reports 0, less any that could not be started (never below 1).
     size_t threadCount() const { return nThreads_; }
+
+#if ECO_TEST_HOOKS
+    /// Test-only (FS-03): makes the next `submit` throw `std::bad_alloc` before it queues anything. The fault
+    /// fires once and then disarms itself. Any thread may arm it.
+    static void failNextSubmitForTest();
+
+    /// A function that starts one worker thread running `body`, detached. It reports a failure by throwing,
+    /// as `std::thread`'s constructor does (`std::system_error`).
+    using StartWorkerFn = void (*)(std::function<void()> body);
+    /// Test-only (CORE-01): replaces the function the constructor starts each worker with, and returns the
+    /// previous one; null restores the default, `std::thread(body).detach()`. It takes effect only if set
+    /// before the first `instance()` call of the process, so a test sets it in a fresh process.
+    static StartWorkerFn setWorkerStarterForTest(StartWorkerFn fn);
+#endif
 
 private:
     /// Binds the Scheduler and starts the detached worker threads.
@@ -254,7 +286,8 @@ private:
     ~SysWorkPool() = default;
 
     /// Runs one worker for ever: takes the oldest queued job, waiting while there is none, runs it, queues
-    /// its result and wakes the Scheduler.
+    /// its result and wakes the Scheduler. It never lets an exception escape; if the result cannot be queued
+    /// for lack of memory, it ends the process with `Eco::Kernel::reportFatal`.
     void workerLoop();
 
     /// One job waiting for a worker.
@@ -263,6 +296,7 @@ private:
         std::function<PoolResult()> work;
         CompleteFn complete;
         ErrShape shape;
+        HandoffFn handoff = nullptr;
     };
 
     // Jobs not yet started, guarded by `jobsMutex_`. Workers wait on `jobsCV_` while the queue is empty.
@@ -285,7 +319,8 @@ private:
 /// Delivers every finished pool job to its task, on the eco thread. It is the pool's drain in the eco/system
 /// async source, and may also be called directly.
 ///
-/// For each finished job, it takes the resume parked under the job's token. If there is none, because the
+/// For each finished job with a hand-off, it first offers the result to it, and moves on if the hand-off took the token
+/// over. For each other finished job, it takes the resume parked under the job's token. If there is none, because the
 /// task was killed, the job's result is dropped. Otherwise it resumes the task with the Task `complete`
 /// builds, or with the job's failure shape if `work` or `complete` threw (for `ErrShape::Never`, ending the
 /// process). Either way it then releases the token's hold, once. If it resumed any task and no exception

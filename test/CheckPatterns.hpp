@@ -52,6 +52,7 @@
 #pragma once
 
 #include <algorithm>
+#include <cstdlib>
 #include <cstring>
 #include <optional>
 #include <regex>
@@ -676,6 +677,49 @@ inline std::string verifyPatterns(const std::string& output,
 //                    linger. A compile failure stays a failure. The JS runner
 //                    ignores it: on JS the test must pass
 //                    (plans/char-case-mapping-elm-exact.md Step 0).
+//
+// Child-environment directives (plans/kernel-lib-bug-fixes.md, "Shared
+// infrastructure"). Applied by the JIT harness (ElmE2ETestBase.hpp
+// runMlirTestsParallel / runElmChild), the AOT runner (aot_e2e_main.cpp
+// run_elf) and the JS runner (test/scripts/run-js-e2e.js), in every suite and
+// both JIT modes; a malformed line fails the test.
+//   -- ENV: NAME=VALUE
+//                    NAME is set to VALUE in the program's environment
+//                    (repeatable). `${VAR}` in VALUE is replaced by a variable
+//                    the harness knows: ECO_TEST_PORT (this test's free port)
+//                    or any variable of the harness's own environment, e.g.
+//                    ECO_TEST_HTTP_URL, ECO_TEST_HTTPS_URL, ECO_TEST_PROXY_URL,
+//                    CURL_CA_BUNDLE (TestServerConfig.hpp / TestHttpServer.hpp;
+//                    only the suites that start the HTTP test server have
+//                    them). An unknown `${VAR}` is an error; `$$` is a literal
+//                    `$`. JIT: set when the child is spawned, so it is seen
+//                    from process start (heap config included).
+//   -- UNSETENV: NAME [NAME...]
+//                    the program runs without these variables (repeatable).
+//                    JIT: removed in the child before the program starts (the
+//                    harness's own start-up code still saw them); AOT: removed
+//                    before exec; JS: left out of node's environment. A name
+//                    both set (ENV) and unset is an error.
+//   -- RLIMIT-FSIZE: <bytes>
+//                    RLIMIT_FSIZE (soft and hard) is <bytes> for the program,
+//                    with SIGXFSZ ignored, so a write past the limit fails with
+//                    EFBIG instead of killing the process. The limit covers
+//                    every regular file the process writes, the captured
+//                    stdout/stderr file of the JIT/AOT runs included (its
+//                    output reaches the CHECKs through shared memory, the raw
+//                    stdout file only in process mode), so keep it above what
+//                    the test prints. POSIX only; JS: through `prlimit` (the
+//                    test is skipped with a note where it is missing).
+//   -- STDIN-DELAY-MS: <n>
+//                    stdin is a pipe that stays open, empty, for <n> ms; then
+//                    the `-- STDIN:` text (if any) is written and the pipe is
+//                    closed (EOF). Without it the `-- STDIN:` text is in the
+//                    pipe before the program starts. JIT: the n ms count from
+//                    the call of the compiled `main` (not from the child's
+//                    start, before the JIT compile); AOT / JS: from the
+//                    process start. In the JIT harness either
+//                    directive now applies in both modes (before: process mode
+//                    only).
 // ----------------------------------------------------------------------------
 
 namespace detail {
@@ -774,6 +818,116 @@ inline std::optional<std::string> xfailNativeReason(const std::string& content) 
         result = blank ? std::string("no reason given") : t;
     });
     return result;
+}
+
+/// The `-- ENV: NAME=VALUE` pairs in file order, VALUE unexpanded (see
+/// expandDirectiveVars). Throws std::runtime_error on a line without `=` or
+/// with an empty / malformed NAME.
+inline std::vector<std::pair<std::string, std::string>> extractEnvDirectives(
+        const std::string& content, const char* marker = "-- ENV:") {
+    std::vector<std::pair<std::string, std::string>> out;
+    detail::forEachDirectiveLine(content, marker, [&](const std::string& rest) {
+        std::string t = trimCheckPattern(rest);
+        const size_t eq = t.find('=');
+        std::string name = eq == std::string::npos ? t : t.substr(0, eq);
+        bool ok = eq != std::string::npos && !name.empty() &&
+                  name.find_first_of(" \t$") == std::string::npos;
+        if (!ok) throw std::runtime_error("malformed ENV directive (want NAME=VALUE): '" + rest + "'");
+        out.push_back({name, t.substr(eq + 1)});
+    });
+    return out;
+}
+
+/// The `-- UNSETENV: NAME...` names (whitespace-separated, repeatable).
+inline std::vector<std::string> extractUnsetenvDirectives(const std::string& content,
+                                                          const char* marker = "-- UNSETENV:") {
+    std::vector<std::string> out;
+    detail::forEachDirectiveLine(content, marker, [&](const std::string& rest) {
+        std::istringstream names(rest);
+        size_t before = out.size();
+        for (std::string name; names >> name;) {
+            if (name.find_first_of("=$") != std::string::npos)
+                throw std::runtime_error("malformed UNSETENV directive: '" + rest + "'");
+            out.push_back(name);
+        }
+        if (out.size() == before) throw std::runtime_error("empty UNSETENV directive");
+    });
+    return out;
+}
+
+namespace detail {
+// A non-negative integer directive (first occurrence), or nullopt.
+inline std::optional<long long> extractCountDirective(const std::string& content, const char* marker) {
+    std::optional<long long> result;
+    detail::forEachDirectiveLine(content, marker, [&](const std::string& rest) {
+        if (result) return;
+        std::string t = trimCheckPattern(rest);
+        bool ok = !t.empty() && t.size() <= 18 &&
+                  t.find_first_not_of("0123456789") == std::string::npos;
+        if (!ok) throw std::runtime_error(std::string("malformed ") + marker + " directive: '" + rest + "'");
+        result = std::stoll(t);
+    });
+    return result;
+}
+} // namespace detail
+
+/// The `-- RLIMIT-FSIZE: <bytes>` limit, or nullopt.
+inline std::optional<long long> extractRlimitFsizeDirective(const std::string& content) {
+    return detail::extractCountDirective(content, "-- RLIMIT-FSIZE:");
+}
+
+/// The `-- STDIN-DELAY-MS: <n>` delay, or nullopt.
+inline std::optional<long long> extractStdinDelayMsDirective(const std::string& content) {
+    return detail::extractCountDirective(content, "-- STDIN-DELAY-MS:");
+}
+
+/// `value` with each `${VAR}` replaced by lookup(VAR) and `$$` by `$`.
+/// `lookup` returns nullopt for a variable it does not know, which throws.
+template <class Lookup>
+inline std::string expandDirectiveVars(const std::string& value, Lookup lookup) {
+    std::string out;
+    for (size_t i = 0; i < value.size(); i++) {
+        if (value[i] != '$') { out += value[i]; continue; }
+        if (i + 1 < value.size() && value[i + 1] == '$') { out += '$'; i++; continue; }
+        if (i + 1 < value.size() && value[i + 1] == '{') {
+            const size_t close = value.find('}', i + 2);
+            if (close == std::string::npos)
+                throw std::runtime_error("unterminated ${ in ENV value '" + value + "'");
+            const std::string name = value.substr(i + 2, close - i - 2);
+            std::optional<std::string> v = lookup(name);
+            if (!v)
+                throw std::runtime_error("ENV value '" + value + "': ${" + name +
+                                         "} is not known to this harness (is it a suite"
+                                         " that starts the HTTP test server?)");
+            out += *v;
+            i = close;
+            continue;
+        }
+        out += '$';
+    }
+    return out;
+}
+
+/// The expanded `-- ENV:` pairs: `${VAR}` from `known` first, then the
+/// harness's environment. Throws on a malformed directive, an unknown
+/// variable, or a name that `-- UNSETENV:` also names.
+inline std::vector<std::pair<std::string, std::string>> resolveEnvDirectives(
+        const std::string& content,
+        const std::vector<std::pair<std::string, std::string>>& known = {}) {
+    auto env = extractEnvDirectives(content);
+    const auto unset = extractUnsetenvDirectives(content);
+    for (auto& kv : env) {
+        if (std::find(unset.begin(), unset.end(), kv.first) != unset.end())
+            throw std::runtime_error("ENV and UNSETENV both name " + kv.first);
+        kv.second = expandDirectiveVars(kv.second, [&](const std::string& name)
+                                                        -> std::optional<std::string> {
+            for (const auto& k : known)
+                if (k.first == name) return k.second;
+            if (const char* e = std::getenv(name.c_str())) return std::string(e);
+            return std::nullopt;
+        });
+    }
+    return env;
 }
 
 } // namespace eco_test

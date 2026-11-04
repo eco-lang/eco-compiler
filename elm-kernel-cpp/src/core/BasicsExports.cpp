@@ -3,6 +3,7 @@
 #include "../KernelExports.h"
 #include "../ExportHelpers.hpp"
 #include "Basics.hpp"
+#include "../../../runtime/src/allocator/IntArith.hpp"
 
 #include <cmath>
 
@@ -52,7 +53,8 @@ double Elm_Kernel_Basics_log(double x) {
 // unboxed values, and allocates the boxed result after both values have been read, so nothing is
 // held across that allocation.
 //
-// The typed Int variants use plain `int64_t` arithmetic, which C++ leaves undefined on overflow.
+// The typed Int variants wrap modulo 2^64 on overflow (they compute in `uint64_t`). Their bodies are
+// `Elm::ecoIntAdd`, `ecoIntSub`, `ecoIntMul` and `ecoIntPow` (runtime allocator/IntArith.hpp).
 
 namespace {
 
@@ -118,7 +120,7 @@ HPtr Elm_Kernel_Basics_pow(HPtr a, HPtr b) {
 }
 
 int64_t Elm_Kernel_Basics_add_Int(int64_t a, int64_t b) {
-    return a + b;
+    return Elm::ecoIntAdd(a, b);
 }
 
 double Elm_Kernel_Basics_add_Float(double a, double b) {
@@ -126,7 +128,7 @@ double Elm_Kernel_Basics_add_Float(double a, double b) {
 }
 
 int64_t Elm_Kernel_Basics_sub_Int(int64_t a, int64_t b) {
-    return a - b;
+    return Elm::ecoIntSub(a, b);
 }
 
 double Elm_Kernel_Basics_sub_Float(double a, double b) {
@@ -134,28 +136,16 @@ double Elm_Kernel_Basics_sub_Float(double a, double b) {
 }
 
 int64_t Elm_Kernel_Basics_mul_Int(int64_t a, int64_t b) {
-    return a * b;
+    return Elm::ecoIntMul(a, b);
 }
 
 double Elm_Kernel_Basics_mul_Float(double a, double b) {
     return a * b;
 }
 
-// A negative exponent gives 0. Otherwise this is exponentiation by squaring in `int64_t`, which is
-// undefined when the result, or an intermediate square, overflows.
+// A negative exponent gives 0. Otherwise this is exponentiation by squaring, wrapped modulo 2^64.
 int64_t Elm_Kernel_Basics_pow_Int(int64_t base, int64_t exp) {
-    if (exp < 0) {
-        return 0;
-    }
-    int64_t result = 1;
-    int64_t b = base;
-    int64_t e = exp;
-    while (e > 0) {
-        if (e & 1) result *= b;
-        b *= b;
-        e >>= 1;
-    }
-    return result;
+    return Elm::ecoIntPow(base, exp);
 }
 
 double Elm_Kernel_Basics_pow_Float(double base, double exp) {

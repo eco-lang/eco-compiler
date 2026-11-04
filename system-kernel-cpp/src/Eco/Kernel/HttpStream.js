@@ -10,7 +10,10 @@ import Eco.Kernel.Stream exposing (createChannelSource, createChannelSink, pipeS
 // for the curl transfer thread (HttpTransfer.cpp); the rules are the native ones:
 //
 //   * Only http: and https: URLs (also for redirects); anything else, or a URL that does
-//     not parse, is BadUrl_ with the URL as given.
+//     not parse, is BadUrl_ with the URL as given. So is a method that is not an RFC 9110
+//     token (the empty string included), checked first; nothing is sent.
+//   * HEAD sends no body: a stream body is still piped, but its writes are acknowledged
+//     and dropped at once and its close succeeds at once (curl's CURLOPT_NOBODY).
 //   * Redirects (3xx other than 304, with a Location) are followed, at most 20; only the
 //     final hop's status, headers and URL are reported. A 303 turns any method but HEAD
 //     into a bodiless GET, and so does a 301/302 after a POST (curl's rules); other
@@ -104,6 +107,7 @@ var _HttpStream_send = F4(function(request, headers, body, discard)
 			__errReason: '',       // "network error: ..." once failed
 			__method: request.a,
 			__bodyKind: body.a,
+			__headDiscard: request.a === 'HEAD' && body.a === 2,   // HEAD: the stream body is dropped
 			__url: null,           // URL of the current hop
 			__urlString: spec.__url,
 			__redirects: 0,
@@ -114,6 +118,11 @@ var _HttpStream_send = F4(function(request, headers, body, discard)
 			__down: null           // download channel state
 		};
 
+		if (!_HttpStream_isToken(t.__method))
+		{
+			_HttpStream_resolveError(t, _HttpStream_K_BADURL);
+			return;
+		}
 		var url = _HttpStream_parseUrl(spec.__url);
 		if (!url)
 		{
@@ -156,6 +165,12 @@ var _HttpStream_send = F4(function(request, headers, body, discard)
 		};
 	});
 });
+
+// Whether `m` is an RFC 9110 token (1*tchar), the only legal form of a method.
+function _HttpStream_isToken(m)
+{
+	return /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/.test(m);
+}
 
 function _HttpStream_parseUrl(s, base)
 {
@@ -277,7 +292,7 @@ function _HttpStream_startHop(t)
 	{
 		add(spec.__headers[i][0], spec.__headers[i][1]);
 	}
-	if (t.__bodyKind === 2)
+	if (t.__bodyKind === 2 && !t.__headDiscard)
 	{
 		req.removeHeader('content-length');
 		req.setHeader('Transfer-Encoding', 'chunked');
@@ -292,7 +307,7 @@ function _HttpStream_startHop(t)
 	{
 		req.end(spec.__bytes);
 	}
-	else if (t.__bodyKind === 0)
+	else if (t.__bodyKind === 0 || t.__headDiscard)
 	{
 		req.end();
 	}
@@ -380,7 +395,7 @@ function _HttpStream_redirect(t, req, res, location, status)
 		}
 		t.__bodyKind = 0;
 	}
-	else if (t.__bodyKind === 2)
+	else if (t.__bodyKind === 2 && !t.__headDiscard)
 	{
 		// A stream body cannot be sent again (curl: "necessary data rewind wasn't possible").
 		t.__errReason = 'network error: the request body stream cannot be resent after a redirect';
@@ -643,9 +658,9 @@ function _HttpStream_uploadChannel(t)
 				done(_HttpStream_reasonError(reason));
 				return;
 			}
-			if (!bytes.byteLength)
+			if (!bytes.byteLength || t.__headDiscard)
 			{
-				done(null);
+				done(null);   // HEAD: dropped
 				return;
 			}
 			var f = track(up.__writes, done);
@@ -667,6 +682,11 @@ function _HttpStream_uploadChannel(t)
 			if (reason)
 			{
 				done(_HttpStream_reasonError(reason));
+				return;
+			}
+			if (t.__headDiscard)
+			{
+				done(null);   // HEAD: no body to end
 				return;
 			}
 			var f = track(null, done);

@@ -39,18 +39,17 @@
 
 #include "eco-system/Core/Core.hpp"
 
+#include <cstdint>
+#include <memory>
 #include <string>
 
 namespace Eco::System {
 
 // --- Kernel bodies -----------------------------------------------------------------
 
-/// Returns a Task that fails with ENOTSUP "not implemented yet", whatever `captured` is. No export in this module
-/// binds it.
-HPointer wsNotImplementedBody(HPointer captured);
 /// Returns a Task that succeeds with `( key, accept )`: a fresh `Sec-WebSocket-Key` from `wsNewKey` and the
-/// `Sec-WebSocket-Accept` value it calls for. `captured` is not read. The Task cannot fail; an exception from
-/// `wsNewKey` is fatal.
+/// `Sec-WebSocket-Accept` value it calls for. `captured` is not read. The Task cannot fail; a failing system random
+/// number generator aborts the process (`wsRandomBytes`).
 HPointer wsHandshakeKeyBody(HPointer captured);
 /// Dials a WebSocket server and reads its answer to the opening request.
 ///
@@ -83,25 +82,47 @@ HPointer wsReadUpgradeBody(HPointer captured, HPointer resume);
 /// `captured` is a 3-tuple of boxed fields: `( Int id, ( Int status, List ( String, String ) headers ) )`, the
 /// parameters `( ( role, mode, maxMessage ), ( heartbeatInterval, heartbeatTimeout, closeTimeout ),
 /// ( threshold, ( ourNoContext, ourBits ), ( peerNoContext, peerBits ) ) )` and `( fromWire, toWire )`. Role 1 is
-/// a server, which first answers an HTTP/1.1 handshake with `status` and `headers`. A server handshake on an HTTP/2
-/// stream is answered on that stream whatever the role. Otherwise no answer is sent. Mode 1 delivers whole messages
+/// a server, which first answers an HTTP/1.1 handshake with `status` and `headers`; a server handshake on an HTTP/2
+/// stream is answered on that stream. A client (role 0) sends no answer. Mode 1 delivers whole messages
 /// and mode 2 streams them (`WsConfig::streamed`). A `threshold` of 0 or more turns permessage-deflate on with the
 /// given parameters; window bits outside 8 to 15 become 15. A non-positive heartbeat interval or timeout becomes 0,
 /// and a non-positive close timeout 30000 ms. `fromWire` and `toWire` are the closures the readable and writable
 /// stream pairs map their values through, as `createMappedSource` and `createMappedSink` describe.
 ///
 /// The Task succeeds with `( wsId, ( readableId, writableId ), ( local, remote ) )`. It fails with EINVAL if the
-/// handshake id is unknown (answered already, or never made) or the mode is neither 1 nor 2, leaving the handshake
-/// in place in the second case, and with ECONNRESET "socket closed" if the connection or stream has gone. A peer
-/// hold registered with the handshake is released after this Task's own hold is taken.
+/// handshake id is unknown (answered already, or never made), the mode is neither 1 nor 2, or the role does not
+/// match the handshake (1 for one read by `readUpgrade` or registered by Http.Server, 0 for one made by `dial`),
+/// leaving the handshake in place in the last two cases, and with ECONNRESET "socket closed" if the connection or
+/// stream has gone, in which case nothing of the WebSocket is left behind. A peer hold registered with the handshake
+/// is released after this Task's own hold is taken.
 HPointer wsOpenBody(HPointer captured, HPointer resume);
+
+#ifndef _WIN32
+class Conn;
+class WsCore;
+/// The reactor-thread half of `wsOpenBody` for a connection that is not an HTTP/2 server stream, given the
+/// connection `c`, the new socket's `core`, the HTTP/1.1 `response` to write first (empty for none), the Task's
+/// resume token `tok`, the heap generation `gen` and the socket id `wsId`. Reactor thread only.
+///
+/// If `c` holds the handshake (`HoldProtocol`, an HTTP/1.1 upgrade) and is open, it installs the WebSocket codec
+/// over `core` with the bytes read past the handshake, the codec writing `response` first, and posts the `Opened`
+/// event with the connection's addresses once the codec has attached the core; a failed write of `response` then
+/// ends the core like any later transport error. If `c` holds an answered HTTP/2 client handshake
+/// (`Http2ClientProtocol`), it binds the core to that stream and posts `Opened`. In every other case (`c` closing
+/// or gone, the codec not installed, the stream not bound) the core is closed, which posts its `Closed`, and the
+/// `Opened` event that follows is failed with ECONNRESET "socket closed". `Opened` is never posted before the core
+/// is attached or ended, so every request on it is answered.
+void wsOpenOnConn(const std::shared_ptr<Conn>& c, const std::shared_ptr<WsCore>& core, std::string response,
+                  uint64_t tok, uint64_t gen, int64_t wsId);
+#endif
 /// Answers handshake `id` with a refusal and consumes it.
 ///
 /// `captured` is `( Int id, ( Int status, List ( String, String ) headers, String body ) )`. A status below 100 or
 /// above 999 becomes 400. Over HTTP/1.1 the response is written and the connection closed gracefully; over an HTTP/2
 /// stream it is an ordinary response on that stream. The Task completes once the response is written or the
 /// write has failed, and without writing anything for an unknown id or a connection or stream no longer open. A
-/// peer hold registered with the handshake is released after this Task's own hold is taken.
+/// client handshake (one made by `dial`) cannot be refused: the Task completes at once and the handshake stays in
+/// place. A peer hold registered with the handshake is released after this Task's own hold is taken.
 HPointer wsRejectBody(HPointer captured, HPointer resume);
 /// Drops handshake `id` without answering it: aborts its connection, or abandons its HTTP/2 stream, and releases any
 /// peer hold registered with it. `captured` is the boxed Int `id`. Does nothing for an unknown id. The Task completes

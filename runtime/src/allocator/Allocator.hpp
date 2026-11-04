@@ -101,6 +101,10 @@ public:
     // `ptr` must refer to a heap or `PermanentSpace` object, not an embedded constant or null. Those are
     // checked only in `ECO_HEAP_VALIDATE` builds, which also check a nursery address against the free
     // regions. Forward headers exist only during a collection; outside one this returns the word's address.
+    //
+    // Never returns null, so a null test of the result is dead code. Given an embedded constant, a build
+    // with assertions aborts (`fromPointerRaw`), and one without reads the constant's made-up address. For a
+    // value that may be a constant, use `alloc::resolveOrNull` (HeapHelpers.hpp).
     void* resolve(HPointer ptr);
 
     // Returns the address of the object `ptr` refers to, as `resolve` does, inline.

@@ -67,9 +67,8 @@ HPointer compare(void* a, void* b);
 /// Strings compare by content whatever their forms, through `StringOps::compare`. Ints compare
 /// numerically, Floats by `compareFloat`, Chars by code point. Tuples compare slot by slot, and Lists
 /// element by element, with a shorter list below a longer one that starts with it; list spines in either
-/// form are walked element by element. A boxed and an unboxed list element of the same primitive type
-/// compare by value; an Int, Float or Char tuple slot that is boxed on one side and unboxed on the other
-/// orders by its kind, not its value. Values with different heap tags order by tag, and two values with a
+/// form are walked element by element. A boxed and an unboxed list element or tuple slot of the same
+/// primitive type compare by value, as `equal` treats them, Floats by `compareFloat`. Values with different heap tags order by tag, and two values with a
 /// tag not listed here, such as Customs or Records, compare as 0.
 ///
 /// `a` and `b` must be the addresses of heap or `PermanentSpace` objects, or null. Allocates nothing.
@@ -78,9 +77,8 @@ int cmp3(void* a, void* b);
 /// Returns -1, 0 or 1 as `a` is below, equal to or above `b` in Float's total order, in which NaN equals
 /// NaN and is above every number, and -0 equals +0.
 ///
-/// `compare` and `cmp3` use this order for Floats, including Floats inside tuples and lists, except that a
-/// boxed and an unboxed Float list element compare with raw `<` and `==`. The `lt`, `le`, `gt` and `ge`
-/// functions do not use it for two Floats.
+/// `compare` and `cmp3` use this order for Floats, including Floats inside tuples and lists, whether each
+/// is boxed or unboxed. The `lt`, `le`, `gt` and `ge` functions do not use it for two Floats.
 inline int compareFloat(double a, double b) {
     if (a < b) return -1;
     if (a > b) return 1;
@@ -105,9 +103,10 @@ inline int compareFloat(double a, double b) {
 /// the String, Bytes and list forms above, values with different heap tags, functions, and tags not listed here are
 /// unequal.
 ///
-/// The recursion is bounded: two values with the same tag, other than Strings and Bytes, whose comparison
-/// is reached through more than 100 levels of boxed slots are reported equal without being examined. A
-/// list's own spine does not count towards that depth.
+/// The recursion is bounded without losing precision, as in elm/core's JS: a pair of values with the same
+/// tag, other than Strings and Bytes, reached through more than 100 levels of boxed slots is set aside and
+/// compared afterwards from depth 0, so the C stack holds at most about 100 levels and every part of both
+/// values is still examined. A list's own spine does not count towards that depth.
 ///
 /// `a` and `b` must be the addresses of heap or `PermanentSpace` objects, or null. Allocates nothing.
 bool equal(void* a, void* b);
@@ -137,8 +136,8 @@ bool ge(void* a, void* b);
 
 /// Returns `a ++ b` for two Strings or two Lists.
 ///
-/// A null `a` or `b` stands for the empty value: two nulls give the Empty constant, and one null gives the
-/// other argument itself. Two Strings are joined by `StringOps::append`, two Lists by `ListOps::append`.
+/// A null `a` or `b` stands for the empty value, and one null gives the other argument itself. `a` and `b`
+/// must not both be null: the export returns one of two constants itself (asserted). Two Strings are joined by `StringOps::append`, two Lists by `ListOps::append`.
 /// When `a` is a List, it goes to `ListOps::append` whatever `b` is; for any other non-null `a`, `a`
 /// itself is returned.
 ///

@@ -22,13 +22,14 @@
 // is received as a `uint64_t` whose low 32 bits are used, and returned as `uint32_t`; the wider
 // parameter is there because the upper register bits are not guaranteed to be zero through LLVM
 // gc.statepoint calls. A Bool crosses as a boxed `HPtr` (the True or False constant word,
-// REP_ABI_001), not as a C `bool`, except the parameter of Browser.reload. Every other Elm value
+// REP_ABI_001), never as a C `bool`. Every other Elm value
 // is an `HPtr`, the 64-bit encoded HPointer defined in runtime/src/allocator/Heap.hpp. A closure
 // argument is an `HPtr` to a Closure object. A function that takes an Int as `HPtr` receives it
 // boxed.
 //
-// Stubs. Most Browser, Debugger and File entry points are not implemented: they assert when
-// assertions are on, and otherwise return 0.
+// Stubs. Most Browser, Debugger and File entry points have no native counterpart. Those whose Task
+// can fail return a failing Task; the others print "<Elm function> is not supported natively" and
+// exit with status 1 (NotSupportedNatively.hpp).
 //
 //===----------------------------------------------------------------------===//
 
@@ -274,6 +275,20 @@ HPtr Elm_Kernel_List_map3(HPtr closure, HPtr xs, HPtr ys, HPtr zs);
 HPtr Elm_Kernel_List_map4(HPtr closure, HPtr ws, HPtr xs, HPtr ys, HPtr zs);
 /// Implements kernel `List.map5`.
 HPtr Elm_Kernel_List_map5(HPtr closure, HPtr vs, HPtr ws, HPtr xs, HPtr ys, HPtr zs);
+/// Implement kernel `List.map2` to `map5` for an Int, Float or Char result element: every result is stored in
+/// that kind, each closure result being asked for in it.
+HPtr Elm_Kernel_List_map2_Int  (HPtr closure, HPtr xs, HPtr ys);
+HPtr Elm_Kernel_List_map2_Float(HPtr closure, HPtr xs, HPtr ys);
+HPtr Elm_Kernel_List_map2_Char (HPtr closure, HPtr xs, HPtr ys);
+HPtr Elm_Kernel_List_map3_Int  (HPtr closure, HPtr xs, HPtr ys, HPtr zs);
+HPtr Elm_Kernel_List_map3_Float(HPtr closure, HPtr xs, HPtr ys, HPtr zs);
+HPtr Elm_Kernel_List_map3_Char (HPtr closure, HPtr xs, HPtr ys, HPtr zs);
+HPtr Elm_Kernel_List_map4_Int  (HPtr closure, HPtr ws, HPtr xs, HPtr ys, HPtr zs);
+HPtr Elm_Kernel_List_map4_Float(HPtr closure, HPtr ws, HPtr xs, HPtr ys, HPtr zs);
+HPtr Elm_Kernel_List_map4_Char (HPtr closure, HPtr ws, HPtr xs, HPtr ys, HPtr zs);
+HPtr Elm_Kernel_List_map5_Int  (HPtr closure, HPtr vs, HPtr ws, HPtr xs, HPtr ys, HPtr zs);
+HPtr Elm_Kernel_List_map5_Float(HPtr closure, HPtr vs, HPtr ws, HPtr xs, HPtr ys, HPtr zs);
+HPtr Elm_Kernel_List_map5_Char (HPtr closure, HPtr vs, HPtr ws, HPtr xs, HPtr ys, HPtr zs);
 /// Implements kernel `List.sortBy`.
 HPtr Elm_Kernel_List_sortBy(HPtr closure, HPtr list);
 /// Implements kernel `List.sortWith`.
@@ -457,6 +472,24 @@ HPtr Elm_Kernel_JsArray_map(HPtr closure, HPtr array);
 HPtr Elm_Kernel_JsArray_indexedMap(HPtr closure, HPtr offset, HPtr array);
 /// Implements kernel `JsArray.indexedMap` for Int: the Int-typed parameters arrive as raw `int64_t`.
 HPtr Elm_Kernel_JsArray_indexedMap_Int(HPtr closure, int64_t offset, HPtr array);
+/// Implements kernel `JsArray.map` for an Int, Float or Char result element: every element is stored in that
+/// kind, each closure result being asked for in it.
+HPtr Elm_Kernel_JsArray_map_Int  (HPtr closure, HPtr array);
+HPtr Elm_Kernel_JsArray_map_Float(HPtr closure, HPtr array);
+HPtr Elm_Kernel_JsArray_map_Char (HPtr closure, HPtr array);
+/// Implements kernel `JsArray.indexedMap` with a raw Int offset, for an Int, Float or Char result element.
+HPtr Elm_Kernel_JsArray_indexedMap_Int_Int  (HPtr closure, int64_t offset, HPtr array);
+HPtr Elm_Kernel_JsArray_indexedMap_Int_Float(HPtr closure, int64_t offset, HPtr array);
+HPtr Elm_Kernel_JsArray_indexedMap_Int_Char (HPtr closure, int64_t offset, HPtr array);
+/// Implements kernel `JsArray.initialize` with raw Int parameters, for an Int, Float or Char element.
+HPtr Elm_Kernel_JsArray_initialize_Int_Int  (int64_t size, int64_t offset, HPtr closure);
+HPtr Elm_Kernel_JsArray_initialize_Int_Float(int64_t size, int64_t offset, HPtr closure);
+HPtr Elm_Kernel_JsArray_initialize_Int_Char (int64_t size, int64_t offset, HPtr closure);
+/// Implements kernel `JsArray.initializeFromList` with a raw Int `max`, for an Int, Float or Char element: a
+/// boxed list head is unboxed.
+HPtr Elm_Kernel_JsArray_initializeFromList_Int_Int  (int64_t max, HPtr list);
+HPtr Elm_Kernel_JsArray_initializeFromList_Int_Float(int64_t max, HPtr list);
+HPtr Elm_Kernel_JsArray_initializeFromList_Int_Char (int64_t max, HPtr list);
 /// Implements kernel `JsArray.foldl`.
 HPtr Elm_Kernel_JsArray_foldl(HPtr closure, HPtr acc, HPtr array);
 /// Implements kernel `JsArray.foldr`.
@@ -469,9 +502,9 @@ HPtr Elm_Kernel_JsArray_foldr(HPtr closure, HPtr acc, HPtr array);
 /// Writes `tag`, `: `, `value` as `eco_print_elm_value` prints it, and a newline to the calling thread's print
 /// destination, and returns `value`.
 HPtr Elm_Kernel_Debug_log(HPtr tag, HPtr value);
-/// Writes `Debug.todo: `, `message` and a newline to the calling thread's print destination, then ends the process
-/// with `exit(1)`; it does not throw and does not return.
-HPtr Elm_Kernel_Debug_todo(HPtr message);
+/// Writes `Debug.todo: `, `message` and a newline to stderr (not the calling thread's print destination, which may
+/// be a capture stream nobody reads), then ends the process with `exit(1)`; it does not throw and does not return.
+[[noreturn]] HPtr Elm_Kernel_Debug_todo(HPtr message);
 /// Implements kernel `Debug.toString`.
 HPtr Elm_Kernel_Debug_toString(HPtr value);
 /// Implements a saturated `Debug.toString` call; `type_id` is the argument's type id, supplied by the
@@ -598,65 +631,66 @@ HPtr Elm_Kernel_Browser_element(HPtr impl);
 HPtr Elm_Kernel_Browser_document(HPtr impl);
 /// Returns `impl` unchanged.
 HPtr Elm_Kernel_Browser_application(HPtr impl);
-/// Stands in for kernel `Browser.load`: asserts when assertions are on, else returns word 0.
+/// Stands in for kernel `Browser.load`: exits with "Browser.Navigation.load is not supported natively".
 HPtr Elm_Kernel_Browser_load(HPtr url);
-/// Stands in for kernel `Browser.reload`: asserts when assertions are on, else returns word 0. The
-/// only raw `bool` parameter in this header.
-HPtr Elm_Kernel_Browser_reload(bool skipCache);
-/// Stands in for kernel `Browser.pushUrl`: asserts when assertions are on, else returns word 0.
+/// Stands in for kernel `Browser.reload`: exits with "Browser.Navigation.reload is not supported natively".
+/// `skipCache` is a Bool, the boxed True or False constant word (REP_ABI_001).
+HPtr Elm_Kernel_Browser_reload(HPtr skipCache);
+/// Stands in for kernel `Browser.pushUrl`: exits with "Browser.Navigation.pushUrl is not supported natively".
 HPtr Elm_Kernel_Browser_pushUrl(HPtr key, HPtr url);
-/// Stands in for kernel `Browser.replaceUrl`: asserts when assertions are on, else returns word 0.
+/// Stands in for kernel `Browser.replaceUrl`: exits with "Browser.Navigation.replaceUrl is not supported natively".
 HPtr Elm_Kernel_Browser_replaceUrl(HPtr key, HPtr url);
-/// Stands in for kernel `Browser.go`: asserts when assertions are on, else returns word 0.
+/// Stands in for kernel `Browser.go`: exits with "Browser.Navigation.back/forward is not supported natively".
 HPtr Elm_Kernel_Browser_go(HPtr key, int64_t steps);
-/// Stands in for kernel `Browser.getViewport`: asserts when assertions are on, else returns word 0.
+/// Stands in for kernel `Browser.getViewport`: exits with "Browser.Dom.getViewport is not supported natively".
 HPtr Elm_Kernel_Browser_getViewport();
-/// Stands in for kernel `Browser.getViewportOf`: asserts when assertions are on, else returns word 0.
+/// Stands in for kernel `Browser.getViewportOf`: returns a Task failing with `Browser.Dom.NotFound id`.
 HPtr Elm_Kernel_Browser_getViewportOf(HPtr id);
-/// Stands in for kernel `Browser.setViewport`: asserts when assertions are on, else returns word 0.
+/// Stands in for kernel `Browser.setViewport`: exits with "Browser.Dom.setViewport is not supported natively".
 HPtr Elm_Kernel_Browser_setViewport(double x, double y);
-/// Stands in for kernel `Browser.setViewportOf`: asserts when assertions are on, else returns word 0.
+/// Stands in for kernel `Browser.setViewportOf`: returns a Task failing with `Browser.Dom.NotFound id`.
 HPtr Elm_Kernel_Browser_setViewportOf(HPtr id, double x, double y);
-/// Stands in for kernel `Browser.getElement`: asserts when assertions are on, else returns word 0.
+/// Stands in for kernel `Browser.getElement`: returns a Task failing with `Browser.Dom.NotFound id`.
 HPtr Elm_Kernel_Browser_getElement(HPtr id);
-/// Stands in for kernel `Browser.on`: asserts when assertions are on, else returns word 0.
+/// Stands in for kernel `Browser.on`: exits with "Browser.Events.on is not supported natively".
 HPtr Elm_Kernel_Browser_on(HPtr node, HPtr eventName, HPtr handler);
-/// Stands in for kernel `Browser.decodeEvent`: asserts when assertions are on, else returns word 0.
+/// Stands in for kernel `Browser.decodeEvent`: exits with "Browser.Events.on is not supported natively".
 HPtr Elm_Kernel_Browser_decodeEvent(HPtr decoder, HPtr event);
-/// Stands in for kernel `Browser.doc`: asserts when assertions are on, else returns word 0.
+/// Stands in for kernel `Browser.doc`: exits with "Browser.Events.on is not supported natively".
 HPtr Elm_Kernel_Browser_doc();
-/// Stands in for kernel `Browser.window`: asserts when assertions are on, else returns word 0.
+/// Stands in for kernel `Browser.window`: exits with "Browser.Events.on is not supported natively".
 HPtr Elm_Kernel_Browser_window();
-/// Stands in for kernel `Browser.withWindow`: asserts when assertions are on, else returns word 0.
+/// Stands in for kernel `Browser.withWindow`: exits with "Browser.Dom.getViewport is not supported natively".
 HPtr Elm_Kernel_Browser_withWindow(HPtr closure);
-/// Stands in for kernel `Browser.rAF`: asserts when assertions are on, else returns word 0.
+/// Stands in for kernel `Browser.rAF`: exits with "Browser.Events.onAnimationFrame is not supported natively".
 HPtr Elm_Kernel_Browser_rAF();
-/// Stands in for kernel `Browser.now`: asserts when assertions are on, else returns word 0.
+/// Stands in for kernel `Browser.now`: exits with "Browser.Events.onAnimationFrame is not supported natively".
 HPtr Elm_Kernel_Browser_now();
-/// Stands in for kernel `Browser.visibilityInfo`: asserts when assertions are on, else returns word 0.
+/// Stands in for kernel `Browser.visibilityInfo`: exits with "Browser.Events.onVisibilityChange is not supported natively".
 HPtr Elm_Kernel_Browser_visibilityInfo();
-/// Stands in for kernel `Browser.call`: asserts when assertions are on, else returns word 0.
-HPtr Elm_Kernel_Browser_call(HPtr closure);
+/// Stands in for kernel `Browser.call` (`Browser.Dom.focus`/`blur`): returns a Task failing with
+/// `Browser.Dom.NotFound id`. `functionName` is ignored.
+HPtr Elm_Kernel_Browser_call(HPtr functionName, HPtr id);
 
 //===----------------------------------------------------------------------===//
 // Debugger Module (elm/browser)
 //===----------------------------------------------------------------------===//
 
-/// Stands in for kernel `Debugger.init`: asserts when assertions are on, else returns word 0.
+/// Stands in for kernel `Debugger.init`: exits with "The Elm debugger (Debugger.init) is not supported natively".
 HPtr Elm_Kernel_Debugger_init(HPtr value);
-/// Stands in for kernel `Debugger.isOpen`: asserts when assertions are on, else returns word 0.
+/// Stands in for kernel `Debugger.isOpen`: exits with "The Elm debugger (Debugger.isOpen) is not supported natively".
 HPtr Elm_Kernel_Debugger_isOpen(HPtr popout);
-/// Stands in for kernel `Debugger.open`: asserts when assertions are on, else returns word 0.
+/// Stands in for kernel `Debugger.open`: exits with "The Elm debugger (Debugger.open) is not supported natively".
 HPtr Elm_Kernel_Debugger_open(HPtr popout);
-/// Stands in for kernel `Debugger.scroll`: asserts when assertions are on, else returns word 0.
+/// Stands in for kernel `Debugger.scroll`: exits with "The Elm debugger (Debugger.scroll) is not supported natively".
 HPtr Elm_Kernel_Debugger_scroll(HPtr popout);
-/// Stands in for kernel `Debugger.messageToString`: asserts when assertions are on, else returns word 0.
+/// Stands in for kernel `Debugger.messageToString`: exits with "The Elm debugger (Debugger.messageToString) is not supported natively".
 HPtr Elm_Kernel_Debugger_messageToString(HPtr message);
-/// Stands in for kernel `Debugger.download`: asserts when assertions are on, else returns word 0.
+/// Stands in for kernel `Debugger.download`: exits with "The Elm debugger (Debugger.download) is not supported natively".
 HPtr Elm_Kernel_Debugger_download(int64_t historyLength, HPtr json);
-/// Stands in for kernel `Debugger.upload`: asserts when assertions are on, else returns word 0.
+/// Stands in for kernel `Debugger.upload`: exits with "The Elm debugger (Debugger.upload) is not supported natively".
 HPtr Elm_Kernel_Debugger_upload();
-/// Stands in for kernel `Debugger.unsafeCoerce`: asserts when assertions are on, else returns word 0.
+/// Implements kernel `Debugger.unsafeCoerce`: returns `value` unchanged.
 HPtr Elm_Kernel_Debugger_unsafeCoerce(HPtr value);
 
 //===----------------------------------------------------------------------===//
@@ -752,12 +786,12 @@ HPtr Elm_Kernel_Time_setInterval(double intervalMs, HPtr task);
 // Url Module (elm/url)
 //===----------------------------------------------------------------------===//
 
-/// Returns `str` with every UTF-8 byte outside `A-Za-z0-9-_.~` written as `%` and two hexadecimal digits. Unlike
-/// JavaScript's `encodeURIComponent` it also escapes `!*'()`.
+/// Returns `str` with every UTF-8 byte outside `A-Za-z0-9-_.!~*'()` written as `%` and two hexadecimal digits, as
+/// JavaScript's `encodeURIComponent` does.
 HPtr Elm_Kernel_Url_percentEncode(HPtr str);
-/// Returns `Just` the String decoded from `str`'s percent escapes, with `+` turned into a space, or `Nothing` when a
-/// `%` is followed by fewer than two bytes or by a byte that is not a hexadecimal digit. The decoded bytes
-/// are not checked to be UTF-8; invalid sequences are decoded leniently, as `alloc::allocStringFromUTF8` does.
+/// Returns `Just` the String decoded from `str`'s percent escapes (a `+` stays a `+`), or `Nothing` when a `%` is
+/// followed by fewer than two bytes or by a byte that is not a hexadecimal digit, or when the decoded bytes are
+/// not valid UTF-8, as JavaScript's `decodeURIComponent` does.
 HPtr Elm_Kernel_Url_percentDecode(HPtr str);
 
 //===----------------------------------------------------------------------===//
@@ -849,29 +883,29 @@ HPtr Elm_Kernel_Bytes_write_string(HPtr str);
 // File Module (elm/file) - STUBS
 //===----------------------------------------------------------------------===//
 
-/// Stands in for kernel `File.decoder`: asserts when assertions are on, else returns word 0.
+/// Stands in for kernel `File.decoder`: exits with "File.decoder is not supported natively".
 HPtr Elm_Kernel_File_decoder();
-/// Stands in for kernel `File.name`: asserts when assertions are on, else returns word 0.
+/// Stands in for kernel `File.name`: exits with "File.name is not supported natively".
 HPtr Elm_Kernel_File_name(HPtr file);
-/// Stands in for kernel `File.mime`: asserts when assertions are on, else returns word 0.
+/// Stands in for kernel `File.mime`: exits with "File.mime is not supported natively".
 HPtr Elm_Kernel_File_mime(HPtr file);
-/// Stands in for kernel `File.size`: asserts when assertions are on, else returns 0.
+/// Stands in for kernel `File.size`: exits with "File.size is not supported natively".
 int64_t Elm_Kernel_File_size(HPtr file);
-/// Stands in for kernel `File.lastModified`: asserts when assertions are on, else returns 0.
+/// Stands in for kernel `File.lastModified`: exits with "File.lastModified is not supported natively".
 int64_t Elm_Kernel_File_lastModified(HPtr file);
-/// Stands in for kernel `File.toString`: asserts when assertions are on, else returns word 0.
+/// Stands in for kernel `File.toString`: exits with "File.toString is not supported natively".
 HPtr Elm_Kernel_File_toString(HPtr file);
-/// Stands in for kernel `File.toBytes`: asserts when assertions are on, else returns word 0.
+/// Stands in for kernel `File.toBytes`: exits with "File.toBytes is not supported natively".
 HPtr Elm_Kernel_File_toBytes(HPtr file);
-/// Stands in for kernel `File.toUrl`: asserts when assertions are on, else returns word 0.
+/// Stands in for kernel `File.toUrl`: exits with "File.toUrl is not supported natively".
 HPtr Elm_Kernel_File_toUrl(HPtr file);
-/// Stands in for kernel `File.download`: asserts when assertions are on, else returns word 0.
+/// Stands in for kernel `File.download`: exits with "File.Download.string/bytes is not supported natively".
 HPtr Elm_Kernel_File_download(HPtr name, HPtr mime, HPtr content);
-/// Stands in for kernel `File.downloadUrl`: asserts when assertions are on, else returns word 0.
+/// Stands in for kernel `File.downloadUrl`: exits with "File.Download.url is not supported natively".
 HPtr Elm_Kernel_File_downloadUrl(HPtr name, HPtr url);
-/// Stands in for kernel `File.uploadOne`: asserts when assertions are on, else returns word 0.
+/// Stands in for kernel `File.uploadOne`: exits with "File.Select.file is not supported natively".
 HPtr Elm_Kernel_File_uploadOne(HPtr mimes);
-/// Stands in for kernel `File.uploadOneOrMore`: asserts when assertions are on, else returns word 0.
+/// Stands in for kernel `File.uploadOneOrMore`: exits with "File.Select.files is not supported natively".
 HPtr Elm_Kernel_File_uploadOneOrMore(HPtr mimes);
 /// Implements kernel `File.makeBytesSafeForInternetExplorer`.
 HPtr Elm_Kernel_File_makeBytesSafeForInternetExplorer(HPtr bytes);

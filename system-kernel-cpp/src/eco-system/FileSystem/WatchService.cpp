@@ -10,6 +10,7 @@
 
 #include "platform/Scheduler.hpp"
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstdlib>
@@ -64,11 +65,11 @@ struct Sig {
 };
 using Snapshot = std::map<std::string, Sig>;   // relative path ("" = the root itself)
 
-// Fills `s` from `lstat` of `p`, so a symbolic link is described rather than followed. Returns false, leaving `s`
-// unchanged, when `p` cannot be read.
-bool sigOf(const std::string& p, Sig& s) {
+// Fills `s` from `lstat` of `p`, so a symbolic link is described rather than followed, or from `stat` when
+// `follow`. Returns false, leaving `s` unchanged, when `p` cannot be read.
+bool sigOf(const std::string& p, Sig& s, bool follow = false) {
     struct stat sb;
-    if (::lstat(p.c_str(), &sb) != 0) return false;
+    if ((follow ? ::stat(p.c_str(), &sb) : ::lstat(p.c_str(), &sb)) != 0) return false;
     s.ino = static_cast<uint64_t>(sb.st_ino);
     s.type = static_cast<uint32_t>(sb.st_mode & S_IFMT);
 #if defined(__APPLE__)
@@ -83,12 +84,13 @@ bool sigOf(const std::string& p, Sig& s) {
 }
 
 // Replaces `out` with the entry of `root` itself, under "", plus its entries (the whole tree when `recursive`).
-// Symbolic links are recorded, not followed. Returns false, with `out` empty, when `root` cannot be read. Entries
-// that cannot be read, and any after an iteration error, are left out.
+// `root` itself is followed if it is a symbolic link, as inotify follows it; symbolic links below it are recorded,
+// not followed. Returns false, with `out` empty, when `root` cannot be read. Entries that cannot be read, and any
+// after an iteration error, are left out.
 bool takeSnapshot(const std::string& root, bool recursive, Snapshot& out) {
     out.clear();
     Sig rootSig;
-    if (!sigOf(root, rootSig)) return false;
+    if (!sigOf(root, rootSig, /*follow=*/true)) return false;
     out[""] = rootSig;
     if (rootSig.type != S_IFDIR) return true;
     namespace fs = std::filesystem;
@@ -197,7 +199,9 @@ struct WatchService::Impl {
     }
 
     // Adds an inotify watch on `abs` for watch `id`, whose events are reported under relative path `rel`. Returns
-    // false if the kernel refuses it. A wd this watch already uses keeps its first `rel`.
+    // false if the kernel refuses it. A wd this watch already uses keeps its first `rel`: the root, a directory
+    // reached twice in one tree walk, or one a nested watch root shares. A renamed directory does not keep its
+    // old `rel` this way, because `dropSubtree` drops its wds first.
     bool addDir(int64_t id, const std::string& abs, const std::string& rel) {
         int wd = ::inotify_add_watch(inotifyFd, abs.c_str(), kMask);
         if (wd < 0) return false;
@@ -210,20 +214,53 @@ struct WatchService::Impl {
     }
 
     // Adds inotify watches, for watch `id`, on every directory below `abs` that is not a symbolic link; `rel` is
-    // the relative path of `abs` within the watch. A directory that cannot be watched is skipped.
-    void addTree(int64_t id, const std::string& abs, const std::string& rel) {
+    // the relative path of `abs` within the watch. A directory that cannot be watched is skipped. When `found` is
+    // not null, the relative path within the watch of every entry seen below `abs` (files, directories and
+    // symbolic links, in walk order; symbolic links to directories are not descended) is appended to it. Since
+    // each directory's watch is added before its entries are listed, an entry created after the listing is
+    // reported by that watch, so none is missed in between.
+    void addTree(int64_t id, const std::string& abs, const std::string& rel, std::vector<std::string>* found) {
         namespace fs = std::filesystem;
         std::error_code ec;
         fs::recursive_directory_iterator it(abs, fs::directory_options::skip_permission_denied, ec), end;
         for (; !ec && it != end; it.increment(ec)) {
-            std::error_code sec;
-            if (!it->is_directory(sec) || it->is_symlink(sec)) continue;
             std::error_code rec;
             fs::path r = fs::relative(it->path(), fs::path(abs), rec);
             if (rec) continue;
             std::string sub = rel.empty() ? r.generic_string() : rel + "/" + r.generic_string();
+            if (found) found->push_back(sub);
+            std::error_code sec;
+            if (!it->is_directory(sec) || it->is_symlink(sec)) continue;
             addDir(id, it->path().string(), sub);
         }
+    }
+
+    // Drops watch `id`'s uses of the wds it has at relative path `rel` and below, removing each wd from the
+    // kernel once no watch uses it. Never drops the watch's own root (`rel` must not be empty). Called when the
+    // directory at `rel` is renamed or moved away, so it stops being reported under its old path; if it moved
+    // within the watch, its new path is added again from the IN_MOVED_TO record.
+    void dropSubtree(int64_t id, const std::string& rel) {
+        if (rel.empty()) return;
+        auto w = iwatches.find(id);
+        if (w == iwatches.end()) return;
+        const std::string prefix = rel + "/";
+        std::vector<int> keep;
+        for (int wd : w->second.wds) {
+            bool under = false;
+            auto u = wdUses.find(wd);
+            if (u != wdUses.end()) {
+                for (auto& use : u->second) {
+                    if (use.watchId == id && !use.rel.empty() &&
+                        (use.rel == rel || use.rel.compare(0, prefix.size(), prefix) == 0)) {
+                        under = true;
+                        break;
+                    }
+                }
+            }
+            if (under) dropWd(id, wd, /*rmWatch=*/true);
+            else keep.push_back(wd);
+        }
+        w->second.wds = std::move(keep);
     }
 
     // Removes watch `id`'s use of `wd`. When no use is left the wd is forgotten and, if `rmWatch`, removed from
@@ -242,11 +279,20 @@ struct WatchService::Impl {
         }
     }
 
-    // Appends to `out` the events of one raw inotify record, one per watch that uses its wd, and adds the watches
-    // for a directory that appeared inside a recursive watch. A record about a sub-directory itself is skipped,
-    // because its parent reports the same change by name. An IN_IGNORED record forgets the wd and yields no
-    // event.
+    // Appends to `out` the events of one raw inotify record, one per watch that uses its wd. A record about a
+    // sub-directory itself is skipped, because its parent reports the same change by name. An IN_IGNORED record
+    // forgets the wd and yields no event. A queue overflow yields one path-less Moved for every watch, meaning
+    // "rescan". In a recursive watch, a directory that appears (created or moved in) is watched with its whole
+    // tree, and a Moved event follows its own for every entry found in it; a directory that is moved away (or
+    // renamed) has its tree's watches dropped first, so nothing below it is reported under its old path.
     void mapInotify(const Raw& r, std::vector<WatchEvent>& out) {
+        if (r.mask & IN_Q_OVERFLOW) {   // wd -1: belongs to no watch
+            std::vector<int64_t> ids;
+            for (auto& [id, w] : iwatches) ids.push_back(id);
+            std::sort(ids.begin(), ids.end());
+            for (int64_t id : ids) out.push_back(WatchEvent{id, 1, false, std::string()});
+            return;
+        }
         auto it = wdUses.find(r.wd);
         if (it == wdUses.end()) return;
         std::vector<WdUse> uses = it->second;   // copy: the tables change below
@@ -264,7 +310,6 @@ struct WatchService::Impl {
             wdUses.erase(r.wd);
             return;
         }
-        if (r.mask & IN_Q_OVERFLOW) return;
         bool rename = (r.mask & (IN_CREATE | IN_DELETE | IN_DELETE_SELF | IN_MOVE_SELF | IN_MOVED_FROM |
                                  IN_MOVED_TO)) != 0;
         bool change = (r.mask & (IN_ATTRIB | IN_MODIFY)) != 0;
@@ -277,15 +322,20 @@ struct WatchService::Impl {
             WatchEvent ev;
             ev.watchId = u.watchId;
             ev.kind = rename ? 1 : 0;
+            std::vector<std::string> found;
             if (!self) {
                 ev.hasPath = true;
                 ev.path = u.rel.empty() ? r.name : u.rel + "/" + r.name;
-                if (w->second.recursive && (r.mask & IN_ISDIR) && (r.mask & (IN_CREATE | IN_MOVED_TO))) {
+                const bool dirRecord = w->second.recursive && (r.mask & IN_ISDIR);
+                if (dirRecord && (r.mask & IN_MOVED_FROM)) dropSubtree(u.watchId, ev.path);
+                if (dirRecord && (r.mask & (IN_CREATE | IN_MOVED_TO))) {
                     std::string abs = w->second.root + "/" + ev.path;
-                    if (addDir(u.watchId, abs, ev.path)) addTree(u.watchId, abs, ev.path);
+                    if (addDir(u.watchId, abs, ev.path)) addTree(u.watchId, abs, ev.path, &found);
                 }
             }
+            const int64_t watchId = ev.watchId;
             out.push_back(std::move(ev));
+            for (auto& f : found) out.push_back(WatchEvent{watchId, 1, true, std::move(f)});
         }
     }
 #endif
@@ -297,6 +347,7 @@ struct WatchService::Impl {
         std::string root;
         bool recursive = false;
         Snapshot snap;
+        bool gone = false;   // the watched path disappeared: the watch is finished and no longer polled
     };
     std::mutex pMutex;                          // guards `pwatches` between add/remove and the poll thread
     std::map<int64_t, PollWatch> pwatches;
@@ -322,7 +373,8 @@ struct WatchService::Impl {
             std::vector<std::pair<int64_t, std::pair<std::string, bool>>> todo;
             {
                 std::lock_guard<std::mutex> lk(pMutex);
-                for (auto& [id, w] : pwatches) todo.push_back({id, {w.root, w.recursive}});
+                for (auto& [id, w] : pwatches)
+                    if (!w.gone) todo.push_back({id, {w.root, w.recursive}});
             }
             for (auto& [id, spec] : todo) {
                 Snapshot now;
@@ -333,11 +385,14 @@ struct WatchService::Impl {
                     auto it = pwatches.find(id);
                     if (it == pwatches.end()) continue;
                     Snapshot& old = it->second.snap;
-                    if (!exists && !old.empty()) {
+                    if (!exists) {
+                        // The watched path itself went away: one path-less Moved, then the watch is finished, as
+                        // in inotify mode. It stays in the table so that `remove` is still a harmless no-op.
                         WatchEvent ev;
                         ev.watchId = id;
-                        ev.kind = 1;   // the watched path itself went away
+                        ev.kind = 1;
                         evs.push_back(ev);
+                        it->second.gone = true;
                     } else {
                         for (auto& [rel, sig] : now) {
                             auto o = old.find(rel);
@@ -396,7 +451,7 @@ int64_t WatchService::add(const std::string& path, bool recursive) {
             m.iwatches.erase(id);
             return 0;
         }
-        if (recursive) m.addTree(id, path, "");
+        if (recursive) m.addTree(id, path, "", nullptr);
         return id;
     }
 #endif
@@ -455,5 +510,21 @@ void WatchService::drain(std::vector<WatchEvent>& out) {
 bool WatchService::hasEvents() const {
     return impl_->queued.load(std::memory_order_acquire) > 0;
 }
+
+#if ECO_TEST_HOOKS
+void WatchService::injectRawForTest(int wd, uint32_t mask, const std::string& name) {
+    Raw r;
+    r.wd = wd;
+    r.mask = mask;
+    r.name = name;
+    impl_->push(std::move(r));
+}
+
+void WatchService::injectQueueOverflowForTest() {
+#if defined(__linux__)
+    injectRawForTest(-1, IN_Q_OVERFLOW, "");
+#endif
+}
+#endif
 
 } // namespace Eco::System::Fs

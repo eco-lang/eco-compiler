@@ -50,7 +50,10 @@ stderr =
     Handle 2
 
 
-{-| Write a string to a console handle (stdout or stderr).
+{-| Write a string to a console handle: stdout, stderr, or the stdin handle
+of a child started by `Eco.Process.spawnProcess` with `CreatePipe` (until it
+is closed with `Eco.File.close`). Any other handle fails with
+`BadFileDescriptor`.
 -}
 write : Handle -> String -> Task IOError ()
 write (Handle h) content =
@@ -58,7 +61,11 @@ write (Handle h) content =
         |> Task.mapError IOErr.ofKernelTuple
 
 
-{-| Read one line from stdin.
+{-| Read one line from stdin, without its line break. At the end of input it
+gives what is left of the last line, possibly `""`.
+
+The read does not block the program: timers, subscriptions and other tasks
+go on while it waits for input.
 -}
 readLine : Task IOError String
 readLine =
@@ -66,7 +73,9 @@ readLine =
         |> Task.mapError IOErr.ofKernelTuple
 
 
-{-| Read all of stdin as a string.
+{-| Read all of stdin, to the end of input, as a string, exactly as it
+arrives (blank lines and the final newline included). Like `readLine`, it does
+not block the program while it waits.
 -}
 readAll : Task IOError String
 readAll =

@@ -1397,7 +1397,7 @@ ThreadLocalHeap::StackWalkCounts ThreadLocalHeap::collectStackRootsFromStackMap(
                 continue;
             }
             void* phys = alloc.resolve(potential);
-            if (phys != nullptr && alloc.isInHeap(phys)) {
+            if (alloc.isInHeap(phys)) {
                 sm_roots.push(slot);
             }
         }

@@ -12,6 +12,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "eco-system/Core/IoReactor.hpp"
+#include "platform/TestHooks.hpp"
 
 #include <atomic>
 #include <cassert>
@@ -20,6 +21,7 @@
 #include <climits>
 #include <condition_variable>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <deque>
 #include <exception>
@@ -217,7 +219,10 @@ struct IoReactor::Impl {
     }
 
     // Creates the kernel event set and registers the wake event in it; returns false, with errno set, on failure.
+    // On failure the descriptors it opened are closed again and `pollFd`/`wakeFd` are back at -1.
     bool backendInit();
+    // Closes the descriptors a failed `backendInit` opened, keeping `errno` for the caller's message.
+    void backendInitFailed();
     // Makes the next or current backend wait return. May be called from any thread.
     void wake();
     // Consumes a wake that the last backend wait reported, so that it does not wake the next one.
@@ -303,18 +308,36 @@ struct IoReactor::Impl {
 // Backends
 // ---------------------------------------------------------------------------
 
+void IoReactor::Impl::backendInitFailed() {
+    const int saved = errno;
+#if !defined(ECO_IOR_STUB)
+    if (wakeFd >= 0) ::close(wakeFd);
+    if (pollFd >= 0) ::close(pollFd);
+#endif
+    wakeFd = -1;
+    pollFd = -1;
+    errno = saved;
+}
+
 #if defined(ECO_IOR_EPOLL)
 
 bool IoReactor::Impl::backendInit() {
     pollFd = ::epoll_create1(EPOLL_CLOEXEC);
     if (pollFd < 0) return false;
     wakeFd = ::eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK);
-    if (wakeFd < 0) return false;
+    if (wakeFd < 0) {
+        backendInitFailed();
+        return false;
+    }
     struct epoll_event ev;
     std::memset(&ev, 0, sizeof(ev));
     ev.events = EPOLLIN;   // level-triggered: stays ready until resetWake()
     ev.data.u64 = kWakeKey;
-    return ::epoll_ctl(pollFd, EPOLL_CTL_ADD, wakeFd, &ev) == 0;
+    if (::epoll_ctl(pollFd, EPOLL_CTL_ADD, wakeFd, &ev) != 0) {
+        backendInitFailed();
+        return false;
+    }
+    return true;
 }
 
 void IoReactor::Impl::wake() {
@@ -392,7 +415,11 @@ bool IoReactor::Impl::backendInit() {
     struct kevent kev;
     // EV_CLEAR: retrieving the event resets it.
     EV_SET(&kev, kWakeIdent, EVFILT_USER, EV_ADD | EV_CLEAR, 0, 0, keyData(kWakeKey));
-    return ::kevent(pollFd, &kev, 1, nullptr, 0, nullptr) == 0;
+    if (::kevent(pollFd, &kev, 1, nullptr, 0, nullptr) != 0) {
+        backendInitFailed();
+        return false;
+    }
+    return true;
 }
 
 void IoReactor::Impl::wake() {
@@ -474,8 +501,26 @@ IoReactor& IoReactor::instance() {
     return *r;
 }
 
+#if ECO_TEST_HOOKS && !defined(ECO_IOR_STUB)
+// Test-only (SOCK-15): whether `ECO_IOR_FAIL_INIT_FOR_TEST` is set to anything but empty or `0`, which makes
+// the reactor's construction fail as though the event loop could not be created, leaving `ok` false for the
+// life of the process. Read once, by the constructor.
+static bool forcedInitFailureForTest() {
+    const char* v = std::getenv("ECO_IOR_FAIL_INIT_FOR_TEST");
+    return v && *v && !(v[0] == '0' && v[1] == '\0');
+}
+#endif
+
 IoReactor::IoReactor() : impl_(new Impl()) {
 #if !defined(ECO_IOR_STUB)
+#if ECO_TEST_HOOKS
+    if (forcedInitFailureForTest()) {
+        std::fprintf(stderr, "[eco-system] IoReactor: cannot create the event loop (ECO_IOR_FAIL_INIT_FOR_TEST); "
+                             "socket IO is unavailable\n");
+        std::fflush(stderr);
+        return;
+    }
+#endif
     if (!impl_->backendInit()) {
         int e = errno;
         std::fprintf(stderr, "[eco-system] IoReactor: cannot create the event loop (%s); socket IO is unavailable\n",
@@ -497,14 +542,17 @@ IoReactor::IoReactor() : impl_(new Impl()) {
 #endif
 }
 
-void IoReactor::submit(std::function<void()> fn) {
-    if (!impl_->ok || !fn) return;   // Windows stub / no event loop: dropped
+bool IoReactor::submit(std::function<void()> fn) {
+    if (!impl_->ok || !fn) return false;   // Windows stub / no event loop: dropped
     {
         std::lock_guard<std::mutex> lk(impl_->cmdMu);
         impl_->cmds.push_back(std::move(fn));
     }
     impl_->wake();   // after the push, outside the mutex
+    return true;
 }
+
+bool IoReactor::ok() const { return impl_->ok; }
 
 uint64_t IoReactor::add(std::shared_ptr<IoHandler> h, int fd) {
     ECO_IOR_REACTOR_ONLY();

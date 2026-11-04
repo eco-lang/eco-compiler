@@ -32,6 +32,7 @@
 #include "eco-system/Stream/StreamTable.hpp"
 
 #include "allocator/RootedSlots.hpp"
+#include "platform/HttpService.hpp"
 
 #include <exception>
 #include <string>
@@ -93,7 +94,6 @@ void decodeSend(HPointer captured, HttpRequestSpec& spec, int64_t& streamId) {
 
     for (alloc::ListCursor c(headers); !c.done(); c.next()) {
         void* hp = Allocator::instance().resolve(c.current().p);
-        if (!hp) continue;
         Custom* h = static_cast<Custom*>(hp);
         HPointer nameHP = h->values[0].p;
         HPointer valueHP = h->values[1].p;
@@ -241,6 +241,16 @@ HPointer httpStreamSendBody(HPointer captured, HPointer resume) {
         auto& svc = HttpStreamService::instance();
         addDrainSource(&httpStreamDrain, &httpStreamReady);
 
+        if (!::Elm::Platform::HttpService::isHttpToken(spec.method)) {
+            // An empty method, or one with a space, CR/LF or other separator, is not
+            // HTTP (and could inject a request line): nothing is sent, as elm/http's
+            // kernel (HttpService) refuses it too.
+            HttpEvent ev;
+            ev.kind = HttpOutcome::BadUrl;
+            ev.badUrl = spec.url;
+            resumeWith(resume, ev, -1);
+            return alloc::unit();
+        }
         if (spec.bodyKind == 2) {
             StreamPair* src = streamTable().find(streamId);
             if (src && streamReadLocked(src)) {

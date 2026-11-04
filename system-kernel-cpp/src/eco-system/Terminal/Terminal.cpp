@@ -2,7 +2,10 @@
 //
 // Raw mode keeps one piece of process-wide state, `TtyState`, used on the eco thread and by the exit handler. The
 // original mode of fd 0 is read once, at the first request, and every restore puts back that same copy. The exit
-// handler is registered at that moment, with `std::atexit`, and restores only while raw mode is on.
+// handler is registered at that moment, with `std::atexit`, and restores only while raw mode is on. So is a pre-fatal
+// hook (`Elm::Platform::addPreFatalHook`), which `reportFatal` runs before it aborts, and which likewise restores only
+// while raw mode is on. Other abnormal endings (`std::abort` called directly, a signal other than SIGINT and SIGTERM)
+// leave raw mode on (decision D3 of plans/kernel-lib-bug-fixes.md).
 //
 // Raw mode clears the input flags BRKINT, ICRNL, INPCK, ISTRIP and IXON and the local flags ECHO, ICANON, IEXTEN and
 // ISIG, sets 8-bit characters, keeps output newline translation (ONLCR), and makes each read return after one byte.
@@ -17,6 +20,7 @@
 #include "eco-system/Terminal/Terminal.hpp"
 
 #include "eco-system/Core/SignalService.hpp"
+#include "platform/Fatal.hpp"
 
 #include <cerrno>
 #include <cstdlib>
@@ -79,9 +83,20 @@ int terminalColorDepth() {
 
 std::string terminalTitleSequence(const std::string& title) {
     std::string out = "\x1b]2;";
-    for (char ch : title) {
-        unsigned char c = static_cast<unsigned char>(ch);
-        if (c >= 0x20 && c != 0x7f) out.push_back(ch);
+    const size_t n = title.size();
+    for (size_t i = 0; i < n; ++i) {
+        unsigned char c = static_cast<unsigned char>(title[i]);
+        if (c < 0x20 || c == 0x7f) continue;
+        // A C1 control U+0080..U+009F is C2 80..C2 9F in UTF-8; ST (U+009C) and CSI (U+009B) among them would
+        // end or corrupt the sequence on terminals that read 8-bit C1. A lone C2 at the end is kept.
+        if (c == 0xC2 && i + 1 < n) {
+            unsigned char d = static_cast<unsigned char>(title[i + 1]);
+            if (d >= 0x80 && d <= 0x9F) {
+                ++i;
+                continue;
+            }
+        }
+        out.push_back(static_cast<char>(c));
     }
     out.push_back('\x07');
     return out;
@@ -93,7 +108,7 @@ namespace {
 
 /// The raw-mode state of fd 0. Used on the eco thread, and read by `restoreAtExit` on whichever thread exits.
 struct TtyState {
-    bool saved = false;          ///< Whether `original` holds fd 0's mode, read at the first request.
+    bool saved = false;          ///< Whether `original` holds fd 0's mode, read when raw mode last went on.
     struct termios original {};
     bool raw = false;            ///< Whether raw mode is on.
     /// The internal SIGINT and SIGTERM listeners while raw mode is on; 0 when off, or when `addListener` refused.
@@ -137,6 +152,14 @@ void restoreAtExit() {
     if (tty().raw) restoreOriginal();
 }
 
+/// Restores the original mode if raw mode is on, at once (TCSANOW: output that cannot drain must not block a fatal
+/// end) and with a single attempt. This is the pre-fatal hook `reportFatal` runs; it may run on any thread, so it only
+/// reads the state and makes one system call.
+void restoreAtFatal() {
+    auto& s = tty();
+    if (s.raw && s.saved) (void)::tcsetattr(0, TCSANOW, &s.original);
+}
+
 /// Handles SIGINT or SIGTERM while raw mode is on: unless `signo` has another listener, restores the original mode,
 /// gives the signal its previous effect, and turns raw mode back on if the process is still running.
 void rawModeSignal(int signo, void*) {
@@ -152,18 +175,26 @@ void rawModeSignal(int signo, void*) {
 void setRaw(bool on) {
     auto& s = tty();
     if (!::isatty(0)) return;
-    if (!s.saved) {
-        if (::tcgetattr(0, &s.original) != 0) return;
-        s.saved = true;
-        std::atexit(&restoreAtExit);
+    if (on == s.raw) return;   // already in force: nothing is read or saved
+    if (on) {
+        // The mode to restore is the one in force now, just before raw mode goes on, so a change made while
+        // raw mode was off (as `stty` makes) is what exit restores.
+        struct termios cur;
+        if (::tcgetattr(0, &cur) != 0) return;
+        s.original = cur;
+        if (!s.saved) {
+            s.saved = true;
+            std::atexit(&restoreAtExit);
+            (void)::Elm::Platform::addPreFatalHook(&restoreAtFatal);
+        }
     }
     auto& svc = SignalService::instance();
-    if (on && !s.raw) {
+    if (on) {
         if (!applyRaw()) return;
         s.raw = true;
         s.sigint = svc.addListener(SIGINT, &rawModeSignal, nullptr);
         s.sigterm = svc.addListener(SIGTERM, &rawModeSignal, nullptr);
-    } else if (!on && s.raw) {
+    } else {
         restoreOriginal();
         s.raw = false;
         svc.removeListener(s.sigint);

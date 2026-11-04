@@ -1123,9 +1123,14 @@ instanceClosureResult ctx var kernelPrefix home name monoType arity =
 
 {-| Generates a list literal. `[]` is the embedded Nil constant. A longer list
 is built from the last element forwards, one `eco.construct.list` per element
-onto the Nil constant; an element whose SSA type is unboxable is stored
-unboxed, and any other is boxed first. The list's type is registered in the
-type table either way.
+onto the Nil constant. The head slot follows the static layout of the element
+type, as for tuples and records (REP\_HEAP\_001, HEAP\_046): an Int, Float or
+Char element is coerced to its ABI type and stored unboxed, which unboxes an
+element expression that yields `!eco.value` (a `Debug.log` call, for one), and
+any other element is boxed first. Compiled readers of a `List Int` read the
+head word as a raw Int (the list-cursor walk does not look at the cell's
+kind), so the kind must not depend on the element's SSA type. The list's type
+is registered in the type table either way.
 -}
 generateList : Ctx.Context -> List Mono.MonoExpr -> Mono.MonoType -> ExprResult
 generateList ctx items listType =
@@ -1157,6 +1162,17 @@ generateList ctx items listType =
                 ( ctx2, nilOp ) =
                     Ops.ecoConstantNil ctx1 nilVar
 
+                -- The head slot's type in the static layout: i64, f64 or i32
+                -- for an Int, Float or Char element, else !eco.value.
+                headSlotType : MlirType
+                headSlotType =
+                    case listType of
+                        Mono.MList _ elemType ->
+                            Types.monoTypeToAbi elemType
+
+                        _ ->
+                            Types.ecoValue
+
                 ( consOpsReversed, finalVar, finalCtx ) =
                     List.foldr
                         (\item ( accOps, tailVar, accCtx ) ->
@@ -1164,22 +1180,19 @@ generateList ctx items listType =
                                 result : ExprResult
                                 result =
                                     generateExpr accCtx item
-
-                                -- Decided by the SSA type, which can differ
-                                -- from what the Mono type maps to.
-                                headUnboxed : Bool
-                                headUnboxed =
-                                    Types.isUnboxable result.resultType
                             in
-                            if headUnboxed then
+                            if Types.isUnboxable headSlotType then
                                 let
-                                    ( consVar, ctx3 ) =
-                                        Ctx.freshVar result.ctx
+                                    ( coerceOps, headVar, ctx3 ) =
+                                        coerceResultToType result.ctx result.resultVar result.resultType headSlotType
 
-                                    ( ctx4, consOp ) =
-                                        Ops.ecoConstructList ctx3 consVar ( result.resultVar, result.resultType ) ( tailVar, Types.ecoValue ) True
+                                    ( consVar, ctx4 ) =
+                                        Ctx.freshVar ctx3
+
+                                    ( ctx5, consOp ) =
+                                        Ops.ecoConstructList ctx4 consVar ( headVar, headSlotType ) ( tailVar, Types.ecoValue ) True
                                 in
-                                ( consOp :: List.reverse result.ops ++ accOps, consVar, ctx4 )
+                                ( consOp :: List.reverse coerceOps ++ List.reverse result.ops ++ accOps, consVar, ctx5 )
 
                             else
                                 let
@@ -3586,12 +3599,16 @@ arguments are passed as they are and the call is typed by the ABI of
 A kernel is checked in the same spirit. `Basics.logBase` becomes two
 `eco.float.log` ops and a division. A two-argument `Debug.log` becomes an
 `eco.dbg` op on the label and the boxed value, carrying type ids for both,
-and its value is the boxed value. `Debug.toString` becomes a call to
+and its value is the argument as it was generated, before boxing, so an Int,
+Float, Char or Bool keeps its immediate SSA type (REP\_SSA\_001). `Debug.toString` becomes a call to
 `Elm_Kernel_Debug_toString_typed` with the boxed value and its type id.
 `Bytes.encode` and `Bytes.decode` are fused when possible, as for the
 globals, and otherwise call their kernel symbols. Any other kernel is an
 intrinsic when admitted, and otherwise an `eco.call` to the symbol
-`Context.registerKernelInstance` chooses for its argument and result types.
+`Context.registerKernelInstance` chooses for its argument and result types;
+the result type is the kernel ABI's, except for the `JsArray` builders and
+`List.map2` to `map5`, whose variant the call's own result type selects
+(`KernelAbi.callInstanceResultType`).
 
 A local variable or any other callee expression is applied by `eco.papExtend`
 stage by stage, as in `generateClosureApplication`, and its value is coerced
@@ -4045,8 +4062,8 @@ generateSaturatedCallNoFusion ctx func args resultType callInfo =
                                 |> Ops.opBuilder.build
                     in
                     { ops = argOps ++ boxOps ++ [ dbgOp ]
-                    , resultVar = boxedValueVar
-                    , resultType = Types.ecoValue
+                    , resultVar = valueVar
+                    , resultType = valueType
                     , ctx = ctx2
                     , isTerminated = False
                     }
@@ -4298,7 +4315,7 @@ generateSaturatedCallNoFusion ctx func args resultType callInfo =
                                             , home = home
                                             , name = name
                                             , argTypes = elmSig.paramTypes
-                                            , resultType = elmSig.returnType
+                                            , resultType = KernelAbi.callInstanceResultType home name elmSig.returnType resultType
                                             }
 
                                         ( instanceAbi, ctx1c ) =

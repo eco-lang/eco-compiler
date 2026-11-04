@@ -51,6 +51,11 @@ public:
     // Returns the service, creating it and starting its worker thread on first use.
     static HttpService& instance();
 
+    // Returns whether `method` is an HTTP method token (RFC 9110 section 5.6.2): one or more of the letters,
+    // digits and ``!#$%&'*+-.^_`|~``. Only such a method can go on a request line; one with a space, a line
+    // break or any other character could split it, and the empty one leaves the request line without a method.
+    static bool isHttpToken(const std::string& method) noexcept;
+
     /**
      * The abort state of one request, shared between the submitter and the worker.
      *
@@ -84,9 +89,11 @@ public:
      * One HTTP request, as plain data handed to the worker.
      *
      * The worker sends `method` to `url` with `headers`, following redirects, and asks for any content
-     * encoding libcurl supports, decoding the response body before it is returned. An empty `method` means
-     * `GET`, but a request whose method is empty or `GET` and whose `body` is not empty is sent by libcurl as
-     * a `POST`. A `POST`, `PUT` or `PATCH` with an empty body is sent with a `Content-Length` of zero.
+     * encoding libcurl supports, decoding the response body before it is returned. A `method` that is not an
+     * HTTP token (`isHttpToken`), the empty one included, is not sent: the request ends with
+     * `ErrorKind::BadUrl`, as a browser's `XMLHttpRequest.open` refuses it. A `GET` whose `body` is not empty
+     * is sent by libcurl as a `POST`. A `POST`, `PUT` or `PATCH` with an empty body is sent with a
+     * `Content-Length` of zero.
      */
     struct Request {
         std::uint64_t token = 0;     // Copied into the `Result` and every `Progress` tick for this request.
@@ -116,20 +123,23 @@ public:
         Ok = 0,           // A response arrived, whatever its HTTP status.
         Timeout = 1,      // libcurl reported a timeout, including the request's own `timeoutMs`.
         NetworkError = 2, // Any other failure, including an aborted transfer and a failure to start libcurl.
-        BadUrl = 3,       // libcurl rejected the URL as malformed.
+        BadUrl = 3,       // The request was refused before it was sent: libcurl rejected the URL as malformed
+                          // or its scheme as unsupported, or the method is not an HTTP token (`isHttpToken`).
     };
 
     /**
      * The outcome of one request, as plain data handed back by the worker.
      *
-     * When `error` is not `ErrorKind::Ok`, only `token` and `error` are filled in.
+     * When `error` is not `ErrorKind::Ok`, only `token` and `error` are filled in, and also `finalUrl`, set to
+     * the request's URL, for `ErrorKind::BadUrl`.
      */
     struct Result {
         std::uint64_t token = 0;
         ErrorKind     error = ErrorKind::Ok;
         long          status = 0;
         std::string   statusText;   // Never filled in by the worker; always empty.
-        std::string   finalUrl;     // The URL of the last response, after any redirects.
+        std::string   finalUrl;     // The URL of the last response, after any redirects; for `BadUrl`, the
+                                    // request's URL.
         // Response headers in the order received, names lower-cased, from every response on the way, so a
         // redirected request includes the redirect's headers too.
         std::vector<std::pair<std::string, std::string>> headers;

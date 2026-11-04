@@ -120,7 +120,7 @@ HPointer failureFor(ErrShape shape, const char* what) {
     switch (shape) {
         case ErrShape::FErr:   return failFErr("EIO", w);
         case ErrShape::SErr:   return failSErr(1, w);
-        case ErrShape::RunErr: return failRun(0, "EIO", -1, "", "");
+        case ErrShape::RunErr: return failRun(0, "EIO", -1, "", w);
         case ErrShape::Never:  break;
     }
     ::Eco::Kernel::reportFatal(w.c_str());
@@ -130,8 +130,11 @@ HPointer asyncFailure(ErrShape shape, HPointer& resume, uint64_t token,
                       bool counted, const char* what) {
     auto& s = Scheduler::instance();
     if (token != 0) {
-        // A registration left behind would keep its closure alive for the rest of the run.
-        (void)s.takePendingResume(token);
+        // A registration left behind would keep its closure alive for the rest of the run. None left means
+        // the body completed the Task itself before it threw (and released the hold, if counted): the Task
+        // must not be resumed a second time, nor the hold released again.
+        HPointer parked = s.takePendingResume(token);
+        if (alloc::isNil(parked)) return alloc::unit();
     }
     HPointer task = failureFor(shape, what);
     Elm::StackRootGuard g(&task);

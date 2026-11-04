@@ -7,9 +7,9 @@ using namespace Eco::Kernel;
 using Elm::HPtr;
 
 HPtr Eco_Kernel_Env_lookup(HPtr name) {
-    return HPtr::fromBits(Env::lookup(name.toBits()));
+    ECO_KERNEL_GUARD( return HPtr::fromBits(Env::lookup(name.toBits())); )
 }
 
 HPtr Eco_Kernel_Env_rawArgs() {
-    return HPtr::fromBits(Env::rawArgs());
+    ECO_KERNEL_GUARD( return HPtr::fromBits(Env::rawArgs()); )
 }

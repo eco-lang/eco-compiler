@@ -402,6 +402,9 @@ node tools server mode args =
     (answered before any of them was) or not (refused, or answered only after one of them).
   - `big-header <n>`: raw frames: one GET with an `x-big` field of `n` bytes, sent without
     waiting for the server's SETTINGS; prints the response status (or the reset code).
+  - `authority <value|-> [host]`: raw frames: one GET of `/a` with that `:authority` (none for
+    `-`) and, with a `host` argument, a `host` field; prints the response status (or the reset
+    code).
   - `connect <protocol>`: an extended CONNECT (`:protocol`) to `/ws` after the server's SETTINGS;
     prints ENABLE_CONNECT_PROTOCOL, the response status, and how the stream ended.
   - `upload <n> <length|none>`: one POST of `n` bytes to `/b`, with a `content-length` or without
@@ -583,6 +586,19 @@ if (mode === 'concurrency') {
   const n = Number(argS || 3000);
   raw((s) => {
     s.write(frame(1, 5, 1, hpack([[':method', 'GET'], [':scheme', 'https'], [':authority', 'localhost'], [':path', '/big'], ['x-big', 'a'.repeat(n)]])));
+  }, (s, f) => {
+    if (f.type === 1 && f.sid === 1) { out('status ' + firstStatus(f.p)); s.end(); process.exit(0); }
+    if (f.type === 3 && f.sid === 1) { out('reset ' + codeName(f.p.readUInt32BE(0))); s.end(); process.exit(0); }
+  });
+} else if (mode === 'authority') {
+  // raw frames: one GET of /a with the :authority argS (none for "-") and, when a sixth argument is
+  // given, a host field with that value.
+  const h = [[':method', 'GET'], [':scheme', 'https']];
+  if (argS !== '-') h.push([':authority', argS]);
+  h.push([':path', '/a']);
+  if (process.argv[6] !== undefined) h.push(['host', process.argv[6]]);
+  raw((s) => {
+    s.write(frame(1, 5, 1, hpack(h)));
   }, (s, f) => {
     if (f.type === 1 && f.sid === 1) { out('status ' + firstStatus(f.p)); s.end(); process.exit(0); }
     if (f.type === 3 && f.sid === 1) { out('reset ' + codeName(f.p.readUInt32BE(0))); s.end(); process.exit(0); }

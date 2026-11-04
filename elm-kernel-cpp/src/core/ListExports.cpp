@@ -13,9 +13,13 @@
 //   have reallocated.
 // - A closure may expect an argument boxed or unboxed, and publishes which, with its result's kind, in
 //   its header. `kernelListMapN` boxes an unboxed element only when the closure expects that argument
-//   boxed, and keeps each result in the kind the closure returns, so `List.map2` to `map5` box no
-//   element or result that the closure takes or returns unboxed. The kind an element is passed in is
-//   its delivery kind.
+//   boxed, so `List.map2` to `map5` box no element that the closure takes unboxed. The kind an element
+//   is passed in is its delivery kind. The unsuffixed exports keep each result in the kind the closure
+//   returns; the `_Int`, `_Float` and `_Char` exports, which the compiler selects by the element type of
+//   the list a call returns, ask the closure for that kind instead (a boxed result is unboxed), because
+//   code compiled for a `List Int` reads each head as a raw Int (HEAP_046). A polymorphic-result kernel
+//   closure such as `Debug.log "x"` returns its result boxed, so only those variants give a `List Int`
+//   built with it the layout its readers expect.
 // - Sorting only permutes, so a sorted list keeps its input's slot kinds. `sortBy` and `sortWith` take a
 //   kinded snapshot of the input: the boxed form of each element, for the closure, and its kind and
 //   original bits, from which `listFromPermutation` rebuilds the result.
@@ -107,28 +111,6 @@ std::vector<uint64_t> listToVectorU64(HPointer list) {
     return result;
 }
 
-/// Returns each element of `list`'s 64 bits as a pointer, without boxing or resolving anything. Has no
-/// callers; an unboxed element's bits are not an address.
-std::vector<void*> listToVector(HPointer list) {
-    std::vector<void*> result;
-    for (alloc::ListCursor c(list); !c.done(); c.next()) {
-        result.push_back(reinterpret_cast<void*>(c.current().i));
-    }
-    return result;
-}
-
-
-/// Returns the head of the cons cell `cons`, whose header is `hdr`, as an encoded boxed value, boxing an
-/// unboxed head at its slot kind, which makes it a GC point. Has no callers.
-inline uint64_t getConsHead(Cons* cons, Header* hdr) {
-    uint32_t kind = Elm::tupleFieldKind(hdr->unboxed, 0);
-    if (kind != 0) {
-        return Export::encode(alloc::boxElement(cons->head, kind));
-    } else {
-        return Export::encode(cons->head.p);
-    }
-}
-
 /// A copy of one list element, taken from its spine node.
 ///
 /// An unboxed `head` stays correct after a GC; a boxed one is an unrooted HPointer and may be stale after
@@ -154,7 +136,6 @@ inline bool listCurrentAt(HPointer& node, uint32_t& idx, ConsBits& out) {
     while (true) {
         if (alloc::isNil(node) || node.ptr_ind != 0) return false;
         void* obj = allocator.resolve(node);
-        if (!obj) return false;
         Header* hdr = static_cast<Header*>(obj);
         if (hdr->tag == Tag_Cons) {
             Cons* c = static_cast<Cons*>(obj);
@@ -190,7 +171,6 @@ inline bool listCurrentAt(HPointer& node, uint32_t& idx, ConsBits& out) {
 inline void listStepAt(HPointer& node, uint32_t& idx) {
     if (alloc::isNil(node) || node.ptr_ind != 0) return;
     void* obj = Elm::Allocator::instance().resolve(node);
-    if (!obj) { node = alloc::listNil(); return; }
     Header* hdr = static_cast<Header*>(obj);
     if (hdr->tag == Tag_Cons) {
         node = static_cast<Cons*>(obj)->tail;
@@ -280,152 +260,24 @@ inline HPointer unboxableVectorToList(const std::vector<Unboxable>& vec,
     return result;
 }
 
-} // anonymous namespace
-
-extern "C" {
-
-// The head is stored boxed; the `_Int`, `_Float` and `_Char` variants below store theirs unboxed.
-HPtr Elm_Kernel_List_cons(HPtr head, HPtr tail) {
-    uint64_t head_bits = head.toBits();
-    uint64_t tail_bits = tail.toBits();
-    Unboxable headVal;
-    headVal.p = Export::decode(head_bits);
-    HPointer result = List::cons(headVal, Export::decode(tail_bits), true);
-    return HPtr::fromBits(Export::encode(result));
-}
-
-// Each variant stores its head unboxed, with slot kind 1 (Int), 2 (Float) or 3 (Char) in the cell.
-HPtr Elm_Kernel_List_cons_Int(int64_t head, HPtr tail) {
-    HPointer result = alloc::cons(alloc::unboxedInt(head), Export::decode(tail.toBits()),
-                                  /*head_kind=*/static_cast<uint8_t>(1));
-    return HPtr::fromBits(Export::encode(result));
-}
-
-HPtr Elm_Kernel_List_cons_Float(double head, HPtr tail) {
-    HPointer result = alloc::cons(alloc::unboxedFloat(head), Export::decode(tail.toBits()),
-                                  /*head_kind=*/static_cast<uint8_t>(2));
-    return HPtr::fromBits(Export::encode(result));
-}
-
-// The code point is the low 32 bits of `head_raw`; the parameter is 64 bits wide and the upper bits are
-// ignored.
-HPtr Elm_Kernel_List_cons_Char(uint64_t head_raw, HPtr tail) {
-    HPointer result = alloc::cons(alloc::unboxedChar(static_cast<u32>(head_raw & 0xFFFFFFFFu)), Export::decode(tail.toBits()),
-                                  /*head_kind=*/static_cast<uint8_t>(3));
-    return HPtr::fromBits(Export::encode(result));
-}
-
-HPtr Elm_Kernel_List_fromArray(HPtr array) {
-    uint64_t array_bits = array.toBits();
-    HPointer hp = Export::decode(array_bits);
-    if (hp.ptr_ind != 0) {
-        return array;
-    }
-
-    void* arr_ptr = Export::toPtr(array_bits);
-    if (!arr_ptr) {
-        return HPtr::fromBits(Export::encode(alloc::listNil()));
-    }
-
-    Header* hdr = static_cast<Header*>(arr_ptr);
-
-    // A list is returned as it is: kernels such as `String.split` already return lists here.
-    if (hdr->tag == Tag_Cons || hdr->tag == Tag_ConsChunk) {
-        return array;
-    }
-
-    if (hdr->tag != Tag_Array) {
-        return HPtr::fromBits(Export::encode(alloc::listNil()));
-    }
-
-    ElmArray* elmArr = static_cast<ElmArray*>(arr_ptr);
-    u32 len = elmArr->length;
-    bool isUnboxed = elmArr->header.unboxed != 0;
-
-    // Each cons may move the array, so it is rooted and re-resolved after every cons; `alloc::cons` roots
-    // its own head and tail. `List::cons` stores an unboxed element with slot kind Int, whatever the
-    // array's element kind.
-    HPointer arrHP = hp;
-    Elm::StackRootGuard arrRoot(&arrHP);
-
-    HPointer result = alloc::listNil();
-    for (u32 i = len; i > 0; i--) {
-        Unboxable head = elmArr->elements[i - 1];
-        result = List::cons(head, result, !isUnboxed);
-        elmArr = static_cast<ElmArray*>(Allocator::instance().resolve(arrHP));
-    }
-
-    return HPtr::fromBits(Export::encode(result));
-}
-
-HPtr Elm_Kernel_List_toArray(HPtr list) {
-    uint64_t list_bits = list.toBits();
-    // A list is returned as it is, for the same reason as in `List.fromArray`.
-    HPointer hp = Export::decode(list_bits);
-    if (hp.ptr_ind != 0) {
-        return list;
-    }
-    void* ptr = Export::toPtr(list_bits);
-    if (ptr) {
-        Header* hdr = static_cast<Header*>(ptr);
-        if (hdr->tag == Tag_Cons || hdr->tag == Tag_ConsChunk) {
-            return list;
-        }
-    }
-
-    // A heap object that is not a list node reaches here. `ListCursor` ends its walk at such a node,
-    // so `vec` is empty and the result is an Array of length 0.
-    std::vector<uint64_t> vec = listToVectorU64(Export::decode(list_bits));
-
-    // The values are rooted across the array allocation as one range.
-    std::vector<HPointer> rooted;
-    rooted.reserve(vec.size());
-    for (uint64_t e : vec) rooted.push_back(Export::decode(e));
-
-    auto& rs = Allocator::instance().getRootSet();
-    size_t saved = rs.stackRangePoint();
-    if (!rooted.empty()) {
-        rs.pushStackRootRange(rooted.data(), rooted.size(),
-                              /*hpointer_mask=*/~uint64_t(0));
-    }
-
-    HPointer arr = alloc::allocArray(static_cast<u32>(rooted.size()));
-    void* arr_ptr = Allocator::instance().resolve(arr);
-    ElmArray* elmArr = static_cast<ElmArray*>(arr_ptr);
-
-    for (size_t i = 0; i < rooted.size(); i++) {
-        elmArr->elements[i].p = rooted[i];
-    }
-    elmArr->length = static_cast<u32>(rooted.size());
-    elmArr->header.unboxed = 0;  // Elements are boxed
-
-#if ECO_HEAP_VALIDATE
-    for (size_t i = 0; i < rooted.size(); i++)
-        Elm::alloc::validateNurseryHPtr(elmArr->elements[i].p);
-#endif
-
-    rs.restoreStackRangePoint(saved);
-    return HPtr::fromBits(Export::encode(arr));
-}
-
-//===----------------------------------------------------------------------===//
-// Higher-order List functions (implemented with closure calling)
-//===----------------------------------------------------------------------===//
+/// The `wantedKind` of `kernelListMapN` that keeps the kind the closure returns its result in.
+constexpr int kKeepResultKind = -1;
 
 /// Returns the list of `closureHP` applied to the elements of the `n_args` lists in `lists` taken in step,
 /// first to last, as long as the shortest of them. A GC point; the closure is called once per result, in
 /// order.
 ///
-/// `n_args` must be 2 to 5; nothing checks it. An unboxed element is boxed only when the closure expects
-/// that argument boxed, and is otherwise passed in its own kind. The result's cells all have the slot kind
+/// `n_args` must be 2 to 5, which is asserted. An unboxed element is boxed only when the closure expects
+/// that argument boxed, and is otherwise passed in its own kind. The result's cells all have slot kind
+/// `wantedKind` (0 to 3), each closure result being asked for in it, or, for `kKeepResultKind`, the kind
 /// the closure returns, read once from its header.
 ///
 /// `lists` and `closureHP` are rooted for the call and written to: each `lists[i]` is advanced along its
 /// list, and both are updated by any GC.
-HPointer kernelListMapN(int n_args, HPointer* lists, HPointer& closureHP) {
-    static_assert(true, "n_args ∈ {2,3,4,5}");
+HPointer kernelListMapN(int n_args, HPointer* lists, HPointer& closureHP, int wantedKind) {
     // The most input lists any `List.mapN` export passes.
     constexpr int kMaxArgs = 5;
+    assert(n_args >= 2 && n_args <= kMaxArgs && "kernelListMapN: n_args must be 2 to 5");
 
     auto& allocator = Allocator::instance();
     auto& rs = allocator.getRootSet();
@@ -436,7 +288,9 @@ HPointer kernelListMapN(int n_args, HPointer* lists, HPointer& closureHP) {
     for (int i = 0; i < n_args; ++i) {
         closureSlotKinds[i] = closureNewArgKind(meta, static_cast<uint32_t>(i));
     }
-    const uint8_t resultKind = meta.result_kind;
+    assert(wantedKind >= kKeepResultKind && wantedKind <= 3 && "kernelListMapN: bad wantedKind");
+    const uint8_t resultKind =
+        wantedKind == kKeepResultKind ? meta.result_kind : static_cast<uint8_t>(wantedKind);
 
     std::vector<Unboxable> results;
 
@@ -565,87 +419,6 @@ HPointer kernelListMapN(int n_args, HPointer* lists, HPointer& closureHP) {
     return listResult;
 }
 
-HPtr Elm_Kernel_List_map2(HPtr closure, HPtr xs, HPtr ys) {
-    HPointer lists[2] = {
-        Export::decode(xs.toBits()),
-        Export::decode(ys.toBits()),
-    };
-    HPointer closureHP = Export::decode(closure.toBits());
-    HPointer result = kernelListMapN(2, lists, closureHP);
-    return HPtr::fromBits(Export::encode(result));
-}
-
-HPtr Elm_Kernel_List_map3(HPtr closure, HPtr xs, HPtr ys, HPtr zs) {
-    HPointer lists[3] = {
-        Export::decode(xs.toBits()),
-        Export::decode(ys.toBits()),
-        Export::decode(zs.toBits()),
-    };
-    HPointer closureHP = Export::decode(closure.toBits());
-    HPointer result = kernelListMapN(3, lists, closureHP);
-    return HPtr::fromBits(Export::encode(result));
-}
-
-HPtr Elm_Kernel_List_map4(HPtr closure, HPtr ws, HPtr xs, HPtr ys, HPtr zs) {
-    HPointer lists[4] = {
-        Export::decode(ws.toBits()),
-        Export::decode(xs.toBits()),
-        Export::decode(ys.toBits()),
-        Export::decode(zs.toBits()),
-    };
-    HPointer closureHP = Export::decode(closure.toBits());
-    HPointer result = kernelListMapN(4, lists, closureHP);
-    return HPtr::fromBits(Export::encode(result));
-}
-
-HPtr Elm_Kernel_List_map5(HPtr closure, HPtr vs, HPtr ws,
-                           HPtr xs, HPtr ys, HPtr zs) {
-    HPointer lists[5] = {
-        Export::decode(vs.toBits()),
-        Export::decode(ws.toBits()),
-        Export::decode(xs.toBits()),
-        Export::decode(ys.toBits()),
-        Export::decode(zs.toBits()),
-    };
-    HPointer closureHP = Export::decode(closure.toBits());
-    HPointer result = kernelListMapN(5, lists, closureHP);
-    return HPtr::fromBits(Export::encode(result));
-}
-
-// ============================================================================
-// Closure-free combinators: `reverse`, `append`, `concat`, `take`, `drop`.
-//
-// Each forwards to the `ListOps` function of the same name, which gives its contract. The results keep
-// their elements' slot kinds, and a list one of them builds may be chunk views when chunk production is
-// enabled.
-// ============================================================================
-
-HPtr Elm_Kernel_List_reverse(HPtr list) {
-    HPointer result = Elm::ListOps::reverse(Export::decode(list.toBits()));
-    return HPtr::fromBits(Export::encode(result));
-}
-
-HPtr Elm_Kernel_List_append(HPtr a, HPtr b) {
-    HPointer result = Elm::ListOps::append(Export::decode(a.toBits()),
-                                           Export::decode(b.toBits()));
-    return HPtr::fromBits(Export::encode(result));
-}
-
-HPtr Elm_Kernel_List_concat(HPtr listOfLists) {
-    HPointer result = Elm::ListOps::concat(Export::decode(listOfLists.toBits()));
-    return HPtr::fromBits(Export::encode(result));
-}
-
-HPtr Elm_Kernel_List_take(int64_t n, HPtr list) {
-    HPointer result = Elm::ListOps::take(n, Export::decode(list.toBits()));
-    return HPtr::fromBits(Export::encode(result));
-}
-
-HPtr Elm_Kernel_List_drop(int64_t n, HPtr list) {
-    HPointer result = Elm::ListOps::drop(n, Export::decode(list.toBits()));
-    return HPtr::fromBits(Export::encode(result));
-}
-
 /// Fills `boxed`, `kinds` and `scalars` with the kinded snapshot of `list`, one entry per element, first
 /// to last, replacing what they held. A GC point.
 ///
@@ -657,10 +430,10 @@ HPtr Elm_Kernel_List_drop(int64_t n, HPtr list) {
 /// `scalars[i]` is meaningful only when `kinds[i]` is not 0: for a boxed element it is an unrooted copy
 /// that may be stale after the next allocation, and `boxed[i]` is read instead. On return nothing is
 /// rooted; the caller roots `boxed` across any later GC point, and needs root nothing else.
-static void listToKindedVectors(HPointer list,
-                                std::vector<HPointer>& boxed,
-                                std::vector<uint8_t>& kinds,
-                                std::vector<Unboxable>& scalars) {
+void listToKindedVectors(HPointer list,
+                         std::vector<HPointer>& boxed,
+                         std::vector<uint8_t>& kinds,
+                         std::vector<Unboxable>& scalars) {
     Allocator& allocator = Allocator::instance();
 
     // As in `listToVectorU64`, the walk finishes before anything is boxed.
@@ -699,10 +472,10 @@ static void listToKindedVectors(HPointer list,
 ///
 /// The values in `boxed` must be current on entry, but need not be rooted: they are copied into a buffer
 /// that `alloc::listFromUnboxables` roots, before anything allocates.
-static HPointer listFromPermutation(const std::vector<size_t>& indices,
-                                    const std::vector<HPointer>& boxed,
-                                    const std::vector<uint8_t>& kinds,
-                                    const std::vector<Unboxable>& scalars) {
+HPointer listFromPermutation(const std::vector<size_t>& indices,
+                             const std::vector<HPointer>& boxed,
+                             const std::vector<uint8_t>& kinds,
+                             const std::vector<Unboxable>& scalars) {
     std::vector<std::pair<Unboxable, u8>> elems;
     elems.reserve(indices.size());
     for (size_t idx : indices) {
@@ -715,6 +488,249 @@ static HPointer listFromPermutation(const std::vector<size_t>& indices,
         }
     }
     return alloc::listFromUnboxables(elems);
+}
+
+// The bodies of the `List.map2` to `map5` exports, for a result kind `wantedKind` as `kernelListMapN` takes it.
+
+HPtr listMap2(HPtr closure, HPtr xs, HPtr ys, int wantedKind) {
+    HPointer lists[2] = {
+        Export::decode(xs.toBits()),
+        Export::decode(ys.toBits()),
+    };
+    HPointer closureHP = Export::decode(closure.toBits());
+    HPointer result = kernelListMapN(2, lists, closureHP, wantedKind);
+    return HPtr::fromBits(Export::encode(result));
+}
+
+HPtr listMap3(HPtr closure, HPtr xs, HPtr ys, HPtr zs, int wantedKind) {
+    HPointer lists[3] = {
+        Export::decode(xs.toBits()),
+        Export::decode(ys.toBits()),
+        Export::decode(zs.toBits()),
+    };
+    HPointer closureHP = Export::decode(closure.toBits());
+    HPointer result = kernelListMapN(3, lists, closureHP, wantedKind);
+    return HPtr::fromBits(Export::encode(result));
+}
+
+HPtr listMap4(HPtr closure, HPtr ws, HPtr xs, HPtr ys, HPtr zs, int wantedKind) {
+    HPointer lists[4] = {
+        Export::decode(ws.toBits()),
+        Export::decode(xs.toBits()),
+        Export::decode(ys.toBits()),
+        Export::decode(zs.toBits()),
+    };
+    HPointer closureHP = Export::decode(closure.toBits());
+    HPointer result = kernelListMapN(4, lists, closureHP, wantedKind);
+    return HPtr::fromBits(Export::encode(result));
+}
+
+HPtr listMap5(HPtr closure, HPtr vs, HPtr ws, HPtr xs, HPtr ys, HPtr zs, int wantedKind) {
+    HPointer lists[5] = {
+        Export::decode(vs.toBits()),
+        Export::decode(ws.toBits()),
+        Export::decode(xs.toBits()),
+        Export::decode(ys.toBits()),
+        Export::decode(zs.toBits()),
+    };
+    HPointer closureHP = Export::decode(closure.toBits());
+    HPointer result = kernelListMapN(5, lists, closureHP, wantedKind);
+    return HPtr::fromBits(Export::encode(result));
+}
+
+} // anonymous namespace
+
+extern "C" {
+
+// The head is stored boxed; the `_Int`, `_Float` and `_Char` variants below store theirs unboxed.
+HPtr Elm_Kernel_List_cons(HPtr head, HPtr tail) {
+    uint64_t head_bits = head.toBits();
+    uint64_t tail_bits = tail.toBits();
+    Unboxable headVal;
+    headVal.p = Export::decode(head_bits);
+    HPointer result = List::cons(headVal, Export::decode(tail_bits), true);
+    return HPtr::fromBits(Export::encode(result));
+}
+
+// Each variant stores its head unboxed, with slot kind 1 (Int), 2 (Float) or 3 (Char) in the cell.
+HPtr Elm_Kernel_List_cons_Int(int64_t head, HPtr tail) {
+    HPointer result = alloc::cons(alloc::unboxedInt(head), Export::decode(tail.toBits()),
+                                  /*head_kind=*/static_cast<uint8_t>(1));
+    return HPtr::fromBits(Export::encode(result));
+}
+
+HPtr Elm_Kernel_List_cons_Float(double head, HPtr tail) {
+    HPointer result = alloc::cons(alloc::unboxedFloat(head), Export::decode(tail.toBits()),
+                                  /*head_kind=*/static_cast<uint8_t>(2));
+    return HPtr::fromBits(Export::encode(result));
+}
+
+// The code point is the low 32 bits of `head_raw`; the parameter is 64 bits wide and the upper bits are
+// ignored.
+HPtr Elm_Kernel_List_cons_Char(uint64_t head_raw, HPtr tail) {
+    HPointer result = alloc::cons(alloc::unboxedChar(static_cast<u32>(head_raw & 0xFFFFFFFFu)), Export::decode(tail.toBits()),
+                                  /*head_kind=*/static_cast<uint8_t>(3));
+    return HPtr::fromBits(Export::encode(result));
+}
+
+HPtr Elm_Kernel_List_fromArray(HPtr array) {
+    uint64_t array_bits = array.toBits();
+    HPointer hp = Export::decode(array_bits);
+    if (hp.ptr_ind != 0) {
+        return array;
+    }
+
+    void* arr_ptr = Export::toPtr(array_bits);
+    if (!arr_ptr) {
+        return HPtr::fromBits(Export::encode(alloc::listNil()));
+    }
+
+    Header* hdr = static_cast<Header*>(arr_ptr);
+
+    // A list is returned as it is: kernels such as `String.split` already return lists here, and the
+    // kernel is typed `List a -> List a`, so nothing else can reach it.
+    assert((hdr->tag == Tag_Cons || hdr->tag == Tag_ConsChunk) && "List.fromArray: argument is not a list");
+    (void)hdr;
+    return array;
+}
+
+HPtr Elm_Kernel_List_toArray(HPtr list) {
+    uint64_t list_bits = list.toBits();
+    // A list is returned as it is, for the same reason as in `List.fromArray`.
+    HPointer hp = Export::decode(list_bits);
+    if (hp.ptr_ind != 0) {
+        return list;
+    }
+    void* ptr = Export::toPtr(list_bits);
+    if (ptr) {
+        Header* hdr = static_cast<Header*>(ptr);
+        if (hdr->tag == Tag_Cons || hdr->tag == Tag_ConsChunk) {
+            return list;
+        }
+    }
+
+    // A heap object that is not a list node reaches here. `ListCursor` ends its walk at such a node,
+    // so `vec` is empty and the result is an Array of length 0.
+    std::vector<uint64_t> vec = listToVectorU64(Export::decode(list_bits));
+
+    // The values are rooted across the array allocation as one range.
+    std::vector<HPointer> rooted;
+    rooted.reserve(vec.size());
+    for (uint64_t e : vec) rooted.push_back(Export::decode(e));
+
+    auto& rs = Allocator::instance().getRootSet();
+    size_t saved = rs.stackRangePoint();
+    if (!rooted.empty()) {
+        rs.pushStackRootRange(rooted.data(), rooted.size(),
+                              /*hpointer_mask=*/~uint64_t(0));
+    }
+
+    HPointer arr = alloc::allocArray(static_cast<u32>(rooted.size()));
+    void* arr_ptr = Allocator::instance().resolve(arr);
+    ElmArray* elmArr = static_cast<ElmArray*>(arr_ptr);
+
+    for (size_t i = 0; i < rooted.size(); i++) {
+        elmArr->elements[i].p = rooted[i];
+    }
+    elmArr->length = static_cast<u32>(rooted.size());
+    elmArr->header.unboxed = 0;  // Elements are boxed
+
+#if ECO_HEAP_VALIDATE
+    for (size_t i = 0; i < rooted.size(); i++)
+        Elm::alloc::validateNurseryHPtr(elmArr->elements[i].p);
+#endif
+
+    rs.restoreStackRangePoint(saved);
+    return HPtr::fromBits(Export::encode(arr));
+}
+
+//===----------------------------------------------------------------------===//
+// Higher-order List functions (implemented with closure calling)
+//===----------------------------------------------------------------------===//
+
+
+// The unsuffixed forms keep the closure's result kind; the `_Int`, `_Float` and `_Char` forms store every
+// result in that kind (see the file comment).
+
+HPtr Elm_Kernel_List_map2(HPtr closure, HPtr xs, HPtr ys) {
+    return listMap2(closure, xs, ys, kKeepResultKind);
+}
+HPtr Elm_Kernel_List_map2_Int(HPtr closure, HPtr xs, HPtr ys) { return listMap2(closure, xs, ys, 1); }
+HPtr Elm_Kernel_List_map2_Float(HPtr closure, HPtr xs, HPtr ys) { return listMap2(closure, xs, ys, 2); }
+HPtr Elm_Kernel_List_map2_Char(HPtr closure, HPtr xs, HPtr ys) { return listMap2(closure, xs, ys, 3); }
+
+HPtr Elm_Kernel_List_map3(HPtr closure, HPtr xs, HPtr ys, HPtr zs) {
+    return listMap3(closure, xs, ys, zs, kKeepResultKind);
+}
+HPtr Elm_Kernel_List_map3_Int(HPtr closure, HPtr xs, HPtr ys, HPtr zs) {
+    return listMap3(closure, xs, ys, zs, 1);
+}
+HPtr Elm_Kernel_List_map3_Float(HPtr closure, HPtr xs, HPtr ys, HPtr zs) {
+    return listMap3(closure, xs, ys, zs, 2);
+}
+HPtr Elm_Kernel_List_map3_Char(HPtr closure, HPtr xs, HPtr ys, HPtr zs) {
+    return listMap3(closure, xs, ys, zs, 3);
+}
+
+HPtr Elm_Kernel_List_map4(HPtr closure, HPtr ws, HPtr xs, HPtr ys, HPtr zs) {
+    return listMap4(closure, ws, xs, ys, zs, kKeepResultKind);
+}
+HPtr Elm_Kernel_List_map4_Int(HPtr closure, HPtr ws, HPtr xs, HPtr ys, HPtr zs) {
+    return listMap4(closure, ws, xs, ys, zs, 1);
+}
+HPtr Elm_Kernel_List_map4_Float(HPtr closure, HPtr ws, HPtr xs, HPtr ys, HPtr zs) {
+    return listMap4(closure, ws, xs, ys, zs, 2);
+}
+HPtr Elm_Kernel_List_map4_Char(HPtr closure, HPtr ws, HPtr xs, HPtr ys, HPtr zs) {
+    return listMap4(closure, ws, xs, ys, zs, 3);
+}
+
+HPtr Elm_Kernel_List_map5(HPtr closure, HPtr vs, HPtr ws,
+                           HPtr xs, HPtr ys, HPtr zs) {
+    return listMap5(closure, vs, ws, xs, ys, zs, kKeepResultKind);
+}
+HPtr Elm_Kernel_List_map5_Int(HPtr closure, HPtr vs, HPtr ws, HPtr xs, HPtr ys, HPtr zs) {
+    return listMap5(closure, vs, ws, xs, ys, zs, 1);
+}
+HPtr Elm_Kernel_List_map5_Float(HPtr closure, HPtr vs, HPtr ws, HPtr xs, HPtr ys, HPtr zs) {
+    return listMap5(closure, vs, ws, xs, ys, zs, 2);
+}
+HPtr Elm_Kernel_List_map5_Char(HPtr closure, HPtr vs, HPtr ws, HPtr xs, HPtr ys, HPtr zs) {
+    return listMap5(closure, vs, ws, xs, ys, zs, 3);
+}
+
+// ============================================================================
+// Closure-free combinators: `reverse`, `append`, `concat`, `take`, `drop`.
+//
+// Each forwards to the `ListOps` function of the same name, which gives its contract. The results keep
+// their elements' slot kinds, and a list one of them builds may be chunk views when chunk production is
+// enabled.
+// ============================================================================
+
+HPtr Elm_Kernel_List_reverse(HPtr list) {
+    HPointer result = Elm::ListOps::reverse(Export::decode(list.toBits()));
+    return HPtr::fromBits(Export::encode(result));
+}
+
+HPtr Elm_Kernel_List_append(HPtr a, HPtr b) {
+    HPointer result = Elm::ListOps::append(Export::decode(a.toBits()),
+                                           Export::decode(b.toBits()));
+    return HPtr::fromBits(Export::encode(result));
+}
+
+HPtr Elm_Kernel_List_concat(HPtr listOfLists) {
+    HPointer result = Elm::ListOps::concat(Export::decode(listOfLists.toBits()));
+    return HPtr::fromBits(Export::encode(result));
+}
+
+HPtr Elm_Kernel_List_take(int64_t n, HPtr list) {
+    HPointer result = Elm::ListOps::take(n, Export::decode(list.toBits()));
+    return HPtr::fromBits(Export::encode(result));
+}
+
+HPtr Elm_Kernel_List_drop(int64_t n, HPtr list) {
+    HPointer result = Elm::ListOps::drop(n, Export::decode(list.toBits()));
+    return HPtr::fromBits(Export::encode(result));
 }
 
 HPtr Elm_Kernel_List_sortBy(HPtr closure, HPtr list) {

@@ -1,10 +1,11 @@
 //===- Tls.cpp - eco/system kernel module Tls: binding bodies -------------===//
 //
-// The connect's stage-2 inputs wait in a table on the eco thread, keyed by an id that stage 2's payload carries,
-// because a binding's payload is an Elm value and the inputs are C++ objects. The table holds no HPointers, and it
-// is emptied when the heap generation changes, since its entries then belong to a heap that is gone. A stage-1 job
-// whose Task is killed before it is completed never reaches the table. An entry whose stage 2 never runs stays
-// until the heap generation changes.
+// A connect's configuration job and its socket connect run under one resume token: the job's hand-off
+// (`SysWorkPool::HandoffFn`) starts the connect on the eco thread under the token the job was submitted with, so no
+// Task runs between the two steps and nothing waits in a table for one to run (TLS-10). The only table is the set of
+// tokens whose configuration job is in flight, which tells the kill handle which step to cancel and the hand-off
+// whether the Task was killed meanwhile. It holds no HPointers, each entry is erased when its job's result is drained
+// or its job cancelled, and it is emptied when the heap generation changes.
 //
 //===----------------------------------------------------------------------===//
 
@@ -57,70 +58,74 @@ HPointer resumeNow(HPointer& resume, HPointer task) {
 
 #ifndef _WIN32
 
-// --- connect: stage 1 (pool) -------------------------------------------------------
+// --- connect (pool, then the socket connect) ----------------------------------------
 
-// What a stage-1 job produces: the connect's inputs and its client configuration, or a failure.
+// What a configuration job produces: the connect's inputs and its client configuration, or a failure.
 struct ConnectPrep {
     ConnectSpec spec;
     std::shared_ptr<TlsClientConfig> cfg;
     std::string code, message;   // failure (code non-empty)
 };
 
-// Stage 2's inputs, kept on the eco thread between the stages.
-struct PendingConnect {
-    ConnectSpec spec;
-    std::shared_ptr<TlsClientConfig> cfg;
-};
-
-// The stage-2 inputs waiting for their stage 2, by id, for heap generation `gen`.
-struct PendingTable {
-    std::unordered_map<int64_t, PendingConnect> m;
-    int64_t next = 1;
+// The tokens of connects whose configuration job is in flight, each mapped to whether its Task was killed meanwhile,
+// for heap generation `gen`.
+struct InflightTable {
+    std::unordered_map<uint64_t, bool> killed;
     uint64_t gen = 0;
     bool init = false;
 };
 
-// Returns the table of stage-2 inputs, first emptying it if the heap generation has changed. Eco thread only.
-PendingTable& pendingConnects() {
-    static auto* t = new PendingTable();   // never destroyed
+// Returns the table of in-flight configuration jobs, first emptying it if the heap generation has changed. Eco thread
+// only.
+InflightTable& inflightConnects() {
+    static auto* t = new InflightTable();   // never destroyed
     uint64_t g = currentHeapGeneration();
-    if (!t->init || t->gen != g) {   // a dead heap's entries are meaningless
+    if (!t->init || t->gen != g) {   // a dead heap's tokens are meaningless
         t->init = true;
         t->gen = g;
-        t->m.clear();
+        t->killed.clear();
     }
     return *t;
 }
 
-// Takes the stage-2 inputs whose id is the boxed Int `captured` and starts the connect with the TLS client factory,
-// returning its kill handle. With no entry for the id, it resumes the Task at once with ECANCELED.
-HPointer connectStage2Body(HPointer captured, HPointer resume) {
-    uint64_t token = 0;
-    bool counted = false;
-    ECO_SYSTEM_ASYNC_GUARD(FErr, resume, token, counted,
-        int64_t id = payloadInt(captured);
-        auto& t = pendingConnects();
-        auto it = t.m.find(id);
-        if (it == t.m.end()) {   // a dead heap's binding, or the entry already taken
-            return resumeNow(resume, failFErr("ECANCELED", "connect ECANCELED"));
+// The kill handle's cancel for a TLS connect under `token`, as `CancelFn` defines it: removes the configuration job if
+// no worker has started it; else, while the job is in flight, records the kill for the hand-off and returns false (the
+// drain releases the hold); else cancels the socket connect the hand-off started.
+bool cancelTlsConnect(uint64_t token) {
+    auto& t = inflightConnects();
+    auto it = t.killed.find(token);
+    if (it != t.killed.end()) {
+        if (SysWorkPool::cancel(token)) {
+            t.killed.erase(it);
+            return true;
         }
-        PendingConnect p = std::move(it->second);
-        t.m.erase(it);
-        TransportFactory factory = makeTlsClientFactory(std::move(p.cfg));
-        return socketStartConnect(std::move(p.spec), std::move(factory), resume, token, counted);
-    )
+        it->second = true;
+        return false;
+    }
+    return cancelPendingConnect(token);
 }
 
-// Completes stage 1: returns the FErr Task of a failed build, or else stores the inputs under a fresh id and returns
-// the stage-2 binding for it.
+// The configuration job's hand-off: unless the Task was killed or the job failed, starts the connect with the TLS
+// client factory under the job's token and returns true. Otherwise returns false, and the drain finishes the job with
+// `connectPrepared` (or releases only, for a killed Task).
+bool connectHandoff(uint64_t token, PoolResult& pr) {
+    auto& t = inflightConnects();
+    auto it = t.killed.find(token);
+    bool killed = it == t.killed.end() || it->second;   // absent: a dead heap's job
+    if (it != t.killed.end()) t.killed.erase(it);
+    if (killed || !pr.holds<ConnectPrep>()) return false;
+    auto& r = pr.as<ConnectPrep>();
+    if (!r.code.empty()) return false;
+    socketContinueConnect(std::move(r.spec), makeTlsClientFactory(std::move(r.cfg)), token);
+    return true;
+}
+
+// Completes a configuration job the hand-off did not take: returns the FErr Task of the failed build.
 HPointer connectPrepared(PoolResult& pr) {
     auto& r = pr.as<ConnectPrep>();
     if (!r.code.empty()) return failFErr(r.code, r.message);
-    auto& t = pendingConnects();
-    int64_t id = t.next++;
-    t.m.emplace(id, PendingConnect{std::move(r.spec), std::move(r.cfg)});
-    HPointer payload = alloc::allocInt(id);
-    return makeAsyncBinding<connectStage2Body>(payload);   // fresh: the helper roots it
+    // Not reached: a successful build is always handed off, unless the Task was killed, which never completes it.
+    return failFErr("ECANCELED", "connect ECANCELED");
 }
 
 // --- listen (pool) -------------------------------------------------------------------
@@ -148,6 +153,14 @@ HPointer listenPrepared(PoolResult& pr) {
 // ---------------------------------------------------------------------------
 // Kernel bodies
 // ---------------------------------------------------------------------------
+
+#if ECO_TEST_HOOKS && !defined(_WIN32)
+namespace TlsTesting {
+
+size_t inflightConnectCount() { return inflightConnects().killed.size(); }
+
+} // namespace TlsTesting
+#endif
 
 HPointer tlsConnectBody(HPointer captured, HPointer resume) {
     uint64_t token = 0;
@@ -187,28 +200,38 @@ HPointer tlsConnectBody(HPointer captured, HPointer resume) {
         }
         if (spec.timeoutMs < 0) spec.timeoutMs = 0;
         spec.isUnix = false;
-        spec.isTls = true;
-        ensureTlsInit();
         ensureSocketTables();
+        if (!socketIoAvailable()) return resumeNow(resume, socketIoUnavailable("connect"));
+        ensureTlsInit();
         auto& s = Scheduler::instance();
         token = s.parkResume(resume, HoldKind::Task, "Tls.connect");
         counted = true;
-        SysWorkPool::instance().submit(
-            token,
-            [spec = std::move(spec), mode, pem = std::move(pem), serverName = std::move(serverName),
-             alpn = std::move(alpn)]() -> PoolResult {
-                ConnectPrep r;
-                TlsError err;
-                r.cfg = buildTlsClientConfig(mode, pem, serverName, alpn, err);
-                if (!r.cfg) {
-                    r.code = err.code.empty() ? "ERR_SSL_UNKNOWN" : err.code;
-                    r.message = err.message;
-                }
-                r.spec = spec;
-                return PoolResult::of(std::move(r));
-            },
-            &connectPrepared, ErrShape::FErr);
-        return makeKillHandle(token, &SysWorkPool::cancel);
+        // The kill handle first: it allocates, and a throw must leave neither a queued job nor a table entry.
+        HPointer kill = makeKillHandle(token, &cancelTlsConnect);
+        Elm::StackRootGuard g(&kill);
+        auto& inflight = inflightConnects().killed;
+        inflight.emplace(token, false);
+        try {
+            SysWorkPool::instance().submit(
+                token,
+                [spec = std::move(spec), mode, pem = std::move(pem), serverName = std::move(serverName),
+                 alpn = std::move(alpn)]() -> PoolResult {
+                    ConnectPrep r;
+                    TlsError err;
+                    r.cfg = buildTlsClientConfig(mode, pem, serverName, alpn, err);
+                    if (!r.cfg) {
+                        r.code = err.code.empty() ? "ERR_SSL_UNKNOWN" : err.code;
+                        r.message = err.message;
+                    }
+                    r.spec = spec;
+                    return PoolResult::of(std::move(r));
+                },
+                &connectPrepared, ErrShape::FErr, &connectHandoff);
+        } catch (...) {
+            inflight.erase(token);
+            throw;
+        }
+        return kill;
 #endif
     )
 }

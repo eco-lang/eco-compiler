@@ -17,12 +17,19 @@
 // with `tryPopReady`.
 //
 // Each submitted child is waited for on a detached thread of its own, which
-// waits for that one child and nothing else: `waitpid(pid)` on POSIX, the
-// child's process handle on Windows. No other child of the process is ever
+// waits for that one child and nothing else: `waitid(pid, WNOWAIT)` on POSIX,
+// the child's process handle on Windows. No other child of the process is ever
 // reaped here, so other code (Spawn.hpp's `waitChild`, a host embedding eco)
 // may wait for its own children. A wait that cannot be made, for a pid that
 // is not a child of this process or was already reaped elsewhere, is answered
 // at once as failed rather than left pending.
+//
+// On POSIX the wait thread does not reap the child: it stays a zombie, so its
+// pid cannot be reused, until `tryPopReady` hands its result to the consumer
+// and reaps it there. A consumer that may signal the child while its result is
+// still queued (ChildProcess's `killJob`) therefore signals at worst a zombie,
+// never an unrelated process that got the pid. A result that is never popped
+// leaves its zombie until the process exits.
 //
 //===----------------------------------------------------------------------===//
 
@@ -77,6 +84,10 @@ public:
         // error (POSIX errno, Windows GetLastError); `exitCode` is then
         // `kWaitFailedExitCode` and `rawStatus` is 0.
         int            error = 0;
+        // The child waited for. On POSIX a successful wait leaves it unreaped
+        // until `tryPopReady` reaps it; then `exitCode` and `rawStatus` come
+        // from that reap.
+        std::int64_t   pid = 0;
     };
 
     // The `exitCode` of a failed wait. No exit status or signal death maps to
@@ -97,7 +108,9 @@ public:
     void submit(int64_t pid, std::uint64_t resumeToken, WaitLane lane);
 
     // Removes the oldest result queued on `lane` and writes it to `out`.
-    // Returns false, leaving `out` unchanged, if `lane` has none.
+    // Returns false, leaving `out` unchanged, if `lane` has none. On POSIX it
+    // reaps the child of a successful wait (`waitpid` with WNOHANG, which
+    // cannot block: the child has exited), freeing its pid only now.
     bool tryPopReady(WaitLane lane, Ready& out);
     // Returns whether `lane` has a result queued. It does not wait for one.
     bool hasReady(WaitLane lane) const;

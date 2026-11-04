@@ -35,6 +35,8 @@
 #include "eco-system/WebSocket/WsFrame.hpp"
 #include "eco-system/WebSocket/WsHandshake.hpp"
 
+#include "EcoSystemCoreTest.hpp"
+
 #include <algorithm>
 #include <atomic>
 #include <cerrno>
@@ -73,17 +75,9 @@ using namespace Eco::System;
 
 namespace {
 
-int g_failures = 0;
-int g_checks = 0;
-
-#define CHECK(cond)                                                            \
-    do {                                                                       \
-        ++g_checks;                                                            \
-        if (!(cond)) {                                                         \
-            ++g_failures;                                                      \
-            std::fprintf(stderr, "  FAIL %s:%d: %s\n", __FILE__, __LINE__, #cond); \
-        }                                                                      \
-    } while (0)
+// CHECK and the counters are shared with the area files (<Area>Test.cpp) through CoreCheck.hpp.
+using CoreTest::g_checks;
+using CoreTest::g_failures;
 
 using Clock = std::chrono::steady_clock;
 
@@ -2117,7 +2111,6 @@ public:
         return -2;
     }
     int shutdownWrite() override { return ::shutdown(fd_, SHUT_WR) == 0 ? 0 : -1; }
-    bool hasBufferedRead() const override { return !buf_.empty(); }
 
 private:
     int fd_;
@@ -3482,55 +3475,145 @@ void testWsHttpHeads() {
     CHECK(serializeRequest("/x", HeaderList{{"Host", "h"}}) == "GET /x HTTP/1.1\r\nHost: h\r\n\r\n");
 }
 
-int main() {
+// ===========================================================================
+// Shared setup and the area runner (EcoSystemCoreTest.hpp)
+// ===========================================================================
+
+void initCoreRuntime() {
     // The Scheduler singleton needs a heap on this (the main) thread, and must
     // be constructed here, before any service thread can touch it.
     auto& a = Allocator::instance();
     a.initialize();
     a.initThread();
     (void)Scheduler::instance();
+}
 
-    testErrnoNames();
-    testPoolResult();
-    testPool1000();
-    testPoolExceptionAndCancel();
-    testFdChannelPipe();
-    testFdChannelShutdownWakes();
-    testFdChannelStdioNeverClosed();
-    testChannelDrainDispatch();
-    testSignalService();
-    testSignalServiceListeners();
-    testSignalServiceChainToPrevious();
-    testSignalServiceRestoresCustomHandler();
-    testSignalServiceEmbedMode();
-    testGuardsAndHelpers();
-    testRegistry();
-    testHttpServerWireFormat();
-    testSocketUtil();
-    testReactorEcho();
-    testReactorIdleNoBusyLoop();
-    testReactorManyPairs();
-    testReactorSubmitRacing();
-    testReactorStaleGeneration();
-    testReactorTimers();
-    testReactorCloseAll();
-    testMappedSource();
-    testMappedReaderAttach();
-    testMappedSink();
-    testConnProtocolHandoff();
-    testConnMultiTimer();
-    testListenerCallbackMode();
-    testHttp1KeepAlivePipeline();
-    testHttp1Limits();
-    testHttp1UpgradeConnectGone();
-    testHttp1TimeoutsAndClose();
-    testWsFrameCodec();
-    testWsHttpHeads();
-    testHttp2Protocol();
-    testWsDeflate();
-    testReactorQuiesce();   // last reactor test: irreversible
+namespace {
 
-    std::printf("\n%d checks, %d failures\n", g_checks, g_failures);
+// Self-test of the child-scenario harness (ChildScenario.hpp): exit status, stdout/stderr
+// capture, extra environment, a crashing child.
+int scenarioSelfTestExit() {
+    const char* v = std::getenv("ECO_CORE_SELFTEST_VALUE");
+    std::printf("selftest stdout %s\n", v ? v : "(unset)");
+    std::fprintf(stderr, "selftest stderr\n");
+    initCoreRuntime();
+    return 3;
+}
+
+int scenarioSelfTestAbort() {
+    std::abort();
+}
+
+void registerHarnessSelfTestScenarios() {
+    ChildScenario::add("selftest/exit-3", scenarioSelfTestExit);
+    ChildScenario::add("selftest/abort", scenarioSelfTestAbort);
+}
+
+void testChildScenarioHarness() {
+    std::printf("testChildScenarioHarness\n");
+    auto r = ChildScenario::runChildScenario("selftest/exit-3", {{"ECO_CORE_SELFTEST_VALUE", "42"}});
+    CHECK(r.started && r.exited && r.exitCode == 3);
+    CHECK(r.out.find("selftest stdout 42") != std::string::npos);
+    CHECK(r.err.find("selftest stderr") != std::string::npos);
+    auto a = ChildScenario::runChildScenario("selftest/abort");
+    CHECK(a.started && a.signaled && a.signal == SIGABRT && a.crashed());
+    auto m = ChildScenario::runChildScenario("selftest/no-such-scenario");
+    CHECK(m.exited && m.exitCode == 2);
+}
+
+void usage(const char* self) {
+    std::printf("usage: %s [--only <area>]   (an area: run only its checks, not the tests of this file)\n"
+                "       %s --child <scenario>   (run one child scenario, exit with its status)\n"
+                "       %s --list-scenarios\n"
+                "areas:",
+                self, self, self);
+    for (const auto& a : kCoreAreas) std::printf(" %s", a.name);
+    std::printf("\n");
+}
+
+}  // namespace
+
+int main(int argc, char** argv) {
+    // Child scenarios first: `--child <name>` runs one and exits (ChildScenario.hpp).
+    registerHarnessSelfTestScenarios();
+    for (const auto& a : kCoreAreas) a.registerScenarios();
+    ChildScenario::dispatch(argc, argv);
+
+    std::string onlyArea;
+    for (int i = 1; i < argc; ++i) {
+        const std::string arg = argv[i];
+        if (arg == "--only" && i + 1 < argc) {
+            onlyArea = argv[++i];
+        } else {
+            usage(argv[0]);
+            return 2;
+        }
+    }
+    if (!onlyArea.empty() &&
+        std::none_of(std::begin(kCoreAreas), std::end(kCoreAreas),
+                     [&](const CoreArea& a) { return onlyArea == a.name; })) {
+        std::fprintf(stderr, "no area '%s'\n", onlyArea.c_str());
+        usage(argv[0]);
+        return 2;
+    }
+    const bool runExisting = onlyArea.empty();
+
+    initCoreRuntime();
+
+    if (runExisting) {
+        testErrnoNames();
+        testPoolResult();
+        testPool1000();
+        testPoolExceptionAndCancel();
+        testFdChannelPipe();
+        testFdChannelShutdownWakes();
+        testFdChannelStdioNeverClosed();
+        testChannelDrainDispatch();
+        testSignalService();
+        testSignalServiceListeners();
+        testSignalServiceChainToPrevious();
+        testSignalServiceRestoresCustomHandler();
+        testSignalServiceEmbedMode();
+        testGuardsAndHelpers();
+        testRegistry();
+        testHttpServerWireFormat();
+        testSocketUtil();
+        testReactorEcho();
+        testReactorIdleNoBusyLoop();
+        testReactorManyPairs();
+        testReactorSubmitRacing();
+        testReactorStaleGeneration();
+        testReactorTimers();
+        testReactorCloseAll();
+        testMappedSource();
+        testMappedReaderAttach();
+        testMappedSink();
+        testConnProtocolHandoff();
+        testConnMultiTimer();
+        testListenerCallbackMode();
+        testHttp1KeepAlivePipeline();
+        testHttp1Limits();
+        testHttp1UpgradeConnectGone();
+        testHttp1TimeoutsAndClose();
+        testWsFrameCodec();
+        testWsHttpHeads();
+        testHttp2Protocol();
+        testWsDeflate();
+    }
+
+    // The area files (<Area>Test.cpp). They run before testReactorQuiesce, which is irreversible.
+    testChildScenarioHarness();
+    for (const auto& a : kCoreAreas) {
+        if (!onlyArea.empty() && onlyArea != a.name) continue;
+        std::printf("== %s\n", a.name);
+        a.run();
+    }
+
+    if (runExisting) {
+        testReactorQuiesce();   // last reactor test: irreversible
+    }
+
+    std::printf("\n%d checks, %d failures\n", g_checks.load(), g_failures.load());
     std::printf(g_failures == 0 ? "ALL PASSED\n" : "FAILED\n");
     return g_failures == 0 ? 0 : 1;
 }

@@ -475,14 +475,67 @@ function _Stream_terminatePair(p, out)
 	}
 }
 
+// The reasons of the most recently erased pairs that had an Errored side (as native
+// StreamTable.hpp, STREAM-07): id -> { __w: wReason or null, __r: rReason or null }, and
+// the ids in the order they were erased. Ids are never reused (_Stream_nextId only grows).
+var _Stream_kErasedReasonsCap = 4096;
+var _Stream_erased = {};
+var _Stream_erasedOrder = [];
+
+function _Stream_rememberErased(id, p)
+{
+	var wErr = p.__w === _Stream_W_ERRORED;
+	var rErr = p.__r === _Stream_R_ERRORED;
+	if (!wErr && !rErr) return;
+	while (_Stream_erasedOrder.length >= _Stream_kErasedReasonsCap)
+	{
+		delete _Stream_erased[_Stream_erasedOrder.shift()];
+	}
+	_Stream_erased[id] = { __w: wErr ? p.__wReason : null, __r: rErr ? p.__rReason : null };
+	_Stream_erasedOrder.push(id);
+}
+
+// The stored reason of an erased pair's Errored readable / writable side, or null.
+function _Stream_erasedReadReason(id)
+{
+	var e = _Stream_erased[id];
+	return e ? e.__r : null;
+}
+
+function _Stream_erasedWriteReason(id)
+{
+	var e = _Stream_erased[id];
+	return e ? e.__w : null;
+}
+
+// What a read of a missing pair answers: the erased pair's Errored reason, else Closed.
+function _Stream_missingReadErr(id)
+{
+	var reason = _Stream_erasedReadReason(id);
+	return reason !== null ? _Stream_err(_Stream_E_CANCELLED, reason) : _Stream_err(_Stream_E_CLOSED, '');
+}
+
+// The reason a write or close of a missing pair fails Cancelled with.
+function _Stream_missingWriteReason(id)
+{
+	var reason = _Stream_erasedWriteReason(id);
+	return reason !== null ? reason : _Stream_kWritableClosed;
+}
+
+// Erases pair `id` once each side is Closed or Errored and nothing is left in it (native
+// maybeErase), keeping the reasons of an Errored side.
 function _Stream_maybeErase(id)
 {
 	var p = _Stream_table[id];
 	if (!p || p.__pinned || p.__pipeRefs > 0) return;
-	if (p.__w !== _Stream_W_CLOSED || p.__r !== _Stream_R_CLOSED) return;
+	if (p.__w !== _Stream_W_CLOSED && p.__w !== _Stream_W_ERRORED) return;
+	if (p.__r !== _Stream_R_CLOSED && p.__r !== _Stream_R_ERRORED) return;
 	if (p.__readQ.length || p.__writeQ.length || p.__waitingForRoom.length) return;
 	if (p.__parkedRead || p.__closeTok || p.__chanRead) return;
 	if (p.__rawQ.length || p.__readInFlight || p.__readerKick) return;   // mapped source
+	if (p.__reader && !p.__readerEndSent) return;   // the subscription reader is owed the end
+	if (_Stream_carryRest(p)) return;               // Stream.readLine bytes not handed out yet
+	_Stream_rememberErased(id, p);
 	delete _Stream_table[id];
 }
 
@@ -514,7 +567,7 @@ function _Stream_transformCustom(id, pw)
 	p = _Stream_table[id];
 	if (!p)
 	{
-		_Stream_finishWrite(pw, false, _Stream_kWritableClosed);
+		_Stream_finishWrite(pw, false, _Stream_missingWriteReason(id));
 		return;
 	}
 	p.__customState = newState;
@@ -2112,7 +2165,11 @@ function _Stream_runPipe(pid)
 		// 4 (second half). Waiting for the close of dst.
 		if (pp.__closingDst)
 		{
-			if (!d || d.__w === _Stream_W_CLOSED)
+			if (!d && _Stream_erasedWriteReason(pp.__dst) !== null)
+			{
+				_Stream_finishPipe(pid, false, _Stream_erasedWriteReason(pp.__dst));
+			}
+			else if (!d || d.__w === _Stream_W_CLOSED)
 			{
 				_Stream_finishPipe(pid, true, '');
 			}
@@ -2126,16 +2183,17 @@ function _Stream_runPipe(pid)
 		// 1. dst errored or closed -> cancel src.
 		if (!d || d.__w !== _Stream_W_OPEN)
 		{
-			reason = (d && d.__w === _Stream_W_ERRORED) ? d.__wReason : _Stream_kWritableClosed;
+			reason = (d && d.__w === _Stream_W_ERRORED) ? d.__wReason
+				: !d ? _Stream_missingWriteReason(pp.__dst) : _Stream_kWritableClosed;
 			_Stream_finishPipe(pid, false, reason);
 			_Stream_cancelReadableNow(pp.__src, reason);
 			return;
 		}
 
-		// 2. src errored -> abort dst.
-		if (s && s.__r === _Stream_R_ERRORED)
+		// 2. src errored (or erased Errored, its reason kept) -> abort dst.
+		if (s ? s.__r === _Stream_R_ERRORED : _Stream_erasedReadReason(pp.__src) !== null)
 		{
-			reason = s.__rReason;
+			reason = s ? s.__rReason : _Stream_erasedReadReason(pp.__src);
 			_Stream_finishPipe(pid, false, reason);
 			_Stream_cancelWritableNow(pp.__dst, reason);
 			return;
@@ -2412,6 +2470,7 @@ var _Stream_carryLine = F2(function(atEnd, id)
 		{
 			p.__carry = null;
 			p.__carryPos = 0;
+			_Stream_maybeErase(id);   // the carry kept an ended pair
 		}
 		callback(__Scheduler_succeed(__Maybe_Just(_Stream_toBytes(line))));
 	});
@@ -2440,7 +2499,7 @@ var _Stream_carryAppend = F2(function(bytes, id)
 function _Stream_readImpl(id, callback, carryFirst)
 {
 		var p = _Stream_table[id];
-		if (!p) return _Stream_resumeNow(callback, _Stream_err(_Stream_E_CLOSED, ''));
+		if (!p) return _Stream_resumeNow(callback, _Stream_missingReadErr(id));
 		if (_Stream_readLocked(p)) return _Stream_resumeNow(callback, _Stream_err(_Stream_E_LOCKED, ''));
 		var carried = carryFirst ? _Stream_carryRest(p) : null;
 		if (carried)
@@ -2477,7 +2536,7 @@ function _Stream_readImpl(id, callback, carryFirst)
 function _Stream_writeOrEnqueue(value, id, callback, isEnqueue)
 {
 	var p = _Stream_table[id];
-	if (!p) return _Stream_resumeNow(callback, _Stream_err(_Stream_E_CANCELLED, _Stream_kWritableClosed));
+	if (!p) return _Stream_resumeNow(callback, _Stream_err(_Stream_E_CANCELLED, _Stream_missingWriteReason(id)));
 	if (_Stream_writeLocked(p)) return _Stream_resumeNow(callback, _Stream_err(_Stream_E_LOCKED, ''));
 	if (p.__w === _Stream_W_CLOSING || p.__w === _Stream_W_CLOSED)
 	{
@@ -2545,7 +2604,7 @@ var _Stream_closeWritable = function(id)
 	return _Stream_op(function(callback)
 	{
 		var p = _Stream_table[id];
-		if (!p) return _Stream_resumeNow(callback, _Stream_err(_Stream_E_CANCELLED, _Stream_kWritableClosed));
+		if (!p) return _Stream_resumeNow(callback, _Stream_err(_Stream_E_CANCELLED, _Stream_missingWriteReason(id)));
 		if (_Stream_writeLocked(p)) return _Stream_resumeNow(callback, _Stream_err(_Stream_E_LOCKED, ''));
 		if (p.__w === _Stream_W_CLOSING || p.__w === _Stream_W_CLOSED || p.__kind === _Stream_K_SOURCE ||
 			p.__kind === _Stream_K_MAPPED)

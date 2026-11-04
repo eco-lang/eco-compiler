@@ -41,12 +41,14 @@ var _Process_spawn = F2(function(cmd, args) {
     });
 });
 
-var _Process_spawnProcess = F5(function(cmd, args, stdin, stdout, stderr) {
+// The child's stdout and stderr are always shared with this process; only
+// stdin ('inherit' or 'pipe') is configurable.
+var _Process_spawnProcess = F3(function(cmd, args, stdin) {
     return __Scheduler_binding(function(callback) {
         try {
             var child_process = require('child_process');
             var child = child_process.spawn(cmd, __List_toArray(args),
-                { stdio: [stdin, stdout, stderr] });
+                { stdio: [stdin, 'inherit', 'inherit'] });
             _Process_children[child.pid] = child;
             var stdinHandle;
             if (child.stdin) {
@@ -77,9 +79,12 @@ var _Process_wait = function(handle) {
             callback(__Scheduler_succeed(child.exitCode));
             return;
         }
-        child.on('exit', function(code) {
+        var onExit = function(code) {
             delete _Process_children[handle];
             callback(__Scheduler_succeed(code || 0));
-        });
+        };
+        child.on('exit', onExit);
+        // Killing the waiting task stops the wait; the child keeps running.
+        return function() { child.removeListener('exit', onExit); };
     });
 };

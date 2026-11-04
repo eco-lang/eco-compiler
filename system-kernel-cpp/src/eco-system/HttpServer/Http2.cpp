@@ -726,6 +726,11 @@ void Http2Protocol::endHeaders(Stream& s) {
             return;
         }
     }
+    // The authority (from `:authority`, or else Host) must be a valid Host value, as HTTP/1's Host is.
+    if (!s.authority.empty() && !validHostValue(s.authority)) {
+        ownResponse(s, 400);
+        return;
+    }
     if (s.method == "CONNECT") {
         s.connect = true;
         if (!s.protocol.empty() && lowerAscii(s.protocol) != "websocket") {

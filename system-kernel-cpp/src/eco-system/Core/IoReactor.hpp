@@ -85,12 +85,18 @@ private:
     uint64_t key_ = 0;
 };
 
+/// The FErr code and message, after the operation's name, of a socket kernel run when the reactor did not start
+/// (`IoReactor::ok` is false).
+inline constexpr const char* kReactorUnavailableCode = "ENOSYS";
+inline constexpr const char* kReactorUnavailableMessage = "socket IO unavailable: the event loop could not be created";
+
 /// The process's one event loop for eco/system IO, and the thread that runs it.
 ///
 /// The reactor is created by the first call to `instance` and is never destroyed, so its own state is never destroyed
 /// under its thread at process exit. If the backend cannot be created or the thread cannot be started, a message is
-/// printed to stderr and the reactor stays unstarted: `submit` drops every command, and `closeAll` and `quiesce` return
-/// at once.
+/// printed to stderr and the reactor stays unstarted: `ok` returns false, `submit` drops every command, and `closeAll`
+/// and `quiesce` return at once. Socket kernels check `ok` before they start any IO, and fail with
+/// `kReactorUnavailableCode` instead of parking a Task that nothing would complete.
 class IoReactor {
 public:
     /// Returns the reactor, creating it and starting its thread on the first call.
@@ -100,7 +106,14 @@ public:
     /// thread. `fn` is dropped without running when it is empty or the reactor is unstarted, and is never run once the
     /// reactor has quiesced. It runs later, on the reactor thread, with no lock held, so it must not capture anything
     /// that may be destroyed before it runs, nor touch the Elm heap.
-    void submit(std::function<void()> fn);
+    ///
+    /// Returns whether `fn` was queued: false when it was dropped. A caller that parked a Task's hold for `fn` to
+    /// complete must release it on false.
+    bool submit(std::function<void()> fn);
+
+    /// Returns whether the reactor started: its backend was created and its thread is running. It never changes after
+    /// `instance` returns. On false nothing submitted ever runs. May be called from any thread.
+    bool ok() const;
 
     // --- Reactor thread only ------------------------------------------------
 
@@ -169,6 +182,8 @@ public:
 
 private:
     // Creates the backend and starts the thread, or prints to stderr and leaves the reactor unstarted.
+    // In builds with test hooks (platform/TestHooks.hpp), `ECO_IOR_FAIL_INIT_FOR_TEST=1` in the environment makes
+    // it fail that way on purpose (SOCK-15).
     IoReactor();
     ~IoReactor() = default;   // never runs (leaky singleton)
 

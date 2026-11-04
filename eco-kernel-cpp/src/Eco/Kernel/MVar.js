@@ -1,7 +1,13 @@
 /*
-import Eco.Kernel.Scheduler exposing (succeed, binding)
-import Elm.Kernel.Utils exposing (Tuple0)
+import Eco.Kernel.Scheduler exposing (succeed, fail, binding)
+import Elm.Kernel.Utils exposing (Tuple0, Tuple3)
 */
+
+// read, take and put of an id that names no MVar (dropped, or never made) fail with the IO error tuple
+// ( 0, "", "MVar not found: <id>" ), as the C++ kernel does (IO_ERR_002); Eco.MVar reads it as an IOError.
+function _MVar_notFound(id) {
+    return __Scheduler_fail(__Utils_Tuple3(0, '', 'MVar not found: ' + id));
+}
 
 var _MVar_nextId = 1;
 var _MVar_store = {};
@@ -16,7 +22,7 @@ var _MVar_read = function(id) {
     return __Scheduler_binding(function(callback) {
         var mvar = _MVar_store[id];
         if (!mvar) {
-            callback(__Scheduler_succeed(undefined));
+            callback(_MVar_notFound(id));
             return;
         }
         if (mvar.value !== undefined) {
@@ -31,7 +37,7 @@ var _MVar_take = function(id) {
     return __Scheduler_binding(function(callback) {
         var mvar = _MVar_store[id];
         if (!mvar) {
-            callback(__Scheduler_succeed(undefined));
+            callback(_MVar_notFound(id));
             return;
         }
         if (mvar.value !== undefined) {
@@ -49,7 +55,7 @@ var _MVar_put = F2(function(id, value) {
     return __Scheduler_binding(function(callback) {
         var mvar = _MVar_store[id];
         if (!mvar) {
-            callback(__Scheduler_succeed(__Utils_Tuple0));
+            callback(_MVar_notFound(id));
             return;
         }
         if (mvar.value === undefined) {

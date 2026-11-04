@@ -127,7 +127,12 @@ var _File_hWriteString = F2(function(handle, content) {
     return __Scheduler_binding(function(callback) {
         try {
             var fs = require('fs');
-            fs.writeSync(handle, content, null, 'utf8');
+            // writeSync may write less than asked; write on until all of it is written, as the C++ kernel does.
+            var buf = Buffer.from(content, 'utf8');
+            var off = 0;
+            while (off < buf.length) {
+                off += fs.writeSync(handle, buf, off, buf.length - off);
+            }
             callback(__Scheduler_succeed(__Utils_Tuple0));
         } catch (e) {
             callback(__Scheduler_fail(_File_ioErr(e)));
@@ -194,10 +199,14 @@ var _File_findExecutable = function(name) {
         var path = require('path');
         var fs = require('fs');
 
+        // An empty entry (leading, trailing or inner) means the current directory, and a match there is
+        // "./name", as POSIX and Haskell's splitSearchPath have it (path.join would drop the "./"). Only a regular
+        // file matches: a searchable directory passes the X_OK check too.
         for (var i = 0; i < dirs.length; i++) {
             for (var j = 0; j < exts.length; j++) {
-                var fullPath = path.join(dirs[i], name + exts[j]);
+                var fullPath = dirs[i] === '' ? './' + name + exts[j] : path.join(dirs[i], name + exts[j]);
                 try {
+                    if (!fs.statSync(fullPath).isFile()) continue;
                     fs.accessSync(fullPath, fs.constants.X_OK);
                     callback(__Scheduler_succeed(__Maybe_Just(_File_normalize(fullPath))));
                     return;
@@ -258,7 +267,12 @@ var _File_touch = function(path) {
 };
 
 var _File_getCwd = __Scheduler_binding(function(callback) {
-    callback(__Scheduler_succeed(_File_normalize(process.cwd())));
+    // process.cwd() throws (ENOENT) once the working directory was removed.
+    try {
+        callback(__Scheduler_succeed(_File_normalize(process.cwd())));
+    } catch (e) {
+        callback(__Scheduler_fail(_File_ioErr(e)));
+    }
 });
 
 var _File_setCwd = function(path) {
@@ -274,14 +288,24 @@ var _File_setCwd = function(path) {
 
 var _File_canonicalize = function(path) {
     return __Scheduler_binding(function(callback) {
-        try {
-            var fs = require('fs');
-            var resolved = fs.realpathSync(path);
-            callback(__Scheduler_succeed(_File_normalize(resolved)));
-        } catch (e) {
-            var pathMod = require('path');
-            callback(__Scheduler_succeed(_File_normalize(pathMod.resolve(path))));
+        // The empty path fails (ENOENT, as realpath gives), and so does a path that cannot be made absolute
+        // (path.resolve throws when the working directory was removed), as in the C++ kernel.
+        if (path === '') {
+            callback(__Scheduler_fail(_File_ioErr({ code: 'ENOENT', path: '', message: 'could not canonicalize the empty path' })));
+            return;
         }
+        var resolved;
+        try {
+            resolved = require('fs').realpathSync(path);
+        } catch (e) {
+            try {
+                resolved = require('path').resolve(path);
+            } catch (e2) {
+                callback(__Scheduler_fail(_File_ioErr(e2)));
+                return;
+            }
+        }
+        callback(__Scheduler_succeed(_File_normalize(resolved)));
     });
 };
 
@@ -289,7 +313,17 @@ var _File_appDataDir = function(name) {
     return __Scheduler_binding(function(callback) {
         var os = require('os');
         var path = require('path');
-        var home = os.homedir();
+        // os.homedir() returns HOME as it is, even empty; an empty or unset HOME falls back to the passwd entry,
+        // as in the C++ kernel. With no home at all the Task fails (ENOENT).
+        var home = '';
+        try { home = os.homedir(); } catch (e) { home = ''; }
+        if (!home && process.platform !== 'win32') {
+            try { home = os.userInfo().homedir || ''; } catch (e) { home = ''; }
+        }
+        if (!home && !(process.platform === 'win32' && process.env.APPDATA)) {
+            callback(__Scheduler_fail(_File_ioErr({ code: 'ENOENT', path: '', message: 'cannot find a home directory: set HOME' })));
+            return;
+        }
         var dir;
         if (process.platform === 'win32') {
             dir = path.join(process.env.APPDATA || home, name);

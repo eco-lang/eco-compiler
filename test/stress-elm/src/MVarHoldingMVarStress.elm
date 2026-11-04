@@ -10,6 +10,7 @@ module MVarHoldingMVarStress exposing (main)
 
 import Bytes.Decode as BD
 import Bytes.Encode as BE
+import Eco.IO.Error exposing (IOError)
 import Eco.MVar as MV
 import StressHarness exposing (StressFlags)
 import Task
@@ -35,7 +36,7 @@ mvarDec =
     BD.succeed (MV.MVar 0)
 
 
-heavyAlloc : Int -> Task.Task Never Int
+heavyAlloc : Int -> Task.Task IOError Int
 heavyAlloc size =
     Task.succeed (List.sum (List.range 1 size))
 
@@ -58,6 +59,7 @@ cycle size =
                     |> Task.andThen (MV.take intDec)
             )
         |> Task.map (\v -> v == 424242)
+        |> Task.onError (\_ -> Task.succeed False)
 
 
 run : StressFlags -> Task.Task Never Bool

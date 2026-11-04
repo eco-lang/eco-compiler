@@ -17,6 +17,10 @@
 
 #include "eco-system/Core/Core.hpp"
 
+#if ECO_TEST_HOOKS
+#include <atomic>
+#endif
+
 namespace Eco::System {
 
 namespace {
@@ -32,9 +36,21 @@ void* killEval(void* args[]) {
     return reinterpret_cast<void*>(enc(alloc::unit()));
 }
 
+#if ECO_TEST_HOOKS
+// Armed by killHandleFailNextForTest; the next makeKillHandle clears it and throws.
+std::atomic<bool> gFailNextKillHandle{false};
+#endif
+
 } // namespace
 
+#if ECO_TEST_HOOKS
+void killHandleFailNextForTest() { gFailNextKillHandle.store(true, std::memory_order_relaxed); }
+#endif
+
 HPointer makeKillHandle(uint64_t token, CancelFn cancel) {
+#if ECO_TEST_HOOKS
+    if (gFailNextKillHandle.exchange(false, std::memory_order_relaxed)) throw std::bad_alloc();
+#endif
     HPointer cl = alloc::allocClosureK(&killEval, /*max_values=*/3, PK_Boxed);
     // `p` stays valid only while nothing allocates; closureCapture does not.
     void* p = Allocator::instance().resolve(cl);

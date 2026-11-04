@@ -262,12 +262,32 @@ PortRuntime& PortRuntime::instance() {
 PortRuntime::PortRuntime() = default;
 
 void PortRuntime::ensureRuntimeHooks() {
-    // Called only from registration, on the eco thread, so a plain bool
-    // suffices.
-    if (hooksInstalled_) return;
-    hooksInstalled_ = true;
+    // Called only on the eco thread, so plain members suffice.
+    if (!hooksInstalled_) {
+        hooksInstalled_ = true;
+        Scheduler::instance().registerAsyncSource(
+            []() { PortRuntime::instance().drainPendingSends(); },
+            []() { return PortRuntime::instance().hasPendingSends(); });
+    }
 
-    Allocator::instance().getRootSetSlow().addExternalRootScanner(
+    // The slow form gives the thread a heap if it has none, which may start the first generation.
+    RootSet& roots = Allocator::instance().getRootSetSlow();
+    const uint64_t gen = Allocator::instance().heapGeneration();
+    if (scannerGeneration_ == gen) return;
+    if (scannerGeneration_ != 0) {
+        // A heap reset (tests only): the decoders and tagger lists are values of the dead heap, and the ports
+        // belong to the program that made them. A port keeps its host subscribers and its place in the
+        // registration order, and may be registered again.
+        std::lock_guard<std::mutex> lock(portsMutex_);
+        for (auto& [name, info] : ports_) {
+            (void)name;
+            info.registered = false;
+            info.decoder = 0;
+            info.subs = 0;
+        }
+    }
+    scannerGeneration_ = gen;
+    roots.addExternalRootScanner(
         [this](RootSet::EvacuateFn evacuate) {
             std::lock_guard<std::mutex> lock(portsMutex_);
             for (auto& [name, info] : ports_) {
@@ -276,10 +296,13 @@ void PortRuntime::ensureRuntimeHooks() {
                 if (info.subs) evacuate(info.subs);
             }
         }, "port-runtime");
+}
 
-    Scheduler::instance().registerAsyncSource(
-        []() { PortRuntime::instance().drainPendingSends(); },
-        []() { return PortRuntime::instance().hasPendingSends(); });
+void PortRuntime::noteRegistered(const std::string& name) {
+    for (const std::string& n : registrationOrder_) {
+        if (n == name) return;
+    }
+    registrationOrder_.push_back(name);
 }
 
 void PortRuntime::registerIncoming(const std::string& name,
@@ -308,7 +331,7 @@ void PortRuntime::registerIncoming(const std::string& name,
         p.registered = true;
         p.incoming = true;
         p.decoder = encodeHP(decoder);
-        registrationOrder_.push_back(name);
+        noteRegistered(name);
     }
 
     PlatformRuntime::instance().registerManager(name, info);
@@ -334,7 +357,7 @@ void PortRuntime::registerOutgoing(const std::string& name) {
         }
         p.registered = true;
         p.incoming = false;
-        registrationOrder_.push_back(name);
+        noteRegistered(name);
     }
 
     PlatformRuntime::instance().registerManager(name, info);
@@ -342,6 +365,7 @@ void PortRuntime::registerOutgoing(const std::string& name) {
 
 void PortRuntime::setIncomingSubs(const std::string& name,
                                   HPointer subsList) {
+    ensureRuntimeHooks();   // the word stored below needs this generation's scanner
     std::lock_guard<std::mutex> lock(portsMutex_);
     auto it = ports_.find(name);
     if (it == ports_.end() || !it->second.incoming) return;
@@ -399,7 +423,8 @@ void PortRuntime::drainPendingSends() {
         {
             std::lock_guard<std::mutex> lock(portsMutex_);
             auto it = ports_.find(name);
-            if (it == ports_.end() || !it->second.incoming) continue;
+            // A port not registered in this heap generation has no decoder; the send is dropped.
+            if (it == ports_.end() || !it->second.incoming || it->second.decoder == 0) continue;
             decoderEnc = it->second.decoder;
             subsEnc = it->second.subs;
         }

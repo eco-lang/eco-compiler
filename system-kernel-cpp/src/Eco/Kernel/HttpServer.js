@@ -136,6 +136,21 @@ var _HttpServer_servers = {};
 var _HttpServer_nextServerId = 1;
 var _HttpServer_pending = {};   // response key -> entry delivered to Elm (or held), until answered
 var _HttpServer_nextKey = 1;
+// Tombstones (native HttpTables.cpp): response key -> server of a delivered upgrade request whose
+// connection closed before takeUpgrade, so the take reports "socket closed" (ECANCELED) rather
+// than EINVAL. Erased by that take, a respond on the key, or closeServer; they hold nothing.
+var _HttpServer_goneUpgrades = {};
+
+// ConnGone for entry `e` of server `s`: forgets its key; a delivered upgrade request not yet
+// taken (not held in the server's queue) leaves a tombstone.
+function _HttpServer_forget(s, e)
+{
+	delete _HttpServer_pending[e.__key];
+	if (e.__upgrade && s.__queue.indexOf(e) < 0)
+	{
+		_HttpServer_goneUpgrades[e.__key] = s;
+	}
+}
 
 // The Liveness handle of the connection entry `e` arrived on (the raw socket's; an HTTP/2
 // entry's through its session), or null.
@@ -201,21 +216,32 @@ function _HttpServer_hostHeaders(rawHeaders)
 	return hosts;
 }
 
-// RFC 9110 §7.2 Host = uri-host [ ":" port ] (as Http1.cpp validHost).
+// RFC 9110 §7.2 Host = uri-host [ ":" port ] (as Http1.cpp validHost). A bracketed host must be an
+// RFC 3986 IP-literal: an IPvFuture, or an IPv6 address with an optional RFC 6874 `%25` zone id.
 function _HttpServer_validHost(h)
 {
 	if (!h) return false;
-	var m = /^(\[[0-9A-Za-z:.%\-_~!$&'()*+,;=]+\]|(?:[A-Za-z0-9\-._~!$&'()*+,;=]|%[0-9A-Fa-f]{2})+)(?::([0-9]*))?$/.exec(h);
+	var m = /^(\[([^\]]*)\]|(?:[A-Za-z0-9\-._~!$&'()*+,;=]|%[0-9A-Fa-f]{2})+)(?::([0-9]*))?$/.exec(h);
 	if (!m) return false;
-	if (m[1].charAt(0) === '[' && m[1].indexOf(':') < 0) return false;
-	return m[2] === undefined || m[2].length <= 5;
+	if (m[2] !== undefined && !_HttpServer_validIpLiteral(m[2])) return false;
+	return m[3] === undefined || m[3].length <= 5;
+}
+
+// IP-literal content (RFC 3986 §3.2.2, RFC 6874), as Http1.cpp validIpLiteral.
+function _HttpServer_validIpLiteral(s)
+{
+	if (/^[vV]/.test(s)) return /^[vV][0-9A-Fa-f]+\.[A-Za-z0-9\-._~!$&'()*+,;=:]+$/.test(s);
+	var z = /^([^%]*)(?:%25(?:[A-Za-z0-9\-._~]|%[0-9A-Fa-f]{2})+)?$/.exec(s);
+	return !!z && require('net').isIPv6(z[1]);
 }
 
 function _HttpServer_absoluteUrl(s, target, host)
 {
-	if (target.lastIndexOf('http://', 0) === 0 || target.lastIndexOf('https://', 0) === 0)
+	// The scheme is case-insensitive (RFC 3986 §3.1); it is delivered lower-cased, as Url.fromString needs.
+	var scheme = /^https?:\/\//i.exec(target);
+	if (scheme)
 	{
-		return target;
+		return scheme[0].toLowerCase() + target.slice(scheme[0].length);
 	}
 	var authority = host || s.__authority;
 	var path = target.charAt(0) === '/' ? target : '/' + (target === '*' ? '' : target);
@@ -848,9 +874,9 @@ function _HttpServer_createH2Server(options, cfg, http1)
 
 // An HTTP/2 request (compatibility API: Http2ServerRequest / Http2ServerResponse). Checks as
 // Http2.cpp: the header list size (name + value + 32 per field, pseudo fields included; 431),
-// :authority against Host (400), :protocol of an extended CONNECT (websocket, else 501), the
-// body size (413). Pseudo fields are dropped from the list, cookie crumbs joined with "; ".
-// Delivered when the body is complete; an (extended) CONNECT at once.
+// :authority against Host and the authority's syntax (_HttpServer_validHost; 400), :protocol
+// of an extended CONNECT (websocket, else 501), the body size (413). Pseudo fields are dropped
+// from the list, cookie crumbs joined with "; ". Delivered when the body is complete; an (extended) CONNECT at once.
 function _HttpServer_onH2Request(s, req, res)
 {
 	var http2 = require('http2');
@@ -914,6 +940,12 @@ function _HttpServer_onH2Request(s, req, res)
 			own(400);
 			return;
 		}
+	}
+	// The authority (from :authority, or else Host) must be a valid Host value, as HTTP/1's Host is.
+	if (authority !== '' && !_HttpServer_validHost(authority))
+	{
+		own(400);
+		return;
 	}
 	var upgrade = '';
 	if (isConnect && pseudo[':protocol'] !== undefined)
@@ -1186,7 +1218,7 @@ function _HttpServer_start(host, port, cfg, tls, callback)
 			{
 				if (_HttpServer_pending[q[i].__key] === q[i])
 				{
-					delete _HttpServer_pending[q[i].__key];
+					_HttpServer_forget(s, q[i]);
 				}
 				_HttpServer_releaseEntry(q[i]);
 			}
@@ -1253,7 +1285,7 @@ function _HttpServer_start(host, port, cfg, tls, callback)
 				var pe = _HttpServer_pending[k];
 				if (pe.__session === session)
 				{
-					delete _HttpServer_pending[k];
+					_HttpServer_forget(s, pe);
 					_HttpServer_releaseEntry(pe);
 				}
 			}
@@ -1358,7 +1390,8 @@ var _HttpServer_respond = F4(function(key, status, headers, body)
 		var e = _HttpServer_pending[key];
 		if (!e)
 		{
-			complete();   // unknown or already answered
+			delete _HttpServer_goneUpgrades[key];
+			complete();   // unknown, already answered, or its connection is gone
 			return;
 		}
 		delete _HttpServer_pending[key];
@@ -1379,7 +1412,8 @@ var _HttpServer_respondHtml = F5(function(key, status, headers, doctype, node)
 		var e = _HttpServer_pending[key];
 		if (!e)
 		{
-			complete();   // unknown or already answered
+			delete _HttpServer_goneUpgrades[key];
+			complete();   // unknown, already answered, or its connection is gone
 			return;
 		}
 		delete _HttpServer_pending[key];
@@ -1406,6 +1440,10 @@ var _HttpServer_closeServer = F2(function(serverId, deadlineMs)
 		}
 		s.__closing = true;
 		s.__live.gone();      // nothing holds the closed server; the setImmediate below holds the task
+		for (var gk in _HttpServer_goneUpgrades)
+		{
+			if (_HttpServer_goneUpgrades[gk] === s) delete _HttpServer_goneUpgrades[gk];
+		}
 		s.__server.close();   // stop accepting: the port is free
 		// Held requests (no subscriber): 503 + close.
 		var held = s.__queue;
@@ -1456,6 +1494,12 @@ var _HttpServer_takeUpgrade = function(key)
 			// delivery hold ends.
 			callback(__Scheduler_succeed(__WebSocket_parkH2Upgrade(stream, e.__method, e.__target, e.__rawHeaders, __Liveness_hold())));
 			_HttpServer_releaseEntry(e);
+			return;
+		}
+		if (!e && _HttpServer_goneUpgrades[key])
+		{
+			delete _HttpServer_goneUpgrades[key];
+			callback(__Scheduler_fail(__Utils_Tuple2('ECANCELED', 'socket closed')));
 			return;
 		}
 		if (!e || !e.__raw || !e.__upgrade)

@@ -392,12 +392,8 @@ int main(int argc, char **argv) {
     // a lock, and then runs DLL detach and static destructors that may need the
     // same lock, so the process can hang. `TerminateProcess` runs neither. It
     // also skips the `atexit` handlers, so no statistics are printed here.
-    std::cout.flush();
-    std::cerr.flush();
-    ::TerminateProcess(::GetCurrentProcess(), static_cast<UINT>(args.result));
-    // `TerminateProcess` may return before the process is gone; returning
-    // from `main` would then reach the teardown avoided above.
-    for (;;) { ::Sleep(1000); }
+    // `eco_terminate_process` flushes the streams first and never returns.
+    eco_terminate_process(args.result);
 #endif
     return args.result;
 }

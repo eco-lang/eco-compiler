@@ -19,6 +19,7 @@ module MVarChanPipelineStress exposing (main)
 
 import Bytes.Decode as BD
 import Bytes.Encode as BE
+import Eco.IO.Error exposing (IOError)
 import Eco.MVar as MV
 import StressHarness exposing (StressFlags)
 import Task
@@ -34,18 +35,18 @@ listDec =
     BD.succeed []
 
 
-smallAlloc : Int -> Task.Task Never Int
+smallAlloc : Int -> Task.Task IOError Int
 smallAlloc size =
     Task.succeed (List.sum (List.range 1 (size // 8)))
 
 
-push : MV.MVar (List Int) -> Int -> Task.Task Never ()
+push : MV.MVar (List Int) -> Int -> Task.Task IOError ()
 push chan v =
     MV.take listDec chan
         |> Task.andThen (\xs -> MV.put listEnc chan (xs ++ [ v ]))
 
 
-pushMany : Int -> MV.MVar (List Int) -> Int -> Task.Task Never ()
+pushMany : Int -> MV.MVar (List Int) -> Int -> Task.Task IOError ()
 pushMany size chan i =
     if i > size then
         Task.succeed ()
@@ -66,6 +67,7 @@ cycle size =
                     |> Task.andThen (\_ -> MV.take listDec chan)
             )
         |> Task.map (\xs -> xs == List.range 1 size)
+        |> Task.onError (\_ -> Task.succeed False)
 
 
 run : StressFlags -> Task.Task Never Bool

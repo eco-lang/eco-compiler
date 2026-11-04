@@ -13,6 +13,7 @@
 
 #include "eco-system/Core/IoReactor.hpp"
 
+#include <cassert>
 #include <cerrno>
 
 namespace Eco::System {
@@ -21,9 +22,6 @@ namespace {
 
 /// Returns the process's reactor.
 IoReactor& reactor() { return IoReactor::instance(); }
-
-/// The drain time, in milliseconds, that `portCloseGraceful` uses when it is given none.
-constexpr int64_t kDefaultDrainMs = 2000;
 
 } // namespace
 
@@ -137,7 +135,9 @@ void H2StreamPort::portCloseGraceful(int64_t drainMs) {
     ending_ = true;
     if (tunnel_) tunnel_->tunnelEnd();
     if (gone_) return;
-    deadlines_[Conn::kTimerDrain] = reactor().nowMs() + (drainMs > 0 ? drainMs : kDefaultDrainMs);
+    // Every caller passes WsCore::kDrainMs; the fallback only keeps a stray 0 from ending the drain at once.
+    assert(drainMs > 0 && "portCloseGraceful: callers pass WsCore::kDrainMs");
+    deadlines_[Conn::kTimerDrain] = reactor().nowMs() + (drainMs > 0 ? drainMs : WsCore::kDrainMs);
     armTimer();
 }
 

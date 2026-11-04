@@ -2,7 +2,8 @@
 //
 // The bodies behind FileSystem.hpp. Everything here runs on the eco thread except the lambda that
 // `fsPoolSubmit` hands to the pool, which runs the worker operation on a worker thread and captures only the
-// operation and a copy of its `FsArgs`.
+// operation, a copy of its `FsArgs` and, for a FileSystem handle, the handle's id. The open-handle table is
+// guarded by a mutex because those lambdas update it too.
 //
 //===----------------------------------------------------------------------===//
 
@@ -15,8 +16,10 @@
 #include <cctype>
 #include <cerrno>
 #include <cstdlib>
+#include <condition_variable>
 #include <cstring>
-#include <unordered_set>
+#include <mutex>
+#include <unordered_map>
 #include <vector>
 
 #if defined(_WIN32)
@@ -30,11 +33,63 @@ namespace Eco::System::Fs {
 
 namespace {
 
-/// Returns the open-handle table: the fds that a successful `open` returned and that no `close` has removed
-/// since. Eco thread only; nothing guards it. It is never destroyed once created.
-std::unordered_set<int64_t>& openHandles() {
-    static auto* s = new std::unordered_set<int64_t>();   // leaky
-    return *s;
+/// One open FileSystem handle: its fd, the operations on it submitted and not yet finished, and whether a close
+/// has been asked for, after which no new operation may start.
+struct HandleEntry {
+    int fd = -1;
+    int inFlight = 0;
+    bool closing = false;
+};
+
+/// The open-handle table: each handle id that a successful `open` returned and whose close has not yet finished.
+/// Ids count up from 1 and are never reused, so a closed handle cannot come to name a later open's fd (FS-01).
+/// Guarded by `m`: the eco thread looks ids up and the pool workers count operations out; `idle` is notified
+/// whenever an entry's `inFlight` drops.
+struct HandleTable {
+    std::mutex m;
+    std::condition_variable idle;
+    std::unordered_map<int64_t, HandleEntry> entries;
+    int64_t nextId = 1;
+    uint64_t generation = 0;   // The heap generation the entries were opened in; 0 before the first check.
+};
+
+/// Returns the open-handle table, created on first use and never destroyed, so a worker finishing at exit never
+/// uses a destroyed table. Any thread; the eco thread uses `currentHandles`.
+HandleTable& openHandles() {
+    static auto* t = new HandleTable();   // leaky
+    return *t;
+}
+
+/// Returns the open-handle table after making it belong to the current heap generation. A heap reset (tests
+/// only) ends the program that opened the handles, so the first eco-thread call after one closes the fd of every
+/// idle handle with `::close` and empties the table (RESET-04); a handle with an operation or a close still
+/// running is only dropped, its fd left to that work. `nextId` keeps counting, so no id is reused. Eco thread.
+HandleTable& currentHandles() {
+    auto& t = openHandles();
+    const uint64_t gen = Allocator::instance().heapGeneration();
+    std::lock_guard<std::mutex> lk(t.m);
+    if (t.generation != gen) {
+        if (t.generation != 0) {
+            for (auto& [id, e] : t.entries) {
+                (void)id;
+                if (e.inFlight == 0 && !e.closing) ::close(e.fd);
+            }
+            t.entries.clear();
+        }
+        t.generation = gen;
+    }
+    return t;
+}
+
+/// Counts one operation on handle `id` as finished and wakes a close waiting for it. Any thread.
+void handleOpDone(int64_t id) {
+    auto& t = openHandles();
+    {
+        std::lock_guard<std::mutex> lk(t.m);
+        auto it = t.entries.find(id);
+        if (it != t.entries.end()) --it->second.inFlight;
+    }
+    t.idle.notify_all();
 }
 
 /// Returns a copy of the payload `captured`, built by `packFsArgs`, with `s2` copied as Bytes when `s2Bytes`
@@ -119,6 +174,7 @@ HPointer fsComplete(PoolResult& pr) {
     case FsRes::Kind::ReadStream: {
         FdChannelOptions o;
         o.readLimit = r.readLimit;
+        o.nonBlocking = true;   // opened by this module: the description is the channel's alone
         int64_t id = createChannelSource(new FdChannel(static_cast<int>(r.n), o));
         return succeedInt(id);
     }
@@ -126,6 +182,7 @@ HPointer fsComplete(PoolResult& pr) {
         FdChannelOptions o;
         o.truncateOnClose = r.truncateOnClose;
         o.syncOnClose = r.syncOnClose;
+        o.nonBlocking = true;
         int64_t id = createChannelSink(new FdChannel(static_cast<int>(r.n), o));
         return succeedInt(id);
     }
@@ -133,11 +190,23 @@ HPointer fsComplete(PoolResult& pr) {
     return succeedUnit();
 }
 
-/// Returns the Task for a finished `open`, as `fsComplete` does, first adding the new fd to the open-handle
-/// table when the open succeeded.
+/// Returns the Task for a finished `open`, as `fsComplete` does. When the open succeeded, it first adds the new
+/// fd to the open-handle table under a fresh id, which the Task succeeds with in place of the fd; if that cannot
+/// be done, the fd is closed before the exception goes on.
 HPointer fsCompleteOpen(PoolResult& pr) {
     FsRes& r = pr.as<FsRes>();
-    if (r.err == 0 && r.code.empty()) openHandles().insert(r.n);
+    if (r.err == 0 && r.code.empty()) {
+        auto& t = currentHandles();
+        try {
+            std::lock_guard<std::mutex> lk(t.m);
+            int64_t id = t.nextId++;
+            t.entries.emplace(id, HandleEntry{static_cast<int>(r.n), 0, false});
+            r.n = id;
+        } catch (...) {
+            ::close(static_cast<int>(r.n));
+            throw;
+        }
+    }
     return fsComplete(pr);
 }
 
@@ -175,30 +244,96 @@ HPointer fsPoolSubmit(FsOp op, FsKind kind, HPointer captured, HPointer resume) 
     ECO_SYSTEM_ASYNC_GUARD(FErr, resume, token, counted,
         bool bytes = kind == FsKind::PathBytes || kind == FsKind::HandleBytes;
         FsArgs args = unpack(captured, bytes);   // before anything that allocates
-        bool handle = kind == FsKind::Handle || kind == FsKind::HandleBytes || kind == FsKind::Close;
+        const bool handle = kind == FsKind::Handle || kind == FsKind::HandleBytes || kind == FsKind::Close;
+        const bool isClose = kind == FsKind::Close;
+        const int64_t id = handle ? args.i0 : 0;
+        auto& table = currentHandles();
         if (handle) {
-            auto& open = openHandles();
-            if (open.find(args.i0) == open.end()) {
+            bool known = false;
+            {
+                std::lock_guard<std::mutex> lk(table.m);
+                auto it = table.entries.find(id);
+                if (it != table.entries.end() && !it->second.closing) {
+                    known = true;
+                    if (isClose) it->second.closing = true;
+                    else ++it->second.inFlight;
+                    args.i0 = it->second.fd;   // the worker operation takes the fd
+                }
+            }
+            if (!known) {
                 HPointer task = failFErr("EBADF", "EBADF: bad file descriptor");
                 Elm::StackRootGuard g(&task);
                 Scheduler::callClosure1(resume, task);
                 return alloc::unit();
             }
-            if (kind == FsKind::Close) open.erase(args.i0);
         }
-        if (kind == FsKind::TempDir) args.s1 = joinTmp(tmpDirectoryString(), args.s1);
+        // From here until the submit returns, a handle's mark (closing, or one more in flight) must be undone if
+        // anything throws: otherwise the handle would stay unusable with its fd open (FS-03).
+        try {
+            if (kind == FsKind::TempDir) args.s1 = joinTmp(tmpDirectoryString(), args.s1);
 
-        auto& s = Scheduler::instance();
-        token = s.parkResume(resume, HoldKind::Task, "FileSystem.op");
-        counted = true;
-        CompleteFn complete = kind == FsKind::Open ? &fsCompleteOpen : &fsComplete;
-        SysWorkPool::instance().submit(
-            token,
-            [op, a = std::move(args)]() -> PoolResult { return PoolResult::of(op(a)); },
-            complete, ErrShape::FErr);
+            auto& s = Scheduler::instance();
+            token = s.parkResume(resume, HoldKind::Task, "FileSystem.op");
+            counted = true;
+            CompleteFn complete = kind == FsKind::Open ? &fsCompleteOpen : &fsComplete;
+            std::function<PoolResult()> work;
+            if (isClose) {
+                // The close waits for the operations started before it, so none can reach the fd once it is
+                // closed and perhaps reused; they were submitted earlier, so a worker has already taken each.
+                work = [op, id, a = std::move(args)]() -> PoolResult {
+                    auto& t = openHandles();
+                    {
+                        std::unique_lock<std::mutex> lk(t.m);
+                        t.idle.wait(lk, [&] {
+                            auto it = t.entries.find(id);
+                            return it == t.entries.end() || it->second.inFlight == 0;
+                        });
+                    }
+                    FsRes r = op(a);
+                    {
+                        std::lock_guard<std::mutex> lk(t.m);
+                        t.entries.erase(id);
+                    }
+                    return PoolResult::of(std::move(r));
+                };
+            } else if (handle) {
+                work = [op, id, a = std::move(args)]() -> PoolResult {
+                    struct Done {
+                        int64_t id;
+                        ~Done() { handleOpDone(id); }
+                    } done{id};
+                    return PoolResult::of(op(a));
+                };
+            } else {
+                work = [op, a = std::move(args)]() -> PoolResult { return PoolResult::of(op(a)); };
+            }
+            SysWorkPool::instance().submit(token, std::move(work), complete, ErrShape::FErr);
+        } catch (...) {
+            if (handle) {
+                {
+                    std::lock_guard<std::mutex> lk(table.m);
+                    auto it = table.entries.find(id);
+                    if (it != table.entries.end()) {
+                        if (isClose) it->second.closing = false;
+                        else --it->second.inFlight;
+                    }
+                }
+                table.idle.notify_all();
+            }
+            throw;
+        }
         return alloc::unit();
     )
 }
+
+#if ECO_TEST_HOOKS
+int fdOfHandleForTest(int64_t id) {
+    auto& t = currentHandles();
+    std::lock_guard<std::mutex> lk(t.m);
+    auto it = t.entries.find(id);
+    return it == t.entries.end() ? -1 : it->second.fd;
+}
+#endif
 
 // ---------------------------------------------------------------------------
 // Directory getters

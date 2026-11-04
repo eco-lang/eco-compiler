@@ -13,6 +13,7 @@
 #include "Allocator.hpp"
 #include "Heap.hpp"
 #include "HeapHelpers.hpp"
+#include "IntArith.hpp"
 #include "PermanentSpace.hpp"
 #include "StringOps.hpp"
 #include "ThreadLocalHeap.hpp"
@@ -29,8 +30,15 @@
 #include <cstring>
 #if !defined(_WIN32)
 #include <unistd.h>
+#else
+#define WIN32_LEAN_AND_MEAN
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
 #endif
 #include <deque>
+#include <iostream>
 #include <map>  // call-census row merge
 #include <memory>
 #include <mutex>
@@ -2803,7 +2811,21 @@ extern "C" [[noreturn]] void eco_crash(HPtr message_val) {
     fputc('\n', stderr);
 
     // exit, not abort: a SIGABRT handler, such as the one LLVM installs, would add its own report.
-    std::exit(1);
+    eco_terminate_process(1);
+}
+
+extern "C" [[noreturn]] void eco_terminate_process(int code) {
+    std::cout.flush();
+    std::cerr.flush();
+    std::fflush(nullptr);
+#if defined(_WIN32)
+    // TerminateProcess skips ExitProcess's thread kill, DLL detach and static destructors (see the header).
+    ::TerminateProcess(::GetCurrentProcess(), static_cast<UINT>(code));
+    // TerminateProcess may return before the process is gone; going on would reach that teardown after all.
+    for (;;) { ::Sleep(1000); }
+#else
+    std::exit(code);
+#endif
 }
 
 //===----------------------------------------------------------------------===//
@@ -4255,7 +4277,6 @@ extern "C" uint32_t eco_get_tag(HPtr val) {
     }
 
     void* obj = Allocator::instance().resolve(hp);
-    if (!obj) return 0;
 
     Header* header = static_cast<Header*>(obj);
 
@@ -4299,7 +4320,6 @@ extern "C" int64_t eco_cons_head_i64(HPtr cons) {
     HPointer hp = cons.toHPointer();
 
     void* obj = Allocator::instance().resolve(hp);
-    if (!obj) return 0;
 
     Unboxable head;
     uint32_t kind;
@@ -4309,7 +4329,6 @@ extern "C" int64_t eco_cons_head_i64(HPtr cons) {
         return head.i;
     } else {
         void* headObj = Allocator::instance().resolve(head.p);
-        if (!headObj) return 0;
         return static_cast<ElmInt*>(headObj)->value;
     }
 }
@@ -4318,7 +4337,6 @@ extern "C" double eco_cons_head_f64(HPtr cons) {
     HPointer hp = cons.toHPointer();
 
     void* obj = Allocator::instance().resolve(hp);
-    if (!obj) return 0.0;
 
     Unboxable head;
     uint32_t kind;
@@ -4328,7 +4346,6 @@ extern "C" double eco_cons_head_f64(HPtr cons) {
         return head.f;
     } else {
         void* headObj = Allocator::instance().resolve(head.p);
-        if (!headObj) return 0.0;
         return static_cast<ElmFloat*>(headObj)->value;
     }
 }
@@ -4337,7 +4354,6 @@ extern "C" uint32_t eco_cons_head_char(HPtr cons) {
     HPointer hp = cons.toHPointer();
 
     void* obj = Allocator::instance().resolve(hp);
-    if (!obj) return 0;
 
     Unboxable head;
     uint32_t kind;
@@ -4347,7 +4363,6 @@ extern "C" uint32_t eco_cons_head_char(HPtr cons) {
         return head.c;
     } else {
         void* headObj = Allocator::instance().resolve(head.p);
-        if (!headObj) return 0;
         return static_cast<uint32_t>(static_cast<ElmChar*>(headObj)->value);
     }
 }
@@ -4358,7 +4373,6 @@ extern "C" uint32_t eco_cons_head_char(HPtr cons) {
 // generated code calls it by name.
 extern "C" HPtr eco_list_head_hybrid(HPtr list) {
     void* obj = Allocator::instance().resolve(list.toHPointer());
-    if (!obj) return HPtr::fromBits(0);
     Unboxable head;
     uint32_t kind;
     if (!listFirstElem(obj, head, kind)) return HPtr::fromBits(0);
@@ -4707,23 +4721,7 @@ extern "C" uint32_t eco_array_get_char(HPtr arr, int64_t index) {
 //===----------------------------------------------------------------------===//
 
 extern "C" int64_t eco_int_pow(int64_t base, int64_t exp) {
-    if (exp < 0) {
-        return 0;
-    }
-    if (exp == 0) {
-        return 1;
-    }
-
-    // Exponentiation by squaring.
-    int64_t result = 1;
-    while (exp > 0) {
-        if (exp & 1) {
-            result *= base;
-        }
-        base *= base;
-        exp >>= 1;
-    }
-    return result;
+    return Elm::ecoIntPow(base, exp);
 }
 
 //===----------------------------------------------------------------------===//
@@ -4755,7 +4753,6 @@ extern "C" void eco_array_set_fix_kind(HPtr array_hptr, uint32_t intended_kind) 
     std::memcpy(&hp, &bits, sizeof(hp));
     if (hp.ptr_ind != 0) return;
     void* ptr = Allocator::instance().resolve(hp);
-    if (!ptr) return;
     ElmArray* arr = static_cast<ElmArray*>(ptr);
     arr->header.unboxed = intended_kind & 0x3F;
 }

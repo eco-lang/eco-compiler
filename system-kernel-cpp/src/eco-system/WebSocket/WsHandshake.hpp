@@ -50,10 +50,12 @@ using HeaderList = std::vector<std::pair<std::string, std::string>>;
 /// Returns the `Sec-WebSocket-Accept` value that answers `key`: the base64 SHA-1 of `key` followed by the RFC 6455
 /// GUID. Returns an empty string on Windows, where the build has no OpenSSL.
 std::string wsAcceptFor(const std::string& key);
-/// Returns a fresh `Sec-WebSocket-Key`: 16 bytes from OpenSSL's `RAND_bytes`, in base64. Throws `std::runtime_error`
-/// if `RAND_bytes` fails. Returns an empty string on Windows.
+/// Returns a fresh `Sec-WebSocket-Key`: 16 bytes from `wsRandomBytes`, in base64. Returns an empty string on
+/// Windows.
 std::string wsNewKey();
-/// Fills the `n` bytes at `out` with random bytes.
+/// Fills the `n` bytes at `out` with random bytes from the system's cryptographic generator: OpenSSL's `RAND_bytes`,
+/// or `BCryptGenRandom` on Windows. If the generator fails, prints a message to stderr and aborts the process; there
+/// is no weaker fallback.
 void wsRandomBytes(unsigned char* out, size_t n);
 
 // --- HTTP heads (pure) --------------------------------------------------------------
@@ -218,8 +220,8 @@ public:
     bool cancel();
 
     /// Reports that the HTTP/1.1 response head `head` was read on `c`, and posts it as a `Dialed` event unless the
-    /// dial has resolved, in which case `c` is aborted. `ok` and `err` are ignored.
-    void headDone(Conn& c, HttpHead head, bool ok, const std::string& err);
+    /// dial has resolved, in which case `c` is aborted.
+    void headDone(Conn& c, HttpHead head);
     /// Posts a failed `Dialed` event with `code` and `message`, unless the dial has resolved or been cancelled.
     void failed(const std::string& code, const std::string& message);
     /// Returns `DialSpec::deadlineMs`.

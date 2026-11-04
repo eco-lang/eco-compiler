@@ -109,7 +109,6 @@ target_compile_features(ElmKernel_JsArray PUBLIC cxx_std_20)
 
 # Debug module
 add_library(ElmKernel_Debug STATIC
-    src/core/Debug.cpp
     src/core/DebugExports.cpp
 )
 target_include_directories(ElmKernel_Debug PUBLIC
@@ -184,7 +183,6 @@ target_compile_features(ElmKernel_Json PUBLIC cxx_std_20)
 
 # Browser module
 add_library(ElmKernel_Browser STATIC
-    src/browser/Browser.cpp
     src/browser/BrowserExports.cpp
 )
 target_include_directories(ElmKernel_Browser PUBLIC
@@ -195,7 +193,6 @@ target_compile_features(ElmKernel_Browser PUBLIC cxx_std_20)
 
 # Bytes module
 add_library(ElmKernel_Bytes STATIC
-    src/bytes/Bytes.cpp
     src/bytes/BytesExports.cpp
 )
 target_include_directories(ElmKernel_Bytes PUBLIC
@@ -213,7 +210,6 @@ endif()
 
 # File module
 add_library(ElmKernel_File STATIC
-    src/file/File.cpp
     src/file/FileExports.cpp
 )
 target_include_directories(ElmKernel_File PUBLIC
@@ -262,7 +258,6 @@ target_compile_features(ElmKernel_Parser PUBLIC cxx_std_20)
 
 # Regex module
 add_library(ElmKernel_Regex STATIC
-    src/regex/Regex.cpp
     src/regex/RegexExports.cpp
 )
 target_include_directories(ElmKernel_Regex PUBLIC
@@ -287,7 +282,6 @@ target_compile_features(ElmKernel_Time PUBLIC cxx_std_20)
 
 # Url module
 add_library(ElmKernel_Url STATIC
-    src/url/Url.cpp
     src/url/UrlExports.cpp
 )
 target_include_directories(ElmKernel_Url PUBLIC
@@ -355,4 +349,29 @@ endif()
 # src/KernelDebug.hpp for the ECO_KLOG macro.
 if(ECO_KERNEL_DEBUG)
     target_compile_definitions(ElmKernel_Http PRIVATE ECO_KERNEL_DEBUG)
+endif()
+
+#------------------------------------------------------------------------------
+# Unit tests for the time code (the time effect manager's GC rooting,
+# test/elm-kernel-time/TimeKernelTest.cpp). The `test` binary does not
+# link elm-kernel-cpp, so these run in their own binary, set up like
+# eco-system-core-test (CoreCheck.hpp checks, ChildScenario.hpp children).
+#   cmake --build <dir> --target elm-kernel-time-test
+#   <dir>/elm-kernel-cpp/elm-kernel-time-test
+#------------------------------------------------------------------------------
+
+if(NOT WIN32 AND TARGET EcoRuntimeStatic)
+    find_package(Threads REQUIRED)
+    add_executable(elm-kernel-time-test EXCLUDE_FROM_ALL
+        ${CMAKE_CURRENT_SOURCE_DIR}/../test/elm-kernel-time/ElmKernelTimeTest.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/../test/elm-kernel-time/TimeKernelTest.cpp)
+    target_compile_features(elm-kernel-time-test PRIVATE cxx_std_20)
+    target_link_libraries(elm-kernel-time-test PRIVATE
+        ElmKernel_Time ElmKernel_Platform ElmKernel_Scheduler ElmKernel_EffectRegistry
+        # The runtime's PlatformRuntime/PortRuntime call the Json kernel (flags, ports).
+        ElmKernel_Json
+        EcoRuntimeStatic Threads::Threads)
+    if(ECO_ASSERTS_ON)
+        target_compile_options(elm-kernel-time-test PRIVATE -UNDEBUG)
+    endif()
 endif()

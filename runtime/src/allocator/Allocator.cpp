@@ -1136,7 +1136,8 @@ void Allocator::reset(const HeapConfig* new_config) {
 
 // The checks on `ptr` are only in ECO_HEAP_VALIDATE builds because this runs on every dereference, and
 // the standard build keeps assertions on. The tag assertion after the loop stays in every build that has
-// assertions.
+// assertions. The result is never null; an embedded constant is the caller's error (`fromPointerRaw`
+// asserts on it), and `alloc::resolveOrNull` is the call for a value that may be one.
 void* Allocator::resolve(HPointer ptr) {
     void* obj = fromPointerRaw(ptr);
 

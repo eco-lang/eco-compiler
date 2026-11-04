@@ -13,6 +13,7 @@ module ModifyMVarAccumulateListStress exposing (main)
 
 import Bytes.Decode as BD
 import Bytes.Encode as BE
+import Eco.IO.Error exposing (IOError)
 import Eco.MVar as MV
 import StressHarness exposing (StressFlags)
 import Task
@@ -28,12 +29,12 @@ listDec =
     BD.succeed []
 
 
-smallAlloc : Int -> Task.Task Never Int
+smallAlloc : Int -> Task.Task IOError Int
 smallAlloc size =
     Task.succeed (List.sum (List.range 1 size))
 
 
-prependOne : Int -> MV.MVar (List String) -> Int -> Task.Task Never ()
+prependOne : Int -> MV.MVar (List String) -> Int -> Task.Task IOError ()
 prependOne size mvar i =
     MV.take listDec mvar
         |> Task.andThen
@@ -47,7 +48,7 @@ prependOne size mvar i =
             )
 
 
-loop : Int -> Int -> MV.MVar (List String) -> Int -> Task.Task Never ()
+loop : Int -> Int -> MV.MVar (List String) -> Int -> Task.Task IOError ()
 loop count size mvar i =
     if i > count then
         Task.succeed ()
@@ -77,6 +78,7 @@ run flags =
             (\xs ->
                 List.length xs == count && List.head xs == Just ("v" ++ String.fromInt count)
             )
+        |> Task.onError (\_ -> Task.succeed False)
 
 
 main : Program StressFlags StressHarness.Model StressHarness.Msg

@@ -2,6 +2,8 @@
 #include "allocator/StringOps.hpp"
 #include "allocator/Allocator.hpp"
 
+#include <cassert>
+
 namespace Elm::Kernel::String {
 
 // ============================================================================
@@ -34,16 +36,6 @@ HPointer cons(u32 c, void* str) {
 
 HPointer uncons(void* str) {
     return StringOps::uncons(str);
-}
-
-// Returns the Char in the head of the list cell `c`, held unboxed or as a boxed `ElmChar`. Does not
-// allocate. Nothing calls it.
-static u32 consCellChar(Allocator& allocator, Cons* c) {
-    if (Elm::tupleFieldKind(c->header.unboxed, 0) != 0) {
-        return c->head.c;
-    }
-    void* charObj = allocator.resolve(c->head.p);
-    return static_cast<ElmChar*>(charObj)->value;
 }
 
 // Returns the Char in the list element `v` whose slot kind is `kind`, as `alloc::ListCursor` gives
@@ -120,45 +112,6 @@ bool any(CharPredicate pred, void* str) {
 
 bool all(CharPredicate pred, void* str) {
     return StringOps::all(pred, str);
-}
-
-// ============================================================================
-// Folding
-// ============================================================================
-
-HPointer foldl(FoldFunc func, HPointer acc, void* str) {
-    if (!str) return acc;
-    auto& allocator = Allocator::instance();
-
-    // Copied out of the heap before `func`, which may allocate, is first called. toStdU16String
-    // reads every String form.
-    auto snapshot = StringOps::toStdU16String(str);
-
-    HPointer result = acc;
-    const u16* p = reinterpret_cast<const u16*>(snapshot.data());
-    size_t n = snapshot.size();
-    for (size_t i = 0; i < n;) {
-        u32 cp = StringOps::nextCodePoint(p, n, i);
-        void* accObj = allocator.resolve(result);
-        result = func(cp, accObj);
-    }
-    return result;
-}
-
-HPointer foldr(FoldFunc func, HPointer acc, void* str) {
-    if (!str) return acc;
-    auto& allocator = Allocator::instance();
-
-    auto snapshot = StringOps::toStdU16String(str);
-
-    HPointer result = acc;
-    const u16* p = reinterpret_cast<const u16*>(snapshot.data());
-    for (size_t i = snapshot.size(); i > 0;) {
-        u32 cp = StringOps::prevCodePoint(p, i);
-        void* accObj = allocator.resolve(result);
-        result = func(cp, accObj);
-    }
-    return result;
 }
 
 // ============================================================================
@@ -307,7 +260,8 @@ HPointer words(void* str) {
                 in_word = true;
             }
         }
-        if (ranges.empty()) return alloc::listNil();
+        // `trimmed` is non-empty and trimmed with the same `isJsWhitespace` set, so it starts a word.
+        assert(!ranges.empty() && "String::words: a non-empty trimmed String has a word");
         std::vector<HPointer> parts(ranges.size(), alloc::listNil());
         auto& rs = allocator.getRootSet();
         size_t saved = rs.stackRangePoint();
@@ -352,7 +306,8 @@ HPointer words(void* str) {
         }
     }
 
-    if (ranges.empty()) return alloc::listNil();
+    // As in the UTF-8 branch: a non-empty trimmed String has at least one word.
+    assert(!ranges.empty() && "String::words: a non-empty trimmed String has a word");
 
     // Phase 2: create strings with rooting
     std::vector<HPointer> parts(ranges.size(), alloc::listNil());

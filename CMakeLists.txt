@@ -1495,11 +1495,29 @@ add_custom_target(check
     COMMAND sh ${CMAKE_SOURCE_DIR}/test/scripts/check-large-body-access.sh ${CMAKE_SOURCE_DIR}
     # Reserved ctor tags in Compiler.IR.Runtime.CtorTag must equal the runtime's (SD-18).
     COMMAND sh ${CMAKE_SOURCE_DIR}/test/scripts/check-ctor-tags.sh ${CMAKE_SOURCE_DIR}
+    # Every GC external root scanner is registered with a name.
+    COMMAND python3 ${CMAKE_SOURCE_DIR}/test/scripts/check-scanner-names.py ${CMAKE_SOURCE_DIR}
+    # Kernel source rules (plans/kernel-lib-bug-fixes.md): every eco-kernel export under ECO_KERNEL_GUARD,
+    # no throwing std::filesystem overloads, no C bool at the kernel ABI (REP_ABI_001), no dead null test
+    # after Allocator::resolve, the ECO_KLOG copies agree, no weak RNG in WebSocket, no strerror on the
+    # HTTP server worker.
+    COMMAND sh ${CMAKE_SOURCE_DIR}/test/scripts/check-eco-kernel-guard.sh ${CMAKE_SOURCE_DIR}
+    COMMAND sh ${CMAKE_SOURCE_DIR}/test/scripts/check-filesystem-nothrow.sh ${CMAKE_SOURCE_DIR}
+    COMMAND sh ${CMAKE_SOURCE_DIR}/test/scripts/check-kernel-abi-bool.sh ${CMAKE_SOURCE_DIR}
+    COMMAND sh ${CMAKE_SOURCE_DIR}/test/scripts/check-resolve-null-guards.sh ${CMAKE_SOURCE_DIR}
+    COMMAND sh ${CMAKE_SOURCE_DIR}/test/scripts/check-klog-copies.sh ${CMAKE_SOURCE_DIR}
+    COMMAND sh ${CMAKE_SOURCE_DIR}/test/scripts/check-ws-rng.sh ${CMAKE_SOURCE_DIR}
+    COMMAND sh ${CMAKE_SOURCE_DIR}/test/scripts/check-httpserver-strerror.sh ${CMAKE_SOURCE_DIR}
     # No two sibling folders of the compiler source depend on each other, under either reading
     # (plans/compiler-source-tree-reorganization.md, rule 4).
     COMMAND python3 ${CMAKE_SOURCE_DIR}/compiler/scripts/check-folder-cycles.py ${CMAKE_SOURCE_DIR}/compiler/src
     COMMAND python3 ${CMAKE_SOURCE_DIR}/compiler/scripts/check-folder-cycles.py ${CMAKE_SOURCE_DIR}/compiler/src --merge
     COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR}
+    # The static_assert translation units (test/static-asserts), compiled with the build tree's flags, and
+    # the kernel archives' exported C names (REP_ABI_001), so after the build.
+    COMMAND sh ${CMAKE_SOURCE_DIR}/test/scripts/run-static-asserts.sh ${CMAKE_BINARY_DIR}
+    COMMAND ${CMAKE_COMMAND} -E env ECO_BUILD_DIR=${CMAKE_BINARY_DIR}
+        sh ${CMAKE_SOURCE_DIR}/test/scripts/check-kernel-c-symbols.sh ${CMAKE_SOURCE_DIR}
     COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR} --target test
     COMMAND sh -c "${CMAKE_BINARY_DIR}/test/test $\${TEST_FILTER:+--filter \"$$TEST_FILTER\"}"
     COMMENT "Gate A (incremental): build default ALL + Stage 1, run JIT E2E"
@@ -1570,6 +1588,14 @@ if(NOT WIN32)
     set(_full_casemap_check COMMAND sh ${CMAKE_SOURCE_DIR}/test/scripts/check-casemap-tables.sh
         ${CMAKE_SOURCE_DIR} ${NODE_EXECUTABLE})
 endif()
+# elm-kernel-cpp's time-code unit tests (test/elm-kernel-time/TimeKernelTest.cpp), next to
+# eco-system-core-test.
+set(_full_time_test_target)
+set(_full_time_test)
+if(TARGET elm-kernel-time-test)
+    set(_full_time_test_target elm-kernel-time-test)
+    set(_full_time_test COMMAND ${CMAKE_BINARY_DIR}/elm-kernel-cpp/elm-kernel-time-test)
+endif()
 add_custom_target(full
     COMMAND python3 ${CMAKE_SOURCE_DIR}/test/scripts/check-root-bounded.py ${CMAKE_SOURCE_DIR}
     # Large bodies only through the accessors, never resolved (plans/large-object-space.md D4).
@@ -1577,6 +1603,19 @@ add_custom_target(full
     COMMAND sh ${CMAKE_SOURCE_DIR}/test/scripts/check-kernel-homes.sh ${CMAKE_SOURCE_DIR}
     # Reserved ctor tags in Compiler.IR.Runtime.CtorTag must equal the runtime's (SD-18).
     COMMAND sh ${CMAKE_SOURCE_DIR}/test/scripts/check-ctor-tags.sh ${CMAKE_SOURCE_DIR}
+    # Every GC external root scanner is registered with a name.
+    COMMAND python3 ${CMAKE_SOURCE_DIR}/test/scripts/check-scanner-names.py ${CMAKE_SOURCE_DIR}
+    # Kernel source rules (plans/kernel-lib-bug-fixes.md): every eco-kernel export under ECO_KERNEL_GUARD,
+    # no throwing std::filesystem overloads, no C bool at the kernel ABI (REP_ABI_001), no dead null test
+    # after Allocator::resolve, the ECO_KLOG copies agree, no weak RNG in WebSocket, no strerror on the
+    # HTTP server worker.
+    COMMAND sh ${CMAKE_SOURCE_DIR}/test/scripts/check-eco-kernel-guard.sh ${CMAKE_SOURCE_DIR}
+    COMMAND sh ${CMAKE_SOURCE_DIR}/test/scripts/check-filesystem-nothrow.sh ${CMAKE_SOURCE_DIR}
+    COMMAND sh ${CMAKE_SOURCE_DIR}/test/scripts/check-kernel-abi-bool.sh ${CMAKE_SOURCE_DIR}
+    COMMAND sh ${CMAKE_SOURCE_DIR}/test/scripts/check-resolve-null-guards.sh ${CMAKE_SOURCE_DIR}
+    COMMAND sh ${CMAKE_SOURCE_DIR}/test/scripts/check-klog-copies.sh ${CMAKE_SOURCE_DIR}
+    COMMAND sh ${CMAKE_SOURCE_DIR}/test/scripts/check-ws-rng.sh ${CMAKE_SOURCE_DIR}
+    COMMAND sh ${CMAKE_SOURCE_DIR}/test/scripts/check-httpserver-strerror.sh ${CMAKE_SOURCE_DIR}
     # No two sibling folders of the compiler source depend on each other, under either reading
     # (plans/compiler-source-tree-reorganization.md, rule 4).
     COMMAND python3 ${CMAKE_SOURCE_DIR}/compiler/scripts/check-folder-cycles.py ${CMAKE_SOURCE_DIR}/compiler/src
@@ -1584,8 +1623,15 @@ add_custom_target(full
     ${_full_casemap_check}
     COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR} --target clean
     COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR}
+    # The static_assert translation units (test/static-asserts), compiled with the build tree's flags, and
+    # the kernel archives' exported C names (REP_ABI_001), so after the build.
+    COMMAND sh ${CMAKE_SOURCE_DIR}/test/scripts/run-static-asserts.sh ${CMAKE_BINARY_DIR}
+    COMMAND ${CMAKE_COMMAND} -E env ECO_BUILD_DIR=${CMAKE_BINARY_DIR}
+        sh ${CMAKE_SOURCE_DIR}/test/scripts/check-kernel-c-symbols.sh ${CMAKE_SOURCE_DIR}
     COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR} --target test eco-system-core-test eco-system-examples
+        ${_full_time_test_target}
     COMMAND ${CMAKE_BINARY_DIR}/system-kernel-cpp/eco-system-core-test
+    ${_full_time_test}
     COMMAND sh -c "${CMAKE_BINARY_DIR}/test/test $\${TEST_FILTER:+--filter \"$$TEST_FILTER\"}"
     # The eco-system and elm-conformance suites on the JS target (plans/eco-system-library.md
     # Phase 10, plans/char-simple-case-mapping.md).

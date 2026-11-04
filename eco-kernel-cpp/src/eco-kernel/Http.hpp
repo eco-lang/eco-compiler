@@ -8,7 +8,7 @@
 // (and, for an archive, computes its SHA-1 and unzips it) and resumes the Task.
 //
 // Neither Task fails. Each succeeds with an Elm `Result` whose `Err` describes a failed transfer, a non-2xx status
-// (`fetch` only) or an unreadable archive. Killing either Task does not cancel its request.
+// or an unreadable archive. Killing either Task does not cancel its request.
 //
 // The arguments and results are Elm values as `uint64_t` words (see `ExportHelpers.hpp`). Both functions must be
 // called on the eco thread, and each is a GC point.
@@ -33,10 +33,11 @@ uint64_t fetch(uint64_t method, uint64_t url, uint64_t headers);
 ///
 /// The Task succeeds with `Ok (sha, entries)`, where `sha` is the lower-case hex SHA-1 of the downloaded bytes and
 /// `entries` is a List of `(relativePath, content)` String tuples in archive order. An entry whose name ends in
-/// `/` has empty content, and an entry that has no name or cannot be opened is left out. An entry that reads short
-/// keeps its recorded size, the unread part filled with zero bytes. The HTTP status is not checked: any response
-/// body is treated as the archive. The Task succeeds with `Err message` when the transfer fails (the messages are
-/// those of `fetch`) or the body cannot be opened as a ZIP archive.
+/// `/` has empty content, and an entry that has no name is left out. The Task succeeds with `Err message` when the
+/// transfer fails (the messages are those of `fetch`), when the final response's status is not 200 to 299
+/// (`HTTP <status>`, whatever the body), when the body cannot be opened as a ZIP archive, or when an entry cannot
+/// be stat'ed, opened or read to its recorded size (`Failed to stat zip entry <name>`, `Failed to open zip entry
+/// <name>`, `Failed to read zip entry <name>`).
 uint64_t getArchive(uint64_t url);
 
 } // namespace Eco::Kernel::Http

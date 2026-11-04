@@ -23,6 +23,12 @@ var _Console_write = F2(function(handle, content) {
                 process.stderr.write(content);
             } else if (typeof _Process_streamHandles !== 'undefined' && _Process_streamHandles[handle]) {
                 _Process_streamHandles[handle].write(content);
+            } else {
+                // Not stdout, stderr or an open spawnProcess stdin handle: fail
+                // rather than lose the data (as the native kernel does).
+                callback(__Scheduler_fail(_Console_ioErr(
+                    { code: 'EBADF', message: 'console write: no such handle ' + handle })));
+                return;
             }
             callback(__Scheduler_succeed(__Utils_Tuple0));
         } catch (e) {

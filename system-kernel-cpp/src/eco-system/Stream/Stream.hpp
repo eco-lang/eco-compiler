@@ -18,9 +18,9 @@
 //   * A *subscription reader* can take a mapped source's chunks directly in C++, bypassing Elm reads.
 //
 // Every function must be called on the eco thread, the thread that runs the Elm scheduler. All of them
-// except `discardReadable` and `pipeStreams` make no allocation on the GC heap and call no Elm code, so they
-// may be called from a binding body before or after its allocations. Those two complete parked Elm tasks,
-// and so allocate and call Elm.
+// except `discardReadable`, `discardWritable` and `pipeStreams` make no allocation on the GC heap and call no
+// Elm code, so they may be called from a binding body before or after its allocations. Those three complete
+// parked Elm tasks, and so allocate and call Elm.
 //
 //===----------------------------------------------------------------------===//
 
@@ -56,11 +56,20 @@ int64_t createTextChannelSink(ByteChannel* channel);
 /// which allocates and calls Elm. A missing id does nothing.
 void discardReadable(int64_t id);
 
+/// Closes the writable side of pair `id`, for a sink that never reached Elm code able to write to it, so that
+/// the pair can be erased. Its queued writes, if any, are dropped and fail with an empty reason, and the
+/// channel of a channel or mapped sink is shut down; the pair is then erased once nothing is left in flight.
+/// Any tasks parked on the pair are completed with an error, which allocates and calls Elm. A missing id, or
+/// a writable side already Closed or Errored, does nothing.
+void discardWritable(int64_t id);
+
 /// Creates a channel source over the file descriptor `fd` and returns its id, or 0 if `fd` is negative or
 /// cannot be duplicated.
 ///
-/// With `owns`, the stream takes `fd` and it is closed when the channel finishes. Otherwise the caller keeps
-/// `fd`, and the channel works on a close-on-exec duplicate numbered 3 or above. fds 0 to 2 are never
+/// With `owns`, the stream takes `fd` and it is closed when the channel finishes; the fd's open file description
+/// must then be the stream's alone, since a pipe or terminal is made non-blocking (`FdChannelOptions::nonBlocking`).
+/// Otherwise the caller keeps `fd`, and the channel works on a close-on-exec duplicate numbered 3 or above, left in
+/// its blocking mode. fds 0 to 2 are never
 /// duplicated and never closed. On Windows `fd` is used as given in both cases. `origin` names the resource
 /// in failure reasons (`FdChannelOptions::origin`); the channel keeps the pointer, so the string must
 /// outlive the stream, as a string literal does.

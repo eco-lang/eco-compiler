@@ -29,10 +29,8 @@ end in pieces, use [FileSystem.readFileStream](FileSystem#readFileStream) and
 [FileSystem.writeFileStream](FileSystem#writeFileStream).
 
 A handle stays open until [close](#close). An operation on it started after that fails with
-[HandleClosed](FileSystem#ErrorKind), unless its file descriptor, the operating system's number for an open file, has
-since been reused for a file opened by this module or by
-[FileSystem.writeFileWith](FileSystem#writeFileWith) with an option on, and that file is still
-open. The closed handle then acts on that file.
+[HandleClosed](FileSystem#ErrorKind), even when the operating system has since given the closed
+file's number to another file.
 
 A task that fails, fails with a [FileSystem.Error](FileSystem#Error). When opening fails,
 [errorPath](FileSystem#errorPath) is the path that was being opened; for every operation on a
@@ -234,8 +232,8 @@ openForReadAndWrite behaviour path =
 
 The handle, and every copy of it, counts as closed from then on, even if closing fails. An
 operation on it started afterwards, a second `close` included, fails with
-[HandleClosed](FileSystem#ErrorKind), except after the reuse of its file descriptor that the
-module documentation describes.
+[HandleClosed](FileSystem#ErrorKind). The file is closed once the operations on the handle
+started before `close` have finished.
 
 -}
 close : Handle a b -> Task FileSystem.Error ()
@@ -421,7 +419,8 @@ openImpl access path =
         |> Task.map Handle
 
 
-{-| Returns the file descriptor a handle stands for, which is what the kernels take.
+{-| Returns the kernels' id of the open file a handle stands for, which is what the kernels take.
+It is not the file descriptor.
 -}
 fdOf : Handle a b -> Int
 fdOf (Handle fd) =
@@ -465,27 +464,29 @@ entityFromInt n =
 
 -- KERNELS
 -- The annotations fix the kernel ABI: the C++ and JS kernels take and return exactly these
--- shapes. A failure is a ( code, message ) pair. Every binding that takes a file descriptor
+-- shapes. A failure is a ( code, message ) pair. A handle is an opaque id that `open` returns,
+-- never reused; the kernels map it to the file descriptor. Every binding that takes a handle
 -- fails with "EBADF", without reaching the operating system, unless `open` returned it and
 -- `close` has not yet been asked to close it.
 
 
 {-| Opens the file at the POSIX path given second with the open mode given first, and returns
-its file descriptor, registered as an open handle.
+the id of a new open handle on it.
 -}
 kOpen : String -> String -> Task ( String, String ) Int
 kOpen =
     Eco.Kernel.FileSystem.open
 
 
-{-| Removes an open file descriptor from the open handles and closes it.
+{-| Stops an open handle from accepting operations and, once those already started have
+finished, closes its file and removes the handle.
 -}
 kClose : Int -> Task ( String, String ) ()
 kClose =
     Eco.Kernel.FileSystem.close
 
 
-{-| Asks for the 11-integer status list of an open file descriptor;
+{-| Asks for the 11-integer status list of an open handle;
 `FileSystem.Internal.decodeMetadata` reads it.
 -}
 kFstat : Int -> Task ( String, String ) (List Int)
@@ -493,21 +494,21 @@ kFstat =
     Eco.Kernel.FileSystem.fstat
 
 
-{-| Sets the numeric mode, given second, of an open file descriptor.
+{-| Sets the numeric mode, given second, of the file behind an open handle.
 -}
 kFchmod : Int -> Int -> Task ( String, String ) ()
 kFchmod =
     Eco.Kernel.FileSystem.fchmod
 
 
-{-| Sets the owner of an open file descriptor to the user id and group id given second and third.
+{-| Sets the owner of an open handle to the user id and group id given second and third.
 -}
 kFchown : Int -> Int -> Int -> Task ( String, String ) ()
 kFchown =
     Eco.Kernel.FileSystem.fchown
 
 
-{-| Sets the access and modification times of an open file descriptor, given second and third in
+{-| Sets the access and modification times of an open handle, given second and third in
 whole seconds since the Unix epoch.
 -}
 kFutimes : Int -> Int -> Int -> Task ( String, String ) ()
@@ -515,7 +516,7 @@ kFutimes =
     Eco.Kernel.FileSystem.futimes
 
 
-{-| Reads from an open file descriptor at the offset given second (0 when it is negative) as many
+{-| Reads from an open handle at the offset given second (0 when it is negative) as many
 bytes as the third argument says, stopping at the end of the file, or to the end of the file when
 the third argument is negative.
 -}
@@ -524,29 +525,29 @@ kReadFromOffset =
     Eco.Kernel.FileSystem.readFromOffset
 
 
-{-| Writes all the bytes to an open file descriptor at the offset given second, or at the
-descriptor's current position, moving it, when the offset is negative.
+{-| Writes all the bytes to an open handle at the offset given second, or at the
+file's current position, moving it, when the offset is negative.
 -}
 kWriteFromOffset : Int -> Int -> Bytes -> Task ( String, String ) ()
 kWriteFromOffset =
     Eco.Kernel.FileSystem.writeFromOffset
 
 
-{-| Sets the size, given second in bytes, of the file behind an open file descriptor.
+{-| Sets the size, given second in bytes, of the file behind an open handle.
 -}
 kFtruncate : Int -> Int -> Task ( String, String ) ()
 kFtruncate =
     Eco.Kernel.FileSystem.ftruncate
 
 
-{-| Flushes an open file descriptor's data and metadata to the storage device (`fsync`).
+{-| Flushes an open handle's data and metadata to the storage device (`fsync`).
 -}
 kFsync : Int -> Task ( String, String ) ()
 kFsync =
     Eco.Kernel.FileSystem.fsync
 
 
-{-| Flushes an open file descriptor's data to the storage device (`fdatasync`; natively on macOS,
+{-| Flushes an open handle's data to the storage device (`fdatasync`; natively on macOS,
 `F_FULLFSYNC`, falling back to `fsync`).
 -}
 kFdatasync : Int -> Task ( String, String ) ()

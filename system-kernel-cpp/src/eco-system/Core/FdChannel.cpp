@@ -10,6 +10,7 @@
 
 #include "eco-system/Core/FdChannel.hpp"
 
+#include <atomic>
 #include <cerrno>
 #include <deque>
 #include <mutex>
@@ -24,6 +25,7 @@
 #include <fcntl.h>
 #include <poll.h>
 #include <sys/select.h>
+#include <sys/socket.h>
 #include <sys/stat.h>
 #include <unistd.h>
 #endif
@@ -91,12 +93,14 @@ struct FdChannel::State {
         size_t off = 0;
     };
 
-    // Set by the constructor before the thread starts; unguarded after.
-    int fd = -1;
+    // Set by the constructor before the thread starts; unguarded after, except `fd`, which the channel thread sets
+    // to -1 once the fd turns out to have been closed behind its back, and `FdChannel::fd` reads.
+    std::atomic<int> fd{-1};
     uint64_t chanId = 0;
     int wakeR = -1;
     int wakeW = -1;
     bool regular = false;   // regular file: write without chunking
+    bool socket = false;    // a socket: written with a non-blocking send()
     int64_t readRemaining = -1;     // bytes left under FdChannelOptions::readLimit (channel thread only)
     bool truncateOnClose = false;   // FdChannelOptions::truncateOnClose
     bool syncOnClose = false;       // FdChannelOptions::syncOnClose
@@ -233,7 +237,16 @@ void doWrite(State& st) {
         // At most PIPE_BUF per POLLOUT: keeps a pipe write from blocking.
         if (!st.regular && chunk > PIPE_BUF) chunk = PIPE_BUF;
         ssize_t r;
-        do { r = ::write(st.fd, data + off, chunk); } while (r < 0 && errno == EINTR);
+        if (st.socket) {
+            // Per call, so nothing shared with another holder of the socket changes (FD-03).
+            int flags = MSG_DONTWAIT;
+#ifdef MSG_NOSIGNAL
+            flags |= MSG_NOSIGNAL;
+#endif
+            do { r = ::send(st.fd, data + off, chunk, flags); } while (r < 0 && errno == EINTR);
+        } else {
+            do { r = ::write(st.fd, data + off, chunk); } while (r < 0 && errno == EINTR);
+        }
         if (r < 0) {
             int e = errno;
             if (e == EAGAIN || e == EWOULDBLOCK) return;
@@ -299,6 +312,13 @@ int selectAsPoll(struct pollfd* pfd, int n) {
     return r;
 }
 
+// Returns whether `fd` is not an open descriptor (fcntl fails with EBADF).
+bool fdClosed(int fd) { return ::fcntl(fd, F_GETFD) == -1 && errno == EBADF; }
+
+// Drops the channel's fd after it was found closed behind the channel's back, so the thread never touches the
+// number again. Channel thread.
+void forgetFd(State& st) { st.fd.store(-1, std::memory_order_relaxed); }
+
 // The channel thread's body. Serves requests until `stop`, or until a close
 // is requested and no write is queued, then finishes the channel as
 // FdChannel::close and FdChannel::shutdown describe.
@@ -314,12 +334,17 @@ void channelThread(std::shared_ptr<State> sp) {
             wantRead = !st.reads.empty();
             wantWrite = !st.writes.empty();
         }
+        const int fd = st.fd.load(std::memory_order_relaxed);
+        if (fd < 0 && (wantRead || wantWrite)) {   // closed behind our back: nothing can be served
+            failPending(st, EBADF);
+            continue;
+        }
         if (wantRead && st.readRemaining == 0) {   // read limit used up: EOF now
             doRead(st, buf);
             continue;
         }
         struct pollfd pfd[2];
-        pfd[0].fd = (wantRead || wantWrite) ? st.fd : -1;   // -1: ignored by poll
+        pfd[0].fd = (wantRead || wantWrite) ? fd : -1;   // -1: ignored by poll
         pfd[0].events = static_cast<short>((wantRead ? POLLIN : 0) | (wantWrite ? POLLOUT : 0));
         pfd[0].revents = 0;
         pfd[1].fd = st.wakeR;
@@ -330,6 +355,7 @@ void channelThread(std::shared_ptr<State> sp) {
         if (n < 0) {
             int e = errno;
             if (e == EINTR || e == EAGAIN) continue;
+            if (e == EBADF && pfd[0].fd >= 0 && fdClosed(fd)) forgetFd(st);   // select on a closed fd
             failPending(st, e);
             continue;
         }
@@ -337,12 +363,18 @@ void channelThread(std::shared_ptr<State> sp) {
         if (pfd[0].fd < 0) continue;
         short rev = pfd[0].revents;
         if (rev & POLLNVAL) {
-            if (!st.useSelect && ::fcntl(st.fd, F_GETFD) != -1 && st.fd < FD_SETSIZE &&
-                st.wakeR < FD_SETSIZE) {
+            if (fdClosed(fd)) {
+                // Closed behind our back. The number is no longer ours and may already name another file, so it
+                // is never used again: not polled, read, written, truncated, synced or closed (FD-01).
+                forgetFd(st);
+                failPending(st, EBADF);
+                continue;
+            }
+            if (!st.useSelect && fd < FD_SETSIZE && st.wakeR < FD_SETSIZE) {
                 st.useSelect = true;   // open, but not pollable (macOS devices)
                 continue;
             }
-            failPending(st, EBADF);
+            failPending(st, ENOTSUP);   // open, but neither poll nor select can wait on it (FD-05)
             continue;
         }
         if (wantRead && (rev & (POLLIN | POLLHUP | POLLERR))) doRead(st, buf);
@@ -365,21 +397,22 @@ void channelThread(std::shared_ptr<State> sp) {
     for (auto& r : reads) postSimple(st.chanId, r.token, ChannelResult::Op::Read, ECANCELED);
     for (auto& w : writes) postSimple(st.chanId, w.token, ChannelResult::Op::Write, ECANCELED);
     int closeErr = 0;
-    if (closeRequested && st.truncateOnClose && st.fd > 2) {
-        off_t pos = ::lseek(st.fd, 0, SEEK_CUR);
+    const int fd = st.fd.load(std::memory_order_relaxed);   // -1 if it was closed behind our back
+    if (closeRequested && st.truncateOnClose && fd > 2) {
+        off_t pos = ::lseek(fd, 0, SEEK_CUR);
         int rc;
         if (pos < 0) rc = -1;
-        else do { rc = ::ftruncate(st.fd, pos); } while (rc != 0 && errno == EINTR);
+        else do { rc = ::ftruncate(fd, pos); } while (rc != 0 && errno == EINTR);
         if (rc != 0) closeErr = errno;
     }
-    if (closeRequested && st.syncOnClose && st.fd > 2) {
+    if (closeRequested && st.syncOnClose && fd > 2) {
         int rc;
-        do { rc = ::fsync(st.fd); } while (rc != 0 && errno == EINTR);
+        do { rc = ::fsync(fd); } while (rc != 0 && errno == EINTR);
         if (rc != 0 && closeErr == 0) closeErr = errno;
     }
-    if (st.fd > 2) {
+    if (fd > 2) {
         // No retry on EINTR: the fd is released either way on Linux/macOS.
-        if (::close(st.fd) != 0 && errno != EINTR && closeErr == 0) closeErr = errno;
+        if (::close(fd) != 0 && errno != EINTR && closeErr == 0) closeErr = errno;
     }
     if (closeRequested) postSimple(st.chanId, closeToken, ChannelResult::Op::Close, closeErr);
 }
@@ -393,7 +426,17 @@ FdChannel::FdChannel(int fd, FdChannelOptions opts) : st_(std::make_shared<State
     st_->truncateOnClose = opts.truncateOnClose;
     st_->syncOnClose = opts.syncOnClose;
     struct stat sb;
-    if (::fstat(fd, &sb) == 0) st_->regular = S_ISREG(sb.st_mode);
+    if (::fstat(fd, &sb) == 0) {
+        st_->regular = S_ISREG(sb.st_mode);
+        st_->socket = S_ISSOCK(sb.st_mode);
+    }
+    // A pipe or terminal whose open file description is the channel's alone is made non-blocking, so a write
+    // never blocks the thread past its wake pipe (FD-03); an inherited one is left as it is, since the flag would
+    // reach every other holder of the description.
+    if (opts.nonBlocking && fd > 2 && !st_->regular && !st_->socket) {
+        int fl = ::fcntl(fd, F_GETFL);
+        if (fl >= 0 && !(fl & O_NONBLOCK)) (void)::fcntl(fd, F_SETFL, fl | O_NONBLOCK);
+    }
 
     int w[2] = {-1, -1};
     int e = makeCloexecPipe(w, /*nonBlocking=*/true);

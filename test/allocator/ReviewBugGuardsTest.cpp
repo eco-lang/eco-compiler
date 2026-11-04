@@ -19,7 +19,7 @@
 #include <string>
 #include <vector>
 
-#include "../XfailGuard.hpp"
+#include "../ForkedChild.hpp"
 #include "Allocator.hpp"
 #include "AllocatorCommon.hpp"
 #include "HeapHelpers.hpp"
@@ -64,7 +64,7 @@ void testAllocBufferSizePageMultiple() {
 // build).
 void testYlosExhaustionReportsOutOfMemory() {
 #if !defined(_WIN32)
-    XfailGuard::ChildResult r = XfailGuard::runInChild([] {
+    ForkedChild::ChildResult r = ForkedChild::runInChild([] {
         HeapConfig cfg;
         cfg.alloc_buffer_size = 64 * 1024;
         cfg.nursery_block_count = 4;

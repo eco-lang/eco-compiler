@@ -21,7 +21,8 @@ import Eco.Kernel.Stream exposing (createChannelSource, createChannelSink, nodeR
 //     grandchild keeping them open cannot delay a killed run.
 //   * exit 0 → ( stdout, stderr ); a non-zero exit → ProgramError code; a signal death or
 //     a kill → ProgramError -1; a spawn failure → InitError with the errno name.
-//   * Process.kill on the run task SIGTERMs the child; the task then never completes.
+//   * Process.kill on the run task SIGTERMs the child, or, once the child has exited, stops
+//     waiting for its pipes; the task then never completes.
 //
 // `spawn` is JS-only: it is used by the Elm effect-manager body in System/Process.elm
 // (the native backend runs the C++ manager, C.3, and never references it).
@@ -163,7 +164,7 @@ var _ChildProcess_run = F6(function(program, args, shell, cwd, env, limits)
 	return __Scheduler_binding(function(callback)
 	{
 		var maxBytes = limits.a > 0 ? limits.a : 0;
-		var runMs = limits.b > 0 ? limits.b : 0;
+		var runMs = limits.b > 0 && limits.b <= 2147483647 ? limits.b : 0;   // beyond: no limit
 		var command = _ChildProcess_command(program, args, shell);
 
 		function initError(e)
@@ -197,6 +198,21 @@ var _ChildProcess_run = F6(function(program, args, shell, cwd, env, limits)
 			if (exited) return;   // never signal a pid we already saw exit
 			killed = true;
 			try { child.kill('SIGTERM'); } catch (e) {}
+		}
+
+		// The runDuration expiry and Process.kill: SIGTERM while the child runs; once it has
+		// exited with a grandchild still holding the pipes, stop waiting for them.
+		function killRun()
+		{
+			if (!exited)
+			{
+				kill();
+			}
+			else if (!(out.__done && err.__done))
+			{
+				killed = true;
+				advance();
+			}
 		}
 
 		function stopReading()
@@ -288,22 +304,14 @@ var _ChildProcess_run = F6(function(program, args, shell, cwd, env, limits)
 			timer = setTimeout(function()
 			{
 				timer = null;
-				if (!exited)
-				{
-					kill();
-				}
-				else if (!(out.__done && err.__done))
-				{
-					killed = true;   // exited, a grandchild holds the pipes: stop waiting
-					advance();
-				}
+				killRun();
 			}, runMs);
 		}
 
 		return function()
 		{
 			aborted = true;
-			kill();
+			killRun();
 			advance();
 		};
 	});
@@ -342,7 +350,7 @@ var _ChildProcess_spawn = F2(function(sendExit, spec)
 	return __Scheduler_binding(function(callback)
 	{
 		var command = _ChildProcess_command(spec.a.a, spec.a.b, spec.b.a);
-		var runMs = spec.c.b > 0 ? spec.c.b : 0;
+		var runMs = spec.c.b > 0 && spec.c.b <= 2147483647 ? spec.c.b : 0;   // beyond: no limit
 		var kind = spec.c.c;
 		var stdio = kind === 0 ? 'inherit' : kind === 1 ? 'pipe' : 'ignore';
 

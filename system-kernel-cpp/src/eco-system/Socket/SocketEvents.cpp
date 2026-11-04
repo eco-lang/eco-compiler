@@ -15,6 +15,7 @@
 #include "eco-system/Socket/Conn.hpp"
 
 #include <atomic>
+#include <cassert>
 #include <deque>
 #include <exception>
 #include <mutex>
@@ -101,6 +102,7 @@ void postSocketEvent(SocketEvent ev) {
 }
 
 void setSocketEventDispatch(SocketEvent::Kind kind, SocketEventDispatchFn fn) {
+    assert(static_cast<int>(kind) < SocketEvent::kKinds && "not a dispatchable kind");
     queue().dispatch[static_cast<int>(kind)] = fn;
 }
 

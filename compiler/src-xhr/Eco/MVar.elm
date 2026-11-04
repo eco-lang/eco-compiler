@@ -20,10 +20,12 @@ The decoder must read what the encoder wrote, and the types cannot check this.
 The native build's twin of this module takes the same encoder and decoder and
 ignores them, so callers are written against one set of signatures.
 
-Every operation is a `Task Never`. A request that fails, in any of the ways
-`Eco.XHR` describes, crashes the program through `Eco.XHR.orCrash`. A reply that
-cannot be decoded, such as bytes that a decoder cannot read, also crashes the
-program, inside `Eco.XHR`.
+`read`, `take` and `put` fail with an `IOError` when their request fails, in
+any of the ways `Eco.XHR` describes, as it does for an MVar that was dropped:
+the native kernel module fails them in that case too. `new` and `drop` cannot
+fail, so their error type is free; a request of theirs that fails crashes the
+program through `Eco.XHR.orCrash`. A reply that cannot be decoded, such as
+bytes that a decoder cannot read, crashes the program, inside `Eco.XHR`.
 
 @docs MVar
 @docs new, read, take, put, drop
@@ -32,6 +34,7 @@ program, inside `Eco.XHR`.
 
 import Bytes.Decode
 import Bytes.Encode
+import Eco.IO.Error as IOErr exposing (IOError)
 import Eco.XHR
 import Http
 import Json.Decode as Decode
@@ -53,60 +56,62 @@ type MVar a
 
 {-| Asks eco-io for a new, empty MVar.
 -}
-new : Task Never (MVar a)
+new : Task x (MVar a)
 new =
     Eco.XHR.jsonTask "MVar.new"
         Encode.null
         Decode.int
         |> Eco.XHR.orCrash
+        |> Task.mapError never
         |> Task.map MVar
 
 
 {-| Returns the value held in the MVar, as `decoder` reads it, and leaves the
 MVar full. Waits while the MVar is empty.
 -}
-read : Bytes.Decode.Decoder a -> MVar a -> Task Never a
+read : Bytes.Decode.Decoder a -> MVar a -> Task IOError a
 read decoder (MVar id) =
     Eco.XHR.bytesTask "MVar.read"
         (Encode.object [ ( "id", Encode.int id ) ])
         decoder
-        |> Eco.XHR.orCrash
+        |> Task.mapError IOErr.ofKernelTuple
 
 
 {-| Returns the value held in the MVar, as `decoder` reads it, and leaves the
 MVar empty. Waits while the MVar is empty.
 -}
-take : Bytes.Decode.Decoder a -> MVar a -> Task Never a
+take : Bytes.Decode.Decoder a -> MVar a -> Task IOError a
 take decoder (MVar id) =
     Eco.XHR.bytesTask "MVar.take"
         (Encode.object [ ( "id", Encode.int id ) ])
         decoder
-        |> Eco.XHR.orCrash
+        |> Task.mapError IOErr.ofKernelTuple
 
 
 {-| Puts `value`, as `encoder` writes it, into the MVar. Waits while the MVar
 is full.
 -}
-put : (a -> Bytes.Encode.Encoder) -> MVar a -> a -> Task Never ()
+put : (a -> Bytes.Encode.Encoder) -> MVar a -> a -> Task IOError ()
 put encoder (MVar id) value =
     Eco.XHR.sendBytesTask "MVar.put"
         [ Http.header "X-Eco-MVar-Id" (String.fromInt id) ]
         (Bytes.Encode.encode (encoder value))
-        |> Eco.XHR.orCrash
+        |> Task.mapError IOErr.ofKernelTuple
 
 
 {-| Asks eco-io to discard the MVar, together with any value it holds.
 
 A task still waiting on it (a `read` or `take` of it while empty, or a `put`
 to it while full) can then never be answered with a value: the eco-io handler
-in `bin/eco-io-handler.js` fails those requests, and they crash the program.
-So does any later request naming a dropped MVar.
+in `bin/eco-io-handler.js` fails those requests, and the tasks fail. So does
+any later request naming a dropped MVar.
 
 -}
-drop : MVar a -> Task Never ()
+drop : MVar a -> Task x ()
 drop (MVar id) =
     Eco.XHR.jsonTask "MVar.drop"
         (Encode.object [ ( "id", Encode.int id ) ])
         (Decode.succeed ())
         |> Eco.XHR.orCrash
+        |> Task.mapError never
         |> Task.map (\_ -> ())

@@ -46,9 +46,11 @@ struct ManagerState {
     }
 };
 
+void discardState(ManagerState&);
+
 /// Returns the registry that holds the manager's state, creating it on the first call. It is never deleted.
 Registry<ManagerState>& registry() {
-    static auto* r = new Registry<ManagerState>("eco-system-terminal-manager");
+    static auto* r = new Registry<ManagerState>("eco-system-terminal-manager", &discardState);
     return *r;
 }
 
@@ -65,6 +67,13 @@ ManagerState& state() {
 /// The SIGWINCH listener's identifier, or 0 when not listening. Process-wide, because a listener outlives a heap
 /// reset.
 SignalService::ListenerId g_winchListener = 0;
+
+/// The registry's discard hook: a heap reset (tests only) ends the program's subscriptions, so the SIGWINCH
+/// listener is removed with them.
+void discardState(ManagerState&) {
+    if (g_winchListener != 0) SignalService::instance().removeListener(g_winchListener);
+    g_winchListener = 0;
+}
 
 /// Sends the terminal's new size to the program once for each current subscription: each tagger is applied to
 /// `( columns, rows )` and the result sent through the router, and the scheduler is drained after each one. Sends
@@ -116,7 +125,6 @@ void* onEffectsEval(void* args[]) {
     std::vector<uint64_t> wanted;
     for (alloc::ListCursor c(subs); !c.done(); c.next()) {
         void* obj = Allocator::instance().resolve(c.current().p);
-        if (!obj) continue;
         Custom* sub = static_cast<Custom*>(obj);
         if (sub->ctor == CTOR_ON_RESIZE) wanted.push_back(enc(sub->values[ON_RESIZE_TAGGER_FIELD].p));
     }
@@ -168,7 +176,7 @@ void* subMapEval(void* args[]) {
     Elm::StackRootGuard g({&f, &sub, &tagger, &composed});
     {
         Custom* s = static_cast<Custom*>(Allocator::instance().resolve(sub));
-        if (!s || s->ctor != CTOR_ON_RESIZE) return args[1];
+        if (s->ctor != CTOR_ON_RESIZE) return args[1];
         tagger = s->values[ON_RESIZE_TAGGER_FIELD].p;
     }
     composed = alloc::allocClosure(&composedTaggerEval, 3);

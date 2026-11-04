@@ -12,6 +12,7 @@ module ModifyMVarCounterStress exposing (main)
 
 import Bytes.Decode as BD
 import Bytes.Encode as BE
+import Eco.IO.Error exposing (IOError)
 import Eco.MVar as MV
 import StressHarness exposing (StressFlags)
 import Task
@@ -27,18 +28,18 @@ intDec =
     BD.succeed 0
 
 
-smallAlloc : Int -> Task.Task Never Int
+smallAlloc : Int -> Task.Task IOError Int
 smallAlloc size =
     Task.succeed (List.sum (List.range 1 size))
 
 
-modifyInc : MV.MVar Int -> Task.Task Never ()
+modifyInc : MV.MVar Int -> Task.Task IOError ()
 modifyInc mvar =
     MV.take intDec mvar
         |> Task.andThen (\v -> MV.put intEnc mvar (v + 1))
 
 
-loop : Int -> Int -> MV.MVar Int -> Int -> Task.Task Never ()
+loop : Int -> Int -> MV.MVar Int -> Int -> Task.Task IOError ()
 loop count size mvar remaining =
     if remaining <= 0 then
         Task.succeed ()
@@ -66,6 +67,7 @@ run flags =
                     |> Task.andThen (\_ -> MV.take intDec mvar)
             )
         |> Task.map (\v -> v == count)
+        |> Task.onError (\_ -> Task.succeed False)
 
 
 main : Program StressFlags StressHarness.Model StressHarness.Msg

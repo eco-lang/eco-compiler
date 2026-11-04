@@ -1,6 +1,8 @@
 #include "TimerService.hpp"
 #include "Scheduler.hpp"
 
+#include <cmath>
+
 namespace Elm::Platform {
 
 // The timer service, once `instance` has created it. It is never deleted, so the detached worker thread, which
@@ -21,7 +23,14 @@ TimerService::TimerService() {
     std::thread([]{ instance().workerLoop(); }).detach();
 }
 
+double TimerService::sanitizeDelayMs(double millis) {
+    if (!std::isfinite(millis) || std::fabs(millis) > kNodeMaxDelayMs) return 1.0;
+    return millis;
+}
+
 void TimerService::schedule(double millis, std::uint64_t resumeToken) {
+    // Without this, a NaN, infinite or huge delay makes `duration_cast` and the addition below undefined.
+    if (!std::isfinite(millis) || std::fabs(millis) > kMaxDelayMs) millis = 1.0;
     auto delay    = std::chrono::duration<double, std::milli>(millis);
     auto deadline = Clock::now() +
         std::chrono::duration_cast<Clock::duration>(delay);

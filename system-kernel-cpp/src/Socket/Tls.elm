@@ -127,9 +127,10 @@ authorities Node reports as the system's. The variables and the system's authori
 when a connection first needs them, not for every connection.
 
 `TrustedCertificates pem` trusts only the PEM-encoded certificates in `pem`, which may hold one
-or more; the system's authorities are not consulted. On the native backend, reading stops at the
-first certificate block that cannot be read, and the certificates after it are not trusted. When
-no certificate can be read from `pem`, `connect` fails with
+or more; the system's authorities are not consulted. Text outside the certificate blocks is
+skipped. Reading stops at the first certificate block that cannot be read, and the certificates
+after it are not trusted, as with Node's `ca` option and OpenSSL's PEM reader. When no
+certificate can be read from `pem`, `connect` fails with
 `TlsError (CertificateUnusable reason)` before it contacts the server.
 
 `NoVerification` accepts any certificate and checks no name. The connection is encrypted, but
@@ -419,28 +420,32 @@ fromStreamFailure (Stream.Internal.Failure f) =
 the connection's. `listening` tells `listen` apart: there every `ERR_SSL_` code means its
 certificate chain or key cannot be used. On `connect`, the kernels report trusted certificates
 that cannot be read with a message starting `"trusted certificates"`, before contacting the
-server; any other `ERR_SSL_` code is a failed handshake.
+server; any other `ERR_SSL_` code is a failed handshake. These are decided before the
+verification codes, since a library reason such as `NO_CERTIFICATES` contains `_CERT` too.
 -}
 classify : Bool -> Socket.Error -> Error
 classify listening ((Internal.Error e) as socketError) =
-    case certificateProblem e.code of
-        Just problem ->
-            TlsError (CertificateRejected problem)
+    let
+        reason =
+            String.dropLeft 8 e.code
 
-        Nothing ->
-            if String.startsWith "ERR_SSL_" e.code then
-                let
-                    reason =
-                        String.dropLeft 8 e.code
-                in
-                if listening || String.startsWith "trusted certificates" e.message then
-                    TlsError (CertificateUnusable reason)
+        isSsl =
+            String.startsWith "ERR_SSL_" e.code
+    in
+    if isSsl && (listening || String.startsWith "trusted certificates" e.message) then
+        TlsError (CertificateUnusable reason)
 
-                else
+    else
+        case certificateProblem e.code of
+            Just problem ->
+                TlsError (CertificateRejected problem)
+
+            Nothing ->
+                if isSsl then
                     TlsError (HandshakeFailed reason)
 
-            else
-                SocketError socketError
+                else
+                    SocketError socketError
 
 
 {-| The `CertificateProblem` a verification code names. Node reports more verification codes than

@@ -15,6 +15,7 @@
 #include <cstring>
 #include <string>
 #include <sys/socket.h>
+#include <type_traits>
 #include <utility>
 
 namespace Eco::System {
@@ -154,13 +155,13 @@ public:
 
     /// Accepts at most `kMaxPlain` bytes, and none (returning -1 with `wantWrite` set) while earlier output is still
     /// pending. Accepted bytes are encrypted at once; records the socket does not take stay pending.
-    /// Once the transport is broken, every call returns -2.
+    /// Once the transport is broken, every call returns -2, with the error of the send that broke it.
     ssize_t write(const char* buf, size_t n) override {
         wantRead = wantWrite = false;
-        if (broken_) return -2;
+        if (broken_) return sendFailure();
         ERR_clear_error();
         int f = sendOut();
-        if (f < 0) return -2;
+        if (f < 0) return sendFailure();
         if (f == 1) {
             wantWrite = true;
             return -1;
@@ -170,12 +171,12 @@ public:
             size_t put = 0;
             int rc = SSL_write_ex(ssl_, buf, chunk, &put);
             if (rc == 1) {
-                if (sendOut() < 0) return -2;
+                if (sendOut() < 0) return sendFailure();
                 return static_cast<ssize_t>(put);
             }
             int err = SSL_get_error(ssl_, rc);
             if (err == SSL_ERROR_WANT_WRITE) {   // not expected with memory BIOs; wait rather than retry at once
-                if (sendOut() < 0) return -2;
+                if (sendOut() < 0) return sendFailure();
                 wantWrite = true;
                 return -1;
             }
@@ -212,11 +213,6 @@ public:
         return rc < 0 ? -1 : 0;
     }
 
-    /// Returns true for decrypted plaintext OpenSSL holds, or ciphertext in the read BIO, before the end of input.
-    bool hasBufferedRead() const override {
-        return !readEof_ && (SSL_has_pending(ssl_) == 1 || BIO_ctrl_pending(rbio_) > 0);
-    }
-
     /// Returns false once the transport is broken, whatever was queued.
     bool hasPendingWrite() const override {
         if (broken_) return false;
@@ -224,12 +220,13 @@ public:
     }
 
     /// Also completes a pending `shutdownWrite`: once everything has been sent, it shuts down the socket's write side.
-    /// A failure, or a broken transport, ends the shutdown too.
+    /// A failure, or a broken transport, ends the shutdown too; a broken transport reports the error of the send that
+    /// broke it.
     int flush() override {
         wantRead = wantWrite = false;
         if (broken_) {
             shut_ = Shut::Done;
-            return -2;
+            return static_cast<int>(sendFailure());
         }
         int f = sendOut();
         if (f == 1) {
@@ -238,7 +235,7 @@ public:
         }
         if (f < 0) {
             shut_ = Shut::Done;
-            return -2;
+            return static_cast<int>(sendFailure());
         }
         if (shut_ == Shut::Pending) {
             shut_ = Shut::Done;
@@ -303,6 +300,9 @@ private:
             outOff_ = 0;
             (void)BIO_reset(wbio_);
             failErrno(e);
+            sendErrNo_ = errNo;   // kept apart: a later failed recv overwrites the shared fields (TLS-08)
+            sendErrCode_ = errCode;
+            sendErrMessage_ = errMessage;
             return -2;
         }
     }
@@ -329,6 +329,15 @@ private:
             failErrno(e);
             return -2;
         }
+    }
+
+    /// Reports the failed send that broke the transport: copies its error back into the shared error fields, which a
+    /// failed read may have overwritten since, and returns -2. Called only once `broken_` is set.
+    ssize_t sendFailure() {
+        errNo = sendErrNo_;
+        errCode = sendErrCode_;
+        errMessage = sendErrMessage_;
+        return -2;
     }
 
     /// Records the errno `e` as the failure: its name as the code and its description as the message.
@@ -402,9 +411,17 @@ private:
     bool sockEof_ = false;     ///< `recv` returned 0.
     bool readEof_ = false;     ///< The session reported the end of input.
     bool broken_ = false;      ///< A send failed: nothing more goes out.
+    int sendErrNo_ = 0;           ///< The error of the send that set `broken_`.
+    std::string sendErrCode_;
+    std::string sendErrMessage_;
     bool fatal_ = false;       ///< The handshake, a read or a write failed.
     Shut shut_ = Shut::None;
 };
+
+// TLS-01: copying or moving would free the `SSL` object twice; `Transport` deletes the copy operations, which also
+// suppresses the implicit moves.
+static_assert(!std::is_copy_constructible_v<TlsTransport> && !std::is_copy_assignable_v<TlsTransport> &&
+              !std::is_move_constructible_v<TlsTransport> && !std::is_move_assignable_v<TlsTransport>);
 
 /// Attaches a new read and write memory BIO to `ssl`, which then owns them, and returns true, or returns false,
 /// with nothing attached, when one cannot be allocated.

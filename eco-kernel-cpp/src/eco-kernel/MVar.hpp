@@ -21,7 +21,8 @@
 // happens each time the Task is run (its *fulfilment*), so one Task value run twice performs it twice. The
 // Tasks and `put`'s value cross as encoded words (`Export::encode`); ids are plain integers. A Task for an
 // id that names no MVar when it is run fails with the IO error tuple (tag 0, empty path,
-// "MVar not found: <id>"); `drop` instead succeeds.
+// "MVar not found: <id>"), which `Eco.MVar.read`, `take` and `put` deliver to the program as an `IOError`; `drop`
+// instead succeeds.
 //
 // All state is unguarded module-level data, so every function must be called on the eco thread. Every
 // function but `newEmpty` and `registerGcRootScanner` allocates and is a GC point.
@@ -50,8 +51,9 @@ uint64_t put(uint64_t id, uint64_t value);
 uint64_t drop(uint64_t id);
 
 /// Registers a scanner with the allocator's root set that keeps every MVar's value and every parked putter's
-/// value alive, and updates them when the collector moves them. Each call registers another scanner, and
-/// nothing here registers one again after the root set's scanners are cleared.
+/// value alive, and updates them when the collector moves them. The scanner is registered once per heap
+/// generation (`Allocator::heapGeneration`): a later call in the same generation does nothing, and the first
+/// MVar operation after a heap reset registers it again, having dropped the MVars of the old heap.
 void registerGcRootScanner();
 
 } // namespace Eco::Kernel::MVar

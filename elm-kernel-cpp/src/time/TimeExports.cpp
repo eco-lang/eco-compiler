@@ -21,6 +21,7 @@
 
 #include "../KernelExports.h"
 #include "../ExportHelpers.hpp"
+#include "TimeCtors.hpp"
 #include "allocator/Heap.hpp"
 #include "allocator/HeapHelpers.hpp"
 #include "allocator/RuntimeExports.h"
@@ -28,11 +29,16 @@
 #include "platform/TaskBinding.hpp"
 #include <chrono>
 #include <ctime>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <string>
 
+#include <cctype>
+#include <mutex>
+
 #if defined(__linux__) || defined(__APPLE__)
+#include <sys/stat.h>
 #include <unistd.h>
 #endif
 
@@ -40,12 +46,9 @@ using namespace Elm;
 using namespace Elm::Kernel;
 using namespace Elm::alloc;
 using namespace Elm::Platform;
+using Elm::Kernel::Time::CTOR_TIME_EVERY;
 
 namespace {
-
-/// The constructor index of the `Every` subscription that `Time.setInterval` builds. It must equal the
-/// `CTOR_TIME_EVERY` in `TimeEffectManager.cpp`, which the effect manager matches on; nothing checks the two agree.
-static constexpr u16 CTOR_TIME_EVERY = 0;
 
 /// Returns a new `Zone` whose offset is `offsetMinutes` east of UTC at all times: constructor 0 with fields
 /// `[offsetMinutes (unboxed Int), []]`. The eras list, which elm/time uses for offset changes over time, is always
@@ -74,10 +77,12 @@ HPointer createZoneNameOffset(int offsetMinutes) {
     return custom(1, values, 1);  // ctor 1 = Offset, field is unboxed
 }
 
-/// Returns the local time zone's offset from UTC, in minutes east of UTC, at the moment of the call.
+/// Returns the local time zone's offset from UTC, in minutes east of UTC, at the moment of the call. The offset
+/// includes daylight saving time when it is in effect.
 ///
-/// On Linux and macOS this is `tm_gmtoff` of the current local time, which includes daylight saving time. On
-/// other platforms it is the C runtime's `_timezone`, the standard-time offset, which does not.
+/// On Linux and macOS this is `tm_gmtoff` of the current local time. On Windows it is the difference between the
+/// current local time, read as if it were UTC, and the current time; `_tzset` is called once first, so that a `TZ`
+/// environment variable is honoured. On any other platform it is 0.
 int getLocalTimezoneOffset() {
 #if defined(__linux__) || defined(__APPLE__)
     time_t now = time(nullptr);
@@ -85,31 +90,92 @@ int getLocalTimezoneOffset() {
     localtime_r(&now, &local_tm);
 
     return static_cast<int>(local_tm.tm_gmtoff / 60);
+#elif defined(_WIN32)
+    static std::once_flag tzsetOnce;
+    std::call_once(tzsetOnce, [] { _tzset(); });
+    time_t now = time(nullptr);
+    struct tm local_tm;
+    if (localtime_s(&local_tm, &now) != 0) return 0;
+    // `_mkgmtime` reads the broken-down local time as UTC, so the difference is the offset east of UTC.
+    return static_cast<int>((_mkgmtime(&local_tm) - now) / 60);
 #else
-    // `_timezone` is seconds west of UTC, hence the negation.
-    return -(_timezone / 60);
+    return 0;
 #endif
+}
+
+/// Returns whether `id` has the shape of an IANA time-zone id such as `Europe/Paris`, `America/Port-au-Prince` or
+/// `Etc/GMT+5`: one or more components separated by single `/`, each starting with a letter and made of letters,
+/// `_` and `-`, except that a final component `GMT` may be followed by a sign and digits. A POSIX rule such as
+/// `CET-1CEST,M3.5.0,M10.5.0/3` or `UTC0`, and a path, do not have it.
+bool isIanaShapedZoneId(const std::string& id) {
+    if (id.empty() || id.front() == '/' || id.back() == '/') return false;
+    size_t pos = 0;
+    while (pos <= id.size()) {
+        size_t slash = id.find('/', pos);
+        size_t end = slash == std::string::npos ? id.size() : slash;
+        std::string comp = id.substr(pos, end - pos);
+        const bool last = slash == std::string::npos;
+        if (comp.empty() || !std::isalpha(static_cast<unsigned char>(comp[0]))) return false;
+        size_t letters = comp.size();
+        if (last && comp.size() > 4 && comp.compare(0, 3, "GMT") == 0 && (comp[3] == '+' || comp[3] == '-')) {
+            for (size_t i = 4; i < comp.size(); ++i) {
+                if (!std::isdigit(static_cast<unsigned char>(comp[i]))) return false;
+            }
+            letters = 3;
+        }
+        for (size_t i = 0; i < letters; ++i) {
+            unsigned char c = static_cast<unsigned char>(comp[i]);
+            if (!std::isalpha(c) && c != '_' && c != '-') return false;
+        }
+        if (last) return true;
+        pos = slash + 1;
+    }
+    return false;
+}
+
+/// Returns the zone name that the `TZ` value `tz` stands for, or an empty string if it does not name a zone.
+///
+/// One leading `:` is dropped. A path into a zoneinfo directory, such as `/usr/share/zoneinfo/Europe/Paris`, stands
+/// for the part after `/zoneinfo/`. The value is then a name if it has the shape of an IANA id
+/// (`isIanaShapedZoneId`) or, on Linux and macOS, if a file of that name exists under the zoneinfo directory
+/// (`TZDIR`, or `/usr/share/zoneinfo`), which admits legacy ids such as `EST5EDT`. Anything else, such as a POSIX
+/// rule like `CET-1CEST,M3.5.0,M10.5.0/3`, names no zone.
+std::string zoneNameFromTz(const char* tz) {
+    std::string value(tz);
+    if (!value.empty() && value[0] == ':') value.erase(0, 1);
+    const std::string zoneinfoPart = "/zoneinfo/";
+    size_t at = value.find(zoneinfoPart);
+    if (at != std::string::npos) value = value.substr(at + zoneinfoPart.size());
+    if (value.empty()) return "";
+    if (isIanaShapedZoneId(value)) return value;
+#if defined(__linux__) || defined(__APPLE__)
+    if (value[0] != '/' && value.find("..") == std::string::npos) {
+        const char* dir = std::getenv("TZDIR");
+        std::string path = std::string(dir && dir[0] != '\0' ? dir : "/usr/share/zoneinfo") + "/" + value;
+        struct stat st;
+        if (stat(path.c_str(), &st) == 0 && S_ISREG(st.st_mode)) return value;
+    }
+#endif
+    return "";
 }
 
 /// Returns the local time zone's name, or an empty string if none is found.
 ///
-/// The first of these that gives a name wins:
-/// - on Linux, macOS and Windows, a non-empty `TZ` environment variable, returned as it is apart from one
-///   leading `:`, whatever its form (it need not be an IANA name such as `America/New_York`);
+/// If the `TZ` environment variable is set and non-empty, it alone decides: the result is the name it stands for
+/// (`zoneNameFromTz`), which is empty for a value such as a POSIX rule that names no zone, so the caller falls back
+/// to the offset. Otherwise:
 /// - on Linux and macOS, the target of the `/etc/localtime` symbolic link, from just after `zoneinfo/`;
 /// - on Linux, the first line of `/etc/timezone`, without its newline.
 ///
 /// On Windows, nothing but `TZ` is consulted, and on any other platform the result is always empty.
 std::string getTimezoneName() {
-#if defined(__linux__)
+#if defined(__linux__) || defined(__APPLE__) || defined(_WIN32)
     const char* tz = std::getenv("TZ");
     if (tz && tz[0] != '\0') {
-        if (tz[0] == ':') {
-            return std::string(tz + 1);
-        }
-        return std::string(tz);
+        return zoneNameFromTz(tz);
     }
-
+#endif
+#if defined(__linux__) || defined(__APPLE__)
     char buf[256];
     ssize_t len = readlink("/etc/localtime", buf, sizeof(buf) - 1);
     if (len > 0) {
@@ -121,7 +187,8 @@ std::string getTimezoneName() {
             return std::string(found + strlen(zoneinfo));
         }
     }
-
+#endif
+#if defined(__linux__)
     FILE* f = fopen("/etc/timezone", "r");
     if (f) {
         char line[256];
@@ -133,35 +200,9 @@ std::string getTimezoneName() {
         }
         fclose(f);
     }
-#elif defined(__APPLE__)
-    const char* tz = std::getenv("TZ");
-    if (tz && tz[0] != '\0') {
-        if (tz[0] == ':') {
-            return std::string(tz + 1);
-        }
-        return std::string(tz);
-    }
-
-    char buf[256];
-    ssize_t len = readlink("/etc/localtime", buf, sizeof(buf) - 1);
-    if (len > 0) {
-        buf[len] = '\0';
-        const char* zoneinfo = "zoneinfo/";
-        const char* found = strstr(buf, zoneinfo);
-        if (found) {
-            return std::string(found + strlen(zoneinfo));
-        }
-    }
-#elif defined(_WIN32)
-    const char* tz = std::getenv("TZ");
-    if (tz && tz[0] != '\0') {
-        if (tz[0] == ':') return std::string(tz + 1);
-        return std::string(tz);
-    }
-    // Windows names its time zones differently (e.g. "Pacific Standard Time"), and no translation to an IANA
-    // name is attempted, so without `TZ` the result is empty.
 #endif
-
+    // Windows names its time zones differently (e.g. "Pacific Standard Time"), and no translation to an IANA name
+    // is attempted, so without `TZ` the result is empty there.
     return "";
 }
 
@@ -249,9 +290,7 @@ HPtr Elm_Kernel_Time_now(HPtr millisToPosix) {
             /*max_values=*/2,
             Elm::PK_Boxed);
         void* clPtr = Allocator::instance().resolve(bindingCB);
-        if (clPtr) {
-            Elm::alloc::closureCapture(clPtr, Elm::alloc::boxed(mtpHP), true);
-        }
+        Elm::alloc::closureCapture(clPtr, Elm::alloc::boxed(mtpHP), true);
         task = Scheduler::instance().taskBinding(bindingCB);
     }
     return HPtr::fromBits(Export::encode(task));

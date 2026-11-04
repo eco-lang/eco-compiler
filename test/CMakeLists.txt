@@ -149,22 +149,36 @@ add_executable(test
         allocator/AddressSpaceReservationTest.cpp
         allocator/HPointerLayoutTest.cpp
         allocator/ConcurrencyRegisterTest.cpp
+        allocator/ResolveConstantTest.cpp
+        kernel/BrowserKernelTest.cpp
+        kernel/BytesKernelTest.cpp
+        kernel/ConsoleKernelTest.cpp
+        kernel/DebugKernelTest.cpp
+        kernel/IntArithTest.cpp
+        kernel/JsArrayKernelTest.cpp
         kernel/KernelExportsTest.cpp
+        kernel/RegexKernelTest.cpp
+        kernel/TaskEffectManagerTest.cpp
         kernel/UtilsAppendEqualityTest.cpp
+        kernel/UtilsCompareTest.cpp
         kernel/VirtualDomKernelTest.cpp
         platform/PlatformServicesTest.cpp
         platform/SpawnTest.cpp
         platform/SchedulerPidTest.cpp
+        platform/HeapResetKernelStateTest.cpp
+        platform/TaskBindingTest.cpp
+        platform/TimerServiceTest.cpp
+        platform/WaitServiceTest.cpp
 )
 
 target_compile_features(test PRIVATE cxx_std_20)
 target_compile_options(test PRIVATE $<IF:$<PLATFORM_ID:Windows>,/EHsc,-fexceptions>)
-# KernelExportsTest catches Elm::BytesDecodeFailure thrown from the extern "C"
+# KernelExportsTest and BytesKernelTest catch Elm::BytesDecodeFailure thrown from the extern "C"
 # Elm_Kernel_Bytes_read_* exports. Under /EHsc ("extern C functions never
 # throw") those try/catch blocks are optimised away and the throw escapes as an
-# unknown exception, so this file uses /EHs /EHc- as ElmKernel_Bytes does.
+# unknown exception, so these files use /EHs /EHc- as ElmKernel_Bytes does.
 if(MSVC)
-    set_source_files_properties(kernel/KernelExportsTest.cpp PROPERTIES
+    set_source_files_properties(kernel/KernelExportsTest.cpp kernel/BytesKernelTest.cpp PROPERTIES
         COMPILE_OPTIONS "/EHs;/EHc-")
 endif()
 # Windows: provide our minimal getopt_long shim before <getopt.h> resolves —
@@ -201,6 +215,9 @@ target_compile_definitions(test PRIVATE
 # EcoKernel_File: test/eco-kernel/src/File{WriteBytesAtomic,ReadBytesRoundtrip}Test.elm call Eco.File.
 # EcoKernel_Process: test/eco-kernel/src/ProcessSpawnWaitTest.elm calls Eco.Process (plans/spawn-not-fork.md).
 # EcoKernel_Env: the elm-http and eco-kernel TestServerConfig modules read the test server's URLs with Eco.Env.
+# EcoKernel_Console, EcoKernel_Crash: the eco-kernel Console and Crash E2E tests (plans/kernel-lib-bug-fixes.md).
+# EcoKernel_NativeDriver (POSIX): test/eco-kernel/src/NativeDriverEmptyBytesTest.elm (HEAP-02). The driver itself
+# is not linked; runtime/src/codegen/eco_native_stub.cpp's weak stand-ins (return -1) satisfy its references.
 if(APPLE)
     # ld64 has no --whole-archive; -force_load takes one archive path per
     # flag. The plain target names afterwards keep the CMake dependency
@@ -215,6 +232,9 @@ if(APPLE)
         -Wl,-force_load,$<TARGET_FILE:EcoKernel_File>
         -Wl,-force_load,$<TARGET_FILE:EcoKernel_Process>
         -Wl,-force_load,$<TARGET_FILE:EcoKernel_Env>
+        -Wl,-force_load,$<TARGET_FILE:EcoKernel_Console>
+        -Wl,-force_load,$<TARGET_FILE:EcoKernel_Crash>
+        -Wl,-force_load,$<TARGET_FILE:EcoKernel_NativeDriver>
         EcoRunner
         EcoKernel_MVar
         EcoKernel_Hash
@@ -224,7 +244,11 @@ if(APPLE)
         EcoKernel_File
         EcoKernel_Process
         EcoKernel_Env
+        EcoKernel_Console
+        EcoKernel_Crash
+        EcoKernel_NativeDriver
     )
+    target_sources(test PRIVATE ${CMAKE_SOURCE_DIR}/runtime/src/codegen/eco_native_stub.cpp)
 elseif(WIN32)
     # /WHOLEARCHIVE: needs the .lib filename — bare target names get
     # passed to lld-link verbatim and fail. Use the TARGET_FILE generator
@@ -240,6 +264,8 @@ elseif(WIN32)
         EcoKernel_File
         EcoKernel_Process
         EcoKernel_Env
+        EcoKernel_Console
+        EcoKernel_Crash
     )
     target_link_options(test PRIVATE
         /WHOLEARCHIVE:$<TARGET_FILE:EcoRunner>
@@ -251,6 +277,8 @@ elseif(WIN32)
         /WHOLEARCHIVE:$<TARGET_FILE:EcoKernel_File>
         /WHOLEARCHIVE:$<TARGET_FILE:EcoKernel_Process>
         /WHOLEARCHIVE:$<TARGET_FILE:EcoKernel_Env>
+        /WHOLEARCHIVE:$<TARGET_FILE:EcoKernel_Console>
+        /WHOLEARCHIVE:$<TARGET_FILE:EcoKernel_Crash>
     )
 else()
     target_link_libraries(test rapidcheck
@@ -264,8 +292,12 @@ else()
             EcoKernel_File
             EcoKernel_Process
             EcoKernel_Env
+            EcoKernel_Console
+            EcoKernel_Crash
+            EcoKernel_NativeDriver
         -Wl,--no-whole-archive
     )
+    target_sources(test PRIVATE ${CMAKE_SOURCE_DIR}/runtime/src/codegen/eco_native_stub.cpp)
 endif()
 # Export symbols so the JIT can find them via dlsym.
 set_target_properties(test PROPERTIES ENABLE_EXPORTS ON)

@@ -22,6 +22,7 @@
 #include "eco-system/Core/SignalService.hpp"
 
 #include <csignal>
+#include <initializer_list>
 #include <vector>
 
 namespace Eco::System {
@@ -47,9 +48,11 @@ struct ManagerState {
     }
 };
 
+void discardState(ManagerState&);
+
 /// Returns the registry that holds the manager's state, creating it on first use. It is never destroyed.
 Registry<ManagerState>& registry() {
-    static auto* r = new Registry<ManagerState>("eco-system-system-manager");   // leaky
+    static auto* r = new Registry<ManagerState>("eco-system-system-manager", &discardState);   // leaky
     return *r;
 }
 
@@ -69,8 +72,19 @@ ManagerState& state() {
 SignalService::ListenerId g_sigintListener = 0;
 /// The `SignalService` listener for SIGTERM, or 0 when there is none.
 SignalService::ListenerId g_sigtermListener = 0;
-/// Whether `onQuiescent` has been added as a scheduler quiescence listener. Never cleared.
+/// Whether `onQuiescent` has been added as a scheduler quiescence listener. Never cleared: with no subscription
+/// the listener delivers nothing.
 bool g_quiescenceRegistered = false;
+
+/// The registry's discard hook. A heap reset (tests only) ends the program and so its subscriptions: the signal
+/// listeners are removed, giving back their subscriptions, so that the signals have their own effect again (a
+/// Ctrl-C ends the process) rather than being swallowed by a listener with no msgs (RESET-11).
+void discardState(ManagerState&) {
+    for (SignalService::ListenerId* l : {&g_sigintListener, &g_sigtermListener}) {
+        if (*l != 0) SignalService::instance().removeListener(*l);
+        *l = 0;
+    }
+}
 
 // --- Delivery ----------------------------------------------------------------
 
@@ -165,7 +179,6 @@ void* onEffectsEval(void* args[]) {
     std::vector<uint64_t> wanted[SUB_CTOR_COUNT];
     for (alloc::ListCursor c(subs); !c.done(); c.next()) {
         void* obj = Allocator::instance().resolve(c.current().p);
-        if (!obj) continue;
         Custom* sub = static_cast<Custom*>(obj);
         if (sub->ctor < SUB_CTOR_COUNT) {
             wanted[sub->ctor].push_back(enc(sub->values[SUB_MSG_FIELD].p));

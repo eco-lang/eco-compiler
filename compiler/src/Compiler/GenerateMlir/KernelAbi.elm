@@ -1,7 +1,7 @@
 module Compiler.GenerateMlir.KernelAbi exposing
     ( KernelBackendAbiPolicy(..), kernelBackendAbiPolicy
     , KernelInstanceKey, KernelInstanceAbi
-    , deriveKernelInstanceAbi
+    , deriveKernelInstanceAbi, callInstanceResultType
     )
 
 {-| A kernel function is implemented in C++, and the MLIR backend must declare
@@ -25,8 +25,18 @@ type; `String.fromNumber` and `Json.wrap` by their argument; `Basics.add`,
 `JsArray.singleton`, `push` and `unsafeSet` by the element; `MVar.put` by the
 value; and `JsArray.unsafeGet`, `slice`, `appendN`, `initialize`,
 `initializeFromList` and `indexedMap`, which take `_Int` from an Int
-parameter. Every other instance keeps the unsuffixed symbol. The match is on
-`home`, `name` and the argument types only; `prefix` is not consulted.
+parameter. `JsArray.map`, `initialize`, `indexedMap` and `initializeFromList`
+also take a second suffix, `_Int`, `_Float` or `_Char`, from the element type
+of the array they return (as in `Elm_Kernel_JsArray_map_Int` and
+`Elm_Kernel_JsArray_initialize_Int_Float`): those variants store every
+element in that slot kind, which is how code compiled for an `Array Int`,
+`Array Float` or `Array Char` reads it, whatever kind the closure returns its
+result in. `List.map2` to `map5` take the same suffix from the element type of
+the list they return (as in `Elm_Kernel_List_map2_Int`), for the same reason:
+code compiled for a `List Int` reads each head as a raw Int (HEAP\_046). Every
+other instance keeps the unsuffixed symbol. The match is on `home`, `name`, the
+argument types and, for those eight, the result type; `prefix` is not
+consulted.
 
 The ABI types are `Types.monoTypeToAbi` of each argument type and of the
 result type, whatever the symbol. An unsuffixed symbol therefore does not mean
@@ -46,7 +56,7 @@ backend.
 # Per-Instance ABI
 
 @docs KernelInstanceKey, KernelInstanceAbi
-@docs deriveKernelInstanceAbi
+@docs deriveKernelInstanceAbi, callInstanceResultType
 
 -}
 
@@ -152,7 +162,10 @@ deriveKernelInstanceAbi key =
 
 {-| Returns the C symbol for a kernel instance:
 `<prefix>_Kernel_<home>_<name>`, followed by `_Int`, `_Float` or `_Char` when
-`home`, `name` and the argument types match one of the cases below. Any other
+`home`, `name` and the argument types match one of the cases below, and for
+the `JsArray` kernels that build an array from a function or a list, by the
+element suffix `resultElementSuffix` reads from the result type, and for
+`List.map2` to `map5` by the element suffix of the list they return. Any other
 instance, such as `Utils.compare` on two Strings, gets the unsuffixed symbol.
 -}
 kernelInstanceSymbol : KernelInstanceKey -> String
@@ -316,14 +329,31 @@ kernelInstanceSymbol key =
         ( "JsArray", "appendN", [ Mono.MInt, _, _ ] ) ->
             suffixed "_Int"
 
+        -- These also take the element suffix of the array they build.
         ( "JsArray", "initialize", [ Mono.MInt, Mono.MInt, _ ] ) ->
-            suffixed "_Int"
+            suffixed ("_Int" ++ resultElementSuffix key.resultType)
 
         ( "JsArray", "initializeFromList", [ Mono.MInt, _ ] ) ->
-            suffixed "_Int"
+            suffixed ("_Int" ++ resultElementSuffix key.resultType)
 
         ( "JsArray", "indexedMap", [ _, Mono.MInt, _ ] ) ->
-            suffixed "_Int"
+            suffixed ("_Int" ++ resultElementSuffix key.resultType)
+
+        ( "JsArray", "map", [ _, _ ] ) ->
+            suffixed (resultElementSuffix key.resultType)
+
+        -- These take the element suffix of the list they build.
+        ( "List", "map2", _ ) ->
+            suffixed (listElementSuffix key.resultType)
+
+        ( "List", "map3", _ ) ->
+            suffixed (listElementSuffix key.resultType)
+
+        ( "List", "map4", _ ) ->
+            suffixed (listElementSuffix key.resultType)
+
+        ( "List", "map5", _ ) ->
+            suffixed (listElementSuffix key.resultType)
 
         -- The first argument is the Int id; the suffix names the value.
         ( "MVar", "put", [ Mono.MInt, Mono.MInt ] ) ->
@@ -337,6 +367,89 @@ kernelInstanceSymbol key =
 
         _ ->
             rootSymbol
+
+
+{-| Returns the suffix that names the element type of the array a `JsArray`
+kernel builds: `"_Int"`, `"_Float"` or `"_Char"` when `resultType` is a
+`JsArray` of Int, Float or Char, or a pair whose first component is one (the
+result of `initializeFromList`), and `""` for any other element type, a type
+variable included.
+-}
+resultElementSuffix : Mono.MonoType -> String
+resultElementSuffix resultType =
+    let
+        elementSuffix : Mono.MonoType -> String
+        elementSuffix arrayType =
+            case arrayType of
+                Mono.MCustom _ _ "JsArray" [ Mono.MInt ] ->
+                    "_Int"
+
+                Mono.MCustom _ _ "JsArray" [ Mono.MFloat ] ->
+                    "_Float"
+
+                Mono.MCustom _ _ "JsArray" [ Mono.MChar ] ->
+                    "_Char"
+
+                _ ->
+                    ""
+    in
+    case resultType of
+        Mono.MTuple _ [ arrayType, _ ] ->
+            elementSuffix arrayType
+
+        _ ->
+            elementSuffix resultType
+
+
+{-| Returns the suffix that names the element type of the list a `List.mapN`
+kernel builds: `"_Int"`, `"_Float"` or `"_Char"` when `resultType` is a list
+of Int, Float or Char, and `""` for any other element type, a type variable
+included.
+-}
+listElementSuffix : Mono.MonoType -> String
+listElementSuffix resultType =
+    case resultType of
+        Mono.MList _ Mono.MInt ->
+            "_Int"
+
+        Mono.MList _ Mono.MFloat ->
+            "_Float"
+
+        Mono.MList _ Mono.MChar ->
+            "_Char"
+
+        _ ->
+            ""
+
+
+{-| Returns the result type under which a saturated call of the kernel
+`home.name` is keyed, given the result type `abiResultType` of the kernel's
+ABI and the call's own result type `callResultType`.
+
+For `JsArray.map`, `initialize`, `indexedMap` and `initializeFromList`, and
+for `List.map2` to `map5`, whose variant is chosen by the element type of the
+array or list they build (see the module docstring), it is `callResultType`:
+the kernel's ABI keeps that element a boxed type variable, while the call's
+own type has it concrete. The two have the same
+ABI type, `!eco.value`, so the declaration does not change; where they would
+not, and for every other kernel, it is `abiResultType`.
+-}
+callInstanceResultType : String -> String -> Mono.MonoType -> Mono.MonoType -> Mono.MonoType
+callInstanceResultType home name abiResultType callResultType =
+    let
+        selectsByElement : Bool
+        selectsByElement =
+            (home
+                == "JsArray"
+                && (name == "map" || name == "initialize" || name == "indexedMap" || name == "initializeFromList")
+            )
+                || (home == "List" && (name == "map2" || name == "map3" || name == "map4" || name == "map5"))
+    in
+    if selectsByElement && Types.monoTypeToAbi callResultType == Types.monoTypeToAbi abiResultType then
+        callResultType
+
+    else
+        abiResultType
 
 
 {-| Returns `abi` unchanged if every Int, Float and Char argument or result of

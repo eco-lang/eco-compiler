@@ -19,9 +19,15 @@ prefix (`Elm_Kernel_` or `Eco_Kernel_`), and reports a declaration
     `!eco.value` (an `i1` Bool, for instance), or
   - whose symbol carries one of the per-instance primitive suffixes `_Int`,
     `_Float` or `_Char` that `KernelAbi.kernelInstanceSymbol` adds, but has no
-    parameter of the matching primitive type `i64`, `f64` or `i32`. Every
-    suffixed instance is chosen because one of its parameters is that
-    primitive, and `ElmDerived` must then type that parameter unboxed.
+    parameter of the matching primitive type `i64`, `f64` or `i32`. A
+    parameter suffix is chosen because one of the instance's parameters is
+    that primitive, and `ElmDerived` must then type that parameter unboxed.
+    The one exception is the element suffix of the kernels that build an
+    array or list from a closure (`JsArray.map`, `initialize`, `indexedMap`
+    and `initializeFromList`, `List.map2` to `map5`; HEAP\_046): it names the
+    element type of the result, not a parameter, so it is stripped first and
+    the rest of the symbol checked the same way (`initialize_Int_Float` still
+    needs its `i64`).
 
 Among what is not tested: which parameter the suffix refers to, that an
 unsuffixed kernel's types match the Mono types at its call sites (that is
@@ -109,7 +115,7 @@ checkKernelFunc op =
                                     )
 
                             else
-                                case suffixPrimitive symName of
+                                case suffixPrimitive (stripElementSuffix symName) of
                                     Just ( suffix, prim ) ->
                                         if List.member prim inputs then
                                             []
@@ -157,6 +163,52 @@ isElmDerivedAbiType t =
 
         _ ->
             False
+
+
+{-| Returns `symName` without its trailing element suffix (`_Int`, `_Float` or
+`_Char`) when what precedes it is one of the kernels whose variant the element
+type of the array or list they build selects, and `symName` unchanged
+otherwise. `Elm_Kernel_JsArray_initialize_Int_Float` gives
+`Elm_Kernel_JsArray_initialize_Int`, and `Elm_Kernel_List_map2_Int` gives
+`Elm_Kernel_List_map2`.
+-}
+stripElementSuffix : String -> String
+stripElementSuffix symName =
+    let
+        elementSelected : List String
+        elementSelected =
+            [ "_JsArray_map"
+            , "_JsArray_initialize_Int"
+            , "_JsArray_indexedMap_Int"
+            , "_JsArray_initializeFromList_Int"
+            , "_List_map2"
+            , "_List_map3"
+            , "_List_map4"
+            , "_List_map5"
+            ]
+
+        strip : String -> Maybe String
+        strip suffix =
+            if String.endsWith suffix symName then
+                let
+                    root =
+                        String.dropRight (String.length suffix) symName
+                in
+                if List.any (\k -> String.endsWith k root) elementSelected then
+                    Just root
+
+                else
+                    Nothing
+
+            else
+                Nothing
+    in
+    case List.filterMap strip [ "_Int", "_Float", "_Char" ] of
+        root :: _ ->
+            root
+
+        [] ->
+            symName
 
 
 {-| Returns the per-instance primitive suffix of a kernel symbol and the MLIR

@@ -21,43 +21,51 @@ static Elm::HPointer mvarNewBody(Elm::HPointer /*captured*/) {
 extern "C" {
 
 HPtr Eco_Kernel_MVar_new() {
-    return HPtr::fromBits(Export::encode(
-        makeBinding<mvarNewBody>(Elm::alloc::unit())));
+    ECO_KERNEL_GUARD(
+        return HPtr::fromBits(Export::encode(
+            makeBinding<mvarNewBody>(Elm::alloc::unit())));
+    )
 }
 
 HPtr Eco_Kernel_MVar_read(uint64_t id) {
-    return HPtr::fromBits(MVar::read(id));
+    ECO_KERNEL_GUARD( return HPtr::fromBits(MVar::read(id)); )
 }
 
 HPtr Eco_Kernel_MVar_take(uint64_t id) {
-    return HPtr::fromBits(MVar::take(id));
+    ECO_KERNEL_GUARD( return HPtr::fromBits(MVar::take(id)); )
 }
 
 HPtr Eco_Kernel_MVar_put(uint64_t id, HPtr value) {
-    return HPtr::fromBits(MVar::put(id, value.toBits()));
+    ECO_KERNEL_GUARD( return HPtr::fromBits(MVar::put(id, value.toBits())); )
 }
 
 // Per-instance variants. The MVar slot stores an HPointer, so the primitive is boxed here, which lets the
 // call site keep the value unboxed. Nothing allocates between the boxing and the StackRootGuard in
 // MVar::put, so the box needs no rooting of its own.
 HPtr Eco_Kernel_MVar_put_Int(uint64_t id, int64_t value) {
-    Elm::HPointer boxed = Elm::alloc::allocInt(value);
-    return HPtr::fromBits(MVar::put(id, Export::encode(boxed)));
+    ECO_KERNEL_GUARD(
+        Elm::HPointer boxed = Elm::alloc::allocInt(value);
+        return HPtr::fromBits(MVar::put(id, Export::encode(boxed)));
+    )
 }
 
 HPtr Eco_Kernel_MVar_put_Float(uint64_t id, double value) {
-    Elm::HPointer boxed = Elm::alloc::allocFloat(value);
-    return HPtr::fromBits(MVar::put(id, Export::encode(boxed)));
+    ECO_KERNEL_GUARD(
+        Elm::HPointer boxed = Elm::alloc::allocFloat(value);
+        return HPtr::fromBits(MVar::put(id, Export::encode(boxed)));
+    )
 }
 
 // The Char (a code point) arrives as uint64_t, and only its low 32 bits are used.
 HPtr Eco_Kernel_MVar_put_Char(uint64_t id, uint64_t value_raw) {
-    Elm::HPointer boxed = Elm::alloc::allocChar(static_cast<u32>(value_raw & 0xFFFFFFFFu));
-    return HPtr::fromBits(MVar::put(id, Export::encode(boxed)));
+    ECO_KERNEL_GUARD(
+        Elm::HPointer boxed = Elm::alloc::allocChar(static_cast<u32>(value_raw & 0xFFFFFFFFu));
+        return HPtr::fromBits(MVar::put(id, Export::encode(boxed)));
+    )
 }
 
 HPtr Eco_Kernel_MVar_drop(uint64_t id) {
-    return HPtr::fromBits(MVar::drop(id));
+    ECO_KERNEL_GUARD( return HPtr::fromBits(MVar::drop(id)); )
 }
 
 extern "C" void Eco_Kernel_MVar_register_gc_roots() {

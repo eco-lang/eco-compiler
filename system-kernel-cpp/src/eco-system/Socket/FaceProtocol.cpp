@@ -3,6 +3,7 @@
 
 #include "eco-system/Socket/FaceProtocol.hpp"
 
+#include <cassert>
 #include <cerrno>
 #include <utility>
 
@@ -238,7 +239,11 @@ void FaceProtocol::writeFaceShutdown(Conn& c) {
     cancelReason_ = c.aborted() ? kSocketClosed : "";
     c.cancelWrites(ECANCELED);   // the queued writes, then a pending close
     cancelling_ = false;
-    if (closePending_) {   // not queued in the Conn any more (defensive)
+    // A pending close-write is always completed by now: synchronously by `shutdownWrite` (closeDone) when nothing was
+    // queued, or by `cancelWrites` through failOutbound -> finishShutdown. The branch below is kept as a defence for
+    // builds without asserts.
+    assert(!closePending_ && "cancelWrites completes a pending close via finishShutdown");
+    if (closePending_) {   // unreachable today (see the assert)
         closePending_ = false;
         postClose(closeChannel_, closeToken_, ECANCELED, std::string());
     }

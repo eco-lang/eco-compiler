@@ -29,24 +29,31 @@
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <bcrypt.h>
+#include <climits>
 #pragma comment(lib, "bcrypt.lib")
 namespace { constexpr int SHA_DIGEST_LENGTH = 20; } // Bytes in a SHA-1 digest, as OpenSSL names it.
 namespace {
-// Writes the SHA-1 digest of the `len` bytes at `data` to `out` and returns `out`. Writes 20 zero bytes when the
-// algorithm provider cannot be opened. Only the first 0xffffffff bytes of a longer input are hashed.
+// Writes the SHA-1 digest of the `len` bytes at `data` to `out` and returns `out`. The input is fed to the hash
+// in pieces of at most `ULONG_MAX` bytes, since one `BCryptHashData` call takes a `ULONG` length. Writes 20 zero
+// bytes when any CNG call fails, so the digest is still defined; it then matches no real archive's hash.
 inline unsigned char* SHA1(const unsigned char* data, size_t len,
                             unsigned char out[20]) {
-    BCRYPT_ALG_HANDLE h = nullptr;
-    if (BCryptOpenAlgorithmProvider(&h, BCRYPT_SHA1_ALGORITHM, nullptr, 0) != 0) {
-        // Zero-filled so that the digest is still defined.
-        for (int i = 0; i < 20; ++i) out[i] = 0;
-        return out;
+    BCRYPT_ALG_HANDLE alg = nullptr;
+    BCRYPT_HASH_HANDLE hash = nullptr;
+    bool ok = BCRYPT_SUCCESS(BCryptOpenAlgorithmProvider(&alg, BCRYPT_SHA1_ALGORITHM, nullptr, 0)) &&
+              BCRYPT_SUCCESS(BCryptCreateHash(alg, &hash, nullptr, 0, nullptr, 0, 0));
+    while (ok && len > 0) {
+        ULONG chunk = static_cast<ULONG>(len > ULONG_MAX ? ULONG_MAX : len);
+        ok = BCRYPT_SUCCESS(BCryptHashData(hash, const_cast<PUCHAR>(data), chunk, 0));
+        data += chunk;
+        len -= chunk;
     }
-    BCryptHash(h, nullptr, 0,
-               const_cast<PUCHAR>(data),
-               static_cast<ULONG>(len > 0xffffffff ? 0xffffffff : len),
-               out, 20);
-    BCryptCloseAlgorithmProvider(h, 0);
+    ok = ok && BCRYPT_SUCCESS(BCryptFinishHash(hash, out, 20, 0));
+    if (hash) BCryptDestroyHash(hash);
+    if (alg) BCryptCloseAlgorithmProvider(alg, 0);
+    if (!ok) {
+        for (int i = 0; i < 20; ++i) out[i] = 0;
+    }
     return out;
 }
 }
@@ -151,6 +158,15 @@ HPointer buildGetArchiveResponse(const HttpService::Result& r) {
         return err(boxed(errStr), true);
     }
 
+    // Redirects have been followed, so this is the final response's status. An error page is not the archive,
+    // even when its body happens to be a ZIP file.
+    if (r.status < 200 || r.status > 299) {
+        ECO_KLOG("http", "getArchive http-error status=%ld", r.status);
+        HPointer errStr = allocStringFromUTF8("HTTP " + std::to_string(r.status));
+        Elm::StackRootGuard g(&errStr);
+        return err(boxed(errStr), true);
+    }
+
     const std::string& zipData = r.body;
 
     std::string shaHex;
@@ -192,8 +208,12 @@ HPointer buildGetArchiveResponse(const HttpService::Result& r) {
         return err(boxed(errStr), true);
     }
 
+    // An entry that cannot be stat'ed, opened or read in full makes the whole archive unreadable: a package
+    // with a missing or truncated file is corrupt. The message is kept here and turned into an Elm String only
+    // once libzip is closed.
     struct FileEntry { std::string content; std::string relativePath; };
     std::vector<FileEntry> entries;
+    std::string failure;
     zip_int64_t numEntries = zip_get_num_entries(archive, 0);
     ECO_KLOG("http", "zip open entries=%lld", (long long)numEntries);
     for (zip_int64_t i = 0; i < numEntries; ++i) {
@@ -207,7 +227,12 @@ HPointer buildGetArchiveResponse(const HttpService::Result& r) {
         std::string content;
         bool isDir = !entryName.empty() && entryName.back() == '/';
         zip_stat_t st;
-        zip_stat_index(archive, i, 0, &st);
+        if (zip_stat_index(archive, i, 0, &st) != 0 || !(st.valid & ZIP_STAT_SIZE)) {
+            ECO_KLOG("http", "zip entry-stat-fail name=%s msg=%s",
+                     entryName.c_str(), zip_strerror(archive));
+            failure = "Failed to stat zip entry " + entryName;
+            break;
+        }
         ECO_KLOG("http", "zip entry idx=%lld name=%s isDir=%d size=%lluB",
                  (long long)i, entryName.c_str(), (int)isDir,
                  (unsigned long long)st.size);
@@ -217,21 +242,29 @@ HPointer buildGetArchiveResponse(const HttpService::Result& r) {
                 ECO_KLOG("http", "zip entry-open-fail name=%s msg=%s",
                          entryName.c_str(),
                          zip_strerror(archive));
-                continue;
+                failure = "Failed to open zip entry " + entryName;
+                break;
             }
             content.resize(st.size);
             zip_int64_t got = zip_fread(f, content.data(), st.size);
+            zip_fclose(f);
             if (got != (zip_int64_t)st.size) {
                 ECO_KLOG("http",
                          "zip entry-short-read name=%s want=%zu got=%lld",
                          entryName.c_str(), (size_t)st.size, (long long)got);
+                failure = "Failed to read zip entry " + entryName;
+                break;
             }
-            zip_fclose(f);
         }
         entries.push_back({std::move(content), std::move(entryName)});
     }
     zip_close(archive);
     zip_error_fini(&zipError);
+    if (!failure.empty()) {
+        HPointer errStr = allocStringFromUTF8(failure);
+        Elm::StackRootGuard g(&errStr);
+        return err(boxed(errStr), true);
+    }
 
     auto& rs = Elm::Allocator::instance().getRootSet();
     size_t saved = rs.stackRangePoint();
@@ -365,12 +398,7 @@ HPointer fetchBody(HPointer captured, HPointer resume) {
     req.method = method;
     req.url = url;
     req.headers = std::move(hdrs);
-    // A body-less POST must carry `Content-Length: 0`, since a server may refuse one without it (411).
-    // `HttpService` sends that for a `POST` with an empty body; these assignments leave both fields empty.
-    if (method == "POST") {
-        req.body = "";
-        req.contentType = "";
-    }
+    // A body-less POST/PUT/PATCH gets `Content-Length: 0` from HttpService (CURLOPT_POSTFIELDSIZE 0).
     req.eco_lane = true;
     HttpService::instance().submit(std::move(req));
 

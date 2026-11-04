@@ -668,3 +668,36 @@ Results: `tla-check` M6 quick 48/48 and deep 18/18 as expected (every mutant sti
 invariant; `two_gangs_window`, `deep_two_gangs`, `deep_two_gangs_mut`, `deep_1cpu_two_gangs` pass in
 both registration orders); `tla-trace` M6 29/29 (every baseline accepted, every corruption rejected).
 No code defect: the code's behaviour was correct, the model was incomplete. **Verdict: model updated.**
+
+## 2026-11-04 — `F.atexit` / `F.atfork` / `F.fork` widened to eco/system (test/tla/README.md "The canary")
+
+Pin fired: grep `F.atexit` (M6), new hash prefix **b5e7ee7962e3**. `F.atfork` and `F.fork` did not change (no
+`pthread_atfork` or `fork(` call in `system-kernel-cpp/src`; eco/system starts children with `posix_spawn`).
+
+Change: the canary row fix of M1's 2026-11-04 entry (`F.externalRoots`), applied to the three exit and fork
+greps: `footprint-greps.txt` now also globs `system-kernel-cpp/src/*/*/*.cpp` and `*.hpp`. No code changed; the
+grep now sees two existing, never-audited exit handlers:
+- `Terminal/Terminal.cpp`: `std::atexit(&restoreAtExit)`, registered once by `setRaw(true)` the first time raw mode
+  goes on. The handler makes one `tcsetattr(0, TCSADRAIN, ...)` while raw mode is on.
+- `Tls/TlsContext.cpp`: `std::atexit(&tlsQuiesce)`, registered once by `ensureTlsInit`. The handler calls
+  `IoReactor::quiesce(100)`: a release store of `quiesceRequested`, a wake, and a bounded wait on the reactor's own
+  `qMu` / `qCv` for its acknowledgement.
+
+Re-audit against M6b (`ExitGangs`, `X_Reg` ... `X_Done`):
+- Ordering. Both are registered lazily on the eco thread, so either can be registered after the first gang's
+  constructor registered `stopAllAtExit`, and then runs BEFORE it, while gang members may still be running. That is
+  harmless because neither handler takes the registry mutex, a gang's `m_`, `run_m_`, the pool's `m_` or
+  `thread_mutex_`, nor reads or writes any gang, pool or allocator state, nor touches the heap. They commute with
+  every M6 step; `ExitSafe` is about the state `stopAllAtExit` leaves, which they do not touch.
+- Blocking. `tlsQuiesce` waits at most 100 ms, then returns whatever the reactor did. The reactor thread has no heap,
+  never touches it (IoReactor.hpp) and takes no GC lock, so it cannot be waiting for anything `exit()` holds, and
+  the mutator calls `exit()` between pauses (no GC lock held). An in-flight reactor handler is not stopped, as
+  before; it touches no state M6 or the heap models own. `restoreAtExit`'s `TCSADRAIN` can wait for tty output,
+  which no GC thread produces.
+- Heap-touching exit work (the exit major in `atexitPrintStats`, `finishTenureForExit`, `drainHelperWork`) is
+  registered at startup (`installStatsHandlers`), before any of these, so it still runs after both and after
+  `stopAllAtExit`, as MAPPING.md §3 states.
+- Fork: neither handler is a fork handler, and eco/system adds no `pthread_atfork` or `fork`.
+
+MAPPING.md §3 gains one abstraction row for these non-modelled exit handlers (the argument above). The spec is
+unchanged, so `tla-check` was not needed. No code defect. **Verdict: no model change needed.**

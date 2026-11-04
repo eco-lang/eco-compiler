@@ -93,11 +93,23 @@ Registry<ChildJob>& childJobs();
 /// calls do nothing.
 void ensureChildDrains();
 
-/// Asks the WaitService to report the exit of job `jobId`'s child and, when `runDurationMs` is positive, arms the
-/// job's runDuration timer for that many milliseconds. Watches nothing if there is no job `jobId`.
+/// The longest runDuration, in milliseconds, that arms a timer: 2^31 - 1 (about 24.8 days), Node's timer range.
+/// A longer one means no limit, as the Elm `ChildProcess.RunDuration` documents.
+inline constexpr int64_t kMaxRunDurationMs = 2147483647;
+
+/// Asks the WaitService to report the exit of job `jobId`'s child and, when `runDurationMs` is positive and at
+/// most `kMaxRunDurationMs`, arms the job's runDuration timer for that many milliseconds; a longer one arms none.
+/// Watches nothing if there is no job `jobId`. If an exception is thrown, a timer it armed is withdrawn first.
 ///
 /// Calls `ensureChildDrains`. It may allocate on the Elm heap. It must be called at most once for a job.
 void startJobWatch(int64_t jobId, int64_t runDurationMs);
+
+/// Undoes job `jobId`, a run or a spawn, whose exit is not watched because starting the watch threw: withdraws its
+/// runDuration timer if one is still armed, ends and reaps its child (SIGKILL, then a `waitpid` that returns at once
+/// in practice), tells a run's collector to stop, and erases the job without releasing its hold, which the caller
+/// takes over. A collector's later output finds no job and is dropped. On Windows the child is left running and only
+/// the job is erased. Does nothing if there is no such job.
+void abandonJob(int64_t jobId);
 
 /// Marks job `jobId` killed and sends its child SIGTERM. Does nothing if there is no such job or `waitDrain` has
 /// already recorded the child's exit. On Windows it only marks the job.
@@ -128,11 +140,20 @@ bool cancelSpawnByToken(uint64_t token);
 /// A positive `maxBytes` limits each of stdout and stderr: when either passes it, both are cut to `maxBytes` bytes
 /// and the job is killed. A positive `runDurationMs` arms a runDuration timer. If it expires after the child has
 /// exited but while the output is still open, as when a process the child started keeps the pipes open, the job is
-/// killed without a signal and the collector is told to stop reading. Killing the Task kills the job, unless the
-/// exit has already been seen, and the Task then never completes. The job holds the program alive until it completes.
+/// killed without a signal and the collector is told to stop reading. Killing the Task kills the job: with SIGTERM
+/// while the child runs, and, once its exit has been seen, in the same way as that runDuration expiry, so the
+/// output stops being waited for; the Task then never completes. The job holds the program alive until it
+/// completes.
 ///
-/// On Windows the output is never collected, so stdout and stderr are always empty. A C++ exception fails the Task
-/// with kind 0 and code "EIO", as `ECO_SYSTEM_ASYNC_GUARD` does for RunErr.
+/// A C++ exception thrown before the child's exit is watched ends and reaps the child, withdraws the timer and
+/// erases the job, releasing its hold once after the Task has failed; one thrown later leaves the job to complete
+/// on its own.
+///
+/// On Windows the output is read by blocking reads on the collector's threads, which cannot be told to stop, so a
+/// killed run whose pipes a process the child started keeps open completes only once they close; the child is not
+/// signalled, and the exception path above leaves it running. A C++ exception fails the Task
+/// with kind 0 and code "EIO", and the exception message as stderr, as `ECO_SYSTEM_ASYNC_GUARD` does for RunErr
+/// (Elm's `decodeFailedRun` reads only the code for kind 0).
 HPointer childProcessRunBody(HPointer captured, HPointer resume);
 
 // Decoders shared with the effect manager. Each copies the Elm value it is given into `spec` and does not allocate
@@ -149,6 +170,21 @@ void decodeCwd(HPointer cwdTuple, SpawnSpec& spec);
 void decodeEnv(HPointer envTuple, SpawnSpec& spec);
 /// Sets `spec.program` and `spec.args` from `progTuple`, an Elm `( String, List String )`.
 void decodeProgram(HPointer progTuple, SpawnSpec& spec);
+
+#if ECO_TEST_HOOKS
+/// Test-only (PROC-06): where the run fault hook is called, after the task's resume has been parked and its
+/// hold given to the job. `BeforeWaitSubmit` is also reached from the effect manager's spawn, which calls
+/// `startJobWatch` too.
+enum class RunFaultSite : int {
+    BeforeJobWatch = 0,     ///< In `childProcessRunBody`, right before `startJobWatch`.
+    BeforeWaitSubmit = 1,   ///< In `startJobWatch`, after the runDuration timer is parked, right before
+                            ///< `WaitService::submit`.
+};
+/// A hook called at each `RunFaultSite`; a test makes it throw (e.g. `std::bad_alloc`) to fault the run there.
+using RunFaultHook = void (*)(RunFaultSite site);
+/// Test-only (PROC-06): installs `hook`, or removes it when null, and returns the previous one. Eco thread only.
+RunFaultHook setRunFaultHookForTest(RunFaultHook hook);
+#endif
 
 } // namespace Eco::System
 

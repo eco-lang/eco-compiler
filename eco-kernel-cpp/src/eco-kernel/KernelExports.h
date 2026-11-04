@@ -24,8 +24,10 @@
 // The exports that act when called, and return no Task, are `Crash.crash`, `Console.log`, `Process.exit`, the two
 // Hash functions and the GC root hooks.
 //
-// This header also provides `ECO_KERNEL_GUARD`, which an export's definition may wrap around its body so that a C++
-// exception becomes a fatal abort instead of unwinding out of a C-linkage function.
+// This header also provides `ECO_KERNEL_GUARD`, which every export's definition wraps around its body so that a C++
+// exception becomes a fatal abort instead of unwinding out of a C-linkage function
+// (test/scripts/check-eco-kernel-guard.sh checks this). For a Task-returning export the guard covers only building the
+// Task; an exception from the Task's body, when it runs, is caught by the binding trampoline (TaskBinding.hpp).
 //
 //===----------------------------------------------------------------------===//
 
@@ -38,21 +40,20 @@
 #include <exception>
 #include <new>
 #include "../../../runtime/src/allocator/Heap.hpp"
+#include "../../../runtime/src/platform/Fatal.hpp"
 using Elm::HPtr;
 
 namespace Eco {
 namespace Kernel {
 
-/// Reports an unrecoverable native fault and aborts the process.
+/// Reports an unrecoverable native fault and aborts the process, through the runtime's one fatal path,
+/// `Elm::Platform::reportFatal` (platform/Fatal.hpp).
 ///
-/// It flushes stdout, writes `[eco-runtime] FATAL: ` followed by `what` (or `(null)` when `what` is null) to stderr,
-/// and calls `std::abort`. It is for faults that cannot be delivered as a Task failure, such as a C++ exception that
-/// has reached an export.
+/// It flushes stdout, runs the runtime's pre-fatal hooks (the terminal-mode restore among them), writes
+/// `[eco-runtime] FATAL: ` followed by `what` (or `(null)` when `what` is null) to stderr, and calls `std::abort`. It
+/// is for faults that cannot be delivered as a Task failure, such as a C++ exception that has reached an export.
 [[noreturn]] inline void reportFatal(const char* what) {
-    std::fflush(stdout);
-    std::fprintf(stderr, "\n[eco-runtime] FATAL: %s\n", what ? what : "(null)");
-    std::fflush(stderr);
-    std::abort();
+    ::Elm::Platform::reportFatal(what);
 }
 
 } // namespace Kernel
@@ -82,20 +83,21 @@ extern "C" {
 // File Module - file I/O by path, handles, locks, directories
 //===----------------------------------------------------------------------===//
 
-/// Returns a Task that reads the file at `path` as UTF-8 text and succeeds with it as a String. It fails with the IO
-/// error tuple when the file cannot be opened, sized or read.
+/// Returns a Task that reads the file at `path` as UTF-8 text and succeeds with it as a String. A file that is not
+/// regular, or that reports size 0 (procfs), is read to its end. It fails with the IO error tuple when the file
+/// cannot be opened, sized or read, is a directory (`EISDIR`), or is larger than 4 GiB - 1 (`EFBIG`).
 HPtr Eco_Kernel_File_readString(HPtr path);
 
 /// Returns a Task that creates or truncates the file at `path`, writes `content` to it as UTF-8, and succeeds with
-/// Unit. It fails with the IO error tuple only when the file cannot be opened; an error while writing is not reported.
+/// Unit. It fails with the IO error tuple when the file cannot be opened, written in full or closed.
 HPtr Eco_Kernel_File_writeString(HPtr path, HPtr content);
 
-/// Returns a Task that reads the file at `path` and succeeds with its contents as Bytes. It fails with the IO error
-/// tuple when the file cannot be opened, sized or read, or is too large for a Bytes value.
+/// Returns a Task that reads the file at `path` and succeeds with its contents as Bytes, as
+/// `Eco_Kernel_File_readString` reads them. It fails as that does, a file too large for a Bytes value included.
 HPtr Eco_Kernel_File_readBytes(HPtr path);
 
 /// Returns a Task that creates or truncates the file at `path`, writes `bytes` to it, and succeeds with Unit. It fails
-/// with the IO error tuple only when the file cannot be opened; an error while writing is not reported.
+/// with the IO error tuple when the file cannot be opened, written in full or closed.
 HPtr Eco_Kernel_File_writeBytes(HPtr path, HPtr bytes);
 
 /// Returns a Task that writes `bytes` to a new temporary file beside `path`, renames it over `path`, and succeeds with
@@ -134,9 +136,9 @@ HPtr Eco_Kernel_File_dirExists(HPtr path);
 /// `Just` the first match's path, written with forward slashes, or with `Nothing`. It never fails.
 ///
 /// On Windows `Path` is read when `PATH` is not set, and a match is any regular file named `name` with no suffix or
-/// with `.exe`, `.cmd`, `.bat` or `.com`. Elsewhere a match is any path the process may execute, as `access` with
-/// `X_OK` decides, so a searchable directory matches too. An empty `PATH` entry tests `name` against the current
-/// directory.
+/// with `.exe`, `.cmd`, `.bat` or `.com`. Elsewhere a match is a regular file the process may execute, as `access`
+/// with `X_OK` decides; a directory never matches. An empty `PATH` entry (leading, trailing or inner) means the
+/// current directory, and a match there is returned as `./<name>`.
 HPtr Eco_Kernel_File_findExecutable(HPtr name);
 
 /// Returns a Task that succeeds with the names of the entries in the directory `path`, as a List of Strings in no
@@ -158,13 +160,16 @@ HPtr Eco_Kernel_File_setCwd(HPtr path);
 
 /// Returns a Task that succeeds with `path` made absolute, with symbolic links resolved, and written with forward
 /// slashes. When the path cannot be resolved, for example because it does not exist, it succeeds instead with `path`
-/// made absolute and lexically normalised, without resolving links. It does not fail with an error value.
+/// made absolute and lexically normalised, without resolving links. It fails with the IO error tuple for the empty
+/// path (`ENOENT`) and when the path cannot be made absolute (a relative path after the working directory was
+/// removed).
 HPtr Eco_Kernel_File_canonicalize(HPtr path);
 
 /// Returns a Task that succeeds with the path of the per-user data directory for the application `name`. The
-/// directory is not created. The path is `$HOME/.<name>`, on macOS `$HOME/Library/Application Support/<name>`, and on
-/// Windows `<name>` under `APPDATA`, else `USERPROFILE`, else `HOME`. It fails with a plain String when none of
-/// those variables is set.
+/// directory is not created. The path is `<home>/.<name>`, on macOS `<home>/Library/Application Support/<name>`,
+/// where `<home>` is `HOME` or, when that is unset or empty, the passwd entry's home directory; on Windows it is
+/// `<name>` under `APPDATA`, else `USERPROFILE`, else `HOME`. It fails with the IO error tuple for `ENOENT` when no
+/// home directory is found.
 HPtr Eco_Kernel_File_appDataDir(HPtr name);
 
 /// Returns a Task that creates the directory `path` and succeeds with Unit. When `createParents` is True any missing
@@ -180,12 +185,13 @@ HPtr Eco_Kernel_File_removeFile(HPtr path);
 /// path that does not exist is not an error. It fails with the IO error tuple when something cannot be removed.
 HPtr Eco_Kernel_File_removeDir(HPtr path);
 
-/// Returns a Task that writes `content` as UTF-8 to the file descriptor `handle` and succeeds with Unit. It makes one
-/// write call, so a short write is not retried or reported. It fails with the IO error tuple when the write fails.
+/// Returns a Task that writes `content` as UTF-8 to the file descriptor `handle` and succeeds with Unit. A short
+/// write is continued until all of `content` is written. It fails with the IO error tuple when a write fails.
 HPtr Eco_Kernel_File_hWriteString(HPtr handle, HPtr content);
 
 /// Returns a Task that creates the file at `path` if it does not exist, sets its modification time to now, and
-/// succeeds with Unit. It fails with the IO error tuple when the time cannot be set.
+/// succeeds with Unit. It fails with the IO error tuple when the time cannot be set, carrying the error of the
+/// create when the file could not be created.
 HPtr Eco_Kernel_File_touch(HPtr path);
 
 //===----------------------------------------------------------------------===//
@@ -200,18 +206,19 @@ HPtr Eco_Kernel_Crash_crash(HPtr message);
 // Console Module - write to handles, read from stdin
 //===----------------------------------------------------------------------===//
 
-/// Returns a Task that writes `content` as UTF-8 to standard output when `handle` is 1, or standard error when it is
-/// 2, and succeeds with Unit. For any other `handle` it writes nothing and succeeds. It fails with the IO error tuple
-/// when a write fails.
+/// Returns a Task that writes `content` as UTF-8 to standard output when `handle` is 1, standard error when it is 2,
+/// or the child's stdin pipe when it is an open `spawnProcess` stdin handle, and succeeds with Unit. For any other
+/// `handle` it writes nothing and fails with the IO error tuple for `EBADF`. It fails with the IO error tuple when a
+/// write fails.
 HPtr Eco_Kernel_Console_write(HPtr handle, HPtr content);
 
 /// Returns a Task that reads one line from standard input and succeeds with it, without the line break. At the end of
-/// input it succeeds with an empty string; it never fails. The read blocks the thread running the Task.
+/// input it succeeds with what is left, possibly an empty string; it never fails. The read is done off the thread
+/// running the Task, which carries on with other work meanwhile.
 HPtr Eco_Kernel_Console_readLine();
 
-/// Returns a Task that reads standard input to its end and succeeds with the lines read, joined by `\n`, with no line
-/// break after the last. Empty lines before the first non-empty line are dropped. It never fails. The read blocks the
-/// thread running the Task.
+/// Returns a Task that reads standard input to its end and succeeds with everything read, byte for byte. It never
+/// fails. The read is done off the thread running the Task, which carries on with other work meanwhile.
 HPtr Eco_Kernel_Console_readAll();
 
 /// Returns a Task that succeeds with True when `handle` is 0, 1 or 2 and that standard stream is a terminal, and with
@@ -247,16 +254,16 @@ HPtr Eco_Kernel_Process_exit(int64_t code);
 uint64_t Eco_Kernel_Process_spawn(HPtr cmd, HPtr args);
 
 /// Returns a Task that starts the program `cmd` with arguments `args` like `Eco_Kernel_Process_spawn`, and succeeds
-/// with a tuple `(stdinHandle, pid)`. `stdin_`, `stdout_` and `stderr_` are Strings. When `stdin_` is `"pipe"` the
-/// child's standard input is a pipe and `stdinHandle` is `Just` the descriptor of its writing end, an Int; otherwise
-/// standard input is shared and `stdinHandle` is `Nothing`. `stdout_` and `stderr_` are ignored, and those streams
-/// are always shared. It fails with the IO error tuple when the program cannot be started.
-HPtr Eco_Kernel_Process_spawnProcess(HPtr cmd, HPtr args,
-    HPtr stdin_, HPtr stdout_, HPtr stderr_);
+/// with a tuple `(stdinHandle, pid)`. `stdin_` is a String. When it is `"pipe"` the child's standard input is a pipe
+/// and `stdinHandle` is `Just` the descriptor of its writing end, an Int, usable with `Console.write` and
+/// `File.close`; otherwise standard input is shared and `stdinHandle` is `Nothing`. Standard output and error are
+/// always shared. It fails with the IO error tuple when the program cannot be started.
+HPtr Eco_Kernel_Process_spawnProcess(HPtr cmd, HPtr args, HPtr stdin_);
 
 /// Returns a Task that waits for the child with process id `handle` to exit and succeeds with its exit code as an Int:
 /// 128 plus the signal number when a signal ended it, and -1 when it could not be waited for. It never fails. The
-/// waiting is done off the thread running the Task, which carries on with other work meanwhile.
+/// waiting is done off the thread running the Task, which carries on with other work meanwhile. Killing the Task
+/// stops the wait (it keeps the program alive no longer) without killing the child.
 uint64_t Eco_Kernel_Process_wait(HPtr handle);
 
 //===----------------------------------------------------------------------===//
@@ -312,8 +319,8 @@ int64_t Eco_Kernel_Hash_string64(int64_t seed, HPtr str);
 // Runtime Module - executable directory, random numbers and saved state
 //===----------------------------------------------------------------------===//
 
-/// Returns a Task that succeeds with the directory containing the running executable. It fails with a plain String
-/// when that directory cannot be determined.
+/// Returns a Task that succeeds with the directory containing the running executable. It fails with the IO error
+/// tuple for `ENOENT` when that directory cannot be determined.
 HPtr Eco_Kernel_Runtime_dirname();
 
 /// Returns a Task that succeeds with a random Float in [0, 1), drawing a new one each time it is run.

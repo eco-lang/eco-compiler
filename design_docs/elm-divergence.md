@@ -56,11 +56,13 @@ Results agree with Elm for any integer that stays within ±2^31 (or ±2^53 for a
 Programs that rely on JS overflow behaviour, on 32-bit `truncate` used as a hash mix, or on
 `Int` secretly holding a fraction will behave differently.
 
-### Known exception to "never a runtime error"
+### `modBy 0` and `remainderBy 0`
 
-`modBy 0 x` and `remainderBy 0 x` currently throw (`Basics.cpp`, `modBy`), which matches
-Elm's crash. *TODO: decide whether to make these total (`modBy 0 x == 0`, in line with
-`//`) or record them as the deliberate exceptions.*
+Both are total and give `0`, in line with `x // 0 == 0` (decision D1 of
+`plans/kernel-lib-bug-fixes.md`, CGEN_084). In Elm `modBy 0 x` crashes ("Cannot perform mod 0.
+Division by zero error.") and `remainderBy 0 x` gives NaN in an Int. The inline lowering
+(`eco.int.modby`, `eco.int.remainderby`) and the kernel fallbacks (`Basics.cpp`, `modBy`,
+`remainderBy`) agree: a program that crashes in Elm gets a wrong answer in eco instead.
 
 ---
 
@@ -162,11 +164,13 @@ confirmed, add an E2E test (`(nan, nan) == (nan, nan)` is `False`, both shared a
 
 ### 4.1 `==` on functions
 
-Elm throws a runtime error ("Trying to use `(==)` on functions"). eco returns `False`
-(`elm-kernel-cpp/src/core/Utils.cpp:728`, `Tag_Closure`). This fits the total-functions
-principle, but a program that crashes in Elm runs on in eco. *TODO: check functions nested in
-records, custom types and `Dict` values. Also decide whether the type checker should reject
-this statically, as Elm's `comparable`/`equatable` cannot.*
+Elm throws a runtime error ("Trying to use `(==)` on functions") unless the two operands are the
+same function object. eco returns `True` for the same closure object and `False` otherwise
+(`elm-kernel-cpp/src/core/Utils.cpp`, `eqHelp`, `Tag_Closure`), at any depth: functions nested in
+records, custom types, `Maybe` and `Dict` values compare the same way. This is decided (D24 of
+`plans/kernel-lib-bug-fixes.md`) and fits the total-functions principle, but a program that crashes
+in Elm runs on in eco. The type checker does not reject it. Pinned by
+`test/elm/src/FunctionEqualityFalseTest.elm`.
 
 ### 4.2 `Debug.*` under `--optimize`
 
@@ -291,6 +295,66 @@ A module using `A.g` crashes `elm make`; using `A.f` compiles. eco quantifies ov
 variable of each member's type and compiles both. (`compiler/tests/TestLogic/Type/CachedTypeInfoTest.elm`;
 finding B1)
 
+### 4.5 `Time.getZoneName` under a `TZ` that is not a zone id
+
+Elm on node asks ICU for the zone, which names a `TZ` it cannot resolve oddly: a POSIX rule such
+as `TZ=CET-1CEST,M3.5.0,M10.5.0/3` gives `Name "UTC"`, and a path such as
+`TZ=:/usr/share/zoneinfo/Europe/Paris` gives `Name undefined`. eco (decision D30 of
+`plans/kernel-lib-bug-fixes.md`) takes `TZ` as a `Name` only when it has the shape of an IANA id
+or names a file under the zoneinfo directory, a path into that directory standing for the part
+after `zoneinfo/`; otherwise it answers `Offset` with the current offset. So the two examples give
+`Offset 60` (or `120` in summer) and `Name "Europe/Paris"`. (`TimeZoneNamePosixTzTest`,
+`TimeZoneNamePathTzTest` in `test/elm-time`)
+
+Timer delays follow Node: `Time.every` ticks at least 1 ms apart, and a NaN, infinite or
+out-of-range (beyond 2^31 - 1 ms) delay of `Process.sleep` or `Time.every` is 1 ms. Unlike Node,
+`Process.sleep 0` (and a negative delay) wakes at once rather than after 1 ms, so it stays a
+yield. (`TimeEveryZeroIntervalTest`, `ProcessSleepNonFiniteTest`)
+
+### 4.6 `Json.Decode.int` range
+
+Elm reads every JSON number as a JS double, and `Json.Decode.int` accepts any number for which
+`Number.isInteger` holds, of any size: `9223372036854775808` and `1e300` decode as `Ok` with a
+double in the Int. eco accepts an integral number, written with a fraction or exponent or not
+(`1.0`, `1e3`, `-0.0` give `1`, `1000`, `0`), only when it lies in the 64-bit range; any other
+fails with `Expecting an INT`. This is decided (D24 of `plans/kernel-lib-bug-fixes.md`): eco's
+Int cannot hold the value. `Json.Decode.float` and `Json.Decode.value` read such a number as the
+same double as Elm. (`DecodeIntRangeTest` in `test/elm-json`; `JsonDecodeIntIntegralFloatTest`,
+`JsonLargeUnsignedTest` in `test/elm-conformance`)
+
+### 4.7 `elm/parser` integer literals beyond 64 bits
+
+Elm's `Parser.int` and `Parser.number` accumulate the digits in a JS double, so a literal beyond
+2^53 rounds (`0xFFFFFFFFFFFFFFFF` gives `Ok 18446744073709552000`). eco (decision D16 of
+`plans/kernel-lib-bug-fixes.md`) keeps the low 64 bits of the value as a two's complement Int,
+in every base: `0x7FFFFFFFFFFFFFFF` gives `Ok 9223372036854775807`, `0xFFFFFFFFFFFFFFFF` and 64
+binary ones give `Ok -1`, `0x10000000000000000` gives `Ok 0`, and the decimal
+`99999999999999999999` gives `Ok 7766279631452241919`. The kernel computes it unsigned
+(`consumeBase`, `consumeBase16` in `elm-kernel-cpp/src/parser/ParserExports.cpp`), so the wrap is
+well defined. A literal that fits in 64 bits reads as in Elm. (`ParserIntOverflowTest` in
+`test/elm-parser`)
+
+### 4.8 `elm/regex` case-insensitive matching
+
+Both match a pattern over UTF-16 code units, as a JS regex without the `u` flag does (elm/regex
+never passes it): `.` is one unit, so U+1F600 is two matches. With `caseInsensitive = True`, JS
+compares the `toUpperCase` of each unit and never lets a non-ASCII unit match an ASCII one; eco's
+engine (SRELL) uses Unicode simple case folding. They differ on a few characters: `s` matches
+U+017F (long s), `k` matches U+212A (Kelvin sign) and `ß` matches U+1E9E in eco, and none of these
+match in JS. (`RegexNonAsciiTest` in `test/elm-conformance`)
+
+### 4.9 `==` on `Regex` values
+
+Elm compares two values with `==` by walking their enumerable fields (`_Utils_eqHelp` in elm/core's
+JS kernel). A `Regex` is a JS `RegExp`, which has none, so any two `Regex` values are equal in Elm,
+whatever their patterns and flags: `Regex.fromString "a" == Regex.fromString "b"` and
+`Regex.never == Regex.fromString "a"` are both `True` (read from the kernel source, not run on
+node). eco interns compiled regexes by pattern and flags (decision D8 of
+`plans/kernel-lib-bug-fixes.md`; `elm-kernel-cpp/src/regex/RegexExports.cpp`), so two `Regex`
+values are equal exactly when they were built from the same pattern with the same `caseInsensitive`
+and `multiline` options: equal patterns compare `True` as in Elm, different ones `False`. (The
+interning is pinned by `regex-kernel/equal-pattern-and-flags-intern-to-one-id` in `test/kernel/RegexKernelTest.cpp`.)
+
 ---
 
 ## 5. Suspected divergences (not yet checked)
@@ -311,16 +375,20 @@ differs at the edges. *TODO: build an accept/reject table for both.*
 ### 5.3 Regex engine
 
 eco uses SRELL (`elm-kernel-cpp/src/regex/`). Elm uses the host JS engine. Both aim at
-ECMAScript syntax, but they may differ on Unicode property escapes, lookbehind, `\w`/`\b`
-with non-ASCII input, and the `u` flag. Elm's behaviour itself depends on the browser version.
+ECMAScript syntax and both match UTF-16 code units (§4.8 has the one known difference, in
+case-insensitive matching), but they may differ on Unicode property escapes, lookbehind and
+`\w`/`\b` with non-ASCII input. Elm's behaviour itself depends on the browser version.
 *TODO: decide which ECMAScript edition eco promises.*
 
 ### 5.4 JSON
 
-- `Json.Encode.float nan` (or ±Infinity) gives `null` in JS. *TODO: eco?*
-- `Json.Decode.int` accepts `1.0` in JS, and integer range is 2^53 versus 64-bit.
-- Duplicate object keys (JS keeps the last one) and the key order on encode.
-- Number formatting on encode (see 5.1).
+Checked: `Json.Encode.encode` writes the text `JSON.stringify` writes (numbers as
+`Number.prototype.toString`, NaN and ±Infinity as `null`, lone surrogates as `\udxxx`, the indent
+capped at 10), objects keep JavaScript's key order, and `Json.Decode.int` accepts `1.0`
+(`test/elm-conformance/src/Json*Test.elm`). An Int above 2^53 is encoded exactly, not rounded
+(§1), and `Json.Decode.int` is limited to the 64-bit range (§4.6). A lone-surrogate escape such as
+`"\ud83d"` decodes, as `JSON.parse` decodes it, to a String holding that one unit
+(`test/elm-conformance/src/JsonDecodeLoneSurrogateTest.elm`).
 
 ### 5.5 Bitwise width
 
@@ -372,6 +440,7 @@ what eco guarantees.*
 | Int range | 53-bit, silent rounding | 64-bit, wrapping |
 | `truncate 3e9` | `-1294967296` (32-bit) | `3000000000` |
 | `x // 0` | `0` | `0` |
+| `modBy 0 x` / `remainderBy 0 x` | crash / NaN in an Int | `0` / `0` |
 | `round (0/0)` | NaN in an Int | *TODO* (proposed `0`) |
 | `Char.toUpper 'ß'` | `"SS"` in a Char | `'ß'` |
 | `nan == nan` | `False` | `False` |
@@ -383,6 +452,10 @@ what eco guarantees.*
 | `(\x -> x) == (\x -> x)` | runtime error | `False` |
 | `Debug.log` with `--optimize` | compile error | allowed, output kept |
 | `String.toInt "9007199254740993"` | rounded | exact |
+| `Json.Decode.int` on `9223372036854775808` / `1e300` | `Ok` (a double in an Int) | `Err` (outside 64 bits) |
+| `Parser.number` on `0xFFFFFFFFFFFFFFFF` | `Ok 18446744073709552000` (rounded) | `Ok -1` (low 64 bits) |
+| `Regex` case-insensitive `s` against U+017F | no match | match (Unicode case folding) |
+| `Regex.fromString "a" == Regex.fromString "b"` | `True` (any two Regex are equal) | `False` (equal only for the same pattern and options) |
 | `Bitwise` width | 32-bit | *TODO* |
 | `Random` sequences for a seed | reference | *TODO* (may differ) |
 | Deep recursion | `RangeError` at ~10k frames | larger limit, SIGSEGV |
@@ -392,17 +465,17 @@ what eco guarantees.*
 | GLSL shader | compiles | native: `MONOMORPHIZATION ERROR`; JS target: compiles |
 | Ill-typed unannotated recursive group | accepted, may crash at run time | `TYPE MISMATCH` |
 | Later member of an exposed unannotated recursive group used from another module | compiler crash | compiles |
+| `Time.getZoneName` with `TZ=CET-1CEST,…` / `TZ=:/usr/share/zoneinfo/Europe/Paris` | `Name "UTC"` / `Name undefined` | `Offset 60` (or `120`) / `Name "Europe/Paris"` |
+| `Process.sleep 0` | wakes after 1 ms | wakes at once (a yield) |
 
 ## 7. Open items
 
 - Float → Int conversion of NaN, Infinity and out-of-range values (currently C++ UB).
-- `modBy 0` / `remainderBy 0`: make total, or document as exceptions.
 - `compare` on Float: totalOrder or not.
 - Remove any identity shortcut in structural equality, then allow constant extraction.
 - Add E2E tests for every row in the table above.
 - Bitwise op width.
 - Pin the Unicode version.
-- Function equality: keep `False`, or reject statically.
 - `Debug` under `--optimize` on the native path.
 - Every suspected item in §5: check it, then move it to §4 or delete it.
 - Polymorphic recursion on the native backend: whether any of it could be compiled instead of

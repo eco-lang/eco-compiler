@@ -109,8 +109,11 @@ function _Tls_alpnError(alpn)
 	return null;
 }
 
-// The certificates of a PEM text that parse (native: PEM_read_bio_X509 in a loop).
-function _Tls_pemCertificates(pem)
+// The certificate blocks of a PEM text up to the first one that does not parse, which ends
+// the reading, as native's PEM_read_bio_X509 loop and Node's own `ca` option end it; text
+// outside the blocks is skipped. With `allOrNothing`, a block that does not parse gives no
+// certificates at all, as OpenSSL loads an SSL_CERT_FILE natively (X509_load_cert_crl_file).
+function _Tls_pemCertificates(pem, allOrNothing)
 {
 	var crypto = require('crypto');
 	var blocks = String(pem).match(/-----BEGIN CERTIFICATE-----[\s\S]*?-----END CERTIFICATE-----/g) || [];
@@ -120,9 +123,12 @@ function _Tls_pemCertificates(pem)
 		try
 		{
 			new crypto.X509Certificate(blocks[i]);
-			out.push(blocks[i]);
 		}
-		catch (e) { /* skipped, as natively */ }
+		catch (e)
+		{
+			return allOrNothing ? [] : out;
+		}
+		out.push(blocks[i]);
 	}
 	return out;
 }
@@ -143,7 +149,7 @@ function _Tls_systemCertificates()
 		// leaves an empty store (the handshake then fails verification).
 		try
 		{
-			list = _Tls_pemCertificates(require('fs').readFileSync(file, 'utf8'));
+			list = _Tls_pemCertificates(require('fs').readFileSync(file, 'utf8'), true);
 		}
 		catch (e) { list = []; }
 		if (dir)

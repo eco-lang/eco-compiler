@@ -35,6 +35,7 @@
 #include "platform/PlatformRuntime.hpp"
 #include "platform/Scheduler.hpp"
 #include "platform/TaskBinding.hpp"
+#include "platform/TestHooks.hpp"
 
 #include <cstdint>
 #include <exception>
@@ -122,8 +123,19 @@ std::string failureReason(const std::string& origin, const std::string& code,
 std::string errnoFailureReason(const std::string& origin, int err);
 /// Returns whether `reason` is a kernel-made reason: one starting with "\x01" (failed) or "\x02" (ended).
 bool isMarkedReason(const std::string& reason);
+/// The first character of a reason that says the stream had ended, as a string literal, so that a reason can be
+/// spelled `ECO_SYSTEM_ENDED_MARKER "text"` (the escape is resolved before the literals are joined, so the text
+/// cannot extend it).
+#define ECO_SYSTEM_ENDED_MARKER "\x02"
 /// The first character of a reason that says the stream had ended.
-constexpr const char* kEndedMarker = "\x02";
+inline constexpr char kEndedMarker[] = ECO_SYSTEM_ENDED_MARKER;
+/// The ended reason for writing to or closing a writable side that is closed, and the reason a pipe cancels its
+/// source with when the destination was closed: `Stream.Closed` on the Elm side. Its text is parsed by
+/// `Stream.Internal.decodeReason` and must stay byte-identical.
+inline constexpr char kWritableClosed[] = ECO_SYSTEM_ENDED_MARKER "WritableStream is closed";
+static_assert(kEndedMarker[0] == '\x02' && kEndedMarker[1] == '\0', "the ended marker is the single byte 0x02");
+static_assert(kWritableClosed[0] == kEndedMarker[0] && kWritableClosed[1] == 'W',
+              "kWritableClosed starts with the ended marker, then its text");
 
 /// Returns the marked failure reason for a socket stream's plain reason `reason`, with `err` its errno or 0.
 ///
@@ -174,6 +186,12 @@ HPointer failRun(int kind, const std::string& code, int exitCode,
 /// KillHandle.cpp.
 HPointer makeKillHandle(uint64_t token, CancelFn cancel);
 
+#if ECO_TEST_HOOKS
+/// Test-only (SOCK-12): makes the next `makeKillHandle` throw `std::bad_alloc` before it allocates. The fault
+/// fires once and then disarms itself. Defined in KillHandle.cpp.
+void killHandleFailNextForTest();
+#endif
+
 // ---------------------------------------------------------------------------
 // Body guards
 // ---------------------------------------------------------------------------
@@ -187,16 +205,19 @@ namespace detail {
 
 /// Returns the failure Task of shape `shape` for an exception whose message is `what` ("(null)" when null):
 /// for FErr `failFErr("EIO", what)`, for SErr `failSErr(1, what)`, and for RunErr
-/// `failRun(0, "EIO", -1, "", "")`, which drops `what`. For `Never` it does not return: it calls
+/// `failRun(0, "EIO", -1, "", what)`, which carries `what` as the stderr Bytes. For `Never` it does not return: it calls
 /// `Eco::Kernel::reportFatal(what)`.
 HPointer failureFor(ErrShape shape, const char* what);
 
 /// Completes an async kernel's Task with `failureFor(shape, what)` and returns `()` as its kill handle.
 ///
-/// When `token` is not 0, the closure parked under it is first removed and discarded. The failure Task is then
-/// passed to `resume`, and afterwards, when `token` is not 0 and `counted`, the token's hold is released, so
-/// the hold outlasts the call that completes the Task. `resume` must be rooted by the caller; it is called
-/// whether or not it is the closure parked under `token`.
+/// When `token` is not 0, the closure parked under it is first removed and discarded. If none is parked under
+/// it, the body has already completed the Task itself (taking the resume, and releasing the hold if `counted`)
+/// before it threw, so nothing more is done: `resume` is not called and no hold is released. Otherwise the
+/// failure Task is passed to `resume`, and afterwards, when `token` is not 0 and `counted`, the token's hold is
+/// released, so the hold outlasts the call that completes the Task. `resume` must be rooted by the caller; when
+/// `token` is 0 it is called without any check, and otherwise whether or not it is the closure parked under
+/// `token`.
 HPointer asyncFailure(ErrShape shape, HPointer& resume, uint64_t token,
                       bool counted, const char* what);
 

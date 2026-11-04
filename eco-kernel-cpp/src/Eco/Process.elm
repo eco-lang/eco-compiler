@@ -37,7 +37,8 @@ type ProcessHandle
     = ProcessHandle Int
 
 
-{-| How to handle a standard stream when spawning a process.
+{-| How to handle a child's standard input when spawning a process: share
+this process's (`Inherit`) or give the child a new pipe (`CreatePipe`).
 -}
 type StdStream
     = Inherit
@@ -60,16 +61,16 @@ spawn cmd args =
         |> Task.map ProcessHandle
 
 
-{-| Spawn an external process with configurable stdio.
-Returns a record with stdinHandle (optionally a stdin handle ID if stdin was CreatePipe)
-and processHandle. The stdin handle ID can be used with Console.write and File.close.
+{-| Spawn an external process with configurable stdin.
+Returns a record with stdinHandle (a stdin handle ID if stdin was CreatePipe,
+else Nothing) and processHandle. The stdin handle ID can be used with
+Console.write and File.close. The child always shares this process's stdout
+and stderr.
 -}
 spawnProcess :
     { cmd : String
     , args : List String
     , stdin : StdStream
-    , stdout : StdStream
-    , stderr : StdStream
     }
     -> Task ProcessError { stdinHandle : Maybe Int, processHandle : ProcessHandle }
 spawnProcess config =
@@ -77,8 +78,6 @@ spawnProcess config =
         config.cmd
         config.args
         (stdStreamToString config.stdin)
-        (stdStreamToString config.stdout)
-        (stdStreamToString config.stderr)
         |> Task.mapError (ProcErr.ofKernelTuple config.cmd)
         |> Task.map
             (\( stdinHandle, processHandle ) ->
@@ -89,6 +88,9 @@ spawnProcess config =
 
 
 {-| Wait for a process to complete and return its exit code.
+
+Killing the task that waits (`Process.kill`) stops the wait, so it no longer
+keeps the program alive; the child process itself keeps running.
 -}
 wait : ProcessHandle -> Task Never ExitCode
 wait (ProcessHandle ph) =

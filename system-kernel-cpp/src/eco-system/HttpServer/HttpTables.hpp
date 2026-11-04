@@ -29,6 +29,12 @@
 //     closed, as of the last `httpTablesSubscriptionsChanged`.
 //   * A delivered request holds one from delivery until its key is erased, or until `httpTablesTakeUpgrade` hands
 //     the hold to its caller. A parked request holds none.
+//
+// A delivered upgrade request whose connection closes (ConnGone) before the program takes it over is not erased:
+// its key becomes a *tombstone*, which holds nothing (its hold, request and connection are released) and only
+// remembers that the connection is gone, so that `httpTablesTakeUpgrade` can tell that from a key answered
+// already. A tombstone is erased by that take, by a respond on its key, or when its server's ServerClosed is
+// drained; so there is at most one per delivered upgrade request the program has not taken.
 //   * A respond task and a closeServer task each hold one, under the resume token the caller passes, until their
 //     RespondDone or ServerClosed is drained.
 //   * An idle connection holds none.
@@ -36,9 +42,10 @@
 // The tables are eco-thread only and hold no heap values: tokens are Scheduler resume tokens, and the taggers that
 // turn a request into a message live in the manager, which the tables reach through `HttpManagerHooks`. They are
 // keyed on the heap generation. When the heap is reset, the next use of the tables closes the old servers'
-// listeners and aborts their connections on the reactor, releases the old subscription and delivered-request
-// holds (not those of waiting respond and closeServer tasks), and empties the tables. Every event carries a heap
-// generation, and the drain drops an event of an earlier generation unread.
+// listeners and aborts their connections on the reactor and empties the tables. The old holds, including those of
+// waiting respond and closeServer tasks, need no release: the scheduler voided every hold of the old heap when it
+// saw the new generation. Every event carries a heap generation, and the drain drops an event of an earlier
+// generation unread.
 //
 //===----------------------------------------------------------------------===//
 
@@ -130,13 +137,20 @@ bool httpTablesRespond(int64_t key, uint64_t token, ResponseData resp);
 /// `http1ServerClosing` describes.
 bool httpTablesCloseServer(int64_t serverId, int64_t deadlineMs, uint64_t token);
 
-/// Takes over the upgrade request `key`, and returns false, changing nothing, when `key` is not in the table, is
-/// parked, or is not an upgrade request. Eco thread only.
+/// What `httpTablesTakeUpgrade` found.
+enum class TakeUpgrade : uint8_t {
+    Taken,     ///< The request was taken over.
+    Gone,      ///< A tombstone: the request's connection closed before the take. The key is erased now.
+    Refused,   ///< Not in the table (answered already, or of an earlier heap), parked, or not an upgrade request.
+};
+
+/// Takes over the upgrade request `key`. Eco thread only.
 ///
-/// Otherwise it moves the request into `out`, copies its connection into `conn`, and moves its delivery hold into
-/// `hold`, which the caller must release from then on. It erases the key, so a later respond on it does nothing,
-/// and returns true.
-bool httpTablesTakeUpgrade(int64_t key, RequestData& out, std::weak_ptr<Conn>& conn,
+/// It returns `Refused`, changing nothing, when `key` is not in the table, is parked, or is not an upgrade request,
+/// and `Gone`, erasing the key, when it is a tombstone (see the file comment). Otherwise it moves the request into
+/// `out`, copies its connection into `conn`, and moves its delivery hold into `hold`, which the caller must release
+/// from then on. It erases the key, so a later respond on it does nothing, and returns `Taken`.
+TakeUpgrade httpTablesTakeUpgrade(int64_t key, RequestData& out, std::weak_ptr<Conn>& conn,
                            ::Elm::Platform::HoldToken& hold);
 
 /// Tells the tables that the set of onRequest subscriptions has changed. Eco thread only.

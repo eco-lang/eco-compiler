@@ -10,12 +10,13 @@ module MVarHoldingHugeListAcrossGC exposing (main)
 
 import Bytes.Decode as BD
 import Bytes.Encode as BE
+import Eco.IO.Error exposing (IOError)
 import Eco.MVar as MV
 import StressHarness exposing (StressFlags)
 import Task
 
 
-heavyAlloc : Int -> Task.Task Never Int
+heavyAlloc : Int -> Task.Task IOError Int
 heavyAlloc size =
     Task.succeed (List.sum (List.range 1 size))
 
@@ -45,6 +46,7 @@ cycle original listLen size =
             (\v ->
                 List.length v == listLen && List.sum v == List.sum original
             )
+        |> Task.onError (\_ -> Task.succeed False)
 
 
 run : StressFlags -> Task.Task Never Bool

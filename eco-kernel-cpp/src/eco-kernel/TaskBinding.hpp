@@ -108,6 +108,12 @@ inline HPointer failErrno(int err, const std::string& path, const std::string& m
     return Export::decode(taskFailErrno(err, path, message));
 }
 
+/// Returns a new Task that fails with the IO error tuple for the `std::error_code` `ec`, as
+/// `taskFailErrorCode` builds it. A GC point.
+inline HPointer failErrorCode(const std::error_code& ec, const std::string& path, const std::string& message) {
+    return Export::decode(taskFailErrorCode(ec, path, message));
+}
+
 } // namespace Eco::Kernel
 
 #endif // ECO_KERNEL_TASK_BINDING_HPP

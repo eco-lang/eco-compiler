@@ -82,6 +82,11 @@ HPointer makeBytes(const std::string& b) {
 /// scheduler once. Calls nothing when the server has no taggers. Installed as
 /// `HttpManagerHooks::deliver`; runs Elm code, which may change the subscriptions.
 void deliver(int64_t serverId, int64_t key, const RequestData& ev) {
+    {   // `find`, not `[]`: no empty entry is left behind for a server nobody subscribes to
+        ManagerState& st = state();
+        auto it = st.taggers.find(serverId);
+        if (it == st.taggers.end() || it->second.empty()) return;
+    }
     HPointer router = alloc::listNil();
     HPointer arg = alloc::listNil();
     HPointer msg = alloc::listNil();
@@ -122,8 +127,9 @@ void deliver(int64_t serverId, int64_t key, const RequestData& ev) {
 
     // Snapshot the taggers, since a tagger or the drain may run onEffects and replace them. Nothing allocates
     // between the decodes and the range push, so the decoded pointers are current when they become roots.
+    // Building the argument runs no Elm code, so the entry checked on entry is still there.
     ManagerState& st = state();
-    const std::vector<uint64_t>& words = st.taggers[serverId];
+    const std::vector<uint64_t>& words = st.taggers.find(serverId)->second;
     std::vector<HPointer> taggers;
     taggers.reserve(words.size());
     for (uint64_t w : words) taggers.push_back(dec(w));
@@ -159,7 +165,6 @@ void* onEffectsEval(void* args[]) {
     std::map<int64_t, std::vector<uint64_t>> wanted;
     for (alloc::ListCursor c(subs); !c.done(); c.next()) {
         void* obj = Allocator::instance().resolve(c.current().p);
-        if (!obj) continue;
         Custom* sub = static_cast<Custom*>(obj);
         if (sub->ctor != CTOR_ON_REQUEST) continue;
         wanted[sub->values[ON_REQUEST_SERVER_FIELD].i].push_back(
@@ -235,7 +240,7 @@ void* subMapEval(void* args[]) {
     Elm::StackRootGuard g({&f, &sub, &old, &composed});
     {
         Custom* s = static_cast<Custom*>(Allocator::instance().resolve(sub));   // no allocation in scope
-        if (!s || s->ctor != CTOR_ON_REQUEST) return reinterpret_cast<void*>(enc(sub));
+        if (s->ctor != CTOR_ON_REQUEST) return reinterpret_cast<void*>(enc(sub));
         serverId = s->values[ON_REQUEST_SERVER_FIELD].i;
         old = s->values[ON_REQUEST_TAGGER_FIELD].p;
     }

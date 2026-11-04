@@ -64,7 +64,6 @@ HPointer tail(HPointer list) {
 
     auto& allocator = Allocator::instance();
     void* cell = allocator.resolve(list);
-    if (!cell) return alloc::nothing();
 
     return alloc::just(alloc::boxed(alloc::listTailOf(list)), true);
 }
@@ -196,12 +195,10 @@ HPointer filterMap(FilterMapper mapper, HPointer list) {
         // `maybeResult` is fresh from `mapper`, and nothing below allocates before its value is copied out.
         if (!alloc::isConstant(maybeResult)) {
             void* justCell = allocator.resolve(maybeResult);
-            if (justCell) {
-                Custom* just = static_cast<Custom*>(justCell);
-                if (just->header.tag == Tag_Custom && just->ctor == 0) {
-                    u8 val_kind = static_cast<u8>(fieldKind(just->unboxed, 0));
-                    results.push(just->values[0], val_kind);
-                }
+            Custom* just = static_cast<Custom*>(justCell);
+            if (just->header.tag == Tag_Custom && just->ctor == 0) {
+                u8 val_kind = static_cast<u8>(fieldKind(just->unboxed, 0));
+                results.push(just->values[0], val_kind);
             }
         }
 
@@ -340,7 +337,6 @@ HPointer drop(i64 n, HPointer list) {
 
     while (remaining > 0 && !alloc::isNil(current) && current.ptr_ind == 0) {
         void* node = allocator.resolve(current);
-        if (!node) return alloc::listNil();
         Header* hdr = getHeader(node);
         if (hdr->tag == Tag_Cons) {
             current = static_cast<Cons*>(node)->tail;
@@ -672,7 +668,7 @@ HPointer unzip(HPointer listOfPairs) {
     alloc::RootedElems seconds;
 
     for (alloc::ListCursor c(listOfPairs); !c.done(); c.next()) {
-        void* tupleObj = allocator.resolve(c.current().p);
+        void* tupleObj = alloc::resolveOrNull(c.current().p);
         if (tupleObj) {
             Tuple2* tuple = static_cast<Tuple2*>(tupleObj);
             Header* hdr = getHeader(tupleObj);

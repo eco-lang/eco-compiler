@@ -50,10 +50,14 @@
 
 #include <fcntl.h>
 #include <signal.h>
+#include <spawn.h>
+#include <sys/resource.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
 namespace fs = std::filesystem;
+
+extern char** environ;
 
 #ifndef REPO_ROOT
 #define REPO_ROOT "/work"
@@ -343,14 +347,84 @@ ProcResult lower_to_elf(const std::string& mlir_in, const std::string& elf_out,
     return spawn_capture(argv, {}, cwd);
 }
 
+// `<self> --exec-wrapped <fsize|-> <delay-ms|-> [UNSET...] -- <prog> [args...]`:
+// the AOT side of `-- UNSETENV:`, `-- RLIMIT-FSIZE:` and `-- STDIN-DELAY-MS:`
+// (CheckPatterns.hpp). It removes the UNSET variables, sets RLIMIT_FSIZE with
+// SIGXFSZ ignored (both survive exec), and for a delay makes stdin a pipe fed by
+// a detached `sh` that waits, then copies our stdin (the `-- STDIN:` text file
+// runCaptured made, or the null device) into it; then it execs <prog>, so the
+// runner sees the program's own exit status or signal. The feeder is started
+// through an intermediate `sh` that exits at once, so the program never has it
+// as a child.
+int exec_wrapped(int argc, char** argv) {
+    auto fail = [&](const std::string& what) {
+        std::cerr << "aot-e2e --exec-wrapped: " << what << "\n";
+        return 127;
+    };
+    if (argc < 6) return fail("usage: --exec-wrapped <fsize|-> <delay-ms|-> [UNSET...] -- <prog> [args...]");
+    const std::string fsize = argv[2], delay = argv[3];
+    int i = 4;
+    for (; i < argc && std::string(argv[i]) != "--"; ++i) ::unsetenv(argv[i]);
+    if (i + 1 >= argc) return fail("no program after --");
+    char** prog = argv + i + 1;
+    if (fsize != "-") {
+        std::signal(SIGXFSZ, SIG_IGN);
+        struct rlimit rl;
+        rl.rlim_cur = rl.rlim_max = static_cast<rlim_t>(std::stoll(fsize));
+        if (::setrlimit(RLIMIT_FSIZE, &rl) != 0) return fail(std::string("setrlimit: ") + std::strerror(errno));
+    }
+    if (delay != "-") {
+        int p[2];
+        if (::pipe(p) != 0) return fail(std::string("pipe: ") + std::strerror(errno));
+        char secs[32];
+        std::snprintf(secs, sizeof(secs), "%lld.%03lld", std::stoll(delay) / 1000, std::stoll(delay) % 1000);
+        const char* shArgv[] = {"sh", "-c", "exec 3<&0; (sleep \"$1\"; exec cat <&3) & exit 0",
+                                "sh", secs, nullptr};
+        posix_spawn_file_actions_t fa;
+        posix_spawn_file_actions_init(&fa);
+        posix_spawn_file_actions_adddup2(&fa, p[1], STDOUT_FILENO);
+        posix_spawn_file_actions_addclose(&fa, p[0]);
+        posix_spawn_file_actions_addclose(&fa, p[1]);
+        pid_t pid = 0;
+        int rc = posix_spawn(&pid, "/bin/sh", &fa, nullptr, const_cast<char**>(shArgv), environ);
+        posix_spawn_file_actions_destroy(&fa);
+        if (rc != 0) return fail(std::string("posix_spawn(/bin/sh): ") + std::strerror(rc));
+        int st = 0;
+        while (::waitpid(pid, &st, 0) < 0 && errno == EINTR) {}
+        ::close(p[1]);
+        if (::dup2(p[0], STDIN_FILENO) < 0) return fail(std::string("dup2: ") + std::strerror(errno));
+        ::close(p[0]);
+    }
+    ::execv(prog[0], prog);
+    return fail(std::string("exec ") + prog[0] + ": " + std::strerror(errno));
+}
+
+// Runs the ELF with the test's child-environment directives (CheckPatterns.hpp):
+// `-- ENV:` in its environment (after the ECO_TEST_PORT entry), the rest through
+// exec_wrapped. Throws std::runtime_error on a malformed directive.
 ProcResult run_elf(const std::string& elf_path, const std::string& cwd,
+                   const std::string& src,
                    const std::optional<std::string>& stdin_text) {
     std::vector<std::string> argv = { elf_path };
     // A free port per test, as ECO_TEST_PORT (TestPort.hpp,
     // plans/eco-system-library.md Phase 7 step 7.4).
     std::vector<std::string> env;
+    std::vector<std::pair<std::string, std::string>> known;
     if (int port = eco_test::pickFreeTcpPort(); port > 0) {
         env.push_back(eco_test::testPortEnvEntry(port));
+        known.push_back({"ECO_TEST_PORT", std::to_string(port)});
+    }
+    for (const auto& kv : eco_test::resolveEnvDirectives(src, known))
+        env.push_back(kv.first + "=" + kv.second);
+    const auto unset = eco_test::extractUnsetenvDirectives(src);
+    const auto fsize = eco_test::extractRlimitFsizeDirective(src);
+    const auto delay = eco_test::extractStdinDelayMsDirective(src);
+    if (!unset.empty() || fsize || delay) {
+        argv = {eco_test::selfExePath(), "--exec-wrapped",
+                fsize ? std::to_string(*fsize) : "-", delay ? std::to_string(*delay) : "-"};
+        argv.insert(argv.end(), unset.begin(), unset.end());
+        argv.push_back("--");
+        argv.push_back(elf_path);
     }
     return spawn_capture(argv, env, cwd, 64 * 1024, stdin_text);
 }
@@ -426,7 +500,14 @@ TestResult run_one_unmarked(const TestCase& tc) {
     int elf_exit = 0;
     {
         r.ran = true;
-        ProcResult p = run_elf(elf_out, tc.aot_shadow, stdin_text);
+        ProcResult p;
+        try {
+            p = run_elf(elf_out, tc.aot_shadow, *src, stdin_text);
+        } catch (const std::exception& e) {
+            r.ran = false;   // never an XFAIL
+            r.failure_reason = std::string("bad test directive: ") + e.what();
+            return r;
+        }
         elf_output = p.output;
         elf_exit = p.exit_code;
         std::ofstream(out_log) << elf_output;
@@ -555,6 +636,7 @@ void print_help(const char* prog) {
 }  // namespace
 
 int main(int argc, char** argv) {
+    if (argc >= 2 && std::string(argv[1]) == "--exec-wrapped") return exec_wrapped(argc, argv);
     Args args = parse_args(argc, argv);
     if (args.help) { print_help(argv[0]); return 0; }
     if (!preflight()) return 2;

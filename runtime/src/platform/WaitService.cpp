@@ -53,13 +53,13 @@ void WaitService::submit(int64_t pid, std::uint64_t resumeToken, WaitLane lane) 
     }
     if (!h) {
         pushReady(lane, Ready{resumeToken, kWaitFailedExitCode, 0,
-                              static_cast<int>(GetLastError())});
+                              static_cast<int>(GetLastError()), pid});
         return;
     }
-    auto wait = [this, h, resumeToken, lane] {
+    auto wait = [this, h, pid, resumeToken, lane] {
         WaitForSingleObject(h, INFINITE);
         DWORD code = 0;
-        Ready r{resumeToken, 0, 0, 0};
+        Ready r{resumeToken, 0, 0, 0, pid};
         if (GetExitCodeProcess(h, &code)) {
             r.exitCode = exitCodeFromStatus(static_cast<int>(code));
             r.rawStatus = static_cast<int>(code);
@@ -72,16 +72,19 @@ void WaitService::submit(int64_t pid, std::uint64_t resumeToken, WaitLane lane) 
     };
 #else
     auto wait = [this, pid, resumeToken, lane] {
-        int status = 0;
-        pid_t r;
+        // WNOWAIT: learn of the exit but leave the child a zombie, so its pid
+        // stays ours until tryPopReady reaps it on the consumer's thread.
+        siginfo_t info{};
+        int r;
         do {
-            r = ::waitpid(static_cast<pid_t>(pid), &status, 0);
+            r = ::waitid(P_PID, static_cast<id_t>(pid), &info, WEXITED | WNOWAIT);
         } while (r < 0 && errno == EINTR);
         if (r < 0) {
             // ECHILD: not a child of this process, or already reaped by other code.
-            pushReady(lane, Ready{resumeToken, kWaitFailedExitCode, 0, errno});
+            pushReady(lane, Ready{resumeToken, kWaitFailedExitCode, 0, errno, pid});
         } else {
-            pushReady(lane, Ready{resumeToken, exitCodeFromStatus(status), status, 0});
+            // exitCode and rawStatus are filled in by the reap in tryPopReady.
+            pushReady(lane, Ready{resumeToken, 0, 0, 0, pid});
         }
     };
 #endif
@@ -93,7 +96,7 @@ void WaitService::submit(int64_t pid, std::uint64_t resumeToken, WaitLane lane) 
 #if defined(_WIN32)
         CloseHandle(h);
 #endif
-        pushReady(lane, Ready{resumeToken, kWaitFailedExitCode, 0, e.code().value()});
+        pushReady(lane, Ready{resumeToken, kWaitFailedExitCode, 0, e.code().value(), pid});
     }
 }
 
@@ -103,6 +106,26 @@ bool WaitService::tryPopReady(WaitLane lane, Ready& out) {
     if (q.empty()) return false;
     out = q.front();
     q.pop();
+#if !defined(_WIN32)
+    if (out.error == 0) {
+        // The wait thread left the child a zombie (WNOWAIT); reap it now that
+        // its result is with the consumer. It has exited, so this does not block.
+        int status = 0;
+        pid_t r;
+        do {
+            r = ::waitpid(static_cast<pid_t>(out.pid), &status, WNOHANG);
+        } while (r < 0 && errno == EINTR);
+        if (r == static_cast<pid_t>(out.pid)) {
+            out.exitCode = exitCodeFromStatus(status);
+            out.rawStatus = status;
+        } else {
+            // Reaped elsewhere meanwhile (other code waiting for every child).
+            out.exitCode = kWaitFailedExitCode;
+            out.rawStatus = 0;
+            out.error = r < 0 ? errno : ECHILD;
+        }
+    }
+#endif
     return true;
 }
 

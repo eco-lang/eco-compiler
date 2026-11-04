@@ -148,9 +148,11 @@ stream as it happens, and is not echoed. Key combinations such as Ctrl-C arrive
 as input too, rather than raising a signal, so `System.onSignalInterrupt` does
 not see them.
 
-The original mode is the one stdin had when this was first run. It is restored
-when the process exits, but on the native backend not when a fatal error stops
-the program. It is also restored when the program is ended by an interrupt
+The original mode is the one stdin had just before raw mode was last switched
+on, so a change made while raw mode was off is kept. It is restored
+when the process exits, including when the native runtime stops the program
+with a fatal error, but on the native backend not when the process is aborted
+any other way. It is also restored when the program is ended by an interrupt
 (`SIGINT`) or terminate (`SIGTERM`) signal it does not subscribe to, unless,
 on the native backend, the program is embedded in a host application, which
 keeps its own signal handling; any other signal that ends the program leaves
@@ -170,9 +172,9 @@ terminal emulator.
 
 It writes the title escape sequence (OSC 2) to stdout when stdout is a
 terminal, and does nothing otherwise, so the sequence never ends up in a
-redirected file or pipe. ASCII control characters, DEL included, are removed
-from `title` first, so that none of them (BEL or ESC in particular) can end
-the sequence early. Whether the title changes is up to the terminal, and a
+redirected file or pipe. ASCII control characters, DEL included, and the C1
+control characters U+0080 to U+009F are removed from `title` first, so that
+none of them (BEL, ESC or ST in particular) can end the sequence early. Whether the title changes is up to the terminal, and a
 failure to write is ignored.
 
 -}

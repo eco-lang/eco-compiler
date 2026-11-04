@@ -23,11 +23,13 @@
 // `s1` is usually the path, and `s2` a second path, the open flags, or the Bytes to write. A slot an operation
 // does not use holds "" or 0. Each worker operation's declaration below lists the slots it reads.
 //
-// FileHandle operations name a file by its fd. The open-handle table, kept in FileSystem.cpp on the eco
-// thread, holds the fds that `open` returned and `close` has not yet removed. An operation on a handle whose
-// fd is not in the table fails with EBADF without reaching the worker. So a handle cannot act on an fd that
-// this module's `open` did not return or that has been closed, unless a later `open` has returned the same
-// number.
+// FileHandle operations name a file by an opaque handle id, which `open` returns in place of the fd. The
+// open-handle table, kept in FileSystem.cpp, maps each id to its fd, the number of operations on it still under
+// way, and whether its close has been asked for. Ids count up from 1 and are never reused. An operation on an
+// id that is not in the table, or whose close has been asked for, fails with EBADF without reaching the worker,
+// and otherwise its worker operation gets the fd. A close waits until the operations started before it have
+// finished, then closes the fd and removes the id. So a handle can act only on the fd its own `open` returned,
+// and never after its close, even when the system has since given the same fd number to another file.
 //
 // The worker operations are defined in FileSystemOps.cpp, and on Windows in FileSystemOpsWin32.cpp, where
 // every one fails with ENOTSUP. The `C` exports are in FileSystemExports.cpp, and the `FileSystem` effect
@@ -127,7 +129,7 @@ FsRes opLink(const FsArgs&);             // (src, dest)
 FsRes opSymlink(const FsArgs&);          // (src, dest)
 FsRes opReadLink(const FsArgs&);         // (path)
 FsRes opUnlink(const FsArgs&);           // (path)
-FsRes opOpen(const FsArgs&);             // (path, flags)
+FsRes opOpen(const FsArgs&);             // (path, flags); succeeds with the fd
 FsRes opClose(const FsArgs&);            // (-, -, fd)
 FsRes opFstat(const FsArgs&);            // (-, -, fd)
 FsRes opFchmod(const FsArgs&);           // (-, -, fd, mode)
@@ -164,14 +166,17 @@ std::string devNullString();
 HPointer packFsArgs(uint64_t s1, uint64_t s2, int64_t i0 = 0, int64_t i1 = 0, int64_t i2 = 0);
 
 /// How `fsPoolSubmit` treats a kernel's payload and result beyond submitting its operation: how `s2` is copied
-/// out, whether `i0` is a FileHandle fd checked against the open-handle table, and what is done to the table.
+/// out, whether `i0` is a FileHandle id looked up in the open-handle table, and what is done to the table.
 enum class FsKind : uint8_t {
     Path,       ///< `s1` is a String, and `s2`, if used, a String.
     PathBytes,  ///< `s1` is a String and `s2` Bytes.
-    Handle,     ///< `i0` is an fd that must be in the open-handle table, or the Task fails with EBADF.
+    Handle,     ///< `i0` is a handle id that must be open in the table, or the Task fails with EBADF; the
+                ///< operation gets its fd in `i0`, and counts as under way until it returns.
     HandleBytes,///< As `Handle`, and `s2` is Bytes.
-    Close,      ///< As `Handle`, and the fd leaves the table before the operation runs.
-    Open,       ///< On success, the fd in the result enters the table.
+    Close,      ///< As `Handle`; the handle stops accepting operations at once, and its id leaves the table
+                ///< once the close has run, after the operations already under way.
+    Open,       ///< On success, the fd in the result enters the table under a new id, which the Task
+                ///< succeeds with.
     TempDir,    ///< `s1` is a name prefix, to which the temporary directory is prepended.
 };
 
@@ -180,16 +185,18 @@ enum class FsKind : uint8_t {
 /// thread when the Task runs.
 ///
 /// The payload is copied out according to `kind` before anything else. For a `Handle`, `HandleBytes` or
-/// `Close` kind whose fd is not in the open-handle table, `resume` is called at once with the FErr
-/// `( "EBADF", "EBADF: bad file descriptor" )` and nothing is submitted. A `Close` removes the fd from the
-/// table before the close is submitted, so the handle is unusable afterwards even if the close fails. For
-/// `TempDir`, `s1` is prefixed with `tmpDirectoryString()` and a '/', which is left out when that directory
-/// ends in one.
+/// `Close` kind whose id is not in the open-handle table, or whose close has been asked for, `resume` is
+/// called at once with the FErr `( "EBADF", "EBADF: bad file descriptor" )` and nothing is submitted. A
+/// `Close` marks the handle closing before the close is submitted, so the handle is unusable afterwards even if
+/// the close fails; its worker waits for the handle's operations already under way, closes the fd and removes
+/// the id. For `TempDir`, `s1` is prefixed with `tmpDirectoryString()` and a '/', which is left out when that
+/// directory ends in one.
 ///
 /// Otherwise, unless an exception is thrown first, the resume is parked with a Task hold and `op` is submitted with
 /// `SysWorkPool::submit`, whose drain completes the task with the Task built from the `FsRes`. For an `Open`
-/// that succeeds, the new fd enters the table at that point. A C++ exception thrown here becomes an FErr
-/// failure, through `ECO_SYSTEM_ASYNC_GUARD`.
+/// that succeeds, the new fd enters the table under a new id at that point. A C++ exception thrown here becomes
+/// an FErr failure, through `ECO_SYSTEM_ASYNC_GUARD`; for a handle kind it first undoes the mark made on the
+/// handle, so a failed close leaves the handle open and a retried close can still close it.
 ///
 /// Returns `()` as the kill handle, so killing the task does not withdraw the operation.
 HPointer fsPoolSubmit(FsOp op, FsKind kind, HPointer captured, HPointer resume);
@@ -200,6 +207,12 @@ template <FsOp Op, FsKind K>
 HPointer fsPoolBody(HPointer captured, HPointer resume) {
     return fsPoolSubmit(Op, K, captured, resume);
 }
+
+#if ECO_TEST_HOOKS
+/// Test-only (FS-03, RESET-04): returns the fd of open handle `id`, or -1 when the table has no such id. Any
+/// thread.
+int fdOfHandleForTest(int64_t id);
+#endif
 
 // The synchronous binding bodies of the directory getters. Each ignores its captured value and returns a Task
 // that succeeds with the String its getter above returns, on the eco thread.

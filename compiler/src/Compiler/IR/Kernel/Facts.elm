@@ -519,7 +519,7 @@ rows =
             | params = [ PBorrowed, PBorrowed ]
             , gcAlloc = GcNone
             , cppAlloc = True -- dictEq uses std::vector working stacks
-            , divergence = Just "depth > 100 returns true (elm-kernel-cpp/src/core/Utils.cpp:560-563): deep unequal values compare equal; cmp has no such cap"
+            , divergence = Just "functions compare unequal unless the same closure (elm/core crashes; design_docs/elm-divergence.md 4.1); pairs past depth 100 are deferred and still compared, as in elm/core (UTILS-05)"
 
             -- `(==)` takes two arguments. Typed variants serve unboxed
             -- arguments, and every variant returns a boxed value, so only the
@@ -535,7 +535,7 @@ rows =
             | params = [ PBorrowed, PBorrowed ]
             , gcAlloc = GcNone
             , cppAlloc = True
-            , divergence = Just "inherits equal's depth > 100 cap (elm-kernel-cpp/src/core/Utils.cpp:560-563)"
+            , divergence = Just "inherits equal's function-equality divergence (design_docs/elm-divergence.md 4.1)"
             , evidence = "elm-kernel-cpp/src/core/UtilsExports.cpp:111-113 (= !equalRespectingConstants :94-105; NOT Utils::notEqual at elm-kernel-cpp/src/core/Utils.cpp:799-801, which has no callers)"
         }
       )

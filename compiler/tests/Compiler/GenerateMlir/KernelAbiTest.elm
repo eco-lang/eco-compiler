@@ -54,6 +54,17 @@ What the tests establish:
     arguments and result are all `i64`.
   - With prefix `"Eco"`, `MVar.put` at an `Int` and a `()` gets the symbol
     `Eco_Kernel_MVar_put`; only the symbol is checked.
+  - `JsArray.map`, `initialize`, `indexedMap` and `initializeFromList` take
+    the element suffix from their result: an array of `Int`, `Float` or
+    `Char` (for `initializeFromList`, the pair's array) gives `map_Int`,
+    `initialize_Int_Float`, `indexedMap_Int_Char` or
+    `initializeFromList_Int_Int`, and a boxed element keeps `map` or
+    `initialize_Int`. `callInstanceResultType` keys those four by the call's
+    own result type, and every other kernel by its ABI result type.
+  - `List.map2` to `map5` take the element suffix from the list they return:
+    a `List Int` gives `map2_Int`, a `List Char` `map5_Char`, and a `List
+    String` keeps `map3`; `callInstanceResultType` keys them by the call's own
+    result type too.
   - `MVar.put` with prefix `"Eco"`, an `Int` first argument and an `Int`,
     `Float` or `Char` value gets the `_Int`, `_Float` or `_Char` symbol, with
     the first argument `i64` and the value unboxed; with a `String` value it
@@ -61,8 +72,8 @@ What the tests establish:
 
 Among what is not tested: `Utils.notEqual`, `lt`, `le`, `gt` and `ge`;
 `Utils.equal` at `Float` or `Char`; `String.fromNumber`, `Json.wrap` and
-`List.cons` at `Float` or `Char`; `JsArray.singleton`, `push`, `unsafeGet`,
-`slice`, `initialize`, `initializeFromList` and `indexedMap`; a `number` type
+`List.cons` at `Float` or `Char`; `JsArray.singleton`, `push`, `unsafeGet`
+and `slice`; a `number` type
 variable, which `monoTypeToAbi` makes `i64`; a key whose prefix is not the
 kernel's own, such as `MVar.put` with prefix `"Elm"`; and the compile-time
 crash for an argument or result whose ABI type does not match its primitive
@@ -513,6 +524,89 @@ suite =
                         }
                         abi
             ]
+        , describe "deriveKernelInstanceAbi for the JsArray builders (element suffix from the result)"
+            [ test "JsArray.map to an Array Int selects map_Int" <|
+                \_ ->
+                    Expect.equal
+                        { symbolName = "Elm_Kernel_JsArray_map_Int"
+                        , abiArgTypes = [ ecoValue, ecoValue ]
+                        , abiResultType = ecoValue
+                        }
+                        (KernelAbi.deriveKernelInstanceAbi
+                            (jsArrayKey "map" [ Mono.MUnit, Mono.MUnit ] (jsArrayOf Mono.MInt))
+                        )
+            , test "JsArray.map to an Array String keeps the root symbol" <|
+                \_ ->
+                    Expect.equal "Elm_Kernel_JsArray_map"
+                        (KernelAbi.deriveKernelInstanceAbi
+                            (jsArrayKey "map" [ Mono.MUnit, Mono.MUnit ] (jsArrayOf Mono.MString))
+                        ).symbolName
+            , test "JsArray.initialize to an Array Float selects initialize_Int_Float" <|
+                \_ ->
+                    Expect.equal
+                        { symbolName = "Elm_Kernel_JsArray_initialize_Int_Float"
+                        , abiArgTypes = [ ecoInt, ecoInt, ecoValue ]
+                        , abiResultType = ecoValue
+                        }
+                        (KernelAbi.deriveKernelInstanceAbi
+                            (jsArrayKey "initialize" [ Mono.MInt, Mono.MInt, Mono.MUnit ] (jsArrayOf Mono.MFloat))
+                        )
+            , test "JsArray.initialize with a boxed element keeps initialize_Int" <|
+                \_ ->
+                    Expect.equal "Elm_Kernel_JsArray_initialize_Int"
+                        (KernelAbi.deriveKernelInstanceAbi
+                            (jsArrayKey "initialize" [ Mono.MInt, Mono.MInt, Mono.MUnit ] Mono.MUnit)
+                        ).symbolName
+            , test "JsArray.indexedMap to an Array Char selects indexedMap_Int_Char" <|
+                \_ ->
+                    Expect.equal "Elm_Kernel_JsArray_indexedMap_Int_Char"
+                        (KernelAbi.deriveKernelInstanceAbi
+                            (jsArrayKey "indexedMap" [ Mono.MUnit, Mono.MInt, Mono.MUnit ] (jsArrayOf Mono.MChar))
+                        ).symbolName
+            , test "JsArray.initializeFromList takes the element from the pair's array" <|
+                \_ ->
+                    Expect.equal "Elm_Kernel_JsArray_initializeFromList_Int_Int"
+                        (KernelAbi.deriveKernelInstanceAbi
+                            (jsArrayKey "initializeFromList"
+                                [ Mono.MInt, Mono.MUnit ]
+                                (Mono.mTuple [ jsArrayOf Mono.MInt, Mono.mList Mono.MInt ])
+                            )
+                        ).symbolName
+            , test "callInstanceResultType keys a JsArray builder by the call's own result" <|
+                \_ ->
+                    Expect.equal (jsArrayOf Mono.MInt)
+                        (KernelAbi.callInstanceResultType "JsArray" "map" Mono.MUnit (jsArrayOf Mono.MInt))
+            , test "List.map2 to a List Int selects map2_Int" <|
+                \_ ->
+                    Expect.equal
+                        { symbolName = "Elm_Kernel_List_map2_Int"
+                        , abiArgTypes = [ ecoValue, ecoValue, ecoValue ]
+                        , abiResultType = ecoValue
+                        }
+                        (KernelAbi.deriveKernelInstanceAbi
+                            (listMapKey "map2" 2 (Mono.mList Mono.MInt))
+                        )
+            , test "List.map5 to a List Char selects map5_Char" <|
+                \_ ->
+                    Expect.equal "Elm_Kernel_List_map5_Char"
+                        (KernelAbi.deriveKernelInstanceAbi
+                            (listMapKey "map5" 5 (Mono.mList Mono.MChar))
+                        ).symbolName
+            , test "List.map3 to a List String keeps the root symbol" <|
+                \_ ->
+                    Expect.equal "Elm_Kernel_List_map3"
+                        (KernelAbi.deriveKernelInstanceAbi
+                            (listMapKey "map3" 3 (Mono.mList Mono.MString))
+                        ).symbolName
+            , test "callInstanceResultType keys List.map4 by the call's own result" <|
+                \_ ->
+                    Expect.equal (Mono.mList Mono.MFloat)
+                        (KernelAbi.callInstanceResultType "List" "map4" (Mono.mList Mono.MUnit) (Mono.mList Mono.MFloat))
+            , test "callInstanceResultType keeps the ABI result for other kernels" <|
+                \_ ->
+                    Expect.equal Mono.MUnit
+                        (KernelAbi.callInstanceResultType "Debug" "log" Mono.MUnit Mono.MInt)
+            ]
         ]
 
 
@@ -557,6 +651,40 @@ basicsBinopKey opName operandType =
     , argTypes = [ operandType, operandType ]
     , resultType = operandType
     }
+
+
+{-| Builds the key for the elm/core `JsArray` kernel `name` at the given
+argument and result types.
+-}
+jsArrayKey : String -> List Mono.MonoType -> Mono.MonoType -> KernelAbi.KernelInstanceKey
+jsArrayKey name argTypes resultType =
+    { prefix = "Elm"
+    , home = "JsArray"
+    , name = name
+    , argTypes = argTypes
+    , resultType = resultType
+    }
+
+
+{-| Builds the key for elm/core's `List.<name>`, one of `map2` to `map5`, taking
+a closure and `lists` lists (all given as `()`, whose ABI type is
+`!eco.value` like a list's) and returning `resultType`.
+-}
+listMapKey : String -> Int -> Mono.MonoType -> KernelAbi.KernelInstanceKey
+listMapKey name lists resultType =
+    { prefix = "Elm"
+    , home = "List"
+    , name = name
+    , argTypes = List.repeat (lists + 1) Mono.MUnit
+    , resultType = resultType
+    }
+
+
+{-| The monomorphic type of an elm/core `JsArray` of `element`.
+-}
+jsArrayOf : Mono.MonoType -> Mono.MonoType
+jsArrayOf element =
+    Mono.mCustom (ModuleName.Canonical ( "elm", "core" ) "Elm.JsArray") "JsArray" [ element ]
 
 
 {-| The monomorphic type of elm/core's `Order`, the result of `Utils.compare`.

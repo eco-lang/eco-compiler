@@ -4,9 +4,8 @@
 #   usage: check-driver-cli.sh <repo-root> <build-dir>
 #
 # Each check asserts the correct behaviour. A check marked XFAIL reproduces an open defect from
-# cpp-review-bugs.md, with the convention of test/XfailGuard.hpp: it passes while the defect
-# reproduces and fails as XPASS once it does not (the defect looks fixed: drop the mark);
-# ECO_TEST_XFAIL=strict makes it fail on today's code.
+# cpp-review-bugs.md: it passes while the defect reproduces and fails as XPASS once it does not
+# (the defect looks fixed: drop the mark); ECO_TEST_XFAIL=strict makes it fail on today's code.
 set -eu
 
 ROOT=${1:?usage: check-driver-cli.sh <repo-root> <build-dir>}

@@ -66,7 +66,7 @@ HPointer takeResume(uint64_t token) { return Scheduler::instance().takePendingRe
 HPointer endpointOf(const SockEndpoint& ep) { return buildEndpoint(ep); }
 
 /// Erases the entry of WebSocket `wsId` if it has ended, both faces are gone, no `closed` task is parked on it and
-/// no subscription names it, keeping its `WsCloseInfo` in `recentlyClosed` and dropping the oldest beyond
+/// no subscription names it, keeping its `WsCloseInfo` and `closeDelivered` in `recentlyClosed` and dropping the oldest beyond
 /// `kRecentlyClosed`.
 void maybeRetire(int64_t wsId) {
     auto& t = wsTables();
@@ -75,7 +75,7 @@ void maybeRetire(int64_t wsId) {
     WsEntry& e = it->second;
     if (!e.closed || e.facesAlive > 0 || !e.closedWaiters.empty()) return;
     if (wsManagerHasSubscribers(wsId)) return;   // its held close may still be delivered
-    t.recentlyClosed.emplace_back(wsId, e.info);
+    t.recentlyClosed.push_back(WsRecentClose{wsId, e.info, e.closeDelivered});
     while (t.recentlyClosed.size() > kRecentlyClosed) t.recentlyClosed.pop_front();
     t.sockets.erase(it);
 }
@@ -143,15 +143,30 @@ bool onUpgradeRead(WsEvent& ev) {
     return true;
 }
 
+/// Discards the two stream pairs of WebSocket `wsId`, which Elm never received, so that they are erased, and with
+/// them, once its core has ended, the entry (each face's destruction counts down `facesAlive`). Does nothing if
+/// there is no entry. Allocates and calls Elm (`discardReadable`).
+void discardFaces(int64_t wsId) {
+    WsEntry* e = findWs(wsId);
+    if (!e) return;
+    int64_t rid = e->readableId, wid = e->writableId;
+    e->readableId = 0;
+    e->writableId = 0;
+    if (rid != 0) discardReadable(rid);   // `e` may be dangling from here
+    if (wid != 0) discardWritable(wid);
+}
+
 /// Resumes an `open` task with `( wsId, ( readableId, writableId ), ( local, remote ) )`, or with the failure. The
-/// stream ids are 0 if the WebSocket has no entry. Returns whether a task was resumed. Unboxed-field masks: 0x1,
-/// 0x5 and 0.
+/// stream ids are 0 if the WebSocket has no entry. A failed open, or one whose task was killed, discards the
+/// WebSocket's stream pairs (`discardFaces`). Returns whether a task was resumed. Unboxed-field masks: 0x1, 0x5
+/// and 0.
 bool onOpened(WsEvent& ev) {
     HoldRelease release(ev.token);
     HPointer resume = takeResume(ev.token);
     WsEntry* e = findWs(ev.wsId);
     if (alloc::isNil(resume)) {
-        if (e && !ev.failed) abortCore(e->core);
+        if (e && !ev.failed) abortCore(e->core);   // before the faces' shutdowns, in reactor order
+        discardFaces(ev.wsId);
         return false;
     }
     int64_t rid = e ? e->readableId : 0, wid = e ? e->writableId : 0;
@@ -159,6 +174,7 @@ bool onOpened(WsEvent& ev) {
     HPointer remote = alloc::listNil(), eps = alloc::listNil();
     Elm::StackRootGuard g({&resume, &task, &ids, &local, &remote, &eps});
     if (ev.failed) {
+        discardFaces(ev.wsId);   // `resume` is rooted; `e` is not used again
         task = failFErr(ev.code, ev.message);
     } else {
         ids = alloc::tuple2(alloc::unboxedInt(rid), alloc::unboxedInt(wid), 0x5);
@@ -209,7 +225,6 @@ bool onClosed(WsEvent& ev) {
     std::vector<uint64_t> waiters;
     waiters.swap(e->closedWaiters);
     WsCloseInfo info = e->info;
-    bool resumed = false;
     for (uint64_t token : waiters) {
         HoldRelease waiterHold(token);
         HPointer resume = takeResume(token);
@@ -222,11 +237,9 @@ bool onClosed(WsEvent& ev) {
         task = succeed(task);
         Scheduler::callClosure1(resume, task);
         Scheduler::instance().drain();
-        resumed = true;
     }
     wsManagerOnClosed(ev.wsId);
     maybeRetire(ev.wsId);
-    (void)resumed;
     return false;
 }
 
@@ -322,10 +335,15 @@ int64_t wsTablesAddServerH2Handshake(std::shared_ptr<H2PendingUpgrade> h2, HoldT
 }
 
 WsCloseInfo wsRecentCloseInfo(int64_t wsId) {
-    for (const auto& [id, info] : wsTables().recentlyClosed) {
-        if (id == wsId) return info;
+    WsRecentClose* r = wsRecentClose(wsId);
+    return r ? r->info : WsCloseInfo{};
+}
+
+WsRecentClose* wsRecentClose(int64_t wsId) {
+    for (WsRecentClose& r : wsTables().recentlyClosed) {
+        if (r.wsId == wsId) return &r;
     }
-    return WsCloseInfo{};
+    return nullptr;
 }
 
 void wsTablesCloseStarted(int64_t wsId) {

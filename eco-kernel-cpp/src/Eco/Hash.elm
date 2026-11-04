@@ -33,7 +33,8 @@ nicety, never a correctness requirement.
 import Eco.Kernel.Hash
 
 
-{-| Mix `seed` over the string's code units.
+{-| Mix `seed` over the string's code units. The result is in `[0, 2^26)`
+for every seed, negative ones included (the seed is reduced with `modBy`).
 -}
 stringWithSeed : Int -> String -> Int
 stringWithSeed seed s =

@@ -34,9 +34,9 @@
 //
 // Heap generations. The tables belong to one heap generation (`currentHeapGeneration`). When `socketTables` finds the
 // generation changed, the tables of the old heap are reset first: every listener, connection and pending connect is
-// closed or aborted on the reactor, the holds of subscriptions and parked accepts are released, and the tables are
-// cleared. The holds of close tokens, of pending connects and of operations whose `OpDone` is still in flight are not
-// released by the reset. The id counters are not reset.
+// closed or aborted on the reactor and the tables are cleared. The holds the old tables owned (subscriptions, parked
+// accepts, close tokens, pending connects, operations whose `OpDone` is still in flight) need no release: the
+// scheduler voided every hold of the old heap when it saw the new generation. The id counters are not reset.
 //
 //===----------------------------------------------------------------------===//
 

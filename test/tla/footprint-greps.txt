@@ -68,12 +68,12 @@ F.ylobox	runtime/src/allocator/*.cpp runtime/src/allocator/*.hpp	ylo_(lo|hi)_ =
 F.deferredFrees	runtime/src/allocator/*.cpp runtime/src/allocator/*.hpp	deferred_frees_
 F.cycleState	runtime/src/allocator/*.cpp runtime/src/allocator/*.hpp	cycle_state_ =
 F.bgEp	runtime/src/allocator/*.cpp runtime/src/allocator/*.hpp	bg_ep_ =
-F.externalRoots	runtime/src/*/*.cpp runtime/src/*/*.hpp runtime/src/*.cpp elm-kernel-cpp/src/*/*.cpp elm-kernel-cpp/src/*/*.hpp eco-kernel-cpp/src/*/*.cpp eco-kernel-cpp/src/*/*.hpp	addExternalRootScanner
+F.externalRoots	runtime/src/*/*.cpp runtime/src/*/*.hpp runtime/src/*.cpp elm-kernel-cpp/src/*/*.cpp elm-kernel-cpp/src/*/*.hpp eco-kernel-cpp/src/*/*.cpp eco-kernel-cpp/src/*/*.hpp system-kernel-cpp/src/*/*/*.cpp system-kernel-cpp/src/*/*/*.hpp	addExternalRootScanner
 F.zapFiller	runtime/src/allocator/*.cpp runtime/src/allocator/*.hpp	writeFiller[(]z[.]p
 F.vnodeRegistry	runtime/src/*/*.cpp runtime/src/*/*.hpp runtime/src/*.cpp elm-kernel-cpp/src/*/*.cpp elm-kernel-cpp/src/*/*.hpp eco-kernel-cpp/src/*/*.cpp eco-kernel-cpp/src/*/*.hpp	vnodeRegistry
-F.atfork	runtime/src/*/*.cpp runtime/src/*/*.hpp runtime/src/*.cpp elm-kernel-cpp/src/*/*.cpp elm-kernel-cpp/src/*/*.hpp eco-kernel-cpp/src/*/*.cpp eco-kernel-cpp/src/*/*.hpp	pthread_atfork
-F.atexit	runtime/src/*/*.cpp runtime/src/*/*.hpp runtime/src/*.cpp elm-kernel-cpp/src/*/*.cpp elm-kernel-cpp/src/*/*.hpp eco-kernel-cpp/src/*/*.cpp eco-kernel-cpp/src/*/*.hpp	std::atexit|[^_]atexit[(]
-F.fork	runtime/src/*/*.cpp runtime/src/*/*.hpp runtime/src/*.cpp elm-kernel-cpp/src/*/*.cpp elm-kernel-cpp/src/*/*.hpp eco-kernel-cpp/src/*/*.cpp eco-kernel-cpp/src/*/*.hpp	[^A-Za-z_]fork[(]
+F.atfork	runtime/src/*/*.cpp runtime/src/*/*.hpp runtime/src/*.cpp elm-kernel-cpp/src/*/*.cpp elm-kernel-cpp/src/*/*.hpp eco-kernel-cpp/src/*/*.cpp eco-kernel-cpp/src/*/*.hpp system-kernel-cpp/src/*/*/*.cpp system-kernel-cpp/src/*/*/*.hpp	pthread_atfork
+F.atexit	runtime/src/*/*.cpp runtime/src/*/*.hpp runtime/src/*.cpp elm-kernel-cpp/src/*/*.cpp elm-kernel-cpp/src/*/*.hpp eco-kernel-cpp/src/*/*.cpp eco-kernel-cpp/src/*/*.hpp system-kernel-cpp/src/*/*/*.cpp system-kernel-cpp/src/*/*/*.hpp	std::atexit|[^_]atexit[(]
+F.fork	runtime/src/*/*.cpp runtime/src/*/*.hpp runtime/src/*.cpp elm-kernel-cpp/src/*/*.cpp elm-kernel-cpp/src/*/*.hpp eco-kernel-cpp/src/*/*.cpp eco-kernel-cpp/src/*/*.hpp system-kernel-cpp/src/*/*/*.cpp system-kernel-cpp/src/*/*/*.hpp	[^A-Za-z_]fork[(]
 F.promoMu	runtime/src/allocator/*.cpp runtime/src/allocator/*.hpp	promo_mu_
 F.threadMutex	runtime/src/allocator/*.cpp runtime/src/allocator/*.hpp	thread_mutex_
 F.pageWorkCalls	runtime/src/allocator/*.cpp runtime/src/allocator/*.hpp	acquireOldGenBlock[(]|releaseOldGenBlock[(]|onReuse[(]|onRelease[(]|onFreshBump[(]|syncPoint[(]

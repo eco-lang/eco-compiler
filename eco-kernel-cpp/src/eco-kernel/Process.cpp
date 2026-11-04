@@ -10,11 +10,18 @@
 // later turns each finished wait into a succeeding Task, resumes the parked
 // closure with it, and releases the hold.
 //
+// The hold of a wait is released exactly once (LIVE_001, LIVE_003). Killing
+// the waiting task runs the kill handle `waitBody` returns: if the resume is
+// still parked, the handle takes it, releases the hold itself and records the
+// token as withdrawn, and the drain later skips that token's release. The
+// child is not killed, and the WaitService thread goes on waiting for it.
+//
 //===----------------------------------------------------------------------===//
 
 #include "Process.hpp"
 #include "KernelHelpers.hpp"
 #include "TaskBinding.hpp"
+#include "allocator/RuntimeExports.h"
 #include "platform/Spawn.hpp"
 #include "platform/WaitService.hpp"
 #include <cerrno>
@@ -22,13 +29,28 @@
 #include <mutex>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace Eco::Kernel::Process {
 
-// Stdin pipe descriptors handed out by `spawnProcess`, keyed by the
-// descriptor itself. Entries are added and never read or removed.
+// Stdin pipe descriptors handed out by `spawnProcess` and not yet closed,
+// keyed by the handle Elm sees, which is the descriptor itself. Read by
+// `Console.write` (`streamHandleFd`), emptied by `File.close`
+// (`forgetStreamHandle`). Eco thread only.
 static std::unordered_map<int64_t, int> s_streamHandles;
+
+// Tokens of waits whose task was killed while the resume was still parked:
+// the kill handle has released their hold, so `waitServiceDrain` must not.
+// Eco thread only.
+static std::unordered_set<std::uint64_t> s_withdrawnWaits;
+
+int streamHandleFd(int64_t handle) {
+    auto it = s_streamHandles.find(handle);
+    return it == s_streamHandles.end() ? -1 : it->second;
+}
+
+void forgetStreamHandle(int64_t handle) { s_streamHandles.erase(handle); }
 
 namespace {
 
@@ -71,28 +93,21 @@ HPointer spawnBody(HPointer captured) {
     return succeedInt(child.pid);
 }
 
-// Binding body for `spawnProcess`: `captured` is a Record of five boxed
-// fields, cmd, args, stdin_, stdout_, stderr_ in that order. Returns the
-// Task that succeeds with ( stdinHandle, pid ) or fails with the IO error
-// tuple.
+// Binding body for `spawnProcess`: `captured` is a Record of three boxed
+// fields, cmd, args, stdin_ in that order. Returns the Task that succeeds
+// with ( stdinHandle, pid ) or fails with the IO error tuple.
 HPointer spawnProcessBody(HPointer captured) {
-    HPointer cmdHP, argsHP, stdinHP, stdoutHP, stderrHP;
+    HPointer cmdHP, argsHP, stdinHP;
     {
         Record* rec = static_cast<Record*>(
             Elm::Allocator::instance().resolve(captured));
         cmdHP    = rec->values[0].p;
         argsHP   = rec->values[1].p;
         stdinHP  = rec->values[2].p;
-        stdoutHP = rec->values[3].p;
-        stderrHP = rec->values[4].p;
     }
     std::string cmdStr = toString(Export::encode(cmdHP));
     std::vector<std::string> argStrs = listToStringVector(Export::encode(argsHP));
     std::string stdinCfg = toString(Export::encode(stdinHP));
-    std::string stdoutCfg = toString(Export::encode(stdoutHP));
-    std::string stderrCfg = toString(Export::encode(stderrHP));
-    (void)stdoutCfg;  // ignored: stdout and stderr are always shared
-    (void)stderrCfg;
 
     const bool pipeStdin = (stdinCfg == "pipe");
     Elm::platform::SpawnedChild child = startChild(cmdStr, argStrs, pipeStdin);
@@ -115,8 +130,9 @@ HPointer spawnProcessBody(HPointer captured) {
 // Delivers every finished wait on the EcoKernel lane: resumes the closure
 // parked under each token with a Task that succeeds with the exit code, and
 // releases the token's hold. A token with no parked closure only has its hold
-// released. Called by the scheduler as an async source, on its thread; GC
-// points.
+// released, unless its task was killed (`s_withdrawnWaits`): the kill handle
+// released that hold already. Called by the scheduler as an async source, on
+// its thread; GC points.
 void waitServiceDrain() {
     auto& sched = Elm::Platform::Scheduler::instance();
     Elm::Platform::WaitService::Ready ready;
@@ -128,7 +144,7 @@ void waitServiceDrain() {
         std::int64_t exitCode = ready.exitCode;
         HPointer resumeClosure = sched.takePendingResume(token);
         if (Elm::alloc::isNil(resumeClosure)) {
-            sched.releaseHold(token);
+            if (s_withdrawnWaits.erase(token) == 0) sched.releaseHold(token);
             continue;
         }
         // Both values are rooted across taskSucceedKind (which allocates a
@@ -158,10 +174,24 @@ void waitEnsureRegistered() {
     });
 }
 
+// Evaluates a wait's kill handle: `args[0]` is the token as raw bits and
+// `args[1]` the `()` the handle is applied to. If the resume is still parked
+// (no result delivered yet), takes it, releases the hold and marks the token
+// withdrawn so `waitServiceDrain` skips its release; otherwise does nothing.
+void* waitKillEval(void* args[]) {
+    const std::uint64_t token = reinterpret_cast<std::uint64_t>(args[0]);
+    auto& sched = Elm::Platform::Scheduler::instance();
+    if (!Elm::alloc::isNil(sched.takePendingResume(token))) {
+        s_withdrawnWaits.insert(token);
+        sched.releaseHold(token);
+    }
+    return reinterpret_cast<void*>(Export::encode(Elm::alloc::unit()));
+}
+
 // Async-park body for `wait`: `captured` is the tuple ( pid as an unboxed
 // Int, unit ). Parks `resume` under a Task hold, submits the pid to the
-// WaitService, and returns `unit()` as the kill handle. The result is
-// delivered later by `waitServiceDrain`.
+// WaitService, and returns the kill handle (`waitKillEval` over the token).
+// The result is delivered later by `waitServiceDrain`.
 HPointer waitBody(HPointer captured, HPointer resume) {
     int64_t pid;
     {
@@ -175,17 +205,21 @@ HPointer waitBody(HPointer captured, HPointer resume) {
     Elm::Platform::WaitService::instance().submit(
         pid, token, Elm::Platform::WaitLane::EcoKernel);
 
-    // No cancellation: the kill handle is unit.
-    return Elm::alloc::unit();
+    // The kill handle: a closure of arity 2 with the token captured, applied
+    // to `()` when the task is killed. `p` stays valid while nothing
+    // allocates; closureCapture does not.
+    HPointer kill = Elm::alloc::allocClosureK(&waitKillEval, /*max_values=*/2, Elm::PK_Boxed);
+    void* p = Elm::Allocator::instance().resolve(kill);
+    Elm::alloc::closureCapture(p, Elm::alloc::unboxedInt(static_cast<int64_t>(token)), Elm::PK_Int);
+    return kill;
 }
 
 } // anonymous namespace
 
 uint64_t exit(int64_t code) {
     // Eager rather than a Task: there is no state after exit to deliver to.
-    ::exit(static_cast<int>(code));
-    // Unreachable.
-    return 0;
+    // Not ::exit: on Windows that can hang on a service thread's lock (CRASH-01).
+    eco_terminate_process(static_cast<int>(code));
 }
 
 uint64_t spawn(uint64_t cmd, uint64_t args) {
@@ -197,20 +231,15 @@ uint64_t spawn(uint64_t cmd, uint64_t args) {
     return Export::encode(Eco::Kernel::makeBinding<spawnBody>(payload));
 }
 
-uint64_t spawnProcess(uint64_t cmd, uint64_t args,
-                      uint64_t stdin_, uint64_t stdout_, uint64_t stderr_) {
+uint64_t spawnProcess(uint64_t cmd, uint64_t args, uint64_t stdin_) {
     HPointer cmdHP    = Export::decode(cmd);
     HPointer argsHP   = Export::decode(args);
     HPointer stdinHP  = Export::decode(stdin_);
-    HPointer stdoutHP = Export::decode(stdout_);
-    HPointer stderrHP = Export::decode(stderr_);
-    Elm::StackRootGuard g({&cmdHP, &argsHP, &stdinHP, &stdoutHP, &stderrHP});
-    std::vector<Elm::Unboxable> fields(5);
+    Elm::StackRootGuard g({&cmdHP, &argsHP, &stdinHP});
+    std::vector<Elm::Unboxable> fields(3);
     fields[0] = Elm::alloc::boxed(cmdHP);
     fields[1] = Elm::alloc::boxed(argsHP);
     fields[2] = Elm::alloc::boxed(stdinHP);
-    fields[3] = Elm::alloc::boxed(stdoutHP);
-    fields[4] = Elm::alloc::boxed(stderrHP);
     HPointer payload = Elm::alloc::record(fields, /*unboxed_mask=*/0);
     return Export::encode(Eco::Kernel::makeBinding<spawnProcessBody>(payload));
 }

@@ -12,8 +12,8 @@
 // Positions are tracked as a row and a column. A newline moves to column 1 of the
 // next row, and any other character, a surrogate pair included, moves one column.
 //
-// Getting a view of a non-ASCII rope or slice may copy it, which allocates and so
-// is a GC point. Each export therefore passes every string through `parserFlatten`
+// Getting a view of a rope or slice copies it, whatever its length, which allocates
+// and so is a GC point. Each export therefore passes every string through `parserFlatten`
 // first, with any heap value it still needs rooted, and only then takes raw views,
 // which it uses before anything else can allocate.
 //
@@ -25,6 +25,8 @@
 #include "allocator/HeapHelpers.hpp"
 #include "allocator/RuntimeExports.h"
 #include "allocator/StringOps.hpp"
+
+#include <cassert>
 
 using namespace Elm;
 using namespace Elm::Kernel;
@@ -60,26 +62,30 @@ struct ParserStr {
 
 // Prepares `hp` for `parserView`. An embedded constant, which here is the empty
 // string, and a UTF-8 form are returned as they are; anything else goes through
-// `StringOps::ensureFlat`, which leaves a slice or rope above `string_flatten_limit`
-// unchanged, and `parserView` cannot read that. `ensureFlat` may allocate, so this
-// is a GC point: a raw pointer or unrooted heap value held across it must be
-// re-derived afterwards.
+// `StringOps::flattenToLeaf`, which returns a UTF-16 leaf or a large String as it is
+// and copies a slice or rope of any length into one. (`StringOps::ensureFlat` would
+// leave a slice or rope above `string_flatten_limit` as it is, which `parserView`
+// cannot read.) A long rope is therefore copied at every primitive call that reads
+// it. `flattenToLeaf` may allocate, so this is a GC point: a raw pointer or unrooted
+// heap value held across it must be re-derived afterwards.
 inline HPointer parserFlatten(HPointer hp) {
     if (alloc::isEmbeddedConstant(hp)) return hp;  // empty string
-    void* obj = Allocator::instance().resolve(hp);
-    if (obj && StringOps::isUtf8(obj)) return hp;
-    return StringOps::ensureFlat(hp);
+    if (StringOps::isUtf8(Allocator::instance().resolve(hp))) return hp;
+    return StringOps::flattenToLeaf(hp);
 }
 
 // Returns a view of `hp`, which must be an embedded constant (giving an empty view),
-// a UTF-8 form, a UTF-16 leaf or a large String. Does not allocate.
+// a UTF-8 form, a UTF-16 leaf or a large String; anything else is asserted against.
+// Does not allocate.
 inline ParserStr parserView(HPointer hp) {
     if (alloc::isEmbeddedConstant(hp)) return {};  // empty string
     void* obj = Allocator::instance().resolve(hp);
-    if (obj && StringOps::isUtf8(obj)) {
+    if (StringOps::isUtf8(obj)) {
         auto pr = StringOps::utf8Bytes(obj);
         return ParserStr{nullptr, pr.first, static_cast<int64_t>(pr.second)};
     }
+    assert((alloc::getTag(obj) == Tag_String || alloc::getTag(obj) == Tag_LargeStringHeader) &&
+           "parserView: a slice or rope reached the view without parserFlatten");
     alloc::U16View s = alloc::flatStringView(obj);
     return ParserStr{s.chars, nullptr, static_cast<int64_t>(s.length)};
 }
@@ -96,13 +102,15 @@ inline ParserStr resolveString(HPtr str) {
 // Returns the length of `s` in UTF-16 units.
 inline int64_t stringLen(const ParserStr& s) { return s.len; }
 
-// Returns whether `c` is in 0xD800-0xDFFF, a high or a low surrogate.
-inline bool isHighSurrogate(u16 c) {
+// Returns whether `c` is in 0xD800-0xDFFF, a high or a low surrogate. Elm's JS kernel
+// makes the same test, `(code & 0xF800) === 0xD800`, to decide that a character is
+// two units long.
+inline bool isSurrogate(u16 c) {
     return (c & 0xF800) == 0xD800;
 }
 
 // Moves `offset` up to `target`, updating `row` and `col` for each character passed.
-// After a unit `isHighSurrogate` accepts, the next unit, if before `target`, is
+// After a unit `isSurrogate` accepts, the next unit, if before `target`, is
 // passed without counting a column of its own.
 inline void advancePosition(const ParserStr& s, int64_t& offset, int64_t target,
                             int64_t& row, int64_t& col) {
@@ -113,7 +121,7 @@ inline void advancePosition(const ParserStr& s, int64_t& offset, int64_t target,
             row++;
         } else {
             col++;
-            if (isHighSurrogate(code) && offset < target) {
+            if (isSurrogate(code) && offset < target) {
                 offset++;
             }
         }
@@ -148,7 +156,9 @@ HPtr Elm_Kernel_Parser_isAsciiCode(int64_t code, int64_t offset, HPtr str) {
 // Applies the Char predicate `closure` to the character at `offset` in `str`.
 // Returns -1 when `offset` is outside the string or the predicate gives False, -2
 // when it accepts a newline, and otherwise the offset after the character: 2 units
-// on for a surrogate pair, 1 for any other unit.
+// on for any surrogate, 1 for any other unit. Like Elm's JS kernel, which takes
+// `substr(offset, 2)` as the Char, a lone surrogate also advances 2, even at the
+// last unit, where the result is then past the end.
 int64_t Elm_Kernel_Parser_isSubChar(HPtr closure, int64_t offset, HPtr str) {
     // The closure is rooted because resolveString can collect, which would leave
     // the closure's bits stale.
@@ -161,16 +171,16 @@ int64_t Elm_Kernel_Parser_isSubChar(HPtr closure, int64_t offset, HPtr str) {
         return -1;
     }
 
-    // A surrogate followed by a low surrogate is decoded as one code point. Any
-    // other unit is passed as a Char of its own value.
+    // A high surrogate followed by a low surrogate is decoded as one code point. Any
+    // other unit, a lone surrogate included, is passed as a Char of its own value,
+    // which is what JS `Char.toCode` gives for a Char starting with a low surrogate.
     u16 c0 = s.at(offset);
-    i64 advance = 1;
+    i64 advance = isSurrogate(c0) ? 2 : 1;
     u32 codePoint = c0;
-    if (isHighSurrogate(c0) && offset + 1 < len) {
+    if ((c0 & 0xFC00) == 0xD800 && offset + 1 < len) {
         u16 c1 = s.at(offset + 1);
-        if (c1 >= 0xDC00 && c1 <= 0xDFFF) {
+        if ((c1 & 0xFC00) == 0xDC00) {
             codePoint = 0x10000u + ((c0 - 0xD800u) << 10) + (c1 - 0xDC00u);
-            advance = 2;
         }
     }
 
@@ -225,7 +235,7 @@ HPtr Elm_Kernel_Parser_isSubString(HPtr target, int64_t offset, int64_t row,
         } else {
             col++;
             // The unit after a surrogate is compared too, without a column of its own.
-            if (isHighSurrogate(code) && i < smallLen) {
+            if (isSurrogate(code) && i < smallLen) {
                 isGood = (small.at(i++) == big.at(offset++));
             }
         }
@@ -302,33 +312,36 @@ int64_t Elm_Kernel_Parser_chompBase10(int64_t offset, HPtr str) {
 // Reads the run of digits in base `base` starting at `offset` in `str`, and returns
 // `(offset', value)`: the offset after the run and the number it spells, 0 for an
 // empty run. A digit is a unit whose value minus '0' is below `base`, so only a base
-// from 2 to 10 reads the usual digits. `offset` must be non-negative and the value
-// must fit in a 64-bit Int; neither is checked.
+// from 2 to 10 reads the usual digits. `offset` must be non-negative, which is not
+// checked. A value beyond 64 bits wraps: the result is its low 64 bits as a two's
+// complement Int (decision D16 of plans/kernel-lib-bug-fixes.md, a documented
+// divergence from Elm's JS doubles), computed unsigned so the wrap is well defined.
 HPtr Elm_Kernel_Parser_consumeBase(int64_t base, int64_t offset, HPtr str) {
     ParserStr s = resolveString(str);
     i64 len = stringLen(s);
-    i64 total = 0;
+    const u64 ubase = static_cast<u64>(base);
+    u64 total = 0;
     while (offset < len) {
         i64 digit = static_cast<i64>(s.at(offset)) - 0x30;
         if (digit < 0 || digit >= base) {
             break;
         }
-        total = base * total + digit;
+        total = ubase * total + static_cast<u64>(digit);
         offset++;
     }
-    return intIntTuple(offset, total);
+    return intIntTuple(offset, static_cast<i64>(total));
 }
 
 // Reads the run of hexadecimal digits (0-9, A-F, a-f) starting at `offset` in `str`,
 // and returns `(offset', value)` as consumeBase does, with the same unchecked
-// requirements on `offset` and the value.
+// requirement on `offset` and the same wrap beyond 64 bits.
 HPtr Elm_Kernel_Parser_consumeBase16(int64_t offset, HPtr str) {
     ParserStr s = resolveString(str);
     i64 len = stringLen(s);
-    i64 total = 0;
+    u64 total = 0;
     while (offset < len) {
         u16 code = s.at(offset);
-        i64 digit;
+        u64 digit;
         if (code >= 0x30 && code <= 0x39) {
             digit = code - 0x30;
         } else if (code >= 0x41 && code <= 0x46) {
@@ -341,7 +354,7 @@ HPtr Elm_Kernel_Parser_consumeBase16(int64_t offset, HPtr str) {
         total = 16 * total + digit;
         offset++;
     }
-    return intIntTuple(offset, total);
+    return intIntTuple(offset, static_cast<i64>(total));
 }
 
 } // extern "C"

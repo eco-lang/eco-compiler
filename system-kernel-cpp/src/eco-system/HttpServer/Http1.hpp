@@ -30,10 +30,12 @@
 //   * Body: a Content-Length above `maxBodySize` is refused when the headers end, before any 100 Continue is sent;
 //     a body whose bytes so far exceed it is refused as it arrives (413).
 //   * Host: an HTTP/1.1 request must carry exactly one Host header and an HTTP/1.0 request at most one, and its value
-//     must be a host (a bracketed IPv6-style literal or a name of RFC 3986 reg-name characters and %-escapes, which
-//     covers IPv4 addresses) optionally followed by `:` and at most five digits (400).
+//     must be a host (an RFC 3986 IP-literal in brackets, that is an IPv6 address, optionally with an RFC 6874 `%25`
+//     zone id, or an IPvFuture, or a name of reg-name characters and %-escapes, which covers IPv4 addresses)
+//     optionally followed by `:` and at most five digits (400).
 //   * Version: a version llhttp accepts other than 1.0 and 1.1 (505).
-//   * Expect: one Expect header whose value is `100-continue`, ignoring case and surrounding blanks, is accepted, and
+//   * Expect (HTTP/1.1 only; an HTTP/1.0 request's Expect is ignored, RFC 9110 §10.1.1): one Expect header whose
+//     value is `100-continue`, ignoring case and surrounding blanks, is accepted, and
 //     on a request with a body (chunked, or a nonzero Content-Length) `HTTP/1.1 100 Continue` is written when the
 //     headers end. Because of the one-in-flight rule that is always after every earlier response was queued. Any
 //     other Expect value, or more than one Expect header (417).
@@ -48,8 +50,8 @@
 // less sets no timer. Once the server is closing, `kTimerIdle` instead holds the server's close deadline, at which a
 // connection with a request still being read or answered is aborted.
 //
-// The URL delivered with a request is the target as received when it starts with `http://` or `https://` (compared
-// case-sensitively). Otherwise it is the scheme (`https` on a TLS server), then the Host value or, when there is none,
+// The URL delivered with a request is the target as received, with its scheme lower-cased, when it starts with
+// `http://` or `https://` (compared ignoring case, RFC 3986 §3.1). Otherwise it is the scheme (`https` on a TLS server), then the Host value or, when there is none,
 // `ServerConfig::fallbackAuthority`, then the target, with `/` put in front of a target that does not start with one
 // and `*` turned into `/`.
 //
@@ -172,6 +174,12 @@ bool http1Respond(const std::shared_ptr<Conn>& conn, int64_t key, ResponseData r
 
 /// Returns a request key not returned before in this process. May be called from any thread.
 int64_t nextResponseKey();
+
+/// Returns whether `h` is an acceptable RFC 9110 §7.2 Host value, `uri-host [ ":" port ]`: an RFC 3986 IP-literal
+/// in brackets (an IPvFuture, or an IPv6 address with an optional RFC 6874 zone id) or a non-empty reg-name (which
+/// covers IPv4 addresses), then optionally `:` and at most five digits. HTTP/1 checks the Host header with it, and
+/// HTTP/2 the `:authority` (or its Host); a request that fails is answered 400.
+bool validHostValue(const std::string& h);
 
 #ifndef _WIN32
 

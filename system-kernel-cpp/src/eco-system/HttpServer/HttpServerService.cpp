@@ -10,6 +10,7 @@
 #include "eco-system/Core/SocketUtil.hpp"  // socketCloexec, SockAddr, sockaddrToInet
 
 #include <algorithm>
+#include <atomic>
 #include <cctype>
 #include <cerrno>
 #include <cstring>
@@ -208,6 +209,17 @@ bool headersAskClose(const std::vector<std::pair<std::string, std::string>>& hea
 // listenOn
 // ---------------------------------------------------------------------------
 
+#if ECO_TEST_HOOKS
+namespace {
+// The resolver listenOn calls; replaced by setListenResolverForTest.
+std::atomic<GetaddrinfoFn> gListenResolver{&::getaddrinfo};
+} // namespace
+
+GetaddrinfoFn setListenResolverForTest(GetaddrinfoFn fn) {
+    return gListenResolver.exchange(fn ? fn : &::getaddrinfo);
+}
+#endif
+
 ListenResult listenOn(const std::string& host, int64_t port) {
     ListenResult res;
     std::string where = authorityOf(host, port);
@@ -223,10 +235,15 @@ ListenResult listenOn(const std::string& host, int64_t port) {
     hints.ai_flags = AI_PASSIVE;
     std::string service = std::to_string(port);
     struct addrinfo* list = nullptr;
+#if ECO_TEST_HOOKS
+    int gai = gListenResolver.load()(host.empty() ? nullptr : host.c_str(), service.c_str(), &hints, &list);
+#else
     int gai = ::getaddrinfo(host.empty() ? nullptr : host.c_str(), service.c_str(), &hints, &list);
+#endif
+    int gaiErrno = errno;   // read at once: gaiCode needs it for EAI_SYSTEM
     if (gai != 0) {
-        res.code = "ENOTFOUND";
-        res.message = "getaddrinfo ENOTFOUND " + host;
+        res.code = ::Eco::System::gaiCode(gai, gaiErrno);
+        res.message = "getaddrinfo " + res.code + " " + host;
         return res;
     }
     // IPv4 first: "localhost" then serves clients that try 127.0.0.1, and an
@@ -278,9 +295,10 @@ ListenResult listenOn(const std::string& host, int64_t port) {
     }
     ::freeaddrinfo(list);
     if (lastErr == 0) lastErr = EADDRNOTAVAIL;
-    const char* m = std::strerror(lastErr);
     res.code = ::Eco::System::errnoName(lastErr);
-    res.message = std::string(lastSyscall) + " " + res.code + ": " + (m ? m : "") + " " + where;
+    res.sysErr = lastErr;   // the eco thread adds the strerror text (listenFailureMessage)
+    res.syscall = lastSyscall;
+    res.where = where;
     return res;
 }
 

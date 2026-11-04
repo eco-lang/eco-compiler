@@ -9,7 +9,8 @@
 // JS double (h < 2^26, so h * 33 < 2^31).
 
 var _Hash_stringWithSeed = F2(function(seed, str) {
-    var h = seed % 67108864;
+    // Reduced like Elm's `modBy`: JS `%` keeps the sign of a negative seed.
+    var h = ((seed % 67108864) + 67108864) % 67108864;
     for (var i = 0; i < str.length; i++) {
         h = (h * 33 + (str.charCodeAt(i) % 67108864) + 7) % 67108864;
     }

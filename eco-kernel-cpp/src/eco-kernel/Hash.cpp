@@ -16,8 +16,9 @@ constexpr int64_t kBase = 67108864;
 
 /// Returns one step of the narrow hash: `(h * 33 + (x mod 2^26) + 7) mod 2^26`.
 ///
-/// With |h| < 2^26 every intermediate is below 2^32 in magnitude, far inside
-/// i64.
+/// With 0 <= h < 2^26 (and `x`, a code unit, non-negative) every
+/// intermediate is below 2^32, far inside i64, and the result stays in
+/// [0, 2^26).
 inline int64_t mix(int64_t h, int64_t x) {
     return (h * 33 + (x % kBase) + 7) % kBase;
 }
@@ -25,7 +26,9 @@ inline int64_t mix(int64_t h, int64_t x) {
 } // namespace
 
 int64_t stringWithSeed(void* str, int64_t seed) {
-    int64_t h = seed % kBase;
+    // Reduced like Elm's `modBy`, never negative: C++ `%` keeps the sign of a
+    // negative seed, which would start (and keep) the hash below zero.
+    int64_t h = ((seed % kBase) + kBase) % kBase;
     if (!str) {
         return h;
     }

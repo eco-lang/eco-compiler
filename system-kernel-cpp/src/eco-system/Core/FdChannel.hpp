@@ -10,8 +10,10 @@
 // queues read and write requests under a mutex and wakes the thread through a
 // non-blocking *wake pipe*. The thread polls the fd and the wake pipe, serves
 // the oldest read and the oldest write as the fd becomes ready, and posts each
-// answer with `postChannelResult`. The fd itself is left in whatever blocking
-// mode it was given; readiness from poll is what keeps a read from blocking.
+// answer with `postChannelResult`. Readiness from poll is what keeps a read
+// from blocking. The fd is left in whatever blocking mode it was given unless
+// `FdChannelOptions::nonBlocking` says the channel may change it; a socket is
+// always written with a non-blocking `send`.
 //
 // The fd may be closed only once no read or write can still reach it, or an
 // IO call could hit an unrelated fd that reused the number. So the channel
@@ -57,6 +59,11 @@ struct FdChannelOptions {
     /// `failureOrigin` returns. The channel keeps the pointer, so the string
     /// must outlive it; a string literal does.
     const char* origin = "file";
+    /// Whether the fd's open file description belongs to this channel alone, as for a file the module opened
+    /// or the parent's end of a pipe it created. The constructor then makes a pipe or terminal non-blocking, so
+    /// a write cannot block the channel thread. Leave it false for a duplicate of an inherited fd (stdio):
+    /// `O_NONBLOCK` is shared by every holder of the description, the parent shell included.
+    bool nonBlocking = false;
 };
 
 /// A `ByteChannel` over one file descriptor, served by its own thread.
@@ -66,12 +73,22 @@ struct FdChannelOptions {
 /// is answered once all of its bytes are written or a write fails, in which
 /// case `written` counts the bytes that did go out. A non-regular fd is
 /// written at most `PIPE_BUF` bytes per call, each after poll reports it
-/// writable; for a pipe that is enough to keep the write from blocking, but
-/// for a blocking socket or terminal it is not guaranteed.
+/// writable; for a pipe that is enough to keep the write from blocking. A
+/// socket is written with `send(MSG_DONTWAIT)`, and a pipe or terminal made
+/// non-blocking (`FdChannelOptions::nonBlocking`) cannot block either. A
+/// blocking terminal or pipe shared with another process (an inherited stdio
+/// fd) can still block the channel thread in `write` while the terminal's
+/// buffer is full, and `shutdown` then takes effect only once it drains: a
+/// known limitation, since making it non-blocking would change it for every
+/// process that shares it.
 ///
-/// If poll reports the fd invalid and it cannot be waited on another way, or
-/// poll itself fails, every pending read and write is answered with `EBADF`
-/// or the poll errno, and the channel goes on accepting requests.
+/// If poll reports the fd invalid because it was closed behind the channel's
+/// back, every pending and later read and write is answered with `EBADF`, and
+/// the channel never uses the number again, not even to close it, since it may
+/// already name another file. If the fd is open but neither poll nor select can
+/// wait on it (macOS: a device poll rejects, numbered `FD_SETSIZE` or more),
+/// pending requests are answered with `ENOTSUP`. If poll itself fails, they are
+/// answered with its errno. In each case the channel goes on accepting requests.
 ///
 /// When the channel finishes, after `shutdown` or after `close` once the
 /// queued writes are done, the requests still pending are answered with
@@ -110,8 +127,9 @@ public:
     /// first.
     void shutdown() override;
 
-    /// Returns the fd the channel was given. Once the channel has finished
-    /// it may already be closed, and the number reused.
+    /// Returns the fd the channel was given, or -1 once it was found closed
+    /// behind the channel's back. Once the channel has finished it may already
+    /// be closed, and the number reused.
     int fd() const;
     const char* failureOrigin() const override { return origin_; }
 

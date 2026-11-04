@@ -42,8 +42,8 @@ HPointer terminalGetConfigurationBody(HPointer captured);
 HPointer terminalIsTerminalBody(HPointer captured);
 /// Turns raw mode on standard input on when `captured` is the Bool `True`, and off otherwise, then succeeds with
 /// `()`. Does nothing when standard input is not a terminal, or when its mode cannot be read or set; nothing reports
-/// that. Asking for the mode already in force changes nothing. Turning it off restores the mode saved at the first
-/// `setStdInRawMode` call, of either value.
+/// that. Asking for the mode already in force changes nothing and reads nothing. Turning it on saves the mode in
+/// force just then, and turning it off, or the process exiting while it is on, restores that saved mode.
 HPointer terminalSetStdInRawModeBody(HPointer captured);
 /// Sets the terminal window title to the String `captured`, by writing `terminalTitleSequence` of it to standard
 /// output, then succeeds with `()`. Writes nothing when standard output is not a terminal. A write that fails or
@@ -64,8 +64,8 @@ bool terminalSize(int& columns, int& rows);
 int terminalColorDepth();
 
 /// Returns the escape sequence that sets the terminal window title to `title`: ESC `]2;`, the title, then BEL
-/// (OSC 2). Bytes below 0x20 and 0x7F are left out of the title, so that none can end the sequence early; every
-/// other byte is kept as it is.
+/// (OSC 2). Bytes below 0x20, 0x7F and the C1 controls U+0080 to U+009F (the UTF-8 pairs C2 80 to C2 9F) are left
+/// out of the title, so that none can end the sequence early; every other byte is kept as it is.
 std::string terminalTitleSequence(const std::string& title);
 
 } // namespace Eco::System

@@ -7,13 +7,15 @@
 //
 // A client context is chosen by a verification *mode*, an integer:
 //   * 0, SystemCertificates: peers are verified against the system's certificate authorities. If `SSL_CERT_FILE` or
-//     `SSL_CERT_DIR` is set and non-empty, only those are tried; when both are set, a file that fails to load stops
-//     the directory being added. Otherwise OpenSSL's default paths are loaded, and if that leaves the store empty,
+//     `SSL_CERT_DIR` is set and non-empty, it replaces OpenSSL's default file or directory, and the unset one keeps
+//     its default, as OpenSSL's default paths do; the file and the directory are loaded independently, so one that
+//     fails to load does not stop the other. Otherwise OpenSSL's default paths are loaded, and if that leaves the store empty,
 //     the first existing file of a fixed list of common bundle paths. The context is built once and shared by
 //     every client config in the process; a build that fails is not kept, and the next call tries again. Any mode
 //     other than 1 or 2 is treated as 0.
 //   * 1, TrustedCertificates: peers are verified against only the PEM certificates the caller gives. A new context
-//     is built each time; no certificate in the text is an error.
+//     is built each time; text holding no usable certificate (empty, not PEM, or a corrupt block) is the error
+//     `ERR_SSL_NO_CERTIFICATES`.
 //   * 2, NoVerification: the peer is not verified. The context is built once and shared, as for mode 0.
 // The server name and ALPN offer are per connection, so they are kept in `TlsClientConfig`, not in the context.
 //

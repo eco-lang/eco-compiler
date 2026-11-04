@@ -1,6 +1,6 @@
 /**
  * Regression tests for defects found in the runtime review (cpp-review-bugs.md), written as
- * expected-fail guards (test/XfailGuard.hpp) before the fixes and turned into plain tests when the
+ * expected-fail guards before the fixes and turned into plain tests when the
  * defects were fixed (plans/review-likely-bugs-fixes.md, 2026-10-30). Each id is "RB-<line>", the
  * entry's line in cpp-review-bugs.md when it was triaged; the entry's verdict names its test.
  */

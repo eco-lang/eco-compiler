@@ -230,12 +230,6 @@ HPointer closeInfoTuple(const WsCloseInfo& info) {
 // Kernel bodies
 // ---------------------------------------------------------------------------
 
-HPointer wsNotImplementedBody(HPointer /*captured*/) {
-    ECO_SYSTEM_BODY_GUARD(FErr,
-        return failFErr("ENOTSUP", "not implemented yet");
-    )
-}
-
 HPointer wsHandshakeKeyBody(HPointer /*captured*/) {
     ECO_SYSTEM_BODY_GUARD(Never,
         std::string key = wsNewKey();
@@ -379,6 +373,58 @@ HPointer wsReadUpgradeBody(HPointer captured, HPointer resume) {
     )
 }
 
+#ifndef _WIN32
+void wsOpenOnConn(const std::shared_ptr<Conn>& c, const std::shared_ptr<WsCore>& core, std::string response,
+                  uint64_t tok, uint64_t gen, int64_t wsId) {
+    HoldProtocol* hold = c ? dynamic_cast<HoldProtocol*>(c->protocol()) : nullptr;
+    // A client handshake over HTTP/2: an answered extended CONNECT parked in its session.
+    Http2ClientProtocol* h2c = c && !hold ? dynamic_cast<Http2ClientProtocol*>(c->protocol()) : nullptr;
+    WsEvent ev;
+    ev.kind = WsEvent::Kind::Opened;
+    ev.gen = gen;
+    ev.token = tok;
+    ev.wsId = wsId;
+    if ((!hold && !h2c) || c->phase() != Conn::Phase::Open || c->closing() || c->aborted()) {
+        core->portClosed();
+        ev.failed = true;
+        ev.code = "ECONNRESET";
+        ev.message = "socket closed";
+        postWsEvent(std::move(ev));
+        return;
+    }
+    // `Opened` is posted only once the core is bound or installed, and failed if that did not take: a success
+    // posted first could leave the core neither attached nor ended, and every request on it unanswered.
+    SocketEvent se;
+    c->describe(se, std::string());
+    ev.local = se.local;
+    ev.remote = se.remote;
+    if (h2c) {
+        auto port = std::make_shared<H2StreamPort>(core);
+        if (!h2c->bindPort(port)) {
+            port->bind(nullptr, std::string());   // closes the core
+            ev.failed = true;
+            ev.code = "ECONNRESET";
+            ev.message = "socket closed";
+        }
+        postWsEvent(std::move(ev));
+        return;
+    }
+    std::string left = hold->takeLeftover();
+    (void)c->setNoDelay(true);   // small frames (pongs, pings) go out at once
+    // The codec writes the response when it is installed, so that a failed write reaches the core as an error.
+    // Once it is installed (`onOpen` ran and attached the core), the core ends however the connection does, even if
+    // that happened at once (a failed write, a Close among the leftover bytes), so the open has succeeded.
+    c->setProtocol(std::make_unique<WsProtocol>(core, std::move(response)), std::move(left));
+    if (!core->isAttached()) {
+        core->portClosed();   // posts `Closed`
+        ev.failed = true;
+        ev.code = "ECONNRESET";
+        ev.message = "socket closed";
+    }
+    postWsEvent(std::move(ev));
+}
+#endif // !_WIN32
+
 HPointer wsOpenBody(HPointer captured, HPointer resume) {
     uint64_t token = 0;
     bool counted = false;
@@ -436,6 +482,10 @@ HPointer wsOpenBody(HPointer captured, HPointer resume) {
             return resumeNow(resume, failFErr("EINVAL", "open EINVAL: the handshake was answered already"));
         }
         if (mode != 1 && mode != 2) return resumeNow(resume, failFErr("EINVAL", "open EINVAL: unknown mode"));
+        // The role must be the handshake's own (decision D13); checked before anything is created.
+        if (role != (it->second.server ? 1 : 0)) {
+            return resumeNow(resume, failFErr("EINVAL", "open EINVAL: the role does not match the handshake"));
+        }
         std::shared_ptr<Conn> c = std::move(it->second.conn);
         std::shared_ptr<H2PendingUpgrade> h2 = std::move(it->second.h2);
         // Released at the end of the scope, after the parkResume below, so that the program is never left with
@@ -477,57 +527,27 @@ HPointer wsOpenBody(HPointer captured, HPointer resume) {
                 ev.gen = gen;
                 ev.token = tok;
                 ev.wsId = wsId;
-                if (!h2->describe(ev.local, ev.remote)) {
+                bool ok = h2->describe(ev.local, ev.remote);
+                if (ok) {
+                    auto port = std::make_shared<H2StreamPort>(core);
+                    ok = h2->accept(st, headers, port);
+                    if (!ok) port->bind(nullptr, std::string());   // closes the core
+                } else {
                     core->portClosed();
+                }
+                if (!ok) {
                     ev.failed = true;
                     ev.code = "ECONNRESET";
                     ev.message = "socket closed";
-                    postWsEvent(std::move(ev));
-                    return;
                 }
+                // After the accept, as in `wsOpenOnConn`: a success means the core is bound to the stream.
                 postWsEvent(std::move(ev));
-                auto port = std::make_shared<H2StreamPort>(core);
-                if (!h2->accept(st, headers, port)) port->bind(nullptr, std::string());   // closes the core
             });
         }
         // Submitted before the stream pairs are created below, whose first requests then reach an installed codec:
         // reactor commands run in submission order.
         if (!h2) reactor().submit([c, core, response = std::move(response), tok, gen, wsId]() mutable {
-            HoldProtocol* hold = c ? dynamic_cast<HoldProtocol*>(c->protocol()) : nullptr;
-            // A client handshake over HTTP/2: an answered extended CONNECT parked in its session.
-            Http2ClientProtocol* h2c = c && !hold ? dynamic_cast<Http2ClientProtocol*>(c->protocol()) : nullptr;
-            WsEvent ev;
-            ev.kind = WsEvent::Kind::Opened;
-            ev.gen = gen;
-            ev.token = tok;
-            ev.wsId = wsId;
-            if ((!hold && !h2c) || c->phase() != Conn::Phase::Open || c->closing() || c->aborted()) {
-                core->portClosed();
-                ev.failed = true;
-                ev.code = "ECONNRESET";
-                ev.message = "socket closed";
-                postWsEvent(std::move(ev));
-                return;
-            }
-            if (h2c) {
-                SocketEvent se;
-                c->describe(se, std::string());
-                ev.local = se.local;
-                ev.remote = se.remote;
-                postWsEvent(std::move(ev));
-                auto port = std::make_shared<H2StreamPort>(core);
-                if (!h2c->bindPort(port)) port->bind(nullptr, std::string());   // closes the core
-                return;
-            }
-            std::string left = hold->takeLeftover();
-            (void)c->setNoDelay(true);   // small frames (pongs, pings) go out at once
-            if (!response.empty()) c->write(std::move(response), nullptr);
-            SocketEvent se;
-            c->describe(se, std::string());
-            ev.local = se.local;
-            ev.remote = se.remote;
-            postWsEvent(std::move(ev));
-            c->setProtocol(std::make_unique<WsProtocol>(core), std::move(left));
+            wsOpenOnConn(c, core, std::move(response), tok, gen, wsId);
         });
         // fromWire and toWire, rooted since they were read, are stored in the pairs, which scan them.
         int64_t rid = createMappedSource(new WsReadChannel(core, wsId), enc(fromWire));
@@ -564,6 +584,9 @@ HPointer wsRejectBody(HPointer captured, HPointer resume) {
         auto& t = wsTables();
         auto it = t.handshakes.find(id);
         if (it == t.handshakes.end()) return resumeNow(resume, succeedUnit());
+        // Only a server handshake can be refused (decision D13). A client one (made by `dial`) is left in place,
+        // unanswered, and the Task, which cannot fail, completes at once.
+        if (!it->second.server) return resumeNow(resume, succeedUnit());
         std::shared_ptr<Conn> c = std::move(it->second.conn);
         std::shared_ptr<H2PendingUpgrade> h2 = std::move(it->second.h2);
         // Released at the end of the scope, after the parkResume below.

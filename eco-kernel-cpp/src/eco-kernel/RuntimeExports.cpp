@@ -12,19 +12,19 @@ using namespace Eco::Kernel;
 using Elm::HPtr;
 
 HPtr Eco_Kernel_Runtime_dirname() {
-    return HPtr::fromBits(Runtime::dirname());
+    ECO_KERNEL_GUARD( return HPtr::fromBits(Runtime::dirname()); )
 }
 
 uint64_t Eco_Kernel_Runtime_random() {
-    return Runtime::random();
+    ECO_KERNEL_GUARD( return Runtime::random(); )
 }
 
 HPtr Eco_Kernel_Runtime_saveState(HPtr state) {
-    return HPtr::fromBits(Runtime::saveState(state.toBits()));
+    ECO_KERNEL_GUARD( return HPtr::fromBits(Runtime::saveState(state.toBits())); )
 }
 
 HPtr Eco_Kernel_Runtime_loadState() {
-    return HPtr::fromBits(Runtime::loadState());
+    ECO_KERNEL_GUARD( return HPtr::fromBits(Runtime::loadState()); )
 }
 
 extern "C" void Eco_Kernel_Runtime_register_gc_roots() {

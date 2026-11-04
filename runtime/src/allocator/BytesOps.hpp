@@ -24,8 +24,14 @@
 
 #include "Allocator.hpp"
 #include "HeapHelpers.hpp"
+#include <bit>
 #include <cstring>
 #include <vector>
+
+// The encoders and decoders swap bytes only for the order that differs from the host's, and take the host to be
+// little-endian.
+static_assert(std::endian::native == std::endian::little,
+              "Eco assumes a little-endian host (Bytes swaps, HPointer layout)");
 
 namespace Elm {
 namespace BytesOps {
@@ -137,7 +143,7 @@ inline HPointer encodeUnsignedInt(u64 value, Width width, Endianness endian) {
     u8 bytes[4];
 
     // The value is copied out in host order and byte-swapped only for BE, which is right only on a little-endian
-    // host.
+    // host (the `static_assert` at the top of this file).
     switch (width) {
         case Width::W8: {
             bytes[0] = static_cast<u8>(value & 0xFF);

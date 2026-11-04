@@ -5,7 +5,8 @@
 // -1 have defined answers, a Float outside the Int range converts to a defined Int, and `round`
 // breaks ties the way JavaScript's `Math.round` does. In C++ the plain expressions are undefined
 // for some of these inputs, or give a different answer, so the functions here spell out the Elm
-// result case by case. `modBy` with a zero modulus is the exception: it has no result and throws.
+// result case by case. `modBy` with a zero modulus gives 0, as the inline lowering does, where
+// elm/core crashes (CGEN_084, design_docs/elm-divergence.md).
 // Int is a 64-bit two's-complement integer here (`long long`) and Float is a `double`.
 //
 // A *saturating* conversion from Float to Int, used by every rounding function, gives 0 for NaN,
@@ -90,7 +91,7 @@ long long idiv(long long a, long long b);
 
 /// Returns `x` modulo `modulus` by floored division, so a non-zero result has the sign of `modulus`.
 ///
-/// A `modulus` of -1 gives 0. A zero `modulus` throws `std::runtime_error`.
+/// A `modulus` of -1 or 0 gives 0.
 long long modBy(long long modulus, long long x);
 
 /// Returns the remainder of `x` divided by `divisor` by truncated division, so a non-zero result has

@@ -1,7 +1,8 @@
 //===- JsonExports.cpp - C-linkage exports for Json module -----------------===//
 //
 // The native implementation of elm/json: the kernel functions behind Json.Decode and Json.Encode.
-// nlohmann/json (its `ordered_json`) does the parsing and printing; everything Elm sees is a value on the GC heap.
+// nlohmann/json (its `ordered_json`) does the parsing; `writeJsJson` prints the text as JavaScript's
+// `JSON.stringify` does. Everything Elm sees is a value on the GC heap.
 //
 // A `Json.Value` is a heap value of one of two families. The *encoder family* is what Json.Encode
 // builds: `ENC_*` Customs (ctors 0-6). Its arrays and objects hold Elm lists in the reverse of the
@@ -61,6 +62,10 @@
 #endif
 #include <string>
 #include <cstring>
+#include <cmath>
+#include <charconv>
+#include <cstdio>
+#include <cstdlib>
 #include <cassert>
 #include <vector>
 #include <algorithm>
@@ -325,21 +330,119 @@ static void appendMember(json& obj, std::string key, json value) {
     membersOf(obj).emplace_back(std::move(key), std::move(value));
 }
 
+//===----------------------------------------------------------------------===//
+// Lone surrogates: JSON.parse keeps a lone-surrogate escape such as `\ud83d` as one UTF-16 unit, but
+// the nlohmann lexer rejects it. `parseJson` therefore hides each one from the lexer behind the
+// noncharacter U+FDD0 and puts it back into the parsed strings (as the WTF-8 bytes `ED A0-BF xx`,
+// which `allocStringFromUTF8` reads as the one unit).
+//===----------------------------------------------------------------------===//
+
+// The stand-in for a hidden lone surrogate: U+FDD0, written `\ufdd0` (as long as the escape it
+// replaces, so the parser's error positions stay those of the original text) and lexed to the
+// UTF-8 bytes `EF B7 90`.
+static constexpr char kSurrogateMarkUtf8[] = "\xEF\xB7\x90";
+
+// The value in `marks` for an occurrence of U+FDD0 that was in the text itself.
+static constexpr int32_t kRealMark = -1;
+
+// Returns the value of the four hex digits at `p`, or -1 when `p[0..3]` are not all hex digits.
+static int32_t hex4(const char* p) {
+    int32_t v = 0;
+    for (int k = 0; k < 4; k++) {
+        char c = p[k];
+        int d = (c >= '0' && c <= '9') ? c - '0'
+              : (c >= 'a' && c <= 'f') ? c - 'a' + 10
+              : (c >= 'A' && c <= 'F') ? c - 'A' + 10 : -1;
+        if (d < 0) return -1;
+        v = v * 16 + d;
+    }
+    return v;
+}
+
+// Returns the surrogate that the `\uXXXX` escape at `text[i]` names, or -1 when there is no such
+// escape at `i`.
+static int32_t surrogateEscapeAt(const std::string& text, size_t i) {
+    if (i + 6 > text.size() || text[i] != '\\' || text[i + 1] != 'u') return -1;
+    int32_t v = hex4(text.data() + i + 2);
+    return (v >= 0xD800 && v <= 0xDFFF) ? v : -1;
+}
+
+// When `text` holds a lone-surrogate escape (one not part of an escaped high + low pair), sets `out`
+// to `text` with each one replaced by `\ufdd0`, and `marks` to one entry per U+FDD0 the lexer will
+// see, in text order: the hidden surrogate, or `kRealMark` for a U+FDD0 already in the text (raw or
+// escaped). Returns whether it found one; `out` and `marks` are untouched otherwise.
+static bool hideLoneSurrogates(const std::string& text, std::string& out, std::vector<int32_t>& marks) {
+    if (text.find("\\u") == std::string::npos) return false;
+    std::vector<int32_t> found;
+    std::string result;
+    bool anyLone = false;
+    const size_t n = text.size();
+    size_t copied = 0;  // text[0, copied) is in `result`
+    size_t i = 0;
+    while (i < n) {
+        unsigned char c = static_cast<unsigned char>(text[i]);
+        if (c == 0xEF && text.compare(i, 3, kSurrogateMarkUtf8) == 0) {
+            found.push_back(kRealMark);
+            i += 3;
+        } else if (c != '\\') {
+            i++;
+        } else if (i + 1 < n && text[i + 1] != 'u') {
+            i += 2;  // a two-character escape such as `\\`: its second character starts nothing
+        } else {
+            int32_t v = surrogateEscapeAt(text, i);
+            if (v < 0) {
+                if (i + 6 <= n && hex4(text.data() + i + 2) == 0xFDD0) found.push_back(kRealMark);
+                i += (i + 6 <= n) ? 6 : 1;
+                continue;
+            }
+            int32_t lo = (v <= 0xDBFF) ? surrogateEscapeAt(text, i + 6) : -1;
+            if (lo >= 0xDC00) {
+                i += 12;  // a valid pair, which the lexer joins
+                continue;
+            }
+            anyLone = true;
+            result.append(text, copied, i - copied);
+            result += "\\ufdd0";
+            found.push_back(v);
+            i += 6;
+            copied = i;
+        }
+    }
+    if (!anyLone) return false;
+    result.append(text, copied, n - copied);
+    out = std::move(result);
+    marks = std::move(found);
+    return true;
+}
+
 // The SAX handler that parses JSON text into an `ordered_json` whose objects are in JavaScript's key
 // order. It replaces `json::parse`, whose DOM builder inserts each key with a linear search.
+//
+// When `marks` is set (by `hideLoneSurrogates`), each U+FDD0 in a parsed string or key is replaced by
+// the next entry: its hidden lone surrogate, or itself for a `kRealMark`.
 class OrderedDomBuilder {
 public:
     json root;
+    const std::vector<int32_t>* marks = nullptr;
 
     bool null() { add(json(nullptr)); return true; }
     bool boolean(bool b) { add(json(b)); return true; }
     bool number_integer(json::number_integer_t n) { add(json(n)); return true; }
-    bool number_unsigned(json::number_unsigned_t n) { add(json(n)); return true; }
+    // An integer above INT64_MAX does not fit eco's Int, so it is kept as the double JavaScript
+    // would read, as an integer too large for nlohmann's unsigned type already is.
+    bool number_unsigned(json::number_unsigned_t n) {
+        if (n > static_cast<json::number_unsigned_t>(INT64_MAX)) {
+            add(json(static_cast<json::number_float_t>(n)));
+        } else {
+            add(json(n));
+        }
+        return true;
+    }
     bool number_float(json::number_float_t d, const json::string_t&) { add(json(d)); return true; }
-    bool string(json::string_t& str) { add(json(std::move(str))); return true; }
+    bool string(json::string_t& str) { restoreMarks(str); add(json(std::move(str))); return true; }
     bool binary(json::binary_t& b) { add(json::binary(std::move(b))); return true; }
     bool start_object(std::size_t) { stack_.push_back(add(json::object())); return true; }
-    bool key(json::string_t& k) { key_ = std::move(k); return true; }
+    bool key(json::string_t& k) { restoreMarks(k); key_ = std::move(k); return true; }
     bool end_object() {
         dedupeObject(*stack_.back());
         putInJsKeyOrder(*stack_.back());
@@ -356,6 +459,23 @@ public:
     std::string error;  // the parser's message, when it failed
 
 private:
+    // Replaces each U+FDD0 in `str` by the next entry of `marks`, in place (both are three bytes).
+    void restoreMarks(json::string_t& str) {
+        if (!marks) return;
+        size_t at = 0;
+        while ((at = str.find(kSurrogateMarkUtf8, at)) != json::string_t::npos) {
+            int32_t v = nextMark_ < marks->size() ? (*marks)[nextMark_++] : kRealMark;
+            if (v != kRealMark) {
+                str[at] = static_cast<char>(0xE0 | (v >> 12));
+                str[at + 1] = static_cast<char>(0x80 | ((v >> 6) & 0x3F));
+                str[at + 2] = static_cast<char>(0x80 | (v & 0x3F));
+            }
+            at += 3;
+        }
+    }
+
+    size_t nextMark_ = 0;  // the entry of `marks` for the next U+FDD0
+
     // Adds `value` to the innermost open container, or makes it the root, and returns where it now
     // lives. A container on the stack is always the last element of its parent, and only the
     // innermost one grows, so the pointers on the stack stay valid.
@@ -380,10 +500,15 @@ private:
 };
 
 // Parses `text` into `out` and returns true, or returns false with the parser's message in `error`.
+// A lone-surrogate escape is kept as that one unit, as JSON.parse keeps it (`hideLoneSurrogates`).
 // Does not allocate on the GC heap.
 static bool parseJson(const std::string& text, json& out, std::string& error) {
     OrderedDomBuilder builder;
-    if (!json::sax_parse(text, &builder)) {
+    std::string hidden;
+    std::vector<int32_t> marks;
+    const bool lone = hideLoneSurrogates(text, hidden, marks);
+    if (lone) builder.marks = &marks;
+    if (!json::sax_parse(lone ? hidden : text, &builder)) {
         error = builder.error;
         return false;
     }
@@ -719,20 +844,6 @@ static HPointer makeJsonObject(HPointer kvList) {
 }
 
 //===----------------------------------------------------------------------===//
-// JSON Value ADT - Query Helpers
-//===----------------------------------------------------------------------===//
-
-// Returns the ctor of the JSON value `jvalEnc`: the tag of a null-cons constant, or the heap Custom's
-// ctor. Returns 0 for any other constant. Nothing calls it.
-static u16 jsonValueCtor(uint64_t jvalEnc) {
-    if (isNullConsBits(jvalEnc)) return static_cast<u16>(nullConsTagBits(jvalEnc));
-    void* ptr = Export::toPtr(jvalEnc);
-    if (!ptr) return 0;
-    Custom* c = static_cast<Custom*>(ptr);
-    return c->ctor;
-}
-
-//===----------------------------------------------------------------------===//
 // jsonToHeap - Convert nlohmann::json to heap-resident JSON value ADT
 //===----------------------------------------------------------------------===//
 
@@ -740,7 +851,8 @@ static u16 jsonValueCtor(uint64_t jvalEnc) {
 //
 // Object entries are listed in the object's member order, which is already JavaScript's key order,
 // as `parseJson` and `elmToJson` build every object that reaches here. A number nlohmann
-// parsed as an integer becomes `CTOR_JSON_INT` and any other number `CTOR_JSON_FLOAT`.
+// parsed as an integer becomes `CTOR_JSON_INT` and any other number `CTOR_JSON_FLOAT`; `parseJson`
+// has already made every integer outside the i64 range a float.
 static HPointer jsonToHeap(const json& j) {
     auto& allocator = Allocator::instance();
 
@@ -926,19 +1038,6 @@ static uint64_t makeDecoder1(u16 ctor, uint64_t arg) {
     return Export::encode(Allocator::instance().wrap(dec));
 }
 
-// Allocates a decoder with ctor `ctor` and the one unboxed Int argument `arg`. Nothing calls it.
-static uint64_t makeDecoder1i(u16 ctor, int64_t arg) {
-    size_t size = sizeof(Custom) + sizeof(Unboxable);
-    size = (size + 7) & ~7;
-    Custom* dec = static_cast<Custom*>(
-        eco_alloc_with_roots(Tag_Custom, size, nullptr, 0, 0));
-    dec->header.size = 1;
-    dec->ctor = ctor;
-    dec->unboxed = 1;
-    dec->values[0].i = arg;
-    return Export::encode(Allocator::instance().wrap(dec));
-}
-
 // Allocates a decoder with ctor `ctor` and the two boxed arguments `arg1` and `arg2`, in that order,
 // both rooted across the allocation.
 static uint64_t makeDecoder2(u16 ctor, uint64_t arg1, uint64_t arg2) {
@@ -1055,7 +1154,6 @@ static uint64_t runDecoder(HPointer decoderHP, uint64_t jvalEncIn) {
     auto resolveJval = [&]() -> Custom* {
         if (jvalHP.ptr_ind != 0) return nullptr;
         void* p = allocator.resolve(jvalHP);
-        if (!p) return nullptr;
         if (static_cast<Header*>(p)->tag != Tag_Custom) return nullptr;
         return static_cast<Custom*>(p);
     };
@@ -1088,10 +1186,24 @@ static uint64_t runDecoder(HPointer decoderHP, uint64_t jvalEncIn) {
         }
 
         case DEC_INT: {
-            if (!jval || jctor != CTOR_JSON_INT) {
+            // Elm accepts any number for which `Number.isInteger` holds, so an integral float such
+            // as 1.0 or 1e3 decodes too (-0.0 as 0). One outside the i64 range fails, a documented
+            // divergence: Elm would answer with a double that eco's 64-bit Int cannot hold.
+            if (!jval || (jctor != CTOR_JSON_INT && jctor != CTOR_JSON_FLOAT)) {
                 return expecting("an INT", jvalHP);
             }
-            HPointer intVal = allocInt(jval->values[0].i);
+            i64 n;
+            if (jctor == CTOR_JSON_INT) {
+                n = jval->values[0].i;
+            } else {
+                f64 d = jval->values[0].f;
+                if (!std::isfinite(d) || std::trunc(d) != d
+                    || d < -9223372036854775808.0 || d >= 9223372036854775808.0) {
+                    return expecting("an INT", jvalHP);
+                }
+                n = static_cast<i64>(d);
+            }
+            HPointer intVal = allocInt(n);
             return makeOk(intVal);
         }
 
@@ -1631,6 +1743,198 @@ static json elmToJson(uint64_t valueEnc) {
 }
 
 //===----------------------------------------------------------------------===//
+// Serializer - JSON text as JavaScript's JSON.stringify writes it
+//===----------------------------------------------------------------------===//
+
+// Decodes the sequence that starts at `p[0]`, of `n` > 0 bytes, as WTF-8: UTF-8 that may also hold
+// a surrogate (U+D800-U+DFFF) as the three bytes `ED A0-BF xx`, which is how `StringOps::toStdString`
+// writes a lone surrogate. Sets `len` to the length of the sequence and returns its code point, or
+// returns -1 with `len` 1 when the byte at `p[0]` does not start a well-formed sequence.
+static int32_t decodeWtf8(const unsigned char* p, size_t n, size_t& len) {
+    auto cont = [&](size_t k, unsigned char lo, unsigned char hi) {
+        return k < n && p[k] >= lo && p[k] <= hi;
+    };
+    unsigned char c = p[0];
+    len = 1;
+    if (c < 0x80) return c;
+    if (c >= 0xC2 && c <= 0xDF && cont(1, 0x80, 0xBF)) {
+        len = 2;
+        return ((c & 0x1F) << 6) | (p[1] & 0x3F);
+    }
+    if (c >= 0xE0 && c <= 0xEF && cont(1, c == 0xE0 ? 0xA0 : 0x80, 0xBF) && cont(2, 0x80, 0xBF)) {
+        len = 3;
+        return ((c & 0x0F) << 12) | ((p[1] & 0x3F) << 6) | (p[2] & 0x3F);
+    }
+    if (c >= 0xF0 && c <= 0xF4 && cont(1, c == 0xF0 ? 0x90 : 0x80, c == 0xF4 ? 0x8F : 0xBF)
+        && cont(2, 0x80, 0xBF) && cont(3, 0x80, 0xBF)) {
+        len = 4;
+        return ((c & 0x07) << 18) | ((p[1] & 0x3F) << 12) | ((p[2] & 0x3F) << 6) | (p[3] & 0x3F);
+    }
+    return -1;
+}
+
+// Appends the code point `cp`, which is not a surrogate, to `out` as UTF-8.
+static void appendUtf8(int32_t cp, std::string& out) {
+    if (cp < 0x80) {
+        out.push_back(static_cast<char>(cp));
+    } else if (cp < 0x800) {
+        out.push_back(static_cast<char>(0xC0 | (cp >> 6)));
+        out.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
+    } else if (cp < 0x10000) {
+        out.push_back(static_cast<char>(0xE0 | (cp >> 12)));
+        out.push_back(static_cast<char>(0x80 | ((cp >> 6) & 0x3F)));
+        out.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
+    } else {
+        out.push_back(static_cast<char>(0xF0 | (cp >> 18)));
+        out.push_back(static_cast<char>(0x80 | ((cp >> 12) & 0x3F)));
+        out.push_back(static_cast<char>(0x80 | ((cp >> 6) & 0x3F)));
+        out.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
+    }
+}
+
+// Appends the WTF-8 text `s` to `out` as a JSON string literal, as `JSON.stringify` quotes a string.
+//
+// `"` and `\` are escaped, as are `\b \f \n \r \t`, and every other character below U+0020 is written
+// `\u00xx`. A lone surrogate is written `\udxxx`; a surrogate pair is joined into its code point.
+// Every other character is copied as it is, so the result is always valid UTF-8. A byte that starts no
+// well-formed sequence, which an Elm String never produces, is written as U+FFFD.
+static void writeJsString(const std::string& s, std::string& out) {
+    static constexpr char hex[] = "0123456789abcdef";
+    const auto* p = reinterpret_cast<const unsigned char*>(s.data());
+    const size_t n = s.size();
+    out.push_back('"');
+    size_t i = 0;
+    while (i < n) {
+        unsigned char c = p[i];
+        if (c < 0x80) {
+            switch (c) {
+                case '"':  out += "\\\""; break;
+                case '\\': out += "\\\\"; break;
+                case '\b': out += "\\b"; break;
+                case '\f': out += "\\f"; break;
+                case '\n': out += "\\n"; break;
+                case '\r': out += "\\r"; break;
+                case '\t': out += "\\t"; break;
+                default:
+                    if (c < 0x20) {
+                        out += "\\u00";
+                        out.push_back(hex[c >> 4]);
+                        out.push_back(hex[c & 0xF]);
+                    } else {
+                        out.push_back(static_cast<char>(c));
+                    }
+                    break;
+            }
+            ++i;
+            continue;
+        }
+        size_t len;
+        int32_t cp = decodeWtf8(p + i, n - i, len);
+        if (cp < 0) {
+            out += "\xEF\xBF\xBD";
+        } else if (cp >= 0xD800 && cp <= 0xDFFF) {
+            size_t len2 = 0;
+            int32_t lo = (cp <= 0xDBFF && i + len < n) ? decodeWtf8(p + i + len, n - i - len, len2) : -1;
+            if (lo >= 0xDC00 && lo <= 0xDFFF) {
+                appendUtf8(0x10000 + ((cp - 0xD800) << 10) + (lo - 0xDC00), out);
+                len += len2;
+            } else {
+                out += "\\u";
+                for (int shift = 12; shift >= 0; shift -= 4) out.push_back(hex[(cp >> shift) & 0xF]);
+            }
+        } else {
+            out.append(s, i, len);
+        }
+        i += len;
+    }
+    out.push_back('"');
+}
+
+// Appends `j` to `out` as `JSON.stringify(j, null, indent)` writes it, where `level` is the nesting
+// depth of `j`. Does not allocate on the GC heap.
+//
+// An `indent` above 0 puts each array element and object member on its own line, indented by
+// `indent` spaces per level, with `": "` after a key; an empty array or object is `[]` or `{}`. 0
+// writes everything on one line with no whitespace. A float is written as `Number.prototype.toString`
+// writes it (`3`, `1e+21`, `1.5e-7`), and NaN and the infinities as `null`. An integer is written in
+// full: unlike JavaScript, eco keeps all 64 bits of an Int. Object members are written in their
+// stored order, which is already JavaScript's.
+static void writeJsJson(const json& j, int indent, int level, std::string& out) {
+    auto newline = [&](int depth) {
+        out.push_back('\n');
+        out.append(static_cast<size_t>(indent) * static_cast<size_t>(depth), ' ');
+    };
+    switch (j.type()) {
+        case json::value_t::boolean:
+            out += j.get<bool>() ? "true" : "false";
+            return;
+        case json::value_t::number_integer:
+        case json::value_t::number_unsigned: {
+            char buf[24];
+            auto [end, ec] = j.is_number_unsigned()
+                ? std::to_chars(buf, buf + sizeof(buf), j.get<uint64_t>())
+                : std::to_chars(buf, buf + sizeof(buf), j.get<i64>());
+            (void)ec;
+            out.append(buf, end);
+            return;
+        }
+        case json::value_t::number_float: {
+            f64 d = j.get<f64>();
+            if (!std::isfinite(d)) {
+                out += "null";
+                return;
+            }
+            char buf[32];
+            out.append(buf, StringOps::formatFloatShortest(d, buf));
+            return;
+        }
+        case json::value_t::string:
+            writeJsString(j.get_ref<const json::string_t&>(), out);
+            return;
+        case json::value_t::array: {
+            const auto& elems = j.get_ref<const json::array_t&>();
+            if (elems.empty()) {
+                out += "[]";
+                return;
+            }
+            out.push_back('[');
+            for (size_t i = 0; i < elems.size(); ++i) {
+                if (i > 0) out.push_back(',');
+                if (indent > 0) newline(level + 1);
+                writeJsJson(elems[i], indent, level + 1, out);
+            }
+            if (indent > 0) newline(level);
+            out.push_back(']');
+            return;
+        }
+        case json::value_t::object: {
+            const JsonMembers& members =
+                static_cast<const JsonMembers&>(j.get_ref<const json::object_t&>());
+            if (members.empty()) {
+                out += "{}";
+                return;
+            }
+            out.push_back('{');
+            for (size_t i = 0; i < members.size(); ++i) {
+                if (i > 0) out.push_back(',');
+                if (indent > 0) newline(level + 1);
+                writeJsString(members[i].first, out);
+                out += indent > 0 ? ": " : ":";
+                writeJsJson(members[i].second, indent, level + 1, out);
+            }
+            if (indent > 0) newline(level);
+            out.push_back('}');
+            return;
+        }
+        case json::value_t::null:
+        case json::value_t::binary:
+        case json::value_t::discarded:
+            break;
+    }
+    out += "null";
+}
+
+//===----------------------------------------------------------------------===//
 // Extern C Functions
 //===----------------------------------------------------------------------===//
 
@@ -1803,7 +2107,6 @@ static uint64_t rewrapEscapingResult(uint64_t result) {
     HPointer payload = c->values[0].p;
     if (isConstant(payload)) return result;
     void* p = Allocator::instance().resolve(payload);
-    if (!p) return result;
     Header* h = static_cast<Header*>(p);
     // The number is copied out before the allocation, and the old box and `Ok` are not used after it,
     // so nothing needs rooting.
@@ -1895,16 +2198,20 @@ HPtr Elm_Kernel_Json_runOnString(HPtr decoder, HPtr jsonString) {
 // Encoding
 //===----------------------------------------------------------------------===//
 
-// Implementation: an `indent` above 0 prints one element or field per line, indented by `indent`
-// spaces per level; 0 or less prints on one line with no whitespace between tokens.
+// Implementation: the text is what `JSON.stringify(value, null, indent)` gives (`writeJsJson`). An
+// `indent` above 0 prints one element or field per line, indented by `indent` spaces per level, at
+// most 10 as in JavaScript; 0 or less prints on one line with no whitespace between tokens. No C++
+// exception leaves this export: one that would, such as `std::bad_alloc`, ends the process with a
+// message instead of unwinding through compiled code.
 HPtr Elm_Kernel_Json_encode(int64_t indent, HPtr value) {
     uint64_t valueEnc = value.toBits();
-    json j = elmToJson(valueEnc);
     std::string str;
-    if (indent > 0) {
-        str = j.dump(static_cast<int>(indent));
-    } else {
-        str = j.dump();
+    try {
+        json j = elmToJson(valueEnc);
+        writeJsJson(j, static_cast<int>(std::clamp<int64_t>(indent, 0, 10)), 0, str);
+    } catch (const std::exception& e) {
+        std::fprintf(stderr, "Elm runtime error: Json.Encode.encode failed: %s\n", e.what());
+        std::abort();
     }
     HPointer result = allocElmString(str);
     return HPtr::fromBits(Export::encode(result));

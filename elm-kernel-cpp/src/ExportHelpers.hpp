@@ -18,7 +18,6 @@
 #include "allocator/Allocator.hpp"
 #include "allocator/HeapHelpers.hpp"
 #include <cstdint>
-#include <cstdio>
 
 namespace Elm::Kernel::Export {
 

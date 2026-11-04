@@ -21,9 +21,9 @@ send the bytes as the request body and the path in an `X-Eco-Path` header. How
 a reply becomes a result, a failure or a crash is set out in `Eco.XHR`.
 
 Operations that can fail return a `Task IOError`, with the failure classified
-as `Eco.IO.Error` describes. `fileExists`, `dirExists`, `findExecutable`,
-`getCwd` and `appDataDir` have no failure type: any failure of theirs crashes
-the program, through `Eco.XHR.orCrash`.
+as `Eco.IO.Error` describes. `fileExists`, `dirExists` and `findExecutable`
+have no failure type: any failure of theirs crashes the program, through
+`Eco.XHR.orCrash`.
 
 What an operation does to the file system is decided by eco-io, not here.
 Where the eco-io server in this repository, `bin/eco-io-handler.js`, does
@@ -319,10 +319,10 @@ touch path =
 
 {-| The task that reads eco-io's current working directory.
 -}
-getCwd : Task Never String
+getCwd : Task IOError String
 getCwd =
     Eco.XHR.stringTask "File.getCwd" Encode.null
-        |> Eco.XHR.orCrash
+        |> Task.mapError IOErr.ofKernelTuple
 
 
 {-| Changes eco-io's current working directory to `path`.
@@ -338,8 +338,9 @@ setCwd path =
 
 The server in this repository succeeds even when the links cannot be resolved,
 for instance because `path` does not exist: it then returns `path` made
-absolute and normalized, with no links resolved. The task can still fail when
-the request to eco-io itself fails.
+absolute and normalized, with no links resolved. It fails for the empty path
+(`FileNotFound`) and when `path` cannot be made absolute. The task can also fail
+when the request to eco-io itself fails.
 
 -}
 canonicalize : String -> Task IOError String
@@ -355,11 +356,11 @@ the current user. The server in this repository gives
 under the home directory when that is unset) on Windows, and `~/.name`
 elsewhere. The directory need not exist.
 -}
-appDataDir : String -> Task Never String
+appDataDir : String -> Task IOError String
 appDataDir name =
     Eco.XHR.stringTask "File.appDataDir"
         (Encode.object [ ( "name", Encode.string name ) ])
-        |> Eco.XHR.orCrash
+        |> Task.mapError IOErr.ofKernelTuple
 
 
 {-| Creates the directory at `path`. When `createParents` is `True`, missing

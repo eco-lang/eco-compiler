@@ -55,6 +55,9 @@
 #include "RootedSlots.hpp"
 #include "RuntimeExports.h"
 #include <algorithm>
+#include <cstdint>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <string>
 #include <vector>
@@ -257,6 +260,15 @@ inline bool isEmptyString(HPointer ptr) {
 // Returns whether `ptr` is an embedded constant or a null-cons word; the same test as `isConstant`.
 inline bool isEmbeddedConstant(HPointer ptr) {
     return ptr.ptr_ind != 0;
+}
+
+// Returns the object `ptr` refers to, as `Allocator::resolve` does, or null when `ptr` is an embedded
+// constant or a null-cons word (`ptr_ind` set), such as `Nothing`, `[]`, `""` or `True`, which has no
+// object behind it. `Allocator::resolve` itself never returns null and must not be given a constant, so
+// this is the call for a value that may be one; a null test after a plain `resolve` is dead code.
+inline void* resolveOrNull(HPointer ptr) {
+    if (ptr.ptr_ind != 0) return nullptr;
+    return Allocator::instance().resolve(ptr);
 }
 
 // ============================================================================
@@ -697,7 +709,6 @@ struct RootedListCursor {
         while (true) {
             if (isNil(node) || node.ptr_ind != 0) return false;
             void* obj = alloc_->resolve(node);
-            if (!obj) return false;
             Header* hdr = getHeader(obj);
             if (hdr->tag == Tag_Cons) {
                 Cons* c = static_cast<Cons*>(obj);
@@ -729,7 +740,6 @@ struct RootedListCursor {
     void advance() {
         if (isNil(node) || node.ptr_ind != 0) return;
         void* obj = alloc_->resolve(node);
-        if (!obj) { node = listNil(); return; }
         Header* hdr = getHeader(obj);
         if (hdr->tag == Tag_Cons) {
             node = static_cast<Cons*>(obj)->tail;
@@ -809,10 +819,6 @@ private:
                 return;
             }
             void* obj = alloc_->resolve(rest);
-            if (!obj) {
-                done_ = true;
-                return;
-            }
             Header* hdr = getHeader(obj);
             if (hdr->tag == Tag_Cons) {
                 Cons* c = static_cast<Cons*>(obj);
@@ -858,7 +864,6 @@ inline u32 listLogicalLen(HPointer list) {
     HPointer cur = list;
     while (!isNil(cur) && cur.ptr_ind == 0) {
         void* obj = Allocator::instance().resolve(cur);
-        if (!obj) break;
         Header* hdr = getHeader(obj);
         if (hdr->tag == Tag_Cons) {
             ++n;
@@ -1009,7 +1014,6 @@ struct ListBackwardCursor {
         HPointer cur = list;
         while (!isNil(cur) && cur.ptr_ind == 0) {
             void* obj = alloc_->resolve(cur);
-            if (!obj) break;
             Header* h = getHeader(obj);
             if (h->tag == Tag_Cons) {
                 nodes.push_back(cur);
@@ -1458,8 +1462,17 @@ inline HPointer record(const std::vector<Unboxable>& values, u64 unboxed_mask) {
 // ByteBuffer Allocation
 // ============================================================================
 
+// Reports that a Bytes value of `length` bytes was asked for, and aborts. A ByteBuffer's length is the u32
+// `header.size`, so no Bytes value holds more than `UINT32_MAX` bytes; the allocators below call this rather
+// than narrow a larger length.
+[[noreturn]] inline void byteBufferTooLarge(size_t length) {
+    std::fprintf(stderr, "eco: a Bytes value of %zu bytes exceeds the 4 GiB Bytes limit\n", length);
+    std::abort();
+}
+
 // Returns a Bytes value holding a copy of the `length` bytes at `data`, or the empty Bytes when `length`
-// is 0. With a null `data` nothing is copied, and the large path zeroes the body.
+// is 0. With a null `data` nothing is copied, and the large path zeroes the body. A `length` over
+// `UINT32_MAX` aborts (`byteBufferTooLarge`).
 //
 // A Bytes value whose object would be at least the large-object threshold is built by
 // `Allocator::allocLargeByteBuffer`, as a nursery header and a pinned body; any other is one
@@ -1467,6 +1480,7 @@ inline HPointer record(const std::vector<Unboxable>& values, u64 unboxed_mask) {
 // therefore not point into the collected heap, unless it points into a rooted large body.
 inline HPointer allocByteBuffer(const u8* data, size_t length) {
     if (length == 0) return emptyBytes();
+    if (length > UINT32_MAX) byteBufferTooLarge(length);
     auto& allocator = Allocator::instance();
     size_t total_size = sizeof(ByteBuffer) + length;
     total_size = (total_size + 7) & ~7;
@@ -1500,13 +1514,15 @@ struct BlankByteBuffer {
 };
 
 // Allocates a Bytes value of `length` bytes and returns it with a pointer to write them through, so that
-// an encoder can write straight into the object. The size split is as for `allocByteBuffer`. A GC point,
+// an encoder can write straight into the object. The size split and the `UINT32_MAX` limit are as for
+// `allocByteBuffer`. A GC point,
 // so any HPointer the caller holds across it must be rooted.
 //
 // Nothing is written to the bytes on the small path; the large path zeroes them. The result's `bytes` is valid
 // only as `BlankByteBuffer` says.
 inline BlankByteBuffer allocByteBufferBlank(size_t length) {
     if (length == 0) return BlankByteBuffer{emptyBytes(), nullptr, 0};
+    if (length > UINT32_MAX) byteBufferTooLarge(length);
     auto& allocator = Allocator::instance();
 
     size_t total_size = sizeof(ByteBuffer) + length;
@@ -1526,9 +1542,11 @@ inline BlankByteBuffer allocByteBufferBlank(size_t length) {
     return BlankByteBuffer{hp, buf->bytes, static_cast<u32>(length)};
 }
 
-// Returns a Bytes value of `length` zero bytes, or the empty Bytes when `length` is 0. A GC point.
+// Returns a Bytes value of `length` zero bytes, or the empty Bytes when `length` is 0. A `length` over
+// `UINT32_MAX` aborts, as for `allocByteBuffer`. A GC point.
 inline HPointer allocByteBufferZero(size_t length) {
     if (length == 0) return emptyBytes();
+    if (length > UINT32_MAX) byteBufferTooLarge(length);
     auto& allocator = Allocator::instance();
     size_t total_size = sizeof(ByteBuffer) + length;
     total_size = (total_size + 7) & ~7;
@@ -1653,9 +1671,7 @@ public:
         if (!active_) return;
         active_ = false;
         void* obj = Allocator::instance().resolve(*hp_);
-        if (obj) {
-            clear_builder(static_cast<Header*>(obj));
-        }
+        clear_builder(static_cast<Header*>(obj));
     }
 
     // Clears the builder bit, unless `clear` already has.
@@ -1935,9 +1951,14 @@ enum TaskCtor : u16 {
 
 // The constructor index of a stack frame, the Custom that `stackFrame` builds.
 static constexpr u16 CTOR_StackFrame = 0xFFFE;
-// The constructor index of an effect router. The same value as `CONSTANT_TAG`, which is reported for
-// the Empty constant.
-static constexpr u16 CTOR_Router     = 0xFFFD;
+// The constructor index of an effect router.
+static constexpr u16 CTOR_Router     = 0xFFFC;
+// The reserved constructor tags (Heap.hpp, next to `CONSTANT_TAG`) are pairwise distinct. 0xFFFF is
+// `CTOR_DICT_RBNODE` in elm-kernel-cpp.
+static_assert(CTOR_Router != CONSTANT_TAG && CTOR_StackFrame != CONSTANT_TAG,
+              "a runtime constructor tag equals CONSTANT_TAG");
+static_assert(CTOR_Router != CTOR_StackFrame && CTOR_Router != 0xFFFF && CTOR_StackFrame != 0xFFFF,
+              "two reserved constructor tags are equal");
 
 /**
  * The constructor index of a node of an effect bag.
@@ -2127,13 +2148,11 @@ inline HPointer makeByteBufferSlice(HPointer base, u32 offset, u32 length) {
     if (length == 0) return emptyBytes();
 
     void* base_obj = allocator.resolve(base);
-    if (base_obj) {
-        Header* h = static_cast<Header*>(base_obj);
-        if (h->tag == Tag_ByteBufferSlice) {
-            ElmByteBufferSlice* inner = static_cast<ElmByteBufferSlice*>(base_obj);
-            base = inner->base;
-            offset += inner->offset;
-        }
+    Header* h = static_cast<Header*>(base_obj);
+    if (h->tag == Tag_ByteBufferSlice) {
+        ElmByteBufferSlice* inner = static_cast<ElmByteBufferSlice*>(base_obj);
+        base = inner->base;
+        offset += inner->offset;
     }
 
     // The bytes are copied to the C++ stack first because allocByteBuffer copies only after it allocates,

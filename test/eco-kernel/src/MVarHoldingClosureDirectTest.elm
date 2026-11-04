@@ -61,7 +61,7 @@ init _ =
                     )
                 |> Task.map (\g -> g 3 4 == 107)
     in
-    ( Nothing, Task.perform GotResult task )
+    ( Nothing, Task.perform GotResult (task |> Task.onError (\_ -> Task.succeed False)) )
 
 
 update : Msg -> Model -> ( Model, Cmd Msg )

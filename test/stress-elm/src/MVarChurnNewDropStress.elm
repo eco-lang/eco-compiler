@@ -12,6 +12,7 @@ module MVarChurnNewDropStress exposing (main)
 
 import Bytes.Decode as BD
 import Bytes.Encode as BE
+import Eco.IO.Error exposing (IOError)
 import Eco.MVar as MV
 import StressHarness exposing (StressFlags)
 import Task
@@ -28,12 +29,12 @@ intDec =
 
 
 {-| Builds a throwaway list to churn nursery memory on each churn iter. -}
-smallAlloc : Int -> Task.Task Never Int
+smallAlloc : Int -> Task.Task IOError Int
 smallAlloc size =
     Task.succeed (List.sum (List.range 1 size))
 
 
-churn : Int -> MV.MVar Int -> Int -> Task.Task Never ()
+churn : Int -> MV.MVar Int -> Int -> Task.Task IOError ()
 churn size persistent i =
     if i <= 0 then
         Task.succeed ()
@@ -78,6 +79,7 @@ run flags =
                     |> Task.andThen (\_ -> MV.take intDec persistent)
             )
         |> Task.map (\final -> final == count // 16)
+        |> Task.onError (\_ -> Task.succeed False)
 
 
 main : Program StressFlags StressHarness.Model StressHarness.Msg

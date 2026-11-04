@@ -5,6 +5,8 @@
 #include "allocator/StringOps.hpp"
 #include "allocator/ListOps.hpp"
 
+#include <cassert>
+#include <utility>
 #include <vector>
 
 namespace Elm::Kernel::Utils {
@@ -33,8 +35,9 @@ uint64_t getOrderGT() { return nullConsWordFor(ORDER_GT); }
 /// `RBEmpty_elm_builtin` needs no tag: it has no fields, so it is an embedded constant and never reaches
 /// `eqHelp` as a heap object.
 constexpr u16 CTOR_DICT_RBNODE = 0xFFFF;
-// 0xFFFD is also reserved: it is the tag the runtime reports for the Empty constant (runtime `Heap.hpp`,
-// `CONSTANT_TAG`). The runtime's effect-router constructor, `CTOR_Router`, has the same value.
+// 0xFFFC to 0xFFFE are reserved too: 0xFFFD is the tag the runtime reports for the Empty constant (runtime
+// `Heap.hpp`, `CONSTANT_TAG`, which lists the whole range), 0xFFFC and 0xFFFE its router and stack-frame
+// constructors.
 
 /// Returns whether `ctor` is the constructor tag of a Dict node.
 static bool isDictCtor(u16 ctor) {
@@ -90,11 +93,17 @@ static int resolveAndCompare(Allocator& allocator, HPointer ap, HPointer bp,
     return 1;
 }
 
-static bool eqHelp(void* a, void* b, int depth);
-static bool dictEq(void* a, void* b, int depth);
+/// The pairs `eqHelp` met beyond its depth bound and left for `equal` to compare, as elm/core's JS
+/// `_Utils_eqHelp` does with its `stack`. The raw addresses stay valid because equality allocates
+/// nothing, so no collection can run, and no object moves, while one `equal` call runs; the vector itself
+/// is ordinary C++ memory, off the GC heap.
+using EqDeferred = std::vector<std::pair<void*, void*>>;
+
+static bool eqHelp(void* a, void* b, int depth, EqDeferred& deferred);
+static bool dictEq(void* a, void* b, int depth, EqDeferred& deferred);
 
 /// Returns whether slots `a` and `b`, of kinds `aKind` and `bKind`, hold equal values, with `depth` the
-/// nesting depth `eqHelp` bounds.
+/// nesting depth `eqHelp` bounds and `deferred` the pairs it leaves for `equal`.
 ///
 /// Same-kind primitives compare by value, Floats with IEEE `==`. Two boxed slots are decided by
 /// `resolveAndCompare`, or by `eqHelp` one level deeper. A boxed slot and an unboxed one are equal when
@@ -102,7 +111,7 @@ static bool dictEq(void* a, void* b, int depth);
 /// different kinds is unequal.
 static bool eqUnboxableSlot(Allocator& allocator,
                              Elm::Unboxable a, Elm::Unboxable b,
-                             uint32_t aKind, uint32_t bKind, int depth) {
+                             uint32_t aKind, uint32_t bKind, int depth, EqDeferred& deferred) {
     if (aKind == bKind) {
         switch (aKind) {
             case 1: return a.i == b.i;
@@ -111,7 +120,7 @@ static bool eqUnboxableSlot(Allocator& allocator,
             default: {
                 void* ao; void* bo; bool eq;
                 if (resolveAndCompare(allocator, a.p, b.p, &ao, &bo, &eq) == 0) return eq;
-                return eqHelp(ao, bo, depth + 1);
+                return eqHelp(ao, bo, depth + 1, deferred);
             }
         }
     }
@@ -172,13 +181,13 @@ static int compareUnboxableSlot(Allocator& allocator,
                 // `header.size` is the length in UTF-16 units in every String form.
                 if (alloc::isEmptyString(a.p) && !bConst) {
                     void* bo2 = allocator.resolve(b.p);
-                    if (bo2 && alloc::isString(bo2)) {
+                    if (alloc::isString(bo2)) {
                         return static_cast<Header*>(bo2)->size == 0 ? 0 : -1;
                     }
                 }
                 if (alloc::isEmptyString(b.p) && !aConst) {
                     void* ao2 = allocator.resolve(a.p);
-                    if (ao2 && alloc::isString(ao2)) {
+                    if (alloc::isString(ao2)) {
                         return static_cast<Header*>(ao2)->size == 0 ? 0 : 1;
                     }
                 }
@@ -208,14 +217,14 @@ static inline bool isListNode(void* p) {
     return t == Tag_Cons || t == Tag_ConsChunk;
 }
 
-/// Returns the order of list elements `aSlot` and `bSlot`, of kinds `aKind` and `bKind`, with `cmpFn`
-/// used to compare two boxed heap values.
+/// Returns the order of slots `aSlot` and `bSlot` (list elements or tuple fields), of kinds `aKind` and
+/// `bKind`, with `cmpFn` used to compare two boxed heap values.
 ///
-/// Same-kind elements go to `compareUnboxableSlot`. When one is boxed and refers to a heap Int, Float or
-/// Char of the other's kind, the values are compared, Floats with `<` and `==` rather than
-/// `compareFloat`. A boxed element that is a constant orders above the unboxed one. Any other pair orders
-/// by kind.
-static int compareListElem(Elm::Allocator& allocator,
+/// Same-kind slots go to `compareUnboxableSlot`. When one is boxed and refers to a heap Int, Float or
+/// Char of the other's kind, the values are compared as `compareUnboxableSlot` compares them (Floats by
+/// `compareFloat`), so the order agrees with `eqUnboxableSlot`. A boxed slot that is a constant orders
+/// above the unboxed one. Any other pair orders by kind; well-typed values do not reach that.
+static int compareMixedSlot(Elm::Allocator& allocator,
                            Elm::Unboxable aSlot, uint32_t aKind,
                            Elm::Unboxable bSlot, uint32_t bKind,
                            int (*cmpFn)(void*, void*)) {
@@ -241,8 +250,8 @@ static int compareListElem(Elm::Allocator& allocator,
             } else if (primKind == 2) {
                 f64 bv = static_cast<ElmFloat*>(boxedPtr)->value;
                 f64 uv = prim.f;
-                if (aKind == 0) { ord = (bv == uv) ? 0 : (bv < uv ? -1 : 1); }
-                else             { ord = (uv == bv) ? 0 : (uv < bv ? -1 : 1); }
+                if (aKind == 0) { ord = compareFloat(bv, uv); }
+                else             { ord = compareFloat(uv, bv); }
             } else {
                 u32 bv = static_cast<ElmChar*>(boxedPtr)->value;
                 u32 uv = prim.c;
@@ -267,7 +276,7 @@ static int cmpListHybrid(void* a, void* b) {
     alloc::ListCursor ca(allocator.wrap(a));
     alloc::ListCursor cb(allocator.wrap(b));
     while (!ca.done() && !cb.done()) {
-        int ord = compareListElem(allocator, ca.current(), ca.currentKind(),
+        int ord = compareMixedSlot(allocator, ca.current(), ca.currentKind(),
                                   cb.current(), cb.currentKind(), cmp);
         if (ord != 0) return ord;
         ca.next();
@@ -336,19 +345,12 @@ static int cmp(void* a, void* b) {
             Header* ahdr = getHeader(a);
             Header* bhdr = getHeader(b);
 
-            {
-                uint32_t aKind = Elm::tupleFieldKind(ahdr->unboxed, 0);
-                uint32_t bKind = Elm::tupleFieldKind(bhdr->unboxed, 0);
-                if (aKind != bKind) return aKind < bKind ? -1 : 1;
-                int ord = compareUnboxableSlot(allocator, atup->a, btup->a, aKind, cmp);
-                if (ord != 0) return ord;
-            }
-            {
-                uint32_t aKind = Elm::tupleFieldKind(ahdr->unboxed, 1);
-                uint32_t bKind = Elm::tupleFieldKind(bhdr->unboxed, 1);
-                if (aKind != bKind) return aKind < bKind ? -1 : 1;
-                return compareUnboxableSlot(allocator, atup->b, btup->b, aKind, cmp);
-            }
+            // A slot boxed on one side and unboxed on the other compares by value, as `==` does.
+            int ord = compareMixedSlot(allocator, atup->a, Elm::tupleFieldKind(ahdr->unboxed, 0),
+                                       btup->a, Elm::tupleFieldKind(bhdr->unboxed, 0), cmp);
+            if (ord != 0) return ord;
+            return compareMixedSlot(allocator, atup->b, Elm::tupleFieldKind(ahdr->unboxed, 1),
+                                    btup->b, Elm::tupleFieldKind(bhdr->unboxed, 1), cmp);
         }
 
         case Tag_Tuple3: {
@@ -360,10 +362,9 @@ static int cmp(void* a, void* b) {
             for (unsigned i = 0; i < 3; ++i) {
                 uint32_t aKind = Elm::tupleFieldKind(ahdr->unboxed, i);
                 uint32_t bKind = Elm::tupleFieldKind(bhdr->unboxed, i);
-                if (aKind != bKind) return aKind < bKind ? -1 : 1;
                 Elm::Unboxable aSlot = (i == 0) ? atup->a : (i == 1) ? atup->b : atup->c;
                 Elm::Unboxable bSlot = (i == 0) ? btup->a : (i == 1) ? btup->b : btup->c;
-                int ord = compareUnboxableSlot(allocator, aSlot, bSlot, aKind, cmp);
+                int ord = compareMixedSlot(allocator, aSlot, aKind, bSlot, bKind, cmp);
                 if (ord != 0 || i == 2) return ord;
             }
             return 0;
@@ -382,7 +383,7 @@ static int cmp(void* a, void* b) {
                     return cmpListHybrid(ax, bx);
                 }
 
-                int ord = compareListElem(
+                int ord = compareMixedSlot(
                     allocator, ax->head,
                     Elm::tupleFieldKind(ahdr->unboxed, 0), bx->head,
                     Elm::tupleFieldKind(bhdr->unboxed, 0), cmp);
@@ -431,20 +432,30 @@ int cmp3(void* a, void* b) {
 // ============================================================================
 
 bool equal(void* a, void* b) {
-    return eqHelp(a, b, 0);
+    // `eqHelp` recurses at most about 100 boxed levels deep and defers the pairs below that; each deferred
+    // pair is compared afresh from depth 0, which may defer more. So the C stack stays bounded and every
+    // part of both values is still examined.
+    EqDeferred deferred;
+    bool isEqual = eqHelp(a, b, 0, deferred);
+    while (isEqual && !deferred.empty()) {
+        auto [x, y] = deferred.back();
+        deferred.pop_back();
+        isEqual = eqHelp(x, y, 0, deferred);
+    }
+    return isEqual;
 }
 
 /// Returns whether list elements `aSlot` and `bSlot`, of kinds `aKind` and `bKind`, are equal, with
-/// `depth` the nesting depth `eqHelp` bounds.
+/// `depth` the nesting depth `eqHelp` bounds and `deferred` the pairs it leaves for `equal`.
 ///
 /// Same-kind elements go to `eqUnboxableSlot`. A boxed element and an unboxed one are equal when the
 /// boxed side is a heap Int, Float or Char of the unboxed kind with the same value; any other pair of
 /// different kinds is unequal.
 static bool eqListElem(Elm::Allocator& allocator,
                        Elm::Unboxable aSlot, uint32_t aKind,
-                       Elm::Unboxable bSlot, uint32_t bKind, int depth) {
+                       Elm::Unboxable bSlot, uint32_t bKind, int depth, EqDeferred& deferred) {
     if (aKind == bKind) {
-        return eqUnboxableSlot(allocator, aSlot, bSlot, aKind, bKind, depth);
+        return eqUnboxableSlot(allocator, aSlot, bSlot, aKind, bKind, depth, deferred);
     }
     if (aKind == 0 || bKind == 0) {
         HPointer boxedHP = (aKind == 0) ? aSlot.p : bSlot.p;
@@ -470,13 +481,13 @@ static bool eqListElem(Elm::Allocator& allocator,
 /// Returns whether the lists whose first spine nodes are at `a` and `b` have equal elements and the same
 /// length, walking them in whatever spine forms they have. Used only where a spine contains a chunk view,
 /// as for `cmpListHybrid`.
-static bool eqListHybrid(void* a, void* b, int depth) {
+static bool eqListHybrid(void* a, void* b, int depth, EqDeferred& deferred) {
     auto& allocator = Allocator::instance();
     alloc::ListCursor ca(allocator.wrap(a));
     alloc::ListCursor cb(allocator.wrap(b));
     while (!ca.done() && !cb.done()) {
         if (!eqListElem(allocator, ca.current(), ca.currentKind(),
-                        cb.current(), cb.currentKind(), depth)) {
+                        cb.current(), cb.currentKind(), depth, deferred)) {
             return false;
         }
         ca.next();
@@ -485,9 +496,10 @@ static bool eqListHybrid(void* a, void* b, int depth) {
     return ca.done() && cb.done();
 }
 
-/// Returns `equal(a, b)` for values reached through `depth` levels of boxed slots. Above 100, for two values
-/// with the same tag that are not Strings or Bytes, it returns true without looking.
-static bool eqHelp(void* a, void* b, int depth) {
+/// Returns `equal(a, b)` for values reached through `depth` levels of boxed slots, as far as this call
+/// decides it. Above 100, for two values with the same tag that are not Strings or Bytes, it pushes the
+/// pair onto `deferred` and returns true; `equal` compares the deferred pairs afterwards.
+static bool eqHelp(void* a, void* b, int depth, EqDeferred& deferred) {
     if (a == b) return true;
 
     if (!a || !b) return alloc::isZeroLengthString(a ? a : b);
@@ -511,13 +523,14 @@ static bool eqHelp(void* a, void* b, int depth) {
     // As in `cmp`, a cell and a chunk view are tested for only when the tags differ.
     if (tagA != tagB) {
         if (isListNode(a) && isListNode(b)) {
-            return eqListHybrid(a, b, depth);
+            return eqListHybrid(a, b, depth, deferred);
         }
         return false;
     }
 
-    // Bounds the recursion, at the price of reporting deeply nested values equal unexamined.
+    // Bounds the recursion: the pair is compared later, from depth 0, by `equal`.
     if (depth > 100) {
+        deferred.emplace_back(a, b);
         return true;
     }
 
@@ -553,10 +566,10 @@ static bool eqHelp(void* a, void* b, int depth) {
             Header* bhdr = getHeader(b);
             if (!eqUnboxableSlot(allocator, atup->a, btup->a,
                                   Elm::tupleFieldKind(ahdr->unboxed, 0),
-                                  Elm::tupleFieldKind(bhdr->unboxed, 0), depth)) return false;
+                                  Elm::tupleFieldKind(bhdr->unboxed, 0), depth, deferred)) return false;
             return eqUnboxableSlot(allocator, atup->b, btup->b,
                                     Elm::tupleFieldKind(ahdr->unboxed, 1),
-                                    Elm::tupleFieldKind(bhdr->unboxed, 1), depth);
+                                    Elm::tupleFieldKind(bhdr->unboxed, 1), depth, deferred);
         }
 
         case Tag_Tuple3: {
@@ -566,13 +579,13 @@ static bool eqHelp(void* a, void* b, int depth) {
             Header* bhdr = getHeader(b);
             if (!eqUnboxableSlot(allocator, atup->a, btup->a,
                                   Elm::tupleFieldKind(ahdr->unboxed, 0),
-                                  Elm::tupleFieldKind(bhdr->unboxed, 0), depth)) return false;
+                                  Elm::tupleFieldKind(bhdr->unboxed, 0), depth, deferred)) return false;
             if (!eqUnboxableSlot(allocator, atup->b, btup->b,
                                   Elm::tupleFieldKind(ahdr->unboxed, 1),
-                                  Elm::tupleFieldKind(bhdr->unboxed, 1), depth)) return false;
+                                  Elm::tupleFieldKind(bhdr->unboxed, 1), depth, deferred)) return false;
             return eqUnboxableSlot(allocator, atup->c, btup->c,
                                     Elm::tupleFieldKind(ahdr->unboxed, 2),
-                                    Elm::tupleFieldKind(bhdr->unboxed, 2), depth);
+                                    Elm::tupleFieldKind(bhdr->unboxed, 2), depth, deferred);
         }
 
         case Tag_Cons: {
@@ -584,14 +597,14 @@ static bool eqHelp(void* a, void* b, int depth) {
                 Header* ahdr = getHeader(ax);
                 Header* bhdr = getHeader(bx);
                 if (ahdr->tag != Tag_Cons || bhdr->tag != Tag_Cons) {
-                    return eqListHybrid(ax, bx, depth);
+                    return eqListHybrid(ax, bx, depth, deferred);
                 }
 
                 if (!eqListElem(allocator, ax->head,
                                 Elm::tupleFieldKind(ahdr->unboxed, 0),
                                 bx->head,
                                 Elm::tupleFieldKind(bhdr->unboxed, 0),
-                                depth)) {
+                                depth, deferred)) {
                     return false;
                 }
 
@@ -607,7 +620,7 @@ static bool eqHelp(void* a, void* b, int depth) {
         }
 
         case Tag_ConsChunk:
-            return eqListHybrid(a, b, depth);
+            return eqListHybrid(a, b, depth, deferred);
 
         case Tag_Custom: {
             Custom* ac = static_cast<Custom*>(a);
@@ -615,7 +628,7 @@ static bool eqHelp(void* a, void* b, int depth) {
 
             // Two Dicts with the same pairs may have different trees, depending on insertion order.
             if (isDictCtor(ac->ctor) || isDictCtor(bc->ctor)) {
-                return dictEq(a, b, depth);
+                return dictEq(a, b, depth, deferred);
             }
 
             if (ac->ctor != bc->ctor) return false;
@@ -626,7 +639,7 @@ static bool eqHelp(void* a, void* b, int depth) {
             for (u32 i = 0; i < fieldCount; ++i) {
                 uint32_t aKind = static_cast<uint32_t>(Elm::customSlotKind(ac, i));
                 uint32_t bKind = static_cast<uint32_t>(Elm::customSlotKind(bc, i));
-                if (!eqUnboxableSlot(allocator, ac->values[i], bc->values[i], aKind, bKind, depth)) return false;
+                if (!eqUnboxableSlot(allocator, ac->values[i], bc->values[i], aKind, bKind, depth, deferred)) return false;
             }
 
             return true;
@@ -642,7 +655,7 @@ static bool eqHelp(void* a, void* b, int depth) {
             for (u32 i = 0; i < fieldCount; ++i) {
                 uint32_t aKind = static_cast<uint32_t>(Elm::recordSlotKind(ar, i));
                 uint32_t bKind = static_cast<uint32_t>(Elm::recordSlotKind(br, i));
-                if (!eqUnboxableSlot(allocator, ar->values[i], br->values[i], aKind, bKind, depth)) return false;
+                if (!eqUnboxableSlot(allocator, ar->values[i], br->values[i], aKind, bKind, depth, deferred)) return false;
             }
 
             return true;
@@ -660,7 +673,7 @@ static bool eqHelp(void* a, void* b, int depth) {
             // One kind covers every element. Two arrays with the same elements may still differ in it, for
             // example one decoded from JSON with an Int decoder and one built from a list of boxed Ints.
             for (u32 i = 0; i < aa->length; ++i) {
-                if (!eqUnboxableSlot(allocator, aa->elements[i], ba->elements[i], aKind, bKind, depth)) return false;
+                if (!eqUnboxableSlot(allocator, aa->elements[i], ba->elements[i], aKind, bKind, depth, deferred)) return false;
             }
 
             return true;
@@ -684,13 +697,13 @@ static bool eqHelp(void* a, void* b, int depth) {
 }
 
 /// Returns whether the Dicts whose root nodes are at `a` and `b` hold equal key/value pairs in the same
-/// key order, with `depth` the nesting depth `eqHelp` bounds.
+/// key order, with `depth` the nesting depth `eqHelp` bounds and `deferred` the pairs it leaves for `equal`.
 ///
 /// Walks both trees in order, in step, with an explicit stack each. A node is
 /// `RBNode_elm_builtin color key value left right`, in slots 0 to 4. Colours are ignored, since two trees
 /// holding the same pairs can colour their nodes differently. A non-Dict node, such as a Custom with
 /// another constructor on one side, ends that tree's walk.
-static bool dictEq(void* a, void* b, int depth) {
+static bool dictEq(void* a, void* b, int depth, EqDeferred& deferred) {
     auto& allocator = Allocator::instance();
 
     // Returns the Custom a subtree word refers to, or null for a constant (the empty subtree, RBEmpty) or a
@@ -698,7 +711,6 @@ static bool dictEq(void* a, void* b, int depth) {
     auto resolveCustom = [&allocator](HPointer hp) -> Custom* {
         if (alloc::isConstant(hp)) return nullptr;
         void* obj = allocator.resolve(hp);
-        if (!obj) return nullptr;
         Header* hdr = static_cast<Header*>(obj);
         if (hdr->tag != Tag_Custom) return nullptr;
         return static_cast<Custom*>(obj);
@@ -723,14 +735,14 @@ static bool dictEq(void* a, void* b, int depth) {
         uint32_t aKKind = static_cast<uint32_t>(Elm::fieldKind(aNode->unboxed, 1));
         uint32_t bKKind = static_cast<uint32_t>(Elm::fieldKind(bNode->unboxed, 1));
         if (!eqUnboxableSlot(allocator, aNode->values[1], bNode->values[1],
-                              aKKind, bKKind, depth)) {
+                              aKKind, bKKind, depth, deferred)) {
             return false;
         }
 
         uint32_t aVKind = static_cast<uint32_t>(Elm::fieldKind(aNode->unboxed, 2));
         uint32_t bVKind = static_cast<uint32_t>(Elm::fieldKind(bNode->unboxed, 2));
         if (!eqUnboxableSlot(allocator, aNode->values[2], bNode->values[2],
-                              aVKind, bVKind, depth)) {
+                              aVKind, bVKind, depth, deferred)) {
             return false;
         }
 
@@ -783,7 +795,8 @@ bool ge(void* a, void* b) {
 // ============================================================================
 
 HPointer append(void* a, void* b) {
-    if (!a && !b) return alloc::emptyString();
+    // Two constants never get here: the export returns one of them itself.
+    assert((a || b) && "Utils::append: both operands are constants; the export returns one of them");
     if (!a) return Allocator::instance().wrap(b);
     if (!b) return Allocator::instance().wrap(a);
 
@@ -794,8 +807,7 @@ HPointer append(void* a, void* b) {
         return StringOps::append(a, b);
     }
 
-    if (tagA == Tag_Cons || tagA == Tag_ConsChunk
-        || alloc::isNil(Allocator::instance().wrap(a))) {
+    if (tagA == Tag_Cons || tagA == Tag_ConsChunk) {
         HPointer listA = Allocator::instance().wrap(a);
         HPointer listB = Allocator::instance().wrap(b);
         return ListOps::append(listA, listB);

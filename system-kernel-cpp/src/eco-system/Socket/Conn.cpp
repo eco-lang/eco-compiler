@@ -772,13 +772,14 @@ void Conn::applyInterest() {
     readErrReason_ = "read " + code;
     writeErrReason_ = "write " + code;
     bool readWasDone = readDone_;
+    bool writeWasDone = writeDone_;   // e.g. a write error already reported: not reported a second time
     readDone_ = writeDone_ = true;
     shutRequested_ = false;
     {
         BusyScope b(*this);   // the callbacks may not start IO: the fd is closed next
         if (protocol_ && !readWasDone) protocol_->onError(*this, e, readErrReason_);
         failOutbound(e);
-        if (protocol_ && phase_ == Phase::Open) protocol_->onError(*this, e, writeErrReason_);
+        if (protocol_ && phase_ == Phase::Open && !writeWasDone) protocol_->onError(*this, e, writeErrReason_);
     }
     closeNow();
 }

@@ -79,7 +79,6 @@ void* onEffectsEval(void* args[]) {
     std::map<int64_t, std::vector<uint64_t>> wanted;
     for (alloc::ListCursor c(subs); !c.done(); c.next()) {
         void* obj = Allocator::instance().resolve(c.current().p);
-        if (!obj) continue;
         Custom* sub = static_cast<Custom*>(obj);
         if (sub->ctor != CTOR_ON_MESSAGE) continue;
         wanted[sub->values[ON_MESSAGE_SOCKET_FIELD].i].push_back(
@@ -133,7 +132,7 @@ void* subMapEval(void* args[]) {
     Elm::StackRootGuard g({&f, &sub, &old, &composed});
     {
         Custom* s = static_cast<Custom*>(Allocator::instance().resolve(sub));   // no allocation in scope
-        if (!s || s->ctor != CTOR_ON_MESSAGE) return reinterpret_cast<void*>(enc(sub));
+        if (s->ctor != CTOR_ON_MESSAGE) return reinterpret_cast<void*>(enc(sub));
         socketId = s->values[ON_MESSAGE_SOCKET_FIELD].i;
         old = s->values[ON_MESSAGE_TAGGER_FIELD].p;
     }

@@ -27,13 +27,17 @@ static void* sleepKillEval(void* args[]) {
 // Starts one run of a sleep and returns its kill handle. `captured` is the boxed `ElmFloat` delay in
 // milliseconds. Parks `resume` under a Task hold, schedules a timer for the delay carrying the resume token,
 // and returns a closure of `sleepKillEval` that captures the token. Allocates.
+//
+// The delay goes through `TimerService::sanitizeDelayMs`, Node's rule: a NaN, infinite or huge delay sleeps
+// 1 ms, while 0 and negative delays wake at once, so `Process.sleep 0` stays a yield.
 static HPointer sleepBindingBody(HPointer captured, HPointer resume) {
     void* ptr = Allocator::instance().resolve(captured);
     double millis = static_cast<ElmFloat*>(ptr)->value;
 
     uint64_t resumeToken = Elm::Platform::Scheduler::instance().parkResume(
         resume, Elm::Platform::HoldKind::Task, "Process.sleep");
-    Elm::Platform::TimerService::instance().schedule(millis, resumeToken);
+    Elm::Platform::TimerService::instance().schedule(
+        Elm::Platform::TimerService::sanitizeDelayMs(millis), resumeToken);
 
     // Killing the sleep withdraws its timer (see `withdrawParkedTimer` for when the hold is released). The
     // token is captured unboxed, and nothing allocates between `allocClosureK` and the capture, so `p` stays

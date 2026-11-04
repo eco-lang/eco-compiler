@@ -2,8 +2,8 @@
 //
 // An Elm program subscribes to the datagrams of a bound UDP socket with `Socket.Udp.onMessage`, and on the native
 // backend those subscriptions are kept by a C++ effect manager, registered with the platform runtime under the key
-// "Socket.Udp". This header holds the `OnMessage` layout constants that manager reads, two DgramT kind masks that
-// mirror the literals `buildDgramT` in `Udp.cpp` writes (nothing reads them), and the export that registers it.
+// "Socket.Udp". This header holds the `OnMessage` layout constants that manager reads, the two DgramT kind masks
+// `buildDgramT` in `Udp.cpp` builds a datagram with, and the export that registers it.
 //
 // The manager knows a subscription only by its constructor layout. In `system-kernel-cpp/src/Socket/Udp.elm`, with the
 // alias `DatagramArg` written out, it is
@@ -43,11 +43,10 @@ constexpr int ON_MESSAGE_TAGGER_FIELD = 1;
 /// The kind mask of an `OnMessage` value: slot 0 is an unboxed Int, slot 1 is boxed.
 constexpr uint64_t ON_MESSAGE_MASK = 0x1;
 
-/// The kind mask of the outer DgramT tuple `( data, from )`: both slots boxed. Nothing reads it; `buildDgramT` writes
-/// the literal 0.
+/// The kind mask of the outer DgramT tuple `( data, from )`: both slots boxed. `buildDgramT` builds it with this.
 constexpr uint32_t DGRAM_T_MASK = 0;
-/// The kind mask of the DgramT's `( fromAddress, fromPort )` tuple: the port in slot 1 is an unboxed Int. Nothing
-/// reads it; `buildDgramT` writes the literal 0x4.
+/// The kind mask of the DgramT's `( fromAddress, fromPort )` tuple: the port in slot 1 is an unboxed Int.
+/// `buildDgramT` builds it with this.
 constexpr uint32_t DGRAM_FROM_MASK = 0x4;
 
 } // namespace UdpManager

@@ -65,13 +65,11 @@ type ProcessHandle
     = ProcessHandle Int
 
 
-{-| What `spawnProcess` asks for one of a child's standard streams: standard
-input, standard output or standard error.
+{-| What `spawnProcess` asks for a child's standard input.
 
-`Inherit` asks for the child to share this process's stream. `CreatePipe` asks
-for a new pipe in its place. `spawnProcess` hands back a handle for standard
-input only, so nothing in this module gives a way to read a piped standard
-output or standard error.
+`Inherit` asks for the child to share this process's standard input.
+`CreatePipe` asks for a new pipe in its place, whose handle `spawnProcess`
+hands back. A child always shares this process's standard output and error.
 
 -}
 type StdStream
@@ -120,16 +118,16 @@ spawn cmd args =
 
 
 {-| Asks eco-io to start `config.cmd` with the arguments `config.args` and the
-given setting for each standard stream, and returns the handle of the child
-together with `stdinHandle`.
+given setting for its standard input, and returns the handle of the child
+together with `stdinHandle`. The child shares this process's standard output
+and error.
 
 `stdinHandle` is the number eco-io replies with for the child's standard input,
 or `Nothing` when it replies `null`. This module does not check it against
 `config.stdin`. Under the eco-io handler in `bin/eco-io-handler.js` it is a
 number only when standard input is `CreatePipe`, and that number, made into an
 `Eco.Console.Handle` or an `Eco.File.Handle`, is accepted by `Eco.Console.write`
-and `Eco.File.close`. No handle is returned for standard output or standard
-error.
+and `Eco.File.close`.
 
 A command that cannot be started is a failed request, as for `spawn`. A failed
 request fails with the `ProcessError` that
@@ -141,8 +139,6 @@ spawnProcess :
     { cmd : String
     , args : List String
     , stdin : StdStream
-    , stdout : StdStream
-    , stderr : StdStream
     }
     -> Task ProcessError { stdinHandle : Maybe Int, processHandle : ProcessHandle }
 spawnProcess config =
@@ -151,8 +147,6 @@ spawnProcess config =
             [ ( "cmd", Encode.string config.cmd )
             , ( "args", Encode.list Encode.string config.args )
             , ( "stdin", encodeStdStream config.stdin )
-            , ( "stdout", encodeStdStream config.stdout )
-            , ( "stderr", encodeStdStream config.stderr )
             ]
         )
         (Decode.map2

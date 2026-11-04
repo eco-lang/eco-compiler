@@ -1,6 +1,6 @@
 ---
 status: done
-updated: 2026-10-27
+updated: 2026-11-04
 ---
 
 # Plan: sockets for `eco/system` — TCP, UDP, Unix and TLS
@@ -254,6 +254,9 @@ Reactor behaviour:
   if `writeQ` non-empty or `wantWrite` or a pending `shutdownWrite` returned 1.
 - **Read request** (`submit`): push; if `transport->hasBufferedRead()` serve immediately (TLS
   buffered plaintext would otherwise hang, N6); else update interest.
+  *Deviation (2026-11-04, DEAD-25 of `plans/kernel-lib-bug-fixes.md`):* `hasBufferedRead` was never
+  called and is deleted; the `Conn` reaches buffered TLS plaintext by attempting a read after
+  `setProtocol` and `updateInterest`.
 - **Readable:** while `readReqs` non-empty: `read(max)`: >0 → `ChannelResult{Read, bytes}`; 0 →
   EOF result for this and every queued read, `readDone`; -1 → stop; -2 → error result with
   `reason = "read <CODE>"` (e.g. `"read ECONNRESET"`) for every queued read.

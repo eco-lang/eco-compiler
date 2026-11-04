@@ -72,12 +72,26 @@
 #include "allocator/AddressSpaceReservationTest.hpp"
 #include "allocator/HPointerLayoutTest.hpp"
 #include "allocator/ConcurrencyRegisterTest.hpp"
+#include "allocator/ResolveConstantTest.hpp"
+#include "kernel/BrowserKernelTest.hpp"
+#include "kernel/BytesKernelTest.hpp"
+#include "kernel/ConsoleKernelTest.hpp"
+#include "kernel/DebugKernelTest.hpp"
+#include "kernel/IntArithTest.hpp"
+#include "kernel/JsArrayKernelTest.hpp"
 #include "kernel/KernelExportsTest.hpp"
+#include "kernel/RegexKernelTest.hpp"
+#include "kernel/TaskEffectManagerTest.hpp"
 #include "kernel/UtilsAppendEqualityTest.hpp"
+#include "kernel/UtilsCompareTest.hpp"
 #include "kernel/VirtualDomKernelTest.hpp"
+#include "platform/HeapResetKernelStateTest.hpp"
 #include "platform/PlatformServicesTest.hpp"
 #include "platform/SpawnTest.hpp"
 #include "platform/SchedulerPidTest.hpp"
+#include "platform/TaskBindingTest.hpp"
+#include "platform/TimerServiceTest.hpp"
+#include "platform/WaitServiceTest.hpp"
 #include "codegen/CodegenIsolatedTest.hpp"
 #include "codegen/CodegenHarnessSelfTest.hpp"
 #include "bf-codegen/BFCodegenTest.hpp"
@@ -614,6 +628,7 @@ struct IsolatedSuites {
     std::unique_ptr<IsolatedTestRunner::IsolatedTestCaseSuite> sliceCrashers;
     std::unique_ptr<IsolatedTestRunner::IsolatedTestCaseSuite> largeBodyChurn;
     std::unique_ptr<IsolatedTestRunner::IsolatedTestCaseSuite> gcPressure;
+    std::unique_ptr<IsolatedTestRunner::IsolatedTestCaseSuite> kernelIsolated;
 };
 
 static IsolatedSuites buildIsolatedSuites() {
@@ -627,6 +642,10 @@ static IsolatedSuites buildIsolatedSuites() {
     registerPlatformServicesTests(*s.platformServices);
     registerSpawnTests(*s.platformServices);
     registerSchedulerPidTests(*s.platformServices);  // SD-1
+    registerHeapResetKernelStateTests(*s.platformServices);
+    registerTimerServiceTests(*s.platformServices);
+    registerWaitServiceTests(*s.platformServices);
+    registerTaskBindingTests(*s.platformServices);
 
     // Crash-risk representation tests (byte-slice GC under F1; elm_bytebuffer_len
     // / Bytes.width on a slice under F3). Spawned per case so each abort is
@@ -635,6 +654,20 @@ static IsolatedSuites buildIsolatedSuites() {
         std::make_unique<IsolatedTestRunner::IsolatedTestCaseSuite>("SliceCrashers");
     registerSliceCrasherTests(*s.sliceCrashers);
     registerKernelExportsCrasherTests(*s.sliceCrashers);
+
+    // Kernel-library cases that need a process of their own: they initialize the allocator, or
+    // fork a child that crashes or exits (and the Allocator::resolve contract the kernels rely on).
+    s.kernelIsolated = std::make_unique<IsolatedTestRunner::IsolatedTestCaseSuite>("KernelIsolated");
+    registerBytesKernelTests(*s.kernelIsolated);
+    registerIntArithIsolatedTests(*s.kernelIsolated);
+    registerTaskEffectManagerTests(*s.kernelIsolated);
+    registerJsArrayKernelTests(*s.kernelIsolated);
+    registerConsoleKernelTests(*s.kernelIsolated);
+    registerRegexKernelTests(*s.kernelIsolated);
+    registerBrowserKernelTests(*s.kernelIsolated);
+    registerDebugKernelTests(*s.kernelIsolated);
+    registerUtilsCompareTests(*s.kernelIsolated);
+    registerResolveConstantTests(*s.kernelIsolated);
 
     // Sustained-pressure GC tests (multi-MB nursery + old gen, real eco_alloc_*).
     // Run each case in a spawned child so a SEGV/abort in one test only fails
@@ -730,7 +763,7 @@ static int runIsolatedChild(int argc, char* argv[]) {
     if (kind == "case" && args.size() == 3) {
         IsolatedSuites s = buildIsolatedSuites();
         for (auto* suite : {s.platformServices.get(), s.sliceCrashers.get(), s.largeBodyChurn.get(),
-                            s.gcPressure.get()}) {
+                            s.gcPressure.get(), s.kernelIsolated.get()}) {
             if (suite->getName() == args[1]) return suite->runCaseInChild(result, args[2]);
         }
         std::cerr << "isolated child: no isolated suite named '" << args[1] << "'\n";
@@ -1306,11 +1339,16 @@ int main(int argc, char* argv[]) {
     Testing::TestSuite virtualDomKernelTests("VirtualDomKernel");
     registerVirtualDomKernelTests(virtualDomKernelTests);
 
+    // Int arithmetic kernel exports (add/sub/mul wrap, pow).
+    Testing::TestSuite intArithTests("IntArith");
+    registerIntArithTests(intArithTests);
+
     IsolatedSuites isolated = buildIsolatedSuites();
     auto platformServicesTests = std::move(isolated.platformServices);
     auto sliceCrashersTests = std::move(isolated.sliceCrashers);
     auto largeBodyChurnTests = std::move(isolated.largeBodyChurn);
     auto gcPressureTests = std::move(isolated.gcPressure);
+    auto kernelIsolatedTests = std::move(isolated.kernelIsolated);
 
     // Codegen tests (MLIR lowering and JIT execution) - parallel isolated execution
     //
@@ -1396,6 +1434,8 @@ int main(int argc, char* argv[]) {
     suite.add(std::move(kernelExportsTests));
     suite.add(std::move(utilsAppendEqualityTests));
     suite.add(std::move(virtualDomKernelTests));
+    suite.add(std::move(intArithTests));
+    suite.add(std::move(kernelIsolatedTests));
     suite.add(std::move(platformServicesTests));
     suite.add(std::move(gcPressureTests));
     suite.add(std::move(largeBodyChurnTests));

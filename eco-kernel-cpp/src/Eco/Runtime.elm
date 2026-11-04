@@ -11,16 +11,19 @@ All operations are atomic IO primitives backed by kernel implementations.
 
 -}
 
+import Eco.IO.Error as IOErr exposing (IOError)
 import Eco.Kernel.Runtime
 import Json.Encode as Encode
 import Task exposing (Task)
 
 
-{-| Get the directory of the current script or binary.
+{-| Get the directory of the current script or binary. Fails with
+`FileNotFound` when the executable's path cannot be determined.
 -}
-dirname : Task Never String
+dirname : Task IOError String
 dirname =
     Eco.Kernel.Runtime.dirname
+        |> Task.mapError IOErr.ofKernelTuple
 
 
 {-| Get a random Float between 0 (inclusive) and 1 (exclusive).

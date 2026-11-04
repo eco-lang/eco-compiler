@@ -155,6 +155,11 @@ target_include_directories(EcoKernel_Process PUBLIC
 )
 target_compile_features(EcoKernel_Process PUBLIC cxx_std_20)
 
+# Console.write and File.close use Process's table of spawnProcess stdin handles
+# (Process::streamHandleFd / forgetStreamHandle), so both link after it.
+target_link_libraries(EcoKernel_Console PUBLIC EcoKernel_Process)
+target_link_libraries(EcoKernel_File PUBLIC EcoKernel_Process)
+
 # MVar module (concurrency primitives)
 add_library(EcoKernel_MVar STATIC
     src/eco-kernel/MVar.cpp

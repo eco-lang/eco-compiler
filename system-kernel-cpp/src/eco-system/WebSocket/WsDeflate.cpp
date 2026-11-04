@@ -3,6 +3,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "eco-system/WebSocket/WsDeflate.hpp"
+#include "eco-system/Stream/ZlibFeed.hpp"
 
 #include <zlib.h>
 
@@ -45,18 +46,25 @@ bool Deflater::chunk(const char* p, size_t n, std::string& out) {
         }
         z.init = true;
     }
+    // The input goes to zlib in slices (ZlibFeed.hpp); only the last one is flushed.
+    const char* rest = p;
+    size_t left = n;
     z.s.next_in = reinterpret_cast<Bytef*>(const_cast<char*>(p));
-    z.s.avail_in = static_cast<uInt>(n);
+    z.s.avail_in = 0;
     for (;;) {
+        zlibRefill(z.s, rest, left);
         size_t old = out.size();
         out.resize(old + kDeflateStep);
         z.s.next_out = reinterpret_cast<Bytef*>(&out[old]);
         z.s.avail_out = static_cast<uInt>(kDeflateStep);
-        int r = deflate(&z.s, Z_SYNC_FLUSH);
+        int r = deflate(&z.s, left == 0 ? Z_SYNC_FLUSH : Z_NO_FLUSH);
         out.resize(old + (kDeflateStep - z.s.avail_out));
-        if (r == Z_BUF_ERROR) return true;   // no progress possible: a repeated flush with no input
-        if (r != Z_OK) return false;
-        if (z.s.avail_out != 0 && z.s.avail_in == 0) return true;
+        if (r == Z_BUF_ERROR) {
+            if (left == 0) return true;   // no progress possible: a repeated flush with no input
+        } else if (r != Z_OK) {
+            return false;
+        }
+        if (z.s.avail_out != 0 && z.s.avail_in == 0 && left == 0) return true;
     }
 }
 
@@ -157,7 +165,7 @@ Inflater::Step Inflater::step(std::string& out, size_t maxOut) {
         out.resize(old + maxOut);
         z_stream& s = z_->s;
         s.next_in = reinterpret_cast<Bytef*>(&in_[inOff_]);
-        s.avail_in = static_cast<uInt>(std::min<size_t>(avail, 1u << 30));
+        s.avail_in = static_cast<uInt>(std::min<size_t>(avail, zlibSlice()));
         uInt given = s.avail_in;
         s.next_out = reinterpret_cast<Bytef*>(&out[old]);
         s.avail_out = static_cast<uInt>(maxOut);

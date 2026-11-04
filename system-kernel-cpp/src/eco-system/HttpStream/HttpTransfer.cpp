@@ -19,13 +19,18 @@
 //   * The header callback starts the header list again on every `HTTP/` status
 //     line, so only the last response's fields are kept. The event is posted at
 //     the end of the first header block that is neither interim (1xx) nor a
-//     redirect that curl follows (3xx other than 304, with a Location field).
-//     Body bytes that arrive before that are dropped.
+//     redirect that curl follows (3xx other than 304, with a non-empty Location
+//     field). Body bytes that arrive before that are dropped.
 //   * The header deadline is checked by the multi loop, which polls for at most
 //     a second, or until just past the deadline, and by an upload read that is
 //     waiting for data.
 //   * Stream bodies are sent with chunked transfer encoding, and `Expect:` is
-//     sent empty so that curl does not wait for a 100-continue.
+//     sent empty so that curl does not wait for a 100-continue. A HEAD request
+//     sends no body: its stream body is accepted and dropped as it is written
+//     (`upDiscard`), and neither header is sent.
+//   * A proxy's answer to CONNECT is not passed to the header callback
+//     (CURLOPT_SUPPRESS_CONNECT_HEADERS), so it is never taken for the
+//     response.
 //   * No `CURLOPT_ACCEPT_ENCODING`: the response body is delivered as sent,
 //     still encoded if the server encoded it.
 //   * Peer and host are verified, and a non-empty `CURL_CA_BUNDLE` in the
@@ -78,12 +83,13 @@ using Clock = std::chrono::steady_clock;
 /// and kept alive by whichever of them holds it last; the service refers to it
 /// weakly.
 ///
-/// `token`, `spec`, `hasDeadline` and `deadline` are fixed at construction.
+/// `token`, `spec`, `upDiscard`, `hasDeadline` and `deadline` are fixed at construction.
 /// Everything else is guarded by `m`.
 struct HttpTransfer : std::enable_shared_from_this<HttpTransfer> {
     /// Makes the state for `s`, whose event will carry `tok`, and starts the
     /// header deadline if `s` has a timeout.
-    HttpTransfer(uint64_t tok, HttpRequestSpec s) : token(tok), spec(std::move(s)) {
+    HttpTransfer(uint64_t tok, HttpRequestSpec s)
+        : token(tok), spec(std::move(s)), upDiscard(spec.bodyKind == 2 && spec.method == "HEAD") {
         if (spec.timeoutMs > 0) {
             hasDeadline = true;
             deadline = Clock::now() + std::chrono::milliseconds(spec.timeoutMs);
@@ -92,6 +98,9 @@ struct HttpTransfer : std::enable_shared_from_this<HttpTransfer> {
 
     const uint64_t token;
     const HttpRequestSpec spec;
+    /// A HEAD request with a stream body: curl sends no body, so upload writes
+    /// are acknowledged and dropped at once and a close succeeds at once.
+    const bool upDiscard;
     bool hasDeadline = false;
     Clock::time_point deadline;
 
@@ -171,7 +180,9 @@ std::string uploadFailure(const HttpTransfer& t) {
 /// acknowledged while fewer than `kCap` bytes are queued ahead of them, and all
 /// unacknowledged ones fail once the transfer is finished, aborted or shut, which
 /// also empties the upload queue. A requested upload close is answered once the
-/// end of the body has been sent or the transfer is dead.
+/// end of the body has been sent or the transfer is dead. Under `upDiscard`
+/// (HEAD) a live transfer acknowledges and drops every write at once, and
+/// answers a close with success at once.
 ///
 /// Results are posted while `t.m` is held, so that a later call cannot post a
 /// result for a later request first.
@@ -223,6 +234,16 @@ void serviceLocked(HttpTransfer& t) {
             it = t.up.erase(it);
             continue;
         }
+        if (t.upDiscard) {
+            if (!it->acked) {
+                ChannelResult r = makeResult(t.upChannel, it->token, ChannelResult::Op::Write);
+                r.written = it->bytes.size();
+                postChannelResult(std::move(r));
+            }
+            t.upBytes -= left;
+            it = t.up.erase(it);
+            continue;
+        }
         if (!it->acked && ahead < kCap) {
             ChannelResult r = makeResult(t.upChannel, it->token, ChannelResult::Op::Write);
             r.written = it->bytes.size();
@@ -236,6 +257,7 @@ void serviceLocked(HttpTransfer& t) {
         t.up.clear();
         t.upBytes = 0;
     }
+    if (t.upDiscard && t.upCloseRequested && !upDead) t.upEofSent = true;   // nothing to send
     if (t.upCloseRequested && !t.upClosePosted && (t.upEofSent || upDead)) {
         ChannelResult r = makeResult(t.upChannel, t.upCloseToken, ChannelResult::Op::Close);
         if (!t.upEofSent) {
@@ -268,7 +290,7 @@ struct HeaderState {
     CURL* easy = nullptr;
     long status = 0;
     std::string statusText;
-    bool sawLocation = false;
+    bool sawLocation = false;   ///< The block has a Location field with a non-empty value.
     HttpHeaderList headers;
 };
 
@@ -286,8 +308,9 @@ std::string trimHttp(const std::string& s) {
     return s.substr(b, e - b);
 }
 
-/// Returns whether a response with `status`, and with a Location field if
-/// `sawLocation`, is a redirect that curl follows rather than a final response.
+/// Returns whether a response with `status`, and with a non-empty Location
+/// field if `sawLocation`, is a redirect that curl follows rather than a final
+/// response. Curl ignores an empty Location, so it is not counted.
 bool isFollowedRedirect(long status, bool sawLocation) {
     return sawLocation && status >= 300 && status < 400 && status != 304;
 }
@@ -375,7 +398,7 @@ size_t headerCb(char* buffer, size_t size, size_t nitems, void* userdata) {
     std::string name = lowerAscii(trimHttp(line.substr(0, colon)));
     std::string value = trimHttp(line.substr(colon + 1));
     if (name.empty()) return n;
-    if (name == "location") hs->sawLocation = true;
+    if (name == "location" && !value.empty()) hs->sawLocation = true;
     hs->headers.emplace_back(std::move(name), std::move(value));
     return n;
 }
@@ -463,7 +486,8 @@ bool isBadUrlCode(CURLcode c) {
 // ---------------------------------------------------------------------------
 
 /// Builds the request's header list: Content-Type, then `spec.headers`, then,
-/// for a stream body, chunked transfer encoding and an empty `Expect:`. A field
+/// for a stream body that is sent (not under HEAD), chunked transfer encoding and
+/// an empty `Expect:`. A field
 /// that could inject a header line is left out. Returns null for an empty list;
 /// otherwise the caller frees it with `curl_slist_free_all`.
 curl_slist* buildHeaderList(const HttpRequestSpec& spec) {
@@ -477,7 +501,7 @@ curl_slist* buildHeaderList(const HttpRequestSpec& spec) {
     };
     if (spec.bodyKind != 0 && !spec.contentType.empty()) add("Content-Type", spec.contentType);
     for (const auto& h : spec.headers) add(h.first, h.second);
-    if (spec.bodyKind == 2) {
+    if (spec.bodyKind == 2 && spec.method != "HEAD") {
         list = curl_slist_append(list, "Transfer-Encoding: chunked");
         list = curl_slist_append(list, "Expect:");
     }
@@ -506,6 +530,10 @@ void configure(CURL* easy, HttpTransfer& t, HeaderState& hs, char* errbuf) {
     curl_easy_setopt(easy, CURLOPT_WRITEFUNCTION, writeCb);
     curl_easy_setopt(easy, CURLOPT_WRITEDATA, &t);
     if (spec.timeoutMs > 0) curl_easy_setopt(easy, CURLOPT_CONNECTTIMEOUT_MS, static_cast<long>(spec.timeoutMs));
+#if LIBCURL_VERSION_NUM >= 0x073600
+    // A proxy's "200 Connection established" is not the response.
+    curl_easy_setopt(easy, CURLOPT_SUPPRESS_CONNECT_HEADERS, 1L);
+#endif
 
     // libcurl does not read CURL_CA_BUNDLE itself.
     curl_easy_setopt(easy, CURLOPT_SSL_VERIFYPEER, 1L);
@@ -540,10 +568,11 @@ void configure(CURL* easy, HttpTransfer& t, HeaderState& hs, char* errbuf) {
 /// Records that `t` has finished with `code` (with `errbuf` as the message if
 /// not empty), posts its event if it is not yet resolved, and answers what the
 /// channels wait for. A clean finish with a `status` but no posted head posts a
-/// status event with an empty head, `effUrl` as its URL, and a body that has
-/// already ended. Takes `t.m`.
+/// status event with `effUrl` as its URL and a body that has already ended; its
+/// status text and headers are those of `hs`, the last header block parsed, when
+/// that block has the same status, and empty otherwise. Takes `t.m`.
 void finishTransfer(HttpTransfer& t, CURLcode code, const char* errbuf, long status,
-                    const char* effUrl) {
+                    const char* effUrl, HeaderState* hs = nullptr) {
     std::lock_guard<std::mutex> lk(t.m);
     t.finished = true;
     t.multi = nullptr;
@@ -562,6 +591,13 @@ void finishTransfer(HttpTransfer& t, CURLcode code, const char* errbuf, long sta
             t.discardBody = t.spec.discardNon2xx && !ok2xx;
             ev.kind = ok2xx ? HttpOutcome::GoodStatus : HttpOutcome::BadStatus;
             ev.status = status;
+            if (hs && hs->status == status) {
+                // A block the header callback did not take as final (curl's rule
+                // for following differed): it is the response after all.
+                ev.statusText = hs->statusText;
+                ev.headers = std::move(hs->headers);
+                hs->headers.clear();
+            }
             ev.url = effUrl ? effUrl : t.spec.url;
             ev.transfer = t.shared_from_this();
         } else if (t.timedOut || code == CURLE_OPERATION_TIMEDOUT) {
@@ -660,7 +696,7 @@ void runTransfer(std::shared_ptr<HttpTransfer> tp) {
     curl_multi_cleanup(multi);
     if (headers) curl_slist_free_all(headers);
 
-    finishTransfer(t, result, errbuf, status, effUrl.empty() ? nullptr : effUrl.c_str());
+    finishTransfer(t, result, errbuf, status, effUrl.empty() ? nullptr : effUrl.c_str(), &hs);
 }
 
 } // namespace

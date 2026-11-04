@@ -13,6 +13,7 @@ module MVarReadDoesNotEmptyTest exposing (main)
 import Bytes exposing (Endianness(..))
 import Bytes.Decode as BD
 import Bytes.Encode as BE
+import Eco.IO.Error exposing (IOError)
 import Eco.MVar as MV
 import Platform
 import Task
@@ -46,7 +47,7 @@ intDec =
     BD.signedInt32 BE
 
 
-readN : MV.MVar Int -> Task.Task Never Readings
+readN : MV.MVar Int -> Task.Task IOError Readings
 readN m =
     MV.read intDec m
         |> Task.andThen
@@ -90,7 +91,7 @@ init _ =
                         rs.r1 == payload && rs.r2 == payload && rs.r3 == payload && rs.r4 == payload && rs.r5 == payload && rs.t == payload
                     )
     in
-    ( Nothing, Task.perform GotResult task )
+    ( Nothing, Task.perform GotResult (task |> Task.onError (\_ -> Task.succeed False)) )
 
 
 update : Msg -> Model -> ( Model, Cmd Msg )

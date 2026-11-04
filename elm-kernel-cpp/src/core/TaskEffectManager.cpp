@@ -26,22 +26,9 @@
 using namespace Elm;
 using namespace Elm::alloc;
 using namespace Elm::Platform;
+namespace Export = Elm::Kernel::Export;
 
 namespace {
-
-// Returns the word that encodes `h`.
-static inline uint64_t encodeHP(HPointer h) {
-    union { HPointer hp; uint64_t val; } u;
-    u.hp = h;
-    return u.val;
-}
-
-// Returns the HPointer encoded by `val`.
-static inline HPointer decodeHP(uint64_t val) {
-    union { HPointer hp; uint64_t val; } u;
-    u.val = val;
-    return u.hp;
-}
 
 // ============================================================================
 // Effect Manager Closures
@@ -52,7 +39,7 @@ static void* taskInitEvaluator(void* args[]) {
     (void)args;
     HPointer nilState = listNil();
     HPointer task = Scheduler::instance().taskSucceed(nilState);
-    return reinterpret_cast<void*>(encodeHP(task));
+    return reinterpret_cast<void*>(Export::encode(task));
 }
 
 // Evaluates `\value -> sendToApp router value`, with the router captured in `args[0]` and the value in
@@ -61,14 +48,14 @@ static void* taskSendToAppEvaluator(void* args[]) {
     uint64_t routerEnc = reinterpret_cast<uint64_t>(args[0]);
     uint64_t valueEnc = reinterpret_cast<uint64_t>(args[1]);
 
-    HPointer router = decodeHP(routerEnc);
-    HPointer value = decodeHP(valueEnc);
+    HPointer router = Export::decode(routerEnc);
+    HPointer value = Export::decode(valueEnc);
 
     PlatformRuntime::instance().sendToApp(router, value);
 
     HPointer unitVal = Elm::alloc::unit();
     HPointer task = Scheduler::instance().taskSucceed(unitVal);
-    return reinterpret_cast<void*>(encodeHP(task));
+    return reinterpret_cast<void*>(Export::encode(task));
 }
 
 // Evaluates `onEffects : Router msg -> List (MyCmd msg) -> List (MySub msg) -> State -> Task Never State`
@@ -82,8 +69,8 @@ static void* taskOnEffectsEvaluator(void* args[]) {
     uint64_t routerEnc = reinterpret_cast<uint64_t>(args[0]);
     uint64_t cmdsEnc = reinterpret_cast<uint64_t>(args[1]);
 
-    HPointer router = decodeHP(routerEnc);
-    HPointer cmds = decodeHP(cmdsEnc);
+    HPointer router = Export::decode(routerEnc);
+    HPointer cmds = Export::decode(cmdsEnc);
 
     // Rooted before allocClosure, which may collect: otherwise closureCapture would store a stale router
     // and the walk below would start from a stale list.
@@ -92,9 +79,7 @@ static void* taskOnEffectsEvaluator(void* args[]) {
     // Two slots: the captured router, then the value the Task succeeds with.
     HPointer sendToAppCl = allocClosure(taskSendToAppEvaluator, 2);
     void* clPtr = Allocator::instance().resolve(sendToAppCl);
-    if (clPtr) {
-        closureCapture(clPtr, boxed(router), true);
-    }
+    closureCapture(clPtr, boxed(router), true);
 
     // `taskAndThen` and `rawSpawn` allocate and may collect. `sendToAppCl` is rooted, and RootedListCursor
     // keeps its list node rooted and resolves it afresh on every read and advance, so the walk never holds
@@ -109,30 +94,28 @@ static void* taskOnEffectsEvaluator(void* args[]) {
             HPointer cmdHP = head.p;
 
             void* cmdPtr = Allocator::instance().resolve(cmdHP);
-            if (cmdPtr) {
-                Custom* cmd = static_cast<Custom*>(cmdPtr);
-                HPointer innerTask = cmd->values[0].p;
+            Custom* cmd = static_cast<Custom*>(cmdPtr);
+            HPointer innerTask = cmd->values[0].p;
 
-                HPointer chainedTask = Scheduler::instance().taskAndThen(sendToAppCl, innerTask);
+            HPointer chainedTask = Scheduler::instance().taskAndThen(sendToAppCl, innerTask);
 
-                Scheduler::instance().rawSpawn(chainedTask);
-            }
+            Scheduler::instance().rawSpawn(chainedTask);
 
             cursor.advance();
         }
     }
 
     uint64_t stateEnc = reinterpret_cast<uint64_t>(args[3]);
-    HPointer task = Scheduler::instance().taskSucceed(decodeHP(stateEnc));
-    return reinterpret_cast<void*>(encodeHP(task));
+    HPointer task = Scheduler::instance().taskSucceed(Export::decode(stateEnc));
+    return reinterpret_cast<void*>(Export::encode(task));
 }
 
 // Evaluates `onSelfMsg : Router msg -> selfMsg -> State -> Task Never State` with the call arguments in
 // `args[0..2]`: ignores the message and returns a Task that succeeds with the state from `args[2]`.
 static void* taskOnSelfMsgEvaluator(void* args[]) {
     uint64_t stateEnc = reinterpret_cast<uint64_t>(args[2]);
-    HPointer task = Scheduler::instance().taskSucceed(decodeHP(stateEnc));
-    return reinterpret_cast<void*>(encodeHP(task));
+    HPointer task = Scheduler::instance().taskSucceed(Export::decode(stateEnc));
+    return reinterpret_cast<void*>(Export::encode(task));
 }
 
 // Evaluates `\v -> Task.succeed (f v)`, the continuation `taskCmdMapEvaluator` chains onto a command's
@@ -145,8 +128,8 @@ static void* taskMapContinuationEvaluator(void* args[]) {
     uint64_t mappedEnc =
         eco_apply_closure(HPtr::fromBits(mapperEnc), &valueEnc, 1).toBits();
 
-    HPointer task = Scheduler::instance().taskSucceed(decodeHP(mappedEnc));
-    return reinterpret_cast<void*>(encodeHP(task));
+    HPointer task = Scheduler::instance().taskSucceed(Export::decode(mappedEnc));
+    return reinterpret_cast<void*>(Export::encode(task));
 }
 
 // Evaluates `cmdMap : (a -> b) -> MyCmd a -> MyCmd b` with the function in `args[0]` and the command in
@@ -156,15 +139,12 @@ static void* taskCmdMapEvaluator(void* args[]) {
     uint64_t cmdEnc = reinterpret_cast<uint64_t>(args[1]);
 
     // Rooted across allocClosure, taskAndThen and custom, which may collect.
-    HPointer mapper = decodeHP(reinterpret_cast<uint64_t>(args[0]));
-    HPointer origCmd = decodeHP(cmdEnc);
+    HPointer mapper = Export::decode(reinterpret_cast<uint64_t>(args[0]));
+    HPointer origCmd = Export::decode(cmdEnc);
     HPointer innerTask = listNil();
     Elm::StackRootGuard guard(&mapper, &origCmd, &innerTask);
 
     void* cmdPtr = Allocator::instance().resolve(origCmd);
-    if (!cmdPtr) {
-        return reinterpret_cast<void*>(cmdEnc);
-    }
 
     Custom* cmd = static_cast<Custom*>(cmdPtr);
     innerTask = cmd->values[0].p;
@@ -183,7 +163,7 @@ static void* taskCmdMapEvaluator(void* args[]) {
     std::vector<Unboxable> values(1);
     values[0].p = mappedTask;
     HPointer newCmd = custom(0, values, 0);  // tag 0 = Perform
-    return reinterpret_cast<void*>(encodeHP(newCmd));
+    return reinterpret_cast<void*>(Export::encode(newCmd));
 }
 
 } // anonymous namespace
@@ -194,23 +174,27 @@ static void* taskCmdMapEvaluator(void* args[]) {
 
 extern "C" {
 
-// The four closures have no captures; their arities are the evaluators' argument counts. They are held in
-// unrooted locals across the later allocClosure calls, each of which may collect.
+// The four closures have no captures; their arities are the evaluators' argument counts. Each stays rooted
+// across the later allocClosure calls, any of which may collect.
 void eco_register_task_effect_manager() {
     HPointer initCl = allocClosure(taskInitEvaluator, 0);
+    Elm::StackRootGuard initRoot(&initCl);
 
     HPointer onEffectsCl = allocClosure(taskOnEffectsEvaluator, 4);
+    Elm::StackRootGuard onEffectsRoot(&onEffectsCl);
 
     HPointer onSelfMsgCl = allocClosure(taskOnSelfMsgEvaluator, 3);
+    Elm::StackRootGuard onSelfMsgRoot(&onSelfMsgCl);
 
     HPointer cmdMapCl = allocClosure(taskCmdMapEvaluator, 2);
+    Elm::StackRootGuard cmdMapRoot(&cmdMapCl);
 
     PlatformRuntime::ManagerInfo info;
-    info.init = encodeHP(initCl);
-    info.onEffects = encodeHP(onEffectsCl);
-    info.onSelfMsg = encodeHP(onSelfMsgCl);
-    info.cmdMap = encodeHP(cmdMapCl);
-    info.subMap = encodeHP(listNil());  // No subscriptions, so no subMap.
+    info.init = Export::encode(initCl);
+    info.onEffects = Export::encode(onEffectsCl);
+    info.onSelfMsg = Export::encode(onSelfMsgCl);
+    info.cmdMap = Export::encode(cmdMapCl);
+    info.subMap = Export::encode(listNil());  // No subscriptions, so no subMap.
 
     PlatformRuntime::instance().registerManager("Task", info);
 }

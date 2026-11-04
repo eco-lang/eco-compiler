@@ -579,7 +579,10 @@ onMessage (Internal.WebSocket ws) toMsg =
 
 {-| Creates a subscription to the end of a connection. Its [`CloseInfo`](#CloseInfo) is
 delivered once, to every `onClose` subscription the connection has at that moment. A
-subscription made after it was delivered receives nothing.
+subscription made after it was delivered receives nothing. If no `onClose` subscription names
+the connection when it ends, the `CloseInfo` is kept and delivered once, to the `onClose`
+subscriptions of the first later update that has any. On the native backend it is kept only
+until more than 4096 other connections have ended, as for [`awaitClose`](#awaitClose).
 
 Until its `CloseInfo` has been delivered, an `onClose` subscription keeps the program running.
 

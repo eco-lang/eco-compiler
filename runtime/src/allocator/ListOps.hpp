@@ -97,7 +97,6 @@ inline i64 length(HPointer list) {
 
     while (!alloc::isNil(current) && current.ptr_ind == 0) {
         void* node = allocator.resolve(current);
-        if (!node) break;
         Header* hdr = getHeader(node);
         if (hdr->tag == Tag_ConsChunk) {
             // A view's `len` counts every element from it to the end of the list, so the walk stops here.

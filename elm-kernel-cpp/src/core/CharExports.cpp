@@ -7,8 +7,7 @@ using namespace Elm::Kernel;
 
 extern "C" {
 
-// Checks the range on the full 64-bit Int rather than calling `Char::fromCode`, which takes a
-// 32-bit code. Codes below 0 or above 0x10FFFF become U+FFFD, as in elm/core's JS kernel and in
+// Checks the range on the full 64-bit Int, so a code above 2^32 is not truncated into range. Codes below 0 or above 0x10FFFF become U+FFFD, as in elm/core's JS kernel and in
 // the `eco.char.fromInt` lowering; surrogate codes pass through unchanged.
 uint32_t Elm_Kernel_Char_fromCode(int64_t code) {
     if (code < 0 || code > 0x10FFFF) return 0xFFFDu;

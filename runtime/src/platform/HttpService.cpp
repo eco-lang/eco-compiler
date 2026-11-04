@@ -5,6 +5,7 @@
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 
 // Writes one line tagged `tag` to stderr, formatted as by `printf`, in builds that define `ECO_KERNEL_DEBUG`.
 // Otherwise it expands to an expression that does nothing, and the arguments are not evaluated. `tag` must be a
@@ -88,6 +89,15 @@ bool HttpService::tryPopProgress(Progress& out) {
 bool HttpService::hasProgress() const {
     std::lock_guard<std::mutex> lk(progressMutex_);
     return !progress_.empty();
+}
+
+bool HttpService::isHttpToken(const std::string& method) noexcept {
+    if (method.empty()) return false;
+    for (unsigned char c : method) {
+        bool alnum = (c >= '0' && c <= '9') || (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z');
+        if (!alnum && (c == 0 || !std::strchr("!#$%&'*+-.^_`|~", c))) return false;   // strchr finds the NUL
+    }
+    return true;
 }
 
 namespace {
@@ -190,10 +200,19 @@ HttpService::Result HttpService::perform(const Request& req) {
 
     ECO_KLOG("http",
         "curl request method=%s url=%s headers=%zu body=%zuB lane=%s token=%lu",
-        (req.method.empty() ? "GET" : req.method.c_str()),
+        req.method.c_str(),
         req.url.c_str(), req.headers.size(), req.body.size(),
         req.eco_lane ? "eco" : "elm",
         (unsigned long)req.token);
+
+    // A method that is not a token would make a malformed request line, or with a line break smuggle in
+    // headers or a second request, since libcurl sends `CURLOPT_CUSTOMREQUEST` as given.
+    if (!isHttpToken(req.method)) {
+        ECO_KLOG("http", "invalid method token=%lu", (unsigned long)req.token);
+        result.error = ErrorKind::BadUrl;
+        result.finalUrl = req.url;
+        return result;
+    }
 
     ProgressCtx progressCtx;
     progressCtx.service = this;
@@ -218,6 +237,11 @@ HttpService::Result HttpService::perform(const Request& req) {
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &body);
     curl_easy_setopt(curl, CURLOPT_HEADERFUNCTION, headerCb);
     curl_easy_setopt(curl, CURLOPT_HEADERDATA, &headerAcc);
+#if LIBCURL_VERSION_NUM >= 0x073600
+    // Through an https_proxy, the proxy's answer to CONNECT is not a response: its header lines are not the
+    // response's (HTTPS-NEW-1, as in eco/system's HttpTransfer.cpp).
+    curl_easy_setopt(curl, CURLOPT_SUPPRESS_CONNECT_HEADERS, 1L);
+#endif
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
     curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
     // "" advertises every encoding this libcurl supports and has it decode the body before `writeCb` sees it.
@@ -246,9 +270,9 @@ HttpService::Result HttpService::perform(const Request& req) {
     }
 
     // A body is given with `CURLOPT_COPYPOSTFIELDS`, which makes libcurl use `POST` unless a custom method is
-    // set, and a custom method is set unless the method is empty or `GET`. So a `GET` or empty-method request
-    // with a body goes out as a `POST`.
-    if (!req.method.empty() && req.method != "GET") {
+    // set, and a custom method is set unless the method is `GET`. So a `GET` request with a body goes out as a
+    // `POST`.
+    if (req.method != "GET") {
         curl_easy_setopt(curl, CURLOPT_CUSTOMREQUEST, req.method.c_str());
     }
     if (!req.body.empty()) {
@@ -301,8 +325,12 @@ HttpService::Result HttpService::perform(const Request& req) {
         result.body = std::move(body);
     } else if (res == CURLE_OPERATION_TIMEDOUT) {
         result.error = ErrorKind::Timeout;
-    } else if (res == CURLE_URL_MALFORMAT) {
+    } else if (res == CURLE_URL_MALFORMAT || (res == CURLE_UNSUPPORTED_PROTOCOL && status == 0)) {
+        // The URL was refused before anything was sent, for its syntax or its scheme, which a browser reports as
+        // a bad URL too. An unsupported scheme met on a redirect (a response arrived, so `status` is set) is a
+        // network error, as in a browser.
         result.error = ErrorKind::BadUrl;
+        result.finalUrl = req.url;
     } else {
         result.error = ErrorKind::NetworkError;
     }

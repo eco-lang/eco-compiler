@@ -6,5 +6,6 @@ runtime/src/allocator/RootSet.cpp: void RootSet::addExternalRootScanner(External
 runtime/src/allocator/RootSet.hpp: void addExternalRootScanner(ExternalRootScanner scanner,
 runtime/src/allocator/RuntimeExports.cpp: Allocator::instance().getRootSet().addExternalRootScanner(
 runtime/src/platform/PlatformRuntime.cpp: Allocator::instance().getRootSetSlow().addExternalRootScanner(
-runtime/src/platform/PortRuntime.cpp: Allocator::instance().getRootSetSlow().addExternalRootScanner(
+runtime/src/platform/PortRuntime.cpp: roots.addExternalRootScanner(
 runtime/src/platform/Scheduler.cpp: Allocator::instance().getRootSetSlow().addExternalRootScanner(
+system-kernel-cpp/src/eco-system/Core/Registry.hpp: Allocator::instance().getRootSet().addExternalRootScanner(

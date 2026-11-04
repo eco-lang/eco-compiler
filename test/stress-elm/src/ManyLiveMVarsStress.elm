@@ -10,6 +10,7 @@ module ManyLiveMVarsStress exposing (main)
 
 import Bytes.Decode as BD
 import Bytes.Encode as BE
+import Eco.IO.Error exposing (IOError)
 import Eco.MVar as MV
 import StressHarness exposing (StressFlags)
 import Task
@@ -25,16 +26,16 @@ intDec =
     BD.succeed 0
 
 
-heavyAlloc : Int -> Task.Task Never Int
+heavyAlloc : Int -> Task.Task IOError Int
 heavyAlloc size =
     Task.succeed (List.sum (List.range 1 size))
 
 
 {-| Make `total` MVars each pre-filled with its index `i` in [1..total]. -}
-makeAll : Int -> Task.Task Never (List (MV.MVar Int))
+makeAll : Int -> Task.Task IOError (List (MV.MVar Int))
 makeAll total =
     let
-        go : Int -> List (MV.MVar Int) -> Task.Task Never (List (MV.MVar Int))
+        go : Int -> List (MV.MVar Int) -> Task.Task IOError (List (MV.MVar Int))
         go i acc =
             if i > total then
                 Task.succeed (List.reverse acc)
@@ -50,10 +51,10 @@ makeAll total =
     go 1 []
 
 
-takeAll : List (MV.MVar Int) -> Task.Task Never (List Int)
+takeAll : List (MV.MVar Int) -> Task.Task IOError (List Int)
 takeAll mvars =
     let
-        go : List (MV.MVar Int) -> List Int -> Task.Task Never (List Int)
+        go : List (MV.MVar Int) -> List Int -> Task.Task IOError (List Int)
         go ms acc =
             case ms of
                 [] ->
@@ -77,6 +78,7 @@ cycle mvarCount allocSize =
                     |> Task.andThen (\_ -> takeAll mvars)
             )
         |> Task.map (\vs -> vs == List.range 1 mvarCount)
+        |> Task.onError (\_ -> Task.succeed False)
 
 
 run : StressFlags -> Task.Task Never Bool

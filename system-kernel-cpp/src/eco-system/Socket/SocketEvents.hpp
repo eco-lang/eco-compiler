@@ -11,8 +11,8 @@
 // a message, the drain calls `Scheduler::drain()` before taking the next event.
 //
 // Heap generation: every event carries `gen`, a heap generation taken on the eco thread when the operation or the
-// object behind the event began. After a heap reset an event of an older generation refers to tokens and counts
-// that died with the old heap. The drain does not dispatch such an event; it only releases its OS resources,
+// object behind the event began. After a heap reset an event of an older generation refers to tokens and holds
+// that died with the old heap (the scheduler voids them at the reset). The drain does not dispatch such an event; it only releases its OS resources,
 // aborting the connection it carries, if any. An event whose kind has no dispatch function is released the same
 // way. Such an event is called an orphan.
 //
@@ -61,11 +61,11 @@ struct TlsInfo {
 /// Which members are meaningful depends on `kind`; the rest keep their defaults. The record holds no Elm heap
 /// pointers, so it may be built on any thread and may outlive a heap reset.
 struct SocketEvent {
-    /// The kind of result, which selects the dispatch function. `kKinds` must equal the number of enumerators;
-    /// nothing checks this.
-    enum class Kind : uint8_t { Connected, Accepted, Datagram, OpDone, ListenerClosed, UdpClosed };
-    /// The number of `Kind` enumerators: the size of the dispatch table.
-    static constexpr int kKinds = 6;
+    /// The kind of result, which selects the dispatch function. `Count_` is not a kind: it stays last, and its
+    /// value is the number of kinds.
+    enum class Kind : uint8_t { Connected, Accepted, Datagram, OpDone, ListenerClosed, UdpClosed, Count_ };
+    /// The number of `Kind` enumerators (`Count_` excluded): the size of the dispatch table.
+    static constexpr int kKinds = static_cast<int>(Kind::Count_);
 
     Kind kind = Kind::OpDone;
     uint64_t gen = 0;                ///< Heap generation; see the file comment.

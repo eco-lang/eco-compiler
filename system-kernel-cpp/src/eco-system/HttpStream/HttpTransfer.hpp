@@ -24,9 +24,10 @@
 //
 // Each transfer posts at most one `HttpEvent`, the one that answers the request:
 // a status event when the headers of the final response have arrived. If the
-// transfer ends before that, it is a status event with an empty head when curl
-// finished cleanly with a status, and otherwise a BadUrl, Timeout or
-// NetworkError event. The transfer is *resolved* once that event is posted or
+// transfer ends before that, it is a status event when curl finished cleanly
+// with a status (with the last header block's head if its status is that one,
+// and otherwise an empty head; its body has already ended), and otherwise a
+// BadUrl, Timeout or NetworkError event. The transfer is *resolved* once that event is posted or
 // `HttpStreamService::cancel` has claimed it; after that no event is posted.
 // Events are taken off the service's queue with `HttpStreamService::tryPop`.
 //
@@ -64,10 +65,11 @@ using HttpHeaderList = std::vector<std::pair<std::string, std::string>>;
 
 /// One HTTP request, as plain C++ data.
 struct HttpRequestSpec {
-    /// The method. Without a body, "POST" and "HEAD" are sent as libcurl's own
-    /// verbs, "GET" or empty as a GET, and any other as a custom request. With a
-    /// body, "POST" is sent as a POST and any other method, including "GET" and
-    /// empty, as a POST with that method as its custom request; "HEAD" sends no
+    /// The method, an RFC 9110 token (`httpStreamSendBody` rejects any other
+    /// before a transfer is made). Without a body, "POST" and "HEAD" are sent as
+    /// libcurl's own verbs, "GET" as a GET, and any other as a custom request.
+    /// With a body, "POST" is sent as a POST and any other method, including
+    /// "GET", as a POST with that method as its custom request; "HEAD" sends no
     /// body.
     std::string method;
     std::string url;
@@ -185,7 +187,9 @@ private:
 /// aborted first; an empty write is answered at once. Its `close` ends the
 /// request body, and is answered once curl has taken the end of the body, or
 /// with `ECANCELED` if the transfer ends first; writes and closes after a
-/// `close` fail with `ECANCELED`. A `Download` channel answers reads from the
+/// `close` fail with `ECANCELED`. For a HEAD request, which sends no body, a
+/// write is acknowledged and dropped at once and a `close` succeeds at once
+/// while the transfer is alive. A `Download` channel answers reads from the
 /// response body, possibly with fewer bytes than asked for; at the end of the
 /// body a read sees the end of the input, or `EIO` with the curl error as its
 /// reason. Its `close` answers pending reads with

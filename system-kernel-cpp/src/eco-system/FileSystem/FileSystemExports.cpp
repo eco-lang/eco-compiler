@@ -178,7 +178,8 @@ uint64_t Eco_Kernel_FileSystem_unlink(uint64_t path) {
     )
 }
 
-/// Returns the Task binding for the kernel `open`, of Elm type `String -> String -> Task FErr Int`.
+/// Returns the Task binding for the kernel `open`, of Elm type `String -> String -> Task FErr Int`. The Int is the
+/// new handle's id, which the handle kernels below take; it is never the fd itself.
 uint64_t Eco_Kernel_FileSystem_open(uint64_t flags, uint64_t path) {
     ECO_KERNEL_GUARD(
         HPointer payload = packFsArgs(path, flags);
@@ -187,81 +188,81 @@ uint64_t Eco_Kernel_FileSystem_open(uint64_t flags, uint64_t path) {
 }
 
 /// Returns the Task binding for the kernel `close`, of Elm type `Int -> Task FErr ()`.
-uint64_t Eco_Kernel_FileSystem_close(int64_t fd) {
+uint64_t Eco_Kernel_FileSystem_close(int64_t handle) {
     ECO_KERNEL_GUARD(
-        HPointer payload = packFsArgs(0, 0, fd);
+        HPointer payload = packFsArgs(0, 0, handle);
         return enc(makeAsyncBinding<fsPoolBody<opClose, FsKind::Close>>(payload));
     )
 }
 
 /// Returns the Task binding for the kernel `fstat`, of Elm type `Int -> Task FErr (List Int)`.
-uint64_t Eco_Kernel_FileSystem_fstat(int64_t fd) {
+uint64_t Eco_Kernel_FileSystem_fstat(int64_t handle) {
     ECO_KERNEL_GUARD(
-        HPointer payload = packFsArgs(0, 0, fd);
+        HPointer payload = packFsArgs(0, 0, handle);
         return enc(makeAsyncBinding<fsPoolBody<opFstat, FsKind::Handle>>(payload));
     )
 }
 
 /// Returns the Task binding for the kernel `fchmod`, of Elm type `Int -> Int -> Task FErr ()`.
-uint64_t Eco_Kernel_FileSystem_fchmod(int64_t fd, int64_t mode) {
+uint64_t Eco_Kernel_FileSystem_fchmod(int64_t handle, int64_t mode) {
     ECO_KERNEL_GUARD(
-        HPointer payload = packFsArgs(0, 0, fd, mode);
+        HPointer payload = packFsArgs(0, 0, handle, mode);
         return enc(makeAsyncBinding<fsPoolBody<opFchmod, FsKind::Handle>>(payload));
     )
 }
 
 /// Returns the Task binding for the kernel `fchown`, of Elm type `Int -> Int -> Int -> Task FErr ()`.
-uint64_t Eco_Kernel_FileSystem_fchown(int64_t fd, int64_t uid, int64_t gid) {
+uint64_t Eco_Kernel_FileSystem_fchown(int64_t handle, int64_t uid, int64_t gid) {
     ECO_KERNEL_GUARD(
-        HPointer payload = packFsArgs(0, 0, fd, uid, gid);
+        HPointer payload = packFsArgs(0, 0, handle, uid, gid);
         return enc(makeAsyncBinding<fsPoolBody<opFchown, FsKind::Handle>>(payload));
     )
 }
 
 /// Returns the Task binding for the kernel `futimes`, of Elm type `Int -> Int -> Int -> Task FErr ()`.
-uint64_t Eco_Kernel_FileSystem_futimes(int64_t fd, int64_t atime, int64_t mtime) {
+uint64_t Eco_Kernel_FileSystem_futimes(int64_t handle, int64_t atime, int64_t mtime) {
     ECO_KERNEL_GUARD(
-        HPointer payload = packFsArgs(0, 0, fd, atime, mtime);
+        HPointer payload = packFsArgs(0, 0, handle, atime, mtime);
         return enc(makeAsyncBinding<fsPoolBody<opFutimes, FsKind::Handle>>(payload));
     )
 }
 
 /// Returns the Task binding for the kernel `readFromOffset`, of Elm type `Int -> Int -> Int -> Task FErr Bytes`.
-uint64_t Eco_Kernel_FileSystem_readFromOffset(int64_t fd, int64_t offset, int64_t length) {
+uint64_t Eco_Kernel_FileSystem_readFromOffset(int64_t handle, int64_t offset, int64_t length) {
     ECO_KERNEL_GUARD(
-        HPointer payload = packFsArgs(0, 0, fd, offset, length);
+        HPointer payload = packFsArgs(0, 0, handle, offset, length);
         return enc(makeAsyncBinding<fsPoolBody<opReadFromOffset, FsKind::Handle>>(payload));
     )
 }
 
 /// Returns the Task binding for the kernel `writeFromOffset`, of Elm type `Int -> Int -> Bytes -> Task FErr ()`.
-uint64_t Eco_Kernel_FileSystem_writeFromOffset(int64_t fd, int64_t offset, uint64_t bytes) {
+uint64_t Eco_Kernel_FileSystem_writeFromOffset(int64_t handle, int64_t offset, uint64_t bytes) {
     ECO_KERNEL_GUARD(
-        HPointer payload = packFsArgs(0, bytes, fd, offset);
+        HPointer payload = packFsArgs(0, bytes, handle, offset);
         return enc(makeAsyncBinding<fsPoolBody<opWriteFromOffset, FsKind::HandleBytes>>(payload));
     )
 }
 
 /// Returns the Task binding for the kernel `ftruncate`, of Elm type `Int -> Int -> Task FErr ()`.
-uint64_t Eco_Kernel_FileSystem_ftruncate(int64_t fd, int64_t length) {
+uint64_t Eco_Kernel_FileSystem_ftruncate(int64_t handle, int64_t length) {
     ECO_KERNEL_GUARD(
-        HPointer payload = packFsArgs(0, 0, fd, length);
+        HPointer payload = packFsArgs(0, 0, handle, length);
         return enc(makeAsyncBinding<fsPoolBody<opFtruncate, FsKind::Handle>>(payload));
     )
 }
 
 /// Returns the Task binding for the kernel `fsync`, of Elm type `Int -> Task FErr ()`.
-uint64_t Eco_Kernel_FileSystem_fsync(int64_t fd) {
+uint64_t Eco_Kernel_FileSystem_fsync(int64_t handle) {
     ECO_KERNEL_GUARD(
-        HPointer payload = packFsArgs(0, 0, fd);
+        HPointer payload = packFsArgs(0, 0, handle);
         return enc(makeAsyncBinding<fsPoolBody<opFsync, FsKind::Handle>>(payload));
     )
 }
 
 /// Returns the Task binding for the kernel `fdatasync`, of Elm type `Int -> Task FErr ()`.
-uint64_t Eco_Kernel_FileSystem_fdatasync(int64_t fd) {
+uint64_t Eco_Kernel_FileSystem_fdatasync(int64_t handle) {
     ECO_KERNEL_GUARD(
-        HPointer payload = packFsArgs(0, 0, fd);
+        HPointer payload = packFsArgs(0, 0, handle);
         return enc(makeAsyncBinding<fsPoolBody<opFdatasync, FsKind::Handle>>(payload));
     )
 }

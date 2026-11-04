@@ -51,7 +51,7 @@ init _ =
                             |> Task.andThen (\_ -> MV.take intDec m)
                     )
     in
-    ( Nothing, Task.perform Got task )
+    ( Nothing, Task.perform Got (task |> Task.onError (\_ -> Task.succeed -1)) )
 
 
 update : Msg -> Model -> ( Model, Cmd Msg )

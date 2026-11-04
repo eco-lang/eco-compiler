@@ -13,6 +13,11 @@
 // later, keeps the resume closure so the result can be delivered then, and
 // returns at once; `makeAsyncBinding` wraps it.
 //
+// A C++ exception that escapes a body ends the process through `reportFatal`
+// (Fatal.hpp) with the exception's message, instead of unwinding through the
+// scheduler, which catches nothing. A body that can fail recoverably returns a
+// failed Task instead, in its own error shape.
+//
 // Every body receives one captured payload, an HPointer the kernel builds before
 // wrapping: a single value, a tuple or record of several (built with the
 // HeapHelpers `tuple2`, `tuple3` or `record`), or `unit()` when there is
@@ -37,6 +42,7 @@
 #include "allocator/Allocator.hpp"
 #include "allocator/Heap.hpp"
 #include "allocator/HeapHelpers.hpp"
+#include "platform/Fatal.hpp"
 #include "platform/Scheduler.hpp"
 
 namespace Elm::Platform {
@@ -75,7 +81,8 @@ inline HPointer decodeBits(uint64_t v) {
 // scheduler supplies. Calls `Body(captured)`, passes the Task it returns to the
 // resume closure with `Scheduler::callClosure1`, and returns `unit()` as the
 // kill handle, encoded as a pointer. Cancelling in-flight work is not
-// modelled.
+// modelled. An exception escaping the body is reported with
+// `reportFatalCurrentException`, which aborts.
 template <BindingBody Body>
 inline void* bindingTrampoline(void* rawArgs[]) {
     uint64_t capturedEnc = reinterpret_cast<uint64_t>(rawArgs[0]);
@@ -88,7 +95,11 @@ inline void* bindingTrampoline(void* rawArgs[]) {
         // Rooted before `Body` runs, since it and the resume call may allocate
         // and move all three.
         Elm::StackRootGuard guard(&captured, &resume, &task);
-        task = Body(captured);
+        try {
+            task = Body(captured);
+        } catch (...) {
+            reportFatalCurrentException();
+        }
         Scheduler::callClosure1(resume, task);
     }
 
@@ -100,7 +111,8 @@ inline void* bindingTrampoline(void* rawArgs[]) {
 //
 // Calls `Body(captured, resume)` with the two arguments as in
 // `bindingTrampoline`, and returns what the body returns, encoded as a
-// pointer, as the kill handle. It never calls the resume closure itself.
+// pointer, as the kill handle. It never calls the resume closure itself. An
+// exception escaping the body is reported as in `bindingTrampoline`.
 //
 // When `Scheduler::holdCensusEnabled()`, it checks that the body either
 // enqueued something or acquired a hold (holds are defined in Liveness.hpp),
@@ -121,7 +133,11 @@ inline void* asyncBindingTrampoline(void* rawArgs[]) {
     const u64 enq0 = check ? sched.enqueueSerial() : 0;
     {
         Elm::StackRootGuard guard(&captured, &resume, &killHandle);
-        killHandle = Body(captured, resume);
+        try {
+            killHandle = Body(captured, resume);
+        } catch (...) {
+            reportFatalCurrentException();
+        }
     }
     if (check && sched.acquireSerial() == acq0 && sched.enqueueSerial() == enq0) {
         sched.noteHoldlessPark(__PRETTY_FUNCTION__);
@@ -135,8 +151,7 @@ inline void* asyncBindingTrampoline(void* rawArgs[]) {
 // `Body(captured)` and continues with the Task the body returns.
 //
 // `captured` is stored boxed in the binding's closure and stays reachable for
-// as long as the Task does; if `resolve(cb)` returns null the capture is
-// skipped and the closure holds no payload. Making the Task does no IO. Allocates.
+// as long as the Task does. Making the Task does no IO. Allocates.
 template <BindingBody Body>
 inline HPointer makeBinding(HPointer captured) {
     Elm::StackRootGuard capRoot(&captured);
@@ -147,10 +162,7 @@ inline HPointer makeBinding(HPointer captured) {
         reinterpret_cast<EvalFunction>(&detail::bindingTrampoline<Body>),
         /*max_values=*/2, PK_Boxed);
 
-    void* cbPtr = Allocator::instance().resolve(cb);
-    if (cbPtr) {
-        alloc::closureCapture(cbPtr, alloc::boxed(captured), /*is_boxed=*/true);
-    }
+    alloc::closureCapture(Allocator::instance().resolve(cb), alloc::boxed(captured), /*is_boxed=*/true);
 
     return Scheduler::instance().taskBinding(cb);
 }
@@ -166,7 +178,7 @@ inline HPointer makeBinding(HPointer captured) {
 // report it (see `asyncBindingTrampoline`). The body's return value becomes
 // the kill handle; `unit()` when there is nothing to cancel.
 //
-// `captured` is stored as in `makeBinding`, with the same null-`resolve` skip. Allocates.
+// `captured` is stored as in `makeBinding`. Allocates.
 template <AsyncBindingBody Body>
 inline HPointer makeAsyncBinding(HPointer captured) {
     Elm::StackRootGuard capRoot(&captured);
@@ -175,10 +187,7 @@ inline HPointer makeAsyncBinding(HPointer captured) {
         reinterpret_cast<EvalFunction>(&detail::asyncBindingTrampoline<Body>),
         /*max_values=*/2, PK_Boxed);
 
-    void* cbPtr = Allocator::instance().resolve(cb);
-    if (cbPtr) {
-        alloc::closureCapture(cbPtr, alloc::boxed(captured), /*is_boxed=*/true);
-    }
+    alloc::closureCapture(Allocator::instance().resolve(cb), alloc::boxed(captured), /*is_boxed=*/true);
 
     return Scheduler::instance().taskBinding(cb);
 }

@@ -34,10 +34,15 @@
 //
 // The component is a process singleton and runs on the eco thread, the one thread that runs Elm code; its
 // state has no lock. Its scanner is registered with the root set of the thread that first calls `instance`.
+// A heap reset (`Allocator::reset`, which only tests make) destroys that root set and every value the
+// component holds, so the first eco-thread call of `instance`, `registerManager` or `setupEffects` in a new heap
+// generation drops the managers, their states, the effects queue, the model and the decoders, and registers
+// the scanner again; the program that runs next must register its managers again.
 
 #include "allocator/Heap.hpp"
 #include "allocator/HeapHelpers.hpp"
 #include "Scheduler.hpp"
+#include "TestHooks.hpp"
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -85,6 +90,17 @@ public:
     bool hasManager(const std::string& home) const {
         return managers_.find(home) != managers_.end();
     }
+
+#if ECO_TEST_HOOKS
+    // Test-only (TASK-01, TIME-NEW-1): returns the closures registered for `home`, as the runtime holds them,
+    // or null when no manager is registered under that name. The words are the ones the root scanner
+    // updates, so a read after a collection sees where each value moved. The pointer is valid until the next
+    // `registerManager`.
+    const ManagerInfo* findManagerForTest(const std::string& home) const {
+        auto it = managers_.find(home);
+        return it == managers_.end() ? nullptr : &it->second;
+    }
+#endif
 
     // Starts every registered effect manager and returns the Empty constant (`{}`).
     //
@@ -175,6 +191,15 @@ public:
 private:
     // Creates the runtime and registers its GC external root scanner with the calling thread's root set.
     PlatformRuntime();
+
+    // Registers the root scanner with the calling thread's root set, giving the thread a heap if it has none,
+    // and records the heap generation it belongs to.
+    void registerRootScanner();
+    // Drops every heap value and registers the scanner again if the heap was reset since they were stored (see
+    // the file comment). Does nothing on a thread without a heap.
+    void syncHeapGeneration();
+    // The heap generation the state and the scanner belong to.
+    uint64_t heapGeneration_ = 0;
 
     /**
      * The effect values one manager has been given in the batch being dispatched, as encoded HPointers.

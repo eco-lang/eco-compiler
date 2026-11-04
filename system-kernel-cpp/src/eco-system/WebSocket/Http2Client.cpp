@@ -380,7 +380,6 @@ void Http2ClientProtocol::endOfStream() {
 void Http2ClientProtocol::streamGone(uint32_t code) {
     if (streamClosed_) return;
     streamClosed_ = true;
-    closeCode_ = code;
     if (phase_ == Phase::Settings || phase_ == Phase::Requested) {
         failDial("ERR_WS_HANDSHAKE", "the server reset the opening stream");
         return;
@@ -453,7 +452,6 @@ void Http2ClientProtocol::onCloseAll(Conn&) {
     }
     if (!streamClosed_) {
         streamClosed_ = true;
-        closeCode_ = H2StreamPort::kCancel;
         if (port_) {
             std::shared_ptr<H2StreamPort> port = port_;
             port->streamReset(H2StreamPort::kCancel);

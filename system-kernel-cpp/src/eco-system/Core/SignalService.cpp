@@ -15,12 +15,14 @@
 #include "eco-system/Core/FdChannel.hpp"   // makeCloexecPipe
 
 #include <cerrno>
+#include <cstring>
 #include <thread>
 
 #ifndef _WIN32
 #include <csignal>
 #include <fcntl.h>
 #include <poll.h>
+#include <pthread.h>
 #include <signal.h>
 #include <time.h>
 #include <unistd.h>
@@ -235,6 +237,10 @@ void SignalService::unsubscribe(int signo) {
 
 SignalService::ListenerId SignalService::addListener(int signo, Listener fn, void* ctx) {
     if (!fn) return 0;
+    // Room for the record first, growing geometrically as push_back would: this is the only step that can throw,
+    // so a failure leaves nothing to undo, and the push_back after `subscribe` cannot throw (SYS_003).
+    if (listeners_.size() == listeners_.capacity())
+        listeners_.reserve(listeners_.capacity() < 4 ? 4 : listeners_.capacity() * 2);
     if (!subscribe(signo)) return 0;
     ListenerId id = nextListenerId_++;
     listeners_.push_back(ListenerRec{id, signo, fn, ctx});
@@ -278,14 +284,67 @@ void SignalService::dispatch(int signo) {
 #ifdef _WIN32
 void SignalService::chainToPrevious(int) {}
 #else
+namespace {
+
+// Returns whether the default action of `signo` is to ignore it (or, for SIGCONT, only to continue a stopped
+// process), so that giving a signal its default effect does nothing.
+bool defaultIgnores(int signo) {
+    switch (signo) {
+    case SIGCHLD:
+    case SIGCONT:
+    case SIGURG:
+#ifdef SIGWINCH
+    case SIGWINCH:
+#endif
+        return true;
+    default:
+        return false;
+    }
+}
+
+} // namespace
+
 void SignalService::chainToPrevious(int signo) {
     if (signo <= 0 || signo >= kMaxSig || counts_[signo] == 0) return;
     auto* old = static_cast<struct sigaction*>(saved_[signo]);
     if (!old) return;
-    struct sigaction ours {};
-    if (::sigaction(signo, old, &ours) != 0) return;
-    ::raise(signo);   // synchronous on this thread; default action may end the process
-    ::sigaction(signo, &ours, nullptr);   // survived: listen again
+    const bool info = (old->sa_flags & SA_SIGINFO) != 0;
+    if (!info && old->sa_handler == SIG_IGN) return;
+    if (!info && old->sa_handler == SIG_DFL) {
+        if (defaultIgnores(signo)) return;
+        // The default action can only be had by raising the signal under it. An instance that arrives in this
+        // window also gets the default action, which is the effect being asked for anyway.
+        struct sigaction ours {};
+        if (::sigaction(signo, old, &ours) != 0) return;
+        ::raise(signo);   // synchronous on this thread; the default action may end or stop the process
+        ::sigaction(signo, &ours, nullptr);   // survived: listen again
+        return;
+    }
+    // A previous handler is called directly, with this service's handler left installed, so an instance that
+    // arrives meanwhile still reaches the Eco queue. It runs with the mask the kernel would give it.
+    sigset_t mask = old->sa_mask;
+    if (!(old->sa_flags & SA_NODEFER)) sigaddset(&mask, signo);
+    sigset_t before;
+    if (::pthread_sigmask(SIG_BLOCK, &mask, &before) != 0) return;
+    if (info) {
+        siginfo_t si;
+        std::memset(&si, 0, sizeof si);
+        si.si_signo = signo;
+        si.si_code = SI_USER;
+        si.si_pid = ::getpid();
+        si.si_uid = ::getuid();
+        old->sa_sigaction(signo, &si, nullptr);
+    } else {
+        old->sa_handler(signo);
+    }
+    ::pthread_sigmask(SIG_SETMASK, &before, nullptr);
+    if (old->sa_flags & SA_RESETHAND) {
+        // The kernel would have reset the disposition on delivery; the last unsubscribe restores that instead.
+        struct sigaction dfl {};
+        dfl.sa_handler = SIG_DFL;
+        sigemptyset(&dfl.sa_mask);
+        *old = dfl;
+    }
 }
 #endif
 

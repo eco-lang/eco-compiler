@@ -5,10 +5,10 @@
 //
 // It has three parts. `toString`, `fromString` and `listToStringVector` convert between Elm Strings or Lists of
 // Strings and `std::string`. The `taskSucceed*` and `taskFail*` functions allocate a Task that succeeds or fails
-// with a given value and return its word. `ioErrorTagFromErrno`, `taskFailIO` and `taskFailErrno` build the *IO
-// error tuple*, the value an eco kernel IO operation fails with: `( tag, path, message )`, where `tag` is an Int
-// classifying the error, `path` is the path the failing operation concerns, as the caller passes it, and
-// `message` describes the failure.
+// with a given value and return its word. `ioErrorTagFromErrno`, `ioErrorTagFromErrorCode`, `taskFailIO`,
+// `taskFailErrno` and `taskFailErrorCode` build the *IO error tuple*, the value an eco kernel IO operation fails
+// with: `( tag, path, message )`, where `tag` is an Int classifying the error, `path` is the path the failing
+// operation concerns, as the caller passes it, and `message` describes the failure.
 //
 // A Task built here is a finished value: building it performs no IO. An eco kernel function that returns a Task
 // and performs IO is expected to defer the IO to a Task binding (`Eco::Kernel::makeBinding`, in
@@ -32,6 +32,7 @@
 #include "platform/Scheduler.hpp"
 #include <cerrno>
 #include <string>
+#include <system_error>
 #include <vector>
 
 namespace Eco::Kernel {
@@ -133,6 +134,38 @@ inline uint64_t taskFailErrno(int err, const std::string& path, const std::strin
     return taskFailIO(ioErrorTagFromErrno(err), path, message);
 }
 
+/// Returns the IO error tag that classifies the `std::error_code` `ec`, with the numbering of
+/// `ioErrorTagFromErrno`.
+///
+/// `ec` is compared with `std::errc` conditions rather than read as an `errno` value, so a code in another
+/// category maps by its meaning: on Windows, `std::filesystem` reports Win32 codes in the system category,
+/// such as ERROR_PATH_NOT_FOUND (3) or ERROR_ALREADY_EXISTS (183), and those map to the same tags as their
+/// POSIX counterparts. On POSIX the generic and system codes are `errno` values, and the result equals
+/// `ioErrorTagFromErrno(ec.value())`.
+inline int ioErrorTagFromErrorCode(const std::error_code& ec) {
+    using std::errc;
+    if (ec == errc::no_such_file_or_directory) return 1;  // FileNotFound
+    if (ec == errc::permission_denied || ec == errc::operation_not_permitted) return 2;  // PermissionDenied
+    if (ec == errc::not_a_directory) return 3;  // NotADirectory
+    if (ec == errc::is_a_directory) return 4;   // IsADirectory
+    if (ec == errc::file_exists) return 5;      // AlreadyExists
+    if (ec == errc::no_space_on_device) return 6;  // NoSpaceLeft
+    if (ec == errc::too_many_files_open || ec == errc::too_many_files_open_in_system) return 7;  // TooManyOpenFiles
+    if (ec == errc::broken_pipe) return 8;          // BrokenPipe
+    if (ec == errc::bad_file_descriptor) return 9;  // BadFileDescriptor
+    return 0;                                       // OtherIOError
+}
+
+/// Returns the word of a new Task that fails with the IO error tuple for the `std::error_code` `ec`, as
+/// `taskFailIO` does with the tag `ioErrorTagFromErrorCode` gives `ec`. The message is `message`, then ": ",
+/// then `ec.message()`. A GC point.
+///
+/// Use this for failures a `std::filesystem` call reports, and `taskFailErrno` for those an `errno` reports.
+inline uint64_t taskFailErrorCode(const std::error_code& ec, const std::string& path,
+                                  const std::string& message) {
+    return taskFailIO(ioErrorTagFromErrorCode(ec), path, message + ": " + ec.message());
+}
+
 /// Returns the word of a new Task that succeeds with the Bool `b`, a boxed constant word. A GC point.
 inline uint64_t taskSucceedBool(bool b) {
     return taskSucceed(b ? elmTrue() : elmFalse());
@@ -209,13 +242,12 @@ inline void forEachListElement(uint64_t encodedList, F&& visitor) {
 
 /// Returns the texts of the Elm Strings in the List whose word is `encodedList`, in order, as UTF-8.
 ///
-/// Each element is resolved as a String object; an element that is the empty-string constant is not
-/// special-cased, as it is in `toString`. Does not allocate on the Elm heap.
+/// Each element is read as `toString` reads it, so an element that is the empty-string constant gives `""`
+/// and is never passed to `Allocator::resolve` (HEAP_014). Does not allocate on the Elm heap.
 inline std::vector<std::string> listToStringVector(uint64_t encodedList) {
     std::vector<std::string> result;
     forEachListElement(encodedList, [&](Unboxable head, bool /*is_boxed*/) {
-        void* ptr = Allocator::instance().resolve(head.p);
-        result.push_back(StringOps::toStdString(ptr));
+        result.push_back(toString(Export::encode(head.p)));
     });
     return result;
 }

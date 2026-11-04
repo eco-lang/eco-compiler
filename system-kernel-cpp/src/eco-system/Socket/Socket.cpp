@@ -6,6 +6,7 @@
 
 #include "eco-system/Socket/Socket.hpp"
 
+#include "eco-system/Core/IoReactor.hpp"
 #include "eco-system/Core/SocketUtil.hpp"
 #include "eco-system/Core/SysWorkPool.hpp"
 #include "eco-system/Socket/SocketTables.hpp"
@@ -14,6 +15,7 @@
 
 #include <cerrno>
 #include <cstring>
+#include <stdexcept>
 #include <utility>
 #include <vector>
 
@@ -28,22 +30,6 @@
 namespace Eco::System {
 
 namespace {
-
-// --- Stubs (Socket.hpp) ----------------------------------------------------------
-
-// The body of `socketNotImplementedTask`.
-HPointer notImplementedBody(HPointer /*captured*/) {
-    ECO_SYSTEM_BODY_GUARD(FErr,
-        return failFErr("ENOTSUP", "not implemented yet");
-    )
-}
-
-// The body of `socketDoneTask`.
-HPointer doneBody(HPointer /*captured*/) {
-    ECO_SYSTEM_BODY_GUARD(Never,
-        return succeedUnit();
-    )
-}
 
 // --- Payload decoding (no allocation) ---------------------------------------------
 
@@ -177,10 +163,6 @@ HPointer listenComplete(PoolResult& pr) { return completeListen(pr.as<ListenResu
 // Socket.hpp helpers
 // ---------------------------------------------------------------------------
 
-HPointer socketNotImplementedTask() { return makeBinding<notImplementedBody>(alloc::unit()); }
-
-HPointer socketDoneTask() { return makeBinding<doneBody>(alloc::unit()); }
-
 ListenFd::ListenFd(ListenFd&& o) noexcept : fd(o.fd), createdPath(std::move(o.createdPath)) {
     o.fd = -1;
     o.createdPath.clear();
@@ -289,6 +271,7 @@ ListenResult unixListenOn(const std::string& path, bool removeExisting, int64_t 
 
 HPointer completeListen(ListenResult& r, TransportFactory factory) {
     if (!r.code.empty()) return failFErr(r.code, r.message);
+    if (!socketIoAvailable()) return socketIoUnavailable("listen");   // `r` still owns the socket and closes it
     ensureSocketTables();
     auto& t = socketTables();
     int64_t id = t.nextListenerId++;
@@ -308,16 +291,45 @@ HPointer completeListen(ListenResult& r, TransportFactory factory) {
     return succeed(lt);
 }
 
+bool socketIoAvailable() { return reactor().ok(); }
+
+HPointer socketIoUnavailable(const char* op) {
+    return failFErr(kReactorUnavailableCode, codeMessage(op, kReactorUnavailableCode, kReactorUnavailableMessage));
+}
+
 HPointer socketStartConnect(ConnectSpec spec, TransportFactory factory, HPointer& resume,
                             uint64_t& token, bool& counted) {
     ensureSocketTables();
+    if (!socketIoAvailable()) return resumeNow(resume, socketIoUnavailable("connect"));
     auto& sched = Scheduler::instance();
     token = sched.parkResume(resume, HoldKind::Task, "Socket.connect");
     counted = true;
+    // The kill handle first: it allocates, and if it throws, the guard fails the Task and releases the hold, which a
+    // connect already registered and submitted would release a second time when it completes (SOCK-12).
+    HPointer kill = makeKillHandle(token, &cancelPendingConnect);
+    Elm::StackRootGuard g(&kill);
+    socketContinueConnect(std::move(spec), std::move(factory), token);
+    return kill;
+}
+
+void socketContinueConnect(ConnectSpec spec, TransportFactory factory, uint64_t token) {
+    ensureSocketTables();
+    if (!socketIoAvailable()) throw std::runtime_error(codeMessage("connect", kReactorUnavailableCode,
+                                                                   kReactorUnavailableMessage));
     auto c = Conn::makeClient(std::move(spec), std::move(factory), token, currentHeapGeneration());
-    socketTables().pendingConnects[token] = c;
-    reactor().submit([c] { c->startConnect(); });
-    return makeKillHandle(token, &cancelPendingConnect);
+    auto& pending = socketTables().pendingConnects;
+    pending[token] = c;
+    bool submitted = false;
+    try {
+        submitted = reactor().submit([c] { c->startConnect(); });
+    } catch (...) {
+        pending.erase(token);
+        throw;
+    }
+    if (!submitted) {   // not reached while socketIoAvailable holds; nothing would complete the connect
+        pending.erase(token);
+        throw std::runtime_error(codeMessage("connect", kReactorUnavailableCode, kReactorUnavailableMessage));
+    }
 }
 
 // ---------------------------------------------------------------------------

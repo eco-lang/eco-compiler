@@ -18,9 +18,10 @@ import Eco.Kernel.Stream exposing (createChannelSource, createChannelSink, toByt
 // operation reports (FileSystemOps.cpp); the description is libuv's (node's) text for the
 // errno, which differs from glibc's strerror for a few errnos (EEXIST, EISDIR, ...).
 //
-// File handles: the fds returned by `open` and not yet closed are kept in a set, so an
-// operation on a closed handle fails with EBADF instead of reaching a reused fd number (as
-// the native open-handle table does).
+// File handles: `open` returns an opaque id, never reused, that maps to the fd until the
+// close has run, so an operation on a closed handle fails with EBADF instead of reaching a
+// reused fd number, and a close waits for the operations already started (as the native
+// open-handle table does).
 //
 // File streams are fd-based ByteChannels (see the API at the top of Stream.js): the fd is
 // opened by the readFileStream / writeFileStream task itself, so open errors are reported
@@ -471,8 +472,12 @@ var _FileSystem_devNull = __Scheduler_binding(function(callback)
 
 // --- File handles ----------------------------------------------------------------------------
 
-// fds returned by `open` and not yet closed.
-var _FileSystem_openHandles = new Set();
+// The open handles, as native (FS-01): an opaque id, counting up from 1 and never reused,
+// maps to { __fd, __inFlight, __closing, __onIdle }. `open` returns the id; an operation
+// started on a handle counts in __inFlight until it calls back; once a close is asked
+// for (__closing) no operation starts, and the fd is closed when __inFlight reaches 0.
+var _FileSystem_openHandles = new Map();
+var _FileSystem_nextHandleId = 1;
 
 var _FileSystem_openFlags = { 'r': 1, 'w': 1, 'r+': 1, 'wx': 1, 'w+': 1, 'wx+': 1 };
 
@@ -481,26 +486,42 @@ function _FileSystem_badHandle()
 	return __Scheduler_fail(__Utils_Tuple2('EBADF', 'EBADF: bad file descriptor'));
 }
 
-// A task on an open handle: fails with EBADF when `fd` is not open, else runs `run`.
-function _FileSystem_handleTask(fd, run)
+// Counts one operation on handle entry `h` as finished, running a waiting close once none is left.
+function _FileSystem_handleOpDone(h)
+{
+	h.__inFlight--;
+	if (h.__inFlight === 0 && h.__onIdle)
+	{
+		var go = h.__onIdle;
+		h.__onIdle = null;
+		go();
+	}
+}
+
+// A task on an open handle: fails with EBADF when handle `id` is not open or is closing,
+// else runs `run(fd, ok, fail)`, which must call one of `ok` and `fail` once.
+function _FileSystem_handleTask(id, run)
 {
 	return __Scheduler_binding(function(callback)
 	{
-		if (!_FileSystem_openHandles.has(fd))
+		var h = _FileSystem_openHandles.get(id);
+		if (!h || h.__closing)
 		{
 			callback(_FileSystem_badHandle());
 			return;
 		}
+		h.__inFlight++;
 		run(
-			function(value) { callback(__Scheduler_succeed(value)); },
-			function(err, syscall) { callback(_FileSystem_errTask(err, syscall, '')); }
+			h.__fd,
+			function(value) { _FileSystem_handleOpDone(h); callback(__Scheduler_succeed(value)); },
+			function(err, syscall) { _FileSystem_handleOpDone(h); callback(_FileSystem_errTask(err, syscall, '')); }
 		);
 	});
 }
 
-function _FileSystem_handleUnitTask(fd, fn, args, syscall)
+function _FileSystem_handleUnitTask(id, fn, args, syscall)
 {
-	return _FileSystem_handleTask(fd, function(ok, fail)
+	return _FileSystem_handleTask(id, function(fd, ok, fail)
 	{
 		fn.apply(_FileSystem_fs, [fd].concat(args, [function(err)
 		{
@@ -511,7 +532,7 @@ function _FileSystem_handleUnitTask(fd, fn, args, syscall)
 }
 
 // open : String -> String -> Task FErr Int   (nodeFlags, path), mode 0666 (node opens with
-// O_CLOEXEC)
+// O_CLOEXEC); the Int is the new handle's id
 var _FileSystem_open = F2(function(flags, path)
 {
 	return __Scheduler_binding(function(callback)
@@ -528,33 +549,42 @@ var _FileSystem_open = F2(function(flags, path)
 				callback(_FileSystem_errTask(err, 'open', path));
 				return;
 			}
-			_FileSystem_openHandles.add(fd);
-			callback(__Scheduler_succeed(fd));
+			var id = _FileSystem_nextHandleId++;
+			_FileSystem_openHandles.set(id, { __fd: fd, __inFlight: 0, __closing: false, __onIdle: null });
+			callback(__Scheduler_succeed(id));
 		});
 	});
 });
 
-// close : Int -> Task FErr ()   (the fd leaves the open set before it is closed)
-var _FileSystem_close = function(fd)
+// close : Int -> Task FErr ()   (the handle stops accepting operations at once; the fd is
+// closed once those already started have finished, and then the id leaves the table)
+var _FileSystem_close = function(id)
 {
 	return __Scheduler_binding(function(callback)
 	{
-		if (!_FileSystem_openHandles.has(fd))
+		var h = _FileSystem_openHandles.get(id);
+		if (!h || h.__closing)
 		{
 			callback(_FileSystem_badHandle());
 			return;
 		}
-		_FileSystem_openHandles.delete(fd);
-		_FileSystem_fs.close(fd, function(err)
+		h.__closing = true;
+		var doClose = function()
 		{
-			callback(err && err.code !== 'EINTR' ? _FileSystem_errTask(err, 'close', '') : __Scheduler_succeed(__Utils_Tuple0));
-		});
+			_FileSystem_fs.close(h.__fd, function(err)
+			{
+				_FileSystem_openHandles.delete(id);
+				callback(err && err.code !== 'EINTR' ? _FileSystem_errTask(err, 'close', '') : __Scheduler_succeed(__Utils_Tuple0));
+			});
+		};
+		if (h.__inFlight === 0) doClose();
+		else h.__onIdle = doClose;
 	});
 };
 
-var _FileSystem_fstat = function(fd)
+var _FileSystem_fstat = function(id)
 {
-	return _FileSystem_handleTask(fd, function(ok, fail)
+	return _FileSystem_handleTask(id, function(fd, ok, fail)
 	{
 		_FileSystem_fs.fstat(fd, { bigint: true }, function(err, s)
 		{
@@ -564,26 +594,26 @@ var _FileSystem_fstat = function(fd)
 	});
 };
 
-var _FileSystem_fchmod = F2(function(fd, mode)
+var _FileSystem_fchmod = F2(function(id, mode)
 {
-	return _FileSystem_handleUnitTask(fd, _FileSystem_fs.fchmod, [mode], 'fchmod');
+	return _FileSystem_handleUnitTask(id, _FileSystem_fs.fchmod, [mode], 'fchmod');
 });
 
-var _FileSystem_fchown = F3(function(fd, uid, gid)
+var _FileSystem_fchown = F3(function(id, uid, gid)
 {
-	return _FileSystem_handleUnitTask(fd, _FileSystem_fs.fchown, [uid, gid], 'fchown');
+	return _FileSystem_handleUnitTask(id, _FileSystem_fs.fchown, [uid, gid], 'fchown');
 });
 
-var _FileSystem_futimes = F3(function(fd, atime, mtime)
+var _FileSystem_futimes = F3(function(id, atime, mtime)
 {
-	return _FileSystem_handleUnitTask(fd, _FileSystem_fs.futimes, [atime, mtime], 'futime');
+	return _FileSystem_handleUnitTask(id, _FileSystem_fs.futimes, [atime, mtime], 'futime');
 });
 
 // readFromOffset : Int -> Int -> Int -> Task FErr Bytes   (fd, offset, length): offset < 0
 // reads from 0, length < 0 reads to EOF; stops early at EOF.
-var _FileSystem_readFromOffset = F3(function(fd, offset, length)
+var _FileSystem_readFromOffset = F3(function(id, offset, length)
 {
-	return _FileSystem_handleTask(fd, function(ok, fail)
+	return _FileSystem_handleTask(id, function(fd, ok, fail)
 	{
 		var pos = offset < 0 ? 0 : offset;
 		var chunks = [];
@@ -647,9 +677,9 @@ function _FileSystem_writeAll(fd, buf, pos, done)
 
 // writeFromOffset : Int -> Int -> Bytes -> Task FErr ()   (fd, offset, bytes); a negative
 // offset writes at the current file position (node's -1).
-var _FileSystem_writeFromOffset = F3(function(fd, offset, bytes)
+var _FileSystem_writeFromOffset = F3(function(id, offset, bytes)
 {
-	return _FileSystem_handleTask(fd, function(ok, fail)
+	return _FileSystem_handleTask(id, function(fd, ok, fail)
 	{
 		_FileSystem_writeAll(fd, _FileSystem_bytesToBuffer(bytes), offset < 0 ? null : offset, function(err)
 		{
@@ -659,19 +689,19 @@ var _FileSystem_writeFromOffset = F3(function(fd, offset, bytes)
 	});
 });
 
-var _FileSystem_ftruncate = F2(function(fd, length)
+var _FileSystem_ftruncate = F2(function(id, length)
 {
-	return _FileSystem_handleUnitTask(fd, _FileSystem_fs.ftruncate, [length], 'ftruncate');
+	return _FileSystem_handleUnitTask(id, _FileSystem_fs.ftruncate, [length], 'ftruncate');
 });
 
-var _FileSystem_fsync = function(fd)
+var _FileSystem_fsync = function(id)
 {
-	return _FileSystem_handleUnitTask(fd, _FileSystem_fs.fsync, [], 'fsync');
+	return _FileSystem_handleUnitTask(id, _FileSystem_fs.fsync, [], 'fsync');
 };
 
-var _FileSystem_fdatasync = function(fd)
+var _FileSystem_fdatasync = function(id)
 {
-	return _FileSystem_handleUnitTask(fd, _FileSystem_fs.fdatasync, [], 'fdatasync');
+	return _FileSystem_handleUnitTask(id, _FileSystem_fs.fdatasync, [], 'fdatasync');
 };
 
 

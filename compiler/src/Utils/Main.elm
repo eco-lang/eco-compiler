@@ -1006,20 +1006,24 @@ dirCreateDirectoryIfMissing createParents filename =
 
 
 {-| A task that gives the current working directory, as `Eco.File.getCwd` reads
-it.
+it, and crashes the program if it cannot be read (for instance after the
+directory was removed).
 -}
 dirGetCurrentDirectory : Task Never String
 dirGetCurrentDirectory =
     Eco.File.getCwd
+        |> IO.crashOnError
 
 
 {-| Returns the directory where the application called `filename` keeps its data
 for the current user, as `Eco.File.appDataDir` gives it. The directory need not
-exist.
+exist. Crashes the program when no home directory can be found, with a message
+that says to set `HOME`.
 -}
 dirGetAppUserDataDirectory : FilePath -> Task Never FilePath
 dirGetAppUserDataDirectory filename =
     Eco.File.appDataDir filename
+        |> IO.crashOnError
 
 
 {-| Returns when the file at `filename` was last modified, and crashes the program
@@ -1244,11 +1248,12 @@ newMVar toEncoder value =
 
 
 {-| Returns the MVar's value, read with `decoder`, and leaves the MVar full. Waits
-while the MVar is empty.
+while the MVar is empty. Crashes the program if the MVar was dropped.
 -}
 readMVar : Bytes.Decode.Decoder a -> MVar a -> Task Never a
 readMVar decoder (MVar ref) =
     Eco.MVar.read decoder (Eco.MVar.MVar ref)
+        |> IO.crashOnError
 
 
 {-| Returns a task that takes the MVar's value, gives it to `io`, puts the first
@@ -1268,19 +1273,21 @@ modifyMVar decoder toEncoder m io =
 
 
 {-| Returns the MVar's value, read with `decoder`, and leaves the MVar empty.
-Waits while the MVar is empty.
+Waits while the MVar is empty. Crashes the program if the MVar was dropped.
 -}
 takeMVar : Bytes.Decode.Decoder a -> MVar a -> Task Never a
 takeMVar decoder (MVar ref) =
     Eco.MVar.take decoder (Eco.MVar.MVar ref)
+        |> IO.crashOnError
 
 
 {-| Puts `value`, written with `encoder`, into the MVar. Waits while the MVar is
-full.
+full. Crashes the program if the MVar was dropped.
 -}
 putMVar : (a -> Bytes.Encode.Encoder) -> MVar a -> a -> Task Never ()
 putMVar encoder (MVar ref) value =
     Eco.MVar.put encoder (Eco.MVar.MVar ref) value
+        |> IO.crashOnError
 
 
 {-| A task that creates a new, empty MVar.
@@ -1437,6 +1444,7 @@ Node's `__dirname`.
 nodeGetDirname : Task Never String
 nodeGetDirname =
     Eco.Runtime.dirname
+        |> IO.crashOnError
 
 
 

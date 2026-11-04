@@ -32,7 +32,8 @@ uint64_t lowerAndLink(uint64_t mlirPath, uint64_t outputPath,
                       uint64_t rootModule);
 
 /// Returns a Task like `lowerAndLink`, except that the MLIR is the contents of the Elm Bytes value `bytes` and no
-/// root module name is passed. Its failure message begins `Eco.NativeDriver.lowerAndLinkBytes:`.
+/// root module name is passed. Its failure message begins `Eco.NativeDriver.lowerAndLinkBytes:`. Empty Bytes (the
+/// embedded empty-Bytes constant included) fail without calling the driver.
 uint64_t lowerAndLinkBytes(uint64_t bytes, uint64_t outputPath);
 
 } // namespace Eco::Kernel::NativeDriver

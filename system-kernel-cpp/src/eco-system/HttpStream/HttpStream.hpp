@@ -41,7 +41,9 @@ namespace Eco::System {
 /// `headers` the response's fields as `( name, value )` pairs in arrival
 /// order, names lower-cased. For BadStatus and GoodStatus `bodyStreamId` is a
 /// new Readable over the response body; for the other kinds it is -1 and the
-/// head fields are empty or 0. A stream body whose Readable is already being
+/// head fields are empty or 0. A method that is not an RFC 9110 token (the
+/// empty string included) resumes the task at once with BadUrl and sends
+/// nothing; a stream body is then left unread. A stream body whose Readable is already being
 /// read (a parked read, a pipe or a subscription reader) resumes the task at
 /// once with NetworkError and sends nothing. A stream id that names no
 /// stream is not rejected: the request is sent with an empty body.

@@ -57,7 +57,7 @@ runAndWait cmd args =
 
 piped : Task Never String
 piped =
-    P.spawnProcess { cmd = "true", args = [], stdin = P.CreatePipe, stdout = P.Inherit, stderr = P.Inherit }
+    P.spawnProcess { cmd = "true", args = [], stdin = P.CreatePipe }
         |> Task.andThen
             (\r ->
                 P.wait r.processHandle

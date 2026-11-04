@@ -18,14 +18,22 @@
 //     empty or `0`. One detached thread reads the inotify instance and queues each record unchanged. Turning a
 //     record into events, and adding the watches for directories created inside a recursive watch, happens in
 //     `drain`, so the tables that map inotify watches to ids are used by one thread only. An attribute change or
-//     a modification is Changed; a create, delete or move is Moved. Directories that are symbolic links are not
-//     followed below the watched path. A queue overflow record is dropped, so changes it stands for are lost.
+//     a modification is Changed; a create, delete or move is Moved. The watched path itself is followed if it is
+//     a symbolic link; directories that are symbolic links below it are not followed. In a recursive watch, a
+//     directory that appears (created, or moved in) is watched with its whole tree, and every entry already in it
+//     is reported as Moved after the directory's own event, so entries created before its watch was added are
+//     not missed (duplicates are possible); a directory that is renamed or moved out stops being reported under
+//     its old path, and a renamed one is reported under its new path. When the kernel's queue overflows, one
+//     Moved event with no path is reported for every watch, meaning "rescan": the changes it stands for are lost.
+//     When the watched path itself disappears, one Moved event with no path is reported, and the watch then
+//     reports nothing more.
 //   * Poll mode, on other POSIX systems, or on Linux when the variable asks for it. One detached thread takes a
-//     snapshot of every watched tree once a second (the type, inode, size, mtime and ctime of each entry, read
-//     without following symbolic links) and compares it with the last one. An entry that appeared, disappeared,
-//     or has a different inode or type is Moved. Any other difference is Changed, except on a directory, whose
-//     own differences are not reported. When the watched path itself disappears, one Moved event with no path is
-//     reported.
+//     snapshot of every watched tree once a second (the type, inode, size, mtime and ctime of each entry; the
+//     watched path itself is followed if it is a symbolic link, entries below it are not) and compares it with
+//     the last one. An entry that appeared, disappeared, or has a different inode or type is Moved. Any other
+//     difference is Changed, except on a directory, whose own differences are not reported. When the watched path
+//     itself disappears, one Moved event with no path is reported, and, as in inotify mode, the watch is then
+//     finished: nothing more is reported, even if the path reappears.
 //
 // On Windows nothing is watched: `add` returns 0.
 //
@@ -36,6 +44,8 @@
 
 #ifndef ECO_SYSTEM_FILESYSTEM_WATCH_SERVICE_HPP
 #define ECO_SYSTEM_FILESYSTEM_WATCH_SERVICE_HPP
+
+#include "platform/TestHooks.hpp"
 
 #include <cstdint>
 #include <string>
@@ -78,6 +88,17 @@ public:
     /// Returns whether any record is queued for `drain`. It reads an atomic counter only. A true result may still
     /// yield no events, since some queued inotify records map to none.
     bool hasEvents() const;
+
+#if ECO_TEST_HOOKS
+    /// Test-only (WATCH-07): queues the raw inotify record `(wd, mask, name)` exactly as the inotify reader thread
+    /// would, and wakes the scheduler; the next `drain` maps it. Any thread. Only inotify mode, on Linux, maps
+    /// such a record; elsewhere `drain` drops it.
+    void injectRawForTest(int wd, uint32_t mask, const std::string& name);
+    /// Test-only (WATCH-07): queues the record the kernel reports when its inotify queue overflows
+    /// (`wd == -1`, `mask == IN_Q_OVERFLOW`, no name), as `injectRawForTest` does. Linux only; elsewhere it does
+    /// nothing.
+    void injectQueueOverflowForTest();
+#endif
 
     /// The service's private state.
     struct Impl;

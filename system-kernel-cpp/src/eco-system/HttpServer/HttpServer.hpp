@@ -73,11 +73,6 @@ HPointer httpServerRespondHtmlBody(HPointer captured, HPointer resume);
 /// as `HttpSrv::httpTablesCloseServer` describes. The task never fails, except by a fatal error.
 HPointer httpServerCloseServerBody(HPointer captured, HPointer resume);
 
-/// Returns a Task that fails with `( "ENOTSUP", "not implemented yet" )`, whatever `captured` is.
-///
-/// Nothing in the project binds this body.
-HPointer httpServerNotImplementedBody(HPointer captured);
-
 /// Takes over the upgrade request with response key `key` for a WebSocket handshake, and returns a Task that
 /// succeeds with `( handshakeId, ( method, target, version ), ( headers, isH2, remote ) )`.
 ///

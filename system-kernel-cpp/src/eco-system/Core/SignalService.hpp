@@ -95,7 +95,8 @@ public:
     using ListenerId = uint64_t;
 
     /// Takes one subscription to `signo` and adds `fn` as a listener of it, returning the new identifier. Returns
-    /// 0, adding nothing, when `fn` is null or `subscribe` fails.
+    /// 0, adding nothing, when `fn` is null or `subscribe` fails. If making room for the listener throws
+    /// (`std::bad_alloc`), it throws before subscribing, so nothing is left subscribed.
     ///
     /// `ctx` is kept and passed to `fn`; whatever it points to must outlive the listener.
     ListenerId addListener(int signo, Listener fn, void* ctx);
@@ -111,11 +112,18 @@ public:
 
     /// Gives `signo` the effect it would have had without this service's handler.
     ///
-    /// The disposition saved by the first subscription is reinstated, the signal is raised on the calling thread,
-    /// and this service's handler is put back if the process survives, as it does, for example, for a disposition
-    /// that ignores the signal or a previous handler that returns. For SIGINT or SIGTERM with the default
-    /// disposition the process ends. Does nothing for a signal with no subscriptions, when the saved disposition
-    /// cannot be reinstated, or on Windows. Must be called on the eco thread.
+    /// What it does depends on the disposition saved by the first subscription. A previous handler is called
+    /// directly on the calling thread, with `signo` (unless `SA_NODEFER`) and the handler's own `sa_mask` blocked
+    /// around the call, while this service's handler stays installed, so an instance of the signal that arrives
+    /// meanwhile is still queued for the listeners. A `SA_SIGINFO` handler gets a `siginfo_t` made up for a
+    /// signal the process sent itself (`SI_USER`, this pid and uid) and a null context, so a handler that reads
+    /// the context must not be chained. A saved `SA_RESETHAND` makes the saved disposition the default one
+    /// afterwards. An ignoring disposition does nothing, and so does the default one of a signal ignored by
+    /// default (SIGCHLD, SIGCONT, SIGURG, SIGWINCH). For any other default disposition the saved one is
+    /// reinstated, the signal is raised on the calling thread, and this service's handler is put back if the
+    /// process survives; for SIGINT or SIGTERM the process ends, and an instance arriving in that window gets the
+    /// default action too. Does nothing for a signal with no subscriptions, when the saved disposition cannot be
+    /// reinstated, or on Windows. Must be called on the eco thread, outside a signal handler.
     void chainToPrevious(int signo);
 
     /// Moves everything now in the pipe into the queue, and returns whether anything was moved. Never notifies the

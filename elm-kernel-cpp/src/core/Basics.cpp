@@ -5,7 +5,6 @@
 #define _USE_MATH_DEFINES
 #include <cmath>
 #include <limits>
-#include <stdexcept>
 
 namespace Elm::Kernel::Basics {
 
@@ -91,10 +90,11 @@ long long idiv(long long a, long long b) {  // a / -1 is undefined for the small
 
 long long modBy(long long modulus, long long x) {
     // `%` truncates; adding `modulus` to a remainder of the other sign gives the floored result.
-    if (modulus == 0) {
-        throw std::runtime_error("Elm.Kernel.Basics.modBy: modulus was zero");
+    // x % -1 is undefined for the smallest Int; a zero modulus gives 0, like the inline lowering.
+    if (modulus == 0 || modulus == -1) {
+        return 0;
     }
-    long long answer = modulus == -1 ? 0 : x % modulus;  // x % -1 is undefined for the smallest Int
+    long long answer = x % modulus;
     if ((answer > 0 && modulus < 0) || (answer < 0 && modulus > 0)) {
         return answer + modulus;
     }

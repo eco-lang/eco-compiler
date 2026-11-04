@@ -641,6 +641,16 @@ void eco_closure_call_saturated_eval(
 // nothing after the prefix.
 [[noreturn]] void eco_crash(HPtr message);
 
+// Ends the process with status `code`, after flushing `std::cout`, `std::cerr` and every C stdio stream. The one
+// way the runtime and the kernels end a program that has not returned from `main` (a crash, `Debug.todo`,
+// `Eco.Process.exit`, `Eco.Crash.crash`).
+//
+// On POSIX it calls `std::exit(code)`, so `atexit` handlers (statistics, the GC gang shutdown) still run. On
+// Windows it calls `TerminateProcess` and never returns: the scheduler's detached service threads are never told
+// to stop, and `exit`'s `ExitProcess` would kill them, possibly while one holds a lock that DLL detach or a
+// static destructor then needs, so the process could hang (CRASH-01). `atexit` handlers do not run there.
+[[noreturn]] void eco_terminate_process(int code);
+
 // The print functions below write to the calling thread's print destination (`eco_set_output_stream`).
 // The untyped printer renders a value from its heap representation alone: Ints, Floats, Chars and Strings
 // in Elm syntax, lists as `[...]`, tuples, a Custom as `Ctor<n>` and its fields, a Record as
@@ -766,8 +776,7 @@ uint32_t eco_get_custom_ctor(HPtr obj);
 // For a nullary constructor (a null-cons constant, HEAP_044) it is the index the word carries; for the
 // Empty constant (Nil, Nothing, Unit, the empty record or String) `CONSTANT_TAG`; for a Bool constant 0
 // for False and 1 for True. For a heap object it is 1 for a cons cell or chunk view (the list's Cons), the
-// `ctor` field for a Custom, and 0 for anything else. `CONSTANT_TAG` is also `CTOR_Router`'s value. `val`
-// must not be 0 (asserted).
+// `ctor` field for a Custom, and 0 for anything else. `val` must not be 0 (asserted).
 uint32_t eco_get_tag(HPtr val);
 
 //===----------------------------------------------------------------------===//
@@ -870,7 +879,7 @@ uint32_t eco_array_get_char(HPtr arr, int64_t index);
 // Returns `base` raised to the power `exp`, or 0 when `exp` is negative.
 //
 // The arithmetic is plain signed multiplication, so a power whose computation overflows `int64_t` is
-// undefined behaviour.
+// undefined behaviour. The body is `Elm::ecoIntPow` (IntArith.hpp).
 int64_t eco_int_pow(int64_t base, int64_t exp);
 
 //===----------------------------------------------------------------------===//

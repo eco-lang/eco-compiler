@@ -56,10 +56,11 @@ struct WsEvent {
     /// pair created on the eco thread. `BodyDispose`: a body's stream pair can no longer be received and is to be
     /// discarded. `HandshakeGone`: the connection of a server handshake taken from `Http.Server` is gone before the
     /// handshake was answered.
+    /// `Count_` is not a kind: it stays last, and its value is the number of kinds.
     enum class Kind : uint8_t { Dialed, UpgradeRead, Opened, OpDone, PingDone, Closed, BodyNeeded, BodyDispose,
-                                HandshakeGone };
-    /// The number of `Kind` enumerators: the size of the dispatch table. Nothing checks that the two agree.
-    static constexpr int kKinds = 9;
+                                HandshakeGone, Count_ };
+    /// The number of `Kind` enumerators (`Count_` excluded): the size of the dispatch table.
+    static constexpr int kKinds = static_cast<int>(Kind::Count_);
 
     Kind kind = Kind::OpDone;
     uint64_t gen = 0;                 ///< Heap generation; see the file comment.

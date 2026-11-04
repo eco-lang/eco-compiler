@@ -15,6 +15,7 @@
 #include "eco-system/Socket/SocketTables.hpp"
 
 #include "eco-system/Socket/ConnChannel.hpp"
+#include "eco-system/Socket/SocketManager.hpp"
 #include "eco-system/Stream/Stream.hpp"
 #include "eco-system/Stream/StreamTable.hpp"
 
@@ -36,8 +37,9 @@ void abortConn(const std::shared_ptr<Conn>& c) {
 }
 
 // Empties `t`, which belongs to a heap that no longer exists: aborts every held, materialized and pending
-// connection, closes every listener, and releases only the subscription holds and the holds of parked accepts,
-// whose tasks will never resume.
+// connection and closes every listener. The scheduler voided every hold of the old heap at the reset (D21 of
+// plans/kernel-lib-bug-fixes.md), so the releases below do nothing; they are kept so that each hold the tables
+// own still has one release.
 void resetTables(SocketTables& t) {
     auto& sched = Scheduler::instance();
     for (auto& kv : t.listeners) {
@@ -58,16 +60,6 @@ void resetTables(SocketTables& t) {
     t.listeners.clear();
     t.conns.clear();
     t.pendingConnects.clear();
-}
-
-// Resumes the task parked under `token` with `task`, which the caller roots. Returns false, doing nothing, if the
-// task is gone because it was killed. Releases no hold.
-bool resumeToken(uint64_t token, HPointer& task) {
-    HPointer resume = Scheduler::instance().takePendingResume(token);
-    if (alloc::isNil(resume)) return false;
-    Elm::StackRootGuard g(&resume);
-    Scheduler::callClosure1(resume, task);
-    return true;
 }
 
 // Resumes the task parked under `token` with success and unit. Returns false if the task is gone. Releases no hold.
@@ -277,10 +269,10 @@ HPointer buildEndpoint(const SockEndpoint& ep) {
     HPointer text = alloc::allocStringFromUTF8(ep.text);
     // `text` is passed straight to `tuple3`, which roots its boxed fields across its own allocation.
     return alloc::tuple3(alloc::unboxedInt(ep.kind), alloc::boxed(text), alloc::unboxedInt(ep.port),
-                         0x11);
+                         SocketManager::EP_T_MASK);
 }
 
-// The masks mark the unboxed fields: `connId` in the outer triple, both stream ids, and nothing in the endpoint pair.
+// The masks are the ConnT layout constants of SocketManager.hpp, which the Socket effect manager's taggers share.
 HPointer buildConnT(int64_t connId, const SocketEvent& ev) {
     int64_t rid = 0, wid = 0;
     if (ConnEntry* e = findConn(connId)) {
@@ -292,11 +284,11 @@ HPointer buildConnT(int64_t connId, const SocketEvent& ev) {
     HPointer remote = alloc::listNil();
     HPointer eps = alloc::listNil();
     Elm::StackRootGuard g({&ids, &local, &remote, &eps});
-    ids = alloc::tuple2(alloc::unboxedInt(rid), alloc::unboxedInt(wid), 0x5);
+    ids = alloc::tuple2(alloc::unboxedInt(rid), alloc::unboxedInt(wid), SocketManager::CONN_IDS_MASK);
     local = buildEndpoint(ev.local);
     remote = buildEndpoint(ev.remote);
-    eps = alloc::tuple2(alloc::boxed(local), alloc::boxed(remote), 0);
-    return alloc::tuple3(alloc::unboxedInt(connId), alloc::boxed(ids), alloc::boxed(eps), 0x1);
+    eps = alloc::tuple2(alloc::boxed(local), alloc::boxed(remote), SocketManager::CONN_ENDPOINTS_MASK);
+    return alloc::tuple3(alloc::unboxedInt(connId), alloc::boxed(ids), alloc::boxed(eps), SocketManager::CONN_T_MASK);
 }
 
 HPointer buildListenT(int64_t listenerId, const SockEndpoint& bound) {

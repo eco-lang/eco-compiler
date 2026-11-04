@@ -10,14 +10,16 @@ itself. Each function is one request to eco-io, the HTTP server that `Eco.XHR`
 describes, with the op `"Runtime."` followed by the function's name. What the
 answer means is up to eco-io; this module only reads it.
 
-None of these tasks can fail. Each is wrapped in `Eco.XHR.orCrash`, so an
-eco-io failure crashes the program, and `Eco.XHR` itself crashes on a reply it
-cannot decode.
+`dirname` fails with an `IOError` when its request fails, as the native
+kernel module's does when it cannot find the executable's directory. The other
+tasks cannot fail: each is wrapped in `Eco.XHR.orCrash`, so an eco-io failure
+crashes the program. `Eco.XHR` itself crashes on a reply it cannot decode.
 
 @docs dirname, random, saveState, loadState
 
 -}
 
+import Eco.IO.Error as IOErr exposing (IOError)
 import Eco.XHR
 import Json.Decode as Decode
 import Json.Encode as Encode
@@ -27,10 +29,10 @@ import Task exposing (Task)
 {-| Returns the directory path that eco-io answers the `Runtime.dirname` op
 with. Nothing here checks what directory that is or that it exists.
 -}
-dirname : Task Never String
+dirname : Task IOError String
 dirname =
     Eco.XHR.stringTask "Runtime.dirname" Encode.null
-        |> Eco.XHR.orCrash
+        |> Task.mapError IOErr.ofKernelTuple
 
 
 {-| Returns a random number from eco-io, which is expected to be at least 0 and

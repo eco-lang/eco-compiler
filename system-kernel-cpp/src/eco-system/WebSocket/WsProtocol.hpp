@@ -23,8 +23,8 @@
 //     the message's *body*, a separate channel source whose reads give the message's payload as it arrives.
 //   * The *writable* is the channel sink of outgoing messages. Each write is one data message.
 //   * *Failing the connection* is the response to a protocol error, invalid data, an oversized message or an
-//     internal failure: a Close frame with the code (1002, 1007, 1009 or 1011) is sent unless one has been
-//     written already, input stops being processed, the readable fails, and the transport is closed.
+//     internal failure: a Close frame with the code (1002, 1007, 1009 or 1011) is sent unless ours has been handed
+//     to the port already, input stops being processed, the readable fails, and the transport is closed.
 //   * The *CloseInfo* is the code, reason and cleanness reported in the `Closed` event. The first one set is kept.
 //
 // Input. Bytes go to a `ws::WsDecoder`. A message is queued for the readable until a read request takes it. While
@@ -43,7 +43,8 @@
 // data, after which incoming data frames are discarded and later writes fail ECANCELED "socket closed". When both Close
 // frames are through, the `Closed` event is posted and a server closes the transport; a client waits for the server to
 // end it. Both waits are bounded by `WsConfig::closeTimeout`, counted from when the first Close was queued, after which
-// the transport is aborted. When the connection fails, except as Liveness says, the CloseInfo is our code and text, not
+// the transport is aborted. A Close of ours whose write fails completes nothing: the CloseInfo becomes 1006, an empty
+// reason, not clean, and its waiting requests complete when the transport ends, as below. When the connection fails, except as Liveness says, the CloseInfo is our code and text, not
 // clean, and the readable fails with errno EMSGSIZE for 1009 and EPROTO otherwise, and the reason "ERR_WS_PROTOCOL:
 // <text>", "ERR_WS_INVALID_DATA: <text>", "ERR_WS_MESSAGE_TOO_BIG" or "ERR_WS_INTERNAL_ERROR: <text>"; 1002 and any
 // code other than 1007, 1009 and 1011 give the first. A transport that ends without a Close frame gives the CloseInfo
@@ -204,6 +205,8 @@ public:
     /// Returns whether the port should read: after `attach`, before the transport is gone, and while reading is not
     /// paused or input is being ignored anyway.
     bool wantsRead() const;
+    /// Returns whether `attach` has been called, whatever happened to the transport since.
+    bool isAttached() const { return attached_; }
 
     // --- Channel requests (from the faces' submits) ----------------------------
     /// Asks for the next message on the readable channel `chan`, answered with a `ChannelResult` carrying `token`.
@@ -397,8 +400,11 @@ private:
     /// writable is closed, incoming data is discarded, a body still receiving frames fails, the held input is released,
     /// and the close-handshake deadline runs.
     void queueGracefulClose(int code, const std::string& reason);
-    /// Handles the writing of our Close frame: completes the waiting `startClose` and `writeClose` requests, and
-    /// ends the WebSocket if the peer's Close is in too and the connection has not failed.
+    /// Handles the end of the write of our Close frame. Written (`err` 0): completes the waiting `startClose` and
+    /// `writeClose` requests, and ends the WebSocket if the peer's Close is in too and the connection has not failed.
+    /// Failed: the close handshake cannot complete, so the CloseInfo becomes 1006, unclean, unless `Closed` has been
+    /// posted, and the waiting requests stay for `ended`, which the transport's end that follows any failed write
+    /// calls.
     void closeFrameWritten(int err);
     /// Fails every queued data message, and every outgoing stream's pending requests, with ECANCELED and `reason`,
     /// and drops a queued graceful Close.
@@ -440,6 +446,9 @@ private:
     void armPongTimer();
     /// Fails the connection after the heartbeat ping went unanswered, as the file comment describes.
     void heartbeatTimeout();
+    /// Returns how long a ping, the heartbeat's included, waits for its pong: `heartbeatTimeout`, or 30 s when that
+    /// is 0 or less.
+    int64_t pingTimeoutMs() const;
     /// Tells a live port that `wantsRead` may have changed.
     void updateInterest();
 
@@ -494,8 +503,15 @@ private:
     std::vector<uint64_t> closeOps_;                            ///< `startClose` tokens.
     std::map<uint64_t, OutStream> outStreams_;                  ///< Outgoing streams by sequence number.
 
-    // Close state.
-    bool closeQueued_ = false;     ///< Our Close is queued or written.
+    // Close state. Our Close goes through up to three steps, each with its flag: queued (`closeQueued_`, set when it
+    // enters `outQ_`, or for the echo and the failure Close when it is written at once), handed to the port
+    // (`closeSent_`), and written (`closeWritten_`, set only when the port reports the write done without error).
+    // A queued Close can still be dropped from `outQ_` by `failQueued`, which is why `failWith` tests `closeSent_`:
+    // it sends a Close of its own only when none has reached the port. The waiting requests (`closeOps_`,
+    // `closeWaiters_`) are completed exactly once, by the successful write or, when there is none, by `ended`;
+    // `ended` does not set `closeWritten_`, so a `writeClose` after an abnormal end fails as one with no history.
+    bool closeQueued_ = false;
+    bool closeSent_ = false;
     bool closeWritten_ = false;
     bool closeReceived_ = false;
     bool failed_ = false;
@@ -522,11 +538,14 @@ private:
 /// gone. Destroying it detaches it from the core.
 class WsProtocol final : public ConnProtocol, public WsPort {
 public:
-    /// Creates the port of `core`.
-    explicit WsProtocol(std::shared_ptr<WsCore> core) : core_(std::move(core)) {}
+    /// Creates the port of `core`. `preamble`, when not empty, is written to the `Conn` in `onOpen` before the core
+    /// is attached, ahead of every frame (a server's HTTP/1.1 101 response); if its write fails, the `Conn`'s error
+    /// reaches the core through `onError`.
+    explicit WsProtocol(std::shared_ptr<WsCore> core, std::string preamble = std::string())
+        : core_(std::move(core)), preamble_(std::move(preamble)) {}
     ~WsProtocol() override;
 
-    /// Records `c`, installs the close hook, and attaches the port to the core.
+    /// Records `c`, installs the close hook, writes the preamble, and attaches the port to the core.
     void onOpen(Conn& c) override;
     void onData(Conn& c, std::string_view bytes) override;
     void onEof(Conn& c) override;
@@ -548,6 +567,7 @@ public:
 
 private:
     std::shared_ptr<WsCore> core_;
+    std::string preamble_;   ///< Written in `onOpen`, then emptied.
     /// The `Conn` from `onOpen` on, or null before. The `Conn` owns this protocol, so it outlives it.
     Conn* conn_ = nullptr;
 };

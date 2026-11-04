@@ -35,10 +35,13 @@
 // of its destination (`pipedIn`) until it finishes, and keeps both pairs from being erased (`pipeRefs`).
 // Pumping a pair schedules the pipes that read from or write into it.
 //
-// Lifetime. A pair is erased when it is not pinned, no pipe names it, both sides are Closed, its queues are
-// empty and nothing is parked or in flight. A missing id then reads as Closed and writes fail Cancelled with
-// the reason "WritableStream is closed", which is what the erased pair would have answered. The stdio pairs
-// are pinned.
+// Lifetime. A pair is erased when it is not pinned, no pipe names it, each side is Closed or Errored, its
+// queues and its `readLine` carry are empty, nothing is parked or in flight, and a subscription reader has
+// been sent the end. Erasing it destroys its channel and drops the heap words it held. A missing id then
+// answers what the erased pair would have: reads give Closed and writes fail Cancelled with the reason
+// "WritableStream is closed" (`kWritableClosed`), except that an Errored side's reason is kept, off the heap,
+// for the 4096 most recently erased pairs with one (`streamErasedReadReason`, `streamErasedWriteReason`), and
+// reads or writes of that side still fail with it. Pair ids are never reused. The stdio pairs are pinned.
 //
 //===----------------------------------------------------------------------===//
 
@@ -175,6 +178,13 @@ struct StreamPair {
 /// Returns the stream table, created on the first call and never destroyed. The first call also installs the
 /// dispatch that routes channel results to their pairs. Eco thread only.
 Registry<StreamPair>& streamTable();
+
+/// Returns whether pair `id` was erased with its readable side Errored and its reason is still kept, setting
+/// `reason` to it if so. Eco thread only.
+bool streamErasedReadReason(int64_t id, std::string& reason);
+/// Returns whether pair `id` was erased with its writable side Errored and its reason is still kept, setting
+/// `reason` to it if so. Eco thread only.
+bool streamErasedWriteReason(int64_t id, std::string& reason);
 
 /// Brings pair `id` up to date: moves values from the writable side to the readable side, completes parked
 /// reads, writes and closes that can now complete, schedules the pipes that read from or write into the pair,

@@ -11,7 +11,8 @@
 // whole process, survives it. Every member function therefore first compares `Allocator::heapGeneration()` with the
 // generation it last saw. On the first call, and whenever the generation has changed, it discards
 // every entry, since their words refer to a heap that no longer exists, and registers its scanner
-// with the current root set.
+// with the current root set. An entry that owns something outside the heap (a watch, a listener)
+// gives the registry a discard hook, called for each entry before it is discarded.
 //
 // The scanner keeps a pointer to the registry, so a registry must never be destroyed: create it with
 // `new` and never delete it, as in the usage below. Copying is refused.
@@ -55,10 +56,17 @@ namespace Eco::System {
 template <typename Entry>
 class Registry {
 public:
+    /// A function given each entry a heap reset discards, before it is discarded, to release what the
+    /// entry owns outside the heap. It must not allocate on the heap or read the entry's words: they
+    /// refer to the heap that was reset.
+    using DiscardHook = void (*)(Entry&);
+
     /// Creates an empty registry whose scanner is labelled `scannerName` in the collector's statistics.
     /// The pointer is kept, so `scannerName` must have static lifetime, such as a string literal. The
-    /// scanner is registered on the first call to any other member, not here.
-    explicit Registry(const char* scannerName) : name_(scannerName) {}
+    /// scanner is registered on the first call to any other member, not here. `onDiscard`, if not null,
+    /// is called for each entry a heap reset discards.
+    explicit Registry(const char* scannerName, DiscardHook onDiscard = nullptr)
+        : name_(scannerName), onDiscard_(onDiscard) {}
 
     Registry(const Registry&) = delete;
     Registry& operator=(const Registry&) = delete;
@@ -106,13 +114,16 @@ public:
     }
 
 private:
-    /// Empties the table and registers the scanner, on the first call and whenever the heap generation
-    /// has changed since the last one; does nothing otherwise.
+    /// Empties the table, giving each entry to the discard hook first, and registers the scanner, on the
+    /// first call and whenever the heap generation has changed since the last one; does nothing otherwise.
     void ensure() {
         uint64_t g = Allocator::instance().heapGeneration();
         if (!reg_ || gen_ != g) {
             reg_ = true;
             gen_ = g;
+            if (onDiscard_) {
+                for (auto& kv : m_) onDiscard_(kv.second);
+            }
             m_.clear();
             Registry* self = this;   // the registry is never destroyed, so it outlives every scanner
             Allocator::instance().getRootSet().addExternalRootScanner(
@@ -129,6 +140,7 @@ private:
 
     std::unordered_map<int64_t, Entry> m_;
     const char* name_;  ///< The scanner's label; static lifetime, not owned.
+    DiscardHook onDiscard_;  ///< Called for each entry a heap reset discards; may be null.
     int64_t nextId_ = 1;
     uint64_t gen_ = 0;  ///< The heap generation the scanner was last registered for.
     bool reg_ = false;  ///< Whether the scanner has been registered at all; `gen_` is meaningful only once it has.

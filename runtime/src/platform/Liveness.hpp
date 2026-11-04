@@ -17,6 +17,11 @@
 // moved, and `HoldRelease`, which releases at the end of a scope. Their
 // members are defined in Scheduler.cpp.
 //
+// A heap reset (tests only) ends the program, so the Scheduler voids every
+// live hold when it first sees the new heap generation; releasing a voided
+// hold afterwards does nothing. Kernel tables that reset with the heap
+// therefore need not release the holds they owned.
+//
 //===----------------------------------------------------------------------===//
 
 #ifndef ECO_PLATFORM_LIVENESS_HPP

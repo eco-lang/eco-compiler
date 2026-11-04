@@ -109,7 +109,8 @@ HPtr elm_utf8_decode(HPtr buffer, u32 offset, u32 len);
 // value.
 //
 // For a sequence or a String encoder this is the width cached in the encoder itself, so the call does
-// not walk the tree. Defined by the Bytes kernel, not in this component. Not a GC point.
+// not walk the tree. A width over `UINT32_MAX`, more than a Bytes value can hold, prints an error and
+// aborts. Defined by the Bytes kernel, not in this component. Not a GC point.
 u32 elm_encoder_size(HPtr encoder);
 
 // Writes the bytes of `encoder`, a `Bytes.Encode.Encoder` value, to `dst` and returns how many were

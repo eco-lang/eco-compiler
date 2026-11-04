@@ -20,6 +20,7 @@ module MVarBlockingReadAwaitsPutStress exposing (main)
 
 import Bytes.Decode as BD
 import Bytes.Encode as BE
+import Eco.IO.Error exposing (IOError)
 import Eco.MVar as MV
 import Process
 import StressHarness exposing (StressFlags)
@@ -39,7 +40,7 @@ intDec =
     BD.succeed 0
 
 
-reader : MV.MVar Int -> MV.MVar Int -> Task.Task Never ()
+reader : MV.MVar Int -> MV.MVar Int -> Task.Task IOError ()
 reader dataMVar resultMVar =
     MV.read intDec dataMVar
         |> Task.andThen (\v -> MV.put intEnc resultMVar v)
@@ -60,6 +61,7 @@ cycle expected =
                         )
             )
         |> Task.map (\v -> v == expected)
+        |> Task.onError (\_ -> Task.succeed False)
 
 
 run : StressFlags -> Task.Task Never Bool

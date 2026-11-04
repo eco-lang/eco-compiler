@@ -1,15 +1,18 @@
 //===- DebugExports.cpp - C-linkage exports for Debug module ---------------===//
 //
-// Defines the elm/core `Debug` kernel functions declared in `KernelExports.h`. Output goes to the calling
-// thread's print destination, which `eco_set_output_stream` in `RuntimeExports.h` sets.
+// Defines the elm/core `Debug` kernel functions declared in `KernelExports.h`. `Debug.log` output goes to the
+// calling thread's print destination, which `eco_set_output_stream` in `RuntimeExports.h` sets. The
+// `Debug.todo` message goes to stderr, since the process exits before a capture stream is ever read.
 
 #include "../KernelExports.h"
 #include "../ExportHelpers.hpp"
-#include "Debug.hpp"
 #include "allocator/Heap.hpp"
 #include "allocator/HeapHelpers.hpp"
 #include "allocator/RuntimeExports.h"
 #include "allocator/StringOps.hpp"
+
+#include <cstdio>
+#include <cstdlib>
 
 using namespace Elm;
 using namespace Elm::Kernel;
@@ -27,7 +30,6 @@ extern "C" {
 
 HPtr Elm_Kernel_Debug_log(HPtr tag, HPtr value) {
     uint64_t tag_bits = tag.toBits();
-    uint64_t value_bits = value.toBits();
     std::string tagStr = elmStringToStd(Elm::Kernel::Export::toPtr(tag_bits));
 
     eco_output_text(tagStr.c_str());
@@ -41,11 +43,13 @@ HPtr Elm_Kernel_Debug_log(HPtr tag, HPtr value) {
 HPtr Elm_Kernel_Debug_todo(HPtr message) {
     uint64_t message_bits = message.toBits();
     std::string msgStr = elmStringToStd(Elm::Kernel::Export::toPtr(message_bits));
-    eco_output_text("Debug.todo: ");
-    eco_output_text(msgStr.c_str());
-    eco_output_text("\n");
-    exit(1);
-    return HPtr::fromBits(0);
+    // Straight to stderr, not eco_output_text: under output capture (the JIT runner) the thread's print
+    // destination is a stream nobody reads once the process has exited (DEBUG-01).
+    std::fprintf(stderr, "Debug.todo: %s\n", msgStr.c_str());
+    std::fflush(stderr);
+    // exit, not abort: a SIGABRT handler, such as the one LLVM installs, would add its own report. Through
+    // eco_terminate_process, which on Windows avoids ExitProcess's teardown hang (CRASH-01).
+    eco_terminate_process(1);
 }
 
 // The symbol used when Debug.toString is a function value (a kernel closure). Its MLIR declaration has one

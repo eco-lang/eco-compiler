@@ -8,14 +8,18 @@
 #include "eco-system/WebSocket/Http2Client.hpp"
 #include "eco-system/WebSocket/WsEvents.hpp"
 
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
-#include <random>
-#include <stdexcept>
 
 #ifndef _WIN32
 #include <openssl/evp.h>
 #include <openssl/rand.h>
 #include <openssl/sha.h>
+#else
+#include <windows.h>
+#include <bcrypt.h>
+#pragma comment(lib, "bcrypt")   // wsRandomBytes; also honoured by clang/lld on COFF
 #endif
 
 namespace Eco::System {
@@ -165,18 +169,26 @@ std::string wsAcceptFor(const std::string& key) {
 }
 
 void wsRandomBytes(unsigned char* out, size_t n) {
+    // Callers ask for at most a few KiB at a time, so `n` fits the int / ULONG of the system calls.
 #ifndef _WIN32
     if (RAND_bytes(out, static_cast<int>(n)) == 1) return;
+    const char* source = "RAND_bytes";
+#else
+    if (BCryptGenRandom(nullptr, out, static_cast<ULONG>(n), BCRYPT_USE_SYSTEM_PREFERRED_RNG) >= 0) return;
+    const char* source = "BCryptGenRandom";
 #endif
-    static thread_local std::mt19937_64 rng{std::random_device{}()};
-    for (size_t i = 0; i < n; ++i) out[i] = static_cast<unsigned char>(rng());
+    // A broken system RNG is a fault of the environment, and masking keys and handshake keys must not silently come
+    // from anything weaker. The callers run on the reactor thread, inside write paths, where nothing could catch an
+    // exception, so this is fatal, as in OpenSSL's own policy.
+    std::fprintf(stderr, "eco: fatal: WebSocket: the system random number generator (%s) failed\n", source);
+    std::fflush(stderr);
+    std::abort();
 }
 
 std::string wsNewKey() {
 #ifndef _WIN32
     unsigned char raw[16];
-    if (RAND_bytes(raw, sizeof raw) != 1)
-        throw std::runtime_error("RAND_bytes failed");
+    wsRandomBytes(raw, sizeof raw);
     return base64(raw, sizeof raw);
 #else
     return std::string();
@@ -350,7 +362,7 @@ public:
         c.setDeadline(Conn::kTimerHeaders, 0);
         std::string leftover = buf_.substr(n);
         buf_.clear();
-        job_->headDone(c, std::move(head), true, std::string());
+        job_->headDone(c, std::move(head));
         if (c.phase() == Conn::Phase::Open) {
             c.setProtocol(std::make_unique<HoldProtocol>(), std::move(leftover));   // retires us
         }
@@ -437,7 +449,6 @@ void DialJob::tryNext() {
     cs.address = spec_.addresses[next_++];
     cs.port = spec_.port;
     cs.timeoutMs = remaining;
-    cs.isTls = spec_.isTls;
     auto c = Conn::makeClient(std::move(cs), spec_.factory, 0, spec_.gen);
     current_ = c;
     auto self = shared_from_this();
@@ -501,7 +512,7 @@ void DialJob::redialHttp1() {
     tryNext();
 }
 
-void DialJob::headDone(Conn& c, HttpHead head, bool, const std::string&) {
+void DialJob::headDone(Conn& c, HttpHead head) {
     current_.reset();
     int expected = 0;
     if (!resolved.compare_exchange_strong(expected, 1)) {   // killed: nobody waits

@@ -177,11 +177,18 @@ private:
         bool everSubscribed = false;  // Set by the first subscription; buffering stops from then on.
     };
 
-    // Installs, once, the root scanner that reports every port's decoder and
-    // tagger list to the collector, and the scheduler async source made of
-    // `drainPendingSends` and `hasPendingSends`. Not synchronised: it must be
-    // called on the eco thread.
+    // Installs, once, the scheduler async source made of `drainPendingSends`
+    // and `hasPendingSends`, and, once per heap generation, the root scanner
+    // that reports every port's decoder and tagger list to the collector. A
+    // heap reset (tests only) loses the scanner with the old root set; the
+    // first call after it drops every port's decoder and tagger list, which
+    // belong to the dead heap, and marks every port unregistered, so that the
+    // next program can register it again. Not synchronised: it must be called
+    // on the eco thread.
     void ensureRuntimeHooks();
+    // Appends `name` to `registrationOrder_` unless it is already there (a
+    // port registered again after a heap reset). Requires `portsMutex_`.
+    void noteRegistered(const std::string& name);
 
     // Guards ports_ and registrationOrder_. The collector's root scanner takes
     // this mutex, so the eco thread must not hold it across an allocation.
@@ -205,6 +212,8 @@ private:
     std::deque<PendingSend> pendingSends_;
 
     bool hooksInstalled_ = false;  // Set by ensureRuntimeHooks; read and written on the eco thread only.
+    // The heap generation whose root set has the scanner; 0 before the first. Eco thread only.
+    uint64_t scannerGeneration_ = 0;
 };
 
 }  // namespace Elm::Platform

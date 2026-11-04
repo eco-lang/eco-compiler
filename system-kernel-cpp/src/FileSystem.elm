@@ -964,7 +964,12 @@ directory, to its entries, but not to anything inside its subdirectories.
 
 A path that cannot be watched, such as one that does not exist, gives no events and no error.
 Subscriptions to the same path with the same recursiveness share one watcher, and each event
-goes to all of them.
+goes to all of them. A watched path that is a soft link is followed.
+
+On the native backend, when the watched path itself disappears, the watch reports one
+`Moved Nothing` and then nothing more, even if the path is created again. A `Moved Nothing` can
+also mean that changes were lost, because the operating system's queue of changes overflowed:
+every watch then gets one. Either way, take it as a cue to look at the watched path again.
 
 -}
 watch : (WatchEvent -> msg) -> Path -> Sub msg
@@ -974,6 +979,12 @@ watch toMsg path =
 
 {-| Creates a subscription like [watch](#watch), which also reports changes anywhere inside the
 directory's subdirectories.
+
+On the native backend, a directory that appears inside the tree, created or moved in, is reported
+together with every entry already in it, so a tree created all at once is not missed; an entry
+may then be reported twice. A directory that is renamed or moved out is no longer reported under
+its old path.
+
 -}
 watchRecursive : (WatchEvent -> msg) -> Path -> Sub msg
 watchRecursive toMsg path =
@@ -1409,28 +1420,28 @@ kReadFileStream =
 
 
 {-| Opens the file at the path with the open mode given first (`"w"` or `"wx"` here) and returns
-its file descriptor, registered as an open handle.
+the id of a new open handle on it (not its file descriptor).
 -}
 kOpen : String -> String -> Task ( String, String ) Int
 kOpen =
     Eco.Kernel.FileSystem.open
 
 
-{-| Closes an open file descriptor.
+{-| Closes an open handle's file, once the operations started on it have finished.
 -}
 kClose : Int -> Task ( String, String ) ()
 kClose =
     Eco.Kernel.FileSystem.close
 
 
-{-| Writes the bytes to an open file descriptor at the byte offset.
+{-| Writes the bytes to an open handle's file at the byte offset.
 -}
 kWriteFromOffset : Int -> Int -> Bytes -> Task ( String, String ) ()
 kWriteFromOffset =
     Eco.Kernel.FileSystem.writeFromOffset
 
 
-{-| Flushes an open file descriptor's data to the storage device.
+{-| Flushes an open handle's data to the storage device.
 -}
 kFsync : Int -> Task ( String, String ) ()
 kFsync =

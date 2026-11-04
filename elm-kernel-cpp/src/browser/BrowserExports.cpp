@@ -1,17 +1,34 @@
 //===- BrowserExports.cpp - C-linkage exports for Browser module -----------===//
 //
 // The C exports for elm/browser's `Browser` and `Debugger` kernels. Natively there is no DOM,
-// navigation or debugger, so these exist only so that a program referencing elm/browser links.
-// Their contracts are on the declarations in `KernelExports.h`. They do not use `Browser.hpp`.
+// navigation or debugger. `element`, `document` and `application` pass their argument through, so a
+// program referencing elm/browser links. The kernels behind `Browser.Dom` Tasks that can fail
+// (`getViewportOf`, `setViewportOf`, `getElement`, `focus`, `blur`) return a Task failing with
+// `NotFound id`: natively no element has that id. Every other one ends the program with
+// "<Elm function> is not supported natively" and exit status 1 (`unsupportedNatively`, decision D9 of
+// plans/kernel-lib-bug-fixes.md), except `Debugger.unsafeCoerce`, which returns its argument as it does
+// in JavaScript. Their contracts are on the declarations in `KernelExports.h`.
 //
 //===----------------------------------------------------------------------===//
 
 #include "../KernelExports.h"
 #include "../ExportHelpers.hpp"
-#include <cassert>
+#include "../NotSupportedNatively.hpp"
+#include "allocator/HeapHelpers.hpp"
 
 using namespace Elm;
 using namespace Elm::Kernel;
+
+namespace {
+
+/// Returns a Task that fails with `Browser.Dom.NotFound id`. `Browser.Dom.Error` has one constructor with one
+/// field, a box: ctor 0 with the String `id` in a boxed field.
+HPtr notFound(HPtr id) {
+    HPointer error = alloc::custom(0, {alloc::boxed(Export::decode(id.toBits()))}, 0);
+    return Elm_Kernel_Scheduler_fail(HPtr::fromBits(Export::encode(error)));
+}
+
+} // anonymous namespace
 
 extern "C" {
 
@@ -29,119 +46,97 @@ HPtr Elm_Kernel_Browser_application(HPtr impl) {
 
 HPtr Elm_Kernel_Browser_load(HPtr url) {
     (void)url;
-    assert(false && "Elm_Kernel_Browser_load not implemented - requires platform");
-    return HPtr::fromBits(0);
+    unsupportedNatively("Browser.Navigation.load");
 }
 
-HPtr Elm_Kernel_Browser_reload(bool skipCache) {
+HPtr Elm_Kernel_Browser_reload(HPtr skipCache) {
     (void)skipCache;
-    assert(false && "Elm_Kernel_Browser_reload not implemented - requires platform");
-    return HPtr::fromBits(0);
+    unsupportedNatively("Browser.Navigation.reload");
 }
 
 HPtr Elm_Kernel_Browser_pushUrl(HPtr key, HPtr url) {
     (void)key;
     (void)url;
-    assert(false && "Elm_Kernel_Browser_pushUrl not implemented - requires platform");
-    return HPtr::fromBits(0);
+    unsupportedNatively("Browser.Navigation.pushUrl");
 }
 
 HPtr Elm_Kernel_Browser_replaceUrl(HPtr key, HPtr url) {
     (void)key;
     (void)url;
-    assert(false && "Elm_Kernel_Browser_replaceUrl not implemented - requires platform");
-    return HPtr::fromBits(0);
+    unsupportedNatively("Browser.Navigation.replaceUrl");
 }
 
 HPtr Elm_Kernel_Browser_go(HPtr key, int64_t steps) {
     (void)key;
     (void)steps;
-    assert(false && "Elm_Kernel_Browser_go not implemented - requires platform");
-    return HPtr::fromBits(0);
+    unsupportedNatively("Browser.Navigation.back/forward");
 }
 
 HPtr Elm_Kernel_Browser_getViewport() {
-    assert(false && "Elm_Kernel_Browser_getViewport not implemented - requires platform");
-    return HPtr::fromBits(0);
+    unsupportedNatively("Browser.Dom.getViewport");
 }
 
 HPtr Elm_Kernel_Browser_getViewportOf(HPtr id) {
-    (void)id;
-    assert(false && "Elm_Kernel_Browser_getViewportOf not implemented - requires platform");
-    return HPtr::fromBits(0);
+    return notFound(id);
 }
 
 HPtr Elm_Kernel_Browser_setViewport(double x, double y) {
     (void)x;
     (void)y;
-    assert(false && "Elm_Kernel_Browser_setViewport not implemented - requires platform");
-    return HPtr::fromBits(0);
+    unsupportedNatively("Browser.Dom.setViewport");
 }
 
 HPtr Elm_Kernel_Browser_setViewportOf(HPtr id, double x, double y) {
-    (void)id;
     (void)x;
     (void)y;
-    assert(false && "Elm_Kernel_Browser_setViewportOf not implemented - requires platform");
-    return HPtr::fromBits(0);
+    return notFound(id);
 }
 
 HPtr Elm_Kernel_Browser_getElement(HPtr id) {
-    (void)id;
-    assert(false && "Elm_Kernel_Browser_getElement not implemented - requires platform");
-    return HPtr::fromBits(0);
+    return notFound(id);
 }
 
 HPtr Elm_Kernel_Browser_on(HPtr node, HPtr eventName, HPtr handler) {
     (void)node;
     (void)eventName;
     (void)handler;
-    assert(false && "Elm_Kernel_Browser_on not implemented - requires platform");
-    return HPtr::fromBits(0);
+    unsupportedNatively("Browser.Events.on");
 }
 
 HPtr Elm_Kernel_Browser_decodeEvent(HPtr decoder, HPtr event) {
     (void)decoder;
     (void)event;
-    assert(false && "Elm_Kernel_Browser_decodeEvent not implemented - requires platform");
-    return HPtr::fromBits(0);
+    unsupportedNatively("Browser.Events.on");
 }
 
 HPtr Elm_Kernel_Browser_doc() {
-    assert(false && "Elm_Kernel_Browser_doc not implemented - requires platform");
-    return HPtr::fromBits(0);
+    unsupportedNatively("Browser.Events.on");
 }
 
 HPtr Elm_Kernel_Browser_window() {
-    assert(false && "Elm_Kernel_Browser_window not implemented - requires platform");
-    return HPtr::fromBits(0);
+    unsupportedNatively("Browser.Events.on");
 }
 
 HPtr Elm_Kernel_Browser_withWindow(HPtr closure) {
     (void)closure;
-    assert(false && "Elm_Kernel_Browser_withWindow not implemented - requires platform");
-    return HPtr::fromBits(0);
+    unsupportedNatively("Browser.Dom.getViewport");
 }
 
 HPtr Elm_Kernel_Browser_rAF() {
-    assert(false && "Elm_Kernel_Browser_rAF not implemented - requires platform");
-    return HPtr::fromBits(0);
+    unsupportedNatively("Browser.Events.onAnimationFrame");
 }
 
 HPtr Elm_Kernel_Browser_now() {
-    assert(false && "Elm_Kernel_Browser_now not implemented - requires platform");
-    return HPtr::fromBits(0);
+    unsupportedNatively("Browser.Events.onAnimationFrame");
 }
 
 HPtr Elm_Kernel_Browser_visibilityInfo() {
-    assert(false && "Elm_Kernel_Browser_visibilityInfo not implemented - requires platform");
-    return HPtr::fromBits(0);
+    unsupportedNatively("Browser.Events.onVisibilityChange");
 }
 
-HPtr Elm_Kernel_Browser_call(HPtr closure) {
-    (void)closure;
-    assert(false && "Elm_Kernel_Browser_call not implemented - requires platform");
-    return HPtr::fromBits(0);
+HPtr Elm_Kernel_Browser_call(HPtr functionName, HPtr id) {
+    (void)functionName;
+    return notFound(id);
 }
 
 //===----------------------------------------------------------------------===//
@@ -150,50 +145,41 @@ HPtr Elm_Kernel_Browser_call(HPtr closure) {
 
 HPtr Elm_Kernel_Debugger_init(HPtr value) {
     (void)value;
-    assert(false && "Elm_Kernel_Debugger_init not implemented - requires browser");
-    return HPtr::fromBits(0);
+    unsupportedNatively("The Elm debugger (Debugger.init)");
 }
 
 HPtr Elm_Kernel_Debugger_isOpen(HPtr popout) {
     (void)popout;
-    assert(false && "Elm_Kernel_Debugger_isOpen not implemented - requires browser");
-    return HPtr::fromBits(0);
+    unsupportedNatively("The Elm debugger (Debugger.isOpen)");
 }
 
 HPtr Elm_Kernel_Debugger_open(HPtr popout) {
     (void)popout;
-    assert(false && "Elm_Kernel_Debugger_open not implemented - requires browser");
-    return HPtr::fromBits(0);
+    unsupportedNatively("The Elm debugger (Debugger.open)");
 }
 
 HPtr Elm_Kernel_Debugger_scroll(HPtr popout) {
     (void)popout;
-    assert(false && "Elm_Kernel_Debugger_scroll not implemented - requires browser");
-    return HPtr::fromBits(0);
+    unsupportedNatively("The Elm debugger (Debugger.scroll)");
 }
 
 HPtr Elm_Kernel_Debugger_messageToString(HPtr message) {
     (void)message;
-    assert(false && "Elm_Kernel_Debugger_messageToString not implemented - requires browser");
-    return HPtr::fromBits(0);
+    unsupportedNatively("The Elm debugger (Debugger.messageToString)");
 }
 
 HPtr Elm_Kernel_Debugger_download(int64_t historyLength, HPtr json) {
     (void)historyLength;
     (void)json;
-    assert(false && "Elm_Kernel_Debugger_download not implemented - requires browser");
-    return HPtr::fromBits(0);
+    unsupportedNatively("The Elm debugger (Debugger.download)");
 }
 
 HPtr Elm_Kernel_Debugger_upload() {
-    assert(false && "Elm_Kernel_Debugger_upload not implemented - requires browser");
-    return HPtr::fromBits(0);
+    unsupportedNatively("The Elm debugger (Debugger.upload)");
 }
 
 HPtr Elm_Kernel_Debugger_unsafeCoerce(HPtr value) {
-    (void)value;
-    assert(false && "Elm_Kernel_Debugger_unsafeCoerce not implemented - requires browser");
-    return HPtr::fromBits(0);
+    return value;
 }
 
 } // extern "C"

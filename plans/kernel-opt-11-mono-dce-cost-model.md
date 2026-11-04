@@ -125,7 +125,8 @@ All anchors below re-verified against the working tree on 2026-08-10.
   `label: value` shape is what the E2E `CHECK` fixtures assert.
   (`elm-kernel-cpp/src/core/DebugExports.cpp:26-42` defines the C export
   `Elm_Kernel_Debug_log` via `eco_output_text`; it is the *interpreter/kernel-call* form and
-  is not what the MLIR path emits. `Elm::Kernel::log` in `core/Debug.cpp:28-50` — the
+  is not what the MLIR path emits. `Elm::Kernel::log` in `core/Debug.cpp:28-50` (since deleted,
+  DEAD-01 of `plans/kernel-lib-bug-fixes.md`) — the
   `std::cout` one whose comment claims the omission — is **dead**: declared at `Debug.hpp:12`
   and called from nowhere in `elm-kernel-cpp/` or `runtime/` (grepped 2026-08-10).)
   The comment at `Debug.cpp:47-48` ("The compiler omits Debug.log calls in optimized
@@ -236,7 +237,8 @@ Draft body (this is the text to commit, not a summary of it):
 > `eco_dbg_print_typed` (`runtime/src/allocator/RuntimeExports.cpp:3411-3426`), which
 > writes `label: value\n` into the captured program output stream, interleaved with
 > ordinary output. The `std::cout` comment at `elm-kernel-cpp/src/core/Debug.cpp:47-48`
-> claims the opposite; its function has no callers and is dead.
+> claims the opposite; its function has no callers and is dead. (The file has since been deleted,
+> DEAD-01 of `plans/kernel-lib-bug-fixes.md`.)
 > **D-1 (no deletion).** An expression that transitively contains a `Debug.*` kernel
 > reference is never droppable, whatever the KernelFacts row says. `(Debug, log)` carries
 > `callTimeEffect = EffObservableIO` ⇒ `cseSafe = False` ⇒ `droppable = False`, and the

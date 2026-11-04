@@ -35,6 +35,7 @@
 #include "../KernelDebug.hpp"
 #include "../KernelExports.h"
 #include "../ExportHelpers.hpp"
+#include "HttpRequestLayout.hpp"
 #include "allocator/Heap.hpp"
 #include "allocator/HeapHelpers.hpp"
 #include "allocator/RuntimeExports.h"
@@ -107,25 +108,8 @@ static constexpr u16 CTOR_DICT_RBNODE  = 0xFFFF;
 /// The constructor tag of `RBEmpty_elm_builtin`, its declaration index.
 static constexpr u16 CTOR_DICT_RBEMPTY = 1;
 
-// Slot indexes of the fields of the Request record `Http.toTask` receives,
-//   { allowCookiesFromOtherDomains, body, expect, headers, method, timeout,
-//     tracker, url }
-// whose fields are all boxed and so sit in name order.
-
-/// The slot of `body`.
-static constexpr int REQ_BODY    = 1;
-/// The slot of `expect`.
-static constexpr int REQ_EXPECT  = 2;
-/// The slot of `headers`.
-static constexpr int REQ_HEADERS = 3;
-/// The slot of `method`.
-static constexpr int REQ_METHOD  = 4;
-/// The slot of `timeout`.
-static constexpr int REQ_TIMEOUT = 5;
-/// The slot of `tracker`.
-static constexpr int REQ_TRACKER = 6;
-/// The slot of `url`.
-static constexpr int REQ_URL     = 7;
+// The slots of the Request record `Http.toTask` receives (REQ_*).
+using namespace Elm::Kernel::HttpRequestLayout;
 
 // Constructor tags of elm/http's
 //   type Progress = Sending { sent : Int, size : Int }
@@ -138,7 +122,7 @@ static constexpr u16 PROGRESS_SENDING   = 0;
 static constexpr u16 PROGRESS_RECEIVING = 1;
 
 // Tracking state. Every table below is guarded by `g_trackedMutex` and used on
-// the eco thread. The root scanner registered by `httpRegisterScannerOnce`
+// the eco thread. The root scanner registered by `httpSyncHeapGeneration`
 // takes the same non-recursive mutex, and it runs inside whichever allocation
 // starts a collection, so the mutex must never be held across a call that can
 // allocate on the heap. Non-allocating reads of heap values under it are fine.
@@ -218,27 +202,6 @@ std::string elmStringToUTF8(uint64_t strEnc) {
     void* ptr = Export::toPtr(strEnc);
     if (!ptr) return "";
     return Elm::StringOps::toStdString(ptr);
-}
-
-/// Returns the 64-bit word for `h`.
-static inline uint64_t encodeHP(HPointer h) {
-    union { HPointer hp; uint64_t val; } u;
-    u.hp = h;
-    return u.val;
-}
-/// Returns the HPointer whose 64-bit word is `val`.
-static inline HPointer decodeHP(uint64_t val) {
-    union { HPointer hp; uint64_t val; } u;
-    u.val = val;
-    return u.hp;
-}
-
-/// Returns the object `hp` points to, or null when `hp` is an embedded
-/// constant or a null-cons word (`ptr_ind` set), such as `Nothing`, `Nil` or
-/// the empty String, which have no object behind them.
-static inline void* resolveOrNull(HPointer hp) {
-    if (hp.ptr_ind != 0) return nullptr;
-    return Allocator::instance().resolve(hp);
 }
 
 /// Returns the bytes of the request body or multipart value `content`: the UTF-8 of a String (`stringBody`,
@@ -394,11 +357,11 @@ HPointer buildResponse(const HttpService::Result& r, HPointer body) {
 /// be cancelled by tracker. Does not allocate.
 void httpRegisterTracked(uint64_t token, HPointer router, HPointer tracker,
                          bool claimTracker) {
-    std::string trackerStr = elmStringToUTF8(encodeHP(tracker));
+    std::string trackerStr = elmStringToUTF8(Export::encode(tracker));
     ECO_KLOG("elm-http", "track-register token=%lu tracker=%s",
              (unsigned long)token, trackerStr.c_str());
     std::lock_guard<std::mutex> lk(g_trackedMutex);
-    g_httpTracked[token] = TrackedReq{encodeHP(router), encodeHP(tracker), false};
+    g_httpTracked[token] = TrackedReq{Export::encode(router), Export::encode(tracker), false};
     if (claimTracker) g_trackerToken[trackerStr] = token;
 }
 
@@ -419,21 +382,49 @@ bool httpClearTracked(uint64_t token) {
     return cancelled;
 }
 
-/// Registers, once per process, a root scanner that keeps the router and
-/// tracker words of `g_httpTracked` alive and updates them when objects move.
-/// The scanner takes `g_trackedMutex` and does not allocate.
-void httpRegisterScannerOnce() {
-    static std::once_flag flag;
-    std::call_once(flag, []() {
-        Allocator::instance().getRootSet().addExternalRootScanner(
-            [](RootSet::EvacuateFn evac) {
-                std::lock_guard<std::mutex> lock(g_trackedMutex);
-                for (auto& [token, tr] : g_httpTracked) {
-                    evac(tr.routerEnc);
-                    evac(tr.trackerEnc);
-                }
-            });
-    });
+/// The heap generation the tracking tables and the root scanner belong to; 0
+/// before the first sync. Eco thread only.
+uint64_t g_httpHeapGeneration = 0;
+
+/// Makes the tracking state belong to the current heap generation. On the
+/// first call in a generation it registers, with the current root set, a root
+/// scanner named "http-effects" that keeps the router and tracker words of
+/// `g_httpTracked` alive and updates them when objects move; the scanner takes
+/// `g_trackedMutex` and does not allocate. If state from an earlier generation
+/// is left (a heap reset, which only tests make), it is dropped first: every
+/// table is cleared, so no progress tick or cancel reaches a router or tracker
+/// of the dead heap, and every request still in flight is told to abort. The
+/// scheduler voided their holds and parked resumes at the reset, so a result
+/// that still arrives is dropped by `httpDrain`. Later calls in the same
+/// generation do nothing. Every entry point that adds to a table calls it
+/// first. Eco thread.
+void httpSyncHeapGeneration() {
+    const uint64_t gen = Allocator::instance().heapGeneration();
+    if (g_httpHeapGeneration == gen) return;
+    std::vector<std::shared_ptr<HttpService::RequestControl>> stale;
+    {
+        std::lock_guard<std::mutex> lock(g_trackedMutex);
+        for (auto& [token, control] : g_httpControl) {
+            (void)token;
+            stale.push_back(control);
+        }
+        g_httpTracked.clear();
+        g_trackerToken.clear();
+        g_httpControl.clear();
+        g_unboundTicket.clear();
+        g_cancelledTickets.clear();
+        g_supersededTickets.clear();
+    }
+    for (auto& control : stale) (void)control->abort();
+    g_httpHeapGeneration = gen;
+    Allocator::instance().getRootSet().addExternalRootScanner(
+        [](RootSet::EvacuateFn evac) {
+            std::lock_guard<std::mutex> lock(g_trackedMutex);
+            for (auto& [token, tr] : g_httpTracked) {
+                evac(tr.routerEnc);
+                evac(tr.trackerEnc);
+            }
+        }, "http-effects");
 }
 
 /// Builds the `Progress` value of one tick: `Sending { sent = now, size =
@@ -496,8 +487,8 @@ void httpDrainProgress() {
 
         // The scanner updates the table entries, not these copies, so they need
         // their own roots across the allocations below.
-        HPointer router = decodeHP(routerEnc);
-        HPointer tracker = decodeHP(trackerEnc);
+        HPointer router = Export::decode(routerEnc);
+        HPointer tracker = Export::decode(trackerEnc);
         HPointer progress = listNil();
         HPointer selfMsg = listNil();
         Elm::StackRootGuard g({&router, &tracker, &progress, &selfMsg});
@@ -524,6 +515,7 @@ void httpDrainProgress() {
 /// `Response`, applies `toValue` and `resultToTask`, and resumes the task with
 /// the result. Each result's hold is released, whether delivered or dropped.
 void httpDrain() {
+    httpSyncHeapGeneration();
     httpDrainProgress();
 
     HttpService::Result r;
@@ -545,7 +537,7 @@ void httpDrain() {
         {
             void* bp = Allocator::instance().resolve(bundle);
             HPointer typeHP = static_cast<Custom*>(bp)->values[4].p;
-            wantBytes = (elmStringToUTF8(encodeHP(typeHP)) == "arraybuffer");
+            wantBytes = (elmStringToUTF8(Export::encode(typeHP)) == "arraybuffer");
         }
         HPointer rawBody;
         if (wantBytes) {
@@ -592,12 +584,15 @@ void httpDrain() {
     }
 }
 
-/// Registers, once per process, the tracking root scanner and the async source
-/// whose drain is `httpDrain`, ready while results or progress are queued.
+/// Makes the tracking state belong to the current heap generation
+/// (`httpSyncHeapGeneration`, which registers the tracking root scanner), and
+/// registers, once per process, the async source whose drain is `httpDrain`,
+/// ready while results or progress are queued. The scheduler keeps its async
+/// sources across a heap reset.
 void httpEnsureRegistered() {
+    httpSyncHeapGeneration();
     static std::once_flag flag;
     std::call_once(flag, []() {
-        httpRegisterScannerOnce();
         Scheduler::instance().registerAsyncSource(
             httpDrain,
             []() {
@@ -633,11 +628,10 @@ struct ExtractedRequest {
 ExtractedRequest extractRequest(HPointer requestHP) {
     ExtractedRequest out;
     void* ptr = Allocator::instance().resolve(requestHP);
-    if (!ptr) return out;
     Record* req = static_cast<Record*>(ptr);
 
-    out.pod.method = elmStringToUTF8(encodeHP(req->values[REQ_METHOD].p));
-    out.pod.url    = elmStringToUTF8(encodeHP(req->values[REQ_URL].p));
+    out.pod.method = elmStringToUTF8(Export::encode(req->values[REQ_METHOD].p));
+    out.pod.url    = elmStringToUTF8(Export::encode(req->values[REQ_URL].p));
 
     // Each header is a Custom with fields [name, value].
     for (Elm::alloc::ListCursor l(req->values[REQ_HEADERS].p); !l.done();
@@ -645,8 +639,8 @@ ExtractedRequest extractRequest(HPointer requestHP) {
         void* hPtr = resolveOrNull(l.current().p);
         if (hPtr) {
             Custom* hdr = static_cast<Custom*>(hPtr);
-            std::string key = elmStringToUTF8(encodeHP(hdr->values[0].p));
-            std::string val = elmStringToUTF8(encodeHP(hdr->values[1].p));
+            std::string key = elmStringToUTF8(Export::encode(hdr->values[0].p));
+            std::string val = elmStringToUTF8(Export::encode(hdr->values[1].p));
             out.pod.headers.push_back({key, val});
         }
     }
@@ -655,7 +649,7 @@ ExtractedRequest extractRequest(HPointer requestHP) {
     if (bodyPtr) {
         Custom* body = static_cast<Custom*>(bodyPtr);
         if (body->ctor == BODY_PAIR) {
-            out.pod.contentType = elmStringToUTF8(encodeHP(body->values[0].p));
+            out.pod.contentType = elmStringToUTF8(Export::encode(body->values[0].p));
             // The content is a String (`stringBody`, `jsonBody`) or Bytes (`bytesBody`), or, from `multipartBody`, a
             // form, which is serialised as multipart/form-data.
             HPointer content = body->values[1].p;
@@ -671,7 +665,7 @@ ExtractedRequest extractRequest(HPointer requestHP) {
                     void* partPtr = resolveOrNull(l.current().p);
                     if (partPtr) {
                         Custom* part = static_cast<Custom*>(partPtr);
-                        std::string key = elmStringToUTF8(encodeHP(part->values[0].p));
+                        std::string key = elmStringToUTF8(Export::encode(part->values[0].p));
                         HPointer value = part->values[1].p;
                         void* vp = resolveOrNull(value);
                         mp += "--" + boundary + "\r\n";
@@ -680,7 +674,7 @@ ExtractedRequest extractRequest(HPointer requestHP) {
                             // bytesPart: a Blob of [bytes, mime], sent as a
                             // browser sends a Blob appended to a FormData.
                             Custom* blob = static_cast<Custom*>(vp);
-                            std::string mime = elmStringToUTF8(encodeHP(blob->values[1].p));
+                            std::string mime = elmStringToUTF8(Export::encode(blob->values[1].p));
                             mp += "Content-Disposition: form-data; name=\"" + key +
                                   "\"; filename=\"blob\"\r\n";
                             mp += "Content-Type: " +
@@ -739,7 +733,7 @@ void* httpKillEval(void* args[]) {
     (void)s.takePendingResume(token);
     (void)httpClearTracked(token);
     if (httpAbort(token)) s.releaseHold(token);
-    return reinterpret_cast<void*>(encodeHP(unit()));
+    return reinterpret_cast<void*>(Export::encode(unit()));
 }
 
 /// Allocates the kill handle of request `token`, a closure that runs
@@ -762,11 +756,12 @@ HPointer makeHttpKillHandle(uint64_t token) {
 /// cancelled, or when the record or its expect has no object; in both cases
 /// the task never resumes.
 void* httpBindingEval(void* args[]) {
-    HPointer request      = decodeHP(reinterpret_cast<uint64_t>(args[0]));
-    HPointer resultToTask = decodeHP(reinterpret_cast<uint64_t>(args[1]));
-    HPointer router       = decodeHP(reinterpret_cast<uint64_t>(args[2]));
+    httpSyncHeapGeneration();
+    HPointer request      = Export::decode(reinterpret_cast<uint64_t>(args[0]));
+    HPointer resultToTask = Export::decode(reinterpret_cast<uint64_t>(args[1]));
+    HPointer router       = Export::decode(reinterpret_cast<uint64_t>(args[2]));
     uint64_t ticket       = reinterpret_cast<uint64_t>(args[3]);
-    HPointer resume       = decodeHP(reinterpret_cast<uint64_t>(args[4]));
+    HPointer resume       = Export::decode(reinterpret_cast<uint64_t>(args[4]));
 
     bool claimTracker = true;
     if (ticket != 0) {
@@ -781,13 +776,13 @@ void* httpBindingEval(void* args[]) {
         }
         if (cancelled) {
             ECO_KLOG("elm-http", "ticket=%lu cancelled before start", (unsigned long)ticket);
-            return reinterpret_cast<void*>(encodeHP(unit()));
+            return reinterpret_cast<void*>(Export::encode(unit()));
         }
     }
 
     ExtractedRequest ex = extractRequest(request);
     if (!ex.ok) {
-        return reinterpret_cast<void*>(encodeHP(unit()));
+        return reinterpret_cast<void*>(Export::encode(unit()));
     }
 
     // Once parked, the scheduler keeps the bundle rooted.
@@ -821,13 +816,14 @@ void* httpBindingEval(void* args[]) {
     HttpService::instance().submit(std::move(ex.pod));
 
     // Allocates, but nothing above is used afterwards.
-    return reinterpret_cast<void*>(encodeHP(makeHttpKillHandle(token)));
+    return reinterpret_cast<void*>(Export::encode(makeHttpKillHandle(token)));
 }
 
 /// Returns the Task that, when run, sends request `reqHP` and resumes with
 /// `resultToTask` applied to the expect's value. `routerHP` receives the
 /// progress of a tracked request, and `ticket` is its spawn ticket or 0.
-/// Registers the async source and the tracking root scanner on first use.
+/// Registers the async source on first use, and the tracking root scanner on
+/// the first use in each heap generation.
 HPointer httpMakeTask(HPointer routerHP, HPointer rttHP, HPointer reqHP, uint64_t ticket) {
     Elm::StackRootGuard g({&reqHP, &rttHP, &routerHP});
     httpEnsureRegistered();
@@ -835,12 +831,10 @@ HPointer httpMakeTask(HPointer routerHP, HPointer rttHP, HPointer reqHP, uint64_
     // Four captures, plus the resume argument the scheduler supplies.
     HPointer bindingCallback = allocClosureK(httpBindingEval, 5, Elm::PK_Boxed);
     void* clPtr = Allocator::instance().resolve(bindingCallback);
-    if (clPtr) {
-        closureCapture(clPtr, boxed(reqHP), true);
-        closureCapture(clPtr, boxed(rttHP), true);
-        closureCapture(clPtr, boxed(routerHP), true);
-        closureCapture(clPtr, unboxedInt(static_cast<i64>(ticket)), Elm::PK_Int);
-    }
+    closureCapture(clPtr, boxed(reqHP), true);
+    closureCapture(clPtr, boxed(rttHP), true);
+    closureCapture(clPtr, boxed(routerHP), true);
+    closureCapture(clPtr, unboxedInt(static_cast<i64>(ticket)), Elm::PK_Int);
     return Scheduler::instance().taskBinding(bindingCallback);
 }
 
@@ -852,11 +846,11 @@ void* mapExpectEvaluator(void* args[]) {
     uint64_t oldEnc      = reinterpret_cast<uint64_t>(args[1]);
     uint64_t responseEnc = reinterpret_cast<uint64_t>(args[2]);
 
-    HPointer func = decodeHP(funcEnc);
+    HPointer func = Export::decode(funcEnc);
     Elm::StackRootGuard funcRoot(&func);
     uint64_t midEnc = eco_apply_closure(HPtr::fromBits(oldEnc), &responseEnc, 1).toBits();
     uint64_t funcArg = midEnc;
-    HPtr res = eco_apply_closure(HPtr::fromBits(encodeHP(func)), &funcArg, 1);
+    HPtr res = eco_apply_closure(HPtr::fromBits(Export::encode(func)), &funcArg, 1);
     return reinterpret_cast<void*>(res.toBits());
 }
 
@@ -904,6 +898,7 @@ HPtr Elm_Kernel_Http_toTask(HPtr router, HPtr resultToTask, HPtr request) {
 /// target.
 uint64_t Eco_Http_toTaskForSpawn(uint64_t routerEnc, uint64_t resultToTaskEnc,
                                  uint64_t requestEnc, uint64_t trackerEnc) {
+    httpSyncHeapGeneration();   // before the ticket goes in: a new generation clears the tables
     uint64_t ticket = 0;
     if (trackerEnc != 0) {
         std::string trackerStr = elmStringToUTF8(trackerEnc);
@@ -930,6 +925,7 @@ uint64_t Eco_Http_toTaskForSpawn(uint64_t routerEnc, uint64_t resultToTaskEnc,
 /// result and releases the hold. A withdrawn request never resumes, and its
 /// later progress ticks are dropped.
 void Eco_Http_cancelTracker(uint64_t trackerEnc) {
+    httpSyncHeapGeneration();
     std::string trackerStr = elmStringToUTF8(trackerEnc);
     uint64_t token = 0;
     {
@@ -995,10 +991,8 @@ HPtr Elm_Kernel_Http_mapExpect(HPtr closure, HPtr expectVal) {
     Elm::StackRootGuard g(&type, &toBody, &oldTV, &func);
     HPointer composed = allocClosureK(mapExpectEvaluator, 3, Elm::PK_Boxed);
     void* clPtr = Allocator::instance().resolve(composed);
-    if (clPtr) {
-        closureCapture(clPtr, boxed(func), true);
-        closureCapture(clPtr, boxed(oldTV), true);
-    }
+    closureCapture(clPtr, boxed(func), true);
+    closureCapture(clPtr, boxed(oldTV), true);
     Elm::StackRootGuard cg(&composed);
     std::vector<Unboxable> v(3);
     v[0].p = type;

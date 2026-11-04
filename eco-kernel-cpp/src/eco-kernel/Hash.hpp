@@ -6,21 +6,22 @@
 //
 // `Data.HashMap` keys its buckets on an Int the caller supplies, and callers
 // that key on names hash a String on every probe. The narrow hash returns
-// exactly what its JS twin returns. Its pure-Elm twin agrees only for a
-// non-negative seed and a string with no surrogate code units. The twins live
+// exactly what its JS twin returns. Its pure-Elm twin agrees for every seed
+// and a string with no surrogate code units. The twins live
 // outside this file and are kept in step by hand. The wide hash's JS twin
 // computes a different value.
 //
 // There are two hashes, and the difference between them is width.
 //
-// The *narrow* hash stays below 2^26 (for a non-negative seed), so that two of
+// The *narrow* hash is in [0, 2^26) for every seed, so that two of
 // them can be packed into one Int as `a * 2^26 + b` without leaving the range
 // both a native i64 and a JS double represent exactly. It is
 //
 //     h_0     = seed mod 2^26
 //     h_{i+1} = (h_i * 33 + (c_i mod 2^26) + 7) mod 2^26
 //
-// over the UTF-16 code units c_i, with C++ `%` as `mod`.
+// over the UTF-16 code units c_i, with `mod` as Elm's `modBy` (never negative;
+// the seed is reduced as `((seed % 2^26) + 2^26) % 2^26`).
 //
 // The *wide* hash is 64-bit FNV-1a over the same code units. It is for callers
 // that use the hash only as a bucket key, where any i64 is acceptable and more
@@ -45,8 +46,8 @@ namespace Hash {
 ///
 /// `str` is the resolved address of an Elm String, or null for the empty
 /// string, which hashes to `seed mod 2^26`. It is only read, and only during
-/// the call. The result is in [0, 2^26) when `seed` is non-negative. A negative
-/// `seed` keeps its sign through C++ `%`, and the result may then be negative.
+/// the call. The result is in [0, 2^26) for every `seed`, negative ones
+/// included.
 ///
 /// Callers that pack two hashes into one Int rely on the narrow range, so this
 /// function must not be widened.

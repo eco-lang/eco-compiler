@@ -65,7 +65,11 @@ files.
   ListExports.cpp:32-39, and per-file equivalents).
 - **Known closure FABRICATION sites** (grep `Tag_Closure|allocClosure`):
   `core/Utils.cpp`, `core/TaskEffectManager.cpp`, `http/HttpExports.cpp`,
-  `http/HttpEffectManager.cpp`, `time/TimeExports.cpp`, `time/TimeEffectManager.cpp`.
+  `http/HttpEffectManager.cpp`, `time/TimeExports.cpp`, `time/TimeEffectManager.cpp`;
+  since 2026-11-04 (plans/kernel-lib-bug-fixes.md) also eco-kernel `Console.cpp`
+  (readLine/readAll), `Process.cpp` (wait) and `MVar.cpp`: each allocates a kill-handle
+  closure capturing only an Int token, handed only to the scheduler (the `Process.sleep`
+  pattern), never into a type-visible position.
   Files on this list are automatic careful-audit territory; anything reachable from a
   kernel that fabricates a closure into a type-visible position is not licensable.
 - **Where the compiler-visible kernel type lives:** for elm/core kernels, the

@@ -2111,6 +2111,7 @@ function _WebSocket_park(socket, raw, isUnix, leftover, peer, watch)
 		local: _WebSocket_endpoint(raw, isUnix, true),
 		remote: _WebSocket_endpoint(raw, isUnix, false),
 		gone: false,
+		server: false,   // set by the server-side parks (readUpgrade, Http.Server's upgrades)
 		peer: peer || null
 	};
 	h.onError = function() { /* reported when the codec starts (the socket is destroyed) */ };
@@ -2166,6 +2167,7 @@ function _WebSocket_parkUpgrade(socket, raw, head, method, target, version, rawH
 		fields.push([rawHeaders[i], rawHeaders[i + 1]]);
 	}
 	var id = _WebSocket_park(socket, raw, false, Buffer.from(head || Buffer.alloc(0)), peer, true);
+	_WebSocket_hs[id].server = true;
 	return __Utils_Tuple3(
 		id,
 		__Utils_Tuple3(method, target, version),
@@ -2264,6 +2266,7 @@ function _WebSocket_parkH2Upgrade(stream, method, target, fields, peer)
 	var duplex = _WebSocket_h2Duplex(stream, session, false);
 	var id = _WebSocket_park(duplex, session.socket, false, Buffer.alloc(0), peer);
 	_WebSocket_hs[id].h2 = stream;
+	_WebSocket_hs[id].server = true;
 	return __Utils_Tuple3(
 		id,
 		__Utils_Tuple3(method, target, '2'),
@@ -2750,6 +2753,7 @@ var _WebSocket_readUpgrade = F2(function(connId, timeoutMs)
 			}
 			var id = _WebSocket_park(socket, raw, d.isUnix, Buffer.from(rest));
 			var h = _WebSocket_hs[id];
+			h.server = true;
 			callback(__Scheduler_succeed(__Utils_Tuple3(
 				id,
 				__Utils_Tuple3(parsed.method, parsed.target, parsed.version),
@@ -2788,6 +2792,12 @@ var _WebSocket_open = F5(function(id, response, params, fromWire, toWire)
 		if (mode !== 1 && mode !== 2)
 		{
 			callback(_WebSocket_ferr('EINVAL', 'open EINVAL: unknown mode'));
+			return;
+		}
+		// The role must be the handshake's own (decision D13), as in the native kernel.
+		if (role !== (_WebSocket_hs[id].server ? 1 : 0))
+		{
+			callback(_WebSocket_ferr('EINVAL', 'open EINVAL: the role does not match the handshake'));
 			return;
 		}
 		// ( threshold (-1: no deflate), ( ourNoContext, ourBits ), ( peerNoContext, peerBits ) )
@@ -2889,6 +2899,12 @@ var _WebSocket_reject = F2(function(id, response)
 {
 	return __Scheduler_binding(function(callback)
 	{
+		// Only a server handshake can be refused (decision D13); a client one stays in place.
+		if (_WebSocket_hs[id] && !_WebSocket_hs[id].server)
+		{
+			callback(_WebSocket_done());
+			return;
+		}
 		var h = _WebSocket_unpark(id);
 		if (!h || h.gone || h.socket.destroyed)
 		{

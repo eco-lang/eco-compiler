@@ -154,8 +154,8 @@ type EnvironmentVariables
 
 {-| How long the child may run before it is sent `SIGTERM`.
 
-`Milliseconds` counts from the moment the child is started. A value of 0 or less is the same as
-`NoLimit`.
+`Milliseconds` counts from the moment the child is started. A value of 0 or less, or more than
+2147483647 (about 24.8 days, the longest timer Node.js supports), is the same as `NoLimit`.
 
 When the limit expires, a [`run`](#run) fails with `exitCode` `-1`, while a [`spawn`](#spawn)'s
 `onExit` gets whatever exit code the child then ends with.
@@ -289,11 +289,12 @@ stopped the run, its standard output and standard error have both reached their 
 child started that keeps them open therefore delays the result until `runDuration` expires; the run
 then fails with `exitCode` `-1` and the output collected so far.
 
-Killing the task with `Process.kill` sends the child `SIGTERM` if it is still running, and the
-task then never completes.
+Killing the task with `Process.kill` sends the child `SIGTERM` if it is still running; if it has
+already exited, the run stops waiting for output that a process it started keeps open. The task
+then never completes.
 
-On the native backend under Windows, the output is not collected, and every run that starts a
-child fails with `exitCode` `-1`.
+On the native backend under Windows, every run that starts a child fails with `exitCode` `-1`,
+and a killed run still waits for its output to end.
 
 -}
 run : String -> List String -> RunOptions -> Task FailedRun SuccessfulRun
@@ -468,7 +469,7 @@ encodeEnvironmentVariables environmentVariables =
 
 
 {-| Encodes a run duration as the kernels' limit in milliseconds, where 0 means no limit, so a
-`Milliseconds` value of 0 or less becomes no limit.
+`Milliseconds` value of 0 or less, or more than 2147483647, becomes no limit.
 -}
 encodeRunDuration : RunDuration -> Int
 encodeRunDuration runDuration =
@@ -477,7 +478,11 @@ encodeRunDuration runDuration =
             0
 
         Milliseconds ms ->
-            max 0 ms
+            if ms > 2147483647 then
+                0
+
+            else
+                max 0 ms
 
 
 {-| Builds a `FailedRun` from the failure the `run` kernel reports,

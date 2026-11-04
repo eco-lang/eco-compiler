@@ -213,6 +213,7 @@ void WsCore::onControl(uint8_t opcode, std::string&& payload) {
             }
             std::string echo = code == ws::kCloseNoStatus ? std::string() : ws::closePayload(code, "");
             auto self = shared_from_this();
+            closeSent_ = true;
             writeControl(ws::kOpClose, echo, [self](int err) { self->closeFrameWritten(err); });
         }
         finishIfDone();
@@ -682,9 +683,9 @@ void WsCore::checkPause() {
         paused_ = false;
         int64_t t = nowMs();
         lastRxMs_ = t;
-        if (hbPingSent_) hbDeadline_ = t + cfg_.heartbeatTimeout;
+        int64_t pingTimeout = pingTimeoutMs();
+        if (hbPingSent_) hbDeadline_ = t + pingTimeout;
         else if (cfg_.heartbeatInterval > 0) armHeartbeat(t + cfg_.heartbeatInterval);
-        int64_t pingTimeout = cfg_.heartbeatTimeout > 0 ? cfg_.heartbeatTimeout : kDefaultPingTimeoutMs;
         for (Ping& p : pings_) p.deadline = t + pingTimeout;
         armPongTimer();
         updateInterest();
@@ -736,6 +737,7 @@ void WsCore::pumpWrites() {
         if (it.isClose) {
             std::string frame = std::move(it.frame);
             outQ_.pop_front();
+            closeSent_ = true;
             port_->portWrite(std::move(frame), [self](int err) { self->closeFrameWritten(err); });
             continue;
         }
@@ -1025,7 +1027,17 @@ void WsCore::queueGracefulClose(int code, const std::string& reason) {
     pumpWrites();
 }
 
-void WsCore::closeFrameWritten(int) {
+void WsCore::closeFrameWritten(int err) {
+    if (err != 0) {
+        // The Close never got out: the handshake cannot complete cleanly, and the waiters stay for `ended`.
+        if (!closedPosted_) {
+            infoSet_ = true;
+            closeCode_ = ws::kCloseAbnormal;
+            closeReason_.clear();
+            clean_ = false;
+        }
+        return;
+    }
     closeWritten_ = true;
     std::vector<uint64_t> ops;
     ops.swap(closeOps_);
@@ -1071,8 +1083,9 @@ void WsCore::failWith(int frameCode, const std::string& frameText, int infoCode,
     endReadable(ReadEnd::Error, readErr, readReason);
     writeClosed_ = true;
     failQueued(kSocketClosed);
-    if (!closeWritten_) {
+    if (!closeSent_) {
         closeQueued_ = true;
+        closeSent_ = true;
         auto self = shared_from_this();
         writeControl(ws::kOpClose, ws::closePayload(frameCode, frameText),
                      [self](int err) { self->closeFrameWritten(err); });
@@ -1097,8 +1110,8 @@ void WsCore::ended(int err, const std::string& reason, bool) {
     writeClosed_ = true;
     failQueued(kSocketClosed);
     if (!closeWritten_ && (!closeOps_.empty() || !closeWaiters_.empty())) {
-        // Our Close never got out: its waiters complete anyway.
-        closeWritten_ = true;
+        // Our Close never got out: its waiters complete anyway (`closeWritten_` stays false, so a later
+        // `writeClose` fails ECANCELED as after any abnormal end).
         std::vector<uint64_t> ops;
         ops.swap(closeOps_);
         for (uint64_t t : ops) postOpDone(t);
@@ -1187,12 +1200,16 @@ void WsCore::startPing(uint64_t token) {
         return;
     }
     int64_t t = nowMs();
-    int64_t timeout = cfg_.heartbeatTimeout > 0 ? cfg_.heartbeatTimeout : kDefaultPingTimeoutMs;
+    int64_t timeout = pingTimeoutMs();
     Ping p{pingPayload(++pingCounter_ & 0x7FFFFFFFFFFFFFFFULL), token, t, paused_ ? 0 : t + timeout};
     std::string payload = p.payload;
     pings_.push_back(std::move(p));
     armPongTimer();
     writeControl(ws::kOpPing, payload, nullptr);
+}
+
+int64_t WsCore::pingTimeoutMs() const {
+    return cfg_.heartbeatTimeout > 0 ? cfg_.heartbeatTimeout : kDefaultPingTimeoutMs;
 }
 
 void WsCore::armHeartbeat(int64_t at) {
@@ -1224,7 +1241,7 @@ void WsCore::portTimer(int timerId) {
         }
         hbPingSent_ = true;
         rxAtPing_ = rxBytes_;
-        hbDeadline_ = t + (cfg_.heartbeatTimeout > 0 ? cfg_.heartbeatTimeout : kDefaultPingTimeoutMs);
+        hbDeadline_ = t + pingTimeoutMs();
         armPongTimer();
         writeControl(ws::kOpPing, pingPayload((++pingCounter_ & 0x7FFFFFFFFFFFFFFFULL) | (1ULL << 63)),
                      nullptr);
@@ -1278,6 +1295,11 @@ void WsProtocol::onOpen(Conn& c) {
     c.addCloseHook([weak](Conn&) {
         if (auto k = weak.lock()) k->portClosed();
     });
+    if (!preamble_.empty()) {
+        std::string bytes;
+        bytes.swap(preamble_);
+        c.write(std::move(bytes), nullptr);
+    }
     core_->attach(this);
 }
 

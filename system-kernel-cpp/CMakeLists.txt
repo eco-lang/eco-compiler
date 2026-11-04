@@ -343,15 +343,26 @@ endforeach()
 #------------------------------------------------------------------------------
 
 if(NOT WIN32 AND TARGET EcoRuntimeStatic)
-    add_executable(eco-system-core-test EXCLUDE_FROM_ALL
-        ${CMAKE_CURRENT_SOURCE_DIR}/../test/eco-system-core/EcoSystemCoreTest.cpp)
+    # One file per eco/system area besides EcoSystemCoreTest.cpp (test/eco-system-core/EcoSystemCoreTest.hpp).
+    set(_core_test_areas WebSocket HeapReset Stream ChildProcess Signal HttpServer Terminal Tls Watch
+        FileSystem CoreServices FdChannel Socket Zlib)
+    set(_core_test_srcs ${CMAKE_CURRENT_SOURCE_DIR}/../test/eco-system-core/EcoSystemCoreTest.cpp)
+    foreach(_area ${_core_test_areas})
+        list(APPEND _core_test_srcs ${CMAKE_CURRENT_SOURCE_DIR}/../test/eco-system-core/${_area}Test.cpp)
+    endforeach()
+    add_executable(eco-system-core-test EXCLUDE_FROM_ALL ${_core_test_srcs})
     target_compile_features(eco-system-core-test PRIVATE cxx_std_20)
     # EcoSystem_HttpServer for the HttpServer checks (serializeH1, listenOn,
     # Http1Protocol on the reactor; WS2). EcoSystem_Socket and
     # EcoSystem_Stream for the WS1 checks (Conn protocols, listener callback
     # mode, mapped stream pairs; plans/eco-system-websockets.md §3.2, §3.3).
     # EcoSystem_WebSocket for the WS4 frame codec and HTTP head checks (§3.6).
+    # EcoSystem_FileSystem, EcoSystem_ChildProcess, EcoSystem_System, EcoSystem_HttpStream and
+    # EcoSystem_Terminal for the area files (WatchTest, ChildProcessTest, HeapResetTest,
+    # TerminalTest, ...).
     target_link_libraries(eco-system-core-test PRIVATE
+        EcoSystem_System EcoSystem_FileSystem EcoSystem_ChildProcess
+        EcoSystem_HttpStream EcoSystem_Terminal
         EcoSystem_WebSocket EcoSystem_Tls
         EcoSystem_HttpServer EcoSystem_Socket EcoSystem_Stream EcoSystem_Core
         EcoRuntimeStatic Threads::Threads)

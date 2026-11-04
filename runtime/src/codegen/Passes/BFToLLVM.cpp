@@ -43,6 +43,13 @@
 
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/MapVector.h"
+#include "llvm/ADT/bit.h"
+
+// The fused reads and writes below swap bytes (`LLVM::ByteSwapOp`) only for a big-endian request, which is
+// right only when the code runs on a little-endian host, as the JIT and AOT outputs of this build do. This file
+// is built as C++17, so it uses LLVM's `llvm::endianness` in place of C++20's `std::endian`.
+static_assert(llvm::endianness::native == llvm::endianness::little,
+              "Eco assumes a little-endian host (Bytes swaps, HPointer layout)");
 
 using namespace mlir;
 using namespace bf;

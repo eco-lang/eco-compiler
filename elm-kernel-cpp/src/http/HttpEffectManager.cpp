@@ -32,6 +32,7 @@
 
 #include "../KernelExports.h"
 #include "../ExportHelpers.hpp"
+#include "HttpRequestLayout.hpp"
 #include "allocator/Heap.hpp"
 #include "allocator/HeapHelpers.hpp"
 #include "allocator/Allocator.hpp"
@@ -45,6 +46,8 @@
 using namespace Elm;
 using namespace Elm::alloc;
 using namespace Elm::Platform;
+namespace Export = Elm::Kernel::Export;
+using namespace Elm::Kernel::HttpRequestLayout;
 
 /// Defined and documented in `HttpExports.cpp`.
 extern "C" void Eco_Http_cancelTracker(uint64_t trackerEnc);
@@ -54,20 +57,6 @@ extern "C" uint64_t Eco_Http_toTaskForSpawn(uint64_t routerEnc, uint64_t resultT
 
 namespace {
 
-/// Returns the bits of `h` as a word.
-static inline uint64_t encodeHP(HPointer h) {
-    union { HPointer hp; uint64_t val; } u;
-    u.hp = h;
-    return u.val;
-}
-
-/// Returns the word `val` read as an HPointer.
-static inline HPointer decodeHP(uint64_t val) {
-    union { HPointer hp; uint64_t val; } u;
-    u.val = val;
-    return u.hp;
-}
-
 /// Returns the Elm String `hp` as UTF-8, or "" when `hp` is an embedded
 /// constant (such as the empty String) or does not resolve to an object.
 static std::string trackerToStd(HPointer hp) {
@@ -75,7 +64,6 @@ static std::string trackerToStd(HPointer hp) {
     // builds.
     if (hp.ptr_ind != 0) return "";
     void* ptr = Allocator::instance().resolve(hp);
-    if (!ptr) return "";
     return Elm::StringOps::toStdString(ptr);
 }
 
@@ -89,7 +77,7 @@ static void* httpInitEvaluator(void* args[]) {
     (void)args;
     HPointer nilState = listNil();
     HPointer task = Scheduler::instance().taskSucceed(nilState);
-    return reinterpret_cast<void*>(encodeHP(task));
+    return reinterpret_cast<void*>(Export::encode(task));
 }
 
 /// Sends `args[1]` to the app through router `args[0]`, and returns
@@ -102,12 +90,12 @@ static void* httpSuccessHandler(void* args[]) {
     uint64_t routerEnc = reinterpret_cast<uint64_t>(args[0]);
     uint64_t valueEnc = reinterpret_cast<uint64_t>(args[1]);
 
-    HPointer router = decodeHP(routerEnc);
-    HPointer value = decodeHP(valueEnc);
+    HPointer router = Export::decode(routerEnc);
+    HPointer value = Export::decode(valueEnc);
 
     PlatformRuntime::instance().sendToApp(router, value);
 
-    return reinterpret_cast<void*>(encodeHP(
+    return reinterpret_cast<void*>(Export::encode(
         Scheduler::instance().taskSucceed(unit())));
 }
 
@@ -120,8 +108,8 @@ static void* httpMapHandler(void* args[]) {
 
     uint64_t mappedEnc = eco_apply_closure(HPtr::fromBits(mapperEnc), &valueEnc, 1).toBits();
 
-    HPointer task = Scheduler::instance().taskSucceed(decodeHP(mappedEnc));
-    return reinterpret_cast<void*>(encodeHP(task));
+    HPointer task = Scheduler::instance().taskSucceed(Export::decode(mappedEnc));
+    return reinterpret_cast<void*>(Export::encode(task));
 }
 
 /// Carries out the commands in `args[1]` and returns `Task.succeed subs`,
@@ -145,10 +133,10 @@ static void* httpOnEffectsEvaluator(void* args[]) {
     // taskAndThen, rawSpawn), so `router` and the list position must be rooted
     // across it. The cursor keeps its spine node rooted and resolves it again
     // on each read and advance.
-    HPointer router = decodeHP(reinterpret_cast<uint64_t>(args[0]));
+    HPointer router = Export::decode(reinterpret_cast<uint64_t>(args[0]));
     Elm::StackRootGuard outerRoots(&router);
     Elm::alloc::RootedListCursor cursor(
-        decodeHP(reinterpret_cast<uint64_t>(args[1])));
+        Export::decode(reinterpret_cast<uint64_t>(args[1])));
     Elm::Unboxable cursorHead;
     u8 cursorKind;
 
@@ -156,7 +144,7 @@ static void* httpOnEffectsEvaluator(void* args[]) {
         HPointer cmdHP = cursorHead.p;
         Elm::StackRootGuard iterRoots(&cmdHP);
 
-        void* cmdPtr = allocator.resolve(cmdHP);
+        void* cmdPtr = alloc::resolveOrNull(cmdHP);
         if (cmdPtr) {
             Header* header = static_cast<Header*>(cmdPtr);
             u16 ctor = (header->tag == Tag_Custom)
@@ -170,43 +158,36 @@ static void* httpOnEffectsEvaluator(void* args[]) {
                 HPointer successCl = allocClosure(httpSuccessHandler, 2);
                 Elm::StackRootGuard clRoot(&successCl);
                 void* clPtr = allocator.resolve(successCl);
-                if (clPtr) {
-                    closureCapture(clPtr, boxed(router), true);
-                }
+                closureCapture(clPtr, boxed(router), true);
 
-                // Field 6 of the Request record is `tracker : Maybe String`.
-                // Every field is boxed, so the fields are in alphabetical
-                // order; the index must agree with `REQ_TRACKER` in
-                // HttpExports.cpp. `Nothing` is an embedded constant, and
-                // `Just` a Custom whose field 0 is the String. The word is
-                // read after the last allocation above, and the call reads it
-                // before it allocates.
+                // The Request record's `tracker` is a `Maybe String`.
+                // `Nothing` is an embedded constant, and `Just` a Custom whose
+                // field 0 is the String. The word is read after the last
+                // allocation above, and the call reads it before it allocates.
                 uint64_t trackerEnc = 0;
                 if (void* rp = allocator.resolve(req)) {
-                    HPointer mt = static_cast<Record*>(rp)->values[6].p;
+                    HPointer mt = static_cast<Record*>(rp)->values[REQ_TRACKER].p;
                     if (mt.ptr_ind == 0) {
                         if (void* mp = allocator.resolve(mt)) {
-                            trackerEnc = encodeHP(static_cast<Custom*>(mp)->values[0].p);
+                            trackerEnc = Export::encode(static_cast<Custom*>(mp)->values[0].p);
                         }
                     }
                 }
                 uint64_t taskEnc = Eco_Http_toTaskForSpawn(
-                    encodeHP(router), encodeHP(successCl), encodeHP(req), trackerEnc);
-                HPointer taskHP = decodeHP(taskEnc);
+                    Export::encode(router), Export::encode(successCl), Export::encode(req), trackerEnc);
+                HPointer taskHP = Export::decode(taskEnc);
                 Elm::StackRootGuard taskRoot(&taskHP);
                 sched.rawSpawn(taskHP);
             } else if (header->tag == Tag_Custom && ctor == 0) {
                 // Cancel tracker. Neither reading the String nor the cancel
                 // allocates, so nothing more needs rooting.
                 HPointer tracker = static_cast<Custom*>(cmdPtr)->values[0].p;
-                Eco_Http_cancelTracker(encodeHP(tracker));
+                Eco_Http_cancelTracker(Export::encode(tracker));
             } else if (header->tag == Tag_Task) {
                 HPointer successCl = allocClosure(httpSuccessHandler, 2);
                 Elm::StackRootGuard clRoot(&successCl);
                 void* clPtr = allocator.resolve(successCl);
-                if (clPtr) {
-                    closureCapture(clPtr, boxed(router), true);
-                }
+                closureCapture(clPtr, boxed(router), true);
                 HPointer wrappedTask = sched.taskAndThen(successCl, cmdHP);
                 sched.rawSpawn(wrappedTask);
             }
@@ -216,8 +197,8 @@ static void* httpOnEffectsEvaluator(void* args[]) {
     }
 
     uint64_t subsEnc = reinterpret_cast<uint64_t>(args[2]);
-    HPointer task = sched.taskSucceed(decodeHP(subsEnc));
-    return reinterpret_cast<void*>(encodeHP(task));
+    HPointer task = sched.taskSucceed(Export::decode(subsEnc));
+    return reinterpret_cast<void*>(Export::encode(task));
 }
 
 /// Delivers a progress report to the app and returns `Task.succeed state`,
@@ -233,12 +214,12 @@ static void* httpOnSelfMsgEvaluator(void* args[]) {
     auto& sched = Scheduler::instance();
     auto& allocator = Allocator::instance();
 
-    HPointer router  = decodeHP(reinterpret_cast<uint64_t>(args[0]));
-    HPointer selfMsg = decodeHP(reinterpret_cast<uint64_t>(args[1]));
-    HPointer state   = decodeHP(reinterpret_cast<uint64_t>(args[2]));
+    HPointer router  = Export::decode(reinterpret_cast<uint64_t>(args[0]));
+    HPointer selfMsg = Export::decode(reinterpret_cast<uint64_t>(args[1]));
+    HPointer state   = Export::decode(reinterpret_cast<uint64_t>(args[2]));
     Elm::StackRootGuard topRoots(&router, &selfMsg, &state);
 
-    void* smPtr = allocator.resolve(selfMsg);
+    void* smPtr = alloc::resolveOrNull(selfMsg);
     if (smPtr) {
         Tuple2* sm = static_cast<Tuple2*>(smPtr);
         HPointer tracker  = sm->a.p;
@@ -246,8 +227,8 @@ static void* httpOnSelfMsgEvaluator(void* args[]) {
         Elm::StackRootGuard msgRoots(&tracker, &progress);
         std::string wantTracker = trackerToStd(tracker);
 
-        // `toMsg` and `sendToApp` run Elm code, which may collect.
-        Elm::StackRootGuard walkRoots(&router, &progress);
+        // `toMsg` and `sendToApp` run Elm code, which may collect; `router` (topRoots) and `progress`
+        // (msgRoots) are already rooted across those calls.
         Elm::alloc::RootedListCursor cursor(state);
         Elm::Unboxable cursorHead;
         u8 cursorKind;
@@ -255,7 +236,7 @@ static void* httpOnSelfMsgEvaluator(void* args[]) {
             HPointer subHP = cursorHead.p;
             Elm::StackRootGuard iterRoots(&subHP);
 
-            void* subPtr = allocator.resolve(subHP);
+            void* subPtr = alloc::resolveOrNull(subHP);
             if (subPtr) {
                 Custom* sub = static_cast<Custom*>(subPtr);
                 HPointer subTracker = sub->values[0].p;
@@ -272,7 +253,7 @@ static void* httpOnSelfMsgEvaluator(void* args[]) {
 
     // `state` is rooted, so it holds the current address after the loop.
     HPointer task = sched.taskSucceed(state);
-    return reinterpret_cast<void*>(encodeHP(task));
+    return reinterpret_cast<void*>(Export::encode(task));
 }
 
 /// Returns the command `args[1]` with its message mapped by the function
@@ -293,74 +274,65 @@ static void* httpCmdMapEvaluator(void* args[]) {
     auto& allocator = Allocator::instance();
 
     // mapExpect, the new records and allocClosure / taskAndThen all allocate.
-    HPointer mapper = decodeHP(reinterpret_cast<uint64_t>(args[0]));
-    HPointer origCmd = decodeHP(reinterpret_cast<uint64_t>(args[1]));
+    HPointer mapper = Export::decode(reinterpret_cast<uint64_t>(args[0]));
+    HPointer origCmd = Export::decode(reinterpret_cast<uint64_t>(args[1]));
     Elm::StackRootGuard guards(&mapper, &origCmd);
 
     void* cmdPtr = allocator.resolve(origCmd);
-    if (!cmdPtr) {
-        return reinterpret_cast<void*>(encodeHP(origCmd));
-    }
 
     Header* header = static_cast<Header*>(cmdPtr);
     if (header->tag == Tag_Custom) {
         Custom* cmd = static_cast<Custom*>(cmdPtr);
         if (cmd->ctor != 1) {
-            return reinterpret_cast<void*>(encodeHP(origCmd));
+            return reinterpret_cast<void*>(Export::encode(origCmd));
         }
         HPointer reqHP = cmd->values[0].p;
         Elm::StackRootGuard reqRoot(&reqHP);
         void* reqPtr = allocator.resolve(reqHP);
-        if (!reqPtr || static_cast<Header*>(reqPtr)->tag != Tag_Record) {
-            return reinterpret_cast<void*>(encodeHP(origCmd));
+        if (static_cast<Header*>(reqPtr)->tag != Tag_Record) {
+            return reinterpret_cast<void*>(Export::encode(origCmd));
         }
-        // The index of `expect` in the Request record, whose fields are all
-        // boxed and so in alphabetical order. It must agree with `REQ_EXPECT`
-        // in HttpExports.cpp.
-        constexpr int kReqExpect = 2;   // alphabetical: allowCookies…, body, expect, …
-        HPointer expect = static_cast<Record*>(reqPtr)->values[kReqExpect].p;
-        HPointer mappedExpect = decodeHP(Elm_Kernel_Http_mapExpect(
-            HPtr::fromBits(encodeHP(mapper)), HPtr::fromBits(encodeHP(expect))).toBits());
+        HPointer expect = static_cast<Record*>(reqPtr)->values[REQ_EXPECT].p;
+        HPointer mappedExpect = Export::decode(Elm_Kernel_Http_mapExpect(
+            HPtr::fromBits(Export::encode(mapper)), HPtr::fromBits(Export::encode(expect))).toBits());
         Elm::StackRootGuard expectRoot(&mappedExpect);
 
         // mapExpect allocated, so the record is resolved again.
         Record* req = static_cast<Record*>(allocator.resolve(reqHP));
         const u32 n = req->header.size;
         std::vector<Unboxable> fields(req->values, req->values + n);
-        fields[kReqExpect].p = mappedExpect;
+        fields[REQ_EXPECT].p = mappedExpect;
         HPointer newReq = record(fields, req->unboxed);
         Elm::StackRootGuard newReqRoot(&newReq);
 
         std::vector<Unboxable> wrap(1);
         wrap[0].p = newReq;
         HPointer newCmd = custom(1, wrap, 0);
-        return reinterpret_cast<void*>(encodeHP(newCmd));
+        return reinterpret_cast<void*>(Export::encode(newCmd));
     }
     if (header->tag != Tag_Task) {
-        return reinterpret_cast<void*>(encodeHP(origCmd));
+        return reinterpret_cast<void*>(Export::encode(origCmd));
     }
 
     HPointer mapCl = allocClosure(httpMapHandler, 2);
     Elm::StackRootGuard mapClRoot(&mapCl);
     void* clPtr = allocator.resolve(mapCl);
-    if (clPtr) {
-        closureCapture(clPtr, boxed(mapper), true);
-    }
+    closureCapture(clPtr, boxed(mapper), true);
 
     HPointer mappedTask = Scheduler::instance().taskAndThen(mapCl, origCmd);
-    return reinterpret_cast<void*>(encodeHP(mappedTask));
+    return reinterpret_cast<void*>(Export::encode(mappedTask));
 }
 
 /// Returns `func (toMsg progress)`, where `func` is `args[0]`, `toMsg` is
 /// `args[1]` and `progress` is `args[2]`. It is the `toMsg >> func` that
 /// `subMap` builds, with the first two captured.
 static void* httpSubComposeEvaluator(void* args[]) {
-    HPointer func = decodeHP(reinterpret_cast<uint64_t>(args[0]));
+    HPointer func = Export::decode(reinterpret_cast<uint64_t>(args[0]));
     Elm::StackRootGuard funcRoot(&func);
     uint64_t progressEnc = reinterpret_cast<uint64_t>(args[2]);
     uint64_t msgEnc = eco_apply_closure(HPtr::fromBits(reinterpret_cast<uint64_t>(args[1])),
                                         &progressEnc, 1).toBits();
-    HPtr res = eco_apply_closure(HPtr::fromBits(encodeHP(func)), &msgEnc, 1);
+    HPtr res = eco_apply_closure(HPtr::fromBits(Export::encode(func)), &msgEnc, 1);
     return reinterpret_cast<void*>(res.toBits());
 }
 
@@ -374,13 +346,13 @@ static void* httpSubComposeEvaluator(void* args[]) {
 /// subscription that is not a Custom is returned unchanged.
 static void* httpSubMapEvaluator(void* args[]) {
     auto& allocator = Allocator::instance();
-    HPointer func = decodeHP(reinterpret_cast<uint64_t>(args[0]));
-    HPointer sub = decodeHP(reinterpret_cast<uint64_t>(args[1]));
+    HPointer func = Export::decode(reinterpret_cast<uint64_t>(args[0]));
+    HPointer sub = Export::decode(reinterpret_cast<uint64_t>(args[1]));
     Elm::StackRootGuard guards(&func, &sub);
 
     void* subPtr = allocator.resolve(sub);
-    if (!subPtr || static_cast<Header*>(subPtr)->tag != Tag_Custom) {
-        return reinterpret_cast<void*>(encodeHP(sub));
+    if (static_cast<Header*>(subPtr)->tag != Tag_Custom) {
+        return reinterpret_cast<void*>(Export::encode(sub));
     }
     HPointer tracker = static_cast<Custom*>(subPtr)->values[0].p;
     HPointer toMsg = static_cast<Custom*>(subPtr)->values[1].p;
@@ -396,7 +368,7 @@ static void* httpSubMapEvaluator(void* args[]) {
     fields[0].p = tracker;
     fields[1].p = composed;
     HPointer mapped = custom(0, fields, 0);
-    return reinterpret_cast<void*>(encodeHP(mapped));
+    return reinterpret_cast<void*>(Export::encode(mapped));
 }
 
 } // anonymous namespace
@@ -428,11 +400,11 @@ void eco_register_http_effect_manager() {
     Elm::StackRootGuard subMapRoot(&subMapCl);
 
     PlatformRuntime::ManagerInfo info;
-    info.init = encodeHP(initCl);
-    info.onEffects = encodeHP(onEffectsCl);
-    info.onSelfMsg = encodeHP(onSelfMsgCl);
-    info.cmdMap = encodeHP(cmdMapCl);
-    info.subMap = encodeHP(subMapCl);
+    info.init = Export::encode(initCl);
+    info.onEffects = Export::encode(onEffectsCl);
+    info.onSelfMsg = Export::encode(onSelfMsgCl);
+    info.cmdMap = Export::encode(cmdMapCl);
+    info.subMap = Export::encode(subMapCl);
 
     PlatformRuntime::instance().registerManager("Http", info);
 }

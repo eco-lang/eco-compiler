@@ -86,8 +86,9 @@ and uses no external library.
 **License:** BSD-2-Clause
 **Website:** https://www.akenotsuki.com/misc/srell/en/
 
-`regex/Regex.cpp` and `regex/RegexExports.cpp` implement `Regex.fromStringWith`, `find`, `replace`,
-`split` and `contains` with SRELL, which follows ECMAScript regex semantics (matching the JS kernel).
+`regex/RegexExports.cpp` implements `Regex.fromStringWith`, `find`, `replace`, `split` and
+`contains` with SRELL, which follows ECMAScript regex semantics (matching the JS kernel), over UTF-16
+code units as a JS regex without the `u` flag does.
 Header-only; no link dependency.
 
 ### 3. libcurl + OpenSSL (HTTP Client)

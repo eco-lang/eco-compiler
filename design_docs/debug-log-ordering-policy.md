@@ -11,8 +11,9 @@ JS `prod` entry (:188-198, reached from `Terminal/Make.elm:654`); the native pat
 `Debug.log` lowers to an `eco.dbg` op (`Generate/MLIR/Expr.elm:3921`) →
 `eco_dbg_print_typed` (`runtime/src/allocator/RuntimeExports.cpp:3411-3426`), which
 writes `label: value\n` into the captured program output stream, interleaved with
-ordinary output. The `std::cout` comment at `elm-kernel-cpp/src/core/Debug.cpp:47-48`
-claims the opposite; its function has no callers and is dead.
+ordinary output. A `std::cout` comment in the former `elm-kernel-cpp/src/core/Debug.cpp`
+claimed the opposite; its function had no callers and the file was deleted (DEAD-01 of
+`plans/kernel-lib-bug-fixes.md`, 2026-11-04).
 
 **D-1 (no deletion).** An expression that transitively contains a `Debug.*` kernel
 reference is never droppable, whatever the KernelFacts row says. `(Debug, log)` carries

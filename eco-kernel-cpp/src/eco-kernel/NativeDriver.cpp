@@ -65,10 +65,15 @@ HPointer lowerAndLinkBytesBody(HPointer captured) {
         bytesHP = tup->a.p;
         outputPathHP = tup->b.p;
     }
-    void* ptr = Elm::Allocator::instance().resolve(bytesHP);
+    // The empty Bytes is an embedded constant (HEAP_014), which resolve must not see; it reads as null, length 0.
+    void* ptr = Elm::alloc::resolveBytesOrNull(bytesHP);
     size_t len = Elm::alloc::byteBufferLength(ptr);
     const uint8_t* data = Elm::alloc::byteBufferData(ptr);
     std::string op = toString(Export::encode(outputPathHP));
+    if (len == 0) {
+        // Empty MLIR holds no program; it is rejected here rather than handed to the driver.
+        return failString("Eco.NativeDriver.lowerAndLinkBytes: the MLIR is empty");
+    }
 
     int rc = eco_native_lower_and_link_bytes(
         reinterpret_cast<const char *>(data), len, op.c_str());

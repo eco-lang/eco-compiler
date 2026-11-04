@@ -17,8 +17,8 @@ import Maybe exposing (Just, Nothing)
 //     no-op. Node itself restores the terminal at exit and when SIGINT / SIGTERM end
 //     the process (its ResetStdio), which is the native atexit + signal-listener rule.
 //   * setTitle — the terminal window title: when fd 1 is a terminal, the OSC 2 sequence
-//     ESC ] 2 ; title BEL written to fd 1 directly (as native), C0 controls and DEL
-//     removed from the title; otherwise nothing (plans/eco-system-api-refactor.md D10).
+//     ESC ] 2 ; title BEL written to fd 1 directly (as native), C0 controls, DEL and C1
+//     controls (U+0080..U+009F) removed from the title; otherwise nothing (plans/eco-system-api-refactor.md D10).
 //
 // `attachResizeListener` is JS-only: the Elm Terminal manager body uses it (the
 // native backend runs the C++ manager, C.4).
@@ -129,7 +129,7 @@ var _Terminal_setTitle = function(title)
 		{
 			try
 			{
-				require('fs').writeSync(1, '\x1b]2;' + title.replace(/[\x00-\x1f\x7f]/g, '') + '\x07');
+				require('fs').writeSync(1, '\x1b]2;' + title.replace(/[\x00-\x1f\x7f-\x9f]/g, '') + '\x07');
 			}
 			catch (e)
 			{

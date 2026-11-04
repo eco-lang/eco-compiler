@@ -89,10 +89,34 @@ static HPointer makeApplyTaggersClosure(HPointer taggers) {
 
 PlatformRuntime& PlatformRuntime::instance() {
     static PlatformRuntime* runtime = new PlatformRuntime();
+    runtime->syncHeapGeneration();
     return *runtime;
 }
 
 PlatformRuntime::PlatformRuntime() {
+    registerRootScanner();
+}
+
+void PlatformRuntime::syncHeapGeneration() {
+    Allocator& a = Allocator::instance();
+    if (a.getCurrentThreadHeap() == nullptr || a.heapGeneration() == heapGeneration_) return;
+    // A heap reset (tests only): every value below belongs to the dead heap, and so does the program they made.
+    // The pending flags JSON and the ready hook are host data and are kept.
+    managers_.clear();
+    managerStates_.clear();
+    effectsQueue_.clear();
+    effectsActive_ = false;
+    activeBatch_ = {0, 0};
+    dispatchActive_ = false;
+    effectsScratch_.clear();
+    modelStorage_ = 0;
+    modelRooted_ = false;   // the value root went with the old root set
+    sendToAppClosure_ = 0;
+    flagsDecoder_ = 0;
+    registerRootScanner();
+}
+
+void PlatformRuntime::registerRootScanner() {
     // Register external root scanner so the GC can trace our state.
     // Use the slow form: the constructor may run before the calling thread
     // has been registered with `initThread()`.
@@ -147,6 +171,8 @@ PlatformRuntime::PlatformRuntime() {
                 }
             }
         }, "platform-runtime");
+    // Read after the slow form, which may start the first generation.
+    heapGeneration_ = Allocator::instance().heapGeneration();
 }
 
 // ============================================================================
@@ -154,6 +180,7 @@ PlatformRuntime::PlatformRuntime() {
 // ============================================================================
 
 void PlatformRuntime::registerManager(const std::string& home, const ManagerInfo& info) {
+    syncHeapGeneration();
     managers_[home] = info;
 }
 
@@ -162,6 +189,7 @@ void PlatformRuntime::registerManager(const std::string& home, const ManagerInfo
 // ============================================================================
 
 HPointer PlatformRuntime::setupEffects(HPointer sendToAppClosure) {
+    syncHeapGeneration();
     sendToAppClosure_ = encodeHP(sendToAppClosure);
 
     auto& sched = Scheduler::instance();

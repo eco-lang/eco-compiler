@@ -3,7 +3,7 @@
 
 namespace Elm::Kernel::JsArray {
 
-HPointer initializeFromList(u32 max, HPointer list) {
+HPointer initializeFromList(u32 max, HPointer list, int wantedKind) {
     auto& allocator = Allocator::instance();
 
     // `list` arrives unrooted, so it is copied into a rooted local before `allocArray` can move it. `arr`
@@ -22,7 +22,13 @@ HPointer initializeFromList(u32 max, HPointer list) {
     u8 kind;
     while (count < max && cursor.read(head, kind)) {
         void* arrObj = allocator.resolve(arr);
-        if (kind == 0) {
+        if (wantedKind > 0) {
+            // A boxed head of an Int, Float or Char list (one a kernel built from a boxed closure result)
+            // is unboxed, so the array has the element type's kind whatever kinds the cells carry.
+            Unboxable v = (kind == 0) ? unboxByKind(head.p, static_cast<u32>(wantedKind)) : head;
+            assert((kind == 0 || kind == wantedKind) && "JsArray.initializeFromList: list head kind mismatch");
+            alloc::arrayPushKind(arrObj, v, static_cast<u8>(wantedKind));
+        } else if (kind == 0) {
             alloc::arrayPush(arrObj, alloc::boxed(head.p), true);
         } else {
             alloc::arrayPushKind(arrObj, head, static_cast<u8>(kind));
@@ -37,7 +43,7 @@ HPointer initializeFromList(u32 max, HPointer list) {
     HPointer remaining = cursor.node;
     if (cursor.idx > 0 && !alloc::isNil(remaining) && remaining.ptr_ind == 0) {
         void* obj = allocator.resolve(remaining);
-        if (obj && getHeader(obj)->tag == Tag_ConsChunk) {
+        if (getHeader(obj)->tag == Tag_ConsChunk) {
             ConsChunk* cv = static_cast<ConsChunk*>(obj);
             ListBacking* lb = static_cast<ListBacking*>(
                 allocator.resolve(cv->backing));

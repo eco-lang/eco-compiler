@@ -4,7 +4,8 @@
 // work on the MVar when the scheduler steps the Task. A fiber parks by handing its resume closure to the
 // scheduler with `parkResume`, which roots the closure, and queueing a `Waiter` holding the returned token.
 // Waking it takes the closure back, calls it with a succeeding Task, and releases the hold. Values held here
-// (slot values and putters' pending values) are rooted by the scanner `registerGcRootScanner` registers.
+// (slot values and putters' pending values) are rooted by a scanner registered once per heap generation
+// (`currentMVars`).
 //
 //===----------------------------------------------------------------------===//
 
@@ -47,8 +48,28 @@ struct MVarSlot {
 // Every live MVar, by id. After each evaluator returns, a full slot has no readers or takers and an empty
 // slot has no putters.
 static std::unordered_map<int64_t, MVarSlot> s_mvars;
-// The id the next `newEmpty` hands out; it only increases.
+// The id the next `newEmpty` hands out; it only increases, across heap resets too.
 static int64_t s_nextId = 1;
+// The heap generation (`Allocator::heapGeneration`) `s_mvars` and the root scanner belong to; 0 before the
+// first `currentMVars`.
+static uint64_t s_mvarGeneration = 0;
+
+static void addRootScanner();
+
+// Returns `s_mvars`, made to belong to the current heap generation. On the first call in a generation it
+// registers the root scanner (`addRootScanner`) with the current root set. If MVars of an earlier generation
+// are left (a heap reset, which only tests make), they are dropped first: their values are values of the dead
+// heap, and the scheduler voided their waiters' holds and resume closures at the reset. An id of the old heap
+// then names no MVar, as after `drop`. Every access to `s_mvars` but the scanner's goes through here.
+static std::unordered_map<int64_t, MVarSlot>& currentMVars() {
+    const uint64_t gen = Elm::Allocator::instance().heapGeneration();
+    if (s_mvarGeneration != gen) {
+        s_mvars.clear();
+        s_mvarGeneration = gen;
+        addRootScanner();
+    }
+    return s_mvars;
+}
 
 // ============================================================================
 // Wake path
@@ -139,8 +160,9 @@ static void* readBindingEvaluator(void* rawArgs[]) {
     HPointer resumeHP = Export::decode(resumeEnc);
 
     auto& sched = Elm::Platform::Scheduler::instance();
-    auto it = s_mvars.find(id);
-    if (it == s_mvars.end()) {
+    auto& mvars = currentMVars();
+    auto it = mvars.find(id);
+    if (it == mvars.end()) {
         resumeNotFound(resumeHP, id);
         return reinterpret_cast<void*>(Export::encode(unit()));
     }
@@ -165,8 +187,9 @@ static void* takeBindingEvaluator(void* rawArgs[]) {
     HPointer resumeHP = Export::decode(resumeEnc);
 
     auto& sched = Elm::Platform::Scheduler::instance();
-    auto it = s_mvars.find(id);
-    if (it == s_mvars.end()) {
+    auto& mvars = currentMVars();
+    auto it = mvars.find(id);
+    if (it == mvars.end()) {
         resumeNotFound(resumeHP, id);
         return reinterpret_cast<void*>(Export::encode(unit()));
     }
@@ -197,8 +220,9 @@ static void* putBindingEvaluator(void* rawArgs[]) {
     HPointer resumeHP = Export::decode(resumeEnc);
 
     auto& sched = Elm::Platform::Scheduler::instance();
-    auto it = s_mvars.find(id);
-    if (it == s_mvars.end()) {
+    auto& mvars = currentMVars();
+    auto it = mvars.find(id);
+    if (it == mvars.end()) {
         resumeNotFound(resumeHP, id);
         return reinterpret_cast<void*>(Export::encode(unit()));
     }
@@ -223,7 +247,7 @@ static void* putBindingEvaluator(void* rawArgs[]) {
 
 int64_t newEmpty() {
     int64_t id = s_nextId++;
-    s_mvars[id] = MVarSlot{};
+    currentMVars()[id] = MVarSlot{};
     return id;
 }
 
@@ -278,8 +302,9 @@ static HPointer dropBody(HPointer captured) {
     Tuple2* tup =
         static_cast<Tuple2*>(Elm::Allocator::instance().resolve(captured));
     int64_t mvarId = tup->a.i;
-    auto it = s_mvars.find(mvarId);
-    if (it != s_mvars.end()) {
+    auto& mvars = currentMVars();
+    auto it = mvars.find(mvarId);
+    if (it != mvars.end()) {
         // Taking each closure lets it be collected; releasing each hold lets the event loop go quiescent.
         auto& sched = Elm::Platform::Scheduler::instance();
         auto abandon = [&](std::deque<Waiter>& q) {
@@ -293,7 +318,7 @@ static HPointer dropBody(HPointer captured) {
         abandon(it->second.readers);
         abandon(it->second.takers);
         abandon(it->second.putters);
-        s_mvars.erase(it);
+        mvars.erase(it);
     }
     return Export::decode(taskSucceedUnit());
 }
@@ -304,7 +329,9 @@ uint64_t drop(uint64_t id) {
     return Export::encode(Eco::Kernel::makeBinding<dropBody>(payload));
 }
 
-void registerGcRootScanner() {
+// Registers, with the current root set, the scanner `registerGcRootScanner` describes. Called by
+// `currentMVars` once per heap generation.
+static void addRootScanner() {
     Elm::Allocator::instance().getRootSet().addExternalRootScanner(
         [](Elm::RootSet::EvacuateFn evacuate) {
             auto evacField = [&](HPointer& field) {
@@ -324,7 +351,11 @@ void registerGcRootScanner() {
                     evacField(w.pendingValue);
                 }
             }
-        });
+        }, "eco-mvar");
+}
+
+void registerGcRootScanner() {
+    (void)currentMVars();
 }
 
 } // namespace Eco::Kernel::MVar

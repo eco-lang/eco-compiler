@@ -17,8 +17,10 @@
 //   /drip-chunked[?bytes=1024&ms=500]  chunked body in 8 chunks over ~ms
 //   /truncate              promises Content-Length: 1000, sends 10 bytes, closes
 //   /redirect              302 Found, Location: /anything
+//   /redirect-empty-location  302 Found with an empty `Location:` header
 //   anything else          404 "Not Found", text/plain "not found"
-// HTTPS (TestHttpServer's second port) and /package.zip are not served.
+// HTTPS (TestHttpServer's second port), its CONNECT proxy port (ECO_TEST_PROXY_URL),
+// /package.zip, /package-short.zip, /status-zip/<n> and /proxy-connects are not served.
 'use strict';
 
 const net = require('net');
@@ -168,6 +170,9 @@ function handle(socket, req) {
             'Content-Length: 1000\r\n' +
             'Connection: close\r\n\r\n' +
             '0123456789', 'latin1'));
+        finish();
+    } else if (route === '/redirect-empty-location') {
+        send(response(302, 'Found', 'text/plain', '', 'Location:\r\n'));
         finish();
     } else if (route === '/redirect') {
         send(response(302, 'Found', 'text/plain', '', 'Location: /anything\r\n'));

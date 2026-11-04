@@ -15,6 +15,7 @@ module MVarTakeThenPutCycleTest exposing (main)
 import Bytes exposing (Endianness(..))
 import Bytes.Decode as BD
 import Bytes.Encode as BE
+import Eco.IO.Error exposing (IOError)
 import Eco.MVar as MV
 import Platform
 import Task
@@ -38,7 +39,7 @@ intDec =
     BD.signedInt32 BE
 
 
-cycle : MV.MVar Int -> Int -> Task.Task Never Int
+cycle : MV.MVar Int -> Int -> Task.Task IOError Int
 cycle m v =
     MV.put intEnc m v
         |> Task.andThen (\_ -> MV.take intDec m)
@@ -64,7 +65,7 @@ init _ =
                     )
                 |> Task.map (\( v1, v2, v3 ) -> v1 == 10 && v2 == 20 && v3 == 30)
     in
-    ( Nothing, Task.perform GotResult task )
+    ( Nothing, Task.perform GotResult (task |> Task.onError (\_ -> Task.succeed False)) )
 
 
 update : Msg -> Model -> ( Model, Cmd Msg )

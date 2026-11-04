@@ -22,10 +22,29 @@
 // bodies) are de-chunked before routing.
 //   /package.zip     -> 200 application/zip, a canned 2-entry STORED zip
 //                       (for the Eco.Http.getArchive E2E test)
+//   /package-short.zip -> the same zip, but the first central-directory
+//                       entry's uncompressed size is 16 instead of 34, so it
+//                       disagrees with the local header and the stored data
+//   /status-zip/{code} -> the valid /package.zip body with HTTP status {code}
+//                       (e.g. /status-zip/404)
+//   /redirect-empty-location -> 302 with an empty `Location:` header
+//   /proxy-connects  -> 200 text/plain: how many CONNECT tunnels the proxy
+//                       port has opened so far (a test can check its request
+//                       really went through the proxy)
+//
+// A third port, proxyPort(), is an HTTP proxy that only does CONNECT: it
+// answers `CONNECT 127.0.0.1:<port>` (or localhost) with `200 Connection
+// established` and relays bytes both ways, so `https_proxy=<proxy URL>` routes
+// a TLS request to httpsPort() through it. Other hosts get 403, other methods
+// 405, an unreachable port 502. Its URL, http://127.0.0.1:<proxyPort>, is
+// published as ECO_TEST_PROXY_URL in this process's environment when the
+// server starts (so test children inherit it, like the TestServerConfig.hpp
+// URLs).
 //===----------------------------------------------------------------------===//
 
 #include <arpa/inet.h>
 #include <netinet/in.h>
+#include <poll.h>
 #include <sys/socket.h>
 #include <unistd.h>
 
@@ -75,6 +94,22 @@ static const unsigned char kDummyPackageZip[] = {
     0x2e,0x65,0x6c,0x6d,0x50,0x4b,0x05,0x06,0x00,0x00,0x00,0x00,0x02,0x00,0x02,0x00,
     0x84,0x00,0x00,0x00,0xa0,0x00,0x00,0x00,0x00,0x00,
 };
+
+// /package.zip with the first central-directory entry's uncompressed-size
+// field (offset 24 of the "PK\1\2" header) changed from 34 to 64, more than the entry
+// stores, so a reader that trusts it comes up short (HTTP-10).
+inline std::string shortPackageZip() {
+    std::string zip(reinterpret_cast<const char*>(kDummyPackageZip), sizeof(kDummyPackageZip));
+    const size_t cd = zip.find(std::string("PK\x01\x02", 4));
+    if (cd != std::string::npos && cd + 28 <= zip.size()) {
+        zip[cd + 24] = 0x40;
+        zip[cd + 25] = zip[cd + 26] = zip[cd + 27] = 0;
+    }
+    return zip;
+}
+
+// CONNECT tunnels opened by the proxy port (/proxy-connects).
+inline std::atomic<long> g_proxyConnects{0};
 
 // Extract a long-valued query parameter (e.g. "bytes=2048"), or `def` if absent.
 inline long queryLong(const std::string& query, const std::string& key, long def) {
@@ -354,6 +389,18 @@ inline void handleConnection(Conn conn) {
                            "0123456789");
         } else if (route == "/redirect") {
             sendResponse(conn, 302, "Found", "text/plain", "", "Location: /anything\r\n");
+        } else if (route == "/redirect-empty-location") {
+            sendResponse(conn, 302, "Found", "text/plain", "", "Location:\r\n");
+        } else if (route == "/package-short.zip") {
+            sendResponse(conn, 200, "OK", "application/zip", shortPackageZip());
+        } else if (route.rfind("/status-zip/", 0) == 0) {
+            int code = std::atoi(route.substr(12).c_str());
+            if (code <= 0) code = 200;
+            std::string zip(reinterpret_cast<const char*>(kDummyPackageZip),
+                            sizeof(kDummyPackageZip));
+            sendResponse(conn, code, "Status", "application/zip", zip);
+        } else if (route == "/proxy-connects") {
+            sendResponse(conn, 200, "OK", "text/plain", std::to_string(g_proxyConnects.load()));
         } else if (route == "/package.zip") {
             std::string zip(reinterpret_cast<const char*>(kDummyPackageZip),
                             sizeof(kDummyPackageZip));
@@ -363,6 +410,79 @@ inline void handleConnection(Conn conn) {
         }
     }
     conn.close();
+}
+
+// One connection to the proxy port: read the CONNECT request head, open the
+// tunnel to the loopback target, then copy bytes both ways until both sides
+// have closed.
+inline void handleProxyConnection(int fd) {
+    auto reply = [&](const std::string& status) {
+        std::string r = "HTTP/1.1 " + status + "\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+        (void)::send(fd, r.data(), r.size(), MSG_NOSIGNAL);
+        ::close(fd);
+    };
+    std::string buf;
+    char tmp[16384];
+    size_t headerEnd;
+    while ((headerEnd = buf.find("\r\n\r\n")) == std::string::npos) {
+        ssize_t n = ::read(fd, tmp, sizeof(tmp));
+        if (n <= 0 || buf.size() > 65536) { ::close(fd); return; }
+        buf.append(tmp, static_cast<size_t>(n));
+    }
+    std::istringstream ls(buf.substr(0, buf.find("\r\n")));
+    std::string method, target;
+    ls >> method >> target;
+    if (method != "CONNECT") return reply("405 Method Not Allowed");
+    const size_t colon = target.rfind(':');
+    const std::string host = colon == std::string::npos ? target : target.substr(0, colon);
+    const int port = colon == std::string::npos ? 0 : std::atoi(target.c_str() + colon + 1);
+    if ((host != "127.0.0.1" && host != "localhost") || port <= 0 || port > 65535)
+        return reply("403 Forbidden");
+    int up = ::socket(AF_INET, SOCK_STREAM, 0);
+    sockaddr_in addr{};
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    addr.sin_port = htons(static_cast<uint16_t>(port));
+    if (up < 0 || ::connect(up, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0) {
+        if (up >= 0) ::close(up);
+        return reply("502 Bad Gateway");
+    }
+    g_proxyConnects.fetch_add(1);
+    const std::string ok = "HTTP/1.1 200 Connection established\r\n\r\n";
+    (void)::send(fd, ok.data(), ok.size(), MSG_NOSIGNAL);
+    auto sendAll = [](int to, const char* p, size_t n) {
+        while (n > 0) {
+            ssize_t w = ::send(to, p, n, MSG_NOSIGNAL);
+            if (w <= 0) return false;
+            p += w;
+            n -= static_cast<size_t>(w);
+        }
+        return true;
+    };
+    const std::string early = buf.substr(headerEnd + 4);   // client bytes sent with the head
+    bool clientOpen = sendAll(up, early.data(), early.size());
+    bool upOpen = true;
+    while (clientOpen || upOpen) {
+        pollfd pf[2] = {{fd, static_cast<short>(clientOpen ? POLLIN : 0), 0},
+                        {up, static_cast<short>(upOpen ? POLLIN : 0), 0}};
+        if (::poll(pf, 2, 30000) <= 0) break;   // idle 30 s or error: drop the tunnel
+        if (clientOpen && (pf[0].revents & (POLLIN | POLLHUP | POLLERR))) {
+            ssize_t n = ::read(fd, tmp, sizeof(tmp));
+            if (n <= 0 || !sendAll(up, tmp, static_cast<size_t>(n))) {
+                clientOpen = false;
+                ::shutdown(up, SHUT_WR);
+            }
+        }
+        if (upOpen && (pf[1].revents & (POLLIN | POLLHUP | POLLERR))) {
+            ssize_t n = ::read(up, tmp, sizeof(tmp));
+            if (n <= 0 || !sendAll(fd, tmp, static_cast<size_t>(n))) {
+                upOpen = false;
+                ::shutdown(fd, SHUT_WR);
+            }
+        }
+    }
+    ::close(up);
+    ::close(fd);
 }
 
 // Open a loopback listening socket on an ephemeral port; returns {fd, port}.
@@ -394,6 +514,7 @@ public:
 
     int port() const { return port_; }
     int httpsPort() const { return httpsPort_; }
+    int proxyPort() const { return proxyPort_; }
     const std::string& certPath() const { return certPath_; }
 
 private:
@@ -409,6 +530,18 @@ private:
             httpsPort_ = sport;
             std::thread([this] { tlsAcceptLoop(); }).detach();
         }
+
+        auto [xfd, xport] = openLoopbackListener();
+        proxyFd_ = xfd;
+        proxyPort_ = xport;
+        std::thread([this] {
+            while (true) {
+                int fd = accept(proxyFd_, nullptr, nullptr);
+                if (fd < 0) continue;
+                std::thread(handleProxyConnection, fd).detach();
+            }
+        }).detach();
+        setenv("ECO_TEST_PROXY_URL", ("http://127.0.0.1:" + std::to_string(proxyPort_)).c_str(), 1);
     }
 
     void acceptLoop() {
@@ -500,6 +633,8 @@ private:
     int port_ = 0;
     int tlsFd_ = -1;
     int httpsPort_ = 0;
+    int proxyFd_ = -1;
+    int proxyPort_ = 0;
     SSL_CTX* sslCtx_ = nullptr;
     std::string certPath_;
 };

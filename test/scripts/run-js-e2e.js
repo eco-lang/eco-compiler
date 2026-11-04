@@ -11,7 +11,8 @@
 // Projects (default: all, in this order; projectSpecs below):
 //   eco-system       test/eco-system, compiled with --local-package eco/system=<repo>/system-kernel-cpp
 //   elm-conformance  test/elm-conformance, stock elm packages only (elm/core, elm/json,
-//                    elm/regex): the Elm-vs-eco conformance tests, which the native harness
+//                    elm/regex, elm/bytes, elm/url, elm/parser, elm/time): the Elm-vs-eco
+//                    conformance tests, which the native harness
 //                    runs too. Compiled programs get the mode guard
 //                    (patchModeGuard), and `-- SKIP-JS:` is a failure there.
 // For every <project>/src/*.elm with a top-level `main`:
@@ -28,7 +29,13 @@
 //   3. Each test runs as `node <Name>.run.js` (a two-line launcher installing the
 //      XMLHttpRequest shim js-e2e-xhr.js, which elm/http needs on Node, and calling
 //      Elm.<Name>.init()) in its own child process, with:
-//        stdin          the `-- STDIN:` text through a pipe, else /dev/null
+//        stdin          the `-- STDIN:` text through a pipe, else /dev/null; with
+//                       `-- STDIN-DELAY-MS: <n>` the pipe stays open and empty for n ms
+//        environment    ours, plus `-- ENV: NAME=VALUE` lines (`${VAR}` from the variables
+//                       below or our environment, `$$` = `$`), minus `-- UNSETENV: NAME...`
+//        RLIMIT_FSIZE   `-- RLIMIT-FSIZE: <bytes>`, through `prlimit` (node ignores SIGXFSZ,
+//                       so writes fail with EFBIG); skipped with a note without prlimit
+//                       (all four directives: test/CheckPatterns.hpp)
 //        ECO_TEST_PORT  a free TCP port (test/TestPort.hpp)
 //        ECO_TEST_HTTP_URL, ECO_TEST_HTTPS_URL  the HTTP test server (test/TestServerConfig.hpp;
 //                       no HTTPS here: both name the plain HTTP port)
@@ -257,6 +264,82 @@ function extractStdin(content) {
     return out;
 }
 
+// `-- ENV:` / `-- UNSETENV:` / `-- RLIMIT-FSIZE:` / `-- STDIN-DELAY-MS:` (test/CheckPatterns.hpp).
+function extractEnv(content) {
+    return directiveLines(content, '-- ENV:').map((rest) => {
+        const t = rest.trim();
+        const eq = t.indexOf('=');
+        const name = eq < 0 ? t : t.slice(0, eq);
+        if (eq < 0 || !name || /[ \t$]/.test(name)) {
+            throw new Error("malformed ENV directive (want NAME=VALUE): '" + rest + "'");
+        }
+        return [name, t.slice(eq + 1)];
+    });
+}
+
+function extractUnsetenv(content) {
+    const out = [];
+    for (const rest of directiveLines(content, '-- UNSETENV:')) {
+        const names = rest.trim().split(/\s+/).filter(Boolean);
+        if (!names.length) throw new Error('empty UNSETENV directive');
+        if (names.some((n) => /[=$]/.test(n))) throw new Error("malformed UNSETENV directive: '" + rest + "'");
+        out.push(...names);
+    }
+    return out;
+}
+
+function extractCount(content, marker) {
+    const lines = directiveLines(content, marker);
+    if (!lines.length) return null;
+    const t = lines[0].trim();
+    if (!/^\d{1,18}$/.test(t)) throw new Error('malformed ' + marker + " directive: '" + lines[0] + "'");
+    return Number(t);
+}
+
+function expandVars(value, lookup) {
+    let out = '';
+    for (let i = 0; i < value.length; i++) {
+        if (value[i] !== '$') { out += value[i]; continue; }
+        if (value[i + 1] === '$') { out += '$'; i++; continue; }
+        if (value[i + 1] === '{') {
+            const close = value.indexOf('}', i + 2);
+            if (close < 0) throw new Error("unterminated ${ in ENV value '" + value + "'");
+            const name = value.slice(i + 2, close);
+            const v = lookup(name);
+            if (v === undefined) throw new Error("ENV value '" + value + "': ${" + name + '} is not known to this harness');
+            out += v;
+            i = close;
+            continue;
+        }
+        out += '$';
+    }
+    return out;
+}
+
+// The child's environment: `base` with the test's ENV lines (expanded against `base`) set and
+// its UNSETENV names removed.
+function childEnv(t, base) {
+    const env = Object.assign({}, base);
+    for (const [name, value] of t.env) {
+        if (t.unset.includes(name)) throw new Error('ENV and UNSETENV both name ' + name);
+        env[name] = expandVars(value, (n) => base[n]);
+    }
+    for (const name of t.unset) delete env[name];
+    return env;
+}
+
+let prlimitPath;
+function findPrlimit() {
+    if (prlimitPath !== undefined) return prlimitPath;
+    prlimitPath = null;
+    for (const dir of (process.env.PATH || '').split(path.delimiter).concat(['/usr/bin', '/bin'])) {
+        if (!dir) continue;
+        const p = path.join(dir, 'prlimit');
+        try { fs.accessSync(p, fs.constants.X_OK); prlimitPath = p; break; } catch (e) { /* next */ }
+    }
+    return prlimitPath;
+}
+
 function extractSkip(content) {
     const lines = directiveLines(content, '-- SKIP-JS:');
     if (lines.length) return lines[0].trim() || '(no reason given)';
@@ -457,6 +540,13 @@ async function runProject(spec, opts, server) {
             t.patterns = extractCheckPatterns(t.content);
             t.exit = extractExit(t.content);
             t.stdin = extractStdin(t.content);
+            t.env = extractEnv(t.content);
+            t.unset = extractUnsetenv(t.content);
+            t.fsize = extractCount(t.content, '-- RLIMIT-FSIZE:');
+            t.stdinDelay = extractCount(t.content, '-- STDIN-DELAY-MS:');
+            if (skip === null && t.fsize !== null && !findPrlimit()) {
+                skip = 'RLIMIT-FSIZE needs prlimit (util-linux), not found on this host';
+            }
         } catch (e) {
             results.set(t.name, { status: 'fail', message: String(e.message || e) });
             continue;
@@ -521,25 +611,44 @@ async function runProject(spec, opts, server) {
     const runOne = async (t) => {
         const port = await pickFreePort();
         const started = Date.now();
+        let env;
+        try {
+            env = childEnv(t, Object.assign({}, process.env, serverEnv, { ECO_TEST_PORT: String(port) }));
+        } catch (e) {
+            const message = 'bad test directive: ' + String(e.message || e);
+            results.set(t.name, { status: 'fail', message, ms: 0 });
+            outputs.set(t.name, { output: '' });
+            if (!opts.record) console.log('  FAIL ' + spec.name + '/' + t.name + '\n    ' + message);
+            return;
+        }
         const r = await new Promise((resolve) => {
-            const stdin = t.stdin === null ? fs.openSync('/dev/null', 'r') : 'pipe';
-            const child = spawn(process.execPath, [t.name + '.run.js'], {
+            const piped = t.stdin !== null || t.stdinDelay !== null;
+            const stdin = piped ? 'pipe' : fs.openSync('/dev/null', 'r');
+            const nodeArgv = [process.execPath, t.name + '.run.js'];
+            const argv = t.fsize === null ? nodeArgv
+                : [findPrlimit(), '--fsize=' + t.fsize + ':' + t.fsize, ...nodeArgv];
+            const child = spawn(argv[0], argv.slice(1), {
                 cwd: outDir,
                 stdio: [stdin, 'pipe', 'pipe'],
-                env: Object.assign({}, process.env, serverEnv, { ECO_TEST_PORT: String(port) }),
+                env,
             });
             if (typeof stdin === 'number') fs.closeSync(stdin);
             const chunks = [];
             child.stdout.on('data', (d) => chunks.push(d));
             child.stderr.on('data', (d) => chunks.push(d));
-            if (t.stdin !== null) {
+            child.on('error', (e) => chunks.push(Buffer.from(String(e))));
+            let stdinTimer = null;
+            if (piped) {
                 child.stdin.on('error', () => {});
-                child.stdin.end(t.stdin);
+                const feed = () => child.stdin.end(t.stdin === null ? '' : t.stdin);
+                if (t.stdinDelay === null) feed();
+                else stdinTimer = setTimeout(feed, t.stdinDelay);
             }
             let timedOut = false;
             const timer = setTimeout(() => { timedOut = true; child.kill('SIGKILL'); }, opts.timeoutSec * 1000);
             child.on('close', (code, signal) => {
                 clearTimeout(timer);
+                if (stdinTimer) clearTimeout(stdinTimer);
                 resolve({ code, signal, timedOut, output: Buffer.concat(chunks).toString('utf8') });
             });
         });

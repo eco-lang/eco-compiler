@@ -25,8 +25,9 @@
 
 namespace Eco::Kernel::Process {
 
-/// Ends the process with status `code`, through the C library's `exit`, when
-/// called. Does not return.
+/// Ends the process with status `code` when called, through
+/// `eco_terminate_process` (`std::exit` on POSIX, `TerminateProcess` on
+/// Windows). Does not return.
 uint64_t exit(int64_t code);
 
 /// Returns a Task that starts the program `cmd` (an Elm String) with the List
@@ -38,18 +39,28 @@ uint64_t spawn(uint64_t cmd, uint64_t args);
 /// Returns a Task that starts `cmd` with `args` as `spawn` does, and succeeds
 /// with the tuple `( stdinHandle, pid )`. A GC point.
 ///
-/// `stdin_`, `stdout_` and `stderr_` are Strings. When `stdin_` is `"pipe"`,
-/// the child's standard input is a pipe and `stdinHandle` is `Just` the file
-/// descriptor of its writing end, an Int; for any other value standard input is
-/// shared and `stdinHandle` is `Nothing`. `stdout_` and `stderr_` are ignored:
-/// those streams are always shared. The Task fails as `spawn`'s does.
-uint64_t spawnProcess(uint64_t cmd, uint64_t args, uint64_t stdin_, uint64_t stdout_, uint64_t stderr_);
+/// `stdin_` is a String. When it is `"pipe"`, the child's standard input is a
+/// pipe and `stdinHandle` is `Just` the file descriptor of its writing end, an
+/// Int, which `Console.write` writes to and `File.close` closes; for any other
+/// value standard input is shared and `stdinHandle` is `Nothing`. Standard
+/// output and error are always shared. The Task fails as `spawn`'s does.
+uint64_t spawnProcess(uint64_t cmd, uint64_t args, uint64_t stdin_);
 
 /// Returns a Task that waits for the child with process id `handle` to exit,
 /// and succeeds with its exit code as an Int, or -1 when it could not be
 /// waited for; on POSIX a child ended by a signal gives 128 plus the signal
-/// number. The Task never fails, and cannot be cancelled. A GC point.
+/// number. The Task never fails. Killing it stops the wait (it no longer keeps
+/// the program alive) but not the child. A GC point.
 uint64_t wait(uint64_t handle);
+
+/// Returns the descriptor of the open `spawnProcess` stdin pipe whose handle
+/// is `handle`, or -1 when `handle` names none. Eco thread only.
+int streamHandleFd(int64_t handle);
+
+/// Forgets the `spawnProcess` stdin pipe whose handle is `handle`, if any, so
+/// a later write to that number (a reused descriptor) is refused. Called when
+/// the handle is closed. Eco thread only.
+void forgetStreamHandle(int64_t handle);
 
 } // namespace Eco::Kernel::Process
 

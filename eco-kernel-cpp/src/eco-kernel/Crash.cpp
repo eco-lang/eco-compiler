@@ -2,6 +2,7 @@
 
 #include "Crash.hpp"
 #include "KernelHelpers.hpp"
+#include "allocator/RuntimeExports.h"
 #include <cstdio>
 #include <cstdlib>
 // Some C libraries (musl) ship no <execinfo.h>; there the backtrace functions
@@ -26,8 +27,8 @@ uint64_t crash(uint64_t message) {
         backtrace_symbols_fd(bt, n, fileno(stderr));
         std::fflush(stderr);
     }
-    ::exit(1);
-    return 0;
+    // Not ::exit: on Windows that can hang on a service thread's lock (CRASH-01).
+    eco_terminate_process(1);
 }
 
 } // namespace Eco::Kernel::Crash

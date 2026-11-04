@@ -19,6 +19,7 @@ module MVarHoldingEmbeddedConstantsAcrossGC exposing (main)
 
 import Bytes.Decode as BD
 import Bytes.Encode as BE
+import Eco.IO.Error exposing (IOError)
 import Eco.MVar as MV
 import StressHarness exposing (StressFlags)
 import Task
@@ -34,7 +35,7 @@ type alias Mvars =
 
 
 {-| Forces ≥ 1 minor GC by building a large throwaway list. -}
-heavyAlloc : Int -> Task.Task Never Int
+heavyAlloc : Int -> Task.Task IOError Int
 heavyAlloc size =
     Task.succeed (List.sum (List.range 1 size))
 
@@ -79,7 +80,7 @@ strDec =
     BD.succeed ""
 
 
-buildMvars : Task.Task Never Mvars
+buildMvars : Task.Task IOError Mvars
 buildMvars =
     MV.new
         |> Task.andThen
@@ -142,6 +143,7 @@ cycle size =
                                     )
                         )
             )
+        |> Task.onError (\_ -> Task.succeed False)
 
 
 run : StressFlags -> Task.Task Never Bool

@@ -7,6 +7,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "eco-system/Stream/StreamCodec.hpp"
+#include "eco-system/Stream/ZlibFeed.hpp"
 
 #include <zlib.h>
 
@@ -106,24 +107,29 @@ std::string zlibMessage(const z_stream& zs, const char* fallback) {
 
 // Compresses `in` into `out`, finishing the stream when `finish` is set, and
 // returns "" or the reason for the failure. zlib is called until it has
-// consumed all of `in` and has nothing more to write.
+// consumed all of `in`, which it is given in slices (ZlibFeed.hpp), and has
+// nothing more to write.
 std::string deflateRun(CodecState& c, const std::string& in, bool finish,
                        std::vector<std::string>& out) {
     z_stream& zs = c.zs;
-    zs.next_in = reinterpret_cast<Bytef*>(const_cast<char*>(in.data()));
-    zs.avail_in = static_cast<uInt>(in.size());
+    const char* rest = in.data();
+    size_t left = in.size();
+    zs.next_in = reinterpret_cast<Bytef*>(const_cast<char*>(rest));
+    zs.avail_in = 0;
     std::string buf(kOutChunk, '\0');
     for (;;) {
+        zlibRefill(zs, rest, left);
+        const bool finishing = finish && left == 0;   // the last slice
         zs.next_out = reinterpret_cast<Bytef*>(buf.data());
         zs.avail_out = static_cast<uInt>(kOutChunk);
-        int rc = deflate(&zs, finish ? Z_FINISH : Z_NO_FLUSH);
+        int rc = deflate(&zs, finishing ? Z_FINISH : Z_NO_FLUSH);
         if (rc == Z_STREAM_ERROR) return zlibMessage(zs, "deflate failed");
         size_t have = kOutChunk - zs.avail_out;
         if (have) out.emplace_back(buf.data(), have);
-        if (finish) {
+        if (finishing) {
             if (rc == Z_STREAM_END) break;
             if (rc == Z_BUF_ERROR && have == 0) break;   // no progress possible
-        } else if (zs.avail_out != 0) {
+        } else if (zs.avail_out != 0 && zs.avail_in == 0 && left == 0) {
             break;   // all input consumed, nothing more pending
         }
     }
@@ -134,10 +140,13 @@ std::string deflateRun(CodecState& c, const std::string& in, bool finish,
 // which includes any input left over once the stream has ended.
 std::string inflateRun(CodecState& c, const std::string& in, std::vector<std::string>& out) {
     z_stream& zs = c.zs;
-    zs.next_in = reinterpret_cast<Bytef*>(const_cast<char*>(in.data()));
-    zs.avail_in = static_cast<uInt>(in.size());
+    const char* rest = in.data();
+    size_t left = in.size();
+    zs.next_in = reinterpret_cast<Bytef*>(const_cast<char*>(rest));
+    zs.avail_in = 0;
     std::string buf(kOutChunk, '\0');
     for (;;) {
+        zlibRefill(zs, rest, left);   // the input goes to zlib in slices (ZlibFeed.hpp)
         if (c.zEnded) {
             if (zs.avail_in != 0) return "Junk found after end of compressed data.";
             break;
@@ -162,7 +171,7 @@ std::string inflateRun(CodecState& c, const std::string& in, std::vector<std::st
         }
         if (have) out.emplace_back(buf.data(), have);
         if (c.zEnded) continue;                // check for trailing data
-        if (zs.avail_out != 0) break;          // input exhausted; output drained
+        if (zs.avail_out != 0 && left == 0) break;   // input exhausted; output drained
         // Output buffer full: inflate may hold more; go round again.
     }
     return {};

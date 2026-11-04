@@ -10,11 +10,11 @@
 // scheduler) must not do. It is therefore built on a `SysWorkPool` worker, and the socket work starts only once it
 // is ready.
 //
-// A connect therefore runs in two stages. Stage 1 builds the client configuration on the pool. Its completion, on
-// the eco thread, keeps the configuration and the connect's inputs in a table and resumes the Task with a second
-// binding, stage 2, which starts the connect with the TLS client factory. Killing the Task in stage 1 cancels the
-// pool job if no worker has started it (`SysWorkPool::cancel`); in stage 2 it cancels the connect
-// (`cancelPendingConnect`). A listen needs one stage: a single pool job builds the server configuration and then
+// A connect therefore runs in two steps under one resume token. A pool job builds the client configuration; its
+// hand-off, on the eco thread, starts the connect with the TLS client factory under the same token
+// (`socketContinueConnect`), so the Task is not resumed in between. Killing the Task while the job is queued cancels it
+// (`SysWorkPool::cancel`); while it runs, the kill is recorded and the hand-off starts nothing; once the connect has
+// started, it cancels the connect (`cancelPendingConnect`). A listen needs one step: a single pool job builds the server configuration and then
 // opens the listening socket, and its completion records the listener in the shared listener table with the TLS
 // server factory, so accepting and closing work as they do for a plain listener.
 //
@@ -31,7 +31,8 @@ namespace Eco::System {
 
 /// Connects over TLS to the address in `captured` and completes the Task with the connection, as
 /// `socketStartConnect` describes, or with an FErr. `resume` is the Task's resume closure; the kill handle is
-/// returned, or `()` on Windows, where the Task is resumed with an ENOTSUP failure before any work starts.
+/// returned, or `()` on Windows, where the Task is resumed with an ENOTSUP failure before any work starts, and when
+/// socket IO is unavailable (`socketIoAvailable`), where it is resumed with that failure.
 ///
 /// `captured` is `tuple3( target, settings, tls )`, all boxed: `target` is `( String address, Int port, Int
 /// timeoutMs )`, `settings` is `( Bool noDelay, Int keepAliveSec )`, and `tls` is `( String serverName, ( Int mode,
@@ -52,6 +53,15 @@ HPointer tlsListenBody(HPointer captured, HPointer resume);
 /// `captured`: the text of what its handshake negotiated, with `alpn` `Nothing` when no ALPN protocol was agreed.
 /// It fails with `EINVAL` for an unknown id or a connection that is not TLS.
 HPointer tlsInfoBody(HPointer captured);
+
+#if ECO_TEST_HOOKS && !defined(_WIN32)
+/// Test-only access to the connect's table of in-flight configuration jobs (TLS-10). Eco thread only.
+namespace TlsTesting {
+/// Returns the number of connects whose configuration job has not been drained or cancelled yet, for the current heap
+/// generation.
+size_t inflightConnectCount();
+} // namespace TlsTesting
+#endif
 
 } // namespace Eco::System
 

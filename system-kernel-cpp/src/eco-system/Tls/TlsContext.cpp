@@ -84,9 +84,14 @@ std::shared_ptr<ssl_ctx_st> makeSystemContext(TlsError& err) {
     if (file && !*file) file = nullptr;
     if (dir && !*dir) dir = nullptr;
     if (file || dir) {
-        // The environment overrides the defaults. One call loads both, its result discarded and the error queue
-        // cleared; a file that fails to load stops the directory being added.
-        (void)SSL_CTX_load_verify_locations(ctx, file, dir);
+        // The environment overrides the defaults, each variable on its own, as OpenSSL's default paths do: the unset
+        // one keeps OpenSSL's default. The file and the directory are loaded by separate calls, so a file that fails
+        // to load does not stop the directory being added; results are discarded and the error queue cleared.
+        if (!file) file = X509_get_default_cert_file();
+        if (!dir) dir = X509_get_default_cert_dir();
+        if (file && *file) (void)SSL_CTX_load_verify_locations(ctx, file, nullptr);
+        ERR_clear_error();
+        if (dir && *dir) (void)SSL_CTX_load_verify_locations(ctx, nullptr, dir);
         ERR_clear_error();
         return owned;
     }
@@ -114,7 +119,8 @@ std::shared_ptr<ssl_ctx_st> makeSystemContext(TlsError& err) {
 }
 
 /// Builds a context for mode 1, TrustedCertificates, that trusts only the certificates in `pem`, or returns null and
-/// sets `err`.
+/// sets `err`. Text outside the certificate blocks is skipped, and reading stops at the first block that cannot be
+/// read, as with Node's `ca` option and the JS backend's `_Tls_pemCertificates`.
 std::shared_ptr<ssl_ctx_st> makeTrustedContext(const std::string& pem, TlsError& err) {
     SSL_CTX* ctx = SSL_CTX_new(TLS_client_method());
     if (!ctx) {
@@ -144,11 +150,13 @@ std::shared_ptr<ssl_ctx_st> makeTrustedContext(const std::string& pem, TlsError&
     }
     BIO_free(bio);
     if (added == 0) {
-        err = tlsTakeError("trusted certificates");
-        if (err.code == "ERR_SSL_UNKNOWN") {
-            err.code = "ERR_SSL_NO_CERTIFICATES";
-            err.message = "trusted certificates: no certificate found";
-        }
+        // Whatever the PEM parser reported (no start line, a corrupt block), the caller's error is that the text holds
+        // no usable certificate, as on the JS backend; OpenSSL's own text is kept in the message.
+        unsigned long e = ERR_peek_error();
+        err.code = "ERR_SSL_NO_CERTIFICATES";
+        err.message = "trusted certificates: no certificate found";
+        if (e != 0) err.message += " (" + tlsErrorMessage(e) + ")";
+        ERR_clear_error();
         return nullptr;
     }
     ERR_clear_error();   // the loop ends on a "no start line" error

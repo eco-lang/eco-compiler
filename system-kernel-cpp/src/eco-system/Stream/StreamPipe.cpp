@@ -46,8 +46,6 @@ namespace Eco::System {
 
 namespace {
 
-/// The reason `src` is cancelled with when `dst` was closed, marked (`\x02`) as a Closed reason.
-constexpr const char* kWritableClosed = "\x02WritableStream is closed";   // Stream.Closed
 /// The most bytes one channel read issued by a pipe asks for.
 constexpr size_t kPipeReadChunk = 64 * 1024;
 
@@ -188,7 +186,10 @@ void streamRunPipe(int64_t pid) {
 
         // Waiting for the close of dst that the drained-src step started.
         if (pp.closingDst) {
-            if (!d || d->w == WState::Closed) {
+            std::string erasedReason;
+            if (!d && streamErasedWriteReason(pp.dst, erasedReason)) {
+                finishPipe(pid, false, erasedReason);
+            } else if (!d || d->w == WState::Closed) {
                 finishPipe(pid, true, "");
             } else if (d->w == WState::Errored) {
                 std::string reason = d->wReason;
@@ -199,16 +200,18 @@ void streamRunPipe(int64_t pid) {
 
         // dst errored or closed: cancel src.
         if (!d || d->w != WState::Open) {
-            std::string reason = (d && d->w == WState::Errored) ? d->wReason
-                                                                 : std::string(kWritableClosed);
+            std::string reason = kWritableClosed;
+            if (d && d->w == WState::Errored) reason = d->wReason;
+            else if (!d) (void)streamErasedWriteReason(pp.dst, reason);   // an erased Errored dst keeps its reason
             finishPipe(pid, false, reason);
             streamCancelReadableNow(pp.src, reason);
             return;
         }
 
-        // src errored: cancel dst.
-        if (s && s->r == RState::Errored) {
-            std::string reason = s->rReason;
+        // src errored (or erased Errored, its reason kept): cancel dst.
+        std::string srcReason;
+        if (s ? s->r == RState::Errored : streamErasedReadReason(pp.src, srcReason)) {
+            std::string reason = s ? s->rReason : srcReason;
             finishPipe(pid, false, reason);
             streamCancelWritableNow(pp.dst, reason);
             return;

@@ -27,6 +27,12 @@
 // condition variable or exits, on a stop or when nothing can wake it. One thing that keeps it running is
 // the hold, one unit of the pending-async count, whose rules `Liveness.hpp` states. Hosts that embed the
 // runtime observe the loop through three hooks: quiescence listeners, stop hooks and an activity hook.
+//
+// A heap reset (`Allocator::reset`, which only tests make) destroys every heap object and the root set the
+// scanner was registered with, but not the scheduler. The first eco-thread call into the scheduler in a new heap
+// generation therefore starts it afresh (`resetForNewHeap`): the processes, run queue and parked resume closures
+// of the old heap are dropped, every live hold is voided, and the root scanner is registered again on the new
+// root set. A hold token from before the reset stays void: releasing it does nothing.
 
 #ifndef ECO_PLATFORM_SCHEDULER_HPP
 #define ECO_PLATFORM_SCHEDULER_HPP
@@ -135,7 +141,8 @@ public:
     // predicate or from the activity hook.
     //
     // Census builds abort, naming the acquiring site where it is known, when `t` is `kNoHold`, a token never
-    // acquired, or one already released. Other builds check nothing.
+    // acquired, or one already released. Other builds check nothing. A token acquired before a heap reset was
+    // voided by it, and releasing it does nothing.
     void releaseHold(HoldToken t);
     // Writes the live holds, counted by kind and site, and any holdless parks to stderr, headed by `why`.
     // In builds without a census it writes only the pending-async count.
@@ -161,7 +168,10 @@ public:
     // valid for the rest of the run; other builds do nothing.
     void noteHoldlessPark(const char* binding);
     // Returns the number of live holds.
-    int pendingAsync() const { return pendingAsync_.load(); }
+    int pendingAsync() {
+        syncHeapGeneration();
+        return pendingAsync_.load();
+    }
     // Returns how many calls to `drain` are in progress.
     int drainDepth() const { return drainDepth_; }
 
@@ -307,6 +317,27 @@ private:
     // Creates the scheduler and registers its root scanner.
     Scheduler();
 
+    // Registers the root scanner with the calling thread's root set, initialising that thread's heap if it has
+    // none, and records the heap generation it belongs to.
+    void registerRootScanner();
+    // Starts the scheduler afresh if the heap was reset since its state was made (see the file comment). Does
+    // nothing on a thread without a heap: only the eco thread may drop heap state, and a release from another
+    // thread is handled by the void-token floors alone.
+    void syncHeapGeneration() {
+        Allocator& a = Allocator::instance();
+        if (a.getCurrentThreadHeap() != nullptr && a.heapGeneration() != heapGeneration_) resetForNewHeap();
+    }
+    // Drops everything that refers to the old heap: the run queue, the process registry and finished hand-over,
+    // the self-message handlers and the parked resume closures. Voids every live hold (the census is emptied,
+    // the counts go to zero, and tokens issued so far fall below the void floors), then registers the root
+    // scanner on the new root set. Async sources, listeners, hooks and the id counters are kept. A reset must
+    // not race a release on another thread, nor an acquire: a hold that a thread without a heap acquires between
+    // `Allocator::reset` and the eco thread's next sync is voided by that sync with the old ones, and the
+    // pending-async count it added is zeroed. Tests let async work finish, and start none, across a reset.
+    void resetForNewHeap();
+    // Returns whether hold token `t` was issued before the last heap reset.
+    bool holdVoidedByReset(HoldToken t) const;
+
     // Steps the process whose encoded HPointer is `procEncoded` until it parks, blocks or finishes.
     void stepProcess(uint64_t procEncoded);
 
@@ -418,6 +449,12 @@ private:
     std::unordered_map<HoldToken, std::pair<HoldKind, const char*>> holds_;  // Token to (kind, site).
     std::vector<std::pair<const char*, u64>> holdlessParks_;                // Binding name to count.
     std::atomic<u64> nextHoldId_{1};
+    // The void floors: a resume token below `resumeFloor_`, or a free-standing token whose serial is below
+    // `holdFloor_`, was issued before the last heap reset. Both are 0 until the first reset.
+    std::atomic<u64> resumeFloor_{0};
+    std::atomic<u64> holdFloor_{0};
+    // The heap generation the scheduler's state and root scanner belong to. Eco thread only.
+    uint64_t heapGeneration_ = 0;
     // Free-standing Host holds, which do not count as busy. Also counts resume-keyed Host holds, which are
     // never subtracted.
     std::atomic<int> hostHolds_{0};

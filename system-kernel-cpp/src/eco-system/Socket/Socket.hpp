@@ -40,26 +40,36 @@
 
 namespace Eco::System {
 
-/// Returns a Task that, each time it runs, fails with the FErr `( "ENOTSUP", "not implemented yet" )`. Allocates.
-/// Nothing in the project calls it.
-HPointer socketNotImplementedTask();
-
-/// Returns a `Task Never ()` that, each time it runs, succeeds with `()` and does nothing else. Allocates. Nothing in
-/// the project calls it.
-HPointer socketDoneTask();
-
 // --- Building blocks (eco thread unless noted) ---------------------------------
+
+/// Returns whether socket IO is available: the IO reactor started (`IoReactor::ok`). When it did not, nothing a
+/// socket kernel submits would ever run, so a kernel checks this before it parks a Task and fails instead with
+/// `socketIoUnavailable`. Creates the reactor on the first call. May be called from any thread.
+bool socketIoAvailable();
+
+/// Returns the FErr Task `( "ENOSYS", "<op> ENOSYS socket IO unavailable: ..." )` of a socket kernel named `op` run
+/// while `socketIoAvailable` is false. Allocates.
+HPointer socketIoUnavailable(const char* op);
 
 /// Starts a client connect to `spec` over a transport built by `factory` (null for the plain transport), and returns
 /// the Task's kill handle. R mode.
 ///
 /// It must be called from a `makeAsyncBinding` body inside `ECO_SYSTEM_ASYNC_GUARD`, with that guard's `resume`,
-/// `token` and `counted`. It parks `resume`, taking a hold, and at once sets `token` to the resume token and
-/// `counted` to true, so that the guard can release them if a later step throws. The Task is completed when the
-/// connect's `Connected` event is dispatched by `SocketTables`, with the new connection or the connect's FErr. Killing
-/// the Task runs `cancelPendingConnect`.
+/// `token` and `counted`. Without socket IO (`socketIoAvailable`) it completes the Task at once with
+/// `socketIoUnavailable` and returns `()`. Otherwise it parks `resume`, taking a hold, and at once sets `token` to the
+/// resume token and `counted` to true, so that the guard can release them if a later step throws; it makes the kill
+/// handle before the connect is registered or submitted, so that a throw leaves nothing behind for the guard but the
+/// hold. The Task is completed when the connect's `Connected` event is dispatched by `SocketTables`, with the new
+/// connection or the connect's FErr. Killing the Task runs `cancelPendingConnect`.
 HPointer socketStartConnect(ConnectSpec spec, TransportFactory factory, HPointer& resume,
                             uint64_t& token, bool& counted);
+
+/// Starts a client connect to `spec` over a transport built by `factory`, for a Task whose resume is already parked
+/// under `token`, with its hold, as `socketStartConnect` does after parking. The connect's `Connected` event completes
+/// the Task and releases the hold, and `cancelPendingConnect(token)` cancels it, so the caller's kill handle must run
+/// that once this has returned. Throws, with nothing registered or submitted, if the connect cannot be started
+/// (including when socket IO is unavailable); the resume and the hold then remain the caller's.
+void socketContinueConnect(ConnectSpec spec, TransportFactory factory, uint64_t token);
 
 /// The sole owner of a listening socket and of the Unix socket file it created.
 ///

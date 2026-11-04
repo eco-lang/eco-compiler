@@ -42,9 +42,27 @@ public:
     // in the order they were scheduled. A zero or negative delay is not special: the timer fires as soon as
     // the worker sees it, still through the ready queue.
     //
-    // `millis` must be finite and small enough that the deadline fits `Clock`. `resumeToken` must not be the
-    // token of another timer that has not yet fired. May be called from any thread.
+    // Any `millis` is accepted. A NaN or infinite delay, or one whose magnitude exceeds `kMaxDelayMs` (beyond
+    // which the deadline might not fit `Clock`), is taken as 1 ms, as Node takes a delay it cannot represent.
+    // Callers that implement an Elm timer apply `sanitizeDelayMs` first, which uses Node's narrower range.
+    // `resumeToken` must not be the token of another timer that has not yet fired. May be called from any
+    // thread.
     void schedule(double millis, std::uint64_t resumeToken);
+
+    // The largest delay magnitude, in milliseconds, that `schedule` honours as given: about 31.7 years, far
+    // inside the range of `Clock`'s nanosecond count from any reachable `now()`.
+    static constexpr double kMaxDelayMs = 1e12;
+
+    // The largest delay Node's timers honour, 2^31 - 1 ms (about 24.8 days); `sanitizeDelayMs` takes a larger
+    // one as 1 ms.
+    static constexpr double kNodeMaxDelayMs = 2147483647.0;
+
+    // Returns `millis` as an Elm timer delay, by Node's rule for `setTimeout` (decision D30 of
+    // plans/kernel-lib-bug-fixes.md): a NaN or infinite delay, or one whose magnitude exceeds
+    // `kNodeMaxDelayMs`, becomes 1 ms; any other delay is returned unchanged, so 0 and negative delays still
+    // fire at once (`Process.sleep 0` stays a yield). `Time.every` further clamps its result to at least 1 ms,
+    // as Node's `setInterval` does.
+    static double sanitizeDelayMs(double millis);
 
     // Removes the timer with token `token` if it has not fired, and returns whether it did. After a true
     // result the token is never delivered, so anything its delivery would have done, such as releasing a

@@ -67,7 +67,10 @@ type IOMode
 -- FILE I/O BY PATH
 
 
-{-| Read a file as a UTF-8 string.
+{-| Read a file as a UTF-8 string. A file that is not regular, or that reports
+size 0 as `/proc` files do, is read to its end. Fails with `IsADirectory` for a
+directory, and with an `OtherIOError` ("file too large") for a file of 4 GiB or
+more.
 -}
 readString : String -> Task IOError String
 readString path =
@@ -75,7 +78,8 @@ readString path =
         |> Task.mapError IOErr.ofKernelTuple
 
 
-{-| Write a UTF-8 string to a file.
+{-| Write a UTF-8 string to a file. Fails when the file cannot be opened,
+written in full or closed, for instance with `NoSpaceLeft` on a full disk.
 -}
 writeString : String -> String -> Task IOError ()
 writeString path content =
@@ -83,7 +87,8 @@ writeString path content =
         |> Task.mapError IOErr.ofKernelTuple
 
 
-{-| Read a file as raw bytes.
+{-| Read a file as raw bytes, as `readString` reads it; it fails in the same
+cases.
 -}
 readBytes : String -> Task IOError Bytes
 readBytes path =
@@ -91,7 +96,7 @@ readBytes path =
         |> Task.mapError IOErr.ofKernelTuple
 
 
-{-| Write raw bytes to a file.
+{-| Write raw bytes to a file. Fails as `writeString` does.
 -}
 writeBytes : String -> Bytes -> Task IOError ()
 writeBytes path bytes =
@@ -206,7 +211,9 @@ dirExists path =
     Eco.Kernel.File.dirExists path
 
 
-{-| Search for an executable on the system PATH.
+{-| Search for an executable on the system PATH. Only a regular file the
+process may execute matches, never a directory. An empty PATH entry means the
+current directory, and a match there is `./name`.
 -}
 findExecutable : String -> Task Never (Maybe String)
 findExecutable name =
@@ -243,11 +250,13 @@ touch path =
 -- DIRECTORY OPERATIONS
 
 
-{-| Get the current working directory.
+{-| Get the current working directory. Fails when it cannot be read, for
+instance with `FileNotFound` after the directory was removed.
 -}
-getCwd : Task Never String
+getCwd : Task IOError String
 getCwd =
     Eco.Kernel.File.getCwd
+        |> Task.mapError IOErr.ofKernelTuple
 
 
 {-| Set the current working directory.
@@ -258,7 +267,10 @@ setCwd path =
         |> Task.mapError IOErr.ofKernelTuple
 
 
-{-| Resolve symlinks and normalize a path.
+{-| Resolve symlinks and normalize a path. A path that cannot be resolved, for
+instance because it does not exist, is made absolute and normalized without
+resolving links. Fails for the empty path, and when the path cannot be made
+absolute (a relative path after the working directory was removed).
 -}
 canonicalize : String -> Task IOError String
 canonicalize path =
@@ -266,11 +278,17 @@ canonicalize path =
         |> Task.mapError IOErr.ofKernelTuple
 
 
-{-| Get the application-specific user data directory.
+{-| Get the application-specific user data directory: `<home>/.name`, or
+`<home>/Library/Application Support/name` on macOS, where `<home>` is `HOME`
+or, when that is unset or empty, the user's home directory from the system's
+user database; on Windows `name` under `APPDATA`, `USERPROFILE` or `HOME`. The
+directory need not exist. Fails with `FileNotFound` when no home directory can
+be found.
 -}
-appDataDir : String -> Task Never String
+appDataDir : String -> Task IOError String
 appDataDir name =
     Eco.Kernel.File.appDataDir name
+        |> Task.mapError IOErr.ofKernelTuple
 
 
 {-| Create a directory. If the first argument is True, parent directories are

@@ -199,7 +199,9 @@ HPointer httpServerTakeUpgradeBody(HPointer captured) {
         HttpSrv::RequestData req;
         std::weak_ptr<Conn> weak;
         HoldToken peerHold = kNoHold;
-        if (!HttpSrv::httpTablesTakeUpgrade(key, req, weak, peerHold)) {
+        HttpSrv::TakeUpgrade taken = HttpSrv::httpTablesTakeUpgrade(key, req, weak, peerHold);
+        if (taken == HttpSrv::TakeUpgrade::Gone) return failFErr("ECANCELED", "socket closed");
+        if (taken != HttpSrv::TakeUpgrade::Taken) {
             return failFErr("EINVAL",
                             "upgradeRequest EINVAL: the request was answered already or is not an upgrade request");
         }

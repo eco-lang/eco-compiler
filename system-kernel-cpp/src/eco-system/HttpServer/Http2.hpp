@@ -30,7 +30,8 @@
 //     as its headers end, since its request side does not end.
 //   * The request's URL is built from `:scheme` (`https` or `http` by `ServerConfig::tls` when it is neither),
 //     `:authority` and `:path`. A Host header that differs from `:authority`, ignoring case, is answered 400; a Host
-//     header alone supplies the authority, and with neither `ServerConfig::fallbackAuthority` is used. Pseudo fields
+//     header alone supplies the authority, and with neither `ServerConfig::fallbackAuthority` is used. An authority
+//     that is not a valid Host value (`validHostValue`, as HTTP/1 checks Host) is answered 400. Pseudo fields
 //     are not in the delivered headers. Cookie fields are joined with "; " into one field, at the place of the first.
 //     Names arrive lower-case, as HTTP/2 requires. `RequestData::flags` is 2 (HTTP/2), plus 4 under TLS.
 //   * A CONNECT whose `:protocol` is `websocket`, ignoring case, is delivered with the upgrade token "websocket"; any

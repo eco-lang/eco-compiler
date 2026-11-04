@@ -13,9 +13,8 @@ seed is reduced modulo 2^26, and each character then turns the hash `h` into
 intermediate reaches 2^32, so the arithmetic is exact. For a non-negative seed
 and a string with no UTF-16 surrogate code units, the result is the one the
 kernel implementations give. They step over UTF-16 code units, so a character
-above U+FFFF is one step here and two there, and they can reduce a negative
-seed to a negative starting value, where `modBy` here always gives a
-non-negative one.
+above U+FFFF is one step here and two there. They reduce the seed as `modBy`
+does here, so a negative seed gives the same non-negative result.
 
 The wide hash, `string64`, is a different mix, and its value depends on the
 build. Here it is in `[0, 2^31)`; the native kernel computes a 64-bit FNV-1a

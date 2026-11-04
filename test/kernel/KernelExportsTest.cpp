@@ -762,6 +762,7 @@ static void test_kernel_int_division_total() {
     TEST_ASSERT(Elm_Kernel_Basics_remainderBy(4, -seven) == -3);
     TEST_ASSERT(Elm_Kernel_Basics_modBy(neg1, minInt) == 0);
     TEST_ASSERT(Elm_Kernel_Basics_modBy(4, -seven) == 1);
+    TEST_ASSERT(Elm_Kernel_Basics_modBy(zero, seven) == 0);   // D1: 0, as the inline lowering (ABI-01)
 }
 
 static void test_kernel_shift_count_mod_64() {

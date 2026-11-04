@@ -113,7 +113,9 @@ download a large file:
             }
 
 The `method` is sent as [`Http.Method.toString`](Http-Method#toString) gives its name, so
-`UNKNOWN "PROPFIND"` sends `PROPFIND`.
+`UNKNOWN "PROPFIND"` sends `PROPFIND`. A name that is not an HTTP token, such as `UNKNOWN ""` or
+one holding a space, CR or LF, is not sent: the request fails at once with `Http.BadUrl`
+carrying the URL.
 
 The `timeout` is how many milliseconds to wait for the final response's headers before the
 request fails with `Http.Timeout`. It is rounded to whole milliseconds, at least 1, and
@@ -243,7 +245,8 @@ fails, a transfer still running is stopped: before the response headers the requ
 [`fromStreamFailure`](#fromStreamFailure) reads as `Http.NetworkError`.
 If instead the transfer ends before the whole stream has been sent (the response is complete,
 the request has failed, or it was stopped), the rest is not sent, and the stream is cancelled,
-at the latest when it next has a value to send. A 307 or 308 redirect fails with
+at the latest when it next has a value to send. A `HEAD` request sends no body: the stream is still
+read, and its values are dropped as they come. A 307 or 308 redirect fails with
 `Http.NetworkError`, because a stream cannot be sent twice. Other redirects differ between
 backends: on the JavaScript backend a 303, or a 301 or 302 after a `POST`, is followed as a `GET`
 without a body and any other fails with `Http.NetworkError`; on the native backend such a request

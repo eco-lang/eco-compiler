@@ -44,6 +44,9 @@ class NodeXMLHttpRequest {
     }
 
     open(method, url) {
+        // As a browser's open does: a method that is not an RFC 9110 token (the empty one included) is a
+        // SyntaxError, which elm/http reports as BadUrl_, as it does a bad URL.
+        if (!/^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/.test(String(method))) throw new SyntaxError('invalid method ' + JSON.stringify(String(method)));
         const u = new URL(url);   // throws on a bad URL: elm/http reports BadUrl_
         if (u.protocol !== 'http:' && u.protocol !== 'https:') throw new TypeError('unsupported protocol ' + u.protocol);
         this._method = String(method);

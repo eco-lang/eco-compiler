@@ -387,7 +387,6 @@ inline u16 charAt(void* str, i64 index) {
         if (hdr->tag == Tag_StringSlice) {
             ElmStringSlice* slc = static_cast<ElmStringSlice*>(str);
             void* base = allocator.resolve(slc->base);
-            if (!base) return 0;
             // The base may be a large String; flatStringChars reads either flat form.
             return flatStringChars(base)[slc->offset + index];
         }
@@ -400,13 +399,12 @@ inline u16 charAt(void* str, i64 index) {
         // Tag_StringRope: descend.
         ElmStringRope* r = static_cast<ElmStringRope*>(str);
         void* leftObj = allocator.resolve(r->left);
-        u32 leftLen = leftObj ? static_cast<Header*>(leftObj)->size : 0;
+        u32 leftLen = static_cast<Header*>(leftObj)->size;
         if (static_cast<u64>(index) < leftLen) {
             str = leftObj;
         } else {
             index -= leftLen;
             str = allocator.resolve(r->right);
-            if (!str) return 0;
         }
     }
 }
@@ -1521,7 +1519,6 @@ inline std::u16string toStdU16String(void* str) {
         u32 len = slc->header.size;
         u32 offset = slc->offset;
         void* base = Allocator::instance().resolve(slc->base);
-        if (!base) return {};
         // The base may be a large String; flatStringChars reads either flat form.
         return std::u16string(reinterpret_cast<const char16_t*>(flatStringChars(base) + offset), len);
     }
@@ -1558,10 +1555,8 @@ inline std::u16string toStdU16String(void* str) {
         } else if (h->tag == Tag_StringSlice) {
             ElmStringSlice* slc = static_cast<ElmStringSlice*>(top);
             void* base = allocator.resolve(slc->base);
-            if (base) {
-                std::memcpy(dst, flatStringChars(base) + slc->offset, slc->header.size * sizeof(u16));
-                dst += slc->header.size;
-            }
+            std::memcpy(dst, flatStringChars(base) + slc->offset, slc->header.size * sizeof(u16));
+            dst += slc->header.size;
         } else if (h->tag == Tag_StringUtf8View || h->tag == Tag_StringUtf8Leaf) {
             auto pr = utf8Bytes(top);
             GC_STATS_UTF8_WIDEN_SITE(UTF8_WIDEN_ROPE_CHILD, pr.second);
@@ -1572,8 +1567,8 @@ inline std::u16string toStdU16String(void* str) {
             ElmStringRope* r = static_cast<ElmStringRope*>(top);
             void* rightObj = allocator.resolve(r->right);
             void* leftObj = allocator.resolve(r->left);
-            if (rightObj) stack.push_back(rightObj);
-            if (leftObj) stack.push_back(leftObj);
+            stack.push_back(rightObj);
+            stack.push_back(leftObj);
         }
     }
     return out;

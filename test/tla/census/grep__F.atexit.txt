@@ -9,3 +9,5 @@ runtime/src/allocator/RuntimeExports.cpp: std::atexit(closureStatsDumpImpl);
 runtime/src/allocator/RuntimeExports.cpp: std::atexit(dispatchStatsDumpImpl);
 runtime/src/codegen/eco_entry.cpp: std::atexit(atexitPrintStats);
 runtime/src/embed/eco_embed.cpp: std::atexit(atexitStopEcoThread);
+system-kernel-cpp/src/eco-system/Terminal/Terminal.cpp: std::atexit(&restoreAtExit);
+system-kernel-cpp/src/eco-system/Tls/TlsContext.cpp: std::atexit(&tlsQuiesce);

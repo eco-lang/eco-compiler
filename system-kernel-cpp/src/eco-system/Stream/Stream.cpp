@@ -56,11 +56,11 @@ namespace Eco::System {
 
 namespace {
 
-/// The failure reason for writing to or closing a writable side that is closed. The leading "\x02" marks it
-/// as an ended-stream reason.
-constexpr const char* kWritableClosed = "\x02WritableStream is closed";
 /// The failure reason of writes behind a Custom transform that closed its stream, marked as ended.
-constexpr const char* kTerminated = "\x02TransformStream has been terminated";
+/// (`kWritableClosed`, the other ended reason used here, is shared from Core.hpp.)
+constexpr char kTerminated[] = ECO_SYSTEM_ENDED_MARKER "TransformStream has been terminated";
+static_assert(kTerminated[0] == kEndedMarker[0] && kTerminated[1] == 'T',
+              "kTerminated starts with the ended marker, then its text");
 /// The most bytes one channel read asks for.
 constexpr size_t kChannelReadChunk = 64 * 1024;
 
@@ -85,13 +85,6 @@ std::string channelFailure(const StreamPair* p, const ChannelResult& r) {
     if (isMarkedReason(r.reason)) return r.reason;
     return r.reason.empty() ? errnoFailureReason("stream", r.err != 0 ? r.err : EIO)
                             : failureReason("stream", "", r.reason);
-}
-
-/// Returns the errno name of `err`, ": ", and its `strerror` text. Eco thread only, since `strerror` is not
-/// synchronised.
-std::string describeErrno(int err) {
-    const char* m = std::strerror(err);
-    return std::string(errnoName(err)) + ": " + (m ? m : "");
 }
 
 /// Returns a new Bytes value holding a copy of `b`, or the empty-Bytes constant when `b` is empty.
@@ -239,15 +232,78 @@ void terminatePair(StreamPair* p, std::vector<TokenRef>& out) {
     if (p->r == RState::Open) p->r = RState::Closed;
 }
 
-/// Erases pair `id` if the erasure rule in StreamTable.hpp allows it, and forgets its channel.
+/// The reasons of an erased pair one of whose sides was Errored, which its missing id still answers with.
+struct ErasedReasons {
+    bool wErrored = false;
+    bool rErrored = false;
+    std::string wReason, rReason;
+};
+
+/// The most erased pairs whose reasons are kept; the oldest is forgotten first.
+constexpr size_t kErasedReasonsCap = 4096;
+
+/// The reasons of the most recently erased pairs that had an Errored side, by pair id, and their ids in the
+/// order they were erased. Plain strings, off the heap. Pair ids are never reused (the table's id counter only
+/// grows, even across a heap reset), so an entry can never answer for a newer pair. Eco thread only.
+struct ErasedStore {
+    std::unordered_map<int64_t, ErasedReasons> byId;
+    std::deque<int64_t> order;
+};
+
+ErasedStore& erasedStore() {
+    static auto* s = new ErasedStore();
+    return *s;
+}
+
+/// Keeps the reasons of `p`, about to be erased as pair `id`, if one of its sides is Errored.
+void rememberErased(int64_t id, const StreamPair& p) {
+    const bool wErr = p.w == WState::Errored;
+    const bool rErr = p.r == RState::Errored;
+    if (!wErr && !rErr) return;
+    auto& st = erasedStore();
+    while (st.order.size() >= kErasedReasonsCap) {
+        st.byId.erase(st.order.front());
+        st.order.pop_front();
+    }
+    ErasedReasons e;
+    e.wErrored = wErr;
+    e.rErrored = rErr;
+    if (wErr) e.wReason = p.wReason;
+    if (rErr) e.rReason = p.rReason;
+    st.byId[id] = std::move(e);
+    st.order.push_back(id);
+}
+
+/// Returns the Task a read of the missing pair `id` answers with: a Cancelled SErr with the stored reason if
+/// the pair was erased with its readable side Errored, otherwise Closed.
+HPointer missingReadFailure(int64_t id) {
+    std::string reason;
+    if (streamErasedReadReason(id, reason)) return failSErr(kSErrCancelled, reason);
+    return failSErr(kSErrClosed, "");
+}
+
+/// Returns the reason a write or close of the missing pair `id` fails Cancelled with: the stored reason if the
+/// pair was erased with its writable side Errored, otherwise `kWritableClosed`.
+std::string missingWriteReason(int64_t id) {
+    std::string reason;
+    if (streamErasedWriteReason(id, reason)) return reason;
+    return kWritableClosed;
+}
+
+/// Erases pair `id` if the erasure rule in StreamTable.hpp allows it, keeps the reasons of an Errored side,
+/// and forgets its channel.
 void maybeErase(int64_t id) {
     auto& t = streamTable();
     StreamPair* p = t.find(id);
     if (!p || p->pinned || p->pipeRefs > 0) return;
-    if (p->w != WState::Closed || p->r != RState::Closed) return;
+    if (p->w != WState::Closed && p->w != WState::Errored) return;
+    if (p->r != RState::Closed && p->r != RState::Errored) return;
     if (!p->readQ.empty() || !p->writeQ.empty() || !p->waitingForRoom.empty()) return;
     if (p->parkedReadToken || p->closeToken || p->chanReadTok) return;
     if (!p->rawQ.empty() || p->readInFlight || p->readerKick) return;   // MappedSource
+    if (p->reader && !p->readerEndSent) return;   // the subscription reader is still owed the end
+    if (p->carryPos < p->carry.size()) return;    // `Stream.readLine` bytes not handed out yet
+    rememberErased(id, *p);
     if (p->channel) channelPairs().erase(p->channel->id());
     t.erase(id);
 }
@@ -292,6 +348,22 @@ Registry<StreamPair>& streamTable() {
 
 void pinStream(int64_t id) {
     if (StreamPair* p = streamTable().find(id)) p->pinned = true;
+}
+
+bool streamErasedReadReason(int64_t id, std::string& reason) {
+    auto& st = erasedStore();
+    auto it = st.byId.find(id);
+    if (it == st.byId.end() || !it->second.rErrored) return false;
+    reason = it->second.rReason;
+    return true;
+}
+
+bool streamErasedWriteReason(int64_t id, std::string& reason) {
+    auto& st = erasedStore();
+    auto it = st.byId.find(id);
+    if (it == st.byId.end() || !it->second.wErrored) return false;
+    reason = it->second.wReason;
+    return true;
 }
 
 // ---------------------------------------------------------------------------
@@ -387,7 +459,7 @@ void transformCustom(int64_t id, const PendingWrite& pw) {
     HPointer newState = stKind == 0 ? stSlot.p : alloc::boxElement(stSlot, stKind);
     StreamPair* p = streamTable().find(id);   // re-resolve after the call
     if (!p) {
-        finishWrite(pw, false, kWritableClosed);
+        finishWrite(pw, false, missingWriteReason(id));
         return;
     }
     p->customStateEnc = enc(newState);
@@ -1039,6 +1111,17 @@ int64_t createTextChannelSink(ByteChannel* channel) {
 
 void discardReadable(int64_t id) { streamCancelReadableNow(id, std::string()); }
 
+void discardWritable(int64_t id) {
+    StreamPair* p = streamTable().find(id);
+    if (!p || p->w == WState::Closed || p->w == WState::Errored) return;
+    std::vector<TokenRef> toFail;
+    p->w = WState::Closed;   // Closed, not Errored, so that the pair can be erased
+    drainWriteSide(p, toFail);
+    if (p->kind == StreamKind::ChannelSink && p->channel) p->channel->shutdown();
+    failAll(toFail, std::string());   // allocates: `p` is dead from here
+    pumpStream(id);
+}
+
 int64_t createChannelSink(ByteChannel* channel) {
     return insertChannelPair(StreamKind::ChannelSink, channel);
 }
@@ -1067,6 +1150,7 @@ int64_t createFdSource(int fd, bool owns, const char* origin) {
     if (cfd < 0) return 0;
     FdChannelOptions o;
     o.origin = origin;
+    o.nonBlocking = owns && cfd > 2;   // an fd the stream owns has a description of its own
     return createChannelSource(new FdChannel(cfd, o));
 }
 
@@ -1076,6 +1160,7 @@ int64_t createFdSink(int fd, bool owns, const char* origin) {
     if (cfd < 0) return 0;
     FdChannelOptions o;
     o.origin = origin;
+    o.nonBlocking = owns && cfd > 2;
     return createChannelSink(new FdChannel(cfd, o));
 }
 
@@ -1174,7 +1259,8 @@ namespace {
 /// `carryFirst`, the unread part of the `Stream.readLine` carry is handed out first, as one Bytes value.
 ///
 /// Answers at once with the next buffered value, with Closed for a missing pair or an ended side, with the
-/// reason for an Errored one, and with Locked when the side is in use. Otherwise parks the task and returns
+/// reason for an Errored one (also one erased since, as StreamTable.hpp says), and with Locked when the side
+/// is in use. Otherwise parks the task and returns
 /// its kill handle. A park on a channel or mapped source holds the program alive; one on an in-memory pair
 /// does not. A ChannelSource issues a channel read for the park unless a withdrawn read is still in flight,
 /// whose result then answers this read.
@@ -1185,7 +1271,7 @@ HPointer readImpl(HPointer captured, HPointer resume, bool carryFirst) {
         int64_t id = payloadInt(captured);
         auto& sched = Scheduler::instance();
         StreamPair* p = streamTable().find(id);
-        if (!p) return resumeNow(resume, failSErr(kSErrClosed, ""));
+        if (!p) return resumeNow(resume, missingReadFailure(id));
         if (streamReadLocked(p)) return resumeNow(resume, failSErr(kSErrLocked, ""));
         if (carryFirst && p->carryPos < p->carry.size()) {
             std::string rest = p->carry.substr(p->carryPos);   // copy out first
@@ -1196,7 +1282,7 @@ HPointer readImpl(HPointer captured, HPointer resume, bool carryFirst) {
         if (p->kind == StreamKind::MappedSource && p->readQ.empty() && !p->rawQ.empty()) {
             mapHead(id);                        // the chunk read ahead (calls Elm)
             p = streamTable().find(id);
-            if (!p) return resumeNow(resume, failSErr(kSErrClosed, ""));
+            if (!p) return resumeNow(resume, missingReadFailure(id));
         }
         if (!p->readQ.empty()) {
             HPointer v = dec(p->readQ.front());
@@ -1277,13 +1363,16 @@ HPointer streamCarryLineBody(HPointer captured) {
         } else {
             return succeed(alloc::nothing());
         }
+        bool drained = false;
         if (p->carryPos >= p->carry.size()) {
             p->carry.clear();
             p->carryPos = 0;
+            drained = true;
         } else if (p->carryPos > p->carry.size() / 2) {
             p->carry.erase(0, p->carryPos);
             p->carryPos = 0;
         }
+        if (drained) maybeErase(id);   // the carry kept an ended pair; `p` is dead from here
         HPointer bytes = makeBytes(line);
         return succeed(alloc::just(alloc::boxed(bytes), true));   // fresh: `just` roots it
     )
@@ -1307,7 +1396,7 @@ namespace {
 /// `write` and, with `isEnqueue`, `enqueue`. Sets `token` and `counted` when it parks, for the async guard.
 ///
 /// A missing pair, a source, or a writable side that is Closing or Closed fails with the closed reason; an
-/// Errored side fails with its reason; a side in use fails Locked. On a channel sink the value becomes one
+/// Errored side fails with its reason, also once its pair has been erased; a side in use fails Locked. On a channel sink the value becomes one
 /// channel write, holding the program alive until the channel answers it: a write parks until then, an
 /// enqueue succeeds at once. On an in-memory pair, a write parks until its value is transformed and an
 /// enqueue succeeds once its value is accepted; when `writeQ` is full, either waits for room and holds the
@@ -1319,7 +1408,7 @@ HPointer writeOrEnqueue(HPointer captured, HPointer& resume, uint64_t& token,
     payloadBoxedAndId(captured, v, id);
     auto& sched = Scheduler::instance();
     StreamPair* p = streamTable().find(id);
-    if (!p) return resumeNow(resume, failSErr(kSErrCancelled, kWritableClosed));
+    if (!p) return resumeNow(resume, failSErr(kSErrCancelled, missingWriteReason(id)));
     if (streamWriteLocked(p)) return resumeNow(resume, failSErr(kSErrLocked, ""));
     if (p->w == WState::Closing || p->w == WState::Closed) {
         return resumeNow(resume, failSErr(kSErrCancelled, kWritableClosed));
@@ -1336,7 +1425,7 @@ HPointer writeOrEnqueue(HPointer captured, HPointer& resume, uint64_t& token,
         std::string bytes;
         streamMapForSink(p->mapFnEnc, v, tag, text, bytes);
         p = streamTable().find(id);              // re-fetch after the call
-        if (!p) return resumeNow(resume, failSErr(kSErrCancelled, kWritableClosed));
+        if (!p) return resumeNow(resume, failSErr(kSErrCancelled, missingWriteReason(id)));
         if (p->w != WState::Open) {
             std::string reason = p->w == WState::Errored ? p->wReason : std::string(kWritableClosed);
             return resumeNow(resume, failSErr(kSErrCancelled, reason));
@@ -1424,7 +1513,7 @@ HPointer streamCloseWritableBody(HPointer captured, HPointer resume) {
         int64_t id = payloadInt(captured);
         auto& sched = Scheduler::instance();
         StreamPair* p = streamTable().find(id);
-        if (!p) return resumeNow(resume, failSErr(kSErrCancelled, kWritableClosed));
+        if (!p) return resumeNow(resume, failSErr(kSErrCancelled, missingWriteReason(id)));
         if (streamWriteLocked(p)) return resumeNow(resume, failSErr(kSErrLocked, ""));
         if (p->w == WState::Closing || p->w == WState::Closed ||
             p->kind == StreamKind::ChannelSource || p->kind == StreamKind::MappedSource) {

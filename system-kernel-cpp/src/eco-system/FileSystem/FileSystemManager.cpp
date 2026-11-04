@@ -56,9 +56,18 @@ struct ManagerState {
     }
 };
 
+void stopWatch(WatchEntry& e);
+
+// The registry's discard hook: a heap reset (tests only) discards the state, so
+// every watch it holds is stopped and its hold released, as an empty
+// subscription list would have done.
+void discardState(ManagerState& s) {
+    for (auto& kv : s.watches) stopWatch(kv.second);
+}
+
 // Returns the registry that holds the manager's state. It is never destroyed.
 Registry<ManagerState>& registry() {
-    static auto* r = new Registry<ManagerState>("eco-system-file-manager");   // leaky
+    static auto* r = new Registry<ManagerState>("eco-system-file-manager", &discardState);   // leaky
     return *r;
 }
 
@@ -173,7 +182,6 @@ void* onEffectsEval(void* args[]) {
     std::map<WatchKey, std::vector<uint64_t>> wanted;
     for (alloc::ListCursor c(subs); !c.done(); c.next()) {
         void* obj = Allocator::instance().resolve(c.current().p);
-        if (!obj) continue;
         Custom* sub = static_cast<Custom*>(obj);
         if (sub->ctor != CTOR_WATCH) continue;
         std::string path = toStdString(sub->values[WATCH_PATH_FIELD].p);
@@ -248,7 +256,7 @@ void* subMapEval(void* args[]) {
     Elm::StackRootGuard g({&f, &sub, &path, &recursive, &old, &composed});
     {
         Custom* s = static_cast<Custom*>(Allocator::instance().resolve(sub));   // no allocation in scope
-        if (!s || s->ctor != CTOR_WATCH) return reinterpret_cast<void*>(enc(sub));
+        if (s->ctor != CTOR_WATCH) return reinterpret_cast<void*>(enc(sub));
         path = s->values[WATCH_PATH_FIELD].p;
         recursive = s->values[WATCH_RECURSIVE_FIELD].p;
         old = s->values[WATCH_TAGGER_FIELD].p;

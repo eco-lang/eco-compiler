@@ -385,6 +385,10 @@ inline u64 nullConsWordFor(u32 idx) {
 // The compiler tags case branches on such values with the same number, so it must equal
 // `Compiler.IR.Runtime.CtorTag.constantTag` in the compiler and `value_enc::ConstantTag` in codegen;
 // check-ctor-tags.sh checks that.
+//
+// The top of the u16 range is reserved for tags the compiler never gives a declared constructor, and its
+// four values are distinct: 0xFFFC `CTOR_Router` and 0xFFFE `CTOR_StackFrame` (HeapHelpers.hpp), 0xFFFD
+// this one, and 0xFFFF `CTOR_DICT_RBNODE` (Dict nodes, elm-kernel-cpp and `Compiler.IR.Runtime.CtorTag`).
 #define CONSTANT_TAG 0xFFFD
 
 // Returns the `Forward::forward_ptr` value for the address `newObj`: the address divided by 8.

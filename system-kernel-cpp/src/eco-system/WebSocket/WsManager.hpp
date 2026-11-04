@@ -25,13 +25,14 @@
 //
 // The end of a WebSocket is reported by `wsManagerOnClosed`. A close is delivered only after every message read before
 // it: while a reader is attached and has not yet seen the readable's end, the close waits for it. A close that finds no
-// `OnClose` subscriber is held while the WebSocket's `WsTables` entry remains, and is delivered once an `OnClose`
-// subscription names the WebSocket and no reader holds it back. A WebSocket's close is delivered at most once.
+// `OnClose` subscriber is held, in the WebSocket's `WsTables` entry or, once that is erased, in its record among the
+// recently closed WebSockets (while the record lasts), and is delivered once an `OnClose` subscription names the
+// WebSocket and no reader holds it back. A WebSocket's close is delivered at most once.
 //
 // The manager keeps at most one Scheduler hold (a liveness count that keeps the program running) per WebSocket that
-// has an entry in `WsTables`. It holds it while an `OnMessage` subscription names the WebSocket and the WebSocket has
-// not ended or still has messages to deliver, or while an `OnClose` subscription names it and its close has not been
-// delivered. All of this runs on the eco thread.
+// has an entry in `WsTables` or an undelivered close in its recently closed record. It holds it while an `OnMessage`
+// subscription names the WebSocket and the WebSocket has not ended or still has messages to deliver, or while an
+// `OnClose` subscription names it and its close has not been delivered. All of this runs on the eco thread.
 //
 //===----------------------------------------------------------------------===//
 

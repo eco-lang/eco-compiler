@@ -23,6 +23,7 @@
 #include "eco-system/Tls/TlsTransport.hpp"
 #include "virtual-dom/HtmlWriter.hpp"
 
+#include <cstring>
 #include <string>
 #include <utility>
 #include <vector>
@@ -74,11 +75,20 @@ HPointer serverResult(int64_t id, const std::string& address, int64_t port) {
     return succeed(alloc::tuple3(alloc::unboxedInt(id), alloc::boxed(text), alloc::unboxedInt(port), 0x11));
 }
 
+// Returns the Node-style message of the failed listen `r`: its `message`, or, for an errno failure,
+// "syscall CODE: text where" with the C library's strerror as the text. Eco thread only: strerror is not
+// synchronised, which is why the worker that ran `listenOn` leaves it to this function.
+std::string listenFailureMessage(const HttpSrv::ListenResult& r) {
+    if (r.sysErr == 0) return r.message;
+    const char* m = std::strerror(r.sysErr);
+    return r.syscall + " " + r.code + ": " + (m ? m : "") + " " + r.where;
+}
+
 // Builds `createServer`'s Task from its job's result on the eco thread: the FErr from listening, or the new
 // server's result after the fd is handed to `httpTablesStartServer`.
 HPointer createComplete(PoolResult& pr) {
     auto& r = pr.as<CreateRes>();
-    if (r.listen.fd < 0) return failFErr(r.listen.code, r.listen.message);
+    if (r.listen.fd < 0) return failFErr(r.listen.code, listenFailureMessage(r.listen));
     auto cfg = std::make_shared<ServerConfig>();
     cfg->fallbackAuthority = authorityOf(r.host, r.listen.boundPort);
     int fd = r.listen.fd;
@@ -365,12 +375,6 @@ HPointer httpServerCloseServerBody(HPointer captured, HPointer resume) {
             completeNow(resume, token, counted);
         }
         return alloc::unit();
-    )
-}
-
-HPointer httpServerNotImplementedBody(HPointer /*captured*/) {
-    ECO_SYSTEM_BODY_GUARD(FErr,
-        return failFErr("ENOTSUP", "not implemented yet");
     )
 }
 

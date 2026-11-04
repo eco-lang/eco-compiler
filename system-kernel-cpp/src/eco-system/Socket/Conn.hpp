@@ -91,6 +91,11 @@ namespace Eco::System {
 /// An implementation does not own the fd: the `Conn` closes it.
 class Transport {
 public:
+    Transport() = default;
+    /// Not copyable (and so not movable): an implementation owns per-connection state such as an `SSL*`, which a
+    /// copy would free twice. Transports live behind `std::unique_ptr<Transport>`.
+    Transport(const Transport&) = delete;
+    Transport& operator=(const Transport&) = delete;
     virtual ~Transport() = default;
     /// Advances the handshake. Returns 0 when it is done, 1 when it must be called again once the readiness in
     /// `wantRead`/`wantWrite` arrives, or a negative value when it failed. The default has no handshake and returns 0.
@@ -103,9 +108,6 @@ public:
     /// Ends the write direction: for TLS a close_notify and then a TCP FIN, for the plain transport the FIN alone.
     /// Returns 0 when done, 1 when it must be called again, or a negative value on failure.
     virtual int shutdownWrite() = 0;
-    /// Returns whether the transport holds decrypted input that no fd event will announce. The `Conn` does not call
-    /// this; it reaches such input by attempting a read after `setProtocol` and `updateInterest`.
-    virtual bool hasBufferedRead() const { return false; }
     /// Returns whether the transport holds output it produced that the socket has not yet taken, such as records
     /// behind an accepted write or a close_notify. While it does, an open or draining `Conn` keeps write interest and
     /// calls `flush` when the socket is writable.
@@ -144,7 +146,6 @@ struct ConnectSpec {
     int64_t timeoutMs = 0;      ///< Milliseconds for the connect and the handshake together; 0 or less for no limit.
     bool noDelay = false;       // TCP
     int64_t keepAliveSec = 0;   ///< TCP keep-alive idle time in seconds; 0 or less leaves keep-alive off.
-    bool isTls = false;         ///< Informational only: nothing reads it.
 };
 
 // --- Protocols ------------------------------------------------------------------
@@ -177,7 +178,8 @@ public:
     /// over, or "write <CODE>" for a failed write or flush, after which writing is over and the queued writes have
     /// already been failed through their `done`. `<CODE>` is the transport's error code, or the errno name. When the
     /// reactor cannot watch the fd, the connection closes; the read error is reported, with the reactor's errno, unless
-    /// reading had already ended, and, while the connection is still open, a write error is reported.
+    /// reading had already ended, and, while the connection is still open, a write error is reported unless writing
+    /// had already ended.
     virtual void onError(Conn& c, int err, const std::string& code) = 0;
     /// Reports that `Conn::outbound` has fallen below `Conn::kLowWatermark` after having reached it. The default does
     /// nothing.

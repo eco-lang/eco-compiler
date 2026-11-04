@@ -109,7 +109,7 @@ extern "C" std::uint64_t eco_caf_promote(std::uint64_t bits,
     }
 
     void *root = alloc.resolve(hpFromBits(bits));
-    if (root == nullptr || !alloc.isInHeap(root)) {
+    if (!alloc.isInHeap(root)) {
         perm.stats.values_constant++;
         return bits;
     }
@@ -137,7 +137,7 @@ extern "C" std::uint64_t eco_caf_promote(std::uint64_t bits,
             if (hp.ptr_ind != 0 || hp.ptr == 0)
                 return; // constant or null
             void *c = alloc.resolve(hp);
-            if (c == nullptr || !alloc.isInHeap(c))
+            if (!alloc.isInHeap(c))
                 return;
             if (visited.insert(c).second)
                 work.push_back(c);
@@ -175,7 +175,7 @@ extern "C" std::uint64_t eco_caf_promote(std::uint64_t bits,
             if (!fixed || hp.ptr_ind != 0 || hp.ptr == 0)
                 return; // constant or null, kept as copied
             void *t = alloc.resolve(hp);
-            if (t == nullptr || !alloc.isInHeap(t))
+            if (!alloc.isInHeap(t))
                 return;
             auto it = map.find(t);
             if (it == map.end()) {

@@ -163,7 +163,6 @@ private:
     std::string held_;           ///< DATA received while held, not yet credited to the stream window.
     bool heldEnd_ = false;       ///< The server's END_STREAM arrived while held.
     bool streamClosed_ = false;
-    uint32_t closeCode_ = 0;     ///< The code the stream closed with. Recorded, and read nowhere.
     std::shared_ptr<H2StreamPort> port_;
 
     // The request body (tunnel bytes).

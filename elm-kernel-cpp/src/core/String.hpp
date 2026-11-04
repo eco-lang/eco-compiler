@@ -11,16 +11,15 @@
 // The functions here take each String as `void*`: the address of a String object that the caller
 // has resolved, or null for the empty String. Such a pointer is valid only until the next
 // allocation, which may move the object. Most functions forward to the `StringOps` operation of
-// the same name, whose comment gives the result's form; `fromList`, `lines`, `words`, `foldl`,
-// `foldr` and `fromNumber` are written here. A function that allocates keeps the Strings it still
-// needs alive across its own allocations, so the caller need not root them for its sake; `foldl`
-// and `foldr` are the exception, as their comments say.
+// the same name, whose comment gives the result's form; `fromList`, `lines`, `words` and
+// `fromNumber` are written here. A function that allocates keeps the Strings it still needs alive
+// across its own allocations, so the caller need not root them for its sake.
 //
 // The C-linkage entry points the compiled program calls are in StringExports.cpp, declared in
 // KernelExports.h. They decode their arguments and call the functions below, except for `map`,
-// `filter`, `any`, `all`, `foldl` and `foldr`. Those take an Elm closure, which these function-pointer
-// versions cannot call, so the exports implement them themselves and the versions here have no
-// callers.
+// `filter`, `any` and `all`. Those take an Elm closure, which these function-pointer versions cannot
+// call, so the exports implement them themselves and the versions here have no callers. (`foldl`
+// and `foldr` are likewise implemented by their exports alone.)
 #ifndef ECO_STRING_HPP
 #define ECO_STRING_HPP
 
@@ -71,8 +70,8 @@ HPointer fromList(HPointer chars);
 // Higher-Order Operations
 // ============================================================================
 //
-// The functions in this section and the next have no callers: the exports for `String.map`,
-// `filter`, `any`, `all`, `foldl` and `foldr` apply Elm closures and do not use them.
+// The functions in this section have no callers: the exports for `String.map`, `filter`, `any`
+// and `all` apply Elm closures and do not use them.
 
 /// A function that maps one Char, as a code point, to another.
 using CharMapper = u32 (*)(u32);
@@ -92,27 +91,6 @@ bool any(CharPredicate pred, void* str);
 
 /// Returns whether `pred` is true of every Char of `str`; true for an empty `str`.
 bool all(CharPredicate pred, void* str);
-
-// ============================================================================
-// Folding
-// ============================================================================
-
-/// A fold step: given a Char, as a code point, and the resolved accumulator, returns the next
-/// accumulator. The accumulator is resolved with `Allocator::resolve`, so it must be a heap object,
-/// not an embedded constant such as `[]` or `""`.
-using FoldFunc = HPointer (*)(u32, void*);
-
-/// Returns the accumulator left by applying `func` to each Char of `str` from first to last,
-/// starting from `acc`; `acc` itself for a null `str`.
-///
-/// `str` is copied before `func` is first called. The accumulator is not rooted while `func` runs,
-/// so a `func` that allocates may leave it stale.
-HPointer foldl(FoldFunc func, HPointer acc, void* str);
-
-/// Returns the accumulator left by applying `func` to each Char of `str` from last to first,
-/// starting from `acc`; `acc` itself for a null `str`. As for `foldl`, the accumulator is not
-/// rooted while `func` runs.
-HPointer foldr(FoldFunc func, HPointer acc, void* str);
 
 // ============================================================================
 // Slicing

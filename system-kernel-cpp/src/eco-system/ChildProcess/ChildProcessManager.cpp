@@ -21,7 +21,15 @@
 #include "eco-system/ChildProcess/ChildProcess.hpp"
 #include "eco-system/Stream/Stream.hpp"
 
+#include <cassert>
+#include <cerrno>
 #include <vector>
+
+#ifndef _WIN32
+#include <signal.h>
+#include <sys/wait.h>
+#include <unistd.h>
+#endif
 
 namespace Eco::System {
 
@@ -82,7 +90,8 @@ void decodeSpawnSpec(HPointer specHP, SpawnCmd& out) {
     decodeCwd(cwdHP, out.spec);
     HPointer envHP;
     {
-        Tuple3* t = asTuple3(tripleHP);   // mask SPEC_TRIPLE_MASK
+        Tuple3* t = asTuple3(tripleHP);
+        assert(t->header.unboxed == SPEC_TRIPLE_MASK && "spec triple layout drifted");
         envHP = t->a.p;
         out.runDurationMs = t->b.i;
         out.connection = t->c.i;
@@ -102,7 +111,9 @@ StdioMode stdioFor(int64_t connection) {
 }
 
 // Carries out one `Spawn` command, `cmd`, in the five steps the file comment lists. `router`, `onInit` and
-// `onExit` must be rooted by the caller; they are read through the references after each allocation.
+// `onExit` must be rooted by the caller; they are read through the references after each allocation. An exception
+// in step 1 after the child has started undoes the start (the child is ended and reaped, its job, hold and streams
+// dropped) before it goes on.
 void handleSpawn(HPointer& router, const SpawnCmd& cmd, HPointer& onInit, HPointer& onExit) {
 #ifdef _WIN32
     // A Cmd cannot fail, so an unsupported spawn ends the program.
@@ -118,19 +129,50 @@ void handleSpawn(HPointer& router, const SpawnCmd& cmd, HPointer& onInit, HPoint
     int64_t ids[3] = {0, 0, 0};
     int64_t jobId = 0;
     if (ch.err == 0) {
-        if (external) {
-            ids[0] = createFdSink(ch.stdinFd, /*owns=*/true, "pipe");
-            ids[1] = createFdSource(ch.stdoutFd, /*owns=*/true, "pipe");
-            ids[2] = createFdSource(ch.stderrFd, /*owns=*/true, "pipe");
+        // The pipe ends not yet handed to a stream; -1 once handed over (or never a pipe).
+        int fds[3] = {ch.stdinFd, ch.stdoutFd, ch.stderrFd};
+        HoldToken hold = kNoHold;
+        try {
+            if (external) {
+                fds[0] = -1;
+                ids[0] = createFdSink(ch.stdinFd, /*owns=*/true, "pipe");
+                fds[1] = -1;
+                ids[1] = createFdSource(ch.stdoutFd, /*owns=*/true, "pipe");
+                fds[2] = -1;
+                ids[2] = createFdSource(ch.stderrFd, /*owns=*/true, "pipe");
+            }
+            ChildJob job;
+            job.kind = JobKind::Spawn;
+            job.pid = ch.pid;
+            job.routerEnc = enc(router);
+            job.onExitEnc = enc(onExit);
+            if (!detached) hold = job.hold = s.acquireHold(HoldKind::Task, "ChildProcess.spawn");
+            jobId = childJobs().insert(std::move(job));
+            startJobWatch(jobId, cmd.runDurationMs);   // may allocate (timer closure)
+        } catch (...) {
+            // Until the watch is started nothing would ever complete the job (PROC-06's shape), so an exception
+            // here undoes the start before it goes on: the child is ended and reaped, its job erased, its hold
+            // released once (LIVE_003), and its pipe ends closed. A spawn that a Cmd started cannot fail, so the
+            // exception still ends the program; it leaves no child or hold behind.
+            if (jobId != 0) {
+                abandonJob(jobId);
+            } else {
+#ifndef _WIN32
+                ::kill(static_cast<pid_t>(ch.pid), SIGKILL);
+                int st;
+                while (::waitpid(static_cast<pid_t>(ch.pid), &st, 0) < 0 && errno == EINTR) {}
+#endif
+            }
+            if (hold != kNoHold) s.releaseHold(hold);
+            if (ids[0] != 0) discardWritable(ids[0]);
+            for (int k : {1, 2}) {
+                if (ids[k] != 0) discardReadable(ids[k]);
+            }
+            for (int fd : fds) {
+                if (fd >= 0) ::close(fd);
+            }
+            throw;
         }
-        ChildJob job;
-        job.kind = JobKind::Spawn;
-        job.pid = ch.pid;
-        job.routerEnc = enc(router);
-        job.onExitEnc = enc(onExit);
-        if (!detached) job.hold = s.acquireHold(HoldKind::Task, "ChildProcess.spawn");
-        jobId = childJobs().insert(std::move(job));
-        startJobWatch(jobId, cmd.runDurationMs);   // may allocate (timer closure)
     }
 
     // Step 2.
@@ -195,7 +237,7 @@ void* onEffectsEval(void* args[]) {
         bool isSpawn = false;
         {
             Custom* cmd = static_cast<Custom*>(Allocator::instance().resolve(head.p));
-            if (cmd && cmd->ctor == CTOR_SPAWN) {   // `cmd` is a raw pointer: nothing in this scope allocates.
+            if (cmd->ctor == CTOR_SPAWN) {   // `cmd` is a raw pointer: nothing in this scope allocates.
                 specHP = cmd->values[SPAWN_SPEC_FIELD].p;
                 onInit = cmd->values[SPAWN_ON_INIT_FIELD].p;
                 onExit = cmd->values[SPAWN_ON_EXIT_FIELD].p;
@@ -253,7 +295,7 @@ void* cmdMapEval(void* args[]) {
     Elm::StackRootGuard g({&f, &cmd, &spec, &onInit, &onExit, &newInit, &newExit});
     {
         Custom* c = static_cast<Custom*>(Allocator::instance().resolve(cmd));
-        if (!c || c->ctor != CTOR_SPAWN) return args[1];
+        if (c->ctor != CTOR_SPAWN) return args[1];
         spec = c->values[SPAWN_SPEC_FIELD].p;
         onInit = c->values[SPAWN_ON_INIT_FIELD].p;
         onExit = c->values[SPAWN_ON_EXIT_FIELD].p;

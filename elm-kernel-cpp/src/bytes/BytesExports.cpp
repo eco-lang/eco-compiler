@@ -33,9 +33,16 @@
 #include "allocator/RootSet.hpp"
 #include "allocator/RuntimeExports.h"
 #include "platform/Scheduler.hpp"
+#include <bit>
 #include <cassert>
 #include <cstdint>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
+
+// The byte swaps of the reads and writes below turn little-endian host words into big-endian bytes and back.
+static_assert(std::endian::native == std::endian::little,
+              "Eco assumes a little-endian host (Bytes swaps, HPointer layout)");
 
 // The runtime's `elm_bytebuffer_len`, declared in `allocator/ElmBytesRuntime.h` with an `HPtr`
 // parameter, here with its bits.
@@ -383,15 +390,29 @@ int64_t Elm_Kernel_Bytes_getStringWidth(HPtr str) {
     return utf8_bytes;
 }
 
+/// Reports that an encoding of `size` bytes is larger than a Bytes value can be, and aborts.
+///
+/// A ByteBuffer's length is a u32 (`header.size`), so no Bytes value holds more than `UINT32_MAX` bytes.
+[[noreturn]] static void bytesTooLarge(size_t size) {
+    std::fprintf(stderr, "eco: Bytes.Encode: an encoding of %zu bytes exceeds the 4 GiB Bytes limit\n", size);
+    std::abort();
+}
+
+/// Returns `size`, the width of an encoding, after checking that it fits a Bytes value (`bytesTooLarge`).
+static size_t checkedEncodingSize(size_t size) {
+    if (size > UINT32_MAX) bytesTooLarge(size);
+    return size;
+}
+
 // The two encoder-tree operations declared in `allocator/ElmBytesRuntime.h`, which owns their
-// contract. Each resolves the encoder and hands it to encoderSize or writeEncoder. The width is
-// narrowed to u32 with no check, so an encoder wider than 4 GiB gives a wrong result.
+// contract. Each resolves the encoder and hands it to encoderSize or writeEncoder. A width over
+// `UINT32_MAX` does not fit the u32 result or a Bytes value, and aborts (`bytesTooLarge`).
 
 extern "C" u32 elm_encoder_size(HPtr encoderVal) {
     auto& allocator = Allocator::instance();
     HPointer h = Export::decode(encoderVal.toBits());
     Custom* enc = static_cast<Custom*>(allocator.resolve(h));
-    return static_cast<u32>(encoderSize(enc));
+    return static_cast<u32>(checkedEncodingSize(encoderSize(enc)));
 }
 
 extern "C" u32 elm_encoder_write_into(HPtr encoderVal, u8* dst) {
@@ -400,14 +421,15 @@ extern "C" u32 elm_encoder_write_into(HPtr encoderVal, u8* dst) {
     Custom* enc = static_cast<Custom*>(allocator.resolve(h));
     size_t offset = 0;
     writeEncoder(enc, dst, offset);
-    return static_cast<u32>(offset);
+    // A backstop: the caller sized `dst` with elm_encoder_size, which already refused such a width.
+    return static_cast<u32>(checkedEncodingSize(offset));
 }
 
 HPtr Elm_Kernel_Bytes_encode(HPtr encoderVal) {
     auto& allocator = Allocator::instance();
     HPointer h = Export::decode(encoderVal.toBits());
 
-    size_t totalSize = encoderSize(static_cast<Custom*>(allocator.resolve(h)));
+    size_t totalSize = checkedEncodingSize(encoderSize(static_cast<Custom*>(allocator.resolve(h))));
 
     // The encoder tree is rooted across the allocByteBufferBlank allocation and resolved again after it.
     alloc::BlankByteBuffer dst;
@@ -485,8 +507,9 @@ HPtr Elm_Kernel_Bytes_decodeFailure() {
 // --- arity 2 read functions: (bytes, offset) ---
 
 // Each numeric read copies the bytes into an integer, byte-swaps it when the requested order is
-// big-endian, and reinterprets it. The swap assumes a little-endian host. A negative offset, or one
-// with fewer bytes after it than the width, fails the read.
+// big-endian, and reinterprets it. The swap assumes a little-endian host, which the `static_assert`
+// at the top of this file enforces. A negative offset, or one with fewer bytes after it than the
+// width, fails the read.
 
 /// Fails the current read by throwing `Elm::BytesDecodeFailure`.
 ///
