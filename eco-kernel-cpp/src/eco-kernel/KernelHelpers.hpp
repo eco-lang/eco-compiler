@@ -1,18 +1,23 @@
 //===- KernelHelpers.hpp - Shared helpers for Eco kernel C++ functions -----===//
 //
-// String conversion, task wrapping, and Elm list traversal utilities used by
-// all Eco kernel module implementations.
+// The eco kernel functions take and return Elm values as `uint64_t` words (see `ExportHelpers.hpp`), and most of
+// them deal in Strings, Lists and Tasks. This header holds the conversions and Task builders they share.
 //
-// IMPORTANT (KERNEL_TASK_IO_001 / plans/defer-eager-kernel-tasks-via-binding.md):
-// The `taskSucceed*` / `taskFail*` helpers below should NOT be called from
-// the synchronous return position of a kernel function. They are intended
-// for use INSIDE a Task_Binding evaluator body. New IO-performing kernel
-// functions must defer via `Eco::Kernel::makeBinding<Body>(captured)` (see
-// TaskBinding.hpp) so the syscall fires when the scheduler steps the
-// binding. The helpers in this file then run from inside the body and
-// produce the Task the binding delivers. Direct eager use is reserved for
-// the explicit exemption list (Scheduler primitives, terminator non-returners
-// `exit` / `crash`, identity `log` helper, MVar fast paths).
+// It has three parts. `toString`, `fromString` and `listToStringVector` convert between Elm Strings or Lists of
+// Strings and `std::string`. The `taskSucceed*` and `taskFail*` functions allocate a Task that succeeds or fails
+// with a given value and return its word. `ioErrorTagFromErrno`, `taskFailIO` and `taskFailErrno` build the *IO
+// error tuple*, the value an eco kernel IO operation fails with: `( tag, path, message )`, where `tag` is an Int
+// classifying the error, `path` is the path the failing operation concerns, as the caller passes it, and
+// `message` describes the failure.
+//
+// A Task built here is a finished value: building it performs no IO. An eco kernel function that returns a Task
+// and performs IO is expected to defer the IO to a Task binding (`Eco::Kernel::makeBinding`, in
+// `TaskBinding.hpp`), whose body runs each time the scheduler runs the Task and may use these builders to
+// produce the Task it delivers. Nothing here checks how they are called.
+//
+// Every function that allocates is a GC point, and each roots the Strings it allocates before the next
+// allocation. The Task builders use `Elm::Platform::Scheduler::instance()`, so they run on the eco thread, the
+// thread that runs the Elm scheduler.
 //
 //===----------------------------------------------------------------------===//
 
@@ -34,7 +39,9 @@ namespace Eco::Kernel {
 using namespace Elm;
 using namespace Elm::alloc;
 
-// Extract UTF-8 std::string from a uint64_t-encoded ElmString.
+/// Returns the text of the Elm String whose word is `val`, as UTF-8.
+///
+/// `val` must be a String or the empty-string constant. Does not allocate on the Elm heap.
 inline std::string toString(uint64_t val) {
     HPointer h = Export::decode(val);
     if (Elm::alloc::isEmptyString(h)) {
@@ -44,43 +51,51 @@ inline std::string toString(uint64_t val) {
     return StringOps::toStdString(ptr);
 }
 
-// Allocate an ElmString from UTF-8 and return as encoded uint64_t.
+/// Allocates an Elm String holding the UTF-8 text `s` and returns its word. A GC point.
 inline uint64_t fromString(const std::string& s) {
     HPointer h = allocStringFromUTF8(s);
     return Export::encode(h);
 }
 
-// Wrap result HPointer in Task.succeed and return as uint64_t.
+/// Returns the word of a new Task that succeeds with the boxed value `value`. A GC point.
+///
+/// `value` must be rooted by the caller if it is a heap object that the caller uses afterwards.
 inline uint64_t taskSucceed(HPointer value) {
     HPointer task = Elm::Platform::Scheduler::instance().taskSucceed(value);
     return Export::encode(task);
 }
 
-// Wrap a uint64_t-encoded value in Task.succeed.
+/// Returns the word of a new Task that succeeds with the boxed value whose word is `encodedValue`, as
+/// `taskSucceed` does.
 inline uint64_t taskSucceedEncoded(uint64_t encodedValue) {
     return taskSucceed(Export::decode(encodedValue));
 }
 
-// Wrap result in Task.succeed(Unit).
+/// Returns the word of a new Task that succeeds with Unit. A GC point.
 inline uint64_t taskSucceedUnit() {
     return taskSucceed(unit());
 }
 
-// Wrap error HPointer in Task.fail and return as uint64_t.
+/// Returns the word of a new Task that fails with the boxed value `error`. A GC point.
 inline uint64_t taskFail(HPointer error) {
     HPointer task = Elm::Platform::Scheduler::instance().taskFail(error);
     return Export::encode(task);
 }
 
-// Wrap a string error message in Task.fail.
+/// Returns the word of a new Task that fails with an Elm String holding the UTF-8 text `msg`. A GC point.
 inline uint64_t taskFailString(const std::string& msg) {
     HPointer str = allocStringFromUTF8(msg);
     Elm::StackRootGuard guard(&str);
     return taskFail(str);
 }
 
-// Map an errno value to the stable IO error classification tag (see IO_ERR_002).
-// Keep in sync with Eco.IO.Error.decodeIOError / .tagFromCode and the JS kernels.
+/// Returns the IO error tag that classifies the `errno` value `err`.
+///
+/// The tags are 1 FileNotFound (`ENOENT`), 2 PermissionDenied (`EACCES`, `EPERM`), 3 NotADirectory (`ENOTDIR`),
+/// 4 IsADirectory (`EISDIR`), 5 AlreadyExists (`EEXIST`), 6 NoSpaceLeft (`ENOSPC`), 7 TooManyOpenFiles
+/// (`EMFILE`, `ENFILE`), 8 BrokenPipe (`EPIPE`), 9 BadFileDescriptor (`EBADF`), and 0 OtherIOError for any other
+/// value. The numbers are decoded on the Elm side by `Eco.IO.Error.decodeIOError` and `tagFromCode`, and by the
+/// JS kernels, so a change here must be made there too; nothing checks that they agree.
 inline int ioErrorTagFromErrno(int err) {
     switch (err) {
         case ENOENT: return 1;  // FileNotFound
@@ -98,9 +113,10 @@ inline int ioErrorTagFromErrno(int err) {
     }
 }
 
-// Fail a Task with the neutral IO error tuple ( classificationTag, path, message )
-// consumed by Eco.IO.Error.ofKernelTuple (see IO_ERR_002). Tuple3 layout: slot 0 =
-// unboxed Int (tag), slots 1,2 = boxed String — mask 0x1.
+/// Returns the word of a new Task that fails with the IO error tuple `( tag, path, message )`. A GC point.
+///
+/// `tag` is stored as an unboxed Int and is not checked against the tags `ioErrorTagFromErrno` returns. `path`
+/// and `message` become Elm Strings. The tuple is what `Eco.IO.Error.ofKernelTuple` reads on the Elm side.
 inline uint64_t taskFailIO(int tag, const std::string& path, const std::string& message) {
     HPointer pathStr = allocStringFromUTF8(path);
     Elm::StackRootGuard g1(&pathStr);
@@ -111,39 +127,44 @@ inline uint64_t taskFailIO(int tag, const std::string& path, const std::string& 
     return taskFail(tup);
 }
 
-// Convenience: classify a C errno and fail with the neutral IO error tuple.
+/// Returns the word of a new Task that fails with the IO error tuple for the `errno` value `err`, as
+/// `taskFailIO` does with the tag `ioErrorTagFromErrno` gives `err`.
 inline uint64_t taskFailErrno(int err, const std::string& path, const std::string& message) {
     return taskFailIO(ioErrorTagFromErrno(err), path, message);
 }
 
-// Wrap a boxed Bool in Task.succeed.
+/// Returns the word of a new Task that succeeds with the Bool `b`, a boxed constant word. A GC point.
 inline uint64_t taskSucceedBool(bool b) {
     return taskSucceed(b ? elmTrue() : elmFalse());
 }
 
-// Wrap an unboxed Int in Task.succeed. The value lives in the Task's payload
-// slot directly; no separate ElmInt is allocated.
+/// Returns the word of a new Task that succeeds with the Int `value`. A GC point.
+///
+/// The Int is stored unboxed in the Task, so the Task is the only object allocated.
 inline uint64_t taskSucceedInt(int64_t value) {
     HPointer task = Elm::Platform::Scheduler::instance().taskSucceedKind(
         Elm::alloc::unboxedInt(value), 1);
     return Export::encode(task);
 }
 
-// Wrap an unboxed Float in Task.succeed (payload slot carries f64 directly).
+/// Returns the word of a new Task that succeeds with the Float `value`, stored unboxed in the Task. A GC point.
 inline uint64_t taskSucceedFloat(double value) {
     HPointer task = Elm::Platform::Scheduler::instance().taskSucceedKind(
         Elm::alloc::unboxedFloat(value), 2);
     return Export::encode(task);
 }
 
-// Wrap an ElmString (as uint64_t) in Task.succeed.
+/// Returns the word of a new Task that succeeds with an Elm String holding the UTF-8 text `s`. A GC point.
 inline uint64_t taskSucceedString(const std::string& s) {
     HPointer str = allocStringFromUTF8(s);
     Elm::StackRootGuard guard(&str);
     return taskSucceed(str);
 }
 
-// Wrap a Maybe String in Task.succeed.
+/// Returns the word of a new Task that succeeds with `Just` an Elm String holding the UTF-8 text at `value`,
+/// or with `Nothing` when `value` is null. A GC point.
+///
+/// A non-null `value` must point to a NUL-terminated string; it is not kept.
 inline uint64_t taskSucceedMaybeString(const char* value) {
     if (value) {
         HPointer str = allocStringFromUTF8(std::string(value));
@@ -155,13 +176,14 @@ inline uint64_t taskSucceedMaybeString(const char* value) {
     }
 }
 
-// Wrap a List String in Task.succeed.
+/// Returns the word of a new Task that succeeds with a List of Elm Strings holding the UTF-8 texts in `items`,
+/// in order. A GC point.
 inline uint64_t taskSucceedStringList(const std::vector<std::string>& items) {
     std::vector<HPointer> ptrs(items.size(), listNil());
     auto& rs = Allocator::instance().getRootSet();
     size_t saved = rs.stackRangePoint();
-    // ONE all-boxed record for the presized buffer (unfilled slots hold the
-    // Nil constant, which the GC skips) — plans/kernel-root-stack-bounded-rooting.md.
+    // One all-boxed root range covers the whole buffer; the slots not yet filled hold the Nil constant, which
+    // the GC skips.
     rs.pushStackRootRange(ptrs.data(), ptrs.size(), ~0ULL);
 
     for (size_t i = 0; i < items.size(); ++i) {
@@ -172,11 +194,11 @@ inline uint64_t taskSucceedStringList(const std::vector<std::string>& items) {
     return taskSucceed(listFromPointers(ptrs));
 }
 
-// Iterate over an Elm List (hybrid spine: Cons cells + chunk views) calling
-// a visitor function on each element. The visitor receives the head
-// Unboxable and whether it's boxed. Non-allocating walk — visitors that
-// allocate must snapshot what they need (ListCursor caches raw interior
-// pointers; see HeapHelpers.hpp).
+/// Calls `visitor` on each element of the Elm List whose word is `encodedList`, first to last.
+///
+/// `visitor` is called as `visitor(element, isBoxed)`, where `element` is the `Unboxable` slot value and
+/// `isBoxed` is whether its slot kind is boxed. The walk is an `Elm::alloc::ListCursor`, which is stale after
+/// any heap allocation, so `visitor` must not allocate on the Elm heap. Does not allocate itself.
 template<typename F>
 inline void forEachListElement(uint64_t encodedList, F&& visitor) {
     for (Elm::alloc::ListCursor c(Export::decode(encodedList)); !c.done();
@@ -185,7 +207,10 @@ inline void forEachListElement(uint64_t encodedList, F&& visitor) {
     }
 }
 
-// Convert an Elm List String to a std::vector<std::string>.
+/// Returns the texts of the Elm Strings in the List whose word is `encodedList`, in order, as UTF-8.
+///
+/// Each element is resolved as a String object; an element that is the empty-string constant is not
+/// special-cased, as it is in `toString`. Does not allocate on the Elm heap.
 inline std::vector<std::string> listToStringVector(uint64_t encodedList) {
     std::vector<std::string> result;
     forEachListElement(encodedList, [&](Unboxable head, bool /*is_boxed*/) {

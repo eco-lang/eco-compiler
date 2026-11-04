@@ -1,19 +1,16 @@
 //===- UdpExports.cpp - C exports of Eco.Kernel.Socket (UDP) --------------===//
 //
-// plans/eco-system-sockets.md Appendix B.2. The ABI follows the Elm
-// annotations of the wrappers in Socket/Udp.elm (base plan F7): Int →
-// int64_t, everything else (Bool, String, Bytes, tuples) → an encoded
-// uint64_t.
+// The C-linkage functions compiled Elm code calls for the UDP kernels of `Socket.Udp`. Each one decodes its
+// arguments, packs them into one heap payload and returns a Task binding whose step is the matching body in Udp.cpp;
+// nothing happens until the Task runs. The argument types follow the Elm type of the kernel: an Int arrives as a raw
+// `int64_t`, and everything else (Bool, String, Bytes, tuples) as an encoded `uint64_t` word.
 //
-// Exports only decode, root and pack their arguments and return a binding
-// (G2); the bodies are in Udp.cpp. Payload layouts (F5 masks):
+// Payload layouts (kind masks are 2 bits per slot, 1 meaning an unboxed Int):
 //   udpBind          tuple2( boxed target, boxed settings )             mask 0
 //   udpSend          tuple3( boxed to, boxed data, Int socketId )       mask 0x10
 //   udpReceive,
 //   udpClose         boxed ElmInt socket id
 //   udpMembership    tuple2( boxed ( join, group, iface ), Int id )     mask 0x4 (inner 0)
-//
-// Templates used: T1 (S-mode export), T2/T7 (async exports).
 //
 //===----------------------------------------------------------------------===//
 
@@ -24,6 +21,8 @@ using namespace Eco::System;
 extern "C" {
 
 // udpBind : ( String, Int ) -> ( Bool, Bool, Bool ) -> Task FErr UdpT
+/// Returns the Task that binds a UDP socket to the address `target`, with the options `settings`
+/// (reuseAddress, broadcast, ipv6Only).
 uint64_t Eco_Kernel_Socket_udpBind(uint64_t target, uint64_t settings) {
     ECO_KERNEL_GUARD(
         HPointer t = dec(target);
@@ -35,6 +34,7 @@ uint64_t Eco_Kernel_Socket_udpBind(uint64_t target, uint64_t settings) {
 }
 
 // udpSend : ( String, Int ) -> Bytes -> Int -> Task FErr ()
+/// Returns the Task that sends `data` as one datagram from socket `socketId` to the address `to`.
 uint64_t Eco_Kernel_Socket_udpSend(uint64_t to, uint64_t data, int64_t socketId) {
     ECO_KERNEL_GUARD(
         HPointer t = dec(to);
@@ -47,6 +47,7 @@ uint64_t Eco_Kernel_Socket_udpSend(uint64_t to, uint64_t data, int64_t socketId)
 }
 
 // udpReceive : Int -> Task FErr DgramT
+/// Returns the Task that receives the next datagram on socket `socketId`.
 uint64_t Eco_Kernel_Socket_udpReceive(int64_t socketId) {
     ECO_KERNEL_GUARD(
         HPointer payload = alloc::allocInt(socketId);
@@ -55,6 +56,7 @@ uint64_t Eco_Kernel_Socket_udpReceive(int64_t socketId) {
 }
 
 // udpClose : Int -> Task Never ()
+/// Returns the Task that closes socket `socketId`.
 uint64_t Eco_Kernel_Socket_udpClose(int64_t socketId) {
     ECO_KERNEL_GUARD(
         HPointer payload = alloc::allocInt(socketId);
@@ -63,7 +65,8 @@ uint64_t Eco_Kernel_Socket_udpClose(int64_t socketId) {
 }
 
 // udpMembership : Bool -> String -> String -> Int -> Task FErr ()
-//   (join, group, interface or "", socketId)
+/// Returns the Task that makes socket `socketId` join (`join` True) or leave the multicast group `group`, on the
+/// interface `iface` names, as `UdpHandler::membership` describes.
 uint64_t Eco_Kernel_Socket_udpMembership(uint64_t join, uint64_t group, uint64_t iface,
                                          int64_t socketId) {
     ECO_KERNEL_GUARD(

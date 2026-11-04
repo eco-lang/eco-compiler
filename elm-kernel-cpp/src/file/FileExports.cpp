@@ -1,9 +1,8 @@
-//===- FileExports.cpp - C-linkage exports for File module (STUBS) ---------===//
+// The C-linkage definitions of elm/file's kernel functions, declared in `KernelExports.h`.
 //
-// These are stub implementations that will crash if called.
-// Full implementation requires browser/platform file APIs.
-//
-//===----------------------------------------------------------------------===//
+// Every function here stands for a browser File operation that has no native counterpart. Each one asserts, and in
+// a build without assertions ignores its arguments and returns 0 (the word 0 for an `HPtr` result). The one
+// exception is `makeBytesSafeForInternetExplorer`, which returns its argument unchanged.
 
 #include "../KernelExports.h"
 #include "../ExportHelpers.hpp"
@@ -17,7 +16,6 @@ using namespace Elm::Kernel;
 extern "C" {
 
 HPtr Elm_Kernel_File_decoder() {
-    // Returns a JSON decoder for File objects.
     assert(false && "Elm_Kernel_File_decoder not implemented");
     return HPtr::fromBits(0);
 }
@@ -92,8 +90,6 @@ HPtr Elm_Kernel_File_uploadOneOrMore(HPtr mimes) {
 }
 
 HPtr Elm_Kernel_File_makeBytesSafeForInternetExplorer(HPtr bytes) {
-    // This is an IE-specific workaround that's probably not needed.
-    // Just return the bytes unchanged.
     return bytes;
 }
 

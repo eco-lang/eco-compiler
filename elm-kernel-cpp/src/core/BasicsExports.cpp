@@ -46,46 +46,43 @@ double Elm_Kernel_Basics_log(double x) {
     return Basics::log(x);
 }
 
-// Phase E.2 / Phase F: per-instance Int / Float variants. Direct uses
-// are intrinsic-lowered; these are reached only by indirect uses where
-// (+) etc. is captured into a PAP.
+// `add`, `sub`, `mul` and `pow` come in three forms: an `_Int` variant on raw `int64_t`, a `_Float`
+// variant on raw `double`, and a boxed form on two `HPtr` words that each refer to a heap `ElmInt` or
+// `ElmFloat`. The boxed form reads the tag of `a` only, calls the matching typed variant on the two
+// unboxed values, and allocates the boxed result after both values have been read, so nothing is
+// held across that allocation.
 //
-// `kernelInstanceSymbol` selects `_Int` or `_Float` whenever both
-// argument MonoTypes are concretely `MInt` / `MFloat`. When the call
-// site is polymorphic (e.g. the eco-compiler source has a helper
-// `addAll : List number -> number` whose Basics.add reference reaches
-// monomorphisation with `MVar n` arg types), `kernelInstanceSymbol`
-// falls through to the boxed root symbol `Elm_Kernel_Basics_<op>` and
-// the frontend emits a boxed user wrapper that calls it. The boxed
-// roots (defined immediately below) close that gap — they inspect
-// the runtime tag of the heap-boxed args and dispatch to the matching
-// `_Int` / `_Float` typed variant.
+// The typed Int variants use plain `int64_t` arithmetic, which C++ leaves undefined on overflow.
 
 namespace {
 
-// Read the heap tag of an HPtr argument. Embedded constants don't
-// reach these wrappers — Int/Float are always heap-boxed when reaching
-// a polymorphic Basics call site (they have heap representations
-// `ElmInt` / `ElmFloat`, never embedded HPtr constants).
+/// Returns the heap tag of the object `p` refers to.
+///
+/// `p` must refer to a heap object. An Int or Float is never an embedded constant, so a boxed number
+/// always qualifies; an embedded constant would be dereferenced as an address.
 inline Elm::Tag tagOfBoxed(HPtr p) {
     void* obj = Elm::Kernel::Export::toPtr(p.toBits());
     return Elm::alloc::getTag(obj);
 }
 
+/// Returns the value of the heap `ElmInt` that `p` refers to. The tag is not checked.
 inline int64_t intOfBoxed(HPtr p) {
     void* obj = Elm::Kernel::Export::toPtr(p.toBits());
     return static_cast<Elm::ElmInt*>(obj)->value;
 }
 
+/// Returns the value of the heap `ElmFloat` that `p` refers to. The tag is not checked.
 inline double floatOfBoxed(HPtr p) {
     void* obj = Elm::Kernel::Export::toPtr(p.toBits());
     return static_cast<Elm::ElmFloat*>(obj)->value;
 }
 
+/// Allocates a heap `ElmInt` holding `v` and returns its word. The allocation is a GC point.
 inline HPtr boxInt(int64_t v) {
     return HPtr::fromBits(Elm::Kernel::Export::encode(Elm::alloc::allocInt(v)));
 }
 
+/// Allocates a heap `ElmFloat` holding `v` and returns its word. The allocation is a GC point.
 inline HPtr boxFloat(double v) {
     return HPtr::fromBits(Elm::Kernel::Export::encode(Elm::alloc::allocFloat(v)));
 }
@@ -144,8 +141,8 @@ double Elm_Kernel_Basics_mul_Float(double a, double b) {
     return a * b;
 }
 
-// Integer power matches the polymorphic kernel's same-tag branch:
-// negative exponent yields 0; non-negative uses repeated squaring.
+// A negative exponent gives 0. Otherwise this is exponentiation by squaring in `int64_t`, which is
+// undefined when the result, or an intermediate square, overflows.
 int64_t Elm_Kernel_Basics_pow_Int(int64_t base, int64_t exp) {
     if (exp < 0) {
         return 0;

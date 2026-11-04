@@ -1,18 +1,14 @@
 //===- Process.cpp - Process kernel module implementation -----------------===//
 //
-// Per KERNEL_TASK_IO_001 / plans/defer-eager-kernel-tasks-via-binding.md
-// Phase 4a: `spawn`, `spawnProcess`, `wait` are returned as Task_Bindings so
-// the spawn and the wait happen inside the binding evaluator at
-// scheduler-step time, not at kernel-call time. The spawn is the runtime's
-// primitive (platform/Spawn.hpp: posix_spawnp / CreateProcessW, never fork;
-// plans/spawn-not-fork.md Phase 2).
+// `spawn` and `spawnProcess` are Binding Tasks whose bodies start the child
+// with the runtime's `Elm::platform::spawnChild` (posix_spawnp, or
+// CreateProcessW on Windows, never a fork).
 //
-// `wait` parks its Task and submits the pid to the `WaitService`, which waits
-// for that one child on a thread of its own and hands the result back via the
-// standard async-source drain; the scheduler thread never blocks on it.
-//
-// `exit(code)` is the explicit Q7 / KERNEL_TASK_IO_001 exemption: it never
-// returns, so wrapping it in a Task is misleading. It stays eager.
+// `wait` is an async-park binding. Its body parks the resume closure under a
+// scheduler hold and submits the pid to the `WaitService` on the EcoKernel
+// lane. `waitServiceDrain`, registered once as a scheduler async source,
+// later turns each finished wait into a succeeding Task, resumes the parked
+// closure with it, and releases the hold.
 //
 //===----------------------------------------------------------------------===//
 
@@ -30,16 +26,15 @@
 
 namespace Eco::Kernel::Process {
 
-// Map from child PID to pipe fd (stdin write end) if applicable.
+// Stdin pipe descriptors handed out by `spawnProcess`, keyed by the
+// descriptor itself. Entries are added and never read or removed.
 static std::unordered_map<int64_t, int> s_streamHandles;
 
 namespace {
 
-// The child of `spawn` / `spawnProcess`: the program itself, no shell, its
-// stdout and stderr shared with ours (plans/spawn-not-fork.md Phase 2:
-// posix_spawnp / CreateProcessW, never fork). A program that cannot be
-// started fails the spawn Task (posix_spawn reports it; fork + execvp used to
-// "succeed" with a child that exited 127).
+// Starts `cmd` with `args` directly (no shell), in this process's session,
+// with stdout and stderr shared and stdin a pipe when `pipeStdin`, else
+// shared. Returns the child; a nonzero `err` means it was not started.
 Elm::platform::SpawnedChild startChild(const std::string& cmd, const std::vector<std::string>& args,
                                        bool pipeStdin) {
     Elm::platform::SpawnSpec spec;
@@ -56,7 +51,9 @@ Elm::platform::SpawnedChild startChild(const std::string& cmd, const std::vector
     return child;
 }
 
-// Body for `spawn`. Captured payload is tuple2(cmd, args).
+// Binding body for `spawn`: starts the child named by `captured`, the tuple
+// ( cmd, args ), and returns the Task that succeeds with its pid or fails
+// with the IO error tuple. Unpacks `captured` before its first allocation.
 HPointer spawnBody(HPointer captured) {
     HPointer cmdHP;
     HPointer argsHP;
@@ -74,8 +71,10 @@ HPointer spawnBody(HPointer captured) {
     return succeedInt(child.pid);
 }
 
-// Body for `spawnProcess`. Captured payload is a Record of 5 boxed fields
-// in declaration order: [cmd, args, stdin_, stdout_, stderr_].
+// Binding body for `spawnProcess`: `captured` is a Record of five boxed
+// fields, cmd, args, stdin_, stdout_, stderr_ in that order. Returns the
+// Task that succeeds with ( stdinHandle, pid ) or fails with the IO error
+// tuple.
 HPointer spawnProcessBody(HPointer captured) {
     HPointer cmdHP, argsHP, stdinHP, stdoutHP, stderrHP;
     {
@@ -92,7 +91,7 @@ HPointer spawnProcessBody(HPointer captured) {
     std::string stdinCfg = toString(Export::encode(stdinHP));
     std::string stdoutCfg = toString(Export::encode(stdoutHP));
     std::string stderrCfg = toString(Export::encode(stderrHP));
-    (void)stdoutCfg;  // "inherit" is the only currently-supported value
+    (void)stdoutCfg;  // ignored: stdout and stderr are always shared
     (void)stderrCfg;
 
     const bool pipeStdin = (stdinCfg == "pipe");
@@ -107,37 +106,34 @@ HPointer spawnProcessBody(HPointer captured) {
         stdinMaybe = justKind(unboxedInt(handleId), 1);
     }
 
-    // Eco.Process.spawnProcess destructures ( stdinHandle, processHandle ):
-    // a Tuple2 of (Maybe Int boxed, Int unboxed: slot 1 kind 1 = 0x4). It
-    // used to be a Record {pid, maybe}, whose `unboxed` word the tuple
-    // projection read back as the stdinHandle (raw word 0x1, found by SD-26).
+    // A Tuple2 of (Maybe Int, boxed; pid, unboxed Int): mask 0x4 marks
+    // slot 1 as an unboxed Int.
     HPointer tup = tuple2(boxed(stdinMaybe), unboxedInt(child.pid), 0x4);
     return succeed(tup);
 }
 
-// PHASE-4b WaitService drain. Pops (token, exitCode) pairs queued by the
-// WaitService's waiting threads, allocates Task.succeed(exitCode) on the main
-// thread, and resumes the parked closure via callClosure1. Mirrors
-// Scheduler::processReadyAsync's TimerService loop. Runs from inside
-// processReadyAsync's asyncSources_ iteration.
+// Delivers every finished wait on the EcoKernel lane: resumes the closure
+// parked under each token with a Task that succeeds with the exit code, and
+// releases the token's hold. A token with no parked closure only has its hold
+// released. Called by the scheduler as an async source, on its thread; GC
+// points.
 void waitServiceDrain() {
     auto& sched = Elm::Platform::Scheduler::instance();
     Elm::Platform::WaitService::Ready ready;
     while (Elm::Platform::WaitService::instance().tryPopReady(
                Elm::Platform::WaitLane::EcoKernel, ready)) {
         std::uint64_t token = ready.token;
-        // 128 + signal for a signal death; WaitService::kWaitFailedExitCode (-1) when the pid could not
-        // be waited for (Eco.Process.wait's Task cannot fail, so the failure is reported as that code).
-        // 64-bit, so a Windows NTSTATUS code such as 0xC0000005 stays positive (never -1).
+        // A failed wait arrives as WaitService::kWaitFailedExitCode (-1), since
+        // the Task cannot fail.
         std::int64_t exitCode = ready.exitCode;
         HPointer resumeClosure = sched.takePendingResume(token);
         if (Elm::alloc::isNil(resumeClosure)) {
             sched.releaseHold(token);
             continue;
         }
-        // Root resumeClosure + succeedTask across taskSucceedKind (which
-        // allocates a Tag_Task with an unboxed Int payload, kind=1) and
-        // callClosure1 (which may evaluate the resume closure and GC).
+        // Both values are rooted across taskSucceedKind (which allocates a
+        // Task with an unboxed Int payload, kind 1) and callClosure1 (which
+        // may run the resume closure and collect).
         HPointer succeedTask = Elm::alloc::unit();
         {
             Elm::StackRootGuard guard(&resumeClosure, &succeedTask);
@@ -149,6 +145,7 @@ void waitServiceDrain() {
     }
 }
 
+// Registers `waitServiceDrain` as a scheduler async source, once per process.
 void waitEnsureRegistered() {
     static std::once_flag flag;
     std::call_once(flag, [] {
@@ -161,11 +158,10 @@ void waitEnsureRegistered() {
     });
 }
 
-// PHASE-4b async-park body for `wait`. Captured payload is
-// tuple2(pid [unboxed Int], unit). Registers the resume token with the
-// scheduler, submits the pid to the WaitService, and returns the
-// kill handle. The actual `taskSucceed(exitCode)` is delivered later by
-// `waitServiceDrain` on the main thread.
+// Async-park body for `wait`: `captured` is the tuple ( pid as an unboxed
+// Int, unit ). Parks `resume` under a Task hold, submits the pid to the
+// WaitService, and returns `unit()` as the kill handle. The result is
+// delivered later by `waitServiceDrain`.
 HPointer waitBody(HPointer captured, HPointer resume) {
     int64_t pid;
     {
@@ -179,18 +175,16 @@ HPointer waitBody(HPointer captured, HPointer resume) {
     Elm::Platform::WaitService::instance().submit(
         pid, token, Elm::Platform::WaitLane::EcoKernel);
 
-    // Kill handle: Unit placeholder (no cancellation yet).
+    // No cancellation: the kill handle is unit.
     return Elm::alloc::unit();
 }
 
 } // anonymous namespace
 
 uint64_t exit(int64_t code) {
-    // EXEMPT from KERNEL_TASK_IO_001 (Q7): `exit` never returns. Wrapping in
-    // a Task / binding would be misleading. The scheduler never sees the
-    // post-exit state, so there is no Task to deliver.
+    // Eager rather than a Task: there is no state after exit to deliver to.
     ::exit(static_cast<int>(code));
-    // Never returns.
+    // Unreachable.
     return 0;
 }
 
@@ -222,8 +216,7 @@ uint64_t spawnProcess(uint64_t cmd, uint64_t args,
 }
 
 uint64_t wait(uint64_t handle) {
-    // PHASE-4b: the WaitService waits for the child on a thread of its own;
-    // the binding evaluator only parks the resume + submits the pid.
+    // Registration happens when the Task is made, not when it runs.
     waitEnsureRegistered();
     HPointer payload = Elm::alloc::tuple2(
         Elm::alloc::unboxedInt(static_cast<int64_t>(handle)),

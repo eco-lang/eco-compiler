@@ -4,9 +4,8 @@
 #include "KernelHelpers.hpp"
 #include <cstdio>
 #include <cstdlib>
-// musl (Stage B static build) ships no <execinfo.h>/backtrace; stub them as
-// no-ops so the crash handler compiles. glibc keeps its real backtrace. See
-// plans/static-link-eco-binary.md.
+// Some C libraries (musl) ship no <execinfo.h>; there the backtrace functions
+// are stubbed as no-ops that capture no frames. glibc keeps its real backtrace.
 #if defined(__has_include) && __has_include(<execinfo.h>)
 #  include <execinfo.h>
 #else
@@ -28,7 +27,6 @@ uint64_t crash(uint64_t message) {
         std::fflush(stderr);
     }
     ::exit(1);
-    // Never returns.
     return 0;
 }
 

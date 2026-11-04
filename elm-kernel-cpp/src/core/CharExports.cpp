@@ -7,34 +7,23 @@ using namespace Elm::Kernel;
 
 extern "C" {
 
-// A Char is a Unicode code point held in 32 bits (REP_ABI_001: Char -> i32).
-// Out-of-range codes (< 0 or > 0x10FFFF) become U+FFFD, as elm/core's JS
-// String.fromCodePoint would throw on them and the eco.char.fromInt lowering
-// uses the same replacement. Surrogate code points (0xD800..0xDFFF) pass
-// through unchanged, as in JS.
+// Checks the range on the full 64-bit Int rather than calling `Char::fromCode`, which takes a
+// 32-bit code. Codes below 0 or above 0x10FFFF become U+FFFD, as in elm/core's JS kernel and in
+// the `eco.char.fromInt` lowering; surrogate codes pass through unchanged.
 uint32_t Elm_Kernel_Char_fromCode(int64_t code) {
     if (code < 0 || code > 0x10FFFF) return 0xFFFDu;
     return static_cast<uint32_t>(code);
 }
 
-// ABI note (x86-64 SysV): MLIR-emitted callers wrap kernel calls in LLVM
-// `gc.statepoint` intrinsics. The statepoint represents the call's element
-// type *without* per-arg attributes (no `zeroext`), so LLVM CodeGen emits a
-// narrow `mov %eax, %edi`-style move that leaves the upper bits of %rdi with leftover
-// state. If the C++ callees declared the parameter as `uint32_t`, the
-// compiler would trust the SysV zero-extension contract — surfacing the leaked bits as the high half of the int64_t return.
-//
-// Receiving the parameter as `uint64_t` forces a full-register read; we
-// then mask down to the canonical 32-bit Char value. The wider type also
-// keeps the C++ compiler from optimising the mask away.
-//
-// Char.toCode is the code point itself: a Char is one code point (KERN_008).
+// Char ABI masking. Each Char parameter in this file is declared `uint64_t` and masked to
+// its low 32 bits, because the caller does not guarantee the upper bits are zero. Compiled code
+// calls kernels through LLVM `gc.statepoint`, which does not carry the `zeroext` attribute on
+// arguments, so the caller need not zero-extend the 32-bit Char into the 64-bit register.
+// Declared `uint64_t`, the full register is read and the mask is a real operation the compiler
+// must keep.
 int64_t Elm_Kernel_Char_toCode(uint64_t c_raw) {
     return static_cast<int64_t>(static_cast<uint32_t>(c_raw & 0xFFFFFFFFu));
 }
-
-// The four case mappers return one code point, the Unicode simple case mapping
-// of the argument (Char.cpp, CaseMap.hpp, plans/char-simple-case-mapping.md).
 
 uint32_t Elm_Kernel_Char_toLower(uint64_t c_raw) {
     char32_t result = Char::toLower(static_cast<char32_t>(c_raw & 0xFFFFFFFFu));

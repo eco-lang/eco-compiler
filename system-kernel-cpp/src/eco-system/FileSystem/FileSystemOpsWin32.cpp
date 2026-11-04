@@ -1,10 +1,8 @@
 //===- FileSystemOpsWin32.cpp - Windows stubs of Eco.Kernel.FileSystem ----===//
 //
-// plans/eco-system-library.md §1: Windows is out of scope for now. Every
-// fallible file system task fails with the error code "ENOTSUP"; the four
-// directory getters (FileSystem.cpp) work.
-//
-// Templates used: none (POD only).
+// File system operations are not implemented on Windows; these stubs keep the module linking. Each worker
+// operation fails with errno ENOTSUP. The failure gives "eco/system" as the failing call's name and the operation's
+// `s1` slot as the path, so the message ends ", eco/system '<s1>'", or ", eco/system" when `s1` is empty.
 //
 //===----------------------------------------------------------------------===//
 
@@ -16,6 +14,7 @@ namespace Eco::System::Fs {
 
 namespace {
 
+// Returns the ENOTSUP failure every operation here gives, quoting `a.s1`.
 FsRes unsupported(const FsArgs& a) {
     return FsRes::fail(ENOTSUP, "eco/system", a.s1);
 }

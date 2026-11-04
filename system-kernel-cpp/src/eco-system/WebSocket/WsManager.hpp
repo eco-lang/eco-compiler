@@ -1,30 +1,37 @@
 //===- WsManager.hpp - The C++ effect manager of WebSocket ----------------===//
 //
-// plans/eco-system-websockets.md §3.6 and Appendix C.2 (manager key
-// "WebSocket"). The Elm declaration lives in
-// system-kernel-cpp/src/WebSocket.elm, section "EFFECT MANAGER":
+// An Elm program learns what arrives on a WebSocket through subscriptions, and this component is the native effect
+// manager, registered under the key "WebSocket", that serves them.
+//
+// `src/WebSocket.elm` declares the subscription type, in its "EFFECT MANAGER" section:
 //
 //     type MySub msg
 //         = OnMessage Int (( Int, String, Bytes ) -> msg)
 //         | OnClose Int (( Int, String, Bool ) -> msg)
-//     -- tag 0 / 1: [wsId unboxed Int (mask 0b01), tagger boxed]
 //
-// Tagger arguments: ( kind, text, bytes ) (the mapped-source tags of
-// Appendix B.1; mask 0x1) and ( code, reason, clean ) (mask 0x1).
+// Both constructors name a WebSocket by its id, the key of its entry in `WsTables`, and carry a tagger: the function
+// that turns what the subscription reports into a message for the program. An `OnMessage` tagger is given
+// `( tag, text, bytes )` for each message received, where `tag` is the chunk's `ChannelResult::tag` and a text message
+// fills `text` and leaves `bytes` empty, a binary one the reverse. An `OnClose` tagger is given
+// `( code, reason, clean )`, the `WsCloseInfo` of the WebSocket's end, once. The constants below mirror that
+// declaration. Constructor tags are the zero-based declaration indexes, and nothing checks them against the Elm file,
+// so the two must be kept in sync by hand.
 //
-// Tags are the zero-based declaration indexes (Compiler/Data/CtorTag.elm).
-// Keep the two in sync.
+// Messages are not queued here. A WebSocket's received messages are its readable stream, and while some `OnMessage`
+// subscription names the WebSocket the manager attaches a subscription reader to that readable (`attachReader`), so
+// that each message is handed to every `OnMessage` tagger as it is read. When the last such subscription goes, the
+// reader is detached and later messages wait on the readable for an ordinary read. Attaching fails while the readable
+// is in use, for instance by a parked read, and is tried again whenever the manager next reconciles the WebSocket.
 //
-// Phase WS4 (WsManager.cpp): a registry wsId → taggers of each kind; the
-// first OnMessage of a connection attaches a subscription reader to its
-// readable (Stream.hpp attachReader, retried on every onEffects while a
-// read is parked), the last one detaches it; a message goes to every
-// tagger in subscription order (T8, G12). OnClose: the CloseInfo is
-// delivered once; a close with no subscriber is held for the first one.
-// Keep-alive (§3.6): a connection with subscriptions holds one count while
-// it is open (OnMessage) or until its close was delivered (OnClose).
+// The end of a WebSocket is reported by `wsManagerOnClosed`. A close is delivered only after every message read before
+// it: while a reader is attached and has not yet seen the readable's end, the close waits for it. A close that finds no
+// `OnClose` subscriber is held while the WebSocket's `WsTables` entry remains, and is delivered once an `OnClose`
+// subscription names the WebSocket and no reader holds it back. A WebSocket's close is delivered at most once.
 //
-// Templates used: T6 (manager).
+// The manager keeps at most one Scheduler hold (a liveness count that keeps the program running) per WebSocket that
+// has an entry in `WsTables`. It holds it while an `OnMessage` subscription names the WebSocket and the WebSocket has
+// not ended or still has messages to deliver, or while an `OnClose` subscription names it and its close has not been
+// delivered. All of this runs on the eco thread.
 //
 //===----------------------------------------------------------------------===//
 
@@ -37,32 +44,43 @@ namespace Eco::System {
 
 namespace WsManager {
 
-// MySub
+/// The constructor tag of `OnMessage`.
 constexpr uint16_t CTOR_ON_MESSAGE = 0;
+/// The constructor tag of `OnClose`.
 constexpr uint16_t CTOR_ON_CLOSE = 1;
-constexpr int SUB_WS_FIELD = 0;       // unboxed Int (both constructors)
+/// The field of a `MySub` that holds the WebSocket id, an unboxed Int in both constructors.
+constexpr int SUB_WS_FIELD = 0;
+/// The field of a `MySub` that holds the tagger.
 constexpr int SUB_TAGGER_FIELD = 1;
-constexpr uint64_t SUB_MASK = 0x1;    // slot 0 Int
+/// The unboxed-field mask of a `MySub`: the id is an unboxed Int and the tagger is boxed.
+constexpr uint64_t SUB_MASK = 0x1;
 
-// Tagger argument masks.
-constexpr uint32_t MESSAGE_ARG_MASK = 0x1;   // ( Int, String, Bytes )
-constexpr uint32_t CLOSE_ARG_MASK = 0x1;     // ( Int, String, Bool )
+/// The unboxed-field mask of the `( tag, text, bytes )` tuple given to an `OnMessage` tagger: `tag` is an unboxed
+/// Int and the other two are boxed.
+constexpr uint32_t MESSAGE_ARG_MASK = 0x1;
+/// The unboxed-field mask of the `( code, reason, clean )` tuple given to an `OnClose` tagger: `code` is an unboxed
+/// Int and the other two are boxed, the Bool included.
+constexpr uint32_t CLOSE_ARG_MASK = 0x1;
 
 } // namespace WsManager
 
-// Main thread, from the WsEvent drain: WebSocket `wsId` is Closed (its entry
-// holds the CloseInfo): deliver it to the OnClose subscribers (sendToApp +
-// drain per message) or hold it, and release the subscriptions' count.
+/// Reports that WebSocket `wsId` has ended, its entry holding the `WsCloseInfo`.
+///
+/// Delivers the close to the `OnClose` subscribers, running the scheduler after each message, unless there are none or
+/// the attached reader has not yet seen the readable's end, in which case the close is not delivered now. Then updates
+/// the WebSocket's hold and, once no subscription, reader or hold of this manager refers to the WebSocket, asks
+/// `wsTablesRetire` to erase its entry if nothing else still needs it. Eco thread only; it calls Elm code.
 void wsManagerOnClosed(int64_t wsId);
 
-// True if some subscription names `wsId`.
+/// Returns whether some subscription, of either kind, names WebSocket `wsId`. Eco thread only.
 bool wsManagerHasSubscribers(int64_t wsId);
 
 } // namespace Eco::System
 
 extern "C" {
-// Called from the compiler-emitted @__eco_register_ports preamble (base plan
-// §3.6); returns `()` as the `!eco.value` result (T6).
+/// Registers this effect manager under "WebSocket", and returns the Unit value. It is meant to be called from the
+/// compiler-emitted `@__eco_register_ports` preamble, on the eco thread. The manager has no commands: its cmdMap is
+/// registered as the empty list.
 uint64_t Eco_System_registerManager_WebSocket();
 }
 

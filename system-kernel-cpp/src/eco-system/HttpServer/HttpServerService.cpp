@@ -1,11 +1,6 @@
 //===- HttpServerService.cpp - Listening and wire format of Http.Server ---===//
 //
-// See HttpServerService.hpp. POSIX (Linux, macOS); Windows uses
-// HttpServerServiceWin32.cpp. Every fd is O_CLOEXEC (socketCloexec,
-// Core/SocketUtil). The connections themselves run on the IoReactor
-// (Http1.cpp, plans/eco-system-websockets.md §3.4).
-//
-// Templates used: none (POD only, G1).
+// The POSIX implementation (Linux, macOS) of HttpServerService.hpp.
 //
 //===----------------------------------------------------------------------===//
 
@@ -30,6 +25,7 @@ namespace Eco::System::HttpSrv {
 
 namespace {
 
+/// Closes `fd` if it is not negative, retrying on EINTR.
 void closeFd(int fd) {
     if (fd >= 0) {
         while (::close(fd) < 0 && errno == EINTR) {
@@ -37,13 +33,15 @@ void closeFd(int fd) {
     }
 }
 
-// Node's text for a listen address: IPv6 literals are bracketed.
+/// Returns "host:port" as Node writes a listen address in its errors: an empty
+/// host is "localhost" and an unbracketed IPv6 literal is bracketed.
 std::string authorityOf(const std::string& host, int64_t port) {
     std::string h = host.empty() ? std::string("localhost") : host;
     if (h.find(':') != std::string::npos && h.front() != '[') h = "[" + h + "]";
     return h + ":" + std::to_string(port);
 }
 
+/// Returns true when `a` equals `b` ignoring ASCII case.
 bool iequals(const std::string& a, const char* b) {
     size_t n = std::strlen(b);
     if (a.size() != n) return false;
@@ -55,6 +53,7 @@ bool iequals(const std::string& a, const char* b) {
     return true;
 }
 
+/// Returns true when `s` contains CR, LF or NUL, which would break a header line.
 bool hasBadChar(const std::string& s) {
     for (char c : s) {
         if (c == '\r' || c == '\n' || c == '\0') return true;
@@ -62,7 +61,8 @@ bool hasBadChar(const std::string& s) {
     return false;
 }
 
-// RFC 9110 IMF-fixdate, e.g. "Tue, 07 Oct 2026 18:50:00 GMT".
+/// Returns the current time as an RFC 9110 IMF-fixdate, e.g.
+/// "Wed, 07 Oct 2026 18:50:00 GMT".
 std::string httpDate() {
     std::time_t t = std::time(nullptr);
     struct tm g;
@@ -148,8 +148,7 @@ const char* statusReason(int64_t status) {
 }
 
 std::string serializeH1(const ResponseData& r, const H1Options& o) {
-    // Node rejects codes outside 100..999 (RangeError); a final 1xx (and
-    // 101 outside an upgrade) cannot be a response either (§3.4): 500.
+    // A 1xx cannot be a final response.
     int64_t status = (r.status < 200 || r.status > 999) ? 500 : r.status;
     bool noBody = status == 204 || status == 304;
     std::string out;
@@ -189,7 +188,7 @@ std::string serializeH1(const ResponseData& r, const H1Options& o) {
 bool headersAskClose(const std::vector<std::pair<std::string, std::string>>& headers) {
     for (const auto& h : headers) {
         if (!iequals(h.first, "connection")) continue;
-        // A comma-separated token list (RFC 9110 §7.6.1).
+        // A comma-separated token list.
         size_t i = 0;
         const std::string& v = h.second;
         while (i <= v.size()) {
@@ -206,7 +205,7 @@ bool headersAskClose(const std::vector<std::pair<std::string, std::string>>& hea
 }
 
 // ---------------------------------------------------------------------------
-// listenOn (worker thread)
+// listenOn
 // ---------------------------------------------------------------------------
 
 ListenResult listenOn(const std::string& host, int64_t port) {
@@ -242,7 +241,6 @@ ListenResult listenOn(const std::string& host, int64_t port) {
     const char* lastSyscall = "listen";
     for (struct addrinfo* a : addrs) {
         int sockErr = 0;
-        // Non-blocking: the fd is handed to a ListenerHandler (the reactor).
         int fd = ::Eco::System::socketCloexec(a->ai_family, a->ai_socktype, a->ai_protocol,
                                               /*nonBlocking=*/true, &sockErr);
         if (fd < 0) {

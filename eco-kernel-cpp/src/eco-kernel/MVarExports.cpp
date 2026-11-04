@@ -9,11 +9,9 @@
 using namespace Eco::Kernel;
 using Elm::HPtr;
 
-// Task purity (plans/task-purity-and-caf-guard-removal.md F1): the slot is
-// allocated when the Task is FULFILLED, not when the value is evaluated.
-// One `MVar.new` Task value — shared, or cached in a memoized CAF slot —
-// yields a fresh MVar per fulfilment (JS/XHR parity; the
-// MVarDropReleasesSlot regression class).
+// Creates an empty MVar and returns a Task succeeding with its id. As the binding body of `MVar.new`, it
+// runs each time that Task is run, so one Task value, shared or cached in a memoized CAF slot, yields a
+// fresh MVar each time.
 static Elm::HPointer mvarNewBody(Elm::HPointer /*captured*/) {
     int64_t id = MVar::newEmpty();
     // Task Never Int with the id stored unboxed in Task.value.
@@ -39,12 +37,9 @@ HPtr Eco_Kernel_MVar_put(uint64_t id, HPtr value) {
     return HPtr::fromBits(MVar::put(id, value.toBits()));
 }
 
-// Per-instance variants. The MVar slot stores an HPointer, so the primitive
-// must be boxed somewhere; doing it here lets the call site keep the value
-// unboxed in SSA and skip the boxing op in MLIR. eco_alloc_* may trigger GC,
-// so the StackRootGuard inside MVar::put picks up the freshly-allocated
-// pointer; we don't need to root anything before the call because the
-// Allocator returns a fresh HPointer.
+// Per-instance variants. The MVar slot stores an HPointer, so the primitive is boxed here, which lets the
+// call site keep the value unboxed. Nothing allocates between the boxing and the StackRootGuard in
+// MVar::put, so the box needs no rooting of its own.
 HPtr Eco_Kernel_MVar_put_Int(uint64_t id, int64_t value) {
     Elm::HPointer boxed = Elm::alloc::allocInt(value);
     return HPtr::fromBits(MVar::put(id, Export::encode(boxed)));
@@ -55,8 +50,7 @@ HPtr Eco_Kernel_MVar_put_Float(uint64_t id, double value) {
     return HPtr::fromBits(MVar::put(id, Export::encode(boxed)));
 }
 
-// The Char (a code point) arrives as uint64_t and is masked to 32 bits (see
-// elm-kernel-cpp CharExports.cpp: statepointed calls do not zero-extend).
+// The Char (a code point) arrives as uint64_t, and only its low 32 bits are used.
 HPtr Eco_Kernel_MVar_put_Char(uint64_t id, uint64_t value_raw) {
     Elm::HPointer boxed = Elm::alloc::allocChar(static_cast<u32>(value_raw & 0xFFFFFFFFu));
     return HPtr::fromBits(MVar::put(id, Export::encode(boxed)));

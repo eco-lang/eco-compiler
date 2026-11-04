@@ -1,41 +1,44 @@
-//===- HttpTables.hpp - Main-thread tables and events of Http.Server ------===//
+//===- HttpTables.hpp - Eco-thread tables and events of Http.Server -------===//
 //
-// plans/eco-system-websockets.md §3.4 "Main-thread tables", "respond",
-// "closeServer", "Keep-alive counts", "Manager" (phase WS2).
+// An HTTP server's sockets live on the reactor thread, while its requests are answered by Elm code on the eco thread
+// (the thread that runs the Elm scheduler). This component is the eco-thread side of that split: it receives what the
+// reactor reports, keeps track of every server and every request that is still owed an answer, and takes the holds
+// that keep the program alive by the rules the third fact below lists.
 //
-// Events (reactor → main thread): one POD queue, drained by an eco/system
-// async source on the main thread (the SocketEvents pattern, sockets plan
-// §3.3.2). Every event carries the heap generation of its server; an event
-// of a dead heap releases nothing (its counts died with the heap).
-//   * Request{serverId, key, request}: a complete request (Http1.cpp).
-//   * RespondDone{token}: a response's bytes were taken by the transport
-//     (or failed): the respond task completes.
-//   * ConnGone{serverId, key}: the connection of a delivered request closed
-//     before the answer.
-//   * ServerClosed{serverId}: closeServer's reactor part ran (the listener
-//     is closed, the port is free).
+// Everything rests on three facts.
 //
-// Tables (main thread only, keyed on heap generation as a T5 Registry, no
-// HPointers: tokens are Scheduler resume tokens, taggers live in the
-// manager):
-//   * HttpServers: id → the ListenerHandler, the reactor-side state, the
-//     config, the closed flag, the closeServer tokens and the requests
-//     parked while the server had no subscriber (bounded: maxBodySize × 4
-//     bytes per server, beyond it answered 503).
-//   * HttpKeys: key → the server, the connection (weak), and while parked
-//     the request itself. Keys are erased by respond, takeUpgrade (WS5),
-//     ConnGone, closeServer (parked: 503) and a new heap generation.
+// First, the reactor and the eco thread share no tables. The reactor reports through one queue of `HttpEvent`s,
+// which `postHttpEvent` fills from any thread and a drain on the eco thread empties. The eco thread reaches the
+// reactor only by submitting closures to it. An event is one of:
+//   * Request: a complete request arrived on a connection, under a new *key*, the number that names that request
+//     until it is answered.
+//   * RespondDone: the transport took a response's bytes, or failed to.
+//   * ConnGone: the connection of a request that was still owed an answer closed.
+//   * ServerClosed: the reactor part of closing a server ran, so its listener is closed and the port is free.
 //
-// Holds (LIVE_001, plans/program-liveness-rule.md §10.6): a server holds
-// nothing of its own; it holds one while an onRequest subscription names it
-// (until it is closed); a key holds one from its delivery to a subscriber
-// until it is erased, or until takeUpgrade moves it to the handshake (a
-// parked key holds none: nobody asked for it); a respond task holds one
-// until its RespondDone; a closeServer task until ServerClosed. Idle
-// connections hold none.
+// Second, a request can arrive while nothing in the program is subscribed to its server. Such a request is
+// *parked*: kept, in arrival order, until a subscriber appears or the server closes. A server's parked requests are
+// bounded at four times its `maxBodySize` in bytes, as `requestSize` in the source estimates them; a request that
+// would go over the bound is answered 503, except that a server with nothing parked always accepts one.
+// A parked request still waiting when its server is closed is answered 503 too. A request that is handed to a
+// subscriber is *delivered*.
 //
-// Templates used: T5 (generation-keyed tables), T8/G12 via the manager,
-// G10 (HoldRelease on every hold).
+// Third, the program must not stop while a peer is owed an answer, and must not be kept alive by a server nobody
+// asks for. Holds, the liveness counts `Liveness.hpp` defines, follow from that:
+//   * A server holds nothing of its own. It holds one while an onRequest subscription names it and it is not
+//     closed, as of the last `httpTablesSubscriptionsChanged`.
+//   * A delivered request holds one from delivery until its key is erased, or until `httpTablesTakeUpgrade` hands
+//     the hold to its caller. A parked request holds none.
+//   * A respond task and a closeServer task each hold one, under the resume token the caller passes, until their
+//     RespondDone or ServerClosed is drained.
+//   * An idle connection holds none.
+//
+// The tables are eco-thread only and hold no heap values: tokens are Scheduler resume tokens, and the taggers that
+// turn a request into a message live in the manager, which the tables reach through `HttpManagerHooks`. They are
+// keyed on the heap generation. When the heap is reset, the next use of the tables closes the old servers'
+// listeners and aborts their connections on the reactor, releases the old subscription and delivered-request
+// holds (not those of waiting respond and closeServer tasks), and empties the tables. Every event carries a heap
+// generation, and the drain drops an event of an earlier generation unread.
 //
 //===----------------------------------------------------------------------===//
 
@@ -62,90 +65,103 @@ namespace HttpSrv {
 struct ServerConfig;
 struct ServerReactorState;
 
-// A complete request as the manager hands it to Elm (C.1), plus what the
-// WS5 hand-off needs (the raw target, the version, the peer).
+/// One complete request as it is handed to Elm, together with what taking it over as an upgrade needs: the raw
+/// target, the version flags and the peer.
 struct RequestData {
-    std::string method;   // "GET", "OPTIONS", ...
-    std::string target;   // the raw request target
-    std::string url;      // absolute (E.5)
-    std::vector<std::pair<std::string, std::string>> headers;   // arrival order, raw case
+    std::string method;   ///< As received, such as `GET` or `OPTIONS`.
+    std::string target;   ///< The request target exactly as received.
+    std::string url;      ///< The absolute URL the target resolves to.
+    std::vector<std::pair<std::string, std::string>> headers;   ///< In arrival order, names in their received case.
     std::string body;
-    int64_t flags = 1;    // C.1: bits 0-1 version (0 = 1.0, 1 = 1.1, 2 = 2), bit 2 TLS
-    std::string upgrade;  // lower-cased upgrade token, "" = none
+    int64_t flags = 1;    ///< Bits 0-1 the version (0 HTTP/1.0, 1 HTTP/1.1, 2 HTTP/2), bit 2 set for TLS.
+    std::string upgrade;  ///< The lower-cased upgrade token the request asks for, or empty for none.
     bool isHead = false;
     SockEndpoint remote;
 };
 
+/// One report from the reactor thread to the eco thread, of a kind the file comment lists.
+///
+/// Only the members a kind names are meaningful for it; the others keep their defaults.
 struct HttpEvent {
     enum class Kind : uint8_t { Request, RespondDone, ConnGone, ServerClosed };
     Kind kind = Kind::RespondDone;
-    uint64_t gen = 0;
-    int64_t serverId = 0;
-    int64_t key = 0;                // Request, ConnGone
-    uint64_t token = 0;             // RespondDone
-    std::weak_ptr<Conn> conn;       // Request
-    RequestData req;                // Request
+    uint64_t gen = 0;               ///< The heap generation the event belongs to; the drain drops an event of another.
+    int64_t serverId = 0;           ///< Request, ConnGone, ServerClosed.
+    int64_t key = 0;                ///< Request, ConnGone.
+    uint64_t token = 0;             ///< RespondDone.
+    std::weak_ptr<Conn> conn;       ///< Request.
+    RequestData req;                ///< Request.
 };
 
-// Any thread. Queues `ev` and wakes the scheduler loop. The queue must have
-// been created on the main thread first (ensureHttpTables).
+/// Queues `ev` for the drain and wakes the scheduler loop. May be called from any thread. `ensureHttpTables` is
+/// meant to have been called on the eco thread first; until it has, no drain is registered to receive `ev`.
 void postHttpEvent(HttpEvent ev);
 
-// Main thread: creates the queue (binding the Scheduler), registers the
-// drain and the socket stop hook. Idempotent.
+/// Must be called on the eco thread. The first call creates the event queue, calls `ensureSocketEvents` (which
+/// starts the reactor and registers the scheduler stop hook that closes its handlers), and adds the drain.
 void ensureHttpTables();
 
-// Main thread: a listening fd (non-blocking, cloexec; owned from now on)
-// becomes a server: a ListenerHandler in callback mode (the connection's
-// protocol from makeServerProtocol once its handshake is done,
-// maxConnections < 0: unlimited) and the table entry (no hold of its
-// own). `transport`: the TLS transport factory of an https
-// server (WS3, websockets plan §3.5), null for plain TCP. Returns the
-// server id.
+/// Makes the listening socket `fd` into a server and returns the server's id. Eco thread only.
+///
+/// `fd` must be listening and non-blocking, and is owned by the server from now on. `cfg` is shared with the
+/// reactor, and its `serverId` and `gen` are overwritten with the new id and the current heap generation. The
+/// server accepts while fewer than `maxConnections` of its connections are open, or without limit when it is
+/// negative, and gives each connection the protocol `makeServerProtocol` builds. `transport` builds each
+/// connection's transport, such as TLS; when it is null the transport is plain TCP. The server takes no hold.
 int64_t httpTablesStartServer(int fd, std::shared_ptr<ServerConfig> cfg, int64_t maxConnections,
                               TransportFactory transport = nullptr);
 
-// Main thread, from the respond body: false when `key` is unknown
-// (answered, gone, or of a dead heap: complete at once). Otherwise erases
-// the key (releasing its hold) and submits the response; `token` (a
-// registered resume holding its own count) completes through RespondDone.
+/// Answers the request `key` with `resp`, and returns false, doing nothing, when `key` is not in the table (already
+/// answered, taken as an upgrade, its connection gone, or of an earlier heap). Eco thread only.
+///
+/// Otherwise it erases the key, releasing its hold, hands the response to the reactor and returns true. `token` is
+/// the caller's resume token, which names its hold. When the RespondDone for this response is drained, whether or
+/// not the response could be sent, the hold is released and the task is resumed with Unit unless it was killed.
 bool httpTablesRespond(int64_t key, uint64_t token, ResponseData resp);
 
-// Main thread, from the closeServer body: false when the server is unknown
-// or already closed and its ServerClosed was drained (complete at once).
-// Otherwise `token` (registered, counted) completes on ServerClosed.
+/// Closes the server `serverId`, and returns false, doing nothing, when there is no such server (never started,
+/// already closed with its ServerClosed drained, or of an earlier heap). Eco thread only.
+///
+/// Otherwise it returns true. `token` is the caller's resume token naming its hold; when the ServerClosed is
+/// drained the hold is released and the task is resumed with Unit unless it was killed. A server already closing
+/// only adds `token` to those waiting. On the first call it releases the server's subscription hold, answers every
+/// parked request 503, and asks the reactor to close the listener and to finish the server's connections, aborting
+/// those still unfinished `deadlineMs` milliseconds from then (a negative value counts as 0), as
+/// `http1ServerClosing` describes.
 bool httpTablesCloseServer(int64_t serverId, int64_t deadlineMs, uint64_t token);
 
-// Main thread, for WS5's takeUpgrade (HttpUpgrade.cpp): when `key` is an upgrade request still
-// waiting for its answer, moves its request (raw target, headers with
-// duplicates and original case, version flags, peer) into `out`, its
-// connection into `conn`, its delivery hold into `hold` (the caller owns it
-// from then on: the handshake's peerHold, plans/program-liveness-rule.md
-// N5), erases the key (a later respond on it completes at once) and returns
-// true. The caller then submits Http1Protocol::takeUpgradeHead +
-// Conn::setProtocol to the reactor.
+/// Takes over the upgrade request `key`, and returns false, changing nothing, when `key` is not in the table, is
+/// parked, or is not an upgrade request. Eco thread only.
+///
+/// Otherwise it moves the request into `out`, copies its connection into `conn`, and moves its delivery hold into
+/// `hold`, which the caller must release from then on. It erases the key, so a later respond on it does nothing,
+/// and returns true.
 bool httpTablesTakeUpgrade(int64_t key, RequestData& out, std::weak_ptr<Conn>& conn,
                            ::Elm::Platform::HoldToken& hold);
 
-// Main thread: the manager's subscriptions changed (onEffects): parked
-// requests of servers that now have a subscriber are delivered from the
-// drain (never from onEffects itself).
+/// Tells the tables that the set of onRequest subscriptions has changed. Eco thread only.
+///
+/// It acquires or releases each server's subscription hold to match, and, if some server with a subscriber has
+/// parked requests, asks the next drain pass to deliver them; they are never delivered from inside this call.
 void httpTablesSubscriptionsChanged();
 
-// Tests only (EcoSystemCoreTest.cpp, no scheduler loop): pops the oldest
-// queued event without handling it.
+/// Removes the oldest queued event into `out` without handling it, and returns false when the queue is empty. For
+/// tests that run without a scheduler loop.
 bool httpTablesPopEventForTest(HttpEvent& out);
 
-// --- Manager hooks (HttpServerManager.cpp) -------------------------------------
-// Registered by the manager's registration (function pointers, so the tables
-// do not link the manager: the Core unit test drives them without one).
-// Without hooks no server has a subscriber.
+/// The two calls the tables make into the onRequest subscriptions, as plain function pointers so that the tables do
+/// not depend on the effect manager that owns the subscriptions. A null `hasSubscriber` behaves as no subscriber.
 struct HttpManagerHooks {
+    /// Returns whether any onRequest subscription names `serverId`.
     bool (*hasSubscriber)(int64_t serverId) = nullptr;
-    // Calls every tagger of the server with the request (T8, G12: sendToApp +
-    // drain() per tagger). Runs Elm: callers re-look-up everything afterwards.
+    /// Must hand the request `key` of `serverId` to the subscriptions that name the server. It may run Elm code, so
+    /// the tables look everything up again afterwards. Must be non-null whenever `hasSubscriber` can return true:
+    /// a request otherwise takes its delivery hold and is not delivered.
     void (*deliver)(int64_t serverId, int64_t key, const RequestData& req) = nullptr;
 };
+
+/// Installs `hooks` in place of any installed before. Eco thread only. Until it is called no server has a
+/// subscriber.
 void setHttpManagerHooks(HttpManagerHooks hooks);
 
 } // namespace HttpSrv

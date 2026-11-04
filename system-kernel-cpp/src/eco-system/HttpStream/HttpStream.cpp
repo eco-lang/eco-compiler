@@ -1,47 +1,26 @@
 //===- HttpStream.cpp - eco/system kernel module HttpStream ---------------===//
 //
-// plans/eco-system-library.md Appendix B.7, E.6 and Phase 8 step 8.2: the
-// `send` binding body and the main-thread drain of HttpStreamService events.
+// Two pieces of machinery, both on the eco thread: the send body, which
+// starts a transfer, and the drain, which takes the transfer's event off the
+// service's queue and resumes the task.
 //
-// `send` (async, T2 shape on HttpStreamService):
-//   1. G3: the request is copied out of the heap into an HttpRequestSpec.
-//      Headers are elm/http `Header` values read in place (B1a:
-//      `type Header = Header String String`, constructor 0, two boxed
-//      Strings — elm/http 2.0.0 Http.elm:198, read the same way by
-//      elm-kernel-cpp/src/http/HttpExports.cpp extractRequest).
-//   2. A stream body (bodyKind 2) must not be read-locked (it is consumed by
-//      the transfer); a locked one resolves at once with NetworkError_.
-//   3. The resume is registered with its hold (parkResume, G10).
-//   4. A stream body gets the upload pump: a ChannelSink over the
-//      transfer's upload HttpTransferChannel, and an internal pipe
-//      (Stream.hpp pipeStreams) from the Readable into it. The pipe reads
-//      the stream on the main thread with the stream table's own machinery
-//      (any stream kind, no Elm task), closes the sink when the Readable
-//      closes (the end of the chunked body), and when the Readable errors it
-//      aborts the sink, whose shutdown aborts the transfer (NetworkError_).
-//      If the transfer ends first, the sink errors and the pipe cancels the
-//      Readable.
-//   5. The transfer thread starts; the kill handle (T7) aborts it.
+// Nothing allocates on the GC heap until the request has been copied out of
+// the payload into an `HttpRequestSpec`, so the payload's fields can be read
+// in place without rooting. Headers are elm/http `Header` values
+// (`type Header = Header String String`): a Custom whose two fields are
+// Strings, read the same way as elm/http's own kernel reads them.
 //
-// Drain (one event per transfer, each carrying the task's hold):
-//   * Bad/GoodStatus (the headers): the body becomes a ChannelSource over the
-//     download HttpTransferChannel (its reads answer EOF at once when the
-//     body is discarded), the B.7 result tuple is built and the task resumes.
-//     From here only parked reads of the body stream keep the program alive
-//     (keep-alive rule, §3.4).
-//   * BadUrl/Timeout/NetworkError (the transfer ended before the headers):
-//     the result carries kind 0/1/2.
-//   * A killed task (resume gone): the hold is released and the transfer
-//     aborted.
-// A curl error after the headers reaches the body stream as an Errored
-// readable with reason "network error: <curl message>" (ChannelResult
-// reason), so readers get Cancelled.
+// For a stream body, a `ChannelSink` is made over the transfer's upload side
+// and the Readable is piped into it with `pipeStreams`, which reads the
+// stream with the stream table's own machinery and no Elm task. When the
+// Readable ends the sink is closed, which ends the chunked body. When the
+// Readable fails the sink is cancelled, which aborts the transfer. When the
+// transfer ends first, the sink fails and the pipe cancels the Readable.
 //
-// Result masks (B.7, G7): ( Int, String, String ) 0x1;
-// ( (…), List, Int ) 0x10; ( Int, String, (…) ) 0x1.
-//
-// Templates used: T2 (async binding + drain), T3 (header list, one
-// RootedSlots record), T7 (kill handle), G10 via HoldRelease.
+// The task's hold is taken when its resume is parked, and the event that
+// answers the transfer carries the token; the drain releases the hold after
+// handling the event. After a Bad/GoodStatus result, any further hold comes
+// from work on the body stream, which Stream owns.
 //
 //===----------------------------------------------------------------------===//
 
@@ -62,20 +41,24 @@ namespace Eco::System {
 
 namespace {
 
-// --- Copy-out (G3; no allocation) -------------------------------------------
+// --- Copy-out (no allocation) ------------------------------------------------
 
+// Returns whether `b` is the True constant.
 bool isElmTrue(HPointer b) {
     return ::Elm::hpBits(b) == ::Elm::hpBits(alloc::elmTrue());
 }
 
-// An Int tuple slot: unboxed (kind 1, the normal case) or boxed.
+// Returns the Int in a tuple slot whose kind is `kind`: the raw value when
+// the kind is 1 (unboxed Int), otherwise the boxed `ElmInt` it points to.
 int64_t slotInt(const Unboxable& u, u32 kind) {
     if (kind == 1) return u.i;
     return static_cast<ElmInt*>(Allocator::instance().resolve(u.p))->value;
 }
 
-// Decodes the payload into `spec`; `streamId` is the Readable of a stream
-// body (-1 otherwise).
+// Copies the payload `captured` (laid out as `httpStreamSendBody` describes)
+// into `spec`, and sets `streamId` to the Readable of a stream body, or -1
+// for any other body kind. Allocates nothing on the GC heap. A header list
+// element that resolves to null is skipped.
 void decodeSend(HPointer captured, HttpRequestSpec& spec, int64_t& streamId) {
     HPointer reqAndHeaders, bodyAndDiscard;
     {
@@ -108,7 +91,6 @@ void decodeSend(HPointer captured, HttpRequestSpec& spec, int64_t& streamId) {
     spec.url = toStdString(urlHP);
     if (spec.timeoutMs < 0) spec.timeoutMs = 0;
 
-    // List Http.Header (B1a): Custom ctor 0 with two boxed Strings.
     for (alloc::ListCursor c(headers); !c.done(); c.next()) {
         void* hp = Allocator::instance().resolve(c.current().p);
         if (!hp) continue;
@@ -139,9 +121,9 @@ void decodeSend(HPointer captured, HttpRequestSpec& spec, int64_t& streamId) {
     spec.discardNon2xx = isElmTrue(discard);
 }
 
-// --- Result (B.7) ------------------------------------------------------------
+// --- Result ------------------------------------------------------------------
 
-// List ( String, String ) in arrival order (T3: one RootedSlots record).
+// Builds a `List ( String, String )` of `hs`, in the same order.
 HPointer buildHeaderList(const HttpHeaderList& hs) {
     alloc::RootedSlots slots(hs.size());
     HPointer name = alloc::listNil();
@@ -155,7 +137,9 @@ HPointer buildHeaderList(const HttpHeaderList& hs) {
     return alloc::listFromPointers(slots);
 }
 
-// ( kind, badUrl, ( ( status, statusText, url ), headers, streamId ) ).
+// Builds the task's result for `ev`, with `streamId` as the body's Readable:
+// `( kind, badUrl, ( ( status, statusText, url ), headers, streamId ) )`.
+// Int slots are unboxed, so the masks are 0x1, 0x10 and 0x1.
 HPointer buildResult(const HttpEvent& ev, int64_t streamId) {
     HPointer statusText = alloc::listNil();
     HPointer url = alloc::listNil();
@@ -176,7 +160,9 @@ HPointer buildResult(const HttpEvent& ev, int64_t streamId) {
                          alloc::boxed(mid), 0x1);
 }
 
-// Resumes `resume` (rooted by the caller) with Task.succeed of the result.
+// Resumes `resume` with a Task that succeeds with the result for `ev` and
+// `streamId`. `resume` must be rooted by the caller, since building the
+// result allocates.
 void resumeWith(HPointer& resume, const HttpEvent& ev, int64_t streamId) {
     HPointer task = alloc::listNil();
     Elm::StackRootGuard g(&task);
@@ -185,15 +171,21 @@ void resumeWith(HPointer& resume, const HttpEvent& ev, int64_t streamId) {
     Scheduler::callClosure1(resume, task);
 }
 
-// --- Drain (main thread) -----------------------------------------------------
+// --- Drain (eco thread) ------------------------------------------------------
 
+// Delivers every queued `HttpEvent`: releases its task's hold, and resumes
+// the task, first making a Readable over the download side for a Bad/
+// GoodStatus event. An event whose task was killed aborts its transfer
+// instead. A Bad/GoodStatus event with no transfer is delivered as
+// NetworkError. An exception while handling an event is fatal. Calls
+// `Scheduler::drain` afterwards if any task was resumed.
 void httpStreamDrain() {
     auto& svc = HttpStreamService::instance();
     auto& sched = Scheduler::instance();
     bool resumed = false;
     HttpEvent ev;
     while (svc.tryPop(ev)) {
-        HoldRelease release(ev.token);   // every event carries the task's hold (G10)
+        HoldRelease release(ev.token);
         try {
             HPointer resume = sched.takePendingResume(ev.token);
             if (alloc::isNil(resume)) {
@@ -205,18 +197,18 @@ void httpStreamDrain() {
             int64_t streamId = -1;
             bool hasBody = ev.kind == HttpOutcome::GoodStatus || ev.kind == HttpOutcome::BadStatus;
             if (hasBody && !ev.transfer) {
-                ev.kind = HttpOutcome::NetworkError;   // defensive: no body source
+                ev.kind = HttpOutcome::NetworkError;
                 hasBody = false;
             }
             if (hasBody) {
-                (void)streamTable();   // the channel dispatch exists before the channel
+                (void)streamTable();   // makes sure the channel dispatch exists before the channel
                 streamId = createChannelSource(
                     new HttpTransferChannel(ev.transfer, HttpTransferChannel::Dir::Download));
             }
             resumeWith(resume, ev, streamId);
             resumed = true;
         } catch (const std::exception& e) {
-            ::Eco::Kernel::reportFatal(e.what());   // never unwind into the loop (F21)
+            ::Eco::Kernel::reportFatal(e.what());   // never unwind into the scheduler loop
         } catch (...) {
             ::Eco::Kernel::reportFatal("unknown native exception in the Http.Stream drain");
         }
@@ -224,10 +216,13 @@ void httpStreamDrain() {
     if (resumed) sched.drain();
 }
 
+// Returns whether the service has an event waiting for the drain.
 bool httpStreamReady() {
     return HttpStreamService::instance().ready();
 }
 
+// The kill handle's cancel function: aborts the transfer created with `token`
+// and returns whether that resolved it, so no event will arrive.
 bool cancelTransfer(uint64_t token) {
     return HttpStreamService::cancel(token);
 }
@@ -240,7 +235,7 @@ HPointer httpStreamSendBody(HPointer captured, HPointer resume) {
     ECO_SYSTEM_ASYNC_GUARD(Never, resume, token, counted,
         HttpRequestSpec spec;
         int64_t streamId = -1;
-        decodeSend(captured, spec, streamId);   // G3: nothing allocates before this
+        decodeSend(captured, spec, streamId);   // nothing allocates before this
 
         auto& sched = Scheduler::instance();
         auto& svc = HttpStreamService::instance();
@@ -249,7 +244,7 @@ HPointer httpStreamSendBody(HPointer captured, HPointer resume) {
         if (spec.bodyKind == 2) {
             StreamPair* src = streamTable().find(streamId);
             if (src && streamReadLocked(src)) {
-                // The Readable is in use elsewhere: it cannot be consumed.
+                // The Readable is already being read, so it cannot be the body.
                 HttpEvent ev;
                 ev.kind = HttpOutcome::NetworkError;
                 resumeWith(resume, ev, -1);
@@ -264,7 +259,7 @@ HPointer httpStreamSendBody(HPointer captured, HPointer resume) {
         if (stream) {
             int64_t sink = createChannelSink(
                 new HttpTransferChannel(transfer, HttpTransferChannel::Dir::Upload));
-            (void)pipeStreams(streamId, sink);   // checked above; may pump (allocates)
+            (void)pipeStreams(streamId, sink);   // read lock checked above (not existence); may allocate
         }
         svc.start(transfer);                    // on failure it posts NetworkError itself
         return makeKillHandle(token, &cancelTransfer);

@@ -1,58 +1,45 @@
 //===- IoReactor.hpp - The shared non-blocking IO event loop --------------===//
 //
-// plans/eco-system-sockets.md §3.3.1 (SD11). One leaky singleton (base plan
-// §3.4) with one detached thread, started on first use (instance(), from the
-// main thread in practice). All socket IO of eco/system runs here: one
-// IoHandler per fd, no thread per socket. Results reach the main thread
-// through the existing POD queues (channel results, socket events), whose
-// drains run from the eco/system async source; the Scheduler is unchanged.
+// eco/system does all of its socket IO on one thread, so that it needs no thread per socket. This component is that
+// thread's event loop, the reactor.
 //
-// Backends: epoll + eventfd (Linux); kqueue + EVFILT_USER/EV_CLEAR (macOS,
-// built and E2E-tested in CI, and the BSDs, untested); Windows: a stub whose
-// submit() drops work (Windows kernels fail ENOTSUP before reaching it; CI
-// builds it but runs no eco/system tests on Windows).
+// The reactor is one object, `IoReactor::instance()`, created on first use and never destroyed, with one detached
+// thread, the reactor thread, that runs `runOnce` forever. Work reaches the reactor thread in two ways:
 //
-// Rules (§3.3.1, each a review fix; §9 N1, N14):
-//   1. Interest is level-triggered and demand-driven, and an fd with no
-//      interest is NOT in the kernel set: setInterest(k, false, false) is
-//      EPOLL_CTL_DEL (kqueue: EV_DELETE of both filters). epoll reports
-//      EPOLLERR/EPOLLHUP even with no requested events, so an idle registered
-//      fd that the peer resets would spin. EPOLLRDHUP is not requested (a
-//      persistent RDHUP with write-only interest would spin too); a peer's
-//      FIN shows up as readable (read() returns 0).
-//   2. Event data is the 64-bit key (slot index | generation << 32), never
-//      the fd. remove() bumps the slot's generation; an event whose
-//      generation does not match is dropped (fd-number reuse, descriptions
-//      duplicated into children, a handler removed earlier in the same
-//      batch). Events are also masked by the slot's CURRENT interest, so a
-//      handler never sees a direction it no longer asks for.
-//   3. remove() before close(), always; only the handler closes its fd, on
-//      the reactor thread.
-//   4. Wake: submit() pushes under the command mutex, then writes the eventfd
-//      / triggers EVFILT_USER. The loop resets the eventfd (kqueue: EV_CLEAR
-//      on retrieval) BEFORE draining the command queue, so no submit is lost.
-//   5. Loop: runOnce(timeout): timeout = the earliest timer deadline (a
-//      min-heap) or infinite; wait; dispatch due timers (deadline order);
-//      dispatch events (EPOLLIN -> readable, EPOLLOUT -> writable,
-//      EPOLLERR|EPOLLHUP|EPOLLRDHUP -> errorOrHangup; kqueue EV_EOF/EV_ERROR
-//      -> errorOrHangup); drain commands (submission order).
-//   6. Lock order: command mutex -> channel-results queue / socket-events
-//      queue -> Scheduler mutex. The reactor holds NO lock while calling a
-//      handler or a command (the command queue is swapped out first), so a
-//      handler may post results and a command may submit more commands.
-//   7. Exit: std::exit may run while the thread is inside a handler; handlers
-//      hold only POD and OS resources, so that is safe for plain sockets.
-//      TLS registers an atexit hook that calls quiesce() (§3.6, N13).
+//   * A handler, an `IoHandler`, owns one file descriptor (or none, for a handler that only uses a timer). It is
+//     registered with `add`, which returns its key, and the reactor calls it when its fd is ready or its timer is due.
+//   * A command is a function passed to `submit` from any thread. It runs on the reactor thread, and is how any other
+//     thread asks for anything to be done to a handler.
 //
-// Handlers are shared_ptrs: the slot holds one, and dispatch holds another
-// for the duration of each call, so a handler may remove itself (or any
-// other handler) from inside onReady/onTimer/onCloseAll.
+// `add`, and everything that takes a key (`setInterest`, `setTimer`, `remove`), may be called only on the reactor
+// thread, that is from inside a handler call or a command. Nothing here touches the Elm heap.
 //
-// Threading: submit/closeAll/quiesce/loopIterations from any thread; the
-// rest from the reactor thread only (inside a handler or a submitted
-// command). G1: nothing here touches the Elm heap.
+// A key is a 64-bit number, the handler's slot index in the low 32 bits and the slot's generation in the high 32.
+// `remove` bumps the generation, so an event or a call carrying an old key is ignored: the fd number may have been
+// reused, or the handler removed by an earlier event of the same batch. Key 0 is never a handler's key.
 //
-// Templates used: none (POD only, G1).
+// Interest is which directions, read and write, a handler wants to hear about. It is level-triggered and starts
+// empty, and a handler with no interest is not in the kernel's event set at all, because epoll reports errors and
+// hangups on any fd in its set, wanted or not, and an idle fd whose peer reset it would wake the loop forever. For the
+// same reason a peer's half close is not requested separately; it shows up as readable, with `read` returning 0. Each
+// event is masked by the interest the handler holds when the event is dispatched, so a handler never hears about a
+// direction it has dropped.
+//
+// One iteration of the loop checks for a quiesce, waits for the earliest timer or an event or a wake, fires the due
+// timers in deadline order, dispatches the events, and runs the queued commands in submission order. `submit` wakes
+// the loop after queueing, and the loop consumes the wake before it takes the command queue, so no command waits for a
+// later wake. No lock is held while a handler or a command runs, so a handler may submit commands and a command may
+// submit more.
+//
+// An exception escaping a handler or a command is printed to stderr and dropped, and the loop carries on.
+//
+// To quiesce is to stop the reactor for good: once the reactor thread sees a `quiesce` request it starts no further
+// handler or command and blocks forever. Process exit can run while the reactor thread is inside a handler, and
+// quiescing first keeps that thread from entering any handler after the request; one already running is not stopped.
+//
+// Backends: epoll with an eventfd for the wake on Linux, kqueue with an `EVFILT_USER` event on macOS and the BSDs. On
+// Windows the reactor is a stub that never starts: `submit` drops its command and `closeAll` and `quiesce` return at
+// once.
 //
 //===----------------------------------------------------------------------===//
 
@@ -67,21 +54,30 @@ namespace Eco::System {
 
 class IoReactor;
 
-// Reactor-thread object owning one fd's IO. Never touches the heap (G1).
+/// An object that owns the IO of one file descriptor, or a timer with no fd, and is driven by the reactor.
+///
+/// An implementation is held by `std::shared_ptr`. Once `IoReactor::add` registers it, the reactor holds a reference
+/// until `IoReactor::remove`, and holds another for the length of each call it makes, so a handler may remove itself
+/// or another handler from inside any of its callbacks. Every callback runs on the reactor thread. The handler owns its
+/// fd: it must call `IoReactor::remove` before it closes the fd, and the reactor never closes it. A callback that
+/// throws has its exception printed to stderr and dropped.
 class IoHandler : public std::enable_shared_from_this<IoHandler> {
 public:
     virtual ~IoHandler() = default;
-    // Reactor thread. Only directions with current interest are reported;
-    // errorOrHangup only while some interest is set (rule 1). The handler
-    // learns the details from its syscalls.
+    /// Reports that the fd is ready. `readable` and `writable` are reported only for directions the handler has
+    /// interest in when the call is made, and no call is made while it has none. `errorOrHangup` reports an error or
+    /// hangup, and with kqueue also end of file (with epoll a peer's half close arrives as readable only); the handler
+    /// learns which from its own system calls. With kqueue, read and write readiness arrive as separate events, so
+    /// one loop iteration may call this twice for the same fd.
     virtual void onReady(bool readable, bool writable, bool errorOrHangup) = 0;
-    // Reactor thread: the deadline set with setTimer passed (the timer is
-    // cleared before the call, so the handler may set a new one).
+    /// Reports that the deadline set with `IoReactor::setTimer` has passed. The timer is cleared before the call, so
+    /// the override may set a new one. The default does nothing.
     virtual void onTimer() {}
-    // Reactor thread: embed stop / exit quiesce: close now (remove + close).
+    /// Asks the handler to shut down now, from `IoReactor::closeAll`. An override is expected to remove itself and
+    /// close its fd; the reactor does not check that it does.
     virtual void onCloseAll() = 0;
-    // slot | generation << 32, set by add(); 0 when not registered (before
-    // add, after remove). Reactor thread only.
+    /// Returns the handler's key, or 0 when it is not registered (before `IoReactor::add` and after
+    /// `IoReactor::remove`). It is written on the reactor thread, unsynchronised, so it must be read there.
     uint64_t key() const { return key_; }
 
 private:
@@ -89,76 +85,94 @@ private:
     uint64_t key_ = 0;
 };
 
+/// The process's one event loop for eco/system IO, and the thread that runs it.
+///
+/// The reactor is created by the first call to `instance` and is never destroyed, so its own state is never destroyed
+/// under its thread at process exit. If the backend cannot be created or the thread cannot be started, a message is
+/// printed to stderr and the reactor stays unstarted: `submit` drops every command, and `closeAll` and `quiesce` return
+/// at once.
 class IoReactor {
 public:
+    /// Returns the reactor, creating it and starting its thread on the first call.
     static IoReactor& instance();
 
-    // Any thread. Runs fn on the reactor thread, in submission order. fn may
-    // capture only POD and shared_ptrs to reactor-side state (G1).
+    /// Queues `fn` to run on the reactor thread, after every command submitted before it. May be called from any
+    /// thread. `fn` is dropped without running when it is empty or the reactor is unstarted, and is never run once the
+    /// reactor has quiesced. It runs later, on the reactor thread, with no lock held, so it must not capture anything
+    /// that may be destroyed before it runs, nor touch the Elm heap.
     void submit(std::function<void()> fn);
 
     // --- Reactor thread only ------------------------------------------------
 
-    // Registers `h` for `fd` with NO interest (the fd is not in the kernel set
-    // yet). `fd` may be -1 for a timer-only handler. Returns the key (never 0;
-    // also stored in h->key()), or 0 if `h` is null or already registered.
+    /// Registers `h` as the handler for `fd`, with no interest and no timer, and returns its key, which `h->key()`
+    /// also returns until `remove`. `fd` may be -1 for a handler that uses only a timer. Returns 0, and registers
+    /// nothing, when `h` is null or already registered.
     uint64_t add(std::shared_ptr<IoHandler> h, int fd);
-    // Demand-driven interest (rule 1). (false, false) removes the fd from the
-    // kernel set; anything else adds or modifies it. A stale key, a timer-only
-    // handler or an unchanged interest is a no-op returning 0. Returns 0 or
-    // the errno of a failed epoll_ctl/kevent (the interest is then unchanged).
+    /// Sets the handler's interest to `read` and `write`, and returns 0 or the errno of the failed kernel call.
+    ///
+    /// Clearing both takes the fd out of the kernel's event set. A key that is not registered, a handler with no fd,
+    /// or an interest equal to the current one does nothing and returns 0. On epoll a failure leaves the interest
+    /// unchanged. On kqueue each direction is changed by its own call, so when the write change fails the read change
+    /// has already been made.
     int setInterest(uint64_t key, bool read, bool write);
-    // One timer per handler, on the nowMs() clock: a new deadline replaces
-    // the old one; 0 cancels. A deadline already passed fires on the next
-    // loop iteration. Stale keys are ignored.
+    /// Sets the handler's one timer to fire at `deadlineMonoMs` on the `nowMs` clock, replacing any earlier deadline;
+    /// 0 cancels the timer. A deadline already passed fires at the next loop iteration. A key that is not registered
+    /// is ignored.
     void setTimer(uint64_t key, int64_t deadlineMonoMs);
-    // Removes the handler: EPOLL_CTL_DEL / EV_DELETE if registered, cancels
-    // its timer, bumps the slot generation, clears h->key(). The caller closes
-    // the fd AFTER this (rule 3). Stale keys are ignored.
+    /// Unregisters the handler with key `key`: takes its fd out of the kernel's event set, cancels its timer, and
+    /// makes `key` stale, so that events already collected for it are dropped and its `key()` returns 0. The fd is
+    /// not closed; the handler closes it after this call. The reactor's reference to the handler is dropped, which
+    /// may destroy it. A key that is not registered is ignored.
     void remove(uint64_t key);
-    // Steady clock, milliseconds. Any thread.
+    /// Returns the time on a steady clock, in milliseconds. May be called from any thread.
     int64_t nowMs() const;
 
-    // --- Main thread (any non-reactor thread) -----------------------------
+    // --- Any thread -------------------------------------------------------
 
-    // Calls onCloseAll() on every registered handler (embed stop, §3.3.9) and
-    // waits until that is done. Handlers added meanwhile by onCloseAll are not
-    // closed. Called on the reactor thread it runs inline (no deadlock).
-    // Returns at once if the reactor is quiesced or failed to start.
+    /// Calls `onCloseAll` on every handler registered when the calls begin, except one that an earlier `onCloseAll`
+    /// removed, and returns when that is done. A handler registered meanwhile is not called.
+    ///
+    /// Called on the reactor thread, it runs the calls itself. Called on another thread, it submits them as a command
+    /// and blocks until they finish, or until the reactor is asked to quiesce, in which case it returns without
+    /// waiting further. It returns at once if the reactor is unstarted or a quiesce has been requested.
     void closeAll();
 
-    // Stops dispatching handlers and commands for good (TLS atexit, §3.6):
-    // the reactor thread acknowledges at its next dispatch point (or at
-    // once when idle) and then parks forever. Waits at most `timeoutMs` for
-    // the acknowledgement; true if acknowledged (or the reactor never ran).
-    // Called on the reactor thread: no further dispatch after the current
-    // handler returns; returns true. Irreversible.
+    /// Stops the reactor for good, and returns whether it is known to have stopped.
+    ///
+    /// The reactor thread sees the request before it next starts a handler or a command, or at once if it is waiting
+    /// for events, and from then on runs nothing and blocks forever. Called on another thread, this wakes the reactor
+    /// and waits at most `timeoutMs` (a negative value is taken as 0) for it to acknowledge, returning whether it did;
+    /// a handler that runs longer than that makes it return false. Called on the reactor thread, it returns true at
+    /// once, and nothing is started after the current call returns. It returns true if the reactor is unstarted.
+    /// Queued commands and registered handlers are abandoned, not run or closed.
     bool quiesce(int64_t timeoutMs);
 
     // --- Internal / tests ---------------------------------------------------
 
-    // One loop iteration (rule 5); the reactor thread calls it forever.
-    // timeoutMs < 0: wait for the earliest timer or forever. A later
-    // Scheduler integration would call this (§8). Reactor thread only.
+    /// Runs one iteration of the loop, as the file comment describes. It waits for at most `timeoutMs`, and no longer
+    /// than until the earliest timer; a negative `timeoutMs` waits for the earliest timer, or for ever if there is
+    /// none. Reactor thread only; the reactor thread calls it in a loop for its whole life.
     void runOnce(int64_t timeoutMs);
-    // Number of runOnce iterations so far (test-only busy-loop check).
+    /// Returns how many times `runOnce` has been entered. May be called from any thread.
     uint64_t loopIterations() const;
-    // True on the reactor thread.
+    /// Returns whether the calling thread is the reactor thread.
     static bool onReactorThread();
-    // Runs the normal dispatch path for a synthetic event (test-only check of
-    // the generation rule). Reactor thread only.
+    /// Dispatches a synthetic event for `key` as though the backend had reported it, with the same stale-key check
+    /// and interest masking. Reactor thread only.
     void injectEventForTest(uint64_t key, bool readable, bool writable, bool errorOrHangup);
 
     IoReactor(const IoReactor&) = delete;
     IoReactor& operator=(const IoReactor&) = delete;
 
+    /// The reactor's state, defined in the source file.
     struct Impl;
 
 private:
+    // Creates the backend and starts the thread, or prints to stderr and leaves the reactor unstarted.
     IoReactor();
     ~IoReactor() = default;   // never runs (leaky singleton)
 
-    Impl* impl_;
+    Impl* impl_;   // never null; allocated by the constructor and never freed
 };
 
 } // namespace Eco::System

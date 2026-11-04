@@ -1,18 +1,17 @@
 //===- ErrnoNames.cpp - errno → symbolic name ("ENOENT") ------------------===//
 //
-// FErr codes (B2) are errno names, as in Node/gren (`error.code`).
-// plans/eco-system-library.md §3.8: glibc ≥ 2.32 has strerrorname_np;
-// elsewhere (musl, macOS, Windows) this table is used. Every POSIX errno is
-// listed, plus the Linux and BSD/macOS extensions; each entry is guarded by
-// #ifdef so the table compiles on every platform. Aliases (EWOULDBLOCK =
-// EAGAIN, EDEADLOCK = EDEADLK, and EOPNOTSUPP = ENOTSUP on Linux) resolve to
-// the first entry, so the preferred name comes first. ENOTSUP is reported as
-// "ENOTSUP" on every platform (libuv's name; it is also the Windows stub
-// code, §1). Unknown values give "UNKNOWN".
+// `errnoName` asks three sources in turn. ENOTSUP is answered first, as
+// "ENOTSUP": on Linux EOPNOTSUPP has the same value, and this check keeps that
+// value from being named "EOPNOTSUPP" by either source below. On glibc 2.32 and
+// later, `strerrorname_np` names the value; it decides between aliases there,
+// and a null result falls through to the table. Otherwise the value is looked
+// up in `kErrnoTable`, and a value missing from it gives "UNKNOWN".
 //
-// Pure function; safe on any thread.
-//
-// Templates used: none.
+// The table lists POSIX, Linux and BSD/macOS errno names, each guarded by
+// `#ifdef` so that only the names a platform defines are compiled in. Where two
+// names share a value (EWOULDBLOCK and EAGAIN, EDEADLOCK and EDEADLK), the
+// table lookup returns the entry nearer the top, and the preferred name is listed
+// first.
 //
 //===----------------------------------------------------------------------===//
 
@@ -25,11 +24,14 @@ namespace Eco::System {
 
 namespace {
 
+/// One table row: an errno value and its symbolic name, a string literal.
 struct ErrnoEntry {
     int code;
     const char* name;
 };
 
+/// The errno names this platform defines, searched from the top; for a shared value the earlier entry is
+/// the one returned.
 const ErrnoEntry kErrnoTable[] = {
 #ifdef E2BIG
     {E2BIG, "E2BIG"},

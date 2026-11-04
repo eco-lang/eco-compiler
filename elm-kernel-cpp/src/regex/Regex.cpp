@@ -1,12 +1,3 @@
-/**
- * Elm Kernel Regex Module - Runtime Heap Integration
- *
- * Provides regular expression operations using GC-managed heap values.
- * Note: these Elm::Kernel::Regex helpers are partial and unused. The exported
- * Elm_Kernel_Regex_* kernel functions are implemented in full, with SRELL, in
- * RegexExports.cpp.
- */
-
 #include "Regex.hpp"
 #include "allocator/Allocator.hpp"
 #include "allocator/StringOps.hpp"
@@ -15,15 +6,13 @@
 namespace Elm::Kernel::Regex {
 
 RegexPtr never() {
-    // Return a regex that never matches
     auto r = std::make_shared<Regex>();
-    r->patternStr = {'.', '^'};  // Pattern that never matches
+    r->patternStr = {'.', '^'};
     r->caseInsensitive = false;
     r->multiline = false;
     try {
         r->pattern = srell::u16regex(u".^");
     } catch (...) {
-        // If pattern fails, leave default
     }
     return r;
 }
@@ -49,8 +38,7 @@ HPointer fromStringWith(void* pattern, bool caseInsensitive, bool multiline) {
         std::basic_string<char16_t> patternBuf(patternU16.begin(), patternU16.end());
         regex->pattern = srell::u16regex(patternBuf.data(), patternBuf.size(), flags);
 
-        // TODO: Need proper way to store RegexPtr in heap
-        // For now return Nothing
+        // Compiled only to be discarded: there is no heap representation for a RegexPtr.
         return alloc::nothing();
     }
     catch (...) {
@@ -73,7 +61,6 @@ bool contains(RegexPtr regex, void* str) {
 }
 
 HPointer findAtMost(i64 n, RegexPtr regex, void* str) {
-    // Return empty list - unused stub (see RegexExports.cpp)
     (void)n;
     (void)regex;
     (void)str;
@@ -81,7 +68,6 @@ HPointer findAtMost(i64 n, RegexPtr regex, void* str) {
 }
 
 HPointer replaceAtMost(i64 n, RegexPtr regex, ReplacerFn replacer, void* str) {
-    // Return original string - unused stub (see RegexExports.cpp)
     (void)n;
     (void)regex;
     (void)replacer;
@@ -89,7 +75,6 @@ HPointer replaceAtMost(i64 n, RegexPtr regex, ReplacerFn replacer, void* str) {
 }
 
 HPointer splitAtMost(i64 n, RegexPtr regex, void* str) {
-    // Return list with single element (original string) - unused stub (see RegexExports.cpp)
     (void)n;
     (void)regex;
     HPointer strPtr = Allocator::instance().wrap(str);

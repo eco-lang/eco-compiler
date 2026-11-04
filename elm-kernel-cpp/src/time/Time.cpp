@@ -1,9 +1,3 @@
-/**
- * Elm Kernel Time Module - Runtime Heap Integration
- *
- * Provides time-related operations using GC-managed heap values.
- */
-
 #include "Time.hpp"
 #include "allocator/Allocator.hpp"
 #include "allocator/StringOps.hpp"

@@ -1,8 +1,10 @@
 //===- Spawn.hpp - the runtime's spawn primitive, under its eco-system names ===//
 //
-// plans/spawn-not-fork.md Phase 1: the implementation moved to the runtime
-// (runtime/src/platform/Spawn.{hpp,cpp}), which Eco.Process and the test
-// harnesses share. The eco-system ChildProcess module keeps these names.
+// The eco-system ChildProcess code starts child processes with the runtime's spawn primitive, which lives in
+// `Elm::platform` (runtime/src/platform/Spawn.hpp). This header brings that primitive into `Eco::System` with
+// `using` declarations, so the ChildProcess files name it without the namespace. It defines nothing of its own:
+// `spawnChild`, `SpawnSpec`, `StdioMode`, `SpawnedChild` and the `kShell*` and `kEnv*` constants are the
+// runtime's, and their contracts are stated on the declarations in platform/Spawn.hpp.
 //
 //===----------------------------------------------------------------------===//
 

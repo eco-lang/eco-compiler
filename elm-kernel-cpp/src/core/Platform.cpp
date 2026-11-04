@@ -1,6 +1,4 @@
-// Platform.cpp - Implementation moved to PlatformExports.cpp and platform/PlatformRuntime.cpp
-// This file kept as empty compilation unit for CMake.
+// An empty compilation unit: the Platform kernel exports are defined in PlatformExports.cpp.
 
 namespace Elm::Kernel::Platform {
-// All functionality is now in the heap-native PlatformRuntime.
 } // namespace Elm::Kernel::Platform

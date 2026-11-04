@@ -1,12 +1,8 @@
 //===- TlsContext.cpp - OpenSSL contexts for Socket.Tls -------------------===//
 //
-// See TlsContext.hpp (plans/eco-system-sockets.md §3.6, §D.5). The build
-// functions run on SysWorkPool workers: POD and OpenSSL only (G1). The
-// process-wide caches (system and no-verification client contexts) are
-// guarded by a mutex that is never held while allocating on the Elm heap
-// (nothing here touches the heap at all).
-//
-// Templates used: T2 (worker side, G1).
+// Nothing here touches the Elm heap, so the build functions can run on any worker thread. The two shared client
+// contexts (system and no-verification) are guarded by one mutex, which stays held while a missing one is built,
+// including the certificate file reads of the system context.
 //
 //===----------------------------------------------------------------------===//
 
@@ -33,21 +29,21 @@ namespace Eco::System {
 
 namespace {
 
-// --- Init and exit (N13) -------------------------------------------------------
+// --- Init and exit -------------------------------------------------------------
 
+/// Asks the IoReactor to quiesce, waiting at most 100 ms; registered by `ensureTlsInit` to run at exit.
 void tlsQuiesce() {
-    // Stop the reactor dispatching handlers (some may be inside OpenSSL)
-    // before the process tears down; at most 100 ms (§3.6).
     (void)IoReactor::instance().quiesce(100);
 }
 
 // --- Contexts -------------------------------------------------------------------
 
+/// Returns a `std::shared_ptr` that owns `ctx` and frees it with `SSL_CTX_free`.
 std::shared_ptr<ssl_ctx_st> own(SSL_CTX* ctx) {
     return std::shared_ptr<ssl_ctx_st>(ctx, [](ssl_ctx_st* c) { SSL_CTX_free(c); });
 }
 
-// The options every context shares (§3.6).
+/// Sets the protocol floor, options and modes every context shares, as the header's file comment lists them.
 void commonOptions(SSL_CTX* ctx) {
     (void)SSL_CTX_set_min_proto_version(ctx, TLS1_2_VERSION);
     uint64_t opts = SSL_OP_NO_RENEGOTIATION | SSL_OP_NO_COMPRESSION;
@@ -58,11 +54,13 @@ void commonOptions(SSL_CTX* ctx) {
     (void)SSL_CTX_set_mode(ctx, SSL_MODE_ENABLE_PARTIAL_WRITE | SSL_MODE_ACCEPT_MOVING_WRITE_BUFFER);
 }
 
+/// Returns whether `path` names an existing regular file.
 bool fileExists(const char* path) {
     struct stat st;
     return ::stat(path, &st) == 0 && S_ISREG(st.st_mode);
 }
 
+/// Returns whether `ctx` has no certificate store or a store holding no loaded objects.
 bool storeEmpty(SSL_CTX* ctx) {
     X509_STORE* store = SSL_CTX_get_cert_store(ctx);
     if (!store) return true;
@@ -70,7 +68,8 @@ bool storeEmpty(SSL_CTX* ctx) {
     return !objs || sk_X509_OBJECT_num(objs) == 0;
 }
 
-// §3.6 SystemCertificates.
+/// Builds a context for mode 0, SystemCertificates, or returns null and sets `err` if OpenSSL cannot allocate one.
+/// Failing to load certificates is not a failure here; it leaves a context whose handshakes fail verification.
 std::shared_ptr<ssl_ctx_st> makeSystemContext(TlsError& err) {
     SSL_CTX* ctx = SSL_CTX_new(TLS_client_method());
     if (!ctx) {
@@ -85,9 +84,8 @@ std::shared_ptr<ssl_ctx_st> makeSystemContext(TlsError& err) {
     if (file && !*file) file = nullptr;
     if (dir && !*dir) dir = nullptr;
     if (file || dir) {
-        // As OpenSSL itself (and Node): the environment overrides the
-        // defaults. A file that does not load leaves an empty store; the
-        // handshake then fails verification.
+        // The environment overrides the defaults. One call loads both, its result discarded and the error queue
+        // cleared; a file that fails to load stops the directory being added.
         (void)SSL_CTX_load_verify_locations(ctx, file, dir);
         ERR_clear_error();
         return owned;
@@ -95,9 +93,8 @@ std::shared_ptr<ssl_ctx_st> makeSystemContext(TlsError& err) {
     (void)SSL_CTX_set_default_verify_paths(ctx);
     ERR_clear_error();
     if (storeEmpty(ctx)) {
-        // Static and brew builds point at an OpenSSL prefix that may hold no
-        // bundle (N12, R3). A hashed default directory loads lazily and
-        // still works; the probe adds a bundle file next to it.
+        // OpenSSL's built-in default paths may hold no bundle, as with a statically linked or Homebrew OpenSSL. A
+        // hashed default directory is read lazily and counts as empty here, so the probe adds a file beside it.
         static const char* const kProbe[] = {
             "/etc/ssl/certs/ca-certificates.crt",
             "/etc/pki/tls/certs/ca-bundle.crt",
@@ -116,7 +113,8 @@ std::shared_ptr<ssl_ctx_st> makeSystemContext(TlsError& err) {
     return owned;
 }
 
-// §3.6 TrustedCertificates: only the certificates in `pem`.
+/// Builds a context for mode 1, TrustedCertificates, that trusts only the certificates in `pem`, or returns null and
+/// sets `err`.
 std::shared_ptr<ssl_ctx_st> makeTrustedContext(const std::string& pem, TlsError& err) {
     SSL_CTX* ctx = SSL_CTX_new(TLS_client_method());
     if (!ctx) {
@@ -157,6 +155,7 @@ std::shared_ptr<ssl_ctx_st> makeTrustedContext(const std::string& pem, TlsError&
     return owned;
 }
 
+/// Builds a context for mode 2, NoVerification, or returns null and sets `err`.
 std::shared_ptr<ssl_ctx_st> makeNoVerifyContext(TlsError& err) {
     SSL_CTX* ctx = SSL_CTX_new(TLS_client_method());
     if (!ctx) {
@@ -169,21 +168,25 @@ std::shared_ptr<ssl_ctx_st> makeNoVerifyContext(TlsError& err) {
     return owned;
 }
 
-// Process-wide caches (any worker thread).
+/// Returns the mutex that guards `cachedSystem` and `cachedNoVerify`. It is never destroyed, so it stays usable
+/// during exit.
 std::mutex& cacheMutex() {
-    static auto* m = new std::mutex();   // leaky (§3.4)
+    static auto* m = new std::mutex();
     return *m;
 }
+/// Returns the shared mode 0 context, null until one is built; guarded by `cacheMutex`, never destroyed.
 std::shared_ptr<ssl_ctx_st>& cachedSystem() {
     static auto* p = new std::shared_ptr<ssl_ctx_st>();
     return *p;
 }
+/// Returns the shared mode 2 context, null until one is built; guarded by `cacheMutex`, never destroyed.
 std::shared_ptr<ssl_ctx_st>& cachedNoVerify() {
     static auto* p = new std::shared_ptr<ssl_ctx_st>();
     return *p;
 }
 
-// ALPN list → wire format (length-prefixed). Each protocol 1..255 bytes.
+/// Writes `alpn` to `out` in ALPN wire format and returns true, or returns false with `err` set to `EINVAL` if a
+/// name is empty or longer than 255 bytes; `out` then holds the names before it.
 bool alpnWire(const std::vector<std::string>& alpn, std::string& out, TlsError& err) {
     out.clear();
     for (const auto& p : alpn) {
@@ -198,6 +201,7 @@ bool alpnWire(const std::vector<std::string>& alpn, std::string& out, TlsError& 
     return true;
 }
 
+/// Returns whether `name` parses as an IPv4 or IPv6 address.
 bool isIpLiteral(const std::string& name) {
     if (name.empty()) return false;
     ASN1_OCTET_STRING* ip = a2i_IPADDRESS(name.c_str());
@@ -209,8 +213,10 @@ bool isIpLiteral(const std::string& name) {
     return true;
 }
 
-// Server ALPN selection (§3.6): the first server protocol the client offers.
-// No overlap: a fatal alert, or no ALPN in NoAck mode (websockets plan §3.5).
+/// Selects, as OpenSSL's ALPN select callback, the first protocol of the server's list that the client's offer `in`
+/// contains, pointing `out` into `in`. With no match it returns `SSL_TLSEXT_ERR_NOACK` if the `TlsServerConfig`
+/// that `arg` points to has `alpnNoAck`, else `SSL_TLSEXT_ERR_ALERT_FATAL`. A malformed entry ends the scan of the
+/// offer.
 int alpnSelect(SSL* /*ssl*/, const unsigned char** out, unsigned char* outlen,
                const unsigned char* in, unsigned int inlen, void* arg) {
     auto* cfg = static_cast<TlsServerConfig*>(arg);
@@ -230,12 +236,12 @@ int alpnSelect(SSL* /*ssl*/, const unsigned char** out, unsigned char* outlen,
         }
         i += 1 + sl;
     }
-    if (cfg->alpnNoAck) return SSL_TLSEXT_ERR_NOACK;   // Http.Server: HTTP/1.1 without ALPN
+    if (cfg->alpnNoAck) return SSL_TLSEXT_ERR_NOACK;
     return SSL_TLSEXT_ERR_ALERT_FATAL;   // no_application_protocol (as Node)
 }
 
-// RFC 9113 §9.2.2 / Appendix A: TLS 1.2 suites for HTTP/2 (ECDHE key
-// exchange, AEAD ciphers). SSL_CTX_set_cipher_list does not touch TLS 1.3.
+/// The TLS 1.2 cipher suites allowed for HTTP/2: ECDHE key exchange with AEAD ciphers.
+/// `SSL_CTX_set_cipher_list` does not affect TLS 1.3 suites.
 const char* const kH2Tls12Ciphers =
     "ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:"
     "ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:"
@@ -246,7 +252,7 @@ const char* const kH2Tls12Ciphers =
 // ---------------------------------------------------------------------------
 
 void ensureTlsInit() {
-    static bool done = false;   // main thread only
+    static bool done = false;   // eco thread only, unsynchronised
     if (done) return;
     done = true;
     (void)OPENSSL_init_ssl(OPENSSL_INIT_NO_ATEXIT | OPENSSL_INIT_LOAD_SSL_STRINGS |
@@ -319,8 +325,7 @@ std::shared_ptr<TlsClientConfig> buildTlsClientConfig(int64_t mode, const std::s
         break;
     }
     default: {
-        // Built once per process (the store is read from disk); a failure
-        // is not cached.
+        // A failed build leaves the cache empty, so the next call tries again.
         std::lock_guard<std::mutex> lk(cacheMutex());
         if (!cachedSystem()) cachedSystem() = makeSystemContext(err);
         cfg->ctx = cachedSystem();
@@ -350,9 +355,8 @@ std::shared_ptr<TlsServerConfig> buildTlsServerConfig(const std::string& certifi
         err = tlsTakeError("ciphers");
         return nullptr;
     }
-    (void)SSL_CTX_set_num_tickets(ctx, 0);   // no session resumption in v1 (TlsContext.hpp)
+    (void)SSL_CTX_set_num_tickets(ctx, 0);   // no session tickets: there is no session resumption
 
-    // The chain: the leaf certificate first, then the intermediates.
     BIO* bio = BIO_new_mem_buf(certificateChain.data(), static_cast<int>(certificateChain.size()));
     if (!bio) {
         err = tlsTakeError("certificateChain");
@@ -407,7 +411,7 @@ std::shared_ptr<TlsServerConfig> buildTlsServerConfig(const std::string& certifi
 
 } // namespace Eco::System
 
-#else // _WIN32: no OpenSSL (the kernels fail ENOTSUP before reaching here, §1)
+#else // _WIN32: no OpenSSL, so only ensureTlsInit exists, as a no-op
 
 namespace Eco::System {
 

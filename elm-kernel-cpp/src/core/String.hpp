@@ -1,14 +1,28 @@
+// The C++ side of elm/core's `String` module, for programs eco compiles to native code.
+//
+// A String on the runtime heap is not one kind of object. It may be a UTF-16 leaf, a large String,
+// a slice, a rope, or one of two UTF-8 forms whose bytes are all ASCII, as `Elm::StringOps`
+// (runtime/src/allocator/StringOps.hpp) defines them; the empty String is the Empty constant,
+// never an object. Whatever the form, a length or a position is counted in UTF-16 units, which is
+// how Elm counts them. A Char is one code point, so an operation that turns a String into Chars
+// reads a valid surrogate pair as one Char, and one that turns Chars into a String writes a code
+// above 0xFFFF as two units.
+//
+// The functions here take each String as `void*`: the address of a String object that the caller
+// has resolved, or null for the empty String. Such a pointer is valid only until the next
+// allocation, which may move the object. Most functions forward to the `StringOps` operation of
+// the same name, whose comment gives the result's form; `fromList`, `lines`, `words`, `foldl`,
+// `foldr` and `fromNumber` are written here. A function that allocates keeps the Strings it still
+// needs alive across its own allocations, so the caller need not root them for its sake; `foldl`
+// and `foldr` are the exception, as their comments say.
+//
+// The C-linkage entry points the compiled program calls are in StringExports.cpp, declared in
+// KernelExports.h. They decode their arguments and call the functions below, except for `map`,
+// `filter`, `any`, `all`, `foldl` and `foldr`. Those take an Elm closure, which these function-pointer
+// versions cannot call, so the exports implement them themselves and the versions here have no
+// callers.
 #ifndef ECO_STRING_HPP
 #define ECO_STRING_HPP
-
-/**
- * Elm Kernel String Module - Runtime Heap Integration
- *
- * This module provides string operations that work with the GC-managed heap.
- * All strings are represented as HPointer to ElmString objects on the heap.
- *
- * Functions delegate to StringOps helpers from the runtime allocator.
- */
 
 #include "allocator/Heap.hpp"
 #include "allocator/HeapHelpers.hpp"
@@ -19,208 +33,180 @@ namespace Elm::Kernel::String {
 // Length
 // ============================================================================
 
-/**
- * Returns the number of code units in a string.
- * Equivalent to Elm's String.length for BMP characters.
- */
+/// Returns the length of `str` in UTF-16 units, as Elm's `String.length` counts it; 0 for null.
 i64 length(void* str);
 
 // ============================================================================
 // Concatenation
 // ============================================================================
 
-/**
- * Appends two strings: a ++ b
- */
+/// Returns `a` followed by `b`, as `StringOps::append` forms it. A GC point.
 HPointer append(void* a, void* b);
 
-/**
- * Joins strings with a separator.
- */
+/// Returns the Strings of the Elm list `stringList` joined in order with `sep` between each two, as
+/// `StringOps::join` forms it. A GC point.
 HPointer join(void* sep, HPointer stringList);
 
 // ============================================================================
 // Character Operations
 // ============================================================================
 
-/**
- * Prepends a character to a string.
- * Takes a Unicode code point (a Char); an astral code point is prepended as
- * its UTF-16 surrogate pair.
- */
+/// Returns the Char `c` followed by `str`. A code point above 0xFFFF is written as its UTF-16
+/// surrogate pair. A GC point.
 HPointer cons(u32 c, void* str);
 
-/**
- * Removes and returns the first character.
- * Returns Just(Tuple2(char, rest)) or Nothing if empty.
- */
+/// Returns `Just (c, rest)`, where `c` is the first Char of `str` and `rest` the remainder, or
+/// `Nothing` when `str` is null or empty. A GC point.
 HPointer uncons(void* str);
 
-/**
- * Converts a list of characters to a string.
- */
+/// Returns the String of the Chars in the Elm list `chars`, in order, or the Empty constant for an
+/// empty list.
+///
+/// The list's cells may hold each Char unboxed or as a boxed `ElmChar`. The result is a UTF-8 form
+/// when every Char is below 0x80 and UTF-8 Strings are enabled, and a UTF-16 String otherwise. A GC
+/// point.
 HPointer fromList(HPointer chars);
 
 // ============================================================================
 // Higher-Order Operations
 // ============================================================================
+//
+// The functions in this section and the next have no callers: the exports for `String.map`,
+// `filter`, `any`, `all`, `foldl` and `foldr` apply Elm closures and do not use them.
 
-/**
- * Function pointer for character transformation.
- */
+/// A function that maps one Char, as a code point, to another.
 using CharMapper = u32 (*)(u32);
 
-/**
- * Function pointer for character predicates.
- */
+/// A function that answers a yes-or-no question about one Char, given as a code point.
 using CharPredicate = bool (*)(u32);
 
-/**
- * Maps a function over each character, producing a new string.
- */
+/// Returns `str` with each Char replaced by `func` of it, as `StringOps::map` does. A GC point.
 HPointer map(CharMapper func, void* str);
 
-/**
- * Filters characters based on a predicate.
- */
+/// Returns the Chars of `str` for which `pred` is true, in order, as `StringOps::filter` does. A GC
+/// point.
 HPointer filter(CharPredicate pred, void* str);
 
-/**
- * Checks if any character satisfies a predicate.
- */
+/// Returns whether `pred` is true of some Char of `str`.
 bool any(CharPredicate pred, void* str);
 
-/**
- * Checks if all characters satisfy a predicate.
- */
+/// Returns whether `pred` is true of every Char of `str`; true for an empty `str`.
 bool all(CharPredicate pred, void* str);
 
 // ============================================================================
 // Folding
 // ============================================================================
 
-/**
- * Fold function type: (char, accumulator) -> new_accumulator
- */
+/// A fold step: given a Char, as a code point, and the resolved accumulator, returns the next
+/// accumulator. The accumulator is resolved with `Allocator::resolve`, so it must be a heap object,
+/// not an embedded constant such as `[]` or `""`.
 using FoldFunc = HPointer (*)(u32, void*);
 
-/**
- * Folds left over characters.
- */
+/// Returns the accumulator left by applying `func` to each Char of `str` from first to last,
+/// starting from `acc`; `acc` itself for a null `str`.
+///
+/// `str` is copied before `func` is first called. The accumulator is not rooted while `func` runs,
+/// so a `func` that allocates may leave it stale.
 HPointer foldl(FoldFunc func, HPointer acc, void* str);
 
-/**
- * Folds right over characters.
- */
+/// Returns the accumulator left by applying `func` to each Char of `str` from last to first,
+/// starting from `acc`; `acc` itself for a null `str`. As for `foldl`, the accumulator is not
+/// rooted while `func` runs.
 HPointer foldr(FoldFunc func, HPointer acc, void* str);
 
 // ============================================================================
 // Slicing
 // ============================================================================
 
-/**
- * Extracts a substring from start (inclusive) to end (exclusive).
- * Negative indices count from end.
- */
+/// Returns the units of `str` from index `start` up to but not including `end`, as Elm's
+/// `String.slice` does: a negative index counts from the end, and both are then clamped to the
+/// String. A GC point.
 HPointer slice(i64 start, i64 end, void* str);
 
 // ============================================================================
 // Splitting
 // ============================================================================
 
-/**
- * Splits a string on a separator into a list of strings.
- */
+/// Returns an Elm list of the pieces of `str` between non-overlapping occurrences of `sep`, found
+/// from the left, as `StringOps::split` forms them. A null or empty `str` gives a list holding only
+/// the empty String; otherwise a null or empty `sep` splits `str` into its Chars. A GC point.
 HPointer split(void* sep, void* str);
 
-/**
- * Splits a string into lines.
- */
+/// Returns an Elm list of the lines of `str`, split at each `"\r\n"`, `"\r"` and `"\n"`.
+///
+/// A line break at the very end gives a final empty line, and a null or empty `str` gives a list
+/// holding only the empty String. When `str` is a UTF-8 form and UTF-8 Strings are enabled, each
+/// line is what `slice` gives for its range, so a long line shares `str`; otherwise each non-empty
+/// line is a new UTF-16 String. A GC point.
 HPointer lines(void* str);
 
-/**
- * Splits a string into words.
- */
+/// Returns an Elm list of the words of `str`, as elm/core's JS kernel finds them: `str` is trimmed,
+/// then split at each run of whitespace, where whitespace is `StringOps::isJsWhitespace`'s set.
+///
+/// A `str` that is null, empty or all whitespace gives a list holding only the empty String. When
+/// the trimmed String is a UTF-8 form and UTF-8 Strings are enabled, each word is what `slice`
+/// gives for its range; otherwise each is a new UTF-16 String. A GC point.
 HPointer words(void* str);
 
 // ============================================================================
 // Transformation
 // ============================================================================
 
-/**
- * Reverses a string.
- */
+/// Returns the Chars of `str` in reverse order; a valid surrogate pair stays in order as one Char.
+/// A GC point.
 HPointer reverse(void* str);
 
-/**
- * Converts string to uppercase (ASCII only).
- */
+/// Returns `str` in upper case, by the Unicode simple case mapping as `StringOps::toUpper` applies
+/// it: each code point maps to one code point, with no context and no locale. A GC point.
 HPointer toUpper(void* str);
 
-/**
- * Converts string to lowercase (ASCII only).
- */
+/// Returns `str` in lower case, by the Unicode simple case mapping as `StringOps::toLower` applies
+/// it. A GC point.
 HPointer toLower(void* str);
 
-/**
- * Trims whitespace from both ends.
- */
+/// Returns `str` without the whitespace at either end, where whitespace is
+/// `StringOps::isJsWhitespace`'s set. A GC point.
 HPointer trim(void* str);
 
-/**
- * Trims whitespace from the left.
- */
+/// Returns `str` without the whitespace at its start, as `trim` defines it. A GC point.
 HPointer trimLeft(void* str);
 
-/**
- * Trims whitespace from the right.
- */
+/// Returns `str` without the whitespace at its end, as `trim` defines it. A GC point.
 HPointer trimRight(void* str);
 
 // ============================================================================
 // Searching
 // ============================================================================
 
-/**
- * Checks if str starts with prefix.
- */
+/// Returns whether `str` begins with `prefix`. A null `prefix` begins any String.
 bool startsWith(void* prefix, void* str);
 
-/**
- * Checks if str ends with suffix.
- */
+/// Returns whether `str` ends with `suffix`. A null `suffix` ends any String.
 bool endsWith(void* suffix, void* str);
 
-/**
- * Checks if the substring needle is contained in haystack.
- */
+/// Returns whether `needle` occurs in `haystack`. A null `needle` occurs in any String.
 bool contains(void* needle, void* haystack);
 
-/**
- * Returns a list of all indices where needle appears in haystack.
- */
+/// Returns an Elm list of every unit index at which `needle` occurs in `haystack`, in increasing
+/// order, overlapping occurrences included. A null or empty `needle`, or a null `haystack`, gives the
+/// empty list. A GC point.
 HPointer indexes(void* needle, void* haystack);
 
 // ============================================================================
 // Conversion
 // ============================================================================
 
-/**
- * Parses an integer from a string.
- * Returns Just(int) on success, Nothing on failure.
- */
+/// Returns `Just` the Int that `str` spells in decimal, or `Nothing`, as `StringOps::toInt`
+/// decides. A GC point.
 HPointer toInt(void* str);
 
-/**
- * Parses a float from a string.
- * Returns Just(float) on success, Nothing on failure.
- */
+/// Returns `Just` the Float that `str` spells, or `Nothing`, as `StringOps::toFloat` decides. A GC
+/// point.
 HPointer toFloat(void* str);
 
-/**
- * Converts a number to a string.
- * Works for both Int and Float types.
- */
+/// Returns the text of the number `n`, as `StringOps::fromInt` or `StringOps::fromFloat` writes it.
+/// `n` is the address of a boxed `ElmInt` or `ElmFloat`; a null `n`, or an object with any other
+/// tag, gives the Empty constant. A GC point.
 HPointer fromNumber(void* n);
 
 } // namespace Elm::Kernel::String

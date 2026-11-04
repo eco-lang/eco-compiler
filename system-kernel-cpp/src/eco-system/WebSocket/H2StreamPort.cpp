@@ -1,16 +1,11 @@
 //===- H2StreamPort.cpp - A WebSocket over an HTTP/2 stream (RFC 8441) ----===//
 //
-// See H2StreamPort.hpp (plans/eco-system-websockets.md §3.9, phase WS9).
-// Reactor thread only (G1).
-//
 // Re-entrancy: every tunnel call may run the h2 session at once and call back
 // into this port (streamData, streamWritable, streamReset) and from there
 // into the core. Entry points keep the port alive (shared_from_this) across
 // such calls, input that arrives while the core runs is appended to in_ and
 // delivered by the running loop, and once the stream is gone (gone_) no
 // tunnel call is made.
-//
-// Templates used: none (POD only, G1).
 //
 //===----------------------------------------------------------------------===//
 
@@ -24,14 +19,15 @@ namespace Eco::System {
 
 namespace {
 
+/// Returns the process's reactor.
 IoReactor& reactor() { return IoReactor::instance(); }
 
+/// The drain time, in milliseconds, that `portCloseGraceful` uses when it is given none.
 constexpr int64_t kDefaultDrainMs = 2000;
 
 } // namespace
 
-// The port's own timer (a timer-only reactor handler): the codec's deadlines
-// are per stream, and one Conn carries many streams.
+/// It refers to its port weakly, so a timer that fires after the port has been destroyed does nothing.
 struct H2StreamPort::Timer final : IoHandler {
     std::weak_ptr<H2StreamPort> port;
     void onReady(bool, bool, bool) override {}
@@ -64,8 +60,7 @@ void H2StreamPort::bind(H2Tunnel* tunnel, std::string buffered) {
     deliver();
 }
 
-// Gives the core what it takes now; the stream window is replenished by what
-// it took (backpressure: a paused codec leaves the rest here, unconsumed).
+// What a paused codec does not take stays in in_, unconsumed, which is what holds the peer back.
 void H2StreamPort::deliver() {
     if (delivering_ || !bound_ || gone_) return;
     delivering_ = true;
@@ -98,7 +93,7 @@ void H2StreamPort::streamEnd() {
 void H2StreamPort::streamReset(uint32_t code) {
     if (gone_) return;
     auto self = shared_from_this();
-    if (code == 0) deliver();   // an orderly end: what the codec still takes
+    if (code == 0) deliver();
     gone_ = true;
     tunnel_ = nullptr;
     in_.clear();
@@ -150,7 +145,7 @@ void H2StreamPort::portAbort() {
     if (gone_) return;
     auto self = shared_from_this();
     if (H2Tunnel* t = tunnel_) t->tunnelReset(kCancel);
-    streamReset(kCancel);   // the core learns it now (idempotent if the reset ran already)
+    streamReset(kCancel);   // does nothing if tunnelReset already reported the reset
 }
 
 // --- Timers -------------------------------------------------------------------------------
@@ -172,8 +167,9 @@ void H2StreamPort::armTimer() {
     if (timer_->key() != 0) reactor().setTimer(timer_->key(), earliest);
 }
 
-// Expired ids in deadline order; an id re-armed by an earlier one is skipped
-// (as Conn's multi-timer, §10 WS1).
+// Handles expired ids in deadline order, one per round, clearing each before it is handled. An id that an earlier
+// handler re-arms for a later time is not handled in this call. The round limit bounds the loop if handlers keep
+// re-arming ids that have already passed.
 void H2StreamPort::fire() {
     auto self = shared_from_this();
     int64_t now = reactor().nowMs();
@@ -186,7 +182,7 @@ void H2StreamPort::fire() {
         deadlines_[id] = 0;
         if (gone_) continue;
         if (id == Conn::kTimerDrain) {
-            // The peer did not end its side in time: reset (as a TCP drain ends in a close).
+            // The stream was not closed within the drain time.
             portAbort();
         } else {
             core_->portTimer(id);

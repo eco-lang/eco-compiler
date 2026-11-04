@@ -1,30 +1,9 @@
 //===- Udp.cpp - UDP sockets on the IoReactor -----------------------------===//
 //
-// See Udp.hpp (plans/eco-system-sockets.md §3.3.5, §3.3.7, §3.3.8, §3.4,
-// Appendix B.2, §D.4).
-//
-//   * udpBind (P, T2): udpBindOn on the SysWorkPool (socket, options, bind;
-//     the result owns the fd through RAII, N11); the completion hands the
-//     fd to a new UdpHandler and records the UdpEntry (a bound socket holds
-//     nothing of its own, LIVE_001).
-//   * udpSend / udpMembership (R): parkResume + submit + OpDone (released
-//     by SocketTables.cpp's OpDone dispatcher).
-//   * udpReceive (A): a held datagram at once (§3.4), else parked on the
-//     entry with one credit and a hold (parkResume); kill handle
-//     cancelParkedReceive (returns the credit; the handle releases the hold).
-//   * udpClose (S): idempotent; marks the entry closed, fails the parked
-//     receives ECANCELED (releasing their holds), drops the held datagrams
-//     and submits close(); the subscription hold is released by the UdpClosed
-//     drain.
-//
-// Every body follows G2/G3: copy the inputs out of the heap first, then act,
-// then allocate. Error messages follow Node (§D.5): "bind <CODE> addr:port",
-// "send <CODE> addr:port", "addMembership <CODE>", "dropMembership <CODE>";
-// operations on a closed socket fail ECANCELED.
-//
-// Templates used: T1 (udpClose), T2 (bind + completion), T5 (table), T7
-// (receive kill handle), T8 (delivery via UdpManager.cpp), T9/G10
-// (completions, HoldRelease), G12 (drain per delivery).
+// The kernel bodies read the payload in two phases. First they copy everything they need out of the heap into C++
+// values, without allocating, so the raw pointers they read through stay valid; only then do they act and allocate.
+// The value builders likewise root each value they have made, or pass it straight to a helper that roots it,
+// before making the next.
 //
 //===----------------------------------------------------------------------===//
 
@@ -50,8 +29,10 @@ namespace Eco::System {
 
 namespace {
 
+/// Returns the reactor.
 IoReactor& reactor() { return IoReactor::instance(); }
 
+/// Closes `fd` if it is not negative, ignoring any error.
 void closeQuietly(int fd) {
 #ifndef _WIN32
     if (fd >= 0) (void)::close(fd);
@@ -60,6 +41,7 @@ void closeQuietly(int fd) {
 #endif
 }
 
+/// Returns "address:port", the form error messages quote a destination in.
 std::string hostPort(const std::string& address, int64_t port) {
     return address + ":" + std::to_string(port);
 }
@@ -74,8 +56,8 @@ UdpHandler::UdpHandler(int fd, int64_t socketId, uint64_t gen, bool isV6)
     : fd_(fd), socketId_(socketId), gen_(gen), isV6_(isV6) {}
 
 UdpHandler::~UdpHandler() {
-    // Only reachable with an open fd if start() never ran (a registered
-    // handler is kept alive by its reactor slot until close()).
+    // A registered handler is kept alive by the reactor until close() removes it, so an open fd here means the
+    // handler was never registered.
     if (fd_ >= 0 && key() == 0) closeQuietly(fd_);
 }
 
@@ -93,7 +75,7 @@ bool UdpHandler::canReceive() const {
 void UdpHandler::updateInterest() {
     if (key() == 0 || closed_) return;
     int e = reactor().setInterest(key(), canReceive(), !sendQ_.empty());
-    if (e != 0 && !backoff_) {   // cannot watch the fd now: retry later
+    if (e != 0 && !backoff_) {
         backoff_ = true;
         reactor().setTimer(key(), reactor().nowMs() + kBackoffMs);
     }
@@ -144,28 +126,27 @@ void UdpHandler::receiveLoop() {
         if (n < 0) {
             int e = errno;
             if (e == EAGAIN || e == EWOULDBLOCK) return;
-            // EINTR, and ICMP errors some systems queue on a UDP socket: retry.
+            // EINTR, and the errors an ICMP report can leave pending on a datagram socket: try again.
             if (e == EINTR || e == ECONNREFUSED || e == ECONNRESET || e == EHOSTUNREACH ||
                 e == ENETUNREACH)
                 continue;
-            // Anything else (ENOMEM, ENOBUFS, ...): back off instead of
-            // spinning on a level-triggered fd (N9).
+            // Anything else (ENOMEM, ENOBUFS, ...): back off instead of spinning on a level-triggered fd.
             backoff_ = true;
             reactor().setTimer(key(), reactor().nowMs() + kBackoffMs);
             return;
         }
-        if (mh.msg_flags & MSG_TRUNC) continue;   // larger than any datagram we accept: drop
+        if (mh.msg_flags & MSG_TRUNC) continue;   // longer than the buffer: dropped
         from.len = mh.msg_namelen;
         SocketEvent ev;
         ev.kind = SocketEvent::Kind::Datagram;
         ev.gen = gen_;
         ev.ownerId = socketId_;
         if (!sockaddrToInet(from, ev.remote.text, ev.remote.port)) {
-            ev.remote.text = isV6_ ? "::" : "0.0.0.0";   // §3.2 fallback (should not happen)
+            ev.remote.text = isV6_ ? "::" : "0.0.0.0";
             ev.remote.port = 0;
         }
         ev.data.assign(buf_.data(), static_cast<size_t>(n));
-        if (credit_ > 0) --credit_;   // consumed (unlimited while subscribed)
+        if (credit_ > 0) --credit_;   // taken even when unlimited
         postSocketEvent(std::move(ev));
     }
 #endif
@@ -179,7 +160,7 @@ void UdpHandler::serviceSends() {
         if (n < 0) {
             int e = errno;
             if (e == EINTR) continue;
-            if (e == EAGAIN || e == EWOULDBLOCK) return;   // write interest (updateInterest)
+            if (e == EAGAIN || e == EWOULDBLOCK) return;   // the caller watches for writability
             postOpDone(r.token, e, "send", r.what);
         } else {
             postOpDone(r.token, 0, "send", r.what);
@@ -199,9 +180,7 @@ void UdpHandler::send(uint64_t token, std::string address, int64_t port, std::st
     SendReq r{token, SockAddr(), std::move(data), what};
     int e = inetToSockaddr(address, port, r.to);
     if (e == 0) {
-        // §D.4: an IPv4 destination on an IPv6 socket goes to ::ffff:a.b.c.d
-        // (an ipv6Only socket then fails as the kernel reports); an IPv6
-        // destination on an IPv4 socket fails EAFNOSUPPORT.
+        // On an IPv6-only socket the mapped address fails in sendto, with whatever error the system reports.
         if (r.to.family() == AF_INET6 && !isV6_) e = EAFNOSUPPORT;
         else if (r.to.family() == AF_INET && isV6_) (void)mapIPv4ToIPv6(r.to);
     }
@@ -211,7 +190,7 @@ void UdpHandler::send(uint64_t token, std::string address, int64_t port, std::st
     }
     bool idle = sendQ_.empty();
     sendQ_.push_back(std::move(r));
-    if (idle) serviceSends();   // in order behind any send waiting for EAGAIN
+    if (idle) serviceSends();   // otherwise it waits behind the sends already queued
     updateInterest();
 #else
     (void)data;
@@ -243,8 +222,7 @@ void UdpHandler::membership(uint64_t token, bool join, std::string group, std::s
         std::memset(&mr, 0, sizeof(mr));
         const auto* g6 = reinterpret_cast<const struct sockaddr_in6*>(g.get());
         mr.ipv6mr_multiaddr = g6->sin6_addr;
-        // The interface: the scope of the interface address (its address
-        // bits are ignored, Appendix A), else the group's own scope, else 0.
+        // The address bits of `iface` are ignored; only its scope names the interface.
         uint32_t index = g6->sin6_scope_id;
         if (!iface.empty()) {
             SockAddr i;
@@ -266,12 +244,12 @@ void UdpHandler::membership(uint64_t token, bool join, std::string group, std::s
 }
 
 void UdpHandler::close() {
-    if (closed_) return;   // one UdpClosed per socket
+    if (closed_) return;
     closed_ = true;
     std::deque<SendReq> q;
     q.swap(sendQ_);
     for (auto& r : q) postOpDone(r.token, ECANCELED, "send", r.what);
-    if (key() != 0) reactor().remove(key());   // remove before close (rule 3)
+    if (key() != 0) reactor().remove(key());   // the reactor requires removal before the fd is closed
     closeQuietly(fd_);
     fd_ = -1;
     SocketEvent ev;
@@ -323,6 +301,8 @@ UdpBindResult::~UdpBindResult() { closeQuietly(fd); }
 
 namespace {
 
+/// Returns `r` turned into the failure for errno `err`, closing its fd; `what` is the "address:port" the message
+/// quotes.
 UdpBindResult bindFailure(UdpBindResult r, int err, const std::string& what) {
     closeQuietly(r.fd);
     r.fd = -1;
@@ -356,12 +336,11 @@ UdpBindResult udpBindOn(const std::string& address, int64_t port, bool reuseAddr
         return bindFailure(std::move(r), e, what);
     }
     if (r.isV6) {
-        // Explicit: Linux's default comes from net.ipv6.bindv6only.
+        // Set either way, so the result does not depend on the system's default.
         int v6 = ipv6Only ? 1 : 0;
         (void)::setsockopt(r.fd, IPPROTO_IPV6, IPV6_V6ONLY, &v6, sizeof(v6));
     }
-    // Buffer sizes >= 65 536 so a maximal datagram fits (macOS's default
-    // maxdgram is 9 216, N15). Only ever raised.
+    // Each buffer is raised to kMaxDatagram if it is smaller, never lowered; a failure is ignored.
     for (int opt : {SO_SNDBUF, SO_RCVBUF}) {
         int cur = 0;
         socklen_t len = sizeof(cur);
@@ -393,19 +372,19 @@ UdpBindResult udpBindOn(const std::string& address, int64_t port, bool reuseAddr
 }
 
 // ---------------------------------------------------------------------------
-// Main-thread table, values and delivery
+// Eco-thread table, values and delivery
 // ---------------------------------------------------------------------------
 
 namespace {
 
-// A dead heap's entries: close their handlers (the UdpClosed events are a
-// dead heap's and are dropped) and release the holds of their subscriptions
-// and parked receives (their tasks never resume).
+/// Closes every handler in `t`, releases the subscription holds and the holds of the parked receives, whose tasks
+/// are never resumed, and empties the table. The `UdpClosed` events that follow belong to the old heap generation
+/// and are not dispatched.
 void resetTables(UdpTables& t) {
     auto& sched = Scheduler::instance();
     for (auto& kv : t.sockets) {
         if (auto h = kv.second.handler) reactor().submit([h] { h->close(); });
-        HoldRelease subHold(kv.second.subHold);   // holds outlive the heap: release them
+        HoldRelease subHold(kv.second.subHold);
         for (uint64_t token : kv.second.parkedReceives) {
             (void)sched.takePendingResume(token);
             sched.releaseHold(token);
@@ -414,23 +393,23 @@ void resetTables(UdpTables& t) {
     t.sockets.clear();
 }
 
-// UdpT ( socketId, ( address, port ) ), masks 0x1 / 0x4.
+/// Returns the Elm value `( id, ( address, port ) )` for socket `id` bound to `ep`, with both Ints unboxed.
 HPointer buildUdpT(int64_t id, const SockEndpoint& ep) {
     HPointer inner = alloc::listNil();
     Elm::StackRootGuard g(&inner);
     HPointer text = alloc::allocStringFromUTF8(ep.text);
-    // Fresh result passed directly into the helper (it roots its arguments, G4).
+    // `text` is passed straight to tuple2, which roots its arguments.
     inner = alloc::tuple2(alloc::boxed(text), alloc::unboxedInt(ep.port), 0x4);
     return alloc::tuple2(alloc::unboxedInt(id), alloc::boxed(inner), 0x1);
 }
 
-// DgramT ( data, ( fromAddress, fromPort ) ), masks 0 / 0x4.
+/// Returns the Elm value `( data, ( fromAddress, fromPort ) )` for the datagram `ev`, with the port unboxed.
 HPointer buildDgramT(const SocketEvent& ev) {
     HPointer data = alloc::listNil();
     HPointer from = alloc::listNil();
     Elm::StackRootGuard g(&data, &from);
     {
-        // T4/G8: fill right after the allocation (n == 0 gives emptyBytes()).
+        // Filled before anything else allocates; an empty payload gives the empty-Bytes constant.
         alloc::BlankByteBuffer bb = alloc::allocByteBufferBlank(ev.data.size());
         if (!ev.data.empty()) std::memcpy(bb.bytes, ev.data.data(), ev.data.size());
         data = bb.hp;
@@ -440,6 +419,8 @@ HPointer buildDgramT(const SocketEvent& ev) {
     return alloc::tuple2(alloc::boxed(data), alloc::boxed(from), 0);
 }
 
+/// Fails the task parked under `token` with the FErr `( code, message )` and returns true, or returns false if
+/// nothing is parked under it. Releases no hold.
 bool resumeFail(uint64_t token, const std::string& code, const std::string& message) {
     HPointer task = alloc::listNil();
     Elm::StackRootGuard g(&task);
@@ -451,9 +432,8 @@ bool resumeFail(uint64_t token, const std::string& code, const std::string& mess
     return true;
 }
 
-// Serves the held FIFO of socket `id` while it has a consumer (§3.4): the
-// oldest parked receive first, else the subscribers. Each delivery resumes
-// or sends, then drains (G12).
+/// Delivers the held datagrams of socket `id` from the front, as the header's file comment describes, until none is
+/// held, no one takes them, or the socket closes. Runs the scheduler after each delivery.
 void serveHeld(int64_t id) {
     auto& sched = Scheduler::instance();
     for (;;) {
@@ -463,8 +443,8 @@ void serveHeld(int64_t id) {
             uint64_t token = e->parkedReceives.front();
             e->parkedReceives.pop_front();
             HPointer resume = sched.takePendingResume(token);
-            if (alloc::isNil(resume)) continue;   // killed (its cancel already ran)
-            HoldRelease release(token);   // the parked receive's hold, after the resume
+            if (alloc::isNil(resume)) continue;   // already completed; whoever did released its hold
+            HoldRelease release(token);   // released after the resume
             SocketEvent ev = std::move(e->held.front());
             e->held.pop_front();
             HPointer task = alloc::listNil();
@@ -481,47 +461,54 @@ void serveHeld(int64_t id) {
         HPointer dgram = alloc::listNil();
         Elm::StackRootGuard g(&dgram);
         dgram = buildDgramT(ev);
-        udpManagerDeliver(id, dgram);   // sendToApp + drain per tagger
+        udpManagerDeliver(id, dgram);
     }
 }
 
-// Deferred work (requestSocketWork): serve every socket's held FIFO.
+/// Serves the held datagrams of every socket, in socket id order; the work `udpTablesSyncSubscriptions` requests.
 void serveAllHeld() {
     std::vector<int64_t> ids;
     for (auto& kv : udpTables().sockets) {
         if (!kv.second.held.empty()) ids.push_back(kv.first);
     }
-    std::sort(ids.begin(), ids.end());   // POD ids (G15 is about HPointers)
+    std::sort(ids.begin(), ids.end());
     for (int64_t id : ids) serveHeld(id);
 }
 
-// --- Event dispatchers (SocketEvents.cpp drain) ------------------------------
+// --- Event dispatchers ------------------------------
 
+/// Holds the datagram `ev` and serves the socket's held FIFO, or drops it if the socket is closed or unknown.
+/// Returns false: `serveHeld` already ran the scheduler after each delivery.
 bool onDatagram(SocketEvent& ev) {
     UdpEntry* e = findUdp(ev.ownerId);
     if (!e || e->closed) return false;   // closed: dropped
     int64_t id = ev.ownerId;
-    e->held.push_back(std::move(ev));    // in order behind anything held earlier
-    while (e->held.size() > kMaxHeldDatagrams) e->held.pop_front();   // drop the oldest
-    serveHeld(id);                       // drains per delivery itself
+    e->held.push_back(std::move(ev));
+    while (e->held.size() > kMaxHeldDatagrams) e->held.pop_front();
+    serveHeld(id);
     return false;
 }
 
+/// Erases the closed socket, releases its subscription hold and fails its parked receives with ECANCELED. Returns
+/// whether any task was resumed.
 bool onUdpClosed(SocketEvent& ev) {
     UdpEntry* e = findUdp(ev.ownerId);
     if (!e) return false;
+    // Moved out before any task resumes, since Elm code can change the table.
     UdpEntry entry = std::move(*e);
     udpTables().sockets.erase(ev.ownerId);
     HoldRelease subHold(entry.subHold);   // the subscription's hold, if any
     bool resumed = false;
-    for (uint64_t token : entry.parkedReceives) {   // closeAll path: nobody failed them yet
+    // Parked receives remain only when the socket closed without `udpClose`, which fails them itself.
+    for (uint64_t token : entry.parkedReceives) {
         HoldRelease receiveHold(token);
         resumed |= resumeFail(token, "ECANCELED", "receive ECANCELED");
     }
     return resumed;
 }
 
-// T2 completion (main thread).
+/// Completes a bind on the eco thread: returns the failure Task, or adds the bound socket to the table, starts its
+/// handler and returns the Task that succeeds with its `( id, ( address, port ) )`.
 HPointer udpBindComplete(PoolResult& pr) {
     auto& r = pr.as<UdpBindResult>();
     if (!r.code.empty()) return failFErr(r.code, r.message);
@@ -534,35 +521,36 @@ HPointer udpBindComplete(PoolResult& pr) {
     UdpEntry e;
     e.handler = h;
     e.bound = r.bound;
-    // A bound socket holds nothing of its own (LIVE_001, L2): parked
-    // receives and onMessage subscriptions hold.
     t.sockets.emplace(id, std::move(e));
     reactor().submit([h] { h->start(); });
     HPointer ut = buildUdpT(id, r.bound);
     return succeed(ut);
 }
 
-// --- Payload decoding (no allocation, G5) ----------------------------------------
+// --- Payload decoding (no allocation) ----------------------------------------
 
+/// Returns whether `b` is the Elm `True` constant.
 bool isElmTrue(HPointer b) { return ::Elm::hpBits(b) == ::Elm::hpBits(alloc::elmTrue()); }
 
-// An Int tuple slot: unboxed (the normal case, HEAP_046) or boxed.
+/// Returns the Int in slot `slot` of a tuple whose kind mask is `mask`, whether the slot holds it unboxed or boxed.
 int64_t slotInt(const Unboxable& u, u32 mask, int slot) {
     if (Elm::tupleFieldKind(mask, slot) == 1) return u.i;
     return static_cast<ElmInt*>(Allocator::instance().resolve(u.p))->value;
 }
 
+/// Returns the value of `captured`, a boxed Int.
 int64_t payloadInt(HPointer captured) {
     return static_cast<ElmInt*>(Allocator::instance().resolve(captured))->value;
 }
 
+/// Completes the body's Task at once by passing `task` to `resume`, and returns `()` as the kill handle.
 HPointer resumeNow(HPointer& resume, HPointer task) {
     Elm::StackRootGuard g(&task);
     Scheduler::callClosure1(resume, task);
     return alloc::unit();
 }
 
-// ( address, port ) from an Elm tuple2 (String, Int).
+/// Reads `address` and `port` from `tuple`, an Elm `( String, Int )`.
 void readHostPort(HPointer tuple, std::string& address, int64_t& port) {
     Tuple2* t = asTuple2(tuple);
     HPointer addr = t->a.p;
@@ -570,8 +558,8 @@ void readHostPort(HPointer tuple, std::string& address, int64_t& port) {
     address = toStdString(addr);
 }
 
-// R mode: parks `resume` with the operation's hold (named `site`) and returns
-// the token (G10). The caller submits the work.
+/// Parks `resume`, taking a hold named `site`, and returns the token, which it also stores in `token`; sets
+/// `counted`. The caller then submits the work whose `OpDone` completes it.
 uint64_t startOp(HPointer& resume, uint64_t& token, bool& counted, const char* site) {
     auto& s = Scheduler::instance();
     token = s.parkResume(resume, HoldKind::Task, site);
@@ -582,7 +570,7 @@ uint64_t startOp(HPointer& resume, uint64_t& token, bool& counted, const char* s
 } // namespace
 
 UdpTables& udpTables() {
-    static auto* t = new UdpTables();   // leaky (§3.4)
+    static auto* t = new UdpTables();   // never freed
     uint64_t g = currentHeapGeneration();
     if (!t->init || t->gen != g) {
         if (t->init) resetTables(*t);
@@ -599,8 +587,8 @@ UdpEntry* findUdp(int64_t id) {
 }
 
 void ensureUdpTables() {
-    ensureSocketTables();   // the OpDone dispatcher and the event queue
-    static bool done = false;   // main thread only
+    ensureSocketTables();
+    static bool done = false;
     if (done) return;
     done = true;
     setSocketEventDispatch(SocketEvent::Kind::Datagram, &onDatagram);
@@ -612,8 +600,6 @@ void udpTablesSyncSubscriptions() {
     bool heldWaiting = false;
     for (auto& kv : udpTables().sockets) {
         UdpEntry& e = kv.second;
-        // The subscription hold (LIVE_001): while an onMessage subscription
-        // names this open socket.
         bool wantHold = !e.closed && e.handler && udpManagerHasSubscribers(kv.first);
         if (wantHold && !e.subHold) e.subHold = sched.acquireHold(HoldKind::Subscription, "Udp.onMessage");
         if (!wantHold && e.subHold) {
@@ -640,11 +626,11 @@ bool cancelParkedReceive(uint64_t token) {
         q.erase(it);
         if (kv.second.handler && !kv.second.closed) {
             auto h = kv.second.handler;
-            reactor().submit([h] { h->addCredit(-1); });   // return the credit
+            reactor().submit([h] { h->addCredit(-1); });
         }
-        return true;   // removed: the kill handle releases its hold
+        return true;
     }
-    return false;   // not parked any more: whoever took it released (or will)
+    return false;
 }
 
 // ---------------------------------------------------------------------------
@@ -652,7 +638,7 @@ bool cancelParkedReceive(uint64_t token) {
 // ---------------------------------------------------------------------------
 
 // udpBind : ( String, Int ) -> ( Bool, Bool, Bool ) -> Task FErr UdpT
-// payload tuple2( boxed target, boxed settings ), mask 0.
+// Payload: tuple2( boxed ( address, port ), boxed ( reuseAddress, broadcast, ipv6Only ) ), mask 0.
 HPointer udpBindBody(HPointer captured, HPointer resume) {
     uint64_t token = 0;
     bool counted = false;
@@ -660,7 +646,7 @@ HPointer udpBindBody(HPointer captured, HPointer resume) {
         std::string address;
         int64_t port = 0;
         bool reuseAddress = false, broadcast = false, ipv6Only = false;
-        {   // G3/G5: no allocation in this scope
+        {   // no allocation in this scope
             Tuple2* p = asTuple2(captured);
             HPointer target = p->a.p;
             HPointer settings = p->b.p;
@@ -680,19 +666,19 @@ HPointer udpBindBody(HPointer captured, HPointer resume) {
                 return PoolResult::of(udpBindOn(address, port, reuseAddress, broadcast, ipv6Only));
             },
             &udpBindComplete, ErrShape::FErr);
-        return alloc::unit();   // short job; an orphaned result closes its fd (RAII)
+        return alloc::unit();
     )
 }
 
 // udpSend : ( String, Int ) -> Bytes -> Int -> Task FErr ()
-// payload tuple3( boxed to, boxed data, Int socketId ), mask 0x10.
+// Payload: tuple3( boxed to, boxed data, Int socketId ), mask 0x10 (slot 2 unboxed).
 HPointer udpSendBody(HPointer captured, HPointer resume) {
     uint64_t token = 0;
     bool counted = false;
     ECO_SYSTEM_ASYNC_GUARD(FErr, resume, token, counted,
         std::string address, data;
         int64_t port = 0, id = 0;
-        {   // G3/G5
+        {   // no allocation in this scope
             Tuple3* p = asTuple3(captured);
             HPointer to = p->a.p;
             HPointer bytes = p->b.p;
@@ -713,7 +699,7 @@ HPointer udpSendBody(HPointer captured, HPointer resume) {
     )
 }
 
-// udpReceive : Int -> Task FErr DgramT — payload: boxed socket id.
+// udpReceive : Int -> Task FErr DgramT. Payload: the boxed socket id.
 HPointer udpReceiveBody(HPointer captured, HPointer resume) {
     uint64_t token = 0;
     bool counted = false;
@@ -722,7 +708,7 @@ HPointer udpReceiveBody(HPointer captured, HPointer resume) {
         ensureUdpTables();
         UdpEntry* e = findUdp(id);
         if (!e || e->closed) return resumeNow(resume, failFErr("ECANCELED", "receive ECANCELED"));
-        if (!e->held.empty()) {   // held items first (§3.4)
+        if (!e->held.empty()) {
             SocketEvent ev = std::move(e->held.front());
             e->held.pop_front();
             HPointer task = alloc::listNil();
@@ -733,10 +719,10 @@ HPointer udpReceiveBody(HPointer captured, HPointer resume) {
         }
         token = Scheduler::instance().parkResume(resume, HoldKind::Task, "Udp.receive");
         counted = true;
-        // The kill handle first: it allocates, and a throw must not leave the
-        // token parked (asyncFailure releases it).
+        // The kill handle is made before the token is queued: it allocates, and if it throws, the token
+        // asyncFailure completes is not left in the queue.
         HPointer kill = makeKillHandle(token, &cancelParkedReceive);
-        e = findUdp(id);   // G11: looked up again after the allocation
+        e = findUdp(id);
         e->parkedReceives.push_back(token);
         auto h = e->handler;
         if (h) reactor().submit([h] { h->addCredit(1); });
@@ -744,19 +730,19 @@ HPointer udpReceiveBody(HPointer captured, HPointer resume) {
     )
 }
 
-// udpClose : Int -> Task Never () — payload: boxed socket id.
+// udpClose : Int -> Task Never (). Payload: the boxed socket id.
 HPointer udpCloseBody(HPointer captured) {
     ECO_SYSTEM_BODY_GUARD(Never,
         int64_t id = payloadInt(captured);
         ensureUdpTables();
         UdpEntry* e = findUdp(id);
-        if (!e || e->closed) return succeedUnit();   // closed already: idempotent
+        if (!e || e->closed) return succeedUnit();
         e->closed = true;
         std::deque<uint64_t> parked;
         parked.swap(e->parkedReceives);
-        e->held.clear();   // undelivered datagrams are dropped
-        if (auto h = e->handler) reactor().submit([h] { h->close(); });   // UdpClosed releases the count
-        // Parked receives fail now, then release their holds. Allocates: `e` is dead.
+        e->held.clear();
+        if (auto h = e->handler) reactor().submit([h] { h->close(); });   // the subscription hold is released later
+        // `e` is not used past here: the resumes below can run Elm code, which may change the table.
         auto& s = Scheduler::instance();
         for (uint64_t t : parked) {
             HoldRelease receiveHold(t);
@@ -772,7 +758,7 @@ HPointer udpCloseBody(HPointer captured) {
 }
 
 // udpMembership : Bool -> String -> String -> Int -> Task FErr ()
-// payload tuple2( boxed ( join, group, iface ), Int socketId ), mask 0x4.
+// Payload: tuple2( boxed ( join, group, iface ), Int socketId ), mask 0x4 (slot 1 unboxed).
 HPointer udpMembershipBody(HPointer captured, HPointer resume) {
     uint64_t token = 0;
     bool counted = false;
@@ -780,7 +766,7 @@ HPointer udpMembershipBody(HPointer captured, HPointer resume) {
         bool join = false;
         std::string group, iface;
         int64_t id = 0;
-        {   // G3/G5
+        {   // no allocation in this scope
             Tuple2* p = asTuple2(captured);
             HPointer args = p->a.p;
             id = slotInt(p->b, p->header.unboxed, 1);

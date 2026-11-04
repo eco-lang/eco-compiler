@@ -1,26 +1,24 @@
 //===- Tls.hpp - eco/system kernel module Tls (internal) ------------------===//
 //
-// plans/eco-system-sockets.md §3.6, Appendix B.3: the binding bodies of
-// Eco.Kernel.Tls (Tls.cpp; bound by TlsExports.cpp).
+// `Socket.Tls` opens TLS client connections and TLS listeners, and reports what a TLS handshake negotiated. This
+// component holds the three binding bodies behind it, which `TlsExports.cpp` binds to the kernel exports.
 //
-//   * connect (P then R): the client context is built on the SysWorkPool
-//     (TlsContext, the system context cached); its completion returns a
-//     second binding (stage 2) that starts the connect exactly as
-//     tcpConnect does (socketStartConnect) with the TLS transport factory.
-//     The connect timeout covers the TCP connect and the handshake. Kill:
-//     stage 1 cancels the pool job (T7, SysWorkPool::cancel); stage 2 has
-//     the connect's kill handle (cancelPendingConnect).
-//   * listen (P): one pool job builds the server context and then listens
-//     (tcpListenOn); the completion hands the fd to completeListen with the
-//     TLS factory, so the listener lives in the shared listener table
-//     (Socket.accept / onConnection / closeListener work unchanged).
-//   * info (S): from the ConnEntry (captured at handshake end); a non-TLS
-//     (or unknown) connection fails EINVAL.
+// A TLS connection is a TCP connection whose bytes pass through a TLS transport, so the bodies reuse the plain
+// socket machinery (`socketStartConnect`, `tcpListenOn`, `completeListen`) and add only two things: an OpenSSL
+// configuration, built by `TlsContext`, and a transport factory over it, made by `TlsTransport`. Building a
+// configuration may read certificate files and so may block, which the eco thread (the thread that runs the Elm
+// scheduler) must not do. It is therefore built on a `SysWorkPool` worker, and the socket work starts only once it
+// is ready.
 //
-// Windows: connect / listen / info fail ENOTSUP (§1); no OpenSSL.
+// A connect therefore runs in two stages. Stage 1 builds the client configuration on the pool. Its completion, on
+// the eco thread, keeps the configuration and the connect's inputs in a table and resumes the Task with a second
+// binding, stage 2, which starts the connect with the TLS client factory. Killing the Task in stage 1 cancels the
+// pool job if no worker has started it (`SysWorkPool::cancel`); in stage 2 it cancels the connect
+// (`cancelPendingConnect`). A listen needs one stage: a single pool job builds the server configuration and then
+// opens the listening socket, and its completion records the listener in the shared listener table with the TLS
+// server factory, so accepting and closing work as they do for a plain listener.
 //
-// Templates used: T1 (info), T2 (pool bodies + completions), T7 (kill
-// handles), G10.
+// On Windows there is no OpenSSL, and all three fail with the FErr code `ENOTSUP`.
 //
 //===----------------------------------------------------------------------===//
 
@@ -31,9 +29,29 @@
 
 namespace Eco::System {
 
-HPointer tlsConnectBody(HPointer captured, HPointer resume);   // P then R
-HPointer tlsListenBody(HPointer captured, HPointer resume);    // P
-HPointer tlsInfoBody(HPointer captured);                       // S
+/// Connects over TLS to the address in `captured` and completes the Task with the connection, as
+/// `socketStartConnect` describes, or with an FErr. `resume` is the Task's resume closure; the kill handle is
+/// returned, or `()` on Windows, where the Task is resumed with an ENOTSUP failure before any work starts.
+///
+/// `captured` is `tuple3( target, settings, tls )`, all boxed: `target` is `( String address, Int port, Int
+/// timeoutMs )`, `settings` is `( Bool noDelay, Int keepAliveSec )`, and `tls` is `( String serverName, ( Int mode,
+/// String pem ), List String alpn )`, with `mode` and `pem` as `buildTlsClientConfig` takes them. A negative timeout
+/// is treated as 0, no limit; it covers the TCP connect and the handshake together. A configuration that cannot be
+/// built fails the Task with its `TlsError` code, or `ERR_SSL_UNKNOWN` when that is empty.
+HPointer tlsConnectBody(HPointer captured, HPointer resume);
+/// Opens a TLS listener on the address in `captured` and completes the Task with it as `completeListen` describes,
+/// or with an FErr. `resume` is the Task's resume closure; `()` is returned, as there is no kill handle.
+///
+/// `captured` is `tuple3( target, settings, tls )`, all boxed: `target` is `( String address, Int port )`,
+/// `settings` is `( Int backlog, Bool ipv6Only )`, and `tls` is `( String certificateChain, String privateKey, List
+/// String alpn )`, passed to `buildTlsServerConfig` and `tcpListenOn`. A configuration that cannot be built fails
+/// the Task with its `TlsError` code, or `ERR_SSL_UNKNOWN` when that is empty, and no socket is opened. A socket
+/// opened by a job whose result is never completed is closed when that result is destroyed.
+HPointer tlsListenBody(HPointer captured, HPointer resume);
+/// Returns a Task that succeeds with `( protocol, alpn, cipher )` of the TLS connection whose boxed Int id is
+/// `captured`: the text of what its handshake negotiated, with `alpn` `Nothing` when no ALPN protocol was agreed.
+/// It fails with `EINVAL` for an unknown id or a connection that is not TLS.
+HPointer tlsInfoBody(HPointer captured);
 
 } // namespace Eco::System
 

@@ -1,41 +1,31 @@
 //===- SignalService.hpp - Process signals as POD events ------------------===//
 //
-// plans/eco-system-library.md §3.4: SIGINT, SIGTERM and SIGWINCH (any
-// catchable signal, in fact; tests use SIGUSR1) reach Elm through a
-// self-pipe:
-//   * the sigaction handler (SA_RESTART) only writes the signal number, one
-//     byte, to the non-blocking write end of an O_CLOEXEC pipe;
-//   * one detached thread waits for the pipe to become readable, reads it
-//     and queues `signo` events, then wakes the scheduler loop;
-//   * the scheduler's readiness check (pollReady, main thread) also takes
-//     what the handler has written, and on Linux dequeues subscribed signals
-//     that are pending but not yet handled, so a signal received before the
-//     loop goes quiescent is never lost to the reader thread's scheduling
-//     delay (the loop exits only when no async source is ready);
-//   * the main-thread signal drain hands each event to every LISTENER of
-//     that signal (per-signal, multi-subscriber dispatch, Phase 5): the
-//     System manager (SIGINT, SIGTERM), the Terminal manager (SIGWINCH) and
-//     the Terminal kernel's internal raw-mode restore (SIGINT, SIGTERM).
-//     A listener that sends to the app does sendToApp + drain() per message
-//     (G12).
+// A process signal can arrive at any moment, on any thread, while the code that wants to react to it runs only on
+// the eco thread (the one thread that runs the Elm scheduler). This component carries each signal from the one to
+// the other: SIGINT, SIGTERM, SIGWINCH, or any other catchable signal.
 //
-// Handlers are installed only while some subscription to that signal
-// exists: subscribe/unsubscribe keep a reference count per signal, the
-// first subscribe installs the handler (remembering the previous
-// disposition) and the last unsubscribe restores it. addListener /
-// removeListener subscribe / unsubscribe once per listener. There is no
-// automatic chaining to the previous handler: like Node, a listened-to
-// signal no longer has its default effect. A listener may chain explicitly
-// with chainToPrevious (the raw-mode restore does, when it is the only
-// listener).
+// Two terms are kept apart. A *subscription* to a signal means this component's handler is installed for it.
+// Subscriptions are reference counted per signal: the first `subscribe` installs the handler and saves the
+// disposition it replaces, and the last `unsubscribe` puts that disposition back. A *listener* is a callback for one
+// signal; `addListener` takes one subscription for it and `removeListener` gives it back. While a signal is
+// subscribed it loses its previous effect, so a subscribed SIGINT does not end the process. A listener that wants
+// the previous effect asks for it with `chainToPrevious`.
 //
-// Disabled in embed mode (Scheduler::embedMode(), §3.7): subscribe is a
-// no-op that returns false, so the host keeps its signal dispositions.
-// Signal subscriptions do not hold pendingAsync (keep-alive rule, §3.4).
+// The signal travels through a self-pipe, a pipe the process writes to itself:
+//   * the handler, installed with `SA_RESTART`, writes the signal number as one byte to the non-blocking write end
+//     of a close-on-exec pipe, and does nothing else. A byte that finds the pipe full is dropped;
+//   * a detached reader thread waits for the pipe to become readable, moves its bytes into a queue of signal
+//     numbers, and wakes the scheduler loop;
+//   * the scheduler's readiness check, `pollReady`, also empties the pipe into the queue itself, and on Linux also
+//     takes subscribed signals that are pending but whose handler has not run yet. The loop does not go quiescent
+//     while an async source is ready, so a signal already received when the loop checks is queued then, not left
+//     to a reader thread that has not yet been scheduled;
+//   * the signal drain, `signalDrain`, pops each queued signal on the eco thread and calls every listener of it.
 //
-// Windows: subscribe is a no-op that returns false (§1).
+// Nothing here takes a scheduler hold, so a subscription does not keep the program running.
 //
-// Templates used: none (POD only, G1).
+// In embed mode (`Scheduler::embedMode()`) and on Windows, `subscribe` does nothing and returns false, so no
+// handler is ever installed and the host's dispositions are left alone.
 //
 //===----------------------------------------------------------------------===//
 
@@ -52,102 +42,137 @@
 
 namespace Eco::System {
 
+/// The process's signal subscriptions, the queue of signals received, and the listeners they are delivered to.
+///
+/// There is one, obtained with `instance`, created on first use and never destroyed. It can be neither copied nor
+/// constructed elsewhere. Subscriptions, listeners and dispatch must be used on the eco thread only: nothing
+/// guards that state. `takeFromPipe`, `hasReady` and `tryPop` may be called from any thread.
 class SignalService {
 public:
+    /// Returns the single service, creating it on the first call. The first call must be made on the eco thread,
+    /// because the service binds `Scheduler::instance()` there.
     static SignalService& instance();
 
-    // Main thread. Returns true if the subscription is active (the handler
-    // is installed). False, with no effect, in embed mode, on Windows, for
-    // an uncatchable or out-of-range signal, or if setup failed.
+    /// Takes one subscription to `signo`, installing the handler if it is the first, and returns whether the
+    /// subscription is held. Returns false, changing nothing, in embed mode, on Windows, for SIGKILL, SIGSTOP, a
+    /// number outside 1..127 or not below `NSIG`, or when the pipe or reader thread cannot be set up.
+    /// Also returns false when `sigaction` fails; a pipe and reader thread that were set up then stay set up.
     bool subscribe(int signo);
-    // Main thread. Undoes one successful subscribe; restores the previous
-    // handler when the count reaches zero. Unmatched calls are ignored.
+    /// Gives back one subscription to `signo`, and when none are left restores the disposition the first
+    /// subscription replaced. Does nothing for a signal with no subscriptions.
     void unsubscribe(int signo);
-    // Main thread. Current reference count for `signo`.
+    /// Returns how many subscriptions `signo` has, or 0 for a number outside 1..127.
     int subscribers(int signo) const;
 
-    // Main thread (the drain, or a test). Non-blocking.
+    /// Removes the oldest queued signal into `signo` and returns true, or returns false, leaving `signo` alone,
+    /// when the queue is empty. Does not wait for a signal.
     bool tryPop(int& signo);
+    /// Returns whether any signal is queued.
     bool hasReady() const { return readyCount_.load(std::memory_order_acquire) > 0; }
-    // Main thread: the readiness check of the signal drain source, called by
-    // the scheduler loop (with its mutex held: never notifies the
-    // scheduler). Queues every signal already received - written to the pipe
-    // by the handler but not yet taken by the reader thread, or (Linux)
-    // pending for the process with our handler not yet run - then returns
-    // hasReady(). Non-blocking.
+    /// Returns whether any signal is queued. This is the ready predicate of the signal drain source.
+    ///
+    /// When the queue is empty and the service has started, it first queues every signal already received:
+    /// written to the pipe by the handler but not yet taken by the reader thread or, on Linux, a subscribed signal
+    /// pending with its handler not yet run. That step takes this service's two locks, which the reader thread
+    /// also takes. It does not wait for a signal, and it never notifies the scheduler, because the scheduler calls
+    /// it with its own lock held. Must be called on the eco thread.
     bool pollReady();
 
-    // --- Listeners (main thread) -------------------------------------------
-    //
-    // A listener is called by the signal drain, on the main thread, for every
-    // delivered `signo` it listens to; several listeners of one signal are
-    // called in registration order. A listener may add or remove listeners
-    // (including itself); one removed before its turn is not called.
+    // Listeners
+
+    /// A callback for one signal, called on the eco thread by the signal drain with the signal number and the
+    /// `ctx` it was added with. A *delivery* is one call of `dispatch` for the signal, which the drain makes once
+    /// per queued signal number; signals that arrive together may be queued once, and a byte dropped on a full
+    /// pipe is never queued.
+    ///
+    /// Listeners of one signal are called in the order they were added. A listener may add or remove listeners,
+    /// itself included. One removed before its turn in a delivery is not called, and one added during a delivery
+    /// is first called at the next one. What an exception that escapes a listener does is stated at `dispatch`
+    /// and `signalDrain`.
     using Listener = void (*)(int signo, void* ctx);
+    /// The identifier `addListener` gives a listener: an alias of `uint64_t`, not a distinct type. Identifiers
+    /// count up from 1, and 0 means none.
     using ListenerId = uint64_t;
 
-    // Subscribes `signo` once and records the listener. Returns its id, or 0
-    // (nothing recorded) when subscribe() fails: embed mode, Windows, an
-    // uncatchable or out-of-range signal, or setup failure.
+    /// Takes one subscription to `signo` and adds `fn` as a listener of it, returning the new identifier. Returns
+    /// 0, adding nothing, when `fn` is null or `subscribe` fails.
+    ///
+    /// `ctx` is kept and passed to `fn`; whatever it points to must outlive the listener.
     ListenerId addListener(int signo, Listener fn, void* ctx);
-    // Removes the listener and unsubscribes its signal once. Unknown ids
-    // (including 0) are ignored.
+    /// Removes listener `id` and gives back its subscription. Does nothing for an unknown id, 0 included.
     void removeListener(ListenerId id);
-    // Number of listeners currently registered for `signo`.
+    /// Returns how many listeners `signo` has.
     int listenerCount(int signo) const;
 
-    // Calls every listener of `signo` (what the drain does per event).
+    /// Calls every listener of `signo`, as one delivery, in the order and with the add/remove rules `Listener`
+    /// states. Exceptions thrown by a listener propagate from here; only `signalDrain` turns them into a fatal
+    /// error.
     void dispatch(int signo);
 
-    // Gives `signo` the effect it would have had without our handler: the
-    // previous disposition (saved by the first subscribe) is reinstated, the
-    // signal is raised on this thread, and our handler is put back if the
-    // process survives (SIG_IGN, or a previous handler that returns). For
-    // SIGINT / SIGTERM with the default disposition this terminates the
-    // process. A no-op when `signo` is not subscribed (or on Windows).
+    /// Gives `signo` the effect it would have had without this service's handler.
+    ///
+    /// The disposition saved by the first subscription is reinstated, the signal is raised on the calling thread,
+    /// and this service's handler is put back if the process survives, as it does, for example, for a disposition
+    /// that ignores the signal or a previous handler that returns. For SIGINT or SIGTERM with the default
+    /// disposition the process ends. Does nothing for a signal with no subscriptions, when the saved disposition
+    /// cannot be reinstated, or on Windows. Must be called on the eco thread.
     void chainToPrevious(int signo);
 
-    // Signal-reader thread or main thread: reads everything currently in the
-    // pipe and queues it, under pipeMutex_ so that a byte read by one thread
-    // is queued before the other can observe an empty pipe. Never notifies.
-    // Returns true if anything was queued.
+    /// Moves everything now in the pipe into the queue, and returns whether anything was moved. Never notifies the
+    /// scheduler, and returns false on Windows or before the pipe exists.
+    ///
+    /// The reader thread and `pollReady` both call it. It holds a lock from each read until the bytes read are
+    /// queued, so the other caller never sees an empty pipe while a byte read from it is not yet in the queue.
     bool takeFromPipe();
 
 private:
+    /// Creates the service and binds `Scheduler::instance()`, the one process-wide scheduler. Creating the scheduler
+    /// registers its root scanner with the calling thread's heap, which is why `instance` must first be called on
+    /// the eco thread.
     SignalService();
     ~SignalService() = default;
 
-    bool ensureStarted();   // main thread: pipe + reader thread
-    void queue(int signo);  // ready_ push (any thread; no notify)
-    void takePending();     // main thread (Linux): dequeue pending subscribed signals
+    /// Creates the pipe, starts the reader thread and adds the signal drain source, the first time it succeeds,
+    /// and returns whether all of that is in place. On failure nothing is left behind. Eco thread only.
+    bool ensureStarted();
+    /// Appends `signo` to the queue. Takes `readyMutex_`; never notifies.
+    void queue(int signo);
+    /// Queues every subscribed signal that is pending with its handler not yet run, dequeuing it so the handler
+    /// will not also see it. Linux only; does nothing elsewhere. Eco thread only.
+    void takePending();
 
+    /// One more than the highest signal number this service accepts; it is also the size of the per-signal tables.
     static constexpr int kMaxSig = 128;
 
-    Scheduler* sched_ = nullptr;
+    Scheduler* sched_ = nullptr;   ///< The scheduler bound by the constructor; the reader thread wakes it.
     bool started_ = false;
     int counts_[kMaxSig] = {};
-    void* saved_[kMaxSig] = {};   // struct sigaction* of the previous disposition
+    /// For each signal, a heap `struct sigaction` holding the disposition its first subscription replaced, or
+    /// null if never subscribed. Allocated once per signal and never freed.
+    void* saved_[kMaxSig] = {};
 
-    int readFd_ = -1;            // non-blocking read end (set before the reader starts)
-    std::mutex pipeMutex_;       // held from a pipe read until its bytes are queued
-    std::mutex readyMutex_;      // order: pipeMutex_ -> readyMutex_
-    std::deque<int> ready_;
-    std::atomic<size_t> readyCount_{0};
+    int readFd_ = -1;            ///< Non-blocking read end of the pipe; set before the reader thread starts.
+    std::mutex pipeMutex_;       ///< Held by `takeFromPipe` from its first read until its bytes are queued.
+    std::mutex readyMutex_;      ///< Guards `ready_`. Lock order: `pipeMutex_`, then `readyMutex_`.
+    std::deque<int> ready_;      ///< Queued signal numbers, oldest first. Guarded by `readyMutex_`.
+    std::atomic<size_t> readyCount_{0};   ///< The length of `ready_`, readable without the lock.
 
+    /// One listener as `addListener` recorded it.
     struct ListenerRec {
         ListenerId id;
         int signo;
         Listener fn;
-        void* ctx;
+        void* ctx;   ///< Passed to `fn`; not owned.
     };
-    std::vector<ListenerRec> listeners_;   // main thread only
+    std::vector<ListenerRec> listeners_;   ///< Every listener added and not yet removed. Eco thread only.
     ListenerId nextListenerId_ = 1;
 };
 
-// The signal drain (main thread). Runs from the eco/system async source;
-// tests may call it directly. Pops every queued signal and dispatches it to
-// its listeners. Does not call Scheduler::drain(): each listener follows G12
-// for each message it sends.
+/// Pops every queued signal and calls its listeners, as `SignalService::dispatch` does. This is the drain of the
+/// signal drain source, and must be called on the eco thread.
+///
+/// An exception escaping a listener ends the process through `Eco::Kernel::reportFatal`. It does not call
+/// `Scheduler::drain()`.
 void signalDrain();
 
 } // namespace Eco::System

@@ -1,10 +1,8 @@
 //===- SysWorkPool.cpp - Worker pool for short blocking syscalls ----------===//
 //
-// See SysWorkPool.hpp. Leaky singleton with detached workers (§3.4, like
-// runtime/src/platform/WaitService.cpp), so std::exit never runs a
-// destructor under a live worker.
-//
-// Templates used: T2 (drain), T7 (cancel), G10.
+// Once constructed, the pool is never freed, and its workers are detached, so no destructor runs while a
+// worker may still be using the pool. Two locks are used, never together: `jobsMutex_` for the job queue
+// and `readyMutex_` for the result queue.
 //
 //===----------------------------------------------------------------------===//
 
@@ -18,19 +16,19 @@ namespace Eco::System {
 
 namespace {
 
+/// Returns whether the pool has a finished job; the ready predicate added with `poolDrain`.
 bool poolReady() { return SysWorkPool::instance().hasReady(); }
 
 } // namespace
 
 SysWorkPool& SysWorkPool::instance() {
-    static SysWorkPool* inst = new SysWorkPool();   // leaky (§3.4)
+    static SysWorkPool* inst = new SysWorkPool();   // never freed
     return *inst;
 }
 
 SysWorkPool::SysWorkPool() {
-    // Bind the Scheduler on the constructing (main) thread: workers must
-    // never be the first to call Scheduler::instance() (its constructor
-    // touches the allocator).
+    // Bound here, on the eco thread: a worker must never be the first to
+    // call Scheduler::instance(), whose constructor touches the allocator.
     sched_ = &Scheduler::instance();
     unsigned hc = std::thread::hardware_concurrency();
     nThreads_ = std::max<size_t>(1, std::min<size_t>(4, hc == 0 ? 1 : hc));
@@ -111,7 +109,8 @@ void poolDrain() {
     bool resumed = false;
     SysWorkPool::Item item;
     while (pool.tryPop(item)) {
-        HoldRelease release(item.token);            // exactly one release (G10)
+        // Released at the end of the iteration, after the resume has run, and on every path out of it.
+        HoldRelease release(item.token);
         HPointer resume = s.takePendingResume(item.token);
         if (alloc::isNil(resume)) continue;         // killed: release only
         HPointer task = alloc::unit();

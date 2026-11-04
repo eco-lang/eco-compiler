@@ -1,14 +1,18 @@
 //===- HtmlWriter.cpp - HTML serialization of native VirtualDom values ------===//
 //
-// plans/elm-html-native-kernel.md §8. A line-by-line mirror of the Elm
-// reference `Http.Dom.render` (system-kernel-cpp/src/Http/Dom.elm), with the
-// same function names; the two must produce byte-identical output (VDOM_005,
-// DomDifferentialTest). Keep them in step.
+// This file mirrors the Elm serializer in `Html.Dom` (system-kernel-cpp/src/Html/Dom.elm)
+// function by function, and many helpers carry the same names. The two must produce
+// byte-identical output (invariant VDOM_005), so a change to one is made to the other.
 //
-// R8 / VDOM_004: nothing here allocates on the Eco heap or calls Elm code, so
-// every resolved object stays where it is for the whole walk. All state lives
-// in std:: containers. Total (D17): any input produces some output and nothing
-// asserts, throws (other than std::bad_alloc) or recurses with the tree size.
+// An element is written in two steps. Its facts (attributes, namespaced attributes, styles and
+// properties) are first resolved, the way the browser runtime's organize-then-apply would set
+// them on a live element, into the ordered list of attributes its opening tag carries. Then the
+// tag, those attributes and the children are written. Children are pushed onto a work stack
+// with a closing-tag item beneath them, so the walk never recurses.
+//
+// Nothing here allocates on the Eco heap or calls Elm code (invariant VDOM_004), so the raw
+// pointers it takes into heap objects stay valid for the whole walk. All of its own state lives
+// in std:: containers.
 //
 //===----------------------------------------------------------------------===//
 
@@ -27,30 +31,36 @@ namespace Elm::Kernel::VirtualDom {
 
 namespace {
 
+// Attribute name/value pairs, in output order.
 using Pairs = std::vector<std::pair<std::string, std::string>>;
+// Attribute names in output order, each with its value; `nullopt` writes the name without a value.
 using AttrList = std::vector<std::pair<std::string, std::optional<std::string>>>;
 
 //===----------------------------------------------------------------------===//
-// Heap reading (R3: always through Export::toPtr)
+// Heap reading. Every word is decoded with `Export::toPtr`, because a word may be an embedded
+// constant or a raw pointer to a literal outside the heap.
 //===----------------------------------------------------------------------===//
 
-// The Custom object behind `bits`, or nullptr for a constant or a non-Custom.
+// Returns the `Custom` object behind `bits`, or nullptr for a constant or an object of another kind.
 Custom* asCustom(uint64_t bits) {
     void* p = Export::toPtr(bits);
     if (p == nullptr || static_cast<Header*>(p)->tag != Tag_Custom) return nullptr;
     return static_cast<Custom*>(p);
 }
 
+// Returns field `i` of `c` as an encoded word, or the `Nothing` constant if `c` has no such field.
 uint64_t field(Custom* c, u32 i) {
     if (i >= c->header.size) return Export::encode(alloc::nothing());
     return Export::encode(c->values[i].p);
 }
 
+// Returns the Elm string `bits` as UTF-8, or the empty string for a constant. `bits` must be a
+// string or a constant; nothing here checks the kind of another object.
 std::string str(uint64_t bits) {
     return StringOps::toStdString(Export::toPtr(bits));
 }
 
-// `Nothing` -> nullopt; `Just s` -> s.
+// Returns `s` for `Just s`, and nullopt for `Nothing` or anything else that is not a `Custom`.
 std::optional<std::string> maybeStr(uint64_t bits) {
     Custom* j = asCustom(bits);
     if (j == nullptr) return std::nullopt;
@@ -61,11 +71,14 @@ std::optional<std::string> maybeStr(uint64_t bits) {
 // Text helpers
 //===----------------------------------------------------------------------===//
 
+// Returns whether byte `c` cannot appear in a tag name, or in an attribute name when
+// `isAttribute` is set: whitespace, controls, DEL, quotes, `<`, `>`, `/`, and for attributes `=`.
 bool breaksToken(bool isAttribute, unsigned char c) {
     return c <= 0x20 || c == 0x7F || c == '"' || c == '\'' || c == '<' || c == '>' || c == '/' ||
            (isAttribute && c == '=');
 }
 
+// Returns whether `name` is empty or contains a byte that `breaksToken` rejects.
 bool isTokenBreaking(bool isAttribute, const std::string& name) {
     if (name.empty()) return true;
     for (unsigned char c : name)
@@ -73,20 +86,28 @@ bool isTokenBreaking(bool isAttribute, const std::string& name) {
     return false;
 }
 
+// Returns whether `c` is an ASCII capital letter.
 bool isUpper(char c) { return c >= 'A' && c <= 'Z'; }
 
+// Returns `c` in lower case if it is an ASCII capital letter, and `c` otherwise.
 char lowerChar(char c) { return isUpper(c) ? static_cast<char>(c + 32) : c; }
 
+// Returns `s` with its ASCII capital letters lowered; other bytes are unchanged.
 std::string asciiLower(const std::string& s) {
     std::string r = s;
     for (char& c : r) c = lowerChar(c);
     return r;
 }
 
+// Returns whether `s` begins with `prefix`.
 bool startsWith(const std::string& s, const char* prefix) {
     return s.rfind(prefix, 0) == 0;
 }
 
+// Returns the CSS property name for style key `key`. A key that contains `-` or no capital letter
+// is returned unchanged, `cssFloat` becomes `float`, and any other camelCase key becomes kebab
+// case, with a leading `-` added when it then starts with a vendor prefix (`webkit-`, `moz-`,
+// `ms-`, `o-`).
 std::string cssName(const std::string& key) {
     bool anyUpper = false;
     for (char c : key)
@@ -107,6 +128,7 @@ std::string cssName(const std::string& key) {
     return kebab;
 }
 
+// Appends `s` to `out` as HTML text content, escaping `&`, `<`, `>`, `"` and `'`.
 void escapeText(const std::string& s, std::string& out) {
     for (char c : s) {
         switch (c) {
@@ -120,6 +142,8 @@ void escapeText(const std::string& s, std::string& out) {
     }
 }
 
+// Appends `s` to `out` as a double-quoted attribute value, escaping `&`, `"`, `<` and `>` but not
+// `'`, unlike `escapeText`.
 void escapeAttr(const std::string& s, std::string& out) {
     for (char c : s) {
         switch (c) {
@@ -132,6 +156,8 @@ void escapeAttr(const std::string& s, std::string& out) {
     }
 }
 
+// Appends `s` to `out` unescaped, as the content of a `style` element, except that each `</`
+// becomes `<\/` so that the text cannot close the element.
 void rawText(const std::string& s, std::string& out) {
     for (size_t i = 0; i < s.size(); ++i) {
         if (s[i] == '<' && i + 1 < s.size() && s[i + 1] == '/') {
@@ -147,6 +173,9 @@ void rawText(const std::string& s, std::string& out) {
 // Property values
 //===----------------------------------------------------------------------===//
 
+// A property's JSON value, reduced to what reflecting it into an attribute needs. `s` is meaningful
+// only for `PString`, `b` only for `PBool` and `f` only for `PNumber`; an array or object is
+// `PCompound` and keeps no content.
 struct PropValue {
     enum Kind { PString, PBool, PNumber, PNull, PCompound } kind = PNull;
     std::string s;
@@ -154,6 +183,7 @@ struct PropValue {
     double f = 0.0;
 };
 
+// Returns the `PropValue` of the encoded `Json.Value` word `json`.
 PropValue propValue(uint64_t json) {
     JsonRead::View v = JsonRead::view(json);
     PropValue p;
@@ -181,6 +211,8 @@ PropValue propValue(uint64_t json) {
     return p;
 }
 
+// Returns `v` as JavaScript's `String(v)` would give it for a scalar, with numbers in shortest
+// round-trip form, or nullopt for an array or object.
 std::optional<std::string> jsString(const PropValue& v) {
     switch (v.kind) {
         case PropValue::PString: return v.s;
@@ -196,17 +228,19 @@ std::optional<std::string> jsString(const PropValue& v) {
     return std::nullopt;
 }
 
+// Returns whether `v` is truthy in JavaScript's sense. An array or object is always truthy.
 bool truthy(const PropValue& v) {
     switch (v.kind) {
         case PropValue::PString: return !v.s.empty();
         case PropValue::PBool: return v.b;
-        case PropValue::PNumber: return v.f != 0 && v.f == v.f;   // not 0, not NaN
+        case PropValue::PNumber: return v.f != 0 && v.f == v.f;   // NaN is not equal to itself
         case PropValue::PNull: return false;
         case PropValue::PCompound: return true;
     }
     return false;
 }
 
+// Returns `jsString(v)`, or the empty string for an array or object.
 std::string jsStringOrEmpty(const PropValue& v) {
     std::optional<std::string> s = jsString(v);
     return s ? *s : std::string();
@@ -216,6 +250,8 @@ std::string jsStringOrEmpty(const PropValue& v) {
 // Organize helpers
 //===----------------------------------------------------------------------===//
 
+// Returns the value of the first entry keyed `key`, or nullptr if there is none. The pointer is
+// valid until `entries` is next changed.
 template <typename V>
 const V* lookup(const std::string& key, const std::vector<std::pair<std::string, V>>& entries) {
     for (const auto& e : entries)
@@ -223,6 +259,8 @@ const V* lookup(const std::string& key, const std::vector<std::pair<std::string,
     return nullptr;
 }
 
+// Replaces the value of the first entry keyed `key` with `value`, or appends a new entry at the
+// end if there is none, so entries keep the order their keys were first seen in.
 template <typename V>
 void upsert(const std::string& key, V value, std::vector<std::pair<std::string, V>>& entries) {
     for (auto& e : entries) {
@@ -234,27 +272,33 @@ void upsert(const std::string& key, V value, std::vector<std::pair<std::string, 
     entries.emplace_back(key, std::move(value));
 }
 
+// Returns the class lists `old` and `neu` joined by a space, or `neu` alone if `old` is empty.
 std::string joinClass(const std::string& old, const std::string& neu) {
     if (old.empty()) return neu;
     return old + " " + neu;
 }
 
+// One step of applying an element's facts, in the order its first fact of that kind was seen.
+// There is at most one slot each for styles, attributes and namespaced attributes, which apply
+// the whole collected group, and one per distinct property key.
 struct Slot {
     enum Kind { StyleSlot, AttrSlot, AttrNSSlot, PropSlot } kind;
     std::string key;     // PropSlot only
     PropValue value;     // PropSlot only
 };
 
+// Appends a slot of `kind` to `slots`, unless one is already there.
 void addSlot(Slot::Kind kind, std::vector<Slot>& slots) {
     for (const Slot& s : slots)
         if (s.kind == kind) return;
     slots.push_back(Slot{kind, {}, {}});
 }
 
+// Records property `key` = `value` in its slot, appending the slot if it is new. A repeated
+// `className` is joined to the earlier value with a space; any other repeated key replaces it.
 void upsertProp(const std::string& key, const PropValue& value, std::vector<Slot>& slots) {
     for (Slot& s : slots) {
         if (s.kind == Slot::PropSlot && s.key == key) {
-            // mergePropSlot
             if (key == "className") {
                 PropValue joined;
                 joined.kind = PropValue::PString;
@@ -270,9 +314,11 @@ void upsertProp(const std::string& key, const PropValue& value, std::vector<Slot
 }
 
 //===----------------------------------------------------------------------===//
-// Resolve: _VirtualDom_organizeFacts followed by _VirtualDom_applyFacts (§8.5)
+// Resolve: the facts of one element are organized, which groups them into slots, and then
+// applied, which sets attributes in slot order as a live element would be set.
 //===----------------------------------------------------------------------===//
 
+// The facts of one element, grouped by kind, with the slots that fix the order they apply in.
 struct Organized {
     std::vector<Slot> slots;
     Pairs styles;
@@ -280,6 +326,9 @@ struct Organized {
     Pairs attrsNS;
 };
 
+// The attributes of one element as applying its slots sets them. A `style` entry in `attrs` holds
+// no value; its text is `styleRaw`, from a `style` attribute, followed by `styleProps`. A value
+// of nullopt in `attrs` is an attribute written without a value.
 struct Applied {
     AttrList attrs;
     std::string styleRaw;
@@ -287,18 +336,25 @@ struct Applied {
     std::optional<std::string> textareaValue;
 };
 
+// The final attributes of an element's opening tag, in order, with the `value` property of a
+// `textarea`, which becomes its content instead of an attribute.
 struct Resolved {
     AttrList attrs;
     std::optional<std::string> textareaValue;
 };
 
+// How a property is reflected into an attribute: as its string form, as an attribute present
+// only when the value is truthy, by the special rules for `value`, or not at all.
 enum class ReflectKind { AsString, AsBool, AsValue, NoReflect };
 
+// The reflection of one property. `name` is the attribute name, and is null for `AsValue` and
+// `NoReflect`; it points to a string literal.
 struct Reflect {
     ReflectKind kind;
     const char* name;
 };
 
+// Returns how property `key` is reflected into an attribute, from a fixed table of HTML properties.
 Reflect reflection(const std::string& key) {
     static const std::pair<const char*, const char*> renamedString[] = {
         {"className", "class"},        {"htmlFor", "for"},         {"httpEquiv", "http-equiv"},
@@ -328,6 +384,8 @@ Reflect reflection(const std::string& key) {
     return {ReflectKind::NoReflect, nullptr};
 }
 
+// Adds the fact `factBits` to `o`. A repeated attribute replaces the earlier one, except `class`,
+// which is joined to it. Events, and words that are not facts, are ignored.
 void organizeFact(uint64_t factBits, Organized& o) {
     Custom* f = asCustom(factBits);
     if (f == nullptr) return;
@@ -357,6 +415,8 @@ void organizeFact(uint64_t factBits, Organized& o) {
     }
 }
 
+// Sets attribute `name` to `value`, ignoring a name that breaks a token. Setting `style` replaces
+// the style text and clears the style properties collected so far.
 void setAttr(const std::string& name, std::optional<std::string> value, Applied& st) {
     if (isTokenBreaking(true, name)) return;
     if (name == "style") {
@@ -368,6 +428,7 @@ void setAttr(const std::string& name, std::optional<std::string> value, Applied&
     upsert(name, std::move(value), st.attrs);
 }
 
+// Removes every attribute named `name`.
 void removeAttr(const std::string& name, Applied& st) {
     AttrList kept;
     for (auto& e : st.attrs)
@@ -375,6 +436,8 @@ void removeAttr(const std::string& name, Applied& st) {
     st.attrs = std::move(kept);
 }
 
+// Sets style property `key` to `value`, or removes it when `value` is empty. Setting one adds a
+// valueless `style` attribute if there is none yet.
 void setStyle(const std::string& key, const std::string& value, Applied& st) {
     std::string name = cssName(key);
     if (value.empty()) {
@@ -389,11 +452,14 @@ void setStyle(const std::string& key, const std::string& value, Applied& st) {
         st.attrs.emplace_back("style", std::nullopt);
 }
 
+// Sets attribute `name` to the string form of `value`, or does nothing for an array or object.
 void setString(const std::string& name, const PropValue& value, Applied& st) {
     std::optional<std::string> s = jsString(value);
     if (s) setAttr(name, std::move(s), st);
 }
 
+// Applies property `key` = `value` to `st` as its reflection says. `value` on a `textarea` becomes
+// its content, on a `select` is dropped, and elsewhere becomes the `value` attribute.
 void reflectProp(const std::string& lowerTag, const std::string& key, const PropValue& value,
                  Applied& st) {
     Reflect r = reflection(key);
@@ -415,6 +481,8 @@ void reflectProp(const std::string& lowerTag, const std::string& key, const Prop
     }
 }
 
+// Applies one slot of `o` to `st`. When `isHtml` is set (the element has no namespace), plain
+// attribute names are lowered.
 void applySlot(bool isHtml, const std::string& lowerTag, const Organized& o, const Slot& slot,
                Applied& st) {
     switch (slot.kind) {
@@ -433,6 +501,8 @@ void applySlot(bool isHtml, const std::string& lowerTag, const Organized& o, con
     }
 }
 
+// Returns `attr` unchanged unless it is `style`, whose value becomes the raw style text followed by
+// the style properties as `name:value;`, with a `;` between them when the text lacks one.
 std::pair<std::string, std::optional<std::string>>
 finishStyle(const Applied& st, const std::pair<std::string, std::optional<std::string>>& attr) {
     if (attr.first != "style") return attr;
@@ -443,6 +513,8 @@ finishStyle(const Applied& st, const std::pair<std::string, std::optional<std::s
     return {attr.first, st.styleRaw + ";" + props};
 }
 
+// Returns the attributes and textarea content that the fact list `facts` gives an element whose
+// lowered tag is `lowerTag`.
 Resolved resolve(bool isHtml, const std::string& lowerTag, uint64_t facts) {
     Organized organized;
     for (alloc::ListCursor c(Export::decode(facts)); !c.done(); c.next())
@@ -460,6 +532,7 @@ Resolved resolve(bool isHtml, const std::string& lowerTag, uint64_t facts) {
 // Render
 //===----------------------------------------------------------------------===//
 
+// Returns whether HTML element `lowerTag` is void, and so is written with no closing tag.
 bool isVoidElement(const std::string& lowerTag) {
     static const char* voids[] = {"area", "base", "br", "col", "embed", "hr", "img",
                                   "input", "link", "meta", "source", "track", "wbr"};
@@ -468,6 +541,7 @@ bool isVoidElement(const std::string& lowerTag) {
     return false;
 }
 
+// Appends each attribute of `attrs` to `out` as ` name` or ` name="value"`.
 void renderAttrs(const AttrList& attrs, std::string& out) {
     for (const auto& a : attrs) {
         out.push_back(' ');
@@ -480,7 +554,8 @@ void renderAttrs(const AttrList& attrs, std::string& out) {
     }
 }
 
-// One work item: Visit raw node, or Emit text.
+// One item on the writer's work stack. With `emit` set it appends `text` as is; otherwise it
+// visits `node`, writing its text as raw `style` text (`raw`) when it is inside a `style` element.
 struct Work {
     bool emit;
     bool raw;
@@ -488,12 +563,16 @@ struct Work {
     std::string text;
 };
 
+// Pushes a visit to each of `kids` onto `work`, so that they are popped in order.
 void pushVisits(std::vector<Work>& work, bool raw, const std::vector<uint64_t>& kids) {
-    // Reverse, so the first kid is visited first.
     for (size_t i = kids.size(); i-- > 0;) work.push_back(Work{false, raw, kids[i], {}});
 }
 
-// Elements and keyed elements; `keyed` kids are ( key, node ) tuples.
+// Writes the opening tag of element `el` to `out`, and pushes its closing tag and its children onto
+// `work`. With `keyed` set, the children are `(key, node)` tuples, and one that is not a tuple is
+// skipped. A tag that breaks a token is replaced by its children; a void HTML element gets no children
+// or closing tag; an HTML `textarea` whose `value` property is a scalar gets that value as its
+// content instead of its children.
 void expand(Custom* el, bool keyed, std::vector<Work>& work, std::string& out) {
     std::optional<std::string> ns = maybeStr(field(el, EL_NS));
     std::string tag = str(field(el, EL_TAG));
@@ -508,7 +587,7 @@ void expand(Custom* el, bool keyed, std::vector<Work>& work, std::string& out) {
         kids.push_back(kid);
     }
 
-    if (isTokenBreaking(false, tag)) {   // D17: unwrap
+    if (isTokenBreaking(false, tag)) {
         pushVisits(work, false, kids);
         return;
     }
@@ -544,7 +623,7 @@ void writeHtml(uint64_t nodeBits, std::string& out) {
             continue;
         }
         Custom* n = asCustom(w.node);
-        if (n == nullptr) continue;   // total: not a node, nothing to write
+        if (n == nullptr) continue;
         switch (n->ctor) {
             case NODE_TEXT:
                 if (w.raw) rawText(str(field(n, TEXT_STRING)), out);

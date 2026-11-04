@@ -1,15 +1,26 @@
 //===- Stream.hpp - C++ API of the eco/system stream table ----------------===//
 //
-// plans/eco-system-library.md Appendix B.2 ("C++ API"): the functions other
-// eco/system modules use to hand a byte channel to Elm as a stream. The
-// returned id is wrapped in Elm by `Stream.Internal.Readable` /
-// `Stream.Internal.Writable` (B3).
+// Other eco/system modules produce and consume bytes through their own transports (files, child processes,
+// sockets, HTTP transfers, WebSockets), and Elm reads and writes them as `Stream` values. This header is how
+// such a module hands a transport to Elm as a stream.
 //
-// All functions run on the main thread (G1) and allocate nothing on the
-// heap, so they may be called from inside a binding body before or after
-// any allocation.
+// A transport is a `ByteChannel`. Each function here makes a *pair*, an entry in the stream table
+// (`streamTable`, whose header describes pairs, their kinds and when one is erased), and returns its id. That
+// id is what Elm wraps as a `Readable` or `Writable` handle. A pair made from a channel takes ownership of it,
+// and the channel is destroyed when the pair is.
 //
-// Templates used: T5 (the table behind them).
+// Two families of pair can be made, and one of them can also be read without Elm:
+//   * A *channel source* or *channel sink* carries the channel's bytes as Bytes values, or as Strings for a
+//     text channel.
+//   * A *mapped source* or *mapped sink* carries values the kernel cannot build itself, such as a WebSocket
+//     message. The channel speaks in chunks labelled with an integer tag, and an Elm closure converts each
+//     chunk into a value, or each value into a chunk.
+//   * A *subscription reader* can take a mapped source's chunks directly in C++, bypassing Elm reads.
+//
+// Every function must be called on the eco thread, the thread that runs the Elm scheduler. All of them
+// except `discardReadable` and `pipeStreams` make no allocation on the GC heap and call no Elm code, so they
+// may be called from a binding body before or after its allocations. Those two complete parked Elm tasks,
+// and so allocate and call Elm.
 //
 //===----------------------------------------------------------------------===//
 
@@ -22,77 +33,104 @@
 
 namespace Eco::System {
 
-// A readable stream of Bytes over `channel`. The table takes ownership of
-// the channel (it is destroyed when the pair is erased).
+/// Creates a readable pair over `channel` and returns its id. The pair takes ownership of `channel`, which
+/// must not be null. Each chunk the channel reads becomes one value: a String decoded from its bytes when the
+/// result has `ChannelResult::text` set, otherwise Bytes. A text chunk becomes a String on its own, so a
+/// channel that sets `text` should deliver whole UTF-8 characters in each chunk. Nothing is read until a
+/// reader or a pipe asks.
 int64_t createChannelSource(ByteChannel* channel);
 
-// A writable stream of Bytes over `channel`. Takes ownership as above.
+/// Creates a writable pair of Bytes over `channel` and returns its id. The pair takes ownership of
+/// `channel`, which must not be null. Each accepted value is one channel write, and a write completes when
+/// the channel answers it.
 int64_t createChannelSink(ByteChannel* channel);
 
-// Text channels (plans/eco-system-websockets.md WS6): a channel source whose
-// read results have ChannelResult::text set yields Strings (the UTF-8 of
-// `bytes`, which must be whole characters) instead of Bytes — the same
-// createChannelSource. A TEXT channel sink is a writable of Strings: each
-// value's UTF-8 is written with requestWrite.
+/// Creates a writable pair of Strings over `channel` and returns its id. As `createChannelSink`, except that
+/// each value is written as the UTF-8 of the String.
 int64_t createTextChannelSink(ByteChannel* channel);
 
-// Cancels the readable side of pair `id` with no reason (a source that never
-// reached Elm, e.g. a WebSocket body nobody can receive): it is erased once
-// its channel released. Allocates (it may complete parked tasks); main
-// thread, outside the stream table's own callbacks.
+/// Cancels the readable side of pair `id` with an empty reason, for a source that never reached Elm code
+/// able to read it. Its buffered values are dropped and the channel of a channel or mapped source is shut
+/// down; an unpinned channel or mapped source is then erased once nothing is left in flight, while a pair
+/// with a live writable side is left errored. Any tasks parked on the pair are completed with an error,
+/// which allocates and calls Elm. A missing id does nothing.
 void discardReadable(int64_t id);
 
-// FdSource / FdSink: a ChannelSource / ChannelSink over an FdChannel.
-// `owns` = the stream owns `fd` and closes it when it is closed. With
-// `owns == false` the caller keeps `fd`: the channel works on a duplicate
-// (fds 0–2 are never closed or duplicated, §3.4). Returns 0 on failure
-// (only possible when duplicating fails).
-int64_t createFdSource(int fd, bool owns, const char* origin);   // origin: FdChannelOptions::origin
+/// Creates a channel source over the file descriptor `fd` and returns its id, or 0 if `fd` is negative or
+/// cannot be duplicated.
+///
+/// With `owns`, the stream takes `fd` and it is closed when the channel finishes. Otherwise the caller keeps
+/// `fd`, and the channel works on a close-on-exec duplicate numbered 3 or above. fds 0 to 2 are never
+/// duplicated and never closed. On Windows `fd` is used as given in both cases. `origin` names the resource
+/// in failure reasons (`FdChannelOptions::origin`); the channel keeps the pointer, so the string must
+/// outlive the stream, as a string literal does.
+int64_t createFdSource(int fd, bool owns, const char* origin);
+/// Creates a channel sink over the file descriptor `fd` and returns its id, or 0 on failure. `fd`, `owns`
+/// and `origin` mean what they do for `createFdSource`.
 int64_t createFdSink(int fd, bool owns, const char* origin);
 
-// --- Value-mapped channel pairs (plans/eco-system-websockets.md §3.3, W16) ---
-//
-// They carry values the kernels cannot build (B1: e.g. WebSocket.Message)
-// across the boundary: the channel speaks tagged POD chunks
-// (ChannelResult::tag/text/bytes), Elm closures convert.
+// --- Value-mapped pairs ----------------------------------------------------
 
-// A readable whose values are fromWire ( tag, text ? String : "",
-// text ? empty : Bytes ) for each chunk the channel reads. `fromWireEnc` is
-// the encoded closure (enc(closure)), stored in the (scanned) pair before
-// any allocation; the closure is applied on the main thread when a consumer
-// takes the chunk (a read, a parked read, a pipe) — G11. Reads ahead one
-// chunk (the first request is issued here). Takes ownership of `channel`.
+/// Creates a mapped source over `channel` and returns its id. The pair takes ownership of `channel`, which
+/// must not be null.
+///
+/// `fromWireEnc` is the encoded Elm closure that turns a chunk into a value. The word must be current when
+/// this is called, with no allocation since it was encoded; the pair keeps it where the collector updates
+/// it. Each chunk the channel reads waits off the heap until a consumer takes it (a read, a parked read or a
+/// pipe), and then the closure is applied on the eco thread to `( tag, text, bytes )`. For a chunk with
+/// `ChannelResult::text` set, `text` is its UTF-8 decoded as a String and `bytes` is empty; otherwise `text`
+/// is "" and `bytes` holds the data.
+///
+/// The pair reads ahead one chunk, and the first read is requested here. A read-ahead requested while a
+/// pipe reads from the pair keeps the program alive until it answers; a parked read holds the program
+/// alive itself.
 int64_t createMappedSource(ByteChannel* channel, uint64_t fromWireEnc);
 
-// A writable whose accepted values are passed to toWire
-// (a -> ( Int, String, Bytes )) and written with requestWriteTagged; a
-// write completes when the channel completes it (as a ChannelSink).
+/// Creates a mapped sink over `channel` and returns its id. The pair takes ownership of `channel`, which
+/// must not be null.
+///
+/// `toWireEnc` is the encoded Elm closure of type `a -> ( Int, String, Bytes )`, with the same currency
+/// requirement as `fromWireEnc`. Each accepted value is passed to it, and the result is written as one
+/// chunk with `requestWriteTagged`: the Int is the tag, and a non-empty String is written as text, otherwise
+/// the Bytes are written. A write completes when the channel answers it.
 int64_t createMappedSink(ByteChannel* channel, uint64_t toWireEnc);
 
-// Subscription reader of a mapped source: while attached, chunks bypass
-// readQ and fromWire and go to `fn` as POD (data, then once the end: eof,
-// or err/reason), read-ahead continues as fast as `fn` returns, and reads,
-// pipes and cancelReadable fail Locked. `fn` runs on the main thread from
-// the channel drain (never inside attachReader; it may call Elm, G11/G12:
-// the drain calls Scheduler::drain() afterwards). attachReader returns
-// false (doing nothing) while a read is parked, the pair is piped, a
-// reader is already attached, or the id is not a mapped source; chunks
-// already read are handed to `fn` first, in order. detachReader returns
-// the pair to normal reading (later chunks queue as usual); no-op if
-// nothing is attached.
+/// A subscription reader: the callback that receives a mapped source's chunks in C++ while attached.
+///
+/// It is called with the pair's id, a chunk, and the `ctx` given to `attachReader`. A chunk with data comes
+/// as a Read result. The end comes once, as a result with `eof` set, or with `err` (the errno, `EIO` when
+/// none is known) and `reason` set to the pair's failure reason. `r` is valid only during the call. It is
+/// called on the eco thread from the channel drain, never from inside `attachReader`, and it may call Elm,
+/// since the drain runs the scheduler afterwards.
 using ReaderFn = void (*)(int64_t pairId, ChannelResult& r, void* ctx);
+
+/// Attaches `fn` as the subscription reader of mapped source `pairId` and returns whether it did.
+///
+/// While attached, chunks go to `fn` instead of waiting to be mapped. Reading ahead continues as fast as
+/// `fn` returns. Reads, pipes and `cancelReadable` on the pair fail as Locked. Chunks read before the call
+/// are handed to `fn` first, in order. The pair keeps `ctx` without owning it, and it must stay valid until
+/// `detachReader` or until the pair is erased.
+///
+/// Returns false, doing nothing, if `fn` is null, the id is not a mapped source, a reader is already
+/// attached, a read is parked, a pipe reads from the pair, or mapped values are waiting to be read.
 bool attachReader(int64_t pairId, ReaderFn fn, void* ctx);
+/// Detaches the subscription reader of pair `pairId`, returning the pair to normal reading: later chunks
+/// wait for a consumer as usual. Does nothing if no reader is attached.
 void detachReader(int64_t pairId);
 
-// Pins pair `id` (it is never erased; the stdio pairs, §3.7).
+/// Pins pair `id`, so that it is never erased. A missing id does nothing.
 void pinStream(int64_t id);
 
-// An internal pipeTo with no Elm task (Http.Stream's upload pump, Phase 8):
-// moves the readable side of `src` into the writable side of `dst` with the
-// pipeTo propagation rules (§3.5), holding both locks until it finishes.
-// Returns false, doing nothing, if `src` is read-locked or `dst` is
-// write-locked. Unlike the functions above it may complete parked Elm tasks
-// (it pumps both pairs), so it allocates: call it from a binding body.
+/// Pipes the readable side of pair `src` into the writable side of pair `dst` with no Elm task to report
+/// the outcome, and returns whether the pipe was started.
+///
+/// The pipe owns both sides until it finishes. When `src` has ended and been drained, `dst` is closed; when
+/// `src` has failed, `dst` is cancelled with its reason; when `dst` is closed or has failed, `src` is
+/// cancelled. A missing `src` counts as an ended one, and a missing `dst` as a closed one, so an unknown id
+/// still starts a pipe and returns true. Returns false,
+/// doing nothing, if `src`'s readable side is in use (a parked read, a pipe or a subscription reader) or
+/// `dst`'s writable side is (a write waiting for room or a pipe). Runs the pumps of both pairs, which may
+/// complete parked tasks, so it allocates and calls Elm.
 bool pipeStreams(int64_t src, int64_t dst);
 
 } // namespace Eco::System

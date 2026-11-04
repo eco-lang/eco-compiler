@@ -1,8 +1,42 @@
 //===- JsonExports.cpp - C-linkage exports for Json module -----------------===//
 //
-// Full JSON decoder/encoder implementation using nlohmann/json.
-// JSON values are represented as heap-resident Custom objects using the
-// JSON value ADT (CTOR_JSON_* ctors), not as foreign C++ pointers.
+// The native implementation of elm/json: the kernel functions behind Json.Decode and Json.Encode.
+// nlohmann/json (its `ordered_json`) does the parsing and printing; everything Elm sees is a value on the GC heap.
+//
+// A `Json.Value` is a heap value of one of two families. The *encoder family* is what Json.Encode
+// builds: `ENC_*` Customs (ctors 0-6). Its arrays and objects hold Elm lists in the reverse of the
+// order their entries were added, because `addEntry` and `addField` prepend. The *decoder family* is
+// what parsing builds: `CTOR_JSON_*` Customs (ctors 100-107). Its arrays hold ElmArrays and its
+// objects hold lists of (key, value) Tuple2s. In each family null is a null-cons constant: an
+// embedded constant word that carries a ctor and is never a heap object.
+//
+// The decoder interpreter reads only the decoder family, so `Json.run` first converts an
+// encoder-family value to the decoder family by way of nlohmann. Every object this file builds,
+// parses or prints has its keys in JavaScript's order, the order Elm's objects have: array-index
+// keys ("0", "7") first, ascending, then the others in the order they were added. Of two fields
+// given the same key, the key keeps its first position and takes the last value.
+//
+// A decoder-family array longer than `jsonArrayChunkSize()` is *chunked* (ctor 107): its elements are
+// split over several ElmArrays so that no one of them reaches the large-object threshold. Code here
+// reads either form only through `jsonArrayLength` and `jsonArrayAt`.
+//
+// A `Decoder` is a heap value too: a `DEC_*` Custom (ctors 0-22) whose fields are its arguments, or,
+// for a decoder with no arguments, a null-cons constant. `runDecoder` interprets one against a
+// decoder-family value and returns an Elm `Result`.
+//
+// Most of the file is rooting. Any allocation and any call to an Elm closure may move heap objects
+// (the rule `elm-kernel-cpp/ExportHelpers` states), and decoding allocates at almost every step, so
+// each function roots the handles it still needs after an allocation and re-derives raw pointers
+// from them afterwards.
+//
+// The *escape points* are `Json.run` and `Json.runOnString`, where a `Result` leaves this file for
+// compiled Elm code. Inside the file an Int, Float or Char `Ok` payload is boxed; compiled code
+// expects it unboxed, so `rewrapEscapingResult` rewrites it there.
+//
+// `json/JsonRead` copies the `ENC_*` and `CTOR_JSON_*` values instead of including this file, so its
+// copies must change with these. This file is listed in the kernel licence manifest
+// (`kernel-license-files.csv`), and any change to its bytes, comments included, fails the
+// `kernel-license-check` build target until it is re-audited.
 //
 //===----------------------------------------------------------------------===//
 
@@ -32,38 +66,40 @@
 #include <algorithm>
 #include <deque>
 
-// Objects keep their keys in insertion order (ordered_json), and every object
-// built here is put into JavaScript's key order (putInJsKeyOrder), which is the
-// order Elm's objects have: eco used to sort keys (plans/kg-reported-bugs.md
-// step 4).
+// Objects keep their keys in insertion order, so `putInJsKeyOrder` can give them JavaScript's order.
 using json = nlohmann::ordered_json;
 using namespace Elm;
 using namespace Elm::Kernel;
 using namespace Elm::alloc;
 
-// Declare closure call
+// Applies an Elm closure to `num_args` encoded words. A GC point.
 extern "C" HPtr eco_apply_closure(HPtr closure, uint64_t* args, uint32_t num_args);
 
 //===----------------------------------------------------------------------===//
 // JSON Value Heap ADT
 //===----------------------------------------------------------------------===//
 
-// Ctor tags for the heap-resident JSON value ADT.
-// All use Tag_Custom with these ctor values.
+// The ctors of the decoder family of `Json.Value`, each a `Tag_Custom` heap object except null.
+// The numbers start at 100 so that they cannot be mistaken for an `ENC_*` ctor.
+
+/// The ctor of JSON null, which is the null-cons constant for this ctor and never a heap object.
 static constexpr u16 CTOR_JSON_NULL   = 100;
-static constexpr u16 CTOR_JSON_BOOL   = 101;  // 1 boxed field: True/False constant
-static constexpr u16 CTOR_JSON_INT    = 102;  // 1 unboxed field: i64
-static constexpr u16 CTOR_JSON_FLOAT  = 103;  // 1 unboxed field: f64
-static constexpr u16 CTOR_JSON_STRING = 104;  // 1 boxed field: HPointer to ElmString
-static constexpr u16 CTOR_JSON_ARRAY  = 105;  // 1 boxed field: HPointer to ElmArray
-static constexpr u16 CTOR_JSON_OBJECT = 106;  // 1 boxed field: Elm List of (String, JsonValue) tuples
-// threaded-gc-04b D5: an array longer than jsonArrayChunkSize() elements.
-// values[0] = ElmArray of chunk ElmArrays (chunk i holds elements
-// [i*F, min(n, (i+1)*F)), every chunk below the large-object threshold);
-// values[1] = unboxed Int n. Read only through jsonArrayLength/jsonArrayAt.
+static constexpr u16 CTOR_JSON_BOOL   = 101;  ///< One boxed field, the True or False constant.
+static constexpr u16 CTOR_JSON_INT    = 102;  ///< One unboxed Int field.
+static constexpr u16 CTOR_JSON_FLOAT  = 103;  ///< One unboxed Float field.
+static constexpr u16 CTOR_JSON_STRING = 104;  ///< One boxed field, an Elm String.
+static constexpr u16 CTOR_JSON_ARRAY  = 105;  ///< One boxed field, an ElmArray of JSON values.
+static constexpr u16 CTOR_JSON_OBJECT = 106;  ///< One boxed field, an Elm List of (String, JSON value) Tuple2s.
+/// The ctor of an array of more than F = `jsonArrayChunkSize()` elements.
+///
+/// `values[0]` is an ElmArray of chunk ElmArrays, where chunk i holds elements
+/// [i*F, min(n, (i+1)*F)); `values[1]` is the element count n, an unboxed Int.
 static constexpr u16 CTOR_JSON_ARRAY_CHUNKED = 107;
 
-// Decoder ctor values
+// The ctors of a `Decoder`, one per kernel constructor function below. A decoder with no arguments
+// (`DEC_STRING`, `DEC_BOOL`, `DEC_INT`, `DEC_FLOAT`, `DEC_VALUE`) is the null-cons constant for its
+// ctor; every other is a heap Custom whose fields are its arguments in the order the export takes
+// them.
 static constexpr u16 DEC_STRING = 0;
 static constexpr u16 DEC_BOOL = 1;
 static constexpr u16 DEC_INT = 2;
@@ -88,7 +124,8 @@ static constexpr u16 DEC_MAP6 = 20;
 static constexpr u16 DEC_MAP7 = 21;
 static constexpr u16 DEC_MAP8 = 22;
 
-// Encoder ctor values
+// The ctors of the encoder family of `Json.Value`. `ENC_NULL` is a null-cons constant; the others
+// are heap Customs with one field. `json/JsonRead` holds copies of these values.
 static constexpr u16 ENC_NULL = 0;
 static constexpr u16 ENC_BOOL = 1;
 static constexpr u16 ENC_INT = 2;
@@ -101,13 +138,13 @@ static constexpr u16 ENC_OBJECT = 6;
 // Helper Functions
 //===----------------------------------------------------------------------===//
 
-// Create an Elm String from a C++ string (UTF-8 to UTF-16 conversion).
+// Allocates an Elm String holding the UTF-8 text `str`. A GC point.
 static HPointer allocElmString(const std::string& str) {
     return allocStringFromUTF8(str);
 }
 
-// Convert any Elm String form (leaf or slice) to a UTF-8 C++ string.
-// Routes through StringOps::toStdString — the canonical interop path.
+// Returns the text of the Elm String `strEnc`, of any string form, as UTF-8. Does not allocate on the
+// GC heap.
 static std::string elmStringToStd(uint64_t strEnc) {
     HPointer h = Export::decode(strEnc);
     if (Elm::alloc::isEmptyString(h)) {
@@ -118,8 +155,8 @@ static std::string elmStringToStd(uint64_t strEnc) {
     return Elm::StringOps::toStdString(ptr);
 }
 
-// Create Ok result. Roots `value` across the Custom allocate so callers may
-// pass an HPointer captured before this call.
+// Allocates `Ok value`, with `value` in a boxed slot. `value` is rooted across the allocation, so a
+// caller may pass a handle it has not rooted itself.
 static uint64_t makeOk(HPointer value) {
     size_t size = sizeof(Custom) + sizeof(Unboxable);
     size = (size + 7) & ~7;
@@ -137,35 +174,33 @@ static uint64_t makeOk(HPointer value) {
 }
 
 
-// Json.Decode.Error, as elm/json declares it:
+// The constructor tags of elm/json's `Json.Decode.Error`, in declaration order:
 //
 //     type Error
 //         = Field String Error      -- tag 0
-//         | Index Int Error         -- tag 1, the Int unboxed (computeCtorLayout)
+//         | Index Int Error         -- tag 1, the Int stored unboxed
 //         | OneOf (List Error)      -- tag 2
 //         | Failure String Value    -- tag 3
 //
-// Constructor tags are declaration order and the fields keep their order; an
-// Int field is stored unboxed. The errors below are built the way elm/json's
-// JavaScript kernel builds them (`_Json_runHelp`), so `errorToString` gives the
-// same text (plans/kg-reported-bugs.md step 2).
+// The fields keep their declared order. The errors below are built as elm/json's JavaScript kernel
+// builds them (`_Json_runHelp`), so `errorToString` gives the same text.
 static constexpr u16 ERR_FIELD = 0;
 static constexpr u16 ERR_INDEX = 1;
 static constexpr u16 ERR_ONE_OF = 2;
 static constexpr u16 ERR_FAILURE = 3;
 
-// `Err error`. Roots `error` across the allocation.
+// Allocates `Err error`, rooting `error` across the allocation.
 static uint64_t makeErrResult(HPointer error) {
     return Export::encode(err(boxed(error), true));
 }
 
-// The `Error` inside an `Err` result.
+// Returns the `Error` inside the `Err` result `result`. Does not allocate; the handle is unrooted.
 static HPointer getErrValue(uint64_t result) {
     return static_cast<Custom*>(Export::toPtr(result))->values[0].p;
 }
 
-// `Err (Failure message value)`, where `value` is the JSON value (heap ADT or
-// the embedded null) the decoder failed on.
+// Allocates `Err (Failure message value)`, where `value` is the decoder-family value, a heap
+// Custom or the null constant, that the decoder failed on.
 static uint64_t makeFailure(const std::string& message, HPointer value) {
     StackRootGuard valueRoot(&value);
     HPointer msgStr = allocElmString(message);
@@ -174,27 +209,27 @@ static uint64_t makeFailure(const std::string& message, HPointer value) {
     return makeErrResult(failure);
 }
 
-// elm/json's `_Json_expecting`: `Err (Failure ("Expecting " ++ type) value)`.
+// Allocates `Err (Failure ("Expecting " ++ type) value)`, as elm/json's `_Json_expecting` does.
 static uint64_t expecting(const std::string& type, HPointer value) {
     return makeFailure("Expecting " + type, value);
 }
 
-// `Err (Field key inner)` for the failed result `innerResult` = `Err inner`.
+// Allocates `Err (Field key inner)`, where `innerResult` is `Err inner`.
 static uint64_t wrapField(HPointer key, uint64_t innerResult) {
     HPointer inner = getErrValue(innerResult);
     StackRootGuard roots(&key, &inner);
     return makeErrResult(custom(ERR_FIELD, { boxed(key), boxed(inner) }, 0));
 }
 
-// `Err (Index index inner)` for the failed result `innerResult` = `Err inner`.
+// Allocates `Err (Index index inner)`, where `innerResult` is `Err inner`.
 static uint64_t wrapIndex(int64_t index, uint64_t innerResult) {
     HPointer inner = getErrValue(innerResult);
     StackRootGuard roots(&inner);
     return makeErrResult(custom(ERR_INDEX, { unboxedInt(index), boxed(inner) }, /*slot 0 Int*/ 0x1));
 }
 
-// Whether `key` is an array index ("0", "7", up to "4294967294"), the keys a
-// JavaScript object lists first, in numeric order. Its value goes to `index`.
+// Returns whether `key` is an array index ("0", "7", up to "4294967294"), the kind of key a
+// JavaScript object lists first, in numeric order, and if so writes its value to `index`.
 static bool isArrayIndexKey(const std::string& key, uint64_t& index) {
     if (key.empty() || key.size() > 10) return false;
     if (key.size() > 1 && key[0] == '0') return false;
@@ -208,12 +243,12 @@ static bool isArrayIndexKey(const std::string& key, uint64_t& index) {
     return true;
 }
 
-// An ordered_json object's members, in order. ordered_map is a std::vector of
-// pairs whose `operator[]` / `emplace` search it linearly, so this file appends
-// members straight to the vector and removes repeated keys once per object
-// (dedupeObject): an object of n keys costs O(n log n), not O(n^2).
+// The members of an `ordered_json` object, in order. Its map is a vector of pairs whose `operator[]`
+// and `emplace` search it linearly, so this file appends members straight to the vector and removes
+// repeated keys once per object with `dedupeObject`: an object of n keys costs O(n log n), not O(n^2).
 using JsonMembers = std::vector<std::pair<const std::string, json>>;
 
+// Returns the member vector of the object `obj`.
 static JsonMembers& membersOf(json& obj) {
     return static_cast<JsonMembers&>(obj.get_ref<json::object_t&>());
 }
@@ -230,8 +265,8 @@ static void dedupeObject(json& obj) {
     std::stable_sort(byKey.begin(), byKey.end(), [&](uint32_t a, uint32_t b) {
         return members[a].first < members[b].first;
     });
-    // lastOf[i]: for the first occurrence i of a repeated key, the index of its
-    // last occurrence; `repeat[i]` marks the later occurrences.
+    // For the first occurrence `i` of a repeated key, `lastOf[i]` is the index of its last occurrence;
+    // `repeat` marks the later occurrences. Both stay empty when no key repeats.
     std::vector<uint32_t> lastOf;
     std::vector<bool> repeat;
     for (size_t k = 1; k < n; k++) {
@@ -258,8 +293,8 @@ static void dedupeObject(json& obj) {
 
 // Puts the members of the object `obj`, which has no repeated keys, into
 // JavaScript's order: array-index keys first, ascending, then the others in
-// insertion order. Together with dedupeObject this is the order Elm (on
-// JavaScript) gives an object's keys when it builds, parses or prints one.
+// insertion order. Together with `dedupeObject` this gives the order Elm, on JavaScript, gives an
+// object's keys when it builds, parses or prints one.
 static void putInJsKeyOrder(json& obj) {
     JsonMembers& members = membersOf(obj);
     std::vector<std::pair<uint64_t, uint32_t>> indexed;
@@ -285,14 +320,13 @@ static void putInJsKeyOrder(json& obj) {
 }
 
 // Appends the member (key, value) to the object `obj` without a check; the
-// caller finishes the object with dedupeObject and putInJsKeyOrder.
+// caller finishes the object with `dedupeObject` and `putInJsKeyOrder`.
 static void appendMember(json& obj, std::string key, json value) {
     membersOf(obj).emplace_back(std::move(key), std::move(value));
 }
 
-// Parses JSON text into an ordered_json whose objects are in JavaScript's key
-// order. A SAX builder rather than json::parse, whose DOM builder inserts each
-// key with ordered_map's linear search.
+// The SAX handler that parses JSON text into an `ordered_json` whose objects are in JavaScript's key
+// order. It replaces `json::parse`, whose DOM builder inserts each key with a linear search.
 class OrderedDomBuilder {
 public:
     json root;
@@ -322,10 +356,9 @@ public:
     std::string error;  // the parser's message, when it failed
 
 private:
-    // Adds `value` to the innermost open container (or makes it the root) and
-    // returns where it now lives. A container on the stack is only ever the
-    // last element of its parent, and only the innermost one grows, so the
-    // pointers on the stack stay valid.
+    // Adds `value` to the innermost open container, or makes it the root, and returns where it now
+    // lives. A container on the stack is always the last element of its parent, and only the
+    // innermost one grows, so the pointers on the stack stay valid.
     json* add(json value) {
         if (stack_.empty()) {
             root = std::move(value);
@@ -346,8 +379,8 @@ private:
     std::string key_;
 };
 
-// Parses `text` into `out`, or returns false with the parser's message in
-// `error`.
+// Parses `text` into `out` and returns true, or returns false with the parser's message in `error`.
+// Does not allocate on the GC heap.
 static bool parseJson(const std::string& text, json& out, std::string& error) {
     OrderedDomBuilder builder;
     if (!json::sax_parse(text, &builder)) {
@@ -358,7 +391,7 @@ static bool parseJson(const std::string& text, json& out, std::string& error) {
     return true;
 }
 
-// Check if a result is Ok.
+// Returns whether the `Result` word `result` is an `Ok`.
 static bool isOk(uint64_t result) {
     void* ptr = Export::toPtr(result);
     if (!ptr) return false;
@@ -366,7 +399,7 @@ static bool isOk(uint64_t result) {
     return c->ctor == 0;
 }
 
-// Get value from Ok result.
+// Returns the payload of `result`, which must be an `Ok` as built by `makeOk`. The handle is unrooted.
 static HPointer getOkValue(uint64_t result) {
     void* ptr = Export::toPtr(result);
     Custom* c = static_cast<Custom*>(ptr);
@@ -377,16 +410,14 @@ static HPointer getOkValue(uint64_t result) {
 // JSON Value ADT - Construction Helpers
 //===----------------------------------------------------------------------===//
 
-// JSON null — the JSON value ADT's only nullary ctor. Like every nullary
-// constructor it is an embedded null-cons constant (HEAP_044,
-// plans/null-cons-hpointer-embedding.md §2.3), never a heap object.
+// Returns decoder-family JSON null, the null-cons constant for `CTOR_JSON_NULL`. Does not allocate.
 static HPointer makeJsonNull() {
     return hpFromBits(nullConsWordFor(CTOR_JSON_NULL));
 }
 
-// Create a heap-resident JSON bool.
+// Allocates a decoder-family JSON boolean holding `b`.
 static HPointer makeJsonBool(bool b) {
-    // No HPointer args (elmTrue/elmFalse return embedded constants).
+    // The field is a constant, which no collection moves, so nothing needs rooting.
     size_t size = sizeof(Custom) + sizeof(Unboxable);
     size = (size + 7) & ~7;
     Custom* c = static_cast<Custom*>(
@@ -398,7 +429,7 @@ static HPointer makeJsonBool(bool b) {
     return Allocator::instance().wrap(c);
 }
 
-// Create a heap-resident JSON int.
+// Allocates a decoder-family JSON integer holding `val`.
 static HPointer makeJsonInt(i64 val) {
     size_t size = sizeof(Custom) + sizeof(Unboxable);
     size = (size + 7) & ~7;
@@ -411,7 +442,7 @@ static HPointer makeJsonInt(i64 val) {
     return Allocator::instance().wrap(c);
 }
 
-// Create a heap-resident JSON float.
+// Allocates a decoder-family JSON float holding `val`.
 static HPointer makeJsonFloat(f64 val) {
     size_t size = sizeof(Custom) + sizeof(Unboxable);
     size = (size + 7) & ~7;
@@ -419,12 +450,13 @@ static HPointer makeJsonFloat(f64 val) {
         eco_alloc_with_roots(Tag_Custom, size, nullptr, 0, 0));
     c->header.size = 1;
     c->ctor = CTOR_JSON_FLOAT;
-    c->unboxed = 2;  // kind=Float at slot 0
+    c->unboxed = 2;  // Float in slot 0
     c->values[0].f = val;
     return Allocator::instance().wrap(c);
 }
 
-// Create a heap-resident JSON string.
+// Allocates a decoder-family JSON string around the Elm String `elmStr`, which is rooted across the
+// allocation.
 static HPointer makeJsonString(HPointer elmStr) {
     size_t size = sizeof(Custom) + sizeof(Unboxable);
     size = (size + 7) & ~7;
@@ -440,20 +472,21 @@ static HPointer makeJsonString(HPointer elmStr) {
     return Allocator::instance().wrap(c);
 }
 
-// Roots a vector of HPointers that will NOT be resized while rooted, with ONE
-// all-boxed record (an all-ones mask covers a range of any length,
-// `stackRangeSlotIsRoot`; plans/kernel-root-stack-bounded-rooting.md — it used
-// to push one record per 64 slots, which overflowed the shadow stack above
-// 4,194,304 elements). The caller restores the range stack point afterwards.
+// Roots every element of `v` with one range record on the range stack of `rs`, whatever its length,
+// since an all-ones mask makes every slot of a range a root (`stackRangeSlotIsRoot`).
+//
+// The record points into `v`'s buffer, so `v` must not be resized or destroyed until the caller has
+// restored the range stack to a point saved before this call. An empty `v` pushes nothing.
 static void rootBuffer(RootSet& rs, std::vector<HPointer>& v) {
     if (!v.empty()) rs.pushStackRootRange(v.data(), v.size(), ~0ULL);
 }
 
-// Allocates a JsArray of `count` elements from elems[start..start+count) of
-// uniform kind (0 boxed, 1 Int, 2 Float): boxed values are stored as-is,
-// unboxed kinds are read out of their boxed ElmInt/ElmFloat. `elems` must be
-// rooted by the caller (re-read after the allocation). count <= 32 here, so
-// the array is always small (nursery-born, filled with no allocation).
+// Allocates a JsArray holding elems[start, start+count), with slot kind `kind` (0 boxed, 1 Int, 2
+// Float). For kind 1 or 2 each element must be a boxed Int or Float, whose number is stored
+// unboxed; for kind 0 the handles are stored as they are.
+//
+// `elems` must be rooted by the caller; it is read only after the one allocation. Every caller
+// passes `count` of at most 32.
 static HPointer jsArrayFromSlice(std::vector<HPointer>& elems, size_t start, size_t count,
                                  u8 kind) {
     auto& allocator = Allocator::instance();
@@ -479,8 +512,8 @@ static HPointer jsArrayFromSlice(std::vector<HPointer>& elems, size_t start, siz
     return jsArr;
 }
 
-// Allocates the Array.elm `Node` Custom wrapping `child` (a JsArray):
-// ctor 0 = SubTree, ctor 1 = Leaf (declaration order in Array.elm).
+// Allocates an elm/core Array `Node` with ctor `ctor` around the JsArray `child`, which is rooted
+// across the allocation. Ctor 0 is `SubTree` and 1 is `Leaf`, their order in elm/core's Array.elm.
 static HPointer makeArrayNode(u16 ctor, HPointer child) {
     size_t sz = (sizeof(Custom) + 1 * sizeof(Unboxable) + 7) & ~size_t{7};
     uint64_t roots[1];
@@ -493,27 +526,24 @@ static HPointer makeArrayNode(u16 ctor, HPointer child) {
     return Allocator::instance().wrap(node);
 }
 
-// Builds an Elm `Array a` = `Array_elm_builtin Int Int (Tree a) (JsArray a)`
-// with EXACTLY Array.fromList's shape (elm/core Array.elm fromListHelp /
-// builderToArray / treeFromBuilder / compressNodes): the last len % 32
-// elements form the tail (empty for a multiple of 32 — Array.get's
-// tailIndex relies on it); every full 32-element chunk is a Leaf node; while more than 32 nodes
-// remain they are grouped 32 at a time into SubTree nodes; the top level is
-// a JsArray of at most 32 nodes; startShift = max 5 (5 * floor(log32(treeLen - 1))).
+// Allocates an elm/core `Array` holding `elements` in order, with slot kind `elemKind` for its
+// leaves (as `jsArrayFromSlice` takes it).
 //
-// threaded-gc-04b D5: before this, the tree was ONE flat JsArray of all
-// leaves with startShift 5 — only a valid Array up to 32 leaves (1,056
-// elements); larger decoded arrays returned wrong elements from Array.get,
-// and the flat leaf array was a large pointer-bearing object (the S2 source).
-// Every JsArray built here has <= 32 elements.
+// The result has the shape elm/core's `Array.fromList` gives the same elements, because elm/core's
+// Array functions read that shape: `Array_elm_builtin length startShift tree tail`. The tail holds the
+// last `len % 32` elements, and is empty when `len` is a multiple of 32. Every full run of 32
+// elements before it is a `Leaf`. While more than 32 nodes remain at a level they are grouped, 32 at
+// a time, into `SubTree` nodes, and the top level is a JsArray of at most 32 nodes. `startShift` is
+// `max 5 (5 * floor (log32 (treeLen - 1)))`, where treeLen is the number of elements in leaves.
+// Every JsArray built here holds at most 32 elements.
 //
-// `elements` must be rooted by the caller (rootBuffer) and is not resized.
+// `elements` must be rooted by the caller (with `rootBuffer`) and is not resized.
 static HPointer buildElmArrayFromElements(std::vector<HPointer>& elements, u8 elemKind) {
     constexpr size_t kBranch = 32;
     auto& allocator = Allocator::instance();
     auto& rs = allocator.getRootSet();
     const size_t len = elements.size();
-    const size_t tailLen = len % kBranch;   // fromListHelp: full chunks are Leaves
+    const size_t tailLen = len % kBranch;
     const size_t tailStart = len - tailLen;
     const size_t numLeaves = tailStart / kBranch;
 
@@ -521,9 +551,9 @@ static HPointer buildElmArrayFromElements(std::vector<HPointer>& elements, u8 el
     HPointer tailJsArr = jsArrayFromSlice(elements, tailStart, tailLen, elemKind);
     rs.pushStackRootRange(&tailJsArr, 1, 1);
 
-    // Every level's vector stays alive (and rooted, buffer never moved) until
-    // the function returns: a std::deque never relocates its elements, so the
-    // root ranges registered on each level's buffer stay valid.
+    // Each level's vector is rooted by a range record that points into its buffer, so it must stay in
+    // place until the function returns. Growing a std::deque at its end never moves the vectors
+    // already in it, as growing a std::vector of vectors could.
     std::deque<std::vector<HPointer>> levels;
 
     // Level 0: the Leaf nodes, in index order.
@@ -566,7 +596,7 @@ static HPointer buildElmArrayFromElements(std::vector<HPointer>& elements, u8 el
     std::memcpy(&roots[3], &tailJsArr, sizeof(tailJsArr));
     Custom* c = static_cast<Custom*>(eco_alloc_with_roots(Tag_Custom, sz, roots, 4, 0xC));
     c->ctor = 0;       // Array_elm_builtin
-    c->unboxed = 0x5;  // fields 0 (length) and 1 (startShift) are unboxed Ints
+    c->unboxed = 0x5;  // Int in slots 0 (length) and 1 (startShift)
     c->values[0].i = static_cast<i64>(roots[0]);
     c->values[1].i = static_cast<i64>(roots[1]);
     std::memcpy(&c->values[2].p, &roots[2], sizeof(HPointer));
@@ -575,7 +605,8 @@ static HPointer buildElmArrayFromElements(std::vector<HPointer>& elements, u8 el
     return allocator.wrap(c);
 }
 
-// Create a heap-resident JSON array from an ElmArray of JSON values.
+// Allocates an unchunked decoder-family JSON array around the ElmArray `elmArray`, which is rooted
+// across the allocation.
 static HPointer makeJsonArray(HPointer elmArray) {
     size_t size = sizeof(Custom) + sizeof(Unboxable);
     size = (size + 7) & ~7;
@@ -591,15 +622,16 @@ static HPointer makeJsonArray(HPointer elmArray) {
     return Allocator::instance().wrap(c);
 }
 
-// threaded-gc-04b D5: elements per chunk of a chunked JSON array, so every
-// chunk ElmArray stays below the large-object threshold (1,021 at 8 KiB).
+// Returns the most elements an ElmArray can hold while staying below the allocator's large-object
+// threshold: the length of every chunk of a chunked JSON array but the last, and the longest array
+// left unchunked. 1,021 for an 8 KiB threshold.
 static size_t jsonArrayChunkSize() {
     return (Allocator::instance().getLargeObjectThreshold() - 1 - sizeof(ElmArray)) /
            sizeof(Unboxable);
 }
 
-// Create a chunked heap-resident JSON array: `index` is an ElmArray of chunk
-// ElmArrays holding `n` elements in total.
+// Allocates a chunked decoder-family JSON array, where `index` is an ElmArray of chunk ElmArrays
+// holding `n` elements in total. `index` is rooted across the allocation.
 static HPointer makeJsonArrayChunked(HPointer index, u32 n) {
     size_t size = sizeof(Custom) + 2 * sizeof(Unboxable);
     size = (size + 7) & ~7;
@@ -610,15 +642,14 @@ static HPointer makeJsonArrayChunked(HPointer index, u32 n) {
     std::memcpy(&index, &roots[0], sizeof(index));
     c->header.size = 2;
     c->ctor = CTOR_JSON_ARRAY_CHUNKED;
-    c->unboxed = 0x4;              // values[1]: Int (kind 1 in bits [2,3])
+    c->unboxed = 0x4;              // Int in slot 1
     c->values[0].p = index;
     c->values[1].i = static_cast<i64>(n);
     return Allocator::instance().wrap(c);
 }
 
-// Builds the JSON array for `elements` (rooted by the caller, not resized):
-// one ElmArray up to jsonArrayChunkSize() elements, else chunks then an index
-// (each array filled right after its allocation: SAFE-FRESH).
+// Allocates the decoder-family JSON array holding `elements`: unchunked up to `jsonArrayChunkSize()`
+// elements, chunked above. `elements` must be rooted by the caller and is not resized.
 static HPointer makeJsonArrayFrom(std::vector<HPointer>& elements) {
     const size_t n = elements.size();
     const size_t F = jsonArrayChunkSize();
@@ -635,7 +666,6 @@ static HPointer makeJsonArrayFrom(std::vector<HPointer>& elements) {
         std::vector<HPointer> slice(elements.begin() + lo, elements.begin() + hi);
         chunks[c] = arrayFromPointers(slice);
 #if ECO_HEAP_VALIDATE
-        // V5: every chunk is below the large-object threshold.
         assert(sizeof(ElmArray) + slice.size() * sizeof(Unboxable) <
                    Allocator::instance().getLargeObjectThreshold() &&
                "JSON array chunk reached the large-object threshold");
@@ -646,19 +676,22 @@ static HPointer makeJsonArrayFrom(std::vector<HPointer>& elements) {
     return makeJsonArrayChunked(index, static_cast<u32>(n));
 }
 
+// Returns whether `ctor` is the ctor of a decoder-family JSON array of either form.
 static bool isJsonArrayCtor(u16 ctor) {
     return ctor == CTOR_JSON_ARRAY || ctor == CTOR_JSON_ARRAY_CHUNKED;
 }
 
-// Element count of a JSON array of either form. No allocation.
+// Returns the number of elements of the JSON array `jarr`, of either form. Does not allocate.
 static u32 jsonArrayLength(Custom* jarr) {
     if (jarr->ctor == CTOR_JSON_ARRAY_CHUNKED) return static_cast<u32>(jarr->values[1].i);
     return static_cast<ElmArray*>(Allocator::instance().resolve(jarr->values[0].p))->length;
 }
 
-// Element i (< jsonArrayLength) of a JSON array of either form. No
-// allocation. The chunk size is chunk 0's length (every chunk but the last
-// is full), so it does not depend on the current configuration.
+// Returns element `i` of the JSON array `jarr`, of either form. `i` must be less than
+// `jsonArrayLength(jarr)`; nothing checks it. Does not allocate.
+//
+// The chunk size is read from chunk 0, which is full whenever there is more than one chunk, so an
+// array built under one large-object threshold reads correctly under another.
 static HPointer jsonArrayAt(Custom* jarr, u32 i) {
     auto& allocator = Allocator::instance();
     ElmArray* top = static_cast<ElmArray*>(allocator.resolve(jarr->values[0].p));
@@ -668,7 +701,8 @@ static HPointer jsonArrayAt(Custom* jarr, u32 i) {
     return chunk->elements[i % F].p;
 }
 
-// Create a heap-resident JSON object from an Elm List of (String, JsonValue) tuples.
+// Allocates a decoder-family JSON object around `kvList`, an Elm List of (String, JSON value)
+// Tuple2s, which is rooted across the allocation.
 static HPointer makeJsonObject(HPointer kvList) {
     size_t size = sizeof(Custom) + sizeof(Unboxable);
     size = (size + 7) & ~7;
@@ -688,9 +722,8 @@ static HPointer makeJsonObject(HPointer kvList) {
 // JSON Value ADT - Query Helpers
 //===----------------------------------------------------------------------===//
 
-// Get the ctor tag of a JSON value: the embedded null-cons word for JSON null
-// (HEAP_044), the heap Custom's ctor otherwise.
-// Returns 0 for other non-JSON-value inputs (e.g. legacy embedded constants).
+// Returns the ctor of the JSON value `jvalEnc`: the tag of a null-cons constant, or the heap Custom's
+// ctor. Returns 0 for any other constant. Nothing calls it.
 static u16 jsonValueCtor(uint64_t jvalEnc) {
     if (isNullConsBits(jvalEnc)) return static_cast<u16>(nullConsTagBits(jvalEnc));
     void* ptr = Export::toPtr(jvalEnc);
@@ -703,6 +736,11 @@ static u16 jsonValueCtor(uint64_t jvalEnc) {
 // jsonToHeap - Convert nlohmann::json to heap-resident JSON value ADT
 //===----------------------------------------------------------------------===//
 
+// Allocates the decoder-family value for the parsed JSON `j`. A GC point.
+//
+// Object entries are listed in the object's member order, which is already JavaScript's key order,
+// as `parseJson` and `elmToJson` build every object that reaches here. A number nlohmann
+// parsed as an integer becomes `CTOR_JSON_INT` and any other number `CTOR_JSON_FLOAT`.
 static HPointer jsonToHeap(const json& j) {
     auto& allocator = Allocator::instance();
 
@@ -728,19 +766,8 @@ static HPointer jsonToHeap(const json& j) {
     }
 
     if (j.is_array()) {
-        // Convert each element to heap, collecting HPointers.
-        //
-        // Each recursive `jsonToHeap` call is a GC point. We must keep
-        // every previously-collected HPointer rooted so a GC inside the
-        // loop body relocates them in-place. The previous push_back
-        // pattern left already-pushed slots stale across subsequent
-        // recursions and broke down on arrays of nontrivial size — the
-        // STALE-hptr validator caught this in JsonRoundtrip*.elm.
-        //
-        // Approach: pre-fill a vector of size j.size() with Nil, then
-        // register ONE all-boxed stack-root record over its contiguous
-        // buffer (rootBuffer). The vector's data() pointer is stable since
-        // we don't grow.
+        // Each recursive call is a GC point, so every element converted so far must stay rooted. The
+        // vector is sized once and filled with Nil, a constant, so one record roots all of it.
         size_t n = j.size();
         std::vector<HPointer> elements(n, listNil());
         auto& rs = Allocator::instance().getRootSet();
@@ -752,27 +779,18 @@ static HPointer jsonToHeap(const json& j) {
             elements[i++] = jsonToHeap(elem);
         }
 
-        // Build the JSON array from the collected (still-rooted) HPointers:
-        // flat, or chunked above jsonArrayChunkSize() (threaded-gc-04b D5).
         HPointer jarr = makeJsonArrayFrom(elements);
         rs.restoreStackRangePoint(saved);
         return jarr;
     }
 
     if (j.is_object()) {
-        // Build list of (key, value) tuples in reverse member order so the
-        // final list is in that order. Every object reaching here was built
-        // by parseJson or elmToJson, so it is already in JavaScript's key
-        // order.
+        // The list is built by prepending from the last member, so it ends in member order.
         const JsonMembers& members = static_cast<const JsonMembers&>(j.get_ref<const json::object_t&>());
 
         HPointer kvList = listNil();
         HPointer keyStr = listNil();  // placeholder; assigned per-iteration
-        // `kvList` accumulates across iterations and must survive every
-        // alloc-capable call (allocElmString / jsonToHeap / tuple2 / cons).
-        // `keyStr` is hoisted into a single rooted slot held outside the loop
-        // so each iteration just rewrites the slot rather than push/pop a
-        // fresh StackRootGuard.
+        // `keyStr` is rooted once, outside the loop, and overwritten on each iteration.
         Elm::StackRootGuard objRoots(&kvList, &keyStr);
         for (auto it = members.rbegin(); it != members.rend(); ++it) {
             keyStr = allocElmString(it->first);
@@ -785,7 +803,6 @@ static HPointer jsonToHeap(const json& j) {
         return makeJsonObject(kvList);
     }
 
-    // Fallback: null.
     return makeJsonNull();
 }
 
@@ -793,10 +810,11 @@ static HPointer jsonToHeap(const json& j) {
 // heapJsonToNlohmann - Convert heap-resident JSON value ADT to nlohmann::json
 //===----------------------------------------------------------------------===//
 
+// Returns the nlohmann value for the decoder-family value `jvalEnc`. Anything that is not a
+// decoder-family value becomes JSON null. Does not allocate on the GC heap.
 static json heapJsonToNlohmann(uint64_t jvalEnc) {
     auto& allocator = Allocator::instance();
 
-    // Embedded CTOR_JSON_NULL — the JSON value ADT's only nullary ctor.
     if (isNullConsBits(jvalEnc)) return json(nullptr);
 
     void* ptr = Export::toPtr(jvalEnc);
@@ -828,7 +846,6 @@ static json heapJsonToNlohmann(uint64_t jvalEnc) {
 
         case CTOR_JSON_ARRAY:
         case CTOR_JSON_ARRAY_CHUNKED: {
-            // No heap allocation below, so `c` stays valid.
             json arr = json::array();
             const u32 len = jsonArrayLength(c);
             for (u32 i = 0; i < len; i++) {
@@ -860,18 +877,19 @@ static json heapJsonToNlohmann(uint64_t jvalEnc) {
 // Decoder Creation Helpers
 //===----------------------------------------------------------------------===//
 
-// Primitive (nullary) decoders are embedded null-cons constants (HEAP_044) —
-// no allocation, stable across GC.
+// Returns the decoder with no arguments for `ctor`, the null-cons constant for that ctor. Does not
+// allocate.
 static uint64_t makeDecoder0(u16 ctor) {
     return nullConsWordFor(ctor);
 }
 
-// The heap-slot form of a decoded value: its kind (0 boxed, 1 Int, 2 Float, 3 Char) and the slot
-// contents, read off the value itself. Only Int, Float and Char are unboxed in heap fields
-// (REP_*), and the compiled code that reads a list head or tuple field of one of those types
-// reads the unboxed scalar. The element decoder's top constructor cannot decide this:
-// `Decode.field "v" Decode.int` and `Decode.map f Decode.int` decode Ints but are DEC_FIELD /
-// DEC_MAP, and a slot left boxed there hands the pointer's bits to the reader as the number.
+// Writes to `slot` the form the decoded value `v` takes in a heap field, and returns that slot's kind
+// (0 boxed, 1 Int, 2 Float, 3 Char). A boxed Int, Float or Char gives its number and kind; anything
+// else gives `v` itself and kind 0. Does not allocate.
+//
+// Compiled code reads a list head or tuple field of type Int, Float or Char as an unboxed number,
+// so the kind is read off the value, not off the decoder: `Decode.field "v" Decode.int` and
+// `Decode.map f Decode.int` decode Ints, though their ctors are `DEC_FIELD` and `DEC_MAP`.
 static u8 decodedSlot(Allocator& allocator, HPointer v, Unboxable& slot) {
     slot.p = v;
     if (isEmbeddedConstant(v)) return 0;
@@ -891,6 +909,7 @@ static u8 decodedSlot(Allocator& allocator, HPointer v, Unboxable& slot) {
     }
 }
 
+// Allocates a decoder with ctor `ctor` and the one boxed argument `arg`, rooted across the allocation.
 static uint64_t makeDecoder1(u16 ctor, uint64_t arg) {
     HPointer payload = Export::decode(arg);
     size_t size = sizeof(Custom) + sizeof(Unboxable);
@@ -907,6 +926,7 @@ static uint64_t makeDecoder1(u16 ctor, uint64_t arg) {
     return Export::encode(Allocator::instance().wrap(dec));
 }
 
+// Allocates a decoder with ctor `ctor` and the one unboxed Int argument `arg`. Nothing calls it.
 static uint64_t makeDecoder1i(u16 ctor, int64_t arg) {
     size_t size = sizeof(Custom) + sizeof(Unboxable);
     size = (size + 7) & ~7;
@@ -919,6 +939,8 @@ static uint64_t makeDecoder1i(u16 ctor, int64_t arg) {
     return Export::encode(Allocator::instance().wrap(dec));
 }
 
+// Allocates a decoder with ctor `ctor` and the two boxed arguments `arg1` and `arg2`, in that order,
+// both rooted across the allocation.
 static uint64_t makeDecoder2(u16 ctor, uint64_t arg1, uint64_t arg2) {
     HPointer p0 = Export::decode(arg1);
     HPointer p1 = Export::decode(arg2);
@@ -939,11 +961,13 @@ static uint64_t makeDecoder2(u16 ctor, uint64_t arg1, uint64_t arg2) {
     return Export::encode(Allocator::instance().wrap(dec));
 }
 
+// Allocates a decoder with ctor `ctor`, the unboxed Int `arg1` in slot 0 and the boxed `arg2` in slot
+// 1, which is rooted across the allocation.
 static uint64_t makeDecoder2ip(u16 ctor, int64_t arg1, uint64_t arg2) {
     HPointer p1 = Export::decode(arg2);
     size_t size = sizeof(Custom) + 2 * sizeof(Unboxable);
     size = (size + 7) & ~7;
-    // arg1 is unboxed Int (slot 0); p1 is HPointer (slot 1). mask = 0b10 = 0x2.
+    // Only roots[1] is an HPointer, so the mask is 0x2.
     uint64_t roots[2] = { static_cast<uint64_t>(arg1), 0 };
     std::memcpy(&roots[1], &p1, sizeof(p1));
     Custom* dec = static_cast<Custom*>(
@@ -951,7 +975,7 @@ static uint64_t makeDecoder2ip(u16 ctor, int64_t arg1, uint64_t arg2) {
     std::memcpy(&p1, &roots[1], sizeof(p1));
     dec->header.size = 2;
     dec->ctor = ctor;
-    dec->unboxed = 1;  // first field unboxed
+    dec->unboxed = 1;  // Int in slot 0
     dec->values[0].i = arg1;
     dec->values[1].p = p1;
     return Export::encode(Allocator::instance().wrap(dec));
@@ -963,15 +987,13 @@ static uint64_t makeDecoder2ip(u16 ctor, int64_t arg1, uint64_t arg2) {
 
 static uint64_t runDecoder(HPointer decoderHP, uint64_t jvalEncIn);
 
-// elm/json decodes a list, an array or an object's values from the first to
-// the last and reports the FIRST that fails, wrapped in `Index` / `Field`. The
-// list and key/value decoders below build their results back to front, so on
-// a failure they decode again from the front with these, which return that
-// error. Decoders are pure, so the same element fails again; the error path
-// pays for the rescan, the success path does not.
+// elm/json decodes a list, an array or an object's values from the first to the last and reports
+// the first that fails, wrapped in `Index` or `Field`. The list and key-value decoders below decode
+// from the last, so on a failure they decode again from the front with these two, which return that
+// error. Decoders are pure, so the same element fails again; only the error path pays for the rescan.
 
-// `Err (Index i e)` for the first element `i` of the JSON array `arrayHP`
-// (of `len` elements) that `elemDecHP` fails on with `e`.
+// Allocates `Err (Index i e)` for the first element `i` of the JSON array `arrayHP`, of `len`
+// elements, that `elemDecHP` fails on with `e`. A GC point.
 static uint64_t firstFailingElement(HPointer elemDecHP, HPointer arrayHP, u32 len) {
     auto& allocator = Allocator::instance();
     StackRootGuard roots(&elemDecHP, &arrayHP);
@@ -984,8 +1006,8 @@ static uint64_t firstFailingElement(HPointer elemDecHP, HPointer arrayHP, u32 le
     return makeFailure("Expecting a LIST", arrayHP);
 }
 
-// `Err (Field key e)` for the first member `key` of the JSON object `objectHP`
-// whose value `valDecHP` fails on with `e`.
+// Allocates `Err (Field key e)` for the first member `key` of the JSON object `objectHP` whose value
+// `valDecHP` fails on with `e`. A GC point.
 static uint64_t firstFailingField(HPointer valDecHP, HPointer objectHP) {
     auto& allocator = Allocator::instance();
     StackRootGuard roots(&valDecHP, &objectHP);
@@ -1005,24 +1027,28 @@ static uint64_t firstFailingField(HPointer valDecHP, HPointer objectHP) {
     return makeFailure("Expecting an OBJECT", objectHP);
 }
 
-// Run decoder on a heap-resident JSON value and return Result.
+// Runs the decoder `decoderHP` on the decoder-family value `jvalEncIn` and returns the `Result`. An
+// `Ok` payload is always in a boxed slot, an Int, Float or Char included. A GC point: it allocates
+// and may call Elm closures.
 //
-// Both `decoderHP` and the JSON value referenced by `jvalEncIn` are rooted for
-// the lifetime of the body so the GC keeps them valid across recursive
-// `runDecoder` calls, closure invocations, and any other allocator activity.
-// Raw `Custom*` for `decoder` / `jval` MUST be re-derived through the rooted
-// handles after every potential GC point. The `jvalEncIn` parameter is an
-// unrooted copy: recursive calls must pass `Export::encode(jvalHP)`.
+// The errors are elm/json's. A list, array or key-value decoder fails with the first element, in
+// JSON order, that fails, wrapped in `Index` or `Field`; `mapN` decoders run in argument order and
+// return the first failure. `oneOf` returns the first success, and if none succeeds, `OneOf` of every
+// alternative's error in order.
+//
+// Implementation: both arguments are rooted (as `decoderHP` and `jvalHP`) for the whole body, and the
+// raw `decoder` and `jval` pointers are valid only until the first GC point; after one, re-derive
+// them through `resolveDecoder` and `resolveJval`. A recursive call must be passed
+// `Export::encode(jvalHP)`, not `jvalEncIn`, which is an unrooted copy.
 static uint64_t runDecoder(HPointer decoderHP, uint64_t jvalEncIn) {
     auto& allocator = Allocator::instance();
 
     HPointer jvalHP = Export::decode(jvalEncIn);
     StackRootGuard topRoots(&decoderHP, &jvalHP);
 
-    // Helpers — always re-resolve after a potential GC.
+    // Each returns null for a constant: a decoder with no arguments, or JSON null.
     auto resolveDecoder = [&]() -> Custom* {
-        // Primitive decoders are embedded null-cons constants (HEAP_044) —
-        // no heap object; their arms below never dereference `decoder`.
+        // The arms for decoders with no arguments never dereference `decoder`.
         if (decoderHP.ptr_ind != 0) return nullptr;
         return static_cast<Custom*>(allocator.resolve(decoderHP));
     };
@@ -1035,9 +1061,7 @@ static uint64_t runDecoder(HPointer decoderHP, uint64_t jvalEncIn) {
     };
 
     Custom* decoder = resolveDecoder();
-    // Ctor of the decoder / JSON value: from the embedded null-cons word for
-    // the nullary forms (primitive decoders; JSON null), from the heap Custom
-    // otherwise.
+    // A constant that is not null-cons gives ctor 0.
     const u16 dctor = decoder ? decoder->ctor
                               : static_cast<u16>(isNullConsBits(hpBits(decoderHP))
                                                      ? nullConsTagBits(hpBits(decoderHP))
@@ -1053,7 +1077,6 @@ static uint64_t runDecoder(HPointer decoderHP, uint64_t jvalEncIn) {
             if (!jval || jctor != CTOR_JSON_STRING) {
                 return expecting("a STRING", jvalHP);
             }
-            // The string is already an ElmString on the heap.
             return makeOk(jval->values[0].p);
         }
 
@@ -1073,7 +1096,6 @@ static uint64_t runDecoder(HPointer decoderHP, uint64_t jvalEncIn) {
         }
 
         case DEC_FLOAT: {
-            // Accept both JSON int and JSON float as numbers.
             if (!jval || (jctor != CTOR_JSON_FLOAT && jctor != CTOR_JSON_INT)) {
                 return expecting("a FLOAT", jvalHP);
             }
@@ -1088,19 +1110,15 @@ static uint64_t runDecoder(HPointer decoderHP, uint64_t jvalEncIn) {
         }
 
         case DEC_NULL: {
-            // JSON null is an embedded constant (jval == nullptr, jctor from
-            // the null-cons word) — test the ctor alone.
+            // JSON null is a constant, so `jval` is null here and only the ctor can be tested.
             if (jctor != CTOR_JSON_NULL) {
                 return expecting("null", jvalHP);
             }
-            // `decoder` is still fresh here (no allocations between top-of-fn and now).
             HPointer fallback = decoder->values[0].p;
-            // makeOk roots its argument internally.
             return makeOk(fallback);
         }
 
         case DEC_VALUE: {
-            // Return the heap-resident JSON value directly.
             return makeOk(jvalHP);
         }
 
@@ -1109,22 +1127,17 @@ static uint64_t runDecoder(HPointer decoderHP, uint64_t jvalEncIn) {
                 return expecting("a LIST", jvalHP);
             }
 
-            // Elements are read through the rooted jvalHP (resolveJval) with
-            // jsonArrayAt, either representation (threaded-gc-04b D5). Each
-            // head's kind comes from the decoded value (decodedSlot); every
-            // element has the list's element type, so they all agree, and the
-            // first one decoded gives the chunk chain's kind.
+            // Each head's kind is read off the decoded value (decodedSlot). Every element has the
+            // list's element type, so the kinds agree, and the chunk path takes the first one's.
             HPointer elemDecHP = decoder->values[0].p;
             u8 elemConsKind = 0;  // 0 = boxed
 
-            // Length (primitive snapshot).
             const u32 len = jsonArrayLength(jval);
 
-            // Chunks: decode in the SAME reverse order (failure semantics —
-            // the error returned is the last failing index) but accumulate
-            // on the GC-rooted scratch stack; eco_scratch_finish reverses,
-            // so the logical order matches the cells path exactly, and the
-            // whole result becomes a dense chunk chain instead of len cells.
+            // When the runtime builds lists from chunks, the heads go on its rooted scratch stack and
+            // `eco_scratch_finish` builds one chunked list from them, instead of `len` cons cells. It
+            // decodes in the same order as the cell path below, so both report the same failure, and
+            // `eco_scratch_finish` reverses what was pushed, so both give the same list.
             if (eco_g_list_chunks) {
                 StackRootGuard decRoots(&elemDecHP);
                 int64_t mark = eco_scratch_mark();
@@ -1152,9 +1165,7 @@ static uint64_t runDecoder(HPointer decoderHP, uint64_t jvalEncIn) {
                 return makeOk(chunked.toHPointer());
             }
 
-            // Decode each element in reverse to build the list. `result` is
-            // the accumulator; it and `elemDecHP` may be moved by GC during
-            // the recursion or `cons`. Root both (jvalHP is rooted above).
+            // Decoding from the last element lets each head be prepended.
             HPointer result = listNil();
             StackRootGuard listRoots(&result, &elemDecHP);
 
@@ -1168,13 +1179,9 @@ static uint64_t runDecoder(HPointer decoderHP, uint64_t jvalEncIn) {
                 }
                 HPointer elemVal = getOkValue(elemResult);
 
-                // Unwrap primitive wrappers so the Cons head holds the unboxed
-                // value directly, as compiled code reads an Int, Float or Char
-                // head (decodedSlot).
                 Unboxable headSlot;
                 elemConsKind = decodedSlot(allocator, elemVal, headSlot);
-                // `cons` allocates; `result` is rooted via listRoots above.
-                // For boxed heads the head HPointer must also stay valid.
+                // A boxed head is a handle and must be rooted across `cons`; an unboxed one is a number.
                 if (elemConsKind == 0) {
                     StackRootGuard headRoot(&headSlot.p);
                     result = cons(headSlot, result, /*head_kind=*/(u8)0);
@@ -1190,17 +1197,11 @@ static uint64_t runDecoder(HPointer decoderHP, uint64_t jvalEncIn) {
                 return expecting("an ARRAY", jvalHP);
             }
 
-            // Snapshot the element decoder handle; elements are read through
-            // the rooted jvalHP with jsonArrayAt (threaded-gc-04b D5).
             HPointer elemDecHP = decoder->values[0].p;
 
-            // Snapshot length (primitive).
             const u32 len = jsonArrayLength(jval);
 
-            // threaded-gc-04b D5: decode each element into a pre-sized vector
-            // (pre-filled with Nil, a constant the GC skips) rooted ONCE in
-            // 64-slot ranges (a range's hpointer_mask has 64 bits), instead of
-            // re-pinning the whole vector as one >64-slot range per element.
+            // Sized once and filled with Nil, a constant, so one record roots every decoded element.
             std::vector<HPointer> elements(len, alloc::listNil());
 
             auto& rs = allocator.getRootSet();
@@ -1219,11 +1220,8 @@ static uint64_t runDecoder(HPointer decoderHP, uint64_t jvalEncIn) {
                 elements[i] = getOkValue(elemResult);
             }
 
-            // The elements' slot kind comes from the decoded values, as in
-            // DEC_LIST (decodedSlot): `array (map f int)` or `array (field
-            // "v" int)` gives an Array Int too, which compiled code reads
-            // unboxed. Every element has the array's element type, so the
-            // first one gives the kind (0 boxed, 1 Int, 2 Float, 3 Char).
+            // As for a list, the slot kind comes from the decoded values, since `array (field "v" int)`
+            // gives an Array Int too. Every element has the one element type, so the first decides.
             u8 elemKind = 0;
             if (len > 0) {
                 Unboxable firstSlot;
@@ -1235,9 +1233,7 @@ static uint64_t runDecoder(HPointer decoderHP, uint64_t jvalEncIn) {
         }
 
         case DEC_FIELD: {
-            // Snapshot the field name (std::string copy, GC-immune) and the
-            // nested decoder handle. `elmStringToStd` may walk a slice or
-            // rope but does not allocate.
+            // `elmStringToStd` does not allocate, so `decoder` is still valid for the reads below.
             std::string fieldName =
                 elmStringToStd(Export::encode(decoder->values[0].p));
             if (!jval || jctor != CTOR_JSON_OBJECT) {
@@ -1246,9 +1242,8 @@ static uint64_t runDecoder(HPointer decoderHP, uint64_t jvalEncIn) {
             HPointer fieldNameHP = decoder->values[0].p;
             HPointer nestedDecHP = decoder->values[1].p;
 
-            // Walk the key/value list (hybrid spines: RootedListCursor keeps
-            // the spine node rooted and re-resolves per element).
-            // `nestedDecHP` survives into the recursive `runDecoder` call.
+            // The first entry whose key matches is decoded; nothing below allocates until that call.
+            // The name is rooted for the `Field` a failure is wrapped in.
             StackRootGuard fieldRoots(&nestedDecHP, &fieldNameHP);
             alloc::RootedListCursor kv(jval->values[0].p);
             Unboxable kvHead;
@@ -1296,33 +1291,24 @@ static uint64_t runDecoder(HPointer decoderHP, uint64_t jvalEncIn) {
                 return expecting("an OBJECT", jvalHP);
             }
 
-            // The tuple's value slot takes the kind of each decoded value
-            // (decodedSlot): compiled code reads a `(String, Int)` field as
-            // an unboxed Int, whatever decoder produced it.
+            // Each tuple's value slot takes the kind read off its decoded value (decodedSlot).
             HPointer valDecHP = decoder->values[0].p;
 
-            // Collect key/value tuple HPointers into a buffer (no allocations
-            // here; safe to walk with raw pointers if we re-resolve cell on
-            // each iteration).
+            // Nothing allocates while the entries are collected, so a plain cursor is enough.
             std::vector<HPointer> tuples;
             for (alloc::ListCursor kv(jval->values[0].p); !kv.done(); kv.next()) {
                 tuples.push_back(kv.current().p);
             }
 
-            // Build the result list in reverse. Pin `result`, `valDecHP`,
-            // `keyStr`, and the `tuples` buffer across each `runDecoder`
-            // (which may GC) and each `cons` / `tuple2` (which allocate).
+            // The list is built by prepending from the last entry. The base roots below cover the
+            // accumulator, the value decoder, the current key and every collected entry.
             HPointer result = listNil();
-            // `keyStr` is hoisted into the base roots so it's rooted once
-            // and reassigned per iteration, instead of paying for a
-            // per-iter pushStackRootRange/restore.
             HPointer keyStr = listNil();
 
             auto& rs = allocator.getRootSet();
             size_t kvSaved = rs.stackRangePoint();
 
-            // The whole `tuples` buffer is ONE all-boxed record (rootBuffer),
-            // so the base roots are four records whatever the entry count.
+            // Four records, whatever the number of entries.
             auto pushBaseRoots = [&]() {
                 rs.pushStackRootRange(&result,    1, 1);
                 rs.pushStackRootRange(&valDecHP,  1, 1);
@@ -1348,7 +1334,6 @@ static uint64_t runDecoder(HPointer decoderHP, uint64_t jvalEncIn) {
                 u8 valKind = decodedSlot(allocator, decodedVal, valSlot);
                 u64 tupleBitmap = static_cast<u64>(valKind) << 2;
 
-                // Root the (possibly heap-pointer) value slot across `tuple2`.
                 if (valKind == 0) rs.pushStackRootRange(&valSlot.p, 1, 1);
                 HPointer resTup = tuple2(boxed(keyStr), valSlot, tupleBitmap);
                 if (valKind == 0) {
@@ -1358,7 +1343,7 @@ static uint64_t runDecoder(HPointer decoderHP, uint64_t jvalEncIn) {
 
                 rs.pushStackRootRange(&resTup, 1, 1);
                 result = cons(boxed(resTup), result, true);
-                // Pop the `resTup` and `keyStr` roots now that result owns them.
+                // Drop the `resTup` record, which `result` now reaches.
                 rs.restoreStackRangePoint(kvSaved);
                 pushBaseRoots();
             }
@@ -1376,12 +1361,9 @@ static uint64_t runDecoder(HPointer decoderHP, uint64_t jvalEncIn) {
         }
 
         case DEC_ANDTHEN: {
-            // Snapshot inner decoder + callback handles before any recursion.
             HPointer innerDecHP = decoder->values[1].p;
             HPointer callbackHP = decoder->values[0].p;
 
-            // Root callback (and our own jvalHP, already top-rooted) across
-            // the inner runDecoder.
             uint64_t innerResult;
             {
                 StackRootGuard guard(&callbackHP);
@@ -1392,8 +1374,6 @@ static uint64_t runDecoder(HPointer decoderHP, uint64_t jvalEncIn) {
             HPointer value = getOkValue(innerResult);
             HPointer newDecHP;
             {
-                // Root callback + decoded value + new-decoder slot across the
-                // closure call. eco_apply_closure may GC.
                 StackRootGuard guard(&callbackHP, &value);
                 uint64_t args[1] = { Export::encode(value) };
                 uint64_t newDecEnc = eco_apply_closure(
@@ -1405,12 +1385,9 @@ static uint64_t runDecoder(HPointer decoderHP, uint64_t jvalEncIn) {
         }
 
         case DEC_ONEOF: {
-            // RootedListCursor keeps the spine node rooted and re-resolves
-            // fresh on every read/advance, so the recursive runDecoder GC
-            // points are safe (hybrid spines: cells + chunk views).
-            // Every alternative's error is kept, in order, for `OneOf`; the
-            // collected errors cross later decodes, so they are rooted with
-            // ONE shadow-stack record however many there are.
+            // A rooted cursor, because each recursive call is a GC point. Every alternative's error is
+            // kept, in order, for `OneOf`; they cross later decodes, so `RootedSlots` roots them all
+            // with one record.
             alloc::RootedListCursor decs(decoder->values[0].p);
             Unboxable decHead;
             u8 decKind;
@@ -1436,13 +1413,6 @@ static uint64_t runDecoder(HPointer decoderHP, uint64_t jvalEncIn) {
 
             uint64_t result1;
             {
-                // Root dec1HP too: the recursive runDecoder doesn't update
-                // *our* by-value `dec1HP`, but if its return path passes
-                // back via makeOk that's a fresh HPointer; the trouble was
-                // an unrooted `callbackHP` was the only declared root —
-                // any nursery dec/callback objects allocated mid-decode
-                // could otherwise leave a separate stale local. Mirrors
-                // DEC_MAP2..DEC_MAP4 patterns.
                 StackRootGuard guard(&dec1HP, &callbackHP);
                 result1 = runDecoder(dec1HP, Export::encode(jvalHP));
             }
@@ -1490,7 +1460,6 @@ static uint64_t runDecoder(HPointer decoderHP, uint64_t jvalEncIn) {
             return makeOk(Export::decode(mapped));
         }
 
-        // Generic mapN for 3-8 decoders.
         case DEC_MAP3:
         case DEC_MAP4:
         case DEC_MAP5:
@@ -1499,7 +1468,6 @@ static uint64_t runDecoder(HPointer decoderHP, uint64_t jvalEncIn) {
         case DEC_MAP8: {
             int n = decoder->ctor - DEC_MAP1 + 1;
 
-            // Snapshot the callback and all sub-decoder handles up front.
             HPointer callbackHP = decoder->values[0].p;
             std::vector<HPointer> subDecHPs;
             subDecHPs.reserve(n);
@@ -1507,9 +1475,7 @@ static uint64_t runDecoder(HPointer decoderHP, uint64_t jvalEncIn) {
                 subDecHPs.push_back(decoder->values[i + 1].p);
             }
 
-            // `results` accumulates fresh HPointer-encoded ok-values; the
-            // buffer must be range-rooted because each subsequent runDecoder
-            // may GC and invalidate previously-decoded entries.
+            // Every decoded value must stay rooted across the later sub-decoders and the closure call.
             std::vector<HPointer> results;
             results.reserve(n);
 
@@ -1529,7 +1495,7 @@ static uint64_t runDecoder(HPointer decoderHP, uint64_t jvalEncIn) {
                 }
                 results.push_back(getOkValue(r));
 
-                // Re-pin every range — `results` may have reallocated.
+                // Push the ranges again so that the `results` record covers the value just added.
                 rs.restoreStackRangePoint(mapSaved);
                 rs.pushStackRootRange(&callbackHP, 1, 1);
                 if (!subDecHPs.empty()) {
@@ -1559,16 +1525,20 @@ static uint64_t runDecoder(HPointer decoderHP, uint64_t jvalEncIn) {
 // Encoding Helper
 //===----------------------------------------------------------------------===//
 
-// Convert Elm encoder value to nlohmann::json.
+// Returns the nlohmann value for the `Json.Value` `valueEnc`, of either family. Does not allocate on
+// the GC heap.
+//
+// An encoder-family array is emitted in the order its entries were added. An object of either family
+// has its keys in JavaScript's order, and of two fields with the same key the key keeps its first
+// position and takes the last value. A heap Int,
+// Float or String that is not wrapped in an `ENC_*` Custom is emitted as that primitive, a Bool
+// constant as a boolean, and anything else unrecognised as null.
 static json elmToJson(uint64_t valueEnc) {
     auto& allocator = Allocator::instance();
     HPointer h = Export::decode(valueEnc);
 
-    // Embedded constants do not normally reach the recursive encoder — every
-    // Json.Encode primitive is boxed into an ENC_* Custom node first (see
-    // Elm_Kernel_Json_wrap; empty array/object/null are ENC_* nodes too). Handle
-    // any that arrive defensively: a Bool constant -> its JSON bool; anything
-    // else -> null. This is merge-ready (no dependence on which empty). Plan P0.5.
+    // `Json.wrap` puts every primitive in an `ENC_*` Custom, so in well-typed use a constant here is
+    // `ENC_NULL` or `CTOR_JSON_NULL`.
     if (isConstantBits(valueEnc)) {
         if (isBoolConst(h)) return json(boolValue(h));
         return json(nullptr);
@@ -1601,8 +1571,7 @@ static json elmToJson(uint64_t valueEnc) {
                 return json(elmStringToStd(Export::encode(c->values[0].p)));
 
             case ENC_ARRAY: {
-                // The internal list is in reverse order because List.foldl + cons
-                // prepends each element. Collect and reverse to restore original order.
+                // `addEntry` prepends, so the list is newest first.
                 std::vector<json> elements;
                 for (alloc::ListCursor l(c->values[0].p); !l.done(); l.next()) {
                     elements.push_back(elmToJson(Export::encode(l.current().p)));
@@ -1612,9 +1581,8 @@ static json elmToJson(uint64_t valueEnc) {
             }
 
             case ENC_OBJECT: {
-                // addField prepends, so the list holds the fields last first:
-                // add them to the object in the order the program gave them,
-                // then put the keys in JavaScript's order.
+                // `addField` prepends, so the list is newest first; the fields are appended in the
+                // order the program gave them, then deduplicated and put in JavaScript's order.
                 std::vector<HPointer> fields;
                 for (alloc::ListCursor l(c->values[0].p); !l.done(); l.next()) {
                     fields.push_back(l.current().p);
@@ -1630,7 +1598,6 @@ static json elmToJson(uint64_t valueEnc) {
                 return obj;
             }
 
-            // Heap-resident JSON value ADT: convert back to nlohmann::json.
             case CTOR_JSON_NULL:
             case CTOR_JSON_BOOL:
             case CTOR_JSON_INT:
@@ -1646,7 +1613,6 @@ static json elmToJson(uint64_t valueEnc) {
         }
     }
 
-    // Check for primitives.
     if (header->tag == Tag_Int) {
         ElmInt* i = static_cast<ElmInt*>(ptr);
         return json(i->value);
@@ -1657,7 +1623,6 @@ static json elmToJson(uint64_t valueEnc) {
         return json(f->value);
     }
 
-    // Any string form: flat leaf, slice, rope, or large-block header.
     if (isString(ptr)) {
         return json(elmStringToStd(valueEnc));
     }
@@ -1747,10 +1712,10 @@ HPtr Elm_Kernel_Json_map1(HPtr closure, HPtr d1) {
     return HPtr::fromBits(makeDecoder2(DEC_MAP1, closure.toBits(), d1.toBits()));
 }
 
-// Pre-decode every input handle and pass them as roots to the helper.
-// `nFields` includes the closure and all decoder slots.
+// Allocates a `mapN` decoder with ctor `ctor` and `nFields` boxed fields, the closure followed by the
+// decoders, from `args` in that order. Every argument is rooted across the allocation. `args` must
+// hold exactly `nFields` words.
 static uint64_t buildMapDecoder(u16 ctor, u32 nFields, std::initializer_list<uint64_t> args) {
-    // All args are HPointers (closure + N decoders).
     std::vector<uint64_t> roots;
     roots.reserve(args.size());
     for (uint64_t a : args) {
@@ -1816,21 +1781,18 @@ HPtr Elm_Kernel_Json_map8(HPtr closure, HPtr d1, HPtr d2, HPtr d3, HPtr d4, HPtr
 //===----------------------------------------------------------------------===//
 
 //===----------------------------------------------------------------------===//
-// Escape-boundary rewrap (MONO_013 / MONO_029 / REP_HEAP_002)
+// Escape-point rewrap
 //===----------------------------------------------------------------------===//
-// Heap slot layout is a STATIC function of the monomorphized type: for
-// `Result Error Int` the Ok payload slot is an unboxed i64 (kind 01) and the
-// compiled reader consults only the CtorLayout — never header.unboxed. Every
-// maker in this file stores the Ok payload BOXED (primitives cross the kernel
-// ABI as Tag_Int/Tag_Float/Tag_Char boxes), which is what the kernel-internal
-// readers (getOkValue, the combinator recursion) and the C++ platform callers
-// expect — but wrong the moment the Result escapes to compiled Elm code. At
-// the two escape points (Json_run / Json_runOnString) a boxed-primitive Ok
-// payload is therefore re-stored unboxed with its 2-bit kind. Embedded
-// constants (Bool/empties), strings, customs and Err payloads already match
-// the static layout and pass through untouched. The C++ platform callers
-// (PlatformRuntime::decodeFlags, PortRuntime receive) read the payload back
-// kind-aware via boxElement.
+
+// Returns `result` with a boxed Int, Float or Char `Ok` payload replaced by a new `Ok` holding the
+// number unboxed, with its slot kind; any other `result` is returned unchanged. May allocate.
+//
+// Compiled code decides the layout of a heap field from the field's type alone, and for
+// `Result Error Int` it reads the `Ok` payload as an unboxed Int without looking at the header's kind
+// bits. Inside this file every `Ok` payload is boxed, because primitives reach the kernel boxed and
+// `getOkValue` and the decoder recursion read them that way. So a `Result` is rewritten here, at the
+// escape points and nowhere else. Constants, strings, Customs and `Err` results already have the
+// layout compiled code expects.
 static uint64_t rewrapEscapingResult(uint64_t result) {
     void* ptr = Export::toPtr(result);
     if (!ptr) return result;
@@ -1843,8 +1805,8 @@ static uint64_t rewrapEscapingResult(uint64_t result) {
     void* p = Allocator::instance().resolve(payload);
     if (!p) return result;
     Header* h = static_cast<Header*>(p);
-    // The raw scalar is extracted BEFORE the allocation below, and the old
-    // box + Ok pair are dead after the rebuild — no rooting needed.
+    // The number is copied out before the allocation, and the old box and `Ok` are not used after it,
+    // so nothing needs rooting.
     Unboxable v;
     u64 kind;
     switch (h->tag) {
@@ -1866,10 +1828,9 @@ static uint64_t rewrapEscapingResult(uint64_t result) {
     return Export::encode(alloc::custom(0, { v }, kind));
 }
 
+// Implementation: a decoder must be a null-cons constant or a heap object; anything else gives
+// `Err` "Invalid decoder". An encoder-family `value` is converted to the decoder family first.
 HPtr Elm_Kernel_Json_run(HPtr decoder, HPtr value) {
-    // Value is a JSON value (CTOR_JSON_* Custom, or the embedded JSON null).
-    // A primitive decoder is an embedded null-cons constant (HEAP_044);
-    // composite decoders are heap Customs.
     HPointer decoderHP = Export::decode(decoder.toBits());
     if (!isNullConsBits(decoder.toBits()) &&
         (decoderHP.ptr_ind != 0 ||
@@ -1877,21 +1838,12 @@ HPtr Elm_Kernel_Json_run(HPtr decoder, HPtr value) {
         return HPtr::fromBits(makeFailure("Invalid decoder", Export::decode(value.toBits())));
     }
     uint64_t valueBits = value.toBits();
-    // Json.Encode.null is the embedded ENC_NULL constant, the encoder family's
-    // only nullary ctor; the decoder family's null is the CTOR_JSON_NULL
-    // constant. No other Value is a constant with tag ENC_NULL, so map it
-    // across here (fixed 2026-10-08, plans/elm-html-native-kernel.md §14 I2):
-    // without this, Json.Decode.null and nullable failed on Json.Encode.null.
+    // `Json.Encode.null` is the `ENC_NULL` constant, which `Decode.null` would not recognise.
     if (isNullConsBits(valueBits) && nullConsTagBits(valueBits) == ENC_NULL) {
         valueBits = nullConsWordFor(CTOR_JSON_NULL);
     }
-    // Family bridge (HEAP_046 sibling, fixed 2026-08-29): a Value built by
-    // Json.Encode arrives as an ENC_* Custom (Json_wrap's family), but
-    // runDecoder dispatches on the CTOR_JSON_* family — so every decodeValue
-    // over an encoder-built value silently returned Err. Convert through the
-    // existing nlohmann bridge; decoder-family values (ctor >= 100) and the
-    // embedded JSON null pass through. The type system guarantees a heap
-    // Custom here is one of the two Value families.
+    // An encoder-family Custom is converted through nlohmann. A heap Custom here is a `Json.Value`,
+    // so a ctor no greater than `ENC_OBJECT` means the encoder family.
     if (!isConstantBits(valueBits)) {
         void* vptr = Export::toPtr(valueBits);
         if (vptr) {
@@ -1899,7 +1851,6 @@ HPtr Elm_Kernel_Json_run(HPtr decoder, HPtr value) {
             if (vh->tag == Tag_Custom &&
                 static_cast<Custom*>(vptr)->ctor <= ENC_OBJECT) {
                 json j = elmToJson(valueBits);
-                // jsonToHeap allocates; the decoder must be rooted across it.
                 StackRootGuard guard(&decoderHP);
                 valueBits = Export::encode(jsonToHeap(j));
             }
@@ -1909,6 +1860,9 @@ HPtr Elm_Kernel_Json_run(HPtr decoder, HPtr value) {
         rewrapEscapingResult(runDecoder(decoderHP, valueBits)));
 }
 
+// Implementation: text that does not parse gives `Err (Failure ("This is not valid JSON! " ++ message)
+// string)`, as elm/json does, where `message` is the parser's own and `string` is the text as a
+// `Json.Value`.
 HPtr Elm_Kernel_Json_runOnString(HPtr decoder, HPtr jsonString) {
     uint64_t jsonStringEnc = jsonString.toBits();
     std::string str = elmStringToStd(jsonStringEnc);
@@ -1916,8 +1870,6 @@ HPtr Elm_Kernel_Json_runOnString(HPtr decoder, HPtr jsonString) {
     json jval;
     std::string parseError;
     if (!parseJson(str, jval, parseError)) {
-        // elm/json: `Failure ("This is not valid JSON! " ++ message) (string as a Value)`.
-        // The message is the parser's own, as it is the JavaScript engine's in Elm.
         HPointer strHP = Export::decode(jsonStringEnc);
         HPointer jsonStr;
         {
@@ -1927,8 +1879,7 @@ HPtr Elm_Kernel_Json_runOnString(HPtr decoder, HPtr jsonString) {
         return HPtr::fromBits(makeFailure("This is not valid JSON! " + parseError, jsonStr));
     }
 
-    // Convert the parsed JSON tree to heap-resident objects. `jsonToHeap`
-    // allocates; the decoder handle must be rooted across that.
+    // `jsonToHeap` allocates, so the decoder is rooted across it.
     HPointer decoderHP = Export::decode(decoder.toBits());
     HPointer heapJson;
     {
@@ -1944,6 +1895,8 @@ HPtr Elm_Kernel_Json_runOnString(HPtr decoder, HPtr jsonString) {
 // Encoding
 //===----------------------------------------------------------------------===//
 
+// Implementation: an `indent` above 0 prints one element or field per line, indented by `indent`
+// spaces per level; 0 or less prints on one line with no whitespace between tokens.
 HPtr Elm_Kernel_Json_encode(int64_t indent, HPtr value) {
     uint64_t valueEnc = value.toBits();
     json j = elmToJson(valueEnc);
@@ -1957,15 +1910,14 @@ HPtr Elm_Kernel_Json_encode(int64_t indent, HPtr value) {
     return HPtr::fromBits(Export::encode(result));
 }
 
+// Implementation: `value` arrives boxed. A Bool constant, the empty-String constant, a heap Int, a
+// heap Float or a String of any form is wrapped in a new `ENC_*` Custom; any other constant becomes
+// `ENC_NULL`; any other heap value, such as an array or object `Json.Value`, is returned as it is.
 HPtr Elm_Kernel_Json_wrap(HPtr value) {
     uint64_t valueEnc = value.toBits();
-    // Wrap a boxed Elm value into an encoder Custom object for elmToJson.
-    // Called with AllBoxed ABI: the compiler auto-boxes primitives (i64→ElmInt,
-    // f64→ElmFloat) before calling, so we always receive an HPointer.
     auto& allocator = Allocator::instance();
     HPointer h = Export::decode(valueEnc);
 
-    // Embedded constant booleans → ENC_BOOL (store the Bool constant verbatim).
     if (isBoolConst(h)) {
         size_t size = (sizeof(Custom) + sizeof(Unboxable) + 7) & ~7;
         Custom* enc = static_cast<Custom*>(
@@ -1977,12 +1929,8 @@ HPtr Elm_Kernel_Json_wrap(HPtr value) {
         return HPtr::fromBits(Export::encode(allocator.wrap(enc)));
     }
 
-    // Embedded empty-string constant → ENC_STRING wrapping the constant. This is
-    // the only empty that reaches wrap in well-typed use (Json.Encode.string "").
-    // Post-merge isEmptyString matches the merged empty; the Bool check above
-    // has already peeled off True/False, so this only sees the empty string.
+    // `Json.Encode.string ""` arrives as the empty-String constant, which needs no rooting.
     if (isEmptyString(h)) {
-        // h is an embedded constant: stable across GC, no rooting needed.
         size_t size = (sizeof(Custom) + sizeof(Unboxable) + 7) & ~7;
         Custom* enc = static_cast<Custom*>(
             eco_alloc_with_roots(Tag_Custom, size, nullptr, 0, 0));
@@ -1993,8 +1941,6 @@ HPtr Elm_Kernel_Json_wrap(HPtr value) {
         return HPtr::fromBits(Export::encode(allocator.wrap(enc)));
     }
 
-    // Any other embedded constant is not a valid Json.Encode primitive argument
-    // (defensive) → ENC_NULL.
     if (isConstantBits(valueEnc)) {
         return Elm_Kernel_Json_encodeNull();
     }
@@ -2005,7 +1951,7 @@ HPtr Elm_Kernel_Json_wrap(HPtr value) {
     Header* header = static_cast<Header*>(ptr);
 
     if (header->tag == Tag_Int) {
-        // Snapshot the unboxed int before any allocation may move the source.
+        // Read before the allocation, which may move the box.
         int64_t intVal = static_cast<ElmInt*>(ptr)->value;
         size_t size = (sizeof(Custom) + sizeof(Unboxable) + 7) & ~7;
         Custom* enc = static_cast<Custom*>(
@@ -2018,24 +1964,20 @@ HPtr Elm_Kernel_Json_wrap(HPtr value) {
     }
 
     if (header->tag == Tag_Float) {
-        // Snapshot the unboxed float before any allocation may move the source.
+        // Read before the allocation, which may move the box.
         double floatVal = static_cast<ElmFloat*>(ptr)->value;
         size_t size = (sizeof(Custom) + sizeof(Unboxable) + 7) & ~7;
         Custom* enc = static_cast<Custom*>(
             eco_alloc_with_roots(Tag_Custom, size, nullptr, 0, 0));
         enc->header.size = 1;
         enc->ctor = ENC_FLOAT;
-        enc->unboxed = 2;  // kind=Float at slot 0
+        enc->unboxed = 2;  // Float in slot 0
         enc->values[0].f = floatVal;
         return HPtr::fromBits(Export::encode(allocator.wrap(enc)));
     }
 
-    // Any string form: flat leaf, slice, rope, or large-block header.
-    // Checking Tag_String alone misroutes ropes/slices/large strings (built
-    // by String.repeat / concatenation above the leaf size classes) into the
-    // "already an encoder" fallthrough, which elmToJson then renders as null.
+    // `isString`, not a test for `Tag_String`: a slice or rope String has another tag.
     if (isString(ptr)) {
-        // Pattern A: h is the only HPointer field.
         size_t size = (sizeof(Custom) + sizeof(Unboxable) + 7) & ~7;
         uint64_t roots[1];
         std::memcpy(&roots[0], &h, sizeof(h));
@@ -2049,14 +1991,12 @@ HPtr Elm_Kernel_Json_wrap(HPtr value) {
         return HPtr::fromBits(Export::encode(allocator.wrap(enc)));
     }
 
-    // Already an encoder Custom (ENC_OBJECT, ENC_ARRAY, etc.) — return as-is.
     return value;
 }
 
-// Phase C per-instance variants. Each takes a typed primitive directly and
-// builds the corresponding ENC_INT / ENC_FLOAT / ENC_INT (Char as code point)
-// encoder Custom without first going through a heap-resident ElmInt /
-// ElmFloat wrapper.
+// The `_Int`, `_Float` and `_Char` variants of `Json.wrap` take the number unboxed and build the
+// `ENC_*` Custom straight from it. A Char becomes an `ENC_INT` holding its code point, since JSON has
+// no character type.
 HPtr Elm_Kernel_Json_wrap_Int(int64_t value) {
     auto& allocator = Allocator::instance();
     size_t size = (sizeof(Custom) + sizeof(Unboxable) + 7) & ~7;
@@ -2064,7 +2004,7 @@ HPtr Elm_Kernel_Json_wrap_Int(int64_t value) {
         eco_alloc_with_roots(Tag_Custom, size, nullptr, 0, 0));
     enc->header.size = 1;
     enc->ctor = ENC_INT;
-    enc->unboxed = 1;  // kind=Int at slot 0
+    enc->unboxed = 1;  // Int in slot 0
     enc->values[0].i = value;
     return HPtr::fromBits(Export::encode(allocator.wrap(enc)));
 }
@@ -2076,19 +2016,15 @@ HPtr Elm_Kernel_Json_wrap_Float(double value) {
         eco_alloc_with_roots(Tag_Custom, size, nullptr, 0, 0));
     enc->header.size = 1;
     enc->ctor = ENC_FLOAT;
-    enc->unboxed = 2;  // kind=Float at slot 0
+    enc->unboxed = 2;  // Float in slot 0
     enc->values[0].f = value;
     return HPtr::fromBits(Export::encode(allocator.wrap(enc)));
 }
 
-// The Char arrives as uint64_t and is masked to its 32-bit code point (see
-// CharExports.cpp).
+// Implementation: the code point is the low 32 bits of `value_raw`, as for every Char crossing the
+// kernel ABI (`elm-kernel-cpp/KernelExports`).
 HPtr Elm_Kernel_Json_wrap_Char(uint64_t value_raw) {
     const uint32_t value = static_cast<uint32_t>(value_raw & 0xFFFFFFFFu);
-    // Char is a Unicode code point. JSON has no native char type; encode as
-    // an integer code point (matches what `Json.Encode.int (Char.toCode c)`
-    // would produce). This branch is rare in practice — Json.Encode has no
-    // public Char encoder — but is reachable via polymorphic uses.
     auto& allocator = Allocator::instance();
     size_t size = (sizeof(Custom) + sizeof(Unboxable) + 7) & ~7;
     Custom* enc = static_cast<Custom*>(
@@ -2100,10 +2036,8 @@ HPtr Elm_Kernel_Json_wrap_Char(uint64_t value_raw) {
     return HPtr::fromBits(Export::encode(allocator.wrap(enc)));
 }
 
+// Implementation: the result is the null-cons constant for `ENC_NULL`; nothing is allocated.
 HPtr Elm_Kernel_Json_encodeNull() {
-    // ENC_NULL is nullary — an embedded null-cons constant (HEAP_044).
-    // elmToJson's embedded-constant arm renders any non-Bool constant as
-    // JSON null, which is exactly this value's meaning.
     return HPtr::fromBits(nullConsWordFor(ENC_NULL));
 }
 
@@ -2131,12 +2065,11 @@ HPtr Elm_Kernel_Json_emptyObject() {
     return HPtr::fromBits(Export::encode(Allocator::instance().wrap(enc)));
 }
 
+// Implementation: returns a new `ENC_ARRAY` whose list is `func entry` prepended to `array`'s list,
+// so the list is newest first; `elmToJson` reverses it. `array` itself is not changed.
 HPtr Elm_Kernel_Json_addEntry(HPtr func, HPtr entry, HPtr array) {
     auto& allocator = Allocator::instance();
 
-    // Call the encoder function on the entry: encoded = func(entry).
-    // The closure call is a GC point; re-resolve everything afterwards through
-    // rooted handles.
     HPointer arrayHP = Export::decode(array.toBits());
     HPointer encodedHP;
     {
@@ -2146,7 +2079,6 @@ HPtr Elm_Kernel_Json_addEntry(HPtr func, HPtr entry, HPtr array) {
         encodedHP = Export::decode(encoded);
     }
 
-    // Build the new cons cell. `cons` allocates; root the inputs across it.
     HPointer newList;
     {
         StackRootGuard guard(&arrayHP, &encodedHP);
@@ -2156,7 +2088,6 @@ HPtr Elm_Kernel_Json_addEntry(HPtr func, HPtr entry, HPtr array) {
         newList = cons(boxed(encodedHP), tailHP, true);
     }
 
-    // Build the ENC_ARRAY Custom; newList is the only HPointer field.
     size_t size = sizeof(Custom) + sizeof(Unboxable);
     size = (size + 7) & ~7;
     uint64_t roots[1];
@@ -2172,17 +2103,17 @@ HPtr Elm_Kernel_Json_addEntry(HPtr func, HPtr entry, HPtr array) {
     return HPtr::fromBits(Export::encode(allocator.wrap(enc)));
 }
 
+// Implementation: returns a new `ENC_OBJECT` whose list is the Tuple2 (`key`, `value`) prepended to
+// `object`'s list, so the list is newest first. `object` itself is not changed.
 HPtr Elm_Kernel_Json_addField(HPtr key, HPtr value, HPtr object) {
     auto& allocator = Allocator::instance();
     HPointer keyHP    = Export::decode(key.toBits());
     HPointer valueHP  = Export::decode(value.toBits());
     HPointer objectHP = Export::decode(object.toBits());
 
-    // Build (key, value) Tuple2. Pattern A: keyHP and valueHP are fields;
-    // objectHP is live-across (we use it later via resolve).
+    // `keyHP` and `valueHP` are rooted by the allocation itself, `objectHP` by the guard.
     HPointer tupleHP;
     {
-        // objectHP isn't a field of the tuple but must survive the allocate.
         StackRootGuard guardObj(&objectHP);
         uint64_t roots[2];
         std::memcpy(&roots[0], &keyHP, sizeof(keyHP));
@@ -2197,7 +2128,6 @@ HPtr Elm_Kernel_Json_addField(HPtr key, HPtr value, HPtr object) {
         tupleHP = allocator.wrap(tuple);
     }
 
-    // cons (the new tuple, prior list head) and root across the call.
     HPointer newList;
     {
         StackRootGuard guard(&tupleHP, &objectHP);

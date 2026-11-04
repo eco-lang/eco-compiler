@@ -1,29 +1,33 @@
 //===- Hash.hpp - Native string hashing for Elm-side hash tables ---------===//
 //
-// `Data.HashMap` keys its buckets on an Int the caller supplies, and the
-// callers that matter here key on names: `TOpt.globalHash` hashes a value
-// name once per probe, roughly 10^6 times per self-compile.
+// Hashing a String in Elm costs one closure call per character, so this
+// component computes the two String hashes the Elm side uses in a native loop
+// that does not allocate.
 //
-// Computing that hash in Elm is what made the hashed tables lose. `String.foldl`
-// snapshots the whole string into a std::vector<u16> and then performs one
-// GENERIC CLOSURE DISPATCH per character (eco_apply_closure_typed), boxing and
-// unboxing the accumulator each time — against a `Dict String` probe whose
-// comparisons bottom out in a C++ memcmp. Measured three times, always the same
-// way: loop entries 27 (+33.6 s), 24(iii)+(iv) (+7.47 s) and 12s.
+// `Data.HashMap` keys its buckets on an Int the caller supplies, and callers
+// that key on names hash a String on every probe. The narrow hash returns
+// exactly what its JS twin returns. Its pure-Elm twin agrees only for a
+// non-negative seed and a string with no surrogate code units. The twins live
+// outside this file and are kept in step by hand. The wide hash's JS twin
+// computes a different value.
 //
-// This computes the identical hash in one allocation-free C loop. The mix is
-// the same one the Elm side used, so a table built by either implementation
-// answers the same way and the pure twin in compiler/src-xhr stays exact:
+// There are two hashes, and the difference between them is width.
 //
-//     h_0     = seed
+// The *narrow* hash stays below 2^26 (for a non-negative seed), so that two of
+// them can be packed into one Int as `a * 2^26 + b` without leaving the range
+// both a native i64 and a JS double represent exactly. It is
+//
+//     h_0     = seed mod 2^26
 //     h_{i+1} = (h_i * 33 + (c_i mod 2^26) + 7) mod 2^26
 //
-// Base 2^26 matches `Monomorphized.hashBase`: two of these pack into 2^52,
-// inside the exact-integer range of both the native i64 and the JS double, so
-// the native, JS-bootstrap and pure-Elm implementations agree bit for bit.
+// over the UTF-16 code units c_i, with C++ `%` as `mod`.
 //
-// GC: allocation-free on every path, so the lowered call is gc-leaf and needs
-// no rooting and no statepoint.
+// The *wide* hash is 64-bit FNV-1a over the same code units. It is for callers
+// that use the hash only as a bucket key, where any i64 is acceptable and more
+// bits mean fewer collisions.
+//
+// Both read the string through `Elm::StringOps` and never allocate, so the
+// pointer they are given stays valid for the whole call.
 //
 //===----------------------------------------------------------------------===//
 
@@ -36,21 +40,24 @@ namespace Eco {
 namespace Kernel {
 namespace Hash {
 
-/// Mix `seed` over the UTF-16 code units of `str` (an encoded HPointer's
-/// resolved pointer, or nullptr for the empty/constant forms).
+/// Returns the narrow hash of `str` from `seed`: the formula in the file
+/// comment, applied to each UTF-16 code unit of `str` in order.
 ///
-/// NARROW: the result stays in [0, 2^26). Callers that PACK two hashes into
-/// one Int need that — `Monomorphized.packHashes` is `layoutH * hashBase +
-/// specH` — so this variant must not be widened.
+/// `str` is the resolved address of an Elm String, or null for the empty
+/// string, which hashes to `seed mod 2^26`. It is only read, and only during
+/// the call. The result is in [0, 2^26) when `seed` is non-negative. A negative
+/// `seed` keeps its sign through C++ `%`, and the result may then be negative.
+///
+/// Callers that pack two hashes into one Int rely on the narrow range, so this
+/// function must not be widened.
 int64_t stringWithSeed(void* str, int64_t seed);
 
-/// FNV-1a over the same code units, full 64-bit, seeded.
+/// Returns the wide hash of `str` from `seed`: 64-bit FNV-1a over the UTF-16
+/// code units of `str`, starting from the FNV offset basis XOR `seed`.
 ///
-/// WIDE: for callers that use the hash only as a `Data.HashMap` bucket key.
-/// That map stores its buckets in a `Dict Int` keyed on the RAW hash — no
-/// mask, no `modBy`, no `Bitwise` — so any i64 is a legal key, negatives
-/// included, and a wider hash simply means shorter buckets. It is also
-/// cheaper than the narrow mix: no modulo per character.
+/// `str` is as for `stringWithSeed`; null hashes to the starting value. The
+/// result is the 64-bit hash reinterpreted as a signed Int, so it may be
+/// negative.
 int64_t string64(void* str, int64_t seed);
 
 } // namespace Hash

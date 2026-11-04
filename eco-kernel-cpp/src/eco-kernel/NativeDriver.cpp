@@ -1,11 +1,6 @@
 //===- NativeDriver.cpp - Eco kernel module impl --------------------------===//
 //
-// Per KERNEL_TASK_IO_001 / plans/defer-eager-kernel-tasks-via-binding.md
-// Phase 6: `lowerAndLink` and `lowerAndLinkBytes` are returned as
-// Task_Bindings. The MLIR→LLVM→linker pipeline still runs on the scheduler
-// thread (LLVM / linker stacks aren't obviously thread-safe), but now at
-// scheduler-step time rather than kernel-call time, matching the
-// KERNEL_TASK_IO_001 invariant.
+// The bodies run the whole lowering and link on the thread stepping the Task; nothing is handed to another thread.
 //
 //===----------------------------------------------------------------------===//
 
@@ -21,12 +16,9 @@
 
 namespace Eco::Kernel::NativeDriver {
 
-// Strong external declarations — the symbols are guaranteed to exist at
-// link time because EcoEntryStatic ships weak stub definitions (see
-// eco_native_stub.cpp). When EcoNativeDriverStatic is also linked in (as
-// it is for the unified `eco` binary), its strong definitions override
-// the weak stubs and lowering happens in-process; otherwise the stubs
-// return -1 and we surface a Task failure.
+// The driver entry points, declared here rather than by including the runtime's `codegen/EcoNativeAPI.h`, which
+// owns their contracts. A definition exists in any binary built on `EcoEntryStatic` or `EcoEmbedStatic`: the weak
+// stand-ins returning -1 are compiled into those, and `EcoNativeDriverStatic`'s definitions replace them when linked.
 extern "C" {
 int eco_native_lower_and_link(const char *mlirPath, const char *outputPath,
                               const char *rootModule);
@@ -36,6 +28,8 @@ int eco_native_lower_and_link_bytes(const char *bytes, size_t len,
 
 namespace {
 
+// Runs the file form of the driver on the `( mlirPath, outputPath, rootModule )` tuple of Strings `captured` and
+// returns the Task described on `lowerAndLink`.
 HPointer lowerAndLinkBody(HPointer captured) {
     HPointer mlirPathHP;
     HPointer outputPathHP;
@@ -59,6 +53,9 @@ HPointer lowerAndLinkBody(HPointer captured) {
     return succeedUnit();
 }
 
+// Runs the in-memory form of the driver on the `( bytes, outputPath )` tuple `captured` and returns the Task
+// described on `lowerAndLinkBytes`. The driver reads the bytes in place in the heap through `data`; nothing
+// allocates on the Elm heap between taking that pointer and the driver's return.
 HPointer lowerAndLinkBytesBody(HPointer captured) {
     HPointer bytesHP;
     HPointer outputPathHP;

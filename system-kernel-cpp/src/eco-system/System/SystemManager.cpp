@@ -1,31 +1,17 @@
 //===- SystemManager.cpp - The C++ effect manager of `System` -------------===//
 //
-// plans/eco-system-library.md §3.6, §3.7 and Appendix C.0 / C.1. Layout:
-// SystemManager.hpp.
+// The manager's state is one `Registry` entry, `ManagerState`: the router `onEffects` was last given, and, per
+// `MySub` tag, the msgs of the current subscriptions, all as encoded words the registry's root scanner keeps up to
+// date. Each `onEffects` replaces the lists wholesale and then makes the process-wide listeners match them: a
+// `SignalService` listener for SIGINT or SIGTERM exists exactly while its list is non-empty, and the quiescence
+// listener is added on the first `OnEmptyEventLoop` subscription and never removed (it returns false while unarmed or
+// while there is nothing to deliver).
 //
-//   * onEffects: every `Execute t` is rawSpawn'ed (its result is ignored),
-//     then the scheduler is drained once. The subscriptions replace the
-//     three stored msg lists (encoded words in a T5 registry). A
-//     SignalService listener for SIGINT / SIGTERM is registered while the
-//     matching list is non-empty; the quiescence listener is registered
-//     once, on the first OnEmptyEventLoop subscription.
-//   * subMap applies `f` to the stored msg now and rebuilds the same
-//     constructor (as gren does); cmdMap returns the command unchanged.
-//   * Delivery (quiescence listener, signal dispatch): snapshot the msgs of
-//     the event into one rooted buffer, then sendToApp + drain() per msg
-//     (G12).
-//   * onEmptyEventLoop fires once per arming (decision L-REARM,
-//     plans/program-liveness-rule.md §7, LIVE_005): one armed bit per program
-//     run (ManagerState::emptyLoopArmed), starting armed, cleared before
-//     delivery, set only by System.rearmEmptyEventLoop
-//     (rearmEmptyEventLoop below). New async work never re-arms it.
+// Delivery may run the program's update, which may call `onEffects` and replace the very list being delivered. So
+// `deliver` first copies the msgs into a local buffer pushed as one stack root range, then sends each one.
 //
-// Signal subscriptions and the quiescence hook hold no pendingAsync (§3.4
-// keep-alive rule): a program that only listens for them exits. Neither
-// fires in embed mode (SignalService and the Scheduler check embedMode()).
-//
-// Templates used: T6 (manager, rooted registration per G14), T5 (state),
-// T8/G12 (delivery), G6 (one root range for the snapshot).
+// `subMap` applies the tagging function to the stored msg at once and rebuilds the same constructor, rather than
+// composing taggers; `cmdMap` returns the command unchanged, since `Execute` carries no msg.
 //
 //===----------------------------------------------------------------------===//
 
@@ -44,13 +30,15 @@ namespace {
 
 using namespace SystemManager;
 
+/// The state of the System manager for one heap, as one `Registry` entry. Used on the eco thread only.
 struct ManagerState {
-    uint64_t routerEnc = 0;
-    std::vector<uint64_t> msgs[SUB_CTOR_COUNT];   // encoded msgs per MySub tag
-    // L-REARM armed bit (LIVE_005). Registry state, so it is armed again
-    // after a heap reset (F24). Eco thread only.
+    uint64_t routerEnc = 0;                       ///< 0 until the first `onEffects`.
+    std::vector<uint64_t> msgs[SUB_CTOR_COUNT];   ///< Encoded msgs of the current subscriptions, per `MySub` tag.
+    /// Whether the next empty event loop delivers `OnEmptyEventLoop`. Kept in the registry entry, so a heap
+    /// reset, which re-creates the entry, arms it again.
     bool emptyLoopArmed = true;
 
+    /// Calls `f` on every encoded word the entry holds, as `Registry` requires.
     template <typename F>
     void forEachWord(F&& f) {
         f(routerEnc);
@@ -59,12 +47,14 @@ struct ManagerState {
     }
 };
 
+/// Returns the registry that holds the manager's state, creating it on first use. It is never destroyed.
 Registry<ManagerState>& registry() {
     static auto* r = new Registry<ManagerState>("eco-system-system-manager");   // leaky
     return *r;
 }
 
-// The single state entry (re-created after a heap reset, F24).
+/// Returns the manager's one state entry, creating a fresh one (empty lists, armed) when there is none, which is
+/// so on first use and after a heap reset clears the registry. The reference is valid until the next heap reset.
 ManagerState& state() {
     static int64_t id = 0;
     auto& r = registry();
@@ -73,16 +63,19 @@ ManagerState& state() {
     return *r.find(id);
 }
 
-// Process-wide: SignalService listeners outlive any heap. 0 = not listening.
+// The process-wide listeners. They outlive any heap, so they are not in the registry entry.
+
+/// The `SignalService` listener for SIGINT, or 0 when there is none.
 SignalService::ListenerId g_sigintListener = 0;
+/// The `SignalService` listener for SIGTERM, or 0 when there is none.
 SignalService::ListenerId g_sigtermListener = 0;
+/// Whether `onQuiescent` has been added as a scheduler quiescence listener. Never cleared.
 bool g_quiescenceRegistered = false;
 
 // --- Delivery ----------------------------------------------------------------
 
-// Sends every stored msg of MySub tag `which` to the app, draining after
-// each (G12). The msgs are snapshotted first: update may change the
-// subscriptions (and the stored lists) while we deliver.
+/// Sends each msg stored for `MySub` tag `which`, as it was on entry, to the program, draining the scheduler after
+/// each. Does nothing before the first `onEffects` or when there are no such msgs.
 void deliver(int which) {
     ManagerState& st = state();
     if (st.routerEnc == 0 || st.msgs[which].empty()) return;
@@ -102,9 +95,10 @@ void deliver(int which) {
     rs.restoreStackRangePoint(saved);
 }
 
-// Scheduler quiescence listener: true iff it delivered (the loop then
-// continues). Fires only while armed and subscribed; disarms before the
-// delivery, so a rearmEmptyEventLoop issued by the handler sticks.
+/// The scheduler quiescence listener: when armed and there is an `OnEmptyEventLoop` subscription, disarms and
+/// delivers its msgs, returning true; otherwise returns false. It disarms before delivering, so a
+/// `rearmEmptyEventLoop` made while handling the msg stays in effect. An exception from the delivery is reported
+/// as fatal, so none unwinds into the event loop.
 bool onQuiescent(void*) {
     ManagerState& st = state();
     if (!st.emptyLoopArmed || st.msgs[CTOR_ON_EMPTY_EVENT_LOOP].empty()) return false;
@@ -112,11 +106,11 @@ bool onQuiescent(void*) {
     try {
         deliver(CTOR_ON_EMPTY_EVENT_LOOP);
     } catch (const std::exception& e) {
-        ::Eco::Kernel::reportFatal(e.what());   // never unwind into the loop (F21)
+        ::Eco::Kernel::reportFatal(e.what());
     } catch (...) {
         ::Eco::Kernel::reportFatal("unknown native exception in onEmptyEventLoop");
     }
-    return true;   // reportFatal is [[noreturn]]; true keeps the contract
+    return true;
 }
 
 } // namespace
@@ -129,16 +123,17 @@ void rearmEmptyEventLoop() { state().emptyLoopArmed = true; }
 
 namespace {
 
-// SignalService listener (main thread, from the signal drain).
+/// The `SignalService` listener for SIGINT and SIGTERM: delivers the msgs of the matching subscription.
 void onSignal(int signo, void*) {
     if (signo == SIGINT) deliver(CTOR_ON_SIGNAL_INTERRUPT);
     else if (signo == SIGTERM) deliver(CTOR_ON_SIGNAL_TERMINATE);
 }
 
+/// Adds a listener for `signo` into `listener` when `wanted` and there is none, and removes the one in `listener`,
+/// setting it to 0, when not `wanted`.
 void reconcileSignal(int signo, bool wanted, SignalService::ListenerId& listener) {
     if (wanted && listener == 0) {
-        // 0 again when inactive (embed mode, Windows): retried on the next
-        // onEffects, which is a no-op there.
+        // `addListener` gives 0 in embed mode and on Windows, so the next onEffects tries again, and fails again.
         listener = SignalService::instance().addListener(signo, &onSignal, nullptr);
     } else if (!wanted && listener != 0) {
         SignalService::instance().removeListener(listener);
@@ -146,21 +141,27 @@ void reconcileSignal(int signo, bool wanted, SignalService::ListenerId& listener
     }
 }
 
-// --- Manager closures (C.0) ----------------------------------------------------
+// --- Manager closures ---------------------------------------------------------
 
-// init : Task Never ()  (a 0-arity thunk, forced by setupEffects)
+/// Evaluates `init : Task Never ()`, a closure of no arguments: returns a Task that succeeds with Unit.
 void* initEval(void*[]) {
     return reinterpret_cast<void*>(enc(Scheduler::instance().taskSucceed(alloc::unit())));
 }
 
-// onEffects : Router -> List (MyCmd msg) -> List (MySub msg) -> () -> Task Never ()
+/// Evaluates `onEffects : Router -> List (MyCmd msg) -> List (MySub msg) -> () -> Task Never ()`.
+///
+/// Replaces the stored subscriptions with `args[2]` and the router with `args[0]`, adds or removes the signal
+/// listeners to match, and adds the quiescence listener if there is an `OnEmptyEventLoop` subscription and it has
+/// not been added yet. Then spawns the task of each command in `args[1]`, in order, and if it spawned any, drains
+/// the scheduler once. Returns a Task that succeeds with Unit. Subscriptions for which `resolve` returns null, or
+/// whose tag is not a `MySub` tag, are ignored.
 void* onEffectsEval(void* args[]) {
     HPointer router = dec(args[0]);
     HPointer cmds = dec(args[1]);
     HPointer subs = dec(args[2]);
     Elm::StackRootGuard g(&router, &cmds, &subs);
 
-    // Subscriptions: a non-allocating walk (G5), then the registry update.
+    // Subscriptions: a walk that does not allocate, so the raw pointers stay valid, then the registry update.
     std::vector<uint64_t> wanted[SUB_CTOR_COUNT];
     for (alloc::ListCursor c(subs); !c.done(); c.next()) {
         void* obj = Allocator::instance().resolve(c.current().p);
@@ -205,17 +206,19 @@ void* onEffectsEval(void* args[]) {
     return reinterpret_cast<void*>(enc(Scheduler::instance().taskSucceed(alloc::unit())));
 }
 
-// onSelfMsg : Router -> Never -> () -> Task Never ()  (never sent)
+/// Evaluates `onSelfMsg : Router -> Never -> () -> Task Never ()`: returns a Task that succeeds with the state,
+/// `args[2]`. The manager sends itself no messages.
 void* onSelfMsgEval(void* args[]) {
     return reinterpret_cast<void*>(enc(Scheduler::instance().taskSucceed(dec(args[2]))));
 }
 
-// cmdMap : (a -> b) -> MyCmd a -> MyCmd b — Execute carries no msg.
+/// Evaluates `cmdMap : (a -> b) -> MyCmd a -> MyCmd b`: returns the command `args[1]` unchanged.
 void* cmdMapEval(void* args[]) {
     return args[1];
 }
 
-// subMap : (a -> b) -> MySub a -> MySub b — apply f to the msg now.
+/// Evaluates `subMap : (a -> b) -> MySub a -> MySub b`: returns a new subscription with the constructor of
+/// `args[1]` and its msg replaced by the result of calling `args[0]` on it. `args[1]` must be a heap object.
 void* subMapEval(void* args[]) {
     HPointer f = dec(args[0]);
     HPointer sub = dec(args[1]);
@@ -228,7 +231,7 @@ void* subMapEval(void* args[]) {
         ctor = static_cast<uint16_t>(s->ctor);
         msg = s->values[SUB_MSG_FIELD].p;
     }
-    mapped = Scheduler::callClosure1(f, msg);   // Elm call (G11)
+    mapped = Scheduler::callClosure1(f, msg);
     std::vector<Unboxable> fields{alloc::boxed(mapped)};
     return reinterpret_cast<void*>(enc(alloc::custom(ctor, fields, 0)));
 }
@@ -241,8 +244,7 @@ using namespace Eco::System;
 
 namespace {
 
-// Allocates the five manager closures in the rooted PortRuntime form (G14)
-// and registers them under "System".
+/// Allocates the five manager closures, rooted until they are encoded, and registers them under "System".
 void registerSystemManager() {
     HPointer initCl = alloc::listNil();
     HPointer effCl = alloc::listNil();

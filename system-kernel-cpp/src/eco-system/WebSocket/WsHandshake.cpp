@@ -1,22 +1,4 @@
 //===- WsHandshake.cpp - The kernel side of the opening handshake ---------===//
-//
-// See WsHandshake.hpp (plans/eco-system-websockets.md §3.6, Appendix B.1,
-// D.2, D.3). The protocols run on the reactor thread and post POD WsEvents.
-//
-// Error codes and messages (FErr, D.9):
-//   * dial: the connect's own (`connect ECONNREFUSED 127.0.0.1:1`, the TLS
-//     codes) for the last address tried; ETIMEDOUT `WebSocket handshake
-//     ETIMEDOUT <address>:<port>` when the one deadline passes;
-//     ERR_WS_HANDSHAKE for a response that is not HTTP, a head over 64 KiB
-//     or a server that closes before answering; `read <CODE>` failures keep
-//     their code.
-//   * readUpgrade: ETIMEDOUT `upgradeRequest ETIMEDOUT` (the read timeout),
-//     ERR_WS_HANDSHAKE for a request that is not HTTP (answered 400) or a
-//     client that closes before sending one, ECANCELED `socket closed` when
-//     the connection is closed meanwhile.
-//
-// Templates used: none (POD only, G1).
-//
 //===----------------------------------------------------------------------===//
 
 #include "eco-system/WebSocket/WsHandshake.hpp"
@@ -40,11 +22,14 @@ namespace Eco::System {
 
 namespace {
 
+// The GUID RFC 6455 appends to a key before hashing it for the accept value.
 [[maybe_unused]] constexpr const char* kGuid = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 
+// Returns the shared reactor.
 IoReactor& reactor() { return IoReactor::instance(); }
 
 #ifndef _WIN32
+// Returns the `n` bytes at `data` in standard base64, padded.
 std::string base64(const unsigned char* data, size_t n) {
     std::string out(4 * ((n + 2) / 3) + 1, '\0');
     int len = EVP_EncodeBlock(reinterpret_cast<unsigned char*>(out.data()), data,
@@ -54,12 +39,14 @@ std::string base64(const unsigned char* data, size_t n) {
 }
 #endif
 
+// Returns whether `c` may appear in an RFC 9110 token.
 bool isTokenChar(unsigned char c) {
     if (c >= '0' && c <= '9') return true;
     if ((c | 0x20) >= 'a' && (c | 0x20) <= 'z') return true;
     return std::strchr("!#$%&'*+-.^_`|~", c) != nullptr && c != 0;
 }
 
+// Returns whether `s` is a non-empty RFC 9110 token.
 bool isToken(std::string_view s) {
     if (s.empty()) return false;
     for (unsigned char c : s) {
@@ -68,13 +55,14 @@ bool isToken(std::string_view s) {
     return true;
 }
 
+// Returns `s` without leading and trailing spaces and tabs.
 std::string_view trimOws(std::string_view s) {
     while (!s.empty() && (s.front() == ' ' || s.front() == '\t')) s.remove_prefix(1);
     while (!s.empty() && (s.back() == ' ' || s.back() == '\t')) s.remove_suffix(1);
     return s;
 }
 
-// The lines of a head (without its blank line), CR LF or LF terminated.
+// Returns the lines of `head` up to its first blank line, each without its CR LF or LF. The views point into `head`.
 std::vector<std::string_view> headLines(std::string_view head) {
     std::vector<std::string_view> lines;
     size_t at = 0;
@@ -90,7 +78,7 @@ std::vector<std::string_view> headLines(std::string_view head) {
     return lines;
 }
 
-// "HTTP/d.d" → "d.d".
+// Reads `v` as `HTTP/d.d` with single digits, and on success writes "d.d" to `out`.
 bool parseVersion(std::string_view v, std::string& out) {
     if (v.size() != 8 || v.substr(0, 5) != "HTTP/" || v[6] != '.') return false;
     if (v[5] < '0' || v[5] > '9' || v[7] < '0' || v[7] > '9') return false;
@@ -98,6 +86,8 @@ bool parseVersion(std::string_view v, std::string& out) {
     return true;
 }
 
+// Appends the header fields in `lines`, skipping the first (the request or status line), to `out`, and returns
+// whether all were valid, with the reason in `err` if not. Fields before the invalid one are already appended.
 bool parseFields(const std::vector<std::string_view>& lines, HeaderList& out, std::string& err) {
     for (size_t i = 1; i < lines.size(); ++i) {
         std::string_view line = lines[i];
@@ -127,6 +117,7 @@ bool parseFields(const std::vector<std::string_view>& lines, HeaderList& out, st
     return true;
 }
 
+// Returns `s` with ASCII capitals made lower case.
 std::string lowerAscii(std::string s) {
     for (char& c : s) {
         if (c >= 'A' && c <= 'Z') c = static_cast<char>(c + 32);
@@ -134,6 +125,8 @@ std::string lowerAscii(std::string s) {
     return s;
 }
 
+// Appends each valid header in `headers` to `out` as a CR LF terminated line. With `skipFraming`, also leaves out
+// `Content-Length`, `Transfer-Encoding` and `Connection`, so the caller can write its own.
 void appendHeaders(std::string& out, const HeaderList& headers, bool skipFraming) {
     for (const auto& [name, value] : headers) {
         if (!httpHeaderValid(name, value)) continue;
@@ -148,7 +141,8 @@ void appendHeaders(std::string& out, const HeaderList& headers, bool skipFraming
     }
 }
 
-// The errno name of a §D.2 reason ("read ECONNRESET" → "ECONNRESET").
+// Returns the error code in a `ConnProtocol::onError` reason: the part after the first space ("read ECONNRESET"
+// gives "ECONNRESET"), or the whole reason if it has no space.
 std::string codeOfReason(const std::string& reason) {
     size_t sp = reason.find(' ');
     return sp == std::string::npos ? reason : reason.substr(sp + 1);
@@ -174,7 +168,6 @@ void wsRandomBytes(unsigned char* out, size_t n) {
 #ifndef _WIN32
     if (RAND_bytes(out, static_cast<int>(n)) == 1) return;
 #endif
-    // No OpenSSL (Windows stubs) or RAND failure: never used for keys natively.
     static thread_local std::mt19937_64 rng{std::random_device{}()};
     for (size_t i = 0; i < n; ++i) out[i] = static_cast<unsigned char>(rng());
 }
@@ -183,7 +176,7 @@ std::string wsNewKey() {
 #ifndef _WIN32
     unsigned char raw[16];
     if (RAND_bytes(raw, sizeof raw) != 1)
-        throw std::runtime_error("RAND_bytes failed");   // a Task Never: reportFatal (G2)
+        throw std::runtime_error("RAND_bytes failed");
     return base64(raw, sizeof raw);
 #else
     return std::string();
@@ -323,9 +316,11 @@ const char* httpStatusReason(int status) {
 
 namespace {
 
-// Writes the request and reads the response head under the dial's deadline.
+// The HTTP/1.1 half of a dial: writes the request and reads the response head under the dial's deadline, then
+// reports to the job and parks the connection. It reports at most one result.
 class DialProtocol final : public ConnProtocol {
 public:
+    // Creates the protocol for `job`, which it keeps alive.
     explicit DialProtocol(std::shared_ptr<DialJob> job) : job_(std::move(job)) {}
 
     void onOpen(Conn& c) override {
@@ -383,6 +378,7 @@ public:
     bool wantsRead() const override { return !done_; }
 
 private:
+    // Reports the failure to the job and aborts `c`, unless a result was reported already.
     void fail(Conn& c, const std::string& code, const std::string& message) {
         if (done_) return;
         done_ = true;
@@ -465,8 +461,8 @@ void DialJob::onConnect(Conn& c, bool ok, const std::string& code, const std::st
         return;
     }
     if (spec_.http2) {
-        // WS9: ALPN chose h2 → RFC 8441 on this connection; otherwise the
-        // HTTP/1.1 Upgrade on the same connection (W12).
+        // When the server did not choose h2, or `makeHttp2ClientProtocol` returns null, the HTTP/1.1 Upgrade is
+        // made on this same connection.
         const TlsInfo* ti = c.tlsInfo();
         if (ti && ti->alpn == "h2") {
             if (auto h2 = makeHttp2ClientProtocol(shared_from_this())) {

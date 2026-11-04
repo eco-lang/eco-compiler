@@ -1,25 +1,13 @@
 //===- FileSystemManager.cpp - The C++ effect manager of `FileSystem` ----===//
 //
-// plans/eco-system-library.md §3.6, Phase 4 step 4.5 and Appendix C.0 /
-// C.2. Layout: FileSystemManager.hpp.
+// The manager's state is one entry in a `Registry`, so the collector updates
+// the encoded router and taggers it holds. It maps each (path, recursive) key
+// to its watch id, its liveness hold and the taggers of its subscriptions.
 //
-//   * onEffects: the subscriptions are grouped by registry key
-//     (path, recursive), each holding its list of encoded taggers. One
-//     WatchService watch exists per key. A key that appears starts a watch
-//     and, if the path could be watched, acquires one Subscription hold (an
-//     active watch keeps the program alive, §3.4); a key that disappears
-//     stops its watch and releases the hold. A path that cannot be watched
-//     produces no events and holds nothing (gren ignores watch errors).
-//   * subMap composes the tagger (TimeEffectManager pattern): a 3-slot
-//     closure capturing (f, oldTagger) applied to the event tuple.
-//   * Delivery (T8/G12): the watch drain (one eco/system async source)
-//     maps each POD WatchEvent to its key's taggers, snapshots them into one
-//     rooted range, builds ( kind, Maybe relativePath ), calls each tagger,
-//     then sendToApp + drain() per message.
-//   * Windows: a Watch subscription crashes with a clear message (§1).
-//
-// Templates used: T6 (manager, rooted registration per G14), T5 (state),
-// T8/G12 (delivery), G6 (one root range for the tagger snapshot).
+// A collection may move any heap object, so a pointer obtained by resolving a
+// word is used only until the next allocation or Elm call. The closures below
+// that resolve heap objects copy the words they need out of the heap first,
+// root them, and only then allocate or call Elm.
 //
 //===----------------------------------------------------------------------===//
 
@@ -43,18 +31,23 @@ using namespace FileSystemManager;
 using Fs::WatchEvent;
 using Fs::WatchService;
 
-using WatchKey = std::pair<std::string, bool>;   // (path, recursive)
+// The identity of a watch: the watched path, and whether it is recursive.
+using WatchKey = std::pair<std::string, bool>;
 
+// The watch of one key and the subscriptions that share it.
 struct WatchEntry {
-    int64_t watchId = 0;    // 0: the path could not be watched
-    HoldToken hold = kNoHold;   // the active watch's Subscription hold
-    std::vector<uint64_t> taggers;   // encoded taggers
+    int64_t watchId = 0;    // 0 when the path could not be watched, or after stopWatch
+    HoldToken hold = kNoHold;   // held only while watchId is not 0
+    std::vector<uint64_t> taggers;   // encoded taggers, in subscription order
 };
 
+// Everything the manager keeps between calls.
 struct ManagerState {
-    uint64_t routerEnc = 0;
+    uint64_t routerEnc = 0;   // 0 until the first onEffects
     std::map<WatchKey, WatchEntry> watches;
 
+    // Calls `f` on every encoded heap word the state holds, for the Registry's
+    // root scanner.
     template <typename F>
     void forEachWord(F&& f) {
         f(routerEnc);
@@ -63,12 +56,15 @@ struct ManagerState {
     }
 };
 
+// Returns the registry that holds the manager's state. It is never destroyed.
 Registry<ManagerState>& registry() {
     static auto* r = new Registry<ManagerState>("eco-system-file-manager");   // leaky
     return *r;
 }
 
-// The single state entry (re-created after a heap reset, F24).
+// Returns the manager's one state entry, creating an empty one on the first
+// call and again after a heap reset has cleared the registry. The reference is
+// valid until the registry is next cleared.
 ManagerState& state() {
     static int64_t id = 0;
     auto& r = registry();
@@ -79,8 +75,13 @@ ManagerState& state() {
 
 // --- Delivery ----------------------------------------------------------------
 
-// T8 for every tagger of the event's watch. The taggers are snapshotted
-// first: update may change the subscriptions while we deliver (G11).
+// Sends `ev` to the program once for every tagger of its watch, draining the
+// scheduler after each message. Does nothing before the first onEffects, or
+// when no current key has the event's watch id, as for an event queued before
+// its watch was stopped.
+//
+// The taggers are copied and rooted first, because the Elm calls and drains
+// may run onEffects, which can replace or erase the entry.
 void deliver(const WatchEvent& ev) {
     ManagerState& st = state();
     if (st.routerEnc == 0) return;
@@ -100,7 +101,7 @@ void deliver(const WatchEvent& ev) {
     HPointer str = alloc::listNil();
     HPointer arg = alloc::listNil();
     HPointer msg = alloc::listNil();
-    // No allocation since the decodes above.
+    // Nothing has allocated since the decodes above, so the words are current.
     Elm::StackRootGuard g({&router, &str, &arg, &msg});
     auto& rs = Allocator::instance().getRootSet();
     size_t saved = rs.stackRangePoint();
@@ -109,19 +110,21 @@ void deliver(const WatchEvent& ev) {
         if (ev.hasPath) {
             str = alloc::allocStringFromUTF8(ev.path);
             // `just` allocates while its argument is rooted (`str`); its fresh
-            // result goes straight into tuple2, which roots it (G4).
+            // result goes straight into tuple2, which roots it.
             arg = alloc::tuple2(alloc::unboxedInt(ev.kind),
                                 alloc::boxed(alloc::just(alloc::boxed(str), true)), 0x1);
         } else {
             arg = alloc::tuple2(alloc::unboxedInt(ev.kind), alloc::boxed(alloc::nothing()), 0x1);
         }
-        msg = Scheduler::callClosure1(taggers[i], arg);   // Elm call (G11)
+        msg = Scheduler::callClosure1(taggers[i], arg);
         PlatformRuntime::instance().sendToApp(router, msg);
-        Scheduler::instance().drain();                    // once per message (G12)
+        Scheduler::instance().drain();
     }
     rs.restoreStackRangePoint(saved);
 }
 
+// Delivers every queued watch event. An exception from a delivery ends the
+// process with a fatal error rather than unwinding into the scheduler loop.
 void watchDrain() {
     std::vector<WatchEvent> evs;
     WatchService::instance().drain(evs);
@@ -129,24 +132,26 @@ void watchDrain() {
         try {
             deliver(ev);
         } catch (const std::exception& e) {
-            ::Eco::Kernel::reportFatal(e.what());   // never unwind into the loop (F21)
+            ::Eco::Kernel::reportFatal(e.what());
         } catch (...) {
             ::Eco::Kernel::reportFatal("unknown native exception in FileSystem watch delivery");
         }
     }
 }
 
+// Returns whether the watch service has queued records. Any thread may call it.
 bool watchReady() {
     return WatchService::instance().hasEvents();
 }
 
-// --- Manager closures (C.0) ----------------------------------------------------
+// --- Manager closures ----------------------------------------------------------
 
-// init : Task Never ()  (a 0-arity thunk, forced by setupEffects)
+// Evaluates `init : Task Never ()`, returning a Task that succeeds with `()`.
 void* initEval(void*[]) {
     return reinterpret_cast<void*>(enc(Scheduler::instance().taskSucceed(alloc::unit())));
 }
 
+// Stops the watch of `e`, if it has one, and releases its hold.
 void stopWatch(WatchEntry& e) {
     if (e.watchId != 0) WatchService::instance().remove(e.watchId);
     if (e.hold != kNoHold) Scheduler::instance().releaseHold(e.hold);
@@ -154,13 +159,17 @@ void stopWatch(WatchEntry& e) {
     e.hold = kNoHold;
 }
 
-// onEffects : Router -> List (MyCmd msg) -> List (MySub msg) -> () -> Task Never ()
+// Evaluates `onEffects router cmds subs state`, making the watches match
+// `subs`: a key no subscription names any more is stopped, a new key starts a
+// watch and, if the path could be watched, takes a Subscription hold, and every
+// remaining key gets the taggers of its current subscriptions. Returns a Task
+// that succeeds with `()`.
 void* onEffectsEval(void* args[]) {
     HPointer router = dec(args[0]);
     HPointer subs = dec(args[2]);
     Elm::StackRootGuard g(&router, &subs);
 
-    // A non-allocating walk (G5): copy every field out.
+    // Nothing in this walk allocates, so the resolved objects stay put.
     std::map<WatchKey, std::vector<uint64_t>> wanted;
     for (alloc::ListCursor c(subs); !c.done(); c.next()) {
         void* obj = Allocator::instance().resolve(c.current().p);
@@ -177,8 +186,6 @@ void* onEffectsEval(void* args[]) {
         ::Eco::Kernel::reportFatal("eco/system: FileSystem.watch is not supported on Windows yet");
 #endif
 
-    // Registry update and service calls: POD only, no heap allocation while
-    // `st` is live.
     {
         ManagerState& st = state();
         st.routerEnc = enc(router);
@@ -209,25 +216,28 @@ void* onEffectsEval(void* args[]) {
     return reinterpret_cast<void*>(enc(Scheduler::instance().taskSucceed(alloc::unit())));
 }
 
-// onSelfMsg : Router -> Never -> () -> Task Never ()  (never sent)
+// Evaluates `onSelfMsg router msg state`, returning a Task that succeeds with
+// `state`. The manager sends itself no messages.
 void* onSelfMsgEval(void* args[]) {
     return reinterpret_cast<void*>(enc(Scheduler::instance().taskSucceed(dec(args[2]))));
 }
 
-// The composed tagger of subMap: args[0] = f, args[1] = old tagger,
-// args[2] = the event tuple. Result: f (old event).
+// Evaluates the tagger subMap builds, with captures `f` and `old` followed by
+// the event tuple, and returns `f (old event)`.
 void* composedTaggerEval(void* args[]) {
     HPointer f = dec(args[0]);
     HPointer old = dec(args[1]);
     HPointer event = dec(args[2]);
     HPointer mid = alloc::listNil();
     Elm::StackRootGuard g({&f, &old, &event, &mid});
-    mid = Scheduler::callClosure1(old, event);           // Elm call (G11)
+    mid = Scheduler::callClosure1(old, event);
     HPointer out = Scheduler::callClosure1(f, mid);
     return reinterpret_cast<void*>(enc(out));
 }
 
-// subMap : (a -> b) -> MySub a -> MySub b
+// Evaluates `subMap f sub`, returning a `Watch` with the same path and flag
+// whose tagger applies `f` after the old one. A value that is not a `Watch` is
+// returned unchanged.
 void* subMapEval(void* args[]) {
     HPointer f = dec(args[0]);
     HPointer sub = dec(args[1]);
@@ -245,7 +255,7 @@ void* subMapEval(void* args[]) {
     }
     composed = alloc::allocClosure(&composedTaggerEval, 3);
     {
-        // Both captures right after the allocation, nothing allocated in between (G8).
+        // Both captures go in before anything else allocates.
         void* p = Allocator::instance().resolve(composed);
         alloc::closureCapture(p, alloc::boxed(f), true);
         alloc::closureCapture(p, alloc::boxed(old), true);
@@ -262,8 +272,8 @@ using namespace Eco::System;
 
 namespace {
 
-// Allocates the manager closures in the rooted PortRuntime form (G14) and
-// registers them under "FileSystem". No commands: cmdMap is nil.
+// Allocates the manager closures and registers them under "FileSystem". The
+// manager has no commands, so its cmdMap is the empty list.
 void registerFileManager() {
     HPointer initCl = alloc::listNil();
     HPointer effCl = alloc::listNil();

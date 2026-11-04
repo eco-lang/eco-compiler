@@ -1,9 +1,5 @@
 //===- SocketUtil.cpp - Small POSIX socket helpers shared by eco/system ---===//
 //
-// See SocketUtil.hpp. Pure functions; safe on any thread.
-//
-// Templates used: none (POD only, G1).
-//
 //===----------------------------------------------------------------------===//
 
 #include "eco-system/Core/SocketUtil.hpp"
@@ -31,8 +27,7 @@ SockAddr::SockAddr() { std::memset(&ss, 0, sizeof(ss)); }
 #ifdef _WIN32
 
 // ---------------------------------------------------------------------------
-// Windows stubs (§1): nothing reaches these on Windows (the kernels fail
-// ENOTSUP first); they exist so EcoSystem_Core links.
+// Windows stubs, so that EcoSystem_Core links.
 // ---------------------------------------------------------------------------
 
 int SockAddr::family() const { return 0; }
@@ -88,14 +83,15 @@ int setNoSigPipe(int fd) {
     int one = 1;
     if (::setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &one, sizeof(one)) < 0) return errno;
 #else
-    (void)fd;   // MSG_NOSIGNAL (kSendFlags) on every send instead
+    (void)fd;   // callers pass kSendFlags (MSG_NOSIGNAL where defined) to send instead
 #endif
     return 0;
 }
 
 namespace {
 
-[[maybe_unused]] void closeQuietly(int fd) {   // unused where SOCK_CLOEXEC exists
+// Closes `fd`, retrying on EINTR, and leaves errno as it was.
+[[maybe_unused]] void closeQuietly(int fd) {
     int saved = errno;
     while (::close(fd) < 0 && errno == EINTR) {
     }
@@ -143,8 +139,7 @@ int acceptCloexec(int listenFd, bool nonBlocking, struct sockaddr* addr, socklen
         if (err) *err = errno;
         return -1;
     }
-    // A failure here leaves the fd usable (the window is closed by
-    // POSIX_SPAWN_CLOEXEC_DEFAULT on macOS, SF9); only O_NONBLOCK matters.
+    // Not atomic with accept: a child spawned in between can inherit the fd.
     (void)setCloexec(fd);
     if (nonBlocking) {
         int e = setNonBlocking(fd);
@@ -173,7 +168,7 @@ std::string scopeName(uint32_t scopeId) {
 }
 
 bool parseScope(const std::string& scope, uint32_t& scopeId) {
-    if (scope.empty() || scope.size() > 15) return false;   // §D.1: 1-15 characters
+    if (scope.empty() || scope.size() > 15) return false;
     bool digits = true;
     for (char c : scope) {
         if (c < '0' || c > '9') { digits = false; break; }
@@ -264,8 +259,6 @@ bool sockaddrToInet(const struct sockaddr* sa, socklen_t len, std::string& text,
 size_t unixPathMax() { return sizeof(sockaddr_un::sun_path); }
 
 int unixSockaddr(const std::string& path, SockAddr& out) {
-    // §D.3: the length check comes first (both backends report ENAMETOOLONG
-    // before any syscall), then the v1 restrictions.
     if (path.size() >= unixPathMax()) return ENAMETOOLONG;
     if (path.empty()) return ENOENT;
     if (path.find('\0') != std::string::npos) return EINVAL;
@@ -292,7 +285,7 @@ bool sockaddrToUnixPath(const struct sockaddr* sa, socklen_t len, std::string& p
     const auto* u = reinterpret_cast<const struct sockaddr_un*>(sa);
     size_t max = static_cast<size_t>(len) - off;
     if (max > unixPathMax()) max = unixPathMax();
-    if (u->sun_path[0] == '\0') {   // abstract (Linux): not supported in v1 (SD4)
+    if (u->sun_path[0] == '\0') {   // abstract (Linux)
         path.clear();
         return true;
     }

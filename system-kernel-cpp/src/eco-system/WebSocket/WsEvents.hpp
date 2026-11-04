@@ -1,36 +1,28 @@
-//===- WsEvents.hpp - WebSocket results to the main thread ----------------===//
+//===- WsEvents.hpp - WebSocket results to the eco thread -----------------===//
 //
-// plans/eco-system-websockets.md §3.6 "Results to the main thread": message
-// data travels on the channel-results queue (the mapped readable,
-// ByteChannel.hpp); every other WebSocket result is one POD WsEvent on this
-// queue (the sockets plan §3.3.2 pattern, as SocketEvents), posted by the
-// IoReactor thread and drained on the main thread by a drain registered with
-// the eco/system async source.
+// WebSocket I/O runs on the IoReactor thread, but the tasks waiting for its results live on the eco thread, which
+// alone may touch the Elm heap. This component carries those results across. Message data travels on the
+// channel-results queue of `ByteChannel.hpp`; every other WebSocket result is one `WsEvent`, a plain record holding
+// no Elm heap pointers, posted on a single queue from any thread and drained on the eco thread. It is the WebSocket
+// counterpart of `SocketEvents.hpp`, and works the same way.
 //
-//   * Dialed: a client handshake ended (dial): the HTTP status and response
-//     headers, the Conn (held by a HoldProtocol until open), or a failure.
-//   * UpgradeRead: a socket-level opening request was read (readUpgrade).
-//   * Opened: open installed the codec (endpoints), or failed.
-//   * OpDone: an R-mode operation finished (close, reject).
-//   * PingDone: a ping's pong arrived (rtt), or the ping failed.
-//   * Closed: a WebSocket ended: ( code, reason, clean ).
-//   * BodyNeeded (WS6): a streamed message started: create its body's
-//     stream pair on the main thread and hand the id to the core
-//     (WsCore::bodyReady).
-//   * BodyDispose (WS6): a body's pair that nobody can receive any more.
+// The drain is added with `addDrainSource`; its ready predicate reads only atomic values, so it takes no lock. On
+// each pass it first runs the requested work (below), then pops events one at a time and hands each to the
+// dispatch function registered for its kind. When the dispatch function returns true, the drain calls
+// `Scheduler::drain()` before taking the next event.
 //
-// The drain hands each event to the dispatch function registered for its
-// kind (WsTables.cpp) and calls Scheduler::drain() after every event that
-// resumed a task or delivered a message (G12; the dispatcher returns true).
-// Events of an older heap generation are dropped after releasing their OS
-// resources (an orphaned Conn is aborted), never resumed or counted (F24).
-// requestWsWork(fn) runs `fn` from the drain (the manager's deferred held-
-// close deliveries).
+// Heap generation: every event carries `gen`, the heap generation (`currentHeapGeneration`) taken on the eco thread
+// when the operation or the object behind the event began. An event of an older generation refers to tokens and
+// counts that died with the old heap, so the drain does not dispatch it; it only aborts the connection the event
+// carries, if any, on the reactor. An event whose kind has no dispatch function is released the same way. Such an
+// event is called an orphan.
 //
-// Lock order (sockets plan §3.3.1 rule 6): IoReactor command mutex → this
-// queue's mutex → Scheduler mutex.
+// WebSocket work: `requestWsWork(fn)` asks the drain to call `fn` on its next pass, once however often it was
+// requested before then. It lets code that must not deliver messages itself (an effect manager's onEffects) have
+// eco-thread work done soon after.
 //
-// Templates used: T8/G12 (drain side), G10 (dispatchers own the counts).
+// An exception that escapes a dispatch function or a work function is reported with `reportFatal`; it never unwinds
+// into the scheduler loop.
 //
 //===----------------------------------------------------------------------===//
 
@@ -49,51 +41,80 @@ namespace Eco::System {
 
 class Conn;
 
+/// One WebSocket result on its way to the eco thread.
+///
+/// Which members are meaningful depends on `kind`; the rest keep their defaults. The record holds no Elm heap
+/// pointers, so it may be built on any thread and may outlive a heap reset.
 struct WsEvent {
+    /// The kind of result, which selects the dispatch function.
+    ///
+    /// `Dialed`: a client opening handshake ended, with the response's status and headers and the connection, or
+    /// failed. `UpgradeRead`: an opening request was read from a server-side connection, or reading it failed.
+    /// `Opened`: the WebSocket codec was installed on the connection, with its endpoints, or could not be.
+    /// `OpDone`: a close or reject operation finished. `PingDone`: a ping was answered, with its round-trip time,
+    /// or failed. `Closed`: a WebSocket ended. `BodyNeeded`: a streamed message started, and its body needs a stream
+    /// pair created on the eco thread. `BodyDispose`: a body's stream pair can no longer be received and is to be
+    /// discarded. `HandshakeGone`: the connection of a server handshake taken from `Http.Server` is gone before the
+    /// handshake was answered.
     enum class Kind : uint8_t { Dialed, UpgradeRead, Opened, OpDone, PingDone, Closed, BodyNeeded, BodyDispose,
                                 HandshakeGone };
+    /// The number of `Kind` enumerators: the size of the dispatch table. Nothing checks that the two agree.
     static constexpr int kKinds = 9;
 
     Kind kind = Kind::OpDone;
-    uint64_t gen = 0;                 // heap generation of the originating main-thread object
-    uint64_t token = 0;               // the task's resume token (0: none)
-    int64_t wsId = 0;                 // Opened / PingDone / Closed; HandshakeGone: the hsId
-    bool failed = false;              // failure: code + message (FErr)
+    uint64_t gen = 0;                 ///< Heap generation; see the file comment.
+    uint64_t token = 0;               ///< The waiting task's resume token; 0 if no task waits.
+    int64_t wsId = 0;                 ///< The WebSocket's id; for HandshakeGone, the handshake id.
+    bool failed = false;              ///< True if the operation failed; `code` and `message` then describe it.
     std::string code, message;
-    std::shared_ptr<Conn> conn;       // Dialed / UpgradeRead: the held connection
-    // Dialed: the response; UpgradeRead: the request.
+    /// Dialed and UpgradeRead that succeeded: the connection, kept alive while the event is in transit. An orphan's
+    /// connection is aborted.
+    std::shared_ptr<Conn> conn;
+    // Dialed: the response's status and headers. UpgradeRead: the request's method, target, version and headers.
     int64_t status = 0;
-    bool isH2 = false;
+    bool isH2 = false;                ///< Dialed: true if the handshake ran over HTTP/2.
     std::string method, target, version;
-    std::vector<std::pair<std::string, std::string>> headers;   // in order, original case
-    SockEndpoint local, remote;       // UpgradeRead / Opened
-    bool isTls = false;
-    int64_t rtt = 0;                  // PingDone
-    int closeCode = 0;                // Closed
+    std::vector<std::pair<std::string, std::string>> headers;
+    SockEndpoint local, remote;       // UpgradeRead, Opened
+    bool isTls = false;               ///< Dialed, UpgradeRead: true if the connection is TLS.
+    int64_t rtt = 0;                  ///< PingDone: the round-trip time in milliseconds.
+    // Closed: the close code and reason, and whether the closing handshake completed.
+    int closeCode = 0;
     std::string reason;
     bool clean = false;
-    uint64_t bodySeq = 0;             // BodyNeeded: the body's sequence number in its core
-    bool bodyText = false;            // BodyNeeded: a text body (String chunks)
-    int64_t pairId = 0;               // BodyDispose: the stream pair
+    uint64_t bodySeq = 0;             ///< BodyNeeded: the body's sequence number within its WebSocket.
+    bool bodyText = false;            ///< BodyNeeded: true for a text body.
+    int64_t pairId = 0;               ///< BodyDispose: the stream pair to discard.
 };
 
-// Main thread: creates the queue (binding the Scheduler on the main thread),
-// registers the drain. Idempotent; every WebSocket kernel body calls it
-// (through ensureWsTables) before it submits reactor work.
+/// Sets up the event queue, once; later calls do nothing. Must be called on the eco thread (its once-flag is not
+/// locked) before any event is posted. It calls `ensureSocketEvents`, which starts the IoReactor, and adds the drain.
 void ensureWsEvents();
 
-// Any thread. Queues `ev` and wakes the scheduler loop.
+/// Queues `ev` for the drain and wakes the scheduler loop. May be called on any thread. No other lock is taken while
+/// the queue's mutex is held: the scheduler is woken after it is released.
 void postWsEvent(WsEvent ev);
 
-// Main thread. Returns true if it resumed a task or delivered a message.
+/// A function that handles events of one kind on the eco thread, called by the drain with each such event of the
+/// current heap generation. It may move from the event. Returns true to have the drain call `Scheduler::drain()`,
+/// which it needs when it resumed a task or delivered a message without draining.
 using WsEventDispatchFn = bool (*)(WsEvent& ev);
+
+/// Makes `fn` the dispatch function for events of `kind`, replacing any earlier one; null removes it, and events of
+/// that kind are then released as orphans. Eco thread only.
 void setWsEventDispatch(WsEvent::Kind kind, WsEventDispatchFn fn);
 
-// Main thread. Runs `fn` from the drain soon (deduplicated by function).
+/// A function the drain calls on the eco thread at a caller's request. The drain does not call `Scheduler::drain()`
+/// after it, so it must do so itself if it resumed or delivered anything.
 using WsWorkFn = void (*)();
+
+/// Asks the drain to call `fn` on its next pass. A function requested again before that pass runs is still called
+/// once. A request made while the work is running is served on a later pass. Eco thread only: the work list is not
+/// locked.
 void requestWsWork(WsWorkFn fn);
 
-// Main thread (the drain, or a test).
+/// Runs one pass of the drain: the requested work, then every queued event, as the file comment describes. Eco
+/// thread only. It is the drain `ensureWsEvents` adds.
 void wsEventsDrain();
 
 } // namespace Eco::System

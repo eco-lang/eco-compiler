@@ -1,10 +1,7 @@
 //===- Runtime.cpp - Runtime kernel module implementation -----------------===//
 //
-// Per KERNEL_TASK_IO_001 / plans/defer-eager-kernel-tasks-via-binding.md
-// Phase 7: `dirname`, `random`, `saveState`, `loadState` are returned as
-// Task_Bindings. In particular `random()` now draws a fresh sample EACH
-// time the scheduler steps the binding — mirrors the same fix that
-// `Time.now` got via deferral (`plans/...time-now...`).
+// Each exported function only builds a binding Task, with Unit as the captured value except for `saveState`, which
+// captures the state itself. The bodies in the anonymous namespace do the work when the Task is run.
 //
 //===----------------------------------------------------------------------===//
 
@@ -24,11 +21,15 @@
 
 namespace Eco::Kernel::Runtime {
 
+// The value stored by the most recent `saveState` run. It is meaningful only while `s_hasState` is set, and it is
+// reached by the collector only through the scanner `registerGcRootScanner` adds.
 static HPointer s_savedState = {};
+// Whether any `saveState` run has stored a value. Nothing clears it.
 static bool s_hasState = false;
 
 namespace {
 
+// Returns the Task that `dirname` describes, reading the directory now.
 HPointer dirnameBody(HPointer /*captured*/) {
     std::string dir = eco::platform::currentExecutableDir();
     if (dir.empty()) {
@@ -37,28 +38,27 @@ HPointer dirnameBody(HPointer /*captured*/) {
     return succeedString(dir);
 }
 
+// Returns a Task that succeeds with the next draw from the process-wide generator, which is created and seeded on
+// the first call.
 HPointer randomBody(HPointer /*captured*/) {
     static std::mt19937_64 gen(std::random_device{}());
     static std::uniform_real_distribution<double> dist(0.0, 1.0);
     return succeedFloat(dist(gen));
 }
 
-// `saveState` captures the state HPointer in slot 0 (boxed). The body
-// stores it into s_savedState; the registered external root scanner keeps
-// it alive across subsequent GCs.
+// Stores `captured`, the state value itself, as the saved state, and returns a Task that succeeds with Unit. The
+// store happens before the allocation of that Task, so the scanner, if registered, already covers it.
 HPointer saveStateBody(HPointer captured) {
     s_savedState = captured;
     s_hasState = true;
     return succeedUnit();
 }
 
-// With nothing saved, the state is JSON `null`, as the doc and the JS twin
-// (`_Runtime_replState = null`) say: `Json.Encode.null`, the ENC_NULL encoder
-// constant (null-cons tag 0, JsonExports.cpp), which `Json.Decode.null`
-// accepts. It used to be the Empty constant (`Nothing`'s word), which is not a
-// JSON Value (plans/kg-reported-bugs.md, open items).
+/// The null-constructor tag of `Json.Encode.null` (the `ENC_NULL` encoder constant in JsonExports.cpp).
 constexpr u16 JSON_ENC_NULL = 0;
 
+/// Returns a Task that succeeds with the saved state, or, when none has been stored, with JSON `null` (the
+/// `Json.Encode.null` value, which `Json.Decode.null` accepts), as the JS kernel does.
 HPointer loadStateBody(HPointer /*captured*/) {
     if (s_hasState) {
         return succeed(s_savedState);
@@ -90,6 +90,8 @@ uint64_t loadState() {
 
 void registerGcRootScanner() {
     Elm::Allocator::instance().getRootSet().addExternalRootScanner(
+        // The scanner works on the encoded word, the form `EvacuateFn` takes, and writes back whatever it is
+        // rewritten to.
         [](Elm::RootSet::EvacuateFn evacuate) {
             if (!s_hasState) return;
             uint64_t encoded = Export::encode(s_savedState);

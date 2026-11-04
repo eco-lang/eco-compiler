@@ -1,12 +1,4 @@
-//===- WsChannel.cpp - The two stream faces of a WebSocket ----------------===//
-//
-// See WsChannel.hpp (plans/eco-system-websockets.md §3.3, §3.6). Main thread
-// only; every operation is a reactor submit (POD + shared_ptr<WsCore>, G1).
-// shutdown() is idempotent (ByteChannel contract).
-//
-// Templates used: T9 (requests).
-//
-//===----------------------------------------------------------------------===//
+//===- WsChannel.cpp - The channels of a WebSocket ------------------------===//
 
 #include "eco-system/WebSocket/WsChannel.hpp"
 
@@ -20,8 +12,11 @@ namespace Eco::System {
 
 namespace {
 
+/// Returns the process's IoReactor, which the requests are submitted to.
 IoReactor& reactor() { return IoReactor::instance(); }
 
+/// Answers request `token` on channel `channelId` with an `op` result whose `err` is `ENOTSUP`, for a request the
+/// channel's direction does not support.
 void postUnsupported(uint64_t channelId, uint64_t token, ChannelResult::Op op) {
     ChannelResult r;
     r.channelId = channelId;
@@ -101,12 +96,12 @@ void WsWriteChannel::close(uint64_t token) {
 void WsWriteChannel::shutdown() {
     if (done_) return;
     done_ = true;
-    wsTablesCloseStarted(wsId_);   // released by Closed (no-op if it is closed already)
+    wsTablesCloseStarted(wsId_);
     auto k = core_;
     reactor().submit([k] { k->writeShutdown(); });
 }
 
-// --- A streamed message's body (WS6) ---------------------------------------------
+// --- A streamed message's body ---------------------------------------------------
 
 WsBodyChannel::WsBodyChannel(std::shared_ptr<WsCore> core, uint64_t seq)
     : core_(std::move(core)), seq_(seq) {}
@@ -136,14 +131,12 @@ void WsBodyChannel::shutdown() {
     reactor().submit([k, seq] { k->bodyCancel(seq); });
 }
 
-// --- An outgoing message stream (WS6) -----------------------------------------------
+// --- An outgoing message stream -----------------------------------------------------
 
 WsOutChannel::WsOutChannel(std::shared_ptr<WsCore> core, uint64_t seq)
     : core_(std::move(core)), seq_(seq) {}
 
 WsOutChannel::~WsOutChannel() {
-    // A stream dropped without close or shutdown (its pair erased): abort it,
-    // so the messages behind it are not blocked forever.
     if (!done_) shutdown();
 }
 

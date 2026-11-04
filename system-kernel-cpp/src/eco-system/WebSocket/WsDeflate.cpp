@@ -1,10 +1,5 @@
 //===- WsDeflate.cpp - permessage-deflate engine (RFC 7692) ---------------===//
 //
-// See WsDeflate.hpp (plans/eco-system-websockets.md §3.7). zlib directly;
-// no IO, no heap access (G1).
-//
-// Templates used: none (POD only).
-//
 //===----------------------------------------------------------------------===//
 
 #include "eco-system/WebSocket/WsDeflate.hpp"
@@ -20,7 +15,10 @@ namespace ws {
 
 namespace {
 
+/// The number of bytes of output space `Deflater::chunk` gives zlib per call.
 constexpr size_t kDeflateStep = 64 * 1024;
+/// The four bytes a sync flush ends with, which permessage-deflate removes
+/// from every sent message and the receiver adds back.
 constexpr unsigned char kTail[4] = {0x00, 0x00, 0xff, 0xff};
 
 } // namespace
@@ -56,7 +54,7 @@ bool Deflater::chunk(const char* p, size_t n, std::string& out) {
         z.s.avail_out = static_cast<uInt>(kDeflateStep);
         int r = deflate(&z.s, Z_SYNC_FLUSH);
         out.resize(old + (kDeflateStep - z.s.avail_out));
-        if (r == Z_BUF_ERROR) return true;   // nothing to do (a repeated flush with no input)
+        if (r == Z_BUF_ERROR) return true;   // no progress possible: a repeated flush with no input
         if (r != Z_OK) return false;
         if (z.s.avail_out != 0 && z.s.avail_in == 0) return true;
     }
@@ -67,7 +65,7 @@ bool Deflater::message(const char* p, size_t n, std::string& out) {
     if (!chunk(p, n, out)) return false;
     size_t len = out.size() - start;
     if (len >= 4 && std::memcmp(out.data() + out.size() - 4, kTail, 4) == 0) out.resize(out.size() - 4);
-    if (out.size() == start) out.push_back('\0');   // an empty message (§7.2.3.6)
+    if (out.size() == start) out.push_back('\0');
     endMessage();
     return true;
 }
@@ -112,8 +110,8 @@ void Inflater::finish() {
     finished_ = true;
 }
 
-// A new raw stream; with `keepWindow` the last 32 KiB of output stay usable
-// as back-references (BFINAL inside a message, or context takeover).
+// Carries the window over by reading it out as a dictionary and setting it on
+// the reset stream.
 void Inflater::resetStream(bool keepWindow) {
     if (!z_->init) return;
     if (!keepWindow) {
@@ -146,8 +144,8 @@ Inflater::Step Inflater::step(std::string& out, size_t maxOut) {
             in_.clear();
             inOff_ = 0;
             if (!finished_) return Step::NeedInput;
-            // The message is complete: the next one starts on a clean stream
-            // (no context takeover), or after a final block with the window kept.
+            // After a final block the stream was already reset with its window
+            // kept; resetting again with it kept is harmless.
             if (noContext_) resetStream(false);
             else if (sawFinal_) resetStream(true);
             finished_ = false;
@@ -169,7 +167,7 @@ Inflater::Step Inflater::step(std::string& out, size_t maxOut) {
         out.resize(old + produced);
         inOff_ += consumed;
         if (r == Z_STREAM_END) {
-            // A block with BFINAL (§7.2.3.4): what follows is a new stream
+            // A final block inside the message: what follows is a new stream
             // that may refer back into this one.
             sawFinal_ = true;
             resetStream(true);

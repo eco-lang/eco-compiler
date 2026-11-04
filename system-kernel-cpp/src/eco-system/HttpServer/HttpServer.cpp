@@ -1,48 +1,14 @@
 //===- HttpServer.cpp - eco/system kernel module HttpServer ---------------===//
 //
-// plans/eco-system-library.md Appendix B.6 / Phase 7 and
-// plans/eco-system-websockets.md §3.4 / Appendix B.2 (phase WS2): the
-// binding bodies of Eco.Kernel.HttpServer. Connections run on the IoReactor
-// (Http1.cpp); the main-thread state is in HttpTables.cpp.
+// Each body that reads its payload does so in a block scope, through raw pointers, copying what it needs into C++
+// values. Nothing in that scope allocates on the heap, so the pointers stay valid; only after the scope does the
+// body allocate, park its resume closure or call out.
 //
-//   * createServer (P mode, T2): the pool worker resolves the host and
-//     opens the listening socket (HttpSrv::listenOn: IPv4 first, socket,
-//     SO_REUSEADDR, bind, listen; non-blocking). The main-thread completion
-//     hands it to HttpTables (a ListenerHandler in callback mode), which
-//     takes the server's keep-alive count (released when closeServer is
-//     done). Result: ( serverId, boundAddress, boundPort ) — the port the system picked
-//     for port 0. A failure is the FErr tuple ( code, message ), e.g.
-//     ( "EADDRINUSE", "listen EADDRINUSE: ..." ).
-//   * createServerWith (P mode, T2): the same over Socket's tcpListenOn
-//     (an Address, Socket.Address text), with the §7 / A.2 options and the
-//     protocols bits (1 HTTP/1.x, 2 HTTP/2); none, or http2 without tls,
-//     fails EINVAL (Elm checks both first). With tls (WS3,
-//     websockets plan §3.5) the same pool job first builds the TLS server
-//     context (buildTlsServerConfig: certificate chain and key; failures are
-//     its ERR_SSL_* codes), with HTTP/1.x in alpnFallback = NoAck mode, with
-//     the server's own ALPN list (httpServerAlpn; the user's alpn is not
-//     passed down), and,
-//     with http2, the RFC 9113 TLS 1.2 cipher restriction. The listener then
-//     wraps every accepted connection in a TlsTransport and installs its
-//     protocol after the handshake (Http1.cpp makeServerProtocol: ALPN
-//     dispatch); requests carry flags bit 2 and https:// URLs. With http2
-//     (WS8, §3.8) the server also offers "h2": such connections run
-//     Http2Protocol (Http2.cpp, nghttp2), with maxConcurrentStreams.
-//   * respond (R mode): copies the response out of the heap (G3), registers
-//     the resume, takes one count, and hands the POD to HttpTables, which
-//     erases the key (releasing the request's count) and submits it to the
-//     reactor; the task completes when the transport took the bytes
-//     (RespondDone). An unknown, answered or dead key completes at once:
-//     respond is a Task Never.
-//   * respondHtml (R mode): respond with an Http.Dom.Node body, serialized by
-//     ElmKernel_VirtualDom's writeHtml inside the same copy-out scope
-//     (plans/elm-html-native-kernel.md §7.3).
-//   * closeServer (R mode): HttpTables closes the listener and starts the
-//     graceful close on the reactor; the task completes on ServerClosed. An
-//     unknown or fully closed server completes at once.
-//   * takeUpgrade (S mode): HttpUpgrade.cpp (phase WS5).
-//
-// Templates used: T2, T4 (copy-out), G3, G10.
+// An asynchronous body parks its resume under a token with `Scheduler::parkResume`, which also takes the hold that
+// keeps the program running until the task completes. `token` and `counted` record that for
+// `ECO_SYSTEM_ASYNC_GUARD`, so that in the FErr bodies an exception afterwards fails the task and releases the hold;
+// in the `Never` bodies an exception is fatal. When nothing is left to wait for, `completeNow` resumes the task and
+// releases the hold itself. The bodies return `()` as the kill handle, so killing a task cancels nothing.
 //
 //===----------------------------------------------------------------------===//
 
@@ -72,8 +38,9 @@ namespace {
 using HttpSrv::ResponseData;
 using HttpSrv::ServerConfig;
 
-// Owns the listening fd until the completion takes it (a killed task's
-// orphaned result closes it, N11).
+// The result of `createServer`'s pool job. It owns the listening fd in `listen.fd` until `createComplete` takes it
+// by setting it to -1, and, except on Windows, closes the fd when destroyed still holding it, as when the result is
+// dropped without completing. A move hands the fd over. `host` is the requested host name.
 struct CreateRes {
     HttpSrv::ListenResult listen;
     std::string host;
@@ -91,24 +58,24 @@ struct CreateRes {
     }
 };
 
-// The authority of request URLs without a Host header (E.5): IPv6 literals
-// bracketed, an empty host is "localhost".
+// Returns `host:port` as the URL authority used for requests that carry no Host header. A host containing ':'
+// that is not already bracketed is bracketed as an IPv6 literal, and an empty host becomes "localhost".
 std::string authorityOf(const std::string& host, int64_t port) {
     std::string h = host.empty() ? std::string("localhost") : host;
     if (h.find(':') != std::string::npos && h.front() != '[') h = "[" + h + "]";
     return h + ":" + std::to_string(port);
 }
 
-// ( serverId, boundAddress, boundPort ): tuple3, slots 0 and 2 Int (2 bits per slot:
-// mask 0x11, HEAP_046).
-// `address` is copied out before the allocation (G3).
+// Returns a Task that succeeds with `( id, address, port )`. The mask 0x11 marks slots 0 and 2 as unboxed Ints,
+// at two bits per slot.
 HPointer serverResult(int64_t id, const std::string& address, int64_t port) {
     HPointer text = alloc::allocStringFromUTF8(address);
-    // `text` is fresh and goes straight into the helper, which roots it (G4).
+    // `text` goes straight into `tuple3`, which roots its boxed arguments across its allocation.
     return succeed(alloc::tuple3(alloc::unboxedInt(id), alloc::boxed(text), alloc::unboxedInt(port), 0x11));
 }
 
-// Main thread (the pool drain), resume already taken and rooted.
+// Builds `createServer`'s Task from its job's result on the eco thread: the FErr from listening, or the new
+// server's result after the fd is handed to `httpTablesStartServer`.
 HPointer createComplete(PoolResult& pr) {
     auto& r = pr.as<CreateRes>();
     if (r.listen.fd < 0) return failFErr(r.listen.code, r.listen.message);
@@ -121,11 +88,8 @@ HPointer createComplete(PoolResult& pr) {
     return serverResult(id, address, r.listen.boundPort);
 }
 
-// The ALPN protocols an https server offers (§3.5): its own list from its
-// protocols, never the user's Socket.Tls.ServerOptions.alpn: "h2" with http2
-// (WS8, Http2Protocol), then "http/1.1" with http1. With http1 a client
-// offering neither still connects without ALPN (NoAck) and is served
-// HTTP/1.1; an h2-only server sends the fatal alert instead.
+// Returns the ALPN protocols a TLS server offers, in order of preference: "h2" when `http2`, then "http/1.1" when
+// `http1`. It is unused on Windows, where no TLS server is built.
 [[maybe_unused]] std::vector<std::string> httpServerAlpn(bool http1, bool http2) {
     std::vector<std::string> alpn;
     if (http2) alpn.push_back("h2");
@@ -133,7 +97,8 @@ HPointer createComplete(PoolResult& pr) {
     return alpn;
 }
 
-// createServerWith's options, copied out of the heap.
+// The options of `createServerWith`, copied out of the heap. `maxConnections` is negative for no limit, and the
+// certificate chain and private key are empty without TLS.
 struct WithSpec {
     std::string address;
     int64_t port = 0;
@@ -142,13 +107,17 @@ struct WithSpec {
     ServerConfig cfg;
 };
 
+// The result of `createServerWith`'s pool job. `listen.owned` closes the fd unless `createWithComplete` takes it.
+// `spec` has its certificate chain and private key cleared.
 struct WithRes {
-    ListenResult listen;   // Socket.hpp: RAII ListenFd
+    ListenResult listen;
     WithSpec spec;
-    std::shared_ptr<TlsServerConfig> tls;   // cfg.tls: the context (null on failure)
-    std::string code, message;              // context failure (code non-empty)
+    std::shared_ptr<TlsServerConfig> tls;   // null without TLS, or when building the context failed
+    std::string code, message;              // the TLS context failure when `code` is not empty
 };
 
+// Builds `createServerWith`'s Task from its job's result on the eco thread: the TLS failure, the listen failure,
+// or the new server's result after the fd is handed to `httpTablesStartServer`.
 HPointer createWithComplete(PoolResult& pr) {
     auto& r = pr.as<WithRes>();
     if (!r.code.empty()) return failFErr(r.code, r.message);
@@ -163,22 +132,22 @@ HPointer createWithComplete(PoolResult& pr) {
     return serverResult(id, address, r.listen.bound.port);
 }
 
-// Resumes `resume` with () now (an R-mode task that needs no reactor work).
+// Completes the task parked under `token` with `()` now: discards the parked closure, calls `resume`, and then
+// releases the hold and clears `token` and `counted`. The hold is released only after the resume has run, so the
+// program cannot be judged finished in between.
 void completeNow(HPointer& resume, uint64_t& token, bool& counted) {
     auto& s = Scheduler::instance();
     (void)s.takePendingResume(token);
     HPointer task = succeedUnit();
     Elm::StackRootGuard g(&task);
     Scheduler::callClosure1(resume, task);
-    // Release after the resume is published (plans/program-liveness-rule.md
-    // §6.2, L6); token/counted stay set until then.
     s.releaseHold(token);
     token = 0;
     counted = false;
 }
 
-// The response headers ( name, values ) -> one line per value. Reads only; no
-// allocation (G3, G5).
+// Appends to `data.headers` one `( name, value )` line for each value of each `( name, values )` pair in the list
+// `headers`. It does not allocate on the heap, so it may run inside a body's copy-out scope.
 void copyHeaders(HPointer headers, ResponseData& data) {
     for (alloc::ListCursor c(headers); !c.done(); c.next()) {
         Tuple2* h = asTuple2(c.current().p);
@@ -188,8 +157,8 @@ void copyHeaders(HPointer headers, ResponseData& data) {
     }
 }
 
-// The rest of respond / respondHtml once the response is copied out: register
-// the resume with its hold (G10), and hand the POD to HttpTables.
+// Parks `resume` with its hold, recording that in `token` and `counted`, and asks `httpTablesRespond` to send
+// `data` for `key`, completing the task at once when the key is not in the table. Returns `()` as the kill handle.
 HPointer submitResponse(int64_t key, ResponseData data, HPointer resume, uint64_t& token,
                         bool& counted);
 
@@ -201,25 +170,25 @@ HPointer httpServerCreateServerBody(HPointer captured, HPointer resume) {
     ECO_SYSTEM_ASYNC_GUARD(FErr, resume, token, counted,
         std::string host;
         int64_t port = 0;
-        {   // G3: read first; no allocation in this scope
+        {   // no heap allocation in this scope
             Tuple2* t = asTuple2(captured);
             host = toStdString(t->a.p);
             port = t->b.i;
         }
-        HttpSrv::ensureHttpTables();   // bind the Scheduler on the main thread
+        HttpSrv::ensureHttpTables();
         auto& s = Scheduler::instance();
-        token = s.parkResume(resume, HoldKind::Task, "Http.Server.createServer");   // G10
+        token = s.parkResume(resume, HoldKind::Task, "Http.Server.createServer");
         counted = true;
         SysWorkPool::instance().submit(
             token,
-            [host = std::move(host), port]() -> PoolResult {   // worker: POD only (G1)
+            [host = std::move(host), port]() -> PoolResult {   // runs on a worker: no heap access
                 CreateRes r;
                 r.listen = HttpSrv::listenOn(host, port);
                 r.host = host;
                 return PoolResult::of(std::move(r));
             },
             &createComplete, ErrShape::FErr);
-        return alloc::unit();   // kill handle: unit (the job is short)
+        return alloc::unit();
     )
 }
 
@@ -230,7 +199,7 @@ HPointer httpServerCreateServerWithBody(HPointer captured, HPointer resume) {
         WithSpec spec;
         int64_t protocols = 0;
         bool hasTls = false;
-        {   // G3: read first; no allocation in this scope
+        {   // no heap allocation in this scope
             Tuple3* t = asTuple3(captured);
             HPointer targetHP = t->a.p;
             HPointer tlsHP = t->b.p;
@@ -258,14 +227,14 @@ HPointer httpServerCreateServerWithBody(HPointer captured, HPointer resume) {
             spec.cfg.requestMs = times->c.i;
             spec.cfg.maxBodySize = sizes->a.i;
             spec.cfg.maxHeaderSize = sizes->b.i;
-            spec.cfg.maxConcurrentStreams = sizes->c.i;   // HTTP/2 (WS8); -1 unlimited
+            spec.cfg.maxConcurrentStreams = sizes->c.i;   // HTTP/2 only
         }
         spec.cfg.tls = hasTls;
         spec.cfg.http1 = (protocols & 1) != 0;
         spec.cfg.http2 = (protocols & 2) != 0;
         HttpSrv::ensureHttpTables();
 #ifdef _WIN32
-        if (hasTls) {   // no OpenSSL on Windows (§1)
+        if (hasTls) {   // no OpenSSL on Windows
             HPointer task = failFErr("ENOTSUP", "createServerWith: tls is not supported on Windows yet");
             Elm::StackRootGuard g(&task);
             Scheduler::callClosure1(resume, task);
@@ -284,20 +253,20 @@ HPointer httpServerCreateServerWithBody(HPointer captured, HPointer resume) {
             Scheduler::callClosure1(resume, task);
             return alloc::unit();
         }
-        if (hasTls) ensureTlsInit();   // main thread, before any OpenSSL use (N13)
+        if (hasTls) ensureTlsInit();   // on the eco thread, before the worker uses OpenSSL
         auto& s = Scheduler::instance();
-        token = s.parkResume(resume, HoldKind::Task, "Http.Server.createServerWith");   // G10
+        token = s.parkResume(resume, HoldKind::Task, "Http.Server.createServerWith");
         counted = true;
         SysWorkPool::instance().submit(
             token,
-            [spec = std::move(spec)]() -> PoolResult {   // worker: POD only (G1)
+            [spec = std::move(spec)]() -> PoolResult {   // runs on a worker: no heap access
                 WithRes r;
 #ifndef _WIN32
-                if (spec.cfg.tls) {   // the context first, as Socket.Tls.listen (PEM work)
+                if (spec.cfg.tls) {   // the context first, so that a bad certificate opens no socket
                     TlsError err;
                     TlsServerMode mode;
-                    mode.alpnNoAck = spec.cfg.http1;  // §3.5 alpnFallback = NoAck
-                    mode.h2Ciphers = spec.cfg.http2;  // RFC 9113 §9.2.2
+                    mode.alpnNoAck = spec.cfg.http1;  // a client offering no ALPN match is served HTTP/1.1
+                    mode.h2Ciphers = spec.cfg.http2;  // HTTP/2's TLS 1.2 cipher restriction (RFC 9113)
                     r.tls = buildTlsServerConfig(spec.certificateChain, spec.privateKey,
                                                  httpServerAlpn(spec.cfg.http1, spec.cfg.http2),
                                                  err, mode);
@@ -310,7 +279,7 @@ HPointer httpServerCreateServerWithBody(HPointer captured, HPointer resume) {
 #endif
                 r.listen = tcpListenOn(spec.address, spec.port, 511, /*ipv6Only=*/false);
                 r.spec = spec;
-                r.spec.certificateChain.clear();   // not kept beyond the context
+                r.spec.certificateChain.clear();   // the result does not carry the key material
                 r.spec.privateKey.clear();
                 return PoolResult::of(std::move(r));
             },
@@ -325,7 +294,7 @@ HPointer httpServerRespondBody(HPointer captured, HPointer resume) {
     ECO_SYSTEM_ASYNC_GUARD(Never, resume, token, counted,
         int64_t key = 0;
         ResponseData data;
-        {   // G3: copy everything out; no allocation in this scope (G5)
+        {   // no heap allocation in this scope
             Tuple2* outer = asTuple2(captured);
             HPointer ksHP = outer->a.p;
             HPointer hbHP = outer->b.p;
@@ -340,15 +309,13 @@ HPointer httpServerRespondBody(HPointer captured, HPointer resume) {
     )
 }
 
-// plans/elm-html-native-kernel.md §7.3: respond, with the body serialized from
-// an Http.Dom.Node inside the copy-out scope (no String or Bytes on the heap).
 HPointer httpServerRespondHtmlBody(HPointer captured, HPointer resume) {
     uint64_t token = 0;
     bool counted = false;
     ECO_SYSTEM_ASYNC_GUARD(Never, resume, token, counted,
         int64_t key = 0;
         ResponseData data;
-        {   // G3: copy everything out; no allocation in this scope (G5)
+        {   // no heap allocation in this scope
             Tuple2* outer = asTuple2(captured);
             Tuple2* ks = asTuple2(outer->a.p);
             key = ks->a.i;
@@ -357,7 +324,7 @@ HPointer httpServerRespondHtmlBody(HPointer captured, HPointer resume) {
             copyHeaders(hdn->a.p, data);
             if (::Elm::hpBits(hdn->b.p) == ::Elm::hpBits(alloc::elmTrue()))   // Bool: a constant
                 data.body = "<!DOCTYPE html>";
-            // R8/VDOM_004: no Eco allocation and no Elm call, so G5 holds across the walk.
+            // writeHtml neither allocates on the heap nor calls Elm, so `hdn` stays valid across the walk.
             ::Elm::Kernel::VirtualDom::writeHtml(enc(hdn->c.p), data.body);
         }
         return submitResponse(key, std::move(data), resume, token, counted);
@@ -370,10 +337,10 @@ HPointer submitResponse(int64_t key, ResponseData data, HPointer resume, uint64_
                         bool& counted) {
     HttpSrv::ensureHttpTables();
     auto& s = Scheduler::instance();
-    token = s.parkResume(resume, HoldKind::Task, "Http.Server.respond");   // G10
+    token = s.parkResume(resume, HoldKind::Task, "Http.Server.respond");
     counted = true;
     if (!HttpSrv::httpTablesRespond(key, token, std::move(data))) {
-        completeNow(resume, token, counted);   // unknown, answered or gone: at once
+        completeNow(resume, token, counted);
     }
     return alloc::unit();
 }
@@ -392,10 +359,10 @@ HPointer httpServerCloseServerBody(HPointer captured, HPointer resume) {
         }
         HttpSrv::ensureHttpTables();
         auto& s = Scheduler::instance();
-        token = s.parkResume(resume, HoldKind::Task, "Http.Server.closeServer");   // G10
+        token = s.parkResume(resume, HoldKind::Task, "Http.Server.closeServer");
         counted = true;
         if (!HttpSrv::httpTablesCloseServer(id, deadlineMs, token)) {
-            completeNow(resume, token, counted);   // unknown or closed: at once
+            completeNow(resume, token, counted);
         }
         return alloc::unit();
     )

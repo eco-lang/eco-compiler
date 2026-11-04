@@ -1,15 +1,11 @@
 //===- Console.cpp - Console kernel module implementation -----------------===//
 //
-// Per KERNEL_TASK_IO_001 / plans/defer-eager-kernel-tasks-via-binding.md
-// Phase 1: `write`, `readLine`, `readAll`, `isTerminal` are returned as
-// Task_Bindings so the actual stdin/stdout IO (or isatty query) runs when the scheduler steps the binding (NOT
-// at the kernel call site). `log` is the explicit Q7/KERNEL_TASK_IO_001
-// exemption — it's an identity helper that returns its `value` arg, not a
-// Task, and stays eager.
+// Each Task-returning function packs what its body needs into the binding's captured value and leaves all IO to
+// the body. `write` and `isTerminal` capture a Tuple2 whose slot 0 is the handle as an unboxed Int; slot 1 is the
+// String for `write` and Unit for `isTerminal`. `readLine` and `readAll` capture Unit.
 //
-// readLine/readAll bindings still block the scheduler thread on stdin inside
-// the evaluator (Q3); a future StdinService follow-up (mirror of
-// TimerService/HttpService) will move stdin reads to a worker thread.
+// Output goes straight to the file descriptors with `write`, or `_write` on Windows, not through a buffered stream.
+// Input is read through `std::cin` on the thread that runs the Task, which blocks there.
 //
 //===----------------------------------------------------------------------===//
 
@@ -23,10 +19,9 @@
 #if defined(_WIN32)
 #include <io.h>
 #include <stdio.h>
-// On Windows route stdout/stderr writes through _write()/_fileno() — the
-// underlying CRT primitive that matches POSIX ::write semantics (returns
-// short bytes, no buffering layered on top). EINTR cannot happen on Win64
-// for a regular file/pipe but the retry loop is harmless.
+// The platform layer: `_eco_write` is one unbuffered write that may write fewer bytes than asked, the `_fd`
+// functions give the descriptors of the three standard streams, and `_eco_isatty` says whether a descriptor is a
+// terminal. On Windows `_write` takes an `unsigned int` length, so callers cap a single write at 0x7fffffff bytes.
 namespace { inline int _eco_write(int fd, const void* buf, unsigned int len) {
     return ::_write(fd, buf, len);
 } }
@@ -38,6 +33,7 @@ inline bool _eco_isatty(int fd) { return ::_isatty(fd) != 0; }
 }
 #else
 #include <unistd.h>
+// The POSIX platform layer, with the same meaning as the Windows one above.
 namespace { inline ssize_t _eco_write(int fd, const void* buf, size_t len) {
     return ::write(fd, buf, len);
 } }
@@ -53,9 +49,8 @@ namespace Eco::Kernel::Console {
 
 namespace {
 
-// Body for `write`. Captured payload is a Tuple2 with the handle as an
-// unboxed Int (slot 0) and the content as a boxed String (slot 1). The
-// scheduler thread runs this when the binding is stepped.
+// Writes the String in `captured` to the stream its handle names and returns the Task `write` documents.
+// `captured` is the Tuple2 `write` builds. The String is copied out before anything allocates.
 HPointer writeBody(HPointer captured) {
     int64_t handle;
     HPointer contentHP;
@@ -73,12 +68,8 @@ HPointer writeBody(HPointer captured) {
     } else if (handle == 2) {
         fd = _eco_stderr_fd();
     } else {
-        // Stream handle support would go here (check global stream handle map).
         return succeedUnit();
     }
-    // Write the whole buffer, surfacing errors (e.g. EPIPE when a downstream
-    // reader closed the pipe). SIGPIPE is ignored at startup so the write
-    // returns EPIPE rather than terminating the process (see eco_entry.cpp).
     const char* data = str.data();
     size_t remaining = str.size();
     while (remaining > 0) {
@@ -102,8 +93,7 @@ HPointer writeBody(HPointer captured) {
     return succeedUnit();
 }
 
-// TODO(StdinService): blocking stdin read inside the binding evaluator. Move
-// to a worker thread in a follow-up plan (mirror TimerService / HttpService).
+// Reads one line from `std::cin`, blocking, and returns the Task `readLine` documents.
 HPointer readLineBody(HPointer /*captured*/) {
     std::string line;
     if (std::getline(std::cin, line)) {
@@ -112,7 +102,7 @@ HPointer readLineBody(HPointer /*captured*/) {
     return succeedString("");
 }
 
-// TODO(StdinService): same — blocking stdin read inside the evaluator.
+// Reads `std::cin` to its end, blocking, and returns the Task `readAll` documents.
 HPointer readAllBody(HPointer /*captured*/) {
     std::string content;
     std::string line;
@@ -125,9 +115,7 @@ HPointer readAllBody(HPointer /*captured*/) {
     return succeedString(content);
 }
 
-// Body for `isTerminal`. Captured payload is a Tuple2 with the handle as an
-// unboxed Int (slot 0) and unit (slot 1). Handles 0, 1 and 2 are the standard
-// streams; any other handle (e.g. a process stream) answers False.
+// Returns the Task `isTerminal` documents for the handle in `captured`, the Tuple2 `isTerminal` builds.
 HPointer isTerminalBody(HPointer captured) {
     int64_t handle;
     {
@@ -175,15 +163,10 @@ uint64_t isTerminal(uint64_t handle) {
 }
 
 uint64_t log(uint64_t tag, uint64_t value) {
-    // EXEMPT from KERNEL_TASK_IO_001: `log` is an identity helper, not a
-    // Task producer. It eagerly writes its `tag` argument to stderr and
-    // returns `value` unchanged so it can be spliced into Elm expressions
-    // (`Console.log "x" x`). See plans/defer-eager-kernel-tasks-via-binding.md
-    // Q7 for the exemption rationale.
+    // Not deferred to a binding: `log` returns no Task, only `value`, so there is no Task to run the write later.
     std::string msg = toString(tag);
     msg += '\n';
-    // Direct stderr write — bypasses iostream sync so traces appear in
-    // FIFO order with other ::write-based output in the process.
+    // Written to the descriptor, not through `std::cerr`, so it is not held in a stream buffer.
 #if defined(_WIN32)
     (void)_eco_write(_eco_stderr_fd(), msg.data(),
                      static_cast<unsigned int>(
@@ -191,7 +174,6 @@ uint64_t log(uint64_t tag, uint64_t value) {
 #else
     (void)_eco_write(_eco_stderr_fd(), msg.data(), msg.size());
 #endif
-    // Identity on `value`: return the same HPointer bits we were handed.
     return value;
 }
 

@@ -1,9 +1,8 @@
 //===- HttpStreamExports.cpp - C exports of Eco.Kernel.HttpStream ---------===//
 //
-// plans/eco-system-library.md Appendix B.7. The export only decodes, roots,
-// packs and binds (G2); the body is in HttpStream.cpp.
-//
-// Templates used: T1 (export shape: four arguments in nested tuples), T2.
+// The C-linkage entry point of `Http.Stream.send`. It packs its four
+// arguments into one payload and binds `httpStreamSendBody` (HttpStream.hpp)
+// to it, so the request is made each time the returned Task runs.
 //
 //===----------------------------------------------------------------------===//
 
@@ -15,6 +14,8 @@ extern "C" {
 
 // send : ( String, String, Int ) -> List Http.Header -> ( Int, String, ( Bytes, Int ) )
 //        -> Bool -> Task Never ( Int, String, ( ( Int, String, String ), List ( String, String ), Int ) )
+// Returns the Task binding for one request; the payload layout and the result
+// are described at `httpStreamSendBody`.
 uint64_t Eco_Kernel_HttpStream_send(uint64_t request, uint64_t headers, uint64_t body,
                                     uint64_t discard) {
     ECO_KERNEL_GUARD(

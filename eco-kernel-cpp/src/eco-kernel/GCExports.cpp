@@ -1,6 +1,4 @@
 //===- GCExports.cpp - C-linkage exports for the GC module ----------------===//
-//
-// plans/frontend-heap-release.md §4.3 (HEAP_076).
 
 #include "KernelExports.h"
 #include "GC.hpp"

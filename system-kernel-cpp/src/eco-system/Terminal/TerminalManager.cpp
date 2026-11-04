@@ -1,21 +1,13 @@
 //===- TerminalManager.cpp - The C++ effect manager of Terminal ----===//
 //
-// plans/eco-system-library.md §3.6, Appendix C.0 / C.4 and Phase 5 step
-// 5.3. Layout: TerminalManager.hpp.
+// The manager keeps its state in C++, not in the Elm state value, which is always `()`. The state is the router
+// and the current taggers, held as encoded words in a single-entry `Registry`, so the collector keeps them alive
+// and up to date. A heap reset empties the registry, and the next lookup creates a new, empty entry.
 //
-//   * onEffects: the OnResize taggers replace the stored list (encoded words
-//     in a T5 registry, with the router). A SignalService SIGWINCH listener
-//     is registered while the list is non-empty (it holds no pendingAsync:
-//     resize subscriptions do not keep the program alive, §3.4).
-//   * Delivery (the SIGWINCH listener, main thread): read the new size with
-//     TIOCGWINSZ (nothing is delivered when no stdio fd is a terminal, like
-//     Node's stdout 'resize'), snapshot the taggers into one rooted buffer,
-//     then for each: tagger ( columns, rows ) → sendToApp → drain() (T8,
-//     G12).
-//   * subMap composes the tagger (TimeEffectManager composition pattern).
-//     There are no commands.
-//
-// Templates used: T6 (rooted registration per G14), T5, T8, G6.
+// The SIGWINCH listener is process-wide, since `SignalService` survives a heap reset. `onEffects` adds it when
+// there are taggers and none is registered, and removes it when the taggers are empty; a heap reset leaves it
+// registered until the next `onEffects`, and `onWinch` then does nothing. It takes no liveness hold, which is why a
+// resize subscription does not keep the program running.
 //
 //===----------------------------------------------------------------------===//
 
@@ -30,7 +22,7 @@
 #include <vector>
 
 #ifndef SIGWINCH
-#define SIGWINCH 28   // Windows: never subscribed (SignalService is a no-op there)
+#define SIGWINCH 28   // Windows has no SIGWINCH; defined only so the code compiles, and never subscribed
 #endif
 
 namespace Eco::System {
@@ -39,10 +31,14 @@ namespace {
 
 using namespace TerminalManager;
 
+/// The manager's state: the router messages are sent through and the taggers of the current subscriptions, in
+/// the order the subscription list gave them, all as encoded HPointer words. `routerEnc` is 0 until the first
+/// `onEffects`.
 struct ManagerState {
     uint64_t routerEnc = 0;
-    std::vector<uint64_t> taggers;   // encoded OnResize taggers
+    std::vector<uint64_t> taggers;
 
+    /// Calls `f` on every encoded word the state holds, for the registry's root scanner.
     template <typename F>
     void forEachWord(F&& f) {
         f(routerEnc);
@@ -50,12 +46,14 @@ struct ManagerState {
     }
 };
 
+/// Returns the registry that holds the manager's state, creating it on the first call. It is never deleted.
 Registry<ManagerState>& registry() {
-    static auto* r = new Registry<ManagerState>("eco-system-terminal-manager");   // leaky
+    static auto* r = new Registry<ManagerState>("eco-system-terminal-manager");
     return *r;
 }
 
-// The single state entry (re-created after a heap reset, F24).
+/// Returns the manager's single state entry, creating an empty one when there is none, as on the first call and
+/// after a heap reset. The reference is valid until the next heap reset; look it up again after calling into Elm.
 ManagerState& state() {
     static int64_t id = 0;
     auto& r = registry();
@@ -64,17 +62,20 @@ ManagerState& state() {
     return *r.find(id);
 }
 
-// Process-wide: SignalService listeners outlive any heap. 0 = not listening.
+/// The SIGWINCH listener's identifier, or 0 when not listening. Process-wide, because a listener outlives a heap
+/// reset.
 SignalService::ListenerId g_winchListener = 0;
 
-// --- Delivery ----------------------------------------------------------------
-
+/// Sends the terminal's new size to the program once for each current subscription: each tagger is applied to
+/// `( columns, rows )` and the result sent through the router, and the scheduler is drained after each one. Sends
+/// nothing when `terminalSize` finds no size or there are no taggers. The SIGWINCH listener; runs on the eco
+/// thread from the signal drain.
 void onWinch(int, void*) {
     int columns = 0, rows = 0;
     if (!terminalSize(columns, rows)) return;
     ManagerState& st = state();
     if (st.routerEnc == 0 || st.taggers.empty()) return;
-    // Snapshot: update may change the subscriptions while we deliver.
+    // Snapshot, rooted as one range: the program may change its subscriptions during delivery.
     std::vector<HPointer> taggers;
     taggers.reserve(st.taggers.size());
     for (uint64_t w : st.taggers) taggers.push_back(dec(w));
@@ -88,27 +89,30 @@ void onWinch(int, void*) {
     rs.pushStackRootRange(taggers.data(), taggers.size(), ~0ULL);
     for (size_t i = 0; i < taggers.size(); ++i) {
         arg = alloc::tuple2(alloc::unboxedInt(columns), alloc::unboxedInt(rows), 0x5);
-        msg = Scheduler::callClosure1(taggers[i], arg);   // Elm call (G11)
+        msg = Scheduler::callClosure1(taggers[i], arg);
         PlatformRuntime::instance().sendToApp(router, msg);
         Scheduler::instance().drain();
     }
     rs.restoreStackRangePoint(saved);
 }
 
-// --- Manager closures (C.0) ------------------------------------------------------
-
-// init : Task Never ()  (a 0-arity thunk, forced by setupEffects)
+/// Returns a Task that succeeds with `()`, the manager's initial Elm state. The evaluator of the arity-0 `init`
+/// closure.
 void* initEval(void*[]) {
     return reinterpret_cast<void*>(enc(Scheduler::instance().taskSucceed(alloc::unit())));
 }
 
-// onEffects : Router -> List (MyCmd msg) -> List (MySub msg) -> () -> Task Never ()
+/// Replaces the stored router and taggers with `args[0]` and the taggers of the `OnResize` values in the
+/// subscription list `args[2]`, adds the SIGWINCH listener when the list becomes non-empty and removes it when it
+/// becomes empty, and returns a Task that succeeds with `()`. The commands `args[1]` and state `args[3]` are
+/// ignored. On Windows a non-empty list ends the process with `Eco::Kernel::reportFatal`. If `addListener` fails,
+/// as in embed mode, nothing is listened for, and the next call tries again.
 void* onEffectsEval(void* args[]) {
     HPointer router = dec(args[0]);
     HPointer subs = dec(args[2]);
     Elm::StackRootGuard g(&router, &subs);
 
-    // A non-allocating walk (G5), then the registry update.
+    // The walk does not allocate, so `obj` stays valid while it is read.
     std::vector<uint64_t> wanted;
     for (alloc::ListCursor c(subs); !c.done(); c.next()) {
         void* obj = Allocator::instance().resolve(c.current().p);
@@ -117,7 +121,7 @@ void* onEffectsEval(void* args[]) {
         if (sub->ctor == CTOR_ON_RESIZE) wanted.push_back(enc(sub->values[ON_RESIZE_TAGGER_FIELD].p));
     }
 #ifdef _WIN32
-    // A Sub is infallible: crash with a clear message (§1).
+    // A Sub cannot report failure, so an unsupported one ends the process.
     if (!wanted.empty())
         ::Eco::Kernel::reportFatal("eco/system: Terminal.onResize is not supported on Windows yet");
 #endif
@@ -137,23 +141,25 @@ void* onEffectsEval(void* args[]) {
     return reinterpret_cast<void*>(enc(Scheduler::instance().taskSucceed(alloc::unit())));
 }
 
-// onSelfMsg : Router -> Never -> () -> Task Never ()  (never sent)
+/// Returns a Task that succeeds with the state `args[2]` unchanged. Nothing sends this manager a self-message.
 void* onSelfMsgEval(void* args[]) {
     return reinterpret_cast<void*>(enc(Scheduler::instance().taskSucceed(dec(args[2]))));
 }
 
-// \size -> f (tagger size): args[0] = f, args[1] = tagger, args[2] = size.
+/// Returns `f (tagger size)`, where `f` is `args[0]`, `tagger` is `args[1]` and `size` is `args[2]`. The evaluator
+/// of the closures `subMapEval` builds, whose two captures are `f` and `tagger`.
 void* composedTaggerEval(void* args[]) {
     HPointer f = dec(args[0]);
     HPointer tagger = dec(args[1]);
     HPointer x = dec(args[2]);
     HPointer inner = alloc::listNil();
     Elm::StackRootGuard g({&f, &tagger, &x, &inner});
-    inner = Scheduler::callClosure1(tagger, x);   // Elm call (G11)
+    inner = Scheduler::callClosure1(tagger, x);
     return reinterpret_cast<void*>(enc(Scheduler::callClosure1(f, inner)));
 }
 
-// subMap : (a -> b) -> MySub a -> MySub b — compose the tagger.
+/// Returns an `OnResize` whose tagger is the subscription `args[1]`'s tagger followed by the function `args[0]`.
+/// Returns `args[1]` itself when it is not an `OnResize` value.
 void* subMapEval(void* args[]) {
     HPointer f = dec(args[0]);
     HPointer sub = dec(args[1]);
@@ -167,7 +173,7 @@ void* subMapEval(void* args[]) {
     }
     composed = alloc::allocClosure(&composedTaggerEval, 3);
     {
-        void* p = Allocator::instance().resolve(composed);   // captures right away (G8)
+        void* p = Allocator::instance().resolve(composed);   // no allocation until both captures are stored
         alloc::closureCapture(p, alloc::boxed(f), PK_Boxed);
         alloc::closureCapture(p, alloc::boxed(tagger), PK_Boxed);
     }
@@ -183,8 +189,8 @@ using namespace Eco::System;
 
 namespace {
 
-// Allocates the manager closures in the rooted PortRuntime form (G14) and
-// registers them under "Terminal". Subscriptions only: no cmdMap.
+/// Allocates the manager's closures and registers them with the runtime under "Terminal". The cmdMap slot is the
+/// Empty constant, since the manager has no commands.
 void registerTerminalManager() {
     HPointer initCl = alloc::listNil();
     HPointer effCl = alloc::listNil();

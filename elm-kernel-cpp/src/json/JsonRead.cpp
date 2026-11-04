@@ -1,8 +1,8 @@
 //===- JsonRead.cpp - Read-only view of Json.Value heap forms ---------------===//
 //
-// plans/elm-html-native-kernel.md P0.3. No Eco allocation and no Elm calls
-// anywhere in this file (R8, VDOM_004): every walk reads resolved objects whose
-// addresses stay valid because nothing here can trigger a collection.
+// Every walk here holds raw addresses from `Export::toPtr` and `Allocator::resolve` while it reads.
+// They stay valid only because nothing in this file allocates on the Elm heap or calls Elm, so no
+// collection can run in the middle of a walk. A change that allocates must re-derive them.
 //
 //===----------------------------------------------------------------------===//
 
@@ -17,8 +17,11 @@ namespace Elm::Kernel::JsonRead {
 
 namespace {
 
-// Resolved element `i` of a CTOR_JSON_ARRAY / CTOR_JSON_ARRAY_CHUNKED node, as
-// JsonExports.cpp jsonArrayAt does it.
+// Returns the word of element `i` of the decoder-family array `jarr`, chunked or not, read the way
+// `jsonArrayAt` in `JsonExports.cpp` reads it. `i` must be less than `jsonArrayLength(jarr)`; nothing
+// checks it.
+//
+// The chunk length is read from chunk 0, which is full whenever there is more than one chunk.
 uint64_t jsonArrayAt(Custom* jarr, u32 i) {
     auto& allocator = Allocator::instance();
     ElmArray* top = static_cast<ElmArray*>(allocator.resolve(jarr->values[0].p));
@@ -28,19 +31,23 @@ uint64_t jsonArrayAt(Custom* jarr, u32 i) {
     return Export::encode(chunk->elements[i % F].p);
 }
 
+// Returns the number of elements of the decoder-family array `jarr`, chunked or not.
 u32 jsonArrayLength(Custom* jarr) {
     if (jarr->ctor == CTOR_JSON_ARRAY_CHUNKED) return static_cast<u32>(jarr->values[1].i);
     return static_cast<ElmArray*>(Allocator::instance().resolve(jarr->values[0].p))->length;
 }
 
+// Appends the `n` ASCII characters at `s` to `out`, one UTF-16 unit each.
 void appendAscii(std::u16string& out, const char* s, size_t n) {
     for (size_t i = 0; i < n; ++i) out.push_back(static_cast<char16_t>(s[i]));
 }
 
 void appendJs(uint64_t bits, std::u16string& out, int depth);
 
+// Appends the elements of the array `v` to `out`, rendered by `appendJs` and joined by commas.
+// `depth` is the nesting depth of `v`; past 256 nothing is appended.
 void appendArray(const View& v, std::u16string& out, int depth) {
-    if (depth > 256) return;   // capped: deeper arrays stringify as ""
+    if (depth > 256) return;
     std::vector<uint64_t> elems;
     arrayElements(v, elems);
     for (size_t i = 0; i < elems.size(); ++i) {
@@ -49,12 +56,13 @@ void appendArray(const View& v, std::u16string& out, int depth) {
     }
 }
 
-// One array element as Array.prototype.join renders it.
+// Appends to `out` the value word `bits` as `Array.prototype.join` renders an element, where `depth`
+// is the nesting depth of the array that holds it.
 void appendJs(uint64_t bits, std::u16string& out, int depth) {
     View v = view(bits);
     switch (v.kind) {
         case Kind::Null:
-            return;   // null and undefined join as ""
+            return;   // join renders null as the empty string
         case Kind::Bool:
             if (v.boolean) appendAscii(out, "true", 4);
             else appendAscii(out, "false", 5);
@@ -88,7 +96,7 @@ View view(uint64_t valueBits) {
             v.kind = Kind::Bool;
             v.boolean = alloc::boolValue(h);
         }
-        return v;   // any other constant is null
+        return v;
     }
     void* ptr = Export::toPtr(valueBits);
     if (!ptr) return v;
@@ -144,7 +152,7 @@ View view(uint64_t valueBits) {
             v.kind = Kind::Object;
             return v;
         default:
-            return v;   // ENC_NULL, CTOR_JSON_NULL and unknown ctors are null
+            return v;
     }
 }
 
@@ -154,7 +162,7 @@ void arrayElements(const View& array, std::vector<uint64_t>& out) {
     if (!ptr || static_cast<Header*>(ptr)->tag != Tag_Custom) return;
     Custom* c = static_cast<Custom*>(ptr);
     if (c->ctor == ENC_ARRAY) {
-        // addEntry prepends, so the list is in reverse JSON order (F2).
+        // `addEntry` prepends, so the list holds the elements in reverse of the order they were added.
         size_t start = out.size();
         for (alloc::ListCursor l(c->values[0].p); !l.done(); l.next())
             out.push_back(Export::encode(l.current().p));

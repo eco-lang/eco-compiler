@@ -1,9 +1,21 @@
 //===- ParserExports.cpp - C-linkage exports for Parser module ------------===//
 //
-// Full implementation mirroring elm/parser's Elm/Kernel/Parser.js.
+// The kernel primitives of elm/parser: the few operations its Elm code cannot do
+// quickly by itself, each of which inspects the source string at an offset.
 //
-// Elm strings are stored as UTF-16 code units (ElmString::chars); offsets are
-// UTF-16 code-unit indices, matching the JS kernel's use of charCodeAt/length.
+// Every offset here, taken or returned, counts UTF-16 code units, so a
+// supplementary character occupies two offsets. A string reaching
+// these functions may be in a UTF-16 form or in one of the all-ASCII UTF-8 forms;
+// ASCII bytes and UTF-16 units coincide, so both are read through one view,
+// `ParserStr`, without copying an ASCII string.
+//
+// Positions are tracked as a row and a column. A newline moves to column 1 of the
+// next row, and any other character, a surrogate pair included, moves one column.
+//
+// Getting a view of a non-ASCII rope or slice may copy it, which allocates and so
+// is a GC point. Each export therefore passes every string through `parserFlatten`
+// first, with any heap value it still needs rooted, and only then takes raw views,
+// which it uses before anything else can allocate.
 //
 //===----------------------------------------------------------------------===//
 
@@ -20,42 +32,38 @@ using namespace Elm::alloc;
 
 namespace {
 
-// Unboxed-kind bitmaps for tuples of Ints (2 bits/slot, 01 = unboxed Int).
-// A (Int, Int) tuple is 0b0101 = 0x5; a (Int, Int, Int) tuple is 0b010101 = 0x15.
+// The unboxed-field mask of a tuple whose two fields are both unboxed Ints. A mask
+// has 2 bits per field, 01 meaning an unboxed Int, so this is 0b0101.
 constexpr u32 TUPLE2_INT_INT       = 0x5;
+// The unboxed-field mask of a tuple whose three fields are all unboxed Ints (0b010101).
 constexpr u32 TUPLE3_INT_INT_INT   = 0x15;
 
-// Resolves an HPtr-encoded string into a ParserStr the hot loops can index via
-// at(i). A UTF-8 (all-ASCII) source exposes its bytes directly — no allocation,
-// no transcode — so repeated primitive calls over a decoded UTF-8 source stay
-// linear. Any other form (UTF-16 leaf / slice / rope / large-header) is
-// flattened once per call to a u16 leaf (HEAP_026: ensureFlat may return a
-// Tag_LargeStringHeader, resolved through `body`), exactly as before. The
-// empty-string constant yields an empty ParserStr.
-// A resolved parser string: either a UTF-16 payload (`wide`) or a UTF-8/ASCII
-// byte payload (`narrow`). A UTF-8 (all-ASCII) source exposes its bytes
-// directly — no flatten, no transcode, no allocation per primitive call —
-// which keeps parsing a decoded UTF-8 source linear rather than O(n^2) (each
-// primitive would otherwise re-widen the whole source via ensureFlat). UTF-16 /
-// rope / slice sources flatten to a leaf once per call as before. `at(i)`
-// widens an ASCII byte to a u16 unit; ASCII has no surrogates, so the surrogate
-// branches in the loops below are simply never taken.
+// A read-only view of a string as a run of `len` UTF-16 code units.
+//
+// The units are either UTF-16 (`wide`) or ASCII bytes (`narrow`), and `at` widens
+// a byte to the unit it equals. Reading an ASCII string's bytes in place means a
+// parse over it does not copy the whole source at every primitive call. A view
+// with both pointers null is empty. It does not own what it points at, which
+// stays valid only until the next allocation. `at` does no bounds check.
 struct ParserStr {
     const u16* wide = nullptr;
     const u8* narrow = nullptr;
     int64_t len = 0;
+    // Returns the unit at index `i`, which must be in [0, len).
     u16 at(int64_t i) const {
         return wide ? wide[i] : static_cast<u16>(narrow[i]);
     }
+    // Returns whether either pointer is non-null. A default (empty-constant) view has
+    // neither; a zero-length view of a heap string may still be valid.
     bool valid() const { return wide != nullptr || narrow != nullptr; }
 };
 
-// Flatten `hp` (if needed) to a form whose payload can be indexed without
-// further allocation. UTF-8 (ASCII) and already-flat forms pass through;
-// UTF-16 rope/slice sources flatten to a leaf via ensureFlat — which
-// ALLOCATES and is therefore a GC point. Callers holding raw payload
-// pointers (or unrooted HPointers/closures) across this call must root or
-// re-derive them.
+// Prepares `hp` for `parserView`. An embedded constant, which here is the empty
+// string, and a UTF-8 form are returned as they are; anything else goes through
+// `StringOps::ensureFlat`, which leaves a slice or rope above `string_flatten_limit`
+// unchanged, and `parserView` cannot read that. `ensureFlat` may allocate, so this
+// is a GC point: a raw pointer or unrooted heap value held across it must be
+// re-derived afterwards.
 inline HPointer parserFlatten(HPointer hp) {
     if (alloc::isEmbeddedConstant(hp)) return hp;  // empty string
     void* obj = Allocator::instance().resolve(hp);
@@ -63,14 +71,12 @@ inline HPointer parserFlatten(HPointer hp) {
     return StringOps::ensureFlat(hp);
 }
 
-// Derive the raw payload view from an already-flattened string. Performs no
-// allocation; the returned raw pointers stay valid only until the next GC
-// point.
+// Returns a view of `hp`, which must be an embedded constant (giving an empty view),
+// a UTF-8 form, a UTF-16 leaf or a large String. Does not allocate.
 inline ParserStr parserView(HPointer hp) {
     if (alloc::isEmbeddedConstant(hp)) return {};  // empty string
     void* obj = Allocator::instance().resolve(hp);
     if (obj && StringOps::isUtf8(obj)) {
-        // UTF-8 (ASCII): index the bytes directly, no transcode.
         auto pr = StringOps::utf8Bytes(obj);
         return ParserStr{nullptr, pr.first, static_cast<int64_t>(pr.second)};
     }
@@ -78,6 +84,8 @@ inline ParserStr parserView(HPointer hp) {
     return ParserStr{s.chars, nullptr, static_cast<int64_t>(s.length)};
 }
 
+// Returns a view of the string `str`, passed through `parserFlatten` first, so
+// this is a GC point.
 inline ParserStr resolveString(HPtr str) {
     HPointer hp;
     uint64_t bits = str.toBits();
@@ -85,14 +93,17 @@ inline ParserStr resolveString(HPtr str) {
     return parserView(parserFlatten(hp));
 }
 
+// Returns the length of `s` in UTF-16 units.
 inline int64_t stringLen(const ParserStr& s) { return s.len; }
 
+// Returns whether `c` is in 0xD800-0xDFFF, a high or a low surrogate.
 inline bool isHighSurrogate(u16 c) {
     return (c & 0xF800) == 0xD800;
 }
 
-// Walks offset..target updating row/col, skipping the low surrogate of any
-// surrogate pair. Matches the inner loop of the JS kernel's findSubString.
+// Moves `offset` up to `target`, updating `row` and `col` for each character passed.
+// After a unit `isHighSurrogate` accepts, the next unit, if before `target`, is
+// passed without counting a column of its own.
 inline void advancePosition(const ParserStr& s, int64_t& offset, int64_t target,
                             int64_t& row, int64_t& col) {
     while (offset < target) {
@@ -109,13 +120,13 @@ inline void advancePosition(const ParserStr& s, int64_t& offset, int64_t target,
     }
 }
 
-// Builds a (Int, Int) tuple on the heap with both fields unboxed.
+// Returns a new `(a, b)` tuple with both fields unboxed. Allocates.
 inline HPtr intIntTuple(int64_t a, int64_t b) {
     return HPtr::fromBits(Export::encode(
         tuple2(unboxedInt(a), unboxedInt(b), TUPLE2_INT_INT)));
 }
 
-// Builds a (Int, Int, Int) tuple on the heap with all fields unboxed.
+// Returns a new `(a, b, c)` tuple with all fields unboxed. Allocates.
 inline HPtr intIntIntTuple(int64_t a, int64_t b, int64_t c) {
     return HPtr::fromBits(Export::encode(
         tuple3(unboxedInt(a), unboxedInt(b), unboxedInt(c), TUPLE3_INT_INT_INT)));
@@ -125,7 +136,8 @@ inline HPtr intIntIntTuple(int64_t a, int64_t b, int64_t c) {
 
 extern "C" {
 
-// isAsciiCode code offset src == (src.charCodeAt(offset) === code)
+// Returns True when `offset` is inside `str` and the unit there equals `code`, and
+// False otherwise, as a boxed Bool.
 HPtr Elm_Kernel_Parser_isAsciiCode(int64_t code, int64_t offset, HPtr str) {
     ParserStr s = resolveString(str);
     i64 len = stringLen(s);
@@ -133,17 +145,13 @@ HPtr Elm_Kernel_Parser_isAsciiCode(int64_t code, int64_t offset, HPtr str) {
     return HPtr::fromBits(Export::encodeBoxedBool(result));
 }
 
-// isSubChar predicate offset src
-//   returns  offset+advance  if predicate matches,
-//            -2              if predicate matches and the char is '\n',
-//            -1              otherwise (including end-of-string).
-//
-// Supplementary chars (surrogate pairs) advance offset by 2 when matched.
+// Applies the Char predicate `closure` to the character at `offset` in `str`.
+// Returns -1 when `offset` is outside the string or the predicate gives False, -2
+// when it accepts a newline, and otherwise the offset after the character: 2 units
+// on for a surrogate pair, 1 for any other unit.
 int64_t Elm_Kernel_Parser_isSubChar(HPtr closure, int64_t offset, HPtr str) {
-    // Root the predicate closure across resolveString: flattening a rope/
-    // slice source allocates (GC point), which would leave the by-value
-    // closure bits stale when the predicate is applied below (mirrors
-    // Elm_Kernel_String_map's closure rooting).
+    // The closure is rooted because resolveString can collect, which would leave
+    // the closure's bits stale.
     HPointer closureHP = Export::decode(closure.toBits());
     Elm::StackRootGuard closureRoot(&closureHP);
 
@@ -153,9 +161,8 @@ int64_t Elm_Kernel_Parser_isSubChar(HPtr closure, int64_t offset, HPtr str) {
         return -1;
     }
 
-    // Load the char(s) at offset: a valid surrogate pair is one Char (its full
-    // code point, as elm/parser's JS passes the two-unit string) and advances
-    // offset by 2; a lone surrogate is a Char of its own unit value.
+    // A surrogate followed by a low surrogate is decoded as one code point. Any
+    // other unit is passed as a Char of its own value.
     u16 c0 = s.at(offset);
     i64 advance = 1;
     u32 codePoint = c0;
@@ -167,11 +174,9 @@ int64_t Elm_Kernel_Parser_isSubChar(HPtr closure, int64_t offset, HPtr str) {
         }
     }
 
-    // Invoke the predicate closure with the Char passed as an unboxed 32-bit
-    // code point (PK_Char). Use `eco_apply_closure_typed` (PAP-aware) so a curried
-    // or partially-applied predicate is handled correctly — the strict-
-    // arity entries assume the closure is exactly saturated by these
-    // newargs, which isn't a contract user code is bound by.
+    // The Char goes unboxed (PK_Char). eco_apply_closure_typed handles a closure
+    // of any arity, which a user's predicate may have. It may collect, so `s` is
+    // not read after it.
     static constexpr auto kLayoutChar1 = Elm::makeEvalParamLayout<1>(0, {3});
     const auto* layout = Elm::asLayout(&kLayoutChar1);
     int64_t args[1] = { static_cast<int64_t>(codePoint) };
@@ -181,23 +186,22 @@ int64_t Elm_Kernel_Parser_isSubChar(HPtr closure, int64_t offset, HPtr str) {
         return -1;
     }
 
-    // '\n' is reported specially so callers can update row/col.
     if (codePoint == '\n') {
         return -2;
     }
     return offset + advance;
 }
 
-// isSubString small offset row col big
-//   If `big` contains `small` starting at `offset`, returns (offset+len, row', col')
-//   where row'/col' reflect the position after the match. Otherwise returns
-//   (-1, row', col') with row'/col' advanced up to the first mismatch.
+// Tests whether `str` holds `target` starting at `offset`, where the position is
+// `row` and `col`. Returns `(offset', row', col')`: on a match, `offset'` is the end
+// of the match and `row'`/`col'` the position there. Otherwise `offset'` is -1. If
+// `offset` is negative or `target` does not fit between `offset` and the end, `row`
+// and `col` come back unchanged; otherwise they have been advanced over the units
+// that matched before the first that did not.
 HPtr Elm_Kernel_Parser_isSubString(HPtr target, int64_t offset, int64_t row,
                                    int64_t col, HPtr str) {
-    // Flatten both strings BEFORE deriving any raw payload pointers: either
-    // flatten can allocate (GC point), which would invalidate a raw pointer
-    // derived earlier. Both HPointers are rooted so each survives the
-    // other's flatten; the views below perform no allocation.
+    // Both strings are passed through `parserFlatten` before either view is taken,
+    // because either flatten can collect. Both are rooted so each survives the other's flatten.
     HPointer targetHP = Export::decode(target.toBits());
     HPointer strHP = Export::decode(str.toBits());
     Elm::StackRootGuard guard(&targetHP, &strHP);
@@ -220,8 +224,7 @@ HPtr Elm_Kernel_Parser_isSubString(HPtr target, int64_t offset, int64_t row,
             col = 1;
         } else {
             col++;
-            // For a surrogate pair, consume the paired low surrogate from both
-            // strings and advance i/offset by one more. Matches JS semantics.
+            // The unit after a surrogate is compared too, without a column of its own.
             if (isHighSurrogate(code) && i < smallLen) {
                 isGood = (small.at(i++) == big.at(offset++));
             }
@@ -232,15 +235,16 @@ HPtr Elm_Kernel_Parser_isSubString(HPtr target, int64_t offset, int64_t row,
     return intIntIntTuple(resultOffset, row, col);
 }
 
-// findSubString small offset row col big
-//   Returns (index, row', col') where `index` is the position of the first
-//   occurrence of `small` in `big` at or after `offset`, or -1 if missing.
-//   row'/col' end up at the position *after* the match (or at end-of-string
-//   when not found) — mirrors JS, which advances through [offset, target).
+// Searches `str` for `target` from `offset`, where the position is `row` and `col`.
+// Returns `(index, row', col')`: `index` is where the first occurrence at or after a
+// non-negative `offset` starts, or -1 if there is none, and `row'`/`col'` are the
+// position after that occurrence, or at the end of `str` when there is none. An
+// empty `target` is found at `offset` itself when `offset` is at most the length.
+// A negative `offset`, or one past the end, leaves `row` and `col` unchanged.
 HPtr Elm_Kernel_Parser_findSubString(HPtr target, int64_t offset, int64_t row,
                                      int64_t col, HPtr str) {
-    // Same discipline as isSubString: flatten both (GC points) before
-    // deriving raw payload pointers.
+    // As in isSubString, both strings are passed through `parserFlatten` before either
+    // view is taken.
     HPointer targetHP = Export::decode(target.toBits());
     HPointer strHP = Export::decode(str.toBits());
     Elm::StackRootGuard guard(&targetHP, &strHP);
@@ -251,8 +255,7 @@ HPtr Elm_Kernel_Parser_findSubString(HPtr target, int64_t offset, int64_t row,
     i64 smallLen = stringLen(small);
     i64 bigLen = stringLen(big);
 
-    // indexOf(smallString, offset): naive scan is sufficient here — the JS
-    // kernel delegates to String.prototype.indexOf, which is also linear.
+    // A naive scan, which can take time proportional to the product of the lengths.
     i64 index = -1;
     if (smallLen == 0) {
         index = (offset <= bigLen) ? offset : -1;
@@ -280,7 +283,9 @@ HPtr Elm_Kernel_Parser_findSubString(HPtr target, int64_t offset, int64_t row,
     return intIntIntTuple(index, row, col);
 }
 
-// chompBase10 offset src — advance past any run of ASCII '0'-'9', return new offset.
+// Returns the offset after the run of ASCII digits '0'-'9' in `str` that starts at
+// `offset`, or `offset` itself when there is none. `offset` must be non-negative;
+// it is not checked.
 int64_t Elm_Kernel_Parser_chompBase10(int64_t offset, HPtr str) {
     ParserStr s = resolveString(str);
     i64 len = stringLen(s);
@@ -294,8 +299,11 @@ int64_t Elm_Kernel_Parser_chompBase10(int64_t offset, HPtr str) {
     return offset;
 }
 
-// consumeBase base offset src — parse a run of base-N digits ('0'..base-1),
-// return (newOffset, accumulatedValue). Assumes base in [2, 10].
+// Reads the run of digits in base `base` starting at `offset` in `str`, and returns
+// `(offset', value)`: the offset after the run and the number it spells, 0 for an
+// empty run. A digit is a unit whose value minus '0' is below `base`, so only a base
+// from 2 to 10 reads the usual digits. `offset` must be non-negative and the value
+// must fit in a 64-bit Int; neither is checked.
 HPtr Elm_Kernel_Parser_consumeBase(int64_t base, int64_t offset, HPtr str) {
     ParserStr s = resolveString(str);
     i64 len = stringLen(s);
@@ -311,8 +319,9 @@ HPtr Elm_Kernel_Parser_consumeBase(int64_t base, int64_t offset, HPtr str) {
     return intIntTuple(offset, total);
 }
 
-// consumeBase16 offset src — parse a run of hex digits (0-9, A-F, a-f),
-// return (newOffset, accumulatedValue).
+// Reads the run of hexadecimal digits (0-9, A-F, a-f) starting at `offset` in `str`,
+// and returns `(offset', value)` as consumeBase does, with the same unchecked
+// requirements on `offset` and the value.
 HPtr Elm_Kernel_Parser_consumeBase16(int64_t offset, HPtr str) {
     ParserStr s = resolveString(str);
     i64 len = stringLen(s);

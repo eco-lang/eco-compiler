@@ -1,24 +1,15 @@
 //===- UdpManager.cpp - The C++ effect manager of Socket.Udp --------------===//
 //
-// plans/eco-system-sockets.md §3.5, base plan Appendix C.0 / sockets plan
-// C.2. Layout: UdpManager.hpp.
+// The manager's state is one `ManagerState` entry in a `Registry`, which keeps the router and the taggers as encoded
+// words the collector updates, and empties itself on a heap reset; `state()` then makes a fresh entry.
 //
-//   * onEffects: the OnMessage taggers are grouped by socket id (encoded
-//     words in a T5 registry, with the router). Subscriptions hold no
-//     pendingAsync: a bound socket already does (§3.3.8).
-//   * subMap composes the tagger (TimeEffectManager pattern) and keeps the
-//     unboxed socket id (mask 0x1). There are no commands.
-//     After the update the UDP table is synchronised (Udp.cpp): a socket
-//     whose tagger list became non-empty gets setUnlimited(true) and its
-//     held FIFO is delivered (from the socket drain, never from inside
-//     onEffects); one whose list became empty gets setUnlimited(false).
-//   * Delivery (T8, §3.4): udpManagerDeliver builds nothing itself: the
-//     DgramT is built once by the caller (rooted); the taggers are
-//     snapshotted into one rooted range, and for each: call it, sendToApp,
-//     drain() (G11, G12). Every subscriber gets the same Datagram.
-//   * Windows: an OnMessage subscription crashes with a clear message (§1).
+// onEffects copies the subscriptions out of the list without allocating, replaces the state with them, and then
+// calls `udpTablesSyncSubscriptions` so that each socket's receiving and hold follow the new subscriptions. It calls
+// no tagger: datagrams held while a socket had no subscriber are delivered later, from the socket event drain.
 //
-// Templates used: T6 (rooted registration per G14), T5, T8/G12.
+// Delivery copies a socket's taggers into a vector rooted as a stack-root range before calling any of them, since
+// sending a message to the application and running the scheduler may lead to onEffects replacing the state. Every
+// tagger receives the same DgramT value.
 //
 //===----------------------------------------------------------------------===//
 
@@ -38,10 +29,12 @@ namespace {
 
 using namespace UdpManager;
 
+/// The manager's state: the router of the last update and the taggers of its subscriptions.
 struct ManagerState {
     uint64_t routerEnc = 0;
-    std::map<int64_t, std::vector<uint64_t>> taggers;   // socket id → encoded taggers
+    std::map<int64_t, std::vector<uint64_t>> taggers;   ///< Encoded taggers by socket id, in subscription order.
 
+    /// Calls `f` on the router word and every tagger word, for the registry's scanner.
     template <typename F>
     void forEachWord(F&& f) {
         f(routerEnc);
@@ -50,12 +43,14 @@ struct ManagerState {
     }
 };
 
+/// Returns the registry holding the manager's state, created on first use and never deleted.
 Registry<ManagerState>& registry() {
     static auto* r = new Registry<ManagerState>("eco-system-socket-udp-manager");   // leaky
     return *r;
 }
 
-// The single state entry (re-created after a heap reset, F24).
+/// Returns the manager's state entry, making a new, empty one when there is none, as after a heap reset. The
+/// reference is valid until the registry next discards its entries on a heap reset.
 ManagerState& state() {
     static int64_t id = 0;
     auto& r = registry();
@@ -64,20 +59,23 @@ ManagerState& state() {
     return *r.find(id);
 }
 
-// --- Manager closures (C.0) ------------------------------------------------------
+// --- Manager closures ------------------------------------------------------------
 
-// init : Task Never ()  (a 0-arity thunk, forced by setupEffects)
+/// Evaluates `init : Task Never ()`, a closure of no arguments: returns a Task that succeeds with unit.
 void* initEval(void*[]) {
     return reinterpret_cast<void*>(enc(Scheduler::instance().taskSucceed(alloc::unit())));
 }
 
-// onEffects : Router -> List (MyCmd msg) -> List (MySub msg) -> () -> Task Never ()
+/// Evaluates `onEffects : Router -> List (MyCmd msg) -> List (MySub msg) -> () -> Task Never ()`: replaces the
+/// router and the taggers with those of `args[0]` and `args[2]`, brings the UDP sockets in line with them, and returns
+/// a Task that succeeds with unit. List elements for which `resolve` returns null, or with another constructor, are
+/// skipped.
 void* onEffectsEval(void* args[]) {
     HPointer router = dec(args[0]);
     HPointer subs = dec(args[2]);
     Elm::StackRootGuard g(&router, &subs);
 
-    // A non-allocating walk (G5): copy every field out.
+    // Nothing allocates during the walk, so the raw `sub` pointers stay valid.
     std::map<int64_t, std::vector<uint64_t>> wanted;
     for (alloc::ListCursor c(subs); !c.done(); c.next()) {
         void* obj = Allocator::instance().resolve(c.current().p);
@@ -89,7 +87,7 @@ void* onEffectsEval(void* args[]) {
     }
 
 #if defined(_WIN32)
-    // A Sub is infallible: crash with a clear message (§1).
+    // A Sub cannot fail, so an unsupported one is fatal.
     if (!wanted.empty())
         ::Eco::Kernel::reportFatal("eco/system: Socket.Udp.onMessage is not supported on Windows yet");
 #endif
@@ -100,32 +98,32 @@ void* onEffectsEval(void* args[]) {
         st.routerEnc = enc(router);
         st.taggers = std::move(wanted);
     }
-    // §3.4: socket demand follows the subscriptions; held datagrams are
-    // delivered from the socket drain (no Elm calls from here).
     ensureUdpTables();
     udpTablesSyncSubscriptions();
 
     return reinterpret_cast<void*>(enc(Scheduler::instance().taskSucceed(alloc::unit())));
 }
 
-// onSelfMsg : Router -> Never -> () -> Task Never ()  (never sent)
+/// Evaluates `onSelfMsg : Router -> Never -> () -> Task Never ()`: returns a Task that succeeds with the state
+/// `args[2]`. No self message is ever sent.
 void* onSelfMsgEval(void* args[]) {
     return reinterpret_cast<void*>(enc(Scheduler::instance().taskSucceed(dec(args[2]))));
 }
 
-// The composed tagger of subMap: args[0] = f, args[1] = old tagger,
-// args[2] = the DgramT tuple. Result: f (old datagram).
+/// Evaluates the tagger `subMap` builds, whose captures are `f` in `args[0]` and the original tagger in `args[1]`:
+/// returns `f (old args[2])` for the DgramT in `args[2]`.
 void* composedTaggerEval(void* args[]) {
     HPointer f = dec(args[0]);
     HPointer old = dec(args[1]);
     HPointer x = dec(args[2]);
     HPointer mid = alloc::listNil();
     Elm::StackRootGuard g({&f, &old, &x, &mid});
-    mid = Scheduler::callClosure1(old, x);   // Elm call (G11)
+    mid = Scheduler::callClosure1(old, x);
     return reinterpret_cast<void*>(enc(Scheduler::callClosure1(f, mid)));
 }
 
-// subMap : (a -> b) -> MySub a -> MySub b — compose the tagger, keep the id.
+/// Evaluates `subMap : (a -> b) -> MySub a -> MySub b`: returns a new `OnMessage` with the same socket id whose
+/// tagger applies `args[0]` after the old one. A value that is not an `OnMessage` heap object is returned unchanged.
 void* subMapEval(void* args[]) {
     HPointer f = dec(args[0]);
     HPointer sub = dec(args[1]);
@@ -141,7 +139,7 @@ void* subMapEval(void* args[]) {
     }
     composed = alloc::allocClosure(&composedTaggerEval, 3);
     {
-        // Both captures right after the allocation, nothing allocated in between (G8).
+        // `p` is raw, so both captures follow the allocation with nothing allocated in between.
         void* p = Allocator::instance().resolve(composed);
         alloc::closureCapture(p, alloc::boxed(f), PK_Boxed);
         alloc::closureCapture(p, alloc::boxed(old), PK_Boxed);
@@ -164,8 +162,8 @@ void udpManagerDeliver(int64_t socketId, HPointer& dgramT) {
     HPointer router = alloc::listNil();
     HPointer msg = alloc::listNil();
     Elm::StackRootGuard g(&router, &msg);
-    // Snapshot the taggers: update may change the subscriptions while we
-    // deliver (G11). No allocation from the decodes to the range push.
+    // Sending a message and running the scheduler may replace the taggers, so deliver from a rooted copy. Nothing
+    // allocates from the decodes to the range push.
     ManagerState& st = state();
     const std::vector<uint64_t>& words = st.taggers[socketId];
     std::vector<HPointer> taggers;
@@ -176,9 +174,9 @@ void udpManagerDeliver(int64_t socketId, HPointer& dgramT) {
     size_t saved = rs.stackRangePoint();
     rs.pushStackRootRange(taggers.data(), taggers.size(), ~0ULL);
     for (size_t i = 0; i < taggers.size(); ++i) {
-        msg = Scheduler::callClosure1(taggers[i], dgramT);   // Elm call (G11)
+        msg = Scheduler::callClosure1(taggers[i], dgramT);
         PlatformRuntime::instance().sendToApp(router, msg);
-        Scheduler::instance().drain();                       // once per message (G12)
+        Scheduler::instance().drain();
     }
     rs.restoreStackRangePoint(saved);
 }
@@ -189,8 +187,8 @@ using namespace Eco::System;
 
 namespace {
 
-// Allocates the manager closures in the rooted PortRuntime form (G14) and
-// registers them under "Socket.Udp". Subscriptions only: no cmdMap.
+/// Allocates the manager's closures, rooted until they are encoded, and registers them under "Socket.Udp". There
+/// are no commands, so the `cmdMap` slot holds the Nil constant rather than a closure.
 void registerUdpManager() {
     HPointer initCl = alloc::listNil();
     HPointer effCl = alloc::listNil();

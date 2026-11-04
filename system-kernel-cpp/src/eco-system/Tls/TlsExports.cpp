@@ -1,16 +1,9 @@
 //===- TlsExports.cpp - C exports of Eco.Kernel.Tls -----------------------===//
 //
-// plans/eco-system-sockets.md §3.6 and Appendix B.3. The ABI follows the
-// Elm annotations of the wrappers in Socket/Tls.elm (base plan F7): Int →
-// int64_t, tuples → an encoded uint64_t.
-//
-// Exports only decode, root and pack their arguments and return a binding
-// (G2); the bodies are in Tls.cpp. Payload layouts (F5 masks):
-//   connect, listen   tuple3( boxed target, boxed settings, boxed tls )   mask 0
-//   info              boxed ElmInt connection id
-// No OpenSSL header is included here, so this file builds on Windows as is.
-//
-// Templates used: T1 (info), T2/T7 (connect, listen).
+// The C exports of `Socket.Tls`. Each takes its arguments as the words of the Elm values in the annotation above
+// it, an Int as `int64_t` and any other value as an encoded `uint64_t`, packs them into a payload and returns a
+// binding of the body in Tls.cpp, which does the work when the Task runs. No OpenSSL header is included here, so
+// this file builds on Windows, where the bodies fail with ENOTSUP.
 //
 //===----------------------------------------------------------------------===//
 
@@ -20,7 +13,7 @@ using namespace Eco::System;
 
 namespace {
 
-// tuple3( boxed a, boxed b, boxed c ), mask 0: every argument rooted across the allocation.
+// Returns `tuple3( a, b, c )` of the decoded words, every slot boxed; each is rooted across the allocation.
 HPointer triplePayload(uint64_t a, uint64_t b, uint64_t c) {
     HPointer aHP = dec(a);
     HPointer bHP = dec(b);
@@ -33,6 +26,7 @@ HPointer triplePayload(uint64_t a, uint64_t b, uint64_t c) {
 
 extern "C" {
 
+// Returns the Task that connects as `tlsConnectBody` describes.
 // connect : ( String, Int, Int ) -> ( Bool, Int ) -> ( String, ( Int, String ), List String )
 //           -> Task FErr ConnT
 uint64_t Eco_Kernel_Tls_connect(uint64_t target, uint64_t settings, uint64_t tls) {
@@ -42,6 +36,7 @@ uint64_t Eco_Kernel_Tls_connect(uint64_t target, uint64_t settings, uint64_t tls
     )
 }
 
+// Returns the Task that listens as `tlsListenBody` describes.
 // listen : ( String, Int ) -> ( Int, Bool ) -> ( String, String, List String ) -> Task FErr ListenT
 uint64_t Eco_Kernel_Tls_listen(uint64_t target, uint64_t settings, uint64_t tls) {
     ECO_KERNEL_GUARD(
@@ -50,6 +45,7 @@ uint64_t Eco_Kernel_Tls_listen(uint64_t target, uint64_t settings, uint64_t tls)
     )
 }
 
+// Returns the Task that reports connection `connId`'s TLS details as `tlsInfoBody` describes.
 // info : Int -> Task FErr InfoT
 uint64_t Eco_Kernel_Tls_info(int64_t connId) {
     ECO_KERNEL_GUARD(

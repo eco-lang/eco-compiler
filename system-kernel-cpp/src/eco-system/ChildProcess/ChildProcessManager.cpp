@@ -1,34 +1,18 @@
 //===- ChildProcessManager.cpp - The C++ effect manager of ChildProcess -===//
 //
-// plans/eco-system-library.md §3.6, Appendix C.0 / C.3 and Phase 5 step
-// 5.2 ("spawn manager"). Layout: ChildProcessManager.hpp.
-//
-// For each `Spawn spec onInit onExit` command, in onEffects:
-//   1. spawn the child per its connection (Integrated: inherit 0–2;
-//      External: three pipes, handed to Elm as FdSink(stdin) and
-//      FdSource(stdout, stderr) via the Stream C++ API; Ignored: /dev/null;
-//      Detached: /dev/null plus a new session, and no liveness hold);
-//      register its job (router + onExit tagger, encoded, in the T5 job
-//      table) and watch it (WaitService lane EcoSystem, runDuration timer);
-//   2. create the Elm process that stands for the child:
-//      rawSpawn(makeAsyncBinding<childBody>(jobId)). Its binding parks until
-//      the child exits; its kill handle (T7) SIGTERMs the child and returns
-//      false from the CancelFn, so the exit drain still releases. The
-//      rawSpawn result stays ROOTED until it is delivered (G13);
-//   3. Scheduler::drain(), so the binding steps and installs its kill
-//      handle before Elm can see the Process.Id (review R1.20);
-//   4. onInit ( processId, Just ( stdinId, stdoutId, stderrId ) | Nothing );
-//   5. sendToApp + drain() (G12).
-//   6. On exit (ChildProcess.cpp completeSpawn): resume the Elm process, then
-//      onExit ( exitCode, signal ) + sendToApp + drain().
-// A spawn that fails still delivers onInit (a finished process; External
-// gets stream ids 0, which read as closed and fail writes), then onExit
-// ( -errno, 0 ), like gren's `error` event (node errno codes are negative).
-//
-// cmdMap composes both taggers (TimeEffectManager composition pattern).
-// There are no subscriptions.
-//
-// Templates used: T6 (manager, rooted registration per G14), T7, T8, G13.
+// Each `Spawn` is carried out in five steps, by `handleSpawn`, on the eco thread:
+//   1. Start the child. For an External connection, wrap its three pipe ends in streams that own them. Insert a
+//      spawn job in the `childJobs()` table, with the router and the onExit tagger as encoded words, and, unless
+//      the connection is Detached, a Task hold. Ask for the child's exit to be reported, and arm its runDuration
+//      timer if it has one.
+//   2. Create the Elm process that stands for the child, running `childBody`, and keep it rooted until it has been
+//      handed to onInit.
+//   3. Run the scheduler, so that `childBody` parks and installs its kill handle before the program can see the
+//      process's id and kill it.
+//   4. Apply onInit and send the result to the program, then run the scheduler again.
+//   5. If the child could not be started, apply onExit to `( -errno, 0 )` and send that too.
+// The rest of a child's life belongs to its job: when the child exits, `ChildProcess.cpp` resumes the Elm process,
+// sends the onExit message and releases the job's hold, if it has one.
 //
 //===----------------------------------------------------------------------===//
 
@@ -47,15 +31,16 @@ using namespace ChildProcessManager;
 
 // --- The Elm process that stands for a spawned child ------------------------
 
-// makeAsyncBinding body; payload = the job id (a boxed Int). Parks until the
-// child exits (completeSpawn resumes it); the kill handle SIGTERMs the child.
+// Runs the Elm process that stands for a spawned child: the `makeAsyncBinding` body whose `captured` is the job id,
+// a boxed Int. It parks `resume` under a new token, records the token in the job, and returns a kill handle that
+// kills the job as `cancelSpawnByToken` does. If there is no such job, as when the spawn failed, it completes at
+// once with `()`. The parked token acquires no hold, since the job holds the program alive.
 HPointer childBody(HPointer captured, HPointer resume) {
     uint64_t token = 0;
-    bool counted = false;   // the job holds the child's hold, not this task
+    bool counted = false;
     ECO_SYSTEM_ASYNC_GUARD(Never, resume, token, counted,
         int64_t jobId = static_cast<ElmInt*>(Allocator::instance().resolve(captured))->value;
         if (!childJobs().find(jobId)) {
-            // Spawn failed, or the child is already gone: finish now.
             HPointer task = succeedUnit();
             Elm::StackRootGuard g(&task);
             Scheduler::callClosure1(resume, task);
@@ -69,13 +54,15 @@ HPointer childBody(HPointer captured, HPointer resume) {
 
 // --- Spawning ------------------------------------------------------------------
 
+// A `Spawn` command's spec, copied out of the heap. `connection` is the connection kind as Elm sent it, normally
+// one of the `CONN_*` values.
 struct SpawnCmd {
     SpawnSpec spec;
     int64_t runDurationMs = 0;
     int64_t connection = CONN_INTEGRATED;
 };
 
-// Copies the spec of a Spawn command out of the heap (G3; no allocation).
+// Copies the spec `specHP` of a `Spawn` command into `out`. It does not allocate on the Elm heap.
 void decodeSpawnSpec(HPointer specHP, SpawnCmd& out) {
     HPointer progHP, optsHP, tripleHP;
     {
@@ -103,6 +90,8 @@ void decodeSpawnSpec(HPointer specHP, SpawnCmd& out) {
     decodeEnv(envHP, out.spec);
 }
 
+// Returns how a child with connection kind `connection` has its stdin, stdout and stderr connected. An unknown kind
+// is treated as Integrated.
 StdioMode stdioFor(int64_t connection) {
     switch (connection) {
         case CONN_EXTERNAL: return StdioMode::Pipes;
@@ -112,11 +101,11 @@ StdioMode stdioFor(int64_t connection) {
     }
 }
 
-// Steps 1–5 for one command. `router`, `onInit`, `onExit` are rooted by the
-// caller and re-read through these references after every allocation.
+// Carries out one `Spawn` command, `cmd`, in the five steps the file comment lists. `router`, `onInit` and
+// `onExit` must be rooted by the caller; they are read through the references after each allocation.
 void handleSpawn(HPointer& router, const SpawnCmd& cmd, HPointer& onInit, HPointer& onExit) {
 #ifdef _WIN32
-    // A Cmd is infallible: crash with a clear message (§1).
+    // A Cmd cannot fail, so an unsupported spawn ends the program.
     ::Eco::Kernel::reportFatal("eco/system: ChildProcess.spawn is not supported on Windows yet");
 #endif
     auto& s = Scheduler::instance();
@@ -124,7 +113,7 @@ void handleSpawn(HPointer& router, const SpawnCmd& cmd, HPointer& onInit, HPoint
     const bool detached = cmd.connection == CONN_DETACHED;
     const bool external = cmd.connection == CONN_EXTERNAL;
 
-    // 1. Spawn (POD) and register the job (encoded words only).
+    // Step 1.
     SpawnedChild ch = spawnChild(cmd.spec, stdioFor(cmd.connection), detached);
     int64_t ids[3] = {0, 0, 0};
     int64_t jobId = 0;
@@ -139,13 +128,12 @@ void handleSpawn(HPointer& router, const SpawnCmd& cmd, HPointer& onInit, HPoint
         job.pid = ch.pid;
         job.routerEnc = enc(router);
         job.onExitEnc = enc(onExit);
-        // Detached does not keep the program alive (E.4, X4).
         if (!detached) job.hold = s.acquireHold(HoldKind::Task, "ChildProcess.spawn");
         jobId = childJobs().insert(std::move(job));
         startJobWatch(jobId, cmd.runDurationMs);   // may allocate (timer closure)
     }
 
-    // 2. The Elm process for the child, rooted until delivered (G13).
+    // Step 2.
     HPointer proc = alloc::listNil();
     HPointer streams = alloc::listNil();
     HPointer arg = alloc::listNil();
@@ -153,10 +141,10 @@ void handleSpawn(HPointer& router, const SpawnCmd& cmd, HPointer& onInit, HPoint
     Elm::StackRootGuard g({&proc, &streams, &arg, &msg});
     proc = s.rawSpawn(makeAsyncBinding<childBody>(alloc::allocInt(jobId)));
 
-    // 3. Step it, so the kill handle is installed before Elm sees the id.
+    // Step 3.
     s.drain();
 
-    // 4. onInit ( processId, Maybe ( stdinId, stdoutId, stderrId ) ).
+    // Step 4.
     if (external) {
         streams = alloc::just(
             alloc::boxed(alloc::tuple3(alloc::unboxedInt(ids[0]), alloc::unboxedInt(ids[1]),
@@ -166,14 +154,13 @@ void handleSpawn(HPointer& router, const SpawnCmd& cmd, HPointer& onInit, HPoint
         streams = alloc::nothing();
     }
     arg = alloc::tuple2(alloc::boxed(proc), alloc::boxed(streams), 0);
-    msg = Scheduler::callClosure1(onInit, arg);   // Elm call (G11)
+    msg = Scheduler::callClosure1(onInit, arg);   // Elm call; may allocate
 
-    // 5. Deliver.
     PlatformRuntime::instance().sendToApp(router, msg);
     s.drain();
 
     if (ch.err != 0) {
-        // No child: report the failure as an exit, as gren's `error` event.
+        // Step 5.
         arg = alloc::tuple2(alloc::unboxedInt(-static_cast<int64_t>(ch.err)),
                             alloc::unboxedInt(0), 0x5);
         msg = Scheduler::callClosure1(onExit, arg);
@@ -182,14 +169,17 @@ void handleSpawn(HPointer& router, const SpawnCmd& cmd, HPointer& onInit, HPoint
     }
 }
 
-// --- Manager closures (C.0) ------------------------------------------------------
+// --- Manager closures ------------------------------------------------------------
 
-// init : Task Never ()  (a 0-arity thunk, forced by setupEffects)
+// Returns the Task `Task.succeed ()`, which gives the manager's initial state `()`; `init : Task Never ()` as a
+// closure of no arguments.
 void* initEval(void*[]) {
     return reinterpret_cast<void*>(enc(Scheduler::instance().taskSucceed(alloc::unit())));
 }
 
-// onEffects : Router -> List (MyCmd msg) -> List (MySub msg) -> () -> Task Never ()
+// Carries out the `Spawn` commands in the list `args[1]` with the router `args[0]`, and returns
+// `Task.succeed ()`. Commands with another constructor are skipped. The four arguments are those of
+// `onEffects : Router -> List (MyCmd msg) -> List (MySub msg) -> () -> Task Never ()`; the last two are not read.
 void* onEffectsEval(void* args[]) {
     HPointer router = dec(args[0]);
     HPointer cmds = dec(args[1]);
@@ -205,7 +195,7 @@ void* onEffectsEval(void* args[]) {
         bool isSpawn = false;
         {
             Custom* cmd = static_cast<Custom*>(Allocator::instance().resolve(head.p));
-            if (cmd && cmd->ctor == CTOR_SPAWN) {   // no allocation in scope (G5)
+            if (cmd && cmd->ctor == CTOR_SPAWN) {   // `cmd` is a raw pointer: nothing in this scope allocates.
                 specHP = cmd->values[SPAWN_SPEC_FIELD].p;
                 onInit = cmd->values[SPAWN_ON_INIT_FIELD].p;
                 onExit = cmd->values[SPAWN_ON_EXIT_FIELD].p;
@@ -214,7 +204,7 @@ void* onEffectsEval(void* args[]) {
         }
         if (isSpawn) {
             SpawnCmd sc;
-            decodeSpawnSpec(specHP, sc);   // copy-out, no allocation
+            decodeSpawnSpec(specHP, sc);
             handleSpawn(router, sc, onInit, onExit);
         }
         c.advance();
@@ -222,23 +212,26 @@ void* onEffectsEval(void* args[]) {
     return reinterpret_cast<void*>(enc(Scheduler::instance().taskSucceed(alloc::unit())));
 }
 
-// onSelfMsg : Router -> Never -> () -> Task Never ()  (never sent)
+// Returns `Task.succeed state`, `state` being `args[2]`; `onSelfMsg : Router -> Never -> () -> Task Never ()`.
+// The manager sends itself no messages.
 void* onSelfMsgEval(void* args[]) {
     return reinterpret_cast<void*>(enc(Scheduler::instance().taskSucceed(dec(args[2]))));
 }
 
-// \x -> f (tagger x): args[0] = f, args[1] = tagger, args[2] = x.
+// Returns `f (tagger x)`, given `f`, `tagger` and `x` as `args[0]`, `args[1]` and `args[2]`; the evaluator of the
+// closures `compose` builds.
 void* composedTaggerEval(void* args[]) {
     HPointer f = dec(args[0]);
     HPointer tagger = dec(args[1]);
     HPointer x = dec(args[2]);
     HPointer inner = alloc::listNil();
     Elm::StackRootGuard g({&f, &tagger, &x, &inner});
-    inner = Scheduler::callClosure1(tagger, x);         // Elm call (G11)
+    inner = Scheduler::callClosure1(tagger, x);         // Elm call; may allocate
     return reinterpret_cast<void*>(enc(Scheduler::callClosure1(f, inner)));
 }
 
-// Allocates `\x -> f (tagger x)`; captures written right after allocation (G8).
+// Returns a new closure `\x -> f (tagger x)`. `f` and `tagger` must be rooted by the caller; they are read after
+// the closure is allocated.
 HPointer compose(HPointer& f, HPointer& tagger) {
     HPointer cl = alloc::allocClosure(&composedTaggerEval, 3);
     void* p = Allocator::instance().resolve(cl);
@@ -247,7 +240,8 @@ HPointer compose(HPointer& f, HPointer& tagger) {
     return cl;
 }
 
-// cmdMap : (a -> b) -> MyCmd a -> MyCmd b — compose both taggers.
+// Returns the `Spawn` command `args[1]` with `f`, `args[0]`, applied after both its onInit and onExit; a command
+// with another constructor is returned as it is. `cmdMap : (a -> b) -> MyCmd a -> MyCmd b`.
 void* cmdMapEval(void* args[]) {
     HPointer f = dec(args[0]);
     HPointer cmd = dec(args[1]);
@@ -278,8 +272,8 @@ using namespace Eco::System;
 
 namespace {
 
-// Allocates the manager closures in the rooted PortRuntime form (G14) and
-// registers them under "ChildProcess". Commands only: no subMap.
+// Registers the manager's closures under "ChildProcess". The closures are rooted while they are allocated and
+// encoded only after the last allocation. subMap is `[]`, since the manager has no subscriptions.
 void registerProcessManager() {
     HPointer initCl = alloc::listNil();
     HPointer effCl = alloc::listNil();

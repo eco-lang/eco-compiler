@@ -1,39 +1,39 @@
 //===- TlsTransport.hpp - The TLS Transport of a connection ---------------===//
 //
-// plans/eco-system-sockets.md §3.6 "Transport", §3.3.3 (Transport), N6, N7.
-// A TlsTransport is a Conn's byte layer for TLS: one SSL over two MEMORY
-// BIOs. The transport itself moves the bytes between the socket and the
-// BIOs (recv, and send with MSG_NOSIGNAL), so OpenSSL never writes to the
-// socket (no SIGPIPE in embed mode, SF10).
+// A connection that speaks TLS needs something between its socket and its protocol that encrypts what is written and
+// decrypts what is read. This component is that layer: the `Transport` (see `Conn.hpp`) a `Conn` uses for TLS.
 //
-//   * handshake(): SSL_do_handshake until done; the output of each step is
-//     sent before waiting for input, so exactly one of wantRead/wantWrite is
-//     set when it returns 1, and it returns 0 only once the final flight is
-//     on the socket. A failure sends what OpenSSL queued (an alert) best
-//     effort and sets errCode per §D.5: a client's rejected certificate →
-//     Node's verification code (CERT_HAS_EXPIRED, ERR_TLS_CERT_ALTNAME_INVALID,
-//     …), a protocol error → ERR_SSL_<REASON>, a peer that went away →
-//     ECONNRESET.
-//   * read(): SSL_read; when OpenSSL needs input, one recv into the read
-//     BIO (bounded: only on demand); a peer's FIN without close_notify is
-//     end of input (SSL_OP_IGNORE_UNEXPECTED_EOF); socket errors keep their
-//     errno name ("read ECONNRESET").
-//   * write(): at most 64 KiB of plaintext per call goes into SSL_write once
-//     the previous records are on the socket; records the socket does not
-//     take at once stay pending (hasPendingWrite) and the Conn flushes them
-//     when writable.
-//   * shutdownWrite(): close_notify (SSL_shutdown), then SHUT_WR once it is
-//     on the socket: 1 while that needs writability (the Conn keeps driving
-//     it through hasPendingWrite/flush, also after a write-face shutdown).
-//     Socket.close / reset never call it (no close_notify, as Node's
-//     destroy()).
-//   * info(): protocol (SSL_get_version), ALPN, cipher (OpenSSL name), read
-//     by the Conn when the handshake ends.
+// One OpenSSL `SSL` object holds the session. It is given two memory BIOs, OpenSSL's in-memory byte queues, instead
+// of the socket: ciphertext received from the peer is written into the *read BIO*, and ciphertext OpenSSL produces is
+// taken from the *write BIO*. The transport moves the bytes between the BIOs and the socket itself, with `recv`, and
+// with `send` passing `kSendFlags`, so OpenSSL never touches the fd. The transport does not own the fd.
 //
-// Reactor thread only (G1). The transport holds the TLS configuration
-// (shared_ptr) so the server's ALPN callback argument outlives its SSL.
+// Most of the transport follows from that arrangement. Any call into OpenSSL may produce output (handshake messages,
+// alerts, a close_notify, an answer to a key update), so the handshake, reads, writes and `flush` first send what
+// was produced and leave what the socket did not take as *pending output*, which `hasPendingWrite` reports and
+// `flush` sends. When OpenSSL needs input, the transport reads one chunk from the socket into the read BIO and
+// retries, until OpenSSL has what it needs or the socket would block.
 //
-// Templates used: none (POD and OpenSSL only, G1).
+//   * The handshake sends each *flight* (the messages one handshake step produces) before waiting for the peer, and
+//     reports completion only once the final flight is on the socket.
+//   * A write takes at most 64 KiB of plaintext per call, and only once earlier output has been sent, so the
+//     pending output stays bounded.
+//   * Ending the write direction queues a close_notify (only after a completed handshake with no failure), then
+//     shuts down the socket's write side once the pending output has been sent, unless the transport is or
+//     becomes broken.
+//   * A failed `send` makes the transport *broken*: what was queued is dropped and nothing more is sent.
+//
+// Failures are reported through `Transport::errCode` and `errMessage`. A client's failed certificate verification
+// gives the code `tlsVerifyCode` returns, with a message naming the host or IP address for a name mismatch. An
+// OpenSSL protocol error (`SSL_ERROR_SSL` with a queued error) gives the code `tlsErrorCode` returns. A failed
+// handshake with neither gives ECONNRESET and the message "Client network socket disconnected before secure TLS
+// connection was established" when no error was recorded before, and a later failure with neither gives
+// ECONNRESET. A failed `recv`, `send` or `shutdown` gives the errno's name.
+//
+// A transport is called on the reactor thread, as `Conn` requires of its members; its destructor, which frees the
+// `SSL` object, runs wherever its `Conn` is destroyed. OpenSSL's error queue is per thread, and `handshake`, `read`
+// and `write` clear it before calling into OpenSSL. A working transport keeps the TLS configuration it was made from
+// alive, which a server's ALPN select callback needs (see `TlsServerConfig`).
 //
 //===----------------------------------------------------------------------===//
 
@@ -47,11 +47,21 @@
 
 namespace Eco::System {
 
-// Transport factories for Conn (clients, socketStartConnect) and
-// ListenerHandler (accepted connections, completeListen). They never return
-// null: a TLS object that cannot be created yields a transport whose
-// handshake fails (so a TLS connection never silently falls back to plain).
+/// Returns a factory that makes a client-side TLS transport over the connected fd it is given, using `cfg`.
+///
+/// When `cfg->serverName` is not empty and `cfg->ipLiteral` is false, the transport sends it as SNI (the server name
+/// indication), and, when verifying, the peer's certificate must match it, with no partial wildcards. When
+/// `cfg->ipLiteral` is true it sends no SNI, and, when verifying, the certificate must list that address. An empty
+/// `cfg->serverName` sends no SNI and sets no name check. The client offers `cfg->alpnWire` when it is not empty.
+///
+/// The factory ignores its `isServer` argument. When the `SSL` object cannot be set up, the factory returns a
+/// transport whose handshake fails at once with the first queued OpenSSL error, or `ERR_SSL_UNKNOWN` when none was
+/// queued, so a TLS connection never falls back to plain bytes; it does not return null. On Windows this function
+/// itself returns a null factory.
 TransportFactory makeTlsClientFactory(std::shared_ptr<TlsClientConfig> cfg);
+/// Returns a factory that makes a server-side TLS transport over the accepted fd it is given, using `cfg`. The
+/// factory ignores its `isServer` argument and fails as `makeTlsClientFactory` describes. On Windows this function
+/// itself returns a null factory.
 TransportFactory makeTlsServerFactory(std::shared_ptr<TlsServerConfig> cfg);
 
 } // namespace Eco::System

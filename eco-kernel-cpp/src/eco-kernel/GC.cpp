@@ -1,13 +1,8 @@
 //===- GC.cpp - Eco.GC kernel module implementation -----------------------===//
 //
-// plans/frontend-heap-release.md §4.3 (HEAP_076). `minorGC` / `majorGC` are
-// Task_Bindings (KERNEL_TASK_IO_001): the value is a CAF and the body runs on
-// every scheduler step, on the owning mutator, outside any GC pause. The
-// body collects FIRST and allocates the result string AFTER the collection.
-// `majorGC` is the full release (Allocator::collectMajorAndRelease).
-//
-// The report is returned as a JSON string so no kernel-record layout is
-// involved; Eco/GC.elm decodes it. Nothing may branch on its values (HEAP_076).
+// Each binding body collects first and allocates the result String only after the collection, so no heap value
+// is held across it. The Task's captured value is Unit, which the bodies ignore. The report is passed as a JSON
+// String so that no kernel record layout is involved.
 //
 //===----------------------------------------------------------------------===//
 
@@ -25,8 +20,7 @@ namespace Eco::Kernel::GC {
 
 namespace {
 
-// Keys are the Elm field names of Eco.GC.GCReport (§4.1); `collected` is
-// always 1 natively (a collection always runs).
+// Returns `r` as the JSON object described in `GC.hpp`, or `{"kind":"error"}` if it does not fit the buffer.
 std::string toJson(const Elm::GCReport& r) {
     char buf[1024];
     const int n = std::snprintf(buf, sizeof buf,
@@ -52,16 +46,18 @@ std::string toJson(const Elm::GCReport& r) {
         r.minor_count, r.major_count, r.majors_run,
         r.trim_result);
     if (n < 0 || static_cast<size_t>(n) >= sizeof buf) {
-        return "{\"kind\":\"error\"}";   // Eco/GC.elm decodes this to its zero record
+        return "{\"kind\":\"error\"}";
     }
     return std::string(buf, static_cast<size_t>(n));
 }
 
+// Runs `collectMajorAndRelease` and returns a Task that succeeds with its report. Binding body.
 HPointer majorBody(HPointer /*captured*/) {
     const Elm::GCReport r = Elm::Allocator::instance().collectMajorAndRelease();
-    return succeedString(toJson(r));   // allocated AFTER the collection
+    return succeedString(toJson(r));
 }
 
+// Runs a minor collection and returns a Task that succeeds with its report. Binding body.
 HPointer minorBody(HPointer /*captured*/) {
     const Elm::GCReport r = Elm::Allocator::instance().collectMinor();
     return succeedString(toJson(r));

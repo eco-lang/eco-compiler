@@ -1,23 +1,16 @@
 //===- HttpServerService.hpp - Listening and wire format of Http.Server ---===//
 //
-// plans/eco-system-library.md Phase 7 step 7.2, Appendix E.5, and
-// plans/eco-system-websockets.md §3.4 (phase WS2). What is left of the
-// thread-based service once Http.Server moved onto the IoReactor
-// (Http1.{hpp,cpp}, HttpTables.{hpp,cpp}): POD helpers only, no heap
-// access, no Elm calls, no Debug.log (G1).
+// The parts of the HTTP server that need neither the Elm heap nor the event
+// loop: opening the listening socket, and turning a response into HTTP/1.1
+// bytes.
 //
-//   * listenOn (a SysWorkPool worker, P mode): resolve the host (IPv4
-//     first), socket, SO_REUSEADDR, bind, listen. The fd is O_CLOEXEC and
-//     NON-BLOCKING (it is handed to a ListenerHandler in callback mode); the
-//     result carries the bound port (port 0 picks one). Error texts are
-//     Node's ("listen EADDRINUSE: address already in use 127.0.0.1:8080").
-//   * serializeH1: an HTTP/1.1 response (§3.4 "Responses").
-//   * statusReason: the reason phrase of a status code.
+// Error codes follow Node's `http` module. A listen that fails with an errno
+// gets a "syscall CODE: text address" message whose text is the C library's
+// strerror: for example code "EADDRINUSE" with message
+// "listen EADDRINUSE: Address already in use 127.0.0.1:8080" on glibc.
 //
-// Windows: HttpServerServiceWin32.cpp, whose listenOn fails with ENOTSUP
-// (§1).
-//
-// Templates used: none (POD only, G1).
+// On Windows HttpServerServiceWin32.cpp replaces the implementation: `listenOn`
+// always fails with "ENOTSUP", and the other functions are inert stubs.
 //
 //===----------------------------------------------------------------------===//
 
@@ -31,52 +24,62 @@
 
 namespace Eco::System::HttpSrv {
 
-// The outcome of listenOn. fd >= 0 on success (non-blocking, cloexec);
-// otherwise `code` is the error name ("EADDRINUSE", "ENOTFOUND", ...) and
-// `message` Node-like text.
+/// The outcome of `listenOn`: a listening socket, or the reason there is none.
+/// On success `fd` is a non-blocking, close-on-exec listening descriptor and
+/// `code` is empty; on failure `fd` is -1, `code` is the error name
+/// ("EADDRINUSE", "ENOTFOUND", "ERR_SOCKET_BAD_PORT", ...) and `message` the
+/// Node-style text. `fd` is a plain int: this record does not close it, so the
+/// receiver owns the descriptor.
 struct ListenResult {
     int fd = -1;
-    int64_t boundPort = 0;   // the port actually bound (getsockname)
-    std::string boundAddress;   // the address actually bound, as text (getsockname)
+    int64_t boundPort = 0;   // on success the port bound (the requested one if it can't be read); 0 on failure
+    std::string boundAddress;   // the bound address as text; may be empty
     std::string code;
     std::string message;
 };
 
-// A response (the respond kernel's arguments, copied out of the heap).
+/// A response to serialise: status, header lines in order, and body, all as
+/// plain values.
 struct ResponseData {
     int64_t status = 200;
-    std::vector<std::pair<std::string, std::string>> headers;   // one line each
+    std::vector<std::pair<std::string, std::string>> headers;   // name, value; one line each
     std::string body;
 };
 
-// How serializeH1 frames a response (§3.4).
+/// The facts about the connection and request that change how `serializeH1`
+/// frames a response.
 struct H1Options {
     bool isHead = false;      // the request was HEAD: headers only (Content-Length kept)
     bool keepAlive = false;   // "Connection: keep-alive", else "Connection: close"
 };
 
-// Worker thread (P mode). Blocking: name resolution, socket, bind, listen.
+/// Opens a TCP socket listening on `host` and `port`. An empty `host` means
+/// every local address, and port 0 lets the system pick one. The resolved addresses are
+/// tried IPv4 first, and the first that binds and listens is returned.
+/// Failures: a port outside 0..65535 gives "ERR_SOCKET_BAD_PORT", any
+/// getaddrinfo failure gives "ENOTFOUND", and otherwise the errno name of the
+/// last address's failure ("EADDRNOTAVAIL" if no address was tried). Blocks on
+/// name resolution.
 ListenResult listenOn(const std::string& host, int64_t port);
 
-// The reason phrase of a status code ("OK", "Not Found", ...; "unknown"
-// otherwise, as Node).
+/// Returns the reason phrase of `status` ("OK", "Not Found", ...), or
+/// "unknown" for a code with none. The string is static.
 const char* statusReason(int64_t status);
 
-// Serialises a response, always as "HTTP/1.1":
-//   * a status outside 100..999 is answered 500 (Node throws a RangeError);
-//     a user status 100..199 (a final 1xx, including 101 outside an
-//     upgrade) is answered 500 too (§3.4);
-//   * 204 and 304 get neither body nor Content-Length; every other status
-//     gets Content-Length (HEAD: the length of the body it would have had,
-//     no body);
-//   * user headers named Content-Length, Connection or Transfer-Encoding
-//     are dropped (the server writes its own), as are lines with CR, LF or
-//     NUL and empty names; a Date header is added unless one was given;
-//   * "Connection: keep-alive" or "Connection: close" per `o.keepAlive`.
+/// Returns `r` as the bytes of an HTTP/1.1 response, framed as `o` says:
+///   * a status below 200 or above 999 is sent as 500;
+///   * 204 and 304 get neither body nor Content-Length; every other status
+///     gets Content-Length, and the body unless `o.isHead`;
+///   * headers named Content-Length, Connection or Transfer-Encoding
+///     (any case) are dropped, as are headers with an empty name or a CR, LF
+///     or NUL in the name or value; a Date header is added unless a kept one
+///     is named Date;
+///   * the last header is "Connection: keep-alive" if `o.keepAlive`, else
+///     "Connection: close".
 std::string serializeH1(const ResponseData& r, const H1Options& o);
 
-// True when one of the user's Connection headers lists the token "close"
-// (case-insensitive): the response then closes the connection (§3.4).
+/// Returns true when a header in `headers` named Connection (any case) lists
+/// the token "close" (any case) in its comma-separated value.
 bool headersAskClose(const std::vector<std::pair<std::string, std::string>>& headers);
 
 } // namespace Eco::System::HttpSrv

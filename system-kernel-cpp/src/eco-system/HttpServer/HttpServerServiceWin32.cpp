@@ -1,13 +1,13 @@
 //===- HttpServerServiceWin32.cpp - Windows stub of the HTTP server -------===//
 //
-// plans/eco-system-library.md §1: Windows is out of scope for now.
-// `createServer` fails with "ENOTSUP" (listenOn below), `createServerWith`
-// fails in Socket's tcpListenOn (ENOTSUP), and `onRequest` crashes with a
-// clear message (HttpServerManager.cpp). No server is ever started, so the
-// reactor-side HTTP/1.1 functions (Http1.cpp, which needs llhttp, not built
-// on Windows) are never reached; these stubs only satisfy the linker.
-//
-// Templates used: none (POD only).
+// The HTTP server is not supported on Windows. This file replaces both
+// HttpServerService.cpp and Http1.cpp there (Http1.cpp is not built on
+// Windows). `listenOn` always fails with "ENOTSUP", so this file never opens a
+// listener; the other definitions exist to satisfy the linker and do nothing
+// useful: `statusReason` returns "unknown", `serializeH1` an empty string,
+// `headersAskClose` and `http1Respond` false, and both protocol factories
+// null. `http1ServerClosing` only records the closing flag and deadline, and
+// `nextResponseKey` still hands out increasing keys.
 //
 //===----------------------------------------------------------------------===//
 
@@ -33,7 +33,7 @@ std::string serializeH1(const ResponseData&, const H1Options&) { return std::str
 bool headersAskClose(const std::vector<std::pair<std::string, std::string>>&) { return false; }
 
 std::unique_ptr<ConnProtocol> makeHttp1Protocol(Conn&, const std::shared_ptr<ServerReactorState>&) {
-    return nullptr;   // the listener aborts the connection
+    return nullptr;
 }
 
 std::unique_ptr<ConnProtocol> makeServerProtocol(Conn&, const std::shared_ptr<ServerReactorState>&) {

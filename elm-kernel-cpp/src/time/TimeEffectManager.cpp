@@ -1,10 +1,27 @@
 //===- TimeEffectManager.cpp - Time effect manager implementation ----------===//
 //
-// Manages Time.every subscriptions by chaining one-shot timers via
-// Scheduler::pendingResumes_ + TimerService. All HPointer / GC interaction
-// runs on the main scheduler thread; the TimerService worker thread only
-// ever sees (deadline, uint64_t token) pairs.
-// See plans/time-every-via-scheduler-timerservice.md.
+// The native effect manager for Elm's `Time` module: it is what makes a `Time.every` subscription deliver
+// messages.
+//
+// `Time` has subscriptions and no commands. Each time the application's subscriptions change, `onEffects` is
+// given the current list, and the manager keeps one entry per distinct interval in `g_intervals`: the
+// interval's tagger (the `Posix -> msg` function), the router to send through, and a generation. An interval
+// that stays subscribed keeps its entry, with its tagger and router replaced; one that is dropped is erased.
+//
+// Each entry drives a chain of one-shot timers, one *tick* at a time. A tick is a closure parked with
+// `Scheduler::parkResume`, whose resume token is handed to `TimerService::schedule`. The timer worker thread
+// only ever handles the deadline and the token; when the timer fires, the scheduler runs the tick on the eco
+// thread. The tick builds a `Posix` for the current time, applies the tagger, sends the message with
+// `PlatformRuntime::sendToApp`, and schedules the next tick.
+//
+// A tick knows only its interval and generation. The *generation* is a number given to an entry when it is
+// created; a tick whose interval has no entry, or an entry with another generation, does nothing and ends its
+// chain. When an interval is dropped, its recorded tick is also withdrawn with `withdrawParkedTimer`, which releases
+// its hold on the scheduler.
+//
+// The taggers and routers are heap values held only as encoded words in this C++ map, so a root scanner
+// registered with the allocator updates them when a collection moves them. That scanner takes `g_timerMutex`,
+// which is the rule for the rest of the file: no allocation while holding that mutex.
 //
 //===----------------------------------------------------------------------===//
 
@@ -32,50 +49,49 @@ using namespace Elm::Platform;
 
 namespace {
 
-// Ctor for Time.Every subscription (must match TimeExports.cpp)
+/// Constructor tag of the `Time.every` subscription Custom: field 0 is the interval in milliseconds, field 1 the
+/// tagger. The value must agree with the one `TimeExports.cpp` builds subscriptions with.
 static constexpr u16 CTOR_TIME_EVERY = 0;
 
-// Encode/decode helpers
+/// Returns the bits of `h` as a word, the form in which HPointers cross closure arguments and returns.
 static inline uint64_t encodeHP(HPointer h) {
     union { HPointer hp; uint64_t val; } u;
     u.hp = h;
     return u.val;
 }
 
+/// Returns the HPointer whose bits are `val`; the inverse of `encodeHP`.
 static inline HPointer decodeHP(uint64_t val) {
     union { HPointer hp; uint64_t val; } u;
     u.val = val;
     return u.hp;
 }
 
-// Per-interval state. Lives only on the main scheduler thread.
-//
-// Invariant: ALL accesses to g_intervals (mutation, lookup, scanning) take
-// g_timerMutex. We must NOT hold g_timerMutex across any Allocator call —
-// the GC scanner re-enters this mutex during evacuation, and any allocation
-// can trigger GC. Copy primitives out, drop the lock, then allocate.
+/// The state of one subscribed interval, the value type of `g_intervals`.
+///
+/// Every access to an `IntervalState` in `g_intervals` is made holding `g_timerMutex`, and nothing that may
+/// allocate is called while it is held: the root scanner takes the same mutex, and an allocation may run the
+/// scanner on the same thread. Code copies the words it needs out, releases the mutex, then allocates.
 struct IntervalState {
     double   intervalMs;
-    uint64_t generation;  // bumped on (re)subscription; stale ticks self-cancel
-    uint64_t taggerEnc;   // encoded HPointer to (Posix -> msg) closure
-    uint64_t routerEnc;   // encoded HPointer to Router
-    // Resume token of the interval's scheduled tick (0 = none recorded).
-    // Unsubscribing withdraws it, so a dropped Time.every holds nothing from
-    // that moment (plans/program-liveness-rule.md §5.3, LIVE-5).
+    uint64_t generation;  // The generation a tick must carry to act; fresh when the entry is created.
+    uint64_t taggerEnc;   // Encoded HPointer to the `Posix -> msg` closure.
+    uint64_t routerEnc;   // Encoded HPointer to the manager's router.
+    // Resume token of the most recently scheduled tick, or 0 if none has been recorded. It is withdrawn when the
+    // interval is dropped.
     uint64_t tickToken = 0;
 };
 
+/// Guards `g_intervals`.
 static std::mutex g_timerMutex;
+/// The subscribed intervals, keyed by interval in milliseconds with -0.0 folded to +0.0.
 static std::unordered_map<double, IntervalState> g_intervals;
+/// The next generation to give a new entry; generations start at 1.
 static std::atomic<uint64_t> g_nextGeneration{1};
 
-// Register, exactly once, an external root scanner that walks every live
-// IntervalState and evacuates its taggerEnc / routerEnc fields. The scanner
-// runs on the main thread during GC (which is triggered by allocations).
-//
-// Invariant: no Allocator calls while holding g_timerMutex. If a thread
-// held the mutex across an allocation, GC's scanner would deadlock on the
-// same (non-recursive) mutex on the same thread.
+/// Registers, on the first call in the process, a root scanner named "time-effects" that passes the nonzero
+/// `taggerEnc` and `routerEnc` words of every entry in `g_intervals` to the collector, holding `g_timerMutex`.
+/// Later calls do nothing.
 static void timerRegisterScannerOnce() {
     static std::once_flag flag;
     std::call_once(flag, []() {
@@ -91,17 +107,13 @@ static void timerRegisterScannerOnce() {
     });
 }
 
-// Forward declaration: defined below.
 static void* timerTickEvaluator(void* args[]);
 
-// Schedule a single Time.every tick for (intervalMs, generation).
-// Mirrors sleepBindingBody (ProcessExports.cpp): parkResume →
-// TimerService::schedule. The tick's resume token is recorded in the
-// interval's state if that interval still has this generation, so that
-// unsubscribing can withdraw the tick.
+/// Schedules one tick for the entry of `intervalMs` with generation `generation`, to run `intervalMs`
+/// milliseconds from now. The tick closure captures the interval and generation as a boxed Float and Int; it is
+/// parked with a hold of kind `Task`, and its resume token is passed to `TimerService::schedule`. The token is
+/// recorded as the entry's `tickToken` if the entry still has that generation. Allocates.
 static void scheduleTimerTick(double intervalMs, uint64_t generation) {
-    // Box metadata as Elm values so they're GC-visible and travel through
-    // the closure's captures.
     HPointer intervalHP = allocFloat(intervalMs);
     HPointer genHP      = allocInt(static_cast<i64>(generation));
 
@@ -119,8 +131,7 @@ static void scheduleTimerTick(double intervalMs, uint64_t generation) {
     uint64_t token = sched.parkResume(tickCl, Elm::Platform::HoldKind::Task, "Time.every");
     TimerService::instance().schedule(intervalMs, token);
 
-    // Tick delivery runs on this (eco) thread, so the tick cannot have been
-    // delivered before the token is recorded.
+    // Ticks run on this thread, the eco thread, so this tick cannot have run before its token is recorded.
     std::lock_guard<std::mutex> lock(g_timerMutex);
     auto it = g_intervals.find(intervalMs);
     if (it != g_intervals.end() && it->second.generation == generation) {
@@ -128,12 +139,13 @@ static void scheduleTimerTick(double intervalMs, uint64_t generation) {
     }
 }
 
-// Per-tick evaluator. Runs entirely on the main scheduler thread, fired by
-// Scheduler::processReadyAsync via callClosure1(tickCl, taskSucceed(unit)).
-//
-//   args[0] = intervalHP   (boxed ElmFloat capture)
-//   args[1] = genHP        (boxed ElmInt capture)
-//   args[2] = Task succeed unit  (applied by processReadyAsync; ignored here)
+/// Runs one tick and returns `Task.succeed ()`. `args[0]` and `args[1]` are the boxed interval and generation
+/// captured by `scheduleTimerTick`; `args[2]`, the value the scheduler resumes the closure with, is ignored.
+///
+/// If the captured interval and generation resolve and the interval's entry still has this generation, applies
+/// its tagger to a `Posix` for the current system time in milliseconds, sends the result with
+/// `PlatformRuntime::sendToApp`, and schedules the next tick.
+/// Otherwise it does nothing more, which ends the chain.
 static void* timerTickEvaluator(void* args[]) {
     HPointer intervalHP = decodeHP(reinterpret_cast<uint64_t>(args[0]));
     HPointer genHP      = decodeHP(reinterpret_cast<uint64_t>(args[1]));
@@ -149,9 +161,8 @@ static void* timerTickEvaluator(void* args[]) {
     double   intervalMs = static_cast<ElmFloat*>(intervalPtr)->value;
     uint64_t generation = static_cast<uint64_t>(
                               static_cast<ElmInt*>(genPtr)->value);
-    if (intervalMs == 0.0) intervalMs = 0.0;  // fold -0.0 to +0.0 (Q6)
+    if (intervalMs == 0.0) intervalMs = 0.0;  // Folds -0.0 to +0.0, as the map's keys are.
 
-    // Snapshot encodings under the mutex; drop it before any allocation.
     uint64_t taggerEnc = 0, routerEnc = 0;
     bool active = false;
     {
@@ -166,14 +177,11 @@ static void* timerTickEvaluator(void* args[]) {
 
     HPointer succeedTask = Scheduler::instance().taskSucceed(unit());
     if (!active) {
-        // Interval was unsubscribed (or re-created with a new generation).
-        // processReadyAsync decrements pendingAsync_ for us; just return.
         return reinterpret_cast<void*>(encodeHP(succeedTask));
     }
 
-    // Per Q2: decode immediately, root before any allocation, and re-encode
-    // from the rooted HPointers at every use site. Do NOT reuse taggerEnc /
-    // routerEnc after allocations — the encodings would be stale if GC ran.
+    // The words copied out of the entry are decoded and rooted here, after the `taskSucceed` call above;
+    // later uses re-encode the rooted HPointers rather than reuse taggerEnc and routerEnc.
     HPointer taggerHP = decodeHP(taggerEnc);
     HPointer routerHP = decodeHP(routerEnc);
     HPointer posixHP  = listNil();
@@ -183,12 +191,8 @@ static void* timerTickEvaluator(void* args[]) {
         Elm::StackRootGuard guard(
             { &taggerHP, &routerHP, &posixHP, &msgHP, &succeedTask });
 
-        // Q1 — build the Posix Custom directly. Posix is
-        // `type Posix = Posix Int` (CtorTag.elm: ctor index 0, single
-        // unboxed Int field). Passing a raw Tag_Int would alias the
-        // tagger/posixToMillis pattern match's offset-16 read past the
-        // end of the ElmInt — same heap-layout-punning bug we fixed in
-        // Time.now.
+        // `Posix` is `type Posix = Posix Int`: a Custom with constructor 0 and one unboxed Int field. The tagger
+        // reads that field, so it must be given the Custom, not a bare boxed Int.
         std::vector<Unboxable> vals(1);
         vals[0].i = static_cast<i64>(
             std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -203,9 +207,7 @@ static void* timerTickEvaluator(void* args[]) {
         PlatformRuntime::instance().sendToApp(routerHP, msgHP);
     }
 
-    // Chain the next tick. scheduleTimerTick allocates; the previous
-    // guard has been released, but we no longer need taggerHP/routerHP
-    // alive past sendToApp.
+    // taggerHP and routerHP are no longer rooted, but nothing below uses them.
     scheduleTimerTick(intervalMs, generation);
 
     return reinterpret_cast<void*>(encodeHP(succeedTask));
@@ -215,43 +217,38 @@ static void* timerTickEvaluator(void* args[]) {
 // Effect Manager Closures
 // ============================================================================
 
-// init : Task Never State
-// State is just Nil (we track state in C++ globals)
+/// The manager's `init`: returns `Task.succeed []`. The manager's Elm state is always `[]`; its real state is
+/// `g_intervals`.
 static void* timeInitEvaluator(void* args[]) {
     (void)args;
-    // Return Task.succeed(Nil)
     HPointer nilState = listNil();
     HPointer task = Scheduler::instance().taskSucceed(nilState);
     return reinterpret_cast<void*>(encodeHP(task));
 }
 
-// onEffects : Router msg -> List (MyCmd msg) -> List (MySub msg) -> State -> Task Never State
-// For Time: no commands, only subscriptions (Time.every)
+/// The manager's `onEffects`, given the router, the commands (ignored), the subscriptions and the state
+/// (ignored), in `args[0]` to `args[3]`. Returns `Task.succeed []`.
+///
+/// Makes `g_intervals` match the `Time.every` subscriptions in the list. Elements with another constructor are
+/// skipped, as are NaN intervals; of several subscriptions with the same interval, one tagger is kept. A
+/// dropped interval's entry is erased and its recorded tick withdrawn. A new interval gets an entry with a
+/// fresh generation and its first tick is scheduled. An interval already present keeps its generation and its
+/// tick chain, with its tagger and router replaced by this call's. Also registers the root scanner on the first
+/// call.
 static void* timeOnEffectsEvaluator(void* args[]) {
-    // args[0] = router (captured)
-    // args[1] = cmds (arg - ignored, Time has no cmds)
-    // args[2] = subs
-    // args[3] = state (arg - ignored, we use C++ state)
-
     uint64_t routerEnc = reinterpret_cast<uint64_t>(args[0]);
 
-    // Wait for all 4 arguments to be applied
-    // When partially applied, we return ourselves
-    // This is called with 4 args: router, cmds, subs, state
     uint64_t subsEnc = reinterpret_cast<uint64_t>(args[2]);
     HPointer subs = decodeHP(subsEnc);
 
-    // Collect all requested intervals from subscriptions
-    std::unordered_map<double, uint64_t> requestedIntervals;  // interval -> tagger
+    std::unordered_map<double, uint64_t> requestedIntervals;  // Interval to encoded tagger.
 
-    // Non-allocating walk over hybrid spines (cells + chunk views).
+    // Nothing in this walk allocates, so the encoded taggers stay valid until they are stored.
     for (Elm::alloc::ListCursor l(subs); !l.done(); l.next()) {
         void* subPtr = Allocator::instance().resolve(l.current().p);
         if (subPtr) {
             Custom* sub = static_cast<Custom*>(subPtr);
             if (sub->ctor == CTOR_TIME_EVERY) {
-                // values[0] = interval (unboxed Float)
-                // values[1] = tagger (boxed Closure)
                 double interval = sub->values[0].f;
                 uint64_t taggerEnc = encodeHP(sub->values[1].p);
                 requestedIntervals[interval] = taggerEnc;
@@ -259,9 +256,7 @@ static void* timeOnEffectsEvaluator(void* args[]) {
         }
     }
 
-    // Q6: fold -0.0 to +0.0 so the double map key is stable across
-    // subscription/lookup paths. Skip NaN intervals — nonsensical and would
-    // never match in the lookup map anyway.
+    // A NaN key would never be found again, since NaN compares unequal to itself.
     auto normalize = [](double d) -> double {
         return d == 0.0 ? 0.0 : d;
     };
@@ -281,15 +276,11 @@ static void* timeOnEffectsEvaluator(void* args[]) {
     std::vector<PendingStart> toStart;
     std::vector<uint64_t> toCancel;
 
-    // Update g_intervals under the mutex; do NOT allocate while holding it.
     {
         std::lock_guard<std::mutex> lock(g_timerMutex);
 
-        // Erase intervals that are no longer requested, collecting their
-        // scheduled ticks for withdrawal below. A tick that has already
-        // fired is withdrawn too (its resume is discarded); the generation
-        // check in timerTickEvaluator remains for a tick with no recorded
-        // token.
+        // A dropped interval's tick is withdrawn below, after the mutex is released. The generation check in
+        // timerTickEvaluator still stops a tick whose token was not recorded.
         for (auto it = g_intervals.begin(); it != g_intervals.end(); ) {
             if (normalizedRequested.find(it->first) == normalizedRequested.end()) {
                 if (it->second.tickToken != 0) toCancel.push_back(it->second.tickToken);
@@ -299,7 +290,6 @@ static void* timeOnEffectsEvaluator(void* args[]) {
             }
         }
 
-        // Insert new intervals or update existing ones in place.
         for (auto& [intervalMs, taggerEnc] : normalizedRequested) {
             auto it = g_intervals.find(intervalMs);
             if (it == g_intervals.end()) {
@@ -309,65 +299,48 @@ static void* timeOnEffectsEvaluator(void* args[]) {
                 });
                 toStart.push_back({ intervalMs, gen });
             } else {
-                // Q7: in-place mutation is safe under the Q2 rooting
-                // discipline. Old encodings lose their root the moment we
-                // overwrite, but any in-flight tick that already
-                // snapshotted them has rooted the decoded HPointers on
-                // its stack, so the old closures stay alive until that
-                // tick returns.
+                // Overwriting drops this map's root for the old tagger and router.
                 it->second.taggerEnc = taggerEnc;
                 it->second.routerEnc = routerEnc;
             }
         }
     }
 
-    // Withdraw the dropped intervals' ticks (each releases its hold exactly
-    // once: here, or in processReadyAsync if it already fired). After the
-    // mutex is dropped: withdrawParkedTimer takes the Scheduler's locks.
+    // Done after g_timerMutex is released, since withdrawParkedTimer may release a scheduler hold.
     for (uint64_t t : toCancel) {
         withdrawParkedTimer(t);
     }
 
-    // Allocations only AFTER releasing g_timerMutex.
     for (const auto& ps : toStart) {
         scheduleTimerTick(ps.intervalMs, ps.generation);
     }
 
-    // Return Task.succeed(Nil) - state unchanged
     HPointer newState = listNil();
     HPointer task = Scheduler::instance().taskSucceed(newState);
     return reinterpret_cast<void*>(encodeHP(task));
 }
 
-// onSelfMsg : Router msg -> selfMsg -> State -> Task Never State
-// Time doesn't use self messages (timer threads directly call sendToApp)
+/// The manager's `onSelfMsg`, given the router, a self-message and the state in `args[0]` to `args[2]`. Returns
+/// `Task.succeed state`. The manager never sends itself messages; ticks call `sendToApp` themselves.
 static void* timeOnSelfMsgEvaluator(void* args[]) {
-    // args[0] = router (captured, ignored)
-    // args[1] = selfMsg (arg, ignored)
-    // args[2] = state (arg)
-
-    // Just return Task.succeed(state)
     uint64_t stateEnc = reinterpret_cast<uint64_t>(args[2]);
     HPointer task = Scheduler::instance().taskSucceed(decodeHP(stateEnc));
     return reinterpret_cast<void*>(encodeHP(task));
 }
 
-// Helper: Composed tagger evaluator for subMap
-// args[0] = mapper, args[1] = origTagger, args[2] = time
+/// The tagger `subMap` builds: given the mapper, the original tagger and a `Posix` in `args[0]` to `args[2]`,
+/// returns `mapper (origTagger posix)`.
 static void* composedTaggerEvaluator(void* args[]) {
     uint64_t mapperEnc = reinterpret_cast<uint64_t>(args[0]);
     uint64_t taggerEnc = reinterpret_cast<uint64_t>(args[1]);
     uint64_t timeEnc = reinterpret_cast<uint64_t>(args[2]);
 
-    // Root the mapper across the first eco_apply_closure (origTagger): the
-    // tagger body may GC and move the mapper, leaving `mapperEnc` stale.
+    // The tagger may allocate and move the mapper, so the mapper is rooted across that call.
     HPointer mapperHP = decodeHP(mapperEnc);
     Elm::StackRootGuard mapperRoot(&mapperHP);
 
-    // Call origTagger(time)
     uint64_t msgEnc = eco_apply_closure(HPtr::fromBits(taggerEnc), &timeEnc, 1).toBits();
 
-    // Call mapper(msg). Root the freshly-produced msg over the mapper call.
     HPointer msgHP = decodeHP(msgEnc);
     Elm::StackRootGuard msgRoot(&msgHP);
     HPtr mapperCl = HPtr::fromBits(encodeHP(mapperHP));
@@ -377,88 +350,80 @@ static void* composedTaggerEvaluator(void* args[]) {
     return reinterpret_cast<void*>(resultEnc);
 }
 
-// subMap : (a -> b) -> MySub a -> MySub b
-// Maps over the tagger in Time.every subscription
+/// The manager's `subMap`, given a mapper and a subscription in `args[0]` and `args[1]`. For a `Time.every`
+/// subscription, returns a new one with the same interval whose tagger is `composedTaggerEvaluator` over the
+/// mapper and the original tagger. Returns the subscription unchanged if it is not a heap object or has another
+/// constructor.
+///
+/// The new subscription is built with kind bitmap `0b10`, which makes the interval slot a Float and the tagger
+/// slot boxed.
 static void* timeSubMapEvaluator(void* args[]) {
-    // args[0] = mapper function
-    // args[1] = original sub
-
     auto& allocator = Allocator::instance();
 
-    // Root mapper and origSub across allocClosure / closureCapture / custom
-    // — those allocations would otherwise leave by-value HPointer locals
-    // pointing at the pre-swap location. origTagger (read out of origSub)
-    // is also rooted because it survives across allocClosure.
+    // Every allocation below may move these values, so all three are rooted; origTagger is filled in from
+    // origSub.
     HPointer mapper = decodeHP(reinterpret_cast<uint64_t>(args[0]));
     HPointer origSub = decodeHP(reinterpret_cast<uint64_t>(args[1]));
-    HPointer origTagger = listNil();  // placeholder; will be set below
+    HPointer origTagger = listNil();
     Elm::StackRootGuard guards(&mapper, &origSub, &origTagger);
 
     void* subPtr = allocator.resolve(origSub);
     if (!subPtr) {
-        return reinterpret_cast<void*>(encodeHP(origSub));  // Return unchanged
+        return reinterpret_cast<void*>(encodeHP(origSub));
     }
 
     Custom* sub = static_cast<Custom*>(subPtr);
     if (sub->ctor != CTOR_TIME_EVERY) {
-        return reinterpret_cast<void*>(encodeHP(origSub));  // Not our sub type
+        return reinterpret_cast<void*>(encodeHP(origSub));
     }
 
-    // Get original interval and tagger. Snapshot before any further alloc.
+    // `sub` is read before the first allocation; it may be stale after it.
     double interval = sub->values[0].f;
     origTagger = sub->values[1].p;
-    // From here on, `sub` and `subPtr` are stale-on-GC; do not re-use them.
 
-    // Create composed tagger: mapper . origTagger
-    // composedTagger = \time -> mapper (origTagger time)
     HPointer composedTagger = allocClosure(composedTaggerEvaluator, 3);
     Elm::StackRootGuard ctRoot(&composedTagger);
     void* clPtr = allocator.resolve(composedTagger);
     if (clPtr) {
         closureCapture(clPtr, boxed(mapper), true);
-        // closureCapture is called twice; re-resolve composedTagger between
-        // calls because closureCapture (allocator-aware) may move things on
-        // unboxed-capture allocs. Cheap to re-resolve.
+        // Re-resolved in case the first capture allocated and moved the closure.
         clPtr = allocator.resolve(composedTagger);
         closureCapture(clPtr, boxed(origTagger), true);
     }
 
-    // Create new subscription with composed tagger
     std::vector<Unboxable> values(2);
     values[0].f = interval;
     values[1].p = composedTagger;
 
-    HPointer newSub = custom(CTOR_TIME_EVERY, values, 0b10);  // interval: Float kind
+    HPointer newSub = custom(CTOR_TIME_EVERY, values, 0b10);
     return reinterpret_cast<void*>(encodeHP(newSub));
 }
 
 } // anonymous namespace
 
 // ============================================================================
-// Registration function (called from runtime initialization)
+// Registration
 // ============================================================================
 
 extern "C" {
 
+/// Registers this file's closures with `PlatformRuntime` as the effect manager "Time", replacing any manager
+/// registered under that name: `init`, `onEffects`, `onSelfMsg` and `subMap` as above, and `[]` as `cmdMap`,
+/// since Time has no commands.
 void eco_register_time_effect_manager() {
-    // Create init closure
     HPointer initCl = allocClosure(timeInitEvaluator, 0);
 
-    // Create onEffects closure (4-arg curried)
     HPointer onEffectsCl = allocClosure(timeOnEffectsEvaluator, 4);
 
-    // Create onSelfMsg closure (3-arg curried)
     HPointer onSelfMsgCl = allocClosure(timeOnSelfMsgEvaluator, 3);
 
-    // Create subMap closure (2-arg)
     HPointer subMapCl = allocClosure(timeSubMapEvaluator, 2);
 
-    // Register with PlatformRuntime
     PlatformRuntime::ManagerInfo info;
     info.init = encodeHP(initCl);
     info.onEffects = encodeHP(onEffectsCl);
     info.onSelfMsg = encodeHP(onSelfMsgCl);
-    info.cmdMap = encodeHP(listNil());  // No commands
+    info.cmdMap = encodeHP(listNil());
     info.subMap = encodeHP(subMapCl);
 
     PlatformRuntime::instance().registerManager("Time", info);

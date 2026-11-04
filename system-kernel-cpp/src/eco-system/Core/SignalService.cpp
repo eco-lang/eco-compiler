@@ -1,20 +1,12 @@
 //===- SignalService.cpp - Process signals as POD events ------------------===//
 //
-// See SignalService.hpp. Leaky singleton with a detached reader thread
-// (§3.4). The handler is async-signal-safe: it reads one atomic int and
-// calls write(2), preserving errno.
+// The handler is async-signal-safe: it loads one lock-free atomic int and calls write(2), preserving errno. It runs on
+// whichever thread the kernel picks among those not blocking the signal.
 //
-// Quiescence (plans/eco-system-library.md §10, 2026-10-08): the handler runs
-// on whichever thread the kernel picks (for kill(2) from another process,
-// normally the main thread), but the event used to reach the scheduler only
-// through the reader thread. Under CPU load that thread could be scheduled
-// after the main loop had found itself quiescent and exited, so a signal
-// sent by a child before it exited was lost (SignalInterruptTest, about 1
-// run in 12 under load). pollReady() closes this: the loop's readiness
-// check reads the pipe itself, and the reader holds pipeMutex_ from read to
-// queue, so a byte is always either in the pipe or in ready_.
-//
-// Templates used: none (POD only, G1).
+// Why a signal is never lost to the loop going quiescent: the loop's readiness check (`pollReady`) reads the pipe
+// itself instead of relying on the reader thread having run, and the reader holds `pipeMutex_` from each read until
+// its bytes are queued. So, as seen by anyone who takes `pipeMutex_`, a byte the handler wrote is in the pipe or in
+// `ready_` until it is popped.
 //
 //===----------------------------------------------------------------------===//
 
@@ -38,13 +30,15 @@ namespace Eco::System {
 
 namespace {
 
+// Returns whether the signal drain has work, queuing any signal already received; the drain source's predicate.
 [[maybe_unused]] bool signalReady() { return SignalService::instance().pollReady(); }
 
 #ifndef _WIN32
-// Write end of the self-pipe, read by the handler. Lock-free int.
+// The write end of the self-pipe, or -1 before it exists. The handler reads it, so it must be a lock-free atomic.
 std::atomic<int> g_sigWriteFd{-1};
 static_assert(std::atomic<int>::is_always_lock_free, "handler needs a lock-free fd");
 
+// Writes `signo` as one byte to the self-pipe, if it exists. A byte that finds the pipe full (EAGAIN) is dropped.
 extern "C" void ecoSystemSignalHandler(int signo) {
     int saved = errno;
     int fd = g_sigWriteFd.load(std::memory_order_relaxed);
@@ -52,14 +46,13 @@ extern "C" void ecoSystemSignalHandler(int signo) {
         unsigned char b = static_cast<unsigned char>(signo);
         ssize_t r;
         do { r = ::write(fd, &b, 1); } while (r < 0 && errno == EINTR);
-        // EAGAIN (pipe full): the signal is dropped, as coalesced signals are.
     }
     errno = saved;
 }
 
-// Waits for the (non-blocking) read end to become readable, then takes its
-// bytes under pipeMutex_. The main thread may have taken them first
-// (pollReady); then there is nothing to queue and no wake-up.
+// Runs the reader thread: waits for the read end `rfd` to become readable, moves its bytes into the queue and wakes
+// `sched`, for as long as poll succeeds. The eco thread may have taken the bytes first in `pollReady`; then there is
+// nothing to queue and no wake-up. The thread returns on a poll error other than EINTR, or on POLLERR or POLLNVAL.
 void readerThread(int rfd, Scheduler* sched) {
     for (;;) {
         struct pollfd p {};
@@ -68,12 +61,11 @@ void readerThread(int rfd, Scheduler* sched) {
         int r = ::poll(&p, 1, -1);
         if (r < 0) {
             if (errno == EINTR) continue;
-            return;   // defensive
+            return;
         }
-        if (p.revents & (POLLERR | POLLNVAL)) return;   // the pipe is never closed; defensive
+        if (p.revents & (POLLERR | POLLNVAL)) return;   // the pipe is never closed
         if (SignalService::instance().takeFromPipe()) {
-            // Outside pipeMutex_/readyMutex_ (the Scheduler reads hasReady()
-            // and pollReady() under its mutex).
+            // Notified outside pipeMutex_ and readyMutex_: the scheduler calls pollReady() with its own lock held.
             sched->notifyWorkAvailableFromAsync();
         }
     }
@@ -83,13 +75,14 @@ void readerThread(int rfd, Scheduler* sched) {
 } // namespace
 
 SignalService& SignalService::instance() {
-    static SignalService* inst = new SignalService();   // leaky (§3.4)
+    // Never destroyed, so the detached reader thread can use it after exit begins.
+    static SignalService* inst = new SignalService();
     return *inst;
 }
 
 SignalService::SignalService() {
-    // Bound on the constructing (main) thread; the reader thread must never
-    // be the first caller of Scheduler::instance().
+    // Bound on the constructing thread, which must be the eco thread; the reader thread must never be the first
+    // caller of Scheduler::instance().
     sched_ = &Scheduler::instance();
 }
 
@@ -184,9 +177,8 @@ void SignalService::takePending() {
 bool SignalService::ensureStarted() {
     if (started_) return true;
     int fds[2] = {-1, -1};
-    // Both ends non-blocking: the handler must never block, and the read end
-    // is read by two threads (the reader after poll, the main thread in
-    // pollReady).
+    // Both ends non-blocking: the handler must never block, and the read end is read by two threads (the reader
+    // after poll, the eco thread in pollReady), so a read may find it already empty.
     if (makeCloexecPipe(fds, /*nonBlocking=*/true) != 0) return false;
     readFd_ = fds[0];
     try {
@@ -204,7 +196,7 @@ bool SignalService::ensureStarted() {
 }
 
 bool SignalService::subscribe(int signo) {
-    if (sched_->embedMode()) return false;   // the host owns signals (§3.7)
+    if (sched_->embedMode()) return false;   // the host owns signals
     if (signo <= 0 || signo >= kMaxSig || signo >= NSIG) return false;
     if (signo == SIGKILL || signo == SIGSTOP) return false;
     if (counts_[signo] > 0) {
@@ -215,7 +207,7 @@ bool SignalService::subscribe(int signo) {
 
     auto* old = static_cast<struct sigaction*>(saved_[signo]);
     if (!old) {
-        old = new struct sigaction();   // leaky, one per signal ever used
+        old = new struct sigaction();   // never freed; one per signal ever subscribed
         saved_[signo] = old;
     }
     struct sigaction sa {};
@@ -238,7 +230,7 @@ void SignalService::unsubscribe(int signo) {
 #endif // _WIN32
 
 // ---------------------------------------------------------------------------
-// Listeners (main thread)
+// Listeners (eco thread)
 // ---------------------------------------------------------------------------
 
 SignalService::ListenerId SignalService::addListener(int signo, Listener fn, void* ctx) {
@@ -269,7 +261,8 @@ int SignalService::listenerCount(int signo) const {
 }
 
 void SignalService::dispatch(int signo) {
-    // Snapshot: a listener may add or remove listeners (G11-style re-entry).
+    // A snapshot, because a listener may add or remove listeners; each entry is rechecked against the live list
+    // before it is called.
     std::vector<ListenerRec> snap;
     for (const auto& l : listeners_)
         if (l.signo == signo) snap.push_back(l);
@@ -303,7 +296,7 @@ void signalDrain() {
         try {
             svc.dispatch(signo);
         } catch (const std::exception& e) {
-            ::Eco::Kernel::reportFatal(e.what());   // never unwind into the loop (F21)
+            ::Eco::Kernel::reportFatal(e.what());   // never unwind into the scheduler loop
         } catch (...) {
             ::Eco::Kernel::reportFatal("unknown native exception in signal dispatch");
         }

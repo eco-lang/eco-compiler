@@ -1,9 +1,9 @@
 //===- Http2.cpp - HTTP/2 server connections on the IoReactor -------------===//
 //
-// See Http2.hpp (plans/eco-system-websockets.md §3.8, phase WS8). Reactor
-// thread only; POSIX (nghttp2 is not built on Windows).
-//
-// Templates used: none (POD only, G1).
+// nghttp2 must not be re-entered from its own callbacks, yet a callback (a tunnel handler answering a ping, a stream
+// closing) often wants to send. `processing_` and `flushing_` mark that nghttp2 is running; `afterIo` called meanwhile
+// returns at once or only sets `flushAgain_`, and the running `flush` loops until nothing more was asked for. A `done`
+// whose END_STREAM has been framed waits in `sentDones_` and becomes the completion of the next `Conn::write`.
 //
 //===----------------------------------------------------------------------===//
 
@@ -26,16 +26,20 @@ namespace Eco::System::HttpSrv {
 
 namespace {
 
+// Returns the shared reactor.
 IoReactor& reactor() { return IoReactor::instance(); }
 
+// Returns the reactor time `ms` milliseconds from now, or 0 (no deadline) when `ms` is 0 or less.
 int64_t after(int64_t ms) { return ms > 0 ? reactor().nowMs() + ms : 0; }
 
+// Returns `s` with ASCII letters lower-cased.
 std::string lowerAscii(std::string_view s) {
     std::string out(s);
     for (char& c : out) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
     return out;
 }
 
+// Returns `s` without leading and trailing spaces and tabs.
 std::string trimmed(const std::string& s) {
     size_t a = 0, b = s.size();
     while (a < b && (s[a] == ' ' || s[a] == '\t')) ++a;
@@ -43,6 +47,7 @@ std::string trimmed(const std::string& s) {
     return s.substr(a, b - a);
 }
 
+// Returns whether `a` and `b` are equal, ignoring ASCII case.
 bool iequal(const std::string& a, const std::string& b) {
     if (a.size() != b.size()) return false;
     for (size_t i = 0; i < a.size(); ++i) {
@@ -53,7 +58,7 @@ bool iequal(const std::string& a, const std::string& b) {
     return true;
 }
 
-// RFC 9110 IMF-fixdate (as serializeH1).
+// Returns the current time as an HTTP date (IMF-fixdate), such as "Wed, 07 Oct 2026 08:49:37 GMT".
 std::string httpDate() {
     std::time_t t = std::time(nullptr);
     struct tm g;
@@ -63,8 +68,8 @@ std::string httpDate() {
     return buf;
 }
 
-// Connection-specific fields never sent over HTTP/2 (RFC 9113 §8.2.2), and
-// the length the server writes itself.
+// Returns whether a response field named `lower` is dropped: a connection-specific field, which HTTP/2 forbids, or
+// `content-length`, which the server writes itself.
 bool droppedResponseField(const std::string& lower) {
     return lower == "connection" || lower == "keep-alive" || lower == "proxy-connection" ||
            lower == "transfer-encoding" || lower == "upgrade" || lower == "content-length";
@@ -76,11 +81,16 @@ bool droppedResponseField(const std::string& lower) {
 // Stream state
 // ---------------------------------------------------------------------------
 
+// One open stream: the request as it arrives, then the response being sent, or the tunnel it became.
+//
+// `st` moves forward only: Headers until the header block ends, Body until END_STREAM, Delivered while the program
+// owes an answer (a CONNECT is Delivered as soon as its headers end), then Responding, or Tunnel once `bindTunnel`
+// binds it. A stream that closes in any state is erased by `closeStream`.
 struct Http2Protocol::Stream {
     enum class St : uint8_t { Headers, Body, Delivered, Responding, Tunnel };
     int32_t id = 0;
     St st = St::Headers;
-    int64_t key = 0;
+    int64_t key = 0;            // the outstanding key while Delivered, else 0
     // The request.
     std::string method, scheme, authority, path, protocol;
     std::vector<std::pair<std::string, std::string>> headers;
@@ -90,7 +100,7 @@ struct Http2Protocol::Stream {
     std::string body;           // counted in buffered_
     bool isHead = false;
     bool connect = false;       // CONNECT, with or without :protocol
-    int64_t deadline = 0;       // requestTimeout while Headers / Body
+    int64_t deadline = 0;       // reactor time `after(cfg_.requestMs)` while Headers / Body; 0 = none
     // The response.
     bool rstAfterSend = false;  // RST_STREAM(NO_ERROR) after our END_STREAM
     std::string out;            // DATA still to frame (from outOff)
@@ -98,7 +108,7 @@ struct Http2Protocol::Stream {
     bool outEnd = false;        // END_STREAM after `out`
     bool deferred = false;      // the data provider returned NGHTTP2_ERR_DEFERRED
     std::function<void(int)> done;
-    // WS9 tunnels.
+    // Tunnels.
     std::unique_ptr<H2StreamHandler> tunnel;
     bool notifyWritable = false;   // `out` reached Conn::kLowWatermark: onWritable when it drains
     std::string tunnelIn;       // received before the tunnel was bound (counted in buffered_)
@@ -108,13 +118,17 @@ struct Http2Protocol::Stream {
 // nghttp2 callbacks
 // ---------------------------------------------------------------------------
 
+// The nghttp2 session callbacks. Each receives the `Http2Protocol` as its user data.
 struct Http2Protocol::Cb {
+    // Returns the protocol passed as user data `ud`.
     static Http2Protocol* self(void* ud) { return static_cast<Http2Protocol*>(ud); }
 
+    // Returns whether `f` is the HEADERS frame that opens a request.
     static bool isRequestHeaders(const nghttp2_frame* f) {
         return f->hd.type == NGHTTP2_HEADERS && f->headers.cat == NGHTTP2_HCAT_REQUEST;
     }
 
+    // Opens a stream for a new request and starts its request deadline.
     static int beginHeaders(nghttp2_session*, const nghttp2_frame* f, void* ud) {
         Http2Protocol* p = self(ud);
         if (p->done_ || !isRequestHeaders(f)) return 0;
@@ -125,6 +139,7 @@ struct Http2Protocol::Cb {
         return 0;
     }
 
+    // Records one request header field, counting it against `maxHeaderSize` and joining cookie fields.
     static int header(nghttp2_session*, const nghttp2_frame* f, const uint8_t* name, size_t nl,
                       const uint8_t* value, size_t vl, uint8_t, void* ud) {
         Http2Protocol* p = self(ud);
@@ -148,7 +163,7 @@ struct Http2Protocol::Cb {
             else if (n == ":protocol") s->protocol = v;
             return 0;
         }
-        if (n == "cookie") {   // RFC 9113 §8.2.3: crumbs joined with "; "
+        if (n == "cookie") {
             if (s->cookieIndex < 0) {
                 s->cookieIndex = static_cast<int64_t>(s->headers.size());
                 s->headers.emplace_back(std::string(n), std::string(v));
@@ -163,6 +178,7 @@ struct Http2Protocol::Cb {
         return 0;
     }
 
+    // Acts on a received HEADERS or DATA frame: ends the header block, and handles END_STREAM.
     static int frameRecv(nghttp2_session*, const nghttp2_frame* f, void* ud) {
         Http2Protocol* p = self(ud);
         if (p->done_) return 0;
@@ -192,6 +208,8 @@ struct Http2Protocol::Cb {
         }
     }
 
+    // Takes a piece of DATA for stream `sid`: buffers it as body, keeps it for a pending tunnel, hands it to a bound
+    // tunnel, or drops it, giving back flow-control window as the header's file comment describes.
     static int dataChunk(nghttp2_session* session, uint8_t, int32_t sid, const uint8_t* data,
                          size_t len, void* ud) {
         Http2Protocol* p = self(ud);
@@ -216,8 +234,7 @@ struct Http2Protocol::Cb {
             return 0;
         case Stream::St::Delivered:
             if (s->connect) {
-                // A CONNECT waiting for its answer: kept for a tunnel (WS9);
-                // the stream window (64 KiB) bounds it.
+                // Kept for a tunnel, with its stream window not given back, so the window bounds it.
                 s->tunnelIn.append(reinterpret_cast<const char*>(data), len);
                 p->buffered_ += len;
                 p->connPending_ += len;
@@ -238,11 +255,14 @@ struct Http2Protocol::Cb {
         }
     }
 
+    // Forgets stream `sid`, closed with error code `code`.
     static int streamClose(nghttp2_session*, int32_t sid, uint32_t code, void* ud) {
         self(ud)->closeStream(sid, code);
         return 0;
     }
 
+    // After a frame with END_STREAM is sent, moves the stream's `done` to wait for the write, and resets the stream
+    // with NO_ERROR if it was marked for that (`rstAfterSend`) and the client's side is still open.
     static int frameSend(nghttp2_session* session, const nghttp2_frame* f, void* ud) {
         Http2Protocol* p = self(ud);
         if ((f->hd.type != NGHTTP2_HEADERS && f->hd.type != NGHTTP2_DATA) ||
@@ -261,6 +281,7 @@ struct Http2Protocol::Cb {
         return 0;
     }
 
+    // Fails the stream's `done` with ECANCELED when its HEADERS or DATA cannot be sent.
     static int frameNotSend(nghttp2_session*, const nghttp2_frame* f, int, void* ud) {
         Http2Protocol* p = self(ud);
         if (f->hd.type != NGHTTP2_HEADERS && f->hd.type != NGHTTP2_DATA) return 0;
@@ -273,6 +294,8 @@ struct Http2Protocol::Cb {
         return 0;
     }
 
+    // Copies up to `len` queued response bytes of stream `sid` into `buf`, sets EOF once an ended queue is empty, and
+    // returns NGHTTP2_ERR_DEFERRED for a tunnel with nothing queued, until `tunnelWrite` or `tunnelEnd` resumes it.
     static nghttp2_ssize readData(nghttp2_session*, int32_t sid, uint8_t* buf, size_t len,
                                   uint32_t* flags, nghttp2_data_source*, void* ud) {
         Http2Protocol* p = self(ud);
@@ -288,7 +311,7 @@ struct Http2Protocol::Cb {
             if (s->outEnd) {
                 *flags |= NGHTTP2_DATA_FLAG_EOF;
             } else if (n == 0) {
-                s->deferred = true;   // a tunnel with nothing queued (tunnelWrite resumes)
+                s->deferred = true;
                 return NGHTTP2_ERR_DEFERRED;
             }
         }
@@ -354,7 +377,7 @@ void Http2Protocol::onOpen(Conn& c) {
     }
 
     std::vector<nghttp2_settings_entry> iv;
-    if (cfg_.maxConcurrentStreams >= 0) {   // only when set (W19)
+    if (cfg_.maxConcurrentStreams >= 0) {
         iv.push_back({NGHTTP2_SETTINGS_MAX_CONCURRENT_STREAMS,
                       static_cast<uint32_t>(std::min<int64_t>(cfg_.maxConcurrentStreams,
                                                               std::numeric_limits<int32_t>::max()))});
@@ -480,9 +503,7 @@ void Http2Protocol::flush(Conn& c) {
 
 void Http2Protocol::afterIo(Conn& c) {
     if (done_ || !session_) return;
-    // WS9: a tunnel call made from inside nghttp2 (DATA handed to the codec,
-    // which answers a ping) or while frames are written only queues: the
-    // running step frames it (nghttp2 is never re-entered).
+    // A call from inside nghttp2 only queues; the running step frames it.
     if (processing_) return;
     if (flushing_) {
         flushAgain_ = true;
@@ -504,7 +525,6 @@ void Http2Protocol::afterIo(Conn& c) {
     if (!done_) c.updateInterest();
 }
 
-// WS9: tunnels whose queue drained below the watermark may write again.
 void Http2Protocol::notifyWritable() {
     writableWaiters_ = false;
     std::vector<int32_t> ids;
@@ -523,9 +543,8 @@ void Http2Protocol::notifyWritable() {
     }
 }
 
-// A tunnel's handler is destroyed later, on the reactor thread: the stream
-// may end inside a call the handler itself made (a reset framed by its own
-// tunnelReset).
+// The stream may end inside a call the handler itself made (a reset framed by its own tunnelReset), so the last
+// reference is dropped by a later reactor command.
 void Http2Protocol::retireTunnel(std::unique_ptr<H2StreamHandler> t, uint32_t code) {
     if (!t) return;
     std::shared_ptr<H2StreamHandler> sp(std::move(t));
@@ -687,8 +706,6 @@ void Http2Protocol::endHeaders(Stream& s) {
     }
     s.st = Stream::St::Body;
     s.isHead = s.method == "HEAD";
-    // :authority and Host must agree (§3.8); Host alone gives the authority.
-    // A Content-Length over maxBodySize is answered before any body (413).
     for (const auto& h : s.headers) {
         if (h.first == "content-length") {
             std::string v = trimmed(h.second);
@@ -712,7 +729,7 @@ void Http2Protocol::endHeaders(Stream& s) {
     if (s.method == "CONNECT") {
         s.connect = true;
         if (!s.protocol.empty() && lowerAscii(s.protocol) != "websocket") {
-            ownResponse(s, 501);   // RFC 9220 §3: an unknown :protocol
+            ownResponse(s, 501);
             return;
         }
         deliver(s);   // on HEADERS: a CONNECT never ends
@@ -852,8 +869,7 @@ void Http2Protocol::closeStream(int32_t id, uint32_t code) {
         d(ECANCELED);
     }
     if (s->tunnel) retireTunnel(std::move(s->tunnel), code);
-    // A delivered, unanswered key stays outstanding (keyStream_) until the
-    // program answers it or the connection closes (§3.8 rapid reset).
+    // A delivered, unanswered key stays outstanding, so rapid resets still count against the cap.
     consumeConnection();
 }
 
@@ -897,7 +913,7 @@ void Http2Protocol::serverClosing(Conn& c) {
     afterIo(c);
 }
 
-// --- WS9 hooks ------------------------------------------------------------------
+// --- Tunnels --------------------------------------------------------------------
 
 bool Http2Protocol::tunnelPending(int64_t key) const {
     auto it = keyStream_.find(key);

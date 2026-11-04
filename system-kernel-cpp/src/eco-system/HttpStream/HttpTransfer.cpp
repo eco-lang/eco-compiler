@@ -1,33 +1,35 @@
 //===- HttpTransfer.cpp - Streaming HTTP transfers over libcurl -----------===//
 //
-// See HttpTransfer.hpp. Everything here is POD and runs on the transfer
-// threads or, for the channel requests and cancel, on the main thread
-// (G1): no Eco heap access, no Elm calls, no allocation on the Eco heap.
+// A transfer's thread runs curl and its callbacks, which post events. The eco
+// thread runs channel requests, `start` (whose failure path posts an event),
+// `cancel`, and `abort` (called only from the event drain in HttpStream.cpp).
+// Nothing here touches the GC heap.
+// All of a transfer's mutable state is guarded by its mutex `m`, and the curl
+// callbacks wait on its `cv`.
 //
-// Curl setup (Phase 8 step 8.2):
-//   * CURLOPT_PROTOCOLS_STR / CURLOPT_REDIR_PROTOCOLS_STR "http,https",
-//     CURLOPT_FOLLOWLOCATION 1 (at most 20 redirects).
-//   * The header callback resets the header list on every `HTTP/` status
-//     line (only the final hop's headers are kept), parses the status code
-//     and statusText, lower-cases names, and posts the Headers event at the
-//     end of the first block that is neither interim (1xx) nor a followed
-//     redirect (3xx with Location).
-//   * Timeout: CURLOPT_CONNECTTIMEOUT_MS plus a header deadline enforced by
-//     the multi loop (and by a blocked upload read). It stops once the
-//     headers have arrived (E.6).
-//   * expectStream (discardNon2xx) on a non-2xx status: the body is never
-//     delivered, so the transfer is aborted as soon as the headers are
-//     posted (no bytes are downloaded only to be dropped); the body stream
-//     reads EOF.
-//   * Upload writes/closes that can no longer complete fail with a reason
-//     ("network error: …", "the HTTP request was aborted", …), which the
-//     stream table uses as the Cancelled reason.
-//   * Stream bodies are sent with chunked transfer encoding (no
-//     Content-Length, E.6); `Expect: 100-continue` is disabled.
-//   * No CURLOPT_ACCEPT_ENCODING: the body stream carries the bytes as sent
-//     (a program that asks for gzip can pipe through Stream.decompressor).
+// `serviceLocked` answers whatever channel requests the state allows. The
+// operations here call it under `m` after changing the state, so the results it
+// posts for one side are in the order the requests were made. Some requests are
+// answered at once instead: an empty upload write, a write after `close`, and a
+// second `close`.
 //
-// Templates used: T7 (cancel), T9 (channel results; POD side).
+// Curl setup:
+//   * Only http and https, for the request and for redirects, which are
+//     followed up to 20 times.
+//   * The header callback starts the header list again on every `HTTP/` status
+//     line, so only the last response's fields are kept. The event is posted at
+//     the end of the first header block that is neither interim (1xx) nor a
+//     redirect that curl follows (3xx other than 304, with a Location field).
+//     Body bytes that arrive before that are dropped.
+//   * The header deadline is checked by the multi loop, which polls for at most
+//     a second, or until just past the deadline, and by an upload read that is
+//     waiting for data.
+//   * Stream bodies are sent with chunked transfer encoding, and `Expect:` is
+//     sent empty so that curl does not wait for a 100-continue.
+//   * No `CURLOPT_ACCEPT_ENCODING`: the response body is delivered as sent,
+//     still encoded if the server encoded it.
+//   * Peer and host are verified, and a non-empty `CURL_CA_BUNDLE` in the
+//     environment names the CA file.
 //
 //===----------------------------------------------------------------------===//
 
@@ -55,10 +57,15 @@ namespace Eco::System {
 
 namespace {
 
+/// The size in bytes of one buffer chunk, and the largest piece curl is asked
+/// to hand the write callback at once.
 constexpr size_t kChunk = 64 * 1024;
-constexpr size_t kCap = 4 * kChunk;   // both directions: 4 chunks of 64 KiB
+/// The bound, in bytes, on each side's buffer: 4 chunks.
+constexpr size_t kCap = 4 * kChunk;
+/// The most redirects curl follows for one request.
 constexpr long kMaxRedirs = 20;
 
+/// The clock the header deadline is measured on.
 using Clock = std::chrono::steady_clock;
 
 } // namespace
@@ -67,7 +74,15 @@ using Clock = std::chrono::steady_clock;
 // Shared transfer state
 // ---------------------------------------------------------------------------
 
+/// The state of one transfer, shared by its thread, its channels and its event,
+/// and kept alive by whichever of them holds it last; the service refers to it
+/// weakly.
+///
+/// `token`, `spec`, `hasDeadline` and `deadline` are fixed at construction.
+/// Everything else is guarded by `m`.
 struct HttpTransfer : std::enable_shared_from_this<HttpTransfer> {
+    /// Makes the state for `s`, whose event will carry `tok`, and starts the
+    /// header deadline if `s` has a timeout.
     HttpTransfer(uint64_t tok, HttpRequestSpec s) : token(tok), spec(std::move(s)) {
         if (spec.timeoutMs > 0) {
             hasDeadline = true;
@@ -81,20 +96,27 @@ struct HttpTransfer : std::enable_shared_from_this<HttpTransfer> {
     Clock::time_point deadline;
 
     std::mutex m;
+    /// Notified when the callbacks may be able to go on: data, room, the end of
+    /// the body, an abort, or the end of the transfer.
     std::condition_variable cv;
 
     // --- Guarded by m ---
-    CURLM* multi = nullptr;      // set while the thread drives curl (wakeup target)
-    bool resolved = false;       // the task's event was posted, or the task was killed
+    /// The transfer's multi handle, owned by its thread, for `curl_multi_wakeup`.
+    /// Null before the thread has set it up and once it stops driving curl.
+    CURLM* multi = nullptr;
+    bool resolved = false;       ///< The event was posted, or `cancel` claimed the transfer.
     bool abort = false;
     bool timedOut = false;
     bool headersPosted = false;
-    bool discardBody = false;
+    bool discardBody = false;    ///< `discardNon2xx` applies: the status was not 2xx.
     bool finished = false;
-    int curlCode = 0;
-    std::string errReason;       // "network error: …" once finished with an error
+    int curlCode = 0;            ///< The `CURLcode` the transfer finished with.
+    /// "network error: " and curl's message, once finished with an error.
+    std::string errReason;
 
     // Upload side.
+    /// One write on the upload side: its bytes, how many curl has taken, and
+    /// whether its result has been posted.
     struct UpChunk {
         std::string bytes;
         size_t off = 0;
@@ -102,28 +124,31 @@ struct HttpTransfer : std::enable_shared_from_this<HttpTransfer> {
         bool acked = false;
     };
     std::deque<UpChunk> up;
-    size_t upBytes = 0;          // unread bytes in `up`
-    uint64_t upChannel = 0;
+    size_t upBytes = 0;          ///< Bytes in `up` that curl has not taken.
+    uint64_t upChannel = 0;      ///< The upload channel's id, or 0 before one is made.
     bool upCloseRequested = false;
     uint64_t upCloseToken = 0;
     bool upClosePosted = false;
-    bool upEofSent = false;      // the read callback returned 0
-    bool upShut = false;
+    bool upEofSent = false;      ///< The read callback has returned 0, ending the body.
+    bool upShut = false;         ///< The upload channel was shut down.
 
     // Download side.
     std::deque<std::string> down;
-    size_t downBytes = 0;
+    size_t downBytes = 0;        ///< Bytes in `down`.
+    /// A read request not yet answered.
     struct PendingRead {
         uint64_t token;
         size_t max;
     };
     std::deque<PendingRead> reads;
-    uint64_t downChannel = 0;
-    bool downShut = false;
+    uint64_t downChannel = 0;    ///< The download channel's id, or 0 before one is made.
+    bool downShut = false;       ///< The download channel was closed or shut down.
 };
 
 namespace {
 
+/// Returns an empty, successful result of kind `op` for request `token` on
+/// channel `channel`.
 ChannelResult makeResult(uint64_t channel, uint64_t token, ChannelResult::Op op) {
     ChannelResult r;
     r.channelId = channel;
@@ -132,19 +157,25 @@ ChannelResult makeResult(uint64_t channel, uint64_t token, ChannelResult::Op op)
     return r;
 }
 
-// Why the upload side can take no more (an upload write or close fails).
+/// Returns the reason an upload write or close fails with: an abort, the curl
+/// error, or the response having ended before the body was sent. Requires `t.m`.
 std::string uploadFailure(const HttpTransfer& t) {
-    if (t.abort || t.upShut) return "the HTTP request was aborted";   // kill / cancel
-    if (!t.errReason.empty()) return t.errReason;                     // curl error
+    if (t.abort || t.upShut) return "the HTTP request was aborted";
+    if (!t.errReason.empty()) return t.errReason;
     return "the HTTP response ended before the request body was sent";
 }
 
-// Completes whatever the current state allows: pending reads, upload write
-// acknowledgements, the upload close. Posts the results while holding t.m,
-// so results of one channel are queued in request order (lock order:
-// t.m → channel-results queue → Scheduler mutex).
+/// Answers what the state of `t` allows, under `t.m`, which the caller must
+/// hold. Pending reads are answered, in order, with buffered bytes, the end of
+/// the input or an error, until one has to wait for data. Upload writes are
+/// acknowledged while fewer than `kCap` bytes are queued ahead of them, and all
+/// unacknowledged ones fail once the transfer is finished, aborted or shut, which
+/// also empties the upload queue. A requested upload close is answered once the
+/// end of the body has been sent or the transfer is dead.
+///
+/// Results are posted while `t.m` is held, so that a later call cannot post a
+/// result for a later request first.
 void serviceLocked(HttpTransfer& t) {
-    // --- Download: pending reads ---
     while (!t.reads.empty()) {
         HttpTransfer::PendingRead rd = t.reads.front();
         ChannelResult r = makeResult(t.downChannel, rd.token, ChannelResult::Op::Read);
@@ -179,7 +210,6 @@ void serviceLocked(HttpTransfer& t) {
         postChannelResult(std::move(r));
     }
 
-    // --- Upload: acknowledge writes that fit the buffer, fail the rest ---
     bool upDead = t.finished || t.abort || t.upShut;
     size_t ahead = 0;
     for (auto it = t.up.begin(); it != t.up.end();) {
@@ -207,8 +237,6 @@ void serviceLocked(HttpTransfer& t) {
         t.upBytes = 0;
     }
     if (t.upCloseRequested && !t.upClosePosted && (t.upEofSent || upDead)) {
-        // Clean once curl has taken the end of the body; ECANCELED if the
-        // transfer ended (or was aborted) before that.
         ChannelResult r = makeResult(t.upChannel, t.upCloseToken, ChannelResult::Op::Close);
         if (!t.upEofSent) {
             r.err = ECANCELED;
@@ -219,6 +247,8 @@ void serviceLocked(HttpTransfer& t) {
     }
 }
 
+/// Marks `t` aborted, wakes its callbacks and its multi loop, and answers what
+/// the abort allows. The caller must hold `t.m`.
 void abortLocked(HttpTransfer& t) {
     t.abort = true;
     t.cv.notify_all();
@@ -230,6 +260,9 @@ void abortLocked(HttpTransfer& t) {
 // Curl callbacks (transfer thread)
 // ---------------------------------------------------------------------------
 
+/// The response head being parsed by the header callback, on the transfer
+/// thread. It belongs to `runTransfer`'s frame, and `t` and `easy` point at
+/// that call's transfer and easy handle.
 struct HeaderState {
     HttpTransfer* t = nullptr;
     CURL* easy = nullptr;
@@ -239,11 +272,13 @@ struct HeaderState {
     HttpHeaderList headers;
 };
 
+/// Returns `s` with ASCII letters lower-cased.
 std::string lowerAscii(std::string s) {
     for (auto& c : s) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
     return s;
 }
 
+/// Returns `s` without leading and trailing spaces, tabs, CRs and LFs.
 std::string trimHttp(const std::string& s) {
     size_t b = 0, e = s.size();
     while (b < e && (s[b] == ' ' || s[b] == '\t' || s[b] == '\r' || s[b] == '\n')) ++b;
@@ -251,11 +286,16 @@ std::string trimHttp(const std::string& s) {
     return s.substr(b, e - b);
 }
 
+/// Returns whether a response with `status`, and with a Location field if
+/// `sawLocation`, is a redirect that curl follows rather than a final response.
 bool isFollowedRedirect(long status, bool sawLocation) {
     return sawLocation && status >= 300 && status < 400 && status != 304;
 }
 
-// The end of the final response's header block: resolve the task.
+/// Records that the final response's headers have arrived and, unless the
+/// transfer is already resolved, posts its status event with the parsed head.
+/// With `discardNon2xx` and a status that is not 2xx it then aborts the
+/// transfer, whose reads see the end of the input. Takes `t.m`.
 void postHeaders(HeaderState& hs) {
     HttpTransfer& t = *hs.t;
     const char* eff = nullptr;
@@ -265,7 +305,7 @@ void postHeaders(HeaderState& hs) {
     t.headersPosted = true;
     bool ok2xx = hs.status >= 200 && hs.status < 300;
     t.discardBody = t.spec.discardNon2xx && !ok2xx;
-    if (t.resolved) return;   // killed: nobody resumes; the abort ends the transfer
+    if (t.resolved) return;   // cancelled: the abort `cancel` made ends the transfer
     t.resolved = true;
     HttpEvent ev;
     ev.token = t.token;
@@ -278,28 +318,29 @@ void postHeaders(HeaderState& hs) {
     hs.headers.clear();
     HttpStreamService::instance().post(std::move(ev));
     if (t.discardBody) {
-        // expectStream, non-2xx: the body is never delivered, so stop the
-        // transfer now instead of downloading it; reads answer EOF.
         abortLocked(t);
     } else {
         serviceLocked(t);
     }
 }
 
+/// Curl's header callback: parses one header line into `userdata`, a
+/// `HeaderState`, and posts the event at the end of the final header block.
+/// Returns 0, which fails the transfer, once it is aborted; lines after the
+/// event (trailers) are ignored.
 size_t headerCb(char* buffer, size_t size, size_t nitems, void* userdata) {
     size_t n = size * nitems;
     auto* hs = static_cast<HeaderState*>(userdata);
     {
         std::lock_guard<std::mutex> lk(hs->t->m);
-        if (hs->t->abort) return 0;              // stop the transfer
-        if (hs->t->headersPosted) return n;      // trailers: ignored
+        if (hs->t->abort) return 0;
+        if (hs->t->headersPosted) return n;
     }
     std::string line(buffer, n);
     while (!line.empty() && (line.back() == '\r' || line.back() == '\n')) line.pop_back();
 
     if (line.rfind("HTTP/", 0) == 0) {
-        // A new response (redirect hop or interim): reset (only the final
-        // hop's headers are kept).
+        // A new response (a redirect hop or an interim one) starts over.
         hs->headers.clear();
         hs->sawLocation = false;
         hs->status = 0;
@@ -339,13 +380,18 @@ size_t headerCb(char* buffer, size_t size, size_t nitems, void* userdata) {
     return n;
 }
 
+/// Curl's write callback: queues the body bytes for the download side of
+/// `userdata`, a `HttpTransfer`, waiting while that would take it past `kCap`
+/// (a piece is always taken into an empty buffer). Bytes before the event,
+/// and all bytes under `discardBody`, are dropped. Returns 0, which fails the
+/// transfer, once it is aborted or the download side is shut.
 size_t writeCb(char* ptr, size_t size, size_t nmemb, void* userdata) {
     size_t n = size * nmemb;
     auto* t = static_cast<HttpTransfer*>(userdata);
     std::unique_lock<std::mutex> lk(t->m);
-    if (t->abort || t->downShut) return 0;   // CURLE_WRITE_ERROR: ends the transfer
-    if (!t->headersPosted) return n;          // a body we do not deliver
-    if (t->discardBody) return n;             // expectStream, non-2xx: drop
+    if (t->abort || t->downShut) return 0;
+    if (!t->headersPosted) return n;          // an interim or redirect body
+    if (t->discardBody) return n;
     t->cv.wait(lk, [t, n] {
         return t->abort || t->downShut || t->downBytes == 0 || t->downBytes + n <= kCap;
     });
@@ -357,6 +403,12 @@ size_t writeCb(char* ptr, size_t size, size_t nmemb, void* userdata) {
     return n;
 }
 
+/// Curl's read callback: copies up to `size * nitems` queued upload bytes of
+/// `userdata`, a `HttpTransfer`, into `buffer`, waiting while there are none.
+/// Returns 0, ending the body, once the upload close is requested and the
+/// queue is empty, and aborts the transfer once it is aborted, the upload side
+/// is shut, or the header deadline passes while it waits. A write whose bytes
+/// are all taken has its result posted if it was not acknowledged already.
 size_t readCb(char* buffer, size_t size, size_t nitems, void* userdata) {
     size_t max = size * nitems;
     auto* t = static_cast<HttpTransfer*>(userdata);
@@ -367,7 +419,7 @@ size_t readCb(char* buffer, size_t size, size_t nitems, void* userdata) {
         if (t->upCloseRequested) {
             t->upEofSent = true;
             serviceLocked(*t);
-            return 0;   // end of the chunked body
+            return 0;
         }
         if (t->hasDeadline && !t->headersPosted) {
             if (Clock::now() >= t->deadline) {
@@ -400,6 +452,8 @@ size_t readCb(char* buffer, size_t size, size_t nitems, void* userdata) {
     return copied;
 }
 
+/// Returns whether `c` is reported as BadUrl: a malformed URL, or a scheme other
+/// than http/https, including one reached by a redirect.
 bool isBadUrlCode(CURLcode c) {
     return c == CURLE_URL_MALFORMAT || c == CURLE_UNSUPPORTED_PROTOCOL;
 }
@@ -408,10 +462,13 @@ bool isBadUrlCode(CURLcode c) {
 // The transfer thread
 // ---------------------------------------------------------------------------
 
+/// Builds the request's header list: Content-Type, then `spec.headers`, then,
+/// for a stream body, chunked transfer encoding and an empty `Expect:`. A field
+/// that could inject a header line is left out. Returns null for an empty list;
+/// otherwise the caller frees it with `curl_slist_free_all`.
 curl_slist* buildHeaderList(const HttpRequestSpec& spec) {
     curl_slist* list = nullptr;
     auto add = [&list](const std::string& name, const std::string& value) {
-        // A CR or LF would inject a header line: such a header is dropped.
         if (name.find_first_of("\r\n:") != std::string::npos || name.empty()) return;
         if (value.find_first_of("\r\n") != std::string::npos) return;
         // "Name;" sends an empty value ("Name:" would remove the header).
@@ -422,11 +479,13 @@ curl_slist* buildHeaderList(const HttpRequestSpec& spec) {
     for (const auto& h : spec.headers) add(h.first, h.second);
     if (spec.bodyKind == 2) {
         list = curl_slist_append(list, "Transfer-Encoding: chunked");
-        list = curl_slist_append(list, "Expect:");   // no 100-continue round trip
+        list = curl_slist_append(list, "Expect:");
     }
     return list;
 }
 
+/// Sets every option of `easy` for `t`'s request. `t`, `hs` and `errbuf` are kept
+/// by curl for the handle's life; `errbuf` must hold `CURL_ERROR_SIZE` bytes.
 void configure(CURL* easy, HttpTransfer& t, HeaderState& hs, char* errbuf) {
     const HttpRequestSpec& spec = t.spec;
     curl_easy_setopt(easy, CURLOPT_URL, spec.url.c_str());
@@ -448,17 +507,16 @@ void configure(CURL* easy, HttpTransfer& t, HeaderState& hs, char* errbuf) {
     curl_easy_setopt(easy, CURLOPT_WRITEDATA, &t);
     if (spec.timeoutMs > 0) curl_easy_setopt(easy, CURLOPT_CONNECTTIMEOUT_MS, static_cast<long>(spec.timeoutMs));
 
-    // TLS: verify the peer; honour CURL_CA_BUNDLE like elm/http's native
-    // kernel (libcurl does not read it itself).
+    // libcurl does not read CURL_CA_BUNDLE itself.
     curl_easy_setopt(easy, CURLOPT_SSL_VERIFYPEER, 1L);
     curl_easy_setopt(easy, CURLOPT_SSL_VERIFYHOST, 2L);
     if (const char* ca = std::getenv("CURL_CA_BUNDLE")) {
         if (*ca) curl_easy_setopt(easy, CURLOPT_CAINFO, ca);
     }
 
-    // Method and body. GET/POST/HEAD use curl's own verbs, so a 301/302/303
-    // after a POST is followed with a GET as browsers do; any other method
-    // (or a GET with a body) is a custom request.
+    // POST and HEAD use curl's own verbs, so curl's redirect handling for those
+    // verbs applies. Any other method is sent with CURLOPT_CUSTOMREQUEST, except
+    // a GET without a body. HEAD sends no body even if one is given.
     const std::string& m = spec.method;
     bool hasBody = spec.bodyKind != 0;
     if (m == "HEAD") {
@@ -479,8 +537,11 @@ void configure(CURL* easy, HttpTransfer& t, HeaderState& hs, char* errbuf) {
     }
 }
 
-// The end of the transfer: record the result, resolve the task if nothing
-// did yet, and complete what the channels are waiting for.
+/// Records that `t` has finished with `code` (with `errbuf` as the message if
+/// not empty), posts its event if it is not yet resolved, and answers what the
+/// channels wait for. A clean finish with a `status` but no posted head posts a
+/// status event with an empty head, `effUrl` as its URL, and a body that has
+/// already ended. Takes `t.m`.
 void finishTransfer(HttpTransfer& t, CURLcode code, const char* errbuf, long status,
                     const char* effUrl) {
     std::lock_guard<std::mutex> lk(t.m);
@@ -496,8 +557,6 @@ void finishTransfer(HttpTransfer& t, CURLcode code, const char* errbuf, long sta
         HttpEvent ev;
         ev.token = t.token;
         if (code == CURLE_OK && status > 0) {
-            // The response ended without a header block we recognised as
-            // final (unusual): deliver it now, with an already-finished body.
             t.headersPosted = true;
             bool ok2xx = status >= 200 && status < 300;
             t.discardBody = t.spec.discardNon2xx && !ok2xx;
@@ -519,6 +578,9 @@ void finishTransfer(HttpTransfer& t, CURLcode code, const char* errbuf, long sta
     serviceLocked(t);
 }
 
+/// Runs `tp`'s transfer to its end on the calling thread, then finishes it with
+/// curl's result, the response code and the effective URL. Hitting the header
+/// deadline or an abort stops the loop with a timeout or abort code.
 void runTransfer(std::shared_ptr<HttpTransfer> tp) {
     HttpTransfer& t = *tp;
     char errbuf[CURL_ERROR_SIZE];
@@ -561,7 +623,7 @@ void runTransfer(std::shared_ptr<HttpTransfer> tp) {
             std::snprintf(errbuf, sizeof errbuf, "%s", curl_multi_strerror(mc));
             break;
         }
-        if (running == 0) break;   // no DONE message: treat as finished
+        if (running == 0) break;   // no DONE message: finished with CURLE_OK
         int waitMs = 1000;
         {
             std::lock_guard<std::mutex> lk(t.m);
@@ -584,7 +646,7 @@ void runTransfer(std::shared_ptr<HttpTransfer> tp) {
     }
     {
         std::lock_guard<std::mutex> lk(t.m);
-        t.multi = nullptr;   // no wakeups after this point
+        t.multi = nullptr;   // before the handle is cleaned up below
         if (t.timedOut && result != CURLE_OK) result = CURLE_OPERATION_TIMEDOUT;
     }
 
@@ -607,21 +669,24 @@ void runTransfer(std::shared_ptr<HttpTransfer> tp) {
 // HttpStreamService
 // ---------------------------------------------------------------------------
 
+/// The service's state.
 struct HttpStreamService::Impl {
-    std::mutex m;   // guards `live` and `events`
+    std::mutex m;   ///< Guards `live` and `events`.
+    /// Started transfers whose thread has not ended, by token. Not owning.
     std::unordered_map<uint64_t, std::weak_ptr<HttpTransfer>> live;
     std::deque<HttpEvent> events;
-    std::atomic<size_t> count{0};
+    std::atomic<size_t> count{0};   ///< The size of `events`, readable without `m`.
+    /// The scheduler `post` wakes, bound by the constructor. Leaky, like the service.
     Scheduler* sched = nullptr;
 };
 
 HttpStreamService::HttpStreamService() : impl_(new Impl()) {
-    impl_->sched = &Scheduler::instance();   // bound on the main thread
+    impl_->sched = &Scheduler::instance();
     curl_global_init(CURL_GLOBAL_DEFAULT);
 }
 
 HttpStreamService& HttpStreamService::instance() {
-    static auto* s = new HttpStreamService();   // leaky (§3.4)
+    static auto* s = new HttpStreamService();   // never destroyed
     return *s;
 }
 
@@ -659,7 +724,7 @@ bool HttpStreamService::cancel(uint64_t token) {
         auto it = self.impl_->live.find(token);
         if (it != self.impl_->live.end()) t = it->second.lock();
     }
-    if (!t) return false;   // finished: its event is queued (the drain decrements)
+    if (!t) return false;
     std::lock_guard<std::mutex> lk(t->m);
     bool removed = !t->resolved;
     t->resolved = true;
@@ -714,8 +779,6 @@ HttpTransferChannel::HttpTransferChannel(std::shared_ptr<HttpTransfer> t, Dir di
 }
 
 HttpTransferChannel::~HttpTransferChannel() {
-    // Dropped without a graceful close (a heap reset, or an erased pair
-    // that never closed): stop the transfer.
     if (!closeRequested_) shutdown();
 }
 
@@ -729,7 +792,7 @@ void HttpTransferChannel::requestRead(uint64_t token, size_t maxBytes) {
     }
     t_->reads.push_back({token, maxBytes});
     serviceLocked(*t_);
-    t_->cv.notify_all();   // room in the download buffer
+    t_->cv.notify_all();   // the read may have made room for the write callback
 }
 
 void HttpTransferChannel::requestWrite(uint64_t token, std::string bytes) {
@@ -754,7 +817,7 @@ void HttpTransferChannel::requestWrite(uint64_t token, std::string bytes) {
     t_->up.push_back(HttpTransfer::UpChunk{std::move(bytes), 0, token, false});
     t_->upBytes += n;
     serviceLocked(*t_);
-    t_->cv.notify_all();   // data for the read callback
+    t_->cv.notify_all();
 }
 
 void HttpTransferChannel::close(uint64_t token) {
@@ -765,7 +828,7 @@ void HttpTransferChannel::close(uint64_t token) {
             t_->upCloseRequested = true;
             t_->upCloseToken = token;
             serviceLocked(*t_);
-            t_->cv.notify_all();   // the read callback sends the end of the body
+            t_->cv.notify_all();
             return;
         }
         ChannelResult r = makeResult(id(), token, ChannelResult::Op::Close);
@@ -773,8 +836,6 @@ void HttpTransferChannel::close(uint64_t token) {
         postChannelResult(std::move(r));
         return;
     }
-    // Download: the reader is done (EOF or error seen). Pending reads (none
-    // in practice) complete with ECANCELED.
     t_->downShut = true;
     serviceLocked(*t_);
     t_->cv.notify_all();
@@ -791,7 +852,7 @@ void HttpTransferChannel::shutdown() {
         t_->downShut = true;
     }
     if (!t_->finished) {
-        abortLocked(*t_);   // a cancelled body stream ends the transfer
+        abortLocked(*t_);
     } else {
         serviceLocked(*t_);
     }

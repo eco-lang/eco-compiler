@@ -1,36 +1,15 @@
 //===- WsManager.cpp - The C++ effect manager of WebSocket ----------------===//
 //
-// plans/eco-system-websockets.md §3.6 "Manager", Appendix C.2; base plan
-// Appendix C.0. Layout: WsManager.hpp.
+// The manager's state is in two tables. The taggers and the router, which are heap values, are kept as encoded words
+// in the single entry of a `Registry`, grouped by WebSocket id and kind. Everything else about a subscribed WebSocket
+// (whether a reader is attached, whether it has seen the end, the hold) is plain data in the `Aux` table, keyed on the
+// heap generation.
 //
-//   * onEffects: the taggers are grouped by WebSocket id and kind (encoded
-//     words in a T5 registry, with the router), then every id is
-//     reconciled (no Elm calls from onEffects):
-//       - OnMessage: the first subscriber attaches the subscription reader to
-//         the readable (attachReader fails while a read is parked: retried on
-//         the next onEffects); the last one detaches it, so later messages
-//         wait on the readable again;
-//       - keep-alive (§3.6): one pendingAsync count per subscribed
-//         connection while it is open (OnMessage) or until its close was
-//         delivered (OnClose); a count per subscription would only differ in
-//         the number, not in liveness;
-//       - a held close (the connection closed with no OnClose subscriber) is
-//         delivered to the new subscribers from the WebSocket drain
-//         (requestWsWork).
-//   * The reader (readerFn) runs from the channel drain: it builds the
-//     ( kind, text, bytes ) argument once (rooted) and hands it to every
-//     OnMessage tagger in subscription order, sendToApp + drain() per
-//     message (T8, G12). The taggers are snapshotted per message (an update
-//     may change the subscriptions, G11; a detach stops the feed).
-//   * Closed (wsManagerOnClosed): the ( code, reason, clean ) argument goes
-//     to every OnClose tagger once, or is held. While the reader is attached
-//     it waits for the readable's end to reach the reader, so every message
-//     received before the close is delivered first (the queued chunks run
-//     from a later channel drain); readerFn then delivers it.
-//   * subMap composes the tagger (TimeEffectManager pattern) and keeps the
-//     unboxed WebSocket id (mask 0x1). There are no commands.
-//
-// Templates used: T6 (rooted registration per G14), T5, T8/G12.
+// `onEffects` never calls Elm code: it stores the new subscriptions and then reconciles every id it has heard of,
+// attaching or detaching the reader and taking or releasing the hold. Closes that a new `OnClose` subscription
+// should receive are delivered from the WebSocket event drain, which `requestWsWork` asks to call
+// `deliverHeldCloses`. Each delivery sends one message per tagger and runs the scheduler after each, and the taggers
+// are read once per delivery, so a subscription change made while it runs does not affect the delivery under way.
 //
 //===----------------------------------------------------------------------===//
 
@@ -54,15 +33,20 @@ namespace {
 
 using namespace WsManager;
 
+// The encoded taggers of the subscriptions that name one WebSocket, by kind, each in the order of the subscription
+// list `onEffects` was given.
 struct Subs {
-    std::vector<uint64_t> messages;   // encoded taggers, in subscription order
+    std::vector<uint64_t> messages;
     std::vector<uint64_t> closes;
 };
 
+// The manager's heap-holding state: the router of the last `onEffects` (0 before the first) and the taggers of every
+// subscribed WebSocket, by id.
 struct ManagerState {
     uint64_t routerEnc = 0;
     std::map<int64_t, Subs> subs;
 
+    // Calls `f` on every encoded word the state holds, for the registry's scanner.
     template <typename F>
     void forEachWord(F&& f) {
         f(routerEnc);
@@ -73,12 +57,14 @@ struct ManagerState {
     }
 };
 
+// Returns the registry that holds the manager's state. It is created on first use and never destroyed.
 Registry<ManagerState>& registry() {
     static auto* r = new Registry<ManagerState>("eco-system-websocket-manager");   // leaky
     return *r;
 }
 
-// The single state entry (re-created after a heap reset, F24).
+// Returns the manager's state, creating an empty one on first use and after a heap reset, which empties the registry.
+// The reference is valid until the next heap reset.
 ManagerState& state() {
     static int64_t id = 0;
     auto& r = registry();
@@ -87,25 +73,27 @@ ManagerState& state() {
     return *r.find(id);
 }
 
-// POD bookkeeping per subscribed id (no heap words), keyed on the heap
-// generation like the tables.
+// What the manager knows about one WebSocket beyond its taggers.
 struct Aux {
-    bool attached = false;
-    int64_t readableId = 0;
-    HoldToken hold = kNoHold;   // the subscription's hold while it waits for a msg or the close
-    bool ended = false;   // the attached reader saw the readable's end
+    bool attached = false;      // The subscription reader is attached to `readableId`.
+    int64_t readableId = 0;     // The readable the reader was attached to; meaningful only while `attached`.
+    HoldToken hold = kNoHold;   // The WebSocket's hold, or `kNoHold` when none is taken.
+    bool ended = false;         // The attached reader has seen the readable's end.
 };
 
+// The `Aux` entries, by WebSocket id, and the heap generation they belong to.
 struct AuxTable {
     std::map<int64_t, Aux> m;
     uint64_t gen = 0;
-    bool init = false;
+    bool init = false;   // `gen` has been set from a first call of `aux`.
 };
 
+// Returns the `Aux` entries of the current heap generation, discarding all of them first if the generation has changed
+// since the last call. The holds of discarded entries are not released.
 std::map<int64_t, Aux>& aux() {
     static auto* t = new AuxTable();   // leaky
     uint64_t g = currentHeapGeneration();
-    if (!t->init || t->gen != g) {   // a dead heap's counts died with it
+    if (!t->init || t->gen != g) {
         t->init = true;
         t->gen = g;
         t->m.clear();
@@ -113,22 +101,25 @@ std::map<int64_t, Aux>& aux() {
     return t->m;
 }
 
+// Returns the taggers of WebSocket `wsId`, or null if no subscription names it. The pointer is valid until the next
+// `onEffects` or heap reset, and running Elm code may cause either.
 const Subs* subsOf(int64_t wsId) {
     ManagerState& st = state();
     auto it = st.subs.find(wsId);
     return it == st.subs.end() ? nullptr : &it->second;
 }
 
-// --- Delivery (T8, G12) ------------------------------------------------------------
+// --- Delivery ---------------------------------------------------------------------
 
-// Calls every tagger of kind `closes` / messages of `wsId` with `arg`
-// (rooted by the caller): sendToApp + drain per message.
+// Applies each close tagger (if `closes`) or each message tagger of WebSocket `wsId` to `arg`, sends the result to the
+// program and runs the scheduler, one tagger at a time in subscription order. The taggers are those subscribed when
+// the call starts. Does nothing before the first `onEffects`. `arg` must be rooted by the caller.
 void deliver(int64_t wsId, bool closes, HPointer& arg) {
     std::vector<HPointer> taggers;
     HPointer router = alloc::listNil(), msg = alloc::listNil();
     Elm::StackRootGuard g(&router, &msg);
     {
-        // Snapshot (no allocation from the decodes to the range push, G5).
+        // Nothing allocates from here to the range push, so the decoded taggers stay valid.
         const Subs* s = subsOf(wsId);
         if (!s || state().routerEnc == 0) return;
         const std::vector<uint64_t>& words = closes ? s->closes : s->messages;
@@ -140,27 +131,29 @@ void deliver(int64_t wsId, bool closes, HPointer& arg) {
     size_t saved = rs.stackRangePoint();
     rs.pushStackRootRange(taggers.data(), taggers.size(), ~0ULL);
     for (size_t i = 0; i < taggers.size(); ++i) {
-        msg = Scheduler::callClosure1(taggers[i], arg);   // Elm call (G11)
+        msg = Scheduler::callClosure1(taggers[i], arg);
         PlatformRuntime::instance().sendToApp(router, msg);
-        Scheduler::instance().drain();                    // once per message (G12)
+        Scheduler::instance().drain();
     }
     rs.restoreStackRangePoint(saved);
 }
 
+// Declared ahead of `readerFn`, which calls them; their comments are at their definitions.
 void deliverClose(int64_t wsId);
 bool reconcile(int64_t wsId);
 
-// True while the close must wait: the reader is attached and the readable's
-// end has not reached it (messages received before the close are queued).
+// Returns whether a close of WebSocket `wsId` must wait for the reader: one is attached and has not yet seen the
+// readable's end, so messages read before the close may still be queued for it.
 bool closeWaitsForReader(int64_t wsId) {
     auto& table = aux();
     auto it = table.find(wsId);
     return it != table.end() && it->second.attached && !it->second.ended;
 }
 
-// The subscription reader of a readable (Stream.hpp ReaderFn): data chunks
-// become ( kind, text, bytes ) for the OnMessage taggers. The end of the
-// readable is reported through Closed instead, which waits for it.
+// The subscription reader (`ReaderFn`) of WebSocket `ctx`'s readable. It delivers each chunk as a
+// `( tag, text, bytes )` message. At the readable's end or failure it records that the end was seen, delivers the
+// close if the WebSocket has ended, its close is undelivered and some `OnClose` subscription names it, and
+// reconciles the WebSocket.
 void readerFn(int64_t, ChannelResult& r, void* ctx) {
     int64_t wsId = static_cast<int64_t>(reinterpret_cast<intptr_t>(ctx));
     if (r.eof || r.err != 0) {
@@ -168,7 +161,7 @@ void readerFn(int64_t, ChannelResult& r, void* ctx) {
         WsEntry* e = findWs(wsId);
         const Subs* s = subsOf(wsId);
         if (e && e->closed && !e->closeDelivered && s && !s->closes.empty()) deliverClose(wsId);
-        (void)reconcile(wsId);   // a close seen before the end released nothing yet
+        (void)reconcile(wsId);
         return;
     }
     HPointer str = alloc::listNil(), bytes = alloc::listNil(), arg = alloc::listNil();
@@ -182,7 +175,7 @@ void readerFn(int64_t, ChannelResult& r, void* ctx) {
             bytes = alloc::emptyBytes();
         } else {
             alloc::BlankByteBuffer bb = alloc::allocByteBufferBlank(r.bytes.size());
-            std::memcpy(bb.bytes, r.bytes.data(), r.bytes.size());   // no allocation in between (G8)
+            std::memcpy(bb.bytes, r.bytes.data(), r.bytes.size());
             bytes = bb.hp;
         }
     }
@@ -190,11 +183,13 @@ void readerFn(int64_t, ChannelResult& r, void* ctx) {
     deliver(wsId, /*closes=*/false, arg);
 }
 
+// Delivers the end of WebSocket `wsId` to its close taggers as `( code, reason, clean )`, and marks it delivered,
+// unless it has not ended or was already delivered. It is marked delivered before any tagger runs.
 void deliverClose(int64_t wsId) {
     WsEntry* e = findWs(wsId);
     if (!e || !e->closed || e->closeDelivered) return;
     e->closeDelivered = true;
-    WsCloseInfo info = e->info;   // G3: copy before allocating
+    WsCloseInfo info = e->info;   // Copied: the entry may be erased once Elm code runs.
     HPointer reason = alloc::listNil(), arg = alloc::listNil();
     Elm::StackRootGuard g(&reason, &arg);
     reason = alloc::allocStringFromUTF8(info.reason);
@@ -203,8 +198,11 @@ void deliverClose(int64_t wsId) {
     deliver(wsId, /*closes=*/true, arg);
 }
 
-// Attach / detach the reader, adjust the count, note a held close. No Elm
-// calls. Returns true if a held close waits for delivery.
+// Brings WebSocket `wsId` in line with its subscriptions, without calling Elm code: attaches the reader if a message
+// subscription names it and none is attached, detaches it if none does, and takes or releases the hold as the file
+// comment of the header describes. Once nothing is left for the WebSocket, erases its `Aux` entry and asks
+// `wsTablesRetire` to erase its table entry if nothing else still needs it. Returns whether a close subscription is
+// waiting for a close that can be delivered now.
 bool reconcile(int64_t wsId) {
     const Subs* s = subsOf(wsId);
     bool hasMsg = s && !s->messages.empty();
@@ -223,7 +221,7 @@ bool reconcile(int64_t wsId) {
         detachReader(a.readableId);
         a.attached = false;
     }
-    bool waiting = a.attached && !a.ended;   // queued messages still to deliver
+    bool waiting = a.attached && !a.ended;
     bool want = (hasMsg && e && (!e->closed || waiting)) ||
                 (hasClose && e && !(e->closed && e->closeDelivered));
     if (want && a.hold == kNoHold) {
@@ -240,6 +238,8 @@ bool reconcile(int64_t wsId) {
     return held;
 }
 
+// Delivers every close that a close subscription is waiting for and that no reader holds back, and reconciles each
+// WebSocket a close subscription names. It is the work `onEffects` asks the WebSocket event drain for.
 void deliverHeldCloses() {
     std::vector<int64_t> ids;
     for (auto& kv : state().subs) {
@@ -252,21 +252,24 @@ void deliverHeldCloses() {
     }
 }
 
-// --- Manager closures (C.0) ------------------------------------------------------
+// --- Manager closures --------------------------------------------------------------
 
-// init : Task Never ()  (a 0-arity thunk, forced by setupEffects)
+// The evaluator of `init : Task Never ()`. Returns a Task that succeeds with Unit.
 void* initEval(void*[]) {
     return reinterpret_cast<void*>(enc(Scheduler::instance().taskSucceed(alloc::unit())));
 }
 
-// onEffects : Router -> List (MyCmd msg) -> List (MySub msg) -> () -> Task Never ()
+// The evaluator of `onEffects : Router -> List (MyCmd msg) -> List (MySub msg) -> () -> Task Never ()`. Replaces the
+// stored router and subscriptions with `args[0]` and `args[2]`, reconciles every WebSocket that was or is subscribed or
+// has an `Aux` entry, and asks the WebSocket event drain to deliver held closes if any are now due. Ignores the
+// commands and the state, and returns a Task that succeeds with Unit. A list element whose constructor tag is neither
+// `MySub` constructor's is skipped.
 void* onEffectsEval(void* args[]) {
     HPointer router = dec(args[0]);
     HPointer subs = dec(args[2]);
     Elm::StackRootGuard g(&router, &subs);
 
-    // A non-allocating walk (G5): copy every field out. The native runtime
-    // lists the subscriptions in declaration order (listFromEncoded).
+    // Nothing allocates during the walk, so the resolved objects stay valid while their fields are copied out.
     std::map<int64_t, Subs> wanted;
     for (alloc::ListCursor c(subs); !c.done(); c.next()) {
         void* obj = Allocator::instance().resolve(c.current().p);
@@ -280,7 +283,7 @@ void* onEffectsEval(void* args[]) {
 
     std::set<int64_t> ids;
     {
-        // Registry update: POD only, no heap allocation while `st` is live.
+        // Nothing allocates while `st` is in use.
         ManagerState& st = state();
         for (auto& kv : st.subs) ids.insert(kv.first);
         st.routerEnc = enc(router);
@@ -291,30 +294,32 @@ void* onEffectsEval(void* args[]) {
     for (auto& kv : aux()) ids.insert(kv.first);
     bool held = false;
     for (int64_t id : ids) held = reconcile(id) || held;
-    if (held) requestWsWork(&deliverHeldCloses);   // delivered from the drain, not from here
+    if (held) requestWsWork(&deliverHeldCloses);
 
     return reinterpret_cast<void*>(enc(Scheduler::instance().taskSucceed(alloc::unit())));
 }
 
-// onSelfMsg : Router -> Never -> () -> Task Never ()  (never sent)
+// The evaluator of `onSelfMsg : Router -> Never -> () -> Task Never ()`. Returns a Task that succeeds with the state,
+// `args[2]`. No self message is ever sent.
 void* onSelfMsgEval(void* args[]) {
     return reinterpret_cast<void*>(enc(Scheduler::instance().taskSucceed(dec(args[2]))));
 }
 
-// The composed tagger of subMap: args[0] = f, args[1] = old tagger,
-// args[2] = the event tuple. Result: f (old event).
+// The evaluator of the tagger `subMap` builds, with `f` and the old tagger captured as `args[0]` and `args[1]`.
+// Returns `f (old x)` for the argument `x`, `args[2]`.
 void* composedTaggerEval(void* args[]) {
     HPointer f = dec(args[0]);
     HPointer old = dec(args[1]);
     HPointer x = dec(args[2]);
     HPointer mid = alloc::listNil();
     Elm::StackRootGuard g({&f, &old, &x, &mid});
-    mid = Scheduler::callClosure1(old, x);   // Elm call (G11)
+    mid = Scheduler::callClosure1(old, x);
     return reinterpret_cast<void*>(enc(Scheduler::callClosure1(f, mid)));
 }
 
-// subMap : (a -> b) -> MySub a -> MySub b — compose the tagger, keep the
-// constructor and the id.
+// The evaluator of `subMap : (a -> b) -> MySub a -> MySub b`. Returns a subscription with the same constructor and
+// WebSocket id whose tagger applies `f` to what the old tagger returns. A value whose constructor tag is neither
+// `MySub` constructor's is returned unchanged.
 void* subMapEval(void* args[]) {
     HPointer f = dec(args[0]);
     HPointer sub = dec(args[1]);
@@ -333,7 +338,7 @@ void* subMapEval(void* args[]) {
     }
     composed = alloc::allocClosure(&composedTaggerEval, 3);
     {
-        // Both captures right after the allocation, nothing allocated in between (G8).
+        // Nothing allocates between resolving the closure and the captures.
         void* p = Allocator::instance().resolve(composed);
         alloc::closureCapture(p, alloc::boxed(f), PK_Boxed);
         alloc::closureCapture(p, alloc::boxed(old), PK_Boxed);
@@ -347,7 +352,7 @@ void* subMapEval(void* args[]) {
 void wsManagerOnClosed(int64_t wsId) {
     const Subs* s = subsOf(wsId);
     if (s && !s->closes.empty() && !closeWaitsForReader(wsId)) deliverClose(wsId);
-    (void)reconcile(wsId);   // releases the count; a later subscriber gets a held close
+    (void)reconcile(wsId);
 }
 
 bool wsManagerHasSubscribers(int64_t wsId) {
@@ -361,8 +366,8 @@ using namespace Eco::System;
 
 namespace {
 
-// Allocates the manager closures in the rooted PortRuntime form (G14) and
-// registers them under "WebSocket". Subscriptions only: no cmdMap.
+// Allocates the manager's closures, keeping them rooted until all are allocated, and registers them under
+// "WebSocket". The cmdMap is the empty list, since the manager has no commands.
 void registerWsManager() {
     HPointer initCl = alloc::listNil();
     HPointer effCl = alloc::listNil();
@@ -376,7 +381,7 @@ void registerWsManager() {
     subMapCl = alloc::allocClosure(&subMapEval, 2);
     PlatformRuntime::ManagerInfo info{enc(initCl), enc(effCl), enc(selfCl),
                                       enc(cmdMapCl), enc(subMapCl)};
-    PlatformRuntime::instance().registerManager("WebSocket", info);   // no allocation after encode
+    PlatformRuntime::instance().registerManager("WebSocket", info);   // Nothing allocates after the words are encoded.
 }
 
 } // namespace

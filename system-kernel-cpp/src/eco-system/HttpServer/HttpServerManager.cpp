@@ -1,24 +1,8 @@
 //===- HttpServerManager.cpp - The C++ effect manager of Http.Server ------===//
 //
-// plans/eco-system-library.md §3.6, Appendix C.0 / C.5 and Phase 7 step
-// 7.2. Layout: HttpServerManager.hpp.
-//
-//   * onEffects: the OnRequest taggers are grouped by server id (encoded
-//     words in a T5 registry, with the router). Subscriptions hold no
-//     pendingAsync: the listening server already does (§3.4). It then
-//     tells HttpTables, whose drain delivers the requests parked for a
-//     server that has a subscriber now (never from onEffects itself).
-//   * subMap composes the tagger (TimeEffectManager pattern) and keeps the
-//     unboxed server id (mask 0x1). There are no commands.
-//   * Delivery (httpManagerDeliver, called by the HttpTables drain for each
-//     request, T8/G12): build the tagger argument once (fully rooted,
-//     G4/G6), snapshot the server's taggers into one rooted range, and for
-//     each tagger: call it, sendToApp, drain(). Requests of a server
-//     nobody subscribes to are parked by HttpTables (plans/eco-system-
-//     websockets.md §3.4 "Manager": bounded, keyed on heap generation).
-//   * Windows: an OnRequest subscription crashes with a clear message (§1).
-//
-// Templates used: T6 (rooted registration per G14), T5, T8/G12, G6, G10.
+// The manager's state, the router and every server's taggers, is one entry of a `Registry`, so the collector keeps
+// those values alive and updates their encoded words when it moves them. Each function decodes the words it needs,
+// or writes new ones, with no allocation in between, so the decoded pointers are current until they are rooted.
 //
 //===----------------------------------------------------------------------===//
 
@@ -41,10 +25,13 @@ namespace {
 using namespace HttpServerManager;
 using HttpSrv::RequestData;
 
+/// The manager's state: the router of the last `onEffects`, and the taggers of the current subscriptions grouped by
+/// server id, in subscription order. All are encoded HPointer words; `routerEnc` is 0 until the first `onEffects`.
 struct ManagerState {
     uint64_t routerEnc = 0;
-    std::map<int64_t, std::vector<uint64_t>> taggers;   // server id → encoded taggers
+    std::map<int64_t, std::vector<uint64_t>> taggers;
 
+    /// Calls `f` on every encoded word the state holds, as `Registry` requires.
     template <typename F>
     void forEachWord(F&& f) {
         f(routerEnc);
@@ -53,12 +40,15 @@ struct ManagerState {
     }
 };
 
+/// Returns the registry that holds the manager's state. It is created on the first call and never deleted, as
+/// `Registry` requires.
 Registry<ManagerState>& registry() {
-    static auto* r = new Registry<ManagerState>("eco-system-http-server-manager");   // leaky
+    static auto* r = new Registry<ManagerState>("eco-system-http-server-manager");
     return *r;
 }
 
-// The single state entry (re-created after a heap reset, F24).
+/// Returns the manager's single state entry, creating an empty one on the first call and after a heap reset has
+/// discarded the registry's entries. The reference is invalidated when a heap reset discards the entry.
 ManagerState& state() {
     static int64_t id = 0;
     auto& r = registry();
@@ -67,6 +57,8 @@ ManagerState& state() {
     return *r.find(id);
 }
 
+/// Returns whether any current `OnRequest` subscription names `serverId`; false before the first `onEffects`.
+/// Installed as `HttpManagerHooks::hasSubscriber`.
 bool hasSubscriber(int64_t serverId) {
     ManagerState& st = state();
     if (st.routerEnc == 0) return false;
@@ -74,16 +66,21 @@ bool hasSubscriber(int64_t serverId) {
     return it != st.taggers.end() && !it->second.empty();
 }
 
-// --- Delivery (T8) -------------------------------------------------------------
+// --- Delivery -------------------------------------------------------------------
 
-// A Bytes value holding `b` (T4); empty → the embedded constant (HEAP_071).
+/// Returns a new `Bytes` value holding a copy of `b`, or the shared empty `Bytes` constant when `b` is empty. A GC
+/// point when `b` is not empty.
 HPointer makeBytes(const std::string& b) {
     if (b.empty()) return alloc::emptyBytes();
     alloc::BlankByteBuffer bb = alloc::allocByteBufferBlank(b.size());
-    std::memcpy(bb.bytes, b.data(), b.size());   // no allocation in between (G8)
+    std::memcpy(bb.bytes, b.data(), b.size());
     return bb.hp;
 }
 
+/// Builds the tagger argument for request `key` of `serverId` from `ev`, then, for each tagger of `serverId` as the
+/// subscriptions stood on entry, calls it on that argument, sends the result to the program and drains the
+/// scheduler once. Calls nothing when the server has no taggers. Installed as
+/// `HttpManagerHooks::deliver`; runs Elm code, which may change the subscriptions.
 void deliver(int64_t serverId, int64_t key, const RequestData& ev) {
     HPointer router = alloc::listNil();
     HPointer arg = alloc::listNil();
@@ -99,7 +96,7 @@ void deliver(int64_t serverId, int64_t key, const RequestData& ev) {
     Elm::StackRootGuard g({&router, &arg, &msg, &hdrs, &body, &mu, &hb, &name, &value, &values, &kfu});
     auto& rs = Allocator::instance().getRootSet();
 
-    // ( name, [ value ] ) per header occurrence (T3: one rooted range).
+    // The header pairs are collected in a rooted range and turned into a list in one call.
     {
         std::vector<HPointer> ptrs(ev.headers.size(), alloc::listNil());
         size_t saved = rs.stackRangePoint();
@@ -107,7 +104,6 @@ void deliver(int64_t serverId, int64_t key, const RequestData& ev) {
         for (size_t i = 0; i < ev.headers.size(); ++i) {
             name = alloc::allocStringFromUTF8(ev.headers[i].first);
             value = alloc::allocStringFromUTF8(ev.headers[i].second);
-            // A one-element list: a single cons, not a list-building loop (G6).
             values = alloc::cons(alloc::boxed(value), alloc::listNil(), true);
             ptrs[i] = alloc::tuple2(alloc::boxed(name), alloc::boxed(values), 0);
         }
@@ -124,8 +120,8 @@ void deliver(int64_t serverId, int64_t key, const RequestData& ev) {
                         TAGGER_KEY_MASK);
     arg = alloc::tuple3(alloc::boxed(mu), alloc::boxed(hb), alloc::boxed(kfu), TAGGER_ARG_MASK);
 
-    // Snapshot the taggers: update may change the subscriptions while we
-    // deliver (G11). No allocation from the decodes to the range push.
+    // Snapshot the taggers, since a tagger or the drain may run onEffects and replace them. Nothing allocates
+    // between the decodes and the range push, so the decoded pointers are current when they become roots.
     ManagerState& st = state();
     const std::vector<uint64_t>& words = st.taggers[serverId];
     std::vector<HPointer> taggers;
@@ -135,28 +131,31 @@ void deliver(int64_t serverId, int64_t key, const RequestData& ev) {
     size_t saved = rs.stackRangePoint();
     rs.pushStackRootRange(taggers.data(), taggers.size(), ~0ULL);
     for (size_t i = 0; i < taggers.size(); ++i) {
-        msg = Scheduler::callClosure1(taggers[i], arg);   // Elm call (G11)
+        msg = Scheduler::callClosure1(taggers[i], arg);
         PlatformRuntime::instance().sendToApp(router, msg);
-        Scheduler::instance().drain();                    // once per message (G12)
+        Scheduler::instance().drain();
     }
     rs.restoreStackRangePoint(saved);
 }
 
-// --- Manager closures (C.0) ------------------------------------------------------
+// --- Manager closures -----------------------------------------------------------
 
-// init : Task Never ()  (a 0-arity thunk, forced by setupEffects)
+/// Evaluates `init`: returns a task that succeeds with `()`, the manager's unused Elm state.
 void* initEval(void*[]) {
     return reinterpret_cast<void*>(enc(Scheduler::instance().taskSucceed(alloc::unit())));
 }
 
-// onEffects : Router -> List (MyCmd msg) -> List (MySub msg) -> () -> Task Never ()
+/// Evaluates `onEffects router cmds subs ()`. Replaces the stored router and taggers with those of `subs` and tells
+/// `HttpTables` the subscriptions changed. Then spawns the task of every `Respond` in `cmds` and, if there was
+/// any, drains the scheduler. Returns a task that succeeds with `()`. On Windows, any `OnRequest` subscription is
+/// a fatal error.
 void* onEffectsEval(void* args[]) {
     HPointer router = dec(args[0]);
     HPointer cmds = dec(args[1]);
     HPointer subs = dec(args[2]);
     Elm::StackRootGuard g(&router, &cmds, &subs);
 
-    // A non-allocating walk (G5): copy every field out.
+    // Nothing allocates in this walk, so `subs` and the resolved objects stay current.
     std::map<int64_t, std::vector<uint64_t>> wanted;
     for (alloc::ListCursor c(subs); !c.done(); c.next()) {
         void* obj = Allocator::instance().resolve(c.current().p);
@@ -168,21 +167,19 @@ void* onEffectsEval(void* args[]) {
     }
 
 #if defined(_WIN32)
-    // A Sub is infallible: crash with a clear message (§1).
+    // A subscription has no way to report failure.
     if (!wanted.empty())
         ::Eco::Kernel::reportFatal("eco/system: Http.Server.onRequest is not supported on Windows yet");
 #endif
 
-    // Registry update: POD only, no heap allocation while `st` is live.
     {
         ManagerState& st = state();
         st.routerEnc = enc(router);
         st.taggers = std::move(wanted);
     }
-    HttpSrv::httpTablesSubscriptionsChanged();   // parked requests: from the drain
+    HttpSrv::httpTablesSubscriptionsChanged();
 
-    // Commands (send): spawn every Respond task, as SystemManager does for Execute
-    // (allocates; the cursor stays rooted).
+    // Spawning allocates, so the list is walked with a rooted cursor.
     bool spawned = false;
     {
         alloc::RootedListCursor c(cmds);
@@ -204,29 +201,31 @@ void* onEffectsEval(void* args[]) {
     return reinterpret_cast<void*>(enc(Scheduler::instance().taskSucceed(alloc::unit())));
 }
 
-// onSelfMsg : Router -> Never -> () -> Task Never ()  (never sent)
+/// Evaluates `onSelfMsg router msg state`: returns a task that succeeds with `state`. The manager sends itself
+/// no messages.
 void* onSelfMsgEval(void* args[]) {
     return reinterpret_cast<void*>(enc(Scheduler::instance().taskSucceed(dec(args[2]))));
 }
 
-// cmdMap : (a -> b) -> MyCmd a -> MyCmd b — Respond carries no msg.
+/// Evaluates `cmdMap f cmd`: returns `cmd` unchanged, since `Respond` produces no message.
 void* cmdMapEval(void* args[]) {
     return args[1];
 }
 
-// The composed tagger of subMap: args[0] = f, args[1] = old tagger,
-// args[2] = the request tuple. Result: f (old request).
+/// Evaluates the tagger `subMap` builds, with captures `f` and `old` in `args[0]` and `args[1]` and the tagger
+/// argument in `args[2]`: returns `f (old arg)`.
 void* composedTaggerEval(void* args[]) {
     HPointer f = dec(args[0]);
     HPointer old = dec(args[1]);
     HPointer x = dec(args[2]);
     HPointer mid = alloc::listNil();
     Elm::StackRootGuard g({&f, &old, &x, &mid});
-    mid = Scheduler::callClosure1(old, x);   // Elm call (G11)
+    mid = Scheduler::callClosure1(old, x);
     return reinterpret_cast<void*>(enc(Scheduler::callClosure1(f, mid)));
 }
 
-// subMap : (a -> b) -> MySub a -> MySub b — compose the tagger, keep the id.
+/// Evaluates `subMap f sub`: returns an `OnRequest` with the same server id whose tagger applies the old tagger and
+/// then `f`. Returns `sub` unchanged if it is not an `OnRequest`, or `resolve` returns null for it.
 void* subMapEval(void* args[]) {
     HPointer f = dec(args[0]);
     HPointer sub = dec(args[1]);
@@ -242,7 +241,7 @@ void* subMapEval(void* args[]) {
     }
     composed = alloc::allocClosure(&composedTaggerEval, 3);
     {
-        // Both captures right after the allocation, nothing allocated in between (G8).
+        // Nothing allocates between the closure's allocation and the captures, so `p` stays current.
         void* p = Allocator::instance().resolve(composed);
         alloc::closureCapture(p, alloc::boxed(f), PK_Boxed);
         alloc::closureCapture(p, alloc::boxed(old), PK_Boxed);
@@ -260,8 +259,8 @@ using namespace Eco::System;
 
 namespace {
 
-// Allocates the manager closures in the rooted PortRuntime form (G14) and
-// registers them under "Http.Server". Commands (send) and subscriptions (onRequest).
+/// Allocates the five manager closures, registers them under "Http.Server", and installs `hasSubscriber` and
+/// `deliver` as the `HttpTables` hooks.
 void registerHttpServerManager() {
     HPointer initCl = alloc::listNil();
     HPointer effCl = alloc::listNil();
@@ -276,7 +275,7 @@ void registerHttpServerManager() {
     subMapCl = alloc::allocClosure(&subMapEval, 2);
     PlatformRuntime::ManagerInfo info{enc(initCl), enc(effCl), enc(selfCl),
                                       enc(cmdMapCl), enc(subMapCl)};
-    PlatformRuntime::instance().registerManager("Http.Server", info);   // no allocation after encode
+    PlatformRuntime::instance().registerManager("Http.Server", info);
     HttpSrv::HttpManagerHooks hooks;
     hooks.hasSubscriber = &hasSubscriber;
     hooks.deliver = &deliver;

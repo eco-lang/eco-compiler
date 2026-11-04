@@ -1,10 +1,3 @@
-/**
- * Elm Kernel Utils Module - Runtime Heap Integration
- *
- * This module provides core comparison, equality, and utility functions
- * that work with the GC-managed heap values.
- */
-
 #include "Utils.hpp"
 #include "ExportHelpers.hpp"
 #include "allocator/Allocator.hpp"
@@ -16,37 +9,34 @@
 
 namespace Elm::Kernel::Utils {
 
-// Order type: type_id 0 is reserved for built-in Order type
+/// A type id for Order. Nothing uses it.
 constexpr u16 ORDER_TYPE_ID = 0;
+/// The constructor index of LT, the first of Order's nullary constructors.
 constexpr u16 ORDER_LT = 0;
+/// The constructor index of EQ.
 constexpr u16 ORDER_EQ = 1;
+/// The constructor index of GT.
 constexpr u16 ORDER_GT = 2;
 
-// Order values are nullary constructors, so they are embedded null-cons
-// constants (plans/null-cons-hpointer-embedding.md, HEAP_044): no allocation,
-// no GC roots, no init. Kept as functions for the kernel/codegen call ABI
-// (Eco_Runtime_getOrder* lowering treats the result as a regular Elm value).
-void initOrderSingletons() {}  // retained for the weak-linked init hook; no-op
+// Order's constructors take no arguments, so each value is the null-cons word `nullConsWordFor` builds
+// from its constructor index.
+void initOrderSingletons() {}
 
 uint64_t getOrderLT() { return nullConsWordFor(ORDER_LT); }
 uint64_t getOrderEQ() { return nullConsWordFor(ORDER_EQ); }
 uint64_t getOrderGT() { return nullConsWordFor(ORDER_GT); }
 
-// Reserved ctor tags for runtime-recognised types. Must match
-// `Compiler.IR.Runtime.CtorTag` in the compiler.
-//
-// `Dict.RBNode_elm_builtin` is tagged so the runtime can compare two Dicts by
-// content (in-order key/value traversal) instead of by the tree shape that
-// happens to be produced by Elm's LLRB `insertHelp`. Stock Elm JS achieves the
-// same thing via a negative `$` tag. `RBEmpty_elm_builtin` is an embedded
-// null-cons constant carrying its plain declaration index 1 (HEAP_044,
-// plans/null-cons-hpointer-embedding.md P3.0) — it never reaches eqHelp as a
-// heap object, so RBNode alone routes heap-Dict comparisons to dictEq.
+/// The constructor tag the compiler gives `Dict.RBNode_elm_builtin`, so that equality can recognise a Dict
+/// node and compare two Dicts by content rather than by the shape of their trees. It must match
+/// `Compiler.IR.Runtime.CtorTag` in the compiler; `test/scripts/check-ctor-tags.sh` checks that it does.
+///
+/// `RBEmpty_elm_builtin` needs no tag: it has no fields, so it is an embedded constant and never reaches
+/// `eqHelp` as a heap object.
 constexpr u16 CTOR_DICT_RBNODE = 0xFFFF;
-// 0xFFFD is reserved as CONSTANT_TAG (see runtime Heap.hpp / CtorTag.constantTag):
-// the merged-empty ctor tag returned by eco_get_tag for Nil/Nothing/etc. Not used
-// here, but reserved so no runtime-recognised type may reuse it.
+// 0xFFFD is also reserved: it is the tag the runtime reports for the Empty constant (runtime `Heap.hpp`,
+// `CONSTANT_TAG`). The runtime's effect-router constructor, `CTOR_Router`, has the same value.
 
+/// Returns whether `ctor` is the constructor tag of a Dict node.
 static bool isDictCtor(u16 ctor) {
     return ctor == CTOR_DICT_RBNODE;
 }
@@ -55,56 +45,61 @@ static bool isDictCtor(u16 ctor) {
 // Helper Functions
 // ============================================================================
 
+/// Returns the heap tag of the object at `obj`, or `Tag_Forward` for a null `obj`, which no caller treats
+/// as a real tag.
 static Tag getTag(void* obj) {
-    if (!obj) return Tag_Forward;  // Invalid
+    if (!obj) return Tag_Forward;
     Header* hdr = static_cast<Header*>(obj);
     return static_cast<Tag>(hdr->tag);
 }
 
-// Safely resolve an HPointer field value.
-// Returns nullptr for embedded constants (caller must handle constant comparison).
+/// Returns the address of the object the slot word `p` refers to, or null when `p` is an embedded constant.
 static void* safeResolve(Allocator& allocator, HPointer p) {
     if (alloc::isConstant(p)) return nullptr;
     return allocator.resolve(p);
 }
 
-// Compare two HPointer field values that may be embedded constants.
-// Both must be boxed (non-unboxed) fields. Returns:
-//   1 if both resolved successfully (caller should call eqHelp/cmp on aOut, bOut)
-//   0 if comparison is determined (result stored in *result)
+/// Decides equality of two boxed slot words `ap` and `bp` when either is an embedded constant, or resolves
+/// both when neither is.
+///
+/// Returns 0 when either is a constant, with `*eqResult` set: true when the words are equal, or when one
+/// is the Empty constant and the other a String of length 0. `*aOut` and `*bOut` are then not written.
+/// Returns 1 when both are heap words, with their addresses in `*aOut` and `*bOut` and `*eqResult` not
+/// written.
 static int resolveAndCompare(Allocator& allocator, HPointer ap, HPointer bp,
                               void** aOut, void** bOut, bool* eqResult) {
     bool aConst = alloc::isConstant(ap);
     bool bConst = alloc::isConstant(bp);
 
     if (aConst || bConst) {
-        // At least one is an embedded constant - compare raw i64 values
         union { HPointer hp; uint64_t val; } ua, ub;
         ua.hp = ap;
         ub.hp = bp;
         *eqResult = (ua.val == ub.val);
-        // SD-26 (HEAP_071): the Empty constant ("") equals a zero-length
-        // heap String.
         if (!*eqResult && aConst != bConst) {
             HPointer c = aConst ? ap : bp;
             HPointer h = aConst ? bp : ap;
             *eqResult = alloc::isEmptyString(c) &&
                         alloc::isZeroLengthString(allocator.resolve(h));
         }
-        return 0;  // Comparison determined
+        return 0;
     }
 
     *aOut = allocator.resolve(ap);
     *bOut = allocator.resolve(bp);
-    return 1;  // Need recursive comparison
+    return 1;
 }
 
-// Forward decls
 static bool eqHelp(void* a, void* b, int depth);
 static bool dictEq(void* a, void* b, int depth);
 
-// Compare two Unboxable slots structurally for equality.
-// Returns true iff the slots are equal. Mixed kinds compare as unequal.
+/// Returns whether slots `a` and `b`, of kinds `aKind` and `bKind`, hold equal values, with `depth` the
+/// nesting depth `eqHelp` bounds.
+///
+/// Same-kind primitives compare by value, Floats with IEEE `==`. Two boxed slots are decided by
+/// `resolveAndCompare`, or by `eqHelp` one level deeper. A boxed slot and an unboxed one are equal when
+/// the boxed side is a heap Int, Float or Char of the unboxed kind with the same value; any other pair of
+/// different kinds is unequal.
 static bool eqUnboxableSlot(Allocator& allocator,
                              Elm::Unboxable a, Elm::Unboxable b,
                              uint32_t aKind, uint32_t bKind, int depth) {
@@ -121,13 +116,8 @@ static bool eqUnboxableSlot(Allocator& allocator,
         }
     }
 
-    // Mixed kinds: one slot stores a primitive unboxed (kind 1/2/3) while the
-    // other stores a boxed HPointer (kind 0) to the matching primitive heap
-    // type. This happens legitimately when the two containers were built via
-    // different paths — e.g. a List.range boxed-Int Cons list vs an
-    // Array.fromList literal, or a JSON-decoded Int array vs one built via
-    // Array.fromList over a boxed list. Fall through to the Tag_Cons-style
-    // primitive cross-check.
+    // Mixed kinds arise when two containers of the same type were built by different paths, for example an
+    // Int array decoded from JSON (unboxed) and one built from a list of boxed Ints.
     if (aKind == 0 || bKind == 0) {
         HPointer boxedHP = (aKind == 0) ? a.p : b.p;
         Elm::Unboxable prim = (aKind == 0) ? b : a;
@@ -149,13 +139,18 @@ static bool eqUnboxableSlot(Allocator& allocator,
     return false;
 }
 
-// Compare two Unboxable slots whose kinds agree (0=boxed, 1=Int, 2=Float, 3=Char).
-// Returns -1, 0, or 1.
-// Chars compare in code-point order: a Char is one code point (KERN_008).
+/// Returns -1, 0 or 1 as Char `a` is below, equal to or above `b` in code-point order.
 static int compareChar(u32 a, u32 b) {
     return a < b ? -1 : (a > b ? 1 : 0);
 }
 
+/// Returns the order of slots `a` and `b`, which must both have kind `kind`, with `cmpFn` used to compare
+/// two boxed heap values.
+///
+/// Ints compare numerically, Floats by `compareFloat`, Chars by code point. For two boxed slots, a
+/// constant equal to the other word is 0; the Empty constant against a String object is 0 when the String
+/// has length 0 and below it otherwise; any other constant is below a heap value. Two different constants
+/// must not reach here: that asserts, and is undefined behaviour when assertions are off.
 static int compareUnboxableSlot(Allocator& allocator,
                                  Elm::Unboxable a, Elm::Unboxable b, uint32_t kind,
                                  int (*cmpFn)(void*, void*)) {
@@ -168,18 +163,13 @@ static int compareUnboxableSlot(Allocator& allocator,
         case 3:
             return compareChar(a.c, b.c);
         default: {
-            // Both slots are boxed HPointers - recurse.
             void* ao; void* bo; bool eq;
             if (resolveAndCompare(allocator, a.p, b.p, &ao, &bo, &eq) == 0) {
                 if (eq) return 0;
                 bool aConst = alloc::isConstant(a.p);
                 bool bConst = alloc::isConstant(b.p);
 
-                // Canonicalise the empty-string constant against a heap-resident
-                // String of size 0 (any of the four forms recognised by
-                // alloc::isString: leaf / slice / rope / large header).
-                // header.size is the logical UTF-16 length on all of them.
-                // (In a String-typed comparison the merged empty constant is "".)
+                // `header.size` is the length in UTF-16 units in every String form.
                 if (alloc::isEmptyString(a.p) && !bConst) {
                     void* bo2 = allocator.resolve(b.p);
                     if (bo2 && alloc::isString(bo2)) {
@@ -193,21 +183,12 @@ static int compareUnboxableSlot(Allocator& allocator,
                     }
                 }
 
-                // Elm's two comparable embedded constants — Const_EmptyString
-                // ("") and Const_Nil ([]) — represent the minimum value of
-                // their type. Per Elm semantics, "" < any non-empty String
-                // and [] < any non-empty List, so a const-vs-heap comparison
-                // is LT (constant side) or GT (heap side). The EmptyString
-                // canonicalisation above handles the edge case where the
-                // heap value is itself an empty string.
+                // The only comparable constants are "" and [], each the least value of its type.
                 if (aConst && !bConst) return -1;
                 if (!aConst && bConst) return 1;
 
-                // Both sides are constants AND resolveAndCompare reported
-                // eq=false (different constant families). Unreachable in
-                // well-typed Elm — any comparable-typed value pair shares
-                // one constant family, and no other comparable embedded
-                // constants are planned (REP_COMPARE_CONST_001).
+                // Two different constants: in well-typed Elm two comparable values of one type cannot both
+                // be constants and differ.
                 assert(false &&
                        "compareUnboxableSlot: cross-family constant comparison "
                        "is unreachable in well-typed Elm");
@@ -218,21 +199,22 @@ static int compareUnboxableSlot(Allocator& allocator,
     }
 }
 
-// Non-empty lists appear in two spine-node forms (Tag_Cons cells and
-// Tag_ConsChunk views; hybrid spines, plans/chunked-list-representation.md
-// §6 / HEAP_039): chunk boundaries and node forms are NOT part of a list's
-// identity, so eq/compare walk the logical element sequence via
-// alloc::ListCursor — exactly the multi-representation treatment strings
-// already get above the tag-difference fallback.
+/// Returns whether the object at `p` is a list spine node, a `Tag_Cons` cell or a `Tag_ConsChunk` view.
+///
+/// A spine may mix both forms, and neither the forms nor where chunks begin are part of a list's value, so
+/// equality and ordering walk the elements with `alloc::ListCursor` whenever the forms differ.
 static inline bool isListNode(void* p) {
     Tag t = getTag(p);
     return t == Tag_Cons || t == Tag_ConsChunk;
 }
 
-// One list element vs another, preserving the historical semantics of the
-// old Tag_Cons compare arm: same-kind → compareUnboxableSlot; one side boxed
-// → resolve and compare when the boxed form matches the primitive kind;
-// otherwise arbitrary total order by kind.
+/// Returns the order of list elements `aSlot` and `bSlot`, of kinds `aKind` and `bKind`, with `cmpFn`
+/// used to compare two boxed heap values.
+///
+/// Same-kind elements go to `compareUnboxableSlot`. When one is boxed and refers to a heap Int, Float or
+/// Char of the other's kind, the values are compared, Floats with `<` and `==` rather than
+/// `compareFloat`. A boxed element that is a constant orders above the unboxed one. Any other pair orders
+/// by kind.
 static int compareListElem(Elm::Allocator& allocator,
                            Elm::Unboxable aSlot, uint32_t aKind,
                            Elm::Unboxable bSlot, uint32_t bKind,
@@ -276,9 +258,10 @@ static int compareListElem(Elm::Allocator& allocator,
 
 static int cmp(void* a, void* b);
 
-// Form-blind list comparison over hybrid spines (used for the RARE cases: a
-// cross-form pair, or a cell walk that runs into a chunk view mid-spine).
-// The hot cells-only path never comes here.
+/// Returns the order of the lists whose first spine nodes are at `a` and `b`, walking their elements in
+/// whatever spine forms they have. A list that is a proper prefix of the other orders below it.
+///
+/// `cmp` comes here only when a spine contains a chunk view; a spine of cells alone is walked directly.
 static int cmpListHybrid(void* a, void* b) {
     auto& allocator = Allocator::instance();
     alloc::ListCursor ca(allocator.wrap(a));
@@ -290,15 +273,13 @@ static int cmpListHybrid(void* a, void* b) {
         ca.next();
         cb.next();
     }
-    if (!ca.done()) return 1;   // a is longer
-    if (!cb.done()) return -1;  // b is longer
+    if (!ca.done()) return 1;
+    if (!cb.done()) return -1;
     return 0;
 }
 
-// Low-level comparison returning -1 (LT), 0 (EQ), or 1 (GT)
+/// Returns the unclamped sign `cmp3` documents; `cmp3` is this function under a public name.
 static int cmp(void* a, void* b) {
-    // Null checks. A null is an embedded constant; against a String it is ""
-    // and equals a zero-length heap String (SD-26, HEAP_071).
     if (!a && !b) return 0;
     if (!a) return alloc::isZeroLengthString(b) ? 0 : -1;
     if (!b) return alloc::isZeroLengthString(a) ? 0 : 1;
@@ -306,19 +287,13 @@ static int cmp(void* a, void* b) {
     Tag tagA = getTag(a);
     Tag tagB = getTag(b);
 
-    // Strings can appear in multiple representations (Tag_String / Tag_StringSlice).
-    // Two equal-content strings must compare equal regardless of form, so route
-    // any string-vs-string comparison through StringOps::compare before the
-    // generic tag-difference fallback.
+    // Checked before the tags, which differ between String forms.
     if (alloc::isString(a) && alloc::isString(b)) {
         return StringOps::compare(a, b);
     }
 
-    // Different types - compare by tag. Lists are the one family with two
-    // heap forms (Tag_Cons cells / Tag_ConsChunk views, HEAP_039): a
-    // cross-form pair must compare by content, so the form-blind walk is
-    // checked HERE — inside the mismatch branch — where it costs nothing on
-    // the hot equal-tag path.
+    // A cell and a chunk view have different tags but may be equal lists. Testing for them only here keeps
+    // the test off the path where the tags agree.
     if (tagA != tagB) {
         if (isListNode(a) && isListNode(b)) {
             return cmpListHybrid(a, b);
@@ -344,11 +319,8 @@ static int cmp(void* a, void* b) {
         }
 
         case Tag_Char: {
-            // Chars order by code point, like the eco.char.lt intrinsic
-            // (KERN_008). elm/core's JS compares them as UTF-16 strings; the
-            // two orders differ only between U+E000..U+FFFF and astral code
-            // points (JS puts the astral surrogate pair first) - a documented
-            // divergence.
+            // Code-point order. elm/core's JS compares Chars as UTF-16 strings, which differs from this only
+            // between U+E000..U+FFFF and code points above U+FFFF, where JS puts the surrogate pair first.
             ElmChar* ac = static_cast<ElmChar*>(a);
             ElmChar* bc = static_cast<ElmChar*>(b);
             return compareChar(ac->value, bc->value);
@@ -364,7 +336,6 @@ static int cmp(void* a, void* b) {
             Header* ahdr = getHeader(a);
             Header* bhdr = getHeader(b);
 
-            // Field a (slot 0)
             {
                 uint32_t aKind = Elm::tupleFieldKind(ahdr->unboxed, 0);
                 uint32_t bKind = Elm::tupleFieldKind(bhdr->unboxed, 0);
@@ -372,7 +343,6 @@ static int cmp(void* a, void* b) {
                 int ord = compareUnboxableSlot(allocator, atup->a, btup->a, aKind, cmp);
                 if (ord != 0) return ord;
             }
-            // Field b (slot 1)
             {
                 uint32_t aKind = Elm::tupleFieldKind(ahdr->unboxed, 1);
                 uint32_t bKind = Elm::tupleFieldKind(bhdr->unboxed, 1);
@@ -400,11 +370,8 @@ static int cmp(void* a, void* b) {
         }
 
         case Tag_Cons: {
-            // Cells-fast walk — byte-comparable to the pre-chunk code for
-            // pure cell spines (the overwhelmingly common case). Falls over
-            // to the cursor-based hybrid walk the moment either spine hits
-            // a chunk view (Tag_ConsChunk lands here only via cmpListHybrid
-            // from the tag-mismatch branch, or mid-spine).
+            // Walks cells directly, and hands the rest of both lists to the cursor walk as soon as either
+            // spine reaches a chunk view.
             Cons* ax = static_cast<Cons*>(a);
             Cons* bx = static_cast<Cons*>(b);
 
@@ -429,17 +396,17 @@ static int cmp(void* a, void* b) {
                          : static_cast<Cons*>(safeResolve(allocator, bx->tail));
             }
 
-            if (ax != nullptr) return 1;   // a is longer
-            if (bx != nullptr) return -1;  // b is longer
+            if (ax != nullptr) return 1;
+            if (bx != nullptr) return -1;
             return 0;
         }
 
         case Tag_ConsChunk:
-            // Both sides are views (equal-tag dispatch): form-blind walk.
             return cmpListHybrid(a, b);
 
         default:
-            return 0;  // Other types compare as equal
+            // Elm cannot order other types, so a well-typed program does not reach this.
+            return 0;
     }
 }
 
@@ -455,9 +422,6 @@ HPointer compare(void* a, void* b) {
     return Export::decode(enc);
 }
 
-// Order-free sibling of `compare`: the same `cmp` result, handed back as a
-// sign int so callers can branch on it without materializing an Order value.
-// UNCLAMPED — see the header note.
 int cmp3(void* a, void* b) {
     return cmp(a, b);
 }
@@ -470,9 +434,12 @@ bool equal(void* a, void* b) {
     return eqHelp(a, b, 0);
 }
 
-// One list element vs another for equality, preserving the historical
-// semantics of the old Tag_Cons eq arm: same-kind → eqUnboxableSlot; one
-// side boxed → resolve and compare against the primitive; otherwise unequal.
+/// Returns whether list elements `aSlot` and `bSlot`, of kinds `aKind` and `bKind`, are equal, with
+/// `depth` the nesting depth `eqHelp` bounds.
+///
+/// Same-kind elements go to `eqUnboxableSlot`. A boxed element and an unboxed one are equal when the
+/// boxed side is a heap Int, Float or Char of the unboxed kind with the same value; any other pair of
+/// different kinds is unequal.
 static bool eqListElem(Elm::Allocator& allocator,
                        Elm::Unboxable aSlot, uint32_t aKind,
                        Elm::Unboxable bSlot, uint32_t bKind, int depth) {
@@ -500,8 +467,9 @@ static bool eqListElem(Elm::Allocator& allocator,
     return false;
 }
 
-// Form-blind list equality over hybrid spines (rare paths only — see
-// cmpListHybrid).
+/// Returns whether the lists whose first spine nodes are at `a` and `b` have equal elements and the same
+/// length, walking them in whatever spine forms they have. Used only where a spine contains a chunk view,
+/// as for `cmpListHybrid`.
 static bool eqListHybrid(void* a, void* b, int depth) {
     auto& allocator = Allocator::instance();
     alloc::ListCursor ca(allocator.wrap(a));
@@ -517,27 +485,21 @@ static bool eqListHybrid(void* a, void* b, int depth) {
     return ca.done() && cb.done();
 }
 
+/// Returns `equal(a, b)` for values reached through `depth` levels of boxed slots. Above 100, for two values
+/// with the same tag that are not Strings or Bytes, it returns true without looking.
 static bool eqHelp(void* a, void* b, int depth) {
-    // Reference equality
     if (a == b) return true;
 
-    // Null checks. A null is an embedded constant; against a String it is ""
-    // and equals a zero-length heap String (SD-26, HEAP_071).
     if (!a || !b) return alloc::isZeroLengthString(a ? a : b);
 
     Tag tagA = getTag(a);
     Tag tagB = getTag(b);
 
-    // Strings may appear in multiple representations; route any
-    // string-vs-string equality through StringOps::equal so a leaf and an
-    // equivalent slice compare equal.
+    // Checked before the tags, which differ between String forms, and likewise for Bytes below.
     if (alloc::isString(a) && alloc::isString(b)) {
         return StringOps::equal(a, b);
     }
 
-    // ByteBuffers may appear as flat Tag_ByteBuffer, Tag_LargeByteHeader,
-    // or Tag_ByteBufferSlice; byteBufferView handles all three forms and
-    // returns the logical (data, length) view for comparison.
     if (alloc::isByteBuffer(a) && alloc::isByteBuffer(b)) {
         auto va = alloc::byteBufferView(a);
         auto vb = alloc::byteBufferView(b);
@@ -546,10 +508,7 @@ static bool eqHelp(void* a, void* b, int depth) {
         return std::memcmp(va.data, vb.data, va.length) == 0;
     }
 
-    // Type mismatch. Lists are the one family with two heap forms
-    // (cells / chunk views, HEAP_039): a cross-form pair must compare by
-    // content, checked HERE — inside the mismatch branch — so the hot
-    // equal-tag path pays nothing.
+    // As in `cmp`, a cell and a chunk view are tested for only when the tags differ.
     if (tagA != tagB) {
         if (isListNode(a) && isListNode(b)) {
             return eqListHybrid(a, b, depth);
@@ -557,9 +516,9 @@ static bool eqHelp(void* a, void* b, int depth) {
         return false;
     }
 
-    // Depth limit check (prevent stack overflow on deep structures)
+    // Bounds the recursion, at the price of reporting deeply nested values equal unexamined.
     if (depth > 100) {
-        return true;  // Assume equal at depth limit
+        return true;
     }
 
     auto& allocator = Allocator::instance();
@@ -617,7 +576,7 @@ static bool eqHelp(void* a, void* b, int depth) {
         }
 
         case Tag_Cons: {
-            // Cells-fast walk with chunk escape (see cmp's Tag_Cons arm).
+            // Walks cells directly, as in `cmp`.
             Cons* ax = static_cast<Cons*>(a);
             Cons* bx = static_cast<Cons*>(b);
 
@@ -654,9 +613,7 @@ static bool eqHelp(void* a, void* b, int depth) {
             Custom* ac = static_cast<Custom*>(a);
             Custom* bc = static_cast<Custom*>(b);
 
-            // Dict equality: compare by content so that two dicts with the
-            // same key/value pairs but different insertion-order tree shapes
-            // compare equal. (See notes on CTOR_DICT_RBNODE.)
+            // Two Dicts with the same pairs may have different trees, depending on insertion order.
             if (isDictCtor(ac->ctor) || isDictCtor(bc->ctor)) {
                 return dictEq(a, b, depth);
             }
@@ -700,12 +657,8 @@ static bool eqHelp(void* a, void* b, int depth) {
             uint32_t aKind = aa->header.unboxed & 0x3;
             uint32_t bKind = ba->header.unboxed & 0x3;
 
-            // Two arrays representing the same element sequence may disagree on
-            // the uniform "unboxed kind" stored in the header — e.g. one built
-            // via Array.fromList over a boxed-Int Cons list (kind 0) vs one
-            // decoded from JSON with an Int decoder (kind 1). Delegate to
-            // eqUnboxableSlot per-element, which handles mixed boxed/unboxed
-            // primitive comparisons (same logic the Tag_Cons path uses).
+            // One kind covers every element. Two arrays with the same elements may still differ in it, for
+            // example one decoded from JSON with an Int decoder and one built from a list of boxed Ints.
             for (u32 i = 0; i < aa->length; ++i) {
                 if (!eqUnboxableSlot(allocator, aa->elements[i], ba->elements[i], aKind, bKind, depth)) return false;
             }
@@ -714,9 +667,7 @@ static bool eqHelp(void* a, void* b, int depth) {
         }
 
         case Tag_ByteBuffer: {
-            // The early ByteBuffer fast-path above already handles all
-            // byte-buffer forms; this case is only reached when both sides
-            // have tag Tag_ByteBuffer.
+            // Unreachable: the `isByteBuffer` test above already took every Bytes pair.
             auto va = alloc::byteBufferView(a);
             auto vb = alloc::byteBufferView(b);
             if (va.length != vb.length) return false;
@@ -725,7 +676,6 @@ static bool eqHelp(void* a, void* b, int depth) {
         }
 
         case Tag_Closure:
-            // Functions cannot be compared in Elm
             return false;
 
         default:
@@ -733,24 +683,18 @@ static bool eqHelp(void* a, void* b, int depth) {
     }
 }
 
-// Compare two Dicts by content: equal iff they contain the same key/value
-// pairs under the same comparable ordering. Uses iterative in-order traversal
-// over both trees in lockstep, so we never materialise intermediate lists.
-//
-// Dict's constructor layout is
-//   RBNode_elm_builtin NColor k v left right
-// with values[0]=color, values[1]=k, values[2]=v, values[3]=left, values[4]=right.
-// RBEmpty_elm_builtin has no fields.
-//
-// Color is deliberately ignored: for two LLRB trees representing the same
-// key/value set, the colour on individual nodes depends on insertion order.
+/// Returns whether the Dicts whose root nodes are at `a` and `b` hold equal key/value pairs in the same
+/// key order, with `depth` the nesting depth `eqHelp` bounds.
+///
+/// Walks both trees in order, in step, with an explicit stack each. A node is
+/// `RBNode_elm_builtin color key value left right`, in slots 0 to 4. Colours are ignored, since two trees
+/// holding the same pairs can colour their nodes differently. A non-Dict node, such as a Custom with
+/// another constructor on one side, ends that tree's walk.
 static bool dictEq(void* a, void* b, int depth) {
     auto& allocator = Allocator::instance();
 
-    // Resolve a subtree HPointer to its Custom header. Returns nullptr if the
-    // HPointer is an embedded constant — in particular RBEmpty, which is an
-    // embedded null-cons word (HEAP_044), so a constant IS the normal empty
-    // subtree — or if the resolved tag isn't Custom (malformed input).
+    // Returns the Custom a subtree word refers to, or null for a constant (the empty subtree, RBEmpty) or a
+    // heap object that is not a Custom.
     auto resolveCustom = [&allocator](HPointer hp) -> Custom* {
         if (alloc::isConstant(hp)) return nullptr;
         void* obj = allocator.resolve(hp);
@@ -760,6 +704,7 @@ static bool dictEq(void* a, void* b, int depth) {
         return static_cast<Custom*>(obj);
     };
 
+    // Pushes `node` and its chain of left children, stopping at the first that is not a Dict node.
     auto pushLeftSpine = [&resolveCustom](std::vector<Custom*>& stack, Custom* node) {
         while (node != nullptr && node->ctor == CTOR_DICT_RBNODE) {
             stack.push_back(node);
@@ -800,9 +745,8 @@ bool notEqual(void* a, void* b) {
     return !equal(a, b);
 }
 
-// Sets `x` and `y` and returns true when `a` and `b` are both boxed Floats: the order operators on
-// two Floats are IEEE 754 comparisons, false with a NaN (CGEN_086); on tuples and lists they follow
-// `cmp`, whose Float order is `compareFloat`'s total order.
+/// Returns whether `a` and `b` are both heap Floats, and if so writes their values to `x` and `y`. When it
+/// returns false, `x` and `y` are not written.
 static bool bothFloats(void* a, void* b, double& x, double& y) {
     if (!a || !b || getTag(a) != Tag_Float || getTag(b) != Tag_Float) return false;
     x = static_cast<ElmFloat*>(a)->value;
@@ -846,21 +790,18 @@ HPointer append(void* a, void* b) {
     Tag tagA = getTag(a);
     Tag tagB = getTag(b);
 
-    // Either side may be a slice; route any string-shaped append through
-    // StringOps::append so slice inputs are handled.
     if (alloc::isString(a) && alloc::isString(b)) {
         return StringOps::append(a, b);
     }
 
     if (tagA == Tag_Cons || tagA == Tag_ConsChunk
         || alloc::isNil(Allocator::instance().wrap(a))) {
-        // List append (either spine-node form; hybrid spines)
         HPointer listA = Allocator::instance().wrap(a);
         HPointer listB = Allocator::instance().wrap(b);
         return ListOps::append(listA, listB);
     }
 
-    // Unsupported types - return first value
+    // Elm's `++` takes only Strings and Lists, so a well-typed program does not reach this.
     return Allocator::instance().wrap(a);
 }
 

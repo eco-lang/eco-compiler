@@ -1,11 +1,4 @@
 //===- Http1.cpp - HTTP/1.1 server connections on the IoReactor -----------===//
-//
-// See Http1.hpp (plans/eco-system-websockets.md §3.4, phase WS2). Reactor
-// thread only; POSIX (llhttp is not built on Windows, where
-// HttpServerServiceWin32.cpp provides the stubs).
-//
-// Templates used: none (POD only, G1).
-//
 //===----------------------------------------------------------------------===//
 
 #include "eco-system/HttpServer/Http1.hpp"
@@ -23,13 +16,16 @@ namespace Eco::System::HttpSrv {
 
 namespace {
 
+/// The next request key `nextResponseKey` hands out. Keys start at 1 because 0 means no request.
 std::atomic<int64_t> g_nextKey{1};
 
+/// Returns the shared IO reactor.
 IoReactor& reactor() { return IoReactor::instance(); }
 
-// The deadline `ms` from now; a timeout of 0 or less is none (0 cancels).
+/// Returns the deadline `ms` milliseconds from now, or 0, which sets no deadline, when `ms` is 0 or less.
 int64_t after(int64_t ms) { return ms > 0 ? reactor().nowMs() + ms : 0; }
 
+/// Returns whether `a` equals `b` ignoring ASCII case.
 bool iequals(const std::string& a, const char* b) {
     size_t n = std::strlen(b);
     if (a.size() != n) return false;
@@ -41,33 +37,39 @@ bool iequals(const std::string& a, const char* b) {
     return true;
 }
 
+/// Returns the characters of `s` from `a` up to `b`, without leading or trailing spaces and tabs.
 std::string trim(const std::string& s, size_t a, size_t b) {
     while (a < b && (s[a] == ' ' || s[a] == '\t')) ++a;
     while (b > a && (s[b - 1] == ' ' || s[b - 1] == '\t')) --b;
     return s.substr(a, b - a);
 }
 
+/// Returns `s` with ASCII letters lower-cased.
 std::string lowerAscii(std::string s) {
     for (char& c : s) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
     return s;
 }
 
-// The first element of a comma-separated list, trimmed and lower-cased.
+/// Returns the first element of the comma-separated list `v`, trimmed and lower-cased.
 std::string firstToken(const std::string& v) {
     size_t j = v.find(',');
     return lowerAscii(trim(v, 0, j == std::string::npos ? v.size() : j));
 }
 
+/// Returns whether `c` is a hexadecimal digit.
 bool isHex(char c) { return std::isxdigit(static_cast<unsigned char>(c)) != 0; }
 
+/// Returns whether `c` is an RFC 3986 unreserved or sub-delimiter character, which with %-escapes make up a reg-name.
 bool isRegNameChar(char c) {
     if (std::isalnum(static_cast<unsigned char>(c))) return true;
     return std::strchr("-._~!$&'()*+,;=", c) != nullptr && c != '\0';
 }
 
-// RFC 9110 §7.2: Host = uri-host [ ":" port ]; uri-host is an IP-literal
-// ("[" IPv6 / IPvFuture "]"), an IPv4 address or a reg-name (unreserved,
-// pct-encoded, sub-delims). An empty value is refused (§3.4: invalid).
+/// Returns whether `h` is an acceptable Host value: a host, then optionally `:` and at most five digits.
+///
+/// The host is either a bracketed literal containing a colon and only hex digits, `:`, `.`, `%` and reg-name
+/// characters, or a non-empty run of reg-name characters and %-escapes, which also covers IPv4 addresses. An empty
+/// value is refused.
 bool validHost(const std::string& h) {
     if (h.empty()) return false;
     size_t i = 0;
@@ -108,8 +110,10 @@ bool validHost(const std::string& h) {
     return true;
 }
 
+/// Returns the protocol a parser belongs to.
 Http1Protocol* self(llhttp_t* p) { return static_cast<Http1Protocol*>(p->data); }
 
+/// The interim response written to a client that asked to be told to send its body.
 constexpr const char k100Continue[] = "HTTP/1.1 100 Continue\r\n\r\n";
 
 } // namespace
@@ -184,8 +188,6 @@ int Http1Protocol::headersComplete() {
         errorStatus_ = 505;
         return -1;
     }
-    // Host (§3.4): exactly one for HTTP/1.1, at most one for HTTP/1.0,
-    // with a valid value.
     int hosts = 0;
     bool hostOk = true;
     const std::string* expect = nullptr;
@@ -206,7 +208,7 @@ int Http1Protocol::headersComplete() {
     bool hasBody = (parser_.flags & F_CHUNKED) != 0 || parser_.content_length > 0;
     if ((parser_.flags & F_CONTENT_LENGTH) != 0 &&
         parser_.content_length > static_cast<uint64_t>(cfg_.maxBodySize)) {
-        errorStatus_ = 413;   // before any 100-continue
+        errorStatus_ = 413;   // refused before a 100 Continue could be written
         return -1;
     }
     if (expects > 0) {
@@ -214,8 +216,8 @@ int Http1Protocol::headersComplete() {
             errorStatus_ = 417;
             return -1;
         }
-        // At the head of the pipeline by construction (one in flight): every
-        // earlier response is queued before this one is parsed.
+        // Safe to write now: with one request in flight, every earlier response was queued before this request
+        // was parsed.
         if (hasBody && cur_ != nullptr) cur_->write(std::string(k100Continue), nullptr);
     }
     if (cur_ != nullptr) cur_->setDeadline(Conn::kTimerHeaders, 0);
@@ -225,7 +227,7 @@ int Http1Protocol::headersComplete() {
 int Http1Protocol::cbBody(llhttp_t* p, const char* at, size_t n) {
     Http1Protocol* s = self(p);
     if (static_cast<int64_t>(s->body_.size() + n) > s->cfg_.maxBodySize) {
-        s->errorStatus_ = 413;   // the running total of a chunked body
+        s->errorStatus_ = 413;   // a chunked body, whose size is known only as it arrives
         return HPE_USER;
     }
     s->body_.append(at, n);
@@ -238,7 +240,7 @@ int Http1Protocol::cbMessageComplete(llhttp_t* p) {
     s->isHead_ = p->method == HTTP_HEAD;
     s->shouldKeepAlive_ = llhttp_should_keep_alive(p) != 0;
     s->mustClose_ = llhttp_get_upgrade(p) != 0;   // Upgrade + Connection: upgrade, or CONNECT
-    return HPE_PAUSED;   // one request in flight
+    return HPE_PAUSED;   // one request in flight: resumed by respond
 }
 
 // ---------------------------------------------------------------------------
@@ -247,7 +249,7 @@ int Http1Protocol::cbMessageComplete(llhttp_t* p) {
 
 Http1Protocol::Http1Protocol(std::shared_ptr<ServerReactorState> srv, std::shared_ptr<ConnShared> cs)
     : srv_(std::move(srv)), cs_(std::move(cs)), cfg_(*srv_->cfg) {
-    llhttp_init(&parser_, HTTP_REQUEST, &settings());   // strict: no lenient flags, ever
+    llhttp_init(&parser_, HTTP_REQUEST, &settings());   // strict: no lenient flag is set
     parser_.data = this;
 }
 
@@ -263,7 +265,7 @@ void Http1Protocol::resetRequest() {
 
 void Http1Protocol::onOpen(Conn& c) {
     state_ = State::Idle;
-    // A fresh connection gets headersTimeout for its first byte (slowloris).
+    // A fresh connection gets headersMs for its first byte, so an idle client cannot hold it open.
     if (srv_->closing) {
         closeNow(c);
         return;
@@ -294,7 +296,7 @@ void Http1Protocol::onData(Conn& c, std::string_view bytes) {
 void Http1Protocol::startRequest(Conn& c) {
     state_ = State::Reading;
     resetRequest();
-    if (!srv_->closing) c.setDeadline(Conn::kTimerIdle, 0);   // else: the server's deadline
+    if (!srv_->closing) c.setDeadline(Conn::kTimerIdle, 0);   // when closing, it holds the server's deadline
     c.setDeadline(Conn::kTimerHeaders, after(cfg_.headersMs));
     c.setDeadline(Conn::kTimerRequest, after(cfg_.requestMs));
 }
@@ -309,7 +311,7 @@ void Http1Protocol::parse(Conn& c) {
         cur_ = nullptr;
         if (state_ != State::Reading) return;
         if (err == HPE_OK) {
-            in_.clear();   // all consumed (llhttp keeps its own state)
+            in_.clear();   // all consumed; llhttp keeps any partial message in its own state
             return;
         }
         if ((err == HPE_PAUSED || err == HPE_PAUSED_UPGRADE) && messageDone_) {
@@ -322,8 +324,7 @@ void Http1Protocol::parse(Conn& c) {
             messageComplete(c);
             return;   // one in flight: the rest waits for the response
         }
-        // A parse error (strict llhttp: smuggling attempts land here) or a
-        // limit / rule broken in a callback.
+        // A parse error, including the ambiguous framings strict llhttp rejects, or a rule a callback enforced.
         failRequest(c, errorStatus_ != 0 ? errorStatus_ : 400);
         return;
     }
@@ -368,9 +369,8 @@ void Http1Protocol::messageComplete(Conn& c) {
     r.isHead = isHead_;
     r.remote = cs_->remote;
     bool isConnect = parser_.method == HTTP_CONNECT;
-    // An upgrade request with a body is a normal request whose upgrade is
-    // refused (§3.4); CONNECT carries no token. Both still close afterwards
-    // (mustClose_).
+    // An upgrade request with a body is delivered as an ordinary request, and a CONNECT carries no token. Both
+    // still close after their response (mustClose_).
     if (mustClose_ && !isConnect && body_.empty() && hasUpgradeHeader) {
         r.upgrade = firstToken(upgradeHeader);
     }
@@ -427,7 +427,7 @@ bool Http1Protocol::respond(Conn& c, int64_t key, ResponseData r, bool forceClos
 void Http1Protocol::afterResponse(Conn& c) {
     if (!in_.empty()) parse(c);   // pipelined requests, in order
     if (state_ == State::Reading && peerEof_) {
-        eofWhileReading(c);   // the peer's FIN came during the last request: nothing more follows
+        eofWhileReading(c);   // the peer's FIN came earlier: nothing more will arrive
         return;
     }
     if (state_ == State::Idle) {
@@ -471,7 +471,6 @@ void Http1Protocol::onEof(Conn& c) {
 }
 
 void Http1Protocol::eofWhileReading(Conn& c) {
-    // Between messages (only CRLFs seen): close; mid-request: 400.
     if (llhttp_finish(&parser_) == HPE_OK) {
         closeNow(c);
     } else {
@@ -480,8 +479,6 @@ void Http1Protocol::eofWhileReading(Conn& c) {
 }
 
 void Http1Protocol::onError(Conn& c, int /*err*/, const std::string& /*code*/) {
-    // The peer reset the connection or a write failed: nothing more can be
-    // exchanged. The close hook reports the request in flight (ConnGone).
     if (state_ != State::Done) c.abort(false);
 }
 
@@ -526,7 +523,7 @@ std::string Http1Protocol::takeUpgradeHead(Conn& c, int64_t key) {
 }
 
 // ---------------------------------------------------------------------------
-// Server-level helpers
+// Server-level functions
 // ---------------------------------------------------------------------------
 
 std::unique_ptr<ConnProtocol> makeHttp1Protocol(Conn& c,
@@ -575,8 +572,7 @@ void http1ServerClosing(const std::shared_ptr<ServerReactorState>& srv, int64_t 
         if (auto c = kv.second.lock()) live.push_back(std::move(c));
     }
     for (auto& c : live) {
-        // Connections handed to another protocol (WebSocket, WS5) are
-        // detached from the server and stay open.
+        // A connection taken over by another protocol after an upgrade is left open.
         if (auto* p = dynamic_cast<Http1Protocol*>(c->protocol())) p->serverClosing(*c);
         else if (auto* p2 = dynamic_cast<Http2Protocol*>(c->protocol())) p2->serverClosing(*c);
     }

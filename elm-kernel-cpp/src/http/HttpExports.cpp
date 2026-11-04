@@ -1,22 +1,34 @@
 //===- HttpExports.cpp - C-linkage exports for the elm/http kernel ---------===//
 //
-// Implements the stock `elm/http` 2.0.0 kernel contract (Elm.Kernel.Http.*) on
-// libcurl + OpenSSL. The SAME unmodified `Http.elm` runs on both the JS and
-// C++ kernels, so these exports must match the stock arities and value shapes:
+// The stock `elm/http` 2.0.0 package calls a small kernel (`Http.toTask`,
+// `Http.expect`, `Http.mapExpect` and the body builders), and this file is
+// that kernel for native programs, built on `Elm::Platform::HttpService`. The
+// package's `Http.elm` is used unmodified, so every export keeps the stock
+// arity and builds the value shapes the stock kernel builds.
 //
-//   toTask : router -> (a -> Task) -> Request -> Task        (arity 3)
-//   expect : type -> toBody -> toValue -> Expect             (arity 3)
-//   pair   : a -> b -> Body                                  (arity 2)
-//   emptyBody, bytesToBlob, toDataView, toFormData, mapExpect
+// Two facts shape the file. First, only the eco thread (the thread that runs
+// the Elm scheduler) may touch the heap, while the transfers run on
+// `HttpService`'s worker thread. The two sides trade only plain data: a
+// `HttpService::Request` going out, and a `HttpService::Result` or
+// `HttpService::Progress` coming back, each tagged with a `uint64_t` token.
+// Everything that reads or builds an Elm value runs on the eco thread.
 //
-// SINGLE-THREADED HEAP (HEAP_007/HEAP_011): only the main scheduler thread may
-// touch the Eco heap. The actual network IO runs on Elm::Platform::HttpService
-// worker threads, which exchange ONLY plain-data PODs + a uint64 token with the
-// main thread. All Response/Metadata/Task construction and closure application
-// happens on the main thread in the async-source drain registered with the
-// Scheduler. Per-request heap continuations are rooted via the Scheduler's
-// pendingResumes_ (already GC-scanned), so no worker thread ever holds an
-// HPointer.
+// Second, a request is a Task, and the Task only starts when the scheduler
+// runs its binding (`httpBindingEval`). The binding reads the Elm `Request`
+// record into a `HttpService::Request`, parks a continuation bundle with
+// `Scheduler::parkResume` (which returns the token and takes a hold under it,
+// as `Liveness.hpp` defines a hold), submits the request, and returns a kill
+// handle. The async-source drain (`httpDrain`) later pops each result, builds
+// the Elm `Response`, runs the expect's closures and resumes the task. The
+// hold is released exactly once, by whichever path ends the request.
+//
+// Most of the remaining state serves `Http.track` and `Http.cancel`, which
+// name a request by a tracker String rather than by its token. Stock elm/http
+// keeps a process id per tracker from the moment its manager spawns the
+// request; here the token exists only once the binding runs, so a cancel that
+// arrives earlier is caught by a spawn ticket instead. A tracker reused by a
+// newer request is re-pointed at it, and the older request runs on and can
+// no longer be cancelled, as in stock elm/http.
 //
 //===----------------------------------------------------------------------===//
 
@@ -49,101 +61,133 @@ using namespace Elm::Platform;
 
 namespace {
 
-// ---- Internal value shapes (kernel-private; never matched by Elm) ----------
-// Body : Custom. ctor 0 = empty; ctor 1 = pair [contentType(String), content];
-// ctor 2 = form-data [parts list]; ctor 3 = blob [bytes, mime].
+// Kernel-private value shapes. Elm code never pattern-matches these; only this
+// file builds and reads them.
+
+/// The constructor of an empty `Body`, a Custom with no fields.
 static constexpr u16 BODY_EMPTY = 0;
+/// The constructor of a `pair` value, a Custom with fields [first, second].
+/// It is a `Body` as [content type, content] and a multipart `Part` as
+/// [name, value].
 static constexpr u16 BODY_PAIR  = 1;
+/// The constructor of a multipart form, a Custom with fields [list of parts].
 static constexpr u16 BODY_FORM  = 2;
+/// The constructor of a blob, a Custom holding `bytesToBlob`'s two arguments
+/// in order.
 static constexpr u16 BODY_BLOB  = 3;
-// Expect/Resolver : Custom ctor 0, fields [type(String), toBody, toValue].
+/// The constructor of an `Expect`, a Custom with fields [type String, toBody,
+/// toValue].
 static constexpr u16 EXPECT_CTOR = 0;
-// Per-request continuation bundle stashed in pendingResumes_ while the request
-// is in flight: Custom ctor 0, fields [resume, resultToTask, toBody, toValue, type].
+/// The constructor of a request's continuation bundle, parked while the
+/// request is in flight: a Custom with fields [resume, resultToTask, toBody,
+/// toValue, type].
 static constexpr u16 BUNDLE_CTOR = 0;
 
-// ---- Response constructor tags (Elm-observed; declaration order) -----------
+// Constructor tags of elm/http's
 //   type Response body = BadUrl_ String | Timeout_ | NetworkError_
 //                      | BadStatus_ Metadata body | GoodStatus_ Metadata body
+// which are its declaration indexes and must stay in step with `Http.elm`.
+
+/// The tag of `BadUrl_`.
 static constexpr u16 RESP_BAD_URL      = 0;
+/// The tag of `Timeout_`.
 static constexpr u16 RESP_TIMEOUT      = 1;
+/// The tag of `NetworkError_`.
 static constexpr u16 RESP_NETWORK      = 2;
+/// The tag of `BadStatus_`.
 static constexpr u16 RESP_BAD_STATUS   = 3;
+/// The tag of `GoodStatus_`.
 static constexpr u16 RESP_GOOD_STATUS  = 4;
 
-// Dict ctor tags (must match CTOR_DICT_RBNODE in
-// elm-kernel-cpp/src/core/Utils.cpp and Compiler.IR.Runtime.CtorTag).
-//   RBNode_elm_builtin NColor k v left right   (fields 0..4; reserved 0xFFFF)
-//   RBEmpty_elm_builtin                         (no fields; plain declaration
-//                                               index 1 — embedded null-cons
-//                                               constant, HEAP_044/P3.0)
+/// The constructor tag of elm/core's `RBNode_elm_builtin color key value left
+/// right`, a reserved tag rather than a declaration index. It must agree with
+/// the value of the same name in `core/Utils.cpp` and with the compiler's
+/// `Compiler.Data.CtorTag`.
 static constexpr u16 CTOR_DICT_RBNODE  = 0xFFFF;
+/// The constructor tag of `RBEmpty_elm_builtin`, its declaration index.
 static constexpr u16 CTOR_DICT_RBEMPTY = 1;
 
-// ---- Stock Request record field indices (alphabetical canonical order) -----
+// Slot indexes of the fields of the Request record `Http.toTask` receives,
 //   { allowCookiesFromOtherDomains, body, expect, headers, method, timeout,
 //     tracker, url }
+// whose fields are all boxed and so sit in name order.
+
+/// The slot of `body`.
 static constexpr int REQ_BODY    = 1;
+/// The slot of `expect`.
 static constexpr int REQ_EXPECT  = 2;
+/// The slot of `headers`.
 static constexpr int REQ_HEADERS = 3;
+/// The slot of `method`.
 static constexpr int REQ_METHOD  = 4;
+/// The slot of `timeout`.
 static constexpr int REQ_TIMEOUT = 5;
+/// The slot of `tracker`.
 static constexpr int REQ_TRACKER = 6;
+/// The slot of `url`.
 static constexpr int REQ_URL     = 7;
 
-// ---- Progress ctor tags (Elm-observed; declaration order) ------------------
+// Constructor tags of elm/http's
 //   type Progress = Sending { sent : Int, size : Int }
 //                 | Receiving { received : Int, size : Maybe Int }
+// which are its declaration indexes.
+
+/// The tag of `Sending`, an upload tick.
 static constexpr u16 PROGRESS_SENDING   = 0;
+/// The tag of `Receiving`, a download tick.
 static constexpr u16 PROGRESS_RECEIVING = 1;
 
-// ---- Per-request progress-tracking registry (main-thread only, P3b) --------
-// Maps an in-flight request token to the Http manager's router + the user's
-// tracker String, so a progress tick (which carries only a token) can be
-// routed via sendToSelf. Also indexes tracker -> token so Http.cancel (keyed
-// by tracker) can mark a request cancelled (drop-delivery, Q-L simpler option).
-//
-// All access is on the main scheduler thread (toTask binding step, the
-// async-source drain, and the GC scanner which runs stop-the-world on this
-// thread). g_trackedMutex is defensive and is NEVER held across an Allocator
-// call (which could trigger GC -> the scanner -> self-deadlock).
+// Tracking state. Every table below is guarded by `g_trackedMutex` and used on
+// the eco thread. The root scanner registered by `httpRegisterScannerOnce`
+// takes the same non-recursive mutex, and it runs inside whichever allocation
+// starts a collection, so the mutex must never be held across a call that can
+// allocate on the heap. Non-allocating reads of heap values under it are fine.
+
+/// A tracked request in flight: where its progress ticks go, and whether
+/// `Http.cancel` has withdrawn it.
 struct TrackedReq {
-    uint64_t routerEnc = 0;   // boxed HPointer (Router Custom)
-    uint64_t trackerEnc = 0;  // boxed HPointer (tracker String)
+    uint64_t routerEnc = 0;   ///< The Http manager's router, an encoded HPointer kept current by the scanner.
+    uint64_t trackerEnc = 0;  ///< The tracker String, an encoded HPointer kept current by the scanner.
     bool     cancelled = false;
 };
+/// The mutex guarding every tracking table in this file.
 std::mutex g_trackedMutex;
-std::unordered_map<uint64_t, TrackedReq> g_httpTracked;     // token -> req
-std::unordered_map<std::string, uint64_t> g_trackerToken;   // tracker -> token
+/// The tracked requests whose binding has run, by token, until their result
+/// is drained, they are killed, or a cancel claims them while queued.
+std::unordered_map<uint64_t, TrackedReq> g_httpTracked;
+/// The token of the request a tracker currently names, the one `Http.cancel`
+/// with that tracker withdraws.
+std::unordered_map<std::string, uint64_t> g_trackerToken;
 
-// ---- Withdrawal (plans/program-liveness-rule.md §5.3, decision L5) ----------
-// Every elm/http request's abort control, by token: inserted by the binding,
-// erased when its result is drained or when it is claimed while queued. Guarded
-// by g_trackedMutex; holds no heap value.
+/// The abort control of every submitted request, tracked or not, by token.
+/// An entry is added by the binding and removed when the result is drained or
+/// when `httpAbort` claims the request while it is still queued.
 std::unordered_map<uint64_t, std::shared_ptr<HttpService::RequestControl>> g_httpControl;
 
-// Tracked requests the Http manager has spawned whose binding has not run yet
-// (the spawned process is still on the run queue). stock elm/http's manager
-// keeps `tracker -> pid` from the moment it spawns, and `Http.cancel` kills
-// that pid, so a cancel issued in the same batch as its request stops the
-// request before it starts. Natively the binding registers the tracker only
-// when it runs, so the manager's spawn takes a ticket (httpSpawnTicket), a
-// Cancel that finds its tracker here cancels the ticket, and the binding, when
-// it runs, drops a cancelled ticket without sending anything or holding.
-// Guarded by g_trackedMutex.
+// Spawn tickets. A tracked request that the Http manager spawns takes a
+// ticket (`Eco_Http_toTaskForSpawn`) before its binding runs. A cancel that
+// finds the tracker's ticket here marks it cancelled, and the binding, when it
+// runs, then returns without submitting the request or taking a hold.
+
+/// The next spawn ticket to hand out. Zero is never a ticket.
 uint64_t g_nextTicket = 1;
-std::unordered_map<std::string, uint64_t> g_unboundTicket;   // tracker -> latest ticket
+/// The latest unbound ticket of each tracker, removed when its binding runs
+/// or a cancel takes it.
+std::unordered_map<std::string, uint64_t> g_unboundTicket;
+/// Tickets cancelled before their binding ran.
 std::unordered_set<uint64_t> g_cancelledTickets;
-// Tickets whose tracker a later spawn took over before they started (stock:
-// a second `Dict.insert tracker pid`). They still report progress, but never
-// become the tracker's cancel target.
+/// Tickets whose tracker a later spawn took over before they ran. Their
+/// requests still report progress, but never become the tracker's cancel
+/// target.
 std::unordered_set<uint64_t> g_supersededTickets;
 
-// Aborts request `token` (RequestControl::abort). True iff it was still queued
-// and is now claimed: the caller then owns the release of its hold (the worker
-// posts nothing for it). False: it is running or done (or unknown), and its
-// result reaches httpDrain, which drops it (cancelled or Nil resume) and
-// releases. Eco thread.
+/// Asks for request `token` to be aborted, and returns whether it was claimed
+/// while still queued.
+///
+/// True means no result will be posted for it, its control entry is gone, and
+/// the caller must release its hold. False means it is running and told to
+/// stop, has finished, or has no control entry; any result still to come is
+/// drained by `httpDrain`, which releases the hold. Eco thread.
 bool httpAbort(uint64_t token) {
     std::shared_ptr<HttpService::RequestControl> control;
     {
@@ -158,11 +202,16 @@ bool httpAbort(uint64_t token) {
     return true;
 }
 
+/// Removes the abort control of request `token`, if there is one.
 void httpForgetControl(uint64_t token) {
     std::lock_guard<std::mutex> lk(g_trackedMutex);
     g_httpControl.erase(token);
 }
 
+/// Returns the Elm String encoded as `strEnc` as UTF-8, or an empty string for
+/// the empty String and for a word that resolves to no object. The word must
+/// be a String or one of those two; nothing checks its tag. Does not allocate
+/// on the heap.
 std::string elmStringToUTF8(uint64_t strEnc) {
     HPointer hp = Export::decode(strEnc);
     if (Elm::alloc::isEmptyString(hp)) return "";
@@ -171,31 +220,31 @@ std::string elmStringToUTF8(uint64_t strEnc) {
     return Elm::StringOps::toStdString(ptr);
 }
 
+/// Returns the 64-bit word for `h`.
 static inline uint64_t encodeHP(HPointer h) {
     union { HPointer hp; uint64_t val; } u;
     u.hp = h;
     return u.val;
 }
+/// Returns the HPointer whose 64-bit word is `val`.
 static inline HPointer decodeHP(uint64_t val) {
     union { HPointer hp; uint64_t val; } u;
     u.val = val;
     return u.hp;
 }
 
-// Constant-safe resolve: embedded constants (Nil, Nothing, True/False, Unit,
-// EmptyString) have a non-zero constant field and must not be passed to
-// Allocator::resolve (which asserts). Returns nullptr for those.
+/// Returns the object `hp` points to, or null when `hp` is an embedded
+/// constant or a null-cons word (`ptr_ind` set), such as `Nothing`, `Nil` or
+/// the empty String, which have no object behind them.
 static inline void* resolveOrNull(HPointer hp) {
     if (hp.ptr_ind != 0) return nullptr;
     return Allocator::instance().resolve(hp);
 }
 
-// The bytes of a request body or multipart value: the UTF-8 of a String
-// (stringBody, jsonBody, stringPart), or the raw bytes of a Bytes value
-// (bytesBody, the bytes of a bytesPart). The Empty constant is both the empty
-// String and the empty Bytes, and gives "". A `File` (fileBody, filePart) only
-// comes from a browser, so none reaches the native kernel; it gives "".
-// Reads only: no allocation.
+/// Returns the bytes of the request body or multipart value `content`: the UTF-8 of a String (`stringBody`,
+/// `jsonBody`, `stringPart`) or the raw bytes of a Bytes value (`bytesBody`, the bytes of a `bytesPart`). The empty
+/// constant is both the empty String and the empty Bytes, and gives `""`. A `File` (`fileBody`, `filePart`) only
+/// comes from a browser, so none reaches the native kernel; it gives `""` too. Reads only and allocates nothing.
 static std::string bodyBytes(HPointer content) {
     void* obj = resolveOrNull(content);
     if (!obj) return "";
@@ -207,7 +256,8 @@ static std::string bodyBytes(HPointer content) {
     return "";
 }
 
-// HTTP status code -> a short reason phrase (curl does not surface it).
+/// Returns the standard reason phrase for eleven common HTTP status codes, and
+/// an empty string for any other `code`.
 const char* reasonPhrase(long code) {
     switch (code) {
         case 200: return "OK";
@@ -225,15 +275,7 @@ const char* reasonPhrase(long code) {
     }
 }
 
-// Build an elm/core `Dict String String` from the response headers: a valid
-// red-black tree, as `Dict.insert` and `Dict.remove` pattern-match on node
-// colours (Dict.elm `NColor = Red | Black`, so Red is null-cons 0 and Black 1).
-// It used to be a right-leaning chain with `()` as every colour, which broke
-// `remove` (plans/kg-reported-bugs.md step 1, kernel audit). std::map gives
-// sorted, dedup (last-wins) keys; the tree is built balanced from them: every
-// level but the deepest is full, the deepest level's nodes are Red and every
-// other node is Black, so each path has the same number of Black nodes and no
-// Red node has a Red child. The root is Black.
+/// Allocates an empty elm/core Dict.
 HPointer rbEmpty() {
     std::vector<Unboxable> v;
     return custom(CTOR_DICT_RBEMPTY, v, 0);
@@ -241,11 +283,14 @@ HPointer rbEmpty() {
 
 namespace {
 
+/// The tag of elm/core's `Red`, the first constructor of `NColor`, a null-cons constant.
 constexpr u16 DICT_RED = 0;
+/// The tag of elm/core's `Black`.
 constexpr u16 DICT_BLACK = 1;
 
-// The subtree holding `entries[lo, hi)`, at depth `depth` (the root is 1) of a
-// tree whose deepest level is `height`.
+/// Builds the subtree holding `entries[lo, hi)`, rooted at the middle entry, at depth `depth` (the root is 1) of a
+/// tree whose deepest level is `height`. Nodes on the deepest level are Red unless that level is the root's, and
+/// every other node is Black.
 HPointer buildHeadersTree(const std::vector<std::pair<std::string, std::string>>& entries,
                           size_t lo, size_t hi, int depth, int height) {
     if (lo >= hi) return rbEmpty();
@@ -271,6 +316,13 @@ HPointer buildHeadersTree(const std::vector<std::pair<std::string, std::string>>
 
 } // namespace
 
+/// Builds an elm/core `Dict String String` from the header pairs `hdrs`. When a name occurs more than once, the last
+/// value wins.
+///
+/// The result is a valid red-black tree, since `Dict.insert` and `Dict.remove` pattern-match on node colours. It is
+/// built balanced from the sorted keys: every level but the deepest is full, the deepest level's nodes are Red and
+/// every other node is Black, so each path has the same number of Black nodes and no Red node has a Red child. The
+/// root is Black.
 HPointer buildHeadersDict(const std::vector<std::pair<std::string, std::string>>& hdrs) {
     std::map<std::string, std::string> sorted;
     for (auto& kv : hdrs) sorted[kv.first] = kv.second;
@@ -280,7 +332,9 @@ HPointer buildHeadersDict(const std::vector<std::pair<std::string, std::string>>
     return buildHeadersTree(entries, 0, entries.size(), 1, height);
 }
 
-// Build the Metadata record { headers, statusCode, statusText, url }.
+/// Builds the `Metadata` record `{ headers, statusCode, statusText, url }` of
+/// result `r`. The status text is the reason phrase for `r.status` when
+/// `r.statusText` is empty.
 HPointer buildMetadata(const HttpService::Result& r) {
     auto& rs = Allocator::instance().getRootSet();
     size_t saved = rs.stackRangePoint();
@@ -292,21 +346,22 @@ HPointer buildMetadata(const HttpService::Result& r) {
     rs.pushStackRootRange(&statusText, 1, 1);
     HPointer url = allocStringFromUTF8(r.finalUrl);
 
-    // computeRecordLayout (Types.elm) orders fields as unboxed-first (sorted),
-    // then boxed (sorted). Metadata { headers, statusCode:Int, statusText, url }
-    // => physical [ statusCode(0,Int), headers(1), statusText(2), url(3) ].
+    // The compiler (`Types.computeRecordLayout`) puts unboxed fields first, then
+    // boxed ones, each group in name order, so the unboxed Int `statusCode`
+    // takes slot 0.
     std::vector<Unboxable> fields(4);
-    fields[0].i = static_cast<i64>(r.status);  // statusCode (unboxed Int, slot 0)
+    fields[0].i = static_cast<i64>(r.status);
     fields[1].p = headers;
     fields[2].p = statusText;
     fields[3].p = url;
-    HPointer md = record(fields, (u64{1} << 0));  // slot0 kind=01 (Int)
+    HPointer md = record(fields, (u64{1} << 0));  // slot 0 kind 01 (Int)
     rs.restoreStackRangePoint(saved);
     return md;
 }
 
-// Build a `Response body` Custom from the worker result and the materialised
-// `body` value. Runs on the main thread.
+/// Builds the `Response body` for result `r`, with `body` as the body of a
+/// `GoodStatus_` (status 200 to 299) or `BadStatus_` response. `BadUrl_`
+/// carries `r.finalUrl`.
 HPointer buildResponse(const HttpService::Result& r, HPointer body) {
     using EK = HttpService::ErrorKind;
     if (r.error == EK::Timeout) {
@@ -323,7 +378,6 @@ HPointer buildResponse(const HttpService::Result& r, HPointer body) {
         v[0].p = url;
         return custom(RESP_BAD_URL, v, 0);
     }
-    // Ok: GoodStatus_ for 2xx else BadStatus_; both carry [metadata, body].
     Elm::StackRootGuard bodyRoot(&body);
     HPointer md = buildMetadata(r);
     Elm::StackRootGuard mdRoot(&md);
@@ -334,16 +388,10 @@ HPointer buildResponse(const HttpService::Result& r, HPointer body) {
     return custom(good ? RESP_GOOD_STATUS : RESP_BAD_STATUS, v, 0);
 }
 
-// ---- Tracking registry helpers (main thread) -------------------------------
-
-// Register a tracked request. trackerStr is computed here (no Allocator call)
-// and held only as a std::string key. A tracker already naming an older
-// request is re-pointed at this one; the older request is NOT cancelled. That
-// is stock elm/http's behaviour on every backend: its manager does
-// `Dict.insert tracker pid reqs` for a new request (Http.elm:1003) and only
-// `Cancel` kills (Http.elm:992); the older request runs on, delivers its
-// result, and can no longer be cancelled by tracker
-// (plans/program-liveness-rule.md §5.3 tracker reuse, phase 3 finding).
+/// Records request `token` as tracked by `tracker`, with progress going to
+/// `router`. When `claimTracker` is true the tracker is pointed at this
+/// request, and an older request it named is not cancelled but can no longer
+/// be cancelled by tracker. Does not allocate.
 void httpRegisterTracked(uint64_t token, HPointer router, HPointer tracker,
                          bool claimTracker) {
     std::string trackerStr = elmStringToUTF8(encodeHP(tracker));
@@ -354,9 +402,9 @@ void httpRegisterTracked(uint64_t token, HPointer router, HPointer tracker,
     if (claimTracker) g_trackerToken[trackerStr] = token;
 }
 
-// Clear a token's tracking on final result. Returns whether it was cancelled
-// (so the caller can drop delivery). Reads the stored tracker String (no alloc)
-// to remove the tracker -> token index entry if it still points at this token.
+/// Ends the tracking of request `token`, and returns whether `Http.cancel` had
+/// withdrawn it. Returns false for an untracked token. The tracker stops
+/// naming the request if it still does. Does not allocate.
 bool httpClearTracked(uint64_t token) {
     std::lock_guard<std::mutex> lk(g_trackedMutex);
     auto it = g_httpTracked.find(token);
@@ -371,8 +419,9 @@ bool httpClearTracked(uint64_t token) {
     return cancelled;
 }
 
-// GC scanner over the tracking registry (P3c). Runs stop-the-world on the main
-// thread; evacuates the router + tracker HPointers in place. Never allocates.
+/// Registers, once per process, a root scanner that keeps the router and
+/// tracker words of `g_httpTracked` alive and updates them when objects move.
+/// The scanner takes `g_trackedMutex` and does not allocate.
 void httpRegisterScannerOnce() {
     static std::once_flag flag;
     std::call_once(flag, []() {
@@ -387,34 +436,30 @@ void httpRegisterScannerOnce() {
     });
 }
 
-// ---- Progress value construction (P5, main thread) -------------------------
-// upload   -> Sending  { sent : Int, size : Int }       ctor 0
-// download -> Receiving{ received : Int, size : Maybe Int } ctor 1
+/// Builds the `Progress` value of one tick: `Sending { sent = now, size =
+/// total }` when `isUpload`, otherwise `Receiving { received = now, size }`,
+/// where `size` is `Just total` when `total` is above zero and `Nothing`
+/// otherwise.
 HPointer buildProgress(bool isUpload, uint64_t now, uint64_t total) {
     if (isUpload) {
-        // record { sent, size } — both unboxed Int; computeRecordLayout orders
-        // unboxed-first (alphabetical): [sent(slot0,Int), size(slot1,Int)].
-        // 2-bit mask: slot0=01, slot1=01 -> 0b0101.
+        // Both fields are unboxed Ints, in name order: [sent, size], mask 0b0101.
         std::vector<Unboxable> rf(2);
-        rf[0] = unboxedInt(static_cast<i64>(now));    // sent
-        rf[1] = unboxedInt(static_cast<i64>(total));  // size
+        rf[0] = unboxedInt(static_cast<i64>(now));
+        rf[1] = unboxedInt(static_cast<i64>(total));
         HPointer rec = record(rf, 0x5);
         Elm::StackRootGuard g(&rec);
         std::vector<Unboxable> cf(1);
         cf[0] = boxed(rec);
         return custom(PROGRESS_SENDING, cf, 0);
     }
-    // size : Maybe Int — Just total when known, else Nothing (chunked).
     HPointer size = (total > 0)
         ? justKind(unboxedInt(static_cast<i64>(total)), /*kind=Int*/1)
         : nothing();
     Elm::StackRootGuard sg(&size);
-    // record { received, size } — received unboxed Int, size boxed Maybe;
-    // unboxed-first order: [received(slot0,Int), size(slot1,boxed)].
-    // 2-bit mask: slot0=01, slot1=00 -> 0b0001.
+    // The unboxed Int `received` comes before the boxed `size`, mask 0b0001.
     std::vector<Unboxable> rf(2);
-    rf[0] = unboxedInt(static_cast<i64>(now));  // received
-    rf[1] = boxed(size);                         // size : Maybe Int
+    rf[0] = unboxedInt(static_cast<i64>(now));
+    rf[1] = boxed(size);
     HPointer rec = record(rf, 0x1);
     Elm::StackRootGuard rg(&rec);
     std::vector<Unboxable> cf(1);
@@ -422,9 +467,12 @@ HPointer buildProgress(bool isUpload, uint64_t now, uint64_t total) {
     return custom(PROGRESS_RECEIVING, cf, 0);
 }
 
-// Drain progress ticks (P4a). For each, look up the token's (router, tracker),
-// build a Progress value, wrap it in the SelfMsg tuple (tracker, progress), and
-// route it to the Http manager self-process via sendToSelf -> onSelfMsg.
+/// Delivers every queued progress tick of a tracked request that has not been
+/// cancelled, as the self-message `(tracker, progress)` to the Http manager.
+/// Ticks of untracked, finished or cancelled requests are dropped.
+///
+/// Each tick is followed by `Scheduler::drain()`, so it is handled before the
+/// next is popped.
 void httpDrainProgress() {
     HttpService::Progress ev;
     while (HttpService::instance().tryPopProgress(ev)) {
@@ -444,41 +492,38 @@ void httpDrainProgress() {
                 found = true;
             }
         }
-        if (!found || cancelled) continue;  // untracked or cancelled: drop
+        if (!found || cancelled) continue;
 
-        // Root the decoded locals before any allocation: the scanner keeps the
-        // registry entries alive, but these stack copies need their own roots
-        // so GC updates them in place across buildProgress / tuple2.
+        // The scanner updates the table entries, not these copies, so they need
+        // their own roots across the allocations below.
         HPointer router = decodeHP(routerEnc);
         HPointer tracker = decodeHP(trackerEnc);
         HPointer progress = listNil();
         HPointer selfMsg = listNil();
         Elm::StackRootGuard g({&router, &tracker, &progress, &selfMsg});
         progress = buildProgress(ev.isUpload, ev.now, ev.total);
-        selfMsg = tuple2(boxed(tracker), boxed(progress), 0);  // (tracker, progress)
+        selfMsg = tuple2(boxed(tracker), boxed(progress), 0);
         PlatformRuntime::instance().sendToSelf(router, selfMsg);
 
-        // Deliver this tick (step the manager self-process -> onSelfMsg ->
-        // sendToApp) before popping the next. sendToSelf only *enqueues* the
-        // self-process; because Process is immutable, enqueuing multiple ticks
-        // before stepping would leave several snapshots whose mailboxes overlap,
-        // and stepping each would re-deliver earlier ticks. Draining per tick
-        // keeps the mailbox at one message and delivers each exactly once
-        // (per-tick scheduler step, Q-G).
+        // `sendToSelf` only enqueues the manager's process. Processes are
+        // immutable, so enqueuing several ticks before stepping would leave
+        // snapshots with overlapping mailboxes and re-deliver earlier ticks;
+        // stepping after each tick delivers each once.
         Scheduler::instance().drain();
     }
 }
 
-// ---- Main-thread async-source drain ----------------------------------------
-// Pops completed worker results and, for each, resumes the matching binding on
-// the main thread: build Response -> apply expect.toBody/toValue -> apply
-// resultToTask -> resume(resultTask).
+/// Finishes every completed request: the async source's drain, run on the eco
+/// thread.
+///
+/// Progress is delivered first, so the ticks already queued reach the manager
+/// before a result is handled. Then for each result it ends the tracking, and
+/// drops a result that was cancelled or whose resume was already taken (a
+/// killed task). Otherwise it makes the body (Bytes when the expect type is
+/// `"arraybuffer"`, a String otherwise), applies `toBody`, builds the
+/// `Response`, applies `toValue` and `resultToTask`, and resumes the task with
+/// the result. Each result's hold is released, whether delivered or dropped.
 void httpDrain() {
-    // Drain progress first (delivering each tick fully, see httpDrainProgress)
-    // so all progress reaches the app before the final result is delivered:
-    // result delivery (httpSuccessHandler) calls sendToApp synchronously, so
-    // progress must be flushed first to preserve the track API's "progress
-    // before final result" ordering (P2c).
     httpDrainProgress();
 
     HttpService::Result r;
@@ -486,21 +531,16 @@ void httpDrain() {
         ECO_KLOG("elm-http",
                  "drain token=%lu err=%d status=%ld body=%zuB",
                  (unsigned long)r.token, (int)r.error, r.status, r.body.size());
-        // Clear tracking for this token (no-op for untracked). If it was
-        // cancelled via Http.cancel, drop the result without resuming.
         bool cancelled = httpClearTracked(r.token);
         httpForgetControl(r.token);
         HPointer bundle = Scheduler::instance().takePendingResume(r.token);
         if (alloc::isNil(bundle) || cancelled) {
-            // Cancelled or unknown token: release its hold.
             Scheduler::instance().releaseHold(r.token);
             continue;
         }
         Elm::StackRootGuard bundleRoot(&bundle);
 
-        // Materialise the raw body per the expect type (bundle.values[4]):
-        // "" => an Elm String (UTF-8); "arraybuffer" => Elm Bytes (ByteBuffer).
-        // The expect.toBody closure (identity / toDataView) is applied below.
+        // The bundle is re-resolved after every allocation, since it may move.
         bool wantBytes;
         {
             void* bp = Allocator::instance().resolve(bundle);
@@ -516,7 +556,6 @@ void httpDrain() {
         }
         Elm::StackRootGuard rawRoot(&rawBody);
 
-        // toBody = bundle.values[2]
         HPointer body;
         {
             void* bp = Allocator::instance().resolve(bundle);
@@ -528,7 +567,6 @@ void httpDrain() {
         HPointer response = buildResponse(r, body);
         Elm::StackRootGuard respRoot(&response);
 
-        // value = toValue(response); toValue = bundle.values[3]
         HPointer value;
         {
             void* bp = Allocator::instance().resolve(bundle);
@@ -537,7 +575,6 @@ void httpDrain() {
         }
         Elm::StackRootGuard valueRoot(&value);
 
-        // resultTask = resultToTask(value); resultToTask = bundle.values[1]
         HPointer resultTask;
         {
             void* bp = Allocator::instance().resolve(bundle);
@@ -546,7 +583,6 @@ void httpDrain() {
         }
         Elm::StackRootGuard taskRoot(&resultTask);
 
-        // resume(resultTask); resume = bundle.values[0]
         {
             void* bp = Allocator::instance().resolve(bundle);
             HPointer resume = static_cast<Custom*>(bp)->values[0].p;
@@ -556,6 +592,8 @@ void httpDrain() {
     }
 }
 
+/// Registers, once per process, the tracking root scanner and the async source
+/// whose drain is `httpDrain`, ready while results or progress are queued.
 void httpEnsureRegistered() {
     static std::once_flag flag;
     std::call_once(flag, []() {
@@ -569,18 +607,29 @@ void httpEnsureRegistered() {
     });
 }
 
-// Read the stock Request record into a worker POD + extract the expect's
-// toBody/toValue closures. Runs on the main thread (binding step).
+/// What the binding reads from one Request record: the plain-data request for
+/// the worker, and the heap values it needs to finish the request.
+///
+/// The HPointers are copies, unrooted, and valid only until the next heap
+/// allocation.
 struct ExtractedRequest {
     HttpService::Request pod;
-    HPointer type;     // expect.__type: "" (String body) or "arraybuffer" (Bytes)
+    HPointer type;     ///< The expect's type String: `"arraybuffer"` asks for a Bytes body.
     HPointer toBody;
     HPointer toValue;
-    HPointer trackerHP = {};  // tracker String (valid only when tracked)
-    bool tracked = false;     // request.tracker == Just _
-    bool ok = false;
+    HPointer trackerHP = {};  ///< The tracker String; meaningful only when `tracked`.
+    bool tracked = false;     ///< Whether `tracker` is `Just`.
+    bool ok = false;          ///< False when the record or its expect has no object; then only some fields are set.
 };
 
+/// Reads the Request record `requestHP` into an `ExtractedRequest`, without
+/// allocating on the heap.
+///
+/// The method, URL and headers are copied as UTF-8. A `pair` body gives the
+/// content type and the content read as a String, except that a multipart
+/// form is serialised as `multipart/form-data` with each part's value read as
+/// a String. Any other body is sent empty. A `Just` timeout is truncated to
+/// whole milliseconds.
 ExtractedRequest extractRequest(HPointer requestHP) {
     ExtractedRequest out;
     void* ptr = Allocator::instance().resolve(requestHP);
@@ -590,8 +639,7 @@ ExtractedRequest extractRequest(HPointer requestHP) {
     out.pod.method = elmStringToUTF8(encodeHP(req->values[REQ_METHOD].p));
     out.pod.url    = elmStringToUTF8(encodeHP(req->values[REQ_URL].p));
 
-    // headers : List Header, Header = Header String String (Custom ctor 0).
-    // Non-allocating walk over hybrid spines.
+    // Each header is a Custom with fields [name, value].
     for (Elm::alloc::ListCursor l(req->values[REQ_HEADERS].p); !l.done();
          l.next()) {
         void* hPtr = resolveOrNull(l.current().p);
@@ -603,16 +651,13 @@ ExtractedRequest extractRequest(HPointer requestHP) {
         }
     }
 
-    // body : Body (Custom). empty => no body; pair => [contentType, content].
     void* bodyPtr = resolveOrNull(req->values[REQ_BODY].p);
     if (bodyPtr) {
         Custom* body = static_cast<Custom*>(bodyPtr);
         if (body->ctor == BODY_PAIR) {
             out.pod.contentType = elmStringToUTF8(encodeHP(body->values[0].p));
-            // content is a String (stringBody/jsonBody) or Bytes (bytesBody).
-            // multipartBody wraps a BODY_FORM here; serialise it to
-            // multipart/form-data. Every body used to be read as a String, so
-            // a bytesBody sent garbage (plans/kg-reported-bugs.md, open items).
+            // The content is a String (`stringBody`, `jsonBody`) or Bytes (`bytesBody`), or, from `multipartBody`, a
+            // form, which is serialised as multipart/form-data.
             HPointer content = body->values[1].p;
             void* cp = resolveOrNull(content);
             bool isForm = cp && static_cast<Header*>(cp)->tag == Tag_Custom &&
@@ -625,7 +670,7 @@ ExtractedRequest extractRequest(HPointer requestHP) {
                      !l.done(); l.next()) {
                     void* partPtr = resolveOrNull(l.current().p);
                     if (partPtr) {
-                        Custom* part = static_cast<Custom*>(partPtr);  // pair [key, value]
+                        Custom* part = static_cast<Custom*>(partPtr);
                         std::string key = elmStringToUTF8(encodeHP(part->values[0].p));
                         HPointer value = part->values[1].p;
                         void* vp = resolveOrNull(value);
@@ -657,25 +702,20 @@ ExtractedRequest extractRequest(HPointer requestHP) {
         }
     }
 
-    // timeout : Maybe Float (Just => ctor 1, field 0 is the Float ms). Nothing
-    // is an embedded constant (resolveOrNull => nullptr => no timeout).
+    // `Nothing` is a constant, so only a `Just` resolves; its field 0 is the
+    // unboxed Float.
     void* toPtr = resolveOrNull(req->values[REQ_TIMEOUT].p);
     if (toPtr) {
-        // Nothing is an embedded constant (filtered above), so a resolved value
-        // is `Just <Float ms>` — the Float is at field 0 (unboxed).
         Custom* mt = static_cast<Custom*>(toPtr);
         out.pod.timeoutMs = static_cast<long>(mt->values[0].f);
     }
 
-    // tracker : Maybe String (Just => Custom, field 0 is the tracker String;
-    // Nothing => embedded constant => resolveOrNull yields nullptr => untracked).
     void* trPtr = resolveOrNull(req->values[REQ_TRACKER].p);
     if (trPtr) {
         out.trackerHP = static_cast<Custom*>(trPtr)->values[0].p;
         out.tracked = true;
     }
 
-    // expect : Expect (Custom ctor 0) [type, toBody, toValue].
     void* expectPtr = resolveOrNull(req->values[REQ_EXPECT].p);
     if (!expectPtr) return out;
     Custom* expect = static_cast<Custom*>(expectPtr);
@@ -686,11 +726,13 @@ ExtractedRequest extractRequest(HPointer requestHP) {
     return out;
 }
 
-// Kill handle of a request: `Process.kill` applies it to `()`.
-// args[0] = the request's token (PK_Int, raw bits), args[1] = ().
-// The killed task never resumes, its tracking ends, and its hold is released
-// exactly once: here if the request was claimed while queued, otherwise by
-// httpDrain when the (aborted or finished) result arrives and finds no resume.
+/// Kills one request: the evaluator of its kill handle, which `Process.kill`
+/// applies to `()`. `args[0]` is the request's token as a raw Int, `args[1]`
+/// is `()`.
+///
+/// The task never resumes and its tracking ends. Its hold is released here if
+/// the request was claimed while queued, and otherwise by `httpDrain` when the
+/// result arrives and finds no resume. Returns Unit.
 void* httpKillEval(void* args[]) {
     uint64_t token = reinterpret_cast<uint64_t>(args[0]);
     auto& s = Scheduler::instance();
@@ -700,16 +742,25 @@ void* httpKillEval(void* args[]) {
     return reinterpret_cast<void*>(encodeHP(unit()));
 }
 
+/// Allocates the kill handle of request `token`, a closure that runs
+/// `httpKillEval` when applied to `()`.
 HPointer makeHttpKillHandle(uint64_t token) {
     HPointer cl = allocClosureK(httpKillEval, /*max_values=*/2, Elm::PK_Boxed);
-    void* p = Allocator::instance().resolve(cl);   // no allocation until captured (G8)
+    void* p = Allocator::instance().resolve(cl);   // nothing allocates before the capture
     closureCapture(p, unboxedInt(static_cast<i64>(token)), Elm::PK_Int);
     return cl;
 }
 
-// Binding evaluator (main thread). Captures: args[0]=request,
-// args[1]=resultToTask, args[2]=router, args[3]=spawn ticket (PK_Int, 0 =
-// none; see g_unboundTicket). Scheduler appends the resume closure as args[4].
+/// Starts one request: the evaluator of its Task binding, run by the scheduler
+/// on the eco thread. `args[0]` to `args[3]` are the captured request,
+/// `resultToTask`, router and spawn ticket (a raw Int, 0 for none), and
+/// `args[4]` is the resume closure the scheduler supplies.
+///
+/// It parks the continuation bundle with a hold, records tracking for a
+/// tracked request, submits the request and returns the kill handle. It
+/// returns Unit without submitting, parking or holding when the ticket was
+/// cancelled, or when the record or its expect has no object; in both cases
+/// the task never resumes.
 void* httpBindingEval(void* args[]) {
     HPointer request      = decodeHP(reinterpret_cast<uint64_t>(args[0]));
     HPointer resultToTask = decodeHP(reinterpret_cast<uint64_t>(args[1]));
@@ -729,9 +780,6 @@ void* httpBindingEval(void* args[]) {
             }
         }
         if (cancelled) {
-            // Cancelled before it started (as stock elm/http kills the pid
-            // before its binding runs): nothing is sent, nothing holds, and
-            // the task never resumes.
             ECO_KLOG("elm-http", "ticket=%lu cancelled before start", (unsigned long)ticket);
             return reinterpret_cast<void*>(encodeHP(unit()));
         }
@@ -739,12 +787,10 @@ void* httpBindingEval(void* args[]) {
 
     ExtractedRequest ex = extractRequest(request);
     if (!ex.ok) {
-        // Malformed expect: resume immediately with NetworkError -> resultToTask.
         return reinterpret_cast<void*>(encodeHP(unit()));
     }
 
-    // Build the continuation bundle [resume, resultToTask, toBody, toValue, type]
-    // and register it; the Scheduler's pendingResumes_ scanner keeps it rooted.
+    // Once parked, the scheduler keeps the bundle rooted.
     HPointer toBody = ex.toBody;
     HPointer toValue = ex.toValue;
     HPointer type = ex.type;
@@ -762,8 +808,6 @@ void* httpBindingEval(void* args[]) {
     u64 token = Scheduler::instance().parkResume(bundle, Elm::Platform::HoldKind::Task,
                                                  "Http.request");
 
-    // Tracked request (tracker == Just _): register (router, tracker) so the
-    // worker's progress ticks route to the Http manager self-process (P3b).
     if (ex.tracked) {
         httpRegisterTracked(token, router, trackerHP, claimTracker);
     }
@@ -776,19 +820,19 @@ void* httpBindingEval(void* args[]) {
     }
     HttpService::instance().submit(std::move(ex.pod));
 
-    // Kill handle: withdraws the request (claimed if queued, curl aborted if
-    // running). Allocates; nothing above is needed past this point.
+    // Allocates, but nothing above is used afterwards.
     return reinterpret_cast<void*>(encodeHP(makeHttpKillHandle(token)));
 }
 
-// The binding Task of one request (stock toTask contract plus a spawn ticket).
+/// Returns the Task that, when run, sends request `reqHP` and resumes with
+/// `resultToTask` applied to the expect's value. `routerHP` receives the
+/// progress of a tracked request, and `ticket` is its spawn ticket or 0.
+/// Registers the async source and the tracking root scanner on first use.
 HPointer httpMakeTask(HPointer routerHP, HPointer rttHP, HPointer reqHP, uint64_t ticket) {
     Elm::StackRootGuard g({&reqHP, &rttHP, &routerHP});
     httpEnsureRegistered();
 
-    // Binding closure captures [request, resultToTask, router, ticket]; arity
-    // = 4 captures + 1 scheduler-supplied resume arg. The router is needed so
-    // the binding step can register progress tracking for a tracked request.
+    // Four captures, plus the resume argument the scheduler supplies.
     HPointer bindingCallback = allocClosureK(httpBindingEval, 5, Elm::PK_Boxed);
     void* clPtr = Allocator::instance().resolve(bindingCallback);
     if (clPtr) {
@@ -800,8 +844,9 @@ HPointer httpMakeTask(HPointer routerHP, HPointer rttHP, HPointer reqHP, uint64_
     return Scheduler::instance().taskBinding(bindingCallback);
 }
 
-// mapExpect composition: newToValue(response) = func(oldToValue(response)).
-// Captures: args[0]=func, args[1]=oldToValue, args[2]=response.
+/// Returns `func (oldToValue response)`: the evaluator of the `toValue` closure
+/// `Http.mapExpect` builds. `args[0]` and `args[1]` are the captured `func`
+/// and `oldToValue`, and `args[2]` is the response.
 void* mapExpectEvaluator(void* args[]) {
     uint64_t funcEnc     = reinterpret_cast<uint64_t>(args[0]);
     uint64_t oldEnc      = reinterpret_cast<uint64_t>(args[1]);
@@ -817,21 +862,19 @@ void* mapExpectEvaluator(void* args[]) {
 
 } // anonymous namespace
 
-// Kernel symbol names are NOT arbitrary: the compiler binds an Elm
-// `Elm.Kernel.Http.<fn>` reference to the external C symbol `Elm_Kernel_Http_<fn>`
-// by the dot->underscore convention in canonicalToMLIRName
-// (compiler/src/Compiler/Generate/MLIR/Names.elm:18). These exports must keep
-// that exact spelling, and each is registered for the JIT in
-// runtime/src/codegen/RuntimeSymbols.cpp.
+// The compiler binds an Elm `Elm.Kernel.Http.<fn>` reference to the C symbol
+// `Elm_Kernel_Http_<fn>` (`canonicalToMLIRName`), so these exports keep that
+// exact spelling. Each `Elm.Kernel.Http` export is also registered for the JIT in `RuntimeSymbols.cpp`.
 extern "C" {
 
-// emptyBody : Body
+// `emptyBody : Body`.
 HPtr Elm_Kernel_Http_emptyBody() {
     std::vector<Unboxable> v;
     return HPtr::fromBits(Export::encode(custom(BODY_EMPTY, v, 0)));
 }
 
-// pair : a -> b -> Body  (also stringBody/jsonBody/stringPart/filePart/bytesBody)
+// `pair : a -> b -> c`, the constructor elm/http uses for every body and
+// multipart part.
 HPtr Elm_Kernel_Http_pair(HPtr a, HPtr b) {
     HPointer aHP = Export::decode(a.toBits());
     HPointer bHP = Export::decode(b.toBits());
@@ -842,7 +885,8 @@ HPtr Elm_Kernel_Http_pair(HPtr a, HPtr b) {
     return HPtr::fromBits(Export::encode(custom(BODY_PAIR, v, 0)));
 }
 
-// toTask : router -> (a -> Task x b) -> Request -> Task x b
+// `toTask : router -> (a -> Task x b) -> Request -> Task x b`, with no spawn
+// ticket.
 HPtr Elm_Kernel_Http_toTask(HPtr router, HPtr resultToTask, HPtr request) {
     HPointer task = httpMakeTask(Export::decode(router.toBits()),
                                  Export::decode(resultToTask.toBits()),
@@ -850,15 +894,19 @@ HPtr Elm_Kernel_Http_toTask(HPtr router, HPtr resultToTask, HPtr request) {
     return HPtr::fromBits(Export::encode(task));
 }
 
-// The Http manager's Request branch: toTask for a request the manager is about
-// to spawn. A tracked request takes a spawn ticket (g_unboundTicket), so that
-// a Cancel issued before its binding runs reaches it. `trackerEnc` is the
-// tracker String, or 0 for an untracked request.
+/// Returns what `Http.toTask` returns, for a request the Http manager is about
+/// to spawn. `trackerEnc` is the request's tracker String, or 0 for an
+/// untracked request.
+///
+/// A tracked request takes a spawn ticket, so that a cancel issued before its
+/// binding runs still reaches it. A ticket already waiting under the same
+/// tracker is superseded: its request is no longer the tracker's cancel
+/// target.
 uint64_t Eco_Http_toTaskForSpawn(uint64_t routerEnc, uint64_t resultToTaskEnc,
                                  uint64_t requestEnc, uint64_t trackerEnc) {
     uint64_t ticket = 0;
     if (trackerEnc != 0) {
-        std::string trackerStr = elmStringToUTF8(trackerEnc);   // no allocation
+        std::string trackerStr = elmStringToUTF8(trackerEnc);
         std::lock_guard<std::mutex> lk(g_trackedMutex);
         ticket = g_nextTicket++;
         auto [it, fresh] = g_unboundTicket.try_emplace(trackerStr, ticket);
@@ -872,16 +920,15 @@ uint64_t Eco_Http_toTaskForSpawn(uint64_t routerEnc, uint64_t resultToTaskEnc,
     return Export::encode(task);
 }
 
-// Http.cancel by tracker string (the Http effect manager's Cancel branch),
-// with stock elm/http's meaning: it withdraws the latest request issued with
-// that tracker, if that one is still in flight (plans/program-liveness-rule.md
-// §5.3, LIVE-5):
-//   * spawned but not started (same batch): its ticket is cancelled; the
-//     binding drops it;
-//   * queued behind another request: claimed, its hold released now;
-//   * running: curl is told to abort; the result is dropped by httpDrain,
-//     which releases.
-// The pending result never resumes and further progress ticks are ignored.
+/// Withdraws the request that tracker String `trackerEnc` names, the latest
+/// one issued with it, if it is still in flight. Older requests with the same
+/// tracker are not affected. Does not allocate on the heap.
+///
+/// A request whose binding has not run has its ticket cancelled, and the
+/// tracker then names nothing. A queued request is claimed and its hold
+/// released here. A running one is told to stop, and `httpDrain` drops its
+/// result and releases the hold. A withdrawn request never resumes, and its
+/// later progress ticks are dropped.
 void Eco_Http_cancelTracker(uint64_t trackerEnc) {
     std::string trackerStr = elmStringToUTF8(trackerEnc);
     uint64_t token = 0;
@@ -893,8 +940,8 @@ void Eco_Http_cancelTracker(uint64_t trackerEnc) {
                      trackerStr.c_str(), (unsigned long)ui->second);
             g_cancelledTickets.insert(ui->second);
             g_unboundTicket.erase(ui);
-            // stock: `Dict.remove tracker reqs`; an older request with this
-            // tracker was already unreachable by tracker.
+            // Any request still under this tracker was superseded by this
+            // spawn and is no longer its cancel target.
             g_trackerToken.erase(trackerStr);
             return;
         }
@@ -912,7 +959,7 @@ void Eco_Http_cancelTracker(uint64_t trackerEnc) {
         token = ti->second;
     }
     if (httpAbort(token)) {
-        // Claimed while queued: no result will arrive, so end it here.
+        // No result will arrive, so the request ends here.
         auto& s = Scheduler::instance();
         (void)s.takePendingResume(token);
         (void)httpClearTracked(token);
@@ -920,7 +967,7 @@ void Eco_Http_cancelTracker(uint64_t trackerEnc) {
     }
 }
 
-// expect : type -> toBody -> toValue -> Expect
+// `expect : String -> (a -> body) -> (Response body -> b) -> Expect b`.
 HPtr Elm_Kernel_Http_expect(HPtr type, HPtr toBody, HPtr toValue) {
     HPointer typeHP    = Export::decode(type.toBits());
     HPointer toBodyHP  = Export::decode(toBody.toBits());
@@ -933,7 +980,9 @@ HPtr Elm_Kernel_Http_expect(HPtr type, HPtr toBody, HPtr toValue) {
     return HPtr::fromBits(Export::encode(custom(EXPECT_CTOR, v, 0)));
 }
 
-// mapExpect : (a -> b) -> Expect a -> Expect b
+// `mapExpect : (a -> b) -> Expect a -> Expect b`. The new expect keeps the type
+// and `toBody`, and its `toValue` applies `closure` after the old one. An
+// `expectVal` that resolves to no object is returned unchanged.
 HPtr Elm_Kernel_Http_mapExpect(HPtr closure, HPtr expectVal) {
     void* expectPtr = Export::toPtr(expectVal.toBits());
     if (!expectPtr) return expectVal;
@@ -958,8 +1007,8 @@ HPtr Elm_Kernel_Http_mapExpect(HPtr closure, HPtr expectVal) {
     return HPtr::fromBits(Export::encode(custom(EXPECT_CTOR, v, 0)));
 }
 
-// bytesToBlob : String -> Bytes -> Body content  (Phase-2 multipart helper),
-// called by elm/http as `bytesToBlob mime bytes`. The blob is [bytes, mime].
+// `bytesToBlob`, which elm/http calls as `bytesToBlob mime bytes`. The blob holds
+// the bytes then the MIME type.
 HPtr Elm_Kernel_Http_bytesToBlob(HPtr mimeType, HPtr bytes) {
     HPointer bytesHP = Export::decode(bytes.toBits());
     HPointer mimeHP  = Export::decode(mimeType.toBits());
@@ -970,13 +1019,14 @@ HPtr Elm_Kernel_Http_bytesToBlob(HPtr mimeType, HPtr bytes) {
     return HPtr::fromBits(Export::encode(custom(BODY_BLOB, v, 0)));
 }
 
-// toDataView : Bytes -> body  (used as expect.toBody for the bytes path).
-// Eco `Bytes` is already a ByteBuffer, so this is identity.
+// `toDataView`, the `toBody` of a Bytes expect. The body is already Bytes, so
+// it is returned unchanged.
 HPtr Elm_Kernel_Http_toDataView(HPtr bytes) {
     return bytes;
 }
 
-// toFormData : List Part -> body  (Phase-2 multipart).
+// `toFormData : List Part -> body`, the multipart form `extractRequest`
+// serialises.
 HPtr Elm_Kernel_Http_toFormData(HPtr parts) {
     HPointer partsHP = Export::decode(parts.toBits());
     Elm::StackRootGuard g(&partsHP);
@@ -985,7 +1035,7 @@ HPtr Elm_Kernel_Http_toFormData(HPtr parts) {
     return HPtr::fromBits(Export::encode(custom(BODY_FORM, v, 0)));
 }
 
-// Global curl init/teardown.
+// libcurl's process-wide setup, run before `main`, and its teardown at exit.
 __attribute__((constructor))
 static void initCurl() { curl_global_init(CURL_GLOBAL_DEFAULT); }
 __attribute__((destructor))

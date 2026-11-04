@@ -1,35 +1,6 @@
 //===- Socket.cpp - eco/system kernel module Socket: binding bodies -------===//
 //
-// plans/eco-system-sockets.md Appendix B.1, §3.3.6-§3.3.8, §D.2, §D.3, §D.5:
-// the binding bodies of the stream-socket kernels of Eco.Kernel.Socket.
-//
-//   * lookup (P, T2): getaddrinfo on the SysWorkPool; "" fails ENOTFOUND
-//     without a call; results in order, deduplicated, printed with
-//     inet_ntop (+ "%ifname"); kill handle SysWorkPool::cancel (T7).
-//   * tcpConnect / unixConnect (R): socketStartConnect: pendingAsync, a
-//     client Conn submitted to the reactor, one Connected event; kill handle
-//     cancelPendingConnect (T7: kill → abort; an orphaned success is
-//     closed by the drain).
-//   * tcpListen / unixListen (P, T2): tcpListenOn / unixListenOn on the
-//     pool (RAII ListenFd in the result, N11), completeListen on the main
-//     thread (an open listener holds nothing of its own, LIVE_001).
-//   * accept (A): a held connection at once (§3.4), else parked on the
-//     listener entry with one credit and a hold (parkResume); kill handle
-//     cancelParkedAccept (returns the credit; the handle releases the hold).
-//   * closeListener (R): idempotent; parked accepts fail ECANCELED, held
-//     connections are aborted, the task completes on ListenerClosed (after
-//     the fd is closed and the Unix path unlinked).
-//   * close / reset (S): submit abort; return at once.
-//   * setNoDelay / setKeepAlive (R): Unix succeeds at once with no effect;
-//     TCP setsockopt on the reactor, OpDone.
-//   * peerCredentials (S): from the ConnEntry; non-Unix EINVAL.
-//
-// Every body follows G2/G3: copy the inputs out of the heap first, then act,
-// then allocate. Error messages are "<syscall> <CODE>" plus the address or
-// path (§D.5).
-//
-// Templates used: T1 (S bodies), T2 (pool bodies + completions), T3 (lookup
-// list), T7 (kill handles), G10 (counts).
+// No body holds a raw pointer into its payload across an allocation on the Elm heap, which may move the payload.
 //
 //===----------------------------------------------------------------------===//
 
@@ -60,32 +31,39 @@ namespace {
 
 // --- Stubs (Socket.hpp) ----------------------------------------------------------
 
+// The body of `socketNotImplementedTask`.
 HPointer notImplementedBody(HPointer /*captured*/) {
     ECO_SYSTEM_BODY_GUARD(FErr,
         return failFErr("ENOTSUP", "not implemented yet");
     )
 }
 
+// The body of `socketDoneTask`.
 HPointer doneBody(HPointer /*captured*/) {
     ECO_SYSTEM_BODY_GUARD(Never,
         return succeedUnit();
     )
 }
 
-// --- Payload decoding (no allocation, G5) ----------------------------------------
+// --- Payload decoding (no allocation) ---------------------------------------------
 
+// Returns whether `b` is Elm's True.
 bool isElmTrue(HPointer b) { return ::Elm::hpBits(b) == ::Elm::hpBits(alloc::elmTrue()); }
 
-// An Int tuple slot: unboxed (the normal case, HEAP_046) or boxed.
+// Returns the Int in tuple slot `u`, whose kind is read from the tuple's header mask `mask` at index `slot`: the raw
+// value when the slot is unboxed, else the value of the boxed `ElmInt` it points to.
 int64_t slotInt(const Unboxable& u, u32 mask, int slot) {
     if (Elm::tupleFieldKind(mask, slot) == 1) return u.i;
     return static_cast<ElmInt*>(Allocator::instance().resolve(u.p))->value;
 }
 
+// Returns the value of `captured`, which must be a boxed `ElmInt`.
 int64_t payloadInt(HPointer captured) {
     return static_cast<ElmInt*>(Allocator::instance().resolve(captured))->value;
 }
 
+// Completes an async body's Task now by passing `task` to `resume`, and returns `()` as the kill handle. Runs Elm
+// code. `resume` must be rooted by the caller.
 HPointer resumeNow(HPointer& resume, HPointer task) {
     Elm::StackRootGuard g(&task);
     Scheduler::callClosure1(resume, task);
@@ -93,29 +71,34 @@ HPointer resumeNow(HPointer& resume, HPointer task) {
 }
 
 #ifdef _WIN32
+// Completes an async body's Task now with the FErr ENOTSUP, as `resumeNow` does.
 HPointer unsupported(HPointer& resume) {
     return resumeNow(resume, failFErr("ENOTSUP", "eco/system: sockets are not supported on Windows yet"));
 }
 #endif
 
+// Returns the message `"<syscall> <code>"`, followed by a space and `what` when `what` is not empty.
 std::string codeMessage(const char* syscall, const std::string& code, const std::string& what) {
     std::string m = std::string(syscall) + " " + code;
     if (!what.empty()) m += " " + what;
     return m;
 }
 
+// Returns the shared IO reactor.
 IoReactor& reactor() { return IoReactor::instance(); }
 
-// --- lookup (§3.3.6) ---------------------------------------------------------------
+// --- lookup -----------------------------------------------------------------------
 
+// The outcome of a lookup on a worker: the addresses, or, when `code` is not empty, the FErr.
 struct LookupRes {
     std::vector<std::string> addresses;
     std::string code, message;
 };
 
+// Resolves `name` on a worker thread, as `socketLookupBody` describes.
 LookupRes lookupWork(const std::string& name) {
     LookupRes r;
-    if (name.empty()) {   // as Node: without calling the resolver
+    if (name.empty()) {
         r.code = "ENOTFOUND";
         r.message = "getaddrinfo ENOTFOUND " + name;
         return r;
@@ -128,7 +111,7 @@ LookupRes lookupWork(const std::string& name) {
     hints.ai_flags = 0;
     struct addrinfo* res = nullptr;
     int rc = ::getaddrinfo(name.c_str(), nullptr, &hints, &res);
-    int sysErr = errno;   // EAI_SYSTEM (G3: right after the call)
+    int sysErr = errno;   // read at once: gaiCode needs it for EAI_SYSTEM
     if (rc != 0) {
         r.code = gaiCode(rc, sysErr);
         r.message = "getaddrinfo " + r.code + " " + name;
@@ -156,7 +139,7 @@ LookupRes lookupWork(const std::string& name) {
     return r;
 }
 
-// List String (T3: one rooted range).
+// Turns a lookup's outcome into its Task on the eco thread: a failure, or a `List String` of the addresses.
 HPointer lookupComplete(PoolResult& pr) {
     auto& r = pr.as<LookupRes>();
     if (!r.code.empty()) return failFErr(r.code, r.message);
@@ -166,8 +149,9 @@ HPointer lookupComplete(PoolResult& pr) {
     return succeed(list);
 }
 
-// --- listen (§3.3.7) ---------------------------------------------------------------
+// --- listen -----------------------------------------------------------------------
 
+// Closes `fd` when it is not negative, ignoring failure. Does nothing on Windows.
 void closeQuietly(int fd) {
 #ifndef _WIN32
     if (fd >= 0) (void)::close(fd);
@@ -176,6 +160,7 @@ void closeQuietly(int fd) {
 #endif
 }
 
+// Returns a failed `ListenResult` with code `code` and the message `codeMessage("listen", code, what)`.
 ListenResult listenFailure(const std::string& code, const std::string& what) {
     ListenResult r;
     r.code = code;
@@ -183,6 +168,7 @@ ListenResult listenFailure(const std::string& code, const std::string& what) {
     return r;
 }
 
+// Finishes a plain-transport listen on the eco thread, as `completeListen` does.
 HPointer listenComplete(PoolResult& pr) { return completeListen(pr.as<ListenResult>(), nullptr); }
 
 } // namespace
@@ -234,7 +220,7 @@ ListenResult tcpListenOn(const std::string& address, int64_t port, int64_t backl
     int one = 1;
     (void)::setsockopt(r.owned.fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
     if (sa.family() == AF_INET6) {
-        // Explicit: Linux's default comes from net.ipv6.bindv6only.
+        // Set either way, so the system default does not decide.
         int v6 = ipv6Only ? 1 : 0;
         (void)::setsockopt(r.owned.fd, IPPROTO_IPV6, IPV6_V6ONLY, &v6, sizeof(v6));
     }
@@ -265,12 +251,10 @@ ListenResult tcpListenOn(const std::string& address, int64_t port, int64_t backl
 ListenResult unixListenOn(const std::string& path, bool removeExisting, int64_t mode) {
 #ifndef _WIN32
     SockAddr sa;
-    int e = unixSockaddr(path, sa);   // ENAMETOOLONG before any syscall (§D.3)
+    int e = unixSockaddr(path, sa);   // fails a path that is too long before any system call
     if (e != 0) return listenFailure(errnoName(e), path);
     struct stat st;
     if (::lstat(path.c_str(), &st) == 0) {
-        // §D.3: an existing path fails EADDRINUSE unless removeExisting, which
-        // removes only a socket.
         if (!removeExisting || !S_ISSOCK(st.st_mode)) return listenFailure("EADDRINUSE", path);
         if (::unlink(path.c_str()) < 0 && errno != ENOENT) {
             e = errno;
@@ -285,9 +269,8 @@ ListenResult unixListenOn(const std::string& path, bool removeExisting, int64_t 
         e = errno;
         return listenFailure(errnoName(e), path);
     }
-    r.owned.createdPath = path;   // from here on, a failure (or a kill) unlinks it
-    // Order (§D.3): bind → chmod → listen, so no client connects before the
-    // mode is set.
+    r.owned.createdPath = path;   // from here on, a failure, or a result nobody takes, unlinks it
+    // chmod before listen, so no client connects before the mode is set.
     if (mode >= 0 && ::chmod(path.c_str(), static_cast<mode_t>(mode & 07777)) < 0) {
         e = errno;
         return listenFailure(errnoName(e), path);
@@ -319,12 +302,8 @@ HPointer completeListen(ListenResult& r, TransportFactory factory) {
     ListenerEntry e;
     e.handler = h;
     e.bound = r.bound;
-    // An open listener holds nothing of its own (LIVE_001, L2): parked
-    // accepts and onConnection subscriptions hold.
     t.listeners.emplace(id, std::move(e));
     reactor().submit([h] { h->start(); });
-    // A subscription may already name this id (it cannot: ids are fresh),
-    // so only an accept or a later onEffects gives it demand.
     HPointer lt = buildListenT(id, r.bound);
     return succeed(lt);
 }
@@ -333,7 +312,7 @@ HPointer socketStartConnect(ConnectSpec spec, TransportFactory factory, HPointer
                             uint64_t& token, bool& counted) {
     ensureSocketTables();
     auto& sched = Scheduler::instance();
-    token = sched.parkResume(resume, HoldKind::Task, "Socket.connect");   // G10
+    token = sched.parkResume(resume, HoldKind::Task, "Socket.connect");
     counted = true;
     auto c = Conn::makeClient(std::move(spec), std::move(factory), token, currentHeapGeneration());
     socketTables().pendingConnects[token] = c;
@@ -345,12 +324,11 @@ HPointer socketStartConnect(ConnectSpec spec, TransportFactory factory, HPointer
 // Kernel bodies
 // ---------------------------------------------------------------------------
 
-// lookup : String -> Task FErr (List String) — payload: the name.
 HPointer socketLookupBody(HPointer captured, HPointer resume) {
     uint64_t token = 0;
     bool counted = false;
     ECO_SYSTEM_ASYNC_GUARD(FErr, resume, token, counted,
-        std::string name = toStdString(captured);   // G3
+        std::string name = toStdString(captured);
         auto& s = Scheduler::instance();
         token = s.parkResume(resume, HoldKind::Task, "Socket.lookup");
         counted = true;
@@ -364,7 +342,7 @@ HPointer socketLookupBody(HPointer captured, HPointer resume) {
 
 #ifdef _WIN32
 
-// tcpConnect / unixConnect: not supported on Windows yet (§1).
+// On Windows, tcpConnect and unixConnect fail with ENOTSUP.
 HPointer socketTcpConnectBody(HPointer /*captured*/, HPointer resume) {
     uint64_t token = 0;
     bool counted = false;
@@ -383,14 +361,13 @@ HPointer socketUnixConnectBody(HPointer /*captured*/, HPointer resume) {
 
 #else
 
-// tcpConnect : ( String, Int, Int ) -> ( Bool, Int ) -> Task FErr ConnT
-// payload tuple2( boxed target, boxed settings ), mask 0.
+// The payload is ( ( address, port, timeoutMs ), ( noDelay, keepAliveSec ) ), the outer pair boxed.
 HPointer socketTcpConnectBody(HPointer captured, HPointer resume) {
     uint64_t token = 0;
     bool counted = false;
     ECO_SYSTEM_ASYNC_GUARD(FErr, resume, token, counted,
         ConnectSpec spec;
-        {   // G3/G5: no allocation in this scope
+        {   // no allocation in this scope
             Tuple2* p = asTuple2(captured);
             HPointer target = p->a.p;
             HPointer settings = p->b.p;
@@ -410,22 +387,20 @@ HPointer socketTcpConnectBody(HPointer captured, HPointer resume) {
     )
 }
 
-// unixConnect : String -> Task FErr ConnT — payload: the path.
 HPointer socketUnixConnectBody(HPointer captured, HPointer resume) {
     uint64_t token = 0;
     bool counted = false;
     ECO_SYSTEM_ASYNC_GUARD(FErr, resume, token, counted,
         ConnectSpec spec;
         spec.isUnix = true;
-        spec.address = toStdString(captured);   // G3
+        spec.address = toStdString(captured);
         return socketStartConnect(std::move(spec), nullptr, resume, token, counted);
     )
 }
 
 #endif
 
-// tcpListen : ( String, Int ) -> ( Int, Bool ) -> Task FErr ListenT
-// payload tuple2( boxed target, boxed settings ), mask 0.
+// The payload is ( ( address, port ), ( backlog, ipv6Only ) ), the outer pair boxed.
 HPointer socketTcpListenBody(HPointer captured, HPointer resume) {
     uint64_t token = 0;
     bool counted = false;
@@ -433,7 +408,7 @@ HPointer socketTcpListenBody(HPointer captured, HPointer resume) {
         std::string address;
         int64_t port = 0, backlog = 511;
         bool ipv6Only = false;
-        {   // G3/G5
+        {   // no allocation in this scope
             Tuple2* p = asTuple2(captured);
             HPointer target = p->a.p;
             HPointer settings = p->b.p;
@@ -455,12 +430,11 @@ HPointer socketTcpListenBody(HPointer captured, HPointer resume) {
                 return PoolResult::of(tcpListenOn(address, port, backlog, ipv6Only));
             },
             &listenComplete, ErrShape::FErr);
-        return alloc::unit();   // short job; an orphaned result closes its fd (RAII)
+        return alloc::unit();
     )
 }
 
-// unixListen : String -> ( Bool, Int ) -> Task FErr ListenT
-// payload tuple2( boxed path, boxed settings ), mask 0.
+// The payload is ( path, ( removeExisting, mode ) ), the outer pair boxed.
 HPointer socketUnixListenBody(HPointer captured, HPointer resume) {
     uint64_t token = 0;
     bool counted = false;
@@ -468,7 +442,7 @@ HPointer socketUnixListenBody(HPointer captured, HPointer resume) {
         std::string path;
         bool removeExisting = false;
         int64_t mode = -1;
-        {   // G3/G5
+        {   // no allocation in this scope
             Tuple2* p = asTuple2(captured);
             HPointer pathHP = p->a.p;
             HPointer settings = p->b.p;
@@ -491,7 +465,6 @@ HPointer socketUnixListenBody(HPointer captured, HPointer resume) {
     )
 }
 
-// accept : Int -> Task FErr ConnT — payload: boxed listener id.
 HPointer socketAcceptBody(HPointer captured, HPointer resume) {
     uint64_t token = 0;
     bool counted = false;
@@ -500,7 +473,7 @@ HPointer socketAcceptBody(HPointer captured, HPointer resume) {
         ensureSocketTables();
         ListenerEntry* e = findListener(id);
         if (!e || e->closing) return resumeNow(resume, failFErr("ECANCELED", "accept ECANCELED"));
-        if (!e->held.empty()) {   // held items first (§3.4)
+        if (!e->held.empty()) {
             SocketEvent ev = std::move(e->held.front());
             e->held.pop_front();
             int64_t connId = materializeConnection(ev);   // no allocation
@@ -515,7 +488,7 @@ HPointer socketAcceptBody(HPointer captured, HPointer resume) {
         // The kill handle first: it allocates, and a throw must not leave the
         // token parked (asyncFailure releases it).
         HPointer kill = makeKillHandle(token, &cancelParkedAccept);
-        e = findListener(id);   // G11: looked up again after the allocation
+        e = findListener(id);   // looked up again after the allocation
         e->parkedAccepts.push_back(token);
         auto h = e->handler;
         if (h) reactor().submit([h] { h->addCredit(1); });
@@ -523,7 +496,6 @@ HPointer socketAcceptBody(HPointer captured, HPointer resume) {
     )
 }
 
-// closeListener : Int -> Task FErr () — payload: boxed listener id.
 HPointer socketCloseListenerBody(HPointer captured, HPointer resume) {
     uint64_t token = 0;
     bool counted = false;
@@ -531,7 +503,7 @@ HPointer socketCloseListenerBody(HPointer captured, HPointer resume) {
         int64_t id = payloadInt(captured);
         ensureSocketTables();
         ListenerEntry* e = findListener(id);
-        if (!e) return resumeNow(resume, succeedUnit());   // closed already: idempotent
+        if (!e) return resumeNow(resume, succeedUnit());
         auto& s = Scheduler::instance();
         token = s.parkResume(resume, HoldKind::Task, "Socket.closeListener");
         counted = true;
@@ -550,7 +522,7 @@ HPointer socketCloseListenerBody(HPointer captured, HPointer resume) {
             }
         }
         if (h) reactor().submit([h] { h->close(); });
-        // Parked accepts fail now, then release their holds. Allocates: `e` is dead.
+        // From here on the loop allocates, so `e` is not used again.
         for (uint64_t t : parked) {
             HoldRelease acceptHold(t);
             HPointer r = s.takePendingResume(t);
@@ -566,6 +538,7 @@ HPointer socketCloseListenerBody(HPointer captured, HPointer resume) {
 
 namespace {
 
+// Asks the reactor to abort connection `connId`, with `reset` passed to `Conn::abort`. Ignores an unknown id.
 void abortConnection(int64_t connId, bool reset) {
     ensureSocketTables();
     ConnEntry* e = findConn(connId);
@@ -574,8 +547,8 @@ void abortConnection(int64_t connId, bool reset) {
     reactor().submit([c, reset] { c->abort(reset); });
 }
 
-// R-mode socket option: Unix succeeds at once (§D.3); TCP runs `fn` on the
-// reactor and posts OpDone.
+// Runs the body of a socket-option kernel, as `socketSetNoDelayBody` describes, with `fn` as the option's setter.
+// `fn` runs on the reactor thread and returns 0 or an errno; its outcome is posted as an `OpDone` event.
 HPointer optionBody(int64_t connId, HPointer& resume, uint64_t& token, bool& counted,
                     std::function<int(Conn&)> fn) {
     ensureSocketTables();
@@ -605,7 +578,6 @@ HPointer optionBody(int64_t connId, HPointer& resume, uint64_t& token, bool& cou
 
 } // namespace
 
-// close : Int -> Task Never () — payload: boxed connection id.
 HPointer socketCloseBody(HPointer captured) {
     ECO_SYSTEM_BODY_GUARD(Never,
         abortConnection(payloadInt(captured), /*reset=*/false);
@@ -613,7 +585,6 @@ HPointer socketCloseBody(HPointer captured) {
     )
 }
 
-// reset : Int -> Task Never () — payload: boxed connection id.
 HPointer socketResetBody(HPointer captured) {
     ECO_SYSTEM_BODY_GUARD(Never,
         abortConnection(payloadInt(captured), /*reset=*/true);
@@ -621,7 +592,6 @@ HPointer socketResetBody(HPointer captured) {
     )
 }
 
-// setNoDelay : Bool -> Int -> Task FErr () — payload tuple2( boxed Bool, Int id ), mask 0x4.
 HPointer socketSetNoDelayBody(HPointer captured, HPointer resume) {
     uint64_t token = 0;
     bool counted = false;
@@ -637,7 +607,6 @@ HPointer socketSetNoDelayBody(HPointer captured, HPointer resume) {
     )
 }
 
-// setKeepAlive : Int -> Int -> Task FErr () — payload tuple2( Int seconds, Int id ), mask 0x5.
 HPointer socketSetKeepAliveBody(HPointer captured, HPointer resume) {
     uint64_t token = 0;
     bool counted = false;
@@ -653,7 +622,6 @@ HPointer socketSetKeepAliveBody(HPointer captured, HPointer resume) {
     )
 }
 
-// peerCredentials : Int -> Task FErr ( Int, Int, Int ) — payload: boxed connection id.
 HPointer socketPeerCredentialsBody(HPointer captured) {
     ECO_SYSTEM_BODY_GUARD(FErr,
         int64_t id = payloadInt(captured);

@@ -1,4 +1,9 @@
 //===- PlatformExports.cpp - C-linkage exports for Platform module ---------===//
+//
+// Each export decodes its arguments, then either builds a node of an effect bag or forwards to
+// `PlatformRuntime` or `PortRuntime`. A bag node is a Custom whose constructor is an `FxBagTag` value and
+// whose fields are all boxed: `Fx_Leaf` holds the home and the value, `Fx_Node` the list of bags, and
+// `Fx_Map` the tagger and the inner bag. The registration exports return Unit.
 
 #include "../KernelExports.h"
 #include "../ExportHelpers.hpp"
@@ -20,7 +25,6 @@ extern "C" {
 
 HPtr Elm_Kernel_Platform_batch(HPtr commands) {
     uint64_t commands_bits = commands.toBits();
-    // Create a NODE bag: Custom with ctor=Fx_Node, 1 boxed field (list of bags)
     HPointer list = decode(commands_bits);
     std::vector<Unboxable> fields(1);
     fields[0].p = list;
@@ -31,7 +35,6 @@ HPtr Elm_Kernel_Platform_batch(HPtr commands) {
 HPtr Elm_Kernel_Platform_map(HPtr closure, HPtr cmd) {
     uint64_t closure_bits = closure.toBits();
     uint64_t cmd_bits = cmd.toBits();
-    // Create a MAP bag: Custom with ctor=Fx_Map, 2 boxed fields (tagger, inner bag)
     HPointer tagger = decode(closure_bits);
     HPointer bag = decode(cmd_bits);
     std::vector<Unboxable> fields(2);
@@ -68,7 +71,6 @@ HPtr Elm_Kernel_Platform_worker(HPtr impl) {
 HPtr Elm_Kernel_Platform_leaf(HPtr home, HPtr value) {
     uint64_t home_bits = home.toBits();
     uint64_t value_bits = value.toBits();
-    // Create a LEAF bag: Custom with ctor=Fx_Leaf, 2 boxed fields (home string, value)
     HPointer homeHP = decode(home_bits);
     HPointer valueHP = decode(value_bits);
     std::vector<Unboxable> fields(2);
@@ -78,15 +80,15 @@ HPtr Elm_Kernel_Platform_leaf(HPtr home, HPtr value) {
     return HPtr::fromBits(encode(bag));
 }
 
-// Port registration (called from the generated @__eco_register_ports
-// preamble before Platform.worker runs). The name is the bare port name;
-// PortRuntime enforces global uniqueness (PORT_001).
+// The port and flags-decoder registrations are called from the generated @__eco_register_ports preamble
+// before Platform.worker runs. A port name is the bare port name; PortRuntime rejects a duplicate
+// (invariant PORT_001). A name that is an embedded constant (the empty String) registers as "".
 
 HPtr Elm_Kernel_Platform_registerIncomingPort(HPtr name, HPtr decoder) {
     HPointer nameHP = decode(name.toBits());
     HPointer decoderHP = decode(decoder.toBits());
-    // Extract the name BEFORE handing decoderHP over: toStdString does not
-    // allocate, but keep the order conservative anyway.
+    // The name is copied out before registerIncoming, which may collect. toStdString itself does not
+    // allocate on the Elm heap.
     void* namePtr = (nameHP.ptr_ind != 0)
                         ? nullptr
                         : Allocator::instance().resolve(nameHP);
@@ -97,10 +99,7 @@ HPtr Elm_Kernel_Platform_registerIncomingPort(HPtr name, HPtr decoder) {
     return HPtr::fromBits(encode(alloc::unit()));
 }
 
-// Flags decoder registration (Phase 5): called from the generated
-// @__eco_register_ports preamble before Platform.worker runs. The decoder
-// is compiled from the root main's `Program flags model msg` type;
-// initWorker runs it against the host-supplied flags JSON.
+// initWorker runs this decoder on the flags JSON the host supplies.
 HPtr Elm_Kernel_Platform_registerFlagsDecoder(HPtr decoder) {
     HPointer decoderHP = decode(decoder.toBits());
     Elm::Platform::PlatformRuntime::instance().setFlagsDecoder(decoderHP);

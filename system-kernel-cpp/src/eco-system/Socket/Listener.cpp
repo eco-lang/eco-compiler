@@ -1,11 +1,4 @@
 //===- Listener.cpp - A listening stream socket on the IoReactor ----------===//
-//
-// See Listener.hpp (plans/eco-system-sockets.md §3.3.4). Reactor thread
-// only, except the constructor (main thread).
-//
-// Templates used: none (POD only, G1).
-//
-//===----------------------------------------------------------------------===//
 
 #include "eco-system/Socket/Listener.hpp"
 
@@ -23,8 +16,11 @@ namespace Eco::System {
 
 namespace {
 
+/// Returns the shared reactor.
 IoReactor& reactor() { return IoReactor::instance(); }
 
+/// Closes `fd` if it is not negative, and unlinks `path` if `ownsPath` is set and `path` is not empty. Does nothing on
+/// Windows.
 void closeFdAndPath(int fd, bool ownsPath, const std::string& path) {
 #ifndef _WIN32
     if (fd >= 0) (void)::close(fd);
@@ -42,8 +38,7 @@ ListenerHandler::ListenerHandler(int fd, int64_t listenerId, uint64_t gen, bool 
       ownsPath_(ownsPath), factory_(std::move(factory)) {}
 
 ListenerHandler::~ListenerHandler() {
-    // Only reachable with an open fd if start() never ran (a registered
-    // handler is kept alive by its reactor slot until close()).
+    // Only reachable with an open fd if the listener was never registered.
     if (fd_ >= 0 && key() == 0) closeFdAndPath(fd_, ownsPath_, unixPath_);
 }
 
@@ -102,14 +97,14 @@ void ListenerHandler::acceptLoop() {
         if (cfd < 0) {
             if (err == EAGAIN || err == EWOULDBLOCK) return;
             if (err == ECONNABORTED || err == EINTR || err == EPROTO) continue;
-            // EMFILE / ENFILE / ENOBUFS / ENOMEM, or anything unexpected:
-            // back off instead of spinning on a level-triggered fd (N9).
+            // EMFILE, ENFILE, ENOBUFS, ENOMEM, or anything unexpected: pause rather than spin on a
+            // level-triggered fd that stays readable.
             backoff_ = true;
             reactor().setTimer(key(), reactor().nowMs() + kBackoffMs);
             return;
         }
         bool reserved = false;
-        if (!protocolFactory_ && credit_ > 0) {   // reserved now, returned if the handshake fails (N10)
+        if (!protocolFactory_ && credit_ > 0) {
             --credit_;
             reserved = true;
         }
@@ -122,7 +117,7 @@ void ListenerHandler::acceptLoop() {
         handshaking_.push_back(Handshake{c, reserved});
         auto self = std::static_pointer_cast<ListenerHandler>(shared_from_this());
         if (protocolFactory_) {
-            // Counted until the fd closes (the credit of callback mode).
+            // Counted as open until the fd closes; a failed handshake closes it too.
             ++open_;
             std::weak_ptr<ListenerHandler> weak = self;
             c->addCloseHook([weak](Conn&) {
@@ -149,20 +144,17 @@ void ListenerHandler::established(Conn& c, bool ok) {
         return;
     }
     if (!ok) {
-        // A failed or timed-out handshake returns its credit and is dropped
-        // silently (as Node without a tlsClientError listener).
         if (h.reserved) ++credit_;
         c.abort(false);
         updateInterest();
         return;
     }
     if (protocolFactory_) {
-        // Callback mode: the connection stays on the reactor.
         std::unique_ptr<ConnProtocol> p = protocolFactory_(c);
         if (!p) {
             c.abort(false);
         } else {
-            c.setProtocol(std::move(p), std::string());   // onOpen
+            c.setProtocol(std::move(p), std::string());
         }
         updateInterest();
         return;
@@ -199,16 +191,13 @@ void ListenerHandler::closeNow(bool post) {
         std::vector<Handshake> hs;
         hs.swap(handshaking_);
         for (auto& h : hs) h.conn->abort(false);
-        if (key() != 0) reactor().remove(key());   // remove before close (rule 3)
+        if (key() != 0) reactor().remove(key());   // the reactor requires removal before the fd is closed
         closeFdAndPath(fd_, ownsPath_, unixPath_);
         fd_ = -1;
         ownsPath_ = false;
     }
-    // Callback mode (HTTP servers): the owner closed the listener from a
-    // reactor command and learns of it there; there is no Socket listener
-    // entry to tell.
     if (!post || protocolFactory_) return;
-    // After the fd is closed and the path unlinked: a re-listen works at once.
+    // Posted only after the fd is closed and the path unlinked, so the address is free when it arrives.
     SocketEvent ev;
     ev.kind = SocketEvent::Kind::ListenerClosed;
     ev.gen = gen_;

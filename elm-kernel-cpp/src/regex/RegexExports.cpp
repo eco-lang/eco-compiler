@@ -1,6 +1,24 @@
 //===- RegexExports.cpp - C-linkage exports for Regex module --------------===//
 //
-// Full implementation using SRELL (std::regex-compatible header-only library).
+// elm/regex's kernel functions, implemented with the vendored SRELL library
+// (a header-only engine with a std::regex-compatible interface).
+//
+// A compiled `srell::regex` is a C++ object and cannot live on the Elm heap,
+// so an Elm `Regex` value is a heap Custom with constructor `CTOR_REGEX` whose
+// first field is an integer id into a process-wide side table of compiled
+// patterns. Entries are never removed, so a compiled pattern outlives every
+// Elm value that names it and a GC never has to update the table.
+//
+// Every export that matches a string first copies it into a UTF-8 `std::string` and
+// matches it with `srell::regex`, the `char` instantiation, which treats the
+// text as bytes. A `Match` record's `index` is converted back from the byte
+// offset to UTF-16 code units, the index JavaScript reports.
+//
+// A count `n` limits the matches used: 0 means none, and a negative `n` means
+// no limit. The engine copy is on the C++ heap and immune to GC, but the heap
+// values built along the way (match records, strings, list parts) are rooted
+// across the allocations and closure calls that follow them, as the
+// allocation rules in `ExportHelpers.hpp` require.
 //
 //===----------------------------------------------------------------------===//
 
@@ -12,7 +30,6 @@
 #include "allocator/StringOps.hpp"
 #include "../../vendor/srell.hpp"
 
-// eco_apply_closure is declared in RuntimeExports.h (included above)
 #include <cmath>
 #include <string>
 #include <unordered_map>
@@ -24,28 +41,31 @@ using namespace Elm::alloc;
 
 namespace {
 
-// Custom type ctor for storing compiled regex
-// We store: regexId (integer), caseInsensitive flag, multiline flag
-// The compiled srell::regex lives in a static side table, NOT on the Elm heap.
+// The constructor tag of an Elm `Regex` value. Its fields are the side-table id,
+// then the caseInsensitive and multiline options as 0 or 1.
 static constexpr u16 CTOR_REGEX = 0xFF00;
 
-// Side table mapping integer IDs to compiled regex objects.
-// Regex objects live here for their entire lifetime (never freed, matching
-// the JS runtime behavior where compiled regexes are never collected).
+// The next side-table id to hand out. Ids start at 1 and are never reused.
+// Unsynchronised, like the table.
 static int64_t s_nextRegexId = 1;
+// Returns the side table from id to compiled pattern. Its entries are `new`ed,
+// never removed and never freed, so every compiled pattern leaks for the life
+// of the process.
 static std::unordered_map<int64_t, srell::regex*>& regexTable() {
     static std::unordered_map<int64_t, srell::regex*> table;
     return table;
 }
 
+// Adds `re` to the side table, which takes ownership of it, and returns its new id.
 static int64_t registerRegex(srell::regex* re) {
     int64_t id = s_nextRegexId++;
     regexTable()[id] = re;
     return id;
 }
 
-// Helper: Convert any Elm String form (leaf or slice) to UTF-8 std::string
-// for SRELL. Routes through StringOps::toStdString.
+// Returns a UTF-8 copy of the Elm string encoded as `strEnc`, in any of its
+// forms. The empty string, and any other word `toPtr` maps to null, give "".
+// Does not allocate on the Elm heap.
 std::string elmStringToUTF8(uint64_t strEnc) {
     HPointer hp = Export::decode(strEnc);
     if (Elm::alloc::isEmptyString(hp)) return "";
@@ -55,12 +75,17 @@ std::string elmStringToUTF8(uint64_t strEnc) {
     return Elm::StringOps::toStdString(ptr);
 }
 
-// Helper: Create an Elm string from UTF-8
+// Returns a new Elm string holding the UTF-8 text `utf8`. A GC point unless
+// `utf8` is empty.
 HPointer utf8ToElmString(const std::string& utf8) {
     return allocStringFromUTF8(utf8);
 }
 
-// Helper: Get compiled regex from Elm Regex Custom type
+// Returns the compiled pattern that the Elm `Regex` value `regexEnc` names, or
+// null if the word does not decode to a pointer, the object's constructor field
+// is not `CTOR_REGEX`, or its id is not in the side table. The object's tag is
+// not checked, so the caller must pass a Custom. The pointer is valid for the
+// life of the process.
 srell::regex* getCompiledRegex(uint64_t regexEnc) {
     void* ptr = Export::toPtr(regexEnc);
     if (!ptr) return nullptr;
@@ -68,7 +93,6 @@ srell::regex* getCompiledRegex(uint64_t regexEnc) {
     Custom* c = static_cast<Custom*>(ptr);
     if (c->ctor != CTOR_REGEX) return nullptr;
 
-    // values[0] stores an integer ID into the regex side table
     int64_t id = c->values[0].i;
     auto& table = regexTable();
     auto it = table.find(id);
@@ -76,9 +100,15 @@ srell::regex* getCompiledRegex(uint64_t regexEnc) {
     return it->second;
 }
 
-// Helper: Create a Match record
-// Match = { match : String, index : Int, number : Int, submatches : List (Maybe String) }
-// Fields in the compiler's layout order: index, number, match, submatches
+// Returns a new Elm `Match` record
+// { match : String, index : Int, number : Int, submatches : List (Maybe String) }
+// built from `matchStr`, `index`, `number` and `submatches`, where a
+// submatch whose flag is false becomes `Nothing`. A GC point.
+//
+// The slots follow the compiler's record layout: unboxed fields first, then
+// boxed ones, each group sorted by name, so the order is index, number, match,
+// submatches. The kind mask `0b0101`, which `record` reads as 2 bits per slot,
+// makes slots 0 and 1 Int and slots 2 and 3 boxed.
 HPointer createMatch(const std::string& matchStr, int64_t index, int64_t number,
                      const std::vector<std::pair<bool, std::string>>& submatches) {
     // Root submatchList (built across the loop's allocs) and matchStrHP
@@ -105,31 +135,27 @@ HPointer createMatch(const std::string& matchStr, int64_t index, int64_t number,
         submatchList = cons(boxed(submatchValue), submatchList, true);
     }
 
-    // Create record in the compiler's layout (computeRecordLayout, Types.elm):
-    // unboxed fields first, then boxed ones, each group sorted by name, so
-    // Match { index, match, number, submatches } is (index, number, match,
-    // submatches). Alphabetical order here made `.match` read the Int 1 as a
-    // pointer (plans/kg-reported-bugs.md step 1).
     matchStrHP = utf8ToElmString(matchStr);
 
     std::vector<Unboxable> fields(4);
-    fields[0].i = index;                    // index (Int) - unboxed
-    fields[1].i = number;                   // number (Int) - unboxed
-    fields[2].p = matchStrHP;               // match (String) - boxed
-    fields[3].p = submatchList;             // submatches (List) - boxed
+    fields[0].i = index;
+    fields[1].i = number;
+    fields[2].p = matchStrHP;
+    fields[3].p = submatchList;
 
-    // Slot kinds, 2 bits per slot: slots 0 and 1 are Int (01), 2 and 3 boxed.
     u64 unboxedMask = 0b0101;
 
     // record() roots all boxed entries of `fields` internally before alloc.
     return record(fields, unboxedMask);
 }
 
-// Converts byte offsets in a UTF-8 string to UTF-16 code unit indexes, the unit
-// of Elm's `Match.index` (and of `String.length` and `String.slice`): a 4-byte
-// sequence (a code point above U+FFFF) is two units, any other one. Offsets must
-// be asked for in non-decreasing order, as a match iterator yields them; each
-// call carries on from the last, so a whole scan is linear.
+// Converts byte offsets in the UTF-8 text `str` to UTF-16 code unit indexes,
+// the unit of Elm's `Match.index`, `String.length` and `String.slice`. The
+// UTF-8 lead byte decides each step: a 4-byte sequence (a code point above
+// U+FFFF) is two units, any other sequence one, and any other byte counts as
+// one unit of one byte. Offsets must be asked for in non-decreasing order, as a
+// match iterator yields them; each call carries on from the last, so a whole
+// scan is linear.
 class Utf16Index {
 public:
     explicit Utf16Index(const std::string& str) : str_(str) {}
@@ -168,7 +194,8 @@ private:
 extern "C" {
 
 HPtr Elm_Kernel_Regex_never() {
-    // Return a regex that never matches anything.
+    // Compiles `(?!)`, which matches nowhere, under a new side-table id. If that
+    // throws, returns the Nothing constant instead of a Regex.
     try {
         srell::regex* re = new srell::regex("(?!)", srell::regex::ECMAScript);
         int64_t id = registerRegex(re);
@@ -178,9 +205,7 @@ HPtr Elm_Kernel_Regex_never() {
         values[1].i = 0;   // caseInsensitive = false
         values[2].i = 0;   // multiline = false
 
-        // All three fields are Ints: kind 01 in each 2-bit slot. It was 0b111,
-        // which made them Char, Int and boxed (plans/kg-reported-bugs.md
-        // step 1, kernel audit).
+        // All three fields are Ints: kind 01 in each 2-bit slot.
         HPointer regex = custom(CTOR_REGEX, values, 0x15);
         return HPtr::fromBits(Export::encode(regex));
     } catch (...) {
@@ -189,16 +214,17 @@ HPtr Elm_Kernel_Regex_never() {
 }
 
 double Elm_Kernel_Regex_infinity() {
-    // Return positive infinity (used for "match all" in replaceAtMost, etc.).
+    // Returns a double positive infinity, Elm's count for "every match".
     return std::numeric_limits<double>::infinity();
 }
 
 HPtr Elm_Kernel_Regex_fromStringWith(HPtr options, HPtr pattern) {
+    // Returns `Just` a new Regex compiled from `pattern` as ECMAScript syntax,
+    // or Nothing if `options` decodes to null or compiling throws.
+    // `options` is { caseInsensitive : Bool, multiline : Bool }, two boxed Bool
+    // slots in that order.
     uint64_t optionsEnc = options.toBits();
     uint64_t patternEnc = pattern.toBits();
-    // Options is a record: { caseInsensitive : Bool, multiline : Bool }
-    // Fields in canonical order: caseInsensitive, multiline
-    // Returns Maybe Regex
 
     void* optPtr = Export::toPtr(optionsEnc);
     if (!optPtr) {
@@ -206,7 +232,6 @@ HPtr Elm_Kernel_Regex_fromStringWith(HPtr options, HPtr pattern) {
     }
 
     Record* opts = static_cast<Record*>(optPtr);
-    // Both fields are boxed Bool (HPointer constants)
     bool caseInsensitive = Export::decodeBoxedBool(Export::encode(opts->values[0].p));
     bool multiline = Export::decodeBoxedBool(Export::encode(opts->values[1].p));
 
@@ -241,7 +266,8 @@ HPtr Elm_Kernel_Regex_fromStringWith(HPtr options, HPtr pattern) {
 }
 
 HPtr Elm_Kernel_Regex_contains(HPtr regex, HPtr str) {
-    // Returns Bool (boxed as True/False HPointer constant)
+    // Returns, as a boxed Bool, whether `regex` matches anywhere in `str`; false
+    // if `regex` is not a known Regex or matching throws. Allocates nothing.
     uint64_t regexEnc = regex.toBits();
     uint64_t strEnc = str.toBits();
     srell::regex* re = getCompiledRegex(regexEnc);
@@ -260,10 +286,11 @@ HPtr Elm_Kernel_Regex_contains(HPtr regex, HPtr str) {
 }
 
 HPtr Elm_Kernel_Regex_findAtMost(int64_t n, HPtr regex, HPtr str) {
+    // Returns a list of Match records for the first `n` matches of `regex` in
+    // `str`, numbered from 1, in order. Returns the empty list if `regex` is not
+    // a known Regex or matching throws.
     uint64_t regexEnc = regex.toBits();
     uint64_t strEnc = str.toBits();
-    // Returns List Match
-    // n is the maximum number of matches to find (negative = unlimited)
 
     if (n == 0) {
         return HPtr::fromBits(Export::encode(listNil()));
@@ -277,8 +304,8 @@ HPtr Elm_Kernel_Regex_findAtMost(int64_t n, HPtr regex, HPtr str) {
     std::string strUtf8 = elmStringToUTF8(strEnc);
 
     // The accumulated match records cross later createMatch allocations, so
-    // they are rooted — all of them with ONE shadow-stack record however many
-    // there are (Elm::alloc::RootedSlots, plans/kernel-root-stack-bounded-rooting.md).
+    // they are rooted, all of them with one shadow-stack record however many
+    // there are (Elm::alloc::RootedSlots).
     Elm::alloc::RootedSlots matches;
     int64_t matchNum = 0;
     Utf16Index utf16Index(strUtf8);
@@ -318,15 +345,15 @@ HPtr Elm_Kernel_Regex_findAtMost(int64_t n, HPtr regex, HPtr str) {
 }
 
 HPtr Elm_Kernel_Regex_replaceAtMost(int64_t n, HPtr regex, HPtr closure, HPtr str) {
+    // Returns `str` with its first `n` matches of `regex` replaced by what the
+    // Elm function `closure` (Match -> String) returns for each, called once per
+    // match in order. Returns `str` unchanged if `regex` is not a known Regex or
+    // `n` is 0. If anything in the loop throws, returns the word `str` was passed as.
     uint64_t regexEnc = regex.toBits();
     uint64_t strEnc = str.toBits();
-    // Replaces up to n matches using the callback closure
-    // closure : Match -> String
-    // Returns String
 
     srell::regex* re = getCompiledRegex(regexEnc);
     if (!re) {
-        // Return original string if no regex
         return str;
     }
 
@@ -334,14 +361,12 @@ HPtr Elm_Kernel_Regex_replaceAtMost(int64_t n, HPtr regex, HPtr closure, HPtr st
         return str;
     }
 
-    // Snapshot the input string into UTF-8 BEFORE rooting begins. After the
-    // first GC point inside the loop, `strEnc` (the original heap string)
-    // may have been moved, but the std::string copy on the C stack is stable.
+    // Snapshot the input string into UTF-8 before the first GC point. After it,
+    // `strEnc` may name a moved object, but the std::string copy is stable.
     std::string strUtf8 = elmStringToUTF8(strEnc);
 
-    // Root the closure across every iteration: createMatch + eco_apply_closure
-    // + utf8ToElmString (called transitively by elmStringToUTF8 on the result)
-    // are all GC points.
+    // Root the closure across every iteration: createMatch and
+    // eco_apply_closure are GC points.
     HPointer closureHP = Export::decode(closure.toBits());
     Elm::StackRootGuard closureRoot(&closureHP);
 
@@ -400,7 +425,7 @@ HPtr Elm_Kernel_Regex_replaceAtMost(int64_t n, HPtr regex, HPtr closure, HPtr st
         result.append(strUtf8.substr(lastEnd));
 
     } catch (...) {
-        // On error, return original string
+        // `str` is not rooted, and allocations in the loop may have moved it.
         return str;
     }
 
@@ -409,10 +434,11 @@ HPtr Elm_Kernel_Regex_replaceAtMost(int64_t n, HPtr regex, HPtr closure, HPtr st
 }
 
 HPtr Elm_Kernel_Regex_splitAtMost(int64_t n, HPtr regex, HPtr str) {
+    // Returns the parts of `str` between its first `n` matches of `regex`, in
+    // order, as a list of strings. Returns a one-element list holding `str` if
+    // `regex` is not a known Regex, `n` is 0, `str` is empty, or matching throws.
     uint64_t regexEnc = regex.toBits();
     uint64_t strEnc = str.toBits();
-    // Splits the string at up to n regex matches
-    // Returns List String
 
     srell::regex* re = getCompiledRegex(regexEnc);
     if (!re) {
@@ -428,7 +454,7 @@ HPtr Elm_Kernel_Regex_splitAtMost(int64_t n, HPtr regex, HPtr str) {
         return HPtr::fromBits(Export::encode(cons(boxed(elmStr), listNil(), true)));
     }
 
-    // The parts cross later string allocations; rooted with ONE record (see
+    // The parts cross later string allocations; rooted with one record (see
     // findAtMost).
     Elm::alloc::RootedSlots parts;
     size_t lastEnd = 0;
@@ -458,7 +484,7 @@ HPtr Elm_Kernel_Regex_splitAtMost(int64_t n, HPtr regex, HPtr str) {
         parts.push(utf8ToElmString(finalPart));
 
     } catch (...) {
-        // On error, return list with just original string
+        // `strEnc` is not rooted, and allocations in the loop may have moved it.
         HPointer elmStr = Export::decode(strEnc);
         return HPtr::fromBits(Export::encode(cons(boxed(elmStr), listNil(), true)));
     }

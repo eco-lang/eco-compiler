@@ -1,47 +1,37 @@
 //===- StreamPipe.cpp - pipeThrough / pipeTo for the eco/system streams ---===//
 //
-// plans/eco-system-library.md §3.5 (pipeThrough, pipeTo, propagation) and
-// Phase 6 step 6.2 ("a registry of src → dst pumps, triggered from every
-// state change of either pair").
+// A pipe moves values from the readable side of one pair, `src`, into the writable side of another, `dst`, until
+// one of them ends. This file implements the pipes behind `Stream.pipeThrough`, `Stream.pipeTo` and the C++
+// `pipeStreams`; their contracts are on the declarations in `StreamTable.hpp` and `Stream.hpp`.
 //
-// A pipe moves values from the readable side of `src` into the writable
-// side of `dst`. While it runs it owns both sides (StreamPair::pipedOut /
-// pipedIn: every other read, write, close or cancel on them fails with
-// `Locked`) and keeps both pairs alive (pipeRefs). It runs as an item on the
-// pump driver's work list (Stream.cpp), scheduled whenever either pair is
-// pumped, so chains of pipes are driven iteratively.
+// While a pipe runs it owns both sides: it sets `StreamPair::pipedOut` on `src` and `pipedIn` on `dst`, so any
+// other read, write, close or cancel on them fails with `Locked`, and it counts in both pairs' `pipeRefs`, so
+// neither is erased. A pipe has no thread or callback of its own. It is an item on the pump driver's work list
+// (`streamSchedulePipe`), and `streamRunPipe` is run whenever either pair is pumped. Chains of pipes are
+// therefore driven by one loop instead of by recursion.
 //
-// Each run, in order (WHATWG pipeTo defaults):
-//   1. dst errored, or closed by someone else → cancel src with the reason;
-//      the pipe fails with Cancelled reason.
-//   2. src errored → abort dst (cancelWritable semantics) with the reason;
-//      the pipe fails.
-//   3. src has a value and dst has room → move it (an accepted write that
-//      needs no completion; a ChannelSink gets a channel write).
-//   4. src closed and drained → close dst; the pipe succeeds once dst is
-//      Closed (a codec dst flushes first), or fails if the close errors.
-//   5. src has nothing buffered and dst has room: an in-memory src with a
-//      value waiting in its writeQ is pumped (the pipe is now a waiting
-//      reader, which opens a readCap-0 gate); a ChannelSource gets one
-//      channel read (Stream.cpp's channel dispatch puts the chunk into
-//      src's readQ).
-// A pipe is also a waiting reader for src's pump: streamPipeDemand() opens
-// the readCap gate (so readCap 0 sources still flow).
+// Each run of a pipe takes the first of these steps that applies, and repeats while it makes progress:
+//   - while the pipe waits for its own close of `dst`: it succeeds once `dst` is Closed or missing, and fails
+//     with `dst`'s reason if the close errors;
+//   - `dst` is not Open, or missing: `src` is cancelled with `dst`'s reason if `dst` has Errored, or
+//     with a Closed reason otherwise, and the pipe fails;
+//   - `src` has Errored: `dst` is cancelled with `src`'s reason, and the pipe fails;
+//   - `src` has a value ready and `dst` has room: the value is moved. A ChannelSink gets a channel write, through
+//     its Elm mapping closure first if it is a mapped sink;
+//   - `src` is Closed and drained, or missing: `dst` is closed, and the pipe waits for that close;
+//   - otherwise, if `dst` has room, `src` is asked for more: an in-memory source with a value in its `writeQ`
+//     is pumped, a MappedSource is pumped or has its read-ahead issued, and a ChannelSource gets one channel
+//     read whose result its channel dispatch puts into `readQ`.
+// A pipe whose `dst` has room, and that is not closing `dst`, also counts as a waiting reader of `src`
+// (`streamPipeDemand`), so `src`'s pump moves a value to its readable side even when `readQ` is at capacity.
 //
-// pipeStreams() (Stream.hpp) creates the same pipe with no Elm task, for C++
-// callers: Http.Stream's upload pump pipes the request-body Readable into a
-// ChannelSink over the transfer's upload channel (Phase 8).
+// The pipe table holds only ids, a resume token and a flag, no heap values: a `pipeTo` task's resume closure
+// is kept by the Scheduler under that token, so no root scanner is needed. The table is cleared when the heap
+// generation changes, as the stream table is.
 //
-// The registry holds POD only (ids, a resume token, flags): the pipeTo
-// resume closure lives in the Scheduler's pendingResumes_, so no scanner is
-// needed. It is cleared when the heap generation changes (F24), like the
-// stream table.
-//
-// Channel requests issued here use held tokens (streamHeldToken: the
-// request id is its own liveness hold), released by the channel dispatch
-// (G10). In-memory pipes hold none (an in-memory park, §3.5).
-//
-// Templates used: T9 (pipeTo parks and completes), G10 (channel requests).
+// Liveness: each channel read, write or close a pipe issues is a held token (`streamHeldToken`), released when
+// the channel's result is dispatched. A pipe over in-memory pairs holds nothing, and neither does a parked
+// `pipeTo` task. A pipe waiting on a MappedSource's read-ahead gives that request a hold of its own.
 //
 //===----------------------------------------------------------------------===//
 
@@ -56,16 +46,20 @@ namespace Eco::System {
 
 namespace {
 
+/// The reason `src` is cancelled with when `dst` was closed, marked (`\x02`) as a Closed reason.
 constexpr const char* kWritableClosed = "\x02WritableStream is closed";   // Stream.Closed
+/// The most bytes one channel read issued by a pipe asks for.
 constexpr size_t kPipeReadChunk = 64 * 1024;
 
+/// One running pipe: the pair ids it connects and how it reports.
 struct Pipe {
     int64_t src = 0;
     int64_t dst = 0;
-    uint64_t token = 0;        // pipeTo resume token (0: pipeThrough)
-    bool closingDst = false;   // the pipe has closed dst and waits for it
+    uint64_t token = 0;        ///< The `pipeTo` resume token; 0 when no task waits (pipeThrough, pipeStreams).
+    bool closingDst = false;   ///< The pipe has closed `dst` and waits for the close to finish.
 };
 
+/// The running pipes by pipe id, for the heap generation `gen`. Eco thread only.
 struct PipeTable {
     std::unordered_map<int64_t, Pipe> m;
     int64_t nextId = 1;
@@ -73,8 +67,9 @@ struct PipeTable {
     bool init = false;
 };
 
+/// Returns the pipe table, first emptying it if the heap generation has changed since it was last used.
 PipeTable& pipes() {
-    static auto* t = new PipeTable();   // leaky (§3.4); main thread only
+    static auto* t = new PipeTable();   // leaked, never destroyed at exit
     uint64_t g = Allocator::instance().heapGeneration();
     if (!t->init || t->gen != g) {
         t->init = true;
@@ -84,15 +79,17 @@ PipeTable& pipes() {
     return *t;
 }
 
+/// Returns whether `d` exists, its writable side is Open, and it can take one more value without waiting.
 bool dstCanAccept(const StreamPair* d) {
     return d && d->w == WState::Open && d->waitingForRoom.empty() &&
            d->writeQ.size() < d->writeCap;
 }
 
-// Hands encoded value `v` to dst's writable side. No heap allocation.
+/// Queues encoded value `v` on `d`'s writable side as an accepted write that needs no completion. A ChannelSink
+/// is sent the value's bytes (text or raw, by `textSink`) as a held channel write. No heap allocation.
 void pushIntoDst(StreamPair* d, uint64_t v) {
     if (d->kind == StreamKind::ChannelSink) {
-        std::string bytes = d->textSink ? toStdString(dec(v)) : toStdBytes(dec(v));   // G3: copy out first
+        std::string bytes = d->textSink ? toStdString(dec(v)) : toStdBytes(dec(v));   // copied before any allocation
         uint64_t req = streamHeldToken("StreamPipe.write");   // released by the dispatch
         d->writeQ.push_back(PendingWrite{req, 0, true, true});
         d->channel->requestWrite(req, std::move(bytes));
@@ -101,6 +98,8 @@ void pushIntoDst(StreamPair* d, uint64_t v) {
     d->writeQ.push_back(PendingWrite{0, v, true, false});
 }
 
+/// Starts closing `d`'s writable side: it becomes Closing, and a ChannelSink is sent a held channel close.
+/// An in-memory pair's own pump finishes the close, flushing a codec first.
 void closeDst(StreamPair* d) {
     d->w = WState::Closing;
     if (d->kind == StreamKind::ChannelSink) {
@@ -109,11 +108,11 @@ void closeDst(StreamPair* d) {
         d->closeCounted = true;
         d->channel->close(req);
     }
-    // In-memory: the dst pump finishes the close (a codec flushes first).
 }
 
-// Removes pipe `pid`, releases its locks and references, and completes a
-// pipeTo task. Allocates (the completion).
+/// Removes pipe `pid`, releases its locks and references on both pairs, and completes its `pipeTo` task, if any:
+/// with Unit if `ok`, otherwise failing with `Cancelled` and `reason`. Then pumps both pairs. Does nothing for an
+/// unknown `pid`. Allocates and calls Elm.
 void finishPipe(int64_t pid, bool ok, const std::string& reason) {
     auto& pt = pipes();
     auto it = pt.m.find(pid);
@@ -139,6 +138,8 @@ void finishPipe(int64_t pid, bool ok, const std::string& reason) {
     pumpStream(pp.dst);
 }
 
+/// Adds a pipe from `src` to `dst`, reporting to `token` (0 for none), takes both sides and a pipe reference on
+/// each pair that exists, and returns the pipe's id. Does not schedule it.
 int64_t createPipe(int64_t src, int64_t dst, uint64_t token) {
     auto& pt = pipes();
     int64_t pid = pt.nextId++;
@@ -157,7 +158,8 @@ int64_t createPipe(int64_t src, int64_t dst, uint64_t token) {
     return pid;
 }
 
-// The immediate path of a T9 body (`resume` is rooted by the guard).
+/// Completes a `pipeTo` task at once by applying `resume` to `task`, and returns Unit. `resume` must be rooted
+/// by the caller.
 HPointer resumeNow(HPointer& resume, HPointer task) {
     Elm::StackRootGuard g(&task);
     Scheduler::callClosure1(resume, task);
@@ -184,7 +186,7 @@ void streamRunPipe(int64_t pid) {
         StreamPair* s = t.find(pp.src);
         StreamPair* d = t.find(pp.dst);
 
-        // 4 (second half). Waiting for the close of dst.
+        // Waiting for the close of dst that the drained-src step started.
         if (pp.closingDst) {
             if (!d || d->w == WState::Closed) {
                 finishPipe(pid, true, "");
@@ -195,7 +197,7 @@ void streamRunPipe(int64_t pid) {
             return;
         }
 
-        // 1. dst errored or closed → cancel src.
+        // dst errored or closed: cancel src.
         if (!d || d->w != WState::Open) {
             std::string reason = (d && d->w == WState::Errored) ? d->wReason
                                                                  : std::string(kWritableClosed);
@@ -204,7 +206,7 @@ void streamRunPipe(int64_t pid) {
             return;
         }
 
-        // 2. src errored → abort dst.
+        // src errored: cancel dst.
         if (s && s->r == RState::Errored) {
             std::string reason = s->rReason;
             finishPipe(pid, false, reason);
@@ -212,8 +214,8 @@ void streamRunPipe(int64_t pid) {
             return;
         }
 
-        // 3. Move one value. A mapped sink maps it first (an Elm call: the
-        //    value leaves src's scanned readQ, so it is rooted across it).
+        // Move one value. A mapped sink maps it first; that calls Elm, and the value has left src's scanned
+        // readQ, so it is rooted across the call.
         if (s && !s->readQ.empty() && dstCanAccept(d) && d->kind == StreamKind::ChannelSink &&
             d->mapFnEnc) {
             HPointer v = dec(s->readQ.front());
@@ -222,7 +224,7 @@ void streamRunPipe(int64_t pid) {
             int64_t tag = 0;
             bool text = false;
             std::string bytes;
-            streamMapForSink(d->mapFnEnc, v, tag, text, bytes);   // G11: s, d are dead
+            streamMapForSink(d->mapFnEnc, v, tag, text, bytes);   // calls Elm: s and d may be dangling
             if (StreamPair* dd = t.find(pp.dst); dd && dd->w == WState::Open && dd->channel) {
                 uint64_t req = streamHeldToken("StreamPipe.write");   // released by the dispatch
                 dd->writeQ.push_back(PendingWrite{req, 0, true, true});
@@ -241,7 +243,7 @@ void streamRunPipe(int64_t pid) {
             continue;
         }
 
-        // 4. src closed and drained → close dst.
+        // src closed and drained (or missing): close dst. s is non-null below this step.
         bool srcDone = !s || (s->r == RState::Closed && s->readQ.empty() && s->rawQ.empty() &&
                               s->parkedReadToken == 0);
         if (srcDone) {
@@ -251,20 +253,17 @@ void streamRunPipe(int64_t pid) {
             continue;
         }
 
-        // 5a. An in-memory source with nothing transformed yet but a value
-        //     waiting: the pipe is a waiting reader now, so pump the source
-        //     (its gate opens through streamPipeDemand; readCap 0 sources
-        //     transform only here). Progress is guaranteed: the source
-        //     transforms one value, so this cannot loop.
+        // A source with nothing in readQ but a value in its writeQ: pump it. The pipe counts as a waiting
+        // reader (streamPipeDemand), so the pump moves a value even with readQ at capacity. Returns rather than
+        // loops: the pump schedules this pipe again.
         if (s->kind != StreamKind::ChannelSource && s->kind != StreamKind::ChannelSink &&
             s->r == RState::Open && s->readQ.empty() && !s->writeQ.empty() && dstCanAccept(d)) {
             pumpStream(pp.src);
             return;
         }
 
-        // 5c. A mapped source: a chunk read ahead is mapped by its pump (the
-        //     pipe is a waiting reader); otherwise its read-ahead request
-        //     now keeps the program alive (a hold) while the pipe waits.
+        // A MappedSource: a raw chunk already read is mapped by its pump; a read-ahead in flight gets a hold
+        // while the pipe waits on it; otherwise the read-ahead is issued.
         if (s->kind == StreamKind::MappedSource && s->r == RState::Open && s->readQ.empty() &&
             dstCanAccept(d)) {
             if (!s->rawQ.empty()) {
@@ -279,7 +278,7 @@ void streamRunPipe(int64_t pid) {
             return;
         }
 
-        // 5b. A channel source: the pipe reads.
+        // A ChannelSource: the pipe reads.
         if (s->kind == StreamKind::ChannelSource && s->r == RState::Open &&
             s->parkedReadToken == 0 && s->readQ.empty() && dstCanAccept(d) && s->channel) {
             uint64_t req = streamHeldToken("StreamPipe.read");   // released by the dispatch
@@ -288,7 +287,7 @@ void streamRunPipe(int64_t pid) {
             if (s->chanReadTok == 0) {
                 s->chanReadTok = req;
                 s->channel->requestRead(req, kPipeReadChunk);
-            }   // else a withdrawn read is in flight: its result is the pipe's
+            }   // else a withdrawn read is in flight, and its result goes to the pipe
         }
         return;
     }
@@ -299,17 +298,17 @@ bool pipeStreams(int64_t src, int64_t dst) {
     StreamPair* s = t.find(src);
     StreamPair* d = t.find(dst);
     if ((s && streamReadLocked(s)) || (d && streamWriteLocked(d))) return false;
-    int64_t pid = createPipe(src, dst, 0);   // no task: like pipeThrough
+    int64_t pid = createPipe(src, dst, 0);
     streamSchedulePipe(pid);
     return true;
 }
 
 // ---------------------------------------------------------------------------
-// Kernel bodies (B.2)
+// Kernel bodies
 // ---------------------------------------------------------------------------
 
-// pipeThrough : Int -> Int -> Task SErr () — payload tuple2(Int transformation,
-// Int readable), mask 0x5. Elm returns `Readable transformation`.
+// Payload tuple2( Int transformation, Int readable ), mask 0x5. Succeeds once the pipe is started; the pipe's
+// outcome is not reported.
 HPointer streamPipeThroughBody(HPointer captured) {
     ECO_SYSTEM_BODY_GUARD(SErr,
         int64_t dst, src;
@@ -325,13 +324,13 @@ HPointer streamPipeThroughBody(HPointer captured) {
             return failSErr(kSErrLocked, "");
         }
         int64_t pid = createPipe(src, dst, 0);
-        streamSchedulePipe(pid);   // completions inside only enqueue resumes
+        streamSchedulePipe(pid);
         return succeedUnit();
     )
 }
 
-// pipeTo : Int -> Int -> Task SErr () — payload tuple2(Int writable,
-// Int readable), mask 0x5. Parks until dst has been closed (Q mode).
+// Payload tuple2( Int writable, Int readable ), mask 0x5. Parks until the pipe finishes: it succeeds once dst
+// has closed or is gone, and otherwise fails with Cancelled and the reason. The parked resume holds nothing.
 HPointer streamPipeToBody(HPointer captured, HPointer resume) {
     uint64_t token = 0;
     bool counted = false;

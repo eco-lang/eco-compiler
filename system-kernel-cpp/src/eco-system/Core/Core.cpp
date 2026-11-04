@@ -1,11 +1,8 @@
 //===- Core.cpp - Shared helpers for eco/system kernels -------------------===//
 //
-// Implements the helper list of Core.hpp (plans/eco-system-library.md
-// §3.3.2). Every builder here runs on the main thread (G1), copies nothing
-// raw across an allocation (G5) and roots each fresh HPointer local before
-// the next allocation (G4).
-//
-// Templates used: T4 (Bytes in/out), B2 error tuples.
+// The builders here root each fresh HPointer local before the next allocation, and keep no raw heap pointer
+// across one, because any allocation may move objects. `alloc::tuple2` and `alloc::tuple3` root their own
+// boxed fields across their allocation, so a value passed straight to them needs no root of its own.
 //
 //===----------------------------------------------------------------------===//
 
@@ -18,8 +15,8 @@ namespace Eco::System {
 
 namespace {
 
-// A Bytes value holding `b` (T4). Empty → the embedded empty-Bytes constant
-// (HEAP_071). The buffer is filled immediately after allocation (G8).
+// Returns a new Elm Bytes value holding the bytes of `b`, or the empty-Bytes constant when `b` is empty
+// (HEAP_071: no zero-length buffer is allocated).
 HPointer makeBytes(const std::string& b) {
     if (b.empty()) return alloc::emptyBytes();
     alloc::BlankByteBuffer bb = alloc::allocByteBufferBlank(b.size());
@@ -72,7 +69,7 @@ HPointer succeedBytes(const std::string& b) {
 }
 
 // ---------------------------------------------------------------------------
-// Failure (B2)
+// Failure
 // ---------------------------------------------------------------------------
 
 HPointer failFErr(const std::string& code, const std::string& msg) {
@@ -85,7 +82,7 @@ HPointer failFErr(const std::string& code, const std::string& msg) {
 }
 
 HPointer failErrno(int err) {
-    const char* m = std::strerror(err);            // main thread only (G1)
+    const char* m = std::strerror(err);            // not synchronised; eco thread only
     return failFErr(errnoName(err), m ? m : "");
 }
 
@@ -133,22 +130,22 @@ HPointer asyncFailure(ErrShape shape, HPointer& resume, uint64_t token,
                       bool counted, const char* what) {
     auto& s = Scheduler::instance();
     if (token != 0) {
-        // Remove the registration (a stale entry would keep the closure alive
-        // forever). `resume` is the body's own rooted copy.
+        // A registration left behind would keep its closure alive for the rest of the run.
         (void)s.takePendingResume(token);
     }
-    HPointer task = failureFor(shape, what);   // `resume` rooted by the macro
+    HPointer task = failureFor(shape, what);
     Elm::StackRootGuard g(&task);
     Scheduler::callClosure1(resume, task);
-    // Release after the failure is published (plans/program-liveness-rule.md
-    // §6.2, L6).
+    // Released only after `resume` has run, so the hold covers the completion of the Task.
     if (token != 0 && counted) s.releaseHold(token);
     return alloc::unit();
 }
 
 } // namespace detail
 
-// --- Stream failure reasons -------------------------------------------------
+// ---------------------------------------------------------------------------
+// Stream failure reasons
+// ---------------------------------------------------------------------------
 
 std::string failureReason(const std::string& origin, const std::string& code,
                           const std::string& message) {
@@ -164,7 +161,7 @@ std::string failureReason(const std::string& origin, const std::string& code,
 }
 
 std::string errnoFailureReason(const std::string& origin, int err) {
-    const char* m = std::strerror(err);   // main thread only (G1)
+    const char* m = std::strerror(err);   // not synchronised; eco thread only
     std::string code = errnoName(err);
     return failureReason(origin, code, code + ": " + (m ? m : ""));
 }
@@ -175,6 +172,8 @@ bool isMarkedReason(const std::string& reason) {
 
 namespace {
 
+// Returns whether `code` is one the TLS layer reports: an "ERR_SSL_", "ERR_TLS_" or "CERT_" prefix, "_CERT"
+// anywhere, or "UNABLE_TO_VERIFY_LEAF_SIGNATURE".
 bool isTlsCode(const std::string& code) {
     return code.rfind("ERR_SSL_", 0) == 0 || code.rfind("ERR_TLS_", 0) == 0 ||
            code.rfind("CERT_", 0) == 0 || code.find("_CERT") != std::string::npos ||

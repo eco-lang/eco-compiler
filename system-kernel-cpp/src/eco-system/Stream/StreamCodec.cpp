@@ -1,14 +1,8 @@
 //===- StreamCodec.cpp - zlib and UTF-8 engines of Codec-kind streams -----===//
 //
-// plans/eco-system-library.md §3.5 (UTF-8 rules) and Phase 6 step 6.2. See
-// StreamCodec.hpp for the contract. Pure C++: no heap access, no Elm calls,
-// main thread only (the pair that owns the state is main-thread only).
-//
-// The z_stream lives behind a stable heap pointer: zlib's internal state
-// points back at its z_stream (deflateStateCheck), so it must never move
-// with the StreamPair that owns it.
-//
-// Templates used: none (no heap access).
+// A codec is allocated on its own, behind a `CodecPtr`, rather than held by
+// value, because zlib's internal state points back at the `z_stream` it was
+// initialised with and rejects the stream if that address changes.
 //
 //===----------------------------------------------------------------------===//
 
@@ -23,8 +17,10 @@ namespace Eco::System {
 
 namespace {
 
+// The size of the buffer zlib writes into, and so the largest output chunk.
 constexpr size_t kOutChunk = 64 * 1024;
 
+// What a codec does, which decides the input it reads and the state it uses.
 enum class CodecKind : uint8_t { Deflate, Inflate, TextEncode, TextDecode };
 
 } // namespace
@@ -34,21 +30,24 @@ struct CodecState {
 
     // Zlib.
     z_stream zs{};
-    bool zInit = false;
+    bool zInit = false;      // zs has been initialised and must be ended
     bool zEnded = false;     // inflate: Z_STREAM_END seen
-    bool zFailed = false;
+    bool zFailed = false;    // an error was returned; every later call fails
 
     // TextEncode: a high surrogate carried from the previous chunk (0: none).
     char16_t pendingHigh = 0;
 
-    // TextDecode (WHATWG UTF-8 decoder state).
+    // TextDecode: the WHATWG UTF-8 decoder's state. `cp` is the code point
+    // built so far, `seen` and `needed` count its continuation bytes, and
+    // `lower`/`upper` bound the next continuation byte.
     uint32_t cp = 0;
     int seen = 0;
     int needed = 0;
     unsigned char lower = 0x80;
     unsigned char upper = 0xBF;
-    bool bomChecked = false;
+    bool bomChecked = false; // the first code point has been decoded
 
+    // Creates a codec of kind `k` with no zlib stream yet.
     explicit CodecState(CodecKind k) : kind(k) {}
     ~CodecState() {
         if (zInit) {
@@ -62,6 +61,8 @@ void CodecDeleter::operator()(CodecState* c) const { delete c; }
 
 namespace {
 
+// Returns zlib's `windowBits` for `algorithm`: a 15-bit window, with 16
+// added for gzip and negated for raw deflate.
 int windowBitsFor(int algorithm) {
     switch (algorithm) {
     case kCodecGzip: return 31;
@@ -72,6 +73,7 @@ int windowBitsFor(int algorithm) {
 
 // --- UTF-8 output helpers ---------------------------------------------------
 
+// Appends the UTF-8 encoding of `cp` to `out`. `cp` must be at most 0x10FFFF.
 void appendUtf8(std::string& out, uint32_t cp) {
     if (cp < 0x80) {
         out.push_back(static_cast<char>(cp));
@@ -90,14 +92,21 @@ void appendUtf8(std::string& out, uint32_t cp) {
     }
 }
 
+// U+FFFD REPLACEMENT CHARACTER, which stands for input that cannot be encoded
+// or decoded.
 constexpr uint32_t kReplacement = 0xFFFD;
 
 // --- zlib ---------------------------------------------------------------------
 
+// Returns zlib's own message for the last error on `zs`, or `fallback` if
+// zlib gave none.
 std::string zlibMessage(const z_stream& zs, const char* fallback) {
     return zs.msg ? std::string(zs.msg) : std::string(fallback);
 }
 
+// Compresses `in` into `out`, finishing the stream when `finish` is set, and
+// returns "" or the reason for the failure. zlib is called until it has
+// consumed all of `in` and has nothing more to write.
 std::string deflateRun(CodecState& c, const std::string& in, bool finish,
                        std::vector<std::string>& out) {
     z_stream& zs = c.zs;
@@ -121,6 +130,8 @@ std::string deflateRun(CodecState& c, const std::string& in, bool finish,
     return {};
 }
 
+// Decompresses `in` into `out` and returns "" or the reason for the failure,
+// which includes any input left over once the stream has ended.
 std::string inflateRun(CodecState& c, const std::string& in, std::vector<std::string>& out) {
     z_stream& zs = c.zs;
     zs.next_in = reinterpret_cast<Bytef*>(const_cast<char*>(in.data()));
@@ -159,6 +170,8 @@ std::string inflateRun(CodecState& c, const std::string& in, std::vector<std::st
 
 // --- TextEncode -----------------------------------------------------------------
 
+// Encodes `units` as UTF-8 onto `out`, carrying a final high surrogate in
+// `c.pendingHigh` and replacing unpaired surrogates with U+FFFD.
 void encodeUnits(CodecState& c, const std::u16string& units, std::string& out) {
     for (char16_t u : units) {
         if (c.pendingHigh) {
@@ -182,8 +195,10 @@ void encodeUnits(CodecState& c, const std::u16string& units, std::string& out) {
     }
 }
 
-// --- TextDecode (WHATWG Encoding §4.1 UTF-8 decoder) ------------------------
+// --- TextDecode -------------------------------------------------------------
 
+// Appends the decoded `cp` to `out`, unless it is a byte order mark and the
+// first code point the codec has decoded.
 void emitDecoded(CodecState& c, uint32_t cp, std::string& out) {
     if (!c.bomChecked) {
         c.bomChecked = true;
@@ -192,6 +207,8 @@ void emitDecoded(CodecState& c, uint32_t cp, std::string& out) {
     appendUtf8(out, cp);
 }
 
+// Decodes `in` onto `out`, continuing any sequence left unfinished by the
+// previous chunk and leaving an unfinished one in `c`.
 void decodeBytes(CodecState& c, const std::string& in, std::string& out) {
     size_t i = 0;
     const size_t n = in.size();

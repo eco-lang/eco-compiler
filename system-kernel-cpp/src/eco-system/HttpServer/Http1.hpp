@@ -1,81 +1,75 @@
 //===- Http1.hpp - HTTP/1.1 server connections on the IoReactor -----------===//
 //
-// plans/eco-system-websockets.md §3.4 (W9, phase WS2). Http1Protocol is the
-// ConnProtocol (§3.2) of one accepted Http.Server connection: an llhttp
-// request parser (strict: no lenient flag is ever set) driving the state
-// machine
+// An `Http.Server` connection that speaks HTTP/1.x has to be parsed, policed and answered on the reactor thread, while
+// the answer itself comes from Elm on the eco thread. This component is the reactor side of that exchange.
 //
-//   Idle → Reading → AwaitingElm → (response queued) → Idle (keep-alive) …
-//                  ↘ UpgradePending → (declined: response) → Closing
-//   any state → Closing (error, limit, timeout, server close, peer EOF)
+// `Http1Protocol` is the `ConnProtocol` of one such connection. It feeds the bytes it reads to an llhttp request parser
+// in strict mode (no lenient flag is set), turns each complete request into a `HttpEvent` of plain data posted with
+// `postHttpEvent`, and writes the response it is later handed by `respond`. It never touches the Elm heap. The
+// component also holds the per-server state shared by every connection of a server (`ServerConfig`,
+// `ServerReactorState`), the factory a server's listener calls for each accepted connection, and the reactor commands
+// that answer a request or close a server whichever protocol, HTTP/1.1 or HTTP/2, the connection runs.
 //
-// REACTOR THREAD ONLY (G1): no heap access; complete requests go to the
-// main thread as POD HttpEvents (HttpTables.hpp), responses come back as
-// reactor commands (respond()).
+// Everything follows from one rule: a connection has at most one request in flight. A request is *in flight* from the
+// moment it is fully parsed and posted until its response is queued. Each request gets a *key* from `nextResponseKey`,
+// which the eco side quotes back to answer it; `ConnShared::key` holds the key in flight, or 0. llhttp is paused when a
+// message completes and resumed only once the response is queued, after which the bytes already buffered are parsed,
+// so pipelined requests are answered in the order they arrived. A connection moves through these states:
 //
-//   * One request in flight: llhttp is paused at on_message_complete;
-//     nothing more is parsed until the response is queued (Conn::write);
-//     then llhttp_resume and the bytes already buffered are parsed, so
-//     pipelined requests are answered in order. While a request waits for
-//     Elm, reading continues only until kPipelineBuffer bytes are buffered
-//     (so a peer's FIN or reset is still noticed), then TCP back-pressures
-//     the client. Reading also pauses while the response queue is above
-//     Conn::kLowWatermark (onWritable resumes it).
-//   * Limits (ServerConfig): the request line + header block ≤
-//     maxHeaderSize (431); the body ≤ maxBodySize (413, checked against
-//     Content-Length before any 100-continue, and as a running total).
-//     Every error response closes the connection (Connection: close, then
-//     Conn::closeGraceful: FIN, discard input until EOF or the drain
-//     deadline, N8).
-//   * Timers (Conn ids): kTimerHeaders from the first byte of a request to
-//     the end of its headers, kTimerRequest from the first byte to the end
-//     of the body (408 + close); kTimerIdle while Idle (keep-alive: close
-//     silently; a fresh connection waits headersTimeout for its first
-//     byte). A timeout of 0 or less is none. No timer runs while Elm
-//     answers. After closeServer, kTimerIdle is the server's deadline
-//     (abort).
-//   * Expect: "100-continue" (case-insensitive) on a request with a body
-//     is answered "HTTP/1.1 100 Continue" when the request is parsed, which
-//     is always after every earlier response was queued (one in flight);
-//     never when Content-Length exceeds maxBodySize (413). Any other Expect
-//     value: 417 + close.
-//   * Host (E.5 revised): HTTP/1.1 needs exactly one Host header, HTTP/1.0
-//     at most one; a value that is not `host [":" port]` (RFC 3986 reg-name,
-//     IPv4, or a bracketed IPv6 literal) → 400. The request URL is "http://"
-//     + Host (or the server's fallback authority) + the target; an
-//     absolute-form target is kept as is.
-//   * Versions other than HTTP/1.0 and HTTP/1.1 → 505.
-//   * Upgrade / CONNECT: llhttp's upgrade flag (Upgrade + Connection:
-//     upgrade, or CONNECT) is recorded at on_message_complete. An upgrade
-//     request without a body is delivered with its first Upgrade token
-//     (lower-cased) and the connection enters UpgradePending: the bytes
-//     after the request (the "head") are kept for the hand-off (WS5,
-//     takeUpgradeHead). CONNECT and upgrade requests with a body are
-//     delivered without a token. In every case llhttp_resume_after_upgrade
-//     is never called, so any response other than a hand-off is written
-//     with Connection: close and the connection closes (no h2c smuggling).
-//   * Responses (respond): serializeH1 with keep-alive iff the request
-//     allows it (llhttp_should_keep_alive), the server is not closing, the
-//     user's headers do not say Connection: close, the request was not an
-//     upgrade/CONNECT, and the peer has not half-closed with nothing more
-//     buffered.
-//   * Half-close: after the peer's FIN the in-flight request and the
-//     requests already buffered are answered, then the connection closes.
+//   Idle -> Reading -> AwaitingElm -> (response queued) -> Idle (keep-alive)
+//                   -> UpgradePending -> (upgrade taken: Done) or (response) -> Closing
+//   any state -> Closing (error, limit, timeout, server close, peer EOF)
 //
-// Connection bookkeeping shared with the main thread's tables:
-//   * ServerReactorState (one per server, reactor thread only once shared):
-//     the config, the closing flag and deadline, the live connections
-//     (closeServer walks them).
-//   * ConnShared (one per connection): the key of the request in flight and
-//     the peer's endpoint. The Conn's close hook posts ConnGone{key} with
-//     it and unregisters the connection; it never touches the protocol, so
-//     a protocol handed off later (WS5) leaves nothing dangling.
+// While a request is in flight, reading continues until `kPipelineBuffer` unparsed bytes are buffered, so that a FIN
+// or reset from the peer is still noticed. Reading also pauses once the queued output reaches `Conn::kLowWatermark`
+// after a response is queued, until `onWritable` reports it has fallen below.
 //
-// Hooks for the WS5 hand-off (Http.Server.upgradeRequest): upgradePending,
-// takeUpgradeHead (ends HTTP/1.1 on the connection and clears the key; the
-// caller then installs the WebSocket protocol with Conn::setProtocol).
+// Rules on requests, each answered with the status shown and then a close:
+//   * Header bytes: the bytes of the URL, the header names and the header values together may not exceed
+//     `maxHeaderSize` (431). The method, the version, separators and line ends are not counted.
+//   * Body: a Content-Length above `maxBodySize` is refused when the headers end, before any 100 Continue is sent;
+//     a body whose bytes so far exceed it is refused as it arrives (413).
+//   * Host: an HTTP/1.1 request must carry exactly one Host header and an HTTP/1.0 request at most one, and its value
+//     must be a host (a bracketed IPv6-style literal or a name of RFC 3986 reg-name characters and %-escapes, which
+//     covers IPv4 addresses) optionally followed by `:` and at most five digits (400).
+//   * Version: a version llhttp accepts other than 1.0 and 1.1 (505).
+//   * Expect: one Expect header whose value is `100-continue`, ignoring case and surrounding blanks, is accepted, and
+//     on a request with a body (chunked, or a nonzero Content-Length) `HTTP/1.1 100 Continue` is written when the
+//     headers end. Because of the one-in-flight rule that is always after every earlier response was queued. Any
+//     other Expect value, or more than one Expect header (417).
+//   * Timeouts: `kTimerHeaders` runs from the first byte of a request to the end of its headers (`headersMs`), and
+//     `kTimerRequest` from the first byte to the end of the body (`requestMs`); either expiring gives 408. Neither
+//     runs while Elm answers.
+//   * Anything else llhttp rejects (400).
+// An error response carries `Connection: close`, and the connection then closes with `Conn::closeGraceful`.
 //
-// Templates used: none (POD only, G1).
+// Between requests `kTimerIdle` bounds how long the connection stays idle: `headersMs` for a fresh connection's first
+// byte, `keepAliveMs` after a response; when it expires the connection closes without a response. A timeout of 0 or
+// less sets no timer. Once the server is closing, `kTimerIdle` instead holds the server's close deadline, at which a
+// connection with a request still being read or answered is aborted.
+//
+// The URL delivered with a request is the target as received when it starts with `http://` or `https://` (compared
+// case-sensitively). Otherwise it is the scheme (`https` on a TLS server), then the Host value or, when there is none,
+// `ServerConfig::fallbackAuthority`, then the target, with `/` put in front of a target that does not start with one
+// and `*` turned into `/`.
+//
+// Upgrades. llhttp flags a request as an upgrade when it has `Upgrade` together with `Connection: upgrade`, or is a
+// CONNECT. An upgrade request without a body is delivered with its first Upgrade token, lower-cased, and the connection
+// enters UpgradePending: the bytes read after the request, the *head*, are kept for whoever takes the connection over
+// with `takeUpgradeHead` and `Conn::setProtocol`. A CONNECT, or an upgrade request with a body, is delivered with no
+// token. Any answer to an upgrade request other than a take-over is written with `Connection: close` and the
+// connection closes, so the parser is never resumed past one.
+//
+// A response keeps the connection open only if llhttp says the request allows it, the server is not closing, the
+// response's own headers do not ask to close (`headersAskClose`), the request was not an upgrade or CONNECT, the caller
+// did not force a close, and the peer has not ended its input with nothing left to parse. After the peer's FIN, the
+// request in flight and the complete requests already buffered are answered, then the connection closes.
+//
+// `ConnShared` is the per-connection state that outlives the protocol: the close hook installed by
+// `makeHttp1Protocol` reads it, never the protocol, so a connection whose protocol was replaced by `setProtocol` leaves
+// the hook nothing dangling. The hook posts `ConnGone` with the key in flight, if any.
+//
+// Not built on Windows, where `HttpServerServiceWin32.cpp` provides stand-ins for the free functions.
 //
 //===----------------------------------------------------------------------===//
 
@@ -101,157 +95,230 @@
 
 namespace Eco::System::HttpSrv {
 
-// Immutable once the server is created; read on both threads.
+/// The settings of one server, filled in before it starts listening and shared, as a `shared_ptr` to const, with
+/// every connection.
+///
+/// Nothing enforces that its creator does not change it afterwards through a non-const alias; the protocols read it
+/// on the reactor thread without a lock. Sizes are in bytes and times in milliseconds.
 struct ServerConfig {
     int64_t serverId = 0;
-    uint64_t gen = 0;               // heap generation of createServer
-    bool tls = false;               // TLS (WS3): URL scheme https, flags bit 2
-    bool http1 = true;              // createServerWith's protocols bit 0: HTTP/1.x
-    bool http2 = false;             // protocols bit 1: ALPN h2 (Http2.cpp, WS8)
-    std::string fallbackAuthority;  // host:port for requests without Host (E.5)
+    uint64_t gen = 0;               ///< The heap generation the server was created in, copied into its events.
+    bool tls = false;               ///< Requests get the `https` scheme and bit 2 of `RequestData::flags`.
+    bool http1 = true;              ///< Whether HTTP/1.x is served; false makes an HTTP/2-only server.
+    bool http2 = false;             ///< Whether a connection whose TLS handshake chose `h2` is served with HTTP/2.
+    std::string fallbackAuthority;  ///< The `host:port` put in the URL of a request with no Host header.
     int64_t maxBodySize = 16 * 1024 * 1024;
     int64_t maxHeaderSize = 64 * 1024;
     int64_t keepAliveMs = 5000;
     int64_t headersMs = 60000;
     int64_t requestMs = 300000;
-    int64_t maxConcurrentStreams = -1;   // HTTP/2 (WS8): -1 unlimited (W19)
+    int64_t maxConcurrentStreams = -1;   ///< Used by HTTP/2 only. 0 or less sets no limit on streams.
 };
 
-// Reactor thread only (the main thread only passes the shared_ptr around).
+/// The state of one server that its connections share on the reactor thread: its settings, whether it is closing,
+/// and its live connections.
+///
+/// Nothing locks it, so it may be read or changed only on the reactor thread; other threads may only hold and pass on
+/// the `shared_ptr`.
 struct ServerReactorState {
     std::shared_ptr<const ServerConfig> cfg;
     bool closing = false;
-    int64_t closeDeadline = 0;   // monotonic ms (IoReactor::nowMs)
+    int64_t closeDeadline = 0;   ///< When closing connections are aborted, in `IoReactor::nowMs` time.
+    /// The server's live connections, keyed by address. An entry is added by `makeHttp1Protocol` or
+    /// `makeHttp2Protocol` and removed by the close hook it installs.
     std::unordered_map<Conn*, std::weak_ptr<Conn>> conns;
 };
 
-// Per connection; reactor thread only.
+/// What an HTTP/1.1 connection's protocol and its close hook both need, shared between them so that it outlives a
+/// protocol that is replaced. Used on the reactor thread only.
 struct ConnShared {
-    int64_t key = 0;   // the request in flight (delivered or about to be), 0: none
+    int64_t key = 0;   ///< The key of the request in flight, or 0 when none is.
     SockEndpoint remote;
 };
 
-// The factory of ListenerHandler's callback mode: registers `c` with the
-// server, installs the close hook (ConnGone) and returns the protocol.
+/// Returns a new `Http1Protocol` for the accepted connection `c` of the server `srv`.
+///
+/// It also registers `c` in `srv->conns`, turns on `TCP_NODELAY`, and adds a close hook to `c` that removes it from
+/// `srv->conns` and, if a request is in flight, posts `ConnGone` with its key. The protocol keeps `srv`; the hook does
+/// not.
 std::unique_ptr<ConnProtocol> makeHttp1Protocol(Conn& c,
                                                 const std::shared_ptr<ServerReactorState>& srv);
 
-// The callback-mode factory of every Http.Server listener (websockets plan
-// §3.5, WS3). It runs once the connection is established, i.e. after the TLS
-// handshake of an https server, and dispatches on the ALPN protocol the
-// handshake chose (Conn::tlsInfo()->alpn): "h2" → Http2Protocol (phase WS8),
-// anything else (http/1.1, or no ALPN: plain TCP, a client that offered
-// none, or the NoAck fallback) → makeHttp1Protocol, or, on a server without
-// HTTP/1.x (an h2-only one), null: the connection is dropped. Servers offer
-// "h2" and "http/1.1" as their protocols say (HttpServer.cpp httpServerAlpn).
+/// Returns the protocol for the established connection `c` of the server `srv`, chosen by what its TLS handshake
+/// negotiated.
+///
+/// A connection whose handshake chose `h2`, on a server with `http2` set, gets `makeHttp2Protocol`. Any other
+/// connection, including one with no TLS or no ALPN, gets `makeHttp1Protocol` if the server has `http1` set, and
+/// otherwise a null pointer.
 std::unique_ptr<ConnProtocol> makeServerProtocol(Conn& c,
                                                  const std::shared_ptr<ServerReactorState>& srv);
 
-// Reactor command of closeServer: marks the server closing with `deadline`
-// and tells every live HTTP/1.1 connection (idle ones close at once) and
-// every HTTP/2 connection (GOAWAY, Http2.cpp).
+/// Marks the server `srv` as closing, with `deadline` (in `IoReactor::nowMs` time) as the moment its unfinished
+/// connections are aborted, and tells every live connection still running `Http1Protocol` or `Http2Protocol`.
+///
+/// An idle HTTP/1.1 connection closes at once; one with a request being read or answered may finish it with
+/// `Connection: close`. A connection handed to another protocol is left alone. Must be called on the reactor thread.
 void http1ServerClosing(const std::shared_ptr<ServerReactorState>& srv, int64_t deadline);
 
-// Reactor command of respond: answers `key` on `conn` if it is still the
-// request in flight there (HTTP/1.1) or a delivered, unanswered stream
-// (HTTP/2, Http2Protocol::respond); `done` is moved into the write and runs
-// once the transport took the bytes (or failed). False (and `done` left
-// untouched) when the key is not in flight on a live connection.
-// `forceClose`: Connection: close (the 503s of closeServer).
+/// Answers the request `key` on `conn` with `r`, and returns whether it was answered.
+///
+/// On a connection running `Http1Protocol` this is `Http1Protocol::respond`, and on one running `Http2Protocol` it is
+/// `Http2Protocol::respond`; for a null `conn` or any other protocol it returns false. When it returns true, `done`
+/// has been taken and is called with the result of sending the response; when it returns false, `done` is left as it
+/// was for the caller to deal with. `forceClose` makes an HTTP/1.1 response close the connection. Must be called on the
+/// reactor thread.
 bool http1Respond(const std::shared_ptr<Conn>& conn, int64_t key, ResponseData r, bool forceClose,
                   std::function<void(int err)>& done);
 
-// Response keys: unique per process (any thread).
+/// Returns a request key not returned before in this process. May be called from any thread.
 int64_t nextResponseKey();
 
 #ifndef _WIN32
 
+/// The HTTP/1.x protocol of one server connection, as the file comment describes: one request in flight, parsed
+/// strictly, answered in order.
+///
+/// It refers to the server's `ServerConfig` through the `ServerReactorState` it keeps alive. It is neither copyable
+/// nor movable, since llhttp holds a pointer to it. Every member is called on the reactor thread.
 class Http1Protocol final : public ConnProtocol {
 public:
-    // Bytes buffered (not yet parsed) beyond which reading pauses while a
-    // request waits for Elm or an upgrade.
+    /// The number of unparsed bytes at which reading pauses while a request is in flight.
     static constexpr size_t kPipelineBuffer = 64 * 1024;
-    // The drain deadline of a close after a response or an error (bounds the
-    // queued response too, Conn::closeGraceful).
+    /// The time in milliseconds a closing connection is given, counted from the close and covering a queued response.
     static constexpr int64_t kCloseDrainMs = 10000;
 
+    /// Creates the protocol of a connection of the server `srv`, sharing `cs` with the connection's close hook.
+    /// `srv->cfg` must not be null.
     Http1Protocol(std::shared_ptr<ServerReactorState> srv, std::shared_ptr<ConnShared> cs);
     ~Http1Protocol() override = default;
 
+    /// Starts the idle timer for the first byte, or closes the connection at once if the server is closing.
     void onOpen(Conn& c) override;
+    /// Buffers `bytes`, and parses them unless a request is in flight. Ignored once the connection is closing or done.
     void onData(Conn& c, std::string_view bytes) override;
+    /// Closes an idle connection, answers 400 to a request cut short, and otherwise lets the request in flight and the
+    /// requests buffered behind it be answered before closing.
     void onEof(Conn& c) override;
+    /// Aborts the connection; its close hook reports the request in flight as gone.
     void onError(Conn& c, int err, const std::string& code) override;
     void onWritable(Conn& c) override;
+    /// Answers 408 when the headers or request timer expires during a read. When `kTimerIdle` expires it closes an
+    /// idle connection, or aborts a busy one if the server is closing.
     void onTimer(Conn& c, int timerId) override;
     void onCloseAll(Conn& c) override;
+    /// Returns true while idle or reading a request, and while a request is in flight with fewer than
+    /// `kPipelineBuffer` bytes buffered; false after the peer's end of input or while the queued output is high.
     bool wantsRead() const override;
 
+    /// Writes `r` as the response to the request `key`, if `key` is the request in flight on this connection, and
+    /// returns whether it did.
+    ///
+    /// On success `done` is moved into `Conn::write`, and the connection either closes, as the file comment's
+    /// keep-alive rule decides (`forceClose` forces a close), or goes on to the requests buffered behind this one. On
+    /// failure nothing changes and `done` is left as it was.
     bool respond(Conn& c, int64_t key, ResponseData r, bool forceClose,
                  std::function<void(int)>& done);
+    /// Applies the server's close to this connection: closes it now if idle, and, while a request is being read or
+    /// answered, arms `kTimerIdle` with the server's close deadline, at which it is aborted unless it has closed by
+    /// then.
     void serverClosing(Conn& c);
 
-    // --- WS5 hand-off -----------------------------------------------------------
-    // True while `key` is an upgrade request waiting for its answer.
+    // Upgrade take-over
+
+    /// Returns whether `key` is an upgrade request in flight on this connection, waiting for an answer.
     bool upgradePending(int64_t key) const;
-    // Ends HTTP/1.1 on this connection for `key` (precondition:
-    // upgradePending(key)): clears the key and the timers and returns the
-    // bytes read past the request. The caller installs the next protocol
-    // with Conn::setProtocol(p, head) in the same reactor step.
+    /// Ends HTTP/1.1 on `c` for the upgrade request `key`, and returns the bytes read after that request.
+    ///
+    /// The key in flight and the timers are cleared, and this protocol does nothing more with the connection; the
+    /// caller must then install the next protocol with `Conn::setProtocol`, passing it the returned bytes. If
+    /// `upgradePending(key)` is false, it changes nothing and returns an empty string.
     std::string takeUpgradeHead(Conn& c, int64_t key);
 
     Http1Protocol(const Http1Protocol&) = delete;
     Http1Protocol& operator=(const Http1Protocol&) = delete;
 
 private:
+    /// Where the connection is, as the file comment's state diagram shows. `Done` means this protocol has finished
+    /// with the connection: it was torn down, or taken over after an upgrade.
     enum class State : uint8_t { Idle, Reading, AwaitingElm, UpgradePending, Closing, Done };
 
-    // llhttp callbacks (parser.data = this).
+    // llhttp callbacks. Each finds its protocol through the parser's `data` pointer and returns 0 to go on, or nonzero
+    // to stop or pause.
+
+    /// Clears the request being parsed as a new message begins.
     static int cbMessageBegin(llhttp_t* p);
+    /// Appends a piece of the request target, failing with 431 once the header byte limit is passed.
     static int cbUrl(llhttp_t* p, const char* at, size_t n);
+    /// Appends a piece of a header name, starting a new header after a value, failing with 431 once the header byte
+    /// limit is passed.
     static int cbHeaderField(llhttp_t* p, const char* at, size_t n);
+    /// Appends a piece of the current header's value, failing with 431 once the header byte limit is passed.
     static int cbHeaderValue(llhttp_t* p, const char* at, size_t n);
+    /// Calls `headersComplete`.
     static int cbHeadersComplete(llhttp_t* p);
+    /// Appends a piece of the body, failing with 413 once the body would pass `maxBodySize`.
     static int cbBody(llhttp_t* p, const char* at, size_t n);
+    /// Records what the response needs to know about the completed request and pauses the parser.
     static int cbMessageComplete(llhttp_t* p);
+    /// Returns the llhttp callback table shared by every connection, built on first use.
     static const llhttp_settings_t& settings();
 
+    /// Adds `n` to the header bytes of the request being parsed, and returns false, with 431 recorded, once they
+    /// exceed `maxHeaderSize`.
     bool countHeaderBytes(size_t n);
+    /// Applies the version, Host, Content-Length and Expect rules once the headers are parsed, writes 100 Continue
+    /// where they call for it, and stops the headers timer. Returns 0 to go on, or -1 with the status recorded.
     int headersComplete();
+    /// Clears the request being parsed.
     void resetRequest();
+    /// Moves from Idle to Reading as the first byte of a request arrives, and starts the headers and request timers.
     void startRequest(Conn& c);
+    /// Parses the buffered input while the connection is reading, posting a completed request or answering an error.
     void parse(Conn& c);
+    /// Stops the request timers, gives the completed request a key and posts it as a `Request` event.
     void messageComplete(Conn& c);
+    /// Writes a response with `status` and no body, with `Connection: close`, and closes the connection.
     void failRequest(Conn& c, int64_t status);
+    /// Clears the key in flight and every timer, and closes the connection gracefully.
     void closeNow(Conn& c);
+    /// Goes on after a response that kept the connection open: parses buffered requests, then, if no request is in
+    /// flight, closes the connection if the peer has ended its input or the server is closing, or else starts the
+    /// keep-alive timer.
     void afterResponse(Conn& c);
+    /// Handles the peer's end of input while a request is being read: a close if nothing but blank lines was read
+    /// since the last message, 400 otherwise.
     void eofWhileReading(Conn& c);
+    /// Returns the URL of the parsed request, built from its target and `host` as the file comment describes.
     std::string absoluteUrl(const std::string& host) const;
 
     std::shared_ptr<ServerReactorState> srv_;
     std::shared_ptr<ConnShared> cs_;
+    /// The server's settings, `*srv_->cfg`, kept alive by `srv_`.
     const ServerConfig& cfg_;
     llhttp_t parser_;
-    Conn* cur_ = nullptr;          // the Conn while llhttp runs (100-continue)
+    /// The connection being parsed, set only while `llhttp_execute` runs so that callbacks can write and set timers;
+    /// null otherwise.
+    Conn* cur_ = nullptr;
 
     State state_ = State::Idle;
-    std::string in_;               // read, not parsed yet
+    std::string in_;               ///< Bytes read and not yet parsed.
     bool peerEof_ = false;
-    bool outHigh_ = false;         // the response queue reached Conn::kLowWatermark
+    bool outHigh_ = false;         ///< The queued output reached `Conn::kLowWatermark` and has not yet fallen below.
 
-    // The request being parsed.
+    // The request being parsed
     std::string url_;
     std::vector<std::pair<std::string, std::string>> headers_;
-    bool inValue_ = false;
+    bool inValue_ = false;         ///< The last piece appended was part of a header value.
     std::string body_;
     size_t headerBytes_ = 0;
-    int64_t errorStatus_ = 0;      // a limit / rule broken in a callback (HPE_USER)
+    int64_t errorStatus_ = 0;      ///< The status a callback chose when it stopped the parser, or 0.
     bool messageDone_ = false;
 
-    // The request in flight (after on_message_complete).
+    // The request in flight
     bool isHead_ = false;
     bool shouldKeepAlive_ = false;
-    bool mustClose_ = false;       // upgrade / CONNECT: never parse past it
+    /// The request was an upgrade or CONNECT, so a response to it closes the connection.
+    bool mustClose_ = false;
 };
 
 #endif // !_WIN32

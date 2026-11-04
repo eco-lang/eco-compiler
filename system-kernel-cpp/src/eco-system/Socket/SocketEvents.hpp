@@ -1,32 +1,27 @@
-//===- SocketEvents.hpp - Socket results to the main thread ---------------===//
+//===- SocketEvents.hpp - Socket results to the eco thread ----------------===//
 //
-// plans/eco-system-sockets.md §3.3.2. Stream data travels on the existing
-// channel-results queue (ByteChannel.hpp); every other socket result is one
-// POD SocketEvent on this queue, posted by the IoReactor thread (or by the
-// main thread itself) and drained on the main thread by a drain registered
-// with the eco/system async source (ready predicate: a lock-free count).
+// Socket work runs on the IoReactor thread, but the tasks and subscriptions waiting for its results live on the
+// eco thread, which alone may touch the Elm heap. This component carries those results across: every socket result
+// other than stream data (which travels on the channel-results queue of `ByteChannel.hpp`) is one `SocketEvent`, a
+// plain record holding no Elm heap pointers, posted on a single queue from any thread and drained on the eco thread.
 //
-// The drain hands each event to the dispatch function registered for its
-// kind (SocketTables.cpp registers Connected / Accepted / OpDone /
-// ListenerClosed; S4's UDP code registers Datagram / UdpClosed) and calls
-// Scheduler::drain() after every event that resumed a task or delivered a
-// message (G12; the dispatch function reports that by returning true).
+// The drain is added with `addDrainSource`; its ready predicate reads only atomic counters, so it takes no lock. On
+// each pass it first runs the requested socket work (below), then pops events one at a time and hands each to the
+// dispatch function registered for its kind. When the dispatch function reports that it resumed a task or delivered
+// a message, the drain calls `Scheduler::drain()` before taking the next event.
 //
-// Heap generations: every event carries the heap generation of the main-
-// thread object that caused it (`gen`, captured on the main thread when
-// the reactor object was created). An event of an older generation belongs
-// to a dead heap (heap-reset harnesses, F24): its tokens and counts died
-// with the heap, so the drain only releases its OS resources (an orphaned
-// connection is aborted) and never resumes or decrements.
+// Heap generation: every event carries `gen`, a heap generation taken on the eco thread when the operation or the
+// object behind the event began. After a heap reset an event of an older generation refers to tokens and counts
+// that died with the old heap. The drain does not dispatch such an event; it only releases its OS resources,
+// aborting the connection it carries, if any. An event whose kind has no dispatch function is released the same
+// way. Such an event is called an orphan.
 //
-// Deferred main-thread work: requestSocketWork(fn) runs `fn` from the drain
-// (once per request, deduplicated by function). The managers use it to
-// deliver held FIFOs after onEffects (which must not call taggers itself).
+// Socket work: `requestSocketWork(fn)` asks the drain to call `fn` on its next pass, once however often it was
+// requested before then. It lets code that must not call taggers itself (an effect manager's onEffects) have
+// eco-thread work done soon after.
 //
-// Lock order (§3.3.1 rule 6): IoReactor command mutex → this queue's mutex →
-// Scheduler mutex.
-//
-// Templates used: T8/G12 (drain side), G10 (dispatchers own the counts).
+// An exception that escapes a dispatch function or a work function is reported with `reportFatal`; it never unwinds
+// into the scheduler loop.
 //
 //===----------------------------------------------------------------------===//
 
@@ -41,67 +36,87 @@ namespace Eco::System {
 
 class Conn;
 
-// EpT (§3.2): kind 0 Inet (text = address, port), 1 Unix (text = path; "" unnamed; port 0).
+/// A socket's local or remote address, as the Elm side receives it.
+///
+/// `kind` 0 is an Internet address: `text` is the address and `port` the port. `kind` 1 is a Unix domain address:
+/// `text` is the path, empty for an unnamed socket, and `port` is 0. Nothing enforces this pairing.
 struct SockEndpoint {
     int kind = 0;
     std::string text;
     int64_t port = 0;
 };
 
-// CredT (§3.2): a Unix peer's credentials, captured at accept/connect.
+/// The process id, user id and group id of the peer of a Unix domain connection.
 struct Cred {
     int64_t pid = 0, uid = 0, gid = 0;
 };
 
-// InfoT (§3.2): captured when a TLS handshake ends (S5).
+/// What a completed TLS handshake negotiated: the protocol version, the ALPN protocol and the cipher, as text.
 struct TlsInfo {
     std::string protocol, alpn, cipher;
 };
 
+/// One socket result on its way to the eco thread.
+///
+/// Which members are meaningful depends on `kind`; the rest keep their defaults. The record holds no Elm heap
+/// pointers, so it may be built on any thread and may outlive a heap reset.
 struct SocketEvent {
+    /// The kind of result, which selects the dispatch function. `kKinds` must equal the number of enumerators;
+    /// nothing checks this.
     enum class Kind : uint8_t { Connected, Accepted, Datagram, OpDone, ListenerClosed, UdpClosed };
+    /// The number of `Kind` enumerators: the size of the dispatch table.
     static constexpr int kKinds = 6;
 
     Kind kind = Kind::OpDone;
-    uint64_t gen = 0;                // heap generation of the originating main-thread object
-    uint64_t token = 0;              // Connected / OpDone / *Closed: the task's resume token (0: none)
-    int64_t ownerId = 0;             // listener id (Accepted, ListenerClosed) or udp id (Datagram, UdpClosed)
-    bool failed = false;             // failure (§D.5): code + message
+    uint64_t gen = 0;                ///< Heap generation; see the file comment.
+    uint64_t token = 0;              ///< Connected, OpDone: the waiting task's resume token.
+    int64_t ownerId = 0;             ///< Listener id (Accepted, ListenerClosed) or UDP socket id (Datagram, UdpClosed).
+    bool failed = false;             ///< True if the operation failed; `code` and `message` then describe it.
     std::string code, message;
-    std::shared_ptr<Conn> conn;      // Connected / Accepted
+    /// Accepted, and a Connected that succeeded: the connection, kept alive while the event is in transit. An
+    /// orphan's connection is aborted.
+    std::shared_ptr<Conn> conn;
     SockEndpoint local, remote;
     Cred cred;
-    bool hasCred = false;            // Unix: captured at accept/connect
+    bool hasCred = false;            ///< True if `cred` was captured (a Unix domain connection).
     TlsInfo tls;
-    bool hasTls = false;             // captured at handshake end
-    bool isUnix = false;             // Connected / Accepted: a Unix domain connection
-    std::string data;                // Datagram payload (S4)
+    bool hasTls = false;             ///< True if `tls` was captured (a TLS handshake completed).
+    bool isUnix = false;             ///< Connected, Accepted: true for a Unix domain connection.
+    std::string data;                ///< Datagram: the payload.
 };
 
-// Main thread. Creates the queue (binding Scheduler::instance() on the main
-// thread), registers the drain and the embed stop hook (§3.3.9). Every
-// socket kernel body calls it before it submits work to the reactor.
-// Idempotent.
+/// Sets up the event queue, once; later calls do nothing. Must be called on the eco thread (its once-flag, the
+/// dispatch table and the work list are not locked) before any event is posted. It adds the drain, starts the
+/// IoReactor, and registers a scheduler stop hook that calls `IoReactor::closeAll()`, so that the program's
+/// listeners and connections do not stay open after the scheduler loop stops on request.
 void ensureSocketEvents();
 
-// Any thread. Queues `ev` and wakes the scheduler loop.
+/// Queues `ev` for the drain and wakes the scheduler loop. May be called on any thread. No other lock is taken while
+/// the queue's mutex is held: the scheduler is woken after it is released.
 void postSocketEvent(SocketEvent ev);
 
-// Main thread. The handler of one event kind: returns true if it resumed a
-// task or delivered a message (the drain then calls Scheduler::drain()).
-// It runs only for events of the current heap generation.
+/// A function that handles events of one kind on the eco thread, called by the drain with each such event of the
+/// current heap generation. It may move from the event. It returns true if it resumed a task or delivered a message,
+/// and the drain then calls `Scheduler::drain()`.
 using SocketEventDispatchFn = bool (*)(SocketEvent& ev);
+
+/// Makes `fn` the dispatch function for events of `kind`, replacing any earlier one; null removes it, and events of
+/// that kind are then released as orphans. Eco thread only.
 void setSocketEventDispatch(SocketEvent::Kind kind, SocketEventDispatchFn fn);
 
-// Main thread. Runs `fn` from the drain soon (deduplicated by function); fn
-// may call Elm, sendToApp and drain() itself.
+/// A function the drain calls on the eco thread at a caller's request. It may call Elm code and send messages; the
+/// drain does not call `Scheduler::drain()` after it, so it must do so itself if it resumed or delivered anything.
 using SocketWorkFn = void (*)();
+
+/// Asks the drain to call `fn` on its next pass. A function requested again before that pass runs is still called
+/// once. A request made while the work is running is served on a later pass. Eco thread only.
 void requestSocketWork(SocketWorkFn fn);
 
-// The heap generation the main thread is on now (Allocator::heapGeneration).
+/// Returns the heap generation the allocator is on now (`Allocator::heapGeneration`).
 uint64_t currentHeapGeneration();
 
-// Main thread (the drain, or a test).
+/// Runs one pass of the drain: the requested socket work, then every queued event, as the file comment describes.
+/// Eco thread only. It is the drain `ensureSocketEvents` adds, and may also be called directly.
 void socketEventsDrain();
 
 } // namespace Eco::System

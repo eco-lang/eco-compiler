@@ -1,14 +1,13 @@
 //===- FileSystemExports.cpp - C exports of Eco.Kernel.FileSystem ---------===//
 //
-// plans/eco-system-library.md Appendix B.3. Each export only decodes its
-// arguments and packs them (packFsArgs, FileSystem.hpp) into one payload,
-// then returns a binding (G2): P mode (makeAsyncBinding + the T2 pool body)
-// for everything but the four directory getters, which are S mode
-// (makeBinding, T1). Bool arguments arrive as encoded constants and are
-// packed as 0/1 Ints. The `FileSystem` effect manager registration is in
-// FileSystemManager.cpp.
+// The `extern "C"` functions that compiled Elm code calls for the `Eco.Kernel.FileSystem` kernels. Each one
+// returns a Task binding, which performs the operation each time the Task runs, and does no IO itself. The
+// four directory getters return a synchronous binding over their S-mode body. Every other kernel decodes its
+// arguments, packs them into the payload `packFsArgs` describes, and returns an async binding over
+// `fsPoolBody`. A Bool argument arrives as the encoded True or False constant and is packed as the Int 1 or 0.
 //
-// Templates used: T1, T2.
+// Above each function is the Elm type of its kernel. The arguments arrive in the order of that type: Int as
+// `int64_t`, every other value as an encoded word.
 //
 //===----------------------------------------------------------------------===//
 
@@ -19,7 +18,7 @@ using namespace Eco::System::Fs;
 
 extern "C" {
 
-// stat : Bool -> String -> Task FErr (List Int)
+/// Returns the Task binding for the kernel `stat`, of Elm type `Bool -> String -> Task FErr (List Int)`.
 uint64_t Eco_Kernel_FileSystem_stat(uint64_t resolveLink, uint64_t path) {
     ECO_KERNEL_GUARD(
         HPointer payload = packFsArgs(path, 0, Export::decodeBoxedBool(resolveLink) ? 1 : 0);
@@ -27,7 +26,7 @@ uint64_t Eco_Kernel_FileSystem_stat(uint64_t resolveLink, uint64_t path) {
     )
 }
 
-// access : Int -> String -> Task FErr ()
+/// Returns the Task binding for the kernel `access`, of Elm type `Int -> String -> Task FErr ()`.
 uint64_t Eco_Kernel_FileSystem_access(int64_t mode, uint64_t path) {
     ECO_KERNEL_GUARD(
         HPointer payload = packFsArgs(path, 0, mode);
@@ -35,7 +34,7 @@ uint64_t Eco_Kernel_FileSystem_access(int64_t mode, uint64_t path) {
     )
 }
 
-// chmod : Int -> String -> Task FErr ()
+/// Returns the Task binding for the kernel `chmod`, of Elm type `Int -> String -> Task FErr ()`.
 uint64_t Eco_Kernel_FileSystem_chmod(int64_t mode, uint64_t path) {
     ECO_KERNEL_GUARD(
         HPointer payload = packFsArgs(path, 0, mode);
@@ -43,7 +42,7 @@ uint64_t Eco_Kernel_FileSystem_chmod(int64_t mode, uint64_t path) {
     )
 }
 
-// chown : Bool -> Int -> Int -> String -> Task FErr ()
+/// Returns the Task binding for the kernel `chown`, of Elm type `Bool -> Int -> Int -> String -> Task FErr ()`.
 uint64_t Eco_Kernel_FileSystem_chown(uint64_t resolveLink, int64_t uid, int64_t gid, uint64_t path) {
     ECO_KERNEL_GUARD(
         HPointer payload = packFsArgs(path, 0, Export::decodeBoxedBool(resolveLink) ? 1 : 0, uid, gid);
@@ -51,7 +50,7 @@ uint64_t Eco_Kernel_FileSystem_chown(uint64_t resolveLink, int64_t uid, int64_t 
     )
 }
 
-// utimes : Bool -> Int -> Int -> String -> Task FErr ()
+/// Returns the Task binding for the kernel `utimes`, of Elm type `Bool -> Int -> Int -> String -> Task FErr ()`.
 uint64_t Eco_Kernel_FileSystem_utimes(uint64_t resolveLink, int64_t atime, int64_t mtime, uint64_t path) {
     ECO_KERNEL_GUARD(
         HPointer payload = packFsArgs(path, 0, Export::decodeBoxedBool(resolveLink) ? 1 : 0, atime, mtime);
@@ -59,7 +58,7 @@ uint64_t Eco_Kernel_FileSystem_utimes(uint64_t resolveLink, int64_t atime, int64
     )
 }
 
-// rename : String -> String -> Task FErr ()
+/// Returns the Task binding for the kernel `rename`, of Elm type `String -> String -> Task FErr ()`.
 uint64_t Eco_Kernel_FileSystem_rename(uint64_t from, uint64_t to) {
     ECO_KERNEL_GUARD(
         HPointer payload = packFsArgs(from, to);
@@ -67,7 +66,7 @@ uint64_t Eco_Kernel_FileSystem_rename(uint64_t from, uint64_t to) {
     )
 }
 
-// realpath : String -> Task FErr String
+/// Returns the Task binding for the kernel `realpath`, of Elm type `String -> Task FErr String`.
 uint64_t Eco_Kernel_FileSystem_realpath(uint64_t path) {
     ECO_KERNEL_GUARD(
         HPointer payload = packFsArgs(path, 0);
@@ -75,7 +74,7 @@ uint64_t Eco_Kernel_FileSystem_realpath(uint64_t path) {
     )
 }
 
-// copyFile : String -> String -> Task FErr ()
+/// Returns the Task binding for the kernel `copyFile`, of Elm type `String -> String -> Task FErr ()`.
 uint64_t Eco_Kernel_FileSystem_copyFile(uint64_t src, uint64_t dest) {
     ECO_KERNEL_GUARD(
         HPointer payload = packFsArgs(src, dest);
@@ -83,7 +82,7 @@ uint64_t Eco_Kernel_FileSystem_copyFile(uint64_t src, uint64_t dest) {
     )
 }
 
-// appendFile : Bytes -> String -> Task FErr ()
+/// Returns the Task binding for the kernel `appendFile`, of Elm type `Bytes -> String -> Task FErr ()`.
 uint64_t Eco_Kernel_FileSystem_appendFile(uint64_t bytes, uint64_t path) {
     ECO_KERNEL_GUARD(
         HPointer payload = packFsArgs(path, bytes);
@@ -91,7 +90,7 @@ uint64_t Eco_Kernel_FileSystem_appendFile(uint64_t bytes, uint64_t path) {
     )
 }
 
-// readFile : String -> Task FErr Bytes
+/// Returns the Task binding for the kernel `readFile`, of Elm type `String -> Task FErr Bytes`.
 uint64_t Eco_Kernel_FileSystem_readFile(uint64_t path) {
     ECO_KERNEL_GUARD(
         HPointer payload = packFsArgs(path, 0);
@@ -99,7 +98,7 @@ uint64_t Eco_Kernel_FileSystem_readFile(uint64_t path) {
     )
 }
 
-// writeFile : Bytes -> String -> Task FErr ()
+/// Returns the Task binding for the kernel `writeFile`, of Elm type `Bytes -> String -> Task FErr ()`.
 uint64_t Eco_Kernel_FileSystem_writeFile(uint64_t bytes, uint64_t path) {
     ECO_KERNEL_GUARD(
         HPointer payload = packFsArgs(path, bytes);
@@ -107,7 +106,7 @@ uint64_t Eco_Kernel_FileSystem_writeFile(uint64_t bytes, uint64_t path) {
     )
 }
 
-// truncate : Int -> String -> Task FErr ()
+/// Returns the Task binding for the kernel `truncate`, of Elm type `Int -> String -> Task FErr ()`.
 uint64_t Eco_Kernel_FileSystem_truncate(int64_t length, uint64_t path) {
     ECO_KERNEL_GUARD(
         HPointer payload = packFsArgs(path, 0, length);
@@ -115,7 +114,7 @@ uint64_t Eco_Kernel_FileSystem_truncate(int64_t length, uint64_t path) {
     )
 }
 
-// remove : Bool -> String -> Task FErr ()
+/// Returns the Task binding for the kernel `remove`, of Elm type `Bool -> String -> Task FErr ()`.
 uint64_t Eco_Kernel_FileSystem_remove(uint64_t recursive, uint64_t path) {
     ECO_KERNEL_GUARD(
         HPointer payload = packFsArgs(path, 0, Export::decodeBoxedBool(recursive) ? 1 : 0);
@@ -123,7 +122,7 @@ uint64_t Eco_Kernel_FileSystem_remove(uint64_t recursive, uint64_t path) {
     )
 }
 
-// listDirectory : String -> Task FErr (List ( String, Int ))
+/// Returns the Task binding for the kernel `listDirectory`, of Elm type `String -> Task FErr (List ( String, Int ))`.
 uint64_t Eco_Kernel_FileSystem_listDirectory(uint64_t path) {
     ECO_KERNEL_GUARD(
         HPointer payload = packFsArgs(path, 0);
@@ -131,7 +130,7 @@ uint64_t Eco_Kernel_FileSystem_listDirectory(uint64_t path) {
     )
 }
 
-// makeDirectory : Bool -> String -> Task FErr ()
+/// Returns the Task binding for the kernel `makeDirectory`, of Elm type `Bool -> String -> Task FErr ()`.
 uint64_t Eco_Kernel_FileSystem_makeDirectory(uint64_t recursive, uint64_t path) {
     ECO_KERNEL_GUARD(
         HPointer payload = packFsArgs(path, 0, Export::decodeBoxedBool(recursive) ? 1 : 0);
@@ -139,7 +138,7 @@ uint64_t Eco_Kernel_FileSystem_makeDirectory(uint64_t recursive, uint64_t path) 
     )
 }
 
-// makeTempDirectory : String -> Task FErr String
+/// Returns the Task binding for the kernel `makeTempDirectory`, of Elm type `String -> Task FErr String`.
 uint64_t Eco_Kernel_FileSystem_makeTempDirectory(uint64_t prefix) {
     ECO_KERNEL_GUARD(
         HPointer payload = packFsArgs(prefix, 0);
@@ -147,7 +146,7 @@ uint64_t Eco_Kernel_FileSystem_makeTempDirectory(uint64_t prefix) {
     )
 }
 
-// link : String -> String -> Task FErr ()
+/// Returns the Task binding for the kernel `link`, of Elm type `String -> String -> Task FErr ()`.
 uint64_t Eco_Kernel_FileSystem_link(uint64_t src, uint64_t dest) {
     ECO_KERNEL_GUARD(
         HPointer payload = packFsArgs(src, dest);
@@ -155,7 +154,7 @@ uint64_t Eco_Kernel_FileSystem_link(uint64_t src, uint64_t dest) {
     )
 }
 
-// symlink : String -> String -> Task FErr ()
+/// Returns the Task binding for the kernel `symlink`, of Elm type `String -> String -> Task FErr ()`.
 uint64_t Eco_Kernel_FileSystem_symlink(uint64_t src, uint64_t dest) {
     ECO_KERNEL_GUARD(
         HPointer payload = packFsArgs(src, dest);
@@ -163,7 +162,7 @@ uint64_t Eco_Kernel_FileSystem_symlink(uint64_t src, uint64_t dest) {
     )
 }
 
-// readLink : String -> Task FErr String
+/// Returns the Task binding for the kernel `readLink`, of Elm type `String -> Task FErr String`.
 uint64_t Eco_Kernel_FileSystem_readLink(uint64_t path) {
     ECO_KERNEL_GUARD(
         HPointer payload = packFsArgs(path, 0);
@@ -171,7 +170,7 @@ uint64_t Eco_Kernel_FileSystem_readLink(uint64_t path) {
     )
 }
 
-// unlink : String -> Task FErr ()
+/// Returns the Task binding for the kernel `unlink`, of Elm type `String -> Task FErr ()`.
 uint64_t Eco_Kernel_FileSystem_unlink(uint64_t path) {
     ECO_KERNEL_GUARD(
         HPointer payload = packFsArgs(path, 0);
@@ -179,7 +178,7 @@ uint64_t Eco_Kernel_FileSystem_unlink(uint64_t path) {
     )
 }
 
-// open : String -> String -> Task FErr Int
+/// Returns the Task binding for the kernel `open`, of Elm type `String -> String -> Task FErr Int`.
 uint64_t Eco_Kernel_FileSystem_open(uint64_t flags, uint64_t path) {
     ECO_KERNEL_GUARD(
         HPointer payload = packFsArgs(path, flags);
@@ -187,7 +186,7 @@ uint64_t Eco_Kernel_FileSystem_open(uint64_t flags, uint64_t path) {
     )
 }
 
-// close : Int -> Task FErr ()
+/// Returns the Task binding for the kernel `close`, of Elm type `Int -> Task FErr ()`.
 uint64_t Eco_Kernel_FileSystem_close(int64_t fd) {
     ECO_KERNEL_GUARD(
         HPointer payload = packFsArgs(0, 0, fd);
@@ -195,7 +194,7 @@ uint64_t Eco_Kernel_FileSystem_close(int64_t fd) {
     )
 }
 
-// fstat : Int -> Task FErr (List Int)
+/// Returns the Task binding for the kernel `fstat`, of Elm type `Int -> Task FErr (List Int)`.
 uint64_t Eco_Kernel_FileSystem_fstat(int64_t fd) {
     ECO_KERNEL_GUARD(
         HPointer payload = packFsArgs(0, 0, fd);
@@ -203,7 +202,7 @@ uint64_t Eco_Kernel_FileSystem_fstat(int64_t fd) {
     )
 }
 
-// fchmod : Int -> Int -> Task FErr ()
+/// Returns the Task binding for the kernel `fchmod`, of Elm type `Int -> Int -> Task FErr ()`.
 uint64_t Eco_Kernel_FileSystem_fchmod(int64_t fd, int64_t mode) {
     ECO_KERNEL_GUARD(
         HPointer payload = packFsArgs(0, 0, fd, mode);
@@ -211,7 +210,7 @@ uint64_t Eco_Kernel_FileSystem_fchmod(int64_t fd, int64_t mode) {
     )
 }
 
-// fchown : Int -> Int -> Int -> Task FErr ()
+/// Returns the Task binding for the kernel `fchown`, of Elm type `Int -> Int -> Int -> Task FErr ()`.
 uint64_t Eco_Kernel_FileSystem_fchown(int64_t fd, int64_t uid, int64_t gid) {
     ECO_KERNEL_GUARD(
         HPointer payload = packFsArgs(0, 0, fd, uid, gid);
@@ -219,7 +218,7 @@ uint64_t Eco_Kernel_FileSystem_fchown(int64_t fd, int64_t uid, int64_t gid) {
     )
 }
 
-// futimes : Int -> Int -> Int -> Task FErr ()
+/// Returns the Task binding for the kernel `futimes`, of Elm type `Int -> Int -> Int -> Task FErr ()`.
 uint64_t Eco_Kernel_FileSystem_futimes(int64_t fd, int64_t atime, int64_t mtime) {
     ECO_KERNEL_GUARD(
         HPointer payload = packFsArgs(0, 0, fd, atime, mtime);
@@ -227,7 +226,7 @@ uint64_t Eco_Kernel_FileSystem_futimes(int64_t fd, int64_t atime, int64_t mtime)
     )
 }
 
-// readFromOffset : Int -> Int -> Int -> Task FErr Bytes
+/// Returns the Task binding for the kernel `readFromOffset`, of Elm type `Int -> Int -> Int -> Task FErr Bytes`.
 uint64_t Eco_Kernel_FileSystem_readFromOffset(int64_t fd, int64_t offset, int64_t length) {
     ECO_KERNEL_GUARD(
         HPointer payload = packFsArgs(0, 0, fd, offset, length);
@@ -235,7 +234,7 @@ uint64_t Eco_Kernel_FileSystem_readFromOffset(int64_t fd, int64_t offset, int64_
     )
 }
 
-// writeFromOffset : Int -> Int -> Bytes -> Task FErr ()
+/// Returns the Task binding for the kernel `writeFromOffset`, of Elm type `Int -> Int -> Bytes -> Task FErr ()`.
 uint64_t Eco_Kernel_FileSystem_writeFromOffset(int64_t fd, int64_t offset, uint64_t bytes) {
     ECO_KERNEL_GUARD(
         HPointer payload = packFsArgs(0, bytes, fd, offset);
@@ -243,7 +242,7 @@ uint64_t Eco_Kernel_FileSystem_writeFromOffset(int64_t fd, int64_t offset, uint6
     )
 }
 
-// ftruncate : Int -> Int -> Task FErr ()
+/// Returns the Task binding for the kernel `ftruncate`, of Elm type `Int -> Int -> Task FErr ()`.
 uint64_t Eco_Kernel_FileSystem_ftruncate(int64_t fd, int64_t length) {
     ECO_KERNEL_GUARD(
         HPointer payload = packFsArgs(0, 0, fd, length);
@@ -251,7 +250,7 @@ uint64_t Eco_Kernel_FileSystem_ftruncate(int64_t fd, int64_t length) {
     )
 }
 
-// fsync : Int -> Task FErr ()
+/// Returns the Task binding for the kernel `fsync`, of Elm type `Int -> Task FErr ()`.
 uint64_t Eco_Kernel_FileSystem_fsync(int64_t fd) {
     ECO_KERNEL_GUARD(
         HPointer payload = packFsArgs(0, 0, fd);
@@ -259,7 +258,7 @@ uint64_t Eco_Kernel_FileSystem_fsync(int64_t fd) {
     )
 }
 
-// fdatasync : Int -> Task FErr ()
+/// Returns the Task binding for the kernel `fdatasync`, of Elm type `Int -> Task FErr ()`.
 uint64_t Eco_Kernel_FileSystem_fdatasync(int64_t fd) {
     ECO_KERNEL_GUARD(
         HPointer payload = packFsArgs(0, 0, fd);
@@ -267,7 +266,7 @@ uint64_t Eco_Kernel_FileSystem_fdatasync(int64_t fd) {
     )
 }
 
-// readFileStream : Int -> Int -> String -> Task FErr Int
+/// Returns the Task binding for the kernel `readFileStream`, of Elm type `Int -> Int -> String -> Task FErr Int`.
 uint64_t Eco_Kernel_FileSystem_readFileStream(int64_t start, int64_t endInclusive, uint64_t path) {
     ECO_KERNEL_GUARD(
         HPointer payload = packFsArgs(path, 0, start, endInclusive);
@@ -275,7 +274,7 @@ uint64_t Eco_Kernel_FileSystem_readFileStream(int64_t start, int64_t endInclusiv
     )
 }
 
-// writeFileStream : Int -> Int -> String -> Task FErr Int
+/// Returns the Task binding for the kernel `writeFileStream`, of Elm type `Int -> Int -> String -> Task FErr Int`.
 uint64_t Eco_Kernel_FileSystem_writeFileStream(int64_t mode, int64_t position, uint64_t path) {
     ECO_KERNEL_GUARD(
         HPointer payload = packFsArgs(path, 0, mode, position);
@@ -283,28 +282,28 @@ uint64_t Eco_Kernel_FileSystem_writeFileStream(int64_t mode, int64_t position, u
     )
 }
 
-// homeDirectory : Task Never String
+/// Returns the Task binding for the kernel `homeDirectory`, of Elm type `Task Never String`.
 uint64_t Eco_Kernel_FileSystem_homeDirectory() {
     ECO_KERNEL_GUARD(
         return enc(makeBinding<fsHomeDirectoryBody>(alloc::unit()));
     )
 }
 
-// currentWorkingDirectory : Task Never String
+/// Returns the Task binding for the kernel `currentWorkingDirectory`, of Elm type `Task Never String`.
 uint64_t Eco_Kernel_FileSystem_currentWorkingDirectory() {
     ECO_KERNEL_GUARD(
         return enc(makeBinding<fsCurrentWorkingDirectoryBody>(alloc::unit()));
     )
 }
 
-// tmpDirectory : Task Never String
+/// Returns the Task binding for the kernel `tmpDirectory`, of Elm type `Task Never String`.
 uint64_t Eco_Kernel_FileSystem_tmpDirectory() {
     ECO_KERNEL_GUARD(
         return enc(makeBinding<fsTmpDirectoryBody>(alloc::unit()));
     )
 }
 
-// devNull : Task Never String
+/// Returns the Task binding for the kernel `devNull`, of Elm type `Task Never String`.
 uint64_t Eco_Kernel_FileSystem_devNull() {
     ECO_KERNEL_GUARD(
         return enc(makeBinding<fsDevNullBody>(alloc::unit()));

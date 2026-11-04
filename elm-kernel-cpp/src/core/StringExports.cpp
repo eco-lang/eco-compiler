@@ -139,9 +139,8 @@ HPtr Elm_Kernel_String_fromNumber(HPtr n) {
     return HPtr::fromBits(Export::encode(result));
 }
 
-// Phase C per-instance variants. Route through the same StringOps backend
-// used by the from_int / from_float intrinsic trampolines so output
-// formatting is identical.
+// The Int and Float variants format through the same StringOps functions as `String::fromNumber`
+// and the intrinsic trampolines below, so every route gives the same text.
 HPtr Elm_Kernel_String_fromNumber_Int(int64_t n) {
     HPointer result = Elm::StringOps::fromInt(n);
     return HPtr::fromBits(Export::encode(result));
@@ -152,9 +151,8 @@ HPtr Elm_Kernel_String_fromNumber_Float(double n) {
     return HPtr::fromBits(Export::encode(result));
 }
 
-// Unboxed-arg trampolines used by the eco.string.from_int/from_float
-// intrinsic lowering. Routed through the same StringOps backend as
-// String::fromNumber so output formatting is identical.
+// The call targets of the eco.string.from_int and eco.string.from_float intrinsics, formatting
+// through the same StringOps functions as `String::fromNumber`.
 HPtr elm_string_from_int(int64_t n) {
     HPointer result = Elm::StringOps::fromInt(n);
     return HPtr::fromBits(Export::encode(result));
@@ -172,27 +170,24 @@ HPtr elm_string_from_double(double f) {
 //===----------------------------------------------------------------------===//
 // Closure-calling helpers.
 //
-// Higher-order kernels can't statically tell whether the user closure has
-// been monomorphised flat or as a multi-stage curry — both shapes are
-// valid. So we route through `eco_apply_closure{,_eval}`, which read the
-// closure header at runtime and dispatch under-saturated / saturated /
-// over-saturated correctly. Strict-arity entries are an unsafe API for
-// user-facing kernels (see closure-callback audit).
+// A closure these kernels are given may take all its arguments at once or one at a time, and
+// nothing here says which. So each is applied through `eco_apply_closure_eval` or
+// `eco_apply_closure_typed`, which read the closure's header and handle a closure that takes fewer
+// or more arguments than it is given. A call may collect and move the closure, so each kernel
+// roots it and encodes it afresh before every call.
 //===----------------------------------------------------------------------===//
 
-// Layout descriptors for the closure invocations below. Each declares the
-// per-arg ParamKind so the runtime can hand unboxed primitives straight to
-// wrappers that accept them. Built with `Elm::makeEvalParamLayout`
-// (`EvalParamLayout` = { u16 num_params, u8 result_kind, u8 pad, kinds... }).
+// The argument layouts for the calls below, which tell the apply call each argument's slot kind
+// (3 is Char, 0 boxed) so it can box or unbox an argument to match the closure. The result kind given
+// is not read.
+//
+// The layout of a call with one unboxed Char argument.
 static constexpr auto kLayoutChar1     = Elm::makeEvalParamLayout<1>(0, {3});      // (Char)
+// The layout of a call with an unboxed Char argument followed by a boxed one.
 static constexpr auto kLayoutCharBoxed = Elm::makeEvalParamLayout<2>(0, {3, 0});   // (Char, a)
 
-// Call a closure with a single Char argument and Char result.
-// Both argument and result travel as unboxed code points (`uint32_t`; the arg
-// slot holds it zero-extended): `eco_apply_closure_eval` reads the closure's
-// intrinsic `result_kind` and either delivers the i32 directly
-// (modern Char-returning wrapper) or unboxes a returned ElmChar exactly once on
-// our behalf — strictly less work than the previous boxed round-trip.
+// Returns the Char that `closure_hptr` returns for the Char `c`. The argument is passed unboxed,
+// and the result is asked for unboxed, so a closure that returns a boxed `ElmChar` has it read.
 static uint32_t callCharToCharClosure(HPtr closure_hptr, uint32_t c) {
     const auto* layout = Elm::asLayout(&kLayoutChar1);
     int64_t args[1] = { static_cast<int64_t>(c) };
@@ -201,9 +196,8 @@ static uint32_t callCharToCharClosure(HPtr closure_hptr, uint32_t c) {
     return result;
 }
 
-// Call a closure with a single Char argument and Bool result.
-// Bool is an embedded HPointer constant (Const_True / Const_False) so the result
-// stays in PK_Boxed form; only the Char argument is passed unboxed.
+// Returns whether `closure_hptr` returns True for the Char `c`. The argument is passed unboxed; a
+// Bool is never unboxed, so the result is the True or False constant word and is decoded here.
 static bool callCharToBoolClosure(HPtr closure_hptr, uint32_t c) {
     const auto* layout = Elm::asLayout(&kLayoutChar1);
     int64_t args[1] = { static_cast<int64_t>(c) };
@@ -211,21 +205,18 @@ static bool callCharToBoolClosure(HPtr closure_hptr, uint32_t c) {
     return Export::decodeBoxedBool(result_hptr.toBits());
 }
 
-// Call a fold closure: `(Char, acc) -> acc`. Char goes through unboxed; the
-// accumulator stays HPointer-encoded.
+// Returns the encoded accumulator that the fold step `closure_hptr` returns for the Char `c` and
+// the encoded accumulator `acc`. The Char is passed unboxed and the accumulator boxed.
 static uint64_t callFoldClosure(HPtr closure_hptr, uint32_t c, uint64_t acc) {
     const auto* layout = Elm::asLayout(&kLayoutCharBoxed);
     int64_t args[2] = { static_cast<int64_t>(c), static_cast<int64_t>(acc) };
     return eco_apply_closure_typed(closure_hptr, args, 2, layout).toBits();
 }
 
-// Snapshot a String (any form) into a stable std::vector<u16> of UTF-16 units.
-// Callers walk it by code point (StringOps::nextCodePoint / prevCodePoint):
-// one Char per code point, a valid surrogate pair being one Char. The snapshot
-// lives on the C stack so callbacks that allocate (and may trigger GC) can't
-// invalidate it. Returns an empty vector for nullptr / empty input.
-// UTF-8 forms zero-extend their ASCII bytes directly (no toStdU16String
-// widen); the result is identical (1 byte == 1 unit under the gate). W4.e.
+// Returns a copy of the UTF-16 units of the String `str`, of any form, or an empty vector for
+// null. The copy is C++ memory, outside the collected heap, so closures called while it is walked
+// may allocate without invalidating it. A UTF-8 form's bytes are ASCII, so each is copied as one
+// unit.
 static std::vector<u16> snapshotChars(void* str) {
     if (!str) return {};
     if (Elm::StringOps::isUtf8(str)) {
@@ -236,9 +227,9 @@ static std::vector<u16> snapshotChars(void* str) {
     return std::vector<u16>(u16str.begin(), u16str.end());
 }
 
-// Materialize a computed UTF-16 unit vector into a String, choosing a UTF-8 form when
-// the content is all-ASCII (W4.e). `result` is C-heap, so allocAsciiOut/GC
-// cannot invalidate it and no rooting is needed. Empty -> the Empty constant.
+// Returns the String of the UTF-16 units in `result`: the Empty constant when there are none, a
+// UTF-8 form when they are all ASCII and UTF-8 Strings are enabled, and a UTF-16 String otherwise.
+// `result` is C++ memory, so the allocation cannot move it. A GC point.
 static HPtr materializeString(const std::vector<u16>& result) {
     if (result.empty()) return HPtr::fromBits(Export::encode(Elm::alloc::emptyString()));
     u16 acc = 0;
@@ -288,6 +279,7 @@ HPtr Elm_Kernel_String_filter(HPtr closure, HPtr str) {
         size_t start = i;
         uint32_t c = Elm::StringOps::nextCodePoint(chars.data(), n, i);
         HPtr cl = HPtr::fromBits(Export::encode(closureHP));
+        // The kept Char's own units are copied, so a lone surrogate stays as it was.
         if (callCharToBoolClosure(cl, c))
             result.insert(result.end(), chars.begin() + start, chars.begin() + i);
     }
@@ -317,7 +309,6 @@ HPtr Elm_Kernel_String_any(HPtr closure, HPtr str) {
 HPtr Elm_Kernel_String_all(HPtr closure, HPtr str) {
     auto chars = snapshotChars(Export::toPtr(str.toBits()));
     if (chars.empty()) {
-        // Empty string: all chars satisfy any predicate.
         return HPtr::fromBits(Export::encodeBoxedBool(true));
     }
 

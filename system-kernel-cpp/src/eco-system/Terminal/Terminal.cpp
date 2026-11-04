@@ -1,32 +1,16 @@
 //===- Terminal.cpp - eco/system kernel module Terminal -------------------===//
 //
-// plans/eco-system-library.md Appendix B.5, §3.8 and Phase 5 step 5.3.
+// Raw mode keeps one piece of process-wide state, `TtyState`, used on the eco thread and by the exit handler. The
+// original mode of fd 0 is read once, at the first request, and every restore puts back that same copy. The exit
+// handler is registered at that moment, with `std::atexit`, and restores only while raw mode is on.
 //
-//   * getConfiguration — `Nothing` unless isatty(1); otherwise
-//     ( colorDepth, columns, rows ) from TIOCGWINSZ and the B.5 colour
-//     heuristic (NO_COLOR / TERM=dumb → 1; FORCE_COLOR=0/1/2/3 → 1/4/8/24;
-//     COLORTERM truecolor/24bit → 24; TERM *256color → 8; otherwise 4).
-//   * isTerminal — isatty on the given standard stream's fd (0, 1 or 2;
-//     plans/kg-reported-bugs.md step 5).
-//   * setStdInRawMode — termios on fd 0 (a no-op unless it is a terminal).
-//     The original mode is saved on first use and restored by an atexit
-//     handler. While raw mode is on, this kernel holds an INTERNAL
-//     SignalService listener on SIGINT and SIGTERM (the one exception to
-//     "handlers only for Elm subscriptions"): when no Elm subscription
-//     listens to the signal, the listener restores the original termios and
-//     chains to the previous disposition (by default: the process dies of
-//     the signal, with a sane terminal). When the program does listen
-//     (System.onSignalInterrupt / onSignalTerminate), raw mode stays on.
-//     Raw mode is node's (uv_tty_set_mode UV_TTY_MODE_RAW).
-//   * setTitle — the terminal window title: when isatty(1), the OSC 2
-//     sequence ESC ] 2 ; title BEL written to fd 1 in one write (EINTR
-//     retried); otherwise nothing, so the sequence never reaches a redirected
-//     file or pipe (plans/eco-system-api-refactor.md D10).
+// Raw mode clears the input flags BRKINT, ICRNL, INPCK, ISTRIP and IXON and the local flags ECHO, ICANON, IEXTEN and
+// ISIG, sets 8-bit characters, keeps output newline translation (ONLCR), and makes each read return after one byte.
 //
-// Windows: every kernel is infallible (Task Never), so it crashes with a
-// clear message (§1).
-//
-// Templates used: T1 (bodies), G3 (copy out, syscall, allocate).
+// The signal listener restores the original mode and calls `SignalService::chainToPrevious`, which by default ends
+// the process. If the process survives (the previous disposition ignored the signal, or a previous handler
+// returned), raw mode is put back on. The listener does none of this when the signal has any other listener, which
+// is taken to mean the program handles the signal itself.
 //
 //===----------------------------------------------------------------------===//
 
@@ -97,7 +81,7 @@ std::string terminalTitleSequence(const std::string& title) {
     std::string out = "\x1b]2;";
     for (char ch : title) {
         unsigned char c = static_cast<unsigned char>(ch);
-        if (c >= 0x20 && c != 0x7f) out.push_back(ch);   // C0 controls and DEL would end the sequence
+        if (c >= 0x20 && c != 0x7f) out.push_back(ch);
     }
     out.push_back('\x07');
     return out;
@@ -107,21 +91,25 @@ namespace {
 
 #ifndef _WIN32
 
-// --- Raw mode (main thread only, except the atexit handler) ----------------
-
+/// The raw-mode state of fd 0. Used on the eco thread, and read by `restoreAtExit` on whichever thread exits.
 struct TtyState {
-    bool saved = false;          // `original` holds fd 0's mode at first use
+    bool saved = false;          ///< Whether `original` holds fd 0's mode, read at the first request.
     struct termios original {};
-    bool raw = false;
+    bool raw = false;            ///< Whether raw mode is on.
+    /// The internal SIGINT and SIGTERM listeners while raw mode is on; 0 when off, or when `addListener` refused.
     SignalService::ListenerId sigint = 0;
     SignalService::ListenerId sigterm = 0;
 };
 
+/// Returns the one `TtyState`, created on first use and never freed, so the exit handler can still read it while
+/// static objects are being destroyed.
 TtyState& tty() {
-    static auto* t = new TtyState();   // leaky: read by the atexit handler
+    static auto* t = new TtyState();
     return *t;
 }
 
+/// Sets fd 0 to raw mode, derived from the saved original mode, and returns whether that succeeded. Waits for
+/// pending output to drain first, and retries on EINTR. Requires `tty().saved`.
 bool applyRaw() {
     struct termios t = tty().original;
     t.c_iflag &= ~(BRKINT | ICRNL | INPCK | ISTRIP | IXON);
@@ -135,6 +123,8 @@ bool applyRaw() {
     return rc == 0;
 }
 
+/// Puts the saved original mode back on fd 0, after pending output drains, retrying on EINTR. Does nothing when no
+/// mode has been saved; a failure is ignored.
 void restoreOriginal() {
     auto& s = tty();
     if (!s.saved) return;
@@ -142,19 +132,23 @@ void restoreOriginal() {
     do { rc = ::tcsetattr(0, TCSADRAIN, &s.original); } while (rc != 0 && errno == EINTR);
 }
 
+/// Restores the original mode if raw mode is on. This is the handler registered with `std::atexit`.
 void restoreAtExit() {
     if (tty().raw) restoreOriginal();
 }
 
-// Internal SignalService listener while raw mode is on (step 5.3).
+/// Handles SIGINT or SIGTERM while raw mode is on: unless `signo` has another listener, restores the original mode,
+/// gives the signal its previous effect, and turns raw mode back on if the process is still running.
 void rawModeSignal(int signo, void*) {
     auto& svc = SignalService::instance();
-    if (svc.listenerCount(signo) > 1) return;   // the program listens: stay raw
+    if (svc.listenerCount(signo) > 1) return;
     restoreOriginal();
-    svc.chainToPrevious(signo);                 // by default the process ends here
-    if (tty().raw) applyRaw();                  // survived (SIG_IGN / a handler)
+    svc.chainToPrevious(signo);
+    if (tty().raw) applyRaw();
 }
 
+/// Turns raw mode on fd 0 on or off, as `terminalSetStdInRawModeBody` describes, adding or removing the signal
+/// listeners with it. Turning raw mode on fails silently, leaving it off, when the mode cannot be set.
 void setRaw(bool on) {
     auto& s = tty();
     if (!::isatty(0)) return;
@@ -183,7 +177,7 @@ void setRaw(bool on) {
 } // namespace
 
 // ---------------------------------------------------------------------------
-// Bodies (B.5)
+// Bodies
 // ---------------------------------------------------------------------------
 
 #ifdef _WIN32
@@ -217,7 +211,8 @@ HPointer terminalGetConfigurationBody(HPointer /*captured*/) {
         int columns = 0, rows = 0;
         (void)terminalSize(columns, rows);
         int depth = terminalColorDepth();
-        // The tuple3 is fresh when passed to just, which roots its argument (G4).
+        // The tuple is passed straight to `just`, which roots its argument, so it needs no guard. Mask 0x15 marks
+        // all three slots as unboxed Ints.
         return succeed(alloc::just(
             alloc::boxed(alloc::tuple3(alloc::unboxedInt(depth), alloc::unboxedInt(columns),
                                        alloc::unboxedInt(rows), 0x15)),
@@ -246,14 +241,14 @@ HPointer terminalSetStdInRawModeBody(HPointer captured) {
 // setTitle : String -> Task Never ()  — payload: the String.
 HPointer terminalSetTitleBody(HPointer captured) {
     ECO_SYSTEM_BODY_GUARD(Never,
-        std::string title = toStdString(captured);   // G3: copy out first
+        std::string title = toStdString(captured);
         if (::isatty(1)) {
             std::string seq = terminalTitleSequence(title);
             size_t done = 0;
             while (done < seq.size()) {
                 ssize_t n = ::write(1, seq.data() + done, seq.size() - done);
                 if (n < 0 && errno == EINTR) continue;
-                if (n <= 0) break;   // best effort: a title is not output
+                if (n <= 0) break;
                 done += static_cast<size_t>(n);
             }
         }

@@ -1,18 +1,10 @@
 //===- MVar.cpp - MVar kernel module implementation -----------------------===//
 //
-// Single-threaded cooperative MVar. Blocking operations (read/take on empty,
-// put on full) park the calling fiber via Task_Binding and are woken by the
-// complementary operation. All state lives on the main scheduler thread; no
-// locks beyond the scheduler's own pendingResumes mutex are needed.
-//
-// Three per-MVar waiter queues reflect the three distinct wake conditions:
-//   * readers — read on empty; all woken together when a value arrives.
-//   * takers  — take on empty; first in line consumes an arriving value.
-//   * putters — put on full;  first in line fills the slot when it empties.
-//
-// A fiber parks by handing its resume closure to the scheduler's pending-
-// resume registry (already GC-rooted) and pushing a Waiter{token, pendingV}
-// onto the appropriate queue. pendingV is only used by putters.
+// Each operation's Task is a Binding over a closure built here, and the closure's evaluator does all the
+// work on the MVar when the scheduler steps the Task. A fiber parks by handing its resume closure to the
+// scheduler with `parkResume`, which roots the closure, and queueing a `Waiter` holding the returned token.
+// Waking it takes the closure back, calls it with a succeeding Task, and releases the hold. Values held here
+// (slot values and putters' pending values) are rooted by the scanner `registerGcRootScanner` registers.
 //
 //===----------------------------------------------------------------------===//
 
@@ -36,13 +28,15 @@ namespace Eco::Kernel::MVar {
 using Elm::HPointer;
 using namespace Elm::alloc;
 
+// A fiber parked on one MVar queue.
 struct Waiter {
+    // The resume token `parkResume` returned; it keys both the parked closure and its hold.
     uint64_t token;
-    // Only meaningful for putter waiters; listNil() for readers/takers.
-    // Rooted by the external GC scanner registered below.
+    // A putter's value to store; `listNil()` for readers and takers.
     HPointer pendingValue;
 };
 
+// One MVar: its value, present when full, and its three queues of parked fibers in arrival order.
 struct MVarSlot {
     std::optional<HPointer> value;
     std::deque<Waiter> readers;
@@ -50,26 +44,23 @@ struct MVarSlot {
     std::deque<Waiter> putters;
 };
 
-// Invariants, restored after each public operation returns:
-//   slot full  ⇒ readers empty ∧ takers empty
-//   slot empty ⇒ putters empty
+// Every live MVar, by id. After each evaluator returns, a full slot has no readers or takers and an empty
+// slot has no putters.
 static std::unordered_map<int64_t, MVarSlot> s_mvars;
+// The id the next `newEmpty` hands out; it only increases.
 static int64_t s_nextId = 1;
 
 // ============================================================================
 // Wake path
 // ============================================================================
 
-// Re-enqueue a parked fiber, handing it `value` as its Task.succeed payload.
-// Releases the hold parkResume took when the fiber parked.
-// Callers must ensure `value` is reachable at call time; GC may run inside
-// taskSucceed / callClosure1, but the StackRootGuard below keeps our local
-// copy updated across those points.
+// Resumes the fiber parked under `token` with a Task that succeeds with `value`, and releases its hold. If no
+// closure is parked under `token`, only releases the hold. `value` must be current; it is rooted here across
+// the allocations.
 static void wakeWaiter(uint64_t token, HPointer value) {
     auto& sched = Elm::Platform::Scheduler::instance();
     HPointer resumeClosure = sched.takePendingResume(token);
     if (isNil(resumeClosure)) {
-        // Orphaned (shouldn't happen in single-threaded path, but defensive).
         sched.releaseHold(token);
         return;
     }
@@ -83,10 +74,8 @@ static void wakeWaiter(uint64_t token, HPointer value) {
     sched.releaseHold(token);
 }
 
-// A value `v` has just arrived at an empty slot. Wake all readers (each
-// observes v; slot is conceptually full from their point of view), then
-// hand v to the first taker if any (which consumes it, leaving the slot
-// empty). If no taker consumes v, v is stored in the slot.
+// Delivers `v`, arriving at the empty `slot`: resumes every reader with it, then hands it to the first taker,
+// leaving the slot empty, or stores it when there is no taker.
 static void processPutArrival(MVarSlot& slot, HPointer v) {
     Elm::StackRootGuard guard(&v);
     while (!slot.readers.empty()) {
@@ -98,16 +87,13 @@ static void processPutArrival(MVarSlot& slot, HPointer v) {
         Waiter w = slot.takers.front();
         slot.takers.pop_front();
         wakeWaiter(w.token, v);
-        // slot stays empty.
     } else {
         slot.value = v;
     }
 }
 
-// The slot has just been emptied by a take. If putters are parked, pop the
-// first and treat its pending value as a freshly-arrived put. If waking
-// intermediaries (readers + first taker) drains the slot again, cascade to
-// the next putter.
+// Refills `slot`, just emptied, from its putters: resumes the first with unit and delivers its value as
+// `processPutArrival` does, repeating while a taker consumed the value and putters remain.
 static void processTakeDeparture(MVarSlot& slot) {
     while (!slot.value.has_value() && !slot.putters.empty()) {
         Waiter w = slot.putters.front();
@@ -121,11 +107,8 @@ static void processTakeDeparture(MVarSlot& slot) {
     }
 }
 
-// Resume a stepped binding with the recoverable "MVar not found" failure
-// (IO_ERR_002 / D6). Task purity (plans/task-purity-and-caf-guard-removal.md
-// F1) moved the not-found check from task CREATION into the evaluators, so
-// the failure must be DELIVERED here — returning without resuming would
-// silently strand the fiber.
+// Resumes `resumeHP` with a Task failing with the IO error tuple (tag 0, empty path, "MVar not found: <id>").
+// An evaluator that found no MVar must call this; returning without resuming would leave the fiber stuck.
 static void resumeNotFound(HPointer resumeHP, int64_t id) {
     HPointer failTask = listNil();
     {
@@ -140,21 +123,16 @@ static void resumeNotFound(HPointer resumeHP, int64_t id) {
 // Binding callback evaluators
 // ============================================================================
 //
-// Each evaluator is invoked by the scheduler when a Task_Binding is stepped.
-// rawArgs layout mirrors the capture order in the kernel export: captured
-// values first, resume closure last. Since the F1 always-binding reshape
-// (Task purity), these evaluators are the ONLY place MVar state is read or
-// written for read/take/put — the exported kernel functions are pure
-// binding constructors, so one Task value fulfilled N times performs the
-// operation N times.
+// The scheduler calls an evaluator each time it steps the Binding Task. `rawArgs` holds the captured values
+// in capture order, then the resume closure. These evaluators are the only code that reads or writes MVar
+// state for read, take and put. Each resumes the fiber or parks it, and returns encoded unit.
 
-// Captured: [0]=unboxed Int (mvar id, PK_Int). Passed: [1]=resume closure (PK_Boxed HPointer).
+// Performs `read`. Captured: [0] the MVar id (PK_Int). Passed: [1] the resume closure.
 //
-// Per the Phase E typed-args convention (REP_ABI_001), `eco_closure_call_saturated`
-// delivers each capture in `combined_args[i]` as raw primitive bits when its
-// `closure->unboxed[i]` kind is PK_Int / PK_Float / PK_Char, NOT as an
-// HPointer-to-boxed-prim. So the captured mvar id is the raw int64; only
-// the resume closure (a true HPointer arg) goes through Export::decode.
+// `eco_closure_call_saturated` delivers each capture in `combined_args[i]` as raw primitive bits when its
+// `closure->unboxed[i]` kind is PK_Int / PK_Float / PK_Char, not as an HPointer to a boxed value. So the
+// captured mvar id is the raw int64; only boxed arguments (here, the resume closure) go through
+// Export::decode.
 static void* readBindingEvaluator(void* rawArgs[]) {
     int64_t id = static_cast<int64_t>(reinterpret_cast<uint64_t>(rawArgs[0]));
     uint64_t resumeEnc = reinterpret_cast<uint64_t>(rawArgs[1]);
@@ -179,8 +157,8 @@ static void* readBindingEvaluator(void* rawArgs[]) {
     return reinterpret_cast<void*>(Export::encode(unit()));
 }
 
-// Captured: [0]=unboxed Int (mvar id, PK_Int). Passed: [1]=resume closure (PK_Boxed HPointer).
-// See readBindingEvaluator for the typed-args convention rationale.
+// Performs `take`. Captured: [0] the MVar id (PK_Int). Passed: [1] the resume closure. Arguments arrive as
+// `readBindingEvaluator` describes.
 static void* takeBindingEvaluator(void* rawArgs[]) {
     int64_t id = static_cast<int64_t>(reinterpret_cast<uint64_t>(rawArgs[0]));
     uint64_t resumeEnc = reinterpret_cast<uint64_t>(rawArgs[1]);
@@ -209,9 +187,8 @@ static void* takeBindingEvaluator(void* rawArgs[]) {
     return reinterpret_cast<void*>(Export::encode(unit()));
 }
 
-// Captured: [0]=unboxed Int (mvar id, PK_Int), [1]=value HPointer (PK_Boxed).
-// Passed:   [2]=resume closure (PK_Boxed HPointer).
-// See readBindingEvaluator for the typed-args convention rationale.
+// Performs `put`. Captured: [0] the MVar id (PK_Int), [1] the value (boxed). Passed: [2] the resume closure.
+// Arguments arrive as `readBindingEvaluator` describes.
 static void* putBindingEvaluator(void* rawArgs[]) {
     int64_t id = static_cast<int64_t>(reinterpret_cast<uint64_t>(rawArgs[0]));
     uint64_t valueEnc  = reinterpret_cast<uint64_t>(rawArgs[1]);
@@ -250,17 +227,12 @@ int64_t newEmpty() {
     return id;
 }
 
-// Task purity (plans/task-purity-and-caf-guard-removal.md F1): read/take/put
-// are PURE binding constructors — no MVar state is read or written here.
-// Every slot inspection (including the not-found check) lives in the
-// evaluators, so the returned Task performs the operation once per
-// FULFILMENT, not once at creation. This deletes KERNEL_TASK_IO_001's old
-// exemption (d) and makes the tasks safe to share and to cache in memoized
-// CAF slots (CGEN_068).
+// read, take and put only build the Binding; because no MVar state is read here, the Tasks they return are
+// safe to share and to cache in memoized CAF slots.
 
 uint64_t read(uint64_t id) {
     int64_t mvarId = static_cast<int64_t>(id);
-    // readBindingEvaluator returns a boxed Task HPtr → K = PK_Boxed.
+    // readBindingEvaluator returns a boxed word (encoded unit), so the result kind is PK_Boxed.
     HPointer cb = allocClosureK(
         reinterpret_cast<Elm::EvalFunction>(readBindingEvaluator), 2,
         Elm::PK_Boxed);
@@ -273,7 +245,7 @@ uint64_t read(uint64_t id) {
 
 uint64_t take(uint64_t id) {
     int64_t mvarId = static_cast<int64_t>(id);
-    // takeBindingEvaluator returns a boxed Task HPtr → K = PK_Boxed.
+    // takeBindingEvaluator returns a boxed word (encoded unit), so the result kind is PK_Boxed.
     HPointer cb = allocClosureK(
         reinterpret_cast<Elm::EvalFunction>(takeBindingEvaluator), 2,
         Elm::PK_Boxed);
@@ -288,7 +260,7 @@ uint64_t put(uint64_t id, uint64_t value) {
     int64_t mvarId = static_cast<int64_t>(id);
     HPointer valueHP = Export::decode(value);
     Elm::StackRootGuard guard(&valueHP);
-    // putBindingEvaluator returns a boxed Task HPtr → K = PK_Boxed.
+    // putBindingEvaluator returns a boxed word (encoded unit), so the result kind is PK_Boxed.
     HPointer cb = allocClosureK(
         reinterpret_cast<Elm::EvalFunction>(putBindingEvaluator), 3,
         Elm::PK_Boxed);
@@ -300,20 +272,15 @@ uint64_t put(uint64_t id, uint64_t value) {
     return Export::encode(task);
 }
 
-// Binding body for `drop` — the erase + waiter abandonment happens at
-// FULFILMENT (F1). Captured: tuple2(unboxedInt(id), boxed(unit), 0x1), the
-// File.cpp Q2 packing convention for a 1-arg unboxed-Int kernel.
+// Performs `drop` and returns a Task succeeding with unit. `captured` is the Tuple2 `drop` builds: the id
+// unboxed in field `a` (mask 0x1), unit in `b`.
 static HPointer dropBody(HPointer captured) {
     Tuple2* tup =
         static_cast<Tuple2*>(Elm::Allocator::instance().resolve(captured));
     int64_t mvarId = tup->a.i;
     auto it = s_mvars.find(mvarId);
     if (it != s_mvars.end()) {
-        // Elm.MVar.drop docs: "Any pending waiters are abandoned." Release
-        // each waiter's resume closure from the scheduler's registry (so it
-        // may be GC'd) and balance the pendingAsync counter so the event
-        // loop can exit. The closures are never invoked; those fibers are
-        // silently dropped.
+        // Taking each closure lets it be collected; releasing each hold lets the event loop go quiescent.
         auto& sched = Elm::Platform::Scheduler::instance();
         auto abandon = [&](std::deque<Waiter>& q) {
             while (!q.empty()) {
@@ -351,9 +318,8 @@ void registerGcRootScanner() {
                     evacField(v);
                     slot.value = v;
                 }
-                // Putter waiters carry the value they're waiting to store.
-                // Reader/taker waiters only carry a token (resume closure
-                // is already rooted by the scheduler's pendingResumes_).
+                // Readers' and takers' `pendingValue` is the nil constant, and their closures are rooted
+                // by the scheduler.
                 for (auto& w : slot.putters) {
                     evacField(w.pendingValue);
                 }

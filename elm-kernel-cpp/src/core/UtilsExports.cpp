@@ -1,4 +1,14 @@
 //===- UtilsExports.cpp - C-linkage exports for Utils module ---------------===//
+//
+// The `extern "C"` wrappers for `Utils.hpp`, declared in `KernelExports.h`, together with the variants
+// that take Int, Float or Char raw and the typed String and List entry points the compiler's lowering
+// calls. They convert words with `Export::toPtr`, which turns every embedded constant into a null
+// pointer, so any export whose result depends on telling two constants apart decides that on the words.
+//
+// The back end may treat an export as a gc-leaf call, one that allocates nothing on the GC heap and so
+// needs no statepoint. Where it matters, a note below says whether an export may be treated so.
+//
+//===----------------------------------------------------------------------===//
 
 #include "../KernelExports.h"
 #include "../ExportHelpers.hpp"
@@ -16,41 +26,30 @@ HPtr Elm_Kernel_Utils_compare(HPtr a, HPtr b) {
     return HPtr::fromBits(Export::encode(result));
 }
 
-// Order-free sibling of Elm_Kernel_Utils_compare, emitted by the compare-case
-// rewrite (EcoCompareCaseRewrite) for residual boxed keys. NOT gc-leaf: the
-// generic `cmp` recurses over arbitrary heap shapes, and every kernel extern is
-// deliberately poison for gc-free propagation (CGEN_072).
+// Not gc-leaf, although `Utils::cmp3` allocates nothing: the back end treats every kernel export as
+// possibly allocating unless it is listed as gc-leaf.
 //
-// RETURN-WIDTH TRAP: this MUST be defined returning int64_t so the widening is
-// the C++ int->int64_t return conversion (sign-extending). Defining it `int`
-// under an i64 MLIR/LLVM declaration leaves RAX's upper 32 bits undefined on
-// SysV x86-64, and the i64 sign tests then read garbage.
+// The return type must stay `int64_t`. The caller declares the result as a 64-bit integer, and returning
+// `int` would leave the upper 32 bits of the return register undefined on SysV x86-64; `int64_t` makes
+// the widening the C++ conversion, which sign-extends.
 int64_t Elm_Kernel_Utils_cmp3(HPtr a, HPtr b) {
     return Utils::cmp3(Export::toPtr(a.toBits()), Export::toPtr(b.toBits()));
 }
 
-// String three-way compare: the sign of StringOps::compare, UNCLAMPED.
-// gc-leaf-safe — StringOps::compare never allocates on the GC heap on any of
-// its four paths (leaf charCompare / both-UTF-8 memcmp / single-segment view /
-// general lockstep, whose only scratch is a C++-heap std::vector).
-// Lives here, not in RuntimeExports, because Export::toPtr's full resolution
-// (embedded-constant -> nullptr; isInHeap -> resolveFast; else raw non-heap
-// pointer for PermanentSpace literals) is required for parity with the kernel path,
-// and RuntimeExports' local hpointerToPtr is NOT equivalent.
-// Same return-width trap as above.
+// May be treated as gc-leaf: `StringOps::compare` allocates nothing on the GC heap. Defined here rather
+// than beside the runtime exports so that it converts words with `Export::toPtr`, as the polymorphic
+// path does; the runtime exports' own helper resolves every non-constant word with `Allocator::resolve`
+// instead. The return type must stay `int64_t`, as for the export above.
 int64_t eco_string_cmp3(HPtr a, HPtr b) {
     void* pa = Export::toPtr(a.toBits());
     void* pb = Export::toPtr(b.toBits());
-    if (pa == pb) return 0;  // includes both-Empty (both nullptr)
-    // empty < non-empty; "" equals a zero-length heap String (SD-26, HEAP_071)
+    // Two nulls are both "", the only String constant.
+    if (pa == pb) return 0;
     if (!pa) return alloc::isZeroLengthString(pb) ? 0 : -1;
     if (!pb) return alloc::isZeroLengthString(pa) ? 0 : 1;
     return StringOps::compare(pa, pb);
 }
 
-// Phase C: pick an Order singleton from an UNCLAMPED sign in ONE gc-leaf call,
-// replacing the three unconditional Eco_Runtime_getOrder* calls (plus two
-// selects) that emitOrderSelect used to emit per cmp_order execution.
 HPtr eco_order_from_sign(int64_t sign) {
     uint64_t enc = (sign < 0) ? Utils::getOrderLT()
                  : (sign > 0) ? Utils::getOrderGT()
@@ -58,14 +57,10 @@ HPtr eco_order_from_sign(int64_t sign) {
     return HPtr::fromBits(enc);
 }
 
-// One-call replacement for the three getOrder calls: sign + singleton pick.
 HPtr eco_string_cmp_order(HPtr a, HPtr b) {
     return eco_order_from_sign(eco_string_cmp3(a, b));
 }
 
-// Phase B per-instance variants. Each takes the corresponding primitive ABI
-// type (int64_t / double / Char) directly and returns the encoded HPtr
-// of the appropriate Order singleton.
 HPtr Elm_Kernel_Utils_compare_Int(int64_t a, int64_t b) {
     uint64_t enc = (a < b) ? Utils::getOrderLT()
                  : (a > b) ? Utils::getOrderGT()
@@ -73,7 +68,7 @@ HPtr Elm_Kernel_Utils_compare_Int(int64_t a, int64_t b) {
     return HPtr::fromBits(enc);
 }
 
-// Float's total order (Utils::compareFloat): NaN equals NaN and is above every number.
+// Uses `Utils::compareFloat`'s total order, unlike the Float `lt`/`gt` variants below, which are IEEE.
 HPtr Elm_Kernel_Utils_compare_Float(double a, double b) {
     const int c = Utils::compareFloat(a, b);
     uint64_t enc = (c < 0)  ? Utils::getOrderLT()
@@ -82,9 +77,8 @@ HPtr Elm_Kernel_Utils_compare_Float(double a, double b) {
     return HPtr::fromBits(enc);
 }
 
-// Char arguments arrive as uint64_t and are masked to the 32-bit Char value
-// (see CharExports.cpp for the statepoint zero-extension rationale). Chars
-// compare in code-point order (KERN_008; see the Tag_Char note in Utils.cpp).
+// Chars arrive as `uint64_t` because the caller does not promise to zero-extend them, so only the low 32
+// bits are read. They compare in code-point order.
 HPtr Elm_Kernel_Utils_compare_Char(uint64_t a_raw, uint64_t b_raw) {
     const uint32_t a = static_cast<uint32_t>(a_raw & 0xFFFFFFFFu);
     const uint32_t b = static_cast<uint32_t>(b_raw & 0xFFFFFFFFu);
@@ -95,24 +89,16 @@ HPtr Elm_Kernel_Utils_compare_Char(uint64_t a_raw, uint64_t b_raw) {
     return HPtr::fromBits(enc);
 }
 
-// Structural equality on embedded constants (True/False/Nil/Unit/etc.) must be
-// resolved by HPointer constant-field, not by passing them through toPtr().
-// toPtr() collapses every embedded constant to nullptr, so without this guard
-// Utils::eqHelp would short-circuit via `if (a == b) return true;` and report
-// any two distinct constants as equal — in particular True == False == true,
-// which silently corrupts every Bool-pattern match in the compiler.
+/// Returns whether the words `aBits` and `bBits` are equal Elm values.
+///
+/// When either is an embedded constant the words decide: two constants are equal when their words are,
+/// and a constant is unequal to a heap value except that the Empty constant equals a String of length 0.
+/// Otherwise the result is `Utils::equal` on the two objects. The words must be tested first because
+/// `Export::toPtr` turns every constant into null, and `Utils::equal` reports two nulls equal, which
+/// would make True equal False.
 static bool equalRespectingConstants(uint64_t aBits, uint64_t bBits) {
-    // Embedded constants are canonical words: two constants are equal iff their
-    // words are equal (True==True, Empty==Empty, …), and a constant is never
-    // equal to a heap pointer. Elm's type system forbids comparing values of
-    // different types, so a merged empty can only ever be compared against the
-    // same-type empty — a whole-word compare is correct under both the legacy
-    // and the merged representations (plan D6/P0.6).
-    //
-    // One exception (SD-26, HEAP_071): the Empty constant ("") equals a
-    // zero-length heap String. No producer allocates one, but every
-    // comparison path agrees on it; checked only when exactly one side is a
-    // constant and the words differ.
+    // A whole-word test is enough because Elm compares only values of one type, and one type never has two
+    // different constants with the same word.
     const bool aConst = isConstantBits(aBits);
     const bool bConst = isConstantBits(bBits);
     if (aConst || bConst) {
@@ -148,11 +134,8 @@ HPtr Elm_Kernel_Utils_ge(HPtr a, HPtr b) {
     return HPtr::fromBits(Export::encodeBoxedBool(Utils::ge(Export::toPtr(a.toBits()), Export::toPtr(b.toBits()))));
 }
 
-// Phase C per-instance variants for equality and ordering on primitives.
-// Each takes the corresponding primitive ABI type directly and returns the
-// boxed Bool (HPtr to the True / False singleton). C operators give the
-// correct semantics: IEEE 754 comparison for Float (NaN-aware); Chars compare
-// as unsigned code points in their low 32 bits (KERN_008).
+// The C++ operators give Elm's results: IEEE 754 comparison for Floats, so a NaN is unequal to itself and
+// orders with nothing, and code-point order on the low 32 bits for Chars. Each returns True or False.
 HPtr Elm_Kernel_Utils_equal_Int   (int64_t  a, int64_t  b) { return HPtr::fromBits(Export::encodeBoxedBool(a == b)); }
 HPtr Elm_Kernel_Utils_equal_Float (double   a, double   b) { return HPtr::fromBits(Export::encodeBoxedBool(a == b)); }
 HPtr Elm_Kernel_Utils_equal_Char  (uint64_t a, uint64_t b) { return HPtr::fromBits(Export::encodeBoxedBool((a & 0xFFFFFFFFu) == (b & 0xFFFFFFFFu))); }
@@ -182,29 +165,20 @@ HPtr Elm_Kernel_Utils_append(HPtr a, HPtr b) {
     uint64_t b_bits = b.toBits();
     void* ptrA = Export::toPtr(a_bits);
     void* ptrB = Export::toPtr(b_bits);
-    // Both are embedded constants (e.g. "" ++ "" or [] ++ []).
-    // toPtr returns nullptr for embedded constants, so return either one directly.
+    // Both empty: either word will do.
     if (!ptrA && !ptrB) return a;
     HPointer result = Utils::append(ptrA, ptrB);
     return HPtr::fromBits(Export::encode(result));
 }
 
-// Typed append exports for the eco.string.append / eco.list.append lowering
-// (plans/kernel-opt-05). Same backends the polymorphic Utils::append reaches --
-// never a "leaf-only" fast path: either operand may be a slice/rope/view
-// (string) or a chunk spine (list). NOT gc-leaf: both allocate.
-//
-// No StackRootGuard here, deliberately: neither wrapper allocates before its
-// backend call, so there is nothing to root. ListOps::append roots its own
-// operands on the chunk path; this is the identical calling shape
-// Utils::append uses today, so the rooting contract is unchanged.
+// These reach the same `StringOps::append` and `ListOps::append` as `Utils::append`, so either operand may
+// be in any String form or any list spine form. Not gc-leaf: both may allocate. Neither wrapper
+// allocates before that call, so there is nothing for it to root; the callee roots what it needs across
+// its own allocations.
 HPtr eco_string_append(HPtr a, HPtr b) {
     void* pa = Export::toPtr(a.toBits());
     void* pb = Export::toPtr(b.toBits());
-    // Both Empty embedded constants ("" ++ ""): toPtr yields nullptr for both.
     if (!pa && !pb) return a;
-    // StringOps::append itself handles one-sided null and zero length, and
-    // roots across every allocation it performs.
     HPointer result = StringOps::append(pa, pb);
     return HPtr::fromBits(Export::encode(result));
 }
@@ -212,13 +186,12 @@ HPtr eco_string_append(HPtr a, HPtr b) {
 HPtr eco_list_append(HPtr a, HPtr b) {
     void* pa = Export::toPtr(a.toBits());
     void* pb = Export::toPtr(b.toBits());
-    // Nil is the Empty embedded constant -> toPtr == nullptr.
-    if (!pa) return b;   // [] ++ b == b
-    if (!pb) return a;   // a ++ [] == a
+    // `[]` is the Empty constant, which `toPtr` turns into null.
+    if (!pa) return b;
+    if (!pb) return a;
     auto& allocator = Allocator::instance();
-    // No allocation between the two wraps, so neither HPointer can go stale.
-    // Raw pa/pb are DEAD from here on -- never hold a resolved void* across
-    // ListOps::append, which allocates.
+    // Nothing allocates between the two wraps. `pa` and `pb` must not be used after `ListOps::append`,
+    // which may move the objects.
     HPointer la = allocator.wrap(pa);
     HPointer lb = allocator.wrap(pb);
     HPointer result = ListOps::append(la, lb);
@@ -228,11 +201,6 @@ HPtr eco_list_append(HPtr a, HPtr b) {
 // ============================================================================
 // Order Constants
 // ============================================================================
-//
-// The three Order values are embedded null-cons constants (HEAP_044) — the
-// getters return the constant words; no allocation, no GC roots. The lowering
-// for eco.{int,float,char}.cmp_order calls these helpers and treats the
-// return value as a regular Elm value.
 
 HPtr Eco_Runtime_getOrderLT() { return HPtr::fromBits(Utils::getOrderLT()); }
 HPtr Eco_Runtime_getOrderEQ() { return HPtr::fromBits(Utils::getOrderEQ()); }

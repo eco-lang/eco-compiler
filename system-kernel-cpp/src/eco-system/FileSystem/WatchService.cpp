@@ -1,10 +1,8 @@
 //===- WatchService.cpp - File system watcher thread for FileSystem -----===//
 //
-// See WatchService.hpp. Leaky singleton with detached threads (§3.4). The
-// threads touch only POD (G1): they queue raw records under `qMutex` and wake
-// the scheduler loop with notifyWorkAvailableFromAsync().
-//
-// Templates used: none (POD only, G1).
+// The watcher threads never touch the watch tables that `drain` uses: the inotify thread queues raw records under
+// `qMutex`, and the poll thread works on its own snapshots under `pMutex`. Each queued record wakes the scheduler
+// loop with `notifyWorkAvailableFromAsync`, called after `qMutex` is released.
 //
 //===----------------------------------------------------------------------===//
 
@@ -41,8 +39,8 @@ namespace {
 
 using ::Elm::Platform::Scheduler;
 
-// A queued record. inotify mode: (wd, mask, name), mapped on the main
-// thread. Poll mode: an already mapped event.
+// A queued record. In inotify mode it is the raw (wd, mask, name) record, turned into events by `drain`; in poll
+// mode (`mapped`) it is an event already built, in `ev`.
 struct Raw {
     bool mapped = false;
     int wd = -1;
@@ -52,7 +50,7 @@ struct Raw {
 };
 
 #if !defined(_WIN32)
-// Poll-mode signature of one entry.
+// What poll mode compares of one entry between two snapshots.
 struct Sig {
     uint64_t ino = 0;
     uint32_t type = 0;
@@ -66,6 +64,8 @@ struct Sig {
 };
 using Snapshot = std::map<std::string, Sig>;   // relative path ("" = the root itself)
 
+// Fills `s` from `lstat` of `p`, so a symbolic link is described rather than followed. Returns false, leaving `s`
+// unchanged, when `p` cannot be read.
 bool sigOf(const std::string& p, Sig& s) {
     struct stat sb;
     if (::lstat(p.c_str(), &sb) != 0) return false;
@@ -82,8 +82,9 @@ bool sigOf(const std::string& p, Sig& s) {
     return true;
 }
 
-// The root's own entry plus its children (recursively when asked). Never
-// follows symlinks. Returns false when the root itself is missing.
+// Replaces `out` with the entry of `root` itself, under "", plus its entries (the whole tree when `recursive`).
+// Symbolic links are recorded, not followed. Returns false, with `out` empty, when `root` cannot be read. Entries
+// that cannot be read, and any after an iteration error, are left out.
 bool takeSnapshot(const std::string& root, bool recursive, Snapshot& out) {
     out.clear();
     Sig rootSig;
@@ -113,13 +114,15 @@ bool takeSnapshot(const std::string& root, bool recursive, Snapshot& out) {
 } // namespace
 
 struct WatchService::Impl {
+    // The process-lifetime `Scheduler::instance()`; set by the constructor and non-null from then on.
     Scheduler* sched = nullptr;
 
-    // --- The queue (any thread) ---
+    // --- The queue: `queue` under `qMutex`; `queued` read without it ---
     std::mutex qMutex;
     std::deque<Raw> queue;
     std::atomic<size_t> queued{0};
 
+    // Queues `r` and wakes the scheduler loop. Called from the watcher threads.
     void push(Raw r) {
         {
             std::lock_guard<std::mutex> lk(qMutex);
@@ -129,27 +132,34 @@ struct WatchService::Impl {
         sched->notifyWorkAvailableFromAsync();   // outside qMutex
     }
 
+    // Used by the scheduler thread only.
     int64_t nextId = 1;
     bool pollMode = false;
 
 #if defined(__linux__)
-    // --- inotify mode (main thread only, except `inotifyFd` reads) ---
+    // --- inotify mode (used by the thread running the Elm scheduler only) ---
     int inotifyFd = -1;
+    // One watch's use of an inotify watch descriptor, at relative path `rel` within the watch.
     struct WdUse {
         int64_t watchId;
         std::string rel;   // "" for the watched path itself
     };
+    // One inotify-mode watch: its root path, whether it is recursive, and the wds it uses.
     struct InotifyWatch {
         std::string root;
         bool recursive = false;
         std::vector<int> wds;
     };
+    // One inotify watch descriptor may serve several watches (two watches of one directory, or nested trees), so
+    // each wd maps to every use of it.
     std::unordered_map<int, std::vector<WdUse>> wdUses;
     std::unordered_map<int64_t, InotifyWatch> iwatches;
 
+    // The inotify events asked for on every watched directory or file.
     static constexpr uint32_t kMask = IN_ATTRIB | IN_CREATE | IN_MODIFY | IN_DELETE | IN_DELETE_SELF |
                                       IN_MOVE_SELF | IN_MOVED_FROM | IN_MOVED_TO;
 
+    // Creates the inotify instance and its reader thread, once. Returns false if either cannot be created.
     bool startInotify() {
         if (inotifyFd >= 0) return true;
         int fd = ::inotify_init1(IN_CLOEXEC);
@@ -165,7 +175,7 @@ struct WatchService::Impl {
         return true;
     }
 
-    // The reader thread: raw records only (G1).
+    // Reads `fd` until a read fails with anything but EINTR, queueing each record unchanged.
     void inotifyThread(int fd) {
         alignas(struct inotify_event) char buf[64 * 1024];
         for (;;) {
@@ -186,6 +196,8 @@ struct WatchService::Impl {
         }
     }
 
+    // Adds an inotify watch on `abs` for watch `id`, whose events are reported under relative path `rel`. Returns
+    // false if the kernel refuses it. A wd this watch already uses keeps its first `rel`.
     bool addDir(int64_t id, const std::string& abs, const std::string& rel) {
         int wd = ::inotify_add_watch(inotifyFd, abs.c_str(), kMask);
         if (wd < 0) return false;
@@ -197,7 +209,8 @@ struct WatchService::Impl {
         return true;
     }
 
-    // Adds watches for every directory below `abs` (recursive watches).
+    // Adds inotify watches, for watch `id`, on every directory below `abs` that is not a symbolic link; `rel` is
+    // the relative path of `abs` within the watch. A directory that cannot be watched is skipped.
     void addTree(int64_t id, const std::string& abs, const std::string& rel) {
         namespace fs = std::filesystem;
         std::error_code ec;
@@ -213,6 +226,8 @@ struct WatchService::Impl {
         }
     }
 
+    // Removes watch `id`'s use of `wd`. When no use is left the wd is forgotten and, if `rmWatch`, removed from
+    // the kernel.
     void dropWd(int64_t id, int wd, bool rmWatch) {
         auto it = wdUses.find(wd);
         if (it == wdUses.end()) return;
@@ -227,7 +242,10 @@ struct WatchService::Impl {
         }
     }
 
-    // Main thread: one raw inotify record → events.
+    // Appends to `out` the events of one raw inotify record, one per watch that uses its wd, and adds the watches
+    // for a directory that appeared inside a recursive watch. A record about a sub-directory itself is skipped,
+    // because its parent reports the same change by name. An IN_IGNORED record forgets the wd and yields no
+    // event.
     void mapInotify(const Raw& r, std::vector<WatchEvent>& out) {
         auto it = wdUses.find(r.wd);
         if (it == wdUses.end()) return;
@@ -274,15 +292,17 @@ struct WatchService::Impl {
 
 #if !defined(_WIN32)
     // --- Poll mode ---
+    // One poll-mode watch: its root path, whether it is recursive, and the snapshot taken at the last poll.
     struct PollWatch {
         std::string root;
         bool recursive = false;
         Snapshot snap;
     };
-    std::mutex pMutex;                          // guards pwatches (POD only)
+    std::mutex pMutex;                          // guards `pwatches` between add/remove and the poll thread
     std::map<int64_t, PollWatch> pwatches;
     bool pollThreadStarted = false;
 
+    // Starts the poll thread, once. Returns false if it cannot be started.
     bool startPollThread() {
         if (pollThreadStarted) return true;
         try {
@@ -294,6 +314,8 @@ struct WatchService::Impl {
         return true;
     }
 
+    // Once a second, snapshots every poll watch and queues the differences from its previous snapshot. The
+    // snapshot is taken outside `pMutex`; a watch removed meanwhile is skipped.
     void pollThread() {
         for (;;) {
             std::this_thread::sleep_for(std::chrono::seconds(1));
@@ -344,12 +366,12 @@ struct WatchService::Impl {
 };
 
 WatchService& WatchService::instance() {
-    static WatchService* s = new WatchService();   // leaky (§3.4)
+    static WatchService* s = new WatchService();   // never destroyed: the detached threads use it
     return *s;
 }
 
 WatchService::WatchService() : impl_(new Impl()) {
-    impl_->sched = &Scheduler::instance();   // bound on the main thread
+    impl_->sched = &Scheduler::instance();
 #if defined(__linux__)
     const char* poll = std::getenv("ECO_SYSTEM_WATCH_POLL");
     impl_->pollMode = poll && *poll && std::strcmp(poll, "0") != 0;

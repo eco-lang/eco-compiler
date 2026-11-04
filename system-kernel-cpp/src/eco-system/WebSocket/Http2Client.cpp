@@ -1,15 +1,10 @@
 //===- Http2Client.cpp - The WebSocket client over HTTP/2 (RFC 8441) ------===//
 //
-// See Http2Client.hpp (plans/eco-system-websockets.md §3.9, phase WS9).
-// Reactor thread only; POSIX (nghttp2 is not built on Windows).
-//
-// Re-entrancy (as Http2.cpp): nghttp2 is never re-entered. Tunnel calls made
-// from inside a session callback (the codec answering a ping while DATA is
-// being received) only queue; the IO step that is running frames them
-// (afterIo's second flush), and a call made while a flush runs makes it loop
-// once more.
-//
-// Templates used: none (POD only, G1).
+// Re-entrancy. `nghttp2_session_mem_recv2` and `nghttp2_session_mem_send2` are never called from inside a session
+// callback, yet a callback can reach the port, and the port's codec can call straight back into the tunnel (for
+// example, to answer a ping while DATA is being received). `processing_` and `flushing_` make such a call only queue:
+// the IO step that is running frames it, in `afterIo`'s second flush, and a call made while a flush runs makes that
+// flush loop once more.
 //
 //===----------------------------------------------------------------------===//
 
@@ -29,7 +24,8 @@ namespace Eco::System {
 
 namespace {
 
-// "read ECONNRESET" → "ECONNRESET".
+// Returns the code part of a `ConnProtocol::onError` reason, the text after the first space: "read ECONNRESET" gives
+// "ECONNRESET". A reason with no space is returned whole.
 std::string codeOfReason(const std::string& reason) {
     size_t sp = reason.find(' ');
     return sp == std::string::npos ? reason : reason.substr(sp + 1);
@@ -42,8 +38,11 @@ std::string codeOfReason(const std::string& reason) {
 // ---------------------------------------------------------------------------
 
 struct Http2ClientProtocol::Cb {
+    // Returns the protocol a callback's user data points to.
     static Http2ClientProtocol* self(void* ud) { return static_cast<Http2ClientProtocol*>(ud); }
 
+    // Clears the response read so far when a HEADERS frame starts on the opening stream before the answer, so that
+    // an informational response leaves nothing behind.
     static int beginHeaders(nghttp2_session*, const nghttp2_frame* f, void* ud) {
         Http2ClientProtocol* p = self(ud);
         if (f->hd.type == NGHTTP2_HEADERS && f->hd.stream_id == p->sid_ && p->phase_ == Phase::Requested) {
@@ -53,6 +52,8 @@ struct Http2ClientProtocol::Cb {
         return 0;
     }
 
+    // Records one field of the response before the answer: `:status` when it is all digits and at most 999, any
+    // other field not starting with ':'. Fields of other frames and streams, and trailers, are ignored.
     static int header(nghttp2_session*, const nghttp2_frame* f, const uint8_t* name, size_t nl,
                       const uint8_t* value, size_t vl, uint8_t, void* ud) {
         Http2ClientProtocol* p = self(ud);
@@ -75,6 +76,8 @@ struct Http2ClientProtocol::Cb {
         return 0;
     }
 
+    // Acts on a whole received frame: the server's SETTINGS (step 2 of the file comment), the response HEADERS
+    // (step 3), and END_STREAM on the opening stream.
     static int frameRecv(nghttp2_session* session, const nghttp2_frame* f, void* ud) {
         Http2ClientProtocol* p = self(ud);
         if (p->done_) return 0;
@@ -82,8 +85,7 @@ struct Http2ClientProtocol::Cb {
         switch (f->hd.type) {
         case NGHTTP2_SETTINGS:
             if ((f->hd.flags & NGHTTP2_FLAG_ACK) == 0 && p->phase_ == Phase::Settings) {
-                // RFC 8441 §3: only a server that sent ENABLE_CONNECT_PROTOCOL = 1
-                // takes an extended CONNECT; nghttp2 leaves that check to us (WF3).
+                // nghttp2 does not check ENABLE_CONNECT_PROTOCOL for a client.
                 if (nghttp2_session_get_remote_settings(session, NGHTTP2_SETTINGS_ENABLE_CONNECT_PROTOCOL) == 1) {
                     p->submitRequest();
                 } else {
@@ -120,6 +122,8 @@ struct Http2ClientProtocol::Cb {
         }
     }
 
+    // Takes received DATA. The connection window is credited at once. DATA of another stream, or before the answer,
+    // or once closing, is dropped and credited; the opening stream's DATA goes to the port, or is held.
     static int dataChunk(nghttp2_session* session, uint8_t, int32_t sid, const uint8_t* data,
                          size_t len, void* ud) {
         Http2ClientProtocol* p = self(ud);
@@ -131,19 +135,22 @@ struct Http2ClientProtocol::Cb {
         std::string_view bytes(reinterpret_cast<const char*>(data), len);
         if (p->port_) {
             std::shared_ptr<H2StreamPort> port = p->port_;
-            port->streamData(bytes);   // consumed into the window as the codec takes it
+            port->streamData(bytes);
         } else {
-            p->held_.append(bytes.data(), bytes.size());   // the stream window (64 KiB) bounds it
+            p->held_.append(bytes.data(), bytes.size());
         }
         return 0;
     }
 
+    // Reports the close of the opening stream to `streamGone`.
     static int streamClose(nghttp2_session*, int32_t sid, uint32_t code, void* ud) {
         Http2ClientProtocol* p = self(ud);
         if (sid == p->sid_) p->streamGone(code);
         return 0;
     }
 
+    // Supplies the opening stream's DATA from the tunnel's queue: ends the stream once the queue is empty after
+    // `tunnelEnd`, and defers when it is empty otherwise.
     static nghttp2_ssize readData(nghttp2_session*, int32_t, uint8_t* buf, size_t len, uint32_t* flags,
                                   nghttp2_data_source*, void* ud) {
         Http2ClientProtocol* p = self(ud);
@@ -157,7 +164,7 @@ struct Http2ClientProtocol::Cb {
             if (p->outEnd_) {
                 *flags |= NGHTTP2_DATA_FLAG_EOF;
             } else if (n == 0) {
-                p->deferred_ = true;   // tunnelWrite / tunnelEnd resume
+                p->deferred_ = true;   // tunnelWrite or tunnelEnd resumes it
                 return NGHTTP2_ERR_DEFERRED;
             }
         }
@@ -177,7 +184,7 @@ Http2ClientProtocol::~Http2ClientProtocol() {
     done_ = true;
     if (port_) {
         std::shared_ptr<H2StreamPort> port = std::move(port_);
-        port->streamReset(H2StreamPort::kCancel);   // never a dangling tunnel
+        port->streamReset(H2StreamPort::kCancel);
     }
     if (session_) nghttp2_session_del(session_);
 }
@@ -298,8 +305,7 @@ void Http2ClientProtocol::afterIo() {
     flush();
     if (done_) return;
     if (fallback_) {
-        // The GOAWAY is queued: close, and dial the same address again over
-        // HTTP/1.1 (W12).
+        // The GOAWAY has been framed: close, and dial the same address again over HTTP/1.1.
         fallback_ = false;
         done_ = true;
         conn_->setDeadline(Conn::kTimerHeaders, 0);
@@ -383,7 +389,7 @@ void Http2ClientProtocol::streamGone(uint32_t code) {
         std::shared_ptr<H2StreamPort> port = port_;
         port->streamReset(code);
     }
-    // One WebSocket per connection (W12): the session ends with its stream.
+    // One WebSocket per connection: the session ends with its stream.
     endSession();
 }
 

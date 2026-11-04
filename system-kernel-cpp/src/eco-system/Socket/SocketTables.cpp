@@ -1,23 +1,14 @@
-//===- SocketTables.cpp - Main-thread socket tables and delivery ----------===//
+//===- SocketTables.cpp - Eco-thread socket tables and delivery -----------===//
 //
-// See SocketTables.hpp (plans/eco-system-sockets.md §3.3.4, §3.3.8, §3.3.9,
-// §3.4). Main thread only.
-//
-// Counts (§3.3.8, G10), released here:
-//   * Connected: the connect's hold (HoldRelease), resumed or orphaned
-//     (an orphaned success is aborted: "an orphaned success is closed").
-//   * OpDone: the R-mode operation's count.
-//   * ListenerClosed: the subscription hold (`subHold`, if any), the hold
-//     of every parked accept it fails, and one hold per closeListener task.
-//   * Accepted: the hold of the parked accept it is handed to (none when it
-//     goes to the subscribers or into the held FIFO: held items hold
-//     nothing, LIVE_001).
-// An open listener holds nothing of its own (plans/program-liveness-rule.md
-// §10.6): parked accepts hold (parkResume), and so does an onConnection
-// subscription (`subHold`, socketTablesSyncSubscriptions).
-//
-// Templates used: T5 (generation-keyed tables), T8 (via the manager), T9
-// (completions), G10 (HoldRelease), G12 (drain per delivery).
+// Which hold each event dispatcher releases:
+//   * Connected: the connect's, whether the task is resumed or has been killed. A successful connect whose task is
+//     gone is aborted.
+//   * OpDone: the operation's.
+//   * ListenerClosed: the subscription hold, if taken, the hold of every parked accept it fails, and that of every
+//     close token it completes.
+//   * Accepted: none directly. Serving the held FIFO releases the hold of each parked accept a connection is handed
+//     to; a connection handed to the subscribers, or left held, involves no hold.
+// Each `HoldRelease` lives to the end of its scope, so a hold is released after its task has been resumed.
 //
 //===----------------------------------------------------------------------===//
 
@@ -34,17 +25,19 @@ namespace Eco::System {
 
 namespace {
 
+// Returns the process-wide reactor that runs the socket objects.
 IoReactor& reactor() { return IoReactor::instance(); }
 
+// Asks the reactor to abort connection `c` without a TCP reset. Does nothing for null.
 void abortConn(const std::shared_ptr<Conn>& c) {
     if (!c) return;
     std::shared_ptr<Conn> cc = c;
     reactor().submit([cc] { cc->abort(false); });
 }
 
-// A dead heap's entries: close their reactor objects and release the
-// holds of their subscriptions and parked accepts (their resumes died with
-// the heap; their tasks never resume).
+// Empties `t`, which belongs to a heap that no longer exists: aborts every held, materialized and pending
+// connection, closes every listener, and releases only the subscription holds and the holds of parked accepts,
+// whose tasks will never resume.
 void resetTables(SocketTables& t) {
     auto& sched = Scheduler::instance();
     for (auto& kv : t.listeners) {
@@ -57,7 +50,7 @@ void resetTables(SocketTables& t) {
         for (auto& ev : e.held) abortConn(ev.conn);
         if (e.handler) {
             auto h = e.handler;
-            reactor().submit([h] { h->close(); });   // its ListenerClosed is a dead heap's: dropped
+            reactor().submit([h] { h->close(); });   // its ListenerClosed is not dispatched
         }
     }
     for (auto& kv : t.conns) abortConn(kv.second.conn);
@@ -67,8 +60,8 @@ void resetTables(SocketTables& t) {
     t.pendingConnects.clear();
 }
 
-// Resumes `token` with `task` (rooted by the caller). False if the task is
-// gone (killed).
+// Resumes the task parked under `token` with `task`, which the caller roots. Returns false, doing nothing, if the
+// task is gone because it was killed. Releases no hold.
 bool resumeToken(uint64_t token, HPointer& task) {
     HPointer resume = Scheduler::instance().takePendingResume(token);
     if (alloc::isNil(resume)) return false;
@@ -77,6 +70,7 @@ bool resumeToken(uint64_t token, HPointer& task) {
     return true;
 }
 
+// Resumes the task parked under `token` with success and unit. Returns false if the task is gone. Releases no hold.
 bool resumeOk(uint64_t token) {
     HPointer task = alloc::listNil();
     Elm::StackRootGuard g(&task);
@@ -88,6 +82,8 @@ bool resumeOk(uint64_t token) {
     return true;
 }
 
+// Resumes the task parked under `token` with failure `( code, message )`. Returns false if the task is gone.
+// Releases no hold.
 bool resumeFail(uint64_t token, const std::string& code, const std::string& message) {
     HPointer task = alloc::listNil();
     Elm::StackRootGuard g(&task);
@@ -99,9 +95,9 @@ bool resumeFail(uint64_t token, const std::string& code, const std::string& mess
     return true;
 }
 
-// Serves the held FIFO of listener `id` while it has a consumer (§3.4):
-// oldest parked accept first, else the subscribers. Each delivery resumes
-// or sends, then drains (G12).
+// Delivers the held connections of listener `id`, oldest first, while it has a consumer: the oldest parked accept,
+// whose hold is released, or else the subscribers. Stops at an unknown or closing listener. Drains the Scheduler
+// after each delivery. A parked accept whose task is gone is dropped from the queue.
 void serveHeld(int64_t id) {
     auto& sched = Scheduler::instance();
     for (;;) {
@@ -111,8 +107,8 @@ void serveHeld(int64_t id) {
             uint64_t token = e->parkedAccepts.front();
             e->parkedAccepts.pop_front();
             HPointer resume = sched.takePendingResume(token);
-            if (alloc::isNil(resume)) continue;   // killed (its cancel already ran)
-            HoldRelease release(token);   // the parked accept's hold, after the resume
+            if (alloc::isNil(resume)) continue;   // the task is gone; its hold is not released here
+            HoldRelease release(token);
             SocketEvent ev = std::move(e->held.front());
             e->held.pop_front();
             HPointer task = alloc::listNil();
@@ -131,28 +127,31 @@ void serveHeld(int64_t id) {
         Elm::StackRootGuard g(&connT);
         int64_t connId = materializeConnection(ev);
         connT = buildConnT(connId, ev);
-        socketManagerDeliver(id, connT);   // sendToApp + drain per tagger
+        socketManagerDeliver(id, connT);
     }
 }
 
-// Deferred work (requestSocketWork): serve every listener's held FIFO.
+// Serves the held FIFO of every listener that has one, in listener id order. Requested as socket work by
+// `socketTablesSyncSubscriptions`.
 void serveAllHeld() {
     std::vector<int64_t> ids;
     for (auto& kv : socketTables().listeners) {
         if (!kv.second.held.empty()) ids.push_back(kv.first);
     }
-    std::sort(ids.begin(), ids.end());   // listener ids are POD (G15 is about HPointers)
+    std::sort(ids.begin(), ids.end());
     for (int64_t id : ids) serveHeld(id);
 }
 
-// --- Event dispatchers (SocketEvents.cpp drain) ------------------------------
+// --- Event dispatchers -------------------------------------------------------
 
+// Completes a connect: resumes its task with the connection, materialized, or with the failure. Returns whether a
+// task was resumed.
 bool onConnected(SocketEvent& ev) {
-    HoldRelease release(ev.token);   // the connect's hold (§3.3.8)
+    HoldRelease release(ev.token);
     socketTables().pendingConnects.erase(ev.token);
     HPointer resume = Scheduler::instance().takePendingResume(ev.token);
     if (alloc::isNil(resume)) {
-        if (!ev.failed) abortConn(ev.conn);   // an orphaned success is closed
+        if (!ev.failed) abortConn(ev.conn);
         return false;
     }
     HPointer task = alloc::listNil();
@@ -168,6 +167,8 @@ bool onConnected(SocketEvent& ev) {
     return true;
 }
 
+// Appends the accepted connection to its listener's held FIFO and serves the FIFO, or aborts the connection if
+// the listener is unknown or closing. Returns false: serving drains after each delivery itself.
 bool onAccepted(SocketEvent& ev) {
     ListenerEntry* e = findListener(ev.ownerId);
     if (!e || e->closing) {
@@ -175,26 +176,31 @@ bool onAccepted(SocketEvent& ev) {
         return false;
     }
     int64_t id = ev.ownerId;
-    e->held.push_back(std::move(ev));   // in order behind anything held earlier
-    serveHeld(id);                      // drains per delivery itself
+    e->held.push_back(std::move(ev));
+    serveHeld(id);
     return false;
 }
 
+// Completes an operation's task with success or its failure. Returns whether the task was resumed.
 bool onOpDone(SocketEvent& ev) {
-    HoldRelease release(ev.token);   // the operation's hold
+    HoldRelease release(ev.token);
     if (ev.failed) return resumeFail(ev.token, ev.code, ev.message);
     return resumeOk(ev.token);
 }
 
+// Erases the closed listener, aborts its held connections, fails its parked accepts with ECANCELED and completes
+// its close tokens. Returns whether any task was resumed.
 bool onListenerClosed(SocketEvent& ev) {
     ListenerEntry* e = findListener(ev.ownerId);
     if (!e) return false;
+    // Moved out before any task resumes, since Elm code can change the table.
     ListenerEntry entry = std::move(*e);
     socketTables().listeners.erase(ev.ownerId);
-    HoldRelease subHold(entry.subHold);   // the subscription's hold, if any
+    HoldRelease subHold(entry.subHold);
     for (auto& h : entry.held) abortConn(h.conn);
     bool resumed = false;
-    for (uint64_t token : entry.parkedAccepts) {   // closeAll path: nobody failed them yet
+    // Parked accepts remain only when the listener closed without `closeListener`, which fails them itself.
+    for (uint64_t token : entry.parkedAccepts) {
         HoldRelease acceptHold(token);
         resumed |= resumeFail(token, "ECANCELED", "accept ECANCELED");
     }
@@ -212,7 +218,7 @@ bool onListenerClosed(SocketEvent& ev) {
 // ---------------------------------------------------------------------------
 
 SocketTables& socketTables() {
-    static auto* t = new SocketTables();   // leaky (§3.4)
+    static auto* t = new SocketTables();   // never freed
     uint64_t g = currentHeapGeneration();
     if (!t->init || t->gen != g) {
         if (t->init) resetTables(*t);
@@ -236,7 +242,7 @@ ConnEntry* findConn(int64_t id) {
 
 void ensureSocketTables() {
     ensureSocketEvents();
-    static bool done = false;   // main thread only
+    static bool done = false;
     if (done) return;
     done = true;
     setSocketEventDispatch(SocketEvent::Kind::Connected, &onConnected);
@@ -246,7 +252,7 @@ void ensureSocketTables() {
 }
 
 int64_t materializeConnection(SocketEvent& ev) {
-    (void)streamTable();   // the channel dispatch exists before the channels
+    (void)streamTable();   // installs the channel result dispatch before the channels exist
     auto& t = socketTables();
     int64_t connId = t.nextConnId++;
     ConnEntry ce;
@@ -269,12 +275,12 @@ int64_t materializeConnection(SocketEvent& ev) {
 
 HPointer buildEndpoint(const SockEndpoint& ep) {
     HPointer text = alloc::allocStringFromUTF8(ep.text);
-    // Fresh result passed directly into the helper (it roots its arguments, G4).
+    // `text` is passed straight to `tuple3`, which roots its boxed fields across its own allocation.
     return alloc::tuple3(alloc::unboxedInt(ep.kind), alloc::boxed(text), alloc::unboxedInt(ep.port),
                          0x11);
 }
 
-// ( connId, ( readableId, writableId ), ( localEpT, remoteEpT ) ), masks 0x1 / 0x5 / 0.
+// The masks mark the unboxed fields: `connId` in the outer triple, both stream ids, and nothing in the endpoint pair.
 HPointer buildConnT(int64_t connId, const SocketEvent& ev) {
     int64_t rid = 0, wid = 0;
     if (ConnEntry* e = findConn(connId)) {
@@ -293,7 +299,6 @@ HPointer buildConnT(int64_t connId, const SocketEvent& ev) {
     return alloc::tuple3(alloc::unboxedInt(connId), alloc::boxed(ids), alloc::boxed(eps), 0x1);
 }
 
-// ( listenerId, EpT ), mask 0x1.
 HPointer buildListenT(int64_t listenerId, const SockEndpoint& bound) {
     HPointer ep = alloc::listNil();
     Elm::StackRootGuard g(&ep);
@@ -312,9 +317,7 @@ void socketTablesSyncSubscriptions() {
     bool heldWaiting = false;
     for (auto& kv : socketTables().listeners) {
         ListenerEntry& e = kv.second;
-        // The subscription hold (LIVE_001): while an onConnection subscription
-        // names this open listener. A closing listener's closeListener tasks
-        // hold until ListenerClosed.
+        // A closing listener's close tokens hold until ListenerClosed, so it needs no subscription hold.
         bool wantHold = !e.closing && e.handler && socketManagerHasSubscribers(kv.first);
         if (wantHold && !e.subHold) e.subHold = sched.acquireHold(HoldKind::Subscription, "Socket.onConnection");
         if (!wantHold && e.subHold) {
@@ -336,7 +339,7 @@ void socketTablesSyncSubscriptions() {
 bool cancelPendingConnect(uint64_t token) {
     auto& m = socketTables().pendingConnects;
     auto it = m.find(token);
-    if (it == m.end()) return false;   // its Connected event is queued: the drain releases
+    if (it == m.end()) return false;   // already handled by onConnected, which released the hold
     std::shared_ptr<Conn> c = it->second;
     m.erase(it);
     return c->cancelConnect();
@@ -350,11 +353,11 @@ bool cancelParkedAccept(uint64_t token) {
         q.erase(it);
         if (kv.second.handler && !kv.second.closing) {
             auto h = kv.second.handler;
-            reactor().submit([h] { h->addCredit(-1); });   // return the credit
+            reactor().submit([h] { h->addCredit(-1); });
         }
-        return true;   // removed: the kill handle releases its hold
+        return true;
     }
-    return false;   // not parked any more: whoever took it released (or will)
+    return false;
 }
 
 } // namespace Eco::System

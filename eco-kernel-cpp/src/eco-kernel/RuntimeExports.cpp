@@ -1,4 +1,9 @@
 //===- RuntimeExports.cpp - C-linkage exports for Runtime module ----------===//
+//
+// The kernel entry points of `Eco.Runtime` and the GC root hooks. Their contracts are on their declarations in
+// `KernelExports.h`. Each Runtime export converts between the `HPtr` of that declaration and the 64-bit word the
+// `Eco::Kernel::Runtime` functions take and return; `random` returns that word unchanged.
+//===----------------------------------------------------------------------===//
 
 #include "KernelExports.h"
 #include "Runtime.hpp"
@@ -26,17 +31,11 @@ extern "C" void Eco_Kernel_Runtime_register_gc_roots() {
     Runtime::registerGcRootScanner();
 }
 
-// Registers the Order LT/EQ/GT singleton slots used by the
-// eco.{int,float,char}.cmp_order intrinsics. Defined in elm-kernel-cpp/Utils;
-// declared weak here so this aggregator still links if ElmKernel is omitted
-// (e.g. minimal Eco-only builds).
-// clang-cl's __attribute__((weak)) on a function declaration emits a
-// COMDAT weak external — under /WHOLEARCHIVE every translation unit
-// that decl-sites the symbol contributes a definition, and lld-link
-// flags the duplicates. On Windows we drop the weak attribute and rely
-// on the /alternatename fallback baked into eco_order_weak_stub_win32.cpp
-// (a default no-op that resolves the symbol if no real definition is
-// linked from ElmKernel_Utils).
+// elm-kernel-cpp's hook that registers the scanner for its Order values, defined in its core Utils exports. Off
+// Windows it is declared weak, so the aggregate hook below still links without elm-kernel-cpp, and the address test
+// there skips it. clang-cl turns a weak declaration into a weak definition that lld-link reports as a duplicate
+// under /WHOLEARCHIVE, so on Windows the declaration is strong, and the runtime's
+// `eco_order_weak_stub_win32.cpp` supplies a no-op default through /alternatename when no real definition is linked.
 #if defined(_WIN32)
 extern "C" void Eco_Kernel_Order_register_gc_roots();
 #else

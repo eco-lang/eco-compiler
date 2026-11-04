@@ -1,7 +1,4 @@
-//===- XssFilters.cpp - elm/virtual-dom 1.0.5 XSS filters (PROD arms) -------===//
-//
-// plans/elm-html-native-kernel.md §6. See XssFilters.hpp.
-//
+//===- XssFilters.cpp - elm/virtual-dom 1.0.5 XSS filters -------------------===//
 //===----------------------------------------------------------------------===//
 
 #include "XssFilters.hpp"
@@ -18,7 +15,7 @@ bool isAsciiLetter(char c) {
     return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z');
 }
 
-// `s` equals the ASCII `word`, ASCII-case-insensitively.
+// Tests whether `s` equals the ASCII string `word`, ASCII-case-insensitively.
 bool equalsIgnoreCase(const std::u16string& s, const char* word) {
     size_t i = 0;
     for (; word[i] != '\0'; ++i) {

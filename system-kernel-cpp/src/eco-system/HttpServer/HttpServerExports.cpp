@@ -1,11 +1,11 @@
 //===- HttpServerExports.cpp - C exports of Eco.Kernel.HttpServer ---------===//
 //
-// plans/eco-system-library.md Appendix B.6 and plans/eco-system-websockets.md
-// Appendix B.2. Exports only pack and bind
-// (G2); the bodies are in HttpServer.cpp. The `Http.Server` effect-manager
-// registration is in HttpServerManager.cpp.
-//
-// Templates used: T1 (packing), T2 (async bindings).
+// The C-linkage symbols that compiled Elm code calls for the kernels of `Eco.Kernel.HttpServer`. Each export
+// packs its arguments into one payload value and returns, as an encoded word, a Task bound to the body that
+// HttpServer.hpp declares; nothing happens until the Task runs. Int arguments arrive as `int64_t` and are stored
+// unboxed, except `takeUpgrade`'s key, which is boxed; every other argument arrives as an encoded word and is
+// stored boxed. Each decoded argument, and each inner tuple, is rooted before the next allocation, since an
+// allocation may move it.
 //
 //===----------------------------------------------------------------------===//
 
@@ -15,7 +15,8 @@ using namespace Eco::System;
 
 extern "C" {
 
-// createServer : String -> Int -> Task ( String, String ) ( Int, Int )
+// createServer : String -> Int -> Task ( String, String ) ( Int, String, Int )
+/// Returns the Task that starts a server on `host` and `port`, as `httpServerCreateServerBody` describes.
 uint64_t Eco_Kernel_HttpServer_createServer(uint64_t host, int64_t port) {
     ECO_KERNEL_GUARD(
         HPointer hostHP = dec(host);
@@ -26,6 +27,7 @@ uint64_t Eco_Kernel_HttpServer_createServer(uint64_t host, int64_t port) {
 }
 
 // respond : Int -> Int -> List ( String, List String ) -> Bytes -> Task Never ()
+/// Returns the Task that answers request `key`, as `httpServerRespondBody` describes.
 uint64_t Eco_Kernel_HttpServer_respond(int64_t key, int64_t status, uint64_t headers,
                                        uint64_t body) {
     ECO_KERNEL_GUARD(
@@ -34,9 +36,8 @@ uint64_t Eco_Kernel_HttpServer_respond(int64_t key, int64_t status, uint64_t hea
         HPointer ks = alloc::listNil();
         HPointer hb = alloc::listNil();
         Elm::StackRootGuard g({&headersHP, &bodyHP, &ks, &hb});
-        // Four arguments: nested tuples (G2). Each inner tuple is rooted
-        // before the next allocation (argument evaluation order is
-        // unspecified, so no allocation is nested inside another's arguments).
+        // No allocation is nested in another's arguments: their evaluation order is unspecified, so an
+        // inner tuple could be moved by its sibling's allocation before being rooted.
         ks = alloc::tuple2(alloc::unboxedInt(key), alloc::unboxedInt(status), 0x5);
         hb = alloc::tuple2(alloc::boxed(headersHP), alloc::boxed(bodyHP), 0);
         HPointer payload = alloc::tuple2(alloc::boxed(ks), alloc::boxed(hb), 0);
@@ -44,9 +45,8 @@ uint64_t Eco_Kernel_HttpServer_respond(int64_t key, int64_t status, uint64_t hea
     )
 }
 
-// respondHtml : Int -> Int -> List ( String, List String ) -> Bool -> Http.Dom.Node -> Task Never ()
-// plans/elm-html-native-kernel.md §7.3: `respond` with an HTML body, serialized in the body's
-// copy-out scope.
+// respondHtml : Int -> Int -> List ( String, List String ) -> Bool -> Html.Dom.Node -> Task Never ()
+/// Returns the Task that answers request `key` with an HTML body, as `httpServerRespondHtmlBody` describes.
 uint64_t Eco_Kernel_HttpServer_respondHtml(int64_t key, int64_t status, uint64_t headers,
                                            uint64_t doctype, uint64_t node) {
     ECO_KERNEL_GUARD(
@@ -56,7 +56,6 @@ uint64_t Eco_Kernel_HttpServer_respondHtml(int64_t key, int64_t status, uint64_t
         HPointer ks = alloc::listNil();
         HPointer hdn = alloc::listNil();
         Elm::StackRootGuard g({&headersHP, &doctypeHP, &nodeHP, &ks, &hdn});
-        // Five arguments: nested tuples (G2), each rooted before the next allocation.
         ks = alloc::tuple2(alloc::unboxedInt(key), alloc::unboxedInt(status), 0x5);
         hdn = alloc::tuple3(alloc::boxed(headersHP), alloc::boxed(doctypeHP), alloc::boxed(nodeHP), 0);
         HPointer payload = alloc::tuple2(alloc::boxed(ks), alloc::boxed(hdn), 0);
@@ -64,10 +63,10 @@ uint64_t Eco_Kernel_HttpServer_respondHtml(int64_t key, int64_t status, uint64_t
     )
 }
 
-// --- plans/eco-system-websockets.md Appendix B.2 ---------------------------------
-
-// createServerWith : ( ( String, Int ), ( Bool, Int ) ) -> Maybe ( String, String )
-//     -> ( ( Int, Int, Int ), ( Int, Int, Int ) ) -> Task ( String, String ) ( Int, Int )
+// createServerWith : ( ( String, Int ), ( Int, Int ) ) -> Maybe ( String, String )
+//     -> ( ( Int, Int, Int ), ( Int, Int, Int ) ) -> Task ( String, String ) ( Int, String, Int )
+/// Returns the Task that starts a server with explicit options, as `httpServerCreateServerWithBody` describes.
+/// The three arguments are stored as Elm passed them.
 uint64_t Eco_Kernel_HttpServer_createServerWith(uint64_t target, uint64_t tls, uint64_t limits) {
     ECO_KERNEL_GUARD(
         HPointer targetHP = dec(target);
@@ -81,6 +80,7 @@ uint64_t Eco_Kernel_HttpServer_createServerWith(uint64_t target, uint64_t tls, u
 }
 
 // closeServer : Int -> Int -> Task Never ()
+/// Returns the Task that closes server `serverId`, as `httpServerCloseServerBody` describes.
 uint64_t Eco_Kernel_HttpServer_closeServer(int64_t serverId, int64_t deadlineMs) {
     ECO_KERNEL_GUARD(
         HPointer payload =
@@ -91,7 +91,8 @@ uint64_t Eco_Kernel_HttpServer_closeServer(int64_t serverId, int64_t deadlineMs)
 
 // takeUpgrade : Int -> Task ( String, String )
 //     ( Int, ( String, String, String ), ( List ( String, List String ), Bool, ( Int, String, Int ) ) )
-// Phase WS5 (HttpUpgrade.cpp): the payload is the boxed key.
+/// Returns the Task that takes over upgrade request `key`, as `httpServerTakeUpgradeBody` describes. The payload
+/// is `key` boxed.
 uint64_t Eco_Kernel_HttpServer_takeUpgrade(int64_t key) {
     ECO_KERNEL_GUARD(
         return enc(makeBinding<httpServerTakeUpgradeBody>(alloc::allocInt(key)));

@@ -1,26 +1,16 @@
 //===- SocketManager.cpp - The C++ effect manager of Socket ---------------===//
 //
-// plans/eco-system-sockets.md §3.5, base plan Appendix C.0 / sockets plan
-// C.1. Layout: SocketManager.hpp.
+// The manager's state is one `Registry` entry holding the router and, for each listener id, its taggers, all as
+// encoded words, so the registry's scanner keeps them alive and updates them when the collector moves them. A heap
+// reset makes the registry drop its entries on its next use, so `state()` then creates a fresh, empty entry.
 //
-//   * onEffects: the OnConnection taggers are grouped by listener id
-//     (encoded words in a T5 registry, with the router). Subscriptions hold
-//     no pendingAsync: an open listener already does (§3.3.8). After the
-//     update the socket tables are synchronised (SocketTables.cpp): a
-//     listener whose tagger list became non-empty gets setUnlimited(true)
-//     and its held FIFO is delivered (from the socket drain, never from
-//     inside onEffects); one whose list became empty gets
-//     setUnlimited(false).
-//   * Delivery (T8, §3.4): socketManagerDeliver builds nothing itself: the
-//     ConnT is built once by the caller (rooted); the taggers are
-//     snapshotted into one rooted range, and for each: call it, sendToApp,
-//     drain() (G11, G12). Every subscriber gets the same Connection (R5).
-//   * subMap composes the tagger (TimeEffectManager pattern) and keeps the
-//     unboxed listener id (mask 0x1). There are no commands.
-//   * Windows: an OnConnection subscription crashes with a clear message
-//     (§1).
+// `onEffects` copies the subscriptions into the state and then calls `socketTablesSyncSubscriptions`; it calls no
+// Elm code itself. Elm code runs only during delivery, where each tagger is called and its message sent to the
+// application, with the Scheduler drained after each one. Draining can run `onEffects` again, which replaces the
+// tagger lists, so delivery works from a rooted copy of them taken before the first call.
 //
-// Templates used: T6 (rooted registration per G14), T5, T8/G12.
+// On Windows, `onEffects` ends the process through `Eco::Kernel::reportFatal` as soon as any `OnConnection`
+// subscription exists.
 //
 //===----------------------------------------------------------------------===//
 
@@ -40,10 +30,14 @@ namespace {
 
 using namespace SocketManager;
 
+// The manager's state: the router of the last `onEffects`, and the taggers of the current subscriptions grouped by
+// listener id, in subscription order. All are encoded HPointer words; a zero `routerEnc` means `onEffects` has not
+// run since the state was created.
 struct ManagerState {
     uint64_t routerEnc = 0;
     std::map<int64_t, std::vector<uint64_t>> taggers;   // listener id → encoded taggers
 
+    // Calls `f` on the router word and on every tagger word, as `Registry` requires.
     template <typename F>
     void forEachWord(F&& f) {
         f(routerEnc);
@@ -52,12 +46,14 @@ struct ManagerState {
     }
 };
 
+// Returns the registry holding the manager's state. It is allocated once and never deleted, as `Registry` requires.
 Registry<ManagerState>& registry() {
     static auto* r = new Registry<ManagerState>("eco-system-socket-manager");   // leaky
     return *r;
 }
 
-// The single state entry (re-created after a heap reset, F24).
+// Returns the manager's single state entry, creating an empty one on first use and after a heap reset. The reference
+// is valid until the next heap reset; nothing else in this file inserts or erases entries.
 ManagerState& state() {
     static int64_t id = 0;
     auto& r = registry();
@@ -66,20 +62,24 @@ ManagerState& state() {
     return *r.find(id);
 }
 
-// --- Manager closures (C.0) ------------------------------------------------------
+// --- Manager closures ------------------------------------------------------------
 
-// init : Task Never ()  (a 0-arity thunk, forced by setupEffects)
+// Returns the manager's initial task, `Task.succeed ()`. It is the body of a closure of arity 0.
+// init : Task Never ()
 void* initEval(void*[]) {
     return reinterpret_cast<void*>(enc(Scheduler::instance().taskSucceed(alloc::unit())));
 }
 
+// Replaces the manager's state with the router `args[0]` and the taggers of the subscriptions `args[2]`, brings the
+// socket tables in line with them, and returns `Task.succeed ()`. The commands `args[1]` and the state `args[3]` are
+// ignored; a subscription whose constructor is not `OnConnection` is skipped.
 // onEffects : Router -> List (MyCmd msg) -> List (MySub msg) -> () -> Task Never ()
 void* onEffectsEval(void* args[]) {
     HPointer router = dec(args[0]);
     HPointer subs = dec(args[2]);
     Elm::StackRootGuard g(&router, &subs);
 
-    // A non-allocating walk (G5): copy every field out.
+    // The walk allocates nothing, so the resolved pointers stay valid while the fields are copied out.
     std::map<int64_t, std::vector<uint64_t>> wanted;
     for (alloc::ListCursor c(subs); !c.done(); c.next()) {
         void* obj = Allocator::instance().resolve(c.current().p);
@@ -91,7 +91,7 @@ void* onEffectsEval(void* args[]) {
     }
 
 #if defined(_WIN32)
-    // A Sub is infallible: crash with a clear message (§1).
+    // A Sub cannot fail, so the unsupported case ends the process instead.
     if (!wanted.empty())
         ::Eco::Kernel::reportFatal("eco/system: Socket.onConnection is not supported on Windows yet");
 #endif
@@ -102,32 +102,33 @@ void* onEffectsEval(void* args[]) {
         st.routerEnc = enc(router);
         st.taggers = std::move(wanted);
     }
-    // §3.4: listener demand follows the subscriptions; held connections are
-    // delivered from the socket drain (no Elm calls from here).
     ensureSocketTables();
     socketTablesSyncSubscriptions();
 
     return reinterpret_cast<void*>(enc(Scheduler::instance().taskSucceed(alloc::unit())));
 }
 
-// onSelfMsg : Router -> Never -> () -> Task Never ()  (never sent)
+// Returns `Task.succeed` of the state `args[2]`. The manager sends itself no messages.
+// onSelfMsg : Router -> Never -> () -> Task Never ()
 void* onSelfMsgEval(void* args[]) {
     return reinterpret_cast<void*>(enc(Scheduler::instance().taskSucceed(dec(args[2]))));
 }
 
-// The composed tagger of subMap: args[0] = f, args[1] = old tagger,
-// args[2] = the ConnT tuple. Result: f (old conn).
+// Returns `f (old x)`, the body of the tagger `subMapEval` builds: `f` and the old tagger `old` are its captures,
+// `args[0]` and `args[1]`, and `x`, the ConnT, is its argument `args[2]`.
 void* composedTaggerEval(void* args[]) {
     HPointer f = dec(args[0]);
     HPointer old = dec(args[1]);
     HPointer x = dec(args[2]);
     HPointer mid = alloc::listNil();
     Elm::StackRootGuard g({&f, &old, &x, &mid});
-    mid = Scheduler::callClosure1(old, x);   // Elm call (G11)
+    mid = Scheduler::callClosure1(old, x);
     return reinterpret_cast<void*>(enc(Scheduler::callClosure1(f, mid)));
 }
 
-// subMap : (a -> b) -> MySub a -> MySub b — compose the tagger, keep the id.
+// Returns an `OnConnection` for the same listener id as `args[1]` whose tagger applies `args[0]` to the result of the
+// old one. Anything other than an `OnConnection` is returned unchanged.
+// subMap : (a -> b) -> MySub a -> MySub b
 void* subMapEval(void* args[]) {
     HPointer f = dec(args[0]);
     HPointer sub = dec(args[1]);
@@ -143,7 +144,7 @@ void* subMapEval(void* args[]) {
     }
     composed = alloc::allocClosure(&composedTaggerEval, 3);
     {
-        // Both captures right after the allocation, nothing allocated in between (G8).
+        // Nothing allocates between resolving `composed` and storing both captures, so `p` stays valid.
         void* p = Allocator::instance().resolve(composed);
         alloc::closureCapture(p, alloc::boxed(f), PK_Boxed);
         alloc::closureCapture(p, alloc::boxed(old), PK_Boxed);
@@ -166,8 +167,8 @@ void socketManagerDeliver(int64_t listenerId, HPointer& connT) {
     HPointer router = alloc::listNil();
     HPointer msg = alloc::listNil();
     Elm::StackRootGuard g(&router, &msg);
-    // Snapshot the taggers: update may change the subscriptions while we
-    // deliver (G11). No allocation from the decodes to the range push.
+    // Snapshot the taggers: draining after a message can run onEffects, which replaces st.taggers. Nothing may
+    // allocate between the decodes and the range push, or the decoded words would be unrooted across a collection.
     ManagerState& st = state();
     const std::vector<uint64_t>& words = st.taggers[listenerId];
     std::vector<HPointer> taggers;
@@ -178,9 +179,9 @@ void socketManagerDeliver(int64_t listenerId, HPointer& connT) {
     size_t saved = rs.stackRangePoint();
     rs.pushStackRootRange(taggers.data(), taggers.size(), ~0ULL);
     for (size_t i = 0; i < taggers.size(); ++i) {
-        msg = Scheduler::callClosure1(taggers[i], connT);   // Elm call (G11)
+        msg = Scheduler::callClosure1(taggers[i], connT);
         PlatformRuntime::instance().sendToApp(router, msg);
-        Scheduler::instance().drain();                      // once per message (G12)
+        Scheduler::instance().drain();
     }
     rs.restoreStackRangePoint(saved);
 }
@@ -191,8 +192,8 @@ using namespace Eco::System;
 
 namespace {
 
-// Allocates the manager closures in the rooted PortRuntime form (G14) and
-// registers them under "Socket". Subscriptions only: no cmdMap.
+// Allocates the manager's closures, rooted until they are encoded, and registers them under "Socket". The cmdMap
+// slot is the empty list, since the manager has no commands.
 void registerSocketManager() {
     HPointer initCl = alloc::listNil();
     HPointer effCl = alloc::listNil();

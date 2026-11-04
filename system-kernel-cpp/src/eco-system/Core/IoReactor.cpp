@@ -1,17 +1,13 @@
 //===- IoReactor.cpp - The shared non-blocking IO event loop --------------===//
 //
-// See IoReactor.hpp (plans/eco-system-sockets.md §3.3.1). Leaky singleton
-// with a detached thread (base plan §3.4): std::exit never destroys state a
-// live reactor thread still uses.
+// The reactor's state falls in two parts. The command queue (under `cmdMu`), the quiesce handshake (`qMu`, `qCv`) and
+// the iteration counter are shared with other threads. The slot table, the timer heap and the event batch are touched
+// only on the reactor thread and have no lock. `cmdMu` is held only to push onto or swap out the queue, and no lock is
+// held while a handler or a command runs.
 //
-// State split:
-//   * shared (any thread): the command queue (cmdMu), the quiesce handshake
-//     (qMu/qCv), the iteration counter;
-//   * reactor thread only, no lock: the slot table, the timer heap, the
-//     backend's event buffer.
-// No lock is ever held while a handler or a command runs (rule 6).
-//
-// Templates used: none (POD only, G1).
+// Timers live in a min-heap that is cancelled lazily: re-arming or cancelling a timer leaves its old entry in the heap,
+// and an entry counts only while its deadline and sequence number still match its slot's. Stale entries are discarded
+// when they reach the top, and the whole heap is compacted when they come to dominate it.
 //
 //===----------------------------------------------------------------------===//
 
@@ -33,6 +29,7 @@
 #include <utility>
 #include <vector>
 
+// Exactly one backend is selected: the Windows stub, epoll, or kqueue.
 #if defined(_WIN32)
 #define ECO_IOR_STUB 1
 #elif defined(__linux__)
@@ -59,19 +56,25 @@ namespace Eco::System {
 
 namespace {
 
+// Whether this thread is the reactor thread; set once by the reactor thread itself.
 thread_local bool t_onReactor = false;
 
-[[maybe_unused]] constexpr uint64_t kWakeKey = 0;   // never a handler key (generations start at 1)
+// The event data that marks the wake event. No handler has this key, because generations start at 1 and skip 0.
+[[maybe_unused]] constexpr uint64_t kWakeKey = 0;
+// The most events one backend wait collects; the rest stay pending for the next iteration.
 [[maybe_unused]] constexpr int kMaxEvents = 256;
 
+// Returns the slot index of `key`.
 inline uint32_t slotOf(uint64_t key) { return static_cast<uint32_t>(key & 0xFFFFFFFFu); }
+// Returns the generation of `key`.
 inline uint32_t genOf(uint64_t key) { return static_cast<uint32_t>(key >> 32); }
+// Returns the key of slot `slot` at generation `gen`.
 inline uint64_t makeKey(uint32_t slot, uint32_t gen) {
     return static_cast<uint64_t>(slot) | (static_cast<uint64_t>(gen) << 32);
 }
 
-// Handlers and commands must not take the reactor down: an exception escaping
-// a detached thread would terminate the process.
+// Runs `f`, printing any exception it throws to stderr, labelled with `what`, and dropping it. An exception escaping
+// the reactor's detached thread would terminate the process.
 template <typename F>
 void guarded(const char* what, F&& f) {
     try {
@@ -85,6 +88,8 @@ void guarded(const char* what, F&& f) {
     }
 }
 
+// One readiness event collected from the backend: the key it was registered with, and readable, writable and
+// error-or-hangup.
 struct Ev {
     uint64_t key;
     bool r, w, e;
@@ -106,10 +111,11 @@ int64_t IoReactor::nowMs() const {
 
 struct IoReactor::Impl {
     // --- shared ---------------------------------------------------------------
-    bool ok = false;   // backend created and thread started (set before instance() returns)
+    // Backend created and thread started. Written only by the constructor, before `instance()` returns.
+    bool ok = false;
 
     std::mutex cmdMu;
-    std::deque<std::function<void()>> cmds;
+    std::deque<std::function<void()>> cmds;   // under cmdMu
 
     std::atomic<uint64_t> iterations{0};
 
@@ -119,24 +125,28 @@ struct IoReactor::Impl {
     bool quiesceAck = false;   // under qMu
 
     // --- reactor thread only -----------------------------------------------
+    // One entry of the slot table; a handler's key names its index and its current generation.
     struct Slot {
         std::shared_ptr<IoHandler> h;
         int fd = -1;
         uint32_t gen = 1;
         bool live = false;
-        bool wantR = false;   // what is in the kernel set
+        // The interest the kernel's event set holds for `fd`.
+        bool wantR = false;
         bool wantW = false;
         int64_t timerDeadline = 0;   // 0: none
-        uint64_t timerSeq = 0;
+        uint64_t timerSeq = 0;   // the sequence number of the heap entry that is current for this slot
     };
     std::vector<Slot> slots;
     std::vector<uint32_t> freeSlots;   // LIFO
 
+    // One timer heap entry; current only while it matches its slot (see `timerValid`).
     struct TimerEntry {
         int64_t deadline;
         uint64_t seq;
         uint64_t key;
     };
+    // Orders the heap by deadline, then by sequence number, earliest on top.
     struct TimerLater {
         bool operator()(const TimerEntry& a, const TimerEntry& b) const {
             return a.deadline > b.deadline || (a.deadline == b.deadline && a.seq > b.seq);
@@ -144,14 +154,16 @@ struct IoReactor::Impl {
     };
     std::priority_queue<TimerEntry, std::vector<TimerEntry>, TimerLater> timers;
     uint64_t timerSeq = 0;
-    size_t liveTimers = 0;
+    size_t liveTimers = 0;   // slots with a timer set; the heap may hold more entries than this
 
-    std::vector<Ev> batch;
+    std::vector<Ev> batch;   // the events collected by the last backend wait
 
     // --- backend --------------------------------------------------------------
     int pollFd = -1;   // epoll / kqueue
     int wakeFd = -1;   // eventfd (epoll only)
 
+    // Returns the slot `key` refers to, or null if the key is 0 or stale. The pointer is invalidated by `add`, which
+    // may grow the slot table.
     Slot* live(uint64_t key) {
         uint32_t idx = slotOf(key);
         if (key == 0 || idx >= slots.size()) return nullptr;
@@ -160,13 +172,14 @@ struct IoReactor::Impl {
         return &s;
     }
 
+    // Returns whether `t` is the current timer of a registered slot.
     bool timerValid(const TimerEntry& t) {
         Slot* s = live(t.key);
         return s && s->timerDeadline == t.deadline && s->timerSeq == t.seq;
     }
 
-    // Drops stale entries when they dominate the heap (setTimer re-arms
-    // lazily: the old entry stays until popped).
+    // Rebuilds the timer heap from its current entries once it holds more than 64 entries and more than four per
+    // live timer.
     void maybeCompactTimers() {
         if (timers.size() <= 64 || timers.size() <= 4 * liveTimers) return;
         std::vector<TimerEntry> keep;
@@ -178,7 +191,8 @@ struct IoReactor::Impl {
         for (auto& t : keep) timers.push(t);
     }
 
-    // ms until the earliest live timer (0 if due), or -1 for none.
+    // Returns the milliseconds from `now` until the earliest current timer (0 if it is due), or -1 if there is
+    // none. Discards stale entries from the top of the heap.
     int64_t nextTimeout(int64_t now) {
         while (!timers.empty() && !timerValid(timers.top())) timers.pop();
         if (timers.empty()) return -1;
@@ -186,6 +200,7 @@ struct IoReactor::Impl {
         return d < 0 ? 0 : d;
     }
 
+    // Acknowledges a quiesce to any `quiesce` waiting for it, then blocks the calling thread for ever.
     [[noreturn]] void park() {
         {
             std::lock_guard<std::mutex> lk(qMu);
@@ -196,32 +211,42 @@ struct IoReactor::Impl {
         for (;;) qCv.wait(lk);
     }
 
+    // Parks the calling thread if a quiesce has been requested.
     void checkQuiesce() {
         if (quiesceRequested.load(std::memory_order_acquire)) park();
     }
 
+    // Creates the kernel event set and registers the wake event in it; returns false, with errno set, on failure.
     bool backendInit();
+    // Makes the next or current backend wait return. May be called from any thread.
     void wake();
+    // Consumes a wake that the last backend wait reported, so that it does not wake the next one.
     void resetWake();
-    // Waits up to timeoutMs (-1: forever); fills `batch`; true if the wake
-    // event was among the results.
+    // Waits up to `timeoutMs` (-1: for ever) and fills `batch` with the handler events collected; returns whether
+    // the wake event was among them.
     bool backendWait(int64_t timeoutMs);
-    // Brings the kernel set to (r, w) for the slot; updates s.wantR/wantW to
-    // what the kernel holds. 0 or errno.
+    // Brings the kernel event set to interest (`r`, `w`) for slot `s`, registered under `key`, and leaves
+    // `s.wantR`/`s.wantW` saying what the kernel holds; returns 0 or an errno.
     int backendCtl(Slot& s, uint64_t key, bool r, bool w);
 
+    // Calls the handler for `key` with the event (`r`, `w`, `e`), masked by its current interest; does nothing for a
+    // stale key, a handler with no interest, or an event left empty by the mask. Parks first if a quiesce is
+    // requested.
     void dispatchEvent(uint64_t key, bool r, bool w, bool e) {
         checkQuiesce();
         Slot* s = live(key);
-        if (!s) return;   // removed (stale generation, rule 2)
+        if (!s) return;   // removed (stale generation)
         r = r && s->wantR;
         w = w && s->wantW;
-        if (!s->wantR && !s->wantW) return;   // no interest any more (rule 1)
+        if (!s->wantR && !s->wantW) return;   // no interest any more, even for an error or hangup
         if (!r && !w && !e) return;
         std::shared_ptr<IoHandler> h = s->h;   // keeps it alive if it removes itself
         guarded("onReady", [&] { h->onReady(r, w, e); });
     }
 
+    // Calls `onTimer` for every timer due at `now`, in deadline order, parking first if a quiesce is requested. The
+    // due set is taken before any call, so a timer set by one of them fires at a later iteration, and one cancelled by
+    // an earlier call does not fire.
     void fireTimers(int64_t now) {
         std::vector<TimerEntry> due;
         while (!timers.empty()) {
@@ -245,6 +270,8 @@ struct IoReactor::Impl {
         }
     }
 
+    // Runs every command queued so far, in submission order. Commands submitted meanwhile wait for the next
+    // iteration.
     void drainCommands() {
         std::deque<std::function<void()>> todo;
         {
@@ -257,6 +284,7 @@ struct IoReactor::Impl {
         }
     }
 
+    // Calls `onCloseAll` on every handler registered now, skipping one that an earlier call removed.
     void closeAllNow() {
         std::vector<std::pair<uint64_t, std::shared_ptr<IoHandler>>> snap;
         for (uint32_t i = 0; i < slots.size(); ++i) {
@@ -325,8 +353,7 @@ bool IoReactor::Impl::backendWait(int64_t timeoutMs) {
 int IoReactor::Impl::backendCtl(Slot& s, uint64_t key, bool r, bool w) {
     bool inKernel = s.wantR || s.wantW;
     if (!r && !w) {
-        // Rule 1: no interest -> not in the kernel set. ENOENT/EBADF mean it
-        // is not there either.
+        // ENOENT: not in the set; EBADF: the fd is closed, and the entry stays only while a duplicate of it is open.
         if (inKernel) (void)::epoll_ctl(pollFd, EPOLL_CTL_DEL, s.fd, nullptr);
         s.wantR = s.wantW = false;
         return 0;
@@ -351,7 +378,9 @@ int IoReactor::Impl::backendCtl(Slot& s, uint64_t key, bool r, bool w) {
 #elif defined(ECO_IOR_KQUEUE)
 
 namespace {
-constexpr uintptr_t kWakeIdent = 1;   // EVFILT_USER ident
+// The ident of the `EVFILT_USER` event used for the wake.
+constexpr uintptr_t kWakeIdent = 1;
+// Returns `key` as kqueue user data.
 inline void* keyData(uint64_t key) { return reinterpret_cast<void*>(static_cast<uintptr_t>(key)); }
 } // namespace
 
@@ -361,7 +390,7 @@ bool IoReactor::Impl::backendInit() {
     int fl = ::fcntl(pollFd, F_GETFD);
     if (fl >= 0) (void)::fcntl(pollFd, F_SETFD, fl | FD_CLOEXEC);
     struct kevent kev;
-    // EV_CLEAR: retrieving the event resets it (rule 4).
+    // EV_CLEAR: retrieving the event resets it.
     EV_SET(&kev, kWakeIdent, EVFILT_USER, EV_ADD | EV_CLEAR, 0, 0, keyData(kWakeKey));
     return ::kevent(pollFd, &kev, 1, nullptr, 0, nullptr) == 0;
 }
@@ -441,7 +470,7 @@ int IoReactor::Impl::backendCtl(Slot&, uint64_t, bool, bool) { return ENOTSUP; }
 // ---------------------------------------------------------------------------
 
 IoReactor& IoReactor::instance() {
-    static IoReactor* r = new IoReactor();   // leaky (§3.4)
+    static IoReactor* r = new IoReactor();   // leaky
     return *r;
 }
 
@@ -474,7 +503,7 @@ void IoReactor::submit(std::function<void()> fn) {
         std::lock_guard<std::mutex> lk(impl_->cmdMu);
         impl_->cmds.push_back(std::move(fn));
     }
-    impl_->wake();   // after the push, outside the mutex (rule 4)
+    impl_->wake();   // after the push, outside the mutex
 }
 
 uint64_t IoReactor::add(std::shared_ptr<IoHandler> h, int fd) {
@@ -555,7 +584,7 @@ void IoReactor::runOnce(int64_t timeoutMs) {
     int64_t t = m.nextTimeout(nowMs());
     if (timeoutMs >= 0 && (t < 0 || timeoutMs < t)) t = timeoutMs;
     bool sawWake = m.backendWait(t);
-    if (sawWake) m.resetWake();   // before draining commands (rule 4)
+    if (sawWake) m.resetWake();   // before draining commands, so a submit made during the drain wakes the next wait
     m.fireTimers(nowMs());
     std::vector<Ev> evs;
     evs.swap(m.batch);
@@ -608,7 +637,7 @@ bool IoReactor::quiesce(int64_t timeoutMs) {
     Impl& m = *impl_;
     if (!m.ok) return true;
     m.quiesceRequested.store(true, std::memory_order_release);
-    if (onReactorThread()) return true;   // nothing more is dispatched after this handler
+    if (onReactorThread()) return true;   // nothing more is dispatched after the current call
     m.wake();
     std::unique_lock<std::mutex> lk(m.qMu);
     return m.qCv.wait_for(lk, std::chrono::milliseconds(timeoutMs < 0 ? 0 : timeoutMs),

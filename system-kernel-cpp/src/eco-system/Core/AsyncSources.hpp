@@ -1,17 +1,17 @@
 //===- AsyncSources.hpp - The single eco/system scheduler async source ----===//
 //
-// eco/system registers exactly ONE async source with the Scheduler
-// (std::call_once, F3) and multiplexes every Core drain (pool, channels,
-// signals) and any later eco/system drain through it.
+// eco/system has many services that finish work outside the eco thread (the work pool, channels, signals,
+// sockets and others), and each needs the Scheduler to call it back when that work is ready. This component
+// gives them one shared async source instead of one Scheduler registration each.
 //
-// Why one: Scheduler::processReadyAsync iterates its source vector with a
-// range-for, so a registerAsyncSource call made while a drain runs (a drain
-// that resumes a task, then drain()s, then steps a binding that registers a
-// new source) would invalidate that iteration. Our own list is iterated by
-// index, so adding a source from inside one of our drains is safe.
+// A service adds a drain source: a drain, which the Scheduler's loop calls to deliver finished work, and a
+// ready predicate, which says whether the drain has work. The first `addDrainSource` or `ensureAsyncSource`
+// registers one source with the Scheduler (`Scheduler::registerAsyncSource`). Its drain runs every drain
+// source in the order added, and its ready predicate is true when any drain source's predicate is.
 //
-// Main thread only (G1). The ready predicates must be cheap and lock-free:
-// the Scheduler evaluates them while holding its own mutex.
+// The drain source list has no lock: it is read and changed on the eco thread only. A drain may add a drain
+// source while the list is being run; the new one runs later in the same pass. The list is never destroyed,
+// so a drain or predicate called during process exit still finds it.
 //
 //===----------------------------------------------------------------------===//
 
@@ -20,18 +20,25 @@
 
 namespace Eco::System {
 
+/// A drain: delivers whatever work its service has finished. Called on the eco thread on every pass of the
+/// Scheduler's loop, whether or not any ready predicate returned true, so it may find no work.
 using DrainFn = void (*)();
+/// A ready predicate: returns whether its drain has work to deliver. The Scheduler calls it with the
+/// Scheduler's lock held, so it must not block and must not call into the Scheduler. It may take a lock of its
+/// own service.
 using ReadyFn = bool (*)();
 
-// Registers the eco/system async source with the Scheduler (once).
+/// Registers the eco/system async source with the Scheduler, the first time it is called from any thread;
+/// later calls do nothing.
 void ensureAsyncSource();
 
-// Adds a drain to the eco/system source (and ensures the source). Adding the
-// same `drain` twice is a no-op. Main thread only.
+/// Adds the drain source `drain` with predicate `ready`, first calling `ensureAsyncSource`. If `drain` was
+/// already added, does nothing, and the `ready` of the earlier call stays in use. Must be called on the eco
+/// thread.
 void addDrainSource(DrainFn drain, ReadyFn ready);
 
-// Runs every registered drain once (what the Scheduler calls). Exposed for
-// tests that drive the drains without the event loop.
+/// Calls every added drain once, in the order added, including any added by a drain during this call. This is
+/// the drain of the source `ensureAsyncSource` registers. Must be called on the eco thread.
 void runDrainSources();
 
 } // namespace Eco::System

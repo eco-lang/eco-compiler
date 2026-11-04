@@ -1,22 +1,21 @@
 //===- SocketExports.cpp - C exports of Eco.Kernel.Socket (stream) --------===//
 //
-// plans/eco-system-sockets.md Appendix B.1 (stream sockets and lookup). The
-// ABI follows the Elm annotations of the wrappers in Socket.elm,
-// Socket/Tcp.elm and Socket/Unix.elm (base plan F7): Int → int64_t,
-// everything else (Bool, String, tuples) → an encoded uint64_t.
+// The C-linkage entry points of the stream-socket and lookup kernels of `Eco.Kernel.Socket`, called by compiled Elm
+// code. The argument types follow the Elm annotations of the wrappers in Socket.elm, Socket/Tcp.elm and
+// Socket/Unix.elm: an Int arrives as `int64_t`, and anything else (Bool, String, tuple) as an encoded `uint64_t`.
 //
-// Exports only decode, root and pack their arguments and return a binding
-// (G2); the bodies are in Socket.cpp. Payload layouts (F5 masks):
-//   lookup, unixConnect         the String
+// An export does no IO. It passes one heap value, the payload, to `makeAsyncBinding` or `makeBinding`, and returns
+// the Task binding made, whose body, declared in Socket.hpp, does the work each time the Task runs. The payloads are:
+//
+//   lookup, unixConnect              the String itself
 //   tcpConnect, tcpListen,
-//   unixListen                  tuple2( boxed arg1, boxed arg2 )   mask 0
+//   unixListen                       a 2-tuple of the two arguments, both boxed (mask 0)
 //   accept, closeListener,
-//   close, reset,
-//   peerCredentials             boxed ElmInt id
-//   setNoDelay                  tuple2( boxed Bool, Int id )       mask 0x4
-//   setKeepAlive                tuple2( Int seconds, Int id )      mask 0x5
+//   close, reset, peerCredentials    the id as a boxed `ElmInt`
+//   setNoDelay                       a 2-tuple of the boxed Bool and the unboxed Int id (mask 0x4)
+//   setKeepAlive                     a 2-tuple of the unboxed Int seconds and the unboxed Int id (mask 0x5)
 //
-// Templates used: T1 (S-mode exports), T2/T7 (async exports).
+// A tuple's mask gives each slot's kind in two bits, slot 0 lowest, with 1 meaning an unboxed Int.
 //
 //===----------------------------------------------------------------------===//
 
@@ -26,7 +25,7 @@ using namespace Eco::System;
 
 namespace {
 
-// tuple2( boxed a, boxed b ), mask 0: both arguments rooted across the allocation.
+// Returns a 2-tuple, mask 0, of the encoded values `a` and `b`, both rooted while it is allocated.
 HPointer pairPayload(uint64_t a, uint64_t b) {
     HPointer aHP = dec(a);
     HPointer bHP = dec(b);
@@ -39,11 +38,14 @@ HPointer pairPayload(uint64_t a, uint64_t b) {
 extern "C" {
 
 // lookup : String -> Task FErr (List String)
+// Returns a Task that resolves the host name `name`, as `socketLookupBody` describes.
 uint64_t Eco_Kernel_Socket_lookup(uint64_t name) {
     ECO_KERNEL_GUARD(return enc(makeAsyncBinding<socketLookupBody>(dec(name)));)
 }
 
 // tcpConnect : ( String, Int, Int ) -> ( Bool, Int ) -> Task FErr ConnT
+// Returns a Task that connects to `target`, ( address, port, timeoutMs ), with `settings`, ( noDelay, keepAliveSec ),
+// as `socketTcpConnectBody` describes.
 uint64_t Eco_Kernel_Socket_tcpConnect(uint64_t target, uint64_t settings) {
     ECO_KERNEL_GUARD(
         HPointer payload = pairPayload(target, settings);
@@ -52,11 +54,14 @@ uint64_t Eco_Kernel_Socket_tcpConnect(uint64_t target, uint64_t settings) {
 }
 
 // unixConnect : String -> Task FErr ConnT
+// Returns a Task that connects to the Unix socket at `path`, as `socketUnixConnectBody` describes.
 uint64_t Eco_Kernel_Socket_unixConnect(uint64_t path) {
     ECO_KERNEL_GUARD(return enc(makeAsyncBinding<socketUnixConnectBody>(dec(path)));)
 }
 
 // tcpListen : ( String, Int ) -> ( Int, Bool ) -> Task FErr ListenT
+// Returns a Task that listens on `target`, ( address, port ), with `settings`, ( backlog, ipv6Only ), as
+// `socketTcpListenBody` describes.
 uint64_t Eco_Kernel_Socket_tcpListen(uint64_t target, uint64_t settings) {
     ECO_KERNEL_GUARD(
         HPointer payload = pairPayload(target, settings);
@@ -65,6 +70,8 @@ uint64_t Eco_Kernel_Socket_tcpListen(uint64_t target, uint64_t settings) {
 }
 
 // unixListen : String -> ( Bool, Int ) -> Task FErr ListenT
+// Returns a Task that listens at `path` with `settings`, ( removeExisting, mode ), as `socketUnixListenBody`
+// describes; a negative mode leaves the file's permissions alone.
 uint64_t Eco_Kernel_Socket_unixListen(uint64_t path, uint64_t settings) {
     ECO_KERNEL_GUARD(
         HPointer payload = pairPayload(path, settings);
@@ -73,6 +80,7 @@ uint64_t Eco_Kernel_Socket_unixListen(uint64_t path, uint64_t settings) {
 }
 
 // accept : Int -> Task FErr ConnT
+// Returns a Task that accepts one connection on listener `listenerId`, as `socketAcceptBody` describes.
 uint64_t Eco_Kernel_Socket_accept(int64_t listenerId) {
     ECO_KERNEL_GUARD(
         HPointer payload = alloc::allocInt(listenerId);
@@ -81,6 +89,7 @@ uint64_t Eco_Kernel_Socket_accept(int64_t listenerId) {
 }
 
 // closeListener : Int -> Task FErr ()
+// Returns a Task that closes listener `listenerId`, as `socketCloseListenerBody` describes.
 uint64_t Eco_Kernel_Socket_closeListener(int64_t listenerId) {
     ECO_KERNEL_GUARD(
         HPointer payload = alloc::allocInt(listenerId);
@@ -89,6 +98,7 @@ uint64_t Eco_Kernel_Socket_closeListener(int64_t listenerId) {
 }
 
 // close : Int -> Task Never ()
+// Returns a Task that aborts connection `connId`, as `socketCloseBody` describes.
 uint64_t Eco_Kernel_Socket_close(int64_t connId) {
     ECO_KERNEL_GUARD(
         HPointer payload = alloc::allocInt(connId);
@@ -97,6 +107,7 @@ uint64_t Eco_Kernel_Socket_close(int64_t connId) {
 }
 
 // reset : Int -> Task Never ()
+// Returns a Task that resets connection `connId`, as `socketResetBody` describes.
 uint64_t Eco_Kernel_Socket_reset(int64_t connId) {
     ECO_KERNEL_GUARD(
         HPointer payload = alloc::allocInt(connId);
@@ -105,6 +116,7 @@ uint64_t Eco_Kernel_Socket_reset(int64_t connId) {
 }
 
 // setNoDelay : Bool -> Int -> Task FErr ()
+// Returns a Task that sets TCP_NODELAY to `noDelay` on connection `connId`, as `socketSetNoDelayBody` describes.
 uint64_t Eco_Kernel_Socket_setNoDelay(uint64_t noDelay, int64_t connId) {
     ECO_KERNEL_GUARD(
         HPointer b = dec(noDelay);   // True/False: embedded constants (no GC hazard)
@@ -113,7 +125,9 @@ uint64_t Eco_Kernel_Socket_setNoDelay(uint64_t noDelay, int64_t connId) {
     )
 }
 
-// setKeepAlive : Int -> Int -> Task FErr ()   (seconds; 0 off, connId)
+// setKeepAlive : Int -> Int -> Task FErr ()
+// Returns a Task that sets TCP keep-alive on connection `connId` to `seconds`, as `socketSetKeepAliveBody`
+// describes.
 uint64_t Eco_Kernel_Socket_setKeepAlive(int64_t seconds, int64_t connId) {
     ECO_KERNEL_GUARD(
         HPointer payload =
@@ -123,6 +137,7 @@ uint64_t Eco_Kernel_Socket_setKeepAlive(int64_t seconds, int64_t connId) {
 }
 
 // peerCredentials : Int -> Task FErr CredT
+// Returns a Task that gives the peer credentials of connection `connId`, as `socketPeerCredentialsBody` describes.
 uint64_t Eco_Kernel_Socket_peerCredentials(int64_t connId) {
     ECO_KERNEL_GUARD(
         HPointer payload = alloc::allocInt(connId);

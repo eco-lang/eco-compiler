@@ -1,9 +1,3 @@
-/**
- * Elm Kernel Url Module - Runtime Heap Integration
- *
- * Provides URL encoding/decoding using GC-managed heap values.
- */
-
 #include "Url.hpp"
 #include "allocator/Allocator.hpp"
 #include "allocator/StringOps.hpp"
@@ -11,7 +5,7 @@
 
 namespace Elm::Kernel::Url {
 
-// Helper: Check if character is unreserved (not percent-encoded)
+/// Returns whether byte `c` is one `percentEncode` leaves as it is: `A-Za-z0-9` or one of `-_.!~*'()`.
 static bool isUnreserved(u8 c) {
     if (c >= 'A' && c <= 'Z') return true;
     if (c >= 'a' && c <= 'z') return true;
@@ -25,7 +19,7 @@ static bool isUnreserved(u8 c) {
     return false;
 }
 
-// Helper: Convert hex character to value, returns -1 on invalid
+/// Returns the value of hexadecimal digit `c`, in either case, or -1 if `c` is not one.
 static i64 hexValue(u16 c) {
     if (c >= '0' && c <= '9') return c - '0';
     if (c >= 'A' && c <= 'F') return c - 'A' + 10;
@@ -33,14 +27,16 @@ static i64 hexValue(u16 c) {
     return -1;
 }
 
-// Helper: Convert value to uppercase hex character
+/// Returns the uppercase hexadecimal digit for `value`, which must be from 0 to 15.
 static u16 toHex(i64 value) {
     if (value < 10) return static_cast<u16>('0' + value);
     return static_cast<u16>('A' + value - 10);
 }
 
-// Helper: Encode UTF-16 to UTF-8 bytes. Reads from a contiguous u16 buffer
-// produced by StringOps::toStdU16String (slice-aware).
+/// Returns the UTF-8 encoding of the UTF-16 units in `src`.
+///
+/// A high surrogate followed by a low one becomes one four-byte sequence. Any other surrogate is encoded as the
+/// three-byte sequence of its unit value, which is not valid UTF-8.
 static std::vector<u8> utf16ToUtf8(const std::u16string& src) {
     std::vector<u8> result;
 
@@ -78,7 +74,11 @@ static std::vector<u8> utf16ToUtf8(const std::u16string& src) {
     return result;
 }
 
-// Helper: Decode UTF-8 bytes to UTF-16 chars, returns false on invalid
+/// Decodes the UTF-8 `bytes` into UTF-16 units in `result`, and returns whether they were valid UTF-8.
+///
+/// Overlong forms, encoded surrogates, values above U+10FFFF, bad continuation bytes and a sequence cut off by
+/// the end are invalid. `result` is cleared first; when the function returns false it holds the units decoded
+/// before the invalid sequence.
 static bool utf8ToUtf16(const std::vector<u8>& bytes, std::vector<u16>& result) {
     result.clear();
     size_t i = 0;
@@ -119,7 +119,6 @@ static bool utf8ToUtf16(const std::vector<u8>& bytes, std::vector<u16>& result) 
             return false;
         }
 
-        // Convert codepoint to UTF-16
         if (codepoint < 0x10000) {
             result.push_back(static_cast<u16>(codepoint));
         }
@@ -137,7 +136,6 @@ HPointer percentEncode(void* str) {
     auto src = StringOps::toStdU16String(str);
     std::vector<u8> utf8 = utf16ToUtf8(src);
 
-    // Build result string
     std::vector<u16> result;
     for (u8 byte : utf8) {
         if (isUnreserved(byte)) {
@@ -178,7 +176,8 @@ HPointer percentDecode(void* str) {
             bytes.push_back(static_cast<u8>(c));
         }
         else {
-            // Non-ASCII character - encode to UTF-8
+            // A character outside ASCII stands for its own UTF-8 bytes, so that the whole input can be decoded
+            // as one byte sequence below.
             u32 codepoint = c;
 
             if (c >= 0xD800 && c <= 0xDBFF && i + 1 < src.size()) {
@@ -210,7 +209,6 @@ HPointer percentDecode(void* str) {
         }
     }
 
-    // Convert UTF-8 bytes to UTF-16
     std::vector<u16> result;
     if (!utf8ToUtf16(bytes, result)) {
         return alloc::nothing();

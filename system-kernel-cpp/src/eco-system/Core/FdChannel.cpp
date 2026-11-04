@@ -1,10 +1,10 @@
 //===- FdChannel.cpp - ByteChannel over a file descriptor -----------------===//
 //
-// See FdChannel.hpp. The channel thread is detached and holds a shared_ptr
-// to the channel state, so destroying the handle never races the thread
-// (§3.4 leaky-service rule, applied per channel).
-//
-// Templates used: none (POD only, G1).
+// The handle and the detached channel thread each hold a shared_ptr to one
+// `State`. Requests are pushed and flags set under `State::m` by the eco
+// thread, which then writes a byte to the wake pipe; the thread snapshots what
+// it wants under the lock, polls without it, and pops a request only after
+// its IO call, so a request's data stays put while the call runs.
 //
 //===----------------------------------------------------------------------===//
 
@@ -32,6 +32,7 @@ namespace Eco::System {
 
 namespace {
 
+// Posts a result for `token` that carries only `op` and `err`.
 void postSimple(uint64_t chanId, uint64_t token, ChannelResult::Op op, int err) {
     ChannelResult r;
     r.channelId = chanId;
@@ -46,7 +47,7 @@ void postSimple(uint64_t chanId, uint64_t token, ChannelResult::Op op, int err) 
 #ifdef _WIN32
 
 // ---------------------------------------------------------------------------
-// Windows stub (§1): every request completes with ENOTSUP.
+// Windows stub: every request completes with ENOTSUP.
 // ---------------------------------------------------------------------------
 
 struct FdChannel::State {
@@ -76,7 +77,7 @@ int FdChannel::fd() const { return st_->fd; }
 #else // POSIX
 
 // ---------------------------------------------------------------------------
-// State shared by the handle (main thread) and the channel thread.
+// State shared by the handle (eco thread) and the channel thread.
 // ---------------------------------------------------------------------------
 
 struct FdChannel::State {
@@ -90,12 +91,13 @@ struct FdChannel::State {
         size_t off = 0;
     };
 
+    // Set by the constructor before the thread starts; unguarded after.
     int fd = -1;
     uint64_t chanId = 0;
     int wakeR = -1;
     int wakeW = -1;
     bool regular = false;   // regular file: write without chunking
-    int64_t readRemaining = -1;     // FdChannelOptions::readLimit (channel thread only)
+    int64_t readRemaining = -1;     // bytes left under FdChannelOptions::readLimit (channel thread only)
     bool truncateOnClose = false;   // FdChannelOptions::truncateOnClose
     bool syncOnClose = false;       // FdChannelOptions::syncOnClose
     bool useSelect = false;  // poll() rejects this fd (channel thread only)
@@ -109,12 +111,15 @@ struct FdChannel::State {
     bool finished = false;   // the thread is done (or never started)
     int deadErr = ECANCELED; // error for requests made once finished
 
+    // Closes the wake pipe. Runs when the last of the handle and the thread
+    // lets go, so no wake() can follow.
     ~State() {
-        // Last reference gone: nobody can write the wake pipe any more.
         if (wakeR >= 0) ::close(wakeR);
         if (wakeW >= 0) ::close(wakeW);
     }
 
+    // Writes one byte to the wake pipe to interrupt the thread's poll. Does
+    // nothing when there is no wake pipe.
     void wake() {
         if (wakeW < 0) return;
         char b = 1;
@@ -123,6 +128,7 @@ struct FdChannel::State {
         // EAGAIN: the pipe already holds a wake byte; fine.
     }
 
+    // Reads the wake pipe until it is empty. Channel thread.
     void drainWake() {
         char buf[64];
         ssize_t r;
@@ -160,9 +166,13 @@ namespace {
 
 using State = FdChannel::State;
 
+// The largest number of bytes one Read result carries.
 constexpr size_t kMaxReadChunk = 1u << 20;
 
-// One read for the head request, after poll reported readiness.
+// Makes one read call for the oldest read request and posts its result,
+// unless the call would block, in which case the request stays queued. With
+// the read limit used up it posts EOF without reading. `buf` is a scratch
+// buffer kept across calls. Channel thread.
 void doRead(State& st, std::vector<char>& buf) {
     uint64_t token;
     size_t maxBytes;
@@ -200,7 +210,9 @@ void doRead(State& st, std::vector<char>& buf) {
     postChannelResult(std::move(res));
 }
 
-// One write chunk for the head request, after poll reported readiness.
+// Makes one write call for the oldest write request. Posts its result once
+// all its bytes are written or the call fails; otherwise records the progress
+// and leaves it queued. Channel thread.
 void doWrite(State& st) {
     uint64_t token;
     const char* data;
@@ -218,7 +230,8 @@ void doWrite(State& st) {
     int err = 0;
     if (off < len) {
         size_t chunk = len - off;
-        if (!st.regular && chunk > PIPE_BUF) chunk = PIPE_BUF;   // never block past POLLOUT
+        // At most PIPE_BUF per POLLOUT: keeps a pipe write from blocking.
+        if (!st.regular && chunk > PIPE_BUF) chunk = PIPE_BUF;
         ssize_t r;
         do { r = ::write(st.fd, data + off, chunk); } while (r < 0 && errno == EINTR);
         if (r < 0) {
@@ -247,7 +260,7 @@ void doWrite(State& st) {
     postChannelResult(std::move(res));
 }
 
-// Complete every pending request with `err` (POLLNVAL / poll failure).
+// Answers every queued read and write with `err`.
 void failPending(State& st, int err) {
     std::deque<State::ReadReq> reads;
     std::deque<State::WriteReq> writes;
@@ -260,9 +273,10 @@ void failPending(State& st, int err) {
     for (auto& w : writes) postSimple(st.chanId, w.token, ChannelResult::Op::Write, err);
 }
 
-// poll() over pfd[0..n) by way of select(). macOS poll() answers POLLNVAL for
-// an open character device (/dev/null, a tty), which select() handles; the
-// channel thread switches to this once it sees that (all fds < FD_SETSIZE).
+// Does what poll(pfd, n, -1) does, for POLLIN and POLLOUT only, by way of
+// select(). Every fd in `pfd` must be below FD_SETSIZE. The channel thread
+// switches to this when poll() answers POLLNVAL for an fd that is open, as
+// macOS poll() does for some character devices.
 int selectAsPoll(struct pollfd* pfd, int n) {
     fd_set rd, wr;
     FD_ZERO(&rd);
@@ -285,7 +299,9 @@ int selectAsPoll(struct pollfd* pfd, int n) {
     return r;
 }
 
-// The channel thread. Owns the fd: it is the only closer (§3.4).
+// The channel thread's body. Serves requests until `stop`, or until a close
+// is requested and no write is queued, then finishes the channel as
+// FdChannel::close and FdChannel::shutdown describe.
 void channelThread(std::shared_ptr<State> sp) {
     State& st = *sp;
     std::vector<char> buf;
@@ -391,7 +407,7 @@ FdChannel::FdChannel(int fd, FdChannelOptions opts) : st_(std::make_shared<State
             e = se.code().value() ? se.code().value() : EAGAIN;
         }
     }
-    // No thread will ever run: this is the only place the fd can be closed.
+    // No thread will ever run, so the fd is closed here.
     st_->finished = true;
     st_->deadErr = e;
     if (fd > 2) ::close(fd);

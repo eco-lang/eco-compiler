@@ -1,10 +1,3 @@
-/**
- * Elm Kernel Bytes Module - Runtime Heap Integration
- *
- * This module provides binary data encoding/decoding using the GC-managed
- * ByteBuffer type from the runtime heap.
- */
-
 #include "Bytes.hpp"
 #include "allocator/Allocator.hpp"
 #include "allocator/BytesOps.hpp"
@@ -15,25 +8,25 @@ namespace Elm::Kernel::Bytes {
 
 using namespace Elm::BytesOps;
 
-// Endianness type ID (distinct from Order)
+/// A type id for `Endianness`. Nothing reads it.
 constexpr u16 ENDIANNESS_TYPE_ID = 2;
 
-// Helper to check if HPointer is Nothing
+/// Returns whether `ptr` is Nothing.
 static bool isNothing(HPointer ptr) {
     return Elm::alloc::isNothing(ptr);
 }
 
-// Helper to check if system is little endian
+/// Returns whether the host is little-endian.
 static bool isLittleEndian() {
     return std::endian::native == std::endian::little;
 }
 
-// Helper to get endianness enum
+/// Returns the `BytesOps` endianness that `littleEndian` stands for.
 static Endianness getEndian(bool littleEndian) {
     return littleEndian ? Endianness::LE : Endianness::BE;
 }
 
-// Helper to create a successful read result: Just(Tuple2(value, newOffset))
+/// Returns `Just(Tuple2(value, newOffset))` with `value` boxed and `newOffset` an unboxed Int.
 static HPointer readSuccessBoxed(HPointer value, i64 newOffset) {
     // 2-bit-per-slot bitmap: field 0 = kind 0 (boxed HPointer), field 1 = kind 1 (Int)
     // = bits[1:0]=00, bits[3:2]=01 => 0x4
@@ -41,7 +34,7 @@ static HPointer readSuccessBoxed(HPointer value, i64 newOffset) {
     return alloc::just(alloc::boxed(tuple), true);
 }
 
-// Helper for unboxed int results
+/// Returns `Just(Tuple2(value, newOffset))` with both fields unboxed Ints.
 static HPointer readSuccessUnboxedInt(i64 value, i64 newOffset) {
     // 2-bit-per-slot bitmap: field 0 = kind 1 (Int), field 1 = kind 1 (Int)
     // = bits[1:0]=01, bits[3:2]=01 => 0x5
@@ -49,7 +42,8 @@ static HPointer readSuccessUnboxedInt(i64 value, i64 newOffset) {
     return alloc::just(alloc::boxed(tuple), true);
 }
 
-// Helper for unboxed float results
+/// Returns `Just(Tuple2(value, newOffset))` with `value` an unboxed Float and `newOffset` an unboxed
+/// Int.
 static HPointer readSuccessUnboxedFloat(f64 value, i64 newOffset) {
     // 2-bit-per-slot bitmap: field 0 = kind 2 (Float), field 1 = kind 1 (Int)
     // = bits[1:0]=10, bits[3:2]=01 => 0x6
@@ -66,7 +60,6 @@ i64 width(void* bytes) {
 }
 
 HPointer getHostEndianness() {
-    // LE = { ctor: 0 }, BE = { ctor: 1 }
     u16 endianCtor = isLittleEndian() ? 0 : 1;
     return alloc::custom(endianCtor, {}, 0);
 }
@@ -74,7 +67,6 @@ HPointer getHostEndianness() {
 i64 getStringWidth(void* str) {
     // UTF-8 (ASCII) forms: byte width == logical length. O(1).
     if (StringOps::isUtf8(str)) return StringOps::length(str);
-    // Calculate UTF-8 byte count for any String form (leaf or slice).
     auto chars = StringOps::toStdU16String(str);
     i64 width = 0;
     for (size_t i = 0; i < chars.size(); i++) {
@@ -106,7 +98,6 @@ i64 getStringWidth(void* str) {
 // ============================================================================
 
 HPointer decode(void* decoder, void* bytes) {
-    // Full decoder implementation is complex - stub returns Nothing
     (void)decoder;
     (void)bytes;
     return alloc::nothing();
@@ -123,17 +114,13 @@ HPointer decodeFailure() {
 HPointer read_i8(void* bytes, i64 offset) {
     HPointer result = decodeSignedInt(bytes, offset, Width::W8, Endianness::LE);
 
-    // Check if result is Nothing
     if (isNothing(result)) {
         return result;
     }
 
-    // Extract the value and wrap in success tuple
     auto& allocator = Allocator::instance();
     void* justObj = allocator.resolve(result);
     Custom* custom = static_cast<Custom*>(justObj);
-
-    // Get the unboxed int value
     i64 value = custom->values[0].i;
     return readSuccessUnboxedInt(value, offset + 1);
 }
@@ -283,10 +270,8 @@ HPointer write_f64(bool littleEndian, f64 value) {
 }
 
 HPointer write_bytes(void* bytes) {
-    // ByteBuffers are immutable; share by reference rather than copying.
-    // The legacy form did fromData(b->bytes, b->header.size) which
-    // round-tripped the entire payload through a fresh allocation.
-    // A null object is the empty-Bytes constant (HEAP_071).
+    // ByteBuffers are immutable, so the value is shared rather than copied. A null object stands
+    // for the empty Bytes, which is an embedded constant rather than a heap object.
     if (!bytes) return alloc::emptyBytes();
     return Allocator::instance().wrap(bytes);
 }

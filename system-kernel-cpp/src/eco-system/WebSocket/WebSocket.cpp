@@ -1,24 +1,8 @@
 //===- WebSocket.cpp - eco/system kernel module WebSocket -----------------===//
 //
-// plans/eco-system-websockets.md Appendix B.1, §3.6 (phase WS4): see
-// WebSocket.hpp. Every body follows G2/G3: copy the inputs out of the heap
-// first, then act (reactor submits, pool jobs), then allocate.
-//
-// Payload layouts (WebSocketExports.cpp):
-//   dial         tuple3( boxed target, boxed tls, boxed request ), mask 0
-//                  target  ( List String addresses, Int port, Int timeoutMs )
-//                  tls     ( ( Bool tls, String serverName ), ( Int verification,
-//                            String pem ), ( Bool http2, Bool ) )
-//                  request ( String target, List ( String, String ) headers )
-//   readUpgrade  tuple2( Int connId, Int timeoutMs ), mask 0x5
-//   open         tuple3( boxed ( Int id, ( Int status, List ( String, String ) ) ),
-//                        boxed params, boxed ( fromWire, toWire ) ), mask 0
-//   reject       tuple2( Int id, boxed ( Int status, List ( String, String ), String ) ), mask 0x1
-//   close        tuple3( Int wsId, Int code, boxed String reason ), mask 0x5
-//   closed / ping / abandon: the boxed Int id.
-//
-// Templates used: T1, T2 (dial stage 1 + completion), T7 (kill handles:
-// dial, closed), T9/G10 (R and A bodies).
+// Each body copies the fields of its payload into C++ values before its first allocation, since raw pointers into
+// the payload are stale after one; the larger payloads are read inside a braced scope that does not allocate. The
+// reactor commands and the pool job capture shared pointers and copied values, never heap pointers.
 //
 //===----------------------------------------------------------------------===//
 
@@ -48,24 +32,30 @@ namespace Eco::System {
 
 namespace {
 
+/// The message of the ENOTSUP failures on Windows.
 [[maybe_unused]] constexpr const char* kWindows = "eco/system: WebSockets are not supported on Windows yet";
 
+/// Returns the shared reactor.
 IoReactor& reactor() { return IoReactor::instance(); }
 
-// --- Payload decoding (no allocation, G5) ----------------------------------------
+// --- Payload decoding (no allocation) ---------------------------------------------
 
+/// Returns whether `b` is the boxed True constant. Does not allocate.
 bool isElmTrue(HPointer b) { return ::Elm::hpBits(b) == ::Elm::hpBits(alloc::elmTrue()); }
 
+/// Returns the Int in field `slot` of a tuple whose unboxed-field mask is `mask`, read from `u` whether the field is
+/// stored unboxed or as a boxed Int. Does not allocate.
 int64_t slotInt(const Unboxable& u, u32 mask, int slot) {
     if (Elm::tupleFieldKind(mask, slot) == 1) return u.i;
     return static_cast<ElmInt*>(Allocator::instance().resolve(u.p))->value;
 }
 
+/// Returns the value of the boxed Int `captured`. Does not allocate.
 int64_t payloadInt(HPointer captured) {
     return static_cast<ElmInt*>(Allocator::instance().resolve(captured))->value;
 }
 
-// List ( String, String ) → HeaderList. No allocation.
+/// Copies the Elm `List ( String, String )` `list` into a `HeaderList`, in order. Does not allocate on the Elm heap.
 HeaderList headerPairs(HPointer list) {
     HeaderList out;
     for (alloc::ListCursor c(list); !c.done(); c.next()) {
@@ -77,6 +67,8 @@ HeaderList headerPairs(HPointer list) {
     return out;
 }
 
+/// Resumes the task with `task` at once, without parking, and returns `()` as the body's kill handle. `task` is
+/// rooted across the call; `resume` must be rooted by the caller.
 HPointer resumeNow(HPointer& resume, HPointer task) {
     Elm::StackRootGuard g(&task);
     Scheduler::callClosure1(resume, task);
@@ -85,25 +77,27 @@ HPointer resumeNow(HPointer& resume, HPointer task) {
 
 // --- dial ---------------------------------------------------------------------------
 
+/// The inputs of a dial, copied out of its payload.
 struct DialArgs {
     std::vector<std::string> addresses;
     int64_t port = 0;
     int64_t timeoutMs = 0;
     bool tls = false;
     std::string serverName;
-    int64_t verification = 0;
+    int64_t verification = 0;  ///< 0 for the system's certificates, 1 for those in `pem`, 2 for none.
     std::string pem;
-    std::string request;
-    // WS9: RFC 8441 first (wss only); the extended CONNECT's fields.
+    std::string request;   ///< The serialized HTTP/1.1 request head.
+    // The request target, and whether the dial offers h2; `authority` and `h2Headers` are filled only when it does.
     bool http2 = false;
     std::string target, authority;
     HeaderList h2Headers;
 };
 
-// The extended CONNECT's fields from the HTTP/1.1 request headers Elm built
-// (D.2): Host becomes :authority; Upgrade, Connection, the key and other
-// connection-specific fields are not sent over HTTP/2 (RFC 8441 §4, RFC 9113
-// §8.2.2); names lower-case.
+/// Derives the extended CONNECT's fields from the HTTP/1.1 request `headers`: the value of Host is written to
+/// `authority`, and every other header that passes `httpHeaderValid` is appended to `out` with its name lower-cased,
+/// except Upgrade, Connection, Sec-WebSocket-Key, Keep-Alive, Proxy-Connection, Transfer-Encoding, TE, an empty name
+/// and a pseudo-header. Those are the connection-specific fields HTTP/2 does not carry (RFC 9113, "Connection-Specific
+/// Header Fields").
 void h2RequestFields(const HeaderList& headers, std::string& authority, HeaderList& out) {
     for (const auto& [name, value] : headers) {
         std::string n = name;
@@ -124,13 +118,16 @@ void h2RequestFields(const HeaderList& headers, std::string& authority, HeaderLi
 
 #ifndef _WIN32
 
-// Stage 2's inputs (TLS), parked on the main thread between the stages.
+/// The inputs of a TLS dial, kept on the eco thread from the end of its first stage (building the TLS client
+/// settings on the work pool) until its second stage starts the dial.
 struct PendingDial {
     DialArgs args;
     std::shared_ptr<TlsClientConfig> cfg;
-    std::shared_ptr<TlsClientConfig> cfgH1;   // WS9: ALPN http/1.1 only (the redial)
+    std::shared_ptr<TlsClientConfig> cfgH1;   ///< ALPN http/1.1 only, for the redial; null unless h2 is offered.
 };
 
+/// The TLS dials between their two stages, keyed by an id that the second stage's payload carries, for one heap
+/// generation.
 struct PendingTable {
     std::unordered_map<int64_t, PendingDial> m;
     int64_t next = 1;
@@ -138,8 +135,9 @@ struct PendingTable {
     bool init = false;
 };
 
+/// Returns the pending-dial table, emptying it first if the heap generation has changed. Eco thread only.
 PendingTable& pendingTable() {
-    static auto* t = new PendingTable();   // leaky (§3.4); main thread only
+    static auto* t = new PendingTable();   // leaked; eco thread only
     uint64_t g = currentHeapGeneration();
     if (!t->init || t->gen != g) {
         t->init = true;
@@ -149,12 +147,15 @@ PendingTable& pendingTable() {
     return *t;
 }
 
-// Parks the task with the dial's hold and starts the DialJob.
+/// Parks the dialling task under a new token with its hold, registers a `DialJob` for `a` as the token's pending
+/// dial, starts it on the reactor, and returns a kill handle that cancels it. `factory` makes the transport (null for
+/// plain TCP), and `h1Factory` the HTTP/1.1-only TLS transport for a redial; h2 is offered only when `a` asks for it
+/// with TLS and `h1Factory` is set. Sets `token` and `counted` for the caller's `ECO_SYSTEM_ASYNC_GUARD`.
 HPointer startDial(DialArgs a, TransportFactory factory, TransportFactory h1Factory, HPointer& resume,
                    uint64_t& token, bool& counted) {
     ensureWsTables();
     auto& s = Scheduler::instance();
-    token = s.parkResume(resume, HoldKind::Task, "WebSocket.dial");   // G10
+    token = s.parkResume(resume, HoldKind::Task, "WebSocket.dial");
     counted = true;
     DialSpec spec;
     spec.addresses = std::move(a.addresses);
@@ -176,7 +177,8 @@ HPointer startDial(DialArgs a, TransportFactory factory, TransportFactory h1Fact
     return makeKillHandle(token, &cancelPendingDial);
 }
 
-// Stage 2 (R): payload = the boxed PendingTable id.
+/// The body of a TLS dial's second stage: takes the `PendingTable` entry whose id is the boxed Int `captured` and
+/// starts its dial. Fails with ECANCELED "connect ECANCELED" if the entry is gone, as it is after a heap reset.
 HPointer dialStage2Body(HPointer captured, HPointer resume) {
     uint64_t token = 0;
     bool counted = false;
@@ -193,13 +195,16 @@ HPointer dialStage2Body(HPointer captured, HPointer resume) {
     )
 }
 
+/// The result of a TLS dial's first stage: the client settings and the dial's inputs, or a failure, when `code`
+/// is not empty.
 struct DialPrep {
     DialArgs args;
     std::shared_ptr<TlsClientConfig> cfg, cfgH1;
     std::string code, message;
 };
 
-// Stage 1 completion (main thread): the failure, or the stage-2 binding.
+/// Completes a TLS dial's first stage on the eco thread: returns the failure, or files the result in the
+/// `PendingTable` and returns the Task of the second stage, so that the first stage's task continues with it.
 HPointer dialPrepared(PoolResult& pr) {
     auto& r = pr.as<DialPrep>();
     if (!r.code.empty()) return failFErr(r.code, r.message);
@@ -207,12 +212,12 @@ HPointer dialPrepared(PoolResult& pr) {
     int64_t id = t.next++;
     t.m.emplace(id, PendingDial{std::move(r.args), std::move(r.cfg), std::move(r.cfgH1)});
     HPointer payload = alloc::allocInt(id);
-    return makeAsyncBinding<dialStage2Body>(payload);   // fresh: the helper roots it
+    return makeAsyncBinding<dialStage2Body>(payload);
 }
 
 #endif // !_WIN32
 
-// ( code, reason, clean ), mask 0x1. Fresh.
+/// Builds the Elm `( code, reason, clean )` of `info`. Allocates; the result is not rooted.
 HPointer closeInfoTuple(const WsCloseInfo& info) {
     HPointer reason = alloc::allocStringFromUTF8(info.reason);
     return alloc::tuple3(alloc::unboxedInt(info.code), alloc::boxed(reason),
@@ -254,7 +259,7 @@ HPointer wsDialBody(HPointer captured, HPointer resume) {
         return resumeNow(resume, failFErr("ENOTSUP", kWindows));
 #else
         DialArgs a;
-        {   // G3/G5: copy everything out; no allocation in this scope
+        {
             Tuple3* p = asTuple3(captured);
             HPointer target = p->a.p;
             HPointer tls = p->b.p;
@@ -291,9 +296,7 @@ HPointer wsDialBody(HPointer captured, HPointer resume) {
             a.http2 = false;
             return startDial(std::move(a), nullptr, nullptr, resume, token, counted);
         }
-        // wss: the client context first, on the pool (CA files, §3.6 of the
-        // sockets plan). ALPN offers http/1.1, or h2 first with `http2`
-        // (WS9; then a second context with http/1.1 only for the redial).
+        // The TLS client settings are built on the pool: loading CA files blocks.
         ensureTlsInit();
         auto& s = Scheduler::instance();
         token = s.parkResume(resume, HoldKind::Task, "WebSocket.dialPrepare");
@@ -363,7 +366,6 @@ HPointer wsReadUpgradeBody(HPointer captured, HPointer resume) {
                 failNow("EBUSY", "upgradeRequest EBUSY: the connection was taken over already");
                 return;
             }
-            // §3.2: no operation may be in flight on the faces.
             if (!f->idle()) {
                 failNow("EBUSY", "upgradeRequest EBUSY: the connection has a read, write or close in progress");
                 return;
@@ -392,7 +394,7 @@ HPointer wsOpenBody(HPointer captured, HPointer resume) {
         HeaderList headers;
         HPointer fromWire = alloc::listNil(), toWire = alloc::listNil();
         Elm::StackRootGuard closures(&fromWire, &toWire);
-        {   // G3/G5: no allocation in this scope
+        {
             Tuple3* p = asTuple3(captured);
             HPointer first = p->a.p;
             HPointer params = p->b.p;
@@ -436,8 +438,8 @@ HPointer wsOpenBody(HPointer captured, HPointer resume) {
         if (mode != 1 && mode != 2) return resumeNow(resume, failFErr("EINVAL", "open EINVAL: unknown mode"));
         std::shared_ptr<Conn> c = std::move(it->second.conn);
         std::shared_ptr<H2PendingUpgrade> h2 = std::move(it->second.h2);
-        // The peer's hold (upgradeRequest, N5) is released once open has
-        // parked its own hold below: no gap, no double count.
+        // Released at the end of the scope, after the parkResume below, so that the program is never left with
+        // neither hold.
         HoldRelease peerHold(it->second.peerHold);
         t.handshakes.erase(it);
         std::string response = role == 1 && !h2 ? serializeResponse(static_cast<int>(status), headers, false,
@@ -468,8 +470,6 @@ HPointer wsOpenBody(HPointer captured, HPointer resume) {
         t.sockets.emplace(wsId, std::move(entry));
         uint64_t tok = token, gen = cfg.gen;
         if (h2) {
-            // WS9 server: 200 on the extended CONNECT stream (no END_STREAM),
-            // the stream bound to the codec through an H2StreamPort.
             int st = static_cast<int>(status);
             reactor().submit([h2, core, st, headers = std::move(headers), tok, gen, wsId] {
                 WsEvent ev;
@@ -490,11 +490,11 @@ HPointer wsOpenBody(HPointer captured, HPointer resume) {
                 if (!h2->accept(st, headers, port)) port->bind(nullptr, std::string());   // closes the core
             });
         }
-        // Install the codec first (reactor commands run in order: the stream
-        // requests created below reach an installed core).
+        // Submitted before the stream pairs are created below, whose first requests then reach an installed codec:
+        // reactor commands run in submission order.
         if (!h2) reactor().submit([c, core, response = std::move(response), tok, gen, wsId]() mutable {
             HoldProtocol* hold = c ? dynamic_cast<HoldProtocol*>(c->protocol()) : nullptr;
-            // WS9 client: an answered extended CONNECT parked in its session.
+            // A client handshake over HTTP/2: an answered extended CONNECT parked in its session.
             Http2ClientProtocol* h2c = c && !hold ? dynamic_cast<Http2ClientProtocol*>(c->protocol()) : nullptr;
             WsEvent ev;
             ev.kind = WsEvent::Kind::Opened;
@@ -529,8 +529,7 @@ HPointer wsOpenBody(HPointer captured, HPointer resume) {
             postWsEvent(std::move(ev));
             c->setProtocol(std::make_unique<WsProtocol>(core), std::move(left));
         });
-        // The stream pair (W16): fromWire / toWire are stored in the pairs
-        // (scanned) with no allocation since they were read.
+        // fromWire and toWire, rooted since they were read, are stored in the pairs, which scan them.
         int64_t rid = createMappedSource(new WsReadChannel(core, wsId), enc(fromWire));
         int64_t wid = createMappedSink(new WsWriteChannel(core, wsId), enc(toWire));
         if (WsEntry* e = findWs(wsId)) {
@@ -564,11 +563,10 @@ HPointer wsRejectBody(HPointer captured, HPointer resume) {
         ensureWsTables();
         auto& t = wsTables();
         auto it = t.handshakes.find(id);
-        if (it == t.handshakes.end()) return resumeNow(resume, succeedUnit());   // answered already
+        if (it == t.handshakes.end()) return resumeNow(resume, succeedUnit());
         std::shared_ptr<Conn> c = std::move(it->second.conn);
         std::shared_ptr<H2PendingUpgrade> h2 = std::move(it->second.h2);
-        // The peer's hold (upgradeRequest, N5) is released once reject has
-        // parked its own hold below: no gap, no double count.
+        // Released at the end of the scope, after the parkResume below.
         HoldRelease peerHold(it->second.peerHold);
         t.handshakes.erase(it);
         if (status < 100 || status > 999) status = 400;
@@ -577,7 +575,6 @@ HPointer wsRejectBody(HPointer captured, HPointer resume) {
         counted = true;
         uint64_t tok = token, gen = currentHeapGeneration();
         if (h2) {
-            // WS9: an ordinary HTTP/2 response on the extended CONNECT stream.
             int st = static_cast<int>(status);
             reactor().submit([h2, st, headers = std::move(headers), body = std::move(body), tok, gen]() mutable {
                 h2->reject(st, headers, std::move(body), [tok, gen](int) {
@@ -620,7 +617,7 @@ HPointer wsAbandonBody(HPointer captured) {
         if (it != t.handshakes.end()) {
             std::shared_ptr<Conn> c = std::move(it->second.conn);
             std::shared_ptr<H2PendingUpgrade> h2 = std::move(it->second.h2);
-            HoldRelease peerHold(it->second.peerHold);   // abandoned: nobody is owed an answer
+            HoldRelease peerHold(it->second.peerHold);
             t.handshakes.erase(it);
             if (c) reactor().submit([c] { c->abort(false); });
             if (h2) reactor().submit([h2] { h2->abandon(); });
@@ -643,9 +640,9 @@ HPointer wsCloseBody(HPointer captured, HPointer resume) {
         }
         ensureWsTables();
         WsEntry* e = findWs(wsId);
-        if (!e || e->closed || !e->core) return resumeNow(resume, succeedUnit());   // idempotent
+        if (!e || e->closed || !e->core) return resumeNow(resume, succeedUnit());
         std::shared_ptr<WsCore> core = e->core;
-        wsTablesCloseStarted(wsId);   // the close handshake keeps the program alive
+        wsTablesCloseStarted(wsId);
         auto& s = Scheduler::instance();
         token = s.parkResume(resume, HoldKind::Task, "WebSocket.close");
         counted = true;
@@ -672,17 +669,13 @@ HPointer wsClosedBody(HPointer captured, HPointer resume) {
             return resumeNow(resume, task);
         }
         auto& s = Scheduler::instance();
-        token = s.parkResume(resume, HoldKind::Task, "WebSocket.closed");   // a parked `closed` keeps the program alive (§3.6)
+        token = s.parkResume(resume, HoldKind::Task, "WebSocket.closed");
         counted = true;
         e->closedWaiters.push_back(token);
         return makeKillHandle(token, &cancelClosedWaiter);
     )
 }
 
-// openOutgoing (S, WS6): a writable for one message sent as a stream. The
-// stream's place in the data FIFO is taken now (the reactor command runs
-// before any write made through the returned pair). Payload tuple2( Int wsId,
-// Int kind ), mask 0x5; kind 1 text (a writable of Strings), 2 binary.
 HPointer wsOpenOutgoingBody(HPointer captured) {
     ECO_SYSTEM_BODY_GUARD(FErr,
         int64_t wsId = 0, kind = 0;
@@ -697,6 +690,7 @@ HPointer wsOpenOutgoingBody(HPointer captured) {
         std::shared_ptr<WsCore> core = e->core;
         uint64_t seq = ++e->outSeq;
         uint8_t opcode = kind == 1 ? ws::kOpText : ws::kOpBinary;
+        // Submitted before any write through the pair created below, which therefore finds the stream open.
         reactor().submit([core, seq, opcode] { core->openOutgoing(seq, opcode); });
         auto* ch = new WsOutChannel(core, seq);
         int64_t pid = kind == 1 ? createTextChannelSink(ch) : createChannelSink(ch);

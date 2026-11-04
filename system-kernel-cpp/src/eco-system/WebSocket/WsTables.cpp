@@ -1,16 +1,7 @@
-//===- WsTables.cpp - Main-thread WebSocket tables ------------------------===//
+//===- WsTables.cpp - Eco-thread WebSocket tables -------------------------===//
 //
-// See WsTables.hpp (plans/eco-system-websockets.md §3.6, Appendix B.1).
-// Main thread only.
-//
-// Holds (G10, §3.6), released here:
-//   * Dialed / UpgradeRead / Opened / OpDone / PingDone: the R-mode
-//     operation's own hold (HoldRelease), resumed or orphaned (an orphaned
-//     handshake's connection is aborted; an orphaned open's WebSocket too).
-//   * Closed: the close handshake's hold (once) and one per parked `closed`.
-//
-// Templates used: T3 (header lists), T5 (generation-keyed tables), T9
-// (completions), G10 (HoldRelease), G12 (drain per resume, by the drain).
+// Every hold a dispatch function releases is released by a `HoldRelease` declared before the resume, so it is
+// released at scope end, after the task has been resumed.
 //
 //===----------------------------------------------------------------------===//
 
@@ -31,24 +22,27 @@ namespace Eco::System {
 
 namespace {
 
+/// The most `WsCloseInfo` entries kept for erased WebSockets.
 constexpr size_t kRecentlyClosed = 4096;
 
+/// Returns the reactor that WebSocket connections run on.
 IoReactor& reactor() { return IoReactor::instance(); }
 
+/// Asks the reactor to abort `c`, if it is not null.
 void abortConn(const std::shared_ptr<Conn>& c) {
     if (!c) return;
     std::shared_ptr<Conn> cc = c;
     reactor().submit([cc] { cc->abort(false); });
 }
 
+/// Asks the reactor to abandon WebSocket `k` at once, if it is not null.
 void abortCore(const std::shared_ptr<WsCore>& k) {
     if (!k) return;
     std::shared_ptr<WsCore> kk = k;
     reactor().submit([kk] { kk->abortNow(); });
 }
 
-// A dead heap's entries: close their reactor objects (their counts and
-// tokens died with the heap) and release the handshakes' peer holds.
+/// Empties `t` for a new heap generation, as the header's file comment describes.
 void resetTables(WsTables& t) {
     for (auto& kv : t.handshakes) {
         HoldRelease peerHold(kv.second.peerHold);
@@ -65,14 +59,15 @@ void resetTables(WsTables& t) {
     t.recentlyClosed.clear();
 }
 
-// Takes `token`'s resume, rooted by the caller's guard. Nil: killed.
+/// Takes the resume closure parked under `token`, or nil if its task was killed. The result is not rooted.
 HPointer takeResume(uint64_t token) { return Scheduler::instance().takePendingResume(token); }
 
-// ( Int, String, Int ) EpT (sockets plan §3.2). Fresh.
+/// Builds the Elm value of endpoint `ep`, as `buildEndpoint` does. The result is not rooted.
 HPointer endpointOf(const SockEndpoint& ep) { return buildEndpoint(ep); }
 
-// Erases a WebSocket whose faces are gone and that is Closed, keeping its
-// CloseInfo in the bounded FIFO.
+/// Erases the entry of WebSocket `wsId` if it has ended, both faces are gone, no `closed` task is parked on it and
+/// no subscription names it, keeping its `WsCloseInfo` in `recentlyClosed` and dropping the oldest beyond
+/// `kRecentlyClosed`.
 void maybeRetire(int64_t wsId) {
     auto& t = wsTables();
     auto it = t.sockets.find(wsId);
@@ -85,15 +80,16 @@ void maybeRetire(int64_t wsId) {
     t.sockets.erase(it);
 }
 
-// --- Event dispatchers (WsEvents.cpp drain) --------------------------------------
+// --- Event dispatchers --------------------------------------------------------------
 
-// dial → ( hsId, ( status, isH2 ), List ( String, List String ) ), masks 0x1 / 0x1.
+/// Resumes a `dial` task with `( hsId, ( status, isH2 ), headers )`, registering the connection as a client
+/// handshake, or with the failure. Returns whether a task was resumed. Unboxed-field masks: 0x1 and 0x1.
 bool onDialed(WsEvent& ev) {
-    HoldRelease release(ev.token);   // the dial's hold
+    HoldRelease release(ev.token);
     wsTables().pendingDials.erase(ev.token);
     HPointer resume = takeResume(ev.token);
     if (alloc::isNil(resume)) {
-        abortConn(ev.conn);   // an orphaned handshake is closed
+        abortConn(ev.conn);
         return false;
     }
     HPointer task = alloc::listNil(), headers = alloc::listNil(), status = alloc::listNil();
@@ -114,8 +110,9 @@ bool onDialed(WsEvent& ev) {
     return true;
 }
 
-// readUpgrade → ( upId, ( method, target, version ), ( headers, isH2, remoteEpT ) ),
-// masks 0x1 / 0 / 0.
+/// Resumes a `readUpgrade` task with `( upId, ( method, target, version ), ( headers, isH2, remote ) )`,
+/// registering the connection as a server handshake, or with the failure. `isH2` is always False. Returns whether a
+/// task was resumed. Unboxed-field masks: 0x1, 0 and 0.
 bool onUpgradeRead(WsEvent& ev) {
     HoldRelease release(ev.token);
     HPointer resume = takeResume(ev.token);
@@ -146,13 +143,15 @@ bool onUpgradeRead(WsEvent& ev) {
     return true;
 }
 
-// open → ( wsId, ( readableId, writableId ), ( localEpT, remoteEpT ) ), masks 0x1 / 0x5 / 0.
+/// Resumes an `open` task with `( wsId, ( readableId, writableId ), ( local, remote ) )`, or with the failure. The
+/// stream ids are 0 if the WebSocket has no entry. Returns whether a task was resumed. Unboxed-field masks: 0x1,
+/// 0x5 and 0.
 bool onOpened(WsEvent& ev) {
     HoldRelease release(ev.token);
     HPointer resume = takeResume(ev.token);
     WsEntry* e = findWs(ev.wsId);
     if (alloc::isNil(resume)) {
-        if (e && !ev.failed) abortCore(e->core);   // killed: nobody gets the WebSocket
+        if (e && !ev.failed) abortCore(e->core);
         return false;
     }
     int64_t rid = e ? e->readableId : 0, wid = e ? e->writableId : 0;
@@ -173,6 +172,7 @@ bool onOpened(WsEvent& ev) {
     return true;
 }
 
+/// Resumes a close or reject task with unit, or with the failure. Returns whether a task was resumed.
 bool onOpDone(WsEvent& ev) {
     HoldRelease release(ev.token);
     HPointer resume = takeResume(ev.token);
@@ -184,6 +184,7 @@ bool onOpDone(WsEvent& ev) {
     return true;
 }
 
+/// Resumes a `ping` task with the round-trip time, or with the failure. Returns whether a task was resumed.
 bool onPingDone(WsEvent& ev) {
     HoldRelease release(ev.token);
     HPointer resume = takeResume(ev.token);
@@ -195,12 +196,15 @@ bool onPingDone(WsEvent& ev) {
     return true;
 }
 
+/// Records the end of a WebSocket, as the header's file comment describes, and erases the entry if that leaves it
+/// ready to be erased. Does nothing for a WebSocket with no entry or one already ended. Returns false, because it
+/// drains the Scheduler after each task it resumes.
 bool onClosed(WsEvent& ev) {
     WsEntry* e = findWs(ev.wsId);
     if (!e || e->closed) return false;
     e->closed = true;
     e->info = WsCloseInfo{ev.closeCode, ev.reason, ev.clean};
-    HoldRelease handshakeHold(e->closeHold);   // the close handshake's hold, once
+    HoldRelease handshakeHold(e->closeHold);
     e->closeHold = kNoHold;
     std::vector<uint64_t> waiters;
     waiters.swap(e->closedWaiters);
@@ -217,19 +221,17 @@ bool onClosed(WsEvent& ev) {
                              alloc::boxed(info.clean ? alloc::elmTrue() : alloc::elmFalse()), 0x1);
         task = succeed(task);
         Scheduler::callClosure1(resume, task);
-        Scheduler::instance().drain();   // G12: once per resumed task
+        Scheduler::instance().drain();
         resumed = true;
     }
-    // onClose subscribers (C.2): delivered now, or held for the first one.
     wsManagerOnClosed(ev.wsId);
     maybeRetire(ev.wsId);
     (void)resumed;
-    return false;   // drained per resume above
+    return false;
 }
 
-// WS6: a streamed message started: its body's pair (a plain channel source
-// over a WsBodyChannel; text bodies yield Strings), whose id the core
-// announces on the readable. A WebSocket gone from the tables gets none.
+/// Creates the stream pair of a streamed message's body, a channel source over a `WsBodyChannel`, and hands its id
+/// to the WebSocket's core on the reactor. Does nothing for a WebSocket with no entry or no core. Returns false.
 bool onBodyNeeded(WsEvent& ev) {
     WsEntry* e = findWs(ev.wsId);
     if (!e || !e->core) return false;
@@ -240,15 +242,14 @@ bool onBodyNeeded(WsEvent& ev) {
     return false;
 }
 
+/// Discards the stream pair `ev.pairId`. Returns true.
 bool onBodyDispose(WsEvent& ev) {
     discardReadable(ev.pairId);
     return true;   // it may have completed parked tasks
 }
 
-// The connection of an upgradeRequest handshake (HoldProtocol watch mode)
-// ended while it waited for accept / reject: nobody is owed an answer any
-// more, so its peer hold ends (LIVE-1c, N5). The entry stays: accept then
-// fails ECONNRESET, reject and abandon complete at once.
+/// Releases the peer hold of handshake `ev.wsId`, whose connection has gone before the handshake was answered. The
+/// entry stays in the table. Returns false.
 bool onHandshakeGone(WsEvent& ev) {
     auto& t = wsTables();
     auto it = t.handshakes.find(ev.wsId);
@@ -265,7 +266,7 @@ bool onHandshakeGone(WsEvent& ev) {
 // ---------------------------------------------------------------------------
 
 WsTables& wsTables() {
-    static auto* t = new WsTables();   // leaky (§3.4)
+    static auto* t = new WsTables();
     uint64_t g = currentHeapGeneration();
     if (!t->init || t->gen != g) {
         if (t->init) resetTables(*t);
@@ -284,7 +285,7 @@ WsEntry* findWs(int64_t wsId) {
 void ensureWsTables() {
     ensureWsEvents();
     ensureSocketTables();
-    static bool done = false;   // main thread only
+    static bool done = false;   // eco thread only
     if (done) return;
     done = true;
     setWsEventDispatch(WsEvent::Kind::Dialed, &onDialed);
@@ -345,7 +346,7 @@ void wsTablesRetire(int64_t wsId) { maybeRetire(wsId); }
 bool cancelPendingDial(uint64_t token) {
     auto& m = wsTables().pendingDials;
     auto it = m.find(token);
-    if (it == m.end()) return false;   // its Dialed event is queued: the drain releases
+    if (it == m.end()) return false;   // already dispatched, or the tables were reset
     std::shared_ptr<DialJob> job = it->second;
     m.erase(it);
     return job->cancel();
@@ -357,7 +358,7 @@ bool cancelClosedWaiter(uint64_t token) {
         auto it = std::find(w.begin(), w.end(), token);
         if (it == w.end()) continue;
         w.erase(it);
-        return true;   // it held a count: the kill handle releases it
+        return true;
     }
     return false;
 }

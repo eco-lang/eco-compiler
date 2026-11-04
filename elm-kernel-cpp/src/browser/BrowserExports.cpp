@@ -1,6 +1,8 @@
 //===- BrowserExports.cpp - C-linkage exports for Browser module -----------===//
 //
-// Browser module exports - mostly stubs since they require platform integration.
+// The C exports for elm/browser's `Browser` and `Debugger` kernels. Natively there is no DOM,
+// navigation or debugger, so these exist only so that a program referencing elm/browser links.
+// Their contracts are on the declarations in `KernelExports.h`. They do not use `Browser.hpp`.
 //
 //===----------------------------------------------------------------------===//
 

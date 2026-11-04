@@ -1,27 +1,8 @@
 //===- System.cpp - eco/system kernel module System (bodies) --------------===//
 //
-// plans/eco-system-library.md Appendix B.1 and §3.7 / §3.8:
-//   * environmentNow — ((platform, arch, applicationPath), (argv, start
-//                     time in ms), (stdin, stdout, stderr) pair ids); a plain
-//                     value, built while the flags are decoded, before `init`
-//                     (plans/eco-system-api-refactor.md D13). The stdio pairs
-//                     are an FdSource on fd 0 and FdSinks on fds 1 and 2,
-//                     created lazily once per process (per heap generation,
-//                     F24) and pinned; fds 0–2 are never closed (§3.4).
-//                     Platform and architecture are compile-time values,
-//                     Node's spellings (§3.8).
-//   * getEnvironmentVariables — `environ`, split at the first '='.
-//   * exitWithCode  — standalone: fflush + std::exit; embed: set the code
-//                     and request a stop (§3.7).
-//   * setExitCode   — eco_set_exit_code.
-//   * rearmEmptyEventLoop — SystemManager::rearmEmptyEventLoop (L-REARM).
-//
-// argv is read from the operating system (/proc/self/cmdline on Linux,
-// _NSGetArgc/_NSGetArgv on macOS, __argc/__argv on Windows), which is the
-// full C argv of the process (D10) without a dependency on eco/kernel's Env
-// (D1). Embedded in a host, it is the host's argv.
-//
-// Templates used: T1 (bodies), T3 (lists of strings / pairs).
+// The arguments are read from the operating system rather than from what `main` was given, so they are
+// the full C argv of the process wherever the program was started from: /proc/self/cmdline on Linux,
+// `_NSGetArgc`/`_NSGetArgv` on macOS and `__argc`/`__argv` on Windows. Elsewhere the list is empty.
 //
 //===----------------------------------------------------------------------===//
 
@@ -61,6 +42,7 @@ namespace {
 
 // --- Platform facts (no allocation) -----------------------------------------
 
+// Returns Node's `process.platform` spelling for the platform this file is compiled for, or "unknown".
 const char* platformName() {
 #if defined(_WIN32)
     return "win32";
@@ -81,7 +63,7 @@ const char* platformName() {
 #endif
 }
 
-// Node's compile-time `process.arch` spellings (§3.8).
+// Returns Node's `process.arch` spelling for the architecture this file is compiled for, or "unknown".
 const char* archName() {
 #if defined(__x86_64__) || defined(_M_X64)
     return "x64";
@@ -110,6 +92,9 @@ const char* archName() {
 #endif
 }
 
+// Returns the path of the running executable, or "" if it cannot be read. On macOS the path is resolved
+// with `realpath`, falling back to the unresolved one; on Linux it is the /proc/self/exe link; on other
+// platforms it is always "".
 std::string applicationPath() {
 #if defined(__APPLE__)
     uint32_t size = 0;
@@ -133,6 +118,9 @@ std::string applicationPath() {
 #endif
 }
 
+// Returns the process's command-line arguments: /proc/self/cmdline on Linux, `_NSGetArgc`/`_NSGetArgv` on
+// macOS, `__argc`/`__argv` on Windows, and an empty list elsewhere. On Linux an unreadable
+// /proc/self/cmdline gives an empty list.
 std::vector<std::string> processArgs() {
     std::vector<std::string> out;
 #if defined(__APPLE__)
@@ -155,6 +143,7 @@ std::vector<std::string> processArgs() {
     return out;
 }
 
+// Returns the process's environment block, a null-terminated array of "name=value" strings.
 char** environment() {
 #if defined(__APPLE__)
     return *_NSGetEnviron();
@@ -167,8 +156,10 @@ char** environment() {
 
 // --- Stdio pairs --------------------------------------------------------------
 
-// The stdin/stdout/stderr pair ids, created once per heap generation (the
-// table of a dead heap is cleared, F24) and pinned. Main thread only.
+// Writes the ids of the stdin, stdout and stderr stream pairs to `ids`. The pairs are made, without taking
+// ownership of fds 0 to 2, and pinned when the cache is from an older heap generation (a heap reset clears
+// the stream table) or any cached id is no longer in the table; otherwise the cached ids are reused. Eco
+// thread only: the cache is an unguarded function static.
 void stdioIds(int64_t ids[3]) {
     struct Cache {
         uint64_t gen = 0;
@@ -191,8 +182,9 @@ void stdioIds(int64_t ids[3]) {
     for (int i = 0; i < 3; ++i) ids[i] = c.ids[i];
 }
 
-// --- Builders (main thread; T3) -------------------------------------------------
+// --- Builders (eco thread) ------------------------------------------------------
 
+// Builds an Elm `List String` of `items`, in order.
 HPointer stringList(const std::vector<std::string>& items) {
     std::vector<HPointer> ptrs(items.size(), alloc::listNil());
     auto& rs = Allocator::instance().getRootSet();
@@ -206,6 +198,7 @@ HPointer stringList(const std::vector<std::string>& items) {
     return list;
 }
 
+// Builds an Elm `List ( String, String )` of `items`, in order.
 HPointer stringPairList(const std::vector<std::pair<std::string, std::string>>& items) {
     std::vector<HPointer> ptrs(items.size(), alloc::listNil());
     auto& rs = Allocator::instance().getRootSet();
@@ -214,7 +207,7 @@ HPointer stringPairList(const std::vector<std::pair<std::string, std::string>>& 
     for (size_t i = 0; i < items.size(); ++i) {
         ptrs[i] = alloc::allocStringFromUTF8(items[i].first);   // rooted in the range
         HPointer value = alloc::allocStringFromUTF8(items[i].second);
-        // `value` is fresh and goes straight into the helper, which roots it (G4).
+        // `value` is fresh and goes straight into tuple2, which roots its boxed fields.
         ptrs[i] = alloc::tuple2(alloc::boxed(ptrs[i]), alloc::boxed(value), 0);
     }
     HPointer list = alloc::listFromPointers(ptrs);
@@ -222,19 +215,15 @@ HPointer stringPairList(const std::vector<std::pair<std::string, std::string>>& 
     return list;
 }
 
+// Returns the value of the boxed Int `captured`.
 int64_t payloadInt(HPointer captured) {
     return static_cast<ElmInt*>(Allocator::instance().resolve(captured))->value;
 }
 
 } // namespace
 
-// environmentNow : Json.Value -> ( ( String, String, String ), ( List String, Int ), ( Int, Int, Int ) )
-// (plans/eco-system-api-refactor.md D13, §10.1). Called once, from System.environmentDecoder,
-// while the runtime decodes the program's flags right before `init` (main thread). Not a Task:
-// the work it does (reading argv, creating the stdio pairs once per heap generation) is the
-// startup of the program itself.
 HPointer systemEnvironmentNow() {
-    // G3: gather everything first.
+    // Everything that does not allocate on the heap is gathered first.
     std::string plat = platformName();
     std::string arch = archName();
     std::string app = applicationPath();
@@ -254,15 +243,14 @@ HPointer systemEnvironmentNow() {
     names = alloc::tuple3(alloc::boxed(platHP), alloc::boxed(archHP),
                           alloc::boxed(appHP), 0);
     argList = stringList(args);
-    // ( List String, Int ): slot 1 unboxed (2 bits per slot: mask 0x4, HEAP_046).
+    // ( List String, Int ): slot 1 unboxed (2 bits per slot, so mask 0x4).
     argsTime = alloc::tuple2(alloc::boxed(argList), alloc::unboxedInt(startMillis), 0x4);
     HPointer stdio = alloc::tuple3(alloc::unboxedInt(ids[0]), alloc::unboxedInt(ids[1]),
                                    alloc::unboxedInt(ids[2]), 0x15);
-    // `stdio` is fresh and goes straight into the helper (G4).
+    // `stdio` is fresh and goes straight into tuple3, which roots its boxed fields.
     return alloc::tuple3(alloc::boxed(names), alloc::boxed(argsTime), alloc::boxed(stdio), 0);
 }
 
-// getEnvironmentVariables : Task Never (List ( String, String ))
 HPointer systemGetEnvironmentVariablesBody(HPointer /*captured*/) {
     ECO_SYSTEM_BODY_GUARD(Never,
         std::vector<std::pair<std::string, std::string>> vars;
@@ -281,24 +269,22 @@ HPointer systemGetEnvironmentVariablesBody(HPointer /*captured*/) {
     )
 }
 
-// exitWithCode : Int -> Task Never () — payload: boxed Int.
 HPointer systemExitWithCodeBody(HPointer captured) {
     ECO_SYSTEM_BODY_GUARD(Never,
         int code = static_cast<int>(payloadInt(captured));
         eco_set_exit_code(code);
         auto& sched = Scheduler::instance();
         if (sched.embedMode()) {
-            // The host owns the process: stop the loop; eco_app_join returns
-            // the code (§3.7).
+            // The host owns the process, so only the loop stops; the host's
+            // eco_app_join returns the code.
             sched.requestStop();
             return succeedUnit();
         }
         std::fflush(nullptr);
-        std::exit(code);   // as in gren, pending IO is not waited for
+        std::exit(code);
     )
 }
 
-// setExitCode : Int -> Task Never () — payload: boxed Int.
 HPointer systemSetExitCodeBody(HPointer captured) {
     ECO_SYSTEM_BODY_GUARD(Never,
         eco_set_exit_code(static_cast<int>(payloadInt(captured)));
@@ -306,8 +292,6 @@ HPointer systemSetExitCodeBody(HPointer captured) {
     )
 }
 
-// rearmEmptyEventLoop : Task Never () — payload: unit (unused). Sets the
-// SystemManager armed bit (plans/program-liveness-rule.md §7, LIVE_005).
 HPointer systemRearmEmptyEventLoopBody(HPointer /*captured*/) {
     ECO_SYSTEM_BODY_GUARD(Never,
         SystemManager::rearmEmptyEventLoop();

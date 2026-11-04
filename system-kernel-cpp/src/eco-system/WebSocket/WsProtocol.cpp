@@ -1,16 +1,8 @@
 //===- WsProtocol.cpp - The WebSocket codec as a connection protocol ------===//
 //
-// See WsProtocol.hpp (plans/eco-system-websockets.md §3.6, Appendix D.1-D.6,
-// D.8, D.9). Reactor thread only (G1): results leave as POD ChannelResults
-// and WsEvents.
-//
-// Re-entrancy: a port call (a write, updateInterest) may run IO at once
-// and call back into the core (portData, portWritable). Every entry point
-// therefore finishes its state changes before it calls the port, input
-// that arrives while the decoder runs is queued (pendingIn_), and the
-// write pump does not nest.
-//
-// Templates used: none (POD only, G1); T9 completion side (ChannelResult).
+// Re-entrancy shapes this file. A port call (a write, an interest update) may run IO at once and call back into
+// the core (portData, portWritable). So input that arrives while the decoder runs is queued in pendingIn_ and
+// decoded by the outer call, and the write pump and the inflate pump each refuse to nest, guarded by a flag.
 //
 //===----------------------------------------------------------------------===//
 
@@ -31,12 +23,16 @@ namespace Eco::System {
 
 namespace {
 
+// The reason given to requests that fail because the WebSocket is closing or closed.
 constexpr const char* kSocketClosed = "socket closed";
+// The ping and heartbeat deadline, in milliseconds, used where WsConfig::heartbeatTimeout is 0 or less.
 constexpr int64_t kDefaultPingTimeoutMs = 30000;
 
+// Returns the reactor's monotonic clock in milliseconds.
 int64_t nowMs() { return IoReactor::instance().nowMs(); }
 
-// A masking key from a pooled RAND_bytes buffer (D.8). Reactor thread.
+// Writes the next 4-byte masking key to `out`, taken from a per-thread pool of 4096 bytes that wsRandomBytes
+// refills when it runs out.
 void nextMask(unsigned char out[4]) {
     thread_local unsigned char pool[4096];
     thread_local size_t at = sizeof pool;
@@ -48,7 +44,7 @@ void nextMask(unsigned char out[4]) {
     at += 4;
 }
 
-// D.9: the readable's failure reason for a close code we failed with.
+// Returns the readable's failure reason for a connection failed with `code` and `text`.
 std::string reasonFor(int code, const std::string& text) {
     switch (code) {
     case ws::kCloseInvalidData:
@@ -62,8 +58,10 @@ std::string reasonFor(int code, const std::string& text) {
     }
 }
 
+// Returns the readable's errno for a connection failed with `code`.
 int errnoFor(int code) { return code == ws::kCloseMessageTooBig ? EMSGSIZE : EPROTO; }
 
+// Returns `n` as 8 big-endian bytes, the payload of a ping.
 std::string pingPayload(uint64_t n) {
     std::string p(8, '\0');
     for (int i = 7; i >= 0; --i) {
@@ -123,7 +121,7 @@ void WsCore::portData(const char* data, size_t n) {
     processing_ = true;
     size_t used = decoder_.feed(data, n, *this);
     if (used < n && !inputDone_ && !decoder_.failed()) {
-        // Stopped after a message (held, WS6): the rest waits.
+        // Stopped after a streamed message (held): the rest waits.
         std::string rest(data + used, n - used);
         rest.append(pendingIn_);
         pendingIn_.swap(rest);
@@ -132,8 +130,6 @@ void WsCore::portData(const char* data, size_t n) {
     processInput();
 }
 
-// Decodes the queued input (bytes that arrived re-entrantly, or held after a
-// streamed message) until it is used up, the input is held, or it ends.
 void WsCore::processInput() {
     if (processing_) return;
     processing_ = true;
@@ -166,7 +162,7 @@ void WsCore::onControl(uint8_t opcode, std::string&& payload) {
     if (inputDone_) return;
     switch (opcode) {
     case ws::kOpPing:
-        // Answered ahead of queued data; never after our Close (D.6).
+        // Straight to the port, so ahead of queued data.
         if (!closeQueued_) writeControl(ws::kOpPong, payload, nullptr);
         return;
     case ws::kOpPong: {
@@ -176,7 +172,7 @@ void WsCore::onControl(uint8_t opcode, std::string&& payload) {
             hbDeadline_ = 0;
             if (cfg_.heartbeatInterval > 0) armHeartbeat(t + cfg_.heartbeatInterval);
         }
-        // A pong answers its ping and every earlier one; unsolicited pongs are ignored.
+        // An unsolicited pong matches nothing and is ignored.
         auto it = std::find_if(pings_.begin(), pings_.end(),
                                [&](const Ping& p) { return p.payload == payload; });
         if (it != pings_.end()) {
@@ -200,7 +196,7 @@ void WsCore::onControl(uint8_t opcode, std::string&& payload) {
         }
         setCloseInfo(code, reason, true);
         if (rxActive_ && !rxEndPending_) {
-            // A Close in the middle of a message (WS6): its body fails, the
+            // A Close in the middle of a message: its body fails, the
             // readable ends cleanly. (A message that arrived whole and is
             // still inflating completes.)
             if (body_ && !body_->messageDone) bodyFail(ECANCELED, kSocketClosed);
@@ -208,8 +204,7 @@ void WsCore::onControl(uint8_t opcode, std::string&& payload) {
         }
         endReadable(ReadEnd::Eof, 0, std::string());
         if (!closeQueued_) {
-            // Echo once, with its code (an empty payload echoed empty, D.5);
-            // queued data is not sent after it.
+            // Queued data is not sent after the echo.
             closeQueued_ = true;
             writeClosed_ = true;
             failQueued(kSocketClosed);
@@ -289,7 +284,7 @@ void WsCore::onDataEnd() {
             discardAfterMessage_ = false;
             decoder_.setDiscardData(true);
         } else {
-            // WS6: the next message waits until this body is finished.
+            // The next message waits until this body is finished.
             held_ = true;
             decoder_.stop();
         }
@@ -304,7 +299,6 @@ void WsCore::onDataEnd() {
     checkPause();
 }
 
-// Payload bytes of the current message (inflated if it is compressed).
 void WsCore::deliverData(const char* p, size_t n) {
     // A message that arrived whole may still be inflating after a Close.
     if (!rxActive_ || failed_ || (inputDone_ && !rxEndPending_)) return;
@@ -344,8 +338,7 @@ void WsCore::deliverData(const char* p, size_t n) {
     deliverBody();
 }
 
-// Inflates the current compressed message in steps of at most 64 KiB (§3.7).
-// Streamed: pauses while the body holds kReadHighBytes (deliverBody resumes).
+// deliverBody resumes a pump that stopped because the body was full.
 void WsCore::pumpInflate() {
     if (pumpingInflate_) return;
     pumpingInflate_ = true;
@@ -373,7 +366,6 @@ void WsCore::pumpInflate() {
     checkPause();
 }
 
-// The current message's input is complete (and inflated).
 void WsCore::messageComplete() {
     if (!rxActive_) return;
     rxActive_ = false;
@@ -397,8 +389,6 @@ void WsCore::messageComplete() {
     }
 }
 
-// The message in progress will never complete (a failure, our Close, a
-// cancelled readable): forget its partial state.
 void WsCore::abandonRx() {
     rxActive_ = false;
     rxEndPending_ = false;
@@ -407,7 +397,7 @@ void WsCore::abandonRx() {
     if (inflater_) inflater_->abandonMessage();
 }
 
-// --- Streamed bodies (WS6) ----------------------------------------------------------------
+// --- Streamed bodies ----------------------------------------------------------------------
 
 void WsCore::startBody(uint8_t opcode) {
     body_ = std::make_unique<Body>();
@@ -418,7 +408,7 @@ void WsCore::startBody(uint8_t opcode) {
     m.ready = false;
     m.bodySeq = body_->seq;
     msgQ_.push_back(std::move(m));
-    // The body's stream pair is created on the main thread (bodyReady).
+    // The body's stream pair is created on the eco thread (bodyReady).
     WsEvent ev;
     ev.kind = WsEvent::Kind::BodyNeeded;
     ev.gen = cfg_.gen;
@@ -440,8 +430,8 @@ void WsCore::bodyReady(uint64_t seq, int64_t pairId) {
     }
     if (found && body_ && body_->seq == seq) body_->pairId = pairId;
     if (!found) {
-        // Nobody can receive this body any more (the readable was cancelled
-        // or failed): let the main thread drop its pair.
+        // Nobody can receive this body any more (the readable was
+        // cancelled): let the eco thread drop its pair.
         WsEvent ev;
         ev.kind = WsEvent::Kind::BodyDispose;
         ev.gen = cfg_.gen;
@@ -552,8 +542,6 @@ void WsCore::bodyFail(int err, const std::string& reason) {
     deliverBody();
 }
 
-// A body is finished once its end was read (or it was cancelled and its
-// message is over): the held input continues with the next message.
 void WsCore::maybeFinishBody() {
     Body* b = body_.get();
     if (!b) return;
@@ -636,7 +624,7 @@ void WsCore::readShutdown() {
     readShut_ = true;
     if (cfg_.streamed && decoder_.inMessage()) {
         // A body is being received: it continues to its end; later messages
-        // are discarded (WS6).
+        // are discarded.
         discardAfterMessage_ = true;
     } else {
         decoder_.setDiscardData(true);
@@ -678,8 +666,6 @@ void WsCore::readShutdown() {
     checkPause();
 }
 
-// Backpressure (W5): pause reading while Elm has not taken enough; the
-// heartbeat and the pong deadlines are suspended meanwhile.
 void WsCore::checkPause() {
     bool high = msgQBytes_ >= kReadHighBytes || msgQ_.size() >= kReadHighCount || held_ ||
                 (body_ && body_->qBytes >= kReadHighBytes) ||
@@ -754,7 +740,7 @@ void WsCore::pumpWrites() {
             continue;
         }
         if (it.streamSeq != 0) {
-            // An outgoing stream (WS6): its chunks as non-FIN fragments, then
+            // An outgoing stream: its chunks as non-FIN fragments, then
             // the FIN frame; everything behind it waits.
             auto sit = outStreams_.find(it.streamSeq);
             if (sit == outStreams_.end()) {
@@ -801,7 +787,7 @@ void WsCore::pumpWrites() {
             // The end of the message: a FIN frame (with the opcode when nothing
             // was sent: an empty message, never compressed). A compressed one
             // carries 0x00, the header of an empty stored block that the
-            // receiver's appended 00 00 ff ff completes (RFC 7692 §7.2.3.6);
+            // receiver's appended 00 00 ff ff completes;
             // with an empty payload those 4 bytes would open a block that never
             // ends, breaking the next message under context takeover.
             bool first = !st.started;
@@ -826,8 +812,6 @@ void WsCore::pumpWrites() {
             continue;
         }
         if (!it.prepared) {
-            // permessage-deflate (WS7): whole messages of at least `threshold`
-            // bytes are compressed (RSV1 on the first fragment).
             it.prepared = true;
             if (cfg_.deflate && static_cast<int64_t>(it.frame.size()) >= cfg_.threshold) {
                 if (!deflater_) deflater_ = std::make_unique<ws::Deflater>(cfg_.ourBits, cfg_.ourNoContext);
@@ -841,8 +825,7 @@ void WsCore::pumpWrites() {
                 it.compressed = true;
             }
         }
-        // The next fragment of the message (D.1: the opcode on the first,
-        // continuations after; FIN on the last).
+        // The opcode on the first fragment, continuations after; FIN on the last.
         size_t n = std::min(kFragment, it.frame.size() - it.offset);
         bool first = it.offset == 0;
         bool fin = it.offset + n >= it.frame.size();
@@ -865,7 +848,7 @@ void WsCore::pumpWrites() {
     pumping_ = false;
 }
 
-// --- Outgoing streams (WS6) --------------------------------------------------------------
+// --- Outgoing streams -------------------------------------------------------------------
 
 void WsCore::openOutgoing(uint64_t seq, uint8_t opcode) {
     OutStream st;
@@ -925,7 +908,7 @@ void WsCore::outAbort(uint64_t seq) {
     auto sit = outStreams_.find(seq);
     if (sit == outStreams_.end()) return;   // finished (FIN sent) or failed already
     if (sit->second.started && !failed_ && !closedPosted_ && !transportGone_) {
-        // A message cut off in the middle cannot be completed (WS6).
+        // A message cut off in the middle cannot be completed.
         failConnection(ws::kCloseInternalError, "an outgoing message stream was cancelled");
         return;
     }
@@ -941,7 +924,6 @@ void WsCore::outAbort(uint64_t seq) {
     pumpWrites();
 }
 
-// Fails a stream's pending chunk writes and its FIN close.
 void WsCore::failStream(OutStream& st, const std::string& reason) {
     for (const OutItem& c : st.chunks) postWriteResult(c.chan, c.token, ECANCELED, reason, 0);
     st.chunks.clear();
@@ -972,9 +954,8 @@ void WsCore::postWriteResult(uint64_t chan, uint64_t token, int err, const std::
     postChannelResult(std::move(r));
 }
 
-// Fails every queued data message (not yet given to the port). A queued
-// graceful Close is dropped too (its waiters complete with the Close that
-// replaces it, or when the connection ends).
+// A dropped graceful Close's waiters complete with the Close that replaces
+// it, or when the connection ends.
 void WsCore::failQueued(const std::string& reason) {
     std::deque<OutItem> q;
     q.swap(outQ_);
@@ -1004,8 +985,8 @@ void WsCore::writeClose(uint64_t chan, uint64_t token) {
 }
 
 void WsCore::writeShutdown() {
-    // cancelWritable fails the connection (D.5); a writable that failed
-    // because the WebSocket is closing (or closed) does not fail it again.
+    // A writable that failed because the WebSocket is closing or closed does
+    // not fail it again.
     if (writeClosed_ || failed_ || closedPosted_ || transportGone_) return;
     failConnection(ws::kCloseInternalError, "the writable was cancelled");
 }
@@ -1019,16 +1000,14 @@ void WsCore::startClose(int code, const std::string& reason, uint64_t token) {
     queueGracefulClose(code, reason);
 }
 
-// Our Close, behind the queued data (D.5): data frames are discarded from now
-// on, later writes fail, the close timeout runs.
 void WsCore::queueGracefulClose(int code, const std::string& reason) {
     if (closeQueued_) return;
     closeQueued_ = true;
     writeClosed_ = true;
     decoder_.setDiscardData(true);
     if (rxActive_ && !rxEndPending_) {
-        // Data after our Close is discarded: a body in progress fails (WS6)
-        // (one that arrived whole and is still inflating completes).
+        // Data after our Close is discarded: a body in progress fails (one
+        // that arrived whole and is still inflating completes).
         if (body_ && !body_->messageDone) bodyFail(ECANCELED, kSocketClosed);
         abandonRx();
     }
@@ -1063,9 +1042,8 @@ void WsCore::closeFrameWritten(int) {
     finishIfDone();
 }
 
-// Both Close frames are through: the WebSocket is Closed. The server closes
-// TCP; the client waits for the server's FIN (portEof), bounded by the close
-// timeout.
+// The client instead waits for the server's FIN (portEof), bounded by the
+// close-handshake deadline.
 void WsCore::finishIfDone() {
     if (!closeWritten_ || !closeReceived_ || failed_) return;
     postClosed();
@@ -1081,8 +1059,6 @@ void WsCore::failConnection(int code, const std::string& text) {
     failWith(code, text, code, text, errnoFor(code), reasonFor(code, text));
 }
 
-// Fail the connection: send Close(frameCode, frameText) unless ours is out
-// already, stop processing input, end the readable with the failure, close.
 void WsCore::failWith(int frameCode, const std::string& frameText, int infoCode,
                       const std::string& infoReason, int readErr, const std::string& readReason) {
     if (failed_ || closedPosted_) return;
@@ -1109,13 +1085,10 @@ void WsCore::failWith(int frameCode, const std::string& frameText, int infoCode,
 }
 
 void WsCore::heartbeatTimeout() {
-    // W5: Close 1001 best effort, reported Abnormal.
     failWith(ws::kCloseGoingAway, std::string(), ws::kCloseAbnormal, std::string(), ETIMEDOUT,
              "heartbeat ETIMEDOUT");
 }
 
-// The transport ended (EOF without a Close, an error, an abort, the close
-// timeout). Everything still pending completes.
 void WsCore::ended(int err, const std::string& reason, bool) {
     setCloseInfo(ws::kCloseAbnormal, std::string(), false);
     if (body_ && !body_->messageDone) bodyFail(err, reason);
@@ -1124,7 +1097,7 @@ void WsCore::ended(int err, const std::string& reason, bool) {
     writeClosed_ = true;
     failQueued(kSocketClosed);
     if (!closeWritten_ && (!closeOps_.empty() || !closeWaiters_.empty())) {
-        // Our Close never got out: its waiters complete (close is idempotent).
+        // Our Close never got out: its waiters complete anyway.
         closeWritten_ = true;
         std::vector<uint64_t> ops;
         ops.swap(closeOps_);
@@ -1270,7 +1243,7 @@ void WsCore::portTimer(int timerId) {
         }
         for (const Ping& p : expired) postPing(p.token, false, 0, "ETIMEDOUT", "ping ETIMEDOUT");
         if (hbPingSent_ && hbDeadline_ > 0 && hbDeadline_ <= t) {
-            if (rxBytes_ > rxAtPing_) {   // liveness is counted in bytes (W5)
+            if (rxBytes_ > rxAtPing_) {   // any byte received counts as alive
                 hbPingSent_ = false;
                 hbDeadline_ = 0;
                 armHeartbeat(std::max(t, lastRxMs_ + cfg_.heartbeatInterval));
@@ -1283,8 +1256,8 @@ void WsCore::portTimer(int timerId) {
         return;
     }
     case Conn::kTimerCloseHandshake:
-        // The close handshake (or the client's wait for the server's FIN)
-        // took too long: abort (D.5).
+        // The close handshake, or the client's wait for the server's FIN,
+        // took too long.
         ended(ETIMEDOUT, kSocketClosed, true);
         if (port_ && !transportGone_) port_->portAbort();
         return;

@@ -1,36 +1,32 @@
 //===- Stream.cpp - eco/system stream table, pump and kernel bodies -------===//
 //
-// plans/eco-system-library.md §3.5 (normative semantics table) and B.2.
+// How the stream table works. StreamTable.hpp describes pairs and pumping; this file rests on four further
+// rules.
 //
-//   * The StreamTable is a T5 Registry (main thread only, G1/G9).
-//   * Bodies follow G2/G3: they read every input out of the heap first, act
-//     on the table (and, for channel kinds, queue POD channel requests), and
-//     only then allocate results.
-//   * read/write/enqueue/closeWritable are T9 operations: they complete at
-//     once when they can and otherwise park a resume token on the pair.
-//     In-memory parks hold nothing; channel requests hold one liveness hold
-//     each (keep-alive rule, §3.4), released by whoever completes the token.
-//   * Completions issued from a binding body only enqueue the resumed
-//     process (resumeEvaluator); the channel drain (ChannelDrain.cpp) calls
-//     Scheduler::drain() once after dispatching (T9).
-//   * After any allocation a StreamPair* may only be reused if nothing can
-//     have erased it; every loop below re-fetches the pair by id (G11).
-//   * Pumps run from one work list (the driver): pumpStream() marks a pair
-//     dirty and, unless a driver is already running, drains the list. Pipes
-//     (StreamPipe.cpp) are items on the same list, so a chain of pipes is
-//     driven iteratively, never recursively.
-//   * Custom pairs call the Elm action closure inside pump() (G11): fn,
-//     state, value and result are rooted across the call; the written value
-//     is popped off writeQ first, so the pair is consistent if the call were
-//     to re-enter the table; the pair is re-fetched after the call; the
-//     result tuple is decoded in a non-allocating scope, and each output is
-//     moved into readQ (scanned) right after it is read or boxed.
-//   * Codec pairs copy the input out of the heap, run the C++ engine
-//     (StreamCodec.cpp), then allocate the outputs one by one, each stored
-//     into readQ immediately (G3).
+// Heap values and pair pointers. Calling Elm or allocating may run the collector, and calling Elm may
+// re-enter a kernel that pumps and erases pairs. So a body reads every input out of the heap first, then
+// acts on the table (and, for a channel pair, queues POD channel requests), and allocates its result last.
+// A value taken out of a queue is rooted before the next allocation, a fresh value is stored into a scanned
+// queue before the next allocation, and a `StreamPair*` is looked up again by id after any allocation or
+// Elm call that could have erased the pair.
 //
-// Templates used: T4 (Bytes out), T5 (registry), T9 (park / complete),
-// G10 via HoldRelease (channel results), G11 (Custom action calls).
+// Parking. A read, write, enqueue or close completes at once when it can, and otherwise parks the task's
+// resume under a token kept on the pair. A park on an in-memory pair holds nothing, since only Elm code can
+// complete it. A channel request is outside work, so it normally holds one liveness hold, named by its
+// token, and the channel dispatch releases it on every path (with `HoldRelease`). An uncounted token
+// (`streamUncountedToken`), for a mapped source's read-ahead and a subscription reader's kick, is not itself
+// a hold; but a read-ahead requested while a pipe reads from the pair takes a separate hold, kept on the
+// pair and released when the result arrives. A source's untokened close (token 0) holds nothing.
+//
+// Completion. Completing a token calls the parked resume closure, which only queues the resumed process.
+// The channel drain that calls `channelDispatch` runs the scheduler once afterwards.
+//
+// Elm calls inside a pump. A Custom pair's action closure and a mapped pair's closures run in the middle of
+// a pump. The value being written has left `writeQ` before the call, so the pair is consistent if the call
+// re-enters the table; the closure, its arguments and its result are rooted across the call; and the
+// result is decoded without allocating, each output moving into `readQ` as soon as it is read or boxed.
+// A Codec pair copies its input off the heap, runs the C++ engine, and allocates its outputs one by one,
+// storing each into `readQ` at once.
 //
 //===----------------------------------------------------------------------===//
 
@@ -60,23 +56,30 @@ namespace Eco::System {
 
 namespace {
 
-constexpr const char* kWritableClosed = "\x02WritableStream is closed";   // Stream.Closed
-constexpr const char* kTerminated = "\x02TransformStream has been terminated";   // Stream.Closed
+/// The failure reason for writing to or closing a writable side that is closed. The leading "\x02" marks it
+/// as an ended-stream reason.
+constexpr const char* kWritableClosed = "\x02WritableStream is closed";
+/// The failure reason of writes behind a Custom transform that closed its stream, marked as ended.
+constexpr const char* kTerminated = "\x02TransformStream has been terminated";
+/// The most bytes one channel read asks for.
 constexpr size_t kChannelReadChunk = 64 * 1024;
 
-// Uncounted request ids (MappedSource read-ahead, reader kicks): far above
-// any resume token, below every held token (bit 63, Scheduler::acquireHold).
+/// The next uncounted request id. The ids start at 2^61, a value resume tokens are assumed never to reach,
+/// and `streamIsUncountedToken` accepts them up to 2^62, below every free-standing hold token (which has bit
+/// 63 set). Nothing checks that the counter stays below 2^62.
 uint64_t g_nextUncountedToken = uint64_t{1} << 61;
 
-// ChannelId → pair id for ChannelSource/ChannelSink pairs. Validated on use
-// (the pair must still exist and own that channel), so stale entries left
-// by an erase or a heap reset are harmless. Main thread only.
+/// Returns the map from channel id to the id of the pair that owns the channel, for every channel pair,
+/// created on first use and never destroyed. An entry is checked on use (the pair must still exist and own
+/// that channel), so an entry left behind by a heap reset is harmless. Eco thread only.
 std::unordered_map<uint64_t, int64_t>& channelPairs() {
-    static auto* m = new std::unordered_map<uint64_t, int64_t>();   // leaky (§3.4)
+    static auto* m = new std::unordered_map<uint64_t, int64_t>();
     return *m;
 }
 
-// The failure reason of a failed channel result (Core.hpp, failureReason).
+/// Returns the marked failure reason for the failed channel result `r`: the channel's own `encodeFailure`
+/// when `p` has a channel, otherwise `r.reason` if it is already marked, else a "stream" reason built from
+/// `r.err` (`EIO` when 0) or from `r.reason`. `p` may be null.
 std::string channelFailure(const StreamPair* p, const ChannelResult& r) {
     if (p && p->channel) return p->channel->encodeFailure(r.err, r.reason);
     if (isMarkedReason(r.reason)) return r.reason;
@@ -84,39 +87,42 @@ std::string channelFailure(const StreamPair* p, const ChannelResult& r) {
                             : failureReason("stream", "", r.reason);
 }
 
+/// Returns the errno name of `err`, ": ", and its `strerror` text. Eco thread only, since `strerror` is not
+/// synchronised.
 std::string describeErrno(int err) {
-    const char* m = std::strerror(err);   // main thread only (G1)
+    const char* m = std::strerror(err);
     return std::string(errnoName(err)) + ": " + (m ? m : "");
 }
 
-// A Bytes value holding `b` (T4); empty → the empty-Bytes constant (HEAP_071).
+/// Returns a new Bytes value holding a copy of `b`, or the empty-Bytes constant when `b` is empty.
+/// Allocates.
 HPointer makeBytes(const std::string& b) {
     if (b.empty()) return alloc::emptyBytes();
     alloc::BlankByteBuffer bb = alloc::allocByteBufferBlank(b.size());
-    std::memcpy(bb.bytes, b.data(), b.size());   // no allocation in between (G8)
+    std::memcpy(bb.bytes, b.data(), b.size());   // no allocation in between
     return bb.hp;
 }
 
 // --- Payload decoding (no allocation) --------------------------------------
 
+/// Returns the value of the boxed Int `captured`.
 int64_t payloadInt(HPointer captured) {
     return static_cast<ElmInt*>(Allocator::instance().resolve(captured))->value;
 }
 
-// tuple2( boxed x, unboxed Int id ), mask 0x4.
+/// Reads the payload `tuple2( boxed x, Int id )` (kind mask 0x4: slot 1 is an unboxed Int) into `x` and `id`.
+/// `x` is unrooted and stale after the next allocation.
 void payloadBoxedAndId(HPointer captured, HPointer& x, int64_t& id) {
     Tuple2* t = asTuple2(captured);
     x = t->a.p;
     id = t->b.i;
 }
 
-// --- Completion (T9) --------------------------------------------------------
+// --- Completion --------------------------------------------------------------
 
 } // namespace
 
-// Completes parked `token` with Task.succeed `value`, then releases its
-// hold if `counted` (after the resume is published, §6.2). A token whose
-// resume is gone (orphaned) only releases its hold. `value` is rooted here across the allocations.
+// The hold is released after the resumed process is queued, so the program cannot be seen idle in between.
 void streamCompleteOk(uint64_t token, bool counted, HPointer value) {
     auto& s = Scheduler::instance();
     HPointer resume = s.takePendingResume(token);   // no allocation
@@ -129,7 +135,6 @@ void streamCompleteOk(uint64_t token, bool counted, HPointer value) {
     if (counted) s.releaseHold(token);
 }
 
-// Completes parked `token` with Task.fail ( kind, reason ).
 void streamCompleteErr(uint64_t token, bool counted, int kind, const std::string& reason) {
     auto& s = Scheduler::instance();
     HPointer resume = s.takePendingResume(token);
@@ -154,36 +159,38 @@ bool streamIsUncountedToken(uint64_t token) {
 
 namespace {
 
+/// Completes `token` as `streamCompleteOk` does.
 void completeOk(uint64_t token, bool counted, HPointer value) {
     streamCompleteOk(token, counted, value);
 }
 
+/// Fails `token` as `streamCompleteErr` does.
 void completeErr(uint64_t token, bool counted, int kind, const std::string& reason) {
     streamCompleteErr(token, counted, kind, reason);
 }
 
-// The immediate path of a T9 body: resume the running binding now.
-// `resume` is the body's parameter, rooted by ECO_SYSTEM_ASYNC_GUARD.
+/// Resumes the running task at once with `task`, for a body that can answer without parking, and returns
+/// Unit for the body to return. `resume` is the body's parameter, which `ECO_SYSTEM_ASYNC_GUARD` roots.
 HPointer resumeNow(HPointer& resume, HPointer task) {
     Elm::StackRootGuard g(&task);
     Scheduler::callClosure1(resume, task);
     return alloc::unit();
 }
 
+/// A parked token to complete later, and whether it is also a liveness hold.
 struct TokenRef {
     uint64_t token;
     bool counted;
 };
 
-// Fails every token in `toks` with Cancelled `reason` (POD in, so no heap
-// word is held across the allocations).
+/// Fails every token in `toks` with a Cancelled SErr carrying `reason`. Allocates and calls Elm.
 void failAll(const std::vector<TokenRef>& toks, const std::string& reason) {
     for (const auto& t : toks) completeErr(t.token, t.counted, kSErrCancelled, reason);
 }
 
-// Collects the tokens of queued in-memory writes (and the close) of `p`
-// and empties the write side. Channel writes are in flight: they complete
-// through the channel dispatch instead, so they stay.
+/// Empties the write side of `p`, appending to `out` the tokens of the writes waiting for room, of the writes
+/// queued in memory, and of a parked close, and releases the write lock. A ChannelSink's queued writes and
+/// close are in flight, so they stay and complete through the channel dispatch.
 void drainWriteSide(StreamPair* p, std::vector<TokenRef>& out) {
     if (p->kind != StreamKind::ChannelSink) {
         for (auto& pw : p->writeQ)
@@ -201,8 +208,10 @@ void drainWriteSide(StreamPair* p, std::vector<TokenRef>& out) {
     }
 }
 
-// Sets both sides Errored with `reason` (cancelWritable, a custom Cancel,
-// a codec failure): empties both queues and collects every token to fail.
+/// Makes both sides of `p` Errored with `reason`, empties `readQ` and the write side as `drainWriteSide`
+/// does, and appends to `out` every token that must now fail: those `drainWriteSide` collects and, except on
+/// a ChannelSource, a parked read. A
+/// ChannelSource's parked read completes when its channel answers.
 void errorPair(StreamPair* p, const std::string& reason, std::vector<TokenRef>& out) {
     p->w = WState::Errored;
     p->wReason = reason;
@@ -218,9 +227,9 @@ void errorPair(StreamPair* p, const std::string& reason, std::vector<TokenRef>& 
     }
 }
 
-// A custom Close (WHATWG TransformStreamDefaultControllerTerminate): the
-// readable closes once readQ drains; the writable errors, failing every
-// write still queued (and a pending close).
+/// Ends `p` for a Custom transform that closed it, as WHATWG's transform-stream terminate does: an Open
+/// readable side becomes Closed, so it ends once `readQ` drains, and an Open or Closing writable side becomes
+/// Errored with `kTerminated`, with the tokens of its queued writes and close appended to `out`.
 void terminatePair(StreamPair* p, std::vector<TokenRef>& out) {
     if (p->w == WState::Open || p->w == WState::Closing) {
         p->w = WState::Errored;
@@ -230,6 +239,7 @@ void terminatePair(StreamPair* p, std::vector<TokenRef>& out) {
     if (p->r == RState::Open) p->r = RState::Closed;
 }
 
+/// Erases pair `id` if the erasure rule in StreamTable.hpp allows it, and forgets its channel.
 void maybeErase(int64_t id) {
     auto& t = streamTable();
     StreamPair* p = t.find(id);
@@ -246,6 +256,8 @@ void channelDispatch(ChannelResult& r);
 void mapHead(int64_t id);
 void mappedReadResult(int64_t id, ChannelResult& r);
 
+/// Adds a ChannelSource or ChannelSink pair that owns `channel`, with the side it lacks Closed, and returns
+/// its id. `channel` must not be null.
 int64_t insertChannelPair(StreamKind kind, ByteChannel* channel) {
     auto& t = streamTable();
     StreamPair p;
@@ -269,7 +281,7 @@ int64_t insertChannelPair(StreamKind kind, ByteChannel* channel) {
 // ---------------------------------------------------------------------------
 
 Registry<StreamPair>& streamTable() {
-    static auto* t = new Registry<StreamPair>("eco-system-streams");   // leaky (§3.4)
+    static auto* t = new Registry<StreamPair>("eco-system-streams");
     static bool dispatchSet = false;
     if (!dispatchSet) {
         dispatchSet = true;
@@ -283,22 +295,23 @@ void pinStream(int64_t id) {
 }
 
 // ---------------------------------------------------------------------------
-// pump() — §3.5. One action per iteration; the pair is re-fetched each time
-// because a completion allocates and a Custom step calls Elm (G11).
+// The pump. One action per iteration; the pair is looked up again each time,
+// because a completion allocates and a Custom step calls Elm.
 // ---------------------------------------------------------------------------
 
 namespace {
 
-// Completes an accepted write once its value has been transformed: succeed,
-// or fail with `reason`. Enqueued values carry no token (already done).
+/// Completes the write `pw` once its value has been transformed: with success if `ok`, otherwise with a
+/// Cancelled SErr carrying `reason`. Does nothing for an enqueued value, which was completed on acceptance.
 void finishWrite(const PendingWrite& pw, bool ok, const std::string& reason) {
     if (!pw.token || !pw.completeOnTransform) return;
     if (ok) completeOk(pw.token, pw.counted, alloc::unit());
     else completeErr(pw.token, pw.counted, kSErrCancelled, reason);
 }
 
-// Allocates each codec output and moves it into readQ straight away (the
-// queue is scanned, so nothing fresh is held across the next allocation).
+/// Appends the codec outputs `outs` to the `readQ` of pair `id`, as Strings if `asString`, otherwise as Bytes.
+/// Each is stored as soon as it is allocated, so no fresh value is held across the next allocation. Stops if
+/// the pair is gone.
 void pushCodecOutputs(int64_t id, const std::vector<std::string>& outs, bool asString) {
     for (const auto& s : outs) {
         HPointer v = asString ? alloc::allocStringFromUTF8(s) : makeBytes(s);
@@ -308,15 +321,14 @@ void pushCodecOutputs(int64_t id, const std::vector<std::string>& outs, bool asS
     }
 }
 
-// The UTF-16 units of a String, copied out of the heap (no allocation).
+/// Returns a copy of the UTF-16 code units of the String `s`. No heap allocation.
 std::u16string stringUnits(HPointer s) {
     if (alloc::isEmptyString(s)) return {};
     return StringOps::toStdU16String(Allocator::instance().resolve(s));
 }
 
-// Moves the elements of the Elm list `outs` into readQ, boxing unboxed
-// Int/Float/Char elements (G7: values handed to Elm through `read` are
-// boxed, the polymorphic ABI). The cursor roots the spine.
+/// Appends the elements of the Elm list `outs` to the `readQ` of pair `id`, boxing unboxed Int, Float and
+/// Char elements, since `read` hands values to Elm boxed. Stops if the pair is gone.
 void pushListOutputs(int64_t id, HPointer outs) {
     alloc::RootedListCursor c(outs);
     Unboxable head;
@@ -330,7 +342,12 @@ void pushListOutputs(int64_t id, HPointer outs) {
     }
 }
 
-// Custom step (§3.5 pump() 3, G11). `pw` has already left writeQ.
+/// Runs one Custom step on pair `id` for the write `pw`, which has already left `writeQ`: calls the action
+/// closure with the state and the value, stores the new state, and acts on the result's constructor.
+/// UpdateState only updates the state; Send appends the outputs to an Open readable side, even past its
+/// capacity; Close appends them and then terminates the pair (`terminatePair`); Cancel makes both sides
+/// Errored with the result's reason. `pw` itself succeeds in every case but a vanished pair, and the writes
+/// queued behind a Close or Cancel fail.
 void transformCustom(int64_t id, const PendingWrite& pw) {
     HPointer fn = alloc::listNil(), st = alloc::listNil();
     {
@@ -341,7 +358,7 @@ void transformCustom(int64_t id, const PendingWrite& pw) {
     HPointer v = dec(pw.valueEnc);
     HPointer res = alloc::listNil();
     Elm::StackRootGuard g(&fn, &st, &v, &res);
-    res = Scheduler::callClosure2(fn, st, v);   // may GC; G11
+    res = Scheduler::callClosure2(fn, st, v);   // may collect and re-enter the table
 
     // Decode ( Int ctor, state, ( List out, String reason ) ) without
     // allocating; keep only rooted handles and plain copies.
@@ -400,7 +417,9 @@ void transformCustom(int64_t id, const PendingWrite& pw) {
     failAll(toFail, failReason);
 }
 
-// Codec step (§3.5 pump() 4, G3). `pw` has already left writeQ.
+/// Runs one Codec step on pair `id` for the write `pw`, which has already left `writeQ`: feeds its value to
+/// the codec, appends the outputs to an Open readable side, and completes `pw`. A codec error makes both
+/// sides Errored with a "codec" failure reason and fails `pw` and every other parked task.
 void transformCodec(int64_t id, const PendingWrite& pw) {
     StreamPair* p = streamTable().find(id);
     CodecState& codec = *p->codec;            // off-heap; stable address
@@ -423,9 +442,9 @@ void transformCodec(int64_t id, const PendingWrite& pw) {
     finishWrite(pw, true, "");
 }
 
-// One pump of an in-memory pair (Identity, Custom, Codec) or of a
-// MappedSource (its readQ side). ChannelSource/ChannelSink are driven by
-// their channel results.
+/// Moves pair `id` forward until no step applies. Applies to an in-memory pair (Identity, Custom, Codec) and
+/// to the `readQ` side of a MappedSource; a ChannelSource or ChannelSink is moved by its channel results
+/// instead, and is left alone here.
 void pumpCore(int64_t id) {
     auto& t = streamTable();
     for (;;) {
@@ -437,7 +456,7 @@ void pumpCore(int64_t id) {
         //    whose destination has room) takes the next raw chunk: map it.
         if (p->kind == StreamKind::MappedSource && p->readQ.empty() && !p->rawQ.empty() &&
             (p->parkedReadToken || streamPipeDemand(p))) {
-            mapHead(id);   // calls Elm (G11)
+            mapHead(id);   // calls Elm
             continue;
         }
 
@@ -544,15 +563,19 @@ void pumpCore(int64_t id) {
     }
 }
 
-// The driver's work list: pair ids (> 0) and pipe ids (stored negated).
-// Main thread only.
+/// The pump driver's work list: pair ids, which are positive, and pipe ids, stored negated. Eco thread only.
 std::deque<int64_t> g_work;
+/// Whether `drive` is running, so that a re-entrant call only adds to `g_work`.
 bool g_driving = false;
 
+/// Adds `item` to the work list unless it is already there.
 void schedule(int64_t item) {
     if (std::find(g_work.begin(), g_work.end(), item) == g_work.end()) g_work.push_back(item);
 }
 
+/// Runs the work list until it is empty, unless a run is already in progress. Each pair item is pumped, has
+/// its read-ahead issued if it is a MappedSource and one is due, has its pipes scheduled, and is erased if it
+/// may be. Each pipe item is run. If an item throws, the list is cleared and the exception propagates.
 void drive() {
     if (g_driving) return;
     g_driving = true;
@@ -593,27 +616,28 @@ void streamSchedulePipe(int64_t pipeId) {
 }
 
 // ---------------------------------------------------------------------------
-// Channel results (main thread, from the Core channel drain; it calls
-// Scheduler::drain() once afterwards). Every channel request except an
-// uncounted one (streamIsUncountedToken) is its own liveness hold, released
-// here by its token on every path (G10, HoldRelease).
+// Channel results, on the eco thread from the Core channel drain, which runs
+// the scheduler once afterwards. A counted channel request is its own
+// liveness hold, released here by its token on every path. An uncounted
+// token is not a hold (a piped read-ahead's separate hold is released with
+// its result), and an untokened close holds nothing.
 // ---------------------------------------------------------------------------
 
 namespace {
 
-// Request ids of ChannelSource reads whose reader was killed (chanReadTok).
-// The kill released their holds, so their results release nothing. Never
-// cleared by a table reset: a late result must still find its id here.
+/// Returns the request ids of withdrawn reads: ChannelSource reads still in flight whose parked task was
+/// killed. The kill released their holds, so their results release nothing. Created on first use and never
+/// destroyed or cleared, not even by a heap reset, so a late result still finds its id here.
 std::unordered_set<uint64_t>& withdrawnReads() {
-    static auto* s = new std::unordered_set<uint64_t>();   // leaky (§3.4)
+    static auto* s = new std::unordered_set<uint64_t>();
     return *s;
 }
 
-// The kill handle's CancelFn for a parked read / readChunk (LIVE-5): un-parks
-// it (the stream is no longer read-locked) and returns whether it held, so
-// that the handle releases that hold. A ChannelSource's request stays in
-// flight, withdrawn (see chanReadTok); a MappedSource's read-ahead is
-// uncounted and goes on; in-memory reads hold nothing (X9).
+/// Withdraws the read parked under `token`, for the kill handle of a `read` or `readChunk`, and returns
+/// whether that read held a liveness hold, which the kill handle then releases. The pair is no longer
+/// read-locked. A ChannelSource's channel request stays in flight as a withdrawn read; a MappedSource's
+/// read-ahead goes on and is not the read's hold; an in-memory read held nothing. A pipe's read is never withdrawn.
+/// Returns false if no read is parked under `token`, because it has completed already.
 bool cancelParkedRead(uint64_t token) {
     for (auto& kv : streamTable().map()) {
         StreamPair& p = kv.second;
@@ -629,6 +653,10 @@ bool cancelParkedRead(uint64_t token) {
     return false;   // completed already: its completion released (or will)
 }
 
+/// Applies the channel result `r` to the pair that owns its channel: completes the read, write or close it
+/// answers, updates the pair's state, releases the request's hold, and pumps the pair. A result for a pair
+/// that is gone, or for a token no longer parked, drops the token's resume and releases its hold if it has
+/// one.
 void channelDispatch(ChannelResult& r) {
     auto& t = streamTable();
     int64_t id = 0;
@@ -650,8 +678,8 @@ void channelDispatch(ChannelResult& r) {
 
     switch (r.op) {
     case ChannelResult::Op::Read: {
-        // A withdrawn read (its reader was killed; readKill released its hold):
-        // its result belongs to the read parked behind it, if any, else to readQ.
+        // A withdrawn read (its reader was killed, and the kill handle released its
+        // hold): its result belongs to the read parked behind it, if any, else to readQ.
         bool withdrawn = r.token != 0 && withdrawnReads().erase(r.token) > 0;
         if (p && p->chanReadTok == r.token) p->chanReadTok = 0;
         if (withdrawn) {
@@ -788,13 +816,13 @@ void channelDispatch(ChannelResult& r) {
 } // namespace
 
 // ---------------------------------------------------------------------------
-// Value-mapped pairs (plans/eco-system-websockets.md §3.3, W16)
+// Value-mapped pairs
 // ---------------------------------------------------------------------------
 
 namespace {
 
-// ( Int tag, String, Bytes ) for a raw chunk, mask 0x1 (B.1 of the
-// WebSockets plan). Allocates; the result is fresh.
+/// Returns a new `( Int tag, String, Bytes )` for the chunk `c` (kind mask 0x1: slot 0 is an unboxed Int).
+/// A text chunk gives its String and empty Bytes, any other chunk "" and its Bytes. The result is unrooted.
 HPointer wireTuple(const ChannelResult& c) {
     HPointer str = alloc::listNil(), bytes = alloc::listNil();
     Elm::StackRootGuard g(&str, &bytes);
@@ -803,7 +831,8 @@ HPointer wireTuple(const ChannelResult& c) {
     return alloc::tuple3(alloc::unboxedInt(c.tag), alloc::boxed(str), alloc::boxed(bytes), 0x1);
 }
 
-// MappedSource: maps the head of rawQ through fromWire (G11) into readQ.
+/// Maps the oldest raw chunk of MappedSource `id` through its `fromWire` closure and appends the result to
+/// `readQ`. Does nothing if the pair is gone or has no raw chunk. Calls Elm.
 void mapHead(int64_t id) {
     ChannelResult c;
     HPointer fn = alloc::listNil();
@@ -817,14 +846,15 @@ void mapHead(int64_t id) {
     HPointer arg = alloc::listNil(), res = alloc::listNil();
     Elm::StackRootGuard g(&fn, &arg, &res);
     arg = wireTuple(c);
-    res = Scheduler::callClosure1(fn, arg);   // may GC; G11
+    res = Scheduler::callClosure1(fn, arg);   // may collect and re-enter the table
     StreamPair* p = streamTable().find(id);  // re-fetch after the call
     if (!p) return;
     p->readQ.push_back(enc(res));            // no allocation since the call
 }
 
-// The chunks / end a subscription reader has not seen yet, then the next
-// read-ahead. Runs from the channel drain (G12: it drains afterwards).
+/// Hands the subscription reader of pair `id` every raw chunk it has not seen, then the end once if the
+/// readable side has ended, and otherwise requests the next read-ahead. If the reader was detached
+/// meanwhile, pumps the pair instead. Runs from the channel drain.
 void feedReader(int64_t id) {
     for (;;) {
         StreamPair* p = streamTable().find(id);
@@ -838,7 +868,7 @@ void feedReader(int64_t id) {
         if (!p->rawQ.empty()) {
             ChannelResult c = std::move(p->rawQ.front());
             p->rawQ.pop_front();
-            fn(id, c, ctx);   // may call Elm (G11): `p` is dead from here
+            fn(id, c, ctx);   // may call Elm: `p` is dead from here
             continue;
         }
         if (p->r != RState::Open) {
@@ -864,7 +894,10 @@ void feedReader(int64_t id) {
     }
 }
 
-// A read result of a MappedSource's channel (from channelDispatch).
+/// Applies the read result `r` of MappedSource `id`'s channel. A subscription reader's kick feeds the
+/// reader. The read-ahead's result releases the hold a pipe gave it, records an end or failure, or keeps the
+/// chunk in `rawQ`, and then feeds the reader or pumps the pair. Any other result is stale and only drops
+/// its token's resume. Pair `id` must exist.
 void mappedReadResult(int64_t id, ChannelResult& r) {
     auto& s = Scheduler::instance();
     StreamPair* p = streamTable().find(id);
@@ -918,7 +951,7 @@ void streamMapForSink(uint64_t toWireEnc, HPointer value, int64_t& tag, bool& te
                       std::string& bytes) {
     HPointer fn = dec(toWireEnc), res = alloc::listNil();
     Elm::StackRootGuard g(&fn, &value, &res);
-    res = Scheduler::callClosure1(fn, value);   // may GC; G11
+    res = Scheduler::callClosure1(fn, value);   // may collect and re-enter the table
     // Decode ( Int, String, Bytes ) without allocating.
     Tuple3* t3 = asTuple3(res);
     u32 ub = t3->header.unboxed;
@@ -962,7 +995,7 @@ bool attachReader(int64_t pairId, ReaderFn fn, void* ctx) {
     StreamPair* p = streamTable().find(pairId);
     if (!p || p->kind != StreamKind::MappedSource || !fn) return false;
     if (p->reader || p->readLock || p->pipedOut) return false;
-    if (!p->readQ.empty()) return false;   // mapped values wait for a reader (never in practice)
+    if (!p->readQ.empty()) return false;   // mapped values wait for a reader
     p->reader = fn;
     p->readerCtx = ctx;
     if (!p->rawQ.empty() || p->r != RState::Open) {
@@ -991,7 +1024,7 @@ void detachReader(int64_t pairId) {
 }
 
 // ---------------------------------------------------------------------------
-// C++ API (B.2)
+// C++ API
 // ---------------------------------------------------------------------------
 
 int64_t createChannelSource(ByteChannel* channel) {
@@ -1012,8 +1045,9 @@ int64_t createChannelSink(ByteChannel* channel) {
 
 namespace {
 
-// The fd the channel will own: `fd` itself when the stream owns it (or for
-// stdio, which FdChannel never closes), otherwise an O_CLOEXEC duplicate.
+/// Returns the fd the channel will own: `fd` itself when the stream owns it, for fds 0 to 2 (which
+/// `FdChannel` never closes), and always on Windows; otherwise a close-on-exec duplicate numbered 3 or
+/// above, or -1 if duplicating fails.
 int channelFd(int fd, bool owns) {
 #ifdef _WIN32
     (void)owns;
@@ -1046,10 +1080,10 @@ int64_t createFdSink(int fd, bool owns, const char* origin) {
 }
 
 // ---------------------------------------------------------------------------
-// Kernel bodies (B.2)
+// Kernel bodies
 // ---------------------------------------------------------------------------
 
-// identity : Int -> Int -> Task Never Int — payload tuple2(readCap, writeCap), mask 0x5.
+// Payload tuple2( Int readCap, Int writeCap ), mask 0x5. Capacities below 1 are raised to 1.
 HPointer streamIdentityBody(HPointer captured) {
     ECO_SYSTEM_BODY_GUARD(Never,
         int64_t readCap, writeCap;
@@ -1067,10 +1101,9 @@ HPointer streamIdentityBody(HPointer captured) {
     )
 }
 
-// custom : (s -> a -> ( Int, s, ( List b, String ) )) -> s -> Int -> Int -> Task Never Int
-// payload tuple2( boxed tuple2(fn, state) mask 0, boxed tuple2(readCap, writeCap) mask 0x5 ), mask 0.
-// The fn and state words go straight into the (scanned) table entry before
-// the result allocates.
+// Payload tuple2( boxed tuple2( fn, state ) mask 0, boxed tuple2( Int readCap, Int writeCap ) mask 0x5 ),
+// mask 0. A negative read capacity becomes 0, which makes the pair a rendezvous; a write capacity below 1
+// becomes 1. The fn and state words go straight into the scanned table entry before the result allocates.
 HPointer streamCustomBody(HPointer captured) {
     ECO_SYSTEM_BODY_GUARD(Never,
         StreamPair p;
@@ -1093,7 +1126,8 @@ HPointer streamCustomBody(HPointer captured) {
 
 namespace {
 
-// A Codec pair (capacities 1/1: see Stream.elm, the codec constructors).
+/// Adds a Codec pair running `codec`, with read and write capacities of 1, and returns `Task.succeed` of its
+/// id.
 HPointer insertCodecPair(CodecPtr codec) {
     StreamPair p;
     p.kind = StreamKind::Codec;
@@ -1106,22 +1140,19 @@ HPointer insertCodecPair(CodecPtr codec) {
 
 } // namespace
 
-// textEncoder : Task Never Int — payload ().
 HPointer streamTextEncoderBody(HPointer) {
     ECO_SYSTEM_BODY_GUARD(Never,
         return insertCodecPair(newTextEncoder());
     )
 }
 
-// textDecoder : Task Never Int — payload ().
 HPointer streamTextDecoderBody(HPointer) {
     ECO_SYSTEM_BODY_GUARD(Never,
         return insertCodecPair(newTextDecoder());
     )
 }
 
-// compressor : Int -> Task Never Int — payload: boxed Int algorithm
-// (0 gzip, 1 deflate, 2 deflate-raw).
+// Payload: boxed Int algorithm, a `newZlibCodec` value (0 gzip, 1 deflate, 2 raw deflate).
 HPointer streamCompressorBody(HPointer captured) {
     ECO_SYSTEM_BODY_GUARD(Never,
         int algorithm = static_cast<int>(payloadInt(captured));
@@ -1129,7 +1160,7 @@ HPointer streamCompressorBody(HPointer captured) {
     )
 }
 
-// decompressor : Int -> Task Never Int — payload: boxed Int algorithm.
+// Payload: boxed Int algorithm, as for the compressor.
 HPointer streamDecompressorBody(HPointer captured) {
     ECO_SYSTEM_BODY_GUARD(Never,
         int algorithm = static_cast<int>(payloadInt(captured));
@@ -1139,8 +1170,14 @@ HPointer streamDecompressorBody(HPointer captured) {
 
 namespace {
 
-// read / readChunk. With `carryFirst` (read), the unread carry of
-// Stream.readLine is handed out first, as one Bytes value.
+/// Reads the next value of pair `id` (the boxed Int `captured`) for `read` and `readChunk`. With
+/// `carryFirst`, the unread part of the `Stream.readLine` carry is handed out first, as one Bytes value.
+///
+/// Answers at once with the next buffered value, with Closed for a missing pair or an ended side, with the
+/// reason for an Errored one, and with Locked when the side is in use. Otherwise parks the task and returns
+/// its kill handle. A park on a channel or mapped source holds the program alive; one on an in-memory pair
+/// does not. A ChannelSource issues a channel read for the park unless a withdrawn read is still in flight,
+/// whose result then answers this read.
 HPointer readImpl(HPointer captured, HPointer resume, bool carryFirst) {
     uint64_t token = 0;
     bool counted = false;
@@ -1151,13 +1188,13 @@ HPointer readImpl(HPointer captured, HPointer resume, bool carryFirst) {
         if (!p) return resumeNow(resume, failSErr(kSErrClosed, ""));
         if (streamReadLocked(p)) return resumeNow(resume, failSErr(kSErrLocked, ""));
         if (carryFirst && p->carryPos < p->carry.size()) {
-            std::string rest = p->carry.substr(p->carryPos);   // G3: copy out first
+            std::string rest = p->carry.substr(p->carryPos);   // copy out first
             p->carry.clear();
             p->carryPos = 0;
             return resumeNow(resume, succeed(makeBytes(rest)));
         }
         if (p->kind == StreamKind::MappedSource && p->readQ.empty() && !p->rawQ.empty()) {
-            mapHead(id);                        // the chunk read ahead (calls Elm, G11)
+            mapHead(id);                        // the chunk read ahead (calls Elm)
             p = streamTable().find(id);
             if (!p) return resumeNow(resume, failSErr(kSErrClosed, ""));
         }
@@ -1173,7 +1210,6 @@ HPointer readImpl(HPointer captured, HPointer resume, bool carryFirst) {
             std::string reason = p->rReason;
             return resumeNow(resume, failSErr(kSErrCancelled, reason));
         }
-        // Park (T9).
         if (p->kind == StreamKind::ChannelSource) {
             // External IO keeps the program alive.
             token = sched.parkResume(resume, HoldKind::Task, "Stream.read");
@@ -1185,13 +1221,13 @@ HPointer readImpl(HPointer captured, HPointer resume, bool carryFirst) {
             counted = true;
             p->parkedReadCounted = true;
         } else {
-            token = sched.registerPendingResume(resume);   // in-memory: no hold (X9)
+            token = sched.registerPendingResume(resume);   // in-memory: only Elm code can complete it
         }
         // The kill handle first: it allocates, and a throw must not leave the
         // token parked (asyncFailure releases it).
         HPointer kill = makeKillHandle(token, &cancelParkedRead);
         Elm::StackRootGuard kg(&kill);
-        p = streamTable().find(id);             // G11: looked up again (a GC erases no pair)
+        p = streamTable().find(id);             // looked up again after the allocation
         p->readLock = true;
         p->parkedReadToken = token;
         if (p->kind == StreamKind::ChannelSource && p->chanReadTok == 0) {
@@ -1205,19 +1241,17 @@ HPointer readImpl(HPointer captured, HPointer resume, bool carryFirst) {
 
 } // namespace
 
-// read : Int -> Task SErr a — payload: boxed Int id.
 HPointer streamReadBody(HPointer captured, HPointer resume) {
     return readImpl(captured, resume, /*carryFirst=*/true);
 }
 
-// readChunk : Int -> Task SErr Bytes — read, ignoring the carry (D18).
 HPointer streamReadChunkBody(HPointer captured, HPointer resume) {
     return readImpl(captured, resume, /*carryFirst=*/false);
 }
 
-// carryLine : Bool -> Int -> Task Never (Maybe Bytes) — payload tuple2(Int atEnd (0/1),
-// Int id), mask 0x5. The next line of the carry without its "\n" (and a "\r"
-// before it); with atEnd /= 0 and no newline, the rest of the carry if any.
+// Payload tuple2( Int atEnd, Int id ), mask 0x5, with `atEnd` 0 or 1. Succeeds with the next line of the
+// carry without its "\n" and any "\r" before it; when no newline is left, with the rest of the carry if
+// `atEnd` is set, else Nothing. A missing pair or an empty carry gives Nothing.
 HPointer streamCarryLineBody(HPointer captured) {
     ECO_SYSTEM_BODY_GUARD(Never,
         int64_t atEnd = 0, id = 0;
@@ -1228,7 +1262,7 @@ HPointer streamCarryLineBody(HPointer captured) {
         }
         StreamPair* p = streamTable().find(id);
         if (!p || p->carryPos >= p->carry.size()) return succeed(alloc::nothing());
-        std::string line;   // G3: copy out, update the carry, then allocate
+        std::string line;   // copy out, update the carry, then allocate
         const char* base = p->carry.data() + p->carryPos;
         size_t avail = p->carry.size() - p->carryPos;
         const void* nl = std::memchr(base, '\n', avail);
@@ -1255,14 +1289,13 @@ HPointer streamCarryLineBody(HPointer captured) {
     )
 }
 
-// carryAppend : Bytes -> Int -> Task Never () — payload tuple2(boxed Bytes, Int id),
-// mask 0x4. A missing pair (closed and erased) drops the bytes.
+// Payload tuple2( boxed Bytes, Int id ), mask 0x4. A missing pair drops the bytes.
 HPointer streamCarryAppendBody(HPointer captured) {
     ECO_SYSTEM_BODY_GUARD(Never,
         HPointer b = alloc::listNil();
         int64_t id = 0;
         payloadBoxedAndId(captured, b, id);
-        std::string data = toStdBytes(b);   // G3: copy out first
+        std::string data = toStdBytes(b);
         if (StreamPair* p = streamTable().find(id)) p->carry.append(data);
         return succeedUnit();
     )
@@ -1270,7 +1303,15 @@ HPointer streamCarryAppendBody(HPointer captured) {
 
 namespace {
 
-// write / enqueue : a -> Int -> Task SErr () — payload tuple2(boxed value, Int id), mask 0x4.
+/// Writes the value in `captured` (payload tuple2( boxed value, Int id ), mask 0x4) to pair `id`, for
+/// `write` and, with `isEnqueue`, `enqueue`. Sets `token` and `counted` when it parks, for the async guard.
+///
+/// A missing pair, a source, or a writable side that is Closing or Closed fails with the closed reason; an
+/// Errored side fails with its reason; a side in use fails Locked. On a channel sink the value becomes one
+/// channel write, holding the program alive until the channel answers it: a write parks until then, an
+/// enqueue succeeds at once. On an in-memory pair, a write parks until its value is transformed and an
+/// enqueue succeeds once its value is accepted; when `writeQ` is full, either waits for room and holds the
+/// write lock meanwhile.
 HPointer writeOrEnqueue(HPointer captured, HPointer& resume, uint64_t& token,
                         bool& counted, bool isEnqueue) {
     HPointer v = alloc::listNil();
@@ -1289,7 +1330,7 @@ HPointer writeOrEnqueue(HPointer captured, HPointer& resume, uint64_t& token,
     }
 
     if (p->kind == StreamKind::ChannelSink && p->mapFnEnc) {
-        // Mapped sink: toWire first (G11), then the tagged channel write.
+        // Mapped sink: toWire first (an Elm call), then the tagged channel write.
         int64_t tag = 0;
         bool text = false;
         std::string bytes;
@@ -1315,7 +1356,7 @@ HPointer writeOrEnqueue(HPointer captured, HPointer& resume, uint64_t& token,
     }
 
     if (p->kind == StreamKind::ChannelSink) {
-        std::string bytes = p->textSink ? toStdString(v) : toStdBytes(v);   // G3: copy out first
+        std::string bytes = p->textSink ? toStdString(v) : toStdBytes(v);   // copy out first
         uint64_t req;   // its hold is released by the channel dispatch
         if (isEnqueue) {
             req = streamHeldToken("Stream.enqueue");
@@ -1331,7 +1372,7 @@ HPointer writeOrEnqueue(HPointer captured, HPointer& resume, uint64_t& token,
     }
 
     if (p->kind == StreamKind::ChannelSource || p->kind == StreamKind::MappedSource) {
-        // A source has no writable side (unreachable from Elm).
+        // A source has no writable side.
         return resumeNow(resume, failSErr(kSErrCancelled, kWritableClosed));
     }
 
@@ -1373,7 +1414,9 @@ HPointer streamEnqueueBody(HPointer captured, HPointer resume) {
     )
 }
 
-// closeWritable : Int -> Task SErr () — payload: boxed Int id.
+// Payload: boxed Int id. A ChannelSink's close holds the program alive until the channel answers it; an
+// in-memory pair closes at once when nothing is queued (except a codec, which must flush), and otherwise
+// parks until the queued writes are through.
 HPointer streamCloseWritableBody(HPointer captured, HPointer resume) {
     uint64_t token = 0;
     bool counted = false;
@@ -1446,13 +1489,13 @@ void streamCancelWritableNow(int64_t id, const std::string& reason) {
     pumpStream(id);
 }
 
-// cancelReadable : String -> Int -> Task SErr () — payload tuple2(reason, id), mask 0x4.
+// Payload tuple2( boxed String reason, Int id ), mask 0x4. A missing pair succeeds.
 HPointer streamCancelReadableBody(HPointer captured) {
     ECO_SYSTEM_BODY_GUARD(SErr,
         HPointer reasonHP = alloc::listNil();
         int64_t id = 0;
         payloadBoxedAndId(captured, reasonHP, id);
-        std::string reason = toStdString(reasonHP);   // G3
+        std::string reason = toStdString(reasonHP);
         StreamPair* p = streamTable().find(id);
         if (!p) return succeedUnit();
         if (streamReadLocked(p)) return failSErr(kSErrLocked, "");
@@ -1461,7 +1504,7 @@ HPointer streamCancelReadableBody(HPointer captured) {
     )
 }
 
-// cancelWritable : String -> Int -> Task SErr () — payload tuple2(reason, id), mask 0x4.
+// Payload tuple2( boxed String reason, Int id ), mask 0x4. A missing pair succeeds.
 HPointer streamCancelWritableBody(HPointer captured) {
     ECO_SYSTEM_BODY_GUARD(SErr,
         HPointer reasonHP = alloc::listNil();
@@ -1477,7 +1520,7 @@ HPointer streamCancelWritableBody(HPointer captured) {
 }
 
 // ---------------------------------------------------------------------------
-// Strict UTF-8 (B5)
+// Strict UTF-8
 // ---------------------------------------------------------------------------
 
 bool isValidUtf8(const std::string& s) {

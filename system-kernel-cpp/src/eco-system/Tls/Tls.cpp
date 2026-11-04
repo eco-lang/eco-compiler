@@ -1,26 +1,10 @@
 //===- Tls.cpp - eco/system kernel module Tls: binding bodies -------------===//
 //
-// See Tls.hpp (plans/eco-system-sockets.md §3.6, Appendix B.3, §D.5).
-//
-// Payload layouts (TlsExports.cpp): connect and listen get
-// tuple3( boxed target, boxed settings, boxed tls ), mask 0, where
-//   connect: target   ( String address, Int port, Int timeoutMs )
-//            settings ( Bool noDelay, Int keepAliveSec )
-//            tls      ( String serverName, ( Int verification, String pem ), List String alpn )
-//   listen:  target   ( String address, Int port )
-//            settings ( Int backlog, Bool ipv6Only )
-//            tls      ( String certificateChain, String privateKey, List String alpn )
-// info gets the boxed connection id.
-//
-// Stage 2 of connect: the pool completion (main thread) parks the built
-// configuration in a main-thread table (heap-generation keyed; no
-// HPointers) under a fresh id and returns makeAsyncBinding<stage2>(id). The
-// pool drain resumes the task with that binding, so the scheduler steps
-// into it at once and installs its kill handle. A killed stage-1 job never
-// completes (SysWorkPool skips orphans, SF12); an entry whose stage 2 never
-// runs (a kill between the two stages) stays until the heap is reset.
-//
-// Templates used: T1 (info), T2 (pool bodies + completions), T7, G3, G10.
+// The connect's stage-2 inputs wait in a table on the eco thread, keyed by an id that stage 2's payload carries,
+// because a binding's payload is an Elm value and the inputs are C++ objects. The table holds no HPointers, and it
+// is emptied when the heap generation changes, since its entries then belong to a heap that is gone. A stage-1 job
+// whose Task is killed before it is completed never reaches the table. An entry whose stage 2 never runs stays
+// until the heap generation changes.
 //
 //===----------------------------------------------------------------------===//
 
@@ -42,22 +26,29 @@ namespace Eco::System {
 namespace {
 
 #ifdef _WIN32
+// The FErr message of every Tls kernel on Windows.
 constexpr const char* kWindows = "eco/system: TLS is not supported on Windows yet";
 #endif
 
-// --- Payload decoding (no allocation, G5) ----------------------------------------
+// --- Payload decoding (these three do not allocate) --------------------------------
 
+// Returns whether `b` is the Elm `True` constant.
 bool isElmTrue(HPointer b) { return ::Elm::hpBits(b) == ::Elm::hpBits(alloc::elmTrue()); }
 
+// Returns the Int in slot `slot` of a tuple whose kind mask is `mask`, whether stored unboxed or boxed.
 int64_t slotInt(const Unboxable& u, u32 mask, int slot) {
     if (Elm::tupleFieldKind(mask, slot) == 1) return u.i;
     return static_cast<ElmInt*>(Allocator::instance().resolve(u.p))->value;
 }
 
+// Returns the value of the boxed Elm Int `captured`.
 int64_t payloadInt(HPointer captured) {
     return static_cast<ElmInt*>(Allocator::instance().resolve(captured))->value;
 }
 
+// --- Resuming at once -------------------------------------------------------------
+
+// Resumes the Task with `task`, which replaces it before any work starts, and returns `()` as the body's kill handle.
 HPointer resumeNow(HPointer& resume, HPointer task) {
     Elm::StackRootGuard g(&task);
     Scheduler::callClosure1(resume, task);
@@ -68,18 +59,20 @@ HPointer resumeNow(HPointer& resume, HPointer task) {
 
 // --- connect: stage 1 (pool) -------------------------------------------------------
 
+// What a stage-1 job produces: the connect's inputs and its client configuration, or a failure.
 struct ConnectPrep {
     ConnectSpec spec;
     std::shared_ptr<TlsClientConfig> cfg;
     std::string code, message;   // failure (code non-empty)
 };
 
-// Stage 2's inputs, parked on the main thread between the stages.
+// Stage 2's inputs, kept on the eco thread between the stages.
 struct PendingConnect {
     ConnectSpec spec;
     std::shared_ptr<TlsClientConfig> cfg;
 };
 
+// The stage-2 inputs waiting for their stage 2, by id, for heap generation `gen`.
 struct PendingTable {
     std::unordered_map<int64_t, PendingConnect> m;
     int64_t next = 1;
@@ -87,8 +80,9 @@ struct PendingTable {
     bool init = false;
 };
 
+// Returns the table of stage-2 inputs, first emptying it if the heap generation has changed. Eco thread only.
 PendingTable& pendingConnects() {
-    static auto* t = new PendingTable();   // leaky (§3.4); main thread only
+    static auto* t = new PendingTable();   // never destroyed
     uint64_t g = currentHeapGeneration();
     if (!t->init || t->gen != g) {   // a dead heap's entries are meaningless
         t->init = true;
@@ -98,7 +92,8 @@ PendingTable& pendingConnects() {
     return *t;
 }
 
-// Stage 2 (R): payload = the boxed PendingTable id.
+// Takes the stage-2 inputs whose id is the boxed Int `captured` and starts the connect with the TLS client factory,
+// returning its kill handle. With no entry for the id, it resumes the Task at once with ECANCELED.
 HPointer connectStage2Body(HPointer captured, HPointer resume) {
     uint64_t token = 0;
     bool counted = false;
@@ -106,7 +101,7 @@ HPointer connectStage2Body(HPointer captured, HPointer resume) {
         int64_t id = payloadInt(captured);
         auto& t = pendingConnects();
         auto it = t.m.find(id);
-        if (it == t.m.end()) {   // a dead heap's binding, or run twice
+        if (it == t.m.end()) {   // a dead heap's binding, or the entry already taken
             return resumeNow(resume, failFErr("ECANCELED", "connect ECANCELED"));
         }
         PendingConnect p = std::move(it->second);
@@ -116,7 +111,8 @@ HPointer connectStage2Body(HPointer captured, HPointer resume) {
     )
 }
 
-// Stage 1 completion (main thread): the failure, or the stage-2 binding.
+// Completes stage 1: returns the FErr Task of a failed build, or else stores the inputs under a fresh id and returns
+// the stage-2 binding for it.
 HPointer connectPrepared(PoolResult& pr) {
     auto& r = pr.as<ConnectPrep>();
     if (!r.code.empty()) return failFErr(r.code, r.message);
@@ -129,12 +125,15 @@ HPointer connectPrepared(PoolResult& pr) {
 
 // --- listen (pool) -------------------------------------------------------------------
 
+// What the listen job produces: the server configuration and the listen outcome, or a configuration failure.
 struct ListenPrep {
     std::shared_ptr<TlsServerConfig> cfg;
-    ListenResult listen;           // owns the fd (RAII, N11)
+    ListenResult listen;           // owns the socket until completeListen takes it
     std::string code, message;     // context failure (code non-empty)
 };
 
+// Completes the listen: the FErr Task of a failed build, or `completeListen` of the outcome, with the TLS server
+// factory when the socket was opened.
 HPointer listenPrepared(PoolResult& pr) {
     auto& r = pr.as<ListenPrep>();
     if (!r.code.empty()) return failFErr(r.code, r.message);
@@ -162,7 +161,7 @@ HPointer tlsConnectBody(HPointer captured, HPointer resume) {
         std::string serverName, pem;
         int64_t mode = 0;
         std::vector<std::string> alpn;
-        {   // G3/G5: copy everything out; no allocation in this scope
+        {   // copy everything out; nothing in this scope allocates, so the raw pointers stay valid
             Tuple3* p = asTuple3(captured);
             HPointer target = p->a.p;
             HPointer settings = p->b.p;
@@ -226,7 +225,7 @@ HPointer tlsListenBody(HPointer captured, HPointer resume) {
         int64_t port = 0, backlog = 511;
         bool ipv6Only = false;
         std::vector<std::string> alpn;
-        {   // G3/G5
+        {   // copy everything out, as in tlsConnectBody
             Tuple3* p = asTuple3(captured);
             HPointer target = p->a.p;
             HPointer settings = p->b.p;
@@ -267,12 +266,11 @@ HPointer tlsListenBody(HPointer captured, HPointer resume) {
                 return PoolResult::of(std::move(r));
             },
             &listenPrepared, ErrShape::FErr);
-        return alloc::unit();   // short job; an orphaned result closes its fd (RAII)
+        return alloc::unit();   // no kill handle; a result never completed closes its socket
 #endif
     )
 }
 
-// info : Int -> Task FErr ( String, Maybe String, String ) — payload: boxed connection id.
 HPointer tlsInfoBody(HPointer captured) {
     ECO_SYSTEM_BODY_GUARD(FErr,
 #ifdef _WIN32
@@ -283,7 +281,7 @@ HPointer tlsInfoBody(HPointer captured) {
         ensureSocketTables();
         ConnEntry* e = findConn(id);
         if (!e || !e->isTls) return failFErr("EINVAL", "info EINVAL: not a TLS connection");
-        TlsInfo info = e->tls;   // G3: copy before allocating (e may move)
+        TlsInfo info = e->tls;   // copied, so nothing below reads through `e`
         HPointer protocol = alloc::listNil();
         HPointer alpn = alloc::listNil();
         HPointer cipher = alloc::listNil();
@@ -293,7 +291,7 @@ HPointer tlsInfoBody(HPointer captured) {
             alpn = alloc::nothing();
         } else {
             HPointer s = alloc::allocStringFromUTF8(info.alpn);
-            alpn = alloc::just(alloc::boxed(s), true);   // fresh: the helper roots it (G4)
+            alpn = alloc::just(alloc::boxed(s), true);   // fresh: the helper roots it
         }
         cipher = alloc::allocStringFromUTF8(info.cipher);
         return succeed(alloc::tuple3(alloc::boxed(protocol), alloc::boxed(alpn), alloc::boxed(cipher), 0));

@@ -1,4 +1,9 @@
 //===- FileExports.cpp - C-linkage exports for File module ----------------===//
+//
+// Each export passes its arguments' bits to the `Eco::Kernel::File` function of the same name and returns that
+// function's Task word, inside `ECO_KERNEL_GUARD`. The contracts are on the declarations in `KernelExports.h`.
+//
+//===----------------------------------------------------------------------===//
 
 #include "KernelExports.h"
 #include "File.hpp"

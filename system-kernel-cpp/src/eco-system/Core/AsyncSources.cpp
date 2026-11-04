@@ -1,10 +1,5 @@
 //===- AsyncSources.cpp - The single eco/system scheduler async source ----===//
 //
-// See AsyncSources.hpp. Leaky singleton state (§3.4): never destroyed, so a
-// late wake-up during std::exit never touches freed memory.
-//
-// Templates used: none (plumbing for T2/T8/T9 drains).
-//
 //===----------------------------------------------------------------------===//
 
 #include "eco-system/Core/AsyncSources.hpp"
@@ -17,16 +12,21 @@ namespace Eco::System {
 
 namespace {
 
+// One drain source: a drain and its ready predicate.
 struct Source {
     DrainFn drain;
     ReadyFn ready;
 };
 
+// Returns the drain source list, in the order added. It is allocated on first use and never freed, so it
+// outlives static destruction.
 std::vector<Source>& sources() {
-    static auto* v = new std::vector<Source>();   // main thread only
+    static auto* v = new std::vector<Source>();   // eco thread only
     return *v;
 }
 
+// Returns whether any drain source's predicate is true. This is the ready predicate of the source
+// `ensureAsyncSource` registers.
 bool anyReady() {
     auto& v = sources();
     for (size_t i = 0; i < v.size(); ++i) {

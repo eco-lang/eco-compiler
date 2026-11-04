@@ -1,6 +1,21 @@
 //===- TimeExports.cpp - C-linkage exports for Time module -----------------===//
 //
-// Full implementation of elm/time kernel functions.
+// The C-linkage kernel functions that compiled Elm code calls for elm/time: `Time.now`, `Time.here`,
+// `Time.getZoneName` and `Time.setInterval`.
+//
+// The first three return Tasks, and a Task is a value that may be built once and run many times, or never. Reading
+// the clock or the time zone when the kernel function is called would fix one reading into the Task for every run.
+// So each of them returns a Binding Task, as `Elm::Platform::makeBinding` in `platform/TaskBinding.hpp` describes,
+// and the reading happens each time the scheduler steps the Task. `Time.now` builds its binding by hand, because
+// it has to capture the `Posix` constructor closure; the other two use `makeBinding`.
+//
+// The values built here are Elm custom types laid out on the GC heap:
+// - a `Zone` is constructor 0 with an unboxed Int offset in minutes east of UTC, and an empty eras list;
+// - a `ZoneName` is `Name String` (constructor 0) or `Offset Int` (constructor 1).
+// The offset and the time-zone name are read from the operating system, with different sources per platform, set
+// out at `getLocalTimezoneOffset` and `getTimezoneName`.
+//
+// The `Elm::Kernel::Time` functions in `Time.hpp` are unused stubs; nothing here calls them.
 //
 //===----------------------------------------------------------------------===//
 
@@ -28,33 +43,23 @@ using namespace Elm::Platform;
 
 namespace {
 
-// Zone is represented as an Int (minutes offset from UTC)
-// The Elm Time.Zone type is actually:
-//   type Zone = Zone Int (List Era)
-// where Era = { start : Int, offset : Int }
-// For simplicity, we represent Zone as just the offset in minutes
-// wrapped in a Custom type with ctor 0
-
-// ZoneName is:
-//   type ZoneName = Name String | Offset Int
-// Name has ctor 0, Offset has ctor 1
-
-// Sub ctor for Time.Every subscription
+/// The constructor index of the `Every` subscription that `Time.setInterval` builds. It must equal the
+/// `CTOR_TIME_EVERY` in `TimeEffectManager.cpp`, which the effect manager matches on; nothing checks the two agree.
 static constexpr u16 CTOR_TIME_EVERY = 0;
 
-// Create a Zone value (offset in minutes from UTC)
-// Zone = Custom { ctor: 0, values: [offsetMinutes (unboxed Int), eras (boxed List)] }
+/// Returns a new `Zone` whose offset is `offsetMinutes` east of UTC at all times: constructor 0 with fields
+/// `[offsetMinutes (unboxed Int), []]`. The eras list, which elm/time uses for offset changes over time, is always
+/// empty. A GC point.
 HPointer createZone(int offsetMinutes) {
-    // Simplified Zone: just store offset, empty eras list
     std::vector<Unboxable> values(2);
     values[0].i = static_cast<i64>(offsetMinutes);
-    values[1].p = listNil();  // empty eras list
+    values[1].p = listNil();
 
-    // Field 0 is unboxed (Int), field 1 is boxed (List)
+    // Slot kinds are 2 bits per field: field 0 is Int (1), field 1 is boxed (0).
     return custom(0, values, 0b01);
 }
 
-// Create a ZoneName.Name value
+/// Returns a new `ZoneName` `Name name`, with `name` copied into an Elm string. A GC point.
 HPointer createZoneNameString(const std::string& name) {
     HPointer nameStr = allocStringFromUTF8(name);
     std::vector<Unboxable> values(1);
@@ -62,49 +67,54 @@ HPointer createZoneNameString(const std::string& name) {
     return custom(0, values, 0);  // ctor 0 = Name, field is boxed
 }
 
-// Create a ZoneName.Offset value
+/// Returns a new `ZoneName` `Offset offsetMinutes`, with the offset as an unboxed Int. A GC point.
 HPointer createZoneNameOffset(int offsetMinutes) {
     std::vector<Unboxable> values(1);
     values[0].i = static_cast<i64>(offsetMinutes);
     return custom(1, values, 1);  // ctor 1 = Offset, field is unboxed
 }
 
-// Get local timezone offset in minutes from UTC
+/// Returns the local time zone's offset from UTC, in minutes east of UTC, at the moment of the call.
+///
+/// On Linux and macOS this is `tm_gmtoff` of the current local time, which includes daylight saving time. On
+/// other platforms it is the C runtime's `_timezone`, the standard-time offset, which does not.
 int getLocalTimezoneOffset() {
 #if defined(__linux__) || defined(__APPLE__)
     time_t now = time(nullptr);
     struct tm local_tm;
     localtime_r(&now, &local_tm);
 
-    // tm_gmtoff is seconds east of UTC
     return static_cast<int>(local_tm.tm_gmtoff / 60);
 #else
-    // Windows fallback - use _timezone
-    // _timezone is seconds west of UTC
+    // `_timezone` is seconds west of UTC, hence the negation.
     return -(_timezone / 60);
 #endif
 }
 
-// Try to get the IANA timezone name
+/// Returns the local time zone's name, or an empty string if none is found.
+///
+/// The first of these that gives a name wins:
+/// - on Linux, macOS and Windows, a non-empty `TZ` environment variable, returned as it is apart from one
+///   leading `:`, whatever its form (it need not be an IANA name such as `America/New_York`);
+/// - on Linux and macOS, the target of the `/etc/localtime` symbolic link, from just after `zoneinfo/`;
+/// - on Linux, the first line of `/etc/timezone`, without its newline.
+///
+/// On Windows, nothing but `TZ` is consulted, and on any other platform the result is always empty.
 std::string getTimezoneName() {
 #if defined(__linux__)
-    // Try TZ environment variable first
     const char* tz = std::getenv("TZ");
     if (tz && tz[0] != '\0') {
-        // TZ might be ":America/New_York" or "America/New_York"
         if (tz[0] == ':') {
             return std::string(tz + 1);
         }
         return std::string(tz);
     }
 
-    // Try reading /etc/localtime symlink
     char buf[256];
     ssize_t len = readlink("/etc/localtime", buf, sizeof(buf) - 1);
     if (len > 0) {
         buf[len] = '\0';
-        // Path is typically /usr/share/zoneinfo/America/New_York
-        // We want to extract "America/New_York"
+        // A target such as /usr/share/zoneinfo/America/New_York gives America/New_York.
         const char* zoneinfo = "zoneinfo/";
         const char* found = strstr(buf, zoneinfo);
         if (found) {
@@ -112,13 +122,11 @@ std::string getTimezoneName() {
         }
     }
 
-    // Try /etc/timezone file
     FILE* f = fopen("/etc/timezone", "r");
     if (f) {
         char line[256];
         if (fgets(line, sizeof(line), f)) {
             fclose(f);
-            // Remove trailing newline
             size_t l = strlen(line);
             if (l > 0 && line[l-1] == '\n') line[l-1] = '\0';
             return std::string(line);
@@ -126,7 +134,6 @@ std::string getTimezoneName() {
         fclose(f);
     }
 #elif defined(__APPLE__)
-    // Try TZ first
     const char* tz = std::getenv("TZ");
     if (tz && tz[0] != '\0') {
         if (tz[0] == ':') {
@@ -135,7 +142,6 @@ std::string getTimezoneName() {
         return std::string(tz);
     }
 
-    // Read /etc/localtime symlink
     char buf[256];
     ssize_t len = readlink("/etc/localtime", buf, sizeof(buf) - 1);
     if (len > 0) {
@@ -147,38 +153,25 @@ std::string getTimezoneName() {
         }
     }
 #elif defined(_WIN32)
-    // Try TZ first — same convention as POSIX, set by the Eco runtime tests.
     const char* tz = std::getenv("TZ");
     if (tz && tz[0] != '\0') {
         if (tz[0] == ':') return std::string(tz + 1);
         return std::string(tz);
     }
-    // GetDynamicTimeZoneInformation returns the Windows-named time zone
-    // (e.g. "Pacific Standard Time"). We do not translate that to an IANA
-    // name here — the caller will fall back to the offset-only path, which
-    // matches the empty-return branch on the POSIX side. A full ICU-based
-    // mapping is plan W2 item 11b's "minimal in v1" position.
+    // Windows names its time zones differently (e.g. "Pacific Standard Time"), and no translation to an IANA
+    // name is attempted, so without `TZ` the result is empty.
 #endif
 
-    // Fallback: return empty string to indicate we should use offset
     return "";
 }
 
-// Binding evaluator for Time.now: invoked when the scheduler consumes the
-// Task_Binding. Reads system_clock at consumption time (not at module init)
-// so successive Time.now references see distinct timestamps. Mirrors the JS
-// kernel's `_Scheduler_binding(callback => callback(_Scheduler_succeed(...)))`.
-//
-// Arguments:
-//   rawArgs[0] = millisToPosix closure (captured by the binding) — the
-//                Elm `Posix` constructor wrapped as `Int -> Posix`.
-//   rawArgs[1] = resume closure (applied by the scheduler).
-//
-// We cannot return a bare Int here because `Time.now : Task x Posix` —
-// downstream pattern matches like `posixToMillis (Posix m) = m` read field 0
-// of a Tag_Custom and a raw Tag_Int has the wrong layout (values[0] is at
-// offset 16 on a Custom, but past the end of an ElmInt). Applying
-// millisToPosix builds the Tag_Custom with the right ctor.
+/// Steps the Binding Task that `Time.now` returns: reads the system clock now, as milliseconds since the Unix
+/// epoch, and applies the resume closure to a Task that succeeds with that time as a `Posix`.
+///
+/// `rawArgs[0]` is the encoded `millisToPosix` closure (`Int -> Posix`) that `Time.now` captured, and `rawArgs[1]`
+/// is the encoded resume closure that the scheduler supplies. The count is passed through `millisToPosix` rather
+/// than succeeding with a bare Int, because Elm code reads a `Posix` as a custom type and a boxed Int has a
+/// different layout. Returns Unit, encoded, as the kill handle: there is nothing to cancel. A GC point.
 static void* timeNowBindingEvaluator(void* rawArgs[]) {
     uint64_t mtpEnc = reinterpret_cast<uint64_t>(rawArgs[0]);
     uint64_t resumeEnc = reinterpret_cast<uint64_t>(rawArgs[1]);
@@ -190,19 +183,15 @@ static void* timeNowBindingEvaluator(void* rawArgs[]) {
         now.time_since_epoch()
     ).count();
 
-    // Two allocations follow (eco_closure_call_saturated for the Posix
-    // ctor, taskSucceed). Root mtpHP / resumeHP across both; root the
-    // intermediate Posix and Task as they appear.
+    // Applying the closure and `taskSucceed` both allocate, so the two inputs and both intermediate results are
+    // rooted for the whole block.
     HPointer posixHP = Elm::alloc::listNil();
     HPointer succeededTask = Elm::alloc::listNil();
     {
         Elm::StackRootGuard guard(&mtpHP, &resumeHP, &posixHP, &succeededTask);
 
-        // millisToPosix : Int -> Posix. Pass `ms` as an unboxed i64 (PK_Int)
-        // via the PAP-aware typed-args entry; the runtime threads it
-        // straight to wrappers that accept unboxed Int, or boxes it once at
-        // the boundary for legacy wrappers — strictly less work than always
-        // boxing here, and tolerates curried/partially-applied user code.
+        // `ms` is passed as an unboxed Int (layout kind 1) through the typed-arguments entry, which boxes it
+        // only if the closure's evaluator wants it boxed, and handles a partially applied closure.
         static constexpr auto kLayoutInt1 = Elm::makeEvalParamLayout<1>(0, {1});
         const auto* layout =
             Elm::asLayout(&kLayoutInt1);
@@ -215,20 +204,20 @@ static void* timeNowBindingEvaluator(void* rawArgs[]) {
         Elm::Platform::Scheduler::callClosure1(resumeHP, succeededTask);
     }
 
-    // Kill handle: Unit (Time.now is synchronous, nothing to cancel).
     return reinterpret_cast<void*>(Export::encode(Elm::alloc::unit()));
 }
 
-// Phase-8 bodies (plans/defer-eager-kernel-tasks-via-binding.md): `Time.here`
-// and `Time.getZoneName` were the only stock-Elm exceptions to the deferred-
-// binding rule. Both wrap the existing helpers inside a Task_Binding so the
-// `localtime_r` + filesystem reads fire at scheduler-step time.
+/// Returns a Task that succeeds with the local `Zone`, built from the offset read at the time of the call. The
+/// binding body of `Time.here`; the captured payload is Unit and is ignored. A GC point.
 static HPointer timeHereBody(HPointer /*captured*/) {
     int offsetMinutes = getLocalTimezoneOffset();
     HPointer zone = createZone(offsetMinutes);
     return Scheduler::instance().taskSucceed(zone);
 }
 
+/// Returns a Task that succeeds with the local `ZoneName`: `Name` with the name `getTimezoneName` finds, or, when
+/// it finds none, `Offset` with the current offset in minutes. The binding body of `Time.getZoneName`; the captured
+/// payload is Unit and is ignored. A GC point.
 static HPointer timeGetZoneNameBody(HPointer /*captured*/) {
     std::string name = getTimezoneName();
     HPointer zoneName;
@@ -246,23 +235,15 @@ static HPointer timeGetZoneNameBody(HPointer /*captured*/) {
 extern "C" {
 
 HPtr Elm_Kernel_Time_now(HPtr millisToPosix) {
-    // Returns Task x Posix. The clock read AND the Posix ctor application
-    // are deferred into a Task_Binding so they fire each time the scheduler
-    // consumes the task; otherwise every reference to Time.now would freeze
-    // to the timestamp captured at module init.
-    //
-    // millisToPosix is captured into the binding closure so the evaluator
-    // can apply `Posix : Int -> Posix` to wrap the raw ms count — the Elm
-    // type is `Task x Posix`, not `Task x Int`. (Building the Posix Custom
-    // by hand in C++ is also possible, but pulling the closure through is
-    // the same path the JS kernel uses and it doesn't hardcode the ctor id
-    // on the C++ side.)
+    // Returns a Binding Task whose step is `timeNowBindingEvaluator`, with `millisToPosix` captured as its first
+    // argument, so the clock is read each time the Task runs. Taking the `Posix` constructor from the Elm side
+    // means its constructor index is not written down here.
     HPointer mtpHP = Export::decode(millisToPosix.toBits());
     HPointer bindingCB = Elm::alloc::listNil();
     HPointer task = Elm::alloc::listNil();
     {
         Elm::StackRootGuard guard(&mtpHP, &bindingCB, &task);
-        // timeNowBindingEvaluator returns a boxed Task HPtr → K = PK_Boxed.
+        // The evaluator's result, the kill handle, is a boxed value.
         bindingCB = Elm::alloc::allocClosureK(
             reinterpret_cast<EvalFunction>(timeNowBindingEvaluator),
             /*max_values=*/2,
@@ -277,36 +258,24 @@ HPtr Elm_Kernel_Time_now(HPtr millisToPosix) {
 }
 
 HPtr Elm_Kernel_Time_here() {
-    // Returns Task x Zone. Per Phase 8 / KERNEL_TASK_IO_001: deferred via
-    // Task_Binding so the `localtime_r` call fires at scheduler-step time.
+    // Returns a Binding Task, so the offset is read each time the Task runs.
     HPointer task = Elm::Platform::makeBinding<timeHereBody>(Elm::alloc::unit());
     return HPtr::fromBits(Export::encode(task));
 }
 
 HPtr Elm_Kernel_Time_getZoneName() {
-    // Returns Task x ZoneName. Per Phase 8 / KERNEL_TASK_IO_001: deferred
-    // via Task_Binding so the TZ env / /etc/localtime / /etc/timezone reads
-    // fire at scheduler-step time, not at module init.
+    // Returns a Binding Task, so the environment and files are read each time the Task runs.
     HPointer task =
         Elm::Platform::makeBinding<timeGetZoneNameBody>(Elm::alloc::unit());
     return HPtr::fromBits(Export::encode(task));
 }
 
 HPtr Elm_Kernel_Time_setInterval(double intervalMs, HPtr task) {
-    // Returns a Sub descriptor (Custom type)
-    // The actual timer is started by the Time effect manager's onEffects
-    //
-    // Sub structure:
-    //   Custom { ctor: CTOR_TIME_EVERY,
-    //            values: [interval (unboxed Float), tagger (boxed Closure)] }
-
     std::vector<Unboxable> values(2);
-    values[0].f = intervalMs;                   // interval in milliseconds (unboxed)
-    values[1].p = Export::decode(task.toBits()); // tagger closure (boxed)
+    values[0].f = intervalMs;
+    values[1].p = Export::decode(task.toBits());
 
-    // Slot kinds, 2 bits per slot: field 0 is a Float (10), field 1 boxed. It was
-    // 0b01 (Int), which only the native manager's direct `.f` reads tolerated
-    // (plans/kg-reported-bugs.md step 1, kernel audit).
+    // The kind mask gives field 0 slot kind 2 (Float) and field 1 kind 0 (boxed).
     HPointer sub = custom(CTOR_TIME_EVERY, values, 0b10);
     return HPtr::fromBits(Export::encode(sub));
 }

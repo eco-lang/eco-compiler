@@ -1,19 +1,14 @@
 //===- Http.cpp - Http kernel module implementation -----------------------===//
 //
-// Per KERNEL_TASK_IO_001 / plans/defer-eager-kernel-tasks-via-binding.md
-// Phase 5: `Eco.Http.fetch` and `Eco.Http.getArchive` are returned as
-// Task_Bindings. The blocking `curl_easy_perform` is now run on an
-// HttpService worker thread (Q10 — extend the existing service, don't fork
-// a parallel one); the main-thread drain pops the worker's result, runs the
-// libzip / SHA1 post-process step (still on the main thread), builds the
-// Eco-shape response, and resumes the parked binding.
+// Both kernels are async-park bindings. When the Task runs, its body copies the request out of the heap, parks a
+// *bundle* with the scheduler, and submits the request to `HttpService` on the *eco lane*, the result queue that
+// `HttpService` keeps apart from elm/http's. The bundle is a heap Custom whose constructor tag says which kernel
+// made it (`KIND_FETCH` or `KIND_GET_ARCHIVE`) and whose one field is the resume closure; parking it keeps it
+// rooted and acquires a hold, under a token that travels with the request.
 //
-// Bundle layout in the scheduler's pendingResumes_ registry:
-//
-//   Custom { ctor = KIND_FETCH | KIND_GET_ARCHIVE, values = [resume] }
-//
-// The single shared async-source drain (`ecoHttpDrain`) reads the bundle's
-// ctor to decide which response builder to use.
+// One async source, `ecoHttpDrain`, serves both kernels. It pops each result on the eco thread, takes the bundle
+// back by its token, builds the response the bundle's tag calls for (the SHA-1 and the unzipping happen here, on
+// the eco thread), resumes the Task with it and releases the hold.
 //
 //===----------------------------------------------------------------------===//
 
@@ -29,24 +24,21 @@
 #include <vector>
 
 #if defined(_WIN32)
-// Use Windows CNG (BCrypt) for SHA-1 — see plans/build-on-windows.md
-// (Dependency stack: OpenSSL eliminated on Windows). The shim below
-// matches OpenSSL's SHA1() one-shot signature so existing call sites
-// don't change.
+// Windows uses CNG (BCrypt) for SHA-1 instead of OpenSSL. The shim below has the signature of OpenSSL's one-shot
+// `SHA1()`, so the code that calls it is the same on every platform.
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <bcrypt.h>
 #pragma comment(lib, "bcrypt.lib")
-namespace { constexpr int SHA_DIGEST_LENGTH = 20; }
+namespace { constexpr int SHA_DIGEST_LENGTH = 20; } // Bytes in a SHA-1 digest, as OpenSSL names it.
 namespace {
+// Writes the SHA-1 digest of the `len` bytes at `data` to `out` and returns `out`. Writes 20 zero bytes when the
+// algorithm provider cannot be opened. Only the first 0xffffffff bytes of a longer input are hashed.
 inline unsigned char* SHA1(const unsigned char* data, size_t len,
                             unsigned char out[20]) {
     BCRYPT_ALG_HANDLE h = nullptr;
     if (BCryptOpenAlgorithmProvider(&h, BCRYPT_SHA1_ALGORITHM, nullptr, 0) != 0) {
-        // On failure, zero-fill the digest so the caller's hex-encoding
-        // path stays well-defined; the caller compares the digest by
-        // value, so an all-zero hash will simply mismatch the registry's
-        // recorded SHA and be reported as a corrupt archive.
+        // Zero-filled so that the digest is still defined.
         for (int i = 0; i < 20; ++i) out[i] = 0;
         return out;
     }
@@ -71,17 +63,17 @@ using Elm::Platform::HttpService;
 
 namespace {
 
-// Bundle ctor tags for the pendingResume registry. Distinct values let the
-// shared drain dispatch by ctor without an extra side table. Picked high to
-// avoid collision with any compiler-generated tag.
+// The bundle constructor tag of a `fetch` request. The drain reads it to choose the response builder.
 constexpr uint16_t KIND_FETCH       = 0xEC01;
+// The bundle constructor tag of a `getArchive` request.
 constexpr uint16_t KIND_GET_ARCHIVE = 0xEC02;
 
-// ----- Helpers shared between drain dispatch branches ---------------------
+// ----- Request helpers ----------------------------------------------------
 
-// Walk an Elm `List (Tuple2 String String)` headers list into a POD
-// vector<{key, value}> on the main thread (binding step). Runs ONLY before
-// any allocation; the snapshotted strings are kept by-value.
+// Returns copies of the `(name, value)` String tuples in the Elm List whose word is `headersEnc`, in order.
+//
+// Does not allocate on the Elm heap, but walks the list through raw pointers, so the list must not move while it
+// runs: the caller must not allocate between decoding the list and this call.
 std::vector<std::pair<std::string, std::string>>
 listOfTuplesToHeaders(uint64_t headersEnc) {
     std::vector<std::pair<std::string, std::string>> result;
@@ -98,17 +90,13 @@ listOfTuplesToHeaders(uint64_t headersEnc) {
 
 // ----- KIND_FETCH response builder ----------------------------------------
 
-// Eco.Http.fetch destructures the Err payload as a Tuple2 (statusCode,
-// statusText) and the Ok payload as a String body. Mirrors the pre-Phase-5
-// eager implementation's exact shape.
+// Returns the `Result` a `fetch` Task succeeds with for the transfer outcome `r`, as `Http.hpp` describes on
+// `fetch`. A GC point.
 HPointer buildFetchResponse(const HttpService::Result& r) {
     using EK = HttpService::ErrorKind;
     ECO_KLOG("http", "fetch result token=%lu err=%d status=%ld body=%zuB",
              (unsigned long)r.token, (int)r.error, r.status, r.body.size());
     if (r.error != EK::Ok) {
-        // Transport-level failures: surface a Tuple2 (0, curl-strerror-ish).
-        // Mirrors the pre-Phase-5 path which mapped CURLE_* to a single
-        // "transport failure" with statusCode=0.
         const char* msg = "Network error";
         switch (r.error) {
             case EK::Timeout:      msg = "Request timed out"; break;
@@ -144,9 +132,8 @@ HPointer buildFetchResponse(const HttpService::Result& r) {
 
 // ----- KIND_GET_ARCHIVE response builder ----------------------------------
 
-// Run libzip + SHA1 on the body bytes and build the Eco-level success value:
-//   Ok (sha, [(relativePath, content)]). Mirrors the pre-Phase-5 eager path
-//   in `Eco.Http.getArchive`.
+// Returns the `Result` a `getArchive` Task succeeds with for the transfer outcome `r`, as `Http.hpp` describes on
+// `getArchive`. Hashes and unzips the body. A GC point.
 HPointer buildGetArchiveResponse(const HttpService::Result& r) {
     ECO_KLOG("http", "getArchive result token=%lu err=%d status=%ld body=%zuB",
              (unsigned long)r.token, (int)r.error, r.status, r.body.size());
@@ -166,7 +153,6 @@ HPointer buildGetArchiveResponse(const HttpService::Result& r) {
 
     const std::string& zipData = r.body;
 
-    // SHA1.
     std::string shaHex;
     {
         unsigned char hash[SHA_DIGEST_LENGTH];
@@ -180,7 +166,7 @@ HPointer buildGetArchiveResponse(const HttpService::Result& r) {
     }
     ECO_KLOG("http", "zip sha=%s size=%zuB", shaHex.c_str(), zipData.size());
 
-    // libzip extract — same logic as the pre-Phase-5 eager `getArchive`.
+    // The archive is read in full into C++ strings first, so no heap allocation happens while libzip is open.
     zip_error_t zipError;
     zip_error_init(&zipError);
     zip_source_t* src = zip_source_buffer_create(
@@ -247,12 +233,11 @@ HPointer buildGetArchiveResponse(const HttpService::Result& r) {
     zip_close(archive);
     zip_error_fini(&zipError);
 
-    // Build Eco-shape result: Ok (sha, [(relativePath, data)]).
     auto& rs = Elm::Allocator::instance().getRootSet();
     size_t saved = rs.stackRangePoint();
     std::vector<HPointer> fileTuples(entries.size(), listNil());
-    // ONE all-boxed record for the presized buffer (unfilled slots hold the
-    // Nil constant, which the GC skips) — plans/kernel-root-stack-bounded-rooting.md.
+    // One all-boxed root range covers the presized buffer. Slots not yet filled hold the Nil constant, which the
+    // GC skips.
     rs.pushStackRootRange(fileTuples.data(), fileTuples.size(), ~0ULL);
 
     for (size_t i = 0; i < entries.size(); ++i) {
@@ -281,6 +266,9 @@ HPointer buildGetArchiveResponse(const HttpService::Result& r) {
 
 // ----- Shared async-source drain ------------------------------------------
 
+// Resumes the Task of every result waiting on the eco lane, as the file comment describes, and releases each
+// result's hold. A result whose bundle is gone has its hold released and nothing resumed; a bundle with an
+// unknown tag resumes its Task with Unit.
 void ecoHttpDrain() {
     auto& sched = Elm::Platform::Scheduler::instance();
     HttpService::Result r;
@@ -328,6 +316,7 @@ void ecoHttpDrain() {
     }
 }
 
+// Registers `ecoHttpDrain` as an async source, ready while the eco lane has results, the first time it is called.
 void ensureRegistered() {
     static std::once_flag flag;
     std::call_once(flag, [] {
@@ -337,8 +326,8 @@ void ensureRegistered() {
     });
 }
 
-// Allocate a bundle Custom (ctor=kind, values=[resume]) and register it as
-// the pendingResume for `resume`'s token. Returns the token.
+// Parks a bundle with constructor tag `kind` holding `resume`, acquiring a Task hold, and returns its token. A GC
+// point.
 uint64_t parkBundle(uint16_t kind, HPointer resume) {
     Elm::StackRootGuard rg(&resume);
     std::vector<Elm::Unboxable> fields(1);
@@ -351,7 +340,8 @@ uint64_t parkBundle(uint16_t kind, HPointer resume) {
 
 // ----- Async-park bindings -------------------------------------------------
 
-// Captured payload for fetch: tuple3(method, url, headers).
+// Sends the `fetch` request in `captured`, a Tuple3 of the method, URL and headers, and parks `resume` to receive
+// its result. Returns Unit as the kill handle, so a kill does not cancel the request.
 HPointer fetchBody(HPointer captured, HPointer resume) {
     HPointer methodHP, urlHP, headersHP;
     {
@@ -375,10 +365,10 @@ HPointer fetchBody(HPointer captured, HPointer resume) {
     req.method = method;
     req.url = url;
     req.headers = std::move(hdrs);
-    // Pre-Phase-5 eager path always set Content-Length: 0 for body-less
-    // POSTs because the package registry rejects them with 411. Preserve.
+    // A body-less POST must carry `Content-Length: 0`, since a server may refuse one without it (411).
+    // `HttpService` sends that for a `POST` with an empty body; these assignments leave both fields empty.
     if (method == "POST") {
-        req.body = "";  // forces COPYPOSTFIELDS path with size=0
+        req.body = "";
         req.contentType = "";
     }
     req.eco_lane = true;
@@ -387,7 +377,8 @@ HPointer fetchBody(HPointer captured, HPointer resume) {
     return unit();  // kill handle
 }
 
-// Captured payload for getArchive: the URL HPointer.
+// Sends a `GET` for the archive at the URL String `captured`, and parks `resume` to receive its result. Returns
+// Unit as the kill handle, so a kill does not cancel the request.
 HPointer getArchiveBody(HPointer captured, HPointer resume) {
     std::string url = toString(Export::encode(captured));
 

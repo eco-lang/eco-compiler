@@ -1,23 +1,27 @@
 //===- UdpManager.hpp - The C++ effect manager of Socket.Udp --------------===//
 //
-// plans/eco-system-sockets.md §3.5 and Appendix C.2 (manager key
-// "Socket.Udp"). The Elm declaration lives in
-// system-kernel-cpp/src/Socket/Udp.elm, section "EFFECT MANAGER":
+// An Elm program subscribes to the datagrams of a bound UDP socket with `Socket.Udp.onMessage`, and on the native
+// backend those subscriptions are kept by a C++ effect manager, registered with the platform runtime under the key
+// "Socket.Udp". This header holds the `OnMessage` layout constants that manager reads, two DgramT kind masks that
+// mirror the literals `buildDgramT` in `Udp.cpp` writes (nothing reads them), and the export that registers it.
+//
+// The manager knows a subscription only by its constructor layout. In `system-kernel-cpp/src/Socket/Udp.elm`, with the
+// alias `DatagramArg` written out, it is
 //
 //     type MySub msg = OnMessage Int (( Bytes, ( String, Int ) ) -> msg)
-//     -- tag 0: [socketId unboxed Int (mask 0b01), tagger boxed]
 //
-// Tagger argument: DgramT (§3.2) = ( data, ( fromAddress, fromPort ) ): the
-// outer tuple2 has mask 0, the inner one 0x4 (slot 1 Int).
+// The socket id is an unboxed Int in slot 0 and the tagger a boxed closure in slot 1. A constructor's tag is its
+// zero-based index in the declaration, so the constants below must change whenever that declaration does; nothing
+// checks that they agree.
 //
-// Tags are the zero-based declaration indexes (Compiler/Data/CtorTag.elm).
-// Keep the two in sync.
+// A tagger is called with a DgramT, the received datagram as the Elm value `( data, ( fromAddress, fromPort ) )`.
 //
-// The manager records the subscriptions (router and taggers per socket id,
-// T5); delivery follows §3.4 (Udp.hpp declares the two hooks
-// udpManagerHasSubscribers / udpManagerDeliver it implements).
+// At each subscription update the manager replaces the taggers it holds for every socket id, and each datagram
+// delivered to a socket goes to every tagger of that socket, in subscription order. It has no commands. On Windows
+// a non-empty subscription list is fatal.
 //
-// Templates used: T6 (manager), T5 (state), T8 (delivery).
+// The manager also implements the two delivery hooks `Udp.hpp` declares, `udpManagerHasSubscribers` and
+// `udpManagerDeliver`, which carry their own contracts there.
 //
 //===----------------------------------------------------------------------===//
 
@@ -30,23 +34,30 @@ namespace Eco::System {
 
 namespace UdpManager {
 
-// MySub
+/// The constructor tag of `OnMessage`, the only constructor of `MySub`.
 constexpr uint16_t CTOR_ON_MESSAGE = 0;
-constexpr int ON_MESSAGE_SOCKET_FIELD = 0;   // unboxed Int
+/// The slot of an `OnMessage` value that holds the socket id, as an unboxed Int.
+constexpr int ON_MESSAGE_SOCKET_FIELD = 0;
+/// The slot of an `OnMessage` value that holds the tagger closure.
 constexpr int ON_MESSAGE_TAGGER_FIELD = 1;
-constexpr uint64_t ON_MESSAGE_MASK = 0x1;    // slot 0 Int
+/// The kind mask of an `OnMessage` value: slot 0 is an unboxed Int, slot 1 is boxed.
+constexpr uint64_t ON_MESSAGE_MASK = 0x1;
 
-// DgramT masks (§3.2).
-constexpr uint32_t DGRAM_T_MASK = 0;      // ( Bytes, ( String, Int ) )
-constexpr uint32_t DGRAM_FROM_MASK = 0x4; // ( String, Int )
+/// The kind mask of the outer DgramT tuple `( data, from )`: both slots boxed. Nothing reads it; `buildDgramT` writes
+/// the literal 0.
+constexpr uint32_t DGRAM_T_MASK = 0;
+/// The kind mask of the DgramT's `( fromAddress, fromPort )` tuple: the port in slot 1 is an unboxed Int. Nothing
+/// reads it; `buildDgramT` writes the literal 0x4.
+constexpr uint32_t DGRAM_FROM_MASK = 0x4;
 
 } // namespace UdpManager
 
 } // namespace Eco::System
 
 extern "C" {
-// Called from the compiler-emitted @__eco_register_ports preamble (base plan
-// §3.6); returns `()` as the `!eco.value` result (T6).
+/// Registers the Socket.Udp effect manager with the platform runtime under the key "Socket.Udp", and returns the
+/// encoded unit value. Generated code calls it from the `@__eco_register_ports` preamble. A C++ exception escaping the
+/// registration is made fatal through `Eco::Kernel::reportFatal`.
 uint64_t Eco_System_registerManager_Socket_Udp();
 }
 

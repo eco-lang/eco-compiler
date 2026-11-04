@@ -1,17 +1,14 @@
 //===- Conn.cpp - One stream connection on the IoReactor ------------------===//
 //
-// See Conn.hpp (plans/eco-system-sockets.md §3.3.3, §D.2, §D.3, §D.5).
-// Reactor thread only, except makeClient (main thread, before the Conn is
-// shared with the reactor) and cancelConnect (main thread, atomics only).
+// Re-entry. Protocol callbacks may call back into the Conn, so the IO loop marks the Conn busy (`busy_`, set by
+// `BusyScope`) while it runs. A request for IO that arrives while busy only sets `again_` and the directions it wants
+// (`againRead_`, `againWrite_`); `runIo` loops once more for them, and `guarded` runs them after a single callback
+// made outside the loop. Interest is applied only once the Conn is no longer busy (`afterIo`).
 //
-// Reads and writes are attempted at once when requested (most complete
-// without waiting), and otherwise wait for readiness with demand-driven
-// interest (§3.3.1 rule 1). What is read goes to the current protocol
-// (plans/eco-system-websockets.md §3.2): the stream faces (FaceProtocol.cpp,
-// one ChannelResult per request) or a protocol installed by setProtocol.
-// Error reasons (§D.2): "read <CODE>", "write <CODE>", "socket closed".
-//
-// Templates used: none (POD only, G1); T9 completion side (ChannelResult).
+// Read buffers. Data reaches `onData` as a view into a reactor-thread buffer, which is reused by the next read. A
+// callback on one Conn may drive another Conn (a write or `updateInterest` on it reads too), so there is one buffer
+// per nesting depth of `serviceReads` (`g_readDepth`, `readBuffer`) and a view is never overwritten while it is
+// still in use.
 //
 //===----------------------------------------------------------------------===//
 
@@ -41,25 +38,29 @@ namespace Eco::System {
 
 namespace {
 
+// The size in bytes of one read, and of each read buffer.
 constexpr size_t kChunk = 64 * 1024;
+// The default face-detached reason, the one face requests fail with once another protocol has the connection.
 constexpr const char* kSocketClosed = "socket closed";
 
+// Returns the reactor thread's buffer of `kChunk` bytes for input that is read only to be discarded.
 char* scratch() {
     thread_local std::vector<char> buf(kChunk);   // reactor thread
     return buf.data();
 }
 
-// Read buffers of serviceReads, one per nesting level: a protocol's onData
-// holds a view into its buffer while it may drive another Conn (a write or
-// updateInterest on it reads too).
+// How many calls of serviceReads are on the reactor thread's stack.
 thread_local int g_readDepth = 0;
 
+// Returns the reactor thread's read buffer of `kChunk` bytes for nesting depth `depth`, creating it if needed. The
+// buffer is not freed or moved when deeper ones are created.
 char* readBuffer(int depth) {
     thread_local std::vector<std::vector<char>> bufs;   // reactor thread
     while (bufs.size() <= static_cast<size_t>(depth)) bufs.emplace_back(kChunk);
     return bufs[static_cast<size_t>(depth)].data();
 }
 
+// Counts one level of serviceReads nesting for the lifetime of the object.
 struct ReadDepth {
     ReadDepth() { ++g_readDepth; }
     ~ReadDepth() { --g_readDepth; }
@@ -67,14 +68,17 @@ struct ReadDepth {
     ReadDepth& operator=(const ReadDepth&) = delete;
 };
 
+// Returns the shared reactor.
 IoReactor& reactor() { return IoReactor::instance(); }
 
 #ifndef _WIN32
 
 // --- The plain transport -------------------------------------------------------
 
+// The transport that is the socket itself: recv, send and shutdown, retried on EINTR.
 class PlainTransport final : public Transport {
 public:
+    // Creates a transport over `fd`, which it uses but does not own.
     explicit PlainTransport(int fd) : fd_(fd) {}
 
     ssize_t read(char* buf, size_t n) override {
@@ -116,6 +120,7 @@ public:
     }
 
 private:
+    // Records errno `e` as the failure and returns -2.
     ssize_t fail(int e) {
         errNo = e;
         errCode = errnoName(e);
@@ -126,16 +131,19 @@ private:
     int fd_;
 };
 
-#else // _WIN32: never reached (the kernels fail ENOTSUP first, §1)
+#else // _WIN32: never reached (the kernels fail ENOTSUP first)
 
+// A transport whose reads, writes and shutdowns fail with ENOTSUP; the handshake succeeds at once.
 class PlainTransport final : public Transport {
 public:
+    // Creates the transport; the fd is ignored.
     explicit PlainTransport(int) {}
     ssize_t read(char*, size_t) override { return fail(); }
     ssize_t write(const char*, size_t) override { return fail(); }
     int shutdownWrite() override { return static_cast<int>(fail()); }
 
 private:
+    // Records ENOTSUP as the failure and returns -2.
     ssize_t fail() {
         errNo = ENOTSUP;
         errCode = "ENOTSUP";
@@ -146,6 +154,7 @@ private:
 
 #endif
 
+// Closes `fd` if it is not negative, ignoring failure. Does nothing on Windows.
 void closeFd(int fd) {
 #ifndef _WIN32
     if (fd >= 0) (void)::close(fd);
@@ -197,8 +206,7 @@ Conn::~Conn() {
     if (fd_ >= 0 && key() == 0) closeFd(fd_);
 }
 
-// Marks the Conn busy for the duration of a scope (protocol callbacks that
-// call back into the Conn only record what to do next, runIo).
+// Marks the Conn busy for the lifetime of the object, and restores the previous state after it.
 struct Conn::BusyScope {
     explicit BusyScope(Conn& c) : c_(c), prev_(c.busy_) { c.busy_ = true; }
     ~BusyScope() { c_.busy_ = prev_; }
@@ -208,8 +216,6 @@ struct Conn::BusyScope {
     bool prev_;
 };
 
-// Runs `f` (which calls the protocol) as one step: IO the protocol asked
-// for meanwhile runs afterwards, and interest is re-evaluated.
 template <typename F>
 void Conn::guarded(F&& f) {
     if (busy_) {
@@ -276,7 +282,7 @@ void Conn::startConnect() {
         if (ie != 0) connectFailed(ie);
         return;
     }
-    // Unix: EAGAIN = the listener's backlog is full (§D.3); reported as is.
+    // Unix: EAGAIN = the listener's backlog is full; reported as is.
     // ENOTSOCK = the path is a file that is not a socket (macOS); reported as
     // Linux reports it, ECONNREFUSED: nobody listens there.
     if (isUnix_ && e == ENOTSOCK) e = ECONNREFUSED;
@@ -393,7 +399,7 @@ bool Conn::cancelConnect() {
 void Conn::describe(SocketEvent& ev, const std::string& listenPath) const {
     ev.isUnix = isUnix_;
     if (isUnix_) {
-        // §D.3: from the arguments, not getsockname/getpeername.
+        // From the arguments, not getsockname/getpeername.
         ev.local = SockEndpoint{1, isClient_ ? std::string() : listenPath, 0};
         ev.remote = SockEndpoint{1, isClient_ ? spec_.address : std::string(), 0};
 #if defined(__linux__)
@@ -441,7 +447,7 @@ void Conn::describe(SocketEvent& ev, const std::string& listenPath) const {
 int Conn::setNoDelay(bool on) {
     if (isUnix_) return 0;
 #ifndef _WIN32
-    if (fd_ < 0) return 0;   // closed: nothing to set (as Node)
+    if (fd_ < 0) return 0;   // closed: nothing to set
     int v = on ? 1 : 0;
     if (::setsockopt(fd_, IPPROTO_TCP, TCP_NODELAY, &v, sizeof(v)) < 0) return errno;
     return 0;
@@ -454,7 +460,7 @@ int Conn::setNoDelay(bool on) {
 int Conn::setKeepAlive(int64_t seconds) {
     if (isUnix_) return 0;
 #ifndef _WIN32
-    if (fd_ < 0) return 0;   // closed: nothing to set (as Node)
+    if (fd_ < 0) return 0;   // closed: nothing to set
     int on = seconds > 0 ? 1 : 0;
     if (::setsockopt(fd_, SOL_SOCKET, SO_KEEPALIVE, &on, sizeof(on)) < 0) return errno;
     if (on) {
@@ -473,7 +479,7 @@ int Conn::setKeepAlive(int64_t seconds) {
 }
 
 // ---------------------------------------------------------------------------
-// Protocols (plans/eco-system-websockets.md §3.2)
+// Protocols
 // ---------------------------------------------------------------------------
 
 void Conn::setProtocol(std::unique_ptr<ConnProtocol> p, std::string leftover) {
@@ -488,13 +494,12 @@ void Conn::setProtocol(std::unique_ptr<ConnProtocol> p, std::string leftover) {
             np->onData(*this, std::string_view(leftover));
         }
         // Plaintext a TLS transport still holds is read by the IO step that
-        // follows (no fd event would announce it, N6).
+        // follows (no fd event would announce it).
         again_ = againRead_ = true;
     });
 }
 
-// Retired protocols die once nothing queued can call them back. Only at
-// the top of a reactor dispatch (never with a protocol method on the stack).
+// Called only at the start of onReady and onTimer, so no protocol method is on the stack.
 void Conn::reapRetired() {
     if (!retired_.empty() && !busy_ && outQ_.empty() && shutDone_.empty()) retired_.clear();
 }
@@ -511,6 +516,7 @@ void Conn::addCloseHook(std::function<void(Conn&)> hook) {
 
 namespace {
 
+// Answers a face request with ECANCELED and `reason`.
 void postDetached(uint64_t channelId, uint64_t token, ChannelResult::Op op,
                   const std::string& reason) {
     ChannelResult r;
@@ -596,7 +602,6 @@ void Conn::updateInterest() {
     if (phase_ == Phase::Open) runIo(true, true);
 }
 
-// Fails every queued write, then every pending shutdownWrite callback.
 void Conn::failOutbound(int err) {
     std::deque<OutReq> q;
     q.swap(outQ_);
@@ -618,11 +623,6 @@ void Conn::finishShutdown(int err) {
 // IO (Open phase)
 // ---------------------------------------------------------------------------
 
-// One IO step: flush what the transport holds, read while the protocol
-// wants data, write the queue (then a requested FIN). Protocol callbacks
-// that ask for more IO (write, updateInterest, ...) only set again_; the
-// loop runs once more for them. `tryRead` / `tryWrite`: readiness (or a
-// request: attempt at once).
 void Conn::runIo(bool tryRead, bool tryWrite) {
     if (phase_ != Phase::Open || aborting_) return;
     if (busy_) {
@@ -724,7 +724,6 @@ void Conn::serviceWrites() {
     }
 }
 
-// A write failed: the write direction is over.
 void Conn::writeFailed() {
     writeErr_ = transport_->errNo != 0 ? transport_->errNo : EIO;
     writeErrReason_ = "write " + (transport_->errCode.empty() ? std::string(errnoName(writeErr_))
@@ -735,8 +734,6 @@ void Conn::writeFailed() {
     if (protocol_ && phase_ == Phase::Open) protocol_->onError(*this, writeErr_, writeErrReason_);
 }
 
-// Writable: send what the transport still holds. A failure ends the write
-// direction (the peer is gone).
 void Conn::flushPending() {
     if (!transport_ || !transport_->hasPendingWrite()) return;
     if (transport_->flush() >= 0) return;
@@ -766,7 +763,7 @@ void Conn::applyInterest() {
     bool r = false, w = false;
     if (!closing_ && !readDone_ && protocol_ && protocol_->wantsRead()) (readOnWrite_ ? w : r) = true;
     if (!outQ_.empty() || shutRequested_) (writeOnRead_ ? r : w) = true;
-    if (transport_ && transport_->hasPendingWrite()) w = true;   // S5: e.g. a close_notify
+    if (transport_ && transport_->hasPendingWrite()) w = true;   // e.g. a close_notify
     int e = reactor().setInterest(key(), r, w);
     if (e == 0) return;
     // The fd cannot be watched: fail what waits and give the socket up.
@@ -786,10 +783,8 @@ void Conn::applyInterest() {
     closeNow();
 }
 
-// closeGraceful: the writes and the FIN are done. Discard input until EOF
-// (closing with unread data would make Linux send RST instead of our FIN,
-// N8) and send what the transport still holds (a TLS close_notify, its
-// SHUT_WR), both bounded by the drain deadline.
+// Input is discarded only if it has not ended or failed; closing with unread input would reset the connection
+// instead of ending it with the FIN already sent.
 void Conn::enterDraining() {
     discarding_ = !eofSeen_ && readErr_ == 0 && !aborted_;
     bool flushing = !aborted_ && transport_ && transport_->hasPendingWrite();
@@ -802,8 +797,7 @@ void Conn::enterDraining() {
     drainStep();
 }
 
-// Draining: flush the transport's pending output and/or discard input;
-// close when neither is left (or on the drain deadline, onTimer).
+// The drain deadline (fireTimer) closes the connection if this does not finish first.
 void Conn::drainStep() {
     bool wantR = false, wantW = false;
     if (transport_ && transport_->hasPendingWrite()) {
@@ -834,7 +828,7 @@ void Conn::drainStep() {
 }
 
 void Conn::closeNow() {
-    if (key() != 0) reactor().remove(key());   // remove before close (rule 3)
+    if (key() != 0) reactor().remove(key());   // remove before close, as IoHandler requires
     closeFd(fd_);
     fd_ = -1;
     phase_ = Phase::Closed;
@@ -1008,7 +1002,7 @@ void Conn::onReady(bool readable, bool writable, bool errorOrHangup) {
         runHandshake();
         return;
     case Phase::Open:
-        // errorOrHangup only arrives with demand (rule 1): treated as both
+        // errorOrHangup only arrives while there is interest: treated as both
         // directions ready (the syscalls report the error).
         runIo(readable || errorOrHangup, writable || errorOrHangup);
         return;

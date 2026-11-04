@@ -1,10 +1,3 @@
-/**
- * Elm Kernel File Module - Runtime Heap Integration
- *
- * Provides file operations using GC-managed heap values.
- * Note: This is a stub - full implementation requires platform-specific file dialogs.
- */
-
 #include "File.hpp"
 #include "allocator/Allocator.hpp"
 #include "allocator/StringOps.hpp"
@@ -13,27 +6,24 @@
 
 namespace Elm::Kernel::File {
 
-// File is represented as a Record with fields:
-// { name : String, mime : String, size : Int, lastModified : Int, content : Bytes }
-// Field indices (alphabetical order):
-constexpr u32 FIELD_CONTENT = 0;
-constexpr u32 FIELD_LAST_MODIFIED = 1;
-constexpr u32 FIELD_MIME = 2;
-constexpr u32 FIELD_NAME = 3;
-constexpr u32 FIELD_SIZE = 4;
+// The slots the accessors read for each field of a File record
+// `{ content, lastModified, mime, name, size }`, numbered in alphabetical order of the field names.
+// No native code builds such a record; in a compiler-built record unboxed fields would come first.
+constexpr u32 FIELD_CONTENT = 0; ///< The slot of `content`, the file's Bytes. No accessor reads it.
+constexpr u32 FIELD_LAST_MODIFIED = 1; ///< The slot of `lastModified`.
+constexpr u32 FIELD_MIME = 2; ///< The slot of `mime`.
+constexpr u32 FIELD_NAME = 3; ///< The slot of `name`.
+constexpr u32 FIELD_SIZE = 4; ///< The slot of `size`.
 
 // ============================================================================
 // Decoder and Compatibility
 // ============================================================================
 
 DecoderPtr decoder() {
-    // Stub - return null decoder
     return DecoderPtr{};
 }
 
 HPointer makeBytesSafeForInternetExplorer(HPointer bytes) {
-    // In modern environments, this is a no-op
-    // It was originally needed because IE had issues with certain byte sequences
     return bytes;
 }
 
@@ -68,7 +58,6 @@ HPointer size(void* file) {
     if (rec->header.tag != Tag_Record) return alloc::allocInt(0);
     if (rec->header.size <= FIELD_SIZE) return alloc::allocInt(0);
 
-    // Size field might be unboxed Int.
     if (Elm::fieldKind(rec->unboxed, FIELD_SIZE) != 0) {
         return alloc::allocInt(rec->values[FIELD_SIZE].i);
     }
@@ -82,7 +71,6 @@ HPointer lastModified(void* file) {
     if (rec->header.tag != Tag_Record) return alloc::allocInt(0);
     if (rec->header.size <= FIELD_LAST_MODIFIED) return alloc::allocInt(0);
 
-    // lastModified might be unboxed Int.
     if (Elm::fieldKind(rec->unboxed, FIELD_LAST_MODIFIED) != 0) {
         return alloc::allocInt(rec->values[FIELD_LAST_MODIFIED].i);
     }

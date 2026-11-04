@@ -1,11 +1,7 @@
-//===- WsEvents.cpp - WebSocket results to the main thread ----------------===//
+//===- WsEvents.cpp - WebSocket results to the eco thread -----------------===//
 //
-// See WsEvents.hpp (plans/eco-system-websockets.md §3.6; the sockets plan
-// §3.3.2 pattern of SocketEvents.cpp). Leaky singleton (base plan §3.4):
-// never destroyed, so a late post from the reactor thread during std::exit
-// never touches freed memory.
-//
-// Templates used: T8/G12 (drain), G10 (the dispatchers own every count).
+// The queue is a leaky singleton: once `queue()` has returned it, it is never destroyed, so a late post from the
+// reactor thread during `std::exit` never touches freed memory.
 //
 //===----------------------------------------------------------------------===//
 
@@ -26,32 +22,35 @@ namespace Eco::System {
 
 namespace {
 
+/// The queue of posted events, with the dispatch table and the requested work.
 struct EventQueue {
     std::mutex m;
-    std::deque<WsEvent> q;
-    std::atomic<size_t> count{0};
-    std::atomic<bool> workPending{false};
-    Scheduler* sched;
-    // Main thread only.
+    std::deque<WsEvent> q;                   ///< Guarded by `m`.
+    std::atomic<size_t> count{0};            ///< The length of `q`, readable without `m` by the ready predicate.
+    std::atomic<bool> workPending{false};    ///< True once work is requested and until the drain takes it.
+    Scheduler* sched;                        ///< The process-wide scheduler, which is never destroyed.
+    // Eco thread only, unguarded.
     WsEventDispatchFn dispatch[WsEvent::kKinds] = {};
     std::vector<WsWorkFn> work;
 
+    /// Creates an empty queue with no dispatch functions.
     EventQueue() : sched(&Scheduler::instance()) {}
 };
 
-// Constructed by ensureWsEvents() on the main thread before any reactor
-// object posts, so the reactor thread never binds the Scheduler.
+/// Returns the queue, creating it on first use.
 EventQueue& queue() {
-    static auto* q = new EventQueue();   // leaky (§3.4)
+    static auto* q = new EventQueue();   // leaked: see the file comment
     return *q;
 }
 
+/// Returns whether an event is queued or work is requested. The drain's ready predicate: it takes no lock.
 bool wsEventsReady() {
     auto& q = queue();
     return q.count.load(std::memory_order_acquire) > 0 ||
            q.workPending.load(std::memory_order_acquire);
 }
 
+/// Moves the oldest queued event into `out` and returns true, or returns false if the queue is empty.
 bool tryPop(WsEvent& out) {
     auto& q = queue();
     std::lock_guard<std::mutex> lk(q.m);
@@ -62,7 +61,7 @@ bool tryPop(WsEvent& out) {
     return true;
 }
 
-// An event nobody takes: an orphaned connection is aborted.
+/// Releases an orphan event: aborts its connection, if it carries one, on the reactor.
 void releaseOrphan(WsEvent& ev) {
     if (ev.conn) {
         std::shared_ptr<Conn> c = std::move(ev.conn);
@@ -74,10 +73,10 @@ void releaseOrphan(WsEvent& ev) {
 
 void ensureWsEvents() {
     (void)queue();
-    static bool done = false;   // main thread only
+    static bool done = false;   // eco thread only
     if (done) return;
     done = true;
-    ensureSocketEvents();       // the reactor, the embed stop hook (sockets plan §3.3.9)
+    ensureSocketEvents();
     addDrainSource(&wsEventsDrain, &wsEventsReady);
 }
 
@@ -88,7 +87,7 @@ void postWsEvent(WsEvent ev) {
         q.q.push_back(std::move(ev));
         q.count.fetch_add(1, std::memory_order_acq_rel);
     }
-    // Outside q.m (lock order, sockets plan §3.3.1 rule 6).
+    // Outside q.m, so that no other lock is taken under it.
     q.sched->notifyWorkAvailableFromAsync();
 }
 
@@ -111,12 +110,12 @@ void wsEventsDrain() {
         if (q.workPending.exchange(false, std::memory_order_acq_rel)) {
             std::vector<WsWorkFn> todo;
             todo.swap(q.work);
-            for (WsWorkFn fn : todo) fn();   // they drain() themselves
+            for (WsWorkFn fn : todo) fn();
         }
         WsEvent ev;
         while (tryPop(ev)) {
             if (ev.gen != currentHeapGeneration()) {
-                releaseOrphan(ev);   // a dead heap's event: no resume, no count
+                releaseOrphan(ev);
                 continue;
             }
             WsEventDispatchFn fn = q.dispatch[static_cast<int>(ev.kind)];
@@ -124,10 +123,10 @@ void wsEventsDrain() {
                 releaseOrphan(ev);
                 continue;
             }
-            if (fn(ev)) Scheduler::instance().drain();   // G12
+            if (fn(ev)) Scheduler::instance().drain();
         }
     } catch (const std::exception& e) {
-        ::Eco::Kernel::reportFatal(e.what());   // never unwind into the loop (F21)
+        ::Eco::Kernel::reportFatal(e.what());
     } catch (...) {
         ::Eco::Kernel::reportFatal("unknown native exception in the WebSocket event drain");
     }

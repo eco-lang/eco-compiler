@@ -1,10 +1,9 @@
-//===- SocketEvents.cpp - Socket results to the main thread ---------------===//
+//===- SocketEvents.cpp - Socket results to the eco thread ----------------===//
 //
-// See SocketEvents.hpp (plans/eco-system-sockets.md §3.3.2, §3.3.9). Leaky
-// singleton (base plan §3.4): never destroyed, so a late post from the
-// reactor thread during std::exit never touches freed memory.
-//
-// Templates used: T8/G12 (drain), G10 (the dispatchers own every count).
+// The queue is a singleton that is never destroyed, so a post from the reactor thread during process exit does not
+// touch freed memory. The event deque is guarded by its mutex; `count` and `workPending` are atomics so the ready
+// predicate needs no lock. The dispatch table and the work list are touched on the eco thread only and are not
+// locked.
 //
 //===----------------------------------------------------------------------===//
 
@@ -24,33 +23,36 @@
 namespace Eco::System {
 
 namespace {
-
+// The queue's state. `sched` caches `Scheduler::instance()`, the process-wide scheduler, so a post need not look it up.
+// The queue's state. `sched` is bound once, on the thread that first calls `queue()`.
 struct EventQueue {
     std::mutex m;
     std::deque<SocketEvent> q;
-    std::atomic<size_t> count{0};
-    std::atomic<bool> workPending{false};
+    std::atomic<size_t> count{0};          // the size of `q`, readable without `m`
+    std::atomic<bool> workPending{false};  // set by requestSocketWork, cleared by the drain
     Scheduler* sched;
-    // Main thread only.
+    // Eco thread only.
     SocketEventDispatchFn dispatch[SocketEvent::kKinds] = {};
     std::vector<SocketWorkFn> work;
 
     EventQueue() : sched(&Scheduler::instance()) {}
 };
 
-// Constructed by ensureSocketEvents() on the main thread before any reactor
-// object exists, so the reactor thread never binds the Scheduler.
+// Returns the queue, creating it on the first call. ensureSocketEvents() makes that first call on the eco thread,
+// before any reactor object exists.
 EventQueue& queue() {
-    static auto* q = new EventQueue();   // leaky (§3.4)
+    static auto* q = new EventQueue();   // never deleted
     return *q;
 }
 
+// The drain's ready predicate: true if an event is queued or socket work is requested. Takes no lock.
 bool socketEventsReady() {
     auto& q = queue();
     return q.count.load(std::memory_order_acquire) > 0 ||
            q.workPending.load(std::memory_order_acquire);
 }
 
+// Moves the oldest queued event into `out` and returns true, or returns false if the queue is empty.
 bool tryPop(SocketEvent& out) {
     auto& q = queue();
     std::lock_guard<std::mutex> lk(q.m);
@@ -61,12 +63,11 @@ bool tryPop(SocketEvent& out) {
     return true;
 }
 
-// §3.3.9: embed stop (eco_app_stop) closes every reactor handler so the
-// program's listeners and connections do not stay open in the host process.
+// The scheduler stop hook: closes every reactor handler, so the program's listeners and connections do not stay
+// open after the scheduler loop stops.
 void socketStopHook() { IoReactor::instance().closeAll(); }
 
-// Releases the OS resources of an event that reached nobody (a dead heap,
-// or no dispatcher): an orphaned connection is aborted.
+// Releases the OS resources of an orphan: its connection, if any, is aborted on the reactor thread.
 void releaseOrphan(SocketEvent& ev) {
     if (ev.conn) {
         std::shared_ptr<Conn> c = std::move(ev.conn);
@@ -80,12 +81,12 @@ uint64_t currentHeapGeneration() { return Allocator::instance().heapGeneration()
 
 void ensureSocketEvents() {
     (void)queue();
-    static bool done = false;   // main thread only
+    static bool done = false;   // eco thread only
     if (done) return;
     done = true;
     addDrainSource(&socketEventsDrain, &socketEventsReady);
     Scheduler::instance().addStopHook(&socketStopHook);
-    (void)IoReactor::instance();   // start the reactor from the main thread
+    (void)IoReactor::instance();   // start the reactor from the eco thread
 }
 
 void postSocketEvent(SocketEvent ev) {
@@ -95,8 +96,7 @@ void postSocketEvent(SocketEvent ev) {
         q.q.push_back(std::move(ev));
         q.count.fetch_add(1, std::memory_order_acq_rel);
     }
-    // Outside q.m: the Scheduler evaluates the ready predicate under its own
-    // mutex, which notify takes too (lock order, §3.3.1 rule 6).
+    // Outside q.m, so q.m is never held while the Scheduler's mutex is taken.
     q.sched->notifyWorkAvailableFromAsync();
 }
 
@@ -135,10 +135,10 @@ void socketEventsDrain() {
                 releaseOrphan(ev);
                 continue;
             }
-            if (fn(ev)) Scheduler::instance().drain();   // G12
+            if (fn(ev)) Scheduler::instance().drain();
         }
     } catch (const std::exception& e) {
-        ::Eco::Kernel::reportFatal(e.what());   // never unwind into the loop (F21)
+        ::Eco::Kernel::reportFatal(e.what());   // never unwind into the scheduler loop
     } catch (...) {
         ::Eco::Kernel::reportFatal("unknown native exception in the socket event drain");
     }

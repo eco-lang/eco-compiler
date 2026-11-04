@@ -1,4 +1,27 @@
-//===- ListExports.cpp - C-linkage exports for List module -----------------===//
+// The `extern "C"` exports of elm/core's `List` kernel, declared in `KernelExports.h`, and the helpers
+// they share.
+//
+// Most of the file serves one concern: calling an Elm closure on list elements without breaking either
+// the GC or the elements' representation. A list element is stored boxed, as an HPointer, or unboxed, as
+// a raw Int, Float or Char, and the slot kind (0 boxed, 1 Int, 2 Float, 3 Char) recorded in its spine node
+// says which. A spine node is a cons cell or a chunk view, as `alloc::ListCursor` in
+// `allocator/HeapHelpers.hpp` describes; such a mixed spine is called hybrid here. Three facts follow.
+//
+// - Every closure call and every boxing allocation is a GC point that may move any heap object. So the
+//   walks here copy what they need out of the spine with no allocation first, and keep every HPointer
+//   they hold across a GC point in a stack root range, re-pushed whenever the vector holding them may
+//   have reallocated.
+// - A closure may expect an argument boxed or unboxed, and publishes which, with its result's kind, in
+//   its header. `kernelListMapN` boxes an unboxed element only when the closure expects that argument
+//   boxed, and keeps each result in the kind the closure returns, so `List.map2` to `map5` box no
+//   element or result that the closure takes or returns unboxed. The kind an element is passed in is
+//   its delivery kind.
+// - Sorting only permutes, so a sorted list keeps its input's slot kinds. `sortBy` and `sortWith` take a
+//   kinded snapshot of the input: the boxed form of each element, for the closure, and its kind and
+//   original bits, from which `listFromPermutation` rebuilds the result.
+//
+// `List.fromArray` and `List.toArray` return a list they are given unchanged, so a list that Elm code
+// wraps in either conversion passes through.
 
 #include "../KernelExports.h"
 #include "../ExportHelpers.hpp"
@@ -21,19 +44,20 @@ namespace {
 //===----------------------------------------------------------------------===//
 // Closure-calling helpers.
 //
-// Higher-order kernels can't statically tell whether the user closure has
-// been monomorphised flat or as a multi-stage curry — both shapes are
-// valid. So we route through `eco_apply_closure`, which reads the
-// closure header at runtime and dispatches under-saturated /
-// saturated / over-saturated correctly. Strict-arity entries are an
-// unsafe API for user-facing kernels (see closure-callback audit).
+// A closure given to a kernel may take its arguments in one stage or be curried over several, and the
+// kernel cannot tell which. `eco_apply_closure` reads the closure's header and applies the arguments
+// across as many stages as it has, so these helpers call through it rather than an entry that requires
+// the arguments to fill the closure exactly.
 //===----------------------------------------------------------------------===//
 
+/// Returns `closure_hptr` applied to the encoded boxed value `arg`, as an encoded boxed result. A GC point.
 inline uint64_t callUnaryClosure(HPtr closure_hptr, uint64_t arg) {
     uint64_t args[1] = { arg };
     return eco_apply_closure(closure_hptr, args, 1).toBits();
 }
 
+/// Returns `closure_hptr` applied to the encoded boxed values `arg1` and `arg2`, as an encoded boxed
+/// result. A GC point.
 inline uint64_t callBinaryClosure(HPtr closure_hptr, uint64_t arg1, uint64_t arg2) {
     uint64_t args[2] = { arg1, arg2 };
     return eco_apply_closure(closure_hptr, args, 2).toBits();
@@ -43,29 +67,23 @@ inline uint64_t callBinaryClosure(HPtr closure_hptr, uint64_t arg1, uint64_t arg
 // List conversion helpers
 //===----------------------------------------------------------------------===//
 
-// Convert list to vector of uint64_t (all HPointer-encoded).
-// For unboxed ints, boxes via allocInt so values are HPointer-encoded.
-//
-// Two-phase (GC-safe, mirrors List.cpp::toArray): first a no-allocation
-// spine walk snapshots each head with its kind; then the boxing pass runs
-// with every HPointer slot (already-boxed heads AND freshly boxed results)
-// pinned in a stack root range, since each boxElement call may trigger a
-// minor GC that moves any of them. The returned encoded values are NOT
-// rooted — callers must root them before the next allocation.
+/// Returns the elements of `list`, first to last, each as an encoded boxed value: a boxed element as it
+/// is, an unboxed one boxed at its slot kind. A GC point.
+///
+/// The returned values are not rooted and are stale after the next allocation unless the caller roots
+/// them first.
 std::vector<uint64_t> listToVectorU64(HPointer list) {
     Allocator& allocator = Allocator::instance();
 
-    // Phase 1: raw spine walk, no allocation (hybrid spines: cells + chunk
-    // views via ListCursor).
+    // The spine walk allocates nothing, so the cursor stays valid; boxing starts only afterwards.
     struct Entry { Unboxable head; uint8_t kind; };
     std::vector<Entry> entries;
     for (alloc::ListCursor c(list); !c.done(); c.next()) {
         entries.push_back(Entry{c.current(), c.currentKind()});
     }
 
-    // Phase 2: box primitives under a root range covering the whole buffer.
-    // Boxed heads are seeded first; primitive slots stay null until boxed
-    // (null roots are ignored by the scanner).
+    // Each boxing may move the boxed heads and the values boxed before it, so the whole buffer is one root
+    // range. Slots for unboxed elements hold a null HPointer until they are boxed.
     std::vector<HPointer> hps(entries.size(), HPointer{});
     for (size_t i = 0; i < entries.size(); ++i) {
         if (entries[i].kind == 0) hps[i] = entries[i].head.p;
@@ -89,7 +107,8 @@ std::vector<uint64_t> listToVectorU64(HPointer list) {
     return result;
 }
 
-// Legacy helper - convert list to vector of raw pointers
+/// Returns each element of `list`'s 64 bits as a pointer, without boxing or resolving anything. Has no
+/// callers; an unboxed element's bits are not an address.
 std::vector<void*> listToVector(HPointer list) {
     std::vector<void*> result;
     for (alloc::ListCursor c(list); !c.done(); c.next()) {
@@ -99,9 +118,8 @@ std::vector<void*> listToVector(HPointer list) {
 }
 
 
-// Get element from Cons as uint64_t, always HPointer-encoded.
-// For unboxed ints, boxes via allocInt so the wrapper can unbox.
-// For boxed values, returns encoded HPointer directly.
+/// Returns the head of the cons cell `cons`, whose header is `hdr`, as an encoded boxed value, boxing an
+/// unboxed head at its slot kind, which makes it a GC point. Has no callers.
 inline uint64_t getConsHead(Cons* cons, Header* hdr) {
     uint32_t kind = Elm::tupleFieldKind(hdr->unboxed, 0);
     if (kind != 0) {
@@ -111,22 +129,26 @@ inline uint64_t getConsHead(Cons* cons, Header* hdr) {
     }
 }
 
-// Snapshot of a Cons cell — extracted with raw access while no allocation
-// occurs, so subsequent boxing/closure calls cannot invalidate the bits.
+/// A copy of one list element, taken from its spine node.
+///
+/// An unboxed `head` stays correct after a GC; a boxed one is an unrooted HPointer and may be stale after
+/// the next allocation. `tail` is meaningful only when the element came from a cons cell.
 struct ConsBits {
     Unboxable head;
     HPointer  tail;
-    uint8_t   kind;  // 0 = boxed HPointer, otherwise primitive kind code
+    uint8_t   kind;  ///< The element's slot kind: 0 boxed, 1 Int, 2 Float, 3 Char.
 };
 
-// Hybrid-spine (cells + chunk views) NON-ALLOCATING cursor primitives for
-// the mapN driver. State is a (spine-node HPointer, in-run index) pair; the
-// node lives in the driver's ROOTED lists[] range, and the index is a plain
-// integer, so both survive any GC and every call re-resolves fresh — the
-// kernelListMapN stale-cursor discipline extended to chunk views.
+// A position in a hybrid spine for `kernelListMapN`, kept as a spine-node HPointer and an index into that
+// node's run (always 0 for a cons cell). The two functions below allocate nothing and resolve the node
+// afresh on each call, so a position whose node HPointer is rooted stays valid across a GC.
 
-// Fetch the current element into `out` (normalizing past exhausted runs by
-// mutating node/idx — non-allocating). Returns false at list end.
+/// Copies the element at the position (`node`, `idx`) into `out`, and returns whether there is one.
+///
+/// A position past the end of a chunk view's run is first moved to the start of the next node, so `node`
+/// and `idx` may change. Returns false, leaving `out` unchanged, at Nil, at any other constant, and at a
+/// node that is neither a cons cell nor a chunk view. For a chunk view `out.tail` is set to Nil. Does not
+/// allocate.
 inline bool listCurrentAt(HPointer& node, uint32_t& idx, ConsBits& out) {
     auto& allocator = Elm::Allocator::instance();
     while (true) {
@@ -162,7 +184,9 @@ inline bool listCurrentAt(HPointer& node, uint32_t& idx, ConsBits& out) {
     }
 }
 
-// Step past the current element (non-allocating; fresh resolve).
+/// Moves the position (`node`, `idx`) past its element: for a cons cell to its tail, for a chunk view to
+/// the next index, which `listCurrentAt` carries on into the next node when the run is exhausted. A node
+/// that is neither ends the list by setting `node` to Nil. Does not allocate.
 inline void listStepAt(HPointer& node, uint32_t& idx) {
     if (alloc::isNil(node) || node.ptr_ind != 0) return;
     void* obj = Elm::Allocator::instance().resolve(node);
@@ -172,43 +196,33 @@ inline void listStepAt(HPointer& node, uint32_t& idx) {
         node = static_cast<Cons*>(obj)->tail;
         idx = 0;
     } else if (hdr->tag == Tag_ConsChunk) {
-        ++idx;  // listCurrentAt rolls into `next` when the run is exhausted
+        ++idx;
     } else {
         node = alloc::listNil();
     }
 }
 
 //===----------------------------------------------------------------------===//
-// Primitive-flow closure invocation (REP_ABI_001)
+// Calling a mapper closure with unboxed arguments.
 //
-// `Elm_Kernel_List_map2/3/4/5` historically pre-boxed every cons head and
-// invoked the user mapper closure via the boxed-result entry point. That
-// forced two boxing allocations per Int/Float/Char element: one to hand the
-// arg in, one to receive the result. Both are pure overhead when the
-// closure itself was monomorphised to take/return primitives — the recent
-// `_result_kind` propagation work means virtually every primitive-return
-// mapper now publishes its real ABI on the closure header.
-//
-// The helpers below let the kernel deliver each cons head in its natural
-// representation (raw bits for unboxed primitives, HPointer for boxed
-// values), build a small `EvalParamLayout` describing that delivery, and
-// route through `eco_apply_closure_eval` so the wrapper writes the result
-// directly into a typed slot. The eval entry is PAP-aware, so a curried
-// or partially-applied user mapper is handled correctly. When the slot
-// kind matches the closure's expected kind, the splice path skips
-// boxing/unboxing entirely.
+// A closure's header records the kind of each argument it takes and of the result it returns. The
+// helpers below let `kernelListMapN` describe the kinds it passes in an `EvalParamLayout` and call through
+// `eco_apply_closure_eval`, which applies the arguments across a curried closure's stages and writes the
+// result into a slot of the closure's result kind.
 //===----------------------------------------------------------------------===//
 
-// Closure metadata snapshot. Read once per iteration *after* every
-// potentially-allocating call to avoid stale fields after GC moves the
-// closure object.
+/// A copy of the parts of a closure's header that describe how it is called.
+///
+/// A copy is used because the closure object may move at any GC point while these values stay the same.
 struct ClosureMeta {
-    Elm::ClosureKinds ks; // kinds snapshot: inline 20 + the closure's ext words
-    uint8_t  result_kind; // ParamKind: closure evaluator's return ABI
-    uint32_t max_values;  // total stage arity (captures + remaining params)
-    uint32_t n_values;    // applied/captured count
+    Elm::ClosureKinds ks;  ///< The kind of every value slot, captured values first.
+    uint8_t  result_kind;  ///< The kind the closure's evaluator returns its result in.
+    uint32_t max_values;   ///< The stage arity: the arguments the evaluator takes, applied ones included.
+    uint32_t n_values;     ///< The arguments already applied.
 };
 
+/// Returns the call metadata of the closure `closureHP` refers to, which must be a heap closure. Does not
+/// allocate.
 inline ClosureMeta readClosureMeta(HPointer closureHP) {
     auto* cl = static_cast<Closure*>(
         Elm::Allocator::instance().resolve(closureHP));
@@ -220,15 +234,14 @@ inline ClosureMeta readClosureMeta(HPointer closureHP) {
     return m;
 }
 
-// Kind of the i-th *new* arg slot the closure expects (skipping captures).
-// `meta.ks` is indexed by absolute slot, so add `meta.n_values`.
+/// Returns the kind the closure described by `meta` expects for its `i`-th argument, counting from the
+/// first one not yet captured.
 inline uint8_t closureNewArgKind(const ClosureMeta& meta, uint32_t i) {
     return static_cast<uint8_t>(Elm::closureKindAt(meta.ks, meta.n_values + i));
 }
 
-// Append one closure result onto the rolling per-iteration result vector.
-// Stores the bits in their natural representation per `result_kind` so the
-// caller can build a uniform-kind result list at the end without re-boxing.
+/// Appends to `out` the closure result that `eco_apply_closure_eval` wrote to `result_storage` for
+/// `result_kind`: an HPointer for 0, the raw Int, Float or Char for 1 to 3.
 inline void appendClosureResult(std::vector<Unboxable>& out,
                                 const void* result_storage,
                                 uint8_t result_kind) {
@@ -253,11 +266,11 @@ inline void appendClosureResult(std::vector<Unboxable>& out,
     out.push_back(v);
 }
 
-// Build a list (in source order) from a vector of Unboxables whose kind is
-// uniform across all cells. `result_kind` is the 2-bit slot kind to embed
-// in each Cons header (0=HPointer head, 1=Int, 2=Float, 3=Char). Calls the
-// `u8 head_kind` overload of `cons` directly so Float/Char result lists
-// are stored unboxed; the boolean overload would mis-tag them as Int.
+/// Returns the list of the values in `vec`, first to last, as cons cells that all have slot kind
+/// `result_kind` (low 2 bits). A GC point.
+///
+/// When `result_kind` is 0 the values are HPointers, and the caller must root `vec` across the call: each
+/// cons may move them.
 inline HPointer unboxableVectorToList(const std::vector<Unboxable>& vec,
                                        uint8_t result_kind) {
     HPointer result = alloc::listNil();
@@ -271,8 +284,7 @@ inline HPointer unboxableVectorToList(const std::vector<Unboxable>& vec,
 
 extern "C" {
 
-// Simple cons that treats head as boxed pointer.
-// For unboxed primitives, a different signature would be needed.
+// The head is stored boxed; the `_Int`, `_Float` and `_Char` variants below store theirs unboxed.
 HPtr Elm_Kernel_List_cons(HPtr head, HPtr tail) {
     uint64_t head_bits = head.toBits();
     uint64_t tail_bits = tail.toBits();
@@ -282,9 +294,7 @@ HPtr Elm_Kernel_List_cons(HPtr head, HPtr tail) {
     return HPtr::fromBits(Export::encode(result));
 }
 
-// Phase C per-instance variants. Each takes a typed primitive head and
-// stores it unboxed in the Cons cell. The 2-bit head_kind in the Cons
-// header (1=Int, 2=Float, 3=Char) marks the slot for GC scanning.
+// Each variant stores its head unboxed, with slot kind 1 (Int), 2 (Float) or 3 (Char) in the cell.
 HPtr Elm_Kernel_List_cons_Int(int64_t head, HPtr tail) {
     HPointer result = alloc::cons(alloc::unboxedInt(head), Export::decode(tail.toBits()),
                                   /*head_kind=*/static_cast<uint8_t>(1));
@@ -297,7 +307,8 @@ HPtr Elm_Kernel_List_cons_Float(double head, HPtr tail) {
     return HPtr::fromBits(Export::encode(result));
 }
 
-// See CharExports.cpp for why the Char arrives as uint64_t and is masked.
+// The code point is the low 32 bits of `head_raw`; the parameter is 64 bits wide and the upper bits are
+// ignored.
 HPtr Elm_Kernel_List_cons_Char(uint64_t head_raw, HPtr tail) {
     HPointer result = alloc::cons(alloc::unboxedChar(static_cast<u32>(head_raw & 0xFFFFFFFFu)), Export::decode(tail.toBits()),
                                   /*head_kind=*/static_cast<uint8_t>(3));
@@ -306,10 +317,8 @@ HPtr Elm_Kernel_List_cons_Char(uint64_t head_raw, HPtr tail) {
 
 HPtr Elm_Kernel_List_fromArray(HPtr array) {
     uint64_t array_bits = array.toBits();
-    // Check for embedded constants first (e.g., Nil).
     HPointer hp = Export::decode(array_bits);
     if (hp.ptr_ind != 0) {
-        // Already a constant (Nil, etc.) — pass through unchanged.
         return array;
     }
 
@@ -320,11 +329,7 @@ HPtr Elm_Kernel_List_fromArray(HPtr array) {
 
     Header* hdr = static_cast<Header*>(arr_ptr);
 
-    // If already a list (either hybrid spine-node form), pass through
-    // unchanged. This happens when C++ kernel functions (e.g.,
-    // Elm_Kernel_String_split) return proper lists, but the Elm source
-    // wraps with Elm.Kernel.List.fromArray (which in JS converts a JS
-    // Array to a Cons list).
+    // A list is returned as it is: kernels such as `String.split` already return lists here.
     if (hdr->tag == Tag_Cons || hdr->tag == Tag_ConsChunk) {
         return array;
     }
@@ -337,10 +342,9 @@ HPtr Elm_Kernel_List_fromArray(HPtr array) {
     u32 len = elmArr->length;
     bool isUnboxed = elmArr->header.unboxed != 0;
 
-    // Root the source array across the cons loop: each List::cons may GC
-    // and move it, so re-resolve the raw pointer from the rooted HPointer
-    // after every allocation. (`result` and each `head` are rooted by cons
-    // itself as direct args.)
+    // Each cons may move the array, so it is rooted and re-resolved after every cons; `alloc::cons` roots
+    // its own head and tail. `List::cons` stores an unboxed element with slot kind Int, whatever the
+    // array's element kind.
     HPointer arrHP = hp;
     Elm::StackRootGuard arrRoot(&arrHP);
 
@@ -356,32 +360,24 @@ HPtr Elm_Kernel_List_fromArray(HPtr array) {
 
 HPtr Elm_Kernel_List_toArray(HPtr list) {
     uint64_t list_bits = list.toBits();
-    // In the C++ backend, kernel functions already work with Cons lists.
-    // The Elm source wraps some kernel calls with toArray (because the JS
-    // kernel expects JS Arrays), but in C++ this conversion is unnecessary.
-    // Pass through Cons lists and Nil unchanged.
+    // A list is returned as it is, for the same reason as in `List.fromArray`.
     HPointer hp = Export::decode(list_bits);
     if (hp.ptr_ind != 0) {
-        // Embedded constant (e.g., Nil) — pass through.
         return list;
     }
     void* ptr = Export::toPtr(list_bits);
     if (ptr) {
         Header* hdr = static_cast<Header*>(ptr);
         if (hdr->tag == Tag_Cons || hdr->tag == Tag_ConsChunk) {
-            // Already a list (either hybrid spine-node form) — pass through.
             return list;
         }
     }
 
-    // Genuine Array-to-List conversion (fallback for other callers).
-    // listToVectorU64 may allocate (via boxElement on unboxed cons heads), so
-    // its output uint64_t HPointer-encoded values must be range-rooted while
-    // we then call alloc::allocArray.
+    // A heap object that is not a list node reaches here. `ListCursor` ends its walk at such a node,
+    // so `vec` is empty and the result is an Array of length 0.
     std::vector<uint64_t> vec = listToVectorU64(Export::decode(list_bits));
 
-    // Re-pack the encoded values into HPointers so we can root them as a
-    // contiguous range across the array allocation.
+    // The values are rooted across the array allocation as one range.
     std::vector<HPointer> rooted;
     rooted.reserve(vec.size());
     for (uint64_t e : vec) rooted.push_back(Export::decode(e));
@@ -416,31 +412,25 @@ HPtr Elm_Kernel_List_toArray(HPtr list) {
 // Higher-order List functions (implemented with closure calling)
 //===----------------------------------------------------------------------===//
 
-// Shared driver for `Elm_Kernel_List_mapN` (N=2..5). Implements the
-// primitive-aware closure-call loop on `n_args` parallel input lists,
-// returning a list whose head representation matches the closure's
-// `result_kind`. Loop terminates when any input list is exhausted (Elm
-// semantics).
-//
-// Inputs:
-//   * `lists[n_args]` — input lists, rooted by the caller across the
-//     entire call (we re-pin them per iteration).
-//   * `closureHP` — the user's mapper closure, also caller-rooted.
-//
-// The `n_args == max_values - n_values` check assumes the closure was
-// constructed for exactly the arity expected by the kernel; mismatches
-// indicate a frontend bug and the splice helper will assert at runtime.
+/// Returns the list of `closureHP` applied to the elements of the `n_args` lists in `lists` taken in step,
+/// first to last, as long as the shortest of them. A GC point; the closure is called once per result, in
+/// order.
+///
+/// `n_args` must be 2 to 5; nothing checks it. An unboxed element is boxed only when the closure expects
+/// that argument boxed, and is otherwise passed in its own kind. The result's cells all have the slot kind
+/// the closure returns, read once from its header.
+///
+/// `lists` and `closureHP` are rooted for the call and written to: each `lists[i]` is advanced along its
+/// list, and both are updated by any GC.
 HPointer kernelListMapN(int n_args, HPointer* lists, HPointer& closureHP) {
     static_assert(true, "n_args ∈ {2,3,4,5}");
+    // The most input lists any `List.mapN` export passes.
     constexpr int kMaxArgs = 5;
 
     auto& allocator = Allocator::instance();
     auto& rs = allocator.getRootSet();
 
-    // Snapshot the closure's per-newarg kinds + result_kind once. The
-    // closure object may move under GC, but the kinds it publishes don't
-    // change — we re-resolve the pointer each iteration only as needed,
-    // not the metadata.
+    // Read once: the closure may move at a GC point, but the kinds in its header do not change.
     ClosureMeta meta = readClosureMeta(closureHP);
     uint8_t closureSlotKinds[kMaxArgs] = {0};
     for (int i = 0; i < n_args; ++i) {
@@ -462,8 +452,7 @@ HPointer kernelListMapN(int n_args, HPointer* lists, HPointer& closureHP) {
         uint64_t bits;
     } resultSlot{};
 
-    // Per-list in-run indices for chunk views (plain ints — GC-stable; the
-    // nodes themselves live in the rooted lists[] range).
+    // The run index of each list's position; the node half is `lists[i]`, which is rooted.
     uint32_t idxs[kMaxArgs] = {0};
     ConsBits cb[kMaxArgs];
 
@@ -476,16 +465,13 @@ HPointer kernelListMapN(int n_args, HPointer* lists, HPointer& closureHP) {
 
     while (readAll()) {
 
-        // Phase 1: pre-box any cons heads that the closure wants in boxed
-        // form. A rolling-prefix root range keeps already-boxed slots
-        // alive across later boxing GCs.
+        // Box the unboxed elements the closure wants boxed. Before each boxing the root ranges are
+        // pushed again so that they cover the elements boxed so far and, for a boxed result
+        // kind, the results so far.
         //
-        // Boxed-source heads (kind==0) are NOT taken from the cb[] snapshot
-        // here: a boxElement GC at a lower index would leave a higher
-        // index's snapshotted head stale (and rooting the stale value in
-        // the rolling re-pin would corrupt the root scan). Their prebox
-        // slots stay null through this loop and are filled from the rooted,
-        // GC-updated lists[] cursors after all boxing is done.
+        // Boxed elements are not taken from `cb` here: a boxing at a lower index could move a higher
+        // index's element and leave its copy in `cb` stale, and rooting a stale value would corrupt the
+        // root scan. Their `prebox` slots stay null until all the boxing is done.
         HPointer prebox[kMaxArgs] = {};
         uint8_t  deliveryKinds[kMaxArgs] = {0};
         for (int i = 0; i < n_args; ++i) {
@@ -514,10 +500,8 @@ HPointer kernelListMapN(int n_args, HPointer* lists, HPointer& closureHP) {
             }
         }
 
-        // Fill boxed-source slots now that all Phase-1 boxing is done:
-        // lists[] is rooted (GC-updated), and listCurrentAt does not
-        // allocate, so these heads are fresh — there is no further GC point
-        // until the closure call below.
+        // `lists` is rooted and `listCurrentAt` does not allocate, so these elements are current, and
+        // there is no GC point between here and the closure call.
         for (int i = 0; i < n_args; ++i) {
             if (deliveryKinds[i] == 0 && cb[i].kind == 0) {
                 ConsBits fresh;
@@ -526,7 +510,7 @@ HPointer kernelListMapN(int n_args, HPointer* lists, HPointer& closureHP) {
             }
         }
 
-        // Phase 2: assemble typed args buffer matching deliveryKinds[].
+        // Each argument in its delivery kind: an encoded HPointer, or the raw Int, Float or Char bits.
         uint64_t typedArgs[kMaxArgs];
         for (int i = 0; i < n_args; ++i) {
             if (deliveryKinds[i] == 0) {
@@ -541,8 +525,7 @@ HPointer kernelListMapN(int n_args, HPointer* lists, HPointer& closureHP) {
             }
         }
 
-        // Layout descriptor: { num=n_args, result_kind, kinds[0..n-1] }
-        // (layout-compatible with EvalParamLayout; kinds past n_args unused).
+        // Kinds past `n_args` are not read.
         Elm::EvalParamLayoutN<kMaxArgs> lb{};
         lb.num_params = static_cast<unsigned short>(n_args);
         lb.result_kind = resultKind;
@@ -559,22 +542,15 @@ HPointer kernelListMapN(int n_args, HPointer* lists, HPointer& closureHP) {
 
         HPtr cl = HPtr::fromBits(Export::encode(closureHP));
         const auto* layout = Elm::asLayout(&lb);
-        // Use the PAP-aware typed-result entry so partially-applied or
-        // multi-stage user mappers (e.g. a closure with `n_values` captures
-        // and `max_values - n_values < n_args` remaining at this stage) are
-        // chained correctly across stages instead of asserting in
-        // `spliceArgsForSaturatedCall`.
+        // `eco_apply_closure_eval` applies the arguments across the closure's stages when it takes fewer
+        // than `n_args` at this one; an entry requiring an exact fit would assert.
         eco_apply_closure_eval(cl, reinterpret_cast<int64_t*>(typedArgs),
                                static_cast<uint32_t>(n_args),
                                layout, &resultSlot, resultKind);
         appendClosureResult(results, &resultSlot, resultKind);
 
-        // Advance each cursor. `cb[i].tail` is a *pre*-closure-call snapshot;
-        // `eco_apply_closure_eval` above can trigger a minor GC that moves
-        // spine nodes. `lists[i]` is in the root set (pushStackRootRange
-        // above) and was updated by any such GC, so step from the live
-        // (node, idx) cursor rather than any stale snapshot. (listStepAt
-        // does not allocate; chunk views advance by index.)
+        // Step from the rooted positions, not from `cb[i].tail`, which the closure call may have left
+        // stale.
         for (int i = 0; i < n_args; ++i) listStepAt(lists[i], idxs[i]);
     }
 
@@ -637,15 +613,11 @@ HPtr Elm_Kernel_List_map5(HPtr closure, HPtr vs, HPtr ws,
 }
 
 // ============================================================================
-// Tier-B closure-free combinator shunts (plans/chunked-list-representation.md
-// §6 L1.3 / §9.2). Under config.list.chunks the MLIR generator rewrites the
-// bodies of recognized elm/core List.{reverse,append,concat,take,drop}
-// specializations into calls to these exports. The ListOps implementations
-// collect-then-build through alloc::listFromUnboxables, which produces DENSE
-// CHUNKS when chunk production is enabled — replacing the `foldl cons`
-// per-element cell chains (the census's 498M-cons HOF pool) with one
-// backing + one view per (sub-LOT) list. All closure-free, so no LSS
-// devirtualization is at stake (§9.2's trap does not apply).
+// Closure-free combinators: `reverse`, `append`, `concat`, `take`, `drop`.
+//
+// Each forwards to the `ListOps` function of the same name, which gives its contract. The results keep
+// their elements' slot kinds, and a list one of them builds may be chunk views when chunk production is
+// enabled.
 // ============================================================================
 
 HPtr Elm_Kernel_List_reverse(HPtr list) {
@@ -674,32 +646,24 @@ HPtr Elm_Kernel_List_drop(int64_t n, HPtr list) {
     return HPtr::fromBits(Export::encode(result));
 }
 
-// Kind-preserving companion to listToVectorU64, for the SORT family.
-//
-// Sorting is a PERMUTATION: its result must carry the same element
-// representation as its input (REP_HEAP_002 — a `List Int` has Int-kind
-// cells). listToVectorU64 boxes every unboxed head so a user closure can be
-// called with it; rebuilding the result from that buffer alone yields
-// ALL-BOXED cells, which silently miscompiles every consumer that reads
-// elements at their STATIC kind — arithmetic folds read the pointer words as
-// numbers. Nothing crashes and `Debug.log` still prints correctly (the
-// printer consults the cell header), which is how it went unnoticed.
-//
-// `boxed` is exactly what listToVectorU64 produced: the closure-delivery view.
-// `kinds[i]` is element i's slot kind (0 = boxed) and `scalars[i]` is its
-// ORIGINAL Unboxable, meaningful ONLY when kinds[i] != 0. For a boxed element
-// `scalars[i]` holds an unrooted pointer copy that goes stale at the next GC,
-// so it must never be read — `listFromPermutation` reads `boxed[i]` for those.
-// Scalars for unboxed elements are plain values, immune to GC, so callers root
-// `boxed` alone, exactly as before.
+/// Fills `boxed`, `kinds` and `scalars` with the kinded snapshot of `list`, one entry per element, first
+/// to last, replacing what they held. A GC point.
+///
+/// `boxed[i]` is element `i` as a boxed value, boxed at its slot kind if it is unboxed: what a closure is
+/// given. `kinds[i]` is its slot kind and `scalars[i]` its original bits. A list whose cells were built
+/// from `boxed` alone would have every element boxed, while code compiled for a `List Int` reads its
+/// elements as Ints, so a sort rebuilds its result from `kinds` and `scalars`.
+///
+/// `scalars[i]` is meaningful only when `kinds[i]` is not 0: for a boxed element it is an unrooted copy
+/// that may be stale after the next allocation, and `boxed[i]` is read instead. On return nothing is
+/// rooted; the caller roots `boxed` across any later GC point, and needs root nothing else.
 static void listToKindedVectors(HPointer list,
                                 std::vector<HPointer>& boxed,
                                 std::vector<uint8_t>& kinds,
                                 std::vector<Unboxable>& scalars) {
     Allocator& allocator = Allocator::instance();
 
-    // Phase 1: raw spine walk, no allocation (hybrid spines: cells + chunk
-    // views via ListCursor).
+    // As in `listToVectorU64`, the walk finishes before anything is boxed.
     struct Entry { Unboxable head; uint8_t kind; };
     std::vector<Entry> entries;
     for (alloc::ListCursor c(list); !c.done(); c.next()) {
@@ -715,8 +679,7 @@ static void listToKindedVectors(HPointer list,
         if (entries[i].kind == 0) boxed[i] = entries[i].head.p;
     }
 
-    // Phase 2: box the primitives under a root range covering the whole
-    // buffer; each boxElement may trigger a minor GC that moves the others.
+    // Each boxing may move the values in `boxed`, so the whole buffer is one root range.
     auto& rs = allocator.getRootSet();
     size_t saved = rs.stackRangePoint();
     if (!boxed.empty()) {
@@ -731,13 +694,11 @@ static void listToKindedVectors(HPointer list,
     rs.restoreStackRangePoint(saved);
 }
 
-// Rebuild a permutation of a kinded snapshot at its ORIGINAL element kinds.
-//
-// Boxed heads are taken from `boxed` (rooted and GC-updated by the caller);
-// unboxed heads from their scalars. Building the pair buffer never allocates,
-// so it is safe to call after the caller has dropped its root range —
-// `listFromUnboxables` roots its own working copy across the cons/chunk
-// allocations, the same self-rooting contract `listFromPointers` offers.
+/// Returns the list of the elements of a kinded snapshot (`boxed`, `kinds`, `scalars`) in the order
+/// `indices` gives, each with its original slot kind: element `indices[0]` first. A GC point.
+///
+/// The values in `boxed` must be current on entry, but need not be rooted: they are copied into a buffer
+/// that `alloc::listFromUnboxables` roots, before anything allocates.
 static HPointer listFromPermutation(const std::vector<size_t>& indices,
                                     const std::vector<HPointer>& boxed,
                                     const std::vector<uint8_t>& kinds,
@@ -759,10 +720,7 @@ static HPointer listFromPermutation(const std::vector<size_t>& indices,
 HPtr Elm_Kernel_List_sortBy(HPtr closure, HPtr list) {
     auto& allocator = Allocator::instance();
 
-    // Materialise input list once, KEEPING each element's kind so the
-    // permutation can be rebuilt at the input's representation. May allocate
-    // (boxElement). `elements` is the contiguous HPointer buffer we range-root
-    // for the duration of the closure-driven key extraction.
+    // `elements` is the boxed view, rooted below across the key closure calls.
     std::vector<HPointer> elements;
     std::vector<uint8_t> kinds;
     std::vector<Unboxable> scalars;
@@ -779,7 +737,6 @@ HPtr Elm_Kernel_List_sortBy(HPtr closure, HPtr list) {
                           /*hpointer_mask=*/~uint64_t(0));
     rs.pushStackRootRange(&closureHP, 1, 1);
 
-    // Extract keys via closure, range-rooting elements, keys, and closure.
     std::vector<HPointer> keys;
     keys.reserve(elements.size());
     for (size_t i = 0; i < elements.size(); ++i) {
@@ -787,8 +744,7 @@ HPtr Elm_Kernel_List_sortBy(HPtr closure, HPtr list) {
         uint64_t k = callUnaryClosure(cl, Export::encode(elements[i]));
         keys.push_back(Export::decode(k));
 
-        // Re-pin: keys may have grown its buffer, and the closure call may
-        // have invalidated the old base addresses.
+        // Pushed again to cover the new key; `keys` may also have reallocated.
         rs.restoreStackRangePoint(saved);
         rs.pushStackRootRange(elements.data(), elements.size(),
                               /*hpointer_mask=*/~uint64_t(0));
@@ -797,32 +753,24 @@ HPtr Elm_Kernel_List_sortBy(HPtr closure, HPtr list) {
                               /*hpointer_mask=*/~uint64_t(0));
     }
 
-    // Sort indices by keys. `Utils::compare` returns an embedded Order
-    // constant and does not allocate for it, but the comparison it performs
-    // still walks the heap; both elements and keys stay range-rooted.
+    // Indices are sorted rather than the elements, and stably, so elements with equal keys keep their
+    // order. `Utils::compare` returns an embedded Order constant and does not allocate it.
     std::vector<size_t> indices(elements.size());
     std::iota(indices.begin(), indices.end(), 0);
     std::stable_sort(indices.begin(), indices.end(), [&](size_t a, size_t b) {
-        // Keys come from a user closure and may be embedded constants
-        // (Const_EmptyString or Const_Nil — the only comparable embedded
-        // constants in Elm). Allocator::resolve asserts on constants, so
-        // pass nullptr for those: Utils::cmp's top-of-function early returns
-        // (`if (!a) return -1; if (!b) return 1;`) produce the correct
-        // top-level ordering, and the EmptyString-vs-heap canonicalisation
-        // inside compareUnboxableSlot handles nested const-vs-heap cases.
+        // A key may be an embedded constant, such as the empty String or `[]`, which `Allocator::resolve`
+        // must not be given, so a constant key is passed as null. `Utils::cmp3` orders a null below any
+        // non-null value except a String of length 0, which it equals.
         void* keyA = alloc::isConstant(keys[a]) ? nullptr
                                                 : allocator.resolve(keys[a]);
         void* keyB = alloc::isConstant(keys[b]) ? nullptr
                                                 : allocator.resolve(keys[b]);
         HPointer orderHP = Utils::compare(keyA, keyB);
-        // Order is an embedded null-cons constant (HEAP_044) — read the ctor
-        // off the word through the single-truth extractor, never resolve it.
+        // The Order is an embedded constant; its constructor is read from the word, not resolved.
         return eco_get_tag(HPtr::fromHPointer(orderHP)) == 0;  // LT
     });
 
-    // Reorder elements AT THEIR ORIGINAL KINDS; the helper pins its working
-    // copy across each cons, so no unrooted mirror of the buffer crosses the
-    // cons GC points.
+    // Nothing allocates between here and `listFromPermutation` copying `elements` into a rooted buffer.
     rs.restoreStackRangePoint(saved);
 
     HPointer result = listFromPermutation(indices, elements, kinds, scalars);
@@ -832,9 +780,7 @@ HPtr Elm_Kernel_List_sortBy(HPtr closure, HPtr list) {
 HPtr Elm_Kernel_List_sortWith(HPtr closure, HPtr list) {
     auto& allocator = Allocator::instance();
 
-    // Kinded snapshot (mirrors sortBy): `elements` is the boxed view the user
-    // comparator is called with, `kinds`/`scalars` carry the input's own
-    // representation so the permutation can be rebuilt at it.
+    // `elements` is the boxed view the comparator is called with.
     std::vector<HPointer> elements;
     std::vector<uint8_t> kinds;
     std::vector<Unboxable> scalars;
@@ -851,18 +797,13 @@ HPtr Elm_Kernel_List_sortWith(HPtr closure, HPtr list) {
                           /*hpointer_mask=*/~uint64_t(0));
     rs.pushStackRootRange(&closureHP, 1, 1);
 
-    // Sort indices, not the HPointers themselves (mirrors sortBy):
-    // stable_sort moves elements through an internal temporary buffer that
-    // is invisible to the root set, so a GC inside the user comparator
-    // would leave buffer-resident HPointers stale. Indices are scalars;
-    // the rooted `elements` buffer is re-read (post-GC-fixup) on every
-    // comparison.
+    // Indices are sorted rather than the HPointers: `std::stable_sort` moves what it sorts through a
+    // temporary buffer the root set cannot see, which a GC inside the comparator would leave stale.
     std::vector<size_t> indices(elements.size());
     std::iota(indices.begin(), indices.end(), 0);
     std::stable_sort(indices.begin(), indices.end(),
                      [&](size_t ia, size_t ib) {
-        // By-value copies of the rooted slots need their own root:
-        // callBinaryClosure may GC and move both.
+        // The copies passed to the closure are rooted too, since the call may move them.
         HPointer aRoot = elements[ia];
         HPointer bRoot = elements[ib];
         size_t innerSaved = rs.stackRangePoint();
@@ -871,15 +812,13 @@ HPtr Elm_Kernel_List_sortWith(HPtr closure, HPtr list) {
 
         HPtr cl = HPtr::fromBits(Export::encode(closureHP));
         uint64_t order = callBinaryClosure(cl, Export::encode(aRoot), Export::encode(bRoot));
-        // The user comparator's Order result is an embedded null-cons constant
-        // (HEAP_044) — read the ctor off the word, never resolve it.
+        // The Order is an embedded constant; its constructor is read from the word, not resolved.
         bool lt = eco_get_tag(HPtr::fromBits(order)) == 0;  // LT means a < b
         rs.restoreStackRangePoint(innerSaved);
         return lt;
     });
 
-    // Materialise the sorted order AT THE ORIGINAL ELEMENT KINDS; the helper
-    // pins its working copy across each cons.
+    // As in `List.sortBy`, nothing allocates before `listFromPermutation` roots its copy.
     rs.restoreStackRangePoint(saved);
 
     HPointer result = listFromPermutation(indices, elements, kinds, scalars);

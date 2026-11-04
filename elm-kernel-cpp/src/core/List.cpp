@@ -1,10 +1,3 @@
-/**
- * Elm Kernel List Module - Runtime Heap Integration
- *
- * This module delegates to ListOps helpers from the runtime allocator.
- * All list operations work with GC-managed Cons cells on the heap.
- */
-
 #include "List.hpp"
 #include "allocator/ListOps.hpp"
 #include "allocator/Allocator.hpp"
@@ -28,7 +21,7 @@ HPointer fromArray(const std::vector<HPointer>& array) {
 // ============================================================================
 
 HPointer sortBy(KeyFunc keyFunc, HPointer list) {
-    // Wrap KeyFunc (void* -> HPointer) to the kind-aware ListOps::KeyExtractor.
+    // Adapts `keyFunc` to `ListOps::KeyExtractor`, which is given each element with only a boxed flag.
     auto& allocator = Allocator::instance();
 
     ListOps::KeyExtractor extractor = [&allocator, keyFunc](Unboxable val, bool is_boxed) -> i64 {
@@ -36,8 +29,7 @@ HPointer sortBy(KeyFunc keyFunc, HPointer list) {
         if (is_boxed) {
             elem = allocator.resolve(val.p);
         } else {
-            // Cannot distinguish Int/Float/Char here; fall back to heuristic via allocInt.
-            // Kind-aware sortByKind should be used instead.
+            // The extractor is not told the slot kind, so every unboxed element is boxed as an Int.
             HPointer boxed = alloc::allocInt(val.i);
             elem = allocator.resolve(boxed);
         }
@@ -57,8 +49,8 @@ HPointer sortBy(KeyFunc keyFunc, HPointer list) {
 HPointer sortWith(CmpFunc cmpFunc, HPointer list) {
     auto& allocator = Allocator::instance();
 
-    // Fish out the element kind from the first Cons cell so the callback can
-    // re-box unboxed Int/Float/Char heads correctly.
+    // The comparator is told only whether an element is boxed, so unboxed elements are boxed at the
+    // slot kind of the first node, which is right only when every element has that kind.
     u8 element_kind = 0;
     if (!alloc::isNil(list)) {
         void* cell = allocator.resolve(list);

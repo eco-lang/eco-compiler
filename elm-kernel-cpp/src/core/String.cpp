@@ -1,10 +1,3 @@
-/**
- * Elm Kernel String Module - Runtime Heap Integration
- *
- * This module delegates to StringOps helpers from the runtime allocator.
- * All string operations work with GC-managed ElmString objects on the heap.
- */
-
 #include "String.hpp"
 #include "allocator/StringOps.hpp"
 #include "allocator/Allocator.hpp"
@@ -43,8 +36,8 @@ HPointer uncons(void* str) {
     return StringOps::uncons(str);
 }
 
-// Reads the Char value (a code point) out of a list cell (unboxed slot or
-// boxed ElmChar). Resolve-only: performs no allocation.
+// Returns the Char in the head of the list cell `c`, held unboxed or as a boxed `ElmChar`. Does not
+// allocate. Nothing calls it.
 static u32 consCellChar(Allocator& allocator, Cons* c) {
     if (Elm::tupleFieldKind(c->header.unboxed, 0) != 0) {
         return c->head.c;
@@ -53,7 +46,9 @@ static u32 consCellChar(Allocator& allocator, Cons* c) {
     return static_cast<ElmChar*>(charObj)->value;
 }
 
-// Same, from a (element, kind) pair produced by a hybrid-spine cursor.
+// Returns the Char in the list element `v` whose slot kind is `kind`, as `alloc::ListCursor` gives
+// them: `v` holds it unboxed when `kind` is nonzero, and otherwise refers to a boxed `ElmChar`. Does
+// not allocate.
 static u32 elemChar(Allocator& allocator, Elm::Unboxable v, u8 kind) {
     if (kind != 0) return v.c;
     void* charObj = allocator.resolve(v.p);
@@ -61,9 +56,8 @@ static u32 elemChar(Allocator& allocator, Elm::Unboxable v, u8 kind) {
 }
 
 HPointer fromList(HPointer chars) {
-    // Two-pass: count list length, allocate exact-size result, then walk
-    // again writing chars directly into the heap object. Eliminates the
-    // std::vector + allocString intermediate copy.
+    // Two passes over the list: the first counts the result's units without allocating, and the
+    // second writes the Chars straight into the one String allocated between them.
     auto& allocator = Allocator::instance();
 
     // `count` is in UTF-16 units: an astral code point encodes as a
@@ -78,10 +72,7 @@ HPointer fromList(HPointer chars) {
     }
     if (count == 0) return alloc::emptyString();
 
-    // All-ASCII => UTF-8 result (seed elimination, see
-    // plans/utf16-seed-elimination.md). Same rooting discipline as the
-    // UTF-16 path below: one allocation with the list rooted, then an
-    // allocation-free write walk.
+    // All ASCII: the result is a UTF-8 form, allocated and written as on the UTF-16 path below.
     if (acc < 0x80 && allocator.getConfig().utf8_strings_enabled) {
         StringOps::AsciiOut out;
         {
@@ -139,8 +130,8 @@ HPointer foldl(FoldFunc func, HPointer acc, void* str) {
     if (!str) return acc;
     auto& allocator = Allocator::instance();
 
-    // Snapshot chars before any allocation. toStdU16String is tag-aware so
-    // a slice input transparently materialises through its base.
+    // Copied out of the heap before `func`, which may allocate, is first called. toStdU16String
+    // reads every String form.
     auto snapshot = StringOps::toStdU16String(str);
 
     HPointer result = acc;
@@ -190,8 +181,8 @@ HPointer lines(void* str) {
     if (!str) {
         return alloc::cons(alloc::boxed(alloc::emptyString()), alloc::listNil(), true);
     }
-    // UTF-8 in => UTF-8 parts (scan bytes, cut via slice; no widen, no UTF-16
-    // parts). W4.c. CR/LF are ASCII so the byte scan is identical.
+    // A UTF-8 form: scan its bytes, which are UTF-16 units under the ASCII rule, and cut each line
+    // with slice rather than widening the String.
     if (StringOps::isUtf8(str) &&
         Allocator::instance().getConfig().utf8_strings_enabled) {
         auto& allocator = Allocator::instance();
@@ -216,9 +207,8 @@ HPointer lines(void* str) {
         HPointer srcHp = allocator.wrap(str);
         auto& rs = allocator.getRootSet();
         size_t saved = rs.stackRangePoint();
-        // ONE all-boxed record for the whole presized buffer (an all-ones mask
-        // covers any length; unfilled slots hold the Nil constant, which the GC
-        // skips) — plans/kernel-root-stack-bounded-rooting.md.
+        // One range roots the whole buffer: an all-ones mask marks every slot whatever the length,
+        // and a slot not yet filled holds the Nil constant, which the collector leaves alone.
         rs.pushStackRootRange(parts.data(), parts.size(), ~0ULL);
         rs.pushStackRootRange(&srcHp, 1, ~0ULL);
         for (size_t i = 0; i < ranges.size(); ++i) {
@@ -236,8 +226,8 @@ HPointer lines(void* str) {
         return alloc::cons(alloc::boxed(alloc::emptyString()), alloc::listNil(), true);
     }
 
-    // The snapshot std::u16string is already a contiguous u16 buffer on the
-    // C stack; no need to duplicate into a separate std::vector.
+    // The copy's buffer is C++ memory, outside the collected heap, so the allocations below do not
+    // move it.
     const u16* strData = reinterpret_cast<const u16*>(snapshot.data());
 
     // Phase 1: find line boundaries (no allocation)
@@ -273,9 +263,8 @@ HPointer lines(void* str) {
     std::vector<HPointer> parts(ranges.size(), alloc::listNil());
     auto& rs = Allocator::instance().getRootSet();
     size_t saved = rs.stackRangePoint();
-    // ONE all-boxed record for the whole presized buffer (an all-ones mask
-    // covers any length; unfilled slots hold the Nil constant, which the GC
-    // skips) — plans/kernel-root-stack-bounded-rooting.md.
+    // One range roots the whole buffer: an all-ones mask marks every slot whatever the length,
+    // and a slot not yet filled holds the Nil constant, which the collector leaves alone.
     rs.pushStackRootRange(parts.data(), parts.size(), ~0ULL);
 
     for (size_t i = 0; i < ranges.size(); ++i) {
@@ -287,8 +276,7 @@ HPointer lines(void* str) {
 }
 
 HPointer words(void* str) {
-    // As elm/core's `_String_words`, `str.trim().split(/\s+/g)`: trim, then split on runs of whitespace, where
-    // whitespace is JavaScript's `\s` (StringOps::isJsWhitespace). A string that trims to empty gives [""].
+    // elm/core's JS kernel computes `str.trim().split(/\s+/g)`; this does the same.
     HPointer trimmed = StringOps::trim(str);
 
     if (StringOps::isEmpty(trimmed)) {
@@ -298,8 +286,7 @@ HPointer words(void* str) {
 
     auto& allocator = Allocator::instance();
 
-    // UTF-8 in => UTF-8 parts. trim() already returned a UTF-8 form (it cuts
-    // via slice); scan its bytes and cut words via slice — no widen. W4.c.
+    // A UTF-8 form: scan its bytes and cut each word with slice rather than widening the String.
     if (StringOps::isUtf8(allocator.resolve(trimmed)) &&
         allocator.getConfig().utf8_strings_enabled) {
         HPointer trimmedHp = trimmed;
@@ -324,9 +311,8 @@ HPointer words(void* str) {
         std::vector<HPointer> parts(ranges.size(), alloc::listNil());
         auto& rs = allocator.getRootSet();
         size_t saved = rs.stackRangePoint();
-        // ONE all-boxed record for the whole presized buffer (an all-ones mask
-        // covers any length; unfilled slots hold the Nil constant, which the GC
-        // skips) — plans/kernel-root-stack-bounded-rooting.md.
+        // One range roots the whole buffer: an all-ones mask marks every slot whatever the length,
+        // and a slot not yet filled holds the Nil constant, which the collector leaves alone.
         rs.pushStackRootRange(parts.data(), parts.size(), ~0ULL);
         rs.pushStackRootRange(&trimmedHp, 1, ~0ULL);
         for (size_t i = 0; i < ranges.size(); ++i) {
@@ -372,9 +358,8 @@ HPointer words(void* str) {
     std::vector<HPointer> parts(ranges.size(), alloc::listNil());
     auto& rs = Allocator::instance().getRootSet();
     size_t saved = rs.stackRangePoint();
-    // ONE all-boxed record for the whole presized buffer (an all-ones mask
-    // covers any length; unfilled slots hold the Nil constant, which the GC
-    // skips) — plans/kernel-root-stack-bounded-rooting.md.
+    // One range roots the whole buffer: an all-ones mask marks every slot whatever the length,
+    // and a slot not yet filled holds the Nil constant, which the collector leaves alone.
     rs.pushStackRootRange(parts.data(), parts.size(), ~0ULL);
 
     for (size_t i = 0; i < ranges.size(); ++i) {
@@ -447,7 +432,6 @@ HPointer toFloat(void* str) {
 
 HPointer fromNumber(void* n) {
     if (!n) return alloc::emptyString();
-    // Detect type and convert accordingly
     Header* hdr = static_cast<Header*>(n);
     if (hdr->tag == Tag_Int) {
         ElmInt* i = static_cast<ElmInt*>(n);
@@ -456,7 +440,6 @@ HPointer fromNumber(void* n) {
         ElmFloat* f = static_cast<ElmFloat*>(n);
         return StringOps::fromFloat(f->value);
     }
-    // Fallback to empty string
     return alloc::emptyString();
 }
 

@@ -1,12 +1,4 @@
 //===- ConnChannel.cpp - The two stream faces of a connection -------------===//
-//
-// See ConnChannel.hpp (plans/eco-system-sockets.md §3.3.3 "Faces"). Main
-// thread only; every operation is a reactor submit (POD + shared_ptr<Conn>,
-// G1). shutdown() is idempotent (ByteChannel contract): the stream table may
-// call it more than once.
-//
-// Templates used: T9 (requests).
-//
 //===----------------------------------------------------------------------===//
 
 #include "eco-system/Socket/ConnChannel.hpp"
@@ -20,8 +12,10 @@ namespace Eco::System {
 
 namespace {
 
+// Returns the process-wide reactor that runs every `Conn` request.
 IoReactor& reactor() { return IoReactor::instance(); }
 
+// Answers request `token` on channel `channelId` at once with an `op` result whose `err` is `ENOTSUP`.
 void postUnsupported(uint64_t channelId, uint64_t token, ChannelResult::Op op) {
     ChannelResult r;
     r.channelId = channelId;

@@ -1,7 +1,32 @@
 //===- HttpEffectManager.cpp - Http effect manager implementation ----------===//
 //
-// Manages Http.get/post/request commands by executing the HTTP tasks and
-// routing responses back to the Elm application.
+// The stock elm/http package declares an effect manager, `Http`, and implements
+// it in Elm. A native program cannot run that Elm code, so this file supplies
+// the same manager as five closures (`init`, `onEffects`, `onSelfMsg`, `cmdMap`
+// and `subMap`) and registers them with `PlatformRuntime` under the name
+// `"Http"`.
+//
+// The manager rests on the stock package's value shapes, which this file reads
+// directly. A command (`MyCmd msg`) is `Cancel tracker`, constructor 0, or
+// `Request r`, constructor 1, where `r` is the Request record. A subscription
+// (`MySub msg`) is `MySub tracker toMsg`, constructor 0. A *tracker* is the
+// String a request is named by for `Http.track` and `Http.cancel`. The
+// manager's State is the current subscription list.
+//
+// What happens to a request belongs to `http/HttpExports`. Here, `onEffects`
+// asks it for the Task of each `Request` and spawns that Task, and passes each
+// `Cancel` to it, which withdraws the latest request issued with that tracker,
+// if still in flight. A withdrawn request's result is discarded instead of delivered (*drop-delivery*).
+// Progress comes back as a self-message `(tracker, progress)`, which
+// `onSelfMsg` hands to the subscriptions with a matching tracker.
+//
+// `cmdMap` and `subMap` do what the stock Elm code does for `Cmd.map` and
+// `Sub.map`: a Request's `expect` is wrapped so the response reaches the app
+// through the tagger, and a subscription's `toMsg` is composed with it.
+//
+// All of this runs on the eco thread, the thread that runs the Elm scheduler.
+// Every evaluator allocates or runs Elm code, either of which may collect, so
+// any heap value held across such a call is rooted.
 //
 //===----------------------------------------------------------------------===//
 
@@ -21,34 +46,33 @@ using namespace Elm;
 using namespace Elm::alloc;
 using namespace Elm::Platform;
 
-// Defined in HttpExports.cpp: mark a tracked request cancelled by its tracker
-// string (drop-delivery). The Cancel command branch calls this.
+/// Defined and documented in `HttpExports.cpp`.
 extern "C" void Eco_Http_cancelTracker(uint64_t trackerEnc);
-// Defined in HttpExports.cpp: the stock toTask for a request this manager
-// spawns, with a spawn ticket for a tracked one (trackerEnc = its tracker
-// String, 0 = untracked), so that a Cancel issued before the spawned process
-// runs still reaches it (plans/program-liveness-rule.md §5.3).
+/// Defined and documented in `HttpExports.cpp`.
 extern "C" uint64_t Eco_Http_toTaskForSpawn(uint64_t routerEnc, uint64_t resultToTaskEnc,
                                             uint64_t requestEnc, uint64_t trackerEnc);
 
 namespace {
 
-// Encode/decode helpers
+/// Returns the bits of `h` as a word.
 static inline uint64_t encodeHP(HPointer h) {
     union { HPointer hp; uint64_t val; } u;
     u.hp = h;
     return u.val;
 }
 
+/// Returns the word `val` read as an HPointer.
 static inline HPointer decodeHP(uint64_t val) {
     union { HPointer hp; uint64_t val; } u;
     u.val = val;
     return u.hp;
 }
 
-// Convert an Elm String HPointer to UTF-8 std::string. Returns "" for the
-// embedded EmptyString constant (resolve would assert on it).
+/// Returns the Elm String `hp` as UTF-8, or "" when `hp` is an embedded
+/// constant (such as the empty String) or does not resolve to an object.
 static std::string trackerToStd(HPointer hp) {
+    // Checked before `resolve`, which asserts on a constant in validating
+    // builds.
     if (hp.ptr_ind != 0) return "";
     void* ptr = Allocator::instance().resolve(hp);
     if (!ptr) return "";
@@ -59,18 +83,21 @@ static std::string trackerToStd(HPointer hp) {
 // Effect Manager Closures
 // ============================================================================
 
-// init : Task Never State
-// State = List (MySub msg) (the active progress subscriptions); starts empty.
+/// Returns `Task.succeed []`: the manager's initial State, an empty
+/// subscription list. Takes no arguments.
 static void* httpInitEvaluator(void* args[]) {
     (void)args;
-    // Return Task.succeed([])
     HPointer nilState = listNil();
     HPointer task = Scheduler::instance().taskSucceed(nilState);
     return reinterpret_cast<void*>(encodeHP(task));
 }
 
-// Helper: Success handler for spawned HTTP tasks
-// args[0] = router, args[1] = value (result from task)
+/// Sends `args[1]` to the app through router `args[0]`, and returns
+/// `Task.succeed ()`.
+///
+/// This is the `resultToTask` a spawned request is built with, so `args[1]`
+/// is the result of the request's expect, which is already a message of the
+/// app's type: any `Cmd.map` tagger was applied to the expect by `cmdMap`.
 static void* httpSuccessHandler(void* args[]) {
     uint64_t routerEnc = reinterpret_cast<uint64_t>(args[0]);
     uint64_t valueEnc = reinterpret_cast<uint64_t>(args[1]);
@@ -78,48 +105,48 @@ static void* httpSuccessHandler(void* args[]) {
     HPointer router = decodeHP(routerEnc);
     HPointer value = decodeHP(valueEnc);
 
-    // Send value directly as message to app
-    // (assuming tagger was pre-applied via Cmd.map)
     PlatformRuntime::instance().sendToApp(router, value);
 
     return reinterpret_cast<void*>(encodeHP(
         Scheduler::instance().taskSucceed(unit())));
 }
 
-// Helper: Map handler for cmdMap
-// args[0] = mapper, args[1] = value
+/// Returns `Task.succeed (mapper value)`, where `mapper` is `args[0]` and
+/// `value` is `args[1]`. `cmdMap` uses it to map the result of a command that
+/// is a Task.
 static void* httpMapHandler(void* args[]) {
     uint64_t mapperEnc = reinterpret_cast<uint64_t>(args[0]);
     uint64_t valueEnc = reinterpret_cast<uint64_t>(args[1]);
 
-    // Apply mapper to value
     uint64_t mappedEnc = eco_apply_closure(HPtr::fromBits(mapperEnc), &valueEnc, 1).toBits();
 
-    // Return Task.succeed(mappedValue)
     HPointer task = Scheduler::instance().taskSucceed(decodeHP(mappedEnc));
     return reinterpret_cast<void*>(encodeHP(task));
 }
 
-// onEffects : Router msg -> List (MyCmd msg) -> List (MySub msg) -> State -> Task Never State
-// Processes commands (Request spawns the HTTP task; Cancel marks a tracked
-// request for drop-delivery) and stores the current subscriptions as the new
-// State so onSelfMsg can route progress to them.
+/// Carries out the commands in `args[1]` and returns `Task.succeed subs`,
+/// making the subscription list `args[2]` the new State. `args[0]` is the
+/// router; the previous State, `args[3]`, is not read.
+///
+/// A `Request` command's Task is built by `Eco_Http_toTaskForSpawn` and
+/// spawned, so the request starts when the scheduler runs it, not here. Its
+/// result is sent to the app through the router. A `Cancel` command withdraws
+/// the latest request issued with its tracker, if still in flight. A command that is a Task rather than a
+/// `MyCmd` value is spawned with its result sent to the app. Any other command
+/// is ignored.
+///
+/// `args[2]` is read after the loop, whose allocations may collect, so the
+/// caller must keep the `args` buffer rooted, as `eco_apply_closure` does.
 static void* httpOnEffectsEvaluator(void* args[]) {
-    // args[0] = router
-    // args[1] = cmds (List (MyCmd msg))
-    // args[2] = subs (List (MySub msg)) — becomes the new State
-    // args[3] = state (previous subscription list; not needed)
-
     auto& sched = Scheduler::instance();
     auto& allocator = Allocator::instance();
 
-    // `router` and the list cursor `current` must survive every alloc inside
-    // the loop body (allocClosure / closureCapture / taskAndThen / rawSpawn);
-    // by-value HPointer locals would otherwise become stale across the GC.
+    // The loop body allocates (allocClosure, Eco_Http_toTaskForSpawn,
+    // taskAndThen, rawSpawn), so `router` and the list position must be rooted
+    // across it. The cursor keeps its spine node rooted and resolves it again
+    // on each read and advance.
     HPointer router = decodeHP(reinterpret_cast<uint64_t>(args[0]));
     Elm::StackRootGuard outerRoots(&router);
-    // RootedListCursor (hybrid spines): the spine node stays rooted and each
-    // read/advance re-resolves fresh across the loop body's GC points.
     Elm::alloc::RootedListCursor cursor(
         decodeHP(reinterpret_cast<uint64_t>(args[1])));
     Elm::Unboxable cursorHead;
@@ -132,21 +159,14 @@ static void* httpOnEffectsEvaluator(void* args[]) {
         void* cmdPtr = allocator.resolve(cmdHP);
         if (cmdPtr) {
             Header* header = static_cast<Header*>(cmdPtr);
-            // Stock elm/http command: `MyCmd msg = Cancel String | Request {...}`
-            // (Cancel=ctor 0, Request=ctor 1).
             u16 ctor = (header->tag == Tag_Custom)
                 ? static_cast<u16>(static_cast<Custom*>(cmdPtr)->ctor)
                 : 0xFFFF;
             if (header->tag == Tag_Custom && ctor == 1) {
-                // Request: call the stock kernel contract
-                // `toTask router (sendToApp router) req` to build the HTTP task,
-                // then spawn it. toTask also wires up progress tracking when the
-                // request carries `tracker = Just _`.
+                // Request r.
                 HPointer req = static_cast<Custom*>(cmdPtr)->values[0].p;
                 Elm::StackRootGuard reqRoot(&req);
 
-                // sendToApp closure (resultToTask): httpSuccessHandler sends the
-                // produced msg to the app and returns Task.succeed(unit).
                 HPointer successCl = allocClosure(httpSuccessHandler, 2);
                 Elm::StackRootGuard clRoot(&successCl);
                 void* clPtr = allocator.resolve(successCl);
@@ -154,11 +174,13 @@ static void* httpOnEffectsEvaluator(void* args[]) {
                     closureCapture(clPtr, boxed(router), true);
                 }
 
-                // Stock Request record field `tracker : Maybe String` (field 6
-                // in canonical order, as HttpExports.cpp REQ_TRACKER). Nothing
-                // is an embedded constant; Just is a Custom, field 0 the String.
-                // Read after the last allocation above; the call reads it
-                // before allocating.
+                // Field 6 of the Request record is `tracker : Maybe String`.
+                // Every field is boxed, so the fields are in alphabetical
+                // order; the index must agree with `REQ_TRACKER` in
+                // HttpExports.cpp. `Nothing` is an embedded constant, and
+                // `Just` a Custom whose field 0 is the String. The word is
+                // read after the last allocation above, and the call reads it
+                // before it allocates.
                 uint64_t trackerEnc = 0;
                 if (void* rp = allocator.resolve(req)) {
                     HPointer mt = static_cast<Record*>(rp)->values[6].p;
@@ -174,13 +196,11 @@ static void* httpOnEffectsEvaluator(void* args[]) {
                 Elm::StackRootGuard taskRoot(&taskHP);
                 sched.rawSpawn(taskHP);
             } else if (header->tag == Tag_Custom && ctor == 0) {
-                // Cancel tracker: mark the tracked request for drop-delivery.
-                // Reading the tracker String and calling the cancel hook do not
-                // allocate, so no extra rooting is needed here.
+                // Cancel tracker. Neither reading the String nor the cancel
+                // allocates, so nothing more needs rooting.
                 HPointer tracker = static_cast<Custom*>(cmdPtr)->values[0].p;
                 Eco_Http_cancelTracker(encodeHP(tracker));
             } else if (header->tag == Tag_Task) {
-                // Fallback: a command that is already a Task — spawn directly.
                 HPointer successCl = allocClosure(httpSuccessHandler, 2);
                 Elm::StackRootGuard clRoot(&successCl);
                 void* clPtr = allocator.resolve(successCl);
@@ -195,21 +215,20 @@ static void* httpOnEffectsEvaluator(void* args[]) {
         cursor.advance();
     }
 
-    // The manager State is the current subscription list (List (MySub msg));
-    // onSelfMsg iterates it to route progress. Return Task.succeed(subs) so the
-    // latest subscriptions (args[2]) become the new state. Read args[2] at the
-    // point of use to pick up the post-loop-GC value from the caller's rooted
-    // combined_args buffer.
     uint64_t subsEnc = reinterpret_cast<uint64_t>(args[2]);
     HPointer task = sched.taskSucceed(decodeHP(subsEnc));
     return reinterpret_cast<void*>(encodeHP(task));
 }
 
-// onSelfMsg : Router msg -> SelfMsg -> State -> Task Never State
-// SelfMsg = (tracker : String, progress : Progress). State = List (MySub msg).
-// For each subscription `MySub subTracker toMsg` whose subTracker matches the
-// progress tracker, deliver `toMsg progress` to the app via sendToApp (mirrors
-// stock Http.onSelfMsg / maybeSend). Returns Task.succeed(state) unchanged.
+/// Delivers a progress report to the app and returns `Task.succeed state`,
+/// leaving the State unchanged. `args[0]` is the router, `args[1]` the
+/// self-message `(tracker, progress)` and `args[2]` the State, the
+/// subscription list.
+///
+/// For each subscription `MySub subTracker toMsg` in the State whose tracker
+/// has the same text as `tracker`, `toMsg progress` is sent to the app, in
+/// list order. A self-message that does not resolve to an object delivers
+/// nothing.
 static void* httpOnSelfMsgEvaluator(void* args[]) {
     auto& sched = Scheduler::instance();
     auto& allocator = Allocator::instance();
@@ -219,7 +238,6 @@ static void* httpOnSelfMsgEvaluator(void* args[]) {
     HPointer state   = decodeHP(reinterpret_cast<uint64_t>(args[2]));
     Elm::StackRootGuard topRoots(&router, &selfMsg, &state);
 
-    // selfMsg = Tuple2(tracker, progress).
     void* smPtr = allocator.resolve(selfMsg);
     if (smPtr) {
         Tuple2* sm = static_cast<Tuple2*>(smPtr);
@@ -228,9 +246,7 @@ static void* httpOnSelfMsgEvaluator(void* args[]) {
         Elm::StackRootGuard msgRoots(&tracker, &progress);
         std::string wantTracker = trackerToStd(tracker);
 
-        // Walk the subscription list (state). router and progress must survive
-        // each toMsg / sendToApp call (both run Elm code that may GC).
-        // RootedListCursor keeps the spine node rooted across those calls.
+        // `toMsg` and `sendToApp` run Elm code, which may collect.
         Elm::StackRootGuard walkRoots(&router, &progress);
         Elm::alloc::RootedListCursor cursor(state);
         Elm::Unboxable cursorHead;
@@ -241,7 +257,6 @@ static void* httpOnSelfMsgEvaluator(void* args[]) {
 
             void* subPtr = allocator.resolve(subHP);
             if (subPtr) {
-                // MySub tracker toMsg — Custom ctor 0, [tracker(String), toMsg].
                 Custom* sub = static_cast<Custom*>(subPtr);
                 HPointer subTracker = sub->values[0].p;
                 HPointer toMsg = sub->values[1].p;
@@ -255,34 +270,29 @@ static void* httpOnSelfMsgEvaluator(void* args[]) {
         }
     }
 
-    // Return Task.succeed(state); re-read from the rooted local (GC may have
-    // moved it during the loop).
+    // `state` is rooted, so it holds the current address after the loop.
     HPointer task = sched.taskSucceed(state);
     return reinterpret_cast<void*>(encodeHP(task));
 }
 
-// cmdMap : (a -> b) -> MyCmd a -> MyCmd b
-// Maps the message type of an Http command, as stock elm/http's cmdMap does:
-//
-//     cmdMap func cmd =
-//         case cmd of
-//             Cancel tracker -> Cancel tracker
-//             Request r -> Request { r | expect = Elm.Kernel.Http.mapExpect func r.expect }
-//
-// so the response reaches the app through every Cmd.map tagger (`mapper` is
-// PlatformRuntime's applyTaggers closure, PORT_005). Until 2026-10-10 a
-// Request came back unchanged and the tagger was dropped: the app received
-// the inner message as its own Msg type (a wrong-layout value; SIGSEGV in
-// update). plans/http-cmdmap-native-crash.md, test elm-http/HttpCmdMapTest.
+/// Returns the command `args[1]` with its message mapped by the function
+/// `args[0]`, as stock elm/http's `cmdMap` does:
+///
+///     cmdMap func cmd =
+///         case cmd of
+///             Cancel tracker -> Cancel tracker
+///             Request r -> Request { r | expect = Elm.Kernel.Http.mapExpect func r.expect }
+///
+/// Without this, the response would reach the app without the `Cmd.map`
+/// tagger applied, as a value of the wrong message type. A `Request` gets a
+/// new record that differs only in `expect`. A command that is a Task is
+/// mapped with `taskAndThen` and `httpMapHandler`. Anything else, including a
+/// `Cancel` and a `Request` whose field is not a record, is returned
+/// unchanged.
 static void* httpCmdMapEvaluator(void* args[]) {
-    // args[0] = mapper function
-    // args[1] = original cmd
-
     auto& allocator = Allocator::instance();
 
-    // Root mapper and origCmd across every allocation below (mapExpect,
-    // the new Request record, allocClosure / taskAndThen): each is a GC
-    // point that would otherwise leave the by-value locals stale.
+    // mapExpect, the new records and allocClosure / taskAndThen all allocate.
     HPointer mapper = decodeHP(reinterpret_cast<uint64_t>(args[0]));
     HPointer origCmd = decodeHP(reinterpret_cast<uint64_t>(args[1]));
     Elm::StackRootGuard guards(&mapper, &origCmd);
@@ -294,8 +304,6 @@ static void* httpCmdMapEvaluator(void* args[]) {
 
     Header* header = static_cast<Header*>(cmdPtr);
     if (header->tag == Tag_Custom) {
-        // Stock elm/http command: Cancel = ctor 0 (no message inside),
-        // Request = ctor 1 [record].
         Custom* cmd = static_cast<Custom*>(cmdPtr);
         if (cmd->ctor != 1) {
             return reinterpret_cast<void*>(encodeHP(origCmd));
@@ -306,14 +314,16 @@ static void* httpCmdMapEvaluator(void* args[]) {
         if (!reqPtr || static_cast<Header*>(reqPtr)->tag != Tag_Record) {
             return reinterpret_cast<void*>(encodeHP(origCmd));
         }
-        // expect = mapExpect func r.expect (allocates: re-resolve after).
+        // The index of `expect` in the Request record, whose fields are all
+        // boxed and so in alphabetical order. It must agree with `REQ_EXPECT`
+        // in HttpExports.cpp.
         constexpr int kReqExpect = 2;   // alphabetical: allowCookies…, body, expect, …
         HPointer expect = static_cast<Record*>(reqPtr)->values[kReqExpect].p;
         HPointer mappedExpect = decodeHP(Elm_Kernel_Http_mapExpect(
             HPtr::fromBits(encodeHP(mapper)), HPtr::fromBits(encodeHP(expect))).toBits());
         Elm::StackRootGuard expectRoot(&mappedExpect);
 
-        // { r | expect = mappedExpect }: the same fields and slot kinds.
+        // mapExpect allocated, so the record is resolved again.
         Record* req = static_cast<Record*>(allocator.resolve(reqHP));
         const u32 n = req->header.size;
         std::vector<Unboxable> fields(req->values, req->values + n);
@@ -330,7 +340,6 @@ static void* httpCmdMapEvaluator(void* args[]) {
         return reinterpret_cast<void*>(encodeHP(origCmd));
     }
 
-    // A command that is already a Task (onEffects' fallback): map its result.
     HPointer mapCl = allocClosure(httpMapHandler, 2);
     Elm::StackRootGuard mapClRoot(&mapCl);
     void* clPtr = allocator.resolve(mapCl);
@@ -338,13 +347,13 @@ static void* httpCmdMapEvaluator(void* args[]) {
         closureCapture(clPtr, boxed(mapper), true);
     }
 
-    // Create mapped task
     HPointer mappedTask = Scheduler::instance().taskAndThen(mapCl, origCmd);
     return reinterpret_cast<void*>(encodeHP(mappedTask));
 }
 
-// (toMsg >> func) progress: the composed toMsg of a mapped subscription.
-// Captures: args[0] = func, args[1] = toMsg; args[2] = the Progress.
+/// Returns `func (toMsg progress)`, where `func` is `args[0]`, `toMsg` is
+/// `args[1]` and `progress` is `args[2]`. It is the `toMsg >> func` that
+/// `subMap` builds, with the first two captured.
 static void* httpSubComposeEvaluator(void* args[]) {
     HPointer func = decodeHP(reinterpret_cast<uint64_t>(args[0]));
     Elm::StackRootGuard funcRoot(&func);
@@ -355,13 +364,14 @@ static void* httpSubComposeEvaluator(void* args[]) {
     return reinterpret_cast<void*>(res.toBits());
 }
 
-// subMap : (a -> b) -> MySub a -> MySub b, as stock elm/http's:
-//
-//     subMap func (MySub tracker toMsg) = MySub tracker (toMsg >> func)
-//
-// Registered since 2026-10-10: with subMap = Nil the runtime applied the
-// Sub.map taggers to the MySub value itself, so Http.track progress under
-// Sub.map never reached the app (plans/http-cmdmap-native-crash.md).
+/// Returns the subscription `args[1]` with its message mapped by the function
+/// `args[0]`, as stock elm/http's `subMap` does:
+///
+///     subMap func (MySub tracker toMsg) = MySub tracker (toMsg >> func)
+///
+/// Without this, the `Sub.map` taggers would be applied to the `MySub` value
+/// itself, and progress under `Sub.map` would not reach the app. A
+/// subscription that is not a Custom is returned unchanged.
 static void* httpSubMapEvaluator(void* args[]) {
     auto& allocator = Allocator::instance();
     HPointer func = decodeHP(reinterpret_cast<uint64_t>(args[0]));
@@ -372,7 +382,6 @@ static void* httpSubMapEvaluator(void* args[]) {
     if (!subPtr || static_cast<Header*>(subPtr)->tag != Tag_Custom) {
         return reinterpret_cast<void*>(encodeHP(sub));
     }
-    // MySub tracker toMsg: Custom ctor 0, [tracker (String), toMsg].
     HPointer tracker = static_cast<Custom*>(subPtr)->values[0].p;
     HPointer toMsg = static_cast<Custom*>(subPtr)->values[1].p;
     Elm::StackRootGuard fieldRoots(&tracker, &toMsg);
@@ -393,17 +402,21 @@ static void* httpSubMapEvaluator(void* args[]) {
 } // anonymous namespace
 
 // ============================================================================
-// Registration function (called from runtime initialization)
+// Registration
 // ============================================================================
 
 extern "C" {
 
+/// Registers the `Http` effect manager's closures with `PlatformRuntime`,
+/// replacing any manager already registered under that name.
+///
+/// It allocates on the heap, so it must run on the eco thread once the
+/// thread's heap exists. It is called by `eco_register_all_effect_managers`.
 void eco_register_http_effect_manager() {
-    // Each closure stays rooted across the later allocations (each a GC point).
+    // Each closure stays rooted across the later allocations.
     HPointer initCl = allocClosure(httpInitEvaluator, 0);
     Elm::StackRootGuard initRoot(&initCl);
 
-    // onEffects (4-arg curried), onSelfMsg (3-arg), cmdMap (2-arg).
     HPointer onEffectsCl = allocClosure(httpOnEffectsEvaluator, 4);
     Elm::StackRootGuard onEffectsRoot(&onEffectsCl);
     HPointer onSelfMsgCl = allocClosure(httpOnSelfMsgEvaluator, 3);
@@ -411,11 +424,9 @@ void eco_register_http_effect_manager() {
     HPointer cmdMapCl = allocClosure(httpCmdMapEvaluator, 2);
     Elm::StackRootGuard cmdMapRoot(&cmdMapCl);
 
-    // subMap (2-arg): Http.track under Sub.map.
     HPointer subMapCl = allocClosure(httpSubMapEvaluator, 2);
     Elm::StackRootGuard subMapRoot(&subMapCl);
 
-    // Register with PlatformRuntime
     PlatformRuntime::ManagerInfo info;
     info.init = encodeHP(initCl);
     info.onEffects = encodeHP(onEffectsCl);

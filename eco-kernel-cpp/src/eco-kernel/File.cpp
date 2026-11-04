@@ -1,21 +1,17 @@
 //===- File.cpp - File kernel module implementation -----------------------===//
 //
-// Per KERNEL_TASK_IO_001 / plans/defer-eager-kernel-tasks-via-binding.md
-// Phase 3: every Task-returning File kernel is wrapped in a Task_Binding so
-// the syscall fires when the scheduler steps the binding, not at the kernel
-// call site. The synchronous IO bodies live in anonymous-namespace helpers
-// keyed by name (`*Body`); the exported `Eco::Kernel::File::*` functions are
-// thin binding-creation wrappers.
+// Each operation is split in two. The IO is in a binding body, `<name>Body` in the anonymous namespace, which the
+// scheduler calls each time it steps the Task. The public function only packs its arguments into one captured value
+// and makes the binding around the body.
 //
-// Capture packing convention (Q2 — no kind-inferred templates):
-//   * 1-arg HPointer kernel: captured = the HPointer directly.
-//   * 1-arg unboxed-Int kernel: captured = tuple2(unboxedInt(i), unit, 0x1).
-//     Slot 1 holds unit() as a no-op placeholder so we can keep using the
-//     existing tuple2 alloc helper.
-//   * 2-arg both-HPointer: captured = tuple2(boxed(a), boxed(b), 0).
-//   * 2-arg (HPointer, Int): captured = tuple2(boxed(a), unboxedInt(i), 0x4).
-//     mask bit pattern: 2 bits per slot, slot 1 unboxed Int = (01 << 2) = 0x4.
-//   * 2-arg (Int, HPointer): captured = tuple2(unboxedInt(i), boxed(b), 0x1).
+// The captured value is packed by a fixed convention, which each body unpacks to match:
+//   * One boxed argument: the argument's HPointer itself.
+//   * One Int argument: `tuple2(unboxedInt(i), unit, 0x1)`. Slot 1 holds Unit only to fill the pair.
+//   * Two boxed arguments: `tuple2(boxed(a), boxed(b), 0)`.
+//   * A boxed argument then an Int: `tuple2(boxed(a), unboxedInt(i), 0x4)`.
+//   * An Int then a boxed argument: `tuple2(unboxedInt(i), boxed(b), 0x1)`.
+// A mask gives each slot a 2-bit kind, slot 0 in the low bits, and kind 1 is an unboxed Int; so 0x1 marks slot 0
+// and 0x4 marks slot 1.
 //
 //===----------------------------------------------------------------------===//
 
@@ -40,21 +36,22 @@
 #include <sys/stat.h>
 #include <sys/utime.h> // _utime
 #include <process.h>   // _getpid
+/// The function that returns the id of the current process.
 #define ECO_GETPID _getpid
-// Windows path-separator and find-executable helpers. The Windows PATH uses
-// ';' (POSIX uses ':'), and executable detection is extension-driven
-// (.exe/.cmd/.bat/.com) rather than a per-file +x bit.
 namespace {
+/// The character that separates directories in `PATH` on Windows.
 constexpr char kPathListSep = ';';
-// Thin name-aliasing wrappers so the file's existing call sites read the
-// same on both platforms. The underscore-prefixed forms are the
-// portability-stable spellings on Windows; the POSIX names are macro
-// aliases in some headers but not others.
+// The `_eco_*` wrappers give the bodies one spelling of the descriptor calls on both platforms. On Windows they
+// call the underscore-prefixed CRT functions.
+/// Opens `p` as `open` does, always in binary mode, and returns the descriptor or -1.
 inline int _eco_open (const char* p, int flags, int mode) { return ::_open(p, flags | _O_BINARY, mode); }
+/// Closes `fd` and returns 0, or -1 on failure.
 inline int _eco_close(int fd)                              { return ::_close(fd); }
+/// Writes up to `n` bytes from `b` to `fd`, at most `INT_MAX` in one call, and returns the count written or -1.
 inline int _eco_write(int fd, const void* b, size_t n)     {
     return ::_write(fd, b, n > 0x7fffffff ? 0x7fffffff : (unsigned int)n);
 }
+/// Reads up to `n` bytes from `fd` into `b`, at most `INT_MAX` in one call, and returns the count read or -1.
 inline int _eco_read (int fd, void* b, size_t n)           {
     return ::_read(fd, b, n > 0x7fffffff ? 0x7fffffff : (unsigned int)n);
 }
@@ -64,9 +61,12 @@ inline int _eco_read (int fd, void* b, size_t n)           {
 #include <fcntl.h>
 #include <sys/stat.h>
 #include <unistd.h>
+/// The function that returns the id of the current process.
 #define ECO_GETPID getpid
 namespace {
+/// The character that separates directories in `PATH` on POSIX systems.
 constexpr char kPathListSep = ':';
+// The `_eco_*` wrappers call the POSIX functions of the same name, with the same results.
 inline int     _eco_open (const char* p, int flags, int mode) { return ::open(p, flags, mode); }
 inline int     _eco_close(int fd)                              { return ::close(fd); }
 inline ssize_t _eco_write(int fd, const void* b, size_t n)     { return ::write(fd, b, n); }
@@ -78,20 +78,19 @@ namespace Eco::Kernel::File {
 
 namespace {
 
-// Tuple unpack helpers (Q2 — explicit HPointer-centric, no inference).
+/// Returns the pair a two-slot captured value refers to. The pointer is valid only until the next allocation.
 inline Tuple2* asTuple2(HPointer captured) {
     return static_cast<Tuple2*>(Elm::Allocator::instance().resolve(captured));
 }
 
 // --- 1-arg-HPointer bodies ----------------------------------------------------
 
+/// Reads the file named by the String `captured` and returns a Task that succeeds with its text or fails.
 HPointer readStringBody(HPointer captured) {
     std::string pathStr = toString(Export::encode(captured));
     ECO_KLOG("file", "readString start path=%s", pathStr.c_str());
-    // Binary + ate to size the file up front, then read straight into a heap
-    // ByteBuffer — no std::string intermediate. Binary vs text is identical on
-    // Linux; keeping the bytes verbatim is exactly what the UTF-8 view wants.
-    // See plans/utf8-string-pipeline-wiring.md (W3).
+    // Opened in binary mode at the end, to size the file and then read its bytes unchanged straight into a heap
+    // ByteBuffer.
     std::ifstream file(pathStr, std::ios::binary | std::ios::ate);
     if (!file) {
         int err = errno;
@@ -106,15 +105,12 @@ HPointer readStringBody(HPointer captured) {
     }
     size_t size = static_cast<size_t>(sz);
     file.seekg(0, std::ios::beg);
-    // Empty file -> the EmptyString embedded constant (via succeedString).
     if (size == 0) {
         ECO_KLOG("file", "readString done path=%s size=0", pathStr.c_str());
         return succeedString(std::string());
     }
-    // Allocate the destination buffer and read directly into its payload.
-    // Nothing allocates between allocByteBufferBlank and the read, so bb.bytes
-    // is stable (BlankByteBuffer contract), and bufHp stays valid because no GC
-    // can occur before makeUtf8View (which roots the base across its own alloc).
+    // Nothing allocates between allocByteBufferBlank and makeUtf8View, so bb.bytes and bufHp stay valid until then;
+    // makeUtf8View roots the buffer across its own allocation.
     Elm::alloc::BlankByteBuffer bb = Elm::alloc::allocByteBufferBlank(size);
     HPointer bufHp = bb.hp;
     file.read(reinterpret_cast<char*>(bb.bytes), static_cast<std::streamsize>(size));
@@ -124,9 +120,8 @@ HPointer readStringBody(HPointer captured) {
         return failErrno(err, pathStr, "could not read file contents");
     }
     ECO_KLOG("file", "readString done path=%s size=%zu", pathStr.c_str(), size);
-    // ASCII source -> zero-copy UTF-8 view over the buffer we just filled (this
-    // is what lets an ASCII .elm file reach the parser in UTF-8 with no extra
-    // copy). Non-ASCII -> one copy into a std::string then the legacy transcode.
+    // All-ASCII content, with UTF-8 strings enabled, becomes a String that is a view over the buffer, with no copy.
+    // Anything else is copied out and converted to an ordinary String.
     if (Elm::Allocator::instance().getConfig().utf8_strings_enabled &&
         Elm::Utf8::allAscii(bb.bytes, size)) {
         return succeed(Elm::StringOps::makeUtf8View(bufHp, 0, static_cast<Elm::u32>(size)));
@@ -135,6 +130,7 @@ HPointer readStringBody(HPointer captured) {
         std::string(reinterpret_cast<const char*>(bb.bytes), size));
 }
 
+/// Reads the file named by the String `captured` and returns a Task that succeeds with its Bytes or fails.
 HPointer readBytesBody(HPointer captured) {
     std::string pathStr = toString(Export::encode(captured));
     ECO_KLOG("file", "readBytes start path=%s", pathStr.c_str());
@@ -159,11 +155,8 @@ HPointer readBytesBody(HPointer captured) {
         return succeed(Elm::alloc::emptyBytes());
     }
     file.seekg(0, std::ios::beg);
-    // Allocate FIRST, then read straight into the payload (no std::vector
-    // staging copy). Nothing allocates on the Elm heap between here and
-    // succeed(): bb.bytes stays valid (BlankByteBuffer contract) and bufHp is
-    // not stale when succeed() roots it. At or above the large-object threshold
-    // the body is pinned in old gen and never moves (HEAP_026).
+    // Nothing allocates on the heap between allocByteBufferBlank and succeed(), so bb.bytes stays valid for the
+    // read and bufHp is current when succeed() takes it.
     Elm::alloc::BlankByteBuffer bb = Elm::alloc::allocByteBufferBlank(size);
     HPointer bufHp = bb.hp;
     file.read(reinterpret_cast<char*>(bb.bytes), static_cast<std::streamsize>(size));
@@ -176,6 +169,7 @@ HPointer readBytesBody(HPointer captured) {
     return succeed(bufHp);
 }
 
+/// Returns a Task that succeeds with whether the String `captured` names a regular file.
 HPointer fileExistsBody(HPointer captured) {
     std::string pathStr = toString(Export::encode(captured));
     std::error_code ec;
@@ -185,6 +179,7 @@ HPointer fileExistsBody(HPointer captured) {
     return succeedBool(exists);
 }
 
+/// Returns a Task that succeeds with whether the String `captured` names a directory.
 HPointer dirExistsBody(HPointer captured) {
     std::string pathStr = toString(Export::encode(captured));
     std::error_code ec;
@@ -195,22 +190,22 @@ HPointer dirExistsBody(HPointer captured) {
 }
 
 #if defined(_WIN32)
-// Windows: an executable is anything matching one of the PATHEXT extensions
-// (.exe / .cmd / .bat / .com being the universally-honoured defaults). We
-// also accept the bare name if it already includes a non-PATHEXT extension
-// — matching cmd.exe's own search behaviour and what the JS kernel's
-// findExecutable implementation does.
+/// Returns whether `p` is a regular file. On Windows any regular file counts as executable; the extensions tried
+/// are chosen by `findExecutableBody`.
 static bool isExecutableCandidate(const std::filesystem::path& p) {
     std::error_code ec;
     if (!std::filesystem::is_regular_file(p, ec)) return false;
     return true;
 }
 #else
+/// Returns whether the process may execute `p`, as `access` with `X_OK` decides. A searchable directory passes too.
 static bool isExecutableCandidate(const std::filesystem::path& p) {
     return ::access(p.string().c_str(), X_OK) == 0;
 }
 #endif
 
+/// Searches `PATH` for the String `captured` and returns a Task that succeeds with `Just` the first match or
+/// `Nothing`. On Windows `Path` is read when `PATH` is not set.
 HPointer findExecutableBody(HPointer captured) {
     std::string nameStr = toString(Export::encode(captured));
     ECO_KLOG("file", "findExecutable start name=%s", nameStr.c_str());
@@ -225,10 +220,7 @@ HPointer findExecutableBody(HPointer captured) {
     }
 
 #if defined(_WIN32)
-    // Try the bare name (if it has an extension already) plus each PATHEXT
-    // candidate in turn. The exts list is the conservative default set —
-    // most users don't customise PATHEXT and the Eco kernel doesn't need
-    // .vbs / .ps1 invocation.
+    // The bare name, then a fixed list of suffixes, in each directory. PATHEXT is not consulted.
     const char* exts[] = { "", ".exe", ".cmd", ".bat", ".com" };
 #else
     const char* exts[] = { "" };
@@ -243,9 +235,7 @@ HPointer findExecutableBody(HPointer captured) {
         for (const char* ext : exts) {
             std::filesystem::path full = dir / (nameStr + ext);
             if (isExecutableCandidate(full)) {
-                // generic_string(): forward-slash form on all platforms. The
-                // Elm compiler's fp* path code splits on '/', so paths handed
-                // back to Elm must never carry Windows backslashes (item 10b).
+                // Forward slashes, because the Elm fp* path code splits on '/'.
                 std::string s = full.generic_string();
                 ECO_KLOG("file", "findExecutable done name=%s result=%s",
                          nameStr.c_str(), s.c_str());
@@ -260,6 +250,7 @@ HPointer findExecutableBody(HPointer captured) {
     return succeed(Elm::alloc::nothing());
 }
 
+/// Returns a Task that succeeds with the entry names of the directory named by the String `captured`, or fails.
 HPointer listBody(HPointer captured) {
     std::string pathStr = toString(Export::encode(captured));
     ECO_KLOG("file", "list start path=%s", pathStr.c_str());
@@ -267,10 +258,7 @@ HPointer listBody(HPointer captured) {
     std::error_code ec;
     auto iter = std::filesystem::directory_iterator(pathStr, ec);
     if (ec) {
-        // Translate the std::filesystem error_code's value to errno for the
-        // existing failErrno path. On POSIX they coincide; on Windows the
-        // generic_category() error from filesystem maps to the C errno space
-        // (e.g. ENOENT/EACCES) which failErrno's tag classifier accepts.
+        // The error_code's value is passed on as if it were an errno value, which it is on POSIX.
         int err = ec.value();
         ECO_KLOG("file", "list fail path=%s errno=%d msg=%s",
                  pathStr.c_str(), err, std::strerror(err));
@@ -287,6 +275,8 @@ HPointer listBody(HPointer captured) {
     return succeedStringList(entries);
 }
 
+/// Returns a Task that succeeds with the modification time in milliseconds of the file named by the String
+/// `captured`, or fails.
 HPointer modificationTimeBody(HPointer captured) {
     std::string pathStr = toString(Export::encode(captured));
     ECO_KLOG("file", "modificationTime start path=%s", pathStr.c_str());
@@ -298,8 +288,7 @@ HPointer modificationTimeBody(HPointer captured) {
         return failErrno(err, pathStr, "could not stat file");
     }
 #if defined(_WIN32)
-    // Win64's _stat exposes whole-second mtime via st_mtime; no nanosecond
-    // field. Multiply up to match the Linux/Darwin millisecond return.
+    // Only whole seconds are read here, scaled to milliseconds.
     int64_t millis = static_cast<int64_t>(st.st_mtime) * 1000;
 #elif defined(__APPLE__)
     const struct timespec &mtim = st.st_mtimespec;
@@ -315,14 +304,12 @@ HPointer modificationTimeBody(HPointer captured) {
     return succeedInt(millis);
 }
 
+/// Returns a Task that succeeds with the working directory, or fails. The captured value is Unit and unused.
 HPointer getCwdBody(HPointer /*captured*/) {
     std::error_code ec;
     auto cwd = std::filesystem::current_path(ec);
     if (!ec) {
-        // Forward-slash form: the Elm fp* path code splits on '/' and would
-        // mishandle the native Windows backslashes from path::string()
-        // (item 10b). This getCwd result seeds many derived paths in the
-        // compiler, so a backslash here cascades into failed file lookups.
+        // Forward slashes, because the Elm fp* path code splits on '/'.
         std::string s = cwd.generic_string();
         ECO_KLOG("file", "getCwd done result=%s", s.c_str());
         return succeedString(s);
@@ -333,6 +320,7 @@ HPointer getCwdBody(HPointer /*captured*/) {
     return failErrno(err, "", "could not get current working directory");
 }
 
+/// Makes the String `captured` the working directory and returns a Task that succeeds with Unit or fails.
 HPointer setCwdBody(HPointer captured) {
     std::string pathStr = toString(Export::encode(captured));
     ECO_KLOG("file", "setCwd start path=%s", pathStr.c_str());
@@ -348,32 +336,34 @@ HPointer setCwdBody(HPointer captured) {
     return succeedUnit();
 }
 
+/// Returns a Task that succeeds with the canonical form of the path `captured`, or its normalised absolute form
+/// when it cannot be resolved.
 HPointer canonicalizeBody(HPointer captured) {
     std::string pathStr = toString(Export::encode(captured));
     ECO_KLOG("file", "canonicalize start path=%s", pathStr.c_str());
     std::error_code ec;
     auto canonical = std::filesystem::canonical(pathStr, ec);
     if (!ec) {
-        std::string s = canonical.generic_string();  // '/' form (item 10b)
+        std::string s = canonical.generic_string();  // '/' form
         ECO_KLOG("file", "canonicalize done path=%s result=%s",
                  pathStr.c_str(), s.c_str());
         return succeedString(s);
     }
-    // Fallback: resolve relative path without following symlinks.
+    // Fallback: make the path absolute without following symlinks.
     std::filesystem::path p = std::filesystem::absolute(pathStr);
-    std::string result = p.lexically_normal().generic_string();  // '/' form (item 10b)
+    std::string result = p.lexically_normal().generic_string();  // '/' form
     ECO_KLOG("file", "canonicalize fallback path=%s result=%s",
              pathStr.c_str(), result.c_str());
     return succeedString(result);
 }
 
+/// Returns a Task that succeeds with the data directory path for the application named by the String `captured`,
+/// or fails with a String when the environment gives no base directory.
 HPointer appDataDirBody(HPointer captured) {
     std::string nameStr = toString(Export::encode(captured));
     std::string dir;
 #if defined(_WIN32)
-    // Windows has no HOME; use APPDATA (roaming) then USERPROFILE, mirroring
-    // eco-io-handler.js (item 10). No leading dot — Windows app-data dirs are
-    // named plainly. Returned with forward slashes for the Elm fp* code.
+    // APPDATA, then USERPROFILE, then HOME. No leading dot on the name. Forward slashes, for the Elm fp* code.
     const char* base = std::getenv("APPDATA");
     if (!base || !*base) base = std::getenv("USERPROFILE");
     if (!base || !*base) base = std::getenv("HOME");
@@ -402,6 +392,7 @@ HPointer appDataDirBody(HPointer captured) {
     return succeedString(dir);
 }
 
+/// Removes the file named by the String `captured` and returns a Task that succeeds with Unit or fails.
 HPointer removeFileBody(HPointer captured) {
     std::string pathStr = toString(Export::encode(captured));
     ECO_KLOG("file", "removeFile start path=%s", pathStr.c_str());
@@ -415,6 +406,7 @@ HPointer removeFileBody(HPointer captured) {
     return succeedUnit();
 }
 
+/// Removes the path `captured` and everything beneath it, and returns a Task that succeeds with Unit or fails.
 HPointer removeDirBody(HPointer captured) {
     std::string pathStr = toString(Export::encode(captured));
     ECO_KLOG("file", "removeDir start path=%s", pathStr.c_str());
@@ -429,6 +421,8 @@ HPointer removeDirBody(HPointer captured) {
     return succeedUnit();
 }
 
+/// Creates the file `captured` if needed, sets its modification time to now, and returns a Task that succeeds with
+/// Unit or fails.
 HPointer touchBody(HPointer captured) {
     std::string pathStr = toString(Export::encode(captured));
     ECO_KLOG("file", "touch start path=%s", pathStr.c_str());
@@ -436,10 +430,7 @@ HPointer touchBody(HPointer captured) {
     if (fd >= 0) {
         _eco_close(fd);
     }
-    // Set the file's last-write time to "now". std::filesystem's
-    // last_write_time uses file_time_type — we set it to the clock's now()
-    // value, which on every supported platform converts to the OS-native
-    // epoch (utimensat-equivalent on POSIX, SetFileTime on Win64).
+    // A failure to open is not reported here; when the file does not exist, setting the time fails instead.
     std::error_code ec;
     std::filesystem::last_write_time(
         pathStr, std::filesystem::file_time_type::clock::now(), ec);
@@ -453,13 +444,14 @@ HPointer touchBody(HPointer captured) {
     return succeedUnit();
 }
 
-// Stubs — TODO real impls. Wrapped in bindings for KERNEL_TASK_IO_001
-// uniformity (so the deferred-binding surface is total).
+/// Returns a Task that succeeds with Unit. No lock is taken.
 HPointer lockBody(HPointer /*captured*/) { return succeedUnit(); }
+/// Returns a Task that succeeds with Unit. No lock is released.
 HPointer unlockBody(HPointer /*captured*/) { return succeedUnit(); }
 
 // --- 1-arg-Int bodies ---------------------------------------------------------
 
+/// Closes the descriptor in slot 0 of `captured`, ignoring failure, and returns a Task that succeeds with Unit.
 HPointer closeBody(HPointer captured) {
     Tuple2* tup = asTuple2(captured);
     int64_t fd = tup->a.i;
@@ -468,6 +460,7 @@ HPointer closeBody(HPointer captured) {
     return succeedUnit();
 }
 
+/// Returns a Task that succeeds with the size of the file open as the descriptor in slot 0 of `captured`, or fails.
 HPointer sizeBody(HPointer captured) {
     Tuple2* tup = asTuple2(captured);
     int64_t fd = tup->a.i;
@@ -485,6 +478,8 @@ HPointer sizeBody(HPointer captured) {
 
 // --- 2-arg bodies -------------------------------------------------------------
 
+/// Writes the String in slot 1 of `captured` to the file named in slot 0, and returns a Task that succeeds with
+/// Unit or fails when the file cannot be opened.
 HPointer writeStringBody(HPointer captured) {
     HPointer pathHP;
     HPointer contentHP;
@@ -510,6 +505,8 @@ HPointer writeStringBody(HPointer captured) {
     return succeedUnit();
 }
 
+/// Writes the Bytes in slot 1 of `captured` to the file named in slot 0, and returns a Task that succeeds with
+/// Unit or fails when the file cannot be opened.
 HPointer writeBytesBody(HPointer captured) {
     HPointer pathHP;
     HPointer bytesHP;
@@ -537,13 +534,15 @@ HPointer writeBytesBody(HPointer captured) {
     return succeedUnit();
 }
 
-// Per-process sequence for writeBytesAtomic temp names. A plain integer, not a
-// heap value.
+/// The next sequence number for a `writeBytesAtomic` temporary file name, shared by the whole process.
 std::atomic<uint64_t> gAtomicWriteSeq{0};
 
-// Write to a sibling temp file, then rename it over the target, so a reader in
-// another process (or after a crash) never sees a partial file. Unlike
-// writeBytes, write and close errors (ENOSPC) are reported.
+/// Writes the Bytes in slot 1 of `captured` to a new temporary file beside the path in slot 0, renames it over that
+/// path, and returns a Task that succeeds with Unit or fails.
+///
+/// The temporary file is `<path>.tmp-<pid>-<seq>`, created exclusively; a name that exists already is skipped, up
+/// to 16 names. A write, close or rename error is reported, and the temporary file is then removed. On Windows a
+/// failed rename is retried five times, after waits of 10 ms doubling to 160 ms.
 HPointer writeBytesAtomicBody(HPointer captured) {
     HPointer pathHP;
     HPointer bytesHP;
@@ -555,7 +554,7 @@ HPointer writeBytesAtomicBody(HPointer captured) {
     std::string pathStr = toString(Export::encode(pathHP));
     std::string tmp;
     int fd = -1;
-    // O_EXCL: never share a temp, even across PID namespaces on one volume.
+    // O_EXCL, so two writers never share a temporary file even when their pids and sequence numbers coincide.
     for (int tries = 0; fd < 0 && tries < 16; ++tries) {
         tmp = pathStr + ".tmp-" + std::to_string(static_cast<long long>(ECO_GETPID())) + "-" +
               std::to_string(gAtomicWriteSeq.fetch_add(1, std::memory_order_relaxed));
@@ -568,7 +567,7 @@ HPointer writeBytesAtomicBody(HPointer captured) {
                  pathStr.c_str(), err, std::strerror(err));
         return failErrno(err, pathStr, "could not create temp file for writing");
     }
-    // NO Elm allocation between resolve and the last write (as writeBytesBody).
+    // Nothing allocates between resolve and the last write, so `data` stays valid.
     void* ptr = Elm::alloc::isConstant(bytesHP) ? nullptr : Elm::Allocator::instance().resolve(bytesHP); // empty Bytes = embedded constant
     size_t len = Elm::alloc::byteBufferLength(ptr);
     const uint8_t* data = Elm::alloc::byteBufferData(ptr);
@@ -588,7 +587,8 @@ HPointer writeBytesAtomicBody(HPointer captured) {
         std::error_code ec;
         std::filesystem::rename(tmp, pathStr, ec); // POSIX rename(2): atomic replace
 #if defined(_WIN32)
-        // Sharing violation while a reader holds the target: bounded retry.
+        // A failed rename is retried a bounded number of times, as happens while another process holds the
+        // target open.
         for (int i = 0; ec && i < 5; ++i) {
             std::this_thread::sleep_for(std::chrono::milliseconds(10 << i));
             ec.clear();
@@ -607,6 +607,8 @@ HPointer writeBytesAtomicBody(HPointer captured) {
     return failErrno(err, pathStr, "could not write file atomically");
 }
 
+/// Opens the file named in slot 0 of `captured` in the mode in slot 1, and returns a Task that succeeds with the
+/// descriptor or fails.
 HPointer openBody(HPointer captured) {
     HPointer pathHP;
     int64_t modeVal;
@@ -638,6 +640,8 @@ HPointer openBody(HPointer captured) {
     return succeedInt(fd);
 }
 
+/// Writes the String in slot 1 of `captured` to the descriptor in slot 0 with one write call, and returns a Task
+/// that succeeds with Unit or fails.
 HPointer hWriteStringBody(HPointer captured) {
     int64_t fd;
     HPointer contentHP;
@@ -661,6 +665,8 @@ HPointer hWriteStringBody(HPointer captured) {
     return succeedUnit();
 }
 
+/// Creates the directory named in slot 1 of `captured`, with its parents when the Bool in slot 0 is True, and
+/// returns a Task that succeeds with Unit or fails.
 HPointer createDirBody(HPointer captured) {
     HPointer createParentsHP;
     HPointer pathHP;
@@ -691,7 +697,7 @@ HPointer createDirBody(HPointer captured) {
 } // anonymous namespace
 
 // ============================================================================
-// Public API — thin binding-creation wrappers. The IO bodies live above.
+// Public API: each function packs its arguments and makes the binding around its body.
 // ============================================================================
 
 uint64_t readString(uint64_t path) {
@@ -734,9 +740,7 @@ uint64_t writeBytesAtomic(uint64_t path, uint64_t bytes) {
 uint64_t open(uint64_t path, uint64_t mode) {
     HPointer pathHP = Export::decode(path);
     Elm::StackRootGuard g(&pathHP);
-    // mode is an unboxed Int passed via the HPtr ABI (the MLIR generator
-    // hands raw i64 bits even when the C++ signature is HPtr — matches the
-    // pre-existing eager behavior of `int64_t modeVal = static_cast<int64_t>(mode)`).
+    // mode arrives as the raw bits of an Int, though the export's parameter is HPtr-typed.
     HPointer payload = Elm::alloc::tuple2(
         Elm::alloc::boxed(pathHP),
         Elm::alloc::unboxedInt(static_cast<int64_t>(mode)),

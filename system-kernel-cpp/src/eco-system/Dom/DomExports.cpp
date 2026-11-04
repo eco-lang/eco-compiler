@@ -1,11 +1,18 @@
 //===- DomExports.cpp - C exports of Eco.Kernel.Dom ------------------------===//
 //
-// plans/elm-html-native-kernel.md §4.2 and plans/eco-system-library.md B1b. The
-// VirtualDom side door: natively a VirtualDom.Node msg already has the heap
-// layout of Http.Dom.Node (VirtualDomLayout.hpp, VDOM_001), so fromNode and
-// fromAttribute are identities. toString runs ElmKernel_VirtualDom's
-// writeHtml, which never allocates on the Eco heap (VDOM_004), then allocates
-// the one result String. Pure kernels (B5): no binding, no table.
+// The C exports behind the kernel module `Eco.Kernel.Dom`, which let Elm code treat `elm/html` and
+// `elm/svg` values as the `Html.Dom` types it can inspect and render.
+//
+// The module rests on one fact about the heap: a native VirtualDom node or attribute is a `Custom` object
+// whose constructor tags and field layout are exactly those of `Html.Dom.Node` and `Html.Dom.Fact`, as
+// `VirtualDomLayout.hpp` defines them. Converting between the two is therefore no work at all, and
+// `fromNode` and `fromAttribute` return their argument unchanged.
+//
+// The kernel `toString` (behind `Html.Dom.htmlToString`) renders a node to HTML with
+// `Elm::Kernel::VirtualDom::writeHtml`. That writer does not allocate on the Eco heap or call Elm code,
+// so no collection can move the tree while it is read. The result String is built only after the walk has finished.
+//
+// None of the exports keeps state between calls.
 //
 //===----------------------------------------------------------------------===//
 
@@ -18,26 +25,30 @@ using namespace Eco::System;
 
 extern "C" {
 
-// fromNode : VirtualDom.Node msg -> Http.Dom.Node
+/// Returns `node`, a `VirtualDom.Node msg`, as an `Html.Dom.Node`. The word is returned unchanged, because
+/// the two types share one heap layout.
 uint64_t Eco_Kernel_Dom_fromNode(uint64_t node) {
     ECO_KERNEL_GUARD(
-        return node;   // R7: zero-copy (D3)
+        return node;
     )
 }
 
-// fromAttribute : VirtualDom.Attribute msg -> Http.Dom.Fact
+/// Returns `fact`, a `VirtualDom.Attribute msg`, as an `Html.Dom.Fact`. The word is returned unchanged, because
+/// the two types share one heap layout.
 uint64_t Eco_Kernel_Dom_fromAttribute(uint64_t fact) {
     ECO_KERNEL_GUARD(
         return fact;
     )
 }
 
-// toString : VirtualDom.Node msg -> String
+/// Returns the HTML text of `node`, a `VirtualDom.Node msg`, as a String. What is written, and what is
+/// skipped, is as `Elm::Kernel::VirtualDom::writeHtml` describes.
 uint64_t Eco_Kernel_Dom_toString(uint64_t node) {
     ECO_KERNEL_GUARD(
         std::string out;
-        ::Elm::Kernel::VirtualDom::writeHtml(node, out);   // R8: no Eco allocation
-        return enc(alloc::allocStringFromUTF8(out));       // the one allocation, after the walk
+        ::Elm::Kernel::VirtualDom::writeHtml(node, out);
+        // Building the String is the first Eco heap allocation, so it must come after the walk.
+        return enc(alloc::allocStringFromUTF8(out));
     )
 }
 

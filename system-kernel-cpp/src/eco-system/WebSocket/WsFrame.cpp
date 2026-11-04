@@ -1,10 +1,5 @@
 //===- WsFrame.cpp - RFC 6455 frame codec (pure) --------------------------===//
 //
-// See WsFrame.hpp (plans/eco-system-websockets.md Appendix D.1, D.4, D.5,
-// D.8). No IO, no heap access (G1).
-//
-// Templates used: none (POD only).
-//
 //===----------------------------------------------------------------------===//
 
 #include "eco-system/WebSocket/WsFrame.hpp"
@@ -184,7 +179,6 @@ void WsDecoder::setDiscardData(bool on) {
     }
 }
 
-// The header in hdr_ is complete: decode and check it (D.1).
 bool WsDecoder::startFrame() {
     unsigned char b0 = hdr_[0], b1 = hdr_[1];
     fin_ = (b0 & 0x80) != 0;
@@ -205,8 +199,7 @@ bool WsDecoder::startFrame() {
     if (masked_) std::memcpy(mask_, hdr_ + at, 4);
 
     if (rsv2 || rsv3) return fail(kCloseProtocolError, "RSV2 or RSV3 is set");
-    // RSV1 means "compressed" (permessage-deflate, RFC 7692 §6): only on the
-    // first frame of a data message, and only once deflate is negotiated.
+    // RSV1 means "compressed" (permessage-deflate): allowed only on the first frame of a data message.
     if (rsv1 && !allowRsv1_) return fail(kCloseProtocolError, "RSV1 is set without a negotiated extension");
     bool known = opcode_ == kOpContinuation || opcode_ == kOpText || opcode_ == kOpBinary ||
                  opcode_ == kOpClose || opcode_ == kOpPing || opcode_ == kOpPong;
@@ -236,7 +229,7 @@ bool WsDecoder::startFrame() {
         utf8_.reset();
     }
     if (!frameIsControl_) {
-        // A compressed message's size is its inflated size (the sink checks it).
+        // A compressed message's limit applies to its inflated size, which is not known here.
         bool checkSize = !discard_ && !(raw_ && msgCompressed_);
         if (checkSize && len > maxMessage_ - std::min(msgSize_, maxMessage_)) {
             return fail(kCloseMessageTooBig, "the message is larger than maxMessageSize");

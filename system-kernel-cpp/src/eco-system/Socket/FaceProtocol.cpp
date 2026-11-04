@@ -1,11 +1,4 @@
 //===- FaceProtocol.cpp - The stream faces as a Conn protocol -------------===//
-//
-// See FaceProtocol.hpp (plans/eco-system-websockets.md §3.2; the rules are
-// those of plans/eco-system-sockets.md §3.3.3 and §D.2, moved here from
-// Conn.cpp unchanged). Reactor thread only.
-//
-// Templates used: none (POD only, G1); T9 completion side (ChannelResult).
-//
 //===----------------------------------------------------------------------===//
 
 #include "eco-system/Socket/FaceProtocol.hpp"
@@ -17,8 +10,10 @@ namespace Eco::System {
 
 namespace {
 
+/// The failure reason of requests cut off by the connection closing or being aborted.
 constexpr const char* kSocketClosed = "socket closed";
 
+/// Posts `res` as the answer to read request `token` of channel `channelId`.
 void postRead(uint64_t channelId, uint64_t token, ChannelResult res) {
     res.channelId = channelId;
     res.token = token;
@@ -26,6 +21,7 @@ void postRead(uint64_t channelId, uint64_t token, ChannelResult res) {
     postChannelResult(std::move(res));
 }
 
+/// Posts the answer to close request `token` of channel `channelId`, with `err` and `reason`.
 void postClose(uint64_t channelId, uint64_t token, int err, const std::string& reason) {
     ChannelResult res;
     res.channelId = channelId;
@@ -36,7 +32,8 @@ void postClose(uint64_t channelId, uint64_t token, int err, const std::string& r
     postChannelResult(std::move(res));
 }
 
-// A read requested after reading ended.
+/// Fills `r` with the answer to a late read: `eof` after the end of input, else the read error, else ECANCELED
+/// with "socket closed".
 void lateRead(const Conn& c, ChannelResult& r) {
     if (c.eofSeen()) {
         r.eof = true;
@@ -49,7 +46,8 @@ void lateRead(const Conn& c, ChannelResult& r) {
     }
 }
 
-// A write (or close) requested after writing ended.
+/// Fills `r` with the error of a late write or close: the recorded write error unless the connection was
+/// aborted, else ECANCELED with "socket closed".
 void lateWrite(const Conn& c, ChannelResult& r) {
     if (c.writeError() != 0 && !c.aborted()) {
         r.err = c.writeError();
@@ -77,8 +75,7 @@ void FaceProtocol::reqRead(Conn& c, uint64_t channelId, uint64_t token, size_t m
         return;
     }
     readReqs_.push_back(ReadReq{channelId, token, maxBytes});
-    // Attempted at once: most reads find data (and TLS may hold decrypted
-    // bytes that no fd event announces, N6).
+    // Attempted at once: a TLS transport may hold decrypted bytes that no fd event announces.
     c.updateInterest();
 }
 
@@ -113,8 +110,6 @@ void FaceProtocol::onData(Conn&, std::string_view bytes) {
 }
 
 void FaceProtocol::onEof(Conn& c) {
-    // End of input: every queued read gets it (buffered bytes, if any, are
-    // still served first by later requests).
     readDone_ = true;
     std::deque<ReadReq> reqs;
     reqs.swap(readReqs_);
@@ -149,9 +144,8 @@ void FaceProtocol::failReads(int err, const std::string& reason) {
 
 void FaceProtocol::reqCloseRead(Conn& c, uint64_t channelId, uint64_t token) {
     if (!readDone_) {
-        // Closed before EOF (not done by the stream table, which closes a
-        // source only after EOF): reading is abandoned (the final close
-        // discards, N8).
+        // Closed before EOF: reading is abandoned, and the final close
+        // discards the unread input.
         readDone_ = true;
         failReads(ECANCELED, std::string());
     }
@@ -163,7 +157,7 @@ void FaceProtocol::reqCloseRead(Conn& c, uint64_t channelId, uint64_t token) {
 
 void FaceProtocol::readFaceShutdown(Conn& c) {
     failReads(ECANCELED, c.aborted() ? std::string(kSocketClosed) : std::string());
-    readDone_ = true;   // before EOF: abandoned, no SHUT_RD (N8)
+    readDone_ = true;   // abandoned, no SHUT_RD
     buffered_.clear();
     checkDone(c);
     c.updateInterest();
@@ -230,7 +224,7 @@ void FaceProtocol::closeDone(Conn& c, int err) {
     closePending_ = false;
     writeFaceDone_ = true;
     if (err == 0 || c.aborted()) {
-        postClose(closeChannel_, closeToken_, 0, std::string());   // §D.2: completes on abort
+        postClose(closeChannel_, closeToken_, 0, std::string());   // completes on abort
     } else if (cancelling_) {
         postClose(closeChannel_, closeToken_, ECANCELED, std::string());
     } else {
@@ -274,9 +268,6 @@ void FaceProtocol::onCloseAll(Conn& c) {
 void FaceProtocol::checkDone(Conn& c) {
     if (cancelling_) return;
     if (readDone_ && writeOver(c) && readReqs_.empty() && writesInFlight_ == 0 && !closePending_) {
-        // Both directions are done: close. If reading was abandoned before
-        // EOF, input is discarded first (N8); what the transport still holds
-        // (a TLS close_notify, its SHUT_WR) is flushed. At most 2 s.
         c.closeGraceful(Conn::kFaceDrainMs);
     }
 }
