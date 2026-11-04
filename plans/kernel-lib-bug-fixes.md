@@ -525,8 +525,9 @@ Behaviour and API changes beyond the decisions' text:
 
 Follow-ups found during Phase 2 (fixed in a second round, see below): DEBUGLOG-INT-CMP, `kernelListMapN`
 result kinds, JSON lone-surrogate decode, TLS corrupt+good PEM divergence, HTTP tracker scanner reset,
-RESET-03, `handleSpawn` leak, HTTP/2 `:authority` validation, IPv6 Host `Request.url`. Not pursued: HTTPS-04
-body buffering on the fallback path; sharing the listen-message helper with Socket.cpp.
+RESET-03, `handleSpawn` leak, HTTP/2 `:authority` validation, IPv6 Host `Request.url`. HTTPS-04's fallback body
+and `List.mapN` passed as a value were fixed in a third round (below). Not pursued: sharing the listen-message
+helper with Socket.cpp.
 
 Static checks retired (2026-11-04, user): the per-bug grep checks (`test/scripts/libbugs/check-<ID>.sh`)
 and `static_assert` files (`test/libbugs-static/`) cited in the Phase 1 tables below were deleted once the
@@ -557,14 +558,39 @@ Second round (X1, X2), each exposed by a new test first:
 - DEBUGLOG-INT-CMP FIXED: list literals took each head's kind from the value, not the element type, so
   `[ Debug.log "d" n ]` built a `List Int` with a boxed head (compiler `GenerateMlir/Expr.elm`; `Debug.log`
   now returns its argument unboxed). `kernelListMapN` FIXED with typed `List.map2..5_Int/_Float/_Char`
-  variants, as ARRAY-NEW-1 (HEAP_046 amended). Still open: `List.mapN`/`Array.map` passed as a function
-  value (no call-site type).
+  variants, as ARRAY-NEW-1 (HEAP_046 amended). The function-value route was fixed in the third round.
 - JSON-NEW-2 (lone `\u` surrogate decode), TLS-NEW-2 (JS now stops at the first corrupt PEM block, like
   native/Node/OpenSSL), RESET-12 (Http tracker scanner per heap generation), RESET-03 (MVar table per
   generation), PROC-06 spawn path, HTTPSRV-NEW-3 (HTTP/2 `:authority` validated like HTTP/1 Host): FIXED.
   IPv6 Host `Request.url`: CLOSED (matches elm/url, documented).
 - Noted, not fixed: native `IssuerNotTrusted` vs Node `LeafNotVerifiable` for a leaf-only trust store;
   nlohmann parse errors may show the `\ufdd0` placeholder for a lone surrogate.
+
+Third round (2026-11-04), each exposed first by a new test that failed natively:
+- `List.mapN` passed as a value FIXED. A reference that is not a saturated call (the alias body
+  `map2 = Elm.Kernel.List.map2`, reached from a record field, a list, a pass-through function or a partial
+  application) got the boxed kernel ABI type, so one erased `List.map2` specialization served every element
+  type and called the untyped kernel. With `Debug.log` as the callback the `List Int` had boxed heads (sums
+  near 2.2e12). `List.map2..5` are now in `Compiler.IR.Kernel.Abi.suffixSelectingKernels`, so the reference
+  keeps its concrete type and names `map2_Int` and friends. They are also in a new `boxedAbiKernels` set:
+  the concrete type is kept only when its top-level ABI equals the boxed one
+  (`Compiler.Monomorphize.KernelAbi.sameTopLevelAbi`, in both mono engines), because an unsigned raw kernel
+  reference in a kernel module can otherwise make a list argument an Int and give the kernel a second ABI
+  (SourceIR `KernelHigherOrderCases` caught it). HEAP_046 amended. Test:
+  test/elm-conformance/src/ListMapNFunctionValueKindTest.elm. `Array.map` was never affected: elm/core's
+  Array.elm calls the JsArray kernels saturated, and user code cannot name them.
+- HTTPS-04 fallback body FIXED. libcurl 7.88 does not follow `Location: \v` (blank after its whitespace trim)
+  or `Location : /` (not its exact field name), while `headerCb` took both for followed redirects, so the
+  302's head was posted only by `finishTransfer` and its body was dropped. libcurl passes no body of an interim
+  response or a followed redirect to the write callback (checked with a C probe), so `writeCb` now takes body
+  bytes that arrive before the head as the final response's and posts that header block's head first
+  (HttpTransfer.cpp; `CURLOPT_WRITEDATA` is now the `HeaderState`). Test:
+  test/eco-system/src/HttpStreamFallbackBodyTest.elm, routes `/redirect-vt-location` and
+  `/redirect-spaced-location` in TestHttpServer.hpp and js-e2e-http-server.js; `-- SKIP-JS` because Node's
+  parser rejects both header forms.
+- Gates after the third round, once each: `full` rc 0 (JIT E2E 2,716/2,716, JS E2E 270 passed/0 failed/9
+  skipped, core 2,735/0, time 19/0), `elm-tests` 21,374/0, `bootstrap` rc 0 (4b and 8c fixed points),
+  `run-aot-e2e` 1,348/1,348 (5 deliberate XFAILs). `stress` was not rerun.
 
 Unit tests reorganised by subject (2026-11-04): the group files (`test/libbugs/LibBugsGroupNN.cpp`,
 `test/eco-system-core/libbugs/CoreGroupNN.cpp`, `test/elm-kernel-time/TimeGroup.cpp`) and their scaffolding

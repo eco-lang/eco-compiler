@@ -2,6 +2,7 @@ module Compiler.Monomorphize.KernelAbi exposing
     ( KernelAbiMode(..), deriveKernelAbiMode
     , canTypeToMonoType_preserveVars, remapEcoVarsFresh
     , freeVarIds
+    , sameTopLevelAbi
     )
 
 {-| A kernel function is implemented in C++, not in Elm, so the types it is
@@ -48,6 +49,11 @@ symbol and the MLIR types of a kernel instantiation is the job of
 # Type Converters
 
 @docs canTypeToMonoType_preserveVars, remapEcoVarsFresh
+
+
+# ABI Shape
+
+@docs sameTopLevelAbi
 
 
 # Free Type Variables
@@ -106,6 +112,63 @@ deriveKernelAbiMode ( home, _ ) canFuncType =
 
     else
         PreserveVars
+
+
+
+-- ============================================================================
+-- ABI SHAPE
+-- ============================================================================
+
+
+{-| Returns whether two kernel types cross the call boundary alike: the same
+number of arguments over all stages, and each argument and the final result
+an `Int`, `Float` or `Char` in both or in neither, `number` variables counting
+as `Int`. Types inside an argument or result are not compared.
+
+A kernel in `Compiler.IR.Kernel.Abi.boxedAbiKernels` keeps a concrete type
+only when it has the same top-level ABI as the boxed one.
+-}
+sameTopLevelAbi : Mono.MonoType -> Mono.MonoType -> Bool
+sameTopLevelAbi a b =
+    let
+        ( argsA, resultA ) =
+            Mono.decomposeFunctionType a
+
+        ( argsB, resultB ) =
+            Mono.decomposeFunctionType b
+    in
+    List.length argsA
+        == List.length argsB
+        && List.all identity (List.map2 samePrimitiveSlot (resultA :: argsA) (resultB :: argsB))
+
+
+{-| Returns whether two top-level kernel slots cross as the same primitive.
+-}
+samePrimitiveSlot : Mono.MonoType -> Mono.MonoType -> Bool
+samePrimitiveSlot x y =
+    primitiveSlot x == primitiveSlot y
+
+
+{-| The primitive a top-level kernel slot of type `t` crosses as: 1 for `Int`
+or a `number` variable, 2 for `Float`, 3 for `Char`, 0 for anything else.
+-}
+primitiveSlot : Mono.MonoType -> Int
+primitiveSlot t =
+    case t of
+        Mono.MInt ->
+            1
+
+        Mono.MVar _ Mono.CNumber ->
+            1
+
+        Mono.MFloat ->
+            2
+
+        Mono.MChar ->
+            3
+
+        _ ->
+            0
 
 
 

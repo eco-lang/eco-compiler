@@ -1,5 +1,5 @@
 module Compiler.IR.Kernel.Abi exposing
-    ( suffixSelectingKernels, alwaysPolymorphicModules, comparePair
+    ( suffixSelectingKernels, boxedAbiKernels, alwaysPolymorphicModules, comparePair
     , hasAnyFreeVar
     )
 
@@ -17,7 +17,7 @@ be forwarded.
 
 # Kernel Tables
 
-@docs suffixSelectingKernels, alwaysPolymorphicModules, comparePair
+@docs suffixSelectingKernels, boxedAbiKernels, alwaysPolymorphicModules, comparePair
 
 
 # Type Variables
@@ -45,8 +45,12 @@ this set never reaches its `_Int`, `_Float` or `_Char` variant, because by the
 time the symbol is chosen the element type is already `CEcoValue`.
 
 Two kinds of kernel are listed. Element-aware container kernels (`List.cons`,
-`Json.wrap`, the `JsArray` element kernels, `MVar.put`) use the concrete element
-type. Primitive-specialized kernels (the `Utils` comparisons, `Basics.add`,
+`List.map2` to `map5`, `Json.wrap`, the `JsArray` element kernels, `MVar.put`)
+use the concrete element type. `List.mapN` is listed so that a reference that
+is not a saturated call (the alias body `map2 = Elm.Kernel.List.map2`, which a
+`List.map2` passed as a value reaches) keeps its result element too: the
+kernel builds the list in that element's kind, which no callback closure can
+supply when its own result is boxed, as a polymorphic-result kernel's is. Primitive-specialized kernels (the `Utils` comparisons, `Basics.add`,
 `sub`, `mul` and `pow`, `String.fromNumber`) have per-type C++ variants.
 
 The symbol choice is `Compiler.GenerateMlir.KernelAbi`'s; where no variant
@@ -58,6 +62,10 @@ suffixSelectingKernels : EverySet (List String) ( String, String )
 suffixSelectingKernels =
     EverySet.fromList comparePair
         [ ( "List", "cons" )
+        , ( "List", "map2" )
+        , ( "List", "map3" )
+        , ( "List", "map4" )
+        , ( "List", "map5" )
         , ( "Utils", "compare" )
         , ( "Utils", "equal" )
         , ( "Utils", "notEqual" )
@@ -75,6 +83,26 @@ suffixSelectingKernels =
         , ( "Basics", "mul" )
         , ( "Basics", "pow" )
         , ( "String", "fromNumber" )
+        ]
+
+
+{-| The suffix-selecting kernels whose variants share the boxed root's ABI:
+the concrete type may only refine what lies inside an argument or result,
+never make a top-level argument or the result an `Int`, `Float` or `Char`.
+`List.map2` to `map5` are the members; their variants differ only in the
+element kind of the list they build. A caller keeps the concrete type of such
+a kernel only where its top-level ABI is the boxed one
+(`Compiler.Monomorphize.KernelAbi.sameTopLevelAbi`). A raw kernel reference
+in a kernel module has no signature, so its type comes from the use alone and
+can make an argument an `Int`, which would give the kernel a second ABI.
+-}
+boxedAbiKernels : EverySet (List String) ( String, String )
+boxedAbiKernels =
+    EverySet.fromList comparePair
+        [ ( "List", "map2" )
+        , ( "List", "map3" )
+        , ( "List", "map4" )
+        , ( "List", "map5" )
         ]
 
 

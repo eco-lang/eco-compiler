@@ -18,6 +18,8 @@
 //   /truncate              promises Content-Length: 1000, sends 10 bytes, closes
 //   /redirect              302 Found, Location: /anything
 //   /redirect-empty-location  302 Found with an empty `Location:` header
+//   /redirect-vt-location  302 Found "moved", `Location:` value one vertical tab
+//   /redirect-spaced-location  302 Found "moved", `Location : /` (space before the colon)
 //   anything else          404 "Not Found", text/plain "not found"
 // HTTPS (TestHttpServer's second port), its CONNECT proxy port (ECO_TEST_PROXY_URL),
 // /package.zip, /package-short.zip, /status-zip/<n> and /proxy-connects are not served.
@@ -173,6 +175,12 @@ function handle(socket, req) {
         finish();
     } else if (route === '/redirect-empty-location') {
         send(response(302, 'Found', 'text/plain', '', 'Location:\r\n'));
+        finish();
+    } else if (route === '/redirect-vt-location') {
+        send(response(302, 'Found', 'text/plain', 'moved', 'Location: \x0b\r\nX-Test: kept\r\n'));
+        finish();
+    } else if (route === '/redirect-spaced-location') {
+        send(response(302, 'Found', 'text/plain', 'moved', 'Location : /\r\nX-Test: kept\r\n'));
         finish();
     } else if (route === '/redirect') {
         send(response(302, 'Found', 'text/plain', '', 'Location: /anything\r\n'));

@@ -28,6 +28,10 @@
 //   /status-zip/{code} -> the valid /package.zip body with HTTP status {code}
 //                       (e.g. /status-zip/404)
 //   /redirect-empty-location -> 302 with an empty `Location:` header
+//   /redirect-vt-location -> 302 "moved" whose `Location:` value is one vertical
+//                       tab: blank to curl, not blank to OWS trimming
+//   /redirect-spaced-location -> 302 "moved" with `Location : /` (a space before
+//                       the colon), a field curl does not take as Location
 //   /proxy-connects  -> 200 text/plain: how many CONNECT tunnels the proxy
 //                       port has opened so far (a test can check its request
 //                       really went through the proxy)
@@ -391,6 +395,12 @@ inline void handleConnection(Conn conn) {
             sendResponse(conn, 302, "Found", "text/plain", "", "Location: /anything\r\n");
         } else if (route == "/redirect-empty-location") {
             sendResponse(conn, 302, "Found", "text/plain", "", "Location:\r\n");
+        } else if (route == "/redirect-vt-location") {
+            sendResponse(conn, 302, "Found", "text/plain", "moved",
+                         "Location: \x0b\r\nX-Test: kept\r\n");
+        } else if (route == "/redirect-spaced-location") {
+            sendResponse(conn, 302, "Found", "text/plain", "moved",
+                         "Location : /\r\nX-Test: kept\r\n");
         } else if (route == "/package-short.zip") {
             sendResponse(conn, 200, "OK", "application/zip", shortPackageZip());
         } else if (route.rfind("/status-zip/", 0) == 0) {

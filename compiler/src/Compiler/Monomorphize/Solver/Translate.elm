@@ -3995,7 +3995,9 @@ depends on the kernel's ABI mode (`KernelAbi.deriveKernelAbiMode`). In
 substitution mode the read-back type is the answer. In preserved-variables
 mode, a kernel that selects its implementation by the types it is called at
 keeps the read-back type when it has no type variable, and otherwise keeps it
-with its `CEcoValue` variables renamed to new ids. Any other kernel takes its
+with its `CEcoValue` variables renamed to new ids; a kernel in
+`KernelAbiFacts.boxedAbiKernels` does so only when the read-back type has the
+boxed type's top-level ABI (`KernelAbi.sameTopLevelAbi`). Any other kernel takes its
 type from its canonical type with the variables preserved, again with
 `CEcoValue` variables renamed.
 
@@ -4027,13 +4029,17 @@ deriveKernelAbiTypeWith kernelId canFuncType funcVarStep s0 =
                                             ( monoAfterSubst, sD )
 
                                         KernelAbi.PreserveVars ->
-                                            if
-                                                EverySet.member KernelAbiFacts.comparePair abiKey KernelAbiFacts.suffixSelectingKernels
-                                                    && not (Mono.containsAnyMVar monoAfterSubst)
-                                            then
+                                            let
+                                                keepsReadBack =
+                                                    EverySet.member KernelAbiFacts.comparePair abiKey KernelAbiFacts.suffixSelectingKernels
+                                                        && (not (EverySet.member KernelAbiFacts.comparePair abiKey KernelAbiFacts.boxedAbiKernels)
+                                                                || KernelAbi.sameTopLevelAbi monoAfterSubst (Tuple.first (KernelAbi.canTypeToMonoType_preserveVars mvarEnv canFuncType))
+                                                           )
+                                            in
+                                            if keepsReadBack && not (Mono.containsAnyMVar monoAfterSubst) then
                                                 ( monoAfterSubst, sD )
 
-                                            else if EverySet.member KernelAbiFacts.comparePair abiKey KernelAbiFacts.suffixSelectingKernels then
+                                            else if keepsReadBack then
                                                 -- The read-back type keeps the shape the suffix is selected by.
                                                 let
                                                     ( abi2, nextId2 ) =

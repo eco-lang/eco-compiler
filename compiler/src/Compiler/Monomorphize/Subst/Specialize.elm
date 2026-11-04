@@ -5355,7 +5355,8 @@ Under `KernelAbi.UseSubstitution` it is the canonical type under the
 substitution. Under `PreserveVars` it is the type under the substitution only
 when the kernel is in `KernelAbiFacts.suffixSelectingKernels` and that type is
 monomorphic by `isFullyMonomorphicType`, which counts an open number variable
-as monomorphic; otherwise every type variable is boxed
+as monomorphic, and, for a kernel in `KernelAbiFacts.boxedAbiKernels`, has the
+boxed type's top-level ABI (`KernelAbi.sameTopLevelAbi`); otherwise every type variable is boxed
 (`KernelAbi.canTypeToMonoType_preserveVars`), a number variable included.
 
 -}
@@ -5375,14 +5376,21 @@ deriveKernelAbiType intern mvarEnv kernelId canFuncType callSubst =
             monoAfterSubst
 
         KernelAbi.PreserveVars ->
+            let
+                boxedAbi =
+                    Tuple.first (KernelAbi.canTypeToMonoType_preserveVars mvarEnv canFuncType)
+            in
             if
                 EverySet.member KernelAbiFacts.comparePair kernelId KernelAbiFacts.suffixSelectingKernels
                     && isFullyMonomorphicType monoAfterSubst
+                    && (not (EverySet.member KernelAbiFacts.comparePair kernelId KernelAbiFacts.boxedAbiKernels)
+                            || KernelAbi.sameTopLevelAbi monoAfterSubst boxedAbi
+                       )
             then
                 monoAfterSubst
 
             else
-                Tuple.first (KernelAbi.canTypeToMonoType_preserveVars mvarEnv canFuncType)
+                boxedAbi
 
 
 

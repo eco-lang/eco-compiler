@@ -20,7 +20,13 @@
 //     line, so only the last response's fields are kept. The event is posted at
 //     the end of the first header block that is neither interim (1xx) nor a
 //     redirect that curl follows (3xx other than 304, with a non-empty Location
-//     field). Body bytes that arrive before that are dropped.
+//     field). Curl passes no body of an interim response or of a redirect it
+//     follows to the write callback, so body bytes that arrive before the event
+//     belong to a block curl took as final where that rule did not (its own
+//     rule differs at the edges: a Location value of C whitespace, a space
+//     before the colon). The write callback then posts the event from that
+//     block before queueing them, and a transfer that ends with no event posts
+//     it from the last block too (`finishTransfer`).
 //   * The header deadline is checked by the multi loop, which polls for at most
 //     a second, or until just past the deadline, and by an upload read that is
 //     waiting for data.
@@ -283,8 +289,9 @@ void abortLocked(HttpTransfer& t) {
 // ---------------------------------------------------------------------------
 
 /// The response head being parsed by the header callback, on the transfer
-/// thread. It belongs to `runTransfer`'s frame, and `t` and `easy` point at
-/// that call's transfer and easy handle.
+/// thread, and read by the write callback when body bytes arrive before the
+/// head was posted. It belongs to `runTransfer`'s frame, and `t` and `easy`
+/// point at that call's transfer and easy handle.
 struct HeaderState {
     HttpTransfer* t = nullptr;
     CURL* easy = nullptr;
@@ -403,17 +410,27 @@ size_t headerCb(char* buffer, size_t size, size_t nitems, void* userdata) {
     return n;
 }
 
-/// Curl's write callback: queues the body bytes for the download side of
-/// `userdata`, a `HttpTransfer`, waiting while that would take it past `kCap`
-/// (a piece is always taken into an empty buffer). Bytes before the event,
-/// and all bytes under `discardBody`, are dropped. Returns 0, which fails the
-/// transfer, once it is aborted or the download side is shut.
+/// Curl's write callback: queues the body bytes for the download side of the
+/// transfer of `userdata`, a `HeaderState`, waiting while that would take it
+/// past `kCap` (a piece is always taken into an empty buffer). Bytes that
+/// arrive before the event first post it from the header block being parsed:
+/// curl delivers only the final response's body, so that block is the final
+/// response, though the header callback took it for a followed redirect
+/// (HTTPS-04). Bytes under `discardBody` are dropped. Returns 0, which fails
+/// the transfer, once it is aborted or the download side is shut.
 size_t writeCb(char* ptr, size_t size, size_t nmemb, void* userdata) {
     size_t n = size * nmemb;
-    auto* t = static_cast<HttpTransfer*>(userdata);
+    auto* hs = static_cast<HeaderState*>(userdata);
+    HttpTransfer* t = hs->t;
     std::unique_lock<std::mutex> lk(t->m);
     if (t->abort || t->downShut) return 0;
-    if (!t->headersPosted) return n;          // an interim or redirect body
+    if (!t->headersPosted) {
+        if (hs->status < 200) return n;       // no final status line parsed yet
+        lk.unlock();
+        postHeaders(*hs);
+        lk.lock();
+        if (t->abort || t->downShut) return 0;
+    }
     if (t->discardBody) return n;
     t->cv.wait(lk, [t, n] {
         return t->abort || t->downShut || t->downBytes == 0 || t->downBytes + n <= kCap;
@@ -528,7 +545,7 @@ void configure(CURL* easy, HttpTransfer& t, HeaderState& hs, char* errbuf) {
     curl_easy_setopt(easy, CURLOPT_HEADERFUNCTION, headerCb);
     curl_easy_setopt(easy, CURLOPT_HEADERDATA, &hs);
     curl_easy_setopt(easy, CURLOPT_WRITEFUNCTION, writeCb);
-    curl_easy_setopt(easy, CURLOPT_WRITEDATA, &t);
+    curl_easy_setopt(easy, CURLOPT_WRITEDATA, &hs);
     if (spec.timeoutMs > 0) curl_easy_setopt(easy, CURLOPT_CONNECTTIMEOUT_MS, static_cast<long>(spec.timeoutMs));
 #if LIBCURL_VERSION_NUM >= 0x073600
     // A proxy's "200 Connection established" is not the response.
