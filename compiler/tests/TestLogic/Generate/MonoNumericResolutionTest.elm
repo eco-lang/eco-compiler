@@ -14,9 +14,10 @@ gathers from its case modules.
     holds no number variable in any type, at any depth.
   - `numericTypesResolvedSuite` applies `expectNumericTypesResolved`: in the
     monomorphized graph (`runToMono`), no call passes an `Int` where its
-    callee's type says `Float`, or the reverse. It also runs on
-    `double n = n + n` used as `double 2` and `double 2.5`, whose two
-    specializations must each agree with their calls.
+    callee's type says `Float`, or the reverse. The catalogue includes, in
+    `SourceIR.SpecializeExprCases`, an unannotated `double n = n + n` used
+    as `double 2` and `double 2.5`, whose two specializations must each
+    agree with their calls.
 
 Both use the substitution engine. Among what is not tested: tail calls, the
 engine a default build uses, and the `SourceIR` case modules the standard
@@ -24,7 +25,6 @@ catalogue leaves out.
 
 -}
 
-import Compiler.AST.SourceBuilder as SB
 import SourceIR.Suite.StandardTestSuites as StandardTestSuites
 import Test exposing (Test)
 import TestLogic.Generate.MonoNumericResolution
@@ -62,17 +62,4 @@ numericTypesResolvedSuite : Test
 numericTypesResolvedSuite =
     Test.describe "Numeric types fixed at call sites (MONO_008)"
         [ StandardTestSuites.expectSuite expectNumericTypesResolved "has resolved numeric types"
-        , Test.test "a number function used at Int and at Float" <|
-            \_ ->
-                expectNumericTypesResolved
-                    (SB.makeModuleWithDefs "NumBoth"
-                        [ ( "double", [ SB.pVar "n" ], SB.binopsExpr [ ( SB.varExpr "n", "+" ) ] (SB.varExpr "n") )
-                        , ( "testValue"
-                          , []
-                          , SB.tupleExpr
-                                (SB.callExpr (SB.varExpr "double") [ SB.intExpr 2 ])
-                                (SB.callExpr (SB.varExpr "double") [ SB.floatExpr 2.5 ])
-                          )
-                        ]
-                    )
         ]

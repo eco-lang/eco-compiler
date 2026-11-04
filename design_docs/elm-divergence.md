@@ -181,6 +181,116 @@ the native path, for parity.*
 eco parses into 64 bits (`runtime/src/allocator/StringOps.hpp:1205`). Elm gives a JS number,
 so values above 2^53 lose precision. *TODO: overflow behaviour (`Nothing`, or wrap?).*
 
+### 4.4 Programs eco rejects that Elm compiles, and the reverse
+
+Elm's rule is that a program which passes type checking and pattern-match checking compiles,
+apart from `BAD MAIN` (a `main` of an unsupported type, or a recursive `main`), which Elm's
+optimizer also reports. eco rejects some programs Elm compiles, and compiles one kind of program
+Elm crashes on. Each rejection is reported as a condition of the program, not as a compiler bug
+(`Builder.Reporting.Exit.isProgramCondition`). The programs are cases of the negative catalogue,
+`compiler/tests/SourceIR/*FailsCases.elm`, which checks each title and stage
+(`plans/sourceir-catalogue-test-logic.md`).
+
+**Size limits, on every target.** Canonicalization rejects a function or lambda with more than
+2047 parameters, a lambda whose parameters and captured variables exceed 2047 (HEAP_078,
+`TOO MANY PARAMETERS`, `TOO MANY CAPTURED VARIABLES`), a constructor of more than 2040 fields and
+a record of more than 2047 fields (HEAP_019, `TOO MANY FIELDS`). These are the runtime's heap
+layouts (`Compiler.IR.Runtime.HeapLimits`); Elm has no such limits. (`LimitFailsCases`)
+
+**Native backend only.** The native backend monomorphizes the whole program, making one copy of
+each function per concrete type it is used at. Three kinds of program that Elm compiles fail
+there, with the report titles shown; eco's JavaScript target compiles them as Elm does.
+
+- *Polymorphic recursion* (`MONOMORPHIZATION ERROR`, "polymorphic recursion cannot be
+  monomorphized"). A function that calls itself, through other functions, at a type that grows
+  every turn would need infinitely many copies. Elm compiles it, and it runs, since every value
+  is finite. Elm (and eco's type checker) allows it only through another annotated top-level
+  function: inside its own body an annotated definition's name has exactly its annotated type,
+  so a direct call of itself at another type is a `TYPE MISMATCH` in both. Example, which Elm
+  compiles (`depth (Deeper 1 (Deeper [ 2 ] Nil))` is `2`):
+
+  ```elm
+  type Nested a
+      = Nil
+      | Deeper a (Nested (List a))
+
+  depth : Nested a -> Int
+  depth n =
+      case n of
+          Nil -> 0
+          Deeper _ rest -> helper rest
+
+  helper : Nested (List a) -> Int
+  helper n =
+      1 + depth n
+  ```
+
+  `depth` at `Nested Int` needs `helper` at `Nested (List Int)`, which needs `depth` there, then
+  at `Nested (List (List Int))`, and so on. The solver reports it when a function's type has
+  strictly grown (by embedding) twice around a call cycle
+  (`Compiler.Monomorphize.Solver.Engine.polymorphicRecursionFailure`): a type-parametric call
+  graph then repeats without end. (`MonoFailsCases` "Polymorphic recursion")
+- *A closure over the size limit after specialization* (`STAGE ARITY LIMIT`, HEAP_078). The
+  limit above is checked again after monomorphization, where a captured polymorphic local
+  function becomes one captured copy per type it is used at, so a closure within the limit in the
+  source can exceed it. For example, 700 local identity functions each used at `Int`, `String`
+  and `Float` inside one lambda give 2,100 captures. The report advises moving such functions to
+  the top level. (`MonoFailsCases` "Closure stage limit")
+- *GLSL shaders* (`MONOMORPHIZATION ERROR`, "unsupported: shader"). The native backend has no
+  WebGL. (`MonoFailsCases` "Unsupported expressions")
+
+**Ill-typed unannotated recursive groups, on every target.** Elm 0.19.1 accepts some ill-typed
+groups of unannotated, mutually recursive functions; eco rejects them with `TYPE MISMATCH`.
+Elm's constraint generation declares an earlier member's type variables inside a later
+member's `let` constraint, which generalizes them, so a use of the earlier member inside the
+group gets a fresh instance instead of sharing its type, against the Hindley-Milner rule for a
+recursive group (members monomorphic within the group, generalized together afterwards). The
+accepted programs are unsound. Example, which Elm compiles and whose output crashes
+(`str.toUpperCase is not a function`):
+
+```elm
+f b =
+    g b
+
+g b =
+    if b then
+        let
+            n =
+                f False
+        in
+        Just (String.toUpper n)
+
+    else
+        Nothing
+
+main =
+    Html.text (Maybe.withDefault "" (f True))
+```
+
+`f`'s result is a `Maybe String`, which `g` then uses as a `String`. A well-typed group that
+type-checks only if a member is used polymorphically inside its own group is rejected too; under
+Hindley-Milner that needs a type annotation, and adding one makes the program compile.
+(`TypeCheckFailsCases` "Unannotated recursive groups"; finding B3)
+
+**The reverse: a program `elm make` crashes on.** In a module that exposes an unannotated
+recursive group, Elm records annotations with too few quantified variables for every member
+after the first, so another module that uses a later member crashes the compiler (`Map.!: given
+key is not an element in the map`):
+
+```elm
+module A exposing (f, g)
+
+f x =
+    g x
+
+g x =
+    f x
+```
+
+A module using `A.g` crashes `elm make`; using `A.f` compiles. eco quantifies over every type
+variable of each member's type and compiles both. (`compiler/tests/TestLogic/Type/CachedTypeInfoTest.elm`;
+finding B1)
+
 ---
 
 ## 5. Suspected divergences (not yet checked)
@@ -276,6 +386,12 @@ what eco guarantees.*
 | `Bitwise` width | 32-bit | *TODO* |
 | `Random` sequences for a seed | reference | *TODO* (may differ) |
 | Deep recursion | `RangeError` at ~10k frames | larger limit, SIGSEGV |
+| Polymorphic recursion | compiles and runs | native: `MONOMORPHIZATION ERROR`; JS target: compiles |
+| Closure of over 2047 parameters and captures after specialization | compiles | native: `STAGE ARITY LIMIT` |
+| Function, closure, record or constructor over the size limits in the source | compiles | `TOO MANY …` (every target) |
+| GLSL shader | compiles | native: `MONOMORPHIZATION ERROR`; JS target: compiles |
+| Ill-typed unannotated recursive group | accepted, may crash at run time | `TYPE MISMATCH` |
+| Later member of an exposed unannotated recursive group used from another module | compiler crash | compiles |
 
 ## 7. Open items
 
@@ -289,3 +405,6 @@ what eco guarantees.*
 - Function equality: keep `False`, or reject statically.
 - `Debug` under `--optimize` on the native path.
 - Every suspected item in §5: check it, then move it to §4 or delete it.
+- Polymorphic recursion on the native backend: whether any of it could be compiled instead of
+  rejected (for example by boxing the recursive calls), and whether the growth check can reject a
+  program that monomorphization could finish (§4.4 argues not; no exhaustive test).

@@ -18,10 +18,13 @@ What the tests establish:
     attribute is `::` or `[]`, as
     `TestLogic.Generate.CodeGen.ListConstruction.expectListConstruction`
     describes.
-  - `userConsAndNil`: a program that declares its own `Cons` and `Nil`
-    constructors, builds values with them and puts them in a list literal
-    compiles to an `eco.construct.custom` named `Cons`, and the check does not
-    report it.
+
+The catalogue includes, in `SourceIR.CaseCases`, a program that declares its
+own `Cons` and `Nil` constructors and puts values built with them in a list
+literal, on which the check must not report the program's own constructors.
+That the program's `Cons` is built with an `eco.construct.custom` at all, so
+that this is not vacuous, is pinned by the unit test
+`Compiler.GenerateMlir.OpsUserListCtorTest`.
 
 Among what is not tested:
 
@@ -31,24 +34,9 @@ Among what is not tested:
 
 -}
 
-import Compiler.AST.SourceBuilder
-    exposing
-        ( TypedDef
-        , UnionDef
-        , callExpr
-        , ctorExpr
-        , intExpr
-        , listExpr
-        , makeModuleWithTypedDefsUnionsAliases
-        , tType
-        )
-import Compiler.IR.Source as Src
-import Expect
 import SourceIR.Suite.StandardTestSuites as StandardTestSuites
 import Test exposing (Test)
-import TestLogic.Generate.CodeGen.Invariants exposing (findOpsNamed, getStringAttr)
 import TestLogic.Generate.CodeGen.ListConstruction exposing (expectListConstruction)
-import TestLogic.TestPipeline exposing (runToMlir)
 
 
 {-| The test group that runs the list-construction check on every program in
@@ -58,59 +46,4 @@ suite : Test
 suite =
     Test.describe "CGEN_016: List Construction"
         [ StandardTestSuites.expectSuite expectListConstruction "passes list construction invariant"
-        , Test.test "a program's own Cons and Nil constructors are not list constructors" userConsAndNil
         ]
-
-
-{-| A program declaring `type MyList = Cons Int MyList | Nil` whose
-`testValue` is `[ Cons 1 (Cons 2 Nil), Nil ]`. The test first makes sure the
-generated MLIR does build a `Cons` with `eco.construct.custom`, so the second
-part, that `expectListConstruction` passes, is not vacuous.
--}
-userConsAndNil : () -> Expect.Expectation
-userConsAndNil _ =
-    let
-        myList =
-            tType "MyList" []
-
-        myListUnion : UnionDef
-        myListUnion =
-            { name = "MyList"
-            , args = []
-            , ctors =
-                [ { name = "Cons", args = [ tType "Int" [], myList ] }
-                , { name = "Nil", args = [] }
-                ]
-            }
-
-        mainDef : TypedDef
-        mainDef =
-            { name = "testValue"
-            , args = []
-            , tipe = tType "List" [ myList ]
-            , body =
-                listExpr
-                    [ callExpr (ctorExpr "Cons") [ intExpr 1, callExpr (ctorExpr "Cons") [ intExpr 2, ctorExpr "Nil" ] ]
-                    , ctorExpr "Nil"
-                    ]
-            }
-
-        modul : Src.Module
-        modul =
-            makeModuleWithTypedDefsUnionsAliases "TestMod" [ mainDef ] [ myListUnion ] []
-    in
-    case runToMlir modul of
-        Err err ->
-            Expect.fail ("Compilation failed: " ++ err)
-
-        Ok { mlirModule } ->
-            let
-                builtCons =
-                    findOpsNamed "eco.construct.custom" mlirModule
-                        |> List.any (\op -> getStringAttr "constructor" op == Just "Cons")
-            in
-            if builtCons then
-                expectListConstruction modul
-
-            else
-                Expect.fail "fixture did not build its own Cons with eco.construct.custom"

@@ -22,14 +22,25 @@ and checked by `TestLogic.Type.PostSolve.GroupBTypes.checkGroupBLiterals`:
     form's type after PostSolve, and, where the solver recorded a type for it,
     that same type before.
 
-A program with no such literal passes once it compiles.
+A program with no such literal passes once it compiles. The catalogue's
+`SourceIR.GroupBLiteralCases` holds literals in the contexts this check was
+first tried on; `Compiler.Type.PostSolveGroupBTypesTest` pins that each of
+those programs has one.
 
 Among what is not tested: `Shader` nodes and variable references.
+
+It also runs over the programs of `SourceIR.MainFailsCases`, which typed
+optimization rejects, and those of `SourceIR.MonoFailsCases`
+(`expectBeforeMonoSuite`), which monomorphization rejects: every stage this
+check looks at accepts them, and they hold what the standard catalogue cannot,
+such as polymorphic recursion over a non-regular type.
 
 -}
 
 import Compiler.IR.Source as Src
 import Expect
+import SourceIR.MainFailsCases as MainFailsCases
+import SourceIR.MonoFailsCases as MonoFailsCases
 import SourceIR.Suite.StandardTestSuites as StandardTestSuites
 import Test exposing (Test)
 import TestLogic.Type.PostSolve.CompileThroughPostSolve as Compile
@@ -43,6 +54,8 @@ suite : Test
 suite =
     Test.describe "POST_001: Group B Structural Types"
         [ StandardTestSuites.expectSuite expectGroupBStructuralTypes "group-b-structural"
+        , MainFailsCases.expectSuite expectGroupBStructuralTypes "group-b-structural"
+        , MonoFailsCases.expectBeforeMonoSuite expectGroupBStructuralTypes "group-b-structural"
         ]
 
 

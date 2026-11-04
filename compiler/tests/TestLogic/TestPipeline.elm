@@ -3,7 +3,10 @@ module TestLogic.TestPipeline exposing
     , GlobalOptArtifacts
     , MlirArtifacts
     , MonoArtifacts
+    , Outcome(..)
     , PostSolveArtifacts
+    , Reports
+    , Stage(..)
     , TypeCheckArtifacts
     , TypedOptArtifacts
     , expectCoverageRun
@@ -27,9 +30,12 @@ module TestLogic.TestPipeline exposing
     , runToMonoNoPreMono
     , runToMonoStage5
     , runToPostSolve
+    , runToReports
+    , runToReportsThrough
     , runToTypeCheck
     , runToTypedOpt
     , stage5Config
+    , stageName
     , stampLikeCompile
     )
 
@@ -90,21 +96,35 @@ optimization on, every runner calls the build's own steps,
 
 What remains different from a build is the input, not the pipeline: the
 program is compiled against mock package interfaces rather than real
-packages, the pattern match checker is not run, and MLIR is generated as one
-module rather than streamed. `test/scripts/check-test-pipeline-production.sh`
+packages, and MLIR is generated as one module rather than streamed. One step
+is left out of the `runTo*` runners above: the pattern-match checker
+(`Compiler.Nitpick.PatternMatches`), which `Compiler.Compile` runs between type
+checking and typed optimization, so a program with a missing pattern gets
+through them although `eco make` rejects it.
+
+`runToReports` and `runToReportsThrough` are the runners for a program that
+may be rejected. They run every stage a build runs, in its order and with the
+pattern-match checker, and give the `Stage` that rejected the program with its
+reports as the production reporters render them (`Outcome`, `Reports`), so a
+test can check which error a user would see. `test/scripts/check-test-pipeline-production.sh`
 fails the `elm-tests` target if this module ever calls a compiler pass other
 than through `Compiler.Pipeline.Steps`.
 
 -}
 
 import Array exposing (Array)
+import Builder.File as File
 import Builder.GraphAssembly as GA
+import Builder.Reporting.Exit as Exit
+import Builder.Reporting.Exit.Help as Help
+import Builder.Reporting.ModuleError as ModuleError
 import Compiler.Canonicalize.Module as Canonicalize
 import Compiler.Config as Config
 import Compiler.Core.Annotation as A
 import Compiler.Core.Name as Name exposing (Name)
 import Compiler.Elm.Interface.Basic as Basic
 import Compiler.Elm.ModuleName as ModuleName
+import Compiler.Error as E
 import Compiler.GenerateMlir.Backend as MLIR
 import Compiler.IR.Canonical as Can
 import Compiler.IR.Canonical.Interface as I
@@ -113,11 +133,16 @@ import Compiler.IR.Source as Src
 import Compiler.IR.Typed.Optimized as TOpt
 import Compiler.IR.Typed.TypeEnv as TypeEnv
 import Compiler.IR.Typed.TypeVars as Vars
+import Compiler.LocalOpt.Error as MainError
 import Compiler.LocalOpt.Typed.Module as TypedOptimize
+import Compiler.Nitpick.PatternMatches as PatternMatches
 import Compiler.Pipeline.Steps as Steps
 import Compiler.PreMono.EntryPrep as EntryPrep
+import Compiler.Reporting.Doc as D
+import Compiler.Reporting.Render.Type.Localizer as Localizer
 import Compiler.Reporting.Result as RResult
 import Compiler.Type.Constrain.Typed.Module as ConstrainTyped
+import Compiler.Type.Error as TypeError
 import Compiler.Type.KernelTypes as KernelTypes
 import Compiler.Type.PostSolve as PostSolve
 import Compiler.Type.Solve as Solve
@@ -131,6 +156,7 @@ import Data.Set
 import Dict exposing (Dict)
 import Expect
 import Mlir.Mlir exposing (MlirModule)
+import Time
 
 
 
@@ -313,8 +339,8 @@ runToTypeCheck srcModule =
 
         Ok { canonical } ->
             case IO.unsafePerformIO (runWithIdsTypeCheck canonical) of
-                Err errCount ->
-                    Err ("Type checking failed with " ++ String.fromInt errCount ++ " error(s)")
+                Err (NE.Nonempty _ rest) ->
+                    Err ("Type checking failed with " ++ String.fromInt (1 + List.length rest) ++ " error(s)")
 
                 Ok { annotations, nodeTypes, nodeVars, solverState, annotationVars, schemeBinderVars } ->
                     Ok
@@ -333,29 +359,31 @@ keeping the node types from both before and after.
 -}
 runToPostSolve : Src.Module -> Result String PostSolveArtifacts
 runToPostSolve srcModule =
-    case runToTypeCheck srcModule of
-        Err e ->
-            Err e
+    Result.map postSolveFrom (runToTypeCheck srcModule)
 
-        Ok { canonical, annotations, nodeTypes, nodeVars, solverState, annotationVars, schemeBinderVars } ->
-            let
-                postSolveResult =
-                    PostSolve.postSolve
-                        annotations
-                        canonical
-                        nodeTypes
-            in
-            Ok
-                { canonical = canonical
-                , annotations = annotations
-                , nodeTypesPre = nodeTypes
-                , nodeTypesPost = postSolveResult.nodeTypes
-                , kernelEnv = postSolveResult.kernelEnv
-                , nodeVars = nodeVars
-                , solverState = solverState
-                , annotationVars = annotationVars
-                , schemeBinderVars = schemeBinderVars
-                }
+
+{-| Runs PostSolve on the node types of a type-checked program, keeping the
+node types from both before and after.
+-}
+postSolveFrom : TypeCheckArtifacts -> PostSolveArtifacts
+postSolveFrom { canonical, annotations, nodeTypes, nodeVars, solverState, annotationVars, schemeBinderVars } =
+    let
+        postSolveResult =
+            PostSolve.postSolve
+                annotations
+                canonical
+                nodeTypes
+    in
+    { canonical = canonical
+    , annotations = annotations
+    , nodeTypesPre = nodeTypes
+    , nodeTypesPost = postSolveResult.nodeTypes
+    , kernelEnv = postSolveResult.kernelEnv
+    , nodeVars = nodeVars
+    , solverState = solverState
+    , annotationVars = annotationVars
+    , schemeBinderVars = schemeBinderVars
+    }
 
 
 {-| Adds the synthetic `main` to `srcModule` with `wrapWithMain`, runs it
@@ -374,43 +402,47 @@ Any error from the typed optimizer gives the same `Err` message.
 -}
 runToTypedOpt : Src.Module -> Result String TypedOptArtifacts
 runToTypedOpt srcModule =
-    case runToPostSolve (wrapWithMain srcModule) of
-        Err e ->
-            Err e
+    runToPostSolve (wrapWithMain srcModule)
+        |> Result.andThen (typedOptFrom >> Result.mapError (\_ -> "Typed optimization produced an error"))
 
-        Ok { canonical, annotations, nodeTypesPost, kernelEnv, nodeVars, solverState, annotationVars, schemeBinderVars } ->
-            let
-                stamped =
-                    stampLikeCompile
-                        { solverState = solverState
-                        , annotations = annotations
-                        , annotationVars = annotationVars
-                        , nodeTypes = nodeTypesPost
-                        , nodeVars = nodeVars
-                        , schemeBinderVars = schemeBinderVars
-                        }
 
-                stampedAnnotations =
-                    stamped.annotations
+{-| Builds the typed local graph of a program that has been through PostSolve,
+as `runToTypedOpt` describes, or gives the typed optimizer's errors.
+-}
+typedOptFrom : PostSolveArtifacts -> Result (OneOrMore.OneOrMore MainError.Error) TypedOptArtifacts
+typedOptFrom { canonical, annotations, nodeTypesPost, kernelEnv, nodeVars, solverState, annotationVars, schemeBinderVars } =
+    let
+        stamped =
+            stampLikeCompile
+                { solverState = solverState
+                , annotations = annotations
+                , annotationVars = annotationVars
+                , nodeTypes = nodeTypesPost
+                , nodeVars = nodeVars
+                , schemeBinderVars = schemeBinderVars
+                }
 
-                stampedNodeTypes =
-                    stamped.nodeTypes
+        stampedAnnotations =
+            stamped.annotations
 
-                typedModule =
-                    TCanBuild.fromCanonical canonical stampedNodeTypes stamped.nodeVars
-            in
-            case RResult.run (TypedOptimize.optimizeTyped stampedAnnotations stampedNodeTypes stamped.nodeVars kernelEnv stamped.annotationVars stamped.schemeRoots typedModule) of
-                ( _, Ok localGraph ) ->
-                    Ok
-                        { canonical = canonical
-                        , annotations = stampedAnnotations
-                        , nodeTypes = stampedNodeTypes
-                        , kernelEnv = kernelEnv
-                        , localGraph = localGraph
-                        }
+        stampedNodeTypes =
+            stamped.nodeTypes
 
-                ( _, Err _ ) ->
-                    Err "Typed optimization produced an error"
+        typedModule =
+            TCanBuild.fromCanonical canonical stampedNodeTypes stamped.nodeVars
+    in
+    case RResult.run (TypedOptimize.optimizeTyped stampedAnnotations stampedNodeTypes stamped.nodeVars kernelEnv stamped.annotationVars stamped.schemeRoots typedModule) of
+        ( _, Ok localGraph ) ->
+            Ok
+                { canonical = canonical
+                , annotations = stampedAnnotations
+                , nodeTypes = stampedNodeTypes
+                , kernelEnv = kernelEnv
+                , localGraph = localGraph
+                }
+
+        ( _, Err errors ) ->
+            Err errors
 
 
 {-| Does what `Compiler.Compile.typeCheckTyped` does between PostSolve and the
@@ -553,52 +585,58 @@ for one.
 -}
 monoWith : Config.EcoConfig -> PreMonoPasses -> Src.Module -> Result String ( MonoArtifacts, Maybe String )
 monoWith ecoConfig passes srcModule =
-    case runToTypedOpt srcModule of
-        Err e ->
-            Err e
+    runToTypedOpt srcModule
+        |> Result.andThen
+            (monoStepsFrom ecoConfig passes
+                >> Result.mapError (\monoErr -> "Monomorphization failed: " ++ monoErr)
+            )
 
-        Ok { canonical, annotations, nodeTypes, kernelEnv, localGraph } ->
-            let
-                globalGraph =
-                    localGraphToGlobalGraph localGraph
 
-                globalTypeEnv =
-                    buildGlobalTypeEnv canonical
+{-| The steps of `monoWith` after typed optimization, giving a failed step's
+message as the step returned it.
+-}
+monoStepsFrom : Config.EcoConfig -> PreMonoPasses -> TypedOptArtifacts -> Result String ( MonoArtifacts, Maybe String )
+monoStepsFrom ecoConfig passes { canonical, annotations, nodeTypes, kernelEnv, localGraph } =
+    let
+        globalGraph =
+            localGraphToGlobalGraph localGraph
 
-                prepared =
-                    Steps.prepare ecoConfig globalGraph
+        globalTypeEnv =
+            buildGlobalTypeEnv canonical
 
-                assigned =
-                    case passes of
-                        WithPreMono ->
-                            (Steps.preMono ecoConfig prepared).assigned
+        prepared =
+            Steps.prepare ecoConfig globalGraph
 
-                        WithoutPreMono ->
-                            prepared
-            in
-            Steps.checkMinted ecoConfig assigned
-                |> Result.andThen (\_ -> Steps.monomorphize ecoConfig globalTypeEnv assigned)
-                |> Result.andThen
-                    (\( g, report ) ->
-                        Steps.checkStageArity g
-                            |> Result.andThen (Steps.checkLayout ecoConfig)
-                            |> Result.map (\g1 -> ( g1, report ))
-                    )
-                |> Result.mapError (\monoErr -> "Monomorphization failed: " ++ monoErr)
-                |> Result.map
-                    (\( monoGraph, report ) ->
-                        ( { canonical = canonical
-                          , annotations = annotations
-                          , nodeTypes = nodeTypes
-                          , kernelEnv = kernelEnv
-                          , localGraph = localGraph
-                          , globalGraph = globalGraph
-                          , globalTypeEnv = globalTypeEnv
-                          , monoGraph = monoGraph
-                          }
-                        , report
-                        )
-                    )
+        assigned =
+            case passes of
+                WithPreMono ->
+                    (Steps.preMono ecoConfig prepared).assigned
+
+                WithoutPreMono ->
+                    prepared
+    in
+    Steps.checkMinted ecoConfig assigned
+        |> Result.andThen (\_ -> Steps.monomorphize ecoConfig globalTypeEnv assigned)
+        |> Result.andThen
+            (\( g, report ) ->
+                Steps.checkStageArity g
+                    |> Result.andThen (Steps.checkLayout ecoConfig)
+                    |> Result.map (\g1 -> ( g1, report ))
+            )
+        |> Result.map
+            (\( monoGraph, report ) ->
+                ( { canonical = canonical
+                  , annotations = annotations
+                  , nodeTypes = nodeTypes
+                  , kernelEnv = kernelEnv
+                  , localGraph = localGraph
+                  , globalGraph = globalGraph
+                  , globalTypeEnv = globalTypeEnv
+                  , monoGraph = monoGraph
+                  }
+                , report
+                )
+            )
 
 
 {-| `monoWith`, then the build's post-monomorphization steps
@@ -608,28 +646,32 @@ monoWith ecoConfig passes srcModule =
 globalOptWith : Config.EcoConfig -> PreMonoPasses -> Src.Module -> Result String GlobalOptArtifacts
 globalOptWith ecoConfig passes srcModule =
     monoWith ecoConfig passes srcModule
-        |> Result.andThen
-            (\( a, _ ) ->
-                let
-                    simplified =
-                        Steps.prune ecoConfig (Tuple.first (Steps.inline ecoConfig a.monoGraph))
-                in
-                Steps.checkPruned ecoConfig simplified
-                    |> Result.andThen (\_ -> Steps.checkStageArity (Tuple.first (Steps.globalOpt ecoConfig simplified)))
-                    |> Result.andThen (Steps.checkClosureStaging ecoConfig)
-                    |> Result.map
-                        (\optimizedMonoGraph ->
-                            { canonical = a.canonical
-                            , annotations = a.annotations
-                            , nodeTypes = a.nodeTypes
-                            , kernelEnv = a.kernelEnv
-                            , localGraph = a.localGraph
-                            , globalGraph = a.globalGraph
-                            , globalTypeEnv = a.globalTypeEnv
-                            , monoGraph = a.monoGraph
-                            , optimizedMonoGraph = optimizedMonoGraph
-                            }
-                        )
+        |> Result.andThen (Tuple.first >> globalOptStepsFrom ecoConfig)
+
+
+{-| The steps of `globalOptWith` after monomorphization.
+-}
+globalOptStepsFrom : Config.EcoConfig -> MonoArtifacts -> Result String GlobalOptArtifacts
+globalOptStepsFrom ecoConfig a =
+    let
+        simplified =
+            Steps.prune ecoConfig (Tuple.first (Steps.inline ecoConfig a.monoGraph))
+    in
+    Steps.checkPruned ecoConfig simplified
+        |> Result.andThen (\_ -> Steps.checkStageArity (Tuple.first (Steps.globalOpt ecoConfig simplified)))
+        |> Result.andThen (Steps.checkClosureStaging ecoConfig)
+        |> Result.map
+            (\optimizedMonoGraph ->
+                { canonical = a.canonical
+                , annotations = a.annotations
+                , nodeTypes = a.nodeTypes
+                , kernelEnv = a.kernelEnv
+                , localGraph = a.localGraph
+                , globalGraph = a.globalGraph
+                , globalTypeEnv = a.globalTypeEnv
+                , monoGraph = a.monoGraph
+                , optimizedMonoGraph = optimizedMonoGraph
+                }
             )
 
 
@@ -807,15 +849,358 @@ withMono engine limits lssConfig =
 
 
 -- ============================================================================
+-- REJECTION REPORTS
+-- ============================================================================
+
+
+{-| A stage of compilation that can reject a program, in the order a build
+reaches them. The first four are the phases of `Compiler.Compile.compileTyped`:
+
+  - `Canonicalize`: canonicalization, whose errors are `Compiler.Error.BadNames`;
+  - `TypeCheck`: type checking along the typed path (`BadTypes`);
+  - `PatternMatch`: pattern-match checking, `Compiler.Nitpick.PatternMatches`
+    (`BadPatterns`);
+  - `TypedOptimize`: the typed optimizer, which checks `main` (`BadMains`).
+
+`Monomorphize` is every step of the build after `Compiler.Compile`, from
+`Compiler.Pipeline.Steps.prepare` to `checkClosureStaging`, whose failures
+`Builder.Generate` reports as `Builder.Reporting.Exit.GenerateMonomorphizationError`.
+
+-}
+type Stage
+    = Canonicalize
+    | TypeCheck
+    | PatternMatch
+    | TypedOptimize
+    | Monomorphize
+
+
+{-| What `runToReports` makes of a program: `Accepted` when no stage rejects
+it, or `Rejected` with the reports of the stage that did.
+-}
+type Outcome
+    = Accepted
+    | Rejected Reports
+
+
+{-| The reports of a rejected program: the `stage` that rejected it, the title
+of each report in order, and `text`, all the reports rendered without colour as
+the terminal shows them.
+-}
+type alias Reports =
+    { stage : Stage
+    , titles : List String
+    , text : String
+    }
+
+
+{-| The name of a stage, for failure messages.
+-}
+stageName : Stage -> String
+stageName stage =
+    case stage of
+        Canonicalize ->
+            "canonicalization"
+
+        TypeCheck ->
+            "type checking"
+
+        PatternMatch ->
+            "pattern-match checking"
+
+        TypedOptimize ->
+            "typed optimization"
+
+        Monomorphize ->
+            "monomorphization"
+
+
+{-| Compiles `srcModule` as far as it gets, the way `eco make` does: the
+phases of `Compiler.Compile.compileTyped` in its order (canonicalization, type
+checking, pattern-match checking, typed optimization), then the build's steps
+after it, as `runToGlobalOpt` runs them under `productionConfig`. It gives the
+stage that rejected the program and that stage's reports, or `Accepted`.
+
+The reports are made by the production reporters, so a test sees the titles
+and wording a user sees. A phase of `Compiler.Compile` fails with a
+`Compiler.Error.Error`, which `Builder.Reporting.ModuleError.toDoc` lays out
+for the module `src/Test.elm` of the project `/project`; a later step fails
+with a message that `Builder.Reporting.Exit.makeToReport` turns into a
+`GenerateMonomorphizationError` report (`MONOMORPHIZATION ERROR`, or `STAGE
+ARITY LIMIT` for a message that starts so). A test program has no source text,
+so the module's source is given as blank lines, as many as the module's
+definitions span: a report quotes blank lines where it would quote code, and
+the rest of its text is unchanged.
+
+The program gets the synthetic `main` of `wrapWithMain` only when it defines
+`testValue` and no `main`; a program with a `main` of its own keeps it, so
+that its `main` can be the one rejected. A program with neither has no entry
+point, and is `Accepted` once typed optimization accepts it, since there is
+nothing for the build's later steps to start from.
+
+MLIR is not generated: its generation reports no error, only a crash.
+
+-}
+runToReports : Src.Module -> Outcome
+runToReports =
+    runToReportsThrough Monomorphize
+
+
+{-| `runToReports`, stopping after `last`: a program that gets through `last`
+is `Accepted` without the later stages being run. A check that needs only the
+early stages uses this, as they cost far less than monomorphization.
+-}
+runToReportsThrough : Stage -> Src.Module -> Outcome
+runToReportsThrough last srcModule0 =
+    let
+        srcModule =
+            withEntryPoint srcModule0
+
+        localizer =
+            Localizer.fromModule srcModule
+
+        reject stage error =
+            Rejected (renderModuleError stage srcModule error)
+
+        continueAfter stage next =
+            if stage == last then
+                Accepted
+
+            else
+                next ()
+    in
+    case RResult.run (Canonicalize.canonicalize ( "eco", "example" ) Basic.testIfaces srcModule) of
+        ( _, Err errors ) ->
+            reject Canonicalize (E.BadNames errors)
+
+        ( _, Ok canonical ) ->
+            continueAfter Canonicalize <|
+                \() ->
+                    case IO.unsafePerformIO (runWithIdsTypeCheck canonical) of
+                        Err errors ->
+                            reject TypeCheck (E.BadTypes localizer errors)
+
+                        Ok tc ->
+                            continueAfter TypeCheck <|
+                                \() ->
+                                    case PatternMatches.check canonical of
+                                        Err errors ->
+                                            reject PatternMatch (E.BadPatterns errors)
+
+                                        Ok () ->
+                                            continueAfter PatternMatch <|
+                                                \() ->
+                                                    typedOptimizeForReports last localizer srcModule canonical tc
+
+
+{-| The stages of `runToReportsThrough` from typed optimization on.
+-}
+typedOptimizeForReports :
+    Stage
+    -> Localizer.Localizer
+    -> Src.Module
+    -> Can.Module
+    ->
+        { annotations : Dict Name.Name (Can.Annotation Name)
+        , nodeTypes : Array (Maybe (Can.Type Name))
+        , nodeVars : Array (Maybe Vars.Variable)
+        , solverState : { cells : Array Vars.PointCell }
+        , annotationVars : Dict Name.Name Vars.Variable
+        , schemeBinderVars : Dict Name.Name (Dict Name.Name Vars.Variable)
+        }
+    -> Outcome
+typedOptimizeForReports last localizer srcModule canonical tc =
+    let
+        artifacts =
+            { canonical = canonical
+            , annotations = tc.annotations
+            , nodeTypes = tc.nodeTypes
+            , nodeVars = tc.nodeVars
+            , solverState = tc.solverState
+            , annotationVars = tc.annotationVars
+            , schemeBinderVars = tc.schemeBinderVars
+            }
+    in
+    case typedOptFrom (postSolveFrom artifacts) of
+        Err errors ->
+            Rejected (renderModuleError TypedOptimize srcModule (E.BadMains localizer errors))
+
+        Ok typed ->
+            if last == TypedOptimize || not (hasMain typed.localGraph) then
+                Accepted
+
+            else
+                case
+                    monoStepsFrom productionConfig WithPreMono typed
+                        |> Result.andThen (Tuple.first >> globalOptStepsFrom productionConfig)
+                of
+                    Err message ->
+                        Rejected (renderGenerateError message)
+
+                    Ok _ ->
+                        Accepted
+
+
+{-| Whether a typed local graph has a `main`.
+-}
+hasMain : TOpt.LocalGraph Name -> Bool
+hasMain (TOpt.LocalGraph data) =
+    data.main /= Nothing
+
+
+{-| `srcModule` with the synthetic `main` of `wrapWithMain` when it defines
+`testValue` and no `main`, and as it is otherwise.
+-}
+withEntryPoint : Src.Module -> Src.Module
+withEntryPoint ((Src.Module data) as srcModule) =
+    let
+        names =
+            List.map
+                (\(A.At _ (Src.Value vdata)) ->
+                    let
+                        ( _, A.At _ name ) =
+                            vdata.name
+                    in
+                    name
+                )
+                data.values
+    in
+    if List.member "testValue" names && not (List.member "main" names) then
+        wrapWithMain srcModule
+
+    else
+        srcModule
+
+
+{-| The reports of `error`, a failure of one of the phases of
+`Compiler.Compile`, as `Builder.Reporting.ModuleError.toDoc` lays them out.
+-}
+renderModuleError : Stage -> Src.Module -> E.Error -> Reports
+renderModuleError stage srcModule error =
+    let
+        text =
+            ModuleError.toDoc "/project"
+                { name = Src.getName srcModule
+                , absolutePath = "/project/src/Test.elm"
+                , modificationTime = File.Time (Time.millisToPosix 0)
+                , source = blankSource srcModule
+                , error = error
+                }
+                []
+                |> D.toString
+    in
+    { stage = stage, titles = reportTitles text, text = text }
+
+
+{-| The report of a failed step after `Compiler.Compile`, whose message is
+`message`, as `Builder.Generate` reports it.
+-}
+renderGenerateError : String -> Reports
+renderGenerateError message =
+    let
+        text =
+            Exit.makeToReport (Exit.MakeBadGenerate (Exit.GenerateMonomorphizationError message))
+                |> Help.reportToDoc
+                |> D.toString
+    in
+    { stage = Monomorphize, titles = reportTitles text, text = text }
+
+
+{-| Source text of blank lines standing in for the text of `srcModule`, one
+more than the last row any of its values, custom types and aliases reaches, so
+that every region a report quotes is within it.
+-}
+blankSource : Src.Module -> String
+blankSource (Src.Module data) =
+    let
+        endRow (A.At (A.Region _ (A.Position row _)) _) =
+            row
+
+        lastRow =
+            List.maximum
+                (List.map endRow data.values
+                    ++ List.map endRow data.unions
+                    ++ List.map endRow data.aliases
+                )
+                |> Maybe.withDefault 0
+    in
+    String.repeat (lastRow + 1) "\n"
+
+
+{-| The titles of the reports in `text`, in order: the title in each report's
+heading bar, a line `-- TITLE ----- path` (the path is left out of a report
+that is about no file).
+-}
+reportTitles : String -> List String
+reportTitles text =
+    List.filterMap barTitle (String.lines text)
+
+
+{-| The title in `line` when it is a report's heading bar: `--`, the title,
+and a run of dashes, then nothing or a space and a path.
+-}
+barTitle : String -> Maybe String
+barTitle line =
+    if String.startsWith "-- " line then
+        let
+            rest =
+                String.dropLeft 3 line
+
+            isBarEnd i =
+                let
+                    after =
+                        String.dropLeft (i + 1) rest
+
+                    dashes =
+                        countLeading '-' after
+
+                    tail =
+                        String.dropLeft dashes after
+                in
+                dashes >= 1 && (tail == "" || String.startsWith " " tail)
+        in
+        String.indexes " -" rest
+            |> List.filter isBarEnd
+            |> List.head
+            |> Maybe.map (\i -> String.left i rest)
+
+    else
+        Nothing
+
+
+{-| The number of times `c` repeats at the start of `s`.
+-}
+countLeading : Char -> String -> Int
+countLeading c s =
+    String.length s - String.length (dropWhileChar c s)
+
+
+{-| `s` without the copies of `c` at its start.
+-}
+dropWhileChar : Char -> String -> String
+dropWhileChar c s =
+    case String.uncons s of
+        Just ( first, rest ) ->
+            if first == c then
+                dropWhileChar c rest
+
+            else
+                s
+
+        Nothing ->
+            s
+
+
+
+-- ============================================================================
 -- LOW-LEVEL HELPERS
 -- ============================================================================
 
 
 {-| Builds the IO action that generates `modul`'s constraints with node ids
-recorded and solves them, giving the solver's results or the number of type
-errors.
+recorded and solves them, giving the solver's results or the type errors.
 -}
-runWithIdsTypeCheck : Can.Module -> IO.IO (Result Int { annotations : Dict Name.Name (Can.Annotation Name), nodeTypes : Array (Maybe (Can.Type Name)), nodeVars : Array (Maybe Vars.Variable), solverState : { cells : Array Vars.PointCell }, annotationVars : Dict Name.Name Vars.Variable, schemeBinderVars : Dict Name.Name (Dict Name.Name Vars.Variable) })
+runWithIdsTypeCheck : Can.Module -> IO.IO (Result (NE.Nonempty TypeError.Error) { annotations : Dict Name.Name (Can.Annotation Name), nodeTypes : Array (Maybe (Can.Type Name)), nodeVars : Array (Maybe Vars.Variable), solverState : { cells : Array Vars.PointCell }, annotationVars : Dict Name.Name Vars.Variable, schemeBinderVars : Dict Name.Name (Dict Name.Name Vars.Variable) })
 runWithIdsTypeCheck modul =
     ConstrainTyped.constrainWithIds modul
         |> IO.andThen
@@ -836,8 +1221,8 @@ runWithIdsTypeCheck modul =
                             , schemeBinderVars = schemeBinderVars
                             }
 
-                    Err (NE.Nonempty _ rest) ->
-                        Err (1 + List.length rest)
+                    Err errors ->
+                        Err errors
             )
 
 

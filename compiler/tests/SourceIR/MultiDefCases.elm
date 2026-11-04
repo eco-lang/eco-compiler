@@ -29,15 +29,17 @@ The cases:
     case.
   - Fifteen definitions, `def1` to `def15`, with varied bodies.
   - Two definitions whose bodies are a `let` nested inside a `let`.
-  - Functions taking a tuple, list or record pattern as their argument, one
-    kind per case. The list patterns `[ a ]` and `[ x, y ]` are refutable,
-    which Elm source rejects as an incomplete match, and the calls in
-    `testValue` match them.
+  - Functions taking a tuple or record pattern as their argument, one kind per
+    case, and functions `f` and `g` that match their argument `list` with the
+    list patterns `[ a ]` and `[ x, y ]` in a `case` with a `_` branch. (A
+    list pattern can fail, and `eco make` rejects one as an argument as an
+    `UNSAFE PATTERN`; that form is a rejected case of
+    `SourceIR.PatternFailsCases`.)
   - Eight definitions of different kinds of body in one module.
 
 Among what is not tested: annotated definitions, custom types, aliases and
 ports; mutual recursion; a `let` with more than one definition; and a call
-that does not match a refutable argument pattern.
+that takes the `_` branch of a list `case`.
 
 -}
 
@@ -403,18 +405,46 @@ tuplePatternMultipleDefs expectFn _ =
     expectFn modul
 
 
-{-| Applies `expectFn` to a module defining `f [ a ] = a`,
-`g [ x, y ] = x + y` and `testValue = ( f [ 1 ], g [ 2, 3 ] )`. Both argument
-patterns are refutable, which Elm source rejects as an incomplete match; the
-calls in `testValue` match them.
+{-| Applies `expectFn` to a module defining
+
+    f list =
+        case list of
+            [ a ] ->
+                a
+
+            _ ->
+                0
+
+    g list =
+        case list of
+            [ x, y ] ->
+                x + y
+
+            _ ->
+                0
+
+and `testValue = ( f [ 1 ], g [ 2, 3 ] )`. Both functions name their argument
+`list`.
 -}
 listPatternMultipleDefs : (Src.Module -> Expectation) -> (() -> Expectation)
 listPatternMultipleDefs expectFn _ =
     let
         modul =
             makeModuleWithDefs "Test"
-                [ ( "f", [ pList [ pVar "a" ] ], varExpr "a" )
-                , ( "g", [ pList [ pVar "x", pVar "y" ] ], binopsExpr [ ( varExpr "x", "+" ) ] (varExpr "y") )
+                [ ( "f"
+                  , [ pVar "list" ]
+                  , caseExpr (varExpr "list")
+                        [ ( pList [ pVar "a" ], varExpr "a" )
+                        , ( pAnything, intExpr 0 )
+                        ]
+                  )
+                , ( "g"
+                  , [ pVar "list" ]
+                  , caseExpr (varExpr "list")
+                        [ ( pList [ pVar "x", pVar "y" ], binopsExpr [ ( varExpr "x", "+" ) ] (varExpr "y") )
+                        , ( pAnything, intExpr 0 )
+                        ]
+                  )
                 , ( "testValue"
                   , []
                   , tupleExpr

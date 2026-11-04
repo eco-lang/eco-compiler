@@ -11,11 +11,15 @@ arguments, partial applications, and definitions with no arguments of their own
 whose value is a function. They give a stage under test those shapes in
 concentrated form.
 
-Each program is a module named `Test`, built with
-`Compiler.AST.SourceBuilder.makeModule`, whose one top-level value `testValue`
-has no annotation. Its body is a single `let` holding every combinator and
+Each program is a module named `Test` with no annotations. The first eight
+are built with `Compiler.AST.SourceBuilder.makeModule`: the one top-level value
+`testValue` has a body that is a single `let` holding every combinator and
 helper the program uses, around one application whose result is an `Int`. The
-arithmetic uses only `+`, `-` and `*`.
+last three are built with `makeModuleWithDefs` and define every combinator and
+helper at the top level of the module instead, so each is specialized into a
+node of its own and referred to as a global; a combinator defined with no
+parameters of its own (`b = s (k s) k`) is a top-level value whose type is a
+function. The arithmetic uses only `+`, `-` and `*`.
 
 This module builds the programs and nothing more. `expectSuite` hands each one
 to the caller's `expectFn`, which decides what is checked. The values given
@@ -37,9 +41,15 @@ The programs, in the order they run:
   - T, defined as `c i` from local S, K, B, C and I: `t 7 (\x -> x * 3)`,
     which is `21`.
   - W, defined directly as `w bf x = bf x x`: `w mul 9`, which is `81`.
+  - B at the top level, `b = s (k s) k` from top-level `k a _ = a` and
+    `s bf uf x = bf x (uf x)`: `b square inc 4` with top-level
+    `square x = x * x` and `inc x = x + 1`, which is `25`.
+  - I at the top level, `i = s k k` from the same top-level `k` and `s`:
+    `i 42`, which is `42`.
+  - A partial application at the top level: `add3 a b c = (a + b) + c`,
+    `partialAdd = add3 1` and `testValue = partialAdd 2 3`, which is `6`.
 
-Among what is not tested: combinators at the top level of a module, or with
-type annotations; an operator such as `(+)` passed as a function value; and a
+Among what is not tested: combinators with type annotations; an operator such as `(+)` passed as a function value; and a
 `testValue` of any type other than `Int`.
 
 -}
@@ -53,6 +63,7 @@ import Compiler.AST.SourceBuilder
         , lambdaExpr
         , letExpr
         , makeModule
+        , makeModuleWithDefs
         , pAnything
         , pVar
         , varExpr
@@ -74,13 +85,15 @@ expectSuite expectFn condStr =
         \_ -> bulkCheck (testCases expectFn)
 
 
-{-| Returns all eight labelled cases: K and S, then I, B and C, then SP, T and W.
+{-| Returns all eleven labelled cases: K and S, then I, B and C, then SP, T and
+W, then the three top-level ones.
 -}
 testCases : (Src.Module -> Expectation) -> List TestCase
 testCases expectFn =
     baseCombinatorCases expectFn
         ++ derivedCombinatorCases expectFn
         ++ appliedCombinatorCases expectFn
+        ++ topLevelCombinatorCases expectFn
 
 
 
@@ -420,3 +433,94 @@ wCombinator expectFn _ =
                 )
     in
     expectFn modul
+
+
+
+-- ============================================================================
+-- TOP-LEVEL COMBINATORS (3 cases)
+-- ============================================================================
+
+
+{-| Returns the three labelled cases whose combinators are top-level
+definitions.
+-}
+topLevelCombinatorCases : (Src.Module -> Expectation) -> List TestCase
+topLevelCombinatorCases expectFn =
+    [ { label = "B combinator: b = s (k s) k (top-level)", run = bCombinatorTopLevel expectFn }
+    , { label = "I combinator: i = s k k (top-level)", run = iCombinatorTopLevel expectFn }
+    , { label = "Partial application of 3-arg function (top-level)", run = partialApp3TopLevel expectFn }
+    ]
+
+
+{-| The top-level `k a _ = a` and `s bf uf x = bf x (uf x)`.
+-}
+topLevelKS : List ( String, List Src.Pattern, Src.Expr )
+topLevelKS =
+    [ ( "k", [ pVar "a", pAnything ], varExpr "a" )
+    , ( "s"
+      , [ pVar "bf", pVar "uf", pVar "x" ]
+      , callExpr (varExpr "bf")
+            [ varExpr "x"
+            , callExpr (varExpr "uf") [ varExpr "x" ]
+            ]
+      )
+    ]
+
+
+{-| Builds the top-level B program, `b square inc 4` with `b = s (k s) k`, and
+hands it to `expectFn`. `s` is applied to two of its three arguments and `k`
+to one of its two.
+-}
+bCombinatorTopLevel : (Src.Module -> Expectation) -> (() -> Expectation)
+bCombinatorTopLevel expectFn _ =
+    expectFn
+        (makeModuleWithDefs "Test"
+            (topLevelKS
+                ++ [ ( "b"
+                     , []
+                     , callExpr (varExpr "s")
+                        [ callExpr (varExpr "k") [ varExpr "s" ]
+                        , varExpr "k"
+                        ]
+                     )
+                   , ( "square", [ pVar "x" ], binopsExpr [ ( varExpr "x", "*" ) ] (varExpr "x") )
+                   , ( "inc", [ pVar "x" ], binopsExpr [ ( varExpr "x", "+" ) ] (intExpr 1) )
+                   , ( "testValue", [], callExpr (varExpr "b") [ varExpr "square", varExpr "inc", intExpr 4 ] )
+                   ]
+            )
+        )
+
+
+{-| Builds the top-level I program, `i 42` with `i = s k k`, and hands it to
+`expectFn`.
+-}
+iCombinatorTopLevel : (Src.Module -> Expectation) -> (() -> Expectation)
+iCombinatorTopLevel expectFn _ =
+    expectFn
+        (makeModuleWithDefs "Test"
+            (topLevelKS
+                ++ [ ( "i", [], callExpr (varExpr "s") [ varExpr "k", varExpr "k" ] )
+                   , ( "testValue", [], callExpr (varExpr "i") [ intExpr 42 ] )
+                   ]
+            )
+        )
+
+
+{-| Builds `add3 a b c = (a + b) + c`, `partialAdd = add3 1` and
+`testValue = partialAdd 2 3`, all at the top level, and hands it to
+`expectFn`.
+-}
+partialApp3TopLevel : (Src.Module -> Expectation) -> (() -> Expectation)
+partialApp3TopLevel expectFn _ =
+    expectFn
+        (makeModuleWithDefs "Test"
+            [ ( "add3"
+              , [ pVar "a", pVar "b", pVar "c" ]
+              , binopsExpr
+                    [ ( binopsExpr [ ( varExpr "a", "+" ) ] (varExpr "b"), "+" ) ]
+                    (varExpr "c")
+              )
+            , ( "partialAdd", [], callExpr (varExpr "add3") [ intExpr 1 ] )
+            , ( "testValue", [], callExpr (varExpr "partialAdd") [ intExpr 2, intExpr 3 ] )
+            ]
+        )

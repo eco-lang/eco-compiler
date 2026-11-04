@@ -24,7 +24,8 @@ The cases, in the order they run:
   - Lambdas: a top-level identity lambda; a two-argument lambda returning its
     first argument; one returning both arguments as a pair; and one with a
     wildcard argument returning `42`. `testValue` calls each with all its
-    arguments.
+    arguments. Then an identity lambda applied where it is written, as the
+    annotated `testValue : Int` = `(\x -> x) 42`.
   - Calls: a let-bound identity lambda called with `42`; a let-bound
     two-argument lambda called with two integer literals; and the identity
     called on the result of calling it.
@@ -140,6 +141,7 @@ lambdaCases expectFn =
     , { label = "Two-argument lambda", run = twoArgumentLambda expectFn }
     , { label = "Lambda returning tuple", run = lambdaReturningTuple expectFn }
     , { label = "Lambda with wildcard pattern", run = lambdaWithWildcard expectFn }
+    , { label = "Lambda applied directly", run = lambdaAppliedDirectly expectFn }
     ]
 
 
@@ -204,6 +206,25 @@ lambdaWithWildcard expectFn _ =
                 ]
     in
     expectFn modul
+
+
+
+{-| Returns the deferred `expectFn` check of a module whose one value is the
+annotated `testValue : Int` = `(\x -> x) 42`, a lambda applied where it is
+written.
+-}
+lambdaAppliedDirectly : (Src.Module -> Expectation) -> (() -> Expectation)
+lambdaAppliedDirectly expectFn _ =
+    let
+        testValueDef : TypedDef
+        testValueDef =
+            { name = "testValue"
+            , args = []
+            , tipe = tType "Int" []
+            , body = callExpr (lambdaExpr [ pVar "x" ] (varExpr "x")) [ intExpr 42 ]
+            }
+    in
+    expectFn (makeModuleWithTypedDefsUnionsAliases "Test" [ testValueDef ] [] [])
 
 
 

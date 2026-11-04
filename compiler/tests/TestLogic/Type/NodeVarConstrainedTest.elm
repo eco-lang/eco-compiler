@@ -26,10 +26,18 @@ Among what is not tested:
   - The node types after PostSolve. PostSolve is run, but nothing it produces
     is checked.
 
+It also runs over the programs of `SourceIR.MainFailsCases`, which typed
+optimization rejects, and those of `SourceIR.MonoFailsCases`
+(`expectBeforeMonoSuite`), which monomorphization rejects: every stage this
+check looks at accepts them, and they hold what the standard catalogue cannot,
+such as polymorphic recursion over a non-regular type.
+
 -}
 
 import Compiler.IR.Source as Src
 import Expect
+import SourceIR.MainFailsCases as MainFailsCases
+import SourceIR.MonoFailsCases as MonoFailsCases
 import SourceIR.Suite.StandardTestSuites as StandardTestSuites
 import Test exposing (Test)
 import TestLogic.TestPipeline as Pipeline
@@ -43,6 +51,8 @@ suite : Test
 suite =
     Test.describe "TYPE_007: Recorded node variables are constrained"
         [ StandardTestSuites.expectSuite expectNodeVarsConstrained "node vars constrained"
+        , MainFailsCases.expectSuite expectNodeVarsConstrained "node vars constrained"
+        , MonoFailsCases.expectBeforeMonoSuite expectNodeVarsConstrained "node vars constrained"
         ]
 
 

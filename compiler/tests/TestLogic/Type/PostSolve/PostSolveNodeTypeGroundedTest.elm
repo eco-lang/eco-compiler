@@ -35,10 +35,18 @@ Among what is not tested:
     type variable whose name starts with `number`, `comparable`, `appendable`
     or `compappend`.
 
+It also runs over the programs of `SourceIR.MainFailsCases`, which typed
+optimization rejects, and those of `SourceIR.MonoFailsCases`
+(`expectBeforeMonoSuite`), which monomorphization rejects: every stage this
+check looks at accepts them, and they hold what the standard catalogue cannot,
+such as polymorphic recursion over a non-regular type.
+
 -}
 
 import Compiler.IR.Source as Src
 import Expect
+import SourceIR.MainFailsCases as MainFailsCases
+import SourceIR.MonoFailsCases as MonoFailsCases
 import SourceIR.Suite.StandardTestSuites as StandardTestSuites
 import Test exposing (Test)
 import TestLogic.Type.PostSolve.CompileThroughPostSolve as Compile
@@ -51,6 +59,8 @@ suite : Test
 suite =
     Test.describe "POST_010: All node type TVars come from enclosing type schemes"
         [ StandardTestSuites.expectSuite expectGrounded "node types grounded"
+        , MainFailsCases.expectSuite expectGrounded "node types grounded"
+        , MonoFailsCases.expectBeforeMonoSuite expectGrounded "node types grounded"
         ]
 
 

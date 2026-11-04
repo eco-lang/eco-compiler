@@ -12,7 +12,7 @@ program passes when both paths accept it with the same annotations and the
 typed path gives every expression and pattern a type, or when both reject it
 with matching errors.
 
-The fixture is four case modules. None of them asserts anything itself: each
+The fixture is seven case modules. None of them asserts anything itself: each
 applies the expectation given to it to every program it builds.
 
   - `SourceIR.Suite.StandardTestSuites` passes the expectation on to its
@@ -22,6 +22,10 @@ applies the expectation given to it to every program it builds.
   - `SourceIR.TypeCheckFailsCases` holds source programs that each contain a
     type error, checked with `expectEquivalentRejection`: both paths must
     reject each of them, with matching errors.
+  - `SourceIR.PatternFailsCases`, `MainFailsCases` and `MonoFailsCases` hold
+    programs of the negative catalogue that a stage after type checking
+    rejects, so both paths must accept them alike: they are checked with
+    `expectEquivalentTypeChecking`, as the standard catalogue is.
   - `SourceIR.KernelCases` and `SourceIR.ForeignCases` build canonical modules
     by hand, holding kernel references and references to values of another
     module respectively. There is no source to canonicalize, so they are checked
@@ -31,9 +35,11 @@ What the tests establish:
 
   - Under "check equivalently", each test that the case modules of
     `StandardTestSuites` build checks its programs as above.
-  - "Type check failure tests are rejected equivalently" is one test over
-    every program in `TypeCheckFailsCases`. It fails on the first program that fails
-    the expectation, and names it.
+  - "Type check failure tests are rejected equivalently" is a group of tests,
+    one per group of cases of `TypeCheckFailsCases`. Each fails on the first
+    program of its group that fails the expectation, and names it.
+  - The groups of `PatternFailsCases`, `MainFailsCases` and `MonoFailsCases`
+    "check equivalently" in the same way.
   - "VarKernel expressions check equivalently" and "VarForeign expressions
     check equivalently" are one test each over every module in `KernelCases`
     and in `ForeignCases`, likewise failing on the first module that fails.
@@ -48,6 +54,9 @@ comparison, such as the node types themselves.
 
 import SourceIR.ForeignCases as ForeignCases
 import SourceIR.KernelCases as KernelCases
+import SourceIR.MainFailsCases as MainFailsCases
+import SourceIR.MonoFailsCases as MonoFailsCases
+import SourceIR.PatternFailsCases as PatternFailsCases
 import SourceIR.Suite.StandardTestSuites as StandardTestSuites
 import SourceIR.TypeCheckFailsCases as TypeCheckFailsCases
 import Test exposing (Test)
@@ -59,7 +68,7 @@ import TestLogic.Type.Constrain.TypedErasedCheckingParity
         )
 
 
-{-| The parity tests: the four case suites, each run through the parity
+{-| The parity tests: the case suites, each run through the parity
 expectation that matches the kind of module it builds.
 -}
 suite : Test
@@ -67,6 +76,11 @@ suite =
     Test.describe "Type solver constrain and constrainWithIds type check equivalently"
         [ StandardTestSuites.expectSuite expectEquivalentTypeChecking "check equivalently"
         , TypeCheckFailsCases.expectSuite expectEquivalentRejection "are rejected equivalently"
+
+        -- Rejected after type checking, so both paths must accept them alike.
+        , PatternFailsCases.expectSuite expectEquivalentTypeChecking "check equivalently"
+        , MainFailsCases.expectSuite expectEquivalentTypeChecking "check equivalently"
+        , MonoFailsCases.expectSuite expectEquivalentTypeChecking "check equivalently"
 
         -- These two build canonical modules, not source, so they take the canonical expectation.
         , KernelCases.expectSuite expectEquivalentTypeCheckingCanonical "check equivalently"

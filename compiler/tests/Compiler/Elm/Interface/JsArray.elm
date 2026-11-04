@@ -10,7 +10,7 @@ operators. `jsArrayInterface` is that record for `Elm.JsArray`, the elm/core
 module that defines the `JsArray` type.
 
 It is a mock, and it differs from the elm/core source that
-`Compiler.Elm.Source.JsArray` carries in one way: it declares only eight
+`Compiler.PackageCompilation.JsArraySource` carries in one way: it declares only eight
 functions, `empty`, `push`, `length`, `slice`, `foldl`, `foldr`,
 `initializeFromList` and `map`. Others in that source, such as `singleton`,
 `initialize` and `unsafeGet`, are not in it. Its `JsArray a` union is the one

@@ -50,6 +50,12 @@ Among what is not tested:
     read, and the structural type is built from that same array.
   - Arrow slots and record field positions.
 
+It also runs over the programs of `SourceIR.MainFailsCases`, which typed
+optimization rejects, and those of `SourceIR.MonoFailsCases`
+(`expectBeforeMonoSuite`), which monomorphization rejects: every stage this
+check looks at accepts them, and they hold what the standard catalogue cannot,
+such as polymorphic recursion over a non-regular type.
+
 -}
 
 import Array
@@ -60,6 +66,8 @@ import Compiler.IR.Source as Src
 import Compiler.Type.PostSolve as PostSolve
 import Dict
 import Expect
+import SourceIR.MainFailsCases as MainFailsCases
+import SourceIR.MonoFailsCases as MonoFailsCases
 import SourceIR.Suite.StandardTestSuites as StandardTestSuites
 import Test exposing (Test)
 import TestLogic.Type.PostSolve.CompileThroughPostSolve as Compile
@@ -88,6 +96,8 @@ suite : Test
 suite =
     Test.describe "POST_007: Lambda Structural Types"
         [ StandardTestSuites.expectSuite expectLambdaStructuralTypes "lambda-structural-types"
+        , MainFailsCases.expectSuite expectLambdaStructuralTypes "lambda-structural-types"
+        , MonoFailsCases.expectBeforeMonoSuite expectLambdaStructuralTypes "lambda-structural-types"
         ]
 
 

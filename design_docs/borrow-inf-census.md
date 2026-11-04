@@ -597,7 +597,7 @@ branch (B2 only some). Net ownership only improved (borrowed ↑).
 
 ### Files added (B3)
 - `compiler/src/Compiler/GlobalOpt/Borrow/{Mode,Sig,KernelSigs}.elm`
-- `compiler/tests/TestLogic/GlobalOpt/BorrowTailCallEscapeTest.elm`
+- `compiler/tests/Compiler/MonoOpt/Borrow/BorrowTailCallEscapeTest.elm`
 - edits: `Borrow.elm` (driver: edges + SCC + fixpoint + readback + census pass), `Borrow/Constrain.elm` (call-boundary upgrade + `constrainDef`), `Borrow/Solve.elm` (`Mode` moved out), `TestLogic/TestPipeline.elm` (signature)
 
 ---

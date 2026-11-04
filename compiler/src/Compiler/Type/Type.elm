@@ -459,11 +459,18 @@ toSuper name =
 
 {-| Converts the solved type of `variable` to an annotation.
 
-The annotation quantifies over every name taken in the naming scope: the names
-the type's variables already carried and those generated for it. Unnamed
-variables are named, and the store is changed, as "Converting solved variables"
-describes. Crashes on a class whose content is a unification error, and on a
-lambda set that is not in a function type's set slot.
+The annotation quantifies over every name taken in the naming scope, the names
+the type's variables already carried and those generated for it, and over every
+name the converted type mentions. The second set matters when an earlier
+conversion reached the same variables, as for the later members of a recursive
+group, which share their variables: the earlier walk marked them and named them,
+so this conversion's `getVarNames` walk skips them and their names are never
+taken in its scope. Stock Elm 0.19.1 quantifies over the taken names only, so
+it gives such a member too few quantified variables.
+
+Unnamed variables are named, and the store is changed, as "Converting solved
+variables" describes. Crashes on a class whose content is a unification error,
+and on a lambda set that is not in a function type's set slot.
 
 -}
 toAnnotation : Variable -> IO (Can.Annotation Name)
@@ -476,10 +483,57 @@ toAnnotation variable =
                         |> IO.andThen
                             (\tipe ->
                                 IO.getNames
-                                    |> IO.map (\nsData -> Can.Forall nsData.taken tipe)
+                                    |> IO.map (\nsData -> Can.Forall (addTypeVarNames tipe nsData.taken) tipe)
                             )
                     )
             )
+
+
+{-| Returns `names` with the name of every type variable `tipe` mentions added,
+record extension variables and the arguments and filled body of an alias
+included.
+-}
+addTypeVarNames : Can.Type Name -> Dict Name () -> Dict Name ()
+addTypeVarNames tipe names =
+    case tipe of
+        Can.TLambda _ arg result ->
+            addTypeVarNames result (addTypeVarNames arg names)
+
+        Can.TVar name ->
+            Dict.insert name () names
+
+        Can.TType _ _ args ->
+            List.foldl addTypeVarNames names args
+
+        Can.TRecord fields maybeExt ->
+            Dict.foldl (\_ (Can.FieldType _ fieldType) acc -> addTypeVarNames fieldType acc)
+                (case maybeExt of
+                    Just ext ->
+                        Dict.insert ext () names
+
+                    Nothing ->
+                        names
+                )
+                fields
+
+        Can.TUnit ->
+            names
+
+        Can.TTuple a b cs ->
+            List.foldl addTypeVarNames names (a :: b :: cs)
+
+        Can.TAlias _ _ args aliasType ->
+            let
+                withArgs =
+                    List.foldl (\( _, argType ) acc -> addTypeVarNames argType acc) names args
+            in
+            case aliasType of
+                Can.Holey _ ->
+                    -- A holey body names the alias's own parameters.
+                    withArgs
+
+                Can.Filled body ->
+                    addTypeVarNames body withArgs
 
 
 {-| Converts each variable of `nodeVars` to a `Can.Type`, keeping `Nothing` where
@@ -489,11 +543,15 @@ All of them are converted in one naming scope, so a name generated for one
 variable is never generated again for another: two unnamed lambda parameters do
 not both become `a`.
 
-`annotationNames` are names to reserve: no generated name is one of them.
+`annotationNames` are names to reserve: no generated name is one of them, and
+a variable reached here that already carries one of them, but is not one of
+the variables holding it, is renamed by a numeric suffix (`getVarNamesAvoiding`).
 Typically they are the names earlier `toAnnotation` calls gave, whose variables
 keep those names. They must be passed in rather than found by `getVarNames`:
 `toAnnotation`'s own `getVarNames` walk left `getVarNamesMark` on each of those
-variables, so the walk below skips them and would not see their names.
+variables, so the walk below skips them and would not see their names. Such a
+carried name is common: a variable instantiated from an annotation, such as a
+let-bound helper's `number` from `(*)`'s, carries that annotation's name.
 
 Crashes in the same cases as `toAnnotation`.
 
@@ -507,7 +565,7 @@ toCanTypeBatch annotationNames nodeVars =
                     IO.pure names
 
                 Just var ->
-                    getVarNames var names
+                    getVarNamesAvoiding annotationNames var names
         )
         Dict.empty
         nodeVars
@@ -1113,7 +1171,22 @@ is changed by `addName`. The lambda sets of function types are not visited.
 
 -}
 getVarNames : Variable -> Dict Name Variable -> IO (Dict Name Variable)
-getVarNames var takenNames =
+getVarNames =
+    getVarNamesAvoiding Dict.empty
+
+
+{-| `getVarNames`, treating each name of `reserved` as held by a variable
+distinct from every one the walk reaches, so that a variable carrying such a
+name is renamed.
+
+`toCanTypeBatch` reserves the annotations' names this way. The variables that
+hold them were marked by `toAnnotation`'s walk, so this walk skips them, and
+without the reservation a distinct variable carrying the same name, such as a
+let-bound helper's `number` instantiated from `(*)`'s annotation, would keep it.
+
+-}
+getVarNamesAvoiding : Dict Name () -> Variable -> Dict Name Variable -> IO (Dict Name Variable)
+getVarNamesAvoiding reserved var takenNames =
     UF.get var
         |> IO.andThen
             (\descProps ->
@@ -1134,7 +1207,7 @@ getVarNames var takenNames =
                                                 IO.pure takenNames
 
                                             Just name ->
-                                                addName 0 name var (Just >> FlexVar) takenNames
+                                                addName reserved 0 name var (Just >> FlexVar) takenNames
 
                                     FlexSuper super maybeName ->
                                         case maybeName of
@@ -1142,27 +1215,27 @@ getVarNames var takenNames =
                                                 IO.pure takenNames
 
                                             Just name ->
-                                                addName 0 name var (Just >> FlexSuper super) takenNames
+                                                addName reserved 0 name var (Just >> FlexSuper super) takenNames
 
                                     RigidVar name ->
-                                        addName 0 name var RigidVar takenNames
+                                        addName reserved 0 name var RigidVar takenNames
 
                                     RigidSuper super name ->
-                                        addName 0 name var (RigidSuper super) takenNames
+                                        addName reserved 0 name var (RigidSuper super) takenNames
 
                                     Alias _ _ args _ ->
-                                        IO.foldrM getVarNames takenNames (List.map Tuple.second args)
+                                        IO.foldrM (getVarNamesAvoiding reserved) takenNames (List.map Tuple.second args)
 
                                     Structure flatType ->
                                         case flatType of
                                             App1 _ _ args ->
-                                                IO.foldrM getVarNames takenNames args
+                                                IO.foldrM (getVarNamesAvoiding reserved) takenNames args
 
                                             Fun1 arg body ->
-                                                getVarNames body takenNames |> IO.andThen (getVarNames arg)
+                                                getVarNamesAvoiding reserved body takenNames |> IO.andThen (getVarNamesAvoiding reserved arg)
 
                                             FunL arg body _ ->
-                                                getVarNames body takenNames |> IO.andThen (getVarNames arg)
+                                                getVarNamesAvoiding reserved body takenNames |> IO.andThen (getVarNamesAvoiding reserved arg)
 
                                             LambdaSet1 _ ->
                                                 IO.pure takenNames
@@ -1171,13 +1244,13 @@ getVarNames var takenNames =
                                                 IO.pure takenNames
 
                                             Record1 fields extension ->
-                                                Dict.values fields |> IO.foldrM getVarNames takenNames |> IO.andThen (getVarNames extension)
+                                                Dict.values fields |> IO.foldrM (getVarNamesAvoiding reserved) takenNames |> IO.andThen (getVarNamesAvoiding reserved extension)
 
                                             Unit1 ->
                                                 IO.pure takenNames
 
                                             Tuple1 a b cs ->
-                                                IO.foldrM getVarNames takenNames (a :: b :: cs)
+                                                IO.foldrM (getVarNamesAvoiding reserved) takenNames (a :: b :: cs)
                             )
             )
 
@@ -1188,14 +1261,14 @@ getVarNames var takenNames =
 
 {-| Records `var` in `takenNames` under `givenName` with the numeric suffix
 `index`, or under the first larger suffix whose name is free or already held
-by `var`'s own class.
+by `var`'s own class. A name in `reserved` is never free.
 
 When the name recorded is not `givenName`, `var`'s content is replaced by
 `makeContent` of the new name, which is how a clashing user name is renamed.
 
 -}
-addName : Int -> Name -> Variable -> (Name -> Content) -> Dict Name Variable -> IO (Dict Name Variable)
-addName index givenName var makeContent takenNames =
+addName : Dict Name () -> Int -> Name -> Variable -> (Name -> Content) -> Dict Name Variable -> IO (Dict Name Variable)
+addName reserved index givenName var makeContent takenNames =
     let
         indexedName : Name
         indexedName =
@@ -1203,16 +1276,20 @@ addName index givenName var makeContent takenNames =
     in
     case Dict.get indexedName takenNames of
         Nothing ->
-            (if indexedName == givenName then
-                IO.pure ()
+            if Dict.member indexedName reserved then
+                addName reserved (index + 1) givenName var makeContent takenNames
 
-             else
-                UF.modify var
-                    (\props ->
-                        IO.makeDescriptor (makeContent indexedName) props.rank props.mark props.copy
-                    )
-            )
-                |> IO.map (\_ -> Dict.insert indexedName var takenNames)
+            else
+                (if indexedName == givenName then
+                    IO.pure ()
+
+                 else
+                    UF.modify var
+                        (\props ->
+                            IO.makeDescriptor (makeContent indexedName) props.rank props.mark props.copy
+                        )
+                )
+                    |> IO.map (\_ -> Dict.insert indexedName var takenNames)
 
         Just otherVar ->
             UF.equivalent var otherVar
@@ -1222,5 +1299,5 @@ addName index givenName var makeContent takenNames =
                             IO.pure takenNames
 
                         else
-                            addName (index + 1) givenName var makeContent takenNames
+                            addName reserved (index + 1) givenName var makeContent takenNames
                     )

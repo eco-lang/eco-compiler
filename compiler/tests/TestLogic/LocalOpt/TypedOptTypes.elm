@@ -22,12 +22,16 @@ checks the parameter types of functions and tail-recursive definitions, the
 declared type of each `let` definition, and the type a `Destruct` stores. A
 named type is known when it is declared by one of the modules in
 `Compiler.Elm.Interface.Basic.testIfaces` or by the program's own module, or
-is one of two types no test interface declares: the built-in `List`, and
-elm/json's `Json.Decode.Decoder`, which the typed optimizer builds port decoders
-with but the test interface of `Json.Decode` leaves out. Its expected argument
-count is the number of variables of that declaration (one for each of those
-two). An
-alias's expected argument count comes from the same places.
+is one of the types the compiler itself builds that no test interface
+declares: the built-in `List`; elm/json's `Json.Decode.Decoder`, which the
+typed optimizer builds port decoders with but the test interface of
+`Json.Decode` leaves out; and the types of a GLSL shader, which type checking
+builds from elm-explorations/webgl and linear-algebra whatever the program
+imports (`Compiler.Type.Constrain.Typed.Expression`, `Compiler.Type.Type`):
+`WebGL.Shader` (three arguments) and `Vec2`, `Vec3`, `Vec4`, `Mat4` and
+`Texture` (none). Its expected argument count is the number of variables of
+that declaration. An alias's expected argument count comes from the same
+places.
 
 Among what is not checked: that a type variable is bound by an enclosing
 annotation, the alias body an alias carries against its declaration, and the
@@ -91,7 +95,8 @@ type alias Arities =
     }
 
 
-{-| Returns the arities of `List`, of `Json.Decode.Decoder`, and of the custom
+{-| Returns the arities of `List`, of `Json.Decode.Decoder`, of the shader
+types, and of the custom
 types and aliases declared by the interfaces in `Basic.testIfaces` and by the
 program's own canonical module.
 -}
@@ -121,6 +126,12 @@ knownArities (Can.Module moduleData) =
                     Dict.fromList
                         [ ( typeKey ModuleName.list "List", 1 )
                         , ( typeKey ModuleName.jsonDecode "Decoder", 1 )
+                        , ( typeKey ModuleName.webgl "Shader", 3 )
+                        , ( typeKey ModuleName.vector2 "Vec2", 0 )
+                        , ( typeKey ModuleName.vector3 "Vec3", 0 )
+                        , ( typeKey ModuleName.vector4 "Vec4", 0 )
+                        , ( typeKey ModuleName.matrix4 "Mat4", 0 )
+                        , ( typeKey ModuleName.texture "Texture", 0 )
                         ]
                 , aliases = Dict.empty
                 }

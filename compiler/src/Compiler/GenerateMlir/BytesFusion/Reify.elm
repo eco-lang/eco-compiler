@@ -1301,7 +1301,8 @@ When the body is `string n` or `bytes n` on the parameter `n` itself, the result
 is a `DLengthPrefixedString` or `DLengthPrefixedBytes`, provided the first
 decoder is a single integer read; if it is not, the result is `Nothing`, and the
 general form is not tried. Otherwise the body is reified as a decoder and the
-result is a `DAndThen`.
+result is a `DAndThen`, unless a residual expression of that decoder mentions
+the parameter (`residualMentions`), in which case the result is `Nothing`.
 
 -}
 reifyAndThenBody :
@@ -1338,10 +1339,90 @@ reifyAndThenBody registry exprCache firstDecoder closureInfo bodyExpr =
                 Nothing ->
                     case reifyDecoder registry exprCache bodyExpr of
                         Just bodyDecoder ->
-                            Just (DAndThen firstDecoder paramName bodyDecoder)
+                            if residualMentions paramName bodyDecoder then
+                                Nothing
+
+                            else
+                                Just (DAndThen firstDecoder paramName bodyDecoder)
 
                         Nothing ->
                             Nothing
+
+
+{-| Returns whether a residual expression of `node`, one that the fused decoder
+compiles as an expression (a `succeed` value, a `map` function, or a length
+that is not the bare local `name`), mentions the local `name`.
+
+`compileDecoderNode` binds an `andThen` parameter only for a length or a loop
+count that is that parameter itself; an expression mentioning it anywhere else
+would be compiled with the parameter unbound (finding F10).
+
+-}
+residualMentions : String -> DecoderNode -> Bool
+residualMentions name node =
+    let
+        mentions e =
+            MonoTraverse.foldExpr
+                (\x acc ->
+                    acc
+                        || (case x of
+                                MonoVarLocal n _ ->
+                                    n == name
+
+                                _ ->
+                                    False
+                           )
+                )
+                False
+                e
+
+        lengthMentions e =
+            case e of
+                MonoVarLocal n _ ->
+                    n /= name && mentions e
+
+                _ ->
+                    mentions e
+
+        sub =
+            residualMentions name
+    in
+    case node of
+        DBytes lenExpr ->
+            lengthMentions lenExpr
+
+        DString lenExpr ->
+            lengthMentions lenExpr
+
+        DSucceed valueExpr ->
+            mentions valueExpr
+
+        DMap fn d ->
+            mentions fn || sub d
+
+        DMap2 fn d1 d2 ->
+            mentions fn || List.any sub [ d1, d2 ]
+
+        DMap3 fn d1 d2 d3 ->
+            mentions fn || List.any sub [ d1, d2, d3 ]
+
+        DMap4 fn d1 d2 d3 d4 ->
+            mentions fn || List.any sub [ d1, d2, d3, d4 ]
+
+        DMap5 fn d1 d2 d3 d4 d5 ->
+            mentions fn || List.any sub [ d1, d2, d3, d4, d5 ]
+
+        DAndThen d1 _ d2 ->
+            sub d1 || sub d2
+
+        DCountLoop _ _ item ->
+            sub item
+
+        DSentinelLoop _ _ item ->
+            sub item
+
+        _ ->
+            False
 
 
 {-| Returns `DLengthPrefixedString` or `DLengthPrefixedBytes` when `bodyExpr` is

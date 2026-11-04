@@ -3,7 +3,7 @@ module Compiler.GenerateMlir.Expr exposing
     , generateExpr, unscopedTailCallError
     , coerceResultToType
     , createDummyValue
-    , collectLetBoundNames, addPlaceholderMappings
+    , collectLetBoundNames, addPlaceholderMappings, splitMutualRecGroup
     , aggBinderPromotableWith, lambdaIdToString, paramSplitAdmissible, scanChainForwardRefs, tupleBinderPromotable
     )
 
@@ -86,7 +86,7 @@ rebuilds the tuple after the case.
 
 # Let-binding Helpers
 
-@docs collectLetBoundNames, addPlaceholderMappings
+@docs collectLetBoundNames, addPlaceholderMappings, splitMutualRecGroup
 @docs aggBinderPromotableWith, lambdaIdToString, paramSplitAdmissible, scanChainForwardRefs, tupleBinderPromotable
 
 -}
@@ -4989,6 +4989,28 @@ detectMutualRecGroup def body =
                                 finalBody
                     in
                     Just ( members, bodyAfterGroup )
+
+
+{-| Splits off a group of mutually recursive closures at the head of the let
+chain `def` / `body`, as `detectMutualRecGroup` finds it: returns the group
+alone, as a let chain ending in unit, and the rest of the chain. `Nothing`
+when the chain does not start with such a group.
+
+A caller that generates a chain one definition at a time (a tail loop's let
+step, `Compiler.GenerateMlir.TailRec`) uses it to generate the group's closures
+together, so that each one captures its siblings' values rather than their
+placeholders.
+
+-}
+splitMutualRecGroup : Mono.MonoDef -> Mono.MonoExpr -> Maybe ( Mono.MonoExpr, Mono.MonoExpr )
+splitMutualRecGroup def body =
+    detectMutualRecGroup def body
+        |> Maybe.map
+            (\( members, restBody ) ->
+                ( rebuildLetChainFromDefs (List.map closureBindingToDef members) Mono.MonoUnit
+                , restBody
+                )
+            )
 
 
 {-| Returns the closure binding as the let definition it came from.

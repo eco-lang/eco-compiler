@@ -40,6 +40,13 @@ The cases, in the order they run:
   - One case that compares strings in one function both through string
     patterns and through `==`.
   - Nine cases on pairs of single-constructor types, described below.
+  - Two cases whose program declares constructors named like built-in ones:
+    `type MyList = Cons Int MyList | Nil` with
+    `testValue : List MyList = [ Cons 1 (Cons 2 Nil), Nil ]`, which has no
+    `case` and only builds values; and `type Tri = True | False | Unknown`
+    with `pick : Tri -> Int` returning 1, 2 or 3 by a `case` on the three
+    constructors and `testValue = pick False + pick Unknown`. Both use
+    `makeModuleWithTypedDefsUnionsAliases` and are modules named `TestMod`.
 
 Each of the nine single-constructor cases declares two custom types, each with
 one constructor of one field, named after the field's type (`WrapBool`,
@@ -125,6 +132,7 @@ testCases expectFn =
         ++ customTypePatternCases expectFn
         ++ stringChainKernelAbiCases expectFn
         ++ singleCtorPairCases expectFn
+        ++ builtinNamedCtorCases expectFn
 
 
 
@@ -1517,3 +1525,123 @@ singleCtorPairFloatBool expectFn _ =
                 []
     in
     expectFn modul
+
+
+
+-- ============================================================================
+-- CONSTRUCTORS NAMED LIKE BUILT-IN ONES
+-- ============================================================================
+
+
+{-| Returns the two cases whose program declares its own constructors with the
+names of built-in ones: `Cons`/`Nil`, and `True`/`False`.
+-}
+builtinNamedCtorCases : (Src.Module -> Expectation) -> List TestCase
+builtinNamedCtorCases expectFn =
+    [ { label = "Own Cons and Nil constructors in a list literal", run = ownConsAndNil expectFn }
+    , { label = "Own True and False constructors matched by a case", run = ownTrueFalse expectFn }
+    ]
+
+
+{-| Gives `expectFn` a module that declares its own list-like type and puts
+values of it in a list literal:
+
+    type MyList
+        = Cons Int MyList
+        | Nil
+
+    testValue : List MyList
+    testValue =
+        [ Cons 1 (Cons 2 Nil), Nil ]
+
+-}
+ownConsAndNil : (Src.Module -> Expectation) -> (() -> Expectation)
+ownConsAndNil expectFn _ =
+    let
+        myList =
+            tType "MyList" []
+
+        myListUnion : UnionDef
+        myListUnion =
+            { name = "MyList"
+            , args = []
+            , ctors =
+                [ { name = "Cons", args = [ tType "Int" [], myList ] }
+                , { name = "Nil", args = [] }
+                ]
+            }
+
+        testValueDef : TypedDef
+        testValueDef =
+            { name = "testValue"
+            , args = []
+            , tipe = tType "List" [ myList ]
+            , body =
+                listExpr
+                    [ callExpr (ctorExpr "Cons") [ intExpr 1, callExpr (ctorExpr "Cons") [ intExpr 2, ctorExpr "Nil" ] ]
+                    , ctorExpr "Nil"
+                    ]
+            }
+    in
+    expectFn (makeModuleWithTypedDefsUnionsAliases "TestMod" [ testValueDef ] [ myListUnion ] [])
+
+
+{-| Gives `expectFn` a module that declares three nullary constructors, two of
+them named `True` and `False`, and matches on them:
+
+    type Tri
+        = True
+        | False
+        | Unknown
+
+    pick : Tri -> Int
+    pick t =
+        case t of
+            True ->
+                1
+
+            False ->
+                2
+
+            Unknown ->
+                3
+
+    testValue : Int
+    testValue =
+        pick False + pick Unknown
+
+-}
+ownTrueFalse : (Src.Module -> Expectation) -> (() -> Expectation)
+ownTrueFalse expectFn _ =
+    let
+        triUnion : UnionDef
+        triUnion =
+            { name = "Tri"
+            , args = []
+            , ctors = List.map (\n -> { name = n, args = [] }) [ "True", "False", "Unknown" ]
+            }
+
+        pickDef : TypedDef
+        pickDef =
+            { name = "pick"
+            , args = [ pVar "t" ]
+            , tipe = tLambda (tType "Tri" []) (tType "Int" [])
+            , body =
+                caseExpr (varExpr "t")
+                    [ ( pCtor "True" [], intExpr 1 )
+                    , ( pCtor "False" [], intExpr 2 )
+                    , ( pCtor "Unknown" [], intExpr 3 )
+                    ]
+            }
+
+        testValueDef : TypedDef
+        testValueDef =
+            { name = "testValue"
+            , args = []
+            , tipe = tType "Int" []
+            , body =
+                binopsExpr [ ( callExpr (varExpr "pick") [ ctorExpr "False" ], "+" ) ]
+                    (callExpr (varExpr "pick") [ ctorExpr "Unknown" ])
+            }
+    in
+    expectFn (makeModuleWithTypedDefsUnionsAliases "TestMod" [ pickDef, testValueDef ] [ triUnion ] [])

@@ -1056,11 +1056,15 @@ applied, read from the code that produces it, or `Nothing` when that code does
 not show it.
 
 For a closure it is the stages of its body's type. For a global it depends on
-the node: a tail function gives the stages of its body's type; a define or
+the node: a tail function's body is the value it returns, so it answers when
+that body is a closure (its parameter count followed by the stages of its
+body's type) or a `case` or `if` whose branches agree, as below; a define or
 port whose expression is a closure looks at the closure's body, and answers
-only when that body is a `case` or `if` whose branches agree, as below; a
-define or port whose expression is itself a `case` or `if` is read the same
-way. Anything else gives `Nothing`, rather than a guess from the type.
+only when that body is a `case` or `if` whose branches agree; a define or port
+whose expression is itself a `case` or `if` is read the same way. Anything else
+gives `Nothing`, rather than a guess from the type. In particular a tail
+function whose body has a branch that is a tail call or a variable gives
+`Nothing`, whatever its type says (GOPT\_003).
 
 A `case` or `if` claims a segmentation only when every branch, `case` jumps and
 inline leaves alike, is a closure and all of them have the same segmentation
@@ -1081,7 +1085,12 @@ closureBodyStageArities graph expr =
                     getExprBodyArities innerExpr
 
                 Mono.MonoTailFunc _ bodyExpr _ ->
-                    Just (MonoReturnArity.collectStageArities (Mono.typeOf bodyExpr))
+                    -- The body is the value returned, so it is read as code like
+                    -- a join's branches, not from its type: a tail function's
+                    -- body is typically a `case` or `if` with a tail call in a
+                    -- branch, which is no closure and says nothing about how the
+                    -- value it returns is staged (GOPT_003).
+                    getReturnedValueArities bodyExpr
 
                 Mono.MonoPortIncoming innerExpr _ ->
                     getExprBodyArities innerExpr
@@ -1142,6 +1151,21 @@ closureBodyStageArities graph expr =
 
                         _ ->
                             Nothing
+
+                Mono.MonoCase _ _ decider jumps _ ->
+                    getClosureArityFromCase decider jumps
+
+                Mono.MonoIf branches final _ ->
+                    getClosureArityFromIf branches final
+
+                _ ->
+                    Nothing
+
+        getReturnedValueArities : Mono.MonoExpr -> Maybe (List Int)
+        getReturnedValueArities e =
+            case e of
+                Mono.MonoClosure _ _ _ ->
+                    getClosureArityFromExpr e
 
                 Mono.MonoCase _ _ decider jumps _ ->
                     getClosureArityFromCase decider jumps
@@ -1236,12 +1260,15 @@ calleeHasPolymorphicReturn env funcExpr =
             False
 
 
-{-| Returns `t` with `n` function layers removed, stopping early at a type that
-is not a function.
+{-| Returns `t` after `n` arguments have been applied to it, stopping early at a
+type that is not a function.
 
-A layer is one `MFunction`, however many arguments it takes. Its one caller
-passes a count of arguments, not of layers, so for a type whose layers take
-several arguments this can peel too far and stop at the final result.
+A function type's layers can each take several arguments
+(`MFunction [a, b] (MFunction [c] r)`), so the count is of arguments, not of
+layers: a layer whose parameters are all consumed is removed, and a layer that
+is only partly consumed keeps its remaining parameters, under its own
+annotation. Counting layers instead peeled `go 3 0`, for a local `go` of type
+`Int -> Int -> (Int -> Int)`, down to `Int` (finding F12).
 
 -}
 peelStages : Int -> Mono.MonoType -> Mono.MonoType
@@ -1251,8 +1278,16 @@ peelStages n t =
 
     else
         case t of
-            Mono.MFunction _ _ _ body ->
-                peelStages (n - 1) body
+            Mono.MFunction _ anno params body ->
+                let
+                    np =
+                        List.length params
+                in
+                if n >= np then
+                    peelStages (n - np) body
+
+                else
+                    Mono.mFunction anno (List.drop n params) body
 
             _ ->
                 t
@@ -1262,9 +1297,9 @@ peelStages n t =
 of a call invokes, given the call's `resultType`, the arguments the call
 consumes over all stages, and the callee's type.
 
-It is `funcType` with `totalArgsConsumed` layers peeled. When that is still a
-function but `resultType` is not, it is the final result of the peeled type
-instead: a callee's type can be the full curried type of the function rather
+It is `funcType` with `totalArgsConsumed` arguments applied (`peelStages`).
+When that is still a function but `resultType` is not, it is the final result
+of the peeled type instead: a callee's type can be the full curried type of the function rather
 than of the partial application being called, and then the peel stops short. A
 call whose result is itself a function keeps the peeled type, so that a
 function returning a closure is not peeled past its last stage.

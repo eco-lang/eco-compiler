@@ -18,8 +18,11 @@ Every program is a module named `Test` built with `Compiler.AST.SourceBuilder`,
 with no type annotations, importing only `Basics` and `List`. Most define a
 function whose arguments use the as-pattern, and a `testValue` that calls it on
 values built from integer and string literals; the rest put the pattern in a
-lambda, a `let` or a `case` inside `testValue` itself. The list and cons
-argument patterns are refutable: they do not match every list.
+lambda, a `let` or a `case` inside `testValue` itself. A list or cons pattern
+does not match every list, and `eco make` rejects one in a function argument
+as an `UNSAFE PATTERN`; so each aliased list pattern is a branch of a `case`
+on the function's list argument, beside a branch for the lists it misses. Their
+argument-position forms are rejected cases of `SourceIR.PatternFailsCases`.
 
 The programs, by group:
 
@@ -29,11 +32,12 @@ The programs, by group:
     a pair whose first element is a pair.
   - Records: an alias on a two-field record pattern, on each of two one-field
     record arguments, and on a four-field record pattern.
-  - Lists: an alias on a cons pattern, on a two-element list pattern, on the
-    head and on the tail of a cons pattern, and on a cons pattern whose tail is
-    itself a cons pattern.
+  - Lists, each in a `case` branch: an alias on a cons pattern, on a
+    two-element list pattern, on the head and on the tail of a cons pattern,
+    and on a cons pattern whose tail is itself a cons pattern.
   - Nesting: an alias on an alias, an alias on a pair nested in a pair, and an
-    alias on a pair of a record pattern and an aliased cons pattern.
+    alias on a pair of a record pattern and a name, whose list a `case`
+    matches with an aliased cons pattern.
   - Definitions: an alias in a let-destructuring, and in the argument of a
     function defined in a `let`.
   - Case: an alias in a case branch.
@@ -361,8 +365,17 @@ listAliasCases expectFn =
     ]
 
 
-{-| Runs `expectFn` on `withList ((h :: t) as list) = ( list, h )` with
-`testValue = withList [ 1, 2 ]`.
+{-| Runs `expectFn` on
+
+    withList xs =
+        case xs of
+            (h :: t) as list ->
+                ( list, h )
+
+            [] ->
+                ( [], 0 )
+
+with `testValue = withList [ 1, 2 ]`.
 -}
 aliasOnConsPattern : (Src.Module -> Expectation) -> (() -> Expectation)
 aliasOnConsPattern expectFn _ =
@@ -370,8 +383,11 @@ aliasOnConsPattern expectFn _ =
         modul =
             makeModuleWithDefs "Test"
                 [ ( "withList"
-                  , [ pAlias (pCons (pVar "h") (pVar "t")) "list" ]
-                  , tupleExpr (varExpr "list") (varExpr "h")
+                  , [ pVar "xs" ]
+                  , caseExpr (varExpr "xs")
+                        [ ( pAlias (pCons (pVar "h") (pVar "t")) "list", tupleExpr (varExpr "list") (varExpr "h") )
+                        , ( pList [], tupleExpr (listExpr []) (intExpr 0) )
+                        ]
                   )
                 , ( "testValue", [], callExpr (varExpr "withList") [ listExpr [ intExpr 1, intExpr 2 ] ] )
                 ]
@@ -379,8 +395,17 @@ aliasOnConsPattern expectFn _ =
     expectFn modul
 
 
-{-| Runs `expectFn` on `pairList ([ a, b ] as both) = both` with
-`testValue = pairList [ 1, 2 ]`.
+{-| Runs `expectFn` on
+
+    pairList xs =
+        case xs of
+            [ a, b ] as both ->
+                both
+
+            _ ->
+                []
+
+with `testValue = pairList [ 1, 2 ]`.
 -}
 aliasOnFixedListPattern : (Src.Module -> Expectation) -> (() -> Expectation)
 aliasOnFixedListPattern expectFn _ =
@@ -388,8 +413,11 @@ aliasOnFixedListPattern expectFn _ =
         modul =
             makeModuleWithDefs "Test"
                 [ ( "pairList"
-                  , [ pAlias (pList [ pVar "a", pVar "b" ]) "both" ]
-                  , varExpr "both"
+                  , [ pVar "xs" ]
+                  , caseExpr (varExpr "xs")
+                        [ ( pAlias (pList [ pVar "a", pVar "b" ]) "both", varExpr "both" )
+                        , ( pAnything, listExpr [] )
+                        ]
                   )
                 , ( "testValue", [], callExpr (varExpr "pairList") [ listExpr [ intExpr 1, intExpr 2 ] ] )
                 ]
@@ -397,7 +425,16 @@ aliasOnFixedListPattern expectFn _ =
     expectFn modul
 
 
-{-| Runs `expectFn` on `parts ((h as head) :: (t as tail)) = ( head, tail )`
+{-| Runs `expectFn` on
+
+    parts xs =
+        case xs of
+            (h as head) :: (t as tail) ->
+                ( head, tail )
+
+            [] ->
+                ( 0, [] )
+
 with `testValue = parts [ 1, 2 ]`.
 -}
 nestedAliasInList : (Src.Module -> Expectation) -> (() -> Expectation)
@@ -408,15 +445,30 @@ nestedAliasInList expectFn _ =
 
         modul =
             makeModuleWithDefs "Test"
-                [ ( "parts", [ pattern ], tupleExpr (varExpr "head") (varExpr "tail") )
+                [ ( "parts"
+                  , [ pVar "xs" ]
+                  , caseExpr (varExpr "xs")
+                        [ ( pattern, tupleExpr (varExpr "head") (varExpr "tail") )
+                        , ( pList [], tupleExpr (intExpr 0) (listExpr []) )
+                        ]
+                  )
                 , ( "testValue", [], callExpr (varExpr "parts") [ listExpr [ intExpr 1, intExpr 2 ] ] )
                 ]
     in
     expectFn modul
 
 
-{-| Runs `expectFn` on `twoOrMore ((a :: b :: rest) as list) = list` with
-`testValue = twoOrMore [ 1, 2, 3 ]`.
+{-| Runs `expectFn` on
+
+    twoOrMore xs =
+        case xs of
+            (a :: b :: rest) as list ->
+                list
+
+            _ ->
+                []
+
+with `testValue = twoOrMore [ 1, 2, 3 ]`.
 -}
 aliasOnNestedCons : (Src.Module -> Expectation) -> (() -> Expectation)
 aliasOnNestedCons expectFn _ =
@@ -426,7 +478,13 @@ aliasOnNestedCons expectFn _ =
 
         modul =
             makeModuleWithDefs "Test"
-                [ ( "twoOrMore", [ pattern ], varExpr "list" )
+                [ ( "twoOrMore"
+                  , [ pVar "xs" ]
+                  , caseExpr (varExpr "xs")
+                        [ ( pattern, varExpr "list" )
+                        , ( pAnything, listExpr [] )
+                        ]
+                  )
                 , ( "testValue", [], callExpr (varExpr "twoOrMore") [ listExpr [ intExpr 1, intExpr 2, intExpr 3 ] ] )
                 ]
     in
@@ -488,23 +546,35 @@ aliasInDeeplyNestedStructure expectFn _ =
     expectFn modul
 
 
-{-| Runs `expectFn` on `mixed (( { x }, (h :: _) as list ) as all) = all` with
-`testValue = mixed ( { x = 1 }, [ 1, 2 ] )`.
+{-| Runs `expectFn` on
+
+    mixed (( { x }, xs ) as all) =
+        case xs of
+            (h :: _) as list ->
+                all
+
+            [] ->
+                all
+
+with `testValue = mixed ( { x = 1 }, [ 1, 2 ] )`.
 -}
 mixedNestedAliases : (Src.Module -> Expectation) -> (() -> Expectation)
 mixedNestedAliases expectFn _ =
     let
         pattern =
             pAlias
-                (pTuple
-                    (pRecord [ "x" ])
-                    (pAlias (pCons (pVar "h") pAnything) "list")
-                )
+                (pTuple (pRecord [ "x" ]) (pVar "xs"))
                 "all"
+
+        body =
+            caseExpr (varExpr "xs")
+                [ ( pAlias (pCons (pVar "h") pAnything) "list", varExpr "all" )
+                , ( pList [], varExpr "all" )
+                ]
 
         modul =
             makeModuleWithDefs "Test"
-                [ ( "mixed", [ pattern ], varExpr "all" )
+                [ ( "mixed", [ pattern ], body )
                 , ( "testValue", [], callExpr (varExpr "mixed") [ tupleExpr (recordExpr [ ( "x", intExpr 1 ) ]) (listExpr [ intExpr 1, intExpr 2 ]) ] )
                 ]
     in

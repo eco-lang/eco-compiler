@@ -1,97 +1,50 @@
 module TestLogic.Canonicalize.DependencySCCTest exposing (suite)
 
-{-| Tests that catch a canonicalizer that groups a module's top-level
-definitions wrongly.
+{-| Tests invariant CANON\_005 on the standard catalogue of test programs: the
+canonicalizer groups a module's top-level definitions into the strongly
+connected components of their dependency graph, each component after the ones
+it depends on.
 
-The canonicalizer groups the top-level definitions into the strongly connected
-components (SCCs) of their dependency graph, as
-`TestLogic.Canonicalize.DependencySCC` describes. Each test builds a module with
-`Compiler.AST.SourceBuilder.makeModuleWithDefs`, whose definitions carry no type
-annotations, and passes it to
-`TestLogic.Canonicalize.DependencySCC.expectSCCGroups`, which checks the
-grouping (no `Declare` depends on itself, dependencies point to earlier or the
-same component, recursive groups are strongly connected) and compares the
-components with the expected ones.
+Each program `SourceIR.Suite.StandardTestSuites.expectSuite` supplies is given
+to `TestLogic.Canonicalize.DependencySCC.expectValidSCCs`, which runs it
+through PostSolve with `TestLogic.TestPipeline.runToPostSolve` and walks the
+canonical declarations. For each program the test establishes, as that
+module's docstring states in full:
 
-The tests, all in `sccTests`:
+  - it canonicalizes and type checks;
+  - no `Declare`d definition depends on itself;
+  - no definition depends on one declared in a later component;
+  - a recursive group of one definition depends on itself, and a larger one
+    is strongly connected through dependencies within the group.
 
-  - "independent definitions have separate SCCs": `a = 1`, `b = 2`, `c = 3`,
-    three non-recursive components.
-  - "linear dependency chain": `a = 1`, `b = a`, `c = b`.
-  - "dependency written after its use": `c = b`, `b = a`, `a = 1`, so the
-    canonicalizer must reorder the source.
-  - "simple function dependency": `helper x = x` and `result = helper 42`.
-  - "self-recursive function": `loop x = loop x`, a recursive group of one.
-  - "mutually recursive functions": `ping x = pong x`, `pong x = ping x` and
-    `user = ping 1`, a recursive group of two followed by its user.
+The catalogue includes `SourceIR.DependencySCCCases`, the programs this check
+was first written for; the grouping expected for each of those is pinned in
+`Compiler.Canonicalize.DependencySCCTest`.
+
+Among what is not tested: the relative order of components that do not depend
+on each other, and dependencies through ports or effect managers.
+
+It also runs over the programs of `SourceIR.MainFailsCases`, which typed
+optimization rejects, and those of `SourceIR.MonoFailsCases`
+(`expectBeforeMonoSuite`), which monomorphization rejects: every stage this
+check looks at accepts them, and they hold what the standard catalogue cannot,
+such as polymorphic recursion over a non-regular type.
 
 -}
 
-import Compiler.AST.SourceBuilder as SB
+import SourceIR.MainFailsCases as MainFailsCases
+import SourceIR.MonoFailsCases as MonoFailsCases
+import SourceIR.Suite.StandardTestSuites as StandardTestSuites
 import Test exposing (Test)
-import TestLogic.Canonicalize.DependencySCC exposing (expectSCCGroups)
+import TestLogic.Canonicalize.DependencySCC exposing (expectValidSCCs)
 
 
-{-| The tests of this module, under one label.
+{-| `expectValidSCCs` over every program of the standard catalogue.
 -}
 suite : Test
 suite =
     Test.describe "Dependency SCCs are correctly computed (CANON_005)"
-        [ sccTests
-        ]
-
-
-{-| Six tests, each running a module of unannotated definitions through
-`expectSCCGroups` with the components it should be grouped into.
--}
-sccTests : Test
-sccTests =
-    Test.describe "SCC computation"
-        [ Test.test "independent definitions have separate SCCs" <|
-            \_ ->
-                SB.makeModuleWithDefs "Independent"
-                    [ ( "a", [], SB.intExpr 1 )
-                    , ( "b", [], SB.intExpr 2 )
-                    , ( "c", [], SB.intExpr 3 )
-                    ]
-                    |> expectSCCGroups [ ( [ "a" ], False ), ( [ "b" ], False ), ( [ "c" ], False ) ]
-        , Test.test "linear dependency chain" <|
-            \_ ->
-                SB.makeModuleWithDefs "Chain"
-                    [ ( "a", [], SB.intExpr 1 )
-                    , ( "b", [], SB.varExpr "a" )
-                    , ( "c", [], SB.varExpr "b" )
-                    ]
-                    |> expectSCCGroups [ ( [ "a" ], False ), ( [ "b" ], False ), ( [ "c" ], False ) ]
-        , Test.test "dependency written after its use" <|
-            \_ ->
-                SB.makeModuleWithDefs "Reversed"
-                    [ ( "c", [], SB.varExpr "b" )
-                    , ( "b", [], SB.varExpr "a" )
-                    , ( "a", [], SB.intExpr 1 )
-                    ]
-                    |> expectSCCGroups [ ( [ "a" ], False ), ( [ "b" ], False ), ( [ "c" ], False ) ]
-        , Test.test "simple function dependency" <|
-            \_ ->
-                SB.makeModuleWithDefs "FnDep"
-                    [ ( "helper", [ SB.pVar "x" ], SB.varExpr "x" )
-                    , ( "result"
-                      , []
-                      , SB.callExpr (SB.varExpr "helper") [ SB.intExpr 42 ]
-                      )
-                    ]
-                    |> expectSCCGroups [ ( [ "helper" ], False ), ( [ "result" ], False ) ]
-        , Test.test "self-recursive function" <|
-            \_ ->
-                SB.makeModuleWithDefs "SelfRec"
-                    [ ( "loop", [ SB.pVar "x" ], SB.callExpr (SB.varExpr "loop") [ SB.varExpr "x" ] ) ]
-                    |> expectSCCGroups [ ( [ "loop" ], True ) ]
-        , Test.test "mutually recursive functions" <|
-            \_ ->
-                SB.makeModuleWithDefs "MutualRec"
-                    [ ( "user", [], SB.callExpr (SB.varExpr "ping") [ SB.intExpr 1 ] )
-                    , ( "ping", [ SB.pVar "x" ], SB.callExpr (SB.varExpr "pong") [ SB.varExpr "x" ] )
-                    , ( "pong", [ SB.pVar "x" ], SB.callExpr (SB.varExpr "ping") [ SB.varExpr "x" ] )
-                    ]
-                    |> expectSCCGroups [ ( [ "ping", "pong" ], True ), ( [ "user" ], False ) ]
+        [ StandardTestSuites.expectSuite expectValidSCCs "has valid dependency SCCs"
+        , MainFailsCases.expectSuite expectValidSCCs "has valid dependency SCCs"
+        , MonoFailsCases.expectBeforeMonoSuite expectValidSCCs "has valid dependency SCCs"
         ]

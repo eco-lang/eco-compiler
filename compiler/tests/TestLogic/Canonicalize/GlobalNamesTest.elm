@@ -17,8 +17,10 @@ kernel module and name; `VarLocal` references are not checked.
     `expectGlobalNamesQualified`, which canonicalizes it, fails if
     canonicalization reports an error, and otherwise checks the homes in the
     result.
-  - Every program of `SourceIR.TypeCheckFailsCases`, in the same way. No type
-    checking runs here, so these programs must only canonicalize without error.
+  - Every program of the negative catalogue's modules whose programs get past
+    canonicalization, in the same way: `SourceIR.TypeCheckFailsCases`,
+    `PatternFailsCases`, `MainFailsCases` and `MonoFailsCases`. No later stage
+    runs here, so these programs must only canonicalize without error.
   - The canonical modules of `SourceIR.KernelCases`, given directly to
     `expectGlobalNamesQualifiedCanonical`. Their references are `VarKernel`
     and `VarLocal`, so this part checks the kernel prefix, module and name of
@@ -35,7 +37,9 @@ Among what is not tested:
     canonicalized, so the last two parts check the hand-built homes and the
     walk, not the canonicalizer.
   - The programs of `SourceIR.CaseSafepointLeakCases`, which
-    `StandardTestSuites` does not include.
+    `StandardTestSuites` does not include, and those of
+    `SourceIR.CanonicalizeFailsCases` and `LimitFailsCases`, which
+    canonicalization rejects.
   - The homes of types in annotations, and of anything in a module outside the
     definitions of its declarations, which the check does not walk.
 
@@ -43,6 +47,9 @@ Among what is not tested:
 
 import SourceIR.ForeignCases as ForeignCases
 import SourceIR.KernelCases as KernelCases
+import SourceIR.MainFailsCases as MainFailsCases
+import SourceIR.MonoFailsCases as MonoFailsCases
+import SourceIR.PatternFailsCases as PatternFailsCases
 import SourceIR.Suite.StandardTestSuites as StandardTestSuites
 import SourceIR.TypeCheckFailsCases as TypeCheckFailsCases
 import Test exposing (Test)
@@ -50,13 +57,16 @@ import TestLogic.Canonicalize.GlobalNames exposing (expectGlobalNamesQualified, 
 
 
 {-| The tests that the references the global-name check inspects carry a
-complete home, in the four parts the module docstring lists.
+complete home, in the parts the module docstring lists.
 -}
 suite : Test
 suite =
     Test.describe "Global names are fully qualified (CANON_001)"
         [ StandardTestSuites.expectSuite expectGlobalNamesQualified "has qualified global names"
         , TypeCheckFailsCases.expectSuite expectGlobalNamesQualified "has qualified global names"
+        , PatternFailsCases.expectSuite expectGlobalNamesQualified "has qualified global names"
+        , MainFailsCases.expectSuite expectGlobalNamesQualified "has qualified global names"
+        , MonoFailsCases.expectSuite expectGlobalNamesQualified "has qualified global names"
 
         -- These two case modules build canonical modules, not source, so they take the variant that does not canonicalize.
         , KernelCases.expectSuite expectGlobalNamesQualifiedCanonical "has qualified global names"

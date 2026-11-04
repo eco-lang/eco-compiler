@@ -75,14 +75,18 @@ toEncoder tipe =
             crash "toEncoder: type variable"
 
         Can.TUnit ->
-            encode "null"
+            let
+                valueType =
+                    Can.TType ModuleName.jsonEncode "Value" []
+            in
+            -- `null` is the function's body, not a callee, so it carries its
+            -- real type, `Json.Encode.Value`, rather than the placeholder
+            -- `encode` gives a reference: the function's type must be its
+            -- parameter type arrowed into its body's type (TOPT_005).
+            Names.registerGlobal A.zero ModuleName.jsonEncode "null" valueType Nothing
                 |> Names.map
                     (\null ->
-                        let
-                            funcType =
-                                Can.tLambda Can.TUnit (Can.TType ModuleName.jsonEncode "Value" [])
-                        in
-                        TOpt.Function Nothing [ ( Name.dollar, Can.TUnit ) ] null { tipe = funcType, tvar = Nothing }
+                        TOpt.Function Nothing [ ( Name.dollar, Can.TUnit ) ] null { tipe = Can.tLambda Can.TUnit valueType, tvar = Nothing }
                     )
 
         Can.TTuple a b cs ->

@@ -64,6 +64,10 @@ cases, by group:
     a lambda.
   - `String.fromNumber` on two `Int` literals and on a `Float`, `Char.fromCode`,
     and `Char.toCode` applied to the result of `Char.fromCode`.
+  - `Char.toCode`, `Char.fromCode`, `Utils.compare` and `Utils.lt` applied to
+    a lambda's argument inside `List.map` over a list of `Char` (or, for
+    `fromCode`, `Int`) literals, so that the `Char` operand is not a constant
+    and the back end cannot fold the op away.
   - `Bytes.encode` and `Bytes.decode` on `Int` literals.
   - `Debug.log` with a `String` tag on a unit value and on a record, so that
     the kernel's result is a unit and a record, and on an `Int`, and
@@ -78,6 +82,7 @@ import Compiler.AST.SourceBuilder
     exposing
         ( boolExpr
         , callExpr
+        , chrExpr
         , floatExpr
         , intExpr
         , lambdaExpr
@@ -129,6 +134,7 @@ testCases expectFn =
         , listCases expectFn
         , tupleCases expectFn
         , stringCases expectFn
+        , charLambdaCases expectFn
         , bytesCases expectFn
         , kernelAbiTypeCases expectFn
         ]
@@ -613,6 +619,56 @@ stringCases expectFn =
     , { label = "K String.fromNumber Float (intrinsic)", run = \_ -> expectFn (makeKernelModule "testValue" (callExpr (qualVarExpr "Elm.Kernel.String" "fromNumber") [ floatExpr 3.14 ])) }
     , { label = "K Char.toCode (intrinsic)", run = \_ -> expectFn (makeKernelModule "testValue" (callExpr (qualVarExpr "Elm.Kernel.Char" "toCode") [ callExpr (qualVarExpr "Elm.Kernel.Char" "fromCode") [ intExpr 65 ] ])) }
     , { label = "K Char.fromCode (intrinsic)", run = \_ -> expectFn (makeKernelModule "testValue" (callExpr (qualVarExpr "Elm.Kernel.Char" "fromCode") [ intExpr 97 ])) }
+    ]
+
+
+{-| Returns the cases whose `Char` kernel takes a lambda's argument, as
+`List.map (\c -> op c ...) items`: `Char.toCode` and `Char.fromCode`, and
+`Utils.compare` and `Utils.lt` against `'m'`.
+-}
+charLambdaCases : (Src.Module -> Expectation) -> List TestCase
+charLambdaCases expectFn =
+    let
+        mapOver fn items =
+            makeKernelModule "testValue"
+                (callExpr (qualVarExpr "List" "map") [ fn, listExpr items ])
+    in
+    [ { label = "K Char.toCode in a lambda"
+      , run =
+            \_ ->
+                expectFn
+                    (mapOver
+                        (lambdaExpr [ pVar "c" ] (callExpr (qualVarExpr "Elm.Kernel.Char" "toCode") [ varExpr "c" ]))
+                        [ chrExpr "a", chrExpr "b" ]
+                    )
+      }
+    , { label = "K Char.fromCode in a lambda"
+      , run =
+            \_ ->
+                expectFn
+                    (mapOver
+                        (lambdaExpr [ pVar "n" ] (callExpr (qualVarExpr "Elm.Kernel.Char" "fromCode") [ varExpr "n" ]))
+                        [ intExpr 97, intExpr 98 ]
+                    )
+      }
+    , { label = "K Utils.compare on Chars in a lambda"
+      , run =
+            \_ ->
+                expectFn
+                    (mapOver
+                        (lambdaExpr [ pVar "c" ] (callExpr (qualVarExpr "Elm.Kernel.Utils" "compare") [ varExpr "c", chrExpr "m" ]))
+                        [ chrExpr "a", chrExpr "z" ]
+                    )
+      }
+    , { label = "K Utils.lt on Chars in a lambda"
+      , run =
+            \_ ->
+                expectFn
+                    (mapOver
+                        (lambdaExpr [ pVar "c" ] (callExpr (qualVarExpr "Elm.Kernel.Utils" "lt") [ varExpr "c", chrExpr "m" ]))
+                        [ chrExpr "a", chrExpr "z" ]
+                    )
+      }
     ]
 
 

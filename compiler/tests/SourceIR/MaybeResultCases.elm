@@ -1,7 +1,8 @@
 module SourceIR.MaybeResultCases exposing (expectSuite)
 
 {-| Supplies a few small programs for a compiler stage check to run on:
-functions over `Maybe` written in the program itself, `Basics.min` and
+functions over `Maybe` written in the program itself, functions over a
+`Maybe` or `Result` type the program declares for itself, `Basics.min` and
 `Basics.max` at four types, `isNaN` and `isInfinite` applied to float divisions
 by zero, integer division by zero, and a self-recursive `let` function that
 uses a parameter of the function around it. A stage that mishandles one of
@@ -41,10 +42,21 @@ when the check accepts each of these programs:
   - One `TestMod` program whose `processItems` defines, in a `let`, an
     unannotated `takeMore` that calls itself and compares against
     `processItems`'s parameter `threshold`.
+  - Three programs built with `makeModuleWithTypedDefsUnionsAliases` as a
+    module named `Test`, each declaring its own `type Maybe a = Just a |
+    Nothing` or `type Result error ok = Ok ok | Err error` and reading the
+    `Int` out of it with a `case`: `getOkValue : Result String Int -> Int`
+    applied to `Ok 42`; `getJustValue : Maybe Int -> Int` applied to
+    `Just 42`; and `addResults : Result String Int -> Result String Int -> Int`,
+    whose `case` on its second argument is nested in the `Ok` branch of the
+    `case` on its first, applied one argument at a time as
+    `(addResults (Ok 21)) (Ok 21)`. Their `Err` branches bind the field with
+    a variable named `_`, not a wildcard.
 
-Among what is not tested: any `Result` value, despite the module's name; the
-`Maybe.map`, `Maybe.withDefault` and `Maybe.andThen` of the `Maybe` module,
-since every program here defines its own; `min` and `max` on tuples or lists;
+Among what is not tested: elm/core's `Result` type, since the programs that
+use one declare their own; the `Maybe.map`, `Maybe.withDefault` and
+`Maybe.andThen` of the `Maybe` module, since every program here defines its
+own; `min` and `max` on tuples or lists;
 `modBy` or `remainderBy` by zero; and `NaN` or an infinity written as a literal.
 
 -}
@@ -52,6 +64,7 @@ since every program here defines its own; `min` and `max` on tuples or lists;
 import Compiler.AST.SourceBuilder
     exposing
         ( TypedDef
+        , UnionDef
         , binopsExpr
         , callExpr
         , caseExpr
@@ -104,6 +117,7 @@ testCases expectFn =
         ++ floatSpecialCases expectFn
         ++ intDivZeroCases expectFn
         ++ letRecCaptureCases expectFn
+        ++ declaredUnionCases expectFn
 
 
 
@@ -738,3 +752,195 @@ letRecCaptureOuterScope expectFn _ =
                 []
     in
     expectFn modul
+
+
+
+-- ============================================================================
+-- MAYBE AND RESULT TYPES DECLARED BY THE PROGRAM
+-- ============================================================================
+
+
+{-| Returns the three cases whose program declares its own `Maybe` or `Result`
+type and reads an `Int` field out of it, each checked with `expectFn`.
+-}
+declaredUnionCases : (Src.Module -> Expectation) -> List TestCase
+declaredUnionCases expectFn =
+    [ { label = "Declared Result String Int: Ok extraction", run = declaredResultOk expectFn }
+    , { label = "Declared Maybe Int: Just extraction", run = declaredMaybeJust expectFn }
+    , { label = "Declared Result: nested Ok extraction", run = declaredNestedResult expectFn }
+    ]
+
+
+{-| The declaration `type Maybe a = Just a | Nothing`.
+-}
+maybeUnion : UnionDef
+maybeUnion =
+    { name = "Maybe"
+    , args = [ "a" ]
+    , ctors =
+        [ { name = "Just", args = [ tVar "a" ] }
+        , { name = "Nothing", args = [] }
+        ]
+    }
+
+
+{-| The declaration `type Result error ok = Ok ok | Err error`. The error type
+comes first, so in `Result String Int` the `Ok` field is the `Int`.
+-}
+resultUnion : UnionDef
+resultUnion =
+    { name = "Result"
+    , args = [ "error", "ok" ]
+    , ctors =
+        [ { name = "Ok", args = [ tVar "ok" ] }
+        , { name = "Err", args = [ tVar "error" ] }
+        ]
+    }
+
+
+{-| The type `Result String Int`, as written in an annotation.
+-}
+tResultStringInt : Src.Type
+tResultStringInt =
+    tType "Result" [ tType "String" [], tInt ]
+
+
+{-| Checks with `expectFn` the program
+
+    getOkValue : Result String Int -> Int
+    getOkValue result =
+        case result of
+            Ok value ->
+                value
+
+            Err _ ->
+                0
+
+    testValue : Int
+    testValue =
+        getOkValue (Ok 42)
+
+-}
+declaredResultOk : (Src.Module -> Expectation) -> (() -> Expectation)
+declaredResultOk expectFn _ =
+    let
+        getOkValueDef : TypedDef
+        getOkValueDef =
+            { name = "getOkValue"
+            , args = [ pVar "result" ]
+            , tipe = tLambda tResultStringInt tInt
+            , body =
+                caseExpr (varExpr "result")
+                    [ ( pCtor "Ok" [ pVar "value" ], varExpr "value" )
+                    , ( pCtor "Err" [ pVar "_" ], intExpr 0 )
+                    ]
+            }
+
+        testValueDef : TypedDef
+        testValueDef =
+            { name = "testValue"
+            , args = []
+            , tipe = tInt
+            , body = callExpr (varExpr "getOkValue") [ callExpr (ctorExpr "Ok") [ intExpr 42 ] ]
+            }
+    in
+    expectFn (makeModuleWithTypedDefsUnionsAliases "Test" [ getOkValueDef, testValueDef ] [ resultUnion ] [])
+
+
+{-| Checks with `expectFn` the program
+
+    getJustValue : Maybe Int -> Int
+    getJustValue maybe =
+        case maybe of
+            Just value ->
+                value
+
+            Nothing ->
+                0
+
+    testValue : Int
+    testValue =
+        getJustValue (Just 42)
+
+-}
+declaredMaybeJust : (Src.Module -> Expectation) -> (() -> Expectation)
+declaredMaybeJust expectFn _ =
+    let
+        getJustValueDef : TypedDef
+        getJustValueDef =
+            { name = "getJustValue"
+            , args = [ pVar "maybe" ]
+            , tipe = tLambda (tMaybe tInt) tInt
+            , body =
+                caseExpr (varExpr "maybe")
+                    [ ( pCtor "Just" [ pVar "value" ], varExpr "value" )
+                    , ( pCtor "Nothing" [], intExpr 0 )
+                    ]
+            }
+
+        testValueDef : TypedDef
+        testValueDef =
+            { name = "testValue"
+            , args = []
+            , tipe = tInt
+            , body = callExpr (varExpr "getJustValue") [ callExpr (ctorExpr "Just") [ intExpr 42 ] ]
+            }
+    in
+    expectFn (makeModuleWithTypedDefsUnionsAliases "Test" [ getJustValueDef, testValueDef ] [ maybeUnion ] [])
+
+
+{-| Checks with `expectFn` the program
+
+    addResults : Result String Int -> Result String Int -> Int
+    addResults r1 r2 =
+        case r1 of
+            Ok a ->
+                case r2 of
+                    Ok b ->
+                        a + b
+
+                    Err _ ->
+                        a
+
+            Err _ ->
+                0
+
+    testValue : Int
+    testValue =
+        (addResults (Ok 21)) (Ok 21)
+
+-}
+declaredNestedResult : (Src.Module -> Expectation) -> (() -> Expectation)
+declaredNestedResult expectFn _ =
+    let
+        addResultsDef : TypedDef
+        addResultsDef =
+            { name = "addResults"
+            , args = [ pVar "r1", pVar "r2" ]
+            , tipe = tLambda tResultStringInt (tLambda tResultStringInt tInt)
+            , body =
+                caseExpr (varExpr "r1")
+                    [ ( pCtor "Ok" [ pVar "a" ]
+                      , caseExpr (varExpr "r2")
+                            [ ( pCtor "Ok" [ pVar "b" ]
+                              , binopsExpr [ ( varExpr "a", "+" ) ] (varExpr "b")
+                              )
+                            , ( pCtor "Err" [ pVar "_" ], varExpr "a" )
+                            ]
+                      )
+                    , ( pCtor "Err" [ pVar "_" ], intExpr 0 )
+                    ]
+            }
+
+        testValueDef : TypedDef
+        testValueDef =
+            { name = "testValue"
+            , args = []
+            , tipe = tInt
+            , body =
+                callExpr
+                    (callExpr (varExpr "addResults") [ callExpr (ctorExpr "Ok") [ intExpr 21 ] ])
+                    [ callExpr (ctorExpr "Ok") [ intExpr 21 ] ]
+            }
+    in
+    expectFn (makeModuleWithTypedDefsUnionsAliases "Test" [ addResultsDef, testValueDef ] [ resultUnion ] [])

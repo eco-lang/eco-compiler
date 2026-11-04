@@ -4,7 +4,7 @@ module Compiler.Monomorphize.Solver.Engine exposing
     , freshVar, enqueueSpec
     , freshStore, resetItem
     , mvarIdKey, pointKey
-    , AliasKey, AliasVerdict(..), ArrowFact, Env, GroundingStats, ItemAux, LayoutQualStats, LssMemberTable, LssSignature, LssStats, MemberSource(..), MonoMemo, NodeResolution, NumberInstance, NumberMultiEntry, QEntry(..), QPre(..), QShadowStats, SettledStats, SigFlowStats, SpecTally, aliasKeyEq, aliasKeyHash, bumpAppliedArrow, bumpArgFlowCensus, bumpArgFlowCensusBy, bumpCompletionJoin, bumpCompletionJoinNoop, bumpEdgeInstalled, bumpFlowDegraded, bumpKernelFactHit, bumpKernelLicensed, bumpTopMixedFlexSig, bumpWidenedByCf, bumpWidenedByKernel, bumpWidenedBySigSize, clearResidualReads, clearedAux, consS, crashFailure, emptyItemAux, emptyLssStats, emptyMemberTable, emptyMonoMemo, groundSetMembers, groundStandaloneMemberIdFor, harvestSuperTableExcept, insertVar, internMemberKey, isLocalMultiTarget, isScalarVar, kernelMemberIdFor, lambdaInstanceMemberId, layoutQualKey, localInstanceTagFor, localVarInfo, lookupCallMemo, lookupSchemeMono, lookupVar, markFlexCtorSpec, memberIdFor, membersClass, memoizedSignatureTrivial, mixTag, numberMultiRootType, papMemberIdFor, papMemberKey, popLocalMulti, popNumberMulti, pushLocalMulti, pushNumberMulti, putAliasVerdict, putCallMemo, putSchemeMono, recordLocalInstance, recordNumberInstance, recordSpecWidenedKey, renderFailure, restoredAux, scoped, specIdsForGlobal, srcLambdaKey, standaloneMemberGlobal, standaloneMemberIdFor, standaloneMemberKernel, trivialSignature, withScratchStore
+    , AliasKey, AliasVerdict(..), ArrowFact, Env, GroundingStats, ItemAux, LayoutQualStats, LssMemberTable, LssSignature, LssStats, MemberSource(..), MonoMemo, NodeResolution, NumberInstance, NumberMultiEntry, QEntry(..), QPre(..), QShadowStats, SettledStats, SigFlowStats, SpecTally, aliasKeyEq, aliasKeyHash, bumpAppliedArrow, bumpArgFlowCensus, bumpArgFlowCensusBy, bumpCompletionJoin, bumpCompletionJoinNoop, bumpEdgeInstalled, bumpFlowDegraded, bumpKernelFactHit, bumpKernelLicensed, bumpTopMixedFlexSig, bumpWidenedByCf, bumpWidenedByKernel, bumpWidenedBySigSize, clearResidualReads, clearedAux, consS, crashFailure, emptyItemAux, emptyLssStats, emptyMemberTable, emptyMonoMemo, groundSetMembers, groundStandaloneMemberIdFor, harvestSuperTableExcept, insertVar, internMemberKey, isLocalMultiTarget, isScalarVar, kernelMemberIdFor, lambdaInstanceMemberId, layoutQualKey, localInstanceTagFor, localVarInfo, lookupCallMemo, lookupSchemeMono, lookupVar, markFlexCtorSpec, memberIdFor, membersClass, memoizedSignatureTrivial, mixTag, notePendingFailure, numberMultiRootType, papMemberIdFor, papMemberKey, popLocalMulti, popNumberMulti, pushLocalMulti, pushNumberMulti, putAliasVerdict, putCallMemo, putSchemeMono, recordLocalInstance, recordNumberInstance, recordSpecWidenedKey, renderFailure, restoredAux, scoped, specIdsForGlobal, srcLambdaKey, standaloneMemberGlobal, standaloneMemberIdFor, standaloneMemberKernel, trivialSignature, withScratchStore
     )
 
 {-| The state the solver-based monomorphizer threads through all of its work,
@@ -77,7 +77,7 @@ always. Two fields of `LssStats` are also read by the engine (see `LssStats`).
 @docs freshVar, enqueueSpec
 @docs freshStore, resetItem
 @docs mvarIdKey, pointKey
-@docs AliasKey, AliasVerdict, ArrowFact, Env, GroundingStats, ItemAux, LayoutQualStats, LssMemberTable, LssSignature, LssStats, MemberSource, MonoMemo, NodeResolution, NumberInstance, NumberMultiEntry, QEntry, QPre, QShadowStats, SettledStats, SigFlowStats, SpecTally, aliasKeyEq, aliasKeyHash, bumpAppliedArrow, bumpArgFlowCensus, bumpArgFlowCensusBy, bumpCompletionJoin, bumpCompletionJoinNoop, bumpEdgeInstalled, bumpFlowDegraded, bumpKernelFactHit, bumpKernelLicensed, bumpTopMixedFlexSig, bumpWidenedByCf, bumpWidenedByKernel, bumpWidenedBySigSize, clearResidualReads, clearedAux, consS, crashFailure, emptyItemAux, emptyLssStats, emptyMemberTable, emptyMonoMemo, groundSetMembers, groundStandaloneMemberIdFor, harvestSuperTableExcept, insertVar, internMemberKey, isLocalMultiTarget, isScalarVar, kernelMemberIdFor, lambdaInstanceMemberId, layoutQualKey, localInstanceTagFor, localVarInfo, lookupCallMemo, lookupSchemeMono, lookupVar, markFlexCtorSpec, memberIdFor, membersClass, memoizedSignatureTrivial, mixTag, numberMultiRootType, papMemberIdFor, papMemberKey, popLocalMulti, popNumberMulti, pushLocalMulti, pushNumberMulti, putAliasVerdict, putCallMemo, putSchemeMono, recordLocalInstance, recordNumberInstance, recordSpecWidenedKey, renderFailure, restoredAux, scoped, specIdsForGlobal, srcLambdaKey, standaloneMemberGlobal, standaloneMemberIdFor, standaloneMemberKernel, trivialSignature, withScratchStore
+@docs AliasKey, AliasVerdict, ArrowFact, Env, GroundingStats, ItemAux, LayoutQualStats, LssMemberTable, LssSignature, LssStats, MemberSource, MonoMemo, NodeResolution, NumberInstance, NumberMultiEntry, QEntry, QPre, QShadowStats, SettledStats, SigFlowStats, SpecTally, aliasKeyEq, aliasKeyHash, bumpAppliedArrow, bumpArgFlowCensus, bumpArgFlowCensusBy, bumpCompletionJoin, bumpCompletionJoinNoop, bumpEdgeInstalled, bumpFlowDegraded, bumpKernelFactHit, bumpKernelLicensed, bumpTopMixedFlexSig, bumpWidenedByCf, bumpWidenedByKernel, bumpWidenedBySigSize, clearResidualReads, clearedAux, consS, crashFailure, emptyItemAux, emptyLssStats, emptyMemberTable, emptyMonoMemo, groundSetMembers, groundStandaloneMemberIdFor, harvestSuperTableExcept, insertVar, internMemberKey, isLocalMultiTarget, isScalarVar, kernelMemberIdFor, lambdaInstanceMemberId, layoutQualKey, localInstanceTagFor, localVarInfo, lookupCallMemo, lookupSchemeMono, lookupVar, markFlexCtorSpec, memberIdFor, membersClass, memoizedSignatureTrivial, mixTag, notePendingFailure, numberMultiRootType, papMemberIdFor, papMemberKey, popLocalMulti, popNumberMulti, pushLocalMulti, pushNumberMulti, putAliasVerdict, putCallMemo, putSchemeMono, recordLocalInstance, recordNumberInstance, recordSpecWidenedKey, renderFailure, restoredAux, scoped, specIdsForGlobal, srcLambdaKey, standaloneMemberGlobal, standaloneMemberIdFor, standaloneMemberKernel, trivialSignature, withScratchStore
 
 -}
 
@@ -1226,12 +1226,14 @@ membersClass members table =
         "l"
 
 
-{-| Records a spec watchdog failure in `ItemAux.pendingFailure`, unless one is
+{-| Records a failure that reaches the user as an error, a spec watchdog trip
+or an unsupported construct, in `ItemAux.pendingFailure`, unless one is
 already recorded, which is kept.
 
 The failure does not stop the current item: the spec that tripped the
-watchdog is still created and scheduled, and the driver reads the failure
-after the item finishes.
+watchdog is still created and scheduled, an unsupported expression is
+translated as a unit placeholder, and the driver reads the failure after the
+item finishes.
 
 -}
 notePendingFailure : Failure -> S -> S
@@ -1246,6 +1248,238 @@ notePendingFailure f s =
 
         Nothing ->
             { s | itemAux = { aux | pendingFailure = Just f } }
+
+
+{-| Records which spec's translation created spec `specId` of `global` at
+`monoType` (`specParent`), then checks the new spec against the spec
+watchdogs (`checkSpecWatchdogs`) and against polymorphic recursion
+(`polymorphicRecursionFailure`), returning the first failure found.
+-}
+checkCreatedSpec : Mono.Global -> Mono.MonoType -> Mono.SpecId -> Mono.SpecializationRegistry -> S -> ( Maybe Failure, S )
+checkCreatedSpec global monoType specId reg s =
+    let
+        s1 =
+            case s.itemAux.currentSpecId of
+                Just parent ->
+                    { s | specParent = CoreDict.insert specId parent s.specParent }
+
+                Nothing ->
+                    s
+    in
+    case checkSpecWatchdogs global monoType reg s1 of
+        Just failure ->
+            ( Just failure, s1 )
+
+        Nothing ->
+            ( polymorphicRecursionFailure global monoType reg s1, s1 )
+
+
+{-| Returns a `LimitExceeded` failure when the spec of `global` at `monoType`
+being created shows polymorphic recursion whose types grow without end (F13).
+
+The specs that led to this one are followed back through `specParent`, from
+the spec being translated, collecting those of `global` itself. The failure
+is reported when two of them, `T0` and `T1`, nest strictly with the new
+type: `T0` is strictly embedded in `T1` and `T1` in `monoType`
+(`strictlyContains`, lambda sets ignored), so that the type grew twice along
+calls that lead back to `global`. A chain from a spec of `global` back to
+`global` is a cycle of calls, and the calls' type arguments are fixed
+expressions over the callers' type variables, so a cycle that made the type
+strictly larger makes it larger again on every further turn: the program
+needs infinitely many specs, which no limit could allow. Finite polymorphism
+never nests like this. A global used at several unrelated types gets specs
+whose creating chains do not pass through one another, and recursion at one
+type requests a spec that already exists, which is never checked. Two nested
+growths are required, rather than one, as a margin.
+
+Without this check such a program reaches the breadth watchdog only after a
+time that grows about cubically with the number of specs, which at the
+default limits is no answer at all.
+
+-}
+polymorphicRecursionFailure : Mono.Global -> Mono.MonoType -> Mono.SpecializationRegistry -> S -> Maybe Failure
+polymorphicRecursionFailure global monoType reg s =
+    case s.itemAux.currentSpecId of
+        Nothing ->
+            Nothing
+
+        Just current ->
+            let
+                newType =
+                    Mono.widenSets monoType
+
+                chain =
+                    sameGlobalAncestors global reg s.specParent current 100000 []
+
+                grows small big =
+                    strictlyContains small big
+            in
+            case List.filter (\t1 -> grows t1 newType) chain of
+                [] ->
+                    Nothing
+
+                t1s ->
+                    if List.any (\t1 -> List.any (\t0 -> grows t0 t1) chain) t1s then
+                        Just (LimitExceeded (polymorphicRecursionMessage global (Registry.createdCount global reg)))
+
+                    else
+                        Nothing
+
+
+{-| Returns the lambda-set-widened types of the specs of `global` among `specId`
+and its creators (`specParent`), nearest first, with at most `fuel` steps.
+-}
+sameGlobalAncestors : Mono.Global -> Mono.SpecializationRegistry -> CoreDict.Dict Int Mono.SpecId -> Mono.SpecId -> Int -> List Mono.MonoType -> List Mono.MonoType
+sameGlobalAncestors global reg parents specId fuel acc =
+    if fuel <= 0 then
+        List.reverse acc
+
+    else
+        let
+            acc1 =
+                case Registry.lookupSpecKey specId reg of
+                    Just ( g, t ) ->
+                        if g == global then
+                            Mono.widenSets t :: acc
+
+                        else
+                            acc
+
+                    Nothing ->
+                        acc
+        in
+        case CoreDict.get specId parents of
+            Just parent ->
+                sameGlobalAncestors global reg parents parent (fuel - 1) acc1
+
+            Nothing ->
+                List.reverse acc1
+
+
+{-| Tells whether `small` is embedded in `big` and differs from it: `big` is
+`small` with some of its parts replaced by larger types that contain them
+(homeomorphic embedding). `List Int` is embedded in `List (List Int)`, and
+`Int -> a -> Int` at `a = Int` in the same function type at `a = List Int`.
+Types are compared with `sameShape`, so lambda sets and the ids of residual
+type variables do not matter.
+-}
+strictlyContains : Mono.MonoType -> Mono.MonoType -> Bool
+strictlyContains small big =
+    not (sameShape small big) && embeds small big
+
+
+{-| Tells whether `small` is homeomorphically embedded in `big`: equal to it,
+embedded in one of its parts (diving), or of the same constructor with each
+part embedded in the corresponding part (coupling).
+-}
+embeds : Mono.MonoType -> Mono.MonoType -> Bool
+embeds small big =
+    sameShape small big
+        || couples small big
+        || List.any (embeds small) (monoTypeChildren big)
+
+
+{-| Tells whether two types are the same apart from lambda sets and the ids of
+their type variables: each spec's residual variables are fresh, so a variable
+matches any variable with the same constraint.
+-}
+sameShape : Mono.MonoType -> Mono.MonoType -> Bool
+sameShape a b =
+    let
+        pairwise xs ys =
+            List.length xs == List.length ys && List.all identity (List.map2 sameShape xs ys)
+    in
+    case ( a, b ) of
+        ( Mono.MVar _ c1, Mono.MVar _ c2 ) ->
+            c1 == c2
+
+        ( Mono.MList _ x, Mono.MList _ y ) ->
+            sameShape x y
+
+        ( Mono.MTuple _ xs, Mono.MTuple _ ys ) ->
+            pairwise xs ys
+
+        ( Mono.MRecord _ fa, Mono.MRecord _ fb ) ->
+            CoreDict.keys fa == CoreDict.keys fb && pairwise (CoreDict.values fa) (CoreDict.values fb)
+
+        ( Mono.MCustom _ h1 n1 xs, Mono.MCustom _ h2 n2 ys ) ->
+            h1 == h2 && n1 == n2 && pairwise xs ys
+
+        ( Mono.MFunction _ _ xs r1, Mono.MFunction _ _ ys r2 ) ->
+            pairwise (xs ++ [ r1 ]) (ys ++ [ r2 ])
+
+        _ ->
+            a == b
+
+
+{-| Tells whether two types have the same head constructor, with the same name
+and number of parts, and each part of `small` is embedded in the matching part
+of `big`.
+-}
+couples : Mono.MonoType -> Mono.MonoType -> Bool
+couples small big =
+    let
+        pairwise xs ys =
+            List.length xs == List.length ys && List.all identity (List.map2 embeds xs ys)
+    in
+    case ( small, big ) of
+        ( Mono.MList _ a, Mono.MList _ b ) ->
+            embeds a b
+
+        ( Mono.MTuple _ xs, Mono.MTuple _ ys ) ->
+            pairwise xs ys
+
+        ( Mono.MRecord _ fa, Mono.MRecord _ fb ) ->
+            CoreDict.keys fa == CoreDict.keys fb && pairwise (CoreDict.values fa) (CoreDict.values fb)
+
+        ( Mono.MCustom _ h1 n1 xs, Mono.MCustom _ h2 n2 ys ) ->
+            h1 == h2 && n1 == n2 && pairwise xs ys
+
+        ( Mono.MFunction _ _ xs r1, Mono.MFunction _ _ ys r2 ) ->
+            pairwise (xs ++ [ r1 ]) (ys ++ [ r2 ])
+
+        _ ->
+            False
+
+
+{-| Returns the immediate component types of a type.
+-}
+monoTypeChildren : Mono.MonoType -> List Mono.MonoType
+monoTypeChildren t =
+    case t of
+        Mono.MList _ e ->
+            [ e ]
+
+        Mono.MTuple _ es ->
+            es
+
+        Mono.MRecord _ fields ->
+            CoreDict.values fields
+
+        Mono.MCustom _ _ _ args ->
+            args
+
+        Mono.MFunction _ _ args r ->
+            args ++ [ r ]
+
+        _ ->
+            []
+
+
+{-| Builds the error message for polymorphic recursion found by
+`polymorphicRecursionFailure`.
+-}
+polymorphicRecursionMessage : Mono.Global -> Int -> String
+polymorphicRecursionMessage global count =
+    "polymorphic recursion cannot be monomorphized: "
+        ++ Registry.prettyGlobal global
+        ++ "\n  it calls itself, directly or through other definitions, at ever larger types"
+        ++ " (each turn of the recursion needs a new specialization; "
+        ++ String.fromInt count
+        ++ " created so far)."
+        ++ "\n  Eco specializes every function for each type it is used at, so a program like this"
+        ++ " has no finite set of specializations. Make the recursion use the same type at each call,"
+        ++ " for example by wrapping the growing value in a custom type."
 
 
 {-| Checks a newly created spec of `global` at `monoType` against the spec
@@ -1342,6 +1576,7 @@ type alias S =
     , dirtySpecs : BitSet
     , dirtyList : List Mono.SpecId
     , specCountByGlobal : CoreDict.Dict String SpecTally -- keyed by the global's comparable key
+    , specParent : CoreDict.Dict Int Mono.SpecId -- each created spec's creating spec, for `polymorphicRecursionFailure`
     , registry : Mono.SpecializationRegistry
     , ports : List Mono.PortRegistration
     , lambdaCounter : Int
@@ -1538,16 +1773,18 @@ type alias NumberInstance =
 
 {-| A reason monomorphization cannot go on.
 
-`Unsupported` is a construct the engine does not handle. `UnifyMismatch` is a
-unification that had to succeed and failed. `EngineBug` is a broken internal
-invariant. Inside a `Step` these three abort the process through
-`crashFailure`; the driver in `Compiler.Monomorphize.Solver.Monomorphize` also returns
-some `EngineBug`s as an `Err`.
+`Unsupported` is a construct the engine does not handle, such as a GLSL
+shader. `UnifyMismatch` is a unification that had to succeed and failed.
+`EngineBug` is a broken internal invariant. Inside a `Step` the last two abort
+the process through `crashFailure`; the driver in
+`Compiler.Monomorphize.Solver.Monomorphize` also returns some `EngineBug`s as an
+`Err`.
 
-`LimitExceeded` is a spec watchdog trip (see `checkSpecWatchdogs`). It is a
-limit the program reached, not a compiler bug, so it never goes through
-`crashFailure`: it is recorded in `ItemAux.pendingFailure`, and the driver
-returns it as an `Err` once the current item finishes.
+`LimitExceeded` is a spec watchdog trip (see `checkSpecWatchdogs`), and
+`Unsupported` a construct of the user's program. Neither is a compiler bug, so
+neither goes through `crashFailure`: each is recorded in
+`ItemAux.pendingFailure`, and the driver returns it as an `Err` once the
+current item finishes.
 
 -}
 type Failure
@@ -1591,9 +1828,9 @@ renderFailure failure =
 {-| Aborts the process with the `renderFailure` message of `f`. Its result type
 is free, so it can stand wherever a value or a `Step` is expected.
 
-It is for `Unsupported`, `UnifyMismatch` and `EngineBug`. A `LimitExceeded`
-failure is recorded with `ItemAux.pendingFailure` instead, so that it reaches
-the user as an ordinary error.
+It is for `UnifyMismatch` and `EngineBug`. A `LimitExceeded` or
+`Unsupported` failure is recorded with `ItemAux.pendingFailure` instead, so
+that it reaches the user as an ordinary error.
 
 -}
 crashFailure : Failure -> a
@@ -2017,19 +2254,19 @@ enqueueSpec global monoType s0 =
 
             -- `hit` is always `CreatedNew` here, so creation is detected by the
             -- registry's next id advancing.
-            watchdog =
+            ( watchdog, sw ) =
                 if reg1.nextId > s0.registry.nextId then
-                    checkSpecWatchdogs global monoType reg1 s
+                    checkCreatedSpec global monoType specId reg1 s
 
                 else
-                    Nothing
+                    ( Nothing, s )
         in
         case watchdog of
             Just failure ->
-                enqueueSpecCommit specId reg1 storedChanged (notePendingFailure failure s)
+                enqueueSpecCommit specId reg1 storedChanged (notePendingFailure failure sw)
 
             Nothing ->
-                enqueueSpecCommit specId reg1 storedChanged s
+                enqueueSpecCommit specId reg1 storedChanged sw
 
 
 {-| Finishes an enqueue of spec `specId`, given the registry `reg1` the probe
@@ -2229,16 +2466,16 @@ enqueueSpecKeyed global monoType s0 =
     in
     case
         if created then
-            checkSpecWatchdogs global monoType reg1 s2
+            checkCreatedSpec global monoType specId reg1 s2
 
         else
-            Nothing
+            ( Nothing, s2 )
     of
-        Just failure ->
-            enqueueSpecCommit specId s2.registry storedChanged (notePendingFailure failure s2)
+        ( Just failure, s3 ) ->
+            enqueueSpecCommit specId s3.registry storedChanged (notePendingFailure failure s3)
 
-        Nothing ->
-            enqueueSpecCommit specId s2.registry storedChanged s2
+        ( Nothing, s3 ) ->
+            enqueueSpecCommit specId s3.registry storedChanged s3
 
 
 

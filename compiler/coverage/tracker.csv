@@ -1,0 +1,113 @@
+module,folder,status,branch_pct,branches,decls,excluded,baseline_branches,notes
+Compiler.Type.Constrain.Common,Compiler.Type,done,100.0%,42/42,11/11,0,31/42,
+Compiler.Type.Constrain.Erased.Module,Compiler.Type,done,–,0/0,1/1,0,0/0,meets the rule at the 2026-11-04 baseline
+Compiler.Type.Constrain.Typed.Expression,Compiler.Type,unreachable,100.0%,103/103,57/57,102,112/139,remaining arms are documented dead code (exclusions)
+Compiler.Type.Constrain.Typed.Module,Compiler.Type,done,100.0%,20/20,18/18,0,10/20,EffectManagerCoverageTest
+Compiler.Type.Constrain.Typed.NodeIds,Compiler.Type,unreachable,100.0%,7/7,6/6,1,7/8,
+Compiler.Type.Constrain.Typed.Pattern,Compiler.Type,done,100.0%,25/25,11/11,0,25/25,meets the rule at the 2026-11-04 baseline
+Compiler.Type.Error,Compiler.Type,done,100.0%,390/390,65/65,26,30/416,ErrorReportCoverageTest; remaining misses excluded
+Compiler.Type.ErrorType,Compiler.Type,done,99.4%,180/181,39/39,3,19/184,"416 believed unreachable, unproven"
+Compiler.Type.Instantiate,Compiler.Type,unreachable,100.0%,10/10,2/2,1,10/11,remaining gap excluded
+Compiler.Type.KernelIntrinsics,Compiler.Type,done,–,0/0,8/8,0,0/0,meets the rule at the 2026-11-04 baseline
+Compiler.Type.KernelTypes,Compiler.Type,done,100.0%,4/4,4/4,0,4/4,meets the rule at the 2026-11-04 baseline
+Compiler.Type.Occurs,Compiler.Type,done,100.0%,17/17,2/2,0,15/17,100%
+Compiler.Type.PostSolve,Compiler.Type,unreachable,100.0%,122/122,29/29,44,89/162,"findings F1, F3"
+Compiler.Type.Solve,Compiler.Type,done,99.1%,106/107,31/31,12,102/117,meets the rule at the 2026-11-04 baseline
+Compiler.Type.SolverRoots,Compiler.Type,done,98.0%,49/50,13/13,9,44/58,396 only
+Compiler.Type.SolverSnapshot,Compiler.Type,done,100.0%,3/3,2/2,0,3/3,meets the rule at the 2026-11-04 baseline
+Compiler.Type.State.IO,Compiler.Type,done,82.0%,41/50,59/59,4,39/54,100%; lsTopContentK codes by a direct unit test
+Compiler.Type.State.IORef,Compiler.Type,done,100.0%,3/3,7/7,4,3/3,meets the rule at the 2026-11-04 baseline
+Compiler.Type.State.Vector,Compiler.Type,unreachable,100.0%,2/2,6/6,3,2/3,
+Compiler.Type.State.Vector.Mutable,Compiler.Type,done,100.0%,1/1,6/6,2,1/1,meets the rule at the 2026-11-04 baseline
+Compiler.Type.Type,Compiler.Type,done,98.9%,93/94,50/50,17,89/102,98.9%; 1222 front-end
+Compiler.Type.TypedCanonical,Compiler.Type,done,85.7%,6/7,4/4,2,6/7,139 excluded: both if-arms crash
+Compiler.Type.Unify,Compiler.Type,done,95.7%,156/163,40/42,4,123/165,95.1%
+Compiler.Type.UnionFind,Compiler.Type,done,91.3%,21/23,15/15,1,21/23,100%; long-path set and self-union by a direct unit test
+Compiler.Reporting.Render.Type,Compiler.Reporting,done,100.0%,35/35,15/15,1,17/36,vrecord {} excluded
+Compiler.Reporting.Render.Type.Localizer,Compiler.Reporting,done,100.0%,16/16,14/14,1,3/17,decoder fallback excluded
+Compiler.LocalOpt.Typed.Case,Compiler.LocalOpt,unreachable,100.0%,18/18,9/9,4,18/20,
+Compiler.LocalOpt.Typed.DecisionTree,Compiler.LocalOpt,unreachable,100.0%,112/112,22/22,29,112/135,112/112 after exclusions
+Compiler.LocalOpt.Typed.Expression,Compiler.LocalOpt,unreachable,99.5%,197/198,35/35,23,193/208,
+Compiler.LocalOpt.Typed.Module,Compiler.LocalOpt,done,98.6%,73/74,27/27,7,59/75,only 629 BadFlags left: needs Platform.Program (mocks lack it; E2E would only show a compile failure)
+Compiler.LocalOpt.Typed.Names,Compiler.LocalOpt,done,100.0%,21/21,22/22,1,21/21,meets the rule at the 2026-11-04 baseline
+Compiler.LocalOpt.Typed.NormalizeLambdaBoundaries,Compiler.LocalOpt,unreachable,100.0%,116/116,30/30,11,89/126,
+Compiler.LocalOpt.Typed.Port,Compiler.LocalOpt,done,100.0%,34/34,20/20,12,26/36,finding F4
+Compiler.PreMono.AliasForward,Compiler.PreMono,done,97.1%,67/69,23/23,2,67/71,97.1%; alias cycle is rejected as RecursiveDecl
+Compiler.PreMono.AssignMVarIds,Compiler.PreMono,done,100.0%,75/75,38/38,4,74/79,"100%; TOpt.Kernel never built, Shader unreachable, stamp census flag"
+Compiler.PreMono.EntryPrep,Compiler.PreMono,done,100.0%,18/18,7/7,4,18/22,100%; missing entry / non-Program 3-arg main unreachable (LocalOpt BadType)
+Compiler.PreMono.EtaExpand,Compiler.PreMono,done,94.9%,225/237,54/55,18,211/253,"94.5%; remaining Holey group, 572, 1349, 1931, 1943"
+Compiler.PreMono.Fresh,Compiler.PreMono,done,100.0%,50/50,11/11,142,69/163,100%
+Compiler.PreMono.InlineSimplify,Compiler.PreMono,flag-gated,–,0/0,0/0,475,68/286,inline.preMono is False by default
+Compiler.PreMono.LiftClosedArgs,Compiler.PreMono,flag-gated,–,0/0,0/0,193,0/0,
+Compiler.Monomorphize.Analysis,Compiler.Monomorphize,done,97.3%,73/75,12/12,9,73/82,"97.3%; open 276 (accessor value surviving to Prune), 595"
+Compiler.Monomorphize.Diff,Compiler.Monomorphize,flag-gated,–,0/0,0/0,98,0/0,
+Compiler.Monomorphize.KernelAbi,Compiler.Monomorphize,done,100.0%,47/47,6/6,1,47/48,100%
+Compiler.Monomorphize.Prune,Compiler.Monomorphize,done,96.6%,28/29,7/7,6,28/34,96.6%
+Compiler.Monomorphize.ResolveAccessorValues,Compiler.Monomorphize,done,91.9%,68/74,11/11,12,63/86,100% after exclusions
+Compiler.Monomorphize.Solver.Engine,Compiler.Monomorphize,done,88.9%,169/190,105/106,37,142/183,round 4: census helpers flag-excluded; 1335 fuel guard (needs 100k-spec chain); F13
+Compiler.Monomorphize.Solver.KernelSetFacts,Compiler.Monomorphize,done,100.0%,46/46,16/16,0,38/46,100%
+Compiler.Monomorphize.Solver.LssInfer,Compiler.Monomorphize,open,90.2%,495/545,98/98,50,484/586,"no verdict after two rounds: 53 branches (signature edges, PAP successors, Fun1 joins, directChildren leaves, VarGlobal/Enum/Box/Cycle leaves 3082-3091)"
+Compiler.Monomorphize.Solver.Monomorphize,Compiler.Monomorphize,open,91.0%,302/332,44/46,451,486/747,"no verdict after two rounds: settle-pass internals 386-1300, actualType join 3837-3880, 4043, 4138, 4304-4340, 4390, 4397, 4467-4494"
+Compiler.Monomorphize.Solver.Store,Compiler.Monomorphize,open,89.6%,336/375,86/86,201,371/551,"no verdict after two rounds: 39 branches (lambda-set writes, Fun1/poison, residual taint, Holey alias classification)"
+Compiler.Monomorphize.Solver.Translate,Compiler.Monomorphize,open,90.3%,1001/1108,218/222,356,1013/1385,"94.6%; refine group settled (5778 no verdict); no verdict after two rounds: kernel devirt/poison 1836-2162, 4103-4178 (real-kernel shapes), scattered 1600, 1644, 2402, 2646-2686, 3674-3970, 4352-4507, 4810, 5041-5096, 5911-6247, 6904-6949"
+Compiler.Monomorphize.Solver.Zonk,Compiler.Monomorphize,done,100.0%,30/30,5/5,3,28/33,100%
+Compiler.Monomorphize.State,Compiler.Monomorphize,done,100.0%,8/8,8/8,8,10/12,100%; VarEnv frames are Subst-engine only
+Compiler.Monomorphize.Subst.Monomorphize,Compiler.Monomorphize,flag-gated,–,0/0,0/0,137,0/0,
+Compiler.Monomorphize.Subst.Specialize,Compiler.Monomorphize,flag-gated,–,0/0,0/0,1308,0/0,
+Compiler.Monomorphize.TypeSubst,Compiler.Monomorphize,done,96.5%,55/57,8/8,341,210/244,"94.7%; all but applySubstPure is Subst-only (flag); open 777, 788, 799 (resolveMonoVars changed-tuple/record/custom arms)"
+Compiler.Monomorphize.ValidateLayout,Compiler.Monomorphize,flag-gated,–,0/0,0/0,69,0/0,
+Compiler.Monomorphize.ValidateLimits,Compiler.Monomorphize,done,100.0%,19/19,6/6,1,14/20,100%
+Compiler.MonoOpt.AbiCloning,Compiler.MonoOpt,open,93.6%,341/367,103/103,99,332/412,"declines (2246-2263, 2320, 2345, 2391-2400, 609, 664, 3039, 3265) need two instances of one member differing in captures/layout/code (fixture); 716, 723, 1633-1639, calleeShape 2100-2112, 2548, 2590, 2644, 2712 mono-owned; 973 reachable via accessor shape; finding F8"
+Compiler.MonoOpt.Borrow,Compiler.MonoOpt,flag-gated,–,0/0,0/0,252,0/0,
+Compiler.MonoOpt.Borrow.Constrain,Compiler.MonoOpt,flag-gated,–,0/0,0/0,442,0/0,
+Compiler.MonoOpt.Borrow.Dsu,Compiler.MonoOpt,flag-gated,–,0/0,0/0,28,0/0,
+Compiler.MonoOpt.Borrow.Facts,Compiler.MonoOpt,flag-gated,–,0/0,0/0,1,0/0,
+Compiler.MonoOpt.Borrow.KernelSigs,Compiler.MonoOpt,flag-gated,–,0/0,0/0,8,0/0,
+Compiler.MonoOpt.Borrow.Lifetime,Compiler.MonoOpt,flag-gated,–,0/0,0/0,75,0/0,
+Compiler.MonoOpt.Borrow.LssFacts,Compiler.MonoOpt,flag-gated,–,0/0,0/0,117,0/0,
+Compiler.MonoOpt.Borrow.Mode,Compiler.MonoOpt,flag-gated,–,0/0,0/0,4,0/0,
+Compiler.MonoOpt.Borrow.Rty,Compiler.MonoOpt,flag-gated,–,0/0,0/0,63,0/0,
+Compiler.MonoOpt.Borrow.Sig,Compiler.MonoOpt,flag-gated,–,0/0,0/0,30,0/0,
+Compiler.MonoOpt.Borrow.Solve,Compiler.MonoOpt,flag-gated,–,0/0,0/0,97,0/0,
+Compiler.MonoOpt.CafCensus,Compiler.MonoOpt,flag-gated,–,0/0,0/0,171,0/0,
+Compiler.MonoOpt.CafDedupe,Compiler.MonoOpt,flag-gated,–,0/0,0/0,134,0/0,
+Compiler.MonoOpt.CafHoist,Compiler.MonoOpt,flag-gated,–,0/0,0/0,293,0/0,
+Compiler.MonoOpt.Cse,Compiler.MonoOpt,flag-gated,–,0/0,0/0,218,0/0,
+Compiler.MonoOpt.CseCensus,Compiler.MonoOpt,flag-gated,–,0/0,0/0,206,0/0,
+Compiler.MonoOpt.CsePurity,Compiler.MonoOpt,flag-gated,–,0/0,0/0,104,0/0,
+Compiler.MonoOpt.FloatMinMax,Compiler.MonoOpt,done,100.0%,11/11,5/5,2,11/13,
+Compiler.MonoOpt.GenCallCensus,Compiler.MonoOpt,flag-gated,–,0/0,0/0,35,0/0,
+Compiler.MonoOpt.GlobalOptimize,Compiler.MonoOpt,done,94.3%,169/175,29/29,9,157/176,round 4: 96.6%; 1156/906/1290/1293/1428/689 open with reasons (no input found)
+Compiler.MonoOpt.InlineSimplify,Compiler.MonoOpt,done,98.8%,580/587,113/113,400,546/844,97.3%; remaining MonoAccessorValue arms (F8) and defensive guards
+Compiler.MonoOpt.ListCombinators,Compiler.MonoOpt,flag-gated,–,0/0,0/0,50,0/37,
+Compiler.MonoOpt.MapTemplate,Compiler.MonoOpt,flag-gated,–,0/0,0/0,315,0/0,
+Compiler.MonoOpt.ReturnArity,Compiler.MonoOpt,done,100.0%,2/2,1/1,0,2/2,meets the rule at the 2026-11-04 baseline
+Compiler.MonoOpt.Staging,Compiler.MonoOpt,done,100.0%,25/25,7/7,21,25/39,
+Compiler.GenerateMlir.Backend,Compiler.GenerateMlir,done,82.3%,177/215,34/39,1,176/216,"100% after exclusions (type agent, GenerateMlir part B)"
+Compiler.GenerateMlir.BytesFusion.Emit,Compiler.GenerateMlir,done,96.9%,95/98,47/47,27,58/117,96.0% after exclusions
+Compiler.GenerateMlir.BytesFusion.LoopIR,Compiler.GenerateMlir,unreachable,85.7%,6/6,1/1,0,6/7,width-zero guard excluded (round 3)
+Compiler.GenerateMlir.BytesFusion.Reify,Compiler.GenerateMlir,open,87.0%,442/501,71/72,42,232/517,"round 3; left: map5 (no mock), inlined elm/bytes combinator guards, non-Global callee specs, curried forms"
+Compiler.GenerateMlir.ConstThunks,Compiler.GenerateMlir,done,91.5%,78/82,13/13,81,74/143,round 4 E2E Char constants; cycle/notThunk/411/468 open with reasons
+Compiler.GenerateMlir.Context,Compiler.GenerateMlir,done,84.6%,44/52,29/29,1,44/52,"95.7%; 777 gcLeaf upgrade (no program found), 783 kernel signature mismatch crash (not provably unreachable)"
+Compiler.GenerateMlir.Expr,Compiler.GenerateMlir,open,78.3%,706/802,146/152,22,675/884,"round 4: decode-through-let flag rows, Bool fan-out/argcount/signature arms excluded; left: stage dispatch, call-kind, spine-yield arms"
+Compiler.GenerateMlir.Functions,Compiler.GenerateMlir,done,64.8%,94/145,27/29,3,94/145,"100% after exclusions (type agent, GenerateMlir part B)"
+Compiler.GenerateMlir.Intrinsics,Compiler.GenerateMlir,done,79.4%,123/155,7/7,0,123/155,"100% after exclusions (type agent, GenerateMlir part B)"
+Compiler.GenerateMlir.KernelAbi,Compiler.GenerateMlir,done,43.9%,36/82,4/5,1,36/82,"100% after exclusions (type agent, GenerateMlir part B)"
+Compiler.GenerateMlir.Lambdas,Compiler.GenerateMlir,done,86.2%,25/26,5/5,1,25/29,round 4 exclusions; 235 open
+Compiler.GenerateMlir.LogicalTypes,Compiler.GenerateMlir,done,92.3%,36/39,9/9,0,36/39,"100% after exclusions (type agent, GenerateMlir part B)"
+Compiler.GenerateMlir.Names,Compiler.GenerateMlir,done,100.0%,2/2,2/2,0,2/2,meets the rule at the 2026-11-04 baseline
+Compiler.GenerateMlir.Ops,Compiler.GenerateMlir,open,62.0%,31/31,67/73,3,31/50,decls ecoToHeap/ecoFromHeap need an escaping promoted tuple; no input found
+Compiler.GenerateMlir.Patterns,Compiler.GenerateMlir,open,74.7%,146/177,30/31,6,143/194,round 4: tuple/Bool/list test arms excluded; left: boxing arms (MONO_029 type-var path case unproven)
+Compiler.GenerateMlir.TailRec,Compiler.GenerateMlir,done,82.3%,120/124,31/31,6,106/129,round 4 E2E CovBackendTailSplitTest; 734/916/1660/1776 open (unproven)
+Compiler.GenerateMlir.TypeTable,Compiler.GenerateMlir,done,96.6%,28/29,14/14,0,28/29,"100% after exclusions (type agent, GenerateMlir part B)"
+Compiler.GenerateMlir.Types,Compiler.GenerateMlir,done,61.5%,32/52,25/26,1,32/52,"100% after exclusions (type agent, GenerateMlir part B)"
+Mlir.Bytecode.AttrType,Mlir,unreachable,100.0%,127/127,38/38,3,113/130,MlirEncodingCoverageTest
+Mlir.Bytecode.DialectSection,Mlir,done,100.0%,4/4,6/6,0,3/4,
+Mlir.Bytecode.IrSection,Mlir,unreachable,100.0%,33/33,20/20,1,28/34,
+Mlir.Bytecode.Section,Mlir,done,–,0/0,2/2,0,0/0,meets the rule at the 2026-11-04 baseline
+Mlir.Bytecode.StreamEncode,Mlir,unreachable,100.0%,15/15,14/14,1,15/16,
+Mlir.Bytecode.StringTable,Mlir,unreachable,100.0%,51/51,18/18,2,37/53,
+Mlir.Bytecode.VarInt,Mlir,done,100.0%,17/17,7/7,0,14/17,
+Mlir.Loc,Mlir,done,–,0/0,1/1,0,0/0,meets the rule at the 2026-11-04 baseline
+Mlir.Mlir,Mlir,done,–,0/0,3/3,0,0/0,meets the rule at the 2026-11-04 baseline
+Mlir.Pretty,Mlir,unreachable,100.0%,92/92,19/19,15,78/98,93-151 dead code: delete

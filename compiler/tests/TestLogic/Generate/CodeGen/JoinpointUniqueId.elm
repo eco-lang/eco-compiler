@@ -15,7 +15,9 @@ joinpoint that does appear.
 
   - for each `MonoTailFunc` node of the monomorphized graph whose body holds a
     `MonoTailCall`, when the module has a top-level `func.func` named for it
-    (`sym_name` ending in `_$_<SpecId>`): that function holds no `scf.while`
+    (`sym_name` ending in `_$_<SpecId>`, or, for a function whose result is
+    promoted, its `$sret` worker, since the function so named is then a shim
+    that calls the worker): that function holds no `scf.while`
     (the tail call was not lowered to a loop), or holds an `eco.jump` (the
     code generator emits none: `Compiler.GenerateMlir.Expr.generateExpr`
     crashes on a `MonoTailCall` that `TailRec` did not lower);
@@ -72,13 +74,25 @@ expectJoinpointUniqueId srcModule =
 checkTailLoops : Mono.MonoGraph -> MlirModule -> List Violation
 checkTailLoops (Mono.MonoGraph data) mlirModule =
     let
-        funcsBySpec =
+        funcsByName =
             findFuncOps mlirModule
+                |> List.filterMap (\op -> getStringAttr "sym_name" op |> Maybe.map (\name -> ( name, op )))
+                |> Dict.fromList
+
+        -- A tail function whose result is promoted is a shim named for the
+        -- spec that calls its `$sret` worker, and the worker holds the loop.
+        funcsBySpec =
+            funcsByName
+                |> Dict.toList
                 |> List.filterMap
-                    (\op ->
-                        getStringAttr "sym_name" op
-                            |> Maybe.andThen specIdOf
-                            |> Maybe.map (\specId -> ( specId, op ))
+                    (\( name, op ) ->
+                        specIdOf name
+                            |> Maybe.map
+                                (\specId ->
+                                    ( specId
+                                    , Dict.get (name ++ "$sret") funcsByName |> Maybe.withDefault op
+                                    )
+                                )
                     )
                 |> Dict.fromList
 

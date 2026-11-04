@@ -47,14 +47,24 @@ including those queued while generating them, together with the context
 emptied of pending lambdas and pending function ops.
 
 Function ops already in `ctx.pendingFuncOps` are returned ahead of each
-round's lambdas. Within one round, two pending lambdas with the same name and
-the same contents are generated once, while two with the same name and
-different contents are a crash. A name queued again in a later round is
-generated again.
+round's lambdas. Two pending lambdas with the same name and the same contents
+are generated once, whether they are queued in the same round or in different
+rounds, while two with the same name and different contents are a crash.
 
 -}
 processLambdas : Ctx.Context -> ( List MlirOp, Ctx.Context )
 processLambdas ctx =
+    processLambdaRounds Dict.empty ctx
+
+
+{-| Generates the pending lambdas of `ctx` round by round, as `processLambdas`
+describes. `generated` holds every lambda generated in an earlier round, by
+name. A lambda queued again in a later round, such as one that bytes fusion
+compiled in a function and that the body of another lambda queues again
+(finding F11), is not generated a second time.
+-}
+processLambdaRounds : Dict.Dict String Ctx.PendingLambda -> Ctx.Context -> ( List MlirOp, Ctx.Context )
+processLambdaRounds generated ctx =
     case ctx.pendingLambdas of
         [] ->
             -- Also drain any pre-generated func ops (e.g. from local tail-rec functions)
@@ -69,17 +79,18 @@ processLambdas ctx =
                 priorFuncOps =
                     ctx.pendingFuncOps
 
-                -- Deduplicate lambdas by name to avoid duplicate function definitions.
-                -- The same lambda can legitimately be queued twice in one round:
+                -- Deduplicate lambdas by name to avoid duplicate function definitions,
+                -- against this round and every earlier one (`generated`).
+                -- The same lambda can legitimately be queued twice:
                 -- BytesFusion compiles a decoder binding AND the fused path
                 -- references the same lambda, so `generateClosure` runs twice on one
                 -- `MonoClosure` and queues two identical entries. Those are dropped.
                 -- Two entries that share a name but differ are two different lambdas
                 -- under one lambdaId, which MONO_019 forbids; dropping one would
                 -- silently miscompile every call to it, so that crashes instead.
-                dedupedLambdas =
+                ( generatedAfter, dedupedLambdas ) =
                     let
-                        ( _, revResult ) =
+                        ( seenAfter, revResult ) =
                             List.foldl
                                 (\lambda ( seen, acc ) ->
                                     case Dict.get lambda.name seen of
@@ -99,10 +110,10 @@ processLambdas ctx =
                                         Nothing ->
                                             ( Dict.insert lambda.name lambda seen, lambda :: acc )
                                 )
-                                ( Dict.empty, [] )
+                                ( generated, [] )
                                 lambdas
                     in
-                    List.reverse revResult
+                    ( seenAfter, List.reverse revResult )
 
                 ( revLambdaOps, ctxAfter ) =
                     List.foldl
@@ -122,7 +133,7 @@ processLambdas ctx =
                         dedupedLambdas
 
                 ( moreOps, finalCtx ) =
-                    processLambdas ctxAfter
+                    processLambdaRounds generatedAfter ctxAfter
             in
             ( priorFuncOps ++ List.reverse revLambdaOps ++ moreOps, finalCtx )
 

@@ -24,7 +24,8 @@ The programs, by group:
     it, and a chain of three in which each refers to the previous one.
   - Nested `let`: a `let` as the body of another, a `let` as the value of a
     definition, two `let`s side by side in a tuple with no enclosing `let`,
-    and a `let` as an element of a list that is the body of another `let`.
+    a `let` as an element of a list that is the body of another `let`, and
+    `let x = 1 in let y = 2 in 3`, whose two definitions are both unused.
   - Local functions: a function defined with an argument, one defined as a
     lambda, two functions of one and two arguments, and a function that calls
     another defined in the same `let`.
@@ -212,6 +213,7 @@ nestedLetCases expectFn =
     , { label = "Let in binding value", run = letInBindingValue expectFn }
     , { label = "Multiple nested lets", run = multipleNestedLets expectFn }
     , { label = "Let inside list inside let", run = letInsideListInsideLet expectFn }
+    , { label = "Nested lets with both bindings unused", run = nestedUnusedLets expectFn }
     ]
 
 
@@ -284,6 +286,22 @@ letInsideListInsideLet expectFn _ =
 
         modul =
             makeModule "testValue" (letExpr [ define "x" [] (intExpr 0) ] list)
+    in
+    expectFn modul
+
+
+
+{-| Builds `let x = 1 in let y = 2 in 3`, in which neither `x` nor `y` is
+used, and gives it to `expectFn`.
+-}
+nestedUnusedLets : (Src.Module -> Expectation) -> (() -> Expectation)
+nestedUnusedLets expectFn _ =
+    let
+        modul =
+            makeModule "testValue"
+                (letExpr [ define "x" [] (intExpr 1) ]
+                    (letExpr [ define "y" [] (intExpr 2) ] (intExpr 3))
+                )
     in
     expectFn modul
 

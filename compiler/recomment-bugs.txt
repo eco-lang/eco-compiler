@@ -4281,7 +4281,7 @@ against that tree).
     "a" for an Int-only type.
 
 
-=== tests/Compiler/AST/StringTableTest.elm
+=== tests/Compiler/Core/StringTableTest.elm
 
 
 - line 76  [reported 1x by: comment]
@@ -4295,7 +4295,7 @@ against that tree).
     the table is never caught at this size.
 
 
-=== tests/Compiler/AST/TypedOptimizedCodecTest.elm
+=== tests/TestLogic/LocalOpt/Typed/TypedOptimizedCodecTest.elm
 
 
 - line 204  [reported 1x by: review]
@@ -4305,7 +4305,7 @@ against that tree).
     after a decode.
 
 
-=== tests/Compiler/AST/VarSupersEquivalenceTest.elm
+=== tests/Compiler/IR/Typed/OptimizedTest.elm
 
 
 - line 187-188  [reported 3x by: comment, review]
@@ -4453,7 +4453,7 @@ against that tree).
     aliases are used. The same helper is copied verbatim in Basic, Bytes, List and JsArray.
 
 
-=== tests/Compiler/GlobalOpt/Borrow/DsuTest.elm
+=== tests/Compiler/MonoOpt/Borrow/DsuTest.elm
 
 
 - line 150-153  [reported 2x by: comment, review]
@@ -4467,7 +4467,7 @@ against that tree).
     inaccurate.
 
 
-=== tests/Compiler/GlobalOpt/Borrow/LifetimeTest.elm
+=== tests/Compiler/MonoOpt/Borrow/LifetimeTest.elm
 
 
 - line 143  [reported 1x by: comment]
@@ -4489,7 +4489,7 @@ against that tree).
     its name describes.
 
 
-=== tests/Compiler/GlobalOpt/KernelFactsTest.elm
+=== tests/Compiler/IR/Kernel/FactsTest.elm
 
 
 - line 83-87  [reported 2x by: comment, review]
@@ -4519,7 +4519,7 @@ against that tree).
     findAnyEntryPoint picks the first Define/TrackedDefine node by key string
     ('author/project:Module.name'). Data.Map.foldl ignores TOpt.compareGlobal. Closed record
     alias constructors are Define nodes and capitals sort first, so for elm/core Array the
-    entry is the `Builder` record constructor (tests/Compiler/Elm/Source/Array.elm:904). The
+    entry is the `Builder` record constructor (tests/Compiler/PackageCompilation/ArraySource.elm:904). The
     'Array.elm typed path monomorphizes successfully' and MLIR tests therefore exercise only
     that constructor and what it reaches, not Array's functions.
 - line 677  [reported 2x by: comment, review]
@@ -4546,7 +4546,7 @@ against that tree).
     mock) Array was compiled against.
 
 
-=== tests/Parse/NumberTests.elm
+=== tests/Compiler/Parse/NumberTest.elm
 
 
 - line 146  [reported 1x by: comment]
@@ -5104,7 +5104,7 @@ against that tree).
     branch at once), although the function is still a TailDef.
 
 
-=== tests/TestLogic/Canonicalize/CachedTypeInfo.elm
+=== tests/Compiler/Type/CachedTypeInfo.elm
 
 
 - line 87  [reported 1x by: map]
@@ -5123,7 +5123,7 @@ against that tree).
     runToPostSolve, and its Expect.fail branch for issues (line 62) can never be reached.
 
 
-=== tests/TestLogic/Canonicalize/DependencySCC.elm
+=== tests/Compiler/Canonicalize/DependencySCC.elm
 
 
 - line 63  [reported 3x by: comment, review]
@@ -5179,7 +5179,7 @@ against that tree).
     expectUniqueIds and expectUniqueIdsCanonical.
 
 
-=== tests/TestLogic/Canonicalize/ImportResolution.elm
+=== tests/Compiler/Canonicalize/ImportResolution.elm
 
 
 - line 52-53  [reported 5x by: comment, review, rework]
@@ -5211,7 +5211,7 @@ against that tree).
     `size` before a push.
 
 
-=== tests/TestLogic/Generate/Bytecode/LocStringCollisionTest.elm
+=== tests/Mlir/Bytecode/LocStringCollisionTest.elm
 
 
 - line 83  [reported 1x by: comment]
@@ -5367,7 +5367,7 @@ against that tree).
     severity: other _operand_types checkers do the same, and it is probably by design.
 
 
-=== tests/TestLogic/Generate/CodeGen/CmpiPredicateAttrTest.elm
+=== tests/Compiler/GenerateMlir/CmpiPredicateAttrTest.elm
 
 
 - line 149  [reported 3x by: comment, review, rework]
@@ -5375,7 +5375,7 @@ against that tree).
     eco.case with case_kind "chr" (src/Compiler/LocalOpt/Typed/Case.elm:120-121,
     src/Compiler/Generate/MLIR/Expr.elm:6907-6997) and emits no arith.cmpi for its literals,
     while the checker passes when no arith.cmpi exists
-    (tests/TestLogic/Generate/CodeGen/CmpiPredicateAttr.elm:58-61). The case therefore
+    (tests/Compiler/GenerateMlir/CmpiPredicateAttr.elm:58-61). The case therefore
     cannot fail on the property named by the test at line 62 ("Char case expression emits
     arith.cmpi with predicate"); it fails only on a compilation failure.
 - line 163  [reported 1x by: review]
@@ -5730,7 +5730,7 @@ against that tree).
     would fail SingletonConstantsTest. Kinds 3-7 no longer exist, so the table is stale.
 
 
-=== tests/TestLogic/Generate/CodeGen/SpinePapDispatchTest.elm
+=== tests/Compiler/Monomorphize/Solver/SpinePapDispatchTest.elm
 
 
 - line 310  [reported 1x by: comment]
@@ -5807,7 +5807,7 @@ against that tree).
     unreported.
 
 
-=== tests/TestLogic/Generate/DebugPolymorphism.elm
+=== tests/Compiler/Monomorphize/DebugPolymorphism.elm
 
 
 - line 56  [reported 1x by: comment]
@@ -5826,7 +5826,7 @@ against that tree).
     applied to a ( number, a ) pair).
 
 
-=== tests/TestLogic/Generate/DebugPolymorphismTest.elm
+=== tests/Compiler/Monomorphize/DebugPolymorphismTest.elm
 
 
 - line 18  [reported 1x by: comment]
@@ -6032,7 +6032,7 @@ against that tree).
     monomorphization succeeds and cannot catch an unelaborated shape.
 
 
-=== tests/TestLogic/GlobalOpt/BorrowTailCallEscapeTest.elm
+=== tests/Compiler/MonoOpt/Borrow/BorrowTailCallEscapeTest.elm
 
 
 - line 184  [reported 1x by: comment]
@@ -6066,7 +6066,7 @@ against that tree).
     at.
 
 
-=== tests/TestLogic/GlobalOpt/EtaExpandTest.elm
+=== tests/Compiler/PreMono/EtaExpandTest.elm
 
 
 - line 269  [reported 1x by: review]
@@ -6096,7 +6096,7 @@ against that tree).
     test that only exercises harness nodes.
 
 
-=== tests/TestLogic/GlobalOpt/InlineSimplifyDestructCaptureTest.elm
+=== tests/Compiler/PreMono/InlineSimplifyDestructCaptureTest.elm
 
 
 - line 95  [reported 1x by: comment]
@@ -6106,7 +6106,7 @@ against that tree).
     call was inlined. Today it is inlined, as the probe run showed.
 
 
-=== tests/TestLogic/GlobalOpt/MonoInlineSimplifyPreserveSetsTest.elm
+=== tests/Compiler/MonoOpt/MonoInlineSimplifyPreserveSetsTest.elm
 
 
 - line 111  [reported 2x by: review]
@@ -6257,7 +6257,7 @@ against that tree).
     :125) is also never read.
 
 
-=== tests/TestLogic/LocalOpt/Typed/TailDefTypesTest.elm
+=== tests/Compiler/LocalOpt/Typed/TailDefTypesTest.elm
 
 
 - line 160  [reported 1x by: map]
@@ -6363,7 +6363,7 @@ against that tree).
     two lines.
 
 
-=== tests/TestLogic/Monomorphize/ComparableKeyEncodingTest.elm
+=== tests/Compiler/IR/MonoComparableKeyEncodingTest.elm
 
 
 - line 197  [reported 1x by: comment]
@@ -6439,7 +6439,7 @@ against that tree).
     performed.
 
 
-=== tests/TestLogic/Monomorphize/KernelLicenseTest.elm
+=== tests/Compiler/Monomorphize/Solver/KernelLicenseTest.elm
 
 
 - line 119  [reported 1x by: rework]
@@ -6491,7 +6491,7 @@ against that tree).
     no coverage, and no `lss.arrowIdentity` setting exists or is applied.
 
 
-=== tests/TestLogic/Monomorphize/LayoutQualTest.elm
+=== tests/Compiler/Monomorphize/Solver/LayoutQualTest.elm
 
 
 - line 106  [reported 1x by: map]
@@ -6513,7 +6513,7 @@ against that tree).
     lines 350 and 419.
 
 
-=== tests/TestLogic/Monomorphize/LssDestrAnnoTest.elm
+=== tests/Compiler/Monomorphize/Solver/LssDestrAnnoTest.elm
 
 
 - line 160  [reported 1x by: comment]
@@ -6525,7 +6525,7 @@ against that tree).
     configuration that differs from it.
 
 
-=== tests/TestLogic/Monomorphize/LssDirectedFlowTest.elm
+=== tests/Compiler/Monomorphize/Solver/LssDirectedFlowTest.elm
 
 
 - line 116  [reported 2x by: review]
@@ -6552,7 +6552,7 @@ against that tree).
     configuration; the test may be pinning off-path behaviour.
 
 
-=== tests/TestLogic/Monomorphize/LssFlowEdgeLossTest.elm
+=== tests/Compiler/Monomorphize/Solver/LssFlowEdgeLossTest.elm
 
 
 - line 88  [reported 2x by: comment, review]
@@ -6566,7 +6566,7 @@ against that tree).
     built but no test uses it. It is dead fixture code, and that case goes untested.
 
 
-=== tests/TestLogic/Monomorphize/LssGroundingTest.elm
+=== tests/Compiler/Monomorphize/Solver/LssGroundingTest.elm
 
 
 - line 263  [reported 1x by: review]
@@ -6577,7 +6577,7 @@ against that tree).
     a broken grounding wiring.
 
 
-=== tests/TestLogic/Monomorphize/LssInjTotalTest.elm
+=== tests/Compiler/Monomorphize/Solver/LssInjTotalTest.elm
 
 
 - line 124-128  [reported 3x by: comment, review]
@@ -6589,7 +6589,7 @@ against that tree).
     module (dead code).
 
 
-=== tests/TestLogic/Monomorphize/LssInstanceQualTest.elm
+=== tests/Compiler/Monomorphize/Solver/LssInstanceQualTest.elm
 
 
 - line 194-196  [reported 3x by: comment, review]
@@ -6600,7 +6600,7 @@ against that tree).
     1`, and no test checks it, so a collision there would go unnoticed.
 
 
-=== tests/TestLogic/Monomorphize/LssLocalMultiUseInjectTest.elm
+=== tests/Compiler/Monomorphize/Solver/LssLocalMultiUseInjectTest.elm
 
 
 - line 115  [reported 1x by: comment]
@@ -6621,7 +6621,7 @@ against that tree).
     `isSet` is never called anywhere in the module (dead code).
 
 
-=== tests/TestLogic/Monomorphize/LssPapMembersTest.elm
+=== tests/Compiler/Monomorphize/Solver/LssPapMembersTest.elm
 
 
 - line 133-136  [reported 2x by: map, rework]
@@ -6634,7 +6634,7 @@ against that tree).
     passes vacuously if all three fixtures fail to compile.
 
 
-=== tests/TestLogic/Monomorphize/LssRefPapSpineTest.elm
+=== tests/Compiler/Monomorphize/Solver/LssRefPapSpineTest.elm
 
 
 - line 100  [reported 1x by: review]
@@ -6656,7 +6656,7 @@ against that tree).
     isVar (line 304) and annoSize (line 330) are never called in the module: dead code.
 
 
-=== tests/TestLogic/Monomorphize/LssRegIdentityTest.elm
+=== tests/Compiler/Monomorphize/Solver/LssRegIdentityTest.elm
 
 
 - line 140  [reported 1x by: review]
@@ -6676,7 +6676,7 @@ against that tree).
     SET', pass when the head annotation is an empty set.
 
 
-=== tests/TestLogic/Monomorphize/LssRootFoldTest.elm
+=== tests/Compiler/Monomorphize/Solver/LssRootFoldTest.elm
 
 
 - line 92  [reported 1x by: map]
@@ -6690,7 +6690,7 @@ against that tree).
     leaves its head unresolved (LVar) would not be caught.
 
 
-=== tests/TestLogic/Monomorphize/LssSigFlowTest.elm
+=== tests/Compiler/Monomorphize/Solver/LssSigFlowTest.elm
 
 
 - line 209-211  [reported 4x by: comment, review]
@@ -6718,7 +6718,7 @@ against that tree).
     TailDef pin they once served no longer run.
 
 
-=== tests/TestLogic/Monomorphize/LssVarCtorRowsTest.elm
+=== tests/Compiler/Monomorphize/Solver/LssVarCtorRowsTest.elm
 
 
 - line 103-107  [reported 5x by: comment, review, rework]
@@ -6733,7 +6733,7 @@ against that tree).
     isSet is dead code: nothing in the file uses it.
 
 
-=== tests/TestLogic/Monomorphize/LssVarLambdaTest.elm
+=== tests/Compiler/Monomorphize/Solver/LssVarLambdaTest.elm
 
 
 - line 105  [reported 1x by: map]
@@ -6750,7 +6750,7 @@ against that tree).
     recordLambdaHome, so a regression in the compiler's arity guard would not fail it.
 
 
-=== tests/TestLogic/Monomorphize/LssVarSuccTest.elm
+=== tests/Compiler/Monomorphize/Solver/LssVarSuccTest.elm
 
 
 - line 81  [reported 1x by: review]
@@ -6819,7 +6819,7 @@ against that tree).
     are never reported (missed case).
 
 
-=== tests/TestLogic/Monomorphize/MonomorphizeTest.elm
+=== tests/Compiler/Monomorphize/KernelAbiTest.elm
 
 
 - line 298-301  [reported 3x by: comment, review]
@@ -6875,7 +6875,7 @@ against that tree).
     Test.skip makes the whole test run report as incomplete or failed.
 
 
-=== tests/TestLogic/Monomorphize/PostInlinePruneTest.elm
+=== tests/Compiler/Monomorphize/PostInlinePruneTest.elm
 
 
 - line 199  [reported 2x by: comment, review]
@@ -6893,7 +6893,7 @@ against that tree).
     unchanged, so nothing checks that an edge between components is removed.
 
 
-=== tests/TestLogic/Monomorphize/PostSettleDevirtTest.elm
+=== tests/Compiler/MonoOpt/PostSettleDevirtTest.elm
 
 
 - line 290-291  [reported 4x by: comment, review]
@@ -6902,7 +6902,7 @@ against that tree).
     non-empty, where the pass would take its walk without relying on lssMemberOrigins alone.
 
 
-=== tests/TestLogic/Monomorphize/RenamingSubstAndMErasedTest.elm
+=== tests/Compiler/Monomorphize/Subst/RenamingSubstAndMErasedTest.elm
 
 
 - line 375  [reported 1x by: map]
@@ -6923,7 +6923,7 @@ against that tree).
     messages describe.
 
 
-=== tests/TestLogic/Monomorphize/TailFuncSpecializationTest.elm
+=== tests/Compiler/Monomorphize/TailFuncSpecializationTest.elm
 
 
 - line 179  [reported 1x by: comment]
@@ -6979,7 +6979,7 @@ against that tree).
     an alias therefore fails canonicalization.
 
 
-=== tests/TestLogic/Type/AnnotationEnforcement.elm
+=== tests/Compiler/Type/AnnotationEnforcement.elm
 
 
 - line 72  [reported 2x by: comment, review]
@@ -6993,7 +6993,7 @@ against that tree).
     empty OneOrMore, so List.head never returns Nothing. It is dead code but does no harm.
 
 
-=== tests/TestLogic/Type/Constrain/GoldenConstraintTest.elm
+=== tests/Compiler/Type/Constrain/GoldenConstraintTest.elm
 
 
 - line 365  [reported 1x by: map]
@@ -7047,7 +7047,7 @@ against that tree).
     behaves wrongly. It is a string, so it was left unchanged.
 
 
-=== tests/TestLogic/Type/DeepSpineStackSafetyTest.elm
+=== tests/Compiler/Type/Constrain/Typed/DeepSpineStackSafetyTest.elm
 
 
 - line 48  [reported 1x by: map]
@@ -7062,7 +7062,7 @@ against that tree).
     caught. The baseline lines are 48-51.
 
 
-=== tests/TestLogic/Type/KernelIntrinsicsTest.elm
+=== tests/Compiler/Type/KernelIntrinsicsTest.elm
 
 
 - line 95-101  [reported 3x by: comment, review]
@@ -7095,7 +7095,7 @@ against that tree).
     inferred type. A bare `a` would wrongly be accepted.
 
 
-=== tests/TestLogic/Type/OccursCheck.elm
+=== tests/Compiler/Type/OccursCheck.elm
 
 
 - line 57-58  [reported 6x by: comment, review, rework]
@@ -7118,7 +7118,7 @@ against that tree).
     under "Vacuous standard-corpus checkers".
 
 
-=== tests/TestLogic/Type/PostSolve/Determinism.elm
+=== tests/Compiler/Type/PostSolveDeterminism.elm
 
 
 - line 96  [reported 4x by: comment, review, rework]
@@ -7140,7 +7140,7 @@ against that tree).
     through PostSolve and cannot detect an unfilled placeholder: the check is vacuous.
 
 
-=== tests/TestLogic/Type/PostSolve/GroupBTypesTest.elm
+=== tests/Compiler/Type/PostSolveGroupBTypesTest.elm
 
 
 - line 133  [reported 1x by: review]
@@ -7151,7 +7151,7 @@ against that tree).
     placeholder (POST_001).
 
 
-=== tests/TestLogic/Type/PostSolve/KernelTypes.elm
+=== tests/Compiler/Type/PostSolveKernelTypes.elm
 
 
 - line 81  [reported 1x by: map]
@@ -7168,7 +7168,7 @@ against that tree).
     reported, but an empty-named `Can.TVar` anywhere else in the same entry is.
 
 
-=== tests/TestLogic/Type/PostSolve/KernelTypesTest.elm
+=== tests/Compiler/Type/PostSolveKernelTypesTest.elm
 
 
 - line 18  [reported 2x by: comment, rework]
@@ -7186,7 +7186,7 @@ against that tree).
     literals have Int type', etc.) claim a type check on the literals.
 
 
-=== tests/TestLogic/Type/PostSolve/NoSyntheticVars.elm
+=== tests/Compiler/Type/PostSolveNoSyntheticVars.elm
 
 
 - line 109-110  [reported 4x by: comment, review, rework]
@@ -7200,7 +7200,7 @@ against that tree).
     leftover solver variable under a letter name is never caught.
 
 
-=== tests/TestLogic/Type/PostSolve/NoSyntheticVarsTest.elm
+=== tests/Compiler/Type/PostSolveNoSyntheticVarsTest.elm
 
 
 - line 71  [reported 1x by: comment]
@@ -7214,7 +7214,7 @@ against that tree).
     The solver names type variables a..z, letter+digits (src/Compiler/Data/Name.elm:339-361)
     or number/comparable/appendable/compappend prefixes
     (src/Compiler/Type/Type.elm:917-946); none is empty, digit-first or _-prefixed, so
-    isSyntheticVariable (tests/TestLogic/Type/PostSolve/NoSyntheticVars.elm:140-147) appears
+    isSyntheticVariable (tests/Compiler/Type/PostSolveNoSyntheticVars.elm:140-147) appears
     never to fire for these three programs once they type check: the tests look unable to
     fail. Not fully traced (PostSolve fallbacks and rigid names).
 
@@ -7369,7 +7369,7 @@ against that tree).
     variables at the use site, which could misreport a node that has no pre-type.
 
 
-=== tests/TestLogic/Type/RankPolymorphism.elm
+=== tests/Compiler/Type/RankPolymorphism.elm
 
 
 - line 139  [reported 1x by: map]
@@ -7384,7 +7384,7 @@ against that tree).
     problem. This is already recorded in the 'Vacuous standard-corpus checkers' pitfall.
 
 
-=== tests/TestLogic/Type/RankPolymorphismTest.elm
+=== tests/Compiler/Type/RankPolymorphismTest.elm
 
 
 - line 44  [reported 2x by: comment, review]
@@ -7394,7 +7394,7 @@ against that tree).
     this suite can fail on a module that type checks.
 
 
-=== tests/TestLogic/Type/UnificationErrorsTest.elm
+=== tests/Compiler/Type/UnificationErrorsTest.elm
 
 
 - line 79  [reported 2x by: comment, review]
@@ -7409,7 +7409,7 @@ against that tree).
     The first 'mismatch' test also asserts success (expectNoTypeErrors).
 
 
-=== tests/Type/Constrain/KernelTests.elm
+=== tests/Compiler/Type/Constrain/KernelParityTest.elm
 
 
 - line 856  [reported 1x by: review]
@@ -7427,7 +7427,7 @@ against that tree).
     several characters. No current test exercises this.
 
 
-=== tests/TestLogic/Canonicalize/LimitErrors.elm
+=== tests/Compiler/Canonicalize/LimitErrors.elm
 
 - line 104  [reported 3x by: comment, review; run 2026-10-27]
     The `Just []` branch of expectFirstReportContains can never run, because

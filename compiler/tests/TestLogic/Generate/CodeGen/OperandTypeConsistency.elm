@@ -12,24 +12,30 @@ _declared types_, one per operand, in operand order. The check is that an op
 declares as many types as it has operands, and that each declared type equals
 the defined type of the operand in the same position.
 
-SSA names are local to a function, so the check runs one top-level `func.func`
-at a time. For each function it first gathers the defined type of every SSA
-name in it, at any depth of nesting, into one `TypeEnv`, and then checks every
-op nested in the function against that environment. Types are compared with
-`TestLogic.Generate.CodeGen.Invariants.typesMatch`, which is plain equality.
+SSA names follow MLIR's scoping. The check runs one top-level `func.func` at a
+time, and an op is checked against the names in scope where it stands: those
+defined at its own level of its region (the region's block arguments and the
+results of its ops, in any of its blocks), and those in scope at the op that
+holds the region, and so on outwards. A name defined inside a region is not in
+scope outside it, nor in a sibling region of the same op, so two sibling
+alternatives of an `eco.case` may each define a value of the same name, with
+different types; the MLIR parser, `Mlir.Pretty` and the bytecode writer
+(`Mlir.Bytecode.IrSection.encodeOp`) all scope names the same way. Types are
+compared with `TestLogic.Generate.CodeGen.Invariants.typesMatch`, which is
+plain equality.
 
 Among what is not checked:
 
   - An op with no `_operand_types` attribute. Which ops must have one is the
     concern of `TestLogic.Generate.CodeGen.OperandTypesAttr`.
-  - An operand whose name is defined nowhere in its function.
+  - An operand whose name is not in scope at its op.
   - The individual operands of an op whose declared types are the wrong number.
     That op gets one violation for the count alone.
   - The `func.func` op itself, and any op that is not inside a top-level
     `func.func`.
 
-When a name is defined more than once in one function, every use of it is
-compared with the definition that comes last in the function.
+When a name is defined more than once at one level, every use of it in that
+scope is compared with the definition that comes last.
 
 @docs expectOperandTypeConsistency
 
@@ -38,7 +44,7 @@ compared with the definition that comes last in the function.
 import Compiler.IR.Source as Src
 import Dict
 import Expect exposing (Expectation)
-import Mlir.Mlir exposing (MlirBlock, MlirModule, MlirOp, MlirRegion(..), MlirType(..))
+import Mlir.Mlir exposing (MlirModule, MlirOp, MlirRegion(..), MlirType(..))
 import OrderedDict
 import TestLogic.Generate.CodeGen.Invariants
     exposing
@@ -83,136 +89,63 @@ checkOperandTypeConsistency mlirModule =
 
 
 {-| Returns the violations of every op nested in `funcOp`, each checked against
-the defined types gathered from the whole of `funcOp`.
+the names in scope where it stands.
 -}
 checkFunction : MlirOp -> List Violation
 checkFunction funcOp =
-    let
-        localTypeEnv =
-            buildTypeEnvFromOp funcOp
-
-        allOpsInFunc =
-            walkOpsInOp funcOp
-    in
-    List.concatMap (checkOp localTypeEnv) allOpsInFunc
+    List.concatMap (checkRegion Dict.empty) funcOp.regions
 
 
-{-| Returns the defined type of every SSA name introduced by `op` or anywhere
-inside it: its own results, and every block argument and op result in its
-regions, at any depth. Where a name is defined twice, the later definition
-replaces the earlier.
+{-| Returns the violations of every op in the region, at any depth, given
+`outerEnv`, the names in scope at the op that holds the region. The ops at the
+region's own level are checked against `outerEnv` plus the region's own
+definitions (`regionDefinitions`), and the regions nested in each op against
+that same environment as their `outerEnv`.
 -}
-buildTypeEnvFromOp : MlirOp -> TypeEnv
-buildTypeEnvFromOp op =
+checkRegion : TypeEnv -> MlirRegion -> List Violation
+checkRegion outerEnv region =
     let
-        withResults =
+        env =
+            regionDefinitions region outerEnv
+    in
+    List.concatMap
+        (\op -> checkOp env op ++ List.concatMap (checkRegion env) op.regions)
+        (regionOps region)
+
+
+{-| Returns `env` with the defined types introduced at the region's own level
+added: the arguments of each block and the results of its body ops and
+terminator, the entry block first and then each labelled block in the order the
+region holds them. What the regions nested in those ops define is not added.
+Where a name is defined twice, the later definition replaces the earlier.
+-}
+regionDefinitions : MlirRegion -> TypeEnv -> TypeEnv
+regionDefinitions (MlirRegion { entry, blocks }) env =
+    List.foldl
+        (\block acc ->
             List.foldl
-                (\( name, t ) acc -> Dict.insert name t acc)
-                Dict.empty
-                op.results
-    in
-    List.foldl collectFromRegion withResults op.regions
+                (\op opAcc -> insertAll op.results opAcc)
+                (insertAll block.args acc)
+                (block.body ++ [ block.terminator ])
+        )
+        env
+        (entry :: OrderedDict.values blocks)
 
 
-{-| Returns `env` with the defined types from the region added: the entry
-block's arguments and ops, then each labelled block's, in the order the region
-holds them.
+{-| Returns `env` with each named type of `pairs` inserted, in list order.
 -}
-collectFromRegion : MlirRegion -> TypeEnv -> TypeEnv
-collectFromRegion (MlirRegion { entry, blocks }) env =
-    let
-        withEntryArgs =
-            List.foldl
-                (\( name, t ) acc -> Dict.insert name t acc)
-                env
-                entry.args
-
-        withEntryBody =
-            collectFromOps entry.body withEntryArgs
-
-        withEntryTerm =
-            collectFromOp entry.terminator withEntryBody
-    in
-    List.foldl collectFromBlock withEntryTerm (OrderedDict.values blocks)
+insertAll : List ( String, MlirType ) -> TypeEnv -> TypeEnv
+insertAll pairs env =
+    List.foldl (\( name, t ) acc -> Dict.insert name t acc) env pairs
 
 
-{-| Returns `env` with the defined types from `block` added: its arguments, then
-those introduced by its body ops and its terminator.
+{-| Returns the ops at the region's own level, leaving out those nested in
+their regions: the body ops and then the terminator of the entry block, then
+of each labelled block in the order the region holds them.
 -}
-collectFromBlock : MlirBlock -> TypeEnv -> TypeEnv
-collectFromBlock block env =
-    let
-        withArgs =
-            List.foldl
-                (\( name, t ) acc -> Dict.insert name t acc)
-                env
-                block.args
-
-        withBody =
-            collectFromOps block.body withArgs
-    in
-    collectFromOp block.terminator withBody
-
-
-{-| Returns `env` with the defined types introduced by each of `ops` added, in
-list order.
--}
-collectFromOps : List MlirOp -> TypeEnv -> TypeEnv
-collectFromOps ops env =
-    List.foldl collectFromOp env ops
-
-
-{-| Returns `env` with the defined types introduced by `op` added: its results,
-then everything in its regions.
--}
-collectFromOp : MlirOp -> TypeEnv -> TypeEnv
-collectFromOp op env =
-    let
-        withResults =
-            List.foldl
-                (\( name, t ) acc -> Dict.insert name t acc)
-                env
-                op.results
-    in
-    List.foldl collectFromRegion withResults op.regions
-
-
-{-| Returns every op nested in the regions of `op`, at any depth, leaving out
-`op` itself.
--}
-walkOpsInOp : MlirOp -> List MlirOp
-walkOpsInOp op =
-    List.concatMap walkOpsInRegion op.regions
-
-
-{-| Returns every op in the region, at any depth: those of the entry block
-first, then those of each labelled block in the order the region holds them.
--}
-walkOpsInRegion : MlirRegion -> List MlirOp
-walkOpsInRegion (MlirRegion { entry, blocks }) =
-    let
-        entryOps =
-            List.concatMap walkOp entry.body ++ walkOp entry.terminator
-
-        blockOps =
-            List.concatMap walkOpsInBlock (OrderedDict.values blocks)
-    in
-    entryOps ++ blockOps
-
-
-{-| Returns every op in `block`, at any depth: the body ops and then the
-terminator, each followed by the ops nested in it.
--}
-walkOpsInBlock : MlirBlock -> List MlirOp
-walkOpsInBlock block =
-    List.concatMap walkOp block.body ++ walkOp block.terminator
-
-
-{-| Returns `op` followed by every op nested in its regions, at any depth.
--}
-walkOp : MlirOp -> List MlirOp
-walkOp op =
-    op :: List.concatMap walkOpsInRegion op.regions
+regionOps : MlirRegion -> List MlirOp
+regionOps (MlirRegion { entry, blocks }) =
+    List.concatMap (\block -> block.body ++ [ block.terminator ]) (entry :: OrderedDict.values blocks)
 
 
 {-| Returns the violations of `op` against the defined types in `typeEnv`.

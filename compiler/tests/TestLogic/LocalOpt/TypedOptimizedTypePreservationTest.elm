@@ -25,13 +25,25 @@ What `suite` establishes, for each program it reaches:
     reached by a jump, has the type of the case.
   - Every literal it visits other than an `Int` has its fixed type: `()`,
     `Basics.Bool`, `Basics.Float`, `Char.Char` or `String.String`.
+  - Every tail-recursive definition (`TailDef`), top-level or in a `let`, has
+    as its stored type the function type its parameters' types and its body's
+    type make up (TOPT\_005), and a top-level one also has its name's
+    annotation as its stored type. The catalogue's
+    `SourceIR.TailDefTypeCases` holds the two annotated tail-recursive
+    programs this rule was first written for.
 
 Among what is not tested: the types of `Int` literals, of global references,
-of functions, calls, `let`, `if` and destructuring. A local variable or kernel
+of plain functions and definitions, calls, `let`, `if` and destructuring. A local variable or kernel
 reference with no entry in the check's environment passes.
+
+It also runs over the programs of `SourceIR.MonoFailsCases`
+(`expectBeforeMonoSuite`), which monomorphization rejects: every stage this
+check looks at accepts them, and they hold what the standard catalogue cannot,
+such as polymorphic recursion over a non-regular type.
 
 -}
 
+import SourceIR.MonoFailsCases as MonoFailsCases
 import SourceIR.Suite.StandardTestSuites as StandardTestSuites
 import Test exposing (Test)
 import TestLogic.LocalOpt.TypePreservation exposing (expectTypePreservation)
@@ -42,6 +54,7 @@ the standard test suite.
 -}
 suite : Test
 suite =
-    Test.describe "TypedOptimized type preservation (TOPT_004)"
+    Test.describe "TypedOptimized type preservation (TOPT_004, TOPT_005)"
         [ StandardTestSuites.expectSuite expectTypePreservation "preserves types"
+        , MonoFailsCases.expectBeforeMonoSuite expectTypePreservation "preserves types"
         ]

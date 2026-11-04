@@ -12,8 +12,8 @@ module compiles when both pathways type-check and optimize it; any
 `CompileError` fails the test that asked for it.
 
 The fixture is the source text of `Elm.JsArray`, from
-`Compiler.Elm.Source.JsArray`, whose functions are bound to kernel values of
-`Elm.Kernel.JsArray`, and of `Array`, from `Compiler.Elm.Source.Array`, which
+`Compiler.PackageCompilation.JsArraySource`, whose functions are bound to kernel values of
+`Elm.Kernel.JsArray`, and of `Array`, from `Compiler.PackageCompilation.ArraySource`, which
 imports `Elm.JsArray`, `Basics`, `Bitwise`, `List`, `Maybe` and `Tuple`. Both
 are compiled as modules of elm/core (`Pkg.core`), against
 `testIfaces`. Where `Array` is compiled it is compiled after
@@ -55,8 +55,8 @@ and any source that fails to compile.
 import Compiler.Elm.Interface.Basic as Basic
 import Compiler.Elm.ModuleName as ModuleName
 import Compiler.Elm.Package as Pkg
-import Compiler.Elm.Source.Array as ArraySource
-import Compiler.Elm.Source.JsArray as JsArraySource
+import Compiler.PackageCompilation.ArraySource as ArraySource
+import Compiler.PackageCompilation.JsArraySource as JsArraySource
 import Compiler.IR.Canonical.Interface as I
 import Compiler.IR.Source as Src
 import Compiler.PackageCompilation as PC

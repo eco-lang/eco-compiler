@@ -33,7 +33,8 @@ module.exports.generateOnly = function(args) {
         .catch(handleError(log));
 };
 
-var elmInstrument = path.join(__dirname, "..", "bin", "elm-instrument");
+// elm-instrument-eco wraps the binwrap-installed elm-instrument and repairs its output.
+var elmInstrument = path.join(__dirname, "..", "bin", "elm-instrument-eco");
 var coverageDir = path.join(".coverage", "instrumented");
 var fakeElmBinary = path.resolve(path.join(__dirname, "..", "bin", "fake-elm"));
 

@@ -1617,7 +1617,11 @@ Before the definition is generated, every name bound from here to the end of
 the chain of `let`s is given a placeholder mapping and made the current
 siblings, as `Expr.generateLet` does, so that closures defined in the chain can
 refer to themselves and to each other. Only those names are siblings, not every
-variable in scope. The outer siblings are restored for the body.
+variable in scope. The outer siblings are restored for the body. A group of
+mutually recursive closures at the head of the chain
+(`Expr.splitMutualRecGroup`) is generated as one `let` chain, as
+`Expr.generateLet` generates it, and the rest of the chain is then compiled as
+the step's body.
 
 For an ordinary definition, `tailRecLetBody` is set to `body` while it is
 generated, so that the analysis of where a promoted binding is used sees its
@@ -1661,8 +1665,28 @@ compileLetStep ctx loopSpec def body =
         ctxReady =
             { ctxWithPlaceholders | currentLetSiblings = letBoundSiblings }
     in
-    case def of
-        Mono.MonoDef _ _ ->
+    case ( def, Expr.splitMutualRecGroup def body ) of
+        ( Mono.MonoDef _ _, Just ( groupSetupExpr, restBody ) ) ->
+            -- Mutually recursive closures are generated together, so that
+            -- each captures its siblings' values, not their placeholders.
+            let
+                groupResult =
+                    Expr.generateExpr ctxReady groupSetupExpr
+
+                ctxAfterGroup =
+                    groupResult.ctx
+
+                bodyStep =
+                    compileStep { ctxAfterGroup | currentLetSiblings = outerSiblings } loopSpec restBody
+            in
+            { ops = groupResult.ops ++ bodyStep.ops
+            , nextParams = bodyStep.nextParams
+            , doneVar = bodyStep.doneVar
+            , results = bodyStep.results
+            , ctx = bodyStep.ctx
+            }
+
+        ( Mono.MonoDef _ _, Nothing ) ->
             let
                 defSetupExpr =
                     Mono.MonoLet def Mono.MonoUnit Mono.MUnit
@@ -1700,7 +1724,7 @@ compileLetStep ctx loopSpec def body =
             , ctx = { stepCtx | fwdRefdLetNames = ctx.fwdRefdLetNames }
             }
 
-        Mono.MonoTailDef _ _ _ ->
+        ( Mono.MonoTailDef _ _ _, _ ) ->
             let
                 defSetupExpr =
                     Mono.MonoLet def Mono.MonoUnit Mono.MUnit

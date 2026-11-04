@@ -87,7 +87,7 @@ test("eco diff: opaque type gaining a parameter is MAJOR", async () => {
 
 // Bug 2: Builder.Generate/Exit.toGenerateReport says "This is likely a compiler bug" for the
 // STAGE ARITY LIMIT, a program condition (one captured polymorphic local function specialised
-// at 2197 types). Unit: Builder/GenerateTest.elm. --stack-size: the default node stack
+// at 2197 types). Unit: Builder/Reporting/ExitTest.elm. --stack-size: the default node stack
 // overflows in the compiler on this input (a separate problem).
 test("STAGE ARITY LIMIT is not reported as a likely compiler bug", async () => {
   const b = ["1", '"a"', "1.5", "'c'", "()", "[ 1 ]", '[ "s" ]', "Just 1", "Nothing", "{ a = 1 }",

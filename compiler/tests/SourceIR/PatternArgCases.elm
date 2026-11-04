@@ -21,14 +21,16 @@ a type with one constructor, annotate every definition, and use
 `makeModuleWithTypedDefsUnionsAliases`, which imports `Basics`, `Maybe`,
 `List`, `Elm.JsArray as JsArray`, `String` and `Char`.
 
-In nine of the programs an argument pattern, such as `h :: t`, `[ a, b ]`,
-`0` or `"hello"`, does not match every value of its type, and
-`Compiler.Nitpick.PatternMatches` reports such an argument as an incomplete
-pattern. These are the cases labelled "Cons pattern", "Fixed list pattern",
-"Nested cons pattern", "List pattern in lambda", "Int literal pattern", "String
-literal pattern", "Multiple literal patterns", "Mixed nested patterns" and
-"Triple nested patterns". An expectation that runs the pattern checker rejects
-them.
+An argument pattern must match every value of its type: `eco make` rejects
+one that can fail, such as `h :: t`, `[ a, b ]`, `0` or `"hello"`, as an
+`UNSAFE PATTERN` (`Compiler.Nitpick.PatternMatches`). So the list and literal
+cases ("Cons pattern", "Fixed list pattern", "Nested cons pattern", "List
+pattern in lambda", "Int literal pattern", "String literal pattern",
+"Multiple literal patterns", "Mixed nested patterns" and "Triple nested
+patterns") bind the argument, or the list inside a tuple argument, to a name
+and match the pattern in a `case` on it, with one more branch for the values
+it misses. The argument-position forms of these nine programs are rejected
+cases of `SourceIR.PatternFailsCases`.
 
 The programs, group by group, in the order they run:
 
@@ -42,13 +44,16 @@ The programs, group by group, in the order they run:
   - Record patterns: `{ x }`, `{ x, y }`, the lambda `\{ name } -> name`, a
     five-field pattern, a function of two records, and a record followed by a
     plain name.
-  - List patterns: `h :: t`, `[ a, b ]`, `_ :: x :: _`, and the lambda
-    `\(x :: _) -> x`.
-  - Literal patterns: `0`, `"hello"`, `()`, and `0` followed by `""`. Of
-    these only `()` matches every value of its type.
-  - Nested patterns: a pair of pairs; a pair of `{ x }` and `h :: _`; a triple
-    of a pair, `{ x, y }` and `h :: t`; and a pair of pairs with `_` in
-    opposite corners.
+  - List patterns, each in a `case` on a list argument: `h :: t` (with `[]`),
+    `[ a, b ]` and `_ :: x :: _` (each with `_`), and `x :: _` (with `[]`) in
+    a lambda.
+  - Literal patterns: `0` and `"hello"`, each in a `case` on the argument with
+    a `_` branch; the argument `()`, which matches every value of its type;
+    and `( 0, "" )` in a `case` on the pair of two arguments, with a `_`
+    branch.
+  - Nested patterns: a pair of pairs; a pair of `{ x }` and a list matched by
+    `h :: _` or `[]`; a triple of a pair, `{ x, y }` and a list matched by
+    `h :: t` or `[]`; and a pair of pairs with `_` in opposite corners.
   - Multi-argument patterns: five arguments mixing names, a pair, a record and
     `_`; three pairs; and names alternating with `_`.
   - Custom type patterns: `getId (Person id _)` and `getAge (Person _ age)` on
@@ -68,6 +73,7 @@ import Compiler.AST.SourceBuilder
         ( TypedDef
         , UnionDef
         , callExpr
+        , caseExpr
         , ctorExpr
         , floatExpr
         , intExpr
@@ -545,15 +551,30 @@ listPatternCases expectFn =
     ]
 
 
-{-| Returns `expectFn` applied to a module defining `head (h :: t) = h` and
-`testValue = head [ 1, 2 ]`. The argument pattern does not match `[]`.
+{-| Returns `expectFn` applied to a module defining
+
+    head list =
+        case list of
+            h :: t ->
+                h
+
+            [] ->
+                0
+
+and `testValue = head [ 1, 2 ]`.
 -}
 consPattern : (Src.Module -> Expectation) -> (() -> Expectation)
 consPattern expectFn _ =
     let
         modul =
             makeModuleWithDefs "Test"
-                [ ( "head", [ pCons (pVar "h") (pVar "t") ], varExpr "h" )
+                [ ( "head"
+                  , [ pVar "list" ]
+                  , caseExpr (varExpr "list")
+                        [ ( pCons (pVar "h") (pVar "t"), varExpr "h" )
+                        , ( pList [], intExpr 0 )
+                        ]
+                  )
                 , ( "testValue", [], callExpr (varExpr "head") [ listExpr [ intExpr 1, intExpr 2 ] ] )
                 ]
     in
@@ -561,15 +582,29 @@ consPattern expectFn _ =
 
 
 {-| Returns `expectFn` applied to a module defining
-`firstTwo [ a, b ] = ( a, b )` and `testValue = firstTwo [ 1, 2 ]`. The
-argument pattern matches only a list of exactly two elements.
+
+    firstTwo list =
+        case list of
+            [ a, b ] ->
+                ( a, b )
+
+            _ ->
+                ( 0, 0 )
+
+and `testValue = firstTwo [ 1, 2 ]`.
 -}
 fixedListPattern : (Src.Module -> Expectation) -> (() -> Expectation)
 fixedListPattern expectFn _ =
     let
         modul =
             makeModuleWithDefs "Test"
-                [ ( "firstTwo", [ pList [ pVar "a", pVar "b" ] ], tupleExpr (varExpr "a") (varExpr "b") )
+                [ ( "firstTwo"
+                  , [ pVar "list" ]
+                  , caseExpr (varExpr "list")
+                        [ ( pList [ pVar "a", pVar "b" ], tupleExpr (varExpr "a") (varExpr "b") )
+                        , ( pAnything, tupleExpr (intExpr 0) (intExpr 0) )
+                        ]
+                  )
                 , ( "testValue", [], callExpr (varExpr "firstTwo") [ listExpr [ intExpr 1, intExpr 2 ] ] )
                 ]
     in
@@ -577,15 +612,29 @@ fixedListPattern expectFn _ =
 
 
 {-| Returns `expectFn` applied to a module defining
-`secondElem (_ :: x :: _) = x` and `testValue = secondElem [ 1, 2, 3 ]`. The
-argument pattern does not match a list shorter than two.
+
+    secondElem list =
+        case list of
+            _ :: x :: _ ->
+                x
+
+            _ ->
+                0
+
+and `testValue = secondElem [ 1, 2, 3 ]`.
 -}
 nestedConsPattern : (Src.Module -> Expectation) -> (() -> Expectation)
 nestedConsPattern expectFn _ =
     let
         modul =
             makeModuleWithDefs "Test"
-                [ ( "secondElem", [ pCons pAnything (pCons (pVar "x") pAnything) ], varExpr "x" )
+                [ ( "secondElem"
+                  , [ pVar "list" ]
+                  , caseExpr (varExpr "list")
+                        [ ( pCons pAnything (pCons (pVar "x") pAnything), varExpr "x" )
+                        , ( pAnything, intExpr 0 )
+                        ]
+                  )
                 , ( "testValue", [], callExpr (varExpr "secondElem") [ listExpr [ intExpr 1, intExpr 2, intExpr 3 ] ] )
                 ]
     in
@@ -593,13 +642,27 @@ nestedConsPattern expectFn _ =
 
 
 {-| Returns `expectFn` applied to a module whose one value is
-`testValue = \(x :: _) -> x`. The argument pattern does not match `[]`.
+
+    testValue =
+        \list ->
+            case list of
+                x :: _ ->
+                    x
+
+                [] ->
+                    0
+
 -}
 listPatternInLambda : (Src.Module -> Expectation) -> (() -> Expectation)
 listPatternInLambda expectFn _ =
     let
         fn =
-            lambdaExpr [ pCons (pVar "x") pAnything ] (varExpr "x")
+            lambdaExpr [ pVar "list" ]
+                (caseExpr (varExpr "list")
+                    [ ( pCons (pVar "x") pAnything, varExpr "x" )
+                    , ( pList [], intExpr 0 )
+                    ]
+                )
 
         modul =
             makeModule "testValue" fn
@@ -624,31 +687,60 @@ literalPatternCases expectFn =
     ]
 
 
-{-| Returns `expectFn` applied to a module defining `isZero 0 = "zero"` and
-`testValue = isZero 0`. The argument pattern matches only `0`.
+{-| Returns `expectFn` applied to a module defining
+
+    isZero n =
+        case n of
+            0 ->
+                "zero"
+
+            _ ->
+                "other"
+
+and `testValue = isZero 0`.
 -}
 intLiteralPattern : (Src.Module -> Expectation) -> (() -> Expectation)
 intLiteralPattern expectFn _ =
     let
         modul =
             makeModuleWithDefs "Test"
-                [ ( "isZero", [ pInt 0 ], strExpr "zero" )
+                [ ( "isZero"
+                  , [ pVar "n" ]
+                  , caseExpr (varExpr "n")
+                        [ ( pInt 0, strExpr "zero" )
+                        , ( pAnything, strExpr "other" )
+                        ]
+                  )
                 , ( "testValue", [], callExpr (varExpr "isZero") [ intExpr 0 ] )
                 ]
     in
     expectFn modul
 
 
-{-| Returns `expectFn` applied to a module defining `greet "hello" = "hi"`
-and `testValue = greet "hello"`. The argument pattern matches only
-`"hello"`.
+{-| Returns `expectFn` applied to a module defining
+
+    greet s =
+        case s of
+            "hello" ->
+                "hi"
+
+            _ ->
+                "bye"
+
+and `testValue = greet "hello"`.
 -}
 stringLiteralPattern : (Src.Module -> Expectation) -> (() -> Expectation)
 stringLiteralPattern expectFn _ =
     let
         modul =
             makeModuleWithDefs "Test"
-                [ ( "greet", [ pStr "hello" ], strExpr "hi" )
+                [ ( "greet"
+                  , [ pVar "s" ]
+                  , caseExpr (varExpr "s")
+                        [ ( pStr "hello", strExpr "hi" )
+                        , ( pAnything, strExpr "bye" )
+                        ]
+                  )
                 , ( "testValue", [], callExpr (varExpr "greet") [ strExpr "hello" ] )
                 ]
     in
@@ -670,15 +762,30 @@ unitPattern expectFn _ =
     expectFn modul
 
 
-{-| Returns `expectFn` applied to a module defining `match 0 "" = 0` and
-`testValue = match 0 ""`. Both argument patterns match only one value.
+{-| Returns `expectFn` applied to a module defining
+
+    match n s =
+        case ( n, s ) of
+            ( 0, "" ) ->
+                0
+
+            _ ->
+                1
+
+and `testValue = match 0 ""`.
 -}
 multipleLiteralPatterns : (Src.Module -> Expectation) -> (() -> Expectation)
 multipleLiteralPatterns expectFn _ =
     let
         modul =
             makeModuleWithDefs "Test"
-                [ ( "match", [ pInt 0, pStr "" ], intExpr 0 )
+                [ ( "match"
+                  , [ pVar "n", pVar "s" ]
+                  , caseExpr (tupleExpr (varExpr "n") (varExpr "s"))
+                        [ ( pTuple (pInt 0) (pStr ""), intExpr 0 )
+                        , ( pAnything, intExpr 1 )
+                        ]
+                  )
                 , ( "testValue", [], callExpr (varExpr "match") [ intExpr 0, strExpr "" ] )
                 ]
     in
@@ -724,19 +831,32 @@ deeplyNestedTuplePattern expectFn _ =
 
 
 {-| Returns `expectFn` applied to a module defining
-`mixed ( { x }, h :: _ ) = ( x, h )` and
-`testValue = mixed ( { x = 1 }, [ "hello", "world" ] )`. The argument
-pattern does not match a pair whose list is empty.
+
+    mixed ( { x }, list ) =
+        case list of
+            h :: _ ->
+                ( x, h )
+
+            [] ->
+                ( x, "" )
+
+and `testValue = mixed ( { x = 1 }, [ "hello", "world" ] )`.
 -}
 mixedNestedPatterns : (Src.Module -> Expectation) -> (() -> Expectation)
 mixedNestedPatterns expectFn _ =
     let
         pattern =
-            pTuple (pRecord [ "x" ]) (pCons (pVar "h") pAnything)
+            pTuple (pRecord [ "x" ]) (pVar "list")
+
+        body =
+            caseExpr (varExpr "list")
+                [ ( pCons (pVar "h") pAnything, tupleExpr (varExpr "x") (varExpr "h") )
+                , ( pList [], tupleExpr (varExpr "x") (strExpr "") )
+                ]
 
         modul =
             makeModuleWithDefs "Test"
-                [ ( "mixed", [ pattern ], tupleExpr (varExpr "x") (varExpr "h") )
+                [ ( "mixed", [ pattern ], body )
                 , ( "testValue", [], callExpr (varExpr "mixed") [ tupleExpr (recordExpr [ ( "x", intExpr 1 ) ]) (listExpr [ strExpr "hello", strExpr "world" ]) ] )
                 ]
     in
@@ -744,9 +864,16 @@ mixedNestedPatterns expectFn _ =
 
 
 {-| Returns `expectFn` applied to a module defining
-`complex ( ( a, b ), { x, y }, h :: t ) = a` and
-`testValue = complex ( ( 1, "hello" ), { x = 3.14, y = 2 }, [ 3, 4 ] )`.
-The argument pattern does not match a triple whose list is empty.
+
+    complex ( ( a, b ), { x, y }, list ) =
+        case list of
+            h :: t ->
+                a
+
+            [] ->
+                a
+
+and `testValue = complex ( ( 1, "hello" ), { x = 3.14, y = 2 }, [ 3, 4 ] )`.
 -}
 tripleNestedPatterns : (Src.Module -> Expectation) -> (() -> Expectation)
 tripleNestedPatterns expectFn _ =
@@ -755,11 +882,17 @@ tripleNestedPatterns expectFn _ =
             pTuple3
                 (pTuple (pVar "a") (pVar "b"))
                 (pRecord [ "x", "y" ])
-                (pCons (pVar "h") (pVar "t"))
+                (pVar "list")
+
+        body =
+            caseExpr (varExpr "list")
+                [ ( pCons (pVar "h") (pVar "t"), varExpr "a" )
+                , ( pList [], varExpr "a" )
+                ]
 
         modul =
             makeModuleWithDefs "Test"
-                [ ( "complex", [ pattern ], varExpr "a" )
+                [ ( "complex", [ pattern ], body )
                 , ( "testValue", [], callExpr (varExpr "complex") [ tuple3Expr (tupleExpr (intExpr 1) (strExpr "hello")) (recordExpr [ ( "x", floatExpr 3.14 ), ( "y", intExpr 2 ) ]) (listExpr [ intExpr 3, intExpr 4 ]) ] )
                 ]
     in

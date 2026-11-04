@@ -26,8 +26,14 @@ What the tests establish:
 Among what is not tested: the parameters of a tail-recursive `let` definition
 against that definition's type.
 
+It also runs over the programs of `SourceIR.MonoFailsCases`
+(`expectBeforeMonoSuite`), which monomorphization rejects: every stage this
+check looks at accepts them, and they hold what the standard catalogue cannot,
+such as polymorphic recursion over a non-regular type.
+
 -}
 
+import SourceIR.MonoFailsCases as MonoFailsCases
 import SourceIR.Suite.StandardTestSuites as StandardTestSuites
 import Test exposing (Test)
 import TestLogic.LocalOpt.FunctionTypeEncode exposing (expectFunctionTypesEncoded)
@@ -40,4 +46,5 @@ suite : Test
 suite =
     Test.describe "Function expressions encode full function type (TOPT_005)"
         [ StandardTestSuites.expectSuite expectFunctionTypesEncoded "has correctly encoded function types"
+        , MonoFailsCases.expectBeforeMonoSuite expectFunctionTypesEncoded "has correctly encoded function types"
         ]

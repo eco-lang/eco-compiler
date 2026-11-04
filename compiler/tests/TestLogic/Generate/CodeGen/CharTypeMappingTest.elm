@@ -21,25 +21,18 @@ What `suite` establishes, for each program, through
 
 Among what is not tested: a `Char` constant; a case on a `Char`; and the result
 types of the comparisons. A program with no `eco.char.` op passes once it
-compiles; the catalogue's char conversions are constant-folded away, so
-`focusedTests` compiles four programs whose `Char` ops take a lambda's
-argument and expects the ops to be present:
-
-  - `List.map (\c -> Elm.Kernel.Char.toCode c) [ 'a', 'b' ]` must emit
-    `eco.char.toInt`;
-  - `List.map (\n -> Elm.Kernel.Char.fromCode n) [ 97, 98 ]` must emit
-    `eco.char.fromInt`;
-  - `List.map (\c -> Elm.Kernel.Utils.compare c 'm') [ 'a', 'z' ]` must emit
-    `eco.char.cmp_order`;
-  - `List.map (\c -> Elm.Kernel.Utils.lt c 'm') [ 'a', 'z' ]` must emit
-    `eco.char.lt`.
+compiles. Most of the catalogue's char conversions are constant-folded away;
+the cases of `SourceIR.KernelIntrinsicCases` whose `Char` kernel takes a
+lambda's argument keep an `eco.char.toInt`, `eco.char.fromInt`,
+`eco.char.cmp_order` and `eco.char.lt` for the check to see, and the unit
+test `Compiler.GenerateMlir.IntrinsicsCharOpsTest` pins that those ops are
+emitted.
 
 -}
 
-import Compiler.AST.SourceBuilder as SB
 import SourceIR.Suite.StandardTestSuites as StandardTestSuites
 import Test exposing (Test)
-import TestLogic.Generate.CodeGen.CharTypeMapping exposing (expectCharTypeMapping, expectCharTypeMappingWithOps)
+import TestLogic.Generate.CodeGen.CharTypeMapping exposing (expectCharTypeMapping)
 
 
 {-| The standard catalogue of programs, each checked with
@@ -49,43 +42,4 @@ suite : Test
 suite =
     Test.describe "CGEN_015: Char Type Mapping"
         [ StandardTestSuites.expectSuite expectCharTypeMapping "passes char type mapping invariant"
-        , focusedTests
-        ]
-
-
-{-| Programs whose `Char` ops survive to MLIR, each checked with
-`expectCharTypeMappingWithOps` and the op it must emit.
--}
-focusedTests : Test
-focusedTests =
-    let
-        mapOver fn items =
-            SB.makeKernelModule "testValue"
-                (SB.callExpr (SB.qualVarExpr "List" "map") [ fn, SB.listExpr items ])
-    in
-    Test.describe "Char ops on non-constant operands"
-        [ Test.test "Char.toCode in a lambda" <|
-            \_ ->
-                mapOver
-                    (SB.lambdaExpr [ SB.pVar "c" ] (SB.callExpr (SB.qualVarExpr "Elm.Kernel.Char" "toCode") [ SB.varExpr "c" ]))
-                    [ SB.chrExpr "a", SB.chrExpr "b" ]
-                    |> expectCharTypeMappingWithOps [ "eco.char.toInt" ]
-        , Test.test "Char.fromCode in a lambda" <|
-            \_ ->
-                mapOver
-                    (SB.lambdaExpr [ SB.pVar "n" ] (SB.callExpr (SB.qualVarExpr "Elm.Kernel.Char" "fromCode") [ SB.varExpr "n" ]))
-                    [ SB.intExpr 97, SB.intExpr 98 ]
-                    |> expectCharTypeMappingWithOps [ "eco.char.fromInt" ]
-        , Test.test "Utils.compare on Chars in a lambda" <|
-            \_ ->
-                mapOver
-                    (SB.lambdaExpr [ SB.pVar "c" ] (SB.callExpr (SB.qualVarExpr "Elm.Kernel.Utils" "compare") [ SB.varExpr "c", SB.chrExpr "m" ]))
-                    [ SB.chrExpr "a", SB.chrExpr "z" ]
-                    |> expectCharTypeMappingWithOps [ "eco.char.cmp_order" ]
-        , Test.test "Utils.lt on Chars in a lambda" <|
-            \_ ->
-                mapOver
-                    (SB.lambdaExpr [ SB.pVar "c" ] (SB.callExpr (SB.qualVarExpr "Elm.Kernel.Utils" "lt") [ SB.varExpr "c", SB.chrExpr "m" ]))
-                    [ SB.chrExpr "a", SB.chrExpr "z" ]
-                    |> expectCharTypeMappingWithOps [ "eco.char.lt" ]
         ]

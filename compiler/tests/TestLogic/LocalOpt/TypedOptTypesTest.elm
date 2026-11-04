@@ -22,8 +22,14 @@ What the tests establish:
 Among what is not tested: whether those types are the right types for their
 expressions, and whether their type variables are bound.
 
+It also runs over the programs of `SourceIR.MonoFailsCases`
+(`expectBeforeMonoSuite`), which monomorphization rejects: every stage this
+check looks at accepts them, and they hold what the standard catalogue cannot,
+such as polymorphic recursion over a non-regular type.
+
 -}
 
+import SourceIR.MonoFailsCases as MonoFailsCases
 import SourceIR.Suite.StandardTestSuites as StandardTestSuites
 import Test exposing (Test)
 import TestLogic.LocalOpt.TypedOptTypes exposing (expectAllExprsHaveTypes)
@@ -36,4 +42,5 @@ suite : Test
 suite =
     Test.describe "TypedOptimized expressions carry well-formed types (TOPT_001)"
         [ StandardTestSuites.expectSuite expectAllExprsHaveTypes "has well-formed types on all expressions"
+        , MonoFailsCases.expectBeforeMonoSuite expectAllExprsHaveTypes "has well-formed types on all expressions"
         ]

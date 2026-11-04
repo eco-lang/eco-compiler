@@ -27,9 +27,8 @@ The docstrings below write each program as Elm source, but the built trees
 contain no parentheses. Where the source has a parenthesised lambda or call,
 such as the argument in `apply (\n -> n) 42` or the function in
 `(makeAdder 5) 3`, the tree has the bare expression where the parser would
-give a `Src.Parens` node. Likewise the `h :: t` argument of `mapHead` and the
-`x as original` argument of `withOriginal` are bare patterns, where the parser
-would give `Src.PParens`. In `caseReturnsDifferentlyStagedLambdas` each
+give a `Src.Parens` node. Likewise the `x as original` argument of
+`withOriginal` is a bare pattern, where the parser would give `Src.PParens`. In `caseReturnsDifferentlyStagedLambdas` each
 `a + b + c` is an operator chain whose first operand is the chain `a + b`,
 where the parser would give one flat chain.
 
@@ -54,8 +53,10 @@ The cases, group by group:
   - Polymorphic higher-order (3 cases): one let-bound function used at a
     number and at a `String` within one tuple.
   - Higher-order with patterns (4 cases): a function whose first parameter is
-    the function it applies and whose second is a tuple, record, `::` or `as`
-    pattern.
+    the function it applies and whose second is a tuple, record or `as`
+    pattern, or a list it matches with `::` in a `case` (a `::` argument
+    pattern can fail, and `eco make` rejects it as an `UNSAFE PATTERN`; that
+    form is a rejected case of `SourceIR.PatternFailsCases`).
   - Case returning function (3 cases): typed modules in which each branch of
     a `case` returns a lambda, so that a definition takes fewer arguments than
     its type has.
@@ -838,16 +839,27 @@ higherOrderWithRecordPattern expectFn _ =
 
 
 {-| Applies `expectFn` to `mapHead (\x -> x) [ 1, 2 ]`, where
-`mapHead f (h :: t) = [ f h ]`. The argument pattern does not match the empty
-list.
+
+    mapHead f list =
+        case list of
+            h :: t ->
+                [ f h ]
+
+            [] ->
+                []
+
 -}
 higherOrderWithListPattern : (Src.Module -> Expectation) -> (() -> Expectation)
 higherOrderWithListPattern expectFn _ =
     let
         mapHead =
             define "mapHead"
-                [ pVar "f", pCons (pVar "h") (pVar "t") ]
-                (listExpr [ callExpr (varExpr "f") [ varExpr "h" ] ])
+                [ pVar "f", pVar "list" ]
+                (caseExpr (varExpr "list")
+                    [ ( pCons (pVar "h") (pVar "t"), listExpr [ callExpr (varExpr "f") [ varExpr "h" ] ] )
+                    , ( pList [], listExpr [] )
+                    ]
+                )
 
         fn =
             lambdaExpr [ pVar "x" ] (varExpr "x")

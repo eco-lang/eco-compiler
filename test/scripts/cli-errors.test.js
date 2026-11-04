@@ -43,7 +43,7 @@ const MAIN = 'main =\n    Html.text "a"\n';
 // Bugs 1 + 4: Compiler.Reporting.Doc.hcat (Text.PrettyPrint.ANSI.Leijen.hcat) keeps only the last doc, and
 // Compiler.Nitpick.Error.delist leaves finite-list entries reversed. A missing two-element list
 // pattern is shown as `[_]` (only the last entry survives hcat). Unit tests:
-// Compiler/Reporting/DocHcatTest.elm, Compiler/Reporting/Error/PatternFiniteListTest.elm,
+// Compiler/Reporting/DocHcatTest.elm, Compiler/Nitpick/ErrorTest.elm,
 // Text/PrettyPrint/ANSI/LeijenTest.elm ("hcat keeps every document").
 test("a missing two-element list pattern is printed with both entries", () => {
   const r = make(HEAD +
@@ -91,7 +91,7 @@ test("two different duplicated arguments are both reported", () => {
 
 // Bug 5: Builder.Reporting.Exit.JsonError.expectationToReport crashes ("region") on any single-row Expecting
 // problem: an elm.json with `"elm-version": 19` makes eco crash with a JS stack trace instead of reporting
-// the bad field. Unit test: Compiler/Reporting/Error/JsonSingleRowTest.elm.
+// the bad field. Unit test: Builder/Reporting/Exit/JsonErrorTest.elm.
 test("a wrongly typed scalar in elm.json gives a report, not a crash", () => {
   const json = fs.readFileSync(APP_ELM_JSON, "utf8").replace('"elm-version": "0.19.1"', '"elm-version": 19');
   const dir = project({ "src/Main.elm": HEAD + MAIN }, json);
@@ -103,7 +103,7 @@ test("a wrongly typed scalar in elm.json gives a report, not a crash", () => {
 
 // Bug 6: Compiler.Canonicalize.Dups.unions folds later-first, so a duplicate constructor's
 // "One here:" snippet shows the LATER occurrence (line 9) and "another one here:" the earlier (line 7).
-// Unit test: Compiler/Canonicalize/Environment/DupsUnionsOrderTest.elm.
+// Unit test: Compiler/Canonicalize/DupsUnionsOrderTest.elm.
 test("a duplicate constructor is reported earlier occurrence first", () => {
   const r = make(HEAD + "type T\n    = A\n    | B\n    | A\n\n\n" + MAIN);
   assert.match(r.out, /NAME CLASH/);
@@ -115,7 +115,7 @@ test("a duplicate constructor is reported earlier occurrence first", () => {
 
 // Bug 7: Compiler.Docs.checkNames keeps only the last name's outcome, so a package module that exposes
 // `a` without documenting it and lists `b` on @docs without exposing it passes `eco make --docs` (rc 0,
-// docs.json written) because the last name `z` is fine. Unit test: Compiler/Elm/DocsTest.elm.
+// docs.json written) because the last name `z` is fine. Unit test: Compiler/DocsTest.elm.
 test("@docs / exposing disagreements fail eco make --docs", () => {
   const elmJson = JSON.stringify({
     type: "package", name: "author/example", summary: "Example package", license: "BSD-3-Clause",
@@ -153,7 +153,7 @@ test("error reports written to a pipe contain no ANSI escape codes", () => {
 // Bug 10 (fixed 2026-10-28, plan review-bug-triage-fixes.md 5.1): Compiler.Lexer.Primitives.andThen passed
 // "consumed, then failed without consuming" on as an empty error, so chompListEnd's oneOf falls back to its `]` alternative at the comma. `[1,2,]` is reported
 // as UNFINISHED LIST at the comma ("expecting to see a closing square bracket") instead of "another list
-// entry after that last comma" at the `]`. Unit test: Compiler/Parse/PrimitivesAndThenConsumedTest.elm.
+// entry after that last comma" at the `]`. Unit test: Compiler/Lexer/PrimitivesAndThenConsumedTest.elm.
 test("a trailing comma in a list is reported after the comma", () => {
   const r = make(HEAD + "main =\n    Html.text (Debug.toString [ 1, 2, ])\n");
   assert.match(r.out, /UNFINISHED LIST/);

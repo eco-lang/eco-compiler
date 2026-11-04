@@ -10,10 +10,12 @@ The module is named after `specializeExpr` in
 specializer, and `suite` runs the programs through monomorphization on that
 engine.
 
-The fixture is ten programs. Each is a module named `Test`, built with
-`makeModuleWithTypedDefsUnionsAliases`, so it imports `Basics`, `Maybe`,
+The fixture is eleven programs. Ten are a module named `Test`, built with
+`makeModuleWithTypedDefsUnionsAliases`, so they import `Basics`, `Maybe`,
 `List`, `Elm.JsArray`, `String` and `Char`, and every top-level definition in
-it carries a type annotation. Each defines `testValue`, which
+them carries a type annotation. The eleventh is a module named `NumBoth`,
+built with `makeModuleWithDefs`, which imports `Basics` and `List` and
+annotates nothing. Each defines `testValue`, which
 `TestLogic.TestPipeline` needs from typed optimization onwards. The Elm
 sketches in the docstrings below are source text for the trees built; the
 trees have no `Parens` node where a sketch has parentheses.
@@ -21,10 +23,10 @@ trees have no `Parens` node where a sketch has parentheses.
 The cases only build programs and hand each to an expectation function; what is
 checked is that function's choice.
 
-  - `suite` runs the ten cases with
+  - `suite` runs the eleven cases with
     `TestLogic.TestPipeline.expectMonomorphization`, which passes when
     `runToMono` succeeds and its graph has a `main` and at least one node.
-  - `expectSuite` runs the same ten cases with the caller's expectation.
+  - `expectSuite` runs the same eleven cases with the caller's expectation.
   - Three cases build a `case` on a custom type whose constructors take no
     arguments: one flat, one with a second `case` inside a branch, and one that
     ends with a catch-all branch.
@@ -35,6 +37,10 @@ checked is that function's choice.
   - One case builds a `case` on `Int` literal patterns, one a `case` on
     `String` literal patterns, and one a single-branch `case` whose branch
     compares a `String` with `==`.
+  - One case defines `double n = n + n` with no annotation, so its type is
+    `number -> number`, and uses it at both an `Int` and a `Float`, as
+    `testValue = ( double 2, double 2.5 )`; monomorphization must make two
+    specializations, each agreeing with its call.
 
 Among what is not tested: no case uses `Debug`. No case checks the value
 `testValue` would compute, and `suite` does not run the solver engine.
@@ -52,7 +58,9 @@ import Compiler.AST.SourceBuilder
         , ctorExpr
         , ifExpr
         , intExpr
+        , floatExpr
         , listExpr
+        , makeModuleWithDefs
         , makeModuleWithTypedDefsUnionsAliases
         , pAnything
         , pCtor
@@ -63,6 +71,7 @@ import Compiler.AST.SourceBuilder
         , tLambda
         , tType
         , tVar
+        , tupleExpr
         , varExpr
         )
 import Compiler.BulkCheck exposing (TestCase, bulkCheck)
@@ -101,6 +110,7 @@ testCases expectFn =
         , debugExprCases expectFn
         , tailRecursiveCases expectFn
         , literalBranchCases expectFn
+        , numberAtTwoTypesCases expectFn
         ]
 
 
@@ -792,3 +802,42 @@ stringLiteralPatterns expectFn _ =
                 []
     in
     expectFn modul
+
+
+
+-- ============================================================================
+-- NUMBER FUNCTION AT TWO TYPES
+-- ============================================================================
+
+
+{-| Returns the one case that uses an unannotated `number` function at `Int`
+and at `Float`, checked with `expectFn`.
+-}
+numberAtTwoTypesCases : (Src.Module -> Expectation) -> List TestCase
+numberAtTwoTypesCases expectFn =
+    [ { label = "Unannotated number function at Int and Float", run = numberAtIntAndFloat expectFn }
+    ]
+
+
+{-| Applies `expectFn` to a module `NumBoth` with no annotations:
+
+    double n =
+        n + n
+
+    testValue =
+        ( double 2, double 2.5 )
+
+-}
+numberAtIntAndFloat : (Src.Module -> Expectation) -> (() -> Expectation)
+numberAtIntAndFloat expectFn _ =
+    expectFn
+        (makeModuleWithDefs "NumBoth"
+            [ ( "double", [ pVar "n" ], binopsExpr [ ( varExpr "n", "+" ) ] (varExpr "n") )
+            , ( "testValue"
+              , []
+              , tupleExpr
+                    (callExpr (varExpr "double") [ intExpr 2 ])
+                    (callExpr (varExpr "double") [ floatExpr 2.5 ])
+              )
+            ]
+        )

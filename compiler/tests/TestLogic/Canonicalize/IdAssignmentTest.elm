@@ -18,8 +18,10 @@ pattern in a module's top-level declarations.
   - Every program of `SourceIR.Suite.StandardTestSuites`, given to
     `expectUniqueIds`, which canonicalizes it, fails if canonicalization
     reports an error, and otherwise checks the ids in the result.
-  - Every program of `SourceIR.TypeCheckFailsCases`, in the same way. No type
-    checking runs here, so these programs must only canonicalize without error.
+  - Every program of the negative catalogue's modules whose programs get past
+    canonicalization, in the same way: `SourceIR.TypeCheckFailsCases`,
+    `PatternFailsCases`, `MainFailsCases` and `MonoFailsCases`. No later stage
+    runs here, so these programs must only canonicalize without error.
   - The canonical modules of `SourceIR.KernelCases`, given directly to
     `expectUniqueIdsCanonical`.
   - The canonical modules of `SourceIR.ForeignCases`, given directly to
@@ -34,12 +36,17 @@ Among what is not tested:
   - Anything outside a module's top-level declarations, which the check does
     not collect.
   - The programs of `SourceIR.CaseSafepointLeakCases`, which
-    `StandardTestSuites` does not include.
+    `StandardTestSuites` does not include, and those of
+    `SourceIR.CanonicalizeFailsCases` and `LimitFailsCases`, which
+    canonicalization rejects.
 
 -}
 
 import SourceIR.ForeignCases as ForeignCases
 import SourceIR.KernelCases as KernelCases
+import SourceIR.MainFailsCases as MainFailsCases
+import SourceIR.MonoFailsCases as MonoFailsCases
+import SourceIR.PatternFailsCases as PatternFailsCases
 import SourceIR.Suite.StandardTestSuites as StandardTestSuites
 import SourceIR.TypeCheckFailsCases as TypeCheckFailsCases
 import Test exposing (Test)
@@ -47,13 +54,16 @@ import TestLogic.Canonicalize.IdAssignment exposing (expectUniqueIds, expectUniq
 
 
 {-| The tests that the node ids the check collects pass the node-id check, in
-the four parts the module docstring lists.
+the parts the module docstring lists.
 -}
 suite : Test
 suite =
     Test.describe "Unique IDs for all nodes in Canonical form"
         [ StandardTestSuites.expectSuite expectUniqueIds "has unique IDs"
         , TypeCheckFailsCases.expectSuite expectUniqueIds "has unique IDs"
+        , PatternFailsCases.expectSuite expectUniqueIds "has unique IDs"
+        , MainFailsCases.expectSuite expectUniqueIds "has unique IDs"
+        , MonoFailsCases.expectSuite expectUniqueIds "has unique IDs"
 
         -- These two case modules build canonical modules, not source, so they take the variant that does not canonicalize.
         , KernelCases.expectSuite expectUniqueIdsCanonical "has unique IDs"

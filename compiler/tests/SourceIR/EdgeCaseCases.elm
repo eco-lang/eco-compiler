@@ -17,9 +17,11 @@ with no type annotations, custom types or type aliases. Most are built with
 `makeModule`, which makes a module named `Test` that imports `Basics` and `List`
 and holds the one value `testValue`; the two that need top-level functions use
 `makeModuleWithDefs`, also importing only `Basics` and `List`. All literal values
-are fixed. Two programs are not exhaustive and so are not valid Elm source: the
-`f :: _` argument of `complex` in "Multiple pattern types in one function", and
-the `h :: t` destructuring in "All destruct patterns".
+are fixed. A cons pattern can fail, and `eco make` rejects one in an argument
+or a `let` destructuring as an `UNSAFE PATTERN`; so in "Multiple pattern types
+in one function" and "All destruct patterns" it is matched in a `case`. The
+forms with the cons pattern as an argument of `complex` and as a
+destructuring, are rejected cases of `SourceIR.PatternFailsCases`.
 
 The programs, in the order they run:
 
@@ -31,9 +33,10 @@ The programs, in the order they run:
   - Edge cases: the empty record, the empty list, and unit.
   - Deep nesting: lists, pairs, `let` expressions and records, each nested four
     levels deep.
-  - Expression combinations: one let-bound function taking five different kinds
-    of argument pattern, four let destructurings of four different pattern
-    kinds, and five top-level functions with different argument patterns, one
+  - Expression combinations: one let-bound function taking four different
+    kinds of argument pattern and a list it matches with a cons pattern, four
+    let destructurings (a pair, a record, a pair from a `case` on a list,
+    an alias), and five top-level functions with different argument patterns, one
     of which, `f1`, is called on both an integer literal and a `String`.
   - Fixed values: a pair of a record holding a list and a triple, and a pair of
     two field accesses on a let-bound record.
@@ -64,6 +67,7 @@ import Compiler.AST.SourceBuilder
         , pAlias
         , pAnything
         , pCons
+        , pList
         , pRecord
         , pTuple
         , pVar
@@ -481,8 +485,16 @@ expressionCombinationCases expectFn =
 
 
 {-| Builds, for `expectFn`, a `testValue` that defines in a `let` the function
-`complex a (b, c) { d, e } (f :: _) (g as h) = [ a, b, d, f, g ]` and returns
-it unapplied. The `f :: _` argument pattern does not match an empty list.
+
+    complex a ( b, c ) { d, e } list (g as h) =
+        case list of
+            f :: _ ->
+                [ a, b, d, f, g ]
+
+            [] ->
+                [ a, b, d, g ]
+
+and returns it unapplied.
 -}
 multiplePatternTypesInOneFunction : (Src.Module -> Expectation) -> (() -> Expectation)
 multiplePatternTypesInOneFunction expectFn _ =
@@ -492,10 +504,14 @@ multiplePatternTypesInOneFunction expectFn _ =
                 [ pVar "a"
                 , pTuple (pVar "b") (pVar "c")
                 , pRecord [ "d", "e" ]
-                , pCons (pVar "f") pAnything
+                , pVar "list"
                 , pAlias (pVar "g") "h"
                 ]
-                (listExpr [ varExpr "a", varExpr "b", varExpr "d", varExpr "f", varExpr "g" ])
+                (caseExpr (varExpr "list")
+                    [ ( pCons (pVar "f") pAnything, listExpr [ varExpr "a", varExpr "b", varExpr "d", varExpr "f", varExpr "g" ] )
+                    , ( pList [], listExpr [ varExpr "a", varExpr "b", varExpr "d", varExpr "g" ] )
+                    ]
+                )
 
         modul =
             makeModule "testValue" (letExpr [ fn ] (varExpr "complex"))
@@ -504,9 +520,11 @@ multiplePatternTypesInOneFunction expectFn _ =
 
 
 {-| Builds, for `expectFn`, a `testValue` whose `let` destructures with four
-kinds of pattern: `(a, b) = (1, 2)`, `{ x } = { x = 3 }`, `h :: t = [ 4, 5 ]`
-and `v as w = 6`, and whose body is `[ a, x, h, v ]`. These are not every kind
-of pattern, and `h :: t` does not match an empty list.
+kinds of pattern: `(a, b) = (1, 2)`, `{ x } = { x = 3 }`,
+`( h, t ) = case [ 4, 5 ] of y :: ys -> ( y, ys ) ; [] -> ( 0, [] )` (a cons
+pattern can fail, so it is matched in a `case` rather than destructured) and
+`v as w = 6`, and whose body is `[ a, x, h, v ]`. These are not every kind of
+pattern.
 -}
 allDestructPatterns : (Src.Module -> Expectation) -> (() -> Expectation)
 allDestructPatterns expectFn _ =
@@ -518,7 +536,12 @@ allDestructPatterns expectFn _ =
             destruct (pRecord [ "x" ]) (recordExpr [ ( "x", intExpr 3 ) ])
 
         def3 =
-            destruct (pCons (pVar "h") (pVar "t")) (listExpr [ intExpr 4, intExpr 5 ])
+            destruct (pTuple (pVar "h") (pVar "t"))
+                (caseExpr (listExpr [ intExpr 4, intExpr 5 ])
+                    [ ( pCons (pVar "y") (pVar "ys"), tupleExpr (varExpr "y") (varExpr "ys") )
+                    , ( pList [], tupleExpr (intExpr 0) (listExpr []) )
+                    ]
+                )
 
         def4 =
             destruct (pAlias (pVar "v") "w") (intExpr 6)

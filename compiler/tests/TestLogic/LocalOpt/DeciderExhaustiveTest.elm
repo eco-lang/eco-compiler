@@ -29,8 +29,14 @@ scrutinee's type; jump targets no leaf names, which the catalogue's redundant
 patterns produce; and whether each leaf selects the branch the source `case`
 would.
 
+It also runs over the programs of `SourceIR.MonoFailsCases`
+(`expectBeforeMonoSuite`), which monomorphization rejects: every stage this
+check looks at accepts them, and they hold what the standard catalogue cannot,
+such as polymorphic recursion over a non-regular type.
+
 -}
 
+import SourceIR.MonoFailsCases as MonoFailsCases
 import SourceIR.Suite.StandardTestSuites as StandardTestSuites
 import Test exposing (Test)
 import TestLogic.LocalOpt.DeciderExhaustive exposing (expectDeciderComplete, expectDeciderPathsConsistent)
@@ -43,5 +49,7 @@ suite : Test
 suite =
     Test.describe "Pattern matches compile to well-formed decision trees (TOPT_002)"
         [ StandardTestSuites.expectSuite expectDeciderPathsConsistent "has consistent decider paths"
+        , MonoFailsCases.expectBeforeMonoSuite expectDeciderPathsConsistent "has consistent decider paths"
         , StandardTestSuites.expectSuite expectDeciderComplete "has complete deciders"
+        , MonoFailsCases.expectBeforeMonoSuite expectDeciderComplete "has complete deciders"
         ]

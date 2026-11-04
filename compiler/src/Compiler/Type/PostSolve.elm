@@ -35,8 +35,8 @@ one per kernel function, under the first-usage-wins rule and the keying that
     parameter it is passed for, taken from the constructor's annotation, with
     the annotation's type variables found by matching its result type against
     the call's node type. A bare kernel reference that is an operand of a
-    binary operator contributes the parameter type in the operator's
-    annotation, and one that is the body of a `case` branch contributes the
+    binary operator contributes its own node type, the operator's parameter
+    type as instantiated there, and one that is the body of a `case` branch contributes the
     `case` expression's node type.
 
 A kernel reference walked after its kernel has an entry, or whose own position
@@ -711,10 +711,9 @@ postSolveIf annotations branches final nodeTypes0 kernel0 =
 operands of a binary operator.
 
 An operand that is a bare kernel reference, and whose kernel still has no
-entry after the walk, is given the parameter type at its position in
-`opAnnotation`: the first parameter for `left`, the second for `right`. That
-type is taken from the annotation as it stands, in the operator's own type
-variables, not from the operand's node type.
+entry after the walk, is given its own node type, the type the solver gave it
+at this use of the operator (see `inferBinopKernelType`); the parameter type at
+its position in `opAnnotation` is the fallback for a node with no type.
 
 -}
 postSolveBinop :
@@ -772,10 +771,17 @@ postSolveBinop annotations opAnnotation left right nodeTypes0 kernel0 =
         ( nt2, ke2 )
 
 
-{-| Returns the node types and kernel type environment with `expectedType`
+{-| Returns the node types and kernel type environment with the operand's type
 recorded for the kernel and written to `operand`'s node, when `operand` is a
 bare kernel reference whose kernel has no entry yet. Otherwise both are
 returned unchanged.
+
+The operand's type is its node type from the solver, the operator's parameter
+type as instantiated at this use. `annotationType`, the parameter type in the
+operator's annotation, is used only when the node has no type: it is written
+in the operator's own type variables, so for `|>` it is the bare variable `a`,
+which says nothing about the kernel.
+
 -}
 inferBinopKernelType :
     Can.Expr
@@ -783,7 +789,7 @@ inferBinopKernelType :
     -> NodeTypes
     -> KernelTypes.KernelTypeEnv
     -> ( NodeTypes, KernelTypes.KernelTypeEnv )
-inferBinopKernelType operand expectedType nodeTypes kernel =
+inferBinopKernelType operand annotationType nodeTypes kernel =
     case operand of
         A.At _ exprInfo ->
             case exprInfo.node of
@@ -793,6 +799,10 @@ inferBinopKernelType operand expectedType nodeTypes kernel =
 
                     else
                         let
+                            expectedType =
+                                arrayGetFlat exprInfo.id nodeTypes
+                                    |> Maybe.withDefault annotationType
+
                             ke2 =
                                 KernelTypes.insertFirstUsage kernelPrefix home name expectedType kernel
 

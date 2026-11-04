@@ -74,7 +74,7 @@ function addCoverage(info, coverage) {
 }
 
 function isCoverageDataFile(filePath) {
-    return /^data-\d+.json$/.test(filePath);
+    return /^data-\d+(-\d+)?\.json$/.test(filePath);
 }
 
 function toPath(sourcePath, moduleName) {

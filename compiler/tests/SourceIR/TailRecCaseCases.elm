@@ -23,10 +23,13 @@ checked. The cases run as `Compiler.BulkCheck` describes.
 Four of the programs are a module named `Test`, importing `Basics` and `List`,
 whose one top-level value `testValue` defines the recursive function, without
 an annotation, in a `let` and applies it to arguments that include a literal
-list of integers. The fifth declares its own list type and an annotated
-top-level function. The function docstrings below give each program as Elm
+list of integers. The other four are modules named `Test` built with
+`makeModuleWithTypedDefsUnionsAliases` or `makeModuleWithTypedDefs`, whose
+recursive function is an annotated top-level definition; two of them declare
+their own type. The function docstrings below give each program as Elm
 source; the built trees have no `Parens` nodes where that source has
-parentheses. In outline:
+parentheses, except in `tailRecTopLevelCount` and `tailRecSumToIf`, whose
+parenthesised call arguments are `Parens` nodes. In outline:
 
   - `tailRecFoldl`: a left fold, recursing from the `x :: xs` branch.
   - `tailRecContains`: the tail call is in the `else` of an `if` inside the
@@ -37,10 +40,19 @@ parentheses. In outline:
     is in that inner `case`'s wildcard branch.
   - `tailRecWildcardDestruct`: the head of the list is matched by `_`, so the
     `::` branch binds only the tail.
+  - `tailRecTopLevelCount`: the same loop as an annotated top-level
+    `count : List Int -> Int -> Int`, with the list first.
+  - `tailRecSumToIf`: an annotated top-level `sumTo : Int -> Int -> Int`
+    whose tail call is in the `else` of an `if` with no `case` at all, a
+    contrast to the others.
+  - `tailRecFanOutAlloc`: a `case` on the three constructors of a declared
+    `Doc`, two of whose branches make a tail call with an argument that
+    allocates a list cell, aimed at the loop-step code that branches on a
+    constructor tag (`compileCaseFanOutStep`).
 
 Among what is not tested: a tail call inside a `let` in a branch, a `case` on
-literals, tuples or records, more than one tail call in a function, and mutual
-recursion. Whether a program does become a loop depends on what the caller's
+literals, tuples or records, mutual recursion, and a tail call in a `case`
+branch nested more than two deep. Whether a program does become a loop depends on what the caller's
 expectation runs, and nothing here checks it.
 
 -}
@@ -60,12 +72,15 @@ import Compiler.AST.SourceBuilder
         , letExpr
         , listExpr
         , makeModule
+        , makeModuleWithTypedDefs
         , makeModuleWithTypedDefsUnionsAliases
         , pAnything
         , pCons
         , pCtor
         , pList
         , pVar
+        , parensExpr
+        , strExpr
         , tLambda
         , tType
         , tVar
@@ -78,7 +93,7 @@ import Test exposing (Test)
 
 
 {-| Builds one test, named `"Tail-recursive case expressions "` followed by
-`condStr`, that applies `expectFn` to the five programs in the order the
+`condStr`, that applies `expectFn` to the eight programs in the order the
 module docstring lists them, stopping at the first whose expectation fails and
 failing under that program's label.
 -}
@@ -88,7 +103,7 @@ expectSuite expectFn condStr =
         \_ -> bulkCheck (testCases expectFn)
 
 
-{-| Returns the five labelled cases, each applying `expectFn` to one program.
+{-| Returns the eight labelled cases, each applying `expectFn` to one program.
 -}
 testCases : (Src.Module -> Expectation) -> List TestCase
 testCases expectFn =
@@ -97,6 +112,9 @@ testCases expectFn =
     , { label = "Tail-rec sum with custom type", run = tailRecCustomTypeSum expectFn }
     , { label = "Tail-rec with nested case", run = tailRecNestedCase expectFn }
     , { label = "Tail-rec with wildcard destruct", run = tailRecWildcardDestruct expectFn }
+    , { label = "Tail-rec top-level count over a list", run = tailRecTopLevelCount expectFn }
+    , { label = "Tail-rec top-level Int loop under an if", run = tailRecSumToIf expectFn }
+    , { label = "Tail-rec 3-ctor fan-out with allocation", run = tailRecFanOutAlloc expectFn }
     ]
 
 
@@ -353,3 +371,186 @@ tailRecWildcardDestruct expectFn _ =
                 )
     in
     expectFn modul
+
+
+
+{-| Returns `expectFn` applied to a module named `Test` with an annotated
+top-level loop over a list:
+
+    count : List Int -> Int -> Int
+    count xs acc =
+        case xs of
+            [] ->
+                acc
+
+            _ :: rest ->
+                count rest (acc + 1)
+
+    testValue : Int
+    testValue =
+        count [ 1, 2 ] 0
+
+-}
+tailRecTopLevelCount : (Src.Module -> Expectation) -> (() -> Expectation)
+tailRecTopLevelCount expectFn _ =
+    let
+        int =
+            tType "Int" []
+
+        countDef =
+            { name = "count"
+            , args = [ pVar "xs", pVar "acc" ]
+            , tipe = tLambda (tType "List" [ int ]) (tLambda int int)
+            , body =
+                caseExpr (varExpr "xs")
+                    [ ( pList [], varExpr "acc" )
+                    , ( pCons pAnything (pVar "rest")
+                      , callExpr (varExpr "count")
+                            [ varExpr "rest"
+                            , parensExpr (binopsExpr [ ( varExpr "acc", "+" ) ] (intExpr 1))
+                            ]
+                      )
+                    ]
+            }
+
+        testValueDef =
+            { name = "testValue"
+            , args = []
+            , tipe = int
+            , body = callExpr (varExpr "count") [ listExpr [ intExpr 1, intExpr 2 ], intExpr 0 ]
+            }
+    in
+    expectFn (makeModuleWithTypedDefs "Test" [ countDef, testValueDef ])
+
+
+{-| Returns `expectFn` applied to a module named `Test` with an annotated
+top-level `Int` loop whose tail call is under an `if`, not in a `case`:
+
+    sumTo : Int -> Int -> Int
+    sumTo n acc =
+        if n <= 0 then
+            acc
+
+        else
+            sumTo (n - 1) (acc + n)
+
+    testValue : Int
+    testValue =
+        sumTo 10 0
+
+-}
+tailRecSumToIf : (Src.Module -> Expectation) -> (() -> Expectation)
+tailRecSumToIf expectFn _ =
+    let
+        int =
+            tType "Int" []
+
+        sumToDef =
+            { name = "sumTo"
+            , args = [ pVar "n", pVar "acc" ]
+            , tipe = tLambda int (tLambda int int)
+            , body =
+                ifExpr (binopsExpr [ ( varExpr "n", "<=" ) ] (intExpr 0))
+                    (varExpr "acc")
+                    (callExpr (varExpr "sumTo")
+                        [ parensExpr (binopsExpr [ ( varExpr "n", "-" ) ] (intExpr 1))
+                        , parensExpr (binopsExpr [ ( varExpr "acc", "+" ) ] (varExpr "n"))
+                        ]
+                    )
+            }
+
+        testValueDef =
+            { name = "testValue"
+            , args = []
+            , tipe = int
+            , body = callExpr (varExpr "sumTo") [ intExpr 10, intExpr 0 ]
+            }
+    in
+    expectFn (makeModuleWithTypedDefs "Test" [ sumToDef, testValueDef ])
+
+
+{-| Returns `expectFn` applied to a module named `Test` holding a
+self-tail-recursive function that matches on a three-constructor type:
+
+    type Doc
+        = Empty
+        | Text String Doc
+        | Line Int Doc
+
+    flatten : Doc -> List String -> List String
+    flatten doc acc =
+        case doc of
+            Empty ->
+                acc
+
+            Text s rest ->
+                flatten rest (s :: acc)
+
+            Line _ rest ->
+                flatten rest ("*" :: acc)
+
+    testValue : List String
+    testValue =
+        flatten (Text "a" (Text "b" Empty)) []
+
+The `Text` and `Line` branches each build a list cell; the `Empty` branch
+builds nothing.
+
+-}
+tailRecFanOutAlloc : (Src.Module -> Expectation) -> (() -> Expectation)
+tailRecFanOutAlloc expectFn _ =
+    let
+        unions : List UnionDef
+        unions =
+            [ { name = "Doc"
+              , args = []
+              , ctors =
+                    [ { name = "Empty", args = [] }
+                    , { name = "Text", args = [ tType "String" [], tType "Doc" [] ] }
+                    , { name = "Line", args = [ tType "Int" [], tType "Doc" [] ] }
+                    ]
+              }
+            ]
+
+        stringList =
+            tType "List" [ tType "String" [] ]
+
+        flattenDef : TypedDef
+        flattenDef =
+            { name = "flatten"
+            , tipe = tLambda (tType "Doc" []) (tLambda stringList stringList)
+            , args = [ pVar "doc", pVar "acc" ]
+            , body =
+                caseExpr (varExpr "doc")
+                    [ ( pCtor "Empty" [], varExpr "acc" )
+                    , ( pCtor "Text" [ pVar "s", pVar "rest" ]
+                      , callExpr (varExpr "flatten")
+                            [ varExpr "rest"
+                            , binopsExpr [ ( varExpr "s", "::" ) ] (varExpr "acc")
+                            ]
+                      )
+                    , ( pCtor "Line" [ pAnything, pVar "rest" ]
+                      , callExpr (varExpr "flatten")
+                            [ varExpr "rest"
+                            , binopsExpr [ ( strExpr "*", "::" ) ] (varExpr "acc")
+                            ]
+                      )
+                    ]
+            }
+
+        testValueDef : TypedDef
+        testValueDef =
+            { name = "testValue"
+            , args = []
+            , tipe = stringList
+            , body =
+                callExpr (varExpr "flatten")
+                    [ callExpr (ctorExpr "Text")
+                        [ strExpr "a"
+                        , callExpr (ctorExpr "Text") [ strExpr "b", ctorExpr "Empty" ]
+                        ]
+                    , listExpr []
+                    ]
+            }
+    in
+    expectFn (makeModuleWithTypedDefsUnionsAliases "Test" [ flattenDef, testValueDef ] unions [])

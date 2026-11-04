@@ -42,6 +42,12 @@ Among what is not tested:
     definition around it is generalized over, which are not in its context.
   - Nodes other than lambdas.
 
+It also runs over the programs of `SourceIR.MainFailsCases`, which typed
+optimization rejects, and those of `SourceIR.MonoFailsCases`
+(`expectBeforeMonoSuite`), which monomorphization rejects: every stage this
+check looks at accepts them, and they hold what the standard catalogue cannot,
+such as polymorphic recursion over a non-regular type.
+
 -}
 
 import Array
@@ -52,6 +58,8 @@ import Compiler.Type.PostSolve as PostSolve
 import Data.Set as EverySet
 import Dict
 import Expect
+import SourceIR.MainFailsCases as MainFailsCases
+import SourceIR.MonoFailsCases as MonoFailsCases
 import SourceIR.Suite.StandardTestSuites as StandardTestSuites
 import Test exposing (Test)
 import TestLogic.Type.PostSolve.CompileThroughPostSolve as Compile
@@ -83,6 +91,8 @@ suite : Test
 suite =
     Test.describe "POST_008: Lambda Context Vars"
         [ StandardTestSuites.expectSuite expectLambdaContextVars "lambda-context-vars"
+        , MainFailsCases.expectSuite expectLambdaContextVars "lambda-context-vars"
+        , MonoFailsCases.expectBeforeMonoSuite expectLambdaContextVars "lambda-context-vars"
         ]
 
 

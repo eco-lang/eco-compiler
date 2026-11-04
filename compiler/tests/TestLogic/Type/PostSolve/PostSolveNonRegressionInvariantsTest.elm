@@ -31,10 +31,18 @@ Among what is not tested:
   - Kernel references, which both checks skip, and record accessors, which
     POST\_006 skips.
 
+It also runs over the programs of `SourceIR.MainFailsCases`, which typed
+optimization rejects, and those of `SourceIR.MonoFailsCases`
+(`expectBeforeMonoSuite`), which monomorphization rejects: every stage this
+check looks at accepts them, and they hold what the standard catalogue cannot,
+such as polymorphic recursion over a non-regular type.
+
 -}
 
 import Compiler.IR.Source as Src
 import Expect
+import SourceIR.MainFailsCases as MainFailsCases
+import SourceIR.MonoFailsCases as MonoFailsCases
 import SourceIR.Suite.StandardTestSuites as StandardTestSuites
 import Test exposing (Test)
 import TestLogic.Type.PostSolve.CompileThroughPostSolve as Compile
@@ -48,6 +56,8 @@ suite : Test
 suite =
     Test.describe "POST_005/POST_006: PostSolve Non-Regression"
         [ StandardTestSuites.expectSuite expectNonRegression "non-regression"
+        , MainFailsCases.expectSuite expectNonRegression "non-regression"
+        , MonoFailsCases.expectBeforeMonoSuite expectNonRegression "non-regression"
         ]
 
 

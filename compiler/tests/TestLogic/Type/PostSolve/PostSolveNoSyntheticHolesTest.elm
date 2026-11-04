@@ -29,9 +29,20 @@ A hole var at a string, character or float literal or unit is replaced by
 PostSolve and so passes; one at any other synthetic expression, such as a
 variable reference, is left in place and fails.
 
+The catalogue includes `SourceIR.SyntheticPlaceholderCases`, whose programs
+type placeholders in nested `let`s and `if` conditions. They came from the
+unit test `Compiler.Type.PostSolveNoSyntheticVarsTest`, whose own check, an
+orphan placeholder variable left in its own node's type, this check covers.
+
 Among what is not tested: a placeholder that was left unconstrained inside a
 larger pre-PostSolve type, one that is a definition's whole body, one whose
 name collides with another variable's, and the types of kernel references.
+
+It also runs over the programs of `SourceIR.MainFailsCases`, which typed
+optimization rejects, and those of `SourceIR.MonoFailsCases`
+(`expectBeforeMonoSuite`), which monomorphization rejects: every stage this
+check looks at accepts them, and they hold what the standard catalogue cannot,
+such as polymorphic recursion over a non-regular type.
 
 -}
 
@@ -42,6 +53,8 @@ import Compiler.IR.Source as Src
 import Data.Map as DataMap
 import Data.Set as EverySet exposing (EverySet)
 import Expect
+import SourceIR.MainFailsCases as MainFailsCases
+import SourceIR.MonoFailsCases as MonoFailsCases
 import SourceIR.Suite.StandardTestSuites as StandardTestSuites
 import Test exposing (Test)
 import TestLogic.Type.PostSolve.CompileThroughPostSolve as Compile
@@ -71,6 +84,8 @@ suite : Test
 suite =
     Test.describe "POST_003: No Synthetic Holes"
         [ StandardTestSuites.expectSuite expectNoSyntheticHoles "no-synthetic-holes"
+        , MainFailsCases.expectSuite expectNoSyntheticHoles "no-synthetic-holes"
+        , MonoFailsCases.expectBeforeMonoSuite expectNoSyntheticHoles "no-synthetic-holes"
         ]
 
 

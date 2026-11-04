@@ -32,12 +32,21 @@ The check reports:
     into, so a violation inside it is reported too;
   - a literal whose type is not its fixed type: `()` for unit, and
     `Basics.Bool`, `Basics.Float`, `Char.Char` and `String.String` for the
-    others. An `Int` literal is not checked, since it may be typed `number`.
+    others. An `Int` literal is not checked, since it may be typed `number`;
+  - a tail-recursive definition (`TailDef`), top-level or in a `let`, whose
+    stored type is not the function type built from its parameters' types
+    followed by its body's type, compared as one type so that a type variable
+    is renamed alike in every position (TOPT\_005). This catches a parameter
+    with a type other than the definition's, a body whose type is not what is
+    left of the definition's type after its parameters, and a stored type
+    that holds only the result type;
+  - a top-level tail-recursive definition, in a recursive group, whose stored
+    type is not the annotation type checking gave its name.
 
-Among what is not checked: global references against their annotations, a
-function's type against its parameters and body, the result type of a call,
-and the types of `let`, `if`, destructuring and the remaining expressions,
-which are only walked into. A local variable with no entry in the environment,
+Among what is not checked: global references against their annotations, the
+type of a `Def` or of a function expression against its parameters and body,
+the result type of a call, and the types of `let`, `if`, destructuring and the
+remaining expressions, which are only walked into. A local variable with no entry in the environment,
 or a kernel with no entry in the kernel type environment, passes. Constructor,
 enum, box, link, kernel and effect manager nodes are not visited.
 
@@ -45,6 +54,7 @@ enum, box, link, kernel and effect manager nodes are not visited.
 
 import Compiler.Core.Annotation as A
 import Compiler.Core.Name as Name exposing (Name)
+import Compiler.Core.TypeIds as TypeIds
 import Compiler.Elm.ModuleName as ModuleName
 import Compiler.IR.Canonical as Can
 import Compiler.IR.Source as Src
@@ -70,7 +80,10 @@ should agree with.
 `"VarKernel"`, `"Inline"` for a case branch held in the decision tree,
 `"Jump target n"` for the jump target numbered `n`, `"VarCycle"`, or the
 kind of literal. `storedType` is the type on the expression and
-`expectedType` the type it was compared with. `context` is the module and name of the
+`expectedType` the type it was compared with; for `"TailDef"`, the
+definition's stored type is `expectedType` and the type built from its
+parameters and body is `storedType`, and for `"TailDef annotation"` the stored
+type is `storedType` and the annotation's type `expectedType`. `context` is the module and name of the
 global the expression is in, without the package, followed by `Def <name>` or
 `TailDef <name>` for each definition the walk entered on the way, whether in a
 `let` or in a recursive group, all separated by spaces.
@@ -88,12 +101,14 @@ type alias Violation =
 {-| What the walk knows at an expression.
 
 `locals` maps each local name in scope, and each name of the recursive group
-being checked, to the type recorded where it is bound.
+being checked, to the type recorded where it is bound. `annotations` are the
+annotations of the module's top-level names.
 
 -}
 type alias TypeEnv =
     { locals : Dict Name.Name (Can.Type Name)
     , kernelEnv : KernelTypes.KernelTypeEnv
+    , annotations : Dict Name.Name (Can.Annotation Name)
     }
 
 
@@ -119,6 +134,7 @@ expectTypePreservation srcModule =
                 env =
                     { locals = Dict.empty
                     , kernelEnv = artifacts.kernelEnv
+                    , annotations = artifacts.annotations
                     }
 
                 violations =
@@ -168,8 +184,9 @@ globalToString (TOpt.Global home name) =
 A definition or port has its expression checked. A recursive group has each of
 its values and definitions checked with every name the group defines added to
 the environment, a value with the type of its expression and a definition with
-its declared type, for the `VarCycle` references among them. Any other node
-has nothing to check.
+its declared type, for the `VarCycle` references among them; and each of its
+tail-recursive definitions has its stored type compared with its name's
+annotation, when it has one. Any other node has nothing to check.
 
 -}
 checkNode : TypeEnv -> String -> TOpt.Node Name -> List Violation
@@ -205,6 +222,7 @@ checkNode env context node =
             in
             List.concatMap (\( _, valExpr ) -> checkExpr defEnv context valExpr) values
                 ++ List.concatMap (checkDef defEnv context) defs
+                ++ List.concatMap (checkTailDefAnnotation env context) defs
 
         TOpt.PortIncoming expr _ _ ->
             checkExpr env context expr
@@ -438,8 +456,9 @@ checkExpr env context expr =
 {-| Returns the violations in a definition's body, with the definition's name
 added to `context`.
 
-A tail-recursive definition's body is checked with its own name and its
-parameters added to `env`. A plain definition's body is checked with `env` as
+A tail-recursive definition's stored type is compared with the function type
+built from its parameters' types and its body's type, and its body is checked
+with its own name and its parameters added to `env`. A plain definition's body is checked with `env` as
 given; its callers have already added its own name, so that a recursive
 definition's references to itself are checked.
 
@@ -462,8 +481,44 @@ checkDef env context def =
                         )
                         envWithSelf
                         params
+
+                builtType =
+                    List.foldr (\( _, paramType ) acc -> Can.TLambda TypeIds.NoArrow paramType acc) (TOpt.typeOf expr) params
+
+                tailDefContext =
+                    context ++ " TailDef " ++ name
             in
-            checkExpr extendedEnv (context ++ " TailDef " ++ name) expr
+            (if TypeEq.alphaEqStrict builtType defType then
+                []
+
+             else
+                [ violation tailDefContext "TailDef" builtType defType "Parameter and body types don't make up the TailDef's stored type (strict)" ]
+            )
+                ++ checkExpr extendedEnv tailDefContext expr
+
+
+{-| Returns a violation when `def` is a tail-recursive definition of a
+top-level recursive group whose stored type differs from the annotation of
+its name in `env.annotations`. A plain definition, or a name with no
+annotation, gives nothing.
+-}
+checkTailDefAnnotation : TypeEnv -> String -> TOpt.Def Name -> List Violation
+checkTailDefAnnotation env context def =
+    case def of
+        TOpt.TailDef _ name _ _ defType _ ->
+            case Dict.get name env.annotations of
+                Just (Can.Forall _ annotationType) ->
+                    if TypeEq.alphaEqStrict defType annotationType then
+                        []
+
+                    else
+                        [ violation (context ++ " TailDef " ++ name) "TailDef annotation" defType annotationType "TailDef's stored type doesn't match its annotation (strict)" ]
+
+                Nothing ->
+                    []
+
+        TOpt.Def _ _ _ _ ->
+            []
 
 
 

@@ -1,7 +1,7 @@
 module Compiler.Reporting.Render.TypeLayoutReportTest exposing (suite)
 
 {-| Checks how type error reports lay out record and tuple types, by compiling
-erroneous programs through the front end (`TestLogic.Reporting.CompileReport`)
+erroneous programs through the front end (`Compiler.Reporting.CompileReport`)
 and comparing the report with what Elm 0.19.1 prints for the same program.
 
 Each expected text is copied from the report of `elm make` 0.19.1. Today they
@@ -31,7 +31,7 @@ parameters after the `=` and in reverse (`type  R = b a`) instead of
 -}
 
 import Test exposing (Test)
-import TestLogic.Reporting.CompileReport as CompileReport
+import Compiler.Reporting.CompileReport as CompileReport
 
 
 extensibleRecord : String

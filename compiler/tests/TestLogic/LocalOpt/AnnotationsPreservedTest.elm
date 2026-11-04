@@ -24,8 +24,14 @@ removes or replaces an entry.
 Among what is not tested: whether an annotation of a node typed optimization
 created is the right type for that node.
 
+It also runs over the programs of `SourceIR.MonoFailsCases`
+(`expectBeforeMonoSuite`), which monomorphization rejects: every stage this
+check looks at accepts them, and they hold what the standard catalogue cannot,
+such as polymorphic recursion over a non-regular type.
+
 -}
 
+import SourceIR.MonoFailsCases as MonoFailsCases
 import SourceIR.Suite.StandardTestSuites as StandardTestSuites
 import Test exposing (Test)
 import TestLogic.LocalOpt.AnnotationsPreserved exposing (expectAnnotationsPreserved)
@@ -38,4 +44,5 @@ suite : Test
 suite =
     Test.describe "Top-level annotations preserved in local graph (TOPT_003)"
         [ StandardTestSuites.expectSuite expectAnnotationsPreserved "has preserved annotations"
+        , MonoFailsCases.expectBeforeMonoSuite expectAnnotationsPreserved "has preserved annotations"
         ]

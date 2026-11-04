@@ -44,7 +44,8 @@ reach a position; a union taken earlier could leave out a construction not yet
 translated. Their order matters: `settleVarCtorRows` reads the ⊤ annotations
 that `settleCtorRows` then fills, and the second `settleVarSuccessors` extends
 sets that `settleVarLambda` writes. With LSS off every settle pass returns its
-input.
+input. After them, specs whose stored types have become one key are merged
+(`mergeConvergedSpecs`).
 
 The settle passes and the census name an arrow inside a type by its _position
 path_: `/aN` is the Nth argument of a function, `/r` its result, `/l` a list
@@ -181,14 +182,17 @@ monomorphizeWithReportAssigned lssConfig limits entryPointName globalTypeEnv ass
                 Ok sDrained ->
                     let
                         -- The order of the settle passes matters; see the module docstring.
-                        sFinal =
+                        sSettled =
                             settleVarSuccessors
                                 (settleVarLambda
                                     (settleVarSuccessors (settleCtorRows (settleVarCtorRows sDrained)))
                                 )
 
+                        ( ( finalMainSpecId, finalFlagsSpecId ), sFinal ) =
+                            mergeConvergedSpecs mainSpecId maybeFlagsSpecId sSettled
+
                         graph =
-                            pruneGraph sFinal (assembleRawGraph sFinal mainSpecId maybeFlagsSpecId)
+                            pruneGraph sFinal (assembleRawGraph sFinal finalMainSpecId finalFlagsSpecId)
 
                         report =
                             if lssConfig.report then
@@ -198,6 +202,127 @@ monomorphizeWithReportAssigned lssConfig limits entryPointName globalTypeEnv ass
                                 Nothing
                     in
                     Ok ( graph, report )
+
+
+{-| Merges every spec whose registry entry has become the same specialization
+as that of a lower SpecId into that lower spec, so that one (global, type) key
+has one SpecId (MONO\_005). Returns the main and flags-decoder SpecIds, either
+of which may have been merged, and the state.
+
+With LSS on, a spec is filed under the type of the demand that created it, and
+its stored type then moves: a later demand under the same key joins into it,
+and when the spec is translated its node's type is joined in and the global's
+own spine stamped on the result (`processItem`). Two demands whose types differ
+only in lambda sets get two specs, and both stored types can end up equal. A
+value whose body chooses between lambdas is an example: a call demands it with
+the lambdas' members on its head arrow, a bare reference with the global's own
+member, and both specs end with the stored type that the stamp gives.
+
+Specs are equal when they have the same global and types that `Mono.eqKeySpec`
+counts as one key, the equality the registry files keys under. Within each
+class the smallest SpecId is kept. The node and registry entry of every other
+spec become `Nothing`, as for a spec that was never created, and every
+`MonoVarGlobal` naming one, the incoming ports' decoders, `main` and the flags
+decoder are pointed at the kept spec. The bodies of the specs of one class were
+translated from the same definition and have the same type, so either one
+stands for the other. Merging changes no type, so one sweep finds every class.
+
+-}
+mergeConvergedSpecs : Mono.SpecId -> Maybe Mono.SpecId -> S -> ( ( Mono.SpecId, Maybe Mono.SpecId ), S )
+mergeConvergedSpecs mainSpecId maybeFlagsSpecId s =
+    let
+        remap =
+            Array.foldl
+                (\entry ( ( idx, seen ), acc ) ->
+                    case ( entry, Array.get idx s.nodes |> Maybe.andThen identity ) of
+                        ( Just ( global, monoType ), Just _ ) ->
+                            let
+                                key =
+                                    Mono.SpecKey global monoType
+                            in
+                            case Mono.specKeyMapGet key seen of
+                                Just keptId ->
+                                    ( ( idx + 1, seen ), Dict.insert idx keptId acc )
+
+                                Nothing ->
+                                    ( ( idx + 1, Mono.specKeyMapInsert key idx seen ), acc )
+
+                        _ ->
+                            ( ( idx + 1, seen ), acc )
+                )
+                ( ( 0, Mono.specKeyMapEmpty ), Dict.empty )
+                s.registry.reverseMapping
+                |> Tuple.second
+    in
+    if Dict.isEmpty remap then
+        ( ( mainSpecId, maybeFlagsSpecId ), s )
+
+    else
+        let
+            remapId specId =
+                Maybe.withDefault specId (Dict.get specId remap)
+
+            remapExpr =
+                Traverse.mapExpr
+                    (\expr ->
+                        case expr of
+                            Mono.MonoVarGlobal region specId monoType ->
+                                Dict.get specId remap
+                                    |> Maybe.map (\keptId -> Mono.MonoVarGlobal region keptId monoType)
+
+                            _ ->
+                                Nothing
+                    )
+
+            remapNode node =
+                case node of
+                    Mono.MonoDefine expr monoType ->
+                        Mono.MonoDefine (remapExpr expr) monoType
+
+                    Mono.MonoTailFunc params expr monoType ->
+                        Mono.MonoTailFunc params (remapExpr expr) monoType
+
+                    Mono.MonoPortIncoming expr monoType ->
+                        Mono.MonoPortIncoming (remapExpr expr) monoType
+
+                    Mono.MonoPortOutgoing expr monoType ->
+                        Mono.MonoPortOutgoing (remapExpr expr) monoType
+
+                    _ ->
+                        node
+
+            nodes1 =
+                Array.indexedMap
+                    (\specId maybeNode ->
+                        if Dict.member specId remap then
+                            Nothing
+
+                        else
+                            Maybe.map remapNode maybeNode
+                    )
+                    s.nodes
+
+            registry0 =
+                s.registry
+
+            reverseMapping1 =
+                Array.indexedMap
+                    (\specId entry ->
+                        if Dict.member specId remap then
+                            Nothing
+
+                        else
+                            entry
+                    )
+                    registry0.reverseMapping
+        in
+        ( ( remapId mainSpecId, Maybe.map remapId maybeFlagsSpecId )
+        , { s
+            | nodes = nodes1
+            , registry = { registry0 | reverseMapping = reverseMapping1 }
+            , ports = List.map (\p -> { p | decoderSpecId = Maybe.map remapId p.decoderSpecId }) s.ports
+          }
+        )
 
 
 {-| Returns the state with every constructor row of the registry that carries a
@@ -3538,6 +3663,7 @@ initState lssConfig limits currentModule nodes annotations globalTypeEnv mvarSta
     , dirtySpecs = BitSet.empty
     , dirtyList = []
     , specCountByGlobal = Dict.empty
+    , specParent = Dict.empty
     , itemAux = Engine.emptyItemAux
     }
 

@@ -184,10 +184,16 @@ constrainRecursiveDefsWithIds rtv defs bodyCon =
 annotated) or `flexInfo` (if not), then nests the two groups around `bodyCon`
 as `constrainRecursiveDefsWithIds` describes.
 
-The flexible variables gathered so far are threaded into the next unannotated
-definition's pattern state, so they are declared in that definition's
-constraint. An annotated definition's constraint is wrapped in a `CLet` that
-introduces its new rigid variables.
+Each unannotated definition's argument and result variables are added to the
+group's flexible variables, which the outer `CLet` built for `[]` declares
+once for the whole group. They are not declared in any definition's own
+constraint: a `CLet` there would generalize them, and a use of an earlier
+member inside a later one would then get a fresh instance of its type instead
+of sharing it, which accepted ill-typed groups (stock Elm 0.19.1 threads them
+into the next definition's pattern state and has this bug). Each definition's
+pattern state starts empty, so its `CLet` declares only the variables its own
+argument patterns bind. An annotated definition's constraint is wrapped in a
+`CLet` that introduces its new rigid variables.
 
 -}
 recDefsHelpWithIds : RigidTypeVar -> List Can.Def -> Constraint -> Info -> Info -> IO Constraint
@@ -214,7 +220,7 @@ recDefsHelpWithIds rtv defs bodyCon rigidInfo flexInfo =
                         (Info flexVars flexCons flexHeaders) =
                             flexInfo
                     in
-                    argsHelpWithIds args (State Dict.empty flexVars [])
+                    argsHelpWithIds args (State Dict.empty [] [])
                         |> IO.andThen
                             (\props ->
                                 let
@@ -231,7 +237,7 @@ recDefsHelpWithIds rtv defs bodyCon rigidInfo flexInfo =
 
                                                 newFlexInfo : Info
                                                 newFlexInfo =
-                                                    Info props.vars
+                                                    Info (props.vars ++ flexVars)
                                                         (defCon :: flexCons)
                                                         (Dict.insert name (A.At region props.tipe) flexHeaders)
                                             in
@@ -1573,7 +1579,17 @@ constrainRecordGroupAWithIds rtv region exprId fields expected =
 
 
 {-| Builds the constraint for an anonymous function, with a fresh variable
-recorded for the node and equated with `expected`.
+recorded for the node and equated with the function's own structural type,
+its parameters' types arrowed into its body's type.
+
+The recorded variable is not equated with `expected` directly. Where the
+expected type is an alias of a function type, or has aliases in its parameter
+positions, such as an annotation `Int -> Fn` with `Fn = Int -> Int`, a variable
+equated with it would join the alias's class and the node would read back as
+the alias (`TAlias Fn`), not as a function type. The structural type is equated
+with `expected` anyway, so the two still agree, and the node's type is the
+`TLambda` chain over the parameter and body types that POST\_007 requires.
+
 -}
 constrainLambdaGroupAWithIds : RigidTypeVar -> A.Region -> Int -> List Can.Pattern -> Can.Expr -> E.Expected Type -> IO Constraint
 constrainLambdaGroupAWithIds rtv region exprId args body expected =
@@ -1588,16 +1604,8 @@ constrainLambdaGroupAWithIds rtv region exprId args body expected =
                                 exprType =
                                     VarN exprVar
                             in
-                            constrainLambdaWithIds rtv region args body expected
-                                |> IO.map
-                                    (\lambdaCon ->
-                                        Type.exists [ exprVar ]
-                                            (CAnd
-                                                [ lambdaCon
-                                                , CEqual region Lambda exprType expected
-                                                ]
-                                            )
-                                    )
+                            constrainLambdaWithIds rtv region args body expected (\funType -> [ CEqual region Lambda exprType (NoExpectation funType) ])
+                                |> IO.map (\lambdaCon -> Type.exists [ exprVar ] lambdaCon)
                         )
             )
 
@@ -1691,7 +1699,7 @@ constrainNodeWithIds rtv region node expected =
                     )
 
         Can.Lambda args body ->
-            constrainLambdaWithIds rtv region args body expected
+            constrainLambdaWithIds rtv region args body expected (\_ -> [])
 
         Can.Binop op _ _ annotation leftExpr rightExpr ->
             constrainBinopNodeWithIds rtv region op annotation leftExpr rightExpr expected
@@ -2163,11 +2171,12 @@ constrainCaseBranchWithIds rtv (Can.CaseBranch pattern expr) pExpect bExpect =
 
 
 {-| Builds an anonymous function's own constraint: fresh variables for the
-arguments and result, the arguments' bindings scoping over the body, and the
-function type equated with `expected`.
+arguments and result, the arguments' bindings scoping over the body, the
+constraints `extra` gives for the function type, and the function type
+equated with `expected`.
 -}
-constrainLambdaWithIds : RigidTypeVar -> A.Region -> List Can.Pattern -> Can.Expr -> E.Expected Type -> IO Constraint
-constrainLambdaWithIds rtv region args body expected =
+constrainLambdaWithIds : RigidTypeVar -> A.Region -> List Can.Pattern -> Can.Expr -> E.Expected Type -> (Type -> List Constraint) -> IO Constraint
+constrainLambdaWithIds rtv region args body expected extra =
     constrainArgsWithIds args
         |> IO.andThen
             (\props ->
@@ -2180,13 +2189,14 @@ constrainLambdaWithIds rtv region args body expected =
                         (\bodyCon ->
                             Type.exists props.vars <|
                                 CAnd
-                                    [ CLet []
+                                    (CLet []
                                         pvars
                                         headers
                                         (CAnd (List.reverse revCons))
                                         bodyCon
-                                    , CEqual region Lambda props.tipe expected
-                                    ]
+                                        :: extra props.tipe
+                                        ++ [ CEqual region Lambda props.tipe expected ]
+                                    )
                         )
             )
 

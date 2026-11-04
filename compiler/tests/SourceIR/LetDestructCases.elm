@@ -19,8 +19,10 @@ programs is an `Int`. The cases fall into six groups:
   - Records: record patterns taking the one field of a record, both fields of
     a two-field record, two fields of a three-field record, and two
     single-field destructures in one `let`.
-  - Lists: `head :: tail` on a three-element list, `[ a, b ]` on a
-    two-element list, and `a :: b :: rest` on a three-element list.
+  - Lists: `h :: t` on a three-element list, `[ x, y ]` on a two-element
+    list, and `x :: y :: r` on a three-element list, each in a `case` whose
+    other branch covers the lists the pattern misses, and whose result, a
+    pair or a triple of the names the pattern binds, the `let` destructures.
   - Nested: a pair of pairs, a pair of a record and an `Int`, a pair whose
     first element is a pair holding a pair, and a triple of pairs.
   - Aliases: `as` naming a whole pair, and `as` naming the inner pair of a
@@ -30,9 +32,10 @@ programs is an `Int`. The cases fall into six groups:
     destructure of a name bound by an earlier destructure in the same `let`;
     and a destructure of the result of calling a `let`-defined function.
 
-Not every program is valid Elm. The three list patterns do not match every
-list, and the pattern-match checker (`Compiler.Nitpick.PatternMatches`) reports
-a `let` destructure whose pattern can fail.
+A `let` destructure whose pattern can fail is not valid Elm: `eco make`
+rejects it as an `UNSAFE PATTERN` (`Compiler.Nitpick.PatternMatches`). So the
+list patterns are matched in a `case` rather than destructured directly; the
+direct forms are rejected cases of `SourceIR.PatternFailsCases`.
 
 Among what is not tested: constructor, literal and unit patterns; destructuring
 in a function argument or a `case`; and values holding anything but `Int`s.
@@ -43,6 +46,7 @@ import Compiler.AST.SourceBuilder
     exposing
         ( binopsExpr
         , callExpr
+        , caseExpr
         , define
         , destruct
         , intExpr
@@ -279,8 +283,9 @@ multipleRecordDestructs expectFn _ =
 -- ============================================================================
 
 
-{-| Returns the three cases that destructure lists. Each pattern can fail on some
-list, though not on the list it is given.
+{-| Returns the three cases that destructure lists. A list pattern can fail on
+some list, so each is a branch of a `case` whose result, a tuple, the `let`
+destructures.
 -}
 listDestructCases : (Src.Module -> Expectation) -> List TestCase
 listDestructCases expectFn =
@@ -290,8 +295,20 @@ listDestructCases expectFn =
     ]
 
 
-{-| Applies `expectFn` to a program that destructures `[ 1, 2, 3 ]` as
-`head :: tail` and returns `head`.
+{-| Applies `expectFn` to the program
+
+    testValue =
+        let
+            ( head, tail ) =
+                case [ 1, 2, 3 ] of
+                    h :: t ->
+                        ( h, t )
+
+                    [] ->
+                        ( 0, [] )
+        in
+        head
+
 -}
 destructConsPattern : (Src.Module -> Expectation) -> (() -> Expectation)
 destructConsPattern expectFn _ =
@@ -300,7 +317,12 @@ destructConsPattern expectFn _ =
             listExpr [ intExpr 1, intExpr 2, intExpr 3 ]
 
         def =
-            destruct (pCons (pVar "head") (pVar "tail")) list
+            destruct (pTuple (pVar "head") (pVar "tail"))
+                (caseExpr list
+                    [ ( pCons (pVar "h") (pVar "t"), tupleExpr (varExpr "h") (varExpr "t") )
+                    , ( pList [], tupleExpr (intExpr 0) (listExpr []) )
+                    ]
+                )
 
         modul =
             makeModule "testValue" (letExpr [ def ] (varExpr "head"))
@@ -308,8 +330,20 @@ destructConsPattern expectFn _ =
     expectFn modul
 
 
-{-| Applies `expectFn` to a program that destructures `[ 1, 2 ]` as `[ a, b ]`
-and returns `( a, b )`.
+{-| Applies `expectFn` to the program
+
+    testValue =
+        let
+            ( a, b ) =
+                case [ 1, 2 ] of
+                    [ x, y ] ->
+                        ( x, y )
+
+                    _ ->
+                        ( 0, 0 )
+        in
+        ( a, b )
+
 -}
 destructFixedListPattern : (Src.Module -> Expectation) -> (() -> Expectation)
 destructFixedListPattern expectFn _ =
@@ -318,7 +352,12 @@ destructFixedListPattern expectFn _ =
             listExpr [ intExpr 1, intExpr 2 ]
 
         def =
-            destruct (pList [ pVar "a", pVar "b" ]) list
+            destruct (pTuple (pVar "a") (pVar "b"))
+                (caseExpr list
+                    [ ( pList [ pVar "x", pVar "y" ], tupleExpr (varExpr "x") (varExpr "y") )
+                    , ( pAnything, tupleExpr (intExpr 0) (intExpr 0) )
+                    ]
+                )
 
         modul =
             makeModule "testValue" (letExpr [ def ] (tupleExpr (varExpr "a") (varExpr "b")))
@@ -326,8 +365,20 @@ destructFixedListPattern expectFn _ =
     expectFn modul
 
 
-{-| Applies `expectFn` to a program that destructures `[ 1, 2, 3 ]` as
-`a :: b :: rest` and returns `( a, b )`.
+{-| Applies `expectFn` to the program
+
+    testValue =
+        let
+            ( a, b, rest ) =
+                case [ 1, 2, 3 ] of
+                    x :: y :: r ->
+                        ( x, y, r )
+
+                    _ ->
+                        ( 0, 0, [] )
+        in
+        ( a, b )
+
 -}
 destructNestedCons : (Src.Module -> Expectation) -> (() -> Expectation)
 destructNestedCons expectFn _ =
@@ -336,7 +387,12 @@ destructNestedCons expectFn _ =
             listExpr [ intExpr 1, intExpr 2, intExpr 3 ]
 
         def =
-            destruct (pCons (pVar "a") (pCons (pVar "b") (pVar "rest"))) list
+            destruct (pTuple3 (pVar "a") (pVar "b") (pVar "rest"))
+                (caseExpr list
+                    [ ( pCons (pVar "x") (pCons (pVar "y") (pVar "r")), tuple3Expr (varExpr "x") (varExpr "y") (varExpr "r") )
+                    , ( pAnything, tuple3Expr (intExpr 0) (intExpr 0) (listExpr []) )
+                    ]
+                )
 
         modul =
             makeModule "testValue" (letExpr [ def ] (tupleExpr (varExpr "a") (varExpr "b")))

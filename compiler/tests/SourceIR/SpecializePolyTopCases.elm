@@ -13,18 +13,19 @@ itself. `expectSuite` runs the expectation function it is given on the cases in
 turn, stopping at the first that fails, and that function decides what is
 checked.
 
-Every case builds a module named `Test` with
+Every case builds a module with
 `Compiler.AST.SourceBuilder.makeModuleWithTypedDefs`, so every top-level
-definition carries a type annotation. Each module has a `testValue` whose
+definition carries a type annotation. The module is named `Test`, except in
+the last case, `TestMod`. Each module but the last has a `testValue` whose
 annotation is a pair type and whose body is a pair of two uses of the
 polymorphic function (in one case, two `let` definitions partially apply it and
-the pair calls those). Five cases also define `addOne : Int -> Int`, to pass as
+the pair calls those); the last adds its two uses as `Int`s. Five cases also define `addOne : Int -> Int`, to pass as
 a function argument.
 
 An integer literal has type `number` until something fixes it; here the
-annotations of `testValue` and `addOne` fix most of them to `Int`, but in two
+annotations of `testValue` and `addOne` fix most of them to `Int`, but in three
 places they stay `number`: the `1` in `const "hi" 1`, and both elements of
-`length [ 1, 2 ]`.
+`length [ 1, 2 ]` and of `count [ 1, 2 ]`.
 
 The cases, in the order they run, by label:
 
@@ -54,6 +55,15 @@ The cases, in the order they run, by label:
   - "twice higher-order at two types": `twice : (a -> a) -> a -> a` at `Int`
     and `String`.
   - "singleton at two types": `singleton : a -> List a` at `Int` and `String`.
+  - "recursive count at List Int and an erased list": a non-tail-recursive
+    `count : List a -> Int`, used as `count [ 1, 2 ] + count []` with
+    `testValue : Int`, so it is specialized once at `List Int` and once at a
+    list of an unconstrained variable that monomorphization erases. It once
+    broke the specializations apart wrongly: the `List Int` spec's binding of
+    `count`'s annotation variable leaked into the solver's global super table
+    (a self-recursive function is a `Cycle` node, whose annotation variables
+    the harvest did not exclude), and the erased spec's element was closed to
+    `Int`.
 
 Among what is not tested:
 
@@ -106,7 +116,7 @@ expectSuite expectFn condStr =
         \_ -> bulkCheck (testCases expectFn)
 
 
-{-| Returns the twelve cases, each a label paired with a check that runs
+{-| Returns the thirteen cases, each a label paired with a check that runs
 `expectFn` on that case's module.
 -}
 testCases : (Src.Module -> Expectation) -> List TestCase
@@ -123,6 +133,7 @@ testCases expectFn =
     , { label = "tail-recursive reverse at two types", run = reverseMulti expectFn }
     , { label = "twice higher-order at two types", run = twiceMulti expectFn }
     , { label = "singleton at two types", run = singletonMulti expectFn }
+    , { label = "recursive count at List Int and an erased list", run = countIntAndErased expectFn }
     ]
 
 
@@ -850,3 +861,55 @@ singletonMulti expectFn _ =
             makeModuleWithTypedDefs "Test" [ singletonDef, testValueDef ]
     in
     expectFn modul
+
+
+
+{-| Runs `expectFn` on a program that applies a recursive `count` to a list of
+`Int` and to the empty list. In Elm source:
+
+    count : List a -> Int
+    count xs =
+        case xs of
+            [] ->
+                0
+
+            _ :: rest ->
+                1 + count rest
+
+    testValue : Int
+    testValue =
+        count [ 1, 2 ] + count []
+
+Nothing fixes the integer literals, which stay `number` until
+monomorphization defaults them to `Int`, and the element type of `[]` is left
+unconstrained.
+
+-}
+countIntAndErased : (Src.Module -> Expectation) -> (() -> Expectation)
+countIntAndErased expectFn _ =
+    let
+        countDef : TypedDef
+        countDef =
+            { name = "count"
+            , args = [ pVar "xs" ]
+            , tipe = tLambda (tType "List" [ tVar "a" ]) (tType "Int" [])
+            , body =
+                caseExpr (varExpr "xs")
+                    [ ( pList [], intExpr 0 )
+                    , ( pCons pAnything (pVar "rest")
+                      , binopsExpr [ ( intExpr 1, "+" ) ] (callExpr (varExpr "count") [ varExpr "rest" ])
+                      )
+                    ]
+            }
+
+        testValueDef : TypedDef
+        testValueDef =
+            { name = "testValue"
+            , args = []
+            , tipe = tType "Int" []
+            , body =
+                binopsExpr [ ( callExpr (varExpr "count") [ listExpr [ intExpr 1, intExpr 2 ] ], "+" ) ]
+                    (callExpr (varExpr "count") [ listExpr [] ])
+            }
+    in
+    expectFn (makeModuleWithTypedDefs "TestMod" [ countDef, testValueDef ])

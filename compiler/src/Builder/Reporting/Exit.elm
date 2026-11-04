@@ -2751,13 +2751,32 @@ type Generate
     | GenerateNativeDriverError String
 
 
+{-| Whether a monomorphization error message, by its prefix, describes a
+condition of the program rather than a fault of the compiler: the specialization
+limit (`"specialization "`), polymorphic recursion, which cannot be
+monomorphized (`Compiler.Monomorphize.Solver.Engine.polymorphicRecursionMessage`),
+and a construct the engine does not support (`"MonoSolver.unsupported: "`, from
+an `Unsupported` failure). The stage arity limit is handled before this is
+asked.
+-}
+isProgramCondition : String -> Bool
+isProgramCondition errorMessage =
+    List.any (\prefix -> String.startsWith prefix errorMessage)
+        [ "specialization "
+        , "polymorphic recursion cannot be monomorphized: "
+        , "MonoSolver.unsupported: "
+        ]
+
+
 {-| Builds the report for a code generation failure.
 
-A monomorphization error is reported as a likely compiler bug, except when its
-message starts with `"specialization "` or `"STAGE ARITY LIMIT"`: those are the
-specialization limit and the closure stage arity limit (`HEAP_078`) being
-reached, conditions of the program rather than faults of the compiler. A stage
-arity error gets a report of its own, with advice on staying under the limit.
+A monomorphization error is reported as a likely compiler bug, except when it
+is a condition of the program rather than a fault of the compiler, which
+`isProgramCondition` recognizes by the message's prefix: the specialization
+limit, the closure stage arity limit (`HEAP_078`), polymorphic recursion, and
+a construct the native backend does not support, such as a GLSL shader. A
+stage arity error gets a report of its own, with advice on staying under the
+limit.
 
 -}
 toGenerateReport : Generate -> Help.Report
@@ -2818,7 +2837,7 @@ toGenerateReport problem =
                     Nothing
                     "An error occurred during monomorphization:"
                     ((D.fromChars errorMessage |> D.red |> D.indent 4)
-                        :: (if String.startsWith "specialization " errorMessage then
+                        :: (if isProgramCondition errorMessage then
                                 []
 
                             else

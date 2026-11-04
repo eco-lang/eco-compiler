@@ -1,0 +1,10 @@
+#!/bin/sh
+# Runs elm-instrument, then repairs its output: the elm-format fork inside elm-instrument 0.0.7 prints
+# negative hex literals as 64-bit two's complement, which stock elm rejects.
+"$(dirname "$0")/../unpacked_bin/elm-instrument" "$@" || exit $?
+for d in "$@"; do
+    [ -d "$d" ] || continue
+    grep -rlE --include=*.elm '[<>=] 0x[89A-Fa-f][0-9A-Fa-f]{15}\b' "$d" | while read -r f; do
+        sed -i -E 's/([<>=] )0xFFF0000000000000\b/\1-0x0010000000000000/g' "$f"
+    done
+done

@@ -2514,7 +2514,7 @@ logic: With CAF hoisting enabled:
   End to end on the default pipeline: Debug.log output keeps source order and is never dropped.
 inputs: Hand-built graphs; E2E programs with Debug.log
 oracle: No Debug-bearing expression is moved into a CAF, merged or dropped.
-tests: compiler/tests/TestLogic/GlobalOpt/CafHoistTest.elm (hoisting on), test/elm/src/DebugLogOrderingTest.elm, test/elm/src/DebugLogNoDropTest.elm
+tests: compiler/tests/Compiler/MonoOpt/CafHoistTest.elm (hoisting on), test/elm/src/DebugLogOrderingTest.elm, test/elm/src/DebugLogNoDropTest.elm
 --
 
 ---

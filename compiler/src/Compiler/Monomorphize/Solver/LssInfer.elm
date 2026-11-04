@@ -96,6 +96,7 @@ import Compiler.IR.Typed.TypeVars as Vars
 import Compiler.Monomorphize.Solver.Engine as Engine exposing (Failure(..))
 import Compiler.Monomorphize.Solver.KernelSetFacts as KernelSetFacts
 import Compiler.Monomorphize.Solver.Store as Store
+import Compiler.Type.Occurs as Occurs
 import Compiler.Type.State.IO as IO
 import Compiler.Type.UnionFind as UF
 import Data.HashMap as HashMap
@@ -1617,8 +1618,12 @@ The result is `WpOpaque`, or `WpNone` when the callee is inert
 (`calleeInert`).
 
 A member of the unit being inferred is loaded through the shared memo, so the
-call unifies with that member's own signature slots. Any other global is
-loaded as a fresh instantiation with its signature applied.
+call unifies with that member's own signature slots. When that unification
+makes the member's type infinite, as a polymorphically recursive call does
+(the member called at `List a` from inside its own unit), it is dropped and
+the call is poisoned instead (`poisonCallBoundary`, with the member's own
+arrows ⊤ too). Any other global is loaded as a fresh instantiation with its
+signature applied.
 
 -}
 applyCalleeAt : TOpt.Global -> Can.Type TypeIds.MVarId -> List (TOpt.Expr TypeIds.MVarId) -> TOpt.Meta TypeIds.MVarId -> Engine.S -> ( WalkPoint, Engine.S )
@@ -1632,7 +1637,18 @@ applyCalleeAt g funcFallbackType args meta s0 =
             ( funcVar, s1 ) ->
                 case unifyCallShape funcVar args meta s1 of
                     ( callVar, s2 ) ->
-                        injectPapMemberInfer g (List.length args) callVar s2
+                        case Engine.liftIO (Occurs.occurs funcVar) s2 of
+                            ( False, s3 ) ->
+                                injectPapMemberInfer g (List.length args) callVar s3
+
+                            ( True, _ ) ->
+                                -- Polymorphic recursion (F7): the call uses the member at an
+                                -- instance of its own type, such as `List a` for `a`, and
+                                -- unifying it with the member's shared signature type made that
+                                -- type infinite. The unification is dropped (the store before it
+                                -- is kept) and the call is made opaque instead: the member's
+                                -- arrows and the call's arguments and result are ⊤.
+                                poisonCallBoundary args meta (Store.poisonArrowSets funcVar s1)
 
     else
         case signatureFor g s0 of

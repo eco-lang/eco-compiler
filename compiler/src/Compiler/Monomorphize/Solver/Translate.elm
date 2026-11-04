@@ -24,8 +24,9 @@ List elements, tuple slots, record fields, branches of an `if` or `case`, the
 bodies of `let` and destructuring, and tail-call arguments are connected this
 way. A call unifies the callee's freshly instantiated type with its arguments
 and with the call's type before translating the arguments, which is how a
-demand reaches a local's uses. Unsupported expressions and broken invariants
-abort the build (`Engine.crashFailure`).
+demand reaches a local's uses. An unsupported expression fails the build with
+an error (`Engine.notePendingFailure`); a broken invariant aborts it
+(`Engine.crashFailure`).
 
 A `let` that binds a function, or a value with functions inside it and a free
 type variable, is specialized once per type it is used at (or translated once
@@ -556,7 +557,8 @@ A node's type is normally classified from its canonical type. Where that
 leaves type variables, a container or branch takes its structure from its
 translated children instead, with lambda sets joined over all of them
 (`joinBranchTypes`), because one child's set is a claim that the others can
-falsify. A `TOpt.Shader` aborts the build as unsupported.
+falsify. A `TOpt.Shader` fails the build with an `Unsupported` error, recorded like a
+watchdog trip (`Engine.notePendingFailure`) so that it is returned as an `Err`.
 
 -}
 translateDispatch : TOpt.Expr TypeIds.MVarId -> Step Mono.MonoExpr
@@ -865,8 +867,10 @@ translateDispatch expr s0 =
             -- set would otherwise never reach the case's set, and a sibling branch's set would read back
             -- as the case's complete set.
             --
-            -- A scalar number slot projected from a let-bound number root is translated body first by
-            -- `specializeNumberDestruct`, so its uses decide the root's instances.
+            -- A number slot projected from a let-bound number root is translated body first by
+            -- `specializeNumberDestruct`, so its uses decide the root's instances. The slot may be a scalar or a
+            -- compound with a `number` variable (a tuple, list, record or custom field); a compound slot is then a
+            -- number root itself for the names destructured from it, or read from it, below (F2).
             case connectTypes (TOpt.typeOf body) meta.tipe s0 of
                 s0d ->
                     case Engine.numberMultiRootType (pathRootName path) s0d of
@@ -875,7 +879,7 @@ translateDispatch expr s0 =
                                 Just eagerRootType ->
                                     case classifyAs Mono.tkClassDestr dmeta.tipe s1 of
                                         ( eagerLeaf, s2 ) ->
-                                            if isScalarNumber eagerLeaf && refineRootInstance s1.env.globalTypeEnv eagerRootType path eagerLeaf /= Nothing then
+                                            if (isScalarNumber eagerLeaf || mentionsNumberVar eagerLeaf) && refineRootInstance s1.env.globalTypeEnv eagerRootType path eagerLeaf /= Nothing then
                                                 specializeNumberDestruct dname path dmeta (pathRootName path) eagerRootType body s2
 
                                             else
@@ -902,7 +906,11 @@ translateDispatch expr s0 =
             specializeLambda srcLam (List.map (\( locName, pt ) -> ( A.toValue locName, pt )) trackedParams) body meta.tipe s0
 
         _ ->
-            ( Engine.crashFailure (Unsupported (nodeKind expr)), s0 )
+            -- A construct the native back end does not support (a GLSL shader, F9) is a
+            -- reported error, not a crash: it is recorded like a watchdog trip, the item
+            -- goes on with a unit placeholder, and the driver returns the failure as an
+            -- `Err` once the item finishes.
+            ( Mono.MonoUnit, Engine.notePendingFailure (Unsupported (nodeKind expr)) s0 )
 
 
 {-| Translates one condition and branch value of an `if`, connecting the
@@ -5203,8 +5211,9 @@ generalDestructBody destructor body meta s0 =
                         s2
 
 
-{-| Translates a destructuring of a scalar number out of a let-bound number
-value that is being specialized per use.
+{-| Translates a destructuring of a number slot, a scalar or a compound with a
+`number` variable, out of a let-bound number value that is being specialized
+per use.
 
 The bound name is itself treated as a number specialized per use, and the body
 is translated first, each use recording its type. For each recorded type, an
@@ -5361,8 +5370,9 @@ rebindTypeArgs home typeName vars typeArgs fieldCanType leaf =
 
 
 {-| Binds the type variables of a declared type to the parts of `mono` at the
-same positions. A function type binds nothing (its parameters keep their
-current arguments). `Nothing` on a shape mismatch or a conflicting binding.
+same positions; a function type binds through its parameters and result, its
+mono stages peeled one parameter at a time. `Nothing` on a shape mismatch or a
+conflicting binding.
 -}
 matchParams : Can.Type Name -> Mono.MonoType -> Dict.Dict Name Mono.MonoType -> Maybe (Dict.Dict Name Mono.MonoType)
 matchParams canType mono acc =
@@ -5415,8 +5425,17 @@ matchParams canType mono acc =
                 (Just acc)
                 fields
 
-        ( Can.TLambda _ _ _, Mono.MFunction _ _ _ _ ) ->
-            Just acc
+        ( Can.TLambda _ a b, Mono.MFunction _ anno (m :: ms) r ) ->
+            matchParams a m acc
+                |> Maybe.andThen
+                    (matchParams b
+                        (if List.isEmpty ms then
+                            r
+
+                         else
+                            Mono.mFunction anno ms r
+                        )
+                    )
 
         ( Can.TAlias _ _ _ (Can.Filled inner), _ ) ->
             matchParams inner mono acc
@@ -5588,23 +5607,26 @@ replaceIndexSlot : Mono.MonoType -> Int -> Mono.MonoType -> Maybe Mono.MonoType
 replaceIndexSlot t i leaf =
     case t of
         Mono.MTuple _ elems ->
-            if i >= 0 && i < List.length elems then
-                Just
-                    (Mono.mTuple
-                        (List.indexedMap
-                            (\j x ->
-                                if j == i then
-                                    leaf
+            case List.head (List.drop i elems) of
+                Just old ->
+                    Just
+                        (substNumberVars (bindNumberVars old leaf Dict.empty)
+                            (Mono.mTuple
+                                (List.indexedMap
+                                    (\j x ->
+                                        if j == i then
+                                            leaf
 
-                                else
-                                    x
+                                        else
+                                            x
+                                    )
+                                    elems
+                                )
                             )
-                            elems
                         )
-                    )
 
-            else
-                Nothing
+                Nothing ->
+                    Nothing
 
         _ ->
             Nothing
@@ -5617,10 +5639,121 @@ replaceRecordSlot : Mono.MonoType -> String -> Mono.MonoType -> Maybe Mono.MonoT
 replaceRecordSlot t f leaf =
     case t of
         Mono.MRecord _ fields ->
-            Just (Mono.mRecord (Dict.insert f leaf fields))
+            let
+                bindings =
+                    case Dict.get f fields of
+                        Just old ->
+                            bindNumberVars old leaf Dict.empty
+
+                        Nothing ->
+                            Dict.empty
+            in
+            Just (substNumberVars bindings (Mono.mRecord (Dict.insert f leaf fields)))
 
         _ ->
             Nothing
+
+
+{-| Adds to `acc` a binding for each `number` variable of `old` to the part of
+`new` at the same position, so that a slot refined to `new` can carry the
+choice to the other slots of its container that share the variable: in
+`( number, number )`, refining the first element to `Float` makes the second
+one `Float` too. A variable already bound keeps its first binding, and a
+position where the two shapes differ binds nothing.
+-}
+bindNumberVars : Mono.MonoType -> Mono.MonoType -> Dict.Dict Int Mono.MonoType -> Dict.Dict Int Mono.MonoType
+bindNumberVars old new acc =
+    case ( old, new ) of
+        ( Mono.MVar id Mono.CNumber, _ ) ->
+            let
+                key =
+                    Id.toComparable id
+            in
+            if new == old || Dict.member key acc then
+                acc
+
+            else
+                Dict.insert key new acc
+
+        ( Mono.MList _ a, Mono.MList _ b ) ->
+            bindNumberVars a b acc
+
+        ( Mono.MTuple _ xs, Mono.MTuple _ ys ) ->
+            bindNumberVarsList xs ys acc
+
+        ( Mono.MRecord _ fa, Mono.MRecord _ fb ) ->
+            Dict.foldl
+                (\k ta a ->
+                    case Dict.get k fb of
+                        Just tb ->
+                            bindNumberVars ta tb a
+
+                        Nothing ->
+                            a
+                )
+                acc
+                fa
+
+        ( Mono.MCustom _ h1 n1 xs, Mono.MCustom _ h2 n2 ys ) ->
+            if h1 == h2 && n1 == n2 then
+                bindNumberVarsList xs ys acc
+
+            else
+                acc
+
+        ( Mono.MFunction _ _ xs r1, Mono.MFunction _ _ ys r2 ) ->
+            if List.length xs == List.length ys then
+                bindNumberVars r1 r2 (bindNumberVarsList xs ys acc)
+
+            else
+                acc
+
+        _ ->
+            acc
+
+
+{-| Does `bindNumberVars` pairwise over two lists of the same length, and
+nothing when the lengths differ.
+-}
+bindNumberVarsList : List Mono.MonoType -> List Mono.MonoType -> Dict.Dict Int Mono.MonoType -> Dict.Dict Int Mono.MonoType
+bindNumberVarsList xs ys acc =
+    if List.length xs == List.length ys then
+        List.foldl (\( x, y ) a -> bindNumberVars x y a) acc (List.map2 Tuple.pair xs ys)
+
+    else
+        acc
+
+
+{-| Replaces each `number` variable bound in `bindings` by its binding,
+everywhere in a type.
+-}
+substNumberVars : Dict.Dict Int Mono.MonoType -> Mono.MonoType -> Mono.MonoType
+substNumberVars bindings t =
+    if Dict.isEmpty bindings then
+        t
+
+    else
+        case t of
+            Mono.MVar id Mono.CNumber ->
+                Maybe.withDefault t (Dict.get (Id.toComparable id) bindings)
+
+            Mono.MList _ e ->
+                Mono.mList (substNumberVars bindings e)
+
+            Mono.MTuple _ es ->
+                Mono.mTuple (List.map (substNumberVars bindings) es)
+
+            Mono.MRecord _ fields ->
+                Mono.mRecord (Dict.map (\_ ft -> substNumberVars bindings ft) fields)
+
+            Mono.MCustom _ home name args ->
+                Mono.mCustom home name (List.map (substNumberVars bindings) args)
+
+            Mono.MFunction _ anno args r ->
+                Mono.mFunction anno (List.map (substNumberVars bindings) args) (substNumberVars bindings r)
+
+            _ ->
+                t
 
 
 {-| Returns the canonical type of the slot a destructor path selects, for
@@ -5692,6 +5825,35 @@ rewriteRootInPath oldName newName path =
 
         TOpt.Unbox sub ->
             TOpt.Unbox (rewriteRootInPath oldName newName sub)
+
+
+{-| Tells whether a type has a `number` variable anywhere: a slot such as
+`( number, Int )`, `List number` or `{ v : number }` that a number root's
+uses still have to decide.
+-}
+mentionsNumberVar : Mono.MonoType -> Bool
+mentionsNumberVar mt =
+    case mt of
+        Mono.MVar _ Mono.CNumber ->
+            True
+
+        Mono.MList _ t ->
+            mentionsNumberVar t
+
+        Mono.MTuple _ ts ->
+            List.any mentionsNumberVar ts
+
+        Mono.MRecord _ fields ->
+            Dict.foldl (\_ t acc -> acc || mentionsNumberVar t) False fields
+
+        Mono.MCustom _ _ _ args ->
+            List.any mentionsNumberVar args
+
+        Mono.MFunction _ _ args r ->
+            List.any mentionsNumberVar args || mentionsNumberVar r
+
+        _ ->
+            False
 
 
 {-| Tells whether a type is `Int`, `Float` or a `number` variable.

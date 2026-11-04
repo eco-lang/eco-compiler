@@ -1,4 +1,4 @@
-module Compiler.BulkCheck exposing (TestCase, bulkCheck)
+module Compiler.BulkCheck exposing (TestCase, bulkCheck, expectFailure)
 
 {-| Combines many labelled test cases into one expectation, so that a caller can
 put them all in a single elm-test test while a failure still names the case that
@@ -12,6 +12,10 @@ but a failing one reports only the first failure.
 
 A case that crashes, rather than failing, ends the whole test, and its label is
 not reported.
+
+A case that is known to fail, because it exposes a compiler bug that is not
+fixed yet, is wrapped with `expectFailure`: it then passes while it fails, and
+fails as soon as it passes, so that the wrapper is removed when the bug is fixed.
 
 -}
 
@@ -96,3 +100,29 @@ reasonDetail reason =
 
         Failure.Invalid _ ->
             ""
+
+
+{-| Returns `testCase` turned into an expected failure: a case that passes when
+the check of `testCase` fails, and fails when it passes.
+
+This is for a case that exposes a compiler bug which is not fixed yet, so that
+the case can be committed before the fix. `reason` names the bug (a
+`compiler/coverage/findings.csv` id and a short description). When the check
+passes, the failure says that the bug looks fixed and the wrapper should be
+removed; the label of `testCase` is kept, so that report names the case.
+
+A check that crashes cannot be caught here, and ends the test as any crash does.
+
+-}
+expectFailure : String -> TestCase -> TestCase
+expectFailure reason testCase =
+    { label = testCase.label
+    , run =
+        \_ ->
+            case Test.Runner.getFailureReason (testCase.run ()) of
+                Nothing ->
+                    Expect.fail ("XPASS: this case is marked as failing (" ++ reason ++ ") but now passes; remove its expectFailure")
+
+                Just _ ->
+                    Expect.pass
+    }

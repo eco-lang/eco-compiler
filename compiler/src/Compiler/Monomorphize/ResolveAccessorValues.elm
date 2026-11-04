@@ -30,9 +30,10 @@ allows two replacements:
 
 A placeholder that fits neither case is left in place. List elements take the
 list's element type as their expected type, call arguments the callee's
-parameter types and record update values the updated field's type; closure
-captures and tail-call arguments are rewritten with no expected type at all,
-so a placeholder can still survive this pass.
+parameter types, tail-call arguments the types of the parameters they are
+passed to, and record update values the updated field's type; closure
+captures are rewritten with no expected type at all, so a placeholder can
+still survive this pass.
 
 @docs accessorTypeNeedsDefer, rewriteNode
 
@@ -81,14 +82,15 @@ accessorTypeNeedsDefer monoType =
             True
 
 
-{-| Rewrites one node body, starting with no known locals, and returns it with
-the advanced lambda counter.
+{-| Rewrites one node body, starting with no known locals and with `tailParams`
+as the parameters of the enclosing tail-recursive function (empty for a node
+that is not one), and returns it with the advanced lambda counter.
 -}
-rewriteExprBody : ModuleName.Canonical -> Int -> Maybe MonoType -> MonoExpr -> ( MonoExpr, Int )
-rewriteExprBody home lambdaCounter maybeExpectedType expr =
+rewriteExprBody : ModuleName.Canonical -> Int -> List ( String, MonoType ) -> Maybe MonoType -> MonoExpr -> ( MonoExpr, Int )
+rewriteExprBody home lambdaCounter tailParams maybeExpectedType expr =
     let
         ( afterDataFlow, _, finalCounter ) =
-            rewriteExpr home lambdaCounter Dict.empty maybeExpectedType expr
+            rewriteExpr home lambdaCounter { locals = Dict.empty, tailParams = tailParams } maybeExpectedType expr
     in
     ( afterDataFlow, finalCounter )
 
@@ -98,7 +100,8 @@ it with the lambda counter advanced past any closures made.
 
 The expected type of a body is the node's type, except for a `MonoTailFunc`,
 whose body is expected to have the type left after every stage of the
-function's type is applied. A node with no body (a constructor, an enum, an
+function's type is applied, and whose parameters give the expected types
+of the arguments of its tail calls. A node with no body (a constructor, an enum, an
 extern, a manager leaf) is returned unchanged.
 
 -}
@@ -108,7 +111,7 @@ rewriteNode home lambdaCounter node =
         Mono.MonoDefine expr monoType ->
             let
                 ( expr1, c1 ) =
-                    rewriteExprBody home lambdaCounter (Just monoType) expr
+                    rewriteExprBody home lambdaCounter [] (Just monoType) expr
             in
             ( Mono.MonoDefine expr1 monoType, c1 )
 
@@ -118,7 +121,7 @@ rewriteNode home lambdaCounter node =
                     Just (Mono.resultTypeOf monoType)
 
                 ( expr1, c1 ) =
-                    rewriteExprBody home lambdaCounter bodyExpectedType expr
+                    rewriteExprBody home lambdaCounter params bodyExpectedType expr
             in
             ( Mono.MonoTailFunc params expr1 monoType, c1 )
 
@@ -137,14 +140,14 @@ rewriteNode home lambdaCounter node =
         Mono.MonoPortIncoming expr monoType ->
             let
                 ( expr1, c1 ) =
-                    rewriteExprBody home lambdaCounter (Just monoType) expr
+                    rewriteExprBody home lambdaCounter [] (Just monoType) expr
             in
             ( Mono.MonoPortIncoming expr1 monoType, c1 )
 
         Mono.MonoPortOutgoing expr monoType ->
             let
                 ( expr1, c1 ) =
-                    rewriteExprBody home lambdaCounter (Just monoType) expr
+                    rewriteExprBody home lambdaCounter [] (Just monoType) expr
             in
             ( Mono.MonoPortOutgoing expr1 monoType, c1 )
 
@@ -174,11 +177,15 @@ type ValueInfo
     | VI_Record (Dict String ValueInfo)
 
 
-{-| What is known about each local in scope, by name. A local with nothing
-known is absent.
+{-| The context of an expression: in `locals`, what is known about each local
+in scope, by name, a local with nothing known being absent; in `tailParams`,
+the parameters of the innermost enclosing tail-recursive function, which a
+`MonoTailCall` passes its arguments to (empty outside one).
 -}
 type alias Env =
-    Dict String ValueInfo
+    { locals : Dict String ValueInfo
+    , tailParams : List ( String, MonoType )
+    }
 
 
 {-| Combines what is known about the values of two branches into what is known
@@ -321,7 +328,7 @@ rewriteExpr home counter env maybeExpected expr =
                     ( expr, VI_Accessor (AO_Field fieldName), counter )
 
         MonoVarLocal name _ ->
-            ( expr, Maybe.withDefault VI_Unknown (Dict.get name env), counter )
+            ( expr, Maybe.withDefault VI_Unknown (Dict.get name env.locals), counter )
 
         MonoLiteral _ _ ->
             ( expr, VI_Unknown, counter )
@@ -427,7 +434,7 @@ rewriteExpr home counter env maybeExpected expr =
                             env
 
                         _ ->
-                            Dict.insert defName defInfo env
+                            { env | locals = Dict.insert defName defInfo env.locals }
 
                 ( body1, bodyInfo, c2 ) =
                     rewriteExpr home c1 envWithDef (Just resultType) body
@@ -440,7 +447,7 @@ rewriteExpr home counter env maybeExpected expr =
         MonoLet (MonoTailDef defName params defExpr) body resultType ->
             let
                 ( defExpr1, _, c1 ) =
-                    rewriteExpr home counter env Nothing defExpr
+                    rewriteExpr home counter { env | tailParams = params } Nothing defExpr
 
                 ( body1, bodyInfo, c2 ) =
                     rewriteExpr home c1 env (Just resultType) body
@@ -670,12 +677,17 @@ rewriteExpr home counter env maybeExpected expr =
 
         MonoTailCall name args t ->
             let
+                paramType n =
+                    List.filter (\( pn, _ ) -> pn == n) env.tailParams
+                        |> List.head
+                        |> Maybe.map Tuple.second
+
                 ( newArgsRev, c1 ) =
                     List.foldl
                         (\( n, e ) ( acc, c ) ->
                             let
                                 ( e1, _, c2 ) =
-                                    rewriteExpr home c env Nothing e
+                                    rewriteExpr home c env (paramType n) e
                             in
                             ( ( n, e1 ) :: acc, c2 )
                         )
