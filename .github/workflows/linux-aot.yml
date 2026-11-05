@@ -134,6 +134,22 @@ jobs:
           docker builder prune --force
           df -h /
 
+      - name: Restore Elm package and toolchain cache
+        # The stock elm 0.19.1 packages (ELM_HOME) and the elm, elm-format and
+        # elm-test-rs binaries compiler/cmake/toolchain.cmake fetches, so a
+        # GitHub outage (504s on package zipballs, failed release downloads, as
+        # on 2026-11-05) cannot fail the build. toolchain.cmake skips a binary
+        # that already exists. Packages never change once published, and the key
+        # moves with any elm.json or the toolchain pins. eco's own package home
+        # is not cached: its compiled artifacts are tied to the compiler build.
+        uses: actions/cache@v4
+        with:
+          path: |
+            .elm-home
+            build/toolchain
+          key: elm-deps-linux-${{ hashFiles('compiler/cmake/toolchain.cmake', '**/elm.json') }}
+          restore-keys: elm-deps-linux-
+
       - name: Restore ccache
         # Restore only: branch runs read master's newest ccache and never save
         # one, so per-commit entries cannot pile up and evict the LLVM caches
@@ -194,6 +210,7 @@ jobs:
           docker run --rm \
             -v "$PWD":/work \
             -e HOST_UID="$(id -u)" -e HOST_GID="$(id -g)" \
+            -e ELM_HOME=/work/.elm-home \
             eco-dev bash /work/ci-linux-test.sh
 
       - name: Save ccache (master only)
@@ -287,6 +304,22 @@ jobs:
           docker builder prune --force
           df -h /
 
+      - name: Restore Elm package and toolchain cache
+        # The stock elm 0.19.1 packages (ELM_HOME) and the elm, elm-format and
+        # elm-test-rs binaries compiler/cmake/toolchain.cmake fetches, so a
+        # GitHub outage (504s on package zipballs, failed release downloads, as
+        # on 2026-11-05) cannot fail the build. toolchain.cmake skips a binary
+        # that already exists. Packages never change once published, and the key
+        # moves with any elm.json or the toolchain pins. eco's own package home
+        # is not cached: its compiled artifacts are tied to the compiler build.
+        uses: actions/cache@v4
+        with:
+          path: |
+            .elm-home
+            build/toolchain
+          key: elm-deps-linux-${{ hashFiles('compiler/cmake/toolchain.cmake', '**/elm.json') }}
+          restore-keys: elm-deps-linux-
+
       - name: Restore ccache
         # Restore only: branch runs read master's newest ccache and never save
         # one, so per-commit entries cannot pile up and evict the LLVM caches
@@ -345,6 +378,7 @@ jobs:
           docker run --rm \
             -v "$PWD":/work \
             -e HOST_UID="$(id -u)" -e HOST_GID="$(id -g)" \
+            -e ELM_HOME=/work/.elm-home \
             eco-dev bash /work/ci-linux-bootstrap.sh
 
       - name: Report outputs and timings

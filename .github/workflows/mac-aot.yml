@@ -60,6 +60,8 @@ jobs:
       contents: read
       actions: write
     env:
+      # Elm package cache, restored and saved by "Restore Elm package and toolchain cache".
+      ELM_HOME: ${{ github.workspace }}/.elm-home
       # The static LLVM/MLIR install tree the mac-build preset links
       # (CMAKE_PREFIX_PATH=$ECO_MAC_DEPS_DIR).
       ECO_MAC_DEPS_DIR: ${{ github.workspace }}/experiments/mac-llvm-build/out/llvm-install
@@ -109,6 +111,22 @@ jobs:
           cmake --version | head -1
           ninja --version
           sysctl hw.memsize hw.ncpu
+
+      - name: Restore Elm package and toolchain cache
+        # The stock elm 0.19.1 packages (ELM_HOME) and the elm, elm-format and
+        # elm-test-rs binaries compiler/cmake/toolchain.cmake fetches, so a
+        # GitHub outage (504s on package zipballs, failed release downloads, as
+        # on 2026-11-05) cannot fail the build. toolchain.cmake skips a binary
+        # that already exists. Packages never change once published, and the key
+        # moves with any elm.json or the toolchain pins. eco's own package home
+        # is not cached: its compiled artifacts are tied to the compiler build.
+        uses: actions/cache@v4
+        with:
+          path: |
+            .elm-home
+            build/toolchain
+          key: elm-deps-mac-${{ hashFiles('compiler/cmake/toolchain.cmake', '**/elm.json') }}
+          restore-keys: elm-deps-mac-
 
       - name: Restore ccache
         # Restore only: branch runs read master's newest ccache and never save
@@ -272,6 +290,8 @@ jobs:
       contents: read
       actions: write
     env:
+      # Elm package cache, restored and saved by "Restore Elm package and toolchain cache".
+      ELM_HOME: ${{ github.workspace }}/.elm-home
       ECO_MAC_DEPS_DIR: ${{ github.workspace }}/experiments/mac-llvm-build/out/llvm-install
     steps:
       - uses: actions/checkout@v4
@@ -319,6 +339,22 @@ jobs:
           cmake --version | head -1
           ninja --version
           sysctl hw.memsize hw.ncpu
+
+      - name: Restore Elm package and toolchain cache
+        # The stock elm 0.19.1 packages (ELM_HOME) and the elm, elm-format and
+        # elm-test-rs binaries compiler/cmake/toolchain.cmake fetches, so a
+        # GitHub outage (504s on package zipballs, failed release downloads, as
+        # on 2026-11-05) cannot fail the build. toolchain.cmake skips a binary
+        # that already exists. Packages never change once published, and the key
+        # moves with any elm.json or the toolchain pins. eco's own package home
+        # is not cached: its compiled artifacts are tied to the compiler build.
+        uses: actions/cache@v4
+        with:
+          path: |
+            .elm-home
+            build-release/toolchain
+          key: elm-deps-mac-release-${{ hashFiles('compiler/cmake/toolchain.cmake', '**/elm.json') }}
+          restore-keys: elm-deps-mac-release-
 
       - name: Restore ccache
         # Its own key: Release objects never match mac-build's, so sharing
