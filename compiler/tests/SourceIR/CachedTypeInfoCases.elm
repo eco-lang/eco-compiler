@@ -13,9 +13,9 @@ counts as passing.
 
 Each program is one module named `Test` that ends with a value `testValue`
 applying its functions, so that the stages after typed optimization, which
-build the program around `testValue`, reach them. The first three are built
+build the program around `testValue`, reach them. The first three and the last are built
 with `Compiler.AST.SourceBuilder.makeModuleWithDefs` and carry no annotation;
-the last two with `makeModuleWithTypedDefs`, where every definition is
+the fourth and fifth with `makeModuleWithTypedDefs`, where every definition is
 annotated. The cases, by label:
 
   - "simple typed value": `x = 42`, `testValue = x`.
@@ -27,6 +27,11 @@ annotated. The cases, by label:
     `testValue = pair (id 1) "s"`.
   - "annotated extensible record": `getX : { r | x : Int } -> Int` and
     `testValue : Int`, `testValue = getX { x = 1, y = 2 }`.
+  - "recursive group whose later member has a variable of its own": the
+    unannotated group `f x = g x []` and `g x y = f x`, with
+    `testValue = g 1 [ "s" ]`. `g : a -> List c -> b` shares `a` and `b` with
+    `f : a -> b` and has `c` of its own, which `Compiler.Type.Type.toAnnotation`
+    once named `a` as well (see `TestLogic.Type.AnnotationVarsDistinctTest`).
 
 Among what is not covered: custom types, aliases, and definitions inside a
 `let`.
@@ -126,6 +131,13 @@ programs =
                     SB.callExpr (SB.varExpr "getX")
                         [ SB.recordExpr [ ( "x", SB.intExpr 1 ), ( "y", SB.intExpr 2 ) ] ]
               }
+            ]
+      )
+    , ( "recursive group whose later member has a variable of its own"
+      , SB.makeModuleWithDefs "Test"
+            [ ( "f", [ SB.pVar "x" ], SB.callExpr (SB.varExpr "g") [ SB.varExpr "x", SB.listExpr [] ] )
+            , ( "g", [ SB.pVar "x", SB.pVar "y" ], SB.callExpr (SB.varExpr "f") [ SB.varExpr "x" ] )
+            , ( "testValue", [], SB.callExpr (SB.varExpr "g") [ SB.intExpr 1, SB.listExpr [ SB.strExpr "s" ] ] )
             ]
       )
     ]

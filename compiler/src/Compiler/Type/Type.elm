@@ -104,6 +104,7 @@ import Compiler.Type.State.IO as IO exposing (IO, NameState)
 import Compiler.Type.UnionFind as UF
 import Dict exposing (Dict)
 import Maybe.Extra as Maybe
+import Set
 import System.Crash exposing (crash)
 
 
@@ -461,12 +462,18 @@ toSuper name =
 
 The annotation quantifies over every name taken in the naming scope, the names
 the type's variables already carried and those generated for it, and over every
-name the converted type mentions. The second set matters when an earlier
-conversion reached the same variables, as for the later members of a recursive
-group, which share their variables: the earlier walk marked them and named them,
-so this conversion's `getVarNames` walk skips them and their names are never
-taken in its scope. Stock Elm 0.19.1 quantifies over the taken names only, so
-it gives such a member too few quantified variables.
+name the converted type mentions.
+
+An earlier conversion may have reached some of the same variables, as for the
+later members of a recursive group, which share their variables: the earlier
+walk marked them and named them, so this conversion's `getVarNames` walk skips
+them. Their names (`markedVarNames`) are therefore reserved in this naming
+scope, so that no variable of this type's own is given one of them, by renaming
+(`getVarNamesAvoiding`) or by generation; otherwise `g : a -> List c -> b`,
+sharing `a` and `b` with an earlier `f : a -> b`, would come out as
+`a -> List a -> b`. They are quantified over as names the type mentions. Stock
+Elm 0.19.1 neither reserves nor quantifies over them, so it gives such a member
+too few quantified variables, and crashes when another module uses it.
 
 Unnamed variables are named, and the store is changed, as "Converting solved
 variables" describes. Crashes on a class whose content is a unification error,
@@ -475,10 +482,15 @@ and on a lambda set that is not in a function type's set slot.
 -}
 toAnnotation : Variable -> IO (Can.Annotation Name)
 toAnnotation variable =
-    getVarNames variable Dict.empty
+    markedVarNames variable
         |> IO.andThen
-            (\userNames ->
-                IO.withFreshNames (makeNameState userNames)
+            (\sharedNames ->
+                getVarNamesAvoiding sharedNames variable Dict.empty
+                    |> IO.map (\userNames -> ( sharedNames, userNames ))
+            )
+        |> IO.andThen
+            (\( sharedNames, userNames ) ->
+                IO.withFreshNames (reserveNames sharedNames (makeNameState userNames))
                     (variableToCanType variable
                         |> IO.andThen
                             (\tipe ->
@@ -487,6 +499,110 @@ toAnnotation variable =
                             )
                     )
             )
+
+
+{-| Returns `nameState` with each name of `names` taken.
+-}
+reserveNames : Dict Name () -> NameState -> NameState
+reserveNames names nameState =
+    { nameState | taken = Dict.union names nameState.taken }
+
+
+{-| Returns the names carried by the variables reachable from `var` that a
+`getVarNames` walk has already marked, as `getVarNames` would reach them but
+without stopping at a marked class. Each class is visited once.
+-}
+markedVarNames : Variable -> IO (Dict Name ())
+markedVarNames var =
+    markedVarNamesHelp var ( Set.empty, Dict.empty )
+        |> IO.map Tuple.second
+
+
+{-| Adds to `names` the names of the marked variables reachable from `var`
+whose class is not in `visited`, as `markedVarNames` describes.
+-}
+markedVarNamesHelp : Variable -> ( Set.Set Int, Dict Name () ) -> IO ( Set.Set Int, Dict Name () )
+markedVarNamesHelp var ( visited, names ) =
+    UF.repr var
+        |> IO.andThen
+            (\(Vars.Pt root) ->
+                if Set.member root visited then
+                    IO.pure ( visited, names )
+
+                else
+                    UF.get var
+                        |> IO.andThen
+                            (\desc ->
+                                let
+                                    acc : ( Set.Set Int, Dict Name () )
+                                    acc =
+                                        ( Set.insert root visited
+                                        , if desc.mark == getVarNamesMark then
+                                            case contentVarName desc.content of
+                                                Just name ->
+                                                    Dict.insert name () names
+
+                                                Nothing ->
+                                                    names
+
+                                          else
+                                            names
+                                        )
+
+                                    children : List Variable
+                                    children =
+                                        case desc.content of
+                                            Alias _ _ args _ ->
+                                                List.map Tuple.second args
+
+                                            Structure flatType ->
+                                                case flatType of
+                                                    App1 _ _ args ->
+                                                        args
+
+                                                    Fun1 arg body ->
+                                                        [ arg, body ]
+
+                                                    FunL arg body _ ->
+                                                        [ arg, body ]
+
+                                                    Record1 fields extension ->
+                                                        extension :: Dict.values fields
+
+                                                    Tuple1 a b cs ->
+                                                        a :: b :: cs
+
+                                                    _ ->
+                                                        []
+
+                                            _ ->
+                                                []
+                                in
+                                IO.foldrM markedVarNamesHelp acc children
+                            )
+            )
+
+
+{-| Returns the name a variable's content carries, if it is a variable that has
+one.
+-}
+contentVarName : Content -> Maybe Name
+contentVarName content =
+    case content of
+        FlexVar maybeName ->
+            maybeName
+
+        FlexSuper _ maybeName ->
+            maybeName
+
+        RigidVar name ->
+            Just name
+
+        RigidSuper _ name ->
+            Just name
+
+        _ ->
+            Nothing
 
 
 {-| Returns `names` with the name of every type variable `tipe` mentions added,

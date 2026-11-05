@@ -326,3 +326,21 @@ test("API diagnostics and make of a module without main answer with JSON, not a 
   assert.strictEqual(make.status, 0, make.out);
   assert.match(make.stdout, /"error"[\s\S]*NO MAIN/, make.out);
 });
+
+// Fixed: Compiler.Type.Type.toAnnotation names the members of an unannotated recursive group in turn; its
+// getVarNames walk skips the variables an earlier member's walk marked (getVarNamesMark), and those names were
+// not reserved in the later member's naming scope. So a variable of the later member's own got a name already
+// used by a shared one: with `f x = g x []` and `g x y = f x`, `g : a -> List c -> b` was exported as
+// `a -> List a -> b`, and another module's valid `Main.g n [ "s" ]` (n : Int) was rejected with TYPE MISMATCH.
+// The shared names (markedVarNames) are now reserved. Stock Elm 0.19.1 crashes on the import (Map.!).
+// Unit test: Compiler/Type/TypeTest.elm.
+test("a later member of a recursive group keeps its own type variables in the interface", () => {
+    const dir = project({
+      "src/Main.elm": "module Main exposing (f, g)\n\n\nf x =\n    g x []\n\n\ng x y =\n    f x\n",
+      "src/User.elm": "module User exposing (main)\n\nimport Html\nimport Main\n\n\nuse : Int -> String\n" +
+        "use n =\n    Main.g n [ \"s\" ]\n\n\nmain =\n    Html.text \"ok\"\n",
+    });
+    const r = eco(dir, ["make", "src/User.elm", "--output=out.js"]);
+    assert.doesNotMatch(r.out, /TYPE MISMATCH|Eco\.Crash/, r.out);
+    assert.strictEqual(r.status, 0, r.out);
+  });
