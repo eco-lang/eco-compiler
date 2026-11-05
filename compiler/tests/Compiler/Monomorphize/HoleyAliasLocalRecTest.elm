@@ -113,7 +113,7 @@ shapesOf name (Mono.MonoGraph g) =
 isPairIntFloat : Mono.MonoType -> Bool
 isPairIntFloat t =
     case t of
-        Mono.MTuple _ [ Mono.MInt, Mono.MFloat ] ->
+        Mono.MTuple _ (Mono.T2 Mono.MInt Mono.MFloat) ->
             True
 
         _ ->

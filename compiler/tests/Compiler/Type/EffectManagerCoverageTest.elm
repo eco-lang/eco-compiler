@@ -74,10 +74,10 @@ expectCompiles source =
                     Src.Module { m | imports = List.filter isMockImport m.imports }
             in
             case RResult.run (Canonicalize.canonicalize ( "eco", "example" ) Basic.testIfaces srcModule) of
-                ( _, Err _ ) ->
+                Err _ ->
                     Expect.fail "the module does not canonicalize"
 
-                ( _, Ok canonical ) ->
+                Ok canonical ->
                     case IO.unsafePerformIO (TypeErased.constrain canonical |> IO.andThen Solve.run) of
                         Err _ ->
                             Expect.fail "the erased type check fails"
@@ -103,10 +103,10 @@ expectCompiles source =
                                                 (TCanBuild.fromCanonical a.canonical a.nodeTypesPost nodeVars)
                                     in
                                     case RResult.run result of
-                                        ( _, Ok _ ) ->
+                                        Ok _ ->
                                             Expect.pass
 
-                                        ( _, Err _ ) ->
+                                        Err _ ->
                                             Expect.fail "the typed optimizer rejects the module"
 
 

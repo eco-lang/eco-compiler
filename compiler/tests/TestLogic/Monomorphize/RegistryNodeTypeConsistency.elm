@@ -111,7 +111,7 @@ checkRegistryNodeTypeConsistency (Mono.MonoGraph data) =
                                          }
                                        ]
 
-                            Just (Mono.MonoCtor shape nType) ->
+                            Just (Mono.MonoCtor _ shape nType) ->
                                 if ctorRowMatches shape.fieldTypes nType regMonoType then
                                     acc
 
@@ -193,7 +193,7 @@ sameLayout a b =
             sameLayout xa xb
 
         ( Mono.MTuple _ xsa, Mono.MTuple _ xsb ) ->
-            sameLayoutList xsa xsb
+            sameLayoutList (Mono.tupleToList xsa) (Mono.tupleToList xsb)
 
         ( Mono.MRecord _ fieldsA, Mono.MRecord _ fieldsB ) ->
             Dict.keys fieldsA
@@ -227,10 +227,10 @@ nodeType node =
         Mono.MonoTailFunc _ _ t ->
             t
 
-        Mono.MonoCtor _ t ->
+        Mono.MonoCtor _ _ t ->
             t
 
-        Mono.MonoEnum _ t ->
+        Mono.MonoEnum _ _ _ t ->
             t
 
         Mono.MonoExtern t ->
@@ -297,7 +297,7 @@ monoTypeToString monoType =
             "List " ++ monoTypeToString elementType
 
         Mono.MTuple _ elements ->
-            "(" ++ String.join ", " (List.map monoTypeToString elements) ++ ")"
+            "(" ++ String.join ", " (List.map monoTypeToString (Mono.tupleToList elements)) ++ ")"
 
         Mono.MRecord _ fields ->
             let

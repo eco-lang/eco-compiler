@@ -65,8 +65,10 @@ import Compiler.IR.Source as Src
 import Compiler.IR.Typed.Optimized as TOpt
 import Compiler.Pipeline.Steps as Steps
 import Data.Map
+import Data.NonEmptyList as NE
 import Dict exposing (Dict)
 import Expect exposing (Expectation)
+import Maybe.Extra as Maybe
 import Set exposing (Set)
 import TestLogic.TestPipeline as Pipeline
 
@@ -215,10 +217,7 @@ nodeCaptures node =
         TOpt.Link _ ->
             []
 
-        TOpt.Manager _ ->
-            []
-
-        TOpt.Kernel _ _ ->
+        TOpt.Manager ->
             []
 
 
@@ -319,7 +318,7 @@ exprCaptures scope expr =
             List.concatMap same (Data.Map.values fields)
 
         TOpt.Tuple _ a b rest _ ->
-            List.concatMap same (a :: b :: rest)
+            List.concatMap same (a :: b :: Maybe.toList rest)
 
         _ ->
             []
@@ -341,4 +340,4 @@ deciderCaptures scope decider =
             deciderCaptures scope yes ++ deciderCaptures scope no
 
         TOpt.FanOut _ edges fallback ->
-            List.concatMap (\( _, d ) -> deciderCaptures scope d) edges ++ deciderCaptures scope fallback
+            List.concatMap (\( _, d ) -> deciderCaptures scope d) (NE.toList edges) ++ deciderCaptures scope fallback

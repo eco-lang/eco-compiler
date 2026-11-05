@@ -183,35 +183,31 @@ insert hash eq key value (HashMap count nextSeq buckets) =
         bucket =
             Maybe.withDefault [] (Dict.get h buckets)
     in
-    if bucketMember eq key bucket then
-        HashMap count nextSeq (Dict.insert h (replaceInBucket eq key value bucket) buckets)
+    case replaceInBucket eq key value bucket of
+        Just replaced ->
+            HashMap count nextSeq (Dict.insert h replaced buckets)
 
-    else
-        -- Prepending is safe for iteration, which sorts on the sequence number.
-        HashMap (count + 1) (nextSeq + 1) (Dict.insert h (( nextSeq, key, value ) :: bucket) buckets)
+        Nothing ->
+            -- Prepending is safe for iteration, which sorts on the sequence number.
+            HashMap (count + 1) (nextSeq + 1) (Dict.insert h (( nextSeq, key, value ) :: bucket) buckets)
 
 
 {-| Returns `bucket` with the value of the first entry whose key equals `key`
 under `eq` replaced by `value`, keeping that entry's stored key and sequence
-number. A bucket with no such entry comes back unchanged.
-
-It returns the bucket alone rather than also reporting whether it found a
-match, which would take a pair at every step; `insert` asks `bucketMember`
-first instead, at the cost of scanning the bucket twice.
-
+number, or `Nothing` when the bucket has no such entry.
 -}
-replaceInBucket : (k -> k -> Bool) -> k -> v -> List ( Int, k, v ) -> List ( Int, k, v )
+replaceInBucket : (k -> k -> Bool) -> k -> v -> List ( Int, k, v ) -> Maybe (List ( Int, k, v ))
 replaceInBucket eq key value bucket =
     case bucket of
         [] ->
-            []
+            Nothing
 
         (( entrySeq, k, _ ) as entry) :: rest ->
             if eq key k then
-                ( entrySeq, k, value ) :: rest
+                Just (( entrySeq, k, value ) :: rest)
 
             else
-                entry :: replaceInBucket eq key value rest
+                Maybe.map ((::) entry) (replaceInBucket eq key value rest)
 
 
 {-| Removes the entry whose key is equal to `key` under `eq`, and returns the

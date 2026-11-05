@@ -91,7 +91,7 @@ graphWithIds : Int -> Int -> Mono.MonoGraph
 graphWithIds a b =
     Mono.MonoGraph
         { nodes = Array.fromList [ Just (closureNode a), Just (closureNode b) ]
-        , main = Nothing
+        , main = Mono.StaticMain 0
         , registry =
             { nextId = 2
             , mapping = Mono.specKeyMapEmpty

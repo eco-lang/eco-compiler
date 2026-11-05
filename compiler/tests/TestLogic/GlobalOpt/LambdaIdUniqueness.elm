@@ -44,6 +44,7 @@ import Compiler.Elm.ModuleName as ModuleName
 import Compiler.IR.Mono as Mono
 import Compiler.IR.Source as Src
 import Compiler.MonoOpt.CafHoist as CafHoist
+import Data.NonEmptyList as NE
 import Dict exposing (Dict)
 import Expect
 import TestLogic.TestPipeline as Pipeline
@@ -215,7 +216,7 @@ exprLambdaIds expr acc =
             List.foldl (\( _, e ) a -> exprLambdaIds e a) (exprLambdaIds inner acc) updates
 
         Mono.MonoTupleCreate _ items _ ->
-            List.foldl exprLambdaIds acc items
+            List.foldl exprLambdaIds acc (Mono.tupleToList items)
 
         Mono.MonoLiteral _ _ ->
             acc
@@ -253,7 +254,7 @@ deciderLambdaIds decider acc =
 
         Mono.FanOut _ edges fallback ->
             deciderLambdaIds fallback
-                (List.foldl (\( _, d ) a -> deciderLambdaIds d a) acc edges)
+                (List.foldl (\( _, d ) a -> deciderLambdaIds d a) acc (NE.toList edges))
 
 
 {-| Returns the expression a `let` definition binds, for either kind of

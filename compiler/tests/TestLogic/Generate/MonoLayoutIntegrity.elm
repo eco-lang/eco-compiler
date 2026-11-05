@@ -185,7 +185,7 @@ anyTypeWithin p monoType =
                     anyTypeWithin p elemType
 
                 Mono.MTuple _ elemTypes ->
-                    List.any (anyTypeWithin p) elemTypes
+                    List.any (anyTypeWithin p) (Mono.tupleToList elemTypes)
 
                 Mono.MRecord _ fields ->
                     List.any (anyTypeWithin p) (Dict.values fields)
@@ -269,15 +269,15 @@ checkConstruction context expr =
         Mono.MonoTupleCreate _ elementExprs monoType ->
             case monoType of
                 Mono.MTuple _ elementTypes ->
-                    if List.length elementTypes /= List.length elementExprs then
+                    if List.length (Mono.tupleToList elementTypes) /= List.length (Mono.tupleToList elementExprs) then
                         [ context
                             ++ ": tuple creation has "
-                            ++ String.fromInt (List.length elementExprs)
+                            ++ String.fromInt (List.length (Mono.tupleToList elementExprs))
                             ++ " elements but its type has "
-                            ++ String.fromInt (List.length elementTypes)
+                            ++ String.fromInt (List.length (Mono.tupleToList elementTypes))
                         ]
 
-                    else if not (List.all identity (List.map2 Mono.eqLayout (List.map Mono.typeOf elementExprs) elementTypes)) then
+                    else if not (List.all identity (List.map2 Mono.eqLayout (List.map Mono.typeOf (Mono.tupleToList elementExprs)) (Mono.tupleToList elementTypes))) then
                         [ context ++ ": tuple creation element types differ from its type's" ]
 
                     else
@@ -306,7 +306,7 @@ collectTupleArityChecks =
         (\t ->
             case t of
                 Mono.MTuple _ elems ->
-                    List.length elems < 2 || List.length elems > 3
+                    List.length (Mono.tupleToList elems) < 2 || List.length (Mono.tupleToList elems) > 3
 
                 _ ->
                     False

@@ -203,8 +203,8 @@ record, which may hold more fields; for a closed record that chain ends in
 
 `Unit1` is the type `()`.
 
-`Tuple1` is a tuple type of two or more elements: the first, the second, and the
-rest.
+`Tuple1` is a tuple type of two or three elements: the first, the second, and
+the third, if any.
 
 `LambdaSet1` is the content of a set slot. It is not a type of values, and the
 type checker's conversions back to types crash if they meet one anywhere but in
@@ -218,7 +218,7 @@ type FlatType
     | EmptyRecord1
     | Record1 (CoreDict.Dict String Variable) Variable
     | Unit1
-    | Tuple1 Variable Variable (List Variable)
+    | Tuple1 Variable Variable (Maybe Variable)
     | LambdaSet1 LambdaSet
 
 

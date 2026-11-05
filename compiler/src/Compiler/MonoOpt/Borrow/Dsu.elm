@@ -1,4 +1,4 @@
-module Compiler.MonoOpt.Borrow.Dsu exposing (Dsu, empty, grow, find, findRoot, union)
+module Compiler.MonoOpt.Borrow.Dsu exposing (Dsu, empty, findRoot, union)
 
 {-| Borrow inference groups the resources of a definition, numbered densely
 from `0`, into classes that only ever grow by merging. This module is the
@@ -18,16 +18,16 @@ each array lookup is direct.
 
 Two standard techniques keep the chains from a key to its root short. `union`
 puts the root of lower rank under the root of higher rank, where a root's rank
-starts at `0` and goes up only in a union of two roots of equal rank. `find`
-compresses the path it walks, pointing every key on it directly at the root.
-`findRoot` and the compression walk in `find` are both tail calls, so a long
-chain does not deepen the stack.
+starts at `0` and goes up only in a union of two roots of equal rank. `union`
+also compresses the paths it walks, pointing every key on them directly at the
+root. `findRoot` and the compression walk are both tail calls, so a long chain
+does not deepen the stack.
 
 A key outside the capacity, including a negative one, has no parent and is
-treated as its own root by `findRoot` and `find`. `union` is not total in the
+treated as its own root by `findRoot` and `union`. `union` is not total in the
 same way; see its docstring.
 
-@docs Dsu, empty, grow, find, findRoot, union
+@docs Dsu, empty, findRoot, union
 
 -}
 
@@ -58,25 +58,6 @@ empty n =
     { parent = Array.initialize n identity
     , rank = Array.repeat n 0
     }
-
-
-{-| Returns `dsu` with its capacity raised to `n`, each added key starting as
-its own parent and every existing parent and rank kept. When the capacity is
-already `n` or more, returns `dsu` as it is.
--}
-grow : Int -> Dsu -> Dsu
-grow n dsu =
-    let
-        len =
-            Array.length dsu.parent
-    in
-    if n <= len then
-        dsu
-
-    else
-        { parent = Array.append dsu.parent (Array.initialize (n - len) (\i -> len + i))
-        , rank = Array.append dsu.rank (Array.repeat (n - len) 0)
-        }
 
 
 {-| Returns the root of the class holding `x`, leaving the structure

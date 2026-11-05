@@ -142,25 +142,16 @@ type ForceMultiline
 {-| One ordinary comment, written between tokens in the source.
 
 `BlockComment` is a `{- -}` comment. It holds the text between the delimiters,
-split into lines, with any nested comment left in the text.
+split into lines (the first line, then the rest), with any nested comment left
+in the text.
 
 `LineComment` is a `--` comment. It holds the text after the `--` up to the end
 of the line.
 
-The other three are the comment trick, a way of switching code on and off by
-editing one character. `CommentTrickOpener` stands for `{--}`,
-`CommentTrickCloser` for a `--` followed by a closing brace, and
-`CommentTrickBlock` for `{--` followed by its text and `-}`. The parser never
-produces these three: it reads every ordinary comment as a `BlockComment` or
-a `LineComment`.
-
 -}
 type FComment
-    = BlockComment (List String)
+    = BlockComment String (List String)
     | LineComment String
-    | CommentTrickOpener
-    | CommentTrickCloser
-    | CommentTrickBlock String
 
 
 {-| The ordinary comments found together at one place in the source.
@@ -365,12 +356,13 @@ capitalised.
 `-f x` is not a negated call.
 
 `Binops` is a whole chain of infix operators, kept flat: each operand paired
-with the operator after it, then the last operand. Precedence and
+with the operator after it (the first pair, then the rest), then the last
+operand. Precedence and
 associativity have not been applied. A parsed chain never holds another
 `Binops` as an operand.
 
 `Lambda` holds its argument patterns and its body. `Call` is a function applied
-to arguments; the parser builds one only when there is at least one.
+to at least one argument: the first, then the rest.
 
 `If` holds the first condition and branch, each `else if` condition and branch
 after it, and the final `else` branch, so a chain of `else if` is one `If`.
@@ -384,8 +376,9 @@ expression.
 `Accessor` is a field accessor such as `.name`, and `Access` a field read from
 an expression, as in `r.name`.
 
-`Update` is a record update, `{ r | ... }`. The parser always makes the record
-being updated a lower-case `Var`.
+`Update` is a record update, `{ r | ... }`, with at least one field: the first,
+then the rest. The parser always makes the record being updated a lower-case
+`Var`.
 
 `Record` is a record literal, `Unit` is `()`, and `Tuple` is a tuple of two or
 more, its first two elements kept apart from the rest.
@@ -406,15 +399,15 @@ type Expr_
     | List (List (C2Eol Expr)) FComments
     | Op Name
     | Negate Expr
-    | Binops (List ( Expr, C2 (A.Located Name) )) Expr
+    | Binops ( Expr, C2 (A.Located Name) ) (List ( Expr, C2 (A.Located Name) )) Expr
     | Lambda (C1 (List (C1 Pattern))) (C1 Expr)
-    | Call Expr (List (C1 Expr))
+    | Call Expr (C1 Expr) (List (C1 Expr))
     | If (C1 ( C2 Expr, C2 Expr )) (List (C1 ( C2 Expr, C2 Expr ))) (C1 Expr)
     | Let (List (C2 (A.Located Def))) FComments Expr
     | Case (C2 Expr) (List ( C2 Pattern, C1 Expr ))
     | Accessor Name
     | Access Expr (A.Located Name)
-    | Update (C2 Expr) (C1 (List (C2Eol ( C1 (A.Located Name), C1 Expr ))))
+    | Update (C2 Expr) (C1 ( C2Eol ( C1 (A.Located Name), C1 Expr ), List (C2Eol ( C1 (A.Located Name), C1 Expr )) ))
     | Record (C1 (List (C2Eol ( C1 (A.Located Name), C1 Expr ))))
     | Unit
     | Tuple (C2 Expr) (C2 Expr) (List (C2 Expr))
@@ -524,8 +517,10 @@ arrow whose result is the arrow `b -> c`.
 a module prefix, the prefix first. Their `A.Region` argument covers the type's
 name only.
 
-`TRecord` is a record type. It holds its fields, the variable it extends when
-written as `{ r | ... }`, and the comments just before the closing brace.
+`TRecord` is a record type `{ ... }`. It holds its fields and the comments just
+before the closing brace. `TRecordExt` is an extensible record type
+`{ r | ... }`: the variable it extends, its first field and the rest (it has at
+least one), and the comments just before the closing brace.
 
 `TUnit` is `()`, and `TTuple` is a tuple of two or more, its first two elements
 kept apart from the rest.
@@ -540,7 +535,8 @@ type Type_
     | TVar Name
     | TType A.Region Name (List (C1 Type))
     | TTypeQual A.Region Name Name (List (C1 Type))
-    | TRecord (List (C2 ( C1 (A.Located Name), C1 Type ))) (Maybe (C2 (A.Located Name))) FComments
+    | TRecord (List (C2 ( C1 (A.Located Name), C1 Type ))) FComments
+    | TRecordExt (C2 (A.Located Name)) (C2 ( C1 (A.Located Name), C1 Type )) (List (C2 ( C1 (A.Located Name), C1 Type ))) FComments
     | TUnit
     | TTuple (C2Eol Type) (C2Eol Type) (List (C2Eol Type))
     | TParens (C2 Type)
@@ -640,10 +636,11 @@ type Value
 
 
 {-| A custom type declaration: its name, its type parameters, and its
-constructors, each a name with the types of its arguments.
+constructors (the first, then the rest), each a name with the types of its
+arguments.
 -}
 type Union
-    = Union (C2 (A.Located Name)) (List (C1 (A.Located Name))) (List (C2Eol ( A.Located Name, List (C1 Type) )))
+    = Union (C2 (A.Located Name)) (List (C1 (A.Located Name))) (C2Eol ( A.Located Name, List (C1 Type) )) (List (C2Eol ( A.Located Name, List (C1 Type) )))
 
 
 {-| A type alias declaration, with its comments.
@@ -799,27 +796,16 @@ type Privacy
 fCommentEncoder : FComment -> Bytes.Encode.Encoder
 fCommentEncoder formatComment =
     case formatComment of
-        BlockComment c ->
+        BlockComment first rest ->
             Bytes.Encode.sequence
                 [ Bytes.Encode.unsignedInt8 0
-                , BE.list BE.string c
+                , BE.string first
+                , BE.list BE.string rest
                 ]
 
         LineComment c ->
             Bytes.Encode.sequence
                 [ Bytes.Encode.unsignedInt8 1
-                , BE.string c
-                ]
-
-        CommentTrickOpener ->
-            Bytes.Encode.unsignedInt8 2
-
-        CommentTrickCloser ->
-            Bytes.Encode.unsignedInt8 3
-
-        CommentTrickBlock c ->
-            Bytes.Encode.sequence
-                [ Bytes.Encode.unsignedInt8 4
                 , BE.string c
                 ]
 
@@ -833,19 +819,10 @@ fCommentDecoder =
             (\idx ->
                 case idx of
                     0 ->
-                        Bytes.Decode.map BlockComment (BD.list BD.string)
+                        Bytes.Decode.map2 BlockComment BD.string (BD.list BD.string)
 
                     1 ->
                         Bytes.Decode.map LineComment BD.string
-
-                    2 ->
-                        Bytes.Decode.succeed CommentTrickOpener
-
-                    3 ->
-                        Bytes.Decode.succeed CommentTrickCloser
-
-                    4 ->
-                        Bytes.Decode.map CommentTrickBlock BD.string
 
                     _ ->
                         Bytes.Decode.fail
@@ -1008,20 +985,28 @@ internalTypeEncoder type_ =
                 , BE.list (c1Encoder typeEncoder) args
                 ]
 
-        TRecord fields ext trailing ->
+        TRecord fields trailing ->
             Bytes.Encode.sequence
                 [ Bytes.Encode.unsignedInt8 4
-                , BE.list (c2Encoder (BE.jsonPair (c1Encoder (A.locatedEncoder BE.string)) (c1Encoder typeEncoder))) fields
-                , BE.maybe (c2Encoder (A.locatedEncoder BE.string)) ext
+                , BE.list typeFieldEncoder fields
+                , fCommentsEncoder trailing
+                ]
+
+        TRecordExt ext firstField fields trailing ->
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 5
+                , c2Encoder (A.locatedEncoder BE.string) ext
+                , typeFieldEncoder firstField
+                , BE.list typeFieldEncoder fields
                 , fCommentsEncoder trailing
                 ]
 
         TUnit ->
-            Bytes.Encode.unsignedInt8 5
+            Bytes.Encode.unsignedInt8 6
 
         TTuple a b cs ->
             Bytes.Encode.sequence
-                [ Bytes.Encode.unsignedInt8 6
+                [ Bytes.Encode.unsignedInt8 7
                 , c2EolEncoder typeEncoder a
                 , c2EolEncoder typeEncoder b
                 , BE.list (c2EolEncoder typeEncoder) cs
@@ -1029,9 +1014,24 @@ internalTypeEncoder type_ =
 
         TParens type__ ->
             Bytes.Encode.sequence
-                [ Bytes.Encode.unsignedInt8 7
+                [ Bytes.Encode.unsignedInt8 8
                 , c2Encoder typeEncoder type__
                 ]
+
+
+{-| Encodes one field of a record type: its name and its type, with their
+comments.
+-}
+typeFieldEncoder : C2 ( C1 (A.Located Name), C1 Type ) -> Bytes.Encode.Encoder
+typeFieldEncoder =
+    c2Encoder (BE.jsonPair (c1Encoder (A.locatedEncoder BE.string)) (c1Encoder typeEncoder))
+
+
+{-| A decoder for one field of a record type as `typeFieldEncoder` writes it.
+-}
+typeFieldDecoder : Bytes.Decode.Decoder (C2 ( C1 (A.Located Name), C1 Type ))
+typeFieldDecoder =
+    c2Decoder (BD.jsonPair (c1Decoder (A.locatedDecoder BD.string)) (c1Decoder typeDecoder))
 
 
 {-| A decoder for one type as `internalTypeEncoder` writes it.
@@ -1064,21 +1064,27 @@ internalTypeDecoder =
                             (BD.list (c1Decoder typeDecoder))
 
                     4 ->
-                        Bytes.Decode.map3 TRecord
-                            (BD.list (c2Decoder (BD.jsonPair (c1Decoder (A.locatedDecoder BD.string)) (c1Decoder typeDecoder))))
-                            (BD.maybe (c2Decoder (A.locatedDecoder BD.string)))
+                        Bytes.Decode.map2 TRecord
+                            (BD.list typeFieldDecoder)
                             fCommentsDecoder
 
                     5 ->
-                        Bytes.Decode.succeed TUnit
+                        Bytes.Decode.map4 TRecordExt
+                            (c2Decoder (A.locatedDecoder BD.string))
+                            typeFieldDecoder
+                            (BD.list typeFieldDecoder)
+                            fCommentsDecoder
 
                     6 ->
+                        Bytes.Decode.succeed TUnit
+
+                    7 ->
                         Bytes.Decode.map3 TTuple
                             (c2EolDecoder typeDecoder)
                             (c2EolDecoder typeDecoder)
                             (BD.list (c2EolDecoder typeDecoder))
 
-                    7 ->
+                    8 ->
                         Bytes.Decode.map TParens
                             (c2Decoder typeDecoder)
 
@@ -1269,11 +1275,17 @@ valueDecoder =
 {-| Encodes a custom type declaration as its parts in order, with no tag.
 -}
 unionEncoder : Union -> Bytes.Encode.Encoder
-unionEncoder (Union name args constructors) =
+unionEncoder (Union name args firstConstructor constructors) =
+    let
+        constructorEncoder : C2Eol ( A.Located Name, List (C1 Type) ) -> Bytes.Encode.Encoder
+        constructorEncoder =
+            c2EolEncoder (BE.jsonPair (A.locatedEncoder BE.string) (BE.list (c1Encoder typeEncoder)))
+    in
     Bytes.Encode.sequence
         [ c2Encoder (A.locatedEncoder BE.string) name
         , BE.list (c1Encoder (A.locatedEncoder BE.string)) args
-        , BE.list (c2EolEncoder (BE.jsonPair (A.locatedEncoder BE.string) (BE.list (c1Encoder typeEncoder)))) constructors
+        , constructorEncoder firstConstructor
+        , BE.list constructorEncoder constructors
         ]
 
 
@@ -1281,10 +1293,16 @@ unionEncoder (Union name args constructors) =
 -}
 unionDecoder : Bytes.Decode.Decoder Union
 unionDecoder =
-    Bytes.Decode.map3 Union
+    let
+        constructorDecoder : Bytes.Decode.Decoder (C2Eol ( A.Located Name, List (C1 Type) ))
+        constructorDecoder =
+            c2EolDecoder (BD.jsonPair (A.locatedDecoder BD.string) (BD.list (c1Decoder typeDecoder)))
+    in
+    Bytes.Decode.map4 Union
         (c2Decoder (A.locatedDecoder BD.string))
         (BD.list (c1Decoder (A.locatedDecoder BD.string)))
-        (BD.list (c2EolDecoder (BD.jsonPair (A.locatedDecoder BD.string) (BD.list (c1Decoder typeDecoder)))))
+        constructorDecoder
+        (BD.list constructorDecoder)
 
 
 {-| Encodes a type alias declaration as its fields in order, with no tag.
@@ -1826,10 +1844,16 @@ expr_Encoder expr_ =
                 , exprEncoder expr
                 ]
 
-        Binops ops final ->
+        Binops firstOp ops final ->
+            let
+                opEncoder : ( Expr, C2 (A.Located Name) ) -> Bytes.Encode.Encoder
+                opEncoder =
+                    BE.jsonPair exprEncoder (c2Encoder (A.locatedEncoder BE.string))
+            in
             Bytes.Encode.sequence
                 [ Bytes.Encode.unsignedInt8 9
-                , BE.list (BE.jsonPair exprEncoder (c2Encoder (A.locatedEncoder BE.string))) ops
+                , opEncoder firstOp
+                , BE.list opEncoder ops
                 , exprEncoder final
                 ]
 
@@ -1840,10 +1864,11 @@ expr_Encoder expr_ =
                 , c1Encoder exprEncoder body
                 ]
 
-        Call func args ->
+        Call func firstArg args ->
             Bytes.Encode.sequence
                 [ Bytes.Encode.unsignedInt8 11
                 , exprEncoder func
+                , c1Encoder exprEncoder firstArg
                 , BE.list (c1Encoder exprEncoder) args
                 ]
 
@@ -1884,10 +1909,15 @@ expr_Encoder expr_ =
                 ]
 
         Update name fields ->
+            let
+                fieldEncoder : C2Eol ( C1 (A.Located Name), C1 Expr ) -> Bytes.Encode.Encoder
+                fieldEncoder =
+                    c2EolEncoder (BE.jsonPair (c1Encoder (A.locatedEncoder BE.string)) (c1Encoder exprEncoder))
+            in
             Bytes.Encode.sequence
                 [ Bytes.Encode.unsignedInt8 17
                 , c2Encoder exprEncoder name
-                , c1Encoder (BE.list (c2EolEncoder (BE.jsonPair (c1Encoder (A.locatedEncoder BE.string)) (c1Encoder exprEncoder)))) fields
+                , c1Encoder (BE.jsonPair fieldEncoder (BE.list fieldEncoder)) fields
                 ]
 
         Record fields ->
@@ -1970,8 +2000,14 @@ expr_Decoder =
                         Bytes.Decode.map Negate exprDecoder
 
                     9 ->
-                        Bytes.Decode.map2 Binops
-                            (BD.list (BD.jsonPair exprDecoder (c2Decoder (A.locatedDecoder BD.string))))
+                        let
+                            opDecoder : Bytes.Decode.Decoder ( Expr, C2 (A.Located Name) )
+                            opDecoder =
+                                BD.jsonPair exprDecoder (c2Decoder (A.locatedDecoder BD.string))
+                        in
+                        Bytes.Decode.map3 Binops
+                            opDecoder
+                            (BD.list opDecoder)
                             exprDecoder
 
                     10 ->
@@ -1980,8 +2016,9 @@ expr_Decoder =
                             (c1Decoder exprDecoder)
 
                     11 ->
-                        Bytes.Decode.map2 Call
+                        Bytes.Decode.map3 Call
                             exprDecoder
+                            (c1Decoder exprDecoder)
                             (BD.list (c1Decoder exprDecoder))
 
                     12 ->
@@ -2010,9 +2047,14 @@ expr_Decoder =
                             (A.locatedDecoder BD.string)
 
                     17 ->
+                        let
+                            fieldDecoder : Bytes.Decode.Decoder (C2Eol ( C1 (A.Located Name), C1 Expr ))
+                            fieldDecoder =
+                                c2EolDecoder (BD.jsonPair (c1Decoder (A.locatedDecoder BD.string)) (c1Decoder exprDecoder))
+                        in
                         Bytes.Decode.map2 Update
                             (c2Decoder exprDecoder)
-                            (c1Decoder (BD.list (c2EolDecoder (BD.jsonPair (c1Decoder (A.locatedDecoder BD.string)) (c1Decoder exprDecoder)))))
+                            (c1Decoder (BD.jsonPair fieldDecoder (BD.list fieldDecoder)))
 
                     18 ->
                         Bytes.Decode.map Record

@@ -133,10 +133,10 @@ nodeExprs node =
         Mono.MonoPortOutgoing expr _ ->
             [ expr ]
 
-        Mono.MonoCtor _ _ ->
+        Mono.MonoCtor _ _ _ ->
             []
 
-        Mono.MonoEnum _ _ ->
+        Mono.MonoEnum _ _ _ _ ->
             []
 
         Mono.MonoExtern _ ->

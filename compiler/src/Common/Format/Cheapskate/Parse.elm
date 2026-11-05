@@ -34,12 +34,9 @@ container, closing nothing, when that container is not indented code, a fenced
 code block or a reference definition, and its oldest child is a line of text
 (see below).
 
-During the first phase, closing a reference definition reads it and, when it
-can be read, logs it in a map keyed by
-`Common.Format.Cheapskate.Util.normalizeReference` of its label, and otherwise
-discards it. The map is passed to `parseInlines`, which does not consult it, so
-it has no effect on the result; the definitions reach the document as a
-`ReferencesBlock`.
+During the first phase, closing a reference definition reads it and discards it
+when it cannot be read. The definitions that can be read reach the document as
+a `ReferencesBlock`; no link is resolved through them.
 
 In the second phase consecutive lines of text become a paragraph, consecutive
 list items of one kind become a list, and the lines of a code block are joined.
@@ -86,6 +83,7 @@ import Common.Format.Cheapskate.ParserCombinators
         , lookAhead
         , many
         , map
+        , mzero
         , notFollowedBy
         , oneOf
         , option
@@ -94,7 +92,6 @@ import Common.Format.Cheapskate.ParserCombinators
         , return
         , satisfy
         , setPosition
-        , showParseError
         , skip
         , skipWhile
         , string
@@ -112,7 +109,6 @@ import Common.Format.Cheapskate.Types
         , HtmlTagType(..)
         , ListType(..)
         , NumWrapper(..)
-        , ReferenceMap
         )
 import Common.Format.Cheapskate.Util
     exposing
@@ -120,7 +116,6 @@ import Common.Format.Cheapskate.Util
         , isWhitespace
         , joinLines
         , nfb
-        , normalizeReference
         , scanBlankline
         , scanChar
         , scanIndentSpace
@@ -131,10 +126,8 @@ import Common.Format.Cheapskate.Util
         , upToCountChars
         )
 import Common.Format.RWS as RWS exposing (RWS)
-import Dict
 import List.Extra as List
 import Set exposing (Set)
-import System.Crash exposing (crash)
 
 
 
@@ -153,12 +146,14 @@ markdown =
     processLines >> processDocument >> Doc
 
 
-{-| The containers open while the lines are read: first the innermost, which
-the next line's content goes into, then the containers that enclose it,
-innermost first, ending with the document.
+{-| The containers open while the lines are read, and the document they are
+in: first the open containers, innermost first, then the children of the
+document, newest first, as a container keeps them. The next line's content goes
+into the innermost open container, or into the document when no container is
+open.
 -}
 type ContainerStack
-    = ContainerStack Container (List Container)
+    = ContainerStack (List Container) (List Elt)
 
 
 {-| The number of a line of the input, counting from 1.
@@ -194,9 +189,6 @@ type Container
 {-| The kind of a container, with what is needed to tell whether a later line
 continues it.
 
-`Document` is the whole text. It is at the bottom of the stack and is never
-closed.
-
 `BlockQuote` is a block quote.
 
 `ListItem` is one item of a list. `markerColumn` is the column at which the
@@ -218,8 +210,7 @@ The last four are the verbatim containers.
 
 -}
 type ContainerType
-    = Document
-    | BlockQuote
+    = BlockQuote
     | ListItem
         { markerColumn : Int
         , padding : Int
@@ -244,8 +235,7 @@ that bring the line to the fence's column. An HTML block needs a line that is
 not blank. A reference definition needs a line that is not blank and does not
 start, after up to three spaces, a link label followed by `:`. A list item needs
 a blank line, or the spaces that reach the column after its marker's column,
-after which up to `padding - 1` more spaces are taken. The document matches
-every line.
+after which up to `padding - 1` more spaces are taken.
 
 -}
 containerContinue : Container -> Scanner
@@ -273,9 +263,6 @@ containerContinue (Container containerType _) =
         Reference ->
             nfb scanBlankline
                 |> andThen (\_ -> nfb (scanNonindentSpace |> andThen (\_ -> scanReference)))
-
-        _ ->
-            return ()
 
 
 {-| Produces a parser that reads, after up to three spaces, the marker that opens
@@ -355,8 +342,7 @@ type Leaf
 
 
 {-| A step of the first phase. It reads and replaces the stack of open
-containers, and logs the reference definitions it closes, keyed by
-`normalizeReference` of the label, to URL and title.
+containers.
 
 This is a name for an `RWS` with no environment, not a new type.
 
@@ -365,31 +351,44 @@ type alias ContainerM a =
     RWS () ContainerStack a
 
 
-{-| Closes every open container except the one at the bottom of the stack, the
-document, and returns that container.
+{-| Closes every open container, and returns the children of the document,
+newest first.
 -}
-closeStack : ContainerM Container
+closeStack : ContainerM (List Elt)
 closeStack =
     RWS.get
         |> RWS.andThen
-            (\(ContainerStack top rest) ->
-                if List.isEmpty rest then
-                    RWS.return top
+            (\(ContainerStack open docChildren) ->
+                if List.isEmpty open then
+                    RWS.return docChildren
 
                 else
                     closeContainer |> RWS.andThen (\_ -> closeStack)
             )
 
 
+{-| Returns the stack of the open containers `open` over a document with the
+children `docChildren`, after `f` has changed the children of the innermost open
+container, or of the document when no container is open.
+-}
+mapInnermostChildren : (List Elt -> List Elt) -> List Container -> List Elt -> ContainerStack
+mapInnermostChildren f open docChildren =
+    case open of
+        (Container ct cs) :: rest ->
+            ContainerStack (Container ct (f cs) :: rest) docChildren
+
+        [] ->
+            ContainerStack [] (f docChildren)
+
+
 {-| Closes the container on top of the stack, making it the newest child of the
-container beneath it. When the stack holds only one container, the stack is
-left as it is.
+container beneath it, or of the document. When no container is open, the stack
+is left as it is.
 
 Two kinds of container are treated differently:
 
   - A reference definition is read with `pReference` from the text of its
     children, joined with newlines and trimmed. When that succeeds, the
-    definition is logged, keyed by `normalizeReference` of its label, and the
     container is closed as usual. When it fails, the container is discarded with
     everything in it.
   - A list item whose oldest child is a blank line loses that line, which
@@ -402,63 +401,45 @@ closeContainer : ContainerM ()
 closeContainer =
     RWS.get
         |> RWS.andThen
-            (\(ContainerStack top rest) ->
-                case top of
-                    Container Reference cs__ ->
-                        case parse pReference (String.trim <| joinLines <| List.map extractText cs__) of
-                            Ok ( lab, lnk, tit ) ->
-                                RWS.tell (Dict.singleton (normalizeReference lab) ( lnk, tit ))
-                                    |> RWS.andThen
-                                        (\_ ->
-                                            case rest of
-                                                (Container ct_ cs_) :: rs ->
-                                                    RWS.put (ContainerStack (Container ct_ (C top :: cs_)) rs)
+            (\(ContainerStack open docChildren) ->
+                case open of
+                    [] ->
+                        RWS.return ()
 
-                                                [] ->
-                                                    RWS.return ()
-                                        )
+                    ((Container Reference cs__) as top) :: rest ->
+                        case parse pReference (String.trim <| joinLines <| List.map extractText cs__) of
+                            Ok _ ->
+                                RWS.put (mapInnermostChildren ((::) (C top)) rest docChildren)
 
                             Err _ ->
-                                case rest of
-                                    c :: cs ->
-                                        RWS.put (ContainerStack c cs)
+                                RWS.put (ContainerStack rest docChildren)
 
-                                    [] ->
-                                        RWS.return ()
+                    ((Container ((ListItem _) as li) cs__) as top) :: rest ->
+                        case List.reverse cs__ of
+                            ((L (BlankLine _)) as b) :: zs ->
+                                RWS.put
+                                    (mapInnermostChildren
+                                        (\cs_ ->
+                                            if List.isEmpty zs then
+                                                C (Container li zs) :: cs_
 
-                    Container ((ListItem _) as li) cs__ ->
-                        case rest of
-                            (Container ct_ cs_) :: rs ->
-                                case List.reverse cs__ of
-                                    ((L (BlankLine _)) as b) :: zs ->
-                                        RWS.put
-                                            (ContainerStack
-                                                (if List.isEmpty zs then
-                                                    Container ct_ (C (Container li zs) :: cs_)
+                                            else
+                                                b :: C (Container li zs) :: cs_
+                                        )
+                                        rest
+                                        docChildren
+                                    )
 
-                                                 else
-                                                    Container ct_ (b :: C (Container li zs) :: cs_)
-                                                )
-                                                rs
-                                            )
+                            _ ->
+                                RWS.put (mapInnermostChildren ((::) (C top)) rest docChildren)
 
-                                    _ ->
-                                        RWS.put (ContainerStack (Container ct_ (C top :: cs_)) rs)
-
-                            [] ->
-                                RWS.return ()
-
-                    _ ->
-                        case rest of
-                            (Container ct_ cs_) :: rs ->
-                                RWS.put (ContainerStack (Container ct_ (C top :: cs_)) rs)
-
-                            [] ->
-                                RWS.return ()
+                    top :: rest ->
+                        RWS.put (mapInnermostChildren ((::) (C top)) rest docChildren)
             )
 
 
-{-| Adds `lf` as the newest child of the container on top of the stack.
+{-| Adds `lf` as the newest child of the container on top of the stack, or of
+the document when no container is open.
 
 A blank line meant for a list item whose oldest child is a blank line closes the
 item instead, and is then added to the container beneath by the same rule.
@@ -468,19 +449,22 @@ addLeaf : Leaf -> ContainerM ()
 addLeaf lf =
     RWS.get
         |> RWS.andThen
-            (\(ContainerStack top rest) ->
-                case ( top, lf ) of
-                    ( Container ((ListItem _) as ct) cs, BlankLine _ ) ->
+            (\(ContainerStack open docChildren) ->
+                case ( open, lf ) of
+                    ( (Container ((ListItem _) as ct) cs) :: rest, BlankLine _ ) ->
                         case List.reverse cs of
                             (L (BlankLine _)) :: _ ->
                                 closeContainer
                                     |> RWS.andThen (\_ -> addLeaf lf)
 
                             _ ->
-                                RWS.put (ContainerStack (Container ct (L lf :: cs)) rest)
+                                RWS.put (ContainerStack (Container ct (L lf :: cs) :: rest) docChildren)
 
-                    ( Container ct cs, _ ) ->
-                        RWS.put (ContainerStack (Container ct (L lf :: cs)) rest)
+                    ( (Container ct cs) :: rest, _ ) ->
+                        RWS.put (ContainerStack (Container ct (L lf :: cs) :: rest) docChildren)
+
+                    ( [], _ ) ->
+                        RWS.put (ContainerStack [] (L lf :: docChildren))
             )
 
 
@@ -489,8 +473,8 @@ addLeaf lf =
 addContainer : ContainerType -> ContainerM ()
 addContainer ct =
     RWS.modify
-        (\(ContainerStack top rest) ->
-            ContainerStack (Container ct []) (top :: rest)
+        (\(ContainerStack open docChildren) ->
+            ContainerStack (Container ct [] :: open) docChildren
         )
 
 
@@ -498,23 +482,16 @@ addContainer ct =
 -- ====== SECOND PHASE: CONTAINERS TO BLOCKS ======
 
 
-{-| Returns the blocks of the document container that `processLines` built,
-reading its children oldest first with `processElts`, to which the reference map
-is passed on. It crashes when the container is not a `Document`, which
-`processLines` never returns.
+{-| Returns the blocks of the document that `processLines` built, reading its
+children oldest first with `processElts`.
 -}
-processDocument : ( Container, ReferenceMap ) -> Blocks
-processDocument ( Container ct cs, remap ) =
-    case ct of
-        Document ->
-            processElts remap (List.reverse cs)
-
-        _ ->
-            crash "top level container is not Document"
+processDocument : List Elt -> Blocks
+processDocument docChildren =
+    processElts (List.reverse docChildren)
 
 
 {-| Returns the blocks that the elements `elts` stand for. The text of
-paragraphs and headings is read with `parseInlines`, which is given `remap`.
+paragraphs and headings is read with `parseInlines`.
 
 The elements are taken from the front, and each one either starts a block or is
 skipped:
@@ -550,12 +527,11 @@ container's children are reversed here before they are read, with three
 exceptions. The first item of a list has its children reversed twice, so they
 are read in the order the item keeps them, while the other items' children are
 reversed once. Every indented code block but the first, and every reference
-definition but the first, gives its lines unreversed. A `Document` among the
-elements crashes.
+definition but the first, gives its lines unreversed.
 
 -}
-processElts : ReferenceMap -> List Elt -> Blocks
-processElts remap elts =
+processElts : List Elt -> Blocks
+processElts elts =
     case elts of
         [] ->
             []
@@ -592,7 +568,7 @@ processElts remap elts =
                                             stripped
                             in
                             (List.map (List.filter ((/=) "") << List.map String.trim << String.split ",") docs |> List.filter ((/=) []) |> ElmDocs)
-                                :: processElts remap rest_
+                                :: processElts rest_
 
                         Nothing ->
                             let
@@ -615,22 +591,22 @@ processElts remap elts =
                                         _ ->
                                             False
                             in
-                            Para (parseInlines remap txt)
-                                :: processElts remap rest_
+                            Para (parseInlines txt)
+                                :: processElts rest_
 
                 BlankLine _ ->
-                    processElts remap rest
+                    processElts rest
 
                 ATXHeader lvl t ->
-                    (parseInlines remap t |> Header lvl)
-                        :: processElts remap rest
+                    (parseInlines t |> Header lvl)
+                        :: processElts rest
 
                 SetextHeader lvl t ->
-                    (parseInlines remap t |> Header lvl)
-                        :: processElts remap rest
+                    (parseInlines t |> Header lvl)
+                        :: processElts rest
 
                 Rule ->
-                    HRule :: processElts remap rest
+                    HRule :: processElts rest
 
         (C (Container ct csRev)) :: rest ->
             let
@@ -656,12 +632,9 @@ processElts remap elts =
                             List.any isBlankLine xs |> not
             in
             case ct of
-                Document ->
-                    crash "Document container found inside Document"
-
                 BlockQuote ->
-                    (processElts remap cs |> Blockquote)
-                        :: processElts remap rest
+                    (processElts cs |> Blockquote)
+                        :: processElts rest
 
                 ListItem { listType } ->
                     let
@@ -707,38 +680,27 @@ processElts remap elts =
 
                         items : List (List Elt)
                         items =
-                            List.filterMap getItem
-                                (Container ct cs
-                                    :: List.filterMap
-                                        (\x ->
-                                            case x of
-                                                C c ->
-                                                    Just c
+                            csRev
+                                :: List.filterMap
+                                    (\x ->
+                                        case x of
+                                            C (Container _ cs_) ->
+                                                Just (List.reverse cs_)
 
-                                                _ ->
-                                                    Nothing
-                                        )
-                                        xs
-                                )
-
-                        getItem : Container -> Maybe (List Elt)
-                        getItem container =
-                            case container of
-                                Container (ListItem _) cs_ ->
-                                    Just (List.reverse cs_)
-
-                                _ ->
-                                    Nothing
+                                            _ ->
+                                                Nothing
+                                    )
+                                    xs
 
                         items_ : List Blocks
                         items_ =
-                            List.map (processElts remap) items
+                            List.map processElts items
 
                         isTight : Bool
                         isTight =
                             tightListItem xs && List.all tightListItem items
                     in
-                    List isTight listType items_ :: processElts remap rest_
+                    List isTight listType items_ :: processElts rest_
 
                 FencedCode { info } ->
                     let
@@ -754,7 +716,7 @@ processElts remap elts =
                             stringBreak ((==) ' ') info
                     in
                     CodeBlock attr txt
-                        :: processElts remap rest
+                        :: processElts rest
 
                 IndentedCode ->
                     let
@@ -796,7 +758,7 @@ processElts remap elts =
                                     False
                     in
                     CodeBlock (CodeAttr { codeLang = "", codeInfo = "" }) txt
-                        :: processElts remap rest_
+                        :: processElts rest_
 
                 RawHtmlBlock ->
                     let
@@ -804,7 +766,7 @@ processElts remap elts =
                         txt =
                             joinLines (List.map extractText cs)
                     in
-                    HtmlBlock txt :: processElts remap rest
+                    HtmlBlock txt :: processElts rest
 
                 Reference ->
                     let
@@ -829,7 +791,7 @@ processElts remap elts =
 
                                 _ ->
                                     (List.reverse acc |> List.concat |> ReferencesBlock)
-                                        :: processElts remap pass
+                                        :: processElts pass
                     in
                     processElts_ [] (C (Container ct cs) :: rest)
 
@@ -850,17 +812,16 @@ extractText elt =
 -- ====== FIRST PHASE: LINES TO CONTAINERS ======
 
 
-{-| Reads `t` into a tree of containers, and returns the document container
-together with the map of reference definitions logged while closing them.
+{-| Reads `t` into a tree of containers, and returns the children of the
+document, newest first.
 
 The text is split into lines with `String.lines`, and each line has its tabs
 expanded with `tabFilter`. The lines are handed to `processLine` through
 `RWS.mapM_`, so the last line is processed first and the first line last. Every
-container still open above the document is then closed, and the document is
-returned.
+container still open is then closed, and the document's children are returned.
 
 -}
-processLines : String -> ( Container, ReferenceMap )
+processLines : String -> List Elt
 processLines t =
     let
         lns : List ( LineNumber, String )
@@ -869,7 +830,7 @@ processLines t =
 
         startState : ContainerStack
         startState =
-            ContainerStack (Container Document []) []
+            ContainerStack [] []
     in
     RWS.evalRWS (RWS.mapM_ processLine lns |> RWS.andThen (\_ -> closeStack)) () startState
 
@@ -909,10 +870,18 @@ processLine : ( LineNumber, String ) -> ContainerM ()
 processLine ( _, txt ) =
     RWS.get
         |> RWS.andThen
-            (\(ContainerStack ((Container ct cs) as top) rest) ->
+            (\(ContainerStack open docChildren) ->
                 let
+                    ( topType, cs ) =
+                        case open of
+                            (Container ct_ cs_) :: _ ->
+                                ( Just ct_, cs_ )
+
+                            [] ->
+                                ( Nothing, docChildren )
+
                     ( t_, numUnmatched ) =
-                        tryOpenContainers (List.reverse (top :: rest)) txt
+                        tryOpenContainers (List.reverse open) txt
 
                     lastLineIsText : Bool
                     lastLineIsText =
@@ -925,7 +894,7 @@ processLine ( _, txt ) =
                                         False
                                )
 
-                    addNew : ( List ContainerType, Leaf ) -> () -> ContainerStack -> ( (), ContainerStack, Dict.Dict String ( String, String ) )
+                    addNew : ( List ContainerType, Leaf ) -> () -> ContainerStack -> ( (), ContainerStack )
                     addNew ( ns, lf ) =
                         RWS.mapM_ addContainer ns
                             |> RWS.andThen
@@ -939,14 +908,14 @@ processLine ( _, txt ) =
                                             addLeaf lf
                                 )
                 in
-                case ( ct, numUnmatched == 0 ) of
-                    ( RawHtmlBlock, True ) ->
+                case ( topType, numUnmatched == 0 ) of
+                    ( Just RawHtmlBlock, True ) ->
                         addLeaf (TextLine t_)
 
-                    ( IndentedCode, True ) ->
+                    ( Just IndentedCode, True ) ->
                         addLeaf (TextLine t_)
 
-                    ( FencedCode { fence }, _ ) ->
+                    ( Just (FencedCode { fence }), _ ) ->
                         if
                             String.startsWith fence t_
                             -- On top of the stack, matched or not, a fenced block stays open until a fence closes it.
@@ -956,7 +925,7 @@ processLine ( _, txt ) =
                         else
                             addLeaf (TextLine t_)
 
-                    ( Reference, _ ) ->
+                    ( Just Reference, _ ) ->
                         let
                             ( ns, lf ) =
                                 tryNewContainers lastLineIsText (String.length txt - String.length t_) t_
@@ -977,8 +946,8 @@ processLine ( _, txt ) =
                                                 _ ->
                                                     False
                                            )
-                                        && ct
-                                        /= IndentedCode
+                                        && topType
+                                        /= Just IndentedCode
                                 then
                                     addLeaf (TextLine t)
 
@@ -987,24 +956,18 @@ processLine ( _, txt ) =
                                         |> RWS.andThen (\_ -> addNew ( ns, lf ))
 
                             ( [] as ns, (SetextHeader lev _) as lf ) ->
-                                if numUnmatched == 0 then
-                                    case List.reverse cs of
-                                        (L (TextLine t)) :: cs_ ->
-                                            RWS.put
-                                                (ContainerStack
-                                                    (Container ct
-                                                        (List.reverse (L (SetextHeader lev t) :: cs_))
-                                                    )
-                                                    rest
-                                                )
+                                case ( numUnmatched, List.reverse cs ) of
+                                    ( 0, (L (TextLine t)) :: cs_ ) ->
+                                        RWS.put
+                                            (mapInnermostChildren
+                                                (\_ -> List.reverse (L (SetextHeader lev t) :: cs_))
+                                                open
+                                                docChildren
+                                            )
 
-                                        -- Unreachable: a setext underline is read only when this child is a text line.
-                                        _ ->
-                                            RWS.error "setext header line without preceding text line"
-
-                                else
-                                    RWS.replicateM numUnmatched closeContainer
-                                        |> RWS.andThen (\_ -> addNew ( ns, lf ))
+                                    _ ->
+                                        RWS.replicateM numUnmatched closeContainer
+                                            |> RWS.andThen (\_ -> addNew ( ns, lf ))
 
                             ( ns, lf ) ->
                                 RWS.replicateM numUnmatched closeContainer
@@ -1015,8 +978,9 @@ processLine ( _, txt ) =
 {-| Returns the rest of `t` after the continuations of the containers `cs`,
 matched in order, and the number of containers from the first whose
 continuation did not match to the end of `cs`, which is zero when all matched.
-Matching stops at the first continuation that does not match. The crash is
-unreachable, since the parser falls back to the rest of `t` instead of failing.
+Matching stops at the first continuation that does not match. The parser
+cannot fail, since it falls back to the rest of `t`; the `Err` case keeps all of
+`t` with no container matched.
 -}
 tryOpenContainers : List Container -> String -> ( String, Int )
 tryOpenContainers cs t =
@@ -1036,10 +1000,8 @@ tryOpenContainers cs t =
         Ok ( t_, n ) ->
             ( t_, n )
 
-        Err e ->
-            crash <|
-                "error parsing scanners: "
-                    ++ showParseError e
+        Err _ ->
+            ( t, 0 )
 
 
 {-| Reads the rest of a line, `t`, for the containers it opens and the leaf it
@@ -1050,8 +1012,8 @@ counted from the start of the whole line. Any number of block quote and list
 item markers are read first, then at most one start of a verbatim container.
 With no verbatim container the leaf is read by `leaf`; after one, the rest of
 the line is a text line or a blank line. `lastLineIsText` is passed to the
-parsers that depend on it. The crash is unreachable, since none of these
-parsers fails.
+parsers that depend on it. None of these parsers fails; the `Err` case
+returns `t` as a text line with no container.
 
 -}
 tryNewContainers : Bool -> Int -> String -> ( List ContainerType, Leaf )
@@ -1085,8 +1047,8 @@ tryNewContainers lastLineIsText offset t =
         Ok ( cs, t_ ) ->
             ( cs, t_ )
 
-        Err err ->
-            crash (showParseError err)
+        Err _ ->
+            ( [], TextLine t )
 
 
 {-| A parser that consumes the rest of the input and returns it as a blank line
@@ -1442,7 +1404,7 @@ parseBullet =
 
 
 {-| A parser for the marker of a numbered list item, ASCII digits followed by `.`
-or `)`, returning the list type with the number. It crashes if `String.toInt`
+or `)`, returning the list type with the number. It fails if `String.toInt`
 rejects the digits.
 -}
 parseListNumber : Parser ListType
@@ -1456,7 +1418,7 @@ parseListNumber =
                             |> andThen (\wrap -> return (Numbered wrap num))
 
                     Nothing ->
-                        crash "Exception: Prelude.read: no parse"
+                        mzero
             )
 
 

@@ -373,19 +373,19 @@ resolveMember facts calleeType m =
                         Nothing ->
                             Poison PUnresolved
 
-                Mono.OriginCtor _ ->
+                Mono.OriginCtor _ _ ->
                     Routed (constructSig calleeType)
 
                 Mono.OriginAccessor _ ->
                     Routed (accessorSig calleeType)
 
-                Mono.OriginPap _ _ ->
+                Mono.OriginPap _ _ _ ->
                     -- Its signature would be the global's minus the supplied
                     -- arguments; that is not derived, so the call stays poisoned.
                     Poison PUnresolved
 
-                Mono.OriginGlobal g ->
-                    case matchGlobal facts g calleeType of
+                Mono.OriginGlobal home name ->
+                    case matchGlobal facts (Mono.Global home name) calleeType of
                         Just specId ->
                             case facts.sigs specId of
                                 Just sig ->

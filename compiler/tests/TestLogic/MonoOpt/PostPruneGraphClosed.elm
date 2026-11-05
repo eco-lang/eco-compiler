@@ -155,10 +155,10 @@ nodeRefs node =
         Mono.MonoPortOutgoing body _ ->
             refsIn body
 
-        Mono.MonoCtor _ _ ->
+        Mono.MonoCtor _ _ _ ->
             []
 
-        Mono.MonoEnum _ _ ->
+        Mono.MonoEnum _ _ _ _ ->
             []
 
         Mono.MonoExtern _ ->
@@ -220,47 +220,45 @@ closedIssues label graph =
 
 
 {-| Returns a message for each live spec that is not reachable from the roots
-over the references of live bodies. Returns none for a graph with no `main`.
+over the references of live bodies.
 -}
 unreachableIssues : Mono.MonoGraph -> List String
 unreachableIssues ((Mono.MonoGraph g) as graph) =
-    case g.main of
-        Nothing ->
-            []
+    let
+        (Mono.StaticMain mainSpecId) =
+            g.main
 
-        Just (Mono.StaticMain mainSpecId) ->
-            let
-                roots =
-                    mainSpecId
-                        :: List.filterMap .decoderSpecId g.ports
-                        ++ (Maybe.map List.singleton g.flagsDecoder |> Maybe.withDefault [])
+        roots =
+            mainSpecId
+                :: List.filterMap .decoderSpecId g.ports
+                ++ (Maybe.map List.singleton g.flagsDecoder |> Maybe.withDefault [])
 
-                reached =
-                    reach (references graph) roots Set.empty
-            in
-            Array.foldl
-                (\entry ( specId, acc ) ->
-                    case entry of
-                        Just _ ->
-                            ( specId + 1
-                            , if Set.member specId reached then
-                                acc
+        reached =
+            reach (references graph) roots Set.empty
+    in
+    Array.foldl
+        (\entry ( specId, acc ) ->
+            case entry of
+                Just _ ->
+                    ( specId + 1
+                    , if Set.member specId reached then
+                        acc
 
-                              else
-                                ("MONO_011 violation, pruned graph: spec "
-                                    ++ String.fromInt specId
-                                    ++ " is live but unreachable from the roots"
-                                )
-                                    :: acc
-                            )
+                      else
+                        ("MONO_011 violation, pruned graph: spec "
+                            ++ String.fromInt specId
+                            ++ " is live but unreachable from the roots"
+                        )
+                            :: acc
+                    )
 
-                        Nothing ->
-                            ( specId + 1, acc )
-                )
-                ( 0, [] )
-                g.nodes
-                |> Tuple.second
-                |> List.reverse
+                Nothing ->
+                    ( specId + 1, acc )
+        )
+        ( 0, [] )
+        g.nodes
+        |> Tuple.second
+        |> List.reverse
 
 
 {-| Returns `seen` with every SpecId reachable from `pending` over `refs` added.

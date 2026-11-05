@@ -154,12 +154,12 @@ canonicalizePort env (Src.Port _ ( _, A.At region portName ) tipe) =
                                     case msg of
                                         Can.TVar _ ->
                                             case checkPayload outgoingType of
-                                                Ok () ->
+                                                Ok payload ->
                                                     ReportingResult.ok
                                                         ( portName
                                                         , Can.Outgoing
                                                             { freeVars = freeVars
-                                                            , payload = outgoingType
+                                                            , payload = payload
                                                             , func = ctipe
                                                             }
                                                         )
@@ -180,12 +180,12 @@ canonicalizePort env (Src.Port _ ( _, A.At region portName ) tipe) =
                                         Can.TVar msg2 ->
                                             if msg1 == msg2 then
                                                 case checkPayload incomingType of
-                                                    Ok () ->
+                                                    Ok payload ->
                                                         ReportingResult.ok
                                                             ( portName
                                                             , Can.Incoming
                                                                 { freeVars = freeVars
-                                                                , payload = incomingType
+                                                                , payload = payload
                                                                 , func = ctipe
                                                                 }
                                                             )
@@ -263,12 +263,12 @@ and tuples and closed records whose parts are all allowed. Aliases are
 expanded before checking. Every other type is rejected, including `Char`, type
 variables, functions, extensible records and any other named type.
 
-An `Err` carries the first offending part, not the whole type, and why it is
-rejected. Tuple parts are checked left to right and record fields in the order
-of their names.
+An `Ok` carries the type as a `Can.Payload`. An `Err` carries the first
+offending part, not the whole type, and why it is rejected. Tuple parts are
+checked left to right and record fields in the order of their names.
 
 -}
-checkPayload : Can.Type Name -> Result ( Can.Type Name, Error.InvalidPayload ) ()
+checkPayload : Can.Type Name -> Result ( Can.Type Name, Error.InvalidPayload ) Can.Payload
 checkPayload tipe =
     case tipe of
         Can.TAlias _ _ args aliasedType ->
@@ -277,15 +277,36 @@ checkPayload tipe =
         Can.TType home name args ->
             case args of
                 [] ->
-                    if isJson home name || isString home name || isIntFloatBool home name || isBytes home name then
-                        Ok ()
+                    if isJson home name then
+                        Ok Can.PayloadValue
+
+                    else if isString home name then
+                        Ok Can.PayloadString
+
+                    else if isBasics home Name.int name then
+                        Ok Can.PayloadInt
+
+                    else if isBasics home Name.float name then
+                        Ok Can.PayloadFloat
+
+                    else if isBasics home Name.bool name then
+                        Ok Can.PayloadBool
+
+                    else if isBytes home name then
+                        Ok Can.PayloadBytes
 
                     else
                         Err ( tipe, Error.UnsupportedType name )
 
                 [ arg ] ->
-                    if isList home name || isMaybe home name || isArray home name then
-                        checkPayload arg
+                    if isList home name then
+                        Result.map Can.PayloadList (checkPayload arg)
+
+                    else if isMaybe home name then
+                        Result.map Can.PayloadMaybe (checkPayload arg)
+
+                    else if isArray home name then
+                        Result.map Can.PayloadArray (checkPayload arg)
 
                     else
                         Err ( tipe, Error.UnsupportedType name )
@@ -294,12 +315,19 @@ checkPayload tipe =
                     Err ( tipe, Error.UnsupportedType name )
 
         Can.TUnit ->
-            Ok ()
+            Ok Can.PayloadUnit
 
         Can.TTuple a b cs ->
-            checkPayload a
-                |> Result.andThen (\_ -> checkPayload b)
-                |> Result.andThen (\_ -> checkPayloadTupleCs cs)
+            Result.map3 Can.PayloadTuple
+                (checkPayload a)
+                (checkPayload b)
+                (case cs of
+                    Just c ->
+                        Result.map Just (checkPayload c)
+
+                    Nothing ->
+                        Ok Nothing
+                )
 
         Can.TVar name ->
             Err ( tipe, Error.TypeVariable name )
@@ -312,40 +340,29 @@ checkPayload tipe =
 
         Can.TRecord fields Nothing ->
             Dict.foldl
-                (\_ field acc -> Result.andThen (\_ -> checkFieldPayload field) acc)
-                (Ok ())
+                (\fieldName field acc -> Result.andThen (\payloads -> Result.map (\payload -> Dict.insert fieldName payload payloads) (checkFieldPayload field)) acc)
+                (Ok Dict.empty)
                 fields
+                |> Result.map Can.PayloadRecord
 
 
-{-| Checks the third and later parts of a tuple, left to right, as
-`checkPayload` does.
+{-| Checks the type of a record field as `checkPayload` does, keeping the
+field's index.
 -}
-checkPayloadTupleCs : List (Can.Type Name) -> Result ( Can.Type Name, Error.InvalidPayload ) ()
-checkPayloadTupleCs types =
-    case types of
-        [] ->
-            Ok ()
-
-        tipe :: rest ->
-            checkPayload tipe
-                |> Result.andThen (\_ -> checkPayloadTupleCs rest)
+checkFieldPayload : Can.FieldType Name -> Result ( Can.Type Name, Error.InvalidPayload ) ( Int, Can.Payload )
+checkFieldPayload (Can.FieldType index tipe) =
+    Result.map (Tuple.pair index) (checkPayload tipe)
 
 
-{-| Checks the type of a record field as `checkPayload` does.
+{-| Tells whether the type named `name` in module `home` is the `Basics` type
+named `basicsName`.
 -}
-checkFieldPayload : Can.FieldType Name -> Result ( Can.Type Name, Error.InvalidPayload ) ()
-checkFieldPayload (Can.FieldType _ tipe) =
-    checkPayload tipe
-
-
-{-| Tells whether the type named `name` in module `home` is
-`Basics.Int`, `Basics.Float` or `Basics.Bool`.
--}
-isIntFloatBool : ModuleName.Canonical -> Name.Name -> Bool
-isIntFloatBool home name =
+isBasics : ModuleName.Canonical -> Name.Name -> Name.Name -> Bool
+isBasics home basicsName name =
     home
         == ModuleName.basics
-        && (name == Name.int || name == Name.float || name == Name.bool)
+        && name
+        == basicsName
 
 
 {-| Tells whether the type named `name` in module `home` is `String.String`.

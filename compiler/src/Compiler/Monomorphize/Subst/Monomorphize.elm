@@ -1,7 +1,4 @@
-module Compiler.Monomorphize.Subst.Monomorphize exposing
-    ( monomorphize
-    , monomorphizeWithLimits, monomorphizeWithLimitsAssigned
-    )
+module Compiler.Monomorphize.Subst.Monomorphize exposing (monomorphizeWithLimitsAssigned)
 
 {-| Code generation needs every function at one concrete type, and Elm code is
 polymorphic, so this module turns a typed optimized graph into a monomorphized
@@ -32,8 +29,7 @@ residual number type variables.
 
 # Monomorphization
 
-@docs monomorphize
-@docs monomorphizeWithLimits, monomorphizeWithLimitsAssigned
+@docs monomorphizeWithLimitsAssigned
 
 -}
 
@@ -67,34 +63,10 @@ type alias MonoState =
     State.MonoState
 
 
-{-| Monomorphizes `globalGraph` from the definition named by the first argument,
-using `Config.defaultLimits` as the spec limits.
-
-Returns `Err` when no `Define` or `TrackedDefine` of that name exists or a
-spec limit is exceeded.
-
--}
-monomorphize : Name -> TypeEnv.GlobalTypeEnv -> TOpt.GlobalGraph Name -> Result String Mono.MonoGraph
-monomorphize =
-    monomorphizeWithLimits Config.defaultLimits
-
-
-{-| Monomorphizes as `monomorphize` does, under the given spec limits.
-
-It first assigns type-variable ids with `EntryPrep.assign ( False, False )`,
-which also synthesizes the flags decoder.
-
--}
-monomorphizeWithLimits : Config.SpecLimits -> Name -> TypeEnv.GlobalTypeEnv -> TOpt.GlobalGraph Name -> Result String Mono.MonoGraph
-monomorphizeWithLimits limits entryPointName globalTypeEnv globalGraph =
-    monomorphizeWithLimitsAssigned limits
-        entryPointName
-        globalTypeEnv
-        (EntryPrep.assign ( False, False ) entryPointName globalGraph)
-
-
-{-| Monomorphizes as `monomorphizeWithLimits` does, on a graph that has
-already been through `EntryPrep.assign`.
+{-| Monomorphizes the graph of `assigned` from the definition named by
+`entryPointName`, under the given spec limits. The graph has already been
+through `EntryPrep`, which assigned its type-variable ids and synthesized the
+flags decoder.
 
 Returns `Err ("No " ++ name ++ " function found")` when the graph has no
 `Define` or `TrackedDefine` of that name.
@@ -114,10 +86,10 @@ monomorphizeWithLimitsAssigned limits entryPointName globalTypeEnv assigned =
             Err ("No " ++ entryPointName ++ " function found")
 
         Just ( mainGlobal, mainType ) ->
-            monomorphizeFromEntryWith limits assigned.flagsGlobal mainGlobal mainType globalTypeEnv nodesWithIds annotationsWithIds mvarEnv
+            monomorphizeFromEntryWith limits assigned.flags mainGlobal mainType globalTypeEnv nodesWithIds annotationsWithIds mvarEnv
 
 
-{-| Seeds the worklist with `mainGlobal` and, when given and annotated, the
+{-| Seeds the worklist with `mainGlobal` and, when given, the
 flags-decoder global, drains it, and returns the assembled and pruned graph.
 
 Both seeded specs get their `MonoType` from their annotation with no
@@ -125,43 +97,38 @@ substitution, so a type variable left in either stays a variable. They are
 created before draining starts and are never checked against the limits.
 
 -}
-monomorphizeFromEntryWith : Config.SpecLimits -> Maybe TOpt.Global -> TOpt.Global -> Can.Type TypeIds.MVarId -> TypeEnv.GlobalTypeEnv -> DMap.Dict String TOpt.Global (TOpt.Node TypeIds.MVarId) -> TOpt.AnnotationsByGlobal TypeIds.MVarId -> State.MVarEnv -> Result String Mono.MonoGraph
-monomorphizeFromEntryWith limits maybeFlagsGlobal mainGlobal mainType globalTypeEnv nodes annotations mvarEnv =
+monomorphizeFromEntryWith : Config.SpecLimits -> Maybe EntryPrep.FlagsDecoder -> TOpt.Global -> Can.Type TypeIds.MVarId -> TypeEnv.GlobalTypeEnv -> DMap.Dict String TOpt.Global (TOpt.Node TypeIds.MVarId) -> TOpt.AnnotationsByGlobal TypeIds.MVarId -> State.MVarEnv -> Result String Mono.MonoGraph
+monomorphizeFromEntryWith limits maybeFlags mainGlobal mainType globalTypeEnv nodes annotations mvarEnv =
     let
         ( stateWithMain, mainSpecIdVal ) =
             initSpecialization mainGlobal mainType globalTypeEnv nodes annotations mvarEnv
 
         ( stateInit, flagsDecoderSpecId ) =
-            case maybeFlagsGlobal of
+            case maybeFlags of
                 Nothing ->
                     ( stateWithMain, Nothing )
 
-                Just flagsGlobal ->
-                    case EntryPrep.findNodeAnnotationType flagsGlobal nodes of
-                        Nothing ->
-                            ( stateWithMain, Nothing )
+                Just flags ->
+                    let
+                        decoderMonoType =
+                            entryPointMonoType Dict.empty flags.tipe
 
-                        Just decoderTipe ->
-                            let
-                                decoderMonoType =
-                                    entryPointMonoType Dict.empty decoderTipe
+                        accum =
+                            stateWithMain.accum
 
-                                accum =
-                                    stateWithMain.accum
-
-                                ( specId, registry2 ) =
-                                    Registry.getOrCreateSpecId (toptGlobalToMono flagsGlobal) decoderMonoType accum.registry
-                            in
-                            ( { stateWithMain
-                                | accum =
-                                    { accum
-                                        | registry = registry2
-                                        , worklist = SpecializeGlobal specId :: accum.worklist
-                                        , scheduled = BitSet.insertGrowing specId accum.scheduled
-                                    }
-                              }
-                            , Just specId
-                            )
+                        ( specId, registry2 ) =
+                            Registry.getOrCreateSpecId (toptGlobalToMono flags.global) decoderMonoType accum.registry
+                    in
+                    ( { stateWithMain
+                        | accum =
+                            { accum
+                                | registry = registry2
+                                , worklist = SpecializeGlobal specId :: accum.worklist
+                                , scheduled = BitSet.insertGrowing specId accum.scheduled
+                            }
+                      }
+                    , Just specId
+                    )
 
         result =
             processWorklistPure limits stateInit
@@ -236,9 +203,9 @@ LSS members.
 assembleRawGraphFrom : State.SpecAccum -> Int -> Mono.SpecId -> Maybe Mono.SpecId -> Mono.MonoGraph
 assembleRawGraphFrom finalAccum lambdaCounter mainSpecIdVal flagsDecoderSpecId =
     let
-        mainInfo : Maybe Mono.MainInfo
+        mainInfo : Mono.MainInfo
         mainInfo =
-            Just (Mono.StaticMain mainSpecIdVal)
+            Mono.StaticMain mainSpecIdVal
 
         nextId : Int
         nextId =
@@ -403,136 +370,126 @@ processOneWorkItem specId rest state =
         accum =
             state.accum
     in
-    if BitSet.member specId accum.inProgress then
-        -- Never taken in practice: inProgress is cleared before this function
-        -- returns, and Specialize schedules an id at most once.
-        { state | accum = { accum | worklist = rest } }
+    case Registry.lookupSpecKey specId accum.registry of
+        Nothing ->
+            { state | accum = { accum | worklist = rest } }
 
-    else
-        case Registry.lookupSpecKey specId accum.registry of
-            Nothing ->
-                { state | accum = { accum | worklist = rest } }
+        Just ( global, monoType ) ->
+            let
+                ctx =
+                    state.ctx
 
-            Just ( global, monoType ) ->
-                let
-                    ctx =
-                        state.ctx
+                freeVars =
+                    case global of
+                        Mono.Global canonical name ->
+                            case DMap.get TOpt.toComparableGlobal (TOpt.Global canonical name) ctx.annotations of
+                                Just (Can.Forall fv _) ->
+                                    fv
 
-                    freeVars =
-                        case global of
-                            Mono.Global canonical name ->
-                                case DMap.get TOpt.toComparableGlobal (TOpt.Global canonical name) ctx.annotations of
-                                    Just (Can.Forall fv _) ->
-                                        fv
+                                Nothing ->
+                                    Dict.empty
 
-                                    Nothing ->
-                                        Dict.empty
+                        Mono.Accessor _ ->
+                            Dict.empty
 
-                            Mono.Accessor _ ->
-                                Dict.empty
+                state2 =
+                    { accum =
+                        { accum
+                            | worklist = rest
+                        }
+                    , ctx =
+                        { ctx
+                            | currentGlobal = Just global
+                            , currentFreeVars = freeVars
+                            , varEnv = State.emptyVarEnv
+                        }
+                    }
+            in
+            case global of
+                Mono.Accessor fieldName ->
+                    let
+                        ( monoNode, stateAfter ) =
+                            specializeAccessorGlobal fieldName monoType state2
 
-                    state2 =
-                        { accum =
-                            { accum
-                                | worklist = rest
-                                , inProgress = BitSet.insertGrowing specId accum.inProgress
+                        stateAfterAccum =
+                            stateAfter.accum
+                    in
+                    { stateAfter
+                        | accum =
+                            { stateAfterAccum
+                                | nodes = arraySetGrowing specId (Just monoNode) stateAfterAccum.nodes
                             }
                         , ctx =
-                            { ctx
-                                | currentGlobal = Just global
-                                , currentFreeVars = freeVars
-                                , varEnv = State.emptyVarEnv
+                            let
+                                ca =
+                                    stateAfter.ctx
+                            in
+                            { ca | currentGlobal = Nothing }
+                    }
+
+                Mono.Global _ name ->
+                    let
+                        toptGlobal =
+                            monoGlobalToTOpt global
+                    in
+                    case DMap.get TOpt.toComparableGlobal toptGlobal state2.ctx.toptNodes of
+                        Nothing ->
+                            let
+                                s2accum =
+                                    state2.accum
+                            in
+                            { state2
+                                | accum =
+                                    { s2accum
+                                        | nodes = arraySetGrowing specId (Just (Mono.MonoExtern monoType)) s2accum.nodes
+                                    }
+                                , ctx =
+                                    let
+                                        c2 =
+                                            state2.ctx
+                                    in
+                                    { c2 | currentGlobal = Nothing }
                             }
-                        }
-                in
-                case global of
-                    Mono.Accessor fieldName ->
-                        let
-                            ( monoNode, stateAfter ) =
-                                specializeAccessorGlobal fieldName monoType state2
 
-                            stateAfterAccum =
-                                stateAfter.accum
-                        in
-                        { stateAfter
-                            | accum =
-                                { stateAfterAccum
-                                    | nodes = arraySetGrowing specId (Just monoNode) stateAfterAccum.nodes
-                                    , inProgress = BitSet.removeGrowing specId stateAfterAccum.inProgress
-                                }
-                            , ctx =
-                                let
-                                    ca =
-                                        stateAfter.ctx
-                                in
-                                { ca | currentGlobal = Nothing }
-                        }
+                        Just toptNode ->
+                            let
+                                ( monoNode0, stateAfter ) =
+                                    Specialize.specializeNode name toptNode monoType state2
 
-                    Mono.Global _ name ->
-                        let
-                            toptGlobal =
-                                monoGlobalToTOpt global
-                        in
-                        case DMap.get TOpt.toComparableGlobal toptGlobal state2.ctx.toptNodes of
-                            Nothing ->
-                                let
-                                    s2accum =
-                                        state2.accum
-                                in
-                                { state2
-                                    | accum =
-                                        { s2accum
-                                            | nodes = arraySetGrowing specId (Just (Mono.MonoExtern monoType)) s2accum.nodes
-                                            , inProgress = BitSet.removeGrowing specId s2accum.inProgress
-                                        }
-                                    , ctx =
-                                        let
-                                            c2 =
-                                                state2.ctx
-                                        in
-                                        { c2 | currentGlobal = Nothing }
-                                }
+                                ( monoNode, newLambdaCounter ) =
+                                    ResolveAccessorValues.rewriteNode
+                                        stateAfter.ctx.currentModule
+                                        stateAfter.ctx.lambdaCounter
+                                        monoNode0
 
-                            Just toptNode ->
-                                let
-                                    ( monoNode0, stateAfter ) =
-                                        Specialize.specializeNode name toptNode monoType state2
+                                stateAfterCtx =
+                                    stateAfter.ctx
 
-                                    ( monoNode, newLambdaCounter ) =
-                                        ResolveAccessorValues.rewriteNode
-                                            stateAfter.ctx.currentModule
-                                            stateAfter.ctx.lambdaCounter
-                                            monoNode0
+                                saAccum =
+                                    stateAfter.accum
 
-                                    stateAfterCtx =
-                                        stateAfter.ctx
+                                -- A constructor keeps the function type it was
+                                -- requested at; its node holds the constructed type.
+                                updatedRegistry =
+                                    case monoNode of
+                                        Mono.MonoCtor _ _ _ ->
+                                            saAccum.registry
 
-                                    saAccum =
-                                        stateAfter.accum
-
-                                    -- A constructor keeps the function type it was
-                                    -- requested at; its node holds the constructed type.
-                                    updatedRegistry =
-                                        case monoNode of
-                                            Mono.MonoCtor _ _ ->
-                                                saAccum.registry
-
-                                            _ ->
-                                                Registry.updateRegistryType specId (Mono.nodeType monoNode) saAccum.registry
-                                in
-                                { stateAfter
-                                    | accum =
-                                        { saAccum
-                                            | registry = updatedRegistry
-                                            , nodes = arraySetGrowing specId (Just monoNode) saAccum.nodes
-                                            , inProgress = BitSet.removeGrowing specId saAccum.inProgress
-                                        }
-                                    , ctx =
-                                        { stateAfterCtx
-                                            | lambdaCounter = newLambdaCounter
-                                            , currentGlobal = Nothing
-                                        }
-                                }
+                                        _ ->
+                                            Registry.updateRegistryType specId (Mono.nodeType monoNode) saAccum.registry
+                            in
+                            { stateAfter
+                                | accum =
+                                    { saAccum
+                                        | registry = updatedRegistry
+                                        , nodes = arraySetGrowing specId (Just monoNode) saAccum.nodes
+                                    }
+                                , ctx =
+                                    { stateAfterCtx
+                                        | lambdaCounter = newLambdaCounter
+                                        , currentGlobal = Nothing
+                                    }
+                            }
 
 
 {-| Builds the node for the accessor `.fieldName` at `monoType`: a
@@ -655,10 +612,10 @@ collectCallsFromNode node =
         Mono.MonoPortOutgoing expr _ ->
             collectCalls expr
 
-        Mono.MonoCtor _ _ ->
+        Mono.MonoCtor _ _ _ ->
             []
 
-        Mono.MonoEnum _ _ ->
+        Mono.MonoEnum _ _ _ _ ->
             []
 
         Mono.MonoExtern _ ->

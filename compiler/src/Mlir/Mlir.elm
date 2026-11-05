@@ -133,7 +133,8 @@ MLIR has no fixed list of types: each dialect may define its own. This is the
 handful of built-in types the compiler uses, plus a way to name any dialect's
 type.
 
-`I1` to `I64` are integers of that many bits, and `F64` is a 64-bit float.
+`I1`, `I8`, `I32` and `I64` are integers of that many bits, and `F64` is a
+64-bit float.
 
 `NamedStruct` names a type defined by a dialect, in full and without MLIR's
 leading `!`, such as `eco.value`. The part before the first `.` is the
@@ -146,7 +147,6 @@ types.
 type MlirType
     = I1
     | I8
-    | I16
     | I32
     | I64
     | F64
@@ -236,8 +236,7 @@ type alias MlirModule =
 --=== Builders
 
 
-{-| The location an operation started by `mlirOp` has until `withLoc` replaces
-it, `Mlir.Loc.unknown`.
+{-| The location of every operation started by `mlirOp`, `Mlir.Loc.unknown`.
 -}
 unknownLoc : Loc
 unknownLoc =
@@ -259,8 +258,6 @@ type alias OpBuilderFns e =
     , withAttrs : Dict String MlirAttr -> OpBuilder e -> OpBuilder e
     , withRegions : List MlirRegion -> OpBuilder e -> OpBuilder e
     , isTerminator : Bool -> OpBuilder e -> OpBuilder e
-    , withLoc : Loc -> OpBuilder e -> OpBuilder e
-    , withSuccessors : List String -> OpBuilder e -> OpBuilder e
     , build : OpBuilder e -> ( e, MlirOp )
     }
 
@@ -295,12 +292,6 @@ opBuilder =
     , isTerminator =
         \flag (OpBuilder e op) ->
             OpBuilder e { op | isTerminator = flag }
-    , withLoc =
-        \loc (OpBuilder e op) ->
-            OpBuilder e { op | loc = loc }
-    , withSuccessors =
-        \succs (OpBuilder e op) ->
-            OpBuilder e { op | successors = succs }
     , build = \(OpBuilder e op) -> ( e, op )
     }
 

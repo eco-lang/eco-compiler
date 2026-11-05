@@ -69,6 +69,7 @@ a partial application, or as a value stored in data.
 
 import Array exposing (Array)
 import Compiler.IR.Mono as Mono exposing (CallInfo, CaptureABI, ClosureInfo, CtorShape, Decider(..), MonoChoice(..), MonoDef(..), MonoDestructor, MonoDtPath, MonoExpr(..), MonoNode, MonoPath, MonoType)
+import Data.NonEmptyList as NE
 
 
 
@@ -340,15 +341,31 @@ travChildren f ctx expr =
 
         MonoTupleCreate region elements resultType ->
             let
-                ( mElements, ctx1 ) =
-                    travExprs f ctx elements
-            in
-            case mElements of
-                Nothing ->
-                    ( Nothing, ctx1 )
+                ( results, ctx1 ) =
+                    Mono.tupleMapAccum
+                        (\e c ->
+                            let
+                                ( me, c1 ) =
+                                    travExpr f c e
+                            in
+                            ( ( e, me ), c1 )
+                        )
+                        ctx
+                        elements
 
-                Just e ->
-                    ( Just (MonoTupleCreate region e resultType), ctx1 )
+                changed ( _, me ) =
+                    case me of
+                        Just _ ->
+                            True
+
+                        Nothing ->
+                            False
+            in
+            if List.any changed (Mono.tupleToList results) then
+                ( Just (MonoTupleCreate region (Mono.tupleMap (\( e, me ) -> Maybe.withDefault e me) results) resultType), ctx1 )
+
+            else
+                ( Nothing, ctx1 )
 
         MonoLiteral _ _ ->
             ( Nothing, ctx )
@@ -442,7 +459,7 @@ travDecider f ctx decider =
         FanOut path edges fallback ->
             let
                 ( mEdges, ctx1 ) =
-                    travEdges f ctx edges
+                    travNonemptyEdges f ctx edges
 
                 ( mFallback, ctx2 ) =
                     travDecider f ctx1 fallback
@@ -613,6 +630,31 @@ travBranches f ctx items =
 
 {-| Returns the edges of a `FanOut` with each edge's subtree rewritten, left to
 right, or `Nothing` when none changed. The tests are kept as they are.
+-}
+travNonemptyEdges : (ctx -> MonoExpr -> ( Maybe MonoExpr, ctx )) -> ctx -> NE.Nonempty ( a, Decider MonoChoice ) -> ( Maybe (NE.Nonempty ( a, Decider MonoChoice )), ctx )
+travNonemptyEdges f ctx (NE.Nonempty (( test, d ) as pair) rest) =
+    let
+        ( mD, ctx1 ) =
+            travDecider f ctx d
+
+        ( mRest, ctx2 ) =
+            travEdges f ctx1 rest
+    in
+    case mD of
+        Nothing ->
+            case mRest of
+                Nothing ->
+                    ( Nothing, ctx2 )
+
+                Just rest1 ->
+                    ( Just (NE.Nonempty pair rest1), ctx2 )
+
+        Just d1 ->
+            ( Just (NE.Nonempty ( test, d1 ) (withDefaultEdges rest mRest)), ctx2 )
+
+
+{-| Returns the edges after the first in `travNonemptyEdges`, each with its
+subtree rewritten, left to right, or `Nothing` when none changed.
 -}
 travEdges : (ctx -> MonoExpr -> ( Maybe MonoExpr, ctx )) -> ctx -> List ( a, Decider MonoChoice ) -> ( Maybe (List ( a, Decider MonoChoice )), ctx )
 travEdges f ctx edges =
@@ -794,7 +836,7 @@ foldChildren f acc expr =
             foldKeyed f (foldExprAccFirst f acc record) updates
 
         MonoTupleCreate _ elements _ ->
-            foldExprs f acc elements
+            foldExprs f acc (Mono.tupleToList elements)
 
         MonoLiteral _ _ ->
             acc
@@ -902,7 +944,7 @@ foldDecider f acc decider =
             foldDecider f (foldDecider f acc success) failure
 
         FanOut _ edges fallback ->
-            foldDecider f (foldEdges f acc edges) fallback
+            foldDecider f (foldEdges f acc (NE.toList edges)) fallback
 
 
 {-| Returns `acc` with an `Inline` leaf's expression folded in. A `Jump` leaf
@@ -970,7 +1012,7 @@ childrenOf expr =
             record :: List.map Tuple.second updates
 
         MonoTupleCreate _ elements _ ->
-            elements
+            Mono.tupleToList elements
 
         MonoLiteral _ _ ->
             []
@@ -1019,7 +1061,7 @@ deciderExprs decider rest =
             deciderExprs success (deciderExprs failure rest)
 
         FanOut _ edges fallback ->
-            List.foldr (\( _, d ) acc -> deciderExprs d acc) (deciderExprs fallback rest) edges
+            List.foldr (\( _, d ) acc -> deciderExprs d acc) (deciderExprs fallback rest) (NE.toList edges)
 
 
 
@@ -1045,11 +1087,11 @@ mapNodeTypes f node =
         Mono.MonoTailFunc params expr t ->
             Mono.MonoTailFunc (List.map (\( n, pt ) -> ( n, f pt )) params) (mapExprTypes f expr) (f t)
 
-        Mono.MonoCtor shape t ->
-            Mono.MonoCtor (mapCtorShapeTypes f shape) (f t)
+        Mono.MonoCtor home shape t ->
+            Mono.MonoCtor home (mapCtorShapeTypes f shape) (f t)
 
-        Mono.MonoEnum i t ->
-            Mono.MonoEnum i (f t)
+        Mono.MonoEnum home name i t ->
+            Mono.MonoEnum home name i (f t)
 
         Mono.MonoExtern t ->
             Mono.MonoExtern (f t)
@@ -1124,7 +1166,7 @@ mapExprTypes f expr =
             Mono.MonoRecordUpdate (mapExprTypes f e) (List.map (\( n, fe ) -> ( n, mapExprTypes f fe )) fields) (f t)
 
         Mono.MonoTupleCreate r elems t ->
-            Mono.MonoTupleCreate r (List.map (mapExprTypes f) elems) (f t)
+            Mono.MonoTupleCreate r (Mono.tupleMap (mapExprTypes f) elems) (f t)
 
         Mono.MonoUnit ->
             Mono.MonoUnit
@@ -1230,10 +1272,10 @@ mapDeciderTypes f decider =
             Mono.Leaf (mapChoiceTypes f choice)
 
         Mono.Chain tests ifDec elseDec ->
-            Mono.Chain (List.map (\( p, test ) -> ( mapDtPathTypes f p, test )) tests) (mapDeciderTypes f ifDec) (mapDeciderTypes f elseDec)
+            Mono.Chain (NE.map (\( p, test ) -> ( mapDtPathTypes f p, test )) tests) (mapDeciderTypes f ifDec) (mapDeciderTypes f elseDec)
 
         Mono.FanOut p edges fallback ->
-            Mono.FanOut (mapDtPathTypes f p) (List.map (\( test, dec ) -> ( test, mapDeciderTypes f dec )) edges) (mapDeciderTypes f fallback)
+            Mono.FanOut (mapDtPathTypes f p) (NE.map (\( test, dec ) -> ( test, mapDeciderTypes f dec )) edges) (mapDeciderTypes f fallback)
 
 
 {-| Applies `f` to the types in an `Inline` leaf's expression. A `Jump` leaf is
@@ -1268,10 +1310,10 @@ anyNodeType p node =
         Mono.MonoTailFunc params expr t ->
             p t || anyParamType p params || anyExprType p expr
 
-        Mono.MonoCtor shape t ->
+        Mono.MonoCtor _ shape t ->
             p t || anyType p shape.fieldTypes
 
-        Mono.MonoEnum _ t ->
+        Mono.MonoEnum _ _ _ t ->
             p t
 
         Mono.MonoExtern t ->
@@ -1339,7 +1381,7 @@ anyExprType p expr =
             p t || anyExprType p e || anyKeyed p fields
 
         Mono.MonoTupleCreate _ elems t ->
-            p t || anyExprs p elems
+            p t || anyExprs p (Mono.tupleToList elems)
 
         Mono.MonoUnit ->
             False
@@ -1522,10 +1564,10 @@ anyDeciderType p decider =
             anyChoiceType p choice
 
         Mono.Chain tests ifDec elseDec ->
-            anyTests p tests || anyDeciderType p ifDec || anyDeciderType p elseDec
+            anyTests p (NE.toList tests) || anyDeciderType p ifDec || anyDeciderType p elseDec
 
         Mono.FanOut pth edges fallback ->
-            anyDtPathType p pth || anyEdges p edges || anyDeciderType p fallback
+            anyDtPathType p pth || anyEdges p (NE.toList edges) || anyDeciderType p fallback
 
 
 {-| Returns whether `p` holds for a type on the path of any test in a `Chain`.
@@ -1608,10 +1650,10 @@ specEdgesOfNode node =
         Mono.MonoPortOutgoing body _ ->
             specEdgesOfExpr body
 
-        Mono.MonoCtor _ _ ->
+        Mono.MonoCtor _ _ _ ->
             []
 
-        Mono.MonoEnum _ _ ->
+        Mono.MonoEnum _ _ _ _ ->
             []
 
         Mono.MonoExtern _ ->

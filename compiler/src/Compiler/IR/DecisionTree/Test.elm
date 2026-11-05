@@ -2,6 +2,9 @@ module Compiler.IR.DecisionTree.Test exposing
     ( Test(..), testToComparable
     , testEncoder, testDecoder
     , testEncoderS, testDecoderS, collectStringsFromTest
+    , FanTest(..), toFanTest, fromFanTest
+    , fanTestEncoder, fanTestDecoder
+    , fanTestEncoderS, fanTestDecoderS, collectStringsFromFanTest
     )
 
 {-| A `case` expression is compiled into a _decision tree_, which examines the
@@ -22,9 +25,18 @@ strings through a string table, as `Compiler.Core.StringTable` describes, and
 those strings before the table is built. `testEncoder` and `testDecoder` are
 the same codec with `StringTable.disabled`, which writes the strings inline.
 
+A _fan-out_ examines one position and goes one of several ways by which of
+its edge tests the value passes. Only constructor and literal tests are ever
+its edge tests: `Bool` and list tests come at most two to a position, and two
+are complete, so they always form a chain of tests. `FanTest` is the test of a
+fan-out edge, with its own codec of the same two forms.
+
 @docs Test, testToComparable
 @docs testEncoder, testDecoder
 @docs testEncoderS, testDecoderS, collectStringsFromTest
+@docs FanTest, toFanTest, fromFanTest
+@docs fanTestEncoder, fanTestDecoder
+@docs fanTestEncoderS, fanTestDecoderS, collectStringsFromFanTest
 
 -}
 
@@ -53,10 +65,6 @@ generator can tell how to read the value's tag without looking the type up.
 
 `IsCons` and `IsNil` ask whether a list is non-empty or empty.
 
-`IsTuple` is the test for a tuple pattern or the unit pattern. Every value of
-a tuple or unit type has the same shape, so nothing about the value can make
-it fail.
-
 `IsInt`, `IsChr` and `IsStr` ask whether the value equals a literal.
 `IsChr` and `IsStr` hold the literal as text in the escaped form that
 `Compiler.IR.Canonical` describes for `PChr` and `PStr`, which is why a
@@ -69,7 +77,6 @@ type Test
     = IsCtor ModuleName.Canonical Name.Name Index.ZeroBased Int Can.CtorOpts
     | IsCons
     | IsNil
-    | IsTuple
     | IsInt Int
     | IsChr String
     | IsStr String
@@ -80,7 +87,8 @@ type Test
 them in sets or as `Dict` keys.
 
 Each kind of test has its own prefix, so tests of different kinds never share
-a key, and an `IsCtor` key includes all five of its fields. A `Char` or
+a key. An `IsCtor` key includes the home module, name, index and `numAlts` of
+the constructor but not `opts`, which the constructor's type determines. A `Char` or
 `String` literal is keyed by the value it denotes (`Compiler.IR.Source.StringLiteral.valueKey`),
 so `'a'` and `'\u{0061}'` share a key.
 
@@ -88,7 +96,7 @@ so `'a'` and `'\u{0061}'` share a key.
 testToComparable : Test -> String
 testToComparable test =
     case test of
-        IsCtor (ModuleName.Canonical ( author, pkg ) moduleName) name zeroBased numAlts opts ->
+        IsCtor (ModuleName.Canonical ( author, pkg ) moduleName) name zeroBased numAlts _ ->
             String.concat
                 [ "C"
                 , author
@@ -102,8 +110,6 @@ testToComparable test =
                 , String.fromInt (Index.toMachine zeroBased)
                 , "/"
                 , String.fromInt numAlts
-                , "/"
-                , ctorOptsToString opts
                 ]
 
         IsCons ->
@@ -111,9 +117,6 @@ testToComparable test =
 
         IsNil ->
             "nil"
-
-        IsTuple ->
-            "tup"
 
         IsInt n ->
             "I" ++ String.fromInt n
@@ -132,21 +135,6 @@ testToComparable test =
                 "Bf"
 
 
-{-| Returns the one-letter code for `opts` in an `IsCtor` key.
--}
-ctorOptsToString : Can.CtorOpts -> String
-ctorOptsToString opts =
-    case opts of
-        Can.Normal ->
-            "N"
-
-        Can.Enum ->
-            "E"
-
-        Can.Unbox ->
-            "U"
-
-
 {-| Encodes a test with its strings written inline. This is `testEncoderS`
 with `StringTable.disabled`, so it needs no table, and `testDecoder` reads
 what it writes.
@@ -163,7 +151,7 @@ testDecoder =
     testDecoderS StringTable.disabled
 
 
-{-| Encodes `test` as a tag byte, 0 to 7 in the order the constructors are
+{-| Encodes `test` as a tag byte, 0 to 6 in the order the constructors are
 declared, followed by its fields, with each string written through `st` as
 `StringTable.string` writes it.
 
@@ -196,36 +184,33 @@ testEncoderS st test =
         IsNil ->
             Bytes.Encode.unsignedInt8 2
 
-        IsTuple ->
-            Bytes.Encode.unsignedInt8 3
-
         IsInt value ->
             Bytes.Encode.sequence
-                [ Bytes.Encode.unsignedInt8 4
+                [ Bytes.Encode.unsignedInt8 3
                 , BE.int64 value
                 ]
 
         IsChr value ->
             Bytes.Encode.sequence
-                [ Bytes.Encode.unsignedInt8 5
+                [ Bytes.Encode.unsignedInt8 4
                 , StringTable.string st value
                 ]
 
         IsStr value ->
             Bytes.Encode.sequence
-                [ Bytes.Encode.unsignedInt8 6
+                [ Bytes.Encode.unsignedInt8 5
                 , StringTable.string st value
                 ]
 
         IsBool value ->
             Bytes.Encode.sequence
-                [ Bytes.Encode.unsignedInt8 7
+                [ Bytes.Encode.unsignedInt8 6
                 , BE.bool value
                 ]
 
 
 {-| Produces a decoder for a test written by `testEncoderS` with the same
-table. A tag byte above 7 makes it fail.
+table. A tag byte above 6 makes it fail.
 -}
 testDecoderS : StringTable -> Bytes.Decode.Decoder Test
 testDecoderS st =
@@ -248,18 +233,15 @@ testDecoderS st =
                         Bytes.Decode.succeed IsNil
 
                     3 ->
-                        Bytes.Decode.succeed IsTuple
-
-                    4 ->
                         Bytes.Decode.map IsInt BD.int64
 
-                    5 ->
+                    4 ->
                         Bytes.Decode.map IsChr (StringTable.stringDec st)
 
-                    6 ->
+                    5 ->
                         Bytes.Decode.map IsStr (StringTable.stringDec st)
 
-                    7 ->
+                    6 ->
                         Bytes.Decode.map IsBool BD.bool
 
                     _ ->
@@ -285,9 +267,6 @@ collectStringsFromTest test acc =
         IsNil ->
             acc
 
-        IsTuple ->
-            acc
-
         IsInt _ ->
             acc
 
@@ -299,3 +278,169 @@ collectStringsFromTest test acc =
 
         IsBool _ ->
             acc
+
+
+
+-- ====== FAN-OUT TESTS ======
+
+
+{-| The test of one edge of a fan-out. Each constructor asks what the `Test`
+constructor of the same kind asks, with the same fields: `FCtor` as `IsCtor`,
+`FInt` as `IsInt`, `FChr` as `IsChr` and `FStr` as `IsStr`.
+-}
+type FanTest
+    = FCtor ModuleName.Canonical Name.Name Index.ZeroBased Int Can.CtorOpts
+    | FInt Int
+    | FChr String
+    | FStr String
+
+
+{-| Returns the `FanTest` that asks what `test` asks, or `Nothing` for a
+`Bool` or list test, which no fan-out has.
+-}
+toFanTest : Test -> Maybe FanTest
+toFanTest test =
+    case test of
+        IsCtor home name index numAlts opts ->
+            Just (FCtor home name index numAlts opts)
+
+        IsInt value ->
+            Just (FInt value)
+
+        IsChr value ->
+            Just (FChr value)
+
+        IsStr value ->
+            Just (FStr value)
+
+        IsCons ->
+            Nothing
+
+        IsNil ->
+            Nothing
+
+        IsBool _ ->
+            Nothing
+
+
+{-| Returns the `Test` that asks what `test` asks.
+-}
+fromFanTest : FanTest -> Test
+fromFanTest test =
+    case test of
+        FCtor home name index numAlts opts ->
+            IsCtor home name index numAlts opts
+
+        FInt value ->
+            IsInt value
+
+        FChr value ->
+            IsChr value
+
+        FStr value ->
+            IsStr value
+
+
+{-| Encodes a fan-out test with its strings written inline. This is
+`fanTestEncoderS` with `StringTable.disabled`, and `fanTestDecoder` reads what
+it writes.
+-}
+fanTestEncoder : FanTest -> Bytes.Encode.Encoder
+fanTestEncoder =
+    fanTestEncoderS StringTable.disabled
+
+
+{-| A decoder for a fan-out test written by `fanTestEncoder`.
+-}
+fanTestDecoder : Bytes.Decode.Decoder FanTest
+fanTestDecoder =
+    fanTestDecoderS StringTable.disabled
+
+
+{-| Encodes `test` as a tag byte, 0 to 3 in the order the constructors are
+declared, followed by its fields, written as `testEncoderS` writes the fields
+of the `Test` of the same kind.
+-}
+fanTestEncoderS : StringTable -> FanTest -> Bytes.Encode.Encoder
+fanTestEncoderS st test =
+    case test of
+        FCtor home name index numAlts opts ->
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 0
+                , ModuleName.canonicalEncoderS st home
+                , StringTable.string st name
+                , Index.zeroBasedEncoder index
+                , BE.int numAlts
+                , Can.ctorOptsEncoder opts
+                ]
+
+        FInt value ->
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 1
+                , BE.int64 value
+                ]
+
+        FChr value ->
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 2
+                , StringTable.string st value
+                ]
+
+        FStr value ->
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 3
+                , StringTable.string st value
+                ]
+
+
+{-| Produces a decoder for a fan-out test written by `fanTestEncoderS` with the
+same table. A tag byte above 3 makes it fail.
+-}
+fanTestDecoderS : StringTable -> Bytes.Decode.Decoder FanTest
+fanTestDecoderS st =
+    Bytes.Decode.unsignedInt8
+        |> Bytes.Decode.andThen
+            (\idx ->
+                case idx of
+                    0 ->
+                        Bytes.Decode.map5 FCtor
+                            (ModuleName.canonicalDecoderS st)
+                            (StringTable.stringDec st)
+                            Index.zeroBasedDecoder
+                            BD.int
+                            Can.ctorOptsDecoder
+
+                    1 ->
+                        Bytes.Decode.map FInt BD.int64
+
+                    2 ->
+                        Bytes.Decode.map FChr (StringTable.stringDec st)
+
+                    3 ->
+                        Bytes.Decode.map FStr (StringTable.stringDec st)
+
+                    _ ->
+                        Bytes.Decode.fail
+            )
+
+
+{-| Returns the collector `acc` after giving it every string
+`fanTestEncoderS` writes for `test`: the home module and name of an `FCtor`, or
+the literal of an `FChr` or `FStr`.
+-}
+collectStringsFromFanTest : FanTest -> StringTable.Collector -> StringTable.Collector
+collectStringsFromFanTest test acc =
+    case test of
+        FCtor home name _ _ _ ->
+            acc
+                |> ModuleName.collectStringsFromCanonical home
+                |> StringTable.add name
+
+        FInt _ ->
+            acc
+
+        FChr value ->
+            StringTable.add value acc
+
+        FStr value ->
+            StringTable.add value acc

@@ -58,9 +58,7 @@ runs it.
 
 The project root is the nearest directory at or above the current directory
 holding an `elm.json`; with none the result is `Err Exit.MakeNoOutline`. A build
-whose root does not define `main` is `Err Exit.MakeNoMain`, and one with more
-than one root defining it, which a single `path` cannot give, is
-`Err Exit.MakeMultipleFilesIntoHtml`.
+whose root does not define `main` is `Err Exit.MakeNoMain`.
 
 -}
 run : String -> Flags -> Task Never (Result Exit.Make String)
@@ -79,8 +77,8 @@ run path flags =
 
 {-| Builds `path` in the project at `root` while holding the project's lock,
 loading the project details with JSON-style reporting and then generating the
-page for the single module that defines `main`, failing as `run` describes
-when there is no such module or several.
+page for its root module, failing as `run` describes when that module does not
+define `main`.
 -}
 runHelp : String -> String -> Flags -> Task Never (Result Exit.Make String)
 runHelp root path (Flags debug optimize withSourceMaps) =
@@ -102,16 +100,13 @@ runHelp root path (Flags debug optimize withSourceMaps) =
                                             buildPaths style root details (NE.Nonempty path [])
                                                 |> Task.andThen
                                                     (\artifacts ->
-                                                        case getMains artifacts of
-                                                            [] ->
+                                                        case getRootMain artifacts of
+                                                            Nothing ->
                                                                 Task.throw Exit.MakeNoMain
 
-                                                            [ name ] ->
+                                                            Just name ->
                                                                 toBuilder withSourceMaps Html.leadingLines root details desiredMode artifacts
                                                                     |> Task.map (Html.sandwich name)
-
-                                                            _ ->
-                                                                Task.throw Exit.MakeMultipleFilesIntoHtml
                                                     )
                                         )
                             )
@@ -155,14 +150,17 @@ buildPaths style root details paths =
 
 
 
--- ====== GET MAINS ======
+-- ====== GET MAIN ======
 
 
-{-| Returns the names of the root modules of `artifacts` that define `main`.
+{-| Returns the name of the root module of `artifacts` if it defines `main`.
+`runHelp` builds a single path, so the build has exactly one root.
 -}
-getMains : Build.Artifacts -> List ModuleName.Raw
-getMains (Build.Artifacts artifactsData) =
-    List.filterMap (getMain artifactsData.modules) (NE.toList artifactsData.roots)
+getRootMain : Build.Artifacts -> Maybe ModuleName.Raw
+getRootMain (Build.Artifacts artifactsData) =
+    case artifactsData.roots of
+        NE.Nonempty root _ ->
+            getMain artifactsData.modules root
 
 
 {-| Returns the name of `root` if it defines `main`. A root inside the project
@@ -178,7 +176,7 @@ getMain modules root =
             else
                 Nothing
 
-        Build.Outside name _ (Opt.LocalGraph maybeMain _ _) _ _ ->
+        Build.Outside name _ (Opt.LocalGraph maybeMain _ _) _ ->
             maybeMain
                 |> Maybe.map (\_ -> name)
 
@@ -188,7 +186,7 @@ getMain modules root =
 isMain : ModuleName.Raw -> Build.Module -> Bool
 isMain targetName modul =
     case modul of
-        Build.Fresh name _ (Opt.LocalGraph maybeMain _ _) _ _ ->
+        Build.Fresh name _ (Opt.LocalGraph maybeMain _ _) _ ->
             Maybe.isJust maybeMain && name == targetName
 
         Build.Cached name mainIsDefined _ ->

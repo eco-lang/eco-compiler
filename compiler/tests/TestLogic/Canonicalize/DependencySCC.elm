@@ -41,6 +41,7 @@ import Compiler.IR.Source as Src
 import Data.Map as DMap
 import Dict exposing (Dict)
 import Expect
+import Maybe.Extra as Maybe
 import Set exposing (Set)
 import TestLogic.TestPipeline as Pipeline
 
@@ -313,7 +314,7 @@ collectTopLevelReferences home (A.At _ exprInfo) =
             DMap.foldl (\_ e acc -> Set.union acc (go e)) Set.empty fields
 
         Can.Tuple a b rest ->
-            many (a :: b :: rest)
+            many (a :: b :: Maybe.toList rest)
 
         Can.List exprs ->
             many exprs

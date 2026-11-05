@@ -61,7 +61,7 @@ import System.Crash exposing (crash)
 `newIORefMVector`, but the constructor is exposed, so one can also be built
 from any `Int`, and nothing checks that the table holds a vector there. The
 type parameter is the type of what the reference refers to; every function
-here takes it to be `Array (Maybe (List Variable))`.
+here takes it to be `Array (List Variable)`.
 
 -}
 type IORef a
@@ -116,7 +116,7 @@ crashOutOfRange ref =
 {-| Returns an action that adds `value` at the end of the table of vectors and
 gives a reference to it.
 -}
-newIORefMVector : Array (Maybe (List Vars.Variable)) -> IO (IORef (Array (Maybe (List Vars.Variable))))
+newIORefMVector : Array (List Vars.Variable) -> IO (IORef (Array (List Vars.Variable)))
 newIORefMVector value =
     \s -> ( { s | ioRefsMVector = Array.push value s.ioRefsMVector }, IORef (Array.length s.ioRefsMVector) )
 
@@ -124,7 +124,7 @@ newIORefMVector value =
 {-| Returns an action that gives the vector the reference refers to and leaves
 the state unchanged. Crashes if the table holds no vector at that position.
 -}
-readIORefMVector : IORef (Array (Maybe (List Vars.Variable))) -> IO (Array (Maybe (List Vars.Variable)))
+readIORefMVector : IORef (Array (List Vars.Variable)) -> IO (Array (List Vars.Variable))
 readIORefMVector (IORef ref) =
     \s ->
         case Array.get ref s.ioRefsMVector of
@@ -139,7 +139,7 @@ readIORefMVector (IORef ref) =
 `value`. If the table holds no vector at that position, the table is left
 unchanged and nothing crashes.
 -}
-writeIORefMVector : IORef (Array (Maybe (List Vars.Variable))) -> Array (Maybe (List Vars.Variable)) -> IO ()
+writeIORefMVector : IORef (Array (List Vars.Variable)) -> Array (List Vars.Variable) -> IO ()
 writeIORefMVector (IORef ref) value =
     \s -> ( { s | ioRefsMVector = Array.set ref value s.ioRefsMVector }, () )
 
@@ -147,7 +147,7 @@ writeIORefMVector (IORef ref) value =
 {-| Returns an action that replaces the vector `ioRef` refers to with `func`
 applied to it. Crashes if the table holds no vector at that position.
 -}
-modifyIORefMVector : IORef (Array (Maybe (List Vars.Variable))) -> (Array (Maybe (List Vars.Variable)) -> Array (Maybe (List Vars.Variable))) -> IO ()
+modifyIORefMVector : IORef (Array (List Vars.Variable)) -> (Array (List Vars.Variable) -> Array (List Vars.Variable)) -> IO ()
 modifyIORefMVector ioRef func =
     readIORefMVector ioRef
         |> IO.andThen (\value -> writeIORefMVector ioRef (func value))

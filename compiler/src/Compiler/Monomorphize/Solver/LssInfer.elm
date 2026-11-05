@@ -2,7 +2,7 @@ module Compiler.Monomorphize.Solver.LssInfer exposing
     ( signatureFor, instantiateWithSignature
     , injectLambdaMemberQualified, injectLambdaMemberQualifiedId, injectSpineMemberId
     , injectPapSuccessors, injectPapSuccessorsFrom, papMemberKey
-    , flowArrowSetsPlain, noteApplied, declaredArityOf, kernelAliasOf
+    , noteApplied, declaredArityOf, kernelAliasOf
     , canTypeArrowDepth, canTypeMentionsArrow
     )
 
@@ -64,7 +64,7 @@ into the fact. An empty fact means only that the body added nothing visible to
 that arrow, not that no function reaches it.
 
 The module also exposes the helpers that write member ids along a type's
-arrows, the arity queries, and the directed set flow `flowArrowSetsPlain`.
+arrows and the arity queries.
 
 
 # Signatures
@@ -80,7 +80,7 @@ arrows, the arity queries, and the directed set flow `flowArrowSetsPlain`.
 
 # Flow and queries
 
-@docs flowArrowSetsPlain, noteApplied, declaredArityOf, kernelAliasOf
+@docs noteApplied, declaredArityOf, kernelAliasOf
 @docs canTypeArrowDepth, canTypeMentionsArrow
 
 -}
@@ -101,7 +101,9 @@ import Compiler.Type.State.IO as IO
 import Compiler.Type.UnionFind as UF
 import Data.HashMap as HashMap
 import Data.Map as DMap
+import Data.NonEmptyList as NE
 import Dict as CoreDict exposing (Dict)
+import Maybe.Extra as Maybe
 
 
 
@@ -114,7 +116,7 @@ whole unit on first demand.
 A `Link` node is followed first, and the member's own memoized signature is
 preferred over the target's. A global that is a cycle group's handle rather
 than a member gets a trivial placeholder. With LSS disabled the result is
-`Engine.trivialSignature 0` and nothing is memoized. Asking for a member of a
+`Engine.trivialSignature` and nothing is memoized. Asking for a member of a
 unit still being inferred aborts with an `EngineBug`.
 
 -}
@@ -130,7 +132,7 @@ signatureFor global s0 =
 
         Nothing ->
             if not s0.env.lss.enabled then
-                ( Engine.trivialSignature 0, s0 )
+                ( Engine.trivialSignature, s0 )
 
             else if HashMap.member TOpt.globalHash (==) global s0.lssInProgress then
                 Engine.crashFailure (EngineBug ("LssInfer.signatureFor re-entry on in-flight unit member: " ++ gkey))
@@ -263,19 +265,17 @@ sigSourceTypeFor global fallbackType s =
 
 
 {-| Applies `sig`'s facts to `slots`, the arrow slots of a fresh instantiation
-rooted at `funcVar`, pairing them by ordinal.
+rooted at `funcVar`, pairing them by ordinal. `sig` is not trivial
+(`instantiateWithSig` loads a trivial signature's type without slots).
 
-A trivial signature writes nothing, whatever the slot count. Otherwise, when the
-signature and the instantiation have different numbers of arrows, every arrow
-set under `funcVar` is made ⊤, and the mismatch is counted under `lss.report`.
+When the signature and the instantiation have different numbers of arrows,
+every arrow set under `funcVar` is made ⊤, and the mismatch is counted under
+`lss.report`.
 
 -}
 applyFacts : TOpt.Global -> Engine.LssSignature -> Array Vars.Variable -> Vars.Variable -> Engine.S -> Engine.S
 applyFacts global sig slots funcVar s0 =
-    if sig.trivial then
-        s0
-
-    else if Array.length sig.arrows /= Array.length slots then
+    if Array.length sig.arrows /= Array.length slots then
         Store.poisonArrowSets funcVar (censusLenGuard global (Array.length sig.arrows) (Array.length slots) s0)
 
     else
@@ -308,14 +308,13 @@ applyFactsGo facts slots i s0 =
     case ( Array.get i facts, Array.get i slots ) of
         ( Just fact, Just slot ) ->
             let
+                -- Every ordinal is in range: the signature has as many arrows as `slots`
+                -- (`applyFacts`), and `zonkSigGo` gives `rep` and `sources` only ordinals below that.
                 afterRep =
                     if fact.rep /= i then
-                        case Array.get fact.rep slots of
-                            Just repSlot ->
-                                Store.unifyStrictS (\() -> "") repSlot slot s0
-
-                            Nothing ->
-                                s0
+                        Array.get fact.rep slots
+                            |> Maybe.map (\repSlot -> Store.unifyStrictS (\() -> "") repSlot slot s0)
+                            |> Maybe.withDefault s0
 
                     else
                         s0
@@ -347,7 +346,7 @@ applyFactsGo facts slots i s0 =
 
 
 {-| Adds to `dst` a deferred inclusion edge from the slot of each ordinal in
-`ordinals`, skipping an ordinal with no slot.
+`ordinals`. Every ordinal has a slot (see `applyFactsGo`).
 -}
 installSources : List Int -> Array Vars.Variable -> Vars.Variable -> Engine.S -> Engine.S
 installSources ordinals slots dst s0 =
@@ -356,14 +355,13 @@ installSources ordinals slots dst s0 =
             s0
 
         j :: rest ->
-            case Array.get j slots of
-                Nothing ->
-                    installSources rest slots dst s0
-
-                Just srcSlot ->
-                    case Store.addSlotSource srcSlot dst s0 of
-                        s1 ->
-                            installSources rest slots dst s1
+            installSources rest
+                slots
+                dst
+                (Array.get j slots
+                    |> Maybe.map (\srcSlot -> Store.addSlotSource srcSlot dst s0)
+                    |> Maybe.withDefault s0
+                )
 
 
 
@@ -372,8 +370,8 @@ installSources ordinals slots dst s0 =
 
 {-| One definition of an inference unit: the global, the type its signature is
 read from, and the body to walk, which is `Nothing` for a node with no
-expression to walk (a constructor, enum, box, manager or kernel node, or an
-unknown global).
+expression to walk (a constructor, enum, box or manager node, or an unknown
+global).
 
 `tailArgs` is non-empty only for a tail-recursive member of a cycle. Its body
 is typed at the function's result while `sigType` is the whole function type,
@@ -425,17 +423,17 @@ inferUnit global s0 =
                                 [] ->
                                     let
                                         placeholder =
-                                            Engine.trivialSignature 0
+                                            Engine.trivialSignature
                                     in
                                     ( placeholder, { s5 | lssSignatures = HashMap.insert TOpt.globalHash (==) global placeholder s5.lssSignatures } )
 
 
-{-| Returns the members of the inference unit `global` belongs to, following
-`Link` nodes: every value and function definition of a `TOpt.Cycle`, or the one
-definition otherwise.
+{-| Returns the members of the inference unit `global` belongs to: every value
+and function definition of a `TOpt.Cycle`, or the one definition otherwise.
+`global` is never a `Link`, which `signatureFor` follows first.
 
-A constructor, enum, box, manager, kernel or unknown global becomes a member
-with no body, which contributes nothing to its signature.
+A constructor, enum, box, manager, kernel, link or unknown global becomes a
+member with no body, which contributes nothing to its signature.
 
 -}
 resolveUnit : TOpt.Global -> Engine.S -> ( List UnitMember, Engine.S )
@@ -492,13 +490,11 @@ resolveUnit ((TOpt.Global home _) as global) s0 =
                 TOpt.Box canType ->
                     ( [ memberOf global canType Nothing s0 ], s0 )
 
-                TOpt.Link target ->
-                    resolveUnit target s0
-
-                TOpt.Manager _ ->
+                TOpt.Link _ ->
+                    -- `signatureFor` follows a link before inferring, and no link targets a link.
                     ( [ memberOf global Can.TUnit Nothing s0 ], s0 )
 
-                TOpt.Kernel _ _ ->
+                TOpt.Manager ->
                     ( [ memberOf global Can.TUnit Nothing s0 ], s0 )
 
 
@@ -773,10 +769,11 @@ of every fact.
 -}
 zonkOneSignature : Maybe Int -> Array Vars.Variable -> Engine.S -> ( Engine.LssSignature, Engine.S )
 zonkOneSignature selfId slots s0 =
-    zonkSigGo selfId slots (Array.length slots) 0 [] s0
+    zonkSigGo selfId slots (Array.length slots) (Array.toIndexedList slots) [] s0
 
 
-{-| Reads back the slots from ordinal `i` onwards, then builds the signature.
+{-| Reads back the slots in `pending`, each with its ordinal, then builds the
+signature.
 
 Each fact's `rep` is the smallest ordinal whose slot is unified with this one.
 A ⊤ slot gives a ⊤ fact of the same kind with no members. A slot with members
@@ -787,107 +784,103 @@ is the default, and its `residual` pairs the `rep` of each fact that carries
 members with those members.
 
 -}
-zonkSigGo : Maybe Int -> Array Vars.Variable -> Int -> Int -> List Engine.ArrowFact -> Engine.S -> ( Engine.LssSignature, Engine.S )
-zonkSigGo selfId slots n i factsRev s0 =
-    if i >= n then
-        let
-            facts =
-                List.reverse factsRev
+zonkSigGo : Maybe Int -> Array Vars.Variable -> Int -> List ( Int, Vars.Variable ) -> List Engine.ArrowFact -> Engine.S -> ( Engine.LssSignature, Engine.S )
+zonkSigGo selfId slots n pending factsRev s0 =
+    case pending of
+        [] ->
+            let
+                facts =
+                    List.reverse factsRev
 
-            trivial =
-                List.all identity
-                    (List.indexedMap
-                        (\j f -> f.rep == j && not f.top && List.isEmpty f.members && List.isEmpty f.sources)
-                        facts
-                    )
-        in
-        let
-            -- Keyed by `rep`: unified slots are one set, so their members
-            -- belong to one key.
-            residual =
-                List.foldr
-                    (\( j, f ) acc ->
-                        if List.isEmpty f.members then
-                            acc
+                trivial =
+                    List.all identity
+                        (List.indexedMap
+                            (\j f -> f.rep == j && not f.top && List.isEmpty f.members && List.isEmpty f.sources)
+                            facts
+                        )
+            in
+            let
+                -- Keyed by `rep`: unified slots are one set, so their members
+                -- belong to one key.
+                residual =
+                    List.foldr
+                        (\( j, f ) acc ->
+                            if List.isEmpty f.members then
+                                acc
 
-                        else
-                            let
-                                key =
-                                    if f.rep == j then
-                                        j
-
-                                    else
-                                        f.rep
-                            in
-                            ( key, f.members ) :: acc
-                    )
-                    []
-                    (List.indexedMap Tuple.pair facts)
-        in
-        ( { arrows = Array.fromList facts, trivial = trivial, residual = residual }
-        , censusSignature n facts trivial s0
-        )
-
-    else
-        case Array.get i slots of
-            Nothing ->
-                Engine.crashFailure (EngineBug "zonkOneSignature: slot index out of range")
-
-            Just slot ->
-                case repOrdinal slots slot i 0 s0 of
-                    ( rep, s1 ) ->
-                        let
-                            ( store1, desc ) =
-                                UF.get slot s1.store
-
-                            s2 =
-                                { s1 | store = store1 }
-
-                            ( fact, s3 ) =
-                                case desc.content of
-                                    Vars.Structure (Vars.LambdaSet1 (Vars.LsTop tpK)) ->
-                                        ( Ok { rep = rep, members = [], top = True, topKind = tpK, sources = [] }, s2 )
-
-                                    Vars.Structure (Vars.LambdaSet1 (Vars.LsMembers ms0)) ->
-                                        let
-                                            -- Filtering keeps the ascending
-                                            -- order set writes require.
-                                            ms =
-                                                case selfId of
-                                                    Just sid ->
-                                                        List.filter (\mid -> mid /= sid) ms0
-
-                                                    Nothing ->
-                                                        ms0
-                                        in
-                                        -- A `maxSetSize` of 0 means no cap.
-                                        if s2.env.lss.maxSetSize > 0 && List.length ms > s2.env.lss.maxSetSize then
-                                            ( Ok { rep = rep, members = [], top = True, topKind = Mono.tkWiden, sources = [] }
-                                            , Engine.bumpWidenedBySigSize s2
-                                            )
+                            else
+                                let
+                                    key =
+                                        if f.rep == j then
+                                            j
 
                                         else
-                                            ( Ok { rep = rep, members = ms, top = False, topKind = Mono.tkLegacy, sources = [] }, s2 )
+                                            f.rep
+                                in
+                                ( key, f.members ) :: acc
+                        )
+                        []
+                        (List.indexedMap Tuple.pair facts)
+            in
+            ( { arrows = Array.fromList facts, trivial = trivial, residual = residual }
+            , censusSignature n facts trivial s0
+            )
 
-                                    Vars.Structure (Vars.LambdaSet1 (Vars.LsFrom ms0 srcs)) ->
-                                        ( Err ( ms0, srcs ), s2 )
+        ( i, slot ) :: rest ->
+            case repOrdinal slots slot i s0 of
+                ( rep, s1 ) ->
+                    let
+                        ( store1, desc ) =
+                            UF.get slot s1.store
 
-                                    _ ->
-                                        -- Unwritten: the body contributed nothing.
-                                        ( Ok { rep = rep, members = [], top = False, topKind = Mono.tkLegacy, sources = [] }, s2 )
-                        in
-                        case fact of
-                            Ok done ->
-                                zonkSigGo selfId slots n (i + 1) (done :: factsRev) s3
+                        s2 =
+                            { s1 | store = store1 }
 
-                            Err ( ms0, srcs ) ->
-                                case sigResolveEdges selfId slots i ms0 srcs s3 of
-                                    ( resolved, s4 ) ->
-                                        let
-                                            ( done, s5 ) =
-                                                finishSigFact rep resolved s4
-                                        in
-                                        zonkSigGo selfId slots n (i + 1) (done :: factsRev) s5
+                        ( fact, s3 ) =
+                            case desc.content of
+                                Vars.Structure (Vars.LambdaSet1 (Vars.LsTop tpK)) ->
+                                    ( Ok { rep = rep, members = [], top = True, topKind = tpK, sources = [] }, s2 )
+
+                                Vars.Structure (Vars.LambdaSet1 (Vars.LsMembers ms0)) ->
+                                    let
+                                        -- Filtering keeps the ascending
+                                        -- order set writes require.
+                                        ms =
+                                            case selfId of
+                                                Just sid ->
+                                                    List.filter (\mid -> mid /= sid) ms0
+
+                                                Nothing ->
+                                                    ms0
+                                    in
+                                    -- A `maxSetSize` of 0 means no cap.
+                                    if s2.env.lss.maxSetSize > 0 && List.length ms > s2.env.lss.maxSetSize then
+                                        ( Ok { rep = rep, members = [], top = True, topKind = Mono.tkWiden, sources = [] }
+                                        , Engine.bumpWidenedBySigSize s2
+                                        )
+
+                                    else
+                                        ( Ok { rep = rep, members = ms, top = False, topKind = Mono.tkLegacy, sources = [] }, s2 )
+
+                                Vars.Structure (Vars.LambdaSet1 (Vars.LsFrom ms0 srcs)) ->
+                                    ( Err ( ms0, srcs ), s2 )
+
+                                _ ->
+                                    -- Unwritten: the body contributed nothing.
+                                    ( Ok { rep = rep, members = [], top = False, topKind = Mono.tkLegacy, sources = [] }, s2 )
+                    in
+                    case fact of
+                        Ok done ->
+                            zonkSigGo selfId slots n rest (done :: factsRev) s3
+
+                        Err ( ms0, srcs ) ->
+                            case sigResolveEdges selfId slots i ms0 srcs s3 of
+                                ( resolved, s4 ) ->
+                                    let
+                                        ( done, s5 ) =
+                                            finishSigFact rep resolved s4
+                                    in
+                                    zonkSigGo selfId slots n rest (done :: factsRev) s5
 
 
 {-| Counts, under `lss.report`, a finished signature of `n` arrows by its number
@@ -1046,25 +1039,23 @@ looking at every ordinal, unlike `repOrdinal`, which looks only below `i`.
 -}
 ordinalOf : Array Vars.Variable -> Int -> Vars.Variable -> Engine.S -> ( Maybe Int, Engine.S )
 ordinalOf slots i node s0 =
-    ordinalOfGo slots i node 0 s0
+    ordinalOfGo i node (Array.toIndexedList slots) s0
 
 
-{-| Looks for `node` among the slots from ordinal `j` onwards, skipping `i`.
+{-| Looks for `node` among the `slots` still to see, each with its ordinal,
+skipping ordinal `i`.
 -}
-ordinalOfGo : Array Vars.Variable -> Int -> Vars.Variable -> Int -> Engine.S -> ( Maybe Int, Engine.S )
-ordinalOfGo slots i node j s0 =
-    if j >= Array.length slots then
-        ( Nothing, s0 )
+ordinalOfGo : Int -> Vars.Variable -> List ( Int, Vars.Variable ) -> Engine.S -> ( Maybe Int, Engine.S )
+ordinalOfGo i node slots s0 =
+    case slots of
+        [] ->
+            ( Nothing, s0 )
 
-    else if j == i then
-        ordinalOfGo slots i node (j + 1) s0
+        ( j, other ) :: rest ->
+            if j == i then
+                ordinalOfGo i node rest s0
 
-    else
-        case Array.get j slots of
-            Nothing ->
-                ( Nothing, s0 )
-
-            Just other ->
+            else
                 let
                     ( store1, eq ) =
                         UF.equivalent node other s0.store
@@ -1076,7 +1067,7 @@ ordinalOfGo slots i node j s0 =
                     ( Just j, s1 )
 
                 else
-                    ordinalOfGo slots i node (j + 1) s1
+                    ordinalOfGo i node rest s1
 
 
 {-| Builds the fact for a slot resolved by `sigResolveEdges`. A resolved ⊤
@@ -1099,29 +1090,33 @@ finishSigFact rep resolved s0 =
         ( { rep = rep, members = resolved.members, top = False, topKind = Mono.tkLegacy, sources = resolved.sources }, s0 )
 
 
-{-| Returns the smallest ordinal from `j` up to `i` whose slot is unified with
-`slot`, which is `i` itself when none below it is.
+{-| Returns the smallest ordinal below `i` whose slot is unified with `slot`,
+or `i` itself when there is none.
 -}
-repOrdinal : Array Vars.Variable -> Vars.Variable -> Int -> Int -> Engine.S -> ( Int, Engine.S )
-repOrdinal slots slot i j s0 =
-    if j >= i then
-        ( i, s0 )
+repOrdinal : Array Vars.Variable -> Vars.Variable -> Int -> Engine.S -> ( Int, Engine.S )
+repOrdinal slots slot i s0 =
+    repOrdinalGo slot i (List.take i (Array.toIndexedList slots)) s0
 
-    else
-        case Array.get j slots of
-            Nothing ->
-                ( i, s0 )
 
-            Just other ->
-                let
-                    ( store1, eq ) =
-                        UF.equivalent other slot s0.store
-                in
-                if eq then
-                    ( j, { s0 | store = store1 } )
+{-| Looks for `slot` among `below`, the slots below ordinal `i` still to see,
+each with its ordinal.
+-}
+repOrdinalGo : Vars.Variable -> Int -> List ( Int, Vars.Variable ) -> Engine.S -> ( Int, Engine.S )
+repOrdinalGo slot i below s0 =
+    case below of
+        [] ->
+            ( i, s0 )
 
-                else
-                    repOrdinal slots slot i (j + 1) { s0 | store = store1 }
+        ( j, other ) :: rest ->
+            let
+                ( store1, eq ) =
+                    UF.equivalent other slot s0.store
+            in
+            if eq then
+                ( j, { s0 | store = store1 } )
+
+            else
+                repOrdinalGo slot i rest { s0 | store = store1 }
 
 
 
@@ -1329,19 +1324,19 @@ walkExpr letEnv expr s0 =
                     ( WpSelf, s1 )
 
         TOpt.Record fields meta ->
-            walkLiteral letEnv "record" (CoreDict.toList fields) Nothing meta expr s0
+            walkLiteral letEnv "record" (CoreDict.toList fields) Nothing meta s0
 
         TOpt.TrackedRecord _ fields meta ->
-            walkLiteral letEnv "record" (List.map (\( ln, e ) -> ( A.toValue ln, e )) (DMap.toList fields)) Nothing meta expr s0
+            walkLiteral letEnv "record" (List.map (\( ln, e ) -> ( A.toValue ln, e )) (DMap.toList fields)) Nothing meta s0
 
         TOpt.Tuple _ a b rest meta ->
-            walkLiteral letEnv "tuple" (List.indexedMap (\i e -> ( String.fromInt i, e )) (a :: b :: rest)) Nothing meta expr s0
+            walkLiteral letEnv "tuple" (List.indexedMap (\i e -> ( String.fromInt i, e )) (a :: b :: Maybe.toList rest)) Nothing meta s0
 
         TOpt.List _ items meta ->
-            walkLiteral letEnv "list" (List.map (\e -> ( "l", e )) items) Nothing meta expr s0
+            walkLiteral letEnv "list" (List.map (\e -> ( "l", e )) items) Nothing meta s0
 
         TOpt.Update _ record fields meta ->
-            walkLiteral letEnv "update" (List.map (\( ln, e ) -> ( A.toValue ln, e )) (DMap.toList fields)) (Just record) meta expr s0
+            walkLiteral letEnv "update" (List.map (\( ln, e ) -> ( A.toValue ln, e )) (DMap.toList fields)) (Just record) meta s0
 
         _ ->
             -- Types inside one definition already share their Points
@@ -1386,52 +1381,39 @@ With LSS enabled, the literal's type is loaded and each part's value is joined
 into the part of that type it fills (`joinLiteralElems`), the updated record
 into the whole. The result is `WpHonest` when the base, if any, is honest and
 every part whose type mentions an arrow is honest, and `WpOpaque` otherwise.
-With LSS disabled only the children are walked, and the result is `WpNone`.
+The walk runs only with LSS enabled (`signatureFor`).
 
 -}
-walkLiteral : LetEnv -> String -> List ( String, TOpt.Expr TypeIds.MVarId ) -> Maybe (TOpt.Expr TypeIds.MVarId) -> TOpt.Meta TypeIds.MVarId -> TOpt.Expr TypeIds.MVarId -> Engine.S -> ( WalkPoint, Engine.S )
-walkLiteral letEnv form elems maybeBase meta expr s0 =
-    if not s0.env.lss.enabled then
-        case walkChildren letEnv (directChildren expr) s0 of
-            s1 ->
-                ( WpNone, s1 )
+walkLiteral : LetEnv -> String -> List ( String, TOpt.Expr TypeIds.MVarId ) -> Maybe (TOpt.Expr TypeIds.MVarId) -> TOpt.Meta TypeIds.MVarId -> Engine.S -> ( WalkPoint, Engine.S )
+walkLiteral letEnv form elems maybeBase meta s0 =
+    case walkMaybe letEnv maybeBase s0 of
+        ( baseWp, s1 ) ->
+            case walkKeyed letEnv elems [] s1 of
+                ( wps, s2 ) ->
+                    case Store.loadTypeS meta.tipe s2 of
+                        ( litVar, s3 ) ->
+                            case joinLiteralBase litVar baseWp s3 of
+                                s4 ->
+                                    case joinLiteralElems form litVar wps s4 of
+                                        s5 ->
+                                            let
+                                                elemHonest ( ( _, e ), wp ) =
+                                                    not (canTypeMentionsArrow (TOpt.typeOf e)) || isHonest wp
 
-    else
-        case walkMaybe letEnv maybeBase s0 of
-            ( baseWp, s1 ) ->
-                case walkKeyed letEnv elems [] s1 of
-                    ( wps, s2 ) ->
-                        case Store.loadTypeS meta.tipe s2 of
-                            ( litVar, s3 ) ->
-                                case joinLiteralBase litVar baseWp s3 of
-                                    s4 ->
-                                        case joinLiteralElems form litVar wps s4 of
-                                            s5 ->
-                                                let
-                                                    elemHonest ( ( _, e ), wp ) =
-                                                        not (canTypeMentionsArrow (TOpt.typeOf e)) || isHonest wp
+                                                -- `walkMaybe` gives a walk point exactly when there is a base.
+                                                baseHonest =
+                                                    Maybe.map isHonest baseWp |> Maybe.withDefault True
 
-                                                    baseHonest =
-                                                        case ( maybeBase, baseWp ) of
-                                                            ( Just _, Just wp ) ->
-                                                                isHonest wp
+                                                honest =
+                                                    baseHonest && List.all elemHonest (List.map2 (\e ( _, wp ) -> ( e, wp )) elems wps)
+                                            in
+                                            ( if honest then
+                                                WpHonest litVar
 
-                                                            ( Just _, Nothing ) ->
-                                                                False
-
-                                                            ( Nothing, _ ) ->
-                                                                True
-
-                                                    honest =
-                                                        baseHonest && List.all elemHonest (List.map2 (\e ( _, wp ) -> ( e, wp )) elems wps)
-                                                in
-                                                ( if honest then
-                                                    WpHonest litVar
-
-                                                  else
-                                                    WpOpaque litVar
-                                                , censusLitFacts form honest s5
-                                                )
+                                              else
+                                                WpOpaque litVar
+                                            , censusLitFacts form honest s5
+                                            )
 
 
 {-| Tells whether a walk point is `WpHonest`.
@@ -1490,22 +1472,20 @@ joinLiteralBase litVar baseWp s0 =
 
 {-| Joins each part's Point into the part of the literal's loaded type it fills:
 a record field by name, a tuple element by position, and every list element
-into the list's element type. Aliases are followed. A type of any other shape
-is left alone and, under `lss.report`, counted.
+into the list's element type. A type of any other shape is left alone and,
+under `lss.report`, counted. (The mono store holds no alias content: its
+loaders expand aliases.)
 -}
 joinLiteralElems : String -> Vars.Variable -> List ( String, WalkPoint ) -> Engine.S -> Engine.S
 joinLiteralElems form litVar wps s0 =
     case Engine.liftIO (UF.get litVar) s0 of
         ( desc, s1 ) ->
             case desc.content of
-                Vars.Alias _ _ _ real ->
-                    joinLiteralElems form real wps s1
-
                 Vars.Structure (Vars.Record1 fields _) ->
                     joinKeyedSlots (List.map (\( k, wp ) -> ( CoreDict.get k fields, wp )) wps) s1
 
                 Vars.Structure (Vars.Tuple1 a b rest) ->
-                    joinKeyedSlots (List.map2 (\slot ( _, wp ) -> ( Just slot, wp )) (a :: b :: rest) wps) s1
+                    joinKeyedSlots (List.map2 (\slot ( _, wp ) -> ( Just slot, wp )) (a :: b :: Maybe.toList rest) wps) s1
 
                 Vars.Structure (Vars.App1 _ "List" [ elem ]) ->
                     joinKeyedSlots (List.map (\( _, wp ) -> ( Just elem, wp )) wps) s1
@@ -1574,8 +1554,9 @@ hands its parent. The callee and arguments themselves are walked by the caller.
 A global or cycle member is applied through its signature (`applyCalleeAt`), a
 kernel through what `KernelSetFacts` records about it (`kernelCallBoundary`),
 and a let-bound or parameter name through its loaded type (`localCalleeJoin`).
-A `Debug` function makes the arrows of every argument and of the result ⊤. An
-enum or box constructor, or any other callee not listed, gives `WpNone`.
+A `Debug` function makes the arrows of every argument and of the result ⊤. A
+box constructor, or any other callee not listed, gives `WpNone`; an enum
+constructor takes no arguments, so it is never a callee.
 
 -}
 walkCall : LetEnv -> TOpt.Expr TypeIds.MVarId -> List (TOpt.Expr TypeIds.MVarId) -> TOpt.Meta TypeIds.MVarId -> Engine.S -> ( WalkPoint, Engine.S )
@@ -1593,14 +1574,9 @@ walkCall letEnv func args meta s0 =
         TOpt.VarDebug _ _ _ _ _ ->
             poisonCallBoundary args meta s0
 
-        TOpt.VarLocal name _ ->
-            localCalleeJoin letEnv name args meta s0
-
         TOpt.TrackedVarLocal _ name _ ->
+            -- An untracked `VarLocal` is generated code's argument or record operand, never a callee.
             localCalleeJoin letEnv name args meta s0
-
-        TOpt.VarEnum _ _ _ _ ->
-            ( WpNone, s0 )
 
         TOpt.VarBox _ _ _ ->
             -- The payload's members reach the constructed value through
@@ -1683,16 +1659,13 @@ When `g`'s declared arity is above `argCount`, the call's value is a partial
 application: its head arrow gets the `p|<g>|<argCount>` member, and each arrow
 below gets the member of the partial application with one more argument, up to
 the declared arity. The `g|` member of `g` itself is never written here, since
-it names the unapplied global. Nothing is written with LSS disabled or for a
-saturated call.
+it names the unapplied global. Nothing is written for a saturated call. The
+walk that calls it runs only with LSS enabled.
 
 -}
 injectPapMemberInfer : TOpt.Global -> Int -> Vars.Variable -> Engine.S -> ( WalkPoint, Engine.S )
 injectPapMemberInfer g argCount callVar s0 =
-    if not s0.env.lss.enabled then
-        ( WpOpaque callVar, s0 )
-
-    else if declaredArityOf g 8 s0 <= argCount then
+    if declaredArityOf g s0 <= argCount then
         ( WpOpaque callVar, s0 )
 
     else
@@ -1842,7 +1815,7 @@ localCalleeJoin letEnv name args meta s0 =
 {-| Walks `v`'s arrows one per argument, adding directed set flow from each
 argument's loaded type into the parameter, for arguments whose type mentions an
 arrow. Returns the rest of the type after the last argument, or `Nothing` when
-the type runs out of arrows or an alias leads back to a Point already passed.
+the type runs out of arrows or the walk reaches a Point already passed.
 -}
 joinCallArgs : Vars.Variable -> List (TOpt.Expr TypeIds.MVarId) -> Dict Int () -> Engine.S -> ( Maybe Vars.Variable, Engine.S )
 joinCallArgs v args seen s0 =
@@ -1865,25 +1838,20 @@ joinCallArgs v args seen s0 =
                 ( Nothing, s1 )
 
             else
-                case desc.content of
-                    Vars.Alias _ _ _ real ->
-                        joinCallArgs real args (CoreDict.insert key () seen) s1
+                case Store.arrowParts desc.content of
+                    Just ( pParam, pRest ) ->
+                        if canTypeMentionsArrow (TOpt.typeOf arg) then
+                            case Store.loadTypeS (TOpt.typeOf arg) s1 of
+                                ( argVar, s2 ) ->
+                                    case flowArrowSetsSig argVar pParam s2 of
+                                        s3 ->
+                                            joinCallArgs pRest rest (CoreDict.insert key () seen) s3
 
-                    _ ->
-                        case Store.arrowParts desc.content of
-                            Just ( pParam, pRest ) ->
-                                if canTypeMentionsArrow (TOpt.typeOf arg) then
-                                    case Store.loadTypeS (TOpt.typeOf arg) s1 of
-                                        ( argVar, s2 ) ->
-                                            case flowArrowSetsSig argVar pParam s2 of
-                                                s3 ->
-                                                    joinCallArgs pRest rest (CoreDict.insert key () seen) s3
+                        else
+                            joinCallArgs pRest rest (CoreDict.insert key () seen) s1
 
-                                else
-                                    joinCallArgs pRest rest (CoreDict.insert key () seen) s1
-
-                            Nothing ->
-                                ( Nothing, s1 )
+                    Nothing ->
+                        ( Nothing, s1 )
 
 
 {-| Applies a kernel to `args` according to what `KernelSetFacts.factFor` records
@@ -1901,11 +1869,11 @@ over-application alike.
 A `Positional` row applies only when the call supplies exactly as many
 arguments as the row has parameters; otherwise the call is poisoned as for no
 row. Each `PSFOpaque` parameter has its argument's arrows made ⊤, and a
-`PSFApplies` parameter is left alone. A `PSFOpaque` result has the call's
-arrows made ⊤ and gives `WpHonest`; any other result is left unconstrained and
-gives `WpNone`.
+`PSFApplies` parameter is left alone. The call's arrows are made ⊤, giving
+`WpHonest`.
 
-The `widenedByKernel` counter is bumped once when anything was made ⊤.
+The `widenedByKernel` counter is bumped once when anything was made ⊤, which a
+`Positional` row always does.
 
 -}
 kernelCallBoundary : Name -> Name -> Name -> TOpt.Meta TypeIds.MVarId -> List (TOpt.Expr TypeIds.MVarId) -> TOpt.Meta TypeIds.MVarId -> Engine.S -> ( WalkPoint, Engine.S )
@@ -1940,48 +1908,20 @@ kernelCallBoundary prefix home name funcMeta args meta s0 =
                 poisonCallBoundary args meta s0
 
             else
-                case kernelArgsGo plan.params args False [] s0 of
-                    ( ( argPoisoned, tunnelsRev ), s1 ) ->
+                case kernelArgsGo plan.params args s0 of
+                    s1 ->
                         case Store.loadTypeS meta.tipe s1 of
                             ( resVar, s2 ) ->
-                                let
-                                    resultStep =
-                                        case plan.result of
-                                            KernelSetFacts.PSFOpaque ->
-                                                case Store.poisonArrowSets resVar s2 of
-                                                    s3 ->
-                                                        ( True, s3 )
-
-                                            _ ->
-                                                ( False, s2 )
-                                in
-                                case resultStep of
-                                    ( resPoisoned, s3 ) ->
-                                        case joinTunnels resVar (List.reverse tunnelsRev) s3 of
-                                            s4 ->
-                                                let
-                                                    s5 =
-                                                        Engine.bumpKernelFactHit
-                                                            (if argPoisoned || resPoisoned then
-                                                                Engine.bumpWidenedByKernel s4
-
-                                                             else
-                                                                s4
-                                                            )
-                                                in
-                                                if resPoisoned then
-                                                    ( WpHonest resVar, s5 )
-
-                                                else
-                                                    ( WpNone, s5 )
+                                case Store.poisonArrowSets resVar s2 of
+                                    s3 ->
+                                        ( WpHonest resVar, Engine.bumpKernelFactHit (Engine.bumpWidenedByKernel s3) )
 
 
 {-| Applies a `Positional` row's parameter flows to the arguments in order, making
-the arrows of each `PSFOpaque` argument's loaded type ⊤. Returns whether any
-argument was made ⊤, and `tunnelsRev` unchanged, since no flow adds to it.
+the arrows of each `PSFOpaque` argument's loaded type ⊤.
 -}
-kernelArgsGo : List KernelSetFacts.ParamSetFlow -> List (TOpt.Expr TypeIds.MVarId) -> Bool -> List Vars.Variable -> Engine.S -> ( ( Bool, List Vars.Variable ), Engine.S )
-kernelArgsGo flows args poisoned tunnelsRev s0 =
+kernelArgsGo : List KernelSetFacts.ParamSetFlow -> List (TOpt.Expr TypeIds.MVarId) -> Engine.S -> Engine.S
+kernelArgsGo flows args s0 =
     case ( flows, args ) of
         ( flow :: fRest, arg :: aRest ) ->
             case flow of
@@ -1990,28 +1930,13 @@ kernelArgsGo flows args poisoned tunnelsRev s0 =
                         ( argVar, s1 ) ->
                             case Store.poisonArrowSets argVar s1 of
                                 s2 ->
-                                    kernelArgsGo fRest aRest True tunnelsRev s2
+                                    kernelArgsGo fRest aRest s2
 
                 KernelSetFacts.PSFApplies ->
-                    kernelArgsGo fRest aRest poisoned tunnelsRev s0
+                    kernelArgsGo fRest aRest s0
 
         _ ->
-            ( ( poisoned, tunnelsRev ), s0 )
-
-
-{-| Adds directed set flow from each of `vars` into the kernel call's result type
-`resVar`.
--}
-joinTunnels : Vars.Variable -> List Vars.Variable -> Engine.S -> Engine.S
-joinTunnels resVar vars s0 =
-    case vars of
-        [] ->
             s0
-
-        v :: rest ->
-            case flowArrowSetsPlain v resVar s0 of
-                s1 ->
-                    joinTunnels resVar rest s1
 
 
 {-| Makes every arrow in each argument's loaded type and in the call's loaded type
@@ -2053,69 +1978,81 @@ standaloneMember key =
     standaloneMemberWith (Engine.memberIdFor key)
 
 
-{-| Returns the number of parameters `g` is declared with, following at most
-`fuel` `Link` nodes.
+{-| Returns the number of parameters `g` is declared with, following its `Link`
+node, if it has one. No link targets a link.
 
 A constructor gives its arity, which may be 0, and a box gives 1. A definition
 whose body is a lambda gives the lambda's parameter count, and a member of a
 cycle the count of its own definition. A kernel alias gives the length of the
 outer arrow spine of the kernel's type. Every other case, including a
-definition with no parameters, an unknown global and running out of fuel,
-gives 1.
+definition with no parameters and an unknown global, gives 1.
 
 -}
-declaredArityOf : TOpt.Global -> Int -> Engine.S -> Int
-declaredArityOf ((TOpt.Global _ name) as g) fuel s =
-    declaredArityGo name g fuel s
+declaredArityOf : TOpt.Global -> Engine.S -> Int
+declaredArityOf ((TOpt.Global _ name) as g) s =
+    case HashMap.get TOpt.globalHash (==) g s.env.toptNodes of
+        Just (TOpt.Link target) ->
+            -- A cycle member links to its group's node, where its own definition is found by `name`.
+            nodeArity name (HashMap.get TOpt.globalHash (==) target s.env.toptNodes)
+
+        node ->
+            nodeArity name node
 
 
-{-| Does what `declaredArityOf` describes, with `sought` the name first asked
-for. A cycle member is a `Link` to its group's node, so the member's own
-definition is found in the group by `sought`, which is kept unchanged however
-many links are followed.
+{-| Returns the declared parameter count of a node, as `declaredArityOf`
+describes, with `sought` the name of the cycle member asked for.
 -}
-declaredArityGo : Name -> TOpt.Global -> Int -> Engine.S -> Int
-declaredArityGo sought g fuel s =
-    if fuel <= 0 then
-        1
+nodeArity : Name -> Maybe (TOpt.Node TypeIds.MVarId) -> Int
+nodeArity sought node =
+    case node of
+        Just (TOpt.Ctor _ arity _) ->
+            arity
 
-    else
-        case HashMap.get TOpt.globalHash (==) g s.env.toptNodes of
-            Just (TOpt.Ctor _ arity _) ->
-                arity
+        Just (TOpt.Box _) ->
+            1
 
-            Just (TOpt.Box _) ->
-                1
+        Just (TOpt.Define body _ _) ->
+            defineBodyArity body
 
-            Just (TOpt.Link target) ->
-                declaredArityGo sought target (fuel - 1) s
+        Just (TOpt.TrackedDefine _ body _ _) ->
+            defineBodyArity body
 
-            Just (TOpt.Define (TOpt.Function _ params _ _) _ _) ->
-                List.length params
+        Just (TOpt.Cycle _ _ funcDefs _) ->
+            cycleDefArity sought funcDefs
 
-            Just (TOpt.TrackedDefine _ (TOpt.Function _ params _ _) _ _) ->
-                List.length params
+        _ ->
+            1
 
-            Just (TOpt.Define (TOpt.TrackedFunction _ params _ _) _ _) ->
-                List.length params
 
-            Just (TOpt.TrackedDefine _ (TOpt.TrackedFunction _ params _ _) _ _) ->
-                List.length params
+{-| Returns the declared parameter count of a top-level definition's body: the
+lambda's parameter count, or for a kernel alias the kernel type's outer arrow
+spine, since a kernel alias has no lambda to count (for a definition that spine
+would also count the arrows of a returned function); 1 otherwise.
+-}
+defineBodyArity : TOpt.Expr TypeIds.MVarId -> Int
+defineBodyArity body =
+    case body of
+        TOpt.VarKernel _ _ _ _ kernelMeta ->
+            canTypeArrowSpine kernelMeta.tipe
 
-            Just (TOpt.Cycle _ _ funcDefs _) ->
-                cycleDefArity sought funcDefs
+        _ ->
+            Maybe.withDefault 1 (lambdaArity body)
 
-            -- A kernel alias has no lambda to count, so its arity is the
-            -- kernel type's outer arrow spine. For a definition that spine
-            -- would also count the arrows of a returned function.
-            Just (TOpt.Define (TOpt.VarKernel _ _ _ _ kernelMeta) _ _) ->
-                canTypeArrowSpine kernelMeta.tipe
 
-            Just (TOpt.TrackedDefine _ (TOpt.VarKernel _ _ _ _ kernelMeta) _ _) ->
-                canTypeArrowSpine kernelMeta.tipe
+{-| Returns the parameter count of a lambda, or `Nothing` for any other
+expression.
+-}
+lambdaArity : TOpt.Expr TypeIds.MVarId -> Maybe Int
+lambdaArity body =
+    case body of
+        TOpt.Function _ params _ _ ->
+            Just (List.length params)
 
-            _ ->
-                1
+        TOpt.TrackedFunction _ params _ _ ->
+            Just (List.length params)
+
+        _ ->
+            Nothing
 
 
 {-| Returns the number of arrows along a canonical type's outer spine, following
@@ -2156,15 +2093,7 @@ cycleDefArity sought funcDefs =
                             case def of
                                 TOpt.Def _ n body _ ->
                                     if n == sought then
-                                        case body of
-                                            TOpt.Function _ params _ _ ->
-                                                Just (List.length params)
-
-                                            TOpt.TrackedFunction _ params _ _ ->
-                                                Just (List.length params)
-
-                                            _ ->
-                                                Just 1
+                                        Just (Maybe.withDefault 1 (lambdaArity body))
 
                                     else
                                         Nothing
@@ -2278,7 +2207,7 @@ injectPapSuccessorsFrom g startDepth v0 s0 =
     else
         let
             arity =
-                declaredArityOf g 8 s0
+                declaredArityOf g s0
         in
         if startDepth >= arity then
             s0
@@ -2308,7 +2237,7 @@ injectPapSuccessors g v0 s0 =
     else
         let
             arity =
-                declaredArityOf g 8 s0
+                declaredArityOf g s0
         in
         if arity <= 1 then
             Engine.bumpArgFlowCensus "refspine|arity1" s0
@@ -2354,8 +2283,8 @@ mintPapSuccessorIds g d arity acc s0 =
 
 {-| Writes `mids`, shallowest first, down the result chain of `v`: the first
 goes on the arrow that is `v`'s result, the next on that arrow's result, and so
-on. Aliases are followed without using a member. The walk stops at a result
-that is not an arrow with a set slot, or at a Point it has already passed.
+on. The walk stops at a result that is not an arrow with a set slot, or at a
+Point it has already passed.
 -}
 papSuccGoC : List Int -> Dict Int () -> Vars.Variable -> Store.SetWriteCtx -> Store.SetWriteCtx
 papSuccGoC mids seen v c0 =
@@ -2386,15 +2315,12 @@ papSuccGoC mids seen v c0 =
                     Vars.Structure (Vars.FunL _ res _) ->
                         papSuccWrite mid rest seen1 res c1
 
-                    Vars.Alias _ _ _ real ->
-                        papSuccGoC mids seen1 real c1
-
                     _ ->
                         c1
 
 
-{-| Writes `mid` on `res` when it is an arrow with a set slot, following aliases,
-and continues `papSuccGoC` from it with the rest of the members.
+{-| Writes `mid` on `res` when it is an arrow with a set slot, and continues
+`papSuccGoC` from it with the rest of the members.
 -}
 papSuccWrite : Int -> List Int -> Dict Int () -> Vars.Variable -> Store.SetWriteCtx -> Store.SetWriteCtx
 papSuccWrite mid rest seen res c0 =
@@ -2422,17 +2348,14 @@ papSuccWrite mid rest seen res c0 =
                 -- it enters, and would stop at once if `res` were already in.
                 papSuccGoC rest seen res (Store.unifySlotWithSetC Nothing [ mid ] slot c1)
 
-            Vars.Alias _ _ _ real ->
-                papSuccWrite mid rest seen1 real c1
-
             _ ->
                 c1
 
 
 {-| Writes the member `mid` into the set slots of the first `arity` arrows along
 `v0`'s result chain: `v0` itself, its result, that arrow's result, and so on.
-Aliases are followed without counting an arrow, and the walk stops early at a
-result that is not an arrow with a set slot, or at a Point already passed.
+The walk stops early at a result that is not an arrow with a set slot, or at a
+Point already passed.
 
 A value applied to fewer arguments than its parameter count is, for this
 purpose, the same value, so `mid` names those arrows too. The bound matters
@@ -2485,9 +2408,6 @@ spineGoC mid remaining seen v c0 =
                 Vars.Structure (Vars.FunL _ res slot) ->
                     spineGoC mid (remaining - 1) (CoreDict.insert key () seen) res (Store.unifySlotWithSetC Nothing [ mid ] slot c1)
 
-                Vars.Alias _ _ _ real ->
-                    spineGoC mid remaining (CoreDict.insert key () seen) real c1
-
                 _ ->
                     c1
 
@@ -2522,9 +2442,8 @@ Where the two sides stop matching, because one is a type variable, they are
 arrows of different kinds, or they have different shapes, every arrow set under
 both is made ⊤ and `onPoison` is applied, and that branch is not walked
 further. An empty record against any other structure, or unit against unit,
-matches with nothing to join.
-Aliases are followed. Records join only the fields they share, then their
-extensions.
+matches with nothing to join. Records join only the fields they share, then
+their extensions. The mono store holds no alias content.
 
 -}
 joinArrowSets : (Engine.S -> Engine.S) -> Vars.Variable -> Vars.Variable -> Engine.S -> Engine.S
@@ -2558,7 +2477,7 @@ joinArrowSets onPoison a b s0 =
                     joinArrowSetsList onPoison argsA argsB s1
 
                 ( Vars.Tuple1 a1 b1 restA, Vars.Tuple1 a2 b2 restB ) ->
-                    joinArrowSetsList onPoison (a1 :: b1 :: restA) (a2 :: b2 :: restB) s1
+                    joinArrowSetsList onPoison (a1 :: b1 :: Maybe.toList restA) (a2 :: b2 :: Maybe.toList restB) s1
 
                 ( Vars.Record1 fieldsA extA, Vars.Record1 fieldsB extB ) ->
                     let
@@ -2587,12 +2506,6 @@ joinArrowSets onPoison a b s0 =
                 _ ->
                     poisonBoth onPoison a b s1
 
-        ( Vars.Alias _ _ _ realA, _ ) ->
-            joinArrowSets onPoison realA b s1
-
-        ( _, Vars.Alias _ _ _ realB ) ->
-            joinArrowSets onPoison a realB s1
-
         _ ->
             poisonBoth onPoison a b s1
 
@@ -2614,8 +2527,7 @@ Results are walked in the same direction and arguments in the opposite one,
 since the functions a caller of `dst` passes in reach `src`'s parameters. At a
 custom type, tuple or record the variance of the parts is not known, so the
 whole of that part is joined symmetrically by `joinArrowSets` instead. A
-mismatch, an alias, an empty record or unit is handled as `joinArrowSets`
-handles it.
+mismatch, an empty record or unit is handled as `joinArrowSets` handles it.
 
 -}
 flowArrowSets : (Engine.S -> Engine.S) -> Vars.Variable -> Vars.Variable -> Engine.S -> Engine.S
@@ -2665,12 +2577,6 @@ flowArrowSets onPoison src dst s0 =
 
                 _ ->
                     poisonBoth onPoison src dst s1
-
-        ( Vars.Alias _ _ _ realS, _ ) ->
-            flowArrowSets onPoison realS dst s1
-
-        ( _, Vars.Alias _ _ _ realD ) ->
-            flowArrowSets onPoison src realD s1
 
         _ ->
             poisonBoth onPoison src dst s1
@@ -2742,13 +2648,10 @@ storeMentionsArrowGo pending visited s0 =
                         storeMentionsArrowGo (args ++ rest) visited1 s1
 
                     Vars.Structure (Vars.Tuple1 a b more) ->
-                        storeMentionsArrowGo (a :: b :: more ++ rest) visited1 s1
+                        storeMentionsArrowGo (a :: b :: Maybe.toList more ++ rest) visited1 s1
 
                     Vars.Structure (Vars.Record1 fields ext) ->
                         storeMentionsArrowGo (CoreDict.values fields ++ (ext :: rest)) visited1 s1
-
-                    Vars.Alias _ _ _ real ->
-                        storeMentionsArrowGo (real :: rest) visited1 s1
 
                     _ ->
                         storeMentionsArrowGo rest visited1 s1
@@ -2760,18 +2663,6 @@ storeMentionsArrowGo pending visited s0 =
 flowArrowSetsSig : Vars.Variable -> Vars.Variable -> Engine.S -> Engine.S
 flowArrowSetsSig =
     flowArrowSets Engine.bumpWidenedByCf
-
-
-{-| Makes the functions held by the type `src` flow into the type `dst`, as a
-directed inclusion: at each pair of matching arrows, `dst`'s set comes to
-include `src`'s. Results flow in the same direction and arguments in the
-opposite one. Inside a custom type, tuple or record the parts are joined
-symmetrically, and where the two types stop matching every arrow set under both
-is made ⊤.
--}
-flowArrowSetsPlain : Vars.Variable -> Vars.Variable -> Engine.S -> Engine.S
-flowArrowSetsPlain =
-    flowArrowSets identity
 
 
 {-| Joins `maybePoint`, when there is one, into `target`, with
@@ -2883,7 +2774,7 @@ canTypeMentionsArrow t =
             False
 
         Can.TTuple a b rest ->
-            canTypeMentionsArrow a || canTypeMentionsArrow b || List.any canTypeMentionsArrow rest
+            canTypeMentionsArrow a || canTypeMentionsArrow b || Maybe.unwrap False canTypeMentionsArrow rest
 
         Can.TAlias _ _ aliasArgs (Can.Filled real) ->
             canTypeMentionsArrow real || List.any (\( _, at ) -> canTypeMentionsArrow at) aliasArgs
@@ -2893,10 +2784,9 @@ canTypeMentionsArrow t =
 
 
 {-| Binds each of `names` in `letEnv` to the argument type of the next arrow along
-`v`'s spine, following aliases. Returns the extended environment and the rest
-of the type after the last name, or `Nothing` with only the names bound so far
-when the spine runs out of arrows or an alias leads back to a Point already
-passed. The store is read, not written.
+`v`'s spine. Returns the extended environment and the rest of the type after
+the last name, or `Nothing` with only the names bound so far when the spine
+runs out of arrows or reaches a Point already passed. The store is read, not written.
 -}
 bindParamsFromSpine : List Name -> Vars.Variable -> Dict Int () -> LetEnv -> Engine.S -> ( LetEnv, Maybe Vars.Variable, Engine.S )
 bindParamsFromSpine names v seen letEnv s0 =
@@ -2919,21 +2809,16 @@ bindParamsFromSpine names v seen letEnv s0 =
                 ( letEnv, Nothing, s1 )
 
             else
-                case desc.content of
-                    Vars.Alias _ _ _ real ->
-                        bindParamsFromSpine names real (CoreDict.insert key () seen) letEnv s1
+                case Store.arrowParts desc.content of
+                    Just ( pParam, pRest ) ->
+                        bindParamsFromSpine rest
+                            pRest
+                            (CoreDict.insert key () seen)
+                            (CoreDict.insert n pParam letEnv)
+                            s1
 
-                    _ ->
-                        case Store.arrowParts desc.content of
-                            Just ( pParam, pRest ) ->
-                                bindParamsFromSpine rest
-                                    pRest
-                                    (CoreDict.insert key () seen)
-                                    (CoreDict.insert n pParam letEnv)
-                                    s1
-
-                            Nothing ->
-                                ( letEnv, Nothing, s1 )
+                    Nothing ->
+                        ( letEnv, Nothing, s1 )
 
 
 {-| Joins the branches of an `if` or `case` whose result type is `meta.tipe`
@@ -3149,7 +3034,7 @@ directChildren expr =
             []
 
         TOpt.Tuple _ a b rest _ ->
-            a :: b :: rest
+            a :: b :: Maybe.toList rest
 
         TOpt.Shader _ _ _ _ ->
             []
@@ -3173,4 +3058,4 @@ deciderExprs decider =
             deciderExprs success ++ deciderExprs failure
 
         TOpt.FanOut _ edges fallback ->
-            List.concatMap (\( _, d ) -> deciderExprs d) edges ++ deciderExprs fallback
+            List.concatMap (\( _, d ) -> deciderExprs d) (NE.toList edges) ++ deciderExprs fallback

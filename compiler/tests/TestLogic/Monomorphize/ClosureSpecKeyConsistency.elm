@@ -147,10 +147,10 @@ checkNodeAgainstKey specId global keyMonoType node =
         Mono.MonoTailFunc params body _ ->
             checkClosureParams ctx keyMonoType params (Mono.typeOf body)
 
-        Mono.MonoCtor _ _ ->
+        Mono.MonoCtor _ _ _ ->
             []
 
-        Mono.MonoEnum _ _ ->
+        Mono.MonoEnum _ _ _ _ ->
             []
 
         Mono.MonoExtern _ ->
@@ -363,7 +363,7 @@ monoTypeEq a b =
             listEq monoTypeEq aParams bParams && monoTypeEq aResult bResult
 
         ( Mono.MTuple _ aElems, Mono.MTuple _ bElems ) ->
-            listEq monoTypeEq aElems bElems
+            listEq monoTypeEq (Mono.tupleToList aElems) (Mono.tupleToList bElems)
 
         ( Mono.MRecord _ aFields, Mono.MRecord _ bFields ) ->
             dictEq monoTypeEq aFields bFields
@@ -481,7 +481,7 @@ monoTypeToString monoType =
             "List " ++ monoTypeToString elementType
 
         Mono.MTuple _ elements ->
-            "(" ++ String.join ", " (List.map monoTypeToString elements) ++ ")"
+            "(" ++ String.join ", " (List.map monoTypeToString (Mono.tupleToList elements)) ++ ")"
 
         Mono.MRecord _ fields ->
             let

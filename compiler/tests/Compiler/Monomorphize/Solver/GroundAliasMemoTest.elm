@@ -28,7 +28,7 @@ records and an open record. Three aliases are built with home `Main` of
   - `Box`, a `Holey` alias with one parameter and the body `{ unbox : param }`,
     built with a chosen parameter id and argument.
 
-The load tests drive `Store.loadTypeC` on a `Store.testLoadCtx` with lambda-set
+The load tests drive `Store.loadTypeC` on a `StoreHelpers.loadCtx` with lambda-set
 specialization on, an empty arrow memo and a fresh store.
 
 What the tests establish:
@@ -88,6 +88,7 @@ import Compiler.IR.Mono as Mono
 import Compiler.IR.Typed.TypeVars as Vars
 import Compiler.Monomorphize.Solver.Engine as Engine
 import Compiler.Monomorphize.Solver.Store as Store
+import Compiler.Monomorphize.Solver.StoreHelpers as StoreHelpers
 import Compiler.Type.UnionFind as UF
 import Data.HashMap as HashMap
 import Dict
@@ -217,29 +218,29 @@ suite =
         [ Test.describe "groundHash / groundNoArrow eligibility"
             [ Test.test "a free var, an arrow and an open record each disqualify" <|
                 \() ->
-                    [ Store.groundNoArrow (varType 1)
-                    , Store.groundNoArrow arrow
-                    , Store.groundNoArrow openRecord
-                    , Store.groundNoArrow (record [ ( "f", arrow ) ])
-                    , Store.groundNoArrow (Can.TTuple intType arrow [])
+                    [ StoreHelpers.groundNoArrow (varType 1)
+                    , StoreHelpers.groundNoArrow arrow
+                    , StoreHelpers.groundNoArrow openRecord
+                    , StoreHelpers.groundNoArrow (record [ ( "f", arrow ) ])
+                    , StoreHelpers.groundNoArrow (Can.TTuple intType arrow Nothing)
                     ]
                         |> Expect.equalLists [ False, False, False, False, False ]
             , Test.test "ground types and a ground alias are eligible" <|
                 \() ->
-                    [ Store.groundNoArrow intType
-                    , Store.groundNoArrow Can.TUnit
-                    , Store.groundNoArrow (record [ ( "a", intType ), ( "b", stringType ) ])
-                    , Store.groundNoArrow groundAlias
-                    , Store.groundNoArrow (boxOf 1 intType)
+                    [ StoreHelpers.groundNoArrow intType
+                    , StoreHelpers.groundNoArrow Can.TUnit
+                    , StoreHelpers.groundNoArrow (record [ ( "a", intType ), ( "b", stringType ) ])
+                    , StoreHelpers.groundNoArrow groundAlias
+                    , StoreHelpers.groundNoArrow (boxOf 1 intType)
                     ]
                         |> Expect.equalLists [ True, True, True, True, True ]
             , Test.test "an arrow in an alias BODY disqualifies, a var in one does not" <|
                 \() ->
-                    ( Store.groundNoArrow arrowAlias, Store.groundNoArrow (boxOf 3 intType) )
+                    ( StoreHelpers.groundNoArrow arrowAlias, StoreHelpers.groundNoArrow (boxOf 3 intType) )
                         |> Expect.equal ( False, True )
             , Test.test "a Holey alias with a VAR argument is disqualified" <|
                 \() ->
-                    Store.groundNoArrow (boxOf 1 (varType 7)) |> Expect.equal False
+                    StoreHelpers.groundNoArrow (boxOf 1 (varType 7)) |> Expect.equal False
             , Test.test "structurally equal occurrences hash equal; different ones differ" <|
                 \() ->
                     let
@@ -303,7 +304,7 @@ suite =
                 \() ->
                     let
                         c0 =
-                            Store.testLoadCtx True Dict.empty Engine.freshStore
+                            StoreHelpers.loadCtx True Dict.empty Engine.freshStore
 
                         ( _, c1 ) =
                             Store.loadTypeC Dict.empty groundAlias c0
@@ -322,7 +323,7 @@ suite =
                 \() ->
                     let
                         c0 =
-                            Store.testLoadCtx True Dict.empty Engine.freshStore
+                            StoreHelpers.loadCtx True Dict.empty Engine.freshStore
 
                         ( p1, c1 ) =
                             Store.loadTypeC Dict.empty groundAlias c0
@@ -339,7 +340,7 @@ suite =
                 \() ->
                     let
                         c0 =
-                            Store.testLoadCtx True Dict.empty Engine.freshStore
+                            StoreHelpers.loadCtx True Dict.empty Engine.freshStore
 
                         ( _, c1 ) =
                             Store.loadTypeC Dict.empty arrowAlias c0
@@ -361,7 +362,7 @@ suite =
                 \() ->
                     let
                         c0 =
-                            Store.testLoadCtx True Dict.empty Engine.freshStore
+                            StoreHelpers.loadCtx True Dict.empty Engine.freshStore
 
                         ( _, c1 ) =
                             Store.loadTypeC Dict.empty (boxOf 1 intType) c0
@@ -382,7 +383,7 @@ suite =
                 \() ->
                     let
                         c0 =
-                            Store.testLoadCtx True Dict.empty Engine.freshStore
+                            StoreHelpers.loadCtx True Dict.empty Engine.freshStore
 
                         ( _, c1 ) =
                             Store.loadTypeC Dict.empty groundAlias c0

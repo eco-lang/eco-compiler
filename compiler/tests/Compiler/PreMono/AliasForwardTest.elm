@@ -76,8 +76,7 @@ What the tests establish:
     after, and `callsRewritten` is still 1: the metrics count what the pass
     would rewrite.
 
-Among what is not tested: an over-applied kernel-alias call
-(`callsKeptKernelOver`), a call whose reference meta does not match the
+Among what is not tested: a call whose reference meta does not match the
 kernel's spine (`callsKeptKernelMeta`), an alias cycle, references inside port
 nodes, the `deps` of a node whose forwarded target is a global, `byTarget`,
 anything about the flag-off graph beyond `testValue`'s callees, and the
@@ -110,9 +109,11 @@ import Compiler.IR.Typed.Optimized as TOpt
 import Compiler.PreMono.AliasForward as AliasForward
 import Compiler.PreMono.EntryPrep as EntryPrep
 import Data.Map
+import Data.NonEmptyList as NE
 import Data.Set as EverySet
 import Dict as CoreDict
 import Expect
+import Maybe.Extra as Maybe
 import Test exposing (Test)
 import TestLogic.TestPipeline as Pipeline
 
@@ -795,7 +796,7 @@ children expr =
             Data.Map.values fields
 
         TOpt.Tuple _ a b rest _ ->
-            a :: b :: rest
+            a :: b :: Maybe.toList rest
 
         _ ->
             []
@@ -816,7 +817,7 @@ deciderChildren decider =
             deciderChildren ok ++ deciderChildren ko
 
         TOpt.FanOut _ branches fallback ->
-            List.concatMap (\( _, d ) -> deciderChildren d) branches
+            List.concatMap (\( _, d ) -> deciderChildren d) (NE.toList branches)
                 ++ deciderChildren fallback
 
 

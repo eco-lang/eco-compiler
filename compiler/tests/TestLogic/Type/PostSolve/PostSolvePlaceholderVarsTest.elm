@@ -62,6 +62,7 @@ import Data.Map
 import Data.Set as EverySet exposing (EverySet)
 import Dict
 import Expect
+import Maybe.Extra as Maybe
 import SourceIR.MainFailsCases as MainFailsCases
 import SourceIR.MonoFailsCases as MonoFailsCases
 import SourceIR.Suite.StandardTestSuites as StandardTestSuites
@@ -252,7 +253,7 @@ collectFuncPositionVars tipe =
             List.foldl
                 (\t acc -> EverySet.union acc (collectFuncPositionVars t))
                 (EverySet.union (collectFuncPositionVars a) (collectFuncPositionVars b))
-                cs
+                (Maybe.toList cs)
 
         Can.TAlias _ _ args aliasType ->
             case aliasType of
@@ -450,7 +451,7 @@ typeToString tipe =
 
         Can.TTuple a b cs ->
             "TTuple ("
-                ++ String.join ", " (List.map typeToString (a :: b :: cs))
+                ++ String.join ", " (List.map typeToString (a :: b :: Maybe.toList cs))
                 ++ ")"
 
         Can.TAlias _ name _ _ ->

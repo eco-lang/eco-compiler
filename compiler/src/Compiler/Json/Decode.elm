@@ -95,7 +95,6 @@ import Compiler.Lexer.Keyword as K
 import Compiler.Lexer.Primitives as P exposing (Col, Row)
 import Data.NonEmptyList as NE
 import Dict
-import System.Crash exposing (crash)
 
 
 
@@ -607,28 +606,20 @@ findField key pairs_ =
 -- ====== ONE OF ======
 
 
-{-| Produces a decoder that tries `decoders` in order on the same value and
-gives the result of the first that succeeds. When all fail, the problem is a
-`OneOf` holding all of theirs.
-
-Given an empty list, the decoder crashes, through `System.Crash`, when it is run.
-
+{-| Produces a decoder that tries `first` and then `rest` in order on the same
+value and gives the result of the first that succeeds. When all fail, the
+problem is a `OneOf` holding all of theirs.
 -}
-oneOf : List (Decoder x a) -> Decoder x a
-oneOf decoders =
+oneOf : Decoder x a -> List (Decoder x a) -> Decoder x a
+oneOf (Decoder decodeFirst) rest =
     Decoder <|
         \ast ->
-            case decoders of
-                (Decoder decodeA) :: decoders_ ->
-                    case decodeA ast of
-                        Ok a ->
-                            Ok a
+            case decodeFirst ast of
+                Ok a ->
+                    Ok a
 
-                        Err e ->
-                            oneOfHelp ast decoders_ [] e
-
-                [] ->
-                    crash "Ran into (Json.Decode.oneOf [])"
+                Err e ->
+                    oneOfHelp ast rest [] e
 
 
 {-| Returns the result of the first of `decoders` to succeed on `ast`, or, when

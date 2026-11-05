@@ -53,8 +53,7 @@ is rendered as a wire-format string.
 `String`, the unit type, functions, type variables, tuples of other sizes and
 most custom types.
 
-`LI64`, `LF64` and `LI32` are `Int`, `Float` and `Char`. `LI1` comes only from
-an `i1` ABI type, never from an Elm type.
+`LI64`, `LF64` and `LI32` are `Int`, `Float` and `Char`.
 
 `LTuple2` and `LTuple3` carry the kind of each element in order. `LRecord`
 carries the kind of each field in record layout order, and its field count is
@@ -72,7 +71,6 @@ type LogicalTypeDesc
     | LI64
     | LF64
     | LI32
-    | LI1
     | LTuple2 AggKind AggKind
     | LTuple3 AggKind AggKind AggKind
     | LRecord (List AggKind)
@@ -107,10 +105,10 @@ monoTypeToLogical customMaxFields ctorShapes ty =
         Mono.MChar ->
             LI32
 
-        Mono.MTuple _ [ a, b ] ->
+        Mono.MTuple _ (Mono.T2 a b) ->
             LTuple2 (kindOf a) (kindOf b)
 
-        Mono.MTuple _ [ a, b, c ] ->
+        Mono.MTuple _ (Mono.T3 a b c) ->
             LTuple3 (kindOf a) (kindOf b) (kindOf c)
 
         Mono.MRecord _ fields ->
@@ -175,7 +173,8 @@ kindOf ty =
 
 
 {-| Returns the logical type that an ABI type alone shows: a primitive for
-`i64`, `f64`, `i32` and `i1`, and `LUnknown` for any other.
+`i64`, `f64` and `i32`, and `LUnknown` for any other. An ABI type is never
+`i1` (REP\_ABI\_001: Bool is `!eco.value` at the ABI).
 -}
 mlirTypeToLogical : MlirType -> LogicalTypeDesc
 mlirTypeToLogical mlirType =
@@ -188,9 +187,6 @@ mlirTypeToLogical mlirType =
 
         I32 ->
             LI32
-
-        I1 ->
-            LI1
 
         _ ->
             LUnknown
@@ -212,9 +208,6 @@ encodeLogicalType desc =
 
         LI32 ->
             "i32"
-
-        LI1 ->
-            "i1"
 
         LTuple2 a b ->
             "tuple2:" ++ kindChar a ++ ":" ++ kindChar b
@@ -259,9 +252,8 @@ kindChar k =
             "v"
 
 
-{-| Returns `op` with the logical types of `argTypes` and `resultType` attached,
-replacing any already there. An op that is not a `func.func` is returned
-unchanged.
+{-| Returns `op`, a `func.func`, with the logical types of `argTypes` and
+`resultType` attached, replacing any already there.
 
 `ctorShapes` supplies the constructors of each custom type, and a custom type
 with more than `customMaxFields` fields is described as `"value"`.
@@ -275,11 +267,10 @@ addLogicalTypesAttr customMaxFields ctorShapes argTypes resultType op =
         op
 
 
-{-| Returns `op` with logical types attached for a function known only by its ABI
-types, replacing any already there. An `i64`, `f64`, `i32` or `i1` is described
-as that primitive and any other type as `"value"`, because an `!eco.value` does
-not show which aggregate, if any, it holds. An op that is not a `func.func` is
-returned unchanged.
+{-| Returns `op`, a `func.func`, with logical types attached for a function
+known only by its ABI types, replacing any already there. An `i64`, `f64` or
+`i32` is described as that primitive and any other type as `"value"`, because
+an `!eco.value` does not show which aggregate, if any, it holds.
 -}
 addLogicalTypesAttrUnknown : List MlirType -> MlirType -> MlirOp -> MlirOp
 addLogicalTypesAttrUnknown argMlirTypes resultMlirType op =
@@ -290,26 +281,22 @@ addLogicalTypesAttrUnknown argMlirTypes resultMlirType op =
 
 
 {-| Returns `op` with `argDescs` and `resultDesc` rendered into its two
-logical-type attributes, if it is a `func.func`, and unchanged otherwise.
+logical-type attributes. Every caller passes a `func.func`.
 -}
 addLogicalDescsAttr : List LogicalTypeDesc -> LogicalTypeDesc -> MlirOp -> MlirOp
 addLogicalDescsAttr argDescs resultDesc op =
-    if op.name == "func.func" then
-        let
-            argEntries =
-                List.map (StringAttr << encodeLogicalType) argDescs
+    let
+        argEntries =
+            List.map (StringAttr << encodeLogicalType) argDescs
 
-            resultEntries =
-                [ StringAttr (encodeLogicalType resultDesc) ]
-        in
-        { op
-            | attrs =
-                op.attrs
-                    |> Dict.insert "eco.logical_param_types"
-                        (ArrayAttr Nothing argEntries)
-                    |> Dict.insert "eco.logical_result_types"
-                        (ArrayAttr Nothing resultEntries)
-        }
-
-    else
-        op
+        resultEntries =
+            [ StringAttr (encodeLogicalType resultDesc) ]
+    in
+    { op
+        | attrs =
+            op.attrs
+                |> Dict.insert "eco.logical_param_types"
+                    (ArrayAttr Nothing argEntries)
+                |> Dict.insert "eco.logical_result_types"
+                    (ArrayAttr Nothing resultEntries)
+    }

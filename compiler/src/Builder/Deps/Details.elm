@@ -352,23 +352,17 @@ type Foreign
 
 
 {-| The interfaces and object graph of the dependencies, as the details carry
-them.
-
-`ArtifactsFresh` holds them in memory: the interfaces of every module of every
-dependency, and the dependencies' merged object graph. This module writes the
-whole of both into `d.dat`, so details read back from `d.dat` also hold
-`ArtifactsFresh`.
-
-`ArtifactsCached` says they are to be read from `o.dat` and `i.dat` instead.
-This module never makes one; only decoding a stored value can produce it.
+them: the interfaces of every module of every dependency, and the dependencies'
+merged object graph. This module writes the whole of both into `d.dat`.
 
 After a typed build the object graph is empty, because typed dependencies are
 loaded with `loadTypedObjects` instead.
 
 -}
-type Extras
-    = ArtifactsCached
-    | ArtifactsFresh Interfaces Opt.GlobalGraph
+type alias Extras =
+    { interfaces : Interfaces
+    , objects : Opt.GlobalGraph
+    }
 
 
 {-| The interfaces of every module of every dependency, keyed by canonical module
@@ -384,24 +378,12 @@ type alias Interfaces =
 -- ====== LOAD ARTIFACTS ======
 
 
-{-| Returns an MVar holding the dependencies' merged object graph. With
-`ArtifactsFresh` details it is filled at once from memory; with
-`ArtifactsCached` a forked thread fills it from `o.dat` (under `root` and
-`maybeBuildDir`), with `Nothing` when that file is missing or cannot be
-decoded.
+{-| Returns an MVar holding the dependencies' merged object graph, filled at
+once from the details. It always holds `Just` the graph.
 -}
-loadObjects : FilePath -> Maybe String -> Details -> Task Never (MVar (Maybe Opt.GlobalGraph))
-loadObjects root maybeBuildDir (Details detailsData) =
-    let
-        extras =
-            detailsData.extras
-    in
-    case extras of
-        ArtifactsFresh _ o ->
-            Utils.newMVar (Utils.maybeEncoder Opt.globalGraphEncoder) (Just o)
-
-        ArtifactsCached ->
-            fork (Utils.maybeEncoder Opt.globalGraphEncoder) (File.readBinary Opt.globalGraphDecoder (Stuff.objectsWithBuildDir root maybeBuildDir))
+loadObjects : Details -> Task Never (MVar (Maybe Opt.GlobalGraph))
+loadObjects (Details detailsData) =
+    Utils.newMVar (Utils.maybeEncoder Opt.globalGraphEncoder) (Just detailsData.extras.objects)
 
 
 {-| Returns an MVar that a forked thread fills with the typed object graph and
@@ -513,20 +495,12 @@ packageTypedArtifactsDecoder =
 -- ====== LOAD TYPE ENVIRONMENTS ======
 
 
-{-| Returns an MVar holding the interfaces of every dependency module. With
-`ArtifactsFresh` details it is filled at once from memory; with
-`ArtifactsCached` a forked thread fills it from `i.dat` (under `root` and
-`maybeBuildDir`), with `Nothing` when that file is missing or cannot be
-decoded.
+{-| Returns an MVar holding the interfaces of every dependency module, filled
+at once from the details. It always holds `Just` the interfaces.
 -}
-loadInterfaces : FilePath -> Maybe String -> Details -> Task Never (MVar (Maybe Interfaces))
-loadInterfaces root maybeBuildDir (Details detailsData) =
-    case detailsData.extras of
-        ArtifactsFresh i _ ->
-            Utils.newMVar (Utils.maybeEncoder interfacesEncoder) (Just i)
-
-        ArtifactsCached ->
-            fork (Utils.maybeEncoder interfacesEncoder) (File.readBinary interfacesDecoder (Stuff.interfacesWithBuildDir root maybeBuildDir))
+loadInterfaces : Details -> Task Never (MVar (Maybe Interfaces))
+loadInterfaces (Details detailsData) =
+    Utils.newMVar (Utils.maybeEncoder interfacesEncoder) (Just detailsData.extras.interfaces)
 
 
 
@@ -1129,7 +1103,7 @@ writeVerifiedArtifacts scope root maybeBuildDir configHash localFingerprint need
                 , buildID = 0
                 , locals = Dict.empty
                 , foreigns = foreigns
-                , extras = ArtifactsFresh ifaces objs
+                , extras = { interfaces = ifaces, objects = objs }
                 , deps = depVersions
                 , hasTypedOpt = needsTypedOpt
                 , configHash = configHash
@@ -2290,28 +2264,23 @@ compile ctx mvar status =
                         stdTraverse (Utils.readMVar resultErrorModuleDResultDecoder) (stdIntersection resultsDict deps)
                             |> Task.andThen
                                 (\depResults ->
-                                    if hasAnyError depResults then
-                                        Task.succeed (Err { name = Src.getName modul, absolutePath = "", modificationTime = File.zeroTime, source = "", error = Error.BadSyntax (Syntax.ParseError (Syntax.ModuleBadEnd 0 0)) })
+                                    case stdSequenceResult depResults of
+                                        Err _ ->
+                                            Task.succeed (Err { name = Src.getName modul, absolutePath = "", modificationTime = File.zeroTime, source = "", error = Error.BadSyntax (Syntax.ParseError (Syntax.ModuleBadEnd 0 0)) })
 
-                                    else
-                                        case stdSequenceResult depResults of
-                                            Err _ ->
-                                                -- Should not happen since we checked hasAnyError above
-                                                Task.succeed (Err { name = Src.getName modul, absolutePath = "", modificationTime = File.zeroTime, source = "", error = Error.BadSyntax (Syntax.ParseError (Syntax.ModuleBadEnd 0 0)) })
+                                        Ok results ->
+                                            let
+                                                ifaces : Dict ModuleName.Raw I.Interface
+                                                ifaces =
+                                                    stdMapMaybe getInterface results
+                                            in
+                                            if ctx.needsTypedOpt then
+                                                Compile.compileTyped ctx.pkg ifaces modul
+                                                    |> Task.andThen (handleTypedCompileResult ctx modul docsStatus)
 
-                                            Ok results ->
-                                                let
-                                                    ifaces : Dict ModuleName.Raw I.Interface
-                                                    ifaces =
-                                                        stdMapMaybe getInterface results
-                                                in
-                                                if ctx.needsTypedOpt then
-                                                    Compile.compileTyped ctx.pkg ifaces modul
-                                                        |> Task.andThen (handleTypedCompileResult ctx modul docsStatus)
-
-                                                else
-                                                    Compile.compile ctx.pkg ifaces modul
-                                                        |> Task.andThen (handleCompileResult ctx modul docsStatus)
+                                            else
+                                                Compile.compile ctx.pkg ifaces modul
+                                                    |> Task.andThen (handleCompileResult ctx modul docsStatus)
                                 )
                     )
 
@@ -2326,13 +2295,6 @@ compile ctx mvar status =
 
         SBadKernel err ->
             Task.succeed (Err err)
-
-
-{-| Returns whether any result in `dict` is an error.
--}
-hasAnyError : Dict ModuleName.Raw (Result e v) -> Bool
-hasAnyError dict =
-    Dict.foldl (\_ result acc -> acc || Result.Extra.isErr result) False dict
 
 
 {-| Returns the result of compiling a module for the JavaScript path. On an
@@ -2572,12 +2534,14 @@ endpointDecoder =
 -- ====== ENCODERS and DECODERS ======
 
 
-{-| Encodes project details in the format of `d.dat`.
+{-| Encodes project details in the format of `d.dat`, starting with
+`detailsFormatVersion`.
 -}
 detailsEncoder : Details -> Bytes.Encode.Encoder
 detailsEncoder (Details detailsData) =
     Bytes.Encode.sequence
-        [ File.timeEncoder detailsData.time
+        [ Bytes.Encode.unsignedInt8 detailsFormatVersion
+        , File.timeEncoder detailsData.time
         , validOutlineEncoder detailsData.outline
         , BE.int detailsData.buildID
         , BE.stdDict ModuleName.rawEncoder localEncoder detailsData.locals
@@ -2590,11 +2554,14 @@ detailsEncoder (Details detailsData) =
         ]
 
 
-{-| A decoder for project details in the format `detailsEncoder` writes.
+{-| A decoder for project details in the format `detailsEncoder` writes. It
+fails on details stored in another format version, so that `load` makes them
+afresh.
 -}
 detailsDecoder : Bytes.Decode.Decoder Details
 detailsDecoder =
-    File.timeDecoder
+    detailsFormatVersionDecoder
+        |> Bytes.Decode.andThen (\() -> File.timeDecoder)
         |> Bytes.Decode.andThen
             (\time ->
                 validOutlineDecoder
@@ -2641,6 +2608,31 @@ detailsDecoder =
                                                 )
                                     )
                         )
+            )
+
+
+{-| The version of the format of `d.dat`, written as its first byte. It must
+change with any change to the layout of `Details`, so that details in an older
+layout fail to decode rather than decoding into the wrong values.
+-}
+detailsFormatVersion : Int
+detailsFormatVersion =
+    1
+
+
+{-| A decoder that reads the format-version byte and fails unless it is
+`detailsFormatVersion`.
+-}
+detailsFormatVersionDecoder : Bytes.Decode.Decoder ()
+detailsFormatVersionDecoder =
+    Bytes.Decode.unsignedInt8
+        |> Bytes.Decode.andThen
+            (\v ->
+                if v == detailsFormatVersion then
+                    Bytes.Decode.succeed ()
+
+                else
+                    Bytes.Decode.fail
             )
 
 
@@ -3047,42 +3039,24 @@ foreignDecoder =
         (BD.list Pkg.nameDecoder)
 
 
-{-| Encodes the dependencies' artifacts as the details carry them; for
-`ArtifactsFresh` that is every interface and the whole object graph.
+{-| Encodes the dependencies' artifacts as the details carry them: every
+interface, then the whole object graph.
 -}
 extrasEncoder : Extras -> Bytes.Encode.Encoder
 extrasEncoder extras =
-    case extras of
-        ArtifactsCached ->
-            Bytes.Encode.unsignedInt8 0
-
-        ArtifactsFresh ifaces objs ->
-            Bytes.Encode.sequence
-                [ Bytes.Encode.unsignedInt8 1
-                , interfacesEncoder ifaces
-                , Opt.globalGraphEncoder objs
-                ]
+    Bytes.Encode.sequence
+        [ interfacesEncoder extras.interfaces
+        , Opt.globalGraphEncoder extras.objects
+        ]
 
 
 {-| A decoder for the dependencies' artifacts as `extrasEncoder` writes them.
 -}
 extrasDecoder : Bytes.Decode.Decoder Extras
 extrasDecoder =
-    Bytes.Decode.unsignedInt8
-        |> Bytes.Decode.andThen
-            (\idx ->
-                case idx of
-                    0 ->
-                        Bytes.Decode.succeed ArtifactsCached
-
-                    1 ->
-                        Bytes.Decode.map2 ArtifactsFresh
-                            interfacesDecoder
-                            Opt.globalGraphDecoder
-
-                    _ ->
-                        Bytes.Decode.fail
-            )
+    Bytes.Decode.map2 Extras
+        interfacesDecoder
+        Opt.globalGraphDecoder
 
 
 {-| Encodes a fingerprint.

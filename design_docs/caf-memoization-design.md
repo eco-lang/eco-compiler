@@ -145,7 +145,7 @@ slot — the exact `eco.shadow_roots` precedent (consumed at
 at `EcoToLLVM.cpp:527`) rewrites each tagged function (§5.2). Rationale
 against a pure-MLIR guard built from `eco.load_global` + branching: the
 dialect has no is-null test op, and thunk bodies come in two shapes (single
-`eco.return` vs `isTerminated` bodies with returns inside `eco.case`
+`eco.return` bodies
 regions, Functions.elm:431) — post-conversion all returns are uniform
 `llvm.return`s, so LLVM-dialect surgery handles every shape with no new
 ops and no Elm-side control-flow plumbing.
@@ -266,7 +266,7 @@ Correctness notes:
   no interleaving call (CGEN_067-style discipline).
 - `llvm.unreachable` / crash tails are not instrumented (no value to
   publish).
-- Both thunk body shapes (single-return and `isTerminated` multi-return)
+- The thunk body shape (a single `eco.return`)
   are handled uniformly — post-conversion returns are all `llvm.return`.
 - Ordering vs other machinery: this runs during EcoToLLVM (MLIR LLVM
   dialect), i.e. before the LLVM-IR-level `$cap` inline prepass and every
@@ -393,7 +393,7 @@ From the survey's categories (compiler self-compile workload):
 Gates (project-standard):
 
 - Unit: new `test/codegen/caf_memo_*.mlir` fixtures — guard shape, hit/miss
-  paths, `isTerminated` multi-return thunk, crash-tail thunk, GC-during-init
+  paths, crash-tail thunk, GC-during-init
   (tiny-nursery forced GC between publish and reuse, the
   `ECO_HEAP_VALIDATE` + forced-GC recipe from the List.mapN bug).
 - E2E: `cmake --build build --target full` (never `check` — .mlir must
@@ -528,7 +528,7 @@ Measurement (M3):
 
 | Risk | Mitigation |
 |---|---|
-| Guard surgery breaks an RS4GC/verifier assumption in some body shape | M0 fixtures first, incl. isTerminated + crash tails; EcoPtrIntVerify leg |
+| Guard surgery breaks an RS4GC/verifier assumption in some body shape | M0 fixtures first, incl. crash tails; EcoPtrIntVerify leg |
 | Bytecode writer chokes on module-level `eco.global` from Elm | M1 round-trip fixture before anything else lands on it |
 | Root-scan cost of thousands of mostly-null slots | measured in M3; publish-time registration follow-up ready (§12) |
 | Debug.log-count-sensitive tests in corpus | corpus gate will surface; align with JS-backend behavior (once) |

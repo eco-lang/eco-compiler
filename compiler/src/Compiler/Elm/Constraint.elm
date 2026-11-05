@@ -288,20 +288,12 @@ goodElm constraint =
 
 {-| The constraint on the Elm version that starts at, and includes,
 `Compiler.Elm.Version.elmCompiler`, the version this compiler implements, and
-runs up to, but not including, the next major version when its major number is
-above 0, or the next minor version when it is 0.
+runs up to, but not including, the next minor version, since its major number
+is 0.
 -}
 defaultElm : Constraint
 defaultElm =
-    let
-        (V.Version major _ _) =
-            V.elmCompiler
-    in
-    if major > 0 then
-        untilNextMajor V.elmCompiler
-
-    else
-        untilNextMinor V.elmCompiler
+    untilNextMinor V.elmCompiler
 
 
 

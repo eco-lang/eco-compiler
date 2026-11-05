@@ -20,14 +20,15 @@ solver variables that stand for type variables of that definition's annotation.
 The record lives in the type checker's state, as the `NodeIdState` that
 `Compiler.Type.State.IO` defines and describes, so each recording operation is an
 `IO ()` action and nothing else has to be threaded through constraint
-generation. That state carries a `recording` flag. With it off, every recording
-operation here leaves the state unchanged, so constraints can be generated
+generation. That state carries a `recording` flag. With it off,
+`recordNodeVar` and `recordSchemeBinders` leave the state unchanged and
+`recordSyntheticExprVar` is not called, so constraints can be generated
 without building a record; `emptyNodeIdState` and `erasedNodeIdState` are the
 starting states with it on and off.
 
 Recording never fails and never checks for an earlier entry: a second record
-for the same node id, or for the same definition name, replaces the first. A
-negative node id is never recorded.
+for the same node id, or for the same definition name, replaces the first.
+`recordNodeVar` ignores a negative node id.
 
 
 # Types
@@ -110,8 +111,8 @@ emptyNodeIdState =
 
 
 {-| The node-id state to start constraint generation from when no record is
-wanted: nothing recorded, and `recording` off, so `recordNodeVar`,
-`recordSyntheticExprVar` and `recordSchemeBinders` all leave it unchanged.
+wanted: nothing recorded, and `recording` off, so `recordNodeVar` and
+`recordSchemeBinders` leave it unchanged.
 -}
 erasedNodeIdState : NodeIdState
 erasedNodeIdState =
@@ -141,22 +142,19 @@ recordNodeVar id var =
 placeholder, by adding it to `syntheticExprIds`.
 
 A placeholder is a variable made only so that an expression with no variable of
-its own has one to record. Nothing is recorded when `recording` is off or `id`
-is negative.
+its own has one to record. Unlike the other recording operations it does not
+look at `recording`: its only caller makes a placeholder only when `recording`
+is on. `id` must not be negative, which holds for every canonical expression id.
 
 -}
 recordSyntheticExprVar : Int -> Vars.Variable -> IO ()
 recordSyntheticExprVar id var =
     IO.modifyNodeIds
         (\state ->
-            if state.recording && id >= 0 then
-                { state
-                    | mapping = arraySetGrowing id (Just var) state.mapping
-                    , syntheticExprIds = EverySet.insert identity id state.syntheticExprIds
-                }
-
-            else
-                state
+            { state
+                | mapping = arraySetGrowing id (Just var) state.mapping
+                , syntheticExprIds = EverySet.insert identity id state.syntheticExprIds
+            }
         )
 
 
@@ -179,7 +177,7 @@ recordSchemeBinders defName binders =
 {-| Returns `arr` with `val` at index `idx`, first lengthening it with `Nothing`
 up to `idx` when it is too short.
 
-`idx` must not be negative; the callers here check that.
+`idx` must not be negative.
 
 -}
 arraySetGrowing : Int -> Maybe a -> Array (Maybe a) -> Array (Maybe a)

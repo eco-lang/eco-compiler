@@ -52,6 +52,7 @@ import Compiler.IR.Kernel.Facts as KernelFacts
 import Compiler.IR.Mono as Mono exposing (MonoExpr(..))
 import Compiler.MonoOpt.CafHoist as CafHoist
 import Compiler.MonoOpt.CsePurity as CsePurity
+import Data.NonEmptyList as NE
 import Dict exposing (Dict)
 
 
@@ -908,7 +909,7 @@ childrenOf expr =
             inner :: List.map Tuple.second updates
 
         MonoTupleCreate _ items _ ->
-            items
+            Mono.tupleToList items
 
 
 {-| Returns the expressions held inline at the leaves of a decision tree.
@@ -926,7 +927,7 @@ deciderExprs decider =
             deciderExprs success ++ deciderExprs failure
 
         Mono.FanOut _ tests fallback ->
-            List.concatMap (\( _, d ) -> deciderExprs d) tests ++ deciderExprs fallback
+            List.concatMap (\( _, d ) -> deciderExprs d) (NE.toList tests) ++ deciderExprs fallback
 
 
 {-| Returns `acc` after applying `f` to each direct sub-expression of `expr`,
@@ -1015,7 +1016,7 @@ foldWithPaths f path acc expr =
                 (at (SStrict 0) inner acc)
 
         MonoTupleCreate _ items _ ->
-            indexed SStrict items acc
+            indexed SStrict (Mono.tupleToList items) acc
 
 
 {-| Returns `acc` after applying `f` to each expression held inline at a leaf
@@ -1060,7 +1061,7 @@ foldDeciderPaths f path depth acc decider =
                 (List.foldl
                     (\( n, ( _, d ) ) a -> foldDeciderPaths f path (depth * 2 + 3 + n) a d)
                     acc
-                    (List.indexedMap Tuple.pair tests)
+                    (List.indexedMap Tuple.pair (NE.toList tests))
                 )
                 fallback
 

@@ -120,7 +120,7 @@ term =
                                 (\initialComments ->
                                     P.oneOf E.TRecordOpen
                                         [ P.word1 '}' E.TRecordEnd
-                                            |> P.andThen (\_ -> P.addEnd start (Src.TRecord [] Nothing initialComments))
+                                            |> P.andThen (\_ -> P.addEnd start (Src.TRecord [] initialComments))
                                         , P.addLocation (Var.lower E.TRecordField)
                                             |> P.andThen
                                                 (\name ->
@@ -137,15 +137,15 @@ term =
                                                                                             chompField
                                                                                                 |> P.andThen
                                                                                                     (\( postFieldComments, field ) ->
-                                                                                                        chompRecordEnd postFieldComments [ ( ( [], preFieldComments ), field ) ]
+                                                                                                        chompRecordEnd postFieldComments []
                                                                                                             |> P.andThen
                                                                                                                 (\( trailingComments, fields ) ->
-                                                                                                                    let
-                                                                                                                        extRecord : Maybe (Src.C2 (A.Located Name))
-                                                                                                                        extRecord =
-                                                                                                                            Just ( ( initialComments, postNameComments ), name )
-                                                                                                                    in
-                                                                                                                    P.addEnd start (Src.TRecord fields extRecord trailingComments)
+                                                                                                                    P.addEnd start
+                                                                                                                        (Src.TRecordExt ( ( initialComments, postNameComments ), name )
+                                                                                                                            ( ( [], preFieldComments ), field )
+                                                                                                                            fields
+                                                                                                                            trailingComments
+                                                                                                                        )
                                                                                                                 )
                                                                                                     )
                                                                                         )
@@ -167,10 +167,10 @@ term =
                                                                                                                 )
                                                                                                         in
                                                                                                         Space.checkIndent end E.TRecordIndentEnd
-                                                                                                            |> P.andThen (\_ -> chompRecordEnd postExpressionComments [ firstField ])
+                                                                                                            |> P.andThen (\_ -> chompRecordEnd postExpressionComments [])
                                                                                                             |> P.andThen
                                                                                                                 (\( trailingComments, fields ) ->
-                                                                                                                    P.addEnd start (Src.TRecord fields Nothing trailingComments)
+                                                                                                                    P.addEnd start (Src.TRecord (firstField :: fields) trailingComments)
                                                                                                                 )
                                                                                                     )
                                                                                         )
@@ -398,12 +398,13 @@ type alias Field =
     ( Src.C1 (A.Located Name), Src.C1 Src.Type )
 
 
-{-| Produces a parser for the rest of a record type, up to and including the `}`,
-where `fields` holds the fields already read, in reverse order.
+{-| Produces a parser for the rest of a record type after its first field, up
+to and including the `}`, where `fields` holds the further fields already read,
+in reverse order.
 
 `comments` are those read after the previous field's type. Each further field
 is paired with the comments before its comma and those after it, and the
-result is the fields in source order with the comments before the `}`.
+result is the further fields in source order with the comments before the `}`.
 
 -}
 chompRecordEnd : Src.FComments -> List (Src.C2 Field) -> P.Parser E.TRecord (Src.C1 (List (Src.C2 Field)))

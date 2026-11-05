@@ -46,8 +46,10 @@ import Compiler.IR.Canonical as Can
 import Compiler.IR.Source as Src
 import Compiler.IR.Typed.Optimized as TOpt
 import Data.Map
+import Data.NonEmptyList as NE
 import Dict
 import Expect
+import Maybe.Extra as Maybe
 import TestLogic.LocalOpt.Typed.TypeEq as TypeEq
 import TestLogic.TestPipeline as Pipeline
 
@@ -224,7 +226,7 @@ collectExprFunctionTypeChecks context expr =
         TOpt.Tuple _ e1 e2 rest _ ->
             collectExprFunctionTypeChecks context e1
                 ++ collectExprFunctionTypeChecks context e2
-                ++ List.concatMap (collectExprFunctionTypeChecks context) rest
+                ++ List.concatMap (collectExprFunctionTypeChecks context) (Maybe.toList rest)
 
         _ ->
             []
@@ -245,7 +247,7 @@ inlineLeaves decider =
             inlineLeaves success ++ inlineLeaves failure
 
         TOpt.FanOut _ edges fallback ->
-            List.concatMap (\( _, d ) -> inlineLeaves d) edges ++ inlineLeaves fallback
+            List.concatMap (\( _, d ) -> inlineLeaves d) (NE.toList edges) ++ inlineLeaves fallback
 
 
 {-| Returns a failure, labelled `context` and `kind`, when `fnType` does not

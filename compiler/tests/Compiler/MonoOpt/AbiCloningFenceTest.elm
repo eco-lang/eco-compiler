@@ -244,7 +244,7 @@ statsWithFence exprs =
                                 (Mono.mList Mono.MInt)
                             )
                         ]
-                , main = Nothing
+                , main = Mono.StaticMain 0
                 , registry =
                     { nextId = 0
                     , mapping = Mono.specKeyMapEmpty

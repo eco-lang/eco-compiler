@@ -56,8 +56,6 @@ box (`indent`, `prefix`, `addSuffix`) and turn a box into text (`render`).
 import Basics.Extra exposing (flip)
 import Prelude
 import Result.Extra as Result
-import System.Crash exposing (crash)
-import Utils.Main as Utils
 
 
 {-| A piece of one line of output. It is meant to hold no line break, but
@@ -174,12 +172,12 @@ stack_ b1 b2 =
         ( line2first, line2rest ) =
             destructure b2
     in
-    case line1rest ++ line2first :: line2rest of
+    case line1rest of
         [] ->
-            crash "the list will contain at least line2first"
+            Stack line1first line2first line2rest
 
-        first :: rest ->
-            Stack line1first first rest
+        x :: xs ->
+            Stack line1first x (xs ++ line2first :: line2rest)
 
 
 {-| Returns `first` with the boxes of `rest` stacked below it, in list order.
@@ -190,20 +188,17 @@ andThen rest first =
     List.foldl (flip stack_) first rest
 
 
-{-| Stacks the boxes of a list in order, one below the next. A list of one box
-returns that box unchanged, and an empty list crashes the program.
+{-| Stacks `first` and the boxes of `rest` in order, one below the next. With
+no `rest` the result is `first` unchanged.
 -}
-stack1 : List Box -> Box
-stack1 children =
-    case children of
+stack1 : Box -> List Box -> Box
+stack1 first rest =
+    case List.reverse rest of
         [] ->
-            crash "stack1: empty structure"
-
-        [ first ] ->
             first
 
-        boxes ->
-            Utils.foldr1 stack_ boxes
+        last :: revInit ->
+            stack_ first (List.foldl stack_ last revInit)
 
 
 {-| Applies `fn` to every line of a box.
@@ -266,16 +261,22 @@ destructure b =
 
 
 {-| Returns the lines of the boxes when every one is a `SingleLine`, or the whole
-list unchanged as an error otherwise. An empty list gives `Ok []`.
+list unchanged, as its first box and the rest, as an error otherwise. An empty
+list gives `Ok []`.
 -}
-allSingles : List Box -> Result (List Box) (List Line)
+allSingles : List Box -> Result ( Box, List Box ) (List Line)
 allSingles boxes =
-    case Result.combine (List.map isLine boxes) of
-        Ok lines_ ->
-            Ok lines_
+    case boxes of
+        [] ->
+            Ok []
 
-        _ ->
-            Err boxes
+        first :: rest ->
+            case Result.combine (List.map isLine boxes) of
+                Ok lines_ ->
+                    Ok lines_
+
+                Err _ ->
+                    Err ( first, rest )
 
 
 {-| Puts `pref` before the first line of a box and the same number of spaces

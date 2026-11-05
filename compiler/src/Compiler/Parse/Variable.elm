@@ -1,6 +1,6 @@
 module Compiler.Parse.Variable exposing
     ( Upper(..)
-    , lower, upper, moduleName, foreignUpper, foreignAlpha
+    , lower, matchingLower, upper, moduleName, foreignUpper, foreignAlpha
     )
 
 {-| This module holds the parsers that read a name in Elm source. What counts
@@ -21,7 +21,8 @@ checked against them.
 Each parser is written directly as a function on the parser state, with
 positions and columns as `Compiler.Lexer.Primitives` describes them. Every
 failure is reported with `Eerr`, as having consumed nothing, except a dot in a
-module name that is not followed by an upper-case identifier, which is `Cerr`.
+module name that is not followed by an upper-case identifier, and a name that
+`matchingLower` reads but does not expect, which are `Cerr`.
 
 
 # Variable Types
@@ -31,10 +32,11 @@ module name that is not followed by an upper-case identifier, which is `Cerr`.
 
 # Parsing Variables
 
-@docs lower, upper, moduleName, foreignUpper, foreignAlpha
+@docs lower, matchingLower, upper, moduleName, foreignUpper, foreignAlpha
 
 -}
 
+import Compiler.Core.Annotation as A
 import Compiler.Core.Name as Name exposing (Name)
 import Compiler.IR.Source as Src
 import Compiler.Lexer.Identifier as Identifier
@@ -105,6 +107,27 @@ lower toError =
                     in
                     P.Cok name newState
 
+
+
+{-| Produces a parser for a lower-case name that must equal `expectedName`, as
+the name repeated after a type annotation must, returning it with the region
+where it was read.
+
+A missing name fails like `lower`, with `toRepeatError`. A different name fails
+with `toMatchError` at the start of the name, marked consumed.
+
+-}
+matchingLower : (Row -> Col -> x) -> (Name -> Row -> Col -> x) -> Name -> P.Parser x (A.Located Name)
+matchingLower toRepeatError toMatchError expectedName =
+    P.addLocation (lower toRepeatError)
+        |> P.andThen
+            (\((A.At (A.Region (A.Position row col) _) name) as located) ->
+                if name == expectedName then
+                    P.pure located
+
+                else
+                    P.Parser (\_ -> P.Cerr row col (toMatchError name))
+            )
 
 
 -- ====== MODULE NAME ======

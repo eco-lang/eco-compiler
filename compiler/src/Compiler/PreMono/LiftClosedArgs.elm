@@ -56,8 +56,10 @@ import Compiler.IR.Canonical as Can
 import Compiler.IR.Typed.Optimized as TOpt
 import Data.Graph as Graph
 import Data.Map as Dict
+import Data.NonEmptyList as NE
 import Data.Set as EverySet
 import Dict as CoreDict
+import Maybe.Extra as Maybe
 
 
 
@@ -580,9 +582,6 @@ recursiveNames (TOpt.GlobalGraph nodes _ _ _ _) =
                 TOpt.PortOutgoing _ deps _ ->
                     deps
 
-                TOpt.Kernel _ deps ->
-                    deps
-
                 _ ->
                     EverySet.empty
 
@@ -603,8 +602,8 @@ recursiveNames (TOpt.GlobalGraph nodes _ _ _ _) =
             List.foldl
                 (\scc acc ->
                     case scc of
-                        Graph.CyclicSCC keys ->
-                            List.foldl (\k a -> CoreDict.insert k () a) acc keys
+                        Graph.CyclicSCC key keys ->
+                            List.foldl (\k a -> CoreDict.insert k () a) acc (key :: keys)
 
                         Graph.AcyclicSCC _ ->
                             acc
@@ -789,7 +788,7 @@ freeDecider bound decider acc =
             freeDecider bound ko (freeDecider bound ok acc)
 
         TOpt.FanOut _ branches fallback ->
-            freeDecider bound fallback (List.foldl (\( _, d ) a -> freeDecider bound d a) acc branches)
+            freeDecider bound fallback (List.foldl (\( _, d ) a -> freeDecider bound d a) acc (NE.toList branches))
 
 
 {-| Returns `acc` with `n` added, unless `n` is in `bound`.
@@ -812,9 +811,6 @@ pathRoot path =
             n
 
         TOpt.Index _ _ inner ->
-            pathRoot inner
-
-        TOpt.ArrayIndex _ inner ->
             pathRoot inner
 
         TOpt.Field _ inner ->
@@ -876,7 +872,7 @@ children expr =
             Dict.values fields
 
         TOpt.Tuple _ a b rest _ ->
-            a :: b :: rest
+            a :: b :: Maybe.toList rest
 
         _ ->
             []
@@ -909,5 +905,5 @@ deciderChildren decider =
             deciderChildren ok ++ deciderChildren ko
 
         TOpt.FanOut _ branches fallback ->
-            List.concatMap (\( _, d ) -> deciderChildren d) branches
+            List.concatMap (\( _, d ) -> deciderChildren d) (NE.toList branches)
                 ++ deciderChildren fallback

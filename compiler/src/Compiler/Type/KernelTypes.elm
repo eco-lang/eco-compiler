@@ -94,15 +94,17 @@ hasEntry prefix home name env =
 
 {-| Records `tipe` as the type of the kernel function `name` of the kernel
 module `prefix.Kernel.home`, unless a type is already recorded for it, in which
-case `env` is returned unchanged.
+case `env` is returned unchanged. Also returns the type recorded for the kernel
+afterwards: the earlier one if there was one, and `tipe` otherwise.
 -}
-insertFirstUsage : Name -> Name -> Name -> Can.Type Name -> KernelTypeEnv -> KernelTypeEnv
+insertFirstUsage : Name -> Name -> Name -> Can.Type Name -> KernelTypeEnv -> ( Can.Type Name, KernelTypeEnv )
 insertFirstUsage prefix home name tipe env =
-    if hasEntry prefix home name env then
-        env
+    case Dict.get ( prefix, home, name ) env of
+        Just existing ->
+            ( existing, env )
 
-    else
-        Dict.insert ( prefix, home, name ) tipe env
+        Nothing ->
+            ( tipe, Dict.insert ( prefix, home, name ) tipe env )
 
 
 {-| Builds the curried function type that takes `argTypes`, in order, and

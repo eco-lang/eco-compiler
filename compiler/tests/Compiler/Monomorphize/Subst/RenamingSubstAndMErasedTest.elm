@@ -202,7 +202,7 @@ checkMakeAdderCurried =
             expectOneSpecOfLayout "makeAdder"
                 (Mono.mFunction Mono.topLegacy
                     [ Mono.MInt ]
-                    (Mono.mFunction Mono.topLegacy [ Mono.MInt ] (Mono.mTuple [ Mono.MInt, Mono.MInt ]))
+                    (Mono.mFunction Mono.topLegacy [ Mono.MInt ] (Mono.mTuple (Mono.T2 Mono.MInt Mono.MInt)))
                 )
                 graph
         )

@@ -122,8 +122,7 @@ toTypedDef exprTypes exprVars def =
 its type checker variable from `exprVars`, both found by its node id. Its
 region is kept, and its sub-expressions stay canonical.
 
-The variable is `Nothing` where `exprVars` has none. A missing type crashes,
-with a message of its own when the node id is negative.
+The variable is `Nothing` where `exprVars` has none. A missing type crashes.
 
 -}
 toTypedExpr : ExprTypes -> ExprVars -> Can.Expr -> TCan.Expr
@@ -136,11 +135,7 @@ toTypedExpr exprTypes exprVars (A.At region info) =
                     t
 
                 Nothing ->
-                    if info.id < 0 then
-                        crash "TypedCanonical.Build.toTypedExpr: placeholder ID"
-
-                    else
-                        crash ("Missing type for expr id " ++ String.fromInt info.id)
+                    crash ("Missing type for expr id " ++ String.fromInt info.id)
 
         tvar =
             Array.get info.id exprVars |> Maybe.andThen identity

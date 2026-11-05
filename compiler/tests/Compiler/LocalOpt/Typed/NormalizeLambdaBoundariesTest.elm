@@ -45,6 +45,7 @@ import Compiler.IR.Source as Src
 import Compiler.IR.Typed.Optimized as TOpt
 import Compiler.Parse.Module as M
 import Data.Map
+import Data.NonEmptyList as NE
 import Expect
 import Test exposing (Test)
 import TestLogic.TestPipeline as Pipeline
@@ -209,4 +210,4 @@ walkDecider d =
             walkDecider s ++ walkDecider f
 
         TOpt.FanOut _ edges fallback ->
-            List.concatMap (\( _, x ) -> walkDecider x) edges ++ walkDecider fallback
+            List.concatMap (\( _, x ) -> walkDecider x) (NE.toList edges) ++ walkDecider fallback

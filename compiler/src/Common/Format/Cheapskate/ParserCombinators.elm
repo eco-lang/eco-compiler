@@ -1,10 +1,9 @@
 module Common.Format.Cheapskate.ParserCombinators exposing
     ( Position(..)
-    , ParseError(..), showParseError
+    , ParseError(..)
     , ParserState(..)
     , Parser(..), parse
     , satisfy, char, anyChar, string, endOfInput
-    , notInClass
     , takeWhile, takeWhile1, takeTill, takeText
     , skip, skipWhile
     , peekChar, notAfter
@@ -40,7 +39,7 @@ fail, the error with the later position is kept, and at equal positions the two
 descriptions are joined with " or ".
 
 @docs Position
-@docs ParseError, showParseError
+@docs ParseError
 @docs ParserState
 @docs Parser, parse
 
@@ -48,11 +47,6 @@ descriptions are joined with " or ".
 # Basic Parsers
 
 @docs satisfy, char, anyChar, string, endOfInput
-
-
-# Character Classes
-
-@docs notInClass
 
 
 # Taking Input
@@ -90,8 +84,6 @@ descriptions are joined with " or ".
 @docs mzero, fail, guard
 
 -}
-
-import Set exposing (Set)
 
 
 {-| A place in the input: a line number, then a column number, both counting
@@ -131,13 +123,6 @@ made with `fail` carries the message it was given instead.
 -}
 type ParseError
     = ParseError Position String
-
-
-{-| Returns a one-line message giving the error's line, column and description.
--}
-showParseError : ParseError -> String
-showParseError (ParseError (Position ln cn) msg) =
-    "ParseError (line " ++ String.fromInt ln ++ " column " ++ String.fromInt cn ++ ") " ++ msg
 
 
 {-| The state of a parse in progress.
@@ -477,59 +462,6 @@ notAfter f =
                         else
                             return ()
             )
-
-
-{-| Returns the set of characters named by a character class specification,
-a simplified form of attoparsec's class syntax.
-
-The specification is a string of characters, in which a character, `-` and a
-second character, such as `a-z`, stand for every character from the first to
-the second inclusive, and for none if the second comes before the first. A `-`
-that does not form such a range stands for itself.
-
--}
-charClass : String -> Set Char
-charClass =
-    let
-        go : List Char -> List Char
-        go str =
-            case str of
-                a :: '-' :: b :: xs ->
-                    List.map Char.fromCode (List.range (Char.toCode a) (Char.toCode b)) ++ go xs
-
-                x :: xs ->
-                    x :: go xs
-
-                _ ->
-                    []
-    in
-    String.toList >> go >> Set.fromList
-
-
-{-| Returns `True` when `c` is in the character class `s`, written in the syntax
-`notInClass` describes. The class is built from `s` afresh on every call.
--}
-inClass : String -> Char -> Bool
-inClass s c =
-    let
-        s_ : Set Char
-        s_ =
-            charClass s
-    in
-    Set.member c s_
-
-
-{-| Returns `True` when a character is not in the character class `s`.
-
-A class is written as a string of its characters, in which a character, `-` and
-a second character, such as `a-z`, stand for every character from the first to
-the second inclusive, and for none if the second comes before the first. A `-`
-that does not form such a range stands for itself.
-
--}
-notInClass : String -> Char -> Bool
-notInClass s =
-    inClass s >> not
 
 
 {-| A parser that succeeds, consuming nothing, only when no input is left.

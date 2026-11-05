@@ -3,11 +3,11 @@ module Compiler.Core.Name exposing
     , toChars, toElmString
     , fromPtr, fromVarIndex, fromTypeVariable, fromTypeVariableScheme, fromManyNames, fromWords
     , hasDot, splitDots, sepBy
-    , isKernel, getKernel
+    , isKernel, toKernel
     , isNumberType, isComparableType, isAppendableType, isCompappendType
     , int, float, bool, char, string, maybe, result, list, array, dict, bytes, tuple, jsArray, json, task, router, cmd, sub
     , platform, virtualDom, shader, debug, debugger, bitwise, basics, utils
-    , negate, true, false, value, node, program, main_, mainModule, dollar, identity_, replValueToPrint
+    , negate, true, false, value, node, program, main_, mainModule, dollar, identity_
     )
 
 {-| Every identifier the compiler handles is a `Name`, and this module holds the
@@ -22,7 +22,7 @@ Three spelling rules matter outside this module.
 A _kernel module_ is one whose name starts with `Elm.Kernel.` or `Eco.Kernel.`
 and whose implementation is not written in Elm. The part before `.Kernel.`,
 `Elm` or `Eco`, is its _kernel prefix_. `isKernel` recognises these names and
-`getKernel` splits one into its prefix and the rest.
+`toKernel` splits one into its prefix and the rest.
 
 A type variable's constraint is written in its name. A variable whose name
 starts with `number`, `comparable`, `appendable` or `compappend` is
@@ -63,7 +63,7 @@ text, so one constant can name several things: `maybe` is both the module
 
 # Kernel Module Utilities
 
-@docs isKernel, getKernel
+@docs isKernel, toKernel
 
 
 # Type Constraint Prefixes
@@ -83,11 +83,10 @@ text, so one constant can name several things: `maybe` is both the module
 
 # Special Names
 
-@docs negate, true, false, value, node, program, main_, mainModule, dollar, identity_, replValueToPrint
+@docs negate, true, false, value, node, program, main_, mainModule, dollar, identity_
 
 -}
 
-import System.Crash exposing (crash)
 
 
 
@@ -157,27 +156,26 @@ splitDots =
 
 
 
--- ====== GET KERNEL ======
+-- ====== TO KERNEL ======
 
 
 {-| Splits the name of a kernel module into its kernel prefix, `Elm` or `Eco`, and
-the rest of the name, so `Elm.Kernel.List` gives `( "Elm", "List" )`.
+the rest of the name, so `Elm.Kernel.List` gives `Just ( "Elm", "List" )`.
 
-It crashes, with the message `AssertionFailed`, on a name that starts with
-neither `Elm.Kernel.` nor `Eco.Kernel.`; `isKernel` accepts exactly the names it
-can split.
+It gives `Nothing` for a name that starts with neither `Elm.Kernel.` nor
+`Eco.Kernel.`; `isKernel` accepts exactly the names it can split.
 
 -}
-getKernel : Name -> ( Name, Name )
-getKernel name =
+toKernel : Name -> Maybe ( Name, Name )
+toKernel name =
     if String.startsWith prefixEcoKernel name then
-        ( "Eco", String.dropLeft (String.length prefixEcoKernel) name )
+        Just ( "Eco", String.dropLeft (String.length prefixEcoKernel) name )
 
     else if String.startsWith prefixKernel name then
-        ( "Elm", String.dropLeft (String.length prefixKernel) name )
+        Just ( "Elm", String.dropLeft (String.length prefixKernel) name )
 
     else
-        crash "AssertionFailed"
+        Nothing
 
 
 
@@ -679,11 +677,3 @@ dollar =
 identity_ : Name
 identity_ =
     "identity"
-
-
-{-| The name the REPL declares an entered expression under, so that its value
-can be printed.
--}
-replValueToPrint : Name
-replValueToPrint =
-    "repl_input_value_"

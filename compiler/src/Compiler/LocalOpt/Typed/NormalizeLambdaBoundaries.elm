@@ -58,6 +58,7 @@ import Compiler.Core.Name as Name exposing (Name)
 import Compiler.IR.Canonical as Can
 import Compiler.IR.Typed.Optimized as TOpt
 import Data.Map
+import Data.NonEmptyList as NE
 import Dict exposing (Dict)
 
 
@@ -300,7 +301,7 @@ renameExpr env expr =
             TOpt.Unit meta
 
         TOpt.Tuple region a b cs meta ->
-            TOpt.Tuple region (ren a) (ren b) (List.map ren cs) meta
+            TOpt.Tuple region (ren a) (ren b) (Maybe.map ren cs) meta
 
         TOpt.Shader src attrs uniforms meta ->
             TOpt.Shader src attrs uniforms meta
@@ -355,9 +356,6 @@ renamePath env path =
         TOpt.Index idx hint sub ->
             TOpt.Index idx hint (renamePath env sub)
 
-        TOpt.ArrayIndex i sub ->
-            TOpt.ArrayIndex i (renamePath env sub)
-
         TOpt.Field fieldName sub ->
             TOpt.Field fieldName (renamePath env sub)
 
@@ -387,7 +385,7 @@ renameDecider env decider =
                 renEdge ( test, subDecider ) =
                     ( test, renameDecider env subDecider )
             in
-            TOpt.FanOut path (List.map renEdge edges) (renameDecider env fallback)
+            TOpt.FanOut path (NE.map renEdge edges) (renameDecider env fallback)
 
 
 {-| Returns `choice` with an inline branch body renamed by `env`; a jump is
@@ -593,12 +591,22 @@ normalizeExpr expr ctx =
             Tuple.mapFirst (\is -> TOpt.List region is listMeta) (normList items ctx)
 
         TOpt.Tuple region a b rest tupleMeta ->
-            case normList (a :: b :: rest) ctx of
-                ( a1 :: b1 :: rest1, ctx1 ) ->
-                    ( TOpt.Tuple region a1 b1 rest1 tupleMeta, ctx1 )
+            let
+                ( a1, ctx1 ) =
+                    norm a ctx
 
-                ( _, ctx1 ) ->
-                    ( expr, ctx1 )
+                ( b1, ctx2 ) =
+                    norm b ctx1
+
+                ( rest1, ctx3 ) =
+                    case rest of
+                        Just c ->
+                            Tuple.mapFirst Just (norm c ctx2)
+
+                        Nothing ->
+                            ( Nothing, ctx2 )
+            in
+            ( TOpt.Tuple region a1 b1 rest1 tupleMeta, ctx3 )
 
         TOpt.Record fields recMeta ->
             let
@@ -664,8 +672,17 @@ normalizeDeciderExpr decider ctx =
 
         TOpt.FanOut path options fallback ->
             let
-                ( os, ctx1 ) =
-                    mapCtx (\( t, d ) c -> Tuple.mapFirst (Tuple.pair t) (normalizeDeciderExpr d c)) options ctx
+                ( ctx1, os ) =
+                    NE.mapAccuml
+                        (\c ( t, d ) ->
+                            let
+                                ( d1, c1 ) =
+                                    normalizeDeciderExpr d c
+                            in
+                            ( c1, ( t, d1 ) )
+                        )
+                        ctx
+                        options
 
                 ( fb, ctx2 ) =
                     normalizeDeciderExpr fallback ctx1
@@ -759,16 +776,6 @@ tryNormalizeLetBoundary :
     -> Maybe ( List ( Name.Name, Can.Type Name ), TOpt.Expr Name )
 tryNormalizeLetBoundary outerParams body =
     case peelLets body [] of
-        ( defs, TOpt.Function _ innerParams innerBody _ ) ->
-            if List.isEmpty defs then
-                Nothing
-
-            else
-                Just
-                    ( outerParams ++ innerParams
-                    , rebuildLets defs innerBody
-                    )
-
         ( defs, TOpt.TrackedFunction _ innerParams innerBody _ ) ->
             if List.isEmpty defs then
                 Nothing
@@ -827,12 +834,6 @@ hoistInlineLambdaChoicesToJumps decider jumps0 =
                     case choice of
                         TOpt.Inline expr ->
                             case expr of
-                                TOpt.Function _ _ _ _ ->
-                                    ( TOpt.Leaf (TOpt.Jump nextIdx)
-                                    , nextIdx + 1
-                                    , ( nextIdx, expr ) :: accJumps
-                                    )
-
                                 TOpt.TrackedFunction _ _ _ _ ->
                                     ( TOpt.Leaf (TOpt.Jump nextIdx)
                                     , nextIdx + 1
@@ -857,20 +858,20 @@ hoistInlineLambdaChoicesToJumps decider jumps0 =
 
                 TOpt.FanOut path edges fallback ->
                     let
-                        stepEdge ( test, subDecider ) ( edgeAcc, n, js ) =
+                        stepEdge ( n, js ) ( test, subDecider ) =
                             let
                                 ( subDecider1, n1, js1 ) =
                                     step subDecider n js
                             in
-                            ( ( test, subDecider1 ) :: edgeAcc, n1, js1 )
+                            ( ( n1, js1 ), ( test, subDecider1 ) )
 
-                        ( edgesRev, next1, acc1 ) =
-                            List.foldl stepEdge ( [], nextIdx, accJumps ) edges
+                        ( ( next1, acc1 ), edges1 ) =
+                            NE.mapAccuml stepEdge ( nextIdx, accJumps ) edges
 
                         ( fallback1, next2, acc2 ) =
                             step fallback next1 acc1
                     in
-                    ( TOpt.FanOut path (List.reverse edgesRev) fallback1, next2, acc2 )
+                    ( TOpt.FanOut path edges1 fallback1, next2, acc2 )
 
         ( newDecider, _, newJumpsRev ) =
             step decider startIndex []
@@ -895,7 +896,7 @@ hasAnyInline decider =
             hasAnyInline success || hasAnyInline failure
 
         TOpt.FanOut _ edges fallback ->
-            List.any (\( _, d ) -> hasAnyInline d) edges || hasAnyInline fallback
+            List.any (\( _, d ) -> hasAnyInline d) (NE.toList edges) || hasAnyInline fallback
 
 
 {-| Removes one case boundary from `\outerParams -> body`.

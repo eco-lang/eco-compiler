@@ -86,10 +86,10 @@ The build and the compiler's test harnesses call the same functions. A harness w
 
 Validators sit between the steps. Each tests a property of the intermediate program and returns either success or a message, and both the build and the tests run them. There is no single function that composes the list; the order is the one `Builder.Generate` runs, from `buildMonoGraphFromMerged` through `monoPipelineFrom` and `runInlineSimplifyPhase`:
 
-1. `Steps.prepare`, then `Steps.preMono`, then the `checkMinted` validator;
+1. `Steps.prepareRoot`, then `Steps.preMono`, then the `checkMinted` validator;
 2. `Steps.monomorphize`, then `checkStageArity` and `checkLayout`;
 3. `Steps.inline`, then `Steps.prune`, then `checkPruned`;
-4. global optimization: `Steps.globalOptCore`, then `Steps.cse`, `Steps.dedupe` and `Steps.hoist` (`Steps.globalOpt` composes the four for the test harnesses);
+4. global optimization: `Steps.globalOptCore`, then `Steps.cse`, `Steps.dedupe` and `Steps.hoist` (`TestLogic.TestPipeline.globalOpt` composes the four for the test harnesses);
 5. `checkStageArity` again, then `checkClosureStaging`.
 
 Every step is a pure function of the settings and a graph. The stage arity check, which fails the build when a closure's parameters and captured values do not fit in one closure stage, runs twice. The first run, after monomorphization, catches specialization multiplying a closure's captured functions. Inlining and global optimization decline any rewrite that would break the limit, so a failure in the second run, after them, is a compiler bug. The closure staging check, which compares each closure's parameters with its type's first stage, runs once at the end, and only when validation is on. The test harnesses call the same steps in the same order.

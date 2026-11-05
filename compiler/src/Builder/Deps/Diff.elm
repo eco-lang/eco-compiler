@@ -523,7 +523,7 @@ toMagnitude (PackageChanges added changed removed) =
         changeMags =
             List.map moduleChangeMagnitude (Dict.values changed)
     in
-    Utils.listMaximum M.compare (addMag :: removeMag :: changeMags)
+    Utils.listMaximum M.compare addMag (removeMag :: changeMags)
 
 
 {-| Returns the magnitude of the changes to one module: MAJOR if any declaration
@@ -532,8 +532,8 @@ was removed or changed, otherwise MINOR if any was added, otherwise PATCH.
 moduleChangeMagnitude : ModuleChanges -> M.Magnitude
 moduleChangeMagnitude (ModuleChanges changes) =
     Utils.listMaximum M.compare
-        [ changeMagnitude changes.unions
-        , changeMagnitude changes.aliases
+        (changeMagnitude changes.unions)
+        [ changeMagnitude changes.aliases
         , changeMagnitude changes.values
         , changeMagnitude changes.binops
         ]

@@ -1,23 +1,22 @@
 module Compiler.Reporting.Result exposing
     ( RResult(..), RStep(..), Step(..)
-    , ok, throw, warn, run
+    , ok, throw, run
     , map, apply, andThen
     , traverse, indexedTraverse, mapTraverseWithKey
     , loop, foldM
     )
 
 {-| A compiler pass that checks a whole module should report every problem it
-finds, not only the first, and gather warnings as it goes. This module is the
-computation type such a pass is written in.
+finds, not only the first. This module is the computation type such a pass is
+written in.
 
 An `RResult info warnings error a` is a computation that is given the current
 _info_ and _warnings_ and either succeeds with a value of type `a` or fails
 with one or more errors of type `error`. The info is whatever state the
 computation's author chooses to carry from step to step; this module only
-passes it along. The warnings are passed along in the same way, and `warn`,
-the one function here that adds to them, takes them to be a list of
-`Compiler.Reporting.Warning.Warning`. No function in this module discards the
-info or warnings when a computation fails. Errors are held in a
+passes it along. The warnings slot is passed along in the same way; nothing
+adds to it, and `run` starts it as `()`. No function in this module discards
+the info or warnings when a computation fails. Errors are held in a
 `Data.OneOrMore`, so a failure always carries at least one.
 
 Whether a failure stops the computation depends on how its steps are combined.
@@ -36,10 +35,10 @@ the same way `traverse` does; `loop` stops at the first failure.
 
 # Basics
 
-`run` starts a computation with `()` as its info and no warnings, and returns
-its warnings and an ordinary `Result`.
+`run` starts a computation with `()` as its info and its warnings, and returns
+an ordinary `Result`.
 
-@docs ok, throw, warn, run
+@docs ok, throw, run
 
 
 # Combinators
@@ -59,7 +58,6 @@ its warnings and an ordinary `Result`.
 -}
 
 import Compiler.Core.Index as Index
-import Compiler.Reporting.Warning as Warning
 import Data.Map as DataMap
 import Data.OneOrMore as OneOrMore
 
@@ -93,22 +91,17 @@ type RStep info warnings error a
     | RErr info warnings (OneOrMore.OneOrMore error)
 
 
-{-| Runs a computation with `()` as its info and an empty list of warnings, and
-returns the warnings with either the value or the errors.
-
-The warnings are returned whether or not the computation failed. The list is
-reversed before it is returned; since `warn` puts each new warning at the head,
-warnings added by `warn` come out in the order they were added.
-
+{-| Runs a computation with `()` as its info and its warnings, and returns
+either the value or the errors.
 -}
-run : RResult () (List w) e a -> ( List w, Result (OneOrMore.OneOrMore e) a )
+run : RResult () () e a -> Result (OneOrMore.OneOrMore e) a
 run (RResult k) =
-    case k () [] of
-        ROk () w a ->
-            ( List.reverse w, Ok a )
+    case k () () of
+        ROk () () a ->
+            Ok a
 
-        RErr () w e ->
-            ( List.reverse w, Err e )
+        RErr () () e ->
+            Err e
 
 
 
@@ -173,20 +166,6 @@ ok a =
     RResult <|
         \i w ->
             ROk i w a
-
-
-{-| Creates a computation that adds `warning` to the warnings and succeeds with
-`()`.
-
-The warning is put at the head of the list, so while a computation runs its
-warnings are held newest first. `run` reverses them.
-
--}
-warn : Warning.Warning -> RResult i (List Warning.Warning) e ()
-warn warning =
-    RResult <|
-        \i warnings ->
-            ROk i (warning :: warnings) ()
 
 
 {-| Creates a computation that fails with `e` as its only error and leaves the

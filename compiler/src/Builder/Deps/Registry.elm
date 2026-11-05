@@ -389,7 +389,7 @@ and the time taken, which includes `callback`, is then printed to stdout.
 -}
 post : Http.Manager -> String -> D.Decoder x a -> (a -> Task Never b) -> Task Never (Result Exit.RegistryProblem b)
 post manager path decoder callback =
-    Website.route path []
+    Website.route path
         |> Task.andThen
             (\url ->
                 Time.now

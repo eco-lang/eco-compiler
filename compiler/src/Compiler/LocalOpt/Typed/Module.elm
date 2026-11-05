@@ -75,13 +75,11 @@ import Compiler.LocalOpt.Typed.Names as Names
 import Compiler.LocalOpt.Typed.NormalizeLambdaBoundaries as LambdaNorm
 import Compiler.LocalOpt.Typed.Port as Port
 import Compiler.Reporting.Result as ReportingResult
-import Compiler.Reporting.Warning as W
 import Compiler.Type.KernelTypes as KernelTypes
 import Compiler.Type.SolverRoots as SolverRoots
 import Data.Map
 import Data.Set as EverySet exposing (EverySet)
 import Dict exposing (Dict)
-import System.Crash
 
 
 
@@ -114,7 +112,7 @@ peelFunctionType n tipe =
 
 
 {-| A result of building a module's graph: a value, or the module errors that
-stopped it, with any warnings and info gathered along the way.
+stopped it, threading info and a warnings slot along the way.
 -}
 type alias MResult i w a =
     ReportingResult.RResult i w E.Error a
@@ -142,11 +140,10 @@ function's type. `allSchemeRoots` is stored in the graph unchanged.
 
 Fails with `BadCycle` when `main` is in a recursive group, `BadType` when
 `main` has a type it cannot be, and `BadFlags` when a program's flags cannot be
-decoded. Warns `MissingTypeAnnotation` for each top-level definition outside a
-recursive group that was written without an annotation.
+decoded.
 
 -}
-optimizeTyped : Annotations -> ExprTypes -> ExprVars -> KernelTypes.KernelTypeEnv -> Dict Name.Name Vars.Variable -> SolverRoots.AllSchemeRoots -> TCan.Module -> MResult i (List W.Warning) (TOpt.LocalGraph Name)
+optimizeTyped : Annotations -> ExprTypes -> ExprVars -> KernelTypes.KernelTypeEnv -> Dict Name.Name Vars.Variable -> SolverRoots.AllSchemeRoots -> TCan.Module -> MResult i w (TOpt.LocalGraph Name)
 optimizeTyped annotations exprTypes exprVars kernelEnv annotationVars allSchemeRoots (TCan.Module tData) =
     TOpt.LocalGraph
         { main = Nothing
@@ -382,15 +379,15 @@ addEffects home annotations effects ((TOpt.LocalGraph data) as graph) =
                 newNodes =
                     case manager of
                         Can.Cmd _ ->
-                            Data.Map.insert TOpt.toComparableGlobal fx (TOpt.Manager TOpt.Cmd) data.nodes
+                            Data.Map.insert TOpt.toComparableGlobal fx TOpt.Manager data.nodes
                                 |> Data.Map.insert TOpt.toComparableGlobal cmd link
 
                         Can.Sub _ ->
-                            Data.Map.insert TOpt.toComparableGlobal fx (TOpt.Manager TOpt.Sub) data.nodes
+                            Data.Map.insert TOpt.toComparableGlobal fx TOpt.Manager data.nodes
                                 |> Data.Map.insert TOpt.toComparableGlobal sub link
 
                         Can.Fx _ _ ->
-                            Data.Map.insert TOpt.toComparableGlobal fx (TOpt.Manager TOpt.Fx) data.nodes
+                            Data.Map.insert TOpt.toComparableGlobal fx TOpt.Manager data.nodes
                                 |> Data.Map.insert TOpt.toComparableGlobal sub link
                                 |> Data.Map.insert TOpt.toComparableGlobal cmd link
             in
@@ -408,12 +405,7 @@ addPort home annotations name port_ graph =
             let
                 portType : Can.Type Name
                 portType =
-                    case Dict.get name annotations of
-                        Just (Can.Forall _ t) ->
-                            t
-
-                        Nothing ->
-                            System.Crash.crash "Module.addPort: Incoming no annotation"
+                    Expr.lookupAnnotationType name annotations
 
                 ( deps, fields, decoder ) =
                     Names.run (Port.toDecoder payload)
@@ -428,12 +420,7 @@ addPort home annotations name port_ graph =
             let
                 portType : Can.Type Name
                 portType =
-                    case Dict.get name annotations of
-                        Just (Can.Forall _ t) ->
-                            t
-
-                        Nothing ->
-                            System.Crash.crash "Module.addPort: Outgoing no annotation"
+                    Expr.lookupAnnotationType name annotations
 
                 ( deps, fields, encoder ) =
                     Names.run (Port.toEncoder payload)
@@ -468,7 +455,7 @@ addToGraph name node fields (TOpt.LocalGraph data) =
 {-| Returns the graph with every declaration in `decls` added, in order, or the
 first error one of them raises.
 -}
-addDecls : ModuleName.Canonical -> Annotations -> ExprTypes -> ExprVars -> KernelTypes.KernelTypeEnv -> Dict Name.Name Vars.Variable -> TCan.Decls -> TOpt.LocalGraph Name -> MResult i (List W.Warning) (TOpt.LocalGraph Name)
+addDecls : ModuleName.Canonical -> Annotations -> ExprTypes -> ExprVars -> KernelTypes.KernelTypeEnv -> Dict Name.Name Vars.Variable -> TCan.Decls -> TOpt.LocalGraph Name -> MResult i w (TOpt.LocalGraph Name)
 addDecls home annotations exprTypes exprVars kernelEnv annotationVars decls graph =
     ReportingResult.loop (addDeclsHelp home annotations exprTypes exprVars kernelEnv annotationVars) ( decls, graph )
 
@@ -479,7 +466,7 @@ declarations still to add, or the finished graph at the end of the list.
 A recursive group containing `main` fails with `BadCycle`.
 
 -}
-addDeclsHelp : ModuleName.Canonical -> Annotations -> ExprTypes -> ExprVars -> KernelTypes.KernelTypeEnv -> Dict Name.Name Vars.Variable -> ( TCan.Decls, TOpt.LocalGraph Name ) -> MResult i (List W.Warning) (ReportingResult.Step ( TCan.Decls, TOpt.LocalGraph Name ) (TOpt.LocalGraph Name))
+addDeclsHelp : ModuleName.Canonical -> Annotations -> ExprTypes -> ExprVars -> KernelTypes.KernelTypeEnv -> Dict Name.Name Vars.Variable -> ( TCan.Decls, TOpt.LocalGraph Name ) -> MResult i w (ReportingResult.Step ( TCan.Decls, TOpt.LocalGraph Name ) (TOpt.LocalGraph Name))
 addDeclsHelp home annotations exprTypes exprVars kernelEnv annotationVars ( decls, graph ) =
     case decls of
         TCan.Declare def subDecls ->
@@ -546,21 +533,12 @@ defToName def =
 
 
 {-| Returns the graph with one non-recursive top-level definition added.
-
-A definition written without a type annotation also produces a
-`MissingTypeAnnotation` warning carrying its annotation from `annotations`.
-
 -}
-addDef : ModuleName.Canonical -> Annotations -> ExprTypes -> ExprVars -> KernelTypes.KernelTypeEnv -> Dict Name.Name Vars.Variable -> TCan.Def -> TOpt.LocalGraph Name -> MResult i (List W.Warning) (TOpt.LocalGraph Name)
+addDef : ModuleName.Canonical -> Annotations -> ExprTypes -> ExprVars -> KernelTypes.KernelTypeEnv -> Dict Name.Name Vars.Variable -> TCan.Def -> TOpt.LocalGraph Name -> MResult i w (TOpt.LocalGraph Name)
 addDef home annotations exprTypes exprVars kernelEnv annotationVars def graph =
     case def of
         TCan.Def (A.At region name) args body ->
-            let
-                (Can.Forall _ tipe) =
-                    findAnnotation name annotations
-            in
-            ReportingResult.warn (W.MissingTypeAnnotation region name tipe)
-                |> ReportingResult.andThen (\_ -> addDefHelp region annotations exprTypes exprVars kernelEnv annotationVars home name args body graph)
+            addDefHelp region annotations exprTypes exprVars kernelEnv annotationVars home name args body graph
 
         TCan.TypedDef (A.At region name) _ typedArgs body _ ->
             addDefHelp region annotations exprTypes exprVars kernelEnv annotationVars home name (List.map Tuple.first typedArgs) body graph
@@ -579,7 +557,7 @@ graph's `main` is set, and the globals that `main` needs are added to the
 dependencies of its node.
 
 -}
-addDefHelp : A.Region -> Annotations -> ExprTypes -> ExprVars -> KernelTypes.KernelTypeEnv -> Dict Name.Name Vars.Variable -> ModuleName.Canonical -> Name.Name -> List Can.Pattern -> TCan.Expr -> TOpt.LocalGraph Name -> MResult i (List W.Warning) (TOpt.LocalGraph Name)
+addDefHelp : A.Region -> Annotations -> ExprTypes -> ExprVars -> KernelTypes.KernelTypeEnv -> Dict Name.Name Vars.Variable -> ModuleName.Canonical -> Name.Name -> List Can.Pattern -> TCan.Expr -> TOpt.LocalGraph Name -> MResult i w (TOpt.LocalGraph Name)
 addDefHelp region annotations exprTypes exprVars kernelEnv annotationVars home name args body ((TOpt.LocalGraph data) as graph) =
     if name /= Name.main_ then
         ReportingResult.ok (addDefNode home annotations exprTypes exprVars kernelEnv annotationVars region name args body EverySet.empty graph)
@@ -587,7 +565,7 @@ addDefHelp region annotations exprTypes exprVars kernelEnv annotationVars home n
     else
         let
             (Can.Forall _ tipe) =
-                findAnnotation name annotations
+                Expr.findAnnotation name annotations
 
             addMain : ( EverySet String TOpt.Global, Dict Name.Name Int, TOpt.Main Name ) -> TOpt.LocalGraph Name
             addMain ( deps, fields, main ) =
@@ -622,8 +600,8 @@ addDefHelp region annotations exprTypes exprVars kernelEnv annotationVars home n
 
                 else if hm == ModuleName.platform && nm == Name.program then
                     case Effects.checkPayload flags of
-                        Ok () ->
-                            Port.toFlagsDecoder flags |> Names.map (TOpt.Dynamic message) |> Names.run |> addMain |> ReportingResult.ok
+                        Ok payload ->
+                            Port.toFlagsDecoder payload |> Names.map (TOpt.Dynamic message) |> Names.run |> addMain |> ReportingResult.ok
 
                         Err ( subType, invalidPayload ) ->
                             ReportingResult.throw (E.BadFlags region subType invalidPayload)
@@ -654,12 +632,7 @@ addDefNode home annotations exprTypes exprVars kernelEnv annotationVars region n
     let
         defType : Can.Type Name
         defType =
-            case Dict.get name annotations of
-                Just (Can.Forall _ t) ->
-                    t
-
-                Nothing ->
-                    System.Crash.crash "Module.addDefNode: no annotation"
+            Expr.lookupAnnotationType name annotations
 
         bodyTvar : Maybe Vars.Variable
         bodyTvar =
@@ -842,12 +815,7 @@ addRecDef home annotations exprTypes exprVars kernelEnv annotationVars cycle (St
             let
                 defType : Can.Type Name
                 defType =
-                    case Dict.get name annotations of
-                        Just (Can.Forall _ t) ->
-                            t
-
-                        Nothing ->
-                            System.Crash.crash "Module.addCycleDef: Def no annotation"
+                    Expr.lookupAnnotationType name annotations
             in
             case args of
                 [] ->
@@ -862,12 +830,7 @@ addRecDef home annotations exprTypes exprVars kernelEnv annotationVars cycle (St
             let
                 defType : Can.Type Name
                 defType =
-                    case Dict.get name annotations of
-                        Just (Can.Forall _ t) ->
-                            t
-
-                        Nothing ->
-                            System.Crash.crash "Module.addCycleDef: TypedDef no annotation"
+                    Expr.lookupAnnotationType name annotations
             in
             case typedArgs of
                 [] ->
@@ -881,18 +844,6 @@ addRecDef home annotations exprTypes exprVars kernelEnv annotationVars cycle (St
 
 
 -- ====== Helpers ======
-
-
-{-| Returns the annotation of `name`, and crashes the compiler when there is none.
--}
-findAnnotation : Name.Name -> Annotations -> Can.Annotation Name
-findAnnotation name annotations =
-    case Dict.get name annotations of
-        Just ann ->
-            ann
-
-        Nothing ->
-            System.Crash.crash ("findAnnotation: " ++ name ++ " not found")
 
 
 {-| Returns the field use counts of `a` and `b` added together, name by name.

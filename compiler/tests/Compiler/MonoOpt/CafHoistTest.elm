@@ -277,7 +277,7 @@ testGraph =
                 , Just (funcNode 1 "y" closedCall)
                 , Just (funcNode 2 "z" closedScalarCall)
                 ]
-        , main = Nothing
+        , main = Mono.StaticMain 0
         , registry =
             { nextId = 3
             , mapping = Mono.specKeyMapEmpty

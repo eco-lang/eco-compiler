@@ -214,7 +214,7 @@ typeFuzzer depth =
                 (Fuzz.intRange 0 300)
                 sub
                 (Fuzz.maybe nameFuzzer)
-            , Fuzz.map3 Can.TTuple sub sub (Fuzz.listOfLengthBetween 0 1 sub)
+            , Fuzz.map3 Can.TTuple sub sub (Fuzz.maybe sub)
             , Fuzz.map4
                 (\n argName body holey ->
                     Can.TAlias home
@@ -259,7 +259,7 @@ suite =
             , Test.test "re-interning over existing subtrees adds exactly one" <|
                 \_ ->
                     Expect.equal (sizeOf [ int, listOf int ] + 1)
-                        (sizeOf [ int, listOf int, Can.TTuple int (listOf int) [] ])
+                        (sizeOf [ int, listOf int, Can.TTuple int (listOf int) Nothing ])
             , Test.test "records built in opposite insertion orders merge" <|
                 \_ ->
                     let
@@ -298,7 +298,7 @@ suite =
                     distinct (Can.TType (ModuleName.Canonical ( "elm", "core" ) "M") "T" [])
                         (Can.TType (ModuleName.Canonical ( "eco", "core" ) "M") "T" [])
             , Test.test "tuple arity 2 vs 3" <|
-                \_ -> distinct (Can.TTuple int int []) (Can.TTuple int int [ int ])
+                \_ -> distinct (Can.TTuple int int Nothing) (Can.TTuple int int (Just int))
             ]
         , Test.describe "round trip"
             [ Test.test "hand-written types" <|
@@ -310,7 +310,7 @@ suite =
                             , Can.TLambda (TypeIds.SolverRoot 3) int (listOf (Can.TVar "a"))
                             , Can.TRecord (Dict.fromList [ ( "x", Can.FieldType 2 int ) ]) (Just "r")
                             , Can.TAlias home "A" [ ( "a", int ) ] (Can.Holey (Can.TVar "a"))
-                            , Can.TTuple Can.TUnit int [ int ]
+                            , Can.TTuple Can.TUnit int (Just int)
                             , int
                             ]
                     in

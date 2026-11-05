@@ -1,5 +1,5 @@
 module Compiler.PreMono.AssignMVarIds exposing
-    ( GlobalMVarState, assignIds, assignIdsToType
+    ( GlobalMVarState, assignIds
     , freshMVarId, mintLamId, mintArrowId
     )
 
@@ -43,7 +43,7 @@ ids are the same every time a given graph is processed. The returned state
 holds the supplies where the walk left them; `freshMVarId`, `mintLamId` and
 `mintArrowId` draw further ids from it that collide with none assigned here.
 
-@docs GlobalMVarState, assignIds, assignIdsToType
+@docs GlobalMVarState, assignIds
 @docs freshMVarId, mintLamId, mintArrowId
 
 -}
@@ -58,6 +58,7 @@ import Compiler.IR.Typed.Optimized as TOpt
 import Compiler.IR.Typed.TypeVars as Vars
 import Compiler.Type.SolverRoots as SolverRoots
 import Data.Map as DMap
+import Data.NonEmptyList as NE
 import Dict exposing (Dict)
 
 
@@ -119,7 +120,6 @@ type alias Ctx =
     , schemeRootsForDef : SolverRoots.SchemeRootsForDef
     , varSupers : Dict Name Vars.SuperType
     , moduleKey : String
-    , defKey : String -- the enclosing global's key; nothing reads it
     , useSolverRoots : Bool -- one ArrowId per SolverRoot, rather than one per arrow
     }
 
@@ -278,33 +278,6 @@ assignIds useSolverRoots censusOn (TOpt.GlobalGraph nodes fields annotations all
     ( TOpt.GlobalGraph newNodes fields newAnnotations DMap.empty Dict.empty
     , { state2 | rootEnv = Dict.empty, arrowRootEnv = Dict.empty }
     )
-
-
-{-| Returns `canType` with ids assigned as for one annotation, and the state
-the supplies ended in.
-
-There are no solver roots here, so every arrow gets a fresh `ArrowId`, and each
-variable's super-type is taken from its name by `TOpt.varSupersOfType`.
-
--}
-assignIdsToType : Can.Type Name -> ( Can.Type TypeIds.MVarId, GlobalMVarState )
-assignIdsToType canType =
-    let
-        ctx =
-            { env = Dict.empty
-            , state = { nextId = TypeIds.firstMVarId, superVars = Dict.empty, rootEnv = Dict.empty, nextLam = TypeIds.firstSrcLambdaId, lamLabels = Dict.empty, nextArrow = TypeIds.firstArrowId, arrowRootEnv = Dict.empty, stampCensusOn = False, arrowsStamped = 0, typesAll = 0, typesNone = 0, typesPartial = 0, arrowsInNone = 0, arrowsUnstampedInPartial = 0 }
-            , schemeRootsForDef = Dict.empty
-            , varSupers = TOpt.varSupersOfType canType
-            , moduleKey = ""
-            , defKey = ""
-            , useSolverRoots = False
-            }
-
-        ( newType, ctx1 ) =
-            rewriteCanTypeTop ctx canType
-    in
-    ( newType, ctx1.state )
-
 
 
 -- ============================================================================
@@ -467,7 +440,6 @@ rewriteAnnotation useSolverRoots varSupers moduleKey schemeRootsForDef (Can.Fora
             , schemeRootsForDef = schemeRootsForDef
             , varSupers = varSupers
             , moduleKey = moduleKey
-            , defKey = ""
             , useSolverRoots = useSolverRoots
             }
 
@@ -512,7 +484,6 @@ rewriteNodes useSolverRoots varSupers allSchemeRoots nodes state =
                     , schemeRootsForDef = schemeRootsForDef
                     , varSupers = varSupers
                     , moduleKey = moduleKeyOf global
-                    , defKey = TOpt.toComparableGlobal global
                     , useSolverRoots = useSolverRoots
                     }
 
@@ -525,8 +496,7 @@ rewriteNodes useSolverRoots varSupers allSchemeRoots nodes state =
         nodes
 
 
-{-| Returns `node` with ids assigned. `Link`, `Manager` and `Kernel` nodes carry
-no types and are returned unchanged.
+{-| Returns `node` with ids assigned. `Link` and `Manager` nodes carry no types and are returned unchanged.
 -}
 rewriteNode : Ctx -> TOpt.Node Name -> ( TOpt.Node TypeIds.MVarId, Ctx )
 rewriteNode ctx node =
@@ -585,11 +555,8 @@ rewriteNode ctx node =
             in
             ( TOpt.Cycle names newValueDefs newFuncDefs deps, ctx2 )
 
-        TOpt.Manager effectsType ->
-            ( TOpt.Manager effectsType, ctx )
-
-        TOpt.Kernel chunks deps ->
-            ( TOpt.Kernel chunks deps, ctx )
+        TOpt.Manager ->
+            ( TOpt.Manager, ctx )
 
         TOpt.PortIncoming expr deps meta ->
             let
@@ -918,7 +885,12 @@ rewriteExpr ctx expr =
                     rewriteExpr ctx2 b
 
                 ( newRest, ctx4 ) =
-                    rewriteExprList ctx3 rest
+                    case rest of
+                        Just c ->
+                            Tuple.mapFirst Just (rewriteExpr ctx3 c)
+
+                        Nothing ->
+                            ( Nothing, ctx3 )
             in
             ( TOpt.Tuple region newA newB newRest newMeta, ctx4 )
 
@@ -1165,18 +1137,17 @@ rewriteDecider ctx decider =
 
         TOpt.FanOut path options fallback ->
             let
-                ( newOptions, ctx1 ) =
-                    List.foldl
-                        (\( test, dec ) ( acc, c ) ->
+                ( ctx1, newOptions ) =
+                    NE.mapAccuml
+                        (\c ( test, dec ) ->
                             let
                                 ( newDec, c1 ) =
                                     rewriteDecider c dec
                             in
-                            ( ( test, newDec ) :: acc, c1 )
+                            ( c1, ( test, newDec ) )
                         )
-                        ( [], ctx )
+                        ctx
                         options
-                        |> Tuple.mapFirst List.reverse
 
                 ( newFallback, ctx2 ) =
                     rewriteDecider ctx1 fallback
@@ -1359,7 +1330,12 @@ rewriteCanType ctx canType =
                     rewriteCanType ctx1 b
 
                 ( newRest, ctx3 ) =
-                    rewriteCanTypeList ctx2 rest
+                    case rest of
+                        Just c ->
+                            Tuple.mapFirst Just (rewriteCanType ctx2 c)
+
+                        Nothing ->
+                            ( Nothing, ctx2 )
             in
             ( Can.TTuple newA newB newRest, ctx3 )
 

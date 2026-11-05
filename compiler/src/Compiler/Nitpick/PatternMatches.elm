@@ -57,6 +57,7 @@ import Data.Map
 import Data.NonEmptyList as NE
 import Dict exposing (Dict)
 import List.Extra as List
+import Maybe.Extra as Maybe
 import Prelude
 import System.Crash exposing (crash)
 import Utils.Bytes.Decode as BD
@@ -120,14 +121,11 @@ simplify (A.At _ patternInfo) =
         Can.PUnit ->
             Ctor unit unitName []
 
-        Can.PTuple a b [] ->
+        Can.PTuple a b Nothing ->
             Ctor pair pairName [ simplify a, simplify b ]
 
-        Can.PTuple a b [ c ] ->
+        Can.PTuple a b (Just c) ->
             Ctor triple tripleName [ simplify a, simplify b, simplify c ]
-
-        Can.PTuple a b cs ->
-            Ctor nTuple nTupleName (List.map simplify (a :: b :: cs))
 
         Can.PCtor { union, name, args } ->
             List.map (\(Can.PatternCtorArg _ _ arg) -> simplify arg) args |> Ctor union name
@@ -215,23 +213,6 @@ triple =
     Can.Union { vars = [ "a", "b", "c" ], alts = [ ctor ], numAlts = 1, opts = Can.Normal }
 
 
-{-| The built-in union for a tuple of more than three elements, with the one
-constructor `#N`.
-
-It declares three arguments whatever the tuple's size. Such a tuple cannot reach
-this module, because canonicalization rejects tuples larger than three.
-
--}
-nTuple : Can.Union
-nTuple =
-    let
-        ctor : Can.Ctor
-        ctor =
-            Can.Ctor { name = nTupleName, index = Index.first, numArgs = 3, args = [ Can.TVar "a", Can.TVar "b", Can.TVar "cs" ] }
-    in
-    Can.Union { vars = [ "a", "b", "cs" ], alts = [ ctor ], numAlts = 1, opts = Can.Normal }
-
-
 {-| The built-in union of lists, with the constructors `[]` and `::`.
 -}
 list : Can.Union
@@ -275,13 +256,6 @@ pairName =
 tripleName : Name.Name
 tripleName =
     "#3"
-
-
-{-| The constructor name that stands for a tuple of more than three elements.
--}
-nTupleName : Name.Name
-nTupleName =
-    "#N"
 
 
 {-| The constructor name that stands for a non-empty list.
@@ -498,7 +472,7 @@ checkExpr (A.At region exprInfo) errors =
         Can.Tuple a b cs ->
             checkExpr a
                 (checkExpr b
-                    (List.foldr checkExpr errors cs)
+                    (Maybe.unwrap errors (\c -> checkExpr c errors) cs)
                 )
 
         Can.Shader _ _ ->

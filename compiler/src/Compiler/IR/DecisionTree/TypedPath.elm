@@ -46,11 +46,7 @@ at position 1.
 `HintTuple2` and `HintTuple3` are tuples of two and of three elements.
 
 `HintCustom` carries the name of the constructor whose arguments the step
-numbers, or the empty string where the container is a tuple of more than three
-elements.
-
-`HintUnknown` says nothing about the container. Decoding gives it for every
-hint tag above 3, not only for the tag it is written with.
+numbers.
 
 -}
 type ContainerHint
@@ -58,7 +54,6 @@ type ContainerHint
     | HintTuple2
     | HintTuple3
     | HintCustom Name.Name
-    | HintUnknown
 
 
 {-| A sub-value of a `case` scrutinee, given as the steps that reach it from the
@@ -80,8 +75,7 @@ type Path
 
 
 {-| Encodes a hint as a tag byte, 0 for `HintList`, 1 for `HintTuple2`, 2 for
-`HintTuple3`, 3 for `HintCustom` and 4 for `HintUnknown`, followed, for
-`HintCustom`, by the constructor name as `st` writes it.
+`HintTuple3` and 3 for `HintCustom`, followed, for `HintCustom`, by the constructor name as `st` writes it.
 -}
 containerHintEncoder : StringTable -> ContainerHint -> Bytes.Encode.Encoder
 containerHintEncoder st hint =
@@ -101,13 +95,9 @@ containerHintEncoder st hint =
                 , StringTable.string st ctorName
                 ]
 
-        HintUnknown ->
-            Bytes.Encode.unsignedInt8 4
-
 
 {-| Produces a decoder for a hint written by `containerHintEncoder` with a table
-holding the same strings. A tag byte above 3 decodes as `HintUnknown` rather
-than failing.
+holding the same strings. A tag byte above 3 fails.
 -}
 containerHintDecoder : StringTable -> Bytes.Decode.Decoder ContainerHint
 containerHintDecoder st =
@@ -128,7 +118,7 @@ containerHintDecoder st =
                         Bytes.Decode.map HintCustom (StringTable.stringDec st)
 
                     _ ->
-                        Bytes.Decode.succeed HintUnknown
+                        Bytes.Decode.fail
             )
 
 
@@ -138,8 +128,8 @@ container hint, and then by the encoding of its inner path. `Empty` is the tag
 byte alone.
 
 The position is written by `Compiler.Core.Index.zeroBasedEncoder`. The hint is
-a tag byte, 0 for `HintList`, 1 for `HintTuple2`, 2 for `HintTuple3`, 3 for
-`HintCustom` and 4 for `HintUnknown`, and a `HintCustom` tag is followed by the
+a tag byte, 0 for `HintList`, 1 for `HintTuple2`, 2 for `HintTuple3` and 3 for
+`HintCustom`, and a `HintCustom` tag is followed by the
 constructor name as `st` writes it. Unless `st` writes names inline, as
 `StringTable.disabled` does, a name missing from `st` is written without error
 and reads back as another string or as the empty string, so `st` must hold
@@ -170,8 +160,8 @@ pathEncoderS st path_ =
 {-| Produces a decoder for a path written by `pathEncoderS` with a table holding
 the same strings.
 
-A step tag byte other than 0, 1 or 2 makes it fail, but a hint tag byte above 3
-decodes as `HintUnknown`.
+A step tag byte other than 0, 1 or 2, or a hint tag byte above 3, makes it
+fail.
 
 -}
 pathDecoderS : StringTable -> Bytes.Decode.Decoder Path

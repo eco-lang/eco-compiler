@@ -95,8 +95,10 @@ import Compiler.Monomorphize.State as State
 import Compiler.Type.UnionFind as UF
 import Data.HashMap as HashMap
 import Data.Map as DMap
+import Data.NonEmptyList as NE
 import Data.Set as EverySet
 import Dict
+import Maybe.Extra as Maybe
 import Set
 
 
@@ -139,7 +141,7 @@ demandUnifyVar annCanType demand s0 =
                 ( demandVar, s2 ) ->
                     ( annVar
                     , Store.unifyStrictS
-                        (\() -> "demandUnify " ++ canKind annCanType ++ " vs " ++ monoKind demand)
+                        (\() -> "demandUnify " ++ canKind annCanType ++ " vs " ++ Mono.monoTypeToDebugString demand)
                         annVar
                         demandVar
                         s2
@@ -225,69 +227,35 @@ connectTypes childCan parentCan s0 =
         unifyBestEffortS childVar parentVar s2
 
 
-{-| Connects each argument of a tail call to `funcName` with the parameter of
-the same name, as `connectTypes` does. The parameters come from the innermost
-loop frame for `funcName` (`withLoopFrame`); with no frame nothing is connected.
+{-| Connects each argument of a tail call with the parameter in the same
+position, as `connectTypes` does. The parameters are those of the current loop
+frame (`withLoopFrame`), which is always the callee's: a tail call is built
+only for a self-call in tail position of its own definition, with its
+arguments in parameter order. With no frame nothing is connected.
 -}
-connectTailCallArgs : Name -> List ( Name, TOpt.Expr TypeIds.MVarId ) -> Engine.S -> Engine.S
-connectTailCallArgs funcName args s0 =
-    case lookupLoopFrame funcName s0.itemAux.loopParams of
+connectTailCallArgs : List ( Name, TOpt.Expr TypeIds.MVarId ) -> Engine.S -> Engine.S
+connectTailCallArgs args s0 =
+    case s0.itemAux.loopParams of
         Nothing ->
             s0
 
         Just params ->
-            connectTailArgsGo params args s0
+            List.foldl (\( pCan, ( _, argExpr ) ) sx -> connectTypes (TOpt.typeOf argExpr) pCan sx)
+                s0
+                (List.map2 Tuple.pair params args)
 
 
-{-| Connects each named argument to the parameter of the same name in
-`params`, skipping an argument with no such parameter.
+{-| Runs a step with the parameter types of a tail-recursive function as the
+current loop frame, so that tail calls inside it can be connected to those
+parameters (`connectTailCallArgs`). The enclosing frame is restored afterwards.
 -}
-connectTailArgsGo : List ( String, Can.Type TypeIds.MVarId ) -> List ( Name, TOpt.Expr TypeIds.MVarId ) -> Engine.S -> Engine.S
-connectTailArgsGo params args s0 =
-    case args of
-        [] ->
-            s0
-
-        ( argName, argExpr ) :: rest ->
-            case List.filter (\( pn, _ ) -> pn == argName) params of
-                ( _, pCan ) :: _ ->
-                    connectTailArgsGo params rest (connectTypes (TOpt.typeOf argExpr) pCan s0)
-
-                [] ->
-                    connectTailArgsGo params rest s0
-
-
-{-| Returns the parameters of the innermost loop frame named `funcName`.
--}
-lookupLoopFrame : Name -> List ( String, List ( String, Can.Type TypeIds.MVarId ) ) -> Maybe (List ( String, Can.Type TypeIds.MVarId ))
-lookupLoopFrame funcName frames =
-    case frames of
-        [] ->
-            Nothing
-
-        ( n, ps ) :: rest ->
-            if n == funcName then
-                Just ps
-
-            else
-                lookupLoopFrame funcName rest
-
-
-{-| Runs a step with a loop frame for the tail-recursive function `name` and
-its parameters pushed, so that tail calls inside it can be connected to those
-parameters (`connectTailCallArgs`). The frame stack is restored afterwards.
--}
-withLoopFrame : Name -> List ( A.Located Name, Can.Type TypeIds.MVarId ) -> Step a -> Step a
-withLoopFrame name typedArgs step s0 =
-    let
-        frame =
-            ( name, List.map (\( ln, t ) -> ( A.toValue ln, t )) typedArgs )
-    in
+withLoopFrame : List ( A.Located Name, Can.Type TypeIds.MVarId ) -> Step a -> Step a
+withLoopFrame typedArgs step s0 =
     let
         aux0 =
             s0.itemAux
     in
-    case step { s0 | itemAux = { aux0 | loopParams = frame :: aux0.loopParams } } of
+    case step { s0 | itemAux = { aux0 | loopParams = Just (List.map Tuple.second typedArgs) } } of
         ( a, s1 ) ->
             let
                 aux1 =
@@ -318,7 +286,7 @@ tupleSlotCanTypes : Can.Type TypeIds.MVarId -> Maybe (List (Can.Type TypeIds.MVa
 tupleSlotCanTypes t =
     case t of
         Can.TTuple a b rest ->
-            Just (a :: b :: rest)
+            Just (a :: b :: Maybe.toList rest)
 
         Can.TAlias _ _ _ (Can.Filled inner) ->
             tupleSlotCanTypes inner
@@ -504,7 +472,7 @@ censusCallKey func supplied s =
         Just g ->
             let
                 declared =
-                    LssInfer.declaredArityOf g 8 s
+                    LssInfer.declaredArityOf g s
             in
             if declared > supplied then
                 "papKnown|d" ++ String.fromInt (declared - supplied)
@@ -653,12 +621,8 @@ translateDispatch expr s0 =
                             List.foldl (\e sb -> connectTypes (TOpt.typeOf e) elemCan sb) sa exprs
 
                         Nothing ->
-                            case exprs of
-                                first :: restExprs ->
-                                    List.foldl (\e sb -> connectTypes (TOpt.typeOf e) (TOpt.typeOf first) sb) sa restExprs
-
-                                [] ->
-                                    sa
+                            -- A literal's solved type is a `List` once aliases are unwrapped.
+                            sa
             in
             case connectElems s0 of
                 s1 ->
@@ -729,7 +693,7 @@ translateDispatch expr s0 =
 
         TOpt.TailCall name args meta ->
             -- The arguments' types are otherwise unconnected to the loop parameters' types.
-            case connectTailCallArgs name args s0 of
+            case connectTailCallArgs args s0 of
                 s0c ->
                     case classifyAs Mono.tkClassMisc meta.tipe s0c of
                         ( monoType, s1 ) ->
@@ -756,28 +720,20 @@ translateDispatch expr s0 =
                         Just slotCans ->
                             List.foldl (\( e, slotCan ) sb -> connectTypes (TOpt.typeOf e) slotCan sb)
                                 sa
-                                (List.map2 Tuple.pair (a :: b :: rest) slotCans)
+                                (List.map2 Tuple.pair (a :: b :: Maybe.toList rest) slotCans)
 
                         Nothing ->
                             sa
             in
             case connectSlots s0 of
                 s1 ->
-                    case translate a s1 of
-                        ( monoA, s2 ) ->
-                            case translate b s2 of
-                                ( monoB, s3 ) ->
-                                    case Engine.traverse translate rest s3 of
-                                        ( monoRest, s4 ) ->
-                                            let
-                                                allExprs =
-                                                    monoA :: monoB :: monoRest
-                                            in
-                                            let
-                                                ( tupleType, s5 ) =
-                                                    Engine.consS (Mono.mTuple (List.map Mono.typeOf allExprs)) s4
-                                            in
-                                            ( Mono.MonoTupleCreate region allExprs tupleType, s5 )
+                    case Mono.tupleMapAccum translate s1 (Mono.tupleOf a b rest) of
+                        ( allExprs, s4 ) ->
+                            let
+                                ( tupleType, s5 ) =
+                                    Engine.consS (Mono.mTuple (Mono.tupleMap Mono.typeOf allExprs)) s4
+                            in
+                            ( Mono.MonoTupleCreate region allExprs tupleType, s5 )
 
         TOpt.Record fields meta ->
             case connectRecordFields (Dict.toList fields) meta.tipe s0 of
@@ -890,7 +846,7 @@ translateDispatch expr s0 =
                                                         case Engine.recordNumberInstance (pathRootName path) refinedRootType s2 of
                                                             ( ( freshRootName, _ ), s3 ) ->
                                                                 generalDestruct
-                                                                    (TOpt.Destructor dname (rewriteRootInPath (pathRootName path) freshRootName path) dmeta)
+                                                                    (TOpt.Destructor dname (replacePathRoot freshRootName path) dmeta)
                                                                     body
                                                                     meta
                                                                     (Engine.insertVar freshRootName refinedRootType s3)
@@ -918,12 +874,12 @@ translateDispatch expr s0 =
         TOpt.TrackedFunction srcLam trackedParams body meta ->
             specializeLambda srcLam (List.map (\( locName, pt ) -> ( A.toValue locName, pt )) trackedParams) body meta.tipe s0
 
-        _ ->
-            -- A construct the native back end does not support (a GLSL shader, F9) is a
-            -- reported error, not a crash: it is recorded like a watchdog trip, the item
-            -- goes on with a unit placeholder, and the driver returns the failure as an
-            -- `Err` once the item finishes.
-            ( Mono.MonoUnit, Engine.notePendingFailure (Unsupported (nodeKind expr)) s0 )
+        TOpt.Shader _ _ _ _ ->
+            -- The native back end does not support a GLSL shader (F9). It is a reported
+            -- error, not a crash: it is recorded like a watchdog trip, the item goes on
+            -- with a unit placeholder, and the driver returns the failure as an `Err`
+            -- once the item finishes.
+            ( Mono.MonoUnit, Engine.notePendingFailure (Unsupported "shader (M6)") s0 )
 
 
 {-| Translates one condition and branch value of an `if`, connecting the
@@ -948,8 +904,8 @@ at `demand`, producing that member's node only.
 
 References from it to itself or to other members enqueue those members as
 specs of their own, so a group of any size becomes one node per member, each
-made in its own work item. When `name` matches no member and the group has
-exactly one definition, that definition is used; otherwise the build aborts.
+made in its own work item. `name` is the demanded global's own name, which
+always names a member; a name that matches none aborts the build.
 
 -}
 specializeCycle : Name -> List ( Name, TOpt.Expr TypeIds.MVarId ) -> List (TOpt.Def TypeIds.MVarId) -> Mono.MonoType -> Step Mono.MonoNode
@@ -964,15 +920,7 @@ specializeCycle name valueDefs funcDefs demand =
                     specializeCycleValue vexpr demand
 
                 Nothing ->
-                    case ( valueDefs, funcDefs ) of
-                        ( [], [ singleDef ] ) ->
-                            specializeCycleFuncDef singleDef demand
-
-                        ( [ ( _, vexpr ) ], [] ) ->
-                            specializeCycleValue vexpr demand
-
-                        _ ->
-                            Engine.crashFailure (EngineBug ("cycle member not found: " ++ name))
+                    Engine.crashFailure (EngineBug ("cycle member not found: " ++ name))
 
 
 {-| Returns the name a definition binds.
@@ -1008,24 +956,23 @@ specializeCycleValue vexpr demand s0 =
 -- ====== PORTS ======
 
 
-{-| Specializes a port at `requestedMonoType` as a one-parameter closure that
-calls the kernel `Elm.Platform.leaf` with the port's name and a value.
+{-| Specializes the port `name` of module `home` at `requestedMonoType`, the one-parameter
+function type from `paramType` to `resultType`, as a closure that calls the
+kernel `Elm.Platform.leaf` with the port's name and a value.
 
 For an incoming port the value is the closure's argument, and the port's own
 decoder (`expr`) is enqueued as a spec of the port global at the decoder's
 type; its id is recorded with the port. For an outgoing port the value is the
 argument passed through the encoder, which is translated inline. With LSS on,
 every lambda set in the port's type is made ⊤ first, since the port's functions
-are handed to the runtime. When the requested type is not a function type, the
-port's own classified type is used instead. The build aborts when the type
-used is not a one-parameter function.
+are handed to the runtime.
 
 -}
-specializePort : Bool -> TOpt.Expr TypeIds.MVarId -> Can.Type TypeIds.MVarId -> Mono.MonoType -> Step Mono.MonoNode
-specializePort incoming expr canType requestedMonoType s0 =
+specializePort : Bool -> ModuleName.Canonical -> Name -> TOpt.Expr TypeIds.MVarId -> Can.Type TypeIds.MVarId -> Mono.MonoType -> Mono.MonoType -> Mono.MonoType -> Step Mono.MonoNode
+specializePort incoming home name expr canType requestedMonoType paramType resultType s0 =
     case poisonPortArrowsIfOn canType s0 of
         s1 ->
-            specializePortBody incoming expr canType requestedMonoType s1
+            specializePortBody incoming home name expr canType requestedMonoType paramType resultType s1
 
 
 {-| Makes every lambda set in `canType` ⊤ in the store when LSS is on.
@@ -1045,95 +992,85 @@ poisonPortArrowsIfOn canType s =
 
 {-| Builds the port closure that `specializePort` describes.
 -}
-specializePortBody : Bool -> TOpt.Expr TypeIds.MVarId -> Can.Type TypeIds.MVarId -> Mono.MonoType -> Step Mono.MonoNode
-specializePortBody incoming expr canType requestedMonoType s0 =
+specializePortBody : Bool -> ModuleName.Canonical -> Name -> TOpt.Expr TypeIds.MVarId -> Can.Type TypeIds.MVarId -> Mono.MonoType -> Mono.MonoType -> Mono.MonoType -> Step Mono.MonoNode
+specializePortBody incoming home name expr canType requestedMonoType paramType resultType s0 =
+    -- Classifying the port's type records its read-backs for the saturation check.
     case classifyAs Mono.tkClassMisc canType (demandUnify canType requestedMonoType s0) of
-        ( classifiedCan, s1 ) ->
-            case portGlobalContext s1 of
-                ( ( portGlobal, portName ), s2 ) ->
-                    -- A demand that is not a function type is replaced by the port's own classified type.
+        ( _, s1 ) ->
+            case allocLambdaId s1 of
+                ( lambdaId, s3 ) ->
                     let
-                        effectiveType =
-                            case requestedMonoType of
-                                Mono.MFunction _ _ _ _ ->
-                                    requestedMonoType
+                        portGlobal =
+                            Mono.Global home name
 
-                                _ ->
-                                    classifiedCan
+                        portName =
+                            Name.toElmString name
+
+                        region =
+                            A.zero
+
+                        paramName =
+                            "_eco_port_arg"
+
+                        paramVar =
+                            Mono.MonoVarLocal paramName paramType
+
+                        nameLit =
+                            Mono.MonoLiteral (Mono.LStr portName) Mono.MString
+
+                        leafKernel valueType =
+                            Mono.MonoVarKernel region "Elm" "Platform" "leaf" (Mono.mFunction Mono.topSynth [ Mono.MString, valueType ] resultType)
+
+                        closureInfo =
+                            { lambdaId = lambdaId
+                            , srcLambda = Nothing
+                            , lssMember = Nothing
+                            , captures = []
+                            , params = [ ( paramName, paramType ) ]
+                            , closureKind = Nothing
+                            , captureAbi = Nothing
+                            }
                     in
-                    case effectiveType of
-                        Mono.MFunction _ _ [ paramType ] resultType ->
-                            case allocLambdaId s2 of
-                                ( lambdaId, s3 ) ->
-                                    let
-                                        region =
-                                            A.zero
+                    if incoming then
+                        let
+                            body =
+                                Mono.MonoCall region (leafKernel paramType) [ nameLit, paramVar ] resultType Mono.defaultCallInfo
 
-                                        paramName =
-                                            "_eco_port_arg"
+                            wrapper =
+                                Mono.MonoClosure closureInfo body requestedMonoType
+                        in
+                        case classifyAs Mono.tkClassMisc (TOpt.typeOf expr) s3 of
+                            ( decoderMonoType, s4 ) ->
+                                case Engine.enqueueSpec portGlobal decoderMonoType s4 of
+                                    ( decoderSpecId, s5 ) ->
+                                        ( Mono.MonoPortIncoming wrapper requestedMonoType
+                                        , recordPort { name = portName, key = Mono.toComparableGlobal portGlobal, incoming = True, decoderSpecId = Just decoderSpecId } s5
+                                        )
 
-                                        paramVar =
-                                            Mono.MonoVarLocal paramName paramType
+                    else
+                        case translate expr (connectEncoderType expr canType s3) of
+                            ( encoderMono, s4 ) ->
+                                let
+                                    encodedType =
+                                        case Mono.typeOf encoderMono of
+                                            Mono.MFunction _ _ _ r ->
+                                                r
 
-                                        nameLit =
-                                            Mono.MonoLiteral (Mono.LStr portName) Mono.MString
+                                            t ->
+                                                t
 
-                                        leafKernel valueType =
-                                            Mono.MonoVarKernel region "Elm" "Platform" "leaf" (Mono.mFunction Mono.topSynth [ Mono.MString, valueType ] resultType)
+                                    encodedExpr =
+                                        Mono.MonoCall region encoderMono [ paramVar ] encodedType Mono.defaultCallInfo
 
-                                        closureInfo =
-                                            { lambdaId = lambdaId
-                                            , srcLambda = Nothing
-                                            , lssMember = Nothing
-                                            , captures = []
-                                            , params = [ ( paramName, paramType ) ]
-                                            , closureKind = Nothing
-                                            , captureAbi = Nothing
-                                            }
-                                    in
-                                    if incoming then
-                                        let
-                                            body =
-                                                Mono.MonoCall region (leafKernel paramType) [ nameLit, paramVar ] resultType Mono.defaultCallInfo
+                                    body =
+                                        Mono.MonoCall region (leafKernel encodedType) [ nameLit, encodedExpr ] resultType Mono.defaultCallInfo
 
-                                            wrapper =
-                                                Mono.MonoClosure closureInfo body effectiveType
-                                        in
-                                        case classifyAs Mono.tkClassMisc (TOpt.typeOf expr) s3 of
-                                            ( decoderMonoType, s4 ) ->
-                                                case Engine.enqueueSpec portGlobal decoderMonoType s4 of
-                                                    ( decoderSpecId, s5 ) ->
-                                                        ( Mono.MonoPortIncoming wrapper effectiveType
-                                                        , recordPort { name = portName, key = Mono.toComparableGlobal portGlobal, incoming = True, decoderSpecId = Just decoderSpecId } s5
-                                                        )
-
-                                    else
-                                        case translate expr (connectEncoderType expr canType s3) of
-                                            ( encoderMono, s4 ) ->
-                                                let
-                                                    encodedType =
-                                                        case Mono.typeOf encoderMono of
-                                                            Mono.MFunction _ _ _ r ->
-                                                                r
-
-                                                            t ->
-                                                                t
-
-                                                    encodedExpr =
-                                                        Mono.MonoCall region encoderMono [ paramVar ] encodedType Mono.defaultCallInfo
-
-                                                    body =
-                                                        Mono.MonoCall region (leafKernel encodedType) [ nameLit, encodedExpr ] resultType Mono.defaultCallInfo
-
-                                                    wrapper =
-                                                        Mono.MonoClosure closureInfo body effectiveType
-                                                in
-                                                ( Mono.MonoPortOutgoing wrapper effectiveType
-                                                , recordPort { name = portName, key = Mono.toComparableGlobal portGlobal, incoming = False, decoderSpecId = Nothing } s4
-                                                )
-
-                        _ ->
-                            ( Engine.crashFailure (EngineBug ("port '" ++ portName ++ "' must have a single-parameter function type; got " ++ monoKind effectiveType)), s2 )
+                                    wrapper =
+                                        Mono.MonoClosure closureInfo body requestedMonoType
+                                in
+                                ( Mono.MonoPortOutgoing wrapper requestedMonoType
+                                , recordPort { name = portName, key = Mono.toComparableGlobal portGlobal, incoming = False, decoderSpecId = Nothing } s4
+                                )
 
 
 {-| Connects an outgoing port's encoder expression to the function type
@@ -1158,67 +1095,6 @@ connectEncoderType expr portCanType s0 =
 
         _ ->
             s0
-
-
-{-| Returns the global being specialized and its name as a string. Aborts the
-build when the current global is not a plain `Mono.Global`.
--}
-portGlobalContext : Step ( Mono.Global, String )
-portGlobalContext s =
-    case s.currentGlobal of
-        Just ((Mono.Global _ nm) as g) ->
-            ( ( g, Name.toElmString nm ), s )
-
-        _ ->
-            ( Engine.crashFailure (EngineBug "specializePort: currentGlobal must be a Global"), s )
-
-
-{-| Returns a short text rendering of a MonoType, used in crash messages.
--}
-monoKind : Mono.MonoType -> String
-monoKind mt =
-    case mt of
-        Mono.MFunction _ _ ps r ->
-            "(" ++ String.join "," (List.map monoKind ps) ++ "->" ++ monoKind r ++ ")"
-
-        Mono.MCustom _ _ n args ->
-            n
-                ++ (if List.isEmpty args then
-                        ""
-
-                    else
-                        "<" ++ String.join "," (List.map monoKind args) ++ ">"
-                   )
-
-        Mono.MVar _ Mono.CNumber ->
-            "num"
-
-        Mono.MVar _ Mono.CEcoValue ->
-            "eco"
-
-        Mono.MInt ->
-            "I"
-
-        Mono.MFloat ->
-            "F"
-
-        Mono.MList _ e ->
-            "[" ++ monoKind e ++ "]"
-
-        Mono.MTuple _ es ->
-            "T(" ++ String.join "," (List.map monoKind es) ++ ")"
-
-        Mono.MRecord _ fields ->
-            "R{" ++ String.join "," (List.map (\( k, v ) -> k ++ ":" ++ monoKind v) (Dict.toList fields)) ++ "}"
-
-        Mono.MString ->
-            "S"
-
-        Mono.MBool ->
-            "B"
-
-        _ ->
-            "other"
 
 
 {-| Adds a port registration to the state unless one with the same key is
@@ -1252,7 +1128,7 @@ specializeCycleFuncDef def demand =
                     ( monoExpr, s1 ) ->
                         ( Mono.MonoDefine monoExpr (Mono.typeOf monoExpr), s1 )
 
-        TOpt.TailDef _ tailName typedArgs body defType _ ->
+        TOpt.TailDef _ _ typedArgs body defType _ ->
             \sIn ->
                 if sIn.env.lss.enabled then
                     -- A classify or a fresh load could not see the lambda sets the demand put on the seeded variable.
@@ -1292,7 +1168,7 @@ specializeCycleFuncDef def demand =
                                                         s2
                                             of
                                                 ( monoParams, s3 ) ->
-                                                    case withLoopFrame tailName typedArgs (Engine.scoped (\sx -> translate body (insertVars monoParams sx))) s3 of
+                                                    case withLoopFrame typedArgs (Engine.scoped (\sx -> translate body (insertVars monoParams sx))) s3 of
                                                         ( monoBody, s4 ) ->
                                                             ( Mono.MonoTailFunc monoParams monoBody funcType, s4 )
 
@@ -1310,7 +1186,7 @@ specializeCycleFuncDef def demand =
                         ( monoParams, s1 ) ->
                             case classifyAs Mono.tkClassLet defType s1 of
                                 ( funcType, s2 ) ->
-                                    case withLoopFrame tailName typedArgs (Engine.scoped (\sx -> translate body (insertVars monoParams sx))) s2 of
+                                    case withLoopFrame typedArgs (Engine.scoped (\sx -> translate body (insertVars monoParams sx))) s2 of
                                         ( monoBody, s3 ) ->
                                             ( Mono.MonoTailFunc monoParams monoBody funcType, s3 )
 
@@ -1319,7 +1195,8 @@ specializeCycleFuncDef def demand =
 -- ====== CONSTRUCTOR / ENUM NODES ======
 
 
-{-| Specializes a constructor at `demand` as a `MonoCtor`.
+{-| Specializes the constructor `name` of module `home` at `demand` as a
+`MonoCtor`.
 
 The constructor's type is unified with the demand and read back; its first
 `arity` parameter types are the field types. The node's result type is what is
@@ -1327,8 +1204,8 @@ left of the demand itself after `arity` arrows. A mismatch with the demand
 aborts the build.
 
 -}
-specializeCtorViaScheme : Name -> Int -> Int -> Can.Type TypeIds.MVarId -> Mono.MonoType -> Step Mono.MonoNode
-specializeCtorViaScheme name tag arity canType demand s0 =
+specializeCtorViaScheme : ModuleName.Canonical -> Name -> Int -> Int -> Can.Type TypeIds.MVarId -> Mono.MonoType -> Step Mono.MonoNode
+specializeCtorViaScheme home name tag arity canType demand s0 =
     case Store.loadTypeS canType s0 of
         ( annVar, s1 ) ->
             case Store.monoTypeToVarS demand s1 of
@@ -1337,18 +1214,19 @@ specializeCtorViaScheme name tag arity canType demand s0 =
                         ( _, s3 ) ->
                             case Store.zonkToMono annVar s3 of
                                 ( ctorMonoType, s4 ) ->
-                                    ( Mono.MonoCtor
+                                    ( Mono.MonoCtor home
                                         { name = name, tag = tag, fieldTypes = extractFieldTypes arity ctorMonoType }
                                         (extractCtorResultType arity demand)
                                     , s4
                                     )
 
 
-{-| Specializes a constructor with no fields at `demand` as a `MonoEnum`,
-whose type is the constructor's type unified with the demand and read back.
+{-| Specializes the constructor `name` of module `home`, which has no fields, at
+`demand` as a `MonoEnum`, whose type is the constructor's type unified with the
+demand and read back.
 -}
-enumNode : Int -> Can.Type TypeIds.MVarId -> Mono.MonoType -> Step Mono.MonoNode
-enumNode tag canType demand s0 =
+enumNode : ModuleName.Canonical -> Name -> Int -> Can.Type TypeIds.MVarId -> Mono.MonoType -> Step Mono.MonoNode
+enumNode home name tag canType demand s0 =
     case Store.loadTypeS canType s0 of
         ( annVar, s1 ) ->
             case Store.monoTypeToVarS demand s1 of
@@ -1357,7 +1235,7 @@ enumNode tag canType demand s0 =
                         ( _, s3 ) ->
                             case Store.zonkToMono annVar s3 of
                                 ( monoType, s4 ) ->
-                                    ( Mono.MonoEnum tag monoType, s4 )
+                                    ( Mono.MonoEnum home name tag monoType, s4 )
 
 
 {-| Returns the parameter types of a function type, taking whole stages until at
@@ -1506,8 +1384,7 @@ classifyLambdaHead arity srcLam canType s0 =
                         ( Nothing, Engine.bumpArgFlowCensus "rootAnn|absent" s0 )
 
             -- Record the definition's root lambda so its member is minted under the global's key.
-            -- A kernel alias is skipped here because Engine cannot see `kernelAliasOf`; folding one
-            -- would give the alias a `g|` member besides its `k|` one.
+            -- A kernel alias (`LssInfer.kernelAliasOf`) has no root lambda, so it never gets here.
             s0c =
                 case ( maybeRootVar, ( srcLam, s0b.currentGlobal ) ) of
                     ( Just _, ( Just lamId, Just (Mono.Global home name) ) ) ->
@@ -1521,16 +1398,11 @@ classifyLambdaHead arity srcLam canType s0 =
                             Engine.bumpArgFlowCensus "rootFold|localSkip" s0b
 
                         else
-                            case LssInfer.kernelAliasOf g s0b of
-                                Just _ ->
-                                    Engine.bumpArgFlowCensus "rootFold|kernelSkip" s0b
-
-                                Nothing ->
-                                    let
-                                        tbl =
-                                            s0b.lssMemberTable
-                                    in
-                                    { s0b | lssMemberTable = { tbl | rootLamOf = Dict.insert (Engine.srcLambdaKey lamId) g tbl.rootLamOf } }
+                            let
+                                tbl =
+                                    s0b.lssMemberTable
+                            in
+                            { s0b | lssMemberTable = { tbl | rootLamOf = Dict.insert (Engine.srcLambdaKey lamId) g tbl.rootLamOf } }
 
                     _ ->
                         s0b
@@ -1619,7 +1491,7 @@ monoTypeMentionsEco mt =
             monoTypeMentionsEco t
 
         Mono.MTuple _ ts ->
-            List.any monoTypeMentionsEco ts
+            List.any monoTypeMentionsEco (Mono.tupleToList ts)
 
         Mono.MCustom _ _ _ args ->
             List.any monoTypeMentionsEco args
@@ -1664,10 +1536,8 @@ translateCall region func args callCanType =
         TOpt.VarDebug funcRegion name _ _ funcMeta ->
             translateKernelCall region funcRegion "Elm" "Debug" name ( "Elm", "Debug", name ) funcMeta.tipe args callCanType
 
-        TOpt.VarLocal name funcMeta ->
-            localCalleeCall region func name funcMeta args callCanType
-
         TOpt.TrackedVarLocal _ name funcMeta ->
+            -- An untracked `VarLocal` is generated code's argument or record operand, never a callee.
             localCalleeCall region func name funcMeta args callCanType
 
         _ ->
@@ -1839,16 +1709,16 @@ translateIndirectCallBody region func args callCanType s0 =
                                                 ( resultMonoType, s6 ) ->
                                                     ( Mono.MonoCall region ctorRef monoArgs resultMonoType Mono.defaultCallInfo, s6 )
 
-                        ( Just (DevirtKernel kernelPrefix home name), s3 ) ->
+                        ( Just (DevirtKernel kernelPrefix home name arity guard), s3 ) ->
                             -- Not `translateKernelCall`: that would translate the arguments a second time.
                             case deriveKernelAbiTypeCall ( kernelPrefix, home, name ) (TOpt.typeOf func) args s3 of
                                 ( funcMonoType, s4 ) ->
                                     case callResultType (List.length args) funcMonoType callCanType s4 of
                                         ( resultMonoType, s5 ) ->
-                                            if not (kernelDevirtShapeOk kernelPrefix home name funcMonoType) then
+                                            if not (kernelDevirtShapeOk arity guard funcMonoType) then
                                                 indirectCallFallback region monoFunc monoArgs (List.length args) callCanType (bumpKernelDeclineShape () s5)
 
-                                            else if not (kernelDevirtEmissionOk kernelPrefix home name monoArgs resultMonoType) then
+                                            else if not (kernelDevirtEmissionOk arity guard monoArgs resultMonoType) then
                                                 indirectCallFallback region monoFunc monoArgs (List.length args) callCanType (bumpKernelDeclineEmission home name monoArgs resultMonoType s5)
 
                                             else
@@ -1868,57 +1738,52 @@ translateIndirectCallBody region func args callCanType s0 =
 
 `DevirtGlobal` is a constructor or a global function with a body.
 `DevirtKernel` is a kernel function, named by prefix, home and name, that
-`KernelFacts` registers for this rewrite.
+`KernelFacts` registers for this rewrite, with the registered arity and shape
+guard.
 
 -}
 type DevirtTarget
     = DevirtGlobal TOpt.Global
-    | DevirtKernel Name Name Name
+    | DevirtKernel Name Name Name Int KernelFacts.ShapeGuard
 
 
 {-| Returns the number of arguments a call must supply for a kernel to be
-called directly in place of an indirect call, or `Nothing` when `KernelFacts`
-does not register the kernel for that rewrite.
+called directly in place of an indirect call, with the kernel's shape guard,
+or `Nothing` when `KernelFacts` does not register the kernel for that rewrite.
 -}
-kernelDevirtArity : Name -> Name -> Name -> Maybe Int
+kernelDevirtArity : Name -> Name -> Name -> Maybe ( Int, KernelFacts.ShapeGuard )
 kernelDevirtArity prefix home name =
     case KernelFacts.devirtOf ( prefix, home, name ) of
-        KernelFacts.DevirtAt arity _ ->
-            Just arity
+        KernelFacts.DevirtAt arity guard ->
+            Just ( arity, guard )
 
         KernelFacts.DevirtNo ->
             Nothing
 
 
 {-| Tells whether a kernel's derived ABI type passes the kernel's shape guard
-in `KernelFacts`.
+`guard` from `KernelFacts`, for the registered `arity`.
 
 A guard that lists positions requires that none of those positions, peeled
 from the derived type, is an unboxed scalar (`unboxedScalar`). For
 `List.cons` the positions are the tail and the result, which are lists and so
 are always boxed; a derived type with a scalar there means the call's types
-are not reliable. An unregistered kernel, or a type with too few parameters,
-fails.
+are not reliable. A type with too few parameters fails.
 
 -}
-kernelDevirtShapeOk : Name -> Name -> Name -> Mono.MonoType -> Bool
-kernelDevirtShapeOk prefix home name funcMonoType =
-    case KernelFacts.devirtOf ( prefix, home, name ) of
-        KernelFacts.DevirtNo ->
-            False
+kernelDevirtShapeOk : Int -> KernelFacts.ShapeGuard -> Mono.MonoType -> Bool
+kernelDevirtShapeOk arity guard funcMonoType =
+    case guard of
+        KernelFacts.ShapeAny ->
+            True
 
-        KernelFacts.DevirtAt arity guard ->
-            case guard of
-                KernelFacts.ShapeAny ->
-                    True
+        KernelFacts.ShapeNoUnboxedScalarAt positions ->
+            case peelArrow arity funcMonoType of
+                Just ( argTypes, resultType ) ->
+                    List.all (\pos -> not (unboxedScalar (atPosition pos argTypes resultType))) positions
 
-                KernelFacts.ShapeNoUnboxedScalarAt positions ->
-                    case peelArrow arity funcMonoType of
-                        Just ( argTypes, resultType ) ->
-                            List.all (\pos -> not (unboxedScalar (atPosition pos argTypes resultType))) positions
-
-                        Nothing ->
-                            False
+                Nothing ->
+                    False
 
 
 {-| Returns the type at a guard position: a negative position is the result,
@@ -1983,33 +1848,28 @@ call must supply exactly the registered number of arguments, the guarded
 positions must not be unboxed scalars, and no argument or result type may
 contain a `number` variable anywhere. Such a variable means the types are not
 settled yet; it may later be closed to `Int` (see `unboxedScalar`), which can
-make the declaration disagree with another of the same kernel. An unregistered
-kernel fails.
+make the declaration disagree with another of the same kernel. `arity` and
+`guard` are the kernel's registration in `KernelFacts`.
 
 -}
-kernelDevirtEmissionOk : Name -> Name -> Name -> List Mono.MonoExpr -> Mono.MonoType -> Bool
-kernelDevirtEmissionOk prefix home name monoArgs resultMonoType =
-    case KernelFacts.devirtOf ( prefix, home, name ) of
-        KernelFacts.DevirtNo ->
-            False
+kernelDevirtEmissionOk : Int -> KernelFacts.ShapeGuard -> List Mono.MonoExpr -> Mono.MonoType -> Bool
+kernelDevirtEmissionOk arity guard monoArgs resultMonoType =
+    let
+        argTypes =
+            List.map Mono.typeOf monoArgs
 
-        KernelFacts.DevirtAt arity guard ->
-            let
-                argTypes =
-                    List.map Mono.typeOf monoArgs
+        shapeOk =
+            case guard of
+                KernelFacts.ShapeAny ->
+                    True
 
-                shapeOk =
-                    case guard of
-                        KernelFacts.ShapeAny ->
-                            True
-
-                        KernelFacts.ShapeNoUnboxedScalarAt positions ->
-                            List.all (\pos -> not (unboxedScalar (atPosition pos argTypes resultMonoType))) positions
-            in
-            (List.length monoArgs == arity)
-                && shapeOk
-                && not (List.any containsCNumber argTypes)
-                && not (containsCNumber resultMonoType)
+                KernelFacts.ShapeNoUnboxedScalarAt positions ->
+                    List.all (\pos -> not (unboxedScalar (atPosition pos argTypes resultMonoType))) positions
+    in
+    (List.length monoArgs == arity)
+        && shapeOk
+        && not (List.any containsCNumber argTypes)
+        && not (containsCNumber resultMonoType)
 
 
 {-| Tells whether a MonoType contains a `number` type variable anywhere.
@@ -2027,7 +1887,7 @@ containsCNumber t =
             containsCNumber elem
 
         Mono.MTuple _ elems ->
-            List.any containsCNumber elems
+            List.any containsCNumber (Mono.tupleToList elems)
 
         Mono.MCustom _ _ _ typeArgs ->
             List.any containsCNumber typeArgs
@@ -2108,19 +1968,11 @@ devirtDirectTarget func args monoFunc s0 =
 
                     ( Just ctorGlobal, s1 ) ->
                         case LssInfer.kernelAliasOf ctorGlobal s1 of
-                            Just ( kernelPrefix, home, name ) ->
-                                -- A kernel alias such as `cons = Elm.Kernel.List.cons` goes through the kernel guards;
-                                -- as a global, inlining would place the raw kernel call here unguarded.
-                                case kernelDevirtArity kernelPrefix home name of
-                                    Just arity ->
-                                        if arity == List.length args then
-                                            ( Just (DevirtKernel kernelPrefix home name), s1 )
-
-                                        else
-                                            ( Nothing, recordKernelArityMiss s1 )
-
-                                    Nothing ->
-                                        ( Nothing, recordKernelMiss home name s1 )
+                            Just _ ->
+                                -- Every member mint maps a kernel alias to its kernel's `k|` member, so this
+                                -- is never taken; declining is safe, unlike calling the alias as a global,
+                                -- which inlining would turn into an unguarded raw kernel call.
+                                ( Nothing, s1 )
 
                             Nothing ->
                                 devirtGlobalTarget ctorGlobal (List.length args) s1
@@ -2167,9 +2019,9 @@ devirtKernelTarget m argCount s0 =
 
         ( Just ( kernelPrefix, home, name ), s1 ) ->
             case kernelDevirtArity kernelPrefix home name of
-                Just arity ->
+                Just ( arity, guard ) ->
                     if arity == argCount then
-                        ( Just (DevirtKernel kernelPrefix home name), s1 )
+                        ( Just (DevirtKernel kernelPrefix home name arity guard), s1 )
 
                     else
                         ( Nothing, recordKernelArityMiss s1 )
@@ -2281,14 +2133,12 @@ isBodyNode g s =
             False
 
 
-{-| Tells whether an expression is a reference to a local variable.
+{-| Tells whether a callee is a reference to a local variable. Only a
+`TrackedVarLocal` is ever a callee.
 -}
 calleeIsPlainVar : TOpt.Expr TypeIds.MVarId -> Bool
 calleeIsPlainVar func =
     case func of
-        TOpt.VarLocal _ _ ->
-            True
-
         TOpt.TrackedVarLocal _ _ _ ->
             True
 
@@ -2466,7 +2316,7 @@ needsPapSlow : TOpt.Global -> List (TOpt.Expr TypeIds.MVarId) -> Can.Type TypeId
 needsPapSlow global args callCanType s =
     s.env.lss.enabled
         && canTypeHasArrow callCanType
-        && LssInfer.declaredArityOf global 8 s
+        && LssInfer.declaredArityOf global s
         > List.length args
 
 
@@ -2511,7 +2361,7 @@ canTypeHasArrow t =
             False
 
         Can.TTuple a b rest ->
-            canTypeHasArrow a || canTypeHasArrow b || List.any canTypeHasArrow rest
+            canTypeHasArrow a || canTypeHasArrow b || Maybe.unwrap False canTypeHasArrow rest
 
         Can.TAlias _ _ aliasArgs (Can.Filled real) ->
             canTypeHasArrow real || List.any (\( _, at ) -> canTypeHasArrow at) aliasArgs
@@ -2552,7 +2402,7 @@ stripArrowIds t =
             t
 
         Can.TTuple x y rest ->
-            Can.TTuple (stripArrowIds x) (stripArrowIds y) (List.map stripArrowIds rest)
+            Can.TTuple (stripArrowIds x) (stripArrowIds y) (Maybe.map stripArrowIds rest)
 
         Can.TAlias home name args (Can.Filled inner) ->
             Can.TAlias home name (List.map (Tuple.mapSecond stripArrowIds) args) (Can.Filled (stripArrowIds inner))
@@ -2589,7 +2439,7 @@ groundCanType canType =
             True
 
         Can.TTuple a b rest ->
-            groundCanType a && groundCanType b && List.all groundCanType rest
+            groundCanType a && groundCanType b && Maybe.unwrap True groundCanType rest
 
         Can.TAlias _ _ _ (Can.Filled inner) ->
             groundCanType inner
@@ -2637,7 +2487,7 @@ computeSchemeMono : String -> Can.Type TypeIds.MVarId -> Step Mono.MonoType
 computeSchemeMono key funcCanType s0 =
     let
         ( mt, intern1 ) =
-            Zonk.canTypeToMonoI s0.env.superStatic funcCanType s0.intern
+            Zonk.canTypeToMonoI funcCanType s0.intern
     in
     case Engine.putSchemeMono key mt { s0 | intern = intern1 } of
         s1 ->
@@ -2731,8 +2581,8 @@ translateGlobalCallGroundMemo region funcRegion global funcCanType args callCanT
         key =
             Mono.SpecKey (toptToMonoGlobal global)
                 (Mono.mFunction Mono.topDeclOther
-                    (List.map (Zonk.canTypeToMono s0.env.superStatic << TOpt.typeOf) args)
-                    (Zonk.canTypeToMono s0.env.superStatic callCanType)
+                    (List.map (Zonk.canTypeToMono << TOpt.typeOf) args)
+                    (Zonk.canTypeToMono callCanType)
                 )
     in
     case Engine.lookupCallMemo key s0 of
@@ -2902,7 +2752,7 @@ censusOneArg hofKey arg s0 =
                 maybeDeclared =
                     case func of
                         TOpt.VarGlobal _ g _ ->
-                            Just (LssInfer.declaredArityOf g 8 s0)
+                            Just (LssInfer.declaredArityOf g s0)
 
                         _ ->
                             Nothing
@@ -3347,10 +3197,8 @@ function's right-hand side when it is a lambda literal with an id.
 -}
 rhsLamOf : TOpt.Expr TypeIds.MVarId -> Maybe ( TypeIds.SrcLambdaId, Int )
 rhsLamOf defBody =
+    -- A let-bound lambda is a `TrackedFunction`; an untracked `Function` is generated code, never let-bound.
     case defBody of
-        TOpt.Function (Just lam) params _ _ ->
-            Just ( lam, List.length params )
-
         TOpt.TrackedFunction (Just lam) params _ _ ->
             Just ( lam, List.length params )
 
@@ -3366,7 +3214,7 @@ rhsPapOf : TOpt.Expr TypeIds.MVarId -> Engine.S -> Maybe ( TOpt.Global, Int )
 rhsPapOf defBody s =
     case defBody of
         TOpt.Call _ (TOpt.VarGlobal _ g _) args _ ->
-            if not (List.isEmpty args) && List.length args < LssInfer.declaredArityOf g 8 s then
+            if not (List.isEmpty args) && List.length args < LssInfer.declaredArityOf g s then
                 Just ( g, List.length args )
 
             else
@@ -3563,13 +3411,13 @@ argDeepCensus arg s =
                         ( "fn", List.length params )
 
                     TOpt.VarGlobal _ g _ ->
-                        ( "ref", LssInfer.declaredArityOf g 8 s )
+                        ( "ref", LssInfer.declaredArityOf g s )
 
                     TOpt.VarBox _ g _ ->
-                        ( "ref", LssInfer.declaredArityOf g 8 s )
+                        ( "ref", LssInfer.declaredArityOf g s )
 
                     TOpt.VarCycle _ home name _ ->
-                        ( "ref", LssInfer.declaredArityOf (TOpt.Global home name) 8 s )
+                        ( "ref", LssInfer.declaredArityOf (TOpt.Global home name) s )
 
                     TOpt.VarKernel _ _ _ _ _ ->
                         ( "kernel", 1 )
@@ -3767,7 +3615,7 @@ injectPapMember global funcVar argCount s0 =
     else
         let
             declared =
-                LssInfer.declaredArityOf global 8 s0
+                LssInfer.declaredArityOf global s0
         in
         if declared <= argCount then
             s0
@@ -3806,11 +3654,11 @@ injectPapMember global funcVar argCount s0 =
 same id a reference to `g` gets elsewhere.
 
 At depth 0 it is the kernel's `k|` member for an alias of a kernel, the `c|`
-member for a constructor, enum or box, and otherwise the global's member:
-the ground id from `groundKey` when one is given, else `g|`. At depth `d`
-greater than 0 it is the partial-application member `p|<g>|<d>`. A kernel,
-effect manager or port node, or a global with no node, has no member at depth
-0 (`Nothing`).
+member for a constructor or box, and otherwise the global's member: the ground
+id from `groundKey` when one is given, else `g|`. At depth `d` greater than 0
+it is the partial-application member `p|<g>|<d>`. A kernel, enum, effect
+manager or port node, or a global with no node, has no member at depth 0
+(`Nothing`).
 
 -}
 memberIdForDepth : TOpt.Global -> Int -> Maybe (() -> String) -> Step (Maybe Int)
@@ -3834,20 +3682,16 @@ memberIdForDepth g d groundKey s0 =
                             ( mid, s1 ) ->
                                 ( Just mid, s1 )
 
-                    Just (TOpt.Enum _ _) ->
-                        case Engine.standaloneMemberIdFor ("c|" ++ TOpt.toComparableGlobal g) g s0 of
-                            ( mid, s1 ) ->
-                                ( Just mid, s1 )
-
                     Just (TOpt.Box _) ->
                         case Engine.standaloneMemberIdFor ("c|" ++ TOpt.toComparableGlobal g) g s0 of
                             ( mid, s1 ) ->
                                 ( Just mid, s1 )
 
-                    Just (TOpt.Kernel _ _) ->
+                    Just TOpt.Manager ->
                         ( Nothing, s0 )
 
-                    Just (TOpt.Manager _) ->
+                    Just (TOpt.Enum _ _) ->
+                        -- Members are minted only for arrow-typed references, and an enum is not a function.
                         ( Nothing, s0 )
 
                     Just (TOpt.PortIncoming _ _ _) ->
@@ -3882,8 +3726,8 @@ returned unchanged.
 A value of `g`'s type demanded for `g` is `g` itself, so its head arrow can
 only hold `g`, and each arrow below it, up to `g`'s declared arity, can only
 hold `g` partially applied. The head arrow gets the kernel's `k|` member when
-`g` is an alias of a kernel, the `c|` member when `g` is a constructor, enum or
-box, and otherwise `g`'s own member, minted under the key of the demand with
+`g` is an alias of a kernel, the `c|` member when `g` is a constructor or box,
+and otherwise `g`'s own member, minted under the key of the demand with
 its sets widened. The arrow at depth `d` below it gets the partial-application
 member `p|<g>|<d>`. Arrows past the declared arity belong to whatever the body
 returns and are not touched.
@@ -3906,7 +3750,7 @@ stampSelfSpine g monoType s0 =
             groundKey =
                 Just (\() -> Mono.toComparableMonoType (Mono.widenSets monoType))
         in
-        stampSpineGo g groundKey (LssInfer.declaredArityOf g 8 s0) 0 monoType s0
+        stampSpineGo g groundKey (LssInfer.declaredArityOf g s0) 0 monoType s0
 
 
 {-| Stamps the arrows of `monoType`'s result spine from depth `d` up to
@@ -4037,7 +3881,7 @@ enrichFromEnv arg canVar s0 =
                                                         List.foldl
                                                             (\( e, pt ) sAcc -> enrichFromEnv e pt sAcc)
                                                             s3
-                                                            (List.map2 Tuple.pair rest pRest)
+                                                            (List.map2 Tuple.pair (Maybe.toList rest) (Maybe.toList pRest))
 
                                     _ ->
                                         s1
@@ -4178,9 +4022,9 @@ to the kernel's loaded type `funcVar`, and returns `funcVar`.
 A kernel with no fact has every set in its type poisoned (made ⊤). A
 `TypeFaithful` license that applies to `canFuncType` leaves every set as it is;
 one that does not apply poisons everything. A `Positional` row poisons the
-parameters marked `PSFOpaque` and the result when it is so marked, and leaves
-the `PSFApplies` parameters alone; when the type has fewer arrows than the row
-has parameters, everything is poisoned.
+parameters marked `PSFOpaque` and the result, and leaves the `PSFApplies`
+parameters alone; when the type has fewer arrows than the row has parameters,
+everything is poisoned.
 
 At a call this runs after the parameters were unified with the arguments, so a
 poison reaches the argument's own sets, and a set left alone carries what the
@@ -4216,54 +4060,32 @@ poisonKernelArrowsThen ( kPrefix, kHome, kName ) canFuncType funcVar s0 =
                     ( funcVar, Engine.bumpKernelLicensed s )
 
             Just (KernelSetFacts.Positional plan) ->
-                case poisonKernelPerParam plan.params [] funcVar False s of
-                    ( maybeOutcome, s1 ) ->
-                        case maybeOutcome of
+                case poisonKernelPerParam plan.params funcVar s of
+                    ( maybeResVar, s1 ) ->
+                        case maybeResVar of
                             Nothing ->
                                 case Store.poisonArrowSets funcVar s1 of
                                     s2 ->
                                         ( funcVar, Engine.bumpWidenedByKernel s2 )
 
-                            Just ( resVar, tunnelVars, argPoisoned ) ->
-                                let
-                                    resultStep =
-                                        case plan.result of
-                                            KernelSetFacts.PSFOpaque ->
-                                                case Store.poisonArrowSets resVar s1 of
-                                                    s2 ->
-                                                        ( True, s2 )
-
-                                            _ ->
-                                                ( False, s1 )
-                                in
-                                case resultStep of
-                                    ( resPoisoned, s2 ) ->
-                                        case joinKernelTunnels resVar tunnelVars s2 of
-                                            s3 ->
-                                                ( funcVar
-                                                , Engine.bumpKernelFactHit
-                                                    (if argPoisoned || resPoisoned then
-                                                        Engine.bumpWidenedByKernel s3
-
-                                                     else
-                                                        s3
-                                                    )
-                                                )
+                            Just resVar ->
+                                case Store.poisonArrowSets resVar s1 of
+                                    s2 ->
+                                        ( funcVar, Engine.bumpKernelFactHit (Engine.bumpWidenedByKernel s2) )
 
     else
         ( funcVar, s )
 
 
 {-| Walks a kernel type's arrows one per entry of `flows`, poisoning the sets
-of each `PSFOpaque` parameter. Returns the remaining result variable, the
-collected tunnel variables (always none, since no flow adds one), and whether
-anything was poisoned; or `Nothing` when the type runs out of arrows first.
+of each `PSFOpaque` parameter. Returns the remaining result variable, or
+`Nothing` when the type runs out of arrows first.
 -}
-poisonKernelPerParam : List KernelSetFacts.ParamSetFlow -> List Vars.Variable -> Vars.Variable -> Bool -> Step (Maybe ( Vars.Variable, List Vars.Variable, Bool ))
-poisonKernelPerParam flows tunnelsRev v poisoned s0 =
+poisonKernelPerParam : List KernelSetFacts.ParamSetFlow -> Vars.Variable -> Step (Maybe Vars.Variable)
+poisonKernelPerParam flows v s0 =
     case flows of
         [] ->
-            ( Just ( v, List.reverse tunnelsRev, poisoned ), s0 )
+            ( Just v, s0 )
 
         flow :: rest ->
             case Engine.liftIO (UF.get v) s0 of
@@ -4277,25 +4099,10 @@ poisonKernelPerParam flows tunnelsRev v poisoned s0 =
                                 KernelSetFacts.PSFOpaque ->
                                     case Store.poisonArrowSets pParam s1 of
                                         s2 ->
-                                            poisonKernelPerParam rest tunnelsRev pRest True s2
+                                            poisonKernelPerParam rest pRest s2
 
                                 KernelSetFacts.PSFApplies ->
-                                    poisonKernelPerParam rest tunnelsRev pRest poisoned s1
-
-
-{-| Lets the lambda sets of each variable in `vars` flow into the matching
-sets of `resVar` (`LssInfer.flowArrowSetsPlain`).
--}
-joinKernelTunnels : Vars.Variable -> List Vars.Variable -> Engine.S -> Engine.S
-joinKernelTunnels resVar vars s0 =
-    case vars of
-        [] ->
-            s0
-
-        v :: rest ->
-            case LssInfer.flowArrowSetsPlain v resVar s0 of
-                s1 ->
-                    joinKernelTunnels resVar rest s1
+                                    poisonKernelPerParam rest pRest s1
 
 
 {-| Loads a type as a fresh instantiation whose type variables share nothing
@@ -4524,7 +4331,7 @@ sameShapeModuloNumeric a b =
             sameShapeModuloNumeric e1 e2
 
         ( Mono.MTuple _ es1, Mono.MTuple _ es2 ) ->
-            allPairs sameShapeModuloNumeric es1 es2
+            allPairs sameShapeModuloNumeric (Mono.tupleToList es1) (Mono.tupleToList es2)
 
         ( Mono.MCustom _ h1 n1 args1, Mono.MCustom _ h2 n2 args2 ) ->
             h1 == h2 && n1 == n2 && allPairs sameShapeModuloNumeric args1 args2
@@ -4702,38 +4509,39 @@ translateLet def body letCanType sTop =
                                                 s3b
 
         TOpt.TailDef _ name typedArgs tailBody defCanType _ ->
-            case classifyAs Mono.tkClassLet defCanType (Engine.pushLocalMulti Nothing Nothing name sTop) of
-                ( declType, s1 ) ->
-                    case Engine.scoped (\sx -> translate body (Engine.insertVar name declType sx)) s1 of
-                        ( monoBody0, s2 ) ->
-                            -- Takes part in handing nested let-functions' use-site overlays up (see `flushLocalMultiEnrich`).
-                            case Engine.popLocalMulti s2 of
-                                ( maybeEntry, s3 ) ->
-                                    case flushLocalMultiEnrich name maybeEntry [] monoBody0 s3 of
-                                        ( monoBody, s4 ) ->
-                                            case multiInstances maybeEntry of
-                                                Just instances ->
-                                                    translateTailDefInstances name typedArgs tailBody defCanType instances monoBody letCanType s4
+            case
+                Engine.withLocalMulti Nothing
+                    Nothing
+                    name
+                    (\sp ->
+                        case classifyAs Mono.tkClassLet defCanType sp of
+                            ( declType, s1 ) ->
+                                Engine.scoped (\sx -> translate body (Engine.insertVar name declType sx)) s1
+                    )
+                    sTop
+            of
+                ( ( monoBody0, entry ), s3 ) ->
+                    -- Takes part in handing nested let-functions' use-site overlays up (see `flushLocalMultiEnrich`).
+                    case flushLocalMultiEnrich name entry [] monoBody0 s3 of
+                        ( monoBody, s4 ) ->
+                            case multiInstances entry of
+                                Just instances ->
+                                    translateTailDefInstances name typedArgs tailBody defCanType instances monoBody letCanType s4
 
-                                                Nothing ->
-                                                    translateTailDefSingle name typedArgs tailBody defCanType maybeEntry monoBody letCanType s4
+                                Nothing ->
+                                    translateTailDefSingle name typedArgs tailBody defCanType entry monoBody letCanType s4
 
 
 {-| Returns the recorded instances of a let-bound function when there are two
 or more, else `Nothing`.
 -}
-multiInstances : Maybe Engine.NumberMultiEntry -> Maybe (List Engine.NumberInstance)
-multiInstances maybeEntry =
-    case maybeEntry of
-        Just entry ->
-            case Mono.specMapValues entry.instances of
-                (_ :: _ :: _) as instances ->
-                    Just instances
+multiInstances : Engine.NumberMultiEntry -> Maybe (List Engine.NumberInstance)
+multiInstances entry =
+    case Mono.specMapValues entry.instances of
+        (_ :: _ :: _) as instances ->
+            Just instances
 
-                _ ->
-                    Nothing
-
-        Nothing ->
+        _ ->
             Nothing
 
 
@@ -4747,20 +4555,15 @@ come from it (`tailDefBindingTypes`); with none, they are classified. The
 or differs only by `number` pollution.
 
 -}
-translateTailDefSingle : Name -> List ( A.Located Name, Can.Type TypeIds.MVarId ) -> TOpt.Expr TypeIds.MVarId -> Can.Type TypeIds.MVarId -> Maybe Engine.NumberMultiEntry -> Mono.MonoExpr -> Can.Type TypeIds.MVarId -> Step Mono.MonoExpr
-translateTailDefSingle name typedArgs tailBody defCanType maybeEntry monoBody letCanType s4 =
+translateTailDefSingle : Name -> List ( A.Located Name, Can.Type TypeIds.MVarId ) -> TOpt.Expr TypeIds.MVarId -> Can.Type TypeIds.MVarId -> Engine.NumberMultiEntry -> Mono.MonoExpr -> Can.Type TypeIds.MVarId -> Step Mono.MonoExpr
+translateTailDefSingle name typedArgs tailBody defCanType entry monoBody letCanType s4 =
     let
         singleInstance =
-            case maybeEntry of
-                Just entry ->
-                    case Mono.specMapValues entry.instances of
-                        [ inst ] ->
-                            Just inst.monoType
+            case Mono.specMapValues entry.instances of
+                [ inst ] ->
+                    Just inst.monoType
 
-                        _ ->
-                            Nothing
-
-                Nothing ->
+                _ ->
                     Nothing
 
         ( maybeAnnVar, s5 ) =
@@ -4778,8 +4581,7 @@ translateTailDefSingle name typedArgs tailBody defCanType maybeEntry monoBody le
     case tailDefBindingTypes maybeAnnVar typedArgs defCanType s5 of
         ( ( monoParams, defType ), s6 ) ->
             case
-                withLoopFrame name
-                    typedArgs
+                withLoopFrame typedArgs
                     (Engine.scoped
                         (\sx -> translate tailBody (insertVars monoParams (Engine.insertVar name defType sx)))
                     )
@@ -4872,8 +4674,7 @@ retranslateTailAtInstance name ord typedArgs tailBody defCanType instType s0 =
                                     case tailDefBindingTypes (Just annVar) typedArgs defCanType (unifyStepBestEffort annVar demandVar sx2) of
                                         ( ( monoParams, defType ), sx3 ) ->
                                             case
-                                                withLoopFrame name
-                                                    typedArgs
+                                                withLoopFrame typedArgs
                                                     (Engine.scoped
                                                         (\sy -> translate tailBody (insertVars monoParams (Engine.insertVar name defType sy)))
                                                     )
@@ -4988,32 +4789,36 @@ translateNumberMultiLet : Name -> TOpt.Expr TypeIds.MVarId -> TOpt.Expr TypeIds.
 translateNumberMultiLet name defBody body letCanType s0 =
     case translate defBody s0 of
         ( eagerBody, s1 ) ->
-            case Engine.recordNumberInstance name (Mono.typeOf eagerBody) (Engine.pushNumberMulti name s1) of
-                ( _, s2 ) ->
-                    -- Bound for readers other than a variable use, such as a destructor's root.
-                    case Engine.scoped (\sx -> translate body (Engine.insertVar name (Mono.typeOf eagerBody) sx)) s2 of
-                        ( monoBody, s3 ) ->
-                            case Engine.popNumberMulti s3 of
-                                ( maybeEntry, s4 ) ->
-                                    case buildFloatDefs name defBody maybeEntry s4 of
-                                        ( floatDefs, s5 ) ->
-                                            case classifyAs Mono.tkClassLet letCanType s5 of
-                                                ( letType0, s6 ) ->
-                                                    let
-                                                        letType =
-                                                            if
-                                                                Mono.containsAnyMVar letType0
-                                                                    || (not (monoTypeMentionsEco (Mono.typeOf monoBody)) && numericLeafOnlyDiff letType0 (Mono.typeOf monoBody))
-                                                            then
-                                                                Mono.typeOf monoBody
+            case
+                Engine.withNumberMulti name
+                    (\sp ->
+                        case Engine.recordNumberInstance name (Mono.typeOf eagerBody) sp of
+                            ( _, s2 ) ->
+                                -- Bound for readers other than a variable use, such as a destructor's root.
+                                Engine.scoped (\sx -> translate body (Engine.insertVar name (Mono.typeOf eagerBody) sx)) s2
+                    )
+                    s1
+            of
+                ( ( monoBody, entry ), s4 ) ->
+                    case buildFloatDefs name defBody entry s4 of
+                        ( floatDefs, s5 ) ->
+                            case classifyAs Mono.tkClassLet letCanType s5 of
+                                ( letType0, s6 ) ->
+                                    let
+                                        letType =
+                                            if
+                                                Mono.containsAnyMVar letType0
+                                                    || (not (monoTypeMentionsEco (Mono.typeOf monoBody)) && numericLeafOnlyDiff letType0 (Mono.typeOf monoBody))
+                                            then
+                                                Mono.typeOf monoBody
 
-                                                            else
-                                                                letType0
+                                            else
+                                                letType0
 
-                                                        bodyWithFloats =
-                                                            List.foldl (\d acc -> Mono.MonoLet d acc (Mono.typeOf acc)) monoBody (List.reverse floatDefs)
-                                                    in
-                                                    ( Mono.MonoLet (Mono.MonoDef name eagerBody) bodyWithFloats letType, s6 )
+                                        bodyWithFloats =
+                                            List.foldl (\d acc -> Mono.MonoLet d acc (Mono.typeOf acc)) monoBody (List.reverse floatDefs)
+                                    in
+                                    ( Mono.MonoLet (Mono.MonoDef name eagerBody) bodyWithFloats letType, s6 )
 
 
 {-| Returns a definition for each recorded instance of a let-bound number
@@ -5021,21 +4826,16 @@ other than the one that keeps the bare name, each translated again at its
 instance's type (`retranslateAt`), so that `10 + 20` becomes a `Float`
 addition in a `Float` copy.
 -}
-buildFloatDefs : Name -> TOpt.Expr TypeIds.MVarId -> Maybe Engine.NumberMultiEntry -> Step (List Mono.MonoDef)
-buildFloatDefs name defBody maybeEntry s0 =
-    case maybeEntry of
-        Just entry ->
-            Engine.traverse
-                (\inst sx ->
-                    case retranslateAt defBody inst.monoType sx of
-                        ( e, sx1 ) ->
-                            ( Mono.MonoDef inst.freshName e, sx1 )
-                )
-                (Mono.specMapValues entry.instances |> List.filter (\inst -> inst.freshName /= name))
-                s0
-
-        Nothing ->
-            ( [], s0 )
+buildFloatDefs : Name -> TOpt.Expr TypeIds.MVarId -> Engine.NumberMultiEntry -> Step (List Mono.MonoDef)
+buildFloatDefs name defBody entry s0 =
+    Engine.traverse
+        (\inst sx ->
+            case retranslateAt defBody inst.monoType sx of
+                ( e, sx1 ) ->
+                    ( Mono.MonoDef inst.freshName e, sx1 )
+        )
+        (Mono.specMapValues entry.instances |> List.filter (\inst -> inst.freshName /= name))
+        s0
 
 
 {-| Translates an expression again at `instType`, as `retranslateWithTag`
@@ -5118,7 +4918,7 @@ hasNumberVar defCanType s =
 
 
 {-| Tells whether a type is one a let-bound number can be specialized at per
-use: `Int`, `Float`, a `number` variable, a non-empty tuple or record made only
+use: `Int`, `Float`, a `number` variable, a tuple or non-empty record made only
 of such types, a list of one, or a custom type with at least one such argument
 and no other argument that mentions a number.
 -}
@@ -5135,7 +4935,7 @@ isNumericFixableShape monoType =
             True
 
         Mono.MTuple _ elems ->
-            not (List.isEmpty elems) && List.all isNumericFixableShape elems
+            List.all isNumericFixableShape (Mono.tupleToList elems)
 
         Mono.MRecord _ fields ->
             not (Dict.isEmpty fields) && List.all isNumericFixableShape (Dict.values fields)
@@ -5170,7 +4970,7 @@ monoTypeMentionsNumeric mt =
             monoTypeMentionsNumeric t
 
         Mono.MTuple _ ts ->
-            List.any monoTypeMentionsNumeric ts
+            List.any monoTypeMentionsNumeric (Mono.tupleToList ts)
 
         Mono.MRecord _ fields ->
             Dict.foldl (\_ t acc -> acc || monoTypeMentionsNumeric t) False fields
@@ -5350,33 +5150,32 @@ specializeNumberDestruct : Name -> TOpt.Path -> TOpt.Meta TypeIds.MVarId -> Name
 specializeNumberDestruct dname path dmeta rootName eagerRootType body s0 =
     case classifyAs Mono.tkClassDestr dmeta.tipe s0 of
         ( eagerLeaf, s1 ) ->
-            case Engine.recordNumberInstance dname eagerLeaf (Engine.pushNumberMulti dname s1) of
-                ( _, s2 ) ->
-                    case Engine.scoped (\sx -> translate body (Engine.insertVar dname eagerLeaf sx)) s2 of
-                        ( monoBody, s3 ) ->
-                            case Engine.popNumberMulti s3 of
-                                ( maybeEntry, s4 ) ->
-                                    let
-                                        dnameUsed =
-                                            exprReferencesLocal dname monoBody
+            case
+                Engine.withNumberMulti dname
+                    (\sp ->
+                        case Engine.recordNumberInstance dname eagerLeaf sp of
+                            ( _, s2 ) ->
+                                Engine.scoped (\sx -> translate body (Engine.insertVar dname eagerLeaf sx)) s2
+                    )
+                    s1
+            of
+                ( ( monoBody, entry ), s4 ) ->
+                    let
+                        dnameUsed =
+                            exprReferencesLocal dname monoBody
 
-                                        instances =
-                                            case maybeEntry of
-                                                Just e ->
-                                                    List.filter (\i -> i.freshName /= dname || dnameUsed) (Mono.specMapValues e.instances)
-
-                                                Nothing ->
-                                                    []
-                                    in
-                                    case Engine.traverse (buildRefinedDestructor rootName eagerRootType path) instances s4 of
-                                        ( maybeDestructors, s5 ) ->
-                                            let
-                                                destructors =
-                                                    List.filterMap identity maybeDestructors
-                                            in
-                                            ( List.foldl (\md acc -> Mono.MonoDestruct md acc (Mono.typeOf acc)) monoBody (List.reverse destructors)
-                                            , s5
-                                            )
+                        instances =
+                            List.filter (\i -> i.freshName /= dname || dnameUsed) (Mono.specMapValues entry.instances)
+                    in
+                    case Engine.traverse (buildRefinedDestructor rootName eagerRootType path) instances s4 of
+                        ( maybeDestructors, s5 ) ->
+                            let
+                                destructors =
+                                    List.filterMap identity maybeDestructors
+                            in
+                            ( List.foldl (\md acc -> Mono.MonoDestruct md acc (Mono.typeOf acc)) monoBody (List.reverse destructors)
+                            , s5
+                            )
 
 
 {-| Builds, for one recorded instance of a destructured name, the root
@@ -5398,7 +5197,7 @@ buildRefinedDestructorWith gte rootName eagerRootType path inst s0 =
         Just refinedRootType ->
             case Engine.recordNumberInstance rootName refinedRootType s0 of
                 ( ( freshRootName, _ ), s1 ) ->
-                    case specializePath (rewriteRootInPath rootName freshRootName path) (Engine.insertVar freshRootName refinedRootType s1) of
+                    case specializePath (replacePathRoot freshRootName path) (Engine.insertVar freshRootName refinedRootType s1) of
                         ( monoPath, s2 ) ->
                             let
                                 dtype =
@@ -5451,9 +5250,6 @@ refineRootInstance gte container path leaf =
             navigateType gte container subPath
                 |> Maybe.andThen (\subC -> replaceUnboxSlot gte subC leaf)
                 |> Maybe.andThen (\newSub -> refineRootInstance gte container subPath newSub)
-
-        _ ->
-            Nothing
 
 
 {-| Returns the type of a let-bound number root `eagerRootType` whose slot
@@ -5574,7 +5370,7 @@ matchParams canType mono acc =
             Just acc
 
         ( Can.TTuple a b rest, Mono.MTuple _ ms ) ->
-            matchList (a :: b :: rest) ms acc
+            matchList (a :: b :: Maybe.toList rest) (Mono.tupleToList ms) acc
 
         ( Can.TUnit, _ ) ->
             Just acc
@@ -5604,10 +5400,8 @@ matchParams canType mono acc =
                         )
                     )
 
-        ( Can.TAlias _ _ _ (Can.Filled inner), _ ) ->
-            matchParams inner mono acc
-
         ( Can.TAlias _ _ args (Can.Holey inner), _ ) ->
+            -- Declared field types hold only `Holey` aliases; `Filled` ones come from the type solver.
             -- Match the body with the formals, then each argument with its formal's binding.
             matchParams inner mono Dict.empty
                 |> Maybe.andThen
@@ -5661,7 +5455,9 @@ replaceUnboxSlot gte container leaf =
 
 {-| Returns the type of the slot `path` selects in `container`, or `Nothing`
 for a list path or a path it cannot follow. A constructor field's type is its
-declared type instantiated at `container`'s type arguments.
+declared type instantiated at `container`'s type arguments. A record field step
+never reaches it: record patterns bind names only, so a `Field` step is never
+under another step.
 -}
 navigateType : TypeEnv.GlobalTypeEnv -> Mono.MonoType -> TOpt.Path -> Maybe Mono.MonoType
 navigateType gte container path =
@@ -5683,9 +5479,6 @@ navigateType gte container path =
                             _ ->
                                 tupleSlot c (Index.toMachine idx)
                     )
-
-        TOpt.Field fieldName subPath ->
-            navigateType gte container subPath |> Maybe.andThen (recordSlot fieldName)
 
         TOpt.Unbox subPath ->
             navigateType gte container subPath |> Maybe.andThen (unboxSlot gte)
@@ -5749,19 +5542,7 @@ tupleSlot : Mono.MonoType -> Int -> Maybe Mono.MonoType
 tupleSlot t i =
     case t of
         Mono.MTuple _ elems ->
-            List.head (List.drop i elems)
-
-        _ ->
-            Nothing
-
-
-{-| Returns the type of record field `f`.
--}
-recordSlot : String -> Mono.MonoType -> Maybe Mono.MonoType
-recordSlot f t =
-    case t of
-        Mono.MRecord _ fields ->
-            Dict.get f fields
+            List.head (List.drop i (Mono.tupleToList elems))
 
         _ ->
             Nothing
@@ -5774,12 +5555,12 @@ replaceIndexSlot : Mono.MonoType -> Int -> Mono.MonoType -> Maybe Mono.MonoType
 replaceIndexSlot t i leaf =
     case t of
         Mono.MTuple _ elems ->
-            case List.head (List.drop i elems) of
+            case List.head (List.drop i (Mono.tupleToList elems)) of
                 Just old ->
                     Just
                         (substNumberVars (bindNumberVars old leaf Dict.empty)
                             (Mono.mTuple
-                                (List.indexedMap
+                                (Mono.tupleIndexedMap
                                     (\j x ->
                                         if j == i then
                                             leaf
@@ -5846,7 +5627,7 @@ bindNumberVars old new acc =
             bindNumberVars a b acc
 
         ( Mono.MTuple _ xs, Mono.MTuple _ ys ) ->
-            bindNumberVarsList xs ys acc
+            bindNumberVarsList (Mono.tupleToList xs) (Mono.tupleToList ys) acc
 
         ( Mono.MRecord _ fa, Mono.MRecord _ fb ) ->
             Dict.foldl
@@ -5908,7 +5689,7 @@ substNumberVars bindings t =
                 Mono.mList (substNumberVars bindings e)
 
             Mono.MTuple _ es ->
-                Mono.mTuple (List.map (substNumberVars bindings) es)
+                Mono.mTuple (Mono.tupleMap (substNumberVars bindings) es)
 
             Mono.MRecord _ fields ->
                 Mono.mRecord (Dict.map (\_ ft -> substNumberVars bindings ft) fields)
@@ -5956,9 +5737,6 @@ pathRootName path =
         TOpt.Index _ _ sub ->
             pathRootName sub
 
-        TOpt.ArrayIndex _ sub ->
-            pathRootName sub
-
         TOpt.Field _ sub ->
             pathRootName sub
 
@@ -5966,32 +5744,22 @@ pathRootName path =
             pathRootName sub
 
 
-{-| Returns the path with its root variable renamed from `oldName` to
-`newName`.
+{-| Returns the path with its root variable replaced by `newName`.
 -}
-rewriteRootInPath : Name -> Name -> TOpt.Path -> TOpt.Path
-rewriteRootInPath oldName newName path =
+replacePathRoot : Name -> TOpt.Path -> TOpt.Path
+replacePathRoot newName path =
     case path of
-        TOpt.Root name ->
-            TOpt.Root
-                (if name == oldName then
-                    newName
-
-                 else
-                    name
-                )
+        TOpt.Root _ ->
+            TOpt.Root newName
 
         TOpt.Index i h sub ->
-            TOpt.Index i h (rewriteRootInPath oldName newName sub)
-
-        TOpt.ArrayIndex i sub ->
-            TOpt.ArrayIndex i (rewriteRootInPath oldName newName sub)
+            TOpt.Index i h (replacePathRoot newName sub)
 
         TOpt.Field f sub ->
-            TOpt.Field f (rewriteRootInPath oldName newName sub)
+            TOpt.Field f (replacePathRoot newName sub)
 
         TOpt.Unbox sub ->
-            TOpt.Unbox (rewriteRootInPath oldName newName sub)
+            TOpt.Unbox (replacePathRoot newName sub)
 
 
 {-| Tells whether a type has a `number` variable anywhere: a slot such as
@@ -6008,7 +5776,7 @@ mentionsNumberVar mt =
             mentionsNumberVar t
 
         Mono.MTuple _ ts ->
-            List.any mentionsNumberVar ts
+            List.any mentionsNumberVar (Mono.tupleToList ts)
 
         Mono.MRecord _ fields ->
             Dict.foldl (\_ t acc -> acc || mentionsNumberVar t) False fields
@@ -6069,7 +5837,7 @@ typeContainsCanLambda t =
             Dict.foldl (\_ (Can.FieldType _ ft) acc -> acc || typeContainsCanLambda ft) False fields
 
         Can.TTuple a b rest ->
-            List.any typeContainsCanLambda (a :: b :: rest)
+            List.any typeContainsCanLambda (a :: b :: Maybe.toList rest)
 
         Can.TAlias _ _ args (Can.Filled inner) ->
             typeContainsCanLambda inner || List.any (\( _, at ) -> typeContainsCanLambda at) args
@@ -6117,38 +5885,41 @@ translateLocalMultiLet name defBody body letCanType s0 =
     let
         sA =
             { s0 | localCanTypes = Dict.insert name (TOpt.typeOf defBody) s0.localCanTypes }
-
-        sB =
-            Engine.pushLocalMulti (rhsLamOf defBody) (rhsPapOf defBody sA) name sA
     in
-    case classifyAs Mono.tkClassLet (TOpt.typeOf defBody) sB of
-        ( declType, s1 ) ->
-            -- Bound for readers other than a variable use, such as a destructor's root.
-            case Engine.scoped (\sx -> translate body (Engine.insertVar name declType sx)) s1 of
-                ( monoBody, s2 ) ->
-                    case Engine.popLocalMulti s2 of
-                        ( maybeEntry, s3 ) ->
-                            case buildLocalDefs name defBody maybeEntry s3 of
-                                ( instanceDefs, s4 ) ->
-                                    case flushLocalMultiEnrich name maybeEntry instanceDefs monoBody s4 of
-                                        ( monoBody1, s5 ) ->
-                                            case classifyAs Mono.tkClassLet letCanType s5 of
-                                                ( letType0, s6 ) ->
-                                                    let
-                                                        letType =
-                                                            if
-                                                                Mono.containsAnyMVar letType0
-                                                                    || (not (monoTypeMentionsEco (Mono.typeOf monoBody)) && numericLeafOnlyDiff letType0 (Mono.typeOf monoBody))
-                                                            then
-                                                                Mono.typeOf monoBody
+    case
+        Engine.withLocalMulti (rhsLamOf defBody)
+            (rhsPapOf defBody sA)
+            name
+            (\sB ->
+                case classifyAs Mono.tkClassLet (TOpt.typeOf defBody) sB of
+                    ( declType, s1 ) ->
+                        -- Bound for readers other than a variable use, such as a destructor's root.
+                        Engine.scoped (\sx -> translate body (Engine.insertVar name declType sx)) s1
+            )
+            sA
+    of
+        ( ( monoBody, entry ), s3 ) ->
+            case buildLocalDefs name defBody entry s3 of
+                ( instanceDefs, s4 ) ->
+                    case flushLocalMultiEnrich name entry instanceDefs monoBody s4 of
+                        ( monoBody1, s5 ) ->
+                            case classifyAs Mono.tkClassLet letCanType s5 of
+                                ( letType0, s6 ) ->
+                                    let
+                                        letType =
+                                            if
+                                                Mono.containsAnyMVar letType0
+                                                    || (not (monoTypeMentionsEco (Mono.typeOf monoBody)) && numericLeafOnlyDiff letType0 (Mono.typeOf monoBody))
+                                            then
+                                                Mono.typeOf monoBody
 
-                                                            else
-                                                                letType0
-                                                    in
-                                                    ( List.foldl (\d acc -> Mono.MonoLet d acc (Mono.typeOf acc)) monoBody1 (List.reverse instanceDefs)
-                                                        |> retypeLet letType
-                                                    , s6
-                                                    )
+                                            else
+                                                letType0
+                                    in
+                                    ( List.foldl (\d acc -> Mono.MonoLet d acc (Mono.typeOf acc)) monoBody1 (List.reverse instanceDefs)
+                                        |> retypeLet letType
+                                    , s6
+                                    )
 
 
 {-| Returns the expression with the type of its outermost `MonoLet` replaced
@@ -6182,20 +5953,15 @@ its body once (`overlayLocalMultiUses`). A group's uses inside its own
 right-hand sides are not overlaid; uses of enclosing groups' instances are.
 
 -}
-flushLocalMultiEnrich : Name -> Maybe Engine.NumberMultiEntry -> List Mono.MonoDef -> Mono.MonoExpr -> Step Mono.MonoExpr
-flushLocalMultiEnrich defName maybeEntry instanceDefs monoBody s0 =
+flushLocalMultiEnrich : Name -> Engine.NumberMultiEntry -> List Mono.MonoDef -> Mono.MonoExpr -> Step Mono.MonoExpr
+flushLocalMultiEnrich defName entry instanceDefs monoBody s0 =
     if not s0.env.lss.enabled then
         ( monoBody, s0 )
 
     else
         let
             inherited =
-                case maybeEntry of
-                    Just entry ->
-                        entry.pendingEnrich
-
-                    Nothing ->
-                        Dict.empty
+                entry.pendingEnrich
 
             -- Not yet wrapped around `monoBody`, so a walk here binds them at the root.
             own =
@@ -6325,7 +6091,15 @@ olmExpr groups env expr =
                     Just (Mono.MonoRecordUpdate (Maybe.withDefault record mr) (Maybe.withDefault updates mu) t)
 
         Mono.MonoTupleCreate region elements t ->
-            Maybe.map (\e -> Mono.MonoTupleCreate region e t) (olmList groups env elements)
+            let
+                results =
+                    Mono.tupleMap (\e -> ( e, olmExpr groups env e )) elements
+            in
+            if List.any (\( _, me ) -> me /= Nothing) (Mono.tupleToList results) then
+                Just (Mono.MonoTupleCreate region (Mono.tupleMap (\( e, me ) -> Maybe.withDefault e me) results) t)
+
+            else
+                Nothing
 
         Mono.MonoLiteral _ _ ->
             Nothing
@@ -6546,7 +6320,7 @@ olmDecider groups env decider =
                     Just (Mono.Chain test (Maybe.withDefault success ms) (Maybe.withDefault failure mf))
 
         Mono.FanOut path edges fallback ->
-            case ( olmEdges groups env edges, olmDecider groups env fallback ) of
+            case ( olmNonemptyEdges groups env edges, olmDecider groups env fallback ) of
                 ( Nothing, Nothing ) ->
                     Nothing
 
@@ -6556,6 +6330,19 @@ olmDecider groups env decider =
 
 {-| Overlays the decision trees of a fan-out's edges, or returns `Nothing`
 when none changes.
+-}
+olmNonemptyEdges : Dict.Dict String ( String, Mono.MonoType ) -> Dict.Dict String Mono.MonoType -> NE.Nonempty ( a, Mono.Decider Mono.MonoChoice ) -> Maybe (NE.Nonempty ( a, Mono.Decider Mono.MonoChoice ))
+olmNonemptyEdges groups env (NE.Nonempty ( test, d ) rest) =
+    case ( olmDecider groups env d, olmEdges groups env rest ) of
+        ( Nothing, Nothing ) ->
+            Nothing
+
+        ( md, mr ) ->
+            Just (NE.Nonempty ( test, Maybe.withDefault d md ) (Maybe.withDefault rest mr))
+
+
+{-| Overlays the decision trees of a list of fan-out edges, or returns
+`Nothing` when none changes.
 -}
 olmEdges : Dict.Dict String ( String, Mono.MonoType ) -> Dict.Dict String Mono.MonoType -> List ( a, Mono.Decider Mono.MonoChoice ) -> Maybe (List ( a, Mono.Decider Mono.MonoChoice ))
 olmEdges groups env edges =
@@ -6685,28 +6472,23 @@ translated again at its type under the instance's position in recording order
 (`retranslateAtInstance`). An unused function gets one definition under its
 own name, translated once in the item's store.
 -}
-buildLocalDefs : Name -> TOpt.Expr TypeIds.MVarId -> Maybe Engine.NumberMultiEntry -> Step (List Mono.MonoDef)
-buildLocalDefs name defBody maybeEntry s0 =
-    case maybeEntry of
-        Just entry ->
-            if Mono.specMapIsEmpty entry.instances then
-                case translate defBody s0 of
-                    ( e, s1 ) ->
-                        ( [ Mono.MonoDef name e ], s1 )
+buildLocalDefs : Name -> TOpt.Expr TypeIds.MVarId -> Engine.NumberMultiEntry -> Step (List Mono.MonoDef)
+buildLocalDefs name defBody entry s0 =
+    if Mono.specMapIsEmpty entry.instances then
+        case translate defBody s0 of
+            ( e, s1 ) ->
+                ( [ Mono.MonoDef name e ], s1 )
 
-            else
-                -- Instances iterate in recording order, the order their `$N` names were given in.
-                Engine.traverse
-                    (\( ord, inst ) sx ->
-                        case retranslateAtInstance name ord defBody inst.monoType sx of
-                            ( e, sx1 ) ->
-                                ( Mono.MonoDef inst.freshName (MonoTraverse.renameLocal name inst.freshName e), sx1 )
-                    )
-                    (List.indexedMap Tuple.pair (Mono.specMapValues entry.instances))
-                    s0
-
-        Nothing ->
-            ( [], s0 )
+    else
+        -- Instances iterate in recording order, the order their `$N` names were given in.
+        Engine.traverse
+            (\( ord, inst ) sx ->
+                case retranslateAtInstance name ord defBody inst.monoType sx of
+                    ( e, sx1 ) ->
+                        ( Mono.MonoDef inst.freshName (MonoTraverse.renameLocal name inst.freshName e), sx1 )
+            )
+            (List.indexedMap Tuple.pair (Mono.specMapValues entry.instances))
+            s0
 
 
 
@@ -6727,7 +6509,7 @@ specializeDecider caseCanType root decider s0 =
 
         TOpt.Chain testChain success failure ->
             case
-                Engine.traverse
+                Engine.traverseNonempty
                     (\( path, test ) sx ->
                         case specializeDtPath root path sx of
                             ( mp, sx1 ) ->
@@ -6747,7 +6529,7 @@ specializeDecider caseCanType root decider s0 =
             case specializeDtPath root path s0 of
                 ( monoPath, s1 ) ->
                     case
-                        Engine.traverse
+                        Engine.traverseNonempty
                             (\( test, dec ) sx ->
                                 case Engine.scoped (specializeDecider caseCanType root dec) sx of
                                     ( md, sx1 ) ->
@@ -6828,7 +6610,7 @@ deciderAnnoFold classified decider s =
         Mono.FanOut _ edges def ->
             List.foldl (\( _, d ) acc -> deciderAnnoFold classified d acc)
                 (deciderAnnoFold classified def s)
-                edges
+                (NE.toList edges)
 
 
 {-| Compares two types' lambda sets position by position under the
@@ -6859,8 +6641,8 @@ annoPairFoldWith prefix a b s =
             annoPairFoldWith prefix xa xb s
 
         ( Mono.MTuple _ xsa, Mono.MTuple _ xsb ) ->
-            if List.length xsa == List.length xsb then
-                List.foldl (\( x, y ) acc -> annoPairFoldWith prefix x y acc) s (List.map2 Tuple.pair xsa xsb)
+            if Mono.tupleArity xsa == Mono.tupleArity xsb then
+                List.foldl (\( x, y ) acc -> annoPairFoldWith prefix x y acc) s (List.map2 Tuple.pair (Mono.tupleToList xsa) (Mono.tupleToList xsb))
 
             else
                 s
@@ -7047,7 +6829,7 @@ deciderLeafTypes decider =
             deciderLeafTypes yes ++ deciderLeafTypes no
 
         Mono.FanOut _ edges def ->
-            List.concatMap (\( _, d ) -> deciderLeafTypes d) edges ++ deciderLeafTypes def
+            List.concatMap (\( _, d ) -> deciderLeafTypes d) (NE.toList edges) ++ deciderLeafTypes def
 
 
 {-| Returns `acc` with each lambda set joined, position by position, with the
@@ -7074,11 +6856,12 @@ joinBranchTypes acc next =
             Mono.mList (joinBranchTypes xa xb)
 
         ( Mono.MTuple _ xsa, Mono.MTuple _ xsb ) ->
-            if List.length xsa == List.length xsb then
-                Mono.mTuple (List.map2 joinBranchTypes xsa xsb)
+            case Mono.tupleMap2 joinBranchTypes xsa xsb of
+                Just xs ->
+                    Mono.mTuple xs
 
-            else
-                acc
+                Nothing ->
+                    acc
 
         ( Mono.MRecord _ fieldsA, Mono.MRecord _ fieldsB ) ->
             if Dict.keys fieldsA == Dict.keys fieldsB then
@@ -7216,13 +6999,6 @@ specializePath path s0 =
                         ( resultType, s2 ) ->
                             ( Mono.MonoIndex i (hintToKind hint) resultType monoSubPath, s2 )
 
-        TOpt.ArrayIndex idx subPath ->
-            case specializePath subPath s0 of
-                ( monoSubPath, s1 ) ->
-                    case computeArrayElementType (Mono.getMonoPathType monoSubPath) s1 of
-                        ( resultType, s2 ) ->
-                            ( Mono.MonoIndex idx (Mono.CustomContainer "") resultType monoSubPath, s2 )
-
         TOpt.Field fieldName subPath ->
             case specializePath subPath s0 of
                 ( monoSubPath, s1 ) ->
@@ -7281,7 +7057,7 @@ projIndexType kind index container s0 =
         PTuple ->
             case container of
                 Mono.MTuple _ elems ->
-                    case List.head (List.drop index elems) of
+                    case List.head (List.drop index (Mono.tupleToList elems)) of
                         Just t ->
                             ( t, s0 )
 
@@ -7293,19 +7069,6 @@ projIndexType kind index container s0 =
 
         PCustom ctorName ->
             computeCustomFieldType ctorName index container s0
-
-
-{-| Returns the element type of an `Array` type, aborting the build for any
-other type.
--}
-computeArrayElementType : Mono.MonoType -> Step Mono.MonoType
-computeArrayElementType container s0 =
-    case container of
-        Mono.MCustom _ _ "Array" [ elem ] ->
-            ( elem, s0 )
-
-        _ ->
-            ( Engine.crashFailure (EngineBug "array projection: container not Array"), s0 )
 
 
 {-| Returns the type of field `index` of constructor `ctorName`, with the
@@ -7394,7 +7157,7 @@ instantiateUnionType vars typeArgs canArgType s0 =
                     Analysis.convertCanTypeNameToMVarId nameToId canArgType
 
                 ( mt, intern1 ) =
-                    Zonk.canTypeToMonoWithI s1.superTable subst convertedArg s1.intern
+                    Zonk.canTypeToMonoWithI subst convertedArg s1.intern
             in
             ( mt, { s1 | intern = intern1 } )
 
@@ -7449,8 +7212,7 @@ hintToProj hint =
             PCustom name
 
 
-{-| Returns the container kind a decision-tree path step's hint names; an
-unknown hint is a custom container with an empty name.
+{-| Returns the container kind a decision-tree path step's hint names.
 -}
 dtHintToKind : TypedPath.ContainerHint -> Mono.ContainerKind
 dtHintToKind hint =
@@ -7467,12 +7229,8 @@ dtHintToKind hint =
         TypedPath.HintCustom name ->
             Mono.CustomContainer name
 
-        TypedPath.HintUnknown ->
-            Mono.CustomContainer ""
 
-
-{-| Returns the projection a decision-tree path step's hint calls for; an
-unknown hint is a custom constructor with an empty name.
+{-| Returns the projection a decision-tree path step's hint calls for.
 -}
 dtHintToProj : TypedPath.ContainerHint -> ProjKind
 dtHintToProj hint =
@@ -7488,9 +7246,6 @@ dtHintToProj hint =
 
         TypedPath.HintCustom name ->
             PCustom name
-
-        TypedPath.HintUnknown ->
-            PCustom ""
 
 
 
@@ -7509,37 +7264,3 @@ lookupAnnotation global s =
 toptToMonoGlobal : TOpt.Global -> Mono.Global
 toptToMonoGlobal (TOpt.Global home name) =
     Mono.Global home name
-
-
-{-| Returns a label for an expression's form, used in the message of an
-unsupported-expression failure.
--}
-nodeKind : TOpt.Expr TypeIds.MVarId -> String
-nodeKind expr =
-    case expr of
-        TOpt.Function _ _ _ _ ->
-            "closure/lambda (M4)"
-
-        TOpt.TrackedFunction _ _ _ _ ->
-            "closure/lambda (M4)"
-
-        TOpt.Case _ _ _ _ _ ->
-            "case/decision-tree (M3)"
-
-        TOpt.Accessor _ _ _ ->
-            "accessor (M3)"
-
-        TOpt.Destruct _ _ _ ->
-            "destructure (M3)"
-
-        TOpt.VarDebug _ _ _ _ _ ->
-            "Debug reference (M6)"
-
-        TOpt.VarCycle _ _ _ _ ->
-            "cycle reference (M6)"
-
-        TOpt.Shader _ _ _ _ ->
-            "shader (M6)"
-
-        _ ->
-            "expression"

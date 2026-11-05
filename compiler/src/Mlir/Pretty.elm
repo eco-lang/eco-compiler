@@ -1,4 +1,4 @@
-module Mlir.Pretty exposing (ppModule, ppModuleHeader, ppModuleFooter, ppTopLevelOp)
+module Mlir.Pretty exposing (ppModuleHeader, ppModuleFooter, ppTopLevelOp)
 
 {-| The compiler can write its MLIR program out as text, and this module turns
 the in-memory model of `Mlir.Mlir` into that text.
@@ -20,8 +20,8 @@ One part of the generic form is not held by the operation it describes: an
 has an `_operand_types` attribute, a list of `TypeAttr`s, those types are
 printed. Otherwise each operand is looked up among the values in scope: the
 arguments of its block and of every enclosing block, and the results of the
-operations printed before it in each of those blocks (for `ppModule`, also the
-earlier top-level operations; `ppTopLevelOp` starts from nothing). The lookup
+operations printed before it in each of those blocks (a top-level operation
+starts from nothing). The lookup
 does not reach into another block of the same region, and an operand it does
 not find is left out, so the printed operand types can be fewer than the
 operands. The `_operand_types` attribute is itself printed with the other
@@ -30,12 +30,8 @@ attributes.
 Locations are accepted but not printed: the location of every operation and of
 the module prints as nothing.
 
-A module can be printed whole by `ppModule`, or piece by piece as
-`ppModuleHeader`, then `ppTopLevelOp` for each top-level operation, then
-`ppModuleFooter`. Joined together, the pieces are the text `ppModule` gives for
-a module of those operations, as long as no top-level operation names the
-result of an earlier one as an operand without an `_operand_types` attribute
-(`ppModule` can look such an operand's type up; `ppTopLevelOp` cannot).
+A module is printed piece by piece: `ppModuleHeader`, then `ppTopLevelOp` for
+each top-level operation, then `ppModuleFooter`.
 
 A `StringAttr` holds its text with escape sequences written out, as
 `Mlir.Mlir` describes, and is rewritten on the way out: a `\uXXXX` escape
@@ -47,7 +43,7 @@ loses its backslash, and a `"` that no backslash escapes gains one.
 The file also holds a walk that collects, under its `sym_name`, every operation
 that has one. Nothing uses it.
 
-@docs ppModule, ppModuleHeader, ppModuleFooter, ppTopLevelOp
+@docs ppModuleHeader, ppModuleFooter, ppTopLevelOp
 
 -}
 
@@ -56,7 +52,6 @@ import Mlir.Mlir
     exposing
         ( MlirAttr(..)
         , MlirBlock
-        , MlirModule
         , MlirOp
         , MlirRegion(..)
         , MlirType(..)
@@ -84,17 +79,15 @@ type alias SsaEnv =
 --==== Pretty Printer (generic MLIR form)
 
 
-{-| The line that opens a printed module, and the first piece of text
-`ppModule` produces.
+{-| The line that opens a printed module.
 -}
 ppModuleHeader : String
 ppModuleHeader =
     "module {\n"
 
 
-{-| Returns the line that closes a printed module, the last piece of text
-`ppModule` produces. Locations are not printed, so `loc` makes no difference to
-the result.
+{-| The line that closes a printed module. Locations are not printed, so it
+carries none.
 -}
 ppModuleFooter : String
 ppModuleFooter =
@@ -115,34 +108,6 @@ is an array. Otherwise its operand type list is empty.
 ppTopLevelOp : MlirOp -> String
 ppTopLevelOp op =
     ppOp 1 Dict.empty op
-
-
-{-| Returns the text of a whole module: `ppModuleHeader`, then each operation
-of its body, then `ppModuleFooter`. Each operation is printed as `ppTopLevelOp`
-prints it, except that the results of the operations before it are in scope for
-its operand types.
--}
-ppModule : MlirModule -> String
-ppModule m =
-    let
-        header =
-            ppModuleHeader
-
-        step op ( linesRev, env ) =
-            ( ppOp 1 env op :: linesRev
-            , List.foldl (\( n, t ) acc -> Dict.insert n t acc) env op.results
-            )
-
-        bodyStr =
-            List.foldl step ( [], Dict.empty ) m.body
-                |> Tuple.first
-                |> List.reverse
-                |> String.concat
-
-        footer =
-            ppModuleFooter
-    in
-    header ++ bodyStr ++ footer
 
 
 {-| Returns the text of a region's blocks, the entry block first and then the
@@ -391,9 +356,6 @@ ppType ty =
         I8 ->
             "i8"
 
-        I16 ->
-            "i16"
-
         I32 ->
             "i32"
 
@@ -422,14 +384,8 @@ ppType ty =
 indentPad : Int -> String
 indentPad n =
     case n of
-        0 ->
-            ""
-
         1 ->
             "  "
-
-        2 ->
-            "    "
 
         3 ->
             "      "

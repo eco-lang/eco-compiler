@@ -1,7 +1,7 @@
 module Compiler.GenerateMlir.BytesFusion.LoopIR exposing
-    ( Endianness(..), WidthExpr(..), Op(..), DecoderOp(..)
+    ( Endianness(..), WidthExpr(..), EncoderProgram, Op(..)
+    , DecoderProgram, DecoderOp(..), FixedRead(..)
     , ListOrder(..), LoopCount(..)
-    , simplifyWidth
     )
 
 {-| The small vocabulary in which a fused `elm/bytes` encoder or decoder is
@@ -11,8 +11,8 @@ An `elm/bytes` encoder or decoder can be compiled to straight reads and writes
 on a buffer, instead of being built as a value and walked at run time, when its
 shape is known at compile time. This module is the description of that shape:
 a list of operations, each one a read, a write, a loop, or a step that combines
-earlier results. It holds only types and one width-simplifying function, and
-does no recognition or emission itself.
+earlier results. It holds only types, and does no recognition or emission
+itself.
 
 Two ideas run through every type here.
 
@@ -25,22 +25,18 @@ Values are not lowered here. A value to be written, a length, a function to
 apply or a constant to produce is kept as a `Mono.MonoExpr`, to be compiled
 when the operations are emitted.
 
-An encoder is a list of `Op`: allocate a buffer whose size is a `WidthExpr`,
-write into it, and return it. A decoder is a list of `DecoderOp`: start reading,
-read and combine values, each result named by a _placeholder_ (a `String` name
-that a later operation uses to refer to that result), and finish with the
-result or with failure.
+An encoder is an `EncoderProgram`: allocate a buffer whose size is a
+`WidthExpr`, write into it with a list of `Op`, and return it. A decoder is a
+`DecoderProgram`: read and combine values with a list of `DecoderOp`, each
+result named by a _placeholder_ (a `String` name that a later operation uses to
+refer to that result), and finish with one result or with failure.
 
 
 # Types
 
-@docs Endianness, WidthExpr, Op, DecoderOp
+@docs Endianness, WidthExpr, EncoderProgram, Op
+@docs DecoderProgram, DecoderOp, FixedRead
 @docs ListOrder, LoopCount
-
-
-# Width Utilities
-
-@docs simplifyWidth
 
 -}
 
@@ -82,11 +78,18 @@ type WidthExpr
     | WOpaqueWidth Mono.MonoExpr
 
 
-{-| One step of a fused encoder. Every constructor except `ReturnBuffer` and
-`WriteEachItem` carries a cursor name as its first argument.
+{-| A fused encoder: allocate a buffer of `width` bytes, place the cursor
+`cursor` at its start, perform `writes` in order, and return the buffer.
+-}
+type alias EncoderProgram =
+    { cursor : String
+    , width : WidthExpr
+    , writes : List Op
+    }
 
-`InitCursor` allocates a buffer of the size its `WidthExpr` gives and places
-the cursor at its start.
+
+{-| One write of a fused encoder. Every constructor except `WriteEachItem`
+carries a cursor name as its first argument.
 
 `WriteU8`, `WriteU16`, `WriteU32`, `WriteF32` and `WriteF64` write the value
 their expression produces as an unsigned integer or a float of that many bits,
@@ -106,12 +109,9 @@ every element.
 `WriteOpaque` writes an encoder value that was not recognised, by handing it to
 the run-time encoder whole. Its size must be counted by a `WOpaqueWidth`.
 
-`ReturnBuffer` ends the encoder and returns the buffer.
-
 -}
 type Op
-    = InitCursor String WidthExpr
-    | WriteU8 String Mono.MonoExpr
+    = WriteU8 String Mono.MonoExpr
     | WriteU16 String Endianness Mono.MonoExpr
     | WriteU32 String Endianness Mono.MonoExpr
     | WriteF32 String Endianness Mono.MonoExpr
@@ -127,15 +127,22 @@ type Op
         , itemByteWidth : Int
         }
     | WriteOpaque String Mono.MonoExpr
-    | ReturnBuffer
+
+
+{-| A fused decoder: read from a cursor at the start of the input, performing
+`body` in order, and produce `Just` the value named by the placeholder
+`result`, unless an operation fails the decoder first.
+-}
+type alias DecoderProgram =
+    { body : List DecoderOp
+    , result : String
+    }
 
 
 {-| One step of a fused decoder. A decoder produces a `Maybe`: `Nothing` when
-it fails, otherwise `Just` its result. Each read and `InitReadCursor` take a
-cursor name as the first argument. Where a constructor produces a value the
-last argument is the placeholder that names that value.
-
-`InitReadCursor` places the cursor at the start of the input.
+it fails, otherwise `Just` its result. Each read takes a cursor name as the
+first argument. Where a constructor produces a value the last argument is the
+placeholder that names that value.
 
 `ReadU8` through `ReadF64` read a fixed number of bytes as an unsigned or
 signed integer or a float of that many bits, in the given byte order where
@@ -154,26 +161,23 @@ last. They are how `map` to `map5` combine their decoders' results.
 which is what `succeed` does.
 
 `LoopDecodeList` decodes a list of a given number of items (none when the count
-is zero or negative), each decoded by its item operations, which must be one
-fixed-width read: the bytes for every item are checked once before the loop,
-and the decoder fails if they are not all there. Its arguments are the count,
-the cursor name, the item operations, the order of the resulting list and the
-result placeholder.
-
-`LoopSentinelDecodeList` decodes items with its item operations, which must be
-one fixed-width integer read, until one equals the integer sentinel. Each read
-is bounds-checked, and running out of input before the sentinel fails the
-decoder. The sentinel itself is consumed but not put in the list. Its arguments
-are the sentinel, the cursor name, the item operations, the order of the
+is zero or negative), each one fixed-width read: the bytes for every item are
+checked once before the loop, and the decoder fails if they are not all there.
+Its arguments are the count, the cursor name, the item read, the order of the
 resulting list and the result placeholder.
 
-`ReturnJust` ends the decoder with `Just` the result named by its placeholder,
-and `ReturnNothing` ends it with `Nothing`.
+`LoopSentinelDecodeList` decodes items, each one fixed-width integer read,
+until one equals the integer sentinel. Each read is bounds-checked, and running
+out of input before the sentinel fails the decoder. The sentinel itself is
+consumed but not put in the list. Its arguments are the sentinel, the cursor
+name, the item read, the order of the resulting list and the result
+placeholder.
+
+`ReturnNothing` ends the decoder with `Nothing`.
 
 -}
 type DecoderOp
-    = InitReadCursor String Mono.MonoExpr
-    | ReadU8 String String
+    = ReadU8 String String
     | ReadI8 String String
     | ReadU16 String Endianness String
     | ReadI16 String Endianness String
@@ -191,10 +195,24 @@ type DecoderOp
     | Apply4 Mono.MonoExpr String String String String String
     | Apply5 Mono.MonoExpr String String String String String String
     | PushValue Mono.MonoExpr String
-    | LoopDecodeList LoopCount String (List DecoderOp) ListOrder String
-    | LoopSentinelDecodeList Int String (List DecoderOp) ListOrder String
-    | ReturnJust String
+    | LoopDecodeList LoopCount String FixedRead ListOrder String
+    | LoopSentinelDecodeList Int String FixedRead ListOrder String
     | ReturnNothing
+
+
+{-| The one read that decodes an item of a decoding loop: an unsigned (`RU`)
+or signed (`RI`) integer, or a float (`RF`), of the number of bits its name
+gives, in the given byte order where there is more than one byte.
+-}
+type FixedRead
+    = RU8
+    | RI8
+    | RU16 Endianness
+    | RI16 Endianness
+    | RU32 Endianness
+    | RI32 Endianness
+    | RF32 Endianness
+    | RF64 Endianness
 
 
 {-| How many items a `LoopDecodeList` decodes: a literal count, the result of
@@ -215,41 +233,3 @@ accumulator `acc` itself.
 type ListOrder
     = InReadOrder
     | ReverseReadOrder
-
-
-{-| Returns `expr` with the sums of constant widths folded into single
-constants and additions of a zero constant removed.
-
-Only additions are simplified. A term that is not a `WConst` stays as it is,
-so the result is a single constant only when every term in `expr` is one.
-
--}
-simplifyWidth : WidthExpr -> WidthExpr
-simplifyWidth expr =
-    case expr of
-        WAdd (WConst a) (WConst b) ->
-            WConst (a + b)
-
-        WAdd a b ->
-            let
-                a_ =
-                    simplifyWidth a
-
-                b_ =
-                    simplifyWidth b
-            in
-            case ( a_, b_ ) of
-                ( WConst 0, _ ) ->
-                    b_
-
-                ( _, WConst 0 ) ->
-                    a_
-
-                ( WConst x, WConst y ) ->
-                    WConst (x + y)
-
-                _ ->
-                    WAdd a_ b_
-
-        _ ->
-            expr

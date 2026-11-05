@@ -50,7 +50,7 @@ phase: cross-phase
 invariants: REP_SSA_001
 ir: MLIR SSA operands
 logic: Assert SSA operands use immediate types only for Int (i64), Float (f64), Char (i32) and Bool (i1):
-  * Every Bool SSA value inside a function body is i1 (`Types.monoTypeToOperand`); it is boxed only at heap, closure and call boundaries (CGEN_009).
+  * Every Bool SSA value inside a function body is i1 (Bool literals are `arith.constant i1`, Expr); it is boxed only at heap, closure and call boundaries (CGEN_009).
   * All other Elm values are !eco.value in SSA.
   * SSA representation is independent of heap layout and ABI.
 inputs: Generated MLIR modules
@@ -1526,7 +1526,7 @@ name: MChar maps to i32
 phase: MLIR codegen
 invariants: CGEN_015
 ir: Char values in MLIR
-logic: Assert the type mapping (`Types.monoTypeToAbi` / `monoTypeToOperand`) maps MChar to i32 (Eco_Char), a Unicode code point:
+logic: Assert the type mapping (`Types.monoTypeToAbi`) maps MChar to i32 (Eco_Char), a Unicode code point:
   * All codegen char constants and ops must use i32; an astral literal such as '😀' is the single constant 128512.
 inputs: MLIR with char operations
 oracle: No other width for char values; all use i32.

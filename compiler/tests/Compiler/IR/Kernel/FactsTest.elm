@@ -21,8 +21,9 @@ instead of moving the expectation with it.
 
 The tests establish:
 
-  - Test 1: `KernelFacts.validationErrors` is empty, so every row passes the
-    table's own consistency checks and no key appears twice.
+  - Test 1: `Compiler.IR.Kernel.FactsValidation.validationErrors` is empty, so
+    every row passes the table's own consistency checks and no key appears
+    twice.
   - Test 2: the keys of the rows for which `gcLeafEligible` holds, sorted, equal
     `stampable`, sorted.
   - Test 3: for each key in `legacyBorrowGolden`, the shim returns exactly the
@@ -37,7 +38,7 @@ The tests establish:
     `eco_gc_alloc_region_fast`, which has neither kernel prefix. The expected
     rows are looked up in the table, so the test also checks that each of them
     exists.
-  - Test 6: `gcLeafEligibleFor` is True for `( "Elm", "String", "length" )` and False
+  - Test 6: `gcLeafEligibleFor` (of `FactsValidation`) is True for `( "Elm", "String", "length" )` and False
     for `( "Elm", "List", "cons" )`, which is listed but allocates, and for
     `( "Elm", "Platform", "sendToApp" )`, which is not listed; `droppableFor` is False
     for `( "Elm", "Debug", "log" )` (values written out). For every row,
@@ -60,6 +61,7 @@ whether any row is true of the C++ kernel it describes.
 -}
 
 import Compiler.IR.Kernel.Facts as KF
+import Compiler.IR.Kernel.FactsValidation as KFV
 import Compiler.MonoOpt.Borrow.KernelSigs as KernelSigs
 import Expect
 import Test exposing (Test)
@@ -71,7 +73,7 @@ suite : Test
 suite =
     Test.describe "GlobalOpt.KernelFacts"
         [ Test.test "1. every row satisfies the cross-field implications" <|
-            \_ -> Expect.equal [] KF.validationErrors
+            \_ -> Expect.equal [] KFV.validationErrors
         , Test.test "2. gcLeafEligible is exactly the audited stampable set" <|
             \_ ->
                 KF.rows
@@ -123,23 +125,23 @@ suite =
                     [ \_ ->
                         Expect.equal
                             [ True, False, False, False ]
-                            [ KF.gcLeafEligibleFor ( "Elm", "String", "length" )
-                            , KF.gcLeafEligibleFor ( "Elm", "List", "cons" )
-                            , KF.gcLeafEligibleFor ( "Elm", "Platform", "sendToApp" )
+                            [ KFV.gcLeafEligibleFor ( "Elm", "String", "length" )
+                            , KFV.gcLeafEligibleFor ( "Elm", "List", "cons" )
+                            , KFV.gcLeafEligibleFor ( "Elm", "Platform", "sendToApp" )
                             , KF.droppableFor ( "Elm", "Debug", "log" )
                             ]
                     , \_ ->
                         KF.rows
                             |> List.filter
                                 (\( k, f ) ->
-                                    (KF.gcLeafEligibleFor k /= KF.gcLeafEligible f)
+                                    (KFV.gcLeafEligibleFor k /= KF.gcLeafEligible f)
                                         || (KF.droppableFor k /= KF.droppable f)
                                 )
                             |> List.map Tuple.first
                             |> Expect.equal []
                     , \_ ->
                         Expect.equal ( False, False, False )
-                            ( KF.gcLeafEligibleFor ( "Elm", "Platform", "sendToApp" )
+                            ( KFV.gcLeafEligibleFor ( "Elm", "Platform", "sendToApp" )
                             , KF.droppableFor ( "Elm", "Platform", "sendToApp" )
                             , KF.hoistableFor ( "Elm", "Platform", "sendToApp" )
                             )

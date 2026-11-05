@@ -137,7 +137,7 @@ toReports source err =
                 ( D.reflow "You must have a documentation comment between the module declaration and the imports."
                 , D.reflow "Learn more at <https://package.elm-lang.org/help/documentation-format>"
                 )
-                |> Report.report "NO DOCS" region []
+                |> Report.report "NO DOCS" region
                 |> NE.singleton
 
         ImplicitExposing region ->
@@ -150,7 +150,7 @@ toReports source err =
                         ++ "And requiring package authors to be explicit about this is a way of adding another quality check before code gets published. "
                         ++ "So as you write out the public API, ask yourself if it will be easy to understand as people read the documentation!"
                 )
-                |> Report.report "IMPLICIT EXPOSING" region []
+                |> Report.report "IMPLICIT EXPOSING" region
                 |> NE.singleton
 
         SyntaxProblem problem ->
@@ -177,7 +177,7 @@ toSyntaxProblemReport source problem =
                 region =
                     toRegion row col
             in
-            Report.report "PROBLEM IN DOCS" region [] <|
+            Report.report "PROBLEM IN DOCS" region <|
                 Code.toSnippet source
                     region
                     Nothing
@@ -227,7 +227,7 @@ toNameProblemReport : Code.Source -> NameProblem -> Report.Report
 toNameProblemReport source problem =
     case problem of
         NameDuplicate name r1 r2 ->
-            Report.report "DUPLICATE DOCS" r2 [] <|
+            Report.report "DUPLICATE DOCS" r2 <|
                 Code.toPair source
                     r1
                     r2
@@ -240,7 +240,7 @@ toNameProblemReport source problem =
                     )
 
         NameOnlyInDocs name region ->
-            Report.report "DOCS MISTAKE" region [] <|
+            Report.report "DOCS MISTAKE" region <|
                 Code.toSnippet source
                     region
                     Nothing
@@ -249,7 +249,7 @@ toNameProblemReport source problem =
                     )
 
         NameOnlyInExports name region ->
-            Report.report "DOCS MISTAKE" region [] <|
+            Report.report "DOCS MISTAKE" region <|
                 Code.toSnippet source
                     region
                     Nothing
@@ -268,7 +268,7 @@ toDefProblemReport : Code.Source -> DefProblem -> Report.Report
 toDefProblemReport source problem =
     case problem of
         NoComment name region ->
-            Report.report "NO DOCS" region [] <|
+            Report.report "NO DOCS" region <|
                 Code.toSnippet source
                     region
                     Nothing
@@ -280,7 +280,7 @@ toDefProblemReport source problem =
                     )
 
         NoAnnotation name region ->
-            Report.report "NO TYPE ANNOTATION" region [] <|
+            Report.report "NO TYPE ANNOTATION" region <|
                 Code.toSnippet source
                     region
                     Nothing

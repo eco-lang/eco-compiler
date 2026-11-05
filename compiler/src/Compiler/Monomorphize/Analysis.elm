@@ -43,12 +43,20 @@ import Compiler.IR.Typed.TypeEnv as TypeEnv
 import Compiler.Monomorphize.State as State exposing (MVarEnv, Substitution)
 import Compiler.Monomorphize.TypeSubst as TypeSubst
 import Data.Map
+import Data.NonEmptyList as NE
 import Dict
 import System.Crash
 
 
 
 -- ========== CUSTOM TYPE COLLECTION ==========
+
+
+{-| A collected `MCustom` type's home module, type name and type arguments,
+kept as the value of its layout-map entry.
+-}
+type alias CustomType =
+    ( ModuleName.Canonical, Name, List Mono.MonoType )
 
 
 {-| Returns `acc` with every `MCustom` type found in `monoType` added, including
@@ -59,23 +67,23 @@ A custom type already in `acc` is not entered again, so its arguments are only
 walked the first time it is met.
 
 -}
-collectCustomTypesFromMonoType : Mono.MonoType -> Mono.LayoutMap () -> Mono.LayoutMap ()
+collectCustomTypesFromMonoType : Mono.MonoType -> Mono.LayoutMap CustomType -> Mono.LayoutMap CustomType
 collectCustomTypesFromMonoType monoType acc =
     case monoType of
-        Mono.MCustom _ _ _ args ->
+        Mono.MCustom _ home name args ->
             if Mono.layoutMapMember monoType acc then
                 acc
 
             else
                 List.foldl collectCustomTypesFromMonoType
-                    (Mono.layoutMapInsert monoType () acc)
+                    (Mono.layoutMapInsert monoType ( home, name, args ) acc)
                     args
 
         Mono.MList _ elem ->
             collectCustomTypesFromMonoType elem acc
 
         Mono.MTuple _ elementTypes ->
-            List.foldl collectCustomTypesFromMonoType acc elementTypes
+            List.foldl collectCustomTypesFromMonoType acc (Mono.tupleToList elementTypes)
 
         Mono.MRecord _ fields ->
             Dict.foldl (\_ t a -> collectCustomTypesFromMonoType t a) acc fields
@@ -92,7 +100,7 @@ collectCustomTypesFromMonoType monoType acc =
 {-| Returns `acc` with every `MCustom` type found in the types along `path` added:
 the root's type and the result type of each step.
 -}
-collectCustomTypesFromPath : Mono.MonoPath -> Mono.LayoutMap () -> Mono.LayoutMap ()
+collectCustomTypesFromPath : Mono.MonoPath -> Mono.LayoutMap CustomType -> Mono.LayoutMap CustomType
 collectCustomTypesFromPath path acc =
     case path of
         Mono.MonoRoot _ rootType ->
@@ -115,11 +123,11 @@ collectCustomTypesFromPath path acc =
 sub-expressions added.
 
 Besides each expression's own type, this takes in closure parameter types,
-destructuring paths, decision-tree paths, and the declared field or element
-types of record and tuple constructions and record updates.
+destructuring paths and decision-tree paths. A record or tuple construction's
+or record update's own type already holds its field or element types.
 
 -}
-collectCustomTypesFromExpr : Mono.MonoExpr -> Mono.LayoutMap () -> Mono.LayoutMap ()
+collectCustomTypesFromExpr : Mono.MonoExpr -> Mono.LayoutMap CustomType -> Mono.LayoutMap CustomType
 collectCustomTypesFromExpr expr acc =
     let
         exprType =
@@ -225,49 +233,19 @@ collectCustomTypesFromExpr expr acc =
             in
             List.foldl (\( _, e ) a -> collectCustomTypesFromExpr e a) deciderAcc jumps
 
-        Mono.MonoRecordCreate fields monoType ->
-            let
-                fieldAcc =
-                    case monoType of
-                        Mono.MRecord _ fieldDict ->
-                            Dict.foldl (\_ t a -> collectCustomTypesFromMonoType t a) accWithType fieldDict
-
-                        _ ->
-                            accWithType
-            in
-            List.foldl (\( _, e ) a -> collectCustomTypesFromExpr e a) fieldAcc fields
+        Mono.MonoRecordCreate fields _ ->
+            List.foldl (\( _, e ) a -> collectCustomTypesFromExpr e a) accWithType fields
 
         Mono.MonoRecordAccess record _ _ ->
             collectCustomTypesFromExpr record accWithType
 
-        Mono.MonoRecordUpdate record updates monoType ->
-            let
-                fieldAcc =
-                    case monoType of
-                        Mono.MRecord _ fields ->
-                            Dict.foldl (\_ t a -> collectCustomTypesFromMonoType t a) accWithType fields
-
-                        _ ->
-                            accWithType
-            in
+        Mono.MonoRecordUpdate record updates _ ->
             List.foldl (\( _, e ) a -> collectCustomTypesFromExpr e a)
-                (collectCustomTypesFromExpr record fieldAcc)
+                (collectCustomTypesFromExpr record accWithType)
                 updates
 
-        Mono.MonoTupleCreate _ exprs monoType ->
-            let
-                elemTypes =
-                    case monoType of
-                        Mono.MTuple _ types ->
-                            types
-
-                        _ ->
-                            []
-
-                elemAcc =
-                    List.foldl collectCustomTypesFromMonoType accWithType elemTypes
-            in
-            List.foldl collectCustomTypesFromExpr elemAcc exprs
+        Mono.MonoTupleCreate _ exprs _ ->
+            List.foldl collectCustomTypesFromExpr accWithType (Mono.tupleToList exprs)
 
         Mono.MonoUnit ->
             accWithType
@@ -280,7 +258,7 @@ collectCustomTypesFromExpr expr acc =
 paths it tests and in its inline leaf expressions. A leaf that jumps to a shared
 branch adds nothing; the branch itself is walked with the `case` expression.
 -}
-collectCustomTypesFromDecider : Mono.Decider Mono.MonoChoice -> Mono.LayoutMap () -> Mono.LayoutMap ()
+collectCustomTypesFromDecider : Mono.Decider Mono.MonoChoice -> Mono.LayoutMap CustomType -> Mono.LayoutMap CustomType
 collectCustomTypesFromDecider decider acc =
     case decider of
         Mono.Leaf choice ->
@@ -294,7 +272,7 @@ collectCustomTypesFromDecider decider acc =
         Mono.Chain tests success failure ->
             let
                 accWithTests =
-                    List.foldl (\( dtPath, _ ) a -> collectCustomTypesFromDtPath dtPath a) acc tests
+                    List.foldl (\( dtPath, _ ) a -> collectCustomTypesFromDtPath dtPath a) acc (NE.toList tests)
             in
             collectCustomTypesFromDecider failure (collectCustomTypesFromDecider success accWithTests)
 
@@ -304,7 +282,7 @@ collectCustomTypesFromDecider decider acc =
                     collectCustomTypesFromDtPath dtPath acc
 
                 edgeAcc =
-                    List.foldl (\( _, d ) a -> collectCustomTypesFromDecider d a) accWithPath edges
+                    List.foldl (\( _, d ) a -> collectCustomTypesFromDecider d a) accWithPath (NE.toList edges)
             in
             collectCustomTypesFromDecider fallback edgeAcc
 
@@ -312,7 +290,7 @@ collectCustomTypesFromDecider decider acc =
 {-| Returns `acc` with every `MCustom` type found in the types along the
 decision-tree path `dtPath` added.
 -}
-collectCustomTypesFromDtPath : Mono.MonoDtPath -> Mono.LayoutMap () -> Mono.LayoutMap ()
+collectCustomTypesFromDtPath : Mono.MonoDtPath -> Mono.LayoutMap CustomType -> Mono.LayoutMap CustomType
 collectCustomTypesFromDtPath dtPath acc =
     case dtPath of
         Mono.DtRoot _ rootType ->
@@ -330,7 +308,7 @@ collectCustomTypesFromDtPath dtPath acc =
 {-| Returns every distinct `MCustom` type found in `nodes`, in their declared
 types and, for nodes that have one, in their bodies. Empty slots are skipped.
 -}
-collectAllCustomTypes : Array (Maybe Mono.MonoNode) -> Mono.LayoutMap ()
+collectAllCustomTypes : Array (Maybe Mono.MonoNode) -> Mono.LayoutMap CustomType
 collectAllCustomTypes nodes =
     Array.foldl
         (\maybeNode acc ->
@@ -352,12 +330,12 @@ collectAllCustomTypes nodes =
                             collectCustomTypesFromExpr expr
                                 (collectCustomTypesFromMonoType monoType accWithParams)
 
-                        Mono.MonoCtor shape monoType ->
+                        Mono.MonoCtor _ shape monoType ->
                             List.foldl collectCustomTypesFromMonoType
                                 (collectCustomTypesFromMonoType monoType acc)
                                 shape.fieldTypes
 
-                        Mono.MonoEnum _ monoType ->
+                        Mono.MonoEnum _ _ _ monoType ->
                             collectCustomTypesFromMonoType monoType acc
 
                         Mono.MonoExtern monoType ->
@@ -387,12 +365,8 @@ collectAllCustomTypes nodes =
 -}
 lookupUnion : TypeEnv.GlobalTypeEnv -> ModuleName.Canonical -> Name -> Maybe Can.Union
 lookupUnion typeEnv canonical typeName =
-    case Data.Map.get ModuleName.toComparableCanonical canonical typeEnv of
-        Nothing ->
-            Nothing
-
-        Just moduleEnv ->
-            Dict.get typeName moduleEnv.unions
+    Data.Map.get ModuleName.toComparableCanonical canonical typeEnv
+        |> Maybe.andThen (\moduleEnv -> Dict.get typeName moduleEnv.unions)
 
 
 
@@ -411,31 +385,8 @@ left unbound.
 buildCompleteCtorShapes : ModuleName.Canonical -> MVarEnv -> List Name -> List Mono.MonoType -> List Can.Ctor -> ( List Mono.CtorShape, MVarEnv )
 buildCompleteCtorShapes home env vars monoArgs alts =
     let
-        ( nameToId, env2 ) =
-            List.foldl
-                (\varName ( acc, e ) ->
-                    let
-                        ( mvarId, e1 ) =
-                            State.freshMVar Mono.CEcoValue e
-                    in
-                    ( Dict.insert varName mvarId acc, e1 )
-                )
-                ( Dict.empty, env )
-                vars
-
-        substById : Substitution
-        substById =
-            List.foldl
-                (\( varName, monoType ) s ->
-                    case Dict.get varName nameToId of
-                        Just mvarId ->
-                            Dict.insert (Id.toComparable mvarId) monoType s
-
-                        Nothing ->
-                            s
-                )
-                Dict.empty
-                (List.map2 Tuple.pair vars monoArgs)
+        ( nameToId, substById, env2 ) =
+            bindTypeParams env vars monoArgs
 
         ( revShapes, finalEnv ) =
             List.foldl
@@ -450,6 +401,40 @@ buildCompleteCtorShapes home env vars monoArgs alts =
                 alts
     in
     ( List.reverse revShapes, finalEnv )
+
+
+{-| Gives each of a custom type's parameters `vars` a fresh variable from `env`,
+in order, and returns the name-to-id map, the substitution binding each
+parameter's id to its argument in `monoArgs`, and the advanced `env`. When
+`vars` and `monoArgs` differ in length, the parameters without an argument are
+left unbound.
+-}
+bindTypeParams : MVarEnv -> List Name -> List Mono.MonoType -> ( Dict.Dict Name TypeIds.MVarId, Substitution, MVarEnv )
+bindTypeParams env vars monoArgs =
+    let
+        ( revIds, env1 ) =
+            List.foldl
+                (\varName ( acc, e ) ->
+                    let
+                        ( mvarId, e1 ) =
+                            State.freshMVar Mono.CEcoValue e
+                    in
+                    ( ( varName, mvarId ) :: acc, e1 )
+                )
+                ( [], env )
+                vars
+
+        ids : List ( Name, TypeIds.MVarId )
+        ids =
+            List.reverse revIds
+    in
+    ( Dict.fromList ids
+    , List.foldl
+        (\( ( _, mvarId ), monoType ) s -> Dict.insert (Id.toComparable mvarId) monoType s)
+        Dict.empty
+        (List.map2 Tuple.pair ids monoArgs)
+    , env1
+    )
 
 
 {-| Returns the ctor shape of one constructor of a type from module `home`:
@@ -519,7 +504,7 @@ convertCanTypeNameToMVarId nameToId canType =
             Can.TTuple
                 (convertCanTypeNameToMVarId nameToId a)
                 (convertCanTypeNameToMVarId nameToId b)
-                (List.map (convertCanTypeNameToMVarId nameToId) rest)
+                (Maybe.map (convertCanTypeNameToMVarId nameToId) rest)
 
         Can.TAlias canonical name args aliasType ->
             let
@@ -572,29 +557,24 @@ computeCtorShapesForGraph globalTypeEnv nodes =
         customTypes =
             collectAllCustomTypes nodes
 
-        processCustomType monoType acc =
-            case monoType of
-                Mono.MCustom _ canonical typeName monoArgs ->
-                    case lookupUnion globalTypeEnv canonical typeName of
-                        Nothing ->
-                            System.Crash.crash
-                                ("Missing union for ctor shape: "
-                                    ++ ModuleName.toComparableCanonical canonical
-                                    ++ "."
-                                    ++ typeName
-                                )
+        processCustomType monoType ( canonical, typeName, monoArgs ) acc =
+            case lookupUnion globalTypeEnv canonical typeName of
+                Nothing ->
+                    System.Crash.crash
+                        ("Missing union for ctor shape: "
+                            ++ ModuleName.toComparableCanonical canonical
+                            ++ "."
+                            ++ typeName
+                        )
 
-                        Just (Can.Union unionData) ->
-                            let
-                                ( completeCtors, _ ) =
-                                    buildCompleteCtorShapes canonical (State.initMVarEnv TypeIds.firstMVarId Dict.empty) unionData.vars monoArgs unionData.alts
-                            in
-                            Mono.layoutMapInsert monoType completeCtors acc
-
-                _ ->
-                    acc
+                Just (Can.Union unionData) ->
+                    let
+                        ( completeCtors, _ ) =
+                            buildCompleteCtorShapes canonical (State.initMVarEnv TypeIds.firstMVarId Dict.empty) unionData.vars monoArgs unionData.alts
+                    in
+                    Mono.layoutMapInsert monoType completeCtors acc
     in
-    Mono.layoutMapFoldl (\monoType _ acc -> processCustomType monoType acc)
+    Mono.layoutMapFoldl processCustomType
         Mono.layoutMapEmpty
         customTypes
 
@@ -605,30 +585,7 @@ type's parameters `vars` replaced by `typeArgs`.
 instantiateCtorField : List Name -> List Mono.MonoType -> Can.Type Name -> Mono.MonoType
 instantiateCtorField vars typeArgs fieldType =
     let
-        ( nameToId, env ) =
-            List.foldl
-                (\varName ( acc, e ) ->
-                    let
-                        ( mvarId, e1 ) =
-                            State.freshMVar Mono.CEcoValue e
-                    in
-                    ( Dict.insert varName mvarId acc, e1 )
-                )
-                ( Dict.empty, State.initMVarEnv TypeIds.firstMVarId Dict.empty )
-                vars
-
-        subst : Substitution
-        subst =
-            List.foldl
-                (\( varName, monoType ) acc ->
-                    case Dict.get varName nameToId of
-                        Just mvarId ->
-                            Dict.insert (Id.toComparable mvarId) monoType acc
-
-                        Nothing ->
-                            acc
-                )
-                Dict.empty
-                (List.map2 Tuple.pair vars typeArgs)
+        ( nameToId, subst, env ) =
+            bindTypeParams (State.initMVarEnv TypeIds.firstMVarId Dict.empty) vars typeArgs
     in
     TypeSubst.applySubstPure env subst (convertCanTypeNameToMVarId nameToId fieldType)

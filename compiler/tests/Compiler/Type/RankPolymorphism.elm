@@ -30,6 +30,7 @@ import Compiler.IR.Source as Src
 import Compiler.Type.Error as TypeError
 import Dict
 import Expect
+import Maybe.Extra as Maybe
 import TestLogic.TestPipeline as Pipeline
 import Compiler.Type.TypeCheckErrors as TypeCheckErrors
 
@@ -112,7 +113,7 @@ typeToString tipe =
             "()"
 
         Can.TTuple a b cs ->
-            "( " ++ String.join ", " (List.map typeToString (a :: b :: cs)) ++ " )"
+            "( " ++ String.join ", " (List.map typeToString (a :: b :: Maybe.toList cs)) ++ " )"
 
         Can.TAlias _ name [] _ ->
             name

@@ -36,12 +36,12 @@ The order of the steps up to MLIR is short enough to show whole.
 runToMlir src:
   typedOpt  = runToTypedOpt src        -- canonicalize, type check, typed optimize,
                                        -- then add the synthetic main
-  prepared  = Steps.prepare cfg globalGraph
+  prepared  = Steps.prepareRoot cfg home globalGraph
   assigned  = (Steps.preMono cfg prepared).assigned -- skipped by the NoPreMono runners
   mono      = Steps.monomorphize cfg globalTypeEnv assigned
   Steps.checkStageArity mono; Steps.checkLayout cfg mono
   simplified = Steps.prune cfg (Steps.inline cfg mono)
-  optimized = Steps.globalOpt cfg simplified
+  optimized = globalOpt cfg simplified
   Steps.checkStageArity optimized; Steps.checkClosureStaging cfg optimized
   MLIR.generateMlirModule cfg (Mode.Dev Nothing) optimized
 ```

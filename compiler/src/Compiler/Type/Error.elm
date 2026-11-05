@@ -339,8 +339,7 @@ An `InfiniteType` is titled INFINITE TYPE, a failed `CallArity` check TOO
 MANY ARGS, and every other error TYPE MISMATCH. A mismatch report explains
 the context the expected type came from and usually shows the two types with
 their differences highlighted, with a hint for the first problem
-`Compiler.Type.ErrorType.toComparison` detects. The report's suggestion list is
-always empty.
+`Compiler.Type.ErrorType.toComparison` detects.
 
 -}
 toReport : Code.Source -> L.Localizer -> Error -> Report.Report
@@ -365,7 +364,7 @@ type `tipe` does not fit `expected`.
 -}
 toPatternReport : Code.Source -> L.Localizer -> A.Region -> PCategory -> T.Type -> PExpected T.Type -> Report.Report
 toPatternReport source localizer patternRegion category tipe expected =
-    Report.report "TYPE MISMATCH" patternRegion [] <|
+    Report.report "TYPE MISMATCH" patternRegion <|
         case expected of
             PNoExpectation expectedType ->
                 Code.toSnippet source patternRegion Nothing <|
@@ -672,7 +671,9 @@ problemsToHint problems =
 {-| Returns the hint paragraphs for one detected problem, which may be none.
 
 A problem about a type variable gives no hint when the other type is an
-unconstrained flexible variable, an infinite type or an earlier error.
+infinite type or an earlier error, nor for the pairs `ErrorType.toDiff` never
+reports as a problem: an unconstrained flexible variable on the other side, or
+an alias against an annotation's variable.
 
 -}
 problemToHint : T.Problem -> List D.Doc
@@ -814,15 +815,6 @@ problemToHint problem =
                 T.Lambda _ _ _ ->
                     badFlexSuper direction super tipe
 
-                T.Infinite ->
-                    []
-
-                T.Error ->
-                    []
-
-                T.FlexVar _ ->
-                    []
-
                 T.FlexSuper s _ ->
                     badFlexFlexSuper super s
 
@@ -847,19 +839,13 @@ problemToHint problem =
                 T.Alias _ _ _ _ ->
                     badFlexSuper direction super tipe
 
+                _ ->
+                    []
+
         T.BadRigidVar x tipe ->
             case tipe of
                 T.Lambda _ _ _ ->
                     badRigidVar x "a function"
-
-                T.Infinite ->
-                    []
-
-                T.Error ->
-                    []
-
-                T.FlexVar _ ->
-                    []
 
                 T.FlexSuper s _ ->
                     badRigidVar x (toASuperThing s)
@@ -882,22 +868,13 @@ problemToHint problem =
                 T.Tuple _ _ _ ->
                     badRigidVar x "a tuple"
 
-                T.Alias _ n _ _ ->
-                    badRigidVar x ("a `" ++ n ++ "` value")
+                _ ->
+                    []
 
         T.BadRigidSuper super x tipe ->
             case tipe of
                 T.Lambda _ _ _ ->
                     badRigidSuper super "a function"
-
-                T.Infinite ->
-                    []
-
-                T.Error ->
-                    []
-
-                T.FlexVar _ ->
-                    []
 
                 T.FlexSuper s _ ->
                     badRigidSuper super (toASuperThing s)
@@ -920,33 +897,35 @@ problemToHint problem =
                 T.Tuple _ _ _ ->
                     badRigidSuper super "a tuple"
 
-                T.Alias _ n _ _ ->
-                    badRigidSuper super ("a `" ++ n ++ "` value")
-
-        T.FieldsMissing fields ->
-            case List.map (D.fromName >> D.green) fields of
-                [] ->
+                _ ->
                     []
 
-                [ f1 ] ->
+        T.FieldsMissing firstField otherFields ->
+            let
+                fieldDoc : Name -> D.Doc
+                fieldDoc =
+                    D.fromName >> D.green
+            in
+            case otherFields of
+                [] ->
                     [ D.toFancyHint
                         [ D.fromChars "Looks"
                         , D.fromChars "like"
                         , D.fromChars "the"
-                        , f1
+                        , fieldDoc firstField
                         , D.fromChars "field"
                         , D.fromChars "is"
                         , D.fromChars "missing."
                         ]
                     ]
 
-                fieldDocs ->
+                _ ->
                     [ D.toFancyHint <|
                         [ D.fromChars "Looks"
                         , D.fromChars "like"
                         , D.fromChars "fields"
                         ]
-                            ++ D.commaSep (D.fromChars "and") identity fieldDocs
+                            ++ D.commaSep (D.fromChars "and") identity (List.map fieldDoc (firstField :: otherFields))
                             ++ [ D.fromChars "are", D.fromChars "missing." ]
                     ]
 
@@ -1215,7 +1194,7 @@ toExprReport : Code.Source -> L.Localizer -> A.Region -> Category -> T.Type -> E
 toExprReport source localizer exprRegion category tipe expected =
     case expected of
         NoExpectation expectedType ->
-            Report.report "TYPE MISMATCH" exprRegion [] <|
+            Report.report "TYPE MISMATCH" exprRegion <|
                 Code.toSnippet source
                     exprRegion
                     Nothing
@@ -1263,13 +1242,13 @@ toExprReport source localizer exprRegion category tipe expected =
                 []
             )
                 |> Code.toSnippet source exprRegion Nothing
-                |> Report.report "TYPE MISMATCH" exprRegion []
+                |> Report.report "TYPE MISMATCH" exprRegion
 
         FromContext region context expectedType ->
             let
                 mismatch : ( ( Maybe A.Region, String ), ( String, String, List D.Doc ) ) -> Report.Report
                 mismatch ( ( maybeHighlight, problem ), ( thisIs, insteadOf, furtherDetails ) ) =
-                    Report.report "TYPE MISMATCH" exprRegion [] <|
+                    Report.report "TYPE MISMATCH" exprRegion <|
                         Code.toSnippet source
                             region
                             maybeHighlight
@@ -1279,7 +1258,7 @@ toExprReport source localizer exprRegion category tipe expected =
 
                 badType : ( ( Maybe A.Region, String ), ( String, List D.Doc ) ) -> Report.Report
                 badType ( ( maybeHighlight, problem ), ( thisIs, furtherDetails ) ) =
-                    Report.report "TYPE MISMATCH" exprRegion [] <|
+                    Report.report "TYPE MISMATCH" exprRegion <|
                         Code.toSnippet source
                             region
                             maybeHighlight
@@ -1289,7 +1268,7 @@ toExprReport source localizer exprRegion category tipe expected =
 
                 custom : Maybe A.Region -> ( D.Doc, D.Doc ) -> Report.Report
                 custom maybeHighlight docPair =
-                    Code.toSnippet source region maybeHighlight docPair |> Report.report "TYPE MISMATCH" exprRegion []
+                    Code.toSnippet source region maybeHighlight docPair |> Report.report "TYPE MISMATCH" exprRegion
             in
             case context of
                 ListEntry index ->
@@ -1454,7 +1433,7 @@ toExprReport source localizer exprRegion category tipe expected =
                             )
                     )
                         |> Code.toSnippet source region (Just exprRegion)
-                        |> Report.report "TOO MANY ARGS" exprRegion []
+                        |> Report.report "TOO MANY ARGS" exprRegion
 
                 CallArg maybeFuncName index ->
                     let
@@ -1663,7 +1642,7 @@ toNearbyRecord : L.Localizer -> ( Name, T.Type ) -> List ( Name, T.Type ) -> T.E
 toNearbyRecord localizer f fs ext =
     D.indent 4 <|
         if List.length fs <= 3 then
-            RT.vrecord (List.map (fieldToDocs localizer) (f :: fs)) (extToDoc ext)
+            RT.vrecord (fieldToDocs localizer f) (List.map (fieldToDocs localizer) fs) (extToDoc ext)
 
         else
             RT.vrecordSnippet (fieldToDocs localizer f) (List.map (fieldToDocs localizer) (List.take 3 fs))
@@ -2013,70 +1992,15 @@ not fit `expected`.
 When both are lists, the element types are compared, the left operand being
 the expected element and the list's elements the actual one, with a hint about
 `++` when the elements are themselves lists. A right side that is not a list
-gets an explanation that `::` needs one.
+gets an explanation that `::` needs one. `expected` is always a list, since it
+comes from the type of `::`.
 
 -}
 badConsRight : L.Localizer -> Category -> T.Type -> T.Type -> RightDocs
 badConsRight localizer category tipe expected =
-    case tipe of
-        T.Type home1 name1 [ actualElement ] ->
-            if T.isList home1 name1 then
-                case expected of
-                    T.Type home2 name2 [ expectedElement ] ->
-                        if T.isList home2 name2 then
-                            EmphBoth
-                                ( D.reflow "I am having trouble with this (::) operator:"
-                                , typeComparison localizer
-                                    expectedElement
-                                    actualElement
-                                    "The left side of (::) is:"
-                                    "But you are trying to put that into a list filled with:"
-                                    (case expectedElement of
-                                        T.Type home name [ _ ] ->
-                                            if T.isList home name then
-                                                [ D.toSimpleHint
-                                                    "Are you trying to append two lists? The (++) operator appends lists, whereas the (::) operator is only for adding ONE element to a list."
-                                                ]
-
-                                            else
-                                                [ D.reflow
-                                                    "Lists need ALL elements to be the same type though."
-                                                ]
-
-                                        _ ->
-                                            [ D.reflow
-                                                "Lists need ALL elements to be the same type though."
-                                            ]
-                                    )
-                                )
-
-                        else
-                            badOpRightFallback localizer category "::" tipe expected
-
-                    _ ->
-                        badOpRightFallback localizer category "::" tipe expected
-
-            else
-                EmphRight
-                    ( D.reflow "The (::) operator can only add elements onto lists."
-                    , loneType localizer
-                        tipe
-                        expected
-                        (D.reflow (addCategory "The right side is" category))
-                        [ D.fillSep
-                            [ D.fromChars "But"
-                            , D.fromChars "(::)"
-                            , D.fromChars "needs"
-                            , D.fromChars "a"
-                            , D.dullyellow (D.fromChars "List")
-                            , D.fromChars "on"
-                            , D.fromChars "the"
-                            , D.fromChars "right."
-                            ]
-                        ]
-                    )
-
-        _ ->
+    let
+        notAList : RightDocs
+        notAList =
             EmphRight
                 ( D.reflow "The (::) operator can only add elements onto lists."
                 , loneType localizer
@@ -2095,6 +2019,41 @@ badConsRight localizer category tipe expected =
                         ]
                     ]
                 )
+    in
+    case ( tipe, expected ) of
+        ( T.Type home1 name1 [ actualElement ], T.Type home2 name2 [ expectedElement ] ) ->
+            if T.isList home1 name1 && T.isList home2 name2 then
+                EmphBoth
+                    ( D.reflow "I am having trouble with this (::) operator:"
+                    , typeComparison localizer
+                        expectedElement
+                        actualElement
+                        "The left side of (::) is:"
+                        "But you are trying to put that into a list filled with:"
+                        (case expectedElement of
+                            T.Type home name [ _ ] ->
+                                if T.isList home name then
+                                    [ D.toSimpleHint
+                                        "Are you trying to append two lists? The (++) operator appends lists, whereas the (::) operator is only for adding ONE element to a list."
+                                    ]
+
+                                else
+                                    [ D.reflow
+                                        "Lists need ALL elements to be the same type though."
+                                    ]
+
+                            _ ->
+                                [ D.reflow
+                                    "Lists need ALL elements to be the same type though."
+                                ]
+                        )
+                    )
+
+            else
+                notAList
+
+        _ ->
+            notAList
 
 
 
@@ -2878,7 +2837,7 @@ toInfiniteReport source localizer region name overallType =
         ]
     )
         |> Code.toSnippet source region Nothing
-        |> Report.report "INFINITE TYPE" region []
+        |> Report.report "INFINITE TYPE" region
 
 
 

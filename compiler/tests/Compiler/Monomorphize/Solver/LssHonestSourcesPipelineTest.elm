@@ -332,7 +332,7 @@ annosOf t =
             annosOf el
 
         Mono.MTuple _ els ->
-            List.concatMap annosOf els
+            List.concatMap annosOf (Mono.tupleToList els)
 
         Mono.MRecord _ fields ->
             Dict.foldl (\_ ft acc -> acc ++ annosOf ft) [] fields

@@ -477,7 +477,7 @@ membersWhere test (Mono.MonoGraph g) =
 isGlobalNamed : String -> Mono.MemberOrigin -> Bool
 isGlobalNamed name origin =
     case origin of
-        Mono.OriginGlobal (Mono.Global _ n) ->
+        Mono.OriginGlobal _ n ->
             n == name
 
         _ ->
@@ -490,7 +490,7 @@ arguments.
 isPapNamed : String -> Int -> Mono.MemberOrigin -> Bool
 isPapNamed name supplied origin =
     case origin of
-        Mono.OriginPap (Mono.Global _ n) k ->
+        Mono.OriginPap _ n k ->
             n == name && k == supplied
 
         _ ->

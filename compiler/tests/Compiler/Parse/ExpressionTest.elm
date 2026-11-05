@@ -60,12 +60,13 @@ suite =
                         (A.at (A.Position 1 1) (A.Position 1 14) <|
                             Src.Update ( ( [], [] ), A.at (A.Position 1 3) (A.Position 1 4) (Src.Var Src.LowVar "a") )
                                 ( []
-                                , [ ( ( [], [], Nothing )
+                                , ( ( ( [], [], Nothing )
                                     , ( ( [], A.at (A.Position 1 7) (A.Position 1 8) "x" )
                                       , ( [], A.at (A.Position 1 11) (A.Position 1 12) (Src.Int 2 "2") )
                                       )
                                     )
-                                  ]
+                                  , []
+                                  )
                                 )
                         )
                     )

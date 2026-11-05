@@ -126,7 +126,7 @@ dealiasHelp typeTable tipe =
             TTuple
                 (dealiasHelp typeTable a)
                 (dealiasHelp typeTable b)
-                (List.map (dealiasHelp typeTable) cs)
+                (Maybe.map (dealiasHelp typeTable) cs)
 
 
 {-| Returns a record field, keeping its position, with `dealiasHelp`'s
@@ -167,7 +167,7 @@ deepDealias tipe =
             TUnit
 
         TTuple a b cs ->
-            TTuple (deepDealias a) (deepDealias b) (List.map deepDealias cs)
+            TTuple (deepDealias a) (deepDealias b) (Maybe.map deepDealias cs)
 
 
 {-| Returns a record field, keeping its position, with `deepDealias` applied to

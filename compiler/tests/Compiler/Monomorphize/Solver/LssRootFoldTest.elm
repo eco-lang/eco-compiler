@@ -465,7 +465,7 @@ member `m`'s origin, or `Nothing` when `m` is not recorded as a global.
 originOf : Int -> Mono.MonoGraph -> Maybe String
 originOf m (Mono.MonoGraph g) =
     case Dict.get m g.lssMemberOrigins of
-        Just (Mono.OriginGlobal (Mono.Global _ n)) ->
+        Just (Mono.OriginGlobal _ n) ->
             Just n
 
         _ ->
@@ -480,7 +480,7 @@ globalMembersOf name (Mono.MonoGraph g) =
     Dict.foldl
         (\m origin acc ->
             case origin of
-                Mono.OriginGlobal (Mono.Global _ n) ->
+                Mono.OriginGlobal _ n ->
                     if n == name then
                         m :: acc
 

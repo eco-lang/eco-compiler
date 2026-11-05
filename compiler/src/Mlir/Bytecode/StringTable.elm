@@ -1,4 +1,4 @@
-module Mlir.Bytecode.StringTable exposing (StringTable, indexOf, encode, addString, empty, collectOp)
+module Mlir.Bytecode.StringTable exposing (StringTable, indexOf, encode, addString, empty, collectOp, splitDialect)
 
 {-| MLIR bytecode refers to many of its strings, such as dialect names,
 operation names and the text of string attributes, by their index in one string
@@ -22,7 +22,7 @@ only as it writes each string. It does this to every string in the table,
 whatever it came from. Two escaped spellings of the same text are therefore two
 entries.
 
-@docs StringTable, indexOf, encode, addString, empty, collectOp
+@docs StringTable, indexOf, encode, addString, empty, collectOp, splitDialect
 
 -}
 
@@ -144,18 +144,27 @@ together with the empty string as the rest.
 -}
 addOpName : String -> StringTable -> StringTable
 addOpName name st =
-    case String.split "." name of
-        dialect :: rest ->
-            let
-                opSuffix =
-                    String.join "." rest
-            in
-            st
-                |> addString dialect
-                |> addString opSuffix
+    let
+        ( dialect, opSuffix ) =
+            splitDialect name
+    in
+    st
+        |> addString dialect
+        |> addString opSuffix
 
-        _ ->
-            addString name st
+
+{-| Splits an operation or type name at its first `.` into the dialect before
+it and the rest after it. A name with no `.` is all dialect, with an empty
+rest.
+-}
+splitDialect : String -> ( String, String )
+splitDialect name =
+    case String.indexes "." name of
+        i :: _ ->
+            ( String.left i name, String.dropLeft (i + 1) name )
+
+        [] ->
+            ( name, "" )
 
 
 {-| Adds an attribute's name `key` and the strings in its value.
@@ -216,9 +225,6 @@ collectType ty st =
         I8 ->
             st
 
-        I16 ->
-            st
-
         I32 ->
             st
 
@@ -229,12 +235,7 @@ collectType ty st =
             st
 
         NamedStruct s ->
-            case String.split "." s of
-                dialect :: _ ->
-                    st |> addString dialect |> addString s
-
-                _ ->
-                    addString s st
+            st |> addString (Tuple.first (splitDialect s)) |> addString s
 
         FunctionType sig ->
             let

@@ -62,8 +62,8 @@ suite =
             \_ ->
                 Expect.equal True
                     (alphaEqStrict
-                        (arrow (alias "G" [ ( "a", v "b" ), ( "b", v "a" ) ] (Can.Filled (Can.TTuple (v "b") (v "a") []))) (v "b"))
-                        (arrow (Can.TTuple (v "b") (v "a") []) (v "b"))
+                        (arrow (alias "G" [ ( "a", v "b" ), ( "b", v "a" ) ] (Can.Filled (Can.TTuple (v "b") (v "a") Nothing))) (v "b"))
+                        (arrow (Can.TTuple (v "b") (v "a") Nothing) (v "b"))
                     )
         , Test.test "R { y : Int } matches { x : Int, y : Int }" <|
             \_ ->

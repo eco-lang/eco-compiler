@@ -8,11 +8,6 @@ module Utils.Main exposing
     , envLookupEnv, envGetProgName, envGetArgs
     , lockWithFileLock
     , binaryDecodeFileOrFail, binaryEncodeFile, builderHPutBuilder
-    , HttpExceptionContent(..), HttpResponse(..), HttpResponseHeaders, HttpStatus(..)
-    , httpResponseStatus, httpResponseHeaders, httpHLocation
-    , httpExceptionContentEncoder, httpExceptionContentDecoder
-    , SomeException(..)
-    , someExceptionEncoder, someExceptionDecoder
     , ThreadId, forkIO
     , newMVar, newEmptyMVar, readMVar, takeMVar, putMVar, dropMVar
     , mVarEncoder, mVarDecoder
@@ -57,15 +52,12 @@ a decoder for what the MVar holds because `Eco.MVar`'s operations do. A
 _channel_ (`Chan`) is an unbounded first-in, first-out queue built from MVars,
 through which concurrent tasks hand values to one another.
 
-`HttpExceptionContent` and the types it is built from describe a failed HTTP
-request, and come with binary codecs.
-
 The rest are pure helpers over `Dict`, `Data.Map`, `List`, `Maybe`, `Result`,
 non-empty lists and `Compiler.Reporting.Result`, most of them traversals. Those
 that take a function giving a `Task` perform the tasks one after another, in
-the order each docstring gives. `find`, `dictFind`, `mapFindMin`,
-`listMaximum`, `foldl1_` and `foldr1` crash the program, through
-`System.Crash.crash`, on a missing key or an empty input.
+the order each docstring gives. `find`, `dictFind`, `mapFindMin`, `foldl1_`
+and `foldr1` crash the program, through `System.Crash.crash`, on a missing key
+or an empty input.
 
 The types `FilePath`, `MVar`, `ChItem`, `Stream` and `LockSharedExclusive` used
 here are defined in `System.IO`.
@@ -98,19 +90,6 @@ here are defined in `System.IO`.
 # Binary Serialization
 
 @docs binaryDecodeFileOrFail, binaryEncodeFile, builderHPutBuilder
-
-
-# HTTP Types and Operations
-
-@docs HttpExceptionContent, HttpResponse, HttpResponseHeaders, HttpStatus
-@docs httpResponseStatus, httpResponseHeaders, httpHLocation
-@docs httpExceptionContentEncoder, httpExceptionContentDecoder
-
-
-# Exception Types
-
-@docs SomeException
-@docs someExceptionEncoder, someExceptionDecoder
 
 
 # Concurrency Primitives
@@ -172,7 +151,6 @@ here are defined in `System.IO`.
 
 -}
 
-import Basics.Extra exposing (flip)
 import Bytes.Decode
 import Bytes.Encode
 import Data.Map as Map
@@ -621,17 +599,21 @@ listGroupBy p list =
                 |> List.reverse
 
 
-{-| Returns the largest element as `compare` orders them, and crashes the program
-if the list is empty.
+{-| Returns the largest of `first` and the elements of `rest` as `compare`
+orders them; of several equal largest elements, the earliest.
 -}
-listMaximum : (a -> a -> Order) -> List a -> a
-listMaximum compare xs =
-    case List.sortWith (flip compare) xs of
-        x :: _ ->
-            x
+listMaximum : (a -> a -> Order) -> a -> List a -> a
+listMaximum compare first rest =
+    List.foldl
+        (\x acc ->
+            if compare x acc == GT then
+                x
 
-        [] ->
-            crash "maximum: empty structure"
+            else
+                acc
+        )
+        first
+        rest
 
 
 {-| Returns the value paired with the first occurrence of `key` in the list, or
@@ -1128,89 +1110,6 @@ envGetArgs =
 
 
 
--- Codec.Archive.Zip
--- Network.HTTP.Client
-
-
-{-| The reason an HTTP request failed, standing in for the type of the same name in
-Haskell's `http-client`.
-
-`StatusCodeException` carries the response (its status and headers) and,
-separately, a body as a `String`.
-
-`TooManyRedirects` carries a list of responses.
-
-`ConnectionFailure` carries a `SomeException`, which says nothing about what
-went wrong.
-
--}
-type HttpExceptionContent
-    = StatusCodeException (HttpResponse ()) String
-    | TooManyRedirects (List (HttpResponse ()))
-    | ConnectionFailure SomeException
-
-
-{-| The status and headers of an HTTP response.
-
-Nothing uses the type parameter `body`: no body is held, whatever `body` is.
-
--}
-type HttpResponse body
-    = HttpResponse
-        { responseStatus : HttpStatus
-        , responseHeaders : HttpResponseHeaders
-        }
-
-
-{-| The headers of an HTTP response, as pairs of a header name and its value.
-
-This is a name for a list of pairs, not a new type.
-
--}
-type alias HttpResponseHeaders =
-    List ( String, String )
-
-
-{-| Returns the status of the response.
--}
-httpResponseStatus : HttpResponse body -> HttpStatus
-httpResponseStatus (HttpResponse { responseStatus }) =
-    responseStatus
-
-
-{-| Returns the headers of the response.
--}
-httpResponseHeaders : HttpResponse body -> HttpResponseHeaders
-httpResponseHeaders (HttpResponse { responseHeaders }) =
-    responseHeaders
-
-
-{-| The name of the HTTP header that gives the target of a redirect.
--}
-httpHLocation : String
-httpHLocation =
-    "Location"
-
-
-{-| The status of an HTTP response: its code and the message that comes with it.
--}
-type HttpStatus
-    = HttpStatus Int String
-
-
-
--- Control.Exception
-
-
-{-| An exception of any kind, standing in for Haskell's `SomeException`. Its one
-constructor carries nothing, so a value says that something went wrong, not
-what.
--}
-type SomeException
-    = SomeException
-
-
-
 -- Control.Concurrent
 
 
@@ -1485,129 +1384,3 @@ chItemDecoder decoder =
     Bytes.Decode.map2 ChItem
         decoder
         mVarDecoder
-
-
-{-| Encodes a `SomeException` as the single byte 0.
--}
-someExceptionEncoder : Bytes.Encode.Encoder
-someExceptionEncoder =
-    Bytes.Encode.unsignedInt8 0
-
-
-{-| A decoder for a `SomeException`, which reads one byte and accepts any value in
-it.
--}
-someExceptionDecoder : Bytes.Decode.Decoder SomeException
-someExceptionDecoder =
-    Bytes.Decode.unsignedInt8
-        |> Bytes.Decode.map (\_ -> SomeException)
-
-
-{-| Encodes a response as its status followed by its headers.
--}
-httpResponseEncoder : HttpResponse body -> Bytes.Encode.Encoder
-httpResponseEncoder (HttpResponse httpResponse) =
-    Bytes.Encode.sequence
-        [ httpStatusEncoder httpResponse.responseStatus
-        , httpResponseHeadersEncoder httpResponse.responseHeaders
-        ]
-
-
-{-| A decoder for a response, as `httpResponseEncoder` writes it.
--}
-httpResponseDecoder : Bytes.Decode.Decoder (HttpResponse body)
-httpResponseDecoder =
-    Bytes.Decode.map2
-        (\responseStatus responseHeaders ->
-            HttpResponse
-                { responseStatus = responseStatus
-                , responseHeaders = responseHeaders
-                }
-        )
-        httpStatusDecoder
-        httpResponseHeadersDecoder
-
-
-{-| Encodes a status as its code followed by its message.
--}
-httpStatusEncoder : HttpStatus -> Bytes.Encode.Encoder
-httpStatusEncoder (HttpStatus statusCode statusMessage) =
-    Bytes.Encode.sequence
-        [ BE.int statusCode
-        , BE.string statusMessage
-        ]
-
-
-{-| A decoder for a status, as `httpStatusEncoder` writes it.
--}
-httpStatusDecoder : Bytes.Decode.Decoder HttpStatus
-httpStatusDecoder =
-    Bytes.Decode.map2 HttpStatus
-        BD.int
-        BD.string
-
-
-{-| Encodes headers as a list of name and value pairs.
--}
-httpResponseHeadersEncoder : HttpResponseHeaders -> Bytes.Encode.Encoder
-httpResponseHeadersEncoder =
-    BE.list (BE.jsonPair BE.string BE.string)
-
-
-{-| A decoder for headers, as `httpResponseHeadersEncoder` writes them.
--}
-httpResponseHeadersDecoder : Bytes.Decode.Decoder HttpResponseHeaders
-httpResponseHeadersDecoder =
-    BD.list (BD.jsonPair BD.string BD.string)
-
-
-{-| Encodes an `HttpExceptionContent` as a tag byte, 0 for `StatusCodeException`,
-1 for `TooManyRedirects` and 2 for `ConnectionFailure`, followed by what the
-constructor carries.
--}
-httpExceptionContentEncoder : HttpExceptionContent -> Bytes.Encode.Encoder
-httpExceptionContentEncoder httpExceptionContent =
-    case httpExceptionContent of
-        StatusCodeException response body ->
-            Bytes.Encode.sequence
-                [ Bytes.Encode.unsignedInt8 0
-                , httpResponseEncoder response
-                , BE.string body
-                ]
-
-        TooManyRedirects responses ->
-            Bytes.Encode.sequence
-                [ Bytes.Encode.unsignedInt8 1
-                , BE.list httpResponseEncoder responses
-                ]
-
-        ConnectionFailure _ ->
-            Bytes.Encode.sequence
-                [ Bytes.Encode.unsignedInt8 2
-                , someExceptionEncoder
-                ]
-
-
-{-| A decoder for an `HttpExceptionContent`, as `httpExceptionContentEncoder`
-writes it. It fails on a tag byte other than 0, 1 or 2.
--}
-httpExceptionContentDecoder : Bytes.Decode.Decoder HttpExceptionContent
-httpExceptionContentDecoder =
-    Bytes.Decode.unsignedInt8
-        |> Bytes.Decode.andThen
-            (\idx ->
-                case idx of
-                    0 ->
-                        Bytes.Decode.map2 StatusCodeException
-                            httpResponseDecoder
-                            BD.string
-
-                    1 ->
-                        Bytes.Decode.map TooManyRedirects (BD.list httpResponseDecoder)
-
-                    2 ->
-                        Bytes.Decode.map ConnectionFailure someExceptionDecoder
-
-                    _ ->
-                        Bytes.Decode.fail
-            )

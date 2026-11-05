@@ -1,5 +1,5 @@
 module Text.PrettyPrint.ANSI.Leijen exposing
-    ( Doc, SimpleDoc(..), Style, Color
+    ( Doc, SimpleDoc(..), Sgr(..), Style, Color(..)
     , text, empty
     , append, plus, a
     , align, indent, hang
@@ -36,14 +36,14 @@ Every string in a document may carry a `Style`: bold, underline and a colour.
 The styling functions change the style of every string inside the document
 they are given, so the outermost colour applied wins. Rendering is in two
 steps. `renderPretty` lays a document out as a `SimpleDoc`, in which styles
-have become SGR commands, the terminal styling commands that
-`System.Console.Ansi` describes. `displayS` then writes it as a string with
-escape sequences, and `displayIO` writes that string to a handle.
+have become SGR commands (`Sgr`), the terminal styling commands. `displayS`
+then writes it as a string with escape sequences, and `displayIO` writes that
+string to a handle.
 
 
 # Core Types
 
-@docs Doc, SimpleDoc, Style, Color
+@docs Doc, SimpleDoc, Sgr, Style, Color
 
 
 # Document Construction
@@ -89,7 +89,6 @@ escape sequences, and `displayIO` writes that string to a handle.
 
 import Pretty as P
 import Pretty.Renderer as PR
-import System.Console.Ansi as Ansi
 import System.IO as IO
 import Task exposing (Task)
 
@@ -119,7 +118,18 @@ type SimpleDoc
     = SEmpty
     | SText String SimpleDoc
     | SLine Int SimpleDoc
-    | SSGR (List Ansi.SGR) SimpleDoc
+    | SSGR (List Sgr) SimpleDoc
+
+
+{-| One SGR command, a terminal styling command. `Reset` turns every attribute
+off, `SetBold` turns bold on, `SetUnderline` turns a single underline on, and
+`SetColor` sets the foreground colour.
+-}
+type Sgr
+    = Reset
+    | SetBold
+    | SetUnderline
+    | SetColor Color
 
 
 {-| Writes `simpleDoc` to `handle` as the text `displayS` gives, escape
@@ -160,13 +170,13 @@ renderPretty w doc =
 
                 else
                     let
-                        sgrs : List Ansi.SGR
+                        sgrs : List Sgr
                         sgrs =
                             if acc.style == Nothing then
                                 styleToSgrs style
 
                             else
-                                Ansi.Reset :: styleToSgrs style
+                                Reset :: styleToSgrs style
                     in
                     { acc | style = Just style, list = SText str :: SSGR sgrs :: acc.list }
         , untagged = untaggedStep
@@ -179,7 +189,7 @@ renderPretty w doc =
                         list
 
                      else
-                        SSGR [ Ansi.Reset ] :: list
+                        SSGR [ Reset ] :: list
                     )
         }
         doc
@@ -194,7 +204,7 @@ untaggedStep str acc =
         newAcc : RenderAcc
         newAcc =
             if acc.style /= Nothing then
-                { acc | style = Nothing, list = SSGR [ Ansi.Reset ] :: acc.list }
+                { acc | style = Nothing, list = SSGR [ Reset ] :: acc.list }
 
             else
                 acc
@@ -215,49 +225,19 @@ type alias RenderAcc =
 {-| Returns the SGR commands that turn on `style`: bold, then underline, then
 the foreground colour, each only if set. The default style gives an empty list.
 -}
-styleToSgrs : Style -> List Ansi.SGR
+styleToSgrs : Style -> List Sgr
 styleToSgrs style =
     [ if style.bold then
-        Just (Ansi.SetConsoleIntensity Ansi.BoldIntensity)
+        Just SetBold
 
       else
         Nothing
     , if style.underline then
-        Just (Ansi.SetUnderlining Ansi.SingleUnderline)
+        Just SetUnderline
 
       else
         Nothing
-    , style.color
-        |> Maybe.map
-            (\color ->
-                case color of
-                    Red ->
-                        Ansi.SetColor Ansi.Foreground Ansi.Vivid Ansi.Red
-
-                    Green ->
-                        Ansi.SetColor Ansi.Foreground Ansi.Vivid Ansi.Green
-
-                    Cyan ->
-                        Ansi.SetColor Ansi.Foreground Ansi.Vivid Ansi.Cyan
-
-                    Blue ->
-                        Ansi.SetColor Ansi.Foreground Ansi.Vivid Ansi.Blue
-
-                    Black ->
-                        Ansi.SetColor Ansi.Foreground Ansi.Vivid Ansi.Black
-
-                    Yellow ->
-                        Ansi.SetColor Ansi.Foreground Ansi.Vivid Ansi.Yellow
-
-                    DullCyan ->
-                        Ansi.SetColor Ansi.Foreground Ansi.Dull Ansi.Cyan
-
-                    DullRed ->
-                        Ansi.SetColor Ansi.Foreground Ansi.Dull Ansi.Red
-
-                    DullYellow ->
-                        Ansi.SetColor Ansi.Foreground Ansi.Dull Ansi.Yellow
-            )
+    , Maybe.map SetColor style.color
     ]
         |> List.filterMap identity
 
@@ -265,10 +245,10 @@ styleToSgrs style =
 {-| Returns `acc` followed by the text of `simpleDoc`, with each SGR command
 written as an escape sequence: the escape character, `[`, a code, then `m`.
 
-The codes are 0 for a reset, 1 for bold and 4 for underline. A dull colour is
-30 to 36 and a vivid one 90 to 96: black, red, green, yellow, blue and cyan are
-0, 1, 2, 3, 4 and 6 above the base. The colour's layer is not looked at; every
-colour is written as a foreground colour.
+The codes are 0 for a reset, 1 for bold and 4 for underline. A colour is a
+foreground colour: a dull one is 30 plus its hue and a vivid one 90 plus its
+hue, where black, red, green, yellow, blue and cyan are hues 0, 1, 2, 3, 4
+and 6.
 
 -}
 displayS : SimpleDoc -> String -> String
@@ -283,53 +263,59 @@ displayS simpleDoc acc =
         SLine n sd ->
             displayS sd (acc ++ "\n" ++ String.repeat n " ")
 
-        SSGR (Ansi.Reset :: tail) sd ->
-            displayS (SSGR tail sd) (acc ++ "\u{001B}[0m")
-
-        SSGR ((Ansi.SetUnderlining Ansi.SingleUnderline) :: tail) sd ->
-            displayS (SSGR tail sd) (acc ++ "\u{001B}[4m")
-
-        SSGR ((Ansi.SetColor _ Ansi.Dull Ansi.Red) :: tail) sd ->
-            displayS (SSGR tail sd) (acc ++ "\u{001B}[31m")
-
-        SSGR ((Ansi.SetColor _ Ansi.Vivid Ansi.Red) :: tail) sd ->
-            displayS (SSGR tail sd) (acc ++ "\u{001B}[91m")
-
-        SSGR ((Ansi.SetColor _ Ansi.Dull Ansi.Green) :: tail) sd ->
-            displayS (SSGR tail sd) (acc ++ "\u{001B}[32m")
-
-        SSGR ((Ansi.SetColor _ Ansi.Vivid Ansi.Green) :: tail) sd ->
-            displayS (SSGR tail sd) (acc ++ "\u{001B}[92m")
-
-        SSGR ((Ansi.SetColor _ Ansi.Dull Ansi.Yellow) :: tail) sd ->
-            displayS (SSGR tail sd) (acc ++ "\u{001B}[33m")
-
-        SSGR ((Ansi.SetColor _ Ansi.Vivid Ansi.Yellow) :: tail) sd ->
-            displayS (SSGR tail sd) (acc ++ "\u{001B}[93m")
-
-        SSGR ((Ansi.SetColor _ Ansi.Dull Ansi.Cyan) :: tail) sd ->
-            displayS (SSGR tail sd) (acc ++ "\u{001B}[36m")
-
-        SSGR ((Ansi.SetColor _ Ansi.Vivid Ansi.Cyan) :: tail) sd ->
-            displayS (SSGR tail sd) (acc ++ "\u{001B}[96m")
-
-        SSGR ((Ansi.SetColor _ Ansi.Dull Ansi.Black) :: tail) sd ->
-            displayS (SSGR tail sd) (acc ++ "\u{001B}[30m")
-
-        SSGR ((Ansi.SetColor _ Ansi.Dull Ansi.Blue) :: tail) sd ->
-            displayS (SSGR tail sd) (acc ++ "\u{001B}[34m")
-
-        SSGR ((Ansi.SetColor _ Ansi.Vivid Ansi.Black) :: tail) sd ->
-            displayS (SSGR tail sd) (acc ++ "\u{001B}[90m")
-
-        SSGR ((Ansi.SetColor _ Ansi.Vivid Ansi.Blue) :: tail) sd ->
-            displayS (SSGR tail sd) (acc ++ "\u{001B}[94m")
-
-        SSGR ((Ansi.SetConsoleIntensity Ansi.BoldIntensity) :: tail) sd ->
-            displayS (SSGR tail sd) (acc ++ "\u{001B}[1m")
+        SSGR (sgr :: tail) sd ->
+            displayS (SSGR tail sd) (acc ++ "\u{001B}[" ++ String.fromInt (sgrCode sgr) ++ "m")
 
         SSGR [] sd ->
             displayS sd acc
+
+
+{-| The code of an SGR command, as `displayS` describes.
+-}
+sgrCode : Sgr -> Int
+sgrCode sgr =
+    case sgr of
+        Reset ->
+            0
+
+        SetBold ->
+            1
+
+        SetUnderline ->
+            4
+
+        SetColor color ->
+            let
+                ( base, hue ) =
+                    case color of
+                        Black ->
+                            ( 90, 0 )
+
+                        Red ->
+                            ( 90, 1 )
+
+                        Green ->
+                            ( 90, 2 )
+
+                        Yellow ->
+                            ( 90, 3 )
+
+                        Blue ->
+                            ( 90, 4 )
+
+                        Cyan ->
+                            ( 90, 6 )
+
+                        DullRed ->
+                            ( 30, 1 )
+
+                        DullYellow ->
+                            ( 30, 3 )
+
+                        DullCyan ->
+                            ( 30, 6 )
+            in
+            base + hue
 
 
 {-| Creates a document holding the given string, with no style.

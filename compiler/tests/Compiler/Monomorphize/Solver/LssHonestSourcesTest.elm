@@ -52,9 +52,9 @@ What the tests establish:
     in `mixedFlex` and 0 in `mixedFlexGc`.
 
 Among what is not tested: tests 4a to 5b with the rule off; kernel and
-partial-application members; `Store.resolveSlotMembers`, which chooses the rule
-from the context's `lssOn`; resolution with no accumulator, when nothing is
-counted; and how a zonk reads a resolution back.
+partial-application members; `Store.resolveSlotMembers`, which always applies
+the rule; resolution with no accumulator, when nothing is counted; and how a
+zonk reads a resolution back.
 
 -}
 
@@ -313,15 +313,13 @@ table `table`.
 `Store.resolveSlotMembersWith` reads only `store`, `lss` and `memberTable`;
 the other fields are placeholders. `lss` holds an accumulator with every
 counter at zero, which is what lets a mixed crossing be counted: with
-`Nothing` there, none is. `lssOn` is True but is not read, since the rule is
-the function's own argument.
+`Nothing` there, none is.
 
 -}
 ctx : Engine.LssMemberTable -> IO.State -> ZonkCtxShape
 ctx table st =
     { store = st
     , next = TypeIds.firstMVarId
-    , lssOn = True
     , maxSetSize = 8
     , lss =
         Just
@@ -365,7 +363,6 @@ of the store's own.
 type alias ZonkCtxShape =
     { store : IO.State
     , next : TypeIds.MVarId
-    , lssOn : Bool
     , maxSetSize : Int
     , lss : Maybe LssAccShape
     , ecoReads : List Vars.Variable

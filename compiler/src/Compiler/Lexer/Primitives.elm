@@ -5,7 +5,7 @@ module Compiler.Lexer.Primitives exposing
     , withIndent, withBacksetIndent
     , inContext, specialize
     , fromByteString, fromSnippet, Snippet
-    , word1, word2, unsafeIndex, isWord, getCharWidth, charWidthAt, codePointAt
+    , word1, word2, unsafeIndex, isWord, charWidthAt, codePointAt
     , Step(..)
     )
 
@@ -53,7 +53,7 @@ nested parser; the checks made against it are in `Compiler.Parse.Space`.
 `fromByteString` and `fromSnippet` run a parser over a text, and treat a parse
 that succeeds without reaching the end of its input as a failure, a _bad end_.
 `word1` and `word2` are parsers for one or two fixed characters. `unsafeIndex`,
-`isWord`, `getCharWidth`, `charWidthAt` and `codePointAt` are for parsers written directly as functions on
+`isWord`, `charWidthAt` and `codePointAt` are for parsers written directly as functions on
 the state instead of being built from the combinators.
 
 
@@ -89,7 +89,7 @@ the state instead of being built from the combinators.
 
 # Character Utilities
 
-@docs word1, word2, unsafeIndex, isWord, getCharWidth, charWidthAt, codePointAt
+@docs word1, word2, unsafeIndex, isWord, charWidthAt, codePointAt
 
 
 # Loop Control
@@ -550,43 +550,38 @@ result.
 
 A failure of the second parser becomes the error `addContext` builds from the
 inner error, given the row and column the failure carries, and is placed at
-the position where `start` began. If `start` consumed input, the whole is
-reported as consumed: an `Eok` becomes `Cok` and an `Eerr` becomes `Cerr`. A
-failure of `start` itself is passed on unwrapped.
+the position where `start` began. The whole is reported as consumed, as if
+`start` always consumed input: an `Eok` becomes `Cok` and an `Eerr` becomes
+`Cerr`. Every `start` in use is a `word1` or a keyword, which consume input
+whenever they succeed. A failure of `start` itself is passed on unwrapped.
 
 -}
 inContext : (x -> Row -> Col -> y) -> Parser y start -> Parser x a -> Parser y a
 inContext addContext (Parser parserStart) (Parser parserA) =
     Parser
         (\((State st) as state) ->
+            let
+                afterStart : State -> PStep y a
+                afterStart s =
+                    case parserA s of
+                        Cok a s_ ->
+                            Cok a s_
+
+                        Eok a s_ ->
+                            Cok a s_
+
+                        Cerr r c tx ->
+                            Cerr st.row st.col (addContext (tx r c))
+
+                        Eerr r c tx ->
+                            Cerr st.row st.col (addContext (tx r c))
+            in
             case parserStart state of
                 Cok _ s ->
-                    case parserA s of
-                        Cok a s_ ->
-                            Cok a s_
-
-                        Eok a s_ ->
-                            Cok a s_
-
-                        Cerr r c tx ->
-                            Cerr st.row st.col (addContext (tx r c))
-
-                        Eerr r c tx ->
-                            Cerr st.row st.col (addContext (tx r c))
+                    afterStart s
 
                 Eok _ s ->
-                    case parserA s of
-                        Cok a s_ ->
-                            Cok a s_
-
-                        Eok a s_ ->
-                            Eok a s_
-
-                        Cerr r c tx ->
-                            Cerr st.row st.col (addContext (tx r c))
-
-                        Eerr r c tx ->
-                            Eerr st.row st.col (addContext (tx r c))
+                    afterStart s
 
                 Cerr r c t ->
                     Cerr r c t
@@ -709,18 +704,6 @@ isWord src pos end word =
     pos < end && unsafeIndex src pos == word
 
 
-{-| Returns how many units of `pos` a character takes: 2 for a character above
-U+FFFF and 1 for any other.
--}
-getCharWidth : Char -> Int
-getCharWidth word =
-    if Char.toCode word > 0xFFFF then
-        2
-
-    else
-        1
-
-
 {-| Returns the code point and width, in `pos` units, of the character at
 `pos`, where `pos < end` and `code` is `Char.toCode (unsafeIndex src pos)`.
 
@@ -758,8 +741,9 @@ codePointAt src pos end code =
 
 
 {-| Returns how many units of `pos` the character `word` at `pos` takes, as
-`codePointAt` gives it: like `getCharWidth`, but it also joins a surrogate pair
-on a host whose `Char` is one UTF-16 unit and never steps past `end`.
+`codePointAt` gives it: 2 for a character above U+FFFF and 1 for any other,
+except that it joins a surrogate pair on a host whose `Char` is one UTF-16
+unit, and it never steps past `end`.
 -}
 charWidthAt : String -> Int -> Int -> Char -> Int
 charWidthAt src pos end word =

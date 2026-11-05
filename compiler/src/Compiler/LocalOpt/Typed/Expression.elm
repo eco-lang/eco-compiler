@@ -2,6 +2,7 @@ module Compiler.LocalOpt.Typed.Expression exposing
     ( Cycle, Annotations
     , optimize, optimizePotentialTailCall
     , destructArgs
+    , findAnnotation, lookupAnnotationType
     )
 
 {-| Monomorphization needs to know the type of every expression it specializes,
@@ -50,6 +51,7 @@ full set of arguments are `TailCall`s.
 @docs Cycle, Annotations
 @docs optimize, optimizePotentialTailCall
 @docs destructArgs
+@docs findAnnotation, lookupAnnotationType
 
 -}
 
@@ -69,8 +71,10 @@ import Compiler.LocalOpt.Typed.Names as Names
 import Compiler.Type.KernelTypes as KernelTypes
 import Compiler.Type.TypedCanonical as TCanBuild
 import Data.Map
+import Data.NonEmptyList as NE
 import Data.Set as EverySet exposing (EverySet)
 import Dict exposing (Dict)
+import Maybe.Extra as Maybe
 import System.Crash
 import Utils.Main as Utils
 
@@ -262,7 +266,7 @@ findVarLocalTvar targetName exprVars (A.At _ info) =
                             Just v
 
                         Nothing ->
-                            firstJustList targetName exprVars rest
+                            firstJustList targetName exprVars (Maybe.toList rest)
 
         Can.Record fields ->
             firstJustList targetName exprVars (Data.Map.values fields)
@@ -414,17 +418,8 @@ optimizeExpr : KernelTypes.KernelTypeEnv -> Annotations -> ExprTypes -> ExprVars
 optimizeExpr kernelEnv annotations exprTypes exprVars home cycle region tipe tvar expr =
     case expr of
         Can.VarLocal name ->
-            if EverySet.member identity name cycle then
-                let
-                    defType =
-                        lookupAnnotationType name annotations
-                in
-                Names.pure (TOpt.VarCycle region home name { tipe = defType, tvar = tvar })
-
-            else
-                Names.lookupLocalType name
-                    |> Names.map (\localType -> TOpt.TrackedVarLocal region name { tipe = localType, tvar = tvar })
-                    |> catchMissing
+            Names.lookupLocalType name
+                |> Names.map (\localType -> TOpt.TrackedVarLocal region name { tipe = localType, tvar = tvar })
 
         Can.VarTopLevel varHome name ->
             let
@@ -728,10 +723,6 @@ optimizeExpr kernelEnv annotations exprTypes exprVars home cycle region tipe tva
                             |> Names.andThen
                                 (\optScrutinee ->
                                     case optScrutinee of
-                                        TOpt.VarLocal root _ ->
-                                            Names.traverse (optimizeBranch root) branches
-                                                |> Names.map (\optBranches -> Case.optimize temp root optBranches tipe tvar)
-
                                         TOpt.TrackedVarLocal _ root _ ->
                                             Names.traverse (optimizeBranch root) branches
                                                 |> Names.map (\optBranches -> Case.optimize temp root optBranches tipe tvar)
@@ -822,7 +813,7 @@ optimizeExpr kernelEnv annotations exprTypes exprVars home cycle region tipe tva
                         optimizeArg b
                             |> Names.andThen
                                 (\optB ->
-                                    Names.traverse optimizeArg cs
+                                    Names.traverseMaybe optimizeArg cs
                                         |> Names.andThen
                                             (\optCs ->
                                                 Names.registerKernel Name.utils (TOpt.Tuple region optA optB optCs { tipe = tipe, tvar = tvar })
@@ -834,25 +825,37 @@ optimizeExpr kernelEnv annotations exprTypes exprVars home cycle region tipe tva
             Names.pure (TOpt.Shader src (EverySet.fromList identity (Data.Map.keys attributes)) (EverySet.fromList identity (Data.Map.keys uniforms)) { tipe = tipe, tvar = tvar })
 
 
-{-| Returns `tracker` unchanged. A missing local type is not caught: the
-lookup it wraps crashes instead.
+{-| Returns the annotation of the top-level definition or port `name`. It
+crashes if `name` has none: the type checker annotates every top-level
+definition and port.
 -}
-catchMissing : Names.Tracker a -> Names.Tracker a
-catchMissing tracker =
-    tracker
+findAnnotation : Name -> Annotations -> Can.Annotation Name
+findAnnotation name annotations =
+    case Dict.get name annotations of
+        Just annotation ->
+            annotation
+
+        Nothing ->
+            System.Crash.crash ("Compiler.LocalOpt.Typed.Expression.findAnnotation: no annotation for " ++ name ++ "; the type checker annotates every top-level definition and port")
 
 
 {-| Returns the type in `name`'s annotation, without its quantifier. It
-crashes if `name` has no annotation.
+crashes as `findAnnotation` does.
 -}
 lookupAnnotationType : Name -> Annotations -> Can.Type Name
 lookupAnnotationType name annotations =
-    case Dict.get name annotations of
-        Just (Can.Forall _ tipe) ->
+    case findAnnotation name annotations of
+        Can.Forall _ tipe ->
             tipe
 
-        Nothing ->
-            System.Crash.crash "Expression.lookupAnnotationType: no annotation"
+
+{-| Crashes for a record pattern whose solved type does not hold `field`: the
+type checker gives every record pattern a record type that holds each of its
+fields.
+-}
+crashRecordPattern : Name -> a
+crashRecordPattern field =
+    System.Crash.crash ("Compiler.LocalOpt.Typed.Expression.destructHelpWithType: the type of a record pattern is a record type holding its field " ++ field)
 
 
 
@@ -928,14 +931,8 @@ optimizeTailExpr kernelEnv annotations exprTypes exprVars home cycle rootName ar
                                     _ ->
                                         False
                         in
-                        if isMatchingName then
-                            case Index.indexedZipWith (\_ ( locName, _ ) arg -> ( A.toValue locName, arg )) argNames oargs of
-                                Index.LengthMatch pairs ->
-                                    Names.pure (TOpt.TailCall rootName pairs { tipe = resultType, tvar = tvar })
-
-                                Index.LengthMismatch _ _ ->
-                                    optimizeArg func
-                                        |> Names.map (\ofunc -> TOpt.Call region ofunc oargs { tipe = tipe, tvar = tvar })
+                        if isMatchingName && List.length argNames == List.length oargs then
+                            Names.pure (TOpt.TailCall rootName (List.map2 (\( locName, _ ) arg -> ( A.toValue locName, arg )) argNames oargs) { tipe = resultType, tvar = tvar })
 
                         else
                             optimizeArg func
@@ -1053,10 +1050,6 @@ optimizeTailExpr kernelEnv annotations exprTypes exprVars home cycle rootName ar
                             |> Names.andThen
                                 (\optScrutinee ->
                                     case optScrutinee of
-                                        TOpt.VarLocal root _ ->
-                                            Names.traverse (optimizeBranch root) branches
-                                                |> Names.map (\optBranches -> Case.optimize temp root optBranches tipe tvar)
-
                                         TOpt.TrackedVarLocal _ root _ ->
                                             Names.traverse (optimizeBranch root) branches
                                                 |> Names.map (\optBranches -> Case.optimize temp root optBranches tipe tvar)
@@ -1429,7 +1422,7 @@ decidecHasTailCall funcName decider =
             decidecHasTailCall funcName success || decidecHasTailCall funcName failure
 
         TOpt.FanOut _ tests fallback ->
-            decidecHasTailCall funcName fallback || List.any (Tuple.second >> decidecHasTailCall funcName) tests
+            decidecHasTailCall funcName fallback || List.any (Tuple.second >> decidecHasTailCall funcName) (NE.toList tests)
 
 
 {-| Wraps `expr` in a `Destruct` applying `destructor`, typed `bodyType` and
@@ -1565,7 +1558,7 @@ lookup. A constructor argument is passed its own pattern type this way.
 
 When `path` is not a `Root`, a tuple, list, cons or multi-argument constructor
 pattern first binds it to a generated name, so that the inner destructors read
-from a root. A tuple of more than three elements crashes.
+from a root.
 
 -}
 destructHelpWithType : ExprTypes -> ExprVars -> Maybe Int -> Maybe (Can.Type Name) -> TOpt.Path -> Can.Pattern -> List (TOpt.Destructor Name) -> Names.Tracker (List (TOpt.Destructor Name))
@@ -1607,10 +1600,10 @@ destructHelpWithType exprTypes exprVars maybeParentPatId maybeType path (A.At re
                                             t
 
                                         Nothing ->
-                                            System.Crash.crash ("Expression.destructHelpWithType: PRecord field " ++ name ++ " not in type")
+                                            crashRecordPattern name
 
                                 _ ->
-                                    lookupPatternType exprTypes effectivePatId ("Expression.destructHelpWithType: PRecord " ++ name)
+                                    crashRecordPattern name
                     in
                     TOpt.Destructor name (TOpt.Field name path) { tipe = fieldType, tvar = Nothing }
             in
@@ -1626,10 +1619,10 @@ destructHelpWithType exprTypes exprVars maybeParentPatId maybeType path (A.At re
         Can.PUnit ->
             Names.pure revDs
 
-        Can.PTuple a b [] ->
+        Can.PTuple a b Nothing ->
             destructTwo exprTypes exprVars effectivePatId TOpt.HintTuple2 path a b revDs
 
-        Can.PTuple a b [ c ] ->
+        Can.PTuple a b (Just c) ->
             case path of
                 TOpt.Root _ ->
                     destructHelp exprTypes exprVars (TOpt.Index Index.first TOpt.HintTuple3 path) a revDs
@@ -1651,9 +1644,6 @@ destructHelpWithType exprTypes exprVars maybeParentPatId maybeType path (A.At re
                                     |> Names.andThen (destructHelp exprTypes exprVars (TOpt.Index Index.second TOpt.HintTuple3 newRoot) b)
                                     |> Names.andThen (destructHelp exprTypes exprVars (TOpt.Index Index.third TOpt.HintTuple3 newRoot) c)
                             )
-
-        Can.PTuple _ _ _ ->
-            System.Crash.crash "Expression.destructHelpWithType: PTuple with more than 3 elements is not supported in Elm"
 
         Can.PList [] ->
             Names.pure revDs
@@ -1703,13 +1693,10 @@ destructHelpWithType exprTypes exprVars maybeParentPatId maybeType path (A.At re
                                         )
                     in
                     case unionData.opts of
-                        Can.Normal ->
-                            destructHelpWithType exprTypes exprVars Nothing actualType (TOpt.Index Index.first (TOpt.HintCustom name) path) arg revDs
-
                         Can.Unbox ->
                             destructHelpWithType exprTypes exprVars Nothing actualType (TOpt.Unbox path) arg revDs
 
-                        Can.Enum ->
+                        _ ->
                             destructHelpWithType exprTypes exprVars Nothing actualType (TOpt.Index Index.first (TOpt.HintCustom name) path) arg revDs
 
                 _ ->

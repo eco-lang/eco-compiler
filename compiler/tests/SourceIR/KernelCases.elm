@@ -102,7 +102,7 @@ simpleKernelCases expectFn =
     , { label = "VarKernel Process.spawn", run = varKernelProcessSpawn expectFn }
     , { label = "VarKernel JsArray.empty", run = varKernelJsArrayEmpty expectFn }
     , { label = "VarKernel Utils.Tuple2", run = varKernelUtilsTuple2 expectFn }
-    , { label = "VarKernel Basics.pi (ConstantFloat intrinsic)", run = varKernelBasicsPi expectFn }
+    , { label = "VarKernel Basics.pi (float constant)", run = varKernelBasicsPi expectFn }
     , { label = "VarKernel Basics.add (intrinsic function arity>0)", run = varKernelBasicsAdd expectFn }
     ]
 
@@ -189,8 +189,8 @@ varKernelUtilsTuple2 expectFn _ =
 `Elm.Kernel.Basics.pi`.
 
 The case's label refers to the MLIR back end, where
-`Compiler.IR.Kernel.Intrinsics` has a float-constant intrinsic for
-`Basics.pi`.
+`Compiler.IR.Kernel.Intrinsics.kernelFloatConstant` gives `Basics.pi` its
+value as a float constant.
 
 -}
 varKernelBasicsPi : (Can.Module -> Expectation) -> (() -> Expectation)

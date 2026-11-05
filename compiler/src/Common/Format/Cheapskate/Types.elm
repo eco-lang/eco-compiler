@@ -3,7 +3,6 @@ module Common.Format.Cheapskate.Types exposing
     , Block(..), Blocks
     , CodeAttr(..), ListType(..), NumWrapper(..), HtmlTagType(..)
     , Inline(..), Inlines, LinkTarget(..)
-    , ReferenceMap
     )
 
 {-| The formatter rewrites the Markdown inside doc comments, and this module is
@@ -41,16 +40,7 @@ comment, which name the values a module documents.
 
 @docs Inline, Inlines, LinkTarget
 
-
-# References
-
-@docs ReferenceMap
-
 -}
-
-import Dict exposing (Dict)
-
-
 
 -- ====== TYPES ======
 
@@ -224,13 +214,3 @@ This is a name for `List Inline`.
 -}
 type alias Inlines =
     List Inline
-
-
-{-| The link reference definitions of a document, from label to URL and title.
-
-The parser builds it keyed by each label in lower case with its whitespace
-removed. No link is resolved through it: a `Ref` keeps its label.
-
--}
-type alias ReferenceMap =
-    Dict String ( String, String )

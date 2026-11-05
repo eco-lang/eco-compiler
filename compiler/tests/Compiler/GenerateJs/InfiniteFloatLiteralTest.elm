@@ -87,10 +87,10 @@ generatedDefinitions src =
         |> Result.andThen
             (\{ canonical, annotations } ->
                 case RResult.run (ErasedOptimize.optimize annotations canonical) of
-                    ( _, Ok (Opt.LocalGraph _ nodes _) ) ->
+                    Ok (Opt.LocalGraph _ nodes _) ->
                         Ok (List.filterMap renderNode (Data.Map.values nodes))
 
-                    ( _, Err _ ) ->
+                    Err _ ->
                         Err "optimization failed"
             )
 

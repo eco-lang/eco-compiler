@@ -1,12 +1,10 @@
 module Compiler.IR.Kernel.Facts exposing
-    ( KernelFacts, CallTimeEffect, GcAlloc, Totality, ParamMode(..)
+    ( KernelFacts, CallTimeEffect(..), GcAlloc(..), Totality(..), ParamMode(..)
     , DevirtPolicy(..), ShapeGuard(..), devirtOf
-    , HofAxis
+    , HofAxis(..)
     , lookup, lookupSymbol, rows
     , gcLeafEligible, droppable
-    , gcLeafEligibleFor
     , CostClass(..), costClass
-    , validationErrors
     , droppableFor, hoistableFor
     )
 
@@ -45,15 +43,16 @@ effect, a divergence note or a devirtualization registration.
 
 **Derived facts.** What the consumers ask is computed from the stored fields,
 never stored: `canTriggerGC`, `gcLeafEligible`, `droppable`, `hoistable`,
-`mayCallBackIntoElm` and `costClass`. Three of them, `gcLeafEligible`,
-`droppable` and `hoistable`, also come in a form that takes a key instead of a
-row (the name ending in `For`), which folds in the whitelist default.
+`mayCallBackIntoElm` and `costClass`. Two of them, `droppable` and
+`hoistable`, also come in a form that takes a key instead of a row (the name
+ending in `For`), which folds in the whitelist default.
 
 **Checking.** The rules a row must obey, such as "`cseSafe` needs no effect,
-no call-back and a totality other than `MayDiverge`", are checked by
-`validationErrors`, which is empty exactly when every row passes and no key is
-repeated. Nothing in this module evaluates it, so the table is only as
-consistent as whatever asserts that list is empty.
+no call-back and a totality other than `MayDiverge`", are checked by the
+_table check_, `validationErrors` of the test module
+`Compiler.IR.Kernel.FactsValidation`, which is empty exactly when every row
+passes and no key is repeated. The compiler never evaluates it, so the table
+is only as consistent as the test that asserts that list is empty.
 
 Some kernels are deliberately not listed. `File.fileExists`, `File.dirExists`,
 `Env.lookup` and `Scheduler.spawn` each return a task that holds on to its
@@ -64,9 +63,7 @@ argument. They have no row, rather than a row that marks the argument owned.
 @docs HofAxis
 @docs lookup, lookupSymbol, rows
 @docs gcLeafEligible, droppable
-@docs gcLeafEligibleFor
 @docs CostClass, costClass
-@docs validationErrors
 @docs droppableFor, hoistableFor
 
 -}
@@ -88,7 +85,7 @@ know" value, so the unaudited base has it.
 `EffRuntimeState` is a change to state held inside the runtime itself.
 
 `EffNoreturn` means the call ends the process instead of returning.
-`validationErrors` rejects it on a row whose totality is `Total`.
+the table check rejects it on a row whose totality is `Total`.
 
 -}
 type CallTimeEffect
@@ -104,7 +101,7 @@ manages. Memory the C++ code takes for itself is recorded separately, by the
 `GcNone` means no allocation on any path through the call.
 
 `GcFixed n` means at most `n` objects per call, each of a size known in
-advance. `validationErrors` requires `n` to be positive; zero is written
+advance. the table check requires `n` to be positive; zero is written
 `GcNone`.
 
 `GcUnbounded` means the number or size of the objects depends on the
@@ -120,7 +117,7 @@ type GcAlloc
 {-| Whether a call always returns normally.
 
 `Total` calls always return. A `Throws` call can fail instead of returning,
-and `validationErrors` requires its row to carry a divergence note.
+and the table check requires its row to carry a divergence note.
 `MayDiverge` is for a call that may never return, and is also the "do not know"
 value.
 
@@ -141,7 +138,7 @@ does, is `HofNo`.
 
 The two kinds of question read `HofUnknown` differently. A question about
 safety reads it as "may call back", through `mayCallBackIntoElm`: it makes
-`canTriggerGC` true, and `validationErrors` rejects a row that has it and is
+`canTriggerGC` true, and the table check rejects a row that has it and is
 `cseSafe`. A question about cost reads it as not knowing: `costClass` answers
 `CUnknown`, not `CHof`, so a row that has not been audited on this axis asserts
 no price. Only `HofYes` gives `CHof`, which is why every higher-order row states
@@ -189,7 +186,7 @@ a call in Elm passes, which a site's argument count is compared against. It is
 not the number of parameters of the C++ export, which can differ: an export may
 take an operand the compiler adds, as `Debug.toString` takes a type id, or a
 kernel with no parameters may be applied to `()`. `guard` restricts the types a
-site may have, as `ShapeGuard` describes. `validationErrors` requires `arity` to
+site may have, as `ShapeGuard` describes. the table check requires `arity` to
 be non-negative and equal to the length of `params` when `params` is not
 empty, the row to carry evidence, and every guard position to be `-1` or an
 argument index from 0 to `arity - 1`.
@@ -258,7 +255,7 @@ type alias KernelFacts =
 `params` empty, no evidence, and no devirtualization registration. A row built
 from it answers `False` for `gcLeafEligible`, `droppable` and `hoistable`, and
 `True` for `canTriggerGC`, unless it overrides the fields those read. With
-`evidence` still empty it fails `validationErrors`.
+`evidence` still empty it fails the table check.
 -}
 unaudited : KernelFacts
 unaudited =
@@ -387,13 +384,6 @@ costClass f =
 -- unlisted key answers False, so no caller has to choose the default itself.
 
 
-{-| Returns `gcLeafEligible` of the key's row, or `False` for an unlisted key.
--}
-gcLeafEligibleFor : ( Name, Name, Name ) -> Bool
-gcLeafEligibleFor key =
-    lookup key |> Maybe.map gcLeafEligible |> Maybe.withDefault False
-
-
 {-| Returns `droppable` of the key's row, or `False` for an unlisted key.
 -}
 droppableFor : ( Name, Name, Name ) -> Bool
@@ -481,7 +471,7 @@ splitSymbol sym =
 
 
 {-| The rows indexed by Mono key, for `lookup`. If two rows had the same key the
-later would win here; `validationErrors` reports that.
+later would win here; the table check reports that.
 -}
 table : Dict ( Name, Name, Name ) KernelFacts
 table =
@@ -1157,170 +1147,3 @@ rows =
         }
       )
     ]
-
-
-
--- VALIDATION
-
-
-{-| Messages for the ways the table breaks its own rules; an empty list means
-the table is consistent.
-
-Repeated keys give a single message stating how many rows repeat an earlier
-key.
-
-Each row must obey these rules, and a row that breaks one gets a message naming
-it. Evidence must contain `.cpp:` or `.hpp:`. A `cseSafe` row must have no
-call-time effect, an audited `HofNo`, and a totality other than
-`MayDiverge`. An `EffNoreturn` row must not be `Total`. `GcFixed` must be
-positive. A `HofYes` row must be `GcUnbounded` and not `Total`. A `Throws` row
-must carry a divergence note. Every `resultAliases` index must point into
-`params`. The key must look like a Mono key: home and name non-empty, a home
-not starting with `Elm_Kernel_` or `Eco_Kernel_`, and a name not ending in
-`_Int`, `_Float` or `_Char`.
-
-A row registered with `DevirtAt arity guard` must also have a non-negative
-`arity`, equal to the length of `params` when `params` is not empty, carry
-evidence, and give guard positions that are `-1` or an argument index from 0 to
-`arity - 1`.
-
--}
-validationErrors : List String
-validationErrors =
-    dupKeyErrors
-        ++ List.concatMap rowErrors rows
-        ++ List.concatMap (\( key, facts ) -> devirtErrors key facts) rows
-
-
-{-| Returns a message for each way a row's devirtualization registration is
-wrong, or nothing for a row that is not registered. A registration must have a
-non-negative arity, evidence, and guard positions that are `-1` or a valid
-argument index for that arity.
-
-A row can state its arity twice, in `DevirtAt` and as the length of `params`,
-and the two must agree. Since `params = []` means the borrow axis was not
-audited rather than that the kernel takes no arguments, they are compared only
-when `params` is not empty; that is why `DevirtAt` carries its own arity.
-
--}
-devirtErrors : ( Name, Name, Name ) -> KernelFacts -> List String
-devirtErrors ( prefix, home, name ) facts =
-    let
-        key =
-            prefix ++ ".Kernel." ++ home ++ "." ++ name
-    in
-    case facts.devirt of
-        DevirtNo ->
-            []
-
-        DevirtAt arity guard ->
-            (if arity < 0 then
-                [ key ++ ": DevirtAt arity is negative" ]
-
-             else
-                []
-            )
-                ++ (if not (List.isEmpty facts.params) && List.length facts.params /= arity then
-                        [ key
-                            ++ ": DevirtAt "
-                            ++ String.fromInt arity
-                            ++ " disagrees with params ("
-                            ++ String.fromInt (List.length facts.params)
-                            ++ ")"
-                        ]
-
-                    else
-                        []
-                   )
-                ++ (if String.isEmpty facts.evidence then
-                        [ key ++ ": DevirtAt row carries no evidence" ]
-
-                    else
-                        []
-                   )
-                ++ (case guard of
-                        ShapeAny ->
-                            []
-
-                        ShapeNoUnboxedScalarAt positions ->
-                            if List.all (\pos -> pos == -1 || (pos >= 0 && pos < arity)) positions then
-                                []
-
-                            else
-                                [ key ++ ": ShapeNoUnboxedScalarAt position out of range for arity " ++ String.fromInt arity ]
-                   )
-
-
-{-| A message giving how many rows repeat an earlier row's key, or nothing
-when every key is distinct. `table` would keep only the last such row, with no
-other sign of the others.
--}
-dupKeyErrors : List String
-dupKeyErrors =
-    if List.length rows == Dict.size table then
-        []
-
-    else
-        [ "duplicate key(s): " ++ String.fromInt (List.length rows - Dict.size table) ]
-
-
-{-| Returns a message, naming the row, for each rule the row breaks. Evidence
-must contain `.cpp:` or `.hpp:`. A `cseSafe` row must have no
-call-time effect, an audited `HofNo`, and a totality other than `MayDiverge`.
-An `EffNoreturn` row must not be `Total`. `GcFixed` must be positive. A `HofYes`
-row must be `GcUnbounded` and not `Total`. A `Throws` row must carry a
-divergence note. Every `resultAliases` index must point into `params`. The key
-must look like a Mono key: home and name non-empty, a home not starting with
-`Elm_Kernel_` or `Eco_Kernel_`, and a name not ending in `_Int`, `_Float` or
-`_Char`.
--}
-rowErrors : ( ( Name, Name, Name ), KernelFacts ) -> List String
-rowErrors ( ( prefix, home, name ), f ) =
-    let
-        tag msg =
-            prefix ++ ".Kernel." ++ home ++ "." ++ name ++ ": " ++ msg
-
-        check cond msg =
-            if cond then
-                []
-
-            else
-                [ tag msg ]
-    in
-    List.concat
-        [ check (String.contains ".cpp:" f.evidence || String.contains ".hpp:" f.evidence)
-            "evidence must carry at least one <file>.cpp:<line> / .hpp:<line> anchor"
-        , check (not f.cseSafe || (f.callTimeEffect == EffNone && not (mayCallBackIntoElm f) && f.totality /= MayDiverge))
-            "cseSafe requires EffNone AND callsBack == HofNo AND totality /= MayDiverge"
-        , check (f.callTimeEffect /= EffNoreturn || f.totality /= Total)
-            "EffNoreturn requires totality /= Total"
-        , check (gcBudgetOk f.gcAlloc)
-            "GcFixed n requires n > 0 (use GcNone for zero)"
-        , -- Elm code run by a call can allocate any amount, and need not return.
-          check (f.callsBack /= HofYes || (f.gcAlloc == GcUnbounded && f.totality /= Total))
-            "callsBack == HofYes requires GcUnbounded AND totality /= Total"
-        , check (f.totality /= Throws || f.divergence /= Nothing)
-            "totality = Throws requires a divergence note"
-        , -- So a row with no borrow modes cannot list aliases either.
-          check (List.all (\i -> i >= 0 && i < List.length f.params) f.resultAliases)
-            "resultAliases index out of range for params"
-        , check (home /= "" && name /= "")
-            "empty home/name"
-        , check (not (String.startsWith "Elm_Kernel_" home || String.startsWith "Eco_Kernel_" home))
-            "home must be the Mono home, not the C symbol prefix"
-        , check (not (List.any (\s -> String.endsWith s name) [ "_Int", "_Float", "_Char" ]))
-            "name must be the base Mono name, not an ABI-suffixed symbol"
-        ]
-
-
-{-| Returns whether an allocation bound is acceptable: `GcFixed` must be
-positive, and the other values always are.
--}
-gcBudgetOk : GcAlloc -> Bool
-gcBudgetOk ga =
-    case ga of
-        GcFixed n ->
-            n > 0
-
-        _ ->
-            True

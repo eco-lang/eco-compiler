@@ -7,8 +7,8 @@ lose them; these tests drive the whole pass on hand-built graphs to catch both.
 
 A partial application (PAP) of a global `g` with `k` bound arguments is a heap
 object holding those `k` arguments. As a lambda-set member it is `p|g|k`, which
-the graph's `lssMemberOrigins` maps to `OriginPap g k`. The function type left
-after the bound arguments is the PAP's _residual_. Calling `g` in place of the
+the graph's `lssMemberOrigins` maps to `OriginPap home name k`. The function
+type left after the bound arguments is the PAP's _residual_. Calling `g` in place of the
 callee would drop the bound arguments, so for such a member the pass leaves
 the callee as it is.
 
@@ -23,7 +23,7 @@ The fixture, built by `run`, is a graph whose node 0 defines a list holding the
 call sites and whose nodes 1 onwards are specs of one global, each at the index
 of its registry entry. A site applies integer literals to a local variable
 whose type is the residual, with the singleton set holding the member `pap` as
-its head annotation, and `origins` maps `pap` to `OriginPap global k`. No spec
+its head annotation, and `origins` maps `pap` to `OriginPap home name k`. No spec
 node is a closure instance of `pap`, so the pass looks the global's specs up in
 the registry. The pass runs with its census switch on. Spec 1 is the only spec
 in every test but test 2.
@@ -105,7 +105,7 @@ suite =
                         papSite 1 (fn1 [ Mono.MInt ] Mono.MInt)
 
                     ( onGraph, onStats ) =
-                        run (origins [ ( pap, Mono.OriginPap addGlobal 1 ) ]) reg nodes [ site ]
+                        run (origins [ ( pap, Mono.OriginPap home "add" 1 ) ]) reg nodes [ site ]
                 in
                 Expect.all
                     [ \_ -> Expect.equal 1 onStats.stampedPapGlobal
@@ -150,7 +150,7 @@ suite =
                         papSite 1 (fn1 [ Mono.MInt ] Mono.MInt)
 
                     ( g, st ) =
-                        run (origins [ ( pap, Mono.OriginPap addGlobal 1 ) ]) reg nodes [ site ]
+                        run (origins [ ( pap, Mono.OriginPap home "add" 1 ) ]) reg nodes [ site ]
                 in
                 Expect.all
                     [ \_ -> Expect.equal 0 st.stampedPapGlobal
@@ -173,7 +173,7 @@ suite =
                         papSite 1 (fn1 [ Mono.MInt ] Mono.MInt)
 
                     ( _, st ) =
-                        run (origins [ ( pap, Mono.OriginPap addGlobal 1 ) ]) reg nodes [ site ]
+                        run (origins [ ( pap, Mono.OriginPap home "add" 1 ) ]) reg nodes [ site ]
                 in
                 Expect.all
                     [ \_ -> Expect.equal 0 st.stampedPapGlobal
@@ -193,7 +193,7 @@ suite =
                         papSite 1 (fn1 [ Mono.MInt ] Mono.MInt)
 
                     ( _, st ) =
-                        run (origins [ ( pap, Mono.OriginPap addGlobal 1 ) ]) reg nodes [ site ]
+                        run (origins [ ( pap, Mono.OriginPap home "add" 1 ) ]) reg nodes [ site ]
                 in
                 Expect.equal 0 st.stampedPapGlobal
         , Test.test "5. P2 RESIDUAL PEEL: a curried residual applied flat is peeled and stamps with k=1, |params|=2" <|
@@ -215,7 +215,7 @@ suite =
                         papSite 2 curriedResidual
 
                     ( g, st ) =
-                        run (origins [ ( pap, Mono.OriginPap addGlobal 1 ) ]) reg nodes [ site ]
+                        run (origins [ ( pap, Mono.OriginPap home "add" 1 ) ]) reg nodes [ site ]
                 in
                 Expect.all
                     [ \_ -> Expect.equal 1 st.stampedPapGlobal
@@ -239,7 +239,7 @@ suite =
                         papSite 1 (fn1 [ Mono.MInt ] Mono.MInt)
 
                     ( _, st ) =
-                        run (origins [ ( pap, Mono.OriginPap addGlobal 1 ) ]) reg nodes [ site ]
+                        run (origins [ ( pap, Mono.OriginPap home "add" 1 ) ]) reg nodes [ site ]
                 in
                 Expect.equal 0 st.stampedPapGlobal
         , Test.test "7. k=2: two bound arguments split the row at 2" <|
@@ -257,7 +257,7 @@ suite =
                         papSite 1 (fn1 [ Mono.MInt ] Mono.MInt)
 
                     ( g, st ) =
-                        run (origins [ ( pap, Mono.OriginPap addGlobal 2 ) ]) reg nodes [ site ]
+                        run (origins [ ( pap, Mono.OriginPap home "add" 2 ) ]) reg nodes [ site ]
                 in
                 Expect.all
                     [ \_ -> Expect.equal 1 st.stampedPapGlobal
@@ -284,7 +284,7 @@ suite =
                         papSite 1 (fn1 [ Mono.MFloat ] shapeTy)
 
                     ( g, st ) =
-                        run (origins [ ( pap, Mono.OriginPap rectGlobal 1 ) ]) reg nodes [ site ]
+                        run (origins [ ( pap, Mono.OriginPap home "Rect" 1 ) ]) reg nodes [ site ]
                 in
                 Expect.all
                     [ \_ -> Expect.equal 1 st.stampedPapGlobal
@@ -315,7 +315,7 @@ suite =
                         papSite 24 (fn1 (List.repeat 24 Mono.MInt) shapeTy)
 
                     ( _, st ) =
-                        run (origins [ ( pap, Mono.OriginPap rectGlobal 1 ) ]) reg nodes [ site ]
+                        run (origins [ ( pap, Mono.OriginPap home "Rect" 1 ) ]) reg nodes [ site ]
                 in
                 Expect.all
                     [ \_ -> Expect.equal 1 st.stampedPapGlobal
@@ -377,7 +377,7 @@ that type.
 -}
 ctorSpec : List Mono.MonoType -> Mono.MonoNode
 ctorSpec fieldTys =
-    Mono.MonoCtor
+    Mono.MonoCtor home
         { name = "Rect", tag = 0, fieldTypes = fieldTys }
         (fn fieldTys shapeTy)
 
@@ -540,7 +540,7 @@ run memberOrigins registry specNodes exprs =
                         )
                         :: List.map Just specNodes
                     )
-            , main = Nothing
+            , main = Mono.StaticMain 0
             , registry = registry
             , ctorShapes = Mono.layoutMapEmpty
             , nextLambdaIndex = 100

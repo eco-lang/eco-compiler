@@ -32,10 +32,10 @@ character will go at, and the mappings recorded so far. `stmtToBuilder` and
 line, and printed lines count from the number given to `emptyBuilder`.
 
 Printing makes two layout decisions. No operator precedence is computed:
-instead an operator expression, conditional or assignment is put in
-parentheses wherever it is an operand of an operator, a part of a conditional,
-the callee of a call (for a call through an application helper, the helper),
-or the object of a property access or index. And an array, an object or a
+instead an operator expression or conditional is put in parentheses wherever
+it is an operand of an operator, a part of a conditional, the callee of a call
+(for a call through an application helper, the helper), or the object of a
+property access or index. And an array, an object or a
 call's arguments go one element to a line when any element may span lines (an
 array, object, call, function or conditional, or an expression containing one),
 and on one line otherwise; a call through an application helper decides this
@@ -97,8 +97,8 @@ mappings, as described below.
 `ExprString` prints its text between single quotes without escaping it, so the
 text must already be escaped for a single-quoted literal. `ExprTrackedString`
 does the same. `ExprTrackedFloat` carries its number already written as text.
-`ExprInt` and `ExprBool` print a number and `true` or `false`. Each tracked
-literal maps its first printed character to the position it carries.
+`ExprInt` prints a number and `ExprTrackedBool` `true` or `false`. Each
+tracked literal maps its first printed character to the position it carries.
 
 `ExprJson` prints a JSON value compactly, with `Compiler.Json.Encode.encodeUgly`,
 as a JavaScript literal.
@@ -121,8 +121,7 @@ carries, reporting the name, and the dot to the column before it.
 `ExprPrefix` and `ExprInfix` apply a `PrefixOp` or an `InfixOp` to their
 operands.
 
-`ExprIf` is the conditional operator, `condition ? then : else`. `ExprAssign`
-is an assignment used as an expression.
+`ExprIf` is the conditional operator, `condition ? then : else`.
 
 `ExprCall` is a call. `ExprTrackedNormalCall` is a call through an application
 helper such as `A2`: given a helper, a function and arguments, it prints
@@ -141,7 +140,6 @@ type Expr
     | ExprTrackedFloat ModuleName.Canonical A.Position String
     | ExprInt Int
     | ExprTrackedInt ModuleName.Canonical A.Position Int
-    | ExprBool Bool
     | ExprTrackedBool ModuleName.Canonical A.Position Bool
     | ExprJson Json.Value
     | ExprArray (List Expr)
@@ -156,14 +154,13 @@ type Expr
     | ExprPrefix PrefixOp Expr
     | ExprInfix InfixOp Expr Expr
     | ExprIf Expr Expr Expr
-    | ExprAssign LValue Expr
     | ExprCall Expr (List Expr)
     | ExprTrackedNormalCall ModuleName.Canonical A.Position Expr Expr (List Expr)
     | ExprFunction (Maybe Name.Name) (List Name.Name) (List Stmt)
     | ExprTrackedFunction ModuleName.Canonical (List (A.Located Name.Name)) (List Stmt)
 
 
-{-| The target of an `ExprAssign`: a name, or `LBracket object index`, printed
+{-| The target of an `Assign`: a name, or `LBracket object index`, printed
 as `object[index]`.
 -}
 type LValue
@@ -186,8 +183,11 @@ nothing.
 `IfStmt` always prints an `else` branch, which is empty when its statement is
 `EmptyStmt`.
 
-`Break` and `Continue` take an optional label. Without one they are printed
-with no indentation.
+`Assign` is an assignment statement, `target = value;`.
+
+`WhileTrue` is `while (true) { ... }`.
+
+`Break` and `Continue` take the label of the statement they leave or repeat.
 
 `Labelled` prints the label on a line of its own, followed by the statement at
 the same indentation.
@@ -200,8 +200,7 @@ same line.
 
 `Var` declares one name. `TrackedVar` carries two names, the first reported by
 its mapping and the second printed, and maps the printed name to its position.
-`Vars` declares several names in one `var`, one to a line, and prints nothing
-for an empty list.
+`Vars` declares one or more names in one `var`, one to a line.
 
 `FunctionStmt` is a function declaration: name, parameters and body.
 
@@ -210,18 +209,19 @@ type Stmt
     = Block (List Stmt)
     | EmptyStmt
     | ExprStmt Expr
+    | Assign LValue Expr
     | IfStmt Expr Stmt Stmt
     | Switch Expr (List Case)
-    | While Expr Stmt
-    | Break (Maybe Name.Name)
-    | Continue (Maybe Name.Name)
+    | WhileTrue Stmt
+    | Break Name.Name
+    | Continue Name.Name
     | Labelled Name.Name Stmt
     | Try Stmt Name.Name Stmt
     | Throw Expr
     | Return Expr
     | Var Name.Name Expr
     | TrackedVar ModuleName.Canonical A.Position Name.Name Name.Name Expr
-    | Vars (List ( Name.Name, Expr ))
+    | Vars ( Name.Name, Expr ) (List ( Name.Name, Expr ))
     | FunctionStmt Name.Name (List Name.Name) (List Stmt)
 
 
@@ -356,28 +356,25 @@ commaSep fn exprs builder =
             commaSep fn rest (addAscii ", " (fn first builder))
 
 
-{-| Prints each element of the list with `fn`, separated by a comma, a newline
-and the indentation one level deeper than `level`.
+{-| Prints `first` and each element of `rest` with `fn`, separated by a comma,
+a newline and the indentation one level deeper than `level`.
 
 Nothing is printed before the first element or after the last, so the caller
 starts the first line and closes the last.
 
 -}
-commaNewlineSep : Level -> (a -> Builder -> Builder) -> List a -> Builder -> Builder
-commaNewlineSep ((Level _ nextLevel) as level) fn exprs builder =
-    case exprs of
+commaNewlineSep : Level -> (a -> Builder -> Builder) -> a -> List a -> Builder -> Builder
+commaNewlineSep ((Level _ nextLevel) as level) fn first rest builder =
+    case rest of
         [] ->
-            builder
-
-        [ first ] ->
             fn first builder
 
-        first :: rest ->
+        next :: others ->
             let
                 (Level deeperIndent _) =
                     nextLevel ()
             in
-            commaNewlineSep level fn rest (addByteString deeperIndent (addLine (addAscii "," (fn first builder))))
+            commaNewlineSep level fn next others (addByteString deeperIndent (addLine (addAscii "," (fn first builder))))
 
 
 
@@ -405,6 +402,15 @@ fromStmt ((Level indent nextLevel) as level) statement builder =
         ExprStmt expr ->
             builder
                 |> addByteString indent
+                |> fromExpr level Whatever expr
+                |> addAscii ";"
+                |> addLine
+
+        Assign lValue expr ->
+            builder
+                |> addByteString indent
+                |> fromLValue level lValue
+                |> addAscii " = "
                 |> fromExpr level Whatever expr
                 |> addAscii ";"
                 |> addLine
@@ -437,24 +443,17 @@ fromStmt ((Level indent nextLevel) as level) statement builder =
                 |> addAscii "}"
                 |> addLine
 
-        While expr stmt ->
+        WhileTrue stmt ->
             builder
                 |> addByteString indent
-                |> addAscii "while ("
-                |> fromExpr level Whatever expr
-                |> addAscii ") {"
+                |> addAscii "while (true) {"
                 |> addLine
                 |> fromStmt (nextLevel ()) stmt
                 |> addByteString indent
                 |> addAscii "}"
                 |> addLine
 
-        Break Nothing ->
-            builder
-                |> addAscii "break;"
-                |> addLine
-
-        Break (Just label) ->
+        Break label ->
             builder
                 |> addByteString indent
                 |> addAscii "break "
@@ -462,12 +461,7 @@ fromStmt ((Level indent nextLevel) as level) statement builder =
                 |> addAscii ";"
                 |> addLine
 
-        Continue Nothing ->
-            builder
-                |> addAscii "continue;"
-                |> addLine
-
-        Continue (Just label) ->
+        Continue label ->
             builder
                 |> addByteString indent
                 |> addAscii "continue "
@@ -534,14 +528,11 @@ fromStmt ((Level indent nextLevel) as level) statement builder =
                 |> addAscii ";"
                 |> addLine
 
-        Vars [] ->
-            builder
-
-        Vars vars ->
+        Vars first rest ->
             builder
                 |> addByteString indent
                 |> addAscii "var "
-                |> commaNewlineSep level (varToBuilder level) vars
+                |> commaNewlineSep level (varToBuilder level) first rest
                 |> addAscii ";"
                 |> addLine
 
@@ -644,6 +635,23 @@ linesMap func xs =
     linesMapHelp func xs
 
 
+{-| Returns the first element of `xs` and the rest when `func` finds any element
+of `xs` to be `Many`, and `Nothing` when it finds every element `One`.
+-}
+multiLine : (a -> Lines) -> List a -> Maybe ( a, List a )
+multiLine func xs =
+    case xs of
+        first :: rest ->
+            if linesMapHelp func xs then
+                Just ( first, rest )
+
+            else
+                Nothing
+
+        [] ->
+            Nothing
+
+
 {-| Does the work of `linesMap`, stopping at the first `Many`.
 -}
 linesMapHelp : (a -> Lines) -> List a -> Bool
@@ -663,8 +671,8 @@ linesMapHelp func xs =
 
 {-| What the place an expression is printed in needs of it.
 
-`Atomic` is an operand position, where an operator expression, a conditional
-or an assignment must be put in parentheses to be read as one unit. `Whatever`
+`Atomic` is an operand position, where an operator expression or a
+conditional must be put in parentheses to be read as one unit. `Whatever`
 needs no parentheses. Every other expression is printed the same in both.
 
 -}
@@ -690,8 +698,8 @@ parensFor grouping builder fillContent =
 
 
 {-| Prints an expression at indentation `level`, laid out as `Expr` and the
-module docstring describe. `grouping` matters only for an operator expression,
-a conditional or an assignment, which it puts in parentheses when `Atomic`.
+module docstring describe. `grouping` matters only for an operator expression
+or a conditional, which it puts in parentheses when `Atomic`.
 -}
 fromExpr : Level -> Grouping -> Expr -> Builder -> Builder
 fromExpr ((Level indent nextLevel) as level) grouping expression builder =
@@ -715,16 +723,6 @@ fromExpr ((Level indent nextLevel) as level) grouping expression builder =
         ExprTrackedInt moduleName position n ->
             addTrackedByteString moduleName position (String.fromInt n) builder
 
-        ExprBool bool ->
-            addAscii
-                (if bool then
-                    "true"
-
-                 else
-                    "false"
-                )
-                builder
-
         ExprTrackedBool moduleName position bool ->
             addTrackedByteString moduleName
                 position
@@ -740,92 +738,76 @@ fromExpr ((Level indent nextLevel) as level) grouping expression builder =
             addAscii (Json.encodeUgly json) builder
 
         ExprArray exprs ->
-            let
-                anyMany : Bool
-                anyMany =
-                    linesMap (fromExprLines level) exprs
-            in
-            if anyMany then
-                builder
-                    |> addAscii "["
-                    |> addLine
-                    |> addByteString deeperIndent
-                    |> commaNewlineSep level (fromExpr level Whatever) exprs
-                    |> addLine
-                    |> addByteString indent
-                    |> addAscii "]"
+            case multiLine (fromExprLines level) exprs of
+                Just ( first, rest ) ->
+                    builder
+                        |> addAscii "["
+                        |> addLine
+                        |> addByteString deeperIndent
+                        |> commaNewlineSep level (fromExpr level Whatever) first rest
+                        |> addLine
+                        |> addByteString indent
+                        |> addAscii "]"
 
-            else
-                builder
-                    |> addAscii "["
-                    |> commaSep (fromExpr level Whatever) exprs
-                    |> addAscii "]"
+                Nothing ->
+                    builder
+                        |> addAscii "["
+                        |> commaSep (fromExpr level Whatever) exprs
+                        |> addAscii "]"
 
         ExprTrackedArray moduleName (A.Region start (A.Position endLine endCol)) exprs ->
-            let
-                anyMany : Bool
-                anyMany =
-                    linesMap (fromExprLines level) exprs
-            in
-            if anyMany then
-                builder
-                    |> addTrackedByteString moduleName start "["
-                    |> addLine
-                    |> addByteString deeperIndent
-                    |> commaNewlineSep level (fromExpr level Whatever) exprs
-                    |> addLine
-                    |> addByteString indent
-                    |> addTrackedByteString moduleName (A.Position endLine (endCol - 1)) "]"
+            case multiLine (fromExprLines level) exprs of
+                Just ( first, rest ) ->
+                    builder
+                        |> addTrackedByteString moduleName start "["
+                        |> addLine
+                        |> addByteString deeperIndent
+                        |> commaNewlineSep level (fromExpr level Whatever) first rest
+                        |> addLine
+                        |> addByteString indent
+                        |> addTrackedByteString moduleName (A.Position endLine (endCol - 1)) "]"
 
-            else
-                builder
-                    |> addTrackedByteString moduleName start "["
-                    |> commaSep (fromExpr level Whatever) exprs
-                    |> addTrackedByteString moduleName (A.Position endLine (endCol - 1)) "]"
+                Nothing ->
+                    builder
+                        |> addTrackedByteString moduleName start "["
+                        |> commaSep (fromExpr level Whatever) exprs
+                        |> addTrackedByteString moduleName (A.Position endLine (endCol - 1)) "]"
 
         ExprObject fields ->
-            let
-                anyMany : Bool
-                anyMany =
-                    linesMap (fromFieldLines (nextLevel ())) fields
-            in
-            if anyMany then
-                builder
-                    |> addAscii "{"
-                    |> addLine
-                    |> addByteString deeperIndent
-                    |> commaNewlineSep level (fromField (nextLevel ())) fields
-                    |> addLine
-                    |> addByteString indent
-                    |> addAscii "}"
+            case multiLine (fromFieldLines (nextLevel ())) fields of
+                Just ( first, rest ) ->
+                    builder
+                        |> addAscii "{"
+                        |> addLine
+                        |> addByteString deeperIndent
+                        |> commaNewlineSep level (fromField (nextLevel ())) first rest
+                        |> addLine
+                        |> addByteString indent
+                        |> addAscii "}"
 
-            else
-                builder
-                    |> addAscii "{"
-                    |> commaSep (fromField (nextLevel ())) fields
-                    |> addAscii "}"
+                Nothing ->
+                    builder
+                        |> addAscii "{"
+                        |> commaSep (fromField (nextLevel ())) fields
+                        |> addAscii "}"
 
         ExprTrackedObject moduleName (A.Region start (A.Position endLine endCol)) fields ->
-            let
-                anyMany : Bool
-                anyMany =
-                    linesMap (trackedFromFieldLines (nextLevel ())) fields
-            in
-            if anyMany then
-                builder
-                    |> addTrackedByteString moduleName start "{"
-                    |> addLine
-                    |> addByteString deeperIndent
-                    |> commaNewlineSep level (trackedFromField (nextLevel ()) moduleName) fields
-                    |> addLine
-                    |> addByteString indent
-                    |> addTrackedByteString moduleName (A.Position endLine (endCol - 1)) "}"
+            case multiLine (trackedFromFieldLines (nextLevel ())) fields of
+                Just ( first, rest ) ->
+                    builder
+                        |> addTrackedByteString moduleName start "{"
+                        |> addLine
+                        |> addByteString deeperIndent
+                        |> commaNewlineSep level (trackedFromField (nextLevel ()) moduleName) first rest
+                        |> addLine
+                        |> addByteString indent
+                        |> addTrackedByteString moduleName (A.Position endLine (endCol - 1)) "}"
 
-            else
-                builder
-                    |> addTrackedByteString moduleName start "{"
-                    |> commaSep (trackedFromField (nextLevel ()) moduleName) fields
-                    |> addTrackedByteString moduleName (A.Position endLine (endCol - 1)) "}"
+                Nothing ->
+                    builder
+                        |> addTrackedByteString moduleName start "{"
+                        |> commaSep (trackedFromField (nextLevel ()) moduleName) fields
+                        |> addTrackedByteString moduleName (A.Position endLine (endCol - 1)) "}"
 
         ExprRef name ->
             addByteString name builder
@@ -866,36 +848,26 @@ fromExpr ((Level indent nextLevel) as level) grouping expression builder =
                     >> addAscii " : "
                     >> fromExpr level Atomic elseExpr
 
-        ExprAssign lValue expr ->
-            parensFor grouping builder <|
-                \b ->
-                    fromLValue level lValue b
-                        |> addAscii " = "
-                        |> fromExpr level Whatever expr
-
         ExprCall function args ->
             let
-                anyMany : Bool
-                anyMany =
-                    linesMap (fromExprLines (nextLevel ())) args
-
                 funcB : Builder
                 funcB =
                     fromExpr level Atomic function builder
             in
-            if anyMany then
-                funcB
-                    |> addAscii "("
-                    |> addLine
-                    |> addByteString deeperIndent
-                    |> commaNewlineSep level (fromExpr (nextLevel ()) Whatever) args
-                    |> addAscii ")"
+            case multiLine (fromExprLines (nextLevel ())) args of
+                Just ( first, rest ) ->
+                    funcB
+                        |> addAscii "("
+                        |> addLine
+                        |> addByteString deeperIndent
+                        |> commaNewlineSep level (fromExpr (nextLevel ()) Whatever) first rest
+                        |> addAscii ")"
 
-            else
-                funcB
-                    |> addAscii "("
-                    |> commaSep (fromExpr (nextLevel ()) Whatever) args
-                    |> addAscii ")"
+                Nothing ->
+                    funcB
+                        |> addAscii "("
+                        |> commaSep (fromExpr (nextLevel ()) Whatever) args
+                        |> addAscii ")"
 
         ExprTrackedNormalCall moduleName position helper function args ->
             let
@@ -921,7 +893,7 @@ fromExpr ((Level indent nextLevel) as level) grouping expression builder =
                     |> addAscii "("
                     |> addLine
                     |> addByteString deeperIndent
-                    |> commaNewlineSep level (fromExpr (nextLevel ()) Whatever) (function :: args)
+                    |> commaNewlineSep level (fromExpr (nextLevel ()) Whatever) function args
                     |> addAscii ")"
 
             else
@@ -970,8 +942,8 @@ trackedNameFromExpr expr =
 {-| Decides whether an expression may span lines.
 
 Arrays, objects, calls, functions and conditionals are `Many` whatever they
-contain, and literals and names are `One`. A property access, index, operator
-expression or assignment is `Many` when any part of it is. `level` plays no
+contain, and literals and names are `One`. A property access, index or
+operator expression is `Many` when any part of it is. `level` plays no
 part in the answer.
 
 -}
@@ -991,9 +963,6 @@ fromExprLines level expression =
             One
 
         ExprTrackedInt _ _ _ ->
-            One
-
-        ExprBool _ ->
             One
 
         ExprTrackedBool _ _ _ ->
@@ -1037,9 +1006,6 @@ fromExprLines level expression =
 
         ExprIf _ _ _ ->
             Many
-
-        ExprAssign lValue expr ->
-            merge (fromLValueLines level lValue) (fromExprLines level expr)
 
         ExprCall _ _ ->
             Many
@@ -1109,18 +1075,6 @@ fromLValue level lValue builder =
 
         LBracket expr bracketedExpr ->
             makeBracketed level expr bracketedExpr builder
-
-
-{-| Decides whether the target of an assignment may span lines.
--}
-fromLValueLines : Level -> LValue -> Lines
-fromLValueLines level lValue =
-    case lValue of
-        LRef _ ->
-            One
-
-        LBracket expr bracketedExpr ->
-            makeBracketedLines level expr bracketedExpr
 
 
 {-| Prints `expr.field`, with `expr` in an operand position.

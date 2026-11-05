@@ -22,6 +22,8 @@ dist/
 .serena
 projects/
 snapshots/
+eco-stuff/
+elm-stuff/
 
 # Machine-specific local dev container setup (managed separately)
 local-dev/

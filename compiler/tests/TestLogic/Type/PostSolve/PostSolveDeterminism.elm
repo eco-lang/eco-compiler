@@ -28,6 +28,7 @@ import Compiler.IR.Canonical as Can
 import Compiler.IR.Source as Src
 import Dict
 import Expect
+import Maybe.Extra as Maybe
 import TestLogic.TestPipeline as Pipeline
 
 
@@ -143,8 +144,8 @@ typesStructurallyEqual type1 type2 =
         ( Can.TTuple a1 b1 cs1, Can.TTuple a2 b2 cs2 ) ->
             typesStructurallyEqual a1 a2
                 && typesStructurallyEqual b1 b2
-                && (List.length cs1 == List.length cs2)
-                && List.all identity (List.map2 typesStructurallyEqual cs1 cs2)
+                && ((cs1 == Nothing) == (cs2 == Nothing))
+                && List.all identity (List.map2 typesStructurallyEqual (Maybe.toList cs1) (Maybe.toList cs2))
 
         ( Can.TAlias mod1 name1 args1 aliased1, Can.TAlias mod2 name2 args2 aliased2 ) ->
             mod1

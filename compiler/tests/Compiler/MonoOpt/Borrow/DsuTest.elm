@@ -2,14 +2,14 @@ module Compiler.MonoOpt.Borrow.DsuTest exposing (suite)
 
 {-| Tests for `Compiler.MonoOpt.Borrow.Dsu`, the union-find that borrow
 inference uses to group integer keys into classes. None of its operations
-returns a `Maybe` or a `Result`, so a wrong `union` or `find` would silently
-put keys in the wrong class; these tests check the operations directly.
+returns a `Maybe` or a `Result`, so a wrong `union` would silently put keys in
+the wrong class; these tests check the operations directly.
 
 A union-find (disjoint-set structure) divides the keys `0` to `n - 1` into
 classes. Each class has one key, its root, that every member leads to through
-the `parent` array. `union` merges the classes of two keys, `findRoot` returns
-a key's root without changing anything, and `find` returns the root and also
-points every key on the way straight at it (path compression). Each root has a
+the `parent` array. `union` merges the classes of two keys, and also
+points every key on the way from either key to its root straight at the root
+(path compression); `findRoot` returns a key's root without changing anything. Each root has a
 `rank`, which `union` uses to decide which of two roots stays a root.
 
 There is no shared fixture. Each test builds a small structure with `empty`
@@ -29,20 +29,16 @@ What the tests establish:
   - Unions of `2` with `3` and `0` with `1` leave `0` and `2` in different
     classes.
   - On a chain `7 -> 6 -> 4 -> 0` built by unions that only join roots,
-    `find 7` returns `0`, repoints `7`, `6` and `4` at `0`, leaves keys off
-    the path and every key's root alone, and a second `find 7` changes
-    nothing.
+    `union 7 0` repoints `7`, `6` and `4` at `0`, leaves keys off the path
+    and every key's root alone, and a second `union 7 0` changes nothing.
   - Seven unions that pair up the eight keys of `empty 8` into one class leave
     no rank above 3, and the random unions on 12 keys leave no rank above 4.
-  - `grow` to a smaller capacity leaves `parent` unchanged; `grow` to a larger
-    one keeps `0` and `1` in one class, adds `5` as its own root, and lets `5`
-    be joined to the existing class by a later `union`.
   - After the random unions, the structure and the reference agree on whether
     `i` and `j` share a class, for every pair of keys with
     `0 <= i < j <= 11`.
 
-Among what is not tested: keys outside the capacity, `size`, the `rank`
-array after `grow`, and which of two roots `union` keeps.
+Among what is not tested: keys outside the capacity, `size`, and which of two
+roots `union` keeps.
 
 -}
 
@@ -62,7 +58,6 @@ suite =
         [ lawsTests
         , compressionTest
         , rankTests
-        , growTest
         , modelTest
         ]
 
@@ -136,21 +131,22 @@ lawsTests =
 -- PATH COMPRESSION
 
 
-{-| Checks that `find` compresses the path it walks, and is idempotent.
+{-| Checks that `union` of two keys already in one class compresses the path
+it walks, and is idempotent.
 
 The unions `0`-`1`, `2`-`3`, `0`-`2`, `4`-`5`, `6`-`7`, `4`-`6` and `0`-`4`
 build, by union by rank, the chain `7 -> 6 -> 4 -> 0` (and `5 -> 4`, `3 -> 2`,
 `2 -> 0`, `1 -> 0`); none of those unions walks that chain, because each one
-joins two roots. The test checks that the chain is really there before `find 7`
-(so a `find` that compresses nothing would fail), that afterwards `7`, `6` and
-`4` all have `0` as their parent, that keys off the path (`5`, `3`) keep their
-parents, that every key keeps its root, and that a second `find 7` returns the
-same root and changes nothing.
+joins two roots. The test checks that the chain is really there before
+`union 7 0` (so a union that compresses nothing would fail), that afterwards
+`7`, `6` and `4` all have `0` as their parent, that keys off the path (`5`,
+`3`) keep their parents, that every key keeps its root, and that a second
+`union 7 0` keeps the root and changes nothing.
 
 -}
 compressionTest : Test
 compressionTest =
-    Test.test "find: compresses the path to the root, idempotent" <|
+    Test.test "union within a class: compresses the path to the root, idempotent" <|
         \_ ->
             let
                 d0 =
@@ -158,11 +154,17 @@ compressionTest =
                         (Dsu.empty 8)
                         [ ( 0, 1 ), ( 2, 3 ), ( 0, 2 ), ( 4, 5 ), ( 6, 7 ), ( 4, 6 ), ( 0, 4 ) ]
 
-                ( r1, d1 ) =
-                    Dsu.find 7 d0
+                d1 =
+                    Dsu.union 7 0 d0
 
-                ( r2, d2 ) =
-                    Dsu.find 7 d1
+                r1 =
+                    Dsu.findRoot 7 d1
+
+                d2 =
+                    Dsu.union 7 0 d1
+
+                r2 =
+                    Dsu.findRoot 7 d2
 
                 parents d keys =
                     List.map (\k -> Array.get k d.parent) keys
@@ -220,41 +222,6 @@ rankTests =
 maxRank : Dsu -> Int
 maxRank d =
     Array.foldl max 0 d.rank
-
-
-
--- GROW
-
-
-{-| Checks `grow` on a capacity-4 structure in which `0` and `1` are joined.
-Growing to 3 leaves `parent` unchanged. Growing to 6 keeps `0` and `1` in one
-class, makes the new key `5` its own root, and lets a later `union 1 5` put `5`
-in the class of `0`.
--}
-growTest : Test
-growTest =
-    Test.test "grow: no-op below capacity, preserves partition, new indices are singletons and unionable" <|
-        \_ ->
-            let
-                d0 =
-                    Dsu.union 0 1 (Dsu.empty 4)
-
-                noop =
-                    Dsu.grow 3 d0
-
-                d1 =
-                    Dsu.grow 6 d0
-
-                d2 =
-                    Dsu.union 1 5 d1
-            in
-            Expect.equal
-                { noopSame = True, stillUnioned = True, newSingleton = True, crossUnion = True }
-                { noopSame = noop.parent == d0.parent
-                , stillUnioned = sameClass 0 1 d1
-                , newSingleton = Dsu.findRoot 5 d1 == 5
-                , crossUnion = sameClass 0 5 d2
-                }
 
 
 

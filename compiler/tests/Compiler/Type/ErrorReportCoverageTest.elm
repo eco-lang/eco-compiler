@@ -81,10 +81,10 @@ go as a program of the catalogue requires.
 typeErrors : Src.Module -> Result String ( Localizer.Localizer, NE.Nonempty TypeError.Error )
 typeErrors srcModule =
     case RResult.run (Canonicalize.canonicalize ( "eco", "example" ) Basic.testIfaces srcModule) of
-        ( _, Err _ ) ->
+        Err _ ->
             Err "the program does not canonicalize"
 
-        ( _, Ok canonical ) ->
+        Ok canonical ->
             case IO.unsafePerformIO (TypeErased.constrain canonical |> IO.andThen Solve.run) of
                 Ok _ ->
                     Err "the program type checks"

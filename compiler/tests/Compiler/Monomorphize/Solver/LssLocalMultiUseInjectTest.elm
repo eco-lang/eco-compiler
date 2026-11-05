@@ -151,7 +151,7 @@ suite =
                         case calleeHeads [ "useF" ] graph of
                             [ ( _, Mono.LSet [ m ] ) ] ->
                                 case Dict.get m g.lssMemberOrigins of
-                                    Just (Mono.OriginPap (Mono.Global _ gname) 1) ->
+                                    Just (Mono.OriginPap _ gname 1) ->
                                         if gname == "apply2" then
                                             Expect.pass
 

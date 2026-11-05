@@ -53,6 +53,7 @@ import Data.Map as DMap
 import Data.OneOrMore as OneOrMore
 import Dict
 import Expect
+import Maybe.Extra as Maybe
 import Set
 
 
@@ -77,7 +78,7 @@ expectUniqueIds modul =
             Canonicalize.canonicalize ( "eco", "example" ) Basic.testIfaces modul
     in
     case Result.run result of
-        ( _, Err errors ) ->
+        Err errors ->
             let
                 errorList =
                     OneOrMore.destruct (::) errors
@@ -97,7 +98,7 @@ expectUniqueIds modul =
                     ++ firstError
                 )
 
-        ( _, Ok canModule ) ->
+        Ok canModule ->
             expectUniqueIdsCanonical canModule
 
 
@@ -321,7 +322,7 @@ collectExprNodeIdsAsList node =
             concatIds (DMap.foldl (\_ expr acc -> collectExprIdsAsList expr :: acc) [] fields)
 
         Can.Tuple a b rest ->
-            concatIds (List.map collectExprIdsAsList (a :: b :: rest))
+            concatIds (List.map collectExprIdsAsList (a :: b :: Maybe.toList rest))
 
         Can.VarLocal _ ->
             ( [], [] )
@@ -399,7 +400,7 @@ collectPatternNodeIdsAsList node =
         Can.PTuple a b rest ->
             collectPatternIdsAsList a
                 ++ collectPatternIdsAsList b
-                ++ List.concatMap collectPatternIdsAsList rest
+                ++ List.concatMap collectPatternIdsAsList (Maybe.toList rest)
 
         Can.PList patterns ->
             List.concatMap collectPatternIdsAsList patterns

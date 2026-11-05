@@ -158,10 +158,10 @@ nodeTypes node =
         Mono.MonoPortOutgoing body t ->
             t :: bodyTypes body
 
-        Mono.MonoCtor _ t ->
+        Mono.MonoCtor _ _ t ->
             [ t ]
 
-        Mono.MonoEnum _ t ->
+        Mono.MonoEnum _ _ _ t ->
             [ t ]
 
         Mono.MonoExtern t ->
@@ -269,7 +269,7 @@ annosOf t =
             annosOf el
 
         Mono.MTuple _ els ->
-            List.concatMap annosOf els
+            List.concatMap annosOf (Mono.tupleToList els)
 
         Mono.MRecord _ fields ->
             Dict.foldl (\_ ft acc -> annosOf ft ++ acc) [] fields

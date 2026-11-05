@@ -29,6 +29,7 @@ import Compiler.Elm.Package as Pkg
 import Compiler.IR.Canonical as Can
 import Compiler.IR.Canonical.Interface as I
 import Dict exposing (Dict)
+import Maybe.Extra as Maybe
 
 
 {-| The canonical name of the module `Elm.JsArray` in the `elm/core` package,
@@ -98,7 +99,7 @@ collectFreeVars tipe =
         Can.TTuple a b cs ->
             List.foldl (\t acc -> Dict.union (collectFreeVars t) acc)
                 (Dict.union (collectFreeVars a) (collectFreeVars b))
-                cs
+                (Maybe.toList cs)
 
         Can.TAlias _ _ args _ ->
             List.foldl (\( _, t ) acc -> Dict.union (collectFreeVars t) acc) Dict.empty args
@@ -252,7 +253,7 @@ jsArrayValues =
           , mkAnnotation
                 (Can.tLambda intType
                     (Can.tLambda listA
-                        (Can.TTuple jsArrayA listA [])
+                        (Can.TTuple jsArrayA listA Nothing)
                     )
                 )
           )

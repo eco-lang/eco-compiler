@@ -342,7 +342,13 @@ eat eatType comments src pos end row col =
                                 let
                                     newComment : Src.FComment
                                     newComment =
-                                        Src.BlockComment (String.lines (String.slice pos2 (newPos - 2) src))
+                                        case String.lines (String.slice pos2 (newPos - 2) src) of
+                                            first :: rest ->
+                                                Src.BlockComment first rest
+
+                                            [] ->
+                                                -- String.lines always yields at least one line.
+                                                Src.BlockComment "" []
                                 in
                                 eat EatSpaces (newComment :: comments) src newPos end newRow newCol
 

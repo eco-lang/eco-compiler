@@ -38,12 +38,10 @@ import Compiler.Monomorphize.State as State
 import Data.BitSet as BitSet exposing (BitSet)
 import Data.Graph as Graph
 import Dict
-import System.Crash
 
 
 {-| Returns the set of SpecIds reachable over `edges` from the roots: `main`'s
-spec, every incoming port's decoder spec and the flags decoder's spec. With no
-`main`, it returns every SpecId that has a node.
+spec, every incoming port's decoder spec and the flags decoder's spec.
 
 The edges must relate every spec to every spec its body refers to. A missing
 edge does not merely keep a dead spec; it can drop a live one.
@@ -54,37 +52,23 @@ reachableFromMain edges (Mono.MonoGraph record) =
     let
         size =
             record.registry.nextId
+
+        (Mono.StaticMain mainSpecId) =
+            record.main
+
+        -- Port and flags decoders are referenced only by the startup preamble, generated after pruning.
+        portRoots =
+            List.filterMap .decoderSpecId record.ports
+
+        flagsRoots =
+            case record.flagsDecoder of
+                Just specId ->
+                    [ specId ]
+
+                Nothing ->
+                    []
     in
-    case record.main of
-        Nothing ->
-            Array.foldl
-                (\maybeNode ( specId, acc ) ->
-                    case maybeNode of
-                        Just _ ->
-                            ( specId + 1, BitSet.insert specId acc )
-
-                        Nothing ->
-                            ( specId + 1, acc )
-                )
-                ( 0, BitSet.fromSize size )
-                record.nodes
-                |> Tuple.second
-
-        Just (Mono.StaticMain mainSpecId) ->
-            let
-                -- Port and flags decoders are referenced only by the startup preamble, generated after pruning.
-                portRoots =
-                    List.filterMap .decoderSpecId record.ports
-
-                flagsRoots =
-                    case record.flagsDecoder of
-                        Just specId ->
-                            [ specId ]
-
-                        Nothing ->
-                            []
-            in
-            markReachable edges (mainSpecId :: portRoots ++ flagsRoots) (BitSet.fromSize size)
+    markReachable edges (mainSpecId :: portRoots ++ flagsRoots) (BitSet.fromSize size)
 
 
 {-| Returns `visited` extended by every SpecId reachable over `callEdges` from
@@ -200,14 +184,8 @@ restrictToSccEdges edges =
                 (\targets ( src, acc ) ->
                     ( src + 1
                     , List.foldl
-                        (\t a ->
-                            case Array.get t a of
-                                Just preds ->
-                                    Array.set t (src :: preds) a
-
-                                Nothing ->
-                                    a
-                        )
+                        -- `t` is in range (`fwd` keeps only those), so the get always hits.
+                        (\t a -> Array.set t (src :: Maybe.withDefault [] (Array.get t a)) a)
                         acc
                         targets
                     )
@@ -240,8 +218,8 @@ restrictToSccEdges edges =
                         Graph.AcyclicSCC v ->
                             ( nextComp + 1, Array.set v nextComp acc )
 
-                        Graph.CyclicSCC vs ->
-                            ( nextComp + 1, List.foldl (\v a -> Array.set v nextComp a) acc vs )
+                        Graph.CyclicSCC v vs ->
+                            ( nextComp + 1, List.foldl (\u a -> Array.set u nextComp a) acc (v :: vs) )
                 )
                 ( 0, Array.repeat n -1 )
                 (Graph.stronglyConnCompInt { fwd = fwd, trans = trans, selfLoops = selfLoops, size = n })
@@ -270,11 +248,10 @@ restrictToSccEdges edges =
 `callEdges` removed, and the kept entries closed.
 
 Closing replaces every `MVar _ CNumber`, and every variable `mvarEnv` marks as
-a number, with `MInt`, in each kept node and each kept `reverseMapping` type. A kept node
-that still has a residual number variable after closing crashes the compiler
-(MONO\_002). `ctorShapes` is recomputed from the closed nodes, so its layout
-keys agree with the closed types, and any shape field still holding a residual
-is closed too.
+a number, with `MInt`, in each kept node and each kept `reverseMapping` type, so
+no kept node has a residual number variable (MONO\_002). `ctorShapes` is
+recomputed from the closed nodes, so its layout keys and field types agree with
+the closed types.
 
 -}
 pruneUnreachableSpecs : State.MVarEnv -> TypeEnv.GlobalTypeEnv -> Mono.MonoGraph -> Mono.MonoGraph
@@ -292,19 +269,12 @@ pruneUnreachableSpecs mvarEnv globalTypeEnv ((Mono.MonoGraph record) as graph) =
         hasResidualType t =
             Mono.typeHasResidualNumber isNum t
 
+        -- `resolveNumberType` rewrites exactly the positions `typeHasResidualNumber` flags, and
+        -- `mapNodeTypes` walks the positions `anyNodeType` checks, so a closed node has no residual (MONO_002).
         closeNode : Mono.MonoNode -> Mono.MonoNode
         closeNode node =
             if Traverse.anyNodeType hasResidualType node then
-                let
-                    closed =
-                        Traverse.mapNodeTypes closeType node
-                in
-                -- The check walks the same positions as the close, so it cannot see a type anyNodeType misses.
-                if Traverse.anyNodeType hasResidualType closed then
-                    System.Crash.crash "MONO_002: residual number var survived the closing pass (Prune)"
-
-                else
-                    closed
+                Traverse.mapNodeTypes closeType node
 
             else
                 node
@@ -314,21 +284,8 @@ pruneUnreachableSpecs mvarEnv globalTypeEnv ((Mono.MonoGraph record) as graph) =
         , tipe = closeType
         , hasResidual = hasResidualType
         , ctorShapes =
-            -- The nodes are already closed, so the per-shape close is defensive.
-            \_ nodes1 ->
-                Mono.layoutMapMap
-                    (\_ shapes ->
-                        List.map
-                            (\shape ->
-                                if List.any hasResidualType shape.fieldTypes then
-                                    { shape | fieldTypes = List.map closeType shape.fieldTypes }
-
-                                else
-                                    shape
-                            )
-                            shapes
-                    )
-                    (Analysis.computeCtorShapesForGraph globalTypeEnv nodes1)
+            -- The nodes are closed, and every shape field type is built from their `MCustom` arguments.
+            \_ nodes1 -> Analysis.computeCtorShapesForGraph globalTypeEnv nodes1
         }
         graph
 

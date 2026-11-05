@@ -1,6 +1,6 @@
 module Compiler.IR.Typed.TypeEnv exposing
     ( ModuleTypeEnv, GlobalTypeEnv
-    , fromCanonical, fromInterfaces, emptyGlobal, emptyGlobalTypeEnv, mergeGlobalTypeEnv
+    , fromCanonical, emptyGlobal, emptyGlobalTypeEnv, mergeGlobalTypeEnv
     , moduleTypeEnvEncoder, moduleTypeEnvDecoder
     , globalTypeEnvEncoder, globalTypeEnvDecoder
     )
@@ -14,8 +14,7 @@ A _type environment_ is the type declarations of one module, keyed by type
 name: its custom types, which the compiler calls _unions_, and its type
 aliases. `ModuleTypeEnv` is the environment of one module, taken from a
 canonical module by `fromCanonical`. `GlobalTypeEnv` holds the environments of
-many modules, each under its module's canonical name, and `fromInterfaces`
-builds one from module interfaces.
+many modules, each under its module's canonical name.
 
 The binary codecs intern their strings through a string table, as
 `Compiler.Core.StringTable` describes, and each encoding begins with its own
@@ -32,7 +31,7 @@ only an environment built in memory has any.
 
 # Builders
 
-@docs fromCanonical, fromInterfaces, emptyGlobal, emptyGlobalTypeEnv, mergeGlobalTypeEnv
+@docs fromCanonical, emptyGlobal, emptyGlobalTypeEnv, mergeGlobalTypeEnv
 
 
 # Serialization
@@ -48,7 +47,6 @@ import Compiler.Core.Name exposing (Name)
 import Compiler.Core.StringTable as StringTable exposing (StringTable)
 import Compiler.Elm.ModuleName as ModuleName
 import Compiler.IR.Canonical as Can
-import Compiler.IR.Canonical.Interface as I
 import Data.Map
 import Dict exposing (Dict)
 import Utils.Bytes.Decode as BD
@@ -97,41 +95,6 @@ fromCanonical (Can.Module moduleData) =
     , unions = moduleData.unions
     , aliases = moduleData.aliases
     }
-
-
-{-| Returns the type environment recorded in the interface of the module named
-`moduleName`.
-
-An interface records its module's package but not the module's name, so the
-name is supplied, and `home` combines the two. Every custom type and alias the
-interface holds is taken, whatever its visibility, as
-`Compiler.IR.Canonical.Interface.extractUnion` and `extractAlias` return it.
-
--}
-fromInterface : ModuleName.Raw -> I.Interface -> ModuleTypeEnv
-fromInterface moduleName (I.Interface data) =
-    { home = ModuleName.Canonical data.home moduleName
-    , unions = Dict.map (\_ iUnion -> I.extractUnion iUnion) data.unions
-    , aliases = Dict.map (\_ iAlias -> I.extractAlias iAlias) data.aliases
-    }
-
-
-{-| Returns the global type environment of the interfaces in `ifaces`, each
-module named by its key in `ifaces` together with the package its interface
-records.
--}
-fromInterfaces : Dict ModuleName.Raw I.Interface -> GlobalTypeEnv
-fromInterfaces ifaces =
-    Dict.foldl
-        (\moduleName iface acc ->
-            let
-                moduleTypeEnv =
-                    fromInterface moduleName iface
-            in
-            Data.Map.insert ModuleName.toComparableCanonical moduleTypeEnv.home moduleTypeEnv acc
-        )
-        Data.Map.empty
-        ifaces
 
 
 {-| A global type environment holding no modules, the same value as

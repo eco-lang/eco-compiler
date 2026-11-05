@@ -92,6 +92,7 @@ import Compiler.Elm.Package as Pkg
 import Compiler.GenerateJs.CodeGen as CodeGen
 import Compiler.GenerateJs.Html as Html
 import Compiler.IR.Optimized as Opt
+import Compiler.IR.Typed.ModuleArtifact as TMod
 import Compiler.IR.Typed.Optimized as TOpt
 import Data.NonEmptyList as NE
 import Eco.NativeDriver
@@ -711,7 +712,7 @@ getMain modules root =
             else
                 Nothing
 
-        Build.Outside name _ objs typed _ ->
+        Build.Outside name _ objs typed ->
             if graphHasMain objs typed then
                 Just name
 
@@ -724,7 +725,7 @@ getMain modules root =
 isMain : ModuleName.Raw -> Build.Module -> Bool
 isMain targetName modul =
     case modul of
-        Build.Fresh name _ objs typed _ ->
+        Build.Fresh name _ objs typed ->
             graphHasMain objs typed && name == targetName
 
         Build.Cached name mainIsDefined _ ->
@@ -773,7 +774,7 @@ getNoMain modules root =
             else
                 Just name
 
-        Build.Outside name _ objs typed _ ->
+        Build.Outside name _ objs typed ->
             if graphHasMain objs typed then
                 Nothing
 
@@ -790,10 +791,14 @@ records that one exists. That marker is what survives a graph being written and
 read back, since the typed graph's codec drops `main`.
 
 -}
-graphHasMain : Opt.LocalGraph -> Maybe (TOpt.LocalGraph Name) -> Bool
+graphHasMain : Opt.LocalGraph -> Maybe TMod.TypedModuleArtifact -> Bool
 graphHasMain (Opt.LocalGraph maybeMain _ _) maybeTyped =
     case maybeTyped of
-        Just (TOpt.LocalGraph data) ->
+        Just typed ->
+            let
+                (TOpt.LocalGraph data) =
+                    typed.typedGraph
+            in
             Maybe.isJust maybeMain || Maybe.isJust data.main
 
         Nothing ->

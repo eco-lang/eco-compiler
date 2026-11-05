@@ -45,7 +45,7 @@ toReport : Code.Source -> P.Error -> Report.Report
 toReport source err =
     case err of
         P.Redundant caseRegion patternRegion index ->
-            Report.report "REDUNDANT PATTERN" patternRegion [] <|
+            Report.report "REDUNDANT PATTERN" patternRegion <|
                 Code.toSnippet source
                     caseRegion
                     (Just patternRegion)
@@ -59,7 +59,7 @@ toReport source err =
         P.Incomplete region context unhandled ->
             case context of
                 P.BadArg ->
-                    Report.report "UNSAFE PATTERN" region [] <|
+                    Report.report "UNSAFE PATTERN" region <|
                         Code.toSnippet source
                             region
                             Nothing
@@ -74,7 +74,7 @@ toReport source err =
                             )
 
                 P.BadDestruct ->
-                    Report.report "UNSAFE PATTERN" region [] <|
+                    Report.report "UNSAFE PATTERN" region <|
                         Code.toSnippet source
                             region
                             Nothing
@@ -90,7 +90,7 @@ toReport source err =
                             )
 
                 P.BadCase ->
-                    Report.report "MISSING PATTERNS" region [] <|
+                    Report.report "MISSING PATTERNS" region <|
                         Code.toSnippet source
                             region
                             Nothing
@@ -135,9 +135,7 @@ type Context
 
 {-| Prints `pattern` as Elm pattern syntax, parenthesised as `context` requires.
 
-A wildcard prints as `_`, and characters and strings are quoted. A constructor
-named `#N` (a tuple of four or more) has no special case and prints as a
-constructor.
+A wildcard prints as `_`, and characters and strings are quoted.
 
 A finite list prints as `[` and its entries in order, separated by `,`, then `]`.
 

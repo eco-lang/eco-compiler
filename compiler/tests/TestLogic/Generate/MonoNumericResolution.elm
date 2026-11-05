@@ -118,7 +118,7 @@ hasNumberVar monoType =
             hasNumberVar elemType
 
         Mono.MTuple _ elemTypes ->
-            List.any hasNumberVar elemTypes
+            List.any hasNumberVar (Mono.tupleToList elemTypes)
 
         Mono.MRecord _ fields ->
             List.any hasNumberVar (Dict.values fields)
@@ -256,7 +256,7 @@ numericConflict a b =
             numericConflict x y
 
         ( Mono.MTuple _ xs, Mono.MTuple _ ys ) ->
-            List.any identity (List.map2 numericConflict xs ys)
+            List.any identity (List.map2 numericConflict (Mono.tupleToList xs) (Mono.tupleToList ys))
 
         ( Mono.MRecord _ xs, Mono.MRecord _ ys ) ->
             Dict.foldl

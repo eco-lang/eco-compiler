@@ -74,9 +74,12 @@ decision.
 import Array
 import Compiler.Core.Annotation exposing (Region)
 import Compiler.Core.Id as Id
+import Compiler.Core.Name exposing (Name)
+import Compiler.Elm.ModuleName as ModuleName
 import Compiler.IR.DecisionTree.Test as DT
 import Compiler.IR.Mono as Mono
 import Compiler.IR.Mono.Traverse as MonoTraverse
+import Data.NonEmptyList as NE
 import Dict exposing (Dict)
 
 
@@ -103,10 +106,10 @@ whose callee is a global function partially applied.
 Declines at a member in the index (one with instances, or one that is blocked):
 `declinedBlocked` for a blocked member. `declinedShape` for a site no layout
 group fits, or whose fitting group has a `Char` capture or `Char` prefix, split
-into `declinedShapeArity` (itself split into `Zero`, `Under` and `Over` by how
+into `declinedShapeArity` (itself split into `Under` and `Over` by how
 the argument count compares with the callee type's first stage),
-`declinedShapeBucketMiss`, `declinedShapeLayout`, `declinedShapeChar` and
-`declinedShapeNonArrow`, so that the parts add up to the whole.
+`declinedShapeBucketMiss`, `declinedShapeLayout` and `declinedShapeChar`, so
+that the parts add up to the whole.
 `declinedAbiMismatch` counts sites whose group's capture types disagree, and
 `declinedBodyMismatch` sites whose group's fingerprints disagree.
 
@@ -134,9 +137,8 @@ form of the callee expression.
 `census`: `byHost` counts outcomes by the global containing the site, `shape`
 the over-applying declines, `niGuard` the reasons sites without an instance were
 turned away, `absentL` rows per site and per member, and `multiSites` the
-make-up of sets of other than one member. `papSites` is never added to: the only
-key it accepts belongs to a site that is stamped instead. `flatStamped` is
-counted whether or not `census` is on.
+make-up of sets of other than one member. `flatStamped` is counted whether or
+not `census` is on.
 
 -}
 type alias AbiCloningStats =
@@ -148,13 +150,11 @@ type alias AbiCloningStats =
     , declinedNoInstance : Int
     , declinedShape : Int
     , declinedShapeArity : Int
-    , declinedShapeArityZero : Int
     , declinedShapeArityUnder : Int
     , declinedShapeArityOver : Int
     , declinedShapeBucketMiss : Int
     , declinedShapeLayout : Int
     , declinedShapeChar : Int
-    , declinedShapeNonArrow : Int
     , declinedAbiMismatch : Int
     , declinedBodyMismatch : Int
     , devirtPost : { fn : Int, ctor : Int, noSpec : Int, partialDeclined : Int, ambiguous : Int }
@@ -165,7 +165,7 @@ type alias AbiCloningStats =
     , multiSetMembers : Dict Int Int
     , topSiteShapes : Dict String Int
     , varSiteShapes : Dict String Int
-    , instQual : { byHost : Dict String Int, flatStamped : Int, shape : Dict String Int, niGuard : Dict String Int, papSites : Dict String Int, absentL : Dict String Int, multiSites : Dict String Int }
+    , instQual : { byHost : Dict String Int, flatStamped : Int, shape : Dict String Int, niGuard : Dict String Int, absentL : Dict String Int, multiSites : Dict String Int }
     , blockedMembers : List ( Int, Maybe Mono.LambdaId )
     }
 
@@ -182,13 +182,11 @@ emptyStats =
     , declinedNoInstance = 0
     , declinedShape = 0
     , declinedShapeArity = 0
-    , declinedShapeArityZero = 0
     , declinedShapeArityUnder = 0
     , declinedShapeArityOver = 0
     , declinedShapeBucketMiss = 0
     , declinedShapeLayout = 0
     , declinedShapeChar = 0
-    , declinedShapeNonArrow = 0
     , declinedAbiMismatch = 0
     , declinedBodyMismatch = 0
     , devirtPost = { fn = 0, ctor = 0, noSpec = 0, partialDeclined = 0, ambiguous = 0 }
@@ -199,7 +197,7 @@ emptyStats =
     , multiSetMembers = Dict.empty
     , topSiteShapes = Dict.empty
     , varSiteShapes = Dict.empty
-    , instQual = { byHost = Dict.empty, flatStamped = 0, shape = Dict.empty, niGuard = Dict.empty, papSites = Dict.empty, absentL = Dict.empty, multiSites = Dict.empty }
+    , instQual = { byHost = Dict.empty, flatStamped = 0, shape = Dict.empty, niGuard = Dict.empty, absentL = Dict.empty, multiSites = Dict.empty }
     , blockedMembers = []
     }
 
@@ -310,24 +308,49 @@ collectInstances (Mono.MonoGraph record) =
 
 {-| Adds the closures of one node to the index. When a `MonoDefine` or port node's
 whole expression is a closure, that closure is offered `specId` as its
-`topLevelSpec`, which `collectClosure` keeps only for a capture-free closure.
-A `MonoTailFunc`'s expression is its body, so a closure there
-is a nested one.
+`topLevelSpec` (see `collectRoot`). A `MonoTailFunc`'s expression is its body,
+so a closure there is a nested one.
 -}
 collectNode : Mono.SpecId -> Mono.MonoNode -> Dict Int MemberInfo -> Dict Int MemberInfo
 collectNode specId node acc =
     case node of
-        Mono.MonoDefine ((Mono.MonoClosure _ _ _) as expr) _ ->
-            collectClosure (Just specId) expr acc
+        Mono.MonoDefine expr _ ->
+            collectRoot specId expr acc
 
-        Mono.MonoPortIncoming ((Mono.MonoClosure _ _ _) as expr) _ ->
-            collectClosure (Just specId) expr acc
+        Mono.MonoPortIncoming expr _ ->
+            collectRoot specId expr acc
 
-        Mono.MonoPortOutgoing ((Mono.MonoClosure _ _ _) as expr) _ ->
-            collectClosure (Just specId) expr acc
+        Mono.MonoPortOutgoing expr _ ->
+            collectRoot specId expr acc
+
+        Mono.MonoTailFunc _ expr _ ->
+            collectGo expr acc
+
+        Mono.MonoCtor _ _ _ ->
+            acc
+
+        Mono.MonoEnum _ _ _ _ ->
+            acc
+
+        Mono.MonoExtern _ ->
+            acc
+
+        Mono.MonoManagerLeaf _ _ ->
+            acc
+
+
+{-| Adds the closures in the whole expression of the node `specId` to the
+index. When the expression is itself a closure, it is offered `specId` as its
+`topLevelSpec`, which `collectClosure` keeps only for a capture-free closure.
+-}
+collectRoot : Mono.SpecId -> Mono.MonoExpr -> Dict Int MemberInfo -> Dict Int MemberInfo
+collectRoot specId expr acc =
+    case expr of
+        Mono.MonoClosure closureInfo body tipe ->
+            collectClosure (Just specId) closureInfo body tipe acc
 
         _ ->
-            List.foldl collectGo acc (nodeExprs node)
+            collectGo expr acc
 
 
 {-| Returns the expression a definition, tail function or port node holds, or
@@ -348,10 +371,10 @@ nodeExprs node =
         Mono.MonoPortOutgoing expr _ ->
             [ expr ]
 
-        Mono.MonoCtor _ _ ->
+        Mono.MonoCtor _ _ _ ->
             []
 
-        Mono.MonoEnum _ _ ->
+        Mono.MonoEnum _ _ _ _ ->
             []
 
         Mono.MonoExtern _ ->
@@ -366,72 +389,9 @@ nodeExprs node =
 collectGo : Mono.MonoExpr -> Dict Int MemberInfo -> Dict Int MemberInfo
 collectGo expr acc =
     case expr of
-        Mono.MonoClosure _ _ _ ->
-            collectClosure Nothing expr acc
-
-        _ ->
-            collectOther expr acc
-
-
-{-| Adds one closure, and every closure in its captures and body, to the index.
-
-`topLevelSpec` is recorded on the instance only when the closure has no
-captures. A closure with an adopted identity replaces its member's entry with a
-blocked one and no groups, and a closure of a member that is already blocked is
-ignored. Given an expression that is not a closure, it returns `acc` unchanged.
-
--}
-collectClosure : Maybe Mono.SpecId -> Mono.MonoExpr -> Dict Int MemberInfo -> Dict Int MemberInfo
-collectClosure topLevelSpec expr acc =
-    case expr of
         Mono.MonoClosure closureInfo body tipe ->
-            let
-                emittedSpec =
-                    if List.isEmpty closureInfo.captures then
-                        topLevelSpec
+            collectClosure Nothing closureInfo body tipe acc
 
-                    else
-                        Nothing
-
-                acc1 =
-                    case instanceMember closureInfo tipe of
-                        Just ( m, isAdopted ) ->
-                            if isAdopted then
-                                Dict.insert m { blocked = True, blockedBy = Just closureInfo.lambdaId, buckets = Dict.empty } acc
-
-                            else
-                                Dict.update m
-                                    (\present ->
-                                        case present of
-                                            Just mi ->
-                                                if mi.blocked then
-                                                    present
-
-                                                else
-                                                    Just { mi | buckets = insertInstance emittedSpec closureInfo body mi.buckets }
-
-                                            Nothing ->
-                                                Just { blocked = False, blockedBy = Nothing, buckets = insertInstance emittedSpec closureInfo body Dict.empty }
-                                    )
-                                    acc
-
-                        Nothing ->
-                            acc
-
-                acc2 =
-                    List.foldl (\( _, e, _ ) a -> collectGo e a) acc1 closureInfo.captures
-            in
-            collectGo body acc2
-
-        _ ->
-            acc
-
-
-{-| Adds the closures inside an expression to the index, as nested closures.
--}
-collectOther : Mono.MonoExpr -> Dict Int MemberInfo -> Dict Int MemberInfo
-collectOther expr acc =
-    case expr of
         Mono.MonoCall _ func args _ _ ->
             List.foldl collectGo (collectGo func acc) args
 
@@ -463,7 +423,7 @@ collectOther expr acc =
             List.foldl (\( _, e ) a -> collectGo e a) (collectGo record acc) updates
 
         Mono.MonoTupleCreate _ elements _ ->
-            List.foldl collectGo acc elements
+            List.foldl collectGo acc (Mono.tupleToList elements)
 
         Mono.MonoLiteral _ _ ->
             acc
@@ -483,8 +443,55 @@ collectOther expr acc =
         Mono.MonoAccessorValue _ _ _ ->
             acc
 
-        Mono.MonoClosure _ _ _ ->
-            collectClosure Nothing expr acc
+
+{-| Adds one closure, of type `tipe`, and every closure in its captures and
+body, to the index.
+
+`topLevelSpec` is recorded on the instance only when the closure has no
+captures. A closure with an adopted identity replaces its member's entry with a
+blocked one and no groups, and a closure of a member that is already blocked is
+ignored.
+
+-}
+collectClosure : Maybe Mono.SpecId -> Mono.ClosureInfo -> Mono.MonoExpr -> Mono.MonoType -> Dict Int MemberInfo -> Dict Int MemberInfo
+collectClosure topLevelSpec closureInfo body tipe acc =
+    let
+        emittedSpec =
+            if List.isEmpty closureInfo.captures then
+                topLevelSpec
+
+            else
+                Nothing
+
+        acc1 =
+            case instanceMember closureInfo tipe of
+                Just ( m, isAdopted ) ->
+                    if isAdopted then
+                        Dict.insert m { blocked = True, blockedBy = Just closureInfo.lambdaId, buckets = Dict.empty } acc
+
+                    else
+                        Dict.update m
+                            (\present ->
+                                case present of
+                                    Just mi ->
+                                        if mi.blocked then
+                                            present
+
+                                        else
+                                            Just { mi | buckets = insertInstance emittedSpec closureInfo body mi.buckets }
+
+                                    Nothing ->
+                                        Just { blocked = False, blockedBy = Nothing, buckets = insertInstance emittedSpec closureInfo body Dict.empty }
+                            )
+                            acc
+
+                Nothing ->
+                    acc
+
+        acc2 =
+            List.foldl (\( _, e, _ ) a -> collectGo e a) acc1 closureInfo.captures
+    in
+    collectGo body acc2
 
 
 {-| Adds the closures inside a let definition's expression to the index.
@@ -515,7 +522,7 @@ collectGoDecider decider acc =
             collectGoDecider failure (collectGoDecider success acc)
 
         Mono.FanOut _ edges fallback ->
-            collectGoDecider fallback (List.foldl (\( _, d ) a -> collectGoDecider d a) acc edges)
+            collectGoDecider fallback (List.foldl (\( _, d ) a -> collectGoDecider d a) acc (NE.toList edges))
 
 
 {-| Files a closure as an instance in `buckets`, under the key of its parameter
@@ -548,11 +555,11 @@ insertInstance emittedSpec closureInfo body buckets =
 {-| Adds `inst` to the first group in `groups` with the same parameter and return
 layout, or puts it in a new group of its own, last, as representative.
 
-An instance with the representative's own lambda id updates only `unanimous` and
-the count. Any other marks the group `multi` and, while `unanimous` and
-`fpUnanimous` both hold, compares its fingerprint with the representative's,
-computing the representative's and keeping it in `repFp` the first time it is
-needed.
+Joining a group marks it `multi` and, while `unanimous` and `fpUnanimous` both
+hold, compares the instance's fingerprint with the representative's, computing
+the representative's and keeping it in `repFp` the first time it is needed.
+Lambda ids are unique in the graph, so a joining instance is never the
+representative itself.
 
 -}
 joinGroup : Instance -> List LayoutGroup -> List LayoutGroup
@@ -572,38 +579,34 @@ joinGroup inst groups =
 
         g :: rest ->
             if sameSignatureLayout g.rep inst then
-                if inst.lambdaId == g.rep.lambdaId then
-                    { g | unanimous = g.unanimous && sameCaptureLayout g.rep inst, count = g.count + 1 } :: rest
+                let
+                    uni1 =
+                        g.unanimous && sameCaptureLayout g.rep inst
 
-                else
-                    let
-                        uni1 =
-                            g.unanimous && sameCaptureLayout g.rep inst
+                    ( fpU1, repFp1 ) =
+                        if not (uni1 && g.fpUnanimous) then
+                            ( g.fpUnanimous, g.repFp )
 
-                        ( fpU1, repFp1 ) =
-                            if not (uni1 && g.fpUnanimous) then
-                                ( g.fpUnanimous, g.repFp )
+                        else
+                            let
+                                rf =
+                                    case g.repFp of
+                                        Just f ->
+                                            f
 
-                            else
-                                let
-                                    rf =
-                                        case g.repFp of
-                                            Just f ->
-                                                f
-
-                                            Nothing ->
-                                                fpOf g.rep
-                                in
-                                ( fpOf inst == rf, Just rf )
-                    in
-                    { g
-                        | unanimous = uni1
-                        , multi = True
-                        , fpUnanimous = fpU1
-                        , repFp = repFp1
-                        , count = g.count + 1
-                    }
-                        :: rest
+                                        Nothing ->
+                                            fpOf g.rep
+                            in
+                            ( fpOf inst == rf, Just rf )
+                in
+                { g
+                    | unanimous = uni1
+                    , multi = True
+                    , fpUnanimous = fpU1
+                    , repFp = repFp1
+                    , count = g.count + 1
+                }
+                    :: rest
 
             else
                 g :: joinGroup inst rest
@@ -732,7 +735,6 @@ abiCloningPass census ((Mono.MonoGraph record) as graph) =
                         , flatStamped = 0
                         , shape = Dict.empty
                         , niGuard = Dict.empty
-                        , papSites = Dict.empty
                         , absentL =
                             if census then
                                 indexSummary index
@@ -952,7 +954,7 @@ scanExpr index expr =
             scanExpr index record || List.any (\( _, e ) -> scanExpr index e) updates
 
         Mono.MonoTupleCreate _ elements _ ->
-            List.any (scanExpr index) elements
+            List.any (scanExpr index) (Mono.tupleToList elements)
 
         Mono.MonoLiteral _ _ ->
             False
@@ -1010,7 +1012,7 @@ scanDecider index decider =
             scanDecider index success || scanDecider index failure
 
         Mono.FanOut _ edges fallback ->
-            List.any (\( _, d ) -> scanDecider index d) edges || scanDecider index fallback
+            List.any (\( _, d ) -> scanDecider index d) (NE.toList edges) || scanDecider index fallback
 
 
 {-| Returns whether a decision-tree leaf's inline expression contains a singleton
@@ -1130,7 +1132,7 @@ goExpr index ctx expr =
         Mono.MonoTupleCreate region elements resultType ->
             let
                 ( newElements, ctx1 ) =
-                    goList index ctx elements
+                    Mono.tupleMapAccum (\e c -> goExpr index c e) ctx elements
             in
             ( Mono.MonoTupleCreate region newElements resultType, ctx1 )
 
@@ -1284,7 +1286,7 @@ goDecider index ctx decider =
         Mono.FanOut path edges fallback ->
             let
                 ( edges1, ctx1 ) =
-                    goEdges index ctx edges
+                    goNonemptyEdges index ctx edges
 
                 ( fb1, ctx2 ) =
                     goDecider index ctx1 fallback
@@ -1293,6 +1295,20 @@ goDecider index ctx decider =
 
 
 {-| Stamps the calls in each subtree of a fan-out, in order.
+-}
+goNonemptyEdges : Dict Int MemberInfo -> StampCtx -> NE.Nonempty ( a, Mono.Decider Mono.MonoChoice ) -> ( NE.Nonempty ( a, Mono.Decider Mono.MonoChoice ), StampCtx )
+goNonemptyEdges index ctx (NE.Nonempty ( t, d ) rest) =
+    let
+        ( d1, ctx1 ) =
+            goDecider index ctx d
+
+        ( rest1, ctx2 ) =
+            goEdges index ctx1 rest
+    in
+    ( NE.Nonempty ( t, d1 ) rest1, ctx2 )
+
+
+{-| Stamps the calls in each subtree of a list of fan-out edges, in order.
 -}
 goEdges : Dict Int MemberInfo -> StampCtx -> List ( a, Mono.Decider Mono.MonoChoice ) -> ( List ( a, Mono.Decider Mono.MonoChoice ), StampCtx )
 goEdges index ctx edges =
@@ -1344,251 +1360,270 @@ only counted.
 -}
 stampCall : Dict Int MemberInfo -> StampCtx -> Region -> Mono.MonoExpr -> List Mono.MonoExpr -> Mono.MonoType -> Mono.CallInfo -> ( Mono.MonoExpr, StampCtx )
 stampCall index ctx region func args resultType callInfo =
-    case Mono.headAnno (Mono.typeOf func) of
-        Mono.LSet [ m ] ->
-            case Dict.get m index of
-                Just memberInfo ->
-                    case resolveRepresentative (Mono.typeOf func) (List.length args) memberInfo of
-                        Stamp inst ->
-                            let
-                                ( kindId, ctx1 ) =
-                                    kindIdFor m ctx
+    case Mono.typeOf func of
+        Mono.MFunction _ (Mono.LSet [ m ]) fargs fret ->
+            stampSingletonCall index ctx region func args resultType callInfo m fargs fret
 
-                                stamped =
-                                    { callInfo
-                                        | closureKind = Just (Mono.Known (Mono.ClosureKindId kindId))
-                                        , captureAbi =
-                                            Just
-                                                { captureTypes = inst.captureTypes
-                                                , paramTypes = inst.paramTypes
-                                                , returnType = inst.returnType
-                                                }
-                                        , fastEvaluator = Just inst.lambdaId
-                                        , fastEvaluatorSpec = inst.topLevelSpec
-                                    }
+        calleeType ->
+            stampUnresolvedCall index ctx region func args resultType callInfo (Mono.headAnno calleeType)
 
-                                stats1 =
-                                    ctx1.stats
-                            in
-                            ( Mono.MonoCall region func args resultType stamped
-                            , bumpHost "stamped"
-                                { ctx1
-                                    | stats =
-                                        { stats1
-                                            | dispatchUpgraded = stats1.dispatchUpgraded + 1
+
+{-| Decides a call whose callee type's outermost arrow, from `fargs` to `fret`,
+is annotated with the singleton set of member `m`, as `stampCall` describes.
+-}
+stampSingletonCall : Dict Int MemberInfo -> StampCtx -> Region -> Mono.MonoExpr -> List Mono.MonoExpr -> Mono.MonoType -> Mono.CallInfo -> Int -> List Mono.MonoType -> Mono.MonoType -> ( Mono.MonoExpr, StampCtx )
+stampSingletonCall index ctx region func args resultType callInfo m fargs fret =
+    case Dict.get m index of
+        Just memberInfo ->
+            case resolveRepresentative (Mono.typeOf func) fargs fret (List.length args) memberInfo of
+                Stamp inst ->
+                    let
+                        ( kindId, ctx1 ) =
+                            kindIdFor m ctx
+
+                        stamped =
+                            { callInfo
+                                | closureKind = Just (Mono.Known (Mono.ClosureKindId kindId))
+                                , captureAbi =
+                                    Just
+                                        { captureTypes = inst.captureTypes
+                                        , paramTypes = inst.paramTypes
+                                        , returnType = inst.returnType
                                         }
+                                , fastEvaluator = Just inst.lambdaId
+                                , fastEvaluatorSpec = inst.topLevelSpec
+                            }
+
+                        stats1 =
+                            ctx1.stats
+                    in
+                    ( Mono.MonoCall region func args resultType stamped
+                    , bumpHost "stamped"
+                        { ctx1
+                            | stats =
+                                { stats1
+                                    | dispatchUpgraded = stats1.dispatchUpgraded + 1
                                 }
-                            )
+                        }
+                    )
 
-                        StampFlat inst ->
-                            let
-                                ( kindIdF, ctxF ) =
-                                    kindIdFor m ctx
+                StampFlat inst ->
+                    let
+                        ( kindIdF, ctxF ) =
+                            kindIdFor m ctx
 
-                                statsF =
-                                    ctxF.stats
+                        statsF =
+                            ctxF.stats
 
-                                iqF =
-                                    statsF.instQual
-                            in
-                            ( Mono.MonoCall region
-                                func
-                                args
-                                resultType
-                                { callInfo
-                                    | closureKind = Just (Mono.Known (Mono.ClosureKindId kindIdF))
-                                    , captureAbi =
-                                        Just
-                                            { captureTypes = inst.captureTypes
-                                            , paramTypes = inst.paramTypes
-                                            , returnType = inst.returnType
-                                            }
-                                    , fastEvaluator = Just inst.lambdaId
-                                    , fastEvaluatorSpec = inst.topLevelSpec
+                        iqF =
+                            statsF.instQual
+                    in
+                    ( Mono.MonoCall region
+                        func
+                        args
+                        resultType
+                        { callInfo
+                            | closureKind = Just (Mono.Known (Mono.ClosureKindId kindIdF))
+                            , captureAbi =
+                                Just
+                                    { captureTypes = inst.captureTypes
+                                    , paramTypes = inst.paramTypes
+                                    , returnType = inst.returnType
+                                    }
+                            , fastEvaluator = Just inst.lambdaId
+                            , fastEvaluatorSpec = inst.topLevelSpec
+                        }
+                    , bumpHost "stampedFlat"
+                        { ctxF
+                            | stats =
+                                { statsF
+                                    | dispatchUpgraded = statsF.dispatchUpgraded + 1
+                                    , instQual = { iqF | flatStamped = iqF.flatStamped + 1 }
                                 }
-                            , bumpHost "stampedFlat"
-                                { ctxF
-                                    | stats =
-                                        { statsF
-                                            | dispatchUpgraded = statsF.dispatchUpgraded + 1
-                                            , instQual = { iqF | flatStamped = iqF.flatStamped + 1 }
+                        }
+                    )
+
+                StampPap inst k ->
+                    let
+                        ( kindId, ctx1 ) =
+                            kindIdFor m ctx
+
+                        stamped =
+                            { callInfo
+                                | closureKind = Just (Mono.Known (Mono.ClosureKindId kindId))
+                                , captureAbi =
+                                    Just
+                                        { captureTypes = inst.captureTypes ++ List.take k inst.paramTypes
+                                        , paramTypes = List.drop k inst.paramTypes
+                                        , returnType = inst.returnType
                                         }
-                                }
-                            )
+                                , fastEvaluator = Just inst.lambdaId
+                                , fastEvaluatorSpec = inst.topLevelSpec
+                                , fastPapPrefix = Just k
+                            }
 
-                        StampPap inst k ->
-                            let
-                                ( kindId, ctx1 ) =
-                                    kindIdFor m ctx
+                        stats1 =
+                            ctx1.stats
+                    in
+                    ( Mono.MonoCall region func args resultType stamped
+                    , { ctx1 | stats = { stats1 | stampedPapPrefix = stats1.stampedPapPrefix + 1 } }
+                    )
 
-                                stamped =
-                                    { callInfo
-                                        | closureKind = Just (Mono.Known (Mono.ClosureKindId kindId))
-                                        , captureAbi =
-                                            Just
-                                                { captureTypes = inst.captureTypes ++ List.take k inst.paramTypes
-                                                , paramTypes = List.drop k inst.paramTypes
-                                                , returnType = inst.returnType
-                                                }
-                                        , fastEvaluator = Just inst.lambdaId
-                                        , fastEvaluatorSpec = inst.topLevelSpec
-                                        , fastPapPrefix = Just k
-                                    }
+                StampStaged inst ->
+                    let
+                        ( kindId, ctx1 ) =
+                            kindIdFor m ctx
 
-                                stats1 =
-                                    ctx1.stats
-                            in
-                            ( Mono.MonoCall region func args resultType stamped
-                            , { ctx1 | stats = { stats1 | stampedPapPrefix = stats1.stampedPapPrefix + 1 } }
-                            )
-
-                        StampStaged inst ->
-                            let
-                                ( kindId, ctx1 ) =
-                                    kindIdFor m ctx
-
-                                stamped =
-                                    { callInfo
-                                        | closureKind = Just (Mono.Known (Mono.ClosureKindId kindId))
-                                        , captureAbi =
-                                            Just
-                                                { captureTypes = inst.captureTypes
-                                                , paramTypes = inst.paramTypes
-                                                , returnType = inst.returnType
-                                                }
-                                        , fastEvaluator = Just inst.lambdaId
-                                        , fastEvaluatorSpec = inst.topLevelSpec
-                                    }
-
-                                stats1 =
-                                    ctx1.stats
-                            in
-                            ( Mono.MonoCall region func args resultType stamped
-                            , { ctx1 | stats = { stats1 | stampedStaged = stats1.stampedStaged + 1 } }
-                            )
-
-                        Decline reason bump ->
-                            let
-                                ctxB =
-                                    bumpShape (Mono.typeOf func) (List.length args) reason (bumpHost reason (bump ctx))
-
-                                statsB =
-                                    ctxB.stats
-                            in
-                            ( Mono.MonoCall region func args resultType callInfo
-                            , noteSite m
-                                reason
-                                { ctxB
-                                    | stats =
-                                        { statsB
-                                            | declineByMember = bumpDict m statsB.declineByMember
-                                            , memberReps = Dict.insert m (memberRepsOf memberInfo) statsB.memberReps
+                        stamped =
+                            { callInfo
+                                | closureKind = Just (Mono.Known (Mono.ClosureKindId kindId))
+                                , captureAbi =
+                                    Just
+                                        { captureTypes = inst.captureTypes
+                                        , paramTypes = inst.paramTypes
+                                        , returnType = inst.returnType
                                         }
+                                , fastEvaluator = Just inst.lambdaId
+                                , fastEvaluatorSpec = inst.topLevelSpec
+                            }
+
+                        stats1 =
+                            ctx1.stats
+                    in
+                    ( Mono.MonoCall region func args resultType stamped
+                    , { ctx1 | stats = { stats1 | stampedStaged = stats1.stampedStaged + 1 } }
+                    )
+
+                Decline reason bump ->
+                    let
+                        ctxB =
+                            bumpShape (Mono.typeOf func) fargs (List.length args) reason (bumpHost reason (bump ctx))
+
+                        statsB =
+                            ctxB.stats
+                    in
+                    ( Mono.MonoCall region func args resultType callInfo
+                    , noteSite m
+                        reason
+                        { ctxB
+                            | stats =
+                                { statsB
+                                    | declineByMember = bumpDict m statsB.declineByMember
+                                    , memberReps = Dict.insert m (memberRepsOf memberInfo) statsB.memberReps
                                 }
+                        }
+                    )
+
+        Nothing ->
+            case postSettleTarget m func (List.length fargs) (List.length args) ctx of
+                PsStamp specId isCtor ->
+                    let
+                        stats1 =
+                            ctx.stats
+
+                        stats2 =
+                            if isCtor then
+                                let
+                                    dp1 =
+                                        stats1.devirtPost
+                                in
+                                { stats1 | devirtPost = { dp1 | ctor = dp1.ctor + 1 } }
+
+                            else
+                                let
+                                    dp1 =
+                                        stats1.devirtPost
+                                in
+                                { stats1 | devirtPost = { dp1 | fn = dp1.fn + 1 } }
+                    in
+                    ( Mono.MonoCall region
+                        (Mono.MonoVarGlobal region specId (Mono.typeOf func))
+                        args
+                        resultType
+                        callInfo
+                    , { ctx | stats = stats2 }
+                    )
+
+                PsNoSpec ->
+                    let
+                        statsN =
+                            ctx.stats
+                    in
+                    ( Mono.MonoCall region func args resultType callInfo
+                    , bumpHost "noInstanceNoSpec"
+                        (bumpNoInstance
+                            (let
+                                dpN =
+                                    statsN.devirtPost
+                             in
+                             { ctx | stats = { statsN | devirtPost = { dpN | noSpec = dpN.noSpec + 1 } } }
                             )
+                        )
+                    )
 
-                Nothing ->
-                    case postSettleTarget m func (List.length args) ctx of
-                        PsStamp specId isCtor ->
-                            let
-                                stats1 =
-                                    ctx.stats
-
-                                stats2 =
-                                    if isCtor then
-                                        let
-                                            dp1 =
-                                                stats1.devirtPost
-                                        in
-                                        { stats1 | devirtPost = { dp1 | ctor = dp1.ctor + 1 } }
-
-                                    else
-                                        let
-                                            dp1 =
-                                                stats1.devirtPost
-                                        in
-                                        { stats1 | devirtPost = { dp1 | fn = dp1.fn + 1 } }
-                            in
-                            ( Mono.MonoCall region
-                                (Mono.MonoVarGlobal region specId (Mono.typeOf func))
-                                args
-                                resultType
-                                callInfo
-                            , { ctx | stats = stats2 }
+                PsAmbiguous n ->
+                    let
+                        statsA =
+                            ctx.stats
+                    in
+                    ( Mono.MonoCall region func args resultType callInfo
+                    , bumpHost ("noInstanceAmbiguous|" ++ String.fromInt n)
+                        (bumpNoInstance
+                            (let
+                                dpA =
+                                    statsA.devirtPost
+                             in
+                             { ctx | stats = { statsA | devirtPost = { dpA | ambiguous = dpA.ambiguous + 1 } } }
                             )
+                        )
+                    )
 
-                        PsNoSpec ->
-                            let
-                                statsN =
-                                    ctx.stats
-                            in
-                            ( Mono.MonoCall region func args resultType callInfo
-                            , bumpHost "noInstanceNoSpec"
-                                (bumpNoInstance
-                                    (let
-                                        dpN =
-                                            statsN.devirtPost
-                                     in
-                                     { ctx | stats = { statsN | devirtPost = { dpN | noSpec = dpN.noSpec + 1 } } }
-                                    )
-                                )
-                            )
+                PsStampPap target ->
+                    -- The callee expression is kept as it is: the
+                    -- bound arguments are read back out of it.
+                    let
+                        ( kindId, ctx1 ) =
+                            kindIdFor m ctx
 
-                        PsAmbiguous n ->
-                            let
-                                statsA =
-                                    ctx.stats
-                            in
-                            ( Mono.MonoCall region func args resultType callInfo
-                            , bumpHost ("noInstanceAmbiguous|" ++ String.fromInt n)
-                                (bumpNoInstance
-                                    (let
-                                        dpA =
-                                            statsA.devirtPost
-                                     in
-                                     { ctx | stats = { statsA | devirtPost = { dpA | ambiguous = dpA.ambiguous + 1 } } }
-                                    )
-                                )
-                            )
+                        stamped =
+                            { callInfo
+                                | closureKind = Just (Mono.Known (Mono.ClosureKindId kindId))
+                                , captureAbi =
+                                    Just
+                                        { captureTypes = target.captureTypes
+                                        , paramTypes = target.paramTypes
+                                        , returnType = target.returnType
+                                        }
+                                , fastEvaluator = Just target.sentinel
+                                , fastEvaluatorSpec = Just target.specId
+                                , fastPapPrefix = Just target.k
+                            }
 
-                        PsStampPap target ->
-                            -- The callee expression is kept as it is: the
-                            -- bound arguments are read back out of it.
-                            let
-                                ( kindId, ctx1 ) =
-                                    kindIdFor m ctx
+                        stats1 =
+                            ctx1.stats
+                    in
+                    ( Mono.MonoCall region func args resultType stamped
+                    , bumpHost "stampedPapGlobal"
+                        { ctx1 | stats = { stats1 | stampedPapGlobal = stats1.stampedPapGlobal + 1 } }
+                    )
 
-                                stamped =
-                                    { callInfo
-                                        | closureKind = Just (Mono.Known (Mono.ClosureKindId kindId))
-                                        , captureAbi =
-                                            Just
-                                                { captureTypes = target.captureTypes
-                                                , paramTypes = target.paramTypes
-                                                , returnType = target.returnType
-                                                }
-                                        , fastEvaluator = Just target.sentinel
-                                        , fastEvaluatorSpec = Just target.specId
-                                        , fastPapPrefix = Just target.k
-                                    }
+                PsNotCandidate why ->
+                    ( Mono.MonoCall region func args resultType callInfo
+                    , bumpAbsentL why
+                        m
+                        func
+                        (List.length args)
+                        (bumpNiGuard why (bumpHost "noInstance" (bumpNoInstance ctx)))
+                    )
 
-                                stats1 =
-                                    ctx1.stats
-                            in
-                            ( Mono.MonoCall region func args resultType stamped
-                            , bumpHost "stampedPapGlobal"
-                                { ctx1 | stats = { stats1 | stampedPapGlobal = stats1.stampedPapGlobal + 1 } }
-                            )
 
-                        PsNotCandidate why ->
-                            ( Mono.MonoCall region func args resultType callInfo
-                            , bumpAbsentL why
-                                m
-                                func
-                                (List.length args)
-                                (bumpPapSite why (bumpNiGuard why (bumpHost "noInstance" (bumpNoInstance ctx))))
-                            )
-
+{-| Counts a call whose callee type's head annotation `anno` is anything but a
+singleton set, as `stampCall` describes, and leaves the call as it was. A
+callee type that is not a function has the head annotation `Mono.topLegacy`.
+-}
+stampUnresolvedCall : Dict Int MemberInfo -> StampCtx -> Region -> Mono.MonoExpr -> List Mono.MonoExpr -> Mono.MonoType -> Mono.CallInfo -> Mono.LambdaSetAnno -> ( Mono.MonoExpr, StampCtx )
+stampUnresolvedCall index ctx region func args resultType callInfo anno =
+    case anno of
         Mono.LSet ms ->
             -- Any set but a singleton, including an empty one.
             let
@@ -1653,73 +1688,39 @@ stampCall index ctx region func args resultType callInfo =
 
 
 {-| Records, on census, a declined call that supplies more arguments than its
-callee type's first stage takes, in the `shape` tally, keyed
+callee type's first stage, `fargs`, takes, in the `shape` tally, keyed
 `<firstStage>-><argCount>|exact|<reason>` when `peelStages` lands exactly on
 the argument count and with `miss` in place of `exact` when it does not.
 -}
-bumpShape : Mono.MonoType -> Int -> String -> StampCtx -> StampCtx
-bumpShape calleeType argCount reason ctx =
-    case calleeType of
-        Mono.MFunction _ _ fargs _ ->
-            if not ctx.census || argCount <= List.length fargs then
-                ctx
-
-            else
-                let
-                    key =
-                        String.fromInt (List.length fargs)
-                            ++ "->"
-                            ++ String.fromInt argCount
-                            ++ "|"
-                            ++ (case peelStages argCount calleeType of
-                                    Just _ ->
-                                        "exact"
-
-                                    Nothing ->
-                                        "miss"
-                               )
-                            ++ "|"
-                            ++ reason
-
-                    st =
-                        ctx.stats
-
-                    iq =
-                        st.instQual
-                in
-                { ctx | stats = { st | instQual = { iq | shape = bumpDictStr key iq.shape } } }
-
-        _ ->
-            ctx
-
-
-{-| Records, on census, a site keyed `<host>|<specId>` in the `papSites` tally when
-its reason begins `g1absentp|WOULDSTAMP`, and ignores every other reason.
-
-`papResolve` gives that reason only together with a target, and such a site is
-stamped rather than passed here, so the tally stays empty.
-
--}
-bumpPapSite : String -> StampCtx -> StampCtx
-bumpPapSite why ctx =
-    if not ctx.census || not (String.startsWith "g1absentp|WOULDSTAMP" why) then
+bumpShape : Mono.MonoType -> List Mono.MonoType -> Int -> String -> StampCtx -> StampCtx
+bumpShape calleeType fargs argCount reason ctx =
+    if not ctx.census || argCount <= List.length fargs then
         ctx
 
     else
         let
+            key =
+                String.fromInt (List.length fargs)
+                    ++ "->"
+                    ++ String.fromInt argCount
+                    ++ "|"
+                    ++ (case peelStages argCount calleeType of
+                            Just _ ->
+                                "exact"
+
+                            Nothing ->
+                                "miss"
+                       )
+                    ++ "|"
+                    ++ reason
+
             st =
                 ctx.stats
 
             iq =
                 st.instQual
         in
-        { ctx
-            | stats =
-                { st
-                    | instQual =
-                        { iq | papSites = bumpDictStr (ctx.hostGlobal ++ "|" ++ String.fromInt ctx.hostSpecId) iq.papSites }
-                }
-        }
+        { ctx | stats = { st | instQual = { iq | shape = bumpDictStr key iq.shape } } }
 
 
 {-| Records, on census, a site whose member is not in the index: a `T|` row
@@ -2143,11 +2144,11 @@ type Resolution
 
 
 {-| Chooses the stamp for a call with `argCount` arguments to a member through a
-callee of type `calleeType`, or declines.
+callee of type `calleeType`, whose outermost arrow takes `fargs` to `fret`, or
+declines.
 
-A blocked member declines, and so does a callee type that is not a function.
-Otherwise `argCount` is compared with the number of parameters the outermost
-arrow takes. No arguments, or fewer, decline. Exactly that many look for the
+A blocked member declines. Otherwise `argCount` is compared with the number of
+parameters the outermost arrow takes. Fewer decline. Exactly that many look for the
 group with the same parameter and return layout, and failing that for a
 partial application (`resolvePapSuffix`). More look first for a group matching
 the type flattened to `argCount` parameters (`flattenedResolution`), then for
@@ -2158,40 +2159,31 @@ its capture types agree and its fingerprints agree, and each failure is a
 decline of its own, checked in that order.
 
 -}
-resolveRepresentative : Mono.MonoType -> Int -> MemberInfo -> Resolution
-resolveRepresentative calleeType argCount memberInfo =
+resolveRepresentative : Mono.MonoType -> List Mono.MonoType -> Mono.MonoType -> Int -> MemberInfo -> Resolution
+resolveRepresentative calleeType fargs fret argCount memberInfo =
     if memberInfo.blocked then
         Decline "blocked" bumpBlocked
 
+    else if argCount < List.length fargs then
+        Decline "arityUnder" bumpShapeArityUnder
+
+    else if argCount > List.length fargs then
+        -- A curried callee type may be applied flat: try it
+        -- peeled to the argument count first.
+        case flattenedResolution argCount calleeType memberInfo of
+            Just resolution ->
+                resolution
+
+            Nothing ->
+                resolveStagedFirstStage fargs fret memberInfo
+
     else
-        case calleeType of
-            Mono.MFunction _ _ fargs fret ->
-                if argCount == 0 then
-                    Decline "arityZero" bumpShapeArityZero
+        case Dict.get (siteFingerprint fargs fret) memberInfo.buckets of
+            Nothing ->
+                resolvePapSuffix fargs fret argCount memberInfo bumpShapeBucketMiss
 
-                else if argCount < List.length fargs then
-                    Decline "arityUnder" bumpShapeArityUnder
-
-                else if argCount > List.length fargs then
-                    -- A curried callee type may be applied flat: try it
-                    -- peeled to the argument count first.
-                    case flattenedResolution argCount calleeType memberInfo of
-                        Just resolution ->
-                            resolution
-
-                        Nothing ->
-                            resolveStagedFirstStage fargs fret memberInfo
-
-                else
-                    case Dict.get (siteFingerprint fargs fret) memberInfo.buckets of
-                        Nothing ->
-                            resolvePapSuffix fargs fret argCount memberInfo bumpShapeBucketMiss
-
-                        Just groups ->
-                            resolveInGroups fargs fret argCount groups memberInfo
-
-            _ ->
-                Decline "nonArrow" bumpShapeNonArrow
+            Just groups ->
+                resolveInGroups fargs fret argCount groups memberInfo
 
 
 {-| Returns the verdict for the first group in `groups` whose representative has
@@ -2480,7 +2472,8 @@ type alias PapTarget =
 
 
 {-| Decides a singleton site whose member `m` has no instance, from the origin the
-graph records for the member.
+graph records for the member. `firstStage` is the number of parameters of the
+callee type's outermost arrow.
 
 A member with no recorded origin is turned away, with the first letter of its
 interned key in the reason. A partial application of a global goes to
@@ -2489,110 +2482,81 @@ callee is a local variable, and `postSettleArity` then checks the argument
 count. Kernels, accessors, and any other callee expression are turned away.
 
 -}
-postSettleTarget : Int -> Mono.MonoExpr -> Int -> StampCtx -> PostSettleOutcome
-postSettleTarget m func argCount ctx =
+postSettleTarget : Int -> Mono.MonoExpr -> Int -> Int -> StampCtx -> PostSettleOutcome
+postSettleTarget m func firstStage argCount ctx =
     case Dict.get m ctx.origins of
         Nothing ->
             PsNotCandidate ("g1absent" ++ Maybe.withDefault "?" (Maybe.map (String.left 1) (Dict.get m ctx.memberKinds)))
 
-        Just (Mono.OriginPap g k) ->
-            case papResolve g k func argCount ctx of
-                ( Just target, _ ) ->
+        Just (Mono.OriginPap home name k) ->
+            case papResolve home name k func firstStage argCount ctx of
+                Ok target ->
                     PsStampPap target
 
-                ( Nothing, key ) ->
+                Err key ->
                     PsNotCandidate key
 
-        Just origin ->
-            case originTarget origin of
-                Nothing ->
-                    PsNotCandidate ("g1" ++ originKindName origin)
+        Just (Mono.OriginGlobal home name) ->
+            postSettleLocal (Mono.Global home name) False func firstStage argCount ctx
 
-                Just ( target, isCtor ) ->
-                    case func of
-                        Mono.MonoVarLocal _ calleeType ->
-                            postSettleArity target isCtor calleeType argCount ctx
+        Just (Mono.OriginCtor home name) ->
+            postSettleLocal (Mono.Global home name) True func firstStage argCount ctx
 
-                        _ ->
-                            PsNotCandidate ("g2" ++ calleeShape func)
+        Just (Mono.OriginKernel _ _ _) ->
+            PsNotCandidate "g1kernel"
+
+        Just (Mono.OriginAccessor _) ->
+            PsNotCandidate "g1accessor"
 
 
-{-| Returns the global a function or constructor origin names, and whether it is a
-constructor, or `Nothing` for any other origin.
+{-| Decides a site whose member is the global function or constructor `target`
+(`isCtor` says which): a candidate only when the callee is a local variable,
+whose argument count `postSettleArity` then checks.
 -}
-originTarget : Mono.MemberOrigin -> Maybe ( Mono.Global, Bool )
-originTarget origin =
-    case origin of
-        Mono.OriginGlobal g ->
-            Just ( g, False )
-
-        Mono.OriginCtor g ->
-            Just ( g, True )
+postSettleLocal : Mono.Global -> Bool -> Mono.MonoExpr -> Int -> Int -> StampCtx -> PostSettleOutcome
+postSettleLocal target isCtor func firstStage argCount ctx =
+    case func of
+        Mono.MonoVarLocal _ calleeType ->
+            postSettleArity target isCtor calleeType firstStage argCount ctx
 
         _ ->
-            Nothing
+            PsNotCandidate ("g2" ++ calleeShape func)
 
 
-{-| Returns the census name of a kernel or accessor origin, or `other`.
--}
-originKindName : Mono.MemberOrigin -> String
-originKindName origin =
-    case origin of
-        Mono.OriginKernel _ _ _ ->
-            "kernel"
-
-        Mono.OriginAccessor _ ->
-            "accessor"
-
-        _ ->
-            "other"
-
-
-{-| Decides a site whose member is global `g` partially applied to `k` arguments,
-and returns the stamp target when every check passes, with a census key for the
-verdict either way.
+{-| Decides a site whose member is the global `name` of module `home` partially
+applied to `k` arguments: the stamp target when every check passes, and
+otherwise the census key of the check that failed.
 
 The callee must be a local variable, and its type must flatten to exactly
-`argCount` parameters (`peelStages`). The specializations of `g` that match are
-those whose node is callable (`specFunctionRow`), whose parameter count is `k`
-plus the site's, and whose parameters after the first `k` and return match the
-site's apart from arrow annotations. Exactly one must match: two
+`argCount` parameters (`peelStages`). The specializations of the global that
+match are those whose node is callable (`specFunctionRow`), whose parameter
+count is `k` plus the site's, and whose parameters after the first `k` and
+return match the site's apart from arrow annotations. Exactly one must match: two
 specializations of one global can share a layout, so picking one of several
 would be a guess. Its first `k` parameters must not include `Char`.
 
-The key is `g1absentp|<verdict>|k=<k>|site=<firstStage>-><argCount>`, with the
-verdict `WOULDSTAMP` when there is a target, except for a callee that is not a
-local variable, keyed `g1absentp|papCallee-<form>`.
+The key is `g1absentp|<verdict>|k=<k>|site=<firstStage>-><argCount>`, where
+`firstStage` is the number of parameters of the callee type's outermost arrow,
+except for a callee that is not a local variable, keyed
+`g1absentp|papCallee-<form>`.
 
 -}
-papResolve : Mono.Global -> Int -> Mono.MonoExpr -> Int -> StampCtx -> ( Maybe PapTarget, String )
-papResolve g k func argCount ctx =
+papResolve : ModuleName.Canonical -> Name -> Int -> Mono.MonoExpr -> Int -> Int -> StampCtx -> Result String PapTarget
+papResolve home name k func firstStage argCount ctx =
     let
-        shape firstStage =
-            "|k=" ++ String.fromInt k ++ "|site=" ++ String.fromInt firstStage ++ "->" ++ String.fromInt argCount
-
-        no reason firstStage =
-            ( Nothing, "g1absentp|" ++ reason ++ shape firstStage )
+        no reason =
+            Err ("g1absentp|" ++ reason ++ "|k=" ++ String.fromInt k ++ "|site=" ++ String.fromInt firstStage ++ "->" ++ String.fromInt argCount)
     in
     case func of
         Mono.MonoVarLocal _ calleeType ->
-            let
-                firstStage =
-                    case calleeType of
-                        Mono.MFunction _ _ params _ ->
-                            List.length params
-
-                        _ ->
-                            0
-            in
             case peelStages argCount calleeType of
                 Nothing ->
-                    no "unpeelable" firstStage
+                    no "unpeelable"
 
                 Just ( fargs, fret ) ->
                     let
                         specs =
-                            Dict.get (Mono.toComparableGlobal g) ctx.specsByGlobal
+                            Dict.get (Mono.toComparableGlobal (Mono.Global home name)) ctx.specsByGlobal
                                 |> Maybe.withDefault []
 
                         ( matches, nonFn ) =
@@ -2619,41 +2583,33 @@ papResolve g k func argCount ctx =
                     case matches of
                         [ ( specId, params, ret ) ] ->
                             if List.any ((==) Mono.MChar) (List.take k params) then
-                                no "papChar" firstStage
+                                no "papChar"
 
                             else
-                                case g of
-                                    Mono.Global home _ ->
-                                        ( Just
-                                            { specId = specId
-                                            , k = k
-                                            , captureTypes = List.take k params
-                                            , paramTypes = List.drop k params
-                                            , returnType = ret
-                                            , sentinel = Mono.AnonymousLambda home (negate specId - 1)
-                                            }
-                                        , "g1absentp|WOULDSTAMP" ++ shape firstStage
-                                        )
-
-                                    Mono.Accessor _ ->
-                                        -- Not expected: an accessor takes one argument.
-                                        no "papAccessor" firstStage
+                                Ok
+                                    { specId = specId
+                                    , k = k
+                                    , captureTypes = List.take k params
+                                    , paramTypes = List.drop k params
+                                    , returnType = ret
+                                    , sentinel = Mono.AnonymousLambda home (negate specId - 1)
+                                    }
 
                         [] ->
                             if List.isEmpty specs then
-                                no "papNoSpec" firstStage
+                                no "papNoSpec"
 
                             else if nonFn then
-                                no "papNonFn" firstStage
+                                no "papNonFn"
 
                             else
-                                no "papShapeMiss" firstStage
+                                no "papShapeMiss"
 
                         _ ->
-                            no "papAmbiguous" firstStage
+                            no "papAmbiguous"
 
         _ ->
-            ( Nothing, "g1absentp|papCallee-" ++ calleeShape func )
+            Err ("g1absentp|papCallee-" ++ calleeShape func)
 
 
 {-| Returns the parameter types and return type of a specialization whose node is
@@ -2670,7 +2626,7 @@ specFunctionRow specId ctx =
         Just (Just (Mono.MonoTailFunc params body _)) ->
             Just ( List.map Tuple.second params, Mono.typeOf body )
 
-        Just (Just (Mono.MonoCtor shape ty)) ->
+        Just (Just (Mono.MonoCtor _ shape ty)) ->
             -- A constructor's parameters are its fields.
             Just ( shape.fieldTypes, Tuple.second (Mono.decomposeFunctionType ty) )
 
@@ -2682,24 +2638,15 @@ specFunctionRow specId ctx =
 `argCount` arguments supplies the whole function, and if so picks the
 specialization of `target` to call (`matchSpec`).
 
-The call qualifies when `argCount` equals the number of parameters of the
-outermost arrow, which must be at least one, or is greater and the type
+The call qualifies when `argCount` equals `firstStage`, the number of
+parameters of the outermost arrow, which must be at least one, or is greater and the type
 flattens to exactly `argCount` parameters. Either way the specialization is
 matched against the unflattened callee type. Any other site is turned away as
 `g3over` or `g3under`.
 
 -}
-postSettleArity : Mono.Global -> Bool -> Mono.MonoType -> Int -> StampCtx -> PostSettleOutcome
-postSettleArity target isCtor calleeType argCount ctx =
-    let
-        firstStage =
-            case calleeType of
-                Mono.MFunction _ _ params _ ->
-                    List.length params
-
-                _ ->
-                    0
-    in
+postSettleArity : Mono.Global -> Bool -> Mono.MonoType -> Int -> Int -> StampCtx -> PostSettleOutcome
+postSettleArity target isCtor calleeType firstStage argCount ctx =
     if firstStage >= 1 && firstStage == argCount then
         matchSpec target isCtor calleeType ctx
 
@@ -2792,19 +2739,6 @@ bumpShapeWith sub ctx =
     { ctx | stats = sub { stats | declinedShape = stats.declinedShape + 1 } }
 
 
-{-| The counter for a call that supplies no arguments.
--}
-bumpShapeArityZero : StampCtx -> StampCtx
-bumpShapeArityZero =
-    bumpShapeWith
-        (\st ->
-            { st
-                | declinedShapeArity = st.declinedShapeArity + 1
-                , declinedShapeArityZero = st.declinedShapeArityZero + 1
-            }
-        )
-
-
 {-| The counter for a call that supplies fewer arguments than its callee type's
 first stage takes.
 -}
@@ -2855,13 +2789,6 @@ partial application holds a `Char` argument.
 bumpShapeChar : StampCtx -> StampCtx
 bumpShapeChar =
     bumpShapeWith (\st -> { st | declinedShapeChar = st.declinedShapeChar + 1 })
-
-
-{-| The counter for a call whose callee type is not a function.
--}
-bumpShapeNonArrow : StampCtx -> StampCtx
-bumpShapeNonArrow =
-    bumpShapeWith (\st -> { st | declinedShapeNonArrow = st.declinedShapeNonArrow + 1 })
 
 
 {-| Counts one site declined because its group's capture types disagree.
@@ -2970,19 +2897,15 @@ fpTy t st =
     fpStr (Mono.toComparableMonoType t) st
 
 
-{-| Appends the lambda id of a closure being rendered, numbering it on first
-appearance.
+{-| Appends the lambda id of a closure being rendered as the next number, and
+records the number for `fpLamRef`. Lambda ids are unique in the graph, so a
+rendered body holds each closure once and every closure gets a new number.
 -}
 fpLam : Mono.LambdaId -> FpState -> FpState
 fpLam (Mono.AnonymousLambda _ uid) ( acc, ctx ) =
-    case Dict.get uid ctx.lamMap of
-        Just pos ->
-            ( ("l" ++ String.fromInt pos) :: acc, ctx )
-
-        Nothing ->
-            ( ("l" ++ String.fromInt ctx.nextLam) :: acc
-            , { ctx | lamMap = Dict.insert uid ctx.nextLam ctx.lamMap, nextLam = ctx.nextLam + 1 }
-            )
+    ( ("l" ++ String.fromInt ctx.nextLam) :: acc
+    , { ctx | lamMap = Dict.insert uid ctx.nextLam ctx.lamMap, nextLam = ctx.nextLam + 1 }
+    )
 
 
 {-| Appends a lambda id that a `CallInfo` refers to: its number when it has one,
@@ -3256,7 +3179,7 @@ fpExpr expr st =
             st |> fpStr "Ru(" |> fpExpr record |> fpStr ",[" |> fpNamedExprs updates |> fpStr "]):" |> fpTy t
 
         Mono.MonoTupleCreate _ items t ->
-            st |> fpStr "Tu[" |> fpExprs items |> fpStr "]:" |> fpTy t
+            st |> fpStr "Tu[" |> fpExprs (Mono.tupleToList items) |> fpStr "]:" |> fpTy t
 
         Mono.MonoUnit ->
             fpStr "U" st
@@ -3373,7 +3296,7 @@ fpDecider decider st =
         Mono.Chain tests success failure ->
             st
                 |> fpStr "Ch(["
-                |> (\a -> List.foldl (\( p, t ) acc -> acc |> fpDtPath p |> fpStr ("?" ++ DT.testToComparable t ++ ";")) a tests)
+                |> (\a -> List.foldl (\( p, t ) acc -> acc |> fpDtPath p |> fpStr ("?" ++ DT.testToComparable t ++ ";")) a (NE.toList tests))
                 |> fpStr "],"
                 |> fpDecider success
                 |> fpStr ","
@@ -3385,7 +3308,7 @@ fpDecider decider st =
                 |> fpStr "Fo("
                 |> fpDtPath path
                 |> fpStr ",["
-                |> (\a -> List.foldl (\( t, d ) acc -> acc |> fpStr (DT.testToComparable t ++ "->") |> fpDecider d |> fpStr ";") a edges)
+                |> (\a -> List.foldl (\( t, d ) acc -> acc |> fpStr (DT.testToComparable (DT.fromFanTest t) ++ "->") |> fpDecider d |> fpStr ";") a (NE.toList edges))
                 |> fpStr "],"
                 |> fpDecider fallback
                 |> fpStr ")"

@@ -21,10 +21,11 @@ node are, are described in `Compiler.IR.Typed.Optimized`.
 import Array exposing (Array)
 import Compiler.Core.Name as Name exposing (Name)
 import Compiler.IR.Canonical as Can
+import Compiler.IR.DecisionTree.Test as Test
 import Compiler.IR.Typed.Optimized as TOpt
 import Compiler.IR.Typed.TypeVars as Vars
 import Compiler.LocalOpt.Typed.DecisionTree as DT
-import Prelude
+import Data.NonEmptyList as NE
 import System.Crash exposing (crash)
 
 
@@ -86,11 +87,10 @@ indexify index ( pattern, branch ) =
 
 A node with no fallback is one where, for any value that reaches it, some
 edge's test passes, so its last edge becomes the fallback and that edge's test
-is not made. A node with a single path forward (one edge and no fallback, or no
-edge and a fallback) is replaced by that path. A node with one test and a
-fallback, or two edges and no fallback, becomes a `Chain` (see `toChain`); any
-other node becomes a `FanOut`. Crashes on a node with neither edges nor a
-fallback.
+is not made. A node with a single path forward, one edge and no fallback, is
+replaced by that path. A node with one test and a fallback, or two edges and
+no fallback, becomes a `Chain` (see `toChain`); any other node becomes a
+`FanOut`.
 
 -}
 treeToDecider : DT.DecisionTree -> TOpt.Decider Int
@@ -99,33 +99,58 @@ treeToDecider tree =
         DT.Match target ->
             TOpt.Leaf target
 
-        DT.Decision _ [] Nothing ->
-            crash "compiler bug, somehow created an empty decision tree"
-
-        DT.Decision _ [ ( _, subTree ) ] Nothing ->
+        DT.Decision _ (NE.Nonempty ( _, subTree ) []) Nothing ->
             treeToDecider subTree
 
-        DT.Decision _ [] (Just subTree) ->
-            treeToDecider subTree
-
-        DT.Decision path [ ( test, successTree ) ] (Just failureTree) ->
+        DT.Decision path (NE.Nonempty ( test, successTree ) []) (Just failureTree) ->
             toChain path test successTree failureTree
 
-        DT.Decision path [ ( test, successTree ), ( _, failureTree ) ] Nothing ->
+        DT.Decision path (NE.Nonempty ( test, successTree ) [ ( _, failureTree ) ]) Nothing ->
             toChain path test successTree failureTree
 
-        DT.Decision path edges Nothing ->
+        -- A missing fallback means the edges' tests cover every value, so
+        -- the last edge can stand in as the fallback without its test.
+        DT.Decision path (NE.Nonempty edge1 (edge2 :: edge3 :: moreEdges)) Nothing ->
             let
-                ( necessaryTests, fallback ) =
-                    ( Prelude.init edges, Tuple.second (Prelude.last edges) )
+                ( necessaryEdges, ( _, fallback ) ) =
+                    splitLast edge1 edge2 (edge3 :: moreEdges)
             in
-            TOpt.FanOut
-                path
-                (List.map (Tuple.mapSecond treeToDecider) necessaryTests)
-                (treeToDecider fallback)
+            TOpt.FanOut path (NE.map toFanEdge necessaryEdges) (treeToDecider fallback)
 
         DT.Decision path edges (Just fallback) ->
-            TOpt.FanOut path (List.map (Tuple.mapSecond treeToDecider) edges) (treeToDecider fallback)
+            TOpt.FanOut path (NE.map toFanEdge edges) (treeToDecider fallback)
+
+
+{-| Returns the list `first :: second :: more` without its last element, and
+that element.
+-}
+splitLast : a -> a -> List a -> ( NE.Nonempty a, a )
+splitLast first second more =
+    case more of
+        [] ->
+            ( NE.singleton first, second )
+
+        third :: rest ->
+            let
+                ( NE.Nonempty head tail, last ) =
+                    splitLast second third rest
+            in
+            ( NE.Nonempty first (head :: tail), last )
+
+
+{-| Converts a decision-tree edge into a fan-out edge: its test as a
+`DT.FanTest`, and its subtree converted. A fan-out is built only for three or
+more ways out, and a position with a `Bool` or list test has at most two, so
+the test is always a constructor or literal test.
+-}
+toFanEdge : ( DT.Test, DT.DecisionTree ) -> ( Test.FanTest, TOpt.Decider Int )
+toFanEdge ( test, subTree ) =
+    case Test.toFanTest test of
+        Just fanTest ->
+            ( fanTest, treeToDecider subTree )
+
+        Nothing ->
+            crash "Typed.Case.toFanEdge: a Bool or list test has at most two ways out, so it makes a Chain"
 
 
 {-| Builds a `Chain` that makes `test` at `path`, continuing with
@@ -143,15 +168,15 @@ toChain path test successTree failureTree =
             treeToDecider failureTree
     in
     case treeToDecider successTree of
-        (TOpt.Chain testChain success subFailure) as success_ ->
+        (TOpt.Chain (NE.Nonempty firstTest otherTests) success subFailure) as success_ ->
             if failure == subFailure then
-                TOpt.Chain (( path, test ) :: testChain) success failure
+                TOpt.Chain (NE.Nonempty ( path, test ) (firstTest :: otherTests)) success failure
 
             else
-                TOpt.Chain [ ( path, test ) ] success_ failure
+                TOpt.Chain (NE.singleton ( path, test )) success_ failure
 
         success ->
-            TOpt.Chain [ ( path, test ) ] success failure
+            TOpt.Chain (NE.singleton ( path, test )) success failure
 
 
 
@@ -180,7 +205,7 @@ countTargetsHelp counts decider =
         TOpt.FanOut _ tests fallback ->
             List.foldl (\( _, sub ) acc -> countTargetsHelp acc sub)
                 (countTargetsHelp counts fallback)
-                tests
+                (NE.toList tests)
 
 
 {-| Returns the element of `arr` at `idx`, or `default` when there is none.
@@ -235,4 +260,4 @@ insertChoices choiceArray decider =
             TOpt.Chain testChain (go success) (go failure)
 
         TOpt.FanOut path tests fallback ->
-            TOpt.FanOut path (List.map (Tuple.mapSecond go) tests) (go fallback)
+            TOpt.FanOut path (NE.map (Tuple.mapSecond go) tests) (go fallback)

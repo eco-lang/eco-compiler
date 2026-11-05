@@ -10,9 +10,8 @@ output checked against `mlir-opt`):
   - A `UnitAttr` element of an array printed as nothing (`[]` or `[, ...]`)
     instead of `unit`.
   - Without `_operand_types`, an operand whose type was not in the environment
-    of its own block (a value defined in an enclosing region, or by an earlier
-    top-level op) was silently left out of the signature, which then had fewer
-    types than operands.
+    of its own block (a value defined in an enclosing region) was silently
+    left out of the signature, which then had fewer types than operands.
 
 -}
 
@@ -86,16 +85,5 @@ suite =
                         Pretty.ppTopLevelOp outer
                 in
                 Expect.equal True (String.contains "\"test.yield\"(%x) : (i64) -> ()" text)
-                    |> Expect.onFail ("printed as: " ++ text)
-        , Test.test "an operand defined by an earlier top-level op keeps its type" <|
-            \_ ->
-                let
-                    text =
-                        Pretty.ppModule
-                            { body = [ mkOp "test.def" [] [ ( "%x", I64 ) ] [] [], mkOp "test.use" [ "%x" ] [] [] [] ]
-                            , loc = Mlir.Loc.unknown
-                            }
-                in
-                Expect.equal True (String.contains "\"test.use\"(%x) : (i64) -> ()" text)
                     |> Expect.onFail ("printed as: " ++ text)
         ]

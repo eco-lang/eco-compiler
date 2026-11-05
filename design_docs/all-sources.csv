@@ -105,7 +105,6 @@ compiler/src/Compiler/Canonicalize,Type.elm
 compiler/src/Compiler,Compile.elm
 compiler/src/Compiler/Data,Bag.elm
 compiler/src/Compiler/Data,Index.elm
-compiler/src/Compiler/Data,IndexName.elm
 compiler/src/Compiler/Data/Map,Utils.elm
 compiler/src/Compiler/Data,Name.elm
 compiler/src/Compiler/Data,NonEmptyList.elm
@@ -208,7 +207,6 @@ compiler/src/Compiler/Reporting/Render/Type,Localizer.elm
 compiler/src/Compiler/Reporting,Report.elm
 compiler/src/Compiler/Reporting,Result.elm
 compiler/src/Compiler/Reporting,Suggest.elm
-compiler/src/Compiler/Reporting,Warning.elm
 compiler/src/Compiler/Type/Constrain,Common.elm
 compiler/src/Compiler/Type/Constrain/Erased,Expression.elm
 compiler/src/Compiler/Type/Constrain/Erased,Module.elm
@@ -239,7 +237,6 @@ compiler/src/Mlir,Loc.elm
 compiler/src/Mlir,Mlir.elm
 compiler/src/Mlir,Pretty.elm
 compiler/src,Prelude.elm
-compiler/src/System/Console,Ansi.elm
 compiler/src/System,Exit.elm
 compiler/src/System,IO.elm
 compiler/src/System/TypeCheck,IO.elm

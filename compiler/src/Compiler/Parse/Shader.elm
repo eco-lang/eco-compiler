@@ -33,7 +33,6 @@ import Compiler.Parse.Error as E
 import Data.Map as Dict
 import Language.GLSL.Parser as GLP
 import Language.GLSL.Syntax as GLS
-import System.Crash as Crash
 
 
 
@@ -199,12 +198,7 @@ parseGlsl startRow startCol src =
 
                 col : Int
                 col =
-                    case List.reverse lines of
-                        lastLine :: _ ->
-                            String.length lastLine
-
-                        _ ->
-                            0
+                    List.foldl (\line _ -> String.length line) 0 lines
 
                 msg : String
                 msg =
@@ -250,68 +244,90 @@ emptyTypes =
     Shader.Types Dict.empty Dict.empty Dict.empty
 
 
+{-| The kind of a shader input: an `attribute`, `uniform` or `varying`
+declaration.
+-}
+type InputKind
+    = Attr
+    | Unif
+    | Vary
+
+
 {-| Adds one input to the inputs of its kind, replacing an earlier entry of
 the same name and kind.
-
-It crashes for a qualifier other than `attribute`, `uniform` or `varying`,
-which `extractInputs` never returns.
-
 -}
-addInput : ( GLS.StorageQualifier, Shader.Type, String ) -> Shader.Types -> Shader.Types
-addInput ( qual, tipe, name ) (Shader.Types attribute uniform varying) =
-    case qual of
-        GLS.Attribute ->
+addInput : ( InputKind, Shader.Type, String ) -> Shader.Types -> Shader.Types
+addInput ( kind, tipe, name ) (Shader.Types attribute uniform varying) =
+    case kind of
+        Attr ->
             Shader.Types (Dict.insert identity name tipe attribute) uniform varying
 
-        GLS.Uniform ->
+        Unif ->
             Shader.Types attribute (Dict.insert identity name tipe uniform) varying
 
-        GLS.Varying ->
+        Vary ->
             Shader.Types attribute uniform (Dict.insert identity name tipe varying)
-
-        _ ->
-            Crash.crash "Should never happen due to `extractInputs` function"
 
 
 {-| Returns the input that a top-level GLSL declaration declares, as its
-qualifier, type and name, or an empty list when the declaration is not an
+kind, type and name, or an empty list when the declaration is not an
 input this module records.
 -}
-extractInputs : GLS.ExternalDeclaration -> List ( GLS.StorageQualifier, Shader.Type, String )
+extractInputs : GLS.ExternalDeclaration -> List ( InputKind, Shader.Type, String )
 extractInputs decl =
     case decl of
         GLS.Declaration (GLS.InitDeclaration (GLS.TypeDeclarator (GLS.FullType (Just (GLS.TypeQualSto qual)) (GLS.TypeSpec _ (GLS.TypeSpecNoPrecision tipe _)))) [ GLS.InitDecl name _ _ ]) ->
-            if List.member qual [ GLS.Attribute, GLS.Varying, GLS.Uniform ] then
-                case tipe of
-                    GLS.Vec2 ->
-                        [ ( qual, Shader.V2, name ) ]
+            case inputKind qual of
+                Just kind ->
+                    case tipe of
+                        GLS.Vec2 ->
+                            [ ( kind, Shader.V2, name ) ]
 
-                    GLS.Vec3 ->
-                        [ ( qual, Shader.V3, name ) ]
+                        GLS.Vec3 ->
+                            [ ( kind, Shader.V3, name ) ]
 
-                    GLS.Vec4 ->
-                        [ ( qual, Shader.V4, name ) ]
+                        GLS.Vec4 ->
+                            [ ( kind, Shader.V4, name ) ]
 
-                    GLS.Mat4 ->
-                        [ ( qual, Shader.M4, name ) ]
+                        GLS.Mat4 ->
+                            [ ( kind, Shader.M4, name ) ]
 
-                    GLS.Int ->
-                        [ ( qual, Shader.Int, name ) ]
+                        GLS.Int ->
+                            [ ( kind, Shader.Int, name ) ]
 
-                    GLS.Float ->
-                        [ ( qual, Shader.Float, name ) ]
+                        GLS.Float ->
+                            [ ( kind, Shader.Float, name ) ]
 
-                    GLS.Sampler2D ->
-                        [ ( qual, Shader.Texture, name ) ]
+                        GLS.Sampler2D ->
+                            [ ( kind, Shader.Texture, name ) ]
 
-                    GLS.Bool ->
-                        [ ( qual, Shader.Bool, name ) ]
+                        GLS.Bool ->
+                            [ ( kind, Shader.Bool, name ) ]
 
-                    _ ->
-                        []
+                        _ ->
+                            []
 
-            else
-                []
+                Nothing ->
+                    []
 
         _ ->
             []
+
+
+{-| The input kind of a storage qualifier, or `Nothing` for a qualifier that
+does not declare an input.
+-}
+inputKind : GLS.StorageQualifier -> Maybe InputKind
+inputKind qual =
+    case qual of
+        GLS.Attribute ->
+            Just Attr
+
+        GLS.Uniform ->
+            Just Unif
+
+        GLS.Varying ->
+            Just Vary
+
+        _ ->
+            Nothing

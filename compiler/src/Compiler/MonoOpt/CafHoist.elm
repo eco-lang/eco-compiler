@@ -74,6 +74,7 @@ import Compiler.Elm.ModuleName as ModuleName
 import Compiler.IR.Mono as Mono
 import Compiler.MonoOpt.CsePurity as CsePurity
 import Data.BitSet as BitSet exposing (BitSet)
+import Data.NonEmptyList as NE
 import Dict exposing (Dict)
 import Set exposing (Set)
 
@@ -567,7 +568,7 @@ collectChildren minNodes ctx expr =
             goList ctx (rec :: List.map Tuple.second updates)
 
         Mono.MonoTupleCreate _ items _ ->
-            goList ctx items
+            goList ctx (Mono.tupleToList items)
 
 
 {-| Returns the combined facts and candidates of a `case` decision tree: the
@@ -595,7 +596,7 @@ collectDecider minNodes ctx decider =
                 testFree =
                     List.foldl (\( dtPath, _ ) acc -> Set.insert (dtRoot dtPath) acc)
                         Set.empty
-                        tests
+                        (NE.toList tests)
 
                 merged =
                     mergeInfo si fi
@@ -614,7 +615,7 @@ collectDecider minNodes ctx decider =
                             ( mergeInfo i di, cs ++ dcs, c1 )
                         )
                         ( leafInfo, [], ctx )
-                        edges
+                        (NE.toList edges)
 
                 ( fi, fcs, ctx2 ) =
                     collectDecider minNodes ctx1 fallback
@@ -965,7 +966,7 @@ replaceChildren cands ctx expr =
         Mono.MonoTupleCreate region items ty ->
             let
                 ( items1, ctx1 ) =
-                    goList ctx items
+                    Mono.tupleMapAccum (\e c -> go c e) ctx items
             in
             ( Mono.MonoTupleCreate region items1 ty, ctx1 )
 
@@ -998,22 +999,22 @@ replaceDecider cands ctx decider =
 
         Mono.FanOut dtPath edges fallback ->
             let
-                ( edgesRev, ctx1 ) =
-                    List.foldl
-                        (\( t, d ) ( acc, c ) ->
+                ( ctx1, edges1 ) =
+                    NE.mapAccuml
+                        (\c ( t, d ) ->
                             let
                                 ( d1, c1 ) =
                                     replaceDecider cands c d
                             in
-                            ( ( t, d1 ) :: acc, c1 )
+                            ( c1, ( t, d1 ) )
                         )
-                        ( [], ctx )
+                        ctx
                         edges
 
                 ( fallback1, ctx2 ) =
                     replaceDecider cands ctx1 fallback
             in
-            ( Mono.FanOut dtPath (List.reverse edgesRev) fallback1, ctx2 )
+            ( Mono.FanOut dtPath edges1 fallback1, ctx2 )
 
 
 
@@ -1106,7 +1107,7 @@ typeTouchesBytes t =
             typeTouchesBytes inner
 
         Mono.MTuple _ items ->
-            List.any typeTouchesBytes items
+            List.any typeTouchesBytes (Mono.tupleToList items)
 
         Mono.MRecord _ fields ->
             Dict.foldl (\_ ft acc -> acc || typeTouchesBytes ft) False fields
@@ -1241,7 +1242,7 @@ zeroRegions expr =
                 ty
 
         Mono.MonoTupleCreate _ items ty ->
-            Mono.MonoTupleCreate A.zero (List.map zeroRegions items) ty
+            Mono.MonoTupleCreate A.zero (Mono.tupleMap zeroRegions items) ty
 
 
 {-| Returns a local definition with `zeroRegions` applied to its body.
@@ -1273,7 +1274,7 @@ zeroRegionsDecider decider =
 
         Mono.FanOut path edges fallback ->
             Mono.FanOut path
-                (List.map (\( t, d ) -> ( t, zeroRegionsDecider d )) edges)
+                (NE.map (\( t, d ) -> ( t, zeroRegionsDecider d )) edges)
                 (zeroRegionsDecider fallback)
 
 

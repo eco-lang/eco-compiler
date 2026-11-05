@@ -376,40 +376,38 @@ chunks, in the package `foreigns` gives, or `pkg` when it has none.
 -}
 addImport : Pkg.Name -> Foreigns -> Src.C1 Src.Import -> VarTable -> Result Syntax.Kernel VarTable
 addImport pkg foreigns ( _, Src.Import ( _, A.At region importName ) maybeAlias ( _, exposing_ ) ) vtable =
-    if Name.isKernel importName then
-        case maybeAlias of
-            Just _ ->
-                Err (Syntax.KernelImportAlias region importName)
+    case Name.toKernel importName of
+        Just ( kernelPrefix, home ) ->
+            case maybeAlias of
+                Just _ ->
+                    Err (Syntax.KernelImportAlias region importName)
 
-            Nothing ->
-                let
-                    ( kernelPrefix, home ) =
-                        Name.getKernel importName
-
-                    add : Name -> Dict Name Chunk -> Dict Name Chunk
-                    add name table =
-                        Dict.insert (Name.sepBy '_' home name) (JsVar kernelPrefix home name) table
-                in
-                toNames region importName exposing_
-                    |> Result.map (List.foldl add vtable)
-
-    else
-        let
-            home : ModuleName.Canonical
-            home =
-                ModuleName.Canonical (Dict.get importName foreigns |> Maybe.withDefault pkg) importName
-        in
-        toPrefix region importName (Maybe.map Src.c2Value maybeAlias)
-            |> Result.andThen
-                (\prefix ->
+                Nothing ->
                     let
                         add : Name -> Dict Name Chunk -> Dict Name Chunk
                         add name table =
-                            Dict.insert (Name.sepBy '_' prefix name) (ElmVar home name) table
+                            Dict.insert (Name.sepBy '_' home name) (JsVar kernelPrefix home name) table
                     in
                     toNames region importName exposing_
                         |> Result.map (List.foldl add vtable)
-                )
+
+        Nothing ->
+            let
+                home : ModuleName.Canonical
+                home =
+                    ModuleName.Canonical (Dict.get importName foreigns |> Maybe.withDefault pkg) importName
+            in
+            toPrefix region importName (Maybe.map Src.c2Value maybeAlias)
+                |> Result.andThen
+                    (\prefix ->
+                        let
+                            add : Name -> Dict Name Chunk -> Dict Name Chunk
+                            add name table =
+                                Dict.insert (Name.sepBy '_' prefix name) (ElmVar home name) table
+                        in
+                        toNames region importName exposing_
+                            |> Result.map (List.foldl add vtable)
+                    )
 
 
 {-| Returns the prefix of the tag names for an Elm module `home`, whose name is

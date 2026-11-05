@@ -250,14 +250,14 @@ baseRegistry n =
 
 
 {-| Builds a graph from its nodes and ports, with a registry from
-`baseRegistry` sized to the nodes, no `main` and no flags decoder. The other
+`baseRegistry` sized to the nodes, a `main` of spec 0 and no flags decoder. The other
 tables are empty, and the next lambda index is 1.
 -}
 mkGraph : List (Maybe Mono.MonoNode) -> List Mono.PortRegistration -> Mono.MonoGraph
 mkGraph nodes ports =
     Mono.MonoGraph
         { nodes = Array.fromList nodes
-        , main = Nothing
+        , main = Mono.StaticMain 0
         , registry = baseRegistry (List.length nodes)
         , ctorShapes = Mono.layoutMapEmpty
         , nextLambdaIndex = 1

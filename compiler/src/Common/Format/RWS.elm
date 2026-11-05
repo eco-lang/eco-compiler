@@ -1,103 +1,71 @@
-module Common.Format.RWS exposing (RWS, andThen, error, evalRWS, get, mapM_, modify, put, replicateM, return, tell)
+module Common.Format.RWS exposing (RWS, andThen, evalRWS, get, mapM_, modify, put, replicateM, return)
 
 {-| Lets a computation made of many steps pass a state from each step to the
-next, and gather a dictionary of entries as it goes, without every step taking
-and returning both by hand.
+next, without every step taking and returning it by hand.
 
-An `RWS r s a` is a reader-writer-state computation. Given an environment of
-type `r` and a state of type `s`, it produces a result of type `a`, a new state,
-and a log. The environment, the reader part, is handed unchanged to every step;
-no function here reads it, so it is only carried along. The state is what each
-step receives from the step before, and `put` and `modify` replace it. The log,
-the writer part, is not a type parameter: it is fixed to a
-`Dict String ( String, String )`, and a step adds entries to it with `tell`.
-
-Steps are chained with `andThen`, which merges the logs of the two steps. When
-both have an entry for the same key, the entry of the step that ran first is
-kept.
+An `RWS r s a` is a reader-state computation. Given an environment of type `r`
+and a state of type `s`, it produces a result of type `a` and a new state. The
+environment, the reader part, is handed unchanged to every step; no function
+here reads it, so it is only carried along. The state is what each step
+receives from the step before, and `put` and `modify` replace it.
 
 `mapM_` does not visit a list in order. It runs its action on the last element
 first and passes the state from the end of the list towards the start.
 
-@docs RWS, andThen, error, evalRWS, get, mapM_, modify, put, replicateM, return, tell
+@docs RWS, andThen, evalRWS, get, mapM_, modify, put, replicateM, return
 
 -}
 
-import Dict exposing (Dict)
-import System.Crash exposing (crash)
 
-
-{-| A computation that, given an environment and a state, returns its result,
-the new state, and the log entries it produced.
+{-| A computation that, given an environment and a state, returns its result
+and the new state.
 
 This is a name for a function type, not a new type, so any function of this
 shape is accepted where an `RWS` is expected.
 
 -}
 type alias RWS r s a =
-    r -> s -> ( a, s, Dict String ( String, String ) )
+    r -> s -> ( a, s )
 
 
 {-| Runs `rws` with environment `r` and initial state `s`, and returns its
-result and its log, dropping the final state.
+result, dropping the final state.
 -}
-evalRWS : RWS r s a -> r -> s -> ( a, Dict String ( String, String ) )
+evalRWS : RWS r s a -> r -> s -> a
 evalRWS rws r s =
-    let
-        ( a, _, w ) =
-            runRWS rws r s
-    in
-    ( a, w )
-
-
-{-| Runs `rws` with environment `r` and initial state `s`, and returns its
-result, its final state and its log.
--}
-runRWS : RWS r s a -> r -> s -> ( a, s, Dict String ( String, String ) )
-runRWS rws r s =
-    rws r s
+    Tuple.first (rws r s)
 
 
 {-| Builds a computation that runs `f` on each element of `xs`, discarding the
-results and keeping the final state and the merged log.
+results and keeping the final state.
 
 The elements are visited from last to first. `f` runs on the last element
 against the starting state, and each earlier element sees the state the one
-after it left. When two steps log the same key, the entry of the step that ran
-first, which is the one for the later element, is kept. An empty list leaves
-the state unchanged and logs nothing.
+after it left. An empty list leaves the state unchanged.
 
 -}
 mapM_ : (a -> RWS r s b) -> List a -> RWS r s ()
 mapM_ f xs =
     \r s0 ->
         List.foldr
-            (\x ( _, s, w ) ->
-                let
-                    ( _, newS, newW ) =
-                        f x r s
-                in
-                ( (), newS, Dict.union w newW )
+            (\x ( _, s ) ->
+                ( (), Tuple.second (f x r s) )
             )
-            ( (), s0, Dict.empty )
+            ( (), s0 )
             xs
 
 
 {-| Builds a computation that runs `rwsa`, passes its result to `f`, and runs
-the computation `f` returns on the state `rwsa` left. The two logs are merged,
-and where both have an entry for the same key, the one from `rwsa` is kept.
+the computation `f` returns on the state `rwsa` left.
 -}
 andThen : (a -> RWS r s b) -> RWS r s a -> RWS r s b
 andThen f rwsa =
     \r s0 ->
         let
-            ( a, s1, w1 ) =
+            ( a, s1 ) =
                 rwsa r s0
-
-            ( b, s2, w2 ) =
-                f a r s1
         in
-        ( b, s2, Dict.union w1 w2 )
+        f a r s1
 
 
 {-| A computation whose result is the current state, which it leaves
@@ -105,14 +73,14 @@ unchanged.
 -}
 get : RWS r s s
 get =
-    \_ s -> ( s, s, Dict.empty )
+    \_ s -> ( s, s )
 
 
 {-| Builds a computation that replaces the state with `newState`.
 -}
 put : s -> RWS r s ()
 put newState =
-    \_ _ -> ( (), newState, Dict.empty )
+    \_ _ -> ( (), newState )
 
 
 {-| Builds a computation that replaces the state with the result of applying
@@ -120,24 +88,14 @@ put newState =
 -}
 modify : (s -> s) -> RWS r s ()
 modify f =
-    \_ s -> ( (), f s, Dict.empty )
+    \_ s -> ( (), f s )
 
 
-{-| Builds a computation whose result is `a`, leaving the state unchanged and
-logging nothing.
+{-| Builds a computation whose result is `a`, leaving the state unchanged.
 -}
 return : a -> RWS r s a
 return a =
-    \_ s -> ( a, s, Dict.empty )
-
-
-{-| Builds a computation that logs the entries of `log` and leaves the state
-unchanged. Earlier entries are not overwritten: `andThen` keeps an earlier
-step's entry over a later one with the same key.
--}
-tell : Dict String ( String, String ) -> RWS r s ()
-tell log =
-    \_ s -> ( (), s, log )
+    \_ s -> ( a, s )
 
 
 {-| Builds a computation that runs `rws` `n` times in sequence, each run seeing
@@ -157,14 +115,3 @@ replicateM n rws =
                     replicateM (n - 1) rws
                         |> andThen (\list -> return (a :: list))
                 )
-
-
-{-| Aborts the program with the given message, through `System.Crash.crash`.
-
-The abort happens as soon as `error` is applied to its message, not when the
-computation it stands for is run.
-
--}
-error : String -> RWS r s a
-error =
-    crash

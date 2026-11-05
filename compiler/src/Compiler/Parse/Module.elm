@@ -458,7 +458,7 @@ getComments decls comments =
                 Decl.Value c (A.At _ (Src.Value v)) ->
                     getComments otherDecls (addComment c (Tuple.second v.name) comments)
 
-                Decl.Union c (A.At _ (Src.Union ( _, n ) _ _)) ->
+                Decl.Union c (A.At _ (Src.Union ( _, n ) _ _ _)) ->
                     getComments otherDecls (addComment c n comments)
 
                 Decl.Alias c (A.At _ (Src.Alias data)) ->

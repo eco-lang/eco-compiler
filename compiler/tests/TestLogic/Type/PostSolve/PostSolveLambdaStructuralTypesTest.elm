@@ -66,6 +66,7 @@ import Compiler.IR.Source as Src
 import Compiler.Type.PostSolve as PostSolve
 import Dict
 import Expect
+import Maybe.Extra as Maybe
 import SourceIR.MainFailsCases as MainFailsCases
 import SourceIR.MonoFailsCases as MonoFailsCases
 import SourceIR.Suite.StandardTestSuites as StandardTestSuites
@@ -419,7 +420,7 @@ bijectiveAlphaEqHelp renaming a b =
                             Err e
 
                         Ok r2 ->
-                            bijectiveAlphaEqList r2 cs1 cs2
+                            bijectiveAlphaEqList r2 (Maybe.toList cs1) (Maybe.toList cs2)
 
         ( Can.TAlias h1 n1 args1 at1, Can.TAlias h2 n2 args2 at2 ) ->
             if h1 == h2 && n1 == n2 then
@@ -634,7 +635,7 @@ typeToString tipe =
 
         Can.TTuple a b cs ->
             "TTuple ("
-                ++ String.join ", " (List.map typeToString (a :: b :: cs))
+                ++ String.join ", " (List.map typeToString (a :: b :: Maybe.toList cs))
                 ++ ")"
 
         Can.TAlias _ name _ _ ->

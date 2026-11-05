@@ -725,10 +725,9 @@ in whitespace.
 `PIndentStart` is its `Indent` form. `PAlias` is an `as` not followed by a name,
 and `PIndentAlias` its `Indent` form.
 
-`PFloat` is a float literal, which cannot be matched on. `PWildcardNotVar`
-carries a name that starts with `_`, which no variable may, and
-`PWildcardReservedWord` carries a reserved word written after a `_`. The `Int`
-each of these three carries is the width in columns the report highlights. For
+`PFloat` is a float literal, which cannot be matched on, and `PWildcardNotVar`
+carries a name that starts with `_`, which no variable may. The `Int` each of
+these two carries is the width in columns the report highlights. For
 `PFloat` it is the length of the float's source text.
 
 -}
@@ -743,7 +742,6 @@ type Pattern
     | PFloat Int Row Col
     | PAlias Row Col
     | PWildcardNotVar Name Int Row Col
-    | PWildcardReservedWord Name Int Row Col
     | PSpace Space Row Col
     | PIndentStart Row Col
     | PIndentAlias Row Col
@@ -942,13 +940,8 @@ type Escape
 
 `NumberEnd` is a number that does not end cleanly, such as one followed directly
 by a letter. `NumberDot` carries the integer written before a `.` that no digit
-follows. `NumberHexDigit` and `NumberBinDigit` are a bad digit in a hexadecimal
-or a binary literal, and `NumberNoLeadingZero` a `0` followed by another digit.
-`NumberNoLeadingOrTrailingUnderscores`, `NumberNoConsecutiveUnderscores`,
-`NumberNoUnderscoresAdjacentToDecimalOrExponent`,
-`NumberNoUnderscoresAdjacentToHexadecimalPreFix` and
-`NumberNoUnderscoresAdjacentToBinaryPreFix` each name a place an underscore may
-not go. `NumberInexactOnHost` is an integer literal whose 64-bit value the
+follows. `NumberHexDigit` is a bad digit in a hexadecimal literal, and
+`NumberNoLeadingZero` a `0` followed by another digit. `NumberInexactOnHost` is an integer literal whose 64-bit value the
 JavaScript-hosted compiler cannot hold exactly (more than 53 significant bits);
 it is reported at the start of the literal.
 
@@ -959,13 +952,7 @@ type Number
     = NumberEnd
     | NumberDot Int
     | NumberHexDigit
-    | NumberBinDigit
     | NumberNoLeadingZero
-    | NumberNoLeadingOrTrailingUnderscores
-    | NumberNoConsecutiveUnderscores
-    | NumberNoUnderscoresAdjacentToDecimalOrExponent
-    | NumberNoUnderscoresAdjacentToHexadecimalPreFix
-    | NumberNoUnderscoresAdjacentToBinaryPreFix
     | NumberInexactOnHost
 
 
@@ -993,8 +980,7 @@ the report draws its excerpt and reads the text at the point of failure, as the
 module docstring describes.
 
 A `ModuleNameUnspecified` report has row 1, column 1 as its region and no
-excerpt. A `ModuleNameMismatch` report highlights the declared name, and its
-list of suggestions holds the expected name.
+excerpt. A `ModuleNameMismatch` report highlights the declared name.
 
 -}
 toReport : Code.Source -> Error -> Report.Report
@@ -1006,7 +992,7 @@ toReport source err =
                 region =
                     toRegion 1 1
             in
-            Report.report "MODULE NAME MISSING" region [] <|
+            Report.report "MODULE NAME MISSING" region <|
                 D.stack
                     [ D.reflow "I need the module name to be declared at the top of this file, like this:"
                     , [ D.cyan (D.fromChars "module")
@@ -1041,7 +1027,7 @@ toReport source err =
                 ]
             )
                 |> Code.toSnippet source region Nothing
-                |> Report.report "MODULE NAME MISMATCH" region [ expectedName ]
+                |> Report.report "MODULE NAME MISMATCH" region
 
         UnexpectedPort region ->
             ( "You are declaring ports in a normal module." |> D.reflow
@@ -1068,7 +1054,7 @@ toReport source err =
                 ]
             )
                 |> Code.toSnippet source region Nothing
-                |> Report.report "UNEXPECTED PORTS" region []
+                |> Report.report "UNEXPECTED PORTS" region
 
         NoPorts region ->
             ( "This module does not declare any ports, but it says it will:" |> D.reflow
@@ -1086,7 +1072,7 @@ toReport source err =
                 ]
             )
                 |> Code.toSnippet source region Nothing
-                |> Report.report "NO PORTS" region []
+                |> Report.report "NO PORTS" region
 
         NoPortsInPackage (A.At region _) ->
             ( "Packages cannot declare any ports, so I am getting stuck here:" |> D.reflow
@@ -1096,7 +1082,7 @@ toReport source err =
                 ]
             )
                 |> Code.toSnippet source region Nothing
-                |> Report.report "PACKAGES CANNOT HAVE PORTS" region []
+                |> Report.report "PACKAGES CANNOT HAVE PORTS" region
 
         NoPortModulesInPackage region ->
             ( "Packages cannot declare any ports, so I am getting stuck here:" |> D.reflow
@@ -1118,7 +1104,7 @@ toReport source err =
                 ]
             )
                 |> Code.toSnippet source region Nothing
-                |> Report.report "PACKAGES CANNOT HAVE PORTS" region []
+                |> Report.report "PACKAGES CANNOT HAVE PORTS" region
 
         NoEffectsOutsideKernel region ->
             ( "It is not possible to declare an `effect module` outside the @elm organization, so I am getting stuck here:" |> D.reflow
@@ -1134,7 +1120,7 @@ toReport source err =
                 ]
             )
                 |> Code.toSnippet source region Nothing
-                |> Report.report "INVALID EFFECT MODULE" region []
+                |> Report.report "INVALID EFFECT MODULE" region
 
         ParseError modul ->
             toParseErrorReport source modul
@@ -1152,7 +1138,7 @@ toKernelReport source kernel =
         importReport region problem advice =
             ( D.reflow problem, D.reflow advice )
                 |> Code.toSnippet source region Nothing
-                |> Report.report "KERNEL IMPORT" region []
+                |> Report.report "KERNEL IMPORT" region
     in
     case kernel of
         KernelHeaderSyntax row col ->
@@ -1167,7 +1153,7 @@ toKernelReport source kernel =
                     ++ "then close the header with `*/` before any JavaScript."
             )
                 |> Code.toSnippet source region Nothing
-                |> Report.report "KERNEL HEADER" region []
+                |> Report.report "KERNEL HEADER" region
 
         KernelUnknownTag row col name ->
             let
@@ -1181,7 +1167,7 @@ toKernelReport source kernel =
                     ++ "Add the value to an import in the header, or fix the spelling of the tag."
             )
                 |> Code.toSnippet source region Nothing
-                |> Report.report "UNKNOWN KERNEL TAG" region []
+                |> Report.report "UNKNOWN KERNEL TAG" region
 
         KernelImportAlias region name ->
             importReport region
@@ -1295,7 +1281,7 @@ toParseErrorReport source modul =
                 ]
             )
                 |> Code.toSnippet source region Nothing
-                |> Report.report "UNFINISHED MODULE DECLARATION" region []
+                |> Report.report "UNFINISHED MODULE DECLARATION" region
 
         ModuleName row col ->
             let
@@ -1337,7 +1323,7 @@ toParseErrorReport source modul =
                 ]
             )
                 |> Code.toSnippet source region Nothing
-                |> Report.report "EXPECTING MODULE NAME" region []
+                |> Report.report "EXPECTING MODULE NAME" region
 
         ModuleExposing exposing_ row col ->
             toExposingReport source exposing_ row col
@@ -1372,7 +1358,7 @@ toParseErrorReport source modul =
                 ]
             )
                 |> Code.toSnippet source region Nothing
-                |> Report.report "UNFINISHED PORT MODULE DECLARATION" region []
+                |> Report.report "UNFINISHED PORT MODULE DECLARATION" region
 
         PortModuleName row col ->
             let
@@ -1404,7 +1390,7 @@ toParseErrorReport source modul =
                 ]
             )
                 |> Code.toSnippet source region Nothing
-                |> Report.report "EXPECTING MODULE NAME" region []
+                |> Report.report "EXPECTING MODULE NAME" region
 
         PortModuleExposing exposing_ row col ->
             toExposingReport source exposing_ row col
@@ -1419,7 +1405,7 @@ toParseErrorReport source modul =
             , "This type of module is reserved for the @elm organization. It is used to define certain effects, avoiding building them into the compiler." |> D.reflow
             )
                 |> Code.toSnippet source region Nothing
-                |> Report.report "BAD MODULE DECLARATION" region []
+                |> Report.report "BAD MODULE DECLARATION" region
 
         FreshLine row col ->
             let
@@ -1439,7 +1425,7 @@ toParseErrorReport source modul =
                             ++ "` until there are none left!"
                     )
                         |> Code.toSnippet source region Nothing
-                        |> Report.report "TOO MUCH INDENTATION" region []
+                        |> Report.report "TOO MUCH INDENTATION" region
             in
             case Code.whatIsNext source row col of
                 Code.Keyword "module" ->
@@ -1471,7 +1457,7 @@ toParseErrorReport source modul =
                         ]
                     )
                         |> Code.toSnippet source region Nothing
-                        |> Report.report "SYNTAX PROBLEM" region []
+                        |> Report.report "SYNTAX PROBLEM" region
 
         ImportStart row col ->
             toImportReport source row col
@@ -1513,7 +1499,7 @@ toParseErrorReport source modul =
                 ]
             )
                 |> Code.toSnippet source region Nothing
-                |> Report.report "EXPECTING IMPORT NAME" region []
+                |> Report.report "EXPECTING IMPORT NAME" region
 
         ImportAs row col ->
             toImportReport source row col
@@ -1553,7 +1539,7 @@ toParseErrorReport source modul =
                 ]
             )
                 |> Code.toSnippet source region Nothing
-                |> Report.report "EXPECTING IMPORT ALIAS" region []
+                |> Report.report "EXPECTING IMPORT ALIAS" region
 
         ImportExposing row col ->
             toImportReport source row col
@@ -1598,7 +1584,7 @@ toParseErrorReport source modul =
                 ]
             )
                 |> Code.toSnippet source region Nothing
-                |> Report.report "UNFINISHED IMPORT" region []
+                |> Report.report "UNFINISHED IMPORT" region
 
         Infix row col ->
             let
@@ -1610,7 +1596,7 @@ toParseErrorReport source modul =
             , "This feature is used by the @elm organization to define the languages built-in operators." |> D.reflow
             )
                 |> Code.toSnippet source region Nothing
-                |> Report.report "BAD INFIX" region []
+                |> Report.report "BAD INFIX" region
 
         Declarations decl _ _ ->
             toDeclarationsReport source decl
@@ -1644,7 +1630,7 @@ toWeirdEndReport source row col =
             , ("The name `" ++ keyword ++ "` is reserved, so try using a different name?") |> D.reflow
             )
                 |> Code.toSnippet source region Nothing
-                |> Report.report "RESERVED WORD" region []
+                |> Report.report "RESERVED WORD" region
 
         Code.Operator op ->
             let
@@ -1656,7 +1642,7 @@ toWeirdEndReport source row col =
             , ("I was not expecting to see a " ++ op ++ " here. Try deleting it? Maybe I can give a better hint from there?") |> D.reflow
             )
                 |> Code.toSnippet source region Nothing
-                |> Report.report "UNEXPECTED SYMBOL" region []
+                |> Report.report "UNEXPECTED SYMBOL" region
 
         Code.Close term bracket ->
             let
@@ -1668,7 +1654,7 @@ toWeirdEndReport source row col =
             , D.reflow ("This " ++ String.fromChar bracket ++ " does not match up with an earlier open " ++ term ++ ". Try deleting it?")
             )
                 |> Code.toSnippet source region Nothing
-                |> Report.report ("UNEXPECTED " ++ String.toUpper term) region []
+                |> Report.report ("UNEXPECTED " ++ String.toUpper term) region
 
         Code.Lower c cs ->
             let
@@ -1680,7 +1666,7 @@ toWeirdEndReport source row col =
             , D.reflow "It is confusing me a lot! Normally I can give fairly specific hints, but something is really tripping me up this time."
             )
                 |> Code.toSnippet source region Nothing
-                |> Report.report "UNEXPECTED NAME" region []
+                |> Report.report "UNEXPECTED NAME" region
 
         Code.Upper c cs ->
             let
@@ -1692,7 +1678,7 @@ toWeirdEndReport source row col =
             , D.reflow "It is confusing me a lot! Normally I can give fairly specific hints, but something is really tripping me up this time."
             )
                 |> Code.toSnippet source region Nothing
-                |> Report.report "UNEXPECTED NAME" region []
+                |> Report.report "UNEXPECTED NAME" region
 
         Code.Other maybeChar ->
             let
@@ -1714,7 +1700,7 @@ toWeirdEndReport source row col =
                         ]
                     )
                         |> Code.toSnippet source region Nothing
-                        |> Report.report "UNEXPECTED SEMICOLON" region []
+                        |> Report.report "UNEXPECTED SEMICOLON" region
 
                 Just ',' ->
                     ( D.reflow "I got stuck on this comma:"
@@ -1727,7 +1713,7 @@ toWeirdEndReport source row col =
                         ]
                     )
                         |> Code.toSnippet source region Nothing
-                        |> Report.report "UNEXPECTED COMMA" region []
+                        |> Report.report "UNEXPECTED COMMA" region
 
                 Just '`' ->
                     ( D.reflow "I got stuck on this character:"
@@ -1751,7 +1737,7 @@ toWeirdEndReport source row col =
                         ]
                     )
                         |> Code.toSnippet source region Nothing
-                        |> Report.report "UNEXPECTED CHARACTER" region []
+                        |> Report.report "UNEXPECTED CHARACTER" region
 
                 Just '$' ->
                     ( D.reflow "I got stuck on this dollar sign:"
@@ -1760,7 +1746,7 @@ toWeirdEndReport source row col =
                             ++ "If so, try a name that (1) starts with a letter and (2) only contains letters, numbers, and underscores."
                     )
                         |> Code.toSnippet source region Nothing
-                        |> Report.report "UNEXPECTED SYMBOL" region []
+                        |> Report.report "UNEXPECTED SYMBOL" region
 
                 Just c ->
                     if List.member c [ '#', '@', '!', '%', '~' ] then
@@ -1768,7 +1754,7 @@ toWeirdEndReport source row col =
                         , D.reflow "It is not used for anything in Elm syntax. Try removing it?"
                         )
                             |> Code.toSnippet source region Nothing
-                            |> Report.report "UNEXPECTED SYMBOL" region []
+                            |> Report.report "UNEXPECTED SYMBOL" region
 
                     else
                         toWeirdEndSyntaxProblemReport source region
@@ -1786,7 +1772,7 @@ toWeirdEndSyntaxProblemReport source region =
     , D.reflow "Whatever I am running into is confusing me a lot! Normally I can give fairly specific hints, but something is really tripping me up this time."
     )
         |> Code.toSnippet source region Nothing
-        |> Report.report "SYNTAX PROBLEM" region []
+        |> Report.report "SYNTAX PROBLEM" region
 
 
 
@@ -1838,7 +1824,7 @@ toImportReport source row col =
         ]
     )
         |> Code.toSnippet source region Nothing
-        |> Report.report "UNFINISHED IMPORT" region []
+        |> Report.report "UNFINISHED IMPORT" region
 
 
 
@@ -1908,7 +1894,7 @@ toExposingReport source exposing_ startRow startCol =
                 ]
             )
                 |> Code.toSnippet source surroundings (Just region)
-                |> Report.report "PROBLEM IN EXPOSING" region []
+                |> Report.report "PROBLEM IN EXPOSING" region
 
         ExposingValue row col ->
             case Code.whatIsNext source row col of
@@ -1926,7 +1912,7 @@ toExposingReport source exposing_ startRow startCol =
                     , D.reflow ("It looks like you are trying to expose `" ++ keyword ++ "` but that is a reserved word. Is there a typo?")
                     )
                         |> Code.toSnippet source surroundings (Just region)
-                        |> Report.report "RESERVED WORD" region []
+                        |> Report.report "RESERVED WORD" region
 
                 Code.Operator op ->
                     let
@@ -1955,7 +1941,7 @@ toExposingReport source exposing_ startRow startCol =
                         ]
                     )
                         |> Code.toSnippet source surroundings (Just region)
-                        |> Report.report "UNEXPECTED SYMBOL" region []
+                        |> Report.report "UNEXPECTED SYMBOL" region
 
                 _ ->
                     let
@@ -1991,7 +1977,7 @@ toExposingReport source exposing_ startRow startCol =
                         ]
                     )
                         |> Code.toSnippet source surroundings (Just region)
-                        |> Report.report "PROBLEM IN EXPOSING" region []
+                        |> Report.report "PROBLEM IN EXPOSING" region
 
         ExposingOperator row col ->
             let
@@ -2033,7 +2019,7 @@ toExposingReport source exposing_ startRow startCol =
                 ]
             )
                 |> Code.toSnippet source surroundings (Just region)
-                |> Report.report "PROBLEM IN EXPOSING" region []
+                |> Report.report "PROBLEM IN EXPOSING" region
 
         ExposingOperatorReserved op row col ->
             let
@@ -2081,7 +2067,7 @@ toExposingReport source exposing_ startRow startCol =
                         ]
             )
                 |> Code.toSnippet source surroundings (Just region)
-                |> Report.report "RESERVED SYMBOL" region []
+                |> Report.report "RESERVED SYMBOL" region
 
         ExposingOperatorRightParen row col ->
             let
@@ -2116,7 +2102,7 @@ toExposingReport source exposing_ startRow startCol =
                 ]
             )
                 |> Code.toSnippet source surroundings (Just region)
-                |> Report.report "PROBLEM IN EXPOSING" region []
+                |> Report.report "PROBLEM IN EXPOSING" region
 
         ExposingEnd row col ->
             let
@@ -2132,7 +2118,7 @@ toExposingReport source exposing_ startRow startCol =
             , D.reflow "Maybe there is a comma missing before this?"
             )
                 |> Code.toSnippet source surroundings (Just region)
-                |> Report.report "UNFINISHED EXPOSING" region []
+                |> Report.report "UNFINISHED EXPOSING" region
 
         ExposingTypePrivacy row col ->
             let
@@ -2180,7 +2166,7 @@ toExposingReport source exposing_ startRow startCol =
                 ]
             )
                 |> Code.toSnippet source surroundings (Just region)
-                |> Report.report "PROBLEM EXPOSING CUSTOM TYPE VARIANTS" region []
+                |> Report.report "PROBLEM EXPOSING CUSTOM TYPE VARIANTS" region
 
         ExposingIndentEnd row col ->
             let
@@ -2212,7 +2198,7 @@ toExposingReport source exposing_ startRow startCol =
                 ]
             )
                 |> Code.toSnippet source surroundings (Just region)
-                |> Report.report "UNFINISHED EXPOSING" region []
+                |> Report.report "UNFINISHED EXPOSING" region
 
         ExposingIndentValue row col ->
             let
@@ -2228,7 +2214,7 @@ toExposingReport source exposing_ startRow startCol =
             , D.reflow "I was expecting another value to expose."
             )
                 |> Code.toSnippet source surroundings (Just region)
-                |> Report.report "UNFINISHED EXPOSING" region []
+                |> Report.report "UNFINISHED EXPOSING" region
 
 
 
@@ -2255,7 +2241,7 @@ toSpaceReport source space row col =
             , D.reflow "Replace the tab with spaces."
             )
                 |> Code.toSnippet source region Nothing
-                |> Report.report "NO TABS" region []
+                |> Report.report "NO TABS" region
 
         EndlessMultiComment ->
             let
@@ -2263,7 +2249,7 @@ toSpaceReport source space row col =
                 region =
                     toWiderRegion row col 2
             in
-            Report.report "ENDLESS COMMENT" region [] <|
+            Report.report "ENDLESS COMMENT" region <|
                 Code.toSnippet source region Nothing <|
                     ( D.reflow "I cannot find the end of this multi-line comment:"
                     , D.stack
@@ -2346,7 +2332,7 @@ toDeclarationsReport source decl =
             , D.reflow "I was expecting to see the corresponding declaration next, starting on a fresh line with no indentation."
             )
                 |> Code.toSnippet source region Nothing
-                |> Report.report "EXPECTING DECLARATION" region []
+                |> Report.report "EXPECTING DECLARATION" region
 
 
 {-| Builds the report for a point at `row` and `col` where a declaration should
@@ -2371,7 +2357,7 @@ toDeclStartReport source row col =
             , D.reflow ("This " ++ String.fromChar bracket ++ " does not match up with an earlier open " ++ term ++ ". Try deleting it?")
             )
                 |> Code.toSnippet source region Nothing
-                |> Report.report ("STRAY " ++ String.toUpper term) region []
+                |> Report.report ("STRAY " ++ String.toUpper term) region
 
         Code.Keyword keyword ->
             let
@@ -2429,7 +2415,7 @@ toDeclStartReport source row col =
                     D.reflow "It is a reserved word. Try changing the name to something else?"
             )
                 |> Code.toSnippet source region Nothing
-                |> Report.report "RESERVED WORD" region []
+                |> Report.report "RESERVED WORD" region
 
         Code.Upper c cs ->
             let
@@ -2463,7 +2449,7 @@ toDeclStartReport source row col =
                 ]
             )
                 |> Code.toSnippet source region Nothing
-                |> Report.report "UNEXPECTED CAPITAL LETTER" region []
+                |> Report.report "UNEXPECTED CAPITAL LETTER" region
 
         Code.Other (Just char) ->
             let
@@ -2491,7 +2477,7 @@ toDeclStartReport source row col =
                     ]
                 )
                     |> Code.toSnippet source region Nothing
-                    |> Report.report "UNEXPECTED SYMBOL" region []
+                    |> Report.report "UNEXPECTED SYMBOL" region
 
             else
                 toDeclStartWeirdDeclarationReport source region
@@ -2524,7 +2510,7 @@ toDeclStartWeirdDeclarationReport source region =
         ]
     )
         |> Code.toSnippet source region Nothing
-        |> Report.report "WEIRD DECLARATION" region []
+        |> Report.report "WEIRD DECLARATION" region
 
 
 
@@ -2557,7 +2543,7 @@ toPortReport source port_ startRow startCol =
                     , D.reflow ("You are trying to make a port named `" ++ keyword ++ "` but that is a reserved word. Try using some other name?")
                     )
                         |> Code.toSnippet source surroundings (Just region)
-                        |> Report.report "RESERVED WORD" region []
+                        |> Report.report "RESERVED WORD" region
 
                 _ ->
                     let
@@ -2596,7 +2582,7 @@ toPortReport source port_ startRow startCol =
                         ]
                     )
                         |> Code.toSnippet source surroundings (Just region)
-                        |> Report.report "PORT PROBLEM" region []
+                        |> Report.report "PORT PROBLEM" region
 
         PortColon row col ->
             let
@@ -2615,7 +2601,7 @@ toPortReport source port_ startRow startCol =
                 ]
             )
                 |> Code.toSnippet source surroundings (Just region)
-                |> Report.report "PORT PROBLEM" region []
+                |> Report.report "PORT PROBLEM" region
 
         PortType tipe row col ->
             toTypeReport source TC_Port tipe row col
@@ -2657,7 +2643,7 @@ toPortReport source port_ startRow startCol =
                 ]
             )
                 |> Code.toSnippet source surroundings (Just region)
-                |> Report.report "UNFINISHED PORT" region []
+                |> Report.report "UNFINISHED PORT" region
 
         PortIndentColon row col ->
             let
@@ -2676,7 +2662,7 @@ toPortReport source port_ startRow startCol =
                 ]
             )
                 |> Code.toSnippet source surroundings (Just region)
-                |> Report.report "UNFINISHED PORT" region []
+                |> Report.report "UNFINISHED PORT" region
 
         PortIndentType row col ->
             let
@@ -2714,7 +2700,7 @@ toPortReport source port_ startRow startCol =
                 ]
             )
                 |> Code.toSnippet source surroundings (Just region)
-                |> Report.report "UNFINISHED PORT" region []
+                |> Report.report "UNFINISHED PORT" region
 
 
 {-| The note showing an outgoing and an incoming example port declaration, which
@@ -2803,7 +2789,7 @@ toDeclTypeReport source declType startRow startCol =
                 ]
             )
                 |> Code.toSnippet source surroundings (Just region)
-                |> Report.report "EXPECTING TYPE NAME" region []
+                |> Report.report "EXPECTING TYPE NAME" region
 
         DT_Alias typeAlias row col ->
             toTypeAliasReport source typeAlias row col
@@ -2852,7 +2838,7 @@ toDeclTypeReport source declType startRow startCol =
                 ]
             )
                 |> Code.toSnippet source surroundings (Just region)
-                |> Report.report "EXPECTING TYPE NAME" region []
+                |> Report.report "EXPECTING TYPE NAME" region
 
 
 {-| Builds the report for an error in a type alias whose parse began at
@@ -2906,7 +2892,7 @@ toTypeAliasReport source typeAlias startRow startCol =
                 ]
             )
                 |> Code.toSnippet source surroundings (Just region)
-                |> Report.report "EXPECTING TYPE ALIAS NAME" region []
+                |> Report.report "EXPECTING TYPE ALIAS NAME" region
 
         AliasEquals row col ->
             case Code.whatIsNext source row col of
@@ -2931,7 +2917,7 @@ toTypeAliasReport source typeAlias startRow startCol =
                         ]
                     )
                         |> Code.toSnippet source surroundings (Just region)
-                        |> Report.report "RESERVED WORD" region []
+                        |> Report.report "RESERVED WORD" region
 
                 _ ->
                     let
@@ -2950,7 +2936,7 @@ toTypeAliasReport source typeAlias startRow startCol =
                         ]
                     )
                         |> Code.toSnippet source surroundings (Just region)
-                        |> Report.report "PROBLEM IN TYPE ALIAS" region []
+                        |> Report.report "PROBLEM IN TYPE ALIAS" region
 
         AliasBody tipe row col ->
             toTypeReport source TC_TypeAlias tipe row col
@@ -2972,7 +2958,7 @@ toTypeAliasReport source typeAlias startRow startCol =
                 ]
             )
                 |> Code.toSnippet source surroundings (Just region)
-                |> Report.report "UNFINISHED TYPE ALIAS" region []
+                |> Report.report "UNFINISHED TYPE ALIAS" region
 
         AliasIndentBody row col ->
             let
@@ -3009,7 +2995,7 @@ toTypeAliasReport source typeAlias startRow startCol =
                 ]
             )
                 |> Code.toSnippet source surroundings (Just region)
-                |> Report.report "UNFINISHED TYPE ALIAS" region []
+                |> Report.report "UNFINISHED TYPE ALIAS" region
 
 
 {-| The note showing an example `type alias` of a record, which ends each report
@@ -3092,7 +3078,7 @@ toCustomTypeReport source customType startRow startCol =
                 ]
             )
                 |> Code.toSnippet source surroundings (Just region)
-                |> Report.report "EXPECTING TYPE NAME" region []
+                |> Report.report "EXPECTING TYPE NAME" region
 
         CT_Equals row col ->
             case Code.whatIsNext source row col of
@@ -3116,7 +3102,7 @@ toCustomTypeReport source customType startRow startCol =
                         ]
                     )
                         |> Code.toSnippet source surroundings (Just region)
-                        |> Report.report "RESERVED WORD" region []
+                        |> Report.report "RESERVED WORD" region
 
                 _ ->
                     let
@@ -3135,7 +3121,7 @@ toCustomTypeReport source customType startRow startCol =
                         ]
                     )
                         |> Code.toSnippet source surroundings (Just region)
-                        |> Report.report "PROBLEM IN CUSTOM TYPE" region []
+                        |> Report.report "PROBLEM IN CUSTOM TYPE" region
 
         CT_Bar row col ->
             let
@@ -3154,7 +3140,7 @@ toCustomTypeReport source customType startRow startCol =
                 ]
             )
                 |> Code.toSnippet source surroundings (Just region)
-                |> Report.report "PROBLEM IN CUSTOM TYPE" region []
+                |> Report.report "PROBLEM IN CUSTOM TYPE" region
 
         CT_Variant row col ->
             let
@@ -3198,7 +3184,7 @@ toCustomTypeReport source customType startRow startCol =
                 ]
             )
                 |> Code.toSnippet source surroundings (Just region)
-                |> Report.report "PROBLEM IN CUSTOM TYPE" region []
+                |> Report.report "PROBLEM IN CUSTOM TYPE" region
 
         CT_VariantArg tipe row col ->
             toTypeReport source TC_CustomType tipe row col
@@ -3220,7 +3206,7 @@ toCustomTypeReport source customType startRow startCol =
                 ]
             )
                 |> Code.toSnippet source surroundings (Just region)
-                |> Report.report "UNFINISHED CUSTOM TYPE" region []
+                |> Report.report "UNFINISHED CUSTOM TYPE" region
 
         CT_IndentBar row col ->
             let
@@ -3239,7 +3225,7 @@ toCustomTypeReport source customType startRow startCol =
                 ]
             )
                 |> Code.toSnippet source surroundings (Just region)
-                |> Report.report "UNFINISHED CUSTOM TYPE" region []
+                |> Report.report "UNFINISHED CUSTOM TYPE" region
 
         CT_IndentAfterBar row col ->
             let
@@ -3258,7 +3244,7 @@ toCustomTypeReport source customType startRow startCol =
                 ]
             )
                 |> Code.toSnippet source surroundings (Just region)
-                |> Report.report "UNFINISHED CUSTOM TYPE" region []
+                |> Report.report "UNFINISHED CUSTOM TYPE" region
 
         CT_IndentAfterEquals row col ->
             let
@@ -3277,7 +3263,7 @@ toCustomTypeReport source customType startRow startCol =
                 ]
             )
                 |> Code.toSnippet source surroundings (Just region)
-                |> Report.report "UNFINISHED CUSTOM TYPE" region []
+                |> Report.report "UNFINISHED CUSTOM TYPE" region
 
 
 {-| The note showing an example custom type with three variants, which ends each
@@ -3390,7 +3376,7 @@ toDeclDefReport source name declDef startRow startCol =
                         ]
                     )
                         |> Code.toSnippet source surroundings (Just region)
-                        |> Report.report "RESERVED WORD" region []
+                        |> Report.report "RESERVED WORD" region
 
                 Code.Operator "->" ->
                     let
@@ -3450,7 +3436,7 @@ toDeclDefReport source name declDef startRow startCol =
                         ]
                     )
                         |> Code.toSnippet source surroundings (Just region)
-                        |> Report.report "MISSING COLON?" region []
+                        |> Report.report "MISSING COLON?" region
 
                 Code.Operator op ->
                     let
@@ -3481,7 +3467,7 @@ toDeclDefReport source name declDef startRow startCol =
                         ]
                     )
                         |> Code.toSnippet source surroundings (Just region)
-                        |> Report.report "UNEXPECTED SYMBOL" region []
+                        |> Report.report "UNEXPECTED SYMBOL" region
 
                 _ ->
                     let
@@ -3512,7 +3498,7 @@ toDeclDefReport source name declDef startRow startCol =
                         ]
                     )
                         |> Code.toSnippet source surroundings (Just region)
-                        |> Report.report "PROBLEM IN DEFINITION" region []
+                        |> Report.report "PROBLEM IN DEFINITION" region
 
         DeclDefType tipe row col ->
             toTypeReport source (TC_Annotation name) tipe row col
@@ -3543,7 +3529,7 @@ toDeclDefReport source name declDef startRow startCol =
                 ]
             )
                 |> Code.toSnippet source surroundings (Just region)
-                |> Report.report "EXPECTING DEFINITION" region []
+                |> Report.report "EXPECTING DEFINITION" region
 
         DeclDefNameMatch defName row col ->
             let
@@ -3572,7 +3558,7 @@ toDeclDefReport source name declDef startRow startCol =
                 ]
             )
                 |> Code.toSnippet source surroundings (Just region)
-                |> Report.report "NAME MISMATCH" region []
+                |> Report.report "NAME MISMATCH" region
 
         DeclDefIndentType row col ->
             let
@@ -3594,7 +3580,7 @@ toDeclDefReport source name declDef startRow startCol =
                 ]
             )
                 |> Code.toSnippet source surroundings (Just region)
-                |> Report.report "UNFINISHED DEFINITION" region []
+                |> Report.report "UNFINISHED DEFINITION" region
 
         DeclDefIndentEquals row col ->
             let
@@ -3616,7 +3602,7 @@ toDeclDefReport source name declDef startRow startCol =
                 ]
             )
                 |> Code.toSnippet source surroundings (Just region)
-                |> Report.report "UNFINISHED DEFINITION" region []
+                |> Report.report "UNFINISHED DEFINITION" region
 
         DeclDefIndentBody row col ->
             let
@@ -3638,7 +3624,7 @@ toDeclDefReport source name declDef startRow startCol =
                 ]
             )
                 |> Code.toSnippet source surroundings (Just region)
-                |> Report.report "UNFINISHED DEFINITION" region []
+                |> Report.report "UNFINISHED DEFINITION" region
 
 
 {-| The note showing a valid definition with a type annotation and explaining
@@ -3806,7 +3792,7 @@ toExprReport source context expr startRow startCol =
                 ]
             )
                 |> Code.toSnippet source region Nothing
-                |> Report.report "EXPECTING RECORD ACCESSOR" region []
+                |> Report.report "EXPECTING RECORD ACCESSOR" region
 
         Access row col ->
             let
@@ -3834,7 +3820,7 @@ toExprReport source context expr startRow startCol =
                 ]
             )
                 |> Code.toSnippet source region Nothing
-                |> Report.report "EXPECTING RECORD ACCESSOR" region []
+                |> Report.report "EXPECTING RECORD ACCESSOR" region
 
         OperatorRight op row col ->
             let
@@ -3918,7 +3904,7 @@ toExprReport source context expr startRow startCol =
                 D.reflow "I was expecting to see an expression next."
             )
                 |> Code.toSnippet source surroundings (Just region)
-                |> Report.report "MISSING EXPRESSION" region []
+                |> Report.report "MISSING EXPRESSION" region
 
         OperatorReserved operator row col ->
             toOperatorReport source context operator row col
@@ -4003,7 +3989,7 @@ toExprReport source context expr startRow startCol =
                 ]
             )
                 |> Code.toSnippet source surroundings (Just region)
-                |> Report.report "MISSING EXPRESSION" region []
+                |> Report.report "MISSING EXPRESSION" region
 
         Char char row col ->
             toCharReport source char row col
@@ -4027,7 +4013,7 @@ toExprReport source context expr startRow startCol =
             , D.reflow "Add a |] somewhere after this to end the shader."
             )
                 |> Code.toSnippet source region Nothing
-                |> Report.report "ENDLESS SHADER" region []
+                |> Report.report "ENDLESS SHADER" region
 
         ShaderProblem problem row col ->
             let
@@ -4042,7 +4028,7 @@ toExprReport source context expr startRow startCol =
                 ]
             )
                 |> Code.toSnippet source region Nothing
-                |> Report.report "SHADER PROBLEM" region []
+                |> Report.report "SHADER PROBLEM" region
 
         IndentOperatorRight op row col ->
             let
@@ -4091,7 +4077,7 @@ toExprReport source context expr startRow startCol =
                 ]
             )
                 |> Code.toSnippet source surroundings (Just region)
-                |> Report.report "MISSING EXPRESSION" region []
+                |> Report.report "MISSING EXPRESSION" region
 
 
 
@@ -4114,7 +4100,7 @@ toCharReport source char row col =
             , D.reflow "Add a closing single quote here!"
             )
                 |> Code.toSnippet source region Nothing
-                |> Report.report "MISSING SINGLE QUOTE" region []
+                |> Report.report "MISSING SINGLE QUOTE" region
 
         CharEscape escape ->
             toEscapeReport source escape row col
@@ -4139,7 +4125,7 @@ toCharReport source char row col =
                 ]
             )
                 |> Code.toSnippet source region Nothing
-                |> Report.report "NEEDS DOUBLE QUOTES" region []
+                |> Report.report "NEEDS DOUBLE QUOTES" region
 
 
 
@@ -4199,7 +4185,7 @@ toStringReport source string row col =
                 ]
             )
                 |> Code.toSnippet source region Nothing
-                |> Report.report "ENDLESS STRING" region []
+                |> Report.report "ENDLESS STRING" region
 
         StringEndless_Multi ->
             let
@@ -4227,7 +4213,7 @@ toStringReport source string row col =
                 ]
             )
                 |> Code.toSnippet source region Nothing
-                |> Report.report "ENDLESS STRING" region []
+                |> Report.report "ENDLESS STRING" region
 
         StringEscape escape ->
             toEscapeReport source escape row col
@@ -4275,7 +4261,7 @@ toEscapeReport source escape row col =
                 ]
             )
                 |> Code.toSnippet source region Nothing
-                |> Report.report "UNKNOWN ESCAPE" region []
+                |> Report.report "UNKNOWN ESCAPE" region
 
         BadUnicodeFormat width ->
             let
@@ -4298,7 +4284,7 @@ toEscapeReport source escape row col =
                 ]
             )
                 |> Code.toSnippet source region Nothing
-                |> Report.report "BAD UNICODE ESCAPE" region []
+                |> Report.report "BAD UNICODE ESCAPE" region
 
         BadUnicodeCode width ->
             let
@@ -4310,7 +4296,7 @@ toEscapeReport source escape row col =
             , D.reflow "The valid code points are between 0 and 10FFFF inclusive."
             )
                 |> Code.toSnippet source region Nothing
-                |> Report.report "BAD UNICODE ESCAPE" region []
+                |> Report.report "BAD UNICODE ESCAPE" region
 
         BadUnicodeLength width numDigits badCode ->
             let
@@ -4366,7 +4352,7 @@ toEscapeReport source escape row col =
                 )
             )
                 |> Code.toSnippet source region Nothing
-                |> Report.report "BAD UNICODE ESCAPE" region []
+                |> Report.report "BAD UNICODE ESCAPE" region
 
 
 
@@ -4400,7 +4386,7 @@ toNumberReport source number row col =
                 ]
             )
                 |> Code.toSnippet source region Nothing
-                |> Report.report "WEIRD NUMBER" region []
+                |> Report.report "WEIRD NUMBER" region
 
         NumberDot int ->
             ( D.reflow "Numbers cannot end with a dot like this:"
@@ -4416,7 +4402,7 @@ toNumberReport source number row col =
                 ]
             )
                 |> Code.toSnippet source region Nothing
-                |> Report.report "WEIRD NUMBER" region []
+                |> Report.report "WEIRD NUMBER" region
 
         NumberHexDigit ->
             ( D.reflow "I thought I was reading a hexidecimal number until I got here:"
@@ -4431,22 +4417,7 @@ toNumberReport source number row col =
                 ]
             )
                 |> Code.toSnippet source region Nothing
-                |> Report.report "WEIRD HEXIDECIMAL" region []
-
-        NumberBinDigit ->
-            ( D.reflow "I thought I was reading a binary literal until I got here:"
-            , D.stack
-                [ D.reflow "Valid binary digits include 0 and 1, so I can only recognize things like this:"
-                , D.indent 4 <|
-                    D.vcat
-                        [ D.fromChars "0b10"
-                        , D.fromChars "0b0010"
-                        , D.fromChars "0b0101_0110_0011_1000"
-                        ]
-                ]
-            )
-                |> Code.toSnippet source region Nothing
-                |> Report.report "WEIRD BINARY LITERAL" region []
+                |> Report.report "WEIRD HEXIDECIMAL" region
 
         NumberNoLeadingZero ->
             ( D.reflow "I do not accept numbers with leading zeros:"
@@ -4459,74 +4430,14 @@ toNumberReport source number row col =
                 ]
             )
                 |> Code.toSnippet source region Nothing
-                |> Report.report "LEADING ZEROS" region []
-
-        NumberNoLeadingOrTrailingUnderscores ->
-            ( D.reflow "I do not accept numbers with leading or trailing underscores:"
-            , D.stack
-                [ D.reflow "Just delete the leading or trailing underscore and it should work!"
-                , D.toSimpleNote <|
-                    "Numbers should not have leading or trailing underscores, as this can make them ambiguous and harder to read or parse correctly. "
-                        ++ "To maintain clarity and follow syntax rules, underscores should only appear between digits."
-                ]
-            )
-                |> Code.toSnippet source region Nothing
-                |> Report.report "LEADING OR TRAILING UNDERSCORE" region []
-
-        NumberNoConsecutiveUnderscores ->
-            ( D.reflow "I do not accept numbers with consecutive underscores:"
-            , D.stack
-                [ D.reflow "Just delete the consecutive underscore and it should work!"
-                , D.toSimpleNote <|
-                    "Numbers should not contain consecutive underscores, as this can lead to confusion and misinterpretation of the value. "
-                        ++ "Use single underscores only between digits to improve readability without breaking the format."
-                ]
-            )
-                |> Code.toSnippet source region Nothing
-                |> Report.report "CONSICUTIVE UNDERSCORES" region []
-
-        NumberNoUnderscoresAdjacentToDecimalOrExponent ->
-            ( D.reflow "I do not accept numbers with underscores directly next to a decimal point, e, or the +/- signs:"
-            , D.stack
-                [ D.reflow "Just delete the underscores directly next to a decimal point, e, or the +/- signs and it should work!"
-                , D.toSimpleNote <|
-                    "Underscores must not appear directly next to a decimal point, e, or the +/- signs in scientific notation, "
-                        ++ "as this disrupts the structure of the number. Keep underscores between digits only to ensure the number remains valid and clearly formatted."
-                ]
-            )
-                |> Code.toSnippet source region Nothing
-                |> Report.report "UNDERSCORE ADJACENT TO DECIMAL POINT, E, OR +/-" region []
-
-        NumberNoUnderscoresAdjacentToHexadecimalPreFix ->
-            ( D.reflow "I do not accept numbers with underscores directly next to the hexadecimal prefix 0x:"
-            , D.stack
-                [ D.reflow "Just delete the underscores directly next to the hexadecimal prefix 0x and it should work!"
-                , D.toSimpleNote <|
-                    "Underscores must not appear directly next to the hexadecimal prefix 0x, as this breaks the structure of the number and causes a syntax error. "
-                        ++ "Always place underscores only between valid hexadecimal digits for proper formatting and readability."
-                ]
-            )
-                |> Code.toSnippet source region Nothing
-                |> Report.report "UNDERSCORE ADJACENT TO HEXADECIMAL PREFIX 0X" region []
-
-        NumberNoUnderscoresAdjacentToBinaryPreFix ->
-            ( D.reflow "I do not accept numbers with underscores directly next to the binary prefix 0b:"
-            , D.stack
-                [ D.reflow "Just delete the underscores directly next to the binary prefix 0b and it should work!"
-                , D.toSimpleNote <|
-                    "Underscores must not appear directly next to the binary prefix 0b, as this breaks the structure of the number and causes a syntax error. "
-                        ++ "Always place underscores only between valid binary digits for proper formatting and readability."
-                ]
-            )
-                |> Code.toSnippet source region Nothing
-                |> Report.report "UNDERSCORE ADJACENT TO BINARY PREFIX 0B" region []
+                |> Report.report "LEADING ZEROS" region
 
         NumberInexactOnHost ->
             ( D.reflow "This integer is too precise for the JavaScript-hosted compiler:"
             , D.reflow "Its 64-bit value needs more than 53 significant bits, which a JavaScript number cannot hold exactly. Compile this module with the native eco compiler, or write the value another way (for example with Bitwise)."
             )
                 |> Code.toSnippet source region Nothing
-                |> Report.report "INEXACT INTEGER" region []
+                |> Report.report "INEXACT INTEGER" region
 
 
 
@@ -4557,7 +4468,7 @@ toOperatorReport source context operator row col =
             , D.reflow "Dots are for record access and decimal points, so they cannot float around on their own. Maybe there is some extra whitespace?"
             )
                 |> Code.toSnippet source region Nothing
-                |> Report.report "UNEXPECTED SYMBOL" region []
+                |> Report.report "UNEXPECTED SYMBOL" region
 
         BadPipe ->
             let
@@ -4569,7 +4480,7 @@ toOperatorReport source context operator row col =
             , D.reflow "Vertical bars should only appear in custom type declarations. Maybe you want || instead?"
             )
                 |> Code.toSnippet source region Nothing
-                |> Report.report "UNEXPECTED SYMBOL" region []
+                |> Report.report "UNEXPECTED SYMBOL" region
 
         BadArrow ->
             let
@@ -4606,7 +4517,7 @@ toOperatorReport source context operator row col =
                 )
             )
                 |> Code.toSnippet source region Nothing
-                |> Report.report "UNEXPECTED ARROW" region []
+                |> Report.report "UNEXPECTED ARROW" region
 
         BadEquals ->
             let
@@ -4636,7 +4547,7 @@ toOperatorReport source context operator row col =
                 ]
             )
                 |> Code.toSnippet source region Nothing
-                |> Report.report "UNEXPECTED EQUALS" region []
+                |> Report.report "UNEXPECTED EQUALS" region
 
         BadHasType ->
             let
@@ -4696,7 +4607,7 @@ toOperatorReport source context operator row col =
                         ]
             )
                 |> Code.toSnippet source region Nothing
-                |> Report.report "UNEXPECTED SYMBOL" region []
+                |> Report.report "UNEXPECTED SYMBOL" region
 
 
 
@@ -4756,7 +4667,7 @@ toLetReport source context let_ startRow startCol =
                 ]
             )
                 |> Code.toSnippet source surroundings (Just region)
-                |> Report.report "LET PROBLEM" region []
+                |> Report.report "LET PROBLEM" region
 
         LetDefAlignment _ row col ->
             let
@@ -4796,7 +4707,7 @@ toLetReport source context let_ startRow startCol =
                 ]
             )
                 |> Code.toSnippet source surroundings (Just region)
-                |> Report.report "LET PROBLEM" region []
+                |> Report.report "LET PROBLEM" region
 
         LetDefName row col ->
             case Code.whatIsNext source row col of
@@ -4818,7 +4729,7 @@ toLetReport source context let_ startRow startCol =
                             ++ "` as a variable name, but it is a reserved word! Try using a different name instead."
                     )
                         |> Code.toSnippet source surroundings (Just region)
-                        |> Report.report "RESERVED WORD" region []
+                        |> Report.report "RESERVED WORD" region
 
                 _ ->
                     toUnfinishLetReport source row col startRow startCol <|
@@ -4921,7 +4832,7 @@ toUnfinishLetReport source row col startRow startCol message =
         ]
     )
         |> Code.toSnippet source surroundings (Just region)
-        |> Report.report "UNFINISHED LET" region []
+        |> Report.report "UNFINISHED LET" region
 
 
 {-| Builds the report for an error in the definition of `name` inside a `let`
@@ -4959,7 +4870,7 @@ toLetDefReport source name def startRow startCol =
                 ]
             )
                 |> Code.toSnippet source surroundings (Just region)
-                |> Report.report "EXPECTING DEFINITION" region []
+                |> Report.report "EXPECTING DEFINITION" region
 
         DefNameMatch defName row col ->
             let
@@ -4983,7 +4894,7 @@ toLetDefReport source name def startRow startCol =
                 ]
             )
                 |> Code.toSnippet source surroundings (Just region)
-                |> Report.report "NAME MISMATCH" region []
+                |> Report.report "NAME MISMATCH" region
 
         DefArg pattern row col ->
             toPatternReport source PArg pattern row col
@@ -5058,7 +4969,7 @@ toLetDefReport source name def startRow startCol =
                         ]
                     )
                         |> Code.toSnippet source surroundings (Just region)
-                        |> Report.report "RESERVED WORD" region []
+                        |> Report.report "RESERVED WORD" region
 
                 Code.Operator "->" ->
                     let
@@ -5115,7 +5026,7 @@ toLetDefReport source name def startRow startCol =
                         ]
                     )
                         |> Code.toSnippet source surroundings (Just region)
-                        |> Report.report "MISSING COLON?" region []
+                        |> Report.report "MISSING COLON?" region
 
                 Code.Operator op ->
                     let
@@ -5143,7 +5054,7 @@ toLetDefReport source name def startRow startCol =
                         ]
                     )
                         |> Code.toSnippet source surroundings (Just region)
-                        |> Report.report "UNEXPECTED SYMBOL" region []
+                        |> Report.report "UNEXPECTED SYMBOL" region
 
                 _ ->
                     let
@@ -5171,7 +5082,7 @@ toLetDefReport source name def startRow startCol =
                         ]
                     )
                         |> Code.toSnippet source surroundings (Just region)
-                        |> Report.report "PROBLEM IN DEFINITION" region []
+                        |> Report.report "PROBLEM IN DEFINITION" region
 
         DefBody expr row col ->
             toExprReport source (InDef name startRow startCol) expr row col
@@ -5193,7 +5104,7 @@ toLetDefReport source name def startRow startCol =
                 ]
             )
                 |> Code.toSnippet source surroundings (Just region)
-                |> Report.report "UNFINISHED DEFINITION" region []
+                |> Report.report "UNFINISHED DEFINITION" region
 
         DefIndentType row col ->
             let
@@ -5212,7 +5123,7 @@ toLetDefReport source name def startRow startCol =
                 ]
             )
                 |> Code.toSnippet source surroundings (Just region)
-                |> Report.report "UNFINISHED DEFINITION" region []
+                |> Report.report "UNFINISHED DEFINITION" region
 
         DefIndentBody row col ->
             let
@@ -5231,7 +5142,7 @@ toLetDefReport source name def startRow startCol =
                 ]
             )
                 |> Code.toSnippet source surroundings (Just region)
-                |> Report.report "UNFINISHED DEFINITION" region []
+                |> Report.report "UNFINISHED DEFINITION" region
 
         DefAlignment indent row col ->
             let
@@ -5264,7 +5175,7 @@ toLetDefReport source name def startRow startCol =
                 )
             )
                 |> Code.toSnippet source surroundings (Just region)
-                |> Report.report "PROBLEM IN DEFINITION" region []
+                |> Report.report "PROBLEM IN DEFINITION" region
 
 
 {-| The note showing a valid definition with a type annotation and explaining
@@ -5329,7 +5240,7 @@ toLetDestructReport source destruct startRow startCol =
                     D.reflow "I was expecting to see an equals sign next, followed by an expression telling me what to compute."
             )
                 |> Code.toSnippet source surroundings (Just region)
-                |> Report.report "PROBLEM IN DEFINITION" region []
+                |> Report.report "PROBLEM IN DEFINITION" region
 
         DestructBody expr row col ->
             toExprReport source (InDestruct startRow startCol) expr row col
@@ -5348,7 +5259,7 @@ toLetDestructReport source destruct startRow startCol =
             , D.reflow "I was expecting to see an equals sign next, followed by an expression telling me what to compute."
             )
                 |> Code.toSnippet source surroundings (Just region)
-                |> Report.report "UNFINISHED DEFINITION" region []
+                |> Report.report "UNFINISHED DEFINITION" region
 
         DestructIndentBody row col ->
             let
@@ -5364,7 +5275,7 @@ toLetDestructReport source destruct startRow startCol =
             , D.reflow "I was expecting to see an expression next. What is it equal to?"
             )
                 |> Code.toSnippet source surroundings (Just region)
-                |> Report.report "UNFINISHED DEFINITION" region []
+                |> Report.report "UNFINISHED DEFINITION" region
 
 
 
@@ -5420,7 +5331,7 @@ toCaseReport source context case_ startRow startCol =
                         region =
                             toKeywordRegion row col keyword
                     in
-                    Report.report "RESERVED WORD" region [] <|
+                    Report.report "RESERVED WORD" region <|
                         (Code.toSnippet source surroundings (Just region) <|
                             ( D.reflow "I am partway through parsing a `case` expression, but I got stuck here:"
                             , D.reflow ("It looks like you are trying to use `" ++ keyword ++ "` in one of your patterns, but it is a reserved word. Try using a different name?")
@@ -5437,7 +5348,7 @@ toCaseReport source context case_ startRow startCol =
                         region =
                             toRegion row col
                     in
-                    Report.report "UNEXPECTED OPERATOR" region [] <|
+                    Report.report "UNEXPECTED OPERATOR" region <|
                         (Code.toSnippet source surroundings (Just region) <|
                             ( D.reflow "I am partway through parsing a `case` expression, but I got stuck here:"
                             , D.fillSep
@@ -5470,7 +5381,7 @@ toCaseReport source context case_ startRow startCol =
                         region =
                             toRegion row col
                     in
-                    Report.report "UNEXPECTED OPERATOR" region [] <|
+                    Report.report "UNEXPECTED OPERATOR" region <|
                         (Code.toSnippet source surroundings (Just region) <|
                             ( D.reflow "I am partway through parsing a `case` expression, but I got stuck here:"
                             , D.fillSep
@@ -5498,7 +5409,7 @@ toCaseReport source context case_ startRow startCol =
                         region =
                             toRegion row col
                     in
-                    Report.report "MISSING ARROW" region [] <|
+                    Report.report "MISSING ARROW" region <|
                         (Code.toSnippet source surroundings (Just region) <|
                             ( D.reflow "I am partway through parsing a `case` expression, but I got stuck here:"
                             , D.stack
@@ -5612,7 +5523,7 @@ toUnfinishCaseReport source row col startRow startCol message =
         ]
     )
         |> Code.toSnippet source surroundings (Just region)
-        |> Report.report "UNFINISHED CASE" region []
+        |> Report.report "UNFINISHED CASE" region
 
 
 {-| The note showing a valid `case` expression and pointing out how its patterns
@@ -5697,7 +5608,7 @@ toIfReport source context if_ startRow startCol =
                 ]
             )
                 |> Code.toSnippet source surroundings (Just region)
-                |> Report.report "UNFINISHED IF" region []
+                |> Report.report "UNFINISHED IF" region
 
         IfElse row col ->
             let
@@ -5723,7 +5634,7 @@ toIfReport source context if_ startRow startCol =
                 ]
             )
                 |> Code.toSnippet source surroundings (Just region)
-                |> Report.report "UNFINISHED IF" region []
+                |> Report.report "UNFINISHED IF" region
 
         IfElseBranchStart row col ->
             let
@@ -5739,7 +5650,7 @@ toIfReport source context if_ startRow startCol =
             , D.reflow "I was expecting to see an expression next. Maybe it is not filled in yet?"
             )
                 |> Code.toSnippet source surroundings (Just region)
-                |> Report.report "UNFINISHED IF" region []
+                |> Report.report "UNFINISHED IF" region
 
         IfCondition expr row col ->
             toExprReport source (InNode NCond startRow startCol context) expr row col
@@ -5783,7 +5694,7 @@ toIfReport source context if_ startRow startCol =
                 ]
             )
                 |> Code.toSnippet source surroundings (Just region)
-                |> Report.report "UNFINISHED IF" region []
+                |> Report.report "UNFINISHED IF" region
 
         IfIndentThen row col ->
             let
@@ -5812,7 +5723,7 @@ toIfReport source context if_ startRow startCol =
                 ]
             )
                 |> Code.toSnippet source surroundings (Just region)
-                |> Report.report "UNFINISHED IF" region []
+                |> Report.report "UNFINISHED IF" region
 
         IfIndentThenBranch row col ->
             let
@@ -5831,7 +5742,7 @@ toIfReport source context if_ startRow startCol =
                 ]
             )
                 |> Code.toSnippet source surroundings (Just region)
-                |> Report.report "UNFINISHED IF" region []
+                |> Report.report "UNFINISHED IF" region
 
         IfIndentElseBranch row col ->
             let
@@ -5850,7 +5761,7 @@ toIfReport source context if_ startRow startCol =
                 ]
             )
                 |> Code.toSnippet source surroundings (Just region)
-                |> Report.report "UNFINISHED IF" region []
+                |> Report.report "UNFINISHED IF" region
 
         IfIndentElse row col ->
             case Code.nextLineStartsWithKeyword "else" source row of
@@ -5885,7 +5796,7 @@ toIfReport source context if_ startRow startCol =
                         ]
                     )
                         |> Code.toSnippet source surroundings (Just region)
-                        |> Report.report "WEIRD ELSE BRANCH" region []
+                        |> Report.report "WEIRD ELSE BRANCH" region
 
                 Nothing ->
                     let
@@ -5929,7 +5840,7 @@ toIfReport source context if_ startRow startCol =
                         ]
                     )
                         |> Code.toSnippet source surroundings (Just region)
-                        |> Report.report "UNFINISHED IF" region []
+                        |> Report.report "UNFINISHED IF" region
 
 
 
@@ -5966,7 +5877,7 @@ toRecordReport source context record startRow startCol =
                     , ("It looks like you are trying to use `" ++ keyword ++ "` as a field name, but that is a reserved word. Try using a different name!") |> D.reflow
                     )
                         |> Code.toSnippet source surroundings (Just region)
-                        |> Report.report "RESERVED WORD" region []
+                        |> Report.report "RESERVED WORD" region
 
                 _ ->
                     let
@@ -6009,7 +5920,7 @@ toRecordReport source context record startRow startCol =
                         ]
                     )
                         |> Code.toSnippet source surroundings (Just region)
-                        |> Report.report "PROBLEM IN RECORD" region []
+                        |> Report.report "PROBLEM IN RECORD" region
 
         RecordEnd row col ->
             let
@@ -6050,7 +5961,7 @@ toRecordReport source context record startRow startCol =
                 ]
             )
                 |> Code.toSnippet source surroundings (Just region)
-                |> Report.report "PROBLEM IN RECORD" region []
+                |> Report.report "PROBLEM IN RECORD" region
 
         RecordField row col ->
             case Code.whatIsNext source row col of
@@ -6068,7 +5979,7 @@ toRecordReport source context record startRow startCol =
                     , ("It looks like you are trying to use `" ++ keyword ++ "` as a field name, but that is a reserved word. Try using a different name!") |> D.reflow
                     )
                         |> Code.toSnippet source surroundings (Just region)
-                        |> Report.report "RESERVED WORD" region []
+                        |> Report.report "RESERVED WORD" region
 
                 Code.Other (Just ',') ->
                     let
@@ -6088,7 +5999,7 @@ toRecordReport source context record startRow startCol =
                         ]
                     )
                         |> Code.toSnippet source surroundings (Just region)
-                        |> Report.report "EXTRA COMMA" region []
+                        |> Report.report "EXTRA COMMA" region
 
                 Code.Close _ '}' ->
                     let
@@ -6107,7 +6018,7 @@ toRecordReport source context record startRow startCol =
                         ]
                     )
                         |> Code.toSnippet source surroundings (Just region)
-                        |> Report.report "EXTRA COMMA" region []
+                        |> Report.report "EXTRA COMMA" region
 
                 _ ->
                     let
@@ -6150,7 +6061,7 @@ toRecordReport source context record startRow startCol =
                         ]
                     )
                         |> Code.toSnippet source surroundings (Just region)
-                        |> Report.report "PROBLEM IN RECORD" region []
+                        |> Report.report "PROBLEM IN RECORD" region
 
         RecordEquals row col ->
             let
@@ -6193,7 +6104,7 @@ toRecordReport source context record startRow startCol =
                 ]
             )
                 |> Code.toSnippet source surroundings (Just region)
-                |> Report.report "PROBLEM IN RECORD" region []
+                |> Report.report "PROBLEM IN RECORD" region
 
         RecordExpr expr row col ->
             toExprReport source (InNode NRecord startRow startCol context) expr row col
@@ -6234,7 +6145,7 @@ toRecordReport source context record startRow startCol =
                 ]
             )
                 |> Code.toSnippet source surroundings (Just region)
-                |> Report.report "UNFINISHED RECORD" region []
+                |> Report.report "UNFINISHED RECORD" region
 
         RecordIndentEnd row col ->
             case Code.nextLineStartsWithCloseCurly source row of
@@ -6255,7 +6166,7 @@ toRecordReport source context record startRow startCol =
                         ]
                     )
                         |> Code.toSnippet source surroundings (Just region)
-                        |> Report.report "NEED MORE INDENTATION" region []
+                        |> Report.report "NEED MORE INDENTATION" region
 
                 Nothing ->
                     let
@@ -6295,7 +6206,7 @@ toRecordReport source context record startRow startCol =
                         ]
                     )
                         |> Code.toSnippet source surroundings (Just region)
-                        |> Report.report "UNFINISHED RECORD" region []
+                        |> Report.report "UNFINISHED RECORD" region
 
         RecordIndentField row col ->
             let
@@ -6314,7 +6225,7 @@ toRecordReport source context record startRow startCol =
                 ]
             )
                 |> Code.toSnippet source surroundings (Just region)
-                |> Report.report "UNFINISHED RECORD" region []
+                |> Report.report "UNFINISHED RECORD" region
 
         RecordIndentEquals row col ->
             let
@@ -6342,7 +6253,7 @@ toRecordReport source context record startRow startCol =
                 ]
             )
                 |> Code.toSnippet source surroundings (Just region)
-                |> Report.report "UNFINISHED RECORD" region []
+                |> Report.report "UNFINISHED RECORD" region
 
         RecordIndentExpr row col ->
             let
@@ -6371,7 +6282,7 @@ toRecordReport source context record startRow startCol =
                 ]
             )
                 |> Code.toSnippet source surroundings (Just region)
-                |> Report.report "UNFINISHED RECORD" region []
+                |> Report.report "UNFINISHED RECORD" region
 
 
 {-| The note showing the recommended layout of a record written across several
@@ -6456,7 +6367,7 @@ toTupleReport source context tuple startRow startCol =
                 ]
             )
                 |> Code.toSnippet source surroundings (Just region)
-                |> Report.report "UNFINISHED PARENTHESES" region []
+                |> Report.report "UNFINISHED PARENTHESES" region
 
         TupleOperatorClose row col ->
             let
@@ -6487,7 +6398,7 @@ toTupleReport source context tuple startRow startCol =
                 ]
             )
                 |> Code.toSnippet source surroundings (Just region)
-                |> Report.report "UNFINISHED OPERATOR FUNCTION" region []
+                |> Report.report "UNFINISHED OPERATOR FUNCTION" region
 
         TupleOperatorReserved operator row col ->
             let
@@ -6568,7 +6479,7 @@ toTupleReport source context tuple startRow startCol =
                 )
             )
                 |> Code.toSnippet source surroundings (Just region)
-                |> Report.report "UNEXPECTED SYMBOL" region []
+                |> Report.report "UNEXPECTED SYMBOL" region
 
         TupleIndentExpr1 row col ->
             let
@@ -6603,7 +6514,7 @@ toTupleReport source context tuple startRow startCol =
                 ]
             )
                 |> Code.toSnippet source surroundings (Just region)
-                |> Report.report "UNFINISHED PARENTHESES" region []
+                |> Report.report "UNFINISHED PARENTHESES" region
 
         TupleIndentExprN row col ->
             let
@@ -6640,7 +6551,7 @@ toTupleReport source context tuple startRow startCol =
                 ]
             )
                 |> Code.toSnippet source surroundings (Just region)
-                |> Report.report "UNFINISHED TUPLE" region []
+                |> Report.report "UNFINISHED TUPLE" region
 
         TupleIndentEnd row col ->
             let
@@ -6669,7 +6580,7 @@ toTupleReport source context tuple startRow startCol =
                 ]
             )
                 |> Code.toSnippet source surroundings (Just region)
-                |> Report.report "UNFINISHED PARENTHESES" region []
+                |> Report.report "UNFINISHED PARENTHESES" region
 
 
 {-| Builds the report for an error in a list expression whose parse began at
@@ -6726,7 +6637,7 @@ toListReport source context list startRow startCol =
                 ]
             )
                 |> Code.toSnippet source surroundings (Just region)
-                |> Report.report "UNFINISHED LIST" region []
+                |> Report.report "UNFINISHED LIST" region
 
         ListExpr expr row col ->
             case expr of
@@ -6755,7 +6666,7 @@ toListReport source context list startRow startCol =
                         ]
                     )
                         |> Code.toSnippet source surroundings (Just region)
-                        |> Report.report "UNFINISHED LIST" region []
+                        |> Report.report "UNFINISHED LIST" region
 
                 _ ->
                     toExprReport source (InNode NList startRow startCol context) expr row col
@@ -6800,7 +6711,7 @@ toListReport source context list startRow startCol =
                 ]
             )
                 |> Code.toSnippet source surroundings (Just region)
-                |> Report.report "UNFINISHED LIST" region []
+                |> Report.report "UNFINISHED LIST" region
 
         ListIndentOpen row col ->
             let
@@ -6863,7 +6774,7 @@ toListReport source context list startRow startCol =
                 ]
             )
                 |> Code.toSnippet source surroundings (Just region)
-                |> Report.report "UNFINISHED LIST" region []
+                |> Report.report "UNFINISHED LIST" region
 
         ListIndentEnd row col ->
             let
@@ -6907,7 +6818,7 @@ toListReport source context list startRow startCol =
                 ]
             )
                 |> Code.toSnippet source surroundings (Just region)
-                |> Report.report "UNFINISHED LIST" region []
+                |> Report.report "UNFINISHED LIST" region
 
         ListIndentExpr row col ->
             let
@@ -6934,7 +6845,7 @@ toListReport source context list startRow startCol =
                 ]
             )
                 |> Code.toSnippet source surroundings (Just region)
-                |> Report.report "UNFINISHED LIST" region []
+                |> Report.report "UNFINISHED LIST" region
 
 
 {-| Builds the report for an error in an anonymous function whose parse began at
@@ -6969,7 +6880,7 @@ toFuncReport source context func startRow startCol =
                     , D.reflow ("It looks like you are trying to use `" ++ keyword ++ "` as an argument, but it is a reserved word in this language. Try using a different argument name!")
                     )
                         |> Code.toSnippet source surroundings (Just region)
-                        |> Report.report "RESERVED WORD" region []
+                        |> Report.report "RESERVED WORD" region
 
                 _ ->
                     let
@@ -7005,7 +6916,7 @@ toFuncReport source context func startRow startCol =
                         ]
                     )
                         |> Code.toSnippet source surroundings (Just region)
-                        |> Report.report "UNFINISHED ANONYMOUS FUNCTION" region []
+                        |> Report.report "UNFINISHED ANONYMOUS FUNCTION" region
 
         FuncIndentArg row col ->
             let
@@ -7040,7 +6951,7 @@ toFuncReport source context func startRow startCol =
                 ]
             )
                 |> Code.toSnippet source surroundings (Just region)
-                |> Report.report "MISSING ARGUMENT" region []
+                |> Report.report "MISSING ARGUMENT" region
 
         FuncIndentArrow row col ->
             let
@@ -7083,7 +6994,7 @@ toFuncReport source context func startRow startCol =
                 ]
             )
                 |> Code.toSnippet source surroundings (Just region)
-                |> Report.report "UNFINISHED ANONYMOUS FUNCTION" region []
+                |> Report.report "UNFINISHED ANONYMOUS FUNCTION" region
 
         FuncIndentBody row col ->
             let
@@ -7124,7 +7035,7 @@ toFuncReport source context func startRow startCol =
                 ]
             )
                 |> Code.toSnippet source surroundings (Just region)
-                |> Report.report "UNFINISHED ANONYMOUS FUNCTION" region []
+                |> Report.report "UNFINISHED ANONYMOUS FUNCTION" region
 
 
 
@@ -7195,7 +7106,7 @@ toPatternReport source context pattern startRow startCol =
                     , "This is a reserved word! Try using some other name?" |> D.reflow
                     )
                         |> Code.toSnippet source surroundings (Just region)
-                        |> Report.report "RESERVED WORD" region []
+                        |> Report.report "RESERVED WORD" region
 
                 Code.Operator "-" ->
                     let
@@ -7211,7 +7122,7 @@ toPatternReport source context pattern startRow startCol =
                     , "It is not possible to pattern match on negative numbers at this time. Try using an `if` expression for that sort of thing for now." |> D.reflow
                     )
                         |> Code.toSnippet source surroundings (Just region)
-                        |> Report.report "UNEXPECTED SYMBOL" region []
+                        |> Report.report "UNEXPECTED SYMBOL" region
 
                 _ ->
                     let
@@ -7256,7 +7167,7 @@ toPatternReport source context pattern startRow startCol =
                         ]
                     )
                         |> Code.toSnippet source surroundings (Just region)
-                        |> Report.report "PROBLEM IN PATTERN" region []
+                        |> Report.report "PROBLEM IN PATTERN" region
 
         PChar char row col ->
             toCharReport source char row col
@@ -7300,7 +7211,7 @@ toPatternReport source context pattern startRow startCol =
                 ]
             )
                 |> Code.toSnippet source region Nothing
-                |> Report.report "UNEXPECTED PATTERN" region []
+                |> Report.report "UNEXPECTED PATTERN" region
 
         PAlias row col ->
             let
@@ -7358,7 +7269,7 @@ toPatternReport source context pattern startRow startCol =
                 ]
             )
                 |> Code.toSnippet source region Nothing
-                |> Report.report "UNFINISHED PATTERN" region []
+                |> Report.report "UNFINISHED PATTERN" region
 
         PWildcardNotVar name width row col ->
             let
@@ -7407,33 +7318,7 @@ toPatternReport source context pattern startRow startCol =
                 )
             )
                 |> Code.toSnippet source region Nothing
-                |> Report.report "UNEXPECTED NAME" region []
-
-        PWildcardReservedWord name width row col ->
-            let
-                region : A.Region
-                region =
-                    toWiderRegion row col width
-            in
-            ( D.fillSep
-                [ D.fromChars "I"
-                , D.fromChars "ran"
-                , D.fromChars "into"
-                , D.fromChars "a"
-                , D.fromChars "reserved"
-                , D.fromChars "word"
-                , D.fromChars "in"
-                , D.fromChars "this"
-                , D.fromChars "_" |> D.dullyellow
-                , D.fromChars "variable:"
-                ]
-            , D.reflow <|
-                "The `"
-                    ++ name
-                    ++ "` keyword is reserved. Try using a different name instead!"
-            )
-                |> Code.toSnippet source region Nothing
-                |> Report.report "RESERVED WORD" region []
+                |> Report.report "UNEXPECTED NAME" region
 
         PSpace space row col ->
             toSpaceReport source space row col
@@ -7484,7 +7369,7 @@ toPatternReport source context pattern startRow startCol =
                 ]
             )
                 |> Code.toSnippet source surroundings (Just region)
-                |> Report.report "UNFINISHED PATTERN" region []
+                |> Report.report "UNFINISHED PATTERN" region
 
         PIndentAlias row col ->
             let
@@ -7541,7 +7426,7 @@ toPatternReport source context pattern startRow startCol =
                 ]
             )
                 |> Code.toSnippet source region Nothing
-                |> Report.report "UNFINISHED PATTERN" region []
+                |> Report.report "UNFINISHED PATTERN" region
 
 
 {-| Builds the report for an error in a record pattern whose parse began at
@@ -7592,7 +7477,7 @@ toPRecordReport source record startRow startCol =
                     , "This is a reserved word, not available for variable names. Try another name!" |> D.reflow
                     )
                         |> Code.toSnippet source surroundings (Just region)
-                        |> Report.report "RESERVED WORD" region []
+                        |> Report.report "RESERVED WORD" region
 
                 _ ->
                     D.reflow "I was expecting to see a field name next." |> toUnfinishRecordPatternReport source row col startRow startCol
@@ -7669,7 +7554,7 @@ toUnfinishRecordPatternReport source row col startRow startCol message =
         ]
     )
         |> Code.toSnippet source surroundings (Just region)
-        |> Report.report "UNFINISHED RECORD PATTERN" region []
+        |> Report.report "UNFINISHED RECORD PATTERN" region
 
 
 {-| Builds the report for an error in a parenthesised or tuple pattern whose
@@ -7699,7 +7584,7 @@ toPTupleReport source context tuple startRow startCol =
                     , "This is a reserved word! Try using some other name?" |> D.reflow
                     )
                         |> Code.toSnippet source surroundings (Just region)
-                        |> Report.report "RESERVED WORD" region []
+                        |> Report.report "RESERVED WORD" region
 
                 _ ->
                     let
@@ -7736,7 +7621,7 @@ toPTupleReport source context tuple startRow startCol =
                         ]
                     )
                         |> Code.toSnippet source surroundings (Just region)
-                        |> Report.report "UNFINISHED PARENTHESES" region []
+                        |> Report.report "UNFINISHED PARENTHESES" region
 
         PTupleEnd row col ->
             case Code.whatIsNext source row col of
@@ -7757,7 +7642,7 @@ toPTupleReport source context tuple startRow startCol =
                             ++ "` keyword is reserved. Try using a different name instead!"
                     )
                         |> Code.toSnippet source surroundings (Just region)
-                        |> Report.report "RESERVED WORD" region []
+                        |> Report.report "RESERVED WORD" region
 
                 Code.Operator op ->
                     let
@@ -7778,7 +7663,7 @@ toPTupleReport source context tuple startRow startCol =
                             ++ "trying to get the first element off the front. Did you want that instead?"
                     )
                         |> Code.toSnippet source surroundings (Just region)
-                        |> Report.report "UNEXPECTED SYMBOL" region []
+                        |> Report.report "UNEXPECTED SYMBOL" region
 
                 Code.Close term bracket ->
                     let
@@ -7802,7 +7687,7 @@ toPTupleReport source context tuple startRow startCol =
                             ++ ". Try deleting it?"
                     )
                         |> Code.toSnippet source surroundings (Just region)
-                        |> Report.report ("STRAY " ++ String.toUpper term) region []
+                        |> Report.report ("STRAY " ++ String.toUpper term) region
 
                 _ ->
                     let
@@ -7836,7 +7721,7 @@ toPTupleReport source context tuple startRow startCol =
                         ]
                     )
                         |> Code.toSnippet source surroundings (Just region)
-                        |> Report.report "UNFINISHED PARENTHESES" region []
+                        |> Report.report "UNFINISHED PARENTHESES" region
 
         PTupleExpr pattern row col ->
             toPatternReport source context pattern row col
@@ -7871,7 +7756,7 @@ toPTupleReport source context tuple startRow startCol =
                 ]
             )
                 |> Code.toSnippet source surroundings (Just region)
-                |> Report.report "UNFINISHED PARENTHESES" region []
+                |> Report.report "UNFINISHED PARENTHESES" region
 
         PTupleIndentExpr1 row col ->
             let
@@ -7908,7 +7793,7 @@ toPTupleReport source context tuple startRow startCol =
                 ]
             )
                 |> Code.toSnippet source surroundings (Just region)
-                |> Report.report "UNFINISHED PARENTHESES" region []
+                |> Report.report "UNFINISHED PARENTHESES" region
 
         PTupleIndentExprN row col ->
             let
@@ -7950,7 +7835,7 @@ toPTupleReport source context tuple startRow startCol =
                 ]
             )
                 |> Code.toSnippet source surroundings (Just region)
-                |> Report.report "UNFINISHED TUPLE PATTERN" region []
+                |> Report.report "UNFINISHED TUPLE PATTERN" region
 
 
 {-| Builds the report for an error in a list pattern whose parse began at
@@ -7975,7 +7860,7 @@ toPListReport source context list startRow startCol =
                     , D.reflow "This is a reserved word though! Try using some other name?"
                     )
                         |> Code.toSnippet source surroundings (Just region)
-                        |> Report.report "RESERVED WORD" region []
+                        |> Report.report "RESERVED WORD" region
 
                 _ ->
                     let
@@ -8001,7 +7886,7 @@ toPListReport source context list startRow startCol =
                         ]
                     )
                         |> Code.toSnippet source surroundings (Just region)
-                        |> Report.report "UNFINISHED LIST PATTERN" region []
+                        |> Report.report "UNFINISHED LIST PATTERN" region
 
         PListEnd row col ->
             let
@@ -8027,7 +7912,7 @@ toPListReport source context list startRow startCol =
                 ]
             )
                 |> Code.toSnippet source surroundings (Just region)
-                |> Report.report "UNFINISHED LIST PATTERN" region []
+                |> Report.report "UNFINISHED LIST PATTERN" region
 
         PListExpr pattern row col ->
             toPatternReport source context pattern row col
@@ -8062,7 +7947,7 @@ toPListReport source context list startRow startCol =
                 ]
             )
                 |> Code.toSnippet source surroundings (Just region)
-                |> Report.report "UNFINISHED LIST PATTERN" region []
+                |> Report.report "UNFINISHED LIST PATTERN" region
 
         PListIndentEnd row col ->
             let
@@ -8091,7 +7976,7 @@ toPListReport source context list startRow startCol =
                 ]
             )
                 |> Code.toSnippet source surroundings (Just region)
-                |> Report.report "UNFINISHED LIST PATTERN" region []
+                |> Report.report "UNFINISHED LIST PATTERN" region
 
         PListIndentExpr row col ->
             let
@@ -8110,7 +7995,7 @@ toPListReport source context list startRow startCol =
                 ]
             )
                 |> Code.toSnippet source surroundings (Just region)
-                |> Report.report "UNFINISHED LIST PATTERN" region []
+                |> Report.report "UNFINISHED LIST PATTERN" region
 
 
 
@@ -8158,7 +8043,7 @@ toTypeReport source context tipe startRow startCol =
                     , D.reflow ("It looks like you are trying to use `" ++ keyword ++ "` as a type variable, but it is a reserved word. Try using a different name!")
                     )
                         |> Code.toSnippet source surroundings (Just region)
-                        |> Report.report "RESERVED WORD" region []
+                        |> Report.report "RESERVED WORD" region
 
                 _ ->
                     let
@@ -8220,7 +8105,7 @@ toTypeReport source context tipe startRow startCol =
                         ]
                     )
                         |> Code.toSnippet source surroundings (Just region)
-                        |> Report.report ("PROBLEM IN " ++ String.toUpper thing) region []
+                        |> Report.report ("PROBLEM IN " ++ String.toUpper thing) region
 
         TSpace space row col ->
             toSpaceReport source space row col
@@ -8273,7 +8158,7 @@ toTypeReport source context tipe startRow startCol =
                 ]
             )
                 |> Code.toSnippet source surroundings (Just region)
-                |> Report.report ("UNFINISHED " ++ String.toUpper thing) region []
+                |> Report.report ("UNFINISHED " ++ String.toUpper thing) region
 
 
 {-| Builds the report for an error in a record type whose parse began at
@@ -8305,7 +8190,7 @@ toTRecordReport source context record startRow startCol =
                     , D.reflow ("It looks like you are trying to use `" ++ keyword ++ "` as a field name, but that is a reserved word. Try using a different name!")
                     )
                         |> Code.toSnippet source surroundings (Just region)
-                        |> Report.report "RESERVED WORD" region []
+                        |> Report.report "RESERVED WORD" region
 
                 _ ->
                     let
@@ -8337,7 +8222,7 @@ toTRecordReport source context record startRow startCol =
                         ]
                     )
                         |> Code.toSnippet source surroundings (Just region)
-                        |> Report.report "UNFINISHED RECORD TYPE" region []
+                        |> Report.report "UNFINISHED RECORD TYPE" region
 
         TRecordEnd row col ->
             let
@@ -8378,7 +8263,7 @@ toTRecordReport source context record startRow startCol =
                 ]
             )
                 |> Code.toSnippet source surroundings (Just region)
-                |> Report.report "UNFINISHED RECORD TYPE" region []
+                |> Report.report "UNFINISHED RECORD TYPE" region
 
         TRecordField row col ->
             case Code.whatIsNext source row col of
@@ -8396,7 +8281,7 @@ toTRecordReport source context record startRow startCol =
                     , D.reflow ("It looks like you are trying to use `" ++ keyword ++ "` as a field name, but that is a reserved word. Try using a different name!")
                     )
                         |> Code.toSnippet source surroundings (Just region)
-                        |> Report.report "RESERVED WORD" region []
+                        |> Report.report "RESERVED WORD" region
 
                 Code.Other (Just ',') ->
                     let
@@ -8416,7 +8301,7 @@ toTRecordReport source context record startRow startCol =
                         ]
                     )
                         |> Code.toSnippet source surroundings (Just region)
-                        |> Report.report "EXTRA COMMA" region []
+                        |> Report.report "EXTRA COMMA" region
 
                 Code.Close _ '}' ->
                     let
@@ -8435,7 +8320,7 @@ toTRecordReport source context record startRow startCol =
                         ]
                     )
                         |> Code.toSnippet source surroundings (Just region)
-                        |> Report.report "EXTRA COMMA" region []
+                        |> Report.report "EXTRA COMMA" region
 
                 _ ->
                     let
@@ -8477,7 +8362,7 @@ toTRecordReport source context record startRow startCol =
                         ]
                     )
                         |> Code.toSnippet source surroundings (Just region)
-                        |> Report.report "PROBLEM IN RECORD TYPE" region []
+                        |> Report.report "PROBLEM IN RECORD TYPE" region
 
         TRecordColon row col ->
             let
@@ -8519,7 +8404,7 @@ toTRecordReport source context record startRow startCol =
                 ]
             )
                 |> Code.toSnippet source surroundings (Just region)
-                |> Report.report "UNFINISHED RECORD TYPE" region []
+                |> Report.report "UNFINISHED RECORD TYPE" region
 
         TRecordType tipe row col ->
             toTypeReport source context tipe row col
@@ -8560,7 +8445,7 @@ toTRecordReport source context record startRow startCol =
                 ]
             )
                 |> Code.toSnippet source surroundings (Just region)
-                |> Report.report "UNFINISHED RECORD TYPE" region []
+                |> Report.report "UNFINISHED RECORD TYPE" region
 
         TRecordIndentEnd row col ->
             case Code.nextLineStartsWithCloseCurly source row of
@@ -8581,7 +8466,7 @@ toTRecordReport source context record startRow startCol =
                         ]
                     )
                         |> Code.toSnippet source surroundings (Just region)
-                        |> Report.report "NEED MORE INDENTATION" region []
+                        |> Report.report "NEED MORE INDENTATION" region
 
                 Nothing ->
                     let
@@ -8621,7 +8506,7 @@ toTRecordReport source context record startRow startCol =
                         ]
                     )
                         |> Code.toSnippet source surroundings (Just region)
-                        |> Report.report "UNFINISHED RECORD TYPE" region []
+                        |> Report.report "UNFINISHED RECORD TYPE" region
 
         TRecordIndentField row col ->
             let
@@ -8640,7 +8525,7 @@ toTRecordReport source context record startRow startCol =
                 ]
             )
                 |> Code.toSnippet source surroundings (Just region)
-                |> Report.report "UNFINISHED RECORD TYPE" region []
+                |> Report.report "UNFINISHED RECORD TYPE" region
 
         TRecordIndentColon row col ->
             let
@@ -8668,7 +8553,7 @@ toTRecordReport source context record startRow startCol =
                 ]
             )
                 |> Code.toSnippet source surroundings (Just region)
-                |> Report.report "UNFINISHED RECORD TYPE" region []
+                |> Report.report "UNFINISHED RECORD TYPE" region
 
         TRecordIndentType row col ->
             let
@@ -8697,7 +8582,7 @@ toTRecordReport source context record startRow startCol =
                 ]
             )
                 |> Code.toSnippet source surroundings (Just region)
-                |> Report.report "UNFINISHED RECORD TYPE" region []
+                |> Report.report "UNFINISHED RECORD TYPE" region
 
 
 {-| The note showing the recommended layout of a record type written across
@@ -8764,7 +8649,7 @@ toTTupleReport source context tuple startRow startCol =
                         ("It looks like you are trying to use `" ++ keyword ++ "` as a variable name, but  it is a reserved word. Try using a different name!")
                     )
                         |> Code.toSnippet source surroundings (Just region)
-                        |> Report.report "RESERVED WORD" region []
+                        |> Report.report "RESERVED WORD" region
 
                 _ ->
                     let
@@ -8796,7 +8681,7 @@ toTTupleReport source context tuple startRow startCol =
                         ]
                     )
                         |> Code.toSnippet source surroundings (Just region)
-                        |> Report.report "UNFINISHED PARENTHESES" region []
+                        |> Report.report "UNFINISHED PARENTHESES" region
 
         TTupleEnd row col ->
             let
@@ -8828,7 +8713,7 @@ toTTupleReport source context tuple startRow startCol =
                 ]
             )
                 |> Code.toSnippet source surroundings (Just region)
-                |> Report.report "UNFINISHED PARENTHESES" region []
+                |> Report.report "UNFINISHED PARENTHESES" region
 
         TTupleType tipe row col ->
             toTypeReport source context tipe row col
@@ -8870,7 +8755,7 @@ toTTupleReport source context tuple startRow startCol =
                 ]
             )
                 |> Code.toSnippet source surroundings (Just region)
-                |> Report.report "UNFINISHED PARENTHESES" region []
+                |> Report.report "UNFINISHED PARENTHESES" region
 
         TTupleIndentTypeN row col ->
             let
@@ -8909,7 +8794,7 @@ toTTupleReport source context tuple startRow startCol =
                 ]
             )
                 |> Code.toSnippet source surroundings (Just region)
-                |> Report.report "UNFINISHED TUPLE TYPE" region []
+                |> Report.report "UNFINISHED TUPLE TYPE" region
 
         TTupleIndentEnd row col ->
             let
@@ -8940,7 +8825,7 @@ toTTupleReport source context tuple startRow startCol =
                 ]
             )
                 |> Code.toSnippet source surroundings (Just region)
-                |> Report.report "UNFINISHED PARENTHESES" region []
+                |> Report.report "UNFINISHED PARENTHESES" region
 
 
 
@@ -10196,18 +10081,9 @@ patternEncoder pattern =
                 , BE.int col
                 ]
 
-        PWildcardReservedWord name width row col ->
-            Bytes.Encode.sequence
-                [ Bytes.Encode.unsignedInt8 10
-                , BE.string name
-                , BE.int width
-                , BE.int row
-                , BE.int col
-                ]
-
         PSpace space row col ->
             Bytes.Encode.sequence
-                [ Bytes.Encode.unsignedInt8 11
+                [ Bytes.Encode.unsignedInt8 10
                 , spaceEncoder space
                 , BE.int row
                 , BE.int col
@@ -10215,14 +10091,14 @@ patternEncoder pattern =
 
         PIndentStart row col ->
             Bytes.Encode.sequence
-                [ Bytes.Encode.unsignedInt8 12
+                [ Bytes.Encode.unsignedInt8 11
                 , BE.int row
                 , BE.int col
                 ]
 
         PIndentAlias row col ->
             Bytes.Encode.sequence
-                [ Bytes.Encode.unsignedInt8 13
+                [ Bytes.Encode.unsignedInt8 12
                 , BE.int row
                 , BE.int col
                 ]
@@ -10296,24 +10172,17 @@ patternDecoder =
                             BD.int
 
                     10 ->
-                        Bytes.Decode.map4 PWildcardReservedWord
-                            BD.string
-                            BD.int
-                            BD.int
-                            BD.int
-
-                    11 ->
                         Bytes.Decode.map3 PSpace
                             spaceDecoder
                             BD.int
                             BD.int
 
-                    12 ->
+                    11 ->
                         Bytes.Decode.map2 PIndentStart
                             BD.int
                             BD.int
 
-                    13 ->
+                    12 ->
                         Bytes.Decode.map2 PIndentAlias
                             BD.int
                             BD.int
@@ -11687,29 +11556,11 @@ numberEncoder number =
         NumberHexDigit ->
             Bytes.Encode.unsignedInt8 2
 
-        NumberBinDigit ->
+        NumberNoLeadingZero ->
             Bytes.Encode.unsignedInt8 3
 
-        NumberNoLeadingZero ->
-            Bytes.Encode.unsignedInt8 4
-
-        NumberNoLeadingOrTrailingUnderscores ->
-            Bytes.Encode.unsignedInt8 5
-
-        NumberNoConsecutiveUnderscores ->
-            Bytes.Encode.unsignedInt8 6
-
-        NumberNoUnderscoresAdjacentToDecimalOrExponent ->
-            Bytes.Encode.unsignedInt8 7
-
-        NumberNoUnderscoresAdjacentToHexadecimalPreFix ->
-            Bytes.Encode.unsignedInt8 8
-
-        NumberNoUnderscoresAdjacentToBinaryPreFix ->
-            Bytes.Encode.unsignedInt8 9
-
         NumberInexactOnHost ->
-            Bytes.Encode.unsignedInt8 10
+            Bytes.Encode.unsignedInt8 4
 
 
 {-| A decoder for what `numberEncoder` writes.
@@ -11730,27 +11581,9 @@ numberDecoder =
                         Bytes.Decode.succeed NumberHexDigit
 
                     3 ->
-                        Bytes.Decode.succeed NumberBinDigit
-
-                    4 ->
                         Bytes.Decode.succeed NumberNoLeadingZero
 
-                    5 ->
-                        Bytes.Decode.succeed NumberNoLeadingOrTrailingUnderscores
-
-                    6 ->
-                        Bytes.Decode.succeed NumberNoConsecutiveUnderscores
-
-                    7 ->
-                        Bytes.Decode.succeed NumberNoUnderscoresAdjacentToDecimalOrExponent
-
-                    8 ->
-                        Bytes.Decode.succeed NumberNoUnderscoresAdjacentToHexadecimalPreFix
-
-                    9 ->
-                        Bytes.Decode.succeed NumberNoUnderscoresAdjacentToBinaryPreFix
-
-                    10 ->
+                    4 ->
                         Bytes.Decode.succeed NumberInexactOnHost
 
                     _ ->

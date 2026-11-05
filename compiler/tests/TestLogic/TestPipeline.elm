@@ -12,7 +12,9 @@ module TestLogic.TestPipeline exposing
     , expectCoverageRun
     , expectMLIRGeneration
     , expectMonomorphization
+    , globalOpt
     , interfaceAnnotations
+    , interfacesTypeEnv
     , productionConfig
     , runSolverMonoWithLimits
     , runSolverMonoWithLimitsNoPreMono
@@ -125,7 +127,7 @@ import Compiler.Core.Name as Name exposing (Name)
 import Compiler.Elm.Interface.Basic as Basic
 import Compiler.Elm.ModuleName as ModuleName
 import Compiler.Error as E
-import Compiler.GenerateMlir.Backend as MLIR
+import Compiler.GenerateMlir.BackendModule as MLIR
 import Compiler.IR.Canonical as Can
 import Compiler.IR.Canonical.Interface as I
 import Compiler.IR.Mono as Mono
@@ -257,7 +259,7 @@ type alias MonoArtifacts =
 {-| The cumulative artifacts of global optimization: the monomorphization
 artifacts plus `optimizedMonoGraph`, the result of running the
 post-monomorphization inliner and then
-`Compiler.MonoOpt.GlobalOptimize.globalOptimize` on `monoGraph`.
+`Compiler.MonoOpt.GlobalOptimize.globalOptimizeWithStats` on `monoGraph`.
 
 `monoGraph` is the graph before both passes, from the engine of the runner's
 configuration.
@@ -316,14 +318,14 @@ runToCanonical srcModule =
             Canonicalize.canonicalize ( "eco", "example" ) Basic.testIfaces srcModule
     in
     case RResult.run canonResult of
-        ( _, Err errors ) ->
+        Err errors ->
             let
                 errorCount =
                     OneOrMore.destruct (::) errors |> List.length
             in
             Err ("Canonicalization failed with " ++ String.fromInt errorCount ++ " error(s)")
 
-        ( _, Ok canonical ) ->
+        Ok canonical ->
             Ok { canonical = canonical }
 
 
@@ -432,7 +434,7 @@ typedOptFrom { canonical, annotations, nodeTypesPost, kernelEnv, nodeVars, solve
             TCanBuild.fromCanonical canonical stampedNodeTypes stamped.nodeVars
     in
     case RResult.run (TypedOptimize.optimizeTyped stampedAnnotations stampedNodeTypes stamped.nodeVars kernelEnv stamped.annotationVars stamped.schemeRoots typedModule) of
-        ( _, Ok localGraph ) ->
+        Ok localGraph ->
             Ok
                 { canonical = canonical
                 , annotations = stampedAnnotations
@@ -441,7 +443,7 @@ typedOptFrom { canonical, annotations, nodeTypesPost, kernelEnv, nodeVars, solve
                 , localGraph = localGraph
                 }
 
-        ( _, Err errors ) ->
+        Err errors ->
             Err errors
 
 
@@ -577,8 +579,16 @@ type PreMonoPasses
     | WithoutPreMono
 
 
+{-| The name of a canonical module, the root module a test program's `main` is
+looked up in.
+-}
+moduleHome : Can.Module -> ModuleName.Canonical
+moduleHome (Can.Module m) =
+    m.name
+
+
 {-| Runs `runToTypedOpt` on `srcModule` and then the build's steps up to and
-including monomorphization (`Compiler.Pipeline.Steps`: `prepare`, `preMono`,
+including monomorphization (`Compiler.Pipeline.Steps`: `prepareRoot`, `preMono`,
 `checkMinted`, `monomorphize`, `checkStageArity`, `checkLayout`) under
 `ecoConfig`. The `Maybe String` is the LSS report, when the configuration asks
 for one.
@@ -605,7 +615,7 @@ monoStepsFrom ecoConfig passes { canonical, annotations, nodeTypes, kernelEnv, l
             buildGlobalTypeEnv canonical
 
         prepared =
-            Steps.prepare ecoConfig globalGraph
+            Steps.prepareRoot ecoConfig (moduleHome canonical) globalGraph
 
         assigned =
             case passes of
@@ -640,13 +650,25 @@ monoStepsFrom ecoConfig passes { canonical, annotations, nodeTypes, kernelEnv, l
 
 
 {-| `monoWith`, then the build's post-monomorphization steps
-(`Compiler.Pipeline.Steps`: `inline`, `prune`, `checkPruned`, `globalOpt`,
-`checkStageArity`, `checkClosureStaging`).
+(`Steps.inline`, `Steps.prune`, `Steps.checkPruned`, `globalOpt`,
+`Steps.checkStageArity`, `Steps.checkClosureStaging`).
 -}
 globalOptWith : Config.EcoConfig -> PreMonoPasses -> Src.Module -> Result String GlobalOptArtifacts
 globalOptWith ecoConfig passes srcModule =
     monoWith ecoConfig passes srcModule
         |> Result.andThen (Tuple.first >> globalOptStepsFrom ecoConfig)
+
+
+{-| Returns the graph after the build's whole global optimization step:
+`Steps.globalOptCore`, then `Steps.cse`, `Steps.dedupe` and `Steps.hoist`,
+which the build runs as separate tasks.
+-}
+globalOpt : Config.EcoConfig -> Mono.MonoGraph -> ( Mono.MonoGraph, Steps.GlobalOptResult )
+globalOpt ecoConfig g =
+    Steps.globalOptCore ecoConfig g
+        |> Steps.cse ecoConfig
+        |> Steps.dedupe ecoConfig
+        |> Steps.hoist ecoConfig
 
 
 {-| The steps of `globalOptWith` after monomorphization.
@@ -658,7 +680,7 @@ globalOptStepsFrom ecoConfig a =
             Steps.prune ecoConfig (Tuple.first (Steps.inline ecoConfig a.monoGraph))
     in
     Steps.checkPruned ecoConfig simplified
-        |> Result.andThen (\_ -> Steps.checkStageArity (Tuple.first (Steps.globalOpt ecoConfig simplified)))
+        |> Result.andThen (\_ -> Steps.checkStageArity (Tuple.first (globalOpt ecoConfig simplified)))
         |> Result.andThen (Steps.checkClosureStaging ecoConfig)
         |> Result.map
             (\optimizedMonoGraph ->
@@ -676,7 +698,7 @@ globalOptStepsFrom ecoConfig a =
 
 
 {-| `globalOptWith`, then MLIR generation through the build's code generator
-context (`Compiler.GenerateMlir.Backend.generateMlirModule ecoConfig`), in
+context (`Compiler.GenerateMlir.BackendModule.generateMlirModule ecoConfig`), in
 development mode, as `eco make` without `--optimize`.
 -}
 mlirWith : Config.EcoConfig -> PreMonoPasses -> Src.Module -> Result String MlirArtifacts
@@ -774,14 +796,14 @@ runToMlirNoPreMono =
     mlirWith productionConfig WithoutPreMono
 
 
-{-| The global graph of `srcModule` after `Compiler.Pipeline.Steps.prepare`
+{-| The global graph of `srcModule` after `Compiler.Pipeline.Steps.prepareRoot`
 has given it its ids under `productionConfig`, which is the kind of graph the
 pre-monomorphization passes work on in a build.
 -}
 runToAssigned : Src.Module -> Result String EntryPrep.Assigned
 runToAssigned srcModule =
     Result.map
-        (\{ localGraph } -> Steps.prepare productionConfig (localGraphToGlobalGraph localGraph))
+        (\{ canonical, localGraph } -> Steps.prepareRoot productionConfig (moduleHome canonical) (localGraphToGlobalGraph localGraph))
         (runToTypedOpt srcModule)
 
 
@@ -863,7 +885,7 @@ reaches them. The first four are the phases of `Compiler.Compile.compileTyped`:
   - `TypedOptimize`: the typed optimizer, which checks `main` (`BadMains`).
 
 `Monomorphize` is every step of the build after `Compiler.Compile`, from
-`Compiler.Pipeline.Steps.prepare` to `checkClosureStaging`, whose failures
+`Compiler.Pipeline.Steps.prepareRoot` to `checkClosureStaging`, whose failures
 `Builder.Generate` reports as `Builder.Reporting.Exit.GenerateMonomorphizationError`.
 
 -}
@@ -970,10 +992,10 @@ runToReportsThrough last srcModule0 =
                 next ()
     in
     case RResult.run (Canonicalize.canonicalize ( "eco", "example" ) Basic.testIfaces srcModule) of
-        ( _, Err errors ) ->
+        Err errors ->
             reject Canonicalize (E.BadNames errors)
 
-        ( _, Ok canonical ) ->
+        Ok canonical ->
             continueAfter Canonicalize <|
                 \() ->
                     case IO.unsafePerformIO (runWithIdsTypeCheck canonical) of
@@ -1213,11 +1235,11 @@ runWithIdsTypeCheck modul =
                 case result of
                     Ok data ->
                         Ok
-                            { annotations = data.annotations
+                            { annotations = Dict.map (\_ entry -> entry.annotation) data.annotations
                             , nodeTypes = data.nodeTypes
                             , nodeVars = data.nodeVars
                             , solverState = data.solverState
-                            , annotationVars = data.annotationVars
+                            , annotationVars = Dict.map (\_ entry -> entry.var) data.annotations
                             , schemeBinderVars = schemeBinderVars
                             }
 
@@ -1303,6 +1325,29 @@ kernelAliasNodes ifaces =
         )
         Data.Map.empty
         aliasedKernels
+
+
+{-| Returns the global type environment of the interfaces in `ifaces`, each
+module named by its key in `ifaces` together with the package its interface
+records. Every custom type and alias an interface holds is taken, whatever its
+visibility, as `Compiler.IR.Canonical.Interface.extractUnion` and
+`extractAlias` return it.
+-}
+interfacesTypeEnv : Dict ModuleName.Raw I.Interface -> TypeEnv.GlobalTypeEnv
+interfacesTypeEnv ifaces =
+    Dict.foldl
+        (\moduleName (I.Interface data) acc ->
+            let
+                moduleTypeEnv =
+                    { home = ModuleName.Canonical data.home moduleName
+                    , unions = Dict.map (\_ iUnion -> I.extractUnion iUnion) data.unions
+                    , aliases = Dict.map (\_ iAlias -> I.extractAlias iAlias) data.aliases
+                    }
+            in
+            Data.Map.insert ModuleName.toComparableCanonical moduleTypeEnv.home moduleTypeEnv acc
+        )
+        Data.Map.empty
+        ifaces
 
 
 {-| Returns an annotation, keyed by global, for every value, every union
@@ -1419,7 +1464,7 @@ buildGlobalTypeEnv canModule =
             TypeEnv.fromCanonical canModule
 
         interfaceTypeEnv =
-            TypeEnv.fromInterfaces Basic.testIfaces
+            interfacesTypeEnv Basic.testIfaces
     in
     TypeEnv.mergeGlobalTypeEnv
         interfaceTypeEnv
@@ -1493,14 +1538,15 @@ wrapWithMain (Src.Module data) =
             A.At A.zero
                 (Src.Call
                     (A.At A.zero (Src.VarQual Src.LowVar htmlQualifier "text"))
-                    [ ( []
-                      , A.At A.zero
-                            (Src.Call
-                                (A.At A.zero (Src.VarQual Src.LowVar "Elm.Kernel.Debug" "toString"))
-                                [ ( [], testValueRef ) ]
-                            )
-                      )
-                    ]
+                    ( []
+                    , A.At A.zero
+                        (Src.Call
+                            (A.At A.zero (Src.VarQual Src.LowVar "Elm.Kernel.Debug" "toString"))
+                            ( [], testValueRef )
+                            []
+                        )
+                    )
+                    []
                 )
 
         mainValue =
@@ -1598,21 +1644,15 @@ expectMLIRGeneration srcModule =
             verifyMLIROutput mlirOutput
 
 
-{-| Creates an expectation that the graph has a `main` and a node array that is
-not empty.
+{-| Creates an expectation that the graph has a node array that is not empty.
 -}
 verifyMonoGraph : Mono.MonoGraph -> Expect.Expectation
 verifyMonoGraph (Mono.MonoGraph data) =
-    case data.main of
-        Nothing ->
-            Expect.fail "Monomorphized graph has no main entry point"
+    if Array.isEmpty data.nodes then
+        Expect.fail "Monomorphized graph has no nodes"
 
-        Just _ ->
-            if Array.isEmpty data.nodes then
-                Expect.fail "Monomorphized graph has no nodes"
-
-            else
-                Expect.pass
+    else
+        Expect.pass
 
 
 {-| Creates an expectation that `output` is not empty and contains `func.func`

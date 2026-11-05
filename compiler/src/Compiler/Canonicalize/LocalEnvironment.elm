@@ -197,7 +197,7 @@ addTypes (Src.Module srcData) env =
             Dups.insert name region ()
 
         addUnionDups : A.Located Src.Union -> Dups.Tracker () -> Dups.Tracker ()
-        addUnionDups (A.At _ (Src.Union ( _, A.At region name ) _ _)) =
+        addUnionDups (A.At _ (Src.Union ( _, A.At region name ) _ _ _)) =
             Dups.insert name region ()
 
         typeNameDups : Dups.Tracker ()
@@ -216,7 +216,7 @@ addTypes (Src.Module srcData) env =
 its parameters pass `checkUnionFreeVars`.
 -}
 addUnion : ModuleName.Canonical -> Env.Exposed Env.Type -> A.Located Src.Union -> LResult i w (Env.Exposed Env.Type)
-addUnion home types ((A.At _ (Src.Union ( _, A.At _ name ) _ _)) as union) =
+addUnion home types ((A.At _ (Src.Union ( _, A.At _ name ) _ _ _)) as union) =
     ReportingResult.map
         (\arity ->
             let
@@ -257,8 +257,7 @@ added.
 A single alias that does not name itself is checked for its parameters and
 record size, canonicalized against `env`, and entered. A cyclic component fails
 with `RecursiveAlias`, naming one of its aliases and the others in it, once
-that alias's parameters have been checked. An empty cyclic component adds
-nothing.
+that alias's parameters have been checked.
 
 -}
 addAlias : Env.Env -> Graph.SCC (A.Located Src.Alias) -> LResult i w Env.Env
@@ -292,10 +291,7 @@ addAlias ({ home, vars, types, ctors, binops, q_vars, q_types, q_ctors } as env)
                                 )
                     )
 
-        Graph.CyclicSCC [] ->
-            ReportingResult.ok env
-
-        Graph.CyclicSCC (((A.At _ (Src.Alias aliasData)) as alias) :: others) ->
+        Graph.CyclicSCC ((A.At _ (Src.Alias aliasData)) as alias) others ->
             let
                 ( _, A.At region name1 ) =
                     aliasData.name
@@ -344,8 +340,11 @@ parentheses, or `Nothing` if the type is not a record.
 recordFieldCount : Src.Type -> Maybe Int
 recordFieldCount (A.At _ tipe) =
     case tipe of
-        Src.TRecord fields _ _ ->
+        Src.TRecord fields _ ->
             Just (List.length fields)
+
+        Src.TRecordExt _ _ fields _ ->
+            Just (1 + List.length fields)
 
         Src.TParens ( _, inner ) ->
             recordFieldCount inner
@@ -395,8 +394,11 @@ getEdges (A.At _ tipe) edges =
         Src.TTypeQual _ _ _ args ->
             List.foldl getEdges edges (List.map Src.c1Value args)
 
-        Src.TRecord fields _ _ ->
+        Src.TRecord fields _ ->
             List.foldl (\( _, ( _, ( _, t ) ) ) es -> getEdges t es) edges fields
+
+        Src.TRecordExt _ firstField fields _ ->
+            List.foldl (\( _, ( _, ( _, t ) ) ) es -> getEdges t es) edges (firstField :: fields)
 
         Src.TUnit ->
             edges
@@ -418,7 +420,7 @@ getEdges (A.At _ tipe) edges =
 parameter. An unused parameter is allowed.
 -}
 checkUnionFreeVars : A.Located Src.Union -> LResult i w Int
-checkUnionFreeVars (A.At unionRegion (Src.Union ( _, A.At _ name ) args ctors)) =
+checkUnionFreeVars (A.At unionRegion (Src.Union ( _, A.At _ name ) args ctor0 ctors)) =
     let
         addArg : A.Located Name -> Dups.Tracker A.Region -> Dups.Tracker A.Region
         addArg (A.At region arg) dict =
@@ -434,7 +436,7 @@ checkUnionFreeVars (A.At unionRegion (Src.Union ( _, A.At _ name ) args ctors)) 
                 let
                     freeVars : Dict Name A.Region
                     freeVars =
-                        List.foldr addCtorFreeVars Dict.empty (List.map (Src.c2EolValue >> Tuple.mapSecond (List.map Src.c1Value)) ctors)
+                        List.foldr addCtorFreeVars Dict.empty (List.map (Src.c2EolValue >> Tuple.mapSecond (List.map Src.c1Value)) (ctor0 :: ctors))
                 in
                 case Dict.toList (Dict.diff freeVars boundVars) of
                     [] ->
@@ -508,18 +510,11 @@ addFreeVars (A.At region tipe) freeVars =
         Src.TTypeQual _ _ _ args ->
             List.foldl addFreeVars freeVars (List.map Src.c1Value args)
 
-        Src.TRecord fields maybeExt _ ->
-            let
-                extFreeVars : Dict Name A.Region
-                extFreeVars =
-                    case maybeExt of
-                        Nothing ->
-                            freeVars
+        Src.TRecord fields _ ->
+            List.foldl (\( _, ( _, ( _, t ) ) ) fvs -> addFreeVars t fvs) freeVars fields
 
-                        Just ( _, A.At extRegion ext ) ->
-                            Dict.insert ext extRegion freeVars
-            in
-            List.foldl (\( _, ( _, ( _, t ) ) ) fvs -> addFreeVars t fvs) extFreeVars fields
+        Src.TRecordExt ( _, A.At extRegion ext ) firstField fields _ ->
+            List.foldl (\( _, ( _, ( _, t ) ) ) fvs -> addFreeVars t fvs) (Dict.insert ext extRegion freeVars) (firstField :: fields)
 
         Src.TUnit ->
             freeVars
@@ -641,7 +636,12 @@ toRecordCtor home name vars fields =
 constructors, which are numbered from zero in declaration order.
 -}
 canonicalizeUnion : Env.Env -> A.Located Src.Union -> LResult i w ( ( Name.Name, Can.Union ), CtorDups )
-canonicalizeUnion ({ home } as env) (A.At _ (Src.Union ( _, A.At _ name ) avars ctors)) =
+canonicalizeUnion ({ home } as env) (A.At _ (Src.Union ( _, A.At _ name ) avars ctor0 ctorRest)) =
+    let
+        ctors : List (Src.C2Eol ( A.Located Name.Name, List (Src.C1 Src.Type) ))
+        ctors =
+            ctor0 :: ctorRest
+    in
     ReportingResult.indexedTraverse (canonicalizeCtor env) (List.map (Tuple.mapSecond (List.map Src.c1Value)) (List.map Src.c2EolValue ctors))
         |> ReportingResult.andThen
             (\cctors ->

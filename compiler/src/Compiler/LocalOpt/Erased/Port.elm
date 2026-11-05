@@ -13,14 +13,10 @@ An outgoing port needs an _encoder_: a function from the Elm value to a
 payload type and combining the library functions of `Json.Encode` and
 `Json.Decode`, so the result is ordinary code that calls those modules.
 
-The payload types handled are `Int`, `Float`, `Bool`, `String`,
-`Json.Encode.Value`, `Bytes`, unit, `Maybe`, `List` and `Array` of a payload
-type, tuples and closed records. Aliases are expanded first. This is the set
-`Compiler.Canonicalize.Effects.checkPayload` accepts, and any other type
-(`Char`, a function, a type variable, an extensible record, another custom
-type) would crash the compiler here; `checkPayload` reports such types to the
-user before this module runs. A type is recognised by its name alone; its home
-module is not looked at.
+The payload types handled are those of `Can.Payload`: `Int`, `Float`, `Bool`,
+`String`, `Json.Encode.Value`, `Bytes`, unit, `Maybe`, `List` and `Array` of a
+payload type, tuples and closed records, as
+`Compiler.Canonicalize.Effects.checkPayload` validates them.
 
 The JSON shapes are: a tuple is an array of its elements, a record is an
 object keyed by its field names, unit is `null`, and `Maybe` is `null` for
@@ -43,94 +39,64 @@ kernel module a codec refers to, and the record fields it uses, as
 
 -}
 
-import Basics.Extra exposing (flip)
 import Compiler.Core.Annotation as A
 import Compiler.Core.Index as Index
-import Compiler.Core.IndexName as IndexName
 import Compiler.Core.Name as Name exposing (Name)
 import Compiler.Elm.ModuleName as ModuleName
 import Compiler.IR.Canonical as Can
-import Compiler.IR.Canonical.Alias as Type
 import Compiler.IR.Optimized as Opt
 import Compiler.LocalOpt.Erased.Names as Names
 import Dict exposing (Dict)
-import System.Crash exposing (crash)
+import Maybe.Extra as Maybe
 
 
 
 -- ====== ENCODE ======
 
 
-{-| Builds a function expression that encodes a value of type `tipe` as JSON.
-
-Crashes on a type outside the payload set given in the module docstring.
-
+{-| Builds a function expression that encodes a value of the payload type
+`payload` as JSON.
 -}
-toEncoder : Can.Type Name -> Names.Tracker Opt.Expr
-toEncoder tipe =
-    case tipe of
-        Can.TAlias _ _ args alias ->
-            toEncoder (Type.dealias args alias)
-
-        Can.TLambda _ _ _ ->
-            crash "toEncoder: function"
-
-        Can.TVar _ ->
-            crash "toEncoder: type variable"
-
-        Can.TUnit ->
+toEncoder : Can.Payload -> Names.Tracker Opt.Expr
+toEncoder payload =
+    case payload of
+        Can.PayloadUnit ->
             Names.map (Opt.Function [ Name.dollar ]) (encode "null")
 
-        Can.TTuple a b cs ->
+        Can.PayloadTuple a b cs ->
             encodeTuple a b cs
 
-        Can.TType _ name args ->
-            case args of
-                [] ->
-                    if name == Name.float then
-                        encode "float"
+        Can.PayloadFloat ->
+            encode "float"
 
-                    else if name == Name.int then
-                        encode "int"
+        Can.PayloadInt ->
+            encode "int"
 
-                    else if name == Name.bool then
-                        encode "bool"
+        Can.PayloadBool ->
+            encode "bool"
 
-                    else if name == Name.string then
-                        encode "string"
+        Can.PayloadString ->
+            encode "string"
 
-                    else if name == Name.value then
-                        Names.registerGlobal A.zero ModuleName.basics Name.identity_
+        Can.PayloadValue ->
+            Names.registerGlobal A.zero ModuleName.basics Name.identity_
 
-                    else if name == Name.bytes then
-                        encodeBytes
+        Can.PayloadBytes ->
+            encodeBytes
 
-                    else
-                        crash "toEncoder: bad custom type"
+        Can.PayloadMaybe arg ->
+            encodeMaybe arg
 
-                [ arg ] ->
-                    if name == Name.maybe then
-                        encodeMaybe arg
+        Can.PayloadList arg ->
+            encodeList arg
 
-                    else if name == Name.list then
-                        encodeList arg
+        Can.PayloadArray arg ->
+            encodeArray arg
 
-                    else if name == Name.array then
-                        encodeArray arg
-
-                    else
-                        crash "toEncoder: bad custom type"
-
-                _ ->
-                    crash "toEncoder: bad custom type"
-
-        Can.TRecord _ (Just _) ->
-            crash "toEncoder: bad record"
-
-        Can.TRecord fields Nothing ->
+        Can.PayloadRecord fields ->
             let
-                encodeField : ( Name, Can.FieldType Name ) -> Names.Tracker Opt.Expr
-                encodeField ( name, Can.FieldType _ fieldType ) =
+                encodeField : ( Name, ( Int, Can.Payload ) ) -> Names.Tracker Opt.Expr
+                encodeField ( name, ( _, fieldType ) ) =
                     toEncoder fieldType
                         |> Names.map
                             (\encoder ->
@@ -139,7 +105,7 @@ toEncoder tipe =
                                     value =
                                         Opt.Call A.zero encoder [ Opt.Access (Opt.VarLocal Name.dollar) A.zero name ]
                                 in
-                                Opt.Tuple A.zero (Opt.Str A.zero (Name.toElmString name)) value []
+                                Opt.Tuple A.zero (Opt.Str A.zero (Name.toElmString name)) value Nothing
                             )
             in
             encode "object"
@@ -161,7 +127,7 @@ toEncoder tipe =
 {-| Builds an encoder for `Maybe tipe`: `Json.Encode.null` for `Nothing`, and
 the encoding of the contained value for `Just`.
 -}
-encodeMaybe : Can.Type Name -> Names.Tracker Opt.Expr
+encodeMaybe : Can.Payload -> Names.Tracker Opt.Expr
 encodeMaybe tipe =
     encode "null"
         |> Names.andThen
@@ -188,7 +154,7 @@ encodeMaybe tipe =
 {-| Builds an encoder for `List tipe`, which encodes each element with the
 encoder for `tipe`.
 -}
-encodeList : Can.Type Name -> Names.Tracker Opt.Expr
+encodeList : Can.Payload -> Names.Tracker Opt.Expr
 encodeList tipe =
     encode "list"
         |> Names.andThen
@@ -201,7 +167,7 @@ encodeList tipe =
 {-| Builds an encoder for `Array tipe`, which encodes each element with the
 encoder for `tipe`.
 -}
-encodeArray : Can.Type Name -> Names.Tracker Opt.Expr
+encodeArray : Can.Payload -> Names.Tracker Opt.Expr
 encodeArray tipe =
     encode "array"
         |> Names.andThen
@@ -211,26 +177,22 @@ encodeArray tipe =
             )
 
 
-{-| Builds an encoder for a tuple with elements of types `a`, `b` and then
-`cs`, which encodes it as a JSON array of the encoded elements in order.
+{-| Builds an encoder for a tuple with elements of types `a`, `b` and, for a
+three-element tuple, `maybeC`, which encodes it as a JSON array of the encoded
+elements in order.
 
-The function binds the first two elements as `a` and `b`, and each later one,
-taken from the tuple's `cs` field, under the `IndexName` name for its position
-(`c`, `d` and so on).
+The function binds the elements as `a`, `b` and, for a three-element tuple,
+`c`.
 
 -}
-encodeTuple : Can.Type Name -> Can.Type Name -> List (Can.Type Name) -> Names.Tracker Opt.Expr
-encodeTuple a b cs =
+encodeTuple : Can.Payload -> Can.Payload -> Maybe Can.Payload -> Names.Tracker Opt.Expr
+encodeTuple a b maybeC =
     let
         let_ : Name -> Index.ZeroBased -> Opt.Expr -> Opt.Expr
         let_ arg index body =
             Opt.Destruct (Opt.Destructor arg (Opt.Index index (Opt.Root Name.dollar))) body
 
-        letCs_ : Name -> Int -> Opt.Expr -> Opt.Expr
-        letCs_ arg index body =
-            Opt.Destruct (Opt.Destructor arg (Opt.ArrayIndex index (Opt.Field "cs" (Opt.Root Name.dollar)))) body
-
-        encodeArg : Name -> Can.Type Name -> Names.Tracker Opt.Expr
+        encodeArg : Name -> Can.Payload -> Names.Tracker Opt.Expr
         encodeArg arg tipe =
             toEncoder tipe
                 |> Names.map (\encoder -> Opt.Call A.zero encoder [ Opt.VarLocal arg ])
@@ -247,29 +209,25 @@ encodeTuple a b cs =
                                         encodeArg "b" b
                                             |> Names.andThen
                                                 (\arg2 ->
-                                                    let
-                                                        ( _, indexedCs ) =
-                                                            List.foldl (\( i, c ) ( index, acc ) -> ( Index.next index, ( i, index, c ) :: acc ))
-                                                                ( Index.third, [] )
-                                                                (List.indexedMap Tuple.pair cs)
-                                                                |> Tuple.mapSecond List.reverse
-                                                    in
-                                                    List.foldl
-                                                        (\( _, i, tipe ) acc ->
-                                                            encodeArg (IndexName.fromIndex i) tipe |> Names.andThen (\encodedArg -> Names.map (flip (++) [ encodedArg ]) acc)
-                                                        )
-                                                        (Names.pure [ arg1, arg2 ])
-                                                        indexedCs
+                                                    Names.traverseMaybe (encodeArg "c") maybeC
                                                         |> Names.map
-                                                            (\args ->
+                                                            (\maybeArg3 ->
+                                                                let
+                                                                    listCall : Opt.Expr
+                                                                    listCall =
+                                                                        Opt.Call A.zero list [ identity, Opt.List A.zero (arg1 :: arg2 :: Maybe.toList maybeArg3) ]
+                                                                in
                                                                 Opt.Function [ Name.dollar ]
                                                                     (let_ "a"
                                                                         Index.first
                                                                         (let_ "b"
                                                                             Index.second
-                                                                            (List.foldr (\( i, index, _ ) -> letCs_ (IndexName.fromIndex index) i)
-                                                                                (Opt.Call A.zero list [ identity, Opt.List A.zero args ])
-                                                                                indexedCs
+                                                                            (case maybeArg3 of
+                                                                                Just _ ->
+                                                                                    let_ "c" Index.third listCall
+
+                                                                                Nothing ->
+                                                                                    listCall
                                                                             )
                                                                         )
                                                                     )
@@ -284,87 +242,67 @@ encodeTuple a b cs =
 -- ====== FLAGS DECODER ======
 
 
-{-| Builds a decoder expression for program flags of type `tipe`.
+{-| Builds a decoder expression for program flags of the payload type
+`payload`.
 
-When `tipe` is unit itself (not an alias of it), the decoder is
-`Json.Decode.succeed ()`, which accepts any JSON value; otherwise it is
-`toDecoder`.
+When `payload` is unit, the decoder is `Json.Decode.succeed ()`, which accepts
+any JSON value; otherwise it is `toDecoder`.
 
 -}
-toFlagsDecoder : Can.Type Name -> Names.Tracker Opt.Expr
-toFlagsDecoder tipe =
-    case tipe of
-        Can.TUnit ->
+toFlagsDecoder : Can.Payload -> Names.Tracker Opt.Expr
+toFlagsDecoder payload =
+    case payload of
+        Can.PayloadUnit ->
             Names.map (\succeed -> Opt.Call A.zero succeed [ Opt.Unit ])
                 (decode "succeed")
 
         _ ->
-            toDecoder tipe
+            toDecoder payload
 
 
 
 -- ====== DECODE ======
 
 
-{-| Builds a decoder expression for values of type `tipe`.
-
-Crashes on a type outside the payload set given in the module docstring.
-
+{-| Builds a decoder expression for values of the payload type `payload`.
 -}
-toDecoder : Can.Type Name -> Names.Tracker Opt.Expr
-toDecoder tipe =
-    case tipe of
-        Can.TLambda _ _ _ ->
-            crash "functions should not be allowed through input ports"
-
-        Can.TVar _ ->
-            crash "type variables should not be allowed through input ports"
-
-        Can.TAlias _ _ args alias ->
-            toDecoder (Type.dealias args alias)
-
-        Can.TUnit ->
+toDecoder : Can.Payload -> Names.Tracker Opt.Expr
+toDecoder payload =
+    case payload of
+        Can.PayloadUnit ->
             decodeTuple0
 
-        Can.TTuple a b cs ->
+        Can.PayloadTuple a b cs ->
             decodeTuple a b cs
 
-        Can.TType _ name args ->
-            case ( name, args ) of
-                ( "Float", [] ) ->
-                    decode "float"
+        Can.PayloadFloat ->
+            decode "float"
 
-                ( "Int", [] ) ->
-                    decode "int"
+        Can.PayloadInt ->
+            decode "int"
 
-                ( "Bool", [] ) ->
-                    decode "bool"
+        Can.PayloadBool ->
+            decode "bool"
 
-                ( "String", [] ) ->
-                    decode "string"
+        Can.PayloadString ->
+            decode "string"
 
-                ( "Value", [] ) ->
-                    decode "value"
+        Can.PayloadValue ->
+            decode "value"
 
-                ( "Bytes", [] ) ->
-                    decodeBytes
+        Can.PayloadBytes ->
+            decodeBytes
 
-                ( "Maybe", [ arg ] ) ->
-                    decodeMaybe arg
+        Can.PayloadMaybe arg ->
+            decodeMaybe arg
 
-                ( "List", [ arg ] ) ->
-                    decodeList arg
+        Can.PayloadList arg ->
+            decodeList arg
 
-                ( "Array", [ arg ] ) ->
-                    decodeArray arg
+        Can.PayloadArray arg ->
+            decodeArray arg
 
-                _ ->
-                    crash "toDecoder: bad type"
-
-        Can.TRecord _ (Just _) ->
-            crash "toDecoder: bad record"
-
-        Can.TRecord fields Nothing ->
+        Can.PayloadRecord fields ->
             decodeRecord fields
 
 
@@ -379,7 +317,7 @@ and otherwise `Just` the value decoded as `tipe`.
 nested `Maybe`, a `null` still gives the outer `Nothing`.
 
 -}
-decodeMaybe : Can.Type Name -> Names.Tracker Opt.Expr
+decodeMaybe : Can.Payload -> Names.Tracker Opt.Expr
 decodeMaybe tipe =
     Names.registerGlobal A.zero ModuleName.maybe "Nothing"
         |> Names.andThen
@@ -420,7 +358,7 @@ decodeMaybe tipe =
 
 {-| Builds a decoder for a JSON array as `List tipe`.
 -}
-decodeList : Can.Type Name -> Names.Tracker Opt.Expr
+decodeList : Can.Payload -> Names.Tracker Opt.Expr
 decodeList tipe =
     decode "list"
         |> Names.andThen
@@ -436,7 +374,7 @@ decodeList tipe =
 
 {-| Builds a decoder for a JSON array as `Array tipe`.
 -}
-decodeArray : Can.Type Name -> Names.Tracker Opt.Expr
+decodeArray : Can.Payload -> Names.Tracker Opt.Expr
 decodeArray tipe =
     decode "array"
         |> Names.andThen
@@ -458,8 +396,8 @@ decodeTuple0 =
         (decode "null")
 
 
-{-| Builds a decoder for a tuple with elements of types `a`, `b` and then `cs`,
-read from a JSON array by position.
+{-| Builds a decoder for a tuple with elements of types `a`, `b` and, for a
+three-element tuple, `maybeC`, read from a JSON array by position.
 
 Each element is decoded with `Json.Decode.index` and bound by
 `Json.Decode.andThen` to the name `Name.fromVarIndex` gives its position
@@ -467,26 +405,26 @@ Each element is decoded with `Json.Decode.index` and bound by
 names and passes it to `Json.Decode.succeed`.
 
 -}
-decodeTuple : Can.Type Name -> Can.Type Name -> List (Can.Type Name) -> Names.Tracker Opt.Expr
-decodeTuple a b cs =
+decodeTuple : Can.Payload -> Can.Payload -> Maybe Can.Payload -> Names.Tracker Opt.Expr
+decodeTuple a b maybeC =
     decode "succeed"
         |> Names.andThen
             (\succeed ->
                 let
                     ( allElems, lastElem ) =
-                        case List.reverse cs of
-                            c :: rest ->
-                                ( a :: b :: List.reverse rest, c )
+                        case maybeC of
+                            Just c ->
+                                ( [ a, b ], c )
 
-                            _ ->
+                            Nothing ->
                                 ( [ a ], b )
 
                     tuple : Opt.Expr
                     tuple =
-                        Opt.Tuple A.zero (toLocal 0) (toLocal 1) (List.indexedMap (\i _ -> toLocal (i + 2)) cs)
+                        Opt.Tuple A.zero (toLocal 0) (toLocal 1) (Maybe.map (\_ -> toLocal 2) maybeC)
                 in
                 List.foldr (\( i, c ) -> Names.andThen (indexAndThen i c))
-                    (indexAndThen (List.length cs + 1) lastElem (Opt.Call A.zero succeed [ tuple ]))
+                    (indexAndThen (List.length allElems) lastElem (Opt.Call A.zero succeed [ tuple ]))
                     (List.indexedMap Tuple.pair allElems)
             )
 
@@ -502,7 +440,7 @@ toLocal index =
 {-| Wraps `decoder` so that it runs after the element at array index `i` has
 been decoded as `tipe` and bound to the name `Name.fromVarIndex i`.
 -}
-indexAndThen : Int -> Can.Type Name -> Opt.Expr -> Names.Tracker Opt.Expr
+indexAndThen : Int -> Can.Payload -> Opt.Expr -> Names.Tracker Opt.Expr
 indexAndThen i tipe decoder =
     decode "andThen"
         |> Names.andThen
@@ -537,7 +475,7 @@ nested in reverse alphabetical order, so the last field alphabetically is
 decoded first. Every field name is registered once in the field counts.
 
 -}
-decodeRecord : Dict Name.Name (Can.FieldType Name) -> Names.Tracker Opt.Expr
+decodeRecord : Dict Name.Name ( Int, Can.Payload ) -> Names.Tracker Opt.Expr
 decodeRecord fields =
     let
         toFieldExpr : Name -> b -> Opt.Expr
@@ -564,8 +502,8 @@ decodeRecord fields =
 {-| Wraps `decoder` so that it runs after field `key` has been decoded as its
 type and bound to a local named `key`.
 -}
-fieldAndThen : Opt.Expr -> ( Name.Name, Can.FieldType Name ) -> Names.Tracker Opt.Expr
-fieldAndThen decoder ( key, Can.FieldType _ tipe ) =
+fieldAndThen : Opt.Expr -> ( Name.Name, ( Int, Can.Payload ) ) -> Names.Tracker Opt.Expr
+fieldAndThen decoder ( key, ( _, tipe ) ) =
     decode "andThen"
         |> Names.andThen
             (\andThen ->

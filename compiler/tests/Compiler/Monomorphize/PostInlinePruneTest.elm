@@ -93,6 +93,7 @@ import Compiler.MonoOpt.InlineSimplify as MonoInlineSimplify
 import Compiler.Monomorphize.Prune as Prune
 import Data.BitSet as BitSet
 import Data.Graph as Graph
+import Data.NonEmptyList as NE
 import Expect
 import Fuzz
 import Test exposing (Test)
@@ -163,18 +164,15 @@ suite =
                 \_ ->
                     withGraphs inlineAwayModule
                         (\_ ((Mono.MonoGraph record) as after) ->
-                            case record.main of
-                                Just (Mono.StaticMain mainSpecId) ->
-                                    if isLive after mainSpecId then
-                                        Expect.pass
+                            let
+                                (Mono.StaticMain mainSpecId) =
+                                    record.main
+                            in
+                            if isLive after mainSpecId then
+                                Expect.pass
 
-                                    else
-                                        Expect.fail "the main spec was pruned"
-
-                                _ ->
-                                    -- Not expected: the pipeline always
-                                    -- adds a `main`.
-                                    Expect.pass
+                            else
+                                Expect.fail "the main spec was pruned"
                         )
             ]
         , Test.describe "T4 — the registry is pruned with the nodes"
@@ -330,7 +328,7 @@ exprGlobalRefs expr =
             exprGlobalRefs inner ++ List.concatMap (\( _, e ) -> exprGlobalRefs e) updates
 
         Mono.MonoTupleCreate _ items _ ->
-            List.concatMap exprGlobalRefs items
+            List.concatMap exprGlobalRefs (Mono.tupleToList items)
 
         Mono.MonoLiteral _ _ ->
             []
@@ -364,7 +362,7 @@ deciderGlobalRefs decider =
             deciderGlobalRefs yes ++ deciderGlobalRefs no
 
         Mono.FanOut _ edges fallback ->
-            List.concatMap (\( _, d ) -> deciderGlobalRefs d) edges ++ deciderGlobalRefs fallback
+            List.concatMap (\( _, d ) -> deciderGlobalRefs d) (NE.toList edges) ++ deciderGlobalRefs fallback
 
 
 {-| Returns what `check` makes of the graph before and after the prune, where
@@ -709,8 +707,8 @@ cyclicSet n keep edges =
         |> List.concatMap
             (\scc ->
                 case scc of
-                    Graph.CyclicSCC vs ->
-                        vs
+                    Graph.CyclicSCC v vs ->
+                        v :: vs
 
                     Graph.AcyclicSCC _ ->
                         []

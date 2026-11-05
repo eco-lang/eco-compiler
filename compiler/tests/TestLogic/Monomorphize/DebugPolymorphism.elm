@@ -172,7 +172,7 @@ agrees param arg =
             agrees p a
 
         ( Mono.MTuple _ ps, Mono.MTuple _ as_ ) ->
-            List.length ps == List.length as_ && List.all identity (List.map2 agrees ps as_)
+            List.length (Mono.tupleToList ps) == List.length (Mono.tupleToList as_) && List.all identity (List.map2 agrees (Mono.tupleToList ps) (Mono.tupleToList as_))
 
         ( Mono.MRecord _ ps, Mono.MRecord _ as_ ) ->
             Dict.keys ps
@@ -216,7 +216,7 @@ typeLabel monoType =
             "List (" ++ typeLabel elemType ++ ")"
 
         Mono.MTuple _ elemTypes ->
-            "( " ++ String.join ", " (List.map typeLabel elemTypes) ++ " )"
+            "( " ++ String.join ", " (List.map typeLabel (Mono.tupleToList elemTypes)) ++ " )"
 
         Mono.MRecord _ fields ->
             "{ " ++ String.join ", " (List.map (\( n, t ) -> n ++ " : " ++ typeLabel t) (Dict.toList fields)) ++ " }"

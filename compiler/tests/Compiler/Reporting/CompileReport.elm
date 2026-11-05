@@ -55,7 +55,7 @@ reportOf source =
                 |> Result.map withTestImports
                 |> Result.andThen
                     (\modul ->
-                        case Tuple.second (ReportingResult.run (Canonicalize.canonicalize ( "eco", "example" ) Basic.testIfaces modul)) of
+                        case ReportingResult.run (Canonicalize.canonicalize ( "eco", "example" ) Basic.testIfaces modul) of
                             Err errors ->
                                 Err (Error.BadNames errors)
 

@@ -44,6 +44,7 @@ import Array
 import Compiler.GenerateMlir.Types as Types
 import Compiler.IR.Mono as Mono
 import Compiler.IR.Source as Src
+import Data.NonEmptyList as NE
 import Expect exposing (Expectation)
 import TestLogic.TestPipeline exposing (runToMlir)
 
@@ -175,7 +176,7 @@ collectCallIssues ctx registry expr =
                 ++ List.concatMap (\( _, e ) -> collectCallIssues ctx registry e) updates
 
         Mono.MonoTupleCreate _ elementExprs _ ->
-            List.concatMap (collectCallIssues ctx registry) elementExprs
+            List.concatMap (collectCallIssues ctx registry) (Mono.tupleToList elementExprs)
 
         Mono.MonoTailCall _ args _ ->
             List.concatMap (\( _, e ) -> collectCallIssues ctx registry e) args
@@ -213,7 +214,7 @@ collectDeciderIssues ctx registry decider =
                 ++ collectDeciderIssues ctx registry failure
 
         Mono.FanOut _ edges fallback ->
-            List.concatMap (\( _, d ) -> collectDeciderIssues ctx registry d) edges
+            List.concatMap (\( _, d ) -> collectDeciderIssues ctx registry d) (NE.toList edges)
                 ++ collectDeciderIssues ctx registry fallback
 
 

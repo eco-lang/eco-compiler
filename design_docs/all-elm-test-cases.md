@@ -5378,7 +5378,7 @@ testValue = {- Elm.Kernel.JsArray.empty -}
 testValue = {- Elm.Kernel.Utils.Tuple2 -}
 ```
 
-### VarKernel Basics.pi (ConstantFloat intrinsic)
+### VarKernel Basics.pi (float constant)
 ```elm
 testValue = {- Elm.Kernel.Basics.pi -}
 ```

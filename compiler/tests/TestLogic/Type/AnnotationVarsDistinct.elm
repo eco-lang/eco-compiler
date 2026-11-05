@@ -30,6 +30,7 @@ import Compiler.IR.Typed.TypeVars as Vars
 import Compiler.Type.SolverSnapshot as SolverSnapshot
 import Dict exposing (Dict)
 import Expect exposing (Expectation)
+import Maybe.Extra as Maybe
 import Set exposing (Set)
 import TestLogic.TestPipeline as Pipeline
 
@@ -148,7 +149,7 @@ variableClasses cells var ( visited, found ) =
                                 go (extension :: Dict.values fields) ( visited1, found )
 
                             Vars.Tuple1 a b cs ->
-                                go (a :: b :: cs) ( visited1, found )
+                                go (a :: b :: Maybe.toList cs) ( visited1, found )
 
                             _ ->
                                 ( visited1, found )
@@ -183,7 +184,7 @@ typeVarNames tipe acc =
             acc
 
         Can.TTuple a b cs ->
-            List.foldl typeVarNames acc (a :: b :: cs)
+            List.foldl typeVarNames acc (a :: b :: Maybe.toList cs)
 
         Can.TAlias _ _ args _ ->
             List.foldl (\( _, t ) a -> typeVarNames t a) acc args

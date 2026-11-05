@@ -88,7 +88,9 @@ import Compiler.PreMono.AssignMVarIds as AssignMVarIds
 import Compiler.PreMono.EntryPrep as EntryPrep
 import Compiler.PreMono.Fresh as Fresh
 import Data.Map as Dict
+import Data.NonEmptyList as NE
 import Dict as CoreDict
+import Maybe.Extra as Maybe
 
 
 
@@ -785,7 +787,12 @@ rewriteExpr ctx expr =
                     rewriteExpr ctx1 b
 
                 ( rest1, ctx3 ) =
-                    mapList ctx2 rest rewriteExpr
+                    case rest of
+                        Just c ->
+                            Tuple.mapFirst Just (rewriteExpr ctx2 c)
+
+                        Nothing ->
+                            ( Nothing, ctx2 )
             in
             ( TOpt.Tuple region a1 b1 rest1 meta, ctx3 )
 
@@ -837,7 +844,7 @@ rewriteDecider ctx decider =
         TOpt.FanOut path branches fallback ->
             let
                 ( newBranches, ctx1 ) =
-                    mapList ctx branches (\c ( t, d ) -> Tuple.mapFirst (Tuple.pair t) (rewriteDecider c d))
+                    mapNonempty ctx branches (\c ( t, d ) -> Tuple.mapFirst (Tuple.pair t) (rewriteDecider c d))
 
                 ( newFallback, ctx2 ) =
                     rewriteDecider ctx1 fallback
@@ -994,7 +1001,8 @@ can be copied into several branches at no cost.
     is built.
   - `Let`, `Destruct`, every `If` branch, and both the `Inline` leaves and the
     `jumps` of a `Case` have the application pushed inside them.
-  - A lambda is beta-reduced by `betaLambda`.
+  - A lambda with no more parameters than there are arguments is
+    beta-reduced by `betaLambda`; any other lambda gets an outer `Call`.
   - Anything else gets an outer `Call`.
 
 `resultType` is the type after all of `args` have been applied, and the
@@ -1057,10 +1065,18 @@ apply ctx e args resultType =
                         ( TOpt.Call region e args newMeta, ctx )
 
             TOpt.Function _ params body _ ->
-                betaLambda ctx params body args resultType
+                if List.length params <= List.length args then
+                    betaLambda ctx params body args resultType
+
+                else
+                    ( TOpt.Call (regionOf e) e args newMeta, ctx )
 
             TOpt.TrackedFunction _ params body _ ->
-                betaLambda ctx (List.map (\( n, t ) -> ( A.toValue n, t )) params) body args resultType
+                if List.length params <= List.length args then
+                    betaLambda ctx (List.map (\( n, t ) -> ( A.toValue n, t )) params) body args resultType
+
+                else
+                    ( TOpt.Call (regionOf e) e args newMeta, ctx )
 
             TOpt.Let def body _ ->
                 let
@@ -1131,7 +1147,7 @@ applyDecider ctx decider args resultType =
         TOpt.FanOut path branches fallback ->
             let
                 ( newBranches, ctx1 ) =
-                    mapList ctx branches (\c ( t, d ) -> Tuple.mapFirst (Tuple.pair t) (applyDecider c d args resultType))
+                    mapNonempty ctx branches (\c ( t, d ) -> Tuple.mapFirst (Tuple.pair t) (applyDecider c d args resultType))
 
                 ( newFallback, ctx2 ) =
                     applyDecider ctx1 fallback args resultType
@@ -1143,8 +1159,8 @@ applyDecider ctx decider args resultType =
 by let-binding each parameter to its argument and applying the body to any
 arguments left over. No substitution is done, so no capture can occur.
 
-Given fewer arguments than parameters, it returns a plain `Call` of a rebuilt
-lambda instead.
+There must be at least as many arguments as parameters; `apply` calls it only
+then.
 
 -}
 betaLambda : Ctx -> List ( Name, Can.Type TypeIds.MVarId ) -> TOpt.Expr TypeIds.MVarId -> List (TOpt.Expr TypeIds.MVarId) -> Can.Type TypeIds.MVarId -> ( TOpt.Expr TypeIds.MVarId, Ctx )
@@ -1152,35 +1168,25 @@ betaLambda ctx params body args resultType =
     let
         arity =
             List.length params
+
+        ( newBody, ctx1 ) =
+            apply ctx body (List.drop arity args) resultType
+
+        wrapped =
+            List.foldr
+                (\( ( pname, ptype ), arg ) acc ->
+                    -- The `Let`'s copy of its body's type is a second
+                    -- occurrence, so its arrow slots are cleared.
+                    TOpt.Let (TOpt.Def A.zero pname arg ptype)
+                        acc
+                        { tipe = clearArrows (TOpt.typeOf acc)
+                        , tvar = (TOpt.metaOf acc).tvar
+                        }
+                )
+                newBody
+                (List.map2 Tuple.pair params (List.take arity args))
     in
-    if List.length args < arity then
-        ( TOpt.Call A.zero
-            (TOpt.Function Nothing params body (TOpt.metaOf body))
-            args
-            { tipe = resultType, tvar = Nothing }
-        , ctx
-        )
-
-    else
-        let
-            ( newBody, ctx1 ) =
-                apply ctx body (List.drop arity args) resultType
-
-            wrapped =
-                List.foldr
-                    (\( ( pname, ptype ), arg ) acc ->
-                        -- The `Let`'s copy of its body's type is a second
-                        -- occurrence, so its arrow slots are cleared.
-                        TOpt.Let (TOpt.Def A.zero pname arg ptype)
-                            acc
-                            { tipe = clearArrows (TOpt.typeOf acc)
-                            , tvar = (TOpt.metaOf acc).tvar
-                            }
-                    )
-                    newBody
-                    (List.map2 Tuple.pair params (List.take arity args))
-        in
-        ( wrapped, bump (\m -> { m | pushed = m.pushed + 1 }) ctx1 )
+    ( wrapped, bump (\m -> { m | pushed = m.pushed + 1 }) ctx1 )
 
 
 
@@ -1258,7 +1264,7 @@ cheap ctx expr =
             List.all (cheap ctx) items
 
         TOpt.Tuple _ a b rest _ ->
-            cheap ctx a && cheap ctx b && List.all (cheap ctx) rest
+            cheap ctx a && cheap ctx b && Maybe.unwrap True (cheap ctx) rest
 
         TOpt.Record fields _ ->
             List.all (cheap ctx) (CoreDict.values fields)
@@ -1376,7 +1382,7 @@ cheapDecider ctx decider =
             cheapDecider ctx ok && cheapDecider ctx ko
 
         TOpt.FanOut _ branches fallback ->
-            List.all (\( _, d ) -> cheapDecider ctx d) branches && cheapDecider ctx fallback
+            List.all (\( _, d ) -> cheapDecider ctx d) (NE.toList branches) && cheapDecider ctx fallback
 
 
 
@@ -1709,7 +1715,7 @@ cost expr =
             3 + Dict.foldl (\_ e a -> a + cost e) 0 fields
 
         TOpt.Tuple _ a b rest _ ->
-            3 + cost a + cost b + sumBy cost rest
+            3 + cost a + cost b + Maybe.unwrap 0 cost rest
 
         _ ->
             1
@@ -1729,10 +1735,10 @@ costDecider decider =
             1
 
         TOpt.Chain tests ok ko ->
-            1 + List.length tests + costDecider ok + costDecider ko
+            1 + List.length (NE.toList tests) + costDecider ok + costDecider ko
 
         TOpt.FanOut _ branches fallback ->
-            1 + sumBy (\( _, d ) -> costDecider d) branches + costDecider fallback
+            1 + sumBy (\( _, d ) -> costDecider d) (NE.toList branches) + costDecider fallback
 
 
 {-| Returns the `cost` of a `let` definition's bound expression or body.
@@ -1832,7 +1838,7 @@ substTypeVars env tipe =
             Can.TUnit
 
         Can.TTuple a b rest ->
-            Can.TTuple (substTypeVars env a) (substTypeVars env b) (List.map (substTypeVars env) rest)
+            Can.TTuple (substTypeVars env a) (substTypeVars env b) (Maybe.map (substTypeVars env) rest)
 
         Can.TAlias h n args real ->
             Can.TAlias h n (List.map (\( pn, t ) -> ( pn, substTypeVars env t )) args) real
@@ -1881,7 +1887,7 @@ clearArrows tipe =
             Can.TUnit
 
         Can.TTuple a b rest ->
-            Can.TTuple (clearArrows a) (clearArrows b) (List.map clearArrows rest)
+            Can.TTuple (clearArrows a) (clearArrows b) (Maybe.map clearArrows rest)
 
         Can.TAlias h n args real ->
             Can.TAlias h
@@ -1903,7 +1909,8 @@ clearArrows tipe =
 
 
 {-| Returns how many arguments one call of `func` may carry, or `Nothing` when
-it is not a global or cycle member with a positive arity in `Gate.arity`.
+it is not a global (a cycle's function included) with a positive arity in
+`Gate.arity`.
 
 The bound is the callee's predicted arity after this pass, capped by the
 declared arity of the reference's own type. It is not the type's arrow count
@@ -1934,12 +1941,10 @@ calleeArity ctx func =
         TOpt.VarGlobal _ g meta ->
             capped (TOpt.toComparableGlobal g) meta
 
-        TOpt.VarCycle _ home name meta ->
-            capped (TOpt.toComparableGlobal (TOpt.Global home name)) meta
-
         _ ->
             -- Kernels included: with no graph node, nothing says where a
-            -- kernel's first stage ends.
+            -- kernel's first stage ends. A `VarCycle` names a cycle value,
+            -- which `Gate.arity` does not hold.
             Nothing
 
 
@@ -1991,15 +1996,13 @@ binderRef ( name, tipe ) =
     TOpt.VarLocal name { tipe = tipe, tvar = Nothing }
 
 
-{-| Returns the region of a call, global, cycle reference or tracked local, or
-`A.zero` for any other expression.
+{-| Returns the region of a global, cycle reference or tracked local, or
+`A.zero` for any other expression. A call never reaches it: `apply` handles
+calls itself.
 -}
 regionOf : TOpt.Expr TypeIds.MVarId -> A.Region
 regionOf expr =
     case expr of
-        TOpt.Call region _ _ _ ->
-            region
-
         TOpt.VarGlobal region _ _ ->
             region
 
@@ -2050,6 +2053,21 @@ mapList ctx xs f =
                 xs
     in
     ( List.reverse acc, ctx1 )
+
+
+{-| Returns `f` mapped over a non-empty list in order, threading the context
+through.
+-}
+mapNonempty : Ctx -> NE.Nonempty a -> (Ctx -> a -> ( b, Ctx )) -> ( NE.Nonempty b, Ctx )
+mapNonempty ctx (NE.Nonempty x xs) f =
+    let
+        ( y, ctx1 ) =
+            f ctx x
+
+        ( ys, ctx2 ) =
+            mapList ctx1 xs f
+    in
+    ( NE.Nonempty y ys, ctx2 )
 
 
 {-| Returns `rebuild` applied to the expressions after `rewriteExpr`.

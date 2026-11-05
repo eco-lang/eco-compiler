@@ -444,29 +444,27 @@ addExposedValue home vars types binops state exposed =
 
 
 {-| Returns the names of the unions in `types` that have a constructor named
-`givenName`.
+`givenName`, in name order.
+
+Only a union's entry can hold such a constructor: an alias's entry holds at
+most its record constructor, named like the alias, and `givenName` names no
+type here.
+
 -}
 checkForCtorMistake : Name -> Dict Name ( Env.Type, Env.Exposed Env.Ctor ) -> List Name
 checkForCtorMistake givenName types =
     let
-        addMatches : a -> ( b, Dict Name (Env.Info Env.Ctor) ) -> List Name -> List Name
-        addMatches _ ( _, exposedCtors ) matches =
-            Dict.foldr addMatch matches exposedCtors
+        addMatch : Name -> ( Env.Type, Env.Exposed Env.Ctor ) -> List Name -> List Name
+        addMatch typeName ( tipe, exposedCtors ) matches =
+            case tipe of
+                Env.Union _ _ ->
+                    if Dict.member givenName exposedCtors then
+                        typeName :: matches
 
-        addMatch : Name -> Env.Info Env.Ctor -> List Name -> List Name
-        addMatch ctorName info matches =
-            if ctorName /= givenName then
-                matches
-
-            else
-                case info of
-                    Env.Specific _ (Env.Ctor _ tipeName _ _ _) ->
-                        tipeName :: matches
-
-                    Env.Specific _ (Env.RecordCtor _ _ _) ->
+                    else
                         matches
 
-                    Env.Ambiguous _ _ ->
-                        matches
+                Env.Alias _ _ _ _ ->
+                    matches
     in
-    Dict.foldr addMatches [] types
+    Dict.foldr addMatch [] types

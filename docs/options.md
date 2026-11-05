@@ -149,7 +149,7 @@ Parsing classes (inputs are trimmed and lower-cased unless stated otherwise):
 | `ECO_SPEC_TYPE_NODE_LIMIT` | INT; 400000; 0 disables | Watchdog (MONO_030): maximum MonoType nodes in one spec key; the compile fails above it (no-hash) | compiler/src/Builder/Eco/Config.elm:166 |
 | `ECO_SPEC_BREADTH_LIMIT` | INT; 50000; 0 disables | Watchdog (MONO_030): maximum created specs per global (no-hash) | compiler/src/Builder/Eco/Config.elm:171 |
 | `ECO_MONO_VALIDATE` | SET; off | Debug/CI: runs the MONO_029 layout validator, pre-mono `assertMinted` and the post-prune checks, and fails the compile on a violation. Env-only, not settable from JSON (no-hash) | compiler/src/Builder/Eco/Config.elm:176 |
-| `ECO_STAMP_GUARD_CENSUS` | exact `1\|true\|yes`, **case-sensitive, not trimmed**; off | Census: per-module `[stampguard] walked= skipped= annWalked= annSkipped=` line on stderr, read once per module in the type-check phase. Not part of EcoConfig | compiler/src/Compiler/Compile.elm:574 |
+| `ECO_STAMP_GUARD_CENSUS` | exact `1\|true\|yes`, **case-sensitive, not trimmed**; off | Census: per-module `[stampguard] walked= skipped= annWalked= module=` line on stderr, read once per module in the type-check phase. Not part of EcoConfig | compiler/src/Compiler/Compile.elm:466 |
 
 #### 2b. Inliner / pre-mono transforms
 

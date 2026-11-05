@@ -61,8 +61,10 @@ import Compiler.IR.Source as Src
 import Compiler.IR.Typed.Optimized as TOpt
 import Compiler.Type.KernelTypes as KernelTypes
 import Data.Map
+import Data.NonEmptyList as NE
 import Dict exposing (Dict)
 import Expect
+import Maybe.Extra as Maybe
 import TestLogic.LocalOpt.Typed.TypeEq as TypeEq
 import TestLogic.TestPipeline as Pipeline
 
@@ -417,7 +419,7 @@ checkExpr env context expr =
         TOpt.Tuple _ e1 e2 rest _ ->
             checkExpr env context e1
                 ++ checkExpr env context e2
-                ++ List.concatMap (checkExpr env context) rest
+                ++ List.concatMap (checkExpr env context) (Maybe.toList rest)
 
         TOpt.VarEnum _ _ _ _ ->
             []
@@ -542,7 +544,7 @@ checkDecider env context expectedType decider =
                 ++ checkDecider env context expectedType failure
 
         TOpt.FanOut _ options fallback ->
-            List.concatMap (\( _, d ) -> checkDecider env context expectedType d) options
+            List.concatMap (\( _, d ) -> checkDecider env context expectedType d) (NE.toList options)
                 ++ checkDecider env context expectedType fallback
 
 
@@ -722,7 +724,7 @@ typeToString tipe =
             "()"
 
         Can.TTuple a b cs ->
-            "( " ++ String.join ", " (List.map typeToString (a :: b :: cs)) ++ " )"
+            "( " ++ String.join ", " (List.map typeToString (a :: b :: Maybe.toList cs)) ++ " )"
 
         Can.TAlias (ModuleName.Canonical pkg mod) name _ _ ->
             Tuple.first pkg ++ "/" ++ Tuple.second pkg ++ ":" ++ mod ++ "." ++ name ++ " (alias)"

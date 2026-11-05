@@ -275,10 +275,11 @@ Minimum viable new op = **4 edits, no new files**:
 2. **A lowering pattern** — one `struct FooOpLowering : OpConversionPattern<FooOp>`
    in the appropriate `EcoToLLVM*.cpp`, plus one line in that file's
    `populate…Patterns` list (e.g. `EcoToLLVMArith.cpp:1133`).
-3. **Elm-side emission** — an `Intrinsic` constructor in
-   `/work/compiler/src/Compiler/GenerateMlir/Intrinsics.elm` (add to `type Intrinsic`
-   at `:26-53`, `intrinsicResultMlirType` at `:70+`, the per-module dispatch under
-   `kernelIntrinsic` at `:312-334`, and `generateIntrinsicOp`).
+3. **Elm-side emission** — an `Operation` constructor in
+   `/work/compiler/src/Compiler/IR/Kernel/Intrinsics.elm` (add to `type Operation`, and to the
+   per-module dispatch under `kernelIntrinsicOn`), plus its result type in
+   `operationResultMlirType` and its emission in `generateOperationOps`
+   (`/work/compiler/src/Compiler/GenerateMlir/Intrinsics.elm`).
 4. **Nothing for MLIR bytecode.** The Elm-side writer is generic and string-keyed
    (`/work/compiler/src/Mlir/Mlir.elm:101-111` — `MlirOp` is `{ name : String, … }`;
    `/work/compiler/src/Mlir/Bytecode/StringTable.elm`). Op names are interned

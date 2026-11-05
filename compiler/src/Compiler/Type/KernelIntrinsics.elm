@@ -1,4 +1,4 @@
-module Compiler.Type.KernelIntrinsics exposing (Row, lookup, rows)
+module Compiler.Type.KernelIntrinsics exposing (Row, lookup)
 
 {-| Gives a few kernel functions a type, so that each use of one is checked
 against a type, instead of being bounded only by its context.
@@ -94,7 +94,7 @@ one annotation cannot fit both. `Compiler.Monomorphize.Solver.KernelSetFacts` an
   - Any kernel whose C++ body has not been read. Leaving a kernel out never
     causes a type error.
 
-@docs Row, lookup, rows
+@docs Row, lookup
 
 -}
 
@@ -125,13 +125,6 @@ constraint of its own.
 lookup : Name -> Name -> Name -> Maybe Row
 lookup prefix home name =
     Dict.get ( prefix, home, name ) intrinsics
-
-
-{-| Every row of the table with its (prefix, home, name) key, in key order.
--}
-rows : List ( ( Name, Name, Name ), Row )
-rows =
-    Dict.toList intrinsics
 
 
 

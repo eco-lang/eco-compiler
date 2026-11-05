@@ -1874,8 +1874,7 @@ toBadDepRank badDep =
 {-| A reason the source code of one package version could not be downloaded.
 
 The endpoint is the address that gives the archive's download link and hash.
-`PP_BadEndpointRequest` and `PP_BadArchiveRequest` are HTTP failures fetching
-the endpoint and the archive.
+`PP_BadEndpointRequest` is an HTTP failure fetching the endpoint.
 `PP_BadEndpointContent` and `PP_BadArchiveContent` carry the URL whose response
 could not be read. `PP_BadArchiveHash` carries the archive's URL, the expected
 hash and the hash of what was downloaded.
@@ -1884,7 +1883,6 @@ hash and the hash of what was downloaded.
 type PackageProblem
     = PP_BadEndpointRequest Http.Error
     | PP_BadEndpointContent String
-    | PP_BadArchiveRequest Http.Error
     | PP_BadArchiveContent String
     | PP_BadArchiveHash String String String
 
@@ -1914,11 +1912,6 @@ toPackageProblemReport pkg vsn problem =
                         ++ "We have gotten reports that schools, businesses, airports, etc. sometimes intercept requests "
                         ++ "and add things to the body or change its contents entirely. Could that be the problem?"
                 ]
-
-        PP_BadArchiveRequest httpError ->
-            toHttpErrorReport "PROBLEM DOWNLOADING PACKAGE" httpError <|
-                "I was trying to download the source code for "
-                    ++ thePackage
 
         PP_BadArchiveContent url ->
             Help.report "PROBLEM DOWNLOADING PACKAGE"
@@ -2006,111 +1999,30 @@ toRegistryProblemReport title problem context =
 
 {-| Builds the report titled `title` for a failed request, opening with `context`,
 a sentence fragment saying why the request was made.
-
-An HTTP exception other than a bad status or too many redirects is reported
-with the placeholder text `TODO` where the error message would go.
-
 -}
 toHttpErrorReport : String -> Http.Error -> String -> Help.Report
-toHttpErrorReport title err context =
-    let
-        toHttpReport : String -> String -> List D.Doc -> Help.Report
-        toHttpReport intro url details =
-            Help.report title Nothing intro <|
-                D.indent 4 (D.dullyellow (D.fromChars url))
-                    :: details
-    in
-    case err of
-        Http.BadUrl url reason ->
-            toHttpReport (context ++ ", so I wanted to fetch:")
-                url
-                [ "But my HTTP library is saying this is not a valid URL. It is saying:" |> D.reflow
-                , D.fromChars reason |> D.indent 4
-                , D.reflow <|
-                    "This may indicate that there is some problem in the compiler, so please open an issue at "
-                        ++ "https://github.com/elm/compiler/issues listing your operating system, Elm version, the command "
-                        ++ "you ran, the terminal output, and any additional information that might help others reproduce the error."
-                ]
+toHttpErrorReport title (Http.BadHttp url code message) context =
+    Help.report title Nothing (context ++ ", so I tried to fetch:") <|
+        [ D.indent 4 (D.dullyellow (D.fromChars url))
+        , D.fillSep <|
+            [ D.fromChars "But"
+            , D.fromChars "it"
+            , D.fromChars "came"
+            , D.fromChars "back"
+            , D.fromChars "as"
+            , D.red (D.fromInt code)
+            ]
+                ++ List.map D.fromChars (String.words message)
 
-        Http.BadHttp url httpExceptionContent ->
-            case httpExceptionContent of
-                Utils.StatusCodeException response body ->
-                    let
-                        (Utils.HttpStatus code message) =
-                            Utils.httpResponseStatus response
-                    in
-                    toHttpReport (context ++ ", so I tried to fetch:")
-                        url
-                        [ D.fillSep <|
-                            [ D.fromChars "But"
-                            , D.fromChars "it"
-                            , D.fromChars "came"
-                            , D.fromChars "back"
-                            , D.fromChars "as"
-                            , D.red (D.fromInt code)
-                            ]
-                                ++ List.map D.fromChars (String.words message)
-                        , body |> D.reflow |> D.indent 4
-                        , D.reflow <|
-                            "This may mean some online endpoint changed in an unexpected way, so if does not seem like "
-                                ++ "something on your side is causing this (e.g. firewall) please report this to "
-                                ++ "https://github.com/elm/compiler/issues with your operating system, Elm version, "
-                                ++ "the command you ran, the terminal output, and any additional information that can help others reproduce the error!"
-                        ]
-
-                Utils.TooManyRedirects responses ->
-                    toHttpReport (context ++ ", so I tried to fetch:")
-                        url
-                        [ D.reflow <|
-                            "But I gave up after following these "
-                                ++ String.fromInt (List.length responses)
-                                ++ " redirects:"
-                        , List.map toRedirectDoc responses |> D.vcat |> D.indent 4
-                        , D.reflow <|
-                            "Is it possible that your internet connection intercepts certain requests? "
-                                ++ "That sometimes causes problems for folks in schools, businesses, airports, hotels, and certain countries. "
-                                ++ "Try asking for help locally or in a community forum!"
-                        ]
-
-                _ ->
-                    toHttpReport (context ++ ", so I tried to fetch:")
-                        url
-                        [ "But my HTTP library is giving me the following error message:" |> D.reflow
-                        , D.fromChars "TODO" |> D.indent 4
-                        , D.reflow <|
-                            "Are you somewhere with a slow internet connection? Or no internet? "
-                                ++ "Does the link I am trying to fetch work in your browser? "
-                                ++ "Maybe the site is down? Does your internet connection have a firewall that blocks certain domains? "
-                                ++ "It is usually something like that!"
-                        ]
-
-        Http.BadMystery url Utils.SomeException ->
-            toHttpReport (context ++ ", so I tried to fetch:")
-                url
-                [ "But I ran into something weird! I was able to extract this error message:" |> D.reflow
-                , D.fromChars "SomeException" |> D.indent 4
-                , D.reflow <|
-                    "Is it possible that your internet connection intercepts certain requests? "
-                        ++ "That sometimes causes problems for folks in schools, businesses, airports, hotels, and certain countries. "
-                        ++ "Try asking for help locally or in a community forum!"
-                ]
-
-
-{-| Builds one line describing a redirect: its status code, then the `Location` it
-pointed to, or the status message when it has none.
--}
-toRedirectDoc : Utils.HttpResponse body -> D.Doc
-toRedirectDoc response =
-    let
-        (Utils.HttpStatus code message) =
-            Utils.httpResponseStatus response
-    in
-    case Utils.listLookup Utils.httpHLocation (Utils.httpResponseHeaders response) of
-        Just loc ->
-            D.red (D.fromInt code) |> D.a (D.fromChars " - ") |> D.a (D.fromChars loc)
-
-        Nothing ->
-            D.red (D.fromInt code) |> D.a (D.fromChars " - ") |> D.a (D.fromChars message)
+        -- The line where the response body would go; no body is kept, so it
+        -- is empty.
+        , D.indent 4 D.empty
+        , D.reflow <|
+            "This may mean some online endpoint changed in an unexpected way, so if does not seem like "
+                ++ "something on your side is causing this (e.g. firewall) please report this to "
+                ++ "https://github.com/elm/compiler/issues with your operating system, Elm version, "
+                ++ "the command you ran, the terminal output, and any additional information that can help others reproduce the error!"
+        ]
 
 
 
@@ -2716,11 +2628,11 @@ toModuleNameConventionTable srcDir names =
 
         nameWidth : Int
         nameWidth =
-            Utils.listMaximum compare (11 :: List.map (String.length << Tuple.first) namePairs)
+            Utils.listMaximum compare 11 (List.map (String.length << Tuple.first) namePairs)
 
         pathWidth : Int
         pathWidth =
-            Utils.listMaximum compare (9 :: List.map (String.length << Tuple.second) namePairs)
+            Utils.listMaximum compare 9 (List.map (String.length << Tuple.second) namePairs)
 
         padded : Int -> String -> String
         padded width str =
@@ -3210,21 +3122,15 @@ packageProblemEncoder packageProblem =
                 , BE.string url
                 ]
 
-        PP_BadArchiveRequest httpError ->
-            Bytes.Encode.sequence
-                [ Bytes.Encode.unsignedInt8 2
-                , Http.errorEncoder httpError
-                ]
-
         PP_BadArchiveContent url ->
             Bytes.Encode.sequence
-                [ Bytes.Encode.unsignedInt8 3
+                [ Bytes.Encode.unsignedInt8 2
                 , BE.string url
                 ]
 
         PP_BadArchiveHash url expectedHash actualHash ->
             Bytes.Encode.sequence
-                [ Bytes.Encode.unsignedInt8 4
+                [ Bytes.Encode.unsignedInt8 3
                 , BE.string url
                 , BE.string expectedHash
                 , BE.string actualHash
@@ -3246,12 +3152,9 @@ packageProblemDecoder =
                         Bytes.Decode.map PP_BadEndpointContent BD.string
 
                     2 ->
-                        Bytes.Decode.map PP_BadArchiveRequest Http.errorDecoder
-
-                    3 ->
                         Bytes.Decode.map PP_BadArchiveContent BD.string
 
-                    4 ->
+                    3 ->
                         Bytes.Decode.map3 PP_BadArchiveHash
                             BD.string
                             BD.string

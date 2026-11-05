@@ -35,6 +35,7 @@ import Compiler.Core.Name as Name exposing (Name)
 import Compiler.Elm.ModuleName as ModuleName
 import Compiler.IR.Canonical as Can
 import Dict exposing (Dict)
+import Maybe.Extra as Maybe
 
 
 
@@ -139,10 +140,10 @@ alphaEqStrictHelp state t1 t2 =
             Just state
 
         ( Can.TTuple a1 b1 cs1, Can.TTuple a2 b2 cs2 ) ->
-            if List.length cs1 == List.length cs2 then
+            if (cs1 == Nothing) == (cs2 == Nothing) then
                 alphaEqStrictHelp state a1 a2
                     |> Maybe.andThen (\s -> alphaEqStrictHelp s b1 b2)
-                    |> Maybe.andThen (\s -> alphaEqStrictList s cs1 cs2)
+                    |> Maybe.andThen (\s -> alphaEqStrictList s (Maybe.toList cs1) (Maybe.toList cs2))
 
             else
                 Nothing
@@ -368,7 +369,7 @@ applySubst subst tipe =
             Can.TUnit
 
         Can.TTuple a b cs ->
-            Can.TTuple (applySubst subst a) (applySubst subst b) (List.map (applySubst subst) cs)
+            Can.TTuple (applySubst subst a) (applySubst subst b) (Maybe.map (applySubst subst) cs)
 
         Can.TAlias home name args at ->
             Can.TAlias home

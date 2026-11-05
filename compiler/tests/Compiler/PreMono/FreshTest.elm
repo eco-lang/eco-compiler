@@ -64,11 +64,13 @@ import Compiler.IR.Canonical as Can
 import Compiler.IR.Typed.Optimized as TOpt
 import Compiler.IR.Typed.TypeVars as Vars
 import Compiler.PreMono.AssignMVarIds as AssignMVarIds
+import Compiler.PreMono.AssignMVarIdsHelpers as AssignMVarIdsHelpers
 import Compiler.PreMono.Fresh as Fresh
 import Data.Map as DMap
 import Data.Set as EverySet
 import Dict
 import Expect
+import Maybe.Extra as Maybe
 import Test exposing (Test)
 
 
@@ -275,7 +277,7 @@ state0 : AssignMVarIds.GlobalMVarState
 state0 =
     let
         seeded =
-            Tuple.second (AssignMVarIds.assignIdsToType (Can.TVar "seed"))
+            Tuple.second (AssignMVarIdsHelpers.assignIdsToType (Can.TVar "seed"))
     in
     { seeded | nextLam = nthLam 10, nextArrow = nthArrow 10 }
 
@@ -491,7 +493,7 @@ arrowIdsOfType t =
             List.concatMap arrowIdsOfType args
 
         Can.TTuple a b rest ->
-            arrowIdsOfType a ++ arrowIdsOfType b ++ List.concatMap arrowIdsOfType rest
+            arrowIdsOfType a ++ arrowIdsOfType b ++ List.concatMap arrowIdsOfType (Maybe.toList rest)
 
         _ ->
             []
@@ -521,7 +523,7 @@ typeVarsOfType t =
             List.concatMap typeVarsOfType args
 
         Can.TTuple a b rest ->
-            typeVarsOfType a ++ typeVarsOfType b ++ List.concatMap typeVarsOfType rest
+            typeVarsOfType a ++ typeVarsOfType b ++ List.concatMap typeVarsOfType (Maybe.toList rest)
 
         _ ->
             []

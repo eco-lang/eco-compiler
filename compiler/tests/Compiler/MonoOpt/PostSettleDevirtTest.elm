@@ -88,7 +88,7 @@ suite =
                 let
                     ( graph, stats ) =
                         run
-                            (origins [ ( member, Mono.OriginGlobal targetGlobal ) ])
+                            (origins [ ( member, Mono.OriginGlobal home "target" ) ])
                             (registryOf [ Just ( targetGlobal, intFnPlain ) ])
                             [ callSite 1 intRet ]
                 in
@@ -105,7 +105,7 @@ suite =
                 let
                     ( graph, stats ) =
                         run
-                            (origins [ ( member, Mono.OriginCtor targetGlobal ) ])
+                            (origins [ ( member, Mono.OriginCtor home "target" ) ])
                             (registryOf [ Just ( targetGlobal, intFnPlain ) ])
                             [ callSite 1 intRet ]
                 in
@@ -121,7 +121,7 @@ suite =
                 let
                     ( graph, stats ) =
                         run
-                            (origins [ ( member, Mono.OriginGlobal targetGlobal ) ])
+                            (origins [ ( member, Mono.OriginGlobal home "target" ) ])
                             (registryOf [ Just ( targetGlobal, intFn2 ) ])
                             [ callSiteTyped 1 intFn2use intRet ]
                 in
@@ -137,7 +137,7 @@ suite =
                 let
                     ( graph, stats ) =
                         run
-                            (origins [ ( member, Mono.OriginGlobal targetGlobal ) ])
+                            (origins [ ( member, Mono.OriginGlobal home "target" ) ])
                             (registryOf [ Just ( targetGlobal, floatFn ) ])
                             [ callSite 1 intRet ]
                 in
@@ -153,7 +153,7 @@ suite =
                 let
                     ( graph, stats ) =
                         run
-                            (origins [ ( member, Mono.OriginGlobal targetGlobal ) ])
+                            (origins [ ( member, Mono.OriginGlobal home "target" ) ])
                             (registryOf
                                 [ Just ( otherGlobal, intFnPlain ) -- spec 0: different global
                                 , Just ( targetGlobal, intFnPlain ) -- spec 1: layout match
@@ -175,7 +175,7 @@ suite =
                 let
                     ( graph, stats ) =
                         run
-                            (origins [ ( member, Mono.OriginGlobal targetGlobal ) ])
+                            (origins [ ( member, Mono.OriginGlobal home "target" ) ])
                             (registryOf
                                 [ Just ( otherGlobal, intFnPlain ) -- spec 0: different global
                                 , Just ( targetGlobal, intFnPlain ) -- spec 1: layout match only
@@ -195,7 +195,7 @@ suite =
                 let
                     ( graph, stats ) =
                         run
-                            (origins [ ( member, Mono.OriginGlobal targetGlobal ) ])
+                            (origins [ ( member, Mono.OriginGlobal home "target" ) ])
                             (registryOf [ Just ( targetGlobal, intFnPlain ) ])
                             [ otherClosure, callSite 1 intRet ]
                 in
@@ -392,7 +392,7 @@ run memberOrigins registry exprs =
                             (Mono.mList Mono.MInt)
                         )
                     ]
-            , main = Nothing
+            , main = Mono.StaticMain 0
             , registry = registry
             , ctorShapes = Mono.layoutMapEmpty
             , nextLambdaIndex = 100

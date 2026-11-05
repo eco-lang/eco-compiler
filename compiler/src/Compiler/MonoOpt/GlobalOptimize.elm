@@ -1,4 +1,4 @@
-module Compiler.MonoOpt.GlobalOptimize exposing (GlobalOptStats, globalOptimize, globalOptimizeWithStats)
+module Compiler.MonoOpt.GlobalOptimize exposing (GlobalOptStats, globalOptimizeWithStats)
 
 {-| Code generation needs to know, at every call, how the function being called
 takes its arguments, and this module settles that once for the whole
@@ -42,13 +42,12 @@ generation does not rely on a segmentation nobody established.
 Where the branches of a `case` or `if` return closures, a segmentation is
 claimed only when every branch is a closure and they all agree.
 
-@docs GlobalOptStats, globalOptimize, globalOptimizeWithStats
+@docs GlobalOptStats, globalOptimizeWithStats
 
 -}
 
 import Array
 import Compiler.Config as Config
-import Compiler.Core.Annotation as A
 import Compiler.Core.Name exposing (Name)
 import Compiler.Elm.ModuleName as ModuleName
 import Compiler.IR.Mono as Mono
@@ -58,6 +57,7 @@ import Compiler.MonoOpt.Borrow as Borrow
 import Compiler.MonoOpt.GenCallCensus as GenCallCensus
 import Compiler.MonoOpt.ReturnArity as MonoReturnArity
 import Compiler.MonoOpt.Staging as Staging
+import Data.NonEmptyList as NE
 import Dict exposing (Dict)
 import Set exposing (Set)
 
@@ -139,14 +139,6 @@ emptyCallEnv =
 
 
 -- MAIN ENTRY POINT
-
-
-{-| Returns the graph after every step `globalOptimizeWithStats` runs, using
-the default configuration's settings and dropping the statistics.
--}
-globalOptimize : Mono.MonoGraph -> Mono.MonoGraph
-globalOptimize graph0a =
-    Tuple.first (globalOptimizeWithStats Config.default.mono.lss.stamp.census False Config.default.borrow Config.default.list.mapTemplate graph0a)
 
 
 {-| The counters collected by `globalOptimizeWithStats`.
@@ -457,11 +449,11 @@ wrapNodeCallables home node ctx =
         Mono.MonoTailFunc params body tipe ->
             ( Mono.MonoTailFunc params body tipe, ctx )
 
-        Mono.MonoCtor shape tipe ->
-            ( Mono.MonoCtor shape tipe, ctx )
+        Mono.MonoCtor ctorHome shape tipe ->
+            ( Mono.MonoCtor ctorHome shape tipe, ctx )
 
-        Mono.MonoEnum tag tipe ->
-            ( Mono.MonoEnum tag tipe, ctx )
+        Mono.MonoEnum ctorHome name tag tipe ->
+            ( Mono.MonoEnum ctorHome name tag tipe, ctx )
 
         Mono.MonoExtern tipe ->
             ( Mono.MonoExtern tipe, ctx )
@@ -477,8 +469,7 @@ wrapNodeCallables home node ctx =
 {-| Returns the graph with a `CallInfo` on every `MonoCall` in its defines,
 tail functions and ports.
 
-A call whose `CallInfo` already has a non-empty `stageArities` keeps it as it
-is. Any other call gets one derived by `computeCallInfo`, into which the fields
+Every call gets one derived by `computeCallInfo`, into which the fields
 AbiCloning stamps (`closureKind`, `captureAbi`, `fastEvaluator`,
 `fastEvaluatorSpec` and `fastPapPrefix`) are copied from the call's existing
 `CallInfo`, since the derivation knows nothing of them.
@@ -494,9 +485,7 @@ annotateCallStaging graph =
             emptyCallEnv
 
         newNodes =
-            Array.indexedMap
-                (\nodeId -> Maybe.map (annotateNodeCalls graph nodeId env))
-                record.nodes
+            Array.map (Maybe.map (annotateNodeCalls graph env)) record.nodes
     in
     Mono.MonoGraph { record | nodes = newNodes }
 
@@ -504,8 +493,8 @@ annotateCallStaging graph =
 {-| Returns a node with its calls annotated. A tail function's function-typed
 parameters are dynamic callees in its body.
 -}
-annotateNodeCalls : Mono.MonoGraph -> Int -> CallEnv -> Mono.MonoNode -> Mono.MonoNode
-annotateNodeCalls graph nodeId env node =
+annotateNodeCalls : Mono.MonoGraph -> CallEnv -> Mono.MonoNode -> Mono.MonoNode
+annotateNodeCalls graph env node =
     case node of
         Mono.MonoDefine expr tipe ->
             Mono.MonoDefine (annotateExprCalls graph env expr) tipe
@@ -569,22 +558,17 @@ annotateExprCalls graph env expr =
                 newArgs =
                     List.map recurse args
 
-                callInfo =
-                    if not (List.isEmpty existingCallInfo.stageArities) then
-                        existingCallInfo
+                derived =
+                    computeCallInfo graph env newFunc newArgs resultType
 
-                    else
-                        let
-                            derived =
-                                computeCallInfo graph env newFunc newArgs resultType
-                        in
-                        { derived
-                            | closureKind = existingCallInfo.closureKind
-                            , captureAbi = existingCallInfo.captureAbi
-                            , fastEvaluator = existingCallInfo.fastEvaluator
-                            , fastEvaluatorSpec = existingCallInfo.fastEvaluatorSpec
-                            , fastPapPrefix = existingCallInfo.fastPapPrefix
-                        }
+                callInfo =
+                    { derived
+                        | closureKind = existingCallInfo.closureKind
+                        , captureAbi = existingCallInfo.captureAbi
+                        , fastEvaluator = existingCallInfo.fastEvaluator
+                        , fastEvaluatorSpec = existingCallInfo.fastEvaluatorSpec
+                        , fastPapPrefix = existingCallInfo.fastPapPrefix
+                    }
             in
             Mono.MonoCall region newFunc newArgs resultType callInfo
 
@@ -668,7 +652,7 @@ annotateExprCalls graph env expr =
             Mono.MonoRecordUpdate newRecord newUpdates resultType
 
         Mono.MonoTupleCreate region elements resultType ->
-            Mono.MonoTupleCreate region (List.map recurse elements) resultType
+            Mono.MonoTupleCreate region (Mono.tupleMap recurse elements) resultType
 
         Mono.MonoLiteral _ _ ->
             expr
@@ -794,7 +778,7 @@ annotateDeciderCalls graph env decider =
 
         Mono.FanOut path edges fallback ->
             Mono.FanOut path
-                (List.map (\( test, d ) -> ( test, annotateDeciderCalls graph env d )) edges)
+                (NE.map (\( test, d ) -> ( test, annotateDeciderCalls graph env d )) edges)
                 (annotateDeciderCalls graph env fallback)
 
 
@@ -827,10 +811,10 @@ callModelForExpr (Mono.MonoGraph { nodes }) env expr =
                 Just (Mono.MonoManagerLeaf _ _) ->
                     Just Mono.FlattenedExternal
 
-                Just (Mono.MonoCtor _ _) ->
+                Just (Mono.MonoCtor _ _ _) ->
                     Just Mono.FlattenedExternal
 
-                Just (Mono.MonoEnum _ _) ->
+                Just (Mono.MonoEnum _ _ _ _) ->
                     Just Mono.FlattenedExternal
 
                 _ ->
@@ -862,13 +846,28 @@ callModelForCallee graph env funcExpr =
             Mono.StageCurried
 
 
+{-| Returns the parameter count of the whole expression of a define or port
+node when it is a closure, and `Nothing` otherwise. Every function-typed define
+and port is a closure by then (`wrapTopLevelCallables`), so `Nothing` is a
+define of a non-function value.
+-}
+nodeRootArity : Mono.MonoExpr -> Maybe Int
+nodeRootArity expr =
+    case expr of
+        Mono.MonoClosure closureInfo _ _ ->
+            Just (List.length closureInfo.params)
+
+        _ ->
+            Nothing
+
+
 {-| Returns the source arity of a function value when the expression shows
 it, or `Nothing`.
 
-For a global it comes from the node: a define's closure parameter count (a
-define that is not a closure gives `Nothing`), a tail function's parameter
-count, all the arguments of an extern or manager leaf, a constructor's field
-count, 0 for an enum, and a port's closure parameter count or 0. A kernel takes
+For a global it comes from the node: a define's or port's closure parameter
+count (see `nodeRootArity`), a tail function's parameter count, all the
+arguments of an extern or manager leaf, a constructor's field count, and 0 for
+an enum. A kernel takes
 all its arguments; a closure, its parameters; a local, its recorded entry.
 
 For a call it is the arity left over: the callee's source arity minus the
@@ -889,12 +888,7 @@ sourceArityForExpr graph env expr =
         Mono.MonoVarGlobal _ specId _ ->
             case Array.get specId nodes |> Maybe.andThen identity of
                 Just (Mono.MonoDefine innerExpr _) ->
-                    case innerExpr of
-                        Mono.MonoClosure closureInfo _ _ ->
-                            Just (List.length closureInfo.params)
-
-                        _ ->
-                            Nothing
+                    nodeRootArity innerExpr
 
                 Just (Mono.MonoTailFunc params _ _) ->
                     Just (List.length params)
@@ -905,27 +899,17 @@ sourceArityForExpr graph env expr =
                 Just (Mono.MonoManagerLeaf _ monoType) ->
                     Just (List.length (Tuple.first (Mono.decomposeFunctionType monoType)))
 
-                Just (Mono.MonoCtor shape _) ->
+                Just (Mono.MonoCtor _ shape _) ->
                     Just (List.length shape.fieldTypes)
 
-                Just (Mono.MonoEnum _ _) ->
+                Just (Mono.MonoEnum _ _ _ _) ->
                     Just 0
 
                 Just (Mono.MonoPortIncoming innerExpr _) ->
-                    case innerExpr of
-                        Mono.MonoClosure closureInfo _ _ ->
-                            Just (List.length closureInfo.params)
-
-                        _ ->
-                            Just 0
+                    nodeRootArity innerExpr
 
                 Just (Mono.MonoPortOutgoing innerExpr _) ->
-                    case innerExpr of
-                        Mono.MonoClosure closureInfo _ _ ->
-                            Just (List.length closureInfo.params)
-
-                        _ ->
-                            Just 0
+                    nodeRootArity innerExpr
 
                 Nothing ->
                     Nothing
@@ -1115,7 +1099,7 @@ closureBodyStageArities graph expr =
                     inlineLeaves no (inlineLeaves yes acc)
 
                 Mono.FanOut _ tests fallback ->
-                    inlineLeaves fallback (List.foldl (\( _, d ) a -> inlineLeaves d a) acc tests)
+                    inlineLeaves fallback (List.foldl (\( _, d ) a -> inlineLeaves d a) acc (NE.toList tests))
 
         agreedArities : List Mono.MonoExpr -> Maybe (List Int)
         agreedArities branchExprs =

@@ -4,7 +4,7 @@ module Compiler.LocalOpt.Typed.Names exposing
     , generate
     , registerGlobal, registerKernel, registerCtor, registerDebug
     , registerField, registerFieldDict, registerFieldList
-    , pure, map, andThen, traverse
+    , pure, map, andThen, traverse, traverseMaybe
     , withVarTypes, lookupLocalType
     )
 
@@ -54,7 +54,7 @@ return the optimized expression that stands for it.
 
 # Monad Operations
 
-@docs pure, map, andThen, traverse
+@docs pure, map, andThen, traverse, traverseMaybe
 
 
 # Local Type Environment
@@ -85,8 +85,8 @@ state: the counter for fresh names, the set of global dependencies, the use
 count of each record field name, and the local type environment.
 
 Values are built with `pure`, `generate`, the `register*` functions and
-`lookupLocalType`, combined with `map`, `andThen`, `traverse` and
-`withVarTypes`, and executed with `run`.
+`lookupLocalType`, combined with `map`, `andThen`, `traverse`,
+`traverseMaybe` and `withVarTypes`, and executed with `run`.
 
 -}
 type Tracker a
@@ -463,3 +463,16 @@ traverse func list =
                     map (\b -> Loop ( rest, b :: acc )) (func a)
         )
         ( list, [] )
+
+
+{-| Returns a computation that runs `func` on the value in `maybe`, if any, and
+produces its result, or `Nothing` without changing the state.
+-}
+traverseMaybe : (a -> Tracker b) -> Maybe a -> Tracker (Maybe b)
+traverseMaybe func maybe =
+    case maybe of
+        Just a ->
+            map Just (func a)
+
+        Nothing ->
+            pure Nothing

@@ -1,5 +1,5 @@
 module Compiler.MonoOpt.Borrow exposing
-    ( run, deriveFacts
+    ( run
     , BorrowStats, emptyStats, renderStats
     , analyzeDefForTest
     )
@@ -42,19 +42,16 @@ the first instance's signature is used; otherwise the instances' signatures are
 combined with `Compiler.MonoOpt.Borrow.LssFacts.meetSig`, which is safe for
 whichever instance is called.
 
-The results are used in two ways. `run` analyses every definition once more
-against the finished tables, this time routing closure calls through the lambda
-sets, and adds up a _census_ of counters (`BorrowStats`). `deriveFacts` stops
-after the signatures and reduces them to the oracle facts of
-`Compiler.MonoOpt.Borrow.Facts`.
+`run` then analyses every definition once more against the finished tables,
+this time routing closure calls through the lambda sets, and adds up a
+_census_ of counters (`BorrowStats`).
 
 Most of the census is about what an ownership-aware back end could save, and
 part of it is an escape analysis: an owned resource that cannot outlive the
 call that made it could live on the stack. Two counts bound that from either
 side. `nonEscapingOwned` treats a resource as escaping when it may alias a
-parameter, is part of the result, or has a lifetime that reaches the
-parameters; it does not follow a resource stored into another that escapes, so
-it overcounts. `nonEscapingOwnedLB` also joins resources that are read out of
+parameter or is part of the result; it does not follow a resource stored into
+another that escapes, so it overcounts. `nonEscapingOwnedLB` also joins resources that are read out of
 or stored into each other, and treats every resource joined to an escaping one,
 to a tail-call argument, or to a resource the constraint walk marked as
 escaping as escaping too.
@@ -62,7 +59,7 @@ escaping as escaping too.
 
 # Running
 
-@docs run, deriveFacts
+@docs run
 
 
 # Statistics
@@ -84,7 +81,6 @@ import Compiler.IR.Mono.Traverse as MonoTraverse
 import Compiler.MonoOpt.AbiCloning as AbiCloning
 import Compiler.MonoOpt.Borrow.Constrain as C
 import Compiler.MonoOpt.Borrow.Dsu as Dsu
-import Compiler.MonoOpt.Borrow.Facts as Facts
 import Compiler.MonoOpt.Borrow.Lifetime as L exposing (Life(..), Lifetime(..))
 import Compiler.MonoOpt.Borrow.LssFacts as LssFacts
 import Compiler.MonoOpt.Borrow.Mode exposing (Mode(..))
@@ -365,78 +361,6 @@ sigLookup table specId =
     Array.get specId table |> Maybe.andThen identity
 
 
-{-| Derives the oracle facts of a graph: for each specialization and each
-lambda-set member, the parameters it wholly borrows, as
-`Compiler.MonoOpt.Borrow.Facts` defines that.
-
-Only the signature table and the lambda signatures are computed, not the
-census. Both are built with closure calls not routed through the lambda sets,
-so an argument passed to a call of a function value is never found borrowed.
-The facts describe `graph`; a later rewrite of the graph is not reflected in
-them.
-
--}
-deriveFacts : Mono.MonoGraph -> Facts.OracleFacts
-deriveFacts (Mono.MonoGraph { nodes }) =
-    let
-        ( table, _, _ ) =
-            solveSigs nodes
-
-        ( byMember, _ ) =
-            LssFacts.buildInstances nodes
-
-        bySpec =
-            Tuple.second
-                (Array.foldl
-                    (\maybeSig ( specId, acc ) ->
-                        case maybeSig of
-                            Just sig ->
-                                ( specId + 1, Dict.insert specId (distillSig sig) acc )
-
-                            Nothing ->
-                                ( specId + 1, acc )
-                    )
-                    ( 0, Dict.empty )
-                    table
-                )
-
-        byLambda =
-            Dict.map (\_ sig -> distillSig sig) (Tuple.first (buildLambdaSigs table byMember))
-    in
-    { bySpec = bySpec
-    , byLambda = byLambda
-    }
-
-
-{-| Returns the parameter indices of `sig` that are wholly borrowed: the
-parameter has at least one heap position, every one of them is `Borrowed`, and
-no `resultLts` entry names it. A parameter with no heap position is never
-included.
--}
-distillSig : BorrowSig -> Facts.CalleeParamFacts
-distillSig sig =
-    let
-        coupled =
-            List.foldl (\( _, s ) acc -> Set.union s acc) Set.empty sig.resultLts
-
-        whollyBorrowed sigTy =
-            not (Array.isEmpty sigTy.modes)
-                && Array.foldl (\m ok -> ok && m == Borrowed) True sigTy.modes
-
-        step sigTy ( i, acc ) =
-            ( i + 1
-            , if whollyBorrowed sigTy && not (Set.member i coupled) then
-                Set.insert i acc
-
-              else
-                acc
-            )
-    in
-    { borrowedParams =
-        Tuple.second (List.foldl step ( 0, Set.empty ) sig.params)
-    }
-
-
 {-| Builds, from the registry, every specialization of each global, keyed by
 `Mono.toComparableGlobal`, as pairs of its type and `SpecId`. One global can
 have several specializations.
@@ -595,10 +519,10 @@ solveScc nodes indexToSpecId scc ( table, bailouts, maxIter ) =
                 Nothing ->
                     ( table, bailouts, maxIter )
 
-        Graph.CyclicSCC idxs ->
+        Graph.CyclicSCC idx idxs ->
             let
                 specIds =
-                    List.filterMap (\i -> Array.get i indexToSpecId) idxs
+                    List.filterMap (\i -> Array.get i indexToSpecId) (idx :: idxs)
 
                 table0 =
                     List.foldl (\sid t -> setSig t sid (Just (initSig nodes sid))) table specIds
@@ -932,21 +856,14 @@ mergeDef table facts node stats =
         ltpRefined =
             countWhere (\r -> not (L.eq (Solve.ltPOf r solved) (Solve.ltAOf r solved))) resList
 
-        -- Escaping for the upper bound: aliases a parameter, is in the result,
-        -- or lives into the parameters.
+        -- Escaping for the upper bound: aliases a parameter or is in the
+        -- result.
         resultResSet =
             List.foldl BitSet.insertGrowing BitSet.empty (Rty.allRes da.resultRty)
 
         escapesR r =
             not (Set.isEmpty (Solve.alphaOf r solved))
                 || BitSet.member r resultResSet
-                || (case Solve.ltPOf r solved of
-                        LParams _ ->
-                            True
-
-                        _ ->
-                            False
-                   )
 
         ownedResources =
             countWhere (\r -> Solve.reifiedOwned r solved) resList
@@ -1065,7 +982,11 @@ mergeDef table facts node stats =
 {-| Solves the signature table of the whole graph, then analyses the node at
 `specId` against it, with closure calls not routed. Returns its solution, the
 resources of its tail-call arguments and its resource count, or `Nothing` when
-there is no node at that id. It exists for tests.
+there is no node at that id.
+
+Test hook: only tests call it (`TestLogic.MonoOpt.BorrowTailCallEscape`), to
+read the solution of one definition, which `run` keeps private.
+
 -}
 analyzeDefForTest : Mono.MonoGraph -> Mono.SpecId -> Maybe ( Solve.Solved, List ResVar, Int )
 analyzeDefForTest graph specId =
@@ -1111,15 +1032,12 @@ countWhere pred =
 
 
 {-| Returns how deeply a lifetime's end is nested in the skeleton: 0 for
-`LEmpty`, `LParams` and an end at the root.
+`LEmpty` and an end at the root.
 -}
 lifeDepth : Lifetime -> Int
 lifeDepth lt =
     case lt of
         LEmpty ->
-            0
-
-        LParams _ ->
             0
 
         LLocal l ->

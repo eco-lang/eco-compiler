@@ -72,6 +72,7 @@ import Compiler.IR.Mono as Mono
 import Compiler.Monomorphize.State exposing (MVarEnv)
 import Data.Set as EverySet
 import Dict
+import Maybe.Extra as Maybe
 import Set exposing (Set)
 
 
@@ -236,7 +237,7 @@ freeVarIdsHelp canType (( acc, seen ) as pair) =
                     fieldPair
 
         Can.TTuple a b rest ->
-            List.foldl (\t accPair -> freeVarIdsHelp t accPair) pair (a :: b :: rest)
+            List.foldl (\t accPair -> freeVarIdsHelp t accPair) pair (a :: b :: Maybe.toList rest)
 
         Can.TUnit ->
             pair
@@ -263,9 +264,8 @@ freeVarIdsHelp canType (( acc, seen ) as pair) =
 
 A record's extension variable is dropped, aliases are replaced by their bodies,
 and each arrow becomes a one-argument function. `Int`, `Float`, `Bool`, `Char`,
-`String` and `List` from `elm/core` become their primitive MonoTypes; a `List`
-without exactly one argument becomes a list of unit. The environment is passed
-through unchanged.
+`String` and `List` from `elm/core` become their primitive MonoTypes. The
+environment is passed through unchanged.
 
 -}
 canTypeToMonoType_preserveVars : MVarEnv -> Can.Type MVarId -> ( Mono.MonoType, MVarEnv )
@@ -305,19 +305,13 @@ canTypeToMonoType_preserveVars env canType =
 
         Can.TTuple a b rest ->
             let
-                ( revMonoTypes, env1 ) =
-                    List.foldl
-                        (\t ( acc, e ) ->
-                            let
-                                ( monoT, e1 ) =
-                                    canTypeToMonoType_preserveVars e t
-                            in
-                            ( monoT :: acc, e1 )
-                        )
-                        ( [], env )
-                        (a :: b :: rest)
+                ( monoTypes, env1 ) =
+                    Mono.tupleMapAccum
+                        (\t e -> canTypeToMonoType_preserveVars e t)
+                        env
+                        (Mono.tupleOf a b rest)
             in
-            ( Mono.mTuple (List.reverse revMonoTypes), env1 )
+            ( Mono.mTuple monoTypes, env1 )
 
         Can.TUnit ->
             ( Mono.MUnit, env )
@@ -361,29 +355,24 @@ convertTType convert env canonical name args =
                     False
     in
     if isElmCore then
-        case name of
-            "Int" ->
+        case ( name, monoArgs ) of
+            ( "Int", _ ) ->
                 ( Mono.MInt, env1 )
 
-            "Float" ->
+            ( "Float", _ ) ->
                 ( Mono.MFloat, env1 )
 
-            "Bool" ->
+            ( "Bool", _ ) ->
                 ( Mono.MBool, env1 )
 
-            "Char" ->
+            ( "Char", _ ) ->
                 ( Mono.MChar, env1 )
 
-            "String" ->
+            ( "String", _ ) ->
                 ( Mono.MString, env1 )
 
-            "List" ->
-                case monoArgs of
-                    [ inner ] ->
-                        ( Mono.mList inner, env1 )
-
-                    _ ->
-                        ( Mono.mList Mono.MUnit, env1 )
+            ( "List", [ inner ] ) ->
+                ( Mono.mList inner, env1 )
 
             _ ->
                 ( Mono.mCustom canonical name monoArgs, env1 )
@@ -452,16 +441,7 @@ remapEcoVarsFresh nextId0 abiType =
                 Mono.MTuple _ es ->
                     let
                         ( es1, acc1 ) =
-                            List.foldr
-                                (\a ( accL, accS ) ->
-                                    let
-                                        ( a1, accS1 ) =
-                                            go a accS
-                                    in
-                                    ( a1 :: accL, accS1 )
-                                )
-                                ( [], ( mapping, nextId ) )
-                                es
+                            Mono.tupleMapAccumR go ( mapping, nextId ) es
                     in
                     ( Mono.mTuple es1, acc1 )
 

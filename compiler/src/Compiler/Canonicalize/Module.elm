@@ -12,7 +12,7 @@ can import, `canonicalize` builds the name environment (imports first, then the
 module's own types and values), canonicalizes every top-level value, then the
 module's effects (ports or an effect manager), then its export list. Each step
 runs only if the one before it succeeded. Infix declarations are collected as
-they are. Warnings, such as unused variables, come back alongside the result.
+they are.
 
 Every expression and pattern node gets an id from one counter that starts fresh
 for the module and runs through the top-level values in source order, so ids
@@ -69,10 +69,8 @@ import Compiler.IR.Canonical as Can
 import Compiler.IR.Canonical.Interface as I
 import Compiler.IR.Source as Src
 import Compiler.Reporting.Result as ReportingResult
-import Compiler.Reporting.Warning as W
 import Data.Graph as Graph
 import Dict exposing (Dict)
-import System.Crash exposing (crash)
 
 
 
@@ -80,8 +78,8 @@ import System.Crash exposing (crash)
 
 
 {-| A canonicalization computation: a `Compiler.Reporting.Result.RResult` whose
-errors are canonicalization errors, with `i` the info it carries and `w` the
-warnings it collects.
+errors are canonicalization errors, with `i` the info it carries and `w` its
+warnings slot.
 -}
 type alias MResult i w a =
     ReportingResult.RResult i w Error.Error a
@@ -101,7 +99,7 @@ reported. The top-level values are in dependency order, as the module
 documentation describes.
 
 -}
-canonicalize : Pkg.Name -> Dict ModuleName.Raw I.Interface -> Src.Module -> MResult i (List W.Warning) Can.Module
+canonicalize : Pkg.Name -> Dict ModuleName.Raw I.Interface -> Src.Module -> MResult i w Can.Module
 canonicalize pkg ifaces ((Src.Module srcData) as modul) =
     let
         home : ModuleName.Canonical
@@ -177,7 +175,7 @@ Node ids are numbered from `Ids.initialIdState`, through the values in source
 order.
 
 -}
-canonicalizeValues : Env.Env -> List (A.Located Src.Value) -> MResult i (List W.Warning) Can.Decls
+canonicalizeValues : Env.Env -> List (A.Located Src.Value) -> MResult i w Can.Decls
 canonicalizeValues env values =
     traverseValuesWithState env Ids.initialIdState values
         |> ReportingResult.andThen (\( nodes, _ ) -> detectCycles (Graph.stronglyConnComp nodes))
@@ -191,7 +189,7 @@ traverseValuesWithState :
     Env.Env
     -> Ids.IdState
     -> List (A.Located Src.Value)
-    -> MResult i (List W.Warning) ( List NodeOne, Ids.IdState )
+    -> MResult i w ( List NodeOne, Ids.IdState )
 traverseValuesWithState env state values =
     case values of
         [] ->
@@ -226,17 +224,15 @@ detectCycles sccs =
                 Graph.AcyclicSCC ( def, _, _ ) ->
                     ReportingResult.map (Can.Declare def) (detectCycles otherSccs)
 
-                Graph.CyclicSCC subNodes ->
-                    ReportingResult.traverse detectBadCycles (Graph.stronglyConnComp subNodes)
-                        |> ReportingResult.andThen
-                            (\defs ->
-                                case defs of
-                                    [] ->
-                                        detectCycles otherSccs
-
-                                    d :: ds ->
-                                        ReportingResult.map (Can.DeclareRec d ds) (detectCycles otherSccs)
-                            )
+                Graph.CyclicSCC subNode subNodes ->
+                    let
+                        ( firstSubScc, otherSubSccs ) =
+                            Graph.stronglyConnCompNonEmpty subNode subNodes
+                    in
+                    ReportingResult.ok Can.DeclareRec
+                        |> ReportingResult.apply (detectBadCycles firstSubScc)
+                        |> ReportingResult.apply (ReportingResult.traverse detectBadCycles otherSubSccs)
+                        |> ReportingResult.andThen (\declareRec -> ReportingResult.map declareRec (detectCycles otherSccs))
 
 
 {-| Returns the definition of a phase-two component that has no cycle, and
@@ -252,10 +248,7 @@ detectBadCycles scc =
         Graph.AcyclicSCC def ->
             ReportingResult.ok def
 
-        Graph.CyclicSCC [] ->
-            crash "The definition of Data.Graph.SCC should not allow empty CyclicSCC!"
-
-        Graph.CyclicSCC (def :: defs) ->
+        Graph.CyclicSCC def defs ->
             let
                 (A.At region name) =
                     extractDefName def
@@ -309,7 +302,7 @@ It throws `TooLarge` when the definition has more parameters than
 nothing, so its parameters alone decide this.
 
 -}
-toNodeOne : Env.Env -> Ids.IdState -> A.Located Src.Value -> MResult i (List W.Warning) ( NodeOne, Ids.IdState )
+toNodeOne : Env.Env -> Ids.IdState -> A.Located Src.Value -> MResult i w ( NodeOne, Ids.IdState )
 toNodeOne env idState ((A.At _ (Src.Value valueData)) as value) =
     let
         ( _, A.At nameRegion name ) =
@@ -327,11 +320,10 @@ toNodeOne env idState ((A.At _ (Src.Value valueData)) as value) =
 within the limit.
 
 An annotated definition becomes `Can.TypedDef`, its parameters typed from the
-annotation, and an unannotated one becomes `Can.Def`. The parameters' bindings
-are checked for unused names, which come back as warnings.
+annotation, and an unannotated one becomes `Can.Def`.
 
 -}
-toNodeOneHelp : Env.Env -> Ids.IdState -> A.Located Src.Value -> MResult i (List W.Warning) ( NodeOne, Ids.IdState )
+toNodeOneHelp : Env.Env -> Ids.IdState -> A.Located Src.Value -> MResult i w ( NodeOne, Ids.IdState )
 toNodeOneHelp env idState (A.At _ (Src.Value valueData)) =
     let
         ( _, (A.At _ name) as aname ) =
@@ -352,7 +344,7 @@ toNodeOneHelp env idState (A.At _ (Src.Value valueData)) =
                         Env.addLocals argBindings env
                             |> ReportingResult.andThen
                                 (\newEnv ->
-                                    Expr.verifyBindingsWithIds W.Pattern
+                                    Expr.verifyBindingsWithIds
                                         argBindings
                                         (Expr.canonicalizeWithIds newEnv stateAfterArgs body)
                                         |> ReportingResult.map
@@ -383,7 +375,7 @@ toNodeOneHelp env idState (A.At _ (Src.Value valueData)) =
                                     Env.addLocals argBindings env
                                         |> ReportingResult.andThen
                                             (\newEnv ->
-                                                Expr.verifyBindingsWithIds W.Pattern
+                                                Expr.verifyBindingsWithIds
                                                     argBindings
                                                     (Expr.canonicalizeWithIds newEnv stateAfterArgs body)
                                                     |> ReportingResult.map

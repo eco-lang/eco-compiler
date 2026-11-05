@@ -37,6 +37,7 @@ optimization.
 import Array
 import Compiler.IR.Mono as Mono
 import Compiler.IR.Source as Src
+import Data.NonEmptyList as NE
 import Dict
 import Expect exposing (Expectation)
 import TestLogic.TestPipeline as Pipeline
@@ -165,7 +166,7 @@ checkExpr ctx expr =
                     checkExpr ctx inner ++ List.concatMap (\( _, e ) -> checkExpr ctx e) updates
 
                 Mono.MonoTupleCreate _ items _ ->
-                    List.concatMap (checkExpr ctx) items
+                    List.concatMap (checkExpr ctx) (Mono.tupleToList items)
 
                 _ ->
                     []
@@ -188,7 +189,7 @@ checkDecider ctx decider =
             checkDecider ctx yes ++ checkDecider ctx no
 
         Mono.FanOut _ edges fallback ->
-            List.concatMap (\( _, d ) -> checkDecider ctx d) edges
+            List.concatMap (\( _, d ) -> checkDecider ctx d) (NE.toList edges)
                 ++ checkDecider ctx fallback
 
 
@@ -230,7 +231,7 @@ hasNumberVar monoType =
             List.any hasNumberVar args || hasNumberVar result
 
         Mono.MTuple _ elems ->
-            List.any hasNumberVar elems
+            List.any hasNumberVar (Mono.tupleToList elems)
 
         Mono.MRecord _ fields ->
             List.any hasNumberVar (Dict.values fields)

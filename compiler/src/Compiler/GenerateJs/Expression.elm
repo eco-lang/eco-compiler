@@ -82,9 +82,9 @@ import Compiler.IR.Source.Shader as Shader
 import Compiler.Json.Encode as Encode
 import Compiler.LocalOpt.Erased.DecisionTree as DT
 import Data.Map as EveryDict
+import Data.NonEmptyList as NE
 import Data.Set as EverySet
 import Dict exposing (Dict)
-import Prelude
 import System.Crash exposing (crash)
 import Utils.Main as Utils
 
@@ -276,22 +276,18 @@ generate mode parentModule expression =
         Opt.Tuple _ a b cs ->
             JsExpr <|
                 case cs of
-                    [] ->
+                    Nothing ->
                         JS.ExprCall (JS.ExprRef (JsName.fromKernel Name.utils "Tuple2"))
                             [ generateJsExpr mode parentModule a
                             , generateJsExpr mode parentModule b
                             ]
 
-                    [ c ] ->
+                    Just c ->
                         JS.ExprCall (JS.ExprRef (JsName.fromKernel Name.utils "Tuple3"))
                             [ generateJsExpr mode parentModule a
                             , generateJsExpr mode parentModule b
                             , generateJsExpr mode parentModule c
                             ]
-
-                    _ ->
-                        JS.ExprCall (JS.ExprRef (JsName.fromKernel Name.utils "TupleN"))
-                            (List.map (generateJsExpr mode parentModule) (a :: b :: cs))
 
         Opt.Shader src attributes uniforms ->
             let
@@ -621,17 +617,12 @@ generateCall mode parentModule pos func args =
                 generateCallHelp mode parentModule pos func args
 
         Opt.VarBox _ _ ->
-            case mode of
-                Mode.Dev _ ->
+            case ( mode, args ) of
+                ( Mode.Prod _, [ arg ] ) ->
+                    generateJsExpr mode parentModule arg
+
+                _ ->
                     generateCallHelp mode parentModule pos func args
-
-                Mode.Prod _ ->
-                    case args of
-                        [ arg ] ->
-                            generateJsExpr mode parentModule arg
-
-                        _ ->
-                            generateCallHelp mode parentModule pos func args
 
         _ ->
             generateCallHelp mode parentModule pos func args
@@ -963,9 +954,6 @@ isLiteral expr =
         JS.ExprTrackedInt _ _ _ ->
             True
 
-        JS.ExprBool _ ->
-            True
-
         JS.ExprTrackedBool _ _ _ ->
             True
 
@@ -990,36 +978,18 @@ apply func value =
             Opt.Call (Maybe.withDefault A.zero (exprRegion func)) func [ value ]
 
 
-{-| Returns the source region an expression carries, if its constructor has one.
+{-| Returns the source region of a function-typed expression that `apply`
+calls, if its constructor carries one. Only the constructors an expression of a
+function type can have (other than the accessor and call `apply` handles itself)
+are inspected; any other expression gives `Nothing`.
 -}
 exprRegion : Opt.Expr -> Maybe A.Region
 exprRegion expr =
     case expr of
-        Opt.Bool region _ ->
-            Just region
-
-        Opt.Chr region _ ->
-            Just region
-
-        Opt.Str region _ ->
-            Just region
-
-        Opt.Int region _ ->
-            Just region
-
-        Opt.Float region _ ->
-            Just region
-
-        Opt.VarLocal _ ->
-            Nothing
-
         Opt.TrackedVarLocal region _ ->
             Just region
 
         Opt.VarGlobal region _ ->
-            Just region
-
-        Opt.VarEnum region _ _ ->
             Just region
 
         Opt.VarBox region _ ->
@@ -1034,55 +1004,10 @@ exprRegion expr =
         Opt.VarKernel region _ _ _ ->
             Just region
 
-        Opt.List region _ ->
-            Just region
-
-        Opt.Function _ _ ->
-            Nothing
-
-        Opt.TrackedFunction _ _ ->
-            Nothing
-
-        Opt.Call region _ _ ->
-            Just region
-
-        Opt.TailCall _ _ ->
-            Nothing
-
-        Opt.If _ _ ->
-            Nothing
-
-        Opt.Let _ _ ->
-            Nothing
-
-        Opt.Destruct _ _ ->
-            Nothing
-
-        Opt.Case _ _ _ _ ->
-            Nothing
-
-        Opt.Accessor region _ ->
-            Just region
-
         Opt.Access _ region _ ->
             Just region
 
-        Opt.Update region _ _ ->
-            Just region
-
-        Opt.Record _ ->
-            Nothing
-
-        Opt.TrackedRecord region _ ->
-            Just region
-
-        Opt.Unit ->
-            Nothing
-
-        Opt.Tuple region _ _ _ ->
-            Just region
-
-        Opt.Shader _ _ _ ->
+        _ ->
             Nothing
 
 
@@ -1160,13 +1085,6 @@ strictEq left right =
         JS.ExprTrackedInt _ _ 0 ->
             JS.ExprPrefix JS.PrefixNot right
 
-        JS.ExprBool bool ->
-            if bool then
-                right
-
-            else
-                JS.ExprPrefix JS.PrefixNot right
-
         JS.ExprTrackedBool _ _ bool ->
             if bool then
                 right
@@ -1181,13 +1099,6 @@ strictEq left right =
 
                 JS.ExprTrackedInt _ _ 0 ->
                     JS.ExprPrefix JS.PrefixNot left
-
-                JS.ExprBool bool ->
-                    if bool then
-                        left
-
-                    else
-                        JS.ExprPrefix JS.PrefixNot left
 
                 JS.ExprTrackedBool _ _ bool ->
                     if bool then
@@ -1213,13 +1124,6 @@ strictNEq left right =
         JS.ExprTrackedInt _ _ 0 ->
             JS.ExprPrefix JS.PrefixNot (JS.ExprPrefix JS.PrefixNot right)
 
-        JS.ExprBool bool ->
-            if bool then
-                JS.ExprPrefix JS.PrefixNot right
-
-            else
-                right
-
         JS.ExprTrackedBool _ _ bool ->
             if bool then
                 JS.ExprPrefix JS.PrefixNot right
@@ -1234,13 +1138,6 @@ strictNEq left right =
 
                 JS.ExprTrackedInt _ _ 0 ->
                     JS.ExprPrefix JS.PrefixNot (JS.ExprPrefix JS.PrefixNot left)
-
-                JS.ExprBool bool ->
-                    if bool then
-                        JS.ExprPrefix JS.PrefixNot left
-
-                    else
-                        left
 
                 JS.ExprTrackedBool _ _ bool ->
                     if bool then
@@ -1271,11 +1168,20 @@ generateTailCall mode parentModule name args =
 
         toRealVars : ( Name.Name, b ) -> JS.Stmt
         toRealVars ( argName, _ ) =
-            JS.ExprAssign (JS.LRef (JsName.fromLocal argName)) (JS.ExprRef (JsName.makeTemp argName)) |> JS.ExprStmt
+            JS.Assign (JS.LRef (JsName.fromLocal argName)) (JS.ExprRef (JsName.makeTemp argName))
+
+        tempVars : List JS.Stmt
+        tempVars =
+            case List.map toTempVars args of
+                first :: rest ->
+                    [ JS.Vars first rest ]
+
+                [] ->
+                    []
     in
-    JS.Vars (List.map toTempVars args)
-        :: List.map toRealVars args
-        ++ [ JS.Continue (Just (JsName.fromLocal name)) ]
+    tempVars
+        ++ List.map toRealVars args
+        ++ [ JS.Continue (JsName.fromLocal name) ]
 
 
 
@@ -1302,7 +1208,7 @@ generateTailDef : Mode.Mode -> ModuleName.Canonical -> Name.Name -> List (A.Loca
 generateTailDef mode parentModule name argNames body =
     generateTrackedFunction parentModule (List.map (\(A.At region argName) -> A.At region (JsName.fromLocal argName)) argNames) <|
         JsBlock
-            [ generate mode parentModule body |> codeToStmt |> JS.While (JS.ExprBool True) |> JS.Labelled (JsName.fromLocal name)
+            [ generate mode parentModule body |> codeToStmt |> JS.WhileTrue |> JS.Labelled (JsName.fromLocal name)
             ]
 
 
@@ -1319,9 +1225,6 @@ generatePath mode path =
     case path of
         Opt.Index index subPath ->
             JS.ExprAccess (generatePath mode subPath) (JsName.fromIndex index)
-
-        Opt.ArrayIndex index subPath ->
-            JS.ExprIndex (generatePath mode subPath) (JS.ExprInt index)
 
         Opt.Root name ->
             JS.ExprRef (JsName.fromLocal name)
@@ -1456,7 +1359,7 @@ goto mode parentModule label ( index, branch ) stmts =
         labeledDeciderStmt =
             JS.Labelled
                 (JsName.makeLabel label index)
-                (JS.While (JS.ExprBool True) (JS.Block stmts))
+                (JS.WhileTrue (JS.Block stmts))
     in
     labeledDeciderStmt :: codeToStmtList (generate mode parentModule branch)
 
@@ -1472,19 +1375,23 @@ generateDecider mode parentModule label root decisionTree =
             codeToStmtList (generate mode parentModule branch)
 
         Opt.Leaf (Opt.Jump index) ->
-            [ JS.Break (Just (JsName.makeLabel label index)) ]
+            [ JS.Break (JsName.makeLabel label index) ]
 
         Opt.Chain testChain success failure ->
+            let
+                (NE.Nonempty firstCond otherConds) =
+                    NE.map (generateIfTest mode root) testChain
+            in
             [ JS.IfStmt
-                (Utils.foldl1_ (JS.ExprInfix JS.OpAnd) (List.map (generateIfTest mode root) testChain))
+                (List.foldl (\cond acc -> JS.ExprInfix JS.OpAnd acc cond) firstCond otherConds)
                 (JS.Block (generateDecider mode parentModule label root success))
                 (JS.Block (generateDecider mode parentModule label root failure))
             ]
 
-        Opt.FanOut path edges fallback ->
+        Opt.FanOut path ((NE.Nonempty ( firstTest, _ ) _) as edges) fallback ->
             [ JS.Switch
-                (generateCaseTest mode root path (Tuple.first (Prelude.head edges)))
-                (List.foldr
+                (generateCaseTest mode root path firstTest)
+                (NE.foldr
                     (\edge cases -> generateCaseBranch mode parentModule label root edge :: cases)
                     [ JS.Default (generateDecider mode parentModule label root fallback) ]
                     edges
@@ -1498,8 +1405,7 @@ generateDecider mode parentModule label root decisionTree =
 A constructor test compares the tag: the `$` property in development, and in
 production the `$` property for an ordinary type or the value itself for an
 enumeration or a box. A `Char` in development is compared through `valueOf()`.
-A list is non-empty exactly when it has a `b` property. Crashes on a tuple
-test, which the decision tree never makes.
+A list is non-empty exactly when it has a `b` property.
 
 -}
 generateIfTest : Mode.Mode -> Name.Name -> ( DT.Path, DT.Test ) -> JS.Expr
@@ -1523,10 +1429,7 @@ generateIfTest mode root ( path, test ) =
                                 Can.Normal ->
                                     JS.ExprAccess value JsName.dollar
 
-                                Can.Enum ->
-                                    value
-
-                                Can.Unbox ->
+                                _ ->
                                     value
             in
             strictEq tag
@@ -1566,26 +1469,22 @@ generateIfTest mode root ( path, test ) =
         Test.IsNil ->
             JS.ExprAccess value (JsName.fromLocal "b") |> JS.ExprPrefix JS.PrefixNot
 
-        Test.IsTuple ->
-            crash "COMPILER BUG - there should never be tests on a tuple"
-
 
 {-| Generates one `case` of a `switch` for a fan-out edge.
 -}
-generateCaseBranch : Mode.Mode -> ModuleName.Canonical -> Name.Name -> Name.Name -> ( DT.Test, Opt.Decider Opt.Choice ) -> JS.Case
+generateCaseBranch : Mode.Mode -> ModuleName.Canonical -> Name.Name -> Name.Name -> ( Test.FanTest, Opt.Decider Opt.Choice ) -> JS.Case
 generateCaseBranch mode parentModule label root ( test, subTree ) =
     JS.Case
         (generateCaseValue mode test)
         (generateDecider mode parentModule label root subTree)
 
 
-{-| Generates the value a `switch` case matches for a test. Crashes for Bool,
-list and tuple tests, which never appear in a fan-out.
+{-| Generates the value a `switch` case matches for a fan-out edge test.
 -}
-generateCaseValue : Mode.Mode -> DT.Test -> JS.Expr
+generateCaseValue : Mode.Mode -> Test.FanTest -> JS.Expr
 generateCaseValue mode test =
     case test of
-        Test.IsCtor home name index _ _ ->
+        Test.FCtor home name index _ _ ->
             case mode of
                 Mode.Dev _ ->
                     JS.ExprString name
@@ -1593,34 +1492,21 @@ generateCaseValue mode test =
                 Mode.Prod _ ->
                     JS.ExprInt (ctorToInt home name index)
 
-        Test.IsInt int ->
+        Test.FInt int ->
             JS.ExprInt int
 
-        Test.IsChr char ->
+        Test.FChr char ->
             JS.ExprString char
 
-        Test.IsStr string ->
+        Test.FStr string ->
             JS.ExprString string
-
-        Test.IsBool _ ->
-            crash "COMPILER BUG - there should never be three tests on a boolean"
-
-        Test.IsCons ->
-            crash "COMPILER BUG - there should never be three tests on a list"
-
-        Test.IsNil ->
-            crash "COMPILER BUG - there should never be three tests on a list"
-
-        Test.IsTuple ->
-            crash "COMPILER BUG - there should never be three tests on a tuple"
 
 
 {-| Generates the value a `switch` examines, given one of its edge tests: the
 constructor tag (as in `generateIfTest`), the value itself for an `Int` or
-`String`, or the `Char`'s `valueOf()` in development. Crashes for Bool, list
-and tuple tests.
+`String`, or the `Char`'s `valueOf()` in development.
 -}
-generateCaseTest : Mode.Mode -> Name.Name -> DT.Path -> DT.Test -> JS.Expr
+generateCaseTest : Mode.Mode -> Name.Name -> DT.Path -> Test.FanTest -> JS.Expr
 generateCaseTest mode root path exampleTest =
     let
         value : JS.Expr
@@ -1628,51 +1514,32 @@ generateCaseTest mode root path exampleTest =
             pathToJsExpr mode root path
     in
     case exampleTest of
-        Test.IsCtor home name _ _ opts ->
-            if name == Name.bool && home == ModuleName.basics then
-                value
+        Test.FCtor _ _ _ _ opts ->
+            case mode of
+                Mode.Dev _ ->
+                    JS.ExprAccess value JsName.dollar
 
-            else
-                case mode of
-                    Mode.Dev _ ->
-                        JS.ExprAccess value JsName.dollar
+                Mode.Prod _ ->
+                    case opts of
+                        Can.Normal ->
+                            JS.ExprAccess value JsName.dollar
 
-                    Mode.Prod _ ->
-                        case opts of
-                            Can.Normal ->
-                                JS.ExprAccess value JsName.dollar
+                        _ ->
+                            value
 
-                            Can.Enum ->
-                                value
-
-                            Can.Unbox ->
-                                value
-
-        Test.IsInt _ ->
+        Test.FInt _ ->
             value
 
-        Test.IsStr _ ->
+        Test.FStr _ ->
             value
 
-        Test.IsChr _ ->
+        Test.FChr _ ->
             case mode of
                 Mode.Dev _ ->
                     JS.ExprCall (JS.ExprAccess value (JsName.fromLocal "valueOf")) []
 
                 Mode.Prod _ ->
                     value
-
-        Test.IsBool _ ->
-            crash "COMPILER BUG - there should never be three tests on a list"
-
-        Test.IsCons ->
-            crash "COMPILER BUG - there should never be three tests on a list"
-
-        Test.IsNil ->
-            crash "COMPILER BUG - there should never be three tests on a list"
-
-        Test.IsTuple ->
-            crash "COMPILER BUG - there should never be three tests on a list"
 
 
 

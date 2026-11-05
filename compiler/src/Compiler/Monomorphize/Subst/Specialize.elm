@@ -62,6 +62,7 @@ import Compiler.Core.Name as Name exposing (Name)
 import Compiler.Core.TypeIds exposing (MVarId)
 import Compiler.Elm.ModuleName as ModuleName
 import Compiler.IR.Canonical as Can
+import Compiler.IR.DecisionTree.Test as Test
 import Compiler.IR.DecisionTree.TypedPath as TypedPath
 import Compiler.IR.Kernel.Abi as KernelAbiFacts
 import Compiler.IR.Mono as Mono
@@ -80,8 +81,10 @@ import Compiler.Monomorphize.State as State exposing (LocalMultiState, MVarEnv, 
 import Compiler.Monomorphize.TypeSubst as TypeSubst
 import Data.BitSet as BitSet
 import Data.Map
+import Data.NonEmptyList as NE
 import Data.Set as EverySet
 import Dict
+import Maybe.Extra as Maybe
 import Set
 import System.Crash
 
@@ -293,9 +296,9 @@ recordWidened from to =
                    )
 
         ( Mono.MTuple _ fromElems, Mono.MTuple _ toElems ) ->
-            List.length fromElems
-                == List.length toElems
-                && List.any identity (List.map2 recordWidened fromElems toElems)
+            Mono.tupleArity fromElems
+                == Mono.tupleArity toElems
+                && List.any identity (List.map2 recordWidened (Mono.tupleToList fromElems) (Mono.tupleToList toElems))
 
         _ ->
             False
@@ -462,7 +465,7 @@ typeContainsLambda canType =
             Dict.foldl (\_ (Can.FieldType _ t) acc -> acc || typeContainsLambda t) False fields
 
         Can.TTuple a b rest ->
-            typeContainsLambda a || typeContainsLambda b || List.any typeContainsLambda rest
+            typeContainsLambda a || typeContainsLambda b || Maybe.unwrap False typeContainsLambda rest
 
         Can.TAlias _ _ _ (Can.Filled inner) ->
             typeContainsLambda inner
@@ -539,7 +542,7 @@ isNumericFixableShape mt =
             True
 
         Mono.MTuple _ ts ->
-            List.all isNumericFixableShape ts
+            List.all isNumericFixableShape (Mono.tupleToList ts)
 
         Mono.MRecord _ fields ->
             not (Dict.isEmpty fields) && List.all isNumericFixableShape (Dict.values fields)
@@ -591,7 +594,7 @@ monoTypeMentionsNumeric mt =
             monoTypeMentionsNumeric t
 
         Mono.MTuple _ ts ->
-            List.any monoTypeMentionsNumeric ts
+            List.any monoTypeMentionsNumeric (Mono.tupleToList ts)
 
         Mono.MRecord _ fields ->
             Dict.foldl (\_ t acc -> acc || monoTypeMentionsNumeric t) False fields
@@ -714,9 +717,6 @@ getValueMultiRootFromPath path state =
         TOpt.Index _ _ subPath ->
             getValueMultiRootFromPath subPath state
 
-        TOpt.ArrayIndex _ subPath ->
-            getValueMultiRootFromPath subPath state
-
         TOpt.Field _ subPath ->
             getValueMultiRootFromPath subPath state
 
@@ -756,9 +756,6 @@ rewriteRootInPath oldName newName path =
 
         TOpt.Index idx hint subPath ->
             TOpt.Index idx hint (rewriteRootInPath oldName newName subPath)
-
-        TOpt.ArrayIndex idx subPath ->
-            TOpt.ArrayIndex idx (rewriteRootInPath oldName newName subPath)
 
         TOpt.Field fieldName subPath ->
             TOpt.Field fieldName (rewriteRootInPath oldName newName subPath)
@@ -836,7 +833,7 @@ the leaf at its index among fresh variables, a field step makes a one-field
 record, and a custom-type step goes through `customContainerForField`. An unbox
 step builds the custom type when `rootCanType` names a union with exactly one
 constructor, and otherwise passes the leaf through unchanged. Returns `Nothing`
-for a list or array index step, or when a custom-type step cannot be built.
+for a list index step, or when a custom-type step cannot be built.
 
 -}
 buildPartialContainer : Can.Type MVarId -> TOpt.Path -> Mono.MonoType -> MonoState -> Maybe ( Mono.MonoType, MonoState )
@@ -861,10 +858,10 @@ buildPartialContainer rootCanType path leafMonoType state =
                         elems =
                             case Index.toMachine idx of
                                 0 ->
-                                    [ leafMonoType, filler ]
+                                    Mono.T2 leafMonoType filler
 
                                 _ ->
-                                    [ filler, leafMonoType ]
+                                    Mono.T2 filler leafMonoType
                     in
                     buildPartialContainer rootCanType subPath (Mono.mTuple elems) state1
 
@@ -888,13 +885,13 @@ buildPartialContainer rootCanType path leafMonoType state =
                         elems =
                             case Index.toMachine idx of
                                 0 ->
-                                    [ leafMonoType, mvA, mvB ]
+                                    Mono.T3 leafMonoType mvA mvB
 
                                 1 ->
-                                    [ mvA, leafMonoType, mvB ]
+                                    Mono.T3 mvA leafMonoType mvB
 
                                 _ ->
-                                    [ mvA, mvB, leafMonoType ]
+                                    Mono.T3 mvA mvB leafMonoType
                     in
                     buildPartialContainer rootCanType subPath (Mono.mTuple elems) state1
 
@@ -942,9 +939,6 @@ buildPartialContainer rootCanType path leafMonoType state =
 
                 Nothing ->
                     buildPartialContainer rootCanType subPath leafMonoType state
-
-        TOpt.ArrayIndex _ _ ->
-            Nothing
 
 
 {-| Returns the specialized form of a destructuring `dname = <destructorPath
@@ -1547,10 +1541,10 @@ current global is not a `Global`.
 specializeCtorViaScheme : Name.Name -> Int -> Int -> Can.Type MVarId -> Mono.MonoType -> MonoState -> ( Mono.MonoNode, MonoState )
 specializeCtorViaScheme ctorName tag arity canType requestedMonoType state =
     let
-        ctorGlobal =
+        ( ctorHome, ctorGlobal ) =
             case state.ctx.currentGlobal of
                 Just (Mono.Global canonical name) ->
-                    TOpt.Global canonical name
+                    ( canonical, TOpt.Global canonical name )
 
                 _ ->
                     System.Crash.crash "specializeCtorViaScheme: currentGlobal is not a Global — ctors must always have a currentGlobal"
@@ -1577,7 +1571,7 @@ specializeCtorViaScheme ctorName tag arity canType requestedMonoType state =
             in
             { ctx | mvarEnv = mvarEnv1 }
     in
-    ( Mono.MonoCtor shape ctorResultType, { state1 | ctx = ctx2 } )
+    ( Mono.MonoCtor ctorHome shape ctorResultType, { state1 | ctx = ctx2 } )
 
 
 {-| Returns the node that the global `ctorName`, defined by `node`, becomes when
@@ -1600,7 +1594,7 @@ whose field types come from the constructor's type, with fresh variables,
 unified with the request, and whose type is what the requested type returns
 after all the fields are applied. An enumeration value becomes a `MonoEnum`. A
 link is followed to the linked node, keeping the current global; a link to a
-missing node, and a kernel, become a `MonoExtern` of the requested type. An
+missing node becomes a `MonoExtern` of the requested type. An
 effect manager becomes a `MonoManagerLeaf` naming the current global's module.
 
 A member of a recursive group is specialized together with every other member,
@@ -1617,8 +1611,8 @@ a function; that request is specialized as a plain value definition of the
 decoder. Each port is recorded once in the state's port registrations, an
 incoming one with its decoder's `SpecId`.
 
-The constructor and enumeration cases, and the port cases requested at a
-function type, crash when the current global is not a `Global`, and a
+The constructor, enumeration and effect manager cases, and the port cases
+requested at a function type, crash when the current global is not a `Global`, and a
 recursive group crashes when the current global is an accessor.
 
 -}
@@ -1675,7 +1669,7 @@ specializeNode ctorName node requestedMonoType state =
                         _ ->
                             System.Crash.crash "specializeNode TOpt.Enum: currentGlobal must be a Global"
             in
-            ( Mono.MonoEnum (CtorTag.effective enumHome ctorName tag) monoType, setMVarEnv envU state )
+            ( Mono.MonoEnum enumHome ctorName (CtorTag.effective enumHome ctorName tag) monoType, setMVarEnv envU state )
 
         TOpt.Box canType ->
             specializeCtorViaScheme ctorName 0 1 canType requestedMonoType state
@@ -1694,20 +1688,17 @@ specializeNode ctorName node requestedMonoType state =
                     in
                     specializeNode linkedName linkedNode requestedMonoType state
 
-        TOpt.Kernel _ _ ->
-            ( Mono.MonoExtern requestedMonoType, state )
-
-        TOpt.Manager _ ->
+        TOpt.Manager ->
             let
-                homeModuleName =
+                managerHome =
                     case state.ctx.currentGlobal of
-                        Just (Mono.Global (ModuleName.Canonical _ modName) _) ->
-                            Name.toElmString modName
+                        Just (Mono.Global canonical _) ->
+                            canonical
 
                         _ ->
-                            "Unknown"
+                            System.Crash.crash "specializeNode TOpt.Manager: currentGlobal must be a Global"
             in
-            ( Mono.MonoManagerLeaf homeModuleName requestedMonoType, state )
+            ( Mono.MonoManagerLeaf managerHome requestedMonoType, state )
 
         TOpt.Cycle _ valueDefs funcDefs _ ->
             specializeCycle valueDefs funcDefs requestedMonoType state
@@ -3910,15 +3901,24 @@ specializeExpr expr subst state =
                     specializeExpr b subst state1
 
                 ( monoRest, state3 ) =
-                    specializeExprs rest subst state2
+                    case rest of
+                        Nothing ->
+                            ( Nothing, state2 )
+
+                        Just c ->
+                            let
+                                ( monoC, stateC ) =
+                                    specializeExpr c subst state2
+                            in
+                            ( Just monoC, stateC )
 
                 allExprs =
-                    monoA :: monoB :: monoRest
+                    Mono.tupleOf monoA monoB monoRest
 
                 -- From the elements, not meta.tipe, so the slot types match the
                 -- values stored even where a canonical variable is unbound.
                 monoType =
-                    Mono.mTuple (List.map Mono.typeOf allExprs)
+                    Mono.mTuple (Mono.tupleMap Mono.typeOf allExprs)
             in
             ( Mono.MonoTupleCreate region allExprs monoType, state3 )
 
@@ -3956,13 +3956,8 @@ inferFromDecider decider fallback =
         Mono.Chain _ yes _ ->
             inferFromDecider yes fallback
 
-        Mono.FanOut _ branches def ->
-            case branches of
-                ( _, d ) :: _ ->
-                    inferFromDecider d fallback
-
-                [] ->
-                    inferFromDecider def fallback
+        Mono.FanOut _ (NE.Nonempty ( _, d ) _) _ ->
+            inferFromDecider d fallback
 
 
 
@@ -4610,19 +4605,6 @@ specializePath intern mvarEnv path varEnv globalTypeEnv currentGlobal destructor
             in
             Mono.MonoIndex (Index.toMachine index) (hintToKind hint) resultType monoSubPath
 
-        TOpt.ArrayIndex idx subPath ->
-            let
-                monoSubPath =
-                    specializePath intern mvarEnv subPath varEnv globalTypeEnv currentGlobal destructorName
-
-                containerType =
-                    Mono.getMonoPathType monoSubPath
-
-                resultType =
-                    computeArrayElementType containerType
-            in
-            Mono.MonoIndex idx (Mono.CustomContainer "") resultType monoSubPath
-
         TOpt.Field fieldName subPath ->
             let
                 monoSubPath =
@@ -4735,12 +4717,12 @@ computeTupleElementType : Int -> Mono.MonoType -> Mono.MonoType
 computeTupleElementType index containerType =
     case containerType of
         Mono.MTuple _ elementTypes ->
-            case List.drop index elementTypes of
+            case List.drop index (Mono.tupleToList elementTypes) of
                 elemType :: _ ->
                     elemType
 
                 [] ->
-                    System.Crash.crash ("Specialize.computeTupleElementType: Tuple index " ++ String.fromInt index ++ " out of bounds for tuple with " ++ String.fromInt (List.length elementTypes) ++ " elements")
+                    System.Crash.crash ("Specialize.computeTupleElementType: Tuple index " ++ String.fromInt index ++ " out of bounds for tuple with " ++ String.fromInt (Mono.tupleArity elementTypes) ++ " elements")
 
         _ ->
             System.Crash.crash ("Specialize.computeTupleElementType: Expected Mono.mTuple but got: " ++ Mono.monoTypeToDebugString containerType)
@@ -4877,20 +4859,6 @@ computeUnboxResultType intern mvarEnv globalTypeEnv containerType =
             System.Crash.crash ("Specialize.computeUnboxResultType: Expected Mono.mCustom but got: " ++ Mono.monoTypeToDebugString containerType)
 
 
-{-| Returns the element type of `containerType`, which must be a custom type
-named `Array` with one argument; crashes otherwise. The type's module is not
-checked.
--}
-computeArrayElementType : Mono.MonoType -> Mono.MonoType
-computeArrayElementType containerType =
-    case containerType of
-        Mono.MCustom _ _ "Array" [ elemType ] ->
-            elemType
-
-        _ ->
-            System.Crash.crash ("Specialize.computeArrayElementType: Expected Array type but got: " ++ Mono.monoTypeToDebugString containerType)
-
-
 {-| Returns the container kind of a destructuring path step for `hint`.
 -}
 hintToKind : TOpt.ContainerHint -> Mono.ContainerKind
@@ -4909,8 +4877,7 @@ hintToKind hint =
             Mono.CustomContainer ctorName
 
 
-{-| Returns the container kind of a decision-tree path step for `hint`. An
-unknown hint becomes a custom container with an empty constructor name.
+{-| Returns the container kind of a decision-tree path step for `hint`.
 -}
 dtHintToKind : TypedPath.ContainerHint -> Mono.ContainerKind
 dtHintToKind hint =
@@ -4927,13 +4894,9 @@ dtHintToKind hint =
         TypedPath.HintCustom ctorName ->
             Mono.CustomContainer ctorName
 
-        TypedPath.HintUnknown ->
-            Mono.CustomContainer ""
-
 
 {-| Returns the destructuring hint that matches the decision-tree hint `hint`,
-so that `computeIndexProjectionType` can type decision-tree steps. An unknown
-hint becomes a custom hint with an empty constructor name.
+so that `computeIndexProjectionType` can type decision-tree steps.
 -}
 dtHintToTOptHint : TypedPath.ContainerHint -> TOpt.ContainerHint
 dtHintToTOptHint hint =
@@ -4949,9 +4912,6 @@ dtHintToTOptHint hint =
 
         TypedPath.HintCustom ctorName ->
             TOpt.HintCustom ctorName
-
-        TypedPath.HintUnknown ->
-            TOpt.HintCustom ""
 
 
 {-| Returns the decision-tree path `dtPath` from the case root `rootName`, with a
@@ -5028,7 +4988,7 @@ specializeDecider expectedMono rootName decider subst state =
                     state.ctx.varEnv
 
                 monoTestChain =
-                    List.map
+                    NE.map
                         (\( path, test ) ->
                             ( specializeDtPath state.accum.intern state.ctx.mvarEnv rootName path state.ctx.varEnv state.ctx.globalTypeEnv, test )
                         )
@@ -5103,15 +5063,15 @@ specializeChoice expectedMono choice subst state =
 `specializeDecider`, in order, each starting from the variable environment the
 fan-out started with.
 -}
-specializeEdges : Mono.MonoType -> Name -> List ( DT.Test, TOpt.Decider (TOpt.Choice MVarId) ) -> Substitution -> MonoState -> ( List ( DT.Test, Mono.Decider Mono.MonoChoice ), MonoState )
+specializeEdges : Mono.MonoType -> Name -> NE.Nonempty ( Test.FanTest, TOpt.Decider (TOpt.Choice MVarId) ) -> Substitution -> MonoState -> ( NE.Nonempty ( Test.FanTest, Mono.Decider Mono.MonoChoice ), MonoState )
 specializeEdges expectedMono rootName edges subst state =
     let
         savedVarEnv =
             state.ctx.varEnv
 
-        ( revAcc, finalState ) =
-            List.foldl
-                (\( test, decider ) ( acc, st ) ->
+        ( finalState, monoEdges ) =
+            NE.mapAccuml
+                (\st ( test, decider ) ->
                     let
                         stWithResetVarEnv =
                             { st
@@ -5126,12 +5086,12 @@ specializeEdges expectedMono rootName edges subst state =
                         ( monoDecider, newSt ) =
                             specializeDecider expectedMono rootName decider subst stWithResetVarEnv
                     in
-                    ( ( test, monoDecider ) :: acc, newSt )
+                    ( newSt, ( test, monoDecider ) )
                 )
-                ( [], state )
+                state
                 edges
     in
-    ( List.reverse revAcc, finalState )
+    ( monoEdges, finalState )
 
 
 {-| Returns the shared branches of a case, each specialized with `expectedMono`
@@ -5280,7 +5240,7 @@ isFullyMonomorphicType monoType =
                 && isFullyMonomorphicType result
 
         Mono.MTuple _ elems ->
-            List.all isFullyMonomorphicType elems
+            List.all isFullyMonomorphicType (Mono.tupleToList elems)
 
         Mono.MRecord _ fields ->
             Dict.foldl
@@ -5479,7 +5439,7 @@ renameTailCalls oldName newName expr =
             Mono.MonoList region (List.map (renameTailCalls oldName newName) items) t
 
         Mono.MonoTupleCreate region items t ->
-            Mono.MonoTupleCreate region (List.map (renameTailCalls oldName newName) items) t
+            Mono.MonoTupleCreate region (Mono.tupleMap (renameTailCalls oldName newName) items) t
 
         Mono.MonoRecordCreate fields t ->
             Mono.MonoRecordCreate
@@ -5540,7 +5500,7 @@ renameTailCallsDecider oldName newName decider =
 
         Mono.FanOut path edges fallback ->
             Mono.FanOut path
-                (List.map (\( test, d ) -> ( test, renameTailCallsDecider oldName newName d )) edges)
+                (NE.map (\( test, d ) -> ( test, renameTailCallsDecider oldName newName d )) edges)
                 (renameTailCallsDecider oldName newName fallback)
 
 

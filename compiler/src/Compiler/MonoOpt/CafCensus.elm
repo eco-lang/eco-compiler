@@ -41,6 +41,7 @@ import Compiler.Core.Name as Name
 import Compiler.Elm.ModuleName as ModuleName
 import Compiler.IR.Mono as Mono
 import Compiler.MonoOpt.CafHoist as CafHoist
+import Data.NonEmptyList as NE
 import Dict exposing (Dict)
 import Set exposing (Set)
 
@@ -249,12 +250,12 @@ walkDecider decider =
                     { acc | free = Set.insert (dtRoot dtPath) acc.free }
                 )
                 (merge (walkDecider succ) (walkDecider fail))
-                tests
+                (NE.toList tests)
 
         Mono.FanOut dtPath edges fallback ->
             List.foldl (\( _, d ) acc -> merge (walkDecider d) acc)
                 (walkDecider fallback)
-                edges
+                (NE.toList edges)
                 |> (\acc -> { acc | free = Set.insert (dtRoot dtPath) acc.free })
 
 
@@ -392,7 +393,7 @@ walkExpr expr =
                         )
 
                 Mono.MonoTupleCreate _ items _ ->
-                    mergeAll (List.map walkExpr items)
+                    mergeAll (List.map walkExpr (Mono.tupleToList items))
 
         sized : Walk
         sized =

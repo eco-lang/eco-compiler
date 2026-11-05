@@ -102,7 +102,7 @@ the value, then its type.
 `EArrayAttr` is a list of attributes, written as their indices.
 `EDenseArrayAttr` carries an element type and the integers, which are written
 as raw bytes, each in the width of the element type (1 byte for `i1` and `i8`,
-2 for `i16`, 4 for `i32`, 8 for `i64`).
+4 for `i32`, 8 for `i64`).
 
 `ESymbolRefAttr` refers to a symbol by name, and is written as the index of the
 string attribute holding that name.
@@ -353,9 +353,6 @@ typeToKey ty =
         I8 ->
             "i8"
 
-        I16 ->
-            "i16"
-
         I32 ->
             "i32"
 
@@ -545,16 +542,9 @@ addAttrEntry attr acc =
             acc
 
         Nothing ->
-            let
-                entry =
-                    attrToEntry attr
-
-                dialect =
-                    entryDialect entry
-            in
             { acc
                 | attrKeys = Dict.insert key acc.nextAttr acc.attrKeys
-                , attrEntries = ( dialect, entry ) :: acc.attrEntries
+                , attrEntries = ( "builtin", attrToEntry attr ) :: acc.attrEntries
                 , nextAttr = acc.nextAttr + 1
             }
 
@@ -694,9 +684,6 @@ typeToEntry ty =
         I8 ->
             EIntegerType 8
 
-        I16 ->
-            EIntegerType 16
-
         I32 ->
             EIntegerType 32
 
@@ -707,38 +694,14 @@ typeToEntry ty =
             EFloat64Type
 
         NamedStruct s ->
-            let
-                dialect =
-                    case String.split "." s of
-                        d :: _ ->
-                            d
-
-                        _ ->
-                            "builtin"
-            in
-            EAsmType dialect ("!" ++ s)
+            EAsmType (Tuple.first (StringTable.splitDialect s)) ("!" ++ s)
 
         FunctionType sig ->
             EFunctionType sig.inputs sig.results
 
 
-{-| Returns the dialect an attribute entry belongs to: the dialect an `EAsmType`
-carries, and `builtin` for any other entry. No attribute becomes an `EAsmType`,
-so for an attribute this is always `builtin`.
--}
-entryDialect : Entry -> String
-entryDialect entry =
-    case entry of
-        EAsmType d _ ->
-            d
-
-        _ ->
-            "builtin"
-
-
 {-| Returns the dialect a type entry belongs to: the dialect an `EAsmType`
-carries, and `builtin` for any other entry. It gives the same answer as
-`entryDialect`.
+carries, and `builtin` for any other entry.
 -}
 typeEntryDialect : Entry -> String
 typeEntryDialect entry =
@@ -906,15 +869,16 @@ type alias EncodedEntry =
 {-| Returns every entry of the table encoded, in index order and split into
 dialect groups: the attributes' groups, then the types'.
 
-A group is a run of consecutive entries of one dialect, so a dialect whose
-entries are not next to each other has more than one group. Gathering each
-dialect's entries together instead would move entries away from their indices.
+A group is a run of consecutive entries of one dialect, given as its first
+entry and the rest, so a dialect whose entries are not next to each other has
+more than one group. Gathering each dialect's entries together instead would
+move entries away from their indices.
 
 Each entry is encoded once, and the same bytes serve the data section and the
 sizes in the offset section.
 
 -}
-computeEncodedGroups : StringTable -> AttrTypeTable -> List (List EncodedEntry)
+computeEncodedGroups : StringTable -> AttrTypeTable -> List ( EncodedEntry, List EncodedEntry )
 computeEncodedGroups st ((AttrTypeTable tbl) as table) =
     let
         encodeOne ( dialect, entry ) =
@@ -953,10 +917,10 @@ computeEncodedGroups st ((AttrTypeTable tbl) as table) =
 
                 first :: rest ->
                     let
-                        ( group, remaining ) =
-                            spanDialect first.dialect [ first ] rest
+                        ( sameDialect, remaining ) =
+                            spanDialect first.dialect [] rest
                     in
-                    group :: groupSequential remaining
+                    ( first, sameDialect ) :: groupSequential remaining
 
         spanDialect dialect acc entries =
             case entries of
@@ -980,7 +944,7 @@ computeEncodedGroups st ((AttrTypeTable tbl) as table) =
 
 
 {-| The width in bytes of one element of a dense array of `ty`: 1 for `i1`
-and `i8`, 2 for `i16`, 4 for `i32`, and 8 otherwise (`i64`).
+and `i8`, 4 for `i32`, and 8 otherwise (`i64`).
 -}
 denseElemBytes : MlirType -> Int
 denseElemBytes ty =
@@ -990,9 +954,6 @@ denseElemBytes ty =
 
         I8 ->
             1
-
-        I16 ->
-            2
 
         I32 ->
             4
@@ -1053,41 +1014,39 @@ encodeDataAndOffsets st dialectRegistry ((AttrTypeTable tbl) as table) =
 
         dataEncoder =
             BE.sequence
-                (groups |> List.concatMap (List.map (\e -> BE.bytes e.encoded)))
+                (groups |> List.concatMap (\( first, rest ) -> List.map (\e -> BE.bytes e.encoded) (first :: rest)))
 
         groupEncoders =
             groups
-                |> List.filterMap
-                    (\groupEntries ->
-                        case groupEntries of
-                            [] ->
-                                Nothing
+                |> List.map
+                    (\( first, rest ) ->
+                        let
+                            groupEntries =
+                                first :: rest
 
-                            first :: _ ->
-                                let
-                                    dialectIdx =
-                                        DialectSection.dialectIndex first.dialect dialectRegistry
+                            dialectIdx =
+                                DialectSection.dialectIndex first.dialect dialectRegistry
 
-                                    numElements =
-                                        List.length groupEntries
+                            numElements =
+                                List.length groupEntries
 
-                                    offsetEncoders =
-                                        groupEntries
-                                            |> List.map
-                                                (\e ->
-                                                    encodeVarInt
-                                                        (e.size
-                                                            * 2
-                                                            + (if e.hasCustom then
-                                                                1
+                            offsetEncoders =
+                                groupEntries
+                                    |> List.map
+                                        (\e ->
+                                            encodeVarInt
+                                                (e.size
+                                                    * 2
+                                                    + (if e.hasCustom then
+                                                        1
 
-                                                               else
-                                                                0
-                                                              )
-                                                        )
+                                                       else
+                                                        0
+                                                      )
                                                 )
-                                in
-                                Just (BE.sequence (encodeVarInt dialectIdx :: encodeVarInt numElements :: offsetEncoders))
+                                        )
+                        in
+                        BE.sequence (encodeVarInt dialectIdx :: encodeVarInt numElements :: offsetEncoders)
                     )
 
         offsetEncoder =
@@ -1317,9 +1276,6 @@ typeWidth ty =
 
         I8 ->
             8
-
-        I16 ->
-            16
 
         I32 ->
             32

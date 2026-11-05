@@ -63,6 +63,7 @@ import Compiler.PreMono.EntryPrep as EntryPrep
 import Data.Map
 import Data.Set
 import Expect
+import Maybe.Extra as Maybe
 import Test exposing (Test)
 import TestLogic.TestPipeline as Pipeline
 
@@ -99,8 +100,11 @@ suite =
 
                     Ok artifacts ->
                         let
+                            (Can.Module canonical) =
+                                artifacts.canonical
+
                             assigned =
-                                EntryPrep.assign ( False, False ) "main" (withMulAlias artifacts.globalGraph)
+                                EntryPrep.assignIn ( False, False ) canonical.name "main" (withMulAlias artifacts.globalGraph)
 
                             ( forwardedGraph, forwardedState, _ ) =
                                 AliasForward.run Config.default.inline assigned.mvarState assigned.graph
@@ -260,7 +264,7 @@ children expr =
             f :: args
 
         TOpt.Tuple _ a b cs _ ->
-            a :: b :: cs
+            a :: b :: Maybe.toList cs
 
         TOpt.List _ es _ ->
             es
@@ -359,7 +363,7 @@ monoChildren expr =
             f :: args
 
         Mono.MonoTupleCreate _ es _ ->
-            es
+            Mono.tupleToList es
 
         Mono.MonoList _ es _ ->
             es

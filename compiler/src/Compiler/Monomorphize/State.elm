@@ -182,14 +182,12 @@ taintNumber mvarId env =
 {-| What a monomorphization run builds up across all its work items.
 
 `nodes` is indexed by `SpecId`, with `Nothing` for a specialization not yet
-built. `scheduled` holds every `SpecId` ever put on the worklist, and
-`inProgress` those currently being processed.
+built. `scheduled` holds every `SpecId` ever put on the worklist.
 
 -}
 type alias SpecAccum =
     { worklist : List WorkItem
     , nodes : Array (Maybe Mono.MonoNode)
-    , inProgress : BitSet
     , scheduled : BitSet
     , registry : Mono.SpecializationRegistry
     , schemeCache : SchemeInfoCache
@@ -391,7 +389,6 @@ initState currentModule toptNodes annotations globalTypeEnv mvarEnv =
     { accum =
         { worklist = []
         , nodes = Array.empty
-        , inProgress = BitSet.empty
         , scheduled = BitSet.empty
         , registry = Registry.emptyRegistry
         , schemeCache = DataMap.empty

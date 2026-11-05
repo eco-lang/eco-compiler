@@ -58,7 +58,9 @@ import Compiler.IR.Canonical as Can
 import Compiler.IR.Typed.Optimized as TOpt
 import Compiler.PreMono.AssignMVarIds as AssignMVarIds
 import Data.Map as DMap
+import Data.NonEmptyList as NE
 import Dict exposing (Dict)
+import Maybe.Extra as Maybe
 
 
 {-| A substitution from a copied body's type variables to the types the caller
@@ -235,7 +237,12 @@ copyType env tipe =
                     copyType env1 b
 
                 ( newRest, env3 ) =
-                    copyTypeList env2 rest
+                    case rest of
+                        Just c ->
+                            Tuple.mapFirst Just (copyType env2 c)
+
+                        Nothing ->
+                            ( Nothing, env2 )
             in
             ( Can.TTuple newA newB newRest, env3 )
 
@@ -623,7 +630,12 @@ copyExpr env expr =
                     copyExpr env1 b
 
                 ( newRest, env3 ) =
-                    copyExprList env2 rest
+                    case rest of
+                        Just c ->
+                            Tuple.mapFirst Just (copyExpr env2 c)
+
+                        Nothing ->
+                            ( Nothing, env2 )
 
                 ( m, env4 ) =
                     copyMeta env3 meta
@@ -782,22 +794,22 @@ copyDecider env decider =
 
         TOpt.FanOut path branches fallback ->
             let
-                ( newBranches, env1 ) =
-                    List.foldl
-                        (\( t, d ) ( out, en ) ->
+                ( env1, newBranches ) =
+                    NE.mapAccuml
+                        (\en ( t, d ) ->
                             let
                                 ( newD, en1 ) =
                                     copyDecider en d
                             in
-                            ( ( t, newD ) :: out, en1 )
+                            ( en1, ( t, newD ) )
                         )
-                        ( [], env )
+                        env
                         branches
 
                 ( newFallback, env2 ) =
                     copyDecider env1 fallback
             in
-            ( TOpt.FanOut path (List.reverse newBranches) newFallback, env2 )
+            ( TOpt.FanOut path newBranches newFallback, env2 )
 
 
 
@@ -892,7 +904,12 @@ mintType state tipe =
                     mintType st1 b
 
                 ( newRest, st3 ) =
-                    mintTypeList st2 rest
+                    case rest of
+                        Just c ->
+                            Tuple.mapFirst Just (mintType st2 c)
+
+                        Nothing ->
+                            ( Nothing, st2 )
             in
             ( Can.TTuple newA newB newRest, st3 )
 
@@ -1225,7 +1242,12 @@ mintExpr state expr =
                     mintExpr st1 b
 
                 ( newRest, st3 ) =
-                    mintExprList st2 rest
+                    case rest of
+                        Just c ->
+                            Tuple.mapFirst Just (mintExpr st2 c)
+
+                        Nothing ->
+                            ( Nothing, st2 )
 
                 ( m, st4 ) =
                     mintMeta st3 meta
@@ -1373,22 +1395,22 @@ mintDecider state decider =
 
         TOpt.FanOut path branches fallback ->
             let
-                ( newBranches, st1 ) =
-                    List.foldl
-                        (\( t, d ) ( out, s ) ->
+                ( st1, newBranches ) =
+                    NE.mapAccuml
+                        (\s ( t, d ) ->
                             let
                                 ( newD, s1 ) =
                                     mintDecider s d
                             in
-                            ( ( t, newD ) :: out, s1 )
+                            ( s1, ( t, newD ) )
                         )
-                        ( [], state )
+                        state
                         branches
 
                 ( newFallback, st2 ) =
                     mintDecider st1 fallback
             in
-            ( TOpt.FanOut path (List.reverse newBranches) newFallback, st2 )
+            ( TOpt.FanOut path newBranches newFallback, st2 )
 
 
 
@@ -1544,7 +1566,7 @@ checkType who tipe seen =
         Can.TTuple a b rest ->
             checkType who a seen
                 |> Result.andThen (checkType who b)
-                |> (\acc -> List.foldl (\t r -> Result.andThen (checkType who t) r) acc rest)
+                |> (\acc -> List.foldl (\t r -> Result.andThen (checkType who t) r) acc (Maybe.toList rest))
 
         Can.TAlias _ _ args real ->
             List.foldl (\( _, t ) acc -> Result.andThen (checkType who t) acc)
@@ -1666,7 +1688,7 @@ exprChildren expr =
             DMap.values fields
 
         TOpt.Tuple _ a b rest _ ->
-            a :: b :: rest
+            a :: b :: Maybe.toList rest
 
         _ ->
             []
@@ -1687,5 +1709,5 @@ deciderChildren decider =
             deciderChildren ok ++ deciderChildren ko
 
         TOpt.FanOut _ branches fallback ->
-            List.concatMap (\( _, d ) -> deciderChildren d) branches
+            List.concatMap (\( _, d ) -> deciderChildren d) (NE.toList branches)
                 ++ deciderChildren fallback

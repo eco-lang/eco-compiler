@@ -34,6 +34,7 @@ optimization, so neither the solver engine nor the optimized graph is examined.
 import Array
 import Compiler.IR.Mono as Mono
 import Compiler.IR.Source as Src
+import Data.NonEmptyList as NE
 import Dict
 import Expect exposing (Expectation)
 import TestLogic.TestPipeline as Pipeline
@@ -125,10 +126,10 @@ checkNode specId node =
         Mono.MonoPortOutgoing expr _ ->
             checkExpr ctx expr
 
-        Mono.MonoCtor _ _ ->
+        Mono.MonoCtor _ _ _ ->
             []
 
-        Mono.MonoEnum _ _ ->
+        Mono.MonoEnum _ _ _ _ ->
             []
 
         Mono.MonoExtern _ ->
@@ -205,7 +206,7 @@ checkExpr ctx expr =
             checkExpr ctx inner
 
         Mono.MonoTupleCreate _ items _ ->
-            List.concatMap (checkExpr ctx) items
+            List.concatMap (checkExpr ctx) (Mono.tupleToList items)
 
         Mono.MonoLiteral _ _ ->
             []
@@ -298,7 +299,7 @@ checkDecider ctx decider =
             checkDecider ctx yes ++ checkDecider ctx no
 
         Mono.FanOut _ edges fallback ->
-            List.concatMap (\( _, d ) -> checkDecider ctx d) edges
+            List.concatMap (\( _, d ) -> checkDecider ctx d) (NE.toList edges)
                 ++ checkDecider ctx fallback
 
 

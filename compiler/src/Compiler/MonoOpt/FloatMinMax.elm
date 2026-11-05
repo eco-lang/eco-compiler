@@ -71,24 +71,26 @@ rewriteFloatNode name node =
     case node of
         Mono.MonoDefine (Mono.MonoClosure ci _ ct) nt ->
             if List.isEmpty ci.captures && List.all (\( _, t ) -> t == Mono.MFloat) ci.params then
-                case ( name, ci.params ) of
-                    ( "clamp", [ ( lo, _ ), ( hi, _ ), ( x, _ ) ] ) ->
-                        Mono.MonoDefine
-                            (Mono.MonoClosure ci
-                                (floatKernel "min" (floatKernel "max" (local x) (local lo)) (local hi))
-                                ct
-                            )
-                            nt
+                if name == "clamp" then
+                    case ci.params of
+                        [ ( lo, _ ), ( hi, _ ), ( x, _ ) ] ->
+                            Mono.MonoDefine
+                                (Mono.MonoClosure ci
+                                    (floatKernel "min" (floatKernel "max" (local x) (local lo)) (local hi))
+                                    ct
+                                )
+                                nt
 
-                    ( _, [ ( a, _ ), ( b, _ ) ] ) ->
-                        if name == "clamp" then
+                        _ ->
                             node
 
-                        else
+                else
+                    case ci.params of
+                        [ ( a, _ ), ( b, _ ) ] ->
                             Mono.MonoDefine (Mono.MonoClosure ci (floatKernel name (local a) (local b)) ct) nt
 
-                    _ ->
-                        node
+                        _ ->
+                            node
 
             else
                 node

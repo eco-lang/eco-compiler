@@ -42,6 +42,7 @@ import Array
 import Compiler.IR.Mono as Mono
 import Compiler.IR.Mono.Traverse as MonoTraverse
 import Compiler.IR.Source as Src
+import Data.NonEmptyList as NE
 import Expect exposing (Expectation)
 import TestLogic.TestPipeline as Pipeline
 
@@ -160,7 +161,7 @@ checkHonestJoinStaging (Mono.MonoGraph data) =
                     inlineLeaves no (inlineLeaves yes acc)
 
                 Mono.FanOut _ edges fallback ->
-                    inlineLeaves fallback (List.foldl (\( _, dd ) a -> inlineLeaves dd a) acc edges)
+                    inlineLeaves fallback (List.foldl (\( _, dd ) a -> inlineLeaves dd a) acc (NE.toList edges))
 
         naturalStaging x =
             case x of
@@ -274,10 +275,10 @@ checkNode specId node =
         Mono.MonoPortOutgoing expr _ ->
             checkExpr ctx expr
 
-        Mono.MonoCtor _ _ ->
+        Mono.MonoCtor _ _ _ ->
             []
 
-        Mono.MonoEnum _ _ ->
+        Mono.MonoEnum _ _ _ _ ->
             []
 
         Mono.MonoExtern _ ->
@@ -344,7 +345,7 @@ checkExpr ctx expr =
             checkExpr ctx inner ++ List.concatMap (\( _, e ) -> checkExpr ctx e) updates
 
         Mono.MonoTupleCreate _ items _ ->
-            List.concatMap (checkExpr ctx) items
+            List.concatMap (checkExpr ctx) (Mono.tupleToList items)
 
         Mono.MonoLiteral _ _ ->
             []
@@ -435,7 +436,7 @@ checkDecider ctx resultType decider =
                 ++ checkDecider ctx resultType no
 
         Mono.FanOut _ edges fallback ->
-            List.concatMap (\( _, d ) -> checkDecider ctx resultType d) edges
+            List.concatMap (\( _, d ) -> checkDecider ctx resultType d) (NE.toList edges)
                 ++ checkDecider ctx resultType fallback
 
 

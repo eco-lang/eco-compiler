@@ -128,7 +128,7 @@ suite =
 
 {-| Creates an expectation that `TestLogic.TestPipeline.runToGlobalOpt`, whose
 global optimizer includes `Compiler.MonoOpt.Staging`, succeeds on `srcModule`
-and gives an optimized graph with a `main` and a node array that is not empty.
+and gives an optimized graph with a node array that is not empty.
 -}
 expectGlobalOpt : Src.Module -> Expectation
 expectGlobalOpt srcModule =
@@ -141,16 +141,11 @@ expectGlobalOpt srcModule =
                 (Mono.MonoGraph data) =
                     optimizedMonoGraph
             in
-            case data.main of
-                Nothing ->
-                    Expect.fail "Optimized graph has no main entry point"
+            if Array.isEmpty data.nodes then
+                Expect.fail "Optimized graph has no nodes"
 
-                Just _ ->
-                    if Array.isEmpty data.nodes then
-                        Expect.fail "Optimized graph has no nodes"
-
-                    else
-                        Expect.pass
+            else
+                Expect.pass
 
 
 {-| Creates one test, named `"JoinpointABI "` followed by `condStr`, that applies

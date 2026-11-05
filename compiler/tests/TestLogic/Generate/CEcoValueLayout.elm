@@ -122,11 +122,11 @@ checkNode specId node =
                 ++ checkTypes (context ++ " parameter") (List.map Tuple.second params)
                 ++ checkExprTree context expr
 
-        Mono.MonoCtor ctorShape monoType ->
+        Mono.MonoCtor _ ctorShape monoType ->
             checkTypes (context ++ " constructor field") ctorShape.fieldTypes
                 ++ checkType context monoType
 
-        Mono.MonoEnum _ monoType ->
+        Mono.MonoEnum _ _ _ monoType ->
             checkType context monoType
 
         Mono.MonoExtern monoType ->
@@ -206,7 +206,7 @@ hasNumberVar monoType =
             hasNumberVar elemType
 
         Mono.MTuple _ elementTypes ->
-            List.any hasNumberVar elementTypes
+            List.any hasNumberVar (Mono.tupleToList elementTypes)
 
         Mono.MRecord _ fields ->
             List.any hasNumberVar (Dict.values fields)

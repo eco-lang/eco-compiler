@@ -4,7 +4,7 @@ module Compiler.GenerateMlir.ExprAstralCharTest exposing (suite)
 0xFFFF is emitted as its full code point.
 
 A Char literal above 0xFFFF (a `\u{1F600}` escape, stored by the parser as a
-surrogate pair and combined by `decodeSurrogatePair`) is emitted by
+surrogate pair and combined by `StringLiteral.codePoints`) is emitted by
 `generateLiteral` through `Ops.arithConstantChar` as a constant of the Char
 type, `i32` (`Types.ecoChar`), which holds any code point.
 

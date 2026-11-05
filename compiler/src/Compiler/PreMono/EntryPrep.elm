@@ -1,5 +1,5 @@
 module Compiler.PreMono.EntryPrep exposing
-    ( Assigned, assign, assignIn
+    ( Assigned, FlagsDecoder, assignIn
     , flagsDecoderName, findEntryPointId, findNodeAnnotationType
     )
 
@@ -8,25 +8,24 @@ lambda and arrow has a program-wide id, and from a decoder for the entry
 point's flags. This module produces both, once, so that the pre-mono passes and
 whichever monomorphization engine is selected all start from the same graph.
 
-`assign` turns a `TOpt.GlobalGraph Name` into an `Assigned` value in two steps.
-First it adds the _flags decoder_: a synthetic `Define` named
+`assignIn` turns a `TOpt.GlobalGraph Name` into an `Assigned` value in two
+steps. First it adds the _flags decoder_: a synthetic `Define` named
 `flagsDecoderName` (`main$flagsDecoder`) in the entry's home module, holding the
 decoder for the flags of a `Platform.Program flags model msg` entry. An entry of
 any other type gets none. Then it runs `AssignMVarIds.assignIds`, whose module
 docstring describes the ids. The decoder node is built with names and so is
 inserted before the ids are assigned.
 
-The entry is the `Define` or `TrackedDefine` with that name in the root
-module when one is given (`assignIn`); otherwise, by its name alone, the first
-such node in any module, in the graph's key order. `findEntryPointId` and
-`findNodeAnnotationType` look up the entry and a node's annotation in the
-graph after assignment.
+The entry is the `Define` or `TrackedDefine` with that name in the given root
+module. `findEntryPointId` and `findNodeAnnotationType` look up the entry and a
+node's annotation in the graph after assignment.
 
-@docs Assigned, assign, assignIn
+@docs Assigned, FlagsDecoder, assignIn
 @docs flagsDecoderName, findEntryPointId, findNodeAnnotationType
 
 -}
 
+import Compiler.Canonicalize.Effects as Effects
 import Compiler.Core.Annotation as A
 import Compiler.Core.Name as Name exposing (Name)
 import Compiler.Core.TypeIds as TypeIds
@@ -39,11 +38,12 @@ import Compiler.LocalOpt.Typed.Names as Names
 import Compiler.LocalOpt.Typed.Port as Port
 import Compiler.PreMono.AssignMVarIds as AssignMVarIds
 import Data.Map as DMap
+import System.Crash exposing (crash)
 
 
 {-| A typed graph after id assignment, with the id-supply state that produced
-it and the global of the flags decoder (`Nothing` when the entry is not a
-`Program` or no entry was found).
+it, the flags decoder (`Nothing` when the entry is not a `Program` or no entry
+was found), and the root module the entry is looked up in.
 
 Every `MVarId`, source-lambda id and `ArrowId` already exists on `graph`, so a
 pass that creates or copies a node must take new ids from `mvarState` (through
@@ -52,29 +52,32 @@ pass that creates or copies a node must take new ids from `mvarState` (through
 -}
 type alias Assigned =
     { graph : TOpt.GlobalGraph TypeIds.MVarId
-    , flagsGlobal : Maybe TOpt.Global
+    , flags : Maybe FlagsDecoder
     , mvarState : AssignMVarIds.GlobalMVarState
-    , entryHome : Maybe ModuleName.Canonical
+    , entryHome : ModuleName.Canonical
+    }
+
+
+{-| The synthetic flags-decoder global and its annotation type after id
+assignment. The pre-mono passes keep a `Define`'s annotation, so the type is
+the one the node has in every later graph.
+-}
+type alias FlagsDecoder =
+    { global : TOpt.Global
+    , tipe : Can.Type TypeIds.MVarId
     }
 
 
 {-| Returns the `Assigned` form of `graph`: the flags decoder for the entry
-named `entryPointName` is inserted, then ids are assigned.
+named `entryPointName` in module `entryHome` is inserted, then ids are
+assigned. The module is kept in the result as `entryHome`, so that the
+monomorphizer enters the same definition.
 
 The pair is passed to `AssignMVarIds.assignIds` as its `useSolverRoots` and
 `censusOn` arguments.
 
 -}
-assign : ( Bool, Bool ) -> Name -> TOpt.GlobalGraph Name -> Assigned
-assign flags entryPointName graph =
-    assignIn flags Nothing entryPointName graph
-
-
-{-| `assign`, with the entry looked up in module `entryHome` only when that is
-given. The module is kept in the result as `entryHome`, so that the
-monomorphizer enters the same definition.
--}
-assignIn : ( Bool, Bool ) -> Maybe ModuleName.Canonical -> Name -> TOpt.GlobalGraph Name -> Assigned
+assignIn : ( Bool, Bool ) -> ModuleName.Canonical -> Name -> TOpt.GlobalGraph Name -> Assigned
 assignIn ( useSolverRoots, censusOn ) entryHome entryPointName graph =
     let
         ( graphWithFlags, maybeFlagsGlobal ) =
@@ -82,9 +85,17 @@ assignIn ( useSolverRoots, censusOn ) entryHome entryPointName graph =
 
         ( assignedGraph, mvarState ) =
             AssignMVarIds.assignIds useSolverRoots censusOn graphWithFlags
+
+        (TOpt.GlobalGraph assignedNodes _ _ _ _) =
+            assignedGraph
     in
     { graph = assignedGraph
-    , flagsGlobal = maybeFlagsGlobal
+    , flags =
+        Maybe.andThen
+            (\global ->
+                Maybe.map (FlagsDecoder global) (findNodeAnnotationType global assignedNodes)
+            )
+            maybeFlagsGlobal
     , mvarState = mvarState
     , entryHome = entryHome
     }
@@ -102,29 +113,24 @@ flagsDecoderName =
 when the entry named `entryPointName` is a `Program`; otherwise the graph
 unchanged and `Nothing`.
 
-The entry is the first `Define` or `TrackedDefine` with that name, in any
-module. Its type is deep-dealiased; when the result is
+The entry is the `Define` or `TrackedDefine` with that name in `entryHome`. Its
+type is deep-dealiased; when the result is
 `Platform.Program flags model msg`, a `Define` of type `Json.Decode.Decoder flags`
 is inserted under `flagsDecoderName` in the entry's home module. Its body is a
 reference to `System.environmentDecoder` when `EcoEnvironment.isEnvironmentFlags`
 holds for the type as written, and otherwise the decoder `Port.toFlagsDecoder`
-builds for `flags`.
+builds for `flags` as `Effects.checkPayload` validates it. Flags it rejects
+crash the compiler: `Compiler.LocalOpt.Typed.Module` has already reported them.
 
 -}
-insertFlagsDecoderNode : Maybe ModuleName.Canonical -> Name -> TOpt.GlobalGraph Name -> ( TOpt.GlobalGraph Name, Maybe TOpt.Global )
-insertFlagsDecoderNode entryHome entryPointName ((TOpt.GlobalGraph nodes fields annots roots varSupers) as graph) =
-    let
-        entryMeta : Maybe ( ModuleName.Canonical, Can.Type Name )
-        entryMeta =
-            findEntryPointId entryHome entryPointName nodes
-                |> Maybe.map (\( TOpt.Global home _, tipe ) -> ( home, tipe ))
-    in
-    case entryMeta of
+insertFlagsDecoderNode : ModuleName.Canonical -> Name -> TOpt.GlobalGraph Name -> ( TOpt.GlobalGraph Name, Maybe TOpt.Global )
+insertFlagsDecoderNode entryHome entryPointName ((TOpt.GlobalGraph nodes _ _ _ _) as graph) =
+    case findEntryPointId entryHome entryPointName nodes of
         Nothing ->
             ( graph, Nothing )
 
-        Just ( home, tipe ) ->
-            insertDecoderFor home tipe graph
+        Just ( _, tipe ) ->
+            insertDecoderFor entryHome tipe graph
 
 
 {-| Adds the flags decoder for an entry in `home` of type `tipe`, when that
@@ -152,7 +158,12 @@ insertDecoderFor home tipe ((TOpt.GlobalGraph nodes fields annots roots varSuper
                                 )
 
                         else
-                            Names.run (Port.toFlagsDecoder flagsType)
+                            case Effects.checkPayload flagsType of
+                                Ok payload ->
+                                    Names.run (Port.toFlagsDecoder payload)
+
+                                Err _ ->
+                                    crash "Compiler.PreMono.EntryPrep.insertDecoderFor: the entry's flags passed Effects.checkPayload in LocalOpt.Typed.Module"
 
                     flagsGlobal : TOpt.Global
                     flagsGlobal =
@@ -174,47 +185,15 @@ insertDecoderFor home tipe ((TOpt.GlobalGraph nodes fields annots roots varSuper
 
 
 {-| Returns the global and annotation type of the entry: the `Define` or
-`TrackedDefine` named `entryPointName` in module `entryHome` when that is given,
-otherwise the first one with that name in any module, or `Nothing`.
+`TrackedDefine` named `entryPointName` in module `entryHome`, or `Nothing`.
 -}
-findEntryPointId : Maybe ModuleName.Canonical -> Name -> DMap.Dict String TOpt.Global (TOpt.Node id) -> Maybe ( TOpt.Global, Can.Type id )
+findEntryPointId : ModuleName.Canonical -> Name -> DMap.Dict String TOpt.Global (TOpt.Node id) -> Maybe ( TOpt.Global, Can.Type id )
 findEntryPointId entryHome entryPointName nodes =
-    case entryHome of
-        Just home ->
-            let
-                global =
-                    TOpt.Global home entryPointName
-            in
-            Maybe.map (Tuple.pair global) (findNodeAnnotationType global nodes)
-
-        Nothing ->
-            DMap.foldl
-                (\global node acc ->
-                    case acc of
-                        Just _ ->
-                            acc
-
-                        Nothing ->
-                            case ( global, node ) of
-                                ( TOpt.Global _ name, TOpt.Define _ _ meta ) ->
-                                    if name == entryPointName then
-                                        Just ( global, meta.tipe )
-
-                                    else
-                                        Nothing
-
-                                ( TOpt.Global _ name, TOpt.TrackedDefine _ _ _ meta ) ->
-                                    if name == entryPointName then
-                                        Just ( global, meta.tipe )
-
-                                    else
-                                        Nothing
-
-                                _ ->
-                                    Nothing
-                )
-                Nothing
-                nodes
+    let
+        global =
+            TOpt.Global entryHome entryPointName
+    in
+    Maybe.map (Tuple.pair global) (findNodeAnnotationType global nodes)
 
 
 {-| Returns the annotation type of the node at `global` when it is a `Define` or

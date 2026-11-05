@@ -152,6 +152,10 @@ readOnly intern =
 
 {-| Returns the number of distinct structures the table holds canonical copies
 of. It does not count the `widenSets` memo; `entries` does.
+
+Test hook: no production code calls it. `MonoComparableKeyEncodingTest` audits
+the table through it.
+
 -}
 size : Intern -> Int
 size intern =
@@ -264,6 +268,10 @@ It answers as `==` does, not as `Mono.eqKeySpec` does, so types that differ
 only in an arrow's lambda set annotation, or only in a variable's id, are not
 equal.
 
+Test hook: no production code calls it. `MonoComparableKeyEncodingTest` checks
+through it that the private `eqExactAgainst`, which the table looks types up
+with, decides as `==` does.
+
 -}
 eqExact : MonoType -> MonoType -> Bool
 eqExact a b =
@@ -314,7 +322,7 @@ eqExactAgainst a c =
         Mono.MTuple ha xs ->
             case c.node of
                 Mono.MTuple hb ys ->
-                    ha == hb && eqChildren xs ys
+                    ha == hb && eqChildren (Mono.tupleToList xs) (Mono.tupleToList ys)
 
                 _ ->
                     False
@@ -504,7 +512,7 @@ widenSetsGo monoType intern0 =
         Mono.MTuple _ elems ->
             let
                 ( elems1, i1 ) =
-                    widenList elems intern0
+                    Mono.tupleMapAccum widenSets intern0 elems
             in
             hashCons (Mono.mTuple elems1) i1
 

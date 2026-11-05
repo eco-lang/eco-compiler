@@ -1,11 +1,11 @@
 module Compiler.GenerateMlir.Ops exposing
-    ( opBuilder, mlirOp, mkRegion, mkRegionTerminatedByOps, funcFunc
-    , ecoConstantUnit, ecoConstantEmptyRec, ecoConstantTrue, ecoConstantFalse, ecoConstantNil, ecoConstantNothing, ecoConstantEmptyString, ecoConstantNullCons
+    ( opBuilder, mlirOp, mkRegion, funcFunc
+    , ecoConstantUnit, ecoConstantEmptyRec, ecoConstantNil, ecoConstantNothing, ecoConstantEmptyString, ecoConstantNullCons
     , ecoConstructList, ecoConstructTuple2, ecoConstructTuple3, ecoConstructRecord, ecoConstructCustom
     , ecoProjectListHead, ecoProjectListTail, ecoProjectTuple2, ecoProjectTuple3, ecoProjectRecord, ecoProjectCustom
-    , ecoCallNamed, ecoReturn, ecoYield, ecoStringLiteral, ecoUnaryOp, ecoBinaryOp, ecoNullaryOp, ecoTernaryOp, ecoCase, ecoCaseString, ecoGetTag
+    , ecoCallNamed, ecoReturn, ecoYield, ecoStringLiteral, ecoUnaryOp, ecoBinaryOp, ecoTernaryOp, ecoCase, ecoCaseString, ecoGetTag
     , ecoArrayGet, ecoArraySet, ecoArrayLength
-    , arithConstantInt, arithConstantInt32, arithConstantFloat, arithConstantBool, arithConstantChar, arithCmpI
+    , arithConstantInt, arithConstantInt32, arithConstantFloat, arithConstantBool, arithConstantChar, CmpIPred(..), arithCmpI
     , scfWhile, scfCondition
     , ecoCaseMany, ecoCaseStringMany, ecoYieldMany, scfYieldMany
     , ecoPapCreateGroup, GroupSibling, slotKindsAttr, withSlotKinds, assertStageArity
@@ -44,12 +44,12 @@ Several facts recur across the builders:
 
 # Op Builder Plumbing
 
-@docs opBuilder, mlirOp, mkRegion, mkRegionTerminatedByOps, funcFunc
+@docs opBuilder, mlirOp, mkRegion, funcFunc
 
 
 # Eco Constants
 
-@docs ecoConstantUnit, ecoConstantEmptyRec, ecoConstantTrue, ecoConstantFalse, ecoConstantNil, ecoConstantNothing, ecoConstantEmptyString, ecoConstantNullCons
+@docs ecoConstantUnit, ecoConstantEmptyRec, ecoConstantNil, ecoConstantNothing, ecoConstantEmptyString, ecoConstantNullCons
 
 
 # Eco Constructors
@@ -64,7 +64,7 @@ Several facts recur across the builders:
 
 # Eco Operations
 
-@docs ecoCallNamed, ecoReturn, ecoYield, ecoStringLiteral, ecoUnaryOp, ecoBinaryOp, ecoNullaryOp, ecoTernaryOp, ecoCase, ecoCaseString, ecoGetTag
+@docs ecoCallNamed, ecoReturn, ecoYield, ecoStringLiteral, ecoUnaryOp, ecoBinaryOp, ecoTernaryOp, ecoCase, ecoCaseString, ecoGetTag
 
 
 # Eco Array Operations
@@ -74,7 +74,7 @@ Several facts recur across the builders:
 
 # Arith Operations
 
-@docs arithConstantInt, arithConstantInt32, arithConstantFloat, arithConstantBool, arithConstantChar, arithCmpI
+@docs arithConstantInt, arithConstantInt32, arithConstantFloat, arithConstantBool, arithConstantChar, CmpIPred, arithCmpI
 
 
 # SCF Operations
@@ -151,26 +151,6 @@ ecoConstantUnit ctx resultVar =
 ecoConstantEmptyRec : Ctx.Context -> String -> ( Ctx.Context, MlirOp )
 ecoConstantEmptyRec ctx resultVar =
     ecoConstantEmpty ctx resultVar
-
-
-{-| Builds the `eco.constant` for True, kind 1, as an `!eco.value`.
--}
-ecoConstantTrue : Ctx.Context -> String -> ( Ctx.Context, MlirOp )
-ecoConstantTrue ctx resultVar =
-    mlirOp ctx "eco.constant"
-        |> opBuilder.withResults [ ( resultVar, Types.ecoValue ) ]
-        |> opBuilder.withAttrs (Dict.singleton "kind" (IntAttr (Just I32) 1))
-        |> opBuilder.build
-
-
-{-| Builds the `eco.constant` for False, kind 0, as an `!eco.value`.
--}
-ecoConstantFalse : Ctx.Context -> String -> ( Ctx.Context, MlirOp )
-ecoConstantFalse ctx resultVar =
-    mlirOp ctx "eco.constant"
-        |> opBuilder.withResults [ ( resultVar, Types.ecoValue ) ]
-        |> opBuilder.withAttrs (Dict.singleton "kind" (IntAttr (Just I32) 0))
-        |> opBuilder.build
 
 
 {-| Builds the empty constant for the empty list.
@@ -299,37 +279,22 @@ ecoConstructTuple3 ctx resultVar ( aVar, aType ) ( bVar, bType ) ( cVar, cType )
         |> opBuilder.build
 
 
-{-| Builds an `eco.construct.record` heap record from its field operands in
-layout order.
-
-`slotKinds` holds one slot kind per field and becomes `slot_kinds`. It crashes
-the compile when `slotKinds` does not have `fieldCount` entries.
-
+{-| Builds an `eco.construct.record` heap record from its fields in layout
+order, each an operand, its type and its slot kind. The fields give
+`field_count`, `slot_kinds` and `_operand_types`.
 -}
-ecoConstructRecord : Ctx.Context -> String -> List ( String, MlirType ) -> Int -> List Int -> ( Ctx.Context, MlirOp )
-ecoConstructRecord ctx resultVar fieldPairs fieldCount slotKinds =
+ecoConstructRecord : Ctx.Context -> String -> List ( String, MlirType, Int ) -> ( Ctx.Context, MlirOp )
+ecoConstructRecord ctx resultVar fields =
     let
         allOperands =
-            List.map Tuple.first fieldPairs
-
-        allTypes =
-            List.map Tuple.second fieldPairs
-
-        operandTypesAttr =
-            if List.isEmpty allOperands then
-                Dict.empty
-
-            else
-                Dict.singleton "_operand_types"
-                    (ArrayAttr Nothing (List.map TypeAttr allTypes))
+            List.map (\( v, _, _ ) -> v) fields
 
         attrs =
-            Dict.union operandTypesAttr
-                (Dict.fromList
-                    [ ( "field_count", IntAttr Nothing fieldCount )
-                    , ( "slot_kinds", slotKindListAttr (checkKindsLength "eco.construct.record" fieldCount slotKinds) )
-                    ]
-                )
+            Dict.fromList
+                [ ( "_operand_types", ArrayAttr Nothing (List.map (\( _, t, _ ) -> TypeAttr t) fields) )
+                , ( "field_count", IntAttr Nothing (List.length fields) )
+                , ( "slot_kinds", slotKindListAttr (List.map (\( _, _, k ) -> k) fields) )
+                ]
     in
     mlirOp ctx "eco.construct.record"
         |> opBuilder.withOperands allOperands
@@ -338,74 +303,31 @@ ecoConstructRecord ctx resultVar fieldPairs fieldCount slotKinds =
         |> opBuilder.build
 
 
-{-| Builds an `eco.construct.custom` heap value with constructor tag `tag` and
-`size` fields, from the field operands.
-
-`slotKinds` holds one slot kind per field and becomes `slot_kinds`; it crashes
-the compile when `slotKinds` does not have `size` entries. A constructor name,
-when given, becomes the `constructor` attribute.
-
+{-| Builds an `eco.construct.custom` heap value of the constructor
+`ctorName`, with tag `tag`, from its fields in order, each an operand, its
+type and its slot kind. The fields give `size`, `slot_kinds` and
+`_operand_types`; the name becomes the `constructor` attribute.
 -}
-ecoConstructCustom : Ctx.Context -> String -> Int -> Int -> List Int -> List ( String, MlirType ) -> Maybe String -> ( Ctx.Context, MlirOp )
-ecoConstructCustom ctx resultVar tag size slotKinds operands maybeCtorName =
+ecoConstructCustom : Ctx.Context -> String -> Int -> String -> List ( String, MlirType, Int ) -> ( Ctx.Context, MlirOp )
+ecoConstructCustom ctx resultVar tag ctorName fields =
     let
         allOperands =
-            List.map Tuple.first operands
-
-        allTypes =
-            List.map Tuple.second operands
-
-        operandTypesAttr =
-            if List.isEmpty allOperands then
-                Dict.empty
-
-            else
-                Dict.singleton "_operand_types"
-                    (ArrayAttr Nothing (List.map TypeAttr allTypes))
-
-        constructorAttr =
-            case maybeCtorName of
-                Just name ->
-                    Dict.singleton "constructor" (StringAttr name)
-
-                Nothing ->
-                    Dict.empty
+            List.map (\( v, _, _ ) -> v) fields
 
         attrs =
-            Dict.union operandTypesAttr
-                (Dict.union constructorAttr
-                    (Dict.fromList
-                        [ ( "tag", IntAttr Nothing tag )
-                        , ( "size", IntAttr Nothing size )
-                        , ( "slot_kinds", slotKindListAttr (checkKindsLength "eco.construct.custom" size slotKinds) )
-                        ]
-                    )
-                )
+            Dict.fromList
+                [ ( "_operand_types", ArrayAttr Nothing (List.map (\( _, t, _ ) -> TypeAttr t) fields) )
+                , ( "constructor", StringAttr ctorName )
+                , ( "tag", IntAttr Nothing tag )
+                , ( "size", IntAttr Nothing (List.length fields) )
+                , ( "slot_kinds", slotKindListAttr (List.map (\( _, _, k ) -> k) fields) )
+                ]
     in
     mlirOp ctx "eco.construct.custom"
         |> opBuilder.withOperands allOperands
         |> opBuilder.withResults [ ( resultVar, Types.ecoValue ) ]
         |> opBuilder.withAttrs attrs
         |> opBuilder.build
-
-
-{-| Returns `kinds` unchanged when it has `count` entries, and otherwise crashes
-the compile with a message naming `opName`.
--}
-checkKindsLength : String -> Int -> List Int -> List Int
-checkKindsLength opName count kinds =
-    if List.length kinds == count then
-        kinds
-
-    else
-        crash
-            (opName
-                ++ ": slot_kinds has "
-                ++ String.fromInt (List.length kinds)
-                ++ " entries for "
-                ++ String.fromInt count
-                ++ " slots"
-            )
 
 
 
@@ -498,9 +420,6 @@ aggSlotTypeString ty =
         I8 ->
             "i8"
 
-        I16 ->
-            "i16"
-
         I32 ->
             "i32"
 
@@ -580,26 +499,19 @@ aggCustomType slotTypes =
 {-| Builds an `eco.make.custom`: a value-level custom-type value with tag `tag`,
 typed by `aggCustomType` of its operand types.
 
-It carries `tag` and, when given, `constructor`, like `eco.construct.custom`,
-but no `size` or `slot_kinds`.
+It carries `tag` and `constructor`, the constructor's name, like
+`eco.construct.custom`, but no `size` or `slot_kinds`.
 
 -}
-ecoMakeCustom : Ctx.Context -> String -> Int -> Maybe String -> List ( String, MlirType ) -> ( Ctx.Context, MlirOp )
-ecoMakeCustom ctx resultVar tag maybeCtorName operands =
+ecoMakeCustom : Ctx.Context -> String -> Int -> String -> List ( String, MlirType ) -> ( Ctx.Context, MlirOp )
+ecoMakeCustom ctx resultVar tag ctorName operands =
     let
-        baseAttrs =
+        attrs =
             Dict.fromList
                 [ ( "_operand_types", ArrayAttr Nothing (List.map (\( _, t ) -> TypeAttr t) operands) )
                 , ( "tag", IntAttr Nothing tag )
+                , ( "constructor", StringAttr ctorName )
                 ]
-
-        attrs =
-            case maybeCtorName of
-                Just n ->
-                    Dict.insert "constructor" (StringAttr n) baseAttrs
-
-                Nothing ->
-                    baseAttrs
     in
     mlirOp ctx "eco.make.custom"
         |> opBuilder.withOperands (List.map Tuple.first operands)
@@ -810,12 +722,10 @@ ecoReturnMulti ctx operandPairs =
 
 
 {-| Builds an `eco.call` to the function named `funcName` with one result per
-pair in the first list, as used to call a multi-result function built by
-`funcFuncMulti`.
-
-It adds `eco.cse_safe` under the same conditions as `ecoCallNamed`, but unlike
-`ecoCallNamed` it never records a kernel declaration.
-
+pair in the first list, as used to call the `$sret` worker of a function, a
+multi-result function built by `funcFuncMulti`. Such a worker is a program
+function, never a kernel, so unlike `ecoCallNamed` it records no kernel
+declaration and adds no `eco.cse_safe`.
 -}
 ecoCallNamedMulti : Ctx.Context -> List ( String, MlirType ) -> String -> List ( String, MlirType ) -> ( Ctx.Context, MlirOp )
 ecoCallNamedMulti ctx resultPairs funcName operands =
@@ -823,29 +733,11 @@ ecoCallNamedMulti ctx resultPairs funcName operands =
         allOperands =
             List.map Tuple.first operands
 
-        allTypes =
-            List.map Tuple.second operands
-
-        operandTypesAttr =
-            if List.isEmpty allOperands then
-                Dict.empty
-
-            else
-                Dict.singleton "_operand_types"
-                    (ArrayAttr Nothing (List.map TypeAttr allTypes))
-
-        csePurityAttr =
-            if ctx.ecoConfig.callPurityAttrs && calleeIsDroppable funcName then
-                Dict.singleton "eco.cse_safe" UnitAttr
-
-            else
-                Dict.empty
-
         attrs =
-            Dict.union csePurityAttr
-                (Dict.union operandTypesAttr
-                    (Dict.singleton "callee" (SymbolRefAttr funcName))
-                )
+            Dict.fromList
+                [ ( "_operand_types", ArrayAttr Nothing (List.map (TypeAttr << Tuple.second) operands) )
+                , ( "callee", SymbolRefAttr funcName )
+                ]
     in
     mlirOp ctx "eco.call"
         |> opBuilder.withOperands allOperands
@@ -943,51 +835,32 @@ arithConstantInt32 ctx resultVar value =
         |> opBuilder.build
 
 
-{-| Builds an `arith.cmpi` comparing two integers by the predicate named
-`predicateName` (`eq`, `ne`, `slt`, `sle`, `sgt`, `sge`, `ult`, `ule`, `ugt` or
-`uge`), with an `i1` result.
-
-An unrecognised predicate name is emitted as `eq`. Both entries of
-`_operand_types` are the left operand's type.
-
+{-| The `arith.cmpi` predicates the generator uses: equal, signed less or
+equal, and signed greater. Add a constructor, with its MLIR predicate number,
+when another is needed.
 -}
-arithCmpI : Ctx.Context -> String -> String -> ( String, MlirType ) -> ( String, MlirType ) -> ( Ctx.Context, MlirOp )
-arithCmpI ctx predicateName resultVar ( lhs, lhsTy ) ( rhs, _ ) =
+type CmpIPred
+    = CmpEq
+    | CmpSle
+    | CmpSgt
+
+
+{-| Builds an `arith.cmpi` comparing two integers by `predicate`, with an `i1`
+result. Both entries of `_operand_types` are the left operand's type.
+-}
+arithCmpI : Ctx.Context -> CmpIPred -> String -> ( String, MlirType ) -> ( String, MlirType ) -> ( Ctx.Context, MlirOp )
+arithCmpI ctx predicate resultVar ( lhs, lhsTy ) ( rhs, _ ) =
     let
         predicateValue =
-            case predicateName of
-                "eq" ->
+            case predicate of
+                CmpEq ->
                     0
 
-                "ne" ->
-                    1
-
-                "slt" ->
-                    2
-
-                "sle" ->
+                CmpSle ->
                     3
 
-                "sgt" ->
+                CmpSgt ->
                     4
-
-                "sge" ->
-                    5
-
-                "ult" ->
-                    6
-
-                "ule" ->
-                    7
-
-                "ugt" ->
-                    8
-
-                "uge" ->
-                    9
-
-                _ ->
-                    0
 
         attrs =
             Dict.fromList
@@ -1068,16 +941,6 @@ ecoBinaryOp ctx opName resultVar ( lhs, lhsTy ) ( rhs, rhsTy ) resultTy =
         |> opBuilder.withOperands [ lhs, rhs ]
         |> opBuilder.withResults [ ( resultVar, resultTy ) ]
         |> opBuilder.withAttrs attrs
-        |> opBuilder.build
-
-
-{-| Builds the eco op named `opName`, such as `eco.array.empty`, with no
-operands and no attributes.
--}
-ecoNullaryOp : Ctx.Context -> String -> String -> MlirType -> ( Ctx.Context, MlirOp )
-ecoNullaryOp ctx opName resultVar resultTy =
-    mlirOp ctx opName
-        |> opBuilder.withResults [ ( resultVar, resultTy ) ]
         |> opBuilder.build
 
 
@@ -1170,29 +1033,6 @@ mkRegion args body terminator =
             }
         , blocks = OrderedDict.empty
         }
-
-
-{-| Returns a single-block region whose terminator is the last of `ops` and
-whose body is the rest.
-
-It crashes the compile when `ops` is empty.
-
--}
-mkRegionTerminatedByOps : List ( String, MlirType ) -> List MlirOp -> MlirRegion
-mkRegionTerminatedByOps args ops =
-    case List.reverse ops of
-        [] ->
-            crash "mkRegionTerminatedByOps: empty ops list - must have terminator"
-
-        terminator :: restReversed ->
-            MlirRegion
-                { entry =
-                    { args = args
-                    , body = List.reverse restReversed
-                    , terminator = terminator
-                    }
-                , blocks = OrderedDict.empty
-                }
 
 
 {-| Builds an `eco.global` named `symName`: a module-level slot that holds one

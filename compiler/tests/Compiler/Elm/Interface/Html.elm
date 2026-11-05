@@ -52,13 +52,20 @@ virtualDomInterface =
         }
 
 
+{-| The package name `elm/html`.
+-}
+elmHtml : Pkg.Name
+elmHtml =
+    ( "elm", "html" )
+
+
 {-| The mock `Html` interface, homed in the elm/html package, holding `text` and
 the public alias `Html msg` for `VirtualDom.Node msg`.
 -}
 htmlInterface : I.Interface
 htmlInterface =
     I.Interface
-        { home = Pkg.html
+        { home = elmHtml
         , values =
             Dict.fromList
                 [ ( "text", textAnnotation )
