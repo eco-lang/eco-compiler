@@ -86,15 +86,17 @@ import Compiler.Parse.Variable as Var
 `projectType`.
 
 The error is `E.ParseError` when the text does not parse, including when text
-is left over after the last declaration it could read. Otherwise it is the
-error for the effect rule the module breaks.
+is left over after the last declaration it could read. In a kernel project it
+is `E.KernelImportAlias` for the first import of a kernel module written with
+`as`. Otherwise it is the error for the effect rule the module breaks.
 
 -}
 fromByteString : ProjectType -> String -> Result E.Error Src.Module
 fromByteString projectType source =
     case P.fromByteString (chompModule projectType) E.ModuleBadEnd source of
         Ok modul ->
-            checkModule projectType modul
+            checkKernelImports projectType modul
+                |> Result.andThen (\() -> checkModule projectType modul)
 
         Err err ->
             Err (E.ParseError err)
@@ -232,6 +234,38 @@ chompModule projectType =
 
 
 -- ====== CHECK MODULE ======
+
+
+{-| Fails with `E.KernelImportAlias` at the first import of a kernel module
+(`Elm.Kernel.*`, `Eco.Kernel.*`) that has an `as`, when the project is a kernel
+project. A kernel module is always referred to by its own name. Outside a
+kernel project a kernel import is left to fail as a module that cannot be
+found.
+-}
+checkKernelImports : ProjectType -> Module -> Result E.Error ()
+checkKernelImports projectType module_ =
+    if isKernel projectType then
+        let
+            ( _, imports ) =
+                module_.imports
+
+            aliased : Src.Import -> Maybe E.Error
+            aliased (Src.Import ( _, A.At region name ) maybeAlias _) =
+                if Name.isKernel name && maybeAlias /= Nothing then
+                    Just (E.BadKernel (E.KernelImportAlias region name))
+
+                else
+                    Nothing
+        in
+        case List.filterMap (Src.c1Value >> aliased) imports of
+            err :: _ ->
+                Err err
+
+            [] ->
+                Ok ()
+
+    else
+        Ok ()
 
 
 {-| Builds the `Src.Module` for a parsed module, failing when its effects

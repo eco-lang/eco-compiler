@@ -147,9 +147,10 @@ level or in a `let`, defined in terms of itself, with the other definitions on
 the cycle, empty when it refers to itself directly.
 
 `TooLarge` is a function, lambda or local function over one of Eco's heap
-limits (HEAP\_078), or a constructor, record type or record literal with more
-fields than a heap object holds (HEAP\_019). It carries the region to
-underline, what is too large, the actual count and the limit.
+limits (HEAP\_078), a constructor, record type or record literal with more
+fields than a heap object holds (HEAP\_019), or a constructor without fields
+at a position its constant word cannot hold (HEAP\_044). It carries the region
+to underline, what is too large, the actual count and the limit.
 
 `TupleLargerThanThree` is a tuple of more than three elements.
 
@@ -211,6 +212,9 @@ captured variables exceed the closure stage arity. `TooManyCtorFields` is a
 custom type variant with more fields than a Custom object holds, and
 `TooManyRecordFields` a record type alias (named) or a record literal or record
 type annotation (`Nothing`) with more fields than a Record object holds.
+`NullaryCtorTooLate` is a variant without fields declared too far down its
+type for its position to fit the constant word that represents it; its counts
+are that position and the last one allowed, both counted from one.
 -}
 type TooLargeWhat
     = TooManyParams Name
@@ -218,6 +222,7 @@ type TooLargeWhat
     | TooManyClosureSlots (Maybe Name)
     | TooManyCtorFields Name
     | TooManyRecordFields (Maybe Name)
+    | NullaryCtorTooLate Name
 
 
 {-| What was given the wrong number of arguments in a `BadArity` error: a type,
@@ -1106,45 +1111,59 @@ toReport source err =
                 fieldAdvice =
                     "Split it into nested records or constructors."
 
-                ( ( title, subject, unit ), ( invariant, advice ) ) =
+                sizeMessage : String -> String -> String -> String
+                sizeMessage subject unit invariant =
+                    subject
+                        ++ " has "
+                        ++ String.fromInt actual
+                        ++ " "
+                        ++ unit
+                        ++ ", but Eco supports at most "
+                        ++ String.fromInt limit
+                        ++ " ("
+                        ++ invariant
+                        ++ ")."
+
+                ( title, message, advice ) =
                     case what of
                         TooManyParams name ->
-                            ( ( "TOO MANY PARAMETERS", "The function `" ++ name ++ "`", "parameters" ), ( "HEAP_078", functionAdvice ) )
+                            ( "TOO MANY PARAMETERS", sizeMessage ("The function `" ++ name ++ "`") "parameters" "HEAP_078", functionAdvice )
 
                         TooManyLambdaParams ->
-                            ( ( "TOO MANY PARAMETERS", "This anonymous function", "parameters" ), ( "HEAP_078", functionAdvice ) )
+                            ( "TOO MANY PARAMETERS", sizeMessage "This anonymous function" "parameters" "HEAP_078", functionAdvice )
 
                         TooManyClosureSlots (Just name) ->
-                            ( ( "TOO MANY CAPTURED VARIABLES", "The local function `" ++ name ++ "`", "parameters and captured variables" ), ( "HEAP_078", functionAdvice ) )
+                            ( "TOO MANY CAPTURED VARIABLES", sizeMessage ("The local function `" ++ name ++ "`") "parameters and captured variables" "HEAP_078", functionAdvice )
 
                         TooManyClosureSlots Nothing ->
-                            ( ( "TOO MANY CAPTURED VARIABLES", "This anonymous function", "parameters and captured variables" ), ( "HEAP_078", functionAdvice ) )
+                            ( "TOO MANY CAPTURED VARIABLES", sizeMessage "This anonymous function" "parameters and captured variables" "HEAP_078", functionAdvice )
 
                         TooManyCtorFields name ->
-                            ( ( "TOO MANY FIELDS", "The constructor `" ++ name ++ "`", "fields" ), ( "HEAP_019", fieldAdvice ) )
+                            ( "TOO MANY FIELDS", sizeMessage ("The constructor `" ++ name ++ "`") "fields" "HEAP_019", fieldAdvice )
 
                         TooManyRecordFields (Just name) ->
-                            ( ( "TOO MANY FIELDS", "The record type `" ++ name ++ "`", "fields" ), ( "HEAP_019", fieldAdvice ) )
+                            ( "TOO MANY FIELDS", sizeMessage ("The record type `" ++ name ++ "`") "fields" "HEAP_019", fieldAdvice )
 
                         TooManyRecordFields Nothing ->
-                            ( ( "TOO MANY FIELDS", "This record", "fields" ), ( "HEAP_019", fieldAdvice ) )
+                            ( "TOO MANY FIELDS", sizeMessage "This record" "fields" "HEAP_019", fieldAdvice )
+
+                        NullaryCtorTooLate name ->
+                            ( "TOO MANY CONSTRUCTORS"
+                            , "The constructor `"
+                                ++ name
+                                ++ "` has no fields and is constructor "
+                                ++ String.fromInt actual
+                                ++ " of its type, but Eco supports a constructor without fields only among the first "
+                                ++ String.fromInt limit
+                                ++ " (HEAP_044)."
+                            , "Move the constructors without fields to the start of the type, or split the type into smaller ones."
+                            )
             in
             Report.report title region [] <|
                 Code.toSnippet source
                     region
                     Nothing
-                    ( D.reflow
-                        (subject
-                            ++ " has "
-                            ++ String.fromInt actual
-                            ++ " "
-                            ++ unit
-                            ++ ", but Eco supports at most "
-                            ++ String.fromInt limit
-                            ++ " ("
-                            ++ invariant
-                            ++ ")."
-                        )
+                    ( D.reflow message
                     , D.reflow advice
                     )
 
@@ -2259,7 +2278,7 @@ errorDecoder =
 
 {-| Encodes a `TooLargeWhat` as a one-byte tag (0 `TooManyParams`, 1
 `TooManyLambdaParams`, 2 `TooManyClosureSlots`, 3 `TooManyCtorFields`, 4
-`TooManyRecordFields`) followed by its name, if any.
+`TooManyRecordFields`, 5 `NullaryCtorTooLate`) followed by its name, if any.
 -}
 tooLargeWhatEncoder : TooLargeWhat -> Bytes.Encode.Encoder
 tooLargeWhatEncoder what =
@@ -2278,6 +2297,9 @@ tooLargeWhatEncoder what =
 
         TooManyRecordFields maybeName ->
             Bytes.Encode.sequence [ Bytes.Encode.unsignedInt8 4, BE.maybe BE.string maybeName ]
+
+        NullaryCtorTooLate name ->
+            Bytes.Encode.sequence [ Bytes.Encode.unsignedInt8 5, BE.string name ]
 
 
 {-| Decodes a `TooLargeWhat` written by `tooLargeWhatEncoder`.
@@ -2302,6 +2324,9 @@ tooLargeWhatDecoder =
 
                     4 ->
                         Bytes.Decode.map TooManyRecordFields (BD.maybe BD.string)
+
+                    5 ->
+                        Bytes.Decode.map NullaryCtorTooLate BD.string
 
                     _ ->
                         Bytes.Decode.fail

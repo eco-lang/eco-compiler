@@ -810,7 +810,9 @@ source directories have it, a source directory has it and a direct dependency
 exposes it, or two direct dependencies expose it.
 
 `SBadSyntax` is a module that does not parse, or whose header names no module
-or a different module from the one its path names.
+or a different module from the one its path names, or a kernel module whose
+`.js` file does not parse. It carries the file's path, modification time and
+text.
 
 `SForeign` is a module that one direct dependency exposes, the one named.
 
@@ -980,12 +982,10 @@ crawlNoLocalPath name projectType foreigns srcDirs =
                 SBadImport Import.NotFound |> Task.succeed
 
 
-{-| Returns `SKernel` when one of `srcDirs` has the kernel module's `.js` file,
-and a not-found import otherwise.
-
-The file is read and parsed, but the result is `SKernel` whether or not it
-parses.
-
+{-| Returns `SKernel` when one of `srcDirs` has the kernel module's `.js` file
+and it parses (`Compiler.Parse.Kernel.fromByteString`), `SBadSyntax` with the
+file's problem when it does not, and a not-found import when no source
+directory has it.
 -}
 checkKernelExistsInDirs : ModuleName.Raw -> Pkg.Name -> Dict ModuleName.Raw Pkg.Name -> List AbsoluteSrcDir -> Task Never Status
 checkKernelExistsInDirs name pkg foreignHomes srcDirs =
@@ -1003,14 +1003,15 @@ checkKernelExistsInDirs name pkg foreignHomes srcDirs =
                     (\exists ->
                         if exists then
                             File.readUtf8 jsPath
-                                |> Task.map
+                                |> Task.andThen
                                     (\bytes ->
                                         case Kernel.fromByteString pkg foreignHomes bytes of
-                                            Just (Chunk.Content _ _) ->
-                                                SKernel
+                                            Ok _ ->
+                                                Task.succeed SKernel
 
-                                            Nothing ->
-                                                SKernel
+                                            Err problem ->
+                                                File.getTime jsPath
+                                                    |> Task.map (\time -> SBadSyntax jsPath time bytes (Syntax.BadKernel problem))
                                     )
 
                         else
@@ -1100,9 +1101,9 @@ on disk, or none could be read; `RSame` means it is the same.
 
 `RProblem` is a module with errors.
 
-`RBlocked` is a module that was not compiled because of its imports: one
-failed, a cached interface could not be read, or, for a module whose file did
-not change, an import could not be found.
+`RBlocked` is a module that was not compiled because of its imports: one has
+errors or is blocked itself, or a cached interface could not be read. An import
+that cannot be found does not block a module but gives it an error.
 
 `RForeign` is a module a direct dependency provides, with its interface.
 
@@ -2304,7 +2305,8 @@ addNewLocal name result locals =
 
 {-| Produces the result of a build from exposed modules: `BP_MissingExposed`
 for the named modules that cannot be found, else `BuildBadModules` with every
-module that has errors, else what the docs goal asks for.
+module that has errors, else `BuildCorruptCache` when a module is blocked
+(see `isBlockedByCorruptCache`), else what the docs goal asks for.
 -}
 finalizeExposed : FilePath -> DocsGoal docs -> NE.Nonempty ModuleName.Raw -> Dict ModuleName.Raw BResult -> Task Never (Result Exit.BuildProblem docs)
 finalizeExposed root docsGoal exposed results =
@@ -2315,7 +2317,12 @@ finalizeExposed root docsGoal exposed results =
         [] ->
             case Dict.foldr (\_ -> addErrors) [] results of
                 [] ->
-                    Task.map Ok (finalizeDocs docsGoal results)
+                    if List.any isBlockedModule (Dict.values results) then
+                        -- Blocked with no errors: a cached interface could not be read.
+                        Exit.BuildCorruptCache |> Err |> Task.succeed
+
+                    else
+                        Task.map Ok (finalizeDocs docsGoal results)
 
                 e :: es ->
                     Exit.BuildBadModules root e es |> Err |> Task.succeed
@@ -2937,32 +2944,31 @@ type Root
     | Outside ModuleName.Raw I.Interface Opt.LocalGraph (Maybe (TOpt.LocalGraph Name)) (Maybe TypeEnv.ModuleTypeEnv)
 
 
-{-| Returns the artifacts of a build from paths, or the errors of every module
-and root that has them.
+{-| Returns the artifacts of a build from paths, or why there are none, as
+`gatherProblemsOrMains` decides.
 -}
 toArtifacts : Env -> Dependencies -> Dict ModuleName.Raw BResult -> NE.Nonempty RootResult -> Result Exit.BuildProblem Artifacts
 toArtifacts (Env envData) foreigns results rootResults =
-    case gatherProblemsOrMains results rootResults of
-        Err (NE.Nonempty e es) ->
-            Err (Exit.BuildBadModules envData.root e es)
-
-        Ok roots ->
-            Ok <|
+    gatherProblemsOrMains envData.root results rootResults
+        |> Result.map
+            (\roots ->
                 Artifacts
                     { pkg = projectTypeToPkg envData.projectType
                     , deps = foreigns
                     , roots = roots
                     , modules = Dict.foldr addInside (NE.foldr addOutside [] rootResults) results
                     }
+            )
 
 
 {-| Returns the roots, in the order given, when no module and no root has
-errors, and the errors otherwise. A blocked outside root is left out of the
-roots. The compiler crashes, with a message blaming a corrupted `eco-stuff/`
-directory, only when the first root is blocked and nothing has errors.
+errors and none is blocked. Otherwise it returns `BuildBadModules` with the
+errors of every module and root that has them, the first root's first, or, when
+nothing has errors but a module or an outside root is blocked,
+`BuildCorruptCache` (`isBlockedByCorruptCache`).
 -}
-gatherProblemsOrMains : Dict ModuleName.Raw BResult -> NE.Nonempty RootResult -> Result (NE.Nonempty ModuleError.Module) (NE.Nonempty Root)
-gatherProblemsOrMains results (NE.Nonempty rootResult rootResults) =
+gatherProblemsOrMains : FilePath -> Dict ModuleName.Raw BResult -> NE.Nonempty RootResult -> Result Exit.BuildProblem (NE.Nonempty Root)
+gatherProblemsOrMains root results rootResults =
     let
         addResult : RootResult -> ( List ModuleError.Module, List Root ) -> ( List ModuleError.Module, List Root )
         addResult result ( es, roots ) =
@@ -2983,36 +2989,67 @@ gatherProblemsOrMains results (NE.Nonempty rootResult rootResults) =
         errors =
             Dict.foldr (\_ -> addErrors) [] results
     in
-    case ( rootResult, List.foldr addResult ( errors, [] ) rootResults ) of
-        ( RInside n, ( [], ms ) ) ->
-            Ok (NE.Nonempty (Inside n) ms)
+    case List.foldr addResult ( errors, [] ) (NE.toList rootResults) of
+        ( e :: es, _ ) ->
+            Err (Exit.BuildBadModules root e es)
 
-        ( RInside _, ( e :: es, _ ) ) ->
-            Err (NE.Nonempty e es)
+        ( [], roots ) ->
+            case roots of
+                r :: rs ->
+                    if isBlockedByCorruptCache results rootResults then
+                        Err Exit.BuildCorruptCache
 
-        ( ROutsideOk n i o t env, ( [], ms ) ) ->
-            Ok (NE.Nonempty (Outside n i o t env) ms)
+                    else
+                        Ok (NE.Nonempty r rs)
 
-        ( ROutsideOk _ _ _ _ _, ( e :: es, _ ) ) ->
-            Err (NE.Nonempty e es)
+                [] ->
+                    -- Every root is a blocked outside root.
+                    Err Exit.BuildCorruptCache
 
-        ( ROutsideErr e, ( es, _ ) ) ->
-            Err (NE.Nonempty e es)
 
-        ( ROutsideBlocked, ( [], _ ) ) ->
-            crash "seems like eco-stuff/ is corrupted"
+{-| Tells whether a module or an outside root of a build was blocked. Asked only
+when nothing in the build has errors, when the one way to be blocked is
+through a cached interface that could not be read (`Corrupted`): a module is
+blocked by a failed import only when that import has errors or is blocked
+itself, and by an import that cannot be found never, as that is reported as an
+error of the importing module.
+-}
+isBlockedByCorruptCache : Dict ModuleName.Raw BResult -> NE.Nonempty RootResult -> Bool
+isBlockedByCorruptCache results rootResults =
+    List.any isBlockedRoot (NE.toList rootResults)
+        || List.any isBlockedModule (Dict.values results)
 
-        ( ROutsideBlocked, ( e :: es, _ ) ) ->
-            Err (NE.Nonempty e es)
+
+{-| Tells whether a root's result is `ROutsideBlocked`.
+-}
+isBlockedRoot : RootResult -> Bool
+isBlockedRoot result =
+    case result of
+        ROutsideBlocked ->
+            True
+
+        _ ->
+            False
+
+
+{-| Tells whether a module's result is `RBlocked`.
+-}
+isBlockedModule : BResult -> Bool
+isBlockedModule result =
+    case result of
+        RBlocked ->
+            True
+
+        _ ->
+            False
 
 
 {-| Adds a project module to `modules`: `Fresh` when it was compiled in this
 build, `Cached` when it was reused. Foreign and kernel modules are skipped.
 
 A module that was not found, has errors or is blocked crashes the compiler,
-which expects such a result to have failed the build already. A module blocked
-only by a cached interface that could not be read gets here with no module
-error reported.
+which expects such a result to have failed the build already: errors and
+blocked modules do, in `gatherProblemsOrMains`.
 
 -}
 addInside : ModuleName.Raw -> BResult -> List Module -> List Module

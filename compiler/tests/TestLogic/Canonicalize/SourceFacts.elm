@@ -18,7 +18,7 @@ _oracle_).
 `sizeViolations` lists every size over a limit of
 `Compiler.IR.Runtime.HeapLimits`, as canonicalization counts it
 (`Compiler.Canonicalize.Expression`, `Type`, `LocalEnvironment`; HEAP\_019,
-HEAP\_078):
+HEAP\_044, HEAP\_078):
 
   - a top-level function, a `let` function or a lambda with more parameters
     than `maxStageArity`;
@@ -30,6 +30,8 @@ HEAP\_078):
     name of an enclosing `let`, its own name included. Top-level values are
     not captured;
   - a constructor with more fields than `maxCtorFields`;
+  - a constructor without fields at a declaration index (counting from zero)
+    over `maxNullaryCtorIndex`;
   - a record type alias whose body (through parentheses) is a record of more
     fields than `maxRecordFields`, and any other record type, in an alias, a
     constructor or an annotation, or record literal, with more fields than
@@ -113,20 +115,30 @@ valueSizes (A.At _ (Src.Value v)) =
 
 unionSizes : A.Located Src.Union -> List SizeViolation
 unionSizes (A.At _ (Src.Union _ _ ctors)) =
-    List.concatMap
-        (\( _, ( A.At _ ctorName, args ) ) ->
-            (if List.length args > HeapLimits.maxCtorFields then
-                [ { title = "TOO MANY FIELDS"
-                  , message = "The constructor `" ++ ctorName ++ "` has " ++ String.fromInt (List.length args) ++ " fields"
-                  }
-                ]
+    List.concat <|
+        List.indexedMap
+            (\index ( _, ( A.At _ ctorName, args ) ) ->
+                (if List.isEmpty args && index > HeapLimits.maxNullaryCtorIndex then
+                    [ { title = "TOO MANY CONSTRUCTORS"
+                      , message = "The constructor `" ++ ctorName ++ "` has no fields and is constructor " ++ String.fromInt (index + 1) ++ " of its type"
+                      }
+                    ]
 
-             else
-                []
+                 else
+                    []
+                )
+                    ++ (if List.length args > HeapLimits.maxCtorFields then
+                            [ { title = "TOO MANY FIELDS"
+                              , message = "The constructor `" ++ ctorName ++ "` has " ++ String.fromInt (List.length args) ++ " fields"
+                              }
+                            ]
+
+                        else
+                            []
+                       )
+                    ++ List.concatMap (Src.c1Value >> typeSizes) args
             )
-                ++ List.concatMap (Src.c1Value >> typeSizes) args
-        )
-        ctors
+            ctors
 
 
 aliasSizes : A.Located Src.Alias -> List SizeViolation

@@ -9,6 +9,10 @@ controls of `SourceIR.LimitFailsCases`, whose programs are one over.
   - "a constructor with 2040 fields and a record alias with 2047 fields":
     `type Wide = Big Int … Int` (`maxCtorFields`) and
     `type alias BigRecord = { f0 : Int, … }` (`maxRecordFields`).
+  - "a custom type of 1024 constructors without fields and one of 2000 with a
+    field": `type Many = C0 | … | C1023`, whose last constructor is at
+    `maxNullaryCtorIndex`, and `type Wider = D0 Int | … | D1999 Int`, past that
+    index but with fields, which the limit does not cover.
 
 Each also defines `testValue = 0`, which uses none of the wide definitions.
 
@@ -64,5 +68,14 @@ limitCases =
                   , tipe = SB.tRecord (List.map (\i -> ( "f" ++ String.fromInt i, SB.tType "Int" [] )) (List.range 0 2046))
                   }
                 ]
+      )
+    , ( "a custom type of 1024 constructors without fields and one of 2000 with a field"
+      , \() ->
+            SB.makeModuleWithTypedDefsUnionsAliases "Test"
+                [ { name = "testValue", args = [], tipe = SB.tType "Int" [], body = SB.intExpr 0 } ]
+                [ { name = "Many", args = [], ctors = List.map (\i -> { name = "C" ++ String.fromInt i, args = [] }) (List.range 0 1023) }
+                , { name = "Wider", args = [], ctors = List.map (\i -> { name = "D" ++ String.fromInt i, args = [ SB.tType "Int" [] ] }) (List.range 0 1999) }
+                ]
+                []
       )
     ]

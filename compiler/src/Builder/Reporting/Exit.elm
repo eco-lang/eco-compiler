@@ -35,9 +35,9 @@ Most of the file is the text of those reports. Some failures are produced in one
 task and read in another, so `BuildProblem`, `BuildProjectProblem`,
 `RegistryProblem` and `DetailsBadDep` also have binary encoders and decoders.
 
-Several distinct failures end in the same report. `GenerateCannotLoadArtifacts`
-and `BP_CannotLoadDependencies` both say that the cache in `eco-stuff/` is
-corrupt and suggest deleting it.
+Several distinct failures end in the same report. `GenerateCannotLoadArtifacts`,
+`BP_CannotLoadDependencies` and `BuildCorruptCache` all say that the cache in
+`eco-stuff/` is corrupt and suggest deleting it.
 
 
 # Output
@@ -2475,12 +2475,15 @@ ioErrorToReport title ioError =
 
 `BuildBadModules` carries the project root and the modules with compile errors,
 at least one. `BuildProjectProblem` is a problem with the set of files rather
-than with any module's code.
+than with any module's code. `BuildCorruptCache` is a cached module interface
+in `eco-stuff/` that is missing or cannot be decoded, which leaves the modules
+that import it uncompiled; it is reported as a corrupt cache.
 
 -}
 type BuildProblem
     = BuildBadModules FilePath ModuleError.Module (List ModuleError.Module)
     | BuildProjectProblem BuildProjectProblem
+    | BuildCorruptCache
 
 
 {-| A problem with which files make up the project, found before or instead of
@@ -2523,6 +2526,9 @@ toBuildProblemReport problem =
 
         BuildProjectProblem projectProblem ->
             toProjectProblemReport projectProblem
+
+        BuildCorruptCache ->
+            corruptCacheReport
 
 
 {-| Builds the report for a problem with the project's set of files.
@@ -2964,6 +2970,9 @@ buildProblemEncoder buildProblem =
                 , buildProjectProblemEncoder problem
                 ]
 
+        BuildCorruptCache ->
+            Bytes.Encode.unsignedInt8 2
+
 
 {-| A decoder for a compile failure written by `buildProblemEncoder`.
 -}
@@ -2981,6 +2990,9 @@ buildProblemDecoder =
 
                     1 ->
                         Bytes.Decode.map BuildProjectProblem buildProjectProblemDecoder
+
+                    2 ->
+                        Bytes.Decode.succeed BuildCorruptCache
 
                     _ ->
                         Bytes.Decode.fail

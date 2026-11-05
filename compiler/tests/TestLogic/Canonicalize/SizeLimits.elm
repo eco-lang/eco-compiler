@@ -2,7 +2,7 @@ module TestLogic.Canonicalize.SizeLimits exposing (expectSizeLimitsEnforced)
 
 {-| The size-limit oracle: canonicalization rejects a program with a `TOO MANY
 …` report exactly when the program, read directly, has a size over one of the
-runtime's limits (HEAP\_019, HEAP\_078).
+runtime's limits (HEAP\_019, HEAP\_044, HEAP\_078).
 
 `TestLogic.Canonicalize.SourceFacts.sizeViolations` reads the sizes from the
 program. `expectSizeLimitsEnforced` runs the program through canonicalization
@@ -14,7 +14,7 @@ reporters) and compares:
     opening of its message (what is too large, by name, and its size; white
     space is compared collapsed, as the report wraps its lines);
   - otherwise, no report may have the title `TOO MANY PARAMETERS`, `TOO MANY
-    CAPTURED VARIABLES` or `TOO MANY FIELDS`. The program may still be
+    CAPTURED VARIABLES`, `TOO MANY FIELDS` or `TOO MANY CONSTRUCTORS`. The program may still be
     rejected for something else, as the negative catalogue's programs are.
 
 -}
@@ -72,7 +72,7 @@ expectSizeLimitsEnforced program =
 -}
 sizeTitles : List String
 sizeTitles =
-    [ "TOO MANY PARAMETERS", "TOO MANY CAPTURED VARIABLES", "TOO MANY FIELDS" ]
+    [ "TOO MANY PARAMETERS", "TOO MANY CAPTURED VARIABLES", "TOO MANY FIELDS", "TOO MANY CONSTRUCTORS" ]
 
 
 describe : List SourceFacts.SizeViolation -> String

@@ -26,7 +26,9 @@ the `command` and `subscription` names of an effect module.
 
 Constructors come last: those of every union, and one for each alias of a
 closed record type, which is a function from the record's fields to the record.
-A union constructor may have at most `HeapLimits.maxCtorFields` arguments.
+A union constructor may have at most `HeapLimits.maxCtorFields` arguments, and
+one with no arguments must be among the first 1024 of its union
+(`HeapLimits.maxNullaryCtorIndex`).
 Each union also gets its _constructor options_ (`Can.CtorOpts`) here: `Unbox`
 for exactly one constructor with exactly one argument, `Enum` when every
 constructor has no arguments, and `Normal` otherwise.
@@ -662,13 +664,19 @@ canonicalizeUnion ({ home } as env) (A.At _ (Src.Union ( _, A.At _ name ) avars 
 
 {-| Returns a constructor with its argument types canonicalized and `index` as
 its position in the union, or fails with `TooLarge` at the constructor when it
-has more than `HeapLimits.maxCtorFields` arguments.
+has more than `HeapLimits.maxCtorFields` arguments, or has none and an `index`
+over `HeapLimits.maxNullaryCtorIndex`. The position and limit of the second
+are counted from one, as the report gives them.
 -}
 canonicalizeCtor : Env.Env -> Index.ZeroBased -> ( A.Located Name.Name, List Src.Type ) -> LResult i w (A.Located Can.Ctor)
 canonicalizeCtor env index ( A.At region ctor, tipes ) =
     if List.length tipes > HeapLimits.maxCtorFields then
         -- A custom-type value holds at most maxCtorFields fields on the heap.
         ReportingResult.throw (Error.TooLarge region (Error.TooManyCtorFields ctor) (List.length tipes) HeapLimits.maxCtorFields)
+
+    else if List.isEmpty tipes && Index.toMachine index > HeapLimits.maxNullaryCtorIndex then
+        -- A nullary constructor is a constant word holding its index in 10 bits (HEAP_044).
+        ReportingResult.throw (Error.TooLarge region (Error.NullaryCtorTooLate ctor) (Index.toHuman index) (HeapLimits.maxNullaryCtorIndex + 1))
 
     else
         ReportingResult.traverse (Type.canonicalize env) tipes

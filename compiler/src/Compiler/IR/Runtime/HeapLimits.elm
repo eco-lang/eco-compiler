@@ -1,4 +1,4 @@
-module Compiler.IR.Runtime.HeapLimits exposing (maxStageArity, maxCtorFields, maxRecordFields)
+module Compiler.IR.Runtime.HeapLimits exposing (maxStageArity, maxCtorFields, maxRecordFields, maxNullaryCtorIndex)
 
 {-| The size limits of Eco's heap objects that an Elm program can exceed, so
 that the compiler can reject such a program with an error instead of producing
@@ -8,15 +8,17 @@ Every closure, custom type value and record on the Eco heap records, for each of
 its slots, whether the slot holds a pointer or an unboxed Int, Float or Char.
 Those per-slot kinds live in a fixed number of header bits plus a bounded number
 of extra "tail kind words" after the fields, and that bound fixes the most slots
-an object can have. The runtime defines the same three numbers in
-`runtime/src/allocator/Heap.hpp` (`CLOSURE_MAX_ARITY`, `CUSTOM_MAX_FIELDS`,
-`RECORD_MAX_FIELDS`); the two definitions must be kept equal by hand.
+an object can have. A constructor without fields is no heap object at all but a
+constant word, which has room for only so large a declaration index. The runtime
+defines the same four numbers in `runtime/src/allocator/Heap.hpp`
+(`CLOSURE_MAX_ARITY`, `CUSTOM_MAX_FIELDS`, `RECORD_MAX_FIELDS`,
+`NULL_CONS_MAX`); the two definitions must be kept equal by hand.
 
 The module imports nothing, so any phase of the compiler can use it, and the
 limit checks in canonicalization, the optimizer and the MLIR generator all read
 their numbers from here.
 
-@docs maxStageArity, maxCtorFields, maxRecordFields
+@docs maxStageArity, maxCtorFields, maxRecordFields, maxNullaryCtorIndex
 
 -}
 
@@ -47,3 +49,13 @@ record alias's constructor function (arity = field count) also fits
 maxRecordFields : Int
 maxRecordFields =
     2047
+
+
+{-| The largest declaration index, counting from zero, a constructor without
+fields may have. Such a value is not a heap object but a constant word holding
+its index in a 10-bit field (HEAP\_044), so 1023 is the runtime's
+`NULL_CONS_MAX`. A constructor with fields has no such limit.
+-}
+maxNullaryCtorIndex : Int
+maxNullaryCtorIndex =
+    1023

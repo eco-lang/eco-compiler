@@ -1,13 +1,16 @@
 #!/bin/sh
 # check-ctor-tags.sh — fail if the compiler's reserved constructor-tag numbers drift from the runtime's.
 #
-# SD-18: compiler/src/Compiler/IR/Runtime/CtorTag.elm hard-codes three numbers that must equal the C++
-# runtime's (its module doc: "Nothing in the compiler checks that they agree"):
+# SD-18: compiler/src/Compiler/IR/Runtime/CtorTag.elm hard-codes two numbers, and takes a third from
+# HeapLimits.elm, that must equal the C++ runtime's (its module doc: "Nothing in the compiler checks
+# that they agree"):
 #   dictRBNode       == CTOR_DICT_RBNODE  (elm-kernel-cpp core/Utils.cpp, http/HttpExports.cpp)
 #   constantTag      == CONSTANT_TAG      (runtime/src/allocator/Heap.hpp)
 #                    == value_enc::ConstantTag (runtime/src/codegen/Passes/EcoToLLVMInternal.h)
 #   nullConsCapacity == NULL_CONS_MAX     (runtime/src/allocator/Heap.hpp; the codegen copy
-#                                          value_enc::NullConsMax is already static_asserted)
+#                                          value_enc::NullConsMax is already static_asserted).
+#                       nullConsCapacity is HeapLimits.maxNullaryCtorIndex, the limit canonicalization
+#                       enforces, so that literal is the one read.
 # A mismatch is a silent miscompile (wrong tag in eco.case / Dict comparison), so check textually.
 # Scans the repository only.
 #
@@ -16,10 +19,11 @@ set -eu
 root=${1:-$(cd "$(dirname "$0")/../.." && pwd)}
 fail=0
 
-# elm_const NAME: the literal on the line after "NAME =" in CtorTag.elm.
+# elm_const NAME [FILE]: the literal on the line after "NAME =" in FILE (default CtorTag.elm) under
+# compiler/src/Compiler/IR/Runtime/.
 elm_const() {
     awk -v n="$1" '$0 ~ "^" n " =$" {getline; print $1; exit}' \
-        "$root/compiler/src/Compiler/IR/Runtime/CtorTag.elm"
+        "$root/compiler/src/Compiler/IR/Runtime/${2:-CtorTag.elm}"
 }
 
 # cpp_const FILE REGEX: the first number after the matched name (#define X v / X = v;).
@@ -44,7 +48,12 @@ same() {
 
 rbnode=$(elm_const dictRBNode)
 consttag=$(elm_const constantTag)
-nullmax=$(elm_const nullConsCapacity)
+# CtorTag.nullConsCapacity must be defined as HeapLimits.maxNullaryCtorIndex, whose literal is compared.
+if [ "$(elm_const nullConsCapacity)" != "HeapLimits.maxNullaryCtorIndex" ]; then
+    echo "check-ctor-tags: CtorTag.nullConsCapacity is not HeapLimits.maxNullaryCtorIndex" >&2
+    fail=1
+fi
+nullmax=$(elm_const maxNullaryCtorIndex HeapLimits.elm)
 
 heap="$root/runtime/src/allocator/Heap.hpp"
 venc="$root/runtime/src/codegen/Passes/EcoToLLVMInternal.h"

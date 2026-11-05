@@ -8,14 +8,17 @@ from the former `Compiler.Canonicalize.LimitErrorsTest`.
 The limits are those of `Compiler.IR.Runtime.HeapLimits`: a closure's stage
 arity, its parameters plus its captured variables, is at most
 `maxStageArity` (2047, HEAP\_078); a constructor has at most `maxCtorFields`
-fields (2040) and a record at most `maxRecordFields` (2047, HEAP\_019).
+fields (2040) and a record at most `maxRecordFields` (2047, HEAP\_019); and a
+constructor without fields is at most at declaration index
+`maxNullaryCtorIndex` (1023, HEAP\_044), so among its type's first 1024
+constructors.
 Canonicalization enforces them, so that a program over them is rejected with a
 located report, not in the back end; a limit that only shows after
 specialization is a monomorphization rejection, in `SourceIR.MonoFailsCases`.
 
 `expectRejectedSuite` gives a check each program with its
 `SourceIR.Suite.Rejection.Rejection`: the title (`TOO MANY PARAMETERS`, `TOO
-MANY CAPTURED VARIABLES` or `TOO MANY FIELDS`) and, as the fragment, the
+MANY CAPTURED VARIABLES`, `TOO MANY FIELDS` or `TOO MANY CONSTRUCTORS`) and, as the fragment, the
 report's sentence naming what is too large, its size, the limit and the
 invariant. `TestLogic.Reporting.ExpectedRejectionTest` checks that
 canonicalization rejects each program with that report, and the size-limit
@@ -32,6 +35,9 @@ The cases, each one over its limit and built with
     function of 2000 parameters capturing 48 locals.
   - "Field counts": a constructor of 2041 fields; a record of 2048 fields as a
     type alias's body, as a record literal and in an annotation.
+  - "Nullary constructor positions": a custom type of 1025 constructors
+    without fields, and one of 1024 constructors with a field followed by one
+    without.
 
 Among what is not tested: the regions the reports carry, and arities the
 compiler generates rather than the program writes.
@@ -80,6 +86,7 @@ groups : List ( String, List RejectedCase )
 groups =
     [ ( "Stage arity", arityCases )
     , ( "Field counts", fieldCases )
+    , ( "Nullary constructor positions", nullaryPositionCases )
     ]
 
 
@@ -253,3 +260,42 @@ wideRecordAnnotation n =
           , body = SB.accessExpr (SB.varExpr "r") "f0"
           }
         ]
+
+
+
+-- ============================================================================
+-- NULLARY CONSTRUCTOR POSITIONS (HEAP_044)
+-- ============================================================================
+
+
+{-| A constructor without fields one position past
+`HeapLimits.maxNullaryCtorIndex` (1023): the last of 1025 constructors that
+have no fields, and one without fields after 1024 that each have a field. The
+constructors with fields have no such limit; only the one without is reported.
+-}
+nullaryPositionCases : List RejectedCase
+nullaryPositionCases =
+    [ fromModule "a custom type of 1025 constructors without fields"
+        (rejectedWithFragment "TOO MANY CONSTRUCTORS" "The constructor `C1024` has no fields and is constructor 1025 of its type, but Eco supports a constructor without fields only among the first 1024 (HEAP_044).")
+        (\() -> SB.makeModuleWithTypedDefsUnionsAliases "Test" [] [ manyCtors 1025 [] ] [])
+    , fromModule "a constructor without fields after 1024 constructors with a field"
+        (rejectedWithFragment "TOO MANY CONSTRUCTORS" "The constructor `Last` has no fields and is constructor 1025 of its type, but Eco supports a constructor without fields only among the first 1024 (HEAP_044).")
+        (\() ->
+            let
+                withFields =
+                    manyCtors 1024 [ SB.tType "Int" [] ]
+            in
+            SB.makeModuleWithTypedDefsUnionsAliases "Test"
+                []
+                [ { withFields | ctors = withFields.ctors ++ [ { name = "Last", args = [] } ] } ]
+                []
+        )
+    ]
+
+
+{-| A custom type `type Many = C0 args | … | C(n-1) args`, every constructor
+taking `args`.
+-}
+manyCtors : Int -> List Src.Type -> SB.UnionDef
+manyCtors n args =
+    { name = "Many", args = [], ctors = List.map (\i -> { name = "C" ++ String.fromInt i, args = args }) (List.range 0 (n - 1)) }

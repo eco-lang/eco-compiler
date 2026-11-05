@@ -159,3 +159,89 @@ test("a trailing comma in a list is reported after the comma", () => {
   assert.match(r.out, /UNFINISHED LIST/);
   assert.match(r.out, /another list entry after that last comma/, r.out);
 });
+
+// Kernel headers (plans/dead-code-report.md, b2-parse and C-R1). Compiler.Parse.Kernel crashed on five
+// header forms the import parser accepts (`as` on a kernel import, a dotted module without `as`,
+// `exposing (..)`, `Type(..)`, an operator), Builder.Build.checkKernelExistsInDirs accepted a kernel file
+// whose header or body did not parse at all, and Canonicalize.Environment.Foreign crashed on an Elm
+// module's `import Elm.Kernel.X as Y`. Each is now a KERNEL syntax error at the line, and a valid kernel
+// file still builds. Unit tests: Compiler/Parse/KernelTest.elm, Compiler/Parse/ModuleTest.elm.
+const KERNEL_PKG_ELM_JSON = JSON.stringify({
+  type: "package", name: "elm/foo", summary: "x", license: "BSD-3-Clause", version: "1.0.0",
+  "exposed-modules": ["Foo"], "elm-version": "0.19.0 <= v < 0.20.0",
+  dependencies: { "elm/core": "1.0.0 <= v < 2.0.0" }, "test-dependencies": {},
+}, null, 4);
+const FOO = "module Foo exposing (x)\n\nimport Elm.Kernel.Foo\n\n\nx : Int\nx =\n    Elm.Kernel.Foo.x\n";
+// Builds the kernel package elm/foo whose src/Elm/Kernel/Foo.js is `js` and whose src/Foo.elm is `foo`.
+function makeKernelPackage(js, foo) {
+  const dir = project({ "src/Foo.elm": foo || FOO, "src/Elm/Kernel/Foo.js": js }, KERNEL_PKG_ELM_JSON);
+  return eco(dir, ["make"]);
+}
+const kernelJs = (header, body) => "/*\n\n" + header + "\n\n*/\n\n" + (body || "var _Foo_x = 1;\n");
+function assertKernelError(r, title, message) {
+  assert.notStrictEqual(r.status, 0, r.out);
+  assert.doesNotMatch(r.out, /Eco\.Crash|threw while handling/, r.out);
+  assert.match(r.out, title, r.out);
+  assert.match(r.out, message, r.out);
+}
+
+test("a valid kernel file builds", () => {
+  const r = makeKernelPackage(kernelJs("import Elm.Kernel.Utils exposing (Tuple0)", "var _Foo_x = __Utils_Tuple0;\n"));
+  assert.strictEqual(r.status, 0, r.out);
+});
+
+test("a kernel header import of a kernel module with `as` is a syntax error", () => {
+  assertKernelError(makeKernelPackage(kernelJs("import Elm.Kernel.Utils as U exposing (Tuple0)")),
+    /KERNEL IMPORT/, /Elm\.Kernel\.Utils/);
+});
+
+test("a kernel header import of a dotted module without `as` is a syntax error", () => {
+  assertKernelError(makeKernelPackage(kernelJs("import Json.Decode exposing (field)")),
+    /KERNEL IMPORT/, /Json\.Decode/);
+});
+
+test("a kernel header `exposing (..)` is a syntax error", () => {
+  assertKernelError(makeKernelPackage(kernelJs("import Maybe exposing (..)")), /KERNEL IMPORT/, /exposing \(\.\.\)/);
+});
+
+test("a kernel header `Maybe(..)` is a syntax error", () => {
+  assertKernelError(makeKernelPackage(kernelJs("import Maybe exposing (Maybe(..))")), /KERNEL IMPORT/, /Maybe\(\.\.\)/);
+});
+
+test("a kernel header operator is a syntax error", () => {
+  assertKernelError(makeKernelPackage(kernelJs("import Basics exposing ((+))")), /KERNEL IMPORT/, /\(\+\)/);
+});
+
+test("a kernel file whose header does not parse is a syntax error, not accepted", () => {
+  assertKernelError(makeKernelPackage("/*\n\nimport\n\n*/\n\nvar _Foo_x = 1;\n"), /KERNEL HEADER/, /Elm\.Kernel\.Foo|Foo\.js/);
+});
+
+test("a kernel file using a tag it does not import is a syntax error, not accepted", () => {
+  assertKernelError(makeKernelPackage(kernelJs("", "var _Foo_x = __Nope_x;\n")), /UNKNOWN KERNEL TAG/, /__Nope_x/);
+});
+
+test("an Elm import of a kernel module with `as` is a syntax error, not a crash", () => {
+  assertKernelError(makeKernelPackage(kernelJs(""), FOO.replace("import Elm.Kernel.Foo\n", "import Elm.Kernel.Foo as F\n")),
+    /KERNEL IMPORT/, /Elm\.Kernel\.Foo/);
+});
+
+// The same kernel header problem in a package built as a dependency (Builder.Deps.Details): the package is
+// reported broken, like any compile error in a dependency, and --Xpackage-errors shows the KERNEL IMPORT
+// report. ECO_HOME is a copy of ~/.eco, so that the local package's artifacts stay out of the real cache.
+test("a kernel header problem in a dependency is reported, not a crash", () => {
+  const foo = project({ "src/Foo.elm": FOO,
+    "src/Elm/Kernel/Foo.js": kernelJs("import Elm.Kernel.Utils as U exposing (Tuple0)") }, KERNEL_PKG_ELM_JSON);
+  const app = JSON.parse(fs.readFileSync(APP_ELM_JSON, "utf8"));
+  app.dependencies.direct["elm/foo"] = "1.0.0";
+  const dir = project({ "src/Main.elm": "module Main exposing (main)\n\nimport Foo\nimport Html\n\n\nmain =\n" +
+    "    Html.text (String.fromInt Foo.x)\n" }, JSON.stringify(app, null, 4));
+  const ecoHome = path.join(dir, "eco-home");
+  const realHome = process.env.ECO_HOME || path.join(os.homedir(), ".eco");
+  if (fs.existsSync(realHome)) fs.cpSync(realHome, ecoHome, { recursive: true });
+  const r = spawnSync(process.execPath, [ECO, "make", "src/Main.elm", "--output=out.js",
+    "--local-package", `elm/foo=${foo}`, "--Xpackage-errors"],
+    { cwd: dir, encoding: "utf8", timeout: 600000, env: { ...process.env, ECO_HOME: ecoHome } });
+  const out = ((r.stdout || "") + (r.stderr || "")).replace(/\x1b\[[0-9;]*m/g, "");
+  assertKernelError({ status: r.status, out }, /PROBLEM BUILDING DEPENDENCIES/, /KERNEL IMPORT[\s\S]*Elm\.Kernel\.Utils/);
+});
+

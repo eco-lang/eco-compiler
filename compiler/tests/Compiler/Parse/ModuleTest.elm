@@ -31,6 +31,10 @@ The one test, "Hello!", checks with a single `Expect.equal` that the result is
     `text` applied to the string literal `"Hello!"`, and no unions, aliases,
     infixes or effects.
 
+Two more tests pin the kernel import rule: a kernel package's import of
+`Elm.Kernel.List as L` fails with `KernelImportAlias` at the module name, and
+the same module parses as an application.
+
 Among what is not tested: `port module` and `effect module` headers, a file
 with no header, a module doc comment, type annotations, more than one
 declaration of a kind (so the order in which the module lists declarations is
@@ -41,6 +45,7 @@ that fails to parse or fails the module checks.
 
 import Compiler.Core.Annotation as A
 import Compiler.IR.Source as S
+import Compiler.Parse.Error as E
 import Compiler.Parse.Module as M
 import Expect
 import Test exposing (Test)
@@ -111,5 +116,31 @@ main =
                         )
               )
                 |> Test.test "Hello!"
+            , Test.test "an aliased kernel import in a kernel package is a KernelImportAlias error" <|
+                \_ ->
+                    M.fromByteString (M.Package ( "elm", "foo" )) kernelAliasSource
+                        |> Result.map (\_ -> ())
+                        |> Expect.equal (Err (E.BadKernel (E.KernelImportAlias (A.Region (A.Position 3 8) (A.Position 3 23)) "Elm.Kernel.List")))
+            , Test.test "an aliased kernel import in an application is left to later phases" <|
+                \_ ->
+                    M.fromByteString M.Application kernelAliasSource
+                        |> Result.map (\_ -> ())
+                        |> Expect.equal (Ok ())
             ]
         ]
+
+
+{-| A module whose line 3 imports the kernel module `Elm.Kernel.List` with
+`as`, which a kernel project may not do and which an application cannot import
+at all, so that the latter is left to canonicalization to report.
+-}
+kernelAliasSource : String
+kernelAliasSource =
+    """module Foo exposing (x)
+
+import Elm.Kernel.List as L
+
+
+x =
+    1
+"""

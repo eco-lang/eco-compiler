@@ -851,6 +851,9 @@ syntaxErrorToString error =
         Syntax.ParseError _ ->
             "Syntax error"
 
+        Syntax.BadKernel _ ->
+            "Kernel import or kernel file error"
+
 
 {-| Returns one line per type error, as `typeErrorToString` describes it.
 -}

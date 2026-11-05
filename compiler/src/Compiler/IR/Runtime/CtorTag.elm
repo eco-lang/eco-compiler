@@ -20,8 +20,10 @@ their contents in key order rather than by the shape of their trees.
 A nullary constructor, one with no fields, needs no heap object. It can be
 represented by a single word marked as a constant that holds the constructor's
 declaration index in a 10-bit field, which is called a null-cons constant.
-`embedsAsNullCons` says which nullary constructors are represented this way,
-and `checkNullConsCapacity` stops the compile for one whose index does not fit.
+`embedsAsNullCons` says which nullary constructors are represented this way.
+Canonicalization rejects a program with a nullary constructor whose index does
+not fit (`Compiler.IR.Runtime.HeapLimits.maxNullaryCtorIndex`), and
+`checkNullConsCapacity` stops the compile for one that gets here anyway.
 
 `Nothing`, `True` and `False` are not null-cons constants. Each is a fixed
 constant word, and `isEmbeddedConstantCtor` picks them out. `Nothing` shares its
@@ -32,8 +34,8 @@ constructor's name and the module that declares it, so a program's own
 constructor named `Nothing`, `True` or `False` is an ordinary one.
 
 The numbers here must equal the runtime's: 0xFFFF its `CTOR_DICT_RBNODE`,
-0xFFFD its `CONSTANT_TAG`, and 1023 its `NULL_CONS_MAX`. Nothing in the compiler
-checks that they agree.
+0xFFFD its `CONSTANT_TAG`, and 1023 (`HeapLimits.maxNullaryCtorIndex`) its
+`NULL_CONS_MAX`. Nothing in the compiler checks that they agree.
 
 @docs effective
 @docs checkNullConsCapacity, constantTag, embedsAsNullCons, isEmbeddedConstantCtor
@@ -43,6 +45,7 @@ checks that they agree.
 import Compiler.Core.Index as Index
 import Compiler.Core.Name exposing (Name)
 import Compiler.Elm.ModuleName as ModuleName
+import Compiler.IR.Runtime.HeapLimits as HeapLimits
 import System.Crash exposing (crash)
 
 
@@ -107,12 +110,12 @@ isEmbeddedConstantCtor home name =
 
 
 {-| The largest declaration index a null-cons constant can hold. The index
-occupies a 10-bit field of the word, so this is 2^10 - 1. It must equal the
-runtime's `NULL_CONS_MAX`.
+occupies a 10-bit field of the word, so this is 2^10 - 1, the limit
+canonicalization enforces.
 -}
 nullConsCapacity : Int
 nullConsCapacity =
-    1023
+    HeapLimits.maxNullaryCtorIndex
 
 
 {-| Returns whether the nullary constructor `name` declared in module `home` is
@@ -125,8 +128,10 @@ embedsAsNullCons home name =
 
 
 {-| Returns `tag` unchanged when it fits in a null-cons constant, that is when
-it is at most `nullConsCapacity`. A larger `tag` stops the compile with an
-error naming the constructor `name` and its index.
+it is at most `nullConsCapacity`. A larger `tag` crashes the compiler, naming
+the constructor `name` and its index: canonicalization has already rejected
+such a constructor with a `TOO MANY CONSTRUCTORS` report, so this is a
+backstop for a tag computed some other way.
 -}
 checkNullConsCapacity : Name -> Int -> Int
 checkNullConsCapacity name tag =
@@ -138,8 +143,7 @@ checkNullConsCapacity name tag =
                 ++ String.fromInt tag
                 ++ ", exceeding the 10-bit HPointer null_cons_idx capacity ("
                 ++ String.fromInt nullConsCapacity
-                ++ "); widen the field using the padding bits — see "
-                ++ "plans/null-cons-hpointer-embedding.md §2.2"
+                ++ "); canonicalization should have rejected it (HEAP_044)"
             )
 
     else

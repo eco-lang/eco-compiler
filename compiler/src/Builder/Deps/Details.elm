@@ -2069,7 +2069,8 @@ type alias StatusDict =
 needed, the names it imports, and the parsed module. `SForeign` is a module
 provided by exactly one dependency. `SKernelLocal` is a kernel module of a
 kernel package with its parsed code. `SKernelForeign` is a kernel module name
-with no `.js` file in the package.
+with no `.js` file in the package. `SBadKernel` is a kernel module whose `.js`
+file does not parse, with the error that compiling it gives.
 
 -}
 type Status
@@ -2077,6 +2078,7 @@ type Status
     | SForeign I.Interface
     | SKernelLocal (List Chunk.Chunk)
     | SKernelForeign
+    | SBadKernel ModuleError.Module
 
 
 {-| Returns the status of module `name` of the package whose sources are in `src`,
@@ -2203,32 +2205,37 @@ crawlKernel foreignDeps mvar pkg src name =
             Utils.fpCombine src (Utils.fpAddExtension (ModuleName.toFilePath name) "js")
     in
     File.exists path
-        |> Task.andThen (handleKernelExistence foreignDeps mvar pkg src path)
+        |> Task.andThen (handleKernelExistence foreignDeps mvar pkg src name path)
 
 
 {-| Parses a kernel module's `.js` file if it exists, and records the name as a
 foreign kernel module otherwise.
 -}
-handleKernelExistence : Dict ModuleName.Raw ForeignInterface -> MVar StatusDict -> Pkg.Name -> FilePath -> FilePath -> Bool -> Task Never (Maybe Status)
-handleKernelExistence foreignDeps mvar pkg src path exists =
+handleKernelExistence : Dict ModuleName.Raw ForeignInterface -> MVar StatusDict -> Pkg.Name -> FilePath -> ModuleName.Raw -> FilePath -> Bool -> Task Never (Maybe Status)
+handleKernelExistence foreignDeps mvar pkg src name path exists =
     if exists then
         File.readUtf8 path
-            |> Task.andThen (parseAndCrawlKernel foreignDeps mvar pkg src)
+            |> Task.andThen (parseAndCrawlKernel foreignDeps mvar pkg src name path)
 
     else
         Task.succeed (Just SKernelForeign)
 
 
-{-| Parses a kernel module's code, crawls the modules it imports, and returns it
-as a local kernel module, or `Nothing` if the code does not parse.
+{-| Parses the code of the kernel module `name`, read from `path`, crawls the
+modules it imports, and returns it as a local kernel module, or as `SBadKernel`
+with the problem when the code does not parse.
 -}
-parseAndCrawlKernel : Dict ModuleName.Raw ForeignInterface -> MVar StatusDict -> Pkg.Name -> FilePath -> String -> Task Never (Maybe Status)
-parseAndCrawlKernel foreignDeps mvar pkg src bytes =
+parseAndCrawlKernel : Dict ModuleName.Raw ForeignInterface -> MVar StatusDict -> Pkg.Name -> FilePath -> ModuleName.Raw -> FilePath -> String -> Task Never (Maybe Status)
+parseAndCrawlKernel foreignDeps mvar pkg src name path bytes =
     case Kernel.fromByteString pkg (stdMapMaybe getDepHome foreignDeps) bytes of
-        Nothing ->
-            Task.succeed Nothing
+        Err problem ->
+            File.getTime path
+                |> Task.map
+                    (\time ->
+                        Just (SBadKernel { name = name, absolutePath = path, modificationTime = time, source = bytes, error = Error.BadSyntax (Syntax.BadKernel problem) })
+                    )
 
-        Just (Chunk.Content imports chunks) ->
+        Ok (Chunk.Content imports chunks) ->
             crawlImports foreignDeps mvar pkg src (List.map Src.c1Value imports)
                 |> Task.map (\_ -> Just (SKernelLocal chunks))
 
@@ -2316,6 +2323,9 @@ compile ctx mvar status =
 
         SKernelForeign ->
             Task.succeed (Ok RKernelForeign)
+
+        SBadKernel err ->
+            Task.succeed (Err err)
 
 
 {-| Returns whether any result in `dict` is an error.
@@ -2782,6 +2792,12 @@ statusEncoder status =
         SKernelForeign ->
             Bytes.Encode.unsignedInt8 3
 
+        SBadKernel err ->
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 4
+                , ModuleError.moduleEncoder err
+                ]
+
 
 {-| A decoder for a crawl status.
 -}
@@ -2807,6 +2823,9 @@ statusDecoder =
 
                     3 ->
                         Bytes.Decode.succeed SKernelForeign
+
+                    4 ->
+                        Bytes.Decode.map SBadKernel ModuleError.moduleDecoder
 
                     _ ->
                         Bytes.Decode.fail

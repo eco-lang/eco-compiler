@@ -163,3 +163,57 @@ test("elm.json version with an over-long component is rejected", async () => {
   const r = await eco(dir, ["make", "--docs=docs.json"]);
   assert.notStrictEqual(r.status, 0, r.out);
 });
+
+// Bug: Builder.Build crashed when a cached module's interface (`.eci`) in eco-stuff/ was missing or could
+// not be decoded. `loadInterface` marks it Corrupted and the importing module (or outside root) comes back
+// blocked with no error recorded, so `addInside` crashed with "Error from `Main` should have been reported
+// already", a first outside root crashed with "seems like eco-stuff/ is corrupted", and a later outside root
+// was silently left out of the output. Each now gets the CORRUPT CACHE report
+// (Builder.Reporting.Exit.BuildCorruptCache). Found by plans/dead-code-report.md (Build.elm:3002, 3036).
+const HELPER = "module Helper exposing (greeting)\n\n\ngreeting : String\ngreeting =\n    \"hi\"\n";
+const mainUsing = (name, extra) => `module ${name} exposing (main)\n\nimport Helper\nimport Html\n\n\nmain =\n    Html.text (Helper.greeting${extra})\n`;
+function findFiles(dir, base) {
+  const found = [];
+  for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+    const p = path.join(dir, e.name);
+    if (e.isDirectory()) found.push(...findFiles(p, base));
+    else if (e.name === base) found.push(p);
+  }
+  return found;
+}
+// Builds src/Main.elm once, so that Helper is cached, then overwrites every cached Helper.eci with bytes
+// that do not decode.
+async function cacheThenCorruptHelper(files) {
+  const dir = project({ "src/Helper.elm": HELPER, "src/Main.elm": mainUsing("Main", ""), ...files });
+  const first = await eco(dir, ["make", "src/Main.elm", "--output=out.js"]);
+  assert.strictEqual(first.status, 0, first.out);
+  const ecis = findFiles(path.join(dir, "eco-stuff"), "Helper.eci");
+  assert.ok(ecis.length > 0, "no cached Helper.eci under eco-stuff/");
+  for (const eci of ecis) fs.writeFileSync(eci, "not an interface");
+  return dir;
+}
+function assertCorruptCache(r) {
+  assert.notStrictEqual(r.status, 0, r.out);
+  assert.match(r.out, /CORRUPT CACHE/, r.out);
+  assert.doesNotMatch(r.out, /should have been reported already|seems like eco-stuff/, r.out);
+}
+
+test("a corrupted cached interface of an import is reported, not a crash", async () => {
+  const dir = await cacheThenCorruptHelper({});
+  fs.writeFileSync(path.join(dir, "src/Main.elm"), mainUsing("Main", ' ++ "!"'));
+  assertCorruptCache(await eco(dir, ["make", "src/Main.elm", "--output=out.js"]));
+});
+
+test("a corrupted cached interface of an outside root's import is reported, not a crash", async () => {
+  const dir = await cacheThenCorruptHelper({ "other/Outside.elm": mainUsing("Outside", "") });
+  assertCorruptCache(await eco(dir, ["make", "other/Outside.elm", "--output=out.js"]));
+});
+
+test("a corrupted cached interface of a later outside root's import is reported, not skipped", async () => {
+  const dir = await cacheThenCorruptHelper({
+    "src/Plain.elm": "module Plain exposing (main)\n\nimport Html\n\n\nmain =\n    Html.text \"plain\"\n",
+    "other/Outside.elm": mainUsing("Outside", ""),
+  });
+  assertCorruptCache(await eco(dir, ["make", "src/Plain.elm", "other/Outside.elm", "--output=out.js"]));
+});
+

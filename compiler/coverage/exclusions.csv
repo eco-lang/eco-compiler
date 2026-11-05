@@ -23,16 +23,12 @@ Compiler.Monomorphize.Subst.Monomorphize,*,flag,mono.engine = EngineSubst is not
 Compiler.Monomorphize.Subst.Specialize,*,flag,mono.engine = EngineSubst is not the default (EngineSolver),,
 Compiler.Monomorphize.ValidateLayout,*,flag,mono.validate is off by default,,
 Compiler.PreMono.LiftClosedArgs,*,flag,census report only (Builder.Generate),,
-Compiler.Type.Error,642,unreachable,"Effects category / NoExpectation exprs arise only for effect-manager functions (Constrain.Typed.Module 387-392, 444); the record-update fieldsCon NoExpectation (Expression 2355) compares with a fresh variable and cannot fail","thisIs ++ "" a thing for CORE LIBRARIES ONLY.""",addCategory
-Compiler.Type.Error,3013,unreachable,"Effects category / NoExpectation exprs arise only for effect-manager functions (Constrain.Typed.Module 387-392, 444); the record-update fieldsCon NoExpectation (Expression 2355) compares with a fresh variable and cannot fail",Bytes.Encode.unsignedInt8 15,categoryEncoder
-Compiler.Type.Error,3082,unreachable,"Effects category / NoExpectation exprs arise only for effect-manager functions (Constrain.Typed.Module 387-392, 444); the record-update fieldsCon NoExpectation (Expression 2355) compares with a fresh variable and cannot fail",Bytes.Decode.succeed Effects,categoryDecoder
 Compiler.Type.Error,824,unreachable,"the other side cannot be a FlexVar: ErrorType.toDiff handles (FlexVar,_) and (_,FlexVar) before toDiffOtherwise",[],problemToHint
 Compiler.Type.Error,862,unreachable,"the other side cannot be a FlexVar: ErrorType.toDiff handles (FlexVar,_) and (_,FlexVar) before toDiffOtherwise",[],problemToHint
 Compiler.Type.Error,900,unreachable,"the other side cannot be a FlexVar: ErrorType.toDiff handles (FlexVar,_) and (_,FlexVar) before toDiffOtherwise",[],problemToHint
 Compiler.Type.Error,886,unreachable,"BadRigidVar/BadRigidSuper vs Alias impossible: toDiff (Alias,t2)/(_,Alias) arms catch rigid-vs-alias first","badRigidVar x (""a `"" ++ n ++ ""` value"")",problemToHint
 Compiler.Type.Error,924,unreachable,"BadRigidVar/BadRigidSuper vs Alias impossible: toDiff (Alias,t2)/(_,Alias) arms catch rigid-vs-alias first","badRigidSuper super (""a `"" ++ n ++ ""` value"")",problemToHint
 Compiler.Type.Error,929,unreachable,FieldsMissing [] impossible: diffRecord builds it only from keys of a non-empty right (ErrorType 980-984),[],problemToHint
-Compiler.Type.Error,1429,unreachable,CallArity with OpName and 0 args impossible: every operator is a 2-argument infix function,"""The ("" ++ op ++ "") operator""",toExprReport
 Compiler.Type.Error,1556,unreachable,RecordUpdateKeys mismatch with all fields present impossible: updated field types are fresh vars (Expression 2384-2401),mismatch,toExprReport
 Compiler.Type.Error,1691,unreachable,FlexOpen extension impossible: access/update on a flexible record always unifies (Unify.unifyRecord extends it),Just (D.fromName x),extToDoc
 Compiler.Type.Error,2054,unreachable,for (::) the expected type is always List x,"badOpRightFallback localizer category ""::"" tipe expected",badConsRight
@@ -65,10 +61,6 @@ Compiler.Type.Constrain.Typed.Expression,2069-2133,unreachable,"called only from
 Compiler.Type.PostSolve,211,unreachable,annotations holds every top-level definition,env,checkKernelAliasBody
 Compiler.Type.PostSolve,648,unreachable,lookup right after insertFirstUsage always succeeds,candidateType,postSolveCall
 Compiler.Type.PostSolve,815,unreachable,inferBinopKernelType is only called when isKernelExpr holds,"( nodeTypes, kernel )",inferBinopKernelType
-Compiler.Type.PostSolve,1023-1027,unreachable,unifyHelp: its only caller passes a ctor result type TType home name [distinct TVars] against its own instance,if existing == t then,unifyHelp
-Compiler.Type.PostSolve,1034,unreachable,unifyHelp: its only caller passes a ctor result type TType home name [distinct TVars] against its own instance,Nothing,unifyHelp
-Compiler.Type.PostSolve,1040-1086,unreachable,"the TLambda, TTuple, TUnit, TRecord and scheme-side Filled alias arms: the only caller (postSolveCallWithCtorKernelArgs, 1251) passes a constructor result type, a TType whose arguments are distinct TVars, so the scheme is a TType at the top and a TVar below it",case unifyHelp subst arg1 arg2 of,unifyHelp
-Compiler.Type.PostSolve,1093,unreachable,"the fallback equality: the scheme is always a TType (see the 1040-1086 row), and a concrete TType is taken by the TType arm, so the two never compare equal here",Just subst,unifyHelp
 Compiler.PreMono.InlineSimplify,*,flag,the pre-mono inliner runs only under inline.preMono (Pipeline.Steps.preMono); default False (Config.default),,
 Compiler.Monomorphize.Solver.Monomorphize,1373,flag,renderLssReport and its blocks run only under lss.report (Monomorphize.monomorphizeWithReportAssigned),renderLssReport sFinal (Mono.MonoGraph g) =,renderLssReport
 Compiler.Monomorphize.Solver.Monomorphize,1391-1394,flag,renderLssReport and its blocks run only under lss.report (Monomorphize.monomorphizeWithReportAssigned),n + 1,renderLssReport
@@ -366,9 +358,7 @@ Compiler.Type.Type,1107-1109,unreachable,"unnamed appendable is never created: u
 Compiler.Type.SolverRoots,282-292,unreachable,"walkTypeForBinders walks inferred annotations only; their aliases are Filled (Type 665), never Holey",case lookupContent state rootIdx of,walkTypeForBinders
 Compiler.Type.SolverRoots,449,unreachable,lookupContent gets the index of a resolved root: always a Root cell,Nothing,lookupContent
 Compiler.Type.Instantiate,89,unreachable,"Filled aliases appear only in solver output (Type 665); fromSrcType callers pass written canonical types (Typed.Module 208/225, Expression 369/376, Pattern 563)",fromSrcType freeVars realType,fromSrcType
-Compiler.Type.PostSolve,1112,unreachable,unifyHelp: its only caller matches a ctor result type (distinct TVars) with its own instance; the TRecord arm is excluded,Nothing,unifyList
-Compiler.Type.PostSolve,1118,unreachable,unifyHelp: its only caller matches a ctor result type (distinct TVars) with its own instance; the TRecord arm is excluded,Nothing,unifyList
-Compiler.Type.PostSolve,1127-1145,unreachable,unifyHelp: its only caller matches a ctor result type (distinct TVars) with its own instance; the TRecord arm is excluded,unifyFieldList subst list1 list2 =,unifyFieldList
+Compiler.Type.PostSolve,1118,unreachable,"unifyList is called only after its callers check that the two lists have the same length (the TType and TTuple arms of unifyHelp)",Nothing,unifyList
 Compiler.Type.PostSolve,1321,unreachable,a ctor applied to more args than it has is a type error,postSolveExpr annotations arg nt ke,processCtorArgs
 Compiler.Type.PostSolve,1328,unreachable,a ctor applied to more args than it has is a type error,"++ List.map (\arg -> ( arg, Nothing )) (List.drop (List.length ctorArgTypes) args)",processCtorArgs
 Compiler.LocalOpt.Typed.NormalizeLambdaBoundaries,530,unreachable,a TrackedFunction always has at least one parameter,PlainLambda,normalizeExpr
@@ -503,7 +493,6 @@ Compiler.Monomorphize.Solver.Translate,383,unreachable,recordFieldCanType on a r
 Compiler.Monomorphize.Solver.Translate,656-661,unreachable,a list literal's element type is always found (listElemCanType never fails on a list literal; see line 311),case exprs of,translateDispatch
 Compiler.Monomorphize.Solver.Translate,762,unreachable,a tuple literal's type always has slot types (type-checked tuple),sa,translateDispatch
 Compiler.Monomorphize.Solver.Translate,954-959,unreachable,"the cycle node is looked up by the name of one of its own members (Monomorphize.resolveGlobalNode), so the member is always found","case ( valueDefs, funcDefs ) of",specializeCycle
-Compiler.Monomorphize.Solver.Translate,1217,unreachable,"a port is specialized once per spec of its global, and its registration key is the port name; the second spec of one port would need two types for one monomorphic port",s,recordPort
 Compiler.Monomorphize.Solver.Translate,5514,unreachable,"navigateType follows let-destructuring paths, and Elm rejects a let pattern containing a list pattern (not exhaustive), so no HintList step occurs",Nothing,navigateType
 Compiler.Monomorphize.Solver.Translate,7207,unreachable,findCtorArg is given a constructor name taken from the destructuring path of the same union,Nothing,findCtorArg
 Compiler.Monomorphize.Solver.Translate,6914,unreachable,"joinBranchTypes joins the types of the branches of one case or if, which have one Elm type: tuples have the same length, records the same fields and custom types the same name and arity",acc,joinBranchTypes
@@ -609,14 +598,12 @@ Compiler.Monomorphize.Solver.LssInfer,1603,unreachable,an enumeration constructo
 Compiler.Monomorphize.Solver.LssInfer,2167,unreachable,a cycle Def body built from source is a TrackedFunction; a non-lambda body is a cycle value,Just 1,cycleDefArity
 Compiler.Monomorphize.Solver.Monomorphize,3568,flag,seedSpec with LSS off; lss.enabled is True by default,s,seedSpec
 Compiler.Monomorphize.Solver.Monomorphize,4541-4544,unreachable,"these arms match only an untracked TOpt.Define, which is built only for a record-alias constructor whose body is a Function; source definitions are TrackedDefine",ctorBackedGlobal toptNodes (fuel - 1) target,ctorBackedGlobal
-Compiler.Monomorphize.Solver.Monomorphize,4527,unreachable,"with the alias arms unreachable (line 4540) only Link steps consume fuel, and a TOpt.Link names its target node directly (one step)",False,ctorBackedGlobal
 Compiler.Monomorphize.Solver.Translate,236,unreachable,"a TOpt.TailCall is built only for a self-call in tail position of its own TailDef, whose body is translated inside its loop frame (withLoopFrame)",s0,connectTailCallArgs
 Compiler.Monomorphize.Solver.Translate,265,unreachable,the innermost loop frame is always the tail-called function's own: a tail call to an outer loop cannot sit inside an inner local function's body in tail position of the outer one,Nothing,lookupLoopFrame
 Compiler.Monomorphize.Solver.Translate,272,unreachable,the innermost loop frame is always the tail-called function's own: a tail call to an outer loop cannot sit inside an inner local function's body in tail position of the outer one,lookupLoopFrame funcName rest,lookupLoopFrame
 Compiler.Monomorphize.Solver.Translate,257,unreachable,a tail call passes exactly the TailDef's parameters (TOpt.TailCall is built from the def's own argument list),connectTailArgsGo params rest s0,connectTailArgsGo
 Compiler.Monomorphize.Solver.Translate,1049,unreachable,a port's type is a function (Canonicalize.Effects checks port types),classifiedCan,specializePortBody
 Compiler.Monomorphize.Solver.Translate,1107,unreachable,a port encoder's mono type is a function (it is built for the port's argument type),t,specializePortBody
-Compiler.Monomorphize.Solver.Translate,1147,unreachable,an outgoing port's type is always a TLambda (Canonicalize.Effects),s0,connectEncoderType
 Compiler.Monomorphize.Solver.Translate,1272-1276,unreachable,peeling a function type by its definition's written parameter count always yields that many parameters: the written parameters never outnumber the type's arrows (type checking),Engine.traverse,specializeCycleFuncDef
 Compiler.Monomorphize.Solver.Translate,1413-1417,unreachable,peeling a lambda's type by its parameter count always yields that many parameters (see line 1264),Engine.traverse,specializeLambda
 Compiler.Monomorphize.Solver.Translate,1365,unreachable,extractFieldTypes is never asked for more parameters than the type has (see line 1264),[],extractFieldTypes
@@ -698,7 +685,6 @@ Compiler.Monomorphize.Solver.Translate,697-697,flag,joinElems is lss.enabled (Tr
 Compiler.Monomorphize.Solver.Translate,1513-1513,unreachable,"root folding is attempted for the head lambda of the node's own definition; LssInfer.kernelAliasOf holds only for a definition whose whole body is a bare VarKernel (LssInfer.elm 2182-2186), which has no head lambda","Engine.bumpArgFlowCensus ""rootFold|kernelSkip"" s0b",classifyLambdaHead
 Compiler.Monomorphize.Solver.Translate,2101-2110,unreachable,"a kernel alias never gets a g| member: every member mint of a global maps a kernel alias to the kernel's k| member first (LssInfer walk of VarGlobal, line 1225; Translate.memberIdForDepth, line 3712; the argument injection at line 3553), so standaloneMemberGlobal never returns one",case kernelDevirtArity kernelPrefix home name of,devirtDirectTarget
 Compiler.Monomorphize.Solver.Translate,3734-3736,unreachable,"members are minted only for references whose type is an arrow (LssInfer standaloneMemberWith / walkNamed), and an enumeration constructor is not a function","case Engine.standaloneMemberIdFor (""c|"" ++ TOpt.toComparableGlobal g) g s0 of",memberIdForDepth
-Compiler.Monomorphize.Solver.Zonk,147-147,unreachable,"instantiateUnionType binds each union parameter to the container's type argument; a parameter used as a record extension (`{ a | x : Int }`) is filled only by a record type (type checking), so the binding is always an MRecord",Dict.empty,canTypeToMonoWithI
 Compiler.GenerateMlir.BytesFusion.Reify,676,unreachable,"a lambda mapped to List Encoder has one parameter: Bytes.Encode.Encoder is a custom type (elm/bytes 1.0.8 Bytes/Encode.elm:46), not a function alias",Nothing,reifyMapBody
 Compiler.GenerateMlir.BytesFusion.Reify,684-689,unreachable,"two-parameter encoder function and its eta-reduction (etaReduceTrailingParam, peelParams): Encoder is a custom type, so a function mapped to List Encoder has exactly one parameter",case etaReduceTrailingParam extraName body of,reifyMapBody
 Compiler.GenerateMlir.BytesFusion.Reify,708-760,unreachable,"two-parameter encoder function and its eta-reduction (etaReduceTrailingParam, peelParams): Encoder is a custom type, so a function mapped to List Encoder has exactly one parameter",etaReduceTrailingParam extra body =,etaReduceTrailingParam
@@ -728,7 +714,6 @@ Compiler.GenerateMlir.ConstThunks,247,flag,constThunks phase < 2 (default 2),"( 
 Compiler.GenerateMlir.ConstThunks,535-803,flag,"report and its helpers (verdictKey, nodeExprs, countRefs, countRefsExpr, showExpr) run only for constThunksReport (off by default; Backend.elm:1436)",report phase registry signatures nodes main nullCons constCtor =,report
 Compiler.GenerateMlir.ConstThunks,125,unreachable,"an admitted spec is a candidate, and isCandidate requires a MonoDefine node",acc,build
 Compiler.GenerateMlir.ConstThunks,233,unreachable,"verdictOf reaches this case only after isCandidate, which requires a MonoDefine node","( Refuse ""notThunk"", memo )",verdictOf
-Compiler.Monomorphize.ResolveAccessorValues,231,unreachable,"joinValueInfo joins two branches of one type, so both records hold the same fields and VI_Record keeps every field",accDict,joinValueInfo
 Compiler.Monomorphize.ResolveAccessorValues,261,unreachable,the expected type of an accessor is always a function whose single stage parameter is the record,Nothing,maybeAccessorSigFromExpected
 Compiler.Monomorphize.Solver.Engine,1267,unreachable,specs are created through enqueueSpec only inside a work item (processItem sets currentSpecId); seeds go through seedSpec,s,checkCreatedSpec
 Compiler.Monomorphize.Solver.Engine,1304,unreachable,specs are created through enqueueSpec only inside a work item (processItem sets currentSpecId); seeds go through seedSpec,Nothing,polymorphicRecursionFailure

@@ -1,5 +1,5 @@
 module Compiler.Parse.Error exposing
-    ( Error(..), Module(..)
+    ( Error(..), Module(..), Kernel(..)
     , Exposing(..), Port(..)
     , Decl(..), DeclDef(..), DeclType(..), TypeAlias(..), CustomType(..)
     , Expr(..), Let(..), Case(..), If(..), Record(..), Tuple(..), List_(..), Func(..), Def(..), Destruct(..)
@@ -76,7 +76,7 @@ wrong constructor.
 
 # Top-Level Errors
 
-@docs Error, Module
+@docs Error, Module, Kernel
 
 
 # Module Structure
@@ -165,6 +165,9 @@ the name and region of a port declared in a package, and
 `NoEffectsOutsideKernel` is an `effect module` in a project that may not have
 one.
 
+`BadKernel` is a problem with the kernel imports of a kernel project, in the
+header of a kernel `.js` file or, for `KernelImportAlias`, in an Elm module.
+
 -}
 type Error
     = ModuleNameUnspecified ModuleName.Raw
@@ -175,6 +178,37 @@ type Error
     | NoPortModulesInPackage A.Region
     | NoEffectsOutsideKernel A.Region
     | ParseError Module
+    | BadKernel Kernel
+
+
+{-| A problem with a kernel `.js` file, or with an import of a kernel module.
+`Compiler.Parse.Kernel` describes the file: a `/* ... */` header of Elm
+`import` lines, then a JavaScript body whose kernel tags (`__List_map`) name
+the values the header imports.
+
+`KernelHeaderSyntax` is a header that does not parse, at the position where
+the parse stopped. `KernelUnknownTag` is a tag in the body that is in no tag
+category and names no imported value, with its position and its name without
+the leading `__`.
+
+The rest carry the region of the import's module name and that name, and are
+forms the Elm import syntax allows but a kernel header does not:
+`KernelImportAlias` an `as` on an import of a kernel module (also refused in an
+Elm module of a kernel project), `KernelDottedWithoutAlias` a module whose name
+has a dot imported without `as`, `KernelExposingAll` an `exposing (..)`,
+`KernelExposingCtors` a type exposed with its constructors (`Maybe(..)`),
+carrying the type's name as well, and `KernelExposingOperator` an operator,
+carrying the operator as well.
+
+-}
+type Kernel
+    = KernelHeaderSyntax Row Col
+    | KernelUnknownTag Row Col Name
+    | KernelImportAlias A.Region Name
+    | KernelDottedWithoutAlias A.Region Name
+    | KernelExposingAll A.Region Name
+    | KernelExposingCtors A.Region Name Name
+    | KernelExposingOperator A.Region Name Name
 
 
 {-| A failure to parse a module: its header, its imports, or its declarations.
@@ -1104,6 +1138,81 @@ toReport source err =
 
         ParseError modul ->
             toParseErrorReport source modul
+
+        BadKernel kernel ->
+            toKernelReport source kernel
+
+
+{-| Builds the report for a problem with a kernel file or a kernel import.
+-}
+toKernelReport : Code.Source -> Kernel -> Report.Report
+toKernelReport source kernel =
+    let
+        importReport : A.Region -> String -> String -> Report.Report
+        importReport region problem advice =
+            ( D.reflow problem, D.reflow advice )
+                |> Code.toSnippet source region Nothing
+                |> Report.report "KERNEL IMPORT" region []
+    in
+    case kernel of
+        KernelHeaderSyntax row col ->
+            let
+                region : A.Region
+                region =
+                    toRegion row col
+            in
+            ( D.reflow "I got stuck while parsing the header of this kernel file:"
+            , D.reflow <|
+                "A kernel file must open with `/*`, then list its imports, each an Elm `import` on a line of its own, "
+                    ++ "then close the header with `*/` before any JavaScript."
+            )
+                |> Code.toSnippet source region Nothing
+                |> Report.report "KERNEL HEADER" region []
+
+        KernelUnknownTag row col name ->
+            let
+                region : A.Region
+                region =
+                    A.Region (A.Position row col) (A.Position row (col + 2 + String.length name))
+            in
+            ( D.reflow ("This kernel file uses `__" ++ name ++ "`, but its header imports nothing by that name:")
+            , D.reflow <|
+                "A tag like `__List_map` refers to a value the header imports, here `map` from `import List exposing (map)`. "
+                    ++ "Add the value to an import in the header, or fix the spelling of the tag."
+            )
+                |> Code.toSnippet source region Nothing
+                |> Report.report "UNKNOWN KERNEL TAG" region []
+
+        KernelImportAlias region name ->
+            importReport region
+                ("The kernel module `" ++ name ++ "` is imported with `as` here:")
+                "A kernel module is always referred to by its own name, so its import cannot have an `as`. Remove the `as` and its alias."
+
+        KernelDottedWithoutAlias region name ->
+            importReport region
+                ("The module `" ++ name ++ "` is imported into this kernel file without `as`:")
+                ("A kernel tag cannot contain a dot, so a module whose name has one needs an alias, as in `import "
+                    ++ name
+                    ++ " as Alias exposing (...)`, to be referred to as `__Alias_value`."
+                )
+
+        KernelExposingAll region name ->
+            importReport region
+                ("The import of `" ++ name ++ "` in this kernel file uses `exposing (..)`:")
+                "A kernel file must list every value it uses from a module, so write the names out, as in `exposing (map, filter)`."
+
+        KernelExposingCtors region name typeName ->
+            importReport region
+                ("The import of `" ++ name ++ "` in this kernel file exposes `" ++ typeName ++ "(..)`:")
+                ("A kernel file must list every value it uses from a module, so name the constructors one by one instead of `"
+                    ++ typeName
+                    ++ "(..)`."
+                )
+
+        KernelExposingOperator region name op ->
+            importReport region
+                ("The import of `" ++ name ++ "` in this kernel file exposes the operator `(" ++ op ++ ")`:")
+                "A kernel tag cannot name an operator. Expose the function the operator stands for instead, such as `add` for `(+)`."
 
 
 {-| The note explaining why packages may not declare ports, which ends both
@@ -8893,6 +9002,74 @@ errorEncoder error =
                 , moduleEncoder modul
                 ]
 
+        BadKernel kernel ->
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 8
+                , kernelEncoder kernel
+                ]
+
+
+{-| Encodes a `Kernel` problem, its tag counting the constructors in
+declaration order.
+-}
+kernelEncoder : Kernel -> Bytes.Encode.Encoder
+kernelEncoder kernel =
+    case kernel of
+        KernelHeaderSyntax row col ->
+            Bytes.Encode.sequence [ Bytes.Encode.unsignedInt8 0, BE.int row, BE.int col ]
+
+        KernelUnknownTag row col name ->
+            Bytes.Encode.sequence [ Bytes.Encode.unsignedInt8 1, BE.int row, BE.int col, BE.string name ]
+
+        KernelImportAlias region name ->
+            Bytes.Encode.sequence [ Bytes.Encode.unsignedInt8 2, A.regionEncoder region, BE.string name ]
+
+        KernelDottedWithoutAlias region name ->
+            Bytes.Encode.sequence [ Bytes.Encode.unsignedInt8 3, A.regionEncoder region, BE.string name ]
+
+        KernelExposingAll region name ->
+            Bytes.Encode.sequence [ Bytes.Encode.unsignedInt8 4, A.regionEncoder region, BE.string name ]
+
+        KernelExposingCtors region name typeName ->
+            Bytes.Encode.sequence [ Bytes.Encode.unsignedInt8 5, A.regionEncoder region, BE.string name, BE.string typeName ]
+
+        KernelExposingOperator region name op ->
+            Bytes.Encode.sequence [ Bytes.Encode.unsignedInt8 6, A.regionEncoder region, BE.string name, BE.string op ]
+
+
+{-| A decoder for what `kernelEncoder` writes.
+-}
+kernelDecoder : Bytes.Decode.Decoder Kernel
+kernelDecoder =
+    Bytes.Decode.unsignedInt8
+        |> Bytes.Decode.andThen
+            (\idx ->
+                case idx of
+                    0 ->
+                        Bytes.Decode.map2 KernelHeaderSyntax BD.int BD.int
+
+                    1 ->
+                        Bytes.Decode.map3 KernelUnknownTag BD.int BD.int BD.string
+
+                    2 ->
+                        Bytes.Decode.map2 KernelImportAlias A.regionDecoder BD.string
+
+                    3 ->
+                        Bytes.Decode.map2 KernelDottedWithoutAlias A.regionDecoder BD.string
+
+                    4 ->
+                        Bytes.Decode.map2 KernelExposingAll A.regionDecoder BD.string
+
+                    5 ->
+                        Bytes.Decode.map3 KernelExposingCtors A.regionDecoder BD.string BD.string
+
+                    6 ->
+                        Bytes.Decode.map3 KernelExposingOperator A.regionDecoder BD.string BD.string
+
+                    _ ->
+                        Bytes.Decode.fail
+            )
+
 
 {-| A decoder for what `errorEncoder` writes. It fails on a tag past the last
 constructor of whichever type it is reading.
@@ -8928,6 +9105,9 @@ errorDecoder =
 
                     7 ->
                         Bytes.Decode.map ParseError moduleDecoder
+
+                    8 ->
+                        Bytes.Decode.map BadKernel kernelDecoder
 
                     _ ->
                         Bytes.Decode.fail

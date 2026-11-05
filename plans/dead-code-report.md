@@ -1,6 +1,7 @@
 ---
-status: not-started
-updated: 2026-11-04
+status: partial
+updated: 2026-11-05
+remaining: "the 433 dead items; claimed-unreachable rows other than those marked fixed below (Type.elm:1017 crash, API/Make No main!, Build addInside RNotFound, GenerateJs generateField, Translate 1147 alias-typed port encoder); the NumList2 side-finding repro is lost and must be rebuilt"
 ---
 
 # Dead code in the Elm compiler: full audit (2026-11-04)
@@ -59,6 +60,29 @@ These are bugs or wrong exclusion reasons, not dead code. Details and inputs are
 | `Parse/Kernel.elm:366-441` (5 crashes), `Canonicalize/Environment/Foreign.elm:154` | kernel package/app with malformed kernel JS imports or `import Elm.Kernel.X as Y` | crash instead of a syntax error (kernel authors only) |
 | `Type/Error.elm:642, 3013, 3082, 1429`; `Type/PostSolve.elm:1023-1145` | kernel-project-only inputs (effect module `init` mismatch, 0-arity infix, record-alias ctor on kernel ref) | no crash; exclusion rows are wrong, delete them |
 | `Monomorphize/ResolveAccessorValues.elm:231`, `Solver/Monomorphize.elm:4651`, `Solver/Translate.elm:1147, 1217`, `Solver/Zonk.elm:147` | see b5 section (two verified with the instrumented compiler) | behaviour correct (except Translate 1147: alias-typed port encoder is not connected); exclusion reasons wrong |
+
+Progress (2026-11-05):
+
+- **Fixed:** corrupted `.eci` (Build.elm:3002, 3036) is now `Exit.BuildCorruptCache`, which gives the
+  CORRUPT CACHE report. This covers an inside root, a first outside root and a later outside root (that one
+  used to be silently left out of the output), and a package build from exposed modules (that path is untested). Pinned by three
+  tests in `test/scripts/cli-builder.test.js`.
+- **Fixed:** a nullary constructor past index 1023 (CtorTag.elm:131) is rejected at canonicalization with
+  TOO MANY CONSTRUCTORS (`HeapLimits.maxNullaryCtorIndex`, HEAP_044(b) amended). The emission crash remains
+  as a backstop. Pinned by `SourceIR.LimitFailsCases` "Nullary constructor positions" and a
+  `LimitBoundaryCases` control.
+- **Exclusions deleted** (reachable): Type/Error 642, 3013, 3082, 1429; PostSolve 1023-1093, 1112,
+  1127-1145; ResolveAccessorValues 231; Solver/Monomorphize 4527 (fuel); Translate 1147, 1217; Zonk 147.
+  PostSolve 1118 stays (dead per T27) with its reason corrected. Translate 1147's alias-typed port encoder
+  is still not connected.
+- **Fixed:** kernel imports (Parse/Kernel.elm:366-441, Canonicalize/Environment/Foreign.elm:154). Every
+  kernel-file problem is now a `Compiler.Parse.Error.Kernel` syntax error: the five header forms that used to
+  crash, a header that does not parse, and an unknown `__Tag`. `import Elm.Kernel.X as Y` in an Elm module of
+  a kernel project is rejected by the parser, and Foreign's crash is gone. Builder/Build.elm:1008 no longer
+  accepts a kernel file that does not parse (it gives `SBadSyntax`), and Builder/Deps/Details.elm reports one
+  like any dependency compile error (`SBadKernel`, shown with `--Xpackage-errors`). Pinned by
+  `tests/Compiler/Parse/KernelTest.elm`, `ModuleTest.elm` and 10 tests in `test/scripts/cli-errors.test.js`.
+- The `/tmp/deadcode/` scratch tree is gone, so the NumList2 repro below is **lost**.
 
 Side finding, found during the audit but not dead code: the default compiler fails with
 `Kernel signature mismatch for Elm_Kernel_Basics_mul_Float` on a let-bound number list destructured

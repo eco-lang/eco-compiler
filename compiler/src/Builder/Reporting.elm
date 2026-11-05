@@ -785,6 +785,9 @@ toFinalMessage done result =
                 Exit.BuildProjectProblem _ ->
                     "Detected a problem."
 
+                Exit.BuildCorruptCache ->
+                    "Detected a problem."
+
 
 
 -- ====== GENERATE ======

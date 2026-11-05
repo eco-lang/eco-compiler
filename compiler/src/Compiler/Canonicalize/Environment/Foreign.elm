@@ -37,7 +37,6 @@ import Compiler.IR.Canonical.Interface as I
 import Compiler.IR.Source as Src
 import Compiler.Reporting.Result as ReportingResult
 import Dict exposing (Dict)
-import System.Crash exposing (crash)
 import Utils.Main as Utils
 
 
@@ -55,8 +54,8 @@ The imports are read in order, and the result is the error of the first import
 that fails.
 
 When `home` belongs to a kernel package, imports of kernel modules
-(`Elm.Kernel.*`, `Eco.Kernel.*`) are left out, and such an import written with
-`as` crashes the compiler. Elsewhere a kernel import is read like any other.
+(`Elm.Kernel.*`, `Eco.Kernel.*`) are left out. Elsewhere a kernel import is read
+like any other.
 
 -}
 createInitialEnv : ModuleName.Canonical -> Dict ModuleName.Raw I.Interface -> List Src.Import -> FResult i w Env.Env
@@ -139,22 +138,12 @@ toSafeImports (ModuleName.Canonical package _) imports =
 
 
 {-| Tells whether an import is of an ordinary module rather than a kernel module.
-
-Crashes the compiler for a kernel import written with `as`.
-
+A kernel import written with `as` never gets here: the parser rejects it in a
+kernel project (`Compiler.Parse.Module.fromByteString`).
 -}
 isNormal : Src.Import -> Bool
-isNormal (Src.Import ( _, A.At _ name ) maybeAlias _) =
-    if Name.isKernel name then
-        case maybeAlias of
-            Nothing ->
-                False
-
-            Just _ ->
-                crash "kernel imports cannot use `as`"
-
-    else
-        True
+isNormal (Src.Import ( _, A.At _ name ) _ _) =
+    not (Name.isKernel name)
 
 
 
