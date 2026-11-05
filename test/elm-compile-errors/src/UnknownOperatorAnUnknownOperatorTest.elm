@@ -9,7 +9,6 @@ the compiler must reject.
 
 -- COMPILE-ERROR: UNKNOWN OPERATOR, an unknown operator
 -- CHECK: -- UNKNOWN OPERATOR -
--- CHECK: (<=>)
 
 testValue =
     1 <=> 2

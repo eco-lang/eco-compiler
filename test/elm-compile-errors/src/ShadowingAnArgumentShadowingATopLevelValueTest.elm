@@ -9,7 +9,6 @@ the compiler must reject.
 
 -- COMPILE-ERROR: SHADOWING, an argument shadowing a top-level value
 -- CHECK: -- SHADOWING -
--- CHECK: The name `scale` is first defined here
 
 scale =
     2

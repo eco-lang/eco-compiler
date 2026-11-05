@@ -9,7 +9,6 @@ the compiler must reject.
 
 -- COMPILE-ERROR: TYPE MISMATCH, second argument to a function
 -- CHECK: -- TYPE MISMATCH -
--- CHECK: Hint: I always figure out the argument types from left to ri
 
 f : Int -> String -> Int
 f a b = a

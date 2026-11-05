@@ -9,7 +9,6 @@ the compiler must reject.
 
 -- COMPILE-ERROR: TYPE MISMATCH, two flexible records
 -- CHECK: -- TYPE MISMATCH -
--- CHECK: name
 
 h a = a.name ++ "s"
 

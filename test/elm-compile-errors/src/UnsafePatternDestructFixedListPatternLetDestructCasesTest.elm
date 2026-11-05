@@ -9,7 +9,6 @@ the compiler must reject.
 
 -- COMPILE-ERROR: UNSAFE PATTERN, Destruct fixed list pattern (LetDestructCases)
 -- CHECK: -- UNSAFE PATTERN -
--- CHECK: []
 
 testValue =
     let

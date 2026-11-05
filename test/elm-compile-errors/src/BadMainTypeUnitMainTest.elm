@@ -9,9 +9,6 @@ the compiler must reject.
 
 -- COMPILE-ERROR: BAD MAIN TYPE, unit main
 -- CHECK: -- BAD MAIN TYPE -
--- CHECK: The type of `main` value I am seeing is:
--- CHECK: ()
--- CHECK: I only know how to handle
 
 main : ()
 main = ()

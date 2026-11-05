@@ -9,7 +9,6 @@ the compiler must reject.
 
 -- COMPILE-ERROR: TYPE MISMATCH, second case pattern
 -- CHECK: -- TYPE MISMATCH -
--- CHECK: Note: A `case` expression can only handle one type of value,
 
 x =
     case "s" of

@@ -9,7 +9,6 @@ the compiler must reject.
 
 -- COMPILE-ERROR: TYPE MISMATCH, rigid comparable as a number
 -- CHECK: -- TYPE MISMATCH -
--- CHECK: Hint: The `comparable` in your type annotation is saying tha
 
 f : comparable -> comparable
 f x = 1

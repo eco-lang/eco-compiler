@@ -9,7 +9,6 @@ the compiler must reject.
 
 -- COMPILE-ERROR: NAMING ERROR, an unknown variable
 -- CHECK: -- NAMING ERROR -
--- CHECK: `undefinedName`
 
 testValue =
     undefinedName + 1

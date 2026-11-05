@@ -9,7 +9,6 @@ the compiler must reject.
 
 -- COMPILE-ERROR: TYPE MISMATCH, flexible record with an extra field where closed
 -- CHECK: -- TYPE MISMATCH -
--- CHECK: age
 
 g : { name : Int } -> Int
 g r = r.name

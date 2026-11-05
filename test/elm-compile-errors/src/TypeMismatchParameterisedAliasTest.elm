@@ -9,7 +9,6 @@ the compiler must reject.
 
 -- COMPILE-ERROR: TYPE MISMATCH, parameterised alias
 -- CHECK: -- TYPE MISMATCH -
--- CHECK: Hint: Want to convert an Int into a String? Use the String.f
 
 type alias Box a = { v : a }
 

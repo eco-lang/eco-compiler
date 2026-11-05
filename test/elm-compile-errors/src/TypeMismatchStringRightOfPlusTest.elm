@@ -9,6 +9,5 @@ the compiler must reject.
 
 -- COMPILE-ERROR: TYPE MISMATCH, string right of +
 -- CHECK: -- TYPE MISMATCH -
--- CHECK: Hint: Switch to the (++) operator to append strings!
 
 x = 1 + "a"

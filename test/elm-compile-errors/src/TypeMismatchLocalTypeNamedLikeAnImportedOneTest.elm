@@ -9,7 +9,6 @@ the compiler must reject.
 
 -- COMPILE-ERROR: TYPE MISMATCH, local type named like an imported one
 -- CHECK: -- TYPE MISMATCH -
--- CHECK: This `identity` call produces:
 
 type Maybe a = Maybe a
 

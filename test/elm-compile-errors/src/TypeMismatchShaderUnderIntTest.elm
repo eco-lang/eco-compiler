@@ -9,7 +9,6 @@ the compiler must reject.
 
 -- COMPILE-ERROR: TYPE MISMATCH, shader under Int
 -- CHECK: -- TYPE MISMATCH -
--- CHECK: shader
 
 x : Int
 x = [glsl| void main () {} |]

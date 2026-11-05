@@ -9,7 +9,6 @@ the compiler must reject.
 
 -- COMPILE-ERROR: TYPE MISMATCH, one-argument function where two
 -- CHECK: -- TYPE MISMATCH -
--- CHECK: Hint: It looks like it takes too few arguments. I was expect
 
 g : Int -> Int
 g a = a

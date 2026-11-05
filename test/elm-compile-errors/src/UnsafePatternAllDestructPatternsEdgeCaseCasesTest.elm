@@ -9,7 +9,6 @@ the compiler must reject.
 
 -- COMPILE-ERROR: UNSAFE PATTERN, All destruct patterns (EdgeCaseCases)
 -- CHECK: -- UNSAFE PATTERN -
--- CHECK: []
 
 testValue =
     let

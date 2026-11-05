@@ -70,6 +70,15 @@ Both are total and give `0`, in line with `x // 0 == 0` (decision D1 of
 Division by zero error.") and `remainderBy 0 x` gives NaN in an Int. The inline lowering
 (`eco.int.modby`, `eco.int.remainderby`) and the kernel fallbacks (`Basics.cpp`, `modBy`,
 `remainderBy`) agree: a program that crashes in Elm gets a wrong answer in eco instead.
+Pinned by `test/eco-divergence/src/ModByZeroKernelPathTest.elm` and `RemainderByZeroTest.elm`.
+
+### Negative zero
+
+eco's Int has one zero. Elm's Int is a JS number, so some integer results are `-0`:
+`remainderBy 4 -4` and `modBy 4 -4` (JS `%` keeps the dividend's sign, and `modBy`'s sign fix-up
+leaves a zero alone), `negate 0` and `0 * -1`. `-0` prints as `0` and `== 0` is `True`, so it shows
+only through a Float: `1 / toFloat n` is `-Infinity` in Elm and `Infinity` in eco. Pinned by
+`test/eco-divergence/src/IntNegativeZeroTest.elm`.
 
 ---
 
@@ -448,6 +457,7 @@ what eco guarantees.*
 | `truncate 3e9` | `-1294967296` (32-bit) | `3000000000` |
 | `x // 0` | `0` | `0` |
 | `modBy 0 x` / `remainderBy 0 x` | crash / NaN in an Int | `0` / `0` |
+| `1 / toFloat (remainderBy 4 -4)` | `-Infinity` (the Int is `-0`) | `Infinity` |
 | `round (0/0)` | NaN in an Int | *TODO* (proposed `0`) |
 | `Char.toUpper 'ß'` | `"SS"` in a Char | `'ß'` |
 | `nan == nan` | `False` | `False` |

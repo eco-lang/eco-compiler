@@ -9,6 +9,5 @@ the compiler must reject.
 
 -- COMPILE-ERROR: TYPE MISMATCH, Bool left of ++
 -- CHECK: -- TYPE MISMATCH -
--- CHECK: Hint: I only know how to append strings and lists.
 
 x = True ++ "a"

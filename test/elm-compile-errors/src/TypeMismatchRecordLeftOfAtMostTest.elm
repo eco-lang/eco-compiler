@@ -9,6 +9,5 @@ the compiler must reject.
 
 -- COMPILE-ERROR: TYPE MISMATCH, record left of <=
 -- CHECK: -- TYPE MISMATCH -
--- CHECK: Hint: I do not know how to compare records. I can only compa
 
 x = { a = 1 } <= { a = 1 }

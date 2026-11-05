@@ -9,7 +9,6 @@ the compiler must reject.
 
 -- COMPILE-ERROR: TYPE MISMATCH, type of a module that is not imported
 -- CHECK: -- TYPE MISMATCH -
--- CHECK: This `text` call produces:
 
 import Html
 

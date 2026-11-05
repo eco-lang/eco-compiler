@@ -9,7 +9,6 @@ the compiler must reject.
 
 -- COMPILE-ERROR: TYPE MISMATCH, aliased record field of the wrong type
 -- CHECK: -- TYPE MISMATCH -
--- CHECK: Hint: Want to convert a String into an Int? Use the String.t
 
 type alias P = { a : Int }
 

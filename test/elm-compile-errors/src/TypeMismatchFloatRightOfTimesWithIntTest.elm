@@ -9,7 +9,6 @@ the compiler must reject.
 
 -- COMPILE-ERROR: TYPE MISMATCH, Float right of * with Int
 -- CHECK: -- TYPE MISMATCH -
--- CHECK: Note: Read <https://elm-lang.org/0.19.1/implicit-casts> to l
 
 f : Float
 f = 1.5

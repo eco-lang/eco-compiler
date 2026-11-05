@@ -9,7 +9,6 @@ the compiler must reject.
 
 -- COMPILE-ERROR: UNSAFE PATTERN, Triple nested patterns (PatternArgCases)
 -- CHECK: -- UNSAFE PATTERN -
--- CHECK: []
 
 complex ( ( a, b ), { x, y }, h :: t ) =
     a

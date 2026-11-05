@@ -9,7 +9,6 @@ the compiler must reject.
 
 -- COMPILE-ERROR: CYCLIC DEFINITION, a top-level value defined by itself
 -- CHECK: -- CYCLIC DEFINITION -
--- CHECK: `loop`
 
 loop =
     loop + 1

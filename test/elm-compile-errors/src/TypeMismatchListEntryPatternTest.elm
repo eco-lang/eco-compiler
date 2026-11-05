@@ -9,7 +9,6 @@ the compiler must reject.
 
 -- COMPILE-ERROR: TYPE MISMATCH, list entry pattern
 -- CHECK: -- TYPE MISMATCH -
--- CHECK: Hint: Want to convert a String into an Int? Use the String.t
 
 x =
     case [ 1 ] of

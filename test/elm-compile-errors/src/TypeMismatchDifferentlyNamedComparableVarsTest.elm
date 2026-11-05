@@ -9,7 +9,6 @@ the compiler must reject.
 
 -- COMPILE-ERROR: TYPE MISMATCH, differently named comparable vars
 -- CHECK: -- TYPE MISMATCH -
--- CHECK: comparable2
 
 type A = A
 

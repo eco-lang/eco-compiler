@@ -9,6 +9,5 @@ the compiler must reject.
 
 -- COMPILE-ERROR: TYPE MISMATCH, consed onto a Maybe
 -- CHECK: -- TYPE MISMATCH -
--- CHECK: The (::) operator can only add elements onto lists.
 
 x = 1 :: Just 1

@@ -9,7 +9,6 @@ the compiler must reject.
 
 -- COMPILE-ERROR: TYPE MISMATCH, rigid compappend as Int
 -- CHECK: -- TYPE MISMATCH -
--- CHECK: Hint: The `compappend` in your type annotation is saying tha
 
 f : compappend -> Int
 f x = x

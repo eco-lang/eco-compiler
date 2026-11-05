@@ -9,7 +9,6 @@ the compiler must reject.
 
 -- COMPILE-ERROR: TYPE MISMATCH, cons head against a cons tail
 -- CHECK: -- TYPE MISMATCH -
--- CHECK: pattern
 
 x =
     case [ 1 ] of

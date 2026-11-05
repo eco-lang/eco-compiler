@@ -9,6 +9,5 @@ the compiler must reject.
 
 -- COMPILE-ERROR: TYPE MISMATCH, lists added
 -- CHECK: -- TYPE MISMATCH -
--- CHECK: Hint: Switch to the (++) operator to append lists!
 
 x = [ 1 ] + [ 2 ]

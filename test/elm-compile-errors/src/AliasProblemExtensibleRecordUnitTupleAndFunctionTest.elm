@@ -9,6 +9,5 @@ the compiler must reject.
 
 -- COMPILE-ERROR: ALIAS PROBLEM, extensible record, unit, tuple and function
 -- CHECK: -- ALIAS PROBLEM -
--- CHECK: { r | f : ( (), A r, Int -> A r ) }
 
 type alias A r = { r | f : ( (), ( {- A -} A r ), Int -> A r ) }

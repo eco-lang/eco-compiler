@@ -788,7 +788,7 @@ int main(int argc, char** argv) {
               << "Tests passed: " << g_color.green() << passed << g_color.reset() << "\n"
               << "Tests failed: " << (failed ? g_color.red() : g_color.dim())
               << failed << g_color.reset() << "\n"
-              << "Tests skipped: " << skipped.size() << " (SKIP-AOT, LINUX-ONLY)\n"
+              << "Tests skipped: " << skipped.size() << " (SKIP-AOT, LINUX-ONLY, COMPILE-ERROR)\n"
               << "Of the passes, expected failures: " << xfailed << " (XFAIL-NATIVE)\n"
               << "\nResult: " << (failed == 0 ? g_color.green() : g_color.red())
               << (failed == 0 ? "PASSED" : "FAILED") << g_color.reset() << "\n";

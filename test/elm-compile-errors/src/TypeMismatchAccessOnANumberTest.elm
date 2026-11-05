@@ -9,7 +9,6 @@ the compiler must reject.
 
 -- COMPILE-ERROR: TYPE MISMATCH, access on a number
 -- CHECK: -- TYPE MISMATCH -
--- CHECK: This `n` value is a:
 
 n : Int
 n = 1

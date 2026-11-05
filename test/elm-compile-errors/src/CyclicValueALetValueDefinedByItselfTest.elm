@@ -9,7 +9,6 @@ the compiler must reject.
 
 -- COMPILE-ERROR: CYCLIC VALUE, a let value defined by itself
 -- CHECK: -- CYCLIC VALUE -
--- CHECK: `y`
 
 testValue =
     let

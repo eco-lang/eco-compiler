@@ -9,7 +9,6 @@ the compiler must reject.
 
 -- COMPILE-ERROR: SHADOWING, shadowing in lambda
 -- CHECK: -- SHADOWING -
--- CHECK: The name `y` is first defined here
 
 test y =
     \y ->

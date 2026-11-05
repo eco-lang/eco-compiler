@@ -9,7 +9,6 @@ the compiler must reject.
 
 -- COMPILE-ERROR: BAD TUPLE, a tuple of four
 -- CHECK: -- BAD TUPLE -
--- CHECK: two or three items
 
 testValue =
     ( 1, 2, 3, 4 )

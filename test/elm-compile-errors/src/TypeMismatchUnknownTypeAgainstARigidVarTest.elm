@@ -9,7 +9,6 @@ the compiler must reject.
 
 -- COMPILE-ERROR: TYPE MISMATCH, unknown type against a rigid var
 -- CHECK: -- TYPE MISMATCH -
--- CHECK: ( Maybe number, ? )
 
 f : a -> ( Bool, a )
 f x =

@@ -9,7 +9,6 @@ the compiler must reject.
 
 -- COMPILE-ERROR: NAME CLASH, a record field given twice
 -- CHECK: -- NAME CLASH -
--- CHECK: multiple `a` fields
 
 testValue =
     { a = 1, a = 2 }

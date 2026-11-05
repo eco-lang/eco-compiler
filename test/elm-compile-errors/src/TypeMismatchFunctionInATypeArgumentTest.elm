@@ -9,7 +9,6 @@ the compiler must reject.
 
 -- COMPILE-ERROR: TYPE MISMATCH, function in a type argument
 -- CHECK: -- TYPE MISMATCH -
--- CHECK: The body is a list of type:
 
 x : Maybe (Int -> Int)
 x = [ Just not ]

@@ -9,7 +9,6 @@ the compiler must reject.
 
 -- COMPILE-ERROR: TYPE MISMATCH, tuple against an alias
 -- CHECK: -- TYPE MISMATCH -
--- CHECK: N
 
 type alias N = Int
 

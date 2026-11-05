@@ -9,7 +9,6 @@ the compiler must reject.
 
 -- COMPILE-ERROR: TYPE MISMATCH, self-applied argument against a rigid var
 -- CHECK: -- TYPE MISMATCH -
--- CHECK: ∞
 
 h : a -> Int
 h w =

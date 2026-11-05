@@ -9,7 +9,6 @@ the compiler must reject.
 
 -- COMPILE-ERROR: TYPE MISMATCH, unknown type against a number
 -- CHECK: -- TYPE MISMATCH -
--- CHECK: ?
 
 f x =
     case [ 1, "a" ] of

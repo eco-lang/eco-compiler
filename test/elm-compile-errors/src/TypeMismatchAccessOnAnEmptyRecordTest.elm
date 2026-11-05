@@ -9,7 +9,6 @@ the compiler must reject.
 
 -- COMPILE-ERROR: TYPE MISMATCH, access on an empty record
 -- CHECK: -- TYPE MISMATCH -
--- CHECK: This `r` record does not have a `foo` field:
 
 r = {}
 

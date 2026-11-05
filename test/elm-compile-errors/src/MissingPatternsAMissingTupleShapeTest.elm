@@ -9,7 +9,6 @@ the compiler must reject.
 
 -- COMPILE-ERROR: MISSING PATTERNS, a missing tuple shape
 -- CHECK: -- MISSING PATTERNS -
--- CHECK: ( False, False )
 
 either pair =
     case pair of

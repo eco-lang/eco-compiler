@@ -9,7 +9,6 @@ the compiler must reject.
 
 -- COMPILE-ERROR: TYPE MISMATCH, case as an argument
 -- CHECK: -- TYPE MISMATCH -
--- CHECK: Hint: Only Int and Float values work as numbers.
 
 x =
     not

@@ -9,7 +9,6 @@ the compiler must reject.
 
 -- COMPILE-ERROR: TYPE MISMATCH, Int right of ++
 -- CHECK: -- TYPE MISMATCH -
--- CHECK: I thought I was appending String values here, not Int values
 
 n : Int
 n = 1

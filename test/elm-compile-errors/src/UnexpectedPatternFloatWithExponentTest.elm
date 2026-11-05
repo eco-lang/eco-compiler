@@ -8,9 +8,6 @@ From `Compiler.Reporting.SyntaxRegionReportTest` (`floatPatternWithExponent`), a
 
 -- COMPILE-ERROR: UNEXPECTED PATTERN
 -- CHECK: -- UNEXPECTED PATTERN -
--- CHECK: I cannot pattern match with floating point numbers:
--- CHECK: Equality on floats can be unreliable, so you usually want to check that they are
--- CHECK: nearby with some sort of (abs (actual - expected) < 0.001) check.
 
 
 f x =

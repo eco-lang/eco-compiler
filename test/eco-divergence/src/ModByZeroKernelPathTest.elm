@@ -16,8 +16,8 @@ The CHECK-MLIR-NOT line pins that; if a change ever routes one of these calls to
 `Elm_Kernel_Basics_modBy`, it fails here and this program becomes the end-to-end witness of
 ABI-01. The fix itself is pinned by the C++ case `int-arith/mod-by-zero-returns-zero`
 (test/kernel/IntArithTest.cpp), which calls the export directly. Stock Elm crashes on `modBy 0`
-(hint 11), so the expected output is eco's documented divergence, not Elm's: SKIP-JS, and
-the test lives here, not in elm-conformance.
+(hint 11), so the expected output is eco's documented divergence, not Elm's. `remainderBy 0` is
+covered by RemainderByZeroTest.
 
 -}
 

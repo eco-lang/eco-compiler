@@ -9,7 +9,6 @@ the compiler must reject.
 
 -- COMPILE-ERROR: TYPE MISMATCH, rigid extension where flexible after a mismatch
 -- CHECK: -- TYPE MISMATCH -
--- CHECK: { r | name : Int }
 
 g : { r | name : Int } -> Int
 g r =

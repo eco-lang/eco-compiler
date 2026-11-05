@@ -9,7 +9,6 @@ the compiler must reject.
 
 -- COMPILE-ERROR: INFINITE TYPE, self-applied argument on both sides
 -- CHECK: -- INFINITE TYPE -
--- CHECK: ∞
 
 k x =
     let

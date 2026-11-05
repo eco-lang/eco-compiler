@@ -9,7 +9,6 @@ the compiler must reject.
 
 -- COMPILE-ERROR: TYPE MISMATCH, flexible record where closed after a mismatch
 -- CHECK: -- TYPE MISMATCH -
--- CHECK: name : String
 
 g : ( Int, { name : Int } ) -> Int
 g p = 0

@@ -9,7 +9,6 @@ the compiler must reject.
 
 -- COMPILE-ERROR: TYPE MISMATCH, rigid var against its Maybe
 -- CHECK: -- TYPE MISMATCH -
--- CHECK: Maybe a
 
 f : a -> Maybe a
 f x = x

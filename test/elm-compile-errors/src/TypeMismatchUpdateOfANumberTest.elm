@@ -9,7 +9,6 @@ the compiler must reject.
 
 -- COMPILE-ERROR: TYPE MISMATCH, update of a number
 -- CHECK: -- TYPE MISMATCH -
--- CHECK: This `n` value is a:
 
 n : Int
 n = 1

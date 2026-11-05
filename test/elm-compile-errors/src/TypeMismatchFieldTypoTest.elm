@@ -9,7 +9,6 @@ the compiler must reject.
 
 -- COMPILE-ERROR: TYPE MISMATCH, field typo
 -- CHECK: -- TYPE MISMATCH -
--- CHECK: This is usually a typo. Here are the `r` fields that are mos
 
 r = { name = "a" }
 

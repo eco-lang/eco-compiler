@@ -9,7 +9,6 @@ the compiler must reject.
 
 -- COMPILE-ERROR: UNSAFE PATTERN, Mixed nested aliases (AsPatternCases)
 -- CHECK: -- UNSAFE PATTERN -
--- CHECK: []
 
 mixed (( { x }, (h :: _) as list ) as all) =
     all

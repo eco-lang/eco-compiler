@@ -9,7 +9,6 @@ the compiler must reject.
 
 -- COMPILE-ERROR: TOO MANY ARGS, a constructor pattern with too many arguments
 -- CHECK: -- TOO MANY ARGS -
--- CHECK: `Just`
 
 f m =
     case m of

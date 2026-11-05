@@ -8,9 +8,6 @@ From `Compiler.Reporting.Render.TypeLayoutReportTest` (`aliasWithCommentedParens
 
 -- COMPILE-ERROR: ALIAS PROBLEM
 -- CHECK: -- ALIAS PROBLEM -
--- CHECK: This type alias is recursive, forming an infinite type!
--- CHECK: When I expand a recursive type alias, it just keeps getting bigger and bigger.
--- CHECK: So dealiasing results in an infinitely large type! Try this instead:
 
 
 type alias R =

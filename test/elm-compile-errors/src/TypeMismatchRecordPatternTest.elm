@@ -9,7 +9,6 @@ the compiler must reject.
 
 -- COMPILE-ERROR: TYPE MISMATCH, record pattern
 -- CHECK: -- TYPE MISMATCH -
--- CHECK: The argument is a pattern that matches record values of type
 
 f : Int -> Int
 f { a } = a

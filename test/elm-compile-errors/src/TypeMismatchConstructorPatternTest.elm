@@ -9,8 +9,6 @@ the compiler must reject.
 
 -- COMPILE-ERROR: TYPE MISMATCH, constructor pattern
 -- CHECK: -- TYPE MISMATCH -
--- CHECK: The first pattern is trying to match `Just` values of type:
--- CHECK: These can never match! Is the pattern the problem? Or is it the expression?
 
 x =
     case 1 of

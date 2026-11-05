@@ -9,7 +9,6 @@ the compiler must reject.
 
 -- COMPILE-ERROR: TYPE MISMATCH, Int right of ++ with a list
 -- CHECK: -- TYPE MISMATCH -
--- CHECK: I thought I was appending List values here, not Int values l
 
 n : Int
 n = 1

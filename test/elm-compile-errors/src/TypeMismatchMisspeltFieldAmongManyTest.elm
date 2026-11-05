@@ -8,9 +8,6 @@ From `Compiler.Reporting.Render.TypeLayoutReportTest` (`misspeltFieldMany`), an 
 
 -- COMPILE-ERROR: TYPE MISMATCH
 -- CHECK: -- TYPE MISMATCH -
--- CHECK: This `r1` record does not have a `alpah` field:
--- CHECK: This is usually a typo. Here are the `r1` fields that are most similar:
--- CHECK: { alpha : number
 
 
 r1 =

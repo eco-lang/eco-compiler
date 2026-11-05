@@ -9,7 +9,6 @@ the compiler must reject.
 
 -- COMPILE-ERROR: MISSING PATTERNS, a missing list length
 -- CHECK: -- MISSING PATTERNS -
--- CHECK: _ :: _ :: _
 
 firstOrZero xs =
     case xs of

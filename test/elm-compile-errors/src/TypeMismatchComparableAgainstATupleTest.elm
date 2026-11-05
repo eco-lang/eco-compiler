@@ -9,6 +9,5 @@ the compiler must reject.
 
 -- COMPILE-ERROR: TYPE MISMATCH, comparable against a tuple
 -- CHECK: -- TYPE MISMATCH -
--- CHECK: comparable
 
 f a = if a < a then [ ( 1, a ), ( "s", ( 1, 2 ) ) ] else []

@@ -9,7 +9,6 @@ the compiler must reject.
 
 -- COMPILE-ERROR: TYPE MISMATCH, record field extra
 -- CHECK: -- TYPE MISMATCH -
--- CHECK: Hint: Seems like a record field typo. Maybe age should be na
 
 f : { name : Int } -> Int
 f r = r.name

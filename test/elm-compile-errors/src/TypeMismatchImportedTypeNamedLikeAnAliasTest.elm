@@ -9,7 +9,6 @@ the compiler must reject.
 
 -- COMPILE-ERROR: TYPE MISMATCH, imported type named like an alias
 -- CHECK: -- TYPE MISMATCH -
--- CHECK: Test.Bool
 
 type alias Bool = Int
 

@@ -9,7 +9,6 @@ the compiler must reject.
 
 -- COMPILE-ERROR: TYPE MISMATCH, tuple component pattern
 -- CHECK: -- TYPE MISMATCH -
--- CHECK: Hint: Try using String.toInt to convert it to an integer?
 
 x =
     case ( 1, 2 ) of

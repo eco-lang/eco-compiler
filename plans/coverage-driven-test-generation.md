@@ -128,7 +128,8 @@ python3 $C html                        # build/coverage/html/{elm-test,e2e}/.cov
 `--e2e-js` files. The baseline's E2E side now includes the JS-target suite (`run-js-e2e.js`).
 
 E2E directives added for it (`test/CheckPatterns.hpp`):
-- `-- COMPILE-ERROR: <what>`: the program must be rejected; CHECK lines match the error report.
+- `-- COMPILE-ERROR: <what>`: the program must be rejected; CHECK lines match the error report
+  (in `test/elm-compile-errors`, only its title).
   Suite `test/elm-compile-errors/` (type, canonicalization, pattern, main, parse and
   monomorphization errors, mined from the SourceIR rejection catalogue and report tests).
 - `-- TEXT-MLIR: <why>`: compiled with `--text-mlir`, which keeps `Mlir.Pretty` covered.

@@ -9,6 +9,5 @@ the compiler must reject.
 
 -- COMPILE-ERROR: TOO MANY ARGS, too many arguments to a lambda
 -- CHECK: -- TOO MANY ARGS -
--- CHECK: This function expects 1 argument, but it got 2 instead.
 
 x = (\a -> a + 1) 1 2

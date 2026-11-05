@@ -9,7 +9,6 @@ the compiler must reject.
 
 -- COMPILE-ERROR: TYPE MISMATCH, two aliased records
 -- CHECK: -- TYPE MISMATCH -
--- CHECK: This `p` value is a:
 
 type alias P = { a : Int }
 

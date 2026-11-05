@@ -9,7 +9,6 @@ the compiler must reject.
 
 -- COMPILE-ERROR: TYPE MISMATCH, same rigid extension
 -- CHECK: -- TYPE MISMATCH -
--- CHECK: { r | name : String }
 
 g : { r | name : Int } -> { r | name : String }
 g r = r

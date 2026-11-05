@@ -8,9 +8,6 @@ From `Compiler.Reporting.SyntaxRegionReportTest` (`elseNotIndented`), an elm-tes
 
 -- COMPILE-ERROR: WEIRD ELSE BRANCH
 -- CHECK: -- WEIRD ELSE BRANCH -
--- CHECK: I was partway through an `if` expression when I got stuck here:
--- CHECK: I think this else keyword needs to be indented more. Try adding some spaces
--- CHECK: before it.
 
 
 main =

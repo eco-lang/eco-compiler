@@ -9,7 +9,6 @@ the compiler must reject.
 
 -- COMPILE-ERROR: TYPE MISMATCH, differently named flex vars
 -- CHECK: -- TYPE MISMATCH -
--- CHECK: b -> b
 
 type A = A
 

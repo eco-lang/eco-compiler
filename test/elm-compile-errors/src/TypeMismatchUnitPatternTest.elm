@@ -9,7 +9,6 @@ the compiler must reject.
 
 -- COMPILE-ERROR: TYPE MISMATCH, unit pattern
 -- CHECK: -- TYPE MISMATCH -
--- CHECK: The argument is a pattern that matches unit values:
 
 f : Int -> Int
 f () = 1

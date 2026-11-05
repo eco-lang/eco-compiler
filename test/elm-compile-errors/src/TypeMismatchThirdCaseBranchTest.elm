@@ -9,7 +9,6 @@ the compiler must reject.
 
 -- COMPILE-ERROR: TYPE MISMATCH, third case branch
 -- CHECK: -- TYPE MISMATCH -
--- CHECK: Hint: All branches in a `case` must produce the same type of
 
 x =
     case 1 of

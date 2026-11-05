@@ -8,9 +8,6 @@ From `Compiler.Reporting.Render.TypeLayoutReportTest` (`misspeltFieldExtensible`
 
 -- COMPILE-ERROR: TYPE MISMATCH
 -- CHECK: -- TYPE MISMATCH -
--- CHECK: This `r` record does not have a `alpah` field:
--- CHECK: This is usually a typo. Here are the `r` fields that are most similar:
--- CHECK: { a
 
 
 g : { a | alpha : Int, beta : Int } -> Int

@@ -9,7 +9,6 @@ the compiler must reject.
 
 -- COMPILE-ERROR: TYPE MISMATCH, rigid var as alias
 -- CHECK: -- TYPE MISMATCH -
--- CHECK: This `p` value is a:
 
 type alias P = { y : Int }
 

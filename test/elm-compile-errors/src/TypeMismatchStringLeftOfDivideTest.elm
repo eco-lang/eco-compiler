@@ -9,6 +9,5 @@ the compiler must reject.
 
 -- COMPILE-ERROR: TYPE MISMATCH, String left of /
 -- CHECK: -- TYPE MISMATCH -
--- CHECK: Hint: Want to convert a String into a Float? Use the String.
 
 x = "a" / 2

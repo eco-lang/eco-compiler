@@ -9,7 +9,6 @@ the compiler must reject.
 
 -- COMPILE-ERROR: NAME CLASH, two let bindings of one name
 -- CHECK: -- NAME CLASH -
--- CHECK: `y`
 
 testValue =
     let

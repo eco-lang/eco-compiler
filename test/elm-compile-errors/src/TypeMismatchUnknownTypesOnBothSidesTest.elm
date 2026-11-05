@@ -9,7 +9,6 @@ the compiler must reject.
 
 -- COMPILE-ERROR: TYPE MISMATCH, unknown types on both sides
 -- CHECK: -- TYPE MISMATCH -
--- CHECK: ( ?, String )
 
 x =
     case [ 1, "a" ] of

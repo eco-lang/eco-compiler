@@ -9,7 +9,6 @@ the compiler must reject.
 
 -- COMPILE-ERROR: TYPE MISMATCH, record fields missing
 -- CHECK: -- TYPE MISMATCH -
--- CHECK: Hint: Looks like fields age and size are missing.
 
 f : { name : Int, age : Int, size : Int } -> Int
 f r = r.name

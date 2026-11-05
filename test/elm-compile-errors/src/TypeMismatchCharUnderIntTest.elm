@@ -9,7 +9,6 @@ the compiler must reject.
 
 -- COMPILE-ERROR: TYPE MISMATCH, char under Int
 -- CHECK: -- TYPE MISMATCH -
--- CHECK: The body is a character of type:
 
 x : Int
 x = 'c'

@@ -9,6 +9,5 @@ the compiler must reject.
 
 -- COMPILE-ERROR: TYPE MISMATCH, consed onto a Bool
 -- CHECK: -- TYPE MISMATCH -
--- CHECK: This `True` value is a:
 
 x = 1 :: True

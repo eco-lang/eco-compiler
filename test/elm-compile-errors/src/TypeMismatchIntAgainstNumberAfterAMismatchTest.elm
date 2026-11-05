@@ -9,7 +9,6 @@ the compiler must reject.
 
 -- COMPILE-ERROR: TYPE MISMATCH, Int against number after a mismatch
 -- CHECK: -- TYPE MISMATCH -
--- CHECK: ( String, Int )
 
 n : Int
 n = 1

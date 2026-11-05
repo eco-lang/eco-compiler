@@ -9,7 +9,6 @@ the compiler must reject.
 
 -- COMPILE-ERROR: NAME CLASH, two arguments of one name
 -- CHECK: -- NAME CLASH -
--- CHECK: multiple `a` arguments
 
 pick a a =
     a

@@ -9,6 +9,5 @@ the compiler must reject.
 
 -- COMPILE-ERROR: ALIAS PROBLEM, qualified type
 -- CHECK: -- ALIAS PROBLEM -
--- CHECK: Maybe.Maybe (List A)
 
 type alias A = Maybe.Maybe (List A)

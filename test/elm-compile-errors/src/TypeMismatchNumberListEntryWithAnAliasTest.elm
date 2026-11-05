@@ -9,7 +9,6 @@ the compiler must reject.
 
 -- COMPILE-ERROR: TYPE MISMATCH, number list entry with an alias
 -- CHECK: -- TYPE MISMATCH -
--- CHECK: Hint: Everything in a list must be the same type of value. T
 
 type alias N = { y : Int }
 

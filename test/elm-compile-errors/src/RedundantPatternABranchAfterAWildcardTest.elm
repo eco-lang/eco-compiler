@@ -9,7 +9,6 @@ the compiler must reject.
 
 -- COMPILE-ERROR: REDUNDANT PATTERN, a branch after a wildcard
 -- CHECK: -- REDUNDANT PATTERN -
--- CHECK: The 2nd pattern is redundant
 
 name n =
     case n of

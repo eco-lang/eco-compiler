@@ -1,8 +1,9 @@
 #pragma once
 #include "../ElmE2ETestBase.hpp"
 
-// Programs the compiler must reject: each carries a `-- COMPILE-ERROR: <what>` line and CHECK lines
-// matched against the error report (CheckPatterns.hpp). They cover the front end's error paths,
+// Programs the compiler must reject: each carries a `-- COMPILE-ERROR: <what>` line and one CHECK
+// line, the title of the error report (`-- TYPE MISMATCH -`), not its text, so that a reworded
+// message does not fail a test that is still rejected for the right reason (CheckPatterns.hpp). They cover the front end's error paths,
 // which the run tests never reach: type errors, canonicalization and pattern errors.
 namespace ElmCompileErrorsTest {
 

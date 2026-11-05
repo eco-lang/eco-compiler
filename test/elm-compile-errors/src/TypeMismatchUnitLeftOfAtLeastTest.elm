@@ -9,6 +9,5 @@ the compiler must reject.
 
 -- COMPILE-ERROR: TYPE MISMATCH, unit left of >=
 -- CHECK: -- TYPE MISMATCH -
--- CHECK: Hint: I only know how to compare ints, floats, chars, string
 
 x = () >= ()

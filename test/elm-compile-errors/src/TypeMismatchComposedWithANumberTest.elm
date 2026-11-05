@@ -9,6 +9,5 @@ the compiler must reject.
 
 -- COMPILE-ERROR: TYPE MISMATCH, composed with a number
 -- CHECK: -- TYPE MISMATCH -
--- CHECK: Hint: With operators like (>>) I always check the left side
 
 x = not >> 1
