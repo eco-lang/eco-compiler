@@ -5,6 +5,7 @@ The MLIR string literal emitter must not produce \' escapes, since MLIR
 only recognizes \\, \", \n, \t, and hex escapes inside double-quoted strings.
 -}
 
+-- TEXT-MLIR: also keeps the MLIR text printer (Mlir.Pretty) covered and checked end to end
 -- CHECK: q1: "it's working"
 -- CHECK: q2: "don't panic"
 -- CHECK: q3: "quotes: ' and '"

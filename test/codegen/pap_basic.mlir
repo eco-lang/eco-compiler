@@ -56,9 +56,9 @@ module {
       num_captured = 1 : i64
     } : (!eco.value) -> !eco.value
 
-    // Debug print the closure (shows as <fn>)
+    // Debug print the closure (shows as <function>)
     eco.dbg %pap : !eco.value
-    // CHECK: <fn>
+    // CHECK: <function>
 
     // Saturate the closure: apply second arg = 7
     // remaining_arity = 1 (closure needs 1 more arg)

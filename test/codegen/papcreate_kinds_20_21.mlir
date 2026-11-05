@@ -252,5 +252,5 @@ module {
   }
 }
 
-// CHECK: <fn>
+// CHECK: <function>
 // CHECK: 867168

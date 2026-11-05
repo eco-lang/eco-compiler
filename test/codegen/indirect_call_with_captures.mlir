@@ -73,7 +73,7 @@ module {
       num_captured = 1 : i64
     } : (!eco.value) -> !eco.value
     eco.dbg %add5 : !eco.value
-    // CHECK: <fn>
+    // CHECK: <function>
 
     // Indirect call: add5(7) = 5 + 7 = 12
     %result1 = "eco.call"(%add5, %b7) {remaining_arity = 1 : i64}

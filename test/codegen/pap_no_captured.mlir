@@ -64,21 +64,21 @@ module {
     } : () -> !eco.value
 
     eco.dbg %pap0 : !eco.value
-    // CHECK: <fn>
+    // CHECK: <function>
 
     // Extend with first argument
     %pap1 = "eco.papExtend"(%pap0, %b1) {slot_kinds = array<i8: 0>, remaining_arity = 3 : i64
     } : (!eco.value, !eco.value) -> !eco.value
 
     eco.dbg %pap1 : !eco.value
-    // CHECK: <fn>
+    // CHECK: <function>
 
     // Extend with second argument
     %pap2 = "eco.papExtend"(%pap1, %b2) {slot_kinds = array<i8: 0>, remaining_arity = 2 : i64
     } : (!eco.value, !eco.value) -> !eco.value
 
     eco.dbg %pap2 : !eco.value
-    // CHECK: <fn>
+    // CHECK: <function>
 
     // Extend with third (final) argument - saturates and calls
     // 1 + 2 + 3 = 6

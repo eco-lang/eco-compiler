@@ -677,6 +677,19 @@ inline std::string verifyPatterns(const std::string& output,
 //                    linger. A compile failure stays a failure. The JS runner
 //                    ignores it: on JS the test must pass
 //                    (plans/char-case-mapping-elm-exact.md Step 0).
+//   -- COMPILE-ERROR: <what>
+//                    the program must be rejected by the compiler: the test
+//                    passes iff compiling it fails and the CHECK-family lines
+//                    match the compiler's output (the error report); nothing is
+//                    run, and EXIT, STDIN and the environment directives do not
+//                    apply. A file with this line is a test even without a
+//                    `main`. JIT harness (ElmE2ETestBase.hpp) and the stock-Elm
+//                    runner (test/scripts/run-elm-e2e.js).
+//   -- TEXT-MLIR: <why>
+//                    the JIT harness compiles the test with `--text-mlir` (MLIR text
+//                    through Mlir.Pretty, not bytecode), as ECO_TEXT_MLIR=1 does for
+//                    every test, so that the text printer stays covered and checked
+//                    end to end. The other runners ignore it.
 //
 // Child-environment directives (plans/kernel-lib-bug-fixes.md, "Shared
 // infrastructure"). Applied by the JIT harness (ElmE2ETestBase.hpp
@@ -818,6 +831,26 @@ inline std::optional<std::string> xfailNativeReason(const std::string& content) 
         result = blank ? std::string("no reason given") : t;
     });
     return result;
+}
+
+/// The `-- COMPILE-ERROR:` description (first occurrence; "no description
+/// given" when blank), or nullopt when the test is an ordinary run test.
+inline std::optional<std::string> compileErrorDirective(const std::string& content) {
+    std::optional<std::string> result;
+    detail::forEachDirectiveLine(content, "-- COMPILE-ERROR:", [&](const std::string& rest) {
+        if (result) return;
+        std::string t = trimCheckPattern(rest);
+        bool blank = t.find_first_not_of(" \t") == std::string::npos;
+        result = blank ? std::string("no description given") : t;
+    });
+    return result;
+}
+
+/// Whether the test has a `-- TEXT-MLIR:` line.
+inline bool textMlirDirective(const std::string& content) {
+    bool found = false;
+    detail::forEachDirectiveLine(content, "-- TEXT-MLIR:", [&](const std::string&) { found = true; });
+    return found;
 }
 
 /// The `-- ENV: NAME=VALUE` pairs in file order, VALUE unexpanded (see

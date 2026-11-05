@@ -74,21 +74,21 @@ module {
       num_captured = 1 : i64
     } : (!eco.value) -> !eco.value
     eco.dbg %f1 : !eco.value
-    // CHECK: <fn>
+    // CHECK: <function>
 
     // Apply one more arg: subtract_chain 100 10
     // Now waiting for 2 more args
     %f2 = "eco.papExtend"(%f1, %b10) {slot_kinds = array<i8: 0>, remaining_arity = 3 : i64
     } : (!eco.value, !eco.value) -> !eco.value
     eco.dbg %f2 : !eco.value
-    // CHECK: <fn>
+    // CHECK: <function>
 
     // Apply one more: subtract_chain 100 10 5
     // Now waiting for 1 more arg
     %f3 = "eco.papExtend"(%f2, %b5) {slot_kinds = array<i8: 0>, remaining_arity = 2 : i64
     } : (!eco.value, !eco.value) -> !eco.value
     eco.dbg %f3 : !eco.value
-    // CHECK: <fn>
+    // CHECK: <function>
 
     // Final application: subtract_chain 100 10 5 3
     // Expected: (((100 - 10) - 5) - 3) = ((90 - 5) - 3) = (85 - 3) = 82

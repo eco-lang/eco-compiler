@@ -69,25 +69,25 @@ module {
       num_captured = 0 : i64
     } : () -> !eco.value
     eco.dbg %pap0 : !eco.value
-    // CHECK: <fn>
+    // CHECK: <function>
 
     // Extend with 1 arg (remaining 4 -> 3, still unsaturated)
     %pap1 = "eco.papExtend"(%pap0, %b1) {slot_kinds = array<i8: 0>, remaining_arity = 4 : i64
     } : (!eco.value, !eco.value) -> !eco.value
     eco.dbg %pap1 : !eco.value
-    // CHECK: <fn>
+    // CHECK: <function>
 
     // Extend with 1 more arg (remaining 3 -> 2, still unsaturated)
     %pap2 = "eco.papExtend"(%pap1, %b2) {slot_kinds = array<i8: 0>, remaining_arity = 3 : i64
     } : (!eco.value, !eco.value) -> !eco.value
     eco.dbg %pap2 : !eco.value
-    // CHECK: <fn>
+    // CHECK: <function>
 
     // Extend with 1 more arg (remaining 2 -> 1, still unsaturated)
     %pap3 = "eco.papExtend"(%pap2, %b3) {slot_kinds = array<i8: 0>, remaining_arity = 2 : i64
     } : (!eco.value, !eco.value) -> !eco.value
     eco.dbg %pap3 : !eco.value
-    // CHECK: <fn>
+    // CHECK: <function>
 
     // Finally saturate with last arg (remaining 1 -> 0)
     %result = "eco.papExtend"(%pap3, %b4) {slot_kinds = array<i8: 0>, remaining_arity = 1 : i64

@@ -5,8 +5,9 @@ Coverage of compiler/src is measured by instrumenting it with elm-instrument (co
 and running two suites against the instrumented build:
 
   elm-test  the elm-test-rs suite, through elm-coverage;
-  E2E       the JIT E2E suite (build/test/test), whose compiles go through a guida.js built from
-            the same instrumented sources and handed to the harness through GUIDA_JS_PATH.
+  E2E       the JIT E2E suite (build/test/test) and the JS-target E2E suite (run-js-e2e.js), whose
+            compiles go through a guida.js built from the same instrumented sources and handed to
+            the harnesses through GUIDA_JS_PATH.
 
 Commands:
 
@@ -20,6 +21,9 @@ Commands:
   report      merge the baseline with quick files and print coverage of the loop's scope; with
               --module, list that module's unreached annotations; with --write-tracker, update
               compiler/coverage/tracker.csv
+  gap         compare the suites: what elm-test reaches and E2E (baseline plus quick --e2e
+              compiles) does not, by folder, module or annotation
+  html        elm-coverage's HTML report of each baseline suite, in build/coverage/html/<suite>
 
 A module's baseline counts are used only while its source is unchanged (sha1 recorded at baseline
 time); an edited module is measured by quick runs alone until the next baseline.
@@ -220,8 +224,10 @@ def eco_home_version():
     return vs[-1] if vs else "0.2.0"
 
 
-def compile_e2e_files(guida, files, tag):
-    """Compiles each E2E test file with the instrumented guida.js (no JIT run): coverage only."""
+def compile_e2e_files(guida, files, tag, js=False):
+    """Compiles each E2E test file with the instrumented guida.js (no JIT run): coverage only. With
+    js, to JavaScript (the JS backend, as run-js-e2e.js does). A `-- COMPILE-ERROR:` test is
+    expected to fail to compile."""
     ok = True
     for f in files:
         f = os.path.abspath(f)
@@ -231,17 +237,25 @@ def compile_e2e_files(guida, files, tag):
         suite_dir = f"{BUILD}/test/{m.group(1)}"
         if not os.path.exists(os.path.join(suite_dir, "elm.json")):
             sys.exit(f"{suite_dir}/elm.json missing: build the test target once first")
-        out = f"{QUICK}/{tag}-mlir/{os.path.basename(f)[:-4]}.mlir"
+        out = f"{QUICK}/{tag}-{'js' if js else 'mlir'}/{os.path.basename(f)[:-4]}.{'js' if js else 'mlir'}"
         os.makedirs(os.path.dirname(out), exist_ok=True)
         builddir = f"covq-{tag}"
+        with open(f) as src:
+            text_mlir = " --text-mlir" if not js and re.search(r"^-- TEXT-MLIR:", src.read(), re.M) else ""
         r = subprocess.run(f'ulimit -s unlimited 2>/dev/null; node --stack-size=50000 {COMPILER}/bin/index.js '
-                           f'make "{f}" --output="{out}" --builddir={builddir}',
+                           f'make "{f}" --output="{out}" --builddir={builddir}{text_mlir}',
                            shell=True, cwd=suite_dir, env=dict(os.environ, GUIDA_JS_PATH=guida),
                            capture_output=True, text=True)
-        status = "ok" if r.returncode == 0 and os.path.exists(out) else "FAILED"
-        ok = ok and status == "ok"
-        print(f"  E2E compile {os.path.basename(f)}: {status}")
-        if status != "ok":
+        with open(f) as src:
+            expect_error = re.search(r"^-- COMPILE-ERROR:", src.read(), re.M) is not None
+        compiled = r.returncode == 0 and os.path.exists(out)
+        if expect_error:
+            status = "FAILED (compiled, but COMPILE-ERROR expected)" if compiled else "ok (rejected)"
+        else:
+            status = "ok" if compiled else "FAILED"
+        ok = ok and status.startswith("ok")
+        print(f"  E2E compile{' (js)' if js else ''} {os.path.basename(f)}: {status}")
+        if not status.startswith("ok"):
             print((r.stdout + r.stderr)[-3000:])
         shutil.rmtree(os.path.join(suite_dir, "eco-stuff", eco_home_version(), builddir), ignore_errors=True)
     return ok
@@ -299,14 +313,32 @@ def cmd_baseline(a):
     log = "/tmp/test_output.txt"
     r = run(f"ulimit -c 0; {BUILD}/test/test 2>&1 | tee {log} | tail -8", shell=True,
             env=dict(os.environ, GUIDA_JS_PATH=guida))
-    e2 = merge_data_files(glob.glob(f"{BASE}/baseline-e2e-data/data-*.json"))
     with open(log, errors="replace") as f:
         tail = f.read()[-2000:]
     m = re.search(r"Tests run:\s*(\d+).*?Tests passed:\s*(\d+).*?Tests failed:\s*(\d+)", tail, re.S)
+    js_summary = run_js_e2e_under_coverage(guida)
+    e2 = merge_data_files(glob.glob(f"{BASE}/baseline-e2e-data/data-*.json"))
     meta = {"elm_test": summ["lines"], "elm_test_failures": summ["failures"],
-            "e2e": m.groups() if m else "unknown", "minutes": round((time.time() - t0) / 60, 1)}
+            "e2e": m.groups() if m else "unknown", "e2e_js": js_summary,
+            "minutes": round((time.time() - t0) / 60, 1)}
     write_baseline(root, info, et, e2, meta)
     shutil.rmtree(aside, ignore_errors=True)
+
+
+def run_js_e2e_under_coverage(guida):
+    """The JS-target E2E suite (test/scripts/run-js-e2e.js, the only E2E path through the JS
+    backend) compiled by the instrumented guida.js, in a build directory of its own so that every
+    test is recompiled and the normal JS E2E outputs are left alone. Returns its summary line."""
+    work = f"{BASE}/js-e2e-build"
+    shutil.rmtree(work, ignore_errors=True)
+    os.makedirs(work)
+    log = f"{BASELINE}/js-e2e.log"
+    run(f"node {WORK}/test/scripts/run-js-e2e.js --build-dir {work} --repo-root {WORK} > {log} 2>&1",
+        shell=True, env=dict(os.environ, GUIDA_JS_PATH=guida))
+    with open(log, errors="replace") as f:
+        lines = [l.strip() for l in f if l.startswith("Tests run:")]
+    print("JS E2E under coverage: " + (lines[-1] if lines else f"no summary, see {log}"))
+    return lines[-1] if lines else "unknown"
 
 
 def write_baseline(root, info, et, e2, meta):
@@ -346,11 +378,14 @@ def cmd_quick(a):
                 hashes[mod] = sha1_file(path)
     data, info, summ = run_elm_coverage(root, a.filter, a.workers, f"{QUICK}/{tag}.log")
     e2_data = {}
-    if a.e2e:
+    if a.e2e or a.e2e_js:
         ddir = f"{QUICK}/{tag}-e2edata"
         shutil.rmtree(ddir, ignore_errors=True)
         guida = build_instrumented_guida(root, f"{QUICK}/{tag}-guida", ddir)
-        compile_e2e_files(guida, a.e2e, tag)
+        if a.e2e:
+            compile_e2e_files(guida, a.e2e, tag)
+        if a.e2e_js:
+            compile_e2e_files(guida, a.e2e_js, tag, js=True)
         e2_data = merge_data_files(glob.glob(f"{ddir}/data-*.json"))
     hashes = {mod: hashes.get(mod) for mod in info}
     out = f"{QUICK}/{tag}.json"
@@ -620,8 +655,9 @@ def is_crash(text, helpers, imports, mod):
     return any((m2, name) in helpers for m2 in exposed.get("..", []))
 
 
-def collect(root, quick_paths):
-    """Merged counts per (module, index): {module: [et_count, e2_count] per annotation}."""
+def collect(root, quick_paths, quick_elm_test=True):
+    """Merged counts per (module, index): {module: [et_count, e2_count] per annotation}. With
+    quick_elm_test=False a quick file adds only its E2E counts."""
     info = load_json(f"{BASELINE}/info.json")
     hashes = load_json(f"{BASELINE}/hashes.json")
     base_et = load_json(f"{BASELINE}/elm-test.json")
@@ -659,7 +695,7 @@ def collect(root, quick_paths):
         for q in quicks:
             if q["hashes"].get(mod) != h or len(q["info"].get(mod, [])) != len(anns):
                 continue
-            for i, c in q["elm_test"].get(mod, {}).items():
+            for i, c in (q["elm_test"] if quick_elm_test else {}).get(mod, {}).items():
                 et[int(i)] += c
             for i, c in q["e2e"].get(mod, {}).items():
                 e2[int(i)] += c
@@ -854,6 +890,94 @@ def cmd_report(a):
 
 
 # ---------------------------------------------------------------------------------------------
+# gap: what elm-test reaches and E2E does not
+# ---------------------------------------------------------------------------------------------
+
+def gap_stats(root, quick_paths, scope_only):
+    """Per module: rows of module_stats with the E2E side (baseline + quick E2E counts) compared
+    with the elm-test side (baseline only). Excluded rows (crash, flag, unreachable) do not count:
+    elm-test reaches flag code on purpose, which E2E at the default flags cannot."""
+    data, stale = collect(root, quick_paths, quick_elm_test=False)
+    excl_whole, excl_lines = load_exclusions(root)
+    helpers = crash_helpers(root, {m: data[m][0] for m in data})
+    out = {}
+    for m in sorted(data):
+        if scope_only and not in_scope(m):
+            continue
+        if not os.path.exists(module_path(root, m)):
+            continue
+        rows, _ = module_stats(root, m, *data[m], excl_whole, excl_lines, helpers)
+        rows = [r for r in rows if not r["excluded"]]
+        st = {}
+        for kind, pred in (("branches", lambda r: r["type"] in BRANCH_TYPES),
+                           ("decls", lambda r: r["type"] == "declaration"),
+                           ("all", lambda r: True)):
+            sel = [r for r in rows if pred(r)]
+            st[kind] = (len(sel), sum(1 for r in sel if r["et"]), sum(1 for r in sel if r["e2"]),
+                        sum(1 for r in sel if r["et"] and not r["e2"]))
+        out[m] = {"st": st, "rows": rows}
+    return out, stale
+
+
+def cmd_gap(a):
+    quick = list(a.quick or [])
+    if a.all_quick:
+        quick += sorted(glob.glob(f"{QUICK}/*.json"))
+    stats, stale = gap_stats(os.path.abspath(a.root), quick, a.scope)
+    kind = a.kind
+    if a.module:
+        s = stats.get(a.module) or sys.exit(f"{a.module}: unknown module")
+        n, et, e2, g = s["st"][kind]
+        print(f"{a.module}: {kind} {n}, elm-test {et}, E2E {e2}, reached by elm-test only {g}")
+        decls = [r for r in s["rows"] if r["type"] == "declaration"]
+        cur = None
+        for r in sorted(s["rows"], key=lambda r: (r["line"], r["col"])):
+            if not (r["et"] and not r["e2"]):
+                continue
+            if kind == "branches" and r["type"] not in BRANCH_TYPES:
+                continue
+            if kind == "decls" and r["type"] != "declaration":
+                continue
+            o = max((d for d in decls if d["line"] <= r["line"]), key=lambda d: d["line"], default=None)
+            o = o["name"] if o else "?"
+            if o != cur:
+                print(f"\n  {o}")
+                cur = o
+            print(f"    {r['line']:5}:{r['col']:<3} et={r['et']:<7} {r['type']:15} {r['text'][:100]}")
+        return
+    groups = {}
+    for m, s in stats.items():
+        if a.folder and folder_of(m) != a.folder:
+            continue
+        groups.setdefault(m if a.folder else folder_of(m), []).append(s["st"][kind])
+    rows = []
+    tot = [0, 0, 0, 0]
+    for g, sts in groups.items():
+        t = [sum(x[k] for x in sts) for k in range(4)]
+        rows.append((g, t))
+        tot = [tot[k] + t[k] for k in range(4)]
+    rows.sort(key=lambda r: -r[1][3])
+    print(f"{kind} ({'in-scope modules' if a.scope else 'all modules'}; exclusions and crash code left out)")
+    print(f"{'module' if a.folder else 'folder':52} {'total':>6} {'elm-test':>15} {'E2E':>15} {'elm-test only':>14}")
+    for g, (n, et, e2, gp) in rows + [("TOTAL", tot)]:
+        if g != "TOTAL" and not gp and not a.all:
+            continue
+        print(f"{g:52} {n:6} {et:6} {pct(et, n)} {e2:6} {pct(e2, n)} {gp:8} {pct(gp, n)}")
+    if stale:
+        print(f"\nNOTE: {len(stale)} in-scope modules changed since the baseline; only quick counts measure them: "
+              f"{', '.join(stale[:8])}{' ...' if len(stale) > 8 else ''}")
+
+
+def cmd_html(a):
+    """elm-coverage's HTML report for each suite of the baseline, in build/coverage/html/<suite>."""
+    for suite, counts in (("elm-test", "elm-test.json"), ("e2e", "e2e.json")):
+        out = f"{BASE}/html/{suite}"
+        shutil.rmtree(out, ignore_errors=True)
+        run(["node", f"{COMPILER}/scripts/coverage/html-report.js", f"{BASELINE}/info.json",
+             f"{BASELINE}/{counts}", f"{COMPILER}/src", out], check=True)
+
+
+# ---------------------------------------------------------------------------------------------
 # workspace: a private compiler directory for one agent of the loop
 # ---------------------------------------------------------------------------------------------
 
@@ -925,6 +1049,7 @@ def main():
     s.add_argument("--workers", type=int, default=8)
     s.add_argument("--tag", help="name of the quick file (default: the root's directory name)")
     s.add_argument("--e2e", nargs="*", help="E2E test files (/work/test/<suite>/src/X.elm) to compile under coverage")
+    s.add_argument("--e2e-js", nargs="*", help="E2E test files to compile to JavaScript under coverage (the JS backend)")
     s.add_argument("--report", action="store_true", help="print the merged report afterwards")
     s.add_argument("--module")
     s.add_argument("--folder")
@@ -951,6 +1076,18 @@ def main():
     s.add_argument("--all", action="store_true", help="with --module, list every annotation, hit or not")
     s.add_argument("--write-tracker", action="store_true")
     s.set_defaults(fn=cmd_report)
+    s = sub.add_parser("gap", help="what elm-test reaches that E2E does not (baseline + quick E2E counts)")
+    s.add_argument("--root", default=COMPILER)
+    s.add_argument("--quick", nargs="*", help="quick files whose E2E counts to merge in")
+    s.add_argument("--all-quick", action="store_true", help="merge the E2E counts of every quick file")
+    s.add_argument("--scope", action="store_true", help="only the loop's in-scope modules (default: all of src/)")
+    s.add_argument("--kind", choices=["branches", "decls", "all"], default="branches")
+    s.add_argument("--folder", help="list the modules of this folder (e.g. Compiler.MonoOpt)")
+    s.add_argument("--module", help="list this module's annotations reached by elm-test only")
+    s.add_argument("--all", action="store_true", help="also list folders/modules with no gap")
+    s.set_defaults(fn=cmd_gap)
+    s = sub.add_parser("html", help="elm-coverage HTML reports of the baseline, one per suite")
+    s.set_defaults(fn=cmd_html)
     a = p.parse_args()
     a.fn(a)
 

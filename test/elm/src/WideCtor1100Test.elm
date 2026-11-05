@@ -3,6 +3,7 @@ module WideCtor1100Test exposing (main)
 {-| 1100-field mixed constructor: large object.
 -}
 
+-- TEXT-MLIR: also keeps the MLIR text printer (Mlir.Pretty) covered and checked end to end
 -- CHECK: field0: 1000
 -- CHECK: field23: "23s"
 -- CHECK: field24: True

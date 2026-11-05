@@ -14,6 +14,7 @@ module ContainerCompareFloatTest exposing (main)
         Elm. NaN-in-container behavior is pinned by EqualityFloatContainerTest.
 -}
 
+-- TEXT-MLIR: also keeps the MLIR text printer (Mlir.Pretty) covered and checked end to end
 -- CHECK: pairLt: LT
 -- CHECK: pairGt: GT
 -- CHECK: pairEq: EQ

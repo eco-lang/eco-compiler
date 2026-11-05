@@ -1,6 +1,6 @@
 ---
 status: partial
-updated: 2026-11-04
+updated: 2026-11-05
 remaining: "9 tracker modules still open (2026-11-04 re-baseline: in-scope branches 95.1%): Monomorphize.Solver LssInfer/Monomorphize/Store/Translate, MonoOpt.AbiCloning, GenerateMlir Expr/Patterns/Ops/BytesFusion.Reify. The rest are branches no round could reach or prove dead (reasons in tracker notes). Done when every row of compiler/coverage/tracker.csv is done, unreachable or flag-gated."
 ---
 
@@ -113,6 +113,38 @@ How it works:
   `build/test/*/eco-stuff` aside so that every E2E program is recompiled, and runs `build/test/test`
   with `GUIDA_JS_PATH` set. Package caches in `~/.eco` are kept: package modules are not recompiled.
 
+## E2E against elm-test (2026-11-05)
+
+A second measure compares the suites instead of combining them: what elm-test reaches that E2E
+(JIT and JS target) does not, over all of `compiler/src`, so that the E2E programs alone exercise
+the compiler as far as the unit tests do (and can serve as a compiler-independent Elm test suite).
+
+```bash
+python3 $C gap [--scope] [--kind branches|decls|all] [--folder F | --module M] --all-quick
+python3 $C html                        # build/coverage/html/{elm-test,e2e}/.coverage/coverage.html
+```
+
+`gap` uses the baseline's elm-test counts and the E2E counts of the baseline plus quick `--e2e` /
+`--e2e-js` files. The baseline's E2E side now includes the JS-target suite (`run-js-e2e.js`).
+
+E2E directives added for it (`test/CheckPatterns.hpp`):
+- `-- COMPILE-ERROR: <what>`: the program must be rejected; CHECK lines match the error report.
+  Suite `test/elm-compile-errors/` (type, canonicalization, pattern, main, parse and
+  monomorphization errors, mined from the SourceIR rejection catalogue and report tests).
+- `-- TEXT-MLIR: <why>`: compiled with `--text-mlir`, which keeps `Mlir.Pretty` covered.
+- `-- SKIP-ELM: <reason>`: skipped by `test/scripts/run-elm-e2e.js`, the runner that compiles the
+  plain-Elm suites with stock Elm 0.19.x; for deliberate eco differences and Elm 0.19.1 bugs.
+
+Programs mined from elm-test (SourceIR catalogue and unit-test pipelines, printed with
+`Common.Format`) were kept only when they reached code E2E did not; their CHECK lines are Elm
+0.19.1's output for them, so they hold on both compilers.
+
+Result: branches, elm-test 60.2%, E2E 58.9% -> 66.5% (elm-test-only branches 2,282 -> 996);
+declarations, elm-test 65.4%, E2E 82.4%. What is left is mostly code that only programs calling
+`Elm.Kernel.*` directly reach (kernel ABI instance names, PostSolve kernel typing, bytes-fusion
+kernel reads/writes), which user code cannot write, plus test-only helpers (debug printers,
+census and validation).
+
 ## Where new tests go
 
 A new test reaches the coverage measure in one of three ways; pick the cheapest that reaches the
@@ -198,5 +230,6 @@ often cover later ones too.
 | 2026-11-04 | Fixed lost counts (elm-test-rs terminates workers before their timer flush; fake-elm now flushes before each result message); elm-test baseline re-run, 15,571 pass | baseline alone 8,524 / 10,457 (81.5%) |
 | 2026-11-04 | Bug-fix phase: F1-F13 found by the loop all fixed (PostSolve kernel types, aliased lambda types, port unit encoder, number destructuring, polymorphic recursion overflow + prompt error, shader Err, accessor placeholders in tail calls, tail-loop mutual recursion SSA, join staging, papExtend stage peeling, bytes-fusion andThen); each validated by full elm-test + full JIT E2E | — |
 | 2026-11-04 | Full re-baseline after the fixes (elm-test 16,236 pass, E2E 2,590 pass); post-F8 accessor-placeholder arms excluded; tracker 46 done, 14 unreachable, 26 flag-gated, 26 open | 8,769 / 9,671 (90.7%) |
+| 2026-11-05 | E2E-vs-elm-test gap: 221 compile-error tests (`test/elm-compile-errors/`), 107 mined run tests, 5 TEXT-MLIR tests; JS E2E counted in the baseline; F16, F17 found | (whole compiler) E2E 66.5% of branches, elm-test 60.2% |
 | 2026-11-04 | GenerateMlir part A/B rounds merged (type, backend agents), 17 disproven post-F8 exclusions removed, dead code deleted (Mlir.Pretty symbol walk, InlineSimplify inlineVar family); full re-baseline (elm-test 16,745 pass, E2E 2,590 pass); tracker 57 done, 15 unreachable, 26 flag-gated, 14 open | 8,937 / 9,491 (94.2%) |
 | 2026-11-04 | Round 4 (solver guards; codegen via real-package E2E tests CovBackend*Test): +~30 branches, 69 proven exclusions; F14 (duplicate SpecIds for one key, fixed by Solver.Monomorphize.mergeConvergedSpecs) and F15 (OperandTypeConsistency checker ignored region scoping; codegen was right) fixed; full re-baseline (elm-test 16,850 pass, E2E 2,594 pass); tracker 62 done, 15 unreachable, 26 flag-gated, 9 open | 8,963 / 9,428 (95.1%) |

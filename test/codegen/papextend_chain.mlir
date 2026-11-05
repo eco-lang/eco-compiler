@@ -71,17 +71,17 @@ module {
     // Chain: pap0(2) -> pap1
     %pap1 = "eco.papExtend"(%pap0, %b2) {slot_kinds = array<i8: 0>, remaining_arity = 4 : i64} : (!eco.value, !eco.value) -> !eco.value
     eco.dbg %pap1 : !eco.value
-    // CHECK: <fn>
+    // CHECK: <function>
 
     // Chain: pap1(3) -> pap2
     %pap2 = "eco.papExtend"(%pap1, %b3) {slot_kinds = array<i8: 0>, remaining_arity = 3 : i64} : (!eco.value, !eco.value) -> !eco.value
     eco.dbg %pap2 : !eco.value
-    // CHECK: <fn>
+    // CHECK: <function>
 
     // Chain: pap2(4) -> pap3
     %pap3 = "eco.papExtend"(%pap2, %b4) {slot_kinds = array<i8: 0>, remaining_arity = 2 : i64} : (!eco.value, !eco.value) -> !eco.value
     eco.dbg %pap3 : !eco.value
-    // CHECK: <fn>
+    // CHECK: <function>
 
     // Final: pap3(5) -> result (saturates and calls)
     // Result = 2*3 + 4*5 = 6 + 20 = 26

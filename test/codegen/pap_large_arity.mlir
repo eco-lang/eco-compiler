@@ -98,21 +98,21 @@ module {
     } : (!eco.value, !eco.value, !eco.value) -> !eco.value
 
     eco.dbg %pap3 : !eco.value
-    // CHECK: <fn>
+    // CHECK: <function>
 
     // Extend with arg 4
     %pap4 = "eco.papExtend"(%pap3, %b4) {slot_kinds = array<i8: 0>, remaining_arity = 3 : i64
     } : (!eco.value, !eco.value) -> !eco.value
 
     eco.dbg %pap4 : !eco.value
-    // CHECK: <fn>
+    // CHECK: <function>
 
     // Extend with arg 5
     %pap5 = "eco.papExtend"(%pap4, %b5) {slot_kinds = array<i8: 0>, remaining_arity = 2 : i64
     } : (!eco.value, !eco.value) -> !eco.value
 
     eco.dbg %pap5 : !eco.value
-    // CHECK: <fn>
+    // CHECK: <function>
 
     // Extend with arg 6 - saturates: 1+2+3+4+5+6 = 21
     %result = "eco.papExtend"(%pap5, %b6) {slot_kinds = array<i8: 0>, remaining_arity = 1 : i64

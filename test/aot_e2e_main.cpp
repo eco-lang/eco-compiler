@@ -225,6 +225,8 @@ std::vector<TestCase> discover_all() {
                 std::ifstream in(p);
                 std::string src((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
                 if (auto why = eco_test::hostSkipReason(src)) tc.skip_reason = *why;
+                // A compile-error test is a check of the front end, which the JIT suite runs.
+                if (eco_test::compileErrorDirective(src)) tc.skip_reason = "COMPILE-ERROR: JIT suite only";
                 tc.xfail_reason = eco_test::xfailNativeReason(src);
             }
             cases.push_back(std::move(tc));

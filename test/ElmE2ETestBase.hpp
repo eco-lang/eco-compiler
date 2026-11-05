@@ -514,11 +514,14 @@ inline CompileResult compileElmToMlir(const std::string& testDir, const std::str
     }
 
     std::string guidaPath = getGuidaPath();
+    // `-- TEXT-MLIR:` (CheckPatterns.hpp): this test is compiled to MLIR text whatever ECO_TEXT_MLIR says.
+    std::string textMlirFlag = getTextMlirFlag();
+    if (textMlirFlag.empty() && eco_test::textMlirDirective(readFile(elmPath))) textMlirFlag = " --text-mlir";
 
     // Big stack (NodeBigStack.hpp): the Stage-1 JS compiler recurses deeply on very wide
     // programs and otherwise overflows, writing a truncated .mlir while still exiting 0.
     std::string compileCmd = "cd \"" + testDir + "\" && sh -c '" + kNodeBigStackScript + "' sh \"" + guidaPath +
-                             "\" make \"" + elmPath + "\" --output=\"" + result.mlirPath + "\"" + getTextMlirFlag();
+                             "\" make \"" + elmPath + "\" --output=\"" + result.mlirPath + "\"" + textMlirFlag;
     if (!buildDir.empty()) {
         compileCmd += " --builddir=\"" + buildDir + "\"";
     }
@@ -550,6 +553,61 @@ inline CompileResult compileElmToMlir(const std::string& testDir, const std::str
 
     result.success = true;
     return result;
+}
+
+// A `-- COMPILE-ERROR:` test (CheckPatterns.hpp): compile it, expecting the compiler to reject
+// it, and match its CHECK lines against the compiler's output (order-insensitive, as the other
+// fixtures and the JS runners; CHECK-NEXT pins adjacent lines). Returns the failure
+// message, empty on a pass. Nothing is cached: the compile is the test.
+inline std::string runCompileErrorTest(const std::string& testDir, const std::string& elmPath,
+                                       const std::string& buildDir, const std::string& extraFlags) {
+    std::vector<CheckPattern> patterns;
+    try {
+        patterns = extractCheckPatterns(readFile(elmPath));
+    } catch (const std::exception& e) {
+        return std::string("bad test directive: ") + e.what();
+    }
+    if (patterns.empty()) {
+        return "a COMPILE-ERROR test needs CHECK lines describing the error report";
+    }
+    const std::string out = testDir + "/eco-stuff/mlir/" + buildDir + ".compile-error.mlir";
+    std::string cmd = "cd \"" + testDir + "\" && sh -c '" + kNodeBigStackScript + "' sh \"" + getGuidaPath() +
+                      "\" make \"" + elmPath + "\" --output=\"" + out + "\" --builddir=\"" + buildDir + "\"" + extraFlags;
+    auto [exitCode, output] = executeCommand(cmd);
+    const bool produced = std::filesystem::exists(out);
+    std::filesystem::remove(out);
+    if (exitCode == 0 || produced) {
+        return "compiled, but a compile error was expected\nOutput:\n" + output.substr(0, 2000);
+    }
+    std::string err = verifyE2EPatterns(output, patterns);
+    if (!err.empty()) {
+        err += "\nCompiler output (exit code " + std::to_string(exitCode) + "):\n" + output.substr(0, 4000);
+    }
+    return err;
+}
+
+// Runs the given COMPILE-ERROR tests: the first alone (it may fill the package caches), the rest
+// getMaxParallelCompilations() at a time. Returns one failure message per test, empty on a pass.
+inline std::vector<std::string> runCompileErrorTests(const std::string& testDir,
+                                                     const std::vector<std::string>& elmPaths,
+                                                     const std::string& extraFlags) {
+    std::vector<std::string> errors(elmPaths.size());
+    if (elmPaths.empty()) return errors;
+    ensureMlirDirExists(testDir);
+    auto stem = [](const std::string& p) { return std::filesystem::path(p).stem().string(); };
+    errors[0] = runCompileErrorTest(testDir, elmPaths[0], stem(elmPaths[0]), extraFlags);
+    for (size_t start = 1; start < elmPaths.size(); start += getMaxParallelCompilations()) {
+        const size_t end = std::min(elmPaths.size(), start + getMaxParallelCompilations());
+        std::vector<std::future<std::string>> batch;
+        for (size_t i = start; i < end; i++) {
+            const std::string elmPath = elmPaths[i];
+            batch.push_back(std::async(std::launch::async, [testDir, elmPath, extraFlags, stem]() {
+                return runCompileErrorTest(testDir, elmPath, stem(elmPath), extraFlags);
+            }));
+        }
+        for (size_t i = start; i < end; i++) errors[i] = batch[i - start].get();
+    }
+    return errors;
 }
 
 inline std::vector<CompileResult> compileAllElmTests(const std::string& testDir,
@@ -1300,12 +1358,16 @@ inline IsolatedTestRunner::ParallelTestSummary runMlirTestsParallel(
 // A runnable test file declares a top-level `main`. Library/helper modules
 // imported by tests (e.g. stress-elm/Gen.elm, stress-elm/Xorshift32.elm) have
 // no `main` and must be skipped — otherwise the Elm compiler's "NO MAIN" error
-// surfaces as a spurious test failure.
+// surfaces as a spurious test failure. A `-- COMPILE-ERROR:` test is a test
+// with or without one.
 inline bool hasTopLevelMain(const std::filesystem::path& elmFile) {
     std::ifstream f(elmFile);
     if (!f) return false;
     std::string line;
     while (std::getline(f, line)) {
+        if (line.rfind("-- COMPILE-ERROR:", 0) == 0) {
+            return true;
+        }
         if (line.size() >= 4 && line.compare(0, 4, "main") == 0) {
             char next = line[4];
             if (next == ' ' || next == '\t' || next == ':' || next == '=') {
@@ -1436,6 +1498,34 @@ public:
         lastFailCount_ = 0;
         lastFailedTests_.clear();
 
+        // PHASE 0: `-- COMPILE-ERROR:` tests, which only compile (and must fail to).
+        {
+            std::vector<std::string> errorPaths, errorNames, runPaths, runNames;
+            for (size_t i = 0; i < pathsToRun.size(); i++) {
+                const bool isError = eco_test::compileErrorDirective(readFile(pathsToRun[i])).has_value();
+                (isError ? errorPaths : runPaths).push_back(pathsToRun[i]);
+                (isError ? errorNames : runNames).push_back(namesToRun[i]);
+            }
+            if (!errorPaths.empty()) {
+                std::cout << "Compiling " << errorPaths.size() << " " << name_
+                          << " COMPILE-ERROR tests (each must be rejected)..." << std::endl;
+                auto errors = runCompileErrorTests(testDir_, errorPaths, extraCompileFlags_);
+                for (size_t i = 0; i < errorPaths.size(); i++) {
+                    IsolatedTestRunner::printTestResult(errorNames[i], "", errors[i].empty(), errors[i]);
+                    if (errors[i].empty()) {
+                        lastPassCount_++;
+                    } else {
+                        lastFailCount_++;
+                        lastFailedTests_.push_back(errorNames[i]);
+                    }
+                }
+            }
+            pathsToRun = std::move(runPaths);
+            namesToRun = std::move(runNames);
+        }
+        const size_t compileErrorPassed = lastPassCount_;
+        const size_t compileErrorFailed = lastFailCount_;
+
         // PHASE 1: Compile all Elm files to MLIR
         auto compileResults = compileAllElmTests(testDir_, name_, pathsToRun, extraCompileFlags_);
 
@@ -1479,8 +1569,8 @@ public:
             std::cout << "\n" << summary.xfailCount << " of " << summary.passCount
                       << " passing tests are expected failures (XFAIL-NATIVE)\n";
         }
-        lastPassCount_ = summary.passCount;
-        lastFailCount_ = summary.failCount + compileFailed;
+        lastPassCount_ = compileErrorPassed + summary.passCount;
+        lastFailCount_ = compileErrorFailed + summary.failCount + compileFailed;
         lastFailedTests_.insert(lastFailedTests_.end(),
             summary.failedTests.begin(), summary.failedTests.end());
 

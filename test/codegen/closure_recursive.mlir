@@ -51,7 +51,7 @@ module {
     // Load it back from global
     %loaded_closure = eco.load_global @my_closure
     eco.dbg %loaded_closure : !eco.value
-    // CHECK: <fn>
+    // CHECK: <function>
 
     // Use the loaded closure: add(10, 20) = 30
     %i10 = arith.constant 10 : i64

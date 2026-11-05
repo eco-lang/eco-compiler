@@ -2169,7 +2169,7 @@ module {
 }
 
 // sum21 with p_i = i: sum i*(i+1), i = 0..20 = 3080
-// CHECK: <fn>
+// CHECK: <function>
 // CHECK: 3080
 // first2047 returns p0 = 5
 // CHECK: [eco.dbg] 5

@@ -73,9 +73,9 @@ module {
     } : (!eco.value, !eco.value) -> !eco.value
 
     eco.dbg %f1 : !eco.value
-    // CHECK: <fn>
+    // CHECK: <function>
     eco.dbg %f2 : !eco.value
-    // CHECK: <fn>
+    // CHECK: <function>
 
     // Apply f1(5) = 2*5 + 3 = 13
     %r1 = "eco.papExtend"(%f1, %b5) {slot_kinds = array<i8: 0>, remaining_arity = 1 : i64

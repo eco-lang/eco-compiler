@@ -39,7 +39,7 @@ module {
     } : () -> !eco.value
 
     eco.dbg %closure : !eco.value
-    // CHECK: <fn>
+    // CHECK: <function>
 
     // Call indirectly with a single argument: 21 * 2 = 42
     %c21 = arith.constant 21 : i64

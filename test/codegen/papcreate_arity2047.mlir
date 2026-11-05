@@ -8220,5 +8220,5 @@ module {
   }
 }
 
-// CHECK: <fn>
+// CHECK: <function>
 // CHECK: 2859118592

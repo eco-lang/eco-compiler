@@ -101,6 +101,7 @@
 #include "eco-system/EcoSystemTest.hpp"
 #include "elm-core/ElmCoreTest.hpp"
 #include "elm-conformance/ElmConformanceTest.hpp"
+#include "elm-compile-errors/ElmCompileErrorsTest.hpp"
 #include "elm-json/ElmJsonTest.hpp"
 #include "elm-parser/ElmParserTest.hpp"
 #include "elm-regex/ElmRegexTest.hpp"
@@ -1392,6 +1393,7 @@ int main(int argc, char* argv[]) {
     // Elm package E2E tests
     auto elmCoreTests = ElmCoreTest::buildElmCoreTestSuite();
     auto elmConformanceTests = ElmConformanceTest::buildElmConformanceTestSuite();
+    auto elmCompileErrorsTests = ElmCompileErrorsTest::buildElmCompileErrorsTestSuite();
     auto elmJsonTests = ElmJsonTest::buildElmJsonTestSuite();
     auto elmParserTests = ElmParserTest::buildElmParserTestSuite();
     auto elmRegexTests = ElmRegexTest::buildElmRegexTestSuite();
@@ -1448,6 +1450,7 @@ int main(int argc, char* argv[]) {
     suite.add(std::move(ecoSystemTests));
     suite.add(std::move(elmCoreTests));
     suite.add(std::move(elmConformanceTests));
+    suite.add(std::move(elmCompileErrorsTests));
     suite.add(std::move(elmJsonTests));
     suite.add(std::move(elmParserTests));
     suite.add(std::move(elmRegexTests));

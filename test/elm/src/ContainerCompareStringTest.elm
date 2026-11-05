@@ -8,6 +8,7 @@ module ContainerCompareStringTest exposing (main)
     uppercase ASCII letters sort before lowercase.
 -}
 
+-- TEXT-MLIR: also keeps the MLIR text printer (Mlir.Pretty) covered and checked end to end
 -- CHECK: pairLt: LT
 -- CHECK: pairGt: GT
 -- CHECK: pairEq: EQ

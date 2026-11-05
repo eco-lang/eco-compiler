@@ -63,7 +63,7 @@ module {
     } : () -> !eco.value
 
     eco.dbg %pap0 : !eco.value
-    // CHECK: <fn>
+    // CHECK: <function>
 
     // Saturate with all 3 arguments at once: 10 + 20 + 30 = 60
     %result = "eco.papExtend"(%pap0, %b10, %b20, %b30) {slot_kinds = array<i8: 0, 0, 0>, remaining_arity = 3 : i64

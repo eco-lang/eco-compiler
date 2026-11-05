@@ -27,7 +27,7 @@ module {
       slot_kinds = array<i8: 1, 1>
     } : (i64, i64) -> !eco.value
     eco.dbg %pap : !eco.value
-    // CHECK: <fn>
+    // CHECK: <function>
 
     // Call with remaining arg (unboxed i64, same as function parameter type)
     %i5 = arith.constant 5 : i64

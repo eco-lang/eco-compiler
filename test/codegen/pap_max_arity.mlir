@@ -117,7 +117,7 @@ module {
     } : (!eco.value, !eco.value, !eco.value, !eco.value) -> !eco.value
 
     eco.dbg %pap4 : !eco.value
-    // CHECK: <fn>
+    // CHECK: <function>
 
     // Extend with remaining 4 to saturate: 1+2+3+4+5+6+7+8 = 36
     %result = "eco.papExtend"(%pap4, %b5, %b6, %b7, %b8) {slot_kinds = array<i8: 0, 0, 0, 0>, remaining_arity = 4 : i64

@@ -82,7 +82,7 @@ module {
       num_captured = 1 : i64
     } : (!eco.value) -> !eco.value
     eco.dbg %pap1 : !eco.value
-    // CHECK: <fn>
+    // CHECK: <function>
 
     // Saturate with one more argument: 5 + 7 = 12
     %result1 = "eco.papExtend"(%pap1, %b7) {slot_kinds = array<i8: 0>, remaining_arity = 1 : i64
@@ -96,7 +96,7 @@ module {
       num_captured = 2 : i64
     } : (!eco.value, !eco.value) -> !eco.value
     eco.dbg %pap2 : !eco.value
-    // CHECK: <fn>
+    // CHECK: <function>
 
     // Saturate with one more argument: 5 + 7 + 3 = 15
     %result2 = "eco.papExtend"(%pap2, %b3) {slot_kinds = array<i8: 0>, remaining_arity = 1 : i64

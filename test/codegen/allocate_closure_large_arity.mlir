@@ -44,7 +44,7 @@ module {
     } : () -> !eco.value
 
     eco.dbg %closure : !eco.value
-    // CHECK: <fn>
+    // CHECK: <function>
 
     // Create arguments
     %c1 = arith.constant 1 : i64

@@ -17,6 +17,7 @@ fallback, `jdIndex` DEC\_INDEX (returns the INNER decoder's Result directly),
 
 -}
 
+-- TEXT-MLIR: also keeps the MLIR text printer (Mlir.Pretty) covered and checked end to end
 -- CHECK: jdInt: 7
 -- CHECK: jdFloat: 25
 -- CHECK: jdSucceed: 42

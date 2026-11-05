@@ -2,7 +2,7 @@
 //
 // PAP creation and partial extension at a larger arity than the other small
 // PAP fixtures: papCreate of an arity-10 llvm.func evaluator, then a 3-arg
-// papExtend that leaves 7 remaining; both print as <fn>.
+// papExtend that leaves 7 remaining; both print as <function>.
 //
 // The name is historical: the packed PAP header's old 6-bit n_values /
 // max_values fields capped arity at 63, which the file once meant to probe.
@@ -70,14 +70,14 @@ module {
     } : () -> !eco.value
 
     eco.dbg %pap : !eco.value
-    // CHECK: <fn>
+    // CHECK: <function>
 
     // Extend with 3 args (still partial, 7 remaining)
     %pap2 = "eco.papExtend"(%pap, %b1, %b2, %b3) {slot_kinds = array<i8: 0, 0, 0>, remaining_arity = 10 : i64
     } : (!eco.value, !eco.value, !eco.value, !eco.value) -> !eco.value
 
     eco.dbg %pap2 : !eco.value
-    // CHECK: <fn>
+    // CHECK: <function>
 
     %zero = arith.constant 0 : i64
     return %zero : i64

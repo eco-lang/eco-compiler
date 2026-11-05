@@ -3345,7 +3345,8 @@ static void print_value(uint64_t val, int depth) {
         }
 
         case Tag_Closure: {
-            output_text("<fn>");
+            // As Elm's Debug.toString, and the typed printer below.
+            output_text("<function>");
             break;
         }
 
