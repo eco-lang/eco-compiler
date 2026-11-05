@@ -2503,6 +2503,10 @@ corrupt cache in `eco-stuff/`.
 resolve to no module or to several, as an `Import.Problem` each. Only the first
 is reported; an `AmbiguousForeign` problem is reported as a missing module.
 
+`BP_RootNameAmbiguous` carries the module name of a file given on the command
+line, that file, and a direct dependency that exposes a module of the same
+name, so that no import of that name could tell the two apart.
+
 -}
 type BuildProjectProblem
     = BP_PathUnknown FilePath
@@ -2514,6 +2518,7 @@ type BuildProjectProblem
     | BP_CannotLoadDependencies
     | BP_Cycle ModuleName.Raw (List ModuleName.Raw)
     | BP_MissingExposed (NE.Nonempty ( ModuleName.Raw, Import.Problem ))
+    | BP_RootNameAmbiguous ModuleName.Raw FilePath Pkg.Name
 
 
 {-| Builds the report for a failed compile.
@@ -2624,6 +2629,19 @@ toProjectProblemReport projectProblem =
                 , D.reflow <|
                     "Learn more about why this is disallowed and how to break cycles here:"
                         ++ D.makeLink "import-cycles"
+                ]
+
+        BP_RootNameAmbiguous name path pkg ->
+            Help.report "AMBIGUOUS MODULE NAME"
+                (Just path)
+                "This file declares a module whose name is already taken:"
+                [ D.fromName name |> D.red |> D.indent 4
+                , D.reflow <|
+                    "But "
+                        ++ Pkg.toChars pkg
+                        ++ " also has a module named `"
+                        ++ name
+                        ++ "`, so an import of that name could mean either. Try choosing a different name for your local file."
                 ]
 
         BP_MissingExposed (NE.Nonempty ( name, problem ) _) ->
@@ -3064,6 +3082,14 @@ buildProjectProblemEncoder buildProjectProblem =
                 , BE.nonempty (BE.jsonPair ModuleName.rawEncoder Import.problemEncoder) problems
                 ]
 
+        BP_RootNameAmbiguous name path pkg ->
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 9
+                , ModuleName.rawEncoder name
+                , BE.string path
+                , Pkg.nameEncoder pkg
+                ]
+
 
 {-| A decoder for a project problem written by `buildProjectProblemEncoder`.
 -}
@@ -3115,6 +3141,12 @@ buildProjectProblemDecoder =
                             (BD.nonempty
                                 (BD.jsonPair ModuleName.rawDecoder Import.problemDecoder)
                             )
+
+                    9 ->
+                        Bytes.Decode.map3 BP_RootNameAmbiguous
+                            ModuleName.rawDecoder
+                            BD.string
+                            Pkg.nameDecoder
 
                     _ ->
                         Bytes.Decode.fail

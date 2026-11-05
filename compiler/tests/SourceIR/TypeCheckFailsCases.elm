@@ -1205,7 +1205,9 @@ rigidCases =
 
 {-| Records whose fields differ from the ones an annotation asks for: a typo,
 missing fields, extra fields, a field of the wrong type, and records with an
-extension variable.
+extension variable. The last is a record whose extension variable `a` an
+earlier error (`y + 1` with `a` rigid) has marked, which once crashed the
+report (Compiler.Type.Type.variableToErrorType).
 -}
 recordFieldCases : List RejectedCase
 recordFieldCases =
@@ -1220,6 +1222,7 @@ recordFieldCases =
     , fromSource "empty record where one with fields" (rejectedWithFragment "TYPE MISMATCH" "Hint: Looks like the name field is missing.") "x : { name : Int }\nx = {}\n"
     , fromSource "aliased record field of the wrong type" (rejectedWithFragment "TYPE MISMATCH" "Hint: Want to convert a String into an Int? Use the String.t") "type alias P = { a : Int }\n\nx : P\nx = { a = \"s\" }\n"
     , fromSource "two aliased records" (rejectedWithFragment "TYPE MISMATCH" "This `p` value is a:") "type alias P = { a : Int }\n\ntype alias Q = { b : Int }\n\np : P\np = { a = 1 }\n\nx : Q\nx = p\n"
+    , fromSource "record whose extension an earlier error marked" (rejectedWithFragment "TYPE MISMATCH" "This `r` value is a:") "f : { a | x : Int } -> a -> Int\nf r y = (y + 1) + (r + 1)\n"
     ]
 
 

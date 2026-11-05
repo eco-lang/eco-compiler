@@ -815,8 +815,10 @@ fieldToCanType variable =
 A class reached again from inside itself becomes `ET.Infinite`, and a class
 whose content is a unification error becomes `ET.Error`. Unnamed variables are
 named, and the store is changed, as "Converting solved variables" describes.
-Crashes on a lambda set outside a function type's set slot, and on such an
-infinite or error class in a record's extension position.
+A record whose extension is such an infinite or error class, which an earlier
+type error can leave behind (for `{ a | x : Int }` after `a` failed to unify),
+is shown closed, with its fields alone. Crashes on a lambda set outside a
+function type's set slot.
 
 -}
 toErrorType : Variable -> IO ET.Type
@@ -1012,6 +1014,14 @@ termToErrorType term =
 
                                         ET.RigidVar ext ->
                                             ET.Record errFields (ET.RigidOpen ext)
+
+                                        -- The extension variable was marked by an earlier type
+                                        -- error, so its name is gone: show the fields alone.
+                                        ET.Error ->
+                                            ET.Record errFields ET.Closed
+
+                                        ET.Infinite ->
+                                            ET.Record errFields ET.Closed
 
                                         _ ->
                                             crash "Used toErrorType on a type that is not well-formed"

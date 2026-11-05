@@ -883,7 +883,20 @@ translateDispatch expr s0 =
                                                 specializeNumberDestruct dname path dmeta (pathRootName path) eagerRootType body s2
 
                                             else
-                                                generalDestruct destructor body meta s2
+                                                case refinedSlotRoot s2.env.globalTypeEnv eagerRootType path eagerLeaf of
+                                                    Just refinedRootType ->
+                                                        -- A slot whose type is already concrete here, such as a list's tail at `List Float`
+                                                        -- in a `Float` copy, is read from the root's instance at that type.
+                                                        case Engine.recordNumberInstance (pathRootName path) refinedRootType s2 of
+                                                            ( ( freshRootName, _ ), s3 ) ->
+                                                                generalDestruct
+                                                                    (TOpt.Destructor dname (rewriteRootInPath (pathRootName path) freshRootName path) dmeta)
+                                                                    body
+                                                                    meta
+                                                                    (Engine.insertVar freshRootName refinedRootType s3)
+
+                                                    Nothing ->
+                                                        generalDestruct destructor body meta s2
 
                                 Nothing ->
                                     generalDestruct destructor body meta s1
@@ -3035,9 +3048,9 @@ variable is already `Float` when `n` is translated.
 -}
 translateKernelCall : A.Region -> A.Region -> Name -> Name -> Name -> ( String, String, String ) -> Can.Type TypeIds.MVarId -> List (TOpt.Expr TypeIds.MVarId) -> Can.Type TypeIds.MVarId -> Step Mono.MonoExpr
 translateKernelCall region funcRegion kernelPrefix home name kernelId funcCanType args callCanType s0 =
-    case deriveKernelAbiTypeCall kernelId funcCanType args s0 of
-        ( funcMonoType, s1 ) ->
-            case Engine.traverse translate args s1 of
+    case deriveKernelAbiTypeCallStash kernelId funcCanType args (Just callCanType) s0 of
+        ( ( funcMonoType, stash ), s1 ) ->
+            case translateArgsWith stash args s1 of
                 ( monoArgs, s2 ) ->
                     case callResultType (List.length args) funcMonoType callCanType s2 of
                         ( resultMonoType, s3 ) ->
@@ -3090,16 +3103,57 @@ peelResult n monoType =
 
 
 {-| Returns a kernel's type at a call: its type is instantiated afresh, its
-parameters are unified with the arguments (`unifyParamsWithArgExprs`), and the
+parameters are unified with the arguments (`unifyParamsCollect`), and the
 result is read back under the kernel's ABI mode (`deriveKernelAbiTypeWith`).
 -}
 deriveKernelAbiTypeCall : ( String, String, String ) -> Can.Type TypeIds.MVarId -> List (TOpt.Expr TypeIds.MVarId) -> Step Mono.MonoType
-deriveKernelAbiTypeCall kernelId canFuncType args =
-    deriveKernelAbiTypeWith kernelId canFuncType <|
+deriveKernelAbiTypeCall kernelId canFuncType args s0 =
+    case deriveKernelAbiTypeCallStash kernelId canFuncType args Nothing s0 of
+        ( ( monoType, _ ), s1 ) ->
+            ( monoType, s1 )
+
+
+{-| Does `deriveKernelAbiTypeCall`, also returning the `ArgStash` of each
+argument, for translating the arguments with `translateArgsWith`.
+
+When an argument is a let-bound number (`StashNumberMulti`) and the call's
+type is given, the kernel's result is unified with it before the arguments are
+read back, as `translateGlobalCallSlow` does for a global. The argument's fresh
+copy of its type meets the kernel's parameter, and for a kernel such as
+`Basics.mul : number -> number -> number` only the result says whether this
+use is an `Int` or a `Float`.
+
+-}
+deriveKernelAbiTypeCallStash : ( String, String, String ) -> Can.Type TypeIds.MVarId -> List (TOpt.Expr TypeIds.MVarId) -> Maybe (Can.Type TypeIds.MVarId) -> Step ( Mono.MonoType, List ArgStash )
+deriveKernelAbiTypeCallStash kernelId canFuncType args maybeCallCanType =
+    deriveKernelAbiTypeKeeping kernelId canFuncType <|
         \s0 ->
             case instantiate canFuncType s0 of
                 ( funcVar, s1 ) ->
-                    ( funcVar, unifyParamsWithArgExprs funcVar args s1 )
+                    case unifyParamsCollect funcVar args s1 of
+                        ( stash, s2 ) ->
+                            case maybeCallCanType of
+                                Just callCanType ->
+                                    if List.any isStashNumberMulti stash then
+                                        ( ( funcVar, stash ), unifyResultWithExpected funcVar (List.length args) callCanType s2 )
+
+                                    else
+                                        ( ( funcVar, stash ), s2 )
+
+                                Nothing ->
+                                    ( ( funcVar, stash ), s2 )
+
+
+{-| Tells whether an argument's stash is for a let-bound number.
+-}
+isStashNumberMulti : ArgStash -> Bool
+isStashNumberMulti stash =
+    case stash of
+        StashNumberMulti _ ->
+            True
+
+        _ ->
+            False
 
 
 {-| Unifies each parameter of a function variable with the corresponding
@@ -3120,12 +3174,21 @@ function's own type would otherwise change that type. The variable is the
 fresh instantiation; the argument's translation reads it back to record the
 function's instance at the type this call demands.
 
+`StashNumberMulti` is for an argument that is a reference to a let-bound
+number (`translateNumberMultiLet`). The type checker gives every use of such a
+value the binding's own type, so the uses share its variables; unified
+directly, an `Int` use and a `Float` use would meet in one variable. Its type is
+instantiated afresh for this call instead, and the argument's translation reads
+the fresh variable back to record the number's instance at the type this call
+demands.
+
 `StashNone` is for every other argument, which is translated normally.
 
 -}
 type ArgStash
     = StashNone
     | StashLocalMulti Vars.Variable
+    | StashNumberMulti Vars.Variable
 
 
 {-| Unifies, best effort, each parameter of a function variable with the
@@ -3164,13 +3227,25 @@ unifyParamsCollect funcVar args s0 =
                                                                     ( StashLocalMulti freshVar0 :: restStash, s5 )
 
                                         Nothing ->
-                                            case argUnifyVar arg s2 of
-                                                ( argVar, s3 ) ->
-                                                    case unifyStepBestEffort pParam argVar s3 of
-                                                        s4 ->
-                                                            case unifyParamsCollect pRest rest s4 of
-                                                                ( restStash, s5 ) ->
-                                                                    ( StashNone :: restStash, s5 )
+                                            case numberMultiArgName arg s2 of
+                                                ( Just _, s2n ) ->
+                                                    -- A let-bound number: each use gets its own copy of the type, so an `Int` use and a `Float` use do not meet.
+                                                    case instantiate (TOpt.typeOf arg) s2n of
+                                                        ( freshVar0, s3 ) ->
+                                                            case unifyStepBestEffort pParam freshVar0 s3 of
+                                                                s4 ->
+                                                                    case unifyParamsCollect pRest rest s4 of
+                                                                        ( restStash, s5 ) ->
+                                                                            ( StashNumberMulti freshVar0 :: restStash, s5 )
+
+                                                ( Nothing, s2n ) ->
+                                                    case argUnifyVar arg s2n of
+                                                        ( argVar, s3 ) ->
+                                                            case unifyStepBestEffort pParam argVar s3 of
+                                                                s4 ->
+                                                                    case unifyParamsCollect pRest rest s4 of
+                                                                        ( restStash, s5 ) ->
+                                                                            ( StashNone :: restStash, s5 )
 
                         Nothing ->
                             ( List.map (\_ -> StashNone) args, censusStashMiss args s1 )
@@ -3251,6 +3326,14 @@ translateArgsWith stash args s0 =
                                         case injectLocalMultiUseMember localName ord v s2 of
                                             s3 ->
                                                 ( Mono.MonoVarLocal freshName instType, s3 )
+
+                ( StashNumberMulti v, Just localName ) ->
+                    \sa ->
+                        case Store.zonkToMono v sa of
+                            ( instType0, s1 ) ->
+                                case Engine.recordNumberInstance localName instType0 s1 of
+                                    ( ( freshName, instType ), s2 ) ->
+                                        ( Mono.MonoVarLocal freshName instType, s2 )
 
                 _ ->
                     translate arg
@@ -3405,6 +3488,27 @@ localMultiArgName arg s0 =
             case Engine.isLocalMultiTarget localName s0 of
                 ( isLM, s1 ) ->
                     ( if isLM then
+                        Just localName
+
+                      else
+                        Nothing
+                    , s1
+                    )
+
+        Nothing ->
+            ( Nothing, s0 )
+
+
+{-| Returns the name of a call argument that refers to a let-bound number
+(`translateNumberMultiLet`), else `Nothing`.
+-}
+numberMultiArgName : TOpt.Expr TypeIds.MVarId -> Step (Maybe Name)
+numberMultiArgName arg s0 =
+    case accessedLocalName arg of
+        Just localName ->
+            case Engine.localVarInfo localName s0 of
+                ( ( _, isNM, _ ), s1 ) ->
+                    ( if isNM then
                         Just localName
 
                       else
@@ -4010,6 +4114,16 @@ variables are not renamed.
 -}
 deriveKernelAbiTypeWith : ( String, String, String ) -> Can.Type TypeIds.MVarId -> Step Vars.Variable -> Step Mono.MonoType
 deriveKernelAbiTypeWith kernelId canFuncType funcVarStep s0 =
+    case deriveKernelAbiTypeKeeping kernelId canFuncType (\sx -> Tuple.mapFirst (\v -> ( v, () )) (funcVarStep sx)) s0 of
+        ( ( monoType, () ), s1 ) ->
+            ( monoType, s1 )
+
+
+{-| Does `deriveKernelAbiTypeWith`, also returning what `funcVarStep` gives
+alongside the kernel's loaded variable.
+-}
+deriveKernelAbiTypeKeeping : ( String, String, String ) -> Can.Type TypeIds.MVarId -> Step ( Vars.Variable, x ) -> Step ( Mono.MonoType, x )
+deriveKernelAbiTypeKeeping kernelId canFuncType funcVarStep s0 =
     let
         abiKey =
             case kernelId of
@@ -4017,7 +4131,7 @@ deriveKernelAbiTypeWith kernelId canFuncType funcVarStep s0 =
                     ( home, name )
     in
     case funcVarStep s0 of
-        ( funcVar0, sA ) ->
+        ( ( funcVar0, kept ), sA ) ->
             case poisonKernelArrowsThen kernelId canFuncType funcVar0 sA of
                 ( funcVar, sB ) ->
                     case Store.zonkToMono funcVar sB of
@@ -4026,7 +4140,7 @@ deriveKernelAbiTypeWith kernelId canFuncType funcVarStep s0 =
                                 ( mvarEnv, sD ) ->
                                     case KernelAbi.deriveKernelAbiMode abiKey canFuncType of
                                         KernelAbi.UseSubstitution ->
-                                            ( monoAfterSubst, sD )
+                                            ( ( monoAfterSubst, kept ), sD )
 
                                         KernelAbi.PreserveVars ->
                                             let
@@ -4037,7 +4151,7 @@ deriveKernelAbiTypeWith kernelId canFuncType funcVarStep s0 =
                                                            )
                                             in
                                             if keepsReadBack && not (Mono.containsAnyMVar monoAfterSubst) then
-                                                ( monoAfterSubst, sD )
+                                                ( ( monoAfterSubst, kept ), sD )
 
                                             else if keepsReadBack then
                                                 -- The read-back type keeps the shape the suffix is selected by.
@@ -4045,7 +4159,7 @@ deriveKernelAbiTypeWith kernelId canFuncType funcVarStep s0 =
                                                     ( abi2, nextId2 ) =
                                                         KernelAbi.remapEcoVarsFresh sD.nextMVarId monoAfterSubst
                                                 in
-                                                ( abi2, { sD | nextMVarId = nextId2 } )
+                                                ( ( abi2, kept ), { sD | nextMVarId = nextId2 } )
 
                                             else
                                                 let
@@ -4055,7 +4169,7 @@ deriveKernelAbiTypeWith kernelId canFuncType funcVarStep s0 =
                                                     ( finalAbi, nextId2 ) =
                                                         KernelAbi.remapEcoVarsFresh env1.nextId abiType
                                                 in
-                                                ( finalAbi, { sD | nextMVarId = nextId2 } )
+                                                ( ( finalAbi, kept ), { sD | nextMVarId = nextId2 } )
 
 
 {-| Applies, with LSS on, a kernel's lambda-set policy from `KernelSetFacts`
@@ -4861,7 +4975,10 @@ per type it is used at.
 
 The right-hand side is translated first at the type it has now (the eager
 instance), and recorded as the first instance, which keeps the bare name. The
-`let` body is then translated, each use recording the type it needs. Each
+`let` body is then translated, each use recording the type it needs. A use as
+a call's argument takes that type from the call, through a fresh copy of the
+binding's type (`StashNumberMulti`), because every use carries the binding's
+own type variables. Each
 other recorded type gets a copy named `n$v<k>`, translated again at that type
 (`buildFloatDefs`). The eager definition is outermost and the copies are
 nested inside it.
@@ -5299,8 +5416,9 @@ buildRefinedDestructorWith gte rootName eagerRootType path inst s0 =
 field, constructor field or unboxed value) replaced by `leaf`, other slots
 unchanged. A constructor field may have any declared type: the type arguments
 it mentions are rebound to the parts of `leaf` at the same positions
-(`rebindTypeArgs`). Returns `Nothing` for a list path, a path it cannot follow,
-or a `leaf` whose shape does not match the field's declared type.
+(`rebindTypeArgs`). A list's head slot sets the type of every element
+(`replaceListSlot`). Returns `Nothing` for a path it cannot follow, or a `leaf`
+whose shape does not match the slot's type.
 -}
 refineRootInstance : TypeEnv.GlobalTypeEnv -> Mono.MonoType -> TOpt.Path -> Mono.MonoType -> Maybe Mono.MonoType
 refineRootInstance gte container path leaf =
@@ -5317,7 +5435,7 @@ refineRootInstance gte container path leaf =
                                 replaceCustomSlot gte ctorName (Index.toMachine idx) subC leaf
 
                             TOpt.HintList ->
-                                Nothing
+                                replaceListSlot subC (Index.toMachine idx) leaf
 
                             _ ->
                                 replaceIndexSlot subC (Index.toMachine idx) leaf
@@ -5333,6 +5451,49 @@ refineRootInstance gte container path leaf =
             navigateType gte container subPath
                 |> Maybe.andThen (\subC -> replaceUnboxSlot gte subC leaf)
                 |> Maybe.andThen (\newSub -> refineRootInstance gte container subPath newSub)
+
+        _ ->
+            Nothing
+
+
+{-| Returns the type of a let-bound number root `eagerRootType` whose slot
+`path` has the compound numeric type `leaf`, such as a list's tail at
+`List Float`, when that differs from the root's eager type; `Nothing` for a
+scalar slot, a slot that still has a `number` variable (both handled by
+`specializeNumberDestruct`), one the root cannot be refined at, or one already
+of the eager type.
+-}
+refinedSlotRoot : TypeEnv.GlobalTypeEnv -> Mono.MonoType -> TOpt.Path -> Mono.MonoType -> Maybe Mono.MonoType
+refinedSlotRoot gte eagerRootType path leaf =
+    if isScalarNumber leaf || mentionsNumberVar leaf || not (isNumericFixableShape leaf) then
+        Nothing
+
+    else
+        refineRootInstance gte eagerRootType path leaf
+            |> Maybe.andThen
+                (\refined ->
+                    if refined == eagerRootType then
+                        Nothing
+
+                    else
+                        Just refined
+                )
+
+
+{-| Returns the list type `container` with the slot `idx` of a cons cell set
+to `leaf`: slot 0 is the head, so the list becomes a list of `leaf`; slot 1 is
+the tail, which `leaf` replaces when it is itself a list. A list's elements all
+have one type, so setting one element sets them all. `Nothing` when
+`container` is not a list or the slot does not fit.
+-}
+replaceListSlot : Mono.MonoType -> Int -> Mono.MonoType -> Maybe Mono.MonoType
+replaceListSlot container idx leaf =
+    case ( container, idx, leaf ) of
+        ( Mono.MList _ _, 0, _ ) ->
+            Just (Mono.mList leaf)
+
+        ( Mono.MList _ _, 1, Mono.MList _ _ ) ->
+            Just leaf
 
         _ ->
             Nothing

@@ -1,7 +1,7 @@
 ---
 status: partial
 updated: 2026-11-05
-remaining: "the 433 dead items; claimed-unreachable rows other than those marked fixed below (Type.elm:1017 crash, API/Make No main!, Build addInside RNotFound, GenerateJs generateField, Translate 1147 alias-typed port encoder); the NumList2 side-finding repro is lost and must be rebuilt"
+remaining: "the 433 dead items; the claimed-unreachable rows are all fixed or re-classified (Translate 1147 pinned as correct behaviour)"
 ---
 
 # Dead code in the Elm compiler: full audit (2026-11-04)
@@ -82,7 +82,23 @@ Progress (2026-11-05):
   accepts a kernel file that does not parse (it gives `SBadSyntax`), and Builder/Deps/Details.elm reports one
   like any dependency compile error (`SBadKernel`, shown with `--Xpackage-errors`). Pinned by
   `tests/Compiler/Parse/KernelTest.elm`, `ModuleTest.elm` and 10 tests in `test/scripts/cli-errors.test.js`.
-- The `/tmp/deadcode/` scratch tree is gone, so the NumList2 repro below is **lost**.
+- **Fixed** (2026-11-05), each after a failing test:
+  - Type.elm:1017: a record extension in the `Error` or `Infinite` state is shown closed instead of
+    crashing (`SourceIR/TypeCheckFailsCases` "record whose extension an earlier error marked").
+  - API/Make.elm "No main!": `make` answers `Exit.MakeNoMain` as JSON, and `diagnostics` answers `{}`
+    because the module compiled.
+  - Build.elm ambiguous root: `eco make src/Html.elm` next to elm/html gives AMBIGUOUS MODULE NAME
+    (`Exit.BP_RootNameAmbiguous`, `checkAmbiguousRoots`).
+  - GenerateJs generateField: the erased optimizer registers shader attribute and uniform names as fields.
+  - NumList2, which was broader than reported: **any** let-bound `number` used at both `Int` and `Float`
+    failed in the solver engine, even `n = 5`. Every use carries the binding's own type variables. Now a
+    let-bound number used as a call argument gets a fresh copy of its type (`StashNumberMulti`, kernel
+    calls included, which also unify their result first). Lists refine through head and tail paths
+    (`replaceListSlot`), and a defaulted compound slot is read from the root's instance at its type
+    (`refinedSlotRoot`). Pinned by `LetNumberListCaseTest` and `LetNumberDualUseTest`; all 53
+    `LetNumber*` E2E tests pass.
+  - Translate 1147 is not a bug: `test/elm/src/PortAliasEchoTest.elm` (an alias-typed port with a record
+    payload) passes natively and pins that.
 
 Side finding, found during the audit but not dead code: the default compiler fails with
 `Kernel signature mismatch for Elm_Kernel_Basics_mul_Float` on a let-bound number list destructured

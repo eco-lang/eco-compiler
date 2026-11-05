@@ -9,8 +9,8 @@ a single HTML page as a string: the generated JavaScript, wrapped by
 one module that defines `main`. The JavaScript back end is the only one used
 here, and HTML is the only output.
 
-Not every failure comes back as an `Exit.Make` error. A build in which no
-module defines `main`, or more than one does, crashes the process instead.
+A build in which the file does not define `main` fails with `Exit.MakeNoMain`,
+as `eco make` does for HTML output.
 
 -}
 
@@ -29,7 +29,6 @@ import Compiler.GenerateJs.Html as Html
 import Compiler.IR.Optimized as Opt
 import Data.NonEmptyList as NE
 import Maybe.Extra as Maybe
-import System.Crash exposing (crash)
 import System.IO exposing (FilePath)
 import Task exposing (Task)
 import Utils.Task.Extra as Task
@@ -59,7 +58,9 @@ runs it.
 
 The project root is the nearest directory at or above the current directory
 holding an `elm.json`; with none the result is `Err Exit.MakeNoOutline`. A build
-with no `main`, or with more than one, crashes rather than returning `Err`.
+whose root does not define `main` is `Err Exit.MakeNoMain`, and one with more
+than one root defining it, which a single `path` cannot give, is
+`Err Exit.MakeMultipleFilesIntoHtml`.
 
 -}
 run : String -> Flags -> Task Never (Result Exit.Make String)
@@ -78,8 +79,8 @@ run path flags =
 
 {-| Builds `path` in the project at `root` while holding the project's lock,
 loading the project details with JSON-style reporting and then generating the
-page for the single module that defines `main`. It crashes when there is no
-such module or several.
+page for the single module that defines `main`, failing as `run` describes
+when there is no such module or several.
 -}
 runHelp : String -> String -> Flags -> Task Never (Result Exit.Make String)
 runHelp root path (Flags debug optimize withSourceMaps) =
@@ -103,14 +104,14 @@ runHelp root path (Flags debug optimize withSourceMaps) =
                                                     (\artifacts ->
                                                         case getMains artifacts of
                                                             [] ->
-                                                                crash "No main!"
+                                                                Task.throw Exit.MakeNoMain
 
                                                             [ name ] ->
                                                                 toBuilder withSourceMaps Html.leadingLines root details desiredMode artifacts
                                                                     |> Task.map (Html.sandwich name)
 
                                                             _ ->
-                                                                crash "TODO"
+                                                                Task.throw Exit.MakeMultipleFilesIntoHtml
                                                     )
                                         )
                             )

@@ -1713,13 +1713,15 @@ checkMidpoint dmvar statuses =
 
 
 {-| Does what `checkMidpoint` does, and also checks for two roots with one
-module name (see `checkUniqueRoots`) before taking the interfaces.
+module name (see `checkUniqueRoots`) and for an inside root whose name a
+dependency also exposes (see `checkAmbiguousRoots`) before taking the
+interfaces.
 -}
 checkMidpointAndRoots : MVar (Maybe Dependencies) -> Dict ModuleName.Raw Status -> NE.Nonempty RootStatus -> Task Never (Result Exit.BuildProjectProblem Dependencies)
 checkMidpointAndRoots dmvar statuses sroots =
     case checkForCycles statuses of
         Nothing ->
-            case checkUniqueRoots statuses sroots of
+            case firstRootProblem statuses sroots of
                 Nothing ->
                     takeAndDropDependencies dmvar
                         |> Task.map
@@ -1849,6 +1851,44 @@ checkUniqueRoots insides sroots =
 
                 Err problem ->
                     Just problem
+
+
+{-| Returns the problem `checkUniqueRoots` finds, or else the one
+`checkAmbiguousRoots` finds.
+-}
+firstRootProblem : Dict ModuleName.Raw Status -> NE.Nonempty RootStatus -> Maybe Exit.BuildProjectProblem
+firstRootProblem statuses sroots =
+    case checkUniqueRoots statuses sroots of
+        Just problem ->
+            Just problem
+
+        Nothing ->
+            checkAmbiguousRoots statuses sroots
+
+
+{-| Returns `BP_RootNameAmbiguous` for the first inside root whose module a
+direct dependency also exposes. The crawl gives such a module an ambiguous
+import status, which an importer would report; a root may have no importer, so
+it is reported here.
+-}
+checkAmbiguousRoots : Dict ModuleName.Raw Status -> NE.Nonempty RootStatus -> Maybe Exit.BuildProjectProblem
+checkAmbiguousRoots statuses sroots =
+    List.filterMap
+        (\sroot ->
+            case sroot of
+                SInside name ->
+                    case Dict.get name statuses of
+                        Just (SBadImport (Import.Ambiguous path _ pkg _)) ->
+                            Just (Exit.BP_RootNameAmbiguous name path pkg)
+
+                        _ ->
+                            Nothing
+
+                _ ->
+                    Nothing
+        )
+        (NE.toList sroots)
+        |> List.head
 
 
 {-| Returns the module name and path of an outside root that parsed, and

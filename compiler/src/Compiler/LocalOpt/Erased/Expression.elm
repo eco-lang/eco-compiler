@@ -308,7 +308,10 @@ optimize cycle (A.At region exprInfo) =
                     )
 
         Can.Shader src (Shader.Types attributes uniforms _) ->
-            Names.pure (Opt.Shader src (EverySet.fromList identity (Data.Map.keys attributes)) (EverySet.fromList identity (Data.Map.keys uniforms)))
+            -- The generator emits each attribute and uniform name as a record field, so under
+            -- --optimize each must have a short name even when no record mentions it.
+            Names.registerFieldList (Data.Map.keys attributes ++ Data.Map.keys uniforms)
+                (Opt.Shader src (EverySet.fromList identity (Data.Map.keys attributes)) (EverySet.fromList identity (Data.Map.keys uniforms)))
 
 
 

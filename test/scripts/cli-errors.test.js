@@ -245,3 +245,84 @@ test("a kernel header problem in a dependency is reported, not a crash", () => {
   assertKernelError({ status: r.status, out }, /PROBLEM BUILDING DEPENDENCIES/, /KERNEL IMPORT[\s\S]*Elm\.Kernel\.Utils/);
 });
 
+
+// Bugs found by plans/dead-code-report.md, each pinned by a test before its fix.
+
+// Fixed: Compiler.Type.Type.variableToErrorType (Type.elm:1017). `y + 1` fails to unify the rigid `a` with
+// `number` and turns `a`'s class into Error; the later `r + 1` mismatch renders `r`'s record type, whose
+// extension is now ET.Error, which hit `crash "Used toErrorType on a type that is not well-formed"` instead
+// of two type errors. Unit test: SourceIR/TypeCheckFailsCases.elm "record whose extension an earlier error
+// marked".
+test("a record extension marked by an earlier type error is reported, not a crash", () => {
+    const r = make(HEAD + "f : { a | x : Int } -> a -> Int\nf r y =\n    (y + 1) + (r + 1)\n\n\n" + MAIN);
+    assert.doesNotMatch(r.out, /not well-formed|Eco\.Crash/, r.out);
+    assert.match(r.out, /TYPE MISMATCH[\s\S]*TYPE MISMATCH/, r.out);
+  });
+
+// Fixed: Compiler.GenerateJs.Expression.generateField (Expression.elm:479-484). LocalOpt/Erased/Expression.elm
+// built Opt.Shader without registering its attribute and uniform names, so under --optimize a shader input
+// that no record mentions was missing from Mode.shortenFieldNames and generation crashed with "field not
+// found in ShortFieldNames". Needs elm-explorations/webgl 1.1.3 and linear-algebra 1.0.3 in the package cache.
+test("an --optimize build of a shader whose attribute no record uses succeeds", () => {
+    const elmJson = JSON.stringify({
+      type: "application", "source-directories": ["src"], "elm-version": "0.19.1",
+      dependencies: {
+        direct: { "elm/core": "1.0.5", "elm/html": "1.0.0", "elm-explorations/linear-algebra": "1.0.3",
+          "elm-explorations/webgl": "1.1.3" },
+        indirect: { "elm/json": "1.1.3", "elm/virtual-dom": "1.0.3" },
+      },
+      "test-dependencies": { direct: {}, indirect: {} },
+    }, null, 4);
+    const main = "module Main exposing (main)\n\nimport Html exposing (Html)\nimport Math.Vector3 exposing (Vec3)\n" +
+      "import WebGL exposing (Shader)\n\n\nvs : Shader { zzAttr : Vec3 } {} {}\nvs =\n    [glsl|\n" +
+      "attribute vec3 zzAttr;\nvoid main () { gl_Position = vec4(zzAttr, 1.0); }\n|]\n\n\n" +
+      "fs : Shader {} {} {}\nfs =\n    [glsl|\nvoid main () { gl_FragColor = vec4(1.0, 1.0, 1.0, 1.0); }\n|]\n\n\n" +
+      "main : Html msg\nmain =\n    WebGL.toHtml [] [ WebGL.entity vs fs (WebGL.points []) {} ]\n";
+    const dir = project({ "src/Main.elm": main }, elmJson);
+    const r = eco(dir, ["make", "src/Main.elm", "--optimize", "--output=out.js"]);
+    assert.strictEqual(r.status, 0, r.out);
+    assert.doesNotMatch(r.out, /ShortFieldNames|Eco\.Crash/, r.out);
+    assert.match(fs.readFileSync(path.join(dir, "out.js"), "utf8"), /zzAttr: '/);
+  });
+
+// Fixed: API.Make (Make.elm:105-106). The API's `diagnostics` with a `path`, and its `make`, ran a full make
+// and `crash "No main!"` when the module had no `main`, so the API process died instead of answering with
+// JSON. Now `make` answers with the NO MAIN error and `diagnostics` with `{}`: the module compiled, and only
+// a page to run needs `main`. API.Main is built here as compiler/scripts/build.sh api builds it, but into a
+// temporary directory, and run through a copy of compiler/bin/index.js that starts Elm.API.Main.
+function apiRunner() {
+  const out = fs.mkdtempSync("/tmp/cli-errors/api-");
+  const shadow = path.resolve(__dirname, "../../build/compiler/build-xhr");
+  const elm = path.resolve(__dirname, "../../build/toolchain/bin/elm");
+  const build = spawnSync(elm, ["make", `--output=${out}/api.js`, path.resolve(__dirname, "../../compiler/src/API/Main.elm")],
+    { cwd: shadow, encoding: "utf8", timeout: 600000 });
+  assert.strictEqual(build.status, 0, (build.stdout || "") + (build.stderr || ""));
+  spawnSync(process.execPath, [path.resolve(__dirname, "../../compiler/scripts/replacements.js"), `${out}/api.js`]);
+  const bin = path.resolve(__dirname, "../../compiler/bin");
+  fs.writeFileSync(`${out}/run.js`, fs.readFileSync(path.join(bin, "index.js"), "utf8")
+    .replace('require("./eco-io-handler")', `require(${JSON.stringify(path.join(bin, "eco-io-handler"))})`)
+    .replace('require("mock-xmlhttprequest")',
+      `require(${JSON.stringify(path.resolve(__dirname, "../../compiler/node_modules/mock-xmlhttprequest"))})`)
+    .replace("Elm.Terminal.Main.init();", "Elm.API.Main.init();"));
+  return { js: `${out}/api.js`, run: `${out}/run.js` };
+}
+
+// Runs one API request in a project whose src/Foo.elm has no `main`, returning the exit status and output.
+function apiRequest(api, request) {
+  const dir = project({ "src/Foo.elm": "module Foo exposing (x)\n\n\nx : Int\nx =\n    1\n" });
+  const r = spawnSync(process.execPath, [api.run, JSON.stringify(request)],
+    { cwd: dir, encoding: "utf8", timeout: 300000, env: { ...process.env, GUIDA_JS_PATH: api.js } });
+  return { status: r.status, stdout: r.stdout || "", out: (r.stdout || "") + (r.stderr || "") };
+}
+
+test("API diagnostics and make of a module without main answer with JSON, not a crash", () => {
+  const api = apiRunner();
+  const diag = apiRequest(api, { command: "diagnostics", path: "src/Foo.elm" });
+  assert.doesNotMatch(diag.out, /No main!|Eco\.Crash/, diag.out);
+  assert.strictEqual(diag.status, 0, diag.out);
+  assert.match(diag.stdout, /^\{\}\s*$/m, diag.out);
+  const make = apiRequest(api, { command: "make", path: "src/Foo.elm", debug: false, optimize: false, sourcemaps: false });
+  assert.doesNotMatch(make.out, /No main!|Eco\.Crash/, make.out);
+  assert.strictEqual(make.status, 0, make.out);
+  assert.match(make.stdout, /"error"[\s\S]*NO MAIN/, make.out);
+});

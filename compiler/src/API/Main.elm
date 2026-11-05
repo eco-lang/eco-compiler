@@ -15,13 +15,14 @@ reported: it is run as a `make` of the empty path.
 _Diagnostics_ checks one module and reports its problems. Given `content`, it
 only parses that text as an application module. Given `path` (and no
 `content`), it runs a full `make` of that file without debug, optimisation or
-source maps.
+source maps; a module that compiles but defines no `main`, such as a library
+module, has no problem.
 
 Each JSON response this module writes goes to stdout and is followed by an exit
 with success, whatever it says. The exceptions: `install` and `uninstall` print
 plain text such as "Success!" before their `null`, and their failures exit with
-failure and no JSON; `make`, and `diagnostics` given `path`, crash when the
-file at `path` does not define `main`. The responses:
+failure and no JSON. A `make` of a file at `path` that does not define `main`
+fails with `Exit.MakeNoMain`. The responses:
 
   - `make` and `format` answer `{"output": ...}`, or `{"error": ...}` holding a
     string. For `make` that string is itself a JSON-encoded error report.
@@ -139,6 +140,10 @@ app =
                                 (\result ->
                                     case result of
                                         Ok _ ->
+                                            exitWithResponse (Encode.object [])
+
+                                        -- It compiled; only a page to run needs `main`.
+                                        Err Exit.MakeNoMain ->
                                             exitWithResponse (Encode.object [])
 
                                         Err error ->

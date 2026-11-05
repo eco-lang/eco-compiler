@@ -217,3 +217,16 @@ test("a corrupted cached interface of a later outside root's import is reported,
   assertCorruptCache(await eco(dir, ["make", "src/Plain.elm", "other/Outside.elm", "--output=out.js"]));
 });
 
+
+// Fixed (plans/dead-code-report.md): Builder.Build.addInside (Build.elm, `RNotFound` arm). In an application
+// that depends on elm/html, a root src/Html.elm is accepted by getRootInfoHelp as `LInside "Html"`,
+// crawlSinglePath finds `Html` in the foreign modules too and gives SBadImport (Import.Ambiguous), and as no
+// module imports the root no error carried it: the build crashed with "Error from `Html` should have been
+// reported already". checkAmbiguousRoots now reports it as BP_RootNameAmbiguous.
+test("a root module that a dependency also exposes is reported, not a crash", async () => {
+    const dir = project({ "src/Html.elm": "module Html exposing (x)\n\n\nx : Int\nx =\n    1\n" });
+    const r = await eco(dir, ["make", "src/Html.elm", "--output=out.js"]);
+    assert.notStrictEqual(r.status, 0, r.out);
+    assert.doesNotMatch(r.out, /should have been reported already|Eco\.Crash/, r.out);
+    assert.match(r.out, /AMBIGUOUS MODULE NAME[\s\S]*elm\/html/, r.out);
+  });
