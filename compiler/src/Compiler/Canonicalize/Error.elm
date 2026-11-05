@@ -84,9 +84,9 @@ import Utils.Bytes.Encode as BE
 Most constructors carry the region of the offending code and the names
 involved.
 
-`DuplicateDecl`, `DuplicateType`, `DuplicateCtor`, `DuplicateBinop`,
-`DuplicateField`, `DuplicateAliasArg`, `DuplicateUnionArg`, `DuplicatePattern`,
-`ExportDuplicate` and `Shadowing` carry two regions, both places where one name
+`DuplicateDecl`, `DuplicateType`, `DuplicateCtor`, `DuplicateField`,
+`DuplicateAliasArg`, `DuplicateUnionArg`, `DuplicatePattern`, `ExportDuplicate`
+and `Shadowing` carry two regions, both places where one name
 is defined or exposed, and their reports show both and are located at the
 second. In `Shadowing` the first is the binding already in scope and the second
 is the new binding that reuses its name.
@@ -117,10 +117,6 @@ report draws its suggestions. `ExportOpenAlias` and `ImportOpenAlias` are a
 `(..)` written after a type alias, in the module's own exposing list and in an
 import's. `ImportCtorByName` is a variant imported by name, and carries the
 variant and then the type it belongs to.
-
-`ImportNotFound` is an import of a module that cannot be found. No
-`Compiler.Canonicalize` module raises it, and its report ignores the list of
-modules it carries.
 
 `ImportExposingNotFound` is a name in an import's exposing list that the
 imported module does not expose. It carries that module and the names of that
@@ -173,7 +169,6 @@ type Error
     | DuplicateDecl Name A.Region A.Region
     | DuplicateType Name A.Region A.Region
     | DuplicateCtor Name A.Region A.Region
-    | DuplicateBinop Name A.Region A.Region
     | DuplicateField Name A.Region A.Region
     | DuplicateAliasArg Name Name A.Region A.Region
     | DuplicateUnionArg Name Name A.Region A.Region
@@ -184,7 +179,6 @@ type Error
     | ExportNotFound A.Region VarKind Name (List Name)
     | ExportOpenAlias A.Region Name
     | ImportCtorByName A.Region Name Name
-    | ImportNotFound A.Region Name (List ModuleName.Canonical)
     | ImportOpenAlias A.Region Name
     | ImportExposingNotFound A.Region ModuleName.Canonical Name (List Name)
     | NotFoundVar A.Region (Maybe Name) Name PossibleNames
@@ -302,12 +296,11 @@ type alias PossibleNames =
 
 
 {-| The kind of name an `ExportNotFound` error is about, which decides how the
-report describes and writes it. `BadPattern` is never raised.
+report describes and writes it.
 -}
 type VarKind
     = BadOp
     | BadVar
-    | BadPattern
     | BadType
 
 
@@ -334,14 +327,6 @@ toKindInfo kind name =
                 |> D.a (D.fromChars "`")
             )
 
-        BadPattern ->
-            ( D.fromChars "a"
-            , D.fromChars "pattern"
-            , D.fromChars "`"
-                |> D.a (D.fromName name)
-                |> D.a (D.fromChars "`")
-            )
-
         BadType ->
             ( D.fromChars "a"
             , D.fromChars "type"
@@ -358,9 +343,7 @@ toKindInfo kind name =
 {-| Builds the report for `err`, quoting the lines of `source` it concerns.
 
 The report is located at the error's region, or at the second region for an
-error that carries two. Its list of suggestions holds the names the message
-offers in place of one that was not found, and for the unknown operators `===`,
-`!=` or `!==`, and `**` it holds the operators the message recommends instead.
+error that carries two.
 
 -}
 toReport : Code.Source -> Error -> Report.Report
@@ -376,7 +359,7 @@ toReport source err =
                 numDefArgs =
                     numTypeArgs + leftovers
             in
-            Report.report "BAD TYPE ANNOTATION" region [] <|
+            Report.report "BAD TYPE ANNOTATION" region <|
                 Code.toSnippet source
                     region
                     Nothing
@@ -425,7 +408,7 @@ toReport source err =
                             "variant"
             in
             if actual < expected then
-                Report.report "TOO FEW ARGS" region [] <|
+                Report.report "TOO FEW ARGS" region <|
                     Code.toSnippet source
                         region
                         Nothing
@@ -445,7 +428,7 @@ toReport source err =
                         )
 
             else
-                Report.report "TOO MANY ARGS" region [] <|
+                Report.report "TOO MANY ARGS" region <|
                     Code.toSnippet source
                         region
                         Nothing
@@ -468,7 +451,7 @@ toReport source err =
                         )
 
         Binop region op1 op2 ->
-            Report.report "INFIX PROBLEM" region [] <|
+            Report.report "INFIX PROBLEM" region <|
                 Code.toSnippet source
                     region
                     Nothing
@@ -495,12 +478,6 @@ toReport source err =
                 "This file defines multiple `"
                     ++ name
                     ++ "` type constructors."
-
-        DuplicateBinop name r1 r2 ->
-            nameClash source r1 r2 <|
-                "This file defines multiple ("
-                    ++ name
-                    ++ ") operators."
 
         DuplicateField name r1 r2 ->
             nameClash source r1 r2 <|
@@ -543,7 +520,7 @@ toReport source err =
                         "This pattern contains multiple `" ++ name ++ "` variables."
 
         EffectNotFound region name ->
-            Report.report "EFFECT PROBLEM" region [] <|
+            Report.report "EFFECT PROBLEM" region <|
                 Code.toSnippet source
                     region
                     Nothing
@@ -554,7 +531,7 @@ toReport source err =
                     )
 
         EffectFunctionNotFound region name ->
-            Report.report "EFFECT PROBLEM" region [] <|
+            Report.report "EFFECT PROBLEM" region <|
                 Code.toSnippet source
                     region
                     Nothing
@@ -570,7 +547,7 @@ toReport source err =
                 messageThatEndsWithPunctuation =
                     "You are trying to expose `" ++ name ++ "` multiple times!"
             in
-            Report.report "REDUNDANT EXPORT" r2 [] <|
+            Report.report "REDUNDANT EXPORT" r2 <|
                 Code.toPair source
                     r1
                     r2
@@ -588,7 +565,7 @@ toReport source err =
                 suggestions =
                     Suggest.sort rawName identity possibleNames |> List.take 4
             in
-            Report.report "UNKNOWN EXPORT" region suggestions <|
+            Report.report "UNKNOWN EXPORT" region <|
                 let
                     ( a, thing, name ) =
                         toKindInfo kind rawName
@@ -632,7 +609,7 @@ toReport source err =
                     ]
 
         ExportOpenAlias region name ->
-            Report.report "BAD EXPORT" region [] <|
+            Report.report "BAD EXPORT" region <|
                 Code.toSnippet source
                     region
                     Nothing
@@ -646,7 +623,7 @@ toReport source err =
                     )
 
         ImportCtorByName region ctor tipe ->
-            Report.report "BAD IMPORT" region [] <|
+            Report.report "BAD IMPORT" region <|
                 Code.toSnippet source
                     region
                     Nothing
@@ -681,18 +658,8 @@ toReport source err =
                         ]
                     )
 
-        ImportNotFound region name _ ->
-            Report.report "UNKNOWN IMPORT" region [] <|
-                Code.toSnippet source
-                    region
-                    Nothing
-                    ( D.reflow
-                        ("I could not find a `" ++ name ++ "` module to import!")
-                    , D.empty
-                    )
-
         ImportOpenAlias region name ->
-            Report.report "BAD IMPORT" region [] <|
+            Report.report "BAD IMPORT" region <|
                 Code.toSnippet source
                     region
                     Nothing
@@ -708,7 +675,7 @@ toReport source err =
                 suggestions =
                     Suggest.sort home identity possibleNames |> List.take 4
             in
-            Report.report "BAD IMPORT" region suggestions <|
+            Report.report "BAD IMPORT" region <|
                 Code.toSnippet source
                     region
                     Nothing
@@ -750,7 +717,7 @@ toReport source err =
 
         NotFoundBinop region op locals ->
             if op == "===" then
-                Report.report "UNKNOWN OPERATOR" region [ "==" ] <|
+                Report.report "UNKNOWN OPERATOR" region <|
                     Code.toSnippet source
                         region
                         Nothing
@@ -759,7 +726,7 @@ toReport source err =
                         )
 
             else if op == "!=" || op == "!==" then
-                Report.report "UNKNOWN OPERATOR" region [ "/=" ] <|
+                Report.report "UNKNOWN OPERATOR" region <|
                     Code.toSnippet source
                         region
                         Nothing
@@ -776,7 +743,7 @@ toReport source err =
                         )
 
             else if op == "**" then
-                Report.report "UNKNOWN OPERATOR" region [ "^", "*" ] <|
+                Report.report "UNKNOWN OPERATOR" region <|
                     Code.toSnippet source
                         region
                         Nothing
@@ -787,7 +754,7 @@ toReport source err =
                         )
 
             else if op == "%" then
-                Report.report "UNKNOWN OPERATOR" region [] <|
+                Report.report "UNKNOWN OPERATOR" region <|
                     Code.toSnippet source
                         region
                         Nothing
@@ -817,7 +784,7 @@ toReport source err =
                                 |> D.a (D.fromChars ")")
                             )
                 in
-                Report.report "UNKNOWN OPERATOR" region suggestions <|
+                Report.report "UNKNOWN OPERATOR" region <|
                     Code.toSnippet source
                         region
                         Nothing
@@ -847,7 +814,7 @@ toReport source err =
                         )
 
         PatternHasRecordCtor region name ->
-            Report.report "BAD PATTERN" region [] <|
+            Report.report "BAD PATTERN" region <|
                 Code.toSnippet source
                     region
                     Nothing
@@ -864,7 +831,7 @@ toReport source err =
             let
                 formatDetails : ( String, D.Doc ) -> Report.Report
                 formatDetails ( aBadKindOfThing, elaboration ) =
-                    Report.report "PORT ERROR" region [] <|
+                    Report.report "PORT ERROR" region <|
                         Code.toSnippet source
                             region
                             Nothing
@@ -921,7 +888,7 @@ toReport source err =
             let
                 formatDetails : ( String, D.Doc ) -> Report.Report
                 formatDetails ( before, after ) =
-                    Report.report "BAD PORT" region [] <|
+                    Report.report "BAD PORT" region <|
                         Code.toSnippet source
                             region
                             Nothing
@@ -1032,7 +999,7 @@ toReport source err =
                     )
             )
                 |> Code.toSnippet source region Nothing
-                |> Report.report "CYCLIC DEFINITION" region []
+                |> Report.report "CYCLIC DEFINITION" region
 
         RecursiveLet (A.At region name) names ->
             (case names of
@@ -1080,7 +1047,7 @@ toReport source err =
                     )
             )
                 |> Code.toSnippet source region Nothing
-                |> Report.report "CYCLIC VALUE" region []
+                |> Report.report "CYCLIC VALUE" region
 
         Shadowing name r1 r2 ->
             let
@@ -1091,7 +1058,7 @@ toReport source err =
                         , D.link "Note" "Linters advise against shadowing, so Elm makes “best practices” the default. Read" "shadowing" "for more details on this choice."
                         ]
             in
-            Report.report "SHADOWING" r2 [] <|
+            Report.report "SHADOWING" r2 <|
                 Code.toPair source
                     r1
                     r2
@@ -1159,7 +1126,7 @@ toReport source err =
                             , "Move the constructors without fields to the start of the type, or split the type into smaller ones."
                             )
             in
-            Report.report title region [] <|
+            Report.report title region <|
                 Code.toSnippet source
                     region
                     Nothing
@@ -1168,7 +1135,7 @@ toReport source err =
                     )
 
         TupleLargerThanThree region ->
-            Report.report "BAD TUPLE" region [] <|
+            Report.report "BAD TUPLE" region <|
                 Code.toSnippet source
                     region
                     Nothing
@@ -1234,7 +1201,7 @@ toReport source err =
                                       )
                                     )
                     in
-                    Report.report title aliasRegion [] <|
+                    Report.report title aliasRegion <|
                         Code.toSnippet source
                             aliasRegion
                             subRegion
@@ -1334,7 +1301,7 @@ toReport source err =
                                         ++ D.commaSep (D.fromChars "and") D.dullyellow (List.map D.fromName unused)
                                         ++ [ D.fromChars "are", D.fromChars "delared,", D.fromChars "but", D.fromChars "not", D.fromChars "used." ]
                     in
-                    Report.report "TYPE VARIABLE PROBLEMS" aliasRegion [] <|
+                    Report.report "TYPE VARIABLE PROBLEMS" aliasRegion <|
                         Code.toSnippet source
                             aliasRegion
                             Nothing
@@ -1406,7 +1373,7 @@ unboundTypeVars source declRegion tipe typeName allVars ( unboundVar, varRegion 
                         ++ [ D.fromChars "definition:" ]
                     )
     in
-    Report.report title declRegion [] <|
+    Report.report title declRegion <|
         Code.toSnippet source
             declRegion
             subRegion
@@ -1436,7 +1403,7 @@ opens with `messageThatEndsWithPunctuation` and is located at `r2`.
 -}
 nameClash : Code.Source -> A.Region -> A.Region -> String -> Report.Report
 nameClash source r1 r2 messageThatEndsWithPunctuation =
-    Report.report "NAME CLASH" r2 [] <|
+    Report.report "NAME CLASH" r2 <|
         Code.toPair source
             r1
             r2
@@ -1527,7 +1494,7 @@ ambiguousName source region maybePrefix name h hs thing =
             )
     )
         |> Code.toSnippet source region Nothing
-        |> Report.report "AMBIGUOUS NAME" region []
+        |> Report.report "AMBIGUOUS NAME" region
 
 
 {-| Builds the report for `name`, a `thing` such as a variable or a type, which
@@ -1575,7 +1542,7 @@ notFound source region maybePrefix name thing { locals, quals } =
                         , D.link "Hint" "Read" "imports" "to see how `import` declarations work in Elm."
                         ]
     in
-    Report.report "NAMING ERROR" region nearbyNames <|
+    Report.report "NAMING ERROR" region <|
         Code.toSnippet source
             region
             Nothing
@@ -1623,7 +1590,7 @@ aliasRecursionReport : Code.Source -> A.Region -> Name -> List Name -> Src.Type 
 aliasRecursionReport source region name args tipe others =
     case others of
         [] ->
-            Report.report "ALIAS PROBLEM" region [] <|
+            Report.report "ALIAS PROBLEM" region <|
                 Code.toSnippet source
                     region
                     Nothing
@@ -1636,7 +1603,7 @@ aliasRecursionReport source region name args tipe others =
                     )
 
         _ ->
-            Report.report "ALIAS PROBLEM" region [] <|
+            Report.report "ALIAS PROBLEM" region <|
                 Code.toSnippet source
                     region
                     Nothing
@@ -1770,7 +1737,7 @@ errorEncoder error =
                 , A.regionEncoder r2
                 ]
 
-        DuplicateBinop name r1 r2 ->
+        DuplicateField name r1 r2 ->
             Bytes.Encode.sequence
                 [ Bytes.Encode.unsignedInt8 10
                 , BE.string name
@@ -1778,17 +1745,9 @@ errorEncoder error =
                 , A.regionEncoder r2
                 ]
 
-        DuplicateField name r1 r2 ->
-            Bytes.Encode.sequence
-                [ Bytes.Encode.unsignedInt8 11
-                , BE.string name
-                , A.regionEncoder r1
-                , A.regionEncoder r2
-                ]
-
         DuplicateAliasArg typeName name r1 r2 ->
             Bytes.Encode.sequence
-                [ Bytes.Encode.unsignedInt8 12
+                [ Bytes.Encode.unsignedInt8 11
                 , BE.string typeName
                 , BE.string name
                 , A.regionEncoder r1
@@ -1797,7 +1756,7 @@ errorEncoder error =
 
         DuplicateUnionArg typeName name r1 r2 ->
             Bytes.Encode.sequence
-                [ Bytes.Encode.unsignedInt8 13
+                [ Bytes.Encode.unsignedInt8 12
                 , BE.string typeName
                 , BE.string name
                 , A.regionEncoder r1
@@ -1806,7 +1765,7 @@ errorEncoder error =
 
         DuplicatePattern context name r1 r2 ->
             Bytes.Encode.sequence
-                [ Bytes.Encode.unsignedInt8 14
+                [ Bytes.Encode.unsignedInt8 13
                 , duplicatePatternContextEncoder context
                 , BE.string name
                 , A.regionEncoder r1
@@ -1815,21 +1774,21 @@ errorEncoder error =
 
         EffectNotFound region name ->
             Bytes.Encode.sequence
-                [ Bytes.Encode.unsignedInt8 15
+                [ Bytes.Encode.unsignedInt8 14
                 , A.regionEncoder region
                 , BE.string name
                 ]
 
         EffectFunctionNotFound region name ->
             Bytes.Encode.sequence
-                [ Bytes.Encode.unsignedInt8 16
+                [ Bytes.Encode.unsignedInt8 15
                 , A.regionEncoder region
                 , BE.string name
                 ]
 
         ExportDuplicate name r1 r2 ->
             Bytes.Encode.sequence
-                [ Bytes.Encode.unsignedInt8 17
+                [ Bytes.Encode.unsignedInt8 16
                 , BE.string name
                 , A.regionEncoder r1
                 , A.regionEncoder r2
@@ -1837,7 +1796,7 @@ errorEncoder error =
 
         ExportNotFound region kind rawName possibleNames ->
             Bytes.Encode.sequence
-                [ Bytes.Encode.unsignedInt8 18
+                [ Bytes.Encode.unsignedInt8 17
                 , A.regionEncoder region
                 , varKindEncoder kind
                 , BE.string rawName
@@ -1846,37 +1805,29 @@ errorEncoder error =
 
         ExportOpenAlias region name ->
             Bytes.Encode.sequence
-                [ Bytes.Encode.unsignedInt8 19
+                [ Bytes.Encode.unsignedInt8 18
                 , A.regionEncoder region
                 , BE.string name
                 ]
 
         ImportCtorByName region ctor tipe ->
             Bytes.Encode.sequence
-                [ Bytes.Encode.unsignedInt8 20
+                [ Bytes.Encode.unsignedInt8 19
                 , A.regionEncoder region
                 , BE.string ctor
                 , BE.string tipe
                 ]
 
-        ImportNotFound region name suggestions ->
-            Bytes.Encode.sequence
-                [ Bytes.Encode.unsignedInt8 21
-                , A.regionEncoder region
-                , BE.string name
-                , BE.list ModuleName.canonicalEncoder suggestions
-                ]
-
         ImportOpenAlias region name ->
             Bytes.Encode.sequence
-                [ Bytes.Encode.unsignedInt8 22
+                [ Bytes.Encode.unsignedInt8 20
                 , A.regionEncoder region
                 , BE.string name
                 ]
 
         ImportExposingNotFound region home value possibleNames ->
             Bytes.Encode.sequence
-                [ Bytes.Encode.unsignedInt8 23
+                [ Bytes.Encode.unsignedInt8 21
                 , A.regionEncoder region
                 , ModuleName.canonicalEncoder home
                 , BE.string value
@@ -1885,7 +1836,7 @@ errorEncoder error =
 
         NotFoundVar region prefix name possibleNames ->
             Bytes.Encode.sequence
-                [ Bytes.Encode.unsignedInt8 24
+                [ Bytes.Encode.unsignedInt8 22
                 , A.regionEncoder region
                 , BE.maybe BE.string prefix
                 , BE.string name
@@ -1894,7 +1845,7 @@ errorEncoder error =
 
         NotFoundType region prefix name possibleNames ->
             Bytes.Encode.sequence
-                [ Bytes.Encode.unsignedInt8 25
+                [ Bytes.Encode.unsignedInt8 23
                 , A.regionEncoder region
                 , BE.maybe BE.string prefix
                 , BE.string name
@@ -1903,7 +1854,7 @@ errorEncoder error =
 
         NotFoundVariant region prefix name possibleNames ->
             Bytes.Encode.sequence
-                [ Bytes.Encode.unsignedInt8 26
+                [ Bytes.Encode.unsignedInt8 24
                 , A.regionEncoder region
                 , BE.maybe BE.string prefix
                 , BE.string name
@@ -1912,7 +1863,7 @@ errorEncoder error =
 
         NotFoundBinop region op locals ->
             Bytes.Encode.sequence
-                [ Bytes.Encode.unsignedInt8 27
+                [ Bytes.Encode.unsignedInt8 25
                 , A.regionEncoder region
                 , BE.string op
                 , BE.everySet BE.string locals
@@ -1920,14 +1871,14 @@ errorEncoder error =
 
         PatternHasRecordCtor region name ->
             Bytes.Encode.sequence
-                [ Bytes.Encode.unsignedInt8 28
+                [ Bytes.Encode.unsignedInt8 26
                 , A.regionEncoder region
                 , BE.string name
                 ]
 
         PortPayloadInvalid region portName badType invalidPayload ->
             Bytes.Encode.sequence
-                [ Bytes.Encode.unsignedInt8 29
+                [ Bytes.Encode.unsignedInt8 27
                 , A.regionEncoder region
                 , BE.string portName
                 , Can.typeEncoder badType
@@ -1936,7 +1887,7 @@ errorEncoder error =
 
         PortTypeInvalid region name portProblem ->
             Bytes.Encode.sequence
-                [ Bytes.Encode.unsignedInt8 30
+                [ Bytes.Encode.unsignedInt8 28
                 , A.regionEncoder region
                 , BE.string name
                 , portProblemEncoder portProblem
@@ -1944,7 +1895,7 @@ errorEncoder error =
 
         RecursiveAlias region name args tipe others ->
             Bytes.Encode.sequence
-                [ Bytes.Encode.unsignedInt8 31
+                [ Bytes.Encode.unsignedInt8 29
                 , A.regionEncoder region
                 , BE.string name
                 , BE.list BE.string args
@@ -1954,7 +1905,7 @@ errorEncoder error =
 
         RecursiveDecl region name names ->
             Bytes.Encode.sequence
-                [ Bytes.Encode.unsignedInt8 32
+                [ Bytes.Encode.unsignedInt8 30
                 , A.regionEncoder region
                 , BE.string name
                 , BE.list BE.string names
@@ -1962,14 +1913,14 @@ errorEncoder error =
 
         RecursiveLet name names ->
             Bytes.Encode.sequence
-                [ Bytes.Encode.unsignedInt8 33
+                [ Bytes.Encode.unsignedInt8 31
                 , A.locatedEncoder BE.string name
                 , BE.list BE.string names
                 ]
 
         Shadowing name r1 r2 ->
             Bytes.Encode.sequence
-                [ Bytes.Encode.unsignedInt8 34
+                [ Bytes.Encode.unsignedInt8 32
                 , BE.string name
                 , A.regionEncoder r1
                 , A.regionEncoder r2
@@ -1977,7 +1928,7 @@ errorEncoder error =
 
         TooLarge region what actual limit ->
             Bytes.Encode.sequence
-                [ Bytes.Encode.unsignedInt8 38
+                [ Bytes.Encode.unsignedInt8 36
                 , A.regionEncoder region
                 , tooLargeWhatEncoder what
                 , BE.int actual
@@ -1986,13 +1937,13 @@ errorEncoder error =
 
         TupleLargerThanThree region ->
             Bytes.Encode.sequence
-                [ Bytes.Encode.unsignedInt8 35
+                [ Bytes.Encode.unsignedInt8 33
                 , A.regionEncoder region
                 ]
 
         TypeVarsUnboundInUnion unionRegion typeName allVars unbound unbounds ->
             Bytes.Encode.sequence
-                [ Bytes.Encode.unsignedInt8 36
+                [ Bytes.Encode.unsignedInt8 34
                 , A.regionEncoder unionRegion
                 , BE.string typeName
                 , BE.list BE.string allVars
@@ -2002,7 +1953,7 @@ errorEncoder error =
 
         TypeVarsMessedUpInAlias aliasRegion typeName allVars unusedVars unboundVars ->
             Bytes.Encode.sequence
-                [ Bytes.Encode.unsignedInt8 37
+                [ Bytes.Encode.unsignedInt8 35
                 , A.regionEncoder aliasRegion
                 , BE.string typeName
                 , BE.list BE.string allVars
@@ -2091,136 +2042,124 @@ errorDecoder =
                             A.regionDecoder
 
                     10 ->
-                        Bytes.Decode.map3 DuplicateBinop
-                            BD.string
-                            A.regionDecoder
-                            A.regionDecoder
-
-                    11 ->
                         Bytes.Decode.map3 DuplicateField
                             BD.string
                             A.regionDecoder
                             A.regionDecoder
 
-                    12 ->
+                    11 ->
                         Bytes.Decode.map4 DuplicateAliasArg
                             BD.string
                             BD.string
                             A.regionDecoder
                             A.regionDecoder
 
-                    13 ->
+                    12 ->
                         Bytes.Decode.map4 DuplicateUnionArg
                             BD.string
                             BD.string
                             A.regionDecoder
                             A.regionDecoder
 
-                    14 ->
+                    13 ->
                         Bytes.Decode.map4 DuplicatePattern
                             duplicatePatternContextDecoder
                             BD.string
                             A.regionDecoder
                             A.regionDecoder
 
-                    15 ->
+                    14 ->
                         Bytes.Decode.map2 EffectNotFound
                             A.regionDecoder
                             BD.string
 
-                    16 ->
+                    15 ->
                         Bytes.Decode.map2 EffectFunctionNotFound
                             A.regionDecoder
                             BD.string
 
-                    17 ->
+                    16 ->
                         Bytes.Decode.map3 ExportDuplicate
                             BD.string
                             A.regionDecoder
                             A.regionDecoder
 
-                    18 ->
+                    17 ->
                         Bytes.Decode.map4 ExportNotFound
                             A.regionDecoder
                             varKindDecoder
                             BD.string
                             (BD.list BD.string)
 
-                    19 ->
+                    18 ->
                         Bytes.Decode.map2 ExportOpenAlias
                             A.regionDecoder
                             BD.string
 
-                    20 ->
+                    19 ->
                         Bytes.Decode.map3 ImportCtorByName
                             A.regionDecoder
                             BD.string
                             BD.string
 
-                    21 ->
-                        Bytes.Decode.map3 ImportNotFound
-                            A.regionDecoder
-                            BD.string
-                            (BD.list ModuleName.canonicalDecoder)
-
-                    22 ->
+                    20 ->
                         Bytes.Decode.map2 ImportOpenAlias
                             A.regionDecoder
                             BD.string
 
-                    23 ->
+                    21 ->
                         Bytes.Decode.map4 ImportExposingNotFound
                             A.regionDecoder
                             ModuleName.canonicalDecoder
                             BD.string
                             (BD.list BD.string)
 
-                    24 ->
+                    22 ->
                         Bytes.Decode.map4 NotFoundVar
                             A.regionDecoder
                             (BD.maybe BD.string)
                             BD.string
                             possibleNamesDecoder
 
-                    25 ->
+                    23 ->
                         Bytes.Decode.map4 NotFoundType
                             A.regionDecoder
                             (BD.maybe BD.string)
                             BD.string
                             possibleNamesDecoder
 
-                    26 ->
+                    24 ->
                         Bytes.Decode.map4 NotFoundVariant
                             A.regionDecoder
                             (BD.maybe BD.string)
                             BD.string
                             possibleNamesDecoder
 
-                    27 ->
+                    25 ->
                         Bytes.Decode.map3 NotFoundBinop
                             A.regionDecoder
                             BD.string
                             (BD.everySet identity BD.string)
 
-                    28 ->
+                    26 ->
                         Bytes.Decode.map2 PatternHasRecordCtor
                             A.regionDecoder
                             BD.string
 
-                    29 ->
+                    27 ->
                         Bytes.Decode.map4 PortPayloadInvalid
                             A.regionDecoder
                             BD.string
                             Can.typeDecoder
                             invalidPayloadDecoder
 
-                    30 ->
+                    28 ->
                         Bytes.Decode.map3 PortTypeInvalid
                             A.regionDecoder
                             BD.string
                             portProblemDecoder
 
-                    31 ->
+                    29 ->
                         Bytes.Decode.map5 RecursiveAlias
                             A.regionDecoder
                             BD.string
@@ -2228,27 +2167,27 @@ errorDecoder =
                             Src.typeDecoder
                             (BD.list BD.string)
 
-                    32 ->
+                    30 ->
                         Bytes.Decode.map3 RecursiveDecl
                             A.regionDecoder
                             BD.string
                             (BD.list BD.string)
 
-                    33 ->
+                    31 ->
                         Bytes.Decode.map2 RecursiveLet
                             (A.locatedDecoder BD.string)
                             (BD.list BD.string)
 
-                    34 ->
+                    32 ->
                         Bytes.Decode.map3 Shadowing
                             BD.string
                             A.regionDecoder
                             A.regionDecoder
 
-                    35 ->
+                    33 ->
                         Bytes.Decode.map TupleLargerThanThree A.regionDecoder
 
-                    36 ->
+                    34 ->
                         Bytes.Decode.map5 TypeVarsUnboundInUnion
                             A.regionDecoder
                             BD.string
@@ -2256,7 +2195,7 @@ errorDecoder =
                             (BD.jsonPair BD.string A.regionDecoder)
                             (BD.list (BD.jsonPair BD.string A.regionDecoder))
 
-                    37 ->
+                    35 ->
                         Bytes.Decode.map5 TypeVarsMessedUpInAlias
                             A.regionDecoder
                             BD.string
@@ -2264,7 +2203,7 @@ errorDecoder =
                             (BD.list (BD.jsonPair BD.string A.regionDecoder))
                             (BD.list (BD.jsonPair BD.string A.regionDecoder))
 
-                    38 ->
+                    36 ->
                         Bytes.Decode.map4 TooLarge
                             A.regionDecoder
                             tooLargeWhatDecoder
@@ -2434,11 +2373,8 @@ varKindEncoder varKind =
             BadVar ->
                 1
 
-            BadPattern ->
-                2
-
             BadType ->
-                3
+                2
         )
 
 
@@ -2458,9 +2394,6 @@ varKindDecoder =
                         Bytes.Decode.succeed BadVar
 
                     2 ->
-                        Bytes.Decode.succeed BadPattern
-
-                    3 ->
                         Bytes.Decode.succeed BadType
 
                     _ ->

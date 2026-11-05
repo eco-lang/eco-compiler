@@ -129,7 +129,7 @@ toReport : Code.Source -> Error -> Report.Report
 toReport source (Error { region, name, unimportedModules, problem }) =
     case problem of
         NotFound ->
-            Report.report "MODULE NOT FOUND" region [] <|
+            Report.report "MODULE NOT FOUND" region <|
                 Code.toSnippet source
                     region
                     Nothing
@@ -170,7 +170,7 @@ toReport source (Error { region, name, unimportedModules, problem }) =
                     )
 
         Ambiguous path _ pkg _ ->
-            Report.report "AMBIGUOUS IMPORT" region [] <|
+            Report.report "AMBIGUOUS IMPORT" region <|
                 Code.toSnippet source
                     region
                     Nothing
@@ -216,7 +216,7 @@ toReport source (Error { region, name, unimportedModules, problem }) =
                     )
 
         AmbiguousLocal path1 path2 paths ->
-            Report.report "AMBIGUOUS IMPORT" region [] <|
+            Report.report "AMBIGUOUS IMPORT" region <|
                 Code.toSnippet source
                     region
                     Nothing
@@ -232,7 +232,7 @@ toReport source (Error { region, name, unimportedModules, problem }) =
                     )
 
         AmbiguousForeign pkg1 pkg2 pkgs ->
-            Report.report "AMBIGUOUS IMPORT" region [] <|
+            Report.report "AMBIGUOUS IMPORT" region <|
                 Code.toSnippet source
                     region
                     Nothing

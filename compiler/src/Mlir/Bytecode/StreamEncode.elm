@@ -368,44 +368,39 @@ addDialectOp fullName (StreamDialectBuilder b) =
             StreamDialectBuilder b
 
         Nothing ->
-            case String.split "." fullName of
-                dialect :: rest ->
-                    let
-                        suffix =
-                            String.join "." rest
+            let
+                ( dialect, suffix ) =
+                    StringTable.splitDialect fullName
 
-                        dIdx =
-                            Dict.get dialect b.dialectSet |> Maybe.withDefault b.numDialects
+                dIdx =
+                    Dict.get dialect b.dialectSet |> Maybe.withDefault b.numDialects
 
-                        isNewDialect =
-                            not (Dict.member dialect b.dialectSet)
-                    in
-                    StreamDialectBuilder
-                        { dialectList =
-                            if isNewDialect then
-                                dialect :: b.dialectList
+                isNewDialect =
+                    not (Dict.member dialect b.dialectSet)
+            in
+            StreamDialectBuilder
+                { dialectList =
+                    if isNewDialect then
+                        dialect :: b.dialectList
 
-                            else
-                                b.dialectList
-                        , dialectSet =
-                            if isNewDialect then
-                                Dict.insert dialect b.numDialects b.dialectSet
+                    else
+                        b.dialectList
+                , dialectSet =
+                    if isNewDialect then
+                        Dict.insert dialect b.numDialects b.dialectSet
 
-                            else
-                                b.dialectSet
-                        , numDialects =
-                            if isNewDialect then
-                                b.numDialects + 1
+                    else
+                        b.dialectSet
+                , numDialects =
+                    if isNewDialect then
+                        b.numDialects + 1
 
-                            else
-                                b.numDialects
-                        , opEntries = { dialectIdx = dIdx, opSuffix = suffix } :: b.opEntries
-                        , opSet = Dict.insert fullName b.nextOpIndex b.opSet
-                        , nextOpIndex = b.nextOpIndex + 1
-                        }
-
-                _ ->
-                    StreamDialectBuilder b
+                    else
+                        b.numDialects
+                , opEntries = { dialectIdx = dIdx, opSuffix = suffix } :: b.opEntries
+                , opSet = Dict.insert fullName b.nextOpIndex b.opSet
+                , nextOpIndex = b.nextOpIndex + 1
+                }
 
 
 {-| Returns every operation name numbered so far, written in full, with its

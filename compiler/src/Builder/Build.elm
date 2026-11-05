@@ -314,7 +314,7 @@ fromExposed style root maybeBuildDir maybeKernelPackage details docsGoal stats (
     Reporting.trackBuild style <|
         \key ->
             makeEnv WriteCaches key root maybeBuildDir maybeKernelPackage details False stats
-                |> Task.andThen (crawlExposed root maybeBuildDir details docsGoal (e :: es))
+                |> Task.andThen (crawlExposed details docsGoal (e :: es))
                 |> Task.andThen (compileExposed root maybeBuildDir details docsGoal exposed)
 
 
@@ -322,14 +322,14 @@ fromExposed style root maybeBuildDir maybeKernelPackage details docsGoal stats (
 need documentation when `docsGoal` does, and returns every crawled module's
 status with the MVar the interfaces will arrive in.
 -}
-crawlExposed : FilePath -> Maybe String -> Details.Details -> DocsGoal docs -> List ModuleName.Raw -> Env -> Task Never { dmvar : MVar (Maybe Dependencies), statuses : Dict ModuleName.Raw Status, env : Env }
-crawlExposed root maybeBuildDir details docsGoal modules env =
+crawlExposed : Details.Details -> DocsGoal docs -> List ModuleName.Raw -> Env -> Task Never { dmvar : MVar (Maybe Dependencies), statuses : Dict ModuleName.Raw Status, env : Env }
+crawlExposed details docsGoal modules env =
     let
         docsNeed : DocsNeed
         docsNeed =
             toDocsNeed docsGoal
     in
-    Details.loadInterfaces root maybeBuildDir details
+    Details.loadInterfaces details
         |> Task.andThen (crawlExposedModules env docsNeed modules)
         |> Task.map (buildCrawlResult env)
 
@@ -504,7 +504,7 @@ type Artifacts
 `Fresh` is a module compiled in this build, including an outside root. It
 carries its interface and its erased graph, which on a typed build is the
 presence-only stub `Compiler.IR.Optimized` describes, and its typed graph and
-type environment, which are `Nothing` on an untyped build.
+type environment together, `Nothing` on an untyped build.
 
 `Cached` is a module reused from disk without compiling. Its `Bool` says
 whether it defines `main`, and its MVar holds its interface once some module
@@ -512,7 +512,7 @@ has needed it read from the `.eci` file (see `CachedInterface`).
 
 -}
 type Module
-    = Fresh ModuleName.Raw I.Interface Opt.LocalGraph (Maybe (TOpt.LocalGraph Name)) (Maybe TypeEnv.ModuleTypeEnv)
+    = Fresh ModuleName.Raw I.Interface Opt.LocalGraph (Maybe TMod.TypedModuleArtifact)
     | Cached ModuleName.Raw Bool (MVar CachedInterface)
 
 
@@ -575,7 +575,7 @@ handleFoundRoots root maybeBuildDir details env elroots =
             Task.succeed (Err (Exit.BuildProjectProblem problem))
 
         Ok lroots ->
-            crawlPaths root maybeBuildDir details env lroots
+            crawlPaths details env lroots
                 |> Task.andThen (compilePaths root maybeBuildDir details env)
 
 
@@ -592,9 +592,9 @@ type alias PathsBuildContext =
 
 {-| Starts loading the dependency interfaces and crawls from the roots.
 -}
-crawlPaths : FilePath -> Maybe String -> Details.Details -> Env -> NE.Nonempty RootLocation -> Task Never PathsBuildContext
-crawlPaths root maybeBuildDir details env lroots =
-    Details.loadInterfaces root maybeBuildDir details
+crawlPaths : Details.Details -> Env -> NE.Nonempty RootLocation -> Task Never PathsBuildContext
+crawlPaths details env lroots =
+    Details.loadInterfaces details
         |> Task.andThen (crawlPathRoots env lroots)
 
 
@@ -775,7 +775,7 @@ getRootName root =
         Inside name ->
             name
 
-        Outside name _ _ _ _ ->
+        Outside name _ _ _ ->
             name
 
 
@@ -1090,7 +1090,7 @@ type alias ResultDict =
 
 `RNew` and `RSame` are modules compiled in this build. Each carries the new
 details entry, the interface, the erased graph, the typed graph and type
-environment (`Nothing` on an untyped build) and the documentation (`Nothing`
+environment together (`Nothing` on an untyped build) and the documentation (`Nothing`
 unless it was needed). `RNew` means the interface differs from the `.eci` file
 on disk, or none could be read; `RSame` means it is the same.
 
@@ -1114,8 +1114,8 @@ decoded.
 
 -}
 type BResult
-    = RNew Details.Local I.Interface Opt.LocalGraph (Maybe (TOpt.LocalGraph Name)) (Maybe TypeEnv.ModuleTypeEnv) (Maybe Docs.Module)
-    | RSame Details.Local I.Interface Opt.LocalGraph (Maybe (TOpt.LocalGraph Name)) (Maybe TypeEnv.ModuleTypeEnv) (Maybe Docs.Module)
+    = RNew Details.Local I.Interface Opt.LocalGraph (Maybe TMod.TypedModuleArtifact) (Maybe Docs.Module)
+    | RSame Details.Local I.Interface Opt.LocalGraph (Maybe TMod.TypedModuleArtifact) (Maybe Docs.Module)
     | RCached Bool Details.BuildID (MVar CachedInterface)
     | RNotFound Import.Problem
     | RProblem ModuleError.Module
@@ -1522,10 +1522,10 @@ checkDepsHelp root maybeBuildDir results deps new same cached importProblems isB
                 |> Task.andThen
                     (\result ->
                         case result of
-                            RNew (Details.Local localData) iface _ _ _ _ ->
+                            RNew (Details.Local localData) iface _ _ _ ->
                                 checkDepsHelp root maybeBuildDir results otherDeps (( dep, iface ) :: new) same cached importProblems isBlocked (max localData.lastChange lastDepChange) lastCompile
 
-                            RSame (Details.Local localData) iface _ _ _ _ ->
+                            RSame (Details.Local localData) iface _ _ _ ->
                                 checkDepsHelp root maybeBuildDir results otherDeps new (( dep, iface ) :: same) cached importProblems isBlocked (max localData.lastChange lastDepChange) lastCompile
 
                             RCached _ lastChange mvar ->
@@ -1777,10 +1777,7 @@ checkForCyclesHelp sccs =
                 Graph.AcyclicSCC _ ->
                     checkForCyclesHelp otherSccs
 
-                Graph.CyclicSCC [] ->
-                    checkForCyclesHelp otherSccs
-
-                Graph.CyclicSCC (m :: ms) ->
+                Graph.CyclicSCC m ms ->
                     Just (NE.Nonempty m ms)
 
 
@@ -1991,8 +1988,7 @@ type alias CompileResultContext =
     , name : ModuleName.Raw
     , iface : I.Interface
     , objects : Opt.LocalGraph
-    , typedObjects : Maybe (TOpt.LocalGraph Name)
-    , typeEnv : Maybe TypeEnv.ModuleTypeEnv
+    , typed : Maybe TMod.TypedModuleArtifact
     , docs : Maybe Docs.Module
     }
 
@@ -2019,7 +2015,7 @@ compileWithoutTypedOpt :
     -> Task Never BResult
 compileWithoutTypedOpt key root maybeBuildDir cacheMode pkg buildID docsNeed path time deps main lastChange source ifaces modul =
     Compile.compile pkg ifaces modul
-        |> Task.andThen (handleCompileResult key root maybeBuildDir cacheMode pkg buildID docsNeed path time deps main lastChange source modul Nothing)
+        |> Task.andThen (handleCompileResult key root maybeBuildDir cacheMode pkg buildID docsNeed path time deps main lastChange source modul)
 
 
 {-| Turns the outcome of compiling a module into its result. Errors, and
@@ -2041,10 +2037,9 @@ handleCompileResult :
     -> Details.BuildID
     -> String
     -> Src.Module
-    -> Maybe (TOpt.LocalGraph Name)
     -> Result Error.Error Compile.Artifacts
     -> Task Never BResult
-handleCompileResult key root maybeBuildDir cacheMode pkg buildID docsNeed path time deps main lastChange source modul maybeTypedObjects result =
+handleCompileResult key root maybeBuildDir cacheMode pkg buildID docsNeed path time deps main lastChange source modul result =
     case result of
         Err err ->
             ModuleError.Module (Src.getName modul) path time source err |> RProblem |> Task.succeed
@@ -2070,8 +2065,7 @@ handleCompileResult key root maybeBuildDir cacheMode pkg buildID docsNeed path t
                             , name = Src.getName modul
                             , iface = I.fromModule pkg canonical annotations
                             , objects = objects
-                            , typedObjects = maybeTypedObjects
-                            , typeEnv = Nothing
+                            , typed = Nothing
                             , docs = docs
                             }
                     in
@@ -2129,7 +2123,7 @@ typed build, one with typed objects, writes none.
 -}
 writeUntypedObjectsIfNeeded : CompileResultContext -> Task Never ()
 writeUntypedObjectsIfNeeded ctx =
-    case ( ctx.cacheMode, ctx.typedObjects ) of
+    case ( ctx.cacheMode, ctx.typed ) of
         ( OneShot, _ ) ->
             Task.succeed ()
 
@@ -2145,15 +2139,8 @@ environment, on a typed build that writes caches.
 -}
 writeTypedObjectsIfNeeded : CompileResultContext -> Task Never ()
 writeTypedObjectsIfNeeded ctx =
-    case ( ctx.cacheMode, ctx.typedObjects, ctx.typeEnv ) of
-        ( WriteCaches, Just typedObjs, Just moduleEnv ) ->
-            let
-                artifact : TMod.TypedModuleArtifact
-                artifact =
-                    { typedGraph = typedObjs
-                    , typeEnv = moduleEnv
-                    }
-            in
+    case ( ctx.cacheMode, ctx.typed ) of
+        ( WriteCaches, Just artifact ) ->
             File.writeBinary TMod.typedModuleArtifactEncoder (Stuff.ecotWithBuildDir ctx.root ctx.maybeBuildDir ctx.name) artifact
 
         _ ->
@@ -2176,7 +2163,7 @@ buildRSame ctx =
                 , lastCompile = ctx.buildID
                 }
     in
-    RSame local ctx.iface ctx.objects ctx.typedObjects ctx.typeEnv ctx.docs
+    RSame local ctx.iface ctx.objects ctx.typed ctx.docs
 
 
 {-| Returns `RNew` with a details entry that records the current build as both
@@ -2195,7 +2182,7 @@ buildRNew ctx =
                 , lastCompile = ctx.buildID
                 }
     in
-    RNew local ctx.iface ctx.objects ctx.typedObjects ctx.typeEnv ctx.docs
+    RNew local ctx.iface ctx.objects ctx.typed ctx.docs
 
 
 {-| Compiles a module through the typed pipeline and handles the outcome (see
@@ -2269,8 +2256,7 @@ handleTypedCompileResult key root maybeBuildDir cacheMode pkg buildID docsNeed p
                             , name = Src.getName modul
                             , iface = I.fromModule pkg typedArtifacts.canonical typedArtifacts.annotations
                             , objects = typedArtifacts.objects
-                            , typedObjects = Just typedArtifacts.typedObjects
-                            , typeEnv = Just typedArtifacts.typeEnv
+                            , typed = Just { typedGraph = typedArtifacts.typedObjects, typeEnv = typedArtifacts.typeEnv }
                             , docs = docs
                             }
                     in
@@ -2311,10 +2297,10 @@ writeDetails root maybeBuildDir (Details.Details detailsData) results =
 addNewLocal : ModuleName.Raw -> BResult -> Dict ModuleName.Raw Details.Local -> Dict ModuleName.Raw Details.Local
 addNewLocal name result locals =
     case result of
-        RNew local _ _ _ _ _ ->
+        RNew local _ _ _ _ ->
             Dict.insert name local locals
 
-        RSame local _ _ _ _ _ ->
+        RSame local _ _ _ _ ->
             Dict.insert name local locals
 
         RCached _ _ _ ->
@@ -2373,10 +2359,10 @@ finalizeExposed root docsGoal exposed results =
 addErrors : BResult -> List ModuleError.Module -> List ModuleError.Module
 addErrors result errors =
     case result of
-        RNew _ _ _ _ _ _ ->
+        RNew _ _ _ _ _ ->
             errors
 
-        RSame _ _ _ _ _ _ ->
+        RSame _ _ _ _ _ ->
             errors
 
         RCached _ _ _ ->
@@ -2407,10 +2393,10 @@ addErrors result errors =
 addImportProblems : Dict ModuleName.Raw BResult -> ModuleName.Raw -> List ( ModuleName.Raw, Import.Problem ) -> List ( ModuleName.Raw, Import.Problem )
 addImportProblems results name problems =
     case Utils.dictFind name results of
-        RNew _ _ _ _ _ _ ->
+        RNew _ _ _ _ _ ->
             problems
 
-        RSame _ _ _ _ _ _ ->
+        RSame _ _ _ _ _ ->
             problems
 
         RCached _ _ _ ->
@@ -2536,10 +2522,10 @@ finalizeDocs goal results =
 toDocs : BResult -> Maybe Docs.Module
 toDocs result =
     case result of
-        RNew _ _ _ _ _ d ->
+        RNew _ _ _ _ d ->
             d
 
-        RSame _ _ _ _ _ d ->
+        RSame _ _ _ _ d ->
             d
 
         RCached _ _ _ ->
@@ -2863,8 +2849,8 @@ crawlRoot ((Env envData) as env) mvar root =
 `RInside` names an inside root, whose result is among the module results.
 
 `ROutsideOk` is an outside root that compiled, with its interface, its erased
-graph, and its typed graph and type environment (`Nothing` on an untyped
-build).
+graph, and its typed graph and type environment together (`Nothing` on an
+untyped build).
 
 `ROutsideErr` is an outside root with errors.
 
@@ -2874,7 +2860,7 @@ failed or a cached interface could not be read.
 -}
 type RootResult
     = RInside ModuleName.Raw
-    | ROutsideOk ModuleName.Raw I.Interface Opt.LocalGraph (Maybe (TOpt.LocalGraph Name)) (Maybe TypeEnv.ModuleTypeEnv)
+    | ROutsideOk ModuleName.Raw I.Interface Opt.LocalGraph (Maybe TMod.TypedModuleArtifact)
     | ROutsideErr ModuleError.Module
     | ROutsideBlocked
 
@@ -2942,7 +2928,7 @@ compileOutside (Env envData) (Details.Local localData) source ifaces modul =
                             Reporting.report envData.key Reporting.BDone
                                 |> Task.map
                                     (\_ ->
-                                        ROutsideOk name (I.fromModule pkg typedArtifacts.canonical typedArtifacts.annotations) typedArtifacts.objects (Just typedArtifacts.typedObjects) (Just typedArtifacts.typeEnv)
+                                        ROutsideOk name (I.fromModule pkg typedArtifacts.canonical typedArtifacts.annotations) typedArtifacts.objects (Just { typedGraph = typedArtifacts.typedObjects, typeEnv = typedArtifacts.typeEnv })
                                     )
 
                         Err errors ->
@@ -2956,7 +2942,7 @@ compileOutside (Env envData) (Details.Local localData) source ifaces modul =
                     case result of
                         Ok (Compile.Artifacts canonical annotations objects) ->
                             Reporting.report envData.key Reporting.BDone
-                                |> Task.map (\_ -> ROutsideOk name (I.fromModule pkg canonical annotations) objects Nothing Nothing)
+                                |> Task.map (\_ -> ROutsideOk name (I.fromModule pkg canonical annotations) objects Nothing)
 
                         Err errors ->
                             ModuleError.Module name localData.path localData.time source errors |> ROutsideErr |> Task.succeed
@@ -2981,7 +2967,7 @@ Each root's module is also among the artifacts' `modules`.
 -}
 type Root
     = Inside ModuleName.Raw
-    | Outside ModuleName.Raw I.Interface Opt.LocalGraph (Maybe (TOpt.LocalGraph Name)) (Maybe TypeEnv.ModuleTypeEnv)
+    | Outside ModuleName.Raw I.Interface Opt.LocalGraph (Maybe TMod.TypedModuleArtifact)
 
 
 {-| Returns the artifacts of a build from paths, or why there are none, as
@@ -2991,23 +2977,28 @@ toArtifacts : Env -> Dependencies -> Dict ModuleName.Raw BResult -> NE.Nonempty 
 toArtifacts (Env envData) foreigns results rootResults =
     gatherProblemsOrMains envData.root results rootResults
         |> Result.map
-            (\roots ->
+            (\( roots, modules ) ->
                 Artifacts
                     { pkg = projectTypeToPkg envData.projectType
                     , deps = foreigns
                     , roots = roots
-                    , modules = Dict.foldr addInside (NE.foldr addOutside [] rootResults) results
+                    , modules = modules
                     }
             )
 
 
-{-| Returns the roots, in the order given, when no module and no root has
-errors and none is blocked. Otherwise it returns `BuildBadModules` with the
-errors of every module and root that has them, the first root's first, or, when
-nothing has errors but a module or an outside root is blocked,
-`BuildCorruptCache` (`isBlockedByCorruptCache`).
+{-| Returns the roots, in the order given, and the modules of the build (as
+`gatherModule` collects them, then the outside roots that compiled), when no
+module and no root has errors and none is blocked. Otherwise it returns
+`BuildBadModules` with the errors of every module and root that has them, the
+first root's first, or, when nothing has errors but a module or an outside root
+is blocked, `BuildCorruptCache` (`isBlockedByCorruptCache`).
+
+A module that was not found and gave no other module an error crashes the
+compiler, which expects such a module to have failed the build already.
+
 -}
-gatherProblemsOrMains : FilePath -> Dict ModuleName.Raw BResult -> NE.Nonempty RootResult -> Result Exit.BuildProblem (NE.Nonempty Root)
+gatherProblemsOrMains : FilePath -> Dict ModuleName.Raw BResult -> NE.Nonempty RootResult -> Result Exit.BuildProblem ( NE.Nonempty Root, List Module )
 gatherProblemsOrMains root results rootResults =
     let
         addResult : RootResult -> ( List ModuleError.Module, List Root ) -> ( List ModuleError.Module, List Root )
@@ -3016,8 +3007,8 @@ gatherProblemsOrMains root results rootResults =
                 RInside n ->
                     ( es, Inside n :: roots )
 
-                ROutsideOk n i o t e ->
-                    ( es, Outside n i o t e :: roots )
+                ROutsideOk n i o t ->
+                    ( es, Outside n i o t :: roots )
 
                 ROutsideErr err ->
                     ( err :: es, roots )
@@ -3025,11 +3016,11 @@ gatherProblemsOrMains root results rootResults =
                 ROutsideBlocked ->
                     ( es, roots )
 
-        errors : List ModuleError.Module
-        errors =
-            Dict.foldr (\_ -> addErrors) [] results
+        gathered : Gathered
+        gathered =
+            Dict.foldr gatherModule { errors = [], modules = NE.foldr addOutside [] rootResults, notFound = [] } results
     in
-    case List.foldr addResult ( errors, [] ) (NE.toList rootResults) of
+    case List.foldr addResult ( gathered.errors, [] ) (NE.toList rootResults) of
         ( e :: es, _ ) ->
             Err (Exit.BuildBadModules root e es)
 
@@ -3040,7 +3031,12 @@ gatherProblemsOrMains root results rootResults =
                         Err Exit.BuildCorruptCache
 
                     else
-                        Ok (NE.Nonempty r rs)
+                        case gathered.notFound of
+                            name :: _ ->
+                                crash ("Error from `" ++ name ++ "` should have been reported already.")
+
+                            [] ->
+                                Ok ( NE.Nonempty r rs, gathered.modules )
 
                 [] ->
                     -- Every root is a blocked outside root.
@@ -3084,51 +3080,50 @@ isBlockedModule result =
             False
 
 
-{-| Adds a project module to `modules`: `Fresh` when it was compiled in this
-build, `Cached` when it was reused. Foreign and kernel modules are skipped.
-
-A module that was not found, has errors or is blocked crashes the compiler,
-which expects such a result to have failed the build already: errors and
-blocked modules do, in `gatherProblemsOrMains`.
-
+{-| What `gatherProblemsOrMains` collects from the module results in one pass:
+the errors of the modules that have them, the project modules (`Fresh` when
+compiled in this build, `Cached` when reused; foreign and kernel modules are
+skipped) and the names of the modules that were not found.
 -}
-addInside : ModuleName.Raw -> BResult -> List Module -> List Module
-addInside name result modules =
-    case result of
-        RNew _ iface objs typedObjs typeEnv _ ->
-            Fresh name iface objs typedObjs typeEnv :: modules
+type alias Gathered =
+    { errors : List ModuleError.Module
+    , modules : List Module
+    , notFound : List ModuleName.Raw
+    }
 
-        RSame _ iface objs typedObjs typeEnv _ ->
-            Fresh name iface objs typedObjs typeEnv :: modules
+
+{-| Adds one module's result to `gathered`. A blocked module adds nothing:
+`isBlockedByCorruptCache` looks for it.
+-}
+gatherModule : ModuleName.Raw -> BResult -> Gathered -> Gathered
+gatherModule name result gathered =
+    case result of
+        RNew _ iface objs typed _ ->
+            { gathered | modules = Fresh name iface objs typed :: gathered.modules }
+
+        RSame _ iface objs typed _ ->
+            { gathered | modules = Fresh name iface objs typed :: gathered.modules }
 
         RCached main _ mvar ->
-            Cached name main mvar :: modules
+            { gathered | modules = Cached name main mvar :: gathered.modules }
 
         RNotFound _ ->
-            crash (badInside name)
+            { gathered | notFound = name :: gathered.notFound }
 
-        RProblem _ ->
-            crash (badInside name)
+        RProblem e ->
+            { gathered | errors = e :: gathered.errors }
 
         RBlocked ->
-            crash (badInside name)
+            gathered
 
         RForeign _ ->
-            modules
+            gathered
 
         RKernel ->
-            modules
+            gathered
 
         RKernelLocal _ ->
-            modules
-
-
-{-| Returns the crash message for a module whose failure should already have
-been reported.
--}
-badInside : ModuleName.Raw -> String
-badInside name =
-    "Error from `" ++ name ++ "` should have been reported already."
+            gathered
 
 
 {-| Adds an outside root that compiled to `modules`, as `Fresh`.
@@ -3139,8 +3134,8 @@ addOutside root modules =
         RInside _ ->
             modules
 
-        ROutsideOk name iface objs typedObjs typeEnv ->
-            Fresh name iface objs typedObjs typeEnv :: modules
+        ROutsideOk name iface objs typed ->
+            Fresh name iface objs typed :: modules
 
         ROutsideErr _ ->
             modules
@@ -3165,25 +3160,23 @@ dictRawMVarBResultEncoder =
 bResultEncoder : BResult -> Bytes.Encode.Encoder
 bResultEncoder bResult =
     case bResult of
-        RNew local iface objects typedObjects typeEnv docs ->
+        RNew local iface objects typed docs ->
             Bytes.Encode.sequence
                 [ Bytes.Encode.unsignedInt8 0
                 , Details.localEncoder local
                 , I.interfaceEncoder iface
                 , Opt.localGraphEncoder objects
-                , BE.maybe TOpt.localGraphEncoder typedObjects
-                , BE.maybe TypeEnv.moduleTypeEnvEncoder typeEnv
+                , BE.maybe TMod.typedModuleArtifactEncoder typed
                 , BE.maybe Docs.bytesModuleEncoder docs
                 ]
 
-        RSame local iface objects typedObjects typeEnv docs ->
+        RSame local iface objects typed docs ->
             Bytes.Encode.sequence
                 [ Bytes.Encode.unsignedInt8 1
                 , Details.localEncoder local
                 , I.interfaceEncoder iface
                 , Opt.localGraphEncoder objects
-                , BE.maybe TOpt.localGraphEncoder typedObjects
-                , BE.maybe TypeEnv.moduleTypeEnvEncoder typeEnv
+                , BE.maybe TMod.typedModuleArtifactEncoder typed
                 , BE.maybe Docs.bytesModuleEncoder docs
                 ]
 
@@ -3235,21 +3228,19 @@ bResultDecoder =
             (\idx ->
                 case idx of
                     0 ->
-                        BD.map6 RNew
+                        Bytes.Decode.map5 RNew
                             Details.localDecoder
                             I.interfaceDecoder
                             Opt.localGraphDecoder
-                            (BD.maybe TOpt.localGraphDecoder)
-                            (BD.maybe TypeEnv.moduleTypeEnvDecoder)
+                            (BD.maybe TMod.typedModuleArtifactDecoder)
                             (BD.maybe Docs.bytesModuleDecoder)
 
                     1 ->
-                        BD.map6 RSame
+                        Bytes.Decode.map5 RSame
                             Details.localDecoder
                             I.interfaceDecoder
                             Opt.localGraphDecoder
-                            (BD.maybe TOpt.localGraphDecoder)
-                            (BD.maybe TypeEnv.moduleTypeEnvDecoder)
+                            (BD.maybe TMod.typedModuleArtifactDecoder)
                             (BD.maybe Docs.bytesModuleDecoder)
 
                     2 ->
@@ -3455,14 +3446,13 @@ rootResultEncoder rootResult =
                 , ModuleName.rawEncoder name
                 ]
 
-        ROutsideOk name iface objs typedObjs typeEnv ->
+        ROutsideOk name iface objs typed ->
             Bytes.Encode.sequence
                 [ Bytes.Encode.unsignedInt8 1
                 , ModuleName.rawEncoder name
                 , I.interfaceEncoder iface
                 , Opt.localGraphEncoder objs
-                , BE.maybe TOpt.localGraphEncoder typedObjs
-                , BE.maybe TypeEnv.moduleTypeEnvEncoder typeEnv
+                , BE.maybe TMod.typedModuleArtifactEncoder typed
                 ]
 
         ROutsideErr err ->
@@ -3487,12 +3477,11 @@ rootResultDecoder =
                         Bytes.Decode.map RInside ModuleName.rawDecoder
 
                     1 ->
-                        Bytes.Decode.map5 ROutsideOk
+                        Bytes.Decode.map4 ROutsideOk
                             ModuleName.rawDecoder
                             I.interfaceDecoder
                             Opt.localGraphDecoder
-                            (BD.maybe TOpt.localGraphDecoder)
-                            (BD.maybe TypeEnv.moduleTypeEnvDecoder)
+                            (BD.maybe TMod.typedModuleArtifactDecoder)
 
                     2 ->
                         Bytes.Decode.map ROutsideErr ModuleError.moduleDecoder

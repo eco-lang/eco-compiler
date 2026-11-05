@@ -236,9 +236,6 @@ typeToString t =
         Mlir.Mlir.I8 ->
             "i8"
 
-        Mlir.Mlir.I16 ->
-            "i16"
-
         Mlir.Mlir.I32 ->
             "i32"
 

@@ -93,7 +93,7 @@ import Compiler.Core.Name as Name exposing (Name)
 import Compiler.Elm.Interface.Basic as Basic
 import Compiler.Elm.ModuleName as ModuleName
 import Compiler.Elm.Package as Pkg
-import Compiler.GenerateMlir.Backend as MLIR
+import Compiler.GenerateMlir.BackendModule as MLIR
 import Compiler.IR.Canonical as Can
 import Compiler.IR.Canonical.Interface as I
 import Compiler.IR.Mono as Mono
@@ -110,6 +110,7 @@ import Compiler.Nitpick.PatternMatches as PatternMatches
 import Compiler.Parse.Error as Syntax
 import Compiler.Parse.Module as Parse
 import Compiler.Pipeline.Steps as Steps
+import Compiler.PreMono.EntryPrep as EntryPrep
 import Compiler.Reporting.Result as RResult
 import Compiler.Type.Constrain.Erased.Module as TypeErased
 import Compiler.Type.Constrain.Typed.Module as TypeTyped
@@ -459,7 +460,7 @@ any warnings.
 -}
 canonicalize : Pkg.Name -> Dict ModuleName.Raw I.Interface -> Src.Module -> Result CompileError Can.Module
 canonicalize pkg ifaces modul =
-    case Tuple.second (RResult.run (Canonicalize.canonicalize pkg ifaces modul)) of
+    case RResult.run (Canonicalize.canonicalize pkg ifaces modul) of
         Ok canonical ->
             Ok canonical
 
@@ -501,8 +502,17 @@ typeCheckTyped canonical =
         ( Err errors, _ ) ->
             Err errors
 
-        ( Ok { annotations, annotationVars, nodeTypes, nodeVars, solverState }, schemeBinderVars ) ->
+        ( Ok solved, schemeBinderVars ) ->
             let
+                { nodeTypes, nodeVars, solverState } =
+                    solved
+
+                annotations =
+                    Dict.map (\_ entry -> entry.annotation) solved.annotations
+
+                annotationVars =
+                    Dict.map (\_ entry -> entry.var) solved.annotations
+
                 postSolveResult =
                     PostSolve.postSolve annotations canonical nodeTypes
 
@@ -546,7 +556,7 @@ nitpick canonical =
 -}
 optimizeErased : Dict Name.Name (Can.Annotation Name) -> Can.Module -> Result (OneOrMore.OneOrMore MainError.Error) Opt.LocalGraph
 optimizeErased annotations canonical =
-    Tuple.second (RResult.run (Optimize.optimize annotations canonical))
+    RResult.run (Optimize.optimize annotations canonical)
 
 
 {-| Optimizes a typed canonical module on the typed pathway, as
@@ -555,7 +565,7 @@ optimizeErased annotations canonical =
 -}
 optimizeTyped : TypeCheckTypedResult -> Result (OneOrMore.OneOrMore MainError.Error) (TOpt.LocalGraph Name)
 optimizeTyped r =
-    Tuple.second (RResult.run (TypedOptimize.optimizeTyped r.annotations r.nodeTypes r.nodeVars r.kernelEnv r.annotationVars r.schemeRoots r.typedCanonical))
+    RResult.run (TypedOptimize.optimizeTyped r.annotations r.nodeTypes r.nodeVars r.kernelEnv r.annotationVars r.schemeRoots r.typedCanonical)
 
 
 
@@ -601,21 +611,55 @@ monomorphize entry results =
                     in
                     Data.Map.insert ModuleName.toComparableCanonical moduleTypeEnv.home moduleTypeEnv env
                 )
-                (TypeEnv.fromInterfaces Basic.testIfaces)
+                (Pipeline.interfacesTypeEnv Basic.testIfaces)
                 results
     in
-    let
-        cfg =
-            Pipeline.productionConfig
+    case entryHome entry nodes of
+        Nothing ->
+            Err (MonomorphizeError ("No " ++ entry ++ " function found"))
 
-        assigned =
-            (Steps.preMono cfg (Steps.prepareEntry cfg entry globalGraph)).assigned
-    in
-    Steps.checkMinted cfg assigned
-        |> Result.andThen (\_ -> Steps.monomorphizeEntry cfg entry globalTypeEnv assigned)
-        |> Result.andThen (\( g, _ ) -> Steps.checkStageArity g)
-        |> Result.andThen (Steps.checkLayout cfg)
-        |> Result.mapError MonomorphizeError
+        Just home ->
+            let
+                cfg =
+                    Pipeline.productionConfig
+
+                assigned =
+                    (Steps.preMono cfg (EntryPrep.assignIn (Steps.assignFlagsFor cfg) home entry globalGraph)).assigned
+            in
+            Steps.checkMinted cfg assigned
+                |> Result.andThen (\_ -> Steps.monomorphizeEntry cfg entry globalTypeEnv assigned)
+                |> Result.andThen (\( g, _ ) -> Steps.checkStageArity g)
+                |> Result.andThen (Steps.checkLayout cfg)
+                |> Result.mapError MonomorphizeError
+
+
+{-| Returns the module of the first `Define` or `TrackedDefine` named `entry`,
+in the graph's key order, so the module whose name sorts first.
+-}
+entryHome : Name.Name -> Data.Map.Dict String TOpt.Global (TOpt.Node Name) -> Maybe ModuleName.Canonical
+entryHome entry nodes =
+    Data.Map.foldl
+        (\(TOpt.Global home name) node acc ->
+            case ( acc, node ) of
+                ( Nothing, TOpt.Define _ _ _ ) ->
+                    if name == entry then
+                        Just home
+
+                    else
+                        Nothing
+
+                ( Nothing, TOpt.TrackedDefine _ _ _ _ ) ->
+                    if name == entry then
+                        Just home
+
+                    else
+                        Nothing
+
+                _ ->
+                    acc
+        )
+        Nothing
+        nodes
 
 
 {-| Returns the MLIR text the MLIR back end generates for `monoGraph` in
@@ -636,7 +680,7 @@ generateMLIR monoGraph =
         simplified =
             Steps.prune cfg (Tuple.first (Steps.inline cfg monoGraph))
     in
-    MLIR.generateProgram cfg (Tuple.first (Steps.globalOpt cfg simplified))
+    MLIR.generateProgram cfg (Tuple.first (Pipeline.globalOpt cfg simplified))
 
 
 {-| Monomorphizes `results` from `entry` as `monomorphize` does and returns the
@@ -988,9 +1032,6 @@ canonicalizeErrorToString error =
         CanonicalizeError.DuplicateCtor name _ _ ->
             "Duplicate constructor: " ++ name
 
-        CanonicalizeError.DuplicateBinop name _ _ ->
-            "Duplicate binary operator: " ++ name
-
         CanonicalizeError.DuplicateField name _ _ ->
             "Duplicate field: " ++ name
 
@@ -1020,9 +1061,6 @@ canonicalizeErrorToString error =
 
         CanonicalizeError.ImportCtorByName _ name _ ->
             "Constructor imported by name: " ++ name
-
-        CanonicalizeError.ImportNotFound _ name _ ->
-            "Import not found: " ++ name
 
         CanonicalizeError.ImportOpenAlias _ name ->
             "Cannot import alias with (..): " ++ name

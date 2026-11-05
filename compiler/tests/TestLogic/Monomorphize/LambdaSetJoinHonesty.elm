@@ -61,6 +61,7 @@ import Array
 import Compiler.IR.Mono as Mono
 import Compiler.IR.Mono.Traverse as MonoTraverse
 import Compiler.IR.Source as Src
+import Data.NonEmptyList as NE
 import Expect exposing (Expectation)
 import TestLogic.TestPipeline as Pipeline
 
@@ -127,10 +128,10 @@ nodeBodies node =
         Mono.MonoPortOutgoing expr _ ->
             [ expr ]
 
-        Mono.MonoCtor _ _ ->
+        Mono.MonoCtor _ _ _ ->
             []
 
-        Mono.MonoEnum _ _ ->
+        Mono.MonoEnum _ _ _ _ ->
             []
 
         Mono.MonoExtern _ ->
@@ -246,7 +247,7 @@ inlineLeaves decider =
             inlineLeaves yes ++ inlineLeaves no
 
         Mono.FanOut _ edges fallback ->
-            List.concatMap (\( _, d ) -> inlineLeaves d) edges ++ inlineLeaves fallback
+            List.concatMap (\( _, d ) -> inlineLeaves d) (NE.toList edges) ++ inlineLeaves fallback
 
 
 {-| Renders a member list for a failure message.

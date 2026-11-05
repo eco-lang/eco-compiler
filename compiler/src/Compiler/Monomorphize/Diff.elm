@@ -35,6 +35,7 @@ and ports are compared by count only.
 import Array exposing (Array)
 import Compiler.Config as Config
 import Compiler.Core.Name exposing (Name)
+import Compiler.Elm.ModuleName as ModuleName
 import Compiler.IR.Mono as Mono
 import Compiler.IR.Typed.TypeEnv as TypeEnv
 import Compiler.Monomorphize.Solver.Monomorphize as MonoSolver
@@ -183,16 +184,11 @@ serializeGraph (Mono.MonoGraph g) =
     header :: nodeLines
 
 
-{-| Writes the main entry, or `none`.
+{-| Writes the main entry.
 -}
-mainStr : Maybe Mono.MainInfo -> String
-mainStr maybeMain =
-    case maybeMain of
-        Just (Mono.StaticMain specId) ->
-            "static:" ++ String.fromInt specId
-
-        Nothing ->
-            "none"
+mainStr : Mono.MainInfo -> String
+mainStr (Mono.StaticMain specId) =
+    "static:" ++ String.fromInt specId
 
 
 {-| Writes an optional number, or `-` when absent.
@@ -256,16 +252,16 @@ serNode node =
         Mono.MonoTailFunc params expr t ->
             "TailFunc([" ++ serParams params ++ "]," ++ serExpr expr ++ "):" ++ ty t
 
-        Mono.MonoCtor shape t ->
+        Mono.MonoCtor _ shape t ->
             "Ctor(" ++ shape.name ++ "#" ++ String.fromInt shape.tag ++ "[" ++ String.join "," (List.map ty shape.fieldTypes) ++ "]):" ++ ty t
 
-        Mono.MonoEnum tag t ->
+        Mono.MonoEnum _ _ tag t ->
             "Enum(" ++ String.fromInt tag ++ "):" ++ ty t
 
         Mono.MonoExtern t ->
             "Extern:" ++ ty t
 
-        Mono.MonoManagerLeaf home t ->
+        Mono.MonoManagerLeaf (ModuleName.Canonical _ home) t ->
             "Manager(" ++ home ++ "):" ++ ty t
 
         Mono.MonoPortIncoming expr t ->
@@ -340,7 +336,7 @@ serExpr expr =
             "Upd(" ++ serExpr record ++ ",[" ++ serFields fields ++ "]):" ++ ty t
 
         Mono.MonoTupleCreate _ exprs t ->
-            "Tup[" ++ serExprs exprs ++ "]:" ++ ty t
+            "Tup[" ++ serExprs (Mono.tupleToList exprs) ++ "]:" ++ ty t
 
         Mono.MonoUnit ->
             "Unit"

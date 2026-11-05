@@ -88,7 +88,6 @@ import Compiler.Elm.Package as Pkg
 import Compiler.Elm.Version as V
 import Compiler.Json.Decode as D
 import Dict exposing (Dict)
-import System.Crash exposing (crash)
 import System.IO as IO
 import Task exposing (Task)
 import Utils.Main as Utils
@@ -219,8 +218,8 @@ verify cache connection registry constraints =
                     |> Task.map
                         (\result ->
                             case result of
-                                ISOk s a ->
-                                    SolverOk (Dict.map (addDeps s) a)
+                                ISOk _ a ->
+                                    SolverOk a
 
                                 ISBack _ ->
                                     noSolution connection
@@ -228,20 +227,6 @@ verify cache connection registry constraints =
                                 ISErr e ->
                                     SolverErr e
                         )
-
-
-{-| Returns the `Details` of `name` at `vsn`, taking its dependency constraints
-from those the search read. Crashes if the search never read them, which cannot
-happen for a version the search chose.
--}
-addDeps : State -> Pkg.Name -> V.Version -> Details
-addDeps (State st) name vsn =
-    case Dict.get (Tuple.mapSecond V.toComparable ( name, vsn )) st.cDict of
-        Just (Constraints _ deps) ->
-            Details vsn deps
-
-        Nothing ->
-            crash "compiler bug manifesting in Deps.Solver.addDeps"
 
 
 {-| Returns the no-solution result that matches `connection`.
@@ -349,6 +334,7 @@ addToApp cache connection registry pkg (Outline.AppOutline appData) forTest =
             attempt : (a -> C.Constraint) -> Dict Pkg.Name a -> Solver (Dict Pkg.Name V.Version)
             attempt toConstraint deps =
                 try (Dict.insert pkg C.anything (Dict.map (\_ -> toConstraint) deps))
+                    |> map solvedVersions
         in
         case
             oneOf
@@ -421,7 +407,7 @@ removeFromApp cache connection registry pkg (Outline.AppOutline appData) =
             allDirects =
                 Dict.union appData.depsDirect appData.testDirect
         in
-        case try (Dict.map (\_ -> C.exactly) (Dict.remove pkg allDirects)) of
+        case map solvedVersions (try (Dict.map (\_ -> C.exactly) (Dict.remove pkg allDirects))) of
             Solver solver ->
                 solver (State { cache = cache, connection = connection, registry = registry, cDict = Dict.empty })
                     |> Task.map
@@ -468,11 +454,19 @@ removeFromApp cache connection registry pkg (Outline.AppOutline appData) =
 
 
 {-| Produces the search for a version of every package in `constraints`, and of
-every package they depend on, that satisfies all of the constraints.
+every package they depend on, that satisfies all of the constraints. Each
+solved package comes with the dependency constraints of its chosen version.
 -}
-try : Dict Pkg.Name C.Constraint -> Solver (Dict Pkg.Name V.Version)
+try : Dict Pkg.Name C.Constraint -> Solver (Dict Pkg.Name Details)
 try constraints =
     exploreGoals (Goals constraints Dict.empty)
+
+
+{-| Returns the version chosen for each package of a solution.
+-}
+solvedVersions : Dict Pkg.Name Details -> Dict Pkg.Name V.Version
+solvedVersions =
+    Dict.map (\_ (Details version _) -> version)
 
 
 
@@ -480,17 +474,18 @@ try constraints =
 
 
 {-| The search's progress: the pending packages with the constraint each must
-satisfy, then the solved packages with the version chosen for each.
+satisfy, then the solved packages with the version chosen for each and that
+version's dependency constraints.
 -}
 type Goals
-    = Goals (Dict Pkg.Name C.Constraint) (Dict Pkg.Name V.Version)
+    = Goals (Dict Pkg.Name C.Constraint) (Dict Pkg.Name Details)
 
 
 {-| Produces the search that solves every pending package in `Goals`, taking them
 in name order and trying each one's eligible versions in registry order, and returns
 the solved set.
 -}
-exploreGoals : Goals -> Solver (Dict Pkg.Name V.Version)
+exploreGoals : Goals -> Solver (Dict Pkg.Name Details)
 exploreGoals (Goals pending solved) =
     case dictMinViewWithKey pending of
         Nothing ->
@@ -525,7 +520,7 @@ addVersion (Goals pending solved) name version =
                     foldM (addConstraint solved) pending (Dict.toList deps)
                         |> map
                             (\newPending ->
-                                Goals newPending (Dict.insert name version solved)
+                                Goals newPending (Dict.insert name (Details version deps) solved)
                             )
 
                 else
@@ -541,10 +536,10 @@ or if the constraint and the pending one for `name` do not overlap. A pending
 constraint is replaced by the intersection of the two.
 
 -}
-addConstraint : Dict Pkg.Name V.Version -> Dict Pkg.Name C.Constraint -> ( Pkg.Name, C.Constraint ) -> Solver (Dict Pkg.Name C.Constraint)
+addConstraint : Dict Pkg.Name Details -> Dict Pkg.Name C.Constraint -> ( Pkg.Name, C.Constraint ) -> Solver (Dict Pkg.Name C.Constraint)
 addConstraint solved unsolved ( name, newConstraint ) =
     case Dict.get name solved of
-        Just version ->
+        Just (Details version _) ->
             if C.satisfies newConstraint version then
                 pure unsolved
 

@@ -29,9 +29,8 @@ including none, 2 bytes for up to 65,536, and 4 bytes beyond that.
 The table must hold every string the body will write, so the strings are
 gathered before the table is built, in a _collector_ (`collectAll`, `add`,
 `collected`), by a walk that must visit every string the encoding will write.
-A string missing from the table is not an error: `string` writes index 0 for
-it, which belongs to another string or to none, and the bytes decode, without
-error, to the wrong string.
+A string missing from the table is a compiler bug: `string` crashes on it,
+rather than write an index that belongs to another string or to none.
 
 `disabled` is a table with index width 0, and with it `string` and
 `stringDec` write and read each string inline instead of as an index. A codec
@@ -78,6 +77,7 @@ import Bytes.Encode as BE
 import Compiler.Core.Name as Name
 import Dict exposing (Dict)
 import Set exposing (Set)
+import System.Crash exposing (crash)
 import Utils.Bytes.Decode as UBD
 import Utils.Bytes.Encode as UBE
 
@@ -260,10 +260,10 @@ isSuperName s =
 {-| Produces an encoder for the string `s` as `table` writes it: its index in
 the table's index width, or, with `disabled`, the string itself inline.
 
-A string that is not in the table is written as index 0, which belongs to
-another string or to none, so the bytes still decode but to the wrong string.
-A table read by `tableDecoder`, unless its width is 0, holds no index for any
-string, so it writes index 0 for all of them.
+Crashes on a string that is not in the table, since its index would belong to
+another string or to none, and the bytes would decode to the wrong string. A
+table read by `tableDecoder`, unless its width is 0, holds no index for any
+string, so it must not be used to encode.
 
 -}
 string : StringTable -> String -> BE.Encoder
@@ -280,7 +280,7 @@ string table s =
                         i
 
                     Nothing ->
-                        0
+                        crash "StringTable.string: string not collected (the collector walk missed a string the encoder writes)"
         in
         if table.width == 1 then
             BE.unsignedInt8 idx
@@ -356,7 +356,7 @@ tableEncoder table =
 `stringDec` needs to read the body that follows.
 
 Unless its width is 0, the table it gives can decode but not encode: its
-`strToIdx` is empty, so `string` would write index 0 for every string. The
+`strToIdx` is empty, so `string` would crash on every string. The
 width byte is taken as it is, so a preamble written from `disabled` gives a
 table that reads strings inline.
 

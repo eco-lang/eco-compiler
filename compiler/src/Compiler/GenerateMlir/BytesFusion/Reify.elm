@@ -104,9 +104,9 @@ widths are known only at run time.
 
     sequence (unsignedInt32 endian (List.length xs) :: List.map f xs)
 
-which reifies to an `EU32` followed by an `ELoop`. `itemNodes` are the writes
-for one element, and every one of them has a constant width. `itemVar` is the
-name by which `itemNodes` refer to the current element, and `itemType` is its
+which reifies to an `EU32` followed by an `ELoop`. `itemWrites` are the writes
+for one element, each of a constant width (see `FixedWrite`). `itemVar` is the
+name by which `itemWrites` refer to the current element, and `itemType` is its
 type. `iterExpr` is `xs`, and `countExpr` is the `List.length xs` call itself,
 also used to size the buffer.
 
@@ -125,11 +125,23 @@ type EncoderNode
     | ELoop
         { itemVar : String
         , itemType : Mono.MonoType
-        , itemNodes : List EncoderNode
+        , itemWrites : List FixedWrite
         , iterExpr : Mono.MonoExpr
         , countExpr : Mono.MonoExpr
         }
     | EOpaque Mono.MonoExpr
+
+
+{-| A write of a number of bytes known at compile time: the numeric writes
+`EU8` to `EF64` of `EncoderNode`, which are the only writes an `ELoop` item may
+make, because the buffer is sized as the count times one item's width.
+-}
+type FixedWrite
+    = FU8 Mono.MonoExpr
+    | FU16 Endianness Mono.MonoExpr
+    | FU32 Endianness Mono.MonoExpr
+    | FF32 Endianness Mono.MonoExpr
+    | FF64 Endianness Mono.MonoExpr
 
 
 {-| A recognised decoder, as a tree that mirrors the `Bytes.Decode`
@@ -153,9 +165,9 @@ that reads an integer and then a string or bytes value of that length.
 callback's parameter, and the decoder the callback's body reifies to.
 
 `DCountLoop` is a `loop` that reads a given number of items; `DSentinelLoop`
-is a `loop` that reads integers until one equals an integer literal. Each carries the order of the list it produces and its item
-decoder, one fixed-width read; `DSentinelLoop` also carries the integer that
-ends the list.
+is a `loop` that reads integers until one equals an integer literal. Each
+carries the order of the list it produces and its item read, one fixed-width
+read; `DSentinelLoop` also carries the integer that ends the list.
 
 -}
 type DecoderNode
@@ -179,8 +191,8 @@ type DecoderNode
     | DLengthPrefixedString LengthDecoder
     | DLengthPrefixedBytes LengthDecoder
     | DAndThen DecoderNode String DecoderNode
-    | DCountLoop CountSource IR.ListOrder DecoderNode
-    | DSentinelLoop Int IR.ListOrder DecoderNode
+    | DCountLoop CountSource IR.ListOrder IR.FixedRead
+    | DSentinelLoop Int IR.ListOrder IR.FixedRead
 
 
 {-| The integer read that supplies the length of a `DLengthPrefixedString` or
@@ -224,36 +236,35 @@ to `let` names in scope.
 reifyEncoderWith : BodyLookup -> Mono.SpecializationRegistry -> Dict String Mono.MonoExpr -> Mono.MonoExpr -> Maybe (List EncoderNode)
 reifyEncoderWith bodyLookup registry exprCache expr =
     case reifyEncoderHelp bodyLookup registry exprCache expr of
-        Just [ EOpaque _ ] ->
+        [ EOpaque _ ] ->
             Nothing
 
-        result ->
-            result
+        nodes ->
+            Just nodes
 
 
 {-| Reifies an encoder expression as `reifyEncoderHelpStrict` does, except that
-an expression it does not recognise becomes `[ EOpaque expr ]`; so the result
-is never `Nothing`. This is what lets one unrecognised subtree leave the rest
-of the encoder fused.
+an expression it does not recognise becomes `[ EOpaque expr ]`. This is what
+lets one unrecognised subtree leave the rest of the encoder fused.
 -}
-reifyEncoderHelp : BodyLookup -> Mono.SpecializationRegistry -> Dict String Mono.MonoExpr -> Mono.MonoExpr -> Maybe (List EncoderNode)
+reifyEncoderHelp : BodyLookup -> Mono.SpecializationRegistry -> Dict String Mono.MonoExpr -> Mono.MonoExpr -> List EncoderNode
 reifyEncoderHelp bodyLookup registry exprCache expr =
     case reifyEncoderHelpStrict bodyLookup registry exprCache expr of
         Just result ->
-            Just result
+            result
 
         Nothing ->
-            Just [ EOpaque expr ]
+            [ EOpaque expr ]
 
 
 {-| Reifies an encoder expression, or returns `Nothing` when its outermost form
 is not recognised.
 
-Recognised forms are a call of a `Bytes.Encode` function or of the `Bytes`
-kernel, directly, curried, or through a local variable bound to a partial call;
-a `let`, whose binding is added to `exprCache`; and a local variable bound in
-`exprCache`. The encoders inside a recognised `sequence` are reified with
-`reifyEncoderHelp`, so they may still be opaque.
+Recognised forms are a call of a `Bytes.Encode` function, directly, curried,
+or through a local variable bound to a partial call; a `let`, whose binding is
+added to `exprCache`; and a local variable bound in `exprCache`. The encoders
+inside a recognised `sequence` are reified with `reifyEncoderHelp`, so they may
+still be opaque.
 
 -}
 reifyEncoderHelpStrict : BodyLookup -> Mono.SpecializationRegistry -> Dict String Mono.MonoExpr -> Mono.MonoExpr -> Maybe (List EncoderNode)
@@ -273,9 +284,6 @@ reifyEncoderHelpStrict bodyLookup registry exprCache expr =
                         _ ->
                             Nothing
 
-                Mono.MonoVarKernel _ _ "Bytes" name _ ->
-                    reifyBytesKernelCall name args
-
                 Mono.MonoCall _ innerFunc innerArgs _ _ ->
                     case innerFunc of
                         Mono.MonoVarGlobal _ innerSpecId _ ->
@@ -289,9 +297,6 @@ reifyEncoderHelpStrict bodyLookup registry exprCache expr =
 
                                 _ ->
                                     Nothing
-
-                        Mono.MonoVarKernel _ _ "Bytes" name2 _ ->
-                            reifyBytesKernelCall name2 (innerArgs ++ args)
 
                         _ ->
                             Nothing
@@ -312,9 +317,6 @@ reifyEncoderHelpStrict bodyLookup registry exprCache expr =
                                         _ ->
                                             Nothing
 
-                                Mono.MonoVarKernel _ _ "Bytes" name2 _ ->
-                                    reifyBytesKernelCall name2 (innerArgs ++ args)
-
                                 _ ->
                                     Nothing
 
@@ -327,7 +329,7 @@ reifyEncoderHelpStrict bodyLookup registry exprCache expr =
         Mono.MonoLet def body _ ->
             case def of
                 Mono.MonoDef name defExpr ->
-                    reifyEncoderHelp bodyLookup registry (Dict.insert name defExpr exprCache) body
+                    Just (reifyEncoderHelp bodyLookup registry (Dict.insert name defExpr exprCache) body)
 
                 _ ->
                     Nothing
@@ -335,7 +337,7 @@ reifyEncoderHelpStrict bodyLookup registry exprCache expr =
         Mono.MonoVarLocal name _ ->
             case Dict.get name exprCache of
                 Just cachedExpr ->
-                    reifyEncoderHelp bodyLookup registry exprCache cachedExpr
+                    Just (reifyEncoderHelp bodyLookup registry exprCache cachedExpr)
 
                 Nothing ->
                     Nothing
@@ -439,23 +441,6 @@ reifyBytesEncodeCall bodyLookup registry exprCache name args =
             Nothing
 
 
-{-| Reifies a call of the `Bytes` kernel function `name`. Only the one-byte
-writes `write_u8` and `write_i8` are recognised; any other kernel call returns
-`Nothing`.
--}
-reifyBytesKernelCall : String -> List Mono.MonoExpr -> Maybe (List EncoderNode)
-reifyBytesKernelCall name args =
-    case ( name, args ) of
-        ( "write_u8", [ valueExpr ] ) ->
-            Just [ EU8 valueExpr ]
-
-        ( "write_i8", [ valueExpr ] ) ->
-            Just [ EU8 valueExpr ]
-
-        _ ->
-            Nothing
-
-
 {-| Reifies the list argument of a `sequence` into the writes of all its
 encoders, in order, or returns `Nothing` when the list's shape is not known.
 
@@ -470,10 +455,7 @@ reifyEncoderList : BodyLookup -> Mono.SpecializationRegistry -> Dict String Mono
 reifyEncoderList bodyLookup registry exprCache listExpr =
     case listExpr of
         Mono.MonoList _ items _ ->
-            items
-                |> List.map (reifyEncoderHelp bodyLookup registry exprCache)
-                |> combineResults
-                |> Maybe.map List.concat
+            Just (List.concatMap (reifyEncoderHelp bodyLookup registry exprCache) items)
 
         Mono.MonoCall _ funcExpr args _ _ ->
             case ( reifyListConsCall registry funcExpr args, args ) of
@@ -651,43 +633,30 @@ count, or returns `Nothing` when `mapFn`'s body is not known or not
 constant-width.
 
 `mapFn` may be a lambda of one parameter, or a named function found in
-`bodyLookup` with one parameter. A named function with two parameters is also
-accepted when its body applies something to the second parameter as the last
-argument and mentions it nowhere else: that is a one-parameter encoder function
-that was eta-expanded (`Encoder` being a function type alias), and the body is
-reduced back with `etaReduceTrailingParam`. The function's parameter becomes the
-loop's `itemVar`. Anything else, such as a function passed in as a parameter or a
+`bodyLookup` with one parameter. The function's parameter becomes the loop's
+`itemVar`. Anything else, such as a function passed in as a parameter or a
 kernel, gives `Nothing`.
 
 The body must reify to fixed-width numeric writes only (see
-`hasConstantWidth`), because the buffer is sized as the count times one item's
+`asFixedWrite`), because the buffer is sized as the count times one item's
 width.
 
 -}
 reifyMapBody : BodyLookup -> Mono.SpecializationRegistry -> Dict String Mono.MonoExpr -> Mono.MonoExpr -> Mono.MonoExpr -> Mono.MonoExpr -> Maybe EncoderNode
 reifyMapBody bodyLookup registry exprCache mapFn iterExpr countExpr =
     case mapFn of
-        Mono.MonoClosure info body _ ->
-            case info.params of
-                [ ( paramName, paramType ) ] ->
-                    buildLoopNode bodyLookup registry exprCache paramName paramType body iterExpr countExpr
-
-                _ ->
-                    Nothing
+        Mono.MonoClosure _ _ _ ->
+            viewUnaryClosure mapFn
+                |> Maybe.andThen
+                    (\( paramName, paramType, body ) ->
+                        buildLoopNode bodyLookup registry exprCache paramName paramType body iterExpr countExpr
+                    )
 
         Mono.MonoVarGlobal _ specId _ ->
             case Dict.get specId bodyLookup of
                 Just ( [ ( paramName, paramType ) ], body ) ->
                     buildLoopNode bodyLookup registry exprCache paramName paramType body iterExpr countExpr
 
-                Just ( [ ( paramName, paramType ), ( extraName, _ ) ], body ) ->
-                    case etaReduceTrailingParam extraName body of
-                        Just reduced ->
-                            buildLoopNode bodyLookup registry exprCache paramName paramType reduced iterExpr countExpr
-
-                        Nothing ->
-                            Nothing
-
                 _ ->
                     Nothing
 
@@ -695,91 +664,27 @@ reifyMapBody bodyLookup registry exprCache mapFn iterExpr countExpr =
             Nothing
 
 
-{-| Undoes one eta-expansion of a function body: returns `f args` when `body`
-is `f args extra`, with the local variable `extra` as the last argument and
-nowhere else in the call, and `Nothing` otherwise.
+{-| Views a lambda of one parameter as its parameter's name and type and its
+body, or returns `Nothing` for any other expression.
 
-`extra` may be the only argument of a call, in which case the result is `f`
-itself, or the last of several, in which case the result is the call without
-it, typed by `peelParams`.
+Every lambda the reifier looks into (a mapped function, an `andThen` callback,
+a loop's step function) has a type whose result is a custom type (`Encoder`,
+`Decoder`, `Step`), so a lambda there has exactly one parameter.
 
 -}
-etaReduceTrailingParam : Name -> MonoExpr -> Maybe MonoExpr
-etaReduceTrailingParam extra body =
-    let
-        mentionsExtra e =
-            MonoTraverse.foldExpr
-                (\x acc ->
-                    acc
-                        || (case x of
-                                MonoVarLocal n _ ->
-                                    n == extra
-
-                                _ ->
-                                    False
-                           )
-                )
-                False
-                e
-    in
-    case body of
-        MonoCall _ func [ MonoVarLocal n _ ] _ _ ->
-            if n == extra && not (mentionsExtra func) then
-                Just func
-
-            else
-                Nothing
-
-        MonoCall region func args _ callInfo ->
-            case List.reverse args of
-                (MonoVarLocal n _) :: revInit ->
-                    let
-                        initArgs =
-                            List.reverse revInit
-                    in
-                    if n == extra && not (List.isEmpty initArgs) && not (mentionsExtra func) && not (List.any mentionsExtra initArgs) then
-                        Maybe.map
-                            (\reducedType -> MonoCall region func initArgs reducedType callInfo)
-                            (peelParams (List.length initArgs) (Mono.typeOf func))
-
-                    else
-                        Nothing
+viewUnaryClosure : MonoExpr -> Maybe ( Name, Mono.MonoType, MonoExpr )
+viewUnaryClosure expr =
+    case expr of
+        Mono.MonoClosure info body _ ->
+            case info.params of
+                [ ( name, paramType ) ] ->
+                    Just ( name, paramType, body )
 
                 _ ->
                     Nothing
 
         _ ->
             Nothing
-
-
-{-| Returns the type of a function of type `funcType` applied to `k`
-arguments, or `Nothing` when it takes fewer than `k`.
-
-A function type may take several parameters at once. When `k` stops part way
-through such a group, the remaining parameters keep the group's own
-annotation.
-
--}
-peelParams : Int -> Mono.MonoType -> Maybe Mono.MonoType
-peelParams k funcType =
-    if k <= 0 then
-        Just funcType
-
-    else
-        case funcType of
-            Mono.MFunction _ anno params ret ->
-                let
-                    np =
-                        List.length params
-                in
-                if k >= np then
-                    peelParams (k - np) ret
-
-                else
-                    Just (Mono.mFunction anno (List.drop k params) ret)
-
-            _ ->
-                Nothing
 
 
 {-| Builds the `ELoop` whose item is the parameter `paramName` and whose writes
@@ -793,93 +698,81 @@ instance.
 -}
 buildLoopNode : BodyLookup -> Mono.SpecializationRegistry -> Dict String Mono.MonoExpr -> String -> Mono.MonoType -> Mono.MonoExpr -> Mono.MonoExpr -> Mono.MonoExpr -> Maybe EncoderNode
 buildLoopNode bodyLookup registry exprCache paramName paramType body iterExpr countExpr =
-    case reifyEncoderHelp bodyLookup registry exprCache body of
-        Just bodyNodes ->
-            if List.all hasConstantWidth bodyNodes then
-                Just
-                    (ELoop
-                        { itemVar = paramName
-                        , itemType = paramType
-                        , itemNodes = bodyNodes
-                        , iterExpr = iterExpr
-                        , countExpr = countExpr
-                        }
-                    )
+    reifyEncoderHelp bodyLookup registry exprCache body
+        |> traverseMaybe asFixedWrite
+        |> Maybe.map
+            (\itemWrites ->
+                ELoop
+                    { itemVar = paramName
+                    , itemType = paramType
+                    , itemWrites = itemWrites
+                    , iterExpr = iterExpr
+                    , countExpr = countExpr
+                    }
+            )
 
-            else
-                Nothing
 
-        Nothing ->
+{-| Returns `node` as a fixed-width write when it is one of the numeric writes
+`EU8` to `EF64`, and `Nothing` for any other node.
+-}
+asFixedWrite : EncoderNode -> Maybe FixedWrite
+asFixedWrite node =
+    case node of
+        EU8 expr ->
+            Just (FU8 expr)
+
+        EU16 endian expr ->
+            Just (FU16 endian expr)
+
+        EU32 endian expr ->
+            Just (FU32 endian expr)
+
+        EF32 endian expr ->
+            Just (FF32 endian expr)
+
+        EF64 endian expr ->
+            Just (FF64 endian expr)
+
+        EBytes _ ->
+            Nothing
+
+        EUtf8 _ ->
+            Nothing
+
+        ELoop _ ->
+            Nothing
+
+        EOpaque _ ->
             Nothing
 
 
-{-| Returns whether `node` writes a number of bytes known at compile time,
-which is true of the fixed-width numeric writes `EU8` to `EF64` and of nothing
-else; a nested `ELoop` gives `False`.
+{-| Returns the number of bytes a fixed-width write writes.
 -}
-hasConstantWidth : EncoderNode -> Bool
-hasConstantWidth node =
-    case node of
-        EU8 _ ->
-            True
-
-        EU16 _ _ ->
-            True
-
-        EU32 _ _ ->
-            True
-
-        EF32 _ _ ->
-            True
-
-        EF64 _ _ ->
-            True
-
-        EBytes _ ->
-            False
-
-        EUtf8 _ ->
-            False
-
-        ELoop _ ->
-            False
-
-        EOpaque _ ->
-            False
-
-
-{-| Returns the number of bytes `node` writes when `hasConstantWidth node`;
-for any other node it returns 0, which is not its width.
--}
-constantNodeWidth : EncoderNode -> Int
-constantNodeWidth node =
-    case node of
-        EU8 _ ->
+fixedWriteWidth : FixedWrite -> Int
+fixedWriteWidth write =
+    case write of
+        FU8 _ ->
             1
 
-        EU16 _ _ ->
+        FU16 _ _ ->
             2
 
-        EU32 _ _ ->
+        FU32 _ _ ->
             4
 
-        EF32 _ _ ->
+        FF32 _ _ ->
             4
 
-        EF64 _ _ ->
+        FF64 _ _ ->
             8
 
-        EBytes _ ->
-            0
 
-        EUtf8 _ ->
-            0
-
-        ELoop _ ->
-            0
-
-        EOpaque _ ->
-            0
+{-| Returns the values of `f` applied to every element of `xs`, in order, or
+`Nothing` if any of them is `Nothing`.
+-}
+traverseMaybe : (a -> Maybe b) -> List a -> Maybe (List b)
+traverseMaybe f xs =
+    List.foldr (\x acc -> Maybe.map2 (::) (f x) acc) (Just []) xs
 
 
 {-| Returns the byte order `expr` names when it is the `elm/bytes` constructor
@@ -909,30 +802,23 @@ reifyEndianness registry expr =
                 _ ->
                     Nothing
 
-        Mono.MonoCall _ fn [] _ _ ->
-            reifyEndianness registry fn
-
         _ ->
             Nothing
 
 
-{-| Returns the Loop IR encoder for `nodes`: an `InitCursor` that allocates a
-buffer of their total width (see `computeWidth`), one write per node in order,
-and `ReturnBuffer`. The cursor is named `"cur"`.
+{-| Returns the Loop IR encoder for `nodes`: a buffer of their total width (see
+`computeWidth`) and one write per node in order. The cursor is named `"cur"`.
 -}
-nodesToOps : List EncoderNode -> List Op
+nodesToOps : List EncoderNode -> IR.EncoderProgram
 nodesToOps nodes =
     let
         cursorName =
             "cur"
-
-        width =
-            computeWidth nodes
-
-        writeOps =
-            List.map (nodeToOp cursorName) nodes
     in
-    InitCursor cursorName width :: writeOps ++ [ ReturnBuffer ]
+    { cursor = cursorName
+    , width = computeWidth nodes
+    , writes = List.map (nodeToOp cursorName) nodes
+    }
 
 
 {-| Returns the Loop IR write for one node, on the cursor `cursorName`. An
@@ -968,30 +854,70 @@ nodeToOp cursorName node =
                 { cursorName = cursorName
                 , itemVar = r.itemVar
                 , itemType = r.itemType
-                , bodyOps = List.map (nodeToOp cursorName) r.itemNodes
+                , bodyOps = List.map (fixedWriteToOp cursorName) r.itemWrites
                 , iterExpr = r.iterExpr
-                , itemByteWidth = sumConstWidths r.itemNodes
+                , itemByteWidth = sumFixedWidths r.itemWrites
                 }
 
         EOpaque expr ->
             WriteOpaque cursorName expr
 
 
-{-| Returns the total width of `nodes`, which must all have constant width
-(see `constantNodeWidth`).
+{-| Returns the Loop IR write for one fixed-width write, on the cursor
+`cursorName`.
 -}
-sumConstWidths : List EncoderNode -> Int
-sumConstWidths nodes =
-    List.foldl (\n acc -> acc + constantNodeWidth n) 0 nodes
+fixedWriteToOp : String -> FixedWrite -> Op
+fixedWriteToOp cursorName write =
+    case write of
+        FU8 expr ->
+            WriteU8 cursorName expr
+
+        FU16 endian expr ->
+            WriteU16 cursorName endian expr
+
+        FU32 endian expr ->
+            WriteU32 cursorName endian expr
+
+        FF32 endian expr ->
+            WriteF32 cursorName endian expr
+
+        FF64 endian expr ->
+            WriteF64 cursorName endian expr
 
 
-{-| Returns the total number of bytes `nodes` write, as a simplified
-`WidthExpr`.
+{-| Returns the total width of `writes`.
+-}
+sumFixedWidths : List FixedWrite -> Int
+sumFixedWidths writes =
+    List.foldl (\w acc -> acc + fixedWriteWidth w) 0 writes
+
+
+{-| Returns the total number of bytes `nodes` write, as a `WidthExpr`.
+
+The widths are added in order. The constant widths before the first width
+known only at run time are summed into one constant; every later width is
+added on its own.
+
 -}
 computeWidth : List EncoderNode -> WidthExpr
 computeWidth nodes =
     List.foldl addNodeWidth (WConst 0) nodes
-        |> IR.simplifyWidth
+
+
+{-| Returns `acc` plus `term`: the sum of the two when both are constants,
+`term` alone when `acc` is the starting zero, and their `WAdd` otherwise.
+-}
+addWidth : WidthExpr -> WidthExpr -> WidthExpr
+addWidth acc term =
+    case ( acc, term ) of
+        ( WConst 0, _ ) ->
+            term
+
+        ( WConst a, WConst b ) ->
+            WConst (a + b)
+
+        _ ->
+            WAdd acc term
 
 
 {-| Adds the width of `node` to `acc`: a constant for a numeric write, the run-time
@@ -1002,50 +928,31 @@ addNodeWidth : EncoderNode -> WidthExpr -> WidthExpr
 addNodeWidth node acc =
     case node of
         EU8 _ ->
-            WAdd acc (WConst 1)
+            addWidth acc (WConst 1)
 
         EU16 _ _ ->
-            WAdd acc (WConst 2)
+            addWidth acc (WConst 2)
 
         EU32 _ _ ->
-            WAdd acc (WConst 4)
+            addWidth acc (WConst 4)
 
         EF32 _ _ ->
-            WAdd acc (WConst 4)
+            addWidth acc (WConst 4)
 
         EF64 _ _ ->
-            WAdd acc (WConst 8)
+            addWidth acc (WConst 8)
 
         EBytes bytesExpr ->
-            WAdd acc (WBytesWidth bytesExpr)
+            addWidth acc (WBytesWidth bytesExpr)
 
         EUtf8 stringExpr ->
-            WAdd acc (WStringUtf8Width stringExpr)
+            addWidth acc (WStringUtf8Width stringExpr)
 
         ELoop r ->
-            WAdd acc (WListLengthMul r.countExpr (sumConstWidths r.itemNodes))
+            addWidth acc (WListLengthMul r.countExpr (sumFixedWidths r.itemWrites))
 
         EOpaque expr ->
-            WAdd acc (WOpaqueWidth expr)
-
-
-{-| Returns every value of `maybes` in order, or `Nothing` if any of them is
-`Nothing`.
--}
-combineResults : List (Maybe a) -> Maybe (List a)
-combineResults maybes =
-    List.foldr
-        (\maybeVal acc ->
-            case ( maybeVal, acc ) of
-                ( Just val, Just list ) ->
-                    Just (val :: list)
-
-                _ ->
-                    Nothing
-        )
-        (Just [])
-        maybes
-
+            addWidth acc (WOpaqueWidth expr)
 
 
 -- ============================================================================
@@ -1063,7 +970,7 @@ local variable bound in `exprCache`. The recognised functions are the
 fixed-width reads, `bytes`, `string`, `succeed`, `fail`, `map` to `map5`,
 `andThen`, and `loop` in two shapes only: a count loop, which reads a given
 number of items, and a sentinel loop, which reads integers until one equals an
-integer literal. A call of a `Bytes` kernel function is never recognised.
+integer literal.
 
 -}
 reifyDecoder : Mono.SpecializationRegistry -> Dict String Mono.MonoExpr -> Mono.MonoExpr -> Maybe DecoderNode
@@ -1083,9 +990,6 @@ reifyDecoder registry exprCache expr =
                         _ ->
                             Nothing
 
-                Mono.MonoVarKernel _ _ "Bytes" _ _ ->
-                    reifyBytesKernelDecodeCall
-
                 Mono.MonoCall _ innerFunc innerArgs _ _ ->
                     case innerFunc of
                         Mono.MonoVarGlobal _ innerSpecId _ ->
@@ -1099,9 +1003,6 @@ reifyDecoder registry exprCache expr =
 
                                 _ ->
                                     Nothing
-
-                        Mono.MonoVarKernel _ _ "Bytes" _ _ ->
-                            reifyBytesKernelDecodeCall
 
                         _ ->
                             Nothing
@@ -1121,9 +1022,6 @@ reifyDecoder registry exprCache expr =
 
                                         _ ->
                                             Nothing
-
-                                Mono.MonoVarKernel _ _ "Bytes" _ _ ->
-                                    reifyBytesKernelDecodeCall
 
                                 _ ->
                                     Nothing
@@ -1261,15 +1159,6 @@ reifyBytesDecodeCall registry exprCache name args =
             Nothing
 
 
-{-| The reification of any call of a `Bytes` kernel function as a decoder,
-which is always `Nothing`: no kernel decoder is recognised.
--}
-reifyBytesKernelDecodeCall : Maybe DecoderNode
-reifyBytesKernelDecodeCall =
-    Nothing
-
-
-
 -- ============================================================================
 -- andThen Pattern Recognition
 -- ============================================================================
@@ -1286,16 +1175,16 @@ reifyAndThen registry exprCache lambdaExpr firstDecoderExpr =
             Nothing
 
         Just firstDecoder ->
-            case lambdaExpr of
-                Mono.MonoClosure closureInfo bodyExpr _ ->
-                    reifyAndThenBody registry exprCache firstDecoder closureInfo bodyExpr
+            case viewUnaryClosure lambdaExpr of
+                Just ( paramName, _, bodyExpr ) ->
+                    reifyAndThenBody registry exprCache firstDecoder paramName bodyExpr
 
-                _ ->
+                Nothing ->
                     Nothing
 
 
 {-| Reifies an `andThen` whose first decoder reifies to `firstDecoder` and whose
-callback is a lambda of one parameter with body `bodyExpr`.
+callback is a lambda of the one parameter `paramName` with body `bodyExpr`.
 
 When the body is `string n` or `bytes n` on the parameter `n` itself, the result
 is a `DLengthPrefixedString` or `DLengthPrefixedBytes`, provided the first
@@ -1309,44 +1198,30 @@ reifyAndThenBody :
     Mono.SpecializationRegistry
     -> Dict String Mono.MonoExpr
     -> DecoderNode
-    -> Mono.ClosureInfo
+    -> Name
     -> Mono.MonoExpr
     -> Maybe DecoderNode
-reifyAndThenBody registry exprCache firstDecoder closureInfo bodyExpr =
-    let
-        maybeParamName =
-            case closureInfo.params of
-                [ ( name, _ ) ] ->
-                    Just name
-
-                _ ->
-                    Nothing
-    in
-    case maybeParamName of
-        Nothing ->
-            Nothing
-
-        Just paramName ->
-            case matchLengthPrefixedPattern registry paramName bodyExpr of
-                Just patternConstructor ->
-                    case decoderToLengthDecoder firstDecoder of
-                        Just lenDecoder ->
-                            Just (patternConstructor lenDecoder)
-
-                        Nothing ->
-                            Nothing
+reifyAndThenBody registry exprCache firstDecoder paramName bodyExpr =
+    case matchLengthPrefixedPattern registry paramName bodyExpr of
+        Just patternConstructor ->
+            case decoderToLengthDecoder firstDecoder of
+                Just lenDecoder ->
+                    Just (patternConstructor lenDecoder)
 
                 Nothing ->
-                    case reifyDecoder registry exprCache bodyExpr of
-                        Just bodyDecoder ->
-                            if residualMentions paramName bodyDecoder then
-                                Nothing
+                    Nothing
 
-                            else
-                                Just (DAndThen firstDecoder paramName bodyDecoder)
+        Nothing ->
+            case reifyDecoder registry exprCache bodyExpr of
+                Just bodyDecoder ->
+                    if residualMentions paramName bodyDecoder then
+                        Nothing
 
-                        Nothing ->
-                            Nothing
+                    else
+                        Just (DAndThen firstDecoder paramName bodyDecoder)
+
+                Nothing ->
+                    Nothing
 
 
 {-| Returns whether a residual expression of `node`, one that the fused decoder
@@ -1414,12 +1289,6 @@ residualMentions name node =
 
         DAndThen d1 _ d2 ->
             sub d1 || sub d2
-
-        DCountLoop _ _ item ->
-            sub item
-
-        DSentinelLoop _ _ item ->
-            sub item
 
         _ ->
             False
@@ -1572,7 +1441,7 @@ reifyLoop registry exprCache initialStateExpr stepFnExpr =
             { lets = exprCache, paths = Dict.empty }
     in
     case resolveLocal env initialStateExpr of
-        Mono.MonoTupleCreate _ [ countExpr, accInit ] _ ->
+        Mono.MonoTupleCreate _ (Mono.T2 countExpr accInit) _ ->
             if isEmptyList (resolveLocal env accInit) then
                 Maybe.map2 (\count ( order, item ) -> DCountLoop count order item)
                     (countSourceOf env countExpr)
@@ -1681,52 +1550,47 @@ countSourceOf env countExpr =
 
 
 {-| Matches the step function of a count loop (see `reifyLoop`), returning the
-order of the list it builds and its item decoder.
+order of the list it builds and its item read.
 -}
-matchCountStep : Mono.SpecializationRegistry -> LoopEnv -> Mono.MonoExpr -> Maybe ( IR.ListOrder, DecoderNode )
+matchCountStep : Mono.SpecializationRegistry -> LoopEnv -> Mono.MonoExpr -> Maybe ( IR.ListOrder, IR.FixedRead )
 matchCountStep registry env0 stepFnExpr =
-    case resolveLocal env0 stepFnExpr of
-        Mono.MonoClosure info body _ ->
-            case info.params of
-                [ ( stateName, _ ) ] ->
-                    let
-                        ( env, inner ) =
-                            peelBindings env0 body
+    case viewUnaryClosure (resolveLocal env0 stepFnExpr) of
+        Just ( stateName, _, body ) ->
+            let
+                ( env, inner ) =
+                    peelBindings env0 body
 
-                        componentName index =
-                            Dict.foldl
-                                (\name path found ->
-                                    case path of
-                                        Mono.MonoIndex i Mono.Tuple2Container _ (Mono.MonoRoot root _) ->
-                                            if i == index && root == stateName then
-                                                Just name
+                componentName index =
+                    Dict.foldl
+                        (\name path found ->
+                            case path of
+                                Mono.MonoIndex i Mono.Tuple2Container _ (Mono.MonoRoot root _) ->
+                                    if i == index && root == stateName then
+                                        Just name
 
-                                            else
-                                                found
+                                    else
+                                        found
 
-                                        _ ->
-                                            found
-                                )
-                                Nothing
-                                env.paths
-                    in
-                    case ( componentName 0, componentName 1, inner ) of
-                        ( Just n, Just acc, Mono.MonoIf [ ( cond, thenExpr ) ] elseExpr _ ) ->
-                            if isCountExhausted registry env n cond then
-                                Maybe.map2 Tuple.pair
-                                    (matchDoneSucceed registry env acc thenExpr)
-                                    (matchCountContinue registry env n acc elseExpr)
+                                _ ->
+                                    found
+                        )
+                        Nothing
+                        env.paths
+            in
+            case ( componentName 0, componentName 1, inner ) of
+                ( Just n, Just acc, Mono.MonoIf [ ( cond, thenExpr ) ] elseExpr _ ) ->
+                    if isCountExhausted registry env n cond then
+                        Maybe.map2 Tuple.pair
+                            (matchDoneSucceed registry env acc thenExpr)
+                            (matchCountContinue registry env n acc elseExpr)
 
-                            else
-                                Nothing
-
-                        _ ->
-                            Nothing
+                    else
+                        Nothing
 
                 _ ->
                     Nothing
 
-        _ ->
+        Nothing ->
             Nothing
 
 
@@ -1745,36 +1609,31 @@ isCountExhausted registry env n cond =
 
 
 {-| Matches the `else` branch of a count loop,
-`map (\x -> Loop ( n - 1, x :: acc )) item`, returning the item decoder.
+`map (\x -> Loop ( n - 1, x :: acc )) item`, returning the item read.
 -}
-matchCountContinue : Mono.SpecializationRegistry -> LoopEnv -> String -> String -> Mono.MonoExpr -> Maybe DecoderNode
+matchCountContinue : Mono.SpecializationRegistry -> LoopEnv -> String -> String -> Mono.MonoExpr -> Maybe IR.FixedRead
 matchCountContinue registry env0 n acc expr =
     viewMap registry env0 expr
         |> Maybe.andThen
             (\( env, fnExpr, itemExpr ) ->
-                case resolveLocal env fnExpr of
-                    Mono.MonoClosure info fnBody _ ->
-                        case info.params of
-                            [ ( x, _ ) ] ->
-                                let
-                                    ( fnEnv, loopExpr ) =
-                                        peelBindings env fnBody
-                                in
-                                case viewCtorArg registry fnEnv "Loop" loopExpr |> Maybe.map (resolveLocal fnEnv) of
-                                    Just (Mono.MonoTupleCreate _ [ nextCount, nextAcc ] _) ->
-                                        if isDecrement registry fnEnv n nextCount && isConsOnto registry fnEnv x acc nextAcc then
-                                            fixedWidthItem registry env itemExpr
+                case viewUnaryClosure (resolveLocal env fnExpr) of
+                    Just ( x, _, fnBody ) ->
+                        let
+                            ( fnEnv, loopExpr ) =
+                                peelBindings env fnBody
+                        in
+                        case viewCtorArg registry fnEnv "Loop" loopExpr |> Maybe.map (resolveLocal fnEnv) of
+                            Just (Mono.MonoTupleCreate _ (Mono.T2 nextCount nextAcc) _) ->
+                                if isDecrement registry fnEnv n nextCount && isConsOnto registry fnEnv x acc nextAcc then
+                                    fixedWidthItem registry env itemExpr
 
-                                        else
-                                            Nothing
-
-                                    _ ->
-                                        Nothing
+                                else
+                                    Nothing
 
                             _ ->
                                 Nothing
 
-                    _ ->
+                    Nothing ->
                         Nothing
             )
 
@@ -1837,55 +1696,45 @@ matchDoneSucceed registry env0 acc expr =
 
 
 {-| Matches the step function of a sentinel loop (see `reifyLoop`), returning
-the sentinel, the order of the list it builds and its item decoder.
+the sentinel, the order of the list it builds and its item read.
 -}
-matchSentinelStep : Mono.SpecializationRegistry -> LoopEnv -> Mono.MonoExpr -> Maybe ( Int, IR.ListOrder, DecoderNode )
+matchSentinelStep : Mono.SpecializationRegistry -> LoopEnv -> Mono.MonoExpr -> Maybe ( Int, IR.ListOrder, IR.FixedRead )
 matchSentinelStep registry env0 stepFnExpr =
-    case resolveLocal env0 stepFnExpr of
-        Mono.MonoClosure info body _ ->
-            case info.params of
-                [ ( acc, _ ) ] ->
-                    viewAndThen registry env0 body
-                        |> Maybe.andThen (matchSentinelCallback registry acc)
+    case viewUnaryClosure (resolveLocal env0 stepFnExpr) of
+        Just ( acc, _, body ) ->
+            viewAndThen registry env0 body
+                |> Maybe.andThen (matchSentinelCallback registry acc)
 
-                _ ->
-                    Nothing
-
-        _ ->
+        Nothing ->
             Nothing
 
 
-{-| Matches the callback and item decoder of a sentinel loop's `andThen`.
+{-| Matches the callback and item read of a sentinel loop's `andThen`.
 -}
-matchSentinelCallback : Mono.SpecializationRegistry -> String -> ( LoopEnv, Mono.MonoExpr, Mono.MonoExpr ) -> Maybe ( Int, IR.ListOrder, DecoderNode )
+matchSentinelCallback : Mono.SpecializationRegistry -> String -> ( LoopEnv, Mono.MonoExpr, Mono.MonoExpr ) -> Maybe ( Int, IR.ListOrder, IR.FixedRead )
 matchSentinelCallback registry acc ( env, callbackExpr, itemExpr ) =
-    case resolveLocal env callbackExpr of
-        Mono.MonoClosure info cbBody _ ->
-            case info.params of
-                [ ( b, _ ) ] ->
-                    let
-                        ( cbEnv, inner ) =
-                            peelBindings env cbBody
-                    in
-                    case inner of
-                        Mono.MonoIf [ ( cond, thenExpr ) ] elseExpr _ ->
-                            Maybe.map3 (\sentinel order item -> ( sentinel, order, item ))
-                                (sentinelOf registry cbEnv b cond)
-                                (matchDoneSucceed registry cbEnv acc thenExpr)
-                                (if matchSentinelContinue registry cbEnv b acc elseExpr then
-                                    integerItem registry env itemExpr
+    case viewUnaryClosure (resolveLocal env callbackExpr) of
+        Just ( b, _, cbBody ) ->
+            let
+                ( cbEnv, inner ) =
+                    peelBindings env cbBody
+            in
+            case inner of
+                Mono.MonoIf [ ( cond, thenExpr ) ] elseExpr _ ->
+                    Maybe.map3 (\sentinel order item -> ( sentinel, order, item ))
+                        (sentinelOf registry cbEnv b cond)
+                        (matchDoneSucceed registry cbEnv acc thenExpr)
+                        (if matchSentinelContinue registry cbEnv b acc elseExpr then
+                            integerItem registry env itemExpr
 
-                                 else
-                                    Nothing
-                                )
-
-                        _ ->
+                         else
                             Nothing
+                        )
 
                 _ ->
                     Nothing
 
-        _ ->
+        Nothing ->
             Nothing
 
 
@@ -1930,74 +1779,67 @@ matchSentinelContinue registry env0 b acc expr =
             False
 
 
-{-| Returns the item decoder of a loop when `itemExpr` reifies to one
-fixed-width read, and `Nothing` otherwise.
+{-| Returns the item read of a loop when `itemExpr` reifies to one fixed-width
+read, and `Nothing` otherwise.
 -}
-fixedWidthItem : Mono.SpecializationRegistry -> LoopEnv -> Mono.MonoExpr -> Maybe DecoderNode
+fixedWidthItem : Mono.SpecializationRegistry -> LoopEnv -> Mono.MonoExpr -> Maybe IR.FixedRead
 fixedWidthItem registry env itemExpr =
-    case reifyDecoder registry env.lets (resolveLocal env itemExpr) of
-        Just node ->
-            if isFixedWidthRead node then
-                Just node
-
-            else
-                Nothing
-
-        Nothing ->
-            Nothing
+    reifyDecoder registry env.lets (resolveLocal env itemExpr)
+        |> Maybe.andThen asFixedRead
 
 
-{-| Returns the item decoder of a sentinel loop when `itemExpr` reifies to one
+{-| Returns the item read of a sentinel loop when `itemExpr` reifies to one
 fixed-width integer read, and `Nothing` otherwise.
 -}
-integerItem : Mono.SpecializationRegistry -> LoopEnv -> Mono.MonoExpr -> Maybe DecoderNode
+integerItem : Mono.SpecializationRegistry -> LoopEnv -> Mono.MonoExpr -> Maybe IR.FixedRead
 integerItem registry env itemExpr =
     fixedWidthItem registry env itemExpr
         |> Maybe.andThen
-            (\node ->
-                case node of
-                    DF32 _ ->
+            (\read ->
+                case read of
+                    IR.RF32 _ ->
                         Nothing
 
-                    DF64 _ ->
+                    IR.RF64 _ ->
                         Nothing
 
                     _ ->
-                        Just node
+                        Just read
             )
 
 
-{-| Returns whether `node` is a single fixed-width primitive read.
+{-| Returns `node` as a fixed-width read when it is a single fixed-width
+primitive read, and `Nothing` otherwise.
 -}
-isFixedWidthRead : DecoderNode -> Bool
-isFixedWidthRead node =
+asFixedRead : DecoderNode -> Maybe IR.FixedRead
+asFixedRead node =
     case node of
         DU8 ->
-            True
+            Just IR.RU8
 
         DS8 ->
-            True
+            Just IR.RI8
 
-        DU16 _ ->
-            True
+        DU16 endian ->
+            Just (IR.RU16 endian)
 
-        DS16 _ ->
-            True
+        DS16 endian ->
+            Just (IR.RI16 endian)
 
-        DU32 _ ->
-            True
+        DU32 endian ->
+            Just (IR.RU32 endian)
 
-        DS32 _ ->
-            True
+        DS32 endian ->
+            Just (IR.RI32 endian)
 
-        DF32 _ ->
-            True
+        DF32 endian ->
+            Just (IR.RF32 endian)
 
-        DF64 _ ->
-            True
+        DF64 endian ->
+            Just (IR.RF64 endian)
 
         _ ->
-            False
+            Nothing
 
 
 
@@ -2034,7 +1876,7 @@ viewSucceed registry env0 expr =
                                         peelBindings env body
                                 in
                                 case result of
-                                    Mono.MonoTupleCreate _ [ off, value ] _ ->
+                                    Mono.MonoTupleCreate _ (Mono.T2 off value) _ ->
                                         if isLocalNamed bodyEnv offset off then
                                             Just ( bodyEnv, value )
 
@@ -2094,7 +1936,7 @@ viewMap registry env0 expr =
                     |> Maybe.andThen
                         (\run ->
                             case run.result of
-                                Mono.MonoTupleCreate _ [ off, applied ] _ ->
+                                Mono.MonoTupleCreate _ (Mono.T2 off applied) _ ->
                                     if isLocalNamed run.env run.offsetName off then
                                         case flatCall (resolveLocal run.env applied) of
                                             Just ( mapFn, [ a ] ) ->
@@ -2507,36 +2349,26 @@ type alias DecoderCompileState =
     }
 
 
-{-| Returns the Loop IR decoder for `node`, with the placeholder of its result.
-
-The operations start with an `InitReadCursor` on the cursor `"dcur"` and end
-with `ReturnJust` of the result. The `InitReadCursor`'s input expression is a
-placeholder `MonoUnit`, not the bytes to decode, which this module never sees.
+{-| Returns the Loop IR decoder for `node`, reading from the cursor `"dcur"`.
 
 Inside an `andThen`, a length or loop count that is the callback's parameter is
 taken from the placeholder of the first decoder's result.
 
 -}
-decoderNodeToOps : DecoderNode -> ( List IR.DecoderOp, String )
+decoderNodeToOps : DecoderNode -> IR.DecoderProgram
 decoderNodeToOps node =
     let
-        cursorName =
-            "dcur"
-
-        dummyBytesExpr =
-            Mono.MonoUnit
-
         initialState =
-            { cursorName = cursorName
+            { cursorName = "dcur"
             , varCounter = 0
-            , ops = [ IR.InitReadCursor cursorName dummyBytesExpr ]
+            , ops = []
             , paramBindings = Dict.empty
             }
 
         ( resultVar, finalState ) =
             compileDecoderNode node initialState
     in
-    ( List.reverse finalState.ops ++ [ IR.ReturnJust resultVar ], resultVar )
+    { body = List.reverse finalState.ops, result = resultVar }
 
 
 {-| Adds the operations for `node` to `state`, and returns the placeholder of
@@ -2544,8 +2376,7 @@ its result.
 
 Child decoders are flattened in order before the operation that combines them.
 A `DFail` adds a `ReturnNothing` and returns the placeholder `"fail"`, which
-names no result. A loop's item decoder is flattened separately, and its
-operations go inside the loop operation.
+names no result.
 
 -}
 compileDecoderNode : DecoderNode -> DecoderCompileState -> ( String, DecoderCompileState )
@@ -2793,23 +2624,10 @@ compileDecoderNode node state =
             in
             compileDecoderNode bodyDecoder stateWithBinding
 
-        DCountLoop countSource order itemDecoder ->
+        DCountLoop countSource order itemRead ->
             let
-                itemState =
-                    { cursorName = state.cursorName
-                    , varCounter = state.varCounter
-                    , ops = []
-                    , paramBindings = state.paramBindings
-                    }
-
-                ( _, itemStateAfter ) =
-                    compileDecoderNode itemDecoder itemState
-
-                itemOps =
-                    List.reverse itemStateAfter.ops
-
                 ( resultVar, state1 ) =
-                    freshVar "list" { state | varCounter = itemStateAfter.varCounter }
+                    freshVar "list" state
 
                 -- A variable bound by an enclosing andThen is the result of an
                 -- earlier read; any other variable is compiled where the loop
@@ -2830,33 +2648,20 @@ compileDecoderNode node state =
             ( resultVar
             , { state1
                 | ops =
-                    IR.LoopDecodeList count state.cursorName itemOps order resultVar
+                    IR.LoopDecodeList count state.cursorName itemRead order resultVar
                         :: state1.ops
               }
             )
 
-        DSentinelLoop sentinel order itemDecoder ->
+        DSentinelLoop sentinel order itemRead ->
             let
-                itemState =
-                    { cursorName = state.cursorName
-                    , varCounter = state.varCounter
-                    , ops = []
-                    , paramBindings = state.paramBindings
-                    }
-
-                ( _, itemStateAfter ) =
-                    compileDecoderNode itemDecoder itemState
-
-                itemOps =
-                    List.reverse itemStateAfter.ops
-
                 ( resultVar, state1 ) =
-                    freshVar "list" { state | varCounter = itemStateAfter.varCounter }
+                    freshVar "list" state
             in
             ( resultVar
             , { state1
                 | ops =
-                    IR.LoopSentinelDecodeList sentinel state.cursorName itemOps order resultVar
+                    IR.LoopSentinelDecodeList sentinel state.cursorName itemRead order resultVar
                         :: state1.ops
               }
             )

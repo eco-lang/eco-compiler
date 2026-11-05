@@ -58,6 +58,9 @@ constrainWithIds canonical =
         |> IO.map (\( con, state ) -> ( con, state.mapping, state.schemeBinderVars ))
 
 
+-- test hook: exposed for tests/Compiler/Type/Constrain/Typed/DeepSpineStackSafetyTest.elm
+
+
 {-| Returns the constraint for a module together with the whole node-id record,
 recording on.
 

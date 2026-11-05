@@ -49,8 +49,7 @@ The cases, by group and label:
     that return a partial decoder.
   - Recognised encoders (`encoderPrograms`): "Encode every write", length
     prefixed lists mapped with a lambda, a named function and a partial
-    application, a `let`-bound partial application, and the kernel writes
-    `write_u8` and `write_i8`.
+    application, and a `let`-bound partial application.
   - Declined encoders (`declinedEncoderPrograms`): calls that are not
     encoders, length prefixes that differ from the recognised shape, loop
     items without a constant width, endianness that is not a constructor, a
@@ -676,11 +675,6 @@ mapWith f =
     D.map f
 
 
-rk : Int -> (Int -> D.Decoder Int)
-rk a =
-    Elm.Kernel.Bytes.read_pair a
-
-
 pickD : Int -> (D.Decoder Int -> D.Decoder Int)
 pickD k =
     if k > 0 then
@@ -692,7 +686,6 @@ pickD k =
 
 testValue k b =
     { a = D.decode (mapWith negate D.unsignedInt8) b
-    , c = D.decode (rk 1 2) b
     , d = D.decode (pickD k D.unsignedInt8) b
     }
 """
@@ -872,15 +865,11 @@ testValue f g b =
         r1 =
             g 1
 
-        r2 =
-            Elm.Kernel.Bytes.read_pair 1
-
         r3 =
             twoArg 1
     in
     { a = D.decode (f BE) b
     , c = D.decode (r1 2) b
-    , d = D.decode (r2 2) b
     , e = D.decode (r3 2) b
     , h =
         D.decode
@@ -1093,18 +1082,12 @@ testValue x =
     E.encode (E.sequence [ w x, E.unsignedInt8 x ])
 """
       )
-    , ( "Encode kernel writes"
-      , """
-testValue x =
-    E.encode (E.sequence [ Elm.Kernel.Bytes.write_u8 x, Elm.Kernel.Bytes.write_i8 x, E.unsignedInt8 x ])
-"""
-      )
     ]
 
 
 {-| Encoder programs whose encoders, or parts of them, the reifier inspects
-and declines: curried calls and `let`-bound partial applications of locals and
-kernels, length-prefixed lists that differ from the recognised shape in
+and declines: curried calls and `let`-bound partial applications of locals,
+length-prefixed lists that differ from the recognised shape in
 one place each, loop bodies without a constant width, and endianness values
 that are not constructors.
 -}
@@ -1114,16 +1097,13 @@ declinedEncoderPrograms =
       , """
 testValue f g x =
     let
-        w1 =
-            Elm.Kernel.Bytes.write_u16 1
-
         w2 =
             f 1
 
         w3 =
             g
     in
-    E.encode (E.sequence [ (f 1) x, w1 x, w2 x, w3 x, E.unsignedInt8 x ])
+    E.encode (E.sequence [ (f 1) x, w2 x, w3 x, E.unsignedInt8 x ])
 """
       )
     , ( "Encode length prefixes that differ from the shape"
@@ -1208,11 +1188,6 @@ encWith e =
     E.unsignedInt16 e
 
 
-wk : Int -> (Int -> E.Encoder)
-wk a =
-    Elm.Kernel.Bytes.write_u16 a
-
-
 pick : Int -> (Int -> E.Encoder)
 pick k =
     if k > 0 then
@@ -1223,7 +1198,7 @@ pick k =
 
 
 testValue k x =
-    E.encode (E.sequence [ encWith BE x, wk 1 x, pick k x, E.unsignedInt8 x ])
+    E.encode (E.sequence [ encWith BE x, pick k x, E.unsignedInt8 x ])
 """
       )
     ]

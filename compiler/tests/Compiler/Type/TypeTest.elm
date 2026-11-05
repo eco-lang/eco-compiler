@@ -26,6 +26,7 @@ import Compiler.IR.Source as Src
 import Compiler.Parse.Module as Parse
 import Dict
 import Expect
+import Maybe.Extra as Maybe
 import Test exposing (Test)
 import TestLogic.TestPipeline as Pipeline
 
@@ -116,7 +117,7 @@ typeVarNames tipe acc =
             acc
 
         Can.TTuple a b cs ->
-            List.foldl typeVarNames acc (a :: b :: cs)
+            List.foldl typeVarNames acc (a :: b :: Maybe.toList cs)
 
         Can.TAlias _ _ args _ ->
             List.foldl (\( _, t ) a -> typeVarNames t a) acc args

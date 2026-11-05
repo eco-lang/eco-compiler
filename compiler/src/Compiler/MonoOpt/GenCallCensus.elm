@@ -1,4 +1,4 @@
-module Compiler.MonoOpt.GenCallCensus exposing (census, render, calleeTag)
+module Compiler.MonoOpt.GenCallCensus exposing (census, render)
 
 {-| Counts the calls the compiler could not make directly, by what kind of
 expression supplies the function being called, so that a report can show where
@@ -22,7 +22,7 @@ expression in function position:
 
 The count reads the graph and changes nothing.
 
-@docs census, render, calleeTag
+@docs census, render
 
 -}
 

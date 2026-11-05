@@ -13,7 +13,7 @@ _escape_: every use reads a field of the value rather than the value itself.
 Returning the value, passing it to a call or capturing it in a closure are
 escapes. The full rule, with its exceptions, belongs to
 `Compiler.GenerateMlir.Expr.tupleBinderPromotable` and
-`Compiler.GenerateMlir.Expr.aggBinderPromotableWith`, which these tests call.
+`Compiler.GenerateMlir.Expr.promotableCtorCall`, which these tests call.
 
 The fixture is one source module, `fixtureModule`, with one function per
 scenario. Every test runs it through `TestLogic.TestPipeline.runToGlobalOpt`
@@ -40,8 +40,11 @@ The tuple tests take the function's first `let` whose value is a tuple and ask
     escapes.
 
 The constructor tests take the function's first `let` whose value is a call to
-a constructor, and ask `aggBinderPromotableWith` with that constructor's
-`CustomContainer` as the kind of container a field read must go through.
+a constructor, and ask `promotableCtorCall` whether it returns the
+constructor's shape. Its context is `Context.initContext` with the graph's
+constructor specializations as `ctorBySpec`: the default configuration, whose
+`aggPromote` flag is on, and no forward references, split parameters or
+`$psplit` workers.
 
   - `ctorGood` binds `p = MkPair a b` and matches it against `MkPair x y`:
     promotable.
@@ -56,8 +59,8 @@ Among what is not tested: the walk is always given empty tables of split
 parameters, of argument positions of calls to functions whose aggregate
 parameter has been split into its fields, and of forward-referenced names, so
 the allowances and the guard that depend on them are not exercised; the
-constructor tests bypass `promotableCtorCall`, so its configuration flag,
-saturation and arity conditions are not checked; no fixture has a 3-tuple or
+configuration flag of `promotableCtorCall` is never off, and every constructor
+call is saturated; no fixture has a 3-tuple or
 a tail-recursive function; the solver engine is not used; and no MLIR is
 generated.
 
@@ -65,6 +68,7 @@ generated.
 
 import Array
 import Compiler.AST.SourceBuilder as B
+import Compiler.GenerateMlir.Context as Context
 import Compiler.GenerateMlir.Expr as Expr
 import Compiler.IR.Mono as Mono
 import Compiler.IR.Source as Src
@@ -114,9 +118,9 @@ suite =
 
 
 {-| Runs `fixtureModule` to global optimization and expects `expected` to be
-the constructor verdict for the function named by `defName`: the verdict of
-`Expr.aggBinderPromotableWith` on that function's first `let` whose value is a
-call to a constructor, with the constructor's `CustomContainer` as the kind.
+the constructor verdict for the function named by `defName`: whether
+`Expr.promotableCtorCall` returns a shape for that function's first `let`
+whose value is a call to a constructor.
 
 The function is the first specialization, in SpecId order, whose comparable
 global name contains `defName` and for which `nodeCtorVerdict` gives a
@@ -132,16 +136,26 @@ expectCtorVerdict defName expected =
 
         Ok { optimizedMonoGraph } ->
             let
-                (Mono.MonoGraph { nodes, registry }) =
+                (Mono.MonoGraph { nodes, registry, ctorShapes }) =
                     optimizedMonoGraph
 
-                ctorShapeOf specId =
-                    case Array.get specId nodes of
-                        Just (Just (Mono.MonoCtor shape _)) ->
-                            Just shape
+                ctorBySpec =
+                    Array.foldl
+                        (\maybeNode ( specId, acc ) ->
+                            case maybeNode of
+                                Just (Mono.MonoCtor _ shape _) ->
+                                    ( specId + 1, Dict.insert specId shape acc )
 
-                        _ ->
-                            Nothing
+                                _ ->
+                                    ( specId + 1, acc )
+                        )
+                        ( 0, Dict.empty )
+                        nodes
+                        |> Tuple.second
+
+                ctx =
+                    Context.initContext registry Array.empty ctorShapes
+                        |> Context.withCtorBySpec ctorBySpec
 
                 verdict =
                     Array.foldl
@@ -154,7 +168,7 @@ expectCtorVerdict defName expected =
                                     case ( maybeName, maybeNode ) of
                                         ( Just ( g, _ ), Just node ) ->
                                             if String.contains defName (Mono.toComparableGlobal g) then
-                                                nodeCtorVerdict ctorShapeOf node
+                                                nodeCtorVerdict ctx node
 
                                             else
                                                 Nothing
@@ -172,47 +186,46 @@ expectCtorVerdict defName expected =
 finds it, or `Nothing` when `node` is neither a `MonoDefine` nor a
 `MonoTailFunc`.
 -}
-nodeCtorVerdict : (Int -> Maybe Mono.CtorShape) -> Mono.MonoNode -> Maybe Bool
-nodeCtorVerdict ctorShapeOf node =
+nodeCtorVerdict : Context.Context -> Mono.MonoNode -> Maybe Bool
+nodeCtorVerdict ctx node =
     case node of
         Mono.MonoDefine body _ ->
-            findCtorLet ctorShapeOf body
+            findCtorLet ctx body
 
         Mono.MonoTailFunc _ body _ ->
-            findCtorLet ctorShapeOf body
+            findCtorLet ctx body
 
         _ ->
             Nothing
 
 
-{-| Returns the escape walk's verdict on the first `let` in `expr` that binds a
-call to a global which `ctorShapeOf` maps to a constructor shape, with that
-constructor's `CustomContainer` as the kind, or `Nothing` if there is none.
+{-| Returns whether `Expr.promotableCtorCall` returns a shape for the first
+`let` in `expr` that binds a call to a global which the context's `ctorBySpec`
+maps to a constructor shape, or `Nothing` if there is none.
 
 The search goes down through closures and through the bodies of `let`s and
 destructures, and nowhere else, so a `let` inside a `case` branch, an `if`, a
 call argument or another `let`'s value is not found.
 
 -}
-findCtorLet : (Int -> Maybe Mono.CtorShape) -> Mono.MonoExpr -> Maybe Bool
-findCtorLet ctorShapeOf expr =
+findCtorLet : Context.Context -> Mono.MonoExpr -> Maybe Bool
+findCtorLet ctx expr =
     case expr of
         Mono.MonoClosure _ inner _ ->
-            findCtorLet ctorShapeOf inner
+            findCtorLet ctx inner
 
-        Mono.MonoLet (Mono.MonoDef x (Mono.MonoCall _ (Mono.MonoVarGlobal _ specId _) _ _ _)) body _ ->
-            case ctorShapeOf specId of
-                Just shape ->
-                    Just (Expr.aggBinderPromotableWith (Mono.CustomContainer shape.name) x body)
+        Mono.MonoLet (Mono.MonoDef x (Mono.MonoCall _ (Mono.MonoVarGlobal _ specId _) cargs callTy callInfo)) body _ ->
+            if Dict.member specId ctx.ctorBySpec then
+                Just (Expr.promotableCtorCall ctx x specId cargs callTy callInfo body /= Nothing)
 
-                Nothing ->
-                    findCtorLet ctorShapeOf body
+            else
+                findCtorLet ctx body
 
         Mono.MonoLet _ body _ ->
-            findCtorLet ctorShapeOf body
+            findCtorLet ctx body
 
         Mono.MonoDestruct _ body _ ->
-            findCtorLet ctorShapeOf body
+            findCtorLet ctx body
 
         _ ->
             Nothing
@@ -324,8 +337,8 @@ findTupleLet expr =
         Mono.MonoClosure _ inner _ ->
             findTupleLet inner
 
-        Mono.MonoLet (Mono.MonoDef x (Mono.MonoTupleCreate _ _ tupleTy)) body _ ->
-            Just (Expr.tupleBinderPromotable Dict.empty Dict.empty Set.empty x tupleTy body)
+        Mono.MonoLet (Mono.MonoDef x (Mono.MonoTupleCreate _ elements _)) body _ ->
+            Just (Expr.tupleBinderPromotable Dict.empty Dict.empty Set.empty x (Mono.tupleContainerKind elements) body)
 
         Mono.MonoLet _ body _ ->
             findTupleLet body

@@ -456,7 +456,7 @@ getMaxDepth problem =
             1 + getMaxDepth prob
 
         OneOf p ps ->
-            Utils.listMaximum compare (getMaxDepth p :: List.map getMaxDepth ps)
+            Utils.listMaximum compare (getMaxDepth p) (List.map getMaxDepth ps)
 
         Failure _ _ ->
             0

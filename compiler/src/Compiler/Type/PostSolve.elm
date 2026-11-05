@@ -63,6 +63,7 @@ import Compiler.IR.Canonical as Can
 import Compiler.Type.KernelTypes as KernelTypes
 import Data.Map
 import Dict exposing (Dict)
+import Maybe.Extra as Maybe
 
 
 {-| The type of each expression and pattern node of a module, indexed by node
@@ -181,7 +182,7 @@ checkDefForAlias annotations def env =
                     in
                     case node of
                         Can.VarKernel kernelPrefix home kernelName ->
-                            KernelTypes.insertFirstUsage kernelPrefix home kernelName resultType env
+                            Tuple.second (KernelTypes.insertFirstUsage kernelPrefix home kernelName resultType env)
 
                         _ ->
                             env
@@ -205,7 +206,7 @@ checkKernelAliasBody annotations defName (A.At _ exprInfo) env =
         Can.VarKernel kernelPrefix home kernelName ->
             case Dict.get defName annotations of
                 Just (Can.Forall _ tipe) ->
-                    KernelTypes.insertFirstUsage kernelPrefix home kernelName tipe env
+                    Tuple.second (KernelTypes.insertFirstUsage kernelPrefix home kernelName tipe env)
 
                 Nothing ->
                     env
@@ -356,7 +357,7 @@ postSolvePattern (A.At _ patInfo) nodeTypes0 kernel0 =
             List.foldl
                 (\p ( nt, ke ) -> postSolvePattern p nt ke)
                 ( nt2, ke2 )
-                cs
+                (Maybe.toList cs)
 
         Can.PList pats ->
             List.foldl
@@ -506,7 +507,7 @@ postSolveExpr annotations (A.At _ exprInfo) nodeTypes0 kernel0 =
             List.foldl
                 (\c ( nt, ke ) -> postSolveExpr annotations c nt ke)
                 ( nt2, ke2 )
-                cs
+                (Maybe.toList cs)
 
         Can.Record fields ->
             let
@@ -634,18 +635,10 @@ postSolveCall annotations exprId func args nodeTypes0 kernel0 =
                         candidateType =
                             KernelTypes.buildFunctionType argTypes callResultType
 
-                        kernel2 =
-                            KernelTypes.insertFirstUsage kernelPrefix home name candidateType kernel1
-
                         -- An earlier entry, if there was one, wins over this call's
                         -- candidate.
-                        kernelNodeType =
-                            case KernelTypes.lookup kernelPrefix home name kernel2 of
-                                Just t ->
-                                    t
-
-                                Nothing ->
-                                    candidateType
+                        ( kernelNodeType, kernel2 ) =
+                            KernelTypes.insertFirstUsage kernelPrefix home name candidateType kernel1
 
                         nodeTypes2 =
                             arraySetJust funcInfo.id kernelNodeType nodeTypes1
@@ -732,49 +725,50 @@ postSolveBinop annotations opAnnotation left right nodeTypes0 kernel0 =
         ( nt2, ke2 ) =
             postSolveExpr annotations right nt1 ke1
 
-        leftIsKernel =
-            isKernelExpr left
+        leftKernel =
+            asKernelRef left
 
-        rightIsKernel =
-            isKernelExpr right
+        rightKernel =
+            asKernelRef right
     in
-    if leftIsKernel || rightIsKernel then
-        let
-            (Can.Forall _ opType) =
-                opAnnotation
+    case ( leftKernel, rightKernel ) of
+        ( Nothing, Nothing ) ->
+            ( nt2, ke2 )
 
-            ( argTypes, _ ) =
-                peelFunctionType opType
+        _ ->
+            let
+                (Can.Forall _ opType) =
+                    opAnnotation
 
-            maybeLeftType =
-                List.head argTypes
+                ( argTypes, _ ) =
+                    peelFunctionType opType
 
-            maybeRightType =
-                argTypes |> List.drop 1 |> List.head
+                maybeLeftType =
+                    List.head argTypes
 
-            ( nt3, ke3 ) =
-                case ( leftIsKernel, maybeLeftType ) of
-                    ( True, Just expectedType ) ->
-                        inferBinopKernelType left expectedType nt2 ke2
+                maybeRightType =
+                    argTypes |> List.drop 1 |> List.head
 
-                    _ ->
-                        ( nt2, ke2 )
-        in
-        case ( rightIsKernel, maybeRightType ) of
-            ( True, Just expectedType ) ->
-                inferBinopKernelType right expectedType nt3 ke3
+                ( nt3, ke3 ) =
+                    case ( leftKernel, maybeLeftType ) of
+                        ( Just ref, Just expectedType ) ->
+                            inferBinopKernelType ref expectedType nt2 ke2
 
-            _ ->
-                ( nt3, ke3 )
+                        _ ->
+                            ( nt2, ke2 )
+            in
+            case ( rightKernel, maybeRightType ) of
+                ( Just ref, Just expectedType ) ->
+                    inferBinopKernelType ref expectedType nt3 ke3
 
-    else
-        ( nt2, ke2 )
+                _ ->
+                    ( nt3, ke3 )
 
 
 {-| Returns the node types and kernel type environment with the operand's type
-recorded for the kernel and written to `operand`'s node, when `operand` is a
-bare kernel reference whose kernel has no entry yet. Otherwise both are
-returned unchanged.
+recorded for the kernel and written to the operand's node, for an operand that
+is the bare kernel reference `ref`, when its kernel has no entry yet. Otherwise
+both are returned unchanged.
 
 The operand's type is its node type from the solver, the operator's parameter
 type as instantiated at this use. `annotationType`, the parameter type in the
@@ -784,35 +778,28 @@ which says nothing about the kernel.
 
 -}
 inferBinopKernelType :
-    Can.Expr
+    KernelRef
     -> Can.Type Name
     -> NodeTypes
     -> KernelTypes.KernelTypeEnv
     -> ( NodeTypes, KernelTypes.KernelTypeEnv )
-inferBinopKernelType operand annotationType nodeTypes kernel =
-    case operand of
-        A.At _ exprInfo ->
-            case exprInfo.node of
-                Can.VarKernel kernelPrefix home name ->
-                    if KernelTypes.hasEntry kernelPrefix home name kernel then
-                        ( nodeTypes, kernel )
+inferBinopKernelType ref annotationType nodeTypes kernel =
+    if KernelTypes.hasEntry ref.prefix ref.home ref.name kernel then
+        ( nodeTypes, kernel )
 
-                    else
-                        let
-                            expectedType =
-                                arrayGetFlat exprInfo.id nodeTypes
-                                    |> Maybe.withDefault annotationType
+    else
+        let
+            expectedType =
+                arrayGetFlat ref.id nodeTypes
+                    |> Maybe.withDefault annotationType
 
-                            ke2 =
-                                KernelTypes.insertFirstUsage kernelPrefix home name expectedType kernel
+            ke2 =
+                Tuple.second (KernelTypes.insertFirstUsage ref.prefix ref.home ref.name expectedType kernel)
 
-                            nt2 =
-                                arraySetJust exprInfo.id expectedType nodeTypes
-                        in
-                        ( nt2, ke2 )
-
-                _ ->
-                    ( nodeTypes, kernel )
+            nt2 =
+                arraySetJust ref.id expectedType nodeTypes
+        in
+        ( nt2, ke2 )
 
 
 {-| Returns the node types and kernel type environment after walking the
@@ -877,7 +864,7 @@ inferBranchKernelType branchExpr expectedType nodeTypes kernel =
                     else
                         let
                             ke2 =
-                                KernelTypes.insertFirstUsage kernelPrefix home name expectedType kernel
+                                Tuple.second (KernelTypes.insertFirstUsage kernelPrefix home name expectedType kernel)
 
                             nt2 =
                                 arraySetJust exprInfo.id expectedType nodeTypes
@@ -923,20 +910,31 @@ function among the arguments does not count.
 -}
 hasKernelArg : List Can.Expr -> Bool
 hasKernelArg args =
-    List.any isKernelExpr args
+    List.any (\arg -> asKernelRef arg /= Nothing) args
 
 
-{-| Tells whether an expression is a bare kernel reference, a `Can.VarKernel`
-node.
+{-| A bare kernel reference: the kernel's prefix, home and name, and the node
+id of the `Can.VarKernel` node.
 -}
-isKernelExpr : Can.Expr -> Bool
-isKernelExpr (A.At _ info) =
+type alias KernelRef =
+    { prefix : Name
+    , home : Name
+    , name : Name
+    , id : Int
+    }
+
+
+{-| Returns the parts of an expression that is a bare kernel reference, a
+`Can.VarKernel` node, and `Nothing` for any other expression.
+-}
+asKernelRef : Can.Expr -> Maybe KernelRef
+asKernelRef (A.At _ info) =
     case info.node of
-        Can.VarKernel _ _ _ ->
-            True
+        Can.VarKernel prefix home name ->
+            Just { prefix = prefix, home = home, name = name, id = info.id }
 
         _ ->
-            False
+            Nothing
 
 
 {-| Returns the node types and kernel type environment with each bare kernel
@@ -970,7 +968,7 @@ propagateKernelArgTypes args expectedTypes nodeTypes0 kernel0 =
                             else
                                 let
                                     ke2 =
-                                        KernelTypes.insertFirstUsage argPrefix argHome argName expectedType ke
+                                        Tuple.second (KernelTypes.insertFirstUsage argPrefix argHome argName expectedType ke)
 
                                     nt2 =
                                         arraySetJust argInfo.id expectedType nt
@@ -1027,7 +1025,7 @@ unifyHelp subst schemeType concreteType =
                         Nothing
 
         ( Can.TType home1 name1 args1, Can.TType home2 name2 args2 ) ->
-            if home1 == home2 && name1 == name2 && List.length args1 == List.length args2 then
+            if home1 == home2 && name1 == name2 then
                 unifyList subst args1 args2
 
             else
@@ -1045,39 +1043,24 @@ unifyHelp subst schemeType concreteType =
                     unifyHelp subst1 res1 res2
 
         ( Can.TTuple a1 b1 cs1, Can.TTuple a2 b2 cs2 ) ->
-            if List.length cs1 == List.length cs2 then
-                case unifyHelp subst a1 a2 of
-                    Nothing ->
-                        Nothing
+            case unifyHelp subst a1 a2 of
+                Nothing ->
+                    Nothing
 
-                    Just subst1 ->
-                        case unifyHelp subst1 b1 b2 of
-                            Nothing ->
-                                Nothing
+                Just subst1 ->
+                    case unifyHelp subst1 b1 b2 of
+                        Nothing ->
+                            Nothing
 
-                            Just subst2 ->
-                                unifyList subst2 cs1 cs2
-
-            else
-                Nothing
+                        Just subst2 ->
+                            unifyList subst2 (Maybe.toList cs1) (Maybe.toList cs2)
 
         ( Can.TUnit, Can.TUnit ) ->
             Just subst
 
         ( Can.TRecord fields1 ext1, Can.TRecord fields2 ext2 ) ->
             if ext1 == ext2 then
-                let
-                    fieldList1 =
-                        Dict.toList fields1
-
-                    fieldList2 =
-                        Dict.toList fields2
-                in
-                if List.length fieldList1 == List.length fieldList2 then
-                    unifyFieldList subst fieldList1 fieldList2
-
-                else
-                    Nothing
+                unifyFieldList subst (Dict.toList fields1) (Dict.toList fields2)
 
             else
                 Nothing
@@ -1169,7 +1152,7 @@ applySubst subst tipe =
             Can.TTuple
                 (applySubst subst a)
                 (applySubst subst b)
-                (List.map (applySubst subst) cs)
+                (Maybe.map (applySubst subst) cs)
 
         Can.TRecord fields ext ->
             Can.TRecord
@@ -1246,12 +1229,7 @@ postSolveCallWithCtorKernelArgs annotations exprId ctorAnnotation funcExpr args 
             arrayGetFlat exprId nodeTypes0
 
         maybeSubst =
-            case maybeCallType of
-                Just callType ->
-                    unifySchemeToType ctorResType callType
-
-                Nothing ->
-                    Nothing
+            maybeCallType |> Maybe.andThen (unifySchemeToType ctorResType)
     in
     case maybeSubst of
         Just subst ->
@@ -1274,9 +1252,9 @@ references among them.
 
 A bare kernel reference whose kernel has no entry yet is given the matching
 parameter type of `ctorArgTypes` with `subst` applied: the type is recorded
-for the kernel and written to the argument's node. Every other argument,
-including a kernel reference beyond the end of `ctorArgTypes`, is walked as an
-ordinary expression.
+for the kernel and written to the argument's node. Every other argument is
+walked as an ordinary expression. The call type checked, so a constructor is
+never given more arguments than `ctorArgTypes` has.
 
 -}
 processCtorArgs :
@@ -1293,8 +1271,8 @@ processCtorArgs annotations subst ctorArgTypes args funcExpr nodeTypes0 kernel0 
         ( nodeTypes1, kernel1 ) =
             postSolveExpr annotations funcExpr nodeTypes0 kernel0
 
-        processArg : ( Can.Expr, Maybe (Can.Type Name) ) -> ( NodeTypes, KernelTypes.KernelTypeEnv ) -> ( NodeTypes, KernelTypes.KernelTypeEnv )
-        processArg ( arg, maybeExpectedType ) ( nt, ke ) =
+        processArg : ( Can.Expr, Can.Type Name ) -> ( NodeTypes, KernelTypes.KernelTypeEnv ) -> ( NodeTypes, KernelTypes.KernelTypeEnv )
+        processArg ( arg, expectedType ) ( nt, ke ) =
             case arg of
                 A.At _ argInfo ->
                     case argInfo.node of
@@ -1303,31 +1281,22 @@ processCtorArgs annotations subst ctorArgTypes args funcExpr nodeTypes0 kernel0 
                                 postSolveExpr annotations arg nt ke
 
                             else
-                                case maybeExpectedType of
-                                    Just expectedType ->
-                                        let
-                                            kernelType =
-                                                applySubst subst expectedType
+                                let
+                                    kernelType =
+                                        applySubst subst expectedType
 
-                                            ke2 =
-                                                KernelTypes.insertFirstUsage kernelPrefix home name kernelType ke
+                                    ke2 =
+                                        Tuple.second (KernelTypes.insertFirstUsage kernelPrefix home name kernelType ke)
 
-                                            nt2 =
-                                                arraySetJust argInfo.id kernelType nt
-                                        in
-                                        ( nt2, ke2 )
-
-                                    Nothing ->
-                                        postSolveExpr annotations arg nt ke
+                                    nt2 =
+                                        arraySetJust argInfo.id kernelType nt
+                                in
+                                ( nt2, ke2 )
 
                         _ ->
                             postSolveExpr annotations arg nt ke
-
-        argsWithTypes =
-            List.map2 (\arg t -> ( arg, Just t )) args ctorArgTypes
-                ++ List.map (\arg -> ( arg, Nothing )) (List.drop (List.length ctorArgTypes) args)
     in
-    List.foldl processArg ( nodeTypes1, kernel1 ) argsWithTypes
+    List.foldl processArg ( nodeTypes1, kernel1 ) (List.map2 Tuple.pair args ctorArgTypes)
 
 
 

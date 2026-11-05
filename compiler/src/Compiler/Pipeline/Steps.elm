@@ -1,9 +1,9 @@
 module Compiler.Pipeline.Steps exposing
-    ( assignFlagsFor, prepare, prepareRoot, prepareEntry
+    ( assignFlagsFor, prepareRoot
     , PreMono, preMono, checkMinted
     , monomorphize, monomorphizeEntry, checkStageArity, checkLayout
     , inline, prune, checkPruned
-    , GlobalOptResult, globalOptCore, cse, dedupe, hoist, globalOpt, checkClosureStaging
+    , GlobalOptResult, globalOptCore, cse, dedupe, hoist, checkClosureStaging
     )
 
 {-| The compiler's middle end as plain functions, so that anything that
@@ -18,15 +18,14 @@ are left for the caller to report.
 
 The steps, in order:
 
-1.  `prepare` gives the typed graph its ids and the entry's flags decoder.
+1.  `prepareRoot` gives the typed graph its ids and the entry's flags decoder.
 2.  `preMono` runs the pre-monomorphization passes, each behind its flag:
     alias forwarding, η-expansion to declared arity, and the pre-mono inliner.
 3.  `monomorphize` runs the configured engine.
 4.  `inline` runs the post-monomorphization inliner, then `prune` removes the
     specializations it left unreferenced.
-5.  `globalOpt` runs global optimization, then CSE, CAF dedupe and CAF
-    hoisting, each behind its flag. `globalOptCore`, `cse`, `dedupe` and
-    `hoist` are the same four pieces taken one at a time.
+5.  `globalOptCore` runs global optimization, then `cse`, `dedupe` and
+    `hoist` run CSE, CAF dedupe and CAF hoisting, each behind its flag.
 
 The `check*` functions are validators to run between steps. Each returns `Err`
 with a message to report when it finds a violation; most of them check only
@@ -35,7 +34,7 @@ under `mono.validate`.
 
 # Preparation
 
-@docs assignFlagsFor, prepare, prepareRoot, prepareEntry
+@docs assignFlagsFor, prepareRoot
 
 
 # Pre-monomorphization
@@ -55,7 +54,7 @@ under `mono.validate`.
 
 # Global optimization
 
-@docs GlobalOptResult, globalOptCore, cse, dedupe, hoist, globalOpt, checkClosureStaging
+@docs GlobalOptResult, globalOptCore, cse, dedupe, hoist, checkClosureStaging
 
 -}
 
@@ -96,7 +95,7 @@ import Compiler.PreMono.InlineSimplify as InlineSimplify
 
 
 {-| Returns the `( useSolverRoots, censusOn )` flags that id assignment
-(`Compiler.PreMono.EntryPrep.assign`) takes for the configured engine.
+(`Compiler.PreMono.EntryPrep.assignIn`) takes for the configured engine.
 
 The solver engine gets `True` and `mono.lss.arrowCensus`. The subst and diff
 engines get `( False, False )`.
@@ -115,33 +114,17 @@ assignFlagsFor ecoConfig =
             ( False, False )
 
 
-{-| Returns the typed graph with its ids assigned and, when `main` is a
-`Program`, its flags decoder added, as `Compiler.PreMono.EntryPrep.assign`
-describes.
+{-| Returns the typed graph with its ids assigned and, when the `main` of
+module `rootHome` is a `Program`, its flags decoder added, as
+`Compiler.PreMono.EntryPrep.assignIn` describes.
 
 Ids exist from here on, so a pre-mono pass that creates or copies a node must
 mint fresh ids for it through `Compiler.PreMono.Fresh`.
 
 -}
-prepare : Config.EcoConfig -> TOpt.GlobalGraph Name -> EntryPrep.Assigned
-prepare ecoConfig typedGraph =
-    prepareEntry ecoConfig "main" typedGraph
-
-
-{-| Returns what `prepare` does, but taking as the entry point the `main` of
-module `rootHome` only, not the first `main` of any module.
--}
 prepareRoot : Config.EcoConfig -> ModuleName.Canonical -> TOpt.GlobalGraph Name -> EntryPrep.Assigned
 prepareRoot ecoConfig rootHome typedGraph =
-    EntryPrep.assignIn (assignFlagsFor ecoConfig) (Just rootHome) "main" typedGraph
-
-
-{-| Returns what `prepare` does, but taking the top-level value named `entry`
-as the entry point instead of `main`.
--}
-prepareEntry : Config.EcoConfig -> Name -> TOpt.GlobalGraph Name -> EntryPrep.Assigned
-prepareEntry ecoConfig entry typedGraph =
-    EntryPrep.assign (assignFlagsFor ecoConfig) entry typedGraph
+    EntryPrep.assignIn (assignFlagsFor ecoConfig) rootHome "main" typedGraph
 
 
 
@@ -604,17 +587,6 @@ hoist ecoConfig ( optimizedGraph, carry ) =
                 ( optimizedGraph, CafHoist.emptyStats )
     in
     ( hoistedGraph, { carry | hoistStats = hoistStats } )
-
-
-{-| Returns the graph after the whole global optimization step:
-`globalOptCore`, then `cse`, `dedupe` and `hoist`.
--}
-globalOpt : Config.EcoConfig -> Mono.MonoGraph -> ( Mono.MonoGraph, GlobalOptResult )
-globalOpt ecoConfig g =
-    globalOptCore ecoConfig g
-        |> cse ecoConfig
-        |> dedupe ecoConfig
-        |> hoist ecoConfig
 
 
 {-| Under `mono.validate`, returns the graph unchanged or `Err` with every

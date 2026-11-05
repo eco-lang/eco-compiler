@@ -1,7 +1,4 @@
-module Compiler.Monomorphize.Solver.Monomorphize exposing
-    ( monomorphize
-    , monomorphizeWithReport, monomorphizeWithReportAssigned
-    )
+module Compiler.Monomorphize.Solver.Monomorphize exposing (monomorphizeWithReportAssigned)
 
 {-| The driver of the solver-based monomorphizer: it turns a typed optimized
 program graph into a monomorphized one, in which every function is used at one
@@ -59,8 +56,7 @@ Nearly half of the file is `renderLssReport`, which renders census counters as
 text when `lss.report` is on. It reads the final state and the pruned graph and
 changes neither.
 
-@docs monomorphize
-@docs monomorphizeWithReport, monomorphizeWithReportAssigned
+@docs monomorphizeWithReportAssigned
 
 -}
 
@@ -96,35 +92,13 @@ import Compiler.Type.UnionFind as UF
 import Data.BitSet as BitSet
 import Data.HashMap as HashMap
 import Data.Map as DMap
+import Data.NonEmptyList as NE
 import Data.Set as EverySet
 import Dict
 
 
-{-| Returns the monomorphized graph of `globalGraph`, entered from the
-definition named `entryPointName`, as `monomorphizeWithReportAssigned`
-describes, with the default spec limits and without the census text.
--}
-monomorphize : Config.LssConfig -> Name -> TypeEnv.GlobalTypeEnv -> TOpt.GlobalGraph Name -> Result String Mono.MonoGraph
-monomorphize lssConfig entryPointName globalTypeEnv globalGraph =
-    Result.map Tuple.first (monomorphizeWithReport lssConfig Config.defaultLimits entryPointName globalTypeEnv globalGraph)
-
-
-{-| Returns what `monomorphizeWithReportAssigned` returns for a graph whose ids
-have not been assigned yet. It first runs `EntryPrep.assign`, with solver roots
-on, and with the stamping census on exactly when `lss.arrowCensus` is.
--}
-monomorphizeWithReport : Config.LssConfig -> Config.SpecLimits -> Name -> TypeEnv.GlobalTypeEnv -> TOpt.GlobalGraph Name -> Result String ( Mono.MonoGraph, Maybe String )
-monomorphizeWithReport lssConfig limits entryPointName globalTypeEnv globalGraph =
-    monomorphizeWithReportAssigned lssConfig
-        limits
-        entryPointName
-        globalTypeEnv
-        (EntryPrep.assign ( True, lssConfig.arrowCensus ) entryPointName globalGraph)
-
-
 {-| Returns the monomorphized graph of an id-assigned graph, entered from the
-definition named `entryPointName` that `EntryPrep.findEntryPointId` finds (in
-the root module `assigned.entryHome` when that is given),
+definition named `entryPointName` in the root module `assigned.entryHome`,
 together with the LSS census text, which is `Just` exactly when `lss.report` is
 on.
 
@@ -140,8 +114,8 @@ monomorphizeWithReportAssigned lssConfig limits entryPointName globalTypeEnv ass
         (TOpt.GlobalGraph nodesWithIds _ annotationsWithIds _ _) =
             assigned.graph
 
-        maybeFlagsGlobal =
-            assigned.flagsGlobal
+        maybeFlags =
+            assigned.flags
 
         mvarState =
             assigned.mvarState
@@ -164,7 +138,7 @@ monomorphizeWithReportAssigned lssConfig limits entryPointName globalTypeEnv ass
 
                 mainMonoType : Mono.MonoType
                 mainMonoType =
-                    Zonk.canTypeToMono Dict.empty mainType
+                    Zonk.canTypeToMono mainType
 
                 -- Seeds bypass `Engine.enqueueSpec`, so their own spine is stamped here.
                 ( mainSpecId, s1 ) =
@@ -173,7 +147,7 @@ monomorphizeWithReportAssigned lssConfig limits entryPointName globalTypeEnv ass
                             seedSpec (toptToMonoGlobal mainGlobal) stampedMain s0b
 
                 ( maybeFlagsSpecId, s2 ) =
-                    seedFlagsDecoder maybeFlagsGlobal nodesWithIds s1
+                    seedFlagsDecoder maybeFlags s1
             in
             case drain s2 of
                 Err failure ->
@@ -232,26 +206,21 @@ mergeConvergedSpecs : Mono.SpecId -> Maybe Mono.SpecId -> S -> ( ( Mono.SpecId, 
 mergeConvergedSpecs mainSpecId maybeFlagsSpecId s =
     let
         remap =
-            Array.foldl
-                (\entry ( ( idx, seen ), acc ) ->
-                    case ( entry, Array.get idx s.nodes |> Maybe.andThen identity ) of
-                        ( Just ( global, monoType ), Just _ ) ->
-                            let
-                                key =
-                                    Mono.SpecKey global monoType
-                            in
-                            case Mono.specKeyMapGet key seen of
-                                Just keptId ->
-                                    ( ( idx + 1, seen ), Dict.insert idx keptId acc )
+            Registry.foldlLive
+                (\idx global monoType ( seen, acc ) ->
+                    let
+                        key =
+                            Mono.SpecKey global monoType
+                    in
+                    case Mono.specKeyMapGet key seen of
+                        Just keptId ->
+                            ( seen, Dict.insert idx keptId acc )
 
-                                Nothing ->
-                                    ( ( idx + 1, Mono.specKeyMapInsert key idx seen ), acc )
-
-                        _ ->
-                            ( ( idx + 1, seen ), acc )
+                        Nothing ->
+                            ( Mono.specKeyMapInsert key idx seen, acc )
                 )
-                ( ( 0, Mono.specKeyMapEmpty ), Dict.empty )
-                s.registry.reverseMapping
+                ( Mono.specKeyMapEmpty, Dict.empty )
+                s.registry
                 |> Tuple.second
     in
     if Dict.isEmpty remap then
@@ -347,91 +316,75 @@ settleCtorRows s =
 
     else
         let
-            isCtorGlobal key =
-                case key of
-                    Mono.Global scHome scName ->
-                        case HashMap.get TOpt.globalHash (==) (TOpt.Global scHome scName) s.env.toptNodes of
-                            Just (TOpt.Ctor _ _ _) ->
-                                True
-
-                            Just (TOpt.Box _) ->
-                                True
-
-                            _ ->
-                                False
-
-                    _ ->
-                        False
-
-            gkeyOf key =
-                case key of
-                    Mono.Global scHome scName ->
-                        Mono.toComparableGlobal (Mono.Global scHome scName)
-
-                    _ ->
-                        "?"
-
-            unions =
-                Array.foldl
-                    (\entry acc ->
-                        case entry of
-                            Just ( key, monoType ) ->
-                                if isCtorGlobal key then
-                                    Dict.update (gkeyOf key)
-                                        (\v ->
-                                            Just
-                                                (case v of
-                                                    Just u ->
-                                                        Mono.enrichAnnotations u monoType
-
-                                                    Nothing ->
-                                                        monoType
-                                                )
-                                        )
-                                        acc
-
-                                else
+            -- Each constructor's rows, in ascending SpecId order, keyed by its comparable global.
+            rowsByCtor : Dict.Dict String (List ( Mono.SpecId, Mono.MonoType ))
+            rowsByCtor =
+                Registry.foldlLive
+                    (\idx key monoType acc ->
+                        case ctorRowGlobal s key of
+                            Just ( home, name ) ->
+                                Dict.update (Mono.toComparableGlobal (Mono.Global home name))
+                                    (\v -> Just (( idx, monoType ) :: Maybe.withDefault [] v))
                                     acc
 
                             Nothing ->
                                 acc
                     )
                     Dict.empty
-                    s.registry.reverseMapping
+                    s.registry
+                    |> Dict.map (\_ rows -> List.reverse rows)
 
-            registry1 =
-                Tuple.second
-                    (Array.foldl
-                        (\entry ( idx, reg ) ->
-                            case entry of
-                                Just ( key, monoType ) ->
-                                    if isCtorGlobal key && Mono.hasTopAnno monoType then
-                                        case Dict.get (gkeyOf key) unions of
-                                            Just u ->
-                                                let
-                                                    enriched =
-                                                        Mono.enrichAnnotationsTopOnly monoType u
-                                                in
-                                                if enriched == monoType then
-                                                    ( idx + 1, reg )
+            enrichRows rows reg =
+                case rows of
+                    [] ->
+                        reg
 
-                                                else
-                                                    ( idx + 1, Registry.updateRegistryType idx enriched reg )
-
-                                            Nothing ->
-                                                ( idx + 1, reg )
+                    ( _, first ) :: rest ->
+                        let
+                            union =
+                                List.foldl (\( _, monoType ) u -> Mono.enrichAnnotations u monoType) first rest
+                        in
+                        List.foldl
+                            (\( idx, monoType ) r ->
+                                if Mono.hasTopAnno monoType then
+                                    let
+                                        enriched =
+                                            Mono.enrichAnnotationsTopOnly monoType union
+                                    in
+                                    if enriched == monoType then
+                                        r
 
                                     else
-                                        ( idx + 1, reg )
+                                        Registry.updateRegistryType idx enriched r
 
-                                Nothing ->
-                                    ( idx + 1, reg )
-                        )
-                        ( 0, s.registry )
-                        s.registry.reverseMapping
-                    )
+                                else
+                                    r
+                            )
+                            reg
+                            rows
         in
-        { s | registry = registry1 }
+        { s | registry = Dict.foldl (\_ rows reg -> enrichRows rows reg) s.registry rowsByCtor }
+
+
+{-| Returns the home and name of a registry key that is a constructor row, a
+`Ctor` or `Box` node, or `Nothing` for any other key.
+-}
+ctorRowGlobal : S -> Mono.Global -> Maybe ( ModuleName.Canonical, Name )
+ctorRowGlobal s key =
+    case key of
+        Mono.Global home name ->
+            case HashMap.get TOpt.globalHash (==) (TOpt.Global home name) s.env.toptNodes of
+                Just (TOpt.Ctor _ _ _) ->
+                    Just ( home, name )
+
+                Just (TOpt.Box _) ->
+                    Just ( home, name )
+
+                _ ->
+                    Nothing
+
+        _ ->
+            Nothing
 
 
 {-| Returns the state with set variables in the constructor rows of the
@@ -463,38 +416,6 @@ settleVarCtorRows s =
 
     else
         let
-            isCtorGlobal key =
-                case key of
-                    Mono.Global vcHome vcName ->
-                        case HashMap.get TOpt.globalHash (==) (TOpt.Global vcHome vcName) s.env.toptNodes of
-                            Just (TOpt.Ctor _ _ _) ->
-                                True
-
-                            Just (TOpt.Box _) ->
-                                True
-
-                            _ ->
-                                False
-
-                    _ ->
-                        False
-
-            gkeyOf key =
-                case key of
-                    Mono.Global _ vcName ->
-                        vcName
-
-                    _ ->
-                        "?"
-
-            moduleOf key =
-                case key of
-                    Mono.Global (ModuleName.Canonical _ vcModule) _ ->
-                        vcModule
-
-                    _ ->
-                        "?"
-
             emptyCell =
                 { top = False, flexVar = False, sets = Nothing }
 
@@ -541,7 +462,7 @@ settleVarCtorRows s =
                         List.foldl
                             (\( i, e ) accE -> collectWalk marked gname (path ++ "/t" ++ String.fromInt i) e accE)
                             acc
-                            (List.indexedMap Tuple.pair elems)
+                            (List.indexedMap Tuple.pair (Mono.tupleToList elems))
 
                     Mono.MRecord _ fields ->
                         Dict.foldl (\fname ft a -> collectWalk marked gname (path ++ "/f:" ++ fname) ft a) acc fields
@@ -556,29 +477,17 @@ settleVarCtorRows s =
                         acc
 
             cells =
-                Tuple.second
-                    (Array.foldl
-                        (\entry ( idx, acc ) ->
-                            case entry of
-                                Just ( key, monoType ) ->
-                                    if isCtorGlobal key then
-                                        ( idx + 1
-                                        , collectWalk (Dict.member idx s.lssStats.flexCtorSpecs)
-                                            (gkeyOf key)
-                                            ""
-                                            monoType
-                                            acc
-                                        )
+                Registry.foldlLive
+                    (\idx key monoType acc ->
+                        case ctorRowGlobal s key of
+                            Just ( _, name ) ->
+                                collectWalk (Dict.member idx s.lssStats.flexCtorSpecs) name "" monoType acc
 
-                                    else
-                                        ( idx + 1, acc )
-
-                                Nothing ->
-                                    ( idx + 1, acc )
-                        )
-                        ( 0, Dict.empty )
-                        s.registry.reverseMapping
+                            Nothing ->
+                                acc
                     )
+                    Dict.empty
+                    s.registry
 
             rewriteWalk gname path t st =
                 case t of
@@ -602,24 +511,24 @@ settleVarCtorRows s =
                             ( anno1, st3 ) =
                                 case anno of
                                     Mono.LVar _ ->
-                                        case Dict.get (gname ++ "|" ++ path) cells of
-                                            Just cell ->
-                                                if cell.top then
-                                                    ( anno, { st2 | skipTop = st2.skipTop + 1 } )
+                                        let
+                                            -- `collectWalk` made a cell at every arrow of these rows, so the get always hits.
+                                            cell =
+                                                Maybe.withDefault emptyCell (Dict.get (gname ++ "|" ++ path) cells)
+                                        in
+                                        if cell.top then
+                                            ( anno, { st2 | skipTop = st2.skipTop + 1 } )
 
-                                                else if cell.flexVar then
-                                                    ( anno, { st2 | skipFlexVar = st2.skipFlexVar + 1 } )
+                                        else if cell.flexVar then
+                                            ( anno, { st2 | skipFlexVar = st2.skipFlexVar + 1 } )
 
-                                                else
-                                                    case cell.sets of
-                                                        Just union ->
-                                                            ( Mono.LSet union, { st2 | wrote = st2.wrote + 1 } )
+                                        else
+                                            case cell.sets of
+                                                Just union ->
+                                                    ( Mono.LSet union, { st2 | wrote = st2.wrote + 1 } )
 
-                                                        Nothing ->
-                                                            ( anno, { st2 | skipNoInfo = st2.skipNoInfo + 1 } )
-
-                                            Nothing ->
-                                                ( anno, { st2 | skipNoInfo = st2.skipNoInfo + 1 } )
+                                                Nothing ->
+                                                    ( anno, { st2 | skipNoInfo = st2.skipNoInfo + 1 } )
 
                                     _ ->
                                         ( anno, st2 )
@@ -636,16 +545,12 @@ settleVarCtorRows s =
                     Mono.MTuple _ elems ->
                         let
                             ( elems1, st1 ) =
-                                List.foldr
-                                    (\( i, e ) ( accL, accSt ) ->
-                                        let
-                                            ( e1, accSt1 ) =
-                                                rewriteWalk gname (path ++ "/t" ++ String.fromInt i) e accSt
-                                        in
-                                        ( e1 :: accL, accSt1 )
+                                Mono.tupleMapAccumR
+                                    (\( i, e ) accSt ->
+                                        rewriteWalk gname (path ++ "/t" ++ String.fromInt i) e accSt
                                     )
-                                    ( [], st )
-                                    (List.indexedMap Tuple.pair elems)
+                                    st
+                                    (Mono.tupleIndexedMap Tuple.pair elems)
                         in
                         ( Mono.mTuple elems1, st1 )
 
@@ -685,49 +590,43 @@ settleVarCtorRows s =
                         ( t, st )
 
             ( registry1, totals ) =
-                Tuple.second
-                    (Array.foldl
-                        (\entry ( idx, ( reg, tAcc ) ) ->
-                            case entry of
-                                Just ( key, monoType ) ->
-                                    if isCtorGlobal key then
-                                        let
-                                            ( rewritten, stEnd ) =
-                                                rewriteWalk (gkeyOf key)
-                                                    ""
-                                                    monoType
-                                                    { wrote = 0, skipTop = 0, skipFlexVar = 0, skipNoInfo = 0 }
+                Registry.foldlLive
+                    (\idx key monoType ( reg, tAcc ) ->
+                        case ctorRowGlobal s key of
+                            Just ( ModuleName.Canonical _ moduleName, name ) ->
+                                let
+                                    ( rewritten, stEnd ) =
+                                        rewriteWalk name
+                                            ""
+                                            monoType
+                                            { wrote = 0, skipTop = 0, skipFlexVar = 0, skipNoInfo = 0 }
 
-                                            tAcc1 =
-                                                { wrote = tAcc.wrote + stEnd.wrote
-                                                , skipTop = tAcc.skipTop + stEnd.skipTop
-                                                , skipFlexVar = tAcc.skipFlexVar + stEnd.skipFlexVar
-                                                , skipNoInfo = tAcc.skipNoInfo + stEnd.skipNoInfo
-                                                , byModule =
-                                                    if stEnd.wrote > 0 then
-                                                        Dict.update (moduleOf key)
-                                                            (\c -> Just (stEnd.wrote + Maybe.withDefault 0 c))
-                                                            tAcc.byModule
+                                    tAcc1 =
+                                        { wrote = tAcc.wrote + stEnd.wrote
+                                        , skipTop = tAcc.skipTop + stEnd.skipTop
+                                        , skipFlexVar = tAcc.skipFlexVar + stEnd.skipFlexVar
+                                        , skipNoInfo = tAcc.skipNoInfo + stEnd.skipNoInfo
+                                        , byModule =
+                                            if stEnd.wrote > 0 then
+                                                Dict.update moduleName
+                                                    (\c -> Just (stEnd.wrote + Maybe.withDefault 0 c))
+                                                    tAcc.byModule
 
-                                                    else
-                                                        tAcc.byModule
-                                                }
-                                        in
-                                        if stEnd.wrote > 0 then
-                                            ( idx + 1, ( Registry.updateRegistryType idx rewritten reg, tAcc1 ) )
+                                            else
+                                                tAcc.byModule
+                                        }
+                                in
+                                if stEnd.wrote > 0 then
+                                    ( Registry.updateRegistryType idx rewritten reg, tAcc1 )
 
-                                        else
-                                            ( idx + 1, ( reg, tAcc1 ) )
+                                else
+                                    ( reg, tAcc1 )
 
-                                    else
-                                        ( idx + 1, ( reg, tAcc ) )
-
-                                Nothing ->
-                                    ( idx + 1, ( reg, tAcc ) )
-                        )
-                        ( 0, ( s.registry, { wrote = 0, skipTop = 0, skipFlexVar = 0, skipNoInfo = 0, byModule = Dict.empty } ) )
-                        s.registry.reverseMapping
+                            Nothing ->
+                                ( reg, tAcc )
                     )
+                    ( s.registry, { wrote = 0, skipTop = 0, skipFlexVar = 0, skipNoInfo = 0, byModule = Dict.empty } )
+                    s.registry
 
             bumpN key n acc =
                 List.foldl (\_ a -> Engine.bumpArgFlowCensus key a) acc (List.repeat n ())
@@ -856,18 +755,14 @@ settleVarLambda s =
                     Mono.MTuple _ elems ->
                         let
                             ( elems1, st1 ) =
-                                List.foldr
-                                    (\( i, e ) ( accL, accSt ) ->
-                                        let
-                                            ( e1, accSt1 ) =
-                                                rewrite e
-                                                    (Maybe.map (\( cm, rp ) -> ( cm, rp ++ "/t" ++ String.fromInt i )) ctx)
-                                                    accSt
-                                        in
-                                        ( e1 :: accL, accSt1 )
+                                Mono.tupleMapAccumR
+                                    (\( i, e ) accSt ->
+                                        rewrite e
+                                            (Maybe.map (\( cm, rp ) -> ( cm, rp ++ "/t" ++ String.fromInt i )) ctx)
+                                            accSt
                                     )
-                                    ( [], st )
-                                    (List.indexedMap Tuple.pair elems)
+                                    st
+                                    (Mono.tupleIndexedMap Tuple.pair elems)
                         in
                         ( Mono.mTuple elems1, st1 )
 
@@ -911,32 +806,25 @@ settleVarLambda s =
                         ( t, st )
 
             ( registry1, totals ) =
-                Tuple.second
-                    (Array.foldl
-                        (\entry ( idx, ( reg, tAcc ) ) ->
-                            case entry of
-                                Just ( _, monoType ) ->
-                                    let
-                                        ( rewritten, stEnd ) =
-                                            rewrite monoType Nothing { wrote = 0, blocked = 0 }
+                Registry.foldlLive
+                    (\idx _ monoType ( reg, tAcc ) ->
+                        let
+                            ( rewritten, stEnd ) =
+                                rewrite monoType Nothing { wrote = 0, blocked = 0 }
 
-                                        tAcc1 =
-                                            { wrote = tAcc.wrote + stEnd.wrote
-                                            , blocked = tAcc.blocked + stEnd.blocked
-                                            }
-                                    in
-                                    if stEnd.wrote > 0 then
-                                        ( idx + 1, ( Registry.updateRegistryType idx rewritten reg, tAcc1 ) )
+                            tAcc1 =
+                                { wrote = tAcc.wrote + stEnd.wrote
+                                , blocked = tAcc.blocked + stEnd.blocked
+                                }
+                        in
+                        if stEnd.wrote > 0 then
+                            ( Registry.updateRegistryType idx rewritten reg, tAcc1 )
 
-                                    else
-                                        ( idx + 1, ( reg, tAcc1 ) )
-
-                                Nothing ->
-                                    ( idx + 1, ( reg, tAcc ) )
-                        )
-                        ( 0, ( s.registry, { wrote = 0, blocked = 0 } ) )
-                        s.registry.reverseMapping
+                        else
+                            ( reg, tAcc1 )
                     )
+                    ( s.registry, { wrote = 0, blocked = 0 } )
+                    s.registry
 
             bumpN key n acc =
                 List.foldl (\_ a -> Engine.bumpArgFlowCensus key a) acc (List.repeat n ())
@@ -1032,7 +920,7 @@ lambdaHomesExpr e acc =
             List.foldl (\( _, x ) aa -> lambdaHomesExpr x aa) (lambdaHomesExpr inner acc) updates
 
         Mono.MonoTupleCreate _ items _ ->
-            List.foldl lambdaHomesExpr acc items
+            List.foldl lambdaHomesExpr acc (Mono.tupleToList items)
 
         _ ->
             acc
@@ -1055,7 +943,7 @@ lambdaHomeDeciderExprs d acc =
 
         Mono.FanOut _ tests fallback ->
             lambdaHomeDeciderExprs fallback
-                (List.foldl (\( _, dd ) aa -> lambdaHomeDeciderExprs dd aa) acc tests)
+                (List.foldl (\( _, dd ) aa -> lambdaHomeDeciderExprs dd aa) acc (NE.toList tests))
 
 
 {-| Returns `acc` with the closure described by `info` and `body` recorded under
@@ -1191,7 +1079,7 @@ varCellWalk path t acc =
         Mono.MTuple _ elems ->
             List.foldl (\( i, e ) aa -> varCellWalk (path ++ "/t" ++ String.fromInt i) e aa)
                 acc
-                (List.indexedMap Tuple.pair elems)
+                (List.indexedMap Tuple.pair (Mono.tupleToList elems))
 
         Mono.MRecord _ fields ->
             Dict.foldl (\fn ft aa -> varCellWalk (path ++ "/f:" ++ fn) ft aa) acc fields
@@ -1304,7 +1192,7 @@ varSuccPass s =
                                             ( Nothing, ( Engine.bumpArgFlowCensus "varsucc|skipNoSucc" sAcc, keysAcc ) )
 
                                         Just ( vsG, d ) ->
-                                            if d + j < LssInfer.declaredArityOf vsG 8 sAcc then
+                                            if d + j < LssInfer.declaredArityOf vsG sAcc then
                                                 let
                                                     succKey =
                                                         LssInfer.papMemberKey vsG (d + j)
@@ -1385,16 +1273,16 @@ varSuccPass s =
 
                 Mono.MTuple _ elems ->
                     let
-                        ( elems1, s1, ch ) =
-                            List.foldr
-                                (\e ( accL, accS, accCh ) ->
+                        ( elems1, ( s1, ch ) ) =
+                            Mono.tupleMapAccumR
+                                (\e ( accS, accCh ) ->
                                     let
                                         ( e1, accS1, ch1 ) =
                                             succType e accS
                                     in
-                                    ( e1 :: accL, accS1, accCh || ch1 )
+                                    ( e1, ( accS1, accCh || ch1 ) )
                                 )
-                                ( [], sIn, False )
+                                ( sIn, False )
                                 elems
                     in
                     if ch then
@@ -1451,33 +1339,24 @@ varSuccPass s =
                     ( t, sIn, False )
 
         ( ( sEnd, _ ), changed ) =
-            Tuple.second
-                (Array.foldl
-                    (\entry ( idx, ( stAcc, chAcc ) ) ->
-                        case entry of
-                            Just ( _, monoType ) ->
-                                let
-                                    ( rewritten, ( sAcc1, kAcc1 ), ch ) =
-                                        succType monoType stAcc
-                                in
-                                if ch then
-                                    ( idx + 1
-                                    , ( ( { sAcc1 | registry = Registry.updateRegistryType idx rewritten sAcc1.registry }
-                                        , kAcc1
-                                        )
-                                      , True
-                                      )
-                                    )
+            Registry.foldlLive
+                (\idx _ monoType ( stAcc, chAcc ) ->
+                    let
+                        ( rewritten, ( sAcc1, kAcc1 ), ch ) =
+                            succType monoType stAcc
+                    in
+                    if ch then
+                        ( ( { sAcc1 | registry = Registry.updateRegistryType idx rewritten sAcc1.registry }
+                          , kAcc1
+                          )
+                        , True
+                        )
 
-                                else
-                                    ( idx + 1, ( ( sAcc1, kAcc1 ), chAcc ) )
-
-                            Nothing ->
-                                ( idx + 1, ( stAcc, chAcc ) )
-                    )
-                    ( 0, ( ( s, midKeys ), False ) )
-                    s.registry.reverseMapping
+                    else
+                        ( ( sAcc1, kAcc1 ), chAcc )
                 )
+                ( ( s, midKeys ), False )
+                s.registry
     in
     ( sEnd, changed )
 
@@ -1946,7 +1825,7 @@ renderLssReport sFinal (Mono.MonoGraph g) =
                             posWalk (path ++ "/t" ++ String.fromInt i) e accE
                         )
                         acc
-                        (List.indexedMap Tuple.pair elems)
+                        (List.indexedMap Tuple.pair (Mono.tupleToList elems))
 
                 Mono.MRecord _ fields ->
                     Dict.foldl (\fname t a -> posWalk (path ++ "/f:" ++ fname) t a) acc fields
@@ -2047,7 +1926,7 @@ renderLssReport sFinal (Mono.MonoGraph g) =
                                                     2
 
                                                 Just ( vfG, d ) ->
-                                                    if d + j < LssInfer.declaredArityOf vfG 8 sFinal then
+                                                    if d + j < LssInfer.declaredArityOf vfG sFinal then
                                                         0
 
                                                     else
@@ -2084,7 +1963,7 @@ renderLssReport sFinal (Mono.MonoGraph g) =
                     varfixWalk rowG inner acc
 
                 Mono.MTuple _ elems ->
-                    List.foldl (varfixWalk rowG) acc elems
+                    List.foldl (varfixWalk rowG) acc (Mono.tupleToList elems)
 
                 Mono.MRecord _ fields ->
                     Dict.foldl (\_ ft a -> varfixWalk rowG ft a) acc fields
@@ -2165,7 +2044,7 @@ renderLssReport sFinal (Mono.MonoGraph g) =
                     varfixCountFlips xa xb
 
                 ( Mono.MTuple _ xsa, Mono.MTuple _ xsb ) ->
-                    List.sum (List.map2 varfixCountFlips xsa xsb)
+                    List.sum (List.map2 varfixCountFlips (Mono.tupleToList xsa) (Mono.tupleToList xsb))
 
                 ( Mono.MRecord _ fa, Mono.MRecord _ fb ) ->
                     Dict.foldl
@@ -2283,7 +2162,7 @@ renderLssReport sFinal (Mono.MonoGraph g) =
                     vf3ArgIds underArg inner acc
 
                 Mono.MTuple _ elems ->
-                    List.foldl (\e aa -> vf3ArgIds underArg e aa) acc elems
+                    List.foldl (\e aa -> vf3ArgIds underArg e aa) acc (Mono.tupleToList elems)
 
                 Mono.MRecord _ fields ->
                     Dict.foldl (\_ ft aa -> vf3ArgIds underArg ft aa) acc fields
@@ -2335,7 +2214,7 @@ renderLssReport sFinal (Mono.MonoGraph g) =
                 Mono.MTuple _ elems ->
                     List.foldl (\( i, e ) aa -> vf3CellWalk argIds (path ++ "/t" ++ String.fromInt i) e aa)
                         acc
-                        (List.indexedMap Tuple.pair elems)
+                        (List.indexedMap Tuple.pair (Mono.tupleToList elems))
 
                 Mono.MRecord _ fields ->
                     Dict.foldl (\fn ft aa -> vf3CellWalk argIds (path ++ "/f:" ++ fn) ft aa) acc fields
@@ -2487,7 +2366,7 @@ renderLssReport sFinal (Mono.MonoGraph g) =
 
                 Mono.FanOut _ tests fallback ->
                     vf3DeciderExprs fallback
-                        (List.foldl (\( _, dd ) aa -> vf3DeciderExprs dd aa) acc tests)
+                        (List.foldl (\( _, dd ) aa -> vf3DeciderExprs dd aa) acc (NE.toList tests))
 
         vf3ExprClosures e acc =
             case e of
@@ -2535,7 +2414,7 @@ renderLssReport sFinal (Mono.MonoGraph g) =
                     List.foldl (\( _, x ) aa -> vf3ExprClosures x aa) (vf3ExprClosures inner acc) updates
 
                 Mono.MonoTupleCreate _ items _ ->
-                    List.foldl vf3ExprClosures acc items
+                    List.foldl vf3ExprClosures acc (Mono.tupleToList items)
 
                 _ ->
                     acc
@@ -2721,7 +2600,7 @@ renderLssReport sFinal (Mono.MonoGraph g) =
                     List.foldl
                         (\( i, e ) aa -> vf3Scan rowG e (Maybe.map (\( r, p ) -> ( r, p ++ "/t" ++ String.fromInt i )) ctx) aa)
                         ( tally, cache )
-                        (List.indexedMap Tuple.pair elems)
+                        (List.indexedMap Tuple.pair (Mono.tupleToList elems))
 
                 Mono.MRecord _ fields ->
                     Dict.foldl
@@ -2783,7 +2662,7 @@ renderLssReport sFinal (Mono.MonoGraph g) =
                     m2StageWalk inner acc
 
                 Mono.MTuple _ elems ->
-                    List.foldl m2StageWalk acc elems
+                    List.foldl m2StageWalk acc (Mono.tupleToList elems)
 
                 Mono.MRecord _ fields ->
                     Dict.foldl (\_ ft a -> m2StageWalk ft a) acc fields
@@ -2923,7 +2802,7 @@ renderLssReport sFinal (Mono.MonoGraph g) =
                     sigArrowCountOf inner n
 
                 Mono.MTuple _ elems ->
-                    List.foldl (\e acc -> sigArrowCountOf e acc) n elems
+                    List.foldl (\e acc -> sigArrowCountOf e acc) n (Mono.tupleToList elems)
 
                 Mono.MRecord _ fields ->
                     Dict.foldl (\_ ft acc -> sigArrowCountOf ft acc) n fields
@@ -2953,7 +2832,7 @@ renderLssReport sFinal (Mono.MonoGraph g) =
                     sigVarCountOf inner n
 
                 Mono.MTuple _ elems ->
-                    List.foldl (\e acc -> sigVarCountOf e acc) n elems
+                    List.foldl (\e acc -> sigVarCountOf e acc) n (Mono.tupleToList elems)
 
                 Mono.MRecord _ fields ->
                     Dict.foldl (\_ ft acc -> sigVarCountOf ft acc) n fields
@@ -3172,10 +3051,7 @@ renderLssReport sFinal (Mono.MonoGraph g) =
                                 TOpt.Box _ ->
                                     "ctor"
 
-                                TOpt.Kernel _ _ ->
-                                    "kernelDef"
-
-                                TOpt.Manager _ ->
+                                TOpt.Manager ->
                                     "manager"
 
                                 TOpt.PortIncoming _ _ _ ->
@@ -3313,8 +3189,8 @@ renderLssReport sFinal (Mono.MonoGraph g) =
                     countTopCells xa xb acc
 
                 ( Mono.MTuple _ xsa, Mono.MTuple _ xsb ) ->
-                    if List.length xsa == List.length xsb then
-                        List.foldl (\( x, y ) ac -> countTopCells x y ac) acc (List.map2 Tuple.pair xsa xsb)
+                    if Mono.tupleArity xsa == Mono.tupleArity xsb then
+                        List.foldl (\( x, y ) ac -> countTopCells x y ac) acc (List.map2 Tuple.pair (Mono.tupleToList xsa) (Mono.tupleToList xsb))
 
                     else
                         acc
@@ -3612,7 +3488,6 @@ initState : Config.LssConfig -> Config.SpecLimits -> ModuleName.Canonical -> DMa
 initState lssConfig limits currentModule nodes annotations globalTypeEnv mvarState =
     { worklist = []
     , nodes = Array.empty
-    , inProgress = BitSet.empty
     , scheduled = BitSet.empty
     , registry = Registry.emptyRegistry
     , ports = []
@@ -3703,31 +3578,25 @@ seedSpec global monoType s =
 
 {-| Returns the flags decoder's `SpecId`, seeded like the entry point at its
 annotation type with its own spine stamped, and the state with it scheduled.
-Returns `Nothing` when there is no flags decoder or its node is not a `Define`
-or `TrackedDefine`.
+Returns `Nothing` when there is no flags decoder.
 -}
-seedFlagsDecoder : Maybe TOpt.Global -> DMap.Dict String TOpt.Global (TOpt.Node TypeIds.MVarId) -> S -> ( Maybe Mono.SpecId, S )
-seedFlagsDecoder maybeFlagsGlobal nodes s =
-    case maybeFlagsGlobal of
+seedFlagsDecoder : Maybe EntryPrep.FlagsDecoder -> S -> ( Maybe Mono.SpecId, S )
+seedFlagsDecoder maybeFlags s =
+    case maybeFlags of
         Nothing ->
             ( Nothing, s )
 
-        Just flagsGlobal ->
-            case EntryPrep.findNodeAnnotationType flagsGlobal nodes of
-                Nothing ->
-                    ( Nothing, s )
+        Just flags ->
+            let
+                decoderMonoType =
+                    Zonk.canTypeToMono flags.tipe
 
-                Just decoderTipe ->
-                    let
-                        decoderMonoType =
-                            Zonk.canTypeToMono Dict.empty decoderTipe
-
-                        ( specId, s1 ) =
-                            case Translate.stampSelfSpine flagsGlobal decoderMonoType s of
-                                ( stampedDec, sb ) ->
-                                    seedSpec (toptToMonoGlobal flagsGlobal) stampedDec sb
-                    in
-                    ( Just specId, s1 )
+                ( specId, s1 ) =
+                    case Translate.stampSelfSpine flags.global decoderMonoType s of
+                        ( stampedDec, sb ) ->
+                            seedSpec (toptToMonoGlobal flags.global) stampedDec sb
+            in
+            ( Just specId, s1 )
 
 
 
@@ -3835,10 +3704,7 @@ that was demanded.
 -}
 processItem : Mono.SpecId -> S -> Result Failure S
 processItem specId s =
-    if BitSet.member specId s.inProgress then
-        Ok s
-
-    else if nodeAlreadyDone specId s && not (BitSet.member specId s.dirtySpecs) then
+    if nodeAlreadyDone specId s && not (BitSet.member specId s.dirtySpecs) then
         -- Already translated and not dirty: a repeated work item.
         Ok s
 
@@ -3862,8 +3728,7 @@ processItem specId s =
                     sItemR =
                         Engine.resetItem
                             { s
-                                | inProgress = BitSet.insertGrowing specId s.inProgress
-                                , currentGlobal = Just global
+                                | currentGlobal = Just global
                                 , lssStats = stats1
 
                                 -- A join made during this translation marks the spec dirty again.
@@ -3918,14 +3783,13 @@ processItem specId s =
                                                 sItem2.itemAux
                                          in
                                          { sItem2
-                                            | inProgress = BitSet.removeGrowing specId sItem2.inProgress
-                                            , currentGlobal = Nothing
+                                            | currentGlobal = Nothing
                                             , itemAux = { aux2 | currentSpecId = Nothing }
                                          }
                                         )
 
                                 else
-                                    case specializeNodeSaturating 1 name home node monoType sItem2 of
+                                    case specializeNodeSaturating 1 name name home node monoType sItem2 of
                                         Err e ->
                                             Err e
 
@@ -3944,7 +3808,7 @@ processItem specId s =
                                                 completionJoin =
                                                     if s1.env.lss.enabled && nodeSupportsRetranslation node then
                                                         case Registry.lookupSpecKey specId s1.registry of
-                                                            Just ( specKey, storedT ) ->
+                                                            Just ( _, storedT ) ->
                                                                 let
                                                                     ( changedJ, joined0 ) =
                                                                         Mono.joinAnnotationsChanged actualType storedT
@@ -3952,15 +3816,10 @@ processItem specId s =
                                                                     -- Report only: positions where the body's type and the stored type disagree.
                                                                     censusCells =
                                                                         if s1.env.lss.report then
-                                                                            case specKey of
-                                                                                Mono.Global jcHome jcName ->
-                                                                                    Mono.joinCollisionCells
-                                                                                        (LssInfer.declaredArityOf (TOpt.Global jcHome jcName) 8 s1)
-                                                                                        actualType
-                                                                                        storedT
-
-                                                                                _ ->
-                                                                                    []
+                                                                            Mono.joinCollisionCells
+                                                                                (LssInfer.declaredArityOf (TOpt.Global home name) s1)
+                                                                                actualType
+                                                                                storedT
 
                                                                         else
                                                                             []
@@ -3975,15 +3834,7 @@ processItem specId s =
 
                                                                     -- The global's own spine, stamped again on the joined type; `changedJ` stays as it was.
                                                                     joined1 =
-                                                                        case specKey of
-                                                                            Mono.Global sgHome sgName ->
-                                                                                case Translate.stampSelfSpine (TOpt.Global sgHome sgName) joinedR s1 of
-                                                                                    ( stamped, _ ) ->
-                                                                                        stamped
-
-                                                                            _ ->
-                                                                                -- An accessor has no global of its own to stamp.
-                                                                                joinedR
+                                                                        Tuple.first (Translate.stampSelfSpine (TOpt.Global home name) joinedR s1)
 
                                                                     censusCells1 =
                                                                         List.repeat recoveredN "rsTop|recovered" ++ censusCells
@@ -4077,9 +3928,9 @@ Specs enqueued by an earlier pass remain, and pruning drops any that nothing
 references.
 
 -}
-specializeNodeSaturating : Int -> Name -> ModuleName.Canonical -> TOpt.Node TypeIds.MVarId -> Mono.MonoType -> S -> Result Failure ( Mono.MonoNode, S )
-specializeNodeSaturating attempt name home node monoType s =
-    case specializeNode name home node monoType s of
+specializeNodeSaturating : Int -> Name -> Name -> ModuleName.Canonical -> TOpt.Node TypeIds.MVarId -> Mono.MonoType -> S -> Result Failure ( Mono.MonoNode, S )
+specializeNodeSaturating attempt reqName name home node monoType s =
+    case specializeNode reqName name home node monoType s of
         ( monoNode, s1 ) ->
             if not (staleResidualRead s1) then
                 Ok ( monoNode, s1 )
@@ -4096,7 +3947,7 @@ specializeNodeSaturating attempt name home node monoType s =
                     )
 
             else
-                specializeNodeSaturating (attempt + 1) name home node monoType (Engine.clearResidualReads s1)
+                specializeNodeSaturating (attempt + 1) reqName name home node monoType (Engine.clearResidualReads s1)
 
 
 {-| The most translation passes `specializeNodeSaturating` makes for one item.
@@ -4107,21 +3958,22 @@ maxSaturationPasses =
 
 
 {-| Returns the node for one spec of the global `name` of `home` at `monoType`,
-by the kind of the global's node.
+by the kind of the global's node. `reqName` is the name of the global the spec
+demands: `name` itself, or the global whose link led here.
 
 A definition is translated by `defineFrom`; a constructor, enum or box by
 `Translate`, with its tag from `CtorTag.effective`, a box being a one-field
 constructor with tag 0. A cycle is translated for the member the spec demands,
-which is the current global rather than `name`. An incoming port demanded at a
-function type, and every outgoing port, go to `Translate.specializePort`; an
+`reqName` rather than `name`. An incoming port demanded at a
+function type, and every outgoing port, go to `portNode`; an
 incoming port demanded at any other type is its decoder, translated as a
-definition. A link is followed to its target. A kernel, or a link to a global
-with no node, becomes a `MonoExtern`, and an effect manager a
+definition. A link is followed to its target. A link to a global with no node
+becomes a `MonoExtern`, and an effect manager a
 `MonoManagerLeaf` named after its module.
 
 -}
-specializeNode : Name -> ModuleName.Canonical -> TOpt.Node TypeIds.MVarId -> Mono.MonoType -> S -> ( Mono.MonoNode, S )
-specializeNode name home node monoType s =
+specializeNode : Name -> Name -> ModuleName.Canonical -> TOpt.Node TypeIds.MVarId -> Mono.MonoType -> S -> ( Mono.MonoNode, S )
+specializeNode reqName name home node monoType s =
     case node of
         TOpt.Define expr _ meta ->
             defineFrom meta.tipe expr monoType s
@@ -4129,18 +3981,15 @@ specializeNode name home node monoType s =
         TOpt.TrackedDefine _ expr _ meta ->
             defineFrom meta.tipe expr monoType s
 
-        TOpt.Kernel _ _ ->
-            ( Mono.MonoExtern monoType, s )
-
         TOpt.Ctor index arity canType ->
-            Translate.specializeCtorViaScheme name (CtorTag.effective home name index) arity canType monoType s
+            Translate.specializeCtorViaScheme home name (CtorTag.effective home name index) arity canType monoType s
 
         TOpt.Enum index canType ->
-            Translate.enumNode (CtorTag.effective home name index) canType monoType s
+            Translate.enumNode home name (CtorTag.effective home name index) canType monoType s
 
         TOpt.Box canType ->
             -- A box is a one-field constructor with tag 0.
-            Translate.specializeCtorViaScheme name 0 1 canType monoType s
+            Translate.specializeCtorViaScheme home name 0 1 canType monoType s
 
         TOpt.Link linkedGlobal ->
             case HashMap.get TOpt.globalHash (==) linkedGlobal s.env.toptNodes of
@@ -4150,37 +3999,50 @@ specializeNode name home node monoType s =
                 Just linkedNode ->
                     case linkedGlobal of
                         TOpt.Global linkedHome linkedName ->
-                            specializeNode linkedName linkedHome linkedNode monoType s
+                            specializeNode reqName linkedName linkedHome linkedNode monoType s
 
-        TOpt.Manager _ ->
-            case home of
-                ModuleName.Canonical _ modName ->
-                    ( Mono.MonoManagerLeaf (Name.toElmString modName) monoType, s )
+        TOpt.Manager ->
+            ( Mono.MonoManagerLeaf home monoType, s )
 
         TOpt.Cycle _ valueDefs funcDefs _ ->
-            -- `name` is the cycle's own; the member demanded is the current global.
-            let
-                reqName =
-                    case s.currentGlobal of
-                        Just (Mono.Global _ n) ->
-                            n
-
-                        _ ->
-                            name
-            in
+            -- `name` is the cycle's own; the member demanded is `reqName`.
             Translate.specializeCycle reqName valueDefs funcDefs monoType s
 
         TOpt.PortIncoming expr _ meta ->
             case monoType of
                 Mono.MFunction _ _ _ _ ->
-                    Translate.specializePort True expr meta.tipe monoType s
+                    portNode True home name expr meta.tipe monoType s
 
                 _ ->
                     -- Demanded at the decoder's type: the decoder, translated as a definition.
                     defineFrom (TOpt.typeOf expr) expr monoType s
 
         TOpt.PortOutgoing expr _ meta ->
-            Translate.specializePort False expr meta.tipe monoType s
+            portNode False home name expr meta.tipe monoType s
+
+
+{-| Returns the node of the port `name` of `home` demanded at the function type
+`monoType`, by `Translate.specializePort`. A port's type is a function of one
+argument (Canonicalize/Effects), and its arrows are classified one argument per
+stage, so any other demand is an engine bug and aborts the build.
+-}
+portNode : Bool -> ModuleName.Canonical -> Name -> TOpt.Expr TypeIds.MVarId -> Can.Type TypeIds.MVarId -> Mono.MonoType -> S -> ( Mono.MonoNode, S )
+portNode incoming home name expr canType monoType s =
+    case monoType of
+        Mono.MFunction _ _ [ paramType ] resultType ->
+            Translate.specializePort incoming home name expr canType monoType paramType resultType s
+
+        _ ->
+            ( Engine.crashFailure
+                (EngineBug
+                    ("port '"
+                        ++ Name.toElmString name
+                        ++ "' must have a single-parameter function type; got "
+                        ++ Mono.monoTypeToDebugString monoType
+                    )
+                )
+            , s
+            )
 
 
 {-| Returns the node of the global `name` of `home` and its annotation variable
@@ -4364,7 +4226,7 @@ licensedKernelAliasNode nd s =
 
 
 {-| Returns the state with `monoNode` stored as the node of `specId` and the
-item closed: the spec is no longer in progress, no global or spec is current,
+item closed: no global or spec is current,
 and `qLog` is empty. First the item's read-backs are replayed
 (`Store.rezonkSettled`) and its constraints checked against the store
 (`Store.qShadowCensus`); both only add to the census, and both must run now,
@@ -4385,7 +4247,6 @@ finishNode specId monoNode s =
     in
     { sQ
         | nodes = arraySetGrowing specId (Just monoNode) sQ.nodes
-        , inProgress = BitSet.removeGrowing specId sQ.inProgress
         , currentGlobal = Nothing
 
         -- So a member minted between items is not qualified by this spec.
@@ -4503,17 +4364,10 @@ assembleRawGraph s mainSpecId flagsDecoderSpecId =
         nextId =
             s.registry.nextId
 
+        -- Every created spec has a node (MONO_017), so `nodes` already reaches `nextId`.
         nodesArray : Array (Maybe Mono.MonoNode)
         nodesArray =
-            let
-                currentLen =
-                    Array.length s.nodes
-            in
-            if currentLen >= nextId then
-                s.nodes
-
-            else
-                Array.append s.nodes (Array.repeat (nextId - currentLen) Nothing)
+            s.nodes
 
         ( callEdgesArray, specHasEffects, specValueUsed ) =
             Array.foldl
@@ -4553,7 +4407,7 @@ assembleRawGraph s mainSpecId flagsDecoderSpecId =
     Mono.MonoGraph
         { nodes = nodesArray
         , registry = { nextId = nextId, mapping = Mono.specKeyMapEmpty, reverseMapping = s.registry.reverseMapping, countByGlobal = Dict.empty }
-        , main = Just (Mono.StaticMain mainSpecId)
+        , main = Mono.StaticMain mainSpecId
         , ctorShapes = Mono.layoutMapEmpty
         , nextLambdaIndex = s.lambdaCounter
         , callEdges = callEdgesArray
@@ -4594,8 +4448,8 @@ buildMemberOrigins toptNodes table =
 
                 "c|" ->
                     case Dict.get mid table.sources of
-                        Just (Engine.SourceGlobal g) ->
-                            Dict.insert mid (Mono.OriginCtor (toptToMono g)) acc
+                        Just (Engine.SourceGlobal (TOpt.Global home name)) ->
+                            Dict.insert mid (Mono.OriginCtor home name) acc
 
                         _ ->
                             acc
@@ -4613,8 +4467,8 @@ buildMemberOrigins toptNodes table =
 
                 "p|" ->
                     case Dict.get mid table.sources of
-                        Just (Engine.SourcePap g supplied) ->
-                            Dict.insert mid (Mono.OriginPap (toptToMono g) supplied) acc
+                        Just (Engine.SourcePap (TOpt.Global home name) supplied) ->
+                            Dict.insert mid (Mono.OriginPap home name supplied) acc
 
                         _ ->
                             acc
@@ -4634,17 +4488,19 @@ an ordinary global, such as `Just`, is minted under `g|`.
 
 -}
 globalOrigin : HashMap.HashMap TOpt.Global (TOpt.Node TypeIds.MVarId) -> TOpt.Global -> Mono.MemberOrigin
-globalOrigin toptNodes g =
+globalOrigin toptNodes ((TOpt.Global home name) as g) =
     if ctorBackedGlobal toptNodes 8 g then
-        Mono.OriginCtor (toptToMono g)
+        Mono.OriginCtor home name
 
     else
-        Mono.OriginGlobal (toptToMono g)
+        Mono.OriginGlobal home name
 
 
 {-| Tells whether `g` is a constructor or box node, following links, and
-definitions whose whole body is a reference to another global or a box, for at
-most `fuel` steps.
+source definitions (`TrackedDefine`) whose whole body is a reference to another
+global or a box, for at most `fuel` steps. An untracked `Define` is a
+record-alias constructor or the flags decoder, neither of which is such an
+alias.
 -}
 ctorBackedGlobal : HashMap.HashMap TOpt.Global (TOpt.Node TypeIds.MVarId) -> Int -> TOpt.Global -> Bool
 ctorBackedGlobal toptNodes fuel g =
@@ -4662,12 +4518,6 @@ ctorBackedGlobal toptNodes fuel g =
             Just (TOpt.Link target) ->
                 ctorBackedGlobal toptNodes (fuel - 1) target
 
-            Just (TOpt.Define (TOpt.VarBox _ target _) _ _) ->
-                ctorBackedGlobal toptNodes (fuel - 1) target
-
-            Just (TOpt.Define (TOpt.VarGlobal _ target _) _ _) ->
-                ctorBackedGlobal toptNodes (fuel - 1) target
-
             Just (TOpt.TrackedDefine _ (TOpt.VarBox _ target _) _ _) ->
                 ctorBackedGlobal toptNodes (fuel - 1) target
 
@@ -4676,13 +4526,6 @@ ctorBackedGlobal toptNodes fuel g =
 
             _ ->
                 False
-
-
-{-| Returns the same global as a `Mono.Global`.
--}
-toptToMono : TOpt.Global -> Mono.Global
-toptToMono (TOpt.Global h n) =
-    Mono.Global h n
 
 
 {-| Returns `rawGraph` pruned and closed by `Prune.pruneUnreachableSpecs`, given

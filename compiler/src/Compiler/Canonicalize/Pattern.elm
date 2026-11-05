@@ -341,15 +341,15 @@ canonicalizeCtorArgsWithIdsHelp env state0 index patterns args acc =
 which there may be at most one; more is `TupleLargerThanThree` at
 `tupleRegion`.
 -}
-canonicalizeTupleWithIds : A.Region -> Env.Env -> Ids.IdState -> List Src.Pattern -> PResult DupsDict w ( List Can.Pattern, Ids.IdState )
+canonicalizeTupleWithIds : A.Region -> Env.Env -> Ids.IdState -> List Src.Pattern -> PResult DupsDict w ( Maybe Can.Pattern, Ids.IdState )
 canonicalizeTupleWithIds tupleRegion env state0 extras =
     case extras of
         [] ->
-            ReportingResult.ok ( [], state0 )
+            ReportingResult.ok ( Nothing, state0 )
 
         [ three ] ->
             canonicalizeWithIds env state0 three
-                |> ReportingResult.map (\( p, s ) -> ( [ p ], s ))
+                |> ReportingResult.map (\( p, s ) -> ( Just p, s ))
 
         _ ->
             ReportingResult.throw (Error.TupleLargerThanThree tupleRegion)

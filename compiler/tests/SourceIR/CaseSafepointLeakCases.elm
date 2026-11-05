@@ -21,11 +21,11 @@ GC-root operands, which the code generator no longer emits.
 
 A `case` that reaches MLIR generation as a case, and whose decision tree tests
 its scrutinee, is lowered by the decision-tree code of
-`Compiler.GenerateMlir.Expr` as a chain of tests or a fan-out, each with a
-Bool form and a general one (`generateChainForBoolADTWithJumps`,
-`generateChainGeneralWithJumps`, `generateBoolFanOutWithJumps`,
-`generateFanOutGeneralWithJumps`). Which of the four a program reaches depends
-on the decision tree built for it, and nothing here checks which one is used.
+`Compiler.GenerateMlir.Expr` as a chain of tests, in a Bool form or a general
+one (`generateChainForBoolADTWithJumps`, `generateChainGeneralWithJumps`), or
+as a fan-out (`generateFanOutWithJumps`). Which of the three a program reaches
+depends on the decision tree built for it, and nothing here checks which one
+is used.
 
 Each program is a module named `Test` built with
 `makeModuleWithTypedDefsUnionsAliases`, which imports `Maybe` among the

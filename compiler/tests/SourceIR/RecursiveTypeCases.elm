@@ -237,9 +237,6 @@ reference is the second argument of `Cons`, written here as Elm source:
     testValue =
         len Empty
 
-The argument `Empty` is built as a call with no arguments, which source text
-cannot express.
-
 -}
 directLinkedList : (Src.Module -> Expectation) -> (() -> Expectation)
 directLinkedList expectFn _ =
@@ -549,8 +546,7 @@ here as Elm source:
     testValue =
         depth (Box { value = 1, next = Nothing })
 
-`Nothing` is built as a call with no arguments, which source text cannot
-express. The module declares its own `Maybe` alongside the imported one.
+The module declares its own `Maybe` alongside the imported one.
 
 -}
 recursiveViaAlias : (Src.Module -> Expectation) -> (() -> Expectation)

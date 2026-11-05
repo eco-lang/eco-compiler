@@ -16,9 +16,8 @@ representation applies where.
 per violation, on either of two kinds:
 
   - A True or False `eco.constant`, recognised by its integer `kind` attribute
-    (1 for True, 0 for False, as `Compiler.GenerateMlir.Ops.ecoConstantTrue`
-    and `ecoConstantFalse` build it), whose results are not exactly one
-    `!eco.value`.
+    (1 for True, 0 for False, the eco dialect's constant kinds), whose results
+    are not exactly one `!eco.value`.
   - An operand of type `i1` given to an op that crosses a heap, closure or
     call boundary: `eco.construct.*`, `eco.papCreate`, `eco.papCreateGroup`,
     `eco.papExtend`, `eco.call` and `eco.return`. The operand's type is its
@@ -196,9 +195,6 @@ typeToString t =
 
         I8 ->
             "i8"
-
-        I16 ->
-            "i16"
 
         I32 ->
             "i32"

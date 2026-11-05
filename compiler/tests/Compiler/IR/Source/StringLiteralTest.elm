@@ -12,6 +12,10 @@ spellings of one value share a key (`a` and `\u0061`, a raw astral character
 and its surrogate-pair escapes), escapes decode to their code points, and the
 key of `ab` differs from that of `a,b`.
 
+`codePoints`, which the MLIR back end decodes Char literal and Char pattern
+text with: each escape that the parser writes for a Char gives one code point,
+and a `\uXXXX` surrogate pair gives the one code point it encodes.
+
 -}
 
 import Compiler.IR.Source.StringLiteral as ES
@@ -41,5 +45,14 @@ suite =
                 \_ -> ES.valueKey "\\n\\'\\\"\\\\x" |> Expect.equal "10,39,34,92,120"
             , Test.test "ab and a,b differ" <|
                 \_ -> (ES.valueKey "ab" == ES.valueKey "a,b") |> Expect.equal False
+            ]
+        , Test.describe "codePoints"
+            [ Test.test "each Char escape is one code point" <|
+                \_ ->
+                    [ "a", "\\n", "\\r", "\\t", "\\\"", "\\'", "\\\\", "\\u00E9", "\\", "😀" ]
+                        |> List.map ES.codePoints
+                        |> Expect.equal [ [ 97 ], [ 10 ], [ 13 ], [ 9 ], [ 34 ], [ 39 ], [ 92 ], [ 233 ], [ 92 ], [ 128512 ] ]
+            , Test.test "a surrogate pair is one code point" <|
+                \_ -> ES.codePoints "\\uD83D\\uDE00" |> Expect.equal [ 128512 ]
             ]
         ]

@@ -18,7 +18,7 @@ function of one parameter annotated `topAbi`.
 
 The fixture is a canonical type per test, built with
 `Compiler.AST.CanonicalBuilder` with named type variables. `convertForTest`
-numbers them with `AssignMVarIds.assignIdsToType`, which gives the variables
+numbers them with `AssignMVarIdsHelpers.assignIdsToType`, which gives the variables
 ids from 0 in the order it first meets them and gives a repeated name the same
 id, so `nthMVarId 0` is the first variable. That function also records a super
 constraint for each variable whose name starts with `number`, `comparable`,
@@ -80,7 +80,7 @@ import Compiler.IR.Mono as Mono
 import Compiler.IR.Typed.TypeVars as Vars
 import Compiler.Monomorphize.KernelAbi as KernelAbi
 import Compiler.Monomorphize.State as State
-import Compiler.PreMono.AssignMVarIds as AssignMVarIds
+import Compiler.PreMono.AssignMVarIdsHelpers as AssignMVarIdsHelpers
 import Dict
 import Expect
 import Test exposing (Test)
@@ -115,14 +115,14 @@ testMVarN n constraint =
 
 
 {-| Returns `canType` with its type variables numbered by
-`AssignMVarIds.assignIdsToType`, and an `MVarEnv` whose side table holds the
+`AssignMVarIdsHelpers.assignIdsToType`, and an `MVarEnv` whose side table holds the
 super constraint that function recorded for each variable, read from its name.
 -}
 convertForTest : Can.Type Name -> ( Can.Type TypeIds.MVarId, State.MVarEnv )
 convertForTest canType =
     let
         ( converted, finalState ) =
-            AssignMVarIds.assignIdsToType canType
+            AssignMVarIdsHelpers.assignIdsToType canType
     in
     ( converted, State.initMVarEnv finalState.nextId finalState.superVars )
 

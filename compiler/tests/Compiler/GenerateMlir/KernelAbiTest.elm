@@ -569,7 +569,7 @@ suite =
                         (KernelAbi.deriveKernelInstanceAbi
                             (jsArrayKey "initializeFromList"
                                 [ Mono.MInt, Mono.MUnit ]
-                                (Mono.mTuple [ jsArrayOf Mono.MInt, Mono.mList Mono.MInt ])
+                                (Mono.mTuple (Mono.T2 (jsArrayOf Mono.MInt) (Mono.mList Mono.MInt)))
                             )
                         ).symbolName
             , test "callInstanceResultType keys a JsArray builder by the call's own result" <|

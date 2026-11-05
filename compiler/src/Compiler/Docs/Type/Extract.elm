@@ -62,6 +62,7 @@ import Compiler.IR.Optimized as Opt
 import Data.Map
 import Data.Set as EverySet exposing (EverySet)
 import Dict exposing (Dict)
+import Maybe.Extra as Maybe
 import System.Crash exposing (crash)
 import Utils.Bytes.Decode as BD
 import Utils.Bytes.Encode as BE
@@ -110,7 +111,7 @@ extract astType =
             pure T.Tuple
                 |> apply (extract a)
                 |> apply (extract b)
-                |> apply (traverse extract cs)
+                |> apply (traverse extract (Maybe.toList cs))
 
         Can.TAlias home name args aliasType ->
             addAlias (Opt.Global home name) ()

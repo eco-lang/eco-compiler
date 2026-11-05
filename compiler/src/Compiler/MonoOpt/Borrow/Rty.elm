@@ -117,7 +117,7 @@ freshRTy ty n =
         Mono.MTuple _ ts ->
             let
                 ( rtys, n1 ) =
-                    freshRTyList ts (n + 1)
+                    freshRTyList (Mono.tupleToList ts) (n + 1)
             in
             ( RTuple n rtys, n1 )
 

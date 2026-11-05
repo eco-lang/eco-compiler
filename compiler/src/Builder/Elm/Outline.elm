@@ -767,9 +767,8 @@ and then as an object of sections.
 -}
 exposedDecoder : Decoder Exposed
 exposedDecoder =
-    D.oneOf
-        [ D.map ExposedList (D.list moduleDecoder)
-        , D.map ExposedDict (D.pairs headerKeyDecoder (D.list moduleDecoder))
+    D.oneOf (D.map ExposedList (D.list moduleDecoder))
+        [ D.map ExposedDict (D.pairs headerKeyDecoder (D.list moduleDecoder))
         ]
 
 

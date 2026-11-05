@@ -24,7 +24,7 @@ In your current backend, intrinsics are conceptually attached to **kernel calls*
               Just (ArraySet { elementMlirType = Types.monoTypeToAbi elt })
   ```   
 
-  Those `ArrayGet` / `ArraySet` constructors end up in `generateIntrinsicOp`, which emits `eco.array.get` / `eco.array.set` with the correct concrete MLIR element type.
+  Those `ArrayGet` / `ArraySet` constructors end up in `generateOperationOps`, which emits `eco.array.get` / `eco.array.set` with the correct concrete MLIR element type.
 - The eco dialect already has **dedicated array ops**:
 
   - `eco.array.get %arr[%i] : T`
@@ -61,7 +61,7 @@ Extend `kernelIntrinsic` so that, for *concrete* element types, these kernel cal
 - `JsArray.slice` → `eco.array.slice`
 - `JsArray.appendN` → `eco.array.append_n` (or similar)
 
-You’d add these to `EcoOps.td` exactly the way `eco.array.get/set/length` are defined now , then add matching constructors to the `Intrinsic` ADT and cases in `generateIntrinsicOp` to emit them.   
+You’d add these to `EcoOps.td` exactly the way `eco.array.get/set/length` are defined now , then add matching constructors to the `Operation` ADT (each carries its operands) and cases in `generateOperationOps` to emit them.   
 
 Important properties:
 

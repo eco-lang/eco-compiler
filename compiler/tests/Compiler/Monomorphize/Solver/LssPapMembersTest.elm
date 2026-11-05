@@ -360,7 +360,7 @@ annosOf t =
             annosOf el
 
         Mono.MTuple _ els ->
-            List.concatMap annosOf els
+            List.concatMap annosOf (Mono.tupleToList els)
 
         Mono.MRecord _ fields ->
             Dict.foldl (\_ ft acc -> acc ++ annosOf ft) [] fields
@@ -396,7 +396,7 @@ with `supplied` arguments.
 isPapSingleton : String -> Int -> Mono.MonoGraph -> Mono.LambdaSetAnno -> Bool
 isPapSingleton name supplied graph anno =
     case ( anno, originsOf graph anno ) of
-        ( Mono.LSet [ _ ], [ Just (Mono.OriginPap (Mono.Global _ n) k) ] ) ->
+        ( Mono.LSet [ _ ], [ Just (Mono.OriginPap _ n k) ] ) ->
             n == name && k == supplied
 
         _ ->

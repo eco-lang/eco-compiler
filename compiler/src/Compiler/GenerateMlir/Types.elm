@@ -1,6 +1,6 @@
 module Compiler.GenerateMlir.Types exposing
     ( ecoValue, ecoInt, ecoFloat, ecoChar
-    , monoTypeToAbi, monoTypeToOperand
+    , monoTypeToAbi
     , mlirTypeToString
     , isFunctionType, countTotalArity, isEcoValueType
     , isUnboxable, mlirTypeToKind
@@ -27,9 +27,9 @@ there, and everything else, Bool included, is `!eco.value`. No number type
 variable (`MVar _ CNumber`) reaches code generation: Prune closes every one to
 Int and fails if one survives (MONO\_002, MONO\_028).
 
-The _operand type_ of a value, given by `monoTypeToOperand`, is its type as an
-SSA value inside a function. It is the ABI type except that a Bool is `i1`, so
-that it can drive a branch directly. A Bool read from a boundary or from the
+The _operand type_ of a value is its type as an SSA value inside a function.
+It is the ABI type except that a Bool is `i1`, so that it can drive a branch
+directly: a Bool literal is an `i1` constant (`Compiler.GenerateMlir.Expr`). A Bool read from a boundary or from the
 heap is a `!eco.value` and has to be unboxed before it can be used as an `i1`.
 
 Inside a heap object (a record, tuple or constructor) only Int, Float and Char
@@ -49,7 +49,7 @@ as SSA values, of types such as `!eco.tuple2<..>` and `!eco.custom<..>`,
 rather than as heap objects.
 
 @docs ecoValue, ecoInt, ecoFloat, ecoChar
-@docs monoTypeToAbi, monoTypeToOperand
+@docs monoTypeToAbi
 @docs mlirTypeToString
 @docs isFunctionType, countTotalArity, isEcoValueType
 @docs isUnboxable, mlirTypeToKind
@@ -65,7 +65,6 @@ import Compiler.IR.Mono as Mono
 import Compiler.IR.Mono.Abi as MonoAbi
 import Dict exposing (Dict)
 import Mlir.Mlir exposing (MlirType(..))
-import System.Crash exposing (crash)
 
 
 
@@ -136,57 +135,6 @@ Int is `i64`, Float `f64` and Char `i32`. Every other type, Bool included, is
 monoTypeToAbi : Mono.MonoType -> MlirType
 monoTypeToAbi monoType =
     MonoAbi.monoTypeToAbi monoType
-
-
-{-| Returns the operand type of a value of the given type: its MLIR type as an
-SSA value inside a function.
-
-This is the ABI type of `monoTypeToAbi` except for Bool, which is `i1`. A
-function type is `!eco.value` whatever its lambda set. A number type variable
-crashes: none reaches code generation (MONO\_002, MONO\_028).
-
--}
-monoTypeToOperand : Mono.MonoType -> MlirType
-monoTypeToOperand monoType =
-    case monoType of
-        Mono.MInt ->
-            ecoInt
-
-        Mono.MFloat ->
-            ecoFloat
-
-        Mono.MBool ->
-            I1
-
-        Mono.MChar ->
-            ecoChar
-
-        Mono.MString ->
-            ecoValue
-
-        Mono.MUnit ->
-            ecoValue
-
-        Mono.MList _ _ ->
-            ecoValue
-
-        Mono.MTuple _ _ ->
-            ecoValue
-
-        Mono.MRecord _ _ ->
-            ecoValue
-
-        Mono.MCustom _ _ _ _ ->
-            ecoValue
-
-        Mono.MFunction _ _ _ _ ->
-            ecoValue
-
-        Mono.MVar _ Mono.CNumber ->
-            crash "MONO_002: a number type variable reached MLIR code generation (Prune closes every one to Int, MONO_028)"
-
-        Mono.MVar _ Mono.CEcoValue ->
-            ecoValue
 
 
 
@@ -316,9 +264,6 @@ mlirTypeToString ty =
         I8 ->
             "i8"
 
-        I16 ->
-            "i16"
-
         I32 ->
             "i32"
 
@@ -389,9 +334,8 @@ type alias CtorLayout =
 an element's type and whether it is unboxed, in element order.
 -}
 type alias TupleLayout =
-    { arity : Int
-    , unboxedBitmap : Int
-    , elements : List ( Mono.MonoType, Bool )
+    { unboxedBitmap : Int
+    , elements : Mono.TupleShape ( Mono.MonoType, Bool )
     }
 
 
@@ -399,11 +343,12 @@ type alias TupleLayout =
 -- LAYOUT COMPUTATION
 
 
-{-| Returns the slot kind of an unboxed value of the given type: 1 for Int, 2
-for Float, 3 for Char, and 0 (boxed) for anything else.
+{-| Returns the slot kind of a heap slot holding a value of the given type: 1
+for Int, 2 for Float, 3 for Char, the types a layout stores unboxed
+(`canUnbox`), and 0 (boxed) for anything else.
 -}
-encodeUnboxedKind : Mono.MonoType -> Int
-encodeUnboxedKind monoType =
+slotKindOf : Mono.MonoType -> Int
+slotKindOf monoType =
     case monoType of
         Mono.MInt ->
             1
@@ -437,11 +382,7 @@ recordSlotKinds layout =
 
 fieldSlotKind : FieldInfo -> Int
 fieldSlotKind field =
-    if field.isUnboxed then
-        encodeUnboxedKind field.monoType
-
-    else
-        0
+    slotKindOf field.monoType
 
 
 {-| The bitmap of a tuple layout (at most three slots, so plain Int
@@ -496,9 +437,9 @@ computeRecordLayout fields =
 {-| Returns the MLIR type of each slot of a tuple layout, in element order: the
 ABI type of an unboxed element, and `!eco.value` for a boxed one.
 -}
-tupleSlotTypes : TupleLayout -> List MlirType
+tupleSlotTypes : TupleLayout -> Mono.TupleShape MlirType
 tupleSlotTypes layout =
-    List.map
+    Mono.tupleMap
         (\( elemTy, isUnboxed ) ->
             if isUnboxed then
                 monoTypeToAbi elemTy
@@ -528,28 +469,10 @@ ctorSlotTypes layout =
 {-| Returns the layout of a tuple with the given element types. Every Int,
 Float or Char element is unboxed; no index cap is applied.
 -}
-computeTupleLayout : List Mono.MonoType -> TupleLayout
+computeTupleLayout : Mono.TupleShape Mono.MonoType -> TupleLayout
 computeTupleLayout types =
-    let
-        elements =
-            List.map (\t -> ( t, canUnbox t )) types
-
-        unboxedBitmap =
-            tupleBitmap
-                (List.map
-                    (\( ty, isUnboxed ) ->
-                        if isUnboxed then
-                            encodeUnboxedKind ty
-
-                        else
-                            0
-                    )
-                    elements
-                )
-    in
-    { arity = List.length types
-    , unboxedBitmap = unboxedBitmap
-    , elements = elements
+    { unboxedBitmap = tupleBitmap (List.map slotKindOf (Mono.tupleToList types))
+    , elements = Mono.tupleMap (\t -> ( t, canUnbox t )) types
     }
 
 

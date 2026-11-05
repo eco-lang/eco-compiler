@@ -152,10 +152,8 @@ sameLambda a b =
         == b.params
         && a.returnType
         == b.returnType
-        && a.isTailRecursive
-        == b.isTailRecursive
-        && a.selfBindingName
-        == b.selfBindingName
+        && a.tailRecSelf
+        == b.tailRecSelf
         && a.body
         == b.body
 
@@ -251,7 +249,7 @@ generateLambdaFuncNamed ctx lambda =
         -- The self name is bound to a local closure instead (see below).
         filteredSiblingMappings : Dict.Dict String Ctx.VarInfo
         filteredSiblingMappings =
-            case lambda.selfBindingName of
+            case lambda.tailRecSelf of
                 Just selfName ->
                     Dict.remove selfName lambda.siblingMappings
 
@@ -277,191 +275,164 @@ generateLambdaFuncNamed ctx lambda =
         actualResultType =
             Types.monoTypeToAbi lambda.returnType
     in
-    if lambda.isTailRecursive then
-        -- Captures stay function arguments outside the loop state; scf.while is not isolated from above.
-        let
-            ( selfPrefixOps, ctxForTailRec ) =
-                case lambda.selfBindingName of
-                    Just selfName ->
-                        let
-                            selfFunctionName =
-                                if hasCaptures then
-                                    lambda.name ++ "$cap"
+    case lambda.tailRecSelf of
+        Just selfName ->
+            -- Captures stay function arguments outside the loop state; scf.while is not isolated from above.
+            let
+                ( selfPrefixOps, ctxForTailRec ) =
+                    let
+                        selfFunctionName =
+                            if hasCaptures then
+                                lambda.name ++ "$cap"
 
-                                else
-                                    lambda.name
+                            else
+                                lambda.name
 
-                            selfArity =
-                                List.length lambda.captures + List.length lambda.params
+                        selfArity =
+                            List.length lambda.captures + List.length lambda.params
 
-                            selfNumCaptured =
-                                List.length lambda.captures
+                        selfNumCaptured =
+                            List.length lambda.captures
 
-                            captureMlirTypes =
-                                List.map (\( _, monoTy ) -> Types.monoTypeToAbi monoTy) lambda.captures
+                        captureMlirTypes =
+                            List.map (\( _, monoTy ) -> Types.monoTypeToAbi monoTy) lambda.captures
 
-                            selfOperandTypesAttr =
-                                if List.isEmpty captureMlirTypes then
-                                    Dict.empty
+                        selfOperandTypesAttr =
+                            if List.isEmpty captureMlirTypes then
+                                Dict.empty
 
-                                else
-                                    Dict.singleton "_operand_types"
-                                        (ArrayAttr Nothing (List.map TypeAttr captureMlirTypes))
+                            else
+                                Dict.singleton "_operand_types"
+                                    (ArrayAttr Nothing (List.map TypeAttr captureMlirTypes))
 
-                            selfFastEvaluatorAttr =
-                                if hasCaptures then
-                                    Dict.singleton "_fast_evaluator" (SymbolRefAttr (lambda.name ++ "$cap"))
+                        selfFastEvaluatorAttr =
+                            if hasCaptures then
+                                Dict.singleton "_fast_evaluator" (SymbolRefAttr (lambda.name ++ "$cap"))
 
-                                else
-                                    Dict.empty
+                            else
+                                Dict.empty
 
-                            -- The kind of the unboxed ABI return type; the attribute is omitted for kind 0 (boxed).
-                            selfResultKind =
-                                Types.mlirTypeToKind (Types.monoTypeToAbi lambda.returnType)
+                        -- The kind of the unboxed ABI return type; the attribute is omitted for kind 0 (boxed).
+                        selfResultKind =
+                            Types.mlirTypeToKind (Types.monoTypeToAbi lambda.returnType)
 
-                            selfResultKindAttr =
-                                if selfResultKind == 0 then
-                                    Dict.empty
+                        selfResultKindAttr =
+                            if selfResultKind == 0 then
+                                Dict.empty
 
-                                else
-                                    Dict.singleton "_result_kind" (IntAttr (Just I8) selfResultKind)
+                            else
+                                Dict.singleton "_result_kind" (IntAttr (Just I8) selfResultKind)
 
-                            selfPapAttrs =
-                                Dict.union selfResultKindAttr
-                                    (Dict.union selfFastEvaluatorAttr
-                                        (Dict.union selfOperandTypesAttr
-                                            (Dict.fromList
-                                                [ ( "function", SymbolRefAttr selfFunctionName )
-                                                , ( "arity", IntAttr Nothing (Ops.assertStageArity selfArity) )
-                                                , ( "num_captured", IntAttr Nothing selfNumCaptured )
-                                                ]
-                                                |> Ops.withSlotKinds captureMlirTypes
-                                            )
+                        selfPapAttrs =
+                            Dict.union selfResultKindAttr
+                                (Dict.union selfFastEvaluatorAttr
+                                    (Dict.union selfOperandTypesAttr
+                                        (Dict.fromList
+                                            [ ( "function", SymbolRefAttr selfFunctionName )
+                                            , ( "arity", IntAttr Nothing (Ops.assertStageArity selfArity) )
+                                            , ( "num_captured", IntAttr Nothing selfNumCaptured )
+                                            ]
+                                            |> Ops.withSlotKinds captureMlirTypes
                                         )
                                     )
+                                )
 
-                            captureVarNames =
-                                List.map (\( capName, _ ) -> "%" ++ capName) lambda.captures
+                        captureVarNames =
+                            List.map (\( capName, _ ) -> "%" ++ capName) lambda.captures
 
-                            ( selfVar, ctxAfterFresh ) =
-                                Ctx.freshVar ctxWithArgs
+                        ( selfVar, ctxAfterFresh ) =
+                            Ctx.freshVar ctxWithArgs
 
-                            ( ctxAfterPap, selfPapOp ) =
-                                Ops.mlirOp ctxAfterFresh "eco.papCreate"
-                                    |> Ops.opBuilder.withOperands captureVarNames
-                                    |> Ops.opBuilder.withResults [ ( selfVar, Types.ecoValue ) ]
-                                    |> Ops.opBuilder.withAttrs selfPapAttrs
-                                    |> Ops.opBuilder.build
+                        ( ctxAfterPap, selfPapOp ) =
+                            Ops.mlirOp ctxAfterFresh "eco.papCreate"
+                                |> Ops.opBuilder.withOperands captureVarNames
+                                |> Ops.opBuilder.withResults [ ( selfVar, Types.ecoValue ) ]
+                                |> Ops.opBuilder.withAttrs selfPapAttrs
+                                |> Ops.opBuilder.build
 
-                            ctxWithSelf =
-                                Ctx.addVarMapping selfName
-                                    selfVar
-                                    Types.ecoValue
-                                    ctxAfterPap
-                        in
-                        ( [ selfPapOp ], ctxWithSelf )
-
-                    Nothing ->
-                        ( [], ctxWithArgs )
-
-            ( tailRecOps, ctx1 ) =
-                TailRec.compileTailFuncToWhile ctxForTailRec lambda.name paramArgPairs (List.map Tuple.second lambda.params) lambda.body actualResultType Nothing
-
-            bodyOps =
-                selfPrefixOps ++ tailRecOps
-
-            ( bodyNonTermOps, bodyTerminator ) =
-                case List.reverse bodyOps of
-                    term :: rest ->
-                        ( List.reverse rest, term )
-
-                    [] ->
-                        let
-                            ( dummyOps, dummyVar, ctxDummy ) =
-                                Expr.createDummyValue ctx1 actualResultType
-
-                            ( _, dummyRetOp ) =
-                                Ops.ecoReturn ctxDummy dummyVar actualResultType
-                        in
-                        ( dummyOps, dummyRetOp )
-
-            funcBodyRegion : MlirRegion
-            funcBodyRegion =
-                Ops.mkRegion allArgPairs bodyNonTermOps bodyTerminator
-
-            funcName =
-                if hasCaptures then
-                    lambda.name ++ "$cap"
-
-                else
-                    lambda.name
-
-            ( ctx2, fastCloneOpRaw ) =
-                Ops.funcFunc ctx1 funcName allArgPairs actualResultType funcBodyRegion
-
-            captureMonoTypes : List Mono.MonoType
-            captureMonoTypes =
-                List.map Tuple.second lambda.captures
-
-            paramMonoTypes : List Mono.MonoType
-            paramMonoTypes =
-                List.map Tuple.second lambda.params
-
-            fastCloneOp =
-                LogicalTypes.addLogicalTypesAttr
-                    ctx2.ecoConfig.logicalTypes.customMaxFields
-                    ctx2.typeRegistry.ctorShapes
-                    (captureMonoTypes ++ paramMonoTypes)
-                    lambda.returnType
-                    fastCloneOpRaw
-        in
-        ( [ fastCloneOp ], ctx2 )
-
-    else
-        let
-            exprResult : Expr.ExprResult
-            exprResult =
-                Expr.generateExpr ctxWithArgs lambda.body
-
-            region : MlirRegion
-            region =
-                if exprResult.isTerminated then
-                    Ops.mkRegionTerminatedByOps allArgPairs exprResult.ops
-
-                else
-                    let
-                        ( coerceOps, finalVar, coerceCtx ) =
-                            Expr.coerceResultToType exprResult.ctx exprResult.resultVar exprResult.resultType actualResultType
-
-                        ( _, returnOp ) =
-                            Ops.ecoReturn coerceCtx finalVar actualResultType
+                        ctxWithSelf =
+                            Ctx.addVarMapping selfName
+                                selfVar
+                                Types.ecoValue
+                                ctxAfterPap
                     in
+                    ( [ selfPapOp ], ctxWithSelf )
+
+                ( tailRecOps, bodyTerminator, ctx1 ) =
+                    TailRec.compileTailFuncToWhile ctxForTailRec lambda.name paramArgPairs (List.map Tuple.second lambda.params) lambda.body actualResultType Nothing
+
+                funcBodyRegion : MlirRegion
+                funcBodyRegion =
+                    Ops.mkRegion allArgPairs (selfPrefixOps ++ tailRecOps) bodyTerminator
+
+                funcName =
+                    if hasCaptures then
+                        lambda.name ++ "$cap"
+
+                    else
+                        lambda.name
+
+                ( ctx2, fastCloneOpRaw ) =
+                    Ops.funcFunc ctx1 funcName allArgPairs actualResultType funcBodyRegion
+
+                captureMonoTypes : List Mono.MonoType
+                captureMonoTypes =
+                    List.map Tuple.second lambda.captures
+
+                paramMonoTypes : List Mono.MonoType
+                paramMonoTypes =
+                    List.map Tuple.second lambda.params
+
+                fastCloneOp =
+                    LogicalTypes.addLogicalTypesAttr
+                        ctx2.ecoConfig.logicalTypes.customMaxFields
+                        ctx2.typeRegistry.ctorShapes
+                        (captureMonoTypes ++ paramMonoTypes)
+                        lambda.returnType
+                        fastCloneOpRaw
+            in
+            ( [ fastCloneOp ], ctx2 )
+
+        Nothing ->
+            let
+                exprResult : Expr.ExprResult
+                exprResult =
+                    Expr.generateExpr ctxWithArgs lambda.body
+
+                ( coerceOps, finalVar, coerceCtx ) =
+                    Expr.coerceResultToType exprResult.ctx exprResult.resultVar exprResult.resultType actualResultType
+
+                ( _, returnOp ) =
+                    Ops.ecoReturn coerceCtx finalVar actualResultType
+
+                region : MlirRegion
+                region =
                     Ops.mkRegion allArgPairs (exprResult.ops ++ coerceOps) returnOp
 
-            funcName =
-                if hasCaptures then
-                    lambda.name ++ "$cap"
+                funcName =
+                    if hasCaptures then
+                        lambda.name ++ "$cap"
 
-                else
-                    lambda.name
+                    else
+                        lambda.name
 
-            ( ctx2, fastCloneOpRaw ) =
-                Ops.funcFunc exprResult.ctx funcName allArgPairs actualResultType region
+                ( ctx2, fastCloneOpRaw ) =
+                    Ops.funcFunc exprResult.ctx funcName allArgPairs actualResultType region
 
-            captureMonoTypes : List Mono.MonoType
-            captureMonoTypes =
-                List.map Tuple.second lambda.captures
+                captureMonoTypes : List Mono.MonoType
+                captureMonoTypes =
+                    List.map Tuple.second lambda.captures
 
-            paramMonoTypes : List Mono.MonoType
-            paramMonoTypes =
-                List.map Tuple.second lambda.params
+                paramMonoTypes : List Mono.MonoType
+                paramMonoTypes =
+                    List.map Tuple.second lambda.params
 
-            fastCloneOp =
-                LogicalTypes.addLogicalTypesAttr
-                    ctx2.ecoConfig.logicalTypes.customMaxFields
-                    ctx2.typeRegistry.ctorShapes
-                    (captureMonoTypes ++ paramMonoTypes)
-                    lambda.returnType
-                    fastCloneOpRaw
-        in
-        ( [ fastCloneOp ], ctx2 )
+                fastCloneOp =
+                    LogicalTypes.addLogicalTypesAttr
+                        ctx2.ecoConfig.logicalTypes.customMaxFields
+                        ctx2.typeRegistry.ctorShapes
+                        (captureMonoTypes ++ paramMonoTypes)
+                        lambda.returnType
+                        fastCloneOpRaw
+            in
+            ( [ fastCloneOp ], ctx2 )

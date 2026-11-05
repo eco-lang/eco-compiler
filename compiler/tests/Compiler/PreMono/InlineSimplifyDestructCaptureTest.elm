@@ -74,6 +74,7 @@ import Compiler.IR.Typed.Optimized as TOpt
 import Compiler.PreMono.InlineSimplify as InlineSimplify
 import Data.Map
 import Expect
+import Maybe.Extra as Maybe
 import Test exposing (Test)
 import TestLogic.Monomorphize.PreMonoBinderHygiene exposing (expectPreMonoBinderHygiene)
 import TestLogic.TestPipeline as Pipeline
@@ -191,7 +192,7 @@ mentionsGlobal name expr =
                 || mentionsGlobal name final
 
         TOpt.Tuple _ a b rest _ ->
-            List.any (mentionsGlobal name) (a :: b :: rest)
+            List.any (mentionsGlobal name) (a :: b :: Maybe.toList rest)
 
         TOpt.List _ items _ ->
             List.any (mentionsGlobal name) items
@@ -252,7 +253,7 @@ binders expr =
             List.concatMap (\( c, t ) -> binders c ++ binders t) branches ++ binders final
 
         TOpt.Tuple _ a b rest _ ->
-            binders a ++ binders b ++ List.concatMap binders rest
+            binders a ++ binders b ++ List.concatMap binders (Maybe.toList rest)
 
         TOpt.List _ items _ ->
             List.concatMap binders items

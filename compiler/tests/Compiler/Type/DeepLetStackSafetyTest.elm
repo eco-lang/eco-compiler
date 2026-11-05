@@ -98,8 +98,8 @@ message "canonicalization failed".
 canonicalizeModule : Src.Module -> Result String Can.Module
 canonicalizeModule srcModule =
     case Result.run (Canonicalize.canonicalize ( "eco", "example" ) Basic.testIfaces srcModule) of
-        ( _, Ok modul ) ->
+        Ok modul ->
             Ok modul
 
-        ( _, Err _ ) ->
+        Err _ ->
             Err "canonicalization failed"

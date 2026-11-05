@@ -122,10 +122,10 @@ a message when either step fails.
 erasedCheck : Src.Module -> Result String ()
 erasedCheck srcModule =
     case RResult.run (Canonicalize.canonicalize ( "eco", "example" ) Basic.testIfaces srcModule) of
-        ( _, Err _ ) ->
+        Err _ ->
             Err "the case does not canonicalize"
 
-        ( _, Ok canonical ) ->
+        Ok canonical ->
             case IO.unsafePerformIO (TypeErased.constrain canonical |> IO.andThen Solve.run) of
                 Ok _ ->
                     Ok ()

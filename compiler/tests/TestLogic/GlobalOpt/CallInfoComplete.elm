@@ -50,6 +50,7 @@ for a callee with a producer whose recorded arity is 0 or less.
 import Array
 import Compiler.IR.Mono as Mono
 import Compiler.IR.Source as Src
+import Data.NonEmptyList as NE
 import Expect
 import TestLogic.TestPipeline as Pipeline
 
@@ -177,7 +178,7 @@ collectExprIssues ctx expr =
                 ++ List.concatMap (\( _, e ) -> collectExprIssues ctx e) updates
 
         Mono.MonoTupleCreate _ elementExprs _ ->
-            List.concatMap (collectExprIssues ctx) elementExprs
+            List.concatMap (collectExprIssues ctx) (Mono.tupleToList elementExprs)
 
         Mono.MonoTailCall _ args _ ->
             List.concatMap (\( _, e ) -> collectExprIssues ctx e) args
@@ -216,7 +217,7 @@ collectDeciderIssues ctx decider =
                 ++ collectDeciderIssues ctx failure
 
         Mono.FanOut _ edges fallback ->
-            List.concatMap (\( _, d ) -> collectDeciderIssues ctx d) edges
+            List.concatMap (\( _, d ) -> collectDeciderIssues ctx d) (NE.toList edges)
                 ++ collectDeciderIssues ctx fallback
 
 

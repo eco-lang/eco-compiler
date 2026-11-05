@@ -167,7 +167,7 @@ arguments by parameter name, and the type it stands for. `VarN` is a solver
 variable. `AppN` is a named type applied to arguments. `FunN` is a function
 type from its first type to its second. `RecordN` is a record's fields and the
 type it extends, which is `EmptyRecordN` for a closed record. `UnitN` is the
-unit type `()`. `TupleN` holds a tuple's first two types and the rest.
+unit type `()`. `TupleN` holds a tuple's first two types and its third, if any.
 
 -}
 type Type
@@ -178,7 +178,7 @@ type Type
     | EmptyRecordN
     | RecordN (Dict Name Type) Type
     | UnitN
-    | TupleN Type Type (List Type)
+    | TupleN Type Type (Maybe Type)
 
 
 
@@ -570,7 +570,7 @@ markedVarNamesHelp var ( visited, names ) =
                                                         extension :: Dict.values fields
 
                                                     Tuple1 a b cs ->
-                                                        a :: b :: cs
+                                                        a :: b :: Maybe.toList cs
 
                                                     _ ->
                                                         []
@@ -606,8 +606,11 @@ contentVarName content =
 
 
 {-| Returns `names` with the name of every type variable `tipe` mentions added,
-record extension variables and the arguments and filled body of an alias
-included.
+record extension variables and the arguments and body of an alias included.
+
+Every alias in `tipe` is `Filled`, as `variableToCanType` builds it; a `Holey`
+body, written in the alias's own parameter names, would add those names too.
+
 -}
 addTypeVarNames : Can.Type Name -> Dict Name () -> Dict Name ()
 addTypeVarNames tipe names =
@@ -636,20 +639,22 @@ addTypeVarNames tipe names =
             names
 
         Can.TTuple a b cs ->
-            List.foldl addTypeVarNames names (a :: b :: cs)
+            List.foldl addTypeVarNames names (a :: b :: Maybe.toList cs)
 
         Can.TAlias _ _ args aliasType ->
             let
                 withArgs =
                     List.foldl (\( _, argType ) acc -> addTypeVarNames argType acc) names args
-            in
-            case aliasType of
-                Can.Holey _ ->
-                    -- A holey body names the alias's own parameters.
-                    withArgs
 
-                Can.Filled body ->
-                    addTypeVarNames body withArgs
+                body =
+                    case aliasType of
+                        Can.Holey t ->
+                            t
+
+                        Can.Filled t ->
+                            t
+            in
+            addTypeVarNames body withArgs
 
 
 {-| Converts each variable of `nodeVars` to a `Can.Type`, keeping `Nothing` where
@@ -911,7 +916,7 @@ termToCanType term =
             IO.pure Can.TTuple
                 |> IO.apply (variableToCanType a)
                 |> IO.apply (variableToCanType b)
-                |> IO.apply (IO.traverseList variableToCanType cs)
+                |> IO.apply (IO.traverseMaybe variableToCanType cs)
 
 
 {-| Converts the type of a record field, giving the field index 0.
@@ -1151,7 +1156,7 @@ termToErrorType term =
             IO.pure ET.Tuple
                 |> IO.apply (variableToErrorType a)
                 |> IO.apply (variableToErrorType b)
-                |> IO.apply (IO.traverseList variableToErrorType cs)
+                |> IO.apply (IO.traverseMaybe variableToErrorType cs)
 
 
 
@@ -1376,7 +1381,7 @@ getVarNamesAvoiding reserved var takenNames =
                                                 IO.pure takenNames
 
                                             Tuple1 a b cs ->
-                                                IO.foldrM (getVarNamesAvoiding reserved) takenNames (a :: b :: cs)
+                                                IO.foldrM (getVarNamesAvoiding reserved) takenNames (a :: b :: Maybe.toList cs)
                             )
             )
 
@@ -1386,8 +1391,12 @@ getVarNamesAvoiding reserved var takenNames =
 
 
 {-| Records `var` in `takenNames` under `givenName` with the numeric suffix
-`index`, or under the first larger suffix whose name is free or already held
-by `var`'s own class. A name in `reserved` is never free.
+`index`, or under the first larger suffix whose name is free. A name in
+`reserved` is never free.
+
+A name already in `takenNames` is held by another class, never by `var`'s own:
+`getVarNamesAvoiding` calls this only for a class it has just marked, and every
+variable in `takenNames` belongs to a class marked when it was added.
 
 When the name recorded is not `givenName`, `var`'s content is replaced by
 `makeContent` of the new name, which is how a clashing user name is renamed.
@@ -1417,13 +1426,5 @@ addName reserved index givenName var makeContent takenNames =
                 )
                     |> IO.map (\_ -> Dict.insert indexedName var takenNames)
 
-        Just otherVar ->
-            UF.equivalent var otherVar
-                |> IO.andThen
-                    (\same ->
-                        if same then
-                            IO.pure takenNames
-
-                        else
-                            addName reserved (index + 1) givenName var makeContent takenNames
-                    )
+        Just _ ->
+            addName reserved (index + 1) givenName var makeContent takenNames

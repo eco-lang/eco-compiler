@@ -23,8 +23,8 @@ import Expect
 import Test exposing (Test)
 
 
-errors : ( List w, Result (OneOrMore.OneOrMore e) a ) -> List e
-errors ( _, result ) =
+errors : Result (OneOrMore.OneOrMore e) a -> List e
+errors result =
     case result of
         Err es ->
             OneOrMore.destruct (::) es

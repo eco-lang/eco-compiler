@@ -272,8 +272,8 @@ command, then a `--help` line for every command with the names padded to one
 width, then `outro`. Each `Common` command's usage line is that of its first
 argument alternative.
 
-`commands` must not be empty, and every `Common` command must have at least one
-argument alternative; otherwise this crashes.
+Every `Common` command must have at least one argument alternative; otherwise
+this crashes.
 
 -}
 exitWithOverview : P.Doc -> P.Doc -> List Command -> Task Never a
@@ -320,10 +320,6 @@ toSummary exeName (Command cmdData) =
 
 {-| Returns one line per command, the executable name, the command name and
 `--help`, with the names padded so that the `--help` column lines up.
-
-The list of commands must not be empty: its widest name is found with
-`Utils.Main.listMaximum`, which crashes on an empty list.
-
 -}
 toCommandList : String -> List Command -> P.Doc
 toCommandList exeName commands =
@@ -334,7 +330,7 @@ toCommandList exeName commands =
 
         width : Int
         width =
-            Utils.listMaximum compare (List.map String.length names)
+            List.maximum (List.map String.length names) |> Maybe.withDefault 0
 
         toExample : String -> P.Doc
         toExample name =

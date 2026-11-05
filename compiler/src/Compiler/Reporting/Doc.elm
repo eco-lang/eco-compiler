@@ -101,7 +101,6 @@ import Compiler.Elm.Version as V
 import Compiler.Json.Encode as E
 import Maybe.Extra as Maybe
 import Prelude
-import System.Console.Ansi as Ansi
 import System.IO exposing (Handle)
 import Task exposing (Task)
 import Text.PrettyPrint.ANSI.Leijen as P
@@ -430,11 +429,7 @@ cycle indent_ name names =
 -}
 cycleTop : Doc
 cycleTop =
-    if isWindows then
-        P.text "+-----+"
-
-    else
-        P.text "┌─────┐"
+    P.text "┌─────┐"
 
 
 {-| The start of a line of a `cycle` diagram that holds a name: the left side
@@ -442,11 +437,7 @@ of the box and the space before the name.
 -}
 cycleLn : Doc
 cycleLn =
-    if isWindows then
-        P.text "|    "
-
-    else
-        P.text "│    "
+    P.text "│    "
 
 
 {-| The line of a `cycle` diagram between two names: the left side of the box
@@ -454,32 +445,14 @@ and a downward arrow.
 -}
 cycleMid : Doc
 cycleMid =
-    if isWindows then
-        P.text "|     |"
-
-    else
-        P.text "│     ↓"
+    P.text "│     ↓"
 
 
 {-| The bottom line of a `cycle` diagram, the bottom of the box.
 -}
 cycleEnd : Doc
 cycleEnd =
-    if isWindows then
-        P.text "+-<---+"
-
-    else
-        P.text "└─────┘"
-
-
-{-| The switch that would draw the `cycle` diagram in ASCII characters instead
-of Unicode line characters. It is always `False`, so the ASCII forms are never
-used.
--}
-isWindows : Bool
-isWindows =
-    False
-
+    P.text "└─────┘"
 
 
 -- ====== JSON Encoding ======
@@ -523,31 +496,12 @@ noStyle =
     Style False False Nothing
 
 
-{-| A colour as `encode` names it.
-
-Each of the six colours has two constructors. The one written with only an
-initial capital, such as `Red`, is the dull shade, and the one in capitals,
-such as `RED`, is the vivid shade. `encode` writes a dull shade in lower case
-and a vivid one in capitals, so `Red` is `"red"` and `RED` is `"RED"`.
-
-A document can carry only the colours of `Text.PrettyPrint.ANSI.Leijen.Color`,
-which has no dull green, blue or black, so `encode` never writes `Green`,
-`Blue` or `Black`.
-
+{-| A colour as `encode` names it: the colours of
+`Text.PrettyPrint.ANSI.Leijen.Color`, six vivid shades and the dull shades of
+red, cyan and yellow.
 -}
-type Color
-    = Red
-    | RED
-    | Yellow
-    | YELLOW
-    | Green
-    | GREEN
-    | Cyan
-    | CYAN
-    | Blue
-    | BLUE
-    | Black
-    | BLACK
+type alias Color =
+    P.Color
 
 
 {-| Returns the runs of `simpleDoc`, given that `style` is in effect and that
@@ -582,7 +536,7 @@ toJsonHelp style revChunks simpleDoc =
 `noStyle`, a bold or underline command turns that attribute on, and a colour
 command replaces the colour, each leaving the rest as it was.
 -}
-sgrToStyle : List Ansi.SGR -> Style -> Style
+sgrToStyle : List P.Sgr -> Style -> Style
 sgrToStyle sgrs ((Style bold underline color) as style) =
     case sgrs of
         [] ->
@@ -591,75 +545,17 @@ sgrToStyle sgrs ((Style bold underline color) as style) =
         sgr :: rest ->
             sgrToStyle rest <|
                 case sgr of
-                    Ansi.Reset ->
+                    P.Reset ->
                         noStyle
 
-                    Ansi.SetConsoleIntensity i ->
-                        Style (isBold i) underline color
+                    P.SetBold ->
+                        Style True underline color
 
-                    Ansi.SetUnderlining u ->
-                        Style bold (isUnderline u) color
+                    P.SetUnderline ->
+                        Style bold True color
 
-                    Ansi.SetColor l i c ->
-                        Style bold underline (toColor l i c)
-
-
-{-| Returns `True`: bold is the only intensity `System.Console.Ansi` has.
--}
-isBold : Ansi.ConsoleIntensity -> Bool
-isBold intensity =
-    case intensity of
-        Ansi.BoldIntensity ->
-            True
-
-
-{-| Returns `True`: a single underline is the only underline
-`System.Console.Ansi` has.
--}
-isUnderline : Ansi.Underlining -> Bool
-isUnderline underlining =
-    case underlining of
-        Ansi.SingleUnderline ->
-            True
-
-
-{-| Returns the `Color` for an SGR colour in the given shade. Each of the six
-colours of `System.Console.Ansi` has a `Color` in both shades, and the
-foreground is that module's only layer, so the result is always `Just`.
--}
-toColor : Ansi.ConsoleLayer -> Ansi.ColorIntensity -> Ansi.Color -> Maybe Color
-toColor layer intensity color =
-    case layer of
-        Ansi.Foreground ->
-            let
-                pick : b -> b -> b
-                pick dull vivid =
-                    case intensity of
-                        Ansi.Dull ->
-                            dull
-
-                        Ansi.Vivid ->
-                            vivid
-            in
-            Just <|
-                case color of
-                    Ansi.Red ->
-                        pick Red RED
-
-                    Ansi.Yellow ->
-                        pick Yellow YELLOW
-
-                    Ansi.Green ->
-                        pick Green GREEN
-
-                    Ansi.Cyan ->
-                        pick Cyan CYAN
-
-                    Ansi.Blue ->
-                        pick Blue BLUE
-
-                    Ansi.Black ->
-                        pick Black BLACK
+                    P.SetColor c ->
+                        Style bold underline (Just c)
 
 
 {-| Returns one run of `encode`'s output: the text of `revChunks` in the order
@@ -686,48 +582,39 @@ encodeChunks (Style bold underline color) revChunks =
                 ]
 
 
-{-| Returns the JSON name of a colour: the constructor name in lower case for a
-dull shade and in capitals for a vivid one.
+{-| Returns the JSON name of a colour: its name in capitals for a vivid shade,
+such as `"RED"`, and in lower case for a dull one, such as `"red"`.
 -}
 encodeColor : Color -> E.Value
 encodeColor color =
     E.string <|
         case color of
-            Red ->
-                "red"
-
-            RED ->
+            P.Red ->
                 "RED"
 
-            Yellow ->
-                "yellow"
-
-            YELLOW ->
+            P.Yellow ->
                 "YELLOW"
 
-            Green ->
-                "green"
-
-            GREEN ->
+            P.Green ->
                 "GREEN"
 
-            Cyan ->
-                "cyan"
-
-            CYAN ->
+            P.Cyan ->
                 "CYAN"
 
-            Blue ->
-                "blue"
-
-            BLUE ->
+            P.Blue ->
                 "BLUE"
 
-            Black ->
-                "black"
-
-            BLACK ->
+            P.Black ->
                 "BLACK"
+
+            P.DullRed ->
+                "red"
+
+            P.DullYellow ->
+                "yellow"
+
+            P.DullCyan ->
+                "cyan"
 
 
 

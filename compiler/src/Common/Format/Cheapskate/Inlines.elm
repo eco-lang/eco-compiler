@@ -29,10 +29,8 @@ markers is read it does not fail, and emphasis left unclosed comes back as its
 markers as text, followed by the inlines read after them.
 
 A link written with a label, `[text][label]` or `[text]`, keeps the label as
-its `Ref` target and is not looked up: the `ReferenceMap` given to
-`parseInlines` is passed along but never read. Every bracketed label that
-`pLinkLabel` can read becomes a link, whether or not a definition exists for
-it.
+its `Ref` target and is not looked up. Every bracketed label that `pLinkLabel`
+can read becomes a link, whether or not a definition exists for it.
 
 Outside code spans, bare URIs, autolinks and raw HTML, a backslash before an
 escapable character, as `Common.Format.Cheapskate.Util.isEscapable` defines
@@ -70,7 +68,6 @@ import Common.Format.Cheapskate.ParserCombinators
         , map
         , mzero
         , notAfter
-        , notInClass
         , oneOf
         , option
         , parse
@@ -78,17 +75,15 @@ import Common.Format.Cheapskate.ParserCombinators
         , return
         , satisfy
         , scan
-        , showParseError
         , skip
         , string
         , takeTill
         , takeWhile
         , takeWhile1
         )
-import Common.Format.Cheapskate.Types exposing (HtmlTagType(..), Inline(..), Inlines, LinkTarget(..), ReferenceMap)
+import Common.Format.Cheapskate.Types exposing (HtmlTagType(..), Inline(..), Inlines, LinkTarget(..))
 import Common.Format.Cheapskate.Util exposing (isEscapable, isWhitespace, nfb, nfbChar, scanSpaces, scanSpnl)
 import Set exposing (Set)
-import System.Crash exposing (crash)
 
 
 {-| A parser for one HTML tag, returning its kind and its text exactly as
@@ -309,7 +304,7 @@ pLinkUrl =
                     let
                         regChunk : Parser String
                         regChunk =
-                            oneOf (takeWhile1 (notInClass " \n()\\")) pEscaped
+                            oneOf (takeWhile1 (\c -> not (String.contains (String.fromChar c) " \n()\\"))) pEscaped
 
                         parenChunk : () -> Parser String
                         parenChunk () =
@@ -333,9 +328,6 @@ whitespace or `)`. The title ends at the first closing delimiter, whatever
 follows it, so it can contain its own closing delimiter only escaped. A
 backslash before an escapable character is dropped, and before any other
 character it makes the parse fail.
-
-`pEnder` tests that the delimiter itself, not the character after it, is not a
-letter or digit, so the test always passes, and `nestedChunk` never succeeds.
 
 -}
 pLinkTitle : Parser String
@@ -371,20 +363,11 @@ pLinkTitle =
                                     else
                                         c
 
-                                pEnder : Parser Char
-                                pEnder =
-                                    skip Char.isAlphaNum |> nfb |> andThen (\_ -> char ender)
-
                                 regChunk : Parser String
                                 regChunk =
                                     oneOf (takeWhile1 (\x -> x /= ender && x /= '\\')) pEscaped
-
-                                nestedChunk : Parser String
-                                nestedChunk =
-                                    lazy (\() -> pLinkTitle)
-                                        |> map (\x -> String.fromChar c ++ x ++ String.fromChar ender)
                             in
-                            map String.concat (manyTill (oneOf regChunk nestedChunk) pEnder)
+                            map String.concat (manyTill regChunk (char ender))
                         )
             )
 
@@ -442,16 +425,15 @@ pSatisfy p =
 
 {-| Returns the inline elements of the text `t`.
 
-Any text can be read, so this never fails. `remap` is not consulted: a
-reference link keeps its label as its target.
+Any text can be read, so the parser never fails; the `Err` case returns `t`
+as plain text. A reference link keeps its label as its target.
 
 -}
-parseInlines : ReferenceMap -> String -> Inlines
-parseInlines remap t =
-    case parse (map List.concat (leftSequence (many (pInline remap)) endOfInput)) t of
-        Err e ->
-            -- Unreachable: pInline fails only at the end of the input.
-            crash ("parseInlines: " ++ showParseError e)
+parseInlines : String -> Inlines
+parseInlines t =
+    case parse (map List.concat (leftSequence (many pInline) endOfInput)) t of
+        Err _ ->
+            [ Str t ]
 
         Ok r ->
             r
@@ -465,15 +447,15 @@ The last alternative accepts any character, so this fails only at the end of
 the input, and when it succeeds it has consumed something.
 
 -}
-pInline : ReferenceMap -> Parser Inlines
-pInline remap =
+pInline : Parser Inlines
+pInline =
     oneOf pAsciiStr
         (oneOf pSpace
-            (oneOf (pEnclosure '*' remap)
-                (oneOf (notAfter Char.isAlphaNum |> andThen (\_ -> pEnclosure '_' remap))
+            (oneOf (pEnclosure '*')
+                (oneOf (notAfter Char.isAlphaNum |> andThen (\_ -> pEnclosure '_'))
                     (oneOf pCode
-                        (oneOf (pLink remap)
-                            (oneOf (pImage remap)
+                        (oneOf pLink
+                            (oneOf pImage
                                 (oneOf pRawHtml
                                     (oneOf pAutolink
                                         (oneOf pEntity pSym)
@@ -783,24 +765,21 @@ pUri scheme =
         |> andThen (\_ -> scan (OpenParens 0) uriScanner)
         |> andThen
             (\x ->
-                guard (not (String.isEmpty x))
-                    |> andThen
-                        (\_ ->
-                            let
-                                ( rawuri, endingpunct ) =
-                                    case String.uncons (String.reverse x) of
-                                        Just ( c, _ ) ->
-                                            if String.contains (String.fromChar c) ".;?!:," then
-                                                ( scheme ++ ":" ++ x, [ Str (String.fromChar c) ] )
+                case String.uncons (String.reverse x) of
+                    Nothing ->
+                        mzero
 
-                                            else
-                                                ( scheme ++ ":" ++ x, [] )
+                    Just ( c, _ ) ->
+                        let
+                            endingpunct : Inlines
+                            endingpunct =
+                                if String.contains (String.fromChar c) ".;?!:," then
+                                    [ Str (String.fromChar c) ]
 
-                                        _ ->
-                                            ( scheme ++ ":" ++ x, [] )
-                            in
-                            return (autoLink rawuri ++ endingpunct)
-                        )
+                                else
+                                    []
+                        in
+                        return (autoLink (scheme ++ ":" ++ x) ++ endingpunct)
             )
 
 
@@ -817,8 +796,8 @@ type OpenParens
 
 
 {-| Returns the scan state after accepting `c` into a bare URI, or `Nothing`
-when `c` ends the URI: a space, tab, carriage return or line feed, or a `)`
-with no open `(` to close.
+when `c` ends the URI: a space or a line feed, or a `)` with no open `(` to
+close. Tabs and carriage returns never reach the inline parser.
 -}
 uriScanner : OpenParens -> Char -> Maybe OpenParens
 uriScanner st c =
@@ -846,11 +825,7 @@ uriScanner st c =
             Just st
 
         _ ->
-            if isSpace c then
-                Nothing
-
-            else
-                Just st
+            Just st
 
 
 {-| Produces a parser for text that starts with a run of the emphasis character
@@ -863,8 +838,8 @@ text. Once the run is read this never fails: emphasis that is not closed comes
 back as its markers as text, followed by the inlines read after them.
 
 -}
-pEnclosure : Char -> ReferenceMap -> Parser Inlines
-pEnclosure c remap =
+pEnclosure : Char -> Parser Inlines
+pEnclosure c =
     takeWhile1 ((==) c)
         |> andThen
             (\cs ->
@@ -872,13 +847,13 @@ pEnclosure c remap =
                     (pSpace |> map ((::) (Str cs)))
                     (case String.length cs of
                         3 ->
-                            pThree c remap
+                            pThree c
 
                         2 ->
-                            pTwo c remap []
+                            pTwo c []
 
                         1 ->
-                            pOne c remap []
+                            pOne c []
 
                         _ ->
                             return (List.singleton (Str cs))
@@ -907,14 +882,14 @@ closing `c` the result is `Emph` holding `prefix` and what was read. With no
 closing `c` it is `c` as text, followed by `prefix` and what was read.
 
 -}
-pOne : Char -> ReferenceMap -> Inlines -> Parser Inlines
-pOne c remap prefix =
+pOne : Char -> Inlines -> Parser Inlines
+pOne c prefix =
     map List.concat
         (many
-            (oneOf (nfbChar c |> andThen (\_ -> pInline remap))
+            (oneOf (nfbChar c |> andThen (\_ -> pInline))
                 (string (String.fromList [ c, c ])
                     |> andThen (\_ -> nfbChar c)
-                    |> andThen (\_ -> pTwo c remap [])
+                    |> andThen (\_ -> pTwo c [])
                 )
             )
         )
@@ -934,14 +909,14 @@ what was read. With no `cc` it is `cc` as text, followed by `prefix` and what
 was read.
 
 -}
-pTwo : Char -> ReferenceMap -> Inlines -> Parser Inlines
-pTwo c remap prefix =
+pTwo : Char -> Inlines -> Parser Inlines
+pTwo c prefix =
     let
         ender : Parser String
         ender =
             string (String.fromList [ c, c ])
     in
-    map List.concat (many (nfb ender |> andThen (\_ -> pInline remap)))
+    map List.concat (many (nfb ender |> andThen (\_ -> pInline)))
         |> andThen
             (\contents ->
                 oneOf (ender |> map (\_ -> single Strong (prefix ++ contents)))
@@ -958,13 +933,13 @@ single `c`, what was read becomes `Emph` and reading goes on as `pTwo`. With
 no `c` the result is `ccc` as text, followed by what was read.
 
 -}
-pThree : Char -> ReferenceMap -> Parser Inlines
-pThree c remap =
-    map List.concat (many (nfbChar c |> andThen (\_ -> pInline remap)))
+pThree : Char -> Parser Inlines
+pThree c =
+    map List.concat (many (nfbChar c |> andThen (\_ -> pInline)))
         |> andThen
             (\contents ->
-                oneOf (string (String.fromList [ c, c ]) |> andThen (\_ -> pOne c remap (single Strong contents)))
-                    (oneOf (char c |> andThen (\_ -> pTwo c remap (single Emph contents)))
+                oneOf (string (String.fromList [ c, c ]) |> andThen (\_ -> pOne c (single Strong contents)))
+                    (oneOf (char c |> andThen (\_ -> pTwo c (single Emph contents)))
                         (return (Str (String.fromList [ c, c, c ]) :: contents))
                     )
             )
@@ -1020,22 +995,20 @@ one `Link`.
 The label's text, parsed into inlines, is the link's text. When an inline
 target `(url "title")` follows, the link points to that URL; otherwise it is a
 reference link, as `pReferenceLink` builds it. Since `pReferenceLink` never
-fails, every label that `pLinkLabel` reads becomes a link here, and the
-fallback to plain text is never used.
+fails, every label that `pLinkLabel` reads becomes a link here.
 
 -}
-pLink : ReferenceMap -> Parser Inlines
-pLink remap =
+pLink : Parser Inlines
+pLink =
     pLinkLabel
         |> andThen
             (\lab ->
                 let
                     lab_ : Inlines
                     lab_ =
-                        parseInlines remap lab
+                        parseInlines lab
                 in
-                oneOf (oneOf (pInlineLink lab_) (pReferenceLink lab lab_))
-                    (return (Str "[" :: lab_ ++ [ Str "]" ]))
+                oneOf (pInlineLink lab_) (pReferenceLink lab lab_)
             )
 
 
@@ -1086,12 +1059,12 @@ inline target, the `!` makes it an `Image`. Otherwise the `!` is text, followed
 by any link that comes after it, so `![text][label]` is text and a reference
 link, not an image.
 -}
-pImage : ReferenceMap -> Parser Inlines
-pImage remap =
+pImage : Parser Inlines
+pImage =
     char '!'
         |> andThen
             (\_ ->
-                oneOf (map linkToImage (pLink remap)) (return [ Str "!" ])
+                oneOf (map linkToImage pLink) (return [ Str "!" ])
             )
 
 
@@ -1219,8 +1192,8 @@ autoLink t =
                 Ok r ->
                     r
 
-                Err e ->
-                    ("autolink: " ++ showParseError e) |> crash
+                Err _ ->
+                    [ Str t_ ]
 
         pToInlines : Parser Inlines
         pToInlines =

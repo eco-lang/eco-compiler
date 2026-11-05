@@ -114,14 +114,14 @@ compileToPostSolveDetailed srcModule =
             Canonicalize.canonicalize ( "eco", "example" ) Basic.testIfaces srcModule
     in
     case RResult.run canonResult of
-        ( _, Err errors ) ->
+        Err errors ->
             let
                 errorCount =
                     OneOrMore.destruct (::) errors |> List.length
             in
             Err ("Canonicalization failed with " ++ String.fromInt errorCount ++ " error(s)")
 
-        ( _, Ok canModule ) ->
+        Ok canModule ->
             let
                 typeCheckResult =
                     IO.unsafePerformIO (runWithIdsTypeCheckDetailed canModule)
@@ -170,7 +170,7 @@ runWithIdsTypeCheckDetailed canModule =
                             case result of
                                 Ok data ->
                                     Ok
-                                        { annotations = data.annotations
+                                        { annotations = Dict.map (\_ entry -> entry.annotation) data.annotations
                                         , nodeTypes = data.nodeTypes
                                         , syntheticExprIds = nodeIdState.syntheticExprIds
                                         }

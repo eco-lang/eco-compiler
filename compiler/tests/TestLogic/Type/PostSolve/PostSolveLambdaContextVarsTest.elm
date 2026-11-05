@@ -58,6 +58,7 @@ import Compiler.Type.PostSolve as PostSolve
 import Data.Set as EverySet
 import Dict
 import Expect
+import Maybe.Extra as Maybe
 import SourceIR.MainFailsCases as MainFailsCases
 import SourceIR.MonoFailsCases as MonoFailsCases
 import SourceIR.Suite.StandardTestSuites as StandardTestSuites
@@ -291,7 +292,7 @@ typeToString tipe =
 
         Can.TTuple a b cs ->
             "TTuple ("
-                ++ String.join ", " (List.map typeToString (a :: b :: cs))
+                ++ String.join ", " (List.map typeToString (a :: b :: Maybe.toList cs))
                 ++ ")"
 
         Can.TAlias _ name _ _ ->

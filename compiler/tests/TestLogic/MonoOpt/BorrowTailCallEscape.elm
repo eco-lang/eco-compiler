@@ -76,8 +76,8 @@ expectTailCallArgsEscape srcModule =
 
         Ok { optimizedMonoGraph } ->
             let
-                -- At the empty path, endsBefore is False only for `LLocal Star`
-                -- and `LParams`, so it already rules out `LEmpty`.
+                -- At the empty path, endsBefore is False only for `LLocal Star`,
+                -- so it already rules out `LEmpty`.
                 deadTailArgs analysis =
                     List.filter
                         (\r ->

@@ -43,6 +43,7 @@ import Compiler.Type.SolverRoots as SolverRoots
 import Data.Map as DMap
 import Dict
 import Expect
+import Maybe.Extra as Maybe
 import TestLogic.TestPipeline as Pipeline
 
 
@@ -213,7 +214,7 @@ exprIds (A.At _ info) =
                     DMap.foldl (\_ fe acc -> exprIds fe ++ acc) [] fields
 
                 Can.Tuple a b cs ->
-                    List.concatMap exprIds (a :: b :: cs)
+                    List.concatMap exprIds (a :: b :: Maybe.toList cs)
 
                 _ ->
                     []
@@ -230,7 +231,7 @@ patternIds (A.At _ info) =
                     patternIds p
 
                 Can.PTuple a b cs ->
-                    List.concatMap patternIds (a :: b :: cs)
+                    List.concatMap patternIds (a :: b :: Maybe.toList cs)
 
                 Can.PList ps ->
                     List.concatMap patternIds ps

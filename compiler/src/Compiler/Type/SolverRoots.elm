@@ -128,16 +128,7 @@ each `Nothing`.
 -}
 normalizeNodeVars : SolverState -> Array (Maybe Vars.Variable) -> Array (Maybe Vars.Variable)
 normalizeNodeVars state nodeVars =
-    Array.map
-        (\maybeVar ->
-            case maybeVar of
-                Just var ->
-                    Just (SolverSnapshot.resolveVariable state var)
-
-                Nothing ->
-                    Nothing
-        )
-        nodeVars
+    Array.map (Maybe.map (SolverSnapshot.resolveVariable state)) nodeVars
 
 
 {-| Replaces each variable in `annotationVars` by the root of its class.
@@ -264,7 +255,14 @@ walkTypeForBinders state canType var acc =
                     acc
                         |> walkTypeForBinders state a aVar
                         |> walkTypeForBinders state b bVar
-                        |> (\acc2 -> walkTypeListForBinders state rest restVars acc2)
+                        |> (\acc2 ->
+                                case ( rest, restVars ) of
+                                    ( Just c, Just cVar ) ->
+                                        walkTypeForBinders state c cVar acc2
+
+                                    _ ->
+                                        acc2
+                           )
 
                 _ ->
                     acc
@@ -368,7 +366,13 @@ stampArrowRoots state canType var =
                     Can.TTuple
                         (stampArrowRoots state a aVar)
                         (stampArrowRoots state b bVar)
-                        (stampArrowRootsList state rest restVars)
+                        (case ( rest, restVars ) of
+                            ( Just c, Just cVar ) ->
+                                Just (stampArrowRoots state c cVar)
+
+                            _ ->
+                                rest
+                        )
 
                 _ ->
                     canType

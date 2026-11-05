@@ -57,7 +57,6 @@ import Compiler.LocalOpt.Erased.Names as Names
 import Compiler.LocalOpt.Erased.Port as Port
 import Compiler.LocalOpt.Error as E
 import Compiler.Reporting.Result as ReportingResult
-import Compiler.Reporting.Warning as W
 import Data.Map
 import Data.Set as EverySet exposing (EverySet)
 import Dict exposing (Dict)
@@ -69,7 +68,7 @@ import System.Crash exposing (crash)
 
 
 {-| The outcome of optimizing a module: the result, or a `Compiler.LocalOpt.Error`
-error, with warnings of type `w` collected either way.
+error, threading a warnings slot of type `w`.
 -}
 type alias MResult i w a =
     ReportingResult.RResult i w E.Error a
@@ -90,14 +89,13 @@ type alias Annotations =
 declarations, using `annotations` for the types of `main` and of unannotated
 definitions.
 
-Each top-level definition outside a recursive group that has no written
-annotation adds a `MissingTypeAnnotation` warning. The result is an error when
+The result is an error when
 `main` has a type other than `VirtualDom.Node msg` or `Platform.Program flags
 model msg` (after dealiasing), when its flags (other than `System.Environment`)
 cannot come from JavaScript, or when it is part of a recursive group.
 
 -}
-optimize : Annotations -> Can.Module -> MResult i (List W.Warning) Opt.LocalGraph
+optimize : Annotations -> Can.Module -> MResult i w Opt.LocalGraph
 optimize annotations (Can.Module canData) =
     Opt.LocalGraph Nothing Data.Map.empty Dict.empty |> addAliases canData.name canData.aliases |> addUnions canData.name canData.unions |> addEffects canData.name canData.effects |> addDecls canData.name annotations canData.decls
 
@@ -302,7 +300,7 @@ mergeFieldCounts a b =
 
 {-| Adds every declaration in `decls` to the graph, stopping at the first error.
 -}
-addDecls : ModuleName.Canonical -> Annotations -> Can.Decls -> Opt.LocalGraph -> MResult i (List W.Warning) Opt.LocalGraph
+addDecls : ModuleName.Canonical -> Annotations -> Can.Decls -> Opt.LocalGraph -> MResult i w Opt.LocalGraph
 addDecls home annotations decls graph =
     ReportingResult.loop (addDeclsHelp home annotations) ( decls, graph )
 
@@ -313,7 +311,7 @@ or the finished graph when none remain.
 A recursive group that contains `main` is a `BadCycle` error.
 
 -}
-addDeclsHelp : ModuleName.Canonical -> Annotations -> ( Can.Decls, Opt.LocalGraph ) -> MResult i (List W.Warning) (ReportingResult.Step ( Can.Decls, Opt.LocalGraph ) Opt.LocalGraph)
+addDeclsHelp : ModuleName.Canonical -> Annotations -> ( Can.Decls, Opt.LocalGraph ) -> MResult i w (ReportingResult.Step ( Can.Decls, Opt.LocalGraph ) Opt.LocalGraph)
 addDeclsHelp home annotations ( decls, graph ) =
     case decls of
         Can.Declare def subDecls ->
@@ -380,21 +378,12 @@ defToName def =
 
 
 {-| Adds one definition that is not part of a recursive group.
-
-A definition without a written annotation adds a `MissingTypeAnnotation`
-warning carrying its type from `annotations`.
-
 -}
-addDef : ModuleName.Canonical -> Annotations -> Can.Def -> Opt.LocalGraph -> MResult i (List W.Warning) Opt.LocalGraph
+addDef : ModuleName.Canonical -> Annotations -> Can.Def -> Opt.LocalGraph -> MResult i w Opt.LocalGraph
 addDef home annotations def graph =
     case def of
         Can.Def (A.At region name) args body ->
-            let
-                (Can.Forall _ tipe) =
-                    findAnnotation name annotations
-            in
-            ReportingResult.warn (W.MissingTypeAnnotation region name tipe)
-                |> ReportingResult.andThen (\_ -> addDefHelp region annotations home name args body graph)
+            addDefHelp region annotations home name args body graph
 
         Can.TypedDef (A.At region name) _ typedArgs body _ ->
             addDefHelp region annotations home name (List.map Tuple.first typedArgs) body graph
@@ -444,8 +433,8 @@ addDefHelp region annotations home name args body ((Opt.LocalGraph _ nodes field
 
                 else if hm == ModuleName.platform && nm == Name.program then
                     case Effects.checkPayload flags of
-                        Ok () ->
-                            Port.toFlagsDecoder flags |> Names.map (Opt.Dynamic message) |> Names.run |> addMain |> ReportingResult.ok
+                        Ok payload ->
+                            Port.toFlagsDecoder payload |> Names.map (Opt.Dynamic message) |> Names.run |> addMain |> ReportingResult.ok
 
                         Err ( subType, invalidPayload ) ->
                             ReportingResult.throw (E.BadFlags region subType invalidPayload)
@@ -507,7 +496,6 @@ the members' names, and a `Link` to it under each member's name.
 
 References to the zero-argument members inside the group are compiled as
 cycle references; references to the function members stay global references.
-No `MissingTypeAnnotation` warning is issued for members of a group.
 
 -}
 addRecDefs : ModuleName.Canonical -> List Can.Def -> Opt.LocalGraph -> Opt.LocalGraph

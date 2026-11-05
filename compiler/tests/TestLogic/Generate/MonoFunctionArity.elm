@@ -54,6 +54,7 @@ Among what is not checked:
 import Array
 import Compiler.IR.Mono as Mono
 import Compiler.IR.Source as Src
+import Data.NonEmptyList as NE
 import Expect
 import TestLogic.TestPipeline as Pipeline
 
@@ -334,7 +335,7 @@ collectExprArityIssues context expr =
                 ++ List.concatMap (\( _, e ) -> collectExprArityIssues context e) updates
 
         Mono.MonoTupleCreate _ elementExprs _ ->
-            List.concatMap (collectExprArityIssues context) elementExprs
+            List.concatMap (collectExprArityIssues context) (Mono.tupleToList elementExprs)
 
         _ ->
             []
@@ -375,5 +376,5 @@ collectDeciderArityIssues context decider =
                 ++ collectDeciderArityIssues context failure
 
         Mono.FanOut _ edges fallback ->
-            List.concatMap (\( _, d ) -> collectDeciderArityIssues context d) edges
+            List.concatMap (\( _, d ) -> collectDeciderArityIssues context d) (NE.toList edges)
                 ++ collectDeciderArityIssues context fallback

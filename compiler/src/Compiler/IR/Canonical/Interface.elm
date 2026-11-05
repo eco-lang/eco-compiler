@@ -400,13 +400,15 @@ privatize di =
 -- ====== ENCODERS and DECODERS ======
 
 
-{-| Encodes an interface as its package, then its values, custom types, type
-aliases and operators, each as a dictionary keyed by name.
+{-| Encodes an interface as `interfaceFormatVersion`, its package, then its
+values, custom types, type aliases and operators, each as a dictionary keyed by
+name.
 -}
 interfaceEncoder : Interface -> Bytes.Encode.Encoder
 interfaceEncoder (Interface i) =
     Bytes.Encode.sequence
-        [ Pkg.nameEncoder i.home
+        [ Bytes.Encode.unsignedInt8 interfaceFormatVersion
+        , Pkg.nameEncoder i.home
         , BE.stdDict BE.string Can.annotationEncoder i.values
         , BE.stdDict BE.string unionEncoder i.unions
         , BE.stdDict BE.string aliasEncoder i.aliases
@@ -414,17 +416,50 @@ interfaceEncoder (Interface i) =
         ]
 
 
-{-| A decoder for an interface as `interfaceEncoder` writes it. It fails on a
-visibility tag `interfaceEncoder` does not write.
+{-| A decoder for an interface as `interfaceEncoder` writes it. It fails on an
+interface stored in another format version, and on a visibility tag
+`interfaceEncoder` does not write.
 -}
 interfaceDecoder : Bytes.Decode.Decoder Interface
 interfaceDecoder =
-    Bytes.Decode.map5 (\home_ values_ unions_ aliases_ binops_ -> Interface { home = home_, values = values_, unions = unions_, aliases = aliases_, binops = binops_ })
-        Pkg.nameDecoder
-        (BD.stdDict BD.string Can.annotationDecoder)
-        (BD.stdDict BD.string unionDecoder)
-        (BD.stdDict BD.string aliasDecoder)
-        (BD.stdDict BD.string binopDecoder)
+    formatVersionDecoder
+        |> Bytes.Decode.andThen
+            (\() ->
+                Bytes.Decode.map5 (\home_ values_ unions_ aliases_ binops_ -> Interface { home = home_, values = values_, unions = unions_, aliases = aliases_, binops = binops_ })
+                    Pkg.nameDecoder
+                    (BD.stdDict BD.string Can.annotationDecoder)
+                    (BD.stdDict BD.string unionDecoder)
+                    (BD.stdDict BD.string aliasDecoder)
+                    (BD.stdDict BD.string binopDecoder)
+            )
+
+
+{-| The version of the binary format of interfaces, written as the first byte
+of an interface and after the tag of a `Private` dependency interface. It must
+change with any change to the layout of the canonical types and declarations
+they hold, so that an interface stored in an older layout (in a module's
+`.eci`, `i.dat`, `d.dat` or a package's artifacts) fails to decode rather than
+decoding into the wrong values.
+-}
+interfaceFormatVersion : Int
+interfaceFormatVersion =
+    1
+
+
+{-| A decoder that reads the format-version byte and fails unless it is
+`interfaceFormatVersion`.
+-}
+formatVersionDecoder : Bytes.Decode.Decoder ()
+formatVersionDecoder =
+    Bytes.Decode.unsignedInt8
+        |> Bytes.Decode.andThen
+            (\v ->
+                if v == interfaceFormatVersion then
+                    Bytes.Decode.succeed ()
+
+                else
+                    Bytes.Decode.fail
+            )
 
 
 {-| Encodes a custom type as a one-byte visibility tag, 0 for open, 1 for
@@ -543,8 +578,8 @@ binopDecoder =
 
 {-| Encodes a dependency interface as a one-byte tag followed by its contents.
 A `Public` one is tag 0 and the interface as `interfaceEncoder` writes it. A
-`Private` one is tag 1, the package, and the custom type and type alias
-declarations, each as a dictionary keyed by name.
+`Private` one is tag 1, `interfaceFormatVersion`, the package, and the custom
+type and type alias declarations, each as a dictionary keyed by name.
 -}
 dependencyInterfaceEncoder : DependencyInterface -> Bytes.Encode.Encoder
 dependencyInterfaceEncoder dependencyInterface =
@@ -558,6 +593,7 @@ dependencyInterfaceEncoder dependencyInterface =
         Private pkg unions aliases ->
             Bytes.Encode.sequence
                 [ Bytes.Encode.unsignedInt8 1
+                , Bytes.Encode.unsignedInt8 interfaceFormatVersion
                 , Pkg.nameEncoder pkg
                 , BE.stdDict BE.string Can.unionEncoder unions
                 , BE.stdDict BE.string Can.aliasEncoder aliases
@@ -577,10 +613,14 @@ dependencyInterfaceDecoder =
                         Bytes.Decode.map Public interfaceDecoder
 
                     1 ->
-                        Bytes.Decode.map3 Private
-                            Pkg.nameDecoder
-                            (BD.stdDict BD.string Can.unionDecoder)
-                            (BD.stdDict BD.string Can.aliasDecoder)
+                        formatVersionDecoder
+                            |> Bytes.Decode.andThen
+                                (\() ->
+                                    Bytes.Decode.map3 Private
+                                        Pkg.nameDecoder
+                                        (BD.stdDict BD.string Can.unionDecoder)
+                                        (BD.stdDict BD.string Can.aliasDecoder)
+                                )
 
                     _ ->
                         Bytes.Decode.fail

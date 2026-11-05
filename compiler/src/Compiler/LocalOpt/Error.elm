@@ -98,7 +98,7 @@ toReport localizer source err =
                 ]
             )
                 |> Code.toSnippet source region Nothing
-                |> Report.report "BAD MAIN TYPE" region []
+                |> Report.report "BAD MAIN TYPE" region
 
         BadCycle region name names ->
             ( D.fromChars "A `main` definition cannot be defined in terms of itself."
@@ -108,7 +108,7 @@ toReport localizer source err =
                 ]
             )
                 |> Code.toSnippet source region Nothing
-                |> Report.report "BAD MAIN" region []
+                |> Report.report "BAD MAIN" region
 
         BadFlags region _ invalidPayload ->
             let
@@ -118,7 +118,7 @@ toReport localizer source err =
                     , butThatIsNoGood
                     )
                         |> Code.toSnippet source region Nothing
-                        |> Report.report "BAD FLAGS" region []
+                        |> Report.report "BAD FLAGS" region
             in
             formatDetails <|
                 case invalidPayload of

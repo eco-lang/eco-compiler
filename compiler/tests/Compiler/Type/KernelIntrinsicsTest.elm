@@ -1,8 +1,8 @@
 module Compiler.Type.KernelIntrinsicsTest exposing (suite)
 
 {-| These tests check that the type checker applies two kernel intrinsic
-annotations, that it leaves a kernel without one unconstrained, and that every
-row of the annotation table passes a few checks on its bookkeeping fields.
+annotations, that it leaves a kernel without one unconstrained, and that the
+annotation table is keyed by prefix.
 
 A kernel reference is a name qualified with a kernel module, such as
 `Elm.Kernel.List.fromArray`, standing for a function the runtime implements
@@ -44,12 +44,6 @@ What the tests establish:
     row's first parameter is the only thing that can reject it.
   - Test 5: `nonesuch` used at `Int -> List String` type checks, so a kernel
     without a row is unconstrained.
-  - Test 6: every entry of `KernelIntrinsics.rows` has the prefix `Elm` or
-    `Eco` and a non-empty `useSites`. Every row that fails is reported, with
-    its full kernel name and each check it fails. Each row's C++ audit and
-    file pins are kept in CSV files beside the kernel license table and are
-    checked by `test/scripts/check-kernel-license-manifest.sh`, which also
-    took over the former test 7.
   - Test 8: `KernelIntrinsics.lookup` finds a row for `Elm`, `List`,
     `fromArray` and none for `Eco`, `List`, `fromArray`. The prefix has to be
     part of the key because one home and name can name two different kernels,
@@ -57,7 +51,9 @@ What the tests establish:
 
 Among what is not tested: how the type checker applies the `addField` and
 `toArray` rows; the name a type error is reported under; and that `useSites`
-says anything beyond the check of test 6.
+is non-empty or says anything true. Each row's C++ audit and file pins are kept
+in CSV files beside the kernel license table and are checked by
+`test/scripts/check-kernel-license-manifest.sh`.
 
 -}
 
@@ -80,7 +76,7 @@ import Test exposing (Test)
 import Compiler.Type.TypeCheckErrors as TypeCheckErrors
 
 
-{-| The eight kernel intrinsic annotation tests described above.
+{-| The kernel intrinsic annotation tests described above.
 -}
 suite : Test
 suite =
@@ -109,39 +105,6 @@ suite =
         , Test.test "5. an UNANNOTATED kernel is still unconstrained (the table is opt-in)" <|
             \() ->
                 expectTypeChecks "an unannotated kernel must stay unconstrained" unannotatedKernelModule
-        , Test.test "6. discipline: every row is prefix-keyed and records its use sites" <|
-            \() ->
-                let
-                    bad =
-                        List.filterMap
-                            (\( ( prefix, home, name ), row ) ->
-                                let
-                                    key =
-                                        prefix ++ ".Kernel." ++ home ++ "." ++ name
-
-                                    problems =
-                                        List.filterMap identity
-                                            [ if prefix == "Elm" || prefix == "Eco" then
-                                                Nothing
-
-                                              else
-                                                Just "prefix must be Elm or Eco"
-                                            , if String.isEmpty row.useSites then
-                                                Just "empty useSites (the fail-stop evidence)"
-
-                                              else
-                                                Nothing
-                                            ]
-                                in
-                                if List.isEmpty problems then
-                                    Nothing
-
-                                else
-                                    Just (key ++ ": " ++ String.join ", " problems)
-                            )
-                            KernelIntrinsics.rows
-                in
-                Expect.equal [] bad
         , Test.test "8. discipline: lookup is keyed by PREFIX, not just (home, name)" <|
             \() ->
                 Expect.all

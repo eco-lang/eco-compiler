@@ -120,7 +120,7 @@ suite =
             \_ ->
                 let
                     ltopOnly =
-                        Mono.mFunction (LTop 7) [ Mono.mList MInt ] (Mono.mTuple [ MString, MFloat ])
+                        Mono.mFunction (LTop 7) [ Mono.mList MInt ] (Mono.mTuple (Mono.T2 MString MFloat))
                 in
                 Expect.equal
                     (Mono.toComparableMonoType ltopOnly)
@@ -338,7 +338,7 @@ suite =
                     present =
                         List.concatMap shapeTags corpus
                 in
-                [ "MInt", "MFloat", "MBool", "MChar", "MString", "MUnit", "MVar CEcoValue", "MVar CNumber", "MList", "MTuple 2", "MTuple 4", "MRecord", "MCustom", "LTop", "LSet", "LVar", "LPartial" ]
+                [ "MInt", "MFloat", "MBool", "MChar", "MString", "MUnit", "MVar CEcoValue", "MVar CNumber", "MList", "MTuple 2", "MTuple 3", "MRecord", "MCustom", "LTop", "LSet", "LVar", "LPartial" ]
                     |> List.filter (\tag -> not (List.member tag present))
                     |> Expect.equalLists []
         , Test.test "K6: Intern.eqExact decides exactly (==) over the pair corpus" <|
@@ -460,7 +460,7 @@ shapeTags monoType =
             "MList" :: shapeTags inner
 
         MTuple _ elements ->
-            ("MTuple " ++ String.fromInt (List.length elements)) :: List.concatMap shapeTags elements
+            ("MTuple " ++ String.fromInt (Mono.tupleArity elements)) :: List.concatMap shapeTags (Mono.tupleToList elements)
 
         MRecord _ fields ->
             "MRecord" :: List.concatMap shapeTags (Dict.values fields)
@@ -567,8 +567,8 @@ goldens =
     , ( MVar (mvarId 3) CNumber, "I" )
     , ( Mono.mList MInt, "L(I)" )
     , ( Mono.mList (Mono.mList MString), "L(L(S))" )
-    , ( Mono.mTuple [ MInt, MFloat ], "T2(FI)" )
-    , ( Mono.mTuple [ MInt, MFloat, MString ], "T3(SFI)" )
+    , ( Mono.mTuple (Mono.T2 MInt MFloat), "T2(FI)" )
+    , ( Mono.mTuple (Mono.T3 MInt MFloat MString), "T3(SFI)" )
     , ( Mono.mRecord (Dict.fromList [ ( "a", MInt ), ( "b", MString ) ]), "R(bSaI)" )
     , ( Mono.mRecord Dict.empty, "R()" )
     , ( Mono.mCustom (ModuleName.Canonical ( "elm", "core" ) "Maybe") "Maybe" [ MInt ]
@@ -603,7 +603,7 @@ corpus =
 {-| The handwritten part of the corpus: the 24 `goldens` types, then fourteen
 more.
 
-The first seven add deep list nesting, a six-element tuple, a four-field
+The first seven add deep list nesting, a three-element tuple holding another, a four-field
 record, a record whose one field is itself a record, a custom type applied to
 itself, and two function types with `LSet` annotations, one of them on a
 function inside a record field.
@@ -622,9 +622,9 @@ handwritten : List MonoType
 handwritten =
     List.map Tuple.first goldens
         ++ [ Mono.mList (Mono.mList (Mono.mList (Mono.mList MChar)))
-           , Mono.mTuple [ MInt, MInt, MInt, MInt, MInt, MInt ]
+           , Mono.mTuple (Mono.T3 MInt MInt (Mono.mTuple (Mono.T3 MInt MInt MInt)))
            , Mono.mRecord (Dict.fromList [ ( "z", MInt ), ( "y", MFloat ), ( "x", MString ), ( "w", MUnit ) ])
-           , Mono.mRecord (Dict.fromList [ ( "nested", Mono.mRecord (Dict.fromList [ ( "b", Mono.mList MInt ), ( "a", Mono.mTuple [ MBool, MChar ] ) ]) ) ])
+           , Mono.mRecord (Dict.fromList [ ( "nested", Mono.mRecord (Dict.fromList [ ( "b", Mono.mList MInt ), ( "a", Mono.mTuple (Mono.T2 MBool MChar) ) ]) ) ])
            , Mono.mCustom (ModuleName.Canonical ( "author", "project" ) "Deep.Module.Name") "Tree" [ Mono.mCustom (ModuleName.Canonical ( "author", "project" ) "Deep.Module.Name") "Tree" [ MInt ] ]
            , Mono.mFunction (LSet [ 9 ]) [ Mono.mFunction (LTop 7) [ MInt ] MInt ] (Mono.mList (MVar (mvarId 1) CEcoValue))
            , Mono.mFunction (LTop 7) [ Mono.mRecord (Dict.fromList [ ( "f", Mono.mFunction (LSet [ 3, 4, 5 ]) [ MChar ] MBool ) ]) ] MUnit
@@ -662,7 +662,7 @@ to continue from.
 At `depth` 0 or below the type is a leaf: one of the six primitives, or a
 `CEcoValue` or `CNumber` variable with one of three ids. Above that,
 `compositeOnly` restricts the choice to the five composites, and without it
-leaves are possible too. The composites are a list, a tuple of one to four
+leaves are possible too. The composites are a list, a tuple of two or three
 elements, a record of one to four fields named from `fieldNames`, a custom type
 of up to two arguments, and a function of up to two arguments. Children are
 generated one level shallower with `compositeOnly` off.
@@ -718,10 +718,21 @@ genTypeWith compositeOnly depth seed0 =
 
         9 ->
             let
-                ( els, s ) =
-                    genTypes (modBy 4 seed + 1) (depth - 1) seed
+                ( a, s1 ) =
+                    genType (depth - 1) seed
+
+                ( b, s2 ) =
+                    genType (depth - 1) s1
             in
-            ( Mono.mTuple els, s )
+            if modBy 2 seed == 0 then
+                ( Mono.mTuple (Mono.T2 a b), s2 )
+
+            else
+                let
+                    ( c, s3 ) =
+                        genType (depth - 1) s2
+                in
+                ( Mono.mTuple (Mono.T3 a b c), s3 )
 
         10 ->
             let
@@ -956,9 +967,9 @@ referenceHelper annoSensitive work acc =
                 MTuple _ elementTypes ->
                     let
                         newWork =
-                            List.foldl (\t w -> WorkType t :: w) (WorkMarker ")" :: rest) elementTypes
+                            List.foldl (\t w -> WorkType t :: w) (WorkMarker ")" :: rest) (Mono.tupleToList elementTypes)
                     in
-                    referenceHelper annoSensitive newWork ("(" :: String.fromInt (List.length elementTypes) :: "T" :: acc)
+                    referenceHelper annoSensitive newWork ("(" :: String.fromInt (List.length (Mono.tupleToList elementTypes)) :: "T" :: acc)
 
                 MRecord _ fields ->
                     let

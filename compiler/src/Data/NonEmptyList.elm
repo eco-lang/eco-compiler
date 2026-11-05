@@ -2,7 +2,7 @@ module Data.NonEmptyList exposing
     ( Nonempty(..)
     , singleton, snoc
     , toList
-    , map, foldr, sortBy
+    , map, indexedMap, mapAccuml, foldr, sortBy
     )
 
 {-| A list type for values that always have at least one element, so that code
@@ -31,7 +31,7 @@ first element needs no `Maybe`.
 
 # Transformations
 
-@docs map, foldr, sortBy
+@docs map, indexedMap, mapAccuml, foldr, sortBy
 
 -}
 
@@ -84,6 +84,40 @@ the same order.
 map : (a -> b) -> Nonempty a -> Nonempty b
 map func (Nonempty x xs) =
     Nonempty (func x) (List.map func xs)
+
+
+{-| Returns the list with `func` applied to every element and its zero-based
+position, the head's being 0, in the same order.
+-}
+indexedMap : (Int -> a -> b) -> Nonempty a -> Nonempty b
+indexedMap func (Nonempty x xs) =
+    Nonempty (func 0 x) (List.indexedMap (\i -> func (i + 1)) xs)
+
+
+{-| Returns the list with `func` applied to every element, head first, while
+threading an accumulator through the calls: each call gets the accumulator the
+previous one returned, starting from `acc`. Returns the last accumulator and
+the new elements, in the same order.
+-}
+mapAccuml : (acc -> a -> ( acc, b )) -> acc -> Nonempty a -> ( acc, Nonempty b )
+mapAccuml func acc (Nonempty x xs) =
+    let
+        ( acc1, y ) =
+            func acc x
+
+        ( accN, ysReversed ) =
+            List.foldl
+                (\a ( accI, ys ) ->
+                    let
+                        ( accJ, b ) =
+                            func accI a
+                    in
+                    ( accJ, b :: ys )
+                )
+                ( acc1, [] )
+                xs
+    in
+    ( accN, Nonempty y (List.reverse ysReversed) )
 
 
 {-| Returns `List.foldr step state` applied to the elements, head first. The

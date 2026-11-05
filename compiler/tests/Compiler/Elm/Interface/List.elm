@@ -26,6 +26,7 @@ import Compiler.IR.Canonical as Can
 import Compiler.IR.Canonical.Interface as I
 import Compiler.IR.Source.Binop as Binop
 import Dict exposing (Dict)
+import Maybe.Extra as Maybe
 
 
 
@@ -120,7 +121,7 @@ collectFreeVars tipe =
         Can.TTuple a b cs ->
             List.foldl (\t acc -> Dict.union (collectFreeVars t) acc)
                 (Dict.union (collectFreeVars a) (collectFreeVars b))
-                cs
+                (Maybe.toList cs)
 
         Can.TAlias _ _ args _ ->
             List.foldl (\( _, t ) acc -> Dict.union (collectFreeVars t) acc) Dict.empty args

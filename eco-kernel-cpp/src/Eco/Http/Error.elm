@@ -9,8 +9,7 @@ module Eco.Http.Error exposing
 The kernel reports HTTP failures as the existing Result-in-success carrying a
 `( statusCode, statusText )` tuple (statusCode 0 signals a transport-level
 failure with no HTTP response). `decode` refines that into the typed `HttpError`.
-This is the v1 "minimal split": network vs. status. Richer kinds (timeout, TLS,
-body-decode, bad-url) are modelled in the ADT and produced by higher layers.
+The split is network vs. status: the kernel reports nothing finer.
 
 @docs HttpError
 @docs decode
@@ -22,13 +21,8 @@ body-decode, bad-url) are modelled in the ADT and produced by higher layers.
 {-| A structured HTTP error.
 -}
 type HttpError
-    = BadUrl String String
-    | Network { url : String, detail : String }
-    | Timeout { url : String, detail : String }
-    | Tls { url : String, detail : String }
+    = Network { url : String, detail : String }
     | BadStatus { url : String, statusCode : Int, statusText : String }
-    | BodyDecode { url : String, detail : String }
-    | OtherHttp { url : String, message : String }
 
 
 {-| Refine the kernel's `( statusCode, statusText )` failure tuple into an
@@ -48,23 +42,8 @@ decode url ( statusCode, statusText ) =
 toString : HttpError -> String
 toString err =
     case err of
-        BadUrl url detail ->
-            "bad URL " ++ url ++ ": " ++ detail
-
         Network r ->
             "network error for " ++ r.url ++ ": " ++ r.detail
 
-        Timeout r ->
-            "timeout for " ++ r.url ++ ": " ++ r.detail
-
-        Tls r ->
-            "TLS error for " ++ r.url ++ ": " ++ r.detail
-
         BadStatus r ->
             "bad status " ++ String.fromInt r.statusCode ++ " for " ++ r.url ++ " (" ++ r.statusText ++ ")"
-
-        BodyDecode r ->
-            "body decode error for " ++ r.url ++ ": " ++ r.detail
-
-        OtherHttp r ->
-            r.message ++ " (" ++ r.url ++ ")"

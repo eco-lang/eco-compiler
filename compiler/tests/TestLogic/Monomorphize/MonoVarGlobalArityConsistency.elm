@@ -57,6 +57,7 @@ Among what is not checked:
 import Array
 import Compiler.IR.Mono as Mono
 import Compiler.IR.Source as Src
+import Data.NonEmptyList as NE
 import Expect
 import TestLogic.TestPipeline as Pipeline
 
@@ -194,7 +195,7 @@ collectExprIssues graph ctx expr =
                 ++ List.concatMap (\( _, e ) -> collectExprIssues graph ctx e) updates
 
         Mono.MonoTupleCreate _ elementExprs _ ->
-            List.concatMap (collectExprIssues graph ctx) elementExprs
+            List.concatMap (collectExprIssues graph ctx) (Mono.tupleToList elementExprs)
 
         Mono.MonoTailCall _ args _ ->
             List.concatMap (\( _, e ) -> collectExprIssues graph ctx e) args
@@ -235,7 +236,7 @@ collectDeciderIssues graph ctx decider =
                 ++ collectDeciderIssues graph ctx failure
 
         Mono.FanOut _ edges fallback ->
-            List.concatMap (\( _, d ) -> collectDeciderIssues graph ctx d) edges
+            List.concatMap (\( _, d ) -> collectDeciderIssues graph ctx d) (NE.toList edges)
                 ++ collectDeciderIssues graph ctx fallback
 
 
@@ -398,7 +399,7 @@ collectCallChainExprIssues graph ctx expr =
                 ++ List.concatMap (\( _, e ) -> collectCallChainExprIssues graph ctx e) updates
 
         Mono.MonoTupleCreate _ elementExprs _ ->
-            List.concatMap (collectCallChainExprIssues graph ctx) elementExprs
+            List.concatMap (collectCallChainExprIssues graph ctx) (Mono.tupleToList elementExprs)
 
         Mono.MonoTailCall _ args _ ->
             List.concatMap (\( _, e ) -> collectCallChainExprIssues graph ctx e) args
@@ -455,7 +456,7 @@ collectCallChainDeciderIssues graph ctx decider =
                 ++ collectCallChainDeciderIssues graph ctx failure
 
         Mono.FanOut _ edges fallback ->
-            List.concatMap (\( _, d ) -> collectCallChainDeciderIssues graph ctx d) edges
+            List.concatMap (\( _, d ) -> collectCallChainDeciderIssues graph ctx d) (NE.toList edges)
                 ++ collectCallChainDeciderIssues graph ctx fallback
 
 
@@ -621,7 +622,7 @@ collectCallArgExprIssues graph ctx expr =
                 ++ List.concatMap (\( _, e ) -> collectCallArgExprIssues graph ctx e) updates
 
         Mono.MonoTupleCreate _ elementExprs _ ->
-            List.concatMap (collectCallArgExprIssues graph ctx) elementExprs
+            List.concatMap (collectCallArgExprIssues graph ctx) (Mono.tupleToList elementExprs)
 
         Mono.MonoTailCall _ args _ ->
             List.concatMap (\( _, e ) -> collectCallArgExprIssues graph ctx e) args
@@ -649,7 +650,7 @@ collectCallArgDeciderIssues graph ctx decider =
                 ++ collectCallArgDeciderIssues graph ctx failure
 
         Mono.FanOut _ edges fallback ->
-            List.concatMap (\( _, d ) -> collectCallArgDeciderIssues graph ctx d) edges
+            List.concatMap (\( _, d ) -> collectCallArgDeciderIssues graph ctx d) (NE.toList edges)
                 ++ collectCallArgDeciderIssues graph ctx fallback
 
 
@@ -717,10 +718,10 @@ leaf, so references to those are checked like any other.
 isArityCheckableNode : Mono.MonoNode -> Bool
 isArityCheckableNode node =
     case node of
-        Mono.MonoCtor _ _ ->
+        Mono.MonoCtor _ _ _ ->
             False
 
-        Mono.MonoEnum _ _ ->
+        Mono.MonoEnum _ _ _ _ ->
             False
 
         _ ->
@@ -738,10 +739,10 @@ nodeKindName node =
         Mono.MonoTailFunc _ _ _ ->
             "MonoTailFunc"
 
-        Mono.MonoCtor _ _ ->
+        Mono.MonoCtor _ _ _ ->
             "MonoCtor"
 
-        Mono.MonoEnum _ _ ->
+        Mono.MonoEnum _ _ _ _ ->
             "MonoEnum"
 
         Mono.MonoExtern _ ->

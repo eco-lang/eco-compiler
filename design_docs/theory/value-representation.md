@@ -4,7 +4,7 @@ Outside the body of a single function, every Elm value except an Int, a Float or
 
 ## Each Elm value in each model
 
-The four models are the ones [eco.md](../../THEORY.md) introduces: logical, SSA, ABI and heap. The SSA, ABI and heap forms are each computed by one function of the value's specialized type. The SSA type comes from `Types.monoTypeToOperand`. The ABI type comes from `MonoAbi.monoTypeToAbi`, which gives the same answer except that Bool is `!eco.value`. The ABI mapping sits beside the specialized syntax tree, not in code generation, so that phases that run before code generation, such as the inliner's cost model, can ask what a call will pass. The heap rule is `Types.canUnbox`, which is true for Int, Float and Char and for nothing else. The logical model is the Elm meaning, and equality, ordering and pattern matching are defined on it: two values are equal when they are the same Elm value, whatever forms they are in.
+The four models are the ones [eco.md](../../THEORY.md) introduces: logical, SSA, ABI and heap. The SSA, ABI and heap forms are each computed by one function of the value's specialized type. The ABI type comes from `MonoAbi.monoTypeToAbi`. The SSA type is the same except that a Bool is an `i1` inside a function body (Bool literals are `arith.constant i1`), where the ABI has `!eco.value`. The ABI mapping sits beside the specialized syntax tree, not in code generation, so that phases that run before code generation, such as the inliner's cost model, can ask what a call will pass. The heap rule is `Types.canUnbox`, which is true for Int, Float and Char and for nothing else. The logical model is the Elm meaning, and equality, ordering and pattern matching are defined on it: two values are equal when they are the same Elm value, whatever forms they are in.
 
 | Elm value | SSA (in a function) | ABI (call, capture) | Heap slot | Own heap object |
 |---|---|---|---|---|
@@ -172,7 +172,7 @@ The validator asserts run only in heap-validating or Debug builds, and the point
 
 Code:
 
-- `compiler/src/Compiler/GenerateMlir/Types.elm`: `monoTypeToOperand`, `canUnbox`, `computeRecordLayout`, `computeCtorLayout`, `computeTupleLayout`, the slot kinds.
+- `compiler/src/Compiler/GenerateMlir/Types.elm`: `canUnbox`, `computeRecordLayout`, `computeCtorLayout`, `computeTupleLayout`, the slot kinds.
 - `compiler/src/Compiler/IR/Mono/Abi.elm`: `monoTypeToAbi`.
 - `compiler/src/Compiler/GenerateMlir/Expr.elm`: `boxToEcoValue`, `boxToMatchSignatureTyped`, `boxArgsForClosureBoundary`, `boxArgsToEvaluatorParams`, `coerceResultToType`. `Patterns.elm`: `generateMonoPathHelper` (projection then unbox).
 - `compiler/src/Compiler/IR/Runtime/CtorTag.elm`: which constructors embed, and `constantTag`.

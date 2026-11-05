@@ -4,15 +4,16 @@ module Compiler.IR.Mono exposing
     , Global(..), LambdaId(..), LambdaSetAnno(..), LayoutMap, Literal(..), MainInfo(..)
     , MaybeClosureKind, MemberOrigin(..), MonoChoice(..), MonoDef(..), MonoDestructor(..), MonoDtPath(..)
     , MonoExpr(..), MonoGraph(..), MonoNode(..), MonoPath(..), MonoType(..), PortRegistration
-    , Segmentation, SpecId, SpecKey(..), SpecKeyMap, SpecMap, SpecializationRegistry
-    , annoCoverage, annoCovers, buildSegmentedFunctionType, clearLssTables, collectAnnoMembers
-    , containsAnyMVar, countTotalArity, decomposeFunctionType, defaultCallInfo, dtPathType, emptyAnnoCoverage
+    , TupleShape(..), tupleArity, tupleContainerKind, tupleIndexedMap, tupleMap, tupleMap2, tupleMapAccum, tupleMapAccumR, tupleOf, tupleToList
+    , SpecId, SpecKey(..), SpecKeyMap, SpecMap, SpecializationRegistry
+    , annoCoverage, annoCovers, clearLssTables, collectAnnoMembers
+    , containsAnyMVar, decomposeFunctionType, defaultCallInfo, dtPathType, emptyAnnoCoverage
     , enrichAnnotations, enrichAnnotationsTopOnly, eqKeyLayout, eqKeySpec, eqLayout, eqModuloTopLabel
     , getMonoPathType, hasTopAnno, hasVarAnno, headAnno, isFunctionType, isTopAnno
     , joinAnnotationsChanged, joinCollisionCells, layoutHashOf, layoutMapEmpty, layoutMapFoldl, layoutMapGet
     , layoutMapInsert, layoutMapMap, layoutMapMember, layoutMapValues, mCustom, mFunction
     , mList, mRecord, mTuple, monoTypeToDebugString, nodeType, overlayAnnotations
-    , recoverStoredSets, resolveNumberType, resultTypeOf, segmentLengths, shallowLayoutKey, singletonHeadMember
+    , recoverStoredSets, resolveNumberType, resultTypeOf, shallowLayoutKey, singletonHeadMember
     , specHashOf, specKeyMapEmpty, specKeyMapGet, specKeyMapInsert, specMapEmpty, specMapFoldl
     , specMapGet, specMapInsert, specMapIsEmpty, specMapRemove, specMapSingleton, specMapSize
     , specMapToList, specMapValues, stageParamTypes, stageReturnType, tkClassCall, tkClassCase
@@ -87,19 +88,20 @@ made.
 @docs Global, LambdaId, LambdaSetAnno, LayoutMap, Literal, MainInfo
 @docs MaybeClosureKind, MemberOrigin, MonoChoice, MonoDef, MonoDestructor, MonoDtPath
 @docs MonoExpr, MonoGraph, MonoNode, MonoPath, MonoType, PortRegistration
-@docs Segmentation, SpecId, SpecKey, SpecKeyMap, SpecMap, SpecializationRegistry
+@docs TupleShape, tupleArity, tupleContainerKind, tupleIndexedMap, tupleMap, tupleMap2, tupleMapAccum, tupleMapAccumR, tupleOf, tupleToList
+@docs SpecId, SpecKey, SpecKeyMap, SpecMap, SpecializationRegistry
 
 
 # Functions
 
-@docs annoCoverage, annoCovers, buildSegmentedFunctionType, clearLssTables, collectAnnoMembers
-@docs containsAnyMVar, countTotalArity, decomposeFunctionType, defaultCallInfo, dtPathType, emptyAnnoCoverage
+@docs annoCoverage, annoCovers, clearLssTables, collectAnnoMembers
+@docs containsAnyMVar, decomposeFunctionType, defaultCallInfo, dtPathType, emptyAnnoCoverage
 @docs enrichAnnotations, enrichAnnotationsTopOnly, eqKeyLayout, eqKeySpec, eqLayout, eqModuloTopLabel
 @docs getMonoPathType, hasTopAnno, hasVarAnno, headAnno, isFunctionType, isTopAnno
 @docs joinAnnotationsChanged, joinCollisionCells, layoutHashOf, layoutMapEmpty, layoutMapFoldl, layoutMapGet
 @docs layoutMapInsert, layoutMapMap, layoutMapMember, layoutMapValues, mCustom, mFunction
 @docs mList, mRecord, mTuple, monoTypeToDebugString, nodeType, overlayAnnotations
-@docs recoverStoredSets, resolveNumberType, resultTypeOf, segmentLengths, shallowLayoutKey, singletonHeadMember
+@docs recoverStoredSets, resolveNumberType, resultTypeOf, shallowLayoutKey, singletonHeadMember
 @docs specHashOf, specKeyMapEmpty, specKeyMapGet, specKeyMapInsert, specMapEmpty, specMapFoldl
 @docs specMapGet, specMapInsert, specMapIsEmpty, specMapRemove, specMapSingleton, specMapSize
 @docs specMapToList, specMapValues, stageParamTypes, stageReturnType, tkClassCall, tkClassCase
@@ -121,6 +123,7 @@ import Compiler.Elm.ModuleName as ModuleName
 import Compiler.IR.DecisionTree.Test as DT
 import Data.BitSet as BitSet exposing (BitSet)
 import Data.HashMap as HashMap
+import Data.NonEmptyList as NE
 import Dict exposing (Dict)
 import Eco.Hash
 
@@ -141,7 +144,7 @@ types. The `Int` each carries first is its packed hash, described in the
 module docstring, and is correct only in a type built with the matching smart
 constructor (`mList`, `mTuple`, `mRecord`, `mCustom`, `mFunction`).
 
-`MTuple` carries its element types in order. `MRecord` carries its field types
+`MTuple` carries its two or three element types in order. `MRecord` carries its field types
 by name; it says nothing about the order or layout of the fields at run time,
 which code generation decides. `MCustom` carries the type's home module, its
 name and its type arguments.
@@ -166,7 +169,7 @@ type MonoType
     | MString
     | MUnit
     | MList Int MonoType
-    | MTuple Int (List MonoType)
+    | MTuple Int (TupleShape MonoType)
     | MRecord Int (Dict Name MonoType)
     | MCustom Int ModuleName.Canonical Name (List MonoType)
     | MFunction Int LambdaSetAnno (List MonoType) MonoType
@@ -193,6 +196,150 @@ specialization defaults it.
 type Constraint
     = CEcoValue
     | CNumber
+
+
+{-| The elements of a tuple, in order. Elm tuples have two or three elements,
+which Canonicalize enforces, so these are the only two shapes. `MTuple` holds
+its element types in one, and `MonoTupleCreate` its element expressions.
+-}
+type TupleShape a
+    = T2 a a
+    | T3 a a a
+
+
+{-| Returns the elements in order.
+-}
+tupleToList : TupleShape a -> List a
+tupleToList shape =
+    case shape of
+        T2 a b ->
+            [ a, b ]
+
+        T3 a b c ->
+            [ a, b, c ]
+
+
+{-| Returns the shape of a tuple given as its first two elements and an
+optional third, the form `Can.TTuple` and `Can.Tuple` use.
+-}
+tupleOf : a -> a -> Maybe a -> TupleShape a
+tupleOf a b rest =
+    case rest of
+        Nothing ->
+            T2 a b
+
+        Just c ->
+            T3 a b c
+
+
+{-| Returns the number of elements, 2 or 3.
+-}
+tupleArity : TupleShape a -> Int
+tupleArity shape =
+    case shape of
+        T2 _ _ ->
+            2
+
+        T3 _ _ _ ->
+            3
+
+
+{-| Applies `f` to each element.
+-}
+tupleMap : (a -> b) -> TupleShape a -> TupleShape b
+tupleMap f shape =
+    case shape of
+        T2 a b ->
+            T2 (f a) (f b)
+
+        T3 a b c ->
+            T3 (f a) (f b) (f c)
+
+
+{-| Applies `f` to each element and its index, counted from 0.
+-}
+tupleIndexedMap : (Int -> a -> b) -> TupleShape a -> TupleShape b
+tupleIndexedMap f shape =
+    case shape of
+        T2 a b ->
+            T2 (f 0 a) (f 1 b)
+
+        T3 a b c ->
+            T3 (f 0 a) (f 1 b) (f 2 c)
+
+
+{-| Combines two shapes element by element, or returns `Nothing` when one has
+two elements and the other three.
+-}
+tupleMap2 : (a -> b -> c) -> TupleShape a -> TupleShape b -> Maybe (TupleShape c)
+tupleMap2 f sa sb =
+    case ( sa, sb ) of
+        ( T2 a1 b1, T2 a2 b2 ) ->
+            Just (T2 (f a1 a2) (f b1 b2))
+
+        ( T3 a1 b1 c1, T3 a2 b2 c2 ) ->
+            Just (T3 (f a1 a2) (f b1 b2) (f c1 c2))
+
+        _ ->
+            Nothing
+
+
+{-| Applies `f` to each element from first to last, threading `acc` through.
+-}
+tupleMapAccum : (a -> s -> ( b, s )) -> s -> TupleShape a -> ( TupleShape b, s )
+tupleMapAccum f acc shape =
+    case shape of
+        T2 a b ->
+            let
+                ( a1, acc1 ) =
+                    f a acc
+
+                ( b1, acc2 ) =
+                    f b acc1
+            in
+            ( T2 a1 b1, acc2 )
+
+        T3 a b c ->
+            let
+                ( a1, acc1 ) =
+                    f a acc
+
+                ( b1, acc2 ) =
+                    f b acc1
+
+                ( c1, acc3 ) =
+                    f c acc2
+            in
+            ( T3 a1 b1 c1, acc3 )
+
+
+{-| Applies `f` to each element from last to first, threading `acc` through.
+-}
+tupleMapAccumR : (a -> s -> ( b, s )) -> s -> TupleShape a -> ( TupleShape b, s )
+tupleMapAccumR f acc shape =
+    case shape of
+        T2 a b ->
+            let
+                ( b1, acc1 ) =
+                    f b acc
+
+                ( a1, acc2 ) =
+                    f a acc1
+            in
+            ( T2 a1 b1, acc2 )
+
+        T3 a b c ->
+            let
+                ( c1, acc1 ) =
+                    f c acc
+
+                ( b1, acc2 ) =
+                    f b acc1
+
+                ( a1, acc3 ) =
+                    f a acc2
+            in
+            ( T3 a1 b1 c1, acc3 )
 
 
 
@@ -367,18 +514,21 @@ mList inner =
 
 {-| Builds the tuple type of `elementTypes`, with its packed hash.
 -}
-mTuple : List MonoType -> MonoType
-mTuple elementTypes =
+mTuple : TupleShape MonoType -> MonoType
+mTuple shape =
     let
+        elementTypes =
+            tupleToList shape
+
         seed =
-            mixHash 12 (List.length elementTypes)
+            mixHash 12 (tupleArity shape)
     in
     MTuple
         (packHashes
             (List.foldl (\t h -> mixHash h (layoutHashOf t)) seed elementTypes)
             (List.foldl (\t h -> mixHash h (specHashOf t)) seed elementTypes)
         )
-        elementTypes
+        shape
 
 
 {-| Builds the record type with `fields`, with its packed hash. Only the
@@ -520,7 +670,7 @@ eqKeyWith annoSensitive a b =
             eqKeyWith annoSensitive xa xb
 
         ( MTuple _ xsa, MTuple _ xsb ) ->
-            eqKeyList annoSensitive xsa xsb
+            eqKeyList annoSensitive (tupleToList xsa) (tupleToList xsb)
 
         ( MRecord _ fieldsA, MRecord _ fieldsB ) ->
             eqFieldsBy (eqKeyWith annoSensitive) fieldsA fieldsB
@@ -1144,13 +1294,6 @@ topClassMisc =
     LTop 20
 
 
-{-| The ⊤ with provenance code `tkRow`.
--}
-topRow : LambdaSetAnno
-topRow =
-    LTop 21
-
-
 {-| Returns whether an annotation is ⊤, whatever its provenance code.
 -}
 isTopAnno : LambdaSetAnno -> Bool
@@ -1164,7 +1307,7 @@ isTopAnno anno =
 
 
 {-| Returns the shared ⊤ with provenance code `k`. A code at or below 0 gives
-`topPoison`, and a code above 21 gives `topLegacy`.
+`topPoison`, and a code above 20 gives `topLegacy`.
 -}
 topOfKind : Int -> LambdaSetAnno
 topOfKind k =
@@ -1228,15 +1371,12 @@ topOfKind k =
     else if k == 20 then
         topClassMisc
 
-    else if k == 21 then
-        topRow
-
     else
         topLegacy
 
 
 {-| Returns the label reports print for provenance code `k`. A code at or below 0
-is `"poison"`, and a code above 21 is `"legacy"`.
+is `"poison"`, and a code above 20 is `"legacy"`.
 -}
 topKindLabel : Int -> String
 topKindLabel k =
@@ -1300,9 +1440,6 @@ topKindLabel k =
     else if k == 20 then
         "clsMisc"
 
-    else if k == 21 then
-        "row"
-
     else
         "legacy"
 
@@ -1338,7 +1475,7 @@ typeNodesGo monoType budget =
                 typeNodesGo inner (budget - 1)
 
             MTuple _ elems ->
-                typeNodesGoList elems (budget - 1)
+                typeNodesGoList (tupleToList elems) (budget - 1)
 
             MRecord _ fields ->
                 Dict.foldl (\_ t b -> typeNodesGoStep t b) (budget - 1) fields
@@ -1406,7 +1543,7 @@ collectAnnoGo monoType acc =
             collectAnnoGo inner acc
 
         MTuple _ elems ->
-            List.foldl collectAnnoGo acc elems
+            List.foldl collectAnnoGo acc (tupleToList elems)
 
         MRecord _ fields ->
             Dict.foldl (\_ t a -> collectAnnoGo t a) acc fields
@@ -1502,11 +1639,12 @@ enrichAnnotationsWith merge structural annoSource =
             mList (enrichAnnotationsWith merge xa xb)
 
         ( MTuple _ xsa, MTuple _ xsb ) ->
-            if List.length xsa == List.length xsb then
-                mTuple (List.map2 (enrichAnnotationsWith merge) xsa xsb)
+            case tupleMap2 (enrichAnnotationsWith merge) xsa xsb of
+                Just xs ->
+                    mTuple xs
 
-            else
-                structural
+                Nothing ->
+                    structural
 
         ( MRecord _ fieldsA, MRecord _ fieldsB ) ->
             if sameFieldKeys fieldsA fieldsB then
@@ -1590,7 +1728,7 @@ hasVarAnno monoType =
             hasVarAnno inner
 
         MTuple _ elems ->
-            List.any hasVarAnno elems
+            List.any hasVarAnno (tupleToList elems)
 
         MRecord _ fields ->
             Dict.foldl (\_ t a -> a || hasVarAnno t) False fields
@@ -1614,7 +1752,7 @@ hasTopAnno monoType =
             hasTopAnno inner
 
         MTuple _ elems ->
-            List.any hasTopAnno elems
+            List.any hasTopAnno (tupleToList elems)
 
         MRecord _ fields ->
             Dict.foldl (\_ t a -> a || hasTopAnno t) False fields
@@ -1678,20 +1816,14 @@ recoverStoredSets joined stored =
             ( mList x1, n )
 
         ( MTuple _ xsJ, MTuple _ xsS ) ->
-            let
-                ( xs1, n ) =
-                    List.foldr
-                        (\( a, b ) ( accL, accN ) ->
-                            let
-                                ( x1, n1 ) =
-                                    recoverStoredSets a b
-                            in
-                            ( x1 :: accL, accN + n1 )
-                        )
-                        ( [], 0 )
-                        (List.map2 Tuple.pair xsJ xsS)
-            in
-            ( mTuple xs1, n )
+            case tupleMap2 recoverStoredSets xsJ xsS of
+                Just results ->
+                    ( mTuple (tupleMap Tuple.first results)
+                    , List.sum (List.map Tuple.second (tupleToList results))
+                    )
+
+                Nothing ->
+                    ( joined, 0 )
 
         ( MRecord _ fj, MRecord _ fs ) ->
             let
@@ -1800,7 +1932,7 @@ joinCollisionCells arity ta tb =
                     go 0 True xa xb acc
 
                 ( MTuple _ xsA, MTuple _ xsB ) ->
-                    List.foldl (\( x, y ) accX -> go 0 True x y accX) acc (List.map2 Tuple.pair xsA xsB)
+                    List.foldl (\( x, y ) accX -> go 0 True x y accX) acc (List.map2 Tuple.pair (tupleToList xsA) (tupleToList xsB))
 
                 ( MRecord _ fa, MRecord _ fb ) ->
                     Dict.foldl
@@ -1859,7 +1991,7 @@ annoCoverage monoType acc =
             annoCoverage inner acc
 
         MTuple _ elems ->
-            List.foldl annoCoverage acc elems
+            List.foldl annoCoverage acc (tupleToList elems)
 
         MRecord _ fields ->
             Dict.foldl (\_ t a -> annoCoverage t a) acc fields
@@ -1908,7 +2040,7 @@ hasUnknownAnno monoType =
             hasUnknownAnno inner
 
         MTuple _ elems ->
-            List.any hasUnknownAnno elems
+            List.any hasUnknownAnno (tupleToList elems)
 
         MRecord _ fields ->
             Dict.foldl (\_ t acc -> acc || hasUnknownAnno t) False fields
@@ -1961,7 +2093,7 @@ normalizeTopLabels monoType =
             mList (normalizeTopLabels inner)
 
         MTuple _ elems ->
-            mTuple (List.map normalizeTopLabels elems)
+            mTuple (tupleMap normalizeTopLabels elems)
 
         MRecord _ fields ->
             mRecord (Dict.map (\_ t -> normalizeTopLabels t) fields)
@@ -1992,7 +2124,7 @@ widenSets monoType =
             mList (widenSets inner)
 
         MTuple _ elems ->
-            mTuple (List.map widenSets elems)
+            mTuple (tupleMap widenSets elems)
 
         MRecord _ fields ->
             mRecord (Dict.map (\_ t -> widenSets t) fields)
@@ -2021,7 +2153,7 @@ eqLayout a b =
             eqLayout xa xb
 
         ( MTuple _ xsa, MTuple _ xsb ) ->
-            eqLayoutList xsa xsb
+            eqLayoutList (tupleToList xsa) (tupleToList xsb)
 
         ( MRecord _ fieldsA, MRecord _ fieldsB ) ->
             eqFieldsBy eqLayout fieldsA fieldsB
@@ -2093,7 +2225,7 @@ shallowLayoutKey depth monoType =
                 "L(" ++ shallowLayoutKey (depth - 1) inner ++ ")"
 
             MTuple _ elems ->
-                "T" ++ String.fromInt (List.length elems) ++ "(" ++ String.join "," (List.map (shallowLayoutKey (depth - 1)) elems) ++ ")"
+                "T" ++ String.fromInt (tupleArity elems) ++ "(" ++ String.join "," (List.map (shallowLayoutKey (depth - 1)) (tupleToList elems)) ++ ")"
 
             MRecord _ fields ->
                 "R" ++ String.fromInt (Dict.size fields) ++ "(" ++ String.join "," (Dict.keys fields) ++ ")"
@@ -2173,16 +2305,16 @@ joinAnnotationsChanged a b =
                         ( False, a )
 
             ( MTuple _ xsa, MTuple _ xsb ) ->
-                if List.length xsa == List.length xsb then
-                    case joinListChanged xsa xsb of
-                        ( True, xs ) ->
-                            ( True, mTuple xs )
+                case tupleMap2 joinAnnotationsChanged xsa xsb of
+                    Just results ->
+                        if List.any Tuple.first (tupleToList results) then
+                            ( True, mTuple (tupleMap Tuple.second results) )
 
-                        ( False, _ ) ->
+                        else
                             ( False, a )
 
-                else
-                    joinWidened a
+                    Nothing ->
+                        joinWidened a
 
             ( MRecord _ fieldsA, MRecord _ fieldsB ) ->
                 if sameFieldKeys fieldsA fieldsB then
@@ -2407,16 +2539,16 @@ overlayAnnotationsChanged structural annoSource =
                         ( False, structural )
 
             ( MTuple _ xsa, MTuple _ xsb ) ->
-                if List.length xsa == List.length xsb then
-                    case overlayListChanged xsa xsb of
-                        ( True, xs ) ->
-                            ( True, mTuple xs )
+                case tupleMap2 overlayAnnotationsChanged xsa xsb of
+                    Just results ->
+                        if List.any Tuple.first (tupleToList results) then
+                            ( True, mTuple (tupleMap Tuple.second results) )
 
-                        ( False, _ ) ->
+                        else
                             ( False, structural )
 
-                else
-                    ( False, structural )
+                    Nothing ->
+                        ( False, structural )
 
             ( MRecord _ fieldsA, MRecord _ fieldsB ) ->
                 if sameFieldKeys fieldsA fieldsB then
@@ -2647,7 +2779,7 @@ typeHasResidualNumber isNumber monoType =
             typeHasResidualNumber isNumber inner
 
         MTuple _ elems ->
-            anyResidualNumber isNumber elems
+            anyResidualNumber isNumber (tupleToList elems)
 
         MRecord _ fields ->
             Dict.foldl (\_ t acc -> acc || typeHasResidualNumber isNumber t) False fields
@@ -2677,27 +2809,22 @@ anyResidualNumber isNumber xs =
 {-| Returns the type with its residual number variables replaced by `MInt`, as
 `resolveNumberType` does, rebuilding this level. Each child goes back through
 `resolveNumberType`, so a child with nothing to replace is kept as it is.
+
+It is called only on a type that `typeHasResidualNumber` accepts, so a variable
+here is a residual number variable, and a leaf type never reaches it.
+
 -}
 resolveNumberTypeRebuild : (MVarId -> Bool) -> MonoType -> MonoType
 resolveNumberTypeRebuild isNumber monoType =
     case monoType of
-        MVar mvarId constraint ->
-            case constraint of
-                CNumber ->
-                    MInt
-
-                CEcoValue ->
-                    if isNumber mvarId then
-                        MInt
-
-                    else
-                        monoType
+        MVar _ _ ->
+            MInt
 
         MList _ inner ->
             mList (resolveNumberType isNumber inner)
 
         MTuple _ elems ->
-            mTuple (List.map (resolveNumberType isNumber) elems)
+            mTuple (tupleMap (resolveNumberType isNumber) elems)
 
         MRecord _ fields ->
             mRecord (Dict.map (\_ t -> resolveNumberType isNumber t) fields)
@@ -2708,22 +2835,7 @@ resolveNumberTypeRebuild isNumber monoType =
         MFunction _ anno args result ->
             mFunction anno (List.map (resolveNumberType isNumber) args) (resolveNumberType isNumber result)
 
-        MInt ->
-            monoType
-
-        MFloat ->
-            monoType
-
-        MBool ->
-            monoType
-
-        MChar ->
-            monoType
-
-        MString ->
-            monoType
-
-        MUnit ->
+        _ ->
             monoType
 
 
@@ -2756,7 +2868,7 @@ containsAnyMVar monoType =
             containsAnyMVarList args || containsAnyMVar result
 
         MTuple _ elems ->
-            containsAnyMVarList elems
+            containsAnyMVarList (tupleToList elems)
 
         MRecord _ fields ->
             Dict.foldl (\_ t acc -> acc || containsAnyMVar t) False fields
@@ -2870,7 +2982,7 @@ type alias CtorShape =
 {-| The whole monomorphized program.
 
 `nodes` holds each specialization's code at its SpecId's index, or `Nothing`
-where there is none. `main` is the program's `main`, if it has one, and
+where there is none. `main` is the program's `main`, and
 `flagsDecoder` the specialization of its flags decoder, if it has one.
 `ctorShapes` gives, for each custom type, the shapes of its constructors.
 `nextLambdaIndex` is the number the next closure made will get.
@@ -2888,7 +3000,7 @@ substitution engine.
 type MonoGraph
     = MonoGraph
         { nodes : Array (Maybe MonoNode)
-        , main : Maybe MainInfo
+        , main : MainInfo
         , registry : SpecializationRegistry
         , ctorShapes : LayoutMap (List CtorShape)
         , nextLambdaIndex : Int
@@ -2937,23 +3049,23 @@ clearLssTables { keepOrigins } (MonoGraph record) =
 {-| What a lambda-set member stands for when it is not a lambda.
 
 `OriginGlobal` is a top-level definition used as a function value, and
-`OriginCtor` a constructor used as one. `OriginKernel` is a kernel function, by
-its prefix (`Elm` or `Eco`), home and name. `OriginAccessor` is the accessor function for the named
-record field.
+`OriginCtor` a constructor used as one, each by its home module and name.
+`OriginKernel` is a kernel function, by its prefix (`Elm` or `Eco`), home and
+name. `OriginAccessor` is the accessor function for the named record field.
 
-`OriginPap` is a partial application of a global, with the number of arguments
-already supplied. It names the partial application so that it can be counted
+`OriginPap` is a partial application of a global, by its home module and name,
+with the number of arguments already supplied. It names the partial application so that it can be counted
 and so that a call through it can read the supplied arguments back out of the
 closure. It must not be turned into a direct call of the global's
 specialization, which would lose those arguments.
 
 -}
 type MemberOrigin
-    = OriginGlobal Global
+    = OriginGlobal ModuleName.Canonical Name
     | OriginKernel Name Name Name
-    | OriginCtor Global
+    | OriginCtor ModuleName.Canonical Name
     | OriginAccessor Name
-    | OriginPap Global Int
+    | OriginPap ModuleName.Canonical Name Int
 
 
 {-| A port the program uses, found during monomorphization.
@@ -2998,14 +3110,15 @@ type.
 is the type of the whole function, not of its result. A tail-recursive
 definition becomes one, and so does a record accessor used as a function.
 
-`MonoCtor` is a constructor, with its shape. `MonoEnum` is a constructor with no
-fields, by its tag.
+`MonoCtor` is a constructor, with its home module and its shape (which holds
+its name). `MonoEnum` is a constructor with no fields, with its home module, its
+name and its tag.
 
 `MonoExtern` is a definition whose code is not in the graph, such as a kernel
 function.
 
-`MonoManagerLeaf` is a leaf of an effect manager, with the name of the
-manager's home module.
+`MonoManagerLeaf` is a leaf of an effect manager, with the manager's home
+module.
 
 `MonoPortIncoming` and `MonoPortOutgoing` are ports, each with the expression
 that implements it.
@@ -3014,10 +3127,10 @@ that implements it.
 type MonoNode
     = MonoDefine MonoExpr MonoType
     | MonoTailFunc (List ( Name, MonoType )) MonoExpr MonoType
-    | MonoCtor CtorShape MonoType
-    | MonoEnum Int MonoType
+    | MonoCtor ModuleName.Canonical CtorShape MonoType
+    | MonoEnum ModuleName.Canonical Name Int MonoType
     | MonoExtern MonoType
-    | MonoManagerLeaf String MonoType
+    | MonoManagerLeaf ModuleName.Canonical MonoType
     | MonoPortIncoming MonoExpr MonoType
     | MonoPortOutgoing MonoExpr MonoType
 
@@ -3039,10 +3152,10 @@ nodeType node =
         MonoTailFunc _ _ t ->
             t
 
-        MonoCtor _ t ->
+        MonoCtor _ _ t ->
             t
 
-        MonoEnum _ t ->
+        MonoEnum _ _ _ t ->
             t
 
         MonoExtern t ->
@@ -3110,7 +3223,7 @@ type MonoExpr
     | MonoRecordCreate (List ( Name, MonoExpr )) MonoType
     | MonoRecordAccess MonoExpr Name MonoType
     | MonoRecordUpdate MonoExpr (List ( Name, MonoExpr )) MonoType
-    | MonoTupleCreate Region (List MonoExpr) MonoType
+    | MonoTupleCreate Region (TupleShape MonoExpr) MonoType
     | MonoUnit
     | MonoAccessorValue Region Name MonoType
 
@@ -3174,6 +3287,19 @@ type ContainerKind
     | Tuple2Container
     | Tuple3Container
     | CustomContainer Name
+
+
+{-| Returns the container kind of a tuple of this shape: `Tuple2Container` or
+`Tuple3Container`.
+-}
+tupleContainerKind : TupleShape a -> ContainerKind
+tupleContainerKind shape =
+    case shape of
+        T2 _ _ ->
+            Tuple2Container
+
+        T3 _ _ _ ->
+            Tuple3Container
 
 
 {-| A path from a variable to one part of its value, written from the outermost
@@ -3283,16 +3409,17 @@ dtPathType path =
 
 {-| A decision tree for a `case`, whose leaves hold an `a`.
 
-`Chain` holds tests that must all pass, each on the value at its path, then the
-tree to follow when they do and the tree to follow when they do not. `FanOut`
-tests the value at one path, and holds a tree for each test and a tree to
-follow when none passes.
+`Chain` holds one or more tests that must all pass, each on the value at its
+path, then the tree to follow when they do and the tree to follow when they do
+not. `FanOut` tests the value at one path, and holds a tree for each of its one
+or more edge tests, which are `DT.FanTest`s, and a tree to follow when none
+passes.
 
 -}
 type Decider a
     = Leaf a
-    | Chain (List ( MonoDtPath, DT.Test )) (Decider a) (Decider a)
-    | FanOut MonoDtPath (List ( DT.Test, Decider a )) (Decider a)
+    | Chain (NE.Nonempty ( MonoDtPath, DT.Test )) (Decider a) (Decider a)
+    | FanOut MonoDtPath (NE.Nonempty ( DT.FanTest, Decider a )) (Decider a)
 
 
 {-| What a `case` does at a leaf of its decision tree: evaluate the branch body
@@ -3453,9 +3580,9 @@ toComparableFragments annoSensitive mt tail =
 
         MTuple _ elementTypes ->
             "T"
-                :: String.fromInt (List.length elementTypes)
+                :: String.fromInt (tupleArity elementTypes)
                 :: "("
-                :: toComparableFragmentsRev annoSensitive elementTypes (")" :: tail)
+                :: toComparableFragmentsRev annoSensitive (tupleToList elementTypes) (")" :: tail)
 
         MRecord _ fields ->
             "R("
@@ -3537,19 +3664,6 @@ isFunctionType monoType =
             False
 
 
-{-| Returns how many arguments a function type takes over all its stages, or 0 for
-a type that is not a function.
--}
-countTotalArity : MonoType -> Int
-countTotalArity monoType =
-    case monoType of
-        MFunction _ _ argTypes result ->
-            List.length argTypes + countTotalArity result
-
-        _ ->
-            0
-
-
 {-| Returns the argument types of a function type's first stage, or `[]` for a type
 that is not a function.
 -}
@@ -3594,17 +3708,6 @@ decomposeFunctionType monoType =
 
         other ->
             ( [], other )
-
-
-{-| How a function's arguments are grouped into stages: the number each stage
-takes, outermost first.
-
-This is a name for `List Int`, so nothing checks that the numbers are positive
-or that they match any function's type.
-
--}
-type alias Segmentation =
-    List Int
 
 
 {-| How a callee takes its arguments. `FlattenedExternal` takes all of them in one
@@ -3707,66 +3810,6 @@ defaultCallInfo =
     , callKind = CallGenericApply
     , evaluatorReturnType = MUnit
     }
-
-
-{-| Returns the segmentation of a function type, read off its chain of stages.
-
-For `MFunction [A,B] (MFunction [C,D] R)` it is `[2, 2]`, for
-`MFunction [A,B,C,D] R` it is `[4]`, and for a type that is not a function it
-is `[]`.
-
--}
-segmentLengths : MonoType -> Segmentation
-segmentLengths monoType =
-    let
-        go t acc =
-            case t of
-                MFunction _ _ stageArgs stageRet ->
-                    go stageRet (List.length stageArgs :: acc)
-
-                _ ->
-                    List.reverse acc
-    in
-    go monoType []
-
-
-{-| Builds the function type that takes `flatArgs` in stages of the sizes `seg`
-gives and returns `finalRet`, with `anno` on the arrow of every stage.
-
-    buildSegmentedFunctionType anno [ A, B, C, D ] R [ 2, 2 ]
-        == MFunction anno [ A, B ] (MFunction anno [ C, D ] R)
-
-    buildSegmentedFunctionType anno [ A, B, C, D ] R [ 4 ]
-        == MFunction anno [ A, B, C, D ] R
-
-Arguments beyond the sum of `seg` are dropped, and a stage that asks for more
-arguments than remain gets only those that remain.
-
--}
-buildSegmentedFunctionType : LambdaSetAnno -> List MonoType -> MonoType -> Segmentation -> MonoType
-buildSegmentedFunctionType anno flatArgs finalRet seg =
-    let
-        splitBySegments : List MonoType -> Segmentation -> List (List MonoType)
-        splitBySegments remaining segLengths =
-            case segLengths of
-                [] ->
-                    []
-
-                m :: rest ->
-                    let
-                        ( now, later ) =
-                            ( List.take m remaining, List.drop m remaining )
-                    in
-                    now :: splitBySegments later rest
-
-        stageArgsLists =
-            splitBySegments flatArgs seg
-    in
-    List.foldr
-        (\stageArgs acc -> mFunction anno stageArgs acc)
-        finalRet
-        stageArgsLists
-
 
 
 -- ============================================================================

@@ -515,7 +515,7 @@ tupleFnAnnos t =
                             _ ->
                                 Nothing
                     )
-                    els
+                    (Mono.tupleToList els)
                 )
 
         _ ->

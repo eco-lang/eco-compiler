@@ -42,6 +42,7 @@ import Compiler.IR.Typed.Optimized as TOpt
 import Data.Map
 import Data.Set as EverySet
 import Dict
+import System.Crash exposing (crash)
 
 
 
@@ -71,8 +72,8 @@ addOptLocalGraph (Opt.LocalGraph _ nodes1 fields1) (Opt.GlobalGraph nodes2 field
 
 {-| Returns the global graph with a node added for the kernel module named
 `moduleName` (such as `Elm.Kernel.File` or `Eco.Kernel.File`), built from its
-parsed chunks. `Name.getKernel` crashes on a name that is neither kind of
-kernel module name.
+parsed chunks. It crashes on a name that is neither kind of kernel module
+name.
 
 The node is keyed as `Opt.toKernelGlobal` describes, so `Elm.Kernel.File` and
 `Eco.Kernel.File` stay two nodes. It replaces any node already under that key.
@@ -85,7 +86,12 @@ addOptKernel : ModuleName.Raw -> List K.Chunk -> Opt.GlobalGraph -> Opt.GlobalGr
 addOptKernel moduleName chunks (Opt.GlobalGraph nodes fields) =
     let
         ( kernelPrefix, home ) =
-            Name.getKernel moduleName
+            case Name.toKernel moduleName of
+                Just split ->
+                    split
+
+                Nothing ->
+                    crash ("GraphAssembly.addOptKernel: not a kernel module name (Deps.Details crawls a kernel module only behind Name.isKernel): " ++ moduleName)
 
         global : Opt.Global
         global =

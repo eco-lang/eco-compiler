@@ -1,5 +1,6 @@
 module Compiler.IR.Canonical exposing
     ( Module(..), ModuleData, Exports(..), Export(..), Effects(..), Manager(..), Port(..)
+    , Payload(..), payloadType
     , Expr, ExprInfo, Expr_(..), CaseBranch(..), FieldUpdate(..)
     , Def(..), Decls(..)
     , Pattern, PatternInfo, Pattern_(..), PatternCtorArg(..)
@@ -61,6 +62,7 @@ plain codec, reached through `fieldUpdateEncoder`.
 # Modules
 
 @docs Module, ModuleData, Exports, Export, Effects, Manager, Port
+@docs Payload, payloadType
 
 
 # Expressions
@@ -181,7 +183,8 @@ field of a record expression. `Update` holds the record being updated and the
 new value of each named field, and `Record` the fields of a record literal;
 both are keyed by field name, and each key keeps the region of the name.
 
-`Tuple` holds the first and second elements and a list of any further ones.
+`Tuple` holds the first and second elements and the third of a three-element
+tuple, if any.
 `Shader` holds the source text of a GLSL shader and the types of its
 attributes, uniforms and varyings, in the forms `Compiler.IR.Source.Shader`
 describes.
@@ -214,7 +217,7 @@ type Expr_
     | Update Expr (Data.Map.Dict String (A.Located Name) FieldUpdate)
     | Record (Data.Map.Dict String (A.Located Name) Expr)
     | Unit
-    | Tuple Expr Expr (List Expr)
+    | Tuple Expr Expr (Maybe Expr)
     | Shader Shader.Source Shader.Types
 
 
@@ -293,8 +296,8 @@ parts.
 
 `PAnything` is `_`. `PRecord` holds the names of the fields a record pattern
 such as `{ x, y }` binds. `PAlias` is a pattern followed by `as` and a name.
-`PTuple` holds the first and second elements and a list of any further ones,
-and `PCons` the head and tail patterns of `::`.
+`PTuple` holds the first and second elements and the third of a
+three-element tuple pattern, if any, and `PCons` the head and tail patterns of `::`.
 
 `PChr` and `PStr` hold the literal in escaped form, as `Chr` and `Str` do.
 The `Bool` of `PStr` is `True` for a triple-quoted string.
@@ -316,7 +319,7 @@ type Pattern_
     | PRecord (List Name)
     | PAlias Pattern Name
     | PUnit
-    | PTuple Pattern Pattern (List Pattern)
+    | PTuple Pattern Pattern (Maybe Pattern)
     | PList (List Pattern)
     | PCons Pattern Pattern
     | PBool Union Bool
@@ -376,8 +379,8 @@ arguments.
 `TRecord` holds each field's type by field name, and the extension variable of
 an extensible record type such as `{ r | x : Int }`, or `Nothing`.
 
-`TTuple` holds the first and second element types and a list of any further
-ones.
+`TTuple` holds the first and second element types and the third of a
+three-element tuple type, if any.
 
 `TAlias` is a use of a type alias: its home and name, each of the alias's
 parameter names paired with the type given for it at this use, and the
@@ -390,7 +393,7 @@ type Type id
     | TType ModuleName.Canonical Name (List (Type id))
     | TRecord (Dict Name (FieldType id)) (Maybe id)
     | TUnit
-    | TTuple (Type id) (Type id) (List (Type id))
+    | TTuple (Type id) (Type id) (Maybe (Type id))
     | TAlias ModuleName.Canonical Name (List ( id, Type id )) (AliasType id)
 
 
@@ -660,22 +663,86 @@ type Effects
 
 An `Incoming` port's annotated type ends in `Sub msg` and it receives values;
 an `Outgoing` port's ends in `Cmd msg` and it sends them. In both, `func` is
-the port's whole annotated type, `payload` the type of the value it carries,
-taken from that type with every alias expanded, and `freeVars` the type
-variables of the annotation.
+the port's whole annotated type, `payload` the value it carries, taken from
+that type with every alias expanded, and `freeVars` the type variables of the
+annotation.
 
 -}
 type Port
     = Incoming
         { freeVars : FreeVars
-        , payload : Type Name
+        , payload : Payload
         , func : Type Name
         }
     | Outgoing
         { freeVars : FreeVars
-        , payload : Type Name
+        , payload : Payload
         , func : Type Name
         }
+
+
+{-| A type that a port or a program's flags can carry, as
+`Compiler.Canonicalize.Effects.checkPayload` accepts it: `Int`, `Float`,
+`Bool`, `String`, `Json.Encode.Value`, `Bytes.Bytes`, unit, a `Maybe`, `List`
+or `Array` of a payload, a tuple of payloads (the first two elements, then the
+rest), and a closed record whose fields are payloads. A record field keeps its
+`FieldType` index.
+-}
+type Payload
+    = PayloadInt
+    | PayloadFloat
+    | PayloadBool
+    | PayloadString
+    | PayloadValue
+    | PayloadBytes
+    | PayloadUnit
+    | PayloadMaybe Payload
+    | PayloadList Payload
+    | PayloadArray Payload
+    | PayloadTuple Payload Payload (Maybe Payload)
+    | PayloadRecord (Dict Name ( Int, Payload ))
+
+
+{-| Returns the canonical type a payload stands for, with no aliases.
+-}
+payloadType : Payload -> Type Name
+payloadType payload =
+    case payload of
+        PayloadInt ->
+            TType ModuleName.basics "Int" []
+
+        PayloadFloat ->
+            TType ModuleName.basics "Float" []
+
+        PayloadBool ->
+            TType ModuleName.basics "Bool" []
+
+        PayloadString ->
+            TType ModuleName.string "String" []
+
+        PayloadValue ->
+            TType ModuleName.jsonEncode "Value" []
+
+        PayloadBytes ->
+            TType ModuleName.bytes "Bytes" []
+
+        PayloadUnit ->
+            TUnit
+
+        PayloadMaybe arg ->
+            TType ModuleName.maybe "Maybe" [ payloadType arg ]
+
+        PayloadList arg ->
+            TType ModuleName.list "List" [ payloadType arg ]
+
+        PayloadArray arg ->
+            TType ModuleName.array "Array" [ payloadType arg ]
+
+        PayloadTuple a b cs ->
+            TTuple (payloadType a) (payloadType b) (Maybe.map payloadType cs)
+
+        PayloadRecord fields ->
+            TRecord (Dict.map (\_ ( index, field ) -> FieldType index (payloadType field)) fields) Nothing
 
 
 {-| The effects an effect module manages, each named by the custom type of the
@@ -865,7 +932,7 @@ typeEncoderS st type_ =
                 [ Bytes.Encode.unsignedInt8 5
                 , typeEncoderS st a
                 , typeEncoderS st b
-                , BE.list (typeEncoderS st) cs
+                , BE.maybe (typeEncoderS st) cs
                 ]
 
         TAlias home name args tipe ->
@@ -914,7 +981,7 @@ typeDecoderS st =
                         Bytes.Decode.map3 TTuple
                             (typeDecoderS st)
                             (typeDecoderS st)
-                            (BD.list (typeDecoderS st))
+                            (BD.maybe (typeDecoderS st))
 
                     6 ->
                         Bytes.Decode.map4 TAlias
@@ -1348,7 +1415,7 @@ expr_Encoder expr_ =
                 [ Bytes.Encode.unsignedInt8 26
                 , exprEncoder a
                 , exprEncoder b
-                , BE.list exprEncoder cs
+                , BE.maybe exprEncoder cs
                 ]
 
         Shader src types ->
@@ -1495,7 +1562,7 @@ expr_Decoder =
                         Bytes.Decode.map3 Tuple
                             exprDecoder
                             exprDecoder
-                            (BD.list exprDecoder)
+                            (BD.maybe exprDecoder)
 
                     27 ->
                         Bytes.Decode.map2 Shader
@@ -1577,7 +1644,7 @@ pattern_Encoder pattern_ =
                 [ Bytes.Encode.unsignedInt8 5
                 , patternEncoder pattern1
                 , patternEncoder pattern2
-                , BE.list patternEncoder otherPatterns
+                , BE.maybe patternEncoder otherPatterns
                 ]
 
         PList patterns ->
@@ -1662,7 +1729,7 @@ pattern_Decoder =
                         Bytes.Decode.map3 PTuple
                             patternDecoder
                             patternDecoder
-                            (BD.list patternDecoder)
+                            (BD.maybe patternDecoder)
 
                     6 ->
                         Bytes.Decode.map PList
@@ -1856,13 +1923,20 @@ collectStringsFromType type_ acc =
         TUnit ->
             acc
 
-        TTuple a b cs ->
-            List.foldl collectStringsFromType
-                (acc
-                    |> collectStringsFromType a
-                    |> collectStringsFromType b
-                )
-                cs
+        TTuple a b maybeC ->
+            let
+                withAB : StringTable.Collector
+                withAB =
+                    acc
+                        |> collectStringsFromType a
+                        |> collectStringsFromType b
+            in
+            case maybeC of
+                Just c ->
+                    collectStringsFromType c withAB
+
+                Nothing ->
+                    withAB
 
         TAlias home name args tipe ->
             let

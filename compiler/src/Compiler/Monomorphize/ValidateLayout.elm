@@ -162,7 +162,7 @@ checkExpr specId frames expr acc =
                                 a
                         )
                         acc
-                        (List.indexedMap Tuple.pair (List.map2 Tuple.pair elems slotTypes))
+                        (List.indexedMap Tuple.pair (List.map2 Tuple.pair (Mono.tupleToList elems) (Mono.tupleToList slotTypes)))
 
                 _ ->
                     acc
@@ -220,7 +220,7 @@ checkPathChain specId name path acc =
                 acc1 =
                     case Mono.getMonoPathType subPath of
                         Mono.MTuple _ slotTypes ->
-                            case List.head (List.drop i slotTypes) of
+                            case List.head (List.drop i (Mono.tupleToList slotTypes)) of
                                 Just slotType ->
                                     if abiKind slotType /= abiKind elemType then
                                         violation specId

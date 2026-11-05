@@ -1055,6 +1055,106 @@ Default leg (flag off):
   time 19/0), elm-tests 21,374 + 918 / 0, `bootstrap` (4b and 8c fixed points), `run-aot-e2e` 1,348/1,348
   (5 deliberate XFAILs). `stress` not rerun.
 
+### dc: dead-code removal (plans/dead-code-removal.md, 2026-11-05): **regression check, single run: wall +0.71 s (FLAT by the CharSimple band), front end −1.3 s, MLIR codegen +3.3 s (source move: `findConcreteCtorField` called 5-7× more)**
+
+| run | wall (s) | parse/check/build (s) | mono (s) | MLIR codegen (s) | GC time (s) | minor GC | major GC | promoted MiB | max RSS (kB) | out.mlir (B) | fixed point |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| r1 | 70.96 | 26.2 | 26.4 | 12.6 | 2.98 | 1392 | 8 | 6492 | 6295092 | 12351452 | same |
+| Δ vs kfix (2026-11-04, one run) | +0.71 (no spread on either row; CharSimple spread 1.10) | −1.3 | −0.9 | +3.3 | −0.02 | −66 | 0 | −394 | −261,200 | +122,019 (+1.0 %, source moved) | |
+| control `eco-optkfix` on today's source, one run | 72.26 | 26.6 | 25.8 | 12.9 | 3.06 | 1399 | 8 | 6503 | 6377388 | 12351452 | byte-identical to `ecodc.mlir` |
+| A/B `eco-optdc` on `dc-base` source (pre-dead-code), under `perf record` | 72.9 (perf) | 29.3 | 28.3 | 9.3 | — | — | — | — | — | 12261672 | n/a (other source) |
+| same binary on today's source, under `perf record` | — | 27.2 | 26.1 | 13.1 | — | — | — | — | — | 12351452 | same |
+
+- **What:** not a front-end step. Since kfix the tree took the dead-code removal (433 report items,
+  `compiler/src` −7,723 lines net): four modules deleted, tuple arity restated in the types (D1),
+  `Reporting.Warning` deleted (D3), `Eco.Http.Error` narrowed (D4), the erased `ArrayIndex` path removed,
+  and format versions on the cache files. The candidate is today's bootstrap `eco-compiler-boot` (copied to
+  `eco-optdc`, its self-output `eco-compiler-boot-2.mlir` to `ecodc.mlir`; A == B), so Phases 1.3-1.4 were done
+  by the bootstrap chain. **One timed run only, by request**, judged against the prior row (kfix). Live tree ==
+  snapshot `dc-w4`. Registry: `~/.eco/0.2.0/packages/registry.dat`.
+- **Checks:** rc 0, no `[gc-stats] SIG`, r1 equals `ecodc.mlir` (fixed point). `.ecot` 8,424,259 B (−190,828).
+- **Verdict:** wall +0.71 s, inside the 1.10 s band of the last triple: **FLAT**, no regression visible. The
+  front end gained: parse/check/build −1.3 s, minors −66, promoted −394 MiB, RSS −261 MB, `.ecot` −2.2 %.
+  Monomorphization −0.9 s. Against that, MLIR codegen is +3.3 s (9.3 → 12.6 s); it was 8.9-9.3 s in every
+  row since CharSimple, so one run cannot call that noise. out.mlir is +1.0 % in bytes but −386 lines, so the
+  emitted program changed shape.
+- **Codegen jump explained (follow-up, same day): the SOURCE moved, not the compiler.** The control
+  `eco-optkfix` on today's source takes 12.9 s in codegen and emits byte-identical MLIR to `eco-optdc`. The
+  same binary (`eco-optdc`) on the `dc-base` snapshot takes 9.3 s, and 13.1 s on today's tree. A call-graph
+  profile of the codegen phase only (`perf record --delay=58000 --call-graph dwarf -F 199`, both sources,
+  `perf_event_paranoid` dropped to 1 and restored to 3) puts the growth in
+  `Patterns.findConcreteCtorField`: 53 → 382 samples (7×). Its callers `generateMonoIndexOnHeap` (44 → 223)
+  and `resolvePathResultType` (28 → 183) both call `lookupCtorFieldInfo` 5-6× as often. The shape
+  registry it scans grew only 4.5 % (type-table ctors 8,468 → 8,850). So today's source has many more
+  constructor-field reads at a type that still contains a type variable. Each one pays a linear
+  scan of every registered shape, sorting the constructor names of each. The function's code did not
+  change. `finishBytecode` (403 → 557) and node generation (308 → 399) account for most of the rest. Which
+  source constructs added the reads is not yet known; a per-constructor count of `findConcreteCtorField`
+  calls (an untimed, instrumented leg) would name them. Memoizing `findConcreteCtorField` per (union,
+  constructor, field) would remove the scan's cost whatever the source does. (The perf-leg sample counts
+  are underestimates: DWARF unwinding lost about 60 % of samples on both sides.)
+- **Gates (fresh, from the G-final pass of the same tree):** elm-tests 21,546 + 918 / 0, JIT E2E 3,017/0,
+  `run-aot-e2e` 1,460/1,460, `stress` 114/114, `bootstrap` pass, CLI 48/48.
+
+### nofcf: remove the codegen cross-specialization search `Patterns.findConcreteCtorField` (2026-11-05): **WIN, kept**
+
+| run | wall (s) | parse/check/build (s) | mono (s) | MLIR codegen (s) | GC time (s) | minor GC | major GC | promoted MiB | max RSS (kB) | out.mlir (B) | fixed point |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| r1 | 66.89 | 26.3 | 26.5 | 8.6 | 2.95 | 1377 | 8 | 6498 | 6302516 | 12343140 | same |
+| r2 | 66.96 | 26.4 | 26.4 | 8.7 | 2.92 | 1377 | 8 | 6498 | 6302156 | 12343140 | same |
+| r3 | 67.09 | 26.6 | 26.3 | 8.7 | 2.93 | 1377 | 8 | 6498 | 6309072 | 12343140 | same |
+| **median** | **66.96** | 26.4 | 26.4 | 8.7 | 2.93 | 1377 | 8 | 6498 | 6302516 | 12343140 | |
+| Δ vs dc (one run) | −4.00 (spread 0.20) | +0.2 | 0.0 | −3.9 | −0.05 | −15 | 0 | +6 | +7,424 | −8,312 (the step deletes source) | |
+
+- **What:** the dc row's codegen jump (+3.3 s) was traced to `Patterns.findConcreteCtorField` (see the dc entry).
+  On a constructor-field read whose type still holds a type variable, it scanned every registered constructor
+  shape (all `ctorShapes` values, a sort of constructor names per entry) for a concrete type of the same field in
+  another specialization. Under MONO_003/MONO_029 such a field is boxed in every view, so the search could only
+  return a type with the same ABI or patch over a MONO_029 violation. `lookupCtorFieldInfo` now reads the
+  container type's own shape only, and the search is deleted. Patch `step-fe-nofcf.patch` (112 lines,
+  `Patterns.elm` only; test headers and 3 coverage-exclusion anchors updated outside the snapshot trees).
+  Candidate built per Phase 1.3/1.4 from `eco-optdc`.
+- **Checks:** rc 0 ×3, no `[gc-stats] SIG`, deterministic, fixed point (`econofcf.mlir`). `.ecot` 8,422,641 B.
+- **Verdict:** wall −4.00 s, far outside any band: **WIN**. The whole gain is MLIR codegen (12.6 → 8.7 s,
+  below the 8.9-9.3 s of every row before dc); the front end and mono are unchanged.
+- **Gates** (run on the experiment form of the same change, a `True ||` guard, identical in behaviour):
+  bootstrap pass (A == B), elm-tests 21,546 + 918 / 0, JIT E2E 3,017/3,017, `run-aot-e2e` 1,460/1,460,
+  E2E MLIR corpus (1,476 files) **0 differences**. The final form is re-gated at the end of the series.
+
+### ctorlay: constructor layouts precomputed by monomorphization (`MonoGraph.ctorLayouts`, 2026-11-05): **FLAT against a same-source control; +1.50 s against nofcf is the workload (source grew); REVERTED (no advantage)**
+
+| run | wall (s) | parse/check/build (s) | mono (s) | MLIR codegen (s) | GC time (s) | minor GC | major GC | promoted MiB | max RSS (kB) | out.mlir (B) | fixed point |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| r1 | 69.07 | 27.7 | 26.9 | 8.6 | 3.07 | 1436 | 8 | 6855 | 6524308 | 12352275 | same |
+| r2 | 68.46 | 27.6 | 26.6 | 8.6 | 3.05 | 1436 | 8 | 6855 | 6509588 | 12352275 | same |
+| r3 | 68.34 | 27.5 | 26.5 | 8.6 | 3.04 | 1436 | 8 | 6855 | 6515840 | 12352275 | same |
+| **median** | **68.46** | 27.6 | 26.6 | 8.6 | 3.05 | 1436 | 8 | 6855 | 6515840 | 12352275 | |
+| Δ vs nofcf | +1.50 (spreads 0.20 / 0.73) | +1.2 | +0.2 | −0.1 | +0.12 | +59 | 0 | +357 | +213,324 | +9,135 (source grew) | |
+| control `eco-optnofcf` on today's source, one run | 68.39 | 27.6 | 26.5 | 8.6 | 3.07 | 1436 | — | 6846 | 6542032 | 12352275 | byte-identical to `ecoctorlay.mlir` |
+
+- **What:** codegen no longer works constructor layouts out. `Compiler.IR.Mono` now owns `FieldLayout`,
+  `CtorLayout`, `isUnboxedInHeap` and `ctorLayoutOf` (moved from `GenerateMlir.Types`, whose `FieldInfo` and
+  `CtorLayout` are now aliases and whose `computeCtorLayout` is gone). `MonoGraph` gains `ctorLayouts =
+  ctorLayoutsOf ctorShapes` (by container type: `ordered` and `byName`), set wherever `ctorShapes` is (Prune,
+  InlineSimplify; empty in both engines). Codegen reads it through `typeRegistry.ctorLayouts` in
+  `lookupCtorFieldInfo` (a `Dict` lookup by constructor name instead of a filter + layout per read), the unbox
+  path, split parameters (`TailRec`, `Backend` psplit) and the type table. Construction sites that hold a node's
+  own shape call `Mono.ctorLayoutOf` on it. REP_HEAP_001, CGEN_014, CGEN_020, MONO_026 amended. Patch
+  `step-fe-ctorlayouts.patch` (961 lines; 13 source files, 15 test files, invariants). Candidate built from
+  `eco-optnofcf`.
+- **Checks:** rc 0 ×3, no `[gc-stats] SIG`, deterministic, fixed point (`ecoctorlay.mlir`). `.ecot` 8,436,424 B.
+- **Verdict:** against the nofcf row, wall +1.50 s is outside the band, a LOSS by §4's letter. The control
+  shows the candidate binary is not the cause: the previous compiler on the same source takes 68.39 s with the
+  same phase split and the same GC counters (minors 1436 both). The +1.5 s is the workload: compiling the
+  compiler's own, now larger, source costs +1.2 s in parse/check/build and +59 minors. Why ~150 added lines
+  cost that much is not attributed; it does not affect compiling other programs. Codegen gains nothing
+  measurable (8.7 → 8.6 s): after nofcf, per-read layout work was already negligible. **FLAT against the
+  control.**
+- **Reverted (user decision, same day):** no advantage, so only the nofcf removal stays. The tree was restored
+  with `lss-loop-snap.sh restore keep-fe-nofcf` (+ verify), and the doc edits outside the snapshot trees were
+  undone by hand. `try-fe-ctorlayouts` and `step-fe-ctorlayouts.patch` stay as the record. Before the revert, a
+  partial gate run on this tree passed bootstrap, elm-tests, JIT E2E and the MLIR corpus diff; AOT was stopped.
+
 ## 6a. Batched end-of-series gates (run once each, after S8)
 
 - **G5 `TypedOptimizedCodecTest` (new):** 135/135 standard-suite modules round-trip the v2 codec
@@ -1337,3 +1437,6 @@ same-sitting control run, not the `ref` row's recorded wall. Details live in eac
 | FloatMinMax | 68.27 | +1.93 | 1392 | 8 | 6823 | 6500884 | — (regression check across a moved tree: new FloatMinMax pass + IEEE Float + Debug.toString; pass FLAT vs a no-pass control 67.46 (band 1.15); 2026-10-24 binary on today's source 68.41; fixed point + deterministic) | review-bug-list |
 | CharSimple | 67.29 | -0.98 | 1392 | 8 | 6819 | 6491908 | — (regression check: review-likely-bugs fixes + Unicode simple case mapping; FLAT vs control eco-optfloat-b 67.66; byte-identical MLIR; fixed point + deterministic) | FloatMinMax |
 | kfix | 70.25 | +2.96 | 1458 | 8 | 6886 | 6556292 | — (regression check, ONE run, across a moved tree: kernel library bug fixes; parse/check/build 27.5 s flat, mono +2.5 s, codegen +0.4 s unattributed; fixed point) | CharSimple |
+| dc | 70.96 | +0.71 | 1392 | 8 | 6492 | 6295092 | — (regression check, ONE run, across a moved tree: dead-code removal; FLAT inside the CharSimple band; parse/check/build 26.2 s (−1.3), mono −0.9 s, MLIR codegen +3.3 s = source move (kfix control 12.9 s on today's source; findConcreteCtorField 7× calls); promoted −394 MiB; fixed point) | kfix |
+| nofcf | 66.96 | -4.00 | 1377 | 8 | 6498 | 6302516 | WIN (findConcreteCtorField removed; MLIR codegen 12.6 -> 8.7 s; E2E MLIR corpus byte-identical) | dc |
+| ctorlay | 68.46 | +1.50 | 1436 | 8 | 6855 | 6515840 | FLAT vs same-source control 68.39 (workload +1.5 s from grown source); REVERTED (no advantage) | nofcf |

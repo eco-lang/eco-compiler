@@ -200,10 +200,10 @@ without the errors.
 canonicalizeModule : Src.Module -> Result String Can.Module
 canonicalizeModule srcModule =
     case Result.run (Canonicalize.canonicalize ( "eco", "example" ) Basic.testIfaces srcModule) of
-        ( _, Ok modul ) ->
+        Ok modul ->
             Ok modul
 
-        ( _, Err _ ) ->
+        Err _ ->
             Err "canonicalization failed"
 
 
@@ -492,17 +492,17 @@ kernelVar =
 suite : Test
 suite =
     Test.describe "Golden constraint fingerprints (byte-identity gate)"
-        [ goldenSrc "literals-containers" ( 2511266603, 4226193006 ) literalsContainers
-        , goldenSrc "access-update-accessor" ( 1544926384, 4178495577 ) accessUpdateAccessor
-        , goldenSrc "binop-chains" ( 430831143, 3366310689 ) binopChains
-        , goldenSrc "pipe-chains" ( 2678310403, 64681076 ) pipeChains
-        , goldenSrc "call-shapes" ( 1746417324, 3223559557 ) callShapes
+        [ goldenSrc "literals-containers" ( 2785153012, 226311435 ) literalsContainers
+        , goldenSrc "access-update-accessor" ( 197418878, 2964110639 ) accessUpdateAccessor
+        , goldenSrc "binop-chains" ( 1220042971, 4258320805 ) binopChains
+        , goldenSrc "pipe-chains" ( 556199974, 608307051 ) pipeChains
+        , goldenSrc "call-shapes" ( 1027021834, 2380110479 ) callShapes
         , goldenSrc "if-chain" ( 2818725526, 50115275 ) ifChain
         , goldenSrc "case-list-patterns" ( 1894973840, 2850780996 ) caseListPatterns
-        , goldenSrc "case-misc-patterns" ( 2621323093, 2815270446 ) caseMiscPatterns
-        , goldenSrc "record-unit-lambdas" ( 2041456857, 793387657 ) recordUnitLambdas
-        , goldenSrc "let-family" ( 3899926726, 1369469687 ) letFamily
-        , goldenSrc "top-level-vars" ( 246617033, 3788333667 ) topLevelVars
+        , goldenSrc "case-misc-patterns" ( 2096710372, 3203079131 ) caseMiscPatterns
+        , goldenSrc "record-unit-lambdas" ( 4177418565, 1552770953 ) recordUnitLambdas
+        , goldenSrc "let-family" ( 767757600, 1487735235 ) letFamily
+        , goldenSrc "top-level-vars" ( 109667206, 3331016800 ) topLevelVars
         , goldenSrc "typed-defs" ( 3380026013, 2639813465 ) typedDefs
         , goldenCan "kernel-var" ( 2702318790, 1175847913 ) kernelVar
         ]

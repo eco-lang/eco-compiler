@@ -25,7 +25,7 @@ It then reports an `eco.unbox` nested in the function, at any depth:
   - whose operand is not in the environment: a function's body is isolated
     from the rest of the module, so every value it uses is defined in it;
   - whose operand's type in the environment is not `!eco.value`; or
-  - whose result type is not `i1`, `i32`, `i64` or `f64`, so an `i8` or `i16`
+  - whose result type is not `i1`, `i32`, `i64` or `f64`, so an `i8`
     result is reported.
 
 Only the first of these that applies is reported for an op.
@@ -191,9 +191,6 @@ typeToString t =
 
         I8 ->
             "i8"
-
-        I16 ->
-            "i16"
 
         I32 ->
             "i32"

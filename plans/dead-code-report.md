@@ -1,7 +1,6 @@
 ---
-status: partial
+status: done
 updated: 2026-11-05
-remaining: "the 433 dead items; the claimed-unreachable rows are all fixed or re-classified (Translate 1147 pinned as correct behaviour)"
 ---
 
 # Dead code in the Elm compiler: full audit (2026-11-04)
@@ -27,6 +26,41 @@ remaining: "the 433 dead items; the claimed-unreachable rows are all fixed or re
 
 Limits: coverage cannot see code that only tests reach at branch level (top-level is covered by
 step 2), and `invariant` arguments are only as strong as the invariant they cite; those items say so.
+
+## Outcome (2026-11-05)
+
+`plans/dead-code-removal.md` carried out every item: the fix proposed here, the variant the plan
+chose, or the "keep" verdict. Each change was checked against the output of the unchanged
+compiler. The MLIR of the ~1,475 JIT E2E programs, the JS of the eco-system and elm-conformance
+tests in three modes, `docs.json` and the formatter's output on about 1,700 files stayed
+byte-identical. The exceptions are deliberate and listed below. elm-tests, the JIT E2E, CLI, AOT
+and stress suites and the bootstrap passed.
+
+- **Done as proposed or in the plan's chosen variant:** all items except those below. W4's
+  decisions D1 (tuple arity in the types, through to Mono and codegen), D3 (warnings deleted)
+  and D4 (`Eco.Http.Error` narrowed to `Network | BadStatus`) are done. D2 and D5 are deferred.
+- **Done in a byte-identical variant** (the full proposal would have changed output): b4#16 and
+  b4#18 crash rather than restructure; b4#26 without the "slice A" part; b4#34 for `$sret` only;
+  b4#36 without `generateBodyExpr`; b4#55 split in the intrinsic type; b4#100 merges constants as
+  `simplifyWidth` did; b4#114 keeps `lamMap`; b4#127 only row 193. Cheaper report alternatives:
+  b4#31, b4#32 (one crash each), b4#117, b4#120.
+- **Not done** (left as they were): b6 T14 (a different binder-root source is not
+  output-equivalent), b6 M6 ("no gaps" at SolverRoots:138 could not be shown), b7#15 (import
+  cycle), b5#100 (hot-path cost for one arm), b4#76 (needs typed slot lists across codegen), b4#51
+  (the arms also serve live inputs), b1#11 (superseded by #17). These join the keep list.
+- **Refuted claim, a real bug:** b3#2's `Opt.ArrayIndex` was still produced. The erased port
+  encoder read an outgoing port's 3-tuple third element as `$.cs[0]`, so any JS program sending a
+  3-tuple through an outgoing port threw a TypeError. `test/elm-conformance/src/OutgoingPortTuple3Test.elm`
+  exposed it. The encoder now reads `$.c`, and `Opt.ArrayIndex` is gone.
+- **Deliberate output changes:** D4 changes the code of programs that use `Eco.Http.Error`
+  (in the corpus, `eco-kernel/HttpEmptyPostTest`). Every JS output loses the uncalled
+  `_Utils_TupleN` prelude block (b3#2). Census lines lose fields that were always empty or zero.
+- **On-disk formats:** `typedGraphFormatVersion` went from 3 to 6, and the erased graph,
+  interfaces and `d.dat` gained version bytes (`Opt.graphFormatVersion` is 3,
+  `interfaceFormatVersion` 1, `detailsFormatVersion` 1). An old cache fails to decode and is rebuilt.
+- **Exclusions:** 325 rows of `compiler/coverage/exclusions.csv` are deleted: 231 whose code is
+  gone or restated, and 94 whose anchor had moved onto live code (the re-baselined coverage showed
+  them reached). 5 flag rows are re-pointed. Coverage is 94.9% (95.1% before).
 
 ## Totals
 

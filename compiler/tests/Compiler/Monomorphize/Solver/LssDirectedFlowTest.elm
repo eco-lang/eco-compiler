@@ -1,6 +1,6 @@
 module Compiler.Monomorphize.Solver.LssDirectedFlowTest exposing (suite)
 
-{-| Tests for `Compiler.Monomorphize.Solver.Store.resolveSlotMembers`, which reads the
+{-| Tests for `Compiler.Monomorphize.Solver.Store.resolveSlotMembersWith`, which reads the
 members of a lambda-set slot that has inclusion edges to other slots. Without
 them, a resolver that loops on a cycle of edges, misses a reachable ⊤, or drops
 the members of a source could go unnoticed.
@@ -20,11 +20,10 @@ The fixture is a store built by hand rather than one produced by compiling a
 program. The tests make points with `mint`, giving a point its content there
 or later with `UF.set`, and call `resolveAt` with a slot's own members and
 sources, as a reader of an `LsFrom` content would; tests 4 and 5 pass these
-directly, without a slot holding them. The resolver context has
-`lssOn = False`, which switches off the honest-sources rule, except in the
-second half of test 5: with the rule on, as in production with lambda-set
-specialization enabled, a resolution that has members and also reaches an
-unwritten (`FlexVar`) source reads as `Nothing`.
+directly, without a slot holding them. The honest-sources rule is switched off,
+except in the second half of test 5: with the rule on, as in production
+(`Store.resolveSlotMembers`), a resolution that has members and also reaches
+an unwritten (`FlexVar`) source reads as `Nothing`.
 
   - Test 1 builds a cycle, A = `LsFrom [1] [B]` and B = `LsFrom [2] [A]`, and
     checks that resolving from A's content and from B's content both return
@@ -234,13 +233,13 @@ captureState =
     \st -> ( st, st )
 
 
-{-| Returns what `Store.resolveSlotMembers` reads in the store `st` for a slot
+{-| Returns what `Store.resolveSlotMembersWith` reads in the store `st` for a slot
 whose own members are `members` and whose sources are `sources`: `Nothing` when
 a ⊤ slot, or a source holding content other than a lambda set or a `FlexVar`,
 is reachable; otherwise `Just` the union of `members` and the members reached.
 
-The context switches the honest-sources rule off (`lssOn = False`) and keeps no
-counters (`lss = Nothing`); `resolveHonestAt` switches the rule on.
+The honest-sources rule is switched off, and the context keeps no counters
+(`lss = Nothing`); `resolveHonestAt` switches the rule on.
 
 -}
 resolveAt : IO.State -> List Int -> List Vars.Variable -> Maybe (List Int)
@@ -248,25 +247,24 @@ resolveAt =
     resolveWith False
 
 
-{-| `resolveAt` with the honest-sources rule switched on (`lssOn = True`), as
-in production with lambda-set specialization enabled: members together with a
-reachable `FlexVar` source read as `Nothing`.
+{-| `resolveAt` with the honest-sources rule switched on, as in production:
+members together with a reachable `FlexVar` source read as `Nothing`.
 -}
 resolveHonestAt : IO.State -> List Int -> List Vars.Variable -> Maybe (List Int)
 resolveHonestAt =
     resolveWith True
 
 
-{-| Runs `Store.resolveSlotMembers` in the store `st` with the honest-sources
-rule set to `lssOn`.
+{-| Runs `Store.resolveSlotMembersWith` in the store `st` with the
+honest-sources rule switched on exactly when `honest` is.
 -}
 resolveWith : Bool -> IO.State -> List Int -> List Vars.Variable -> Maybe (List Int)
-resolveWith lssOn st members sources =
-    Store.resolveSlotMembers members
+resolveWith honest st members sources =
+    Store.resolveSlotMembersWith honest
+        members
         sources
         { store = st
         , next = TypeIds.firstMVarId
-        , lssOn = lssOn
         , maxSetSize = 0
         , lss = Nothing
         , ecoReads = []

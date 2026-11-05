@@ -222,10 +222,10 @@ checkNodeSignature specId keyType node =
         Mono.MonoManagerLeaf _ _ ->
             []
 
-        Mono.MonoCtor _ monoType ->
+        Mono.MonoCtor _ _ monoType ->
             checkType ctx "ctor type" monoType
 
-        Mono.MonoEnum _ monoType ->
+        Mono.MonoEnum _ _ _ monoType ->
             checkType ctx "enum type" monoType
 
 
@@ -296,7 +296,7 @@ collectTypeVars monoType =
                 ++ collectTypeVars result
 
         Mono.MTuple _ elems ->
-            List.concatMap collectTypeVars elems
+            List.concatMap collectTypeVars (Mono.tupleToList elems)
 
         Mono.MRecord _ fields ->
             Dict.foldl (\_ fieldType acc -> acc ++ collectTypeVars fieldType) [] fields
@@ -357,7 +357,7 @@ monoTypeToString monoType =
             "List " ++ monoTypeToString elementType
 
         Mono.MTuple _ elements ->
-            "(" ++ String.join ", " (List.map monoTypeToString elements) ++ ")"
+            "(" ++ String.join ", " (List.map monoTypeToString (Mono.tupleToList elements)) ++ ")"
 
         Mono.MRecord _ fields ->
             let

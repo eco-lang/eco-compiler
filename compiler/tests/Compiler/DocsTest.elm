@@ -59,7 +59,7 @@ suite =
                         Expect.fail "parse failed"
 
                     Ok srcModule ->
-                        case Tuple.second (RResult.run (Canonicalize.canonicalize Pkg.core Basic.testIfaces srcModule)) of
+                        case RResult.run (Canonicalize.canonicalize Pkg.core Basic.testIfaces srcModule) of
                             Err _ ->
                                 Expect.fail "canonicalization failed"
 

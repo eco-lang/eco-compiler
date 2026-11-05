@@ -24,6 +24,7 @@ import Compiler.IR.Typed.TypeVars as Vars
 import Compiler.Type.State.IO as IO exposing (IO)
 import Compiler.Type.UnionFind as UF
 import Dict
+import Maybe.Extra as Maybe
 
 
 
@@ -103,7 +104,7 @@ occursHelp seen var foundCycle =
                                     IO.pure foundCycle
 
                                 Vars.Tuple1 a b cs ->
-                                    IO.foldrM (occursHelp newSeen) foundCycle cs |> IO.andThen (occursHelp newSeen b) |> IO.andThen (occursHelp newSeen a)
+                                    IO.foldrM (occursHelp newSeen) foundCycle (Maybe.toList cs) |> IO.andThen (occursHelp newSeen b) |> IO.andThen (occursHelp newSeen a)
 
                         Vars.Alias _ _ args _ ->
                             IO.foldrM (occursHelp (var :: seen)) foundCycle (List.map Tuple.second args)

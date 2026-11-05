@@ -119,10 +119,10 @@ expectTailCall source =
 
         Ok { canonical, annotations } ->
             case RResult.run (ErasedOptimize.optimize annotations canonical) of
-                ( _, Err _ ) ->
+                Err _ ->
                     Expect.fail "erased optimization failed"
 
-                ( _, Ok (Opt.LocalGraph _ nodes _) ) ->
+                Ok (Opt.LocalGraph _ nodes _) ->
                     let
                         rendered =
                             Data.Map.foldl (\_ node acc -> Debug.toString node :: acc) [] nodes

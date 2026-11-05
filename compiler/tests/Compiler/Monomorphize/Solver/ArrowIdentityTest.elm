@@ -38,7 +38,7 @@ here.
 The fixture types are built from `Int -> Int` arrows: one arrow alone, a pair
 whose two arrows carry the same `ArrowSlot` (an ArrowId, or `Can.noArrow` on
 both), and a pair with two different ArrowIds. Each load runs `loadTypeC` on
-`Store.testLoadCtx` with lambda sets on, an empty variable memo and a given
+`StoreHelpers.loadCtx` with lambda sets on, an empty variable memo and a given
 arrow-memo seed, into a fresh store unless a test says otherwise. The tests
 establish:
 
@@ -79,6 +79,7 @@ import Compiler.IR.Canonical as Can
 import Compiler.IR.Typed.TypeVars as Vars
 import Compiler.Monomorphize.Solver.Engine as Engine
 import Compiler.Monomorphize.Solver.Store as Store
+import Compiler.Monomorphize.Solver.StoreHelpers as StoreHelpers
 import Compiler.Type.State.IO as IO
 import Dict
 import Expect
@@ -122,7 +123,7 @@ of both arrows.
 -}
 twinArrows : TypeIds.ArrowSlot -> Can.Type TypeIds.MVarId
 twinArrows aid =
-    Can.TTuple (arrowWith aid) (arrowWith aid) []
+    Can.TTuple (arrowWith aid) (arrowWith aid) Nothing
 
 
 {-| The type `( Int -> Int, Int -> Int )` with `firstId` on the first arrow and
@@ -130,7 +131,7 @@ twinArrows aid =
 -}
 distinctArrows : Can.Type TypeIds.MVarId
 distinctArrows =
-    Can.TTuple (arrowWith firstId) (arrowWith secondId) []
+    Can.TTuple (arrowWith firstId) (arrowWith secondId) Nothing
 
 
 {-| The `ArrowSlot` stamped with the first ArrowId.
@@ -167,7 +168,7 @@ loadInto : Dict.Dict Int Vars.Variable -> Can.Type TypeIds.MVarId -> IO.State ->
 loadInto seedMemo canType store =
     let
         ( _, c ) =
-            Store.loadTypeC Dict.empty canType (Store.testLoadCtx True seedMemo store)
+            Store.loadTypeC Dict.empty canType (StoreHelpers.loadCtx True seedMemo store)
 
         slots =
             Array.fromList (List.reverse c.arrowSlots)

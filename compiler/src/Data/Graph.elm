@@ -1,4 +1,4 @@
-module Data.Graph exposing (IntGraph, SCC(..), stronglyConnComp, stronglyConnCompInt)
+module Data.Graph exposing (IntGraph, SCC(..), stronglyConnComp, stronglyConnCompNonEmpty, stronglyConnCompInt)
 
 {-| Groups the nodes of a dependency graph into mutually recursive groups and
 orders the groups so that each comes after everything it depends on.
@@ -27,7 +27,7 @@ search collects exactly one component. Both searches keep their own stack of
 pending vertices and are tail recursive, so a deep graph does not exhaust the
 call stack.
 
-@docs IntGraph, SCC, stronglyConnComp, stronglyConnCompInt
+@docs IntGraph, SCC, stronglyConnComp, stronglyConnCompNonEmpty, stronglyConnCompInt
 
 -}
 
@@ -41,14 +41,15 @@ import Dict as CoreDict
 
 `AcyclicSCC` is a single node with no edge to itself.
 
-`CyclicSCC` holds the nodes of a component that has a cycle. It may hold just
-one node, when that node has an edge to itself. Its nodes are in the reverse of
-the order in which the second search reached them, not in input order.
+`CyclicSCC` holds the nodes of a component that has a cycle, the first one
+separately, so that there is always one. It holds just one node when that node
+has an edge to itself. Its nodes are in the reverse of the order in which the
+second search reached them, not in input order.
 
 -}
 type SCC vertex
     = AcyclicSCC vertex
-    | CyclicSCC (List vertex)
+    | CyclicSCC vertex (List vertex)
 
 
 {-| A directed graph whose vertices are the integers from 0 to `size - 1`,
@@ -73,10 +74,13 @@ type alias IntGraph =
 
 
 {-| Returns the strongly connected components of an `IntGraph`, each after
-every component it has an edge to.
+every component it has an edge to. A graph with at least one vertex has at
+least one component.
 
 The result is correct only when the graph meets the contract stated on
 `IntGraph`.
+
+This is the algorithm the module docstring describes.
 
 -}
 stronglyConnCompInt : IntGraph -> List (SCC Int)
@@ -93,19 +97,19 @@ stronglyConnCompInt { fwd, trans, selfLoops, size } =
 
                     else
                         let
-                            ( newVisited, component ) =
+                            ( newVisited, others ) =
                                 collectComponent fwd v visited
                         in
-                        case component of
-                            [ single ] ->
-                                if BitSet.member single selfLoops then
-                                    ( newVisited, CyclicSCC [ single ] :: acc )
+                        case others of
+                            [] ->
+                                if BitSet.member v selfLoops then
+                                    ( newVisited, CyclicSCC v [] :: acc )
 
                                 else
-                                    ( newVisited, AcyclicSCC single :: acc )
+                                    ( newVisited, AcyclicSCC v :: acc )
 
-                            _ ->
-                                ( newVisited, CyclicSCC component :: acc )
+                            first :: rest ->
+                                ( newVisited, CyclicSCC first (rest ++ [ v ]) :: acc )
                 )
                 ( BitSet.emptyWithSize size, [] )
                 rpo
@@ -114,7 +118,8 @@ stronglyConnCompInt { fwd, trans, selfLoops, size } =
 
 
 {-| Returns the strongly connected components of the graph that `edges0`
-describes, each after every component it depends on.
+describes, each after every component it depends on. A non-empty `edges0` has
+at least one component.
 
 Each triple is a node, the key that names it, and the keys of the nodes it
 depends on. A dependency key that names no node is ignored. Keys are expected
@@ -131,10 +136,25 @@ stronglyConnComp edges0 =
                 AcyclicSCC ( n, _, _ ) ->
                     AcyclicSCC n
 
-                CyclicSCC triples ->
-                    CyclicSCC (List.map (\( n, _, _ ) -> n) triples)
+                CyclicSCC ( n, _, _ ) triples ->
+                    CyclicSCC n (List.map (\( m, _, _ ) -> m) triples)
         )
         (stronglyConnCompR edges0)
+
+
+{-| Returns the components of the non-empty graph `first :: rest` as
+`stronglyConnComp` does, the first component separately, since there is always
+one.
+-}
+stronglyConnCompNonEmpty : ( node, comparable, List comparable ) -> List ( node, comparable, List comparable ) -> ( SCC node, List (SCC node) )
+stronglyConnCompNonEmpty (( firstNode, _, _ ) as first) rest =
+    case stronglyConnComp (first :: rest) of
+        scc :: sccs ->
+            ( scc, sccs )
+
+        [] ->
+            -- Not taken: every node lies in a component.
+            ( AcyclicSCC firstNode, [] )
 
 
 {-| Returns the components as `stronglyConnComp` does, but with each node
@@ -171,7 +191,8 @@ stronglyConnCompR edges0 =
                 ( fwd, trans, selfLoops ) =
                     buildGraphs triples keyToId n
             in
-            kosaraju fwd trans selfLoops triples n
+            stronglyConnCompInt { fwd = fwd, trans = trans, selfLoops = selfLoops, size = n }
+                |> List.filterMap (sccToTriples triples)
 
 
 
@@ -195,19 +216,18 @@ binarySearch arr target lo hi =
             mid =
                 lo + (hi - lo) // 2
         in
-        case Array.get mid arr of
-            Nothing ->
-                Nothing
+        Array.get mid arr
+            |> Maybe.andThen
+                (\midVal ->
+                    if target == midVal then
+                        Just mid
 
-            Just midVal ->
-                if target == midVal then
-                    Just mid
+                    else if target < midVal then
+                        binarySearch arr target lo (mid - 1)
 
-                else if target < midVal then
-                    binarySearch arr target lo (mid - 1)
-
-                else
-                    binarySearch arr target (mid + 1) hi
+                    else
+                        binarySearch arr target (mid + 1) hi
+                )
 
 
 
@@ -294,67 +314,25 @@ buildGraphs triples keyToId n =
 
 
 
--- KOSARAJU'S ALGORITHM
+-- VERTICES TO TRIPLES
 
 
-{-| Returns the strongly connected components of the graph given by `fwd`,
-`trans` and `selfLoops`, each after every component it has an edge to, with
-each vertex replaced by its triple from `triples`.
-
-This is the algorithm the module docstring describes, the same as
-`stronglyConnCompInt` except that each vertex is looked up in `triples`.
-
+{-| Replaces each vertex of `scc` by its triple from `triples`, leaving out a
+vertex with no triple, and gives `Nothing` when none is left.
 -}
-kosaraju :
-    Array (List Int)
-    -> Array (List Int)
-    -> BitSet
-    -> Array ( node, comparable, List comparable )
-    -> Int
-    -> List (SCC ( node, comparable, List comparable ))
-kosaraju fwd trans selfLoops triples n =
-    let
-        rpo =
-            reversePostOrder trans n
+sccToTriples : Array ( node, comparable, List comparable ) -> SCC Int -> Maybe (SCC ( node, comparable, List comparable ))
+sccToTriples triples scc =
+    case scc of
+        AcyclicSCC v ->
+            Maybe.map AcyclicSCC (Array.get v triples)
 
-        ( _, sccs ) =
-            List.foldl
-                (\v ( visited, acc ) ->
-                    if BitSet.member v visited then
-                        ( visited, acc )
+        CyclicSCC v vs ->
+            case List.filterMap (\i -> Array.get i triples) (v :: vs) of
+                [] ->
+                    Nothing
 
-                    else
-                        let
-                            ( newVisited, component ) =
-                                collectComponent fwd v visited
-                        in
-                        case component of
-                            [ single ] ->
-                                if BitSet.member single selfLoops then
-                                    case Array.get single triples of
-                                        Just triple ->
-                                            ( newVisited, CyclicSCC [ triple ] :: acc )
-
-                                        Nothing ->
-                                            ( newVisited, acc )
-
-                                else
-                                    case Array.get single triples of
-                                        Just triple ->
-                                            ( newVisited, AcyclicSCC triple :: acc )
-
-                                        Nothing ->
-                                            ( newVisited, acc )
-
-                            _ ->
-                                ( newVisited
-                                , CyclicSCC (List.filterMap (\i -> Array.get i triples) component) :: acc
-                                )
-                )
-                ( BitSet.emptyWithSize n, [] )
-                rpo
-    in
-    List.reverse sccs
+                t :: ts ->
+                    Just (CyclicSCC t ts)
 
 
 
@@ -432,17 +410,23 @@ rpoHelp adj stack visited acc =
 -- COLLECT ONE SCC COMPONENT via DFS on forward graph
 
 
-{-| Returns, with `visited` extended, every vertex that can be reached in `adj`
-from `start` without passing through a vertex `visited` already holds.
+{-| Returns, with `visited` extended, every vertex other than `start` that can
+be reached in `adj` from `start`, which `visited` must not hold, without
+passing through a vertex `visited` already holds. They are in the reverse of
+the order the search visited them, so the whole component, `start` included,
+is the result followed by `start`.
 
 When `start` is taken in reverse post-order of the reversed graph and
-`visited` holds the components already collected, those vertices are exactly
-the component of `start`.
+`visited` holds the components already collected, those vertices and `start`
+are exactly the component of `start`.
 
 -}
 collectComponent : Array (List Int) -> Int -> BitSet -> ( BitSet, List Int )
 collectComponent adj start visited =
-    collectHelp adj [ start ] visited []
+    collectHelp adj
+        (List.foldl (\n s -> n :: s) [] (Maybe.withDefault [] (Array.get start adj)))
+        (BitSet.insert start visited)
+        []
 
 
 {-| Runs the depth-first search whose pending vertices are `stack`, returning

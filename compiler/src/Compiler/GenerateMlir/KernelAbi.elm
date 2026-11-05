@@ -63,7 +63,6 @@ backend.
 import Compiler.GenerateMlir.Types as Types
 import Compiler.IR.Mono as Mono
 import Mlir.Mlir exposing (MlirType)
-import System.Crash exposing (crash)
 
 
 
@@ -124,40 +123,17 @@ type alias KernelInstanceAbi =
 The symbol is `<prefix>_Kernel_<home>_<name>`, with a `_Int`, `_Float` or
 `_Char` suffix for the `(home, name)` pairs and argument types listed in this
 module's docstring. The ABI types are `Types.monoTypeToAbi` of each argument
-type and of the result type, chosen independently of the symbol.
-
-Crashes the compiler if an Int, Float or Char argument or result would be given
-an ABI type other than its own primitive MLIR type.
+type and of the result type (the `ElmDerived` policy), chosen independently of
+the symbol, so an Int, Float or Char argument or result always has its own
+primitive MLIR type.
 
 -}
 deriveKernelInstanceAbi : KernelInstanceKey -> KernelInstanceAbi
 deriveKernelInstanceAbi key =
-    let
-        symbolName : String
-        symbolName =
-            kernelInstanceSymbol key
-
-        policy : KernelBackendAbiPolicy
-        policy =
-            kernelBackendAbiPolicy
-
-        ( abiArgTypes, abiResultType ) =
-            case policy of
-                ElmDerived ->
-                    ( List.map Types.monoTypeToAbi key.argTypes
-                    , Types.monoTypeToAbi key.resultType
-                    )
-
-        abi : KernelInstanceAbi
-        abi =
-            { symbolName = symbolName
-            , abiArgTypes = abiArgTypes
-            , abiResultType = abiResultType
-            }
-    in
-    case policy of
-        ElmDerived ->
-            ensurePrimitiveAbi key abi
+    { symbolName = kernelInstanceSymbol key
+    , abiArgTypes = List.map Types.monoTypeToAbi key.argTypes
+    , abiResultType = Types.monoTypeToAbi key.resultType
+    }
 
 
 {-| Returns the C symbol for a kernel instance:
@@ -394,7 +370,7 @@ resultElementSuffix resultType =
                     ""
     in
     case resultType of
-        Mono.MTuple _ [ arrayType, _ ] ->
+        Mono.MTuple _ (Mono.T2 arrayType _) ->
             elementSuffix arrayType
 
         _ ->
@@ -450,127 +426,3 @@ callInstanceResultType home name abiResultType callResultType =
 
     else
         abiResultType
-
-
-{-| Returns `abi` unchanged if every Int, Float and Char argument or result of
-`key` has its own primitive MLIR type in `abi`, and crashes the compiler with a
-message naming each mismatched slot otherwise.
-
-Slots of any other type are not checked.
-
--}
-ensurePrimitiveAbi : KernelInstanceKey -> KernelInstanceAbi -> KernelInstanceAbi
-ensurePrimitiveAbi key abi =
-    let
-        slotErr : String -> Mono.MonoType -> MlirType -> String
-        slotErr where_ monoTy mlirTy =
-            "Kernel ABI primitive mismatch for "
-                ++ key.home
-                ++ "."
-                ++ key.name
-                ++ " "
-                ++ where_
-                ++ ": MonoType "
-                ++ monoTypeTag monoTy
-                ++ " paired with MLIR "
-                ++ Types.mlirTypeToString mlirTy
-
-        checkSlot : String -> ( Mono.MonoType, MlirType ) -> Maybe String
-        checkSlot where_ ( monoTy, mlirTy ) =
-            case ( monoTy, mlirTy ) of
-                ( Mono.MInt, _ ) ->
-                    if mlirTy == Types.ecoInt then
-                        Nothing
-
-                    else
-                        Just (slotErr where_ monoTy mlirTy)
-
-                ( Mono.MFloat, _ ) ->
-                    if mlirTy == Types.ecoFloat then
-                        Nothing
-
-                    else
-                        Just (slotErr where_ monoTy mlirTy)
-
-                ( Mono.MChar, _ ) ->
-                    if mlirTy == Types.ecoChar then
-                        Nothing
-
-                    else
-                        Just (slotErr where_ monoTy mlirTy)
-
-                _ ->
-                    -- A `number` type variable is legitimately `i64` here.
-                    Nothing
-
-        argErrors : List String
-        argErrors =
-            List.indexedMap
-                (\i pair ->
-                    checkSlot ("arg" ++ String.fromInt i) pair
-                )
-                (List.map2 Tuple.pair key.argTypes abi.abiArgTypes)
-                |> List.filterMap identity
-
-        resultErrors : List String
-        resultErrors =
-            checkSlot "result" ( key.resultType, abi.abiResultType )
-                |> Maybe.map List.singleton
-                |> Maybe.withDefault []
-
-        errors : List String
-        errors =
-            argErrors ++ resultErrors
-    in
-    case errors of
-        [] ->
-            abi
-
-        _ ->
-            crash ("ensurePrimitiveAbi: " ++ String.join "; " errors)
-
-
-{-| Returns a short name for the outermost constructor of a type, for the
-error message of `ensurePrimitiveAbi`.
--}
-monoTypeTag : Mono.MonoType -> String
-monoTypeTag monoType =
-    case monoType of
-        Mono.MInt ->
-            "MInt"
-
-        Mono.MFloat ->
-            "MFloat"
-
-        Mono.MBool ->
-            "MBool"
-
-        Mono.MChar ->
-            "MChar"
-
-        Mono.MString ->
-            "MString"
-
-        Mono.MUnit ->
-            "MUnit"
-
-        Mono.MList _ _ ->
-            "Mono.mList"
-
-        Mono.MTuple _ _ ->
-            "Mono.mTuple"
-
-        Mono.MRecord _ _ ->
-            "Mono.mRecord"
-
-        Mono.MCustom _ _ n _ ->
-            "Mono.mCustom " ++ n
-
-        Mono.MFunction _ _ _ _ ->
-            "Mono.mFunction"
-
-        Mono.MVar _ Mono.CEcoValue ->
-            "MVar CEcoValue"
-
-        Mono.MVar _ Mono.CNumber ->
-            "MVar CNumber"

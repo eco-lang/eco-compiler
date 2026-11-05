@@ -99,8 +99,8 @@ main =
                                                 , A.at (A.Position 7 3)
                                                     (A.Position 7 16)
                                                     (S.Call (A.at (A.Position 7 3) (A.Position 7 7) (S.Var S.LowVar "text"))
-                                                        [ ( [], A.at (A.Position 7 8) (A.Position 7 16) (S.Str "Hello!" False) )
-                                                        ]
+                                                        ( [], A.at (A.Position 7 8) (A.Position 7 16) (S.Str "Hello!" False) )
+                                                        []
                                                     )
                                                 )
                                             , tipe = Nothing

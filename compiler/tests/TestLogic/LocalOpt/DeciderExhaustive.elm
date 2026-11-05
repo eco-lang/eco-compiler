@@ -29,7 +29,7 @@ branches held inline in a `Leaf` as well as in jump targets.
     number of constructors it records.
   - `expectDeciderPathsConsistent` checks that every test made at one path
     within a decider is of one kind: constructor tests of one type (same home
-    module and constructor count), list tests, tuple tests, or literals of one
+    module and constructor count), list tests, or literals of one
     type. A path names one sub-value, which has one type, so two kinds at one
     path mean a path that reaches the wrong part of the value.
 
@@ -55,8 +55,10 @@ import Compiler.IR.DecisionTree.TypedPath as DT
 import Compiler.IR.Source as Src
 import Compiler.IR.Typed.Optimized as TOpt
 import Data.Map
+import Data.NonEmptyList as NE
 import Dict
 import Expect
+import Maybe.Extra as Maybe
 import TestLogic.TestPipeline as Pipeline
 
 
@@ -150,7 +152,7 @@ jumpLeaves decider =
             jumpLeaves success ++ jumpLeaves failure
 
         TOpt.FanOut _ edges fallback ->
-            List.concatMap (\( _, d ) -> jumpLeaves d) edges ++ jumpLeaves fallback
+            List.concatMap (\( _, d ) -> jumpLeaves d) (NE.toList edges) ++ jumpLeaves fallback
 
 
 {-| Returns the problems with the tests of `decider`: a `FanOut` that makes
@@ -164,14 +166,14 @@ testIssues ctx decider =
             []
 
         TOpt.Chain tests success failure ->
-            List.concatMap (\( _, t ) -> ctorIndexIssue ctx t) tests
+            List.concatMap (\( _, t ) -> ctorIndexIssue ctx t) (NE.toList tests)
                 ++ testIssues ctx success
                 ++ testIssues ctx failure
 
         TOpt.FanOut path edges fallback ->
             let
                 keys =
-                    List.map (\( t, _ ) -> DT.testToComparable t) edges
+                    List.map (\( t, _ ) -> DT.testToComparable (DT.fromFanTest t)) (NE.toList edges)
 
                 duplicated =
                     List.length keys /= List.length (unique keys)
@@ -182,8 +184,8 @@ testIssues ctx decider =
              else
                 []
             )
-                ++ List.concatMap (\( t, _ ) -> ctorIndexIssue ctx t) edges
-                ++ List.concatMap (\( _, d ) -> testIssues ctx d) edges
+                ++ List.concatMap (\( t, _ ) -> ctorIndexIssue ctx (DT.fromFanTest t)) (NE.toList edges)
+                ++ List.concatMap (\( _, d ) -> testIssues ctx d) (NE.toList edges)
                 ++ testIssues ctx fallback
 
 
@@ -267,17 +269,16 @@ pathTests decider =
             []
 
         TOpt.Chain tests success failure ->
-            tests ++ pathTests success ++ pathTests failure
+            NE.toList tests ++ pathTests success ++ pathTests failure
 
         TOpt.FanOut path edges fallback ->
-            List.map (\( t, _ ) -> ( path, t )) edges
-                ++ List.concatMap (\( _, d ) -> pathTests d) edges
+            List.map (\( t, _ ) -> ( path, DT.fromFanTest t )) (NE.toList edges)
+                ++ List.concatMap (\( _, d ) -> pathTests d) (NE.toList edges)
                 ++ pathTests fallback
 
 
 {-| Returns the kind of value `test` applies to: for `IsCtor`, the home module
-of the type and its constructor count; otherwise list, tuple, or the literal's
-type.
+of the type and its constructor count; otherwise list, or the literal's type.
 -}
 testKind : DT.Test -> String
 testKind test =
@@ -290,9 +291,6 @@ testKind test =
 
         DT.IsNil ->
             "list"
-
-        DT.IsTuple ->
-            "tuple"
 
         DT.IsInt _ ->
             "Int"
@@ -444,7 +442,7 @@ children expr =
             Data.Map.values fields
 
         TOpt.Tuple _ a b rest _ ->
-            a :: b :: rest
+            a :: b :: Maybe.toList rest
 
         _ ->
             []
@@ -465,7 +463,7 @@ inlineLeaves decider =
             inlineLeaves success ++ inlineLeaves failure
 
         TOpt.FanOut _ edges fallback ->
-            List.concatMap (\( _, d ) -> inlineLeaves d) edges ++ inlineLeaves fallback
+            List.concatMap (\( _, d ) -> inlineLeaves d) (NE.toList edges) ++ inlineLeaves fallback
 
 
 {-| Returns a global as its module name and its own name joined by a dot, as

@@ -46,8 +46,10 @@ and `childrenOf` both skip, since the expected count comes from `childrenOf`.
 -}
 
 import Compiler.Core.Annotation as A
+import Compiler.IR.DecisionTree.Test as DT
 import Compiler.IR.Mono as Mono
 import Compiler.IR.Mono.Traverse as MonoTraverse
+import Data.NonEmptyList as NE
 import Expect
 import Test exposing (Test)
 
@@ -243,9 +245,9 @@ nestedLets depth =
 
 {-| Builds `depth` cases nested through an inline branch, down to the literal 0.
 
-Each case's decision tree is a `Chain` with no tests: its success leaf holds the
-next level inline, and its failure leaf jumps to the case's one jump body, the
-literal 1.
+Each case's decision tree is a `Chain` with one test, that the scrutinee is the
+`Int` 0: its success leaf holds the next level inline, and its failure leaf
+jumps to the case's one jump body, the literal 1.
 
 -}
 nestedCases : Int -> Mono.MonoExpr
@@ -256,7 +258,7 @@ nestedCases depth =
     else
         Mono.MonoCase "c"
             "s"
-            (Mono.Chain [] (Mono.Leaf (Mono.Inline (nestedCases (depth - 1)))) (Mono.Leaf (Mono.Jump 0)))
+            (Mono.Chain (NE.singleton ( Mono.DtRoot "s" Mono.MInt, DT.IsInt 0 )) (Mono.Leaf (Mono.Inline (nestedCases (depth - 1)))) (Mono.Leaf (Mono.Jump 0)))
             [ ( 0, lit 1 ) ]
             Mono.MInt
 
@@ -264,9 +266,10 @@ nestedCases depth =
 {-| Builds a tree `depth` levels deep that combines lets, cases, tuples and ifs.
 
 Each level is a let whose bound expression is `nestedCases 2` and whose body is
-a case. The case's decision tree is a `FanOut` with no edges whose fallback
-holds `mixed (depth - 1)` inline, and its one jump body is a tuple of the
-literal 4 and `mixed (depth - 2)`. At a `depth` of zero or below the tree is
+a case. The case's decision tree is a `FanOut` with one edge, for the `Int` 0,
+that jumps to the case's one jump body, and a fallback that holds
+`mixed (depth - 1)` inline. The jump body is a tuple of the literal 4 and
+`mixed (depth - 2)`. At a `depth` of zero or below the tree is
 `if 1 then 2 else 3`.
 
 -}
@@ -279,8 +282,8 @@ mixed depth =
         Mono.MonoLet (Mono.MonoDef "y" (nestedCases 2))
             (Mono.MonoCase "c"
                 "s"
-                (Mono.FanOut (Mono.DtRoot "s" Mono.MInt) [] (Mono.Leaf (Mono.Inline (mixed (depth - 1)))))
-                [ ( 0, Mono.MonoTupleCreate A.zero [ lit 4, mixed (depth - 2) ] Mono.MInt ) ]
+                (Mono.FanOut (Mono.DtRoot "s" Mono.MInt) (NE.singleton ( DT.FInt 0, Mono.Leaf (Mono.Jump 0) )) (Mono.Leaf (Mono.Inline (mixed (depth - 1)))))
+                [ ( 0, Mono.MonoTupleCreate A.zero (Mono.T2 (lit 4) (mixed (depth - 2))) Mono.MInt ) ]
                 Mono.MInt
             )
             Mono.MInt

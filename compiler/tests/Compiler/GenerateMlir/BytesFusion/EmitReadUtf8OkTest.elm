@@ -42,27 +42,19 @@ suite =
         [ Test.test "ReadUtf8 (length from an expression): ok result is consumed" <|
             \_ ->
                 expectOkUsed
-                    [ IR.InitReadCursor "c" bytesExpr
-                    , IR.ReadUtf8 "c" (Mono.MonoLiteral (Mono.LInt 3) Mono.MInt) "s"
-                    , IR.ReturnJust "s"
-                    ]
+                    { body = [ IR.ReadUtf8 "c" (Mono.MonoLiteral (Mono.LInt 3) Mono.MInt) "s" ]
+                    , result = "s"
+                    }
         , Test.test "ReadUtf8Var (length from an earlier read): ok result is consumed" <|
             \_ ->
                 expectOkUsed
-                    [ IR.InitReadCursor "c" bytesExpr
-                    , IR.ReadU8 "c" "n"
-                    , IR.ReadUtf8Var "c" "n" "s"
-                    , IR.ReturnJust "s"
-                    ]
+                    { body =
+                        [ IR.ReadU8 "c" "n"
+                        , IR.ReadUtf8Var "c" "n" "s"
+                        ]
+                    , result = "s"
+                    }
         ]
-
-
-{-| The input expression given to `InitReadCursor`. The emitter does not compile
-it; the cursor starts on the `%bytes` name passed to `emitFusedDecoder`.
--}
-bytesExpr : Mono.MonoExpr
-bytesExpr =
-    Mono.MonoVarLocal "bytes" Mono.MInt
 
 
 {-| A stand-in expression compiler that compiles every expression to the `i64`
@@ -87,16 +79,16 @@ freshContext =
     Context.initContext Registry.emptyRegistry Array.empty HashMap.empty
 
 
-{-| Emits a fused decoder for `decoderOps` and passes if it contains at least one
+{-| Emits a fused decoder for `program` and passes if it contains at least one
 `bf.read.utf8` and the third result of every one is an operand of some emitted
 op, at any nesting depth. Fails naming each unused result, or
 `<no ok result>` for a read with fewer than three results.
 -}
-expectOkUsed : List IR.DecoderOp -> Expectation
-expectOkUsed decoderOps =
+expectOkUsed : IR.DecoderProgram -> Expectation
+expectOkUsed program =
     let
         ( ops, _, _ ) =
-            Emit.emitFusedDecoder stubCompile freshContext "%bytes" decoderOps
+            Emit.emitFusedDecoder stubCompile freshContext "%bytes" program
 
         all =
             List.concatMap flatten ops

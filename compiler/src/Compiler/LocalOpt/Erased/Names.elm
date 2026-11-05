@@ -4,7 +4,7 @@ module Compiler.LocalOpt.Erased.Names exposing
     , generate
     , registerGlobal, registerKernel, registerCtor, registerDebug
     , registerField, registerFieldDict, registerFieldList
-    , pure, map, andThen, traverse, mapTraverse
+    , pure, map, andThen, traverse, traverseMaybe, mapTraverse
     )
 
 {-| Lowering a definition to the erased optimized form has to record, alongside
@@ -25,7 +25,7 @@ the result. The counter starts at 0 on every `run`, so a generated name is
 unique only within one `run`.
 
 The `register*` functions are where state is added; `pure`, `map`, `andThen`,
-`traverse` and `mapTraverse` combine computations, each passing the state on
+`traverse`, `traverseMaybe` and `mapTraverse` combine computations, each passing the state on
 in order.
 
 
@@ -52,7 +52,7 @@ in order.
 
 # Monad Operations
 
-@docs pure, map, andThen, traverse, mapTraverse
+@docs pure, map, andThen, traverse, traverseMaybe, mapTraverse
 
 -}
 
@@ -387,6 +387,19 @@ traverse func list =
                     map (\b -> Loop ( rest, b :: acc )) (func a)
         )
         ( list, [] )
+
+
+{-| Returns a computation that runs `func` on the value in `maybe`, if any, and
+produces its result, or `Nothing` without changing the state.
+-}
+traverseMaybe : (a -> Tracker b) -> Maybe a -> Tracker (Maybe b)
+traverseMaybe func maybe =
+    case maybe of
+        Just a ->
+            map Just (func a)
+
+        Nothing ->
+            pure Nothing
 
 
 {-| Returns a computation that runs `func` on each value of `dict`, in ascending

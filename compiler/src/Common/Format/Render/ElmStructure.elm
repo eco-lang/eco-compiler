@@ -1,6 +1,6 @@
 module Common.Format.Render.ElmStructure exposing
     ( Multiline(..), FunctionApplicationMultiline(..)
-    , spaceSepOrStack, forceableSpaceSepOrStack, forceableSpaceSepOrStack1, forceableRowOrStack
+    , spaceSepOrStack, forceableSpaceSepOrStack, forceableRowOrStack
     , spaceSepOrIndented, forceableSpaceSepOrIndented
     , spaceSepOrPrefix, prefixOrIndented
     , equalsPair, definition
@@ -39,7 +39,7 @@ The examples in the docstrings show each layout's shapes, one-line form first.
 
 # Space-separated or Stacked
 
-@docs spaceSepOrStack, forceableSpaceSepOrStack, forceableSpaceSepOrStack1, forceableRowOrStack
+@docs spaceSepOrStack, forceableSpaceSepOrStack, forceableRowOrStack
 
 
 # Space-separated or Indented
@@ -74,7 +74,6 @@ The examples in the docstrings show each layout's shapes, one-line form first.
 -}
 
 import Common.Format.Box as Box exposing (Box)
-import System.Crash exposing (crash)
 
 
 {-| Returns `first` and `rest` on one line separated by spaces when all are
@@ -102,7 +101,7 @@ forceableSpaceSepOrStack forceMultiline first rest =
             List.intersperse Box.space (first_ :: rest_) |> Box.row |> Box.line
 
         _ ->
-            Box.stack1 (first :: rest)
+            Box.stack1 first rest
 
 
 {-| Returns `first` and `rest` joined on one line with nothing between them,
@@ -119,20 +118,7 @@ forceableRowOrStack forceMultiline first rest =
             Box.row (first_ :: rest_) |> Box.line
 
         _ ->
-            Box.stack1 (first :: rest)
-
-
-{-| Returns the same layout as `forceableSpaceSepOrStack`, taking the first
-part as the head of `boxes`. It crashes when `boxes` is empty.
--}
-forceableSpaceSepOrStack1 : Bool -> List Box -> Box
-forceableSpaceSepOrStack1 forceMultiline boxes =
-    case boxes of
-        first :: rest ->
-            forceableSpaceSepOrStack forceMultiline first rest
-
-        _ ->
-            crash "forceableSpaceSepOrStack1 with empty list"
+            Box.stack1 first rest
 
 
 {-| Returns `first` and `rest` on one line separated by spaces when all are
@@ -167,8 +153,7 @@ forceableSpaceSepOrIndented forceMultiline first rest =
             List.intersperse Box.space (first_ :: rest_) |> Box.row |> Box.line
 
         _ ->
-            Box.stack1
-                (first :: List.map Box.indent rest)
+            Box.stack1 first (List.map Box.indent rest)
 
 
 {-| Returns `op` followed by `rest`:
@@ -199,10 +184,10 @@ spaceSepOrPrefix op rest =
                 Box.prefix (Box.row [ op_, Box.space ]) rest
 
             else
-                Box.stack1 [ op, Box.indent rest ]
+                Box.stack1 op [ Box.indent rest ]
 
         _ ->
-            Box.stack1 [ op, Box.indent rest ]
+            Box.stack1 op [ Box.indent rest ]
 
 
 {-| Returns `a` followed by `b`:
@@ -227,7 +212,7 @@ prefixOrIndented a b =
             Box.row [ a_, Box.space, b_ ] |> Box.mustBreak
 
         _ ->
-            Box.stack1 [ a, Box.indent b ]
+            Box.stack1 a [ Box.indent b ]
 
 
 {-| Returns `left` and `right` joined by `symbol`, such as `=` or `:`.
@@ -263,15 +248,13 @@ equalsPair symbol forceMultiline left right =
                     ]
 
         ( _, Box.SingleLine left_, right_ ) ->
-            Box.stack1
-                [ Box.row [ left_, Box.space, Box.punc symbol ] |> Box.line
-                , Box.indent right_
+            Box.stack1 (Box.row [ left_, Box.space, Box.punc symbol ] |> Box.line)
+                [ Box.indent right_
                 ]
 
         ( _, left_, right_ ) ->
-            Box.stack1
-                [ left_
-                , Box.punc symbol |> Box.line |> Box.indent
+            Box.stack1 left_
+                [ Box.punc symbol |> Box.line |> Box.indent
                 , Box.indent right_
                 ]
 
@@ -330,20 +313,15 @@ application forceMultiline first args =
                         |> Box.line
 
                 ( ( FAJoinFirst _, Box.SingleLine first_ ), ( Box.SingleLine arg0_, _ ) ) ->
-                    Box.stack1 <|
-                        Box.line (Box.row [ first_, Box.space, arg0_ ])
-                            :: List.map Box.indent rest
+                    Box.stack1 (Box.line (Box.row [ first_, Box.space, arg0_ ]))
+                        (List.map Box.indent rest)
 
                 _ ->
-                    Box.stack1 <|
-                        first
-                            :: List.map Box.indent (arg0 :: rest)
+                    Box.stack1 first (List.map Box.indent (arg0 :: rest))
 
 
-{-| Returns `children` between the delimiters `left` and `right`, separated by
-`sep`. `group True "<" ";" ">"` gives:
-
-    <>
+{-| Returns the children `first` and `rest` between the delimiters `left` and
+`right`, separated by `sep`. `group True "<" ";" ">"` gives:
 
     < child0 >
 
@@ -355,33 +333,26 @@ application forceMultiline first args =
     >
 
 The one-line form is used when `forceMultiline` is `False` and every child is a
-single line; `innerSpaces` puts a space inside each delimiter there. No children
-gives the two delimiters alone, even when forced. In the multi-line form the
-first child follows `left` and a space, and each other child follows `sep` and a
-space.
+single line; `innerSpaces` puts a space inside each delimiter there. In the
+multi-line form the first child follows `left` and a space, and each other child
+follows `sep` and a space.
 
 -}
-group : Bool -> String -> String -> String -> Bool -> List Box -> Box
-group innerSpaces left sep right forceMultiline children =
-    group_ innerSpaces left sep [] right forceMultiline children
+group : Bool -> String -> String -> String -> Bool -> Box -> List Box -> Box
+group innerSpaces left sep right forceMultiline first rest =
+    group_ innerSpaces left sep [] right forceMultiline first rest
 
 
 {-| Returns the layout of `group`, with `extraFooter` placed after the children
 and before `right`.
 
 On one line the footer boxes are separated like children. In the multi-line form
-each footer box is its own line, with no separator before it. With no children,
-the result is one line of `left`, the footer and `right` with no separators or
-inner spaces when every footer box is a single line, and `left` and `right`
-alone, without the footer, when one is not.
+each footer box is its own line, with no separator before it.
 
 -}
-group_ : Bool -> String -> String -> List Box -> String -> Bool -> List Box -> Box
-group_ innerSpaces left sep extraFooter right forceMultiline children =
-    case ( forceMultiline, Box.allSingles children, Box.allSingles extraFooter ) of
-        ( _, Ok [], Ok efs ) ->
-            List.concat [ [ Box.punc left ], efs, [ Box.punc right ] ] |> Box.row |> Box.line
-
+group_ : Bool -> String -> String -> List Box -> String -> Bool -> Box -> List Box -> Box
+group_ innerSpaces left sep extraFooter right forceMultiline first rest =
+    case ( forceMultiline, Box.allSingles (first :: rest), Box.allSingles extraFooter ) of
         ( False, Ok ls, Ok efs ) ->
             List.concat
                 [ if innerSpaces then
@@ -400,17 +371,11 @@ group_ innerSpaces left sep extraFooter right forceMultiline children =
                 |> Box.line
 
         _ ->
-            case children of
-                [] ->
-                    -- Reached only when a footer box is not a single line; the footer is dropped.
-                    Box.row [ Box.punc left, Box.punc right ] |> Box.line
-
-                first :: rest ->
-                    Box.stack1 <|
-                        Box.prefix (Box.row [ Box.punc left, Box.space ]) first
-                            :: List.map (Box.prefix <| Box.row [ Box.punc sep, Box.space ]) rest
-                            ++ extraFooter
-                            ++ [ Box.punc right |> Box.line ]
+            Box.stack1 (Box.prefix (Box.row [ Box.punc left, Box.space ]) first)
+                (List.map (Box.prefix <| Box.row [ Box.punc sep, Box.space ]) rest
+                    ++ extraFooter
+                    ++ [ Box.punc right |> Box.line ]
+                )
 
 
 {-| Returns a record extension: `base` and the already laid out `fields`
@@ -445,9 +410,8 @@ extensionGroup_ multiline base fields =
                 |> Box.line
 
         _ ->
-            Box.stack1
-                [ Box.prefix (Box.row [ Box.punc "{", Box.space ]) base
-                , Box.indent fields
+            Box.stack1 (Box.prefix (Box.row [ Box.punc "{", Box.space ]) base)
+                [ Box.indent fields
                 , Box.punc "}" |> Box.line
                 ]
 

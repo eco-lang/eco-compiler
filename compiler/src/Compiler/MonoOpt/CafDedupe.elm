@@ -40,6 +40,7 @@ expressions inside bodies would need one.
 import Array
 import Compiler.IR.Mono as Mono
 import Compiler.MonoOpt.CafHoist as CafHoist
+import Data.NonEmptyList as NE
 import Dict exposing (Dict)
 
 
@@ -258,7 +259,7 @@ applyRemap remap groupCount (Mono.MonoGraph g) =
             Maybe.map remapId g.flagsDecoder
 
         main1 =
-            Maybe.map (\(Mono.StaticMain sid) -> Mono.StaticMain (remapId sid)) g.main
+            (\(Mono.StaticMain sid) -> Mono.StaticMain (remapId sid)) g.main
     in
     ( Mono.MonoGraph
         { g
@@ -529,7 +530,16 @@ remapExpr remap expr =
         Mono.MonoTupleCreate region items ty ->
             let
                 ( items1, n ) =
-                    remapList remap items
+                    Mono.tupleMapAccum
+                        (\e c ->
+                            let
+                                ( e1, c1 ) =
+                                    remapExpr remap e
+                            in
+                            ( e1, c + c1 )
+                        )
+                        0
+                        items
             in
             ( Mono.MonoTupleCreate region items1 ty, n )
 
@@ -562,19 +572,19 @@ remapDecider remap decider =
 
         Mono.FanOut path edges fallback ->
             let
-                ( edgesRev, en ) =
-                    List.foldl
-                        (\( t, d ) ( acc, c ) ->
+                ( en, edges1 ) =
+                    NE.mapAccuml
+                        (\c ( t, d ) ->
                             let
                                 ( d1, c1 ) =
                                     remapDecider remap d
                             in
-                            ( ( t, d1 ) :: acc, c + c1 )
+                            ( c + c1, ( t, d1 ) )
                         )
-                        ( [], 0 )
+                        0
                         edges
 
                 ( fallback1, fn ) =
                     remapDecider remap fallback
             in
-            ( Mono.FanOut path (List.reverse edgesRev) fallback1, en + fn )
+            ( Mono.FanOut path edges1 fallback1, en + fn )

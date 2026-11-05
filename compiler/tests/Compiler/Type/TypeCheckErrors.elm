@@ -59,10 +59,10 @@ type Outcome
 typeCheck : Src.Module -> Outcome
 typeCheck srcModule =
     case RResult.run (Canonicalize.canonicalize ( "eco", "example" ) Basic.testIfaces srcModule) of
-        ( _, Err errors ) ->
+        Err errors ->
             CanonicalizationFailed (OneOrMore.destruct (::) errors)
 
-        ( _, Ok canonical ) ->
+        Ok canonical ->
             let
                 result =
                     ConstrainTyped.constrainWithIds canonical

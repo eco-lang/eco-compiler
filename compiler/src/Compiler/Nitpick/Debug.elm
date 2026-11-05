@@ -20,7 +20,9 @@ reported.
 import Compiler.IR.Optimized as Opt
 import Data.Map as EveryDict
 import Data.Map.Utils as Map
+import Data.NonEmptyList as NE
 import Dict
+import Maybe.Extra as Maybe
 
 
 
@@ -167,7 +169,7 @@ hasDebug expression =
             False
 
         Opt.Tuple _ a b cs ->
-            hasDebug a || hasDebug b || List.any hasDebug cs
+            hasDebug a || hasDebug b || Maybe.unwrap False hasDebug cs
 
         Opt.Shader _ _ _ ->
             False
@@ -202,4 +204,4 @@ deciderHasDebug decider =
             deciderHasDebug success || deciderHasDebug failure
 
         Opt.FanOut _ tests fallback ->
-            List.any (Tuple.second >> deciderHasDebug) tests || deciderHasDebug fallback
+            List.any (Tuple.second >> deciderHasDebug) (NE.toList tests) || deciderHasDebug fallback

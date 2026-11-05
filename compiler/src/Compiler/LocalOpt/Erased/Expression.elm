@@ -53,6 +53,7 @@ import Compiler.IR.Source.Shader as Shader
 import Compiler.LocalOpt.Erased.Case as Case
 import Compiler.LocalOpt.Erased.Names as Names
 import Data.Map
+import Data.NonEmptyList as NE
 import Data.Set as EverySet exposing (EverySet)
 import Utils.Main as Utils
 
@@ -247,10 +248,6 @@ optimize cycle (A.At region exprInfo) =
                             |> Names.andThen
                                 (\oexpr ->
                                     case oexpr of
-                                        Opt.VarLocal root ->
-                                            Names.traverse (optimizeBranch root) branches
-                                                |> Names.map (Case.optimize temp root)
-
                                         Opt.TrackedVarLocal _ root ->
                                             Names.traverse (optimizeBranch root) branches
                                                 |> Names.map (Case.optimize temp root)
@@ -302,7 +299,7 @@ optimize cycle (A.At region exprInfo) =
                         optimize cycle b
                             |> Names.andThen
                                 (\optB ->
-                                    Names.traverse (optimize cycle) cs
+                                    Names.traverseMaybe (optimize cycle) cs
                                         |> Names.andThen (Names.registerKernel "Elm" Name.utils << Opt.Tuple region optA optB)
                                 )
                     )
@@ -433,8 +430,7 @@ destruct ((A.At region patternInfo) as pattern) =
 variable bound by a pattern whose value is at `path`.
 
 Literal, wildcard and unit patterns bind nothing. A record pattern also counts
-each of its fields as used. A tuple of more than three elements reads its extra
-elements from the `cs` field. A constructor with one argument reads it by index
+each of its fields as used. A constructor with one argument reads it by index
 0, or through `Unbox` when its type's options are `Unbox`. A record's fields are
 read directly from `path`. A tuple, list or cons pattern, or a constructor with
 several arguments, whose value is nested below the root is first bound to a
@@ -464,10 +460,10 @@ destructHelp path (A.At region patternInfo) revDs =
         Can.PUnit ->
             Names.pure revDs
 
-        Can.PTuple a b [] ->
+        Can.PTuple a b Nothing ->
             destructTwo path a b revDs
 
-        Can.PTuple a b [ c ] ->
+        Can.PTuple a b (Just c) ->
             case path of
                 Opt.Root _ ->
                     destructHelp (Opt.Index Index.first path) a revDs
@@ -486,31 +482,6 @@ destructHelp path (A.At region patternInfo) revDs =
                                 destructHelp (Opt.Index Index.first newRoot) a (Opt.Destructor name path :: revDs)
                                     |> Names.andThen (destructHelp (Opt.Index Index.second newRoot) b)
                                     |> Names.andThen (destructHelp (Opt.Index Index.third newRoot) c)
-                            )
-
-        Can.PTuple a b cs ->
-            case path of
-                Opt.Root _ ->
-                    List.foldl (\( index, arg ) -> Names.andThen (destructHelp (Opt.ArrayIndex index (Opt.Field "cs" path)) arg))
-                        (destructHelp (Opt.Index Index.first path) a revDs
-                            |> Names.andThen (destructHelp (Opt.Index Index.second path) b)
-                        )
-                        (List.indexedMap Tuple.pair cs)
-
-                _ ->
-                    Names.generate
-                        |> Names.andThen
-                            (\name ->
-                                let
-                                    newRoot : Opt.Path
-                                    newRoot =
-                                        Opt.Root name
-                                in
-                                List.foldl (\( index, arg ) -> Names.andThen (destructHelp (Opt.ArrayIndex index (Opt.Field "cs" newRoot)) arg))
-                                    (destructHelp (Opt.Index Index.first newRoot) a (Opt.Destructor name path :: revDs)
-                                        |> Names.andThen (destructHelp (Opt.Index Index.second newRoot) b)
-                                    )
-                                    (List.indexedMap Tuple.pair cs)
                             )
 
         Can.PList [] ->
@@ -543,13 +514,10 @@ destructHelp path (A.At region patternInfo) revDs =
                             union
                     in
                     case unionData.opts of
-                        Can.Normal ->
-                            destructHelp (Opt.Index Index.first path) arg revDs
-
                         Can.Unbox ->
                             destructHelp (Opt.Unbox path) arg revDs
 
-                        Can.Enum ->
+                        _ ->
                             destructHelp (Opt.Index Index.first path) arg revDs
 
                 _ ->
@@ -664,14 +632,8 @@ optimizeTail cycle rootName argNames ((A.At region exprInfo) as locExpr) =
                                     _ ->
                                         False
                         in
-                        if isMatchingName then
-                            case Index.indexedZipWith (\_ a b -> ( A.toValue a, b )) argNames oargs of
-                                Index.LengthMatch pairs ->
-                                    Names.pure (Opt.TailCall rootName pairs)
-
-                                Index.LengthMismatch _ _ ->
-                                    optimize cycle func
-                                        |> Names.map (\ofunc -> Opt.Call region ofunc oargs)
+                        if isMatchingName && List.length argNames == List.length oargs then
+                            Names.pure (Opt.TailCall rootName (List.map2 (\a b -> ( A.toValue a, b )) argNames oargs))
 
                         else
                             optimize cycle func
@@ -754,10 +716,6 @@ optimizeTail cycle rootName argNames ((A.At region exprInfo) as locExpr) =
                             |> Names.andThen
                                 (\oexpr ->
                                     case oexpr of
-                                        Opt.VarLocal root ->
-                                            Names.traverse (optimizeBranch root) branches
-                                                |> Names.map (Case.optimize temp root)
-
                                         Opt.TrackedVarLocal _ root ->
                                             Names.traverse (optimizeBranch root) branches
                                                 |> Names.map (Case.optimize temp root)
@@ -835,4 +793,4 @@ decidecHasTailCall decider =
             decidecHasTailCall success || decidecHasTailCall failure
 
         Opt.FanOut _ tests fallback ->
-            decidecHasTailCall fallback || List.any (Tuple.second >> decidecHasTailCall) tests
+            decidecHasTailCall fallback || List.any (Tuple.second >> decidecHasTailCall) (NE.toList tests)

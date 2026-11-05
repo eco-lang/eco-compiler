@@ -59,6 +59,7 @@ import Compiler.Core.Name exposing (Name)
 import Compiler.IR.Mono as Mono exposing (MonoExpr(..))
 import Compiler.MonoOpt.CafHoist as CafHoist
 import Compiler.MonoOpt.CsePurity as CsePurity
+import Data.NonEmptyList as NE
 import Dict exposing (Dict)
 import Set exposing (Set)
 
@@ -612,7 +613,7 @@ collect oracle minCost expr path binders acc =
                 (step "u rb" inner binders acc1)
 
         MonoTupleCreate _ items _ ->
-            each (\n -> "u p" ++ String.fromInt n) items binders acc1
+            each (\n -> "u p" ++ String.fromInt n) (Mono.tupleToList items) binders acc1
 
         _ ->
             acc1
@@ -655,7 +656,7 @@ collectDecider oracle minCost path dpath binders acc decider =
                         collectDecider oracle minCost path (dpath ++ "t" ++ String.fromInt n) binders a d
                     )
                     acc
-                    (List.indexedMap Tuple.pair tests)
+                    (List.indexedMap Tuple.pair (NE.toList tests))
                 )
                 fallback
 
@@ -835,7 +836,7 @@ rebuildChildren byOcc byLca path expr =
                 ty
 
         MonoTupleCreate r items ty ->
-            MonoTupleCreate r (mapIdx (\n -> "u p" ++ String.fromInt n) items) ty
+            MonoTupleCreate r (Mono.tupleIndexedMap (\n e -> at ("u p" ++ String.fromInt n) e) items) ty
 
         other ->
             other
@@ -860,7 +861,7 @@ rebuildDecider byOcc byLca path dpath decider =
 
         Mono.FanOut p tests fallback ->
             Mono.FanOut p
-                (List.indexedMap
+                (NE.indexedMap
                     (\n ( t, d ) -> ( t, rebuildDecider byOcc byLca path (dpath ++ "t" ++ String.fromInt n) d ))
                     tests
                 )
@@ -911,7 +912,7 @@ childrenOf expr =
             inner :: List.map Tuple.second updates
 
         MonoTupleCreate _ items _ ->
-            items
+            Mono.tupleToList items
 
         _ ->
             []
@@ -932,7 +933,7 @@ deciderExprs decider =
             deciderExprs success ++ deciderExprs failure
 
         Mono.FanOut _ tests fallback ->
-            List.concatMap (\( _, d ) -> deciderExprs d) tests ++ deciderExprs fallback
+            List.concatMap (\( _, d ) -> deciderExprs d) (NE.toList tests) ++ deciderExprs fallback
 
 
 {-| Returns the expression a local definition binds.

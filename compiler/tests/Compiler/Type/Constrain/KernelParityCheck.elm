@@ -47,6 +47,7 @@ import Data.Map
 import Data.NonEmptyList as NE
 import Dict exposing (Dict)
 import Expect
+import Maybe.Extra as Maybe
 import Set exposing (Set)
 
 
@@ -159,10 +160,9 @@ runWithIdsPath :
         IO.IO
             (Result
                 Int
-                { annotations : Dict Name.Name (Can.Annotation Name)
+                { annotations : Dict Name.Name { annotation : Can.Annotation Name, var : Vars.Variable }
                 , nodeTypes : Array.Array (Maybe (Can.Type Name))
                 , nodeVars : Array.Array (Maybe Vars.Variable)
-                , annotationVars : Dict Name.Name Vars.Variable
                 , solverState :
                     { cells : Array.Array Vars.PointCell
                     }
@@ -348,7 +348,7 @@ extractExprNodeIds node =
             List.foldl
                 (\e acc -> Set.union (extractAllExprIds e) acc)
                 (Set.union (extractAllExprIds a) (extractAllExprIds b))
-                rest
+                (Maybe.toList rest)
 
         Can.Shader _ _ ->
             Set.empty
@@ -380,7 +380,7 @@ extractPatternExprIds (A.At _ { node }) =
             List.foldl
                 (\p acc -> Set.union (extractPatternExprIds p) acc)
                 (Set.union (extractPatternExprIds a) (extractPatternExprIds b))
-                rest
+                (Maybe.toList rest)
 
         Can.PList patterns ->
             List.foldl (\p acc -> Set.union (extractPatternExprIds p) acc) Set.empty patterns

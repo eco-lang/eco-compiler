@@ -2,11 +2,12 @@ module PolyStepLoopMultiSpecTest exposing (main)
 
 {-| Reproduces the stage-6 MLIR verify failure when MULTIPLE `Step`
     specializations coexist with different `a` types. The existing
-    `PolyStepLoopIntResultTest` only has one `Step` specialization, so
-    `findConcreteCtorField` finds trivial agreement. This test forces
-    three specializations (a = Int, String, Bool) so the cross-specialization
-    agreement scan fails and the scrutinee path's annotated `resultType` stays
-    `MVar`. Without the fallback in `generateDestruct` / `compileDestructStep`
+    `PolyStepLoopIntResultTest` only has one `Step` specialization. This
+    test forces three specializations (a = Int, String, Bool), so the
+    scrutinee path's annotated `resultType` stays `MVar` (codegen once
+    searched the other `Step` specializations for a concrete field type,
+    `findConcreteCtorField`, removed 2026-11-05; here they disagree, so the
+    search never helped). Without the fallback in `generateDestruct` / `compileDestructStep`
     that consults the destructor's own `monoType` (pinned via the outer
     subst's return-type unification), the Int-returning loop's
     `eco.project.custom` emits `!eco.value` but the enclosing

@@ -99,7 +99,6 @@ import Compiler.Monomorphize.Diff as MonoDiff
 import Compiler.Monomorphize.Prune as Prune
 import Compiler.Monomorphize.Solver.Monomorphize as MonoSolver
 import Compiler.Monomorphize.Subst.Monomorphize as Monomorphize
-import Compiler.Monomorphize.ValidateLayout as ValidateLayout
 import Compiler.Nitpick.Debug as Nitpick
 import Compiler.Pipeline.Steps as Steps
 import Compiler.PreMono.AliasForward as AliasForward
@@ -186,7 +185,7 @@ generateDebugOutput backend withSourceMaps leadingLines root pkg roots ( objects
 -}
 generateWithBackend : CodeGen.CodeGen -> Int -> Mode.Mode -> Opt.GlobalGraph -> Data.Map.Dict String ModuleName.Canonical Opt.Main -> CodeGen.SourceMaps -> CodeGen.Output
 generateWithBackend backend leadingLines mode graph mains sourceMaps =
-    backend.generate
+    backend
         { sourceMaps = sourceMaps
         , leadingLines = leadingLines
         , mode = mode
@@ -320,7 +319,7 @@ lookupMain pkg locals root =
         Build.Inside name ->
             Dict.get name locals |> Maybe.andThen (toPair name)
 
-        Build.Outside name _ g _ _ ->
+        Build.Outside name _ g _ ->
             toPair name g
 
 
@@ -343,7 +342,7 @@ file, and returns at once with the graphs still being read.
 loadObjects : FilePath -> Maybe String -> Details.Details -> List Build.Module -> Task Exit.Generate LoadingObjects
 loadObjects root maybeBuildDir details modules =
     Task.io
-        (Details.loadObjects root maybeBuildDir details
+        (Details.loadObjects details
             |> Task.andThen (loadModuleObjects root maybeBuildDir modules)
         )
 
@@ -363,7 +362,7 @@ loadModuleObjects root maybeBuildDir modules mvar =
 
                 modul :: rest ->
                     case modul of
-                        Build.Fresh name _ graph _ _ ->
+                        Build.Fresh name _ graph _ ->
                             partitionModules rest ( ( name, graph ) :: freshAcc, cachedAcc )
 
                         Build.Cached _ _ _ ->
@@ -390,7 +389,7 @@ loadCachedObject root maybeBuildDir modul =
             Utils.newEmptyMVar
                 |> Task.andThen (forkLoadCachedObject root maybeBuildDir name)
 
-        Build.Fresh name _ _ _ _ ->
+        Build.Fresh name _ _ _ ->
             Utils.newMVar (Utils.maybeEncoder Opt.localGraphEncoder) (Just (Opt.LocalGraph Nothing Data.Map.empty Dict.empty))
                 |> Task.map (\mv -> ( name, mv ))
 
@@ -482,7 +481,7 @@ loadTypes root maybeBuildDir ifaces modules =
 
                 modul :: rest ->
                     case modul of
-                        Build.Fresh name iface _ _ _ ->
+                        Build.Fresh name iface _ _ ->
                             partitionTypes rest ( Extract.fromInterface name iface :: freshAcc, cachedAcc )
 
                         Build.Cached _ _ _ ->
@@ -534,7 +533,7 @@ loadTypesFromCached root maybeBuildDir modul =
             Utils.readMVar Build.cachedInterfaceDecoder ciMVar
                 |> Task.andThen (handleCachedInterfaceForTypes root maybeBuildDir name)
 
-        Build.Fresh name iface _ _ _ ->
+        Build.Fresh name iface _ _ ->
             Utils.newMVar (Utils.maybeEncoder Extract.typesEncoder) (Just (Extract.fromInterface name iface))
 
 
@@ -601,8 +600,8 @@ loadTypedObjects root maybeBuildDir localPackages details modules =
         )
 
 
-{-| Returns the typed loading state for `modules`. A fresh module that carries both
-a typed graph and a type env is kept in memory; every other module is listed to
+{-| Returns the typed loading state for `modules`. A fresh module that carries
+its typed graph and type env is kept in memory; every other module is listed to
 be read from its `.ecot` file.
 -}
 loadTypedModuleObjects : FilePath -> Maybe String -> List Build.Module -> MVar (Result (List FilePath) Details.PackageTypedArtifacts) -> Task Never TypedLoadingObjects
@@ -616,17 +615,17 @@ loadTypedModuleObjects root maybeBuildDir modules mvar =
 
                 modul :: rest ->
                     case modul of
-                        Build.Fresh name _ _ (Just typedGraph) (Just typeEnv) ->
+                        Build.Fresh name _ _ (Just typed) ->
                             let
                                 ( fresh, cached ) =
                                     acc
                             in
                             partition rest
-                                ( ( name, { graph = typedGraph, env = typeEnv } ) :: fresh
+                                ( ( name, { graph = typed.typedGraph, env = typed.typeEnv } ) :: fresh
                                 , cached
                                 )
 
-                        Build.Fresh name _ _ _ _ ->
+                        Build.Fresh name _ _ Nothing ->
                             let
                                 ( fresh, cached ) =
                                     acc
@@ -812,7 +811,7 @@ dropCachedInterfaceMVar modul =
         Build.Cached _ _ mvar ->
             Utils.dropMVar mvar
 
-        Build.Fresh _ _ _ _ _ ->
+        Build.Fresh _ _ _ _ ->
             Task.succeed ()
 
 
@@ -821,8 +820,8 @@ dropCachedInterfaceMVar modul =
 stripUntypedGraph : Build.Module -> Build.Module
 stripUntypedGraph modul =
     case modul of
-        Build.Fresh name iface _ typedObjs typeEnv ->
-            Build.Fresh name iface (Opt.LocalGraph Nothing Data.Map.empty Dict.empty) typedObjs typeEnv
+        Build.Fresh name iface _ typed ->
+            Build.Fresh name iface (Opt.LocalGraph Nothing Data.Map.empty Dict.empty) typed
 
         Build.Cached _ _ _ ->
             modul
@@ -1094,8 +1093,6 @@ renderPreAliasForwardReport enabled m =
         ++ String.fromInt m.callsRewrittenKernel
         ++ " callsKeptKernelPartial="
         ++ String.fromInt m.callsKeptKernelPartial
-        ++ " callsKeptKernelOver="
-        ++ String.fromInt m.callsKeptKernelOver
         ++ " callsKeptKernelPoly="
         ++ String.fromInt m.callsKeptKernelPoly
         ++ " callsKeptKernelMeta="
@@ -1731,9 +1728,7 @@ globalOptReportStep cfg ( hoistedGraph, carry ) =
                                 ++ String.fromInt goStats.abiCloning.declinedShape
                                 ++ " (arity="
                                 ++ String.fromInt goStats.abiCloning.declinedShapeArity
-                                ++ " [zero="
-                                ++ String.fromInt goStats.abiCloning.declinedShapeArityZero
-                                ++ " under="
+                                ++ " [under="
                                 ++ String.fromInt goStats.abiCloning.declinedShapeArityUnder
                                 ++ " over="
                                 ++ String.fromInt goStats.abiCloning.declinedShapeArityOver
@@ -1743,8 +1738,6 @@ globalOptReportStep cfg ( hoistedGraph, carry ) =
                                 ++ String.fromInt goStats.abiCloning.declinedShapeLayout
                                 ++ " char="
                                 ++ String.fromInt goStats.abiCloning.declinedShapeChar
-                                ++ " nonArrow="
-                                ++ String.fromInt goStats.abiCloning.declinedShapeNonArrow
                                 ++ ") declinedAbiMismatch="
                                 ++ String.fromInt goStats.abiCloning.declinedAbiMismatch
                                 ++ " declinedBodyMismatch="
@@ -1933,21 +1926,6 @@ abiCensusLines abi =
 
                 else
                     shapes
-               )
-        , "lss census instQual pap WOULDSTAMP by host+spec top400: "
-            ++ (let
-                    ps =
-                        Dict.toList abi.instQual.papSites
-                            |> List.sortBy (\( _, c ) -> negate c)
-                            |> List.take 1200000
-                            |> List.map (\( k, c ) -> k ++ "=" ++ String.fromInt c)
-                            |> String.join " "
-                in
-                if String.isEmpty ps then
-                    "(none)"
-
-                else
-                    ps
                )
         , "lss census instQual noInstance GUARD TOTALS (UNTRUNCATED - a take ranked by site count silently hides fragmented hosts): "
             ++ (let
@@ -2170,7 +2148,7 @@ rootModuleName root =
         Build.Inside name ->
             name
 
-        Build.Outside name _ _ _ _ ->
+        Build.Outside name _ _ _ ->
             name
 
 
@@ -2183,10 +2161,10 @@ addRootTypedGraph root graph =
             -- Inside roots are already in the modules list
             graph
 
-        Build.Outside _ _ _ maybeTypedGraph _ ->
-            case maybeTypedGraph of
-                Just typedGraph ->
-                    GA.addTypedLocalGraph typedGraph graph
+        Build.Outside _ _ _ maybeTyped ->
+            case maybeTyped of
+                Just typed ->
+                    GA.addTypedLocalGraph typed.typedGraph graph
 
                 Nothing ->
                     graph
@@ -2201,10 +2179,10 @@ addRootTypeEnv root globalEnv =
             -- Inside roots are already in the modules list
             globalEnv
 
-        Build.Outside _ _ _ _ maybeTypeEnv ->
-            case maybeTypeEnv of
-                Just modEnv ->
-                    Data.Map.insert ModuleName.toComparableCanonical modEnv.home modEnv globalEnv
+        Build.Outside _ _ _ maybeTyped ->
+            case maybeTyped of
+                Just typed ->
+                    Data.Map.insert ModuleName.toComparableCanonical typed.typeEnv.home typed.typeEnv globalEnv
 
                 Nothing ->
                     globalEnv

@@ -30,8 +30,10 @@ kernel (`ToKernel`).
     `Target`). The caller's reference type must have the same outer arrow spine as
     the kernel's own type, because synthesized references can carry
     placeholder types that are not function types at all. And the call must
-    supply exactly as many arguments as that spine has; an under-applied or
-    over-applied call keeps the alias. Each kept call is counted by reason.
+    supply exactly as many arguments as that spine has; an under-applied call
+    keeps the alias. (No call supplies more: the reference's type has that
+    spine, and an `abiFixed` kernel does not return a function.) Each kept call
+    is counted by reason.
   - A value reference to a `ToKernel` alias, one not in call position, is
     always kept, and counted.
   - The alias definitions themselves are not rewritten.
@@ -59,6 +61,7 @@ import Compiler.IR.Typed.Optimized as TOpt
 import Compiler.PreMono.AssignMVarIds as AssignMVarIds
 import Compiler.PreMono.EntryPrep as EntryPrep
 import Data.Map as Dict exposing (Dict)
+import Data.NonEmptyList as NE
 import Data.Set as EverySet exposing (EverySet)
 import Dict as CoreDict
 
@@ -89,7 +92,6 @@ type alias Metrics =
     , callsRewritten : Int
     , callsRewrittenKernel : Int -- the subset of `callsRewritten` whose target is a kernel
     , callsKeptKernelPartial : Int -- under-applied kernel-alias calls, kept
-    , callsKeptKernelOver : Int -- over-applied kernel-alias calls, kept
     , callsKeptKernelPoly : Int -- kernel-alias calls kept because `abiFixed` is false
     , callsKeptKernelMeta : Int -- kernel-alias calls kept because the reference's spine differs from the kernel's
     , argRefsRewritten : Int -- value references (not in call position) forwarded
@@ -115,7 +117,6 @@ emptyMetrics =
     , callsRewritten = 0
     , callsRewrittenKernel = 0
     , callsKeptKernelPartial = 0
-    , callsKeptKernelOver = 0
     , callsKeptKernelPoly = 0
     , callsKeptKernelMeta = 0
     , argRefsRewritten = 0
@@ -543,14 +544,11 @@ rewriteExpr ctx expr =
                                 , forwardedKernelCall home name c1
                                 )
 
-                            else if argCount < spine then
+                            else
+                                -- Under-applied: the reference's type has `spine` arrows, so a call cannot
+                                -- pass more arguments, and an `abiFixed` kernel returns no function.
                                 ( TOpt.Call region func args1 meta
                                 , bump (\m -> { m | callsKeptKernelPartial = m.callsKeptKernelPartial + 1 }) c1
-                                )
-
-                            else
-                                ( TOpt.Call region func args1 meta
-                                , bump (\m -> { m | callsKeptKernelOver = m.callsKeptKernelOver + 1 }) c1
                                 )
 
                         Nothing ->
@@ -650,7 +648,12 @@ rewriteExpr ctx expr =
                     rewriteExpr c1 b
 
                 ( rest1, c3 ) =
-                    rewriteList c2 rest
+                    case rest of
+                        Just c ->
+                            Tuple.mapFirst Just (rewriteExpr c2 c)
+
+                        Nothing ->
+                            ( Nothing, c2 )
             in
             ( TOpt.Tuple region a1 b1 rest1 meta, c3 )
 
@@ -757,22 +760,22 @@ rewriteDecider ctx decider =
 
         TOpt.FanOut path branches fallback ->
             let
-                ( branches1, c1 ) =
-                    List.foldl
-                        (\( t, d ) ( acc, c ) ->
+                ( c1, branches1 ) =
+                    NE.mapAccuml
+                        (\c ( t, d ) ->
                             let
                                 ( d1, c2 ) =
                                     rewriteDecider c d
                             in
-                            ( ( t, d1 ) :: acc, c2 )
+                            ( c2, ( t, d1 ) )
                         )
-                        ( [], ctx )
+                        ctx
                         branches
 
                 ( fallback1, cf ) =
                     rewriteDecider c1 fallback
             in
-            ( TOpt.FanOut path (List.reverse branches1) fallback1, cf )
+            ( TOpt.FanOut path branches1 fallback1, cf )
 
 
 {-| Returns a `let` or `Cycle` definition with its bound expression or body

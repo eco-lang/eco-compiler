@@ -3,15 +3,15 @@ module Mlir.MlirEncodingCoverageTest exposing (suite)
 {-| Writes a hand-built MLIR module, as text with `Mlir.Pretty` and as
 bytecode with `Mlir.Bytecode.StreamEncode`, so that the encodings no compiled
 program produces are written under test: a region with labelled blocks and a
-terminator with successors, `i16` types and integer attributes typed `i16`,
-`f64` and a dialect type, dense arrays of `i1`, `i8`, `i16` and `i32` and an
+terminator with successors, `i8` types and integer attributes typed `i8`,
+`f64` and a dialect type, dense arrays of `i1`, `i8` and `i32` and an
 empty one, a dense array holding a non-integer element, negative and negative
 zero floats, a dialect type and an operation name without a `.`, an operand
 that is never defined, a file location, and string attributes holding every
 kind of escape both writers convert, well formed or not.
 
 The module is one function-like operation, `test.func`, whose region has an
-entry block and two labelled blocks, `bb1` and `bb2`, each with an `i16`
+entry block and two labelled blocks, `bb1` and `bb2`, each with an `i8`
 argument. The entry block's operation, `test.probe`, carries all of the
 attributes; its terminator, `test.br`, names both labelled blocks as
 successors, the first with MLIR's leading `^` and the second without it, which
@@ -19,8 +19,9 @@ the bytecode writer accepts and the text printer prints as given. The function h
 
 The tests:
 
-  - "text": the text printed by `Mlir.Pretty.ppModule` contains the
-    successor list as given, the labelled blocks, an `i16` result, an empty dense
+  - "text": the text `Mlir.Pretty` prints for the module (its header, each
+    top-level operation, its footer) contains the
+    successor list as given, the labelled blocks, an `i8` result, an empty dense
     array, a negative zero, and the conversions of the escapes (`é` to
     the character, `\u000A` to `\0A`, `\` to `\5C`, an incomplete or
     malformed `\u` kept as written, `\r` to `\0D`, an unknown escape losing
@@ -55,7 +56,13 @@ coverage loop's quick run includes them.
 suite : Test
 suite =
     Test.describe "MLIR encodings (coverage run)"
-        [ Test.test "text" <| \_ -> expectText (Pretty.ppModule testModule)
+        [ Test.test "text" <|
+            \_ ->
+                expectText
+                    (Pretty.ppModuleHeader
+                        ++ String.concat (List.map Pretty.ppTopLevelOp testModule.body)
+                        ++ Pretty.ppModuleFooter
+                    )
         , Test.test "bytecode" <|
             \_ ->
                 StreamEncode.collectAndEncodeOps testModule.body StreamEncode.emptyStreamTables
@@ -93,8 +100,8 @@ expectedFragments =
     [ "[^bb1, bb2]"
     , "^bb1("
     , "^bb2("
-    , ": i16"
-    , "array<i16>"
+    , ": i8"
+    , "array<i8>"
     , "-0.0"
     , "é"
     , "\\0A"
@@ -147,11 +154,11 @@ terminator name operands successors =
     { op | isTerminator = True, successors = successors }
 
 
-{-| A block with one `i16` argument `arg` that returns it.
+{-| A block with one `i8` argument `arg` that returns it.
 -}
 labelledBlock : String -> MlirBlock
 labelledBlock arg =
-    { args = [ ( arg, I16 ) ]
+    { args = [ ( arg, I8 ) ]
     , body = []
     , terminator = terminator "test.return" [ arg ] []
     }
@@ -191,8 +198,8 @@ probeOp : MlirOp
 probeOp =
     mkOp "test.probe"
         []
-        [ ( "%p", I16 ), ( "%q", NamedStruct "plain" ) ]
-        [ ( "int16", IntAttr (Just I16) 5 )
+        [ ( "%p", I8 ), ( "%q", NamedStruct "plain" ) ]
+        [ ( "int8", IntAttr (Just I8) 5 )
         , ( "intFloat", IntAttr (Just F64) 1 )
         , ( "intNamed", IntAttr (Just (NamedStruct "eco.value")) 2 )
         , ( "big", IntAttr (Just I64) 0x1000000000000000 )
@@ -200,10 +207,9 @@ probeOp =
         , ( "negative", TypedFloatAttr -1.5 F64 )
         , ( "dense1", ArrayAttr (Just I1) [ IntAttr Nothing 1, IntAttr Nothing 0 ] )
         , ( "dense8", ArrayAttr (Just I8) [ IntAttr Nothing 7, StringAttr "x" ] )
-        , ( "dense16", ArrayAttr (Just I16) [ IntAttr Nothing 1, IntAttr Nothing 2 ] )
         , ( "dense32", ArrayAttr (Just I32) [ IntAttr Nothing 3 ] )
-        , ( "denseEmpty", ArrayAttr (Just I16) [] )
-        , ( "types", ArrayAttr Nothing [ TypeAttr I8, TypeAttr I16 ] )
+        , ( "denseEmpty", ArrayAttr (Just I8) [] )
+        , ( "types", ArrayAttr Nothing [ TypeAttr I8, TypeAttr I32 ] )
         , ( "_operand_types", ArrayAttr Nothing [ UnitAttr ] )
         , ( "unicode", StringAttr "caf\\u00e9 \\u00E9" )
         , ( "control", StringAttr "line\\u000Aend" )

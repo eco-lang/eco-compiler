@@ -46,6 +46,7 @@ import Compiler.Reporting.Result as Result
 import Data.Map as DMap
 import Data.OneOrMore as OneOrMore
 import Expect
+import Maybe.Extra as Maybe
 
 
 {-| Canonicalizes `modul` as package `eco/example` against
@@ -65,7 +66,7 @@ expectGlobalNamesQualified modul =
             Canonicalize.canonicalize ( "eco", "example" ) Basic.testIfaces modul
     in
     case Result.run result of
-        ( _, Err errors ) ->
+        Err errors ->
             let
                 errorList =
                     OneOrMore.destruct (::) errors
@@ -85,7 +86,7 @@ expectGlobalNamesQualified modul =
                     ++ firstError
                 )
 
-        ( _, Ok canModule ) ->
+        Ok canModule ->
             expectGlobalNamesQualifiedCanonical canModule
 
 
@@ -279,7 +280,7 @@ collectExprNodeIssues node =
         Can.Tuple a b rest ->
             collectExprIssues a
                 ++ collectExprIssues b
-                ++ List.concatMap collectExprIssues rest
+                ++ List.concatMap collectExprIssues (Maybe.toList rest)
 
         Can.Shader _ _ ->
             []
@@ -316,7 +317,7 @@ collectPatternNodeIssues node =
         Can.PTuple a b rest ->
             collectPatternIssues a
                 ++ collectPatternIssues b
-                ++ List.concatMap collectPatternIssues rest
+                ++ List.concatMap collectPatternIssues (Maybe.toList rest)
 
         Can.PList patterns ->
             List.concatMap collectPatternIssues patterns
@@ -361,7 +362,7 @@ validateHome context name home =
 
 
 {-| Returns the issues of a `VarKernel` reference: a kernel prefix other than
-`Elm` or `Eco` (the two `Name.getKernel` yields), or an empty kernel module or
+`Elm` or `Eco` (the two `Name.toKernel` yields), or an empty kernel module or
 function name.
 -}
 validateKernel : String -> String -> String -> List String

@@ -63,6 +63,7 @@ import Compiler.Type.Unify as Unify
 import Compiler.Type.UnionFind as UF
 import Data.NonEmptyList as NE
 import Dict exposing (Dict)
+import Maybe.Extra as Maybe
 import System.Crash exposing (crash)
 import Utils.Main as Utils
 
@@ -102,11 +103,12 @@ run constraint =
 {-| Solves `constraint` as `run` does and, on success, also returns the solved
 type of each node.
 
-`nodeVars` holds, for each node id, the solver variable recorded for that node,
-if any. `nodeTypes` is the same array with each variable converted to a
-`Can.Type`, all in one naming scope that avoids the names the annotations use
-(`Type.toCanTypeBatch`). `annotationVars` holds the saved environment's
-variables themselves, and `nodeVars` is returned unchanged.
+`annotations` gives each name of the saved environment its annotation together
+with the variable it was converted from. `nodeVars` holds, for each node id,
+the solver variable recorded for that node, if any. `nodeTypes` is the same
+array with each variable converted to a `Can.Type`, all in one naming scope
+that avoids the names the annotations use (`Type.toCanTypeBatch`). `nodeVars`
+is returned unchanged.
 
 `solverState.cells` is the store's point cells as they are at the end, after
 the conversions, which write generated names into the store.
@@ -119,8 +121,7 @@ runWithIds :
         IO
             (Result
                 (NE.Nonempty Error.Error)
-                { annotations : Dict Name.Name (Can.Annotation Name)
-                , annotationVars : Dict Name.Name Variable
+                { annotations : Dict Name.Name { annotation : Can.Annotation Name, var : Variable }
                 , nodeTypes : Array (Maybe (Can.Type Name))
                 , nodeVars : Array (Maybe Variable)
                 , solverState :
@@ -137,17 +138,16 @@ runWithIds constraint nodeVars =
                         (\(State env _ errors) ->
                             case errors of
                                 [] ->
-                                    traverseDictIO Type.toAnnotation env
+                                    traverseDictIO (\var -> Type.toAnnotation var |> IO.map (\annotation -> { annotation = annotation, var = var })) env
                                         |> IO.andThen
                                             (\annotations ->
-                                                Type.toCanTypeBatch (annotationVarNames annotations) nodeVars
+                                                Type.toCanTypeBatch (annotationVarNames (Dict.map (\_ entry -> entry.annotation) annotations)) nodeVars
                                                     |> IO.andThen
                                                         (\nodeTypes ->
                                                             \s ->
                                                                 ( s
                                                                 , Ok
                                                                     { annotations = annotations
-                                                                    , annotationVars = env
                                                                     , nodeTypes = nodeTypes
                                                                     , nodeVars = nodeVars
                                                                     , solverState =
@@ -191,7 +191,7 @@ and is grown when a `let` nests deeper.
 
 -}
 type alias Pools =
-    IORef (Array (Maybe (List Variable)))
+    IORef (Array (List Variable))
 
 
 {-| What a solve carries from one constraint to the next: the environment last
@@ -645,7 +645,7 @@ generalize youngMark visitMark youngRank pools =
 {-| Returns the variables of the young pool in buckets by rank, from 0 to
 `youngRank`, and stamps each with `youngMark`.
 -}
-poolToRankTable : Mark -> Int -> List Variable -> IO (IORef (Array (Maybe (List Variable))))
+poolToRankTable : Mark -> Int -> List Variable -> IO (IORef (Array (List Variable)))
 poolToRankTable youngMark youngRank youngInhabitants =
     MVector.replicate (youngRank + 1) []
         |> IO.andThen
@@ -778,7 +778,7 @@ adjustRankContent youngMark visitMark groupRank content =
                                 go b
                                     |> IO.andThen
                                         (\mb ->
-                                            IO.foldM (\rank -> go >> IO.map (max rank)) (max ma mb) cs
+                                            IO.foldM (\rank -> go >> IO.map (max rank)) (max ma mb) (Maybe.toList cs)
                                         )
                             )
 
@@ -890,7 +890,7 @@ typeToVar rank pools tipe =
                         go b
                             |> IO.andThen
                                 (\bVar ->
-                                    IO.traverseList go cs
+                                    IO.traverseMaybe go cs
                                         |> IO.andThen
                                             (\cVars ->
                                                 register rank pools (Vars.Structure (Vars.Tuple1 aVar bVar cVars))
@@ -1032,7 +1032,7 @@ srcTypeToVar rank pools flexVars srcType =
                         go b
                             |> IO.andThen
                                 (\bVar ->
-                                    IO.traverseList go cs
+                                    IO.traverseMaybe go cs
                                         |> IO.andThen
                                             (\cVars ->
                                                 register rank pools (Vars.Structure (Vars.Tuple1 aVar bVar cVars))
@@ -1237,7 +1237,7 @@ restoreContent content =
                     IO.pure ()
 
                 Vars.Tuple1 a b cs ->
-                    IO.traverseList restore (a :: b :: cs)
+                    IO.traverseList restore (a :: b :: Maybe.toList cs)
                         |> IO.map (\_ -> ())
 
         Vars.Alias _ _ args var ->
@@ -1290,7 +1290,7 @@ traverseFlatType f flatType =
             IO.pure Vars.Tuple1
                 |> IO.apply (f a)
                 |> IO.apply (f b)
-                |> IO.apply (IO.traverseList f cs)
+                |> IO.apply (IO.traverseMaybe f cs)
 
 
 

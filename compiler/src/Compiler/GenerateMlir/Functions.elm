@@ -7,9 +7,8 @@ A _node_ is one specialization of a top-level definition: a function or value,
 a tail-recursive function, a constructor, an enum constructor, an extern, an
 effect-manager leaf or a port. `generateNode` turns one node into its function
 ops. A node's name is `<Module>_<name>_$_<specId>` (`accessor_<field>_$_<specId>`
-for a record accessor, `unknown_$_<specId>` when the registry has no key), so
-a reference to a specialization can be named from its SpecId alone. A capture
-clone or worker function appends `$cap`, `$sret` or `$psplit` to that name.
+for a record accessor), so a reference to a specialization can be named from its SpecId alone. A worker
+function appends `$sret` or `$psplit` to that name.
 `generateNode` clears `varMappings`, `definedSsaVars`, `sretTailLayout` and
 `splitAggParams` before returning the context, so the next node cannot see this
 node's variables.
@@ -21,8 +20,8 @@ once. A function with a promoted result or promoted parameters is emitted as a
 _worker_ with the promoted ABI (`$sret` returns each field of its tuple result
 separately; `$psplit` takes promoted parameters as their fields) and a _shim_
 under the original name that keeps the boxed ABI by calling the worker. A
-closure with captures is emitted as its _fast clone_, `$cap`, which takes the
-captures followed by the parameters.
+node's closure never has captures (only a lambda's has, and
+`Compiler.GenerateMlir.Lambdas` emits its `$cap` fast clone).
 
 Two rewrites change a node's body before or instead of compiling it. A
 `List.map` specialization licensed by `Compiler.MonoOpt.MapTemplate` becomes a
@@ -322,23 +321,26 @@ ecoSystemRegisterManagerSymbol home =
     "Eco_System_registerManager_" ++ String.replace "." "_" home
 
 
-{-| Returns `ctx` with `home` added to `ecoSystemManagers` when the manager leaf
-`specId` is a global of a module in package eco/system, and `ctx` unchanged
-otherwise. Being a set, it holds a home once however many leaf specializations
-reach it.
+{-| Returns `ctx` with the module name of `home` added to `ecoSystemManagers`
+when the manager leaf's home `home` is a module in package eco/system, and
+`ctx` unchanged otherwise. Being a set, it holds a home once however many leaf
+specializations reach it.
 -}
-recordEcoSystemManager : Mono.SpecId -> String -> Ctx.Context -> Ctx.Context
-recordEcoSystemManager specId home ctx =
-    case Registry.lookupSpecKey specId ctx.registry of
-        Just ( Mono.Global (ModuleName.Canonical pkg _) _, _ ) ->
-            if pkg == Pkg.ecoSystem then
-                { ctx | ecoSystemManagers = Set.insert home ctx.ecoSystemManagers }
+recordEcoSystemManager : ModuleName.Canonical -> Ctx.Context -> Ctx.Context
+recordEcoSystemManager ((ModuleName.Canonical pkg _) as home) ctx =
+    if pkg == Pkg.ecoSystem then
+        { ctx | ecoSystemManagers = Set.insert (managerModuleName home) ctx.ecoSystemManagers }
 
-            else
-                ctx
+    else
+        ctx
 
-        _ ->
-            ctx
+
+{-| Returns the module name of an effect manager's home, without its package,
+as the leaf's kernel call and the eco/system registration name it.
+-}
+managerModuleName : ModuleName.Canonical -> String
+managerModuleName (ModuleName.Canonical _ modName) =
+    Name.toElmString modName
 
 
 
@@ -519,32 +521,20 @@ generateNodeInner ctx funcName specId node =
         Mono.MonoTailFunc params expr monoType ->
             generateTailFunc ctx funcName params expr monoType (Dict.get specId ctx.sretPromoted)
 
-        Mono.MonoCtor ctorShape monoType ->
+        Mono.MonoCtor home ctorShape monoType ->
             let
                 ctorLayout =
                     Types.computeCtorLayout ctorShape
 
                 ( ctx1, op ) =
-                    generateCtor ctx funcName ctorLayout monoType
+                    generateCtor ctx funcName home ctorLayout monoType
             in
             ( [ op ], ctx1 )
 
-        Mono.MonoEnum tag monoType ->
+        Mono.MonoEnum _ ctorName tag monoType ->
             let
-                maybeCtor : Maybe ( ModuleName.Canonical, String )
-                maybeCtor =
-                    case Registry.lookupSpecKey specId ctx.registry of
-                        Just ( Mono.Global home ctorName, _ ) ->
-                            Just ( home, Name.toElmString ctorName )
-
-                        Just ( Mono.Accessor _, _ ) ->
-                            Nothing
-
-                        Nothing ->
-                            Nothing
-
                 ( ctx1, op ) =
-                    generateEnum ctx funcName tag monoType maybeCtor
+                    generateEnum ctx funcName tag monoType (Name.toElmString ctorName)
             in
             ( [ op ], ctx1 )
 
@@ -555,10 +545,10 @@ generateNodeInner ctx funcName specId node =
             in
             ( [ op ], ctx1 )
 
-        Mono.MonoManagerLeaf homeModuleName monoType ->
+        Mono.MonoManagerLeaf home monoType ->
             let
                 ( ctx1, op ) =
-                    generateManagerLeaf (recordEcoSystemManager specId homeModuleName ctx) funcName homeModuleName monoType
+                    generateManagerLeaf (recordEcoSystemManager home ctx) funcName (managerModuleName home) monoType
             in
             ( [ op ], ctx1 )
 
@@ -570,32 +560,26 @@ generateNodeInner ctx funcName specId node =
 
 
 {-| Returns the function name of the specialization `specId`:
-`<Module>_<name>_$_<specId>` for a global, `accessor_<field>_$_<specId>` for a
-record accessor, and `unknown_$_<specId>` when `registry` has no key for it.
+`<Module>_<name>_$_<specId>` for a global and `accessor_<field>_$_<specId>` for
+a record accessor. An id missing from `registry` crashes (`Registry.keyOf`).
 -}
 specIdToFuncName : Mono.SpecializationRegistry -> Mono.SpecId -> String
 specIdToFuncName registry specId =
-    case Registry.lookupSpecKey specId registry of
-        Just ( Mono.Global home name, _ ) ->
+    case Registry.keyOf specId registry of
+        ( Mono.Global home name, _ ) ->
             Names.canonicalToMLIRName home ++ "_" ++ Names.sanitizeName name ++ "_$_" ++ String.fromInt specId
 
-        Just ( Mono.Accessor fieldName, _ ) ->
+        ( Mono.Accessor fieldName, _ ) ->
             "accessor_" ++ Names.sanitizeName fieldName ++ "_$_" ++ String.fromInt specId
 
-        Nothing ->
-            "unknown_$_" ++ String.fromInt specId
 
-
-{-| Returns `op` with the `eco.shadow_roots` attribute when it is a
-`func.func`, and unchanged otherwise.
+{-| Returns `op` with the `eco.shadow_roots` attribute. It is applied to the
+ops of the main entry other than its `eco.global`: `main` is a value, so they
+are the `func.func` of its thunk.
 -}
 addShadowRootsAttr : MlirOp -> MlirOp
 addShadowRootsAttr op =
-    if op.name == "func.func" then
-        { op | attrs = Dict.insert "eco.shadow_roots" UnitAttr op.attrs }
-
-    else
-        op
+    { op | attrs = Dict.insert "eco.shadow_roots" UnitAttr op.attrs }
 
 
 
@@ -614,7 +598,8 @@ cafSlotName funcName =
 
 {-| Returns whether the thunk for the value `expr` of type `monoType` is
 memoised: CAF memoisation must be enabled, the value's ABI type must be
-`!eco.value`, and `expr` must not be a closure, a literal or `unit`.
+`!eco.value`, and `expr` must not be a literal or `unit`. It is asked only
+for a value that is not a closure.
 
 A slot is only ever given to a value whose ABI type is `!eco.value`, because a
 rooted slot holding a raw scalar would be scanned as a pointer. A literal or
@@ -626,9 +611,6 @@ cafMemoQualifies ctx expr monoType =
     ctx.ecoConfig.cafMemo.enabled
         && (Types.monoTypeToAbi monoType == Types.ecoValue)
         && (case expr of
-                Mono.MonoClosure _ _ _ ->
-                    False
-
                 Mono.MonoLiteral _ _ ->
                     False
 
@@ -668,21 +650,15 @@ generateDefine ctx funcName cafEligible expr monoType maybeSret maybePsplit =
                 retTy =
                     Types.monoTypeToAbi monoType
 
+                ( coerceOps, finalVar, ctxFinal ) =
+                    Expr.coerceResultToType exprResult.ctx exprResult.resultVar exprResult.resultType retTy
+
+                ( _, returnOp ) =
+                    Ops.ecoReturn ctxFinal finalVar retTy
+
                 region : MlirRegion
                 region =
-                    if exprResult.isTerminated then
-                        -- The ops end in their own terminator, and resultVar means nothing.
-                        Ops.mkRegionTerminatedByOps [] exprResult.ops
-
-                    else
-                        let
-                            ( coerceOps, finalVar, ctxFinal ) =
-                                Expr.coerceResultToType exprResult.ctx exprResult.resultVar exprResult.resultType retTy
-
-                            ( _, returnOp ) =
-                                Ops.ecoReturn ctxFinal finalVar retTy
-                        in
-                        Ops.mkRegion [] (exprResult.ops ++ coerceOps) returnOp
+                    Ops.mkRegion [] (exprResult.ops ++ coerceOps) returnOp
 
                 ( ctx2, funcOp ) =
                     Ops.funcFunc exprResult.ctx funcName [] retTy region
@@ -701,34 +677,18 @@ generateDefine ctx funcName cafEligible expr monoType maybeSret maybePsplit =
                 ( [ funcOp ], ctx2 )
 
 
-{-| Builds the functions of the closure definition `funcName`: its fast clone
-when the closure has captures, and otherwise the function itself with any
-`$sret` or `$psplit` promotion in `maybeSret` and `maybePsplit`. The
-promotions are ignored for a closure with captures.
--}
-generateClosureFunc : Ctx.Context -> String -> Mono.ClosureInfo -> Mono.MonoExpr -> Mono.MonoType -> Maybe Ctx.SretInfo -> Maybe Ctx.PsplitInfo -> ( List MlirOp, Ctx.Context )
-generateClosureFunc ctx funcName closureInfo body monoType maybeSret maybePsplit =
-    let
-        hasCaptures =
-            not (List.isEmpty closureInfo.captures)
-    in
-    if hasCaptures then
-        generateClosureFuncWithCaptures ctx funcName closureInfo body monoType
-
-    else
-        generateClosureFuncSingle ctx funcName closureInfo body monoType maybeSret maybePsplit
-
-
-{-| Builds the function `funcName` for a closure with no captures, taking the
-closure's parameters and returning the result of `monoType` at its ABI type.
+{-| Builds the function `funcName` for the closure of a definition, taking
+the closure's parameters and returning the result of `monoType` at its ABI
+type. A definition's closure is made from a top-level function, so it has no
+captures.
 
 With `maybeSret` it instead returns a `$sret` worker and a shim, and with only
 `maybePsplit` a `$psplit` worker and a shim; `maybeSret` wins when both are
 given.
 
 -}
-generateClosureFuncSingle : Ctx.Context -> String -> Mono.ClosureInfo -> Mono.MonoExpr -> Mono.MonoType -> Maybe Ctx.SretInfo -> Maybe Ctx.PsplitInfo -> ( List MlirOp, Ctx.Context )
-generateClosureFuncSingle ctx funcName closureInfo body monoType maybeSret maybePsplit =
+generateClosureFunc : Ctx.Context -> String -> Mono.ClosureInfo -> Mono.MonoExpr -> Mono.MonoType -> Maybe Ctx.SretInfo -> Maybe Ctx.PsplitInfo -> ( List MlirOp, Ctx.Context )
+generateClosureFunc ctx funcName closureInfo body monoType maybeSret maybePsplit =
     let
         argPairs : List ( String, MlirType )
         argPairs =
@@ -764,31 +724,21 @@ generateClosureFuncSingle ctx funcName closureInfo body monoType maybeSret maybe
 
         extractedReturnType : Mono.MonoType
         extractedReturnType =
-            case monoType of
-                Mono.MFunction _ _ _ retType ->
-                    retType
-
-                _ ->
-                    monoType
+            Ctx.closureResultType monoType
 
         returnType : MlirType
         returnType =
             Types.monoTypeToAbi extractedReturnType
 
+        ( coerceOps, finalVar, ctxFinal ) =
+            Expr.coerceResultToType exprResult.ctx exprResult.resultVar exprResult.resultType returnType
+
+        ( _, returnOp ) =
+            Ops.ecoReturn ctxFinal finalVar returnType
+
         region : MlirRegion
         region =
-            if exprResult.isTerminated then
-                Ops.mkRegionTerminatedByOps argPairs exprResult.ops
-
-            else
-                let
-                    ( coerceOps, finalVar, ctxFinal ) =
-                        Expr.coerceResultToType exprResult.ctx exprResult.resultVar exprResult.resultType returnType
-
-                    ( _, returnOp ) =
-                        Ops.ecoReturn ctxFinal finalVar returnType
-                in
-                Ops.mkRegion argPairs (exprResult.ops ++ coerceOps) returnOp
+            Ops.mkRegion argPairs (exprResult.ops ++ coerceOps) returnOp
 
         ( ctx2, funcOp ) =
             Ops.funcFunc exprResult.ctx funcName argPairs returnType region
@@ -842,12 +792,7 @@ generateMapTemplateBody ctx funcName info closureInfo monoType =
 
                 extractedReturnType : Mono.MonoType
                 extractedReturnType =
-                    case monoType of
-                        Mono.MFunction _ _ _ retType ->
-                            retType
-
-                        _ ->
-                            monoType
+                    Ctx.closureResultType monoType
 
                 returnType : MlirType
                 returnType =
@@ -1025,7 +970,7 @@ generateSretWorkerAndShim ctx funcName closureInfo body extractedReturnType sret
             List.map (\( name, _ ) -> "%" ++ name) closureInfo.params
 
         aggTy =
-            Ops.aggTupleType sretInfo.slotTypes
+            Ops.aggTupleType (Mono.tupleToList sretInfo.slotTypes)
 
         ctxWorker : Ctx.Context
         ctxWorker =
@@ -1041,11 +986,7 @@ generateSretWorkerAndShim ctx funcName closureInfo body extractedReturnType sret
             Expr.generateExpr ctxWorker body
 
         ( wCoerceOps, wAggVar, wCtx1 ) =
-            if workerRes.isTerminated then
-                crash ("generateSretWorkerAndShim: terminated body in sret worker " ++ funcName)
-
-            else
-                Expr.coerceResultToType workerRes.ctx workerRes.resultVar workerRes.resultType aggTy
+            Expr.coerceResultToType workerRes.ctx workerRes.resultVar workerRes.resultType aggTy
 
         ( wProjOpsRev, wSlotPairsRev, wCtx2 ) =
             List.foldl
@@ -1055,7 +996,7 @@ generateSretWorkerAndShim ctx funcName closureInfo body extractedReturnType sret
                             Ctx.freshVar ctxAcc
 
                         ( ctxP, projOp ) =
-                            if sretInfo.layout.arity == 2 then
+                            if Mono.tupleArity sretInfo.layout.elements == 2 then
                                 Ops.ecoProjectTuple2Agg ctxF pv idx slotTy ( wAggVar, aggTy )
 
                             else
@@ -1064,7 +1005,7 @@ generateSretWorkerAndShim ctx funcName closureInfo body extractedReturnType sret
                     ( projOp :: opsAcc, ( pv, slotTy ) :: pairsAcc, ctxP )
                 )
                 ( [], [], wCtx1 )
-                (List.indexedMap Tuple.pair sretInfo.slotTypes)
+                (List.indexedMap Tuple.pair (Mono.tupleToList sretInfo.slotTypes))
 
         ( wCtx3, wReturnOp ) =
             Ops.ecoReturnMulti wCtx2 (List.reverse wSlotPairsRev)
@@ -1073,7 +1014,7 @@ generateSretWorkerAndShim ctx funcName closureInfo body extractedReturnType sret
             Ops.mkRegion argPairs (workerRes.ops ++ wCoerceOps ++ List.reverse wProjOpsRev) wReturnOp
 
         ( wCtx4, workerOp ) =
-            Ops.funcFuncMulti wCtx3 (funcName ++ "$sret") argPairs sretInfo.slotTypes workerRegion
+            Ops.funcFuncMulti wCtx3 (funcName ++ "$sret") argPairs (Mono.tupleToList sretInfo.slotTypes) workerRegion
 
         ctxShim : Ctx.Context
         ctxShim =
@@ -1084,37 +1025,22 @@ generateSretWorkerAndShim ctx funcName closureInfo body extractedReturnType sret
             }
                 |> Ctx.resetDefinedSsaVars paramSsaVars
 
-        ( sResultPairsRev, ctxS1 ) =
-            List.foldl
-                (\slotTy ( acc, c ) ->
-                    let
-                        ( v, c1 ) =
-                            Ctx.freshVar c
-                    in
-                    ( ( v, slotTy ) :: acc, c1 )
-                )
-                ( [], ctxShim )
-                sretInfo.slotTypes
-
-        sResultPairs =
-            List.reverse sResultPairsRev
+        ( sResultPairs, ctxS1 ) =
+            Ctx.freshSlotVars ctxShim sretInfo.slotTypes
 
         ( ctxS2, sCallOp ) =
-            Ops.ecoCallNamedMulti ctxS1 sResultPairs (funcName ++ "$sret") argPairs
+            Ops.ecoCallNamedMulti ctxS1 (Mono.tupleToList sResultPairs) (funcName ++ "$sret") argPairs
 
         ( sBoxVar, ctxS3 ) =
             Ctx.freshVar ctxS2
 
         ( ctxS4, sConstructOp ) =
             case sResultPairs of
-                [ a, b ] ->
+                Mono.T2 a b ->
                     Ops.ecoConstructTuple2 ctxS3 sBoxVar a b sretInfo.layout.unboxedBitmap
 
-                [ a, b, c ] ->
+                Mono.T3 a b c ->
                     Ops.ecoConstructTuple3 ctxS3 sBoxVar a b c sretInfo.layout.unboxedBitmap
-
-                _ ->
-                    crash "generateSretWorkerAndShim: slot arity not 2/3"
 
         ( _, sReturnOp ) =
             Ops.ecoReturn ctxS4 sBoxVar Types.ecoValue
@@ -1207,19 +1133,14 @@ generatePsplitWorkerAndShim ctx funcName closureInfo body extractedReturnType ps
         workerRes =
             Expr.generateExpr ctxWorker body
 
+        ( wCoerceOps, wFinalVar, wCtx1 ) =
+            Expr.coerceResultToType workerRes.ctx workerRes.resultVar workerRes.resultType returnType
+
+        ( _, wReturnOp ) =
+            Ops.ecoReturn wCtx1 wFinalVar returnType
+
         workerRegion =
-            if workerRes.isTerminated then
-                Ops.mkRegionTerminatedByOps workerArgPairs workerRes.ops
-
-            else
-                let
-                    ( wCoerceOps, wFinalVar, wCtx1 ) =
-                        Expr.coerceResultToType workerRes.ctx workerRes.resultVar workerRes.resultType returnType
-
-                    ( _, wReturnOp ) =
-                        Ops.ecoReturn wCtx1 wFinalVar returnType
-                in
-                Ops.mkRegion workerArgPairs (workerRes.ops ++ wCoerceOps) wReturnOp
+            Ops.mkRegion workerArgPairs (workerRes.ops ++ wCoerceOps) wReturnOp
 
         wResCtx =
             workerRes.ctx
@@ -1258,7 +1179,7 @@ generatePsplitWorkerAndShim ctx funcName closureInfo body extractedReturnType ps
                                         ( ca2, projOp ) =
                                             case plan.spec of
                                                 Ctx.SplitTuple layout ->
-                                                    if layout.arity == 2 then
+                                                    if Mono.tupleArity layout.elements == 2 then
                                                         Ops.ecoProjectTuple2 ca1 pv idx slotTy ("%" ++ name)
 
                                                     else
@@ -1301,132 +1222,6 @@ generatePsplitWorkerAndShim ctx funcName closureInfo body extractedReturnType ps
     ( [ workerOp, shimWithLogical ], { ctxS4 | splitAggParams = ctx.splitAggParams } )
 
 
-{-| Builds the fast clone `funcName$cap` of a closure with captures: a function
-taking the captures, as `%cap_<index>`, followed by the parameters, and
-returning the closure's result. Within the body each capture's name refers to
-its `%cap_<index>` parameter.
--}
-generateClosureFuncWithCaptures : Ctx.Context -> String -> Mono.ClosureInfo -> Mono.MonoExpr -> Mono.MonoType -> ( List MlirOp, Ctx.Context )
-generateClosureFuncWithCaptures ctx funcName closureInfo body monoType =
-    let
-        fastCloneName =
-            funcName ++ "$cap"
-
-        captureTypes : List ( String, MlirType )
-        captureTypes =
-            List.indexedMap
-                (\idx ( _, expr, _ ) ->
-                    ( "%cap_" ++ String.fromInt idx, Types.monoTypeToAbi (Mono.typeOf expr) )
-                )
-                closureInfo.captures
-
-        paramPairs : List ( String, MlirType )
-        paramPairs =
-            List.map
-                (\( name, ty ) -> ( "%" ++ name, Types.monoTypeToAbi ty ))
-                closureInfo.params
-
-        fastCloneArgs : List ( String, MlirType )
-        fastCloneArgs =
-            captureTypes ++ paramPairs
-
-        extractedReturnType : Mono.MonoType
-        extractedReturnType =
-            case monoType of
-                Mono.MFunction _ _ _ retType ->
-                    retType
-
-                _ ->
-                    monoType
-
-        returnType : MlirType
-        returnType =
-            Types.monoTypeToAbi extractedReturnType
-
-        captureMappings : Dict.Dict String Ctx.VarInfo
-        captureMappings =
-            List.foldl
-                (\( idx, ( name, expr, _ ) ) acc ->
-                    Dict.insert name
-                        { ssaVar = "%cap_" ++ String.fromInt idx
-                        , mlirType = Types.monoTypeToAbi (Mono.typeOf expr)
-                        }
-                        acc
-                )
-                Dict.empty
-                (List.indexedMap Tuple.pair closureInfo.captures)
-
-        paramMappings : Dict.Dict String Ctx.VarInfo
-        paramMappings =
-            List.foldl
-                (\( name, ty ) acc ->
-                    Dict.insert name
-                        { ssaVar = "%" ++ name
-                        , mlirType = Types.monoTypeToAbi ty
-                        }
-                        acc
-                )
-                Dict.empty
-                closureInfo.params
-
-        fastCloneMappings : Dict.Dict String Ctx.VarInfo
-        fastCloneMappings =
-            Dict.union paramMappings captureMappings
-
-        fastCloneSsaVars : List String
-        fastCloneSsaVars =
-            List.map Tuple.first fastCloneArgs
-
-        ctxFastClone : Ctx.Context
-        ctxFastClone =
-            { ctx
-                | nextVar = List.length fastCloneArgs
-                , varMappings = fastCloneMappings
-            }
-                |> Ctx.resetDefinedSsaVars fastCloneSsaVars
-
-        exprResult : Expr.ExprResult
-        exprResult =
-            Expr.generateExpr ctxFastClone body
-
-        fastCloneRegion : MlirRegion
-        fastCloneRegion =
-            if exprResult.isTerminated then
-                Ops.mkRegionTerminatedByOps fastCloneArgs exprResult.ops
-
-            else
-                let
-                    ( coerceOps, finalVar, _ ) =
-                        Expr.coerceResultToType exprResult.ctx exprResult.resultVar exprResult.resultType returnType
-
-                    ( _, returnOp ) =
-                        Ops.ecoReturn exprResult.ctx finalVar returnType
-                in
-                Ops.mkRegion fastCloneArgs (exprResult.ops ++ coerceOps) returnOp
-
-        ( ctx1, fastCloneOpRaw ) =
-            Ops.funcFunc exprResult.ctx fastCloneName fastCloneArgs returnType fastCloneRegion
-
-        captureMonoTypes : List Mono.MonoType
-        captureMonoTypes =
-            List.map (\( _, expr, _ ) -> Mono.typeOf expr) closureInfo.captures
-
-        paramMonoTypes : List Mono.MonoType
-        paramMonoTypes =
-            List.map Tuple.second closureInfo.params
-
-        fastCloneOp =
-            LogicalTypes.addLogicalTypesAttr
-                ctx1.ecoConfig.logicalTypes.customMaxFields
-                ctx1.typeRegistry.ctorShapes
-                (captureMonoTypes ++ paramMonoTypes)
-                extractedReturnType
-                fastCloneOpRaw
-    in
-    ( [ fastCloneOp ], ctx1 )
-
-
-
 -- ====== GENERATE TAIL FUNC ======
 
 
@@ -1437,8 +1232,7 @@ The function returns what `monoType` gives after `params`, which is itself a
 function type when the definition has fewer parameters than its type has
 arrows. With `maybeSret`, the loop returns the fields of the tuple result
 separately: the function is emitted as the worker `funcName$sret` with a shim
-under `funcName` that builds the boxed tuple, as for a closure. Crashes when
-that tuple does not have two or three fields.
+under `funcName` that builds the boxed tuple, as for a closure.
 
 -}
 generateTailFunc : Ctx.Context -> String -> List ( Name.Name, Mono.MonoType ) -> Mono.MonoExpr -> Mono.MonoType -> Maybe Ctx.SretInfo -> ( List MlirOp, Ctx.Context )
@@ -1478,28 +1272,12 @@ generateTailFunc ctx funcName params expr monoType maybeSret =
         retTy =
             Types.monoTypeToAbi actualReturnType
 
-        ( bodyOps, ctx1 ) =
+        ( bodyOps, bodyTerminator, ctx1 ) =
             TailRec.compileTailFuncToWhile ctxWithArgs funcName funcArgPairs (List.map Tuple.second params) expr retTy maybeSret
-
-        ( bodyNonTermOps, bodyTerminator ) =
-            case List.reverse bodyOps of
-                term :: rest ->
-                    ( List.reverse rest, term )
-
-                [] ->
-                    -- Not expected: TailRec always ends the body with a return.
-                    let
-                        ( dummyOps, dummyVar, ctxDummy ) =
-                            Expr.createDummyValue ctx1 retTy
-
-                        ( _, dummyRetOp ) =
-                            Ops.ecoReturn ctxDummy dummyVar retTy
-                    in
-                    ( dummyOps, dummyRetOp )
 
         funcBodyRegion : MlirRegion
         funcBodyRegion =
-            Ops.mkRegion funcArgPairs bodyNonTermOps bodyTerminator
+            Ops.mkRegion funcArgPairs bodyOps bodyTerminator
 
         ( ctx2, funcOp ) =
             Ops.funcFunc ctx1 funcName funcArgPairs retTy funcBodyRegion
@@ -1523,43 +1301,28 @@ generateTailFunc ctx funcName params expr monoType maybeSret =
         Just sretInfo ->
             let
                 ( wCtx, workerOp ) =
-                    Ops.funcFuncMulti ctx2 (funcName ++ "$sret") funcArgPairs sretInfo.slotTypes funcBodyRegion
+                    Ops.funcFuncMulti ctx2 (funcName ++ "$sret") funcArgPairs (Mono.tupleToList sretInfo.slotTypes) funcBodyRegion
 
                 ctxShim =
                     { wCtx | nextVar = List.length params, varMappings = freshVarMappings, splitAggParams = Dict.empty }
                         |> Ctx.resetDefinedSsaVars paramSsaVarsTail
 
-                ( sResultPairsRev, ctxS1 ) =
-                    List.foldl
-                        (\slotTy ( acc, c ) ->
-                            let
-                                ( v, c1 ) =
-                                    Ctx.freshVar c
-                            in
-                            ( ( v, slotTy ) :: acc, c1 )
-                        )
-                        ( [], ctxShim )
-                        sretInfo.slotTypes
-
-                sResultPairs =
-                    List.reverse sResultPairsRev
+                ( sResultPairs, ctxS1 ) =
+                    Ctx.freshSlotVars ctxShim sretInfo.slotTypes
 
                 ( ctxS2, sCallOp ) =
-                    Ops.ecoCallNamedMulti ctxS1 sResultPairs (funcName ++ "$sret") funcArgPairs
+                    Ops.ecoCallNamedMulti ctxS1 (Mono.tupleToList sResultPairs) (funcName ++ "$sret") funcArgPairs
 
                 ( sBoxVar, ctxS3 ) =
                     Ctx.freshVar ctxS2
 
                 ( ctxS4, sConstructOp ) =
                     case sResultPairs of
-                        [ a, b ] ->
+                        Mono.T2 a b ->
                             Ops.ecoConstructTuple2 ctxS3 sBoxVar a b sretInfo.layout.unboxedBitmap
 
-                        [ a, b, c ] ->
+                        Mono.T3 a b c ->
                             Ops.ecoConstructTuple3 ctxS3 sBoxVar a b c sretInfo.layout.unboxedBitmap
-
-                        _ ->
-                            crash "generateTailFunc: sret slot arity not 2/3"
 
                 ( _, sReturnOp ) =
                     Ops.ecoReturn ctxS4 sBoxVar Types.ecoValue
@@ -1585,19 +1348,20 @@ generateTailFunc ctx funcName params expr monoType maybeSret =
 -- ====== GENERATE CTOR ======
 
 
-{-| Builds the constructor function `funcName` for the constructor laid out by
-`ctorLayout`, and registers its type with the context.
+{-| Builds the constructor function `funcName` for the constructor of module
+`home` laid out by `ctorLayout`, and registers its type with the context.
 
 A nullary constructor gives a function with no parameters returning a
-constant: `Nothing`, `True` or `False` of elm/core give their `eco.constant`,
-and any other gives a null-cons constant carrying its tag, which must fit
+constant: elm/core's `Nothing` gives its `eco.constant` (`True` and `False`
+have no constructor node, their references being Bool literals), and any
+other gives a null-cons constant carrying its tag, which must fit
 (`CtorTag.checkNullConsCapacity`). A constructor with fields takes one
 parameter per field at the field's ABI type, boxes those the layout stores
 boxed, and allocates the value with `eco.construct.custom`.
 
 -}
-generateCtor : Ctx.Context -> String -> Types.CtorLayout -> Mono.MonoType -> ( Ctx.Context, MlirOp )
-generateCtor ctx funcName ctorLayout monoType =
+generateCtor : Ctx.Context -> String -> ModuleName.Canonical -> Types.CtorLayout -> Mono.MonoType -> ( Ctx.Context, MlirOp )
+generateCtor ctx funcName home ctorLayout monoType =
     let
         ( _, ctxWithType ) =
             Ctx.getOrCreateTypeIdForMonoType monoType ctx
@@ -1617,23 +1381,17 @@ generateCtor ctx funcName ctorLayout monoType =
         arity =
             List.length ctorLayout.fields
 
-        constructorName : Maybe String
+        constructorName : String
         constructorName =
-            Just (Name.toElmString ctorLayout.name)
+            Name.toElmString ctorLayout.name
 
-        -- The constructor's home is the home of the custom type it builds.
         wellKnownName : Maybe String
         wellKnownName =
-            case ctorResultMonoType of
-                Mono.MCustom _ home _ _ ->
-                    if CtorTag.isEmbeddedConstantCtor home ctorLayout.name then
-                        constructorName
+            if CtorTag.isEmbeddedConstantCtor home ctorLayout.name then
+                Just constructorName
 
-                    else
-                        Nothing
-
-                _ ->
-                    Nothing
+            else
+                Nothing
     in
     if arity == 0 then
         let
@@ -1644,12 +1402,6 @@ generateCtor ctx funcName ctorLayout monoType =
                 case wellKnownName of
                     Just "Nothing" ->
                         Ops.ecoConstantNothing ctx1 resultVar
-
-                    Just "True" ->
-                        Ops.ecoConstantTrue ctx1 resultVar
-
-                    Just "False" ->
-                        Ops.ecoConstantFalse ctx1 resultVar
 
                     _ ->
                         Ops.ecoConstantNullCons ctx1
@@ -1722,7 +1474,7 @@ generateCtor ctx funcName ctorLayout monoType =
                 Ctx.freshVar ctxBoxed
 
             ( ctx2, constructOp ) =
-                Ops.ecoConstructCustom ctx1 resultVar ctorLayout.tag arity (Types.ctorSlotKinds ctorLayout) (List.reverse slotPairsRev) constructorName
+                Ops.ecoConstructCustom ctx1 resultVar ctorLayout.tag constructorName (List.map2 (\( v, t ) k -> ( v, t, k )) (List.reverse slotPairsRev) (Types.ctorSlotKinds ctorLayout))
 
             ( _, returnOp ) =
                 Ops.ecoReturn ctx2 resultVar Types.ecoValue
@@ -1742,13 +1494,16 @@ generateCtor ctx funcName ctorLayout monoType =
 
 
 {-| Builds the function `funcName` of an enum constructor: no parameters,
-returning a constant. `maybeCtor` is the constructor's home and name; `Nothing`,
-`True` and `False` of elm/core give their `eco.constant`, and any other
-constructor a null-cons constant carrying `tag`, which must fit
-(`CtorTag.checkNullConsCapacity`). The type is registered with the context.
+returning a null-cons constant carrying `tag`, which must fit
+(`CtorTag.checkNullConsCapacity`). `ctorName` is the constructor's name, used
+to name it in that check. No enum is one of elm/core's embedded
+constants: `Maybe` has `Just a`, so `Nothing` is never an enum, and a
+reference to `True` or `False` is a Bool literal by then
+(`Compiler.LocalOpt.Typed.Names`), so neither has a node. The type is
+registered with the context.
 -}
-generateEnum : Ctx.Context -> String -> Int -> Mono.MonoType -> Maybe ( ModuleName.Canonical, String ) -> ( Ctx.Context, MlirOp )
-generateEnum ctx funcName tag monoType maybeCtor =
+generateEnum : Ctx.Context -> String -> Int -> Mono.MonoType -> String -> ( Ctx.Context, MlirOp )
+generateEnum ctx funcName tag monoType ctorName =
     let
         ( _, ctxWithType ) =
             Ctx.getOrCreateTypeIdForMonoType monoType ctx
@@ -1756,42 +1511,11 @@ generateEnum ctx funcName tag monoType maybeCtor =
         ( resultVar, ctx1 ) =
             Ctx.freshVar ctxWithType
 
-        maybeCtorName : Maybe String
-        maybeCtorName =
-            Maybe.map Tuple.second maybeCtor
-
-        wellKnownName : Maybe String
-        wellKnownName =
-            case maybeCtor of
-                Just ( home, name ) ->
-                    if CtorTag.isEmbeddedConstantCtor home name then
-                        Just name
-
-                    else
-                        Nothing
-
-                Nothing ->
-                    Nothing
-
+        -- tag is already the effective tag; it is used as given.
         ( ctx2, valueOp ) =
-            case wellKnownName of
-                Just "True" ->
-                    Ops.ecoConstantTrue ctx1 resultVar
-
-                Just "False" ->
-                    Ops.ecoConstantFalse ctx1 resultVar
-
-                Just "Nothing" ->
-                    Ops.ecoConstantNothing ctx1 resultVar
-
-                _ ->
-                    -- tag is already the effective tag; it is used as given.
-                    Ops.ecoConstantNullCons ctx1
-                        resultVar
-                        (CtorTag.checkNullConsCapacity
-                            (Maybe.withDefault "<enum>" maybeCtorName)
-                            tag
-                        )
+            Ops.ecoConstantNullCons ctx1
+                resultVar
+                (CtorTag.checkNullConsCapacity ctorName tag)
 
         ( ctx3, returnOp ) =
             Ops.ecoReturn ctx2 resultVar Types.ecoValue
@@ -1988,8 +1712,10 @@ generateManagerLeaf ctx funcName homeModuleName monoType =
     ( ctxOut, funcOpWithLogical )
 
 
-{-| Builds a placeholder value of `mlirType` named `resultVar`: zero for
-`i64`, `f64` and `i32`, `False` for `i1`, and `unit` for any other type.
+{-| Builds a placeholder value of `mlirType` named `resultVar`, for the body
+of an extern or kernel declaration: zero for `i64`, `f64` and `i32`, and
+`unit` for any other type. `mlirType` is an ABI type, never `i1`
+(REP\_ABI\_001).
 -}
 generateStubValue : Ctx.Context -> String -> MlirType -> ( Ctx.Context, MlirOp )
 generateStubValue ctx resultVar mlirType =
@@ -1999,9 +1725,6 @@ generateStubValue ctx resultVar mlirType =
 
         F64 ->
             Ops.arithConstantFloat ctx resultVar 0.0
-
-        I1 ->
-            Ops.arithConstantBool ctx resultVar False
 
         I32 ->
             Ops.arithConstantChar ctx resultVar 0
@@ -2043,7 +1766,7 @@ generateKernelDecl ctx info =
             Ctx.freshVar ctxWithArgs
 
         ( ctx2, stubOp ) =
-            generateStubValueFromMlirType ctx1 stubVar resultMlirType
+            generateStubValue ctx1 stubVar resultMlirType
 
         ( ctx3, returnOp ) =
             Ops.ecoReturn ctx2 stubVar resultMlirType
@@ -2089,26 +1812,3 @@ generateKernelDecl ctx info =
                 funcOp
     in
     ( ctxOut, funcOpWithLogical )
-
-
-{-| Builds a placeholder value of `mlirType` named `resultVar` for a kernel
-declaration's body: zero for `i64`, `f64` and `i32`, `False` for `i1`, and
-`unit` for any other type.
--}
-generateStubValueFromMlirType : Ctx.Context -> String -> MlirType -> ( Ctx.Context, MlirOp )
-generateStubValueFromMlirType ctx resultVar mlirType =
-    case mlirType of
-        I64 ->
-            Ops.arithConstantInt ctx resultVar 0
-
-        F64 ->
-            Ops.arithConstantFloat ctx resultVar 0.0
-
-        I1 ->
-            Ops.arithConstantBool ctx resultVar False
-
-        I32 ->
-            Ops.arithConstantChar ctx resultVar 0
-
-        _ ->
-            Ops.ecoConstantUnit ctx resultVar

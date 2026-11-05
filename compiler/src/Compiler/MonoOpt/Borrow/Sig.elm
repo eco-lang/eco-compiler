@@ -111,7 +111,7 @@ resCount ty =
             1 + resCount elem
 
         Mono.MTuple _ ts ->
-            1 + List.sum (List.map resCount ts)
+            1 + List.sum (List.map resCount (Mono.tupleToList ts))
 
         Mono.MRecord _ d ->
             1 + List.sum (List.map resCount (Dict.values d))

@@ -44,7 +44,6 @@ The plain forms are wrappers over the `S` forms.
 import Compiler.IR.Typed.TypeVars as Vars exposing (Descriptor)
 import Compiler.Type.State.IO as IO exposing (IO)
 import Compiler.Type.State.IORef as IORef
-import System.Crash exposing (crash)
 
 
 
@@ -160,6 +159,27 @@ reprS s ((Vars.Pt ref) as point) =
                 ( point2, s1 )
 
 
+{-| Returns the root of `point`'s class and the root's weight, together with the
+new state, compressing the path as `reprS` does.
+-}
+reprWeightS : IO.State -> Vars.Point -> ( Vars.Point, Int, IO.State )
+reprWeightS s ((Vars.Pt ref) as point) =
+    case IORef.readPointCellS s ref of
+        Vars.Root weight _ ->
+            ( point, weight, s )
+
+        Vars.Chain ((Vars.Pt ref1) as point1) ->
+            let
+                ( point2, weight, s1 ) =
+                    reprWeightS s point1
+            in
+            if point2 /= point1 then
+                ( point2, weight, IORef.writePointCellS ref (IORef.readPointCellS s1 ref1) s1 )
+
+            else
+                ( point2, weight, s1 )
+
+
 {-| Returns the descriptor of `point`'s class, together with the new state.
 
 When `point` is the root or links straight to it, the state is returned
@@ -243,37 +263,34 @@ replaced and the weight is kept.
 unionS : Vars.Point -> Vars.Point -> Vars.Descriptor -> IO.State -> IO.State
 unionS p1 p2 newDesc s =
     let
-        ( (Vars.Pt ref1) as point1, s1 ) =
-            reprS s p1
+        ( (Vars.Pt ref1) as point1, weight1, s1 ) =
+            reprWeightS s p1
 
-        ( (Vars.Pt ref2) as point2, s2 ) =
-            reprS s1 p2
+        -- Compressing p2's path rewrites only cells that are not roots, so
+        -- weight1 is still the weight of point1's cell.
+        ( (Vars.Pt ref2) as point2, weight2, s2 ) =
+            reprWeightS s1 p2
     in
-    case ( IORef.readPointCellS s2 ref1, IORef.readPointCellS s2 ref2 ) of
-        ( Vars.Root weight1 _, Vars.Root weight2 _ ) ->
-            if point1 == point2 then
-                -- The whole cell is rewritten, so it must carry the existing
-                -- weight, not the sum, which would double it.
-                IORef.writePointCellS ref1 (Vars.Root weight1 newDesc) s2
+    if point1 == point2 then
+        -- The whole cell is rewritten, so it must carry the existing
+        -- weight, not the sum, which would double it.
+        IORef.writePointCellS ref1 (Vars.Root weight1 newDesc) s2
 
-            else
-                let
-                    newWeight : Int
-                    newWeight =
-                        weight1 + weight2
-                in
-                if weight1 >= weight2 then
-                    s2
-                        |> IORef.writePointCellS ref2 (Vars.Chain point1)
-                        |> IORef.writePointCellS ref1 (Vars.Root newWeight newDesc)
+    else
+        let
+            newWeight : Int
+            newWeight =
+                weight1 + weight2
+        in
+        if weight1 >= weight2 then
+            s2
+                |> IORef.writePointCellS ref2 (Vars.Chain point1)
+                |> IORef.writePointCellS ref1 (Vars.Root newWeight newDesc)
 
-                else
-                    s2
-                        |> IORef.writePointCellS ref1 (Vars.Chain point2)
-                        |> IORef.writePointCellS ref2 (Vars.Root newWeight newDesc)
-
-        _ ->
-            crash "Unexpected pattern"
+        else
+            s2
+                |> IORef.writePointCellS ref1 (Vars.Chain point2)
+                |> IORef.writePointCellS ref2 (Vars.Root newWeight newDesc)
 
 
 {-| Returns whether `p1` and `p2` have the same root, together with the new

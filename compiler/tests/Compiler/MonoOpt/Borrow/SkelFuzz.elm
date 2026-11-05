@@ -6,7 +6,6 @@ module Compiler.MonoOpt.Borrow.SkelFuzz exposing
     , fromPaths
     , leafPaths
     , refEndsBefore
-    , refOnBoundary
     , skelFuzzer
     , subsets
     )
@@ -42,10 +41,10 @@ after it. So a use at the probe's position is before a subtree probe but not
 before a leaf probe. An execution that does not reach the probe says nothing
 about it.
 
-`refEndsBefore` and `refOnBoundary` are the model's answers, to be compared with
-`Lifetime.endsBefore` and `Lifetime.onBoundary`. They take a skeleton's
-executions as an argument beside the live set, because the executions come from
-the skeleton and a live set alone does not determine them. `allSkels` and
+`refEndsBefore` is the model's answer, to be compared with
+`Lifetime.endsBefore`. It takes a skeleton's executions as an argument beside
+the live set, because the executions come from the skeleton and a live set
+alone does not determine them. `allSkels` and
 `skelFuzzer` supply the skeletons.
 
 -}
@@ -343,41 +342,6 @@ refEndsBefore execs s p =
                 True
         )
         execs
-
-
-{-| Returns whether probe `p` is a last use of a resource used at the
-leaves `s`.
-
-`p` must be one of `s`, and on every execution in `execs` that reaches `p`, no
-leaf of `s` that the execution visits may come after `p`'s position. An
-execution that does not reach `p` imposes nothing.
-
--}
-refOnBoundary : List (List Path) -> List Path -> Path -> Bool
-refOnBoundary execs s p =
-    List.member p s
-        && List.all
-            (\e ->
-                if containsPath e p then
-                    let
-                        pp =
-                            lastPos e p
-                    in
-                    List.all
-                        (\q ->
-                            case leafIndex e q of
-                                Nothing ->
-                                    True
-
-                                Just qi ->
-                                    qi <= pp
-                        )
-                        s
-
-                else
-                    True
-            )
-            execs
 
 
 {-| Returns whether execution `e` reaches probe `p`, that is whether some leaf

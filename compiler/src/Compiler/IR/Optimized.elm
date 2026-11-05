@@ -78,6 +78,7 @@ import Compiler.IR.DecisionTree.Test as DT
 import Compiler.IR.Kernel.Chunk as K
 import Compiler.IR.Source.Shader as Shader
 import Data.Map
+import Data.NonEmptyList as NE
 import Data.Set exposing (EverySet)
 import Dict exposing (Dict)
 import Utils.Bytes.Decode as BD
@@ -147,7 +148,7 @@ type Expr
     | Record (Dict Name Expr)
     | TrackedRecord A.Region (Data.Map.Dict String (A.Located Name) Expr)
     | Unit
-    | Tuple A.Region Expr Expr (List Expr)
+    | Tuple A.Region Expr Expr (Maybe Expr)
     | Shader Shader.Source (EverySet String Name) (EverySet String Name)
 
 
@@ -214,16 +215,13 @@ is applied to, so the innermost path is the `Root` variable that holds the
 whole value.
 
 `Index` takes a numbered field of a tuple or a constructor. `Field` takes a
-record field by name. `ArrayIndex` takes an element of an array-valued field;
-the erased optimizer uses it with the field `cs` for the third and later
-elements of a tuple. `Unbox` takes the argument of a constructor whose type has
+record field by name. `Unbox` takes the argument of a constructor whose type has
 one constructor of one argument. `Root` names the variable the path starts
 from.
 
 -}
 type Path
     = Index Index.ZeroBased Path
-    | ArrayIndex Int Path
     | Field Name Path
     | Unbox Path
     | Root Name
@@ -238,16 +236,17 @@ type Path
 The paths and tests come from `Compiler.IR.DecisionTree.Path` and
 `Compiler.IR.DecisionTree.Test`.
 
-`Chain` runs a list of tests, each on the part of the value its path reaches,
-and goes to the first subtree if all of them pass and to the second otherwise.
-`FanOut` looks at one part of the value and goes to the subtree whose test
-matches it, or to the fallback when none does.
+`Chain` runs one or more tests, each on the part of the value its path
+reaches, and goes to the first subtree if all of them pass and to the second
+otherwise. `FanOut` looks at one part of the value and goes to the subtree of
+the edge whose test matches it, or to the fallback when none does. It has at
+least one edge, and its edge tests are `DT.FanTest`s.
 
 -}
 type Decider a
     = Leaf a
-    | Chain (List ( DT.Path, DT.Test )) (Decider a) (Decider a)
-    | FanOut DT.Path (List ( DT.Test, Decider a )) (Decider a)
+    | Chain (NE.Nonempty ( DT.Path, DT.Test )) (Decider a) (Decider a)
+    | FanOut DT.Path (NE.Nonempty ( DT.FanTest, Decider a )) (Decider a)
 
 
 {-| What a leaf of a `Case` decision tree does: run a branch body written in
@@ -374,7 +373,7 @@ typedPathStub hasMain =
 
 {-| Returns the global under which the graph holds the kernel module with
 kernel prefix `kernelPrefix` (`Elm` or `Eco`) and home `home`, as
-`Name.getKernel` splits a kernel module name.
+`Name.toKernel` splits a kernel module name.
 
 An `Elm` kernel is keyed by its home alone, `elm/kernel:File.$` for
 `Elm.Kernel.File`. An `Eco` kernel is keyed by its whole module
@@ -416,44 +415,84 @@ ecoKernelModulePrefix =
 -- ====== ENCODERS and DECODERS ======
 
 
-{-| Encodes a global graph: its nodes, then its field counts.
+{-| Encodes a global graph: the format-version byte, its nodes, then its field
+counts.
 -}
 globalGraphEncoder : GlobalGraph -> Bytes.Encode.Encoder
 globalGraphEncoder (GlobalGraph nodes fields) =
     Bytes.Encode.sequence
-        [ BE.assocListDict globalEncoder nodeEncoder nodes
-        , BE.stdDict BE.string BE.int fields
-        ]
-
-
-{-| A decoder for a global graph as `globalGraphEncoder` writes it.
--}
-globalGraphDecoder : Bytes.Decode.Decoder GlobalGraph
-globalGraphDecoder =
-    Bytes.Decode.map2 GlobalGraph
-        (BD.assocListDict toComparableGlobal globalDecoder nodeDecoder)
-        (BD.stdDict BD.string BD.int)
-
-
-{-| Encodes a local graph: its `main`, its nodes, then its field counts.
--}
-localGraphEncoder : LocalGraph -> Bytes.Encode.Encoder
-localGraphEncoder (LocalGraph main nodes fields) =
-    Bytes.Encode.sequence
-        [ BE.maybe mainEncoder main
+        [ Bytes.Encode.unsignedInt8 graphFormatVersion
         , BE.assocListDict globalEncoder nodeEncoder nodes
         , BE.stdDict BE.string BE.int fields
         ]
 
 
-{-| A decoder for a local graph as `localGraphEncoder` writes it.
+{-| A decoder for a global graph as `globalGraphEncoder` writes it. It fails on
+any format-version byte but the current one.
+-}
+globalGraphDecoder : Bytes.Decode.Decoder GlobalGraph
+globalGraphDecoder =
+    formatVersionDecoder
+        |> Bytes.Decode.andThen
+            (\() ->
+                Bytes.Decode.map2 GlobalGraph
+                    (BD.assocListDict toComparableGlobal globalDecoder nodeDecoder)
+                    (BD.stdDict BD.string BD.int)
+            )
+
+
+{-| Encodes a local graph: the format-version byte, its `main`, its nodes, then
+its field counts.
+-}
+localGraphEncoder : LocalGraph -> Bytes.Encode.Encoder
+localGraphEncoder (LocalGraph main nodes fields) =
+    Bytes.Encode.sequence
+        [ Bytes.Encode.unsignedInt8 graphFormatVersion
+        , BE.maybe mainEncoder main
+        , BE.assocListDict globalEncoder nodeEncoder nodes
+        , BE.stdDict BE.string BE.int fields
+        ]
+
+
+{-| A decoder for a local graph as `localGraphEncoder` writes it. It fails on
+any format-version byte but the current one.
 -}
 localGraphDecoder : Bytes.Decode.Decoder LocalGraph
 localGraphDecoder =
-    Bytes.Decode.map3 LocalGraph
-        (BD.maybe mainDecoder)
-        (BD.assocListDict toComparableGlobal globalDecoder nodeDecoder)
-        (BD.stdDict BD.string BD.int)
+    formatVersionDecoder
+        |> Bytes.Decode.andThen
+            (\() ->
+                Bytes.Decode.map3 LocalGraph
+                    (BD.maybe mainDecoder)
+                    (BD.assocListDict toComparableGlobal globalDecoder nodeDecoder)
+                    (BD.stdDict BD.string BD.int)
+            )
+
+
+{-| The version of the binary format of both graphs, written as their first
+byte. It must change with any change to the layout, so that a graph stored in
+an older layout (in `o.dat`, `d.dat`, a package's `artifacts.dat` or a
+module's `.eco`) fails to decode rather than decoding into the wrong values.
+-}
+graphFormatVersion : Int
+graphFormatVersion =
+    3
+
+
+{-| A decoder that reads the format-version byte and fails unless it is
+`graphFormatVersion`.
+-}
+formatVersionDecoder : Bytes.Decode.Decoder ()
+formatVersionDecoder =
+    Bytes.Decode.unsignedInt8
+        |> Bytes.Decode.andThen
+            (\v ->
+                if v == graphFormatVersion then
+                    Bytes.Decode.succeed ()
+
+                else
+                    Bytes.Decode.fail
+            )
 
 
 {-| Encodes a `main` as a tag byte, followed for `Dynamic` by its message type and flags decoder.
@@ -867,7 +906,7 @@ exprEncoder expr =
                 , A.regionEncoder region
                 , exprEncoder a
                 , exprEncoder b
-                , BE.list exprEncoder cs
+                , BE.maybe exprEncoder cs
                 ]
 
         Shader src attributes uniforms ->
@@ -1038,7 +1077,7 @@ exprDecoder =
                             A.regionDecoder
                             exprDecoder
                             exprDecoder
-                            (BD.list exprDecoder)
+                            (BD.maybe exprDecoder)
 
                     29 ->
                         Bytes.Decode.map3 Shader
@@ -1133,7 +1172,7 @@ deciderEncoder encoder decider =
         Chain testChain success failure ->
             Bytes.Encode.sequence
                 [ Bytes.Encode.unsignedInt8 1
-                , BE.list (BE.jsonPair DT.pathEncoder DT.testEncoder) testChain
+                , BE.nonempty (BE.jsonPair DT.pathEncoder DT.testEncoder) testChain
                 , deciderEncoder encoder success
                 , deciderEncoder encoder failure
                 ]
@@ -1142,7 +1181,7 @@ deciderEncoder encoder decider =
             Bytes.Encode.sequence
                 [ Bytes.Encode.unsignedInt8 2
                 , DT.pathEncoder path
-                , BE.list (BE.jsonPair DT.testEncoder (deciderEncoder encoder)) edges
+                , BE.nonempty (BE.jsonPair DT.fanTestEncoder (deciderEncoder encoder)) edges
                 , deciderEncoder encoder fallback
                 ]
 
@@ -1160,14 +1199,14 @@ deciderDecoder decoder =
 
                     1 ->
                         Bytes.Decode.map3 Chain
-                            (BD.list (BD.jsonPair DT.pathDecoder DT.testDecoder))
+                            (BD.nonempty (BD.jsonPair DT.pathDecoder DT.testDecoder))
                             (deciderDecoder decoder)
                             (deciderDecoder decoder)
 
                     2 ->
                         Bytes.Decode.map3 FanOut
                             DT.pathDecoder
-                            (BD.list (BD.jsonPair DT.testDecoder (deciderDecoder decoder)))
+                            (BD.nonempty (BD.jsonPair DT.fanTestDecoder (deciderDecoder decoder)))
                             (deciderDecoder decoder)
 
                     _ ->
@@ -1225,29 +1264,22 @@ pathEncoder path =
                 , pathEncoder subPath
                 ]
 
-        ArrayIndex index subPath ->
-            Bytes.Encode.sequence
-                [ Bytes.Encode.unsignedInt8 1
-                , BE.int index
-                , pathEncoder subPath
-                ]
-
         Field field subPath ->
             Bytes.Encode.sequence
-                [ Bytes.Encode.unsignedInt8 2
+                [ Bytes.Encode.unsignedInt8 1
                 , BE.string field
                 , pathEncoder subPath
                 ]
 
         Unbox subPath ->
             Bytes.Encode.sequence
-                [ Bytes.Encode.unsignedInt8 3
+                [ Bytes.Encode.unsignedInt8 2
                 , pathEncoder subPath
                 ]
 
         Root name ->
             Bytes.Encode.sequence
-                [ Bytes.Encode.unsignedInt8 4
+                [ Bytes.Encode.unsignedInt8 3
                 , BE.string name
                 ]
 
@@ -1266,19 +1298,14 @@ pathDecoder =
                             pathDecoder
 
                     1 ->
-                        Bytes.Decode.map2 ArrayIndex
-                            BD.int
-                            pathDecoder
-
-                    2 ->
                         Bytes.Decode.map2 Field
                             BD.string
                             pathDecoder
 
-                    3 ->
+                    2 ->
                         Bytes.Decode.map Unbox pathDecoder
 
-                    4 ->
+                    3 ->
                         Bytes.Decode.map Root BD.string
 
                     _ ->

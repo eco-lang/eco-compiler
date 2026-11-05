@@ -38,11 +38,18 @@ type EncoderNode
     | ELoop
         { itemVar : String
         , itemType : Mono.MonoType
-        , itemNodes : List EncoderNode
+        , itemWrites : List FixedWrite
         , iterExpr : Mono.MonoExpr
         , countExpr : Mono.MonoExpr
         }
     | EOpaque Mono.MonoExpr
+
+type FixedWrite
+    = FU8 Mono.MonoExpr
+    | FU16 Endianness Mono.MonoExpr
+    | FU32 Endianness Mono.MonoExpr
+    | FF32 Endianness Mono.MonoExpr
+    | FF64 Endianness Mono.MonoExpr
 ```
 
 From `compiler/src/Compiler/GenerateMlir/BytesFusion/Reify.elm`. Notice that every leaf holds an expression: only the structure is read, never the values. Signed and unsigned writes of the same width share one node, because they write the same bytes. The loop carries the element's type so that emission can read each list element at its real type; without it, a loop over records reads its elements at the wrong type. `EOpaque` is the leaf for a part that could not be read.
@@ -142,7 +149,7 @@ Related documents: [mlir-generation.md](mlir-generation.md) (the emitter layerin
 Code:
 
 - `compiler/src/Compiler/GenerateMlir/BytesFusion/Reify.elm`: recognition, the node types (`EncoderNode`, `DecoderNode`), `reifyEncoderWith`, `reifyEncoderHelp`, `reifyLoop`, and conversion to the middle form (`nodesToOps`, `decoderNodeToOps`).
-- `compiler/src/Compiler/GenerateMlir/BytesFusion/LoopIR.elm`: the operation and width types (`Op`, `DecoderOp`, `WidthExpr`, `simplifyWidth`).
+- `compiler/src/Compiler/GenerateMlir/BytesFusion/LoopIR.elm`: the program, operation and width types (`EncoderProgram`, `Op`, `DecoderProgram`, `DecoderOp`, `FixedRead`, `WidthExpr`).
 - `compiler/src/Compiler/GenerateMlir/BytesFusion/Emit.elm`: emission to `bf` and `scf` (`emitDecoderOpsNested`, `addNodeWidth`).
 - `compiler/src/Compiler/GenerateMlir/Expr.elm`: `generateSaturatedCallFusionGate`, `tryBytesEncodeFusion`, `tryEncoderFusionWithBindings`, `tryInlinedDecodeFusion`, `bfExprCompiler`, and the kernel fallbacks in `generateSaturatedCallNoFusion`.
 - `compiler/src/Compiler/MonoOpt/InlineSimplify.elm`: `defaultWhitelist`, `buildBodyLookup`.

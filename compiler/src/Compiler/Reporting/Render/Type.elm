@@ -50,6 +50,7 @@ import Compiler.IR.Canonical as Can
 import Compiler.IR.Source as Src
 import Compiler.Reporting.Doc as D
 import Compiler.Reporting.Render.Type.Localizer as L
+import Maybe.Extra as Maybe
 
 
 
@@ -240,8 +241,8 @@ vrecordSnippet entry entries =
 
 
 {-| Returns a record type laid out over several lines, from documents already
-printed for each field's name and type, extending `maybeExt` when it is given.
-With no fields and no extension it is `{}`.
+printed for each field's name and type, the first field given separately,
+extending `maybeExt` when it is given.
 
 Without an extension, each field is on a line of its own, the first starting
 with `{` and the others with `,`, followed by the closing brace. With an
@@ -249,16 +250,18 @@ extension `r`, the first line is `{ r`, and the next, indented four columns, is
 `| x : Int, y : Int` when the fields fit on it.
 
 -}
-vrecord : List ( D.Doc, D.Doc ) -> Maybe D.Doc -> D.Doc
-vrecord entries maybeExt =
-    case ( List.map entryToDoc entries, maybeExt ) of
-        ( [], Nothing ) ->
-            D.fromChars "{}"
-
-        ( fields, Nothing ) ->
+vrecord : ( D.Doc, D.Doc ) -> List ( D.Doc, D.Doc ) -> Maybe D.Doc -> D.Doc
+vrecord entry entries maybeExt =
+    let
+        fields : List D.Doc
+        fields =
+            List.map entryToDoc (entry :: entries)
+    in
+    case maybeExt of
+        Nothing ->
             D.vcat (prefixedParts "{" "," fields ++ [ D.fromChars "}" ])
 
-        ( fields, Just ext ) ->
+        Just ext ->
             D.vcat
                 [ D.hang 4 <|
                     D.vcat
@@ -303,8 +306,11 @@ srcToDoc context (A.At _ tipe) =
         Src.TTypeQual _ home name args ->
             apply context (D.fromName home |> D.a (D.fromChars ".") |> D.a (D.fromName name)) (List.map (Src.c1Value >> srcToDoc App) args)
 
-        Src.TRecord fields maybeExt _ ->
-            record (List.map srcFieldToDocs fields) (Maybe.map (\( _, A.At _ ext ) -> D.fromName ext) maybeExt)
+        Src.TRecord fields _ ->
+            record (List.map srcFieldToDocs fields) Nothing
+
+        Src.TRecordExt ( _, A.At _ ext ) firstField fields _ ->
+            record (List.map srcFieldToDocs (firstField :: fields)) (Just (D.fromName ext))
 
         Src.TUnit ->
             D.fromChars "()"
@@ -383,7 +389,7 @@ canToDoc localizer context tipe =
             D.fromChars "()"
 
         Can.TTuple a b cs ->
-            tuple (canToDoc localizer None a) (canToDoc localizer None b) (List.map (canToDoc localizer None) cs)
+            tuple (canToDoc localizer None a) (canToDoc localizer None b) (List.map (canToDoc localizer None) (Maybe.toList cs))
 
         Can.TAlias home name args _ ->
             apply context (L.toDoc localizer home name) (List.map (canToDoc localizer App << Tuple.second) args)

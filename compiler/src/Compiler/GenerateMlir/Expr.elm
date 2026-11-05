@@ -4,7 +4,7 @@ module Compiler.GenerateMlir.Expr exposing
     , coerceResultToType
     , createDummyValue
     , collectLetBoundNames, addPlaceholderMappings, splitMutualRecGroup
-    , aggBinderPromotableWith, lambdaIdToString, paramSplitAdmissible, scanChainForwardRefs, tupleBinderPromotable
+    , lambdaIdToString, paramSplitAdmissible, promotableCtorCall, scanChainForwardRefs, tupleBinderPromotable
     )
 
 {-| Every function body the MLIR back end emits is made of expressions, and
@@ -87,7 +87,7 @@ rebuilds the tuple after the case.
 # Let-binding Helpers
 
 @docs collectLetBoundNames, addPlaceholderMappings, splitMutualRecGroup
-@docs aggBinderPromotableWith, lambdaIdToString, paramSplitAdmissible, scanChainForwardRefs, tupleBinderPromotable
+@docs lambdaIdToString, paramSplitAdmissible, promotableCtorCall, scanChainForwardRefs, tupleBinderPromotable
 
 -}
 
@@ -110,9 +110,10 @@ import Compiler.IR.Mono as Mono
 import Compiler.IR.Mono.Closure as Closure
 import Compiler.IR.Mono.Registry as Registry
 import Compiler.IR.Mono.Traverse as MonoTraverse
+import Compiler.IR.Source.StringLiteral as StringLiteral
 import Compiler.LocalOpt.Typed.DecisionTree as DT
+import Data.NonEmptyList as NE
 import Dict
-import Hex
 import List.Extra as ListX
 import Mlir.Mlir exposing (MlirAttr(..), MlirBlock, MlirOp, MlirRegion(..), MlirType(..))
 import OrderedDict
@@ -132,16 +133,12 @@ what the expression's Mono type maps to at an ABI boundary (a Bool is `i1`
 here, a promoted tuple is a value aggregate). A caller that needs a particular
 type coerces with `coerceResultToType`.
 
-`isTerminated` is `True` when `ops` already ends with the `eco.yield` that
-closes a case alternative, so nothing may be appended after it.
-
 -}
 type alias ExprResult =
     { ops : List MlirOp
     , resultVar : String
     , resultType : MlirType
     , ctx : Ctx.Context
-    , isTerminated : Bool
     }
 
 
@@ -150,7 +147,7 @@ type `ty`.
 -}
 emptyResult : Ctx.Context -> String -> MlirType -> ExprResult
 emptyResult ctx var ty =
-    { ops = [], resultVar = var, resultType = ty, ctx = ctx, isTerminated = False }
+    { ops = [], resultVar = var, resultType = ty, ctx = ctx }
 
 
 {-| Returns `ops` with every occurrence of the SSA name `fromVar` replaced by
@@ -347,27 +344,25 @@ fastRefBaseName ctx ( lambdaId, maybeSpec ) =
 
 {-| Returns the MLIR function name of a specialization: the global's mangled
 home and name (or `accessor_` and the field name), then `_$_` and the
-specialization id. An id missing from the registry gives `unknown_$_` and the
-id.
+specialization id. An id missing from the registry crashes
+(`Registry.keyOf`).
 -}
 specIdToFuncName : Mono.SpecializationRegistry -> Mono.SpecId -> String
 specIdToFuncName registry specId =
-    case Registry.lookupSpecKey specId registry of
-        Just ( Mono.Global home name, _ ) ->
+    case Registry.keyOf specId registry of
+        ( Mono.Global home name, _ ) ->
             Names.canonicalToMLIRName home ++ "_" ++ Names.sanitizeName name ++ "_$_" ++ String.fromInt specId
 
-        Just ( Mono.Accessor fieldName, _ ) ->
+        ( Mono.Accessor fieldName, _ ) ->
             "accessor_" ++ Names.sanitizeName fieldName ++ "_$_" ++ String.fromInt specId
-
-        Nothing ->
-            "unknown_$_" ++ String.fromInt specId
 
 
 {-| Creates a placeholder value of `mlirType`, for a place that needs a value
 whose contents do not matter, such as a path that is never reached. It is a
-zero constant for `i64`, `f64`, `i1` and `i32`, and the Unit constant for every
-other type, so its type is `!eco.value` whenever `mlirType` is not one of those
-four.
+zero constant for `i64`, `f64` and `i32`, and the Unit constant for every other
+type, so its type is `!eco.value` whenever `mlirType` is not one of those
+three. `mlirType` is an ABI or heap slot type, which is never `i1` (Bool is
+`!eco.value` there, REP\_ABI\_001).
 -}
 createDummyValue : Ctx.Context -> MlirType -> ( List MlirOp, String, Ctx.Context )
 createDummyValue ctx mlirType =
@@ -387,13 +382,6 @@ createDummyValue ctx mlirType =
             let
                 ( ctx2, op ) =
                     Ops.arithConstantFloat ctx1 resultVar 0.0
-            in
-            ( [ op ], resultVar, ctx2 )
-
-        I1 ->
-            let
-                ( ctx2, op ) =
-                    Ops.arithConstantBool ctx1 resultVar False
             in
             ( [ op ], resultVar, ctx2 )
 
@@ -478,7 +466,6 @@ generateExpr ctx0 expr =
                     , resultVar = matVar
                     , resultType = Types.ecoValue
                     , ctx = ctxM
-                    , isTerminated = False
                     }
 
                 Nothing ->
@@ -568,7 +555,7 @@ generateExpr ctx0 expr =
                             fi
 
                         Nothing ->
-                            crash ("record access: field " ++ fieldName ++ " not in layout")
+                            crash ("Expr.generateExpr: MONO_001 record access of field " ++ fieldName ++ " not in the record's layout")
             in
             generateRecordAccess ctx record fieldInfo.index fieldInfo.isUnboxed fieldType
 
@@ -604,17 +591,13 @@ generateExpr ctx0 expr =
                             -- just the arity; a tuple of another layout is built
                             -- boxed and converted by the leaf's coercion.
                             if
-                                Types.tupleSlotTypes (Types.computeTupleLayout (getTupleElements monoType))
+                                Types.tupleSlotTypes (Tuple.first (tupleLiteralLayout elements monoType))
                                     == Types.tupleSlotTypes tailLayout
                             then
                                 generateTupleCreateValue { ctx | sretTailLayout = Nothing } elements monoType
 
                             else
-                                let
-                                    layout =
-                                        Types.computeTupleLayout (getTupleElements monoType)
-                                in
-                                generateTupleCreate { ctx | sretTailLayout = Nothing } elements layout monoType
+                                generateTupleCreate { ctx | sretTailLayout = Nothing } elements monoType
 
                         resCtx =
                             res.ctx
@@ -622,11 +605,7 @@ generateExpr ctx0 expr =
                     { res | ctx = { resCtx | sretTailLayout = ctx.sretTailLayout } }
 
                 Nothing ->
-                    let
-                        layout =
-                            Types.computeTupleLayout (getTupleElements monoType)
-                    in
-                    generateTupleCreate ctx elements layout monoType
+                    generateTupleCreate ctx elements monoType
 
         Mono.MonoUnit ->
             generateUnit ctx
@@ -657,9 +636,8 @@ generateLiteral ctx lit =
             in
             { ops = [ op ]
             , resultVar = var
-            , resultType = Types.monoTypeToOperand Mono.MBool
+            , resultType = I1
             , ctx = ctx2
-            , isTerminated = False
             }
 
         Mono.LInt value ->
@@ -674,7 +652,6 @@ generateLiteral ctx lit =
             , resultVar = var
             , resultType = Types.ecoInt
             , ctx = ctx2
-            , isTerminated = False
             }
 
         Mono.LFloat value ->
@@ -689,7 +666,6 @@ generateLiteral ctx lit =
             , resultVar = var
             , resultType = Types.ecoFloat
             , ctx = ctx2
-            , isTerminated = False
             }
 
         Mono.LChar value ->
@@ -708,7 +684,6 @@ generateLiteral ctx lit =
             , resultVar = var
             , resultType = Types.ecoChar
             , ctx = ctx2
-            , isTerminated = False
             }
 
         Mono.LStr value ->
@@ -727,7 +702,6 @@ generateLiteral ctx lit =
             , resultVar = var
             , resultType = Types.ecoValue
             , ctx = ctx2
-            , isTerminated = False
             }
 
 
@@ -788,7 +762,6 @@ generateConstThunkRef ctx sig body =
             , tailRecLetBody = ctx.tailRecLetBody
             , sretTailLayout = ctx.sretTailLayout
         }
-    , isTerminated = False
     }
 
 
@@ -804,9 +777,6 @@ in place (`generateConstThunkRef`); anything else is an `eco.call` with no
 arguments. These tables change only references made here: the global's own
 function is still emitted.
 
-A global with no signature is called with no arguments, typed by `monoType`;
-if `monoType` is a function type, compilation crashes.
-
 -}
 generateVarGlobal : Ctx.Context -> Mono.SpecId -> Mono.MonoType -> ExprResult
 generateVarGlobal ctx specId monoType =
@@ -818,132 +788,102 @@ generateVarGlobal ctx specId monoType =
         funcName =
             specIdToFuncName ctx.registry specId
 
-        maybeSig : Maybe Ctx.FuncSignature
-        maybeSig =
-            Array.get specId ctx.signatures |> Maybe.andThen identity
+        sig : Ctx.FuncSignature
+        sig =
+            Ctx.signatureOf specId ctx
+
+        arity : Int
+        arity =
+            List.length sig.paramTypes
     in
-    case maybeSig of
-        Just sig ->
-            let
-                arity : Int
-                arity =
-                    List.length sig.paramTypes
-            in
-            if arity == 0 then
-                case Dict.get specId ctx.nullConsBySpec of
-                    Just nullConsTag ->
+    if arity == 0 then
+        case Dict.get specId ctx.nullConsBySpec of
+            Just nullConsTag ->
+                let
+                    ( ctx2, constOp ) =
+                        Ops.ecoConstantNullCons ctx1 var nullConsTag
+                in
+                { ops = [ constOp ]
+                , resultVar = var
+                , resultType = Types.ecoValue
+                , ctx = ctx2
+                }
+
+            Nothing ->
+                case Dict.get specId ctx.constCtorBySpec of
+                    Just _ ->
                         let
                             ( ctx2, constOp ) =
-                                Ops.ecoConstantNullCons ctx1 var nullConsTag
+                                Ops.ecoConstantNothing ctx1 var
                         in
                         { ops = [ constOp ]
                         , resultVar = var
                         , resultType = Types.ecoValue
                         , ctx = ctx2
-                        , isTerminated = False
                         }
 
                     Nothing ->
-                        case Dict.get specId ctx.constCtorBySpec of
-                            Just _ ->
-                                let
-                                    ( ctx2, constOp ) =
-                                        Ops.ecoConstantNothing ctx1 var
-                                in
-                                { ops = [ constOp ]
-                                , resultVar = var
-                                , resultType = Types.ecoValue
-                                , ctx = ctx2
-                                , isTerminated = False
-                                }
+                        case Dict.get specId ctx.constThunkBySpec of
+                            Just thunkBody ->
+                                generateConstThunkRef ctx sig thunkBody
 
                             Nothing ->
-                                case Dict.get specId ctx.constThunkBySpec of
-                                    Just thunkBody ->
-                                        generateConstThunkRef ctx sig thunkBody
+                                -- Called, not wrapped: papCreate needs an
+                                -- arity above zero.
+                                let
+                                    resultMlirType =
+                                        Types.monoTypeToAbi sig.returnType
 
-                                    Nothing ->
-                                        -- Called, not wrapped: papCreate needs an
-                                        -- arity above zero.
-                                        let
-                                            resultMlirType =
-                                                Types.monoTypeToAbi sig.returnType
+                                    ( ctx2, callOp ) =
+                                        Ops.ecoCallNamed ctx1 var funcName [] resultMlirType
+                                in
+                                { ops = [ callOp ]
+                                , resultVar = var
+                                , resultType = resultMlirType
+                                , ctx = ctx2
+                                }
 
-                                            ( ctx2, callOp ) =
-                                                Ops.ecoCallNamed ctx1 var funcName [] resultMlirType
-                                        in
-                                        { ops = [ callOp ]
-                                        , resultVar = var
-                                        , resultType = resultMlirType
-                                        , ctx = ctx2
-                                        , isTerminated = False
-                                        }
+    else
+        let
+            -- _result_kind is the kind of the function's own return
+            -- type, omitted when boxed.
+            globalResultKind =
+                Types.mlirTypeToKind (Types.monoTypeToAbi sig.returnType)
 
-            else
-                let
-                    -- _result_kind is the kind of the function's own return
-                    -- type, omitted when boxed.
-                    globalResultKind =
-                        Types.mlirTypeToKind (Types.monoTypeToAbi sig.returnType)
+            globalResultKindAttr =
+                if globalResultKind == 0 then
+                    Dict.empty
 
-                    globalResultKindAttr =
-                        if globalResultKind == 0 then
-                            Dict.empty
+                else
+                    Dict.singleton "_result_kind" (IntAttr (Just I8) globalResultKind)
 
-                        else
-                            Dict.singleton "_result_kind" (IntAttr (Just I8) globalResultKind)
+            attrs =
+                Dict.union globalResultKindAttr
+                    (Dict.fromList
+                        [ ( "function", SymbolRefAttr funcName )
+                        , ( "arity", IntAttr Nothing (Ops.assertStageArity arity) )
+                        , ( "num_captured", IntAttr Nothing 0 )
+                        ]
+                    )
 
-                    attrs =
-                        Dict.union globalResultKindAttr
-                            (Dict.fromList
-                                [ ( "function", SymbolRefAttr funcName )
-                                , ( "arity", IntAttr Nothing (Ops.assertStageArity arity) )
-                                , ( "num_captured", IntAttr Nothing 0 )
-                                ]
-                            )
-
-                    ( ctx2, papOp ) =
-                        Ops.mlirOp ctx1 "eco.papCreate"
-                            |> Ops.opBuilder.withResults [ ( var, Types.ecoValue ) ]
-                            |> Ops.opBuilder.withAttrs attrs
-                            |> Ops.opBuilder.build
-                in
-                { ops = [ papOp ]
-                , resultVar = var
-                , resultType = Types.ecoValue
-                , ctx = ctx2
-                , isTerminated = False
-                }
-
-        Nothing ->
-            case monoType of
-                Mono.MFunction _ _ _ _ ->
-                    System.Crash.crash
-                        ("generateVarGlobal: missing FuncSignature for function-typed global "
-                            ++ specIdToFuncName ctx.registry specId
-                        )
-
-                _ ->
-                    let
-                        resultMlirType =
-                            Types.monoTypeToAbi monoType
-
-                        ( ctx2, callOp ) =
-                            Ops.ecoCallNamed ctx1 var funcName [] resultMlirType
-                    in
-                    { ops = [ callOp ]
-                    , resultVar = var
-                    , resultType = resultMlirType
-                    , ctx = ctx2
-                    , isTerminated = False
-                    }
+            ( ctx2, papOp ) =
+                Ops.mlirOp ctx1 "eco.papCreate"
+                    |> Ops.opBuilder.withResults [ ( var, Types.ecoValue ) ]
+                    |> Ops.opBuilder.withAttrs attrs
+                    |> Ops.opBuilder.build
+        in
+        { ops = [ papOp ]
+        , resultVar = var
+        , resultType = Types.ecoValue
+        , ctx = ctx2
+        }
 
 
 {-| Generates a reference to a kernel value.
 
-A kernel that `KernelIntrinsics` classifies as a float constant (such as `pi`)
-becomes an `arith.constant`. Otherwise a function type whose flattened arity is
-above zero becomes an `eco.papCreate` with no captures through
+A kernel that `KernelIntrinsics.kernelFloatConstant` gives a value (such as
+`pi`) becomes an `arith.constant`. Otherwise a function type (whose flattened arity
+is at least one) becomes an `eco.papCreate` with no captures through
 `instanceClosureResult`, naming the symbol `Context.registerKernelInstance`
 chooses, and any other kernel is an `eco.call` with no arguments to the symbol
 `<kernelPrefix>_Kernel_<home>_<name>`, typed by the ABI of `monoType`.
@@ -959,8 +899,8 @@ generateVarKernel ctx kernelPrefix home name monoType =
         kernelName =
             kernelPrefix ++ "_Kernel_" ++ home ++ "_" ++ name
     in
-    case KernelIntrinsics.kernelIntrinsic home name [] monoType of
-        Just (KernelIntrinsics.ConstantFloat { value }) ->
+    case KernelIntrinsics.kernelFloatConstant home name of
+        Just value ->
             let
                 ( ctx2, floatOp ) =
                     Ops.arithConstantFloat ctx1 var value
@@ -969,35 +909,13 @@ generateVarKernel ctx kernelPrefix home name monoType =
             , resultVar = var
             , resultType = Types.ecoFloat
             , ctx = ctx2
-            , isTerminated = False
             }
 
-        Just _ ->
+        _ ->
             case monoType of
                 Mono.MFunction _ _ _ _ ->
                     -- Kernels use total ABI arity (flattened), not stage arity
-                    let
-                        arity : Int
-                        arity =
-                            Types.countTotalArity monoType
-                    in
-                    if arity == 0 then
-                        let
-                            resultMlirType =
-                                Types.monoTypeToAbi monoType
-
-                            ( ctx2, callOp ) =
-                                Ops.ecoCallNamed ctx1 var kernelName [] resultMlirType
-                        in
-                        { ops = [ callOp ]
-                        , resultVar = var
-                        , resultType = resultMlirType
-                        , ctx = ctx2
-                        , isTerminated = False
-                        }
-
-                    else
-                        instanceClosureResult ctx1 var kernelPrefix home name monoType arity
+                    instanceClosureResult ctx1 var kernelPrefix home name monoType (Types.countTotalArity monoType)
 
                 _ ->
                     let
@@ -1011,49 +929,6 @@ generateVarKernel ctx kernelPrefix home name monoType =
                     , resultVar = var
                     , resultType = resultMlirType
                     , ctx = ctx2
-                    , isTerminated = False
-                    }
-
-        Nothing ->
-            case monoType of
-                Mono.MFunction _ _ _ _ ->
-                    -- Kernels use total ABI arity (flattened), not stage arity
-                    let
-                        arity : Int
-                        arity =
-                            Types.countTotalArity monoType
-                    in
-                    if arity == 0 then
-                        let
-                            resultMlirType =
-                                Types.monoTypeToAbi monoType
-
-                            ( ctx2, callOp ) =
-                                Ops.ecoCallNamed ctx1 var kernelName [] resultMlirType
-                        in
-                        { ops = [ callOp ]
-                        , resultVar = var
-                        , resultType = resultMlirType
-                        , ctx = ctx2
-                        , isTerminated = False
-                        }
-
-                    else
-                        instanceClosureResult ctx1 var kernelPrefix home name monoType arity
-
-                _ ->
-                    let
-                        resultMlirType =
-                            Types.monoTypeToAbi monoType
-
-                        ( ctx2, callOp ) =
-                            Ops.ecoCallNamed ctx1 var kernelName [] resultMlirType
-                    in
-                    { ops = [ callOp ]
-                    , resultVar = var
-                    , resultType = resultMlirType
-                    , ctx = ctx2
-                    , isTerminated = False
                     }
 
 
@@ -1113,7 +988,6 @@ instanceClosureResult ctx var kernelPrefix home name monoType arity =
     , resultVar = var
     , resultType = Types.ecoValue
     , ctx = ctx2
-    , isTerminated = False
     }
 
 
@@ -1151,7 +1025,6 @@ generateList ctx items listType =
             , resultVar = var
             , resultType = Types.ecoValue
             , ctx = ctx2
-            , isTerminated = False
             }
 
         _ ->
@@ -1214,7 +1087,6 @@ generateList ctx items listType =
             , resultVar = finalVar
             , resultType = Types.ecoValue
             , ctx = finalCtx
-            , isTerminated = False
             }
 
 
@@ -1301,8 +1173,7 @@ generateClosure ctx closureInfo body monoType =
             , body = body
             , returnType = Mono.typeOf body
             , siblingMappings = baseSiblings
-            , isTailRecursive = False
-            , selfBindingName = Nothing
+            , tailRecSelf = Nothing
             }
     in
     if arity == 0 then
@@ -1322,7 +1193,6 @@ generateClosure ctx closureInfo body monoType =
         , resultVar = resultVar
         , resultType = closureResultType
         , ctx = ctx4
-        , isTerminated = False
         }
 
     else
@@ -1407,7 +1277,6 @@ generateClosure ctx closureInfo body monoType =
         , resultVar = resultVar
         , resultType = Types.ecoValue
         , ctx = ctx4
-        , isTerminated = False
         }
 
 
@@ -1463,86 +1332,86 @@ boxToEcoValue ctx var mlirTy =
 
 
 {-| Returns `intrinsic` if it may be emitted at this call, or `Nothing` to
-make the call an ordinary kernel call. `KernelIntrinsics.kernelIntrinsic`
+make the call an ordinary kernel call. `KernelIntrinsics.kernelIntrinsicOn`
 decides what op a call could become; this decides whether to use it, given the
-configuration and the arguments' SSA types.
+configuration and the SSA types of the operands.
 
 `StringLength`, `AppendString`, `AppendList` and `StringOrderCompare` are
-admitted when their configuration flag is on. `ValueEq` also needs every
-argument to be an `!eco.value` already, because the intrinsic path can unbox
-but not box, and an argument may arrive as a value aggregate. `ConstructList`
-needs its flag and exactly two arguments, and admits a primitive head slot only
-when the head's SSA type is `!eco.value` or the slot's own type, so that a
-mismatched primitive is never written under the wrong head kind; a boxed head
-slot is always admitted. Every other intrinsic is admitted unconditionally.
+admitted when their configuration flag is on. `ValueEq` also needs both
+operands to be an `!eco.value` already, because the intrinsic path can unbox
+but not box, and an operand may arrive as a value aggregate. `ConstructList`
+needs its flag, and admits a primitive head slot only when the head's SSA type
+is `!eco.value` or the slot's own type, so that a mismatched primitive is never
+written under the wrong head kind; a boxed head slot is always admitted. Every
+other intrinsic is admitted unconditionally.
 
 -}
-gateIntrinsic : Ctx.Context -> List ( String, MlirType ) -> KernelIntrinsics.Intrinsic -> Maybe KernelIntrinsics.Intrinsic
-gateIntrinsic ctx argsWithTypes intrinsic =
+gateIntrinsic : Ctx.Context -> KernelIntrinsics.Intrinsic ( String, MlirType ) -> Maybe (KernelIntrinsics.Intrinsic ( String, MlirType ))
+gateIntrinsic ctx intrinsic =
+    let
+        admitIf : Bool -> Maybe (KernelIntrinsics.Intrinsic ( String, MlirType ))
+        admitIf ok =
+            if ok then
+                Just intrinsic
+
+            else
+                Nothing
+    in
     case intrinsic of
-        KernelIntrinsics.StringLength ->
-            if ctx.ecoConfig.stringLengthOp then
-                Just intrinsic
+        KernelIntrinsics.ConstructList { headMlirType } ( _, headSsaTy ) _ ->
+            admitIf
+                (ctx.ecoConfig.list.consIntrinsic
+                    && (Types.isEcoValueType headMlirType
+                            || Types.isEcoValueType headSsaTy
+                            || (headSsaTy == headMlirType)
+                       )
+                )
 
-            else
-                Nothing
+        KernelIntrinsics.Operation operation ->
+            case operation of
+                KernelIntrinsics.StringLength _ ->
+                    admitIf ctx.ecoConfig.stringLengthOp
 
-        KernelIntrinsics.AppendString ->
-            if ctx.ecoConfig.appendSplit then
-                Just intrinsic
+                KernelIntrinsics.AppendString _ _ ->
+                    admitIf ctx.ecoConfig.appendSplit
 
-            else
-                Nothing
+                KernelIntrinsics.AppendList _ _ ->
+                    admitIf ctx.ecoConfig.appendSplit
 
-        KernelIntrinsics.AppendList ->
-            if ctx.ecoConfig.appendSplit then
-                Just intrinsic
+                KernelIntrinsics.StringOrderCompare _ _ _ ->
+                    admitIf ctx.ecoConfig.stringOrderIntrinsic
 
-            else
-                Nothing
-
-        KernelIntrinsics.StringOrderCompare _ ->
-            if ctx.ecoConfig.stringOrderIntrinsic then
-                Just intrinsic
-
-            else
-                Nothing
-
-        KernelIntrinsics.ValueEq _ ->
-            if ctx.ecoConfig.valueEq && List.all (Tuple.second >> Types.isEcoValueType) argsWithTypes then
-                Just intrinsic
-
-            else
-                Nothing
-
-        KernelIntrinsics.ConstructList { headMlirType } ->
-            case ( ctx.ecoConfig.list.consIntrinsic, argsWithTypes ) of
-                ( True, [ ( _, headSsaTy ), _ ] ) ->
-                    if Types.isEcoValueType headMlirType then
-                        Just intrinsic
-
-                    else if Types.isEcoValueType headSsaTy || headSsaTy == headMlirType then
-                        Just intrinsic
-
-                    else
-                        Nothing
+                KernelIntrinsics.ValueEq _ ( _, lhsTy ) ( _, rhsTy ) ->
+                    admitIf (ctx.ecoConfig.valueEq && Types.isEcoValueType lhsTy && Types.isEcoValueType rhsTy)
 
                 _ ->
-                    Nothing
-
-        _ ->
-            Just intrinsic
+                    Just intrinsic
 
 
-{-| Converts the arguments of an admitted intrinsic to the operand types it
-expects. For `ConstructList` the tail is boxed, and the head is boxed into a
-boxed slot or unboxed into a primitive one. Every other intrinsic goes through
-`Intrinsics.unboxArgsForIntrinsic`, which only unboxes.
+{-| Returns the intrinsic a call of kernel function `name` from kernel module
+`home` is emitted as, or `Nothing` when it is an ordinary call: the one
+`KernelIntrinsics.kernelIntrinsicOn` chooses for the arguments, of monomorphic
+types `argTypes`, generated as `argsWithTypes`, when `gateIntrinsic` admits it.
 -}
-coerceIntrinsicArgs : Ctx.Context -> List ( String, MlirType ) -> KernelIntrinsics.Intrinsic -> ( List MlirOp, List String, Ctx.Context )
-coerceIntrinsicArgs ctx argsWithTypes intrinsic =
-    case ( intrinsic, argsWithTypes ) of
-        ( KernelIntrinsics.ConstructList { headMlirType }, [ ( headVar, headSsaTy ), ( tailVar, tailSsaTy ) ] ) ->
+admittedIntrinsic : Ctx.Context -> Name.Name -> Name.Name -> List Mono.MonoType -> List ( String, MlirType ) -> Mono.MonoType -> Maybe (KernelIntrinsics.Intrinsic ( String, MlirType ))
+admittedIntrinsic ctx home name argTypes argsWithTypes resultType =
+    KernelIntrinsics.kernelIntrinsicOn home name (List.map2 Tuple.pair argsWithTypes argTypes) resultType
+        |> Maybe.andThen (gateIntrinsic ctx)
+
+
+{-| Generates an admitted intrinsic, after `argOps`, the operations that
+generated its operands.
+
+For `ConstructList` the tail is boxed, and the head is boxed into a boxed slot
+or unboxed into a primitive one, before the `eco.construct.list`. An
+`Operation`'s operands are converted by `Intrinsics.unboxOperands`, which only
+unboxes, and its operations come from `Intrinsics.generateOperationOps`.
+
+-}
+generateIntrinsic : Ctx.Context -> List MlirOp -> KernelIntrinsics.Intrinsic ( String, MlirType ) -> ExprResult
+generateIntrinsic ctx argOps intrinsic =
+    case intrinsic of
+        KernelIntrinsics.ConstructList { headMlirType } ( headVar, headSsaTy ) ( tailVar, tailSsaTy ) ->
             let
                 ( headOps, headVar1, ctxH ) =
                     if Types.isEcoValueType headMlirType then
@@ -1556,11 +1425,39 @@ coerceIntrinsicArgs ctx argsWithTypes intrinsic =
 
                 ( tailOps, tailVar1, ctxT ) =
                     boxToEcoValue ctxH tailVar tailSsaTy
-            in
-            ( headOps ++ tailOps, [ headVar1, tailVar1 ], ctxT )
 
-        _ ->
-            Intrinsics.unboxArgsForIntrinsic ctx argsWithTypes intrinsic
+                ( resVar, ctx2 ) =
+                    Ctx.freshVar ctxT
+
+                ( ctx3, consOp ) =
+                    Ops.ecoConstructList ctx2
+                        resVar
+                        ( headVar1, headMlirType )
+                        ( tailVar1, Types.ecoValue )
+                        (Types.isUnboxable headMlirType)
+            in
+            { ops = argOps ++ headOps ++ tailOps ++ [ consOp ]
+            , resultVar = resVar
+            , resultType = Types.ecoValue
+            , ctx = ctx3
+            }
+
+        KernelIntrinsics.Operation operation ->
+            let
+                ( unboxOps, operands, ctx1 ) =
+                    Intrinsics.unboxOperands ctx operation
+
+                ( resVar, ctx2 ) =
+                    Ctx.freshVar ctx1
+
+                ( ctx3, operationOps ) =
+                    Intrinsics.generateOperationOps ctx2 operands resVar
+            in
+            { ops = argOps ++ unboxOps ++ operationOps
+            , resultVar = resVar
+            , resultType = Intrinsics.operationResultMlirType operation
+            , ctx = ctx3
+            }
 
 
 {-| Converts each argument to the ABI type of the matching entry of
@@ -1580,41 +1477,47 @@ boxToMatchSignatureTyped ctx actualArgs expectedTypes =
             ( ( String, MlirType ), Mono.MonoType )
             -> ( List MlirOp, List ( String, MlirType ), Ctx.Context )
             -> ( List MlirOp, List ( String, MlirType ), Ctx.Context )
-        helper ( ( var, actualTy ), expectedTy ) ( opsAcc, pairsAcc, ctxAcc ) =
+        helper ( arg, expectedTy ) ( opsAcc, pairsAcc, ctxAcc ) =
             let
-                expectedMlirTy =
-                    Types.monoTypeToAbi expectedTy
+                ( argOps, pair, ctx1 ) =
+                    boxArgToAbi ctxAcc arg expectedTy
             in
-            if expectedMlirTy == actualTy then
-                ( opsAcc, ( var, actualTy ) :: pairsAcc, ctxAcc )
-
-            else if Types.isEcoValueType expectedMlirTy && not (Types.isEcoValueType actualTy) then
-                let
-                    ( boxOps, boxedVar, ctx1 ) =
-                        boxToEcoValue ctxAcc var actualTy
-                in
-                ( List.reverse boxOps ++ opsAcc
-                , ( boxedVar, Types.ecoValue ) :: pairsAcc
-                , ctx1
-                )
-
-            else if not (Types.isEcoValueType expectedMlirTy) && Types.isEcoValueType actualTy then
-                let
-                    ( unboxOps, unboxedVar, ctx1 ) =
-                        Intrinsics.unboxToType ctxAcc var expectedMlirTy
-                in
-                ( List.reverse unboxOps ++ opsAcc
-                , ( unboxedVar, expectedMlirTy ) :: pairsAcc
-                , ctx1
-                )
-
-            else
-                ( opsAcc, ( var, actualTy ) :: pairsAcc, ctxAcc )
+            ( List.reverse argOps ++ opsAcc, pair :: pairsAcc, ctx1 )
 
         ( opsReversed, pairsReversed, ctxFinal ) =
             List.foldl helper ( [], [], ctx ) (List.map2 Tuple.pair actualArgs expectedTypes)
     in
     ( List.reverse opsReversed, List.reverse pairsReversed, ctxFinal )
+
+
+{-| Converts one argument to the ABI type of `expectedTy`, as
+`boxToMatchSignatureTyped` does for each of its arguments.
+-}
+boxArgToAbi : Ctx.Context -> ( String, MlirType ) -> Mono.MonoType -> ( List MlirOp, ( String, MlirType ), Ctx.Context )
+boxArgToAbi ctx ( var, actualTy ) expectedTy =
+    let
+        expectedMlirTy =
+            Types.monoTypeToAbi expectedTy
+    in
+    if expectedMlirTy == actualTy then
+        ( [], ( var, actualTy ), ctx )
+
+    else if Types.isEcoValueType expectedMlirTy && not (Types.isEcoValueType actualTy) then
+        let
+            ( boxOps, boxedVar, ctx1 ) =
+                boxToEcoValue ctx var actualTy
+        in
+        ( boxOps, ( boxedVar, Types.ecoValue ), ctx1 )
+
+    else if not (Types.isEcoValueType expectedMlirTy) && Types.isEcoValueType actualTy then
+        let
+            ( unboxOps, unboxedVar, ctx1 ) =
+                Intrinsics.unboxToType ctx var expectedMlirTy
+        in
+        ( unboxOps, ( unboxedVar, expectedMlirTy ), ctx1 )
+
+    else
+        ( [], ( var, actualTy ), ctx )
 
 
 {-| Converts `var` from its SSA type `actualTy` to `expectedTy`, returning the
@@ -1741,15 +1644,14 @@ generateCall ctx func args resultType callInfo =
                             , resultVar = finalVar
                             , resultType = expectedType
                             , ctx = finalCtx
-                            , isTerminated = False
                             }
 
         Mono.CallDirectFlat ->
             if Types.isFunctionType resultType then
-                generateClosureApplication ctx func args resultType callInfo
+                generateClosureApplication ctx DirectFlat func args resultType callInfo
 
             else
-                generateSaturatedCall ctx func args resultType callInfo
+                generateSaturatedCall ctx DirectFlat func args resultType callInfo
 
         Mono.CallDirectKnownSegmentation ->
             if callInfo.isSingleStageSaturated then
@@ -1758,10 +1660,10 @@ generateCall ctx func args resultType callInfo =
                 -- only a closure value consults the stamp.
                 case func of
                     Mono.MonoVarGlobal _ _ _ ->
-                        generateSaturatedCall ctx func args resultType callInfo
+                        generateSaturatedCall ctx DirectKnownSegmentation func args resultType callInfo
 
                     Mono.MonoVarKernel _ _ _ _ _ ->
-                        generateSaturatedCall ctx func args resultType callInfo
+                        generateSaturatedCall ctx DirectKnownSegmentation func args resultType callInfo
 
                     _ ->
                         case fastDispatchStamp callInfo args of
@@ -1769,7 +1671,7 @@ generateCall ctx func args resultType callInfo =
                                 generateFastDispatchCall ctx func args resultType fastLambdaId fastAbi papPrefix
 
                             Nothing ->
-                                generateSaturatedCall ctx func args resultType callInfo
+                                generateSaturatedCall ctx DirectKnownSegmentation func args resultType callInfo
 
             else
                 case fastDispatchStamp callInfo args of
@@ -1782,7 +1684,7 @@ generateCall ctx func args resultType callInfo =
                                 generateStagedFastDispatchCall ctx func args resultType fastLambdaId fastAbi
 
                             Nothing ->
-                                generateClosureApplication ctx func args resultType callInfo
+                                generateClosureApplication ctx DirectKnownSegmentation func args resultType callInfo
 
 
 {-| Returns the `_gencall_reason` attribute recording why a papExtend is
@@ -1791,8 +1693,8 @@ is off.
 
 The reasons written here are 1 to 6 for the shape of the callee
 (`gencallCalleeReason`), 7 for a batch after the first in a stage-by-stage
-application, 8 for a generic call kind applied stage by stage, and 9 for the
-arguments beyond the first stage of a stamped call.
+application, and 9 for the arguments beyond the first stage of a stamped call.
+The number 8 is not used.
 
 -}
 gencallReasonAttr : Ctx.Context -> Int -> List ( String, MlirAttr )
@@ -1833,23 +1735,27 @@ gencallCalleeReason func =
             6
 
 
-{-| Returns the `_call_kind` attribute text for a call kind, the kind's name in
-snake case.
+{-| The call kinds that `generateCall` sends to `generateClosureApplication`
+and `generateSaturatedCall`: `Mono.CallDirectFlat` and
+`Mono.CallDirectKnownSegmentation`. A stage-by-stage application records it as
+the `_call_kind` of its first `eco.papExtend`.
 -}
-callKindToAttrString : Mono.CallKind -> String
-callKindToAttrString callKind =
-    case callKind of
-        Mono.CallGenericApply ->
-            "generic_apply"
+type DirectCallKind
+    = DirectFlat
+    | DirectKnownSegmentation
 
-        Mono.CallDirectFlat ->
+
+{-| Returns the `_call_kind` attribute text for a direct call kind, the kind's
+name in snake case.
+-}
+directCallKindAttr : DirectCallKind -> String
+directCallKindAttr kind =
+    case kind of
+        DirectFlat ->
             "direct_flat"
 
-        Mono.CallDirectKnownSegmentation ->
+        DirectKnownSegmentation ->
             "direct_known_segmentation"
-
-        Mono.CallSegmentationUnknown ->
-            "segmentation_unknown"
 
 
 {-| Generates a generic application of the callee value to `args`: one
@@ -1932,7 +1838,6 @@ generateGenericApply ctx func args resultType =
     , resultVar = resVar
     , resultType = resultMlirType
     , ctx = ctx4
-    , isTerminated = False
     }
 
 
@@ -2017,7 +1922,6 @@ generateUnknownSegmentationCall ctx func args resultType =
     , resultVar = resVar
     , resultType = resultMlirType
     , ctx = ctx4
-    , isTerminated = False
     }
 
 
@@ -2071,7 +1975,6 @@ generateStagedFastDispatchCall ctx func args resultType fastRef abi =
     , resultVar = tailRes.resultVar
     , resultType = tailRes.resultType
     , ctx = tailRes.ctx
-    , isTerminated = False
     }
 
 
@@ -2148,7 +2051,6 @@ applySegUnknownToVar ctx funcVar funcMlirType args resultType =
     , resultVar = finalVar
     , resultType = callResultMlirType
     , ctx = finalCtx
-    , isTerminated = False
     }
 
 
@@ -2174,7 +2076,6 @@ generateGenericApplyCoerced ctx func args resultType =
     , resultVar = finalVar
     , resultType = expectedType
     , ctx = finalCtx
-    , isTerminated = False
     }
 
 
@@ -2309,18 +2210,6 @@ generateFastDispatchCall ctx func args resultType fastRef abi papPrefix =
     , resultVar = finalVar
     , resultType = expectedType
     , ctx = finalCtx
-    , isTerminated = False
-    }
-
-
-{-| The ops and final value of a stage-by-stage application, as
-`applyByStages` returns them: an `ExprResult` without `isTerminated`.
--}
-type alias ApplyByStagesResult =
-    { ops : List MlirOp
-    , resultVar : String
-    , resultType : MlirType
-    , ctx : Ctx.Context
     }
 
 
@@ -2337,8 +2226,8 @@ matching `_result_kind`; every other op returns a closure of type
 that last op actually runs, which for a call supplying more than one stage is
 not the type of the call itself.
 
-Only the first batch carries `remaining_arity` and the `callKindAttr` call
-kind. A later batch is applied to a closure computed at run time, about which
+Only the first batch carries `remaining_arity` and the call kind `kind`. A
+later batch is applied to a closure computed at run time, about which
 nothing is known, so it is a `segmentation_unknown` op without
 `remaining_arity`.
 
@@ -2353,12 +2242,12 @@ applyByStages :
     -> Int -- sourceRemaining: arguments the closure takes in its current stage
     -> List Int -- remainingStageArities: arities of the stages after it
     -> MlirType -- saturatedReturnType: ABI result of the last stage's function
-    -> Maybe String -- callKindAttr: _call_kind of the first op only
+    -> DirectCallKind -- kind: _call_kind of the first op only
     -> List ( String, MlirType ) -- args: arguments still to apply
     -> List MlirOp -- accumulated ops, in reverse order
     -> List MlirType -- accCaptureTypes: types of arguments already applied; [] on the first batch
-    -> ApplyByStagesResult
-applyByStages ctx funcVar funcMlirType sourceRemaining remainingStageArities saturatedReturnType callKindAttr args accOps accCaptureTypes =
+    -> ExprResult
+applyByStages ctx funcVar funcMlirType sourceRemaining remainingStageArities saturatedReturnType kind args accOps accCaptureTypes =
     case args of
         [] ->
             { ops = List.reverse accOps, resultVar = funcVar, resultType = funcMlirType, ctx = ctx }
@@ -2460,24 +2349,11 @@ applyByStages ctx funcVar funcMlirType sourceRemaining remainingStageArities sat
                             ++ resultKindAttrs
 
                     callKindAttrs =
-                        -- Later batches recurse with callKindAttr = Nothing, so
-                        -- the cross-stage kind is set here regardless of it.
                         if isCrossStage then
                             ( "_call_kind", StringAttr "segmentation_unknown" ) :: gencallReasonAttr ctx 7
 
                         else
-                            case callKindAttr of
-                                Just ck ->
-                                    ( "_call_kind", StringAttr ck )
-                                        :: (if ck == "segmentation_unknown" || ck == "generic_apply" then
-                                                gencallReasonAttr ctx 8
-
-                                            else
-                                                []
-                                           )
-
-                                Nothing ->
-                                    []
+                            [ ( "_call_kind", StringAttr (directCallKindAttr kind) ) ]
 
                     papExtendAttrs =
                         Dict.fromList (baseAttrs ++ callKindAttrs)
@@ -2499,7 +2375,7 @@ applyByStages ctx funcVar funcMlirType sourceRemaining remainingStageArities sat
                     { ops = List.reverse nextOps, resultVar = resVar, resultType = resultMlirType, ctx = ctx2 }
 
                 else
-                    applyByStages ctx2 resVar resultMlirType resultRemaining nextStageArities saturatedReturnType Nothing rest nextOps nextCaptureTypes
+                    applyByStages ctx2 resVar resultMlirType resultRemaining nextStageArities saturatedReturnType kind rest nextOps nextCaptureTypes
 
 
 {-| Generates a partial application of an external or kernel function, which
@@ -2527,12 +2403,7 @@ generateFlattenedPartialApplication ctx func args resultType =
         totalArity =
             case func of
                 Mono.MonoVarGlobal _ specId _ ->
-                    case Array.get specId ctx.signatures |> Maybe.andThen identity of
-                        Just sig ->
-                            List.length sig.paramTypes
-
-                        Nothing ->
-                            Types.countTotalArity (Mono.typeOf func)
+                    List.length (Ctx.signatureOf specId ctx).paramTypes
 
                 Mono.MonoVarKernel _ _ _ _ kernelType ->
                     List.length (Ctx.kernelFuncSignatureFromType kernelType).paramTypes
@@ -2594,7 +2465,6 @@ generateFlattenedPartialApplication ctx func args resultType =
     , resultVar = resVar
     , resultType = resultMlirType
     , ctx = ctx3
-    , isTerminated = False
     }
 
 
@@ -2619,8 +2489,8 @@ then coerced to the ABI of `resultType`. A callee whose value is not
 coerced.
 
 -}
-generateClosureApplication : Ctx.Context -> Mono.MonoExpr -> List Mono.MonoExpr -> Mono.MonoType -> Mono.CallInfo -> ExprResult
-generateClosureApplication ctx func args resultType callInfo =
+generateClosureApplication : Ctx.Context -> DirectCallKind -> Mono.MonoExpr -> List Mono.MonoExpr -> Mono.MonoType -> Mono.CallInfo -> ExprResult
+generateClosureApplication ctx kind func args resultType callInfo =
     case callInfo.callModel of
         Mono.FlattenedExternal ->
             generateFlattenedPartialApplication ctx func args resultType
@@ -2646,7 +2516,6 @@ generateClosureApplication ctx func args resultType callInfo =
                 , resultVar = finalVar
                 , resultType = callResultMlirType
                 , ctx = ctx1
-                , isTerminated = False
                 }
 
             else
@@ -2664,7 +2533,7 @@ generateClosureApplication ctx func args resultType callInfo =
                         callInfo.remainingStageArities
 
                     papResult =
-                        applyByStages ctx1b funcResult.resultVar funcResult.resultType initialRemaining remainingStageArities evaluatorResultMlirType (Just (callKindToAttrString callInfo.callKind)) boxedArgsWithTypes [] []
+                        applyByStages ctx1b funcResult.resultVar funcResult.resultType initialRemaining remainingStageArities evaluatorResultMlirType kind boxedArgsWithTypes [] []
 
                     -- The last stage's function may return a different ABI type
                     -- from the call's own, e.g. a boxed polymorphic result.
@@ -2675,7 +2544,6 @@ generateClosureApplication ctx func args resultType callInfo =
                 , resultVar = finalVar
                 , resultType = callResultMlirType
                 , ctx = ctxFinal
-                , isTerminated = False
                 }
 
 
@@ -2748,18 +2616,13 @@ boxArgsToEvaluatorParams paramAbis ctx argsWithTypes =
 {-| Returns the ABI parameter types of the function a callee expression
 names, when that is known: a global specialization's signature, a kernel's
 signature, or, for a local variable, what `trackLocalEvaluatorParams` recorded
-for it. Any other callee, or a global without a signature, gives `[]`.
+for it. Any other callee gives `[]`.
 -}
 knownEvaluatorParamAbi : Ctx.Context -> Mono.MonoExpr -> List MlirType
 knownEvaluatorParamAbi ctx func =
     case func of
         Mono.MonoVarGlobal _ specId _ ->
-            case Array.get specId ctx.signatures |> Maybe.andThen identity of
-                Just sig ->
-                    List.map Types.monoTypeToAbi sig.paramTypes
-
-                Nothing ->
-                    []
+            List.map Types.monoTypeToAbi (Ctx.signatureOf specId ctx).paramTypes
 
         Mono.MonoVarKernel _ _ _ _ kernelType ->
             List.map Types.monoTypeToAbi (Ctx.kernelFuncSignatureFromType kernelType).paramTypes
@@ -2983,7 +2846,7 @@ tryDecodeFusionWithBindings ctx bindings body =
                                         _ ->
                                             "invalid_bytes"
 
-                                ( decoderOps, _ ) =
+                                decoderOps =
                                     BFReify.decoderNodeToOps decoderNode
 
                                 exprCompiler : BFEmit.ExprCompiler
@@ -2998,7 +2861,6 @@ tryDecodeFusionWithBindings ctx bindings body =
                                 , resultVar = resultVar
                                 , resultType = Types.ecoValue
                                 , ctx = ctx2
-                                , isTerminated = False
                                 }
 
                         Nothing ->
@@ -3172,7 +3034,6 @@ tryEncoderFusionWithBindings ctx accumulated encoderExpr =
                         , resultVar = bufferVar
                         , resultType = Types.ecoValue
                         , ctx = ctx2
-                        , isTerminated = False
                         }
 
                 Nothing ->
@@ -3187,42 +3048,48 @@ Returns `Nothing` for any other call, or when fusion fails.
 tryBytesEncodeFusion : Ctx.Context -> Mono.MonoExpr -> List Mono.MonoExpr -> Maybe ExprResult
 tryBytesEncodeFusion ctx func args =
     let
-        encoderArg : Maybe Mono.MonoExpr
-        encoderArg =
+        isEncode : Bool
+        isEncode =
             case func of
                 Mono.MonoVarGlobal _ specId _ ->
-                    case Registry.lookupSpecKey specId ctx.registry of
-                        Just ( Mono.Global (ModuleName.Canonical pkg moduleName) name, _ ) ->
-                            if pkg == Pkg.bytes && moduleName == "Bytes.Encode" && name == "encode" then
-                                case args of
-                                    [ encoderExpr ] ->
-                                        Just encoderExpr
-
-                                    _ ->
-                                        Nothing
-
-                            else
-                                Nothing
-
-                        _ ->
-                            Nothing
+                    globalBytesFunction ctx specId == Just "encode"
 
                 Mono.MonoVarKernel _ _ "Bytes" "encode" _ ->
-                    case args of
-                        [ encoderExpr ] ->
-                            Just encoderExpr
-
-                        _ ->
-                            Nothing
+                    True
 
                 _ ->
-                    Nothing
+                    False
     in
-    case encoderArg of
-        Just encoderExpr ->
-            tryEncoderFusionWithBindings ctx [] encoderExpr
+    case args of
+        [ encoderExpr ] ->
+            if isEncode then
+                tryEncoderFusionWithBindings ctx [] encoderExpr
 
-        Nothing ->
+            else
+                Nothing
+
+        _ ->
+            Nothing
+
+
+{-| Returns `"encode"` when `specId` is a specialization of
+`Bytes.Encode.encode` (elm/bytes), `"decode"` when it is one of
+`Bytes.Decode.decode`, and `Nothing` otherwise.
+-}
+globalBytesFunction : Ctx.Context -> Int -> Maybe String
+globalBytesFunction ctx specId =
+    case Registry.lookupSpecKey specId ctx.registry of
+        Just ( Mono.Global (ModuleName.Canonical pkg moduleName) name, _ ) ->
+            if pkg == Pkg.bytes && moduleName == "Bytes.Encode" && name == "encode" then
+                Just "encode"
+
+            else if pkg == Pkg.bytes && moduleName == "Bytes.Decode" && name == "decode" then
+                Just "decode"
+
+            else
+                Nothing
+
+        _ ->
             Nothing
 
 
@@ -3253,26 +3120,26 @@ first of these that applies is used: a constructor call built in place
 fused bytes encode (`tryBytesEncodeFusion`), and otherwise
 `generateSaturatedCallNoFusion`.
 -}
-generateSaturatedCall : Ctx.Context -> Mono.MonoExpr -> List Mono.MonoExpr -> Mono.MonoType -> Mono.CallInfo -> ExprResult
-generateSaturatedCall ctx func args resultType callInfo =
+generateSaturatedCall : Ctx.Context -> DirectCallKind -> Mono.MonoExpr -> List Mono.MonoExpr -> Mono.MonoType -> Mono.CallInfo -> ExprResult
+generateSaturatedCall ctx kind func args resultType callInfo =
     case tryCtorInline ctx func args resultType of
         Just inlined ->
             inlined
 
         Nothing ->
-            case tryPsplitCall ctx func args resultType of
+            case tryPsplitCall ctx func args of
                 Just migrated ->
                     migrated
 
                 Nothing ->
-                    generateSaturatedCallFusionGate ctx func args resultType callInfo
+                    generateSaturatedCallFusionGate ctx kind func args resultType callInfo
 
 
 {-| Generates a saturated call as a fused bytes encode when it is one, and
 through `generateSaturatedCallNoFusion` otherwise.
 -}
-generateSaturatedCallFusionGate : Ctx.Context -> Mono.MonoExpr -> List Mono.MonoExpr -> Mono.MonoType -> Mono.CallInfo -> ExprResult
-generateSaturatedCallFusionGate ctx func args resultType callInfo =
+generateSaturatedCallFusionGate : Ctx.Context -> DirectCallKind -> Mono.MonoExpr -> List Mono.MonoExpr -> Mono.MonoType -> Mono.CallInfo -> ExprResult
+generateSaturatedCallFusionGate ctx kind func args resultType callInfo =
     case () of
         _ ->
             case tryBytesEncodeFusion ctx func args of
@@ -3280,7 +3147,7 @@ generateSaturatedCallFusionGate ctx func args resultType callInfo =
                     fusedResult
 
                 Nothing ->
-                    generateSaturatedCallNoFusion ctx func args resultType callInfo
+                    generateSaturatedCallNoFusion ctx kind func args resultType callInfo
 
 
 {-| Generates a saturated call to a global that has a `$psplit` worker as a
@@ -3289,12 +3156,12 @@ call to that worker, or returns `Nothing` to leave it an ordinary call.
 A `$psplit` worker takes some tuple or constructor parameters as their fields,
 one argument per field (see `Context.PsplitInfo`). The call is redirected only
 when the argument at every such position can supply its fields without
-reading them from a heap object (`psplitArgFree`); otherwise the ordinary
+reading them from a heap object (`psplitArg`); otherwise the ordinary
 function, which takes the boxed value, is called.
 
 -}
-tryPsplitCall : Ctx.Context -> Mono.MonoExpr -> List Mono.MonoExpr -> Mono.MonoType -> Maybe ExprResult
-tryPsplitCall ctx func args resultType =
+tryPsplitCall : Ctx.Context -> Mono.MonoExpr -> List Mono.MonoExpr -> Maybe ExprResult
+tryPsplitCall ctx func args =
     if Dict.isEmpty ctx.psplitPromoted then
         Nothing
 
@@ -3303,20 +3170,21 @@ tryPsplitCall ctx func args resultType =
             Mono.MonoVarGlobal _ specId _ ->
                 case Dict.get specId ctx.psplitPromoted of
                     Just info ->
-                        if
-                            (List.length args == List.length info.paramPlans)
-                                && List.all
-                                    (\( mPlan, arg ) ->
-                                        case mPlan of
-                                            Just plan ->
-                                                psplitArgFree ctx plan arg
+                        if List.length args == List.length info.paramPlans then
+                            List.foldr
+                                (\( mPlan, arg ) acc ->
+                                    case mPlan of
+                                        Just plan ->
+                                            Maybe.map2 (\parg rest -> PsplitPromoted plan parg :: rest)
+                                                (psplitArg ctx plan arg)
+                                                acc
 
-                                            Nothing ->
-                                                True
-                                    )
-                                    (List.map2 Tuple.pair info.paramPlans args)
-                        then
-                            Just (emitPsplitCall ctx specId info args resultType)
+                                        Nothing ->
+                                            Maybe.map ((::) (PsplitPlain arg)) acc
+                                )
+                                (Just [])
+                                (List.map2 Tuple.pair info.paramPlans args)
+                                |> Maybe.map (emitPsplitCall ctx specId)
 
                         else
                             Nothing
@@ -3328,52 +3196,94 @@ tryPsplitCall ctx func args resultType =
                 Nothing
 
 
-{-| Tells whether `arg` can supply the slots of `plan` without a heap read: a
-tuple literal of the plan's arity; a call to the constructor the plan splits
-with one argument per field; a call to a global whose `$sret` worker returns
-exactly the plan's tuple slots; a variable already held as slots of the
-plan's types; or a variable holding a value aggregate of the plan's type.
-`emitPsplitSlotArg` must accept exactly these shapes.
+{-| One argument of a call to a `$psplit` worker: an argument passed as it is,
+or one supplying the slots of a promoted parameter's `SlotPlan`.
 -}
-psplitArgFree : Ctx.Context -> Ctx.SlotPlan -> Mono.MonoExpr -> Bool
-psplitArgFree ctx plan arg =
+type PsplitCallArg
+    = PsplitPlain Mono.MonoExpr
+    | PsplitPromoted Ctx.SlotPlan PsplitArg
+
+
+{-| How an argument supplies the slots of a promoted parameter without a heap
+read (`psplitArg`): as `PsplitElements`, the elements of a tuple literal or
+the arguments of a constructor call, one per slot; as `PsplitSretCall`, the
+results of a call to a global's `$sret` worker with these arguments; as
+`PsplitSlots`, the slots of a variable already held as slots; or as
+`PsplitAggVar`, a variable holding a value aggregate.
+-}
+type PsplitArg
+    = PsplitElements (List Mono.MonoExpr)
+    | PsplitSretCall Int (List Mono.MonoExpr) Ctx.SretInfo
+    | PsplitSlots (List ( String, MlirType ))
+    | PsplitAggVar Name.Name
+
+
+{-| Returns how `arg` can supply the slots of `plan` without a heap read, or
+`Nothing` when it cannot: a tuple literal of the plan's arity; a call to the
+constructor the plan splits with one argument per field; a call to a global
+whose `$sret` worker returns exactly the plan's tuple slots; a variable
+already held as slots of the plan's types; or a variable holding a value
+aggregate of the plan's type.
+-}
+psplitArg : Ctx.Context -> Ctx.SlotPlan -> Mono.MonoExpr -> Maybe PsplitArg
+psplitArg ctx plan arg =
     case arg of
         Mono.MonoTupleCreate _ es _ ->
             case plan.spec of
                 Ctx.SplitTuple layout ->
-                    List.length es == layout.arity
+                    if Mono.tupleArity es == Mono.tupleArity layout.elements then
+                        Just (PsplitElements (Mono.tupleToList es))
+
+                    else
+                        Nothing
 
                 _ ->
-                    False
+                    Nothing
 
         Mono.MonoCall _ (Mono.MonoVarGlobal _ sid _) cargs _ _ ->
             case ( plan.spec, Dict.get sid ctx.ctorBySpec ) of
                 ( Ctx.SplitCtor clayout, Just shape ) ->
-                    shape.name == clayout.name && List.length cargs == List.length clayout.fields
+                    if shape.name == clayout.name && List.length cargs == List.length clayout.fields then
+                        Just (PsplitElements cargs)
+
+                    else
+                        Nothing
 
                 _ ->
                     case ( plan.spec, Dict.get sid ctx.sretPromoted ) of
                         ( Ctx.SplitTuple _, Just sinfo ) ->
-                            sinfo.slotTypes == plan.slotTypes
+                            if Mono.tupleToList sinfo.slotTypes == plan.slotTypes then
+                                Just (PsplitSretCall sid cargs sinfo)
+
+                            else
+                                Nothing
 
                         _ ->
-                            False
+                            Nothing
 
         Mono.MonoVarLocal v _ ->
             case Dict.get v ctx.splitAggParams of
                 Just entry ->
-                    List.map Tuple.second entry.slots == plan.slotTypes
+                    if List.map Tuple.second entry.slots == plan.slotTypes then
+                        Just (PsplitSlots entry.slots)
+
+                    else
+                        Nothing
 
                 Nothing ->
                     case Dict.get v ctx.varMappings of
                         Just vi ->
-                            vi.mlirType == psplitAggType plan
+                            if vi.mlirType == psplitAggType plan then
+                                Just (PsplitAggVar v)
+
+                            else
+                                Nothing
 
                         Nothing ->
-                            False
+                            Nothing
 
         _ ->
-            False
+            Nothing
 
 
 {-| Returns the value-aggregate type, tuple or constructor, whose fields are
@@ -3392,28 +3302,26 @@ psplitAggType plan =
 {-| Generates the call to the `$psplit` worker of `specId`: each promoted
 argument contributes its slots (`emitPsplitSlotArg`), and every other argument
 is coerced to the ABI of the matching parameter in the function's signature.
-The result has the ABI of the signature's return type, or of `resultType` when
-there is no signature.
+The result has the ABI of the signature's return type.
 -}
-emitPsplitCall : Ctx.Context -> Int -> Ctx.PsplitInfo -> List Mono.MonoExpr -> Mono.MonoType -> ExprResult
-emitPsplitCall ctx specId info args resultType =
+emitPsplitCall : Ctx.Context -> Int -> List PsplitCallArg -> ExprResult
+emitPsplitCall ctx specId callArgs =
     let
         funcName =
             specIdToFuncName ctx.registry specId
 
-        maybeSig =
-            Array.get specId ctx.signatures |> Maybe.andThen identity
+        sig =
+            Ctx.signatureOf specId ctx
 
         sigParamAbi idx =
-            maybeSig
-                |> Maybe.andThen (\sig -> List.head (List.drop idx sig.paramTypes))
+            List.head (List.drop idx sig.paramTypes)
                 |> Maybe.map Types.monoTypeToAbi
 
         ( opsRev, operandsRev, ctxA ) =
             List.foldl
-                (\( idx, ( mPlan, arg ) ) ( opsAcc, argsAcc, ctxAcc ) ->
-                    case mPlan of
-                        Nothing ->
+                (\( idx, callArg ) ( opsAcc, argsAcc, ctxAcc ) ->
+                    case callArg of
+                        PsplitPlain arg ->
                             let
                                 r =
                                     generateExpr ctxAcc arg
@@ -3431,23 +3339,18 @@ emitPsplitCall ctx specId info args resultType =
                             in
                             ( List.reverse (r.ops ++ coOps) ++ opsAcc, ( fv, fvTy ) :: argsAcc, ctxCo )
 
-                        Just plan ->
+                        PsplitPromoted plan parg ->
                             let
                                 ( sOps, slotPairs, ctxS ) =
-                                    emitPsplitSlotArg ctxAcc plan arg
+                                    emitPsplitSlotArg ctxAcc plan parg
                             in
                             ( List.reverse sOps ++ opsAcc, List.reverse slotPairs ++ argsAcc, ctxS )
                 )
                 ( [], [], ctx )
-                (List.indexedMap Tuple.pair (List.map2 Tuple.pair info.paramPlans args))
+                (List.indexedMap Tuple.pair callArgs)
 
         returnAbi =
-            case maybeSig of
-                Just sig ->
-                    Types.monoTypeToAbi sig.returnType
-
-                Nothing ->
-                    Types.monoTypeToAbi resultType
+            Types.monoTypeToAbi sig.returnType
 
         ( resultVar, ctxB ) =
             Ctx.freshVar ctxA
@@ -3459,18 +3362,17 @@ emitPsplitCall ctx specId info args resultType =
     , resultVar = resultVar
     , resultType = returnAbi
     , ctx = ctxC
-    , isTerminated = False
     }
 
 
-{-| Generates the slot values `arg` supplies for one promoted parameter, for
-exactly the shapes `psplitArgFree` admits: the elements of a literal or
-constructor call, each coerced to its slot type; the results of a `$sret`
-call; the slots of a variable already held as slots; or projections from a
-value-aggregate variable. Any other shape crashes the compiler.
+{-| Generates the slot values an argument supplies for one promoted parameter,
+as `psplitArg` classified it: the elements of a literal or constructor call,
+each coerced to its slot type; the results of a `$sret` call; the slots of a
+variable already held as slots; or projections from a value-aggregate
+variable.
 -}
-emitPsplitSlotArg : Ctx.Context -> Ctx.SlotPlan -> Mono.MonoExpr -> ( List MlirOp, List ( String, MlirType ), Ctx.Context )
-emitPsplitSlotArg ctx plan arg =
+emitPsplitSlotArg : Ctx.Context -> Ctx.SlotPlan -> PsplitArg -> ( List MlirOp, List ( String, MlirType ), Ctx.Context )
+emitPsplitSlotArg ctx plan parg =
     let
         inlineElements es =
             List.foldl
@@ -3487,60 +3389,50 @@ emitPsplitSlotArg ctx plan arg =
                 ( [], [], ctx )
                 (List.map2 Tuple.pair es plan.slotTypes)
     in
-    case arg of
-        Mono.MonoTupleCreate _ es _ ->
+    case parg of
+        PsplitElements es ->
             inlineElements es
 
-        Mono.MonoCall _ (Mono.MonoVarGlobal _ sid _) cargs _ _ ->
-            case ( plan.spec, Dict.get sid ctx.sretPromoted ) of
-                ( Ctx.SplitTuple _, Just sinfo ) ->
-                    if sinfo.slotTypes == plan.slotTypes then
-                        emitSretCallMulti ctx sid cargs sinfo
+        PsplitSretCall sid cargs sinfo ->
+            let
+                ( ops, pairs, ctx1 ) =
+                    emitSretCallMulti ctx sid cargs sinfo
+            in
+            ( ops, Mono.tupleToList pairs, ctx1 )
 
-                    else
-                        inlineElements cargs
+        PsplitSlots slots ->
+            ( [], slots, ctx )
 
-                _ ->
-                    inlineElements cargs
+        PsplitAggVar v ->
+            let
+                ( varName, varTy ) =
+                    Ctx.lookupVar ctx v
 
-        Mono.MonoVarLocal v _ ->
-            case Dict.get v ctx.splitAggParams of
-                Just entry ->
-                    ( [], entry.slots, ctx )
+                ( opsRev, pairsRev, ctxOut ) =
+                    List.foldl
+                        (\( idx, slotTy ) ( oa, pa, ca ) ->
+                            let
+                                ( pv, ca1 ) =
+                                    Ctx.freshVar ca
 
-                Nothing ->
-                    let
-                        ( varName, varTy ) =
-                            Ctx.lookupVar ctx v
+                                ( ca2, projOp ) =
+                                    case plan.spec of
+                                        Ctx.SplitTuple layout ->
+                                            if Mono.tupleArity layout.elements == 2 then
+                                                Ops.ecoProjectTuple2Agg ca1 pv idx slotTy ( varName, varTy )
 
-                        ( opsRev, pairsRev, ctxOut ) =
-                            List.foldl
-                                (\( idx, slotTy ) ( oa, pa, ca ) ->
-                                    let
-                                        ( pv, ca1 ) =
-                                            Ctx.freshVar ca
+                                            else
+                                                Ops.ecoProjectTuple3Agg ca1 pv idx slotTy ( varName, varTy )
 
-                                        ( ca2, projOp ) =
-                                            case plan.spec of
-                                                Ctx.SplitTuple layout ->
-                                                    if layout.arity == 2 then
-                                                        Ops.ecoProjectTuple2Agg ca1 pv idx slotTy ( varName, varTy )
-
-                                                    else
-                                                        Ops.ecoProjectTuple3Agg ca1 pv idx slotTy ( varName, varTy )
-
-                                                Ctx.SplitCtor _ ->
-                                                    Ops.ecoProjectCustomAgg ca1 pv idx slotTy ( varName, varTy )
-                                    in
-                                    ( projOp :: oa, ( pv, slotTy ) :: pa, ca2 )
-                                )
-                                ( [], [], ctx )
-                                (List.indexedMap Tuple.pair plan.slotTypes)
-                    in
-                    ( List.reverse opsRev, List.reverse pairsRev, ctxOut )
-
-        _ ->
-            crash "emitPsplitSlotArg: arg admitted by psplitArgFree but not emittable"
+                                        Ctx.SplitCtor _ ->
+                                            Ops.ecoProjectCustomAgg ca1 pv idx slotTy ( varName, varTy )
+                            in
+                            ( projOp :: oa, ( pv, slotTy ) :: pa, ca2 )
+                        )
+                        ( [], [], ctx )
+                        (List.indexedMap Tuple.pair plan.slotTypes)
+            in
+            ( List.reverse opsRev, List.reverse pairsRev, ctxOut )
 
 
 {-| Generates a saturated call to a constructor with fields as an
@@ -3583,18 +3475,16 @@ tryCtorInline ctx func args resultType =
 the callee.
 
 A global is first checked against a few elm/bytes functions.
-`Bytes.Encode.encode` becomes a fused encode when the `bytesFusion` flag is on
-and the encoder reifies, and otherwise a call to the kernel symbol
-`Elm_Kernel_Bytes_encode`. `Bytes.Decode.decode` becomes a fused decode when
+`Bytes.Encode.encode` becomes a call to the kernel symbol
+`Elm_Kernel_Bytes_encode`: a fused encode was already tried, by
+`generateSaturatedCallFusionGate`. `Bytes.Decode.decode` becomes a fused decode when
 the decoder reifies, whatever the flag, and otherwise a call to
 `Elm_Kernel_Bytes_decode` with field 0 of the `Decoder` value, its inner
 function, because that is what the kernel takes. A global of elm/core is
 replaced by an intrinsic op when `KernelIntrinsics` recognises it and
 `gateIntrinsic` admits it. Every other global is an `eco.call` to its function;
-when it has a signature, arguments are converted by `boxToMatchSignatureTyped`
-and the call is typed by the signature's return type, and without one,
-arguments are passed as they are and the call is typed by the ABI of
-`resultType`.
+arguments are converted by `boxToMatchSignatureTyped` and the call is typed by
+the signature's return type.
 
 A kernel is checked in the same spirit. `Basics.logBase` becomes two
 `eco.float.log` ops and a division. A two-argument `Debug.log` becomes an
@@ -3602,8 +3492,8 @@ A kernel is checked in the same spirit. `Basics.logBase` becomes two
 and its value is the argument as it was generated, before boxing, so an Int,
 Float, Char or Bool keeps its immediate SSA type (REP\_SSA\_001). `Debug.toString` becomes a call to
 `Elm_Kernel_Debug_toString_typed` with the boxed value and its type id.
-`Bytes.encode` and `Bytes.decode` are fused when possible, as for the
-globals, and otherwise call their kernel symbols. Any other kernel is an
+`Bytes.encode` calls its kernel symbol, and `Bytes.decode` is fused when
+possible, as for the globals, and otherwise calls its kernel symbol. Any other kernel is an
 intrinsic when admitted, and otherwise an `eco.call` to the symbol
 `Context.registerKernelInstance` chooses for its argument and result types;
 the result type is the kernel ABI's, except for the `JsArray` builders and
@@ -3613,12 +3503,12 @@ the result type is the kernel ABI's, except for the `JsArray` builders and
 A local variable or any other callee expression is applied by `eco.papExtend`
 stage by stage, as in `generateClosureApplication`, and its value is coerced
 to the ABI of `resultType`. The global and kernel arms are not coerced: their
-value has the type of what they call: the function's signature (or
-`resultType` without one), the kernel instance or the intrinsic.
+value has the type of what they call: the function's signature, the kernel
+instance or the intrinsic.
 
 -}
-generateSaturatedCallNoFusion : Ctx.Context -> Mono.MonoExpr -> List Mono.MonoExpr -> Mono.MonoType -> Mono.CallInfo -> ExprResult
-generateSaturatedCallNoFusion ctx func args resultType callInfo =
+generateSaturatedCallNoFusion : Ctx.Context -> DirectCallKind -> Mono.MonoExpr -> List Mono.MonoExpr -> Mono.MonoType -> Mono.CallInfo -> ExprResult
+generateSaturatedCallNoFusion ctx kind func args resultType callInfo =
     case func of
         Mono.MonoVarGlobal _ specId funcType ->
             let
@@ -3644,315 +3534,136 @@ generateSaturatedCallNoFusion ctx func args resultType callInfo =
 
                         Nothing ->
                             Nothing
-
-                maybeBytesEncodeArg : Maybe Mono.MonoExpr
-                maybeBytesEncodeArg =
-                    case Registry.lookupSpecKey specId ctx.registry of
-                        Just ( Mono.Global (ModuleName.Canonical pkg moduleName) name, _ ) ->
-                            if pkg == Pkg.bytes && moduleName == "Bytes.Encode" && name == "encode" then
-                                case args of
-                                    [ encoderExpr ] ->
-                                        Just encoderExpr
-
-                                    _ ->
-                                        Nothing
-
-                            else
-                                Nothing
-
-                        _ ->
-                            Nothing
-
-                maybeBytesDecodeArgs : Maybe ( Mono.MonoExpr, Mono.MonoExpr )
-                maybeBytesDecodeArgs =
-                    case Registry.lookupSpecKey specId ctx.registry of
-                        Just ( Mono.Global (ModuleName.Canonical pkg moduleName) name, _ ) ->
-                            if pkg == Pkg.bytes && moduleName == "Bytes.Decode" && name == "decode" then
-                                case args of
-                                    [ decoderExpr, bytesExpr ] ->
-                                        Just ( decoderExpr, bytesExpr )
-
-                                    _ ->
-                                        Nothing
-
-                            else
-                                Nothing
-
-                        _ ->
-                            Nothing
             in
-            case maybeBytesEncodeArg of
-                Just encoderExpr ->
-                    case
-                        if ctx.ecoConfig.bytesFusion.enabled then
-                            BFReify.reifyEncoderWith ctx.inlineBodies ctx.registry ctx.decoderExprs encoderExpr
+            case ( globalBytesFunction ctx specId, List.map2 Tuple.pair args argsWithTypes ) of
+                ( Just "encode", [ _ ] ) ->
+                    let
+                        sig : Ctx.FuncSignature
+                        sig =
+                            Ctx.kernelFuncSignatureFromType funcType
 
-                        else
-                            Nothing
-                    of
-                        Just nodes ->
+                        ( boxOps, argVarPairs, ctx1b ) =
+                            boxToMatchSignatureTyped ctx1 argsWithTypes sig.paramTypes
+
+                        ( resVar, ctx2 ) =
+                            Ctx.freshVar ctx1b
+
+                        kernelName : String
+                        kernelName =
+                            "Elm_Kernel_Bytes_encode"
+
+                        callResultType =
+                            Types.monoTypeToAbi sig.returnType
+
+                        ( ctx3, callOp ) =
+                            Ops.ecoCallNamed ctx2 resVar kernelName argVarPairs callResultType
+                    in
+                    { ops = argOps ++ boxOps ++ [ callOp ]
+                    , resultVar = resVar
+                    , resultType = callResultType
+                    , ctx = ctx3
+                    }
+
+                ( Just "decode", [ ( decoderExpr, decoderArg ), ( _, bytesArg ) ] ) ->
+                    case resolveDecoderNode ctx decoderExpr of
+                        Just decoderNode ->
                             let
-                                loopOps =
-                                    BFReify.nodesToOps nodes
+                                decoderOps =
+                                    BFReify.decoderNodeToOps decoderNode
 
                                 exprCompiler : BFEmit.ExprCompiler
                                 exprCompiler =
                                     bfExprCompiler (fusedLetsFromExprs args)
 
-                                ( mlirOps, bufferVar, ctx2 ) =
-                                    BFEmit.emitFusedEncoder exprCompiler ctx1 loopOps
+                                ( mlirOps, resultVar, ctx2 ) =
+                                    BFEmit.emitFusedDecoder exprCompiler ctx1 (Tuple.first bytesArg) decoderOps
                             in
                             { ops = argOps ++ mlirOps
-                            , resultVar = bufferVar
+                            , resultVar = resultVar
                             , resultType = Types.ecoValue
                             , ctx = ctx2
-                            , isTerminated = False
                             }
 
                         Nothing ->
+                            -- The kernel takes the function inside the
+                            -- Decoder, not the Decoder, so field 0 is
+                            -- projected out of it here.
                             let
+                                ( decoderBoxOps, decoderVar, ctx1a ) =
+                                    boxArgToAbi ctx1 decoderArg Mono.MUnit
+
+                                ( bytesBoxOps, bytesVarPair, ctx1b ) =
+                                    boxArgToAbi ctx1a bytesArg Mono.MUnit
+
+                                ( innerVar, ctx1c ) =
+                                    Ctx.freshVar ctx1b
+
+                                ( ctx1d, projectOp ) =
+                                    Ops.ecoProjectCustom ctx1c innerVar 0 Types.ecoValue (Tuple.first decoderVar)
+
+                                kernelArgPairs : List ( String, MlirType )
+                                kernelArgPairs =
+                                    [ ( innerVar, Types.ecoValue ), bytesVarPair ]
+
+                                ( resVar, ctx2 ) =
+                                    Ctx.freshVar ctx1d
+
+                                kernelName : String
+                                kernelName =
+                                    "Elm_Kernel_Bytes_decode"
+
+                                callResultType =
+                                    Types.ecoValue
+
+                                ( ctx3, callOp ) =
+                                    Ops.ecoCallNamed ctx2 resVar kernelName kernelArgPairs callResultType
+                            in
+                            { ops = argOps ++ decoderBoxOps ++ bytesBoxOps ++ [ projectOp, callOp ]
+                            , resultVar = resVar
+                            , resultType = callResultType
+                            , ctx = ctx3
+                            }
+
+                _ ->
+                    let
+                        maybeIntrinsic =
+                            maybeCoreInfo
+                                |> Maybe.andThen
+                                    (\( moduleName, name ) ->
+                                        admittedIntrinsic ctx1 moduleName name argTypes argsWithTypes resultType
+                                    )
+                    in
+                    case maybeIntrinsic of
+                        Just intrinsic ->
+                            generateIntrinsic ctx1 argOps intrinsic
+
+                        Nothing ->
+                            let
+                                funcName : String
+                                funcName =
+                                    specIdToFuncName ctx.registry specId
+
                                 sig : Ctx.FuncSignature
                                 sig =
-                                    Ctx.kernelFuncSignatureFromType funcType
+                                    Ctx.signatureOf specId ctx
 
                                 ( boxOps, argVarPairs, ctx1b ) =
                                     boxToMatchSignatureTyped ctx1 argsWithTypes sig.paramTypes
 
-                                ( resVar, ctx2 ) =
+                                ( resultVar, ctx2 ) =
                                     Ctx.freshVar ctx1b
 
-                                kernelName : String
-                                kernelName =
-                                    "Elm_Kernel_Bytes_encode"
-
-                                callResultType =
+                                resultMlirType =
                                     Types.monoTypeToAbi sig.returnType
 
                                 ( ctx3, callOp ) =
-                                    Ops.ecoCallNamed ctx2 resVar kernelName argVarPairs callResultType
+                                    Ops.ecoCallNamed ctx2 resultVar funcName argVarPairs resultMlirType
                             in
                             { ops = argOps ++ boxOps ++ [ callOp ]
-                            , resultVar = resVar
-                            , resultType = callResultType
+                            , resultVar = resultVar
+                            , resultType = resultMlirType
                             , ctx = ctx3
-                            , isTerminated = False
                             }
-
-                Nothing ->
-                    case maybeBytesDecodeArgs of
-                        Just ( decoderExpr, _ ) ->
-                            case resolveDecoderNode ctx decoderExpr of
-                                Just decoderNode ->
-                                    let
-                                        bytesVar : String
-                                        bytesVar =
-                                            case argsWithTypes of
-                                                [ _, ( bVar, _ ) ] ->
-                                                    bVar
-
-                                                _ ->
-                                                    "invalid_bytes"
-
-                                        ( decoderOps, _ ) =
-                                            BFReify.decoderNodeToOps decoderNode
-
-                                        exprCompiler : BFEmit.ExprCompiler
-                                        exprCompiler =
-                                            bfExprCompiler (fusedLetsFromExprs args)
-
-                                        ( mlirOps, resultVar, ctx2 ) =
-                                            BFEmit.emitFusedDecoder exprCompiler ctx1 bytesVar decoderOps
-                                    in
-                                    { ops = argOps ++ mlirOps
-                                    , resultVar = resultVar
-                                    , resultType = Types.ecoValue
-                                    , ctx = ctx2
-                                    , isTerminated = False
-                                    }
-
-                                Nothing ->
-                                    -- The kernel takes the function inside the
-                                    -- Decoder, not the Decoder, so field 0 is
-                                    -- projected out of it here.
-                                    let
-                                        ( boxOps, argVarPairs, ctx1b ) =
-                                            boxToMatchSignatureTyped ctx1 argsWithTypes [ Mono.MUnit, Mono.MUnit ]
-
-                                        ( decoderVar, bytesVarPair ) =
-                                            case argVarPairs of
-                                                [ a, b ] ->
-                                                    ( a, b )
-
-                                                _ ->
-                                                    ( ( "invalid_decoder", Types.ecoValue ), ( "invalid_bytes", Types.ecoValue ) )
-
-                                        ( innerVar, ctx1c ) =
-                                            Ctx.freshVar ctx1b
-
-                                        ( ctx1d, projectOp ) =
-                                            Ops.ecoProjectCustom ctx1c innerVar 0 Types.ecoValue (Tuple.first decoderVar)
-
-                                        kernelArgPairs : List ( String, MlirType )
-                                        kernelArgPairs =
-                                            [ ( innerVar, Types.ecoValue ), bytesVarPair ]
-
-                                        ( resVar, ctx2 ) =
-                                            Ctx.freshVar ctx1d
-
-                                        kernelName : String
-                                        kernelName =
-                                            "Elm_Kernel_Bytes_decode"
-
-                                        callResultType =
-                                            Types.ecoValue
-
-                                        ( ctx3, callOp ) =
-                                            Ops.ecoCallNamed ctx2 resVar kernelName kernelArgPairs callResultType
-                                    in
-                                    { ops = argOps ++ boxOps ++ [ projectOp, callOp ]
-                                    , resultVar = resVar
-                                    , resultType = callResultType
-                                    , ctx = ctx3
-                                    , isTerminated = False
-                                    }
-
-                        Nothing ->
-                            case maybeCoreInfo of
-                                Just ( moduleName, name ) ->
-                                    case
-                                        KernelIntrinsics.kernelIntrinsic moduleName name argTypes resultType
-                                            |> Maybe.andThen (gateIntrinsic ctx1 argsWithTypes)
-                                    of
-                                        Just intrinsic ->
-                                            let
-                                                ( unboxOps, unboxedArgVars, ctx1b ) =
-                                                    coerceIntrinsicArgs ctx1 argsWithTypes intrinsic
-
-                                                ( resVar, ctx2 ) =
-                                                    Ctx.freshVar ctx1b
-
-                                                ( ctx3, intrinsicOps ) =
-                                                    Intrinsics.generateIntrinsicOps ctx2 intrinsic resVar unboxedArgVars
-
-                                                intrinsicResultType =
-                                                    Intrinsics.intrinsicResultMlirType intrinsic
-                                            in
-                                            { ops = argOps ++ unboxOps ++ intrinsicOps
-                                            , resultVar = resVar
-                                            , resultType = intrinsicResultType
-                                            , ctx = ctx3
-                                            , isTerminated = False
-                                            }
-
-                                        Nothing ->
-                                            -- hasKernelImplementation is False, so the
-                                            -- compiled function is always called.
-                                            if Ctx.hasKernelImplementation then
-                                                let
-                                                    sig : Ctx.FuncSignature
-                                                    sig =
-                                                        Ctx.kernelFuncSignatureFromType funcType
-
-                                                    ( boxOps, argVarPairs, ctx1b ) =
-                                                        boxToMatchSignatureTyped ctx1 argsWithTypes sig.paramTypes
-
-                                                    ( resVar, ctx2 ) =
-                                                        Ctx.freshVar ctx1b
-
-                                                    kernelName : String
-                                                    kernelName =
-                                                        "Elm_Kernel_" ++ moduleName ++ "_" ++ name
-
-                                                    callResultType =
-                                                        Types.monoTypeToAbi sig.returnType
-
-                                                    ( ctx3, callOp ) =
-                                                        Ops.ecoCallNamed ctx2 resVar kernelName argVarPairs callResultType
-                                                in
-                                                { ops = argOps ++ boxOps ++ [ callOp ]
-                                                , resultVar = resVar
-                                                , resultType = callResultType
-                                                , ctx = ctx3
-                                                , isTerminated = False
-                                                }
-
-                                            else
-                                                let
-                                                    funcName : String
-                                                    funcName =
-                                                        specIdToFuncName ctx.registry specId
-
-                                                    maybeSig : Maybe Ctx.FuncSignature
-                                                    maybeSig =
-                                                        Array.get specId ctx.signatures |> Maybe.andThen identity
-
-                                                    ( boxOps, argVarPairs, ctx1b ) =
-                                                        case maybeSig of
-                                                            Just sig ->
-                                                                boxToMatchSignatureTyped ctx1 argsWithTypes sig.paramTypes
-
-                                                            Nothing ->
-                                                                ( [], argsWithTypes, ctx1 )
-
-                                                    ( resultVar, ctx2 ) =
-                                                        Ctx.freshVar ctx1b
-
-                                                    resultMlirType =
-                                                        case maybeSig of
-                                                            Just sig ->
-                                                                Types.monoTypeToAbi sig.returnType
-
-                                                            Nothing ->
-                                                                Types.monoTypeToAbi resultType
-
-                                                    ( ctx3, callOp ) =
-                                                        Ops.ecoCallNamed ctx2 resultVar funcName argVarPairs resultMlirType
-                                                in
-                                                { ops = argOps ++ boxOps ++ [ callOp ]
-                                                , resultVar = resultVar
-                                                , resultType = resultMlirType
-                                                , ctx = ctx3
-                                                , isTerminated = False
-                                                }
-
-                                Nothing ->
-                                    let
-                                        funcName : String
-                                        funcName =
-                                            specIdToFuncName ctx.registry specId
-
-                                        maybeSig : Maybe Ctx.FuncSignature
-                                        maybeSig =
-                                            Array.get specId ctx.signatures |> Maybe.andThen identity
-
-                                        ( boxOps, argVarPairs, ctx1b ) =
-                                            case maybeSig of
-                                                Just sig ->
-                                                    boxToMatchSignatureTyped ctx1 argsWithTypes sig.paramTypes
-
-                                                Nothing ->
-                                                    ( [], argsWithTypes, ctx1 )
-
-                                        ( resultVar, ctx2 ) =
-                                            Ctx.freshVar ctx1b
-
-                                        resultMlirType =
-                                            case maybeSig of
-                                                Just sig ->
-                                                    Types.monoTypeToAbi sig.returnType
-
-                                                Nothing ->
-                                                    Types.monoTypeToAbi resultType
-
-                                        ( ctx3, callOp ) =
-                                            Ops.ecoCallNamed ctx2 resultVar funcName argVarPairs resultMlirType
-                                    in
-                                    { ops = argOps ++ boxOps ++ [ callOp ]
-                                    , resultVar = resultVar
-                                    , resultType = resultMlirType
-                                    , ctx = ctx3
-                                    , isTerminated = False
-                                    }
 
         Mono.MonoVarKernel _ kernelPrefix home name funcType ->
             let
@@ -3963,8 +3674,8 @@ generateSaturatedCallNoFusion ctx func args resultType callInfo =
                 argTypes =
                     List.map Mono.typeOf args
             in
-            case ( home, name, argsWithTypes ) of
-                ( "Basics", "logBase", [ ( baseVar, baseType ), ( xVar, xType ) ] ) ->
+            case ( home, name, List.map2 Tuple.pair args argsWithTypes ) of
+                ( "Basics", "logBase", [ ( _, ( baseVar, baseType ) ), ( _, ( xVar, xType ) ) ] ) ->
                     let
                         ( unboxBaseOps, unboxedBaseVar, ctx1a ) =
                             if Types.isEcoValueType baseType then
@@ -4002,19 +3713,13 @@ generateSaturatedCallNoFusion ctx func args resultType callInfo =
                     , resultVar = resVar
                     , resultType = Types.ecoFloat
                     , ctx = ctx7
-                    , isTerminated = False
                     }
 
-                ( "Debug", "log", [ ( labelVar, _ ), ( valueVar, valueType ) ] ) ->
+                ( "Debug", "log", [ ( _, ( labelVar, _ ) ), ( valueExpr, ( valueVar, valueType ) ) ] ) ->
                     let
                         valueMonoType : Mono.MonoType
                         valueMonoType =
-                            case args of
-                                [ _, valueExpr ] ->
-                                    Mono.typeOf valueExpr
-
-                                _ ->
-                                    Mono.MUnit
+                            Mono.typeOf valueExpr
 
                         ( labelTypeId, ctx1a_ ) =
                             Ctx.getOrCreateTypeIdForMonoType Mono.MString ctx1
@@ -4065,22 +3770,16 @@ generateSaturatedCallNoFusion ctx func args resultType callInfo =
                     , resultVar = valueVar
                     , resultType = valueType
                     , ctx = ctx2
-                    , isTerminated = False
                     }
 
-                ( "Debug", "toString", [ ( valueVar, valueType ) ] ) ->
+                ( "Debug", "toString", [ ( valueExpr, ( valueVar, valueType ) ) ] ) ->
                     -- The type id lets the typed kernel print constructor
                     -- names. A Debug.toString closure value calls the
                     -- one-parameter Elm_Kernel_Debug_toString instead.
                     let
                         valueMonoType : Mono.MonoType
                         valueMonoType =
-                            case args of
-                                [ valueExpr ] ->
-                                    Mono.typeOf valueExpr
-
-                                _ ->
-                                    Mono.MUnit
+                            Mono.typeOf valueExpr
 
                         ( typeId, ctx1b ) =
                             Ctx.getOrCreateTypeIdForMonoType valueMonoType ctx1
@@ -4128,125 +3827,46 @@ generateSaturatedCallNoFusion ctx func args resultType callInfo =
                     , resultVar = resultVar
                     , resultType = Types.ecoValue
                     , ctx = ctx2d
-                    , isTerminated = False
                     }
 
                 ( "Bytes", "encode", [ _ ] ) ->
-                    case args of
-                        [ encoderExpr ] ->
-                            case
-                                if ctx.ecoConfig.bytesFusion.enabled then
-                                    BFReify.reifyEncoderWith ctx.inlineBodies ctx.registry ctx.decoderExprs encoderExpr
+                    let
+                        ( boxOps, argVarPairs, ctx1b ) =
+                            boxToMatchSignatureTyped ctx1 argsWithTypes [ Mono.MUnit ]
 
-                                else
-                                    Nothing
-                            of
-                                Just nodes ->
-                                    let
-                                        loopOps =
-                                            BFReify.nodesToOps nodes
+                        ( resVar, ctx2 ) =
+                            Ctx.freshVar ctx1b
 
-                                        exprCompiler : BFEmit.ExprCompiler
-                                        exprCompiler =
-                                            bfExprCompiler (fusedLetsFromExprs args)
+                        ( ctx3, callOp ) =
+                            Ops.ecoCallNamed ctx2 resVar "Elm_Kernel_Bytes_encode" argVarPairs Types.ecoValue
+                    in
+                    { ops = argOps ++ boxOps ++ [ callOp ]
+                    , resultVar = resVar
+                    , resultType = Types.ecoValue
+                    , ctx = ctx3
+                    }
 
-                                        ( mlirOps, bufferVar, ctx2 ) =
-                                            BFEmit.emitFusedEncoder exprCompiler ctx1 loopOps
-                                    in
-                                    { ops = argOps ++ mlirOps
-                                    , resultVar = bufferVar
-                                    , resultType = Types.ecoValue
-                                    , ctx = ctx2
-                                    , isTerminated = False
-                                    }
-
-                                Nothing ->
-                                    let
-                                        ( boxOps, argVarPairs, ctx1b ) =
-                                            boxToMatchSignatureTyped ctx1 argsWithTypes [ Mono.MUnit ]
-
-                                        ( resVar, ctx2 ) =
-                                            Ctx.freshVar ctx1b
-
-                                        ( ctx3, callOp ) =
-                                            Ops.ecoCallNamed ctx2 resVar "Elm_Kernel_Bytes_encode" argVarPairs Types.ecoValue
-                                    in
-                                    { ops = argOps ++ boxOps ++ [ callOp ]
-                                    , resultVar = resVar
-                                    , resultType = Types.ecoValue
-                                    , ctx = ctx3
-                                    , isTerminated = False
-                                    }
-
-                        _ ->
+                ( "Bytes", "decode", [ ( decoderExpr, _ ), ( _, ( bytesVar, _ ) ) ] ) ->
+                    case resolveDecoderNode ctx decoderExpr of
+                        Just decoderNode ->
                             let
-                                ( boxOps, argVarPairs, ctx1b ) =
-                                    boxToMatchSignatureTyped ctx1 argsWithTypes [ Mono.MUnit ]
+                                decoderOps =
+                                    BFReify.decoderNodeToOps decoderNode
 
-                                ( resVar, ctx2 ) =
-                                    Ctx.freshVar ctx1b
+                                exprCompiler : BFEmit.ExprCompiler
+                                exprCompiler =
+                                    bfExprCompiler (fusedLetsFromExprs args)
 
-                                ( ctx3, callOp ) =
-                                    Ops.ecoCallNamed ctx2 resVar "Elm_Kernel_Bytes_encode" argVarPairs Types.ecoValue
+                                ( mlirOps, resultVar, ctx2 ) =
+                                    BFEmit.emitFusedDecoder exprCompiler ctx1 bytesVar decoderOps
                             in
-                            { ops = argOps ++ boxOps ++ [ callOp ]
-                            , resultVar = resVar
+                            { ops = argOps ++ mlirOps
+                            , resultVar = resultVar
                             , resultType = Types.ecoValue
-                            , ctx = ctx3
-                            , isTerminated = False
+                            , ctx = ctx2
                             }
 
-                ( "Bytes", "decode", [ _, _ ] ) ->
-                    case args of
-                        [ decoderExpr, _ ] ->
-                            case resolveDecoderNode ctx decoderExpr of
-                                Just decoderNode ->
-                                    let
-                                        bytesVar : String
-                                        bytesVar =
-                                            case argsWithTypes of
-                                                [ _, ( bVar, _ ) ] ->
-                                                    bVar
-
-                                                _ ->
-                                                    "invalid_bytes"
-
-                                        ( decoderOps, _ ) =
-                                            BFReify.decoderNodeToOps decoderNode
-
-                                        exprCompiler : BFEmit.ExprCompiler
-                                        exprCompiler =
-                                            bfExprCompiler (fusedLetsFromExprs args)
-
-                                        ( mlirOps, resultVar, ctx2 ) =
-                                            BFEmit.emitFusedDecoder exprCompiler ctx1 bytesVar decoderOps
-                                    in
-                                    { ops = argOps ++ mlirOps
-                                    , resultVar = resultVar
-                                    , resultType = Types.ecoValue
-                                    , ctx = ctx2
-                                    , isTerminated = False
-                                    }
-
-                                Nothing ->
-                                    let
-                                        ( boxOps, argVarPairs, ctx1b ) =
-                                            boxToMatchSignatureTyped ctx1 argsWithTypes [ Mono.MUnit, Mono.MUnit ]
-
-                                        ( resVar, ctx2 ) =
-                                            Ctx.freshVar ctx1b
-
-                                        ( ctx3, callOp ) =
-                                            Ops.ecoCallNamed ctx2 resVar "Elm_Kernel_Bytes_decode" argVarPairs Types.ecoValue
-                                    in
-                                    { ops = argOps ++ boxOps ++ [ callOp ]
-                                    , resultVar = resVar
-                                    , resultType = Types.ecoValue
-                                    , ctx = ctx3
-                                    , isTerminated = False
-                                    }
-
-                        _ ->
+                        Nothing ->
                             let
                                 ( boxOps, argVarPairs, ctx1b ) =
                                     boxToMatchSignatureTyped ctx1 argsWithTypes [ Mono.MUnit, Mono.MUnit ]
@@ -4261,34 +3881,12 @@ generateSaturatedCallNoFusion ctx func args resultType callInfo =
                             , resultVar = resVar
                             , resultType = Types.ecoValue
                             , ctx = ctx3
-                            , isTerminated = False
                             }
 
                 _ ->
-                    case
-                        KernelIntrinsics.kernelIntrinsic home name argTypes resultType
-                            |> Maybe.andThen (gateIntrinsic ctx1 argsWithTypes)
-                    of
+                    case admittedIntrinsic ctx1 home name argTypes argsWithTypes resultType of
                         Just intrinsic ->
-                            let
-                                ( unboxOps, unboxedArgVars, ctx1b ) =
-                                    coerceIntrinsicArgs ctx1 argsWithTypes intrinsic
-
-                                ( resVar, ctx2 ) =
-                                    Ctx.freshVar ctx1b
-
-                                ( ctx3, intrinsicOps ) =
-                                    Intrinsics.generateIntrinsicOps ctx2 intrinsic resVar unboxedArgVars
-
-                                intrinsicResType =
-                                    Intrinsics.intrinsicResultMlirType intrinsic
-                            in
-                            { ops = argOps ++ unboxOps ++ intrinsicOps
-                            , resultVar = resVar
-                            , resultType = intrinsicResType
-                            , ctx = ctx3
-                            , isTerminated = False
-                            }
+                            generateIntrinsic ctx1 argOps intrinsic
 
                         Nothing ->
                             let
@@ -4339,7 +3937,6 @@ generateSaturatedCallNoFusion ctx func args resultType callInfo =
                                     , resultVar = resVar
                                     , resultType = resultMlirType
                                     , ctx = ctx3
-                                    , isTerminated = False
                                     }
 
         Mono.MonoVarLocal name _ ->
@@ -4370,7 +3967,6 @@ generateSaturatedCallNoFusion ctx func args resultType callInfo =
                         , resultVar = finalVar
                         , resultType = callResultMlirType
                         , ctx = ctx1
-                        , isTerminated = False
                         }
 
                     else
@@ -4388,7 +3984,7 @@ generateSaturatedCallNoFusion ctx func args resultType callInfo =
                                 callInfo.remainingStageArities
 
                             papResult =
-                                applyByStages ctx1b funcVarName funcVarType initialRemaining remainingStageArities evaluatorResultMlirType (Just (callKindToAttrString callInfo.callKind)) boxedArgsWithTypes [] []
+                                applyByStages ctx1b funcVarName funcVarType initialRemaining remainingStageArities evaluatorResultMlirType kind boxedArgsWithTypes [] []
 
                             ( coerceOps, finalVar, ctxFinal ) =
                                 coerceResultToType papResult.ctx papResult.resultVar papResult.resultType callResultMlirType
@@ -4397,7 +3993,6 @@ generateSaturatedCallNoFusion ctx func args resultType callInfo =
                         , resultVar = finalVar
                         , resultType = callResultMlirType
                         , ctx = ctxFinal
-                        , isTerminated = False
                         }
 
         _ ->
@@ -4421,7 +4016,6 @@ generateSaturatedCallNoFusion ctx func args resultType callInfo =
                 , resultVar = finalVar
                 , resultType = callResultMlirType
                 , ctx = ctx1
-                , isTerminated = False
                 }
 
             else
@@ -4441,7 +4035,7 @@ generateSaturatedCallNoFusion ctx func args resultType callInfo =
                         callInfo.remainingStageArities
 
                     papResult =
-                        applyByStages ctx1b funcResult.resultVar funcResult.resultType initialRemaining remainingStageArities evaluatorResultMlirType (Just (callKindToAttrString callInfo.callKind)) boxedArgsWithTypes [] []
+                        applyByStages ctx1b funcResult.resultVar funcResult.resultType initialRemaining remainingStageArities evaluatorResultMlirType kind boxedArgsWithTypes [] []
 
                     ( coerceOps, finalVar, ctxFinal ) =
                         coerceResultToType papResult.ctx papResult.resultVar papResult.resultType callResultMlirType
@@ -4450,7 +4044,6 @@ generateSaturatedCallNoFusion ctx func args resultType callInfo =
                 , resultVar = finalVar
                 , resultType = callResultMlirType
                 , ctx = ctxFinal
-                , isTerminated = False
                 }
 
 
@@ -4515,8 +4108,7 @@ as `!eco.value` is unboxed first.
 The case's result type is the then branch's SSA type, and the else branch is
 coerced to it; on the result spine it is the spine's type instead
 (`spineResultMlirType`), and both branches yield through `emitSpineYield`. The
-condition is generated off the spine. A branch that is already terminated
-goes to `generateIfWithTerminatedBranch` or `generateIfWithTerminatedElse`.
+condition is generated off the spine.
 
 -}
 generateIf : Ctx.Context -> List ( Mono.MonoExpr, Mono.MonoExpr ) -> Mono.MonoExpr -> Mono.MonoType -> ExprResult
@@ -4548,151 +4140,55 @@ generateIf ctx branches final resultMonoType =
 
                 thenRes =
                     generateExpr condCtxSpine thenExpr
-            in
-            if thenRes.isTerminated then
-                generateIfWithTerminatedBranch condCtx condVar thenRes restBranches final resultMonoType condOpsAll
 
-            else
-                let
-                    resultMlirType =
-                        case ctx.sretTailLayout of
-                            Nothing ->
-                                thenRes.resultType
+                resultMlirType =
+                    case ctx.sretTailLayout of
+                        Nothing ->
+                            thenRes.resultType
 
-                            Just _ ->
-                                spineResultMlirType ctx resultMonoType
+                        Just _ ->
+                            spineResultMlirType ctx resultMonoType
 
-                    ( thenCoerceOps, thenFinalVar, thenFinalCtx ) =
-                        coerceResultToType thenRes.ctx thenRes.resultVar thenRes.resultType resultMlirType
+                ( thenCoerceOps, thenFinalVar, thenFinalCtx ) =
+                    coerceResultToType thenRes.ctx thenRes.resultVar thenRes.resultType resultMlirType
 
-                    -- Names bound in the then branch are not visible in the else.
-                    elseCtx =
-                        let
-                            sibling =
-                                Ctx.ctxForSiblingRegion condCtx thenFinalCtx
-                        in
-                        { sibling | sretTailLayout = ctx.sretTailLayout }
-
-                    elseRes =
-                        generateIf elseCtx restBranches final resultMonoType
-                in
-                if elseRes.isTerminated then
-                    generateIfWithTerminatedElse condRes.ctx condVar thenRes elseRes resultMlirType condRes.ops
-
-                else
+                -- Names bound in the then branch are not visible in the else.
+                elseCtx =
                     let
-                        ( elseCoerceOps, elseFinalVar, elseFinalCtx ) =
-                            coerceResultToType elseRes.ctx elseRes.resultVar elseRes.resultType resultMlirType
-
-                        ( elseProjOps, elseYieldOp, ctx2 ) =
-                            emitSpineYield elseFinalCtx elseFinalVar resultMlirType
-
-                        elseRegion =
-                            Ops.mkRegion [] (elseRes.ops ++ elseCoerceOps ++ elseProjOps) elseYieldOp
-
-                        ( thenProjOps, thenEcoYield, _ ) =
-                            emitSpineYield thenFinalCtx thenFinalVar resultMlirType
-
-                        thenRegionEco =
-                            Ops.mkRegion [] (thenRes.ops ++ thenCoerceOps ++ thenProjOps) thenEcoYield
-
-                        spineCase =
-                            finishSpineCase ctx2
-                                resultMlirType
-                                (\cS vS tS -> Ops.ecoCase cS vS condVar I1 "bool" [ 1, 0 ] [ thenRegionEco, elseRegion ] tS)
-                                (\cM pairsM -> Ops.ecoCaseMany cM condVar I1 "bool" [ 1, 0 ] [ thenRegionEco, elseRegion ] pairsM)
+                        sibling =
+                            Ctx.ctxForSiblingRegion condCtx thenFinalCtx
                     in
-                    { ops = condOpsAll ++ spineCase.ops
-                    , resultVar = spineCase.resultVar
-                    , resultType = spineCase.resultType
-                    , ctx = Ctx.ctxAfterBranchOp condCtx spineCase.ctx spineCase.newVars
-                    , isTerminated = False
-                    }
+                    { sibling | sretTailLayout = ctx.sretTailLayout }
 
+                elseRes =
+                    generateIf elseCtx restBranches final resultMonoType
 
-{-| Generates an `if` whose then branch, `thenRes`, already ends in its own
-terminator, which is used as it is. The remaining branches are generated off
-the result spine, and the case's type is the else branch's SSA type, or
-`!eco.value` when the else branch is terminated too.
--}
-generateIfWithTerminatedBranch : Ctx.Context -> String -> ExprResult -> List ( Mono.MonoExpr, Mono.MonoExpr ) -> Mono.MonoExpr -> Mono.MonoType -> List MlirOp -> ExprResult
-generateIfWithTerminatedBranch condCtx condVar thenRes restBranches final resultMonoType condOps =
-    let
-        thenRegion =
-            mkRegionFromOps thenRes.ops
+                ( elseCoerceOps, elseFinalVar, elseFinalCtx ) =
+                    coerceResultToType elseRes.ctx elseRes.resultVar elseRes.resultType resultMlirType
 
-        elseCtx =
-            Ctx.ctxForSiblingRegion condCtx thenRes.ctx
+                ( elseProjOps, elseYieldOp, ctx2 ) =
+                    emitSpineYield elseFinalCtx elseFinalVar resultMlirType
 
-        elseRes =
-            generateIf elseCtx restBranches final resultMonoType
+                elseRegion =
+                    Ops.mkRegion [] (elseRes.ops ++ elseCoerceOps ++ elseProjOps) elseYieldOp
 
-        resultMlirType =
-            if elseRes.isTerminated then
-                Types.ecoValue
+                ( thenProjOps, thenEcoYield, _ ) =
+                    emitSpineYield thenFinalCtx thenFinalVar resultMlirType
 
-            else
-                elseRes.resultType
+                thenRegionEco =
+                    Ops.mkRegion [] (thenRes.ops ++ thenCoerceOps ++ thenProjOps) thenEcoYield
 
-        ( elseRegion, ctxAfterElse ) =
-            if elseRes.isTerminated then
-                ( mkRegionFromOps elseRes.ops, elseRes.ctx )
-
-            else
-                let
-                    ( coerceOps, finalVar, coerceCtx ) =
-                        coerceResultToType elseRes.ctx elseRes.resultVar elseRes.resultType resultMlirType
-
-                    ( yieldCtx, yieldOp ) =
-                        Ops.ecoYield coerceCtx finalVar resultMlirType
-                in
-                ( Ops.mkRegion [] (elseRes.ops ++ coerceOps) yieldOp, yieldCtx )
-
-        ( caseResultVar, ctxWithResult ) =
-            Ctx.freshVar ctxAfterElse
-
-        ( ctxFinal, caseOp ) =
-            Ops.ecoCase ctxWithResult caseResultVar condVar I1 "bool" [ 1, 0 ] [ thenRegion, elseRegion ] resultMlirType
-    in
-    { ops = condOps ++ [ caseOp ]
-    , resultVar = caseResultVar
-    , resultType = resultMlirType
-    , ctx = Ctx.ctxAfterBranchOp condCtx ctxFinal [ caseResultVar ]
-    , isTerminated = False
-    }
-
-
-{-| Generates an `if` whose else branch, `elseRes`, already ends in its own
-terminator, which is used as it is; the then branch is coerced to
-`resultMlirType` and yielded. `condOps` are the ops placed before the case.
--}
-generateIfWithTerminatedElse : Ctx.Context -> String -> ExprResult -> ExprResult -> MlirType -> List MlirOp -> ExprResult
-generateIfWithTerminatedElse condCtx condVar thenRes elseRes resultMlirType condOps =
-    let
-        ( thenCoerceOps, thenFinalVar, thenCoerceCtx ) =
-            coerceResultToType thenRes.ctx thenRes.resultVar thenRes.resultType resultMlirType
-
-        ( _, thenYieldOp ) =
-            Ops.ecoYield thenCoerceCtx thenFinalVar resultMlirType
-
-        thenRegion =
-            Ops.mkRegion [] (thenRes.ops ++ thenCoerceOps) thenYieldOp
-
-        elseRegion =
-            mkRegionFromOps elseRes.ops
-
-        ( caseResultVar, ctxWithResult ) =
-            Ctx.freshVar elseRes.ctx
-
-        ( ctxFinal, caseOp ) =
-            Ops.ecoCase ctxWithResult caseResultVar condVar I1 "bool" [ 1, 0 ] [ thenRegion, elseRegion ] resultMlirType
-    in
-    { ops = condOps ++ [ caseOp ]
-    , resultVar = caseResultVar
-    , resultType = resultMlirType
-    , ctx = Ctx.ctxAfterBranchOp condCtx ctxFinal [ caseResultVar ]
-    , isTerminated = False
-    }
+                spineCase =
+                    finishSpineCase ctx2
+                        resultMlirType
+                        (\cS vS tS -> Ops.ecoCase cS vS condVar I1 "bool" [ 1, 0 ] [ thenRegionEco, elseRegion ] tS)
+                        (\cM pairsM -> Ops.ecoCaseMany cM condVar I1 "bool" [ 1, 0 ] [ thenRegionEco, elseRegion ] pairsM)
+            in
+            { ops = condOpsAll ++ spineCase.ops
+            , resultVar = spineCase.resultVar
+            , resultType = spineCase.resultType
+            , ctx = Ctx.ctxAfterBranchOp condCtx spineCase.ctx spineCase.newVars
+            }
 
 
 
@@ -5246,12 +4742,7 @@ occursAnyNames targets expr =
                     hit s1 (hit s2 acc)
 
                 Mono.MonoDestruct (Mono.MonoDestructor _ path _) _ _ ->
-                    case pathRootName path of
-                        Just r ->
-                            hit r acc
-
-                        Nothing ->
-                            acc
+                    hit (pathRootName path) acc
 
                 Mono.MonoClosure info _ _ ->
                     List.foldl (\( c, _, _ ) a -> hit c a) acc info.captures
@@ -5265,11 +4756,11 @@ occursAnyNames targets expr =
 
 {-| Returns the variable a destructuring path starts from.
 -}
-pathRootName : Mono.MonoPath -> Maybe Name.Name
+pathRootName : Mono.MonoPath -> Name.Name
 pathRootName path =
     case path of
         Mono.MonoRoot r _ ->
-            Just r
+            r
 
         Mono.MonoIndex _ _ _ sub ->
             pathRootName sub
@@ -5308,9 +4799,6 @@ named `_tail_<name>_<n>`, and its value is an `eco.papCreate` defining the
 placeholder. Its captures are the free locals of its body that are not
 siblings; one held as scalar slots is rebuilt as a value first, a Bool is
 boxed, and a free local with no mapping is left out.
-
-The result is terminated when the body is, or when the bound expression is and
-the body emits no ops.
 
 -}
 generateLetSingle : Ctx.Context -> Mono.MonoDef -> Mono.MonoExpr -> ExprResult
@@ -5381,7 +4869,7 @@ generateLetSingle ctx def body =
                                     if
                                         ctx.ecoConfig.aggPromote
                                             && chainHeadSafe
-                                            && tupleBinderPromotable ctx.splitAggParams ctx.psplitPromoted ctx.fwdRefdLetNames name monoType analysisBody
+                                            && tupleBinderPromotable ctx.splitAggParams ctx.psplitPromoted ctx.fwdRefdLetNames name (Mono.tupleContainerKind elements) analysisBody
                                     then
                                         generateTupleCreateValue ctxWithPlaceholders elements monoType
 
@@ -5496,15 +4984,11 @@ generateLetSingle ctx def body =
                         ctxOut : Ctx.Context
                         ctxOut =
                             { bodyCtx | currentLetSiblings = outerSiblings }
-
-                        finalIsTerminated =
-                            (exprResult.isTerminated && List.isEmpty bodyResult.ops) || bodyResult.isTerminated
                     in
                     { ops = exprResult.ops ++ bodyResult.ops
                     , resultVar = bodyResult.resultVar
                     , resultType = bodyResult.resultType
                     , ctx = ctxOut
-                    , isTerminated = finalIsTerminated
                     }
 
         Mono.MonoTailDef name params tailBody ->
@@ -5587,8 +5071,7 @@ generateLetSingle ctx def body =
                     , body = tailBody
                     , returnType = Mono.typeOf tailBody
                     , siblingMappings = ctxWithPlaceholders.currentLetSiblings
-                    , isTailRecursive = True
-                    , selfBindingName = Just name
+                    , tailRecSelf = Just name
                     }
 
                 ctx1 =
@@ -5667,7 +5150,6 @@ generateLetSingle ctx def body =
                     , resultVar = resultVar
                     , resultType = Types.ecoValue
                     , ctx = ctx3
-                    , isTerminated = False
                     }
 
                 exprResult =
@@ -5684,15 +5166,11 @@ generateLetSingle ctx def body =
 
                 ctxOut =
                     { bodyCtx | currentLetSiblings = outerSiblings }
-
-                finalIsTerminated =
-                    (exprResult.isTerminated && List.isEmpty bodyResult.ops) || bodyResult.isTerminated
             in
             { ops = exprResult.ops ++ bodyResult.ops
             , resultVar = bodyResult.resultVar
             , resultType = bodyResult.resultType
             , ctx = ctxOut
-            , isTerminated = finalIsTerminated
             }
 
 
@@ -5927,8 +5405,7 @@ generateLetGroup ctx members body =
                     , body = member.lambdaBody
                     , returnType = Mono.typeOf member.lambdaBody
                     , siblingMappings = letBoundSiblings
-                    , isTailRecursive = False
-                    , selfBindingName = Nothing
+                    , tailRecSelf = Nothing
                     }
                 )
                 members
@@ -5959,15 +5436,11 @@ generateLetGroup ctx members body =
 
         ctxOut =
             { bodyCtx | currentLetSiblings = outerSiblings }
-
-        finalIsTerminated =
-            bodyResult.isTerminated
     in
     { ops = captureOpsAll ++ [ groupOp ] ++ bodyResult.ops
     , resultVar = bodyResult.resultVar
     , resultType = bodyResult.resultType
     , ctx = ctxOut
-    , isTerminated = finalIsTerminated
     }
 
 
@@ -6052,12 +5525,25 @@ generateDestruct ctx (Mono.MonoDestructor name path destructorMonoType) body =
     , resultVar = bodyResult.resultVar
     , resultType = bodyResult.resultType
     , ctx = restoredCtx
-    , isTerminated = bodyResult.isTerminated
     }
 
 
 
 -- ====== CASE GENERATION ======
+
+
+{-| The MLIR for a node of a case's decision tree.
+
+A leaf is `Yielded`: the branch body's ops, `body`, and the `yieldOp` that ends
+the case alternative with the value `resultVar`, kept apart so that the yield
+is always the alternative's terminator. Any other node is `Valued`: an
+`eco.case` whose value the enclosing alternative still has to yield (see
+`mkCaseRegionFromDecider`).
+
+-}
+type DeciderResult
+    = Yielded { body : List MlirOp, yieldOp : MlirOp, resultVar : String, ctx : Ctx.Context }
+    | Valued ExprResult
 
 
 {-| Generates a case's decision tree, whose leaves each end in an `eco.yield`
@@ -6066,7 +5552,7 @@ of that branch's body, looked up in `jumpLookup`, so no `eco.joinpoint` is
 emitted and every alternative is a single block. A `Leaf` emits no test; a
 `Chain` and a `FanOut` emit `eco.case` ops.
 -}
-generateDeciderWithJumps : Ctx.Context -> Mono.Decider Mono.MonoChoice -> Array (Maybe Mono.MonoExpr) -> MlirType -> ExprResult
+generateDeciderWithJumps : Ctx.Context -> Mono.Decider Mono.MonoChoice -> Array (Maybe Mono.MonoExpr) -> MlirType -> DeciderResult
 generateDeciderWithJumps ctx decider jumpLookup resultTy =
     case decider of
         Mono.Leaf choice ->
@@ -6080,127 +5566,42 @@ generateDeciderWithJumps ctx decider jumpLookup resultTy =
 
 
 {-| Generates a leaf of a decision tree: the branch body, inline or copied
-from `jumpLookup`, coerced to `resultTy` and yielded (`emitSpineYield`).
-
-A body that is already terminated is kept as it is when it ends in an
-`eco.yield`, or when it has no result value (which `mkCaseRegionFromDecider`
-then reports); one that ends in another terminator but has a value gets the
-yield appended. A jump index missing from `jumpLookup` crashes the compiler.
-
+from `jumpLookup`, coerced to `resultTy` and yielded (`emitSpineYield`). A jump
+index missing from `jumpLookup` crashes the compiler.
 -}
-generateLeafWithJumps : Ctx.Context -> Mono.MonoChoice -> Array (Maybe Mono.MonoExpr) -> MlirType -> ExprResult
+generateLeafWithJumps : Ctx.Context -> Mono.MonoChoice -> Array (Maybe Mono.MonoExpr) -> MlirType -> DeciderResult
 generateLeafWithJumps ctx choice jumpLookup resultTy =
     case choice of
         Mono.Inline branchExpr ->
-            let
-                branchRes =
-                    generateExpr ctx branchExpr
-            in
-            if branchRes.isTerminated then
-                case List.reverse branchRes.ops of
-                    lastOp :: _ ->
-                        if isValidCaseTerminator lastOp then
-                            branchRes
-
-                        else if branchRes.resultVar == "" then
-                            branchRes
-
-                        else
-                            let
-                                actualTy =
-                                    branchRes.resultType
-
-                                ( coerceOps, finalVar, ctx1 ) =
-                                    coerceResultToType branchRes.ctx branchRes.resultVar actualTy resultTy
-
-                                ( yieldPreOps, yieldOp, ctx2 ) =
-                                    emitSpineYield ctx1 finalVar resultTy
-                            in
-                            { ops = branchRes.ops ++ coerceOps ++ yieldPreOps ++ [ yieldOp ]
-                            , resultVar = finalVar
-                            , resultType = resultTy
-                            , ctx = ctx2
-                            , isTerminated = True
-                            }
-
-                    [] ->
-                        branchRes
-
-            else
-                let
-                    actualTy =
-                        branchRes.resultType
-
-                    ( coerceOps, finalVar, ctx1 ) =
-                        coerceResultToType branchRes.ctx branchRes.resultVar actualTy resultTy
-
-                    ( yieldPreOps, yieldOp, ctx2 ) =
-                        emitSpineYield ctx1 finalVar resultTy
-                in
-                { ops = branchRes.ops ++ coerceOps ++ yieldPreOps ++ [ yieldOp ]
-                , resultVar = finalVar
-                , resultType = resultTy
-                , ctx = ctx2
-                , isTerminated = True
-                }
+            yieldLeaf (generateExpr ctx branchExpr) resultTy
 
         Mono.Jump index ->
             case Array.get index jumpLookup |> Maybe.andThen identity of
                 Just branchExpr ->
-                    let
-                        branchRes =
-                            generateExpr ctx branchExpr
-                    in
-                    if branchRes.isTerminated then
-                        case List.reverse branchRes.ops of
-                            lastOp :: _ ->
-                                if isValidCaseTerminator lastOp then
-                                    branchRes
-
-                                else if branchRes.resultVar == "" then
-                                    branchRes
-
-                                else
-                                    let
-                                        actualTy =
-                                            branchRes.resultType
-
-                                        ( coerceOps, finalVar, ctx1 ) =
-                                            coerceResultToType branchRes.ctx branchRes.resultVar actualTy resultTy
-
-                                        ( yieldPreOps, yieldOp, ctx2 ) =
-                                            emitSpineYield ctx1 finalVar resultTy
-                                    in
-                                    { ops = branchRes.ops ++ coerceOps ++ yieldPreOps ++ [ yieldOp ]
-                                    , resultVar = finalVar
-                                    , resultType = resultTy
-                                    , ctx = ctx2
-                                    , isTerminated = True
-                                    }
-
-                            [] ->
-                                branchRes
-
-                    else
-                        let
-                            actualTy =
-                                branchRes.resultType
-
-                            ( coerceOps, finalVar, ctx1 ) =
-                                coerceResultToType branchRes.ctx branchRes.resultVar actualTy resultTy
-
-                            ( yieldPreOps, yieldOp, ctx2 ) =
-                                emitSpineYield ctx1 finalVar resultTy
-                        in
-                        { ops = branchRes.ops ++ coerceOps ++ yieldPreOps ++ [ yieldOp ]
-                        , resultVar = finalVar
-                        , resultType = resultTy
-                        , ctx = ctx2
-                        , isTerminated = True
-                        }
+                    yieldLeaf (generateExpr ctx branchExpr) resultTy
 
                 Nothing ->
                     crash ("generateLeafWithJumps: Jump index " ++ String.fromInt index ++ " not found in jumpLookup")
+
+
+{-| Returns the leaf whose branch body generated as `branchRes`: its value
+coerced to `resultTy`, then yielded (`emitSpineYield`).
+-}
+yieldLeaf : ExprResult -> MlirType -> DeciderResult
+yieldLeaf branchRes resultTy =
+    let
+        ( coerceOps, finalVar, ctx1 ) =
+            coerceResultToType branchRes.ctx branchRes.resultVar branchRes.resultType resultTy
+
+        ( yieldPreOps, yieldOp, ctx2 ) =
+            emitSpineYield ctx1 finalVar resultTy
+    in
+    Yielded
+        { body = branchRes.ops ++ coerceOps ++ yieldPreOps
+        , yieldOp = yieldOp
+        , resultVar = finalVar
+        , ctx = ctx2
+        }
 
 
 {-| Generates a `Chain` node: the tests, then `success` if all pass and
@@ -6208,10 +5609,10 @@ generateLeafWithJumps ctx choice jumpLookup resultTy =
 `generateChainForBoolADTWithJumps`, any other to
 `generateChainGeneralWithJumps`.
 -}
-generateChainWithJumps : Ctx.Context -> List ( Mono.MonoDtPath, DT.Test ) -> Mono.Decider Mono.MonoChoice -> Mono.Decider Mono.MonoChoice -> Array (Maybe Mono.MonoExpr) -> MlirType -> ExprResult
+generateChainWithJumps : Ctx.Context -> NE.Nonempty ( Mono.MonoDtPath, DT.Test ) -> Mono.Decider Mono.MonoChoice -> Mono.Decider Mono.MonoChoice -> Array (Maybe Mono.MonoExpr) -> MlirType -> DeciderResult
 generateChainWithJumps ctx testChain success failure jumpLookup resultTy =
     case testChain of
-        [ ( path, Test.IsBool True ) ] ->
+        NE.Nonempty ( path, Test.IsBool True ) [] ->
             generateChainForBoolADTWithJumps ctx path success failure jumpLookup resultTy
 
         _ ->
@@ -6223,7 +5624,7 @@ generateChainWithJumps ctx testChain success failure jumpLookup resultTy =
 tag 1 and `failure` under tag 0. The failure branch does not see names bound in
 the success branch.
 -}
-generateChainForBoolADTWithJumps : Ctx.Context -> Mono.MonoDtPath -> Mono.Decider Mono.MonoChoice -> Mono.Decider Mono.MonoChoice -> Array (Maybe Mono.MonoExpr) -> MlirType -> ExprResult
+generateChainForBoolADTWithJumps : Ctx.Context -> Mono.MonoDtPath -> Mono.Decider Mono.MonoChoice -> Mono.Decider Mono.MonoChoice -> Array (Maybe Mono.MonoExpr) -> MlirType -> DeciderResult
 generateChainForBoolADTWithJumps ctx path success failure jumpLookup resultTy =
     let
         ( pathOps, boolVar, ctx1 ) =
@@ -6250,30 +5651,26 @@ generateChainForBoolADTWithJumps ctx path success failure jumpLookup resultTy =
                 (\cS vS tS -> Ops.ecoCase cS vS boolVar I1 "bool" [ 1, 0 ] [ thenRegion, elseRegion ] tS)
                 (\cM pairsM -> Ops.ecoCaseMany cM boolVar I1 "bool" [ 1, 0 ] [ thenRegion, elseRegion ] pairsM)
     in
-    { ops = pathOps ++ spineCase.ops
-    , resultVar = spineCase.resultVar
-    , resultType = spineCase.resultType
-    , ctx = Ctx.ctxAfterBranchOp ctx1 spineCase.ctx spineCase.newVars
-    , isTerminated = False
-    }
+    Valued
+        { ops = pathOps ++ spineCase.ops
+        , resultVar = spineCase.resultVar
+        , resultType = spineCase.resultType
+        , ctx = Ctx.ctxAfterBranchOp ctx1 spineCase.ctx spineCase.newVars
+        }
 
 
 {-| Generates a chain of tests as nested `eco.case` ops, so that each test
 runs only after every earlier one has passed. This matters because a later
 test may read a value that exists only when an earlier one holds, such as the
-head of a list that must first be tested to be non-empty. An empty chain is
-just `success`.
+head of a list that must first be tested to be non-empty.
 -}
-generateChainGeneralWithJumps : Ctx.Context -> List ( Mono.MonoDtPath, DT.Test ) -> Mono.Decider Mono.MonoChoice -> Mono.Decider Mono.MonoChoice -> Array (Maybe Mono.MonoExpr) -> MlirType -> ExprResult
-generateChainGeneralWithJumps ctx testChain success failure jumpLookup resultTy =
-    case testChain of
+generateChainGeneralWithJumps : Ctx.Context -> NE.Nonempty ( Mono.MonoDtPath, DT.Test ) -> Mono.Decider Mono.MonoChoice -> Mono.Decider Mono.MonoChoice -> Array (Maybe Mono.MonoExpr) -> MlirType -> DeciderResult
+generateChainGeneralWithJumps ctx (NE.Nonempty firstTest restTests) success failure jumpLookup resultTy =
+    case restTests of
         [] ->
-            generateDeciderWithJumps ctx success jumpLookup resultTy
-
-        [ singleTest ] ->
             let
                 ( condOps, condVar, ctx1 ) =
-                    Patterns.generateMonoTest ctx singleTest
+                    Patterns.generateMonoTest ctx firstTest
 
                 thenRes =
                     generateDeciderWithJumps ctx1 success jumpLookup resultTy
@@ -6296,20 +5693,20 @@ generateChainGeneralWithJumps ctx testChain success failure jumpLookup resultTy 
                         (\cS vS tS -> Ops.ecoCase cS vS condVar I1 "bool" [ 1, 0 ] [ thenRegion, elseRegion ] tS)
                         (\cM pairsM -> Ops.ecoCaseMany cM condVar I1 "bool" [ 1, 0 ] [ thenRegion, elseRegion ] pairsM)
             in
-            { ops = condOps ++ spineCase.ops
-            , resultVar = spineCase.resultVar
-            , resultType = spineCase.resultType
-            , ctx = Ctx.ctxAfterBranchOp ctx1 spineCase.ctx spineCase.newVars
-            , isTerminated = False
-            }
+            Valued
+                { ops = condOps ++ spineCase.ops
+                , resultVar = spineCase.resultVar
+                , resultType = spineCase.resultType
+                , ctx = Ctx.ctxAfterBranchOp ctx1 spineCase.ctx spineCase.newVars
+                }
 
-        firstTest :: restTests ->
+        secondTest :: otherTests ->
             let
                 ( firstOps, firstVar, ctx1 ) =
                     Patterns.generateMonoTest ctx firstTest
 
                 thenRes =
-                    generateChainGeneralWithJumps ctx1 restTests success failure jumpLookup resultTy
+                    generateChainGeneralWithJumps ctx1 (NE.Nonempty secondTest otherTests) success failure jumpLookup resultTy
 
                 ( thenRegion, ctx1a ) =
                     mkCaseRegionFromDecider thenRes resultTy
@@ -6329,148 +5726,49 @@ generateChainGeneralWithJumps ctx testChain success failure jumpLookup resultTy 
                         (\cS vS tS -> Ops.ecoCase cS vS firstVar I1 "bool" [ 1, 0 ] [ thenRegion, elseRegion ] tS)
                         (\cM pairsM -> Ops.ecoCaseMany cM firstVar I1 "bool" [ 1, 0 ] [ thenRegion, elseRegion ] pairsM)
             in
-            { ops = firstOps ++ spineCase.ops
-            , resultVar = spineCase.resultVar
-            , resultType = spineCase.resultType
-            , ctx = Ctx.ctxAfterBranchOp ctx1 spineCase.ctx spineCase.newVars
-            , isTerminated = False
-            }
-
-
-{-| Tells whether a `FanOut`'s first edge tests a Bool, which makes it a
-fan-out on a Bool.
--}
-isBoolFanOut : List ( DT.Test, Mono.Decider Mono.MonoChoice ) -> Bool
-isBoolFanOut edges =
-    case edges of
-        [] ->
-            False
-
-        ( test, _ ) :: _ ->
-            case test of
-                Test.IsBool _ ->
-                    True
-
-                _ ->
-                    False
-
-
-{-| Returns the subtrees for `True` and for `False` among the edges of a Bool
-fan-out, each falling back to `fallback` when no edge tests for it.
--}
-findBoolBranches : List ( DT.Test, Mono.Decider Mono.MonoChoice ) -> Mono.Decider Mono.MonoChoice -> ( Mono.Decider Mono.MonoChoice, Mono.Decider Mono.MonoChoice )
-findBoolBranches edges fallback =
-    let
-        findBranch target =
-            edges
-                |> List.filter
-                    (\( test, _ ) ->
-                        case test of
-                            Test.IsBool b ->
-                                b == target
-
-                            _ ->
-                                False
-                    )
-                |> List.head
-                |> Maybe.map Tuple.second
-                |> Maybe.withDefault fallback
-    in
-    ( findBranch True, findBranch False )
+            Valued
+                { ops = firstOps ++ spineCase.ops
+                , resultVar = spineCase.resultVar
+                , resultType = spineCase.resultType
+                , ctx = Ctx.ctxAfterBranchOp ctx1 spineCase.ctx spineCase.newVars
+                }
 
 
 {-| Returns the string a string-equality test compares with, and crashes the
 compiler on any other test, so that a string fan-out never loses an edge.
 -}
-extractStringPatternStrict : DT.Test -> String
+extractStringPatternStrict : Test.FanTest -> String
 extractStringPatternStrict test =
     case test of
-        Test.IsStr s ->
+        Test.FStr s ->
             s
 
         _ ->
-            crash "CGEN: expected Test.IsStr in string fanout, but got non-string test"
-
-
-{-| Generates a `FanOut` node, a test of one value against several
-alternatives, through `generateBoolFanOutWithJumps` for a Bool and
-`generateFanOutGeneralWithJumps` otherwise.
--}
-generateFanOutWithJumps : Ctx.Context -> Mono.MonoDtPath -> List ( DT.Test, Mono.Decider Mono.MonoChoice ) -> Mono.Decider Mono.MonoChoice -> Array (Maybe Mono.MonoExpr) -> MlirType -> ExprResult
-generateFanOutWithJumps ctx path edges fallback jumpLookup resultTy =
-    if isBoolFanOut edges then
-        generateBoolFanOutWithJumps ctx path edges fallback jumpLookup resultTy
-
-    else
-        generateFanOutGeneralWithJumps ctx path edges fallback jumpLookup resultTy
-
-
-{-| Generates a fan-out on a Bool as one `eco.case` of `case_kind` `bool` on the
-`i1` read at `path`, with the `True` subtree under tag 1 and the `False`
-subtree under tag 0.
--}
-generateBoolFanOutWithJumps : Ctx.Context -> Mono.MonoDtPath -> List ( DT.Test, Mono.Decider Mono.MonoChoice ) -> Mono.Decider Mono.MonoChoice -> Array (Maybe Mono.MonoExpr) -> MlirType -> ExprResult
-generateBoolFanOutWithJumps ctx path edges fallback jumpLookup resultTy =
-    let
-        ( pathOps, boolVar, ctx1 ) =
-            Patterns.generateMonoDtPath ctx path I1
-
-        ( trueBranch, falseBranch ) =
-            findBoolBranches edges fallback
-
-        thenRes =
-            generateDeciderWithJumps ctx1 trueBranch jumpLookup resultTy
-
-        ( thenRegion, ctx1a ) =
-            mkCaseRegionFromDecider thenRes resultTy
-
-        ctxForElse =
-            Ctx.ctxForSiblingRegion ctx1 ctx1a
-
-        elseRes =
-            generateDeciderWithJumps ctxForElse falseBranch jumpLookup resultTy
-
-        ( elseRegion, ctx1b ) =
-            mkCaseRegionFromDecider elseRes resultTy
-
-        spineCase =
-            finishSpineCase ctx1b
-                resultTy
-                (\cS vS tS -> Ops.ecoCase cS vS boolVar I1 "bool" [ 1, 0 ] [ thenRegion, elseRegion ] tS)
-                (\cM pairsM -> Ops.ecoCaseMany cM boolVar I1 "bool" [ 1, 0 ] [ thenRegion, elseRegion ] pairsM)
-    in
-    { ops = pathOps ++ spineCase.ops
-    , resultVar = spineCase.resultVar
-    , resultType = spineCase.resultType
-    , ctx = Ctx.ctxAfterBranchOp ctx1 spineCase.ctx spineCase.newVars
-    , isTerminated = False
-    }
+            crash "CGEN: expected Test.FStr in string fanout, but got non-string test"
 
 
 {-| Generates a fan-out as one `eco.case` with an alternative per edge and a
 last one for `fallback`.
 
 The case kind and the scrutinee's type come from the first edge's test
-(`Patterns.caseKindFromTest`), `ctor` when there are no edges. A string
+(`Patterns.caseKindFromTest`). A string
 fan-out is an `eco.case` carrying the edges' strings, with alternatives
 numbered from 0; any other carries each edge's tag and a fallback tag from
 `Patterns.computeFallbackTag`. Each alternative starts from the context after
 the scrutinee, so no alternative sees names bound in another.
 
 -}
-generateFanOutGeneralWithJumps : Ctx.Context -> Mono.MonoDtPath -> List ( DT.Test, Mono.Decider Mono.MonoChoice ) -> Mono.Decider Mono.MonoChoice -> Array (Maybe Mono.MonoExpr) -> MlirType -> ExprResult
-generateFanOutGeneralWithJumps ctx path edges fallback jumpLookup resultTy =
+generateFanOutWithJumps : Ctx.Context -> Mono.MonoDtPath -> NE.Nonempty ( Test.FanTest, Mono.Decider Mono.MonoChoice ) -> Mono.Decider Mono.MonoChoice -> Array (Maybe Mono.MonoExpr) -> MlirType -> DeciderResult
+generateFanOutWithJumps ctx path ((NE.Nonempty ( firstTest, _ ) _) as nonemptyEdges) fallback jumpLookup resultTy =
     let
+        edges =
+            NE.toList nonemptyEdges
+
         edgeTests =
             List.map Tuple.first edges
 
         caseKind =
-            case edgeTests of
-                firstTest :: _ ->
-                    Patterns.caseKindFromTest firstTest
-
-                [] ->
-                    "ctor"
+            Patterns.caseKindFromTest firstTest
 
         scrutineeType =
             Patterns.scrutineeTypeFromCaseKind caseKind
@@ -6560,71 +5858,34 @@ generateFanOutGeneralWithJumps ctx path edges fallback jumpLookup resultTy =
                             Ops.ecoCaseMany cM scrutineeVar scrutineeType caseKind tags allRegions pairsM
                 )
     in
-    { ops = pathOps ++ spineCase.ops
-    , resultVar = spineCase.resultVar
-    , resultType = spineCase.resultType
-    , ctx = Ctx.ctxAfterBranchOp ctx1 spineCase.ctx spineCase.newVars
-    , isTerminated = False
-    }
-
-
-{-| Returns a one-block region whose last op of `ops` is the terminator and
-the rest the body. Crashes the compiler when `ops` is empty.
--}
-mkRegionFromOps : List MlirOp -> MlirRegion
-mkRegionFromOps ops =
-    case List.reverse ops of
-        [] ->
-            crash "mkRegionFromOps: empty ops - region must have terminator"
-
-        terminator :: restReversed ->
-            MlirRegion
-                { entry = { args = [], body = List.reverse restReversed, terminator = terminator }
-                , blocks = OrderedDict.empty
-                }
-
-
-{-| Tells whether `op` is an `eco.yield`, the only op that may end an
-`eco.case` alternative.
--}
-isValidCaseTerminator : MlirOp -> Bool
-isValidCaseTerminator op =
-    op.name == "eco.yield"
+    Valued
+        { ops = pathOps ++ spineCase.ops
+        , resultVar = spineCase.resultVar
+        , resultType = spineCase.resultType
+        , ctx = Ctx.ctxAfterBranchOp ctx1 spineCase.ctx spineCase.newVars
+        }
 
 
 {-| Returns the region for one `eco.case` alternative from the result of
-generating it. Ops that already end in an `eco.yield` are used as they are.
-Otherwise the value, such as that of a nested `eco.case`, is coerced to
-`resultTy` and yielded (`emitSpineYield`). Ops that are empty, or that end in
-something other than a yield with no result value, crash the compiler.
+generating it. A leaf's body is ended by its own `eco.yield`. The value of
+any other node, a nested `eco.case`, is coerced to `resultTy` and yielded
+(`emitSpineYield`).
 -}
-mkCaseRegionFromDecider : ExprResult -> MlirType -> ( MlirRegion, Ctx.Context )
-mkCaseRegionFromDecider exprRes resultTy =
-    case List.reverse exprRes.ops of
-        [] ->
-            crash "mkCaseRegionFromDecider: empty ops - decider must produce ops"
+mkCaseRegionFromDecider : DeciderResult -> MlirType -> ( MlirRegion, Ctx.Context )
+mkCaseRegionFromDecider deciderRes resultTy =
+    case deciderRes of
+        Yielded leaf ->
+            ( Ops.mkRegion [] leaf.body leaf.yieldOp, leaf.ctx )
 
-        lastOp :: _ ->
-            if isValidCaseTerminator lastOp then
-                ( mkRegionFromOps exprRes.ops, exprRes.ctx )
+        Valued caseRes ->
+            let
+                ( coerceOps, finalVar, ctx1 ) =
+                    coerceResultToType caseRes.ctx caseRes.resultVar caseRes.resultType resultTy
 
-            else if exprRes.resultVar == "" then
-                crash
-                    ("mkCaseRegionFromDecider: non-yield terminator '"
-                        ++ lastOp.name
-                        ++ "' with empty resultVar; "
-                        ++ "this indicates a codegen bug (e.g., eco.return or eco.jump leaked into a case alternative)"
-                    )
-
-            else
-                let
-                    ( coerceOps, finalVar, ctx1 ) =
-                        coerceResultToType exprRes.ctx exprRes.resultVar exprRes.resultType resultTy
-
-                    ( yieldPreOps, yieldOp, ctx2 ) =
-                        emitSpineYield ctx1 finalVar resultTy
-                in
-                ( mkRegionFromOps (exprRes.ops ++ coerceOps ++ yieldPreOps ++ [ yieldOp ]), ctx2 )
+                ( yieldPreOps, yieldOp, ctx2 ) =
+                    emitSpineYield ctx1 finalVar resultTy
+            in
+            ( Ops.mkRegion [] (caseRes.ops ++ coerceOps ++ yieldPreOps) yieldOp, ctx2 )
 
 
 {-| Returns the result type a `case` or `if` declares for a value of
@@ -6643,7 +5904,7 @@ spineResultMlirType ctx resultMonoType =
                         Types.tupleSlotTypes (Types.computeTupleLayout ts)
                             == Types.tupleSlotTypes tailLayout
                     then
-                        Ops.aggTupleType (Types.tupleSlotTypes tailLayout)
+                        Ops.aggTupleType (Mono.tupleToList (Types.tupleSlotTypes tailLayout))
 
                     else
                         Types.monoTypeToAbi resultMonoType
@@ -6670,16 +5931,17 @@ generateCase ctx decider jumps resultMonoType =
 
         jumpLookup =
             pairsToSparseArray jumps
-
-        decisionResult =
-            generateDeciderWithJumps ctx decider jumpLookup resultMlirType
     in
-    { ops = decisionResult.ops
-    , resultVar = decisionResult.resultVar
-    , resultType = resultMlirType
-    , ctx = decisionResult.ctx
-    , isTerminated = False
-    }
+    case generateDeciderWithJumps ctx decider jumpLookup resultMlirType of
+        Yielded leaf ->
+            { ops = leaf.body ++ [ leaf.yieldOp ]
+            , resultVar = leaf.resultVar
+            , resultType = resultMlirType
+            , ctx = leaf.ctx
+            }
+
+        Valued caseRes ->
+            { caseRes | resultType = resultMlirType }
 
 
 
@@ -6711,7 +5973,6 @@ generateRecordCreate ctx fields layout recordType =
         , resultVar = resultVar
         , resultType = Types.ecoValue
         , ctx = ctx2
-        , isTerminated = False
         }
 
     else
@@ -6748,35 +6009,39 @@ generateRecordCreate ctx fields layout recordType =
             ( resultVar, ctx3 ) =
                 Ctx.freshVar ctx2
 
-            fieldVarPairs : List ( String, MlirType )
-            fieldVarPairs =
-                List.map2
-                    (\v field ->
+            fieldVars : List ( String, MlirType, Int )
+            fieldVars =
+                List.map3
+                    (\v field kind ->
                         ( v
                         , if field.isUnboxed then
                             Types.monoTypeToAbi field.monoType
 
                           else
                             Types.ecoValue
+                        , kind
                         )
                     )
                     boxedFieldVars
                     layout.fields
+                    (Types.recordSlotKinds layout)
 
             ( ctx4, constructOp ) =
-                Ops.ecoConstructRecord ctx3 resultVar fieldVarPairs layout.fieldCount (Types.recordSlotKinds layout)
+                Ops.ecoConstructRecord ctx3 resultVar fieldVars
         in
         { ops = fieldsOps ++ boxOps ++ [ constructOp ]
         , resultVar = resultVar
         , resultType = Types.ecoValue
         , ctx = ctx4
-        , isTerminated = False
         }
 
 
 {-| Generates a read of the field at layout position `index` of `record`,
-whose value is of the ABI type of `fieldType`. A field stored boxed whose ABI
-type is a primitive is projected as `!eco.value` and then unboxed.
+whose value is of the ABI type of `fieldType`. The layout stores a field
+unboxed exactly when its type is Int, Float or Char, the types whose ABI is a
+primitive, so a field stored boxed is read as `!eco.value`; one whose
+`fieldType` has a primitive ABI is a layout disagreement (MONO\_029) and
+crashes the compile.
 -}
 generateRecordAccess : Ctx.Context -> Mono.MonoExpr -> Int -> Bool -> Mono.MonoType -> ExprResult
 generateRecordAccess ctx record index isUnboxed fieldType =
@@ -6800,7 +6065,6 @@ generateRecordAccess ctx record index isUnboxed fieldType =
         , resultVar = projectVar
         , resultType = fieldMlirType
         , ctx = ctx2
-        , isTerminated = False
         }
 
     else if Types.isEcoValueType fieldMlirType then
@@ -6812,29 +6076,16 @@ generateRecordAccess ctx record index isUnboxed fieldType =
         , resultVar = projectVar
         , resultType = Types.ecoValue
         , ctx = ctx2
-        , isTerminated = False
         }
 
     else
-        let
-            ( ctx2, projectOp ) =
-                Ops.ecoProjectRecord ctx1 projectVar index Types.ecoValue recordResult.resultVar
-
-            ( unboxOps, unboxedVar, ctx3 ) =
-                Intrinsics.unboxToType ctx2 projectVar fieldMlirType
-        in
-        { ops = recordResult.ops ++ [ projectOp ] ++ unboxOps
-        , resultVar = unboxedVar
-        , resultType = fieldMlirType
-        , ctx = ctx3
-        , isTerminated = False
-        }
+        crash "Expr.generateRecordAccess: MONO_029 boxed record field read at a primitive type"
 
 
 {-| Generates a record update as a new `eco.construct.record`: the record is
 evaluated once, each updated field (by layout index in `updates`) is generated
 and coerced to its storage type, and every other field is projected from the
-old record. A record with no fields is returned as it is.
+old record.
 -}
 generateRecordUpdate : Ctx.Context -> Mono.MonoExpr -> List ( Int, Mono.MonoExpr ) -> Types.RecordLayout -> ExprResult
 generateRecordUpdate ctx record updates layout =
@@ -6842,168 +6093,190 @@ generateRecordUpdate ctx record updates layout =
         recordResult : ExprResult
         recordResult =
             generateExpr ctx record
+
+        updateArr : Array (Maybe Mono.MonoExpr)
+        updateArr =
+            pairsToSparseArray updates
+
+        ( fieldVarsAndTypesReversed, allOpsReversed, finalCtx ) =
+            List.foldl
+                (\fieldInfo ( accVarsTypes, accOps, accCtx ) ->
+                    let
+                        storageType =
+                            if fieldInfo.isUnboxed then
+                                Types.monoTypeToAbi fieldInfo.monoType
+
+                            else
+                                Types.ecoValue
+                    in
+                    case Array.get fieldInfo.index updateArr |> Maybe.andThen identity of
+                        Just updateExpr ->
+                            let
+                                exprResult =
+                                    generateExpr accCtx updateExpr
+
+                                ( coerceOps, coercedVar, ctxAfterCoerce ) =
+                                    coerceResultToType exprResult.ctx exprResult.resultVar exprResult.resultType storageType
+                            in
+                            ( ( coercedVar, storageType ) :: accVarsTypes
+                            , List.reverse coerceOps ++ List.reverse exprResult.ops ++ accOps
+                            , ctxAfterCoerce
+                            )
+
+                        Nothing ->
+                            let
+                                ( projectVar, ctxProj1 ) =
+                                    Ctx.freshVar accCtx
+
+                                ( ctxProj2, projectOp ) =
+                                    Ops.ecoProjectRecord ctxProj1 projectVar fieldInfo.index storageType recordResult.resultVar
+                            in
+                            ( ( projectVar, storageType ) :: accVarsTypes
+                            , projectOp :: accOps
+                            , ctxProj2
+                            )
+                )
+                ( [], List.reverse recordResult.ops, recordResult.ctx )
+                layout.fields
+
+        fieldVarsAndTypes =
+            List.reverse fieldVarsAndTypesReversed
+
+        allOps =
+            List.reverse allOpsReversed
+
+        ( resultVar, ctx1 ) =
+            Ctx.freshVar finalCtx
+
+        ( ctx2, constructOp ) =
+            Ops.ecoConstructRecord ctx1 resultVar (List.map2 (\( v, t ) k -> ( v, t, k )) fieldVarsAndTypes (Types.recordSlotKinds layout))
     in
-    if layout.fieldCount == 0 then
-        recordResult
-
-    else
-        let
-            updateArr : Array (Maybe Mono.MonoExpr)
-            updateArr =
-                pairsToSparseArray updates
-
-            ( fieldVarsAndTypesReversed, allOpsReversed, finalCtx ) =
-                List.foldl
-                    (\fieldInfo ( accVarsTypes, accOps, accCtx ) ->
-                        let
-                            storageType =
-                                if fieldInfo.isUnboxed then
-                                    Types.monoTypeToAbi fieldInfo.monoType
-
-                                else
-                                    Types.ecoValue
-                        in
-                        case Array.get fieldInfo.index updateArr |> Maybe.andThen identity of
-                            Just updateExpr ->
-                                let
-                                    exprResult =
-                                        generateExpr accCtx updateExpr
-
-                                    ( coerceOps, coercedVar, ctxAfterCoerce ) =
-                                        coerceResultToType exprResult.ctx exprResult.resultVar exprResult.resultType storageType
-                                in
-                                ( ( coercedVar, storageType ) :: accVarsTypes
-                                , List.reverse coerceOps ++ List.reverse exprResult.ops ++ accOps
-                                , ctxAfterCoerce
-                                )
-
-                            Nothing ->
-                                let
-                                    ( projectVar, ctxProj1 ) =
-                                        Ctx.freshVar accCtx
-
-                                    ( ctxProj2, projectOp ) =
-                                        Ops.ecoProjectRecord ctxProj1 projectVar fieldInfo.index storageType recordResult.resultVar
-                                in
-                                ( ( projectVar, storageType ) :: accVarsTypes
-                                , projectOp :: accOps
-                                , ctxProj2
-                                )
-                    )
-                    ( [], List.reverse recordResult.ops, recordResult.ctx )
-                    layout.fields
-
-            fieldVarsAndTypes =
-                List.reverse fieldVarsAndTypesReversed
-
-            allOps =
-                List.reverse allOpsReversed
-
-            ( resultVar, ctx1 ) =
-                Ctx.freshVar finalCtx
-
-            ( ctx2, constructOp ) =
-                Ops.ecoConstructRecord ctx1 resultVar fieldVarsAndTypes layout.fieldCount (Types.recordSlotKinds layout)
-        in
-        { ops = allOps ++ [ constructOp ]
-        , resultVar = resultVar
-        , resultType = Types.ecoValue
-        , ctx = ctx2
-        , isTerminated = False
-        }
+    { ops = allOps ++ [ constructOp ]
+    , resultVar = resultVar
+    , resultType = Types.ecoValue
+    , ctx = ctx2
+    }
 
 
 
 -- ====== TUPLE GENERATION ======
 
 
-{-| Generates a heap tuple, an `eco.construct.tuple2` or `eco.construct.tuple3`,
-with each element the layout stores boxed is boxed first; an element the
-layout stores unboxed is coerced to its slot's ABI type, which unboxes an
-element expression that yields `!eco.value` (a `Debug.log` call, for one). The
+{-| Generates a heap tuple of type `tupleType`, an `eco.construct.tuple2` or
+`eco.construct.tuple3`, with its elements prepared by `prepareTupleSlots`. The
 tuple type is registered in the type table.
 -}
-generateTupleCreate : Ctx.Context -> List Mono.MonoExpr -> Types.TupleLayout -> Mono.MonoType -> ExprResult
-generateTupleCreate ctx elements layout tupleType =
+generateTupleCreate : Ctx.Context -> Mono.TupleShape Mono.MonoExpr -> Mono.MonoType -> ExprResult
+generateTupleCreate ctx elements tupleType =
     let
         ( _, ctxWithType ) =
             Ctx.getOrCreateTypeIdForMonoType tupleType ctx
 
-        ( elemOps, elemVarsWithTypes, ctx1 ) =
-            generateExprListTyped ctxWithType elements
+        ( layout, ( ops, slots, ctx2 ) ) =
+            prepareTupleSlots ctxWithType elements tupleType
 
-        ( boxOpsReversed, boxedElemVarsReversed, ctx2 ) =
-            List.foldl
-                (\( ( var, ssaType ), ( elemType, isUnboxed ) ) ( opsAcc, varsAcc, ctxAcc ) ->
+        ( resultVar, ctx3 ) =
+            Ctx.freshVar ctx2
+
+        ( ctx4, constructOp ) =
+            case slots of
+                Mono.T2 a b ->
+                    Ops.ecoConstructTuple2 ctx3 resultVar a b layout.unboxedBitmap
+
+                Mono.T3 a b c ->
+                    Ops.ecoConstructTuple3 ctx3 resultVar a b c layout.unboxedBitmap
+    in
+    { ops = ops ++ [ constructOp ]
+    , resultVar = resultVar
+    , resultType = Types.ecoValue
+    , ctx = ctx4
+    }
+
+
+{-| Returns the layout of a tuple literal of type `tupleType`, with each element
+expression paired with its slot's element type and whether the slot is
+unboxed. A tuple literal's type is the `MTuple` of its elements, so any other
+type crashes the compile.
+-}
+tupleLiteralLayout : Mono.TupleShape Mono.MonoExpr -> Mono.MonoType -> ( Types.TupleLayout, Mono.TupleShape ( Mono.MonoExpr, ( Mono.MonoType, Bool ) ) )
+tupleLiteralLayout elements tupleType =
+    case tupleType of
+        Mono.MTuple _ elementTypes ->
+            let
+                layout =
+                    Types.computeTupleLayout elementTypes
+            in
+            case Mono.tupleMap2 Tuple.pair elements layout.elements of
+                Just paired ->
+                    ( layout, paired )
+
+                Nothing ->
+                    crash "Expr.tupleLiteralLayout: MONO_001 tuple literal whose type has another arity"
+
+        _ ->
+            crash "Expr.tupleLiteralLayout: MONO_001 tuple literal whose type is not an MTuple"
+
+
+{-| Generates the elements of a tuple literal of type `tupleType` in order,
+then prepares each for its slot: an element the layout stores unboxed is
+coerced to its slot's ABI type, which unboxes an element expression that
+yields `!eco.value` (a `Debug.log` call, for one), and any other element is
+boxed. Returns the layout, and the ops with each slot's value and MLIR type.
+-}
+prepareTupleSlots : Ctx.Context -> Mono.TupleShape Mono.MonoExpr -> Mono.MonoType -> ( Types.TupleLayout, ( List MlirOp, Mono.TupleShape ( String, MlirType ), Ctx.Context ) )
+prepareTupleSlots ctx elements tupleType =
+    let
+        ( layout, paired ) =
+            tupleLiteralLayout elements tupleType
+
+        ( generated, ( elemOpsReversed, ctx1 ) ) =
+            Mono.tupleMapAccum
+                (\( expr, slot ) ( accOps, accCtx ) ->
+                    let
+                        result : ExprResult
+                        result =
+                            generateExpr accCtx expr
+                    in
+                    ( ( ( result.resultVar, result.resultType ), slot )
+                    , ( List.reverse result.ops ++ accOps, result.ctx )
+                    )
+                )
+                ( [], ctx )
+                paired
+
+        ( slots, ( boxOpsReversed, ctx2 ) ) =
+            Mono.tupleMapAccum
+                (\( ( var, ssaType ), ( elemType, isUnboxed ) ) ( opsAcc, ctxAcc ) ->
                     if isUnboxed then
                         let
+                            slotType =
+                                Types.monoTypeToAbi elemType
+
                             ( moreOps, slotVar, newCtx ) =
-                                coerceResultToType ctxAcc var ssaType (Types.monoTypeToAbi elemType)
+                                coerceResultToType ctxAcc var ssaType slotType
                         in
-                        ( List.reverse moreOps ++ opsAcc, slotVar :: varsAcc, newCtx )
+                        ( ( slotVar, slotType ), ( List.reverse moreOps ++ opsAcc, newCtx ) )
 
                     else
                         let
                             ( moreOps, boxedVar, newCtx ) =
                                 boxToEcoValue ctxAcc var ssaType
                         in
-                        ( List.reverse moreOps ++ opsAcc, boxedVar :: varsAcc, newCtx )
+                        ( ( boxedVar, Types.ecoValue ), ( List.reverse moreOps ++ opsAcc, newCtx ) )
                 )
-                ( [], [], ctx1 )
-                (List.map2 Tuple.pair elemVarsWithTypes layout.elements)
-
-        boxOps =
-            List.reverse boxOpsReversed
-
-        boxedElemVars =
-            List.reverse boxedElemVarsReversed
-
-        ( resultVar, ctx3 ) =
-            Ctx.freshVar ctx2
-
-        elemVarPairs : List ( String, MlirType )
-        elemVarPairs =
-            List.map2
-                (\v ( elemType, isUnboxed ) ->
-                    ( v
-                    , if isUnboxed then
-                        Types.monoTypeToAbi elemType
-
-                      else
-                        Types.ecoValue
-                    )
-                )
-                boxedElemVars
-                layout.elements
-
-        ( ctx4, constructOp ) =
-            case elemVarPairs of
-                [ ( aVar, aType ), ( bVar, bType ) ] ->
-                    Ops.ecoConstructTuple2 ctx3 resultVar ( aVar, aType ) ( bVar, bType ) layout.unboxedBitmap
-
-                [ ( aVar, aType ), ( bVar, bType ), ( cVar, cType ) ] ->
-                    Ops.ecoConstructTuple3 ctx3 resultVar ( aVar, aType ) ( bVar, bType ) ( cVar, cType ) layout.unboxedBitmap
-
-                _ ->
-                    -- Elm has no tuples of more than three elements.
-                    crash "Compiler.GenerateJs.CodeGen.MLIR" "generateTupleCreate" "unreachable: tuples >3 elements rejected by canonicalization"
+                ( [], ctx1 )
+                generated
     in
-    { ops = elemOps ++ boxOps ++ [ constructOp ]
-    , resultVar = resultVar
-    , resultType = Types.ecoValue
-    , ctx = ctx4
-    , isTerminated = False
-    }
+    ( layout, ( List.reverse elemOpsReversed ++ List.reverse boxOpsReversed, slots, ctx2 ) )
 
 
 
 -- ====== VALUE-AGGREGATE PROMOTION ======
 
 
-{-| Tells whether the tuple of type `tupleType` bound to `name` can be held as
-a value aggregate while `body` runs: whether every use of `name` in `body`
-only reads one of its elements. `tupleType` must be a tuple of two or three
-elements.
+{-| Tells whether the tuple bound to `name`, a two- or three-tuple as `kind`
+says, can be held as a value aggregate while `body` runs: whether every use of
+`name` in `body` only reads one of its elements.
 
 The check is an escape walk over `body`. A use is admitted when it is a
 destructuring that projects an element of the tuple; a case whose decision
@@ -7016,30 +6289,9 @@ tuple passed whole to a `$psplit` worker at a position split the same way
 returning it or binding the name again, makes the answer `False`.
 
 -}
-tupleBinderPromotable : Dict.Dict Name.Name Ctx.SplitParamInfo -> Dict.Dict Int Ctx.PsplitInfo -> Set.Set Name.Name -> Name.Name -> Mono.MonoType -> Mono.MonoExpr -> Bool
-tupleBinderPromotable splitParams psplitTable fwdRefd name tupleType body =
-    let
-        wantKind =
-            case tupleType of
-                Mono.MTuple _ ts ->
-                    if List.length ts == 2 then
-                        Just Mono.Tuple2Container
-
-                    else if List.length ts == 3 then
-                        Just Mono.Tuple3Container
-
-                    else
-                        Nothing
-
-                _ ->
-                    Nothing
-    in
-    case wantKind of
-        Nothing ->
-            False
-
-        Just kind ->
-            walkPromo kind fwdRefd (tailSplitAllowSet kind splitParams) (psplitAllowPositions kind psplitTable) (Set.singleton name) body /= Nothing
+tupleBinderPromotable : Dict.Dict Name.Name Ctx.SplitParamInfo -> Dict.Dict Int Ctx.PsplitInfo -> Set.Set Name.Name -> Name.Name -> Mono.ContainerKind -> Mono.MonoExpr -> Bool
+tupleBinderPromotable splitParams psplitTable fwdRefd name kind body =
+    walkPromo kind fwdRefd (tailSplitAllowSet kind splitParams) (psplitAllowPositions kind psplitTable) (Set.singleton name) body /= Nothing
 
 
 {-| Returns the constructor's shape when the call bound to `name` can be built
@@ -7092,16 +6344,6 @@ promotableCtorCall ctx name specId cargs resultType callInfo body =
                 Nothing
 
 
-{-| Tells whether every use of `name` in `body` only reads an element or field
-of a container of `kind`, by the escape walk of `tupleBinderPromotable`, with
-no forward references, split loop parameters or `$psplit` workers to allow
-for.
--}
-aggBinderPromotableWith : Mono.ContainerKind -> Name.Name -> Mono.MonoExpr -> Bool
-aggBinderPromotableWith kind name body =
-    walkPromo kind Set.empty Set.empty Dict.empty (Set.singleton name) body /= Nothing
-
-
 {-| Returns the yield that ends a case alternative whose value is `finalVar`
 of type `resultTy`, with any ops needed before it.
 
@@ -7121,7 +6363,7 @@ emitSpineYield ctx finalVar resultTy =
             if Types.isAggValueType resultTy then
                 let
                     slotTys =
-                        Types.tupleSlotTypes layout
+                        Mono.tupleToList (Types.tupleSlotTypes layout)
 
                     ( projOpsRev, pairsRev, ctxA ) =
                         List.foldl
@@ -7131,7 +6373,7 @@ emitSpineYield ctx finalVar resultTy =
                                         Ctx.freshVar ctxAcc
 
                                     ( ctxP, projOp ) =
-                                        if layout.arity == 2 then
+                                        if Mono.tupleArity layout.elements == 2 then
                                             Ops.ecoProjectTuple2Agg ctxF pv idx slotTy ( finalVar, resultTy )
 
                                         else
@@ -7207,23 +6449,11 @@ finishSpineCase ctx resultTy buildSingle buildMany =
         Just layout ->
             if Types.isAggValueType resultTy then
                 let
-                    slotTys =
-                        Types.tupleSlotTypes layout
-
-                    ( pairsRev, ctxA ) =
-                        List.foldl
-                            (\slotTy ( acc, c ) ->
-                                let
-                                    ( v, c1 ) =
-                                        Ctx.freshVar c
-                                in
-                                ( ( v, slotTy ) :: acc, c1 )
-                            )
-                            ( [], ctx )
-                            slotTys
+                    ( slots, ctxA ) =
+                        Ctx.freshSlotVars ctx (Types.tupleSlotTypes layout)
 
                     pairs =
-                        List.reverse pairsRev
+                        Mono.tupleToList slots
 
                     ( ctxB, caseOp ) =
                         buildMany ctxA pairs
@@ -7232,15 +6462,12 @@ finishSpineCase ctx resultTy buildSingle buildMany =
                         Ctx.freshVar ctxB
 
                     ( ctxD, makeOp ) =
-                        case pairs of
-                            [ a, b ] ->
+                        case slots of
+                            Mono.T2 a b ->
                                 Ops.ecoMakeTuple2 ctxC aggVar a b
 
-                            [ a, b, c ] ->
+                            Mono.T3 a b c ->
                                 Ops.ecoMakeTuple3 ctxC aggVar a b c
-
-                            _ ->
-                                crash "finishSpineCase: slot arity not 2/3"
                 in
                 { ops = [ caseOp, makeOp ]
                 , resultVar = aggVar
@@ -7275,29 +6502,20 @@ trySretFreshLeaf ctx0 func args =
                             ( aggVar, ctxB ) =
                                 Ctx.freshVar ctxA
 
-                            mMake =
+                            ( ctxC, makeOp ) =
                                 case resultPairs of
-                                    [ p1, p2 ] ->
-                                        Just (Ops.ecoMakeTuple2 ctxB aggVar p1 p2)
+                                    Mono.T2 p1 p2 ->
+                                        Ops.ecoMakeTuple2 ctxB aggVar p1 p2
 
-                                    [ p1, p2, p3 ] ->
-                                        Just (Ops.ecoMakeTuple3 ctxB aggVar p1 p2 p3)
-
-                                    _ ->
-                                        Nothing
+                                    Mono.T3 p1 p2 p3 ->
+                                        Ops.ecoMakeTuple3 ctxB aggVar p1 p2 p3
                         in
-                        case mMake of
-                            Just ( ctxC, makeOp ) ->
-                                Just
-                                    { ops = callOps ++ [ makeOp ]
-                                    , resultVar = aggVar
-                                    , resultType = Ops.aggTupleType info.slotTypes
-                                    , ctx = { ctxC | sretTailLayout = ctx0.sretTailLayout }
-                                    , isTerminated = False
-                                    }
-
-                            Nothing ->
-                                Nothing
+                        Just
+                            { ops = callOps ++ [ makeOp ]
+                            , resultVar = aggVar
+                            , resultType = Ops.aggTupleType (Mono.tupleToList info.slotTypes)
+                            , ctx = { ctxC | sretTailLayout = ctx0.sretTailLayout }
+                            }
 
                     else
                         Nothing
@@ -7313,7 +6531,7 @@ trySretFreshLeaf ctx0 func args =
 to the global's signature (`boxToMatchSignatureTyped`), and one result per slot
 type of `info`. Returns the ops and the result values with their types.
 -}
-emitSretCallMulti : Ctx.Context -> Int -> List Mono.MonoExpr -> Ctx.SretInfo -> ( List MlirOp, List ( String, MlirType ), Ctx.Context )
+emitSretCallMulti : Ctx.Context -> Int -> List Mono.MonoExpr -> Ctx.SretInfo -> ( List MlirOp, Mono.TupleShape ( String, MlirType ), Ctx.Context )
 emitSretCallMulti ctx specId cargs info =
     let
         ( argOps, argsWithTypes, ctxA ) =
@@ -7322,34 +6540,14 @@ emitSretCallMulti ctx specId cargs info =
         funcName =
             specIdToFuncName ctx.registry specId
 
-        maybeSig =
-            Array.get specId ctx.signatures |> Maybe.andThen identity
-
         ( boxOps, argVarPairs, ctxB ) =
-            case maybeSig of
-                Just sig ->
-                    boxToMatchSignatureTyped ctxA argsWithTypes sig.paramTypes
+            boxToMatchSignatureTyped ctxA argsWithTypes (Ctx.signatureOf specId ctx).paramTypes
 
-                Nothing ->
-                    ( [], argsWithTypes, ctxA )
-
-        ( resultPairsRev, ctxC ) =
-            List.foldl
-                (\slotTy ( acc, c ) ->
-                    let
-                        ( v, c1 ) =
-                            Ctx.freshVar c
-                    in
-                    ( ( v, slotTy ) :: acc, c1 )
-                )
-                ( [], ctxB )
-                info.slotTypes
-
-        resultPairs =
-            List.reverse resultPairsRev
+        ( resultPairs, ctxC ) =
+            Ctx.freshSlotVars ctxB info.slotTypes
 
         ( ctxD, callOp ) =
-            Ops.ecoCallNamedMulti ctxC resultPairs (funcName ++ "$sret") argVarPairs
+            Ops.ecoCallNamedMulti ctxC (Mono.tupleToList resultPairs) (funcName ++ "$sret") argVarPairs
     in
     ( argOps ++ boxOps ++ [ callOp ], resultPairs, ctxD )
 
@@ -7406,7 +6604,7 @@ trySretLetBinding ctx ctxWithPlaceholders name expr body =
                         if
                             saturatedDirect
                                 && chainHeadSafe
-                                && tupleBinderPromotable ctx.splitAggParams ctx.psplitPromoted ctx.fwdRefdLetNames name callResultType analysisBody
+                                && tupleBinderPromotable ctx.splitAggParams ctx.psplitPromoted ctx.fwdRefdLetNames name (Mono.tupleContainerKind info.layout.elements) analysisBody
                         then
                             Just (emitSretLetBinding ctx ctxWithPlaceholders name specId cargs info body)
 
@@ -7443,7 +6641,7 @@ emitSretLetBinding ctx ctxWithPlaceholders name specId cargs info body =
                 | varMappings = Dict.remove name ctxD.varMappings
                 , splitAggParams =
                     Dict.insert name
-                        { slots = resultPairs, split = Ctx.SplitTuple info.layout }
+                        { slots = Mono.tupleToList resultPairs, split = Ctx.SplitTuple info.layout }
                         ctxD.splitAggParams
                 , sretTailLayout = ctx.sretTailLayout
             }
@@ -7470,7 +6668,6 @@ emitSretLetBinding ctx ctxWithPlaceholders name specId cargs info body =
     , resultVar = bodyResult.resultVar
     , resultType = bodyResult.resultType
     , ctx = ctxOut
-    , isTerminated = bodyResult.isTerminated
     }
 
 
@@ -7518,10 +6715,10 @@ specMatchesKind : Mono.ContainerKind -> Ctx.SplitSpec -> Bool
 specMatchesKind kind spec =
     case ( kind, spec ) of
         ( Mono.Tuple2Container, Ctx.SplitTuple layout ) ->
-            layout.arity == 2
+            Mono.tupleArity layout.elements == 2
 
         ( Mono.Tuple3Container, Ctx.SplitTuple layout ) ->
-            layout.arity == 3
+            Mono.tupleArity layout.elements == 3
 
         ( Mono.CustomContainer cname, Ctx.SplitCtor clayout ) ->
             clayout.name == cname
@@ -7619,7 +6816,7 @@ walkPromo kind fwdRefd tailSplitOk callSplitOk s expr =
             walkPromoAll kind fwdRefd tailSplitOk callSplitOk s es
 
         Mono.MonoTupleCreate _ es _ ->
-            walkPromoAll kind fwdRefd tailSplitOk callSplitOk s es
+            walkPromoAll kind fwdRefd tailSplitOk callSplitOk s (Mono.tupleToList es)
 
         Mono.MonoRecordCreate fes _ ->
             walkPromoAll kind fwdRefd tailSplitOk callSplitOk s (List.map Tuple.second fes)
@@ -7758,9 +6955,8 @@ walkPromoAll kind fwdRefd tailSplitOk callSplitOk s es =
 
 
 {-| Tells whether a decision tree reaches the tracked names `s` only through
-element projections of a container of `kind`. In a chain a tracked name may
-be tested whole only by an `IsTuple` test, which reads nothing; every other
-test, and the value a fan-out dispatches on, must project first. A `DtUnbox`
+element projections of a container of `kind`. Every chain test, and the value
+a fan-out dispatches on, must project first. A `DtUnbox`
 step directly on a tracked name is accepted only for a constructor `kind`.
 -}
 deciderScrutineeOk : Mono.ContainerKind -> Set.Set Name.Name -> Mono.Decider Mono.MonoChoice -> Bool
@@ -7770,37 +6966,14 @@ deciderScrutineeOk kind s decider =
             True
 
         Mono.Chain tests success failure ->
-            List.all (\( p, t ) -> dtTestPathOk kind s p t) tests
+            List.all (\( p, _ ) -> dtProjectingPathOk kind s p) (NE.toList tests)
                 && deciderScrutineeOk kind s success
                 && deciderScrutineeOk kind s failure
 
         Mono.FanOut path edges fallback ->
             dtProjectingPathOk kind s path
-                && List.all (\( _, d ) -> deciderScrutineeOk kind s d) edges
+                && List.all (\( _, d ) -> deciderScrutineeOk kind s d) (NE.toList edges)
                 && deciderScrutineeOk kind s fallback
-
-
-{-| Tells whether the path of one chain test is acceptable for
-`deciderScrutineeOk`: a tracked root itself only under `IsTuple`, any other
-path as `dtProjectingPathOk` decides.
--}
-dtTestPathOk : Mono.ContainerKind -> Set.Set Name.Name -> Mono.MonoDtPath -> DT.Test -> Bool
-dtTestPathOk kind s path test =
-    case path of
-        Mono.DtRoot r _ ->
-            if Set.member r s then
-                case test of
-                    Test.IsTuple ->
-                        True
-
-                    _ ->
-                        False
-
-            else
-                True
-
-        _ ->
-            dtProjectingPathOk kind s path
 
 
 {-| Tells whether a decision-tree path whose value is read reaches a tracked
@@ -7850,7 +7023,7 @@ walkPromoDecider kind fwdRefd tailSplitOk callSplitOk s decider =
             List.foldl
                 (\( _, d ) acc -> Maybe.andThen (\_ -> walkPromoDecider kind fwdRefd tailSplitOk callSplitOk s d) acc)
                 (Just s)
-                edges
+                (NE.toList edges)
                 |> Maybe.andThen (\_ -> walkPromoDecider kind fwdRefd tailSplitOk callSplitOk s fallback)
 
 
@@ -7905,81 +7078,33 @@ isCustomKind kind =
 
 {-| Generates a tuple literal as a value aggregate, an `eco.make.tuple2` or
 `eco.make.tuple3` of type `!eco.tuple2<..>` or `!eco.tuple3<..>`, which
-allocates nothing. Elements are prepared as `generateTupleCreate` prepares
-them, so the slots have the types the heap tuple's would.
+allocates nothing. Elements are prepared by `prepareTupleSlots`, as for
+`generateTupleCreate`, so the slots have the types the heap tuple's would.
 -}
-generateTupleCreateValue : Ctx.Context -> List Mono.MonoExpr -> Mono.MonoType -> ExprResult
+generateTupleCreateValue : Ctx.Context -> Mono.TupleShape Mono.MonoExpr -> Mono.MonoType -> ExprResult
 generateTupleCreateValue ctx elements monoType =
     let
-        layout =
-            Types.computeTupleLayout (getTupleElements monoType)
-
         ( _, ctxWithType ) =
             Ctx.getOrCreateTypeIdForMonoType monoType ctx
 
-        ( elemOps, elemVarsWithTypes, ctx1 ) =
-            generateExprListTyped ctxWithType elements
-
-        ( boxOpsReversed, boxedElemVarsReversed, ctx2 ) =
-            List.foldl
-                (\( ( var, ssaType ), ( elemType, isUnboxed ) ) ( opsAcc, varsAcc, ctxAcc ) ->
-                    if isUnboxed then
-                        let
-                            ( moreOps, slotVar, newCtx ) =
-                                coerceResultToType ctxAcc var ssaType (Types.monoTypeToAbi elemType)
-                        in
-                        ( List.reverse moreOps ++ opsAcc, slotVar :: varsAcc, newCtx )
-
-                    else
-                        let
-                            ( moreOps, boxedVar, newCtx ) =
-                                boxToEcoValue ctxAcc var ssaType
-                        in
-                        ( List.reverse moreOps ++ opsAcc, boxedVar :: varsAcc, newCtx )
-                )
-                ( [], [], ctx1 )
-                (List.map2 Tuple.pair elemVarsWithTypes layout.elements)
-
-        boxOps =
-            List.reverse boxOpsReversed
-
-        boxedElemVars =
-            List.reverse boxedElemVarsReversed
-
-        elemVarPairs : List ( String, MlirType )
-        elemVarPairs =
-            List.map2
-                (\v ( elemType, isUnboxed ) ->
-                    ( v
-                    , if isUnboxed then
-                        Types.monoTypeToAbi elemType
-
-                      else
-                        Types.ecoValue
-                    )
-                )
-                boxedElemVars
-                layout.elements
+        ( _, ( ops, slots, ctx2 ) ) =
+            prepareTupleSlots ctxWithType elements monoType
 
         ( resultVar, ctx3 ) =
             Ctx.freshVar ctx2
 
         ( ctx4, makeOp ) =
-            case elemVarPairs of
-                [ a, b ] ->
+            case slots of
+                Mono.T2 a b ->
                     Ops.ecoMakeTuple2 ctx3 resultVar a b
 
-                [ a, b, c ] ->
+                Mono.T3 a b c ->
                     Ops.ecoMakeTuple3 ctx3 resultVar a b c
-
-                _ ->
-                    crash "generateTupleCreateValue: unreachable: tuples >3 elements rejected by canonicalization"
     in
-    { ops = elemOps ++ boxOps ++ [ makeOp ]
+    { ops = ops ++ [ makeOp ]
     , resultVar = resultVar
-    , resultType = Ops.aggTupleType (List.map Tuple.second elemVarPairs)
+    , resultType = Ops.aggTupleType (List.map Tuple.second (Mono.tupleToList slots))
     , ctx = ctx4
-    , isTerminated = False
     }
 
 
@@ -8000,13 +7125,12 @@ generateCustomCreateValue ctx shape args =
             Ctx.freshVar ctx2
 
         ( ctx4, makeOp ) =
-            Ops.ecoMakeCustom ctx3 resultVar layout.tag (Just shape.name) slotPairs
+            Ops.ecoMakeCustom ctx3 resultVar layout.tag shape.name slotPairs
     in
     { ops = prepOps ++ [ makeOp ]
     , resultVar = resultVar
     , resultType = Ops.aggCustomType (List.map Tuple.second slotPairs)
     , ctx = ctx4
-    , isTerminated = False
     }
 
 
@@ -8030,16 +7154,13 @@ generateCustomCreateHeap ctx shape args =
             Ops.ecoConstructCustom ctx3
                 resultVar
                 layout.tag
-                (List.length layout.fields)
-                (Types.ctorSlotKinds layout)
-                slotPairs
-                (Just (Name.toElmString layout.name))
+                (Name.toElmString layout.name)
+                (List.map2 (\( v, t ) k -> ( v, t, k )) slotPairs (Types.ctorSlotKinds layout))
     in
     { ops = prepOps ++ [ constructOp ]
     , resultVar = resultVar
     , resultType = Types.ecoValue
     , ctx = ctx4
-    , isTerminated = False
     }
 
 
@@ -8110,7 +7231,6 @@ generateUnit ctx =
     , resultVar = var
     , resultType = Types.ecoValue
     , ctx = ctx2
-    , isTerminated = False
     }
 
 
@@ -8118,107 +7238,29 @@ generateUnit ctx =
 -- ====== CHARACTER LITERAL DECODING ======
 
 
-{-| Returns the number a Char literal's text stands for. The text is either one
-character, whose code is returned, or an escape as the parser keeps it: `\n`,
-`\r`, `\t`, `\"`, `\'`, `\\` or `\uXXXX`. A `\uXXXX` that is a high
-surrogate is combined with the `\uXXXX` after it into the code point it
-encodes, which is above `0xFFFF`. Text of more than one unit that does not
-start with a backslash, such as a raw character above `0xFFFF`, returns the
-code of its first character, its full code point. Empty text, an unknown
-escape, a trailing backslash or bad hex digits crash the compiler.
+{-| Returns the code point a Char literal's text stands for. The text is
+written by the parser (`Compiler.IR.Source.StringLiteral`): one character, or
+an escape `\n`, `\r`, `\t`, `\"`, `\'`, `\\` or `\uXXXX`, where a code
+point above `0xFFFF` is a surrogate pair of two `\uXXXX` escapes. So it
+always denotes exactly one code point; any other text crashes the compiler.
 -}
 decodeCharLiteral : String -> Int
 decodeCharLiteral value =
-    -- A lone backslash is the character itself, not an escape.
-    if String.length value == 1 then
-        case String.uncons value of
-            Just ( c, _ ) ->
-                Char.toCode c
+    case StringLiteral.codePoints value of
+        [ code ] ->
+            code
 
-            Nothing ->
-                crash "decodeCharLiteral: empty character literal"
-
-    else
-        case String.uncons value of
-            Just ( '\\', rest ) ->
-                decodeEscape rest
-
-            Just ( c, _ ) ->
-                Char.toCode c
-
-            Nothing ->
-                crash "decodeCharLiteral: empty character literal"
-
-
-{-| Returns the character code of the escape whose text after the backslash is
-`rest`, as `decodeCharLiteral` describes.
--}
-decodeEscape : String -> Int
-decodeEscape rest =
-    case String.uncons rest of
-        Just ( 'u', hex ) ->
-            decodeUnicodeEscape hex
-
-        Just ( 'n', _ ) ->
-            10
-
-        Just ( 'r', _ ) ->
-            13
-
-        Just ( 't', _ ) ->
-            9
-
-        Just ( '"', _ ) ->
-            34
-
-        Just ( '\'', _ ) ->
-            39
-
-        Just ( '\\', _ ) ->
-            92
-
-        Just ( c, _ ) ->
-            crash ("decodeCharLiteral: unknown escape \\" ++ String.fromChar c)
-
-        Nothing ->
-            crash "decodeCharLiteral: trailing backslash"
-
-
-{-| Returns the code of a `\u` escape whose text after the `u` is `hex`,
-combining a high surrogate with the escape that follows it.
--}
-decodeUnicodeEscape : String -> Int
-decodeUnicodeEscape hex =
-    case Hex.fromString (String.toLower (String.left 4 hex)) of
-        Ok code ->
-            if code >= 0xD800 && code <= 0xDBFF then
-                decodeSurrogatePair code (String.dropLeft 6 hex)
-
-            else
-                code
-
-        Err _ ->
-            crash ("decodeCharLiteral: invalid hex in \\u" ++ String.left 4 hex)
-
-
-{-| Returns the code point encoded by the high surrogate `hi` and the low
-surrogate whose four hex digits begin `rest`.
--}
-decodeSurrogatePair : Int -> String -> Int
-decodeSurrogatePair hi rest =
-    case Hex.fromString (String.toLower (String.left 4 rest)) of
-        Ok lo ->
-            0x00010000 + ((hi - 0xD800) * 0x0400) + (lo - 0xDC00)
-
-        Err _ ->
-            crash "decodeCharLiteral: invalid low surrogate in pair"
+        _ ->
+            crash ("Expr.decodeCharLiteral: Char literal text is not one code point: " ++ value)
 
 
 
 -- ====== SHAPE HELPERS ======
 
 
-{-| Returns a record type's fields by name, or no fields for any other type.
+{-| Returns a record type's fields by name. Record creation, access and
+update are typed by an `MRecord` (MONO\_001), so any other type crashes the
+compile.
 -}
 getRecordFields : Mono.MonoType -> Dict.Dict Name.Name Mono.MonoType
 getRecordFields monoType =
@@ -8227,19 +7269,7 @@ getRecordFields monoType =
             fields
 
         _ ->
-            Dict.empty
-
-
-{-| Returns a tuple type's element types, or none for any other type.
--}
-getTupleElements : Mono.MonoType -> List Mono.MonoType
-getTupleElements monoType =
-    case monoType of
-        Mono.MTuple _ elements ->
-            elements
-
-        _ ->
-            []
+            crash "Expr.getRecordFields: MONO_001 record expression whose type is not an MRecord"
 
 
 {-| Returns an array indexed by the integers of `pairs`, holding each value at

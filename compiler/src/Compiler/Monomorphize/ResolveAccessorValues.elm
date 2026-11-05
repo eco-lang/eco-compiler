@@ -48,6 +48,7 @@ import Compiler.IR.Mono as Mono
         , MonoExpr(..)
         , MonoType(..)
         )
+import Data.NonEmptyList as NE
 import Dict exposing (Dict)
 
 
@@ -125,10 +126,10 @@ rewriteNode home lambdaCounter node =
             in
             ( Mono.MonoTailFunc params expr1 monoType, c1 )
 
-        Mono.MonoCtor _ _ ->
+        Mono.MonoCtor _ _ _ ->
             ( node, lambdaCounter )
 
-        Mono.MonoEnum _ _ ->
+        Mono.MonoEnum _ _ _ _ ->
             ( node, lambdaCounter )
 
         Mono.MonoExtern _ ->
@@ -646,27 +647,28 @@ rewriteExpr home counter env maybeExpected expr =
 
         MonoTupleCreate region elements t ->
             let
-                elemExpectedTypes =
+                withExpected =
                     case t of
                         MTuple _ elemTypes ->
-                            List.map Just elemTypes
+                            Mono.tupleMap2 (\ty e -> ( Just ty, e )) elemTypes elements
+                                |> Maybe.withDefault (Mono.tupleMap (Tuple.pair Nothing) elements)
 
                         _ ->
-                            List.repeat (List.length elements) Nothing
+                            Mono.tupleMap (Tuple.pair Nothing) elements
 
-                ( newElemsRev, c1 ) =
-                    List.foldl
-                        (\( elemExpected, e ) ( acc, c ) ->
+                ( newElems, c1 ) =
+                    Mono.tupleMapAccum
+                        (\( elemExpected, e ) c ->
                             let
                                 ( e1, _, c2 ) =
                                     rewriteExpr home c env elemExpected e
                             in
-                            ( e1 :: acc, c2 )
+                            ( e1, c2 )
                         )
-                        ( [], counter )
-                        (zip elemExpectedTypes elements)
+                        counter
+                        withExpected
             in
-            ( MonoTupleCreate region (List.reverse newElemsRev) t, VI_Unknown, c1 )
+            ( MonoTupleCreate region newElems t, VI_Unknown, c1 )
 
         MonoDestruct path inner t ->
             let
@@ -723,22 +725,22 @@ rewriteDecider home counter env maybeExpected decider =
 
         FanOut path edges fallback ->
             let
-                ( newEdgesRev, c1 ) =
-                    List.foldl
-                        (\( t, d ) ( acc, c ) ->
+                ( c1, newEdges ) =
+                    NE.mapAccuml
+                        (\c ( t, d ) ->
                             let
                                 ( d1, c2 ) =
                                     rewriteDecider home c env maybeExpected d
                             in
-                            ( ( t, d1 ) :: acc, c2 )
+                            ( c2, ( t, d1 ) )
                         )
-                        ( [], counter )
+                        counter
                         edges
 
                 ( fallback1, c3 ) =
                     rewriteDecider home c1 env maybeExpected fallback
             in
-            ( FanOut path (List.reverse newEdgesRev) fallback1, c3 )
+            ( FanOut path newEdges fallback1, c3 )
 
 
 {-| Rewrites an inline leaf with `maybeExpected` as its expected type, and

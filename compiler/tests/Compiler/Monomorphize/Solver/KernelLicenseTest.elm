@@ -107,7 +107,7 @@ import Compiler.Elm.ModuleName as ModuleName
 import Compiler.IR.Canonical as Can
 import Compiler.IR.Mono as Mono
 import Compiler.IR.Source as Src
-import Compiler.Monomorphize.Solver.KernelSetFacts as KernelSetFacts
+import Compiler.Monomorphize.Solver.KernelSetFacts as KernelSetFacts exposing (TypeShape(..))
 import Compiler.Type.KernelIntrinsics as KernelIntrinsics
 import Dict
 import Expect
@@ -427,7 +427,44 @@ intrinsicShapesFor prefix home name =
     KernelIntrinsics.lookup prefix home name
         |> Maybe.map List.singleton
         |> Maybe.withDefault []
-        |> List.map (\row -> KernelSetFacts.shapeOfAnnotation (annotationType row.annotation))
+        |> List.map (\row -> shapeOfAnnotation (annotationType row.annotation))
+
+
+{-| Returns the `TypeShape` of an annotation, or `Nothing` when it contains a
+record, a tuple or an alias, which a shape cannot express, so that a
+`TransportsAs` row's shape can be compared with the kernel's annotation in
+`Compiler.Type.KernelIntrinsics`.
+-}
+shapeOfAnnotation : Can.Type String -> Maybe TypeShape
+shapeOfAnnotation tipe =
+    case tipe of
+        Can.TVar name ->
+            Just (TsVar name)
+
+        Can.TLambda _ arg result ->
+            Maybe.map2 TsFun (shapeOfAnnotation arg) (shapeOfAnnotation result)
+
+        Can.TType _ name args ->
+            Maybe.map (TsCon name) (traverseShapes args)
+
+        Can.TUnit ->
+            Just (TsCon "()" [])
+
+        _ ->
+            Nothing
+
+
+{-| Returns the shapes of `types` in order, or `Nothing` if any of them has
+none.
+-}
+traverseShapes : List (Can.Type String) -> Maybe (List TypeShape)
+traverseShapes types =
+    case types of
+        [] ->
+            Just []
+
+        t :: rest ->
+            Maybe.map2 (::) (shapeOfAnnotation t) (traverseShapes rest)
 
 
 {-| Returns the type inside an annotation, without its set of quantified
@@ -639,7 +676,7 @@ annosOf t =
             annosOf el
 
         Mono.MTuple _ els ->
-            List.concatMap annosOf els
+            List.concatMap annosOf (Mono.tupleToList els)
 
         Mono.MRecord _ fields ->
             Dict.foldl (\_ ft acc -> acc ++ annosOf ft) [] fields
@@ -667,7 +704,7 @@ incMembers (Mono.MonoGraph g) =
     Dict.foldl
         (\member origin acc ->
             case origin of
-                Mono.OriginGlobal (Mono.Global _ "inc") ->
+                Mono.OriginGlobal _ "inc" ->
                     member :: acc
 
                 _ ->

@@ -20,8 +20,8 @@ the other arrays by position:
     element's type id; a tuple adds its arity, its first field and its field
     count; a record its first field and field count; a custom type its first
     constructor and constructor count; a function its first argument, its
-    argument count and its result's type id; a type variable adds 0 for a
-    `number` variable and 1 for any other.
+    argument count and its result's type id; a type variable adds 1 (a
+    `number` variable, which would add 0, never reaches code generation).
   - `fields` holds `[name_index, type_id]` pairs, shared by tuples, records and
     constructors. A tuple field's name index is always 0 and means nothing.
   - `ctors` holds `[tag, name_index, first_field, field_count]` per constructor.
@@ -46,6 +46,7 @@ import Compiler.IR.Mono as Mono
 import Dict
 import Mlir.Loc as Loc
 import Mlir.Mlir exposing (MlirAttr(..), MlirOp)
+import System.Crash
 
 
 
@@ -308,8 +309,9 @@ addPrimitiveType typeId primKind accum =
     { accum | typeAttrs = typeAttr :: accum.typeAttrs }
 
 
-{-| Adds the descriptor of a type variable: `[typeId, 6, c]`, where `c` is 0 for
-a `number` variable and 1 for any other.
+{-| Adds the descriptor of a type variable: `[typeId, 6, 1]`. A `number`
+variable never reaches code generation (MONO\_002, MONO\_028: Prune closes
+every one to Int), so one crashes the compile.
 -}
 addPolymorphicType : Int -> Mono.Constraint -> TypeTableAccum -> TypeTableAccum
 addPolymorphicType typeId constraint accum =
@@ -317,7 +319,7 @@ addPolymorphicType typeId constraint accum =
         constraintValue =
             case constraint of
                 Mono.CNumber ->
-                    0
+                    System.Crash.crash "TypeTable.addPolymorphicType: MONO_002 a number type variable reached MLIR code generation"
 
                 Mono.CEcoValue ->
                     1
@@ -375,7 +377,7 @@ addTupleType typeIds typeId layout accum =
             accum.nextFieldIndex
 
         fieldCount =
-            layout.arity
+            Mono.tupleArity layout.elements
 
         accumWithFields =
             List.foldl
@@ -396,13 +398,13 @@ addTupleType typeIds typeId layout accum =
                     }
                 )
                 accum
-                layout.elements
+                (Mono.tupleToList layout.elements)
 
         typeAttr =
             ArrayAttr Nothing
                 [ IntAttr Nothing typeId
                 , IntAttr Nothing (typeKindToTag TKTuple)
-                , IntAttr Nothing layout.arity
+                , IntAttr Nothing (Mono.tupleArity layout.elements)
                 , IntAttr Nothing firstField
                 , IntAttr Nothing fieldCount
                 ]

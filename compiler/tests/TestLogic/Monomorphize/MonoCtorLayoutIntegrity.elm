@@ -209,7 +209,7 @@ checkCtorNodesUseTheirShapes ctorShapes nodes =
     List.concatMap
         (\( specId, maybeNode ) ->
             case maybeNode of
-                Just (Mono.MonoCtor shape monoType) ->
+                Just (Mono.MonoCtor _ shape monoType) ->
                     checkCtorNode ctorShapes specId shape monoType
 
                 _ ->

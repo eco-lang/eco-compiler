@@ -83,6 +83,7 @@ import Compiler.MonoOpt.Borrow.LssFacts as LssFacts
 import Compiler.MonoOpt.Borrow.Mode exposing (Mode(..))
 import Compiler.MonoOpt.Borrow.Rty as Rty exposing (RTy, ResVar)
 import Compiler.MonoOpt.Borrow.Sig as Sig exposing (BorrowSig)
+import Data.NonEmptyList as NE
 import Dict exposing (Dict)
 import Set exposing (Set)
 
@@ -741,7 +742,7 @@ constrainExpr env path expr g =
             constrainContainer env path es t g
 
         Mono.MonoTupleCreate _ es t ->
-            constrainContainer env path es t g
+            constrainContainer env path (Mono.tupleToList es) t g
 
         Mono.MonoRecordCreate fes t ->
             constrainContainer env path (List.map Tuple.second fes) t g
@@ -1463,77 +1464,6 @@ unifyArms env n path arms resultRty g =
         )
 
 
-{-| Returns a copy of a skeleton with fresh resources, recording string heads in
-`stringRes`. Nothing in this module calls it.
--}
-cloneRTy : RTy -> Gen -> ( RTy, Gen )
-cloneRTy rty g =
-    case rty of
-        Rty.RScalar ->
-            ( Rty.RScalar, g )
-
-        Rty.RString _ ->
-            let
-                ( r, g1 ) =
-                    fresh g
-            in
-            ( Rty.RString r, { g1 | stringRes = r :: g1.stringRes } )
-
-        Rty.ROpaque _ ->
-            let
-                ( r, g1 ) =
-                    fresh g
-            in
-            ( Rty.ROpaque r, g1 )
-
-        Rty.RClosure _ ->
-            let
-                ( r, g1 ) =
-                    fresh g
-            in
-            ( Rty.RClosure r, g1 )
-
-        Rty.RList _ elem ->
-            let
-                ( r, g1 ) =
-                    fresh g
-
-                ( elem2, g2 ) =
-                    cloneRTy elem g1
-            in
-            ( Rty.RList r elem2, g2 )
-
-        Rty.RTuple _ elems ->
-            let
-                ( r, g1 ) =
-                    fresh g
-
-                ( elems2, g2 ) =
-                    cloneList elems g1
-            in
-            ( Rty.RTuple r elems2, g2 )
-
-        Rty.RRecord _ fields ->
-            let
-                ( r, g1 ) =
-                    fresh g
-
-                ( fields2, g2 ) =
-                    cloneFields fields g1
-            in
-            ( Rty.RRecord r fields2, g2 )
-
-        Rty.RCustom _ args ->
-            let
-                ( r, g1 ) =
-                    fresh g
-
-                ( args2, g2 ) =
-                    cloneList args g1
-            in
-            ( Rty.RCustom r args2, g2 )
-
-
 {-| Returns a copy of a skeleton with fresh resources, together with the pairs of
 each original resource and its copy, head first in pre-order. String heads of
 the copy are recorded in `stringRes`; erased resources are not forced owned.
@@ -1645,45 +1575,6 @@ cloneFieldsF fields g =
             ( ( name, x2 ) :: rest2, xp ++ rp, g2 )
 
 
-{-| Copies a list of skeletons as `cloneRTy` does. Only `cloneRTy` calls it.
--}
-cloneList : List RTy -> Gen -> ( List RTy, Gen )
-cloneList rtys g =
-    case rtys of
-        [] ->
-            ( [], g )
-
-        x :: rest ->
-            let
-                ( x2, g1 ) =
-                    cloneRTy x g
-
-                ( rest2, g2 ) =
-                    cloneList rest g1
-            in
-            ( x2 :: rest2, g2 )
-
-
-{-| Copies the field skeletons of a record as `cloneRTy` does. Only `cloneRTy`
-calls it.
--}
-cloneFields : List ( Name, RTy ) -> Gen -> ( List ( Name, RTy ), Gen )
-cloneFields fields g =
-    case fields of
-        [] ->
-            ( [], g )
-
-        ( name, x ) :: rest ->
-            let
-                ( x2, g1 ) =
-                    cloneRTy x g
-
-                ( rest2, g2 ) =
-                    cloneFields rest g1
-            in
-            ( ( name, x2 ) :: rest2, g2 )
-
-
 {-| Pairs the head of the container with the head of the value read out, or
 returns no pair when either has no head.
 -}
@@ -1758,7 +1649,7 @@ collectInlines decider =
             collectInlines s ++ collectInlines f
 
         Mono.FanOut _ edges fallback ->
-            List.concatMap (\( _, d ) -> collectInlines d) edges ++ collectInlines fallback
+            List.concatMap (\( _, d ) -> collectInlines d) (NE.toList edges) ++ collectInlines fallback
 
 
 {-| Returns the head resources of the fields of a record skeleton that a record

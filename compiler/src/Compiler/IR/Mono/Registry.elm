@@ -3,7 +3,7 @@ module Compiler.IR.Mono.Registry exposing
     , emptyRegistry
     , getOrCreateSpecId
     , getOrCreateSpecIdKeyed
-    , lookupSpecKey
+    , lookupSpecKey, keyOf, foldlLive
     , updateRegistryType
     , breadthLimitMessage, createdCount, prettyGlobal, typeNodesLimitMessage
     )
@@ -44,7 +44,7 @@ built here. The limits are checked elsewhere.
 @docs emptyRegistry
 @docs getOrCreateSpecId
 @docs getOrCreateSpecIdKeyed
-@docs lookupSpecKey
+@docs lookupSpecKey, keyOf, foldlLive
 @docs updateRegistryType
 
 
@@ -58,6 +58,7 @@ import Array
 import Compiler.Elm.ModuleName as ModuleName
 import Compiler.IR.Mono as Mono exposing (Global, MonoType, SpecId, SpecializationRegistry)
 import Dict
+import System.Crash
 
 
 
@@ -296,3 +297,37 @@ is no recorded entry for it.
 lookupSpecKey : SpecId -> SpecializationRegistry -> Maybe ( Global, MonoType )
 lookupSpecKey specId registry =
     Array.get specId registry.reverseMapping |> Maybe.andThen identity
+
+
+{-| Returns the global and type recorded for `specId`, for a `specId` that must
+have an entry: every SpecId that reaches code generation is in the registry
+(MONO\_005), so a missing one crashes the compile.
+-}
+keyOf : SpecId -> SpecializationRegistry -> ( Global, MonoType )
+keyOf specId registry =
+    case lookupSpecKey specId registry of
+        Just key ->
+            key
+
+        Nothing ->
+            System.Crash.crash ("Registry.keyOf: MONO_005 no registry entry for SpecId " ++ String.fromInt specId)
+
+
+{-| Folds `f` over every specialization that has a recorded entry, in
+ascending `SpecId` order, with its global and recorded type. Entries a merge or
+a prune cleared are skipped.
+-}
+foldlLive : (SpecId -> Global -> MonoType -> a -> a) -> a -> SpecializationRegistry -> a
+foldlLive f acc0 registry =
+    Array.foldl
+        (\entry ( specId, acc ) ->
+            case entry of
+                Just ( global, monoType ) ->
+                    ( specId + 1, f specId global monoType acc )
+
+                Nothing ->
+                    ( specId + 1, acc )
+        )
+        ( 0, acc0 )
+        registry.reverseMapping
+        |> Tuple.second

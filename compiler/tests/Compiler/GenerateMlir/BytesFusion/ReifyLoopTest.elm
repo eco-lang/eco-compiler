@@ -270,7 +270,7 @@ reifyLoopIn source =
                     in
                     case findLoopCalls g.registry g.nodes of
                         [ call ] ->
-                            Ok (Maybe.map (Reify.decoderNodeToOps >> Tuple.first) (Reify.reifyDecoder g.registry Dict.empty call))
+                            Ok (Maybe.map (Reify.decoderNodeToOps >> .body) (Reify.reifyDecoder g.registry Dict.empty call))
 
                         calls ->
                             Err ("expected one Bytes.Decode.loop call, found " ++ String.fromInt (List.length calls))

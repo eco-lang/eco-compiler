@@ -165,7 +165,7 @@ everyTypeShape =
     , Mono.MVar Id.first Mono.CEcoValue
     , Mono.MVar Id.first Mono.CNumber
     , Mono.mList Mono.MInt
-    , Mono.mTuple [ Mono.MInt, Mono.MString ]
+    , Mono.mTuple (Mono.T2 Mono.MInt Mono.MString)
     , Mono.mRecord (Dict.fromList [ ( "a", Mono.MInt ) ])
     , Mono.mCustom ModuleName.maybe "Maybe" [ Mono.MInt ]
     , arrowWith Mono.topLegacy

@@ -270,16 +270,12 @@ encodeRegion dialectReg attrTypeTable valueEnv (MlirRegion r) =
             namedBlocks
                 |> List.map (\( _, blk ) -> encodeBlock dialectReg attrTypeTable valueEnv blockEnv blk)
     in
-    if numBlocks == 0 then
-        encodeVarInt 0
-
-    else
-        BE.sequence
-            (encodeVarInt numBlocks
-                :: encodeVarInt numValues
-                :: entryEncoder
-                :: namedEncoders
-            )
+    BE.sequence
+        (encodeVarInt numBlocks
+            :: encodeVarInt numValues
+            :: entryEncoder
+            :: namedEncoders
+        )
 
 
 {-| Creates an encoder for a block: a header giving its number of operations

@@ -36,7 +36,7 @@ suite =
                         Dups.unions [ Dups.one "x" (region 1) (), Dups.one "x" (region 2) () ]
                 in
                 case R.run (Dups.detect (\name r1 r2 -> Error.DuplicateDecl name r1 r2) tracker) of
-                    ( _, Err errs ) ->
+                    Err errs ->
                         case OneOrMore.destruct (::) errs of
                             [ Error.DuplicateDecl _ r1 r2 ] ->
                                 Expect.equal ( region 1, region 2 ) ( r1, r2 )
@@ -44,6 +44,6 @@ suite =
                             _ ->
                                 Expect.fail "unexpected errors"
 
-                    ( _, Ok _ ) ->
+                    Ok _ ->
                         Expect.fail "duplicate not detected"
         ]

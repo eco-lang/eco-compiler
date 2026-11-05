@@ -195,13 +195,11 @@ insert bitIndex set0 =
 
             set =
                 ensureWord wIndex set0
-        in
-        case Array.get wIndex set.words of
-            Nothing ->
-                set
 
-            Just word ->
-                { set | words = Array.set wIndex (Bitwise.or word mask) set.words }
+            word =
+                Array.get wIndex set.words |> Maybe.withDefault 0
+        in
+        { set | words = Array.set wIndex (Bitwise.or word mask) set.words }
 
 
 {-| Removes `bitIndex` from `set`. An integer outside the capacity is ignored,
@@ -223,13 +221,11 @@ remove bitIndex set0 =
 
             set =
                 ensureWord wIndex set0
-        in
-        case Array.get wIndex set.words of
-            Nothing ->
-                set
 
-            Just word ->
-                { set | words = Array.set wIndex (Bitwise.and word (Bitwise.complement mask)) set.words }
+            word =
+                Array.get wIndex set.words |> Maybe.withDefault 0
+        in
+        { set | words = Array.set wIndex (Bitwise.and word (Bitwise.complement mask)) set.words }
 
 
 {-| Adds `bitIndex` to `set`, first raising the capacity, if it does not already

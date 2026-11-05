@@ -267,7 +267,7 @@ firstArrowHead t =
             Just anno
 
         Mono.MTuple _ ts ->
-            List.head (List.filterMap firstArrowHead ts)
+            List.head (List.filterMap firstArrowHead (Mono.tupleToList ts))
 
         _ ->
             Nothing

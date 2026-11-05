@@ -30,6 +30,7 @@ import Compiler.Core.TypeIds exposing (MVarId)
 import Compiler.IR.Canonical as Can
 import Data.Set as EverySet exposing (EverySet)
 import Dict
+import Maybe.Extra as Maybe
 
 
 
@@ -155,7 +156,7 @@ hasAnyFreeVar canType =
                     List.any (\( _, Can.FieldType _ t ) -> hasAnyFreeVar t) (Dict.toList fields)
 
         Can.TTuple a b rest ->
-            List.any hasAnyFreeVar (a :: b :: rest)
+            List.any hasAnyFreeVar (a :: b :: Maybe.toList rest)
 
         Can.TUnit ->
             False

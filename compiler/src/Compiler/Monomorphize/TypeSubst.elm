@@ -96,6 +96,7 @@ import Compiler.IR.Mono as Mono
 import Compiler.IR.Mono.Intern as Intern exposing (Intern)
 import Compiler.Monomorphize.State as State exposing (MVarEnv, SchemeInfo, Substitution)
 import Dict
+import Maybe.Extra as Maybe
 import Set exposing (Set)
 
 
@@ -146,7 +147,7 @@ hasStaleConstraint env monoType =
             hasStaleConstraint env inner
 
         Mono.MTuple _ elems ->
-            List.any (hasStaleConstraint env) elems
+            List.any (hasStaleConstraint env) (Mono.tupleToList elems)
 
         Mono.MRecord _ fields ->
             Dict.foldl (\_ t acc -> acc || hasStaleConstraint env t) False fields
@@ -173,7 +174,7 @@ refreshConstraintsRebuild env monoType =
             Mono.mList (refreshConstraintsRebuild env inner)
 
         Mono.MTuple _ elems ->
-            Mono.mTuple (List.map (refreshConstraintsRebuild env) elems)
+            Mono.mTuple (Mono.tupleMap (refreshConstraintsRebuild env) elems)
 
         Mono.MRecord _ fields ->
             Mono.mRecord (Dict.map (\_ t -> refreshConstraintsRebuild env t) fields)
@@ -351,8 +352,17 @@ normalizeMonoType env subst ty =
 
         Mono.MTuple _ elems ->
             let
-                ( elemsNorm, subst1, env1 ) =
-                    normalizeList env subst elems
+                ( elemsNorm, ( subst1, env1 ) ) =
+                    Mono.tupleMapAccumR
+                        (\t ( s, e ) ->
+                            let
+                                ( tNorm, s1, e1 ) =
+                                    normalizeMonoType e s t
+                            in
+                            ( tNorm, ( s1, e1 ) )
+                        )
+                        ( subst, env )
+                        elems
             in
             ( Mono.mTuple elemsNorm, subst1, env1 )
 
@@ -552,14 +562,14 @@ unifyHelp env canType monoType subst =
         ( Can.TTuple a b rest, Mono.MTuple _ monoTypes ) ->
             let
                 canTypes =
-                    a :: b :: rest
+                    a :: b :: Maybe.toList rest
             in
             List.foldl
                 (\( canT, monoT ) ( s, e ) ->
                     unifyHelp e canT monoT s
                 )
                 ( subst, env )
-                (List.map2 Tuple.pair canTypes monoTypes)
+                (List.map2 Tuple.pair canTypes (Mono.tupleToList monoTypes))
 
         ( Can.TAlias _ _ _ (Can.Filled inner), _ ) ->
             unifyHelp env inner monoType subst
@@ -654,7 +664,7 @@ unifyMonoMono env m1 m2 subst =
             List.foldl
                 (\( t1, t2 ) ( s, e ) -> unifyMonoMono e t1 t2 s)
                 ( subst, env )
-                (List.map2 Tuple.pair ts1 ts2)
+                (List.map2 Tuple.pair (Mono.tupleToList ts1) (Mono.tupleToList ts2))
 
         _ ->
             ( subst, env )
@@ -770,11 +780,11 @@ resolveMonoVarsHelp visiting subst monoType =
 
         Mono.MTuple _ elems ->
             let
-                ( changed, newElems ) =
-                    listMapChanged (resolveMonoVarsHelp visiting subst) elems
+                results =
+                    Mono.tupleMap (resolveMonoVarsHelp visiting subst) elems
             in
-            if changed then
-                ( True, Mono.mTuple newElems )
+            if List.any Tuple.first (Mono.tupleToList results) then
+                ( True, Mono.mTuple (Mono.tupleMap Tuple.second results) )
 
             else
                 ( False, monoType )
@@ -841,8 +851,7 @@ Children are offered before their parent. The exception is a bound variable,
 whose resolved binding is returned without being offered.
 
 A record's extension variable contributes the fields of its binding only when it
-is bound directly to a record; otherwise only the record's own fields remain.
-An `elm/core` `List` with other than one argument becomes a list of unit. A
+is bound directly to a record; otherwise only the record's own fields remain. A
 `Holey` alias is applied by binding each of its parameter ids to its applied
 argument and applying that to the body. The parameter ids are bound in order
 into one substitution, so parameters sharing an id resolve to the last argument.
@@ -890,29 +899,24 @@ applySubstPureI env subst canType intern =
                             False
             in
             if isElmCore then
-                case name of
-                    "Int" ->
+                case ( name, monoArgs ) of
+                    ( "Int", _ ) ->
                         ( Mono.MInt, intern1 )
 
-                    "Float" ->
+                    ( "Float", _ ) ->
                         ( Mono.MFloat, intern1 )
 
-                    "Bool" ->
+                    ( "Bool", _ ) ->
                         ( Mono.MBool, intern1 )
 
-                    "Char" ->
+                    ( "Char", _ ) ->
                         ( Mono.MChar, intern1 )
 
-                    "String" ->
+                    ( "String", _ ) ->
                         ( Mono.MString, intern1 )
 
-                    "List" ->
-                        case monoArgs of
-                            [ inner ] ->
-                                Intern.hashCons (Mono.mList inner) intern1
-
-                            _ ->
-                                Intern.hashCons (Mono.mList Mono.MUnit) intern1
+                    ( "List", [ inner ] ) ->
+                        Intern.hashCons (Mono.mList inner) intern1
 
                     _ ->
                         Intern.hashCons (Mono.mCustom canonical name monoArgs) intern1
@@ -952,7 +956,7 @@ applySubstPureI env subst canType intern =
         Can.TTuple a b rest ->
             let
                 ( elems, intern1 ) =
-                    applySubstListI env subst (a :: b :: rest) intern
+                    Mono.tupleMapAccum (applySubstPureI env subst) intern (Mono.tupleOf a b rest)
             in
             Intern.hashCons (Mono.mTuple elems) intern1
 
@@ -1117,7 +1121,7 @@ collectMVarIdsFromMonoHelp monoType (( acc, seen ) as pair) =
             collectMVarIdsFromMonoHelp inner pair
 
         Mono.MTuple _ elements ->
-            List.foldl (\e accPair -> collectMVarIdsFromMonoHelp e accPair) pair elements
+            List.foldl (\e accPair -> collectMVarIdsFromMonoHelp e accPair) pair (Mono.tupleToList elements)
 
         Mono.MRecord _ fields ->
             Dict.foldl (\_ t accPair -> collectMVarIdsFromMonoHelp t accPair) pair fields
@@ -1368,7 +1372,7 @@ renameMVarIdsInCanType renameMap canType =
             Can.TTuple
                 (renameMVarIdsInCanType renameMap a)
                 (renameMVarIdsInCanType renameMap b)
-                (List.map (renameMVarIdsInCanType renameMap) rest)
+                (Maybe.map (renameMVarIdsInCanType renameMap) rest)
 
         Can.TAlias canonical name args aliasType ->
             let
@@ -1460,7 +1464,7 @@ collectMVarIdsHelp canType (( acc, seen ) as pair) =
                     fieldPair
 
         Can.TTuple a b rest ->
-            List.foldl (\t accPair -> collectMVarIdsHelp t accPair) pair (a :: b :: rest)
+            List.foldl (\t accPair -> collectMVarIdsHelp t accPair) pair (a :: b :: Maybe.toList rest)
 
         Can.TAlias _ _ aliasArgs (Can.Filled inner) ->
             let
@@ -1707,12 +1711,24 @@ normalizeAndOccursCheck env targetId subst ty =
                     Just ( Mono.mList innerNorm, subst1, env1 )
 
         Mono.MTuple _ elems ->
-            case normalizeAndOccursCheckList env targetId subst elems of
-                Nothing ->
-                    Nothing
+            let
+                step t acc =
+                    case acc of
+                        Just ( s, e ) ->
+                            case normalizeAndOccursCheck e targetId s t of
+                                Just ( tNorm, s1, e1 ) ->
+                                    ( tNorm, Just ( s1, e1 ) )
 
-                Just ( elemsNorm, subst1, env1 ) ->
-                    Just ( Mono.mTuple elemsNorm, subst1, env1 )
+                                Nothing ->
+                                    ( t, Nothing )
+
+                        Nothing ->
+                            ( t, Nothing )
+
+                ( elemsNorm, final ) =
+                    Mono.tupleMapAccum step (Just ( subst, env )) elems
+            in
+            Maybe.map (\( subst1, env1 ) -> ( Mono.mTuple elemsNorm, subst1, env1 )) final
 
         Mono.MRecord _ fields ->
             case normalizeAndOccursCheckDict env targetId subst fields of

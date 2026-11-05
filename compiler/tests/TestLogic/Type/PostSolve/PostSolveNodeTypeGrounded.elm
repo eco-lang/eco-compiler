@@ -59,6 +59,7 @@ import Compiler.Core.Name as Name exposing (Name)
 import Compiler.IR.Canonical as Can
 import Data.Map as DMap
 import Dict exposing (Dict)
+import Maybe.Extra as Maybe
 import Set exposing (Set)
 
 
@@ -568,7 +569,7 @@ walkChildren funcName annotations nodeTypesPre nodeTypesPost env node =
             DMap.foldl (\_ e acc -> go e ++ acc) [] fields
 
         Can.Tuple a b extras ->
-            go a ++ go b ++ List.concatMap go extras
+            go a ++ go b ++ List.concatMap go (Maybe.toList extras)
 
         Can.VarLocal _ ->
             []
@@ -647,7 +648,7 @@ collectFreeVars tipe =
         Can.TTuple a b extras ->
             List.foldl (\t acc -> Set.union (collectFreeVars t) acc)
                 (Set.union (collectFreeVars a) (collectFreeVars b))
-                extras
+                (Maybe.toList extras)
 
         Can.TAlias _ _ args (Can.Holey _) ->
             List.foldl (\( _, arg ) acc -> Set.union (collectFreeVars arg) acc) Set.empty args

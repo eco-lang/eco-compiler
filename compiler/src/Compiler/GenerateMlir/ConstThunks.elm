@@ -47,6 +47,7 @@ import Compiler.IR.Mono as Mono
 import Compiler.IR.Mono.Registry as Registry
 import Dict
 import Set
+import System.Crash
 
 
 {-| What the analysis needs about the program, and the phase it runs at.
@@ -61,7 +62,7 @@ type alias Env =
     , registry : Mono.SpecializationRegistry
     , signatures : Array (Maybe Ctx.FuncSignature)
     , nodes : Array (Maybe Mono.MonoNode)
-    , mainSpec : Maybe Int
+    , mainSpec : Int
     , nullCons : Dict.Dict Int Int
     , constCtor : Dict.Dict Int String
     }
@@ -70,14 +71,14 @@ type alias Env =
 {-| The outcome of classifying one spec: admitted as a constant thunk or not.
 
 `Admit` carries the shape that admitted it: `"literal"`, `"unit"`, `"kconst"`
-(a kernel float constant), `"alias"` or `"closed"`.
+(a kernel float constant), `"alias"` or `"closed"`, and the admitted body.
 
 `Refuse` carries the reason, a short word the census counts, such as `"str"`,
-`"size"`, `"cycle"` or `"notThunk"`.
+`"size"` or `"notThunk"`.
 
 -}
 type Verdict
-    = Admit String
+    = Admit String Mono.MonoExpr
     | Refuse String
 
 
@@ -97,7 +98,7 @@ build :
     -> Mono.SpecializationRegistry
     -> Array (Maybe Ctx.FuncSignature)
     -> Array (Maybe Mono.MonoNode)
-    -> Maybe Mono.MainInfo
+    -> Mono.MainInfo
     -> Dict.Dict Int Int
     -> Dict.Dict Int String
     -> Dict.Dict Int Mono.MonoExpr
@@ -116,13 +117,8 @@ build phase registry signatures nodes main nullCons constCtor =
         Dict.foldl
             (\specId v acc ->
                 case v of
-                    Admit _ ->
-                        case Array.get specId nodes of
-                            Just (Just (Mono.MonoDefine body _)) ->
-                                Dict.insert specId body acc
-
-                            _ ->
-                                acc
+                    Admit _ body ->
+                        Dict.insert specId body acc
 
                     Refuse _ ->
                         acc
@@ -138,7 +134,7 @@ mkEnv :
     -> Mono.SpecializationRegistry
     -> Array (Maybe Ctx.FuncSignature)
     -> Array (Maybe Mono.MonoNode)
-    -> Maybe Mono.MainInfo
+    -> Mono.MainInfo
     -> Dict.Dict Int Int
     -> Dict.Dict Int String
     -> Env
@@ -149,11 +145,8 @@ mkEnv phase registry signatures nodes main nullCons constCtor =
     , nodes = nodes
     , mainSpec =
         case main of
-            Just (Mono.StaticMain s) ->
-                Just s
-
-            Nothing ->
-                Nothing
+            Mono.StaticMain s ->
+                s
     , nullCons = nullCons
     , constCtor = constCtor
     }
@@ -171,11 +164,12 @@ classifyAll env =
         (Array.foldl
             (\_ ( specId, memo ) ->
                 ( specId + 1
-                , if isCandidate env specId then
-                    Tuple.second (verdictOf env Set.empty specId memo)
+                , case candidateBody env specId of
+                    Just _ ->
+                        Tuple.second (verdictOf env Set.empty specId memo)
 
-                  else
-                    memo
+                    Nothing ->
+                        memo
                 )
             )
             ( 0, Dict.empty )
@@ -183,28 +177,35 @@ classifyAll env =
         )
 
 
-{-| Tells whether a spec is a candidate: a `MonoDefine` with no parameters
-that is not the static `main`.
+{-| Returns the body of a spec that is a candidate, a `MonoDefine` with no
+parameters that is not the static `main`, and `Nothing` for any other spec.
 -}
-isCandidate : Env -> Int -> Bool
-isCandidate env specId =
-    if env.mainSpec == Just specId then
-        False
+candidateBody : Env -> Int -> Maybe Mono.MonoExpr
+candidateBody env specId =
+    if env.mainSpec == specId then
+        Nothing
 
     else
         case ( Array.get specId env.nodes, Array.get specId env.signatures ) of
-            ( Just (Just (Mono.MonoDefine _ _)), Just (Just sig) ) ->
-                List.isEmpty sig.paramTypes
+            ( Just (Just (Mono.MonoDefine body _)), Just (Just sig) ) ->
+                if List.isEmpty sig.paramTypes then
+                    Just body
+
+                else
+                    Nothing
 
             _ ->
-                False
+                Nothing
 
 
 {-| Returns the verdict for a spec, and the memo extended with it.
 
+A spec that is not a candidate is refused, and that refusal is not memoised.
 A spec in `inProgress` is already being classified further up, so reaching it
-again is a cycle and is refused. A spec that is not a candidate is refused.
-Neither refusal is memoised.
+again would be a cycle of values with no parameters referring to each other.
+Elm rejects such a recursive group, and inlining only copies bodies along
+existing references, so no such cycle reaches code generation: reaching one
+crashes the compile.
 
 -}
 verdictOf : Env -> Set.Set Int -> Int -> Dict.Dict Int Verdict -> ( Verdict, Dict.Dict Int Verdict )
@@ -215,21 +216,22 @@ verdictOf env inProgress specId memo =
 
         Nothing ->
             if Set.member specId inProgress then
-                ( Refuse "cycle", memo )
-
-            else if not (isCandidate env specId) then
-                ( Refuse "notThunk", memo )
+                System.Crash.crash
+                    ("ConstThunks.verdictOf: cycle of nullary values through SpecId "
+                        ++ String.fromInt specId
+                        ++ " (the canonicalizer rejects recursive values with no parameters)"
+                    )
 
             else
-                case Array.get specId env.nodes of
-                    Just (Just (Mono.MonoDefine body _)) ->
+                case candidateBody env specId of
+                    Just body ->
                         let
                             ( v, memo1 ) =
                                 classifyBody env (Set.insert specId inProgress) body memo
                         in
                         ( v, Dict.insert specId v memo1 )
 
-                    _ ->
+                    Nothing ->
                         ( Refuse "notThunk", memo )
 
 
@@ -240,7 +242,7 @@ classifyBody : Env -> Set.Set Int -> Mono.MonoExpr -> Dict.Dict Int Verdict -> (
 classifyBody env inProgress body memo =
     case phase1Class env inProgress body memo of
         ( Just cls, memo1 ) ->
-            ( Admit cls, memo1 )
+            ( Admit cls body, memo1 )
 
         ( Nothing, memo1 ) ->
             if env.phase < 2 then
@@ -252,7 +254,7 @@ classifyBody env inProgress body memo =
                         closed env inProgress Set.empty body memo1
                 in
                 if ok && size <= maxNodes then
-                    ( Admit "closed", memo2 )
+                    ( Admit "closed" body, memo2 )
 
                 else if ok then
                     ( Refuse "size", memo2 )
@@ -281,9 +283,9 @@ phase1Class env inProgress body memo =
         Mono.MonoUnit ->
             ( Just "unit", memo )
 
-        Mono.MonoVarKernel _ _ home name ty ->
-            case KernelIntrinsics.kernelIntrinsic home name [] ty of
-                Just (KernelIntrinsics.ConstantFloat _) ->
+        Mono.MonoVarKernel _ _ home name _ ->
+            case KernelIntrinsics.kernelFloatConstant home name of
+                Just _ ->
                     ( Just "kconst", memo )
 
                 _ ->
@@ -298,7 +300,7 @@ phase1Class env inProgress body memo =
 
             else
                 case verdictOf env inProgress target memo of
-                    ( Admit _, memo1 ) ->
+                    ( Admit _ _, memo1 ) ->
                         ( Just "alias", memo1 )
 
                     ( Refuse _, memo1 ) ->
@@ -423,58 +425,58 @@ runtime function. Array, String and List intrinsics, generic equality, generic
 `compare` and String ordering are excluded.
 
 -}
-pureIntrinsic : Maybe KernelIntrinsics.Intrinsic -> Bool
+pureIntrinsic : Maybe (KernelIntrinsics.Intrinsic a) -> Bool
 pureIntrinsic mi =
     case mi of
-        Just i ->
-            case i of
-                KernelIntrinsics.UnaryInt _ ->
+        Just (KernelIntrinsics.Operation operation) ->
+            case operation of
+                KernelIntrinsics.UnaryInt _ _ ->
                     True
 
-                KernelIntrinsics.BinaryInt { op } ->
+                KernelIntrinsics.BinaryInt { op } _ _ ->
                     op /= "eco.int.pow"
 
-                KernelIntrinsics.UnaryFloat _ ->
+                KernelIntrinsics.UnaryFloat _ _ ->
                     True
 
-                KernelIntrinsics.BinaryFloat _ ->
+                KernelIntrinsics.BinaryFloat _ _ _ ->
                     True
 
-                KernelIntrinsics.UnaryBool _ ->
+                KernelIntrinsics.UnaryBool _ _ ->
                     True
 
-                KernelIntrinsics.BinaryBool _ ->
+                KernelIntrinsics.BinaryBool _ _ _ ->
                     True
 
-                KernelIntrinsics.IntToFloat ->
+                KernelIntrinsics.IntToFloat _ ->
                     True
 
-                KernelIntrinsics.FloatToInt _ ->
+                KernelIntrinsics.FloatToInt _ _ ->
                     True
 
-                KernelIntrinsics.IntComparison _ ->
+                KernelIntrinsics.IntComparison _ _ _ ->
                     True
 
-                KernelIntrinsics.FloatComparison _ ->
+                KernelIntrinsics.FloatComparison _ _ _ ->
                     True
 
-                KernelIntrinsics.CharComparison _ ->
+                KernelIntrinsics.CharComparison _ _ _ ->
                     True
 
-                KernelIntrinsics.FloatClassify _ ->
+                KernelIntrinsics.FloatClassify _ _ ->
                     True
 
-                KernelIntrinsics.ConstantFloat _ ->
+                KernelIntrinsics.CharToInt _ ->
                     True
 
-                KernelIntrinsics.CharToInt ->
-                    True
-
-                KernelIntrinsics.CharFromInt ->
+                KernelIntrinsics.CharFromInt _ ->
                     True
 
                 _ ->
                     False
+
+        Just (KernelIntrinsics.ConstructList _ _ _) ->
+            False
 
         Nothing ->
             False
@@ -511,8 +513,8 @@ refuseReason body =
 {-| Returns a census of the analysis, as lines of text.
 
 The first line gives the phase, the number of candidates and of admitted
-thunks, and the count of each class and refusal reason, with the cycle and
-not-a-thunk refusals counted under `other`. It ends with a count of the static
+thunks, and the count of each class and refusal reason, with the not-a-thunk
+refusals counted under `other`. It ends with a count of the static
 references to admitted thunks that are found in define, tail-function and port
 bodies. Each further line shows a candidate whose name is one of `hashBase`,
 `branchFactor`, `shiftStep`, `bitMask` or `wordSize`, with its verdict and its
@@ -528,7 +530,7 @@ report :
     -> Mono.SpecializationRegistry
     -> Array (Maybe Ctx.FuncSignature)
     -> Array (Maybe Mono.MonoNode)
-    -> Maybe Mono.MainInfo
+    -> Mono.MainInfo
     -> Dict.Dict Int Int
     -> Dict.Dict Int String
     -> String
@@ -556,7 +558,7 @@ report phase registry signatures nodes main nullCons constCtor =
             Dict.filter
                 (\_ v ->
                     case v of
-                        Admit cls ->
+                        Admit cls _ ->
                             phase >= 2 || cls /= "closed"
 
                         Refuse _ ->
@@ -633,7 +635,7 @@ report phase registry signatures nodes main nullCons constCtor =
             ++ " aliasTarget="
             ++ String.fromInt (count "!aliasTarget")
             ++ " other="
-            ++ String.fromInt (count "!other" + count "!cycle" + count "!notThunk")
+            ++ String.fromInt (count "!other" + count "!notThunk")
             ++ " sites="
             ++ String.fromInt sites
          )
@@ -646,7 +648,7 @@ report phase registry signatures nodes main nullCons constCtor =
 verdictKey : Verdict -> String
 verdictKey v =
     case v of
-        Admit cls ->
+        Admit cls _ ->
             cls
 
         Refuse r ->
@@ -736,7 +738,7 @@ countRefsExpr admitted e =
             countRefs admitted (r :: List.map Tuple.second fields)
 
         Mono.MonoTupleCreate _ xs _ ->
-            countRefs admitted xs
+            countRefs admitted (Mono.tupleToList xs)
 
         _ ->
             0

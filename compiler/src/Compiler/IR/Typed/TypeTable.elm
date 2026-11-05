@@ -94,7 +94,8 @@ ids of the argument and the result.
 `ERecord` carries each field as its name, its field index and its type's id,
 in field-name order, followed by the extension variable.
 
-`ETuple` carries the ids of the first two elements, then those of the rest.
+`ETuple` carries the ids of the first two elements, then that of the third, if
+any.
 
 `EAlias` carries the home module and the alias name, each argument's name with
 its type's id, `True` for a `Filled` body and `False` for a `Holey` one, and
@@ -109,7 +110,7 @@ type Entry
     | EType ModuleName.Canonical Name (List Int)
     | ERecord (List ( Name, Int, Int )) (Maybe Name)
     | EUnit
-    | ETuple Int Int (List Int)
+    | ETuple Int Int (Maybe Int)
     | EAlias ModuleName.Canonical Name (List ( Name, Int )) Bool Int
 
 
@@ -141,6 +142,10 @@ empty =
 
 
 {-| Returns the number of distinct types interned so far.
+
+Test hook: no production code calls it. `TypeTableTest` measures builders with
+it.
+
 -}
 size : Builder -> Int
 size (Builder r) =
@@ -269,10 +274,15 @@ internChildren t b =
                 ( iy, b2 ) =
                     intern y b1
 
-                ( ics, b3 ) =
-                    internList cs b2
+                ( ic, b3 ) =
+                    case cs of
+                        Just c ->
+                            Tuple.mapFirst Just (intern c b2)
+
+                        Nothing ->
+                            ( Nothing, b2 )
             in
-            ( ETuple ix iy ics, b3 )
+            ( ETuple ix iy ic, b3 )
 
         Can.TAlias home name args at ->
             let
@@ -510,7 +520,7 @@ entryEncoder st width entry =
             BE.unsignedInt8 4
 
         ETuple a b cs ->
-            BE.sequence [ BE.unsignedInt8 5, refE a, refE b, UBE.list refE cs ]
+            BE.sequence [ BE.unsignedInt8 5, refE a, refE b, UBE.maybe refE cs ]
 
         EAlias home name args filled body ->
             BE.sequence
@@ -545,6 +555,10 @@ type Decoded
 
 
 {-| Returns the types of a decoded table, each at its id.
+
+Test hook: no production code calls it. `TypeTableTest` and
+`TypedOptimizedCodecTest` read decoded tables through it.
+
 -}
 decodedTypes : Decoded -> Array (Can.Type Name)
 decodedTypes (Decoded arr _) =
@@ -648,7 +662,7 @@ entryDecoder st width arr =
                         BD.succeed Can.TUnit
 
                     5 ->
-                        BD.map3 Can.TTuple refD refD (UBD.list refD)
+                        BD.map3 Can.TTuple refD refD (UBD.maybe refD)
 
                     6 ->
                         BD.map5
@@ -772,7 +786,17 @@ hashT h t =
             mix h 5
 
         Can.TTuple a b cs ->
-            List.foldl (\c acc -> hashT acc c) (hashT (hashT (mix h 6) a) b) cs
+            let
+                hab : Int
+                hab =
+                    hashT (hashT (mix h 6) a) b
+            in
+            case cs of
+                Just c ->
+                    hashT hab c
+
+                Nothing ->
+                    hab
 
         Can.TAlias home name args at ->
             let

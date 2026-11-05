@@ -55,7 +55,6 @@ import Compiler.Parse.Type as Type
 import Compiler.Reporting.Doc as D
 import Compiler.Reporting.Render.Type as RT
 import Compiler.Reporting.Render.Type.Localizer as L
-import System.Crash exposing (crash)
 import Utils.Bytes.Decode as BD
 import Utils.Bytes.Encode as BE
 
@@ -130,13 +129,15 @@ every part of the type but is not used to shorten any name.
 toDoc : L.Localizer -> RT.Context -> Type -> D.Doc
 toDoc localizer context tipe =
     case tipe of
-        Lambda _ _ ->
-            case List.map (toDoc localizer RT.Func) (collectLambdas tipe) of
-                a :: b :: cs ->
-                    RT.lambda context a b cs
-
-                _ ->
-                    crash "toDoc Lambda"
+        Lambda arg body ->
+            let
+                ( second, rest ) =
+                    collectLambdas body
+            in
+            RT.lambda context
+                (toDoc localizer RT.Func arg)
+                (toDoc localizer RT.Func second)
+                (List.map (toDoc localizer RT.Func) rest)
 
         Var name ->
             D.fromName name
@@ -170,16 +171,21 @@ entryToDoc localizer ( field, fieldType ) =
 
 
 {-| Returns the argument types of a chain of `Lambda`s followed by its final
-result, or a one-element list for a type that is not a function.
+result, as the first of them and the rest; a type that is not a function is
+returned alone.
 -}
-collectLambdas : Type -> List Type
+collectLambdas : Type -> ( Type, List Type )
 collectLambdas tipe =
     case tipe of
         Lambda arg body ->
-            arg :: collectLambdas body
+            let
+                ( next, rest ) =
+                    collectLambdas body
+            in
+            ( arg, next :: rest )
 
         _ ->
-            [ tipe ]
+            ( tipe, [] )
 
 
 
@@ -242,18 +248,21 @@ fromRawType (A.At _ astType) =
         Src.TTypeQual _ _ name args ->
             Type name (List.map fromRawType (List.map Tuple.second args))
 
-        Src.TRecord fields maybeExt _ ->
-            let
-                fromField : Src.C2 ( Src.C1 (A.Located a), Src.C1 Src.Type ) -> ( a, Type )
-                fromField ( _, ( ( _, A.At _ field ), ( _, tipe ) ) ) =
-                    ( field, fromRawType tipe )
-            in
-            Record
-                (List.map fromField fields)
-                (Maybe.map (\( _, A.At _ ext ) -> ext) maybeExt)
+        Src.TRecord fields _ ->
+            Record (List.map fromRawField fields) Nothing
+
+        Src.TRecordExt ( _, A.At _ ext ) firstField fields _ ->
+            Record (List.map fromRawField (firstField :: fields)) (Just ext)
 
         Src.TParens ( _, astType_ ) ->
             fromRawType astType_
+
+
+{-| Converts one field of a parsed record type to its name and `Type`.
+-}
+fromRawField : Src.C2 ( Src.C1 (A.Located a), Src.C1 Src.Type ) -> ( a, Type )
+fromRawField ( _, ( ( _, A.At _ field ), ( _, tipe ) ) ) =
+    ( field, fromRawType tipe )
 
 
 

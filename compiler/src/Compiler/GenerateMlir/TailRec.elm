@@ -56,6 +56,7 @@ import Compiler.GenerateMlir.Types as Types
 import Compiler.IR.DecisionTree.Test as Test
 import Compiler.IR.Mono as Mono
 import Compiler.LocalOpt.Typed.DecisionTree as DT
+import Data.NonEmptyList as NE
 import Dict
 import Mlir.Mlir exposing (MlirOp, MlirRegion(..), MlirType(..))
 import OrderedDict
@@ -89,37 +90,66 @@ type alias LoopSpec =
 
 {-| How one parameter of the function is carried in the loop state.
 
-An unsplit parameter has one slot of its own ABI type and `split` is
-`Nothing`. A scalar-split parameter has one slot per field, `!eco.value` for a
-boxed field and the primitive type for an unboxed one, and `split` says how
-the fields are laid out.
+An `Unsplit` parameter has one slot of its own ABI type, `ty`. A `Split`
+parameter has one slot per field (see `SplitGroup`).
 
 -}
-type alias ParamGroup =
-    { origSsaName : String -- the incoming argument, e.g. "%p"
+type ParamGroup
+    = Unsplit { origSsaName : String, elmName : String, ty : MlirType }
+    | Split SplitGroup
+
+
+{-| A scalar-split parameter: one slot per field, `!eco.value` for a boxed
+field and the primitive type for an unboxed one, and `spec` says how the
+fields are laid out. `origSsaName` is the incoming argument, e.g. `"%p"`.
+-}
+type alias SplitGroup =
+    { origSsaName : String
     , elmName : String
+    , spec : Ctx.SplitSpec
     , slotTypes : List MlirType
-    , split : Maybe Ctx.SplitSpec
     }
+
+
+{-| Returns the types of a parameter's slots in the loop state.
+-}
+groupSlotTypes : ParamGroup -> List MlirType
+groupSlotTypes g =
+    case g of
+        Unsplit u ->
+            [ u.ty ]
+
+        Split sg ->
+            sg.slotTypes
 
 
 {-| The compiled form of one step: its ops, and the state it yields.
 
 `nextParams`, `doneVar` and `results` are the values of the parameter slots,
-the done flag and the result slots at the end of the step. Their types are
-those of the loop state: building the `eco.case` for a `case` or an `if`
-crashes the compile when an alternative yields a value whose type differs
-from the loop-state slot at its position. `results` holds
-placeholders in a step that continues the loop.
+the done flag and the result slots at the end of the step. Each step builder
+converts every value to the type of its loop-state slot, so a step carries
+only the names, and its yield takes the types from the loop state
+(`stepYieldOperands`). `results` holds placeholders in a step that continues
+the loop.
 
 -}
 type alias StepResult =
     { ops : List MlirOp
-    , nextParams : List ( String, MlirType )
+    , nextParams : List String
     , doneVar : String
-    , results : List ( String, MlirType )
+    , results : List String
     , ctx : Ctx.Context
     }
+
+
+{-| Returns the operands a step yields: its parameter values, its done flag
+and its results, each typed by its loop-state slot.
+-}
+stepYieldOperands : LoopSpec -> StepResult -> List ( String, MlirType )
+stepYieldOperands loopSpec step =
+    List.map2 Tuple.pair
+        (step.nextParams ++ step.doneVar :: step.results)
+        (List.map Tuple.second loopSpec.paramVars ++ I1 :: loopSpec.resultSlots)
 
 
 
@@ -129,7 +159,8 @@ type alias StepResult =
 
 
 {-| Builds the ops of a function body that runs `body` as a loop: the
-initial state, the `scf.while`, and an `eco.return` of the result slots.
+initial state and the `scf.while`, then, separately, the body's terminator,
+an `eco.return` of the result slots.
 
 `paramPairs` are the function's arguments, already mapped in `ctx`, and
 `paramMonoTypes` their types, in the same order. With `Just` an `SretInfo` the
@@ -145,7 +176,7 @@ compileTailFuncToWhile :
     -> Mono.MonoExpr
     -> MlirType
     -> Maybe Ctx.SretInfo
-    -> ( List MlirOp, Ctx.Context )
+    -> ( List MlirOp, MlirOp, Ctx.Context )
 compileTailFuncToWhile ctx funcName paramPairs paramMonoTypes body retTy resultPlan =
     let
         groups =
@@ -160,7 +191,7 @@ compileTailFuncToWhile ctx funcName paramPairs paramMonoTypes body retTy resultP
         resultSlots =
             case resultPlan of
                 Just info ->
-                    info.slotTypes
+                    Mono.tupleToList info.slotTypes
 
                 Nothing ->
                     [ retTy ]
@@ -202,7 +233,7 @@ compileTailFuncToWhile ctx funcName paramPairs paramMonoTypes body retTy resultP
             (doneInitOp :: resInitOps) ++ List.reverse entryProjOpsRev
 
         flatParamTypes =
-            List.concatMap .slotTypes groups
+            List.concatMap groupSlotTypes groups
 
         stateTypes =
             flatParamTypes ++ [ I1 ] ++ resultSlots
@@ -247,7 +278,7 @@ compileTailFuncToWhile ctx funcName paramPairs paramMonoTypes body retTy resultP
                 _ ->
                     Ops.ecoReturnMulti ctx7 resFinalPairs
     in
-    ( initOps ++ [ whileOp, returnOp ], ctx8 )
+    ( initOps ++ [ whileOp ], returnOp, ctx8 )
 
 
 
@@ -348,11 +379,8 @@ buildAfterRegion ctx stateTypes loopSpec body =
         stepResult =
             compileStep ctxWithArgs updatedLoopSpec body
 
-        yieldOperands =
-            stepResult.nextParams ++ [ ( stepResult.doneVar, I1 ) ] ++ stepResult.results
-
         ( ctx2, yieldOp ) =
-            Ops.scfYieldMany stepResult.ctx yieldOperands
+            Ops.scfYieldMany stepResult.ctx (stepYieldOperands updatedLoopSpec stepResult)
 
         region =
             mkSingleBlockRegion blockArgPairs stepResult.ops yieldOp
@@ -379,31 +407,23 @@ setupVarMappings ctx groups newBlockArgPairs =
                 [] ->
                     { accCtx | splitAggParams = accSplits }
 
-                g :: rest ->
+                (Unsplit u) :: rest ->
+                    case argPairs of
+                        ( newSsaName, newType ) :: remaining ->
+                            go rest remaining (Ctx.addVarMapping u.elmName newSsaName newType accCtx) accSplits
+
+                        [] ->
+                            crash "TailRec.setupVarMappings: fewer block arguments than parameter slots"
+
+                (Split sg) :: rest ->
                     let
                         n =
-                            List.length g.slotTypes
-
-                        slotArgs =
-                            List.take n argPairs
-
-                        remaining =
-                            List.drop n argPairs
+                            List.length sg.slotTypes
                     in
-                    case g.split of
-                        Nothing ->
-                            case slotArgs of
-                                [ ( newSsaName, newType ) ] ->
-                                    go rest remaining (Ctx.addVarMapping g.elmName newSsaName newType accCtx) accSplits
-
-                                _ ->
-                                    crash "TailRec.setupVarMappings: unsplit param group without exactly one block arg"
-
-                        Just spec ->
-                            go rest
-                                remaining
-                                { accCtx | varMappings = Dict.remove g.elmName accCtx.varMappings }
-                                (Dict.insert g.elmName { slots = slotArgs, split = spec } accSplits)
+                    go rest
+                        (List.drop n argPairs)
+                        { accCtx | varMappings = Dict.remove sg.elmName accCtx.varMappings }
+                        (Dict.insert sg.elmName { slots = List.take n argPairs, split = sg.spec } accSplits)
     in
     go groups newBlockArgPairs ctx Dict.empty
 
@@ -435,22 +455,19 @@ planParamGroups ctx paramPairs paramMonoTypes body =
                     String.dropLeft 1 ssaName
 
                 noSplit =
-                    { origSsaName = ssaName
-                    , elmName = elmName
-                    , slotTypes = [ mlirTy ]
-                    , split = Nothing
-                    }
+                    Unsplit { origSsaName = ssaName, elmName = elmName, ty = mlirTy }
 
                 gated kind spec slotTys =
                     if
                         Expr.paramSplitAdmissible ctx.psplitPromoted kind elmName body
                             && splitArgPolicy ctx spec elmName body
                     then
-                        { origSsaName = ssaName
-                        , elmName = elmName
-                        , slotTypes = slotTys
-                        , split = Just spec
-                        }
+                        Split
+                            { origSsaName = ssaName
+                            , elmName = elmName
+                            , spec = spec
+                            , slotTypes = slotTys
+                            }
 
                     else
                         noSplit
@@ -461,33 +478,13 @@ planParamGroups ctx paramPairs paramMonoTypes body =
             else
                 case monoTy of
                     Mono.MTuple _ ts ->
-                        if List.length ts == 2 || List.length ts == 3 then
-                            let
-                                layout =
-                                    Types.computeTupleLayout ts
-
-                                kind =
-                                    if List.length ts == 2 then
-                                        Mono.Tuple2Container
-
-                                    else
-                                        Mono.Tuple3Container
-                            in
-                            gated kind
-                                (Ctx.SplitTuple layout)
-                                (List.map
-                                    (\( elemTy, isUnboxed ) ->
-                                        if isUnboxed then
-                                            Types.monoTypeToAbi elemTy
-
-                                        else
-                                            Types.ecoValue
-                                    )
-                                    layout.elements
-                                )
-
-                        else
-                            noSplit
+                        let
+                            layout =
+                                Types.computeTupleLayout ts
+                        in
+                        gated (Mono.tupleContainerKind ts)
+                            (Ctx.SplitTuple layout)
+                            (Mono.tupleToList (Types.tupleSlotTypes layout))
 
                     Mono.MCustom _ _ _ _ ->
                         case Mono.layoutMapGet monoTy ctx.typeRegistry.ctorShapes of
@@ -523,26 +520,42 @@ planParamGroups ctx paramPairs paramMonoTypes body =
         paramMonoTypes
 
 
-{-| Tells whether `e` builds a new value of the split shape: a tuple literal of
-its arity, or a call of its constructor with one argument per field.
-`inlineConstructSlots` recognises the same expressions.
+{-| Returns the elements of `e` when it builds a new value of the split shape:
+a tuple literal of its arity, or a call of its constructor with one argument
+per field. `Nothing` for any other expression.
 -}
-isFreshConstruct : Ctx.Context -> Ctx.SplitSpec -> Mono.MonoExpr -> Bool
-isFreshConstruct ctx spec e =
+freshConstructElements : Ctx.Context -> Ctx.SplitSpec -> Mono.MonoExpr -> Maybe (List Mono.MonoExpr)
+freshConstructElements ctx spec e =
     case ( spec, e ) of
         ( Ctx.SplitTuple layout, Mono.MonoTupleCreate _ es _ ) ->
-            List.length es == layout.arity
+            if Mono.tupleArity es == Mono.tupleArity layout.elements then
+                Just (Mono.tupleToList es)
+
+            else
+                Nothing
 
         ( Ctx.SplitCtor clayout, Mono.MonoCall _ (Mono.MonoVarGlobal _ specId _) cargs _ _ ) ->
             case Dict.get specId ctx.ctorBySpec of
                 Just shape ->
-                    shape.name == clayout.name && List.length cargs == List.length clayout.fields
+                    if shape.name == clayout.name && List.length cargs == List.length clayout.fields then
+                        Just cargs
+
+                    else
+                        Nothing
 
                 Nothing ->
-                    False
+                    Nothing
 
         _ ->
-            False
+            Nothing
+
+
+{-| Tells whether `e` builds a new value of the split shape
+(`freshConstructElements`).
+-}
+isFreshConstruct : Ctx.Context -> Ctx.SplitSpec -> Mono.MonoExpr -> Bool
+isFreshConstruct ctx spec e =
+    freshConstructElements ctx spec e /= Nothing
 
 
 {-| Tells whether the tail-call arguments for parameter `pName` in `body`
@@ -664,7 +677,7 @@ scanSplitPolicyDecider ctx spec pName decider acc =
                 spec
                 pName
                 fallback
-                (List.foldl (\( _, d ) a -> scanSplitPolicyDecider ctx spec pName d a) acc edges)
+                (List.foldl (\( _, d ) a -> scanSplitPolicyDecider ctx spec pName d a) acc (NE.toList edges))
 
 
 {-| Returns the initial values of one parameter's slots: the incoming
@@ -673,12 +686,12 @@ heap, once, before the loop.
 -}
 emitEntrySlotProjections : Ctx.Context -> ParamGroup -> ( List MlirOp, List String, Ctx.Context )
 emitEntrySlotProjections ctx g =
-    case g.split of
-        Nothing ->
-            ( [], [ g.origSsaName ], ctx )
+    case g of
+        Unsplit u ->
+            ( [], [ u.origSsaName ], ctx )
 
-        Just spec ->
-            projectSlotsFromHeap ctx spec g.slotTypes g.origSsaName
+        Split sg ->
+            projectSlotsFromHeap ctx sg.spec sg.slotTypes sg.origSsaName
 
 
 {-| Returns ops reading every field of the boxed value `containerVar`, at the
@@ -690,7 +703,7 @@ projectSlotsFromHeap ctx spec slotTypes containerVar =
         projectOne idx slotTy ctxA rv =
             case spec of
                 Ctx.SplitTuple layout ->
-                    if layout.arity == 2 then
+                    if Mono.tupleArity layout.elements == 2 then
                         Ops.ecoProjectTuple2 ctxA rv idx slotTy containerVar
 
                     else
@@ -727,7 +740,7 @@ projectSlotsFromAgg ctx spec slotTypes aggOperand =
         projectOne idx slotTy ctxA rv =
             case spec of
                 Ctx.SplitTuple layout ->
-                    if layout.arity == 2 then
+                    if Mono.tupleArity layout.elements == 2 then
                         Ops.ecoProjectTuple2Agg ctxA rv idx slotTy aggOperand
 
                     else
@@ -810,23 +823,15 @@ compileTailCallStep ctx loopSpec args =
         ( argOpsRev, argVarsRev, ctx1 ) =
             List.foldl
                 (\( g, ( _, argExpr ) ) ( opsAcc, varsAcc, ctxAcc ) ->
-                    case g.split of
-                        Nothing ->
+                    case g of
+                        Unsplit u ->
                             let
                                 argResult =
                                     Expr.generateExpr ctxAcc argExpr
 
                                 expectedTy : MlirType
                                 expectedTy =
-                                    case g.slotTypes of
-                                        [ ty ] ->
-                                            ty
-
-                                        _ ->
-                                            crash
-                                                ("TailRec.compileTailCallStep: unsplit group arity in "
-                                                    ++ loopSpec.funcName
-                                                )
+                                    u.ty
 
                                 ( coerceOps, finalVar, ctxCoerced ) =
                                     Expr.coerceResultToType
@@ -843,13 +848,13 @@ compileTailCallStep ctx loopSpec args =
                             , ctxCoerced
                             )
 
-                        Just spec ->
+                        Split sg ->
                             let
                                 ( chunkOps, slotVars, ctxSlots ) =
-                                    compileSplitTailArg ctxAcc spec g argExpr
+                                    compileSplitTailArg ctxAcc sg argExpr
 
                                 slotPairs =
-                                    List.map2 Tuple.pair slotVars g.slotTypes
+                                    List.map2 Tuple.pair slotVars sg.slotTypes
                             in
                             ( List.reverse chunkOps ++ opsAcc
                             , List.reverse slotPairs ++ varsAcc
@@ -884,14 +889,14 @@ compileTailCallStep ctx loopSpec args =
                 loopSpec.resultSlots
     in
     { ops = argOps ++ [ doneOp ] ++ List.reverse dummyOpsRev
-    , nextParams = argVars
+    , nextParams = List.map Tuple.first argVars
     , doneVar = doneVar
-    , results = List.reverse dummyPairsRev
+    , results = List.map Tuple.first (List.reverse dummyPairsRev)
     , ctx = ctx4
     }
 
 
-{-| Returns the next values of the slots of split parameter `g` from its
+{-| Returns the next values of the slots of split parameter `sg` from its
 tail-call argument `argExpr`.
 
 A split parameter of the same slot types passed on as it is reuses its slots
@@ -901,15 +906,15 @@ fields are read from it: from the value aggregate when it compiles to one, and
 otherwise from the heap after boxing it.
 
 -}
-compileSplitTailArg : Ctx.Context -> Ctx.SplitSpec -> ParamGroup -> Mono.MonoExpr -> ( List MlirOp, List String, Ctx.Context )
-compileSplitTailArg ctx spec g argExpr =
+compileSplitTailArg : Ctx.Context -> SplitGroup -> Mono.MonoExpr -> ( List MlirOp, List String, Ctx.Context )
+compileSplitTailArg ctx sg argExpr =
     let
         passThrough =
             case argExpr of
                 Mono.MonoVarLocal v _ ->
                     case Dict.get v ctx.splitAggParams of
                         Just info ->
-                            if List.map Tuple.second info.slots == g.slotTypes then
+                            if List.map Tuple.second info.slots == sg.slotTypes then
                                 Just (List.map Tuple.first info.slots)
 
                             else
@@ -926,7 +931,7 @@ compileSplitTailArg ctx spec g argExpr =
             ( [], slotVars, ctx )
 
         Nothing ->
-            case inlineConstructSlots ctx spec g argExpr of
+            case inlineConstructSlots ctx sg argExpr of
                 Just result ->
                     result
 
@@ -936,7 +941,7 @@ compileSplitTailArg ctx spec g argExpr =
                             Expr.generateExpr ctx argExpr
                     in
                     if Types.isAggValueType argResult.resultType then
-                        projectSlotsFromAgg argResult.ctx spec g.slotTypes ( argResult.resultVar, argResult.resultType )
+                        projectSlotsFromAgg argResult.ctx sg.spec sg.slotTypes ( argResult.resultVar, argResult.resultType )
                             |> (\( pOps, pVars, pCtx ) -> ( argResult.ops ++ pOps, pVars, pCtx ))
 
                     else
@@ -945,43 +950,17 @@ compileSplitTailArg ctx spec g argExpr =
                                 Expr.coerceResultToType argResult.ctx argResult.resultVar argResult.resultType Types.ecoValue
 
                             ( pOps, pVars, pCtx ) =
-                                projectSlotsFromHeap ctxBoxed spec g.slotTypes boxedVar
+                                projectSlotsFromHeap ctxBoxed sg.spec sg.slotTypes boxedVar
                         in
                         ( argResult.ops ++ coerceOps ++ pOps, pVars, pCtx )
 
 
 {-| Returns the ops and values of the elements of `argExpr`, each converted to
-its slot's type, when `argExpr` is a construct that `isFreshConstruct`
-accepts, and `Nothing` otherwise. The two functions must recognise the same
-expressions.
+its slot's type, when `argExpr` is a fresh construct of the split shape
+(`freshConstructElements`), and `Nothing` otherwise.
 -}
-inlineConstructSlots : Ctx.Context -> Ctx.SplitSpec -> ParamGroup -> Mono.MonoExpr -> Maybe ( List MlirOp, List String, Ctx.Context )
-inlineConstructSlots ctx spec g argExpr =
-    let
-        elementsFor =
-            case ( spec, argExpr ) of
-                ( Ctx.SplitTuple layout, Mono.MonoTupleCreate _ es _ ) ->
-                    if List.length es == layout.arity then
-                        Just es
-
-                    else
-                        Nothing
-
-                ( Ctx.SplitCtor clayout, Mono.MonoCall _ (Mono.MonoVarGlobal _ specId _) cargs _ _ ) ->
-                    case Dict.get specId ctx.ctorBySpec of
-                        Just shape ->
-                            if shape.name == clayout.name && List.length cargs == List.length clayout.fields then
-                                Just cargs
-
-                            else
-                                Nothing
-
-                        Nothing ->
-                            Nothing
-
-                _ ->
-                    Nothing
-    in
+inlineConstructSlots : Ctx.Context -> SplitGroup -> Mono.MonoExpr -> Maybe ( List MlirOp, List String, Ctx.Context )
+inlineConstructSlots ctx sg argExpr =
     Maybe.map
         (\es ->
             let
@@ -998,11 +977,11 @@ inlineConstructSlots ctx spec g argExpr =
                             ( List.reverse (r.ops ++ co) ++ opsAcc, fv :: varsAcc, ctxC )
                         )
                         ( [], [], ctx )
-                        (List.map2 Tuple.pair es g.slotTypes)
+                        (List.map2 Tuple.pair es sg.slotTypes)
             in
             ( List.reverse opsRev, List.reverse varsRev, ctxOut )
         )
-        elementsFor
+        (freshConstructElements ctx sg.spec argExpr)
 
 
 
@@ -1017,8 +996,7 @@ leaving the parameters as they are.
 With a `resultPlan`, `expr` is generated with `sretTailLayout` set, converted
 to a value tuple and split into the result slots, and `sretTailLayout` is put
 back as it was in the returned context so that it does not reach code compiled
-later. An `expr` whose generated code ends in a terminator crashes the
-compile.
+later.
 
 -}
 compileBaseReturnStep :
@@ -1042,110 +1020,65 @@ compileBaseReturnStep ctx loopSpec expr =
 
                 Nothing ->
                     Expr.generateExpr ctx expr
+
+        ( coerceOps, resultPairs, ctx1 ) =
+            case loopSpec.resultPlan of
+                Just info ->
+                    let
+                        aggTy =
+                            Ops.aggTupleType (Mono.tupleToList info.slotTypes)
+
+                        ( cOps, aggVar, cCtx ) =
+                            Expr.coerceResultToType
+                                exprResult.ctx
+                                exprResult.resultVar
+                                exprResult.resultType
+                                aggTy
+
+                        ( projOpsRev, pairsRev, pCtx ) =
+                            List.foldl
+                                (\( idx, slotTy ) ( oAcc, pAcc, cAcc ) ->
+                                    let
+                                        ( pv, cF ) =
+                                            Ctx.freshVar cAcc
+
+                                        ( cP, projOp ) =
+                                            if Mono.tupleArity info.layout.elements == 2 then
+                                                Ops.ecoProjectTuple2Agg cF pv idx slotTy ( aggVar, aggTy )
+
+                                            else
+                                                Ops.ecoProjectTuple3Agg cF pv idx slotTy ( aggVar, aggTy )
+                                    in
+                                    ( projOp :: oAcc, ( pv, slotTy ) :: pAcc, cP )
+                                )
+                                ( [], [], cCtx )
+                                (List.indexedMap Tuple.pair (Mono.tupleToList info.slotTypes))
+                    in
+                    ( cOps ++ List.reverse projOpsRev, List.reverse pairsRev, pCtx )
+
+                Nothing ->
+                    let
+                        ( cOps, finalVar, cCtx ) =
+                            Expr.coerceResultToType
+                                exprResult.ctx
+                                exprResult.resultVar
+                                exprResult.resultType
+                                loopSpec.retType
+                    in
+                    ( cOps, [ ( finalVar, loopSpec.retType ) ], cCtx )
+
+        ( doneVar, ctx2 ) =
+            Ctx.freshVar ctx1
+
+        ( ctx3, doneOp ) =
+            Ops.arithConstantBool ctx2 doneVar True
     in
-    if exprResult.isTerminated then
-        crash
-            "TailRec.compileBaseReturnStep: encountered terminated ExprResult; extend compileStep to handle this expression shape directly."
-
-    else
-        let
-            ( coerceOps, resultPairs, ctx1 ) =
-                case loopSpec.resultPlan of
-                    Just info ->
-                        let
-                            aggTy =
-                                Ops.aggTupleType info.slotTypes
-
-                            ( cOps, aggVar, cCtx ) =
-                                Expr.coerceResultToType
-                                    exprResult.ctx
-                                    exprResult.resultVar
-                                    exprResult.resultType
-                                    aggTy
-
-                            ( projOpsRev, pairsRev, pCtx ) =
-                                List.foldl
-                                    (\( idx, slotTy ) ( oAcc, pAcc, cAcc ) ->
-                                        let
-                                            ( pv, cF ) =
-                                                Ctx.freshVar cAcc
-
-                                            ( cP, projOp ) =
-                                                if info.layout.arity == 2 then
-                                                    Ops.ecoProjectTuple2Agg cF pv idx slotTy ( aggVar, aggTy )
-
-                                                else
-                                                    Ops.ecoProjectTuple3Agg cF pv idx slotTy ( aggVar, aggTy )
-                                        in
-                                        ( projOp :: oAcc, ( pv, slotTy ) :: pAcc, cP )
-                                    )
-                                    ( [], [], cCtx )
-                                    (List.indexedMap Tuple.pair info.slotTypes)
-                        in
-                        ( cOps ++ List.reverse projOpsRev, List.reverse pairsRev, pCtx )
-
-                    Nothing ->
-                        let
-                            ( cOps, finalVar, cCtx ) =
-                                Expr.coerceResultToType
-                                    exprResult.ctx
-                                    exprResult.resultVar
-                                    exprResult.resultType
-                                    loopSpec.retType
-                        in
-                        ( cOps, [ ( finalVar, loopSpec.retType ) ], cCtx )
-
-            ( doneVar, ctx2 ) =
-                Ctx.freshVar ctx1
-
-            ( ctx3, doneOp ) =
-                Ops.arithConstantBool ctx2 doneVar True
-
-            nextParams =
-                loopSpec.paramVars
-        in
-        { ops = exprResult.ops ++ coerceOps ++ [ doneOp ]
-        , nextParams = nextParams
-        , doneVar = doneVar
-        , results = resultPairs
-        , ctx = ctx3
-        }
-
-
-{-| Returns `operands` unchanged, but crashes the compile when an operand's
-type differs from the loop-state slot at the same position, naming the
-function, `label` and the first operand that differs. A difference in the
-number of operands is not checked.
--}
-checkedYieldOperands : LoopSpec -> String -> List ( String, MlirType ) -> List ( String, MlirType )
-checkedYieldOperands loopSpec label operands =
-    let
-        expected =
-            List.map Tuple.second loopSpec.paramVars ++ [ I1 ] ++ loopSpec.resultSlots
-
-        mismatches =
-            List.map2 (\( _, actual ) exp -> ( actual, exp )) operands expected
-                |> List.indexedMap Tuple.pair
-                |> List.filter (\( _, ( actual, exp ) ) -> actual /= exp)
-    in
-    case mismatches of
-        [] ->
-            operands
-
-        ( idx, ( actual, exp ) ) :: _ ->
-            crash
-                ("TailRec yield ABI mismatch in "
-                    ++ loopSpec.funcName
-                    ++ " ["
-                    ++ label
-                    ++ "] operand "
-                    ++ String.fromInt idx
-                    ++ ": yields "
-                    ++ Types.mlirTypeToString actual
-                    ++ " but loop state declares "
-                    ++ Types.mlirTypeToString exp
-                )
-
+    { ops = exprResult.ops ++ coerceOps ++ [ doneOp ]
+    , nextParams = List.map Tuple.first loopSpec.paramVars
+    , doneVar = doneVar
+    , results = List.map Tuple.first resultPairs
+    , ctx = ctx3
+    }
 
 
 -- ============================================================================
@@ -1233,127 +1166,115 @@ field of a constructor the earlier test checked for. Each test becomes an
 compileCaseChainStep :
     Ctx.Context
     -> LoopSpec
-    -> List ( Mono.MonoDtPath, DT.Test )
+    -> NE.Nonempty ( Mono.MonoDtPath, DT.Test )
     -> Mono.Decider Mono.MonoChoice
     -> Mono.Decider Mono.MonoChoice
     -> Array (Maybe Mono.MonoExpr)
     -> StepResult
-compileCaseChainStep ctx loopSpec testChain success failure jumpLookup =
-    case testChain of
-        [] ->
-            compileCaseDeciderStep ctx loopSpec success jumpLookup
+compileCaseChainStep ctx loopSpec (NE.Nonempty firstTest restTests) success failure jumpLookup =
+    let
+        ( firstOps, firstVar, ctx1 ) =
+            Patterns.generateMonoTest ctx firstTest
 
-        firstTest :: restTests ->
-            let
-                ( firstOps, firstVar, ctx1 ) =
-                    Patterns.generateMonoTest ctx firstTest
+        thenStep =
+            case restTests of
+                [] ->
+                    compileCaseDeciderStep ctx1 loopSpec success jumpLookup
 
-                thenStep =
-                    compileCaseChainStep ctx1 loopSpec restTests success failure jumpLookup
+                secondTest :: otherTests ->
+                    compileCaseChainStep ctx1 loopSpec (NE.Nonempty secondTest otherTests) success failure jumpLookup
 
-                thenYieldOperands =
-                    checkedYieldOperands loopSpec
-                        "then"
-                        (thenStep.nextParams
-                            ++ [ ( thenStep.doneVar, I1 ) ]
-                            ++ thenStep.results
-                        )
+        thenYieldOperands =
+            stepYieldOperands loopSpec thenStep
 
-                ( thenYieldCtx, thenYieldOp ) =
-                    Ops.ecoYieldMany thenStep.ctx thenYieldOperands
+        ( thenYieldCtx, thenYieldOp ) =
+            Ops.ecoYieldMany thenStep.ctx thenYieldOperands
 
-                thenRegion =
-                    mkSingleBlockRegion [] thenStep.ops thenYieldOp
+        thenRegion =
+            mkSingleBlockRegion [] thenStep.ops thenYieldOp
 
-                ctxForElse =
-                    Ctx.ctxForSiblingRegion ctx1 thenYieldCtx
+        ctxForElse =
+            Ctx.ctxForSiblingRegion ctx1 thenYieldCtx
 
-                elseStep =
-                    compileCaseDeciderStep ctxForElse loopSpec failure jumpLookup
+        elseStep =
+            compileCaseDeciderStep ctxForElse loopSpec failure jumpLookup
 
-                elseYieldOperands =
-                    checkedYieldOperands loopSpec
-                        "else"
-                        (elseStep.nextParams
-                            ++ [ ( elseStep.doneVar, I1 ) ]
-                            ++ elseStep.results
-                        )
+        elseYieldOperands =
+            stepYieldOperands loopSpec elseStep
 
-                ( elseYieldCtx, elseYieldOp ) =
-                    Ops.ecoYieldMany elseStep.ctx elseYieldOperands
+        ( elseYieldCtx, elseYieldOp ) =
+            Ops.ecoYieldMany elseStep.ctx elseYieldOperands
 
-                elseRegion =
-                    mkSingleBlockRegion [] elseStep.ops elseYieldOp
+        elseRegion =
+            mkSingleBlockRegion [] elseStep.ops elseYieldOp
 
-                numParams =
-                    List.length loopSpec.paramVars
+        numParams =
+            List.length loopSpec.paramVars
 
-                paramTypes =
-                    List.map Tuple.second loopSpec.paramVars
+        paramTypes =
+            List.map Tuple.second loopSpec.paramVars
 
-                ( caseResultNames, ctxWithResults ) =
-                    allocateFreshVars elseYieldCtx (numParams + 1 + List.length loopSpec.resultSlots)
+        ( caseResultNames, ctxWithResults ) =
+            allocateFreshVars elseYieldCtx (numParams + 1 + List.length loopSpec.resultSlots)
 
-                caseResultPairs =
-                    zip caseResultNames (paramTypes ++ [ I1 ] ++ loopSpec.resultSlots)
+        caseResultPairs =
+            zip caseResultNames (paramTypes ++ [ I1 ] ++ loopSpec.resultSlots)
 
-                ( ctxAfterCase, caseOp ) =
-                    Ops.ecoCaseMany
-                        ctxWithResults
-                        firstVar
-                        I1
-                        "bool"
-                        [ 1, 0 ]
-                        [ thenRegion, elseRegion ]
-                        caseResultPairs
+        ( ctxAfterCase, caseOp ) =
+            Ops.ecoCaseMany
+                ctxWithResults
+                firstVar
+                I1
+                "bool"
+                [ 1, 0 ]
+                [ thenRegion, elseRegion ]
+                caseResultPairs
 
-                nextParamVars =
-                    List.take numParams caseResultPairs
+        nextParamVars =
+            List.take numParams caseResultPairs
 
-                doneResultVar =
-                    List.drop numParams caseResultNames
-                        |> List.head
-                        |> Maybe.withDefault "%error_no_done"
+        doneResultVar =
+            List.drop numParams caseResultNames
+                |> List.head
+                |> Maybe.withDefault "%error_no_done"
 
-                resultPairsOut =
-                    List.drop (numParams + 1) caseResultPairs
-            in
-            { ops = firstOps ++ [ caseOp ]
-            , nextParams = nextParamVars
-            , doneVar = doneResultVar
-            , results = resultPairsOut
-            , ctx = Ctx.ctxAfterBranchOp ctx1 ctxAfterCase caseResultNames
-            }
+        resultPairsOut =
+            List.drop (numParams + 1) caseResultPairs
+    in
+    { ops = firstOps ++ [ caseOp ]
+    , nextParams = List.map Tuple.first nextParamVars
+    , doneVar = doneResultVar
+    , results = List.map Tuple.first resultPairsOut
+    , ctx = Ctx.ctxAfterBranchOp ctx1 ctxAfterCase caseResultNames
+    }
 
 
 {-| Compiles a multi-way branch on the value at `path` as one step: an
 `eco.case` with one alternative per edge and a last one for `fallback`. For
 strings its kind is `"str"` and it carries the edge strings as patterns.
 
-The kind of case is taken from the first edge's test, and is `"ctor"` when
-there are no edges. A string case numbers its alternatives in order.
+The kind of case is taken from the first edge's test. A string case numbers its
+alternatives in order.
 
 -}
 compileCaseFanOutStep :
     Ctx.Context
     -> LoopSpec
     -> Mono.MonoDtPath
-    -> List ( DT.Test, Mono.Decider Mono.MonoChoice )
+    -> NE.Nonempty ( Test.FanTest, Mono.Decider Mono.MonoChoice )
     -> Mono.Decider Mono.MonoChoice
     -> Array (Maybe Mono.MonoExpr)
     -> StepResult
-compileCaseFanOutStep ctx loopSpec path edges fallback jumpLookup =
+compileCaseFanOutStep ctx loopSpec path ((NE.Nonempty ( firstTest, _ ) _) as nonemptyEdges) fallback jumpLookup =
     let
+        edges =
+            NE.toList nonemptyEdges
+
         edgeTests =
             List.map Tuple.first edges
 
         caseKind =
-            case edgeTests of
-                firstTest :: _ ->
-                    Patterns.caseKindFromTest firstTest
-
-                [] ->
-                    "ctor"
+            Patterns.caseKindFromTest firstTest
 
         scrutineeType =
             Patterns.scrutineeTypeFromCaseKind caseKind
@@ -1401,12 +1322,7 @@ compileCaseFanOutStep ctx loopSpec path edges fallback jumpLookup =
                             compileCaseDeciderStep branchCtx loopSpec subTree jumpLookup
 
                         yieldOperands =
-                            checkedYieldOperands loopSpec
-                                "fanout-edge"
-                                (subStep.nextParams
-                                    ++ [ ( subStep.doneVar, I1 ) ]
-                                    ++ subStep.results
-                                )
+                            stepYieldOperands loopSpec subStep
 
                         ( yieldCtx, yieldOp ) =
                             Ops.ecoYieldMany subStep.ctx yieldOperands
@@ -1426,12 +1342,7 @@ compileCaseFanOutStep ctx loopSpec path edges fallback jumpLookup =
             compileCaseDeciderStep (Ctx.ctxForSiblingRegion ctx1 ctx2) loopSpec fallback jumpLookup
 
         fallbackYieldOperands =
-            checkedYieldOperands loopSpec
-                "fanout-fallback"
-                (fallbackStep.nextParams
-                    ++ [ ( fallbackStep.doneVar, I1 ) ]
-                    ++ fallbackStep.results
-                )
+            stepYieldOperands loopSpec fallbackStep
 
         ( fallbackYieldCtx, fallbackYieldOp ) =
             Ops.ecoYieldMany fallbackStep.ctx fallbackYieldOperands
@@ -1488,9 +1399,9 @@ compileCaseFanOutStep ctx loopSpec path edges fallback jumpLookup =
             List.drop (numParams + 1) caseResultPairs
     in
     { ops = pathOps ++ [ caseOp ]
-    , nextParams = nextParamVars
+    , nextParams = List.map Tuple.first nextParamVars
     , doneVar = doneResultVar
-    , results = resultPairsOut
+    , results = List.map Tuple.first resultPairsOut
     , ctx = Ctx.ctxAfterBranchOp ctx1 ctx3 caseResultNames
     }
 
@@ -1498,14 +1409,14 @@ compileCaseFanOutStep ctx loopSpec path edges fallback jumpLookup =
 {-| Returns the string a string test compares with, and crashes the compile
 for any other test.
 -}
-extractStringPatternForStep : DT.Test -> String
+extractStringPatternForStep : Test.FanTest -> String
 extractStringPatternForStep test =
     case test of
-        Test.IsStr s ->
+        Test.FStr s ->
             s
 
         _ ->
-            crash "extractStringPatternForStep: expected Test.IsStr but got non-string test"
+            crash "extractStringPatternForStep: expected Test.FStr but got non-string test"
 
 
 
@@ -1548,7 +1459,7 @@ compileIfStep ctx loopSpec branches final =
                     compileStep condCtx loopSpec thenExpr
 
                 thenYieldOperands =
-                    checkedYieldOperands loopSpec "if-then" (thenStep.nextParams ++ [ ( thenStep.doneVar, I1 ) ] ++ thenStep.results)
+                    stepYieldOperands loopSpec thenStep
 
                 ( thenYieldCtx, thenYieldOp ) =
                     Ops.ecoYieldMany thenStep.ctx thenYieldOperands
@@ -1560,7 +1471,7 @@ compileIfStep ctx loopSpec branches final =
                     compileIfStep (Ctx.ctxForSiblingRegion condCtx thenYieldCtx) loopSpec restBranches final
 
                 elseYieldOperands =
-                    checkedYieldOperands loopSpec "if-else" (elseStep.nextParams ++ [ ( elseStep.doneVar, I1 ) ] ++ elseStep.results)
+                    stepYieldOperands loopSpec elseStep
 
                 ( elseYieldCtx, elseYieldOp ) =
                     Ops.ecoYieldMany elseStep.ctx elseYieldOperands
@@ -1596,9 +1507,9 @@ compileIfStep ctx loopSpec branches final =
                     List.drop (numParams + 1) caseResultPairs
             in
             { ops = condRes.ops ++ condUnboxOps ++ [ caseOp ]
-            , nextParams = nextParamVars
+            , nextParams = List.map Tuple.first nextParamVars
             , doneVar = doneResultVar
-            , results = resultPairsOut
+            , results = List.map Tuple.first resultPairsOut
             , ctx = Ctx.ctxAfterBranchOp condCtx ctxAfterCase caseResultNames
             }
 

@@ -3,11 +3,11 @@ module Compiler.IR.Typed.Optimized exposing
     , Def(..), Destructor(..), Path(..)
     , ContainerHint(..)
     , Decider(..), Choice(..)
-    , GlobalGraph(..), LocalGraph(..), LocalGraphData, Node(..), Main(..), EffectsType(..)
+    , GlobalGraph(..), LocalGraph(..), LocalGraphData, Node(..), Main(..)
     , emptyGlobalGraph
     , compareGlobal, toComparableGlobal, toKernelGlobal
     , typeOf, metaOf, tvarOf
-    , computeVarSupers, varSupersOfType
+    , computeVarSupers
     , globalGraphEncoder, globalGraphDecoder, localGraphEncoder, localGraphDecoder
     , globalHash
     )
@@ -47,8 +47,7 @@ written as the index of another string, without error.
 Decoding does not give back everything that was encoded from. A decoded graph
 has no `main`, empty field counts, empty dependency sets on its nodes, no
 solver variable in any meta and no lambda id on any `Function` or
-`TrackedFunction`. A `Manager` node decodes with effects type `Cmd`, a `Kernel`
-node with no chunks, and a `VarDebug` with home `Debug` of `elm/core` and no
+`TrackedFunction`. A `VarDebug` decodes with home `Debug` of `elm/core` and no
 unhandled-value name. The solver variable of a `TailDef` is kept.
 
 The string walkers serve one more purpose. `computeVarSupers` runs them with a
@@ -78,7 +77,7 @@ every name the encoding would write.
 
 # Dependency Graphs
 
-@docs GlobalGraph, LocalGraph, LocalGraphData, Node, Main, EffectsType
+@docs GlobalGraph, LocalGraph, LocalGraphData, Node, Main
 
 
 # Graph Operations
@@ -98,7 +97,7 @@ every name the encoding would write.
 
 # Super Constraints
 
-@docs computeVarSupers, varSupersOfType
+@docs computeVarSupers
 
 
 # Serialization
@@ -121,11 +120,11 @@ import Compiler.Elm.Package as Pkg
 import Compiler.IR.Canonical as Can
 import Compiler.IR.DecisionTree.Test as DT
 import Compiler.IR.DecisionTree.TypedPath as DT
-import Compiler.IR.Kernel.Chunk as K
 import Compiler.IR.Source.Shader as Shader
 import Compiler.IR.Typed.TypeTable as TypeTable exposing (TypeTable)
 import Compiler.IR.Typed.TypeVars as Vars
 import Data.Map
+import Data.NonEmptyList as NE
 import Data.Set exposing (EverySet)
 import Dict exposing (Dict)
 import Eco.Hash
@@ -248,7 +247,7 @@ type Expr id
     | Record (Dict Name (Expr id)) (Meta id)
     | TrackedRecord A.Region (Data.Map.Dict String (A.Located Name) (Expr id)) (Meta id)
     | Unit (Meta id)
-    | Tuple A.Region (Expr id) (Expr id) (List (Expr id)) (Meta id)
+    | Tuple A.Region (Expr id) (Expr id) (Maybe (Expr id)) (Meta id)
     | Shader Shader.Source (EverySet String Name) (EverySet String Name) (Meta id)
 
 
@@ -481,13 +480,12 @@ type ContainerHint
 A path is read inside out: `Root` names the variable holding the whole value,
 and each other step takes a part of the value its inner path reaches. `Index`
 takes the element at an index of a container of the kind its hint names,
-`ArrayIndex` an element by position, `Field` a record field, and `Unbox` the
+`Field` a record field, and `Unbox` the
 argument of a constructor of a type with one constructor of one argument.
 
 -}
 type Path
     = Index Index.ZeroBased ContainerHint Path
-    | ArrayIndex Int Path
     | Field Name Path
     | Unbox Path
     | Root Name
@@ -500,17 +498,18 @@ type Path
 {-| The decision tree of a compiled `case`, with a value of type `a` at each
 leaf.
 
-`Chain` runs a list of tests, each at a path into the inspected value, and
+`Chain` runs one or more tests, each at a path into the inspected value, and
 continues with its first tree if all pass and its second otherwise. `FanOut`
-picks the edge whose test the value at one path passes, or the fallback tree.
-The paths and tests are those of `Compiler.IR.DecisionTree.TypedPath` and
+picks the edge whose test the value at one path passes, or the fallback tree;
+it has at least one edge, and its edge tests are `DT.FanTest`s. The paths and
+tests are those of `Compiler.IR.DecisionTree.TypedPath` and
 `Compiler.IR.DecisionTree.Test`.
 
 -}
 type Decider a
     = Leaf a
-    | Chain (List ( DT.Path, DT.Test )) (Decider a) (Decider a)
-    | FanOut DT.Path (List ( DT.Test, Decider a )) (Decider a)
+    | Chain (NE.Nonempty ( DT.Path, DT.Test )) (Decider a) (Decider a)
+    | FanOut DT.Path (NE.Nonempty ( DT.FanTest, Decider a )) (Decider a)
 
 
 {-| What a leaf of a decision tree leads to: a branch body placed in the tree
@@ -584,12 +583,10 @@ definitions as name and body, the functions as `Def`s, and the group's
 dependencies. Each member's own name holds a `Link` to it. `Link` also points
 an effect module's `command` and `subscription` at its `Manager` node.
 
-`Kernel` carries a kernel module's chunks and dependencies. `PortIncoming` and
-`PortOutgoing` carry a port's decoder or encoder, its dependencies, and the
-port's meta.
+`PortIncoming` and `PortOutgoing` carry a port's decoder or encoder, its
+dependencies, and the port's meta.
 
-Dependency sets, `Manager`'s effects type and `Kernel`'s chunks are not encoded,
-so they are empty or `Cmd` in a decoded graph.
+Dependency sets are not encoded, so they are empty in a decoded graph.
 
 -}
 type Node id
@@ -600,19 +597,9 @@ type Node id
     | Box (Can.Type id)
     | Link Global
     | Cycle (List Name) (List ( Name, Expr id )) (List (Def id)) (EverySet String Global)
-    | Manager EffectsType
-    | Kernel (List K.Chunk) (EverySet String Global)
+    | Manager
     | PortIncoming (Expr id) (EverySet String Global) (Meta id)
     | PortOutgoing (Expr id) (EverySet String Global) (Meta id)
-
-
-{-| Which effects an effect module manages: commands, subscriptions, or both
-(`Fx`).
--}
-type EffectsType
-    = Cmd
-    | Sub
-    | Fx
 
 
 
@@ -808,8 +795,7 @@ metaDecoderS tdt =
 
 
 {-| Produces an encoder for a node: a tag byte, then its fields. Dependency
-sets, `Manager`'s effects type and `Kernel`'s chunks are not written, so a
-`Manager` or `Kernel` node is its tag alone. Tag 2 is not used.
+sets are not written, so a `Manager` node is its tag alone. Tag 2 is not used.
 -}
 nodeEncoderS : StringTable -> TypeTable -> Node Name -> Bytes.Encode.Encoder
 nodeEncoderS st tt node =
@@ -864,30 +850,26 @@ nodeEncoderS st tt node =
                 , BE.list (defEncoderS st tt) functions
                 ]
 
-        Manager _ ->
+        Manager ->
             Bytes.Encode.unsignedInt8 8
-
-        Kernel _ _ ->
-            Bytes.Encode.unsignedInt8 9
 
         PortIncoming decoder _ meta ->
             Bytes.Encode.sequence
-                [ Bytes.Encode.unsignedInt8 10
+                [ Bytes.Encode.unsignedInt8 9
                 , exprEncoderS st tt decoder
                 , TypeTable.ref tt meta.tipe
                 ]
 
         PortOutgoing encoder _ meta ->
             Bytes.Encode.sequence
-                [ Bytes.Encode.unsignedInt8 11
+                [ Bytes.Encode.unsignedInt8 10
                 , exprEncoderS st tt encoder
                 , TypeTable.ref tt meta.tipe
                 ]
 
 
 {-| Produces a decoder for a node as `nodeEncoderS` writes it, filling what was
-not written with empty dependency sets, effects type `Cmd` and no kernel
-chunks. An unknown tag fails.
+not written with empty dependency sets. An unknown tag fails.
 -}
 nodeDecoderS : StringTable -> TypeTable.Decoded -> Bytes.Decode.Decoder (Node Name)
 nodeDecoderS st tdt =
@@ -930,17 +912,14 @@ nodeDecoderS st tdt =
                             (BD.list (defDecoderS st tdt))
 
                     8 ->
-                        Bytes.Decode.succeed (Manager Cmd)
+                        Bytes.Decode.succeed Manager
 
                     9 ->
-                        Bytes.Decode.succeed (Kernel [] Data.Set.empty)
-
-                    10 ->
                         Bytes.Decode.map2 (\expr meta -> PortIncoming expr Data.Set.empty meta)
                             (exprDecoderS st tdt)
                             (metaDecoderS tdt)
 
-                    11 ->
+                    10 ->
                         Bytes.Decode.map2 (\expr meta -> PortOutgoing expr Data.Set.empty meta)
                             (exprDecoderS st tdt)
                             (metaDecoderS tdt)
@@ -1234,7 +1213,7 @@ exprEncoderS st tt expr =
                 , A.regionEncoderV region
                 , exprEncoderS st tt a
                 , exprEncoderS st tt b
-                , BE.list (exprEncoderS st tt) cs
+                , BE.maybe (exprEncoderS st tt) cs
                 , TypeTable.ref tt meta.tipe
                 ]
 
@@ -1438,7 +1417,7 @@ exprDecoderS st tdt =
                             A.regionDecoderV
                             (exprDecoderS st tdt)
                             (exprDecoderS st tdt)
-                            (BD.list (exprDecoderS st tdt))
+                            (BD.maybe (exprDecoderS st tdt))
                             (metaDecoderS tdt)
 
                     29 ->
@@ -1566,7 +1545,7 @@ deciderEncoderS st encoder decider =
         Chain testChain success failure ->
             Bytes.Encode.sequence
                 [ Bytes.Encode.unsignedInt8 1
-                , BE.list (BE.jsonPair (DT.pathEncoderS st) (DT.testEncoderS st)) testChain
+                , BE.nonempty (BE.jsonPair (DT.pathEncoderS st) (DT.testEncoderS st)) testChain
                 , deciderEncoderS st encoder success
                 , deciderEncoderS st encoder failure
                 ]
@@ -1575,7 +1554,7 @@ deciderEncoderS st encoder decider =
             Bytes.Encode.sequence
                 [ Bytes.Encode.unsignedInt8 2
                 , DT.pathEncoderS st path
-                , BE.list (BE.jsonPair (DT.testEncoderS st) (deciderEncoderS st encoder)) edges
+                , BE.nonempty (BE.jsonPair (DT.fanTestEncoderS st) (deciderEncoderS st encoder)) edges
                 , deciderEncoderS st encoder fallback
                 ]
 
@@ -1594,14 +1573,14 @@ deciderDecoderS st decoder =
 
                     1 ->
                         Bytes.Decode.map3 Chain
-                            (BD.list (BD.jsonPair (DT.pathDecoderS st) (DT.testDecoderS st)))
+                            (BD.nonempty (BD.jsonPair (DT.pathDecoderS st) (DT.testDecoderS st)))
                             (deciderDecoderS st decoder)
                             (deciderDecoderS st decoder)
 
                     2 ->
                         Bytes.Decode.map3 FanOut
                             (DT.pathDecoderS st)
-                            (BD.list (BD.jsonPair (DT.testDecoderS st) (deciderDecoderS st decoder)))
+                            (BD.nonempty (BD.jsonPair (DT.fanTestDecoderS st) (deciderDecoderS st decoder)))
                             (deciderDecoderS st decoder)
 
                     _ ->
@@ -1704,29 +1683,22 @@ pathEncoderS st path =
                 , pathEncoderS st subPath
                 ]
 
-        ArrayIndex index subPath ->
-            Bytes.Encode.sequence
-                [ Bytes.Encode.unsignedInt8 1
-                , BE.uintV index
-                , pathEncoderS st subPath
-                ]
-
         Field field subPath ->
             Bytes.Encode.sequence
-                [ Bytes.Encode.unsignedInt8 2
+                [ Bytes.Encode.unsignedInt8 1
                 , StringTable.string st field
                 , pathEncoderS st subPath
                 ]
 
         Unbox subPath ->
             Bytes.Encode.sequence
-                [ Bytes.Encode.unsignedInt8 3
+                [ Bytes.Encode.unsignedInt8 2
                 , pathEncoderS st subPath
                 ]
 
         Root name ->
             Bytes.Encode.sequence
-                [ Bytes.Encode.unsignedInt8 4
+                [ Bytes.Encode.unsignedInt8 3
                 , StringTable.string st name
                 ]
 
@@ -1746,19 +1718,14 @@ pathDecoderS st =
                             (pathDecoderS st)
 
                     1 ->
-                        Bytes.Decode.map2 ArrayIndex
-                            BD.uintV
-                            (pathDecoderS st)
-
-                    2 ->
                         Bytes.Decode.map2 Field
                             (StringTable.stringDec st)
                             (pathDecoderS st)
 
-                    3 ->
+                    2 ->
                         Bytes.Decode.map Unbox (pathDecoderS st)
 
-                    4 ->
+                    3 ->
                         Bytes.Decode.map Root (StringTable.stringDec st)
 
                     _ ->
@@ -1776,7 +1743,7 @@ older layout fails to decode rather than decoding into the wrong values.
 -}
 typedGraphFormatVersion : Int
 typedGraphFormatVersion =
-    3
+    6
 
 
 {-| A decoder that reads the format-version byte and fails unless it is
@@ -2135,10 +2102,7 @@ internTypesFromNode node tb =
                 (List.foldl (\( _, e ) b -> internTypesFromExpr e b) tb values)
                 funcs
 
-        Manager _ ->
-            tb
-
-        Kernel _ _ ->
+        Manager ->
             tb
 
         PortIncoming expr _ meta ->
@@ -2226,10 +2190,18 @@ internTypesFromExpr expr tb =
             Data.Map.foldl (\_ e b -> internTypesFromExpr e b) tb value
                 |> TypeTable.add meta.tipe
 
-        Tuple _ a b cs meta ->
-            List.foldl internTypesFromExpr
-                (tb |> internTypesFromExpr a |> internTypesFromExpr b |> TypeTable.add meta.tipe)
-                cs
+        Tuple _ a b maybeC meta ->
+            let
+                withAB : TypeTable.Builder
+                withAB =
+                    tb |> internTypesFromExpr a |> internTypesFromExpr b |> TypeTable.add meta.tipe
+            in
+            case maybeC of
+                Just c ->
+                    internTypesFromExpr c withAB
+
+                Nothing ->
+                    withAB
 
         _ ->
             TypeTable.add (typeOf expr) tb
@@ -2251,7 +2223,7 @@ internTypesFromDecider decider tb =
             tb |> internTypesFromDecider success |> internTypesFromDecider failure
 
         FanOut _ edges fallback ->
-            List.foldl (\( _, d ) b -> internTypesFromDecider d b) tb edges
+            List.foldl (\( _, d ) b -> internTypesFromDecider d b) tb (NE.toList edges)
                 |> internTypesFromDecider fallback
 
 
@@ -2320,18 +2292,6 @@ computeVarSupers graph =
         )
 
 
-{-| Returns a varSupers map for one canonical type: each string the type writes
-that has a super-constraint prefix, mapped to that constraint. Like
-`computeVarSupers`, it takes alias argument and record field names as well as
-type variables.
--}
-varSupersOfType : Can.Type Name -> Dict Name Vars.SuperType
-varSupersOfType tipe =
-    Set.foldl insertSuperOfName
-        Dict.empty
-        (StringTable.collected (Can.collectStringsFromType tipe StringTable.collectSupers))
-
-
 {-| Returns the collector after giving it a global's home module and name.
 -}
 collectStringsFromGlobal : Global -> StringTable.Collector -> StringTable.Collector
@@ -2380,10 +2340,7 @@ collectStringsFromNode node acc =
             in
             List.foldl collectStringsFromDef withValues funcs
 
-        Manager _ ->
-            acc
-
-        Kernel _ _ ->
+        Manager ->
             acc
 
         PortIncoming expr _ _ ->
@@ -2572,13 +2529,20 @@ collectStringsFromExpr expr acc =
         Unit _ ->
             acc
 
-        Tuple _ a b cs _ ->
-            List.foldl collectStringsFromExpr
-                (acc
-                    |> collectStringsFromExpr a
-                    |> collectStringsFromExpr b
-                )
-                cs
+        Tuple _ a b maybeC _ ->
+            let
+                withAB : StringTable.Collector
+                withAB =
+                    acc
+                        |> collectStringsFromExpr a
+                        |> collectStringsFromExpr b
+            in
+            case maybeC of
+                Just c ->
+                    collectStringsFromExpr c withAB
+
+                Nothing ->
+                    withAB
 
         Shader src attributes uniforms _ ->
             let
@@ -2611,9 +2575,6 @@ collectStringsFromPath path acc =
     case path of
         Index _ hint subPath ->
             acc |> collectStringsFromContainerHint hint |> collectStringsFromPath subPath
-
-        ArrayIndex _ subPath ->
-            collectStringsFromPath subPath acc
 
         Field field subPath ->
             acc |> StringTable.add field |> collectStringsFromPath subPath
@@ -2654,7 +2615,7 @@ collectStringsFromDecider collectInner decider acc =
                     List.foldl
                         (\( p, t ) a -> a |> DT.collectStringsFromPath p |> DT.collectStringsFromTest t)
                         acc
-                        testChain
+                        (NE.toList testChain)
             in
             withTests
                 |> collectStringsFromDecider collectInner success
@@ -2671,11 +2632,11 @@ collectStringsFromDecider collectInner decider acc =
                     List.foldl
                         (\( t, d ) a ->
                             a
-                                |> DT.collectStringsFromTest t
+                                |> DT.collectStringsFromFanTest t
                                 |> collectStringsFromDecider collectInner d
                         )
                         withPath
-                        edges
+                        (NE.toList edges)
             in
             collectStringsFromDecider collectInner fallback withEdges
 

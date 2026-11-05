@@ -48,8 +48,10 @@ import Compiler.IR.Canonical.Interface as I
 import Compiler.IR.Source as Src
 import Compiler.IR.Typed.Optimized as TOpt
 import Data.Map
+import Data.NonEmptyList as NE
 import Dict exposing (Dict)
 import Expect
+import Maybe.Extra as Maybe
 import TestLogic.TestPipeline as Pipeline
 
 
@@ -251,7 +253,7 @@ typeIssues arities context tipe =
             []
 
         Can.TTuple a b cs ->
-            List.concatMap (typeIssues arities context) (a :: b :: cs)
+            List.concatMap (typeIssues arities context) (a :: b :: Maybe.toList cs)
 
         Can.TAlias home name args aliasType ->
             let
@@ -416,7 +418,7 @@ exprIssues arities context expr =
                     List.concatMap (exprIssues arities context) (Data.Map.values fields)
 
                 TOpt.Tuple _ a b rest _ ->
-                    List.concatMap (exprIssues arities context) (a :: b :: rest)
+                    List.concatMap (exprIssues arities context) (a :: b :: Maybe.toList rest)
 
                 _ ->
                     []
@@ -438,7 +440,7 @@ inlineLeaves decider =
             inlineLeaves success ++ inlineLeaves failure
 
         TOpt.FanOut _ edges fallback ->
-            List.concatMap (\( _, d ) -> inlineLeaves d) edges ++ inlineLeaves fallback
+            List.concatMap (\( _, d ) -> inlineLeaves d) (NE.toList edges) ++ inlineLeaves fallback
 
 
 {-| Returns `xs` without repeated elements, keeping the first of each.

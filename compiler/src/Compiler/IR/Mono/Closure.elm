@@ -48,6 +48,7 @@ function type. None of them changes how a function type is curried.
 import Compiler.Core.Annotation as A
 import Compiler.Core.Name exposing (Name)
 import Compiler.IR.Mono as Mono
+import Data.NonEmptyList as NE
 import Dict exposing (Dict)
 import Set exposing (Set)
 import System.Crash
@@ -369,7 +370,7 @@ findFreeLocalsAcc bound expr acc =
             List.foldl (\( _, e ) a -> findFreeLocalsAcc bound e a) accWithRecord updates
 
         Mono.MonoTupleCreate _ exprs _ ->
-            List.foldl (\e a -> findFreeLocalsAcc bound e a) acc exprs
+            List.foldl (\e a -> findFreeLocalsAcc bound e a) acc (Mono.tupleToList exprs)
 
         Mono.MonoDestruct (Mono.MonoDestructor name path _) body _ ->
             let
@@ -451,7 +452,7 @@ collectDeciderFreeLocalsAcc bound decider acc =
         Mono.Chain tests success failure ->
             let
                 accWithPaths =
-                    List.foldl (\( dtPath, _ ) a -> findDtPathFreeLocalsAcc bound dtPath a) acc tests
+                    List.foldl (\( dtPath, _ ) a -> findDtPathFreeLocalsAcc bound dtPath a) acc (NE.toList tests)
 
                 accWithSuccess =
                     collectDeciderFreeLocalsAcc bound success accWithPaths
@@ -464,7 +465,7 @@ collectDeciderFreeLocalsAcc bound decider acc =
                     findDtPathFreeLocalsAcc bound dtPath acc
 
                 accWithEdges =
-                    List.foldl (\( _, d ) a -> collectDeciderFreeLocalsAcc bound d a) accWithRoot edges
+                    List.foldl (\( _, d ) a -> collectDeciderFreeLocalsAcc bound d a) accWithRoot (NE.toList edges)
             in
             collectDeciderFreeLocalsAcc bound fallback accWithEdges
 
@@ -587,7 +588,7 @@ collectVarTypesHelper expr acc =
             List.foldl (\( _, e ) a -> collectVarTypesHelper e a) (collectVarTypesHelper record acc) updates
 
         Mono.MonoTupleCreate _ exprs _ ->
-            List.foldl collectVarTypesHelper acc exprs
+            List.foldl collectVarTypesHelper acc (Mono.tupleToList exprs)
 
         Mono.MonoDestruct (Mono.MonoDestructor _ path _) body _ ->
             let
@@ -641,7 +642,7 @@ collectDeciderVarTypes decider acc =
         Mono.Chain tests success failure ->
             let
                 accWithTests =
-                    List.foldl (\( dtPath, _ ) a -> collectDtPathVarTypes dtPath a) acc tests
+                    List.foldl (\( dtPath, _ ) a -> collectDtPathVarTypes dtPath a) acc (NE.toList tests)
             in
             collectDeciderVarTypes failure (collectDeciderVarTypes success accWithTests)
 
@@ -651,7 +652,7 @@ collectDeciderVarTypes decider acc =
                     collectDtPathVarTypes dtPath acc
 
                 accAfterEdges =
-                    List.foldl (\( _, d ) a -> collectDeciderVarTypes d a) accWithPath edges
+                    List.foldl (\( _, d ) a -> collectDeciderVarTypes d a) accWithPath (NE.toList edges)
             in
             collectDeciderVarTypes fallback accAfterEdges
 
@@ -760,7 +761,7 @@ collectCaseRootTypesHelper expr acc =
             List.foldl (\( _, e ) a -> collectCaseRootTypesHelper e a) (collectCaseRootTypesHelper inner acc) updates
 
         Mono.MonoTupleCreate _ exprs _ ->
-            List.foldl collectCaseRootTypesHelper acc exprs
+            List.foldl collectCaseRootTypesHelper acc (Mono.tupleToList exprs)
 
         Mono.MonoTailCall _ args _ ->
             List.foldl (\( _, e ) a -> collectCaseRootTypesHelper e a) acc args
@@ -787,7 +788,7 @@ collectCaseRootTypesFromDecider decider acc =
         Mono.Chain tests success failure ->
             let
                 accWithTests =
-                    List.foldl (\( dtPath, _ ) a -> collectDtPathCaseRootTypes dtPath a) acc tests
+                    List.foldl (\( dtPath, _ ) a -> collectDtPathCaseRootTypes dtPath a) acc (NE.toList tests)
             in
             collectCaseRootTypesFromDecider failure (collectCaseRootTypesFromDecider success accWithTests)
 
@@ -797,7 +798,7 @@ collectCaseRootTypesFromDecider decider acc =
                     collectDtPathCaseRootTypes dtPath acc
 
                 accAfterEdges =
-                    List.foldl (\( _, d ) a -> collectCaseRootTypesFromDecider d a) accWithPath edges
+                    List.foldl (\( _, d ) a -> collectCaseRootTypesFromDecider d a) accWithPath (NE.toList edges)
             in
             collectCaseRootTypesFromDecider fallback accAfterEdges
 

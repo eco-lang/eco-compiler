@@ -50,6 +50,7 @@ import Compiler.Type.PostSolve as PostSolve
 import Data.Map as Dict
 import Data.Set as EverySet
 import Dict as StdDict
+import Maybe.Extra as Maybe
 
 
 {-| One node that failed one of the two checks.
@@ -315,7 +316,7 @@ alphaEqWith renaming a b =
             Just renaming
 
         ( Can.TTuple a1 b1 cs1, Can.TTuple a2 b2 cs2 ) ->
-            alphaEqList renaming (a1 :: b1 :: cs1) (a2 :: b2 :: cs2)
+            alphaEqList renaming (a1 :: b1 :: Maybe.toList cs1) (a2 :: b2 :: Maybe.toList cs2)
 
         ( Can.TAlias h1 n1 args1 at1, Can.TAlias h2 n2 args2 at2 ) ->
             if h1 == h2 && n1 == n2 then
@@ -430,7 +431,7 @@ freeTypeVars tipe =
             List.foldl
                 (\t acc -> EverySet.union acc (freeTypeVars t))
                 (EverySet.union (freeTypeVars a) (freeTypeVars b))
-                cs
+                (Maybe.toList cs)
 
         Can.TAlias _ _ args aliasType ->
             let
@@ -654,7 +655,7 @@ collectExprNodeKinds (A.At _ exprInfo) acc =
                     ( KOther
                     , List.foldl collectExprNodeKinds
                         (collectExprNodeKinds b (collectExprNodeKinds a acc))
-                        cs
+                        (Maybe.toList cs)
                     )
 
                 Can.Shader _ _ ->
@@ -699,7 +700,7 @@ collectPatternNodeKinds (A.At _ patInfo) acc =
                 Can.PTuple a b cs ->
                     List.foldl collectPatternNodeKinds
                         (collectPatternNodeKinds b (collectPatternNodeKinds a acc))
-                        cs
+                        (Maybe.toList cs)
 
                 Can.PList patterns ->
                     List.foldl collectPatternNodeKinds acc patterns
@@ -799,7 +800,7 @@ typeToString tipe =
 
         Can.TTuple a b cs ->
             "TTuple ("
-                ++ String.join ", " (List.map typeToString (a :: b :: cs))
+                ++ String.join ", " (List.map typeToString (a :: b :: Maybe.toList cs))
                 ++ ")"
 
         Can.TAlias _ name _ _ ->

@@ -396,15 +396,18 @@ record start =
                                                             (\postPipeComments ->
                                                                 chompField [] postPipeComments
                                                             )
-                                                        |> P.andThen (\( postFirstFieldComments, firstField ) -> chompFields postFirstFieldComments [ firstField ])
                                                         |> P.andThen
-                                                            (\fields ->
-                                                                let
-                                                                    starterExpr : Src.Expr
-                                                                    starterExpr =
-                                                                        A.At starterPosition (Src.Var Src.LowVar starterName)
-                                                                in
-                                                                P.addEnd start (Src.Update ( ( preStarterNameComments, postStarterNameComments ), starterExpr ) fields)
+                                                            (\( postFirstFieldComments, firstField ) ->
+                                                                chompFields postFirstFieldComments []
+                                                                    |> P.andThen
+                                                                        (\( trailingComments, moreFields ) ->
+                                                                            let
+                                                                                starterExpr : Src.Expr
+                                                                                starterExpr =
+                                                                                    A.At starterPosition (Src.Var Src.LowVar starterName)
+                                                                            in
+                                                                            P.addEnd start (Src.Update ( ( preStarterNameComments, postStarterNameComments ), starterExpr ) ( trailingComments, ( firstField, moreFields ) ))
+                                                                        )
                                                             )
                                                     , P.word1 '=' E.RecordEquals
                                                         |> P.andThen (\_ -> Space.chompAndCheckIndent E.RecordSpace E.RecordIndentExpr)
@@ -431,34 +434,6 @@ record start =
                         ]
                 )
         )
-
-
-{-| Produces a parser that reads `.field` accesses after `expr` and reports a
-failed field name as a record error. Nothing in this module calls it.
--}
-accessibleRecord : A.Position -> Src.Expr -> P.Parser E.Record Src.Expr
-accessibleRecord start expr =
-    P.oneOfWithFallback
-        [ P.word1 '.' E.RecordOpen
-            |> P.andThen (\_ -> P.getPosition)
-            |> P.andThen (\pos -> chompRecordAccessField start expr pos)
-        ]
-        expr
-
-
-{-| Produces a parser for the field name after a dot at `pos`, wrapping `expr` in
-that access and then reading any further accesses through `accessibleRecord`.
-Nothing in this module calls it, except `accessibleRecord`.
--}
-chompRecordAccessField : A.Position -> Src.Expr -> A.Position -> P.Parser E.Record Src.Expr
-chompRecordAccessField start expr pos =
-    Var.lower E.RecordOpen
-        |> P.andThen (\field -> P.getPosition |> P.map (\end -> ( field, end )))
-        |> P.andThen
-            (\( field, end ) ->
-                accessibleRecord start (A.at start end (Src.Access expr (A.at pos end field)))
-            )
-
 
 
 -- ====== RECORD FIELDS ======
@@ -723,13 +698,9 @@ chompExprEnd start (State { ops, expr, args, end }) comments =
                                                         |> P.map
                                                             (\( ( trailingComments, newLast ), newEnd ) ->
                                                                 let
-                                                                    newOps : List ( Src.Expr, Src.C2 (A.Located Name.Name) )
-                                                                    newOps =
-                                                                        ( toCall expr args, ( ( comments, [] ), op ) ) :: ops
-
                                                                     finalExpr : Src.Expr_
                                                                     finalExpr =
-                                                                        Src.Binops (List.reverse newOps) newLast
+                                                                        toBinops ops ( toCall expr args, ( ( comments, [] ), op ) ) newLast
                                                                 in
                                                                 ( ( trailingComments, A.at start newEnd finalExpr ), newEnd )
                                                             )
@@ -745,11 +716,25 @@ chompExprEnd start (State { ops, expr, args, end }) comments =
                 , end
                 )
 
-            _ ->
-                ( ( comments, A.at start end (Src.Binops (List.reverse ops) (toCall expr args)) )
+            newestOp :: olderOps ->
+                ( ( comments, A.at start end (toBinops olderOps newestOp (toCall expr args)) )
                 , end
                 )
         )
+
+
+{-| Returns the `Src.Binops` of a chain whose operands paired with their
+operators are `olderOps`, newest first, then `newestOp`, and whose last operand
+is `final`.
+-}
+toBinops : List ( Src.Expr, Src.C2 (A.Located Name.Name) ) -> ( Src.Expr, Src.C2 (A.Located Name.Name) ) -> Src.Expr -> Src.Expr_
+toBinops olderOps newestOp final =
+    case List.reverse olderOps of
+        [] ->
+            Src.Binops newestOp [] final
+
+        firstOp :: laterOps ->
+            Src.Binops firstOp (laterOps ++ [ newestOp ]) final
 
 
 {-| Produces a parser for a term starting at `start`, negated if a `-` comes
@@ -777,12 +762,12 @@ to the last argument.
 -}
 toCall : Src.Expr -> List (Src.C1 Src.Expr) -> Src.Expr
 toCall func revArgs =
-    case revArgs of
-        [] ->
-            func
+    case ( revArgs, List.reverse revArgs ) of
+        ( ( _, lastArg ) :: _, firstArg :: laterArgs ) ->
+            A.merge func lastArg (Src.Call func firstArg laterArgs)
 
-        ( _, lastArg ) :: _ ->
-            A.merge func lastArg (Src.Call func (List.reverse revArgs))
+        _ ->
+            func
 
 
 
@@ -1301,7 +1286,7 @@ name; a different name fails with `E.DefNameMatch`.
 chompDefinitionAfterType : A.Position -> Name.Name -> Src.FComments -> Src.FComments -> Src.FComments -> Src.Type -> Space.Parser E.Def (Src.C1 (A.Located Src.Def))
 chompDefinitionAfterType start name postNameComments preTipeComments postTipeComments tipe =
     Space.checkAligned E.DefAlignment
-        |> P.andThen (\_ -> chompMatchingName name)
+        |> P.andThen (\_ -> Var.matchingLower E.DefNameRepeat E.DefNameMatch name)
         |> P.andThen (\defName -> chompDefinitionWithType start defName postNameComments preTipeComments postTipeComments tipe)
 
 
@@ -1359,45 +1344,6 @@ chompDefArgsAndBody start name tipe trailingComments revArgs =
                             )
                 )
         ]
-
-
-{-| Produces a parser for a lower-case name that must equal `expectedName`, as
-the name repeated after a type annotation must.
-
-A different name fails with `E.DefNameMatch` at the start of the name, with the
-outcome marked consumed when the name was. The name's region is where it was
-read.
-
--}
-chompMatchingName : Name.Name -> P.Parser E.Def (A.Located Name.Name)
-chompMatchingName expectedName =
-    let
-        (P.Parser parserL) =
-            Var.lower E.DefNameRepeat
-    in
-    P.Parser <|
-        \((P.State st) as state) ->
-            case parserL state of
-                P.Cok name ((P.State st2) as newState) ->
-                    if expectedName == name then
-                        P.Cok (A.At (A.Region (A.Position st.row st.col) (A.Position st2.row st2.col)) name) newState
-
-                    else
-                        P.Cerr st.row st.col (E.DefNameMatch name)
-
-                P.Eok name ((P.State st2) as newState) ->
-                    if expectedName == name then
-                        P.Eok (A.At (A.Region (A.Position st.row st.col) (A.Position st2.row st2.col)) name) newState
-
-                    else
-                        P.Eerr st.row st.col (E.DefNameMatch name)
-
-                P.Cerr r c t ->
-                    P.Cerr r c t
-
-                P.Eerr r c t ->
-                    P.Eerr r c t
-
 
 
 -- ====== DESTRUCTURE ======

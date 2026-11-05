@@ -65,6 +65,7 @@ import Compiler.MonoOpt.Borrow.LssFacts as LssFacts
 import Compiler.MonoOpt.CsePurity as CsePurity
 import Compiler.MonoOpt.ListCombinators as ListCombinators
 import Data.BitSet as BitSet
+import Data.NonEmptyList as NE
 import Dict exposing (Dict)
 import Set exposing (Set)
 
@@ -645,8 +646,8 @@ the stamp `findCallbackStamp` finds on the call of the callback in `body`, with
 license : Env -> Int -> Int -> Name -> Mono.MonoType -> Mono.MonoType -> MonoExpr -> Templates -> Templates
 license env specId member callbackName callbackType listType body acc =
     case Dict.get member env.info of
-        Just (LssFacts.MemberStandalone (Mono.OriginCtor ctorGlobal)) ->
-            case resolveSpecFor env ctorGlobal callbackType of
+        Just (LssFacts.MemberStandalone (Mono.OriginCtor ctorHome ctorName)) ->
+            case resolveSpecFor env (Mono.Global ctorHome ctorName) callbackType of
                 Just ctorSpecId ->
                     licenseWith specId
                         { callee = CalleeSpec ctorSpecId
@@ -711,8 +712,8 @@ unresolved member.
 licenseResolvedGlobal : Env -> Int -> Int -> Mono.MonoType -> Mono.MonoType -> Templates -> Templates
 licenseResolvedGlobal env specId member callbackType listType acc =
     case Dict.get member env.info of
-        Just (LssFacts.MemberStandalone (Mono.OriginGlobal g)) ->
-            case resolveSpecFor env g callbackType of
+        Just (LssFacts.MemberStandalone (Mono.OriginGlobal home name)) ->
+            case resolveSpecFor env (Mono.Global home name) callbackType of
                 Just globalSpecId ->
                     if BitSet.member globalSpecId env.purity.safeSpecs then
                         licenseWith specId
@@ -1219,7 +1220,7 @@ arrowAnnos ty =
             arrowAnnos elem
 
         Mono.MTuple _ elems ->
-            List.concatMap arrowAnnos elems
+            List.concatMap arrowAnnos (Mono.tupleToList elems)
 
         Mono.MRecord _ fields ->
             Dict.foldl (\_ fieldTy acc -> arrowAnnos fieldTy ++ acc) [] fields
@@ -1318,16 +1319,16 @@ standaloneVerdict origin =
             else
                 Clean
 
-        Mono.OriginCtor _ ->
+        Mono.OriginCtor _ _ ->
             Clean
 
         Mono.OriginAccessor _ ->
             Clean
 
-        Mono.OriginGlobal _ ->
+        Mono.OriginGlobal _ _ ->
             PoisonUnresolved UnresolvedGlobal
 
-        Mono.OriginPap _ _ ->
+        Mono.OriginPap _ _ _ ->
             PoisonUnresolved UnresolvedGlobal
 
 
@@ -1590,7 +1591,7 @@ foldChildren f acc expr =
             List.foldl (\( _, e ) a -> f e a) (f inner acc) updates
 
         MonoTupleCreate _ items _ ->
-            List.foldl f acc items
+            List.foldl f acc (Mono.tupleToList items)
 
 
 {-| Returns `acc` folded with `f` over the expressions inlined in the leaves of a
@@ -1610,7 +1611,7 @@ foldDecider f acc decider =
 
         Mono.FanOut _ tests fallback ->
             foldDecider f
-                (List.foldl (\( _, d ) a -> foldDecider f a d) acc tests)
+                (List.foldl (\( _, d ) a -> foldDecider f a d) acc (NE.toList tests))
                 fallback
 
 

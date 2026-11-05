@@ -19,7 +19,6 @@ file the server keeps about one version of one package.
 
 -}
 
-import Builder.Http as Http
 import Compiler.Elm.Package as Pkg
 import Compiler.Elm.Version as V
 import Task exposing (Task)
@@ -35,16 +34,15 @@ domain =
         |> Task.map (Maybe.withDefault "https://package.elm-lang.org")
 
 
-{-| Returns the URL of `path` on the package server, with `params` appended as
-a percent-encoded query string when there are any.
+{-| Returns the URL of `path` on the package server.
 
 `path` is appended to the domain as given, so it should begin with `/`.
 
 -}
-route : String -> List ( String, String ) -> Task Never String
-route path params =
+route : String -> Task Never String
+route path =
     domain
-        |> Task.map (\d -> Http.toUrl (d ++ path) params)
+        |> Task.map (\d -> d ++ path)
 
 
 {-| Returns the URL of the file named `file` that the package server keeps for

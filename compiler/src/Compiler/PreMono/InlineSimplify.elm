@@ -68,8 +68,10 @@ import Compiler.PreMono.AssignMVarIds as AssignMVarIds
 import Compiler.PreMono.Fresh as Fresh
 import Data.Graph as Graph
 import Data.Map as Dict exposing (Dict)
+import Data.NonEmptyList as NE
 import Data.Set as EverySet
 import Dict as CoreDict
+import Maybe.Extra as Maybe
 
 
 {-| Counts of what one run of the pass did and why it declined the rest.
@@ -532,7 +534,7 @@ openRecordInType tipe =
             List.any openRecordInType args
 
         Can.TTuple a b rest ->
-            openRecordInType a || openRecordInType b || List.any openRecordInType rest
+            openRecordInType a || openRecordInType b || Maybe.unwrap False openRecordInType rest
 
         Can.TAlias _ _ args real ->
             List.any (\( _, t ) -> openRecordInType t) args
@@ -611,7 +613,7 @@ matchType pattern actual subst =
                 subst
 
         ( Can.TTuple pa pb prest, Can.TTuple aa ab arest ) ->
-            matchList prest arest (matchType pb ab (matchType pa aa subst))
+            matchList (Maybe.toList prest) (Maybe.toList arest) (matchType pb ab (matchType pa aa subst))
 
         ( Can.TRecord pfields _, Can.TRecord afields _ ) ->
             CoreDict.foldl
@@ -716,7 +718,7 @@ substTypeVars env tipe =
             Can.TUnit
 
         Can.TTuple a b rest ->
-            Can.TTuple (substTypeVars env a) (substTypeVars env b) (List.map (substTypeVars env) rest)
+            Can.TTuple (substTypeVars env a) (substTypeVars env b) (Maybe.map (substTypeVars env) rest)
 
         Can.TAlias h n args real ->
             Can.TAlias h n (List.map (\( pn, t ) -> ( pn, substTypeVars env t )) args) real
@@ -784,7 +786,7 @@ typeVarsOfType tipe acc =
             acc
 
         Can.TTuple a b rest ->
-            List.foldl typeVarsOfType (typeVarsOfType b (typeVarsOfType a acc)) rest
+            List.foldl typeVarsOfType (typeVarsOfType b (typeVarsOfType a acc)) (Maybe.toList rest)
 
         Can.TAlias _ _ args _ ->
             -- Alias parameters are local to the alias, not free variables; the
@@ -838,7 +840,7 @@ children expr =
             Dict.values fields
 
         TOpt.Tuple _ a b rest _ ->
-            a :: b :: rest
+            a :: b :: Maybe.toList rest
 
         _ ->
             []
@@ -872,7 +874,7 @@ deciderChildren decider =
             deciderChildren ok ++ deciderChildren ko
 
         TOpt.FanOut _ branches fallback ->
-            List.concatMap (\( _, d ) -> deciderChildren d) branches
+            List.concatMap (\( _, d ) -> deciderChildren d) (NE.toList branches)
                 ++ deciderChildren fallback
 
 
@@ -939,9 +941,6 @@ recursiveGlobals nodes =
                 TOpt.PortOutgoing _ deps _ ->
                     deps
 
-                TOpt.Kernel _ deps ->
-                    deps
-
                 _ ->
                     EverySet.empty
 
@@ -962,8 +961,8 @@ recursiveGlobals nodes =
             List.foldl
                 (\scc acc ->
                     case scc of
-                        Graph.CyclicSCC keys ->
-                            List.foldl (\k a -> CoreDict.insert k () a) acc keys
+                        Graph.CyclicSCC key keys ->
+                            List.foldl (\k a -> CoreDict.insert k () a) acc (key :: keys)
 
                         Graph.AcyclicSCC _ ->
                             acc
@@ -1128,7 +1127,7 @@ cost expr =
             3 + Dict.foldl (\_ e a -> a + cost e) 0 fields
 
         TOpt.Tuple _ a b rest _ ->
-            3 + cost a + cost b + sumBy cost rest
+            3 + cost a + cost b + Maybe.unwrap 0 cost rest
 
         TOpt.Shader _ _ _ _ ->
             1
@@ -1148,10 +1147,10 @@ costDecider decider =
             1
 
         TOpt.Chain tests ok ko ->
-            1 + List.length tests + costDecider ok + costDecider ko
+            1 + List.length (NE.toList tests) + costDecider ok + costDecider ko
 
         TOpt.FanOut _ branches fallback ->
-            1 + sumBy (\( _, d ) -> costDecider d) branches + costDecider fallback
+            1 + sumBy (\( _, d ) -> costDecider d) (NE.toList branches) + costDecider fallback
 
 
 {-| Returns the cost of the expression a `let` definition binds, or of a tail
@@ -1358,7 +1357,12 @@ rewriteExpr ctx expr =
                     rewriteExpr c1 b
 
                 ( rest1, c3 ) =
-                    rewriteList c2 rest
+                    case rest of
+                        Just c ->
+                            Tuple.mapFirst Just (rewriteExpr c2 c)
+
+                        Nothing ->
+                            ( Nothing, c2 )
             in
             ( TOpt.Tuple region a1 b1 rest1 meta, c3 )
 
@@ -1465,22 +1469,22 @@ rewriteDecider ctx decider =
 
         TOpt.FanOut path branches fallback ->
             let
-                ( branches1, c1 ) =
-                    List.foldl
-                        (\( t, d ) ( acc, c ) ->
+                ( c1, branches1 ) =
+                    NE.mapAccuml
+                        (\c ( t, d ) ->
                             let
                                 ( d1, c2 ) =
                                     rewriteDecider c d
                             in
-                            ( ( t, d1 ) :: acc, c2 )
+                            ( c2, ( t, d1 ) )
                         )
-                        ( [], ctx )
+                        ctx
                         branches
 
                 ( fallback1, cf ) =
                     rewriteDecider c1 fallback
             in
-            ( TOpt.FanOut path (List.reverse branches1) fallback1, cf )
+            ( TOpt.FanOut path branches1 fallback1, cf )
 
 
 {-| Rewrites `body` and returns `rebuild` applied to the result.
@@ -2007,7 +2011,7 @@ suffixExpr sfx expr =
             TOpt.Unit meta
 
         TOpt.Tuple region a b rest meta ->
-            TOpt.Tuple region (go a) (go b) (List.map go rest) meta
+            TOpt.Tuple region (go a) (go b) (Maybe.map go rest) meta
 
         TOpt.Shader src inputs outputs meta ->
             TOpt.Shader src inputs outputs meta
@@ -2049,9 +2053,6 @@ suffixPath sfx path =
         TOpt.Index idx hint sub ->
             TOpt.Index idx hint (suffixPath sfx sub)
 
-        TOpt.ArrayIndex i sub ->
-            TOpt.ArrayIndex i (suffixPath sfx sub)
-
         TOpt.Field f sub ->
             TOpt.Field f (suffixPath sfx sub)
 
@@ -2085,5 +2086,5 @@ suffixDecider sfx decider =
 
         TOpt.FanOut path branches fallback ->
             TOpt.FanOut path
-                (List.map (\( t, d ) -> ( t, suffixDecider sfx d )) branches)
+                (NE.map (\( t, d ) -> ( t, suffixDecider sfx d )) branches)
                 (suffixDecider sfx fallback)

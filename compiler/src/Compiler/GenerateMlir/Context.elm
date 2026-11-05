@@ -3,11 +3,10 @@ module Compiler.GenerateMlir.Context exposing
     , initContext, withInlineBodies, withEcoConfig, withCtorBySpec, withMapTemplates, withEntryMain
     , freshVar, freshOpId, lookupVar, addVarMapping, addDecoderExpr, ctxForSiblingRegion, ctxAfterBranchOp, resetDefinedSsaVars
     , getOrCreateTypeIdForMonoType, registerKernelCall
-    , buildSignatures, kernelFuncSignatureFromType
-    , hasKernelImplementation
+    , buildSignatures, signatureOf, kernelFuncSignatureFromType
     , KernelDeclInfo
     , registerKernelInstance
-    , PsplitInfo, SlotPlan, SplitParamInfo, SplitSpec(..), SretInfo, residualResultType, withConstCtorBySpec, withConstThunkBySpec, withNullConsBySpec, withPsplitPromoted, withSretPromoted
+    , PsplitInfo, SlotPlan, SplitParamInfo, SplitSpec(..), SretInfo, freshSlotVars, residualResultType, closureResultType, withConstCtorBySpec, withConstThunkBySpec, withNullConsBySpec, withPsplitPromoted, withSretPromoted
     )
 
 {-| MLIR code generation is a pure fold over each function's expression
@@ -71,12 +70,7 @@ type before the type itself.
 
 # Signatures
 
-@docs buildSignatures, kernelFuncSignatureFromType
-
-
-# Kernel fallback
-
-@docs hasKernelImplementation
+@docs buildSignatures, signatureOf, kernelFuncSignatureFromType
 
 
 # Kernel declarations
@@ -91,7 +85,7 @@ type before the type itself.
 
 # Promotions and constant tables
 
-@docs PsplitInfo, SlotPlan, SplitParamInfo, SplitSpec, SretInfo, residualResultType, withConstCtorBySpec, withConstThunkBySpec, withNullConsBySpec, withPsplitPromoted, withSretPromoted
+@docs PsplitInfo, SlotPlan, SplitParamInfo, SplitSpec, SretInfo, freshSlotVars, residualResultType, closureResultType, withConstCtorBySpec, withConstThunkBySpec, withNullConsBySpec, withPsplitPromoted, withSretPromoted
 
 -}
 
@@ -119,7 +113,8 @@ sees it.
 `returnType` is what a call that supplies all of `paramTypes` returns, which
 for a staged definition is itself a function type (see `residualResultType`).
 A definition or port whose body is not a closure or tail-recursive
-function, and an enum, has no parameters. `evaluatorBoxesAll` is `True`
+function, an enum, and an extern or effect-manager leaf whose type is not a
+function, has no parameters. `evaluatorBoxesAll` is `True`
 only for externs and effect-manager leaves, whose closure evaluator takes
 every parameter as `!eco.value`.
 
@@ -165,8 +160,25 @@ separate result instead of one boxed tuple.
 -}
 type alias SretInfo =
     { layout : Types.TupleLayout
-    , slotTypes : List MlirType
+    , slotTypes : Mono.TupleShape MlirType
     }
+
+
+{-| Gives each slot type a fresh SSA variable, in order, and returns the
+variables with their types.
+-}
+freshSlotVars : Context -> Mono.TupleShape MlirType -> ( Mono.TupleShape ( String, MlirType ), Context )
+freshSlotVars ctx slots =
+    Mono.tupleMapAccum
+        (\ty c ->
+            let
+                ( v, c1 ) =
+                    freshVar c
+            in
+            ( ( v, ty ), c1 )
+        )
+        ctx
+        slots
 
 
 {-| Returns the context with the `$sret` result promotions installed, keyed
@@ -219,14 +231,6 @@ kernelFuncSignatureFromType funcType =
     , returnType = retType
     , evaluatorBoxesAll = False
     }
-
-
-{-| Whether a core function whose intrinsic did not match may fall back to
-calling its kernel implementation. It is `False`: no such fallback is taken.
--}
-hasKernelImplementation : Bool
-hasKernelImplementation =
-    False
 
 
 {-| The SSA variable that holds a name's value, and that variable's MLIR
@@ -321,8 +325,8 @@ type alias TypeRegistry =
 {-| A lambda whose body is to be generated later as a function of its own.
 
 `siblingMappings` are the let-bound names of the enclosing let chain the body
-may refer to. `selfBindingName` is the Elm name by which a local
-tail-recursive function refers to itself.
+may refer to. `tailRecSelf` is `Just` the Elm name by which a local
+tail-recursive function refers to itself, and `Nothing` for any other lambda.
 
 -}
 type alias PendingLambda =
@@ -332,8 +336,7 @@ type alias PendingLambda =
     , body : Mono.MonoExpr
     , returnType : Mono.MonoType
     , siblingMappings : Dict.Dict String VarInfo
-    , isTailRecursive : Bool
-    , selfBindingName : Maybe String
+    , tailRecSelf : Maybe String
     }
 
 
@@ -434,14 +437,11 @@ withMapTemplates t ctx =
     { ctx | mapTemplates = t }
 
 
-{-| Returns the context knowing the SpecId of the program's `main`, if any.
+{-| Returns the context knowing the SpecId of the program's `main`.
 -}
-withEntryMain : Maybe Mono.MainInfo -> Context -> Context
-withEntryMain mainInfo ctx =
-    { ctx
-        | entryMainSpec =
-            Maybe.map (\(Mono.StaticMain specId) -> specId) mainInfo
-    }
+withEntryMain : Mono.MainInfo -> Context -> Context
+withEntryMain (Mono.StaticMain specId) ctx =
+    { ctx | entryMainSpec = Just specId }
 
 
 {-| The type graph with no types registered and TypeIds starting at 0.
@@ -475,7 +475,7 @@ getOrCreateTypeIdForMonoType monoType ctx =
                     [ elemType ]
 
                 Mono.MTuple _ elementTypes ->
-                    elementTypes
+                    Mono.tupleToList elementTypes
 
                 Mono.MRecord _ fields ->
                     Dict.values fields
@@ -519,29 +519,25 @@ getOrCreateTypeIdForMonoType monoType ctx =
                 Mono.MVar _ _ ->
                     []
 
+        -- Only called on types processWorklist queued: none is registered,
+        -- and none is queued twice.
         registerSingleType : Mono.MonoType -> Context -> Context
         registerSingleType mt c =
             let
                 reg =
                     c.typeRegistry
+
+                typeId =
+                    reg.nextTypeId
+
+                newReg =
+                    { nextTypeId = typeId + 1
+                    , typeIds = Mono.layoutMapInsert mt typeId reg.typeIds
+                    , typeInfos = ( typeId, mt ) :: reg.typeInfos
+                    , ctorShapes = reg.ctorShapes
+                    }
             in
-            case Mono.layoutMapGet mt reg.typeIds of
-                Just _ ->
-                    c
-
-                Nothing ->
-                    let
-                        typeId =
-                            reg.nextTypeId
-
-                        newReg =
-                            { nextTypeId = typeId + 1
-                            , typeIds = Mono.layoutMapInsert mt typeId reg.typeIds
-                            , typeInfos = ( typeId, mt ) :: reg.typeInfos
-                            , ctorShapes = reg.ctorShapes
-                            }
-                    in
-                    { c | typeRegistry = newReg }
+            { c | typeRegistry = newReg }
 
         -- toRegister is in reverse discovery order, so a fold registers the
         -- starting type last; queued is the set of types already in it.
@@ -577,13 +573,9 @@ getOrCreateTypeIdForMonoType monoType ctx =
                 finalCtx =
                     processWorklist [ monoType ] [] Mono.layoutMapEmpty ctx
             in
-            case Mono.layoutMapGet monoType finalCtx.typeRegistry.typeIds of
-                Just typeId ->
-                    ( typeId, finalCtx )
-
-                Nothing ->
-                    -- Unreachable: processWorklist registers monoType.
-                    ( 0, finalCtx )
+            -- monoType was not registered, so processWorklist registered it,
+            -- last.
+            ( finalCtx.typeRegistry.nextTypeId - 1, finalCtx )
 
 
 {-| Returns the context in which to generate the next alternative region of
@@ -817,148 +809,134 @@ or a `monoType` that is not a function, the result is the final result type.
 -}
 residualResultType : Int -> Mono.MonoType -> Mono.MonoType
 residualResultType numParams monoType =
-    let
-        ( allArgTypes, finalLeaf ) =
-            Mono.decomposeFunctionType monoType
-    in
-    if List.length allArgTypes > numParams then
-        -- The rebuilt function type keeps the outer arrow's annotation.
-        case monoType of
-            Mono.MFunction _ anno _ _ ->
+    case monoType of
+        Mono.MFunction _ anno _ _ ->
+            let
+                ( allArgTypes, finalLeaf ) =
+                    Mono.decomposeFunctionType monoType
+            in
+            if List.length allArgTypes > numParams then
+                -- The rebuilt function type keeps the outer arrow's annotation.
                 Mono.mFunction anno (List.drop numParams allArgTypes) finalLeaf
 
-            _ ->
+            else
                 finalLeaf
 
-    else
-        finalLeaf
+        _ ->
+            monoType
 
 
-{-| Returns the signature of `node`, or `Nothing` for an extern or
-effect-manager leaf whose type is not a function.
+{-| Returns the result type of the outermost stage of a function type (which
+may itself be a function type), or the type itself when it is not a function
+type. A closure's type is always a function type.
+-}
+closureResultType : Mono.MonoType -> Mono.MonoType
+closureResultType monoType =
+    case monoType of
+        Mono.MFunction _ _ _ retType ->
+            retType
+
+        _ ->
+            monoType
+
+
+{-| Returns the signature of `node`.
 
 A closure or tail-recursive function takes its own parameters, and its
 result is the residual result type. Any other definition or port, and an
 enum, has no parameters; a constructor's parameters are its field types; an
-extern or manager leaf of function type takes all its arrows as parameters.
+extern or manager leaf of function type takes all its arrows as parameters,
+and one of any other type has none.
 
 -}
-extractNodeSignature : Mono.MonoNode -> Maybe FuncSignature
+extractNodeSignature : Mono.MonoNode -> FuncSignature
 extractNodeSignature node =
+    let
+        closureOr : Mono.MonoExpr -> Mono.MonoType -> FuncSignature
+        closureOr expr monoType =
+            case expr of
+                Mono.MonoClosure closureInfo _ _ ->
+                    { paramTypes = List.map Tuple.second closureInfo.params
+                    , returnType = residualResultType (List.length closureInfo.params) monoType
+                    , evaluatorBoxesAll = False
+                    }
+
+                _ ->
+                    { paramTypes = []
+                    , returnType = monoType
+                    , evaluatorBoxesAll = False
+                    }
+
+        external : Mono.MonoType -> FuncSignature
+        external monoType =
+            case monoType of
+                Mono.MFunction _ _ _ _ ->
+                    let
+                        ( argMonoTypes, resultMonoType ) =
+                            Mono.decomposeFunctionType monoType
+                    in
+                    { paramTypes = argMonoTypes
+                    , returnType = resultMonoType
+                    , evaluatorBoxesAll = True
+                    }
+
+                _ ->
+                    { paramTypes = []
+                    , returnType = monoType
+                    , evaluatorBoxesAll = True
+                    }
+    in
     case node of
         Mono.MonoDefine expr monoType ->
-            case expr of
-                Mono.MonoClosure closureInfo _ _ ->
-                    Just
-                        { paramTypes = List.map Tuple.second closureInfo.params
-                        , returnType = residualResultType (List.length closureInfo.params) monoType
-                        , evaluatorBoxesAll = False
-                        }
-
-                _ ->
-                    Just
-                        { paramTypes = []
-                        , returnType = monoType
-                        , evaluatorBoxesAll = False
-                        }
+            closureOr expr monoType
 
         Mono.MonoTailFunc params _ monoType ->
-            let
-                returnType =
-                    residualResultType (List.length params) monoType
-            in
-            Just
-                { paramTypes = List.map Tuple.second params
-                , returnType = returnType
-                , evaluatorBoxesAll = False
-                }
+            { paramTypes = List.map Tuple.second params
+            , returnType = residualResultType (List.length params) monoType
+            , evaluatorBoxesAll = False
+            }
 
-        Mono.MonoCtor ctorShape monoType ->
-            Just
-                { paramTypes = ctorShape.fieldTypes
-                , returnType = monoType
-                , evaluatorBoxesAll = False
-                }
+        Mono.MonoCtor _ ctorShape monoType ->
+            { paramTypes = ctorShape.fieldTypes
+            , returnType = monoType
+            , evaluatorBoxesAll = False
+            }
 
-        Mono.MonoEnum _ monoType ->
-            Just
-                { paramTypes = []
-                , returnType = monoType
-                , evaluatorBoxesAll = False
-                }
+        Mono.MonoEnum _ _ _ monoType ->
+            { paramTypes = []
+            , returnType = monoType
+            , evaluatorBoxesAll = False
+            }
 
         Mono.MonoExtern monoType ->
-            case monoType of
-                Mono.MFunction _ _ _ _ ->
-                    let
-                        ( argMonoTypes, resultMonoType ) =
-                            Mono.decomposeFunctionType monoType
-                    in
-                    Just
-                        { paramTypes = argMonoTypes
-                        , returnType = resultMonoType
-                        , evaluatorBoxesAll = True
-                        }
-
-                _ ->
-                    Nothing
+            external monoType
 
         Mono.MonoManagerLeaf _ monoType ->
-            case monoType of
-                Mono.MFunction _ _ _ _ ->
-                    let
-                        ( argMonoTypes, resultMonoType ) =
-                            Mono.decomposeFunctionType monoType
-                    in
-                    Just
-                        { paramTypes = argMonoTypes
-                        , returnType = resultMonoType
-                        , evaluatorBoxesAll = True
-                        }
-
-                _ ->
-                    Nothing
+            external monoType
 
         Mono.MonoPortIncoming expr monoType ->
-            case expr of
-                Mono.MonoClosure closureInfo _ _ ->
-                    Just
-                        { paramTypes = List.map Tuple.second closureInfo.params
-                        , returnType = residualResultType (List.length closureInfo.params) monoType
-                        , evaluatorBoxesAll = False
-                        }
-
-                _ ->
-                    Just
-                        { paramTypes = []
-                        , returnType = monoType
-                        , evaluatorBoxesAll = False
-                        }
+            closureOr expr monoType
 
         Mono.MonoPortOutgoing expr monoType ->
-            case expr of
-                Mono.MonoClosure closureInfo _ _ ->
-                    Just
-                        { paramTypes = List.map Tuple.second closureInfo.params
-                        , returnType = residualResultType (List.length closureInfo.params) monoType
-                        , evaluatorBoxesAll = False
-                        }
-
-                _ ->
-                    Just
-                        { paramTypes = []
-                        , returnType = monoType
-                        , evaluatorBoxesAll = False
-                        }
+            closureOr expr monoType
 
 
 {-| Returns the signature table for `nodes`, indexed like it: `Nothing` for
-an absent node and for a node with no signature.
+an absent node.
 -}
 buildSignatures : Array (Maybe Mono.MonoNode) -> Array (Maybe FuncSignature)
 buildSignatures nodes =
-    Array.map
-        (\maybeNode ->
-            maybeNode |> Maybe.andThen extractNodeSignature
-        )
-        nodes
+    Array.map (Maybe.map extractNodeSignature) nodes
+
+
+{-| Returns the signature of the node of `specId`. Every SpecId that reaches
+code generation has a node (MONO\_011), so a missing one crashes the compile.
+-}
+signatureOf : Int -> Context -> FuncSignature
+signatureOf specId ctx =
+    case Array.get specId ctx.signatures of
+        Just (Just sig) ->
+            sig
+
+        _ ->
+            crash ("Context.signatureOf: MONO_011 no node for SpecId " ++ String.fromInt specId)

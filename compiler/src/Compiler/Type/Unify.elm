@@ -91,6 +91,7 @@ import Compiler.Type.State.IO as IO exposing (IO)
 import Compiler.Type.Type as Type
 import Compiler.Type.UnionFind as UF
 import Dict exposing (Dict)
+import Maybe.Extra as Maybe
 
 
 
@@ -297,23 +298,6 @@ forEach_ xs f =
     List.foldl (\x acc -> acc |> andThen (\_ -> f x)) (pure ()) xs
 
 
-{-| Returns a step that runs `f` on the pairs of `xs` and `ys` in order,
-stopping at the first mismatch. Lists of different lengths mismatch once the
-shorter runs out.
--}
-zipWithM_ : (a -> b -> Unify ()) -> List a -> List b -> Unify ()
-zipWithM_ f xs ys =
-    case ( xs, ys ) of
-        ( [], [] ) ->
-            pure ()
-
-        ( x :: xr, y :: yr ) ->
-            f x y |> andThen (\_ -> zipWithM_ f xr yr)
-
-        _ ->
-            mismatch
-
-
 {-| Returns a step that never mismatches: it runs the given step and gives
 `True` if it succeeded and `False` if it mismatched, keeping the fresh variables
 either way. The store keeps whatever the step changed before a mismatch.
@@ -481,14 +465,22 @@ subUnify var1 var2 =
     guardedUnify var1 var2
 
 
-{-| Returns a step that unifies the remaining elements of two tuples pairwise,
-stopping at the first mismatch, and then joins the context under
-`otherContent`.
+{-| Returns a step that unifies the third elements of two tuples, if both have
+one, and then joins the context under `otherContent`. A two-element tuple and a
+three-element one mismatch.
 -}
-subUnifyTuple : List Vars.Variable -> List Vars.Variable -> Context -> Vars.Content -> Unify ()
-subUnifyTuple cs zs context otherContent =
-    zipWithM_ subUnify cs zs
-        |> andThen (\_ -> merge context otherContent)
+subUnifyTuple : Maybe Vars.Variable -> Maybe Vars.Variable -> Context -> Vars.Content -> Unify ()
+subUnifyTuple maybeC maybeZ context otherContent =
+    case ( maybeC, maybeZ ) of
+        ( Nothing, Nothing ) ->
+            merge context otherContent
+
+        ( Just c, Just z ) ->
+            subUnify c z
+                |> andThen (\_ -> merge context otherContent)
+
+        _ ->
+            mismatch
 
 
 {-| Returns a step that unifies the two sides of a context whose variables are
@@ -793,7 +785,7 @@ unifyFlexSuperStructure context super flatType =
 
                 Vars.Comparable ->
                     comparableOccursCheck context
-                        |> andThen (\_ -> forEach_ (a :: b :: cs) unifyComparableRecursive)
+                        |> andThen (\_ -> forEach_ (a :: b :: Maybe.toList cs) unifyComparableRecursive)
                         |> andThen (\_ -> merge context (Vars.Structure flatType))
 
                 Vars.CompAppend ->

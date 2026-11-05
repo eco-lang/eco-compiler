@@ -1,15 +1,15 @@
-module Compiler.IR.Kernel.Intrinsics exposing (Intrinsic(..), CompareKind(..), kernelIntrinsic)
+module Compiler.IR.Kernel.Intrinsics exposing (Intrinsic(..), Operation(..), CompareKind(..), kernelIntrinsicOn, kernelIntrinsic, kernelFloatConstant)
 
 {-| Which kernel calls are _intrinsics_: calls the MLIR back end lowers to an
 inline operation instead of a call to the kernel function.
 
-`kernelIntrinsic` makes that decision from the kernel function's home and name
-and the monomorphic types of its arguments and result. The decision is needed
-by the back end, which emits the operation, by the inliner, which prices an
+`kernelIntrinsicOn` makes that decision from the kernel function's home and
+name and the monomorphic types of its arguments and result. The decision is
+needed by the back end, which emits the operation, by the inliner, which prices an
 intrinsic call as an operation rather than a call, and by the constant-thunk
 analysis, which asks whether a call is pure arithmetic, so it lives here, below
 all three. `Compiler.GenerateMlir.Intrinsics` emits the MLIR for each
-`Intrinsic`.
+`Operation`, and `Compiler.GenerateMlir.Expr` for `ConstructList`.
 
 The decision is a whitelist: every shape not listed gets `Nothing` and stays
 an ordinary kernel call. Declining is always safe; choosing the wrong operation
@@ -20,7 +20,7 @@ also switched by a configuration flag, or needs the operands' SSA types to
 agree with it, `Compiler.GenerateMlir.Expr` applies that test after this
 module has chosen.
 
-@docs Intrinsic, CompareKind, kernelIntrinsic
+@docs Intrinsic, Operation, CompareKind, kernelIntrinsicOn, kernelIntrinsic, kernelFloatConstant
 
 -}
 
@@ -34,9 +34,17 @@ import Mlir.Mlir exposing (MlirType)
 -- ====== INTRINSIC TYPE ======
 
 
-{-| The inline operation a kernel call is lowered to instead of a call.
+{-| The inline operation a kernel call is lowered to instead of a call, with
+its operands, of type `a`: one per argument of the kernel function, in its
+argument order.
 
-Where a constructor carries `op`, it is the name of the MLIR operation to
+`ConstructList` is `List.cons`, with the head and the tail;
+`headMlirType` is the ABI type of the head, which decides the kind recorded for
+the head slot of the new cell. It is kept apart from the other intrinsics, the
+`Operation`s, because it is the one whose operands may need boxing: an
+`Operation` takes each operand either as it is or unboxed.
+
+Where a constructor of `Operation` carries `op`, it is the name of the MLIR operation to
 emit, such as `"eco.int.add"`; the constructor says what kind of operands and
 result that operation has.
 
@@ -46,8 +54,6 @@ result that operation has.
 Bool, as does `FloatClassify` from one Float. `IntToFloat` is `toFloat`;
 `FloatToInt` is one of `round`, `floor`, `ceiling` and `truncate`.
 
-`ConstantFloat` is a kernel constant (`pi` or `e`) replaced by its value.
-
 `CharToInt` and `CharFromInt` are `Char.toCode` and `Char.fromCode`;
 `StringFromInt` and `StringFromFloat` are `String.fromNumber` at Int and Float;
 `StringLength` is `String.length`.
@@ -56,10 +62,7 @@ The `Array` constructors are the `JsArray` kernel functions: `ArrayGet` is
 `unsafeGet`, `ArraySet` is `unsafeSet`, and the others share their names.
 Where one carries `elementMlirType`, it is the ABI type of the array's
 elements, which decides whether a slot is read or written unboxed.
-`ArrayEmpty`, `ArrayLength`, `ArraySlice` and `ArrayAppendN` do not need it.
-
-`ConstructList` is `List.cons`; `headMlirType` is the ABI type of the head,
-which decides the kind recorded for the head slot of the new cell.
+`ArrayLength`, `ArraySlice` and `ArrayAppendN` do not need it.
 
 `AppendString` and `AppendList` are `++` on two Strings and on two Lists.
 
@@ -72,40 +75,46 @@ tests that number against zero.
 on two Bools; with `negate` set, each is `/=` instead.
 
 -}
-type Intrinsic
-    = UnaryInt { op : String }
-    | BinaryInt { op : String }
-    | UnaryFloat { op : String }
-    | BinaryFloat { op : String }
-    | UnaryBool { op : String }
-    | BinaryBool { op : String }
-    | IntToFloat
-    | FloatToInt { op : String }
-    | IntComparison { op : String }
-    | FloatComparison { op : String }
-    | CharComparison { op : String }
-    | FloatClassify { op : String }
-    | ConstantFloat { value : Float }
-    | CharToInt
-    | CharFromInt
-    | StringFromInt
-    | StringFromFloat
-    | StringLength
-    | ArrayGet { elementMlirType : MlirType }
-    | ArraySet { elementMlirType : MlirType }
-    | ArrayLength
-    | ArrayEmpty
-    | ArraySingleton { elementMlirType : MlirType }
-    | ArrayPush { elementMlirType : MlirType }
-    | ArraySlice
-    | ArrayAppendN
-    | ConstructList { headMlirType : MlirType }
-    | AppendString
-    | AppendList
-    | CompareToOrder { kind : CompareKind }
-    | StringOrderCompare { op : String }
-    | ValueEq { negate : Bool }
-    | BoolEq { negate : Bool }
+type Intrinsic a
+    = ConstructList { headMlirType : MlirType } a a
+    | Operation (Operation a)
+
+
+{-| An intrinsic other than `ConstructList`: the inline operation, with its
+operands, that a kernel call becomes. The constructors are described under
+`Intrinsic`.
+-}
+type Operation a
+    = UnaryInt { op : String } a
+    | BinaryInt { op : String } a a
+    | UnaryFloat { op : String } a
+    | BinaryFloat { op : String } a a
+    | UnaryBool { op : String } a
+    | BinaryBool { op : String } a a
+    | IntToFloat a
+    | FloatToInt { op : String } a
+    | IntComparison { op : String } a a
+    | FloatComparison { op : String } a a
+    | CharComparison { op : String } a a
+    | FloatClassify { op : String } a
+    | CharToInt a
+    | CharFromInt a
+    | StringFromInt a
+    | StringFromFloat a
+    | StringLength a
+    | ArrayGet { elementMlirType : MlirType } a a
+    | ArraySet { elementMlirType : MlirType } a a a
+    | ArrayLength a
+    | ArraySingleton { elementMlirType : MlirType } a
+    | ArrayPush { elementMlirType : MlirType } a a
+    | ArraySlice a a a
+    | ArrayAppendN a a a
+    | AppendString a a
+    | AppendList a a
+    | CompareToOrder { kind : CompareKind } a a
+    | StringOrderCompare { op : String } a a
+    | ValueEq { negate : Bool } a a
+    | BoolEq { negate : Bool } a a
 
 
 {-| The type of the two operands of a `compare` lowered to `CompareToOrder`,
@@ -123,38 +132,72 @@ type CompareKind
 
 
 {-| Returns the intrinsic that a call of kernel function `name` from kernel
-module `home` lowers to, given the monomorphic types of its arguments and of
-its result, or `Nothing` when the call stays a kernel call.
+module `home` lowers to, or `Nothing` when the call stays a kernel call. Each
+of `args` is an argument the call supplies, paired with its monomorphic type;
+`resultType` is the type of the call's result.
+
+The intrinsic carries the arguments as its operands, in the kernel function's
+argument order, so it always has exactly the operands its operation takes.
 
 `home` is the bare module name, such as `"Basics"` or `"JsArray"`; the kernel
-prefix is not consulted. `argTypes` lists the arguments actually supplied, so a
-reference to a kernel function that is not applied passes `[]` and gets an
-intrinsic only for a constant such as `pi`.
+prefix is not consulted. A call supplies at least one argument. A kernel used
+as a value is not a call; `kernelFloatConstant` says which of those are
+constants.
 
 -}
-kernelIntrinsic : Name.Name -> Name.Name -> List Mono.MonoType -> Mono.MonoType -> Maybe Intrinsic
-kernelIntrinsic home name argTypes resultType =
+kernelIntrinsicOn : Name.Name -> Name.Name -> List ( a, Mono.MonoType ) -> Mono.MonoType -> Maybe (Intrinsic a)
+kernelIntrinsicOn home name args resultType =
     case home of
         "Basics" ->
-            basicsIntrinsic name argTypes resultType
+            basicsIntrinsic name args |> Maybe.map Operation
 
         "Bitwise" ->
-            bitwiseIntrinsic name argTypes
+            bitwiseIntrinsic name args |> Maybe.map Operation
 
         "Utils" ->
-            utilsIntrinsic name argTypes
+            utilsIntrinsic name args |> Maybe.map Operation
 
         "JsArray" ->
-            jsArrayIntrinsic name argTypes resultType
+            jsArrayIntrinsic name args resultType |> Maybe.map Operation
 
         "List" ->
-            listIntrinsic name argTypes resultType
+            listIntrinsic name args resultType
 
         "Char" ->
-            charIntrinsic name argTypes
+            charIntrinsic name args |> Maybe.map Operation
 
         "String" ->
-            stringIntrinsic name argTypes
+            stringIntrinsic name args |> Maybe.map Operation
+
+        _ ->
+            Nothing
+
+
+{-| Returns `kernelIntrinsicOn` for a call whose arguments have the types
+`argTypes`, with those types as the operands, for a caller that asks only
+whether, and as what, the call is an intrinsic.
+-}
+kernelIntrinsic : Name.Name -> Name.Name -> List Mono.MonoType -> Mono.MonoType -> Maybe (Intrinsic Mono.MonoType)
+kernelIntrinsic home name argTypes resultType =
+    kernelIntrinsicOn home name (List.map (\ty -> ( ty, ty )) argTypes) resultType
+
+
+{-| Returns the value of the kernel value `name` from kernel module `home` when
+it is a Float constant replaced by its value, `pi` or `e`, and `Nothing` for
+every other kernel value.
+
+They are reached only through `Basics.pi` and `Basics.e`, whose type is
+`Float`.
+
+-}
+kernelFloatConstant : Name.Name -> Name.Name -> Maybe Float
+kernelFloatConstant home name =
+    case ( home, name ) of
+        ( "Basics", "pi" ) ->
+            Just 3.141592653589793
+
+        ( "Basics", "e" ) ->
+            Just 2.718281828459045
 
         _ ->
             Nothing
@@ -163,191 +206,176 @@ kernelIntrinsic home name argTypes resultType =
 {-| Returns the intrinsic for a call of the `Basics` kernel function `name`:
 Int, Float and Bool arithmetic, comparison and conversion.
 
-Every arm but the constants is chosen by the argument types alone, because the
+Every arm is chosen by the name and the argument types alone, because the
 result type of a call can still be a type variable where the call sits in a
-polymorphic context. For the same reason `pi` and `e` accept a type-variable
-result as well as `Float`. `logBase` has no intrinsic.
+polymorphic context. `logBase` has no intrinsic.
 
 `and` and `or` here are strict in both arguments. They are reached only for
 the functions themselves, such as `(&&)` passed as a value; the `&&` and `||`
 operators are short-circuited before this point.
 
 -}
-basicsIntrinsic : Name.Name -> List Mono.MonoType -> Mono.MonoType -> Maybe Intrinsic
-basicsIntrinsic name argTypes resultType =
-    case ( name, argTypes ) of
-        ( "pi", [] ) ->
-            if resultType == Mono.MFloat || isTypeVar resultType then
-                Just (ConstantFloat { value = 3.141592653589793 })
+basicsIntrinsic : Name.Name -> List ( a, Mono.MonoType ) -> Maybe (Operation a)
+basicsIntrinsic name args =
+    case ( name, args ) of
+        ( "add", [ ( a, Mono.MInt ), ( b, Mono.MInt ) ] ) ->
+            Just (BinaryInt { op = "eco.int.add" } a b)
 
-            else
-                Nothing
+        ( "sub", [ ( a, Mono.MInt ), ( b, Mono.MInt ) ] ) ->
+            Just (BinaryInt { op = "eco.int.sub" } a b)
 
-        ( "e", [] ) ->
-            if resultType == Mono.MFloat || isTypeVar resultType then
-                Just (ConstantFloat { value = 2.718281828459045 })
+        ( "mul", [ ( a, Mono.MInt ), ( b, Mono.MInt ) ] ) ->
+            Just (BinaryInt { op = "eco.int.mul" } a b)
 
-            else
-                Nothing
+        ( "idiv", [ ( a, Mono.MInt ), ( b, Mono.MInt ) ] ) ->
+            Just (BinaryInt { op = "eco.int.div" } a b)
 
-        ( "add", [ Mono.MInt, Mono.MInt ] ) ->
-            Just (BinaryInt { op = "eco.int.add" })
+        ( "modBy", [ ( a, Mono.MInt ), ( b, Mono.MInt ) ] ) ->
+            Just (BinaryInt { op = "eco.int.modby" } a b)
 
-        ( "sub", [ Mono.MInt, Mono.MInt ] ) ->
-            Just (BinaryInt { op = "eco.int.sub" })
+        ( "remainderBy", [ ( a, Mono.MInt ), ( b, Mono.MInt ) ] ) ->
+            Just (BinaryInt { op = "eco.int.remainderby" } a b)
 
-        ( "mul", [ Mono.MInt, Mono.MInt ] ) ->
-            Just (BinaryInt { op = "eco.int.mul" })
+        ( "negate", [ ( a, Mono.MInt ) ] ) ->
+            Just (UnaryInt { op = "eco.int.negate" } a)
 
-        ( "idiv", [ Mono.MInt, Mono.MInt ] ) ->
-            Just (BinaryInt { op = "eco.int.div" })
+        ( "abs", [ ( a, Mono.MInt ) ] ) ->
+            Just (UnaryInt { op = "eco.int.abs" } a)
 
-        ( "modBy", [ Mono.MInt, Mono.MInt ] ) ->
-            Just (BinaryInt { op = "eco.int.modby" })
+        ( "pow", [ ( a, Mono.MInt ), ( b, Mono.MInt ) ] ) ->
+            Just (BinaryInt { op = "eco.int.pow" } a b)
 
-        ( "remainderBy", [ Mono.MInt, Mono.MInt ] ) ->
-            Just (BinaryInt { op = "eco.int.remainderby" })
+        ( "add", [ ( a, Mono.MFloat ), ( b, Mono.MFloat ) ] ) ->
+            Just (BinaryFloat { op = "eco.float.add" } a b)
 
-        ( "negate", [ Mono.MInt ] ) ->
-            Just (UnaryInt { op = "eco.int.negate" })
+        ( "sub", [ ( a, Mono.MFloat ), ( b, Mono.MFloat ) ] ) ->
+            Just (BinaryFloat { op = "eco.float.sub" } a b)
 
-        ( "abs", [ Mono.MInt ] ) ->
-            Just (UnaryInt { op = "eco.int.abs" })
+        ( "mul", [ ( a, Mono.MFloat ), ( b, Mono.MFloat ) ] ) ->
+            Just (BinaryFloat { op = "eco.float.mul" } a b)
 
-        ( "pow", [ Mono.MInt, Mono.MInt ] ) ->
-            Just (BinaryInt { op = "eco.int.pow" })
+        ( "fdiv", [ ( a, Mono.MFloat ), ( b, Mono.MFloat ) ] ) ->
+            Just (BinaryFloat { op = "eco.float.div" } a b)
 
-        ( "add", [ Mono.MFloat, Mono.MFloat ] ) ->
-            Just (BinaryFloat { op = "eco.float.add" })
+        ( "negate", [ ( a, Mono.MFloat ) ] ) ->
+            Just (UnaryFloat { op = "eco.float.negate" } a)
 
-        ( "sub", [ Mono.MFloat, Mono.MFloat ] ) ->
-            Just (BinaryFloat { op = "eco.float.sub" })
+        ( "abs", [ ( a, Mono.MFloat ) ] ) ->
+            Just (UnaryFloat { op = "eco.float.abs" } a)
 
-        ( "mul", [ Mono.MFloat, Mono.MFloat ] ) ->
-            Just (BinaryFloat { op = "eco.float.mul" })
+        ( "pow", [ ( a, Mono.MFloat ), ( b, Mono.MFloat ) ] ) ->
+            Just (BinaryFloat { op = "eco.float.pow" } a b)
 
-        ( "fdiv", [ Mono.MFloat, Mono.MFloat ] ) ->
-            Just (BinaryFloat { op = "eco.float.div" })
+        ( "sqrt", [ ( a, Mono.MFloat ) ] ) ->
+            Just (UnaryFloat { op = "eco.float.sqrt" } a)
 
-        ( "negate", [ Mono.MFloat ] ) ->
-            Just (UnaryFloat { op = "eco.float.negate" })
+        ( "sin", [ ( a, Mono.MFloat ) ] ) ->
+            Just (UnaryFloat { op = "eco.float.sin" } a)
 
-        ( "abs", [ Mono.MFloat ] ) ->
-            Just (UnaryFloat { op = "eco.float.abs" })
+        ( "cos", [ ( a, Mono.MFloat ) ] ) ->
+            Just (UnaryFloat { op = "eco.float.cos" } a)
 
-        ( "pow", [ Mono.MFloat, Mono.MFloat ] ) ->
-            Just (BinaryFloat { op = "eco.float.pow" })
+        ( "tan", [ ( a, Mono.MFloat ) ] ) ->
+            Just (UnaryFloat { op = "eco.float.tan" } a)
 
-        ( "sqrt", [ Mono.MFloat ] ) ->
-            Just (UnaryFloat { op = "eco.float.sqrt" })
+        ( "asin", [ ( a, Mono.MFloat ) ] ) ->
+            Just (UnaryFloat { op = "eco.float.asin" } a)
 
-        ( "sin", [ Mono.MFloat ] ) ->
-            Just (UnaryFloat { op = "eco.float.sin" })
+        ( "acos", [ ( a, Mono.MFloat ) ] ) ->
+            Just (UnaryFloat { op = "eco.float.acos" } a)
 
-        ( "cos", [ Mono.MFloat ] ) ->
-            Just (UnaryFloat { op = "eco.float.cos" })
+        ( "atan", [ ( a, Mono.MFloat ) ] ) ->
+            Just (UnaryFloat { op = "eco.float.atan" } a)
 
-        ( "tan", [ Mono.MFloat ] ) ->
-            Just (UnaryFloat { op = "eco.float.tan" })
+        ( "atan2", [ ( a, Mono.MFloat ), ( b, Mono.MFloat ) ] ) ->
+            Just (BinaryFloat { op = "eco.float.atan2" } a b)
 
-        ( "asin", [ Mono.MFloat ] ) ->
-            Just (UnaryFloat { op = "eco.float.asin" })
-
-        ( "acos", [ Mono.MFloat ] ) ->
-            Just (UnaryFloat { op = "eco.float.acos" })
-
-        ( "atan", [ Mono.MFloat ] ) ->
-            Just (UnaryFloat { op = "eco.float.atan" })
-
-        ( "atan2", [ Mono.MFloat, Mono.MFloat ] ) ->
-            Just (BinaryFloat { op = "eco.float.atan2" })
-
-        ( "logBase", [ Mono.MFloat, Mono.MFloat ] ) ->
+        ( "logBase", [ ( _, Mono.MFloat ), ( _, Mono.MFloat ) ] ) ->
             Nothing
 
-        ( "log", [ Mono.MFloat ] ) ->
-            Just (UnaryFloat { op = "eco.float.log" })
+        ( "log", [ ( a, Mono.MFloat ) ] ) ->
+            Just (UnaryFloat { op = "eco.float.log" } a)
 
-        ( "isNaN", [ Mono.MFloat ] ) ->
-            Just (FloatClassify { op = "eco.float.isNaN" })
+        ( "isNaN", [ ( a, Mono.MFloat ) ] ) ->
+            Just (FloatClassify { op = "eco.float.isNaN" } a)
 
-        ( "isInfinite", [ Mono.MFloat ] ) ->
-            Just (FloatClassify { op = "eco.float.isInfinite" })
+        ( "isInfinite", [ ( a, Mono.MFloat ) ] ) ->
+            Just (FloatClassify { op = "eco.float.isInfinite" } a)
 
-        ( "toFloat", [ Mono.MInt ] ) ->
-            Just IntToFloat
+        ( "toFloat", [ ( a, Mono.MInt ) ] ) ->
+            Just (IntToFloat a)
 
-        ( "round", [ Mono.MFloat ] ) ->
-            Just (FloatToInt { op = "eco.float.round" })
+        ( "round", [ ( a, Mono.MFloat ) ] ) ->
+            Just (FloatToInt { op = "eco.float.round" } a)
 
-        ( "floor", [ Mono.MFloat ] ) ->
-            Just (FloatToInt { op = "eco.float.floor" })
+        ( "floor", [ ( a, Mono.MFloat ) ] ) ->
+            Just (FloatToInt { op = "eco.float.floor" } a)
 
-        ( "ceiling", [ Mono.MFloat ] ) ->
-            Just (FloatToInt { op = "eco.float.ceiling" })
+        ( "ceiling", [ ( a, Mono.MFloat ) ] ) ->
+            Just (FloatToInt { op = "eco.float.ceiling" } a)
 
-        ( "truncate", [ Mono.MFloat ] ) ->
-            Just (FloatToInt { op = "eco.float.truncate" })
+        ( "truncate", [ ( a, Mono.MFloat ) ] ) ->
+            Just (FloatToInt { op = "eco.float.truncate" } a)
 
-        ( "min", [ Mono.MInt, Mono.MInt ] ) ->
-            Just (BinaryInt { op = "eco.int.min" })
+        ( "min", [ ( a, Mono.MInt ), ( b, Mono.MInt ) ] ) ->
+            Just (BinaryInt { op = "eco.int.min" } a b)
 
-        ( "max", [ Mono.MInt, Mono.MInt ] ) ->
-            Just (BinaryInt { op = "eco.int.max" })
+        ( "max", [ ( a, Mono.MInt ), ( b, Mono.MInt ) ] ) ->
+            Just (BinaryInt { op = "eco.int.max" } a b)
 
-        ( "min", [ Mono.MFloat, Mono.MFloat ] ) ->
-            Just (BinaryFloat { op = "eco.float.min" })
+        ( "min", [ ( a, Mono.MFloat ), ( b, Mono.MFloat ) ] ) ->
+            Just (BinaryFloat { op = "eco.float.min" } a b)
 
-        ( "max", [ Mono.MFloat, Mono.MFloat ] ) ->
-            Just (BinaryFloat { op = "eco.float.max" })
+        ( "max", [ ( a, Mono.MFloat ), ( b, Mono.MFloat ) ] ) ->
+            Just (BinaryFloat { op = "eco.float.max" } a b)
 
-        ( "lt", [ Mono.MInt, Mono.MInt ] ) ->
-            Just (IntComparison { op = "eco.int.lt" })
+        ( "lt", [ ( a, Mono.MInt ), ( b, Mono.MInt ) ] ) ->
+            Just (IntComparison { op = "eco.int.lt" } a b)
 
-        ( "le", [ Mono.MInt, Mono.MInt ] ) ->
-            Just (IntComparison { op = "eco.int.le" })
+        ( "le", [ ( a, Mono.MInt ), ( b, Mono.MInt ) ] ) ->
+            Just (IntComparison { op = "eco.int.le" } a b)
 
-        ( "gt", [ Mono.MInt, Mono.MInt ] ) ->
-            Just (IntComparison { op = "eco.int.gt" })
+        ( "gt", [ ( a, Mono.MInt ), ( b, Mono.MInt ) ] ) ->
+            Just (IntComparison { op = "eco.int.gt" } a b)
 
-        ( "ge", [ Mono.MInt, Mono.MInt ] ) ->
-            Just (IntComparison { op = "eco.int.ge" })
+        ( "ge", [ ( a, Mono.MInt ), ( b, Mono.MInt ) ] ) ->
+            Just (IntComparison { op = "eco.int.ge" } a b)
 
-        ( "eq", [ Mono.MInt, Mono.MInt ] ) ->
-            Just (IntComparison { op = "eco.int.eq" })
+        ( "eq", [ ( a, Mono.MInt ), ( b, Mono.MInt ) ] ) ->
+            Just (IntComparison { op = "eco.int.eq" } a b)
 
-        ( "neq", [ Mono.MInt, Mono.MInt ] ) ->
-            Just (IntComparison { op = "eco.int.ne" })
+        ( "neq", [ ( a, Mono.MInt ), ( b, Mono.MInt ) ] ) ->
+            Just (IntComparison { op = "eco.int.ne" } a b)
 
-        ( "lt", [ Mono.MFloat, Mono.MFloat ] ) ->
-            Just (FloatComparison { op = "eco.float.lt" })
+        ( "lt", [ ( a, Mono.MFloat ), ( b, Mono.MFloat ) ] ) ->
+            Just (FloatComparison { op = "eco.float.lt" } a b)
 
-        ( "le", [ Mono.MFloat, Mono.MFloat ] ) ->
-            Just (FloatComparison { op = "eco.float.le" })
+        ( "le", [ ( a, Mono.MFloat ), ( b, Mono.MFloat ) ] ) ->
+            Just (FloatComparison { op = "eco.float.le" } a b)
 
-        ( "gt", [ Mono.MFloat, Mono.MFloat ] ) ->
-            Just (FloatComparison { op = "eco.float.gt" })
+        ( "gt", [ ( a, Mono.MFloat ), ( b, Mono.MFloat ) ] ) ->
+            Just (FloatComparison { op = "eco.float.gt" } a b)
 
-        ( "ge", [ Mono.MFloat, Mono.MFloat ] ) ->
-            Just (FloatComparison { op = "eco.float.ge" })
+        ( "ge", [ ( a, Mono.MFloat ), ( b, Mono.MFloat ) ] ) ->
+            Just (FloatComparison { op = "eco.float.ge" } a b)
 
-        ( "eq", [ Mono.MFloat, Mono.MFloat ] ) ->
-            Just (FloatComparison { op = "eco.float.eq" })
+        ( "eq", [ ( a, Mono.MFloat ), ( b, Mono.MFloat ) ] ) ->
+            Just (FloatComparison { op = "eco.float.eq" } a b)
 
-        ( "neq", [ Mono.MFloat, Mono.MFloat ] ) ->
-            Just (FloatComparison { op = "eco.float.ne" })
+        ( "neq", [ ( a, Mono.MFloat ), ( b, Mono.MFloat ) ] ) ->
+            Just (FloatComparison { op = "eco.float.ne" } a b)
 
-        ( "not", [ Mono.MBool ] ) ->
-            Just (UnaryBool { op = "eco.bool.not" })
+        ( "not", [ ( a, Mono.MBool ) ] ) ->
+            Just (UnaryBool { op = "eco.bool.not" } a)
 
-        ( "and", [ Mono.MBool, Mono.MBool ] ) ->
-            Just (BinaryBool { op = "eco.bool.and" })
+        ( "and", [ ( a, Mono.MBool ), ( b, Mono.MBool ) ] ) ->
+            Just (BinaryBool { op = "eco.bool.and" } a b)
 
-        ( "or", [ Mono.MBool, Mono.MBool ] ) ->
-            Just (BinaryBool { op = "eco.bool.or" })
+        ( "or", [ ( a, Mono.MBool ), ( b, Mono.MBool ) ] ) ->
+            Just (BinaryBool { op = "eco.bool.or" } a b)
 
-        ( "xor", [ Mono.MBool, Mono.MBool ] ) ->
-            Just (BinaryBool { op = "eco.bool.xor" })
+        ( "xor", [ ( a, Mono.MBool ), ( b, Mono.MBool ) ] ) ->
+            Just (BinaryBool { op = "eco.bool.xor" } a b)
 
         _ ->
             Nothing
@@ -356,29 +384,29 @@ basicsIntrinsic name argTypes resultType =
 {-| Returns the intrinsic for a call of the `Bitwise` kernel function `name` on
 Int arguments.
 -}
-bitwiseIntrinsic : Name.Name -> List Mono.MonoType -> Maybe Intrinsic
-bitwiseIntrinsic name argTypes =
-    case ( name, argTypes ) of
-        ( "and", [ Mono.MInt, Mono.MInt ] ) ->
-            Just (BinaryInt { op = "eco.int.and" })
+bitwiseIntrinsic : Name.Name -> List ( a, Mono.MonoType ) -> Maybe (Operation a)
+bitwiseIntrinsic name args =
+    case ( name, args ) of
+        ( "and", [ ( a, Mono.MInt ), ( b, Mono.MInt ) ] ) ->
+            Just (BinaryInt { op = "eco.int.and" } a b)
 
-        ( "or", [ Mono.MInt, Mono.MInt ] ) ->
-            Just (BinaryInt { op = "eco.int.or" })
+        ( "or", [ ( a, Mono.MInt ), ( b, Mono.MInt ) ] ) ->
+            Just (BinaryInt { op = "eco.int.or" } a b)
 
-        ( "xor", [ Mono.MInt, Mono.MInt ] ) ->
-            Just (BinaryInt { op = "eco.int.xor" })
+        ( "xor", [ ( a, Mono.MInt ), ( b, Mono.MInt ) ] ) ->
+            Just (BinaryInt { op = "eco.int.xor" } a b)
 
-        ( "complement", [ Mono.MInt ] ) ->
-            Just (UnaryInt { op = "eco.int.complement" })
+        ( "complement", [ ( a, Mono.MInt ) ] ) ->
+            Just (UnaryInt { op = "eco.int.complement" } a)
 
-        ( "shiftLeftBy", [ Mono.MInt, Mono.MInt ] ) ->
-            Just (BinaryInt { op = "eco.int.shl" })
+        ( "shiftLeftBy", [ ( a, Mono.MInt ), ( b, Mono.MInt ) ] ) ->
+            Just (BinaryInt { op = "eco.int.shl" } a b)
 
-        ( "shiftRightBy", [ Mono.MInt, Mono.MInt ] ) ->
-            Just (BinaryInt { op = "eco.int.shr" })
+        ( "shiftRightBy", [ ( a, Mono.MInt ), ( b, Mono.MInt ) ] ) ->
+            Just (BinaryInt { op = "eco.int.shr" } a b)
 
-        ( "shiftRightZfBy", [ Mono.MInt, Mono.MInt ] ) ->
-            Just (BinaryInt { op = "eco.int.shru" })
+        ( "shiftRightZfBy", [ ( a, Mono.MInt ), ( b, Mono.MInt ) ] ) ->
+            Just (BinaryInt { op = "eco.int.shru" } a b)
 
         _ ->
             Nothing
@@ -398,120 +426,120 @@ including one with a type-variable operand, stays a kernel call, which chooses
 by the values at run time.
 
 -}
-utilsIntrinsic : Name.Name -> List Mono.MonoType -> Maybe Intrinsic
-utilsIntrinsic name argTypes =
-    case ( name, argTypes ) of
-        ( "equal", [ Mono.MInt, Mono.MInt ] ) ->
-            Just (IntComparison { op = "eco.int.eq" })
+utilsIntrinsic : Name.Name -> List ( a, Mono.MonoType ) -> Maybe (Operation a)
+utilsIntrinsic name args =
+    case ( name, args ) of
+        ( "equal", [ ( a, Mono.MInt ), ( b, Mono.MInt ) ] ) ->
+            Just (IntComparison { op = "eco.int.eq" } a b)
 
-        ( "notEqual", [ Mono.MInt, Mono.MInt ] ) ->
-            Just (IntComparison { op = "eco.int.ne" })
+        ( "notEqual", [ ( a, Mono.MInt ), ( b, Mono.MInt ) ] ) ->
+            Just (IntComparison { op = "eco.int.ne" } a b)
 
-        ( "lt", [ Mono.MInt, Mono.MInt ] ) ->
-            Just (IntComparison { op = "eco.int.lt" })
+        ( "lt", [ ( a, Mono.MInt ), ( b, Mono.MInt ) ] ) ->
+            Just (IntComparison { op = "eco.int.lt" } a b)
 
-        ( "le", [ Mono.MInt, Mono.MInt ] ) ->
-            Just (IntComparison { op = "eco.int.le" })
+        ( "le", [ ( a, Mono.MInt ), ( b, Mono.MInt ) ] ) ->
+            Just (IntComparison { op = "eco.int.le" } a b)
 
-        ( "gt", [ Mono.MInt, Mono.MInt ] ) ->
-            Just (IntComparison { op = "eco.int.gt" })
+        ( "gt", [ ( a, Mono.MInt ), ( b, Mono.MInt ) ] ) ->
+            Just (IntComparison { op = "eco.int.gt" } a b)
 
-        ( "ge", [ Mono.MInt, Mono.MInt ] ) ->
-            Just (IntComparison { op = "eco.int.ge" })
+        ( "ge", [ ( a, Mono.MInt ), ( b, Mono.MInt ) ] ) ->
+            Just (IntComparison { op = "eco.int.ge" } a b)
 
-        ( "equal", [ Mono.MFloat, Mono.MFloat ] ) ->
-            Just (FloatComparison { op = "eco.float.eq" })
+        ( "equal", [ ( a, Mono.MFloat ), ( b, Mono.MFloat ) ] ) ->
+            Just (FloatComparison { op = "eco.float.eq" } a b)
 
-        ( "notEqual", [ Mono.MFloat, Mono.MFloat ] ) ->
-            Just (FloatComparison { op = "eco.float.ne" })
+        ( "notEqual", [ ( a, Mono.MFloat ), ( b, Mono.MFloat ) ] ) ->
+            Just (FloatComparison { op = "eco.float.ne" } a b)
 
-        ( "lt", [ Mono.MFloat, Mono.MFloat ] ) ->
-            Just (FloatComparison { op = "eco.float.lt" })
+        ( "lt", [ ( a, Mono.MFloat ), ( b, Mono.MFloat ) ] ) ->
+            Just (FloatComparison { op = "eco.float.lt" } a b)
 
-        ( "le", [ Mono.MFloat, Mono.MFloat ] ) ->
-            Just (FloatComparison { op = "eco.float.le" })
+        ( "le", [ ( a, Mono.MFloat ), ( b, Mono.MFloat ) ] ) ->
+            Just (FloatComparison { op = "eco.float.le" } a b)
 
-        ( "gt", [ Mono.MFloat, Mono.MFloat ] ) ->
-            Just (FloatComparison { op = "eco.float.gt" })
+        ( "gt", [ ( a, Mono.MFloat ), ( b, Mono.MFloat ) ] ) ->
+            Just (FloatComparison { op = "eco.float.gt" } a b)
 
-        ( "ge", [ Mono.MFloat, Mono.MFloat ] ) ->
-            Just (FloatComparison { op = "eco.float.ge" })
+        ( "ge", [ ( a, Mono.MFloat ), ( b, Mono.MFloat ) ] ) ->
+            Just (FloatComparison { op = "eco.float.ge" } a b)
 
-        ( "equal", [ Mono.MChar, Mono.MChar ] ) ->
-            Just (CharComparison { op = "eco.char.eq" })
+        ( "equal", [ ( a, Mono.MChar ), ( b, Mono.MChar ) ] ) ->
+            Just (CharComparison { op = "eco.char.eq" } a b)
 
-        ( "notEqual", [ Mono.MChar, Mono.MChar ] ) ->
-            Just (CharComparison { op = "eco.char.ne" })
+        ( "notEqual", [ ( a, Mono.MChar ), ( b, Mono.MChar ) ] ) ->
+            Just (CharComparison { op = "eco.char.ne" } a b)
 
-        ( "lt", [ Mono.MChar, Mono.MChar ] ) ->
-            Just (CharComparison { op = "eco.char.lt" })
+        ( "lt", [ ( a, Mono.MChar ), ( b, Mono.MChar ) ] ) ->
+            Just (CharComparison { op = "eco.char.lt" } a b)
 
-        ( "le", [ Mono.MChar, Mono.MChar ] ) ->
-            Just (CharComparison { op = "eco.char.le" })
+        ( "le", [ ( a, Mono.MChar ), ( b, Mono.MChar ) ] ) ->
+            Just (CharComparison { op = "eco.char.le" } a b)
 
-        ( "gt", [ Mono.MChar, Mono.MChar ] ) ->
-            Just (CharComparison { op = "eco.char.gt" })
+        ( "gt", [ ( a, Mono.MChar ), ( b, Mono.MChar ) ] ) ->
+            Just (CharComparison { op = "eco.char.gt" } a b)
 
-        ( "ge", [ Mono.MChar, Mono.MChar ] ) ->
-            Just (CharComparison { op = "eco.char.ge" })
+        ( "ge", [ ( a, Mono.MChar ), ( b, Mono.MChar ) ] ) ->
+            Just (CharComparison { op = "eco.char.ge" } a b)
 
-        ( "equal", [ Mono.MBool, Mono.MBool ] ) ->
-            Just (BoolEq { negate = False })
+        ( "equal", [ ( a, Mono.MBool ), ( b, Mono.MBool ) ] ) ->
+            Just (BoolEq { negate = False } a b)
 
-        ( "notEqual", [ Mono.MBool, Mono.MBool ] ) ->
-            Just (BoolEq { negate = True })
+        ( "notEqual", [ ( a, Mono.MBool ), ( b, Mono.MBool ) ] ) ->
+            Just (BoolEq { negate = True } a b)
 
-        ( "equal", [ x, y ] ) ->
+        ( "equal", [ ( a, x ), ( b, y ) ] ) ->
             if boxedComparable x && x == y then
-                Just (ValueEq { negate = False })
+                Just (ValueEq { negate = False } a b)
 
             else
                 Nothing
 
-        ( "notEqual", [ x, y ] ) ->
+        ( "notEqual", [ ( a, x ), ( b, y ) ] ) ->
             if boxedComparable x && x == y then
-                Just (ValueEq { negate = True })
+                Just (ValueEq { negate = True } a b)
 
             else
                 Nothing
 
-        ( "compare", [ Mono.MInt, Mono.MInt ] ) ->
-            Just (CompareToOrder { kind = CompareIntKind })
+        ( "compare", [ ( a, Mono.MInt ), ( b, Mono.MInt ) ] ) ->
+            Just (CompareToOrder { kind = CompareIntKind } a b)
 
-        ( "compare", [ Mono.MFloat, Mono.MFloat ] ) ->
-            Just (CompareToOrder { kind = CompareFloatKind })
+        ( "compare", [ ( a, Mono.MFloat ), ( b, Mono.MFloat ) ] ) ->
+            Just (CompareToOrder { kind = CompareFloatKind } a b)
 
-        ( "compare", [ Mono.MChar, Mono.MChar ] ) ->
-            Just (CompareToOrder { kind = CompareCharKind })
+        ( "compare", [ ( a, Mono.MChar ), ( b, Mono.MChar ) ] ) ->
+            Just (CompareToOrder { kind = CompareCharKind } a b)
 
-        ( "compare", [ Mono.MString, Mono.MString ] ) ->
-            Just (CompareToOrder { kind = CompareStringKind })
+        ( "compare", [ ( a, Mono.MString ), ( b, Mono.MString ) ] ) ->
+            Just (CompareToOrder { kind = CompareStringKind } a b)
 
         -- The string comparison's sign is not clamped to -1, 0 or 1, so the
         -- test is always against 0.
-        ( "lt", [ Mono.MString, Mono.MString ] ) ->
-            Just (StringOrderCompare { op = "eco.int.lt" })
+        ( "lt", [ ( a, Mono.MString ), ( b, Mono.MString ) ] ) ->
+            Just (StringOrderCompare { op = "eco.int.lt" } a b)
 
-        ( "le", [ Mono.MString, Mono.MString ] ) ->
-            Just (StringOrderCompare { op = "eco.int.le" })
+        ( "le", [ ( a, Mono.MString ), ( b, Mono.MString ) ] ) ->
+            Just (StringOrderCompare { op = "eco.int.le" } a b)
 
-        ( "gt", [ Mono.MString, Mono.MString ] ) ->
-            Just (StringOrderCompare { op = "eco.int.gt" })
+        ( "gt", [ ( a, Mono.MString ), ( b, Mono.MString ) ] ) ->
+            Just (StringOrderCompare { op = "eco.int.gt" } a b)
 
-        ( "ge", [ Mono.MString, Mono.MString ] ) ->
-            Just (StringOrderCompare { op = "eco.int.ge" })
+        ( "ge", [ ( a, Mono.MString ), ( b, Mono.MString ) ] ) ->
+            Just (StringOrderCompare { op = "eco.int.ge" } a b)
 
-        ( "append", [ Mono.MString, Mono.MString ] ) ->
-            Just AppendString
+        ( "append", [ ( a, Mono.MString ), ( b, Mono.MString ) ] ) ->
+            Just (AppendString a b)
 
-        ( "append", [ Mono.MList _ _, Mono.MList _ _ ] ) ->
-            Just AppendList
+        ( "append", [ ( a, Mono.MList _ _ ), ( b, Mono.MList _ _ ) ] ) ->
+            Just (AppendList a b)
 
         -- Spelled out, though the last arm gives the same answer.
-        ( "append", [ Mono.MString, Mono.MList _ _ ] ) ->
+        ( "append", [ ( _, Mono.MString ), ( _, Mono.MList _ _ ) ] ) ->
             Nothing
 
-        ( "append", [ Mono.MList _ _, Mono.MString ] ) ->
+        ( "append", [ ( _, Mono.MList _ _ ), ( _, Mono.MString ) ] ) ->
             Nothing
 
         _ ->
@@ -521,14 +549,14 @@ utilsIntrinsic name argTypes =
 {-| Returns the intrinsic for `Char.toCode` on a Char or `Char.fromCode` on an
 Int.
 -}
-charIntrinsic : Name.Name -> List Mono.MonoType -> Maybe Intrinsic
-charIntrinsic name argTypes =
-    case ( name, argTypes ) of
-        ( "toCode", [ Mono.MChar ] ) ->
-            Just CharToInt
+charIntrinsic : Name.Name -> List ( a, Mono.MonoType ) -> Maybe (Operation a)
+charIntrinsic name args =
+    case ( name, args ) of
+        ( "toCode", [ ( a, Mono.MChar ) ] ) ->
+            Just (CharToInt a)
 
-        ( "fromCode", [ Mono.MInt ] ) ->
-            Just CharFromInt
+        ( "fromCode", [ ( a, Mono.MInt ) ] ) ->
+            Just (CharFromInt a)
 
         _ ->
             Nothing
@@ -538,17 +566,17 @@ charIntrinsic name argTypes =
 `fromNumber` at Int or Float, and `length` applied to a String. A reference to
 `length` that is not applied has no argument types and gets none.
 -}
-stringIntrinsic : Name.Name -> List Mono.MonoType -> Maybe Intrinsic
-stringIntrinsic name argTypes =
-    case ( name, argTypes ) of
-        ( "fromNumber", [ Mono.MInt ] ) ->
-            Just StringFromInt
+stringIntrinsic : Name.Name -> List ( a, Mono.MonoType ) -> Maybe (Operation a)
+stringIntrinsic name args =
+    case ( name, args ) of
+        ( "fromNumber", [ ( a, Mono.MInt ) ] ) ->
+            Just (StringFromInt a)
 
-        ( "fromNumber", [ Mono.MFloat ] ) ->
-            Just StringFromFloat
+        ( "fromNumber", [ ( a, Mono.MFloat ) ] ) ->
+            Just (StringFromFloat a)
 
-        ( "length", [ Mono.MString ] ) ->
-            Just StringLength
+        ( "length", [ ( a, Mono.MString ) ] ) ->
+            Just (StringLength a)
 
         _ ->
             Nothing
@@ -587,17 +615,18 @@ boxedComparable ty =
             False
 
 
-{-| Returns `ArraySet` for an element of type `elt`, or `Nothing` when `elt`
-is a type variable, whose ABI type, and so the slot kind, is not known.
+{-| Returns `ArraySet` of `index`, `value` and `array` for an element of type
+`elt`, or `Nothing` when `elt` is a type variable, whose ABI type, and so the
+slot kind, is not known.
 -}
-concreteArraySet : Mono.MonoType -> Maybe Intrinsic
-concreteArraySet elt =
+concreteArraySet : Mono.MonoType -> a -> a -> a -> Maybe (Operation a)
+concreteArraySet elt index value array =
     case elt of
         Mono.MVar _ _ ->
             Nothing
 
         _ ->
-            Just (ArraySet { elementMlirType = MonoAbi.monoTypeToAbi elt })
+            Just (ArraySet { elementMlirType = MonoAbi.monoTypeToAbi elt } index value array)
 
 
 {-| Returns the element type of `ty` when it is a `JsArray` or an `Array` with
@@ -635,60 +664,52 @@ argument, and declines only when that is also a type variable. `singleton`
 takes the element from its result, and `push` from its value argument.
 
 -}
-jsArrayIntrinsic : Name.Name -> List Mono.MonoType -> Mono.MonoType -> Maybe Intrinsic
-jsArrayIntrinsic name argTypes resultType =
+jsArrayIntrinsic : Name.Name -> List ( a, Mono.MonoType ) -> Mono.MonoType -> Maybe (Operation a)
+jsArrayIntrinsic name args resultType =
     case name of
-        "empty" ->
-            case argTypes of
-                [] ->
-                    Just ArrayEmpty
-
-                _ ->
-                    Nothing
-
         "singleton" ->
-            case ( argTypes, arrayElementType resultType ) of
-                ( [ _ ], Just elt ) ->
-                    Just (ArraySingleton { elementMlirType = MonoAbi.monoTypeToAbi elt })
+            case ( args, arrayElementType resultType ) of
+                ( [ ( value, _ ) ], Just elt ) ->
+                    Just (ArraySingleton { elementMlirType = MonoAbi.monoTypeToAbi elt } value)
 
                 _ ->
                     Nothing
 
         "push" ->
-            case argTypes of
-                [ elt, _ ] ->
-                    Just (ArrayPush { elementMlirType = MonoAbi.monoTypeToAbi elt })
+            case args of
+                [ ( value, elt ), ( array, _ ) ] ->
+                    Just (ArrayPush { elementMlirType = MonoAbi.monoTypeToAbi elt } value array)
 
                 _ ->
                     Nothing
 
         "slice" ->
-            case argTypes of
-                [ Mono.MInt, Mono.MInt, _ ] ->
-                    Just ArraySlice
+            case args of
+                [ ( start, Mono.MInt ), ( end, Mono.MInt ), ( array, _ ) ] ->
+                    Just (ArraySlice start end array)
 
                 _ ->
                     Nothing
 
         "appendN" ->
-            case argTypes of
-                [ Mono.MInt, _, _ ] ->
-                    Just ArrayAppendN
+            case args of
+                [ ( n, Mono.MInt ), ( dest, _ ), ( source, _ ) ] ->
+                    Just (ArrayAppendN n dest source)
 
                 _ ->
                     Nothing
 
         "length" ->
-            case resultType of
-                Mono.MInt ->
-                    Just ArrayLength
+            case ( args, resultType ) of
+                ( [ ( array, _ ) ], Mono.MInt ) ->
+                    Just (ArrayLength array)
 
                 _ ->
                     Nothing
 
         "unsafeGet" ->
-            case argTypes of
-                [ Mono.MInt, arrayTy ] ->
+            case args of
+                [ ( index, Mono.MInt ), ( array, arrayTy ) ] ->
                     case arrayElementType arrayTy of
                         Just (Mono.MVar _ _) ->
                             -- The kernel call reads the slot kind from the
@@ -696,7 +717,7 @@ jsArrayIntrinsic name argTypes resultType =
                             Nothing
 
                         Just elt ->
-                            Just (ArrayGet { elementMlirType = MonoAbi.monoTypeToAbi elt })
+                            Just (ArrayGet { elementMlirType = MonoAbi.monoTypeToAbi elt } index array)
 
                         Nothing ->
                             -- A boxed result type may be a widened stand-in for
@@ -705,23 +726,23 @@ jsArrayIntrinsic name argTypes resultType =
                                 Nothing
 
                             else
-                                Just (ArrayGet { elementMlirType = MonoAbi.monoTypeToAbi resultType })
+                                Just (ArrayGet { elementMlirType = MonoAbi.monoTypeToAbi resultType } index array)
 
                 _ ->
                     Nothing
 
         "unsafeSet" ->
-            case argTypes of
-                [ Mono.MInt, elt, arrayTy ] ->
+            case args of
+                [ ( index, Mono.MInt ), ( value, elt ), ( array, arrayTy ) ] ->
                     case arrayElementType arrayTy of
                         Just (Mono.MVar _ _) ->
-                            concreteArraySet elt
+                            concreteArraySet elt index value array
 
                         Just fromArray ->
-                            Just (ArraySet { elementMlirType = MonoAbi.monoTypeToAbi fromArray })
+                            Just (ArraySet { elementMlirType = MonoAbi.monoTypeToAbi fromArray } index value array)
 
                         Nothing ->
-                            concreteArraySet elt
+                            concreteArraySet elt index value array
 
                 _ ->
                     Nothing
@@ -734,14 +755,14 @@ jsArrayIntrinsic name argTypes resultType =
 `Nothing` when the head's slot kind is not settled (see `consHeadAbi`) or when
 the tail or the result is not passed as `!eco.value`.
 -}
-listIntrinsic : Name.Name -> List Mono.MonoType -> Mono.MonoType -> Maybe Intrinsic
-listIntrinsic name argTypes resultType =
-    case ( name, argTypes ) of
-        ( "cons", [ headTy, tailTy ] ) ->
+listIntrinsic : Name.Name -> List ( a, Mono.MonoType ) -> Mono.MonoType -> Maybe (Intrinsic a)
+listIntrinsic name args resultType =
+    case ( name, args ) of
+        ( "cons", [ ( head, headTy ), ( tail, tailTy ) ] ) ->
             case consHeadAbi headTy of
                 Just headMlirType ->
                     if boxedSlot tailTy && boxedSlot resultType then
-                        Just (ConstructList { headMlirType = headMlirType })
+                        Just (ConstructList { headMlirType = headMlirType } head tail)
 
                     else
                         Nothing
@@ -756,8 +777,8 @@ listIntrinsic name argTypes resultType =
 {-| Returns the ABI type of a list head of type `headTy`, which is the kind
 its slot is given, or `Nothing` when that is not settled.
 
-Int, Float and Char are unboxed and any other type that is passed as
-`!eco.value` is boxed. A `number` type variable gives `Nothing`: it may still
+Int, Float and Char are unboxed and any other type is boxed, as it is passed
+as `!eco.value`. A `number` type variable gives `Nothing`: it may still
 become Int or Float, and its slot kind must not be fixed before it does.
 
 -}
@@ -777,11 +798,7 @@ consHeadAbi headTy =
             Nothing
 
         _ ->
-            if MonoAbi.isEcoValueType (MonoAbi.monoTypeToAbi headTy) then
-                Just MonoAbi.ecoValue
-
-            else
-                Nothing
+            Just MonoAbi.ecoValue
 
 
 {-| Returns whether a value of type `t` is passed as `!eco.value`.
@@ -789,15 +806,3 @@ consHeadAbi headTy =
 boxedSlot : Mono.MonoType -> Bool
 boxedSlot t =
     MonoAbi.isEcoValueType (MonoAbi.monoTypeToAbi t)
-
-
-{-| Returns whether `t` is a type variable.
--}
-isTypeVar : Mono.MonoType -> Bool
-isTypeVar t =
-    case t of
-        Mono.MVar _ _ ->
-            True
-
-        _ ->
-            False

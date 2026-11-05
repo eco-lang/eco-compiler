@@ -402,7 +402,7 @@ factsOf (Mono.MonoGraph g) =
             Dict.foldl
                 (\m origin acc ->
                     case origin of
-                        Mono.OriginGlobal (Mono.Global _ name) ->
+                        Mono.OriginGlobal _ name ->
                             if name == "myId" then
                                 m :: acc
 

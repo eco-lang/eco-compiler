@@ -114,7 +114,7 @@ valueSizes (A.At _ (Src.Value v)) =
 
 
 unionSizes : A.Located Src.Union -> List SizeViolation
-unionSizes (A.At _ (Src.Union _ _ ctors)) =
+unionSizes (A.At _ (Src.Union _ _ ctor0 ctors)) =
     List.concat <|
         List.indexedMap
             (\index ( _, ( A.At _ ctorName, args ) ) ->
@@ -138,7 +138,7 @@ unionSizes (A.At _ (Src.Union _ _ ctors)) =
                        )
                     ++ List.concatMap (Src.c1Value >> typeSizes) args
             )
-            ctors
+            (ctor0 :: ctors)
 
 
 aliasSizes : A.Located Src.Alias -> List SizeViolation
@@ -173,8 +173,11 @@ parentheses, or `Nothing` when the type is not a record.
 recordBody : Src.Type -> Maybe ( Int, List Src.Type )
 recordBody (A.At _ tipe) =
     case tipe of
-        Src.TRecord fields _ _ ->
+        Src.TRecord fields _ ->
             Just ( List.length fields, List.map (\( _, ( _, ( _, t ) ) ) -> t) fields )
+
+        Src.TRecordExt _ firstField fields _ ->
+            Just ( 1 + List.length fields, List.map (\( _, ( _, ( _, t ) ) ) -> t) (firstField :: fields) )
 
         Src.TParens ( _, inner ) ->
             recordBody inner
@@ -225,8 +228,11 @@ recordSizes (A.At _ tipe) =
         Src.TTypeQual _ _ _ args ->
             List.concatMap (Src.c1Value >> recordSizes) args
 
-        Src.TRecord fields _ _ ->
+        Src.TRecord fields _ ->
             List.length fields :: List.concatMap (\( _, ( _, ( _, t ) ) ) -> recordSizes t) fields
+
+        Src.TRecordExt _ firstField fields _ ->
+            (1 + List.length fields) :: List.concatMap (\( _, ( _, ( _, t ) ) ) -> recordSizes t) (firstField :: fields)
 
         Src.TUnit ->
             []
@@ -377,19 +383,19 @@ nameClashes (Src.Module data) =
             List.map (\(A.At _ (Src.Value v)) -> A.toValue (Tuple.second v.name)) data.values
 
         typeNames =
-            List.map (\(A.At _ (Src.Union ( _, A.At _ n ) _ _)) -> n) data.unions
+            List.map (\(A.At _ (Src.Union ( _, A.At _ n ) _ _ _)) -> n) data.unions
                 ++ List.map (\(A.At _ (Src.Alias a)) -> A.toValue (Tuple.second a.name)) data.aliases
 
         ctorNames =
-            List.concatMap (\(A.At _ (Src.Union _ _ ctors)) -> List.map (\( _, ( A.At _ n, _ ) ) -> n) ctors) data.unions
+            List.concatMap (\(A.At _ (Src.Union _ _ ctor0 ctors)) -> List.map (\( _, ( A.At _ n, _ ) ) -> n) (ctor0 :: ctors)) data.unions
                 ++ List.filterMap aliasCtor data.aliases
 
         typeVarClashes =
-            List.concatMap (\(A.At _ (Src.Union _ vars _)) -> repeats (List.map (Src.c1Value >> A.toValue) vars)) data.unions
+            List.concatMap (\(A.At _ (Src.Union _ vars _ _)) -> repeats (List.map (Src.c1Value >> A.toValue) vars)) data.unions
                 ++ List.concatMap (\(A.At _ (Src.Alias a)) -> repeats (List.map (Src.c1Value >> A.toValue) a.args)) data.aliases
 
         typeFieldClashes =
-            List.concatMap (\(A.At _ (Src.Union _ _ ctors)) -> List.concatMap (\( _, ( _, args ) ) -> List.concatMap (Src.c1Value >> typeFieldRepeats) args) ctors) data.unions
+            List.concatMap (\(A.At _ (Src.Union _ _ ctor0 ctors)) -> List.concatMap (\( _, ( _, args ) ) -> List.concatMap (Src.c1Value >> typeFieldRepeats) args) (ctor0 :: ctors)) data.unions
                 ++ List.concatMap (\(A.At _ (Src.Alias a)) -> typeFieldRepeats (Src.c1Value a.tipe)) data.aliases
 
         topLevel =
@@ -406,7 +412,7 @@ body is a closed record.
 aliasCtor : A.Located Src.Alias -> Maybe String
 aliasCtor (A.At _ (Src.Alias a)) =
     case Src.c1Value a.tipe of
-        A.At _ (Src.TRecord _ Nothing _) ->
+        A.At _ (Src.TRecord _ _) ->
             Just (A.toValue (Tuple.second a.name))
 
         _ ->
@@ -508,7 +514,11 @@ exprClashes scope (A.At _ expr) =
             List.map nameClash (repeats (List.map (\( _, ( ( _, A.At _ n ), _ ) ) -> n) fields))
                 ++ List.concatMap (\( _, ( _, ( _, value ) ) ) -> exprClashes scope value) fields
 
-        Src.Update ( _, record ) ( _, fields ) ->
+        Src.Update ( _, record ) ( _, ( firstField, moreFields ) ) ->
+            let
+                fields =
+                    firstField :: moreFields
+            in
             List.map nameClash (repeats (List.map (\( _, ( ( _, A.At _ n ), _ ) ) -> n) fields))
                 ++ exprClashes scope record
                 ++ List.concatMap (\( _, ( _, ( _, value ) ) ) -> exprClashes scope value) fields
@@ -561,9 +571,13 @@ typeFieldRepeats (A.At _ tipe) =
         Src.TTypeQual _ _ _ args ->
             List.concatMap (Src.c1Value >> typeFieldRepeats) args
 
-        Src.TRecord fields _ _ ->
+        Src.TRecord fields _ ->
             repeats (List.map (\( _, ( ( _, A.At _ n ), _ ) ) -> n) fields)
                 ++ List.concatMap (\( _, ( _, ( _, t ) ) ) -> typeFieldRepeats t) fields
+
+        Src.TRecordExt _ firstField fields _ ->
+            repeats (List.map (\( _, ( ( _, A.At _ n ), _ ) ) -> n) (firstField :: fields))
+                ++ List.concatMap (\( _, ( _, ( _, t ) ) ) -> typeFieldRepeats t) (firstField :: fields)
 
         Src.TUnit ->
             []
@@ -724,14 +738,14 @@ children expr =
         Src.Negate e ->
             [ e ]
 
-        Src.Binops ops final ->
-            List.map Tuple.first ops ++ [ final ]
+        Src.Binops firstOp ops final ->
+            List.map Tuple.first (firstOp :: ops) ++ [ final ]
 
         Src.Lambda _ ( _, body ) ->
             [ body ]
 
-        Src.Call func args ->
-            func :: List.map Src.c1Value args
+        Src.Call func firstArg args ->
+            func :: List.map Src.c1Value (firstArg :: args)
 
         Src.If ( _, ( ( _, c ), ( _, t ) ) ) elseIfs ( _, final ) ->
             c :: t :: List.concatMap (\( _, ( ( _, c2 ), ( _, t2 ) ) ) -> [ c2, t2 ]) elseIfs ++ [ final ]
@@ -755,8 +769,8 @@ children expr =
         Src.Access e _ ->
             [ e ]
 
-        Src.Update ( _, record ) ( _, fields ) ->
-            record :: List.map (\( _, ( _, ( _, value ) ) ) -> value) fields
+        Src.Update ( _, record ) ( _, ( firstField, moreFields ) ) ->
+            record :: List.map (\( _, ( _, ( _, value ) ) ) -> value) (firstField :: moreFields)
 
         Src.Record ( _, fields ) ->
             List.map (\( _, ( _, ( _, value ) ) ) -> value) fields

@@ -205,7 +205,7 @@ isPapSingleton name supplied (Mono.MonoGraph g) a =
     case a of
         Mono.LSet [ m ] ->
             case Dict.get m g.lssMemberOrigins of
-                Just (Mono.OriginPap (Mono.Global _ n) k) ->
+                Just (Mono.OriginPap _ n k) ->
                     n == name && k == supplied
 
                 _ ->

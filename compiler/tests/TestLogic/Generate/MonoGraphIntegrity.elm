@@ -53,6 +53,7 @@ import Compiler.IR.Mono as Mono
 import Compiler.IR.Mono.Traverse as MonoTraverse
 import Compiler.IR.Source as Src
 import Data.HashMap as HashMap
+import Data.NonEmptyList as NE
 import Data.Set as Set exposing (EverySet)
 import Dict
 import Expect
@@ -245,10 +246,10 @@ checkNodeCallability specId node =
                 _ ->
                     [ \() -> Expect.fail (context ++ ": MonoTailFunc has non-function type") ]
 
-        Mono.MonoCtor _ _ ->
+        Mono.MonoCtor _ _ _ ->
             []
 
-        Mono.MonoEnum _ _ ->
+        Mono.MonoEnum _ _ _ _ ->
             []
 
         Mono.MonoExtern _ ->
@@ -328,7 +329,7 @@ inlineLeaves decider =
             inlineLeaves success ++ inlineLeaves failure
 
         Mono.FanOut _ edges fallback ->
-            List.concatMap (\( _, d ) -> inlineLeaves d) edges ++ inlineLeaves fallback
+            List.concatMap (\( _, d ) -> inlineLeaves d) (NE.toList edges) ++ inlineLeaves fallback
 
 
 {-| Returns whether `monoType` is a function type (`MFunction`).
@@ -427,7 +428,7 @@ customTypesIn monoType acc =
             customTypesIn elemType acc
 
         Mono.MTuple _ elemTypes ->
-            List.foldl customTypesIn acc elemTypes
+            List.foldl customTypesIn acc (Mono.tupleToList elemTypes)
 
         Mono.MRecord _ fields ->
             List.foldl customTypesIn acc (Dict.values fields)
@@ -681,7 +682,7 @@ checkExprLocalVarScoping context inScope expr =
                 ++ List.concatMap (\( _, e ) -> checkExprLocalVarScoping context inScope e) updates
 
         Mono.MonoTupleCreate _ elementExprs _ ->
-            List.concatMap (checkExprLocalVarScoping context inScope) elementExprs
+            List.concatMap (checkExprLocalVarScoping context inScope) (Mono.tupleToList elementExprs)
 
         _ ->
             []
@@ -916,7 +917,7 @@ checkDeciderLocalVarScoping context inScope decider =
                 ++ checkDeciderLocalVarScoping context inScope failure
 
         Mono.FanOut _ edges fallback ->
-            List.concatMap (\( _, d ) -> checkDeciderLocalVarScoping context inScope d) edges
+            List.concatMap (\( _, d ) -> checkDeciderLocalVarScoping context inScope d) (NE.toList edges)
                 ++ checkDeciderLocalVarScoping context inScope fallback
 
 
@@ -932,10 +933,10 @@ collectSpecIdRefsFromNode node =
         Mono.MonoTailFunc _ expr _ ->
             collectSpecIdRefsFromExpr expr
 
-        Mono.MonoCtor _ _ ->
+        Mono.MonoCtor _ _ _ ->
             Set.empty
 
-        Mono.MonoEnum _ _ ->
+        Mono.MonoEnum _ _ _ _ ->
             Set.empty
 
         Mono.MonoExtern _ ->
@@ -1044,10 +1045,10 @@ describeNode maybeNode =
                         Mono.MonoTailFunc _ _ _ ->
                             "MonoTailFunc"
 
-                        Mono.MonoCtor _ _ ->
+                        Mono.MonoCtor _ _ _ ->
                             "MonoCtor"
 
-                        Mono.MonoEnum _ _ ->
+                        Mono.MonoEnum _ _ _ _ ->
                             "MonoEnum"
 
                         Mono.MonoExtern _ ->

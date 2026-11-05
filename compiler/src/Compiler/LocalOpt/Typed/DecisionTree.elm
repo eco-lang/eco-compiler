@@ -47,12 +47,15 @@ fallback as one edge.
 
 import Compiler.Core.Annotation as A
 import Compiler.Core.Index as Index
+import Compiler.Core.Name as Name
+import Compiler.Elm.ModuleName as ModuleName
 import Compiler.IR.Canonical as Can
 import Compiler.IR.DecisionTree.Test as Test
 import Compiler.IR.DecisionTree.TypedPath as TypedPath
 import Compiler.IR.Source.StringLiteral as ES
+import Data.NonEmptyList as NE
 import Data.Set as EverySet
-import Prelude
+import Maybe.Extra as Maybe
 import System.Crash exposing (crash)
 import Utils.Main as Utils
 
@@ -67,7 +70,8 @@ paired with the number its `Match` leaves are to carry.
 Branches are tried in the order given: where several match the same value,
 the leaf names the earliest. A branch may be named by several leaves, or by
 none. Patterns are assumed to have passed the exhaustiveness check, since a
-missing case can lead to a node with no fallback.
+missing case can lead to a node with no fallback. Crashes on an empty list,
+since a `case` has a branch.
 
 -}
 compile : List ( Can.Pattern, Int ) -> DecisionTree
@@ -75,9 +79,14 @@ compile rawBranches =
     let
         format : ( Can.Pattern, Int ) -> Branch
         format ( pattern, index ) =
-            Branch index [ ( TypedPath.Empty, pattern ) ]
+            Branch index (flatten ( TypedPath.Empty, pattern ) [])
     in
-    toDecisionTree (List.map format rawBranches)
+    case List.map format rawBranches of
+        first :: rest ->
+            toDecisionTree first rest
+
+        [] ->
+            crash "Typed.DecisionTree.compile: a case has at least one branch"
 
 
 
@@ -94,15 +103,14 @@ matching branch's pattern.
 to follow when the test succeeds. The optional tree is the fallback, followed
 when no edge's test succeeds. It is `Nothing` when the edges' tests cover
 every value that can be at the path (every constructor of the type, both
-`Bool`s, both an empty and a non-empty list, or a tuple test), and when no
-branch could match without one of the edges' tests succeeding. A node whose
-one edge would have no fallback is not built: the edge's tree stands in its
-place, so its test is never made.
+`Bool`s, or both an empty and a non-empty list), and when no branch could
+match without one of the edges' tests succeeding. A node always has at least
+one edge.
 
 -}
 type DecisionTree
     = Match Int
-    | Decision Path (List ( Test, DecisionTree )) (Maybe DecisionTree)
+    | Decision Path (NE.Nonempty ( Test, DecisionTree )) (Maybe DecisionTree)
 
 
 {-| A question a `Decision` node asks about the value at its path. This is
@@ -132,74 +140,93 @@ type alias Path =
 
 
 {-| One row: a `case` branch's number, and the positions it still has to
-check, each with the pattern expected there.
+check, each with the flattened pattern expected there.
 -}
 type Branch
-    = Branch Int (List ( Path, Can.Pattern ))
+    = Branch Int (List ( Path, FlatPattern ))
 
 
-{-| Builds the decision tree for the rows, earliest row first, as the module
-docstring describes.
+{-| A pattern as `flatten` leaves it: one that needs a test of its own, or
+`FAnything` for one that needs none.
+
+`FAnything` stands for a variable, a wildcard or a record pattern. `FCtor`
+is a constructor of a type with two or more constructors, with the fields of
+`Test.IsCtor` and the constructor's argument patterns. `FNil` is the empty
+list pattern, and `FCons` a non-empty list or `::` pattern with its head and
+tail patterns. The literal and `Bool` patterns keep their values.
+
 -}
-toDecisionTree : List Branch -> DecisionTree
-toDecisionTree rawBranches =
-    let
-        branches : List Branch
-        branches =
-            List.map flattenPatterns rawBranches
-    in
-    case checkForMatch branches of
-        Just goal ->
+type FlatPattern
+    = FAnything
+    | FCtor ModuleName.Canonical Name.Name Index.ZeroBased Int Can.CtorOpts (List Can.Pattern)
+    | FNil
+    | FCons Can.Pattern Can.Pattern
+    | FInt Int
+    | FChr String
+    | FStr String
+    | FBool Bool
+
+
+{-| Builds the decision tree for the rows `first :: rest`, earliest row first,
+as the module docstring describes.
+-}
+toDecisionTree : Branch -> List Branch -> DecisionTree
+toDecisionTree ((Branch goal firstPatterns) as first) rest =
+    case List.filterMap isChoicePath firstPatterns of
+        [] ->
             Match goal
 
-        Nothing ->
+        firstPath :: firstPaths ->
             let
+                branches : List Branch
+                branches =
+                    first :: rest
+
                 path : Path
                 path =
                     pickPath branches
+                        (NE.Nonempty firstPath
+                            (firstPaths ++ List.filterMap isChoicePath (List.concatMap (\(Branch _ patterns) -> patterns) rest))
+                        )
 
                 ( edges, fallback ) =
                     gatherEdges branches path
 
-                decisionEdges : List ( Test, DecisionTree )
+                decisionEdges : NE.Nonempty ( Test, DecisionTree )
                 decisionEdges =
-                    List.map (Tuple.mapSecond toDecisionTree) edges
+                    NE.map (Tuple.mapSecond (\(NE.Nonempty b bs) -> toDecisionTree b bs)) edges
             in
-            case ( decisionEdges, fallback ) of
-                ( [ ( _, decisionTree ) ], [] ) ->
-                    decisionTree
-
-                ( _, [] ) ->
+            case fallback of
+                [] ->
                     Decision path decisionEdges Nothing
 
-                ( [], _ :: _ ) ->
-                    toDecisionTree fallback
-
-                _ ->
-                    Decision path decisionEdges (Just (toDecisionTree fallback))
+                f :: fs ->
+                    Decision path decisionEdges (Just (toDecisionTree f fs))
 
 
 {-| Returns whether the tests, all made at one position and with no duplicates,
 cover every value that can be there, so that no fallback is needed.
 
-The kind of test is read from the first one, which must exist. Tests of `Int`,
-`Char` or `String` literals are never complete, and a tuple test always is.
+The kind of test is read from the first one. Tests of `Int`,
+`Char` or `String` literals are never complete.
 
 -}
-isComplete : List Test -> Bool
-isComplete tests =
-    case Prelude.head tests of
+isComplete : NE.Nonempty Test -> Bool
+isComplete (NE.Nonempty firstTest otherTests) =
+    let
+        count : Int
+        count =
+            1 + List.length otherTests
+    in
+    case firstTest of
         Test.IsCtor _ _ _ numAlts _ ->
-            numAlts == List.length tests
+            numAlts == count
 
         Test.IsCons ->
-            List.length tests == 2
+            count == 2
 
         Test.IsNil ->
-            List.length tests == 2
-
-        Test.IsTuple ->
-            True
+            count == 2
 
         Test.IsInt _ ->
             False
@@ -211,42 +238,34 @@ isComplete tests =
             False
 
         Test.IsBool _ ->
-            List.length tests == 2
+            count == 2
 
 
 
 -- ====== FLATTEN PATTERNS ======
 
 
-{-| Returns the row with every pattern whose shape the type already fixes
-expanded, as `flatten` does.
--}
-flattenPatterns : Branch -> Branch
-flattenPatterns (Branch goal pathPatterns) =
-    Branch goal (List.foldr flatten [] pathPatterns)
-
-
-{-| Puts a position and its pattern in front of the other positions, first
-expanding any pattern whose shape the type already fixes.
+{-| Puts a position and its pattern, as `FlatPattern`s, in front of the other
+positions, first expanding any pattern whose shape the type already fixes.
 
 A tuple, or a constructor of a type with one constructor, is replaced by its
 parts at sub-positions. A one-constructor type is expanded this way whatever
 its `Can.CtorOpts`: a single argument is taken with `Unbox`, several with
 `Index` steps. An alias pattern becomes its inner pattern and a variable
-pattern for the alias name at the same position. Unit is dropped. Every
-other pattern is kept as it is.
+pattern for the alias name at the same position. Unit is dropped. The parts
+are expanded in turn. Every other pattern becomes its `FlatPattern`.
 
 -}
-flatten : ( Path, Can.Pattern ) -> List ( Path, Can.Pattern ) -> List ( Path, Can.Pattern )
-flatten (( path, A.At region patternInfo ) as pathPattern) otherPathPatterns =
+flatten : ( Path, Can.Pattern ) -> List ( Path, FlatPattern ) -> List ( Path, FlatPattern )
+flatten ( path, A.At region patternInfo ) otherPathPatterns =
     case patternInfo.node of
         Can.PVar _ ->
-            pathPattern :: otherPathPatterns
+            ( path, FAnything ) :: otherPathPatterns
 
         Can.PAnything ->
-            pathPattern :: otherPathPatterns
+            ( path, FAnything ) :: otherPathPatterns
 
-        Can.PCtor { union, name, args } ->
+        Can.PCtor { home, union, name, index, args } ->
             let
                 (Can.Union unionData) =
                     union
@@ -260,29 +279,19 @@ flatten (( path, A.At region patternInfo ) as pathPattern) otherPathPatterns =
                         List.foldr flatten otherPathPatterns (subPositions (TypedPath.HintCustom name) path args_)
 
             else
-                pathPattern :: otherPathPatterns
+                ( path, FCtor home name index unionData.numAlts unionData.opts (List.map dearg args) ) :: otherPathPatterns
 
         Can.PTuple a b cs ->
             let
-                all =
-                    a :: b :: cs
-
-                len =
-                    List.length all
-
                 hint =
-                    case len of
-                        2 ->
+                    case cs of
+                        Nothing ->
                             TypedPath.HintTuple2
 
-                        3 ->
+                        Just _ ->
                             TypedPath.HintTuple3
-
-                        _ ->
-                            -- A tuple of more than three; canonicalization rejects these.
-                            TypedPath.HintCustom ""
             in
-            all
+            (a :: b :: Maybe.toList cs)
                 |> List.foldl
                     (\x ( index, acc ) ->
                         ( Index.next index
@@ -296,31 +305,38 @@ flatten (( path, A.At region patternInfo ) as pathPattern) otherPathPatterns =
         Can.PUnit ->
             otherPathPatterns
 
-        Can.PAlias realPattern alias ->
-            flatten ( path, realPattern ) <|
-                ( path, A.At region { id = -1, node = Can.PVar alias } )
-                    :: otherPathPatterns
+        Can.PAlias realPattern _ ->
+            flatten ( path, realPattern ) (( path, FAnything ) :: otherPathPatterns)
 
         Can.PRecord _ ->
-            pathPattern :: otherPathPatterns
+            ( path, FAnything ) :: otherPathPatterns
 
-        Can.PList _ ->
-            pathPattern :: otherPathPatterns
+        Can.PList [] ->
+            ( path, FNil ) :: otherPathPatterns
 
-        Can.PCons _ _ ->
-            pathPattern :: otherPathPatterns
+        Can.PList (hd :: tl) ->
+            let
+                -- The tail pattern is synthesized, so it has no real id.
+                tl_ : Can.Pattern
+                tl_ =
+                    A.At region { id = -1, node = Can.PList tl }
+            in
+            ( path, FCons hd tl_ ) :: otherPathPatterns
 
-        Can.PChr _ ->
-            pathPattern :: otherPathPatterns
+        Can.PCons hd tl ->
+            ( path, FCons hd tl ) :: otherPathPatterns
 
-        Can.PStr _ _ ->
-            pathPattern :: otherPathPatterns
+        Can.PChr chr ->
+            ( path, FChr chr ) :: otherPathPatterns
 
-        Can.PInt _ ->
-            pathPattern :: otherPathPatterns
+        Can.PStr str _ ->
+            ( path, FStr str ) :: otherPathPatterns
 
-        Can.PBool _ _ ->
-            pathPattern :: otherPathPatterns
+        Can.PInt int ->
+            ( path, FInt int ) :: otherPathPatterns
+
+        Can.PBool _ bool ->
+            ( path, FBool bool ) :: otherPathPatterns
 
 
 {-| Pairs each pattern with the position of the field it matches, numbering the
@@ -339,27 +355,6 @@ dearg (Can.PatternCtorArg _ _ pattern) =
 
 
 
--- ====== SUCCESSFULLY MATCH ======
-
-
-{-| Returns the number of the first row when none of its remaining patterns
-needs a test, and `Nothing` otherwise or when there are no rows.
--}
-checkForMatch : List Branch -> Maybe Int
-checkForMatch branches =
-    case branches of
-        (Branch goal patterns) :: _ ->
-            if List.all (Tuple.second >> needsTests >> not) patterns then
-                Just goal
-
-            else
-                Nothing
-
-        _ ->
-            Nothing
-
-
-
 -- ====== GATHER OUTGOING EDGES ======
 
 
@@ -371,16 +366,16 @@ The fallback rows are the rows that make no test at `path`, and there are none
 when the tests are complete.
 
 -}
-gatherEdges : List Branch -> Path -> ( List ( Test, List Branch ), List Branch )
+gatherEdges : List Branch -> Path -> ( NE.Nonempty ( Test, NE.Nonempty Branch ), List Branch )
 gatherEdges branches path =
     let
-        relevantTests : List Test
+        relevantTests : NE.Nonempty Test
         relevantTests =
             testsAtPath path branches
 
-        allEdges : List ( Test, List Branch )
+        allEdges : NE.Nonempty ( Test, NE.Nonempty Branch )
         allEdges =
-            List.map (edgesFor path branches) relevantTests
+            NE.map (edgesFor path branches) relevantTests
 
         fallbacks : List Branch
         fallbacks =
@@ -400,7 +395,7 @@ gatherEdges branches path =
 {-| Returns the distinct tests that rows make at `selectedPath`, telling tests
 apart by `Test.testToComparable`.
 -}
-testsAtPath : Path -> List Branch -> List Test
+testsAtPath : Path -> List Branch -> NE.Nonempty Test
 testsAtPath selectedPath branches =
     let
         allTests : List Test
@@ -417,71 +412,46 @@ testsAtPath selectedPath branches =
                 , EverySet.insert Test.testToComparable test visitedTests
                 )
     in
-    Tuple.first (List.foldr skipVisited ( [], EverySet.empty ) allTests)
+    case Tuple.first (List.foldr skipVisited ( [], EverySet.empty ) allTests) of
+        test :: tests ->
+            NE.Nonempty test tests
+
+        [] ->
+            crash "Typed.DecisionTree.testsAtPath: some branch tests the picked path"
 
 
 {-| Returns the test a row makes at `selectedPath`, or `Nothing` when it has no
-pattern there or its pattern there is a variable, a wildcard or a record.
-
-A tuple or unit pattern gives `IsTuple`. An alias pattern crashes, since
-`flatten` has removed every alias.
-
+pattern there or its pattern there needs no test.
 -}
 testAtPath : Path -> Branch -> Maybe Test
 testAtPath selectedPath (Branch _ pathPatterns) =
     Utils.listLookup selectedPath pathPatterns
         |> Maybe.andThen
-            (\(A.At _ patternInfo) ->
-                case patternInfo.node of
-                    Can.PCtor { home, union, name, index } ->
-                        let
-                            (Can.Union unionData) =
-                                union
-                        in
-                        Just (Test.IsCtor home name index unionData.numAlts unionData.opts)
+            (\pattern ->
+                case pattern of
+                    FAnything ->
+                        Nothing
 
-                    Can.PList ps ->
-                        Just
-                            (case ps of
-                                [] ->
-                                    Test.IsNil
+                    FCtor home name index numAlts opts _ ->
+                        Just (Test.IsCtor home name index numAlts opts)
 
-                                _ ->
-                                    Test.IsCons
-                            )
+                    FNil ->
+                        Just Test.IsNil
 
-                    Can.PCons _ _ ->
+                    FCons _ _ ->
                         Just Test.IsCons
 
-                    Can.PTuple _ _ _ ->
-                        Just Test.IsTuple
-
-                    Can.PUnit ->
-                        Just Test.IsTuple
-
-                    Can.PVar _ ->
-                        Nothing
-
-                    Can.PAnything ->
-                        Nothing
-
-                    Can.PInt int ->
+                    FInt int ->
                         Just (Test.IsInt int)
 
-                    Can.PStr str _ ->
-                        Just (Test.IsStr str)
-
-                    Can.PChr chr ->
+                    FChr chr ->
                         Just (Test.IsChr chr)
 
-                    Can.PBool _ bool ->
+                    FStr str ->
+                        Just (Test.IsStr str)
+
+                    FBool bool ->
                         Just (Test.IsBool bool)
-
-                    Can.PRecord _ ->
-                        Nothing
-
-                    Can.PAlias _ _ ->
-                        crash "aliases should never reach 'testAtPath' function"
             )
 
 
@@ -492,177 +462,82 @@ testAtPath selectedPath (Branch _ pathPatterns) =
 {-| Returns the edge for `test`: the test, and the rows that can still match
 when it succeeds at `path`.
 -}
-edgesFor : Path -> List Branch -> Test -> ( Test, List Branch )
+edgesFor : Path -> List Branch -> Test -> ( Test, NE.Nonempty Branch )
 edgesFor path branches test =
-    ( test
-    , List.filterMap (toRelevantBranch test path) branches
-    )
+    case List.filterMap (toRelevantBranch test path) branches of
+        b :: bs ->
+            ( test, NE.Nonempty b bs )
+
+        [] ->
+            crash "Typed.DecisionTree.edgesFor: the branch that made the test passes it"
 
 
 {-| Returns the row as it stands once `test` has succeeded at `path`, or
 `Nothing` when the row's pattern there cannot match a value that passes.
 
 A row whose pattern agrees with the test has that pattern replaced by its
-parts at sub-positions: a constructor's arguments, or a list's head and tail.
-A literal, or an empty list under `IsNil`, that agrees is removed. Whatever
-the test, a unit pattern is removed and a tuple is replaced by its elements.
-A row with no pattern at `path`, or with a variable, wildcard, record or
-alias pattern there, is kept unchanged.
+flattened parts at sub-positions: a constructor's arguments, or a list's head
+and tail. A literal, or an empty list under `IsNil`, that agrees is removed. A
+row with no pattern at `path`, or one that needs no test there, is kept
+unchanged.
 
 -}
 toRelevantBranch : Test -> Path -> Branch -> Maybe Branch
 toRelevantBranch test path ((Branch goal pathPatterns) as branch) =
     case extract path pathPatterns of
-        Found start (A.At region patternInfo) end ->
-            case patternInfo.node of
-                Can.PCtor { union, name, args } ->
-                    case test of
-                        Test.IsCtor _ testName _ _ _ ->
-                            if name == testName then
-                                Just
-                                    (Branch goal <|
-                                        case List.map dearg args of
-                                            (arg :: []) as args_ ->
-                                                let
-                                                    (Can.Union unionData) =
-                                                        union
-                                                in
-                                                if unionData.numAlts == 1 then
-                                                    start ++ (( TypedPath.Unbox path, arg ) :: end)
-
-                                                else
-                                                    start ++ subPositions (TypedPath.HintCustom name) path args_ ++ end
-
-                                            args_ ->
-                                                start ++ subPositions (TypedPath.HintCustom name) path args_ ++ end
-                                    )
-
-                            else
-                                Nothing
-
-                        _ ->
-                            Nothing
-
-                Can.PList [] ->
-                    case test of
-                        Test.IsNil ->
-                            Just (Branch goal (start ++ end))
-
-                        _ ->
-                            Nothing
-
-                Can.PList (hd :: tl) ->
-                    case test of
-                        Test.IsCons ->
-                            let
-                                -- The tail pattern is synthesized, so it has no real id.
-                                tl_ : Can.Pattern
-                                tl_ =
-                                    A.At region { id = -1, node = Can.PList tl }
-                            in
-                            Just (Branch goal (start ++ subPositions TypedPath.HintList path [ hd, tl_ ] ++ end))
-
-                        _ ->
-                            Nothing
-
-                Can.PCons hd tl ->
-                    case test of
-                        Test.IsCons ->
-                            Just (Branch goal (start ++ subPositions TypedPath.HintList path [ hd, tl ] ++ end))
-
-                        _ ->
-                            Nothing
-
-                Can.PChr chr ->
-                    case test of
-                        Test.IsChr testChr ->
-                            if ES.valueKey chr == ES.valueKey testChr then
-                                Just (Branch goal (start ++ end))
-
-                            else
-                                Nothing
-
-                        _ ->
-                            Nothing
-
-                Can.PStr str _ ->
-                    case test of
-                        Test.IsStr testStr ->
-                            if ES.valueKey str == ES.valueKey testStr then
-                                Just (Branch goal (start ++ end))
-
-                            else
-                                Nothing
-
-                        _ ->
-                            Nothing
-
-                Can.PInt int ->
-                    case test of
-                        Test.IsInt testInt ->
-                            if int == testInt then
-                                Just (Branch goal (start ++ end))
-
-                            else
-                                Nothing
-
-                        _ ->
-                            Nothing
-
-                Can.PBool _ bool ->
-                    case test of
-                        Test.IsBool testBool ->
-                            if bool == testBool then
-                                Just (Branch goal (start ++ end))
-
-                            else
-                                Nothing
-
-                        _ ->
-                            Nothing
-
-                Can.PUnit ->
-                    Just (Branch goal (start ++ end))
-
-                Can.PTuple a b cs ->
-                    let
-                        all =
-                            a :: b :: cs
-
-                        len =
-                            List.length all
-
-                        hint =
-                            case len of
-                                2 ->
-                                    TypedPath.HintTuple2
-
-                                3 ->
-                                    TypedPath.HintTuple3
-
-                                _ ->
-                                    -- A tuple of more than three; canonicalization rejects these.
-                                    TypedPath.HintCustom ""
-                    in
-                    Just
-                        (Branch goal
-                            (start
-                                ++ subPositions hint path all
-                                ++ end
-                            )
-                        )
-
-                Can.PVar _ ->
+        Found start pattern end ->
+            let
+                passWith : List ( Path, Can.Pattern ) -> Maybe Branch
+                passWith parts =
+                    Just (Branch goal (start ++ List.foldr flatten end parts))
+            in
+            case ( test, pattern ) of
+                ( _, FAnything ) ->
                     Just branch
 
-                Can.PAnything ->
-                    Just branch
+                ( Test.IsCtor _ testName _ _ _, FCtor _ name _ _ _ args ) ->
+                    if name == testName then
+                        passWith (subPositions (TypedPath.HintCustom name) path args)
 
-                Can.PRecord _ ->
-                    Just branch
+                    else
+                        Nothing
 
-                Can.PAlias _ _ ->
-                    Just branch
+                ( Test.IsNil, FNil ) ->
+                    passWith []
+
+                ( Test.IsCons, FCons hd tl ) ->
+                    passWith (subPositions TypedPath.HintList path [ hd, tl ])
+
+                ( Test.IsChr testChr, FChr chr ) ->
+                    if ES.valueKey chr == ES.valueKey testChr then
+                        passWith []
+
+                    else
+                        Nothing
+
+                ( Test.IsStr testStr, FStr str ) ->
+                    if ES.valueKey str == ES.valueKey testStr then
+                        passWith []
+
+                    else
+                        Nothing
+
+                ( Test.IsInt testInt, FInt int ) ->
+                    if int == testInt then
+                        passWith []
+
+                    else
+                        Nothing
+
+                ( Test.IsBool testBool, FBool bool ) ->
+                    if bool == testBool then
+                        passWith []
+
+                    else
+                        Nothing
+
+                _ ->
+                    Nothing
 
         NotFound ->
             Just branch
@@ -673,12 +548,12 @@ its pattern, and the positions after it, or `NotFound`.
 -}
 type Extract
     = NotFound
-    | Found (List ( Path, Can.Pattern )) Can.Pattern (List ( Path, Can.Pattern ))
+    | Found (List ( Path, FlatPattern )) FlatPattern (List ( Path, FlatPattern ))
 
 
 {-| Finds the first entry for `selectedPath` in a row's positions.
 -}
-extract : Path -> List ( Path, Can.Pattern ) -> Extract
+extract : Path -> List ( Path, FlatPattern ) -> Extract
 extract selectedPath pathPatterns =
     case pathPatterns of
         [] ->
@@ -714,51 +589,17 @@ isIrrelevantTo selectedPath (Branch _ pathPatterns) =
             not (needsTests pattern)
 
 
-{-| Returns whether matching the pattern needs a test. Variables, wildcards and
-record patterns do not. An alias pattern crashes, since `flatten` has removed
-every alias.
+{-| Returns whether matching the pattern needs a test: every `FlatPattern` but
+`FAnything` does.
 -}
-needsTests : Can.Pattern -> Bool
-needsTests (A.At _ patternInfo) =
-    case patternInfo.node of
-        Can.PVar _ ->
+needsTests : FlatPattern -> Bool
+needsTests pattern =
+    case pattern of
+        FAnything ->
             False
 
-        Can.PAnything ->
-            False
-
-        Can.PRecord _ ->
-            False
-
-        Can.PCtor _ ->
+        _ ->
             True
-
-        Can.PList _ ->
-            True
-
-        Can.PCons _ _ ->
-            True
-
-        Can.PUnit ->
-            True
-
-        Can.PTuple _ _ _ ->
-            True
-
-        Can.PChr _ ->
-            True
-
-        Can.PStr _ _ ->
-            True
-
-        Can.PInt _ ->
-            True
-
-        Can.PBool _ _ ->
-            True
-
-        Can.PAlias _ _ ->
-            crash "aliases should never reach 'isIrrelevantTo' function"
 
 
 
@@ -769,24 +610,23 @@ needsTests (A.At _ patternInfo) =
 by the two heuristics the module docstring describes. Of positions still tied
 after both, the one whose first occurrence in the rows comes first wins.
 -}
-pickPath : List Branch -> Path
-pickPath branches =
-    let
-        allPaths : List Path
-        allPaths =
-            List.filterMap isChoicePath (List.concatMap (\(Branch _ patterns) -> patterns) branches)
-    in
+pickPath : List Branch -> NE.Nonempty Path -> Path
+pickPath branches allPaths =
     case bests (addWeights (smallDefaults branches) allPaths) of
-        [ path ] ->
+        NE.Nonempty path [] ->
             path
 
         tiedPaths ->
-            Prelude.head (bests (addWeights (smallBranchingFactor branches) tiedPaths))
+            let
+                (NE.Nonempty path _) =
+                    bests (addWeights (smallBranchingFactor branches) tiedPaths)
+            in
+            path
 
 
 {-| Returns the position when its pattern needs a test.
 -}
-isChoicePath : ( Path, Can.Pattern ) -> Maybe Path
+isChoicePath : ( Path, FlatPattern ) -> Maybe Path
 isChoicePath ( path, pattern ) =
     if needsTests pattern then
         Just path
@@ -797,34 +637,28 @@ isChoicePath ( path, pattern ) =
 
 {-| Pairs each path with its weight.
 -}
-addWeights : (Path -> Int) -> List Path -> List ( Path, Int )
+addWeights : (Path -> Int) -> NE.Nonempty Path -> NE.Nonempty ( Path, Int )
 addWeights toWeight paths =
-    List.map (\path -> ( path, toWeight path )) paths
+    NE.map (\path -> ( path, toWeight path )) paths
 
 
 {-| Returns the paths of least weight, in reverse order of the list given.
-Crashes on an empty list.
 -}
-bests : List ( Path, Int ) -> List Path
-bests allPaths =
-    case allPaths of
-        [] ->
-            crash "Cannot choose the best of zero paths. This should never happen."
+bests : NE.Nonempty ( Path, Int ) -> NE.Nonempty Path
+bests (NE.Nonempty ( headPath, headWeight ) weightedPaths) =
+    let
+        gatherMinimum : ( a, comparable ) -> ( comparable, NE.Nonempty a ) -> ( comparable, NE.Nonempty a )
+        gatherMinimum ( path, weight ) (( minWeight, NE.Nonempty p ps ) as acc) =
+            if weight == minWeight then
+                ( minWeight, NE.Nonempty path (p :: ps) )
 
-        ( headPath, headWeight ) :: weightedPaths ->
-            let
-                gatherMinimum : ( a, comparable ) -> ( comparable, List a ) -> ( comparable, List a )
-                gatherMinimum ( path, weight ) (( minWeight, paths ) as acc) =
-                    if weight == minWeight then
-                        ( minWeight, path :: paths )
+            else if weight < minWeight then
+                ( weight, NE.singleton path )
 
-                    else if weight < minWeight then
-                        ( weight, [ path ] )
-
-                    else
-                        acc
-            in
-            Tuple.second (List.foldl gatherMinimum ( headWeight, [ headPath ] ) weightedPaths)
+            else
+                acc
+    in
+    Tuple.second (List.foldl gatherMinimum ( headWeight, NE.singleton headPath ) weightedPaths)
 
 
 
@@ -848,7 +682,7 @@ smallBranchingFactor branches path =
         ( edges, fallback ) =
             gatherEdges branches path
     in
-    List.length edges
+    List.length (NE.toList edges)
         + (if List.isEmpty fallback then
             0
 

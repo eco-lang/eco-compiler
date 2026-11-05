@@ -32,6 +32,7 @@ import Compiler.Elm.ModuleName as ModuleName
 import Compiler.IR.Mono as Mono
 import Compiler.IR.Mono.Closure as Closure
 import Compiler.IR.Mono.Traverse as MonoTraverse
+import Data.NonEmptyList as NE
 import System.Crash exposing (crash)
 
 
@@ -106,7 +107,7 @@ regroupExpr expr =
             Mono.MonoRecordUpdate (regroupExpr base) (List.map (\( name, e ) -> ( name, regroupExpr e )) fields) monoType
 
         Mono.MonoTupleCreate region exprs monoType ->
-            Mono.MonoTupleCreate region (List.map regroupExpr exprs) monoType
+            Mono.MonoTupleCreate region (Mono.tupleMap regroupExpr exprs) monoType
 
         Mono.MonoList region exprs monoType ->
             Mono.MonoList region (List.map regroupExpr exprs) monoType
@@ -154,7 +155,7 @@ regroupDecider decider =
 
         Mono.FanOut path edges fallback ->
             Mono.FanOut path
-                (List.map (\( test, sub ) -> ( test, regroupDecider sub )) edges)
+                (NE.map (\( test, sub ) -> ( test, regroupDecider sub )) edges)
                 (regroupDecider fallback)
 
 
@@ -187,15 +188,8 @@ flattenTypeToArity targetArity monoType =
         let
             ( firstArgs, restArgs ) =
                 splitAt targetArity allArgs
-
-            nestedResult =
-                if List.isEmpty restArgs then
-                    finalResult
-
-                else
-                    Mono.mFunction anno restArgs finalResult
         in
-        Mono.mFunction anno firstArgs nestedResult
+        Mono.mFunction anno firstArgs (Mono.mFunction anno restArgs finalResult)
 
     else if List.isEmpty allArgs then
         monoType

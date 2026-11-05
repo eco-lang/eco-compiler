@@ -40,6 +40,7 @@ import Compiler.IR.Canonical.Alias as TypeUtils
 import Compiler.IR.Source as Src
 import Dict
 import Expect
+import Maybe.Extra as Maybe
 import Set
 import TestLogic.TestPipeline as Pipeline
 
@@ -169,7 +170,7 @@ typeVars tipe =
             []
 
         Can.TTuple a b cs ->
-            List.concatMap typeVars (a :: b :: cs)
+            List.concatMap typeVars (a :: b :: Maybe.toList cs)
 
         Can.TAlias _ _ args _ ->
             List.concatMap (Tuple.second >> typeVars) args
@@ -214,9 +215,9 @@ unifyRenaming pending forward backward =
                     unifyRenaming rest forward backward
 
                 ( Can.TTuple a1 a2 as_, Can.TTuple b1 b2 bs ) ->
-                    List.length as_
-                        == List.length bs
-                        && unifyRenaming (( a1, b1 ) :: ( a2, b2 ) :: List.map2 Tuple.pair as_ bs ++ rest) forward backward
+                    (as_ == Nothing)
+                        == (bs == Nothing)
+                        && unifyRenaming (( a1, b1 ) :: ( a2, b2 ) :: List.map2 Tuple.pair (Maybe.toList as_) (Maybe.toList bs) ++ rest) forward backward
 
                 ( Can.TRecord fieldsA extA, Can.TRecord fieldsB extB ) ->
                     let

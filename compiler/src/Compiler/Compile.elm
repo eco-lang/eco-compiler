@@ -201,8 +201,8 @@ compileTyped pkg ifaces modul =
                             |> Task.andThen
                                 (\census ->
                                     case typeCheckTyped modul canonical census of
-                                        Ok { annotations, typedCanonical, nodeTypes, kernelEnv, nodeVars, annotationVars, allSchemeRoots, stampWalked, stampSkipped, annWalked, annSkipped } ->
-                                            emitStampGuard census modName stampWalked stampSkipped annWalked annSkipped
+                                        Ok { annotations, typedCanonical, nodeTypes, kernelEnv, nodeVars, annotationVars, allSchemeRoots, stampWalked, stampSkipped, annWalked } ->
+                                            emitStampGuard census modName stampWalked stampSkipped annWalked
                                                 |> Task.andThen
                                                     (\_ -> phase)
                                                 |> Task.map (\_ -> nitpick canonical)
@@ -250,7 +250,7 @@ compileTyped pkg ifaces modul =
 -}
 canonicalize : Pkg.Name -> Dict.Dict ModuleName.Raw I.Interface -> Src.Module -> Result E.Error Can.Module
 canonicalize pkg ifaces modul =
-    case Tuple.second (ReportingResult.run (Canonicalize.canonicalize pkg ifaces modul)) of
+    case ReportingResult.run (Canonicalize.canonicalize pkg ifaces modul) of
         Ok canonical ->
             Ok canonical
 
@@ -284,10 +284,11 @@ annotation come from the type checker's binder variables; those of any other
 definition are found by walking its inferred annotation, and a definition for
 which that walk finds none gets no entry.
 
-A node type or annotation without a solver variable is not stamped. When
-`census` is true, the four counts report how many node types (of those
-present) and annotations had a variable and so entered the walk, and how many
-were skipped; when it is false they are all zero.
+A node type without a solver variable is not stamped; every annotation has
+one, since the solver returns each with the variable it came from. When
+`census` is true, the three counts report how many node types (of those
+present) had a variable and so entered the walk, how many were skipped, and how
+many annotations were stamped; when it is false they are all zero.
 
 -}
 typeCheckTyped :
@@ -309,7 +310,6 @@ typeCheckTyped :
             , stampWalked : Int
             , stampSkipped : Int
             , annWalked : Int
-            , annSkipped : Int
             }
 typeCheckTyped modul canonical census =
     let
@@ -326,41 +326,40 @@ typeCheckTyped modul canonical census =
         ( Err errors, _ ) ->
             Err (E.BadTypes (Localizer.fromModule modul) errors)
 
-        ( Ok { annotations, annotationVars, nodeTypes, nodeVars, solverState }, schemeBinderVars ) ->
+        ( Ok { annotations, nodeTypes, nodeVars, solverState }, schemeBinderVars ) ->
             let
+                solvedAnnotations : Dict.Dict Name (Can.Annotation Name)
+                solvedAnnotations =
+                    Dict.map (\_ entry -> entry.annotation) annotations
+
                 rootedNodeVars =
                     SolverRoots.normalizeNodeVars solverState nodeVars
 
                 rootedAnnotationVars =
-                    SolverRoots.normalizeAnnotationVars solverState annotationVars
+                    SolverRoots.normalizeAnnotationVars solverState (Dict.map (\_ entry -> entry.var) annotations)
 
                 annotatedSchemeRoots =
                     SolverRoots.normalizeAllSchemeRoots solverState schemeBinderVars
 
                 inferredSchemeRoots =
                     Dict.foldl
-                        (\defName annotation acc ->
+                        (\defName entry acc ->
                             if Dict.member defName annotatedSchemeRoots then
                                 acc
 
                             else
-                                case Dict.get defName annotationVars of
-                                    Just annotVar ->
-                                        let
-                                            roots =
-                                                SolverRoots.extractBinderRootsFromInferred
-                                                    solverState
-                                                    annotation
-                                                    annotVar
-                                        in
-                                        if Dict.isEmpty roots then
-                                            acc
+                                let
+                                    roots =
+                                        SolverRoots.extractBinderRootsFromInferred
+                                            solverState
+                                            entry.annotation
+                                            entry.var
+                                in
+                                if Dict.isEmpty roots then
+                                    acc
 
-                                        else
-                                            Dict.insert defName roots acc
-
-                                    Nothing ->
-                                        acc
+                                else
+                                    Dict.insert defName roots acc
                         )
                         Dict.empty
                         annotations
@@ -372,7 +371,7 @@ typeCheckTyped modul canonical census =
                         inferredSchemeRoots
 
                 postSolveResult =
-                    PostSolve.postSolve annotations canonical nodeTypes
+                    PostSolve.postSolve solvedAnnotations canonical nodeTypes
 
                 fixedNodeTypes =
                     postSolveResult.nodeTypes
@@ -424,34 +423,18 @@ typeCheckTyped modul canonical census =
                                     Nothing ->
                                         stampGuardGo (i + 1) walked (skipped + 1)
 
+                -- `stampArrowRoots` resolves the variable to its root itself.
                 stampedAnnotations =
                     Dict.map
-                        (\defName ann ->
-                            case Dict.get defName rootedAnnotationVars of
-                                Just annotVar ->
-                                    SolverRoots.stampArrowRootsInAnnotation solverState ann annotVar
-
-                                Nothing ->
-                                    ann
-                        )
+                        (\_ entry -> SolverRoots.stampArrowRootsInAnnotation solverState entry.annotation entry.var)
                         annotations
 
-                annGuardCounts =
+                annWalkedCount =
                     if census then
-                        Dict.foldl
-                            (\defName _ ( walked, skipped ) ->
-                                case Dict.get defName rootedAnnotationVars of
-                                    Just _ ->
-                                        ( walked + 1, skipped )
-
-                                    Nothing ->
-                                        ( walked, skipped + 1 )
-                            )
-                            ( 0, 0 )
-                            annotations
+                        Dict.size annotations
 
                     else
-                        ( 0, 0 )
+                        0
             in
             Ok
                 { annotations = stampedAnnotations
@@ -463,13 +446,12 @@ typeCheckTyped modul canonical census =
                 , allSchemeRoots = normalizedSchemeRoots
                 , stampWalked = Tuple.first stampGuardCounts
                 , stampSkipped = Tuple.second stampGuardCounts
-                , annWalked = Tuple.first annGuardCounts
-                , annSkipped = Tuple.second annGuardCounts
+                , annWalked = annWalkedCount
                 }
 
 
 {-| Writes one `[stampguard]` line to stderr when `census` is true, giving the
-four stamping counts from `typeCheckTyped` and the module name; does nothing
+three stamping counts from `typeCheckTyped` and the module name; does nothing
 otherwise.
 
 `skipped` counts the node types the walk never entered for want of a solver
@@ -477,8 +459,8 @@ variable; `walked` counts those it entered, whether or not every arrow was
 stamped.
 
 -}
-emitStampGuard : Bool -> Name -> Int -> Int -> Int -> Int -> Task Never ()
-emitStampGuard census modName walked skipped annW annS =
+emitStampGuard : Bool -> Name -> Int -> Int -> Int -> Task Never ()
+emitStampGuard census modName walked skipped annW =
     if census then
         System.IO.writeLn System.IO.stderr
             ("[stampguard] walked="
@@ -487,8 +469,6 @@ emitStampGuard census modName walked skipped annW annS =
                 ++ String.fromInt skipped
                 ++ " annWalked="
                 ++ String.fromInt annW
-                ++ " annSkipped="
-                ++ String.fromInt annS
                 ++ " module="
                 ++ modName
             )
@@ -532,7 +512,7 @@ nitpick canonical =
 -}
 optimize : Src.Module -> Dict.Dict Name.Name (Can.Annotation Name) -> Can.Module -> Result E.Error Opt.LocalGraph
 optimize modul annotations canonical =
-    case Tuple.second (ReportingResult.run (Optimize.optimize annotations canonical)) of
+    case ReportingResult.run (Optimize.optimize annotations canonical) of
         Ok localGraph ->
             Ok localGraph
 
@@ -545,7 +525,7 @@ information copied out of the type check, wrapping any errors in `E.BadMains`.
 -}
 typedOptimizeFromTyped : Src.Module -> Dict.Dict Name.Name (Can.Annotation Name) -> TCan.ExprTypes -> TCan.ExprVars -> KernelTypes.KernelTypeEnv -> Dict.Dict Name.Name Vars.Variable -> SolverRoots.AllSchemeRoots -> TCan.Module -> Result E.Error (TOpt.LocalGraph Name)
 typedOptimizeFromTyped modul annotations nodeTypes nodeVars kernelEnv annotationVars allSchemeRoots tcanModule =
-    case Tuple.second (ReportingResult.run (TypedOptimize.optimizeTyped annotations nodeTypes nodeVars kernelEnv annotationVars allSchemeRoots tcanModule)) of
+    case ReportingResult.run (TypedOptimize.optimizeTyped annotations nodeTypes nodeVars kernelEnv annotationVars allSchemeRoots tcanModule) of
         Ok localGraph ->
             Ok localGraph
 

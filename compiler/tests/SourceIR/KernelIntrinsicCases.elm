@@ -19,7 +19,7 @@ reference.
 For the kernel modules `Basics`, `Bitwise`, `Utils`, `JsArray`, `List`, `Char`
 and `String`, the MLIR back end may emit a call as an inline operation, an
 _intrinsic_, instead of a call into the kernel, choosing by the argument and
-result types (`Compiler.GenerateMlir.Intrinsics.kernelIntrinsic`). Because the
+result types (`Compiler.IR.Kernel.Intrinsics.kernelIntrinsicOn`). Because the
 choice depends on those types, many functions here are called once with `Int`
 and once with `Float` arguments.
 

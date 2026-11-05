@@ -8,9 +8,7 @@ and records, and a shape with more than one type variable.
 A `TransportsAs shape` license applies to an occurrence when the occurrence is
 an instance of `shape`: each `TsVar` is bound to the type at its first
 position, every later position of the same variable must hold the same type,
-and aliases in the occurrence are expanded first. `shapeOfAnnotation` turns an
-annotation into a shape, or gives `Nothing` for an annotation with a record, a
-tuple or an alias.
+and aliases in the occurrence are expanded first.
 
 The tests establish:
 
@@ -22,8 +20,6 @@ The tests establish:
     `a` of the same type, and a tuple whose elements differ does not.
   - A variable bound to a record does not match even the same record, since
     records compare unequal.
-  - `shapeOfAnnotation` gives `TsCon "()" []` for the unit type and `Nothing`
-    for a record.
 
 The group label contains `coverage run`, so that the coverage loop's quick
 runs count these tests.
@@ -62,13 +58,13 @@ suite =
                         TsFun (TsVar "a") (TsFun (TsVar "b") (TsVar "a"))
 
                     pair =
-                        Can.TTuple int int []
+                        Can.TTuple int int Nothing
                 in
                 Expect.equal [ True, True, True, False ]
                     [ applies keep (fn Can.TUnit (fn int Can.TUnit))
                     , applies keep (fn pair (fn int pair))
                     , applies keep (fn (fn int int) (fn int (fn int int)))
-                    , applies keep (fn pair (fn int (Can.TTuple int (Can.TType home "Float" []) [])))
+                    , applies keep (fn pair (fn int (Can.TTuple int (Can.TType home "Float" []) Nothing)))
                     ]
         , Test.test "a variable bound to a record never matches again" <|
             \_ ->
@@ -77,12 +73,6 @@ suite =
                         Can.TRecord Dict.empty Nothing
                 in
                 Expect.equal False (applies (TsFun (TsVar "a") (TsVar "a")) (fn rec rec))
-        , Test.test "shapeOfAnnotation on the unit type and a record" <|
-            \_ ->
-                Expect.equal ( Just (TsCon "()" []), Nothing )
-                    ( KernelSetFacts.shapeOfAnnotation Can.TUnit
-                    , KernelSetFacts.shapeOfAnnotation (Can.TRecord Dict.empty Nothing)
-                    )
         ]
 
 

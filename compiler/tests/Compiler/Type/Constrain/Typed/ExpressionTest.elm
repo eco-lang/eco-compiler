@@ -90,7 +90,7 @@ parse src =
 
 typeErrors : String -> Result String (List ErrT.Error)
 typeErrors src =
-    case parse src |> Result.map (Canonicalize.canonicalize ( "eco", "example" ) Basic.testIfaces >> RResult.run >> Tuple.second) of
+    case parse src |> Result.map (Canonicalize.canonicalize ( "eco", "example" ) Basic.testIfaces >> RResult.run) of
         Err msg ->
             Err msg
 

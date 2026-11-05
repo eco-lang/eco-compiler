@@ -17,9 +17,8 @@ chooses widths of 1, 2 and 4 bytes. The table is sorted as strings, so `"s1"`
 is at index 0; in the 300- and 70,000-string tables the others are not in
 numeric order (`"s10"` follows `"s1"`). The probes are the strings at sorted
 indices 1 and `n - 1` (the last), and `"s<n>"`, encoded with `string` after the
-table's preamble in one byte sequence. No probe sits at index 0, the index
-`string` writes for a string missing from the table, and the last one's index
-does not fit in a narrower width than the table's.
+table's preamble in one byte sequence. No probe sits at index 0, and the last
+one's index does not fit in a narrower width than the table's.
 
 What the tests establish:
 

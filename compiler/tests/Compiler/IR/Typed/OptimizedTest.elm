@@ -1,8 +1,8 @@
 module Compiler.IR.Typed.OptimizedTest exposing (suite)
 
-{-| Tests that `TOpt.varSupersOfType` finds the same names as collecting every
+{-| Tests that `TOpt.computeVarSupers` finds the same names as collecting every
 string in a type and keeping those that imply a super. Without them, the result
-of `varSupersOfType` could change unnoticed: it filters names while collecting
+of `computeVarSupers` could change unnoticed: it filters names while collecting
 them, by `StringTable.isSuperName`, and maps each kept name to its super
 afterwards, by a separate function, so the filter and the mapping can drift
 apart.
@@ -10,17 +10,21 @@ apart.
 A _super_ is the constraint class a name implies by its prefix: number,
 comparable, appendable or compappend. Any name that starts with one of those
 words implies it, so `number1` and `numbers!` imply number; `Compiler.Core.Name`
-owns these prefix tests. `varSupersOfType` runs `Can.collectStringsFromType`
-with the `StringTable.collectSupers` collector, which keeps only the strings
-`isSuperName` accepts, and maps each kept string with the private `superOfName`
-in `Compiler.IR.Typed.Optimized`. The reference, `reference`, runs the same
-traversal with `StringTable.collectAll`, which keeps every string, and maps the
-result with `mirrorSuper`, a copy of `superOfName`.
+owns these prefix tests. `actual` runs `computeVarSupers` on a local graph that
+holds only one annotation, named `fixture`, of the type under test, with no
+declared variables. `computeVarSupers` walks the strings the graph's encoding
+writes with the `StringTable.collectSupers` collector, which keeps only the
+strings `isSuperName` accepts, and maps each kept string with the private
+`superOfName` in `Compiler.IR.Typed.Optimized`. The reference, `reference`,
+walks the type with `Can.collectStringsFromType` and `StringTable.collectAll`,
+which keeps every string, and maps the result with `mirrorSuper`, a copy of
+`superOfName`.
 
 `Can.collectStringsFromType` adds every name in a type, not only its type
 variables: type and alias names, the package author, project and module name of
 their home, record field and extension names, and alias argument names. Both
-sides therefore count any of those whose prefix implies a super.
+sides therefore count any of those whose prefix implies a super. The annotation
+name `fixture` implies none.
 
 The fixture is the thirteen strings in `names`, eight of which imply a super,
 the home module `elm/core` `Basics`, whose three strings imply none, and the
@@ -43,10 +47,10 @@ Among what is not tested:
   - Names outside `names`: `isSuperName` and `superOfName` are compared only on
     those thirteen strings and on `Set`.
   - An `isSuperName` that accepts a string `superOfName` maps to `Nothing`.
-    `varSupersOfType` drops such a string when mapping, so the result is the
+    `computeVarSupers` drops such a string when mapping, so the result is the
     same.
-  - `TOpt.computeVarSupers`, which computes the same map for a whole local
-    graph.
+  - The strings of nodes, scheme roots and declared variables, which
+    `computeVarSupers` also walks.
   - Fuzzed `Holey` alias bodies, and records with more than one field.
 
 -}
@@ -57,6 +61,7 @@ import Compiler.Core.TypeIds as TypeIds
 import Compiler.Elm.ModuleName as ModuleName
 import Compiler.IR.Canonical as Can
 import Compiler.IR.Typed.Optimized as TOpt
+import Data.Map
 import Dict
 import Expect
 import Fuzz exposing (Fuzzer)
@@ -118,13 +123,22 @@ reference t =
         |> List.filterMap (\s -> mirrorSuper s |> Maybe.map (\sup -> ( s, sup )))
 
 
-{-| Returns `TOpt.varSupersOfType t` as a list in ascending order of name, with
-each super written as text by `Debug.toString`, so that it can be compared with
-`reference`.
+{-| Returns `TOpt.computeVarSupers` of a local graph holding only the annotation
+`fixture : t`, as a list in ascending order of name, with each super written as
+text by `Debug.toString`, so that it can be compared with `reference`.
 -}
 actual : Can.Type Name -> List ( Name, String )
 actual t =
-    TOpt.varSupersOfType t
+    TOpt.computeVarSupers
+        (TOpt.LocalGraph
+            { main = Nothing
+            , nodes = Data.Map.empty
+            , fields = Dict.empty
+            , annotations = Dict.singleton "fixture" (Can.Forall Dict.empty t)
+            , schemeRoots = Dict.empty
+            , varSupers = Dict.empty
+            }
+        )
         |> Dict.toList
         |> List.map (\( k, v ) -> ( k, Debug.toString v ))
 
@@ -172,7 +186,7 @@ typeFuzzer depth =
                 nameFuzzer
                 sub
                 (Fuzz.maybe nameFuzzer)
-            , Fuzz.map3 (\a b cs -> Can.TTuple a b cs) sub sub (Fuzz.listOfLengthBetween 0 1 sub)
+            , Fuzz.map3 (\a b cs -> Can.TTuple a b cs) sub sub (Fuzz.maybe sub)
             , Fuzz.map3
                 (\n argName body -> Can.TAlias home n [ ( argName, body ) ] (Can.Filled body))
                 nameFuzzer
@@ -185,7 +199,7 @@ typeFuzzer depth =
 -}
 suite : Test
 suite =
-    Test.describe "TOpt.varSupersOfType (plan S2 collectSupers mode)"
+    Test.describe "TOpt.computeVarSupers (plan S2 collectSupers mode)"
         [ Test.test "alias arg names count (comparable only as an alias parameter)" <|
             \_ ->
                 let

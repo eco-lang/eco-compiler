@@ -63,6 +63,7 @@ import Compiler.Elm.Package as Pkg
 import Compiler.IR.Canonical as Can
 import Compiler.IR.Source as Src
 import Dict exposing (Dict)
+import Maybe.Extra as Maybe
 
 
 
@@ -181,7 +182,7 @@ extractFreeTypeVars tipe =
             List.foldl
                 (\t acc -> Dict.union acc (extractFreeTypeVars t))
                 (Dict.union (extractFreeTypeVars a) (extractFreeTypeVars b))
-                rest
+                (Maybe.toList rest)
 
         Can.TRecord fields maybeExt ->
             let
@@ -244,7 +245,7 @@ listExpr id elements =
 -}
 tupleExpr : Int -> Can.Expr -> Can.Expr -> Can.Expr
 tupleExpr id a b =
-    makeExpr id (Can.Tuple a b [])
+    makeExpr id (Can.Tuple a b Nothing)
 
 
 {-| Builds an anonymous function taking `args` and returning `body`.
@@ -341,10 +342,10 @@ listType elemType =
     Can.TType (ModuleName.Canonical Pkg.core "List") "List" [ elemType ]
 
 
-{-| Returns the tuple type whose element types are `a`, `b` and then those in
-`rest`.
+{-| Returns the tuple type whose element types are `a`, `b` and then `rest`, if
+given.
 -}
-tupleType : Can.Type Name -> Can.Type Name -> List (Can.Type Name) -> Can.Type Name
+tupleType : Can.Type Name -> Can.Type Name -> Maybe (Can.Type Name) -> Can.Type Name
 tupleType a b rest =
     Can.TTuple a b rest
 

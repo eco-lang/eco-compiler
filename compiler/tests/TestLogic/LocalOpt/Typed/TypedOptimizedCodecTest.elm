@@ -73,6 +73,7 @@ import Compiler.IR.Typed.TypeTable as TypeTable
 import Data.Map
 import Dict
 import Expect exposing (Expectation)
+import Maybe.Extra as Maybe
 import SourceIR.MonoFailsCases as MonoFailsCases
 import SourceIR.Suite.StandardTestSuites as StandardTestSuites
 import Test exposing (Test)
@@ -121,7 +122,7 @@ tvars t acc =
             acc
 
         Can.TTuple a b cs ->
-            List.foldl tvars (tvars a (tvars b acc)) cs
+            List.foldl tvars (tvars a (tvars b acc)) (Maybe.toList cs)
 
         Can.TAlias _ _ args aliased ->
             let

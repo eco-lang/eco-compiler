@@ -40,6 +40,7 @@ import Compiler.IR.DecisionTree.TypedPath as DTPath
 import Compiler.IR.Typed.Optimized as TOpt
 import Compiler.LocalOpt.Typed.NormalizeLambdaBoundaries as NLB
 import Data.Map
+import Data.NonEmptyList as NE
 import Data.Set
 import Dict
 import Expect
@@ -117,7 +118,7 @@ caseExpr : TOpt.Expr Name
 caseExpr =
     TOpt.Case "b"
         "b"
-        (TOpt.Chain [ ( DTPath.Empty, DT.IsBool True ) ] (TOpt.Leaf (TOpt.Jump 0)) (TOpt.Leaf (TOpt.Jump 1)))
+        (TOpt.Chain (NE.singleton ( DTPath.Empty, DT.IsBool True )) (TOpt.Leaf (TOpt.Jump 0)) (TOpt.Leaf (TOpt.Jump 1)))
         [ ( 0, branchLog ), ( 1, branchId ) ]
         (meta strToStr)
 
@@ -190,4 +191,4 @@ deciderDebugNames d =
             deciderDebugNames s ++ deciderDebugNames f
 
         TOpt.FanOut _ options fallback ->
-            List.concatMap (\( _, x ) -> deciderDebugNames x) options ++ deciderDebugNames fallback
+            List.concatMap (\( _, x ) -> deciderDebugNames x) (NE.toList options) ++ deciderDebugNames fallback

@@ -58,6 +58,7 @@ import Compiler.Reporting.Render.Type as RT
 import Compiler.Reporting.Render.Type.Localizer as L
 import Data.Bag as Bag
 import Dict exposing (Dict)
+import Maybe.Extra as Maybe
 import Prelude
 import Utils.Bytes.Decode as BD
 import Utils.Bytes.Encode as BE
@@ -106,7 +107,7 @@ type Type
     | Type ModuleName.Canonical Name (List Type)
     | Record (Dict Name Type) Extension
     | Unit
-    | Tuple Type Type (List Type)
+    | Tuple Type Type (Maybe Type)
     | Alias ModuleName.Canonical Name (List ( Name, Type )) Type
 
 
@@ -203,7 +204,7 @@ toDoc localizer ctx tipe =
             RT.tuple
                 (toDoc localizer RT.None a)
                 (toDoc localizer RT.None b)
-                (List.map (toDoc localizer RT.None) cs)
+                (List.map (toDoc localizer RT.None) (Maybe.toList cs))
 
         Alias home name args _ ->
             aliasToDoc localizer ctx home name args
@@ -317,7 +318,7 @@ record cannot gain fields; it carries the alphabetically first such field and
 every field name of the other record, from which a likely intended name can be
 picked. `FieldsMissing` lists the fields the expected record has and the actual
 record lacks, when neither can gain fields and the actual record has nothing
-extra.
+extra: the first of them, then the rest.
 
 -}
 type Problem
@@ -333,7 +334,7 @@ type Problem
     | BadRigidVar Name Type
     | BadRigidSuper Super Name Type
     | FieldTypo Name (List Name)
-    | FieldsMissing (List Name)
+    | FieldsMissing Name (List Name)
 
 
 {-| Which side of a comparison something is on: `Have` is the actual type and
@@ -513,7 +514,7 @@ toDiff localizer ctx tipe1 tipe2 =
                     (Bag.one (ArityMismatch (2 + List.length cs) (2 + List.length zs)))
 
         ( Tuple a b cs, Tuple x y zs ) as pair ->
-            toDiffTuple localizer ctx pair ( a, b, cs ) ( x, y, zs ) (pureDiff [])
+            toDiffTuple localizer ctx pair ( a, b, cs ) ( x, y, zs )
 
         ( Record fields1 ext1, Record fields2 ext2 ) ->
             diffRecord localizer fields1 ext1 fields2 ext2
@@ -619,27 +620,24 @@ toDiff localizer ctx tipe1 tipe2 =
 
 
 {-| Compares two tuples element by element, given their first two elements and
-the rest, with `diffCs` holding the comparisons of the extra elements done so
-far. Tuples of different sizes go to `toDiffOtherwise` as `pair`.
-
-Each extra element's comparison is put in front of those before it, so with
-more than one extra element they come out in reverse order. Elm tuples have at
-most three elements, which leaves one extra element at most.
-
+their third, if any. Tuples of different sizes go to `toDiffOtherwise` as
+`pair`.
 -}
-toDiffTuple : L.Localizer -> RT.Context -> ( Type, Type ) -> ( Type, Type, List Type ) -> ( Type, Type, List Type ) -> Diff (List D.Doc) -> Diff D.Doc
-toDiffTuple localizer ctx pair ( a, b, cs ) ( x, y, zs ) diffCs =
-    case ( cs, zs ) of
-        ( [], [] ) ->
+toDiffTuple : L.Localizer -> RT.Context -> ( Type, Type ) -> ( Type, Type, Maybe Type ) -> ( Type, Type, Maybe Type ) -> Diff D.Doc
+toDiffTuple localizer ctx pair ( a, b, maybeC ) ( x, y, maybeZ ) =
+    let
+        diffAB : Diff (List D.Doc -> D.Doc)
+        diffAB =
             toDiff localizer RT.None a x
                 |> mapDiff RT.tuple
                 |> applyDiff (toDiff localizer RT.None b y)
-                |> applyDiff diffCs
+    in
+    case ( maybeC, maybeZ ) of
+        ( Nothing, Nothing ) ->
+            applyDiff (pureDiff []) diffAB
 
-        ( c :: restCs, z :: restZs ) ->
-            mapDiff (::) (toDiff localizer RT.None c z)
-                |> applyDiff diffCs
-                |> toDiffTuple localizer ctx pair ( a, b, restCs ) ( x, y, restZs )
+        ( Just c, Just z ) ->
+            applyDiff (mapDiff List.singleton (toDiff localizer RT.None c z)) diffAB
 
         _ ->
             toDiffOtherwise localizer ctx pair
@@ -846,7 +844,7 @@ isSuper super tipe =
                     False
 
                 Comparable ->
-                    List.all (isSuper super) (a :: b :: cs)
+                    List.all (isSuper super) (a :: b :: Maybe.toList cs)
 
                 Appendable ->
                     False
@@ -977,11 +975,12 @@ diffRecord localizer fields1 ext1 fields2 ext2 =
                     Different (Bag.one (FieldTypo f (Dict.keys fields2)))
 
                 Nothing ->
-                    if Dict.isEmpty right then
-                        Similar
+                    case Dict.keys right of
+                        [] ->
+                            Similar
 
-                    else
-                        Different (Bag.one (FieldsMissing (Dict.keys right)))
+                        firstMissing :: otherMissing ->
+                            Different (Bag.one (FieldsMissing firstMissing otherMissing))
 
         ( False, True ) ->
             let
@@ -1181,7 +1180,7 @@ typeEncoder type_ =
                 [ Bytes.Encode.unsignedInt8 10
                 , typeEncoder a
                 , typeEncoder b
-                , BE.list typeEncoder cs
+                , BE.maybe typeEncoder cs
                 ]
 
         Alias home name args tipe ->
@@ -1249,7 +1248,7 @@ typeDecoder =
                         Bytes.Decode.map3 Tuple
                             typeDecoder
                             typeDecoder
-                            (BD.list typeDecoder)
+                            (BD.maybe typeDecoder)
 
                     11 ->
                         Bytes.Decode.map4 Alias

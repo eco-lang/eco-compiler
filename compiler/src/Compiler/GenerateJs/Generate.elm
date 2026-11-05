@@ -1,16 +1,14 @@
-module Compiler.GenerateJs.Generate exposing (generate, generateForRepl, generateForReplEndpoint)
+module Compiler.GenerateJs.Generate exposing (generate)
 
-{-| Turns an optimized program into one JavaScript text, either a whole program
-or a snippet that the REPL runs to show one value.
+{-| Turns an optimized program into one JavaScript text.
 
 The input is the _global graph_ of `Compiler.IR.Optimized`: every top-level
 definition of the program and its packages, each a node keyed by its global
 (module and name) and listing the globals it uses. Most of the graph is not
-needed. Generation starts from the entry points, a module's `main` for a program
-and the evaluated value for the REPL, and walks the graph depth first. Each node
-is added to the state once, after the nodes it depends on; kernel text and the
-members of a cycle are the exceptions. A `State` records the text so far and
-the globals already visited. Dependencies are visited in
+needed. Generation starts from the entry points, the `main` of each root
+module, and walks the graph depth first. Each node is added to the state once,
+after the nodes it depends on; kernel text and the members of a cycle are the
+exceptions. A `State` records the text so far and the globals already visited. Dependencies are visited in
 `Opt.compareGlobal` order, which makes the output the same on every run.
 
 A node becomes a `var`, a constructor, a group of mutually recursive
@@ -35,7 +33,7 @@ draws the cycle.
 
 # Code Generation
 
-@docs generate, generateForRepl, generateForReplEndpoint
+@docs generate
 
 -}
 
@@ -51,17 +49,12 @@ import Compiler.GenerateJs.Functions as Functions
 import Compiler.GenerateJs.Mode as Mode
 import Compiler.GenerateJs.Name as JsName
 import Compiler.GenerateJs.SourceMap as SourceMap
-import Compiler.IR.Canonical as Can
 import Compiler.IR.Kernel.Chunk as K
 import Compiler.IR.Optimized as Opt
 import Compiler.Reporting.Doc as D
-import Compiler.Reporting.Render.Type as RT
-import Compiler.Reporting.Render.Type.Localizer as L
 import Data.Map as DataMap
 import Data.Set as EverySet exposing (EverySet)
 import Dict exposing (Dict)
-import Json.Encode as Encode
-import Maybe.Extra as Maybe
 import System.Crash exposing (crash)
 import Utils.Main as Utils
 
@@ -99,8 +92,7 @@ prelude mode =
 The text is one function called at once with `this`. Inside it are
 the runtime helpers, a console warning unless `mode` is production, the kernel
 code, a few definitions that let ports carry `Bytes`, every global reachable
-from a `main` in dependency order, the export of the `main`s, and a few
-definitions for tuples of more than three elements in `Debug.toString`.
+from a `main` in dependency order, and the export of the `main`s.
 
 With source maps the text ends with a source map comment. `leadingLines` is
 the number of lines that will come before this text in the file it is written
@@ -117,34 +109,8 @@ generate sourceMaps leadingLines mode (Opt.GlobalGraph graph _) mains =
     prelude mode
         ++ stateToBuilder state
         ++ toMainExports mode mains
-        ++ escapeNewCode """// EXTRA GUIDA CORE
-
-function _Utils_TupleN(a, b, ...cs) {
-  return { $: '#N', a: a, b: b, cs: cs };
-}
-
-(function(original) {
-    _Debug_toAnsiString = function(ansi, value) {
-        if (value.$ === '#N') {
-            var output = [_Debug_toAnsiString(ansi, value.a), _Debug_toAnsiString(ansi, value.b)];
-            for (var k in value.cs) {
-                output.push(_Debug_toAnsiString(ansi, value.cs[k]));
-            }
-            return '(' + output.join(',') + ')';
-        }
-        return original(ansi, value);
-    }
-}(_Debug_toAnsiString))"""
         ++ "}(this));"
         ++ generateSourceMaps sourceMaps leadingLines state
-
-
-{-| Returns `code` on lines of its own between a `//__START__` and an
-`//__END__` comment line.
--}
-escapeNewCode : String -> String
-escapeNewCode code =
-    "//__START__\n" ++ code ++ "\n//__END__\n"
 
 
 {-| Returns the source map comment for the code in `state`, or the empty string
@@ -196,158 +162,6 @@ perfNote mode =
             "console.warn('Compiled in DEBUG mode. Follow the advice at "
                 ++ D.makeNakedLink "optimize"
                 ++ " for better performance and smaller assets.');"
-
-
-{-| Generates a script that prints the value `name` of `home` and its type to
-the console, with ANSI colours when `ansi` is set.
-
-The code is generated in development mode, with `Debug.toString` and everything
-the value depends on. An uncaught exception is written to standard error and
-ends the process with status 1. The type goes on its own line when it holds a
-newline or the whole would reach 80 characters.
-
--}
-generateForRepl : Bool -> L.Localizer -> Opt.GlobalGraph -> ModuleName.Canonical -> Name.Name -> Can.Annotation Name -> String
-generateForRepl ansi localizer (Opt.GlobalGraph graph _) home name (Can.Forall _ tipe) =
-    let
-        mode : Mode.Mode
-        mode =
-            Mode.Dev Nothing
-
-        debugState : State
-        debugState =
-            addGlobal mode graph (emptyState 0) (Opt.Global ModuleName.debug "toString")
-
-        evalState : State
-        evalState =
-            addGlobal mode graph debugState (Opt.Global home name)
-    in
-    "process.on('uncaughtException', function(err) { process.stderr.write(err.toString() + '\\n'); process.exit(1); });"
-        ++ Functions.functions
-        ++ stateToBuilder evalState
-        ++ print ansi localizer home name tipe
-
-
-{-| Returns the code that prints the value `name` of `home` followed by `tipe`,
-as `generateForRepl` describes.
--}
-print : Bool -> L.Localizer -> ModuleName.Canonical -> Name.Name -> Can.Type Name -> String
-print ansi localizer home name tipe =
-    let
-        value : JsName.Name
-        value =
-            JsName.fromGlobal home name
-
-        toString : JsName.Name
-        toString =
-            JsName.fromKernel Name.debug "toAnsiString"
-
-        tipeDoc : D.Doc
-        tipeDoc =
-            RT.canToDoc localizer RT.None tipe
-
-        bool : String
-        bool =
-            if ansi then
-                "true"
-
-            else
-                "false"
-    in
-    "var _value = "
-        ++ toString
-        ++ "("
-        ++ bool
-        ++ ", "
-        ++ value
-        ++ ");\nvar _type = "
-        ++ Encode.encode 0 (Encode.string (D.toString tipeDoc))
-        ++ ";\nfunction _print(t) { console.log(_value + ("
-        ++ bool
-        ++ " ? '\\x1b[90m' + t + '\\x1b[0m' : t)); }\\n"
-        ++ "if (_value.length + 3 + _type.length >= 80 || _type.indexOf('\\n') >= 0) {\\n"
-        ++ "    _print('\\n    : ' + _type.split('\\n').join('\\n      '));\\n"
-        ++ "} else {\\n"
-        ++ "    _print(' : ' + _type);\\n"
-        ++ "}\\n"
-
-
-
--- ====== REPL Endpoint Generation ======
-
-
-{-| Generates a script that sends the REPL's value and its type with
-`self.postMessage`, as a web worker does.
-
-The value is `maybeName` of `home`, or `Name.replValueToPrint` when there is no
-name. The message has the fields `name` (the name, or `null` without one),
-`value` (the value as `Debug.toString` shows it, with ANSI colours) and `type`.
-The code is generated in development mode.
-
--}
-generateForReplEndpoint : L.Localizer -> Opt.GlobalGraph -> ModuleName.Canonical -> Maybe Name.Name -> Can.Annotation Name -> String
-generateForReplEndpoint localizer (Opt.GlobalGraph graph _) home maybeName (Can.Forall _ tipe) =
-    let
-        name : Name.Name
-        name =
-            Maybe.unwrap Name.replValueToPrint identity maybeName
-
-        mode : Mode.Mode
-        mode =
-            Mode.Dev Nothing
-
-        debugState : State
-        debugState =
-            addGlobal mode graph (emptyState 0) (Opt.Global ModuleName.debug "toString")
-
-        evalState : State
-        evalState =
-            addGlobal mode graph debugState (Opt.Global home name)
-    in
-    Functions.functions
-        ++ stateToBuilder evalState
-        ++ postMessage localizer home maybeName tipe
-
-
-{-| Returns the `self.postMessage` call that `generateForReplEndpoint`
-describes.
-
-The name is put between double quotes with no escaping, and the rendered type
-is inserted as it is, not as a string literal.
-
--}
-postMessage : L.Localizer -> ModuleName.Canonical -> Maybe Name.Name -> Can.Type Name -> String
-postMessage localizer home maybeName tipe =
-    let
-        name : Name.Name
-        name =
-            Maybe.unwrap Name.replValueToPrint identity maybeName
-
-        value : JsName.Name
-        value =
-            JsName.fromGlobal home name
-
-        toString : JsName.Name
-        toString =
-            JsName.fromKernel Name.debug "toAnsiString"
-
-        tipeDoc : D.Doc
-        tipeDoc =
-            RT.canToDoc localizer RT.None tipe
-
-        toName : String -> String
-        toName n =
-            "\"" ++ n ++ "\""
-    in
-    "self.postMessage({\n  name: "
-        ++ Maybe.unwrap "null" toName maybeName
-        ++ ",\n  value: "
-        ++ toString
-        ++ "(true, "
-        ++ value
-        ++ "),\n  type: "
-        ++ D.toString tipeDoc
-        ++ "\n});\n"
 
 
 {-| Generation in progress: the JavaScript built so far, and the globals already
@@ -620,7 +434,7 @@ generateRealCycle home ( name, _ ) =
     in
     JS.Block
         [ JS.Var realName (JS.ExprCall (JS.ExprRef safeName) [])
-        , JS.ExprFunction Nothing [] [ JS.Return (JS.ExprRef realName) ] |> JS.ExprAssign (JS.LRef safeName) |> JS.ExprStmt
+        , JS.ExprFunction Nothing [] [ JS.Return (JS.ExprRef realName) ] |> JS.Assign (JS.LRef safeName)
         ]
 
 
@@ -911,7 +725,7 @@ generateManager mode graph (Opt.Global ((ModuleName.Canonical _ moduleName) as h
 
         createManager : JS.Stmt
         createManager =
-            JS.ExprCall (JS.ExprRef (JsName.fromKernel Name.platform "createManager")) args |> JS.ExprAssign managerLVar |> JS.ExprStmt
+            JS.ExprCall (JS.ExprRef (JsName.fromKernel Name.platform "createManager")) args |> JS.Assign managerLVar
     in
     JS.Block (createManager :: stmts) |> addStmt (List.foldl (flip (addGlobal mode graph)) state deps)
 

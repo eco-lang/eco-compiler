@@ -37,6 +37,7 @@ import Compiler.IR.Canonical as Can
 import Data.Map
 import Data.Set as EverySet exposing (EverySet)
 import Dict
+import Maybe.Extra as Maybe
 
 
 {-| One expression found by `walkExprs`: its node id, its form, and the
@@ -299,7 +300,7 @@ walkExpr scope (A.At _ exprInfo) acc =
                 Can.Tuple a b cs ->
                     List.foldl (walkExpr scope)
                         (walkExpr scope b (walkExpr scope a acc))
-                        cs
+                        (Maybe.toList cs)
 
                 Can.Shader _ _ ->
                     acc
@@ -436,7 +437,7 @@ freeTypeVars tipe =
             List.foldl
                 (\t acc -> EverySet.union acc (freeTypeVars t))
                 (EverySet.union (freeTypeVars a) (freeTypeVars b))
-                cs
+                (Maybe.toList cs)
 
         Can.TAlias _ _ args aliasType ->
             let

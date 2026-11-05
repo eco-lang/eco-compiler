@@ -32,7 +32,6 @@ giving the type scheme of an annotation.
 
 -}
 
-import Basics.Extra exposing (flip)
 import Compiler.Canonicalize.Dups as Dups
 import Compiler.Canonicalize.Environment as Env
 import Compiler.Canonicalize.Error as Error
@@ -43,6 +42,7 @@ import Compiler.IR.Runtime.HeapLimits as HeapLimits
 import Compiler.IR.Source as Src
 import Compiler.Reporting.Result as ReportingResult
 import Dict exposing (Dict)
+import Maybe.Extra as Maybe
 
 
 
@@ -107,15 +107,11 @@ canonicalize env (A.At typeRegion tipe) =
             ReportingResult.map Can.tLambda (canonicalize env a)
                 |> ReportingResult.apply (canonicalize env b)
 
-        Src.TRecord fields maybeExt _ ->
-            if List.length fields > HeapLimits.maxRecordFields then
-                -- The runtime's record object cannot hold more fields than this.
-                ReportingResult.throw (Error.TooLarge typeRegion (Error.TooManyRecordFields Nothing) (List.length fields) HeapLimits.maxRecordFields)
+        Src.TRecord fields _ ->
+            canonicalizeRecord env typeRegion fields Nothing
 
-            else
-                Dups.checkFields (canonicalizeFields env fields)
-                    |> ReportingResult.andThen sequenceAElmDict
-                    |> ReportingResult.map (\cfields -> Can.TRecord cfields (Maybe.map (\( _, A.At _ ext ) -> ext) maybeExt))
+        Src.TRecordExt ( _, A.At _ ext ) firstField fields _ ->
+            canonicalizeRecord env typeRegion (firstField :: fields) (Just ext)
 
         Src.TUnit ->
             ReportingResult.ok Can.TUnit
@@ -126,11 +122,11 @@ canonicalize env (A.At typeRegion tipe) =
                 |> ReportingResult.apply
                     (case cs of
                         [] ->
-                            ReportingResult.ok []
+                            ReportingResult.ok Nothing
 
                         [ ( _, c ) ] ->
                             canonicalize env c
-                                |> ReportingResult.map List.singleton
+                                |> ReportingResult.map Just
 
                         _ ->
                             ReportingResult.throw (Error.TupleLargerThanThree typeRegion)
@@ -138,6 +134,22 @@ canonicalize env (A.At typeRegion tipe) =
 
         Src.TParens ( _, tipe_ ) ->
             canonicalize env tipe_
+
+
+{-| Returns the record type with `fields`, extending `maybeExt` when it is
+given. It fails at `typeRegion` with more than `HeapLimits.maxRecordFields`
+fields, or when a field is named twice.
+-}
+canonicalizeRecord : Env.Env -> A.Region -> List (Src.C2 ( Src.C1 (A.Located Name.Name), Src.C1 Src.Type )) -> Maybe Name -> CResult i w (Can.Type Name)
+canonicalizeRecord env typeRegion fields maybeExt =
+    if List.length fields > HeapLimits.maxRecordFields then
+        -- The runtime's record object cannot hold more fields than this.
+        ReportingResult.throw (Error.TooLarge typeRegion (Error.TooManyRecordFields Nothing) (List.length fields) HeapLimits.maxRecordFields)
+
+    else
+        Dups.checkFields (canonicalizeFields env fields)
+            |> ReportingResult.andThen sequenceAElmDict
+            |> ReportingResult.map (\cfields -> Can.TRecord cfields maybeExt)
 
 
 {-| Pairs each record field's name with the computation that canonicalizes its
@@ -250,7 +262,12 @@ addFreeVars freeVars tipe =
             freeVars
 
         Can.TTuple a b cs ->
-            List.foldl (flip addFreeVars) (addFreeVars (addFreeVars freeVars a) b) cs
+            let
+                withAB : Dict Name.Name ()
+                withAB =
+                    addFreeVars (addFreeVars freeVars a) b
+            in
+            Maybe.unwrap withAB (addFreeVars withAB) cs
 
         Can.TAlias _ _ args _ ->
             List.foldl (\( _, arg ) fvs -> addFreeVars fvs arg) freeVars args

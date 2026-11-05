@@ -161,7 +161,7 @@ valueDecl maybeDocs docComments start =
                                                                 |> P.andThen
                                                                     (\( ( ( preTipeComments, postTipeComments, _ ), tipe ), _ ) ->
                                                                         Space.checkFreshLine E.DeclDefNameRepeat
-                                                                            |> P.andThen (\_ -> chompMatchingName name)
+                                                                            |> P.andThen (\_ -> Var.matchingLower E.DeclDefNameRepeat E.DeclDefNameMatch name)
                                                                             |> P.andThen
                                                                                 (\defName ->
                                                                                     Space.chompAndCheckIndent E.DeclDefSpace E.DeclDefIndentEquals
@@ -241,41 +241,6 @@ chompDefArgsAndBody maybeDocs docComments start name tipe preArgComments revArgs
         ]
 
 
-{-| Produces a parser for a lower-case name that must equal `expectedName`,
-returning it with its region. A different name fails with `E.DeclDefNameMatch`
-at the position where the name starts.
--}
-chompMatchingName : Name -> P.Parser E.DeclDef (A.Located Name)
-chompMatchingName expectedName =
-    let
-        (P.Parser parserL) =
-            Var.lower E.DeclDefNameRepeat
-    in
-    P.Parser <|
-        \((P.State st) as state) ->
-            case parserL state of
-                P.Cok name ((P.State st2) as newState) ->
-                    if expectedName == name then
-                        P.Cok (A.At (A.Region (A.Position st.row st.col) (A.Position st2.row st2.col)) name) newState
-
-                    else
-                        P.Cerr st.row st.col (E.DeclDefNameMatch name)
-
-                P.Eok name ((P.State st2) as newState) ->
-                    if expectedName == name then
-                        P.Eok (A.At (A.Region (A.Position st.row st.col) (A.Position st2.row st2.col)) name) newState
-
-                    else
-                        P.Eerr st.row st.col (E.DeclDefNameMatch name)
-
-                P.Cerr r c t ->
-                    P.Cerr r c t
-
-                P.Eerr r c t ->
-                    P.Eerr r c t
-
-
-
 -- ====== TYPE DECLARATIONS ======
 
 
@@ -326,13 +291,13 @@ typeDecl maybeDocs start =
                                         Type.variant preVariantsComments
                                             |> P.andThen
                                                 (\( firstVariant, firstEnd ) ->
-                                                    chompVariants [ firstVariant ] firstEnd
+                                                    chompVariants [] firstEnd
                                                         |> P.map
                                                             (\( variants, end ) ->
                                                                 let
                                                                     union : A.Located Src.Union
                                                                     union =
-                                                                        A.at start end (Src.Union name args variants)
+                                                                        A.at start end (Src.Union name args firstVariant variants)
                                                                 in
                                                                 ( ( ( [], [] ), Union maybeDocs union ), end )
                                                             )
@@ -430,9 +395,9 @@ chompCustomNameToEqualsHelp trailingComments (( preNameComments, name_ ) as name
 
 
 {-| Produces a parser for any further `| Variant` alternatives of a custom type,
-given the variants read so far, newest first, and where the last one ended.
-Each `|` must be indented. It returns the variants in source order and where
-the last one ends.
+given the further variants read so far, newest first, and where the last one
+ended. Each `|` must be indented. It returns the further variants in source
+order (not the first variant) and where the last one ends.
 -}
 chompVariants : List (Src.C2Eol ( A.Located Name, List (Src.C1 Src.Type) )) -> A.Position -> Space.Parser E.CustomType (List (Src.C2Eol ( A.Located Name, List (Src.C1 Src.Type) )))
 chompVariants variants end =

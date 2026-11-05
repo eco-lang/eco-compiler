@@ -1,4 +1,4 @@
-module Compiler.IR.Source.StringLiteral exposing (Chunk(..), fromChunks, valueKey)
+module Compiler.IR.Source.StringLiteral exposing (Chunk(..), fromChunks, valueKey, codePoints)
 
 {-| A string or char literal can be recorded as a list of pieces, some copied
 from the source text and some standing for an escape, and this module turns such
@@ -11,9 +11,9 @@ backslash escapes in the forms a JavaScript string literal uses, `\n` or
 
 Each piece is a `Chunk`, and `fromChunks` joins a list of them in order.
 `valueKey` goes the other way, from escaped text to a key for the value it
-denotes.
+denotes, and `codePoints` to the code points themselves.
 
-@docs Chunk, fromChunks, valueKey
+@docs Chunk, fromChunks, valueKey, codePoints
 
 -}
 
@@ -101,10 +101,20 @@ decimal, joined by `,`; it is for comparison only.
 -}
 valueKey : String -> String
 valueKey text =
-    decodeUnits (String.toList text) []
-        |> combineSurrogates []
+    codePoints text
         |> List.map String.fromInt
         |> String.join ","
+
+
+{-| Returns the code points an escaped literal text denotes, in order: a raw
+character gives its own code point, an escape the character it stands for,
+and a `\uXXXX` high surrogate followed by a `\uXXXX` low surrogate the one
+code point the pair encodes.
+-}
+codePoints : String -> List Int
+codePoints text =
+    decodeUnits (String.toList text) []
+        |> combineSurrogates []
 
 
 {-| Returns the UTF-16 units, or whole code points for raw characters, of
@@ -135,7 +145,8 @@ decodeUnits chars acc =
             decodeUnits rest (Char.toCode c :: acc)
 
 
-{-| Returns the value of a list of hexadecimal digits.
+{-| Returns the value of a list of hexadecimal digits, digits and uppercase
+letters only: `valueKey` reads only `\u` escapes that `writeCode` wrote.
 -}
 hexValue : List Char -> Int
 hexValue =
@@ -151,11 +162,8 @@ hexValue =
                 + (if code <= 0x39 then
                     code - 0x30
 
-                   else if code <= 0x46 then
-                    code - 0x37
-
                    else
-                    code - 0x57
+                    code - 0x37
                   )
         )
         0

@@ -87,7 +87,7 @@ hasNumberVar monoType =
             hasNumberVar elemType
 
         Mono.MTuple _ elemTypes ->
-            List.any hasNumberVar elemTypes
+            List.any hasNumberVar (Mono.tupleToList elemTypes)
 
         Mono.MRecord _ fields ->
             List.any hasNumberVar (Dict.values fields)

@@ -11,7 +11,8 @@ leaf names a module of package eco/system, the generated preamble
 
 The fixtures are graphs built by `generate`, holding only the given leaves, an
 extern `Main.main` and, optionally, a flags decoder. Each is printed with
-`Backend.generateProgram`, and the tests read the printed MLIR text.
+`Compiler.GenerateMlir.BackendModule.generateProgram`, and the tests read the
+printed MLIR text.
 
   - Two eco/system leaves of the module `System` give exactly one registration
     call in the preamble, and it is the preamble's first call.
@@ -33,7 +34,7 @@ import Array
 import Compiler.Config as Config
 import Compiler.Elm.ModuleName as ModuleName
 import Compiler.Elm.Package as Pkg
-import Compiler.GenerateMlir.Backend as Backend
+import Compiler.GenerateMlir.BackendModule as Backend
 import Compiler.IR.Mono as Mono
 import Compiler.IR.Mono.Registry as Registry
 import Data.BitSet as BitSet
@@ -160,14 +161,14 @@ generate leaves withFlags =
 
         nodes =
             Array.fromList
-                (List.map (\( _, leaf ) -> Just (Mono.MonoManagerLeaf leaf.home leafType)) leafIds
+                (List.map (\( _, leaf ) -> Just (Mono.MonoManagerLeaf (ModuleName.Canonical leaf.pkg leaf.home) leafType)) leafIds
                     ++ [ Just (Mono.MonoExtern Mono.MUnit) ]
                 )
 
         graph =
             Mono.MonoGraph
                 { nodes = nodes
-                , main = Just (Mono.StaticMain mainId)
+                , main = Mono.StaticMain mainId
                 , registry = registry2
                 , ctorShapes = Mono.layoutMapEmpty
                 , nextLambdaIndex = 0

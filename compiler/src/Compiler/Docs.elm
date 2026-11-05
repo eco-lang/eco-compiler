@@ -483,8 +483,8 @@ upper-case names come before lower-case ones).
 Last, it fails with `DefProblems` for exposed names with no doc comment, and for
 exposed values with no type annotation; an exposed operator needs both
 on the function it stands for. A missing annotation on a value is reported
-instead of, not as well as, its missing comment. Exposing a port crashes, as
-its name is not among the module's definitions.
+instead of, not as well as, its missing comment. Exposing a port crashes, as a
+package cannot have ports.
 
 The type of a value is its annotation, not its inferred type.
 
@@ -721,15 +721,15 @@ checkNames exports names =
         loneDoc name regions acc =
             onlyInDocs name regions :: acc
 
-        checks : List (ReportingResult.RResult () (List ()) E.NameProblem A.Region)
+        checks : List (ReportingResult.RResult () () E.NameProblem A.Region)
         checks =
             List.reverse (Dict.merge loneExport checkBoth loneDoc exports docs [])
     in
     case ReportingResult.run (ReportingResult.traverse identity checks) of
-        ( _, Ok _ ) ->
+        Ok _ ->
             Ok ()
 
-        ( _, Err es ) ->
+        Err es ->
             Err (E.NameProblems (OneOrMore.destruct NE.Nonempty es))
 
 
@@ -812,10 +812,10 @@ checkDefs exportDict overview comments (Can.Module canData) =
             Info { comments = comments, types = types, unions = canData.unions, aliases = canData.aliases, binops = canData.binops, effects = canData.effects }
     in
     case ReportingResult.run (ReportingResult.traverse (\( k, v ) -> ReportingResult.map (Tuple.pair k) (checkExport info k v)) (Dict.toList exportDict)) of
-        ( _, Err problems ) ->
+        Err problems ->
             Err (E.DefProblems (OneOrMore.destruct NE.Nonempty problems))
 
-        ( _, Ok inserters ) ->
+        Ok inserters ->
             Ok (List.foldr (\( _, fn ) acc -> fn acc) (emptyModule canData.name overview) inserters)
 
 
@@ -853,8 +853,8 @@ or what it lacks.
 
 A value needs an annotation and a comment, an operator needs both on the
 function it stands for, and a type alias or custom type needs only a comment.
-A port is looked up among the definitions, which do not include ports, so
-exposing one crashes.
+Exposing a port crashes: docs are built only for packages, and a package
+cannot have ports.
 
 -}
 checkExport : Info -> Name -> A.Located Can.Export -> ReportingResult.RResult i w E.DefProblem (Module -> Module)
@@ -945,18 +945,7 @@ checkExport ((Info infoData) as info) name (A.At region export) =
                     )
 
         Can.ExportPort ->
-            getType name info
-                |> ReportingResult.andThen
-                    (\tipe ->
-                        getComment region name info
-                            |> ReportingResult.andThen
-                                (\comment ->
-                                    ReportingResult.ok
-                                        (\(Module mData) ->
-                                            Module { mData | values = Dict.insert name (Value comment tipe) mData.values }
-                                        )
-                                )
-                    )
+            crash "Compiler.Docs.checkExport: ports cannot appear in a package"
 
 
 {-| Returns the doc comment of `name`, or a `NoComment` at `region`.

@@ -86,7 +86,6 @@ drain s:
     joinRounds >= maxJoinRounds (100) -> EngineBug
     else worklist := dirtyList; dirtyList := []; joinRounds += 1; drain
   pop SpecializeGlobal specId; processItem specId:
-    specId in inProgress             -> skip (self-reference while translating)
     already done and not dirty       -> skip (stale duplicate)
     (global, type) := Registry.lookupSpecKey specId
     Engine.resetItem                 -- fresh store and per-item memos

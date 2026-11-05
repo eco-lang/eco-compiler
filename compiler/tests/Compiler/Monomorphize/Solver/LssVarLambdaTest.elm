@@ -298,7 +298,7 @@ global named `name`.
 isGlobalMember : String -> Int -> Mono.MonoGraph -> Bool
 isGlobalMember name m (Mono.MonoGraph g) =
     case Dict.get m g.lssMemberOrigins of
-        Just (Mono.OriginGlobal (Mono.Global _ n)) ->
+        Just (Mono.OriginGlobal _ n) ->
             n == name
 
         _ ->

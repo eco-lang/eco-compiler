@@ -44,6 +44,7 @@ import Compiler.IR.Source as Src
 import Data.Map as DMap
 import Dict
 import Expect
+import Maybe.Extra as Maybe
 import TestLogic.TestPipeline as Pipeline
 
 
@@ -177,7 +178,7 @@ collectExprImportIssues self (A.At _ exprInfo) =
             DMap.foldl (\_ fieldExpr acc -> go fieldExpr ++ acc) [] fields
 
         Can.Tuple a b rest ->
-            List.concatMap go (a :: b :: rest)
+            List.concatMap go (a :: b :: Maybe.toList rest)
 
         Can.List exprs ->
             List.concatMap go exprs

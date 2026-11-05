@@ -16,18 +16,19 @@ The input is a canonical type whose variables are MVarIds, and the output is a
     the lambda-set annotation `Mono.topDeclZonk`, which says nothing is known
     about which lambdas the function may be.
   - A type variable is replaced by its binding in a substitution if it has one.
-    Otherwise it stays a _residual_, an `MVar` left in the result: a `CNumber`
-    one when the `superVars` table marks it `Number`, a `CEcoValue` one
-    otherwise. A number variable is never defaulted to `Int` here.
+    Otherwise it stays a _residual_, an `MVar ... CEcoValue` left in the result.
+    Every caller passes either a type with no unbound number variable (a ground
+    type, or a union field type whose parameters the substitution binds) or a
+    seed annotation, whose only unbound variable is a `Program`'s open `msg`.
   - A `Filled` alias is replaced by its body. A `Holey` alias binds each of its
     parameter ids to the converted argument before converting its body.
   - A record's extension variable contributes the fields of the record it is
     bound to in the substitution; bound to anything else, or unbound, it is
     dropped and the record is closed.
 
-Both tables are keyed by `Id.toComparable` of an MVarId. The substitution is
-empty except where a caller of `canTypeToMonoWithI` supplies one or a `Holey`
-alias extends it.
+The substitution is keyed by `Id.toComparable` of an MVarId. It is empty
+except where a caller of `canTypeToMonoWithI` supplies one or a `Holey` alias
+extends it.
 
 The forms ending in `I` thread an `Intern` table, so each composite is
 hash-consed as it is built; `canTypeToMono` uses `Intern.disabled`. What a
@@ -42,24 +43,24 @@ import Compiler.Elm.ModuleName as ModuleName
 import Compiler.IR.Canonical as Can
 import Compiler.IR.Mono as Mono
 import Compiler.IR.Mono.Intern as Intern exposing (Intern)
-import Compiler.IR.Typed.TypeVars as Vars
 import Dict exposing (Dict)
+import Maybe.Extra as Maybe
 
 
 {-| Converts a canonical type to a monomorphized type with an empty
 substitution and no intern table.
 -}
-canTypeToMono : Dict Int Vars.SuperType -> Can.Type TypeIds.MVarId -> Mono.MonoType
-canTypeToMono superVars canType =
-    Tuple.first (canTypeToMonoWithI superVars Dict.empty canType Intern.disabled)
+canTypeToMono : Can.Type TypeIds.MVarId -> Mono.MonoType
+canTypeToMono canType =
+    Tuple.first (canTypeToMonoWithI Dict.empty canType Intern.disabled)
 
 
 {-| Converts a canonical type to a monomorphized type with an empty
 substitution, hash-consing each composite in the given table.
 -}
-canTypeToMonoI : Dict Int Vars.SuperType -> Can.Type TypeIds.MVarId -> Intern -> ( Mono.MonoType, Intern )
-canTypeToMonoI superVars canType intern =
-    canTypeToMonoWithI superVars Dict.empty canType intern
+canTypeToMonoI : Can.Type TypeIds.MVarId -> Intern -> ( Mono.MonoType, Intern )
+canTypeToMonoI canType intern =
+    canTypeToMonoWithI Dict.empty canType intern
 
 
 {-| Converts a canonical type to a monomorphized type, replacing each type
@@ -71,8 +72,8 @@ the record type replaces a field of the same name taken from the extension
 variable's binding.
 
 -}
-canTypeToMonoWithI : Dict Int Vars.SuperType -> Dict Int Mono.MonoType -> Can.Type TypeIds.MVarId -> Intern -> ( Mono.MonoType, Intern )
-canTypeToMonoWithI superVars subst canType intern0 =
+canTypeToMonoWithI : Dict Int Mono.MonoType -> Can.Type TypeIds.MVarId -> Intern -> ( Mono.MonoType, Intern )
+canTypeToMonoWithI subst canType intern0 =
     case canType of
         Can.TVar mvarId ->
             case Dict.get (Id.toComparable mvarId) subst of
@@ -80,20 +81,15 @@ canTypeToMonoWithI superVars subst canType intern0 =
                     ( monoType, intern0 )
 
                 Nothing ->
-                    case Dict.get (Id.toComparable mvarId) superVars of
-                        Just Vars.Number ->
-                            ( Mono.MVar mvarId Mono.CNumber, intern0 )
-
-                        _ ->
-                            ( Mono.MVar mvarId Mono.CEcoValue, intern0 )
+                    ( Mono.MVar mvarId Mono.CEcoValue, intern0 )
 
         Can.TLambda _ from to ->
-            lambdaChain superVars subst [ from ] to intern0
+            lambdaChain subst [ from ] to intern0
 
         Can.TType canonical name args ->
             let
                 ( monoArgs, intern1 ) =
-                    listToMono superVars subst args intern0
+                    listToMono subst args intern0
 
                 isElmCore =
                     case canonical of
@@ -154,7 +150,7 @@ canTypeToMonoWithI superVars subst canType intern0 =
                         (\k (Can.FieldType _ t) ( acc, i0 ) ->
                             let
                                 ( mt, i1 ) =
-                                    canTypeToMonoWithI superVars subst t i0
+                                    canTypeToMonoWithI subst t i0
                             in
                             ( Dict.insert k mt acc, i1 )
                         )
@@ -166,7 +162,7 @@ canTypeToMonoWithI superVars subst canType intern0 =
         Can.TTuple a b rest ->
             let
                 ( monoElems, intern1 ) =
-                    listToMono superVars subst (a :: b :: rest) intern0
+                    Mono.tupleMapAccum (canTypeToMonoWithI subst) intern0 (Mono.tupleOf a b rest)
             in
             Intern.hashCons (Mono.mTuple monoElems) intern1
 
@@ -174,7 +170,7 @@ canTypeToMonoWithI superVars subst canType intern0 =
             ( Mono.MUnit, intern0 )
 
         Can.TAlias _ _ _ (Can.Filled inner) ->
-            canTypeToMonoWithI superVars subst inner intern0
+            canTypeToMonoWithI subst inner intern0
 
         Can.TAlias _ _ args (Can.Holey inner) ->
             let
@@ -183,21 +179,21 @@ canTypeToMonoWithI superVars subst canType intern0 =
                         (\( paramId, t ) ( acc, i0 ) ->
                             let
                                 ( mt, i1 ) =
-                                    canTypeToMonoWithI superVars subst t i0
+                                    canTypeToMonoWithI subst t i0
                             in
                             ( Dict.insert (Id.toComparable paramId) mt acc, i1 )
                         )
                         ( subst, intern0 )
                         args
             in
-            canTypeToMonoWithI superVars newSubst inner intern1
+            canTypeToMonoWithI newSubst inner intern1
 
 
 {-| Converts each type in a list, in order, threading the intern table from
 left to right.
 -}
-listToMono : Dict Int Vars.SuperType -> Dict Int Mono.MonoType -> List (Can.Type TypeIds.MVarId) -> Intern -> ( List Mono.MonoType, Intern )
-listToMono superVars subst types intern0 =
+listToMono : Dict Int Mono.MonoType -> List (Can.Type TypeIds.MVarId) -> Intern -> ( List Mono.MonoType, Intern )
+listToMono subst types intern0 =
     case types of
         [] ->
             ( [], intern0 )
@@ -205,10 +201,10 @@ listToMono superVars subst types intern0 =
         t :: rest ->
             let
                 ( mt, intern1 ) =
-                    canTypeToMonoWithI superVars subst t intern0
+                    canTypeToMonoWithI subst t intern0
 
                 ( mRest, intern2 ) =
-                    listToMono superVars subst rest intern1
+                    listToMono subst rest intern1
             in
             ( mt :: mRest, intern2 )
 
@@ -222,22 +218,22 @@ function from `a` to a function from `b` to `c`, each arrow annotated
 from last to first.
 
 -}
-lambdaChain : Dict Int Vars.SuperType -> Dict Int Mono.MonoType -> List (Can.Type TypeIds.MVarId) -> Can.Type TypeIds.MVarId -> Intern -> ( Mono.MonoType, Intern )
-lambdaChain superVars subst argsAcc to intern0 =
+lambdaChain : Dict Int Mono.MonoType -> List (Can.Type TypeIds.MVarId) -> Can.Type TypeIds.MVarId -> Intern -> ( Mono.MonoType, Intern )
+lambdaChain subst argsAcc to intern0 =
     case to of
         Can.TLambda _ from innerTo ->
-            lambdaChain superVars subst (from :: argsAcc) innerTo intern0
+            lambdaChain subst (from :: argsAcc) innerTo intern0
 
         _ ->
             let
                 ( resultType, intern1 ) =
-                    canTypeToMonoWithI superVars subst to intern0
+                    canTypeToMonoWithI subst to intern0
             in
             List.foldl
                 (\argType ( acc, i0 ) ->
                     let
                         ( mArg, i1 ) =
-                            canTypeToMonoWithI superVars subst argType i0
+                            canTypeToMonoWithI subst argType i0
                     in
                     Intern.hashCons (Mono.mFunction Mono.topDeclZonk [ mArg ] acc) i1
                 )

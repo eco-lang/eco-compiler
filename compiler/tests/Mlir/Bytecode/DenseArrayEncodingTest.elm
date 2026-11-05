@@ -21,7 +21,7 @@ What the tests establish:
   - an `i64` array of 5 is written with count 1, blob length 8 and blob
     `05 00 00 00 00 00 00 00`, eight little-endian bytes.
 
-Among what is not tested: `i1`, `i16` and `i32` arrays, negative values or
+Among what is not tested: `i1` and `i32` arrays, negative values or
 values too wide for the element type, an empty array, and the offset section.
 
 -}

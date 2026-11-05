@@ -22,6 +22,7 @@ import Compiler.Elm.Package as Pkg
 import Compiler.IR.Canonical as Can
 import Compiler.IR.Canonical.Interface as I
 import Dict exposing (Dict)
+import Maybe.Extra as Maybe
 
 
 
@@ -85,7 +86,7 @@ collectFreeVars tipe =
         Can.TTuple a b cs ->
             List.foldl (\t acc -> Dict.union (collectFreeVars t) acc)
                 (Dict.union (collectFreeVars a) (collectFreeVars b))
-                cs
+                (Maybe.toList cs)
 
         Can.TAlias _ _ args _ ->
             List.foldl (\( _, t ) acc -> Dict.union (collectFreeVars t) acc) Dict.empty args
@@ -140,28 +141,28 @@ the other five functions.
 -}
 tupleAB : Can.Type Name
 tupleAB =
-    Can.TTuple aVar bVar []
+    Can.TTuple aVar bVar Nothing
 
 
 {-| The tuple type `( x, b )`, the result of `mapFirst`.
 -}
 tupleXB : Can.Type Name
 tupleXB =
-    Can.TTuple xVar bVar []
+    Can.TTuple xVar bVar Nothing
 
 
 {-| The tuple type `( a, y )`, the result of `mapSecond`.
 -}
 tupleAY : Can.Type Name
 tupleAY =
-    Can.TTuple aVar yVar []
+    Can.TTuple aVar yVar Nothing
 
 
 {-| The tuple type `( x, y )`, the result of `mapBoth`.
 -}
 tupleXY : Can.Type Name
 tupleXY =
-    Can.TTuple xVar yVar []
+    Can.TTuple xVar yVar Nothing
 
 
 

@@ -106,6 +106,7 @@ order (`Compiler.Parse.Module`, `Compiler.IR.Source`).
 import Compiler.Core.Annotation as A
 import Compiler.Core.Name exposing (Name)
 import Compiler.IR.Source as Src
+import System.Crash exposing (crash)
 
 
 
@@ -284,11 +285,17 @@ negateExpr inner =
 {-| Builds a chain of binary operators. Each pair in `ops` is an operand and the
 operator after it, and `final` is the last operand, so
 `binopsExpr [ ( a, "+" ), ( b, "*" ) ] c` is `a + b * c`. The chain is
-stored flat; precedence is applied later, during canonicalization.
+stored flat; precedence is applied later, during canonicalization. An empty
+`ops` gives `final` alone, as the parser does.
 -}
 binopsExpr : List ( Src.Expr, Name ) -> Src.Expr -> Src.Expr
 binopsExpr ops final =
-    A.At A.zero (Src.Binops (List.map (\( e, op ) -> ( e, c2 (A.At A.zero op) )) ops) final)
+    case List.map (\( e, op ) -> ( e, c2 (A.At A.zero op) )) ops of
+        firstOp :: moreOps ->
+            A.At A.zero (Src.Binops firstOp moreOps final)
+
+        [] ->
+            final
 
 
 {-| Builds an anonymous function taking `args` and returning `body`.
@@ -298,12 +305,17 @@ lambdaExpr args body =
     A.At A.zero (Src.Lambda (c1 (List.map c1 args)) (c1 body))
 
 
-{-| Builds the application of `func` to `args`. An empty `args` gives a call
-with no arguments, which source text cannot express.
+{-| Builds the application of `func` to `args`. An empty `args` gives `func`
+alone, as the parser does.
 -}
 callExpr : Src.Expr -> List Src.Expr -> Src.Expr
 callExpr func args =
-    A.At A.zero (Src.Call func (List.map c1 args))
+    case List.map c1 args of
+        firstArg :: moreArgs ->
+            A.At A.zero (Src.Call func firstArg moreArgs)
+
+        [] ->
+            func
 
 
 {-| Builds an `if` with no `else if` branches.
@@ -342,15 +354,17 @@ accessExpr record field =
 
 
 {-| Builds an update of `record` that sets the given fields. `record` may be any
-expression, though source text only allows a variable there.
+expression, though source text only allows a variable there. It crashes when
+`fields` is empty, which Elm syntax cannot express.
 -}
 updateExpr : Src.Expr -> List ( Name, Src.Expr ) -> Src.Expr
 updateExpr record fields =
-    let
-        fieldList =
-            List.map (\( name, expr ) -> c2Eol ( c1 (A.At A.zero name), c1 expr )) fields
-    in
-    A.At A.zero (Src.Update (c2 record) (c1 fieldList))
+    case List.map (\( name, expr ) -> c2Eol ( c1 (A.At A.zero name), c1 expr )) fields of
+        firstField :: moreFields ->
+            A.At A.zero (Src.Update (c2 record) (c1 ( firstField, moreFields )))
+
+        [] ->
+            crash "SourceBuilder.updateExpr: a record update needs at least one field"
 
 
 {-| Builds `inner` in parentheses.
@@ -805,19 +819,21 @@ tRecord fields =
         fieldList =
             List.map (\( name, t ) -> c2 ( c1 (A.At A.zero name), c1 t )) fields
     in
-    A.At A.zero (Src.TRecord fieldList Nothing noComments)
+    A.At A.zero (Src.TRecord fieldList noComments)
 
 
 {-| Builds the extensible record type `{ extVar | ... }` with the given field
-names and types.
+names and types. It crashes when `fields` is empty, which Elm syntax cannot
+express.
 -}
 tExtRecord : Name -> List ( Name, Src.Type ) -> Src.Type
 tExtRecord extVar fields =
-    let
-        fieldList =
-            List.map (\( name, t ) -> c2 ( c1 (A.At A.zero name), c1 t )) fields
-    in
-    A.At A.zero (Src.TRecord fieldList (Just (c2 (A.At A.zero extVar))) noComments)
+    case List.map (\( name, t ) -> c2 ( c1 (A.At A.zero name), c1 t )) fields of
+        firstField :: moreFields ->
+            A.At A.zero (Src.TRecordExt (c2 (A.At A.zero extVar)) firstField moreFields noComments)
+
+        [] ->
+            crash "SourceBuilder.tExtRecord: an extensible record type needs at least one field"
 
 
 {-| The unit type, `()`.
@@ -852,7 +868,8 @@ type alias UnionDef =
     }
 
 
-{-| Builds the custom type declaration that `def` describes.
+{-| Builds the custom type declaration that `def` describes. It crashes when
+`def` has no constructors, which Elm syntax cannot express.
 -}
 makeUnion : UnionDef -> A.Located Src.Union
 makeUnion def =
@@ -864,12 +881,18 @@ makeUnion def =
                 )
                 def.ctors
     in
-    A.At A.zero
-        (Src.Union
-            (c2 (A.At A.zero def.name))
-            (List.map (\arg -> c1 (A.At A.zero arg)) def.args)
-            ctors
-        )
+    case ctors of
+        firstCtor :: moreCtors ->
+            A.At A.zero
+                (Src.Union
+                    (c2 (A.At A.zero def.name))
+                    (List.map (\arg -> c1 (A.At A.zero arg)) def.args)
+                    firstCtor
+                    moreCtors
+                )
+
+        [] ->
+            crash ("SourceBuilder.makeUnion: the custom type " ++ def.name ++ " needs at least one constructor")
 
 
 {-| A type alias declaration to add to a built module. `args` are the names of

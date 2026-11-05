@@ -44,6 +44,7 @@ import Compiler.Type.Instantiate as Instantiate
 import Compiler.Type.State.IO as IO exposing (IO)
 import Compiler.Type.Type as Type exposing (Type)
 import Dict exposing (Dict)
+import Maybe.Extra as Maybe
 
 
 
@@ -439,11 +440,11 @@ addListEntriesWithIds region entryType index patterns state =
                 |> IO.andThen (addListEntriesWithIds region entryType (Index.next index) rest)
 
 
-{-| Returns `state` extended with the tuple pattern of `a`, `b` and the further
-elements `cs`, each element checked against its own fresh variable, and with the
+{-| Returns `state` extended with the tuple pattern of `a`, `b` and the third
+element `cs`, if any, each element checked against its own fresh variable, and with the
 constraint that the tuple of those variables matches `expectation`.
 -}
-addTupleWithIds : A.Region -> Can.Pattern -> Can.Pattern -> List Can.Pattern -> E.PExpected Type -> State -> IO State
+addTupleWithIds : A.Region -> Can.Pattern -> Can.Pattern -> Maybe Can.Pattern -> E.PExpected Type -> State -> IO State
 addTupleWithIds region a b cs expectation state =
     Type.mkFlexVar
         |> IO.andThen
@@ -464,39 +465,36 @@ addTupleWithIds region a b cs expectation state =
                                 |> IO.andThen (\s1 -> simpleAddWithIds b bType s1)
                                 |> IO.andThen
                                     (\s2 ->
-                                        addTupleRestWithIds cs [] s2
+                                        addTupleThirdWithIds cs s2
                                             |> IO.map
-                                                (\( cVars, State headers vars revCons ) ->
+                                                (\( cVar, State headers vars revCons ) ->
                                                     let
                                                         tupleCon : Type.Constraint
                                                         tupleCon =
-                                                            Type.CPattern region E.PTuple (Type.TupleN aType bType (List.map Type.VarN cVars)) expectation
+                                                            Type.CPattern region E.PTuple (Type.TupleN aType bType (Maybe.map Type.VarN cVar)) expectation
                                                     in
-                                                    State headers (aVar :: bVar :: cVars ++ vars) (tupleCon :: revCons)
+                                                    State headers (aVar :: bVar :: Maybe.toList cVar ++ vars) (tupleCon :: revCons)
                                                 )
                                     )
                         )
             )
 
 
-{-| Returns the fresh variables made for the tuple elements `cs`, in element
-order after any in `accVars`, with `state` extended by those elements.
-
-`accVars` holds the variables already made, newest first.
-
+{-| Returns the fresh variable made for the third tuple element `maybeC`, if
+any, with `state` extended by that element.
 -}
-addTupleRestWithIds : List Can.Pattern -> List Vars.Variable -> State -> IO ( List Vars.Variable, State )
-addTupleRestWithIds cs accVars state =
-    case cs of
-        [] ->
-            IO.pure ( List.reverse accVars, state )
+addTupleThirdWithIds : Maybe Can.Pattern -> State -> IO ( Maybe Vars.Variable, State )
+addTupleThirdWithIds maybeC state =
+    case maybeC of
+        Nothing ->
+            IO.pure ( Nothing, state )
 
-        c :: rest ->
+        Just c ->
             Type.mkFlexVar
                 |> IO.andThen
                     (\cVar ->
                         simpleAddWithIds c (Type.VarN cVar) state
-                            |> IO.andThen (addTupleRestWithIds rest (cVar :: accVars))
+                            |> IO.map (\s -> ( Just cVar, s ))
                     )
 
 

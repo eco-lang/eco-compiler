@@ -175,7 +175,7 @@ simpleKernelTests =
                             []
                             (varKernelExpr 2 "Tuple" "pair")
                             (funType (varType "a")
-                                (funType (varType "b") (tupleType (varType "a") (varType "b") []))
+                                (funType (varType "b") (tupleType (varType "a") (varType "b") Nothing))
                             )
 
                     modul =
@@ -569,7 +569,7 @@ varKernelExprTests =
                         makeTypedDef "testValue"
                             []
                             (varKernelExpr 1 "Utils" "Tuple2")
-                            (funType (varType "a") (funType (varType "b") (tupleType (varType "a") (varType "b") [])))
+                            (funType (varType "a") (funType (varType "b") (tupleType (varType "a") (varType "b") Nothing)))
 
                     modul =
                         makeModuleWithDecls (Can.Declare def Can.SaveTheEnvironment)
@@ -945,7 +945,7 @@ varKernelContextTests =
                         makeTypedDef "pair"
                             []
                             (varKernelExpr 1 "Utils" "pair")
-                            (funType (varType "a") (funType (varType "b") (tupleType (varType "a") (varType "b") [])))
+                            (funType (varType "a") (funType (varType "b") (tupleType (varType "a") (varType "b") Nothing)))
 
                     arg1 =
                         tupleExpr 3 (intExpr 4 1) (intExpr 5 2)

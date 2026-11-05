@@ -45,6 +45,7 @@ import Compiler.Core.Name exposing (Name)
 import Compiler.IR.Kernel.Facts as KernelFacts
 import Compiler.IR.Mono as Mono exposing (MonoExpr(..))
 import Data.BitSet as BitSet exposing (BitSet)
+import Data.NonEmptyList as NE
 import Dict
 
 
@@ -190,10 +191,10 @@ a value and so cannot reach `Debug`.
 isPureConstruction : Mono.MonoNode -> Bool
 isPureConstruction node =
     case node of
-        Mono.MonoCtor _ _ ->
+        Mono.MonoCtor _ _ _ ->
             True
 
-        Mono.MonoEnum _ _ ->
+        Mono.MonoEnum _ _ _ _ ->
             True
 
         _ ->
@@ -328,7 +329,7 @@ costOf expr =
             3 + List.foldl (\( _, e ) n -> n + costOf e) 0 fields
 
         MonoTupleCreate _ items _ ->
-            3 + List.foldl (\i n -> n + costOf i) 0 items
+            3 + List.foldl (\i n -> n + costOf i) 0 (Mono.tupleToList items)
 
         MonoRecordAccess inner _ _ ->
             1 + costOf inner
@@ -434,7 +435,7 @@ foldChildren f acc expr =
             List.foldl (\( _, e ) a -> f e a) (f inner acc) updates
 
         MonoTupleCreate _ items _ ->
-            List.foldl f acc items
+            List.foldl f acc (Mono.tupleToList items)
 
 
 {-| Folds `f` over the expressions in a decider's inline leaves, success branch
@@ -455,7 +456,7 @@ foldDecider f acc decider =
 
         Mono.FanOut _ tests fallback ->
             foldDecider f
-                (List.foldl (\( _, d ) a -> foldDecider f a d) acc tests)
+                (List.foldl (\( _, d ) a -> foldDecider f a d) acc (NE.toList tests))
                 fallback
 
 

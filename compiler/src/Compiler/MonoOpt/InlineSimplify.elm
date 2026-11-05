@@ -88,6 +88,7 @@ import Compiler.IR.Mono.Traverse as Traverse
 import Compiler.IR.Runtime.HeapLimits as HeapLimits
 import Data.BitSet as BitSet
 import Data.Graph as Graph
+import Data.NonEmptyList as NE
 import Dict exposing (Dict)
 import Set
 
@@ -310,7 +311,7 @@ residualTaxonomy inlineConfig (MonoGraph { nodes }) =
                     else
                         "arg-to-tailfunc"
 
-                Just (Just (MonoCtor _ _)) ->
+                Just (Just (MonoCtor _ _ _)) ->
                     "arg-to-ctor"
 
                 Just (Just (MonoDefine _ _)) ->
@@ -393,7 +394,7 @@ residualTaxonomy inlineConfig (MonoGraph { nodes }) =
                     List.foldl (\( _, e ) a -> taxExpr "stored-data" e a) (taxExpr "other" inner acc) updates
 
                 MonoTupleCreate _ items _ ->
-                    List.foldl (taxExpr "stored-data") acc items
+                    List.foldl (taxExpr "stored-data") acc (Mono.tupleToList items)
 
                 MonoTailCall _ entries _ ->
                     List.foldl (\( _, e ) a -> taxExpr "tailcall-arg" e a) acc entries
@@ -413,7 +414,7 @@ residualTaxonomy inlineConfig (MonoGraph { nodes }) =
                     taxDecider here failure (taxDecider here success acc)
 
                 Mono.FanOut _ tests fallback ->
-                    taxDecider here fallback (List.foldl (\( _, d ) a -> taxDecider here d a) acc tests)
+                    taxDecider here fallback (List.foldl (\( _, d ) a -> taxDecider here d a) acc (NE.toList tests))
 
         taxNode node acc =
             case node of
@@ -580,7 +581,7 @@ fnResultSiteCensus nodes =
                     List.foldl (\( _, e ) a -> cenExpr "stored" e a) (cenExpr "other" inner acc) updates
 
                 MonoTupleCreate _ items _ ->
-                    List.foldl (cenExpr "stored") acc items
+                    List.foldl (cenExpr "stored") acc (Mono.tupleToList items)
 
                 MonoTailCall _ entries _ ->
                     List.foldl (\( _, e ) a -> cenExpr "arg" e a) acc entries
@@ -600,7 +601,7 @@ fnResultSiteCensus nodes =
                     cenDecider here failure (cenDecider here success acc)
 
                 Mono.FanOut _ tests fallback ->
-                    cenDecider here fallback (List.foldl (\( _, d ) a -> cenDecider here d a) acc tests)
+                    cenDecider here fallback (List.foldl (\( _, d ) a -> cenDecider here d a) acc (NE.toList tests))
 
         cenNode node acc =
             case node of
@@ -961,7 +962,7 @@ node. Node order, and so every `SpecId`, is kept.
 optimizeNodes :
     List (Maybe MonoNode)
     -> RewriteCtx
-    -> Maybe Mono.MainInfo
+    -> Mono.MainInfo
     -> Mono.SpecializationRegistry
     -> Mono.LayoutMap (List Mono.CtorShape)
     -> List Mono.PortRegistration
@@ -1200,19 +1201,17 @@ buildCallGraph nodes edges =
                 Dict.empty
                 (List.indexedMap Tuple.pair specIds)
 
+        -- Live nodes are numbered densely in order, as in `idToIndex`, so
+        -- `idx` is the running count of live nodes before this one.
         buildResult =
             Array.foldl
-                (\maybeNode ( specId, acc ) ->
+                (\maybeNode ( specId, idx, acc ) ->
                     case maybeNode of
                         Nothing ->
-                            ( specId + 1, acc )
+                            ( specId + 1, idx, acc )
 
                         Just _ ->
                             let
-                                idx =
-                                    Dict.get specId idToIndex
-                                        |> Maybe.withDefault -1
-
                                 neighborSpecIds =
                                     Array.get specId edges
                                         |> Maybe.andThen identity
@@ -1227,11 +1226,7 @@ buildCallGraph nodes edges =
                                     List.member idx neighborIdxs
 
                                 newFwd =
-                                    if idx >= 0 then
-                                        Dict.insert idx neighborIdxs acc.fwd
-
-                                    else
-                                        acc.fwd
+                                    Dict.insert idx neighborIdxs acc.fwd
 
                                 newTrans =
                                     List.foldl
@@ -1246,17 +1241,17 @@ buildCallGraph nodes edges =
                                         neighborIdxs
 
                                 newSelfLoops =
-                                    if hasSelfLoop && idx >= 0 then
+                                    if hasSelfLoop then
                                         BitSet.insert idx acc.selfLoops
 
                                     else
                                         acc.selfLoops
                             in
-                            ( specId + 1, { fwd = newFwd, trans = newTrans, selfLoops = newSelfLoops } )
+                            ( specId + 1, idx + 1, { fwd = newFwd, trans = newTrans, selfLoops = newSelfLoops } )
                 )
-                ( 0, { fwd = Dict.empty, trans = Dict.empty, selfLoops = BitSet.emptyWithSize n } )
+                ( 0, 0, { fwd = Dict.empty, trans = Dict.empty, selfLoops = BitSet.emptyWithSize n } )
                 nodes
-                |> Tuple.second
+                |> (\( _, _, result ) -> result)
 
         fwdArray : Array (List Int)
         fwdArray =
@@ -1282,7 +1277,7 @@ buildCallGraph nodes edges =
                         Graph.AcyclicSCC _ ->
                             acc
 
-                        Graph.CyclicSCC idxs ->
+                        Graph.CyclicSCC idx0 idxs ->
                             List.foldl
                                 (\idx innerAcc ->
                                     case Array.get idx indexToSpecId of
@@ -1293,7 +1288,7 @@ buildCallGraph nodes edges =
                                             innerAcc
                                 )
                                 acc
-                                idxs
+                                (idx0 :: idxs)
                 )
                 Dict.empty
                 sccsInt
@@ -1392,7 +1387,7 @@ computeCost cfg expr =
             3 + computeCost cfg inner + sumBy (\( _, e ) -> computeCost cfg e) updates
 
         MonoTupleCreate _ items _ ->
-            3 + sumBy (computeCost cfg) items
+            3 + sumBy (computeCost cfg) (Mono.tupleToList items)
 
 
 {-| Returns the cost of a `let` definition's bound expression.
@@ -1425,7 +1420,7 @@ computeCostDecider cfg decider =
 
         Mono.FanOut _ tests fallback ->
             1
-                + sumBy (\( _, d ) -> computeCostDecider cfg d) tests
+                + sumBy (\( _, d ) -> computeCostDecider cfg d) (NE.toList tests)
                 + computeCostDecider cfg fallback
 
 
@@ -2156,21 +2151,12 @@ tryLoopify ctx region specId args resultType =
                                     (\( i, arg ) ->
                                         case ( Dict.get i info.flatParams, arg ) of
                                             ( Just lamArity, MonoClosure cinfo cbody ctype ) ->
-                                                if
-                                                    List.length cinfo.params
-                                                        == lamArity
-                                                        && List.all
-                                                            (\( _, ce, _ ) ->
-                                                                case ce of
-                                                                    MonoVarLocal _ _ ->
-                                                                        True
-
-                                                                    _ ->
-                                                                        False
+                                                if List.length cinfo.params == lamArity then
+                                                    localCaptures cinfo.captures
+                                                        |> Maybe.map
+                                                            (\caps ->
+                                                                { index = i, info = cinfo, body = cbody, tipe = ctype, captures = caps }
                                                             )
-                                                            cinfo.captures
-                                                then
-                                                    Just ( i, MonoClosure cinfo cbody ctype )
 
                                                 else
                                                     Nothing
@@ -2186,6 +2172,48 @@ tryLoopify ctx region specId args resultType =
                         Just (loopifyCall ctx region info qualifying args resultType)
 
 
+{-| A closure literal that loopification moves into the loop: the argument
+position it was passed at, its closure parts, and its captures, each of a local
+variable (`LocalCapture`).
+-}
+type alias LoopifyLiteral =
+    { index : Int
+    , info : Mono.ClosureInfo
+    , body : MonoExpr
+    , tipe : Mono.MonoType
+    , captures : List LocalCapture
+    }
+
+
+{-| A capture of a local variable: the name the closure gives it, the variable
+and its type, and whether the capture is stored unboxed.
+-}
+type alias LocalCapture =
+    { name : Name
+    , var : Name
+    , varType : Mono.MonoType
+    , unboxed : Bool
+    }
+
+
+{-| Returns `captures` as `LocalCapture`s when every one captures a local
+variable, and `Nothing` otherwise.
+-}
+localCaptures : List ( Name, MonoExpr, Bool ) -> Maybe (List LocalCapture)
+localCaptures captures =
+    List.foldr
+        (\( capName, capExpr, unboxed ) acc ->
+            case capExpr of
+                MonoVarLocal var varType ->
+                    Maybe.map ((::) { name = capName, var = var, varType = varType, unboxed = unboxed }) acc
+
+                _ ->
+                    Nothing
+        )
+        (Just [])
+        captures
+
+
 {-| Returns the call of `info`'s specialization with `args` loopified: a local
 tail definition, a copy of the specialization without the `qualifying`
 parameters, applied to the other arguments, under `let`s binding the values the
@@ -2196,11 +2224,11 @@ parameter. Each qualifying literal captures fresh names instead of its own, and
 replaces the callee of the one call of its parameter.
 
 -}
-loopifyCall : RewriteCtx -> Region -> LoopifyInfo -> List ( Int, MonoExpr ) -> List MonoExpr -> Mono.MonoType -> ( MonoExpr, RewriteCtx )
+loopifyCall : RewriteCtx -> Region -> LoopifyInfo -> List LoopifyLiteral -> List MonoExpr -> Mono.MonoType -> ( MonoExpr, RewriteCtx )
 loopifyCall ctx region info qualifying args resultType =
     let
         qualifyingIdxs =
-            List.map Tuple.first qualifying
+            List.map .index qualifying
 
         ( sF, ctx1 ) =
             freshVar ctx
@@ -2241,41 +2269,34 @@ loopifyCall ctx region info qualifying args resultType =
         -- function and could rebind it inside the loop.
         ( lambdaPairs, preludeRev, ctxCaps ) =
             List.foldl
-                (\( i, lamExpr ) ( accPairs, accPrelude, c ) ->
-                    case lamExpr of
-                        MonoClosure cinfo cbody ctype ->
-                            let
-                                ( ( cbody1, capsRev ), accPrelude1, c1 ) =
-                                    List.foldl
-                                        (\(( capName, capExpr, unboxed ) as cap) ( ( e, caps ), pre, cc ) ->
-                                            case capExpr of
-                                                MonoVarLocal _ vt ->
-                                                    let
-                                                        ( freshCap, cc1 ) =
-                                                            freshVar cc
-                                                    in
-                                                    ( ( substitute capName freshCap vt e
-                                                      , ( freshCap, MonoVarLocal freshCap vt, unboxed ) :: caps
-                                                      )
-                                                    , ( freshCap, capExpr ) :: pre
-                                                    , cc1
-                                                    )
+                (\lit ( accPairs, accPrelude, c ) ->
+                    let
+                        ( ( cbody1, capsRev ), accPrelude1, c1 ) =
+                            List.foldl
+                                (\cap ( ( e, caps ), pre, cc ) ->
+                                    let
+                                        ( freshCap, cc1 ) =
+                                            freshVar cc
+                                    in
+                                    ( ( substitute cap.name freshCap cap.varType e
+                                      , ( freshCap, MonoVarLocal freshCap cap.varType, cap.unboxed ) :: caps
+                                      )
+                                    , ( freshCap, MonoVarLocal cap.var cap.varType ) :: pre
+                                    , cc1
+                                    )
+                                )
+                                ( ( lit.body, [] ), accPrelude, c )
+                                lit.captures
 
-                                                _ ->
-                                                    ( ( e, cap :: caps ), pre, cc )
-                                        )
-                                        ( ( cbody, [] ), accPrelude, c )
-                                        cinfo.captures
-                            in
-                            -- The literal captures the fresh names, so it stays well
-                            -- scoped if the round limit is reached before it is reduced.
-                            ( ( i, MonoClosure { cinfo | captures = List.reverse capsRev } cbody1 ctype ) :: accPairs
-                            , accPrelude1
-                            , c1
-                            )
-
-                        _ ->
-                            ( ( i, lamExpr ) :: accPairs, accPrelude, c )
+                        cinfo =
+                            lit.info
+                    in
+                    -- The literal captures the fresh names, so it stays well
+                    -- scoped if the round limit is reached before it is reduced.
+                    ( ( lit.index, MonoClosure { cinfo | captures = List.reverse capsRev } cbody1 lit.tipe ) :: accPairs
+                    , accPrelude1
+                    , c1
+                    )
                 )
                 ( [], [], ctx2 )
                 qualifying
@@ -2471,7 +2492,7 @@ loopifyBody sF renames flatOldNames lambdas innerNames expr =
             MonoRecordUpdate (go inner) (List.map (\( n, e ) -> ( n, go e )) updates) t
 
         MonoTupleCreate r items t ->
-            MonoTupleCreate r (List.map go items) t
+            MonoTupleCreate r (Mono.tupleMap go items) t
 
         MonoLiteral _ _ ->
             expr
@@ -2510,7 +2531,7 @@ loopifyDecider sF renames flatOldNames lambdas innerNames decider =
 
         Mono.FanOut path tests fallback ->
             Mono.FanOut path
-                (List.map (\( k, d ) -> ( k, loopifyDecider sF renames flatOldNames lambdas innerNames d )) tests)
+                (NE.map (\( k, d ) -> ( k, loopifyDecider sF renames flatOldNames lambdas innerNames d )) tests)
                 (loopifyDecider sF renames flatOldNames lambdas innerNames fallback)
 
 
@@ -3118,7 +3139,7 @@ rewriteExpr ctx expr =
         MonoTupleCreate region items tupleType ->
             let
                 ( rewrittenItems, ctx1 ) =
-                    rewriteExprs ctx items
+                    Mono.tupleMapAccum (\e c -> rewriteExpr c e) ctx items
             in
             ( MonoTupleCreate region rewrittenItems tupleType, ctx1 )
 
@@ -3286,20 +3307,17 @@ rewriteDecider ctx decider =
 
         Mono.FanOut path edges fallback ->
             let
-                ( revEdges, ctx1 ) =
-                    List.foldl
-                        (\( test, d ) ( acc, accCtx ) ->
+                ( ctx1, rewrittenEdges ) =
+                    NE.mapAccuml
+                        (\accCtx ( test, d ) ->
                             let
                                 ( rewritten, newCtx ) =
                                     rewriteDecider accCtx d
                             in
-                            ( ( test, rewritten ) :: acc, newCtx )
+                            ( newCtx, ( test, rewritten ) )
                         )
-                        ( [], ctx )
+                        ctx
                         edges
-
-                rewrittenEdges =
-                    List.reverse revEdges
 
                 ( rewrittenFallback, ctx2 ) =
                     rewriteDecider ctx1 fallback
@@ -3356,13 +3374,13 @@ rewriteTailCallArgs ctx args =
 
 
 {-| Returns the closure literal with `info` and `closureBody` applied to
-`args`, where `resultType` is the type of the call.
+`args`, where `resultType` is the type of the call. `args` is never empty: no
+pass builds a `MonoCall` with no arguments.
 
 Each parameter that gets an argument is bound to it by a `let` under a fresh
 name, and the body, with those parameters renamed and its own `let` names
 freshened, goes under the `let`s.
 
-  - With no arguments, the result is the closure itself, typed `resultType`.
   - With exactly as many arguments as parameters, it is the body under the
     `let`s.
   - With fewer, it is a residual closure over the remaining parameters, under
@@ -3391,10 +3409,7 @@ betaReduce ctx region info closureBody args resultType =
         numArgs =
             List.length args
     in
-    if numArgs == 0 then
-        ( MonoClosure info closureBody (Mono.typeOf (MonoClosure info closureBody resultType)), ctx )
-
-    else if numArgs == numParams then
+    if numArgs == numParams then
         let
             ( bindings, ctx1 ) =
                 createBindings ctx params args
@@ -3683,7 +3698,7 @@ substitute oldName newName varType expr =
                 recordType
 
         MonoTupleCreate region items tupleType ->
-            MonoTupleCreate region (List.map (substitute oldName newName varType) items) tupleType
+            MonoTupleCreate region (Mono.tupleMap (substitute oldName newName varType) items) tupleType
 
 
 {-| Returns a `let` definition with `substitute` applied to its bound
@@ -3764,7 +3779,7 @@ substituteDecider oldName newName varType decider =
 
         Mono.Chain testChain success failure ->
             Mono.Chain
-                (List.map
+                (NE.map
                     (\( dtPath, test ) ->
                         ( substituteDtPath oldName newName dtPath, test )
                     )
@@ -3775,7 +3790,7 @@ substituteDecider oldName newName varType decider =
 
         Mono.FanOut path edges fallback ->
             Mono.FanOut (substituteDtPath oldName newName path)
-                (List.map (\( test, d ) -> ( test, substituteDecider oldName newName varType d )) edges)
+                (NE.map (\( test, d ) -> ( test, substituteDecider oldName newName varType d )) edges)
                 (substituteDecider oldName newName varType fallback)
 
 
@@ -4025,22 +4040,22 @@ forwardInChain ctx spine finalBody =
                                 Nothing ->
                                     skip ()
 
-                        Mono.MonoDef name ((MonoCall _ ((MonoVarKernel _ _ _ _ _) as funcExpr) boundArgs _ _) as boundCall) ->
-                            -- The same rule for a partial call of a kernel.
-                            case calleeArity c funcExpr of
-                                Just arity ->
-                                    if
-                                        List.length boundArgs
-                                            < arity
-                                            && List.all isPureExpr boundArgs
-                                    then
-                                        attempt name boundCall (ForwardPartialCall funcExpr boundArgs arity) bumpPartialMerges
+                        Mono.MonoDef name ((MonoCall _ ((MonoVarKernel _ _ _ _ kernelType) as funcExpr) boundArgs _ _) as boundCall) ->
+                            -- The same rule for a partial call of a kernel,
+                            -- whose arity is its flat one.
+                            let
+                                arity =
+                                    flatArrowArity kernelType
+                            in
+                            if
+                                List.length boundArgs
+                                    < arity
+                                    && List.all isPureExpr boundArgs
+                            then
+                                attempt name boundCall (ForwardPartialCall funcExpr boundArgs arity) bumpPartialMerges
 
-                                    else
-                                        skip ()
-
-                                Nothing ->
-                                    skip ()
+                            else
+                                skip ()
 
                         _ ->
                             skip ()
@@ -4213,16 +4228,13 @@ forwardGo ctx name payload expr =
                 |> Maybe.map (\( inner1, c ) -> ( MonoRecordAccess inner1 f t, c ))
 
         MonoRecordUpdate inner updates t ->
-            case forwardGo ctx name payload inner of
-                Just ( inner1, c ) ->
-                    Just ( MonoRecordUpdate inner1 updates t, c )
-
-                Nothing ->
-                    forwardGoSndList ctx name payload updates
-                        |> Maybe.map (\( updates1, c ) -> ( MonoRecordUpdate inner updates1 t, c ))
+            -- The record is a variable (Elm's update syntax, kept by
+            -- renaming), never a callee use, so only the updates are searched.
+            forwardGoSndList ctx name payload updates
+                |> Maybe.map (\( updates1, c ) -> ( MonoRecordUpdate inner updates1 t, c ))
 
         MonoTupleCreate region items t ->
-            forwardGoList ctx name payload items
+            forwardGoTuple ctx name payload items
                 |> Maybe.map (\( items1, c ) -> ( MonoTupleCreate region items1 t, c ))
 
         MonoLiteral _ _ ->
@@ -4246,8 +4258,8 @@ forwardGo ctx name payload expr =
 
 {-| Returns how many arguments a callee takes in one call, when that is known
 statically: a closure literal's parameter count, a global's entry in
-`specArities`, or a kernel's flat arity (`flatArrowArity`) when above zero.
-Any other callee gives `Nothing`.
+`specArities`, or a kernel's flat arity (`flatArrowArity`). Any other callee
+gives `Nothing`.
 -}
 calleeArity : RewriteCtx -> MonoExpr -> Maybe Int
 calleeArity ctx funcExpr =
@@ -4261,15 +4273,7 @@ calleeArity ctx funcExpr =
         MonoVarKernel _ _ _ _ kernelType ->
             -- A kernel's type is staged (`Int -> (Int -> Int)`), but its
             -- arity here is the flat one, over every stage.
-            let
-                n =
-                    flatArrowArity kernelType
-            in
-            if n > 0 then
-                Just n
-
-            else
-                Nothing
+            Just (flatArrowArity kernelType)
 
         _ ->
             Nothing
@@ -4292,6 +4296,38 @@ forwardGoList ctx name payload exprs =
                 Nothing ->
                     forwardGoList ctx name payload rest
                         |> Maybe.map (\( rest1, c ) -> ( e :: rest1, c ))
+
+
+{-| Returns the tuple elements with `forwardGo` applied to the first one where
+it succeeds, or `Nothing` when it succeeds on none.
+-}
+forwardGoTuple : RewriteCtx -> Name -> ForwardPayload -> Mono.TupleShape MonoExpr -> Maybe ( Mono.TupleShape MonoExpr, RewriteCtx )
+forwardGoTuple ctx name payload items =
+    let
+        go e =
+            forwardGo ctx name payload e
+    in
+    case items of
+        Mono.T2 a b ->
+            case go a of
+                Just ( a1, c ) ->
+                    Just ( Mono.T2 a1 b, c )
+
+                Nothing ->
+                    Maybe.map (\( b1, c ) -> ( Mono.T2 a b1, c )) (go b)
+
+        Mono.T3 a b x ->
+            case go a of
+                Just ( a1, c ) ->
+                    Just ( Mono.T3 a1 b x, c )
+
+                Nothing ->
+                    case go b of
+                        Just ( b1, c ) ->
+                            Just ( Mono.T3 a b1 x, c )
+
+                        Nothing ->
+                            Maybe.map (\( x1, c ) -> ( Mono.T3 a b x1, c )) (go x)
 
 
 {-| Returns the pairs with `forwardGo` applied to the second part of the first
@@ -4361,7 +4397,7 @@ forwardGoDecider ctx name payload decider =
                         |> Maybe.map (\( f1, c ) -> ( Mono.Chain tests success f1, c ))
 
         Mono.FanOut path tests fallback ->
-            case forwardGoDeciderSndList ctx name payload tests of
+            case forwardGoDeciderSndNonempty ctx name payload tests of
                 Just ( tests1, c ) ->
                     Just ( Mono.FanOut path tests1 fallback, c )
 
@@ -4370,7 +4406,21 @@ forwardGoDecider ctx name payload decider =
                         |> Maybe.map (\( fb1, c ) -> ( Mono.FanOut path tests fb1, c ))
 
 
-{-| Returns the edges of a decision tree with `forwardGoDecider` applied to the
+{-| Returns the edges of a fan-out with `forwardGoDecider` applied to the
+first subtree where it succeeds, or `Nothing` when it succeeds on none.
+-}
+forwardGoDeciderSndNonempty : RewriteCtx -> Name -> ForwardPayload -> NE.Nonempty ( a, Mono.Decider Mono.MonoChoice ) -> Maybe ( NE.Nonempty ( a, Mono.Decider Mono.MonoChoice ), RewriteCtx )
+forwardGoDeciderSndNonempty ctx name payload (NE.Nonempty ( k, d ) rest) =
+    case forwardGoDecider ctx name payload d of
+        Just ( d1, c ) ->
+            Just ( NE.Nonempty ( k, d1 ) rest, c )
+
+        Nothing ->
+            forwardGoDeciderSndList ctx name payload rest
+                |> Maybe.map (\( rest1, c ) -> ( NE.Nonempty ( k, d ) rest1, c ))
+
+
+{-| Returns a list of fan-out edges with `forwardGoDecider` applied to the
 first subtree where it succeeds, or `Nothing` when it succeeds on none.
 -}
 forwardGoDeciderSndList : RewriteCtx -> Name -> ForwardPayload -> List ( a, Mono.Decider Mono.MonoChoice ) -> Maybe ( List ( a, Mono.Decider Mono.MonoChoice ), RewriteCtx )
@@ -4587,7 +4637,7 @@ freshenLetBoundNames ctx expr =
         MonoTupleCreate region items tupleType ->
             let
                 ( items1, ctx1 ) =
-                    freshenLetBoundNamesList ctx items
+                    Mono.tupleMapAccum (\e c -> freshenLetBoundNames c e) ctx items
             in
             ( MonoTupleCreate region items1 tupleType, ctx1 )
 
@@ -4740,22 +4790,22 @@ freshenLetBoundNamesInDecider ctx decider =
 
         Mono.FanOut path edges fallback ->
             let
-                ( edgesRev, ctx1 ) =
-                    List.foldl
-                        (\( test, d ) ( acc, c ) ->
+                ( ctx1, edges1 ) =
+                    NE.mapAccuml
+                        (\c ( test, d ) ->
                             let
                                 ( d1, c1 ) =
                                     freshenLetBoundNamesInDecider c d
                             in
-                            ( ( test, d1 ) :: acc, c1 )
+                            ( c1, ( test, d1 ) )
                         )
-                        ( [], ctx )
+                        ctx
                         edges
 
                 ( fallback1, ctx2 ) =
                     freshenLetBoundNamesInDecider ctx1 fallback
             in
-            ( Mono.FanOut path (List.reverse edgesRev) fallback1, ctx2 )
+            ( Mono.FanOut path edges1 fallback1, ctx2 )
 
 
 {-| Returns `expr` with every reference to the local `oldName` renamed to
@@ -4888,7 +4938,7 @@ renameLocal oldName newName expr =
                 recordType
 
         MonoTupleCreate region items tupleType ->
-            MonoTupleCreate region (List.map (renameLocal oldName newName) items) tupleType
+            MonoTupleCreate region (Mono.tupleMap (renameLocal oldName newName) items) tupleType
 
 
 {-| Returns a `let` definition with `renameLocal` applied to its bound
@@ -4923,7 +4973,7 @@ renameLocalInDecider oldName newName decider =
 
         Mono.Chain testChain success failure ->
             Mono.Chain
-                (List.map
+                (NE.map
                     (\( dtPath, test ) ->
                         ( substituteDtPath oldName newName dtPath, test )
                     )
@@ -4934,7 +4984,7 @@ renameLocalInDecider oldName newName decider =
 
         Mono.FanOut path edges fallback ->
             Mono.FanOut (substituteDtPath oldName newName path)
-                (List.map (\( test, d ) -> ( test, renameLocalInDecider oldName newName d )) edges)
+                (NE.map (\( test, d ) -> ( test, renameLocalInDecider oldName newName d )) edges)
                 (renameLocalInDecider oldName newName fallback)
 
 
@@ -5045,7 +5095,7 @@ tryInlineCall callRegion ctx specId args resultType =
                             ( List.take numArgs params, List.drop numArgs params )
 
                         ( bindings, ctx2 ) =
-                            createBindingsForInline ctx1 usedParams args
+                            createBindings ctx1 usedParams args
 
                         ( substituted, ctx2a ) =
                             freshenLetBoundNames ctx2 (substituteAllForInline bindings remappedBody)
@@ -5093,7 +5143,7 @@ tryInlineCall callRegion ctx specId args resultType =
                             ( List.take numParams args, List.drop numParams args )
 
                         ( bindings, ctx2 ) =
-                            createBindingsForInline ctx1 params usedArgs
+                            createBindings ctx1 params usedArgs
 
                         ( substituted, ctx3 ) =
                             freshenLetBoundNames ctx2 (substituteAllForInline bindings remappedBody)
@@ -5115,7 +5165,7 @@ tryInlineCall callRegion ctx specId args resultType =
                             remapLambdaIds ctx body
 
                         ( bindings, ctx2 ) =
-                            createBindingsForInline ctx1 params args
+                            createBindings ctx1 params args
 
                         ( substituted, ctx3 ) =
                             freshenLetBoundNames ctx2 (substituteAllForInline bindings remappedBody)
@@ -5163,18 +5213,6 @@ isCase expr =
 
         _ ->
             False
-
-
-{-| Returns the bindings of `params` to `args`, as `createBindings` makes them,
-and none for a callee with no parameters.
--}
-createBindingsForInline : RewriteCtx -> List ( Name, Mono.MonoType ) -> List MonoExpr -> ( List Binding, RewriteCtx )
-createBindingsForInline ctx params args =
-    if List.isEmpty params then
-        ( [], ctx )
-
-    else
-        createBindings ctx params args
 
 
 {-| Returns `expr` with the bindings' parameters renamed, as `substituteAll`
@@ -5475,7 +5513,7 @@ simplifyLets ctx expr =
         MonoTupleCreate region items tupleType ->
             let
                 ( simplifiedItems, ctx1 ) =
-                    simplifyLetsExprs ctx items
+                    Mono.tupleMapAccum (\e c -> simplifyLets c e) ctx items
             in
             ( MonoTupleCreate region simplifiedItems tupleType, ctx1 )
 
@@ -5606,20 +5644,17 @@ simplifyLetsDecider ctx decider =
 
         Mono.FanOut path edges fallback ->
             let
-                ( revEdges, ctx1 ) =
-                    List.foldl
-                        (\( test, d ) ( acc, accCtx ) ->
+                ( ctx1, simplifiedEdges ) =
+                    NE.mapAccuml
+                        (\accCtx ( test, d ) ->
                             let
                                 ( simplified, newCtx ) =
                                     simplifyLetsDecider accCtx d
                             in
-                            ( ( test, simplified ) :: acc, newCtx )
+                            ( newCtx, ( test, simplified ) )
                         )
-                        ( [], ctx )
+                        ctx
                         edges
-
-                simplifiedEdges =
-                    List.reverse revEdges
 
                 ( simplifiedFallback, ctx2 ) =
                     simplifyLetsDecider ctx1 fallback
@@ -5807,7 +5842,7 @@ isPureExprGen kDrop expr =
                 && List.all (\( _, e ) -> isPureExprGen kDrop e) updates
 
         MonoTupleCreate _ items _ ->
-            List.all (isPureExprGen kDrop) items
+            List.all (isPureExprGen kDrop) (Mono.tupleToList items)
 
 
 {-| Returns `isPureExprGen` of a `let` definition's bound expression.
@@ -5841,7 +5876,7 @@ isPureDeciderGen kDrop decider =
             isPureDeciderGen kDrop success && isPureDeciderGen kDrop failure
 
         Mono.FanOut _ tests fallback ->
-            List.all (\( _, d ) -> isPureDeciderGen kDrop d) tests
+            List.all (\( _, d ) -> isPureDeciderGen kDrop d) (NE.toList tests)
                 && isPureDeciderGen kDrop fallback
 
 
@@ -5946,7 +5981,7 @@ countUsages name expr =
             countUsages name inner + sumBy (\( _, e ) -> countUsages name e) updates
 
         MonoTupleCreate _ items _ ->
-            sumBy (countUsages name) items
+            sumBy (countUsages name) (Mono.tupleToList items)
 
 
 {-| Returns `countUsages` of a `let` definition's bound expression, or 0 for a
@@ -6005,7 +6040,7 @@ countUsagesInDecider name decider =
             countUsagesInDecider name success + countUsagesInDecider name failure
 
         Mono.FanOut _ edges fallback ->
-            sumBy (\( _, d ) -> countUsagesInDecider name d) edges
+            sumBy (\( _, d ) -> countUsagesInDecider name d) (NE.toList edges)
                 + countUsagesInDecider name fallback
 
 
@@ -6122,7 +6157,7 @@ reshapeCensusGo cleared (Mono.MonoGraph record) =
                 Mono.FanOut _ tests fb ->
                     goDecider tail
                         fb
-                        (List.foldl (\( _, dd ) a -> goDecider tail dd a) acc tests)
+                        (List.foldl (\( _, dd ) a -> goDecider tail dd a) acc (NE.toList tests))
 
         -- `tail`: this expression's value is the value of the enclosing node
         -- or closure body.
@@ -6168,7 +6203,7 @@ reshapeCensusGo cleared (Mono.MonoGraph record) =
                     List.foldl (go False) acc items
 
                 MonoTupleCreate _ items _ ->
-                    List.foldl (go False) acc items
+                    List.foldl (go False) acc (Mono.tupleToList items)
 
                 MonoRecordCreate fields _ ->
                     List.foldl (\( _, v ) a -> go False v a) acc fields

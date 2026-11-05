@@ -34,9 +34,8 @@ top-level definition is annotated, and the program's `testValue` is annotated
 with a type that has no type variables. Most helper bodies ignore some of their
 arguments, so what matters in a program is its types rather than what it
 computes. The sketches in the docstrings below are Elm source, not the trees
-as built: for example, a constructor with no arguments is built as a call with
-no arguments, which source text cannot express, and a parenthesised argument
-has no `Parens` node around it.
+as built: for example, a parenthesised argument has no `Parens` node around
+it.
 
 The fourteen cases fall into four groups:
 

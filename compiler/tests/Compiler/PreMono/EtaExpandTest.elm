@@ -125,8 +125,10 @@ import Compiler.IR.Source as Src
 import Compiler.IR.Typed.Optimized as TOpt
 import Compiler.PreMono.EtaExpand as EtaExpand
 import Data.Map
+import Data.NonEmptyList as NE
 import Dict as CoreDict
 import Expect
+import Maybe.Extra as Maybe
 import Test exposing (Test)
 import TestLogic.TestPipeline as Pipeline
 
@@ -806,7 +808,7 @@ children expr =
             Data.Map.values fields
 
         TOpt.Tuple _ a b rest _ ->
-            a :: b :: rest
+            a :: b :: Maybe.toList rest
 
         _ ->
             []
@@ -829,7 +831,7 @@ deciderChildren decider =
             deciderChildren ok ++ deciderChildren ko
 
         TOpt.FanOut _ branches fallback ->
-            List.concatMap (\( _, d ) -> deciderChildren d) branches
+            List.concatMap (\( _, d ) -> deciderChildren d) (NE.toList branches)
                 ++ deciderChildren fallback
 
 

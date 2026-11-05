@@ -1,6 +1,6 @@
 module Compiler.Monomorphize.Solver.KernelSetFacts exposing
     ( ParamSetFlow(..), KernelPlan, LicenseScope(..), TypeShape(..), License, KernelSetFact(..)
-    , factFor, licenseApplies, shapeOfAnnotation, rows
+    , factFor, licenseApplies, rows
     )
 
 {-| The solver's lambda-set analysis cannot see inside a kernel, and this module
@@ -34,8 +34,8 @@ of three:
     no special treatment. Its `LicenseScope` says what must still be checked
     about the type at each occurrence, and `licenseApplies` checks it.
   - A `Positional` row gives, for a kernel that holds no license, a
-    `ParamSetFlow` for each parameter and for the result. `Bytes.decode` is
-    the only one.
+    `ParamSetFlow` for each parameter; the result's arrows are always
+    poisoned. `Bytes.decode` is the only one.
   - No row means a call to the kernel is fully poisoned.
 
 Removing poison is the safe direction. A lambda-set slot that nothing writes
@@ -118,26 +118,23 @@ key, kind and scope, so that part of the table's layout is part of the check.
     fail: `Dict.fromList` keeps the later one.
 
 @docs ParamSetFlow, KernelPlan, LicenseScope, TypeShape, License, KernelSetFact
-@docs factFor, licenseApplies, shapeOfAnnotation, rows
+@docs factFor, licenseApplies, rows
 
 -}
 
 import Compiler.Core.Name exposing (Name)
 import Compiler.IR.Canonical as Can
 import Dict
+import Maybe.Extra as Maybe
 
 
-{-| What a `Positional` row says about one parameter of a kernel, or about its
-result.
+{-| What a `Positional` row says about one parameter of a kernel.
 
 `PSFOpaque` means the kernel's handling of the value is not accounted for, so
 the arrows in its type are poisoned.
 
 `PSFApplies` means the kernel only applies the function it is given, so its
 arrows need no poison.
-
-`PSFTunnels` means the function values of the argument flow to the kernel's
-result, whose lambda sets receive the argument's members. No row uses it.
 
 -}
 type ParamSetFlow
@@ -146,15 +143,13 @@ type ParamSetFlow
 
 
 {-| The per-position row of a kernel that holds no license: a `ParamSetFlow`
-for each parameter, in order, and one for the result. Its audit is kept outside
-this module, as the module docstring describes. A call whose parameters cannot be
-aligned with `params` is fully poisoned instead.
+for each parameter, in order. The arrows of the kernel's result are always
+poisoned. Its audit is kept outside this module, as the module docstring
+describes. A call whose parameters cannot be aligned with `params` is fully
+poisoned instead.
 -}
 type alias KernelPlan =
     { params : List ParamSetFlow
-
-    -- PSFOpaque poisons the result's arrows; the other two leave them alone.
-    , result : ParamSetFlow
     }
 
 
@@ -275,7 +270,7 @@ hasFunctionCapable isScalarVar tipe =
             List.any (hasFunctionCapable isScalarVar) args
 
         Can.TTuple a b rest ->
-            hasFunctionCapable isScalarVar a || hasFunctionCapable isScalarVar b || List.any (hasFunctionCapable isScalarVar) rest
+            hasFunctionCapable isScalarVar a || hasFunctionCapable isScalarVar b || Maybe.unwrap False (hasFunctionCapable isScalarVar) rest
 
         Can.TRecord fields ext ->
             ext /= Nothing || List.any (\(Can.FieldType _ ft) -> hasFunctionCapable isScalarVar ft) (Dict.values fields)
@@ -310,43 +305,6 @@ aliasBody real =
 
         Can.Filled t ->
             t
-
-
-{-| Returns the `TypeShape` of an annotation, or `Nothing` when it contains a
-record, a tuple or an alias, which a shape cannot express. It exists so that a
-test can compare a `TransportsAs` row's shape with the kernel's annotation in
-`Compiler.Type.KernelIntrinsics`.
--}
-shapeOfAnnotation : Can.Type Name -> Maybe TypeShape
-shapeOfAnnotation tipe =
-    case tipe of
-        Can.TVar name ->
-            Just (TsVar name)
-
-        Can.TLambda _ arg result ->
-            Maybe.map2 TsFun (shapeOfAnnotation arg) (shapeOfAnnotation result)
-
-        Can.TType _ name args ->
-            Maybe.map (TsCon name) (traverseShapes args)
-
-        Can.TUnit ->
-            Just (TsCon "()" [])
-
-        _ ->
-            Nothing
-
-
-{-| Returns the shapes of `types` in order, or `Nothing` if any of them has
-none.
--}
-traverseShapes : List (Can.Type Name) -> Maybe (List TypeShape)
-traverseShapes types =
-    case types of
-        [] ->
-            Just []
-
-        t :: rest ->
-            Maybe.map2 (::) (shapeOfAnnotation t) (traverseShapes rest)
 
 
 {-| Tells whether `occurrence` is an instance of `shape`. Each `TsVar` is bound
@@ -463,7 +421,18 @@ sameType a b =
             n1 == n2 && List.length a1 == List.length a2 && List.all identity (List.map2 sameType a1 a2)
 
         ( Can.TTuple x1 y1 r1, Can.TTuple x2 y2 r2 ) ->
-            sameType x1 x2 && sameType y1 y2 && List.length r1 == List.length r2 && List.all identity (List.map2 sameType r1 r2)
+            sameType x1 x2
+                && sameType y1 y2
+                && (case ( r1, r2 ) of
+                        ( Just z1, Just z2 ) ->
+                            sameType z1 z2
+
+                        ( Nothing, Nothing ) ->
+                            True
+
+                        _ ->
+                            False
+                   )
 
         _ ->
             False
@@ -695,7 +664,6 @@ facts =
         , ( ( "Elm", "Bytes", "decode" )
           , Positional
                 { params = [ PSFApplies, PSFOpaque ]
-                , result = PSFOpaque
                 }
           )
         , ( ( "Elm", "Bytes", "decodeFailure" )

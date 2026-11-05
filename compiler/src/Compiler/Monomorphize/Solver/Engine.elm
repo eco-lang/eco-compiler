@@ -1,10 +1,10 @@
 module Compiler.Monomorphize.Solver.Engine exposing
     ( S, Step, Failure(..), WorkItem(..)
-    , traverse, foldlS, liftIO
+    , traverse, traverseNonempty, foldlS, liftIO
     , freshVar, enqueueSpec
     , freshStore, resetItem
     , mvarIdKey, pointKey
-    , AliasKey, AliasVerdict(..), ArrowFact, Env, GroundingStats, ItemAux, LayoutQualStats, LssMemberTable, LssSignature, LssStats, MemberSource(..), MonoMemo, NodeResolution, NumberInstance, NumberMultiEntry, QEntry(..), QPre(..), QShadowStats, SettledStats, SigFlowStats, SpecTally, aliasKeyEq, aliasKeyHash, bumpAppliedArrow, bumpArgFlowCensus, bumpArgFlowCensusBy, bumpCompletionJoin, bumpCompletionJoinNoop, bumpEdgeInstalled, bumpFlowDegraded, bumpKernelFactHit, bumpKernelLicensed, bumpTopMixedFlexSig, bumpWidenedByCf, bumpWidenedByKernel, bumpWidenedBySigSize, clearResidualReads, clearedAux, consS, crashFailure, emptyItemAux, emptyLssStats, emptyMemberTable, emptyMonoMemo, groundSetMembers, groundStandaloneMemberIdFor, harvestSuperTableExcept, insertVar, internMemberKey, isLocalMultiTarget, isScalarVar, kernelMemberIdFor, lambdaInstanceMemberId, layoutQualKey, localInstanceTagFor, localVarInfo, lookupCallMemo, lookupSchemeMono, lookupVar, markFlexCtorSpec, memberIdFor, membersClass, memoizedSignatureTrivial, mixTag, notePendingFailure, numberMultiRootType, papMemberIdFor, papMemberKey, popLocalMulti, popNumberMulti, pushLocalMulti, pushNumberMulti, putAliasVerdict, putCallMemo, putSchemeMono, recordLocalInstance, recordNumberInstance, recordSpecWidenedKey, renderFailure, restoredAux, scoped, specIdsForGlobal, srcLambdaKey, standaloneMemberGlobal, standaloneMemberIdFor, standaloneMemberKernel, trivialSignature, withScratchStore
+    , AliasKey, AliasVerdict(..), ArrowFact, Env, GroundingStats, ItemAux, LayoutQualStats, LssMemberTable, LssSignature, LssStats, MemberSource(..), MonoMemo, NodeResolution, NumberInstance, NumberMultiEntry, QEntry(..), QPre(..), QShadowStats, SettledStats, SigFlowStats, SpecTally, aliasKeyEq, aliasKeyHash, bumpAppliedArrow, bumpArgFlowCensus, bumpArgFlowCensusBy, bumpCompletionJoin, bumpCompletionJoinNoop, bumpEdgeInstalled, bumpFlowDegraded, bumpKernelFactHit, bumpKernelLicensed, bumpTopMixedFlexSig, bumpWidenedByCf, bumpWidenedByKernel, bumpWidenedBySigSize, clearResidualReads, clearedAux, consS, crashFailure, emptyItemAux, emptyLssStats, emptyMemberTable, emptyMonoMemo, groundSetMembers, groundStandaloneMemberIdFor, harvestSuperTableExcept, insertVar, internMemberKey, isLocalMultiTarget, isScalarVar, kernelMemberIdFor, lambdaInstanceMemberId, layoutQualKey, localInstanceTagFor, localVarInfo, lookupCallMemo, lookupSchemeMono, lookupVar, markFlexCtorSpec, memberIdFor, membersClass, memoizedSignatureTrivial, mixTag, notePendingFailure, numberMultiRootType, papMemberIdFor, papMemberKey, putAliasVerdict, putCallMemo, putSchemeMono, recordLocalInstance, recordNumberInstance, recordSpecWidenedKey, renderFailure, restoredAux, scoped, specIdsForGlobal, srcLambdaKey, standaloneMemberGlobal, standaloneMemberIdFor, standaloneMemberKernel, trivialSignature, withLocalMulti, withNumberMulti, withScratchStore
     )
 
 {-| The state the solver-based monomorphizer threads through all of its work,
@@ -37,11 +37,12 @@ construct the engine cannot handle, or a broken internal invariant, aborts the
 process through `crashFailure`. A spec watchdog trip in `enqueueSpec` is instead
 recorded in `ItemAux.pendingFailure`, for the driver in
 `Compiler.Monomorphize.Solver.Monomorphize` to report once the item finishes. The few
-combinators kept (`traverse`, `foldlS`, `scoped`, `withScratchStore`,
-`liftIO`) take the state directly, and callers write their sequencing as
-explicit `case ... of ( a, s1 )` chains: a function whose results are tuple
-literals can have its multi-result return promoted by the native backend
-(`Backend.buildSretPromoted`), and one written as a combinator chain cannot.
+combinators kept (`traverse`, `traverseNonempty`, `foldlS`, `scoped`,
+`withScratchStore`, `liftIO`) take the state directly, and callers write their
+sequencing as explicit `case ... of ( a, s1 )` chains: a function whose results
+are tuple literals can have its multi-result return promoted by the native
+backend (`Backend.buildSretPromoted`), and one written as a combinator chain
+cannot.
 
 **Lambda-set specialization (LSS).** With `env.lss.enabled` on, every function
 type carries a _lambda set_: the function values that can reach that position.
@@ -73,11 +74,11 @@ only when the report is on, and their docstrings say so; the others count
 always. Two fields of `LssStats` are also read by the engine (see `LssStats`).
 
 @docs S, Step, Failure, WorkItem
-@docs traverse, foldlS, liftIO
+@docs traverse, traverseNonempty, foldlS, liftIO
 @docs freshVar, enqueueSpec
 @docs freshStore, resetItem
 @docs mvarIdKey, pointKey
-@docs AliasKey, AliasVerdict, ArrowFact, Env, GroundingStats, ItemAux, LayoutQualStats, LssMemberTable, LssSignature, LssStats, MemberSource, MonoMemo, NodeResolution, NumberInstance, NumberMultiEntry, QEntry, QPre, QShadowStats, SettledStats, SigFlowStats, SpecTally, aliasKeyEq, aliasKeyHash, bumpAppliedArrow, bumpArgFlowCensus, bumpArgFlowCensusBy, bumpCompletionJoin, bumpCompletionJoinNoop, bumpEdgeInstalled, bumpFlowDegraded, bumpKernelFactHit, bumpKernelLicensed, bumpTopMixedFlexSig, bumpWidenedByCf, bumpWidenedByKernel, bumpWidenedBySigSize, clearResidualReads, clearedAux, consS, crashFailure, emptyItemAux, emptyLssStats, emptyMemberTable, emptyMonoMemo, groundSetMembers, groundStandaloneMemberIdFor, harvestSuperTableExcept, insertVar, internMemberKey, isLocalMultiTarget, isScalarVar, kernelMemberIdFor, lambdaInstanceMemberId, layoutQualKey, localInstanceTagFor, localVarInfo, lookupCallMemo, lookupSchemeMono, lookupVar, markFlexCtorSpec, memberIdFor, membersClass, memoizedSignatureTrivial, mixTag, notePendingFailure, numberMultiRootType, papMemberIdFor, papMemberKey, popLocalMulti, popNumberMulti, pushLocalMulti, pushNumberMulti, putAliasVerdict, putCallMemo, putSchemeMono, recordLocalInstance, recordNumberInstance, recordSpecWidenedKey, renderFailure, restoredAux, scoped, specIdsForGlobal, srcLambdaKey, standaloneMemberGlobal, standaloneMemberIdFor, standaloneMemberKernel, trivialSignature, withScratchStore
+@docs AliasKey, AliasVerdict, ArrowFact, Env, GroundingStats, ItemAux, LayoutQualStats, LssMemberTable, LssSignature, LssStats, MemberSource, MonoMemo, NodeResolution, NumberInstance, NumberMultiEntry, QEntry, QPre, QShadowStats, SettledStats, SigFlowStats, SpecTally, aliasKeyEq, aliasKeyHash, bumpAppliedArrow, bumpArgFlowCensus, bumpArgFlowCensusBy, bumpCompletionJoin, bumpCompletionJoinNoop, bumpEdgeInstalled, bumpFlowDegraded, bumpKernelFactHit, bumpKernelLicensed, bumpTopMixedFlexSig, bumpWidenedByCf, bumpWidenedByKernel, bumpWidenedBySigSize, clearResidualReads, clearedAux, consS, crashFailure, emptyItemAux, emptyLssStats, emptyMemberTable, emptyMonoMemo, groundSetMembers, groundStandaloneMemberIdFor, harvestSuperTableExcept, insertVar, internMemberKey, isLocalMultiTarget, isScalarVar, kernelMemberIdFor, lambdaInstanceMemberId, layoutQualKey, localInstanceTagFor, localVarInfo, lookupCallMemo, lookupSchemeMono, lookupVar, markFlexCtorSpec, memberIdFor, membersClass, memoizedSignatureTrivial, mixTag, notePendingFailure, numberMultiRootType, papMemberIdFor, papMemberKey, putAliasVerdict, putCallMemo, putSchemeMono, recordLocalInstance, recordNumberInstance, recordSpecWidenedKey, renderFailure, restoredAux, scoped, specIdsForGlobal, srcLambdaKey, standaloneMemberGlobal, standaloneMemberIdFor, standaloneMemberKernel, trivialSignature, withLocalMulti, withNumberMulti, withScratchStore
 
 -}
 
@@ -98,6 +99,7 @@ import Compiler.Type.Type as Type
 import Compiler.Type.UnionFind as UF
 import Data.BitSet as BitSet exposing (BitSet)
 import Data.HashMap as HashMap
+import Data.NonEmptyList as NE
 import Data.Set as EverySet
 import Dict as CoreDict exposing (Dict)
 import System.Crash as Crash
@@ -555,13 +557,12 @@ emptyLssStats =
     { setsZonked = 0, flexCtorSpecs = CoreDict.empty, joinRounds = 0, retranslations = 0, widenedBySize = 0, widenedByKernel = 0, widenedByBudget = 0, devirtDirect = 0, devirtKernel = 0, sizeHist = CoreDict.empty, unqualifiedLambdaMints = 0, declinedKernelShape = 0, declinedKernelCNumber = 0, declinedKernelEmission = 0, declinedKernelArity = 0, kernelUnsolvedHist = CoreDict.empty, kernelMissHist = CoreDict.empty, setWriteSkip = 0, setWriteFlex = 0, setWriteTopJoin = 0, setWriteUnion = 0, joinIdenticalHit = 0, joinNoop = 0, joinChanged = 0, completionJoins = 0, completionJoinNoop = 0, widenedSizeHist = CoreDict.empty, slotsMinted = 0, grounding = { grounded = 0, deferred = 0 }, sigStats = { widenedBySigSize = 0, widenedByCf = 0, kernelFactHits = 0, kernelLicensed = 0, edgesInstalled = 0, flowDegraded = 0, multiSetsByArrow = CoreDict.empty, appliedArrows = CoreDict.empty, topMixedFlexSig = 0, topMixedFlexDemand = 0, argFlowCensus = CoreDict.empty, settled = emptySettledStats, qShadow = emptyQShadowStats, qInfer = emptyQShadowStats }, layoutQual = { mints = 0, shared = 0, fallback = 0, tieBypass = 0, instApplied = 0, instCapped = 0, instRootSkip = 0 } }
 
 
-{-| Returns the signature that says nothing, for an annotation with `n`
-arrows: each arrow its own representative, with no members, no ⊤ and no
-sources.
+{-| The signature that says nothing: no arrow facts, and trivial, so no
+instantiation reads its arrows.
 -}
-trivialSignature : Int -> LssSignature
-trivialSignature n =
-    { arrows = Array.initialize n (\i -> { rep = i, members = [], top = False, topKind = Mono.tkLegacy, sources = [] })
+trivialSignature : LssSignature
+trivialSignature =
+    { arrows = Array.empty
     , trivial = True
     , residual = []
     }
@@ -920,8 +921,9 @@ mintLayoutQualified key raw instTag specId isFallback isTieBypass s0 =
                 ( mid, { s2 | lssMemberTable = { table | lambdaQualified = CoreDict.insert mid ( qualifiedRawKey raw instTag, specId ) table.lambdaQualified } } )
 
 
-{-| Records `wkey` as the annotation-widened creation key of spec `specId`,
-unless the spec already has one, which is kept.
+{-| Records `wkey` as the annotation-widened creation key of spec `specId`.
+It is called once per spec, when the spec is created (a seed, or a new spec
+in `enqueueSpecKeyed`).
 -}
 recordSpecWidenedKey : Int -> String -> S -> S
 recordSpecWidenedKey specId wkey s =
@@ -929,11 +931,7 @@ recordSpecWidenedKey specId wkey s =
         table =
             s.lssMemberTable
     in
-    if CoreDict.member specId table.specWidenedKeys then
-        s
-
-    else
-        { s | lssMemberTable = { table | specWidenedKeys = CoreDict.insert specId wkey table.specWidenedKeys } }
+    { s | lssMemberTable = { table | specWidenedKeys = CoreDict.insert specId wkey table.specWidenedKeys } }
 
 
 {-| Adds a member id to the set of μ-tied ids, `LssMemberTable.muTied`.
@@ -1397,7 +1395,7 @@ sameShape a b =
             sameShape x y
 
         ( Mono.MTuple _ xs, Mono.MTuple _ ys ) ->
-            pairwise xs ys
+            pairwise (Mono.tupleToList xs) (Mono.tupleToList ys)
 
         ( Mono.MRecord _ fa, Mono.MRecord _ fb ) ->
             CoreDict.keys fa == CoreDict.keys fb && pairwise (CoreDict.values fa) (CoreDict.values fb)
@@ -1427,7 +1425,7 @@ couples small big =
             embeds a b
 
         ( Mono.MTuple _ xs, Mono.MTuple _ ys ) ->
-            pairwise xs ys
+            pairwise (Mono.tupleToList xs) (Mono.tupleToList ys)
 
         ( Mono.MRecord _ fa, Mono.MRecord _ fb ) ->
             CoreDict.keys fa == CoreDict.keys fb && pairwise (CoreDict.values fa) (CoreDict.values fb)
@@ -1451,7 +1449,7 @@ monoTypeChildren t =
             [ e ]
 
         Mono.MTuple _ es ->
-            es
+            Mono.tupleToList es
 
         Mono.MRecord _ fields ->
             CoreDict.values fields
@@ -1571,7 +1569,6 @@ type alias S =
     { -- Run-global
       worklist : List WorkItem
     , nodes : Array (Maybe Mono.MonoNode)
-    , inProgress : BitSet
     , scheduled : BitSet
     , dirtySpecs : BitSet
     , dirtyList : List Mono.SpecId
@@ -1649,8 +1646,8 @@ Point it was loaded as, consumed by the translation of that root lambda.
 `ecoResidualReads` and `ecoResidualKeyReads` record what each read-back that
 produced an erased residual type read; when one of those has since been bound,
 the read-back was stale and the item is translated again against the same
-store. `loopParams` holds the parameters of the enclosing tail-recursive
-functions, innermost first. `currentSpecId` is the spec being translated.
+store. `loopParams` holds the parameter types of the innermost enclosing
+tail-recursive function. `currentSpecId` is the spec being translated.
 `demandQualified` maps a lambda key (`qualifiedRawKey`) to the smallest member
 id the spec's stored demand carries for it, for the μ-tie. `currentLocalInstance`
 is the instance tag of the code being translated, 0 outside any instance.
@@ -1665,7 +1662,7 @@ type alias ItemAux =
     { lssRootAnn : Maybe ( Can.Type TypeIds.MVarId, Vars.Variable )
     , ecoResidualReads : List Vars.Variable
     , ecoResidualKeyReads : List Int
-    , loopParams : List ( String, List ( String, Can.Type TypeIds.MVarId ) )
+    , loopParams : Maybe (List (Can.Type TypeIds.MVarId))
     , currentSpecId : Maybe Int
     , demandQualified : CoreDict.Dict Int Int
     , currentLocalInstance : Int
@@ -1684,7 +1681,7 @@ type alias ItemAux =
 -}
 emptyItemAux : ItemAux
 emptyItemAux =
-    { lssRootAnn = Nothing, ecoResidualReads = [], ecoResidualKeyReads = [], loopParams = [], currentSpecId = Nothing, demandQualified = CoreDict.empty, currentLocalInstance = 0, retranslating = Nothing, arrowMemo = CoreDict.empty, groundLoads = HashMap.empty, arrowOfSlot = CoreDict.empty, zonkLog = [], qLog = [], qSigRoot = Nothing, pendingFailure = Nothing }
+    { lssRootAnn = Nothing, ecoResidualReads = [], ecoResidualKeyReads = [], loopParams = Nothing, currentSpecId = Nothing, demandQualified = CoreDict.empty, currentLocalInstance = 0, retranslating = Nothing, arrowMemo = CoreDict.empty, groundLoads = HashMap.empty, arrowOfSlot = CoreDict.empty, zonkLog = [], qLog = [], qSigRoot = Nothing, pendingFailure = Nothing }
 
 
 {-| Returns `aux` with every store-scoped field emptied (see `ItemAux`), for
@@ -1844,6 +1841,18 @@ returns the results in the same order.
 traverse : (a -> Step b) -> List a -> Step (List b)
 traverse f items =
     \s -> traverseGo f items s
+
+
+{-| Runs `f` on each element of the non-empty `items` in order, threading the
+state, and returns the results in the same order.
+-}
+traverseNonempty : (a -> Step b) -> NE.Nonempty a -> Step (NE.Nonempty b)
+traverseNonempty f (NE.Nonempty x rest) s =
+    case f x s of
+        ( b, s1 ) ->
+            case traverseGo f rest s1 of
+                ( bs, s2 ) ->
+                    ( NE.Nonempty b bs, s2 )
 
 
 {-| Runs `f` on each element in order, threading the state; the body of
@@ -2239,34 +2248,24 @@ enqueueSpec global monoType s0 =
 
     else
         let
-            ( ( specId, reg1, hit ), s2 ) =
-                let
-                    ( sid, r ) =
-                        Registry.getOrCreateSpecId global monoType s0.registry
-                in
-                ( ( sid, r, Registry.CreatedNew ), s0 )
+            ( specId, reg1 ) =
+                Registry.getOrCreateSpecId global monoType s0.registry
 
-            s =
-                bumpKeyedHit hit s2
-
-            storedChanged =
-                hit == Registry.HitChangedJoin
-
-            -- `hit` is always `CreatedNew` here, so creation is detected by the
-            -- registry's next id advancing.
+            -- Without LSS a stored type never widens. Creation is detected by
+            -- the registry's next id advancing.
             ( watchdog, sw ) =
                 if reg1.nextId > s0.registry.nextId then
-                    checkCreatedSpec global monoType specId reg1 s
+                    checkCreatedSpec global monoType specId reg1 s0
 
                 else
-                    ( Nothing, s )
+                    ( Nothing, s0 )
         in
         case watchdog of
             Just failure ->
-                enqueueSpecCommit specId reg1 storedChanged (notePendingFailure failure sw)
+                enqueueSpecCommit specId reg1 False (notePendingFailure failure sw)
 
             Nothing ->
-                enqueueSpecCommit specId reg1 storedChanged sw
+                enqueueSpecCommit specId reg1 False sw
 
 
 {-| Finishes an enqueue of spec `specId`, given the registry `reg1` the probe
@@ -2531,25 +2530,26 @@ lookupVar name s =
     ( CoreDict.get name s.varEnv, s )
 
 
-{-| Pushes an entry with no instances for the let-bound value `defName` onto
-`numberMulti`, before the `let` body is translated and records its uses.
+{-| Runs `step` with an entry with no instances for the let-bound value
+`defName` pushed onto `numberMulti`, then pops that entry and returns it, with
+the instances `step` recorded, beside `step`'s result. `step` translates the
+`let` body, whose uses record their types.
+
+Nothing between the push and the pop removes a `numberMulti` entry (only
+`resetItem` clears the stack, between items), so the popped entry is the
+pushed one; an empty stack there is an `EngineBug`.
+
 -}
-pushNumberMulti : String -> S -> S
-pushNumberMulti defName s =
-    { s | numberMulti = { defName = defName, instances = Mono.specMapEmpty, rhsLam = Nothing, rhsPap = Nothing, pendingEnrich = CoreDict.empty } :: s.numberMulti }
+withNumberMulti : String -> Step a -> Step ( a, NumberMultiEntry )
+withNumberMulti defName step s0 =
+    case step { s0 | numberMulti = { defName = defName, instances = Mono.specMapEmpty, rhsLam = Nothing, rhsPap = Nothing, pendingEnrich = CoreDict.empty } :: s0.numberMulti } of
+        ( a, s1 ) ->
+            case s1.numberMulti of
+                top :: rest ->
+                    ( ( a, top ), { s1 | numberMulti = rest } )
 
-
-{-| Pops the innermost `numberMulti` entry, or returns `Nothing` when the stack
-is empty.
--}
-popNumberMulti : S -> ( Maybe NumberMultiEntry, S )
-popNumberMulti s =
-    case s.numberMulti of
-        top :: rest ->
-            ( Just top, { s | numberMulti = rest } )
-
-        [] ->
-            ( Nothing, s )
+                [] ->
+                    crashFailure (EngineBug "Engine.withNumberMulti: numberMulti stack empty after its own push")
 
 
 {-| Returns the type of the first instance, the one named `name` itself, of the
@@ -2588,26 +2588,26 @@ recordNumberInstanceOrd name monoType s =
     recordMultiInstance .numberMulti (\stk st -> { st | numberMulti = stk }) "$v" name monoType s
 
 
-{-| Pushes an entry with no instances for the let-bound function `defName` onto
-`localMulti`, with its right-hand side's lambda or partial application if it is
-one, before the `let` body is translated and records the types it is used at.
+{-| Runs `step` with an entry with no instances for the let-bound function
+`defName` pushed onto `localMulti`, with its right-hand side's lambda or
+partial application if it is one, then pops that entry and returns it, with
+the types `step` recorded uses at, beside `step`'s result. `step` translates
+the `let` body.
+
+As for `withNumberMulti`, the popped entry is the pushed one; an empty stack
+there is an `EngineBug`.
+
 -}
-pushLocalMulti : Maybe ( TypeIds.SrcLambdaId, Int ) -> Maybe ( TOpt.Global, Int ) -> String -> S -> S
-pushLocalMulti rhsLam rhsPap defName s =
-    { s | localMulti = { defName = defName, instances = Mono.specMapEmpty, rhsLam = rhsLam, rhsPap = rhsPap, pendingEnrich = CoreDict.empty } :: s.localMulti }
+withLocalMulti : Maybe ( TypeIds.SrcLambdaId, Int ) -> Maybe ( TOpt.Global, Int ) -> String -> Step a -> Step ( a, NumberMultiEntry )
+withLocalMulti rhsLam rhsPap defName step s0 =
+    case step { s0 | localMulti = { defName = defName, instances = Mono.specMapEmpty, rhsLam = rhsLam, rhsPap = rhsPap, pendingEnrich = CoreDict.empty } :: s0.localMulti } of
+        ( a, s1 ) ->
+            case s1.localMulti of
+                top :: rest ->
+                    ( ( a, top ), { s1 | localMulti = rest } )
 
-
-{-| Pops the innermost `localMulti` entry, or returns `Nothing` when the stack
-is empty.
--}
-popLocalMulti : S -> ( Maybe NumberMultiEntry, S )
-popLocalMulti s =
-    case s.localMulti of
-        top :: rest ->
-            ( Just top, { s | localMulti = rest } )
-
-        [] ->
-            ( Nothing, s )
+                [] ->
+                    crashFailure (EngineBug "Engine.withLocalMulti: localMulti stack empty after its own push")
 
 
 {-| Tells whether some `localMulti` entry is for `name`.

@@ -1,7 +1,7 @@
 module Compiler.Type.State.IO exposing
     ( unsafePerformIO
     , IO, State, pure, apply, map, andThen, foldrM, foldM, traverseMapWithKey, forM_, mapM_
-    , mapM, traverseList, traverseTuple
+    , mapM, traverseList, traverseTuple, traverseMaybe
     , traverseArrayMaybe, foldMArray
     , makeDescriptor
     , NameState, getNames, putNames, withFreshNames
@@ -47,7 +47,7 @@ point as a key, and shared contents for the top lambda set.
 # The IO monad
 
 @docs IO, State, pure, apply, map, andThen, foldrM, foldM, traverseMapWithKey, forM_, mapM_
-@docs mapM, traverseList, traverseTuple
+@docs mapM, traverseList, traverseTuple, traverseMaybe
 @docs traverseArrayMaybe, foldMArray
 
 
@@ -125,7 +125,7 @@ position in this array.
 -}
 type alias State =
     { ioRefsPoint : Array PointCell
-    , ioRefsMVector : Array (Array (Maybe (List Variable)))
+    , ioRefsMVector : Array (Array (List Variable))
     , names : NameState
     , nodeIds : NodeIdState
     }
@@ -453,6 +453,19 @@ its result with the unchanged first component.
 traverseTuple : (b -> IO c) -> ( a, b ) -> IO ( a, c )
 traverseTuple f ( a, b ) =
     map (Tuple.pair a) (f b)
+
+
+{-| Returns an action that runs `f` on the value in `maybe`, if any, and returns
+its result, or `Nothing` without changing the state.
+-}
+traverseMaybe : (a -> IO b) -> Maybe a -> IO (Maybe b)
+traverseMaybe f maybe =
+    case maybe of
+        Nothing ->
+            pure Nothing
+
+        Just a ->
+            map Just (f a)
 
 
 {-| Another name for `traverseList`: the action that runs a function on every
