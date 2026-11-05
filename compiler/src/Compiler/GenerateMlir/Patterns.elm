@@ -832,9 +832,10 @@ variable.
 
 A specialized polymorphic constructor such as `Done a` at `a = Int` can reach
 here with its path type still holding `a`, while the field is stored as an
-unboxed `i64`. Only a constructor-field index is resolved this way, and only
-to a registry type with no type variable; in
-every other case the path's own type is returned.
+unboxed `i64`. Only a constructor-field index is resolved this way, from the
+shape registered for the container's own type (`lookupCtorFieldInfo`), and
+only to a field type with no type variable; in every other case the path's own
+type is returned.
 
 -}
 resolvePathResultType : Ctx.Context -> Mono.MonoPath -> Mono.MonoType
@@ -868,31 +869,27 @@ resolvePathResultType ctx path =
 
 
 {-| Returns the layout entry of field `fieldIndex` of constructor `ctorName`,
-from the shapes registered for `containerType`.
+from the shapes registered for `containerType` itself.
 
-When that entry's type still contains a type variable, the entry of a
-same-union shape whose type has none is returned instead, if
-`findConcreteCtorField` finds one; otherwise the entry with the type variable
-is returned. Every custom type reaching code generation has its constructors'
-shapes registered (MONO\_013), so a container type with no shapes, or none
-with that field, crashes the compile.
+The entry is the container's own answer even when its type still contains a
+type variable: such a field is boxed in every view of the value (MONO\_003,
+MONO\_029), so no other specialization of the union is consulted. Every
+custom type reaching code generation has its constructors' shapes registered
+(MONO\_013), so a container type with no shapes, or none with that field,
+crashes the compile.
 
 -}
 lookupCtorFieldInfo : Ctx.Context -> Mono.MonoType -> Name.Name -> Int -> Types.FieldInfo
 lookupCtorFieldInfo ctx containerType ctorName fieldIndex =
     let
-        preferredShapes : List Mono.CtorShape
-        preferredShapes =
+        shapes : List Mono.CtorShape
+        shapes =
             Mono.layoutMapGet containerType ctx.typeRegistry.ctorShapes
                 |> Maybe.withDefault []
     in
-    case ctorFieldFromShapes ctorName fieldIndex preferredShapes of
+    case ctorFieldFromShapes ctorName fieldIndex shapes of
         Just info ->
-            if fieldIsConcrete info then
-                info
-
-            else
-                Maybe.withDefault info (findConcreteCtorField ctx preferredShapes ctorName fieldIndex)
+            info
 
         Nothing ->
             System.Crash.crash
@@ -919,51 +916,6 @@ ctorFieldFromShapes ctorName fieldIndex shapes =
 
         [] ->
             Nothing
-
-
-{-| Returns field `fieldIndex` of `ctorName` from the registered shapes of the
-same union as `refShapes`, when every such entry with no type variable
-has the same layout key (`Mono.eqKeyLayout`).
-
-Two shape lists belong to the same union when they hold the same constructor
-names. A field that is genuinely polymorphic across specializations, `Int` in
-one and `String` in another, gives `Nothing`, as does no concrete entry.
-
--}
-findConcreteCtorField : Ctx.Context -> List Mono.CtorShape -> Name.Name -> Int -> Maybe Types.FieldInfo
-findConcreteCtorField ctx refShapes ctorName fieldIndex =
-    let
-        refNames : List Name.Name
-        refNames =
-            List.sort (List.map .name refShapes)
-
-        sameUnion : List Mono.CtorShape -> Bool
-        sameUnion shapes =
-            List.sort (List.map .name shapes) == refNames
-
-        concreteCandidates : List Types.FieldInfo
-        concreteCandidates =
-            Mono.layoutMapValues ctx.typeRegistry.ctorShapes
-                |> List.filter sameUnion
-                |> List.filterMap (ctorFieldFromShapes ctorName fieldIndex)
-                |> List.filter fieldIsConcrete
-    in
-    case concreteCandidates of
-        [] ->
-            Nothing
-
-        firstInfo :: rest ->
-            let
-                allAgree =
-                    List.all
-                        (\fi -> Mono.eqKeyLayout fi.monoType firstInfo.monoType)
-                        rest
-            in
-            if allAgree then
-                Just firstInfo
-
-            else
-                Nothing
 
 
 {-| Crashes the compile on a `MonoUnbox` step whose container type has no

@@ -3,10 +3,11 @@ module PolyStepLoopMinimalDisagreeTest exposing (main)
 {-| Minimal two-loop reproduction of the same stage-6 bug as
     `PolyStepLoopMultiSpecTest`: two specializations of `loop` where `a`
     differs (Int vs String). The compiler registers two concrete `Step`
-    shapes plus a partially-polymorphic one from loop's body.
-    `findConcreteCtorField` sees `Int` and `String` candidates for
-    `Done.field0`, finds disagreement, returns `Nothing`, and downstream
-    code falls back to `MVar`. Without the `generateDestruct` / TailRec
+    shapes plus a partially-polymorphic one from loop's body, whose
+    `Done.field0` is `MVar`. (Codegen once searched the other `Step`
+    shapes for a concrete type, `findConcreteCtorField`, removed
+    2026-11-05; with `Int` and `String` candidates it found disagreement
+    and kept the `MVar`.) Without the `generateDestruct` / TailRec
     fallback that reaches for the destructor's own `monoType`, the
     Int-returning loop's `eco.project.custom` would emit `!eco.value`
     even though the enclosing `eco.construct.tuple2` expects an unboxed
