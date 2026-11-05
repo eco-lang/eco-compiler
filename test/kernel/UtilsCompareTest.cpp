@@ -12,7 +12,7 @@
 // Compiled Elm never builds these mixed layouts (REP_HEAP_001 / MONO_029 fix a slot's kind by its type), so
 // the defects are reachable only from hand-built values; that is what these tests do. They allocate a handful
 // of small objects and root what they hold across each allocation. The E2E programs of the same area are
-// test/elm-conformance/src/DeepEqualityTest.elm and test/elm/src/FunctionEqualityFalseTest.elm.
+// test/elm-conformance/src/DeepEqualityTest.elm and test/eco-divergence/src/FunctionEqualityFalseTest.elm.
 
 #include "UtilsCompareTest.hpp"
 

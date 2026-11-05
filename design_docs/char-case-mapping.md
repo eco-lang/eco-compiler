@@ -12,13 +12,13 @@ generator, so it keeps Elm's JS behaviour (the differences below), as for Float
 
 The tests are the contract:
 
-- `test/elm/src/CharSimpleCaseTest.elm` (native): eco's semantics.
+- `test/eco-divergence/src/CharSimpleCaseTest.elm` (native): eco's semantics.
 - `test/elm-conformance/src/CharCaseOrdinaryTest.elm`, `CharCaseSpecialTest.elm`,
   `CharLocaleCaseTest.elm`, `StringCaseTest.elm`, `CharCaseFullRangeTest.elm`: rows where eco and
   Elm agree, recorded from Elm on node and run on both targets.
-- `test/elm-conformance/src/CaseMappingDivergenceTest.elm` and `CharCaseMappedOpsTest.elm`: Elm's
-  own behaviour where eco differs, recorded from Elm on node and marked `XFAIL-NATIVE` for good, so
-  each difference stays visible.
+- `test/eco-divergence/src/CaseMappingDivergenceTest.elm` and `CharCaseMappedOpsTest.elm`: the
+  cases where eco differs, with eco's results as CHECK lines and Elm's, recorded on node, as
+  `-- ELM:` lines, so each difference stays visible.
 - Lower level: `test/allocator/CaseMapTest.cpp` (the tables), K17/K18 in
   `test/kernel/KernelExportsTest.cpp` (the kernels), `test/codegen/char_toInt_cmp_plain.mlir` (the
   lowering).

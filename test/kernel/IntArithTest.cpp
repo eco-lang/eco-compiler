@@ -10,7 +10,7 @@
 //
 // modBy 0 (ABI-01): `Elm_Kernel_Basics_modBy(0, x)` threw std::runtime_error out of an `extern "C"` export
 // (Basics::modBy), which would end a native program in std::terminate. Fixed by decision D1: the kernel returns
-// 0, like the inline lowering (CGEN_084). The E2E witness is test/elm/src/ModByZeroKernelPathTest.elm.
+// 0, like the inline lowering (CGEN_084). The E2E witness is test/eco-divergence/src/ModByZeroKernelPathTest.elm.
 
 #include "IntArithTest.hpp"
 

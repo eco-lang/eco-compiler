@@ -27,6 +27,7 @@ set(ELM_TEST_PACKAGES
     elm-url
     elm-conformance
     elm-compile-errors
+    eco-divergence
     stress-elm
 )
 include(${CMAKE_SOURCE_DIR}/cmake/EcoCreateDirLink.cmake)

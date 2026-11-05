@@ -685,6 +685,10 @@ inline std::string verifyPatterns(const std::string& output,
 //                    apply. A file with this line is a test even without a
 //                    `main`. JIT harness (ElmE2ETestBase.hpp) and the stock-Elm
 //                    runner (test/scripts/run-elm-e2e.js).
+//   -- DIVERGENCE: <how Elm behaves instead>
+//                    documentation, on every test of test/eco-divergence, whose CHECK
+//                    lines are eco's behaviour where it differs from Elm 0.19.1. No
+//                    harness reads it; the stock-Elm and JS runners skip that suite.
 //   -- TEXT-MLIR: <why>
 //                    the JIT harness compiles the test with `--text-mlir` (MLIR text
 //                    through Mlir.Pretty, not bytecode), as ECO_TEXT_MLIR=1 does for

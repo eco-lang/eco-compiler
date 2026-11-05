@@ -20,6 +20,13 @@ They share one principle:
 > type for every input. It may return a *wrong answer* (wrapping, `x // 0 == 0`, NaN), but it
 > never returns a value of a different type and never raises a runtime error.
 
+Every divergence that a test shows lives in one E2E suite, `test/eco-divergence/`. Each test there
+carries a `-- DIVERGENCE:` line saying how Elm behaves instead, and its CHECK lines are eco's
+behaviour. Only the native harnesses run it; `test/scripts/run-elm-e2e.js`, which runs the
+plain-Elm suites under stock Elm, leaves it out.
+The other plain-Elm suites (`test/elm*`, including `test/elm-conformance`) hold only programs
+that behave the same under eco and Elm 0.19.1.
+
 ---
 
 ## 1. Int: 64-bit, and never anything else
@@ -170,7 +177,7 @@ same function object. eco returns `True` for the same closure object and `False`
 records, custom types, `Maybe` and `Dict` values compare the same way. This is decided (D24 of
 `plans/kernel-lib-bug-fixes.md`) and fits the total-functions principle, but a program that crashes
 in Elm runs on in eco. The type checker does not reject it. Pinned by
-`test/elm/src/FunctionEqualityFalseTest.elm`.
+`test/eco-divergence/src/FunctionEqualityFalseTest.elm`.
 
 ### 4.2 `Debug.*` under `--optimize`
 

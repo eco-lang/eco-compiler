@@ -5,7 +5,7 @@ with a fraction or exponent. Elm accepts any JS number for which `Number.isInteg
 (`1.0`, `1e3`, `-0.0`). eco's `runDecoder` `DEC_INT` used to accept only nlohmann integer nodes,
 so every "Ok" row below was `Err ... Expecting an INT`. Expected values recorded from Elm on node.
 Out-of-i64 integral floats (`1e300`) are a documented divergence (D24) and are tested in
-test/elm-json/src/DecodeIntRangeTest.elm instead.
+test/eco-divergence/src/DecodeIntRangeTest.elm instead.
 
 -}
 

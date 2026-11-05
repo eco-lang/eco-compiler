@@ -146,11 +146,12 @@ struct TestCase {
 
 // Packages contributing E2E test sources. Matches the JIT runner's
 // ELM_TEST_PACKAGES minus `stress-elm` (those are large, long-running, and
-// covered by the separate `stress-test` binary).
+// covered by the separate `stress-test` binary) and `elm-compile-errors` (compile-only
+// tests, run by the JIT harness).
 const std::vector<std::string>& aot_test_packages() {
     static const std::vector<std::string> pkgs = {
         "elm", "elm-bytes", "eco-kernel", "eco-system", "elm-core", "elm-html", "elm-http",
-        "elm-json", "elm-parser", "elm-regex", "elm-time", "elm-url", "elm-conformance",
+        "elm-json", "elm-parser", "elm-regex", "elm-time", "elm-url", "elm-conformance", "eco-divergence",
     };
     return pkgs;
 }

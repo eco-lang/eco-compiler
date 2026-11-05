@@ -132,8 +132,11 @@ E2E directives added for it (`test/CheckPatterns.hpp`):
   Suite `test/elm-compile-errors/` (type, canonicalization, pattern, main, parse and
   monomorphization errors, mined from the SourceIR rejection catalogue and report tests).
 - `-- TEXT-MLIR: <why>`: compiled with `--text-mlir`, which keeps `Mlir.Pretty` covered.
-- `-- SKIP-ELM: <reason>`: skipped by `test/scripts/run-elm-e2e.js`, the runner that compiles the
-  plain-Elm suites with stock Elm 0.19.x; for deliberate eco differences and Elm 0.19.1 bugs.
+- `-- DIVERGENCE: <how Elm behaves>`: on every test of `test/eco-divergence/`, the suite that
+  holds every program whose behaviour differs between eco and Elm (eco's behaviour as CHECK
+  lines), run only by the native harnesses. `test/scripts/run-elm-e2e.js` compiles the other
+  plain-Elm suites with stock Elm 0.19.x and leaves this one out. Every other plain-Elm suite, including
+  `test/elm-conformance`, passes under both eco and Elm 0.19.1.
 
 Programs mined from elm-test (SourceIR catalogue and unit-test pipelines, printed with
 `Common.Format`) were kept only when they reached code E2E did not; their CHECK lines are Elm

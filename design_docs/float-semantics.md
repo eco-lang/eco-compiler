@@ -12,12 +12,12 @@ JS generator, before monomorphization, so it keeps Elm's JS behaviour (the diffe
 
 The tests are the contract:
 
-- `test/elm/src/FloatIeeeSemanticsTest.elm` (native): eco's semantics, every operation and path.
+- `test/eco-divergence/src/FloatIeeeSemanticsTest.elm` (native): eco's semantics, every operation and path.
 - `test/elm-conformance/src/FloatEdgeTest.elm`: rows where eco and Elm agree, recorded from Elm
   on node and run on both targets.
-- `test/elm-conformance/src/Float*Divergence*.elm`, `FloatNaNOrderTest.elm`,
-  `FloatToIntRangeTest.elm`: Elm's own behaviour where eco differs, recorded from Elm on node and
-  marked `XFAIL-NATIVE` for good, so each difference stays visible.
+- `test/eco-divergence/src/FloatDivergenceTest.elm`, `FloatNaNOrderTest.elm`,
+  `FloatToIntRangeTest.elm`: the cases where eco differs, with eco's results as CHECK lines and
+  Elm's, recorded on node, as `-- ELM:` lines, so each difference stays visible.
 
 ## The semantics
 

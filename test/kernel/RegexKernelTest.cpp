@@ -8,7 +8,7 @@
 //                                  of its backtracking budget on `(a+)+b`), and compare the returned word with the
 //                                  rooted, forwarded `str`. Decision D7 narrowed the catch to srell's
 //                                  `regex_error`, so a third case checks that an exception thrown by the replacer
-//                                  propagates. The E2E twin is test/elm-regex/src/RegexCatchRootingTest.elm.
+//                                  propagates. The E2E twin is test/eco-divergence/src/RegexCatchRootingTest.elm.
 //   interning (REGEX-08)           `Elm_Kernel_Regex_fromStringWith` and `Elm_Kernel_Regex_never` `new`ed a
 //                                  compiled pattern into a side table under a fresh id on every call and never
 //                                  freed it, so compiling the same pattern twice gave two ids (and two leaked

@@ -5,7 +5,7 @@
 // RequireOpLowering (BFToLLVM.cpp) computes end = GEP(ptr, len) with len an i32 and tests
 // `end ule buffer end`. A negative length sign-extends, so the "end" lies BEFORE the cursor and the
 // check passes. A read guarded by it then reads with that length: with Bytes.Decode.string fused
-// (it does not fuse today, see test/elm-bytes/src/DecodeStringStrictFusedTest.elm),
+// (it does not fuse today, see test/eco-divergence/src/DecodeStringStrictFusedTest.elm),
 // `signedInt32 BE |> andThen string` over FF FF FF FF would call elm_utf8_decode with length
 // 0xFFFFFFFF and read far out of bounds. Length prefixes of LenI8/LenI16/LenI32, or a LenU32 of 2^31
 // or more truncated to i32, all reach it. bf_require_zero.mlir and bf_require_fail.mlir are the

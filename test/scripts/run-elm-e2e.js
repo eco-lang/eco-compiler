@@ -20,6 +20,7 @@
 //   elm-compile-errors
 //   elm-conformance  as in run-js-e2e.js: compiled programs get the mode guard (patchModeGuard),
 //                    and a skip directive is a failure there.
+// test/eco-divergence, whose programs behave differently under eco and Elm, is not run here.
 // For every <project>/src/*.elm with a top-level `main`:
 //   1. The test project (elm.json + src/*.elm) is mirrored into one directory per compile
 //      worker, <build>/test/elm-e2e/<elm version>/<name>/project-<k> (elm make is not safe to run
@@ -31,13 +32,14 @@
 //   3. Each test runs as `node <Name>.run.js`: a launcher installing the XMLHttpRequest shim
 //      (js-e2e-xhr.js) and a minimal `document` (elm-e2e-dom.js), so that the tests' static
 //      `main = Html.text ...` programs can start on node, then calling
-//      Elm.<Name>.init({ node, flags }) with the `-- FLAGS:` JSON, if any. Environment, stdin,
+//      Elm.<Name>.init({ node, flags }) with the `-- FLAGS:` JSON, if any; a program with ports
+//      `echoOut` and `echoIn` gets the JIT harness's echo (each echoOut value is sent to echoIn).
+//      Environment, stdin,
 //      the HTTP test server, exit status, timeout and CHECK matching are as in run-js-e2e.js.
 //   A `-- COMPILE-ERROR: <what>` test (test/CheckPatterns.hpp) is not run: it passes iff
 //   `elm make` rejects it and its CHECK lines match the compiler's output. It needs no `main`.
-//   4. `-- SKIP-JS: <reason>` and `-- SKIP-ELM: <reason>` (at the start of a line) skip the test
-//      here; use SKIP-ELM for behaviour that eco deliberately defines differently from Elm, or
-//      where Elm 0.19.1 itself is wrong (say which in the reason).
+//   4. `-- LINUX-ONLY:` as in run-js-e2e.js. There is no other skip: a test whose behaviour
+//      differs between eco and Elm belongs in test/eco-divergence, which this runner does not run.
 //      `-- LINUX-ONLY:` as in run-js-e2e.js; `-- XFAIL-NATIVE:` and `-- SKIP-AOT:` are ignored.
 //   --record <TestName> runs one test without checking it and prints each non-empty output
 //   line as `-- CHECK: <line>`; it fails if the run fails or prints non-ASCII.
@@ -341,10 +343,6 @@ function findPrlimit() {
 }
 
 function extractSkip(content) {
-    for (const marker of ['-- SKIP-ELM:', '-- SKIP-JS:']) {
-        const lines = directiveLines(content, marker);
-        if (lines.length) return marker.slice(3) + ' ' + (lines[0].trim() || '(no reason given)');
-    }
     const linux = directiveLines(content, '-- LINUX-ONLY:');
     if (linux.length && process.platform !== 'linux') {
         return 'LINUX-ONLY: ' + (linux[0].trim() || '(no reason given)');
@@ -418,8 +416,13 @@ const domShim = path.join(__dirname, 'elm-e2e-dom.js');
 function launcher(name, flags) {
     return 'require(' + JSON.stringify(xhrShim) + ');\n' +
         'const node = require(' + JSON.stringify(domShim) + ').install();\n' +
-        "require('./" + name + ".js').Elm." + name + '.init({ node' +
-        (flags === null ? '' : ', flags: ' + flags) + ' });\n';
+        "const app = require('./" + name + ".js').Elm." + name + '.init({ node' +
+        (flags === null ? '' : ', flags: ' + flags) + ' });\n' +
+        // The generic port echo of the JIT harness (ElmE2ETestBase.hpp installPortEchoBounce): a
+        // value sent out through `echoOut` comes back in through `echoIn`.
+        'if (app && app.ports && app.ports.echoOut && app.ports.echoIn) {\n' +
+        '    app.ports.echoOut.subscribe((v) => app.ports.echoIn.send(v));\n' +
+        '}\n';
 }
 
 // `-- FLAGS: {...}`: the JSON flags of a `Program Value` test (test/ElmE2ETestBase.hpp).

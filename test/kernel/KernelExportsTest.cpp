@@ -781,7 +781,7 @@ static void test_kernel_shift_count_mod_64() {
 // (CGEN_086, design_docs/float-semantics.md): `compare` is a total order (NaN equals NaN and is above every
 // number, -0 equals +0); the order operators on two boxed Floats are IEEE; `round` is JS `Math.round` (ties
 // toward +infinity); conversions saturate, with NaN giving 0. The inline lowerings are covered by
-// test/elm/src/FloatIeeeSemanticsTest.elm.
+// test/eco-divergence/src/FloatIeeeSemanticsTest.elm.
 static void test_float_kernels_semantics() {
     initAllocator();
     auto ord = [](uint64_t enc) {

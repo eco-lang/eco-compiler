@@ -5,7 +5,7 @@
 // truncated sequence, stray continuation / 0xF8+ lead, overlong form,
 // surrogate or cp > U+10FFFF. The non-fused kernel decoder
 // (Elm_Kernel_Bytes_read_string) must agree — see K8d and
-// test/elm-bytes/src/DecodeStringStrict{Fused,Kernel}Test.elm.
+// test/eco-divergence/src/DecodeStringStrict{Fused,Kernel}Test.elm.
 //
 // Each buffer is allocated with EXACTLY its bytes, so a truncated sequence
 // ends at the end of the buffer. The harness matches CHECK lines in any order,
