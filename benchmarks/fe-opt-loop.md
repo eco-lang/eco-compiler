@@ -1029,6 +1029,32 @@ Default leg (flag off):
   divergence records), eco-system JS 208/0 (5 skips), elm-conformance JS 14/14, node-addon and
   driver-cli pass; elm-tests 14,572 + 918 / 0; stress 114/114; bootstrap pass.
 
+### kfix: kernel library bug fixes (plans/kernel-lib-bug-fixes.md, incl. the third round, 2026-11-04): **regression check, single run: wall +2.96 s outside the band, front end flat, mono +2.5 s across a moved tree (unattributed)**
+
+| run | wall (s) | parse/check/build (s) | mono (s) | MLIR codegen (s) | GC time (s) | minor GC | major GC | promoted MiB | max RSS (kB) | out.mlir (B) | fixed point |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| r1 | 70.25 | 27.5 | 27.3 | 9.3 | 3.00 | 1458 | 8 | 6886 | 6556292 | 12229433 | same |
+| Δ vs CharSimple (2026-10-30) median | +2.96 (CharSimple spread 1.10; one run, no own spread) | −0.4 | +2.5 | +0.4 | −0.11 | +66 | 0 | +67 | +64,384 | +19,806 (+0.16 %, source moved) | |
+
+- **What:** not a front-end step. Since CharSimple the tree took the SourceIR catalogue work (incl. the B3
+  recursive-group soundness fix), the compiler tree reorg, the coverage-loop fixes, and the kernel library
+  bug fixes. On the compiler side these include list literals taking their head kind from the element type
+  (`Expr.generateList`), the typed `List.map2..5_Int/_Float/_Char` variants, and `List.map2..5` as
+  suffix-selecting kernels with the `boxedAbiKernels` guard. The candidate is today's bootstrap
+  `eco-compiler-boot` (copied to `eco-optkfix`, its self-output `eco-compiler-boot-2.mlir` to `ecokfix.mlir`),
+  so Phases 1.3-1.4 were done by the bootstrap chain. **One timed run only, by request**, not a triple. Package
+  `*artifacts.dat` caches were intact, so no warm-up. Registry: `~/.eco/0.2.0/packages/registry.dat`.
+- **Checks:** rc 0, no `[gc-stats] SIG`, r1 equals `ecokfix.mlir` (fixed point). `.ecot` 8,615,087 B (+79,877).
+- **Verdict:** wall +2.96 s against the recorded CharSimple median, outside its 1.10 s band, but from one run
+  across a moved tree, so this is not a verdict on any one change. The front end is not the mover:
+  parse/check/build is 27.5 s against 27.9 s, and GC time is −0.11 s. The rise is in monomorphization
+  (+2.5 s) and MLIR codegen (+0.4 s), with minors +66, promoted +67 MiB and out.mlir +0.16 %. The candidates
+  for it are the B3 recursive-group checks and the mono-side kernel ABI changes. Attributing it needs
+  `eco-optchar-b` (still in `bin/`) run on today's source as a control, as the FloatMinMax row did.
+- **Gates (fresh, before the run):** `full` rc 0 (JIT E2E 2,716/0, JS 270/0 with 9 skips, core 2,735/0,
+  time 19/0), elm-tests 21,374 + 918 / 0, `bootstrap` (4b and 8c fixed points), `run-aot-e2e` 1,348/1,348
+  (5 deliberate XFAILs). `stress` not rerun.
+
 ## 6a. Batched end-of-series gates (run once each, after S8)
 
 - **G5 `TypedOptimizedCodecTest` (new):** 135/135 standard-suite modules round-trip the v2 codec
@@ -1309,3 +1335,5 @@ same-sitting control run, not the `ref` row's recorded wall. Details live in eac
 | LOS | 68.70 | +1.06 | 1344 | 7 | 6439 | 6395480 | — (regression check across a moved tree, not an A/B: large-object space + header-less large bodies; GC time flat, mono +0.8 / codegen +0.4 from grown source, RSS −158 MB; fixed point + deterministic) | noCS |
 | review-bug-list | 66.34 | -2.36 | 1289 | 7 | 6245 | 6255760 | — (regression check across a moved tree: plans/review-bug-list-fixes.md; every stat at or below LOS; fixed point + deterministic) | LOS |
 | FloatMinMax | 68.27 | +1.93 | 1392 | 8 | 6823 | 6500884 | — (regression check across a moved tree: new FloatMinMax pass + IEEE Float + Debug.toString; pass FLAT vs a no-pass control 67.46 (band 1.15); 2026-10-24 binary on today's source 68.41; fixed point + deterministic) | review-bug-list |
+| CharSimple | 67.29 | -0.98 | 1392 | 8 | 6819 | 6491908 | — (regression check: review-likely-bugs fixes + Unicode simple case mapping; FLAT vs control eco-optfloat-b 67.66; byte-identical MLIR; fixed point + deterministic) | FloatMinMax |
+| kfix | 70.25 | +2.96 | 1458 | 8 | 6886 | 6556292 | — (regression check, ONE run, across a moved tree: kernel library bug fixes; parse/check/build 27.5 s flat, mono +2.5 s, codegen +0.4 s unattributed; fixed point) | CharSimple |
