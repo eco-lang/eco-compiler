@@ -399,9 +399,11 @@ ARG NODE_VERSION=22
 # gcc + libc6-dev -> host compiler for the `.so` embedding check
 #                    (echo_host.c); libc6-dev is only a Recommends of gcc,
 #                    so it must be spelled out under --no-install-recommends
+# g++             -> host compiler for the C++ embedding check (bytes_host.cpp,
+#                    against the bundle's <eco/eco_embed.hpp>)
 # binutils        -> readelf for the ELF assertions
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      ca-certificates curl gcc libc6-dev binutils \
+      ca-certificates curl gcc g++ libc6-dev binutils \
  && rm -rf /var/lib/apt/lists/*
 
 # Node 22 (glibc build) — the host process for the `.node` addon. Same
@@ -418,6 +420,8 @@ COPY --from=eco-builder /eco/build-static/eco-*-x86_64-linux-musl.tar.gz /tmp/
 RUN mkdir -p /opt/eco \
  && tar -xzf /tmp/eco-*-x86_64-linux-musl.tar.gz -C /opt/eco \
  && test -x /opt/eco/bin/eco \
+ && test -f /opt/eco/include/eco/eco_embed.h \
+ && test -f /opt/eco/include/eco/eco_embed.hpp \
  && test -d /opt/eco/lib/eco-runtime/glibc
 
 # Port-echo project. test/embed/echo_host.c's header documents the pairing:
@@ -428,15 +432,14 @@ RUN mkdir -p /opt/eco \
 # of echo_host.c (added with Stage D); it loads ./build/elm.js — the shim
 # generated next to the .node (E2E output convention,
 # plans/native-ports-and-embedding.md) — relative to itself, so it sits at
-# the project root. echo_host.c #includes ../../runtime/src/embed/eco_embed.h
-# relative to its own location, so the repo-relative layout is preserved
-# for it.
+# the project root. echo_host.c #includes <eco/eco_embed.h>, which it
+# finds in the bundle (-I/opt/eco/include), so the smoke test checks the
+# headers a user gets, not the source tree's.
 WORKDIR /smoke
 COPY test/elm/elm.json             /smoke/elm.json
 COPY test/elm/src/PortEchoTest.elm /smoke/src/PortEchoTest.elm
 COPY test/embed/echo_host.js       /smoke/echo_host.js
 COPY test/embed/echo_host.c        /smoke/test/embed/echo_host.c
-COPY runtime/src/embed/eco_embed.h /smoke/runtime/src/embed/eco_embed.h
 
 # --- `.node`: build from the installed bundle, bounce through the shim ----
 # The harness exits non-zero if the round-trip fails; the grep additionally
@@ -503,13 +506,13 @@ RUN readelf -d build/elm.node > /tmp/dyn.txt \
 # literal build/elm.so path is recorded and resolves from /smoke.)
 RUN /opt/eco/bin/eco make src/PortEchoTest.elm --output=build/elm.so \
  && test -f build/elm.so \
- && if gcc test/embed/echo_host.c build/elm.so -o /tmp/echo_host_nolm \
+ && if gcc -I/opt/eco/include test/embed/echo_host.c build/elm.so -o /tmp/echo_host_nolm \
         > /tmp/nolm.log 2>&1; then \
         echo "FATAL: echo_host linked WITHOUT -lm — the .so host contract changed" >&2; \
         exit 1; \
     fi \
  && grep -q 'undefined reference' /tmp/nolm.log \
- && gcc test/embed/echo_host.c build/elm.so -lm \
+ && gcc -I/opt/eco/include test/embed/echo_host.c build/elm.so -lm \
         -Wl,-rpath,/smoke/build -o echo_host \
  && if ! ./echo_host > /tmp/c-echo.log 2>&1; then \
         echo "FATAL: .so echo host failed:" >&2; \
@@ -521,3 +524,29 @@ RUN /opt/eco/bin/eco make src/PortEchoTest.elm --output=build/elm.so \
  && grep -q 'HOST done' /tmp/c-echo.log \
  && grep -q 'HOST exit: 0' /tmp/c-echo.log \
  && echo "OK: .so embedding round-trip; -lm contract verified both ways"
+
+# --- `.so` + C++ layer: the bundle's <eco/eco_embed.hpp> (plans/native-bytes-ports-2.md §2.12)
+# bytes_host.cpp drives test/embed/BytesEchoService.elm through typed port handles, borrowed bytes and
+# emits made inside the callback (written straight into the program's heap), and prints what comes
+# back. Built with only the bundle's include directory, warnings as errors.
+WORKDIR /smoke-bytes
+COPY test/eco-divergence/elm.json       /smoke-bytes/elm.json
+COPY test/embed/BytesEchoService.elm    /smoke-bytes/src/BytesEchoService.elm
+COPY test/embed/bytes_host.cpp          /smoke-bytes/bytes_host.cpp
+RUN mkdir -p build \
+ && /opt/eco/bin/eco make src/BytesEchoService.elm --output=build/bytes.so \
+ && g++ -std=c++20 -Wall -Wextra -Werror -I/opt/eco/include bytes_host.cpp build/bytes.so -lm \
+        -Wl,-rpath,/smoke-bytes/build -o bytes_host \
+ && if ! timeout 60 ./bytes_host > /tmp/cxx-bytes.log 2>&1; then \
+        echo "FATAL: .so C++ bytes host failed:" >&2; \
+        cat /tmp/cxx-bytes.log >&2; \
+        exit 1; \
+    fi \
+ && cat /tmp/cxx-bytes.log \
+ && grep -qx 'HOST got 100000 12492401' /tmp/cxx-bytes.log \
+ && grep -qx 'HOST back 100000 12492401 101' /tmp/cxx-bytes.log \
+ && grep -qx 'HOST back 50000 6245410 60' /tmp/cxx-bytes.log \
+ && grep -qx 'HOST back 1 7 7' /tmp/cxx-bytes.log \
+ && grep -qx 'HOST back 0 0 -1' /tmp/cxx-bytes.log \
+ && grep -qx 'HOST exit: 0' /tmp/cxx-bytes.log \
+ && echo "OK: .so C++ bytes host against the bundle's headers"

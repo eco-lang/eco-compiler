@@ -564,6 +564,34 @@ HPointer ThreadLocalHeap::allocLargeByteBuffer(const u8* data, size_t length) {
     }
 }
 
+NoCollectBytes ThreadLocalHeap::tryAllocByteBufferNoCollect(size_t length) {
+    assert(length > 0 && length <= UINT32_MAX);
+    const size_t total = (sizeof(ByteBuffer) + length + 7) & ~static_cast<size_t>(7);
+    if (total < config_->large_object_threshold) {
+        void* obj = allocateFast(total);
+        if (!obj) return NoCollectBytes{hpFromBits(0), nullptr};
+        initHeaderForTag(getHeader(obj), Tag_ByteBuffer, total);
+        ByteBuffer* buf = static_cast<ByteBuffer*>(obj);
+        buf->header.size = static_cast<u32>(length);
+        return NoCollectBytes{parent_->wrap(buf), buf->bytes};
+    }
+
+    // allocLargeByteBuffer's first attempt, without its collections and its memset: the header first, then the
+    // body. A header left with a null body when the body fails is garbage, as on that function's retry path.
+    void* header_obj = allocateFast(sizeof(LargeByteHeader));
+    if (!header_obj) return NoCollectBytes{hpFromBits(0), nullptr};
+    initHeaderForTag(getHeader(header_obj), Tag_LargeByteHeader, sizeof(LargeByteHeader));
+    LargeByteHeader* h = static_cast<LargeByteHeader*>(header_obj);
+    h->header.size = static_cast<u32>(length);
+    h->body = hpFromBits(0);
+    const size_t body_size = (length + 7) & ~static_cast<size_t>(7);
+    void* body = old_gen_.allocateLargeBody(body_size, length, Tag_ByteBuffer, nursery_.minor_color_);
+    if (!body) return NoCollectBytes{hpFromBits(0), nullptr};
+    h->body = parent_->wrap(body);
+    noteDirectAlloc(body_size);
+    return NoCollectBytes{parent_->wrap(header_obj), largeBytesData(h)};
+}
+
 void* ThreadLocalHeap::allocatePermanent(size_t size, Tag tag) {
     size = (size + 7) & ~static_cast<size_t>(7);
     if (size >= config_->large_object_threshold) {
@@ -677,6 +705,13 @@ struct PauseEndHook {
     Allocator* parent;
     // Enters one level of the pause.
     PauseEndHook(ThreadLocalHeap& heap, Allocator* p) : h(heap), parent(p) {
+        // The stack walk stops silently at a frame it cannot unwind, so a collection with host code on the stack
+        // could miss every compiled frame below it (HEAP_083).
+        if (__builtin_expect(h.no_collect_depth_ != 0, 0)) {
+            std::fprintf(stderr, "[gc] FATAL: a collection started inside a host callback (HEAP_083)\n");
+            std::fflush(stderr);
+            std::abort();
+        }
         ++h.pause_depth_;
     }
     ~PauseEndHook() {

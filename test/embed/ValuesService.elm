@@ -8,11 +8,17 @@ At start it sends its flags, a record of every kind of flags field, straight bac
 After that, for each JSON port payload type `T` it has a pair of ports, `tIn` and `tOut`, and sends
 every value that arrives on `tIn` back out on `tOut`.
 
+For the `order` scenario (divergence D5, plans/native-bytes-ports-2.md §2.10): a value on `orderGo`
+makes the program send `orderOut ()` and run a Task, in one batch. The host answers `orderOut` by
+sending on `orderIn`. The model records the two resulting messages, "in" and "task", in the order they
+reach `update`, and once both have, the program reports that order on `orderLog`.
+
 -}
 
 import Array exposing (Array)
 import Json.Encode as Encode
 import Platform
+import Task
 
 
 type alias Flags =
@@ -113,18 +119,51 @@ port jsonIn : (Encode.Value -> msg) -> Sub msg
 port jsonOut : Encode.Value -> Cmd msg
 
 
-{-| Each message carries the command that sends its value back out.
+port orderGo : (() -> msg) -> Sub msg
+
+
+port orderOut : () -> Cmd msg
+
+
+port orderIn : (() -> msg) -> Sub msg
+
+
+port orderLog : String -> Cmd msg
+
+
+{-| An `Echo` message carries the command that sends its value back out. `Ordered` is one of the
+`order` scenario's two messages.
 -}
 type Msg
     = Echo (Cmd Msg)
+    | Ordered String
 
 
-update : Msg -> () -> ( (), Cmd Msg )
-update (Echo cmd) model =
-    ( model, cmd )
+{-| The `order` scenario's messages, latest first, in the order they reached `update`.
+-}
+type alias Model =
+    List String
 
 
-subscriptions : () -> Sub Msg
+update : Msg -> Model -> ( Model, Cmd Msg )
+update msg model =
+    case msg of
+        Echo cmd ->
+            ( model, cmd )
+
+        Ordered label ->
+            let
+                seen =
+                    label :: model
+            in
+            if List.length seen == 2 then
+                ( [], orderLog (String.join "," (List.reverse seen)) )
+
+            else
+                ( seen, Cmd.none )
+
+
+subscriptions : Model -> Sub Msg
 subscriptions _ =
     Sub.batch
         [ stringIn (Echo << stringOut)
@@ -139,13 +178,23 @@ subscriptions _ =
         , tuple3In (Echo << tuple3Out)
         , recordIn (Echo << recordOut)
         , jsonIn (Echo << jsonOut)
+        , orderGo
+            (\_ ->
+                Echo
+                    (Cmd.batch
+                        [ orderOut ()
+                        , Task.perform (\_ -> Ordered "task") (Task.succeed ())
+                        ]
+                    )
+            )
+        , orderIn (\_ -> Ordered "in")
         ]
 
 
-main : Program Flags () Msg
+main : Program Flags Model Msg
 main =
     Platform.worker
-        { init = \flags -> ( (), flagsOut flags )
+        { init = \flags -> ( [], flagsOut flags )
         , update = update
         , subscriptions = subscriptions
         }

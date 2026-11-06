@@ -35,7 +35,7 @@
 #define NAPI_VERSION 8
 #include <node_api.h>
 
-#include "eco_embed.h"
+#include <eco/eco_embed.h>
 
 #include <atomic>
 #include <cstdlib>

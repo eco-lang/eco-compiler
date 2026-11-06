@@ -87,6 +87,7 @@
 #include "kernel/VirtualDomKernelTest.hpp"
 #include "platform/HeapResetKernelStateTest.hpp"
 #include "platform/PlatformServicesTest.hpp"
+#include "platform/PortBytesTest.hpp"
 #include "platform/SpawnTest.hpp"
 #include "platform/SchedulerPidTest.hpp"
 #include "platform/TaskBindingTest.hpp"
@@ -648,6 +649,7 @@ static IsolatedSuites buildIsolatedSuites() {
     registerTimerServiceTests(*s.platformServices);
     registerWaitServiceTests(*s.platformServices);
     registerTaskBindingTests(*s.platformServices);
+    registerPortBytesTests(*s.platformServices);
 
     // Crash-risk representation tests (byte-slice GC under F1; elm_bytebuffer_len
     // / Bytes.width on a slice under F3). Spawned per case so each abort is

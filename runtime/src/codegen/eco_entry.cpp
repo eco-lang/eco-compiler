@@ -14,7 +14,7 @@
 // recorded through `eco_set_exit_code`, not with what `eco_main` returns.
 //
 // Executables only: a shared-library build is started by its host through the
-// embedding API in `embed/eco_embed.h` instead, and does not link this file.
+// embedding API in `eco/eco_embed.h` (runtime/include) instead, and does not link this file.
 //
 // The rest of the file, compiled only with `ENABLE_GC_STATS`, prints the
 // collector's statistics once when the process ends: at a normal exit through

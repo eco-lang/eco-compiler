@@ -169,12 +169,15 @@ add_executable(test
         platform/SchedulerPidTest.cpp
         platform/HeapResetKernelStateTest.cpp
         platform/TaskBindingTest.cpp
+        platform/PortBytesTest.cpp
         platform/TimerServiceTest.cpp
         platform/WaitServiceTest.cpp
 )
 
 target_compile_features(test PRIVATE cxx_std_20)
 target_compile_options(test PRIVATE $<IF:$<PLATFORM_ID:Windows>,/EHsc,-fexceptions>)
+# The embedding headers, as a host includes them: <eco/eco_embed.h>, <eco/eco_embed.hpp>.
+target_include_directories(test PRIVATE ${CMAKE_SOURCE_DIR}/runtime/include)
 # KernelExportsTest and BytesKernelTest catch Elm::BytesDecodeFailure thrown from the extern "C"
 # Elm_Kernel_Bytes_read_* exports, and RegexKernelTest catches a replacer's exception thrown
 # through the extern "C" Elm_Kernel_Regex_replaceAtMost. Under /EHsc ("extern C functions never
@@ -353,6 +356,7 @@ add_executable(stress-test
         stress-elm/main.cpp
 )
 target_compile_features(stress-test PRIVATE cxx_std_20)
+target_include_directories(stress-test PRIVATE ${CMAKE_SOURCE_DIR}/runtime/include)  # <eco/eco_embed.hpp>, via ElmE2ETestBase.hpp
 target_compile_options(stress-test PRIVATE -fexceptions)
 target_compile_definitions(stress-test PRIVATE
     BUILD_DIR="${CMAKE_BINARY_DIR}"
@@ -413,6 +417,7 @@ add_executable(mlir-equivalence
         ${CMAKE_SOURCE_DIR}/runtime/src/platform/Spawn.cpp
 )
 target_compile_features(mlir-equivalence PRIVATE cxx_std_20)
+target_include_directories(mlir-equivalence PRIVATE ${CMAKE_SOURCE_DIR}/runtime/include)  # <eco/eco_embed.hpp>, via ElmE2ETestBase.hpp
 target_compile_options(mlir-equivalence PRIVATE -fexceptions)
 target_compile_definitions(mlir-equivalence PRIVATE
         REPO_ROOT="${CMAKE_SOURCE_DIR}"
@@ -461,10 +466,28 @@ add_executable(aot-e2e-runner
         ${CMAKE_SOURCE_DIR}/runtime/src/platform/Spawn.cpp
 )
 target_compile_features(aot-e2e-runner PRIVATE cxx_std_20)
+target_include_directories(aot-e2e-runner PRIVATE ${CMAKE_SOURCE_DIR}/runtime/include)  # <eco/eco_embed.hpp>, via ElmE2ETestBase.hpp
 target_compile_options(aot-e2e-runner PRIVATE -fexceptions)
 # The port host of the AOT runner (aot_port_host.cpp): runs a test lowered to a
 # shared library and echoes its `echoOut` port into `echoIn`, as the JIT harness does.
 find_package(Threads REQUIRED)
+# The embedding headers compile on their own, as a host includes them: C99 and C++20, warnings as errors,
+# with only runtime/include on the include path (plans/native-bytes-ports-2.md §4 step 9).
+add_library(embed-header-c OBJECT embed/header_check.c)
+set_target_properties(embed-header-c PROPERTIES C_STANDARD 99 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
+target_include_directories(embed-header-c PRIVATE ${CMAKE_SOURCE_DIR}/runtime/include)
+add_library(embed-header-cxx OBJECT embed/header_check.cpp)
+target_compile_features(embed-header-cxx PRIVATE cxx_std_20)
+target_include_directories(embed-header-cxx PRIVATE ${CMAKE_SOURCE_DIR}/runtime/include)
+if(NOT MSVC)
+    target_compile_options(embed-header-c PRIVATE -Wall -Wextra -Werror -pedantic)
+    target_compile_options(embed-header-cxx PRIVATE -Wall -Wextra -Werror -pedantic)
+else()
+    target_compile_options(embed-header-c PRIVATE /W4 /WX)
+    target_compile_options(embed-header-cxx PRIVATE /W4 /WX)
+endif()
+add_dependencies(test embed-header-c embed-header-cxx)
+
 add_executable(aot-port-host aot_port_host.cpp)
 target_compile_features(aot-port-host PRIVATE cxx_std_20)
 target_link_libraries(aot-port-host PRIVATE ${CMAKE_DL_LIBS} Threads::Threads)

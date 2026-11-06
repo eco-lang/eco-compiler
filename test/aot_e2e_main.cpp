@@ -413,7 +413,8 @@ int exec_wrapped(int argc, char** argv) {
 // `-- ENV:` in its environment (after the ECO_TEST_PORT entry), the rest through
 // exec_wrapped. Throws std::runtime_error on a malformed directive.
 // Whether the test declares both ports of the harness's echo, `echoOut` and
-// `echoIn`, so that it needs a port host (aot-port-host) to run.
+// `echoIn`, or the emit harness's `emitOut` and `emitIn`, so that it needs a port
+// host (aot-port-host) to run.
 bool uses_port_echo(const std::string& src) {
     auto declares = [&](const std::string& port) {
         const std::string decl = "port " + port + " ";
@@ -421,7 +422,7 @@ bool uses_port_echo(const std::string& src) {
             if (pos == 0 || src[pos - 1] == '\n') return true;
         return false;
     };
-    return declares("echoOut") && declares("echoIn");
+    return (declares("echoOut") && declares("echoIn")) || (declares("emitOut") && declares("emitIn"));
 }
 
 // Runs the lowered test: the ELF itself, or for a port-echo test aot-port-host

@@ -617,6 +617,7 @@ endif()
 #   <prefix>/lib/eco-runtime/crt/{crt1,crti,crtn,clang_rt.crtbegin-*,clang_rt.crtend-*}.o
 #   <prefix>/lib/eco-runtime/project/lib{ElmKernel_*,EcoKernel_*,EcoSystem_*,Eco*Static}.a
 #   <prefix>/share/eco/{kernel/eco-kernel-cpp,system/system-kernel-cpp}/
+#   <prefix>/include/eco/{eco_embed.h,eco_embed.hpp}   (embedding headers for library hosts)
 #-------------------------------------------------------------------------------
 option(ECO_BUNDLE_STRIP
        "Strip debug info from bundled project archives so AOT-built binaries \
@@ -724,6 +725,15 @@ if(ECO_STATIC_MUSL)
                 REGEX "/scripts(/|$)" EXCLUDE
                 REGEX "/\\.docs-package(/|$)" EXCLUDE
                 REGEX "/src/eco-system(/|$)" EXCLUDE)
+
+    # The embedding headers, for hosts that link a program built as a library (`.so`/`.node`):
+    # <prefix>/include/eco/eco_embed.h (C) and eco_embed.hpp (C++20). plans/native-bytes-ports-2.md §2.12.
+    install(DIRECTORY ${CMAKE_SOURCE_DIR}/runtime/include/eco/
+            DESTINATION include/eco
+            COMPONENT Bundle
+            FILES_MATCHING
+                PATTERN "*.h"
+                PATTERN "*.hpp")
 
     # Example programs (Hello plus the eco/system examples) and the benchmarks project: Elm
     # sources, elm.json files, the benchmarks' run.mjs and READMEs; build outputs and caches
@@ -895,6 +905,15 @@ if(APPLE AND NOT ECO_GLIBC_OUTPUT_RUNTIME AND NOT ECO_FRONTEND_ONLY)
                 REGEX "/\\.docs-package(/|$)" EXCLUDE
                 REGEX "/src/eco-system(/|$)" EXCLUDE)
 
+    # The embedding headers, for hosts that link a program built as a library (`.so`/`.node`):
+    # <prefix>/include/eco/eco_embed.h (C) and eco_embed.hpp (C++20). plans/native-bytes-ports-2.md §2.12.
+    install(DIRECTORY ${CMAKE_SOURCE_DIR}/runtime/include/eco/
+            DESTINATION include/eco
+            COMPONENT BundleDarwin
+            FILES_MATCHING
+                PATTERN "*.h"
+                PATTERN "*.hpp")
+
     # Example programs (Hello plus the eco/system examples): one project, elm.json + src/*.elm.
     install(DIRECTORY ${CMAKE_SOURCE_DIR}/examples/
             DESTINATION share/eco/examples
@@ -984,6 +1003,15 @@ if(WIN32 AND NOT ECO_FRONTEND_ONLY)
                 REGEX "/scripts(/|$)" EXCLUDE
                 REGEX "/\\.docs-package(/|$)" EXCLUDE
                 REGEX "/src/eco-system(/|$)" EXCLUDE)
+
+    # The embedding headers, for hosts that link a program built as a library (`.so`/`.node`):
+    # <prefix>/include/eco/eco_embed.h (C) and eco_embed.hpp (C++20). plans/native-bytes-ports-2.md §2.12.
+    install(DIRECTORY ${CMAKE_SOURCE_DIR}/runtime/include/eco/
+            DESTINATION include/eco
+            COMPONENT BundleWindows
+            FILES_MATCHING
+                PATTERN "*.h"
+                PATTERN "*.hpp")
 
     # Example programs (Hello plus the eco/system examples): one project, elm.json + src/*.elm.
     install(DIRECTORY ${CMAKE_SOURCE_DIR}/examples/

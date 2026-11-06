@@ -138,6 +138,15 @@ inline void initWideHeader(Header* hdr, Tag tag, u32 n) {
 }
 
 /**
+ * A Bytes value allocated without collecting (`ThreadLocalHeap::tryAllocByteBufferNoCollect`), with the address its
+ * bytes are written through. `bytes` is null when the allocation failed; `hp` is then meaningless.
+ */
+struct NoCollectBytes {
+    HPointer hp;
+    u8* bytes;
+};
+
+/**
  * The heap of the mutator: its nursery, its old generation and its stack-map roots, with the allocation paths into
  * them and the collections of them.
  *
@@ -236,6 +245,14 @@ public:
     // `allocLargeString` splits a String, with a `Tag_LargeByteHeader` header object. Returns the header object.
     // Ordering, retries and failure are as for `allocLargeString`.
     HPointer allocLargeByteBuffer(const u8* data, size_t length);
+
+    // Allocates a Bytes value of `length` bytes (1 to `UINT32_MAX`) without collecting, in the form
+    // `alloc::allocByteBuffer(length)` would give it: a nursery `Tag_ByteBuffer` below the large-object threshold,
+    // otherwise a nursery `Tag_LargeByteHeader` with a pinned body (HEAP_026). The bytes are not written, and the
+    // large body is not zeroed. Returns `{_, nullptr}` when that is impossible without a collection: the nursery
+    // has no room below its limit, or the old generation cannot supply the body. A small object's bytes stay where
+    // they are until the next collection; a large body's stay while the value is reachable. HEAP_083.
+    NoCollectBytes tryAllocByteBufferNoCollect(size_t length);
 
 private:
     // Allocates a pointer-free object of `size` bytes for `tag` as a pinned old large object, which a major
@@ -365,6 +382,13 @@ public:
     // Returns whether a collection of this heap is running: whether the call is inside a pause.
     bool inPause() const { return pause_depth_ > 0; }
 
+    // Enters and leaves a region in which no collection may start (HEAP_083), nested. A pause that starts inside
+    // one aborts the process. `NoCollectScope` (Allocator.hpp) is the way to use them.
+    void enterNoCollect() { ++no_collect_depth_; }
+    void exitNoCollect() { --no_collect_depth_; }
+    // Returns whether the call is inside a region in which no collection may start.
+    bool inNoCollect() const { return no_collect_depth_ > 0; }
+
     // Returns the nursery's root set. Valid for the heap's lifetime.
     RootSet& getRootSet() { return nursery_.getRootSet(); }
 
@@ -437,6 +461,9 @@ private:
     // How many `minorGC`, `majorGC` and `majorGCAndShrink` calls are running, nested. The pause ends when it
     // returns to 0.
     int pause_depth_ = 0;
+    // How many no-collection regions are open, nested (HEAP_083). The runtime opens one around every host
+    // callback it makes, because the stack walk cannot be trusted across host frames.
+    int no_collect_depth_ = 0;
     bool pause_had_major_ = false;   // Whether the current pause ran a major or a cycle handoff.
 
     // Calls `f(slot, kind)` for every root slot except the long-lived and JIT roots: kind 0 for stack-map slots,

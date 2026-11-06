@@ -43,6 +43,12 @@ Run it:
 
     ./hello
 
+# Embedding in a C or C++ program
+
+A program built with `--output=<name>.so` is a library that a C or C++ host runs and talks to
+through the program's ports. The headers are in the distribution's `include/eco/` folder;
+[embedding.md](embedding.md) shows how to use them.
+
 # System programs
 
 Eco ships `eco/system`, a package for writing command-line and server programs in Elm: files and

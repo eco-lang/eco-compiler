@@ -13,6 +13,7 @@
 #include "../runtime/src/allocator/RuntimeExports.h"
 #include "../runtime/src/platform/PlatformRuntime.hpp"
 #include "../runtime/src/platform/PortRuntime.hpp"
+#include <eco/eco_embed.hpp>
 
 #include <algorithm>
 #include <array>
@@ -769,12 +770,174 @@ inline void portEchoBounceBytes(const uint8_t* data, size_t length, void* /*user
     eco_port_send_bytes("echoIn", data, length, nullptr, nullptr);
 }
 
+// The emit harness of PortBytesEmitTest (plans/native-bytes-ports-2.md §4 step 5), written against the C++ layer
+// so that the layer is tested in-process. Each `emitOut` payload is `[op] ++ body`; the harness answers with a
+// result on `emitIn` and a verdict on `emitVerdict`: 1 if the emit took the path the op expects, read from the
+// runtime's emit counters, and 0 if not. The test's doc comment lists the ops.
+namespace emit_harness {
+
+// The thread of the last op 5 or 6, joined by the next request.
+inline std::thread& worker() {
+    static std::thread t;
+    return t;
+}
+
+inline void joinWorker() {
+    if (worker().joinable()) worker().join();
+}
+
+inline const eco::BytesInPort& emitIn() {
+    static const eco::BytesInPort port{"emitIn"};
+    return port;
+}
+
+inline const eco::BytesInPort& emitVerdict() {
+    static const eco::BytesInPort port{"emitVerdict"};
+    return port;
+}
+
+// Emits `body` reversed into `emitIn` with the given capacity.
+inline eco::EmitResult emitReversed(std::span<const std::byte> body, std::size_t capacity) {
+    return emitIn().emit(capacity, [body](std::span<std::byte> out) {
+        const std::size_t n = body.size();
+        for (std::size_t i = 0; i < n; ++i) out[i] = body[n - 1 - i];
+        return n;
+    });
+}
+
+inline void emitByte(const eco::BytesInPort& port, std::uint8_t b) {
+    port.emit(1, [b](std::span<std::byte> out) {
+        out[0] = std::byte{b};
+        return std::size_t{1};
+    });
+}
+
+struct Counts {
+    std::uint64_t direct, offHeap, fallback, shrunk;
+};
+
+inline Counts counts() {
+    const auto& s = Elm::Platform::PortRuntime::instance().emitStats();
+    return Counts{s.direct.load(), s.offHeap.load(), s.fallback.load(), s.shrunk.load()};
+}
+
+// The paths an emit can take, for `tookPath`.
+enum Path { Direct, OffHeap, Fallback, DirectOrFallback };
+
+// Whether exactly one emit, by `path`, was made since `before`. An emit inside a callback goes direct unless the
+// nursery happens to be at its limit, when it falls back, which is correct too: the ops that only need an emit
+// made inside a callback accept either (`DirectOrFallback`), and op 8, whose drain check needs a heap value,
+// insists on `Direct`.
+inline bool tookPath(const Counts& before, Path path) {
+    const Counts now = counts();
+    const std::uint64_t d = now.direct - before.direct, o = now.offHeap - before.offHeap,
+                        f = now.fallback - before.fallback;
+    if (d + o + f != 1) return false;
+    switch (path) {
+        case Direct: return d == 1;
+        case OffHeap: return o == 1;
+        case Fallback: return f == 1;
+        default: return d == 1 || f == 1;
+    }
+}
+
+inline void onRequest(const eco::BorrowedBytes& request) {
+    joinWorker();
+    const std::span<const std::byte> all = request.view();
+    if (all.empty()) return;
+    const int op = static_cast<int>(all[0]);
+    const std::span<const std::byte> body = all.subspan(1);
+    const std::size_t len = body.size();
+    const Counts before = counts();
+    bool ok = false;
+    switch (op) {
+        case 0:
+            ok = emitReversed(body, len) == eco::EmitResult::Queued && tookPath(before, DirectOrFallback);
+            break;
+        case 8:
+            Elm::Platform::PortRuntime::instance().setCollectAtNextDrainForTest(true);
+            ok = emitReversed(body, len) == eco::EmitResult::Queued && tookPath(before, Direct);
+            break;
+        case 1: {
+            ok = emitReversed(body, len + len / 2 + 1) == eco::EmitResult::Queued && tookPath(before, DirectOrFallback);
+            // A large body kept, shrunk in place, when the emit went direct (PORT_010).
+            const Counts now = counts();
+            if (len >= 20000 && now.direct != before.direct) ok = ok && now.shrunk == before.shrunk + 1;
+            break;
+        }
+        case 2:
+            ok = emitReversed(body, 4 * len + 64) == eco::EmitResult::Queued && tookPath(before, DirectOrFallback);
+            break;
+        case 3: {
+            const eco::EmitResult rc = emitIn().emit(len, [](std::span<std::byte>) {
+                return std::optional<std::size_t>();
+            });
+            const Counts now = counts();
+            ok = rc == eco::EmitResult::Cancelled && now.direct == before.direct && now.fallback == before.fallback &&
+                 now.offHeap == before.offHeap;
+            emitByte(emitIn(), static_cast<std::uint8_t>(rc));
+            break;
+        }
+        case 4: {
+            eco::EmitResult inner = eco::EmitResult::Queued;
+            const eco::EmitResult outer = emitIn().emit(1, [&inner](std::span<std::byte> out) {
+                inner = emitIn().emit(1, [](std::span<std::byte>) { return std::size_t{0}; });
+                out[0] = std::byte{static_cast<std::uint8_t>(inner)};
+                return std::size_t{1};
+            });
+            ok = outer == eco::EmitResult::Queued && inner == eco::EmitResult::Nested &&
+                 tookPath(before, DirectOrFallback);
+            break;
+        }
+        case 5: {
+            std::vector<std::byte> copy(body.begin(), body.end());
+            eco::EmitResult rc = eco::EmitResult::NotAPort;
+            std::thread t([&] { rc = emitReversed(copy, copy.size()); });
+            t.join();
+            ok = rc == eco::EmitResult::Queued && tookPath(before, OffHeap);
+            break;
+        }
+        case 6: {
+            // The thread emits the result and the verdict itself, after this callback has returned, from a
+            // retained copy of the request.
+            eco::OwnedBytes owned = request.retain();
+            static std::atomic<bool> returned{false};
+            returned.store(false);
+            worker() = std::thread([owned = std::move(owned)] {
+                while (!returned.load()) std::this_thread::yield();
+                const Counts mine = counts();
+                const std::span<const std::byte> b = owned.view().subspan(1);
+                const bool good = emitReversed(b, b.size()) == eco::EmitResult::Queued && tookPath(mine, OffHeap);
+                emitByte(emitVerdict(), good ? 1 : 0);
+            });
+            returned.store(true);  // The last statement of the callback that touches its own state.
+            return;
+        }
+        case 7: {
+            Elm::Platform::PortRuntime::instance().setEmitForceOffHeapForTest(true);
+            const eco::EmitResult rc = emitReversed(body, len);
+            Elm::Platform::PortRuntime::instance().setEmitForceOffHeapForTest(false);
+            ok = rc == eco::EmitResult::Queued && tookPath(before, Fallback);
+            break;
+        }
+        default:
+            break;
+    }
+    emitByte(emitVerdict(), ok ? 1 : 0);
+}
+
+}  // namespace emit_harness
+
 inline void installPortEchoBounce() {
     static bool installed = false;
     if (!installed) {
         installed = true;
         eco_port_subscribe("echoOut", portEchoBounce, nullptr);
         eco_port_subscribe_bytes("echoOut", portEchoBounceBytes, nullptr);
+        // Made before any program registers its ports, which exercises the unregistered handles.
+        static const eco::BytesOutPort emitOut{"emitOut"};
+        static eco::Subscription emitSub = emitOut.subscribe(&emit_harness::onRequest);
+        (void)emitSub;
     }
 }
 

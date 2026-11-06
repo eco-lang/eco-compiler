@@ -390,7 +390,7 @@ These are not command-line flags, but they are how startup options reach a compi
 
 | Name | Values / default | Effect | Source |
 |---|---|---|---|
-| `eco_app_start(argc, argv, flags_json)` | `flags_json` may be NULL (no flags) | Host C API. `argv` backs `Eco.Kernel.Env.rawArgs`; `flags_json` is decoded by the program's flags decoder, and a mismatch crashes at startup. One app per process | `runtime/src/embed/eco_embed.h:51`, `runtime/src/embed/eco_embed.cpp:238` |
+| `eco_app_start(argc, argv, flags_json)` | `flags_json` may be NULL (no flags) | Host C API. `argv` backs `Eco.Kernel.Env.rawArgs`; `flags_json` is decoded by the program's flags decoder, and a mismatch crashes at startup. One app per process | `runtime/include/eco/eco_embed.h:90`, `runtime/src/embed/eco_embed.cpp:268`. Embedding guide: [embedding.md](embedding.md) |
 | Node addon `Elm.<Root>.init({flags})` | `flags` optional; undefined decodes as `null` | `JSON.stringify(opts.flags)` is passed to the embed API; `init` may be called only once per process | `runtime/src/embed/eco_node_addon.cpp:350` |
 | Generated program `argv` | none | `main()` in `eco_entry.cpp` stores argc/argv for `Eco.Kernel.Env.rawArgs` (argv[0] is dropped). Compiled executables parse **no runtime flags of their own**. They run `eco_main` on a 64 MiB-stack thread | `runtime/src/codegen/eco_entry.cpp:118`, `:300`, `eco-kernel-cpp/src/eco-kernel/Env.cpp:40` |
 

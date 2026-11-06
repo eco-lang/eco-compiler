@@ -5,13 +5,14 @@
  *   - runs ~3 seconds, then stops
  *
  * Build:
- *   cc kafka_host.c -L<dir> -l:libkafka.so -o kafka_host -Wl,-rpath,<dir>
+ *   cc kafka_host.c -I<eco>/include -L<dir> -l:libkafka.so -o kafka_host -Wl,-rpath,<dir>
+ *   (<eco> is the directory above bin/eco; in the source tree, -I runtime/include)
  */
 
 #include <stdio.h>
 #include <unistd.h>
 
-#include "../../runtime/src/embed/eco_embed.h"
+#include <eco/eco_embed.h>
 
 static void on_log(const char* json, void* user) {
     (void)user;

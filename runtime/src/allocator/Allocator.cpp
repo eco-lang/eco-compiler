@@ -449,6 +449,11 @@ HPointer Allocator::allocLargeByteBuffer(const u8* data, size_t length) {
     return tl_heap_->allocLargeByteBuffer(data, length);
 }
 
+NoCollectBytes Allocator::tryAllocByteBufferNoCollect(size_t length) {
+    assert(tl_heap_ && "Thread not initialized - call initThread() first");
+    return tl_heap_->tryAllocByteBufferNoCollect(length);
+}
+
 void Allocator::minorGC() {
     assert(tl_heap_ && "Thread not initialized - call initThread() first");
     tl_heap_->minorGC();

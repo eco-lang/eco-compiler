@@ -9,7 +9,8 @@
  *   - cooperative eco_app_stop / eco_app_join
  *
  * Build:
- *   cc echo_host.c -L<dir> -l:libecho.so -o echo_host -Wl,-rpath,<dir>
+ *   cc echo_host.c -I<eco>/include -L<dir> -l:libecho.so -o echo_host -Wl,-rpath,<dir>
+ *   (<eco> is the directory above bin/eco; in the source tree, -I runtime/include)
  *
  * Expected output lines (asserted by the harness):
  *   HOST echoOut: 42
@@ -21,7 +22,7 @@
 #include <stdio.h>
 #include <string.h>
 
-#include "../../runtime/src/embed/eco_embed.h"
+#include <eco/eco_embed.h>
 
 static int got_echo = 0;
 

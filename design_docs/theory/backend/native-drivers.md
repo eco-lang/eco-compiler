@@ -121,7 +121,7 @@ Code:
 - `runtime/src/codegen/EcoBootConfig.cpp`: bundle path resolution when the compiler runs.
 - `runtime/src/codegen/eco-boot.cpp`, `runtime/src/codegen/ecoc.cpp`: the bootstrap compiler and the developer tool.
 - `runtime/src/codegen/eco_entry.cpp`: the executable entry stub and `eco_get_exit_code`.
-- `runtime/src/embed/eco_embed.h`, `runtime/src/embed/eco_embed.cpp`, `runtime/src/embed/eco_node_addon.cpp`: the embedding C interface and the Node addon.
+- `runtime/include/eco/eco_embed.h`, `runtime/include/eco/eco_embed.hpp`, `runtime/src/embed/eco_embed.cpp`, `runtime/src/embed/eco_node_addon.cpp`: the embedding C interface and the Node addon.
 - `runtime/src/jit/EcoJIT.cpp`, `runtime/src/codegen/EcoRunner.cpp`, `runtime/src/codegen/RuntimeSymbols.cpp`: the JIT, the test harness and the runtime symbol table.
 
 Invariants (`design_docs/invariants.csv`):

@@ -69,6 +69,7 @@
 
 namespace Elm {
 class ThreadLocalHeap;
+struct NoCollectBytes;
 namespace gc { class PageWork; }
 
 class Allocator;
@@ -214,6 +215,9 @@ public:
     // Allocates a byte buffer of `length` bytes copied from `data`, laid out as `allocLargeString` lays out
     // a String. Returns the header (HEAP_026).
     HPointer allocLargeByteBuffer(const u8* data, size_t length);
+    // Allocates a Bytes value of `length` bytes (1 to `UINT32_MAX`) without collecting, as
+    // `ThreadLocalHeap::tryAllocByteBufferNoCollect` describes, or returns `{_, nullptr}` (HEAP_083).
+    NoCollectBytes tryAllocByteBufferNoCollect(size_t length);
 
     // Returns the large-object threshold in bytes: the size from which an allocation takes the large-object
     // path, as `HeapConfig::large_object_threshold` describes.
@@ -787,6 +791,25 @@ public:
 #include "ThreadLocalHeap.hpp"
 
 namespace Elm {
+
+/**
+ * A region of the calling thread in which no collection may start (HEAP_083): a pause that starts inside one aborts
+ * the process. The runtime opens one around every host callback it makes on the eco thread. Nests; does nothing on a
+ * thread with no heap.
+ */
+class NoCollectScope {
+public:
+    NoCollectScope() : heap_(Allocator::instance().getCurrentThreadHeap()) {
+        if (heap_) heap_->enterNoCollect();
+    }
+    ~NoCollectScope() {
+        if (heap_) heap_->exitNoCollect();
+    }
+    NoCollectScope(const NoCollectScope&) = delete;
+    NoCollectScope& operator=(const NoCollectScope&) = delete;
+private:
+    ThreadLocalHeap* heap_;
+};
 
 inline RootSet &Allocator::getRootSet() noexcept {
     return tl_heap_->getRootSet();

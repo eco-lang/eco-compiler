@@ -139,11 +139,16 @@ All declared in `EcoToLLVMRuntime.cpp:173–258`, all **without** `gcLeaf` (so R
 
 ### I. Platform / ports / scheduler — **empty for generated code**
 
-`PortRuntime.hpp:118–125` exports six weak C symbols (`eco_port_send`, `eco_port_subscribe`,
-`eco_port_unsubscribe`, `eco_port_count`, `eco_port_name`, `eco_port_is_incoming`).
+`PortRuntime.hpp` exports the host API as weak C symbols: `eco_port_send`, `eco_port_subscribe`,
+`eco_port_unsubscribe`, `eco_port_count`, `eco_port_name`, `eco_port_is_incoming`, the bytes
+forms (`eco_port_send_bytes`, `eco_port_{,un}subscribe_bytes`, `eco_port_is_bytes`), and, since
+plans/native-bytes-ports-2.md, the port handles (`eco_port_get`, `eco_port_kind`,
+`eco_port_get_name`, `eco_port_send_json`, `eco_port_send_buffer`, `eco_port_{,un}subscribe_json`),
+borrowed and owned bytes (`eco_port_{,un}subscribe_borrowed`, `eco_borrowed_{data,size,retain}`,
+`eco_owned_{data,size,ref,unref}`) and `eco_port_emit`.
 **None is referenced anywhere under `runtime/src/codegen/`** — not emitted, not
-JIT-registered. Their only consumers are `runtime/src/embed/eco_embed.{h,cpp}` and
-`eco_node_addon.cpp`. `PlatformRuntime.hpp` and `Scheduler.{hpp,cpp}` contain **zero**
+JIT-registered. Their only consumers are hosts, through `runtime/include/eco/eco_embed.{h,hpp}`
+(strong copies in `runtime/src/embed/eco_embed.cpp`), and `eco_node_addon.cpp`. `PlatformRuntime.hpp` and `Scheduler.{hpp,cpp}` contain **zero**
 `extern "C"` declarations at all — pure C++ classes reachable only through
 `Elm_Kernel_Platform_*` kernel shims (JIT-registered at `RuntimeSymbols.cpp:835–843`).
 Likewise `ListOps`/`StringOps`/`BytesOps` have **no C linkage whatsoever** — they are

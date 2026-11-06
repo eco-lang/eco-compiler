@@ -119,7 +119,7 @@ Code:
 - `runtime/src/platform/Scheduler.cpp`, `PlatformRuntime.cpp`, `PortRuntime.cpp`, `TaskBinding.hpp`, `Liveness.hpp`: the scheduler, effect managers, ports, Task callbacks and holds.
 - `runtime/src/platform/TimerService.cpp`, `HttpService.cpp`, `WaitService.cpp`, `Spawn.cpp`: service threads and process spawning.
 - `runtime/src/platform/PlatformVirtualMemory_posix.cpp`, `PlatformVirtualMemory_win32.cpp`, `StackMapSection.hpp`, `PlatformPaths.hpp`: per-OS layers.
-- `runtime/src/codegen/eco_entry.cpp` (in the back end's directory), `runtime/src/embed/eco_embed.cpp`, `runtime/src/embed/eco_embed.h`: process entry and host embedding.
+- `runtime/src/codegen/eco_entry.cpp` (in the back end's directory), `runtime/src/embed/eco_embed.cpp`, `runtime/include/eco/eco_embed.h` (with its C++ layer `eco_embed.hpp`): process entry and host embedding.
 - `elm-kernel-cpp/src/EffectManagerRegistry.cpp`: registration of the Elm kernel's effect managers.
 - `ECO_LIVENESS_REPORT=1`: lists the holds still open.
 

@@ -26,6 +26,7 @@
  *                                       that throw at once
  *                          bad-flags    flags that do not decode: init throws, and may be retried
  *                          bad-send     sends of values of the wrong type: each throws at once
+ *                          order        a send from inside a subscriber, against a Task in the same batch
  *   JsonFlagsService.elm   json-flags:N any JSON as flags, echoed back, variant N
  *
  * In every scenario the addon must have app.stop() and stop with exit code 0; the JS backend has
@@ -41,6 +42,10 @@
  *       now checks it on the sending thread, and send throws at once as on JS (PORT_009).
  *   D4  Bytes sent in: on JS the program's Bytes alias the sender's buffer, so a write to it after
  *       the send shows through; the addon copies at the send.
+ *   D5  (not observed, 2026-11-06) predicted from elm/core: a send from inside an outgoing subscriber
+ *       runs `update` at once on JS but is queued natively. The `order` scenario pins what both do
+ *       with such a send and a Task of the same batch: each handles the Task's message first, so the
+ *       transcripts match (plans/native-bytes-ports-2.md §2.10).
  */
 
 'use strict';
@@ -387,6 +392,25 @@ async function scenarioValues() {
     await finish(app);
 }
 
+/* Which `update` runs first, the one for a send made inside a subscriber or the one for a Task of the
+ * same batch (D5, not observed): the order is in the transcript, which must match. */
+async function scenarioOrder() {
+    const app = loadRoot().init({ flags: FLAGS });
+    checkStopShape(app);
+    const flagsOut = collector(app.ports.flagsOut);
+    await flagsOut.next();
+    flagsOut.stop();
+
+    const log = collector(app.ports.orderLog);
+    app.ports.orderOut.subscribe(function () { app.ports.orderIn.send(null); });
+    app.ports.orderGo.send(null);
+    const order = (await log.next()).value;
+    log.stop();
+    if (order !== 'in,task' && order !== 'task,in') fail('order log was ' + JSON.stringify(order));
+    say('order: ' + order);
+    await finish(app);
+}
+
 /* Flags that do not decode (formerly D2): init throws the JS backend's Error, nothing starts, and init
  * may be called again (PORT_009: the addon checks the flags before it starts the program). */
 async function scenarioBadFlags() {
@@ -505,7 +529,8 @@ async function scenarioUnitFlags(n) {
 
 /* `embed_host.js list` prints, for the runner, one `<fixture> <scenario>` line per scenario. */
 function list() {
-    const lines = ['BytesEchoService bytes', 'ValuesService values', 'ValuesService bad-flags', 'ValuesService bad-send']
+    const lines = ['BytesEchoService bytes', 'ValuesService values', 'ValuesService bad-flags', 'ValuesService bad-send',
+                   'ValuesService order']
         .concat(JSON_FLAGS.map(function (_, i) { return 'JsonFlagsService json-flags:' + i; }))
         .concat(UNIT_FLAGS.map(function (_, i) { return 'BytesEchoService unit-flags:' + i; }));
     console.log(lines.join('\n'));
@@ -518,6 +543,7 @@ const scenarios = {
     'values': scenarioValues,
     'bad-flags': scenarioBadFlags,
     'bad-send': scenarioBadSend,
+    'order': scenarioOrder,
 };
 
 let run = MODE === 'list' ? list : scenarios[SCENARIO];

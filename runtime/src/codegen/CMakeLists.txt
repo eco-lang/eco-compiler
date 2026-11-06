@@ -757,7 +757,7 @@ target_include_directories(EcoEntryStatic PRIVATE
 #------------------------------------------------------------------------------
 # EcoEmbedStatic: host-embedding entry (eco_app_start/stop/join) for library
 # outputs (.so/.o). Replaces EcoEntryStatic's main() when the program is
-# linked into a host application. See runtime/src/embed/eco_embed.h.
+# linked into a host application. See runtime/include/eco/eco_embed.h.
 #------------------------------------------------------------------------------
 
 add_library(EcoEmbedStatic STATIC
@@ -767,6 +767,7 @@ add_library(EcoEmbedStatic STATIC
 
 target_include_directories(EcoEmbedStatic PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/..
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../include
 )
 
 target_compile_features(EcoEmbedStatic PRIVATE cxx_std_20)
@@ -798,6 +799,7 @@ if(ECO_NODE_API_INCLUDE_DIR)
     )
     target_include_directories(EcoNodeGlue PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/..
+        ${CMAKE_CURRENT_SOURCE_DIR}/../../include
         ${ECO_NODE_API_INCLUDE_DIR}
     )
     target_compile_features(EcoNodeGlue PRIVATE cxx_std_20)

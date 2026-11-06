@@ -21,7 +21,7 @@
 // it. `eco_app_start` waits on a handshake that the program's ready hook posts, or the thread posts as it
 // finishes, whichever comes first.
 
-#include "eco_embed.h"
+#include <eco/eco_embed.h>
 
 #include "../allocator/Allocator.hpp"
 #include "../allocator/RuntimeExports.h"
@@ -29,6 +29,15 @@
 #include "../platform/PlatformRuntime.hpp"
 #include "../platform/PortRuntime.hpp"
 #include "../platform/Scheduler.hpp"
+
+// The C constants of eco/eco_embed.h and the runtime's enums are one set of numbers.
+static_assert(ECO_PORT_UNREGISTERED == Elm::Platform::kPortUnregistered && ECO_PORT_IN_JSON == Elm::Platform::kPortInJson &&
+              ECO_PORT_IN_BYTES == Elm::Platform::kPortInBytes && ECO_PORT_OUT_JSON == Elm::Platform::kPortOutJson &&
+              ECO_PORT_OUT_BYTES == Elm::Platform::kPortOutBytes);
+static_assert(ECO_EMIT_QUEUED == Elm::Platform::kEmitQueued && ECO_EMIT_NOT_A_PORT == Elm::Platform::kEmitNotAPort &&
+              ECO_EMIT_CANCELLED == Elm::Platform::kEmitCancelled && ECO_EMIT_OVERRUN == Elm::Platform::kEmitOverrun &&
+              ECO_EMIT_NESTED == Elm::Platform::kEmitNested && ECO_EMIT_NO_MEMORY == Elm::Platform::kEmitNoMemory);
+static_assert(ECO_FILL_CANCEL == Elm::Platform::kFillCancel);
 
 #include <atomic>
 #include <condition_variable>
@@ -443,6 +452,81 @@ int eco_port_unsubscribe_bytes(const char* port, eco_port_bytes_callback cb,
 
 int eco_port_is_bytes(const char* port) {
     return Elm::Platform::PortRuntime::instance().isBytes(port);
+}
+
+eco_port* eco_port_get(const char* name) {
+    return Elm::Platform::PortRuntime::instance().get(name);
+}
+
+int eco_port_kind(const eco_port* port) {
+    return Elm::Platform::PortRuntime::kindOf(port);
+}
+
+const char* eco_port_get_name(const eco_port* port) {
+    return port ? port->name.c_str() : nullptr;
+}
+
+int eco_port_send_json(eco_port* port, const char* json_utf8) {
+    using Elm::Platform::PortRuntime;
+    switch (PortRuntime::instance().sendIncoming(port, json_utf8)) {
+        case PortRuntime::SendResult::Queued: return 0;
+        case PortRuntime::SendResult::Rejected: return 2;
+        default: return 1;
+    }
+}
+
+int eco_port_send_buffer(eco_port* port, const uint8_t* data, size_t length,
+                         eco_port_release release, void* ctx) {
+    return Elm::Platform::PortRuntime::instance().sendIncomingBytes(port, data, length, release, ctx) ? 0 : 1;
+}
+
+int eco_port_subscribe_json(eco_port* port, eco_port_callback cb, void* user, eco_destroy_fn destroy) {
+    return Elm::Platform::PortRuntime::instance().subscribeOutgoing(port, cb, user, destroy) ? 0 : 1;
+}
+
+int eco_port_unsubscribe_json(eco_port* port, eco_port_callback cb, void* user) {
+    return Elm::Platform::PortRuntime::instance().unsubscribeOutgoing(port, cb, user) ? 0 : 1;
+}
+
+int eco_port_subscribe_borrowed(eco_port* port, eco_port_borrowed_callback cb, void* user,
+                                eco_destroy_fn destroy) {
+    return Elm::Platform::PortRuntime::instance().subscribeOutgoingBorrowed(port, cb, user, destroy) ? 0 : 1;
+}
+
+int eco_port_unsubscribe_borrowed(eco_port* port, eco_port_borrowed_callback cb, void* user) {
+    return Elm::Platform::PortRuntime::instance().unsubscribeOutgoingBorrowed(port, cb, user) ? 0 : 1;
+}
+
+const uint8_t* eco_borrowed_data(const eco_borrowed_bytes* bytes) {
+    return Elm::Platform::embed_detail::borrowedData(bytes);
+}
+
+size_t eco_borrowed_size(const eco_borrowed_bytes* bytes) {
+    return Elm::Platform::embed_detail::borrowedSize(bytes);
+}
+
+eco_owned_bytes* eco_borrowed_retain(const eco_borrowed_bytes* bytes) {
+    return Elm::Platform::embed_detail::retain(bytes);
+}
+
+const uint8_t* eco_owned_data(const eco_owned_bytes* owned) {
+    return Elm::Platform::embed_detail::ownedData(owned);
+}
+
+size_t eco_owned_size(const eco_owned_bytes* owned) {
+    return Elm::Platform::embed_detail::ownedSize(owned);
+}
+
+void eco_owned_ref(eco_owned_bytes* owned) {
+    Elm::Platform::embed_detail::ownedRef(owned);
+}
+
+void eco_owned_unref(eco_owned_bytes* owned) {
+    Elm::Platform::embed_detail::ownedUnref(owned);
+}
+
+int eco_port_emit(eco_port* port, size_t capacity, eco_bytes_fill fill, void* user) {
+    return Elm::Platform::PortRuntime::instance().emit(port, capacity, fill, user);
 }
 
 #endif  // !defined(_WIN32)

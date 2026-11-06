@@ -144,6 +144,11 @@ check until it is updated:
 - **D4, Bytes sent in.** On JS the program's `Bytes` alias the sender's buffer, so a write to it
   after the send shows through to Elm; the addon copies at the send, keeping Elm values immutable.
 
+- **D5, a send from inside a subscriber (predicted, not observed; plans/native-bytes-ports-2.md
+  §2.10).** elm/core's JS runs `update` at once for such a send, while native queues it. The
+  `order` scenario measures the order of `update` for such a send and a Task of the same batch.
+  Both the JS backend and the addon give `task,in`, so the transcripts match.
+
 Also found and fixed: native `Platform.sendToApp` and `sendToSelf` sent their message when the kernel
 was called, not when the returned Task ran (KERNEL_TASK_IO_001). They now return binding Tasks, as
 elm/core's do; pinned by the `platform-services/PS13` and `PS14` unit tests.
