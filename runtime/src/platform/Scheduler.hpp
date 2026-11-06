@@ -172,6 +172,11 @@ public:
         syncHeapGeneration();
         return pendingAsync_.load();
     }
+    // Returns whether a hold that counts as busy is live: the part of the busy state the activity hook reports
+    // that is kept in atomics, so that any thread may read it, current when read. A host send takes its hold
+    // before it returns, so this is true from then until the eco thread has handled it. It reads two counters
+    // one after the other, so a hold acquired or released in between may or may not be seen.
+    bool hasBusyHolds() const { return pendingAsync_.load() - hostHolds_.load() > 0; }
     // Returns how many calls to `drain` are in progress.
     int drainDepth() const { return drainDepth_; }
 

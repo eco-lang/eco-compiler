@@ -902,7 +902,7 @@ copied closure. Every other field of the graph is passed through.
 optimize : Config.InlineConfig -> MonoGraph -> ( MonoGraph, Metrics )
 optimize inlineConfig graph =
     let
-        (MonoGraph { nodes, main, registry, ctorShapes, nextLambdaIndex, callEdges, ports, flagsDecoder, lssMemberOrigins, lssMemberKinds, lssBlockedMembers }) =
+        (MonoGraph { nodes, main, registry, ctorShapes, nextLambdaIndex, callEdges, ports, flagsDecoder, flagsSchema, lssMemberOrigins, lssMemberKinds, lssBlockedMembers }) =
             graph
 
         ( raisedNodes, raiseCounters ) =
@@ -945,7 +945,7 @@ optimize inlineConfig graph =
     in
     -- A separate function, so that the input array is out of scope while the
     -- nodes are rewritten.
-    optimizeNodes nodesList ctx main registry ctorShapes ports flagsDecoder lssMemberOrigins lssMemberKinds lssBlockedMembers
+    optimizeNodes nodesList ctx main registry ctorShapes ports flagsDecoder flagsSchema lssMemberOrigins lssMemberKinds lssBlockedMembers
         |> Tuple.mapSecond
             (\m ->
                 { m
@@ -967,11 +967,12 @@ optimizeNodes :
     -> Mono.LayoutMap (List Mono.CtorShape)
     -> List Mono.PortRegistration
     -> Maybe Mono.SpecId
+    -> String
     -> Dict Int Mono.MemberOrigin
     -> Dict Int String
     -> Dict Int ()
     -> ( MonoGraph, Metrics )
-optimizeNodes nodesList ctx main registry ctorShapes ports flagsDecoder lssMemberOrigins lssMemberKinds lssBlockedMembers =
+optimizeNodes nodesList ctx main registry ctorShapes ports flagsDecoder flagsSchema lssMemberOrigins lssMemberKinds lssBlockedMembers =
     let
         ( optimizedNodesList, finalCtx, _ ) =
             List.foldl
@@ -1007,6 +1008,7 @@ optimizeNodes nodesList ctx main registry ctorShapes ports flagsDecoder lssMembe
         , specValueUsed = BitSet.empty
         , ports = ports
         , flagsDecoder = flagsDecoder
+        , flagsSchema = flagsSchema
         , lssMemberOrigins = lssMemberOrigins
         , lssMemberKinds = lssMemberKinds
         , lssBlockedMembers = lssBlockedMembers

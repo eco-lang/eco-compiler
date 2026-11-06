@@ -549,6 +549,7 @@ run memberOrigins registry specNodes exprs =
             , specValueUsed = BitSet.empty
             , ports = []
             , flagsDecoder = Nothing
+            , flagsSchema = ""
             , lssMemberOrigins = memberOrigins
             , lssMemberKinds = Dict.empty
             , lssBlockedMembers = Dict.empty

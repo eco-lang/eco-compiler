@@ -963,7 +963,9 @@ kernel `Elm.Platform.leaf` with the port's name and a value.
 For an incoming port the value is the closure's argument, and the port's own
 decoder (`expr`) is enqueued as a spec of the port global at the decoder's
 type; its id is recorded with the port. For an outgoing port the value is the
-argument passed through the encoder, which is translated inline. With LSS on,
+argument passed through the encoder, which is translated inline. A bytes port
+(`Mono.portCarriesBytes`) has no codec: an incoming one enqueues no decoder,
+and an outgoing one puts its argument in the leaf as it is (PORT_008). With LSS on,
 every lambda set in the port's type is made ⊤ first, since the port's functions
 are handed to the runtime.
 
@@ -1030,22 +1032,35 @@ specializePortBody incoming home name expr canType requestedMonoType paramType r
                             , closureKind = Nothing
                             , captureAbi = Nothing
                             }
-                    in
-                    if incoming then
-                        let
-                            body =
-                                Mono.MonoCall region (leafKernel paramType) [ nameLit, paramVar ] resultType Mono.defaultCallInfo
 
-                            wrapper =
-                                Mono.MonoClosure closureInfo body requestedMonoType
-                        in
+                        bytesPort =
+                            Mono.portCarriesBytes incoming paramType
+
+                        -- The leaf of an incoming port, or of an outgoing bytes
+                        -- port, holds the closure's argument itself.
+                        bareLeafWrapper =
+                            Mono.MonoClosure closureInfo
+                                (Mono.MonoCall region (leafKernel paramType) [ nameLit, paramVar ] resultType Mono.defaultCallInfo)
+                                requestedMonoType
+                    in
+                    if incoming && bytesPort then
+                        ( Mono.MonoPortIncoming bareLeafWrapper requestedMonoType
+                        , recordPort { name = portName, key = Mono.toComparableGlobal portGlobal, incoming = True, decoderSpecId = Nothing, bytes = True, schema = "" } s3
+                        )
+
+                    else if incoming then
                         case classifyAs Mono.tkClassMisc (TOpt.typeOf expr) s3 of
                             ( decoderMonoType, s4 ) ->
                                 case Engine.enqueueSpec portGlobal decoderMonoType s4 of
                                     ( decoderSpecId, s5 ) ->
-                                        ( Mono.MonoPortIncoming wrapper requestedMonoType
-                                        , recordPort { name = portName, key = Mono.toComparableGlobal portGlobal, incoming = True, decoderSpecId = Just decoderSpecId } s5
+                                        ( Mono.MonoPortIncoming bareLeafWrapper requestedMonoType
+                                        , recordPort { name = portName, key = Mono.toComparableGlobal portGlobal, incoming = True, decoderSpecId = Just decoderSpecId, bytes = False, schema = incomingSchema paramType } s5
                                         )
+
+                    else if bytesPort then
+                        ( Mono.MonoPortOutgoing bareLeafWrapper requestedMonoType
+                        , recordPort { name = portName, key = Mono.toComparableGlobal portGlobal, incoming = False, decoderSpecId = Nothing, bytes = True, schema = "" } s3
+                        )
 
                     else
                         case translate expr (connectEncoderType expr canType s3) of
@@ -1069,8 +1084,21 @@ specializePortBody incoming home name expr canType requestedMonoType paramType r
                                         Mono.MonoClosure closureInfo body requestedMonoType
                                 in
                                 ( Mono.MonoPortOutgoing wrapper requestedMonoType
-                                , recordPort { name = portName, key = Mono.toComparableGlobal portGlobal, incoming = False, decoderSpecId = Nothing } s4
+                                , recordPort { name = portName, key = Mono.toComparableGlobal portGlobal, incoming = False, decoderSpecId = Nothing, bytes = False, schema = "" } s4
                                 )
+
+
+{-| Returns the `Mono.payloadSchema` of the payload an incoming JSON port's
+tagger type `taggerType` takes.
+-}
+incomingSchema : Mono.MonoType -> String
+incomingSchema taggerType =
+    case taggerType of
+        Mono.MFunction _ _ (payload :: _) _ ->
+            Mono.payloadSchema payload
+
+        _ ->
+            ""
 
 
 {-| Connects an outgoing port's encoder expression to the function type

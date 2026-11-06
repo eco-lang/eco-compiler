@@ -97,7 +97,7 @@ constant constructors, constant thunks, result and parameter promotion, and
 buildContext : Config.EcoConfig -> Mono.MonoGraph -> Ctx.Context
 buildContext ecoConfig monoGraph0 =
     let
-        (Mono.MonoGraph { nodes, main, registry, ctorShapes }) =
+        (Mono.MonoGraph { nodes, main, registry, ctorShapes, flagsSchema }) =
             monoGraph0
 
         signatures =
@@ -106,6 +106,7 @@ buildContext ecoConfig monoGraph0 =
     Ctx.initContext registry signatures ctorShapes
         |> Ctx.withInlineBodies (MonoInlineSimplify.buildBodyLookup monoGraph0)
         |> Ctx.withEcoConfig ecoConfig
+        |> Ctx.withFlagsSchema flagsSchema
         |> Ctx.withCtorBySpec (buildCtorBySpec nodes)
         |> Ctx.withNullConsBySpec (buildNullConsBySpec nodes)
         |> Ctx.withConstCtorBySpec (buildConstCtorBySpec nodes)

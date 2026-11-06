@@ -11,8 +11,11 @@
 //
 // It is written against Node's C API, N-API, and against the embedding interface in `eco_embed.h`. The program
 // runs on its own eco thread, as `eco_app_start` describes; JavaScript runs on Node's main thread. Values cross
-// between the two only as JSON text: `JSON.stringify` on the main thread for flags and incoming port values, and
-// `JSON.parse` on the main thread for each payload an outgoing port sends.
+// between the two as JSON text: `JSON.stringify` on the main thread for flags and incoming port values, and
+// `JSON.parse` on the main thread for each payload an outgoing port sends. A bytes port, whose whole payload is
+// `Bytes`, carries raw bytes instead, as the JS backend does: its subscribers get a `Uint8Array`, and its `send`
+// takes a `Uint8Array`, an `ArrayBuffer` or a `DataView`. Each costs one copy here, since the eco thread's bytes
+// are valid only during the callback and a JavaScript buffer can change or move before the eco thread reads it.
 //
 // The eco thread may not call JavaScript, so it hands work to the main thread through N-API thread-safe
 // functions (TSFNs): a TSFN wraps a function to be run on the main thread and lets any thread queue a call to
@@ -23,8 +26,9 @@
 //   process running.
 // - One keepalive TSFN, `g_keepalive`, is referenced from its creation and while the program reports itself
 //   busy through the idle hook (`eco_set_idle_hook`), and from each port send until the next idle report; an
-//   idle report unreferences it. Once `app.stop()` has been called it is never referenced again, and it is
-//   unreferenced when the stop completes; a failed start releases it.
+//   idle report unreferences it, unless a payload queued for a subscriber has not been delivered yet. Once
+//   `app.stop()` has been called it is never referenced again, and it is unreferenced when the stop completes;
+//   a failed start releases it.
 //
 //===----------------------------------------------------------------------===//
 
@@ -34,6 +38,8 @@
 #include "eco_embed.h"
 
 #include <atomic>
+#include <cstdlib>
+#include <cstring>
 #include <memory>
 #include <mutex>
 #include <new>
@@ -49,6 +55,20 @@ namespace {
 // call to `keepaliveTrampoline`; that call, on the main thread, references or unreferences `g_keepalive` to match
 // the state it reads then. `portSend` also references it directly, so that the loop is held from the moment a
 // value is sent rather than from the moment the eco thread picks it up.
+//
+// An idle report must not unreference the keepalive while the program still has something on its way to
+// JavaScript, or Node exits with it undelivered, where the JS backend would have called the subscriber at once.
+// Two cases (found 2026-11-06 by test/embed/embed_host.js, whose hosts do not pin the loop themselves):
+//
+// - A payload the program sends a subscriber is queued on the subscription's TSFN, which is unreferenced, and
+//   the program then reports itself idle; the two calls reach the main thread in either order.
+//   `g_pendingDeliveries` counts the queued payloads.
+// - An idle report the eco thread made just before a `send` can reach the main thread after it, and would undo
+//   the send's reference. `eco_app_is_busy` reads the program's busy holds as they are now, and a send's hold
+//   is taken before `eco_port_send` returns.
+//
+// `settleKeepalive` holds the loop while the last report was busy, the program has busy holds, or a payload is
+// queued.
 
 // The keepalive TSFN, set by `elmInit` and released by `ecoEnvCleanup`; null until `elmInit` creates it.
 napi_threadsafe_function g_keepalive = nullptr;
@@ -58,6 +78,43 @@ std::atomic<bool> g_ecoBusy{true};
 // Whether `app.stop()` has been called. Used on the main thread only. Once set, nothing references
 // `g_keepalive` again, so a stopped program never holds Node's event loop.
 bool g_stopped = false;
+// Whether `elmInit` has started the program.
+bool g_inited = false;
+// The payloads queued on a subscription TSFN and not yet delivered: incremented on the queuing thread, before
+// the call is queued, and decremented on the main thread once the call has run.
+std::atomic<int> g_pendingDeliveries{0};
+
+// References `g_keepalive` if the app has not been stopped and the program last reported itself busy, has busy
+// holds now or has a payload still to be delivered, and unreferences it otherwise. Main thread only; does
+// nothing before `elmInit` creates it.
+void settleKeepalive(napi_env env) {
+    if (env == nullptr || g_keepalive == nullptr) return;
+    const bool busy = g_ecoBusy.load() || g_pendingDeliveries.load() > 0 || (g_inited && eco_app_is_busy());
+    if (busy && !g_stopped)
+        napi_ref_threadsafe_function(env, g_keepalive);
+    else
+        napi_unref_threadsafe_function(env, g_keepalive);
+}
+
+/**
+ * Marks one queued payload delivered when it goes out of scope, in a subscription TSFN's call, and settles the
+ * keepalive once none is left.
+ */
+struct DeliveryDone {
+    napi_env env;
+    ~DeliveryDone() {
+        if (g_pendingDeliveries.fetch_sub(1) == 1) settleKeepalive(env);
+    }
+};
+
+// Queues `payload` on the subscription TSFN `tsfn`, counting it in `g_pendingDeliveries`; returns whether it
+// was queued.
+bool queueDelivery(napi_threadsafe_function tsfn, void* payload) {
+    g_pendingDeliveries.fetch_add(1);
+    if (napi_call_threadsafe_function(tsfn, payload, napi_tsfn_blocking) == napi_ok) return true;
+    g_pendingDeliveries.fetch_sub(1);
+    return false;
+}
 
 // Tries to throw a JavaScript `Error` carrying N-API's last error message for `env`. If a JavaScript exception is
 // already pending, that exception is what propagates.
@@ -109,6 +166,7 @@ const char* rootModuleName() {
  */
 struct SubEntry {
     std::string port;
+    bool bytes = false;                       // Subscribed with `eco_port_subscribe_bytes`.
     napi_threadsafe_function tsfn = nullptr;  // Calls the subscriber on the main thread; never released.
     napi_ref fnRef = nullptr;                 // The subscriber, held to find this entry on unsubscribe.
 };
@@ -125,6 +183,7 @@ std::vector<SubEntry*>& subEntries() {
 // TSFN is being torn down, or if any step fails, the subscriber is not called.
 void callJsTrampoline(napi_env env, napi_value jsCb, void* /*ctx*/,
                       void* data) {
+    DeliveryDone done{env};
     auto* payload = static_cast<std::string*>(data);
     if (env != nullptr && jsCb != nullptr) {
         napi_value jsonStr = nullptr;
@@ -159,24 +218,67 @@ void nodeSink(const char* json, void* user) {
     if (entry == nullptr || entry->tsfn == nullptr) return;
     auto* payload = new (std::nothrow) std::string(json);
     if (payload == nullptr) return;
-    if (napi_call_threadsafe_function(entry->tsfn, payload,
-                                      napi_tsfn_blocking) != napi_ok) {
-        delete payload;
-    }
+    if (!queueDelivery(entry->tsfn, payload)) delete payload;
 }
 
-// References `g_keepalive` if `g_ecoBusy` is set and the app has not been stopped, and unreferences it
-// otherwise; the call queued by `ecoActivity`.
+// Frees the byte vector that backs an external `ArrayBuffer`; the buffer's finalizer.
+void deleteByteVector(napi_env /*env*/, void* /*data*/, void* hint) {
+    delete static_cast<std::vector<uint8_t>*>(hint);
+}
+
+// Calls the subscriber `jsCb` with a `Uint8Array` over the bytes in `data`, on the main thread; the bytes
+// port counterpart of `callJsTrampoline`.
+//
+// `data` is a `std::vector<uint8_t>` allocated by `nodeSinkBytes`. It becomes the backing store of the
+// array's `ArrayBuffer`, freed by the buffer's finalizer, so the bytes are not copied again; if that fails, as
+// for an empty vector, the bytes are copied into a new `ArrayBuffer` and the vector is deleted here.
+void callJsBytesTrampoline(napi_env env, napi_value jsCb, void* /*ctx*/,
+                           void* data) {
+    DeliveryDone done{env};
+    auto* bytes = static_cast<std::vector<uint8_t>*>(data);
+    if (env == nullptr || jsCb == nullptr) {
+        delete bytes;
+        return;
+    }
+    const size_t length = bytes->size();
+    napi_value buffer = nullptr;
+    if (length == 0 ||
+        napi_create_external_arraybuffer(env, bytes->data(), length, deleteByteVector,
+                                         bytes, &buffer) != napi_ok) {
+        void* copy = nullptr;
+        buffer = nullptr;
+        if (napi_create_arraybuffer(env, length, &copy, &buffer) == napi_ok && length > 0)
+            std::memcpy(copy, bytes->data(), length);
+        delete bytes;
+        if (buffer == nullptr) return;
+    }
+    napi_value array = nullptr;
+    if (napi_create_typedarray(env, napi_uint8_array, length, buffer, 0, &array) != napi_ok) return;
+    napi_value undef = nullptr;
+    napi_get_undefined(env, &undef);
+    napi_value argv[1] = {array};
+    napi_call_function(env, undef, jsCb, 1, argv, nullptr);
+}
+
+// Queues a copy of the `length` bytes at `data` on the TSFN of the `SubEntry` that `user` points to, for
+// `callJsBytesTrampoline` to deliver; the `eco_port_bytes_callback` every bytes subscription is made with. It
+// runs and drops a payload as `nodeSink` does.
+void nodeSinkBytes(const uint8_t* data, size_t length, void* user) {
+    auto* entry = static_cast<SubEntry*>(user);
+    if (entry == nullptr || entry->tsfn == nullptr) return;
+    auto* payload = new (std::nothrow) std::vector<uint8_t>();
+    if (payload == nullptr) return;
+    if (length > 0) payload->assign(data, data + length);
+    if (!queueDelivery(entry->tsfn, payload)) delete payload;
+}
+
+// Settles `g_keepalive` with `settleKeepalive`; the call queued by `ecoActivity`.
 //
 // It reads the state when it runs, not when it was queued, so after a burst of reports the TSFN matches the
 // latest. It does nothing when `env` is null, as when the TSFN is being torn down.
 void keepaliveTrampoline(napi_env env, napi_value /*jsCb*/, void* /*ctx*/,
                          void* /*data*/) {
-    if (env == nullptr || g_keepalive == nullptr) return;
-    if (g_ecoBusy.load() && !g_stopped)
-        napi_ref_threadsafe_function(env, g_keepalive);
-    else
-        napi_unref_threadsafe_function(env, g_keepalive);
+    settleKeepalive(env);
 }
 
 // Records `busy` in `g_ecoBusy` and queues a call to `keepaliveTrampoline`; the idle hook `elmInit` installs.
@@ -201,12 +303,9 @@ std::string* internPortName(const char* name) {
     return names.back();
 }
 
-// Implements `ports.<name>.subscribe(fn)`: subscribes the JavaScript function `fn` to the outgoing port whose
-// name is the function's data, so that it is called on the main thread with each payload, parsed from JSON.
-//
-// Throws a `TypeError` if `fn` is not a function. The subscription does not keep Node's event loop alive.
-// Subscribing the same function twice subscribes it twice.
-napi_value portSubscribe(napi_env env, napi_callback_info info) {
+// Subscribes the JavaScript function `fn` to the outgoing port whose name is the function's data, as a bytes
+// subscriber if `bytes`; `portSubscribe` and `portSubscribeBytes` describe the two.
+napi_value portSubscribeKind(napi_env env, napi_callback_info info, bool bytes) {
     size_t argc = 1;
     napi_value argv[1];
     void* data = nullptr;
@@ -224,6 +323,7 @@ napi_value portSubscribe(napi_env env, napi_callback_info info) {
     // Owned here until every N-API call has succeeded, so a failure leaks neither the entry nor its TSFN.
     auto entry = std::make_unique<SubEntry>();
     entry->port = *portName;
+    entry->bytes = bytes;
 
     napi_value resourceName;
     NAPI_CALL(env, napi_create_string_utf8(env, "eco_port", NAPI_AUTO_LENGTH,
@@ -232,7 +332,7 @@ napi_value portSubscribe(napi_env env, napi_callback_info info) {
               napi_create_threadsafe_function(
                   env, argv[0], nullptr, resourceName, /*max_queue=*/0,
                   /*initial_thread_count=*/1, nullptr, nullptr, nullptr,
-                  callJsTrampoline, &entry->tsfn));
+                  bytes ? callJsBytesTrampoline : callJsTrampoline, &entry->tsfn));
     napi_status st = napi_unref_threadsafe_function(env, entry->tsfn);
     if (st == napi_ok) st = napi_create_reference(env, argv[0], 1, &entry->fnRef);
     if (st != napi_ok) {
@@ -244,9 +344,31 @@ napi_value portSubscribe(napi_env env, napi_callback_info info) {
 
     SubEntry* subscribed = entry.release();
     subEntries().push_back(subscribed);
-    eco_port_subscribe(portName->c_str(), nodeSink, subscribed);
+    if (bytes)
+        eco_port_subscribe_bytes(portName->c_str(), nodeSinkBytes, subscribed);
+    else
+        eco_port_subscribe(portName->c_str(), nodeSink, subscribed);
+    // A first subscriber is handed the payloads buffered before it, queued here; the loop holds until they
+    // are delivered.
+    settleKeepalive(env);
 
     return nullptr;
+}
+
+// Implements `ports.<name>.subscribe(fn)` for a JSON port: subscribes the JavaScript function `fn` to the
+// outgoing port whose name is the function's data, so that it is called on the main thread with each payload,
+// parsed from JSON.
+//
+// Throws a `TypeError` if `fn` is not a function. The subscription does not keep Node's event loop alive.
+// Subscribing the same function twice subscribes it twice.
+napi_value portSubscribe(napi_env env, napi_callback_info info) {
+    return portSubscribeKind(env, info, /*bytes=*/false);
+}
+
+// Implements `ports.<name>.subscribe(fn)` for a bytes port, as `portSubscribe` does for a JSON one, except
+// that `fn` is called with each payload as a new `Uint8Array`.
+napi_value portSubscribeBytes(napi_env env, napi_callback_info info) {
+    return portSubscribeKind(env, info, /*bytes=*/true);
 }
 
 // Implements `ports.<name>.unsubscribe(fn)`: removes the earliest subscription of `fn` to the port whose name
@@ -271,7 +393,10 @@ napi_value portUnsubscribe(napi_env env, napi_callback_info info) {
         if (napi_strict_equals(env, fn, argv[0], &same) != napi_ok || !same)
             continue;
 
-        eco_port_unsubscribe(portName->c_str(), nodeSink, entry);
+        if (entry->bytes)
+            eco_port_unsubscribe_bytes(portName->c_str(), nodeSinkBytes, entry);
+        else
+            eco_port_unsubscribe(portName->c_str(), nodeSink, entry);
         napi_delete_reference(env, entry->fnRef);
         entries.erase(it);
         // The entry and its TSFN are leaked: a delivery in progress may still be using the entry, and
@@ -286,7 +411,8 @@ napi_value portUnsubscribe(napi_env env, napi_callback_info info) {
 // incoming port whose name is the function's data, with `eco_port_send`.
 //
 // Propagates any exception `JSON.stringify` throws; throws a `TypeError` if it does not return a string, as for
-// `undefined` or a function, and an `Error` if `eco_port_send` refuses the send. On success, unless
+// `undefined` or a function, and an `Error` if `eco_port_send` refuses the send, with the JS backend's message
+// when the value does not decode as the port's payload type. On success, unless
 // `app.stop()` has been called, it references `g_keepalive` before returning, so that Node's event loop is held
 // until the program next reports itself idle.
 napi_value portSend(napi_env env, napi_callback_info info) {
@@ -320,13 +446,102 @@ napi_value portSend(napi_env env, napi_callback_info info) {
     NAPI_CALL(env, napi_get_value_string_utf8(env, jsonStr, json.data(),
                                               len + 1, &len));
 
-    if (eco_port_send(portName->c_str(), json.c_str()) != 0) {
+    const int sent = eco_port_send(portName->c_str(), json.c_str());
+    if (sent == 2) {
+        // The value does not decode as the port's payload type: the runtime checked it on this thread
+        // (PORT_009), and the message is the JS backend's.
+        napi_throw_error(env, nullptr, eco_last_error());
+        return nullptr;
+    }
+    if (sent != 0) {
         std::string msg = "eco: unknown incoming port '" + *portName + "'";
         napi_throw_error(env, nullptr, msg.c_str());
         return nullptr;
     }
     // Referenced here, not left to the idle hook, so that the loop is held before the eco thread has seen the
     // value and reported itself busy.
+    if (g_keepalive != nullptr && !g_stopped)
+        napi_ref_threadsafe_function(env, g_keepalive);
+    return nullptr;
+}
+
+// Implements `ports.<name>.send(value)` for an incoming bytes port: copies the bytes of `value`, a `Uint8Array`,
+// an `ArrayBuffer` or a `DataView` (what the JS backend's `_Json_decodeBytes` takes), into a malloc'd buffer
+// and hands that to the port with `eco_port_send_bytes`, to be freed once the eco thread has copied it.
+//
+// Throws a `TypeError` for any other value and an `Error` if the send is refused. On success it references
+// `g_keepalive` as `portSend` does.
+napi_value portSendBytes(napi_env env, napi_callback_info info) {
+    size_t argc = 1;
+    napi_value argv[1] = {nullptr};
+    void* data = nullptr;
+    NAPI_CALL(env, napi_get_cb_info(env, info, &argc, argv, nullptr, &data));
+    auto* portName = static_cast<std::string*>(data);
+
+    const void* bytes = nullptr;
+    size_t length = 0;
+    bool known = false;
+    if (argc >= 1) {
+        bool is = false;
+        NAPI_CALL(env, napi_is_typedarray(env, argv[0], &is));
+        if (is) {
+            napi_typedarray_type type;
+            size_t count = 0;
+            void* p = nullptr;
+            napi_value buffer;
+            size_t offset = 0;
+            NAPI_CALL(env, napi_get_typedarray_info(env, argv[0], &type, &count, &p, &buffer, &offset));
+            // Only a Uint8Array, as on the JS backend; any other element type is refused below.
+            if (type == napi_uint8_array) {
+                bytes = p;
+                length = count;
+                known = true;
+            }
+        }
+        if (!known) {
+            NAPI_CALL(env, napi_is_arraybuffer(env, argv[0], &is));
+            if (is) {
+                void* p = nullptr;
+                NAPI_CALL(env, napi_get_arraybuffer_info(env, argv[0], &p, &length));
+                bytes = p;
+                known = true;
+            }
+        }
+        if (!known) {
+            NAPI_CALL(env, napi_is_dataview(env, argv[0], &is));
+            if (is) {
+                void* p = nullptr;
+                napi_value buffer;
+                size_t offset = 0;
+                NAPI_CALL(env, napi_get_dataview_info(env, argv[0], &length, &p, &buffer, &offset));
+                bytes = p;
+                known = true;
+            }
+        }
+    }
+    if (!known) {
+        napi_throw_type_error(env, nullptr,
+                              "eco: a Bytes port's send expects a Uint8Array, ArrayBuffer or DataView");
+        return nullptr;
+    }
+
+    // The eco thread copies the bytes later, by when JavaScript may have changed or dropped the buffer, so the
+    // port gets a copy of its own.
+    uint8_t* copy = nullptr;
+    if (length > 0) {
+        copy = static_cast<uint8_t*>(std::malloc(length));
+        if (copy == nullptr) {
+            napi_throw_error(env, nullptr, "eco: out of memory copying a Bytes port payload");
+            return nullptr;
+        }
+        std::memcpy(copy, bytes, length);
+    }
+    if (eco_port_send_bytes(portName->c_str(), copy, length, copy ? std::free : nullptr, copy) != 0) {
+        std::free(copy);
+        std::string msg = "eco: unknown incoming port '" + *portName + "'";
+        napi_throw_error(env, nullptr, msg.c_str());
+        return nullptr;
+    }
     if (g_keepalive != nullptr && !g_stopped)
         napi_ref_threadsafe_function(env, g_keepalive);
     return nullptr;
@@ -389,8 +604,8 @@ napi_value appStop(napi_env env, napi_callback_info /*info*/) {
 // ---------------------------------------------------------------------------
 
 // Returns a new `ports` object with one property per port the program has registered: an object with `send`
-// for an incoming port, or with `subscribe` and `unsubscribe` for any other. Returns null, with a JavaScript
-// exception pending, if an N-API call fails.
+// for an incoming port, or with `subscribe` and `unsubscribe` for any other, each the bytes form for a bytes
+// port. Returns null, with a JavaScript exception pending, if an N-API call fails.
 napi_value buildPortsObject(napi_env env) {
     napi_value ports;
     NAPI_CALL(env, napi_create_object(env, &ports));
@@ -404,18 +619,20 @@ napi_value buildPortsObject(napi_env env) {
         napi_value portObj;
         NAPI_CALL(env, napi_create_object(env, &portObj));
 
+        const bool bytes = eco_port_is_bytes(name) == 1;
         if (eco_port_is_incoming(name) == 1) {
             napi_value sendFn;
             NAPI_CALL(env, napi_create_function(env, "send", NAPI_AUTO_LENGTH,
-                                                portSend, interned, &sendFn));
+                                                bytes ? portSendBytes : portSend,
+                                                interned, &sendFn));
             NAPI_CALL(env,
                       napi_set_named_property(env, portObj, "send", sendFn));
         } else {
             napi_value subFn, unsubFn;
             NAPI_CALL(env, napi_create_function(env, "subscribe",
                                                 NAPI_AUTO_LENGTH,
-                                                portSubscribe, interned,
-                                                &subFn));
+                                                bytes ? portSubscribeBytes : portSubscribe,
+                                                interned, &subFn));
             NAPI_CALL(env, napi_create_function(env, "unsubscribe",
                                                 NAPI_AUTO_LENGTH,
                                                 portUnsubscribe, interned,
@@ -430,8 +647,6 @@ napi_value buildPortsObject(napi_env env) {
     return ports;
 }
 
-// Whether `elmInit` has started the program.
-bool g_inited = false;
 // Whether `elmInit` tried to start the program and failed. `eco_app_start` cannot be retried, so a later call
 // fails at once.
 bool g_startFailed = false;
@@ -440,6 +655,8 @@ bool g_startFailed = false;
 // object, `{ ports, stop }`.
 //
 // `opts.flags` is serialized with `JSON.stringify`; an exception it throws propagates and nothing is started.
+// Flags that do not decode as the program's flags type throw an `Error` with the JS backend's message, and
+// nothing is started, so init may be called again (PORT_009).
 // If `opts` is null, a function or a primitive, or `opts.flags` is `undefined` or `JSON.stringify` returns a
 // non-string, the program is started with no flags, as `eco_app_start` describes for a null `flags_json`. Throws
 // an `Error` if the program has already been started successfully by this function, or fails to start; since
@@ -517,14 +734,20 @@ napi_value elmInit(napi_env env, napi_callback_info info) {
         eco_set_idle_hook(ecoActivity, nullptr);
     }
 
-    if (eco_app_start(0, nullptr, hasFlags ? flagsJson.c_str() : nullptr) !=
-        0) {
+    const int started = eco_app_start(0, nullptr, hasFlags ? flagsJson.c_str() : nullptr);
+    if (started != 0) {
         // No eco thread exists to call the hook or the TSFN, so both can go here; otherwise the referenced
         // keepalive would hold Node's event loop for good.
-        g_startFailed = true;
         eco_set_idle_hook(nullptr, nullptr);
         napi_release_threadsafe_function(g_keepalive, napi_tsfn_release);
         g_keepalive = nullptr;
+        if (started == ECO_APP_ERR_BAD_FLAGS) {
+            // Refused before anything started (PORT_009), so init may be called again, as on the JS backend,
+            // whose message this is.
+            napi_throw_error(env, nullptr, eco_last_error());
+            return nullptr;
+        }
+        g_startFailed = true;
         napi_throw_error(env, nullptr, "eco: app failed to start");
         return nullptr;
     }

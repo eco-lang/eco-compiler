@@ -103,6 +103,14 @@ monomorphizeFromEntryWith limits maybeFlags mainGlobal mainType globalTypeEnv no
         ( stateWithMain, mainSpecIdVal ) =
             initSpecialization mainGlobal mainType globalTypeEnv nodes annotations mvarEnv
 
+        flagsSchemaStr =
+            case maybeFlags of
+                Nothing ->
+                    ""
+
+                Just flags ->
+                    Mono.flagsSchema flags.fromJson (entryPointMonoType Dict.empty flags.tipe)
+
         ( stateInit, flagsDecoderSpecId ) =
             case maybeFlags of
                 Nothing ->
@@ -140,7 +148,7 @@ monomorphizeFromEntryWith limits maybeFlags mainGlobal mainType globalTypeEnv no
         Ok finalState ->
             let
                 rawGraph =
-                    assembleRawGraphFrom finalState.accum finalState.ctx.lambdaCounter mainSpecIdVal flagsDecoderSpecId
+                    assembleRawGraphFrom finalState.accum finalState.ctx.lambdaCounter mainSpecIdVal flagsDecoderSpecId flagsSchemaStr
 
                 -- Prune also closes residual number variables, using the final MVarEnv.
                 prunedGraph =
@@ -200,8 +208,8 @@ only `reverseMapping`: the forward `mapping` and `countByGlobal` are emptied.
 LSS members.
 
 -}
-assembleRawGraphFrom : State.SpecAccum -> Int -> Mono.SpecId -> Maybe Mono.SpecId -> Mono.MonoGraph
-assembleRawGraphFrom finalAccum lambdaCounter mainSpecIdVal flagsDecoderSpecId =
+assembleRawGraphFrom : State.SpecAccum -> Int -> Mono.SpecId -> Maybe Mono.SpecId -> String -> Mono.MonoGraph
+assembleRawGraphFrom finalAccum lambdaCounter mainSpecIdVal flagsDecoderSpecId flagsSchemaStr =
     let
         mainInfo : Mono.MainInfo
         mainInfo =
@@ -276,6 +284,7 @@ assembleRawGraphFrom finalAccum lambdaCounter mainSpecIdVal flagsDecoderSpecId =
         , specValueUsed = valueUsedWithMain
         , ports = finalAccum.ports
         , flagsDecoder = flagsDecoderSpecId
+        , flagsSchema = flagsSchemaStr
         , lssMemberOrigins = Dict.empty
         , lssMemberKinds = Dict.empty
         , lssBlockedMembers = Dict.empty

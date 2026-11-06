@@ -60,11 +60,13 @@ type alias Assigned =
 
 {-| The synthetic flags-decoder global and its annotation type after id
 assignment. The pre-mono passes keep a `Define`'s annotation, so the type is
-the one the node has in every later graph.
+the one the node has in every later graph. `fromJson` is False when the decoder
+ignores the host's JSON, as eco/system's `Environment` decoder does.
 -}
 type alias FlagsDecoder =
     { global : TOpt.Global
     , tipe : Can.Type TypeIds.MVarId
+    , fromJson : Bool
     }
 
 
@@ -80,7 +82,7 @@ The pair is passed to `AssignMVarIds.assignIds` as its `useSolverRoots` and
 assignIn : ( Bool, Bool ) -> ModuleName.Canonical -> Name -> TOpt.GlobalGraph Name -> Assigned
 assignIn ( useSolverRoots, censusOn ) entryHome entryPointName graph =
     let
-        ( graphWithFlags, maybeFlagsGlobal ) =
+        ( graphWithFlags, maybeFlags ) =
             insertFlagsDecoderNode entryHome entryPointName graph
 
         ( assignedGraph, mvarState ) =
@@ -92,10 +94,10 @@ assignIn ( useSolverRoots, censusOn ) entryHome entryPointName graph =
     { graph = assignedGraph
     , flags =
         Maybe.andThen
-            (\global ->
-                Maybe.map (FlagsDecoder global) (findNodeAnnotationType global assignedNodes)
+            (\( global, fromJson ) ->
+                Maybe.map (\tipe -> FlagsDecoder global tipe fromJson) (findNodeAnnotationType global assignedNodes)
             )
-            maybeFlagsGlobal
+            maybeFlags
     , mvarState = mvarState
     , entryHome = entryHome
     }
@@ -109,9 +111,9 @@ flagsDecoderName =
     "main$flagsDecoder"
 
 
-{-| Returns the graph with a flags-decoder node added, and that node's global,
-when the entry named `entryPointName` is a `Program`; otherwise the graph
-unchanged and `Nothing`.
+{-| Returns the graph with a flags-decoder node added, and that node's global
+with whether the decoder reads the host's JSON, when the entry named
+`entryPointName` is a `Program`; otherwise the graph unchanged and `Nothing`.
 
 The entry is the `Define` or `TrackedDefine` with that name in `entryHome`. Its
 type is deep-dealiased; when the result is
@@ -123,7 +125,7 @@ builds for `flags` as `Effects.checkPayload` validates it. Flags it rejects
 crash the compiler: `Compiler.LocalOpt.Typed.Module` has already reported them.
 
 -}
-insertFlagsDecoderNode : ModuleName.Canonical -> Name -> TOpt.GlobalGraph Name -> ( TOpt.GlobalGraph Name, Maybe TOpt.Global )
+insertFlagsDecoderNode : ModuleName.Canonical -> Name -> TOpt.GlobalGraph Name -> ( TOpt.GlobalGraph Name, Maybe ( TOpt.Global, Bool ) )
 insertFlagsDecoderNode entryHome entryPointName ((TOpt.GlobalGraph nodes _ _ _ _) as graph) =
     case findEntryPointId entryHome entryPointName nodes of
         Nothing ->
@@ -134,9 +136,9 @@ insertFlagsDecoderNode entryHome entryPointName ((TOpt.GlobalGraph nodes _ _ _ _
 
 
 {-| Adds the flags decoder for an entry in `home` of type `tipe`, when that
-type is a `Program`.
+type is a `Program`, as `insertFlagsDecoderNode` describes.
 -}
-insertDecoderFor : ModuleName.Canonical -> Can.Type Name -> TOpt.GlobalGraph Name -> ( TOpt.GlobalGraph Name, Maybe TOpt.Global )
+insertDecoderFor : ModuleName.Canonical -> Can.Type Name -> TOpt.GlobalGraph Name -> ( TOpt.GlobalGraph Name, Maybe ( TOpt.Global, Bool ) )
 insertDecoderFor home tipe ((TOpt.GlobalGraph nodes fields annots roots varSupers) as graph) =
     case Type.deepDealias tipe of
         Can.TType hm nm [ flagsType, _, _ ] ->
@@ -174,7 +176,7 @@ insertDecoderFor home tipe ((TOpt.GlobalGraph nodes fields annots roots varSuper
                         TOpt.Define decoderExpr deps { tipe = decoderCanType, tvar = Nothing }
                 in
                 ( TOpt.GlobalGraph (DMap.insert TOpt.toComparableGlobal flagsGlobal node nodes) fields annots roots varSupers
-                , Just flagsGlobal
+                , Just ( flagsGlobal, not (EcoEnvironment.isEnvironmentFlags tipe) )
                 )
 
             else

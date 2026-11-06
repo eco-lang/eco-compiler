@@ -266,6 +266,7 @@ mkGraph nodes ports =
         , specValueUsed = BitSet.empty
         , ports = ports
         , flagsDecoder = Nothing
+        , flagsSchema = ""
         , lssMemberOrigins = Dict.empty
         , lssMemberKinds = Dict.empty
         , lssBlockedMembers = Dict.empty
@@ -285,7 +286,7 @@ testGraph =
         , Just (thunkNode "ab")
         , Just (consumerNode 2)
         ]
-        [ { name = "p", key = "p", incoming = True, decoderSpecId = Just 2 } ]
+        [ { name = "p", key = "p", incoming = True, decoderSpecId = Just 2, bytes = False, schema = "" } ]
 
 
 {-| A graph of two thunks with different literals, which the pass must not

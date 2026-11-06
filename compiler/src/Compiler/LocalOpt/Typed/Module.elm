@@ -1,6 +1,6 @@
 module Compiler.LocalOpt.Typed.Module exposing
     ( Annotations, MResult
-    , optimizeTyped
+    , optimizeTyped, checkNativePortPayloads
     )
 
 {-| Builds the typed local graph of one module, the form in which a module's
@@ -37,8 +37,10 @@ the solver variable of its whole type, taken from the `annotationVars`
 argument, and the body's when the function has none there.
 
 `main` is checked here: it must be a `VirtualDom.Node` or a `Platform.Program`
-whose flags can be decoded. A `Node` main is recorded as static; a `Program`'s
-flags decoder becomes the graph's `main`.
+whose flags can be decoded, and, since this graph is for native code, whose
+flags contain no `Bytes`. A `Node` main is recorded as static; a `Program`'s
+flags decoder becomes the graph's `main`. `checkNativePortPayloads` checks the
+ports for the same native limit.
 
 Once every node is built, lambda boundaries are normalized as
 `Compiler.LocalOpt.Typed.NormalizeLambdaBoundaries` describes, and the graph's
@@ -55,7 +57,7 @@ crashes the compiler.
 
 # Optimization
 
-@docs optimizeTyped
+@docs optimizeTyped, checkNativePortPayloads
 
 -}
 
@@ -66,6 +68,7 @@ import Compiler.Elm.ModuleName as ModuleName
 import Compiler.IR.Canonical as Can
 import Compiler.IR.Canonical.Alias as Type
 import Compiler.IR.Runtime.EcoEnvironment as EcoEnvironment
+import Compiler.IR.Source as Src
 import Compiler.IR.Typed.Canonical as TCan exposing (ExprTypes, ExprVars)
 import Compiler.IR.Typed.Optimized as TOpt
 import Compiler.IR.Typed.TypeVars as Vars
@@ -139,8 +142,8 @@ functions. `annotationVars` gives the solver variable of each top-level
 function's type. `allSchemeRoots` is stored in the graph unchanged.
 
 Fails with `BadCycle` when `main` is in a recursive group, `BadType` when
-`main` has a type it cannot be, and `BadFlags` when a program's flags cannot be
-decoded.
+`main` has a type it cannot be, `BadFlags` when a program's flags cannot be
+decoded, and `NativeBytesInFlags` when they contain `Bytes`.
 
 -}
 optimizeTyped : Annotations -> ExprTypes -> ExprVars -> KernelTypes.KernelTypeEnv -> Dict Name.Name Vars.Variable -> SolverRoots.AllSchemeRoots -> TCan.Module -> MResult i w (TOpt.LocalGraph Name)
@@ -159,6 +162,49 @@ optimizeTyped annotations exprTypes exprVars kernelEnv annotationVars allSchemeR
         |> addDecls tData.name annotations exprTypes exprVars kernelEnv annotationVars tData.decls
         |> ReportingResult.map LambdaNorm.normalizeLocalGraph
         |> ReportingResult.map withComputedVarSupers
+
+
+
+{-| Checks the ports of a module compiled to native code, whose source is
+`srcModule`, for the native limit on `Bytes`: a port may carry `Bytes` only as
+its whole payload (PORT_008). Fails with one `NativeBytesInPort` for each port
+whose payload has `Bytes` inside another type, at the region of the port's name.
+-}
+checkNativePortPayloads : Src.Module -> TCan.Module -> MResult i w ()
+checkNativePortPayloads (Src.Module srcData) (TCan.Module tData) =
+    case ( srcData.effects, tData.effects ) of
+        ( Src.Ports srcPorts, Can.Ports ports ) ->
+            let
+                checkPort : Src.Port -> MResult i w ()
+                checkPort (Src.Port _ ( _, A.At region name ) _) =
+                    let
+                        payload =
+                            case Dict.get name ports of
+                                Just (Can.Incoming port_) ->
+                                    Just port_.payload
+
+                                Just (Can.Outgoing port_) ->
+                                    Just port_.payload
+
+                                Nothing ->
+                                    Nothing
+                    in
+                    case payload of
+                        Just p ->
+                            if p /= Can.PayloadBytes && Can.payloadContainsBytes p then
+                                ReportingResult.throw (E.NativeBytesInPort region name)
+
+                            else
+                                ReportingResult.ok ()
+
+                        Nothing ->
+                            ReportingResult.ok ()
+            in
+            ReportingResult.traverse checkPort srcPorts
+                |> ReportingResult.map (\_ -> ())
+
+        _ ->
+            ReportingResult.ok ()
 
 
 
@@ -601,7 +647,11 @@ addDefHelp region annotations exprTypes exprVars kernelEnv annotationVars home n
                 else if hm == ModuleName.platform && nm == Name.program then
                     case Effects.checkPayload flags of
                         Ok payload ->
-                            Port.toFlagsDecoder payload |> Names.map (TOpt.Dynamic message) |> Names.run |> addMain |> ReportingResult.ok
+                            if Can.payloadContainsBytes payload then
+                                ReportingResult.throw (E.NativeBytesInFlags region)
+
+                            else
+                                Port.toFlagsDecoder payload |> Names.map (TOpt.Dynamic message) |> Names.run |> addMain |> ReportingResult.ok
 
                         Err ( subType, invalidPayload ) ->
                             ReportingResult.throw (E.BadFlags region subType invalidPayload)

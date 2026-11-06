@@ -10,6 +10,7 @@
 #include "platform/Scheduler.hpp"
 #include "platform/PlatformRuntime.hpp"
 #include "platform/PortRuntime.hpp"
+#include "platform/TaskBinding.hpp"
 #include "allocator/Heap.hpp"
 #include "allocator/HeapHelpers.hpp"
 #include "allocator/StringOps.hpp"
@@ -20,6 +21,55 @@ using namespace Elm;
 using namespace Elm::Kernel;
 using Export::encode;
 using Export::decode;
+
+namespace {
+
+// Returns a copy of the port name `name`, "" for an embedded constant. Taken before a registration, which
+// may collect; toStdString itself does not allocate on the Elm heap.
+std::string portNameOf(HPtr name) {
+    HPointer nameHP = decode(name.toBits());
+    void* namePtr = (nameHP.ptr_ind != 0) ? nullptr : Allocator::instance().resolve(nameHP);
+    return namePtr ? Elm::StringOps::toStdString(namePtr) : std::string();
+}
+
+// `Platform.sendToApp` and `sendToSelf` return Tasks, as in elm/core: a call builds a Task over
+// `( router, msg )` and sends nothing; the message goes out each time the Task runs (KERNEL_TASK_IO_001).
+// Until 2026-11-06 both sent at once, when called.
+
+// Returns the `( router, msg )` a send Task captures. Allocates.
+HPointer captureSend(HPtr router, HPtr msg) {
+    Unboxable r;
+    Unboxable m;
+    r.p = decode(router.toBits());
+    m.p = decode(msg.toBits());
+    return alloc::tuple2(r, m, 0);
+}
+
+// Reads the router and the message out of a send Task's captured tuple.
+void unpackSend(HPointer captured, HPointer& router, HPointer& msg) {
+    Tuple2* t = static_cast<Tuple2*>(Allocator::instance().resolve(captured));
+    router = t->a.p;
+    msg = t->b.p;
+}
+
+// The body of a `sendToApp` Task: sends the message to the program, then succeeds with `()`.
+HPointer sendToAppBody(HPointer captured) {
+    HPointer router;
+    HPointer msg;
+    unpackSend(captured, router, msg);
+    Elm::Platform::PlatformRuntime::instance().sendToApp(router, msg);
+    return Elm::Platform::Scheduler::instance().taskSucceed(alloc::unit());
+}
+
+// The body of a `sendToSelf` Task: puts the message in the manager's mailbox, then succeeds with `()`.
+HPointer sendToSelfBody(HPointer captured) {
+    HPointer router;
+    HPointer msg;
+    unpackSend(captured, router, msg);
+    return Elm::Platform::PlatformRuntime::instance().sendToSelf(router, msg);
+}
+
+} // namespace
 
 extern "C" {
 
@@ -44,21 +94,14 @@ HPtr Elm_Kernel_Platform_map(HPtr closure, HPtr cmd) {
     return HPtr::fromBits(encode(mapped));
 }
 
-void Elm_Kernel_Platform_sendToApp(HPtr router, HPtr msg) {
-    uint64_t router_bits = router.toBits();
-    uint64_t msg_bits = msg.toBits();
-    HPointer routerHP = decode(router_bits);
-    HPointer msgHP = decode(msg_bits);
-    Elm::Platform::PlatformRuntime::instance().sendToApp(routerHP, msgHP);
+HPtr Elm_Kernel_Platform_sendToApp(HPtr router, HPtr msg) {
+    HPointer captured = captureSend(router, msg);
+    return HPtr::fromBits(encode(Elm::Platform::makeBinding<sendToAppBody>(captured)));
 }
 
 HPtr Elm_Kernel_Platform_sendToSelf(HPtr router, HPtr msg) {
-    uint64_t router_bits = router.toBits();
-    uint64_t msg_bits = msg.toBits();
-    HPointer routerHP = decode(router_bits);
-    HPointer msgHP = decode(msg_bits);
-    HPointer task = Elm::Platform::PlatformRuntime::instance().sendToSelf(routerHP, msgHP);
-    return HPtr::fromBits(encode(task));
+    HPointer captured = captureSend(router, msg);
+    return HPtr::fromBits(encode(Elm::Platform::makeBinding<sendToSelfBody>(captured)));
 }
 
 HPtr Elm_Kernel_Platform_worker(HPtr impl) {
@@ -84,18 +127,22 @@ HPtr Elm_Kernel_Platform_leaf(HPtr home, HPtr value) {
 // before Platform.worker runs. A port name is the bare port name; PortRuntime rejects a duplicate
 // (invariant PORT_001). A name that is an embedded constant (the empty String) registers as "".
 
-HPtr Elm_Kernel_Platform_registerIncomingPort(HPtr name, HPtr decoder) {
-    HPointer nameHP = decode(name.toBits());
+HPtr Elm_Kernel_Platform_registerIncomingPort(HPtr name, HPtr decoder, HPtr schema) {
     HPointer decoderHP = decode(decoder.toBits());
-    // The name is copied out before registerIncoming, which may collect. toStdString itself does not
-    // allocate on the Elm heap.
-    void* namePtr = (nameHP.ptr_ind != 0)
-                        ? nullptr
-                        : Allocator::instance().resolve(nameHP);
-    std::string portName =
-        namePtr ? Elm::StringOps::toStdString(namePtr) : std::string();
-    Elm::Platform::PortRuntime::instance().registerIncoming(portName,
-                                                            decoderHP);
+    // The payload descriptor (PORT_009) is an Elm string literal, read like the name.
+    Elm::Platform::PortRuntime::instance().registerIncoming(portNameOf(name), decoderHP, portNameOf(schema));
+    return HPtr::fromBits(encode(alloc::unit()));
+}
+
+// A bytes port, whose whole payload is Bytes, has no decoder: the runtime hands the bytes over as they are
+// (PORT_008).
+HPtr Elm_Kernel_Platform_registerIncomingBytesPort(HPtr name) {
+    Elm::Platform::PortRuntime::instance().registerIncomingBytes(portNameOf(name));
+    return HPtr::fromBits(encode(alloc::unit()));
+}
+
+HPtr Elm_Kernel_Platform_registerOutgoingBytesPort(HPtr name) {
+    Elm::Platform::PortRuntime::instance().registerOutgoing(portNameOf(name), /*bytes=*/true);
     return HPtr::fromBits(encode(alloc::unit()));
 }
 
@@ -107,13 +154,7 @@ HPtr Elm_Kernel_Platform_registerFlagsDecoder(HPtr decoder) {
 }
 
 HPtr Elm_Kernel_Platform_registerOutgoingPort(HPtr name) {
-    HPointer nameHP = decode(name.toBits());
-    void* namePtr = (nameHP.ptr_ind != 0)
-                        ? nullptr
-                        : Allocator::instance().resolve(nameHP);
-    std::string portName =
-        namePtr ? Elm::StringOps::toStdString(namePtr) : std::string();
-    Elm::Platform::PortRuntime::instance().registerOutgoing(portName);
+    Elm::Platform::PortRuntime::instance().registerOutgoing(portNameOf(name), /*bytes=*/false);
     return HPtr::fromBits(encode(alloc::unit()));
 }
 

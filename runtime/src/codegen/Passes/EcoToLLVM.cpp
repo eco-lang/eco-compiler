@@ -335,6 +335,22 @@ struct EcoToLLVMPass : public PassWrapper<EcoToLLVMPass, OperationPass<ModuleOp>
             }
         }
 
+        // The program's flags descriptor (`eco.flags_schema` on @main, PORT_009) becomes the NUL-terminated
+        // constant `__eco_flags_schema`, which `eco_app_start` checks a host's flags against before it starts
+        // the program. External, so that the embedding code's weak declaration finds it.
+        if (auto mainFn = module.lookupSymbol<func::FuncOp>("main")) {
+            if (auto schema = mainFn->getAttrOfType<StringAttr>("eco.flags_schema")) {
+                OpBuilder gb(ctx);
+                gb.setInsertionPointToStart(module.getBody());
+                std::string text = schema.getValue().str();
+                text.push_back('\0');
+                auto arrayTy = LLVM::LLVMArrayType::get(IntegerType::get(ctx, 8), text.size());
+                gb.create<LLVM::GlobalOp>(mainFn.getLoc(), arrayTy, /*isConstant=*/true,
+                                          LLVM::Linkage::External, "__eco_flags_schema",
+                                          gb.getStringAttr(text));
+            }
+        }
+
         // lowerAllocGroups walks the func::FuncOps, so it must run before Stage 0 erases them. Allocations not
         // in a group are left for the Stage 2 patterns.
         lowerAllocGroups(module, runtime);

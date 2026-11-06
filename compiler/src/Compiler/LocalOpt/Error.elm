@@ -15,6 +15,10 @@ that can cross from JavaScript into Elm. Which types can cross is decided by the
 checks that raise these errors; the reasons a type cannot are the
 `InvalidPayload` of `Compiler.Canonicalize.Error`, shared with ports.
 
+Native code adds limits of its own on what a port or the flags may carry, and
+the errors for those are here too, since the typed optimizer that finds them
+reports through this type.
+
 Errors can also be written to and read from bytes.
 
 
@@ -67,11 +71,19 @@ draws them.
 carries the part of the flags type that was rejected and why it was rejected.
 The report shows only the reason, not the type.
 
+The last two are raised only when compiling to native code, whose ports and
+flags cross as JSON text except for a port whose whole payload is `Bytes`
+(PORT_008). `NativeBytesInPort` is a port, named with the region of its name,
+whose payload has `Bytes` inside another type. `NativeBytesInFlags` is a
+`Program` whose flags type contains `Bytes`.
+
 -}
 type Error
     = BadType A.Region (Can.Type Name)
     | BadCycle A.Region Name (List Name)
     | BadFlags A.Region (Can.Type Name) E.InvalidPayload
+    | NativeBytesInPort A.Region Name
+    | NativeBytesInFlags A.Region
 
 
 
@@ -153,11 +165,30 @@ toReport localizer source err =
                         )
 
 
+        NativeBytesInPort region name ->
+            ( D.reflow ("The `" ++ name ++ "` port carries `Bytes` inside another type, which native code cannot send yet.")
+            , D.stack
+                [ D.reflow "When compiling to native code, a port can carry `Bytes` only as its whole payload, as in:"
+                , D.fromChars ("port " ++ name ++ " : Bytes -> Cmd msg") |> D.dullyellow |> D.indent 4
+                , D.reflow "Send each `Bytes` value through a port of its own, or encode the whole payload into one `Bytes` value."
+                ]
+            )
+                |> Code.toSnippet source region Nothing
+                |> Report.report "PORT ERROR" region
+
+        NativeBytesInFlags region ->
+            ( D.reflow "Your `main` program wants `Bytes` in its flags."
+            , D.reflow "A native program gets its flags as JSON text, which cannot carry `Bytes`. Send the `Bytes` value through a port whose whole payload is `Bytes` instead."
+            )
+                |> Code.toSnippet source region Nothing
+                |> Report.report "BAD FLAGS" region
+
+
 
 -- ====== ENCODERS and DECODERS ======
 
 
-{-| Builds an encoder that writes `error` as a one-byte tag, 0 to 2 in
+{-| Builds an encoder that writes `error` as a one-byte tag, 0 to 4 in
 constructor order, followed by its fields. `errorDecoder` reads it back.
 -}
 errorEncoder : Error -> Bytes.Encode.Encoder
@@ -186,6 +217,19 @@ errorEncoder error =
                 , E.invalidPayloadEncoder invalidPayload
                 ]
 
+        NativeBytesInPort region name ->
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 3
+                , A.regionEncoder region
+                , BE.string name
+                ]
+
+        NativeBytesInFlags region ->
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 4
+                , A.regionEncoder region
+                ]
+
 
 {-| A decoder for an `Error` as `errorEncoder` writes it. An unknown tag fails.
 -}
@@ -211,6 +255,15 @@ errorDecoder =
                             A.regionDecoder
                             Can.typeDecoder
                             E.invalidPayloadDecoder
+
+                    3 ->
+                        Bytes.Decode.map2 NativeBytesInPort
+                            A.regionDecoder
+                            BD.string
+
+                    4 ->
+                        Bytes.Decode.map NativeBytesInFlags
+                            A.regionDecoder
 
                     _ ->
                         Bytes.Decode.fail

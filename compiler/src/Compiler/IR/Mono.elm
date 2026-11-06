@@ -10,6 +10,7 @@ module Compiler.IR.Mono exposing
     , containsAnyMVar, decomposeFunctionType, defaultCallInfo, dtPathType, emptyAnnoCoverage
     , enrichAnnotations, enrichAnnotationsTopOnly, eqKeyLayout, eqKeySpec, eqLayout, eqModuloTopLabel
     , getMonoPathType, hasTopAnno, hasVarAnno, headAnno, isFunctionType, isTopAnno
+    , portCarriesBytes, payloadSchema, flagsSchema
     , joinAnnotationsChanged, joinCollisionCells, layoutHashOf, layoutMapEmpty, layoutMapFoldl, layoutMapGet
     , layoutMapInsert, layoutMapMap, layoutMapMember, layoutMapValues, mCustom, mFunction
     , mList, mRecord, mTuple, monoTypeToDebugString, nodeType, overlayAnnotations
@@ -98,6 +99,7 @@ made.
 @docs containsAnyMVar, decomposeFunctionType, defaultCallInfo, dtPathType, emptyAnnoCoverage
 @docs enrichAnnotations, enrichAnnotationsTopOnly, eqKeyLayout, eqKeySpec, eqLayout, eqModuloTopLabel
 @docs getMonoPathType, hasTopAnno, hasVarAnno, headAnno, isFunctionType, isTopAnno
+@docs portCarriesBytes, payloadSchema, flagsSchema
 @docs joinAnnotationsChanged, joinCollisionCells, layoutHashOf, layoutMapEmpty, layoutMapFoldl, layoutMapGet
 @docs layoutMapInsert, layoutMapMap, layoutMapMember, layoutMapValues, mCustom, mFunction
 @docs mList, mRecord, mTuple, monoTypeToDebugString, nodeType, overlayAnnotations
@@ -3009,6 +3011,7 @@ type MonoGraph
         , specValueUsed : BitSet -- SpecIds some node refers to, and main's
         , ports : List PortRegistration
         , flagsDecoder : Maybe SpecId
+        , flagsSchema : String -- the flags' `payloadSchema` (PORT_009), "" without a flags decoder
         , lssMemberOrigins : Dict Int MemberOrigin -- for members that are not lambdas
         , lssMemberKinds : Dict Int String -- member id to its interned key, for reports
         , lssBlockedMembers : Dict Int () -- members ABI cloning must not stamp
@@ -3074,7 +3077,16 @@ type MemberOrigin
 `toComparableGlobal` of the port's global, so that a port used at several types
 is registered once. For an incoming port, `decoderSpecId` is the
 specialization that holds the decoder for the values it receives; it is
-`Nothing` for an outgoing one.
+`Nothing` for an outgoing one and for a bytes port.
+
+`bytes` marks a _bytes port_, one whose whole payload is `Bytes`
+(`portCarriesBytes`). It has no JSON codec: an outgoing one puts the Bytes
+value itself in its effect leaf, and the runtime hands the host the bytes as
+they are (PORT_008).
+
+`schema` is the `payloadSchema` of an incoming JSON port's payload type, which
+the runtime checks a host's sends against (PORT_009); it is empty for any other
+port.
 
 -}
 type alias PortRegistration =
@@ -3082,7 +3094,115 @@ type alias PortRegistration =
     , key : String
     , incoming : Bool
     , decoderSpecId : Maybe SpecId
+    , bytes : Bool
+    , schema : String
     }
+
+
+{-| Returns the descriptor of a port or flags payload type, which the runtime
+checks host JSON against before handing it to the program (PORT_009):
+
+    i Int    f Float    b Bool    s String    u unit (null)    v anything
+    M<x> Maybe    L<x> List    A<x> Array    (<x><y>) and (<x><y><z>) tuples
+    {<n>:<name><x>...} a record: per field, in name order, the length of the
+    name, `:`, the name and its type
+
+`Json.Value` is `v`, and so is any type that is not a JSON payload type, which
+the runtime then lets through unchecked. For a program's flags of type `()`,
+which decode from any JSON, the caller gives `v` itself.
+
+-}
+payloadSchema : MonoType -> String
+payloadSchema monoType =
+    case monoType of
+        MInt ->
+            "i"
+
+        MFloat ->
+            "f"
+
+        MBool ->
+            "b"
+
+        MString ->
+            "s"
+
+        MUnit ->
+            "u"
+
+        MList _ element ->
+            "L" ++ payloadSchema element
+
+        MTuple _ shape ->
+            "(" ++ String.concat (List.map payloadSchema (tupleToList shape)) ++ ")"
+
+        MRecord _ fields ->
+            "{"
+                ++ String.concat
+                    (List.map
+                        (\( name, fieldType ) -> String.fromInt (String.length name) ++ ":" ++ name ++ payloadSchema fieldType)
+                        (Dict.toList fields)
+                    )
+                ++ "}"
+
+        MCustom _ home name [ arg ] ->
+            if home == ModuleName.maybe && name == "Maybe" then
+                "M" ++ payloadSchema arg
+
+            else if home == ModuleName.array && name == "Array" then
+                "A" ++ payloadSchema arg
+
+            else
+                "v"
+
+        _ ->
+            "v"
+
+
+{-| Returns the `payloadSchema` of a program's flags, given the type of its
+flags decoder, `Json.Decode.Decoder flags`: `v` when the decoder does not read
+the host's JSON (`fromJson` False) or the flags are `()`, which decode from any
+JSON, and the flags type's descriptor otherwise.
+-}
+flagsSchema : Bool -> MonoType -> String
+flagsSchema fromJson decoderType =
+    case ( fromJson, decoderType ) of
+        ( True, MCustom _ _ _ [ MUnit ] ) ->
+            "v"
+
+        ( True, MCustom _ _ _ [ flags ] ) ->
+            payloadSchema flags
+
+        _ ->
+            "v"
+
+
+{-| Returns whether a port whose parameter type is `paramType` is a bytes port,
+one whose whole payload is `Bytes`: for an outgoing port (`incoming` False) the
+parameter is `Bytes`, and for an incoming port the parameter is a tagger whose
+argument is `Bytes`.
+-}
+portCarriesBytes : Bool -> MonoType -> Bool
+portCarriesBytes incoming paramType =
+    let
+        isBytes t =
+            case t of
+                MCustom _ home name [] ->
+                    home == ModuleName.bytes && name == "Bytes"
+
+                _ ->
+                    False
+    in
+    if incoming then
+        case paramType of
+            MFunction _ _ (arg :: _) _ ->
+                isBytes arg
+
+            _ ->
+                False
+
+    else
+        isBytes paramType
 
 
 {-| The program's `main`. `StaticMain` holds the SpecId of its specialization. A

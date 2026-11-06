@@ -520,12 +520,17 @@ optimize modul annotations canonical =
             Err (E.BadMains (Localizer.fromModule modul) errors)
 
 
-{-| Runs the typed optimizer over the typed canonical module and the solver
-information copied out of the type check, wrapping any errors in `E.BadMains`.
+{-| Checks the module's ports for the native limits on `Bytes`, then runs the
+typed optimizer over the typed canonical module and the solver information
+copied out of the type check, wrapping any errors in `E.BadMains`.
 -}
 typedOptimizeFromTyped : Src.Module -> Dict.Dict Name.Name (Can.Annotation Name) -> TCan.ExprTypes -> TCan.ExprVars -> KernelTypes.KernelTypeEnv -> Dict.Dict Name.Name Vars.Variable -> SolverRoots.AllSchemeRoots -> TCan.Module -> Result E.Error (TOpt.LocalGraph Name)
 typedOptimizeFromTyped modul annotations nodeTypes nodeVars kernelEnv annotationVars allSchemeRoots tcanModule =
-    case ReportingResult.run (TypedOptimize.optimizeTyped annotations nodeTypes nodeVars kernelEnv annotationVars allSchemeRoots tcanModule) of
+    case
+        TypedOptimize.checkNativePortPayloads modul tcanModule
+            |> ReportingResult.andThen (\() -> TypedOptimize.optimizeTyped annotations nodeTypes nodeVars kernelEnv annotationVars allSchemeRoots tcanModule)
+            |> ReportingResult.run
+    of
         Ok localGraph ->
             Ok localGraph
 

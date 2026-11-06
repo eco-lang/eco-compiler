@@ -832,7 +832,70 @@ static void test_float_kernels_semantics() {
     TEST_ASSERT(Elm_Kernel_Basics_truncate(-2.9) == -2);
 }
 
+// K20 (PORT_009): `eco_json_check_payload` accepts exactly what the native decoders accept for each
+// payload descriptor, so that a host's send or flags are refused at once only when the eco thread would
+// fail to decode them.
+extern "C" int eco_json_check_payload(const char* schema, const char* json, char** problem);
+
+static bool payloadOk(const char* schema, const char* text, std::string* why = nullptr) {
+    char* problem = nullptr;
+    const int ok = eco_json_check_payload(schema, text, &problem);
+    if (why) *why = problem ? problem : "";
+    std::free(problem);
+    return ok == 1;
+}
+
+static void test_payload_check() {
+    // Int: integers, and integral floats in the i64 range (DEC_INT); not 1.5, not 2^63, not a string.
+    TEST_ASSERT(payloadOk("i", "7"));
+    TEST_ASSERT(payloadOk("i", "1.0"));
+    TEST_ASSERT(payloadOk("i", "-0.0"));
+    TEST_ASSERT(payloadOk("i", "1e3"));
+    TEST_ASSERT(payloadOk("i", "9223372036854775807"));
+    TEST_ASSERT(payloadOk("i", "-9223372036854775808"));
+    TEST_ASSERT(!payloadOk("i", "9223372036854775808"));
+    TEST_ASSERT(!payloadOk("i", "1e19"));
+    TEST_ASSERT(!payloadOk("i", "1.5"));
+    TEST_ASSERT(!payloadOk("i", "\"7\""));
+    TEST_ASSERT(!payloadOk("i", "null"));
+    // Float: any number. Bool, String, unit.
+    TEST_ASSERT(payloadOk("f", "7") && payloadOk("f", "1.5e300") && !payloadOk("f", "true"));
+    TEST_ASSERT(payloadOk("b", "false") && !payloadOk("b", "0"));
+    TEST_ASSERT(payloadOk("s", "\"\\u00e9\"") && !payloadOk("s", "[]"));
+    TEST_ASSERT(payloadOk("u", "null") && !payloadOk("u", "0") && !payloadOk("u", "{}"));
+    TEST_ASSERT(payloadOk("v", "{\"any\":[1,null]}"));
+    // Maybe, List, Array.
+    TEST_ASSERT(payloadOk("Mi", "null") && payloadOk("Mi", "3") && !payloadOk("Mi", "\"3\""));
+    TEST_ASSERT(payloadOk("LMi", "[1,null,2]") && !payloadOk("LMi", "[1,true]"));
+    TEST_ASSERT(payloadOk("Ls", "[]") && !payloadOk("Ls", "{}"));
+    TEST_ASSERT(payloadOk("As", "[\"a\"]") && !payloadOk("As", "\"a\""));
+    // An empty list with a structured element type, followed by more of the descriptor.
+    TEST_ASSERT(payloadOk("(L{2:idi}s)", "[[],\"x\"]"));
+    TEST_ASSERT(!payloadOk("(L{2:idi}s)", "[[],5]"));
+    // Tuples: an array with at least the arity (Decode.index); extra elements are ignored.
+    TEST_ASSERT(payloadOk("(is)", "[1,\"a\"]") && payloadOk("(is)", "[1,\"a\",true]"));
+    TEST_ASSERT(!payloadOk("(is)", "[1]") && !payloadOk("(is)", "{}"));
+    TEST_ASSERT(payloadOk("(bfs)", "[true,2,\"z\"]") && !payloadOk("(bfs)", "[true,2]"));
+    // Records: an object with every field (Decode.field); extra fields are ignored; names may repeat
+    // letters of the descriptor grammar.
+    TEST_ASSERT(payloadOk("{2:idi4:tagsLs}", "{\"id\":1,\"tags\":[],\"extra\":{}}"));
+    TEST_ASSERT(!payloadOk("{2:idi4:tagsLs}", "{\"id\":1}"));
+    TEST_ASSERT(!payloadOk("{2:idi4:tagsLs}", "[1,[]]"));
+    TEST_ASSERT(payloadOk("{1:L{1:MMi}}", "{\"L\":{\"M\":null}}"));   // field M : Maybe Int
+    TEST_ASSERT(!payloadOk("{1:L{1:Mi}}", "{\"L\":{\"M\":null}}"));   // field M : Int
+    TEST_ASSERT(payloadOk("{5:inner{4:deepL(bf)}}", "{\"inner\":{\"deep\":[[true,1.5],[false,2]]}}"));
+    // Where and why, in the words of Json.Decode.errorToString.
+    std::string why;
+    TEST_ASSERT(!payloadOk("{5:inner{4:deepL(bf)}}", "{\"inner\":{\"deep\":[[true,\"x\"]]}}", &why));
+    TEST_ASSERT(why.find("json.inner.deep[0][1]") != std::string::npos);
+    TEST_ASSERT(why.find("Expecting a FLOAT") != std::string::npos);
+    // Not JSON.
+    TEST_ASSERT(!payloadOk("v", "{", &why));
+    TEST_ASSERT(why.find("not valid JSON") != std::string::npos);
+}
+
 void registerKernelExportsTests(Testing::TestSuite& suite) {
+    suite.add(Testing::UnitTest("K20 payload check matches the native decoders (PORT_009)", test_payload_check));
     suite.add(Testing::UnitTest("K19 Float compare, round and conversion kernels (total order, ties up, saturating)", test_float_kernels_semantics));
     suite.add(Testing::UnitTest("K14 kernel integer division is total (CGEN_084)", test_kernel_int_division_total));
     suite.add(Testing::UnitTest("K15 kernel shift count mod 64 (CGEN_085)", test_kernel_shift_count_mod_64));

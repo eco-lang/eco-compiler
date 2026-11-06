@@ -5,6 +5,8 @@
 //   outgoing `port foo : payload -> Cmd msg`:
 //     foo p  ==>  Fx_Leaf{home="foo", value = encoder(p)}
 //     The payload is already a Json value; the manager only stringifies it.
+//     A bytes port (PORT_008) has no encoder: the value is the Bytes p itself,
+//     and the manager hands its bytes to the host as they are.
 //   incoming `port bar : (payload -> msg) -> Sub msg`:
 //     bar tagger  ==>  Fx_Leaf{home="bar", value = tagger}
 //
@@ -20,6 +22,7 @@
 #include "allocator/Allocator.hpp"
 #include "allocator/HeapHelpers.hpp"
 #include "allocator/RootSet.hpp"
+#include "allocator/RootedSlots.hpp"
 #include "allocator/RuntimeExports.h"
 #include "allocator/StringOps.hpp"
 #include <cstdio>
@@ -34,6 +37,10 @@ using namespace Elm::alloc;
 // compile-time dependency on the kernel.
 extern "C" HPtr Elm_Kernel_Json_runOnString(HPtr decoder, HPtr jsonString);
 extern "C" HPtr Elm_Kernel_Json_encode(int64_t indent, HPtr value);
+// Checks JSON text against a payload descriptor on any thread, without the Elm
+// heap (JsonExports.cpp; PORT_009): 1 if it decodes, else 0 with a malloc'd
+// message in `*problem`.
+extern "C" int eco_json_check_payload(const char* schema, const char* json, char** problem);
 
 namespace Elm::Platform {
 
@@ -58,6 +65,18 @@ inline HPointer decodeHP(uint64_t val) {
 inline void* resolveHP(HPointer h) {
     if (h.ptr_ind != 0) return nullptr;
     return Allocator::instance().resolve(h);
+}
+
+// Appends the elements of the boxed list `list` to `slots`, first to last. Does
+// not allocate on the Elm heap.
+void gatherList(HPointer list, Elm::alloc::RootedSlots& slots) {
+    Elm::alloc::RootedListCursor cursor(list);
+    Elm::Unboxable head;
+    u8 kind;
+    while (cursor.read(head, kind)) {
+        slots.push(head.p);
+        cursor.advance();
+    }
 }
 
 // Returns a copy of the Elm string `s`; empty if `s` is an embedded constant.
@@ -88,8 +107,10 @@ void* portOnSelfMsgEvaluator(void* args[]) {
 }
 
 // Evaluates an outgoing port manager's onEffects: encodes each command's Json
-// value as JSON text and passes it to deliverOutgoing, in list order, then
-// returns a task that succeeds with the state unchanged.
+// value as JSON text and passes it to deliverOutgoing, last first, then
+// returns a task that succeeds with the state unchanged. Last first because
+// Elm 0.19.1 hands a manager a batch's commands in reverse (PORT_005): its
+// port delivers `Cmd.batch [ out 1, out 2 ]` as 2, then 1.
 // Slot layout (1 capture + 4 call args):
 //   args[0] = port name (captured ElmString)
 //   args[1] = router (unused)
@@ -103,22 +124,42 @@ void* portOutgoingOnEffectsEvaluator(void* args[]) {
 
     std::string name = elmStringToStd(nameHP);
 
-    // Json_encode allocates. The cursor keeps the rest of the list rooted
-    // across it.
+    // Json_encode allocates; the values sit in rooted slots across it.
     Elm::StackRootGuard loopGuard(&state);
-    Elm::alloc::RootedListCursor cursor(cmdList);
-    Elm::Unboxable cmdHead;
-    u8 cmdKind;
-    while (cursor.read(cmdHead, cmdKind)) {
-        HPointer value = cmdHead.p;
-        {
-            Elm::StackRootGuard itemGuard(&value);
-            HPtr jsonStr = Elm_Kernel_Json_encode(
-                0, HPtr::fromBits(encodeHP(value)));
-            std::string json = elmStringToStd(decodeHP(jsonStr.toBits()));
-            PortRuntime::instance().deliverOutgoing(name, json);
-        }
-        cursor.advance();
+    Elm::alloc::RootedSlots values;
+    gatherList(cmdList, values);
+    for (size_t i = values.size(); i > 0; --i) {
+        HPtr jsonStr = Elm_Kernel_Json_encode(
+            0, HPtr::fromBits(encodeHP(values[i - 1])));
+        std::string json = elmStringToStd(decodeHP(jsonStr.toBits()));
+        PortRuntime::instance().deliverOutgoing(name, json);
+    }
+
+    HPointer task = Scheduler::instance().taskSucceed(state);
+    return reinterpret_cast<void*>(encodeHP(task));
+}
+
+// Evaluates an outgoing bytes port manager's onEffects: passes the bytes of
+// each command's Bytes value to deliverOutgoingBytes, last first, then
+// returns a task that succeeds with the state unchanged. The slot layout is
+// that of portOutgoingOnEffectsEvaluator.
+//
+// Nothing between taking a view of a value's bytes and the return of
+// deliverOutgoingBytes allocates on the Elm heap, so no collection runs and
+// the subscribers get a pointer into the value itself (PORT_008).
+void* portOutgoingBytesOnEffectsEvaluator(void* args[]) {
+    HPointer nameHP = decodeHP(reinterpret_cast<uint64_t>(args[0]));
+    HPointer cmdList = decodeHP(reinterpret_cast<uint64_t>(args[2]));
+    HPointer state = decodeHP(reinterpret_cast<uint64_t>(args[4]));
+
+    std::string name = elmStringToStd(nameHP);
+
+    Elm::StackRootGuard loopGuard(&state);
+    Elm::alloc::RootedSlots values;
+    gatherList(cmdList, values);
+    for (size_t i = values.size(); i > 0; --i) {
+        ByteBufferView view = byteBufferView(resolveBytesOrNull(values[i - 1]));
+        PortRuntime::instance().deliverOutgoingBytes(name, view.data, view.length);
     }
 
     HPointer task = Scheduler::instance().taskSucceed(state);
@@ -201,11 +242,11 @@ bool resultIsOk(HPointer result) {
 }
 
 // Builds the effect-manager closures for the port `name`, incoming or
-// outgoing. The map a port kind does not use (cmdMap for an incoming port,
-// subMap for an outgoing one) is the Empty constant. Allocates, so it may
-// collect.
+// outgoing, a bytes port if `bytes`. The map a port kind does not use (cmdMap
+// for an incoming port, subMap for an outgoing one) is the Empty constant.
+// Allocates, so it may collect.
 PlatformRuntime::ManagerInfo buildPortManager(const std::string& name,
-                                              bool incoming) {
+                                              bool incoming, bool bytes) {
     HPointer nameStr = listNil();
     HPointer initCl = listNil();
     HPointer onEffectsCl = listNil();
@@ -220,6 +261,7 @@ PlatformRuntime::ManagerInfo buildPortManager(const std::string& name,
 
     // onEffects: 1 captured slot (port name) + 4 call args.
     onEffectsCl = allocClosure(incoming ? portIncomingOnEffectsEvaluator
+                               : bytes  ? portOutgoingBytesOnEffectsEvaluator
                                         : portOutgoingOnEffectsEvaluator,
                                5);
     if (void* clPtr = resolveHP(onEffectsCl)) {
@@ -245,6 +287,18 @@ PlatformRuntime::ManagerInfo buildPortManager(const std::string& name,
     std::fflush(stderr);
     std::abort();
 }
+
+// Calls a lent bytes payload's release function, if it has one, once: at
+// `fire`, or when it goes out of scope.
+struct ReleaseOnExit {
+    EcoPortRelease release;
+    void* ctx;
+    void fire() {
+        if (release) release(ctx);
+        release = nullptr;
+    }
+    ~ReleaseOnExit() { fire(); }
+};
 
 }  // namespace
 
@@ -306,7 +360,7 @@ void PortRuntime::noteRegistered(const std::string& name) {
 }
 
 void PortRuntime::registerIncoming(const std::string& name,
-                                   HPointer decoder) {
+                                   HPointer decoder, const std::string& schema) {
     ensureRuntimeHooks();
 
     // The port name is the effect-manager registry key, so a port named like
@@ -319,7 +373,7 @@ void PortRuntime::registerIncoming(const std::string& name,
 
     Elm::StackRootGuard decoderGuard(&decoder);
     PlatformRuntime::ManagerInfo info =
-        buildPortManager(name, /*incoming=*/true);
+        buildPortManager(name, /*incoming=*/true, /*bytes=*/false);
 
     {
         std::lock_guard<std::mutex> lock(portsMutex_);
@@ -330,14 +384,16 @@ void PortRuntime::registerIncoming(const std::string& name,
         }
         p.registered = true;
         p.incoming = true;
+        p.bytes = false;
         p.decoder = encodeHP(decoder);
+        p.schema = schema;
         noteRegistered(name);
     }
 
     PlatformRuntime::instance().registerManager(name, info);
 }
 
-void PortRuntime::registerOutgoing(const std::string& name) {
+void PortRuntime::registerIncomingBytes(const std::string& name) {
     ensureRuntimeHooks();
 
     if (PlatformRuntime::instance().hasManager(name)) {
@@ -346,7 +402,35 @@ void PortRuntime::registerOutgoing(const std::string& name) {
     }
 
     PlatformRuntime::ManagerInfo info =
-        buildPortManager(name, /*incoming=*/false);
+        buildPortManager(name, /*incoming=*/true, /*bytes=*/true);
+
+    {
+        std::lock_guard<std::mutex> lock(portsMutex_);
+        PortInfo& p = ports_[name];
+        if (p.registered) {
+            portCrash("duplicate port name '" + name +
+                      "' (port names must be unique per program)");
+        }
+        p.registered = true;
+        p.incoming = true;
+        p.bytes = true;
+        p.decoder = 0;
+        noteRegistered(name);
+    }
+
+    PlatformRuntime::instance().registerManager(name, info);
+}
+
+void PortRuntime::registerOutgoing(const std::string& name, bool bytes) {
+    ensureRuntimeHooks();
+
+    if (PlatformRuntime::instance().hasManager(name)) {
+        portCrash("port name '" + name +
+                  "' collides with an existing effect manager");
+    }
+
+    PlatformRuntime::ManagerInfo info =
+        buildPortManager(name, /*incoming=*/false, bytes);
 
     {
         std::lock_guard<std::mutex> lock(portsMutex_);
@@ -357,6 +441,7 @@ void PortRuntime::registerOutgoing(const std::string& name) {
         }
         p.registered = true;
         p.incoming = false;
+        p.bytes = bytes;
         noteRegistered(name);
     }
 
@@ -397,6 +482,28 @@ void PortRuntime::deliverOutgoing(const std::string& name,
     }
 }
 
+void PortRuntime::deliverOutgoingBytes(const std::string& name,
+                                       const uint8_t* data, size_t length) {
+    std::vector<std::pair<EcoPortBytesCallback, void*>> sinksCopy;
+    {
+        std::lock_guard<std::mutex> lock(portsMutex_);
+        auto it = ports_.find(name);
+        if (it == ports_.end()) return;
+        if (it->second.byteSinks.empty()) {
+            // As in deliverOutgoing. The buffer holds a copy, since the bytes
+            // are valid only until the eco thread next allocates.
+            if (!it->second.everSubscribedBytes) {
+                it->second.bufferedBytes.emplace_back(data, data + length);
+            }
+            return;
+        }
+        sinksCopy = it->second.byteSinks;
+    }
+    for (auto& [cb, user] : sinksCopy) {
+        cb(data, length, user);
+    }
+}
+
 bool PortRuntime::hasPendingSends() {
     std::lock_guard<std::mutex> lock(pendingMutex_);
     return !pendingSends_.empty();
@@ -404,27 +511,30 @@ bool PortRuntime::hasPendingSends() {
 
 void PortRuntime::drainPendingSends() {
     while (true) {
-        std::string name;
-        std::string json;
-        HoldToken hold = kNoHold;
+        PendingSend item;
         {
             std::lock_guard<std::mutex> lock(pendingMutex_);
             if (pendingSends_.empty()) return;
-            name = std::move(pendingSends_.front().name);
-            json = std::move(pendingSends_.front().json);
-            hold = pendingSends_.front().hold;
+            item = std::move(pendingSends_.front());
             pendingSends_.pop_front();
         }
+        const std::string& name = item.name;
 
-        HoldRelease release(hold);
+        HoldRelease release(item.hold);
+        // A lent bytes payload goes back to the host however this item ends.
+        ReleaseOnExit lent{item.release, item.ctx};
 
         uint64_t decoderEnc = 0;
         uint64_t subsEnc = 0;
         {
             std::lock_guard<std::mutex> lock(portsMutex_);
             auto it = ports_.find(name);
-            // A port not registered in this heap generation has no decoder; the send is dropped.
-            if (it == ports_.end() || !it->second.incoming || it->second.decoder == 0) continue;
+            // A port not registered in this heap generation is dropped, as is
+            // a payload of the other kind (the port registered again as the
+            // other kind after a heap reset).
+            if (it == ports_.end() || !it->second.registered || !it->second.incoming ||
+                it->second.bytes != item.bytes)
+                continue;
             decoderEnc = it->second.decoder;
             subsEnc = it->second.subs;
         }
@@ -434,17 +544,22 @@ void PortRuntime::drainPendingSends() {
         HPointer payload = listNil();
         Elm::StackRootGuard guard({ &decoder, &subs, &payload });
 
-        HPointer jsonStr = allocStringFromUTF8(json);
-        Elm::StackRootGuard strGuard(&jsonStr);
-        HPtr result = Elm_Kernel_Json_runOnString(
-            HPtr::fromBits(encodeHP(decoder)),
-            HPtr::fromBits(encodeHP(jsonStr)));
-        HPointer resultHP = decodeHP(result.toBits());
-        if (!resultIsOk(resultHP)) {
-            portCrash("trying to send an unexpected value through port '" +
-                      name + "': " + json);
-        }
-        {
+        if (item.bytes) {
+            // The one copy of an incoming bytes payload (PORT_008).
+            const uint8_t* data = item.release ? item.data : item.copy.data();
+            payload = allocByteBuffer(data, item.length);
+            lent.fire();
+        } else {
+            HPointer jsonStr = allocStringFromUTF8(item.json);
+            Elm::StackRootGuard strGuard(&jsonStr);
+            HPtr result = Elm_Kernel_Json_runOnString(
+                HPtr::fromBits(encodeHP(decoder)),
+                HPtr::fromBits(encodeHP(jsonStr)));
+            HPointer resultHP = decodeHP(result.toBits());
+            if (!resultIsOk(resultHP)) {
+                portCrash("trying to send an unexpected value through port '" +
+                          name + "': " + item.json);
+            }
             // The Ok's field may hold an unboxed Int, Float or Char, as its
             // slot kind says. Taggers take boxed arguments, so box it.
             void* okPtr = resolveHP(resultHP);
@@ -453,42 +568,89 @@ void PortRuntime::drainPendingSends() {
             payload = Elm::alloc::boxElement(ok->values[0], payloadKind);
         }
 
-        Elm::alloc::RootedListCursor cursor(subs);
-        Elm::Unboxable subHead;
-        u8 subKind;
-        while (cursor.read(subHead, subKind)) {
-            HPointer tagger = subHead.p;
-            Elm::StackRootGuard itemGuard(&tagger);
-
-            HPointer msg = Scheduler::callClosure1(tagger, payload);
-            {
-                Elm::StackRootGuard msgGuard(&msg);
-                PlatformRuntime::instance().deliverToApp(msg);
-            }
-            cursor.advance();
+        // The taggers last first, as Elm 0.19.1 applies a batch's
+        // subscriptions to one port (PORT_005).
+        Elm::alloc::RootedSlots taggers;
+        gatherList(subs, taggers);
+        for (size_t i = taggers.size(); i > 0; --i) {
+            HPointer msg = Scheduler::callClosure1(taggers[i - 1], payload);
+            Elm::StackRootGuard msgGuard(&msg);
+            PlatformRuntime::instance().deliverToApp(msg);
         }
     }
 }
 
-bool PortRuntime::sendIncoming(const char* name, const char* json) {
-    if (name == nullptr || json == nullptr) return false;
+std::string& PortRuntime::lastError() {
+    thread_local std::string message;
+    return message;
+}
+
+PortRuntime::SendResult PortRuntime::sendIncoming(const char* name, const char* json) {
+    if (name == nullptr || json == nullptr) return SendResult::NotAPort;
+    std::string schema;
     {
         std::lock_guard<std::mutex> lock(portsMutex_);
         auto it = ports_.find(name);
         if (it == ports_.end() || !it->second.registered ||
-            !it->second.incoming) {
+            !it->second.incoming || it->second.bytes) {
+            return SendResult::NotAPort;
+        }
+        schema = it->second.schema;
+    }
+    // Checked here, on the sending thread, so that a host learns of a bad
+    // value from this call rather than from the eco thread's abort (PORT_009).
+    if (!schema.empty()) {
+        char* problem = nullptr;
+        if (!eco_json_check_payload(schema.c_str(), json, &problem)) {
+            lastError() = std::string("Trying to send an unexpected type of value through port `") + name +
+                          "`:\n" + (problem ? problem : "");
+            std::free(problem);
+            return SendResult::Rejected;
+        }
+    }
+    PendingSend item;
+    item.name = name;
+    item.json = json;
+    enqueueSend(std::move(item));
+    return SendResult::Queued;
+}
+
+bool PortRuntime::sendIncomingBytes(const char* name, const uint8_t* data,
+                                    size_t length, EcoPortRelease release,
+                                    void* ctx) {
+    if (name == nullptr || (data == nullptr && length != 0)) return false;
+    {
+        std::lock_guard<std::mutex> lock(portsMutex_);
+        auto it = ports_.find(name);
+        if (it == ports_.end() || !it->second.registered ||
+            !it->second.incoming || !it->second.bytes) {
             return false;
         }
     }
+    PendingSend item;
+    item.name = name;
+    item.bytes = true;
+    item.length = length;
+    if (release) {
+        item.data = data;
+        item.release = release;
+        item.ctx = ctx;
+    } else {
+        item.copy.assign(data, data + length);
+    }
+    enqueueSend(std::move(item));
+    return true;
+}
+
+void PortRuntime::enqueueSend(PendingSend item) {
     // Acquired before the item is queued, so the event loop never sees an
     // empty queue and no hold while a send is in flight.
-    HoldToken hold = Scheduler::instance().acquireHold(HoldKind::Port, "port.in");
+    item.hold = Scheduler::instance().acquireHold(HoldKind::Port, "port.in");
     {
         std::lock_guard<std::mutex> lock(pendingMutex_);
-        pendingSends_.push_back(PendingSend{std::string(name), std::string(json), hold});
+        pendingSends_.push_back(std::move(item));
     }
     Scheduler::instance().notifyWorkAvailableFromAsync();
-    return true;
 }
 
 bool PortRuntime::subscribeOutgoing(const char* name, EcoPortCallback cb,
@@ -504,6 +666,7 @@ bool PortRuntime::subscribeOutgoing(const char* name, EcoPortCallback cb,
             std::lock_guard<std::mutex> lock(portsMutex_);
             // Creates an unregistered entry for a port not registered yet.
             PortInfo& info = ports_[name];
+            if (info.registered && info.bytes) return false;
             if (info.everSubscribed || info.buffered.empty()) {
                 info.sinks.emplace_back(cb, user);
                 info.everSubscribed = true;
@@ -524,6 +687,46 @@ bool PortRuntime::unsubscribeOutgoing(const char* name, EcoPortCallback cb,
     auto it = ports_.find(name);
     if (it == ports_.end()) return false;
     auto& sinks = it->second.sinks;
+    for (auto sIt = sinks.begin(); sIt != sinks.end(); ++sIt) {
+        if (sIt->first == cb && sIt->second == user) {
+            sinks.erase(sIt);
+            return true;
+        }
+    }
+    return false;
+}
+
+bool PortRuntime::subscribeOutgoingBytes(const char* name,
+                                         EcoPortBytesCallback cb, void* user) {
+    if (name == nullptr || cb == nullptr) return false;
+    // As subscribeOutgoing.
+    while (true) {
+        std::vector<std::vector<uint8_t>> batch;
+        {
+            std::lock_guard<std::mutex> lock(portsMutex_);
+            PortInfo& info = ports_[name];
+            if (info.registered && !info.bytes) return false;
+            if (info.everSubscribedBytes || info.bufferedBytes.empty()) {
+                info.byteSinks.emplace_back(cb, user);
+                info.everSubscribedBytes = true;
+                return true;
+            }
+            batch.swap(info.bufferedBytes);
+        }
+        for (auto& bytes : batch) {
+            cb(bytes.data(), bytes.size(), user);
+        }
+    }
+}
+
+bool PortRuntime::unsubscribeOutgoingBytes(const char* name,
+                                           EcoPortBytesCallback cb,
+                                           void* user) {
+    if (name == nullptr) return false;
+    std::lock_guard<std::mutex> lock(portsMutex_);
+    auto it = ports_.find(name);
+    if (it == ports_.end()) return false;
+    auto& sinks = it->second.byteSinks;
     for (auto sIt = sinks.begin(); sIt != sinks.end(); ++sIt) {
         if (sIt->first == cb && sIt->second == user) {
             sinks.erase(sIt);
@@ -556,6 +759,14 @@ int PortRuntime::isIncoming(const char* name) {
     return it->second.incoming ? 1 : 0;
 }
 
+int PortRuntime::isBytes(const char* name) {
+    if (name == nullptr) return -1;
+    std::lock_guard<std::mutex> lock(portsMutex_);
+    auto it = ports_.find(name);
+    if (it == ports_.end() || !it->second.registered) return -1;
+    return it->second.bytes ? 1 : 0;
+}
+
 }  // namespace Elm::Platform
 
 // ---------------------------------------------------------------------------
@@ -582,7 +793,15 @@ using Elm::Platform::PortRuntime;
 extern "C" {
 
 ECO_PORT_ABI_WEAK int eco_port_send(const char* port, const char* json_utf8) {
-    return PortRuntime::instance().sendIncoming(port, json_utf8) ? 0 : 1;
+    switch (PortRuntime::instance().sendIncoming(port, json_utf8)) {
+        case PortRuntime::SendResult::Queued: return 0;
+        case PortRuntime::SendResult::Rejected: return 2;
+        default: return 1;
+    }
+}
+
+ECO_PORT_ABI_WEAK const char* eco_last_error(void) {
+    return PortRuntime::lastError().c_str();
 }
 
 ECO_PORT_ABI_WEAK int eco_port_subscribe(const char* port,
@@ -608,6 +827,33 @@ ECO_PORT_ABI_WEAK const char* eco_port_name(int i) {
 
 ECO_PORT_ABI_WEAK int eco_port_is_incoming(const char* port) {
     return PortRuntime::instance().isIncoming(port);
+}
+
+ECO_PORT_ABI_WEAK int eco_port_send_bytes(const char* port,
+                                          const uint8_t* data, size_t length,
+                                          Elm::Platform::EcoPortRelease release,
+                                          void* ctx) {
+    return PortRuntime::instance().sendIncomingBytes(port, data, length,
+                                                     release, ctx)
+               ? 0
+               : 1;
+}
+
+ECO_PORT_ABI_WEAK int eco_port_subscribe_bytes(
+    const char* port, Elm::Platform::EcoPortBytesCallback cb, void* user) {
+    return PortRuntime::instance().subscribeOutgoingBytes(port, cb, user) ? 0
+                                                                          : 1;
+}
+
+ECO_PORT_ABI_WEAK int eco_port_unsubscribe_bytes(
+    const char* port, Elm::Platform::EcoPortBytesCallback cb, void* user) {
+    return PortRuntime::instance().unsubscribeOutgoingBytes(port, cb, user)
+               ? 0
+               : 1;
+}
+
+ECO_PORT_ABI_WEAK int eco_port_is_bytes(const char* port) {
+    return PortRuntime::instance().isBytes(port);
 }
 
 }  // extern "C"

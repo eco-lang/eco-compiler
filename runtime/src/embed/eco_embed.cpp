@@ -57,6 +57,25 @@ static constexpr size_t ECO_EMBED_STACK_SIZE = 64ULL * 1024 * 1024;
 // on whatever thread calls it, and releases it.
 static std::atomic<Elm::Platform::HoldToken> g_lifetime{Elm::Platform::kNoHold};
 
+// Checks JSON text against a payload descriptor without the Elm heap (JsonExports.cpp, PORT_009).
+extern "C" int eco_json_check_payload(const char* schema, const char* json, char** problem);
+
+// The flags descriptor lowering bakes into the program from @main's `eco.flags_schema` (EcoToLLVM, PORT_009).
+// Weak, so a program without flags, or an older one, leaves its address null.
+#if !defined(_WIN32)
+extern "C" __attribute__((weak)) const char __eco_flags_schema[];
+#endif
+
+// Returns the program's flags descriptor, or null when it has none (or on Windows, where the weak
+// declaration is not available).
+static const char* flagsSchema() {
+#if !defined(_WIN32)
+    return __eco_flags_schema != nullptr ? __eco_flags_schema : nullptr;
+#else
+    return nullptr;
+#endif
+}
+
 extern "C" {
 // Initializes the program's global values. Generated with the program only when it needs it, so it is
 // declared weak and is null when absent.
@@ -240,6 +259,20 @@ extern "C" {
 int eco_app_start(int argc, char** argv, const char* flags_json) {
     auto& s = state();
 
+    if (s.started.load()) return ECO_APP_ERR_ALREADY_STARTED;
+    // Before anything starts, so that a host can call again with other flags (PORT_009). Absent flags
+    // reach the decoder as `null`.
+    if (const char* schema = flagsSchema()) {
+        char* problem = nullptr;
+        if (!eco_json_check_payload(schema, flags_json ? flags_json : "null", &problem)) {
+            Elm::Platform::PortRuntime::lastError() =
+                std::string("Problem with the flags given to your Elm program on initialization.\n\n") +
+                (problem ? problem : "");
+            std::free(problem);
+            return ECO_APP_ERR_BAD_FLAGS;
+        }
+    }
+
     bool expected = false;
     if (!s.started.compare_exchange_strong(expected, true)) {
         return ECO_APP_ERR_ALREADY_STARTED;
@@ -307,6 +340,12 @@ void eco_app_stop(void) {
         sched.releaseHold(t);
 }
 
+int eco_app_is_busy(void) {
+    // Returning before the start also keeps the Scheduler from being constructed on this thread.
+    if (!state().started.load()) return 0;
+    return Elm::Platform::Scheduler::instance().hasBusyHolds() ? 1 : 0;
+}
+
 int eco_app_join(void) {
     auto& s = state();
     std::lock_guard<std::mutex> lk(s.joinMutex);
@@ -340,9 +379,16 @@ void eco_set_idle_hook(void (*cb)(int busy, void* user), void* user) {
 #if !defined(_WIN32)
 
 int eco_port_send(const char* port, const char* json_utf8) {
-    return Elm::Platform::PortRuntime::instance().sendIncoming(port, json_utf8)
-               ? 0
-               : 1;
+    using Elm::Platform::PortRuntime;
+    switch (PortRuntime::instance().sendIncoming(port, json_utf8)) {
+        case PortRuntime::SendResult::Queued: return 0;
+        case PortRuntime::SendResult::Rejected: return 2;
+        default: return 1;
+    }
+}
+
+const char* eco_last_error(void) {
+    return Elm::Platform::PortRuntime::lastError().c_str();
 }
 
 int eco_port_subscribe(const char* port, eco_port_callback cb, void* user) {
@@ -369,6 +415,34 @@ const char* eco_port_name(int i) {
 
 int eco_port_is_incoming(const char* port) {
     return Elm::Platform::PortRuntime::instance().isIncoming(port);
+}
+
+int eco_port_send_bytes(const char* port, const uint8_t* data, size_t length,
+                        eco_port_release release, void* ctx) {
+    return Elm::Platform::PortRuntime::instance().sendIncomingBytes(
+               port, data, length, release, ctx)
+               ? 0
+               : 1;
+}
+
+int eco_port_subscribe_bytes(const char* port, eco_port_bytes_callback cb,
+                             void* user) {
+    return Elm::Platform::PortRuntime::instance().subscribeOutgoingBytes(
+               port, cb, user)
+               ? 0
+               : 1;
+}
+
+int eco_port_unsubscribe_bytes(const char* port, eco_port_bytes_callback cb,
+                               void* user) {
+    return Elm::Platform::PortRuntime::instance().unsubscribeOutgoingBytes(
+               port, cb, user)
+               ? 0
+               : 1;
+}
+
+int eco_port_is_bytes(const char* port) {
+    return Elm::Platform::PortRuntime::instance().isBytes(port);
 }
 
 #endif  // !defined(_WIN32)

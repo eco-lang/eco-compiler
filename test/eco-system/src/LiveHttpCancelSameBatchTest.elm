@@ -5,9 +5,12 @@ order the Http manager sees them (plans/program-liveness-rule.md §5.3): as stoc
 kills the request's process before it has started, the request is never sent, keeps the
 program running no longer, and its response never arrives. The server would answer after
 120 s, so a request that kept holding would be stopped by the 60 s watchdog.
+
+A manager sees a batch's commands last first (PORT_005), so the `Http.cancel` comes before
+the request in the batch. Until 2026-11-06 the native Http manager saw them first first, the
+batch held the request first, and the test was skipped on JS.
 -}
 
--- SKIP-JS: stock elm/core hands a manager one batch's commands in reverse order (_Platform_insert conses), so on JS this Cancel would come before its request and do nothing
 -- CHECK: issued
 -- CHECK-NOT: response
 -- EXIT: 0
@@ -39,7 +42,8 @@ update msg () =
         GotServer server ->
             ( ()
             , Cmd.batch
-                [ Http.request
+                [ Http.cancel "b"
+                , Http.request
                     { method = "GET"
                     , headers = []
                     , url = server.baseUrl ++ "/slow?ms=120000"
@@ -48,7 +52,6 @@ update msg () =
                     , timeout = Nothing
                     , tracker = Just "b"
                     }
-                , Http.cancel "b"
                 , Task.perform (\_ -> Issued) (Task.succeed ())
                 ]
             )

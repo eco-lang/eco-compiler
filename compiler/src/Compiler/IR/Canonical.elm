@@ -1,6 +1,6 @@
 module Compiler.IR.Canonical exposing
     ( Module(..), ModuleData, Exports(..), Export(..), Effects(..), Manager(..), Port(..)
-    , Payload(..), payloadType
+    , Payload(..), payloadType, payloadContainsBytes
     , Expr, ExprInfo, Expr_(..), CaseBranch(..), FieldUpdate(..)
     , Def(..), Decls(..)
     , Pattern, PatternInfo, Pattern_(..), PatternCtorArg(..)
@@ -62,7 +62,7 @@ plain codec, reached through `fieldUpdateEncoder`.
 # Modules
 
 @docs Module, ModuleData, Exports, Export, Effects, Manager, Port
-@docs Payload, payloadType
+@docs Payload, payloadType, payloadContainsBytes
 
 
 # Expressions
@@ -743,6 +743,49 @@ payloadType payload =
 
         PayloadRecord fields ->
             TRecord (Dict.map (\_ ( index, field ) -> FieldType index (payloadType field)) fields) Nothing
+
+
+{-| Returns whether `Bytes` occurs anywhere in a payload, the payload itself
+included.
+-}
+payloadContainsBytes : Payload -> Bool
+payloadContainsBytes payload =
+    case payload of
+        PayloadBytes ->
+            True
+
+        PayloadMaybe arg ->
+            payloadContainsBytes arg
+
+        PayloadList arg ->
+            payloadContainsBytes arg
+
+        PayloadArray arg ->
+            payloadContainsBytes arg
+
+        PayloadTuple a b cs ->
+            payloadContainsBytes a || payloadContainsBytes b || Maybe.withDefault False (Maybe.map payloadContainsBytes cs)
+
+        PayloadRecord fields ->
+            List.any (\( _, field ) -> payloadContainsBytes field) (Dict.values fields)
+
+        PayloadInt ->
+            False
+
+        PayloadFloat ->
+            False
+
+        PayloadBool ->
+            False
+
+        PayloadString ->
+            False
+
+        PayloadValue ->
+            False
+
+        PayloadUnit ->
+            False
 
 
 {-| The effects an effect module manages, each named by the custom type of the

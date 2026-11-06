@@ -1,7 +1,11 @@
 #!/bin/sh
 # Builds test/elm/src/PortEchoTest.elm as a Node addon (.node) and runs the Node hosts against it:
 # echo_host.js (the port round trip) and lifecycle_host.js (app.stop()'s Promise, and no leaked
-# keepalive after a stop, a send after stop, or a failed start).
+# keepalive after a stop, a send after stop, or a failed start). Also builds the parity fixtures
+# test/embed/{BytesEchoService,ValuesService,JsonFlagsService}.elm both for the JS backend and as
+# addons, and runs every embed_host.js scenario against both builds: flags, every port payload
+# kind including Bytes (PORT_008), rejected sends, unsubscribe, a leak soak, and app.stop(); the
+# two transcripts must be identical.
 #
 #   usage: run-node-addon-tests.sh <repo-root> <build-dir> [node]
 #
@@ -37,6 +41,27 @@ cp "$ROOT/test/elm/src/PortEchoTest.elm" "$OUT/proj/src/PortEchoTest.elm"
 "$BOOT" "$OUT/pe.mlir" -o "$OUT/elm.node" > "$OUT/lower.log" 2>&1 \
     || { tail -20 "$OUT/lower.log"; echo "node-addon: FAILED to lower"; exit 1; }
 
+# The parity fixtures (test/embed/*Service.elm), each built twice: for the JS backend (<P>-js.js)
+# and as a Node addon (<P>-node.node, with its shim <P>-node.js). test/eco-divergence's elm.json,
+# for its elm/bytes dependency.
+mkdir -p "$OUT/parity/src"
+cp "$ROOT/test/eco-divergence/elm.json" "$OUT/parity/elm.json"
+for P in BytesEchoService ValuesService JsonFlagsService; do
+    echo "node-addon: compiling $P (JS backend and addon)"
+    cp "$ROOT/test/embed/$P.elm" "$OUT/parity/src/$P.elm"
+    for TARGET in "$P.mlir" "$P-js.js"; do
+        ( cd "$OUT/parity" \
+          && { ulimit -s unlimited 2>/dev/null || ulimit -s "$(ulimit -H -s)" 2>/dev/null || true; } \
+          && s=$(ulimit -s) && k=500000 \
+          && { [ "$s" = unlimited ] || [ $((s / 10 * 9)) -ge $k ] || k=$((s / 10 * 9)); } \
+          && "$NODE" --stack-size=$k "$ROOT/compiler/bin/index.js" make "src/$P.elm" \
+               --output="$OUT/$TARGET" ) > "$OUT/$TARGET.log" 2>&1 \
+            || { cat "$OUT/$TARGET.log"; echo "node-addon: FAILED to compile $TARGET"; exit 1; }
+    done
+    "$BOOT" "$OUT/$P.mlir" -o "$OUT/$P-node.node" > "$OUT/$P-lower.log" 2>&1 \
+        || { tail -20 "$OUT/$P-lower.log"; echo "node-addon: FAILED to lower $P"; exit 1; }
+done
+
 failed=0
 run() {   # run <name> <command...>: passes when the command exits 0 within 20 s
     name=$1; shift
@@ -48,6 +73,31 @@ run() {   # run <name> <command...>: passes when the command exits 0 within 20 s
 }
 
 run echo "$NODE" "$ROOT/test/embed/echo_host.js" "$OUT/elm.js"
+
+# Parity: each embed_host.js scenario runs against the JS backend build and the addon build of its
+# fixture. Both runs must pass their own checks (which include the known divergences, asserted per
+# mode) and print the same transcript on stdout.
+mkdir -p "$OUT/parity/t"
+"$NODE" "$ROOT/test/embed/embed_host.js" list > "$OUT/parity/scenarios"
+while read -r P SC; do
+    f="$OUT/parity/t/$(echo "$SC" | tr ':' '_')"
+    ok=1
+    for MODE in js node; do
+        timeout 150 "$NODE" --expose-gc "$ROOT/test/embed/embed_host.js" "$MODE" "$OUT/$P-$MODE.js" "$SC" \
+            > "$f.$MODE.out" 2> "$f.$MODE.err" || ok=0
+    done
+    if [ "$ok" = 1 ] && cmp -s "$f.js.out" "$f.node.out"; then
+        echo "PASS node-addon/parity/$SC"
+    else
+        echo "FAIL node-addon/parity/$SC"
+        for MODE in js node; do
+            echo "    -- $MODE stderr:"; grep -v 'DEV mode\|elm-lang.org' "$f.$MODE.err" | tail -5 | sed 's/^/    /'
+        done
+        echo "    -- transcript diff (js vs node):"; diff "$f.js.out" "$f.node.out" | head -10 | sed 's/^/    /'
+        failed=$((failed + 1))
+    fi
+done < "$OUT/parity/scenarios"
+grep -h '^DIVERGENCE' "$OUT"/parity/t/*.err | sort -u | sed 's/^/node-addon: /'
 run stop-promise "$NODE" "$ROOT/test/embed/lifecycle_host.js" "$OUT/elm.js" stop-promise
 run send-after-stop "$NODE" "$ROOT/test/embed/lifecycle_host.js" "$OUT/elm.js" send-after-stop
 

@@ -69,7 +69,8 @@ anything to register.
 
 `managers` is the set of home modules of the eco/system effect managers to
 register. Under chunked lists, `@main` carries the `eco.list_chunks` attribute,
-which tells lowering that the program uses chunked lists. The returned
+which tells lowering that the program uses chunked lists, and a program with
+flags carries its flags descriptor as `eco.flags_schema`. The returned
 context records the registration kernels as kernel declarations.
 
 -}
@@ -119,12 +120,21 @@ generateMainEntry ctx ports flagsDecoder managers mainInfo =
                 ( ctx4, mainOp0 ) =
                     Ops.funcFunc ctx3 "main" [] Types.ecoValue region
 
-                mainOp =
+                mainOp1 =
                     if ctx.ecoConfig.list.chunks then
                         { mainOp0 | attrs = Dict.insert "eco.list_chunks" UnitAttr mainOp0.attrs }
 
                     else
                         mainOp0
+
+                -- The flags descriptor, which a shared-library build bakes in for
+                -- `eco_app_start` to check the host's flags against (PORT_009).
+                mainOp =
+                    if String.isEmpty ctx.flagsSchema then
+                        mainOp1
+
+                    else
+                        { mainOp1 | attrs = Dict.insert "eco.flags_schema" (StringAttr ctx.flagsSchema) mainOp1.attrs }
             in
             ( portFnOps ++ [ mainOp ], ctx4 )
 
@@ -136,9 +146,12 @@ Its calls come in this order. First one call per home in `managers`, in set
 order, to that manager's `ecoSystemRegisterManagerSymbol`. Then, when there is a
 flags decoder, a call to its thunk and to
 `Elm_Kernel_Platform_registerFlagsDecoder` with the decoder. Then, for each port
-in order, a call to `Elm_Kernel_Platform_registerIncomingPort` with the port's
-name and decoder (obtained by calling the decoder thunk named by
-`decoderSpecId`) for an incoming port that has a decoder, and to
+in order, a call to `Elm_Kernel_Platform_registerIncomingBytesPort` or
+`Elm_Kernel_Platform_registerOutgoingBytesPort` with the name for a bytes port
+(PORT_008), to `Elm_Kernel_Platform_registerIncomingPort` with the port's name
+and decoder (obtained by calling the decoder thunk named by `decoderSpecId`)
+and payload descriptor (`PortRegistration.schema`, PORT_009) for any other
+incoming port that has a decoder, and to
 `Elm_Kernel_Platform_registerOutgoingPort` with the name for any other port.
 
 Returns no ops, and the context unchanged, when there are no ports, no flags
@@ -155,34 +168,27 @@ generateRegisterPorts ctx0 ports flagsDecoder managers =
             ctxClean =
                 { ctx0 | nextVar = 0, varMappings = Dict.empty, definedSsaVars = Set.empty }
 
-            hasIncoming =
-                List.any .incoming ports
+            registerKernelIf used name argTypes c =
+                if used then
+                    Ctx.registerKernelCall c name argTypes Types.ecoValue
 
-            hasOutgoing =
-                List.any (\p -> not p.incoming) ports
+                else
+                    c
 
             ctxKernels =
                 ctxClean
-                    |> (\c ->
-                            if hasIncoming then
-                                Ctx.registerKernelCall c
-                                    "Elm_Kernel_Platform_registerIncomingPort"
-                                    [ Types.ecoValue, Types.ecoValue ]
-                                    Types.ecoValue
-
-                            else
-                                c
-                       )
-                    |> (\c ->
-                            if hasOutgoing then
-                                Ctx.registerKernelCall c
-                                    "Elm_Kernel_Platform_registerOutgoingPort"
-                                    [ Types.ecoValue ]
-                                    Types.ecoValue
-
-                            else
-                                c
-                       )
+                    |> registerKernelIf (List.any (\p -> registerKernelFor p == registerIncomingPortKernel) ports)
+                        registerIncomingPortKernel
+                        [ Types.ecoValue, Types.ecoValue, Types.ecoValue ]
+                    |> registerKernelIf (List.any (\p -> registerKernelFor p == registerOutgoingPortKernel) ports)
+                        registerOutgoingPortKernel
+                        [ Types.ecoValue ]
+                    |> registerKernelIf (List.any (\p -> registerKernelFor p == registerIncomingBytesPortKernel) ports)
+                        registerIncomingBytesPortKernel
+                        [ Types.ecoValue ]
+                    |> registerKernelIf (List.any (\p -> registerKernelFor p == registerOutgoingBytesPortKernel) ports)
+                        registerOutgoingBytesPortKernel
+                        [ Types.ecoValue ]
                     |> (\c ->
                             if flagsDecoder /= Nothing then
                                 Ctx.registerKernelCall c
@@ -251,7 +257,7 @@ generateRegisterPorts ctx0 ports flagsDecoder managers =
                             ( c2, nameOp ) =
                                 Ops.ecoStringLiteral c1 nameVar port_.name
                         in
-                        case ( port_.incoming, port_.decoderSpecId ) of
+                        case ( port_.incoming && not port_.bytes, port_.decoderSpecId ) of
                             ( True, Just decoderSpecId ) ->
                                 let
                                     ( decoderVar, c3 ) =
@@ -264,17 +270,23 @@ generateRegisterPorts ctx0 ports flagsDecoder managers =
                                             []
                                             Types.ecoValue
 
-                                    ( resultVar, c5 ) =
+                                    ( schemaVar, c5 ) =
                                         Ctx.freshVar c4
 
-                                    ( c6, registerOp ) =
-                                        Ops.ecoCallNamed c5
+                                    ( c6, schemaOp ) =
+                                        Ops.ecoStringLiteral c5 schemaVar port_.schema
+
+                                    ( resultVar, c7 ) =
+                                        Ctx.freshVar c6
+
+                                    ( c8, registerOp ) =
+                                        Ops.ecoCallNamed c7
                                             resultVar
-                                            "Elm_Kernel_Platform_registerIncomingPort"
-                                            [ ( nameVar, Types.ecoValue ), ( decoderVar, Types.ecoValue ) ]
+                                            registerIncomingPortKernel
+                                            [ ( nameVar, Types.ecoValue ), ( decoderVar, Types.ecoValue ), ( schemaVar, Types.ecoValue ) ]
                                             Types.ecoValue
                                 in
-                                ( registerOp :: decoderCallOp :: nameOp :: accOps, c6 )
+                                ( registerOp :: schemaOp :: decoderCallOp :: nameOp :: accOps, c8 )
 
                             _ ->
                                 let
@@ -284,7 +296,7 @@ generateRegisterPorts ctx0 ports flagsDecoder managers =
                                     ( c4, registerOp ) =
                                         Ops.ecoCallNamed c3
                                             resultVar
-                                            "Elm_Kernel_Platform_registerOutgoingPort"
+                                            (registerKernelFor port_)
                                             [ ( nameVar, Types.ecoValue ) ]
                                             Types.ecoValue
                                 in
@@ -310,6 +322,53 @@ generateRegisterPorts ctx0 ports flagsDecoder managers =
                 Ops.funcFunc ctxU3 "__eco_register_ports" [] Types.ecoValue region
         in
         ( [ funcOp ], ctxF )
+
+
+{-| Returns the kernel that `generateRegisterPorts` registers `port_` with, as
+its documentation lists.
+-}
+registerKernelFor : Mono.PortRegistration -> String
+registerKernelFor port_ =
+    if port_.bytes then
+        if port_.incoming then
+            registerIncomingBytesPortKernel
+
+        else
+            registerOutgoingBytesPortKernel
+
+    else if port_.incoming && port_.decoderSpecId /= Nothing then
+        registerIncomingPortKernel
+
+    else
+        registerOutgoingPortKernel
+
+
+{-| The kernel that registers an incoming JSON port with its decoder.
+-}
+registerIncomingPortKernel : String
+registerIncomingPortKernel =
+    "Elm_Kernel_Platform_registerIncomingPort"
+
+
+{-| The kernel that registers an outgoing JSON port.
+-}
+registerOutgoingPortKernel : String
+registerOutgoingPortKernel =
+    "Elm_Kernel_Platform_registerOutgoingPort"
+
+
+{-| The kernel that registers an incoming bytes port.
+-}
+registerIncomingBytesPortKernel : String
+registerIncomingBytesPortKernel =
+    "Elm_Kernel_Platform_registerIncomingBytesPort"
+
+
+{-| The kernel that registers an outgoing bytes port.
+-}
+registerOutgoingBytesPortKernel : String
+registerOutgoingBytesPortKernel =
+    "Elm_Kernel_Platform_registerOutgoingBytesPort"
 
 
 {-| Returns the symbol of the function that registers the eco/system effect

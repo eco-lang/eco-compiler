@@ -1005,6 +1005,8 @@ static llvm::orc::SymbolMap buildRuntimeSymbolMap(
         KERNEL_SYM(Elm_Kernel_Platform_leaf)
         KERNEL_SYM(Elm_Kernel_Platform_registerIncomingPort)
         KERNEL_SYM(Elm_Kernel_Platform_registerOutgoingPort)
+        KERNEL_SYM(Elm_Kernel_Platform_registerIncomingBytesPort)
+        KERNEL_SYM(Elm_Kernel_Platform_registerOutgoingBytesPort)
         KERNEL_SYM(Elm_Kernel_Platform_registerFlagsDecoder)
 
         // Process module

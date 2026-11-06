@@ -33,6 +33,7 @@
 #include "../KernelExports.h"
 #include "../ExportHelpers.hpp"
 #include "HttpRequestLayout.hpp"
+#include "allocator/RootedSlots.hpp"
 #include "allocator/Heap.hpp"
 #include "allocator/HeapHelpers.hpp"
 #include "allocator/Allocator.hpp"
@@ -117,7 +118,8 @@ static void* httpMapHandler(void* args[]) {
 /// router; the previous State, `args[3]`, is not read.
 ///
 /// A `Request` command's Task is built by `Eco_Http_toTaskForSpawn` and
-/// spawned, so the request starts when the scheduler runs it, not here. Its
+/// spawned, so the request starts when the scheduler runs it, not here. The
+/// commands are handled last first (PORT_005). Its
 /// result is sent to the app through the router. A `Cancel` command withdraws
 /// the latest request issued with its tracker, if still in flight. A command that is a Task rather than a
 /// `MyCmd` value is spawned with its result sent to the app. Any other command
@@ -135,13 +137,23 @@ static void* httpOnEffectsEvaluator(void* args[]) {
     // on each read and advance.
     HPointer router = Export::decode(reinterpret_cast<uint64_t>(args[0]));
     Elm::StackRootGuard outerRoots(&router);
-    Elm::alloc::RootedListCursor cursor(
-        Export::decode(reinterpret_cast<uint64_t>(args[1])));
-    Elm::Unboxable cursorHead;
-    u8 cursorKind;
+    // The commands are handled last first, as stock elm/http handles the list Elm 0.19.1 gives it, which holds
+    // a batch's commands in reverse (PORT_005): a `Cmd.batch [ request, cancel ]` cancels before the request
+    // exists. They are gathered into rooted slots first, which does not allocate.
+    Elm::alloc::RootedSlots commands;
+    {
+        Elm::alloc::RootedListCursor cursor(
+            Export::decode(reinterpret_cast<uint64_t>(args[1])));
+        Elm::Unboxable cursorHead;
+        u8 cursorKind;
+        while (cursor.read(cursorHead, cursorKind)) {
+            commands.push(cursorHead.p);
+            cursor.advance();
+        }
+    }
 
-    while (cursor.read(cursorHead, cursorKind)) {
-        HPointer cmdHP = cursorHead.p;
+    for (size_t i = commands.size(); i > 0; --i) {
+        HPointer cmdHP = commands[i - 1];
         Elm::StackRootGuard iterRoots(&cmdHP);
 
         void* cmdPtr = alloc::resolveOrNull(cmdHP);
@@ -192,8 +204,6 @@ static void* httpOnEffectsEvaluator(void* args[]) {
                 sched.rawSpawn(wrappedTask);
             }
         }
-
-        cursor.advance();
     }
 
     uint64_t subsEnc = reinterpret_cast<uint64_t>(args[2]);
@@ -207,8 +217,8 @@ static void* httpOnEffectsEvaluator(void* args[]) {
 /// subscription list.
 ///
 /// For each subscription `MySub subTracker toMsg` in the State whose tracker
-/// has the same text as `tracker`, `toMsg progress` is sent to the app, in
-/// list order. A self-message that does not resolve to an object delivers
+/// has the same text as `tracker`, `toMsg progress` is sent to the app, last
+/// first. A self-message that does not resolve to an object delivers
 /// nothing.
 static void* httpOnSelfMsgEvaluator(void* args[]) {
     auto& sched = Scheduler::instance();
@@ -228,12 +238,20 @@ static void* httpOnSelfMsgEvaluator(void* args[]) {
         std::string wantTracker = trackerToStd(tracker);
 
         // `toMsg` and `sendToApp` run Elm code, which may collect; `router` (topRoots) and `progress`
-        // (msgRoots) are already rooted across those calls.
-        Elm::alloc::RootedListCursor cursor(state);
-        Elm::Unboxable cursorHead;
-        u8 cursorKind;
-        while (cursor.read(cursorHead, cursorKind)) {
-            HPointer subHP = cursorHead.p;
+        // (msgRoots) are already rooted across those calls. The subscriptions are visited last first, as stock
+        // elm/http visits the list Elm 0.19.1 gives it (PORT_005); they are gathered into rooted slots first.
+        Elm::alloc::RootedSlots subs;
+        {
+            Elm::alloc::RootedListCursor cursor(state);
+            Elm::Unboxable cursorHead;
+            u8 cursorKind;
+            while (cursor.read(cursorHead, cursorKind)) {
+                subs.push(cursorHead.p);
+                cursor.advance();
+            }
+        }
+        for (size_t i = subs.size(); i > 0; --i) {
+            HPointer subHP = subs[i - 1];
             Elm::StackRootGuard iterRoots(&subHP);
 
             void* subPtr = alloc::resolveOrNull(subHP);
@@ -247,7 +265,6 @@ static void* httpOnSelfMsgEvaluator(void* args[]) {
                     PlatformRuntime::instance().sendToApp(router, msg);
                 }
             }
-            cursor.advance();
         }
     }
 

@@ -11,6 +11,10 @@
 // host as a message to the program, and an outgoing port hands the host the JSON text of each value the program
 // sends on it. What they do is stated by `Elm::Platform::PortRuntime`, whose host API they wrap.
 //
+// A port whose whole payload is `Bytes` is a bytes port, and carries raw bytes rather than JSON: the `_bytes`
+// functions are its end, and `eco_port_is_bytes` tells the two kinds apart. This is an interim interface; a
+// general binary port interface is to replace it in a later version.
+//
 // A host might use them like this:
 //
 //     eco_port_subscribe("logPort", on_log, NULL);   // before start is fine
@@ -23,6 +27,9 @@
 #ifndef ECO_EMBED_H
 #define ECO_EMBED_H
 
+#include <stddef.h>
+#include <stdint.h>
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -34,6 +41,18 @@ extern "C" {
 // subscribed with. It runs on the eco thread, or, for payloads buffered before the port's first subscriber,
 // on the thread that subscribed. It must not touch Elm values; it may call `eco_port_send`.
 typedef void (*eco_port_callback)(const char* json_utf8, void* user);
+
+// A host function that receives the payloads sent on an outgoing bytes port, the same type as
+// `Elm::Platform::EcoPortBytesCallback`.
+//
+// It is called with one payload's `length` bytes at `data` (null when `length` is 0) and the `user` pointer it
+// was subscribed with. `data` points into the Elm value itself: it is valid only during the call and must not be
+// written. It runs where an `eco_port_callback` runs, under the same rules; it may call `eco_port_send_bytes`.
+typedef void (*eco_port_bytes_callback)(const uint8_t* data, size_t length, void* user);
+
+// A host function that takes back a buffer lent to `eco_port_send_bytes`, called once with the `ctx` given
+// there, on the eco thread.
+typedef void (*eco_port_release)(void* ctx);
 
 // ---- Application lifecycle ----
 
@@ -50,9 +69,12 @@ typedef void (*eco_port_callback)(const char* json_utf8, void* user);
 // none; it is copied. A worker decodes it as `Elm::Platform::PlatformRuntime::initWorker` describes, which
 // aborts the process if it does not decode.
 //
-// Returns 0 once the program has started, `ECO_APP_ERR_ALREADY_STARTED` if this has been called before in
-// this process, and `ECO_APP_ERR_THREAD` if the thread could not be created. A first call that fails with
-// `ECO_APP_ERR_THREAD` still counts as the first, so no later call can start a program.
+// Returns 0 once the program has started, `ECO_APP_ERR_ALREADY_STARTED` if it has been started before in
+// this process, `ECO_APP_ERR_BAD_FLAGS` if `flags_json` (or `null`, when it is `NULL`) does not decode as the
+// program's flags, and `ECO_APP_ERR_THREAD` if the thread could not be created. Bad flags are found before
+// anything starts, on the calling thread, with the reason in `eco_last_error`, and the call does not count:
+// the host may call again with other flags. A call that fails with `ECO_APP_ERR_THREAD` counts, so no later
+// call can start a program.
 int eco_app_start(int argc, char** argv, const char* flags_json);
 
 // The result of `eco_app_start` when it has already been called in this process.
@@ -61,6 +83,13 @@ int eco_app_start(int argc, char** argv, const char* flags_json);
 #define ECO_APP_ERR_FLAGS_UNSUPPORTED 2
 // The result of `eco_app_start` when the eco thread could not be created.
 #define ECO_APP_ERR_THREAD 3
+// The result of `eco_app_start` when the flags do not decode as the program's flags type.
+#define ECO_APP_ERR_BAD_FLAGS 4
+
+// Returns the reason for the last refusal on the calling thread: flags `eco_app_start` rejected, or a payload
+// `eco_port_send` rejected. The text, in the words the JS backend's error uses, is valid until the next
+// refusal on this thread, and empty if there has been none.
+const char* eco_last_error(void);
 
 // Asks the program to stop, and returns without waiting for it.
 //
@@ -91,15 +120,24 @@ int eco_app_join(void);
 // started without a hook, and races the eco thread if it was started with one. A null `cb` sets no hook.
 void eco_set_idle_hook(void (*cb)(int busy, void* user), void* user);
 
+// Returns 1 if the program holds work that counts as busy, such as a port payload it has not handled yet, a timer
+// or a request in flight, and 0 otherwise. Unlike the idle hook's last report, it is current when called: a port
+// send counts from the moment `eco_port_send` or `eco_port_send_bytes` returns. Work the eco thread is running
+// without a hold is not counted; the idle hook reports it. May be called from any thread once `eco_app_start` has
+// returned 0, and returns 0 before then; must not be called while `eco_app_start` is in progress.
+int eco_app_is_busy(void);
+
 // ---- Ports ----
 
 // Queues a copy of the JSON text `json_utf8` for the incoming port named `port`, to be decoded and delivered
 // to the program on the eco thread, as `Elm::Platform::PortRuntime::sendIncoming` describes. May be called from
 // any thread.
 //
-// Returns 0 if the payload was queued, and 1 if either argument is null or `port` is not a registered incoming
-// port, which includes any port before the program has registered its ports. A payload that does not decode
-// aborts the process later, on the eco thread.
+// Returns 0 if the payload was queued, 1 if either argument is null or `port` is not a registered incoming JSON
+// port, which includes any port before the program has registered its ports, and 2 if the JSON does not decode
+// as the port's payload type, with the reason in `eco_last_error`. The JSON is checked on the calling thread,
+// against the payload type the compiler recorded for the port, so a bad value is refused here rather than
+// found later on the eco thread.
 int eco_port_send(const char* port, const char* json_utf8);
 
 // Subscribes `cb`, called with `user`, to the payloads sent on the outgoing port named `port`, as
@@ -112,6 +150,28 @@ int eco_port_subscribe(const char* port, eco_port_callback cb, void* user);
 // Removes one subscription of `cb` with `user` from the outgoing port named `port`, and returns 0 if there was
 // one and 1 otherwise. `cb` may still be called once more if a delivery is in progress on another thread.
 int eco_port_unsubscribe(const char* port, eco_port_callback cb, void* user);
+
+// Queues the `length` bytes at `data` for the incoming bytes port named `port`, to be delivered to the program
+// on the eco thread, as `Elm::Platform::PortRuntime::sendIncomingBytes` describes. May be called from any thread.
+//
+// With a `release` function the buffer is lent, not copied: it must stay valid and unchanged until the eco thread
+// calls `release(ctx)`, which it does once, after copying the bytes into the program's heap or dropping them.
+// With a null `release` the bytes are copied before this returns. For example, a host that malloc'd `buf` can
+// hand it over with `eco_port_send_bytes(port, buf, n, free, buf)`.
+//
+// Returns 0 if the payload was queued, and 1, without calling `release`, if `port` is null, `data` is null with
+// a nonzero `length`, or `port` is not a registered incoming bytes port. `eco_port_send` refuses a bytes port.
+int eco_port_send_bytes(const char* port, const uint8_t* data, size_t length, eco_port_release release,
+                        void* ctx);
+
+// Subscribes `cb`, called with `user`, to the payloads sent on the outgoing bytes port named `port`, as
+// `eco_port_subscribe` does for a JSON port. Returns 1 if `port` or `cb` is null or `port` is a registered port
+// that is not a bytes port, and 0 otherwise. `eco_port_subscribe` refuses a registered bytes port. A
+// subscription of either kind made before the port registers as the other kind is kept but never called.
+int eco_port_subscribe_bytes(const char* port, eco_port_bytes_callback cb, void* user);
+// Removes one bytes subscription of `cb` with `user` from the port named `port`, as `eco_port_unsubscribe`
+// does for a JSON one.
+int eco_port_unsubscribe_bytes(const char* port, eco_port_bytes_callback cb, void* user);
 
 // ---- Introspection ----
 //
@@ -126,6 +186,9 @@ const char* eco_port_name(int i);
 // Returns 1 if `port` names a registered incoming port, 0 if it names a registered outgoing port, and -1 if
 // neither or if it is null.
 int eco_port_is_incoming(const char* port);
+// Returns 1 if `port` names a registered bytes port, 0 if it names a registered JSON port, and -1 if neither or
+// if it is null.
+int eco_port_is_bytes(const char* port);
 
 #ifdef __cplusplus
 }

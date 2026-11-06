@@ -182,6 +182,7 @@ generate leaves withFlags =
 
                     else
                         Nothing
+                , flagsSchema = ""
                 , lssMemberOrigins = Dict.empty
                 , lssMemberKinds = Dict.empty
                 , lssBlockedMembers = Dict.empty

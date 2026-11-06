@@ -93,6 +93,8 @@ These rewrites are done here and not during name resolution because the canonica
 
 A port is a typed channel between an Elm program and its host. For each port the phase writes the JSON encoder or decoder as ordinary typed code, built from the port's declared type. Flags, the value the host passes in when the program starts, use the same decoder builder. The work needs only the declared type, so it is done per module.
 
+On the native target, a port whose whole payload is `Bytes` crosses as raw bytes, not JSON. Monomorphization skips its codec and marks it a bytes port, as [scheduler-and-services.md](../runtime/scheduler-and-services.md) describes. Native code cannot yet carry Bytes inside a JSON payload. So for a native build this phase rejects a port payload that has Bytes inside another type, and flags that contain Bytes. Both are interim limits, and a general binary port interface is to remove them.
+
 ## Merging function boundaries
 
 The phase merges function boundaries that would otherwise force extra closures. A function that takes one argument, binds some local values and then returns another function, such as `\x -> let y = f x in \z -> g y z`, makes every call build an intermediate closure and call it again. Such a split is a staging boundary. At a case expression whose branches are functions, the boundaries also force each branch to be wrapped to a common shape. Merging them here leaves later phases fewer closures to build and fewer branches to wrap.

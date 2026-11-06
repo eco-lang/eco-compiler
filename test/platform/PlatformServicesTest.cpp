@@ -13,6 +13,7 @@
 #include "../../runtime/src/platform/Spawn.hpp"
 #include "../../runtime/src/platform/TimerService.hpp"
 #include "../../runtime/src/platform/WaitService.hpp"
+#include "../../elm-kernel-cpp/src/KernelExports.h"
 #include "../allocator/TestHelpers.hpp"
 #include "../TestSuite.hpp"
 
@@ -596,6 +597,86 @@ void test_liveness_effects_inside_update_drain() {
     TEST_ASSERT(s.drainDepth() == 0);
 }
 
+// PS13, PS14: `Platform.sendToApp` and `Platform.sendToSelf` are Tasks, as in elm/core: building one sends
+// nothing, and the message goes out each time the Task runs (KERNEL_TASK_IO_001). They sent at once, when the
+// kernel was called, until 2026-11-06; an Elm effect manager's `List.map (sendToApp router) msgs |>
+// Task.sequence` then sent its messages in List.map's evaluation order, last first.
+#if ECO_TEST_HOOKS
+int g_ps13AppCalls = 0;
+int g_ps13SelfCalls = 0;
+
+void* ps13SendToApp(void* /*args*/[]) {
+    g_ps13AppCalls++;
+    return reinterpret_cast<void*>(Elm::Platform::detail::encodeBits(Elm::alloc::unit()));
+}
+
+void* ps13OnSelfMsg(void* args[]) {
+    g_ps13SelfCalls++;
+    HPointer state = Elm::Platform::detail::decodeBits(reinterpret_cast<uint64_t>(args[2]));
+    return reinterpret_cast<void*>(Elm::Platform::detail::encodeBits(
+        Scheduler::instance().taskSucceed(state)));
+}
+
+// Registers a manager "PS13" whose onSelfMsg counts, and sets up effects with a sendToApp closure that
+// counts; returns its router.
+HPointer ps13Setup() {
+    initRuntime();
+    auto& s = Scheduler::instance();
+    auto& pr = Elm::Platform::PlatformRuntime::instance();
+    using Elm::Platform::detail::encodeBits;
+    HPointer init = s.taskSucceed(Elm::alloc::unit());
+    Elm::StackRootGuard g1(&init);
+    HPointer onEffects = Elm::alloc::allocClosure(ps9OnEffects, 4);
+    Elm::StackRootGuard g2(&onEffects);
+    HPointer onSelf = Elm::alloc::allocClosure(ps13OnSelfMsg, 3);
+    Elm::StackRootGuard g3(&onSelf);
+    Elm::Platform::PlatformRuntime::ManagerInfo info{
+        encodeBits(init), encodeBits(onEffects), encodeBits(onSelf),
+        encodeBits(Elm::alloc::listNil()), encodeBits(Elm::alloc::listNil())};
+    pr.registerManager("PS13", info);
+    HPointer sendToApp = Elm::alloc::allocClosure(ps13SendToApp, 1);   // called with the message alone
+    (void)pr.setupEffects(sendToApp);
+    s.drain();
+    const uint64_t router = pr.routerForTest("PS13");
+    TEST_ASSERT(router != 0);
+    return Elm::Platform::detail::decodeBits(router);
+}
+
+void test_send_to_app_is_a_task() {
+    HPointer router = ps13Setup();
+    Elm::StackRootGuard g(&router);
+    auto& s = Scheduler::instance();
+    HPtr task = Elm_Kernel_Platform_sendToApp(HPtr::fromBits(Elm::Platform::detail::encodeBits(router)),
+                                              HPtr::fromBits(Elm::Platform::detail::encodeBits(Elm::alloc::unit())));
+    HPointer taskHP = Elm::Platform::detail::decodeBits(task.toBits());
+    Elm::StackRootGuard gt(&taskHP);
+    s.drain();
+    TEST_ASSERT(g_ps13AppCalls == 0);   // built, not run: nothing sent
+    (void)s.rawSpawn(taskHP);
+    s.drain();
+    TEST_ASSERT(g_ps13AppCalls == 1);
+    (void)s.rawSpawn(taskHP);             // a Task sends each time it runs
+    s.drain();
+    TEST_ASSERT(g_ps13AppCalls == 2);
+}
+
+void test_send_to_self_is_a_task() {
+    HPointer router = ps13Setup();
+    Elm::StackRootGuard g(&router);
+    auto& s = Scheduler::instance();
+    const int before = g_ps13SelfCalls;
+    HPtr task = Elm_Kernel_Platform_sendToSelf(HPtr::fromBits(Elm::Platform::detail::encodeBits(router)),
+                                               HPtr::fromBits(Elm::Platform::detail::encodeBits(Elm::alloc::unit())));
+    HPointer taskHP = Elm::Platform::detail::decodeBits(task.toBits());
+    Elm::StackRootGuard gt(&taskHP);
+    s.drain();
+    TEST_ASSERT(g_ps13SelfCalls - before == 0);
+    (void)s.rawSpawn(taskHP);
+    s.drain();
+    TEST_ASSERT(g_ps13SelfCalls - before == 1);
+}
+#endif
+
 // ---- Withdrawal (plans/program-liveness-rule.md §5.3, phase 3) -------------
 
 // PS10: a sleep's kill (withdrawParkedTimer, as the Process.sleep kill handle
@@ -747,4 +828,8 @@ void registerPlatformServicesTests(IsolatedTestRunner::IsolatedTestCaseSuite& su
     suite.add(Testing::TestCase("platform-services/liveness PS11 http abort queued and running", test_liveness_http_abort_queued_and_running));
 #endif
     suite.add(Testing::TestCase("platform-services/liveness PS12 Time.every drop cancels tick", test_liveness_time_every_drop_cancels_tick));
+#if ECO_TEST_HOOKS
+    suite.add(Testing::TestCase("platform-services/PS13 sendToApp is a Task: sends when run, not when built", test_send_to_app_is_a_task));
+    suite.add(Testing::TestCase("platform-services/PS14 sendToSelf is a Task: sends when run, not when built", test_send_to_self_is_a_task));
+#endif
 }

@@ -100,6 +100,11 @@ public:
         auto it = managers_.find(home);
         return it == managers_.end() ? nullptr : &it->second;
     }
+    // Test-only: returns the encoded router `setupEffects` made for the manager `home`, or 0 when it has none.
+    uint64_t routerForTest(const std::string& home) const {
+        auto it = managerStates_.find(home);
+        return it == managerStates_.end() ? 0 : it->second.router;
+    }
 #endif
 
     // Starts every registered effect manager and returns the Empty constant (`{}`).

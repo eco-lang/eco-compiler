@@ -166,7 +166,15 @@ monomorphizeWithReportAssigned lssConfig limits entryPointName globalTypeEnv ass
                             mergeConvergedSpecs mainSpecId maybeFlagsSpecId sSettled
 
                         graph =
-                            pruneGraph sFinal (assembleRawGraph sFinal finalMainSpecId finalFlagsSpecId)
+                            pruneGraph sFinal (assembleRawGraph sFinal finalMainSpecId finalFlagsSpecId flagsSchemaStr)
+
+                        flagsSchemaStr =
+                            case maybeFlags of
+                                Nothing ->
+                                    ""
+
+                                Just flags ->
+                                    Mono.flagsSchema flags.fromJson (Zonk.canTypeToMono flags.tipe)
 
                         report =
                             if lssConfig.report then
@@ -4357,8 +4365,8 @@ to full key, is filled only with `lss.report`. `lssBlockedMembers` are the ids
 the μ-tie reused.
 
 -}
-assembleRawGraph : S -> Mono.SpecId -> Maybe Mono.SpecId -> Mono.MonoGraph
-assembleRawGraph s mainSpecId flagsDecoderSpecId =
+assembleRawGraph : S -> Mono.SpecId -> Maybe Mono.SpecId -> String -> Mono.MonoGraph
+assembleRawGraph s mainSpecId flagsDecoderSpecId flagsSchemaStr =
     let
         nextId : Int
         nextId =
@@ -4415,6 +4423,7 @@ assembleRawGraph s mainSpecId flagsDecoderSpecId =
         , specValueUsed = valueUsedWithMain
         , ports = s.ports
         , flagsDecoder = flagsDecoderSpecId
+        , flagsSchema = flagsSchemaStr
         , lssMemberOrigins = buildMemberOrigins s.env.toptNodes s.lssMemberTable
         , lssMemberKinds =
             if s.env.lss.report then

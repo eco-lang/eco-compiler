@@ -1742,8 +1742,11 @@ becomes
 
     \p -> Elm_Kernel_Platform_leaf "foo" (encoder p)
 
-so the payload is encoded before it reaches the leaf. Either way the port is
-recorded in the state's port registrations, an incoming one with its
+so the payload is encoded before it reaches the leaf. A bytes port
+(`Mono.portCarriesBytes`) has no codec: an incoming one enqueues no decoder,
+and an outgoing one puts the Bytes value itself in the leaf,
+`\p -> Elm_Kernel_Platform_leaf "foo" p` (PORT_008). Either way the port is
+recorded in the state's port registrations, an incoming JSON port with its
 decoder's `SpecId`.
 
 Crashes when the current global is not a `Global` or the requested type is not
@@ -1819,35 +1822,60 @@ specializePortNode incoming expr canType requestedMonoType state =
             , closureKind = Nothing
             , captureAbi = Nothing
             }
-    in
-    if incoming then
-        let
-            body =
-                Mono.MonoCall region
+
+        bytesPort =
+            Mono.portCarriesBytes incoming paramType
+
+        -- The leaf of an incoming port, or of an outgoing bytes port, holds
+        -- the closure's argument itself.
+        bareLeafWrapper =
+            Mono.MonoClosure closureInfo
+                (Mono.MonoCall region
                     (leafKernel paramType)
                     [ nameLit, paramVar ]
                     resultType
                     Mono.defaultCallInfo
-
-            wrapper =
-                Mono.MonoClosure closureInfo body requestedMonoType
-
-            decoderMonoType =
-                TypeSubst.applySubstPureRO stateWithLambda.accum.intern stateWithLambda.ctx.mvarEnv subst (TOpt.typeOf expr)
-
+                )
+                requestedMonoType
+    in
+    if incoming then
+        let
             ( decoderSpecId, state1 ) =
-                enqueueSpec portGlobal decoderMonoType stateWithLambda
+                if bytesPort then
+                    ( Nothing, stateWithLambda )
+
+                else
+                    let
+                        decoderMonoType =
+                            TypeSubst.applySubstPureRO stateWithLambda.accum.intern stateWithLambda.ctx.mvarEnv subst (TOpt.typeOf expr)
+                    in
+                    Tuple.mapFirst Just (enqueueSpec portGlobal decoderMonoType stateWithLambda)
 
             state2 =
                 recordPortRegistration
                     { name = portName
                     , key = Mono.toComparableGlobal portGlobal
                     , incoming = True
-                    , decoderSpecId = Just decoderSpecId
+                    , decoderSpecId = decoderSpecId
+                    , bytes = bytesPort
+                    , schema = incomingSchema bytesPort paramType
                     }
                     state1
         in
-        ( Mono.MonoPortIncoming wrapper requestedMonoType, state2 )
+        ( Mono.MonoPortIncoming bareLeafWrapper requestedMonoType, state2 )
+
+    else if bytesPort then
+        ( Mono.MonoPortOutgoing bareLeafWrapper requestedMonoType
+        , recordPortRegistration
+            { name = portName
+            , key = Mono.toComparableGlobal portGlobal
+            , incoming = False
+            , decoderSpecId = Nothing
+            , bytes = True
+            , schema = ""
+            }
+            stateWithLambda
+        )
 
     else
         let
@@ -1885,10 +1913,25 @@ specializePortNode incoming expr canType requestedMonoType state =
                     , key = Mono.toComparableGlobal portGlobal
                     , incoming = False
                     , decoderSpecId = Nothing
+                    , bytes = False
+                    , schema = ""
                     }
                     state1
         in
         ( Mono.MonoPortOutgoing wrapper requestedMonoType, state2 )
+
+
+{-| Returns the `Mono.payloadSchema` of the payload an incoming port's tagger
+type `taggerType` takes, or "" for a bytes port.
+-}
+incomingSchema : Bool -> Mono.MonoType -> String
+incomingSchema bytesPort taggerType =
+    case ( bytesPort, taggerType ) of
+        ( False, Mono.MFunction _ _ (payload :: _) _ ) ->
+            Mono.payloadSchema payload
+
+        _ ->
+            ""
 
 
 {-| Adds `reg` to the state's port registrations unless one with the same

@@ -20,6 +20,7 @@
 #include "allocator/Heap.hpp"
 #include "allocator/HeapHelpers.hpp"
 #include "allocator/Allocator.hpp"
+#include "allocator/RootedSlots.hpp"
 #include "platform/Scheduler.hpp"
 #include "platform/PlatformRuntime.hpp"
 
@@ -59,8 +60,10 @@ static void* taskSendToAppEvaluator(void* args[]) {
 }
 
 // Evaluates `onEffects : Router msg -> List (MyCmd msg) -> List (MySub msg) -> State -> Task Never State`
-// with the four call arguments in `args[0..3]`. For each command `Perform task` in the list, in order, spawns a
-// process running `task |> andThen (sendToApp router)`; the processes are enqueued, not run here. A command
+// with the four call arguments in `args[0..3]`. For each command `Perform task` in the list, last first, spawns a
+// process running `task |> andThen (sendToApp router)`; the processes are enqueued, not run here. Last first
+// because Elm 0.19.1 hands a manager a batch's commands in reverse (its `_Platform_gatherEffects` conses them),
+// so `Cmd.batch [ perform a, perform b ]` runs b first there (PORT_005, test/elm/src/CmdBatchOrderTest.elm). A command
 // for which `resolve` returns null is skipped. Ignores the subscriptions and returns a Task that
 // succeeds with the state from `args[3]`.
 //
@@ -81,27 +84,30 @@ static void* taskOnEffectsEvaluator(void* args[]) {
     void* clPtr = Allocator::instance().resolve(sendToAppCl);
     closureCapture(clPtr, boxed(router), true);
 
-    // `taskAndThen` and `rawSpawn` allocate and may collect. `sendToAppCl` is rooted, and RootedListCursor
-    // keeps its list node rooted and resolves it afresh on every read and advance, so the walk never holds
-    // a stale pointer across them.
+    // The commands are gathered first, into rooted slots, so that they can be spawned last first. The walk
+    // does not allocate. `taskAndThen` and `rawSpawn` allocate and may collect; `sendToAppCl` and the slots
+    // are rooted, so each command is read afresh from its slot.
     {
         Elm::StackRootGuard guard(&sendToAppCl);
-        Elm::alloc::RootedListCursor cursor(cmds);
-        Elm::Unboxable head;
-        u8 kind;
+        Elm::alloc::RootedSlots commands;
+        {
+            Elm::alloc::RootedListCursor cursor(cmds);
+            Elm::Unboxable head;
+            u8 kind;
+            while (cursor.read(head, kind)) {
+                commands.push(head.p);
+                cursor.advance();
+            }
+        }
 
-        while (cursor.read(head, kind)) {
-            HPointer cmdHP = head.p;
-
-            void* cmdPtr = Allocator::instance().resolve(cmdHP);
+        for (size_t i = commands.size(); i > 0; --i) {
+            void* cmdPtr = Allocator::instance().resolve(commands[i - 1]);
             Custom* cmd = static_cast<Custom*>(cmdPtr);
             HPointer innerTask = cmd->values[0].p;
 
             HPointer chainedTask = Scheduler::instance().taskAndThen(sendToAppCl, innerTask);
 
             Scheduler::instance().rawSpawn(chainedTask);
-
-            cursor.advance();
         }
     }
 

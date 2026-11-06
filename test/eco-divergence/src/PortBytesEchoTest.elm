@@ -1,17 +1,18 @@
 port module PortBytesEchoTest exposing (main)
 
 {-| `Bytes` out and in over ports, an Eco extension (stock Elm rejects a `Bytes`
-port payload). The outgoing port encodes its payload with the `Json` kernel's
-`encodeBytes` and the incoming one decodes with `decodeBytes`
-(`Compiler.LocalOpt.Typed.Port`, `Compiler.LocalOpt.Erased.Port`).
+port payload). On the JS backend the outgoing port encodes its payload with
+`_Json_encodeBytes` and the incoming one decodes with `_Json_decodeBytes`
+(`Compiler.LocalOpt.Erased.Port`). Natively both are bytes ports (PORT_008):
+no JSON codec, and the host gets and gives raw bytes.
 
 The harness echo (test/ElmE2ETestBase.hpp `installPortEchoBounce` under the JIT,
 test/aot_port_host.cpp under AOT) feeds every `echoOut` payload back into `echoIn`,
 so the program gets back the bytes it sent and logs them.
 
-Reported bug (2026-11-05): a native build of a program with a `Bytes` port fails
-to link with `undefined symbol: Elm_Kernel_Json_encodeBytes`; the JS backend
-defines `_Json_encodeBytes`/`_Json_decodeBytes`, the native kernel neither.
+Reported bug (2026-11-05, fixed 2026-11-06 by plans/native-bytes-ports.md): a
+native build of a program with a `Bytes` port failed to link with
+`undefined symbol: Elm_Kernel_Json_encodeBytes`, which no native kernel defined.
 
 -}
 

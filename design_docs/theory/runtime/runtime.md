@@ -68,7 +68,7 @@ A program stays alive exactly while it waits for something it asked for. Each su
 
 ## Start-up, embedding and platforms
 
-The program's entry point starts the eco thread, which sets up the heap, runs the Elm program and tears everything down. The same structure serves a program embedded as a shared library or Node addon. There the host's thread is never the mutator: it talks to the eco thread only through the port interface and a mutex-guarded queue. Port payloads cross as serialized JSON and are decoded into Elm values on the eco thread, so no heap value is ever built off it.
+The program's entry point starts the eco thread, which sets up the heap, runs the Elm program and tears everything down. The same structure serves a program embedded as a shared library or Node addon. There the host's thread is never the mutator: it talks to the eco thread only through the port interface and a mutex-guarded queue. Port payloads cross as serialized JSON and are decoded into Elm values on the eco thread, so no heap value is ever built off it. The one exception is a port whose whole payload is `Bytes`, which carries raw bytes. Its outgoing bytes are read in place during the host's callback, and its incoming bytes are copied into the heap on the eco thread. This is an interim design that a general binary port interface will replace; see [scheduler-and-services.md](scheduler-and-services.md).
 
 Child processes are started by spawning, never by forking. A forked child would inherit the heap configuration, the reserved address range, the collector's helper threads and the runtime's global objects, while a spawn runs none of that.
 
@@ -137,5 +137,5 @@ Invariants (`design_docs/invariants.csv`):
 - HEAP_019, REP_HEAP_001, REP_HEAP_002: field kinds.
 - HEAP_020, FORBID_HEAP_003: rooting in C++. HEAP_030, HEAP_034: inline allocation and forwarding checks.
 - KERNEL_TASK_IO_001, KERNEL_TASK_IO_002: deferred kernel IO.
-- LIVE_001 to LIVE_006: holds. PORT_004, PORT_006, PORT_007: ports, the eco thread and JSON flags.
+- LIVE_001 to LIVE_006: holds. PORT_004, PORT_006, PORT_007, PORT_008: ports, the eco thread, JSON flags and bytes ports.
 - GC_DET_001: collector policy does not depend on helper-thread progress. The model canary's rule is in `test/tla/README.md` "The canary".

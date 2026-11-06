@@ -388,6 +388,7 @@ rebuild live edges closer (Mono.MonoGraph record) =
         , specValueUsed = record.specValueUsed
         , ports = record.ports
         , flagsDecoder = record.flagsDecoder
+        , flagsSchema = record.flagsSchema
         , lssMemberOrigins = record.lssMemberOrigins
         , lssMemberKinds = record.lssMemberKinds
         , lssBlockedMembers = record.lssBlockedMembers

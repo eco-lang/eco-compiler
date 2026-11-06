@@ -296,6 +296,7 @@ testGraph =
         , specValueUsed = BitSet.empty
         , ports = []
         , flagsDecoder = Nothing
+        , flagsSchema = ""
         , lssMemberOrigins = Dict.empty
         , lssMemberKinds = Dict.empty
         , lssBlockedMembers = Dict.empty

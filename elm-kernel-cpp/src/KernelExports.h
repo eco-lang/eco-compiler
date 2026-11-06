@@ -520,7 +520,7 @@ HPtr Elm_Kernel_Platform_batch(HPtr commands);
 /// Implements kernel `Platform.map`.
 HPtr Elm_Kernel_Platform_map(HPtr closure, HPtr cmd);
 /// Implements kernel `Platform.sendToApp`.
-void Elm_Kernel_Platform_sendToApp(HPtr router, HPtr msg);
+HPtr Elm_Kernel_Platform_sendToApp(HPtr router, HPtr msg);
 /// Implements kernel `Platform.sendToSelf`.
 HPtr Elm_Kernel_Platform_sendToSelf(HPtr router, HPtr msg);
 /// Implements kernel `Platform.worker`.
@@ -528,9 +528,13 @@ HPtr Elm_Kernel_Platform_worker(HPtr impl);
 /// Implements kernel `Platform.leaf`.
 HPtr Elm_Kernel_Platform_leaf(HPtr home, HPtr value);
 /// Implements kernel `Platform.registerIncomingPort`.
-HPtr Elm_Kernel_Platform_registerIncomingPort(HPtr name, HPtr decoder);
+HPtr Elm_Kernel_Platform_registerIncomingPort(HPtr name, HPtr decoder, HPtr schema);
 /// Implements kernel `Platform.registerOutgoingPort`.
 HPtr Elm_Kernel_Platform_registerOutgoingPort(HPtr name);
+/// Implements kernel `Platform.registerIncomingBytesPort`.
+HPtr Elm_Kernel_Platform_registerIncomingBytesPort(HPtr name);
+/// Implements kernel `Platform.registerOutgoingBytesPort`.
+HPtr Elm_Kernel_Platform_registerOutgoingBytesPort(HPtr name);
 /// Implements kernel `Platform.registerFlagsDecoder`.
 HPtr Elm_Kernel_Platform_registerFlagsDecoder(HPtr decoder);
 

@@ -131,7 +131,7 @@ An effect manager turns commands and subscriptions into work. It has its own sta
 
 1. The three elm/* managers, Time, Http and Task, registered when the eco thread starts.
 2. The system library's managers, registered by a preamble the compiler generates, one for each manager the program uses.
-3. One pseudo-manager for each incoming port, with its decoder.
+3. One pseudo-manager for each incoming port, with its decoder, or with none for a bytes port.
 4. One pseudo-manager for each outgoing port.
 
 The same generated preamble registers both kinds of port, and it runs before the program starts.
@@ -158,6 +158,12 @@ The platform runtime also keeps its in-progress dispatch state in member fields 
 ## Ports and embedding
 
 A port is an effect manager keyed by its bare name. Ports therefore reuse dispatch, tagging and the manager table exactly as elm/core's JavaScript does. Outgoing values arrive already encoded as JSON, and the eco thread turns them into strings for the host's callbacks, holding them until the first subscriber appears. A host may send an incoming value from any thread: the bytes are copied into a queue, each item takes a hold, and the loop wakes. A drain on the eco thread then decodes each payload, applies every subscribed tagger and delivers the messages to the program.
+
+A value from a host is checked where the host gives it, so that a bad one is refused by the call rather than found later on the eco thread. Only the eco thread can run the program's decoders, but those decoders follow from the payload type alone. So the compiler records each incoming port's payload type, and the flags type, as a short descriptor. The runtime checks the host's JSON against it on the calling thread, with the decoders' own parser and acceptance rules and without touching the heap. A refused send returns an error with the reason, and refused flags stop the program from starting at all, so the host may try again. The Node addon turns both into the errors the JavaScript target throws.
+
+A port whose whole payload is `Bytes` is a bytes port, and carries raw bytes instead of JSON, because text would mean converting every byte in both directions. The compiler gives it no JSON codec and registers it as a bytes port. An outgoing value is the Bytes value itself, and the eco thread hands each subscriber a pointer into it and a length. That costs no copy: nothing allocates on the eco thread until the callbacks return, so no collection can move the bytes. An incoming payload is the host's buffer. The queue holds the host's pointer, the drain copies it once into a new Bytes value on the eco thread, and a release function the host supplied hands the buffer back. That one copy is the least possible, because the heap cannot take ownership of the host's memory. The two kinds keep separate subscribers and buffers, and the host API has a bytes form of each port function. Bytes anywhere else in a payload, or anywhere in the flags, is a compile error on the native target, because JSON text cannot carry it.
+
+Bytes ports are an interim design, implemented on 2026-11-06 by `plans/native-bytes-ports.md` to make Bytes payloads work without encoding them as text. A general binary port interface for native code, with Bytes as one of its types and no JSON in between, is planned for a later version. It will replace both the bytes ports and the native-only compile errors.
 
 When Eco is embedded, the host owns the process's lifetime, so the loop never exits because the program has gone quiet, and a stop request takes effect after the current drain. A host such as Node needs to know when the eco thread has real work, so the loop reports busy and idle to an activity hook. The host's lifetime hold has its own kind and is left out of the count of work, so an idle embedded program reports idle.
 
@@ -226,7 +232,7 @@ Invariants (`design_docs/invariants.csv`):
 - KERNEL_TASK_IO_001, KERNEL_TASK_IO_002: deferred kernel IO and rooting in bindings.
 - SCHED_001: a process id names one process for the life of the program. SCHED_002: an unhandled `Task.fail` ends only its process, with a warning on stderr.
 - LIVE_001 to LIVE_006: holds; LIVE_004 is synchronous dispatch, LIVE_005 quiescence listeners, LIVE_006 the private count.
-- PORT_001 to PORT_007: ports as managers, the eco thread, JSON flags.
+- PORT_001 to PORT_009: ports as managers, the eco thread, JSON flags, bytes ports, host values checked where they are given.
 - SYS_002 to SYS_004, SYS_007: system-library managers, services and spawning.
 
 Documents:

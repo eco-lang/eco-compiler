@@ -79,7 +79,7 @@ An executable's entry stub supplies the C `main`. It finds the stack map section
 
 A shared library exposes a C interface instead of `main`: start, stop and wait for an application, send a message to a port, subscribe to a port's output, and register a hook that reports when the program goes idle. All Elm code runs on one dedicated thread, the eco thread. Host threads only queue bytes and wake that thread's loop. This keeps the heap with its single mutator, so calling Elm or touching the heap from a host thread is never allowed.
 
-The Node addon wraps that C interface as a native Node module that looks like the JavaScript target's output: the host calls `init` on the program's root module, and messages cross the boundary as JSON strings. Its liveness follows the same rule as the JavaScript target. An idle program must not keep Node's event loop alive, but a program with pending work must, so the addon holds a reference on Node's loop only while the idle hook reports that the scheduler is busy. The scheduler reports busy while the program holds a counted claim, a hold, on something it asked for ([scheduler-and-services.md](../runtime/scheduler-and-services.md)).
+The Node addon wraps that C interface as a native Node module that looks like the JavaScript target's output: the host calls `init` on the program's root module, and messages cross the boundary as JSON strings. The exception is a bytes port, whose whole payload is `Bytes`: there the addon hands the host a `Uint8Array` and takes a `Uint8Array`, `ArrayBuffer` or `DataView`, as the JavaScript target does. That channel is interim ([scheduler-and-services.md](../runtime/scheduler-and-services.md)). A value or flags that do not fit the program's types make `send` or `init` throw, as on the JavaScript target, because the runtime checks host JSON before the program sees it; a refused `init` may be retried. Its liveness follows the same rule as the JavaScript target. An idle program must not keep Node's event loop alive, but a program with pending work must, so the addon holds a reference on Node's loop only while the idle hook reports that the scheduler is busy, or while a value the program sent is still on its way to a subscriber. Without that second condition Node could exit with the value undelivered, where the JavaScript target would have called the subscriber at once. The scheduler reports busy while the program holds a counted claim, a hold, on something it asked for ([scheduler-and-services.md](../runtime/scheduler-and-services.md)).
 
 ## The JIT
 
@@ -128,7 +128,7 @@ Invariants (`design_docs/invariants.csv`):
 
 - CGEN_074, CGEN_081 to CGEN_083: capacity hoisting, closed-world reachability and the MLIR split.
 - HEAP_010: the Unit constant returned by the compiled main.
-- PORT_001 to PORT_007: ports and embedding, with PORT_006 for the single eco thread.
+- PORT_001 to PORT_009: ports and embedding, with PORT_006 for the single eco thread, PORT_008 for bytes ports and PORT_009 for checking host values.
 - LIVE_001 to LIVE_006: program liveness and the idle hook.
 
 Design documents: `design_docs/mlir-level-partitioning-whole-program-steps.md`, `design_docs/lld-in-eco.md`, `design_docs/distribution.md`.

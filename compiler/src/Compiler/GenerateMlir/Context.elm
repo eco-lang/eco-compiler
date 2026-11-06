@@ -1,6 +1,6 @@
 module Compiler.GenerateMlir.Context exposing
     ( Context, FuncSignature, PendingLambda, TypeRegistry, VarInfo
-    , initContext, withInlineBodies, withEcoConfig, withCtorBySpec, withMapTemplates, withEntryMain
+    , initContext, withInlineBodies, withEcoConfig, withCtorBySpec, withMapTemplates, withEntryMain, withFlagsSchema
     , freshVar, freshOpId, lookupVar, addVarMapping, addDecoderExpr, ctxForSiblingRegion, ctxAfterBranchOp, resetDefinedSsaVars
     , getOrCreateTypeIdForMonoType, registerKernelCall
     , buildSignatures, signatureOf, kernelFuncSignatureFromType
@@ -55,7 +55,7 @@ type before the type itself.
 
 # Building a context
 
-@docs initContext, withInlineBodies, withEcoConfig, withCtorBySpec, withMapTemplates, withEntryMain
+@docs initContext, withInlineBodies, withEcoConfig, withCtorBySpec, withMapTemplates, withEntryMain, withFlagsSchema
 
 
 # Names and scope
@@ -284,6 +284,7 @@ type alias Context =
     , currentLetSiblings : Dict.Dict String VarInfo
     , kernelDecls : Dict.Dict String KernelDeclInfo -- by symbol name
     , ecoSystemManagers : Set.Set String -- home modules of the eco/system effect-manager leaves reached
+    , flagsSchema : String -- the program's `Mono.flagsSchema`, "" without flags; becomes @main's `eco.flags_schema`
     , typeRegistry : TypeRegistry
     , decoderExprs : Dict.Dict String Mono.MonoExpr -- let-bound expressions, by name, for decoder fusion
     , currentFuncName : String -- for crash messages only
@@ -357,6 +358,7 @@ initContext registry signatures initialCtorShapes =
     , currentLetSiblings = Dict.empty
     , kernelDecls = Dict.empty
     , ecoSystemManagers = Set.empty
+    , flagsSchema = ""
     , typeRegistry =
         { emptyTypeRegistry
             | ctorShapes = initialCtorShapes
@@ -428,6 +430,14 @@ withConstThunkBySpec d ctx =
 withEcoConfig : Config.EcoConfig -> Context -> Context
 withEcoConfig cfg ctx =
     { ctx | ecoConfig = cfg }
+
+
+{-| Returns the context with the program's flags descriptor, `Mono.flagsSchema`,
+installed (PORT_009).
+-}
+withFlagsSchema : String -> Context -> Context
+withFlagsSchema schema ctx =
+    { ctx | flagsSchema = schema }
 
 
 {-| Returns the context with the `List.map` template table installed.

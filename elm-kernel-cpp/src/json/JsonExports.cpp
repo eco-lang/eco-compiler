@@ -1938,6 +1938,184 @@ static void writeJsJson(const json& j, int indent, int level, std::string& out) 
 // Extern C Functions
 //===----------------------------------------------------------------------===//
 
+//===----------------------------------------------------------------------===//
+// Payload check (PORT_009)
+//===----------------------------------------------------------------------===//
+//
+// `eco_json_check_payload` tells, on any thread and without the Elm heap, whether JSON text decodes
+// with the decoder the compiler builds for a port or flags payload type (`Compiler.LocalOpt.Typed.Port`),
+// so that a host send or a program's flags can be refused when they are given rather than after the
+// eco thread has failed to decode them. The type comes as a descriptor (`Mono.payloadSchema`):
+//
+//   i Int    f Float    b Bool    s String    u unit (null)    v anything (Json.Value)
+//   M<x> Maybe    L<x> List    A<x> Array    (<x><y>) and (<x><y><z>) tuples
+//   {<n>:<name><x>...} a record, one entry per field: the name's length in bytes, `:`, the name, its type
+//
+// The rules are the native decoders' (`runDecoder`): an Int is a JSON integer or an integral float in
+// the i64 range, a Float any number, a Maybe `null` or its contents, a tuple an array with at least its
+// arity of elements, a record an object with every field (others are ignored). The text is parsed as
+// `Elm_Kernel_Json_runOnString` parses it.
+
+namespace {
+
+/** Checks one JSON value against a descriptor, reading the descriptor as it goes. */
+class PayloadChecker {
+public:
+    explicit PayloadChecker(const char* schema) : at_(schema) {}
+
+    // Returns whether `v` matches the descriptor at the current position, and moves past it either way.
+    // On a mismatch, `problem` says where and why.
+    bool check(const json& v) {
+        const char c = *at_++;
+        switch (c) {
+            case 'v': return true;
+            case 'i': return isInt(v) || fail(v, "an INT");
+            case 'f': return v.is_number() || fail(v, "a FLOAT");
+            case 'b': return v.is_boolean() || fail(v, "a BOOL");
+            case 's': return v.is_string() || fail(v, "a STRING");
+            case 'u': return v.is_null() || fail(v, "null");
+            case 'M': {
+                if (v.is_null()) {
+                    skip();
+                    return true;
+                }
+                return check(v);
+            }
+            case 'L':
+            case 'A': {
+                if (!v.is_array()) {
+                    skip();
+                    return fail(v, c == 'L' ? "a LIST" : "an ARRAY");
+                }
+                const char* elem = at_;
+                for (size_t i = 0; i < v.size(); ++i) {
+                    at_ = elem;
+                    path_.push_back("[" + std::to_string(i) + "]");
+                    if (!check(v[i])) return false;
+                    path_.pop_back();
+                }
+                if (v.empty()) skip();
+                return true;
+            }
+            case '(': {
+                size_t arity = 0;
+                for (const char* p = at_; *p != ')' && *p; p = skipFrom(p)) ++arity;
+                if (!v.is_array()) {
+                    while (*at_ != ')') skip();
+                    ++at_;
+                    return fail(v, "an ARRAY");
+                }
+                for (size_t i = 0; i < arity; ++i) {
+                    if (i >= v.size()) {
+                        while (*at_ != ')') skip();
+                        ++at_;
+                        return fail(v, "a LONGER array. Need index " + std::to_string(i) + " but only see " +
+                                           std::to_string(v.size()) + " entries");
+                    }
+                    path_.push_back("[" + std::to_string(i) + "]");
+                    if (!check(v[i])) return false;
+                    path_.pop_back();
+                }
+                ++at_;  // ')'
+                return true;
+            }
+            case '{': {
+                while (*at_ != '}') {
+                    const std::string name = readName();
+                    auto it = v.is_object() ? v.find(name) : v.end();
+                    if (!v.is_object() || it == v.end()) {
+                        skip();
+                        while (*at_ != '}') {
+                            (void)readName();
+                            skip();
+                        }
+                        ++at_;
+                        return fail(v, "an OBJECT with a field named `" + name + "`");
+                    }
+                    path_.push_back("." + name);
+                    if (!check(*it)) return false;
+                    path_.pop_back();
+                }
+                ++at_;  // '}'
+                return true;
+            }
+            default:
+                // Not a descriptor this checker knows: accept, and leave the decoding to the eco thread.
+                unknown_ = true;
+                return true;
+        }
+    }
+
+    bool unknown() const { return unknown_; }
+    const std::string& problem() const { return problem_; }
+
+private:
+    // Whether `v` decodes as an Int: DEC_INT in `runDecoder`.
+    static bool isInt(const json& v) {
+        if (v.is_number_integer()) return true;
+        if (!v.is_number_float()) return false;
+        const double d = v.get<double>();
+        return std::isfinite(d) && std::trunc(d) == d && d >= -9223372036854775808.0 && d < 9223372036854775808.0;
+    }
+
+    // Returns the position just past the descriptor at `p`.
+    static const char* skipFrom(const char* p) {
+        switch (*p++) {
+            case 'M':
+            case 'L':
+            case 'A':
+                return skipFrom(p);
+            case '(':
+                while (*p != ')' && *p) p = skipFrom(p);
+                return *p ? p + 1 : p;
+            case '{':
+                while (*p != '}' && *p) {
+                    size_t n = 0;
+                    while (*p >= '0' && *p <= '9') n = n * 10 + static_cast<size_t>(*p++ - '0');
+                    p += 1 + n;  // ':' and the name
+                    p = skipFrom(p);
+                }
+                return *p ? p + 1 : p;
+            default:
+                return p;
+        }
+    }
+
+    void skip() { at_ = skipFrom(at_); }
+
+    std::string readName() {
+        size_t n = 0;
+        while (*at_ >= '0' && *at_ <= '9') n = n * 10 + static_cast<size_t>(*at_++ - '0');
+        ++at_;  // ':'
+        std::string name(at_, n);
+        at_ += n;
+        return name;
+    }
+
+    bool fail(const json& v, const std::string& expecting) {
+        std::string where = "json";
+        for (const auto& step : path_) where += step;
+        std::string shown = v.dump(4);
+        if (shown.size() > 500) shown = shown.substr(0, 500) + "...";
+        std::string indented = "    ";
+        for (char ch : shown) {
+            indented += ch;
+            if (ch == '\n') indented += "    ";
+        }
+        problem_ = (path_.empty() ? std::string("Problem with the given value:")
+                                  : "Problem with the value at " + where + ":") +
+                   "\n\n" + indented + "\n\nExpecting " + expecting;
+        return false;
+    }
+
+    const char* at_;
+    std::vector<std::string> path_;
+    std::string problem_;
+    bool unknown_ = false;
+};
+
+}  // namespace
+
 extern "C" {
 
 //===----------------------------------------------------------------------===//
@@ -2457,6 +2635,29 @@ HPtr Elm_Kernel_Json_addField(HPtr key, HPtr value, HPtr object) {
     enc->values[0].p = newList;
 
     return HPtr::fromBits(Export::encode(allocator.wrap(enc)));
+}
+
+// Checks the JSON text `jsonText` against the payload descriptor `schema` (see "Payload check" above).
+// Returns 1 if it decodes. Otherwise returns 0 and, if `problem` is not null, sets `*problem` to a
+// malloc'd message, which the caller frees: the parser's message for text that is not JSON, or what
+// was found and expected where the value does not match. Pure: may be called on any thread.
+int eco_json_check_payload(const char* schema, const char* jsonText, char** problem) {
+    std::string message;
+    try {
+        json v;
+        std::string parseError;
+        if (!parseJson(jsonText ? std::string(jsonText) : std::string(), v, parseError)) {
+            message = "This is not valid JSON! " + parseError;
+        } else {
+            PayloadChecker checker(schema ? schema : "v");
+            if (checker.check(v)) return 1;
+            message = checker.problem();
+        }
+    } catch (const std::exception& e) {
+        message = std::string("The payload could not be checked: ") + e.what();
+    }
+    if (problem) *problem = ::strdup(message.c_str());
+    return 0;
 }
 
 } // extern "C"

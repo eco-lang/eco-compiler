@@ -1,7 +1,12 @@
 module LssTaskSetProbe exposing (main)
 
--- DIVERGENCE: eco delivers the results of a Cmd.batch of two tasks in list order ([42,40]); Elm 0.19.1 delivers [40,42]
--- CHECK: r: [42,40]
+{-| An LSS probe: the dispatch site applies an `Int -> Int` carried in a message. It also pins the
+order a `Cmd.batch` of two `Task.attempt`s delivers its results: last first, [40,42], as Elm 0.19.1
+does (PORT_005). Eco delivered them first first, [42,40], until 2026-11-06, when the test moved here
+from test/eco-divergence.
+-}
+
+-- CHECK: r: [40,42]
 
 import Platform
 import Task exposing (Task)

@@ -756,9 +756,17 @@ inline eco::EcoRunner& getRunner() {
 // outgoing `echoOut` port are fed straight back into the incoming
 // `echoIn` port (eco_port_send queues; the scheduler drains on the eco
 // thread). Subscribing to a port that a given test never declares is
-// harmless — the subscription sits on a placeholder registry entry.
+// harmless — the subscription sits on a placeholder registry entry. Both a
+// JSON and a bytes subscription are made, before any program registers its
+// ports; only the one matching the kind a test's `echoOut` registers as is
+// ever called. A bytes payload is valid only during the callback, so it is
+// sent back with no release function, which copies it.
 inline void portEchoBounce(const char* json, void* /*user*/) {
     eco_port_send("echoIn", json);
+}
+
+inline void portEchoBounceBytes(const uint8_t* data, size_t length, void* /*user*/) {
+    eco_port_send_bytes("echoIn", data, length, nullptr, nullptr);
 }
 
 inline void installPortEchoBounce() {
@@ -766,6 +774,7 @@ inline void installPortEchoBounce() {
     if (!installed) {
         installed = true;
         eco_port_subscribe("echoOut", portEchoBounce, nullptr);
+        eco_port_subscribe_bytes("echoOut", portEchoBounceBytes, nullptr);
     }
 }
 
