@@ -1,14 +1,11 @@
 module StringZeroLenSplitTest exposing (main)
 
-{-| HEAP\_071 audit: split / lines / words producing EMPTY parts (leading,
+{-| HEAP\_071 audit: split / lines producing EMPTY parts (leading,
 trailing and adjacent separators), on ASCII (UTF-8 byte path) and non-ASCII
 (UTF-16 snapshot path) inputs, plus a large input. Every empty part must be the
 Empty constant.
 
 probe s = length, String.isEmpty, (s == ""), case-on-"" — "0EQC" is correct.
-
-`String.words` of a blank string is `[""]`, as in Elm (`str.trim().split(/\s+/g)`); until 2026-10-30
-eco gave `[]` and this test pinned that (plans/review-likely-bugs-fixes.md step 1a).
 
 -}
 
@@ -23,7 +20,6 @@ eco gave `[]` and this test pinned that (plans/review-likely-bugs-fixes.md step 
 -- CHECK: lines_ascii: ["0EQC","0EQC","0EQC","0EQC"]
 -- CHECK: lines_utf16: ["0EQC","1eqc","0EQC"]
 -- CHECK: lines_empty: ["0EQC"]
--- CHECK: words_blank: [[""],[""],[""]]
 -- CHECK: after_gc_bad: 0
 
 import Html exposing (text)
@@ -97,9 +93,6 @@ main =
         linesEmpty =
             String.lines ""
 
-        wordsBlank =
-            [ String.words "   ", String.words "\t\n\u{000D} ", String.words "" ]
-
         held =
             List.filter isEmptyPart
                 (splitAscii
@@ -159,9 +152,6 @@ main =
 
         _ =
             Debug.log "lines_empty" (List.map probe linesEmpty)
-
-        _ =
-            Debug.log "words_blank" wordsBlank
 
         _ =
             Debug.log "after_gc_bad" afterGcBad

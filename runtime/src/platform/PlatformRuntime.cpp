@@ -4,6 +4,7 @@
 #include "allocator/HeapHelpers.hpp"
 #include "allocator/RuntimeExports.h"
 #include "allocator/StringOps.hpp"
+#include <algorithm>
 #include <cstring>
 #include <cstdio>
 #include <cstdlib>
@@ -162,6 +163,12 @@ void PlatformRuntime::registerRootScanner() {
             // while dispatchEffects is on the stack. Keeping them here
             // avoids having to root every intermediate HPointer produced
             // by gatherEffects or held across callClosure4 / drain().
+            // gatherEffects' worklist; empty outside a gather.
+            for (auto& item : gatherStack_) {
+                evacuate(item.bag);
+                evacuate(item.taggers);
+            }
+
             if (dispatchActive_) {
                 evacuate(activeBatch_.cmdBag);
                 evacuate(activeBatch_.subBag);
@@ -430,101 +437,107 @@ void PlatformRuntime::gatherEffects(
     std::unordered_map<std::string, PerManagerEffects>& effects,
     HPointer taggers)
 {
-    if (alloc::isNil(bag) || hpIsConstant(bag)) return;
+    // An explicit worklist instead of recursion: a bag nested once per `Cmd.batch` or `Cmd.map` level
+    // (folding updates builds 100000 levels; elm/core #1123) would otherwise take one C++ frame and
+    // shadow-root records per level and overflow the root stack. gatherStack_ holds encoded words the
+    // root scanner evacuates, so a pending (bag, taggers) pair stays current across every GC point
+    // below. Leaves are visited in the order the recursion visited them: a node's children are pushed
+    // last first. Entries below `base` belong to an outer gather (a map closure may dispatch again).
+    const std::size_t base = gatherStack_.size();
+    gatherStack_.push_back({encodeHP(bag), encodeHP(taggers)});
 
-    void* bagPtr = resolveHP(bag);
-    if (!bagPtr) return;
+    while (gatherStack_.size() > base) {
+        HPointer bag = decodeHP(gatherStack_.back().bag);
+        HPointer taggersLocal = decodeHP(gatherStack_.back().taggers);
+        gatherStack_.pop_back();
 
-    Custom* custom = static_cast<Custom*>(bagPtr);
-    u16 ctor = static_cast<u16>(custom->ctor);
+        if (alloc::isNil(bag) || hpIsConstant(bag)) continue;
 
-    if (ctor == Fx_Leaf) {
-        // Leaf: values[0] = home (ElmString), values[1] = value
-        HPointer homeHP = custom->values[0].p;
-        HPointer value = custom->values[1].p;
+        void* bagPtr = resolveHP(bag);
+        if (!bagPtr) continue;
 
-        // Resolve and extract the home string
-        void* homePtr = resolveHP(homeHP);
-        if (!homePtr) return;
-        std::string home = elmStringToStd(homePtr);
+        Custom* custom = static_cast<Custom*>(bagPtr);
+        u16 ctor = static_cast<u16>(custom->ctor);
 
-        // If manager not registered, silently drop the effect.
-        auto it = effects.find(home);
-        if (it == effects.end()) return;
+        if (ctor == Fx_Leaf) {
+            // Leaf: values[0] = home (ElmString), values[1] = value
+            HPointer homeHP = custom->values[0].p;
+            HPointer value = custom->values[1].p;
 
-        HPointer effect;
-        if (alloc::isNil(taggers)) {
-            // No Fx_Map above the leaf: the value passes through unchanged,
-            // without calling the manager's map closure.
-            effect = value;
-        } else {
-            // Hand the tagger chain to the manager's cmdMap/subMap as a
-            // closure and let the map decide how it applies. A manager
-            // whose map is Empty gets the functions applied to the value
-            // directly.
-            HPointer mapFn = listNil();
-            {
-                auto miIt = managers_.find(home);
-                if (miIt != managers_.end()) {
-                    mapFn = decodeHP(isCmd ? miIt->second.cmdMap
-                                           : miIt->second.subMap);
+            // Resolve and extract the home string
+            void* homePtr = resolveHP(homeHP);
+            if (!homePtr) continue;
+            std::string home = elmStringToStd(homePtr);
+
+            // If manager not registered, silently drop the effect.
+            auto it = effects.find(home);
+            if (it == effects.end()) continue;
+
+            HPointer effect;
+            if (alloc::isNil(taggersLocal)) {
+                // No Fx_Map above the leaf: the value passes through unchanged,
+                // without calling the manager's map closure.
+                effect = value;
+            } else {
+                // Hand the tagger chain to the manager's cmdMap/subMap as a
+                // closure and let the map decide how it applies. A manager
+                // whose map is Empty gets the functions applied to the value
+                // directly.
+                HPointer mapFn = listNil();
+                {
+                    auto miIt = managers_.find(home);
+                    if (miIt != managers_.end()) {
+                        mapFn = decodeHP(isCmd ? miIt->second.cmdMap
+                                               : miIt->second.subMap);
+                    }
+                }
+
+                if (alloc::isNil(mapFn) || hpIsConstant(mapFn)) {
+                    effect = applyTaggers(taggersLocal, value);
+                } else {
+                    // Root value + mapFn + the taggers chain across the closure
+                    // allocation and the map call (both may GC). `custom` is
+                    // stale past this point; all leaf fields were snapshot above.
+                    Elm::StackRootGuard guard({ &mapFn, &value, &taggersLocal });
+                    HPointer applyFn = makeApplyTaggersClosure(taggersLocal);
+                    Elm::StackRootGuard applyGuard(&applyFn);
+                    effect = Scheduler::callClosure2(mapFn, applyFn, value);
                 }
             }
 
-            if (alloc::isNil(mapFn) || hpIsConstant(mapFn)) {
-                effect = applyTaggers(taggers, value);
+            // Add to the appropriate effects list (cmd or sub). The iterator
+            // stays valid across the map call: closures may GC but never
+            // mutate the effects map, and encoded entries are evacuated by
+            // the external root scanner while dispatchActive_ is set.
+            if (isCmd) {
+                it->second.cmdHPs.push_back(encodeHP(effect));
             } else {
-                // Root value + mapFn + the taggers chain across the closure
-                // allocation and the map call (both may GC). `custom` is
-                // stale past this point; all leaf fields were snapshot above.
-                HPointer taggersLocal = taggers;
-                Elm::StackRootGuard guard({ &mapFn, &value, &taggersLocal });
-                HPointer applyFn = makeApplyTaggersClosure(taggersLocal);
-                Elm::StackRootGuard applyGuard(&applyFn);
-                effect = Scheduler::callClosure2(mapFn, applyFn, value);
+                it->second.subHPs.push_back(encodeHP(effect));
             }
         }
-
-        // Add to the appropriate effects list (cmd or sub). The iterator
-        // stays valid across the map call: closures may GC but never
-        // mutate the effects map, and encoded entries are evacuated by
-        // the external root scanner while dispatchActive_ is set.
-        if (isCmd) {
-            it->second.cmdHPs.push_back(encodeHP(effect));
-        } else {
-            it->second.subHPs.push_back(encodeHP(effect));
+        else if (ctor == Fx_Node) {
+            // Node: values[0] = list of bags, user Elm and possibly a chunk spine.
+            // Reading it does not allocate, so the elements are current until they
+            // are pushed, last first so the first is gathered first.
+            std::size_t first = gatherStack_.size();
+            alloc::RootedListCursor cursor(custom->values[0].p);
+            Elm::Unboxable bagHead;
+            u8 bagKind;
+            while (cursor.read(bagHead, bagKind)) {
+                gatherStack_.push_back({encodeHP(bagHead.p), encodeHP(taggersLocal)});
+                cursor.advance();
+            }
+            std::reverse(gatherStack_.begin() + first, gatherStack_.end());
         }
-    }
-    else if (ctor == Fx_Node) {
-        // Node: values[0] = list of bags. The recursive gather can allocate
-        // (Fx_Map cons, applyTaggers closures, manager map evaluators) and
-        // therefore GC: snapshot the tail BEFORE recursing and keep the
-        // loop cursor + taggers chain rooted so iteration 2+ reads
-        // GC-current values (`cell` is stale after any allocation).
-        // Hybrid spines: the batch list is user Elm (e.g. Cmd.batch of a
-        // mapped list) and may be a chunk spine. RootedListCursor keeps the
-        // spine node rooted across the recursive gatherEffects GC points.
-        HPointer taggersLocal = taggers;
-        Elm::StackRootGuard loopGuard(&taggersLocal);
-        Elm::alloc::RootedListCursor cursor(custom->values[0].p);
-        Elm::Unboxable bagHead;
-        u8 bagKind;
-        while (cursor.read(bagHead, bagKind)) {
-            gatherEffects(isCmd, bagHead.p, effects, taggersLocal);
-            cursor.advance();
+        else if (ctor == Fx_Map) {
+            // Map: values[0] = tagger function, values[1] = inner bag.
+            // Root both, and the taggers chain, across the cons allocation.
+            HPointer tagger = custom->values[0].p;
+            HPointer innerBag = custom->values[1].p;
+            Elm::StackRootGuard guard({ &tagger, &innerBag, &taggersLocal });
+            HPointer newTaggers = cons(boxed(tagger), taggersLocal, true);
+            gatherStack_.push_back({encodeHP(innerBag), encodeHP(newTaggers)});
         }
-    }
-    else if (ctor == Fx_Map) {
-        // Map: values[0] = tagger function, values[1] = inner bag.
-        // Root both across the cons allocation, and the new chain across
-        // the recursion, which takes it by value and cannot update this
-        // frame's copy.
-        HPointer tagger = custom->values[0].p;
-        HPointer innerBag = custom->values[1].p;
-        Elm::StackRootGuard guard(&tagger, &innerBag);
-        HPointer newTaggers = cons(boxed(tagger), taggers, true);
-        Elm::StackRootGuard taggersGuard(&newTaggers);
-        gatherEffects(isCmd, innerBag, effects, newTaggers);
     }
 }
 

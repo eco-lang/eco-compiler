@@ -3,8 +3,7 @@ module Compiler.IR.DecisionTree.TestKeyTest exposing (suite)
 {-| Tests for `Compiler.IR.DecisionTree.Test.testToComparable` on `Char` and
 `String` literal tests, which are keyed by the value the literal denotes, not
 by its escaped text. Keyed by text, `'a'` and `'\u{0061}'` became two tests and
-the generated `eco.case` carried the tag 97 twice
-(test/elm/src/CaseCharEscapedDuplicateTest.elm).
+the generated `eco.case` carried the tag 97 twice.
 -}
 
 import Compiler.IR.DecisionTree.Test as DT

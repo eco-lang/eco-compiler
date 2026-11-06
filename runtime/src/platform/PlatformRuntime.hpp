@@ -265,6 +265,12 @@ private:
     bool dispatchActive_ = false;
     std::unordered_map<std::string, PerManagerEffects> effectsScratch_;
 
+    /**
+     * A bag `gatherEffects` has still to walk, with the taggers above it.
+     */
+    struct GatherItem { uint64_t bag; uint64_t taggers; };
+    std::vector<GatherItem> gatherStack_;  // gatherEffects' worklist; empty outside a gather.
+
     uint64_t modelStorage_ = 0;
     bool modelRooted_ = false;  // Whether `modelStorage_` has been registered as a value root.
 
