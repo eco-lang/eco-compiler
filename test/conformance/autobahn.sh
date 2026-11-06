@@ -6,7 +6,7 @@
 # minutes), and a full run takes tens of minutes.
 #
 # Modes:
-#   server  wstest -m fuzzingclient tests examples/src/WsEchoServer.elm (Http.Server +
+#   server  wstest -m fuzzingclient tests examples/system/src/WsEchoServer.elm (Http.Server +
 #           Http.Server.upgradeRequest), one run per backend and per server variant.
 #   client  wstest -m fuzzingserver tests WebSocket.connect, driven by
 #           test/conformance/src/WsAutobahnClient.elm, one run per backend.

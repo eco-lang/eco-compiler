@@ -30,13 +30,17 @@ mark with `xattr -dr com.apple.quarantine` on the unpacked files.
 
 # Run an example
 
-In the distribution there is a `/share/eco/examples` folder. 
+In the distribution there is a `/share/eco/examples` folder. It holds three projects:
+
+- `system/`: Hello world and small `eco/system` programs (a `cat`, an `ls`, servers and clients);
+- `benchmarks/`: compute benchmarks;
+- `cpp-ports/`: an Elm program run inside a C++ program, through ports.
 
 Copy that folder to your home dir so you have write access and can build there. Lets build 
 and run the hello world example:
 
     cp -R /usr/local/share/eco/examples ~/
-    cd ~/examples
+    cd ~/examples/system
     eco make src/Hello.elm --output=hello
 
 Run it:
@@ -47,7 +51,12 @@ Run it:
 
 A program built with `--output=<name>.so` is a library that a C or C++ host runs and talks to
 through the program's ports. The headers are in the distribution's `include/eco/` folder;
-[embedding.md](embedding.md) shows how to use them.
+[embedding.md](embedding.md) shows how to use them. `examples/cpp-ports` is a complete example: a
+C++ program that feeds its standard input to an Elm program and writes out what comes back.
+
+    cd ~/examples/cpp-ports
+    make
+    ./upcase < README.md
 
 # System programs
 
@@ -80,9 +89,9 @@ main =
 its stdin, stdout and stderr as streams (`Stream.readLine env.stdin` reads a line), the time it
 started, the platform and CPU architecture, and the path of the executable.
 
-The same `examples` folder holds small complete `eco/system` programs:
+The `examples/system` folder holds small complete `eco/system` programs:
 
-    cd ~/examples
+    cd ~/examples/system
     eco make src/Cat.elm --output=cat
     ./cat elm.json
     eco make src/Ls.elm --output=ls

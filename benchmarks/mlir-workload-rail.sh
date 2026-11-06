@@ -4,7 +4,7 @@
 #   mlir-workload-rail.sh <tag>          build nothing, compile the workload set
 #   DIFF=<other-tag> mlir-workload-rail.sh <tag>    …and diff against <other-tag>
 #
-# Compiles every module in test/elm/src (632) plus examples/src/Hello.elm with
+# Compiles every module in test/elm/src (632) plus examples/system/src/Hello.elm with
 # the CURRENT Stage-1 compiler (`compiler/bin/index.js` over
 # build/compiler/build-xhr/bin/guida.js) and records TWO artefacts under
 # $OUTROOT/<tag>:
@@ -50,7 +50,7 @@ for i in $(seq 0 $((NPAR - 1))); do
     ln -sfn /work/test/elm/src "$d/src"
     rm -rf "$d/eco-stuff" "$d/elm-stuff"
 done
-rm -rf /work/examples/eco-stuff
+rm -rf /work/examples/system/eco-stuff
 
 compile_one() {
     idx=$1; name=$2
@@ -65,7 +65,7 @@ n=0
 while read -r name; do echo "$n $name"; n=$((n + 1)); done < "$LIST" \
     | xargs -P "$NPAR" -n 2 bash -c 'compile_one "$0" "$1"'
 
-( cd /work/examples && ECO_MONO_LSS_REPORT=1 node /work/compiler/bin/index.js make \
+( cd /work/examples/system && ECO_MONO_LSS_REPORT=1 node /work/compiler/bin/index.js make \
     src/Hello.elm --local-package eco/kernel=/work/eco-kernel-cpp \
     --output="$OUT/__Hello.mlir" ) >"$OUT/__Hello.log" 2>&1
 

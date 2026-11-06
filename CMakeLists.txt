@@ -735,8 +735,9 @@ if(ECO_STATIC_MUSL)
                 PATTERN "*.h"
                 PATTERN "*.hpp")
 
-    # Example programs (Hello plus the eco/system examples) and the benchmarks project: Elm
-    # sources, elm.json files, the benchmarks' run.mjs and READMEs; build outputs and caches
+    # The example projects: examples/system (Hello plus the eco/system examples), examples/benchmarks
+    # and examples/cpp-ports (an Elm program in a C++ host). Elm sources, elm.json files, the
+    # benchmarks' run.mjs, the C++ host and its Makefile, and READMEs; build outputs and caches
     # don't match the filter and drop out.
     install(DIRECTORY ${CMAKE_SOURCE_DIR}/examples/
             DESTINATION share/eco/examples
@@ -745,6 +746,8 @@ if(ECO_STATIC_MUSL)
                 PATTERN "elm.json"
                 PATTERN "*.elm"
                 PATTERN "*.mjs"
+                PATTERN "*.cpp"
+                PATTERN "Makefile"
                 PATTERN "README.md"
                 REGEX "/elm-stuff(/|$)" EXCLUDE
                 REGEX "/eco-stuff(/|$)" EXCLUDE
@@ -914,7 +917,8 @@ if(APPLE AND NOT ECO_GLIBC_OUTPUT_RUNTIME AND NOT ECO_FRONTEND_ONLY)
                 PATTERN "*.h"
                 PATTERN "*.hpp")
 
-    # Example programs (Hello plus the eco/system examples): one project, elm.json + src/*.elm.
+    # The example projects: examples/system (Hello plus the eco/system examples), examples/benchmarks
+    # and examples/cpp-ports, as in the Linux bundle.
     install(DIRECTORY ${CMAKE_SOURCE_DIR}/examples/
             DESTINATION share/eco/examples
             COMPONENT BundleDarwin
@@ -922,6 +926,8 @@ if(APPLE AND NOT ECO_GLIBC_OUTPUT_RUNTIME AND NOT ECO_FRONTEND_ONLY)
                 PATTERN "elm.json"
                 PATTERN "*.elm"
                 PATTERN "*.mjs"
+                PATTERN "*.cpp"
+                PATTERN "Makefile"
                 PATTERN "README.md"
                 REGEX "/elm-stuff(/|$)" EXCLUDE
                 REGEX "/eco-stuff(/|$)" EXCLUDE
@@ -1013,7 +1019,8 @@ if(WIN32 AND NOT ECO_FRONTEND_ONLY)
                 PATTERN "*.h"
                 PATTERN "*.hpp")
 
-    # Example programs (Hello plus the eco/system examples): one project, elm.json + src/*.elm.
+    # The example projects: examples/system (Hello plus the eco/system examples), examples/benchmarks
+    # and examples/cpp-ports, as in the Linux bundle.
     install(DIRECTORY ${CMAKE_SOURCE_DIR}/examples/
             DESTINATION share/eco/examples
             COMPONENT BundleWindows
@@ -1021,6 +1028,8 @@ if(WIN32 AND NOT ECO_FRONTEND_ONLY)
                 PATTERN "elm.json"
                 PATTERN "*.elm"
                 PATTERN "*.mjs"
+                PATTERN "*.cpp"
+                PATTERN "Makefile"
                 PATTERN "README.md"
                 REGEX "/elm-stuff(/|$)" EXCLUDE
                 REGEX "/eco-stuff(/|$)" EXCLUDE
@@ -1581,7 +1590,8 @@ add_custom_target(stress
 # run-js-e2e (compiler/CMakeLists.txt) exists on POSIX hosts only.
 # run-node-addon-tests: builds test/elm/src/PortEchoTest.elm as a `.node` addon and runs the Node hosts
 # against it (test/embed/run-node-addon-tests.sh): the port round trip, app.stop()'s Promise, and no
-# keepalive leaked after a stop, a send after stop or a failed start. Linux only (`.node` addons are
+# keepalive leaked after a stop, a send after stop or a failed start; and the C++ embedding example
+# (examples/cpp-ports). Linux only (`.node` addons are
 # glibc-ABI). `full` runs it after the JS suite.
 set(_full_node_addon)
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND TARGET eco-boot-native AND TARGET EcoNodeGlue)

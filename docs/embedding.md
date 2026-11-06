@@ -4,6 +4,10 @@ An Eco program can be built as a library and run inside another application, the
 starts the program, and the two talk through the program's Elm ports. This page covers the headers,
 the threading rules, and the C and C++ APIs for ports, Bytes ports in particular.
 
+`examples/cpp-ports` in the distribution is a complete, small example: a C++ program that feeds its
+standard input to an Elm program and writes out what comes back, using each kind of port described
+here.
+
 ## Building
 
 Give `eco make` an output ending in `.so` (or `.node` for a Node.js addon):

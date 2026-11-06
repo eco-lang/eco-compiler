@@ -31,6 +31,8 @@ Both archives carry the same tree.
 eco-0.1.0-x86_64-linux-musl/
 ├─ bin/
 │  └─ eco                                      (the static eco binary)
+├─ include/eco/
+│  └─ eco_embed.h, eco_embed.hpp               (C and C++20 headers for hosts of a .so program)
 ├─ lib/eco-runtime/
 │  ├─ ld.lld                                   (static, bundled — also drives the glibc -shared links)
 │  ├─ crt/
@@ -65,7 +67,7 @@ eco-0.1.0-x86_64-linux-musl/
 └─ share/eco/
    ├─ kernel/eco-kernel-cpp/                   (the eco/kernel Elm package sources)
    ├─ system/system-kernel-cpp/                (the eco/system Elm package sources)
-   └─ examples/                                (example project: elm.json + src/*.elm)
+   └─ examples/{system,benchmarks,cpp-ports}/  (example projects)
 ```
 
 `bin/` and `lib/eco-runtime/` must remain siblings. The runtime resolver

@@ -401,9 +401,10 @@ ARG NODE_VERSION=22
 #                    so it must be spelled out under --no-install-recommends
 # g++             -> host compiler for the C++ embedding check (bytes_host.cpp,
 #                    against the bundle's <eco/eco_embed.hpp>)
+# make            -> builds the shipped examples/cpp-ports with its own Makefile
 # binutils        -> readelf for the ELF assertions
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      ca-certificates curl gcc g++ libc6-dev binutils \
+      ca-certificates curl gcc g++ libc6-dev binutils make \
  && rm -rf /var/lib/apt/lists/*
 
 # Node 22 (glibc build) — the host process for the `.node` addon. Same
@@ -550,3 +551,15 @@ RUN mkdir -p build \
  && grep -qx 'HOST back 0 0 -1' /tmp/cxx-bytes.log \
  && grep -qx 'HOST exit: 0' /tmp/cxx-bytes.log \
  && echo "OK: .so C++ bytes host against the bundle's headers"
+
+# --- The shipped embedding example, examples/cpp-ports, built the way its README says: copied out
+# of the bundle and built with its own Makefile, which finds the headers next to the `eco` on PATH.
+RUN cp -R /opt/eco/share/eco/examples/cpp-ports /smoke-cpp-ports \
+ && cd /smoke-cpp-ports \
+ && test -f README.md && test -f host.cpp && test -f src/Upcase.elm \
+ && PATH=/opt/eco/bin:$PATH make \
+ && printf 'hello, world\nsecond line\n' | timeout 60 ./upcase > /tmp/upcase.out 2> /tmp/upcase.err \
+ && cat /tmp/upcase.out /tmp/upcase.err \
+ && printf 'HELLO, WORLD\nSECOND LINE\n' | cmp - /tmp/upcase.out \
+ && grep -qx 'summary: {"bytes":25,"chunks":1,"hostBytes":25,"lines":2}' /tmp/upcase.err \
+ && echo "OK: examples/cpp-ports builds from the bundle with make, and runs"

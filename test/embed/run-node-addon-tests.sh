@@ -5,7 +5,8 @@
 # test/embed/{BytesEchoService,ValuesService,JsonFlagsService}.elm both for the JS backend and as
 # addons, and runs every embed_host.js scenario against both builds: flags, every port payload
 # kind including Bytes (PORT_008), rejected sends, unsubscribe, a leak soak, and app.stop(); the
-# two transcripts must be identical.
+# two transcripts must be identical. Last, builds and runs the C++ embedding example,
+# examples/cpp-ports.
 #
 #   usage: run-node-addon-tests.sh <repo-root> <build-dir> [node]
 #
@@ -118,6 +119,38 @@ if prlimit --pid "$pid" --nproc=1:1 && touch "$go" && wait "$pid"; then
 else
     kill "$pid" 2>/dev/null || true
     echo "FAIL node-addon/failed-start"; sed 's/^/    /' "$log"; failed=$((failed + 1))
+fi
+
+# The C++ embedding example, examples/cpp-ports, built as its Makefile builds it (its own .so, and
+# host.cpp against runtime/include) and run on 4 MB of input: the output must be the input upper
+# cased, and the summary must count all of it.
+EX="$OUT/cpp-ports"
+mkdir -p "$EX/proj"
+cp -R "$ROOT/examples/cpp-ports/elm.json" "$ROOT/examples/cpp-ports/src" "$EX/proj/"
+if ( cd "$EX/proj" \
+     && { ulimit -s unlimited 2>/dev/null || ulimit -s "$(ulimit -H -s)" 2>/dev/null || true; } \
+     && s=$(ulimit -s) && k=500000 \
+     && { [ "$s" = unlimited ] || [ $((s / 10 * 9)) -ge $k ] || k=$((s / 10 * 9)); } \
+     && "$NODE" --stack-size=$k "$ROOT/compiler/bin/index.js" make src/Upcase.elm \
+          --output="$EX/upcase.mlir" ) > "$EX/build.log" 2>&1 \
+   && "$BOOT" "$EX/upcase.mlir" -o "$EX/libupcase.so" >> "$EX/build.log" 2>&1 \
+   && "${CXX:-c++}" -std=c++20 -O2 -Wall -Wextra -Werror -I"$ROOT/runtime/include" \
+        "$ROOT/examples/cpp-ports/host.cpp" -L"$EX" -l:libupcase.so -lm -Wl,-rpath,"$EX" \
+        -o "$EX/upcase" >> "$EX/build.log" 2>&1; then
+    head -c 3000000 /dev/urandom | base64 > "$EX/in.txt"
+    bytes=$(wc -c < "$EX/in.txt"); lines=$(wc -l < "$EX/in.txt")
+    want="summary: {\"bytes\":$bytes,\"chunks\":$(( (bytes + 65535) / 65536 )),\"hostBytes\":$bytes,\"lines\":$lines}"
+    if timeout 60 "$EX/upcase" < "$EX/in.txt" > "$EX/out.txt" 2> "$EX/err.txt" \
+       && tr a-z A-Z < "$EX/in.txt" | cmp -s - "$EX/out.txt" \
+       && [ "$(cat "$EX/err.txt")" = "$want" ]; then
+        echo "PASS node-addon/cpp-ports-example"
+    else
+        echo "FAIL node-addon/cpp-ports-example (want: $want)"; sed 's/^/    /' "$EX/err.txt"
+        failed=$((failed + 1))
+    fi
+else
+    echo "FAIL node-addon/cpp-ports-example (build)"; tail -20 "$EX/build.log" | sed 's/^/    /'
+    failed=$((failed + 1))
 fi
 
 if [ "$failed" -ne 0 ]; then

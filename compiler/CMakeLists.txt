@@ -226,11 +226,12 @@ add_custom_command(
 )
 add_custom_target(eco-system-docs ALL DEPENDS ${ECO_SYSTEM_DIR}/docs.json)
 
-# The example programs (examples/src, plans/eco-system-library.md Phase 9.3) and the compute
-# benchmarks (examples/benchmarks, their own project) are compiled, not run, by `full`, so an API
-# change that breaks them is caught. Output goes to the build tree; the examples' own eco-stuff/
-# cache is git-ignored.
-file(GLOB _eco_system_examples CONFIGURE_DEPENDS ${CMAKE_SOURCE_DIR}/examples/src/*.elm)
+# The example programs (examples/system, plans/eco-system-library.md Phase 9.3), the compute
+# benchmarks (examples/benchmarks) and the embedding example's Elm program (examples/cpp-ports), each
+# its own project, are compiled, not run, by `full`, so an API change that breaks them is caught.
+# (run-node-addon-tests also builds and runs the embedding example.) Output goes to the build tree;
+# the examples' own eco-stuff/ caches are git-ignored.
+file(GLOB _eco_system_examples CONFIGURE_DEPENDS ${CMAKE_SOURCE_DIR}/examples/system/src/*.elm)
 set(_eco_system_example_cmds)
 foreach(_ex ${_eco_system_examples})
     get_filename_component(_name ${_ex} NAME_WE)
@@ -245,12 +246,16 @@ list(APPEND _eco_system_example_cmds
         ${CMAKE_COMMAND} -E env GUIDA_JS_PATH=${BUILD_XHR_DIR}/bin/guida.js
         ${NODE_EXECUTABLE} ${COMPILER_DIR}/bin/index.js make src/Bench.elm
         --local-package eco/system=${ECO_SYSTEM_DIR}
-        --output=${CMAKE_BINARY_DIR}/eco-system-examples/Bench.mlir)
+        --output=${CMAKE_BINARY_DIR}/eco-system-examples/Bench.mlir
+    COMMAND ${CMAKE_COMMAND} -E chdir ${CMAKE_SOURCE_DIR}/examples/cpp-ports
+        ${CMAKE_COMMAND} -E env GUIDA_JS_PATH=${BUILD_XHR_DIR}/bin/guida.js
+        ${NODE_EXECUTABLE} ${COMPILER_DIR}/bin/index.js make src/Upcase.elm
+        --output=${CMAKE_BINARY_DIR}/eco-system-examples/Upcase.mlir)
 add_custom_target(eco-system-examples
     ${_eco_system_example_cmds}
     DEPENDS guida
-    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}/examples
-    COMMENT "Compiling the example programs (examples/src, examples/benchmarks)"
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}/examples/system
+    COMMENT "Compiling the example programs (examples/system, examples/benchmarks, examples/cpp-ports)"
     VERBATIM
 )
 

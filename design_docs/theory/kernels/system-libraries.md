@@ -12,7 +12,7 @@ The library code lives in three top-level directories, all of which take part in
 
 - `eco-kernel-cpp/` is the package `eco/kernel`.
 - `system-kernel-cpp/` is the package `eco/system`.
-- `examples/` is an application on top of `eco/system`: small programs such as a `cat`, an `ls`, TCP and UDP echo servers, a TLS client, an HTTP echo server and a WebSocket chat. Beside them sit compute benchmarks that build under both Eco and the official Elm compiler.
+- `examples/system/` is an application on top of `eco/system`: small programs such as a `cat`, an `ls`, TCP and UDP echo servers, a TLS client, an HTTP echo server and a WebSocket chat. Beside it, `examples/benchmarks/` holds compute benchmarks that build under both Eco and the official Elm compiler, and `examples/cpp-ports/` an Elm program run inside a C++ host through ports.
 
 ## The compiler's IO layer
 
@@ -158,7 +158,7 @@ Code and documents:
 - `compiler/src-xhr/Eco/`: the stock-Elm implementation of the `Eco.*` modules.
 - `runtime/src/platform/Liveness.hpp` (`LivenessHold`), `TaskBinding.hpp`, `Spawn.hpp`: runtime pieces these libraries use. Setting `ECO_LIVENESS_REPORT=1` prints the holds still open.
 - `compiler/src/Compiler/GenerateMlir/Functions.elm` (`ecoSystemManagers`, manager registration), `compiler/src/Compiler/IR/Runtime/EcoEnvironment.elm` (environment flags), `compiler/src/Compiler/Elm/Package.elm` (`isKernel`: which packages may hold kernels).
-- `examples/src/`, `examples/benchmarks/`: example programs and benchmarks.
+- `examples/system/`, `examples/benchmarks/`, `examples/cpp-ports/`: example programs, benchmarks and an embedding example.
 - `plans/eco-system-library.md` sections 2 and 3.2 to 3.4: the library's threading and rooting rules. `plans/native-http-client.md`: a proposed replacement for libcurl, not built.
 - Tests: `test/eco-kernel/`, `test/eco-system/` (the specification; `-- SKIP-JS:` and `-- LINUX-ONLY:` directives), `test/eco-system-core/`, `test/conformance/`.
 

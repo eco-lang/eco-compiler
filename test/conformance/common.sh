@@ -6,7 +6,7 @@
 CONF_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 REPO=$(cd "$CONF_DIR/../.." && pwd)
 BUILD=${ECO_BUILD_DIR:-$REPO/build}
-EXAMPLES=$REPO/examples
+EXAMPLES=$REPO/examples/system
 
 log() { printf '[%s] %s\n' "$(basename "$0")" "$*" >&2; }
 die() { log "error: $*"; exit 1; }
@@ -24,7 +24,7 @@ fetch() {
 }
 
 # build_program MODULE NAME WORKDIR BACKENDS: compile MODULE.elm (from test/conformance/src when it
-# is there, such as the Autobahn client, else examples/src) with the Stage-1 compiler
+# is there, such as the Autobahn client, else examples/system/src) with the Stage-1 compiler
 # (compiler/bin/index.js) for each backend in BACKENDS ("native", "js" or both):
 #   native: MODULE.elm -> WORKDIR/NAME.mlir -> eco-boot-native -> WORKDIR/NAME
 #   js:     MODULE.elm -> WORKDIR/NAME.js plus a launcher WORKDIR/NAME.run.js
