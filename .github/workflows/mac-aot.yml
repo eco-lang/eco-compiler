@@ -53,7 +53,9 @@ concurrency:
 jobs:
   aot:
     runs-on: macos-15
-    timeout-minutes: 90
+    # Runs took 57-87 min by 2026-11-06 and grow as tests are added; a cold
+    # ccache adds more. 150 leaves headroom under the 360-min hosted-runner cap.
+    timeout-minutes: 150
     # actions: write lets "Prune superseded ccache entries" delete caches
     # (the repository's default token is read-only).
     permissions:
