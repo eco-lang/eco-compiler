@@ -1,14 +1,14 @@
 module BytesDecoderMixedCycleTwoValuesTest exposing (main)
 
-{-| Recursive cycle with two top-level VALUE decoders and one top-level
-    FUNCTION decoder. Both values belong to the same SCC as the function
-    and are expected to be miscompiled to Unit stubs by the current
-    `specializeFunctionCycle` behaviour.
+{-| A recursive cycle of two top-level decoder values and one top-level decoder function decodes a tagged tree correctly.
 
-    Input: a small tagged tree.
+`treeDecoder` uses the function `tagDispatch`, which uses `nestedDecoder`, which
+is defined as `treeDecoder` itself.
 
-    The encoding is: `0` -> `Empty`, `1 x` -> `Leaf x`,
-    `2 left right` -> `Node left right`.
+The encoding is `0` for `Empty`, `1 x` for `Leaf x`, and `2 left right` for
+`Node left right`. The input `2 1 4 2 0 1 9` decodes to
+`Just (Node (Leaf 4) (Node Empty (Leaf 9)))`.
+
 -}
 
 -- CHECK: decoded: Just (Node (Leaf 4) (Node Empty (Leaf 9)))
@@ -24,7 +24,7 @@ type Tree
     | Node Tree Tree
 
 
-{-| Value 1: dispatches on the top tag.
+{-| A decoder that reads a tag byte and continues with `tagDispatch`.
 -}
 treeDecoder : D.Decoder Tree
 treeDecoder =
@@ -32,17 +32,16 @@ treeDecoder =
         |> D.andThen tagDispatch
 
 
-{-| Value 2: zero-arg wrapper that reads an inner subtree.
-
-Referenced from `tagDispatch` to pull both values into the mixed cycle.
-
+{-| A second name for `treeDecoder`, used by `tagDispatch` for the subtrees of a
+`Node`, so that the cycle passes through two values.
 -}
 nestedDecoder : D.Decoder Tree
 nestedDecoder =
     treeDecoder
 
 
-{-| Function: resolves a tag byte into the correct sub-decoder.
+{-| Produces the decoder for the rest of a tree whose tag byte is `tag`, failing
+on an unknown tag.
 -}
 tagDispatch : Int -> D.Decoder Tree
 tagDispatch tag =

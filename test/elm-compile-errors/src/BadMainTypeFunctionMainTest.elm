@@ -1,9 +1,6 @@
 module BadMainTypeFunctionMainTest exposing (..)
 
-{-| BAD MAIN TYPE: function main.
-
-From `SourceIR.MainFailsCases` (`typeCases`), the elm-test catalogue of programs
-the compiler must reject.
+{-| A `main` of function type `Int -> Int -> Int` is rejected with a BAD MAIN TYPE error.
 
 -}
 

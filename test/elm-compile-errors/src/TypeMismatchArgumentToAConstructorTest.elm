@@ -1,9 +1,8 @@
 module TypeMismatchArgumentToAConstructorTest exposing (..)
 
-{-| TYPE MISMATCH: argument to a constructor.
+{-| A constructor applied to an argument of the wrong type is rejected with a TYPE MISMATCH.
 
-From `SourceIR.TypeCheckFailsCases` (`contextCases`), the elm-test catalogue of programs
-the compiler must reject.
+`T` wraps an `Int`, and `x = T "s"` gives it a `String`.
 
 -}
 

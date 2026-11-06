@@ -1,11 +1,12 @@
 module CoreIssue1115NanEqualsLiteralZeroTest exposing (main)
 
-{-| `x == 0` with a literal 0 is True when x is NaN.
+{-| NaN compared with a literal `0` is not equal, on either side of `==`.
 
 <https://github.com/elm/core/issues/1115>
 
-Elm 0.19.1 compiles a comparison with the literal `0` to `!x`, which is true for NaN. NaN is not
-equal to anything, so all these comparisons must be False (as `nan == zero` already is).
+Elm 0.19.1 compiles a comparison with the literal `0` to a JavaScript truthiness test, which is
+true for NaN. The test also compares NaN with a `zero` variable, which Elm 0.19.1 already gets
+right.
 
 -}
 

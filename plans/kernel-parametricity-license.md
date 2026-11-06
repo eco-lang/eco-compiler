@@ -599,7 +599,7 @@ claim — an arity-aligned positional row would have bailed to full poison there
 and six containment/discipline pins (the never-license list stays unlicensed;
 unknown kernels have no row; every licensed row pins a file; evidence carries
 the §2.6 markers; `scope` agrees with the evidence class; `licensedFiles` is
-sorted, deduped and repo-relative). Plus `test/elm/src/KernelLicenseTest.elm`,
+sorted, deduped and repo-relative). Plus `test/eco-elm/src/KernelLicenseTest.elm`,
 whose seven CHECKs are chosen so a false singleton yields a different NUMBER
 (two callbacks through one `List.map2`; a `List (Int -> Int)` argument; a
 `List.sortBy` permutation of two closures keyed against source order; two

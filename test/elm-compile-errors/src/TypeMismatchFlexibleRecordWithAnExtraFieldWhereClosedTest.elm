@@ -1,9 +1,9 @@
 module TypeMismatchFlexibleRecordWithAnExtraFieldWhereClosedTest exposing (..)
 
-{-| TYPE MISMATCH: flexible record with an extra field where closed.
+{-| The compiler rejects passing a record that must have an `age` field to a function that takes exactly `{ name : Int }`, with a TYPE MISMATCH error.
 
-From `SourceIR.TypeCheckFailsCases` (`problemCases`), the elm-test catalogue of programs
-the compiler must reject.
+Inside `h`, `a.age` requires `a` to have an `age` field, and `g a` requires `a` to be the closed
+record `{ name : Int }`, which has no such field.
 
 -}
 

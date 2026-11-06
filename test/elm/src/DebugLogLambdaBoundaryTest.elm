@@ -1,12 +1,12 @@
 module DebugLogLambdaBoundaryTest exposing (main)
 
-{-| Bug: Compiler.LocalOpt.Typed.NormalizeLambdaBoundaries renames the name
-inside a VarDebug node when merging a case boundary whose branch lambda has a
-parameter named like the Debug function (`log`), turning Debug.log into
-log_hl_0. Unit test:
-compiler/tests/Compiler/LocalOpt/Typed/NormalizeLambdaBoundariesDebugNameTest.elm.
-Fixed 2026-10-28 (plans/review-bug-triage-fixes.md, item 3.4); the text
-below describes the old behaviour.
+{-| A `case` branch that returns a lambda whose parameter is named `log` can
+still call `Debug.log` inside that lambda.
+
+The parameter name `log` is the same as the function name in `Debug.log`, but
+the qualified call still refers to `Debug.log`. `f True "hi"` logs `"hi"` with
+the label `DebugLogLambdaBoundaryTest` and returns it, so `result` is `"hi"`.
+
 -}
 
 -- CHECK: DebugLogLambdaBoundaryTest: "hi"

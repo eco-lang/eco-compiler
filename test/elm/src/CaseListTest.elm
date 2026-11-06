@@ -1,6 +1,7 @@
 module CaseListTest exposing (main)
 
-{-| Test case expression on List.
+{-| Checks that a `case` on a `List` distinguishes the empty list, a list of
+exactly one element (`[_]`) and any longer list (`_`).
 -}
 
 -- CHECK: case1: "empty"

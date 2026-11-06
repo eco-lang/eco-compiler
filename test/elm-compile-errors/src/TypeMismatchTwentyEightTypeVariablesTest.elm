@@ -1,8 +1,8 @@
 module TypeMismatchTwentyEightTypeVariablesTest exposing (main)
 
-{-| TYPE MISMATCH: twenty eight type variables.
+{-| Using a function of 28 unannotated arguments as a number is rejected with a TYPE MISMATCH.
 
-From `Compiler.Reporting.TypeVariableNameReportTest` (`twentyEightParameters`), an elm-test program the compiler must reject.
+`f` takes 28 arguments `p0` to `p27` and returns `0`; `main = f + 1` gives the function itself to `+`. Each unused argument has its own type variable, so the error message must present a function type with 28 distinct variables.
 
 -}
 

@@ -1,6 +1,10 @@
 module CombinatorBComposeTest exposing (main)
 
-{-| B combinator (compose): square << inc on 4 = 25
+{-| The B combinator, function composition, built only from S and K: `b square inc 4` is `square (inc 4)`, which is 25.
+
+`k` returns its first argument, `s bf uf x` is `bf x (uf x)`, and `b` is the
+point-free definition `s (k s) k`.
+
 -}
 
 -- CHECK: result: 25

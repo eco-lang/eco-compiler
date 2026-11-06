@@ -1,9 +1,8 @@
 module TypeMismatchRigidNumberAsFunctionTest exposing (..)
 
-{-| TYPE MISMATCH: rigid number as function.
+{-| Returning a lambda where the annotation promises a `number` is rejected with a TYPE MISMATCH.
 
-From `SourceIR.TypeCheckFailsCases` (`rigidCases`), the elm-test catalogue of programs
-the compiler must reject.
+`f : number -> number` with `f x = \y -> y`: a function is never a `number`.
 
 -}
 

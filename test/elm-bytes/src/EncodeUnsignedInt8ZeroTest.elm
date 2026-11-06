@@ -1,6 +1,8 @@
 module EncodeUnsignedInt8ZeroTest exposing (main)
 
-{-| Test encoding zero value.
+{-| `Bytes.Encode.unsignedInt8` writes 1 byte for zero.
+
+The test logs the width of the result.
 -}
 
 -- CHECK: EncodeUnsignedInt8ZeroTest: 1

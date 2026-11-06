@@ -1,9 +1,8 @@
 module TypeMismatchTwoAliasedRecordsTest exposing (..)
 
-{-| TYPE MISMATCH: two aliased records.
+{-| A value of one record alias annotated as a different record alias is rejected with a TYPE MISMATCH.
 
-From `SourceIR.TypeCheckFailsCases` (`recordFieldCases`), the elm-test catalogue of programs
-the compiler must reject.
+`P` is `{ a : Int }` and `Q` is `{ b : Int }`; `x : Q` is defined as the `P` value `p`, and the two records have different fields.
 
 -}
 

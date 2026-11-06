@@ -1,8 +1,11 @@
 module ArrayAppendRepeatedTest exposing (main)
 
-{-| Repeatedly growing an `Array` via `Array.append` must not crash
-    and must preserve the element count. Scaled-down regression for a
-    SIGSEGV observed in the stress suite (ArrayConcatMap).
+{-| Growing an `Array` by 100 successive `Array.append` calls, three elements at a time, keeps
+every element in order.
+
+Step `count` appends `[ count, count + 1, count + 2 ]`, counting down from 100, so the result
+has 300 elements, starts with 100 and ends with 3 (from the final step's `[ 1, 2, 3 ]`).
+
 -}
 
 -- CHECK: finalLength: 300

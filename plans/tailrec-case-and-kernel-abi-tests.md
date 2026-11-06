@@ -528,10 +528,10 @@ Only the **primitive unboxable types (Int/i64, Float/f64, Char/i16)** can trigge
 | `test/elm/src/TailRecCaseDestructTest.elm` | E2E: tail-rec + case + destruct |
 | `test/elm/src/TailRecNestedCaseTest.elm` | E2E: tail-rec + nested case |
 | `test/elm/src/TailRecCustomCaseTest.elm` | E2E: tail-rec + custom type case |
-| `test/elm/src/EqualityIntPapWithStringChainTest.elm` | E2E: Int PAP + string chain |
-| `test/elm/src/EqualityCharPapTest.elm` | E2E: Char PAP |
-| `test/elm/src/EqualityFloatPapTest.elm` | E2E: Float PAP |
-| `test/elm/src/EqualityMultiTypePapTest.elm` | E2E: multi-type PAP |
+| `test/eco-elm/src/EqualityIntPapWithStringChainTest.elm` | E2E: Int PAP + string chain |
+| `test/eco-elm/src/EqualityCharPapTest.elm` | E2E: Char PAP |
+| `test/eco-elm/src/EqualityFloatPapTest.elm` | E2E: Float PAP |
+| `test/eco-elm/src/EqualityMultiTypePapTest.elm` | E2E: multi-type PAP |
 | `compiler/tests/TestLogic/Generate/CodeGen/KernelDeclAbiPolicy.elm` | KERN_006 test logic (imports `kernelBackendAbiPolicy`) |
 | `compiler/tests/Compiler/Generate/CodeGen/KernelDeclAbiPolicyTest.elm` | KERN_006 test runner |
 | `compiler/tests/TestLogic/Generate/CodeGen/CaseYieldResultConsistency.elm` | CGEN_010 test logic |

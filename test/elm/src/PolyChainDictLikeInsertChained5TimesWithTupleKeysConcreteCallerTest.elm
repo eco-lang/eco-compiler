@@ -1,9 +1,11 @@
 module PolyChainDictLikeInsertChained5TimesWithTupleKeysConcreteCallerTest exposing (..)
 
-{-| Dict-like insert chained 5 times with tuple keys (concrete caller).
+{-| Tests a polymorphic `insert` on a list-like dictionary type, called five
+times in a chain from a function with concrete `( String, Int )` keys and
+`Int` values.
 
-From `SourceIR.PolyChainCases`, a program of the elm-test catalogue, with a
-`main` that logs its `testValue`. The CHECK lines are what Elm 0.19.1 prints for it.
+`size` looks only at the outermost constructor, returning 1 for any `Entry`,
+so the logged value is 1 rather than the number of entries.
 
 -}
 

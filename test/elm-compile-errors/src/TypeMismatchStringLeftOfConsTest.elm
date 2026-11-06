@@ -1,9 +1,8 @@
 module TypeMismatchStringLeftOfConsTest exposing (..)
 
-{-| TYPE MISMATCH: string left of ::.
+{-| Consing a `String` onto a list of numbers with `::` is rejected with a TYPE MISMATCH.
 
-From `SourceIR.TypeCheckFailsCases` (`operatorCases`), the elm-test catalogue of programs
-the compiler must reject.
+In `"a" :: [ 1 ]` the element on the left must have the type of the list's elements.
 
 -}
 

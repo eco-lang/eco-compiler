@@ -23,6 +23,9 @@ import Process
 import Task
 
 
+{-| Returns an `h4` root at step 0 and a `div` root with nested `span`s afterwards, adding a
+second inner `span` from step 2.
+-}
 view : Int -> Html Int
 view step =
     case step of
@@ -36,6 +39,8 @@ view step =
             Html.div [] [ Html.span [] [ Html.span [] [], Html.span [] [] ] ]
 
 
+{-| Sends `step + 1` as the next message after a 50 ms sleep.
+-}
 next : Int -> Cmd Int
 next step =
     Task.perform (\_ -> step + 1) (Process.sleep 50)

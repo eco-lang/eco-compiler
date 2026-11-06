@@ -1,15 +1,14 @@
 module DecodeMixedTupleRoundtripTest exposing (main)
 
-{-| Small-scale test that a `(Int, String)` tuple — an unboxed primitive
-    field packed next to a heap-allocated String — survives a bytes
-    encode/decode roundtrip.
+{-| A `( Int, String )` tuple survives a round trip through Bytes.Encode and
+Bytes.Decode.
 
-    The tuple shape matches the loop-state shape used by
-    `Utils.Bytes.Decode.list` (`(Int, List a)`). If the closure unboxed
-    bitmap is miscomputed so that the primitive slot is scanned as a boxed
-    pointer (or vice versa), the returned tuple will hold corrupted values
-    and the comparison below will fail — all visible without any minor GC
-    firing.
+The encoder writes the `Int` as a big-endian signed 32-bit value, then the
+string's UTF-8 width as a big-endian unsigned 16-bit value, then the string. The
+decoder reads the three back with nested `andThen` calls and rebuilds the tuple.
+The test logs `True` when the decoded tuple equals the original
+`( 0x01020304, "hello" )`, and `False` if it differs or the decode fails.
+
 -}
 
 -- CHECK: DecodeMixedTupleRoundtripTest: True

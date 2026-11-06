@@ -1,7 +1,6 @@
 module MaybeMapFloatToBoolTest exposing (main)
 
-{-| Test Maybe.map with Float -> Bool mapping function.
-Triggers monomorphization bug where output type (Bool) is treated as input type (Float).
+{-| `Maybe.map` with a Float -> Bool function produces a `Maybe Bool`: mapping `\x -> x > 0` over `Just 42.0` gives `Just True`.
 -}
 
 -- CHECK: result: Just True

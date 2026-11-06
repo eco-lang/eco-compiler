@@ -1,6 +1,13 @@
 module EmbeddedResultErrOkTest exposing (main)
 
-{-| Test Err and Ok values flowing through Result.andThen callbacks.
+{-| `Result.andThen` passes an `Ok` value to its callback, passes an `Err`
+through untouched, and stops at the first callback that returns `Err`.
+
+Each chain applies `validate` (which returns `Err "negative"` unless its
+argument is positive) and then `increment`. Starting from `Ok 10` gives `Ok 11`;
+starting from `Err "bad"` keeps that error; starting from `Ok -5` gives `Err
+"negative"` from `validate`.
+
 -}
 
 -- CHECK: chain1: Ok 11

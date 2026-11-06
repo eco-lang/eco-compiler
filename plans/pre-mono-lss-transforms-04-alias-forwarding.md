@@ -479,14 +479,14 @@ in the same function (`envWithCaptures` records a captured PAP's source arity) �
 copy's situation (`enc tbl` is built in `enc_$_4`, where the copied lambda now lives) and not
 the original's (the PAP arrives as the `List_map` spec's parameter → `CallGenericApply`).
 
-Reproduced in 30 lines (`test/elm/src/PapCopyStampTest.elm`: a recursive `enc` mapping a PAP of
+Reproduced in 30 lines (`test/eco-mlir/src/PapCopyStampTest.elm`: a recursive `enc` mapping a PAP of
 itself over children) and fixed by consulting `fastDispatchStamp` on that branch too — a
 direct-global callee never carries a stamp, so the intrinsic logic is reached exactly as before
 for those. On the repro the copy is `singleton_fast → enc_$_4, _pap_prefix = 1` in both arms, and
 the DEFAULT arm gains stamps as well (`List.map total es`'s callback sites were typed before):
 **the gap predates forwarding and is wider than it** — every stamped site whose callee value is
 built in the same function was emitting the typed helper. elm-tests at the 12-failure baseline;
-E2E 1727/1727 in both arms (with `test/elm/src/PapCopyStampTest.elm`, which pins the fix in the
+E2E 1727/1727 in both arms (with `test/eco-mlir/src/PapCopyStampTest.elm`, which pins the fix in the
 DEFAULT arm: a let-bound PAP of the recursive `enc` captured by an explicit `foldr` lambda).
 
 **The first cut over-reached and was narrowed the same day.** Consulting the stamp for EVERY

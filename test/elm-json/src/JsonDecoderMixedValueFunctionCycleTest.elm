@@ -1,13 +1,10 @@
 module JsonDecoderMixedValueFunctionCycleTest exposing (main)
 
-{-| Mirror of `BytesDecoderMixedValueFunctionCycleTest` but via
-    `Json.Decode`. The JSON decoder pipeline runs through the same
-    monomorphization path, so the mixed value/function cycle should
-    miscompile the top-level value exactly the same way.
+{-| A recursive `Json.Decode` decoder whose cycle runs through a top-level value and a top-level function decodes a nested tree correctly.
 
-    Note: `Json.Decode.lazy` is deliberately NOT used — the value
-    `treeDecoder` references `branchBy` directly. Using `lazy` would
-    introduce a closure that breaks the SCC shape, hiding the bug.
+`treeDecoder` is a value (it takes no arguments) and `branchBy` is a function, and each
+refers to the other without `Json.Decode.lazy`. The reference from `treeDecoder` to `branchBy`
+sits inside the `andThen` callback. The input is a branch (tag 1) holding two leaves (tag 0) with values 7 and 9.
 -}
 
 -- CHECK: decoded: Ok (Branch (Leaf 7) (Leaf 9))

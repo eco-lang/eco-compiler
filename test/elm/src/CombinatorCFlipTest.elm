@@ -1,6 +1,9 @@
 module CombinatorCFlipTest exposing (main)
 
-{-| C combinator (flip): flipped subtraction on 10 and 3 = -7
+{-| The C combinator, which swaps two arguments, built from S and K: `c sub 10 3` is `sub 3 10`, which is -7.
+
+`c` is the point-free definition `s (b b s) (k k)`, with `b = s (k s) k`.
+
 -}
 
 -- CHECK: result: -7

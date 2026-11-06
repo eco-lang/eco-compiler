@@ -1,11 +1,11 @@
 module ErrorMessagesIssue34UnexposedQualifiedTypeTest exposing (..)
 
-{-| NAMING ERROR: a qualified type that the module does not expose.
+{-| A qualified type that its module does not expose is reported as a NAMING ERROR naming the module.
 
 <https://github.com/elm/error-message-catalog/issues/34>
 
-Elm 0.16 to 0.18 said "The qualifier `List` is not in scope", which is false: `List` is in
-scope, it just has no `Bar` type. The report must say that the module does not expose it.
+`foo` is annotated `List.Bar`. `List` is in scope but has no `Bar` type, so the report must say
+"The `List` module does not expose a `Bar` type." and must not say the qualifier is not in scope.
 
 -}
 

@@ -1,15 +1,10 @@
 module EqualityBoolTest exposing (main)
 
-{-| Canonical 2x2 truth table for `(==)` and `(/=)` on `Bool` literals.
+{-| `==` and `/=` on `Bool` literals give the correct answer for all four
+combinations of operands.
 
-This is the smallest reproducer for the embedded-constant equality bug:
-`True`/`False` are HPointer constants. The unsuffixed
-`Elm_Kernel_Utils_equal` collapses both sides through `Export::toPtr`
-into `nullptr`, then `eqHelp` short-circuits with reference equality,
-so any pair of embedded constants compares equal.
+The test logs the full truth table of `==` and of `/=` over `True` and `False`.
 
-There is no `MBool` arm in `utilsIntrinsic`, so no intrinsic lowering
-masks the kernel call.
 -}
 
 -- CHECK: tt: True

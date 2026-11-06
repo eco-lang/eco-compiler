@@ -1,6 +1,15 @@
 module DeepNestStressTest exposing (main)
 
-{-| Test deeply nested data structures: lists, tuples, records, and lets. -}
+{-| Deeply nested lists, tuples, records and `let` expressions can be built and
+taken apart.
+
+- A list nested four deep is matched with a nested list pattern, giving 1.
+- A tuple nested four deep is destructured in a `let` pattern, giving its
+  innermost first component, 1.
+- A record nested four deep is read with a chain of field accesses, giving 1.
+- Four nested `let` expressions each return the inner binding, giving 10.
+
+-}
 
 -- CHECK: nested_list: 1
 -- CHECK: nested_tuple: 1

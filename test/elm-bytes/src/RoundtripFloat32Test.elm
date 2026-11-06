@@ -1,6 +1,10 @@
 module RoundtripFloat32Test exposing (main)
 
-{-| Roundtrip test for float32.
+{-| Floats survive a big-endian `float32` encode and decode with elm/bytes to within 0.0001.
+
+The values 0, 1, -1 and 3.14159 are each round-tripped. A tolerance is used
+because a 32-bit float cannot hold every 64-bit value exactly; the program logs
+`True` only if every decoded value is within it.
 -}
 
 -- CHECK: RoundtripFloat32Test: True

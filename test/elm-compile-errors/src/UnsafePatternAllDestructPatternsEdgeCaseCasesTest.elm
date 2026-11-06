@@ -1,9 +1,11 @@
 module UnsafePatternAllDestructPatternsEdgeCaseCasesTest exposing (..)
 
-{-| UNSAFE PATTERN: All destruct patterns (EdgeCaseCases).
+{-| A `let` that destructures a list with `(h :: t) = [ 4, 5 ]` is rejected with an UNSAFE
+PATTERN error.
 
-From `SourceIR.PatternFailsCases` (`testValue`), the elm-test catalogue of programs
-the compiler must reject.
+A pattern in a `let` must match every value of its type. The same `let` also destructures a
+tuple, a record and an `as` alias, which always match; the cons pattern does not, because
+it fails on the empty list.
 
 -}
 

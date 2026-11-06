@@ -1,9 +1,13 @@
 module FunctionAccumulatorFunctionLookupTest exposing (..)
 
-{-| Function lookup.
+{-| Looking up a function in a list of key and function pairs, and applying the function found, gives the right result.
 
-From `SourceIR.FunctionAccumulatorCases`, a program of the elm-test catalogue, with a
-`main` that logs its `testValue`. The CHECK lines are what Elm 0.19.1 prints for it.
+`lookup` walks a list of `( Int, Int -> Int )` pairs and returns the function
+paired with the key, or `identity` when the key is absent. The table holds two
+lambdas and the partial application `max 4`. The test logs
+`lookup 2 table 5 + lookup 9 table 1 + lookup 3 table 0`, which is
+10 + 1 + 4 = 15: a doubling lambda, `identity` for the missing key 9, and
+`max 4 0`.
 
 -}
 

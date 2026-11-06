@@ -1,9 +1,8 @@
 module ImportResolutionQualifiedImportedFunctionTest exposing (..)
 
-{-| qualified imported function.
+{-| A call written with the module qualifier, `List.map`, resolves to the imported function even though the module is also imported with `exposing (..)`.
 
-From `SourceIR.ImportResolutionCases`, a program of the elm-test catalogue, with a
-`main` that logs its `testValue`. The CHECK lines are what Elm 0.19.1 prints for it.
+`xs` is `List.map negate [ 1, 2 ]`, which `main` logs as `[-1,-2]`.
 
 -}
 

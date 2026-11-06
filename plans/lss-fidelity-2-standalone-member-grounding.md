@@ -246,7 +246,7 @@ Tables (2.1), pure intern helper (2.2), zonk rewrite (3), counters. Gates:
 **G2 — flag on locally: behavior + census.**
 - E2E `--target full` with `ECO_MONO_LSS_GROUND=1` (purge `build/test/*/eco-stuff`
   between legs; suites serial).
-- Targeted E2E: extend `test/elm/src/CtorDevirtTest.elm` / `ConsDevirtTest.elm`
+- Targeted E2E: extend `test/eco-elm/src/CtorDevirtTest.elm` / `ConsDevirtTest.elm`
   patterns with a fixture where ONE global flows at TWO layouts into a shared HOF —
   assert (via `ECO_MONO_LSS_REPORT` or the sites dump) the join is a 2-set, not a
   false singleton; and a same-layout fixture still devirts (`devirtDirect` count
@@ -357,7 +357,7 @@ one frozen corpus, flag off → **byte-identical** (13,557,049 B).
 The §8 budget-pressure risk is **unrealized on the self-compile**: finer ids
 moved `widenedByBudget` by +2 events and spec fan-out not at all. The
 deferral frontier is 11 events. E2E flag-on 1,682/1,682 including the new
-`test/elm/src/LssGroundStandaloneTest.elm` (one global + one box ctor at two
+`test/eco-elm/src/LssGroundStandaloneTest.elm` (one global + one box ctor at two
 layouts each through recursion-protected HOFs; LSS_005 answers pinned).
 Bootstrap fixed point flag-on: Stage 8c **byte-identical**
 (`eco-compiler-boot == eco-compiler-boot-2`, boot .mlirs 13,557,262 B — also

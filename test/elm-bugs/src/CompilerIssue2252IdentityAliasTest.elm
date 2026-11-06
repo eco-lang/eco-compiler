@@ -1,12 +1,11 @@
 module CompilerIssue2252IdentityAliasTest exposing (main)
 
-{-| A type alias `Identity a = a` does not unify with `a` in an annotation.
+{-| A type alias `Identity a = a` is interchangeable with `a`, so `map change = change` type-checks against `(a -> b) -> Identity a -> Identity b`.
 
 <https://github.com/elm/compiler/issues/2252>
 
-`Identity a` is by definition `a`, so `map : (a -> b) -> Identity a -> Identity b` is the type
-`(a -> b) -> a -> b` and `map change = change` is correct. Elm 0.19.1 rejects it with a TYPE
-MISMATCH (`a -> b` vs `Identity a -> Identity b`).
+The annotation means `(a -> b) -> a -> b`, and `map String.length "abc"` should print 3. Elm 0.19.1
+rejects the definition with a TYPE MISMATCH between `a -> b` and `Identity a -> Identity b`.
 
 -}
 

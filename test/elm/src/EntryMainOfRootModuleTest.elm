@@ -1,13 +1,12 @@
 module EntryMainOfRootModuleTest exposing (main)
 
-{-| Bug: Compiler.Monomorphize.EntryPrep (insertFlagsDecoderNode and
-findEntryPointId) find the entry point by the name `main` alone, taking the
-first `main` in graph key order across ALL modules. The imported module
-EntryAuxWithMain also defines `main` and sorts first, so the compiled program
-runs the helper's `main` instead of this module's.
+{-| A program's entry point is the `main` of the module being compiled, even
+when an imported module also defines and exposes a `main`.
 
-Fixed 2026-10-28 (plans/review-bug-triage-fixes.md, item 3.6); the text
-below describes the old behaviour.
+The imported `EntryAuxWithMain` exposes its own `main`, which logs `which:
+"helper"`. This module's `main` logs `which: "root"` and then `greeting`, a
+string taken from the imported module, so the output shows which `main` ran and
+that the import still works.
 
 -}
 

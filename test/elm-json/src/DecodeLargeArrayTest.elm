@@ -1,10 +1,17 @@
 module DecodeLargeArrayTest exposing (main)
 
-{-| threaded-gc-04b D5: JSON arrays longer than the chunk width
-    F = 1,021 elements (8 KiB large-object threshold) are stored chunked.
-    Every decoder must see the same elements at F-1, F, F+1, 3F+7 and a
-    large size, and `Json.Decode.array` must build a well-formed Array (a
-    multi-level tree above 32 leaves) there.
+{-| Decoding long JSON arrays of integers gives the same elements, in order, through
+`Json.Decode.list`, `array`, `index`, `oneOf` and `value`, for arrays of 1,020 to 100,000
+elements.
+
+`check n` encodes `List.range 0 (n - 1)` and logs `True` only if all of these hold: `list`
+decodes it to the original list; `array` decodes it to an `Array` with length `n`, the same
+elements as the list, equal under `==` to `Array.fromList` of the list, and the right value from
+`Array.get` at several indices below `n` (including 32767 and 32768 once `n` is large enough);
+`index i` decodes element `i` at several indices, including the last; `index n` fails;
+a `oneOf` whose first branch (a list of strings) fails falls through to its second and reports
+`n` elements; and decoding to a `Value` and re-encoding gives back the original JSON text.
+The sizes are 1020, 1021, 1022, 3070 and 100000.
 -}
 
 -- CHECK: n1020: True

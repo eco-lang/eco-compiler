@@ -1,9 +1,8 @@
 module NumberGenericAppMaybe exposing (main)
 
-{-| Number-multi gate relaxation regression (Mechanism B): a scalar `number`
-through `Maybe.withDefault : a -> Maybe a -> a` (a generic-call RHS). Constraint
-intact; rejected by `isNumericDataRhs`; defaulted to Int; miscompiled at Float.
-Correct: round (1.5 * 30) = 45.
+{-| A number literal passed through a generic function, here `Maybe.withDefault
+0` applied to `Just 30`, keeps the type `number`, so the `let`-bound result
+can be used in `Float` arithmetic: `round (1.5 * n)` logs 45.
 -}
 
 -- CHECK: numgenapp: 45

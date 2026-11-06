@@ -1,6 +1,10 @@
 module EndiannessBELETest exposing (main)
 
-{-| Test that BE and LE produce different byte orders.
+{-| Encoding a 16-bit unsigned integer in one byte order and decoding it in the other with elm/bytes swaps its two bytes.
+
+`0x1234` encoded big-endian and decoded little-endian must give `0x3412`, and
+encoded little-endian and decoded big-endian must also give `0x3412`. The
+program logs `True` only if both hold.
 -}
 
 -- CHECK: EndiannessBELETest: True

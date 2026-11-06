@@ -436,7 +436,7 @@ is a small precise repair; **P2 (the crossing) is the mass lever**.
    the hot family per §1.2); (b) `enrich|bare` vs `withSets` (how starved
    the local chain is); (c) `leak|letAnno` restated.
 
-### §8.2 P0.b — the family probe (test/elm/src/LssGapDecoderChain.elm)
+### §8.2 P0.b — the family probe (test/eco-elm/src/LssGapDecoderChain.elm)
 
 ```elm
 module LssGapDecoderChain exposing (main)
@@ -771,7 +771,7 @@ the census confirms: at `Cerr|/r/r/a0` **172 specs read k1 and 132 read ⊤**
 (same at `/r/r/a0/r`), i.e. the position is perfectly knowable — construction
 sites that avoid a `case` get it, sites that go through one lose it.
 
-**Minimal reproduction — `test/elm/src/LssGapCtorRebuild.elm`** (CHECK 33,
+**Minimal reproduction — `test/eco-elm/src/LssGapCtorRebuild.elm`** (CHECK 33,
 4 rungs, in the E2E suite). Single-rung bisect:
 
 | rung | coverage | ⊤ |

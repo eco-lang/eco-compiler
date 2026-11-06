@@ -1,5 +1,8 @@
 module RoundTripBoolTest exposing (main)
 
+{-| `True` and `False` encoded with `Json.Encode.bool` decode back to the same values with `Json.Decode.bool`.
+-}
+
 -- CHECK: rt_true: Ok True
 -- CHECK: rt_false: Ok False
 

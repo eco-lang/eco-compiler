@@ -1,6 +1,9 @@
 module RoundtripSignedInt16Test exposing (main)
 
-{-| Roundtrip test for signedInt16.
+{-| Integers survive a big-endian `signedInt16` encode and decode with elm/bytes, including both ends of the signed 16-bit range.
+
+The values 0, 1, -1, 32767 and -32768 are each round-tripped, and the program
+logs `True` only if all of them come back unchanged.
 -}
 
 -- CHECK: RoundtripSignedInt16Test: True

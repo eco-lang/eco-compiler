@@ -1,9 +1,18 @@
 module StringCreationMatrixTest exposing (main)
 
-{-| The same logical ASCII string built via several creation paths (literal,
-String.fromInt, slice, reverse, ++) must be mutually equal, hash-equal as Dict
-keys, and match the same string `case` pattern — regardless of the underlying
-representation (interned UTF-8 leaf / view / UTF-16). Value-blind by design.
+{-| The same string produced in different ways is `==`, finds the same `Dict`
+entry, and matches the same string pattern in a `case`.
+
+The string `"abc123"` is produced four ways: as a literal, as `"abc" ++
+String.fromInt 123`, with `String.slice`, and with `String.reverse`. The test
+logs three results:
+
+  - `eq`: all four are equal and the concatenated one has length 6;
+  - `dict`: a `Dict` keyed by the concatenated one returns its value for the
+    literal, sliced and reversed ones;
+  - `case`: the concatenated, sliced and reversed ones each match the
+    `"abc123"` pattern.
+
 -}
 
 -- CHECK: Creation.eq: True

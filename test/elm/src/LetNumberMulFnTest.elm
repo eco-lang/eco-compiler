@@ -1,9 +1,11 @@
 module LetNumberMulFnTest exposing (main)
 
-{-| Probe: a non-operator user wrapper `mulF : Float -> Float -> Float` whose
-body holds the `(*)`. The constraint that fixes `n` to `Float` is the parameter
-type of `mulF`, reached via an ordinary call (not a syntactic operator at the
-use site). Correct: 1.5*30 = 45.
+{-| An unannotated let-bound integer literal passed to a user function annotated
+`Float -> Float -> Float` is used as a `Float`: `round (mulF 1.5 n)` with
+`n = 30` logs 45.
+
+The multiplication is inside `mulF`; the call site has no operator, so only the
+parameter type of `mulF` fixes `n` to `Float`.
 
 -}
 

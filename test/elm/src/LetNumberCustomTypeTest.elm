@@ -1,11 +1,12 @@
 module LetNumberCustomTypeTest exposing (main)
 
-{-| Probe for the let-bound-`number` mis-specialization (see
-`LetNumberFloatMulTest`) routed through a custom union type payload.
+{-| A let-bound custom type value whose type parameter is `number`, built from
+an integer literal, has its payload extracted by `case` and multiplied by a
+`Float`.
 
-`v = NumBox 30` binds a `number` inside a constructor; the `case` extracts it
-and uses it at `Float`. If the binding defaults to `Int`, the payload is a boxed
-`i64` reinterpreted as `f64` (silent miscompile) — correct answer is 45.
+`v = NumBox 30` has type `NumBox number`. The `case` binds the payload to `k`
+and computes `round (k * 1.5)`, so `k` is used as a `Float` and the logged
+result is 45.
 
 -}
 

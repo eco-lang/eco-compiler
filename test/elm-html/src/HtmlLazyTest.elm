@@ -1,8 +1,12 @@
 module HtmlLazyTest exposing (main)
 
-{-| `Html.Lazy.lazy`..`lazy8` evaluate eagerly at construction (D5), with
-their arguments in order. (Eco evaluates list elements right to left, so
-the log order is not checked.)
+{-| `Html.Lazy.lazy` to `lazy8` call their view function with the arguments they were given, in order.
+
+Each of the eight builds a node whose view function logs its arguments as a
+list, so `lazyN` must log `[1,..,N]`. When the view functions run, and so the
+order of these lines relative to each other, is left to the implementation and
+not checked. The program also logs that the list holds 8 nodes.
+
 -}
 
 -- CHECK-DAG: lazy1: [1]
@@ -19,6 +23,8 @@ import Html exposing (Html)
 import Html.Lazy as Lazy
 
 
+{-| Logs `args` under `label` and returns a text node showing `label`.
+-}
 view : String -> List Int -> Html msg
 view label args =
     let

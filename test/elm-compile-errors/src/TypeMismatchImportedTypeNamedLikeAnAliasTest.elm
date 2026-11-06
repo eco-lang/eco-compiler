@@ -1,9 +1,9 @@
 module TypeMismatchImportedTypeNamedLikeAnAliasTest exposing (..)
 
-{-| TYPE MISMATCH: imported type named like an alias.
+{-| The compiler rejects a list holding both `Basics.True` and a value of a local alias named `Bool`, which stands for `Int`, with a TYPE MISMATCH error.
 
-From `SourceIR.TypeCheckFailsCases` (`problemCases`), the elm-test catalogue of programs
-the compiler must reject.
+The local `type alias Bool = Int` shares its name with the `Bool` from `Basics`, and the two are
+different types.
 
 -}
 

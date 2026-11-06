@@ -1,13 +1,11 @@
 port module PortEchoTest exposing (main)
 
-{-| End-to-end native ports test (plans/native-ports-and-embedding.md).
+{-| An `Int` sent out through an outgoing port comes back unchanged through an incoming port.
 
-The test harness wires a generic echo: every payload sent through the
-outgoing `echoOut` port is bounced back into the incoming `echoIn` port
-(see runElmTestFromMlir in test/ElmE2ETestBase.hpp). This exercises the
-full path on both directions: eager encode -> Fx_Leaf -> port effect
-manager -> host callback -> eco_port_send -> queued drain -> Json decode
--> tagger -> sendToApp -> update.
+The test host must feed every payload of the outgoing port `echoOut` back into the incoming
+port `echoIn`. `init` sends `42`; `update` logs the received value, then a `done` line, and
+marks the model as received, after which `subscriptions` returns `Sub.none` so the
+program can finish.
 
 -}
 

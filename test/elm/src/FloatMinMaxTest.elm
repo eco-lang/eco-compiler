@@ -1,6 +1,9 @@
 module FloatMinMaxTest exposing (main)
 
-{-| Test min and max on floats.
+{-| `min` and `max` on Floats pick the smaller and larger argument, including with a negative argument.
+
+The pairs are 10.0 and 3.14, and -5.0 and 5.0. Whole-number results print without a decimal point.
+
 -}
 
 -- CHECK: min1: 3.14

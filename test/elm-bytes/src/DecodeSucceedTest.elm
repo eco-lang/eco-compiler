@@ -1,6 +1,10 @@
 module DecodeSucceedTest exposing (main)
 
-{-| Test Bytes.Decode.succeed always succeeding.
+{-| Bytes.Decode.succeed produces its value without reading the input.
+
+`succeed 42` is run on a one-byte input, and the logged result is 42. A failed
+decode would log -1.
+
 -}
 
 -- CHECK: DecodeSucceedTest: 42

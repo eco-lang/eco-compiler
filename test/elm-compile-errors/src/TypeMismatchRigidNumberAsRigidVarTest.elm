@@ -1,9 +1,8 @@
 module TypeMismatchRigidNumberAsRigidVarTest exposing (..)
 
-{-| TYPE MISMATCH: rigid number as rigid var.
+{-| Returning a value of an annotated type variable `a` where the annotation promises a `number` is rejected with a TYPE MISMATCH.
 
-From `SourceIR.TypeCheckFailsCases` (`rigidCases`), the elm-test catalogue of programs
-the compiler must reject.
+`f : number -> a -> number` with `f x y = y`: `a` and `number` are independent type variables chosen by the caller.
 
 -}
 

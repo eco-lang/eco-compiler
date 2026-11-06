@@ -1,17 +1,13 @@
 module RecordNarrow01CapturesNonEmptyTest exposing (main)
 
-{-| Variation 14: captures is non-empty.
+{-| A let-bound helper with an inferred extensible-record argument, folded over two records with `List.foldl`, reads the right nested field when its `captures` field is a non-empty list.
 
-    The misread slot still reads from the wrong field, but the value is a
-    non-Nil List Cons (not an embedded constant). The destructure
-    `(LambdaId uid) = inner.lambdaId` won't fail in eco_resolve_hptr
-    (the HPointer is real), but `uid` will be garbage — whatever bits sit
-    at the projected slot of a List Cons interpreted as a LambdaId.
-
-    Confirms the misread slot identity by varying its value.
-
-    Expected (correct): uid: 1998 (= 999 + 999)
-    Buggy outcome: a different uid value (silent miscompile, no crash).
+Each record is built without an annotation, and `buildSibling` is a let-bound
+helper with no annotation, so its argument's type is inferred as an extensible
+record naming only the fields it reads, while the records passed in carry more.
+Here `captures` is the non-empty list `[ 1, 2, 3 ]`. The helper reads `captures`,
+`params` and `lambdaId` of the nested `inner` record and unwraps the `LambdaId`;
+both members hold `LambdaId 999`, so the sum is 1998.
 -}
 
 -- CHECK: uid: 1998

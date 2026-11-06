@@ -1,9 +1,11 @@
 module CharCaseSpecialTest exposing (main)
 
-{-| Char.toUpper/toLower of special characters on which eco and Elm on JS agree. The
-characters whose full case mapping is more than one code point, where eco's simple case mapping
-differs on purpose, are recorded in CaseMappingDivergenceTest (plans/char-simple-case-mapping.md).
-Expectations recorded from Elm (run-js-e2e.js --record).
+{-| `Char.toUpper` and `Char.toLower` of U+1E9E (capital sharp s): the upper case is the character
+itself and the lower case is U+00DF.
+
+For each input the test logs the upper case and the lower case as code points (`charCps` from
+`ConformanceHelp`), the upper case's `Char.toCode` (7838, that is U+1E9E), and the
+`String.length` of the upper case as a one-character string, which is 1.
 -}
 
 -- CHECK: 1E9E up: "1E9E"

@@ -1,9 +1,9 @@
 module CyclicValueALetValueDefinedByItselfTest exposing (..)
 
-{-| CYCLIC VALUE: a let value defined by itself.
+{-| A let-bound value defined in terms of itself is rejected with a CYCLIC VALUE error.
 
-From `SourceIR.CanonicalizeFailsCases` (`testValue`), the elm-test catalogue of programs
-the compiler must reject.
+Inside `testValue`, the let binding `y` is defined as `y + 1`. It takes no arguments, so
+evaluating it would never finish.
 
 -}
 

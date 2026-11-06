@@ -1,6 +1,11 @@
 module CustomTypeMultiFieldTest exposing (main)
 
-{-| Test custom types with multiple fields.
+{-| A value of a custom type whose constructor has three arguments of different
+types (`String`, `Int`, `Bool`) can be built and logged.
+
+The only check is that a line starting with `person` is printed; the logged
+text itself is not checked.
+
 -}
 
 -- CHECK: person

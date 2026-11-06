@@ -1,12 +1,12 @@
 module HoleyAliasTwoParamsTest exposing (main)
 
-{-| Regression: multi-parameter Holey type alias in a constructor field.
+{-| A type alias with two type parameters, used as a constructor field, keeps each parameter bound to its own argument.
 
-Analysis.convertCanTypeNameToMVarId used to bind every alias formal parameter
-to the one dummy id TypeIds.firstMVarId, so the ctor-shape table resolved
-every parameter of `Pair a b` to the same (last) argument: `Pair Int String`
-became `( String, String )`. Each formal now gets its own id by position.
-`GBox` crosses the parameters (`Pair x y`, `Rec y x`).
+`Box` holds a `Pair Int String` and `RBox` a `Rec Int Float`. The test reads
+each field back out with arithmetic or string operations of its expected type,
+and also logs both values whole. `GBox x y` uses the parameters in opposite orders in its two fields, `Pair x y` and
+`Rec y x`, and `gfirst` reads the Int from the first of them; it contributes 0
+to `recInt`.
 
 -}
 

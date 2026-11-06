@@ -1,10 +1,9 @@
 module RecursiveTopLevelLambdaTest exposing (..)
 
-{-| A top-level value defined as a lambda that calls itself.
+{-| A top-level value defined as a lambda that refers to itself can be called recursively.
 
-From `Compiler.LocalOpt.Typed.LocalOptPathsCoverageTest`, an elm-test unit test, with a
-`main` that logs its `testValue`. The CHECK lines are what Elm 0.19.1 prints for it.
-
+`count` is defined as `\n -> ...` rather than with a parameter, and calls
+`count (n + 1)` until `n > 3`, so `count 0` gives 4.
 -}
 
 -- CHECK: testValue: 4

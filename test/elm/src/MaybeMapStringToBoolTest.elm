@@ -1,6 +1,6 @@
 module MaybeMapStringToBoolTest exposing (main)
 
-{-| Test Maybe.map with String -> Bool mapping function.
+{-| `Maybe.map` with a String -> Bool function produces a `Maybe Bool`: mapping `String.isEmpty` over `Just ""` gives `Just True`.
 -}
 
 -- CHECK: result: Just True

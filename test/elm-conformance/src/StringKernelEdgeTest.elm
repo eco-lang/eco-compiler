@@ -1,18 +1,17 @@
 module StringKernelEdgeTest exposing (main)
 
-{-| String kernel edge cases where eco's C++ kernels (StringOps) differed from elm/core's JS kernel
-until 2026-10-30 (cpp-review-bugs.md, "StringOps behaviour diverges from elm/core JS"), recorded from
-Elm on node (run-js-e2e.js --record):
+{-| Edge cases of elm/core's string functions: `String.indexes ""` is `[]`, `String.toInt` accepts a
+leading `+`, and trimming and `String.words` treat all JavaScript whitespace as whitespace.
 
-  - `String.indexes ""` is `[]` in Elm (the JS kernel returns no index for an empty needle);
-  - `String.toInt` accepts a leading `+`;
-  - `String.trim`, `trimLeft`, `trimRight` and `String.words` treat every JS whitespace character as
-    whitespace (`\s`: VT, FF, NBSP, U+FEFF, U+2028, U+3000, ...), not only space, tab, LF and CR.
+  - `String.indexes` with an empty needle returns no indexes.
+  - `String.toInt` accepts "+5" and rejects "+", "-", "+-5" and "++5".
+  - `String.trim`, `trimLeft` and `trimRight` treat VT, FF, NBSP, U+FEFF, U+1680, U+2028,
+    U+2029, U+205F and U+3000 as whitespace, as well as space, tab, LF and CR.
+  - `String.words` splits on VT, FF, NBSP and U+3000.
 
-Also whitespace-only strings, a concatenated string, ASCII VT / FF (the UTF-8 fast path of `words`) and
-a slice. Each row's inputs go through `List.map`, so the kernels run at run time, not in a constant
-fold.
-Lengths and counts are logged instead of the strings themselves to keep the output ASCII.
+The tests also cover strings that are only whitespace, a string built by concatenation, and
+`String.words` on a slice. Lengths and counts are logged instead of most strings, to keep the
+output ASCII.
 
 -}
 
@@ -32,6 +31,8 @@ Lengths and counts are logged instead of the strings themselves to keep the outp
 import ConformanceHelp exposing (logAll, worker)
 
 
+{-| Prints the length of `f` applied to each of `inputs`.
+-}
 lengths : (String -> String) -> List String -> String
 lengths f inputs =
     Debug.toString (List.map (\s -> String.length (f s)) inputs)

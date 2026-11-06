@@ -1,9 +1,9 @@
 module EncodeFloatTest exposing (main)
 
-{-| `Json.Encode.float` calls `Json.wrap` which is migrated in Phase C to
-    `Elm_Kernel_Json_wrap_Float` for `Float` operands. Tests the new
-    Custom-allocation path doesn't drop precision and round-trips through
-    Decode.float intact.
+{-| `Json.Encode.float` writes zero, positive, negative and small fractional values as the
+shortest JSON number text, and `1.5` survives a round trip through `Json.Decode.float`.
+
+`0.0` encodes as `0`, with no fractional part; `3.14`, `-2.5` and `0.001` encode as written.
 -}
 
 -- CHECK: zero: "0"

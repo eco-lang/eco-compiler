@@ -1,9 +1,8 @@
 module TypeMismatchThirdCaseBranchTest exposing (..)
 
-{-| TYPE MISMATCH: third case branch.
+{-| A `case` whose third branch returns a number while the first two return `String`s is rejected with a TYPE MISMATCH.
 
-From `SourceIR.TypeCheckFailsCases` (`contextCases`), the elm-test catalogue of programs
-the compiler must reject.
+Every branch of a `case` must produce the same type; the branches return `"a"`, `"b"` and `2`.
 
 -}
 

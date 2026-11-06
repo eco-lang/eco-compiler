@@ -1,6 +1,7 @@
 module EmbeddedNothingInRecordTest exposing (main)
 
-{-| Test Nothing stored in a record field, extracted, and pattern-matched.
+{-| A `Nothing` stored in a record field and read back with `.value` matches the
+`Nothing` pattern.
 -}
 
 -- CHECK: result: "nothing"

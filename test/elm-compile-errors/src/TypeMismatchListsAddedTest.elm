@@ -1,9 +1,9 @@
 module TypeMismatchListsAddedTest exposing (..)
 
-{-| TYPE MISMATCH: lists added.
+{-| Adding two lists with `+` is rejected with a TYPE MISMATCH.
 
-From `SourceIR.TypeCheckFailsCases` (`operatorCases`), the elm-test catalogue of programs
-the compiler must reject.
+`+` needs `number` operands (`Int` or `Float`); `[ 1 ] + [ 2 ]` gives it two lists.
+Lists are joined with `++`, not `+`.
 
 -}
 

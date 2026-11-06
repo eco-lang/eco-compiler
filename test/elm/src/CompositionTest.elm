@@ -1,6 +1,10 @@
 module CompositionTest exposing (main)
 
-{-| Test function composition.
+{-| Function composition with `>>` and `<<`, and the pipe operator `|>`.
+
+`addOne >> double` applies `addOne` first and `<<` applies its right operand
+first, so the two compositions give `(9 + 1) * 2` and `5 * 2 + 1`.
+
 -}
 
 -- CHECK: compose1: 20

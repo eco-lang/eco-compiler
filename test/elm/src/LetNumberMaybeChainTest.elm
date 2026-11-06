@@ -1,7 +1,10 @@
 module LetNumberMaybeChainTest exposing (main)
 
-{-| Probe: a `number` boxed in `Maybe`, then run through a CHAIN of `Maybe.map`s
-where the first stage forces `Float`. Correct: (1.5*30)/3 = 45/3 = 15.
+{-| An integer literal inside `Just`, run through two `Maybe.map` calls, is used as
+a `Float`: `Just 30` multiplied by `1.5`, divided by 3 and rounded logs 15.
+
+The first `Maybe.map` multiplies by `1.5`, which fixes the payload to `Float`;
+the second uses `(/)` and `round`.
 
 -}
 

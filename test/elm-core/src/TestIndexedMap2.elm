@@ -1,5 +1,9 @@
 module TestIndexedMap2 exposing (main)
 
+{-| `Array.map` applies a function to every element: doubling `[10, 20, 30]`
+gives `[20, 40, 60]`.
+-}
+
 -- CHECK: map1: [20,40,60]
 
 import Array

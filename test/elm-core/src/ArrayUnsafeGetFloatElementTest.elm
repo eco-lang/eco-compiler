@@ -1,8 +1,6 @@
 module ArrayUnsafeGetFloatElementTest exposing (main)
 
-{-| `Array.get 0 arr` on an `Array Float`. Reaches `JsArray.unsafeGet`,
-    which re-boxes the unboxed slot as `ElmInt` — the resulting `Maybe Float`
-    should still equal `Just 1.5`.
+{-| `Array.get 0` on an `Array Float` of 1.5 and 2.5 returns `Just 1.5`.
 -}
 
 -- CHECK: result: Just 1.5

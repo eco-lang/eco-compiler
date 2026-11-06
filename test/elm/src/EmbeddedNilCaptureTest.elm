@@ -1,6 +1,7 @@
 module EmbeddedNilCaptureTest exposing (main)
 
-{-| Test empty list captured by a closure and later pattern-matched.
+{-| A local function that refers to an empty list defined in the enclosing `let`
+matches it against the `[]` pattern.
 -}
 
 -- CHECK: result: "empty"

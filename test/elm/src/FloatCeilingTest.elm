@@ -1,6 +1,8 @@
 module FloatCeilingTest exposing (main)
 
-{-| Test ceiling function.
+{-| `ceiling` rounds a `Float` up towards positive infinity, for positive, whole and negative values.
+
+`ceiling -2.3` and `ceiling -2.7` are both -2.
 -}
 
 -- CHECK: ceil1: 3

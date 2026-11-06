@@ -1,15 +1,10 @@
 module RecordNarrow05NoNestingTest exposing (main)
 
-{-| Variation 28: NO outer record.
+{-| A let-bound helper with an inferred extensible-record argument, folded with `List.foldl`, reads the right field of a record that is not nested in another.
 
-    The helper takes a 5-field record DIRECTLY (no nesting via an outer
-    record). Still let-bound, still row-polymorphic, still passed to
-    List.foldl.
-
-    Tests whether the nesting in the original repro is essential or whether
-    plain row polymorphism on a single record is sufficient.
-
-    Expected (correct): uid: 1998
+The unannotated helper takes the five-field record directly from each tuple and
+reads `captures`, `params` and `lambdaId`. Both members hold `LambdaId 999`, so
+the sum is 1998.
 -}
 
 -- CHECK: uid: 1998

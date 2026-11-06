@@ -31,7 +31,8 @@ JOBS = int(os.environ.get("DC_JOBS", "10"))
 FORMAT_ROOTS = [("test/elm/src", None), ("test/elm-core/src", None), ("test/elm-bytes/src", None),
                 ("test/eco-system/src", None), ("test/elm-conformance/src", None),
                 ("test/elm-parser/src", None), ("test/elm-json/src", None),
-                ("test/elm-compile-errors", None), ("compiler/src", 6000), ("compiler/src-xhr", 6000),
+                ("test/elm-compile-errors", None),
+                ("test/eco-mlir/src", None), ("test/eco-elm/src", None), ("test/eco-elm-bytes/src", None), ("test/eco-elm-core/src", None), ("test/eco-elm-json/src", None), ("test/eco-elm-regex/src", None), ("test/eco-elm-conformance/src", None), ("compiler/src", 6000), ("compiler/src-xhr", 6000),
                 ("eco-kernel-cpp/src", 6000), ("system-kernel-cpp/src", 6000)]
 FORMAT_TIMEOUT = 30
 # The module text travels in argv, and Linux caps one argument at 128 KiB.

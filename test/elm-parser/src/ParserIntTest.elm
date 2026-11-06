@@ -1,5 +1,10 @@
 module ParserIntTest exposing (main)
 
+{-| Checks that `Parser.int` reads a decimal integer and fails on non-numeric input.
+
+`"123456"` parses to `Ok 123456`; `"abc"` gives an `Err`.
+-}
+
 -- CHECK: parsed_int: Ok 123456
 -- CHECK: parse_fail: True
 

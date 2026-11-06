@@ -1,19 +1,10 @@
 module ListMapTemplateCalleeMemberTest exposing (main)
 
-{-| F-3's callee-resolution fixture (`plans/list-map-mlir-template.md` F-3,
-"Fixture (lands with steps 1-4)").
+{-| Checks `List.map` with a callback that applies a function received as a
+parameter, here a lambda bound to a typed `let` name in `main`.
 
-The callback applies a callee LOCAL (`f`, a parameter) whose lambda set is a
-singleton naming a CLOSURE instance — `inc`, bound to a lambda literal at the
-call site. A top-level named function would be an `OriginGlobal` member,
-which the standalone member table declines BY DESIGN, so the fixture would
-pin nothing.
-
-Behaviourally this pins NOTHING positive — a licensed map and a declined map
-compute the same list. The positive pin is the compile-and-grep in the F-3
-landing note: `licensed` gains exactly 1 against the same compile with `inc`
-replaced by a `Debug.log` wrapper, and the artifact greps positive for
-`eco.list.map`.
+`helper` maps `\x -> f x` over its list, and `main` passes it `inc`, which adds
+one, so `[1, 2, 3]` maps to `[2, 3, 4]`.
 
 -}
 

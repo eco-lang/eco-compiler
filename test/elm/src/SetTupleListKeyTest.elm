@@ -1,8 +1,12 @@
 module SetTupleListKeyTest exposing (main)
 
-{-| Set keyed by `( Int, List Int )`. Same F2 reach as
-`DictTupleListKeyTest`: Set ordering uses `compare`, dedupe uses `==`.
-Verify both axes.
+{-| A `Set` of `( Int, List Int )` tuples orders its elements with `compare` and drops duplicates by equality, including when the list component is empty.
+
+The set is built from four tuples, two of them the same `( 0, [] )`. The test
+checks that `Set.toList` gives the three distinct tuples ordered by their lists
+(`[]` before `[1]` before `[2]`), that `Set.size` is 3, and that
+`Set.member ( 0, [] )` is `True`.
+
 -}
 
 -- CHECK: keys: [(0,[]),(0,[1]),(0,[2])]

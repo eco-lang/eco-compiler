@@ -1,7 +1,11 @@
 module IndirectCallFloatTest exposing (main)
 
-{-| Test indirect calls (higher-order functions) with Float return types.
-This exercises the f64 result conversion path in closure calls.
+{-| Functions of type `Float -> Float` passed to higher-order functions, including one built with `>>`, return the right Float values.
+
+`applyFloat f x` calls `f` once and `twiceFloat f x` calls it twice. The
+functions passed are `double`, `addTen` and a local `negate` (`0.0 - x`) that
+shadows the one from `Basics`.
+
 -}
 
 -- CHECK: apply_double: 10
@@ -14,19 +18,16 @@ This exercises the f64 result conversion path in closure calls.
 import Html exposing (text)
 
 
--- Higher-order function that applies a Float->Float function
 applyFloat : (Float -> Float) -> Float -> Float
 applyFloat f x =
     f x
 
 
--- Higher-order function that applies a Float->Float function twice
 twiceFloat : (Float -> Float) -> Float -> Float
 twiceFloat f x =
     f (f x)
 
 
--- Simple float operations to pass as closures
 double : Float -> Float
 double x =
     x * 2.0

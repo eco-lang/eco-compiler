@@ -1,13 +1,13 @@
 module CompilerIssue2221TcoContinuationTest exposing (main)
 
-{-| A tail-recursive function in continuation-passing style loops forever / overflows the stack.
+{-| A tail-recursive function that builds a continuation on each call computes `g 5 identity` as 120.
 
 <https://github.com/elm/compiler/issues/2221>
 
-`g` builds a continuation `\result -> cont (result * value)` and calls itself in tail position.
-TCO turns the call into a loop that reassigns `cont` and `value`, so the new continuation calls
-itself instead of the previous one. Elm 0.19.1 throws `RangeError: Maximum call stack size
-exceeded` for `g 2`; the correct result of `g 5 identity` is 120 (5 factorial).
+`g` multiplies the numbers from `value` down to 1 by wrapping `cont` in a new continuation,
+`\result -> cont (result * value)`, and calling itself in tail position. Each new continuation
+must call the one it wraps. Elm 0.19.1 turns the tail call into a loop that reassigns `cont` and
+`value`, so a continuation ends up calling itself, and `g 2` already overflows the stack.
 
 -}
 

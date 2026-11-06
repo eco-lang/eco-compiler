@@ -1,6 +1,12 @@
 module ClosureCaptureRecordTest exposing (main)
 
-{-| Test closures capturing record fields and tuple elements. -}
+{-| A lambda returned from a function can use a captured record's fields, or the
+elements of a captured tuple bound by a `case` pattern.
+
+`closureFromRecord { x = 1, y = 2 }` and `closureFromTuple ( 1, 2 )` each
+return a function adding 3 to its argument, so applied to 3 each logs 6.
+
+-}
 
 -- CHECK: rec: 6
 -- CHECK: tup: 6

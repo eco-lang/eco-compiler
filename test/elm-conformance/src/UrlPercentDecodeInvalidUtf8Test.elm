@@ -1,13 +1,12 @@
 module UrlPercentDecodeInvalidUtf8Test exposing (main)
 
-{-| URL-03 (plans/kernel-lib-bug-fixes.md): `Url.percentDecode` gives `Nothing` when the decoded
-bytes are not UTF-8 (a bad lead byte, a truncated sequence, an encoded surrogate, an overlong
-form), as JS `decodeURIComponent` throws a URIError; a valid sequence still decodes. A `Just` is
-shown as the code points of its String (ConformanceHelp.cps) to keep the output ASCII.
+{-| `Url.percentDecode` returns `Nothing` when the decoded bytes are not valid UTF-8, and decodes a
+valid sequence.
 
-Natively this is `Elm_Kernel_Url_percentDecode` (elm-kernel-cpp/src/url/UrlExports.cpp), which
-once built the result with the lenient `allocStringFromUTF8` and never returned `Nothing` for bad
-UTF-8. Expectations recorded from Elm on node (run-js-e2e.js --record).
+The invalid inputs are a bad lead byte (`%FF`), a truncated sequence (`%E2%82`), an encoded
+surrogate (`%ED%A0%80`) and an overlong form (`%C0%AF`); the valid one is the euro sign. A `Just`
+is shown as the code points of its string (`ConformanceHelp.cps`).
+
 -}
 
 -- CHECK: bad lead FF: "Nothing"
@@ -20,6 +19,8 @@ import ConformanceHelp exposing (cps, logAll, worker)
 import Url
 
 
+{-| Percent-decodes `s` and shows the result in ASCII.
+-}
 decoded : String -> String
 decoded s =
     case Url.percentDecode s of

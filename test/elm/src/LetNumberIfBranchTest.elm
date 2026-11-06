@@ -1,8 +1,10 @@
 module LetNumberIfBranchTest exposing (main)
 
-{-| Probe: a `number` routed through an `if` expression before the `Float` use.
-Both branches are `number`; the `* 1.5` forces the whole expression to `Float`.
-Correct: 1.5*30 = 45.
+{-| A let-bound `number` passed through an `if` expression whose result is
+multiplied by a `Float` is a `Float`.
+
+With `n = 30`, `(if n > 0 then n else 0) * 1.5` takes the `then` branch and
+rounds to 45.
 
 -}
 

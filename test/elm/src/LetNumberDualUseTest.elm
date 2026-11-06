@@ -1,18 +1,24 @@
 module LetNumberDualUseTest exposing (main)
 
-{-| Let-bound `number` values used at both `Int` and `Float` in one body, which
-the solver engine's per-use copies (`translateNumberMultiLet`) must tell
-apart. Each case is its own top-level value so that one cannot hide another.
-The scalar case is the simplest: `n = 5` with `n + 0` an `Int` and `n * 1.5` a
-`Float`. Then the value goes through a global (`List.sum`, `Tuple.first`), a
-tuple destructured by `case`, a list destructured by `case` at its head and at
-its tail, and a `number` computed by such a `case` and then used at both
-types.
+{-| An unannotated let-bound `number` value can be used as an `Int` and as a
+`Float` in the same expression, because Elm generalizes the type of a `let`
+binding and each use picks its own type.
 
-Before the fix every case but the global one stopped the native build (a
-`mul_Float` kernel signature mismatch, or `eco.float.mul` given an `i64`), and
-an intermediate fix printed 0 for the tail case: the tail was read from the
-`Int` instance as `Float`s (plans/dead-code-report.md, NumList2).
+Each case is a separate top-level value that computes
+`round (toFloat (x + 0) + x * k)`: the `toFloat (x + 0)` use makes `x` an `Int`
+and the `x * k` use, with `k` a `Float` literal, makes it a `Float`.
+
+  - `scalar` uses `n = 5` directly: 5 + 4.0 logs 9.
+  - `listSum` uses `List.sum` of `[ 1, 2, 3 ]`: 6 + 9.0 logs 15.
+  - `tupleFirst` uses `Tuple.first` of `( 1, 2 )`: 1 + 1.5 rounds to 3.
+  - `tupleCase` uses the product of a `( 1, 2 )` tuple destructured by `case`:
+    2 + 3.0 logs 5.
+  - `listHead` uses the head of `[ 1, 2, 3 ]` taken by a `case`: 1 + 1.5 rounds
+    to 3.
+  - `listTail` uses the product of the first two elements of a let-bound
+    `[ 1, 2, 3 ]`, read by a `case` that matches past the head: 2 + 3.0 logs 5.
+  - `caseProduct` is the same product with the list literal written directly as
+    the `case` subject: it logs 5.
 
 -}
 

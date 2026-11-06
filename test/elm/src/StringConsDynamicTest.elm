@@ -1,8 +1,10 @@
 module StringConsDynamicTest exposing (main)
 
-{-| `String.cons` (Elm_Kernel_String_cons) takes a uint16_t Char as its
-first argument — same ABI exposure as Char.toCode. Exercise it with a Char
-freshly derived from the kernel.
+{-| `String.cons` rebuilds a string from the `Char` and rest that `String.uncons` split it into.
+
+`String.uncons "ab"` gives `Just ( 'a', "b" )`, and `String.cons 'a' "b"` is
+`"ab"` again. The `Char` passed to `String.cons` is computed at run time, not
+written as a literal.
 -}
 
 -- CHECK: out: "ab"

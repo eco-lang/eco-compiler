@@ -1,6 +1,6 @@
 module ListLengthTest exposing (main)
 
-{-| Test List.length.
+{-| `List.length` returns 0, 3 and 5 for lists of those lengths.
 -}
 
 -- CHECK: len1: 0

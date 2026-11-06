@@ -1,9 +1,9 @@
 module SortWithCompareEmptyListTest exposing (main)
 
-{-| `List.sortWith compare` on Lists including `[]`. Regression guard
-for the sortWith path. Values pass to the comparator via encoded
-HPointer; the comparator calls top-level `compare` on Lists, which
-takes the early-return path in `cmp` for nullptr-resolved constants.
+{-| `List.sortWith compare` on a `List (List Int)` that contains `[]` twice puts the empty lists first.
+
+`[ [ 1 ], [], [ 2 ], [] ]` sorts to `[[],[],[1],[2]]`, the same result `List.sort`
+gives in `SortEmptyListInListTest`.
 -}
 
 -- CHECK: result: [[],[],[1],[2]]

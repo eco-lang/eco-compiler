@@ -1,6 +1,19 @@
 module CaseMixedPatternTest exposing (main)
 
-{-| Test case with mixed constructor and list patterns in a single expression. -}
+{-| Checks that a single `case` can match a custom type constructor whose argument
+is itself matched as a list, with `x :: _` and `[]` patterns nested inside the
+constructor pattern.
+
+- `headOfContainer` matches `Container (x :: _)` and `Container []`; both are
+  exercised.
+- `pairHead` matches a two-argument constructor, `Pair n (x :: _)` and
+  `Pair n []`; both are exercised.
+- `nestedHead` nests a list pattern inside `Just` inside a constructor. Only the
+  `Nested (Just (x :: _))` branch is exercised.
+
+Among what is not tested: the `Nested (Just [])` and `Nested Nothing` branches.
+
+-}
 
 -- CHECK: head: 42
 -- CHECK: empty: 0

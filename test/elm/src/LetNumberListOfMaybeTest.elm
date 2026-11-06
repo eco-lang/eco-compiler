@@ -1,7 +1,10 @@
 module LetNumberListOfMaybeTest exposing (main)
 
-{-| Probe: nested container — a list of `Maybe number`, each mapped at `Float`.
-Two boxing layers (list of Maybe). Correct: [45, 60].
+{-| `number` literals inside `Just` values in a let-bound list, mapped with a
+`Float` multiplication, are `Float`s.
+
+`xs = [ Just 30, Just 40 ]`, and each payload is turned into `round (x * 1.5)`
+by `Maybe.map`, with 0 as the default for `Nothing`. The test logs `[45,60]`.
 
 -}
 

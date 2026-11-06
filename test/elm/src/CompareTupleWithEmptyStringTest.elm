@@ -1,9 +1,10 @@
 module CompareTupleWithEmptyStringTest exposing (main)
 
-{-| `compare` on tuples whose String field can be `""`. This path IS
-already special-cased in `compareUnboxableSlot` (Utils.cpp:181-194), so
-these should pass today — regression guard against a fix that drops the
-special case while addressing F2 generally.
+{-| `compare` on pairs whose `String` field may be empty.
+
+With the string in either position, `""` orders before `"a"` and equal to
+another `""`.
+
 -}
 
 -- CHECK: ee: EQ

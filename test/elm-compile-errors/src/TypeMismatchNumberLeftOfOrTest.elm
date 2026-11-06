@@ -1,9 +1,6 @@
 module TypeMismatchNumberLeftOfOrTest exposing (..)
 
-{-| TYPE MISMATCH: number left of ||.
-
-From `SourceIR.TypeCheckFailsCases` (`operatorCases`), the elm-test catalogue of programs
-the compiler must reject.
+{-| A number as the left operand of `||` (`1 || True`) is rejected with a TYPE MISMATCH error, because `||` takes two `Bool`s.
 
 -}
 

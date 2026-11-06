@@ -1,6 +1,7 @@
 module CharUnicodeTest exposing (main)
 
-{-| Test Unicode characters.
+{-| `Char.toCode` of non-ASCII character literals written as `\u{...}` escapes
+gives their code points: 955 for U+03BB and 8364 for U+20AC.
 -}
 
 -- CHECK: code1: 955

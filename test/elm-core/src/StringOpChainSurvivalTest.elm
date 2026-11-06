@@ -1,10 +1,19 @@
 module StringOpChainSurvivalTest exposing (main)
 
-{-| A chain of String ops over a decoded/created ASCII string must produce the
-same values as the same chain over literals — regardless of representation.
-This exercises the W4 conservative-widening arms (toUpper/split/join/++/filter/
-reverse/repeat/pad) through compiled code. Value-blind (the "stays UTF-8"
-property is checked by the C++ representation tests + the W5 counter run).
+{-| Checks that `String` functions give the same results on a string built at run time as they would on the equivalent literal.
+
+The string `base` is assembled from `String.fromInt 1234`, a literal and
+`String.repeat 3 "xy"`, giving `"1234-abcDEF-xyxyxy"`. Each logged line is a
+`Bool` that is `True` only if every comparison in it holds:
+
+  - `Chain.upper` compares `String.toUpper base` with `"1234-ABCDEF-XYXYXY"`.
+  - `Chain.splitjoin` checks that `String.split "-" base` gives the three
+    expected pieces and that `String.join "/"` on them gives
+    `"1234/abcDEF/xyxyxy"`.
+  - `Chain.mix` checks `String.reverse`, `String.filter Char.isDigit` on
+    `base`, `String.padLeft` and `String.toLower` followed by `++`; only the
+    filter uses `base`, the others use literals.
+
 -}
 
 -- CHECK: Chain.upper: True

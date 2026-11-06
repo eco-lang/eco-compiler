@@ -6,8 +6,7 @@ one of them.
 
 <https://github.com/elm/error-message-catalog/issues/306>
 
-Elm 0.19.1 takes `Decoder` to mean the one from the last import (`Json.Decode.Decoder`) and
-compiles this program. An ambiguous value name is an AMBIGUOUS NAME error, and an ambiguous type
+Elm 0.19.1 takes `Decoder` to mean `Json.Decode.Decoder` and compiles this program. An ambiguous value name is an AMBIGUOUS NAME error, and an ambiguous type
 name should be an ambiguity error too (the check accepts any AMBIGUOUS title).
 
 -}

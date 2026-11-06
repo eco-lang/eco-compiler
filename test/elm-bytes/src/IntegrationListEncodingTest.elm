@@ -1,6 +1,11 @@
 module IntegrationListEncodingTest exposing (main)
 
-{-| Test encoding/decoding a list of values.
+{-| A list of integers encoded as a one-byte count followed by one byte per element round-trips through elm/bytes.
+
+The decoder reads the count and then uses `Bytes.Decode.loop` to read that many
+bytes, reversing the accumulated list at the end. The list `[ 1, 2, 3, 4, 5 ]` is
+encoded and decoded, and the program logs `True` only if the result equals the
+original.
 -}
 
 -- CHECK: IntegrationListEncodingTest: True

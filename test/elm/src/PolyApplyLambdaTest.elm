@@ -1,6 +1,7 @@
 module PolyApplyLambdaTest exposing (main)
 
-{-| Test polymorphic apply with different types and lambda argument.
+{-| Tests a polymorphic `apply f x = f x` called with an `Int` function, a
+`String` function and an anonymous lambda.
 -}
 
 -- CHECK: applyIntId: 1

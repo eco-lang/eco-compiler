@@ -1,14 +1,21 @@
 module JsonDecodeLoneSurrogateTest exposing (main)
 
-{-| JSON-NEW-2 (follow-up of JSON-01, plans/kernel-lib-bug-fixes.md): `Json.Decode` of JSON text
-holding a lone-surrogate `\uXXXX` escape. Elm (JSON.parse) accepts it and keeps the lone
-surrogate as one UTF-16 unit, in a string value or an object key; a valid escaped pair is one
-code point. eco parsed with the nlohmann lexer, which rejects a lone-surrogate escape, so every
-case here failed with "This is not valid JSON!". eco now hides each lone surrogate from the
-lexer (`hideLoneSurrogates`) and restores it in the parsed string.
-Expected values recorded from Elm on node. The source and the output stay ASCII: a result is
-shown re-encoded with `Json.Encode`, which writes a lone surrogate as `\udxxx`.
+{-| `Json.Decode.string` accepts a `\uXXXX` escape for a lone UTF-16 surrogate and keeps it as one
+code unit, while an escaped surrogate pair becomes one character.
 
+Most rows log the decoded string as `Json.Encode` writes it (`shown`), which keeps the output
+ASCII by writing a lone surrogate as a `\udxxx` escape, followed by its `String.length` in UTF-16
+code units.
+
+  - `lone high`, `lone low`: a single high or low surrogate escape decodes to one unit.
+  - `low then high`, `two highs`: surrogates in the wrong order or unpaired stay separate units.
+  - `pair`: `\ud83d\ude00` decodes to the emoji U+1F600, two units long.
+  - `escaped backslash`: `\\ud83d` is a backslash followed by the text `ud83d`, six units.
+  - `marker char`: a lone high surrogate between an escaped and a literal U+FDD0 decodes to
+    exactly those three units.
+  - `key`: a lone surrogate in an object key, read with `keyValuePairs`, is kept.
+  - `in list`: lone surrogates in strings inside a list are kept.
+  - `bad after lone`: a lone-surrogate string followed by extra text is still rejected.
 -}
 
 -- CHECK: lone high: "Ok \"\\ud83d\" len 1"
@@ -32,14 +39,15 @@ emoji =
     String.fromChar (Char.fromCode 0x0001F600)
 
 
-{-| The String as `Json.Encode` writes it: ASCII, with each lone surrogate as `\udxxx`.
-(`String.toList` and `Char.toCode` cannot show a lone surrogate on the JS target.)
+{-| Returns `s` as `Json.Encode` writes it, with each lone surrogate as a `\udxxx` escape.
 -}
 shown : String -> String
 shown s =
     E.encode 0 (E.string s)
 
 
+{-| Decodes `text` with `Json.Decode.string` and returns the result as `shown`, with its length.
+-}
 str : String -> String
 str text =
     case D.decodeString D.string text of
@@ -50,7 +58,7 @@ str text =
             "Err"
 
 
-{-| Like `str`, but for a result holding non-ASCII text: compares it with `expected`.
+{-| Like `str`, but reports whether the decoded string equals `expected` instead of showing it.
 -}
 strIs : String -> String -> String
 strIs expected text =

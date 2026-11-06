@@ -1,9 +1,8 @@
 module TypeMismatchRigidVarAgainstItsListTest exposing (..)
 
-{-| TYPE MISMATCH: rigid var against its list.
+{-| Returning an argument of type `a` where the annotation says `List a` is rejected with a TYPE MISMATCH.
 
-From `SourceIR.TypeCheckFailsCases` (`problemCases`), the elm-test catalogue of programs
-the compiler must reject.
+`f : a -> List a` with `f x = x`: `a` would have to equal `List a`, which no type does.
 
 -}
 

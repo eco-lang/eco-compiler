@@ -1,15 +1,10 @@
 module ClosureCaptureBoolTest exposing (main)
 
-{-| Test Bool captured in a closure via partial application.
+{-| Partially applying a `Bool -> Int -> Int` function to a `Bool` gives a
+function that remembers that `Bool`.
 
-A Bool value is captured in a closure (papCreate). Per REP_CLOSURE_001 and
-FORBID_CLOSURE_001, Bool must be stored as !eco.value in closures, NOT as
-bare i1. This test triggers the bug where the codegen produces an i1 capture
-operand with unboxed_bitmap=0, creating a type mismatch (the runtime sees
-the bit as "boxed pointer" but receives a bare i1 scalar).
+`boolToInt True` and `boolToInt False` are applied to 0 and log 1 and 0.
 
-The pattern: a function takes a Bool and an Int, partially applied with
-just the Bool to create a closure, then the closure is called with the Int.
 -}
 
 -- CHECK: when_true: 1

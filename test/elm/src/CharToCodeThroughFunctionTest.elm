@@ -1,7 +1,7 @@
 module CharToCodeThroughFunctionTest exposing (main)
 
-{-| Pass a Char through a non-inlined function so it is register-passed at
-the kernel boundary, exercising the i16 zero-extension contract.
+{-| `Char.toCode` of a character returned from a top-level function, here an
+identity function applied to `'A'`, gives 65.
 -}
 
 -- CHECK: code: 65

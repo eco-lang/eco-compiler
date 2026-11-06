@@ -1,9 +1,6 @@
 module NameClashARecordFieldGivenTwiceTest exposing (..)
 
-{-| NAME CLASH: a record field given twice.
-
-From `SourceIR.CanonicalizeFailsCases` (`testValue`), the elm-test catalogue of programs
-the compiler must reject.
+{-| A record literal that gives the same field twice, `{ a = 1, a = 2 }`, is rejected with a NAME CLASH error.
 
 -}
 

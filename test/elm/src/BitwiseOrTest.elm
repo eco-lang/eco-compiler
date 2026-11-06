@@ -1,6 +1,6 @@
 module BitwiseOrTest exposing (main)
 
-{-| Test Bitwise.or.
+{-| `Bitwise.or` returns the bits set in either of two `Int`s.
 -}
 
 -- CHECK: or1: 15

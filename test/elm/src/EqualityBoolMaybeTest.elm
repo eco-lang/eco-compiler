@@ -1,9 +1,12 @@
 module EqualityBoolMaybeTest exposing (main)
 
-{-| `Maybe Bool` equality. `Just _ == Just _` recurses into `eqHelp` on
-the payload, so the embedded-constant collapse on the inner Bool is
-exposed even when the wrapper forces a real kernel call. `Nothing` is
-itself an embedded constant.
+{-| Equality on `Maybe Bool` compares the wrapped `Bool` values and tells
+`Nothing` apart from `Just`.
+
+`Just True` equals `Just True` and `Just False` equals `Just False`, while
+`Just True` and `Just False` differ in either order. `Nothing` equals `Nothing`
+and differs from both `Just True` and `Just False`.
+
 -}
 
 -- CHECK: justTT: True

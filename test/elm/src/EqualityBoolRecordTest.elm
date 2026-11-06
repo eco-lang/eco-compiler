@@ -1,9 +1,12 @@
 module EqualityBoolRecordTest exposing (main)
 
-{-| Record equality with Bool fields. Per the invariants, Bool is *not*
-unboxed in heap fields (only Int / Float / Char are), so each Bool field
-is stored as an `!eco.value` HPointer constant. Recursive eq through
-records walks these and trips the same nullptr-collapse path.
+{-| Record equality compares `Bool` fields correctly.
+
+The record `ref` is `{ a = True, b = False }`. It equals a separately written
+record with the same fields, and differs from records that flip `a`, flip `b` or
+flip both. `recFF_FF` compares a record with both fields `False` against a
+literal with the same fields, which is `True`.
+
 -}
 
 -- CHECK: recEq: True

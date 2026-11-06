@@ -1,10 +1,11 @@
 module LetNumberContainerDualTest exposing (main)
 
-{-| Probe: a generalized let-bound tuple value (`t = ( 30, 40 )`) whose first slot
-is projected at BOTH `Int` (`Tuple.first t + 1`) and `Float`
-(`Tuple.first t * 1.5`). The same container binding must materialise an Int and a
-Float instance — the container analogue of `LetNumberIndirectDualTest`. Correct:
-intUse = 30 + 1 = 31 ; floatUse = round (30*1.5) = 45.
+{-| One unannotated `let`-bound tuple of number literals is used both as Ints and as
+Floats.
+
+Elm generalises the binding `t = ( 30, 40 )`, so `Tuple.first t + 1` uses it at
+`Int` (31) and `Tuple.first t * 1.5` uses it at `Float` (rounded, 45).
+
 -}
 
 -- CHECK: dual-int: 31

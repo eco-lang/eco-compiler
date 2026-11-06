@@ -1,12 +1,11 @@
 module PolyLetTailRecTwoTypesTest exposing (main)
 
-{-| A let-bound, polymorphic, tail-recursive local function used at two types.
+{-| A let-bound, polymorphic, tail-recursive local `foldl` used at two different
+types in the same expression gives the right result for each.
 
-Each use needs its own copy of the loop: the solver emits `foldl` and
-`foldl$1`, each a `MonoTailDef` whose self-calls name that copy. It used to emit
-one `foldl` while the second use named `foldl$1`, and the compile crashed with
-"lookupVar: unbound variable foldl$1" (MONO_011). The elm-test twin is the
-"tail-recursive foldl at two types" case of SourceIR.SpecializePolyLetCases.
+One use sums a `List Int` (6); the other counts the elements of a `List String`
+(2), so the logged pair is `(6,2)`.
+
 -}
 
 -- CHECK: r: (6,2)

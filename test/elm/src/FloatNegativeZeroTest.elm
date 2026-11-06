@@ -1,6 +1,6 @@
 module FloatNegativeZeroTest exposing (main)
 
-{-| Test negative zero behavior.
+{-| Negative zero (`-0.0`) equals 0.0, and dividing 1.0 by it gives -Infinity while dividing by 0.0 gives Infinity.
 -}
 
 -- CHECK: eq: True

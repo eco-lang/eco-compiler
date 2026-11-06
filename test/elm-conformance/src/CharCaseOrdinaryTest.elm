@@ -1,8 +1,17 @@
 module CharCaseOrdinaryTest exposing (main)
 
-{-| Char.toUpper/toLower of characters whose case mapping is one code point (or none), across
-Latin-1, Greek, Cyrillic, Armenian, Georgian, Cherokee, titlecase digraphs and an astral
-script. Expectations recorded from Elm (plans/char-case-mapping-elm-exact.md Step 0.6).
+{-| `Char.toUpper` and `Char.toLower` of characters whose upper and lower case are each a single
+code point, across several scripts.
+
+The inputs are Latin-1 letters, characters whose upper case lies outside their own block (y
+diaeresis, the micro sign, dotless i, long s), Cyrillic, Armenian, Georgian, Cherokee, a
+titlecase digraph, Deseret (outside the Basic Multilingual Plane), characters with no case (a
+digit, a CJK ideograph, an emoji) and every code point from Greek small alpha to small omega,
+final sigma included. Each input is logged by its code points (`charCps` from
+`ConformanceHelp`), with its upper and lower case.
+
+Among what is not tested: characters whose full case mapping is more than one code point, such
+as U+00DF.
 -}
 
 -- CHECK: E9 up: "C9"

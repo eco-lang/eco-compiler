@@ -1,10 +1,13 @@
 module ClosureCapture06Test exposing (main)
 
-{-| Test nested case destruct with flat multi-arg function.
+{-| A two-argument function matches on a custom-type value holding two
+`Maybe String`s and then on each `Maybe` in turn.
 
-This is the flat-form version of a nested destruct pattern (Pair containing
-two Maybes). It compiles successfully but triggers a runtime error, which
-should be investigated separately from the closure capture compilation bug.
+This is the same program as `ClosureCapture05Test` with the function written
+taking both arguments directly instead of returning a lambda. The two strings
+are concatenated, with `Nothing` counting as the empty string, so the three
+calls log `"ab"`, `"a"` and `""`.
+
 -}
 
 -- CHECK: both: "ab"

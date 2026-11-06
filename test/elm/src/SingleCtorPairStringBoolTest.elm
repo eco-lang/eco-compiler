@@ -1,8 +1,10 @@
 module SingleCtorPairStringBoolTest exposing (main)
 
-{-| Two single-constructor types: WrapString (String, boxed) and WrapBool (Bool, boxed).
-Both fields are boxed, so findSingleCtorUnboxedField should return Nothing.
-Tests the fallthrough path works correctly when no unboxed fields exist.
+{-| Pattern matching works on two single-constructor types in one module, one wrapping a `String` and one wrapping a `Bool`.
+
+`unwrapString` returns the wrapped `"world"`. `matchBool` matches the literal
+patterns `WrapBool True` and `WrapBool False`, giving `"yes"` and `"no"`.
+
 -}
 
 -- CHECK: unwrap_str: "world"

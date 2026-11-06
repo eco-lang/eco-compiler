@@ -1,11 +1,12 @@
 module CompilerIssue2001RankCrashParametricLetAnnotationTest exposing (..)
 
-{-| A let annotation `Dict a b` on a value of an unannotated function crashes the compiler.
+{-| A let annotation `Dict a b` inside an unannotated function crashes the compiler.
 
 <https://github.com/elm/compiler/issues/2001>
 
-Elm 0.19.1 crashes ("You ran into a compiler bug", `a [rank = 2]`). The annotation is more general
-than the value, so a type error should be reported.
+`dict` is `toDict value`, so its key type is fixed by the argument `value` of `fn`, while the
+annotation claims it for any `a`. The annotation is too general, so a type error should be
+reported; Elm 0.19.1 crashes ("You ran into a compiler bug") instead.
 
 -}
 

@@ -1,12 +1,11 @@
 module CapturedStagedFuncCallTest exposing (main)
 
-{-| Test: captured staged function applied to multiple args in a closure.
+{-| A function parameter captured by a local helper and applied to two arguments works when the function passed in takes one argument and returns a function.
 
-Reproduces a bug where annotateExprCalls doesn't add closure params to
-varSourceArity, so a captured function parameter's arity falls back to
-firstStageArityFromType, which returns only the first-stage arity.
-When the function is staged (returns a function), only the first arg
-is applied and subsequent args are silently dropped.
+`makeAdder` is defined as `String -> (Int -> Int)`, returning a lambda. Passed to
+`applyBoth` as `f : String -> Int -> Int` and called as `f a b` inside a local
+function, it must receive both arguments, giving the same 15 as the direct
+call.
 -}
 
 -- CHECK: direct: 15
@@ -15,14 +14,13 @@ is applied and subsequent args are silently dropped.
 import Html exposing (text)
 
 
-{-| Staged function: takes one arg, returns a function. -}
+{-| Takes one argument and returns a function adding the key's length to its input. -}
 makeAdder : String -> (Int -> Int)
 makeAdder key =
     \value -> String.length key + value
 
 
-{-| Apply a captured 2-arg function via a wrapper closure.
-The inner lambda captures 'f' and applies it to both a and b.
+{-| Applies `f` to `a` and `b` from inside a local function.
 -}
 applyBoth : (String -> Int -> Int) -> String -> Int -> Int
 applyBoth f a b =

@@ -1,8 +1,9 @@
 module AliasProblemRecursiveAliasWithCommentedParensTest exposing (main)
 
-{-| ALIAS PROBLEM: recursive alias with commented parens.
+{-| A record type alias that refers to itself is rejected with an ALIAS PROBLEM.
 
-From `Compiler.Reporting.Render.TypeLayoutReportTest` (`aliasWithCommentedParens`), an elm-test program the compiler must reject.
+The field `f` of `R` has type `Int -> (Int -> R)`, with a block comment inside the
+parentheses. A type alias cannot be recursive, so the compiler must report it.
 
 -}
 

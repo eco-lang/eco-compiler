@@ -1,6 +1,10 @@
 module FloatRoundTest exposing (main)
 
-{-| Test round function (banker's rounding - ties to even).
+{-| `round` rounds a Float to the nearest Int, with halves rounded up: 2.5 gives 3 and 3.5 gives 4.
+
+Rounding to even would give 2 for 2.5, so this is not banker's rounding. The other
+cases are 2.7, 2.3 and -2.7; a negative half is not tested.
+
 -}
 
 -- CHECK: round1: 3

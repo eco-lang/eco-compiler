@@ -1,5 +1,9 @@
 module BasicsIsNaNTest exposing (main)
 
+{-| `isNaN` is true for `0 / 0` and false for 42.0, and `isInfinite` is true for `1 / 0` and
+false for 42.0.
+-}
+
 -- CHECK: nan_check: True
 -- CHECK: not_nan: False
 -- CHECK: inf_check: True

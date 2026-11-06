@@ -1,9 +1,8 @@
 module TypeMismatchTwoComparableVarsTest exposing (..)
 
-{-| TYPE MISMATCH: two comparable vars.
+{-| A list mixing tuples whose first components have different custom types is rejected with a TYPE MISMATCH.
 
-From `SourceIR.TypeCheckFailsCases` (`problemCases`), the elm-test catalogue of programs
-the compiler must reject.
+`f a b` compares each argument with `<` (so both are `comparable`) and returns `[ ( A, a ), ( B, b ) ]`. The first components have types `A` and `B`, so the two tuples cannot share a list.
 
 -}
 

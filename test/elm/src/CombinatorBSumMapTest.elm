@@ -1,6 +1,10 @@
 module CombinatorBSumMapTest exposing (main)
 
-{-| B combinator with List.sum and List.map: sum (map ((+) 1) [1,2,3]) = 9
+{-| The B combinator, built from S and K, composing `List.sum` with a partially applied `List.map`: the sum of `[ 1, 2, 3 ]` each plus one is 9.
+
+`b` is the point-free definition `s (k s) k`, applied to library functions
+rather than to functions defined in the module.
+
 -}
 
 -- CHECK: result: 9

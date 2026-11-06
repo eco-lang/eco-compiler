@@ -1,6 +1,12 @@
 module CaseMaybePairTest exposing (main)
 
-{-| Test overlapping Maybe pair patterns in decision tree. -}
+{-| Checks that a `case` on a tuple of two `Maybe Int` values, with one branch for
+each of the four `Just`/`Nothing` combinations, picks the right branch and binds
+the right values in each.
+
+The four calls cover all four combinations; `(Just 3, Just 4)` gives their sum.
+
+-}
 
 -- CHECK: both: 7
 -- CHECK: first: 3

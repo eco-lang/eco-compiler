@@ -1,5 +1,8 @@
 module DecodeNullTest exposing (main)
 
+{-| `Json.Decode.null 0` decodes the JSON literal `null` to the given value `0`.
+-}
+
 -- CHECK: decode_null: Ok 0
 
 import Html exposing (text)

@@ -1,10 +1,12 @@
 module CompilerIssue2338LambdaLetAnnotationTupleCrashTest exposing (main)
 
-{-| A let annotation `( Int, x )` inside a lambda passed to a higher-order function crashes the compiler.
+{-| The compiler reports a TYPE MISMATCH for a let annotation `( Int, x )` inside a lambda passed to a higher-order function.
 
 <https://github.com/elm/compiler/issues/2338>
 
-`return : ( Int, x )` claims the second component is any type, but it is the lambda argument `b`: a TYPE MISMATCH. Elm 0.19.1 crashes ("x [rank = 2]", Type/Solve.hs:206, "thread blocked indefinitely in an MVar operation"). (`mapAccuml` is copied from elm-community/list-extra.)
+`return : ( Int, x )` claims the second component can be any type, but it is `b`, an argument of
+the lambda passed to `mapAccuml`. Elm 0.19.1 crashes instead ("x [rank = 2]", Type/Solve.hs:206,
+"thread blocked indefinitely in an MVar operation").
 
 -}
 

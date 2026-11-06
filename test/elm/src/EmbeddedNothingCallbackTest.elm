@@ -1,6 +1,7 @@
 module EmbeddedNothingCallbackTest exposing (main)
 
-{-| Test passing Nothing to a callback that destructures it.
+{-| A function that pattern-matches a `Maybe` returns `Nothing` for `Nothing`
+and applies its function argument to a `Just` payload.
 -}
 
 -- CHECK: applied1: Nothing

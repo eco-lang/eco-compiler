@@ -1,7 +1,8 @@
 module EncodeStringUnicodeTest exposing (main)
 
-{-| Test Bytes.Encode.string with Unicode characters.
-    UTF-8 encoding: multi-byte characters take more bytes.
+{-| `Bytes.Encode.string` writes a string as UTF-8, so a two-byte character takes two bytes.
+
+The test encodes three copies of `é` (U+00E9) and logs the width of the result, 6.
 -}
 
 -- CHECK: EncodeStringUnicodeTest: 6
@@ -13,7 +14,6 @@ import Html exposing (text)
 
 main =
     let
-        -- Two-byte UTF-8 characters
         bytes =
             E.encode (E.string "\u{00E9}\u{00E9}\u{00E9}")
 

@@ -297,7 +297,7 @@ the staging below exists to dodge each one:
 > (aggregate root ⇒ Agg builders; decider paths inherit it for free).
 > **Gates:** unit `TestLogic/Generate/AggPromoteTest` 3/3 (real
 > post-GlobalOpt shapes; promotable/returned/passed-to-call) · smoke
-> fixture `test/elm/src/AggPromoteTupleTest.elm` lowers AND RUNS flag-on
+> fixture `test/eco-elm/src/AggPromoteTupleTest.elm` lowers AND RUNS flag-on
 > with all 6 results correct incl. the mixed `(Int, String)` GC-pointer
 > slot and tuple3 · full E2E flag-off **1609/1609** · flag-on corpus
 > (tests touched) **1609/1609** · **second-order bootstrap gate: the
@@ -844,7 +844,7 @@ tier-4 closure problem regardless (cap:20).
 
 **Flag:** `ECO_PSPLIT_PARAMS`, hash token `psplit`, default off,
 independent for A/B. **Fixtures:** extend
-`test/elm/src/AggPromoteTupleTest.elm`: a projection-only pair consumer
+`test/eco-elm/src/AggPromoteTupleTest.elm`: a projection-only pair consumer
 called with (a) an inline literal (the container must vanish), (b) a
 previously-vetoed let-bound candidate (now promotes + migrates), (c) a
 whole-use consumer NEGATIVE (no worker), (d) a mixed-position partial

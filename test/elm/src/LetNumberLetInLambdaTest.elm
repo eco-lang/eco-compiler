@@ -1,7 +1,9 @@
 module LetNumberLetInLambdaTest exposing (main)
 
-{-| Probe: binding-site variation — the `number` `let` lives inside a lambda
-body, used at `Float`. Correct: 1.5*30 = 45.
+{-| A `number` bound in a `let` inside a top-level function's body and
+multiplied by a `Float` is a `Float`.
+
+`makeVal ()` binds `n = 30` and returns `round (n * 1.5)`, so the test logs 45.
 
 -}
 

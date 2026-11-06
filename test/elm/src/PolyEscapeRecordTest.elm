@@ -1,6 +1,12 @@
 module PolyEscapeRecordTest exposing (main)
 
-{-| Test polymorphic values escaping through records. -}
+{-| A record field holding a polymorphic identity function can be called, and a
+record update that replaces it with an increment function gives a record whose
+field calls the new function.
+
+`r.fn 42` logs 42, and `r2.fn 5`, where `r2 = { r | fn = \y -> y + 1 }`, logs 6.
+
+-}
 
 -- CHECK: result: 42
 -- CHECK: narrowed: 6

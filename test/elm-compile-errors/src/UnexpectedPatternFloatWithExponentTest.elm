@@ -1,8 +1,10 @@
 module UnexpectedPatternFloatWithExponentTest exposing (main)
 
-{-| UNEXPECTED PATTERN: float with exponent.
+{-| A case branch whose pattern is the float literal `1e3` is rejected with an UNEXPECTED
+PATTERN error.
 
-From `Compiler.Reporting.SyntaxRegionReportTest` (`floatPatternWithExponent`), an elm-test program the compiler must reject.
+Elm patterns may match integer, character and string literals but not floats, and a literal
+written with an exponent is a float.
 
 -}
 

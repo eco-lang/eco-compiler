@@ -1,6 +1,6 @@
 module CaseAsPatternTest exposing (main)
 
-{-| Test case expression with as-patterns.
+{-| An as-pattern in a case branch, `((x :: _) as whole)`, binds both the list head and the whole list.
 -}
 
 -- CHECK: as1: 0

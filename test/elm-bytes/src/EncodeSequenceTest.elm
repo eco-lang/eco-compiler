@@ -1,6 +1,9 @@
 module EncodeSequenceTest exposing (main)
 
-{-| Test Bytes.Encode.sequence combining multiple encoders.
+{-| `Bytes.Encode.sequence` of mixed-width encoders produces the sum of their widths.
+
+The sequence holds an `unsignedInt8`, a big-endian `unsignedInt16` and a big-endian
+`unsignedInt32`, so the logged width is 1 + 2 + 4 = 7.
 -}
 
 -- CHECK: EncodeSequenceTest: 7

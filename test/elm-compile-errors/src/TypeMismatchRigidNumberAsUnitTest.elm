@@ -1,9 +1,8 @@
 module TypeMismatchRigidNumberAsUnitTest exposing (..)
 
-{-| TYPE MISMATCH: rigid number as unit.
+{-| Returning `()` where the annotation promises a `number` is rejected with a TYPE MISMATCH.
 
-From `SourceIR.TypeCheckFailsCases` (`rigidCases`), the elm-test catalogue of programs
-the compiler must reject.
+`f : number -> number` with `f x = ()`.
 
 -}
 

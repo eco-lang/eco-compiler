@@ -1,5 +1,11 @@
 module ParserOneOfTest exposing (main)
 
+{-| Checks that `Parser.oneOf` falls through to a later alternative when an earlier one fails.
+
+`boolP` tries `keyword "true"` and then `keyword "false"`; `"true"` gives
+`Ok True` and `"false"` gives `Ok False`.
+-}
+
 -- CHECK: true_: Ok True
 -- CHECK: false_: Ok False
 

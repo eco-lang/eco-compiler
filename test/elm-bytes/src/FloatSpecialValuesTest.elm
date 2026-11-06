@@ -1,6 +1,12 @@
 module FloatSpecialValuesTest exposing (main)
 
-{-| Test encoding/decoding special float values.
+{-| Positive infinity, negative infinity and zero survive a big-endian `float64` encode and decode with elm/bytes.
+
+The infinities are computed as `1 / 0` and `-1 / 0`, and each decoded value is
+compared with `==` against the original. The program logs `True` only if all
+three round trips succeed.
+
+Among what is not tested: NaN, negative zero, and `float32`.
 -}
 
 -- CHECK: FloatSpecialValuesTest: True

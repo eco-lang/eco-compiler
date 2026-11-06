@@ -1,22 +1,11 @@
 module SortByTupleWithMixedConstantsTest exposing (main)
 
-{-| `List.sortBy` returning a tuple key where the second field is
-deterministically `[]` for some inputs and `[-n]` for others, with both
-positive and negative inputs. Stress-tests repeated F2 traversal during
-stable_sort comparator calls.
+{-| `List.sortBy` with a `( Int, List Int )` key whose list is `[]` for positive inputs and `[ -n ]` otherwise orders by the distinct first components.
 
-For input `[-2, -1, 0, 1, 2]`:
-- -2 → (-2, [2])
-- -1 → (-1, [1])
-- 0  → ( 0, [0])
-- 1  → ( 1, [])
-- 2  → ( 2, [])
-Sort by `(first, second)` ascending: order of `first` is -2,-1,0,1,2.
-→ result = [-2, -1, 0, 1, 2] (identity since `first` strictly orders).
-The Nil-vs-heap comparisons fire only as **tiebreakers**; here `first`
-is already distinct, so the F2 bug doesn't change the result. This
-test exists to catch the case where the comparator's wrong sign on
-Nil-vs-heap *avoids* changing the result (a "lucky-pass" regression).
+For `[ -2, -1, 0, 1, 2 ]` the keys are `(-2, [2])`, `(-1, [1])`, `(0, [0])`,
+`(1, [])` and `(2, [])`. Every first component is different, so the second
+components never decide the order and the input comes back unchanged:
+`[-2,-1,0,1,2]`.
 -}
 
 -- CHECK: result: [-2,-1,0,1,2]

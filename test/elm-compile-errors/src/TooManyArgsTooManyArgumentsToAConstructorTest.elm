@@ -1,9 +1,6 @@
 module TooManyArgsTooManyArgumentsToAConstructorTest exposing (..)
 
-{-| TOO MANY ARGS: too many arguments to a constructor.
-
-From `SourceIR.TypeCheckFailsCases` (`contextCases`), the elm-test catalogue of programs
-the compiler must reject.
+{-| Applying a constructor to more arguments than it takes, `Just 1 2`, is rejected with a TOO MANY ARGS error.
 
 -}
 

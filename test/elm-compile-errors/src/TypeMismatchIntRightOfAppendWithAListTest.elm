@@ -1,9 +1,10 @@
 module TypeMismatchIntRightOfAppendWithAListTest exposing (..)
 
-{-| TYPE MISMATCH: Int right of ++ with a list.
+{-| Appending an `Int` to a list with `++` is rejected with a TYPE MISMATCH.
 
-From `SourceIR.TypeCheckFailsCases` (`operatorCases`), the elm-test catalogue of programs
-the compiler must reject.
+`[ 1 ] ++ n` puts a list on the left of `++` and `n : Int` on the right. `++` needs
+both operands to be the same appendable type, and an `Int` is neither a list nor a
+`String`.
 
 -}
 

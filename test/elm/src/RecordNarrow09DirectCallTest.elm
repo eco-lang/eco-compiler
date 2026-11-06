@@ -1,13 +1,12 @@
 module RecordNarrow09DirectCallTest exposing (main)
 
-{-| Variation 19: let-bound helper called DIRECTLY (no higher-order).
+{-| A let-bound helper with an inferred extensible-record argument reads the right nested field when called directly.
 
-    The helper is still let-bound and row-polymorphic, but called directly
-    rather than passed to List.foldl. Tests whether the higher-order
-    pass-through is essential to triggering the bug, or whether any row-poly
-    let-bound call site reproduces it.
-
-    Expected (correct): uid: 999
+Each record is built without an annotation, and `buildSibling` is a let-bound
+helper with no annotation, so its argument's type is inferred as an extensible
+record naming only the fields it reads, while the records passed in carry more.
+The helper is applied once to `( 0, outer )` rather than passed to `List.foldl`,
+so the result is the single `LambdaId 999` unwrapped plus the initial 0.
 -}
 
 -- CHECK: uid: 999

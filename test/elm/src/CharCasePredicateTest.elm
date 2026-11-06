@@ -1,19 +1,10 @@
 module CharCasePredicateTest exposing (main)
 
-{-| FAILING TEST: arith.cmpi missing predicate attribute for i16 (Char) comparisons.
+{-| A `case` on a `Char` with several character-literal branches, including the
+escaped literal `'\\'`, selects the branch matching the scrutinee.
 
-Bug: When the pattern compiler generates equality tests for Char patterns (IsChr),
-it calls Ops.ecoBinaryOp which only sets _operand_types but NOT the required
-predicate attribute. The correct function to use is Ops.arithCmpI which sets both.
+`classify ','` matches the first branch and logs `"comma"`.
 
-i32 comparisons (Int) work correctly because they use eco.int.eq (an eco dialect op).
-i16 comparisons (Char) incorrectly use raw arith.cmpi without the predicate attribute.
-
-NOTE: This bug only manifests in Stage 6 (eco-boot-native MLIR parsing/verification).
-The JIT test infrastructure may not catch it because it handles the missing predicate
-differently. The elm-test CmpiPredicateAttrTest catches it at the MLIR generation level.
-
-See: compiler/src/Compiler/Generate/MLIR/Patterns.elm line 205
 -}
 
 -- CHECK: result: "comma"

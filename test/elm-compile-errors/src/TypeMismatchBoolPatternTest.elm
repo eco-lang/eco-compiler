@@ -1,9 +1,8 @@
 module TypeMismatchBoolPatternTest exposing (..)
 
-{-| TYPE MISMATCH: bool pattern.
+{-| A `True` pattern in a `case` on a number is rejected with a TYPE MISMATCH.
 
-From `SourceIR.TypeCheckFailsCases` (`patternMismatchCases`), the elm-test catalogue of programs
-the compiler must reject.
+`x` matches the number `1` against the `Bool` pattern `True`.
 
 -}
 

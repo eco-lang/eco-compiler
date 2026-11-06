@@ -1,6 +1,9 @@
 module RoundtripUnsignedInt8Test exposing (main)
 
-{-| Roundtrip test for unsignedInt8.
+{-| Integers survive an `unsignedInt8` encode and decode with elm/bytes, from 0 up to 255.
+
+The values 0, 1, 127, 128 and 255 are each round-tripped, and the program logs
+`True` only if all of them come back unchanged.
 -}
 
 -- CHECK: RoundtripUnsignedInt8Test: True

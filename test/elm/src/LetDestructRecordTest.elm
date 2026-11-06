@@ -1,6 +1,9 @@
 module LetDestructRecordTest exposing (main)
 
-{-| Test record destructuring in let bindings. -}
+{-| Record patterns in `let` bindings: a single field, two fields, a subset of a
+record's fields (`{ p, r }` from a record that also has `q`), and a record pattern
+nested inside a tuple pattern.
+-}
 
 -- CHECK: single: 42
 -- CHECK: multi: 3

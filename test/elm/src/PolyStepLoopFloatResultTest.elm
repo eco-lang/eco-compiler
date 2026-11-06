@@ -1,11 +1,13 @@
 module PolyStepLoopFloatResultTest exposing (main)
 
-{-| Float-result variant of the `Step state a` / `loop` bug.
+{-| A polymorphic state-threading loop, driven by a `Step state a` custom type,
+returns a `Float` result and the threaded state correctly.
 
-    Same shape as `PolyStepLoopIntResultTest`, but the `a` specialization
-    is `Float`. Exercises the same `project.custom` / `construct.tuple2`
-    mismatch on a different unboxable primitive — catches a fix that
-    only handles `Int`.
+`IO a` is a function from an `Int` state to a pair of the new state and a
+result. `loop` calls its callback until it returns `Done`, passing the state
+along. `countdown` counts 3, 2, 1, 0, adding each count to the state, and
+finishes with `Done 3.14`, so the result is 3.14 and the state 0 + 3 + 2 + 1 + 0
+= 6. `PolyStepLoopIntResultTest` is the same program with an `Int` result.
 
 -}
 

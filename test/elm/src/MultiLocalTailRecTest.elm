@@ -1,6 +1,10 @@
 module MultiLocalTailRecTest exposing (main)
 
-{-| Test multiple local tail-recursive defs in same let block. -}
+{-| Two independent self-recursive functions defined in the same `let` block, each calling itself in tail position, both run correctly.
+
+`countDown 5` recurses down to `0` and returns `0`; `sumUp 5 0` accumulates
+`5 + 4 + 3 + 2 + 1` into `15`. The logged sum is `15`.
+-}
 
 -- CHECK: result: 15
 

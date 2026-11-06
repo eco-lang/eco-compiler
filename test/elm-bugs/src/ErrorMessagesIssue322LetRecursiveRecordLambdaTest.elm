@@ -1,8 +1,7 @@
 module ErrorMessagesIssue322LetRecursiveRecordLambdaTest exposing (main)
 
 {-| A `let`-bound record whose field is a lambda that refers back to the record (through
-another lambda) is rejected as an infinite loop, although the same definitions at top level
-compile and run.
+another lambda) is rejected as an infinite loop, although the recursion is well founded.
 
 <https://github.com/elm/error-message-catalog/issues/322>
 

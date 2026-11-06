@@ -1,10 +1,12 @@
 module CompilerIssue2077RankCrashExtensibleLetAnnotationTest exposing (..)
 
-{-| Let annotations with an extensible record on unannotated arguments crash the compiler.
+{-| A `let` annotation that gives an unannotated argument a more general extensible-record type
+must be reported as a type error, not crash the compiler.
 
 <https://github.com/elm/compiler/issues/2077>
 
-`fn_ : { a | foo : Int } -> Bool` claims `fn` is polymorphic, which it is not. Elm 0.19.1 crashes
+`fn_ : { a | foo : Int } -> Bool` claims the argument `fn` works for every `a`, but `fn` is a
+plain argument of `test` and is not polymorphic. Elm 0.19.1 crashes
 ("You ran into a compiler bug", `a [rank = 2]`); it should report a type error.
 
 -}

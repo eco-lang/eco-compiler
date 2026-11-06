@@ -203,7 +203,7 @@ no E2E `.mlir` changes. Wipe the E2E caches first, per CLAUDE.md and memory.
     fixture's JIT run shows it does.
 - **Check:** an Int or Char two-alternative case still takes `CaseToScfIfPattern`
   (existing fixtures).
-- **Front-end pin:** `test/elm/src/StringCaseTwoAltTest.elm` (E2E, passes today) checks with
+- **Front-end pin:** `test/eco-mlir/src/StringCaseTwoAltTest.elm` (E2E, passes today) checks with
   `CHECK-MLIR-NOT` that no Elm match produces a single-pattern string case. A single string pattern
   becomes `eco.value.eq` plus a Bool case. It stays after the fix, as a guard on the front end's
   shape.

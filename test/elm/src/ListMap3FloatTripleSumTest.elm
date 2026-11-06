@@ -1,7 +1,7 @@
 module ListMap3FloatTripleSumTest exposing (main)
 
-{-| `List.map3` on three `List Float`s. Same bug surface as `List.map2` but
-    with three inputs re-boxed as `ElmInt`.
+{-| `List.map3` on three `List Float`s passes the Float elements unchanged to the
+mapping function; the sums equal `[ 111.0, 222.0 ]`.
 -}
 
 -- CHECK: result: [111,222]

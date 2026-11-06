@@ -332,7 +332,7 @@ Every step's gate, in one place, so the implementer can self-check:
 |---|---|
 | `InlineSimplifyTest` (new, `compiler/tests/TestLogic/`) | one case per transform: exact inline, partial inline, beta, forward, DCE, case-simplify |
 | **`InlineSimplifyDestructCaptureTest`** | Step 4's binder-capture trap: an inlined body containing `Destruct` whose binder shadows a caller name. **Write this before Step 4 passes.** |
-| `test/elm/src/PreMonoInlineTest.elm` | runtime differential with CHECK lines; must print identically in all four flag arms |
+| `test/eco-elm/src/PreMonoInlineTest.elm` | runtime differential with CHECK lines; must print identically in all four flag arms |
 | existing suites | `elm-tests` at the 13,455 / 12 baseline; E2E 1,720 / 1,720 |
 
 ## 7. A/B — POSITION test, two arms
@@ -491,7 +491,7 @@ review.
 SOLVER VARIABLE. Copying a body copies the `Meta`s verbatim, so two copies of a
 POLYMORPHIC body share one set of solver variables. `MonoSolver` then meets the
 two call sites' instantiations at the same variable. Measured, on
-`test/elm/src/PreMonoInlineTest.elm`, whose `twice : (a -> a) -> a -> a` is used
+`test/eco-elm/src/PreMonoInlineTest.elm`, whose `twice : (a -> a) -> a -> a` is used
 at `Int` and at `List Int`:
 
 ```
@@ -788,7 +788,7 @@ whether the trade is positive.
 | 12d | retire the `isGround` refusal; keep `polymorphic` as a census counter | `PreMonoInlineTest` passes in the EARLY arm — it is the fixture that FAILED and is the direct gate |
 | 12e | re-measure | §12.6 |
 
-**`test/elm/src/PreMonoInlineTest.elm` is the gate for the whole of §12**: it
+**`test/eco-elm/src/PreMonoInlineTest.elm` is the gate for the whole of §12**: it
 already exists, it already fails with the pre-mono inliner unrestricted, and it
 uses four helpers at two types each precisely so a shared-variable collapse
 cannot pass it.

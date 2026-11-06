@@ -1,5 +1,13 @@
 module ParserFloatTest exposing (main)
 
+{-| `Parser.float` parses a decimal number, with or without an exponent.
+
+`"3.14"` gives `Ok 3.14` and `"1.5e-2"` gives `Ok 0.015`.
+
+Among what is not tested: integers without a decimal point, signs, and
+rejected forms such as hexadecimal.
+-}
+
 -- CHECK: parsed_float: Ok 3.14
 -- CHECK: parsed_exp: Ok 0.015
 

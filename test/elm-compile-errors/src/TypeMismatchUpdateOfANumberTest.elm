@@ -1,9 +1,9 @@
 module TypeMismatchUpdateOfANumberTest exposing (..)
 
-{-| TYPE MISMATCH: update of a number.
+{-| A record update applied to an `Int`, `{ n | x = 1 }` with `n : Int`, is rejected with a
+TYPE MISMATCH error.
 
-From `SourceIR.TypeCheckFailsCases` (`contextCases`), the elm-test catalogue of programs
-the compiler must reject.
+Only a record can be updated, and `n` is a number.
 
 -}
 

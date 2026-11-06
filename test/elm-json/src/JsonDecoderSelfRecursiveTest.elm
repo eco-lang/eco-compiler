@@ -1,14 +1,9 @@
 module JsonDecoderSelfRecursiveTest exposing (main)
 
-{-| Self-recursive Json.Decode.Decoder using Json.Decode.lazy.
+{-| A `Json.Decode` decoder that refers to itself through `Json.Decode.lazy` decodes a nested value correctly.
 
-    Tests whether Json.Decode.lazy correctly defers the recursive reference.
-    If this passes but BytesDecoderSelfRecursiveMinimalTest crashes, the
-    bug is specific to how Bytes.Decode handles recursion (no built-in lazy).
-
-    Input: {"val": null, "kids": [{"val": null, "kids": []}]}
-
-    Expected: prints the decoded tree without crashing.
+`treeDecoder` decodes the `"kids"` field as a list of trees, using `lazy` to defer the
+reference to itself. The input `{"kids": [{"kids": []}]}` is a node holding one empty node.
 -}
 
 -- CHECK: decoded: Ok (Node [Node []])

@@ -1,5 +1,10 @@
 module ParserSymbolTest exposing (main)
 
+{-| Checks that `Parser.symbol` matches one-character and two-character symbols.
+
+`symbol "="` succeeds on `"="` and `symbol "=="` succeeds on `"=="`.
+-}
+
 -- CHECK: single: True
 -- CHECK: double: True
 

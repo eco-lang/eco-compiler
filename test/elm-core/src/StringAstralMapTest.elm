@@ -1,9 +1,13 @@
 module StringAstralMapTest exposing (main)
 
-{-| G1/E5: map applies the function once per code point, as in Elm (Char is a
-Unicode code point in i32), so mapping every Char of "a😀b" to 'x' yields
-"xxx". map identity round-trips, and a map that produces an astral Char writes
-it back as a surrogate pair (2 UTF-16 units).
+{-| `String.map` applies its function once to a character outside the Basic
+Multilingual Plane, such as an emoji, and can produce such a character.
+
+Mapping every character of `"a😀b"` to `'x'` gives `"xxx"`, of length 3.
+`String.map identity` returns `"a😀b"` unchanged. Mapping every character of
+`"ab😀"` to `'😀'` gives `"😀😀😀"`, whose `String.length` is 6 because
+`String.length` counts UTF-16 units and each emoji takes two.
+
 -}
 
 -- CHECK: map_const_len: 3

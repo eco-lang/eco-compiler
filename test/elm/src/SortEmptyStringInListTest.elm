@@ -1,8 +1,9 @@
 module SortEmptyStringInListTest exposing (main)
 
-{-| `List.sort` on `List String` that includes `""` twice. `List.sort`
-is `List.sortBy identity`, hitting the same F3 site. Worth a separate
-file because frontends may special-case `List.sort`.
+{-| `List.sort` on a list of Strings that contains `""` twice puts both empty strings first.
+
+`[ "", "b", "", "a" ]` sorts to `["","","a","b"]`. The same input is sorted with
+`List.sortBy identity` in `SortByIdentityEmptyStringTest`.
 -}
 
 -- CHECK: result: ["","","a","b"]

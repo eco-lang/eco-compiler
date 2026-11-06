@@ -1,9 +1,8 @@
 module TooManyArgsTooManyArgumentsToAnOperatorTest exposing (..)
 
-{-| TOO MANY ARGS: too many arguments to an operator.
+{-| An operator function given three arguments is rejected with a TOO MANY ARGS error.
 
-From `SourceIR.TypeCheckFailsCases` (`contextCases`), the elm-test catalogue of programs
-the compiler must reject.
+`(+)` takes two arguments; `x = (+) 1 2 3` passes a third.
 
 -}
 

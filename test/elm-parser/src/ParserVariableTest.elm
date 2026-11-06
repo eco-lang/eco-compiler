@@ -1,5 +1,11 @@
 module ParserVariableTest exposing (main)
 
+{-| Checks that `Parser.variable` accepts an identifier and rejects a reserved word.
+
+`"foo"` gives `Ok "foo"`; `"if"`, which is in the reserved set, gives an
+`Err`.
+-}
+
 -- CHECK: name: Ok "foo"
 -- CHECK: reserved: True
 

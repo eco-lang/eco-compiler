@@ -22,6 +22,8 @@ zone =
     Time.customZone 0 [ { start = 120, offset = 60 } ]
 
 
+{-| Returns the local hour and minute in `zone` of the instant `minutes` after the epoch.
+-}
 hm : Int -> ( Int, Int )
 hm minutes =
     let

@@ -1,6 +1,8 @@
 module EncodeSequenceEmptyTest exposing (main)
 
-{-| Test Bytes.Encode.sequence with empty list.
+{-| `Bytes.Encode.sequence []` produces zero bytes.
+
+The test logs the width of the encoded empty sequence.
 -}
 
 -- CHECK: EncodeSequenceEmptyTest: 0

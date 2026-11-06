@@ -1,9 +1,9 @@
 module TypeMismatchLambdaCallAsAnArgumentTest exposing (..)
 
-{-| TYPE MISMATCH: lambda call as an argument.
+{-| Passing the result of a lambda call to `not` is rejected with a TYPE MISMATCH.
 
-From `SourceIR.TypeCheckFailsCases` (`categoryCases`), the elm-test catalogue of programs
-the compiler must reject.
+`(\a -> a + 1) 1` produces a number, while `not` expects a `Bool`. The argument
+is a call of a lambda rather than a named function.
 
 -}
 

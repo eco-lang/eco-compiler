@@ -1,7 +1,7 @@
 module ArrayIndexedMapFloatAddIndexTest exposing (main)
 
-{-| `Array.indexedMap` on `Array Float`. Reaches `JsArray.indexedMap`, which
-    re-boxes each unboxed element as `ElmInt` before the mapper.
+{-| `Array.indexedMap` over an `Array Float` passes each element's index, here added to the
+element to turn `[ 10, 20, 30 ]` into `[ 10, 21, 32 ]`.
 -}
 
 -- CHECK: result: [10,21,32]

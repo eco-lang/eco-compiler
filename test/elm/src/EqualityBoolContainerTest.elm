@@ -1,10 +1,13 @@
 module EqualityBoolContainerTest exposing (main)
 
-{-| Structural equality over Bool-carrying tuples and lists. Even if the
-top-level `==` were rewritten to a direct i1 compare, the recursive
-`eqHelp` walk on tuples/lists still routes each Bool slot through the
-embedded-constant nullptr collapse, so this bug propagates into
-containers.
+{-| Structural equality compares `Bool` elements inside tuples and lists
+correctly.
+
+The test compares pairs and triples of `Bool` that are equal, or differ in one
+or both positions, and lists of `Bool` that are equal, are reversed, or differ
+in their last element. Only the equal ones are `True`. `listEmpty` compares an
+empty `List Bool` with `[]`, which is `True`.
+
 -}
 
 -- CHECK: pairTT_TT: True

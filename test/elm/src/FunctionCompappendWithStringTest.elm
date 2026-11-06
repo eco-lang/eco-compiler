@@ -1,9 +1,9 @@
 module FunctionCompappendWithStringTest exposing (..)
 
-{-| compappend with String.
+{-| A function whose arguments have the `compappend` constraint (comparable and appendable) works when called with `String`s.
 
-From `SourceIR.FunctionCases`, a program of the elm-test catalogue, with a
-`main` that logs its `testValue`. The CHECK lines are what Elm 0.19.1 prints for it.
+`zsortConcat` compares its two arguments with `<` and appends them smaller
+first, so `zsortConcat "hello" "world"` is `"helloworld"`.
 
 -}
 

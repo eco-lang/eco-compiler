@@ -1,6 +1,9 @@
 module MaybePatternMatchTest exposing (main)
 
-{-| Test pattern matching on Maybe.
+{-| A `case` on a `Maybe` takes the `Just` branch to extract the value and the `Nothing` branch otherwise.
+
+`unwrap` returns the wrapped Int or `0`: `unwrap (Just 42)` is `42` and
+`unwrap Nothing` is `0`.
 -}
 
 -- CHECK: match1: 42

@@ -1,9 +1,6 @@
 module TypeMismatchFieldAccessUnderIntTest exposing (..)
 
-{-| TYPE MISMATCH: field access under Int.
-
-From `SourceIR.TypeCheckFailsCases` (`categoryCases`), the elm-test catalogue of programs
-the compiler must reject.
+{-| A value annotated `Int` but defined as a `String` field of a record, `r.name`, is rejected with a TYPE MISMATCH.
 
 -}
 

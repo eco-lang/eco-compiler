@@ -1,16 +1,11 @@
 module MutualLetRecNestedTest exposing (main)
 
-{-| Bootstrap-stage regression: mutually-recursive closure group created
-INSIDE another closure, where the outer closure's captures flow into the
-inner closures' non-sibling captures. This exercises the case where the
-group op's non-sibling capture operands are themselves captures of the
-enclosing $cap function (i.e. !eco.value ABI-ptr arguments), not freshly
-generated heap pointers.
+{-| Two mutually recursive `let`-bound functions defined inside a lambda that is returned from a top-level function use that function's parameters after it has returned.
 
-Ran at bootstrap stage 6 the symptom was
-    'llvm.call' op operand type mismatch for operand 1:
-    'i64' != '!llvm.ptr<1>'
-
+`makeClassifier 10 11 12 9` returns a function of `n` that starts in `innerBig`
+and alternates with `innerSmall` until `k` reaches `0`. Ending in `innerSmall`
+gives the parameter sum `42`; ending in `innerBig` gives twice that, `84`. So
+odd `n` logs `42` and even `n` logs `84`.
 -}
 
 -- CHECK: run 3: 42

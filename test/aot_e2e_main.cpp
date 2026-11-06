@@ -159,6 +159,7 @@ const std::vector<std::string>& aot_test_packages() {
     static const std::vector<std::string> pkgs = {
         "elm", "elm-bytes", "eco-kernel", "eco-system", "elm-core", "elm-html", "elm-http",
         "elm-json", "elm-parser", "elm-regex", "elm-time", "elm-url", "elm-conformance", "eco-divergence",
+        "eco-mlir", "eco-elm", "eco-elm-bytes", "eco-elm-core", "eco-elm-json", "eco-elm-regex", "eco-elm-conformance",
     };
     return pkgs;
 }

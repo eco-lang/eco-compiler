@@ -1,6 +1,6 @@
 module ToFloatTest exposing (main)
 
-{-| Test toFloat conversion.
+{-| `toFloat` converts a positive, a negative and a zero `Int` to the equal `Float`.
 -}
 
 -- CHECK: toFloat1: 42

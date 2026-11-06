@@ -1,11 +1,17 @@
 module CharFromCodeWideIntTest exposing (main)
 
-{-| DEAD-01 guard (plans/kernel-lib-bug-fixes.md, group 01). `Char.fromCode` of a code outside
-0..0x10FFFF gives U+FFFD in Elm (JS `_Char_fromCode` range-checks the whole number), including
-codes that only fit a 64-bit Int and negative ones. The dead `Elm::Kernel::Char::fromCode(int32_t)`
-that DEAD-01 deletes would have truncated 0x100000041 to 0x41 ('A'); this pins the live export's
-semantics so the deletion (and any later rewrite) keeps them. It passes today: dead code cannot
-be exposed by a program. Expectations recorded from Elm.
+{-| `Char.fromCode` of a code outside 0 to 0x10FFFF gives the replacement character U+FFFD
+(65533), even when the code's low 32 bits are a valid code point.
+
+Each row logs `Char.toCode (Char.fromCode n)`:
+
+  - `wide` and `low 32 bits A`: 0x100000041, written once in hex and once as 2^32 + 65, whose low
+    32 bits are 0x41 (`'A'`), gives 65533.
+  - `neg`: -1 gives 65533.
+  - `max`: 0x10FFFF, the largest code point, is kept.
+  - `above max`: 0x110000 gives 65533.
+
+Among what is not tested: surrogate code points (0xD800 to 0xDFFF).
 -}
 
 -- CHECK: wide: 65533

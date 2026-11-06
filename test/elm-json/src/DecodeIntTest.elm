@@ -1,5 +1,8 @@
 module DecodeIntTest exposing (main)
 
+{-| `Json.Decode.int` decodes the JSON number `42` to the `Int` `42`.
+-}
+
 -- CHECK: decode_int: Ok 42
 
 import Html exposing (text)

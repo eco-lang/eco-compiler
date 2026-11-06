@@ -1,9 +1,11 @@
 module StringLargeSliceTest exposing (main)
 
-{-| G3/E12: slice a source large enough that the result exceeds the 128-code-unit
-tiny-slice limit, producing a real Tag_StringSlice. source = "abcdefghij" x50 =
-500 chars; slice 100..350 = 250 chars starting at index 100 ('a'), ending before
-350 (index 349 -> 'j'). Should pass — string slices are handled everywhere.
+{-| Checks that `String.slice` on a 500-character string returns a 250-character slice with the right content at both ends.
+
+The source is `"abcdefghij"` repeated 50 times. `String.slice 100 350` starts
+at index 100, which holds `'a'`, and stops before index 350, so the slice
+begins `"abcde"` and its last character is the `'j'` at index 349.
+
 -}
 
 -- CHECK: slice_len: 250

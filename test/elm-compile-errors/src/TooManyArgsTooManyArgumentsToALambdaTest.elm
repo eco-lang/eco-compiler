@@ -1,9 +1,6 @@
 module TooManyArgsTooManyArgumentsToALambdaTest exposing (..)
 
-{-| TOO MANY ARGS: too many arguments to a lambda.
-
-From `SourceIR.TypeCheckFailsCases` (`contextCases`), the elm-test catalogue of programs
-the compiler must reject.
+{-| Applying a one-argument lambda to two arguments, `(\a -> a + 1) 1 2`, is rejected with a TOO MANY ARGS error.
 
 -}
 

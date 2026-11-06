@@ -1,22 +1,17 @@
 module ListRebuildKindPreservationTest exposing (main)
 
-{-| Every list REBUILD must reproduce its input's element representation, for
-all three unboxed slot kinds — not just Int.
+{-| Checks that list functions which build a new list from their input return
+`List Float` and `List Char` values equal to the expected literals, and that
+arithmetic over such a result is correct.
 
-The kernel's collect-then-build helpers used to carry `bool is_boxed` per
-element instead of the 2-bit slot KIND, so every unboxed kind collapsed to
-Int. A `List Float` rebuilt through one of them came back with f64 bit
-patterns sitting in Int-kinded slots: `Debug.log` still printed the right
-numbers (the printer reads the cell header), but structural equality against a
-genuine `List Float` failed and arithmetic folds read the wrong slot.
+The functions checked by equality are `List.take`, `List.concat`,
+`List.intersperse`, `List.partition`, `List.unzip` and `List.filterMap` on
+`Float` elements, and `List.take` and `List.concat` on `Char` elements. Also
+checked are `List.maximum` and `List.minimum` of a `List Float`, and the sum
+of `List.take 2` of one.
 
-`List.take` and `List.concat` were the live Float/Char casualties beyond the
-sort family; the rest of these are pinned because they share the same builder
-and would regress silently if it ever collapsed again — the failure mode is
-wrong VALUES, never a crash.
-
-`ListSortWithKindPreservationTest` / `ListSortByKindPreservationTest` cover the
-sort family.
+Sorting is checked by `ListSortWithKindPreservationTest` and
+`ListSortByKindPreservationTest`.
 
 -}
 
@@ -72,15 +67,12 @@ main =
         _ =
             Debug.log "concat-char" (List.concat [ chars, [ 'd' ] ] == [ 'c', 'a', 'b', 'd' ])
 
-        -- maximum/minimum wrap the winning element back up: the Maybe must
-        -- carry the element's kind, not a boxed/unboxed boolean.
         _ =
             Debug.log "maximum-float" (Maybe.withDefault 0 (List.maximum floats))
 
         _ =
             Debug.log "minimum-float" (Maybe.withDefault 0 (List.minimum floats))
 
-        -- Arithmetic over a rebuilt list reads elements at their static kind.
         _ =
             Debug.log "take-float-sum" (List.sum (List.take 2 floats))
     in

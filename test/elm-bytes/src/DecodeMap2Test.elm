@@ -1,6 +1,6 @@
 module DecodeMap2Test exposing (main)
 
-{-| Test Bytes.Decode.map2 combining two decoders.
+{-| `Bytes.Decode.map2` combines two decoders in order: two bytes, 100 and 200, decoded and added with `(+)` give the `Int` 300.
 -}
 
 -- CHECK: DecodeMap2Test: 300

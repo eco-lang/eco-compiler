@@ -1,16 +1,13 @@
 module DestructCaptureTest exposing (main)
 
-{-| Standalone pin for the destructure-binder capture bug: the inliner's
-`freshenLetBoundNames` renamed MonoDef/MonoTailDef binders in
-instantiated bodies but passed `MonoDestruct` binders through verbatim.
-Inlining `swap` (whose body destructures an OPAQUE pair into a binder
-named `x`) into a caller with its OWN `x` used afterwards captured the
-caller's reference (this test printed 11 instead of 56 pre-fix). Found
-via the ECO_ARITY_RAISE=1 native self-compile segfault (raised
-`andThen`'s destructure binder `a` captured `constrainTupleWithIds`'s
-source param `a`), but reachable FLAG-OFF as this shape shows. The pair
-must come from a non-inlinable call — a literal tuple folds at Mono and
-the destruct never materializes.
+{-| A tuple pattern in a `let` inside one function does not interfere with a
+same-named variable in the function that calls it.
+
+`swap` destructures its argument into `( x, y )`, and its caller `f` has its
+own `x = a * 10` that it uses after the call. With `a = 5`, `mk 5` is `( 5, 6 )`,
+so `swap` gives `( 6, 5 )` and `f` returns `6 + 50 = 56`. The pair comes from
+`mk`, a recursive function, rather than from a tuple literal.
+
 -}
 
 import Html exposing (text)
@@ -18,6 +15,9 @@ import Html exposing (text)
 -- CHECK: captured: 56
 
 
+{-| Returns `( n, n + 1 )` for `n` up to 100, subtracting 100 first as often
+as needed above that.
+-}
 mk : Int -> ( Int, Int )
 mk n =
     if n > 100 then

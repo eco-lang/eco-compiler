@@ -1,8 +1,11 @@
 module LetNumberMaybeCaseDirectTest exposing (main)
 
-{-| Probe: `Maybe number` matched DIRECTLY with a `case` pattern (`Just n`),
-payload used at `Float` — distinct from the `Maybe.map` call-arg path. Correct:
-30*1.5 = 45.
+{-| An integer literal inside `Just`, taken out by a `case` pattern and multiplied
+by `1.5`, is used as a `Float`: `round (n * 1.5)` with `n` bound from `Just 30`
+logs 45.
+
+The payload is reached by matching `Just n` directly, not through `Maybe.map`.
+
 -}
 
 -- CHECK: maybedirect: 45

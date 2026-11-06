@@ -1,10 +1,12 @@
 module ContainerCompareIntTest exposing (main)
 
-{-| Ordering of Int-containing Tuple2, Tuple3, and List values via `compare`
-    and the relational operators.
+{-| Ordering of pairs, triples and lists of `Int` with `compare` and the
+relational operators.
 
-    Focus areas: lex order across positions, negatives vs positives, the
-    shorter-is-less rule on lists, and the empty list as the least list.
+The cases cover order decided at different positions, negative against positive
+values, a list that is a prefix of another being less, and the empty list being
+less than any other list.
+
 -}
 
 -- CHECK: pairLt: LT

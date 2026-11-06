@@ -1,6 +1,6 @@
 module DecodeFailTest exposing (main)
 
-{-| Test Bytes.Decode.fail always failing.
+{-| `Bytes.Decode.fail` makes `decode` return `Nothing` even when there are bytes left to read.
 -}
 
 -- CHECK: DecodeFailTest: "Nothing"

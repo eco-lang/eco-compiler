@@ -1,11 +1,9 @@
 module LssGapCtorAsValue exposing (main)
-{-| Does a constructor's `c|` member reach a REGISTRY POSITION at all?
+{-| A custom type constructor passed as a function argument builds the value it
+is applied to.
 
-`standaloneArgMember` already injects `c|` when a ctor is passed as an
-argument, so this probe asks the question P2's viability turns on: if the
-answer is a named set at `useCtor`'s parameter, members at ctor arrows DO
-survive to positions and declaration-site injection can work. If it is ⊤, some
-widening absorbs them and P2 would be inert.
+`useCtor` takes an `Int -> Wrap` and pattern matches on its result;
+`useCtor Wrap 7` prints 7.
 -}
 -- CHECK: ctorAsValue: 7
 import Html exposing (text)

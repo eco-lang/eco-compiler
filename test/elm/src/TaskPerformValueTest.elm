@@ -1,22 +1,9 @@
 module TaskPerformValueTest exposing (main)
 
-{-| `Task.perform` must deliver the task's VALUE to `update`.
+{-| `Task.perform` delivers the task's value to `update` in a `Platform.worker`, for messages that carry an `Int`, a negative `Int` or a `String`, and for a message built by a function that ignores the value.
 
-That is the whole purpose of `perform`, and until 2026-08-25 nothing covered
-it: `TimerEffectTest` uses a CONSTANT tagger (`\_ -> TimerFired`), so the
-fulfilled value is discarded and never has to survive the trip through
-`spawnCmd` → `Platform.sendToApp` → the process mailbox → `update`.
-
-The chain under test (elm/core `Task.elm`):
-
-    perform toMessage task = command (Perform (map toMessage task))
-    spawnCmd router (Perform task) =
-        Scheduler.spawn (task |> andThen (Platform.sendToApp router))
-
-Both a payload-carrying Msg and a nullary one are exercised, so a failure
-localises immediately: if `a` passes but `b` crashes, the defect is in
-carrying a value, not in `perform` itself.
-
+`init` batches four `Task.perform` commands on `Task.succeed`; `update` logs the
+payload of each message.
 -}
 
 -- CHECK: a: 42

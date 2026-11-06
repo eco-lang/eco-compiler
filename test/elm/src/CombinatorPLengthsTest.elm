@@ -1,6 +1,6 @@
 module CombinatorPLengthsTest exposing (main)
 
-{-| P combinator: add lengths of two lists = 5
+{-| The P combinator, which applies one function to two arguments and combines the results: `p (+) List.length [ 1, 2, 3 ] [ 4, 5 ]` is 5.
 -}
 
 -- CHECK: result: 5

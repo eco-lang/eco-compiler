@@ -1,6 +1,8 @@
 module DecodeFloat32BETest exposing (main)
 
-{-| Test Bytes.Decode.float32 BE decoding.
+{-| `Bytes.Decode.float32 BE` reads back a 32-bit big-endian float written by `Bytes.Encode.float32 BE`.
+
+The value `3.14159` does not survive 32-bit precision exactly, so the test rounds the decoded value to two decimal places and expects `3.14`.
 -}
 
 -- CHECK: DecodeFloat32BETest: 3.14

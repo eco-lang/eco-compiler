@@ -1,9 +1,8 @@
 module TypeMismatchTupleAgainstAnAliasTest exposing (..)
 
-{-| TYPE MISMATCH: tuple against an alias.
+{-| A list holding a value of an alias for `Int` and a tuple is rejected with a TYPE MISMATCH.
 
-From `SourceIR.TypeCheckFailsCases` (`problemCases`), the elm-test catalogue of programs
-the compiler must reject.
+`m` has the type `N`, an alias of `Int`, and `[ m, ( 1, 2 ) ]` puts it beside a pair; list elements must all have the same type.
 
 -}
 

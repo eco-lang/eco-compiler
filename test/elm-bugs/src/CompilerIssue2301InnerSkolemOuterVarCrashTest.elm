@@ -1,10 +1,12 @@
 module CompilerIssue2301InnerSkolemOuterVarCrashTest exposing (main)
 
-{-| Unifying a let annotation's type variable with a variable of the enclosing function crashes the compiler.
+{-| The compiler reports a type error when a let annotation's type variable must equal the type of an enclosing function's argument.
 
 <https://github.com/elm/compiler/issues/2301>
 
-In `g : (a -> ()) -> ()`, `g h = h x` needs `x : a` for every `a`, but `x` has one fixed type: a type error. Elm 0.19.1 crashes ("a [rank = 2]", Type/Solve.hs:206, "thread blocked indefinitely in an MVar operation").
+`g : (a -> ()) -> ()` promises to work for every `a`, but `g h = h x` passes `x`, an argument of
+`f` with one type. Elm 0.19.1 crashes instead ("a [rank = 2]", Type/Solve.hs:206, "thread blocked
+indefinitely in an MVar operation").
 
 -}
 

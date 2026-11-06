@@ -1,13 +1,14 @@
 module CaseSingleCtorBoolMultiTypeTest exposing (main)
 
-{-| Test case expression on a single-constructor custom type wrapping Bool
-when another single-constructor type wrapping Int exists in scope.
+{-| A case expression matches `True` and `False` literal patterns inside a
+single-constructor custom type wrapping a `Bool`, while another
+single-constructor type, wrapping an `Int`, is defined in the same module.
 
-Reproduces a codegen bug where findSingleCtorUnboxedField searches all
-single-constructor types and may find a type wrapping Int (unboxed) instead
-of the actual ForceMultiline type wrapping Bool (boxed). This causes
-eco.project.custom to emit i64 for a Bool field, but the subsequent
-eco.case with case_kind="bool" expects i1.
+`nestedMatch` wraps a `Bool` in `ForceMultiline` and matches it against
+`ForceMultiline True` and `ForceMultiline False`. `extractBool` unwraps the
+`Bool` with a variable pattern, and `useWrapper` unwraps the `Int` from
+`Wrapper 42`. The test prints each branch's result and each unwrapped value.
+
 -}
 
 -- CHECK: nested_true: "split"

@@ -1,11 +1,12 @@
 module CompilerIssue1974RankCrashWrongAnnotationTest exposing (..)
 
-{-| A wrong argument annotation in a mutually recursive pair crashes the type checker with `[rank = 1]`.
+{-| A wrong argument annotation on a recursive function called from another crashes the type checker.
 
 <https://github.com/elm/compiler/issues/1974>
 
-`toRemove` is annotated `String` but compared with a `Row a` element. Elm 0.19.1 crashes ("You ran
-into a compiler bug"); it should report a type mismatch.
+`removeFromRow` annotates `toRemove` as `String` but compares it with `head`, an element of type
+`a` from the `Row a`. `equalRows` calls it with an element of type `a`. Elm 0.19.1 crashes ("You
+ran into a compiler bug"); it should report a type mismatch.
 
 -}
 

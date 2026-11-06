@@ -23,11 +23,15 @@ import Process
 import Task
 
 
+{-| Renders the same `textarea`, with `type_` set, at every step.
+-}
 view : Int -> Html Int
 view step =
     Html.textarea [ type_ "text", class "hello" ] []
 
 
+{-| Sends `step + 1` as the next message after a 50 ms sleep.
+-}
 next : Int -> Cmd Int
 next step =
     Task.perform (\_ -> step + 1) (Process.sleep 50)

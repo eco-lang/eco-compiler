@@ -1,10 +1,6 @@
 module TypeMismatchFunctionLeftOfGreaterThanTest exposing (..)
 
-{-| TYPE MISMATCH: function left of >.
-
-From `SourceIR.TypeCheckFailsCases` (`operatorCases`), the elm-test catalogue of programs
-the compiler must reject.
-
+{-| The compiler rejects `not > not`, comparing two functions with `>`, with a TYPE MISMATCH error, because functions are not `comparable`.
 -}
 
 -- COMPILE-ERROR: TYPE MISMATCH, function left of >

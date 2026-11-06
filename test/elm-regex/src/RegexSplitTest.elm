@@ -1,5 +1,12 @@
 module RegexSplitTest exposing (main)
 
+{-| `Regex.split` cuts a string at every match and drops the matched text.
+
+Splitting `"abc123def456ghi"` on `[0-9]+` gives the three letter runs between
+the digit runs.
+
+-}
+
 -- CHECK: split1: ["abc","def","ghi"]
 
 import Html exposing (text)

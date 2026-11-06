@@ -1,8 +1,13 @@
 module RecordFieldPrimitivesRegressionFTest exposing (main)
 
-{-| Category F — direct primitive calls reading a String through a
-record field, mirroring how `Compiler.Parse.Primitives.State.src` is
-accessed.
+{-| `String` functions give the same results on a string read out of a record
+field inside a custom type, whether the string is a literal or built at run
+time with `++`.
+
+The field holds the three characters `"x"` (quote, x, quote). For each of the
+two versions the test logs its length (3), the length after appending `"y"`
+(4), and the code of the character at index 1, which is `x` (120).
+
 -}
 
 -- CHECK: f21_lenLitField: 3
@@ -40,21 +45,21 @@ main =
         srcOf (S s) =
             s.src
 
-        -- F21: String.length on a field
+        -- String.length on the field
         _ =
             Debug.log "f21_lenLitField" (String.length (srcOf litS))
 
         _ =
             Debug.log "f21_lenRtField" (String.length (srcOf rtS))
 
-        -- F22: String.append on a field, then length
+        -- String.append on the field, then its length
         _ =
             Debug.log "f22_appendLitField" (String.length (String.append (srcOf litS) "y"))
 
         _ =
             Debug.log "f22_appendRtField" (String.length (String.append (srcOf rtS) "y"))
 
-        -- Extra: index char from field
+        -- The character at index 1 of the field
         _ =
             Debug.log "fIdx_litField" (Char.toCode (unsafeIndex (srcOf litS) 1))
 

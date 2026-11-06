@@ -1,5 +1,9 @@
 module StringWordsLinesTest exposing (main)
 
+{-| `String.words` splits `"hello world"` at the space and `String.lines`
+splits `"line1\nline2"` at the newline, each into two parts.
+-}
+
 -- CHECK: words1: ["hello","world"]
 -- CHECK: lines1: ["line1","line2"]
 

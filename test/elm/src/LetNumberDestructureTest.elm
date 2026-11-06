@@ -1,9 +1,10 @@
 module LetNumberDestructureTest exposing (main)
 
-{-| Probe: binding-site variation — `number`s bound by a DESTRUCTURING let
-pattern (`( a, b ) = ( 30, 40 )`) rather than a plain `n = …` binding, both used
-at `Float`. The two slots are independent `number` vars; neither must default to
-`Int`. Correct: 30*1.5 + 40*1.5 = 45 + 60 = 105.
+{-| Two `number` literals bound by a tuple pattern in a `let` are both used as
+`Float`s.
+
+`( a, b ) = ( 30, 40 )` binds two independently typed `number` values.
+`round (a * 1.5) + round (b * 1.5)` is 45 + 60, so the test logs 105.
 
 -}
 

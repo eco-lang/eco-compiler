@@ -1,11 +1,10 @@
 module InlineDupLetNamesTest exposing (main)
 
-{-| Inlining the same helper twice, with one call nested in the other's
-argument, copies the helper's internal let-bound names (the case-scrutinee
-tuple binding) twice onto one let chain. MonoInlineSimplify must
-alpha-rename the instantiated body's let names, or MLIR codegen forces both
-scrutinee tuples onto the same SSA placeholder ("redefinition of SSA
-value" / "operand does not dominate this use").
+{-| A function whose body does a `case` on a tuple of its arguments gives the right result when one call to it is passed as an argument to another.
+
+`helper (helper 1 2) 3`: the inner call takes the `( x, y )` branch and gives
+3, and the outer call then gives 3 + 3 = 6.
+
 -}
 
 -- CHECK: InlineDupLetNamesTest: 6

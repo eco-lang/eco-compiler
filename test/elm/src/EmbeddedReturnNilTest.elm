@@ -1,6 +1,12 @@
 module EmbeddedReturnNilTest exposing (main)
 
-{-| Test a function that conditionally returns empty list, consumed by caller.
+{-| A recursive filter returns the empty list when no element passes, and the
+caller receives it like any other list.
+
+`filterPositiveEvens` keeps the elements that are positive and even. Applied to
+`[1, 2, 3, 4, 5]` it returns `[2,4]`, and applied to `[1, 3, 5]` it returns
+`[]`.
+
 -}
 
 -- CHECK: r1: [2,4]

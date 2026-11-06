@@ -1,7 +1,15 @@
 module WideRecordPatternTest exposing (main)
 
-{-| E3/B3: a 28-Int record read through a record PATTERN projects slots 26/27
-(stored boxed under the 26-slot cap) as raw i64. `.f27` and update are correct.
+{-| A record with 28 `Int` fields reads back correctly through field access,
+through a record pattern, and after a record update.
+
+`make 1` sets field `fNN` to 1000 + NN. The test checks:
+
+  - Access to `f27` and `f25`.
+  - `viaPat`, which destructures `{ f27, f25 }` and returns `f27 * 1000 + f25`.
+  - `upd`, which increments `f27` and sets `f26` to 7, read by access and by
+    `viaPat`.
+
 -}
 
 -- CHECK: access f27: 1027

@@ -1,9 +1,15 @@
 module HtmlApiCoverageTest exposing (main)
 
-{-| References every exposed function of `Html`, `Html.Attributes`,
-`Html.Events`, `Html.Keyed` and `Html.Lazy` (elm/html 1.0.0), building one
-tree that uses them all (plans/elm-html-native-kernel.md P3). A missing kernel
-symbol or an ABI mismatch fails the build (CGEN_038).
+{-| A program using every exposed function of `Html`, `Html.Attributes`, `Html.Events`, `Html.Keyed` and `Html.Lazy` (elm/html 1.0.0) compiles and runs.
+
+All of them go into one tree: a `div` carrying every attribute and event
+handler, whose children are every element function applied to the same
+attribute and child, followed by keyed nodes, an `Html.map` and one node from
+each of `lazy` to `lazy8`. Logging the tree prints `<internals>`.
+
+The test also decodes small JSON objects with `targetValue`, `targetChecked` and
+`keyCode` and logs `"ok"` when all three give the expected value.
+
 -}
 
 -- CHECK: built: <internals>
@@ -18,6 +24,8 @@ import Json.Decode as D
 import Json.Encode as Enc
 
 
+{-| The messages the event handlers produce.
+-}
 type Msg
     = Clicked
     | Typed String
@@ -25,6 +33,8 @@ type Msg
     | Code Int
 
 
+{-| Every element function of `Html`, plus `node` for a custom element.
+-}
 elements : List (List (Attribute Msg) -> List (Html Msg) -> Html Msg)
 elements =
     [ h1, h2, h3, h4, h5, h6
@@ -47,6 +57,8 @@ elements =
     ]
 
 
+{-| Attributes that use each function in `Html.Attributes` at least once.
+-}
 attributes : List (Attribute Msg)
 attributes =
     [ A.style "color" "red"
@@ -138,6 +150,8 @@ attributes =
     ]
 
 
+{-| One use of each event handler in `Html.Events`, including `on` with each of the three decoders `Html.Events` provides.
+-}
 events : List (Attribute Msg)
 events =
     [ E.onClick Clicked
@@ -162,6 +176,8 @@ events =
     ]
 
 
+{-| The single tree that uses every element, attribute, event, keyed and lazy function.
+-}
 tree : Html Msg
 tree =
     div (attributes ++ events)

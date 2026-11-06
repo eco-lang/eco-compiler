@@ -1,12 +1,13 @@
 module CompilerIssue2281LongLineListTest exposing (main)
 
-{-| A list literal written on one line longer than 65535 columns is rejected with a parse error.
+{-| A valid list literal written on one line longer than 65535 columns compiles and runs.
 
 <https://github.com/elm/compiler/issues/2281>
 
-`list` below is 22000 elements on a single line (about 66000 columns). Elm 0.19.1 stores columns
-in 16 bits and reports "UNFINISHED LIST ... I was expecting to see another list entry after this
-comma"; the program is valid (the same list written one element per line compiles).
+`list` below is 22000 elements on a single line (about 66000 columns). Elm 0.19.1 cannot handle
+a column past 65535 and rejects it with "UNFINISHED LIST ... I was expecting to see another list
+entry after this comma", although the same list written one element per line compiles. The test
+expects the program to run and log the length 22000.
 
 Fixed in Elm 0.19.2.
 

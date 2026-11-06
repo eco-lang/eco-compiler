@@ -1,13 +1,13 @@
 module DictTupleListKeyTest exposing (main)
 
-{-| Dict keyed by `( Int, List Int )` — Dict.fromList uses `compare`
-internally, which routes through the buggy `compareUnboxableSlot` path
-when comparing keys whose second tuple field is `[]` vs a heap list.
+{-| A `Dict` keyed by `( Int, List Int )` orders a key with an empty list before
+keys with non-empty lists, and can look that key up.
 
-Elm semantics: `(0, []) < (0, [1])`. Therefore Dict.toList ordering
-should be: `(0, [])`, `(0, [1])`, `(0, [2])`. The F2 bug places
-Nil-keyed entries last because Nil's `constant=5` sorts as GT against
-heap pointers (`constant=0`).
+`compare` orders tuples field by field and lists element by element, with a
+shorter prefix first, so `( 0, [] ) < ( 0, [ 1 ] ) < ( 0, [ 2 ] )`. The test
+inserts the three keys out of order, logs `Dict.keys`, and checks that
+`Dict.member` and `Dict.get` find the `( 0, [] )` entry.
+
 -}
 
 -- CHECK: keys: [(0,[]),(0,[1]),(0,[2])]

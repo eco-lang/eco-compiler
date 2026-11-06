@@ -1,5 +1,8 @@
 module RoundTripNullTest exposing (main)
 
+{-| `Json.Encode.null` decodes with `Json.Decode.null 0` to 0, the value passed to `null`.
+-}
+
 -- CHECK: rt_null: Ok 0
 
 import Html exposing (text)

@@ -1,11 +1,13 @@
 module CompilerIssue2298IdentityAliasResultTest exposing (main)
 
-{-| A type alias `Msg a = a` in the result of an annotation does not unify with `a`.
+{-| A type alias `Msg a = a` in an annotation's result is interchangeable with `a`, so `make = identity` type-checks against `a -> Msg a`.
 
-<https://github.com/elm/compiler/issues/2298> (also <https://github.com/elm/compiler/issues/2292>)
+<https://github.com/elm/compiler/issues/2298>
 
-`make : a -> Msg a` is `a -> a`, so `make = identity` is correct. Elm 0.19.1 rejects it
-(`a -> a` vs `a -> Msg a`), while it accepts `Msg a -> a`.
+<https://github.com/elm/compiler/issues/2292>
+
+The annotation means `a -> a`, and `make 7` should print 7. Elm 0.19.1 rejects the definition
+(`a -> a` against `a -> Msg a`), although it accepts the alias in argument position.
 
 -}
 

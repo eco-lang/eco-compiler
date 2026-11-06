@@ -1,10 +1,9 @@
 module NotEqualBoolMaybeTest exposing (main)
 
-{-| `/=` on Maybe Bool. The top-level `Maybe` is a heap Custom (Just) or
-the Nothing constant — so the equality path enters `eqHelp` at the Custom
-tag, and the Bool comparison happens inside `eqUnboxableSlot` /
-`resolveAndCompare`, which already special-cases mixed const/heap.
-Regression guard: must continue to work after fixing the top-level Bool bug.
+{-| `/=` on `Maybe Bool` values gives the right answer for `Just True`,
+`Just False` and `Nothing`, compared in seven pairings: each value with
+itself, the two `Just`s both ways round, and `Nothing` with `Just True` on
+either side.
 -}
 
 -- CHECK: jt_jt: False

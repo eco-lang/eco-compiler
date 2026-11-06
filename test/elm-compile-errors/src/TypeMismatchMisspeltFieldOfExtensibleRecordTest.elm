@@ -1,8 +1,8 @@
 module TypeMismatchMisspeltFieldOfExtensibleRecordTest exposing (main)
 
-{-| TYPE MISMATCH: misspelt field of extensible record.
+{-| A function annotated to take an extensible record with fields `alpha` and `beta` that reads the misspelt field `r.alpah` is rejected with a TYPE MISMATCH error.
 
-From `Compiler.Reporting.Render.TypeLayoutReportTest` (`misspeltFieldExtensible`), an elm-test program the compiler must reject.
+The annotation fixes which fields `r` is known to have, so accessing a field not among them cannot type-check, even though the record type is extensible.
 
 -}
 

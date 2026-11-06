@@ -1,6 +1,6 @@
 module RecursiveFactorialTest exposing (main)
 
-{-| Test simple recursion with factorial.
+{-| A self-recursive top-level `factorial` returns 1 for 0 and 120 and 3628800 for 5 and 10.
 -}
 
 -- CHECK: fact0: 1

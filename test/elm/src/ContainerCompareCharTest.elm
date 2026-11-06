@@ -1,11 +1,14 @@
 module ContainerCompareCharTest exposing (main)
 
-{-| Ordering of Char-containing Tuple2, Tuple3, and List values via `compare`
-    and the relational operators.
+{-| Ordering of pairs, triples and lists of `Char` with `compare` and the
+relational operators.
 
-    Char compare is code-point compare, so uppercase ASCII letters sort
-    before lowercase ones (`'A' < 'a'` because 65 < 97), and BMP code points
-    sort by their numeric code.
+`Char` values compare by code point, so uppercase ASCII letters sort before
+lowercase ones (`'A'` is 65, `'a'` is 97), digits sort before letters, and
+`'\u{03B1}'` (α) sorts before `'\u{03B2}'` (β). Containers compare position by
+position, a list that is a prefix of another is less, and the empty list is
+less than any other list.
+
 -}
 
 -- CHECK: pairLt: LT

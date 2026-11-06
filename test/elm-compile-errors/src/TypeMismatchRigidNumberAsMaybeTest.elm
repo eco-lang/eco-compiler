@@ -1,9 +1,8 @@
 module TypeMismatchRigidNumberAsMaybeTest exposing (..)
 
-{-| TYPE MISMATCH: rigid number as Maybe.
+{-| Returning a `Maybe` where the annotation promises a `number` is rejected with a TYPE MISMATCH.
 
-From `SourceIR.TypeCheckFailsCases` (`rigidCases`), the elm-test catalogue of programs
-the compiler must reject.
+`f : number -> number` with `f x = Just x`.
 
 -}
 

@@ -1,5 +1,8 @@
 module RoundTripListTest exposing (main)
 
+{-| The list `[ 1, 2, 3 ]` encoded with `Json.Encode.list` decodes back to the same list with `Json.Decode.list`.
+-}
+
 -- CHECK: rt_list: Ok [1,2,3]
 
 import Html exposing (text)

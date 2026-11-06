@@ -1,13 +1,12 @@
 module TimeHereTzUtcTest exposing (main)
 
-{-| TIME-05 (plans/kernel-lib-bug-fixes.md): `Time.here` under `TZ=UTC0` gives the UTC zone, so the
-epoch is 00:00. On Linux and macOS `getLocalTimezoneOffset` (elm-kernel-cpp/src/time/TimeExports.cpp)
-reads `tm_gmtoff`, which honours `TZ`, so this passes there. The bug is Windows-only: that branch
-returns the CRT's `_timezone` without ever calling `_tzset`, so it holds the CRT default (28800,
-UTC-8, hour 16) and ignores daylight saving time; the fix calls `_tzset` and uses `localtime_s`. The
-DST half cannot be pinned without a date-dependent expectation (verify by hand on Windows in a DST
-zone). Elm on node with `TZ=UTC0` prints the same two lines. Left unmarked: it passes on Linux, and
-Windows is low priority.
+{-| `Time.here` honours the `TZ` environment variable: with `TZ=UTC0` it gives a zone with no offset, so the Unix epoch reads as 00:00.
+
+The program asks for `Time.here` and logs the hour and minute of
+`Time.millisToPosix 0` in the zone it receives. Any other offset from UTC
+would change the hour or the minute.
+
+Among what is not tested: daylight saving time, and any zone other than UTC.
 
 -}
 
@@ -20,6 +19,8 @@ import Task
 import Time
 
 
+{-| The local zone returned by `Time.here`.
+-}
 type Msg
     = Here Time.Zone
 

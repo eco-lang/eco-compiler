@@ -1,6 +1,10 @@
 module RecursiveTreeTest exposing (main)
 
-{-| Test recursive binary tree type with sum and depth traversals. -}
+{-| A recursive binary tree type can be summed and measured with recursive functions.
+
+The tree `Branch (Branch (Leaf 1) (Leaf 2)) (Leaf 3)` sums to 6 and has depth 3,
+counting a `Leaf` as depth 1.
+-}
 
 -- CHECK: sum: 6
 -- CHECK: depth: 3

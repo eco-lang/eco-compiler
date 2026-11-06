@@ -1,6 +1,10 @@
 module RecursiveMutualTypeTest exposing (main)
 
-{-| Test mutually recursive types (Forest/RoseTree). -}
+{-| A pair of mutually recursive custom types, `Forest` and `RoseTree`, can be built and traversed.
+
+`countNodes` counts a tree of four `RoseNode`s nested up to three levels, folding
+over each node's `Forest` of children.
+-}
 
 -- CHECK: nodes: 4
 

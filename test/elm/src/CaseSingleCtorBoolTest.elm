@@ -1,10 +1,13 @@
 module CaseSingleCtorBoolTest exposing (main)
 
-{-| Test case expression on a single-constructor custom type wrapping Bool.
+{-| A case expression matches `True` and `False` literal patterns inside a
+single-constructor custom type wrapping a `Bool`.
 
-Reproduces a codegen bug where eco.project.custom emits i64 (tag type) for a
-Bool field inside a single-constructor wrapper, but the subsequent eco.case
-with case_kind="bool" expects i1.
+`nestedMatch` wraps a `Bool` in `ForceMultiline` and matches it against
+`ForceMultiline True` and `ForceMultiline False`, and `extractBool` unwraps the
+`Bool` with a variable pattern. The test prints each branch's result and each
+unwrapped value.
+
 -}
 
 -- CHECK: nested_true: "split"

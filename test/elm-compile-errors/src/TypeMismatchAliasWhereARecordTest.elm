@@ -1,9 +1,8 @@
 module TypeMismatchAliasWhereARecordTest exposing (..)
 
-{-| TYPE MISMATCH: alias where a record.
+{-| A value of a record alias used where a record with a differently typed field is expected is rejected with a TYPE MISMATCH.
 
-From `SourceIR.TypeCheckFailsCases` (`problemCases`), the elm-test catalogue of programs
-the compiler must reject.
+`p` has type `P`, an alias of `{ a : Int }`, and `x` is annotated `{ a : String }` but defined as `p`.
 
 -}
 

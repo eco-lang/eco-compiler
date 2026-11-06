@@ -1,11 +1,20 @@
 module ContainerEqualityCustomFloatTest exposing (main)
 
-{-| Equality of custom types whose fields are Float, including NaN, Infinity,
-    and +/- 0.0.
+{-| Checks `==` on custom-type values whose fields are `Float`, including NaN,
+infinities and negative zero.
 
-    Custom types are not Elm `comparable`, so only `==` is exercised. This
-    test targets the `Tag_Custom` branch of `Utils_equal`, which reads
-    unboxed fields via `.i` (bit compare) rather than IEEE equality.
+A constructor's fields are compared with `Float` equality, so `NaN` is unequal
+even to itself, `-0.0` equals `0.0`, and the two infinities differ from each
+other. Custom types are not `comparable`, so only `==` is used.
+
+  - `Point` (two fields): equal, differing in each field, `0.0` against `-0.0`
+    (True), NaN in either field (False), positive infinity on both sides (True)
+    and opposite infinities (False).
+  - `Triple` (three fields): equal, differing in the middle, zeros of mixed
+    sign (True), NaN in the middle (False), and infinities with mixed-sign zeros
+    (True).
+  - Two different constructors of `Shape` with the same payload (False).
+
 -}
 
 -- CHECK: ptEqual: True

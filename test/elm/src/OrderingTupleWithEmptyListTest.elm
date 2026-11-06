@@ -1,8 +1,8 @@
 module OrderingTupleWithEmptyListTest exposing (main)
 
-{-| `<`, `<=`, `>`, `>=` on tuples with `[]` in a List Int field.
-Same F2 bug surface as `CompareTupleWithEmptyListTest`, expressed via
-the relational operators that route through their own kernel symbols.
+{-| Tests `<`, `<=`, `>` and `>=` on `( Int, List Int )` tuples whose first
+components are equal, so the result is decided by comparing `[]` with
+`[ 1 ]` in the second component.
 -}
 
 -- CHECK: lt_ee: False

@@ -1,6 +1,6 @@
 module CharToCodeTest exposing (main)
 
-{-| Test Char.toCode.
+{-| `Char.toCode` gives the code points 65, 97 and 48 for `'A'`, `'a'` and `'0'`.
 -}
 
 -- CHECK: code1: 65

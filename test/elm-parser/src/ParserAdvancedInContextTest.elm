@@ -1,5 +1,15 @@
 module ParserAdvancedInContextTest exposing (main)
 
+{-| `Parser.Advanced.inContext` records its context on the dead ends of a parser that fails inside it.
+
+The inner parser is a `chompIf` whose predicate rejects every character, so
+running it on `"abc"` fails. The test checks that the first dead end's
+`contextStack` is not empty.
+
+Among what is not tested: which context the stack holds, its position, and
+nested contexts.
+-}
+
 -- CHECK: failed_with_context: True
 
 import Html exposing (text)

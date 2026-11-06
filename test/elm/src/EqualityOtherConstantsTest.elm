@@ -1,13 +1,8 @@
 module EqualityOtherConstantsTest exposing (main)
 
-{-| Regression guard for the broader embedded-constant equality story.
+{-| `==` on empty and non-empty values of `String`, `List Int`, `Maybe Int` and `()` gives the right answer in both argument orders.
 
-These cases involve embedded constants other than Bool (Nil, Nothing,
-EmptyString, Unit). They are *currently* correct — either by accident
-(both arms resolve to the same nullptr) or because one arm is a real
-heap pointer that the `if (!a || !b) return false` short-circuit
-catches. The test pins them so a Bool-equality fix does not silently
-regress these adjacent cases.
+Each empty value (`""`, `[]`, `Nothing`) is held in an annotated local and compared with an equal literal, which is `True`, and with a non-empty value on either side, which is `False`. `() == ()` is `True`.
 -}
 
 -- CHECK: emptyEmpty: True

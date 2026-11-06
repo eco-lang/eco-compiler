@@ -1,5 +1,8 @@
 module DecodeAtTest exposing (main)
 
+{-| `Json.Decode.at [ "a", "b" ]` follows nested object fields and decodes the value found there.
+-}
+
 -- CHECK: decode_at: Ok 42
 
 import Html exposing (text)

@@ -27,7 +27,7 @@ bet in the series (deleted-per-op-work family, not metadata-only).
 | `compiler/src/Compiler/Generate/MLIR/Expr.elm` | `consIntrinsicFor` gate helper + `coerceIntrinsicArgs` (new top-level helpers next to `boxToEcoValue` :1263-1295; both internal — Expr.elm's `exposing` list is untouched); consult-site rewrites at :3725/:3731 and :4199/:4204 (`Maybe.andThen` filter, no new branches) |
 | `compiler/src/Compiler/Eco/Config.elm` | `ListConfig.consIntrinsic : Bool` (:61-64) + its doc comment (:51-59), `default.list` record literal (:324), `listDecoder` (:367-370), `hash` token `lcons=1` (new block after :686) |
 | `compiler/src/Builder/Eco/Config.elm` | new `applyListConsIntrinsicOverride` (copy of `applyListChunksOverride` :486-511, placed after :511) + a `Task.andThen` link in `applyEnvOverrides`' chain (insert after the `ECO_LIST_REPORT` link :225-229; binder name is cosmetic — the chain already reuses `cfg26` twice at :246/:256) |
-| `test/elm/src/ListConsIntrinsicTest.elm` | NEW — behaviour + `-- CHECK-MLIR` conversion fixture (boxed / Int / Float / Char heads, devirt path, accumulator loop). Auto-discovered by `discoverTests` (ElmE2ETestBase.hpp:1089-1105) — no registration |
+| `test/eco-mlir/src/ListConsIntrinsicTest.elm` | NEW — behaviour + `-- CHECK-MLIR` conversion fixture (boxed / Int / Float / Char heads, devirt path, accumulator loop). Auto-discovered by `discoverTests` (ElmE2ETestBase.hpp:1089-1105) — no registration |
 | `test/elm/src/ListConsIntrinsicBailTest.elm` | NEW **only if §3.2's discovery step finds a reachable decline shape** — `-- CHECK-MLIR: @Elm_Kernel_List_cons` |
 | `compiler/tests/Compiler/Generate/MLIR/IntrinsicsListConsTest.elm` | NEW — table unit test driven through the EXPOSED `Intrinsics.kernelIntrinsic "List" "cons" …` (`listIntrinsic` is internal; do not widen the `exposing` list). Mirrors `KernelAbiTest.elm`; `exposing (suite)`, `suite : Test` |
 | `runtime/src/codegen/Passes/EcoListTemplate.cpp` | ONLY under contingency B (§Phase 1 decision) — relax `getLiveRoots().empty()` at :148-150 / :659-661 |
@@ -618,7 +618,7 @@ a matching amount (Phase 4 quantifies).
 
 ### Phase 3 — tests
 
-**3.1 `test/elm/src/ListConsIntrinsicTest.elm`** (NEW). Conventions from
+**3.1 `test/eco-mlir/src/ListConsIntrinsicTest.elm`** (NEW). Conventions from
 `AggPromoteTupleTest.elm` (behaviour pinned in BOTH flavours) and `HofFoldlLoopifyTest.elm`
 (`-- CHECK-MLIR`). **Registration: none** — `discoverTests` (ElmE2ETestBase.hpp:1089-1105)
 `directory_iterator`s `test/elm/src` and takes every `.elm` with a top-level `main`

@@ -1,6 +1,10 @@
 module DecodeMap4Test exposing (main)
 
-{-| Test Bytes.Decode.map4 combining four decoders.
+{-| Bytes.Decode.map4 combines four decoders that read consecutive bytes.
+
+Four unsigned 8-bit values 1, 2, 3 and 4 are encoded, and `map4` reads them in
+order and sums them, so the logged result is 10. A failed decode would log -1.
+
 -}
 
 -- CHECK: DecodeMap4Test: 10

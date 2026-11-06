@@ -1,13 +1,14 @@
 module BytesDecoderMutualRecursiveTest exposing (main)
 
-{-| Mutually recursive Bytes.Decode decoders.
+{-| A self-recursive top-level decoder that also delegates to a second top-level decoder decodes a small expression tree correctly.
 
-    Two decoders `exprDecoder` and `atomDecoder` reference each other.
-    Tests the mutual-recursion variant of the self-recursive decoder bug.
+`exprDecoder` refers to itself for both operands of `Add`, and to `atomDecoder`
+for a literal. `atomDecoder` does not refer back, so despite the module name the
+two decoders are not mutually recursive.
 
-    Encoding: [0, 42] for Lit 42, [1, 0, 10, 0, 20] for Add (Lit 10) (Lit 20).
+The encoding is `0 n` for `Lit n` and `1 left right` for `Add left right`. The
+input `1 0 10 0 20` decodes to `Just (Add (Lit 10) (Lit 20))`.
 
-    Expected: prints "decoded: Just (Add (Lit 10) (Lit 20))" without crashing.
 -}
 
 -- CHECK: decoded: Just (Add (Lit 10) (Lit 20))

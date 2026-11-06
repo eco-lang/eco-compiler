@@ -1,6 +1,11 @@
 module CaseReturnFunctionTest exposing (main)
 
-{-| Test case expression where branches return functions.
+{-| Checks that the branches of a `case` can each return a two-argument lambda,
+and that the returned function is applied with the right arithmetic.
+
+`getOp` picks addition, subtraction or multiplication by an `Op` constructor,
+and each result is applied at once to two `Int` arguments.
+
 -}
 
 -- CHECK: op1: 7

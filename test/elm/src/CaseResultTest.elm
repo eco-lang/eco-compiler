@@ -1,6 +1,7 @@
 module CaseResultTest exposing (main)
 
-{-| Test case expression on Result type.
+{-| Checks that a `case` on a `Result` returns the `Ok` value, and -1 for any
+`Err`.
 -}
 
 -- CHECK: res1: 42

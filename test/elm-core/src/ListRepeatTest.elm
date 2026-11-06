@@ -1,5 +1,11 @@
 module ListRepeatTest exposing (main)
 
+{-| `List.repeat n x` gives a list of `n` copies of `x`, and an empty list when `n` is 0.
+
+It is checked with an `Int` and with a `String`.
+
+-}
+
 -- CHECK: repeat1: [0,0,0]
 -- CHECK: repeat_str: ["hi","hi"]
 -- CHECK: repeat_zero: []

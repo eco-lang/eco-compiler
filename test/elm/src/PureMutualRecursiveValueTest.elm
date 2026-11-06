@@ -1,11 +1,11 @@
 module PureMutualRecursiveValueTest exposing (main)
 
-{-| Mutually recursive zero-arity top-level values.
+{-| Two top-level values that refer to each other through lambdas can be defined and used.
 
-    Two bindings `a` and `b` each wrap a lambda that captures the other.
-    Same mechanism as PureRecursiveValueThunkTest but with mutual recursion.
+`a` is `Box (\_ -> b)` and `b` is `Box (\_ -> a)`: neither is a function, but each refers
+to the other only inside a lambda, which Elm allows. `main` unwraps `a`, calls its function
+to get `b`, matches that, and logs `ok: ()`.
 
-    Expected: prints "ok: ()" without crashing.
 -}
 
 -- CHECK: ok: ()

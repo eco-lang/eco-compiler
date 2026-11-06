@@ -1,5 +1,8 @@
 module RoundTripKeyValuePairsTest exposing (main)
 
+{-| `Json.Decode.keyValuePairs` decodes an object encoded from `[ ( "a", 1 ), ( "b", 2 ) ]` back to the same pairs, in the same order.
+-}
+
 -- CHECK: rt_kvp: Ok [("a",1),("b",2)]
 
 import Html exposing (text)

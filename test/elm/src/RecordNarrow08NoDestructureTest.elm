@@ -1,19 +1,13 @@
 module RecordNarrow08NoDestructureTest exposing (main)
 
-{-| Variation 16: NO destructure, just log the value.
+{-| A let-bound helper with an inferred extensible-record argument, folded with `List.foldl`, logs a nested custom-type field as `LambdaId 999`.
 
-    Read `inner.lambdaId` and pass it to `Debug.log` without destructuring.
-    Debug.log uses Debug.toString to render, which inspects the value's
-    type tag at runtime. With the narrow-layout misread, the bits at slot 1
-    of the full layout are `captures = []`, so the value `inner.lambdaId`
-    has type LambdaId statically but bits Const_Nil at runtime.
-
-    Demonstrates the bug as silent miscompile (no destructure, no
-    eco_resolve_hptr): the logged output will reveal what value was read.
-
-    Expected (correct): lambdaId: LambdaId 999
-    Buggy outcome: lambdaId: something else (likely empty list rendering,
-    or runtime crash inside Debug.toString).
+Each record is built without an annotation, and `buildSibling` is a let-bound
+helper with no annotation, so its argument's type is inferred as an extensible
+record naming only the fields it reads, while the records passed in carry more.
+The helper passes `inner.lambdaId` straight to `Debug.log` instead of
+destructuring it, and returns a count. It runs once per member, so `lambdaId`
+is logged twice; the CHECK line matches the first.
 -}
 
 -- CHECK: lambdaId: LambdaId 999

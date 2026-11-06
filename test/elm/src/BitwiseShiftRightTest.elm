@@ -1,6 +1,6 @@
 module BitwiseShiftRightTest exposing (main)
 
-{-| Test Bitwise.shiftRightBy (arithmetic shift).
+{-| `Bitwise.shiftRightBy` is an arithmetic shift: it divides a positive number by a power of two, and keeps the sign of a negative one, so `-1` shifted right stays `-1`.
 -}
 
 -- CHECK: shr1: 1

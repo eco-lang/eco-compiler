@@ -1,9 +1,9 @@
 module HigherOrderFilterLikeFunctionTest exposing (..)
 
-{-| Filter-like function.
+{-| A let-bound function that takes a predicate and a list, and keeps the list's head when the predicate holds, gives `[1]` for a predicate that always returns `True`.
 
-From `SourceIR.HigherOrderCases`, a program of the elm-test catalogue, with a
-`main` that logs its `testValue`. The CHECK lines are what Elm 0.19.1 prints for it.
+`myFilter` looks only at the first element: it is not recursive, so it never
+returns more than one element.
 
 -}
 

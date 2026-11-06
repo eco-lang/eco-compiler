@@ -1,9 +1,8 @@
 module TypeMismatchTwoFlexibleRecordsTest exposing (..)
 
-{-| TYPE MISMATCH: two flexible records.
+{-| A record argument whose `name` field is used both as a number and as a `String` is rejected with a TYPE MISMATCH.
 
-From `SourceIR.TypeCheckFailsCases` (`problemCases`), the elm-test catalogue of programs
-the compiler must reject.
+In `k c`, `c.name + 1` needs `name` to be a number, while passing `c` to `h`, which computes `a.name ++ "s"`, needs it to be a `String`.
 
 -}
 

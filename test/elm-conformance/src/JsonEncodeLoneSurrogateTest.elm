@@ -1,14 +1,16 @@
 module JsonEncodeLoneSurrogateTest exposing (main)
 
-{-| JSON-01 (plans/kernel-lib-bug-fixes.md): `Json.Encode.encode` of a String holding a lone
-surrogate. Elm (JSON.stringify) writes a lone surrogate as a `\uXXXX` escape and leaves a valid
-pair raw. eco's `Elm_Kernel_Json_encode` used nlohmann `json::dump`, which threw
-`type_error.316` on the invalid UTF-8 that a lone surrogate becomes; the exception escaped the
-`extern "C"` export, so `std::terminate` ran and nothing after the first case was logged. eco now
-writes the text with its own `JSON.stringify`-like serializer (`writeJsJson`).
-Expected values recorded from Elm on node. Kept in its own file so a crash hides no other
-JSON CHECKs. The emoji is written as `Char.fromCode 0x1F600` to keep the source ASCII.
+{-| `Json.Encode.encode` writes a lone UTF-16 surrogate in a string as a `\uXXXX` escape and leaves
+a valid surrogate pair unescaped.
 
+The emoji U+1F600 is built with `Char.fromCode`, and `String.left 1` of it is its lone high
+surrogate.
+
+  - `lone high` and `lone low`: a string holding only U+D83D or U+DC00 encodes as `"\ud83d"` or
+    `"\udc00"`.
+  - `lone key`: a lone surrogate in an object key is escaped the same way.
+  - `pair intact`: the encoded emoji is 4 UTF-16 units long, the two quotes and the unescaped
+    pair.
 -}
 
 -- CHECK: lone high: "\"\\ud83d\""

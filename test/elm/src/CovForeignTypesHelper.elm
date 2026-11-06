@@ -1,27 +1,29 @@
 module CovForeignTypesHelper exposing (config, secretValue)
 
-{-| Helper module for `CovForeignTypesTest`: exposes a value whose annotation
-names a type alias the module does not expose, and a record value.
+{-| Supplies `CovForeignTypesTest` with two values from another module: one
+whose annotation names a type alias this module does not expose, and a record.
 
-Because `Secret` is not exposed, the module's interface carries the type of
-`secretValue` with the alias already expanded, which an importing module's
-type checker then instantiates.
+An importing module cannot name `Secret`, but it can still use `secretValue`,
+whose type is `Int` once the alias is expanded.
 
 -}
 
 
+{-| A name for `Int`, deliberately left out of the module's exposing list.
+-}
 type alias Secret =
     Int
 
 
-{-| An `Int`, typed through the unexposed alias `Secret`.
+{-| The number 41, annotated with the unexposed alias `Secret`.
 -}
 secretValue : Secret
 secretValue =
     41
 
 
-{-| A record value, for a field access through the module name.
+{-| A record with `x = 1` and `y = 2`, which an importer reads a field of
+through the module name.
 -}
 config : { x : Int, y : Int }
 config =

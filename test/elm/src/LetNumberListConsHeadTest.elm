@@ -1,8 +1,10 @@
 module LetNumberListConsHeadTest exposing (main)
 
-{-| Probe: `number` list head extracted via a `::` cons pattern, used at `Float`.
-`buildPartialContainer` returns `Nothing` for `HintList`, so this exercises a
-destructure path with no number demand-refinement support. Correct: 30*1.5 = 45.
+{-| The head of a list of `number` literals, matched by a `::` pattern in a
+`case` and multiplied by a `Float`, is a `Float`.
+
+`case [ 30, 40 ] of h :: _ -> round (h * 1.5)` logs 45.
+
 -}
 
 -- CHECK: listcons: 45

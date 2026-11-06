@@ -1,9 +1,8 @@
 module BadMainRecursiveMainTest exposing (..)
 
-{-| BAD MAIN: recursive main.
+{-| An annotated `main` that is mutually recursive with another function is rejected with a BAD MAIN error.
 
-From `SourceIR.MainFailsCases` (`cycleCases`), the elm-test catalogue of programs
-the compiler must reject.
+`main : Int -> Int` calls `f`, and `f` calls `main`.
 
 -}
 

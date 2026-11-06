@@ -1,6 +1,6 @@
 module FloatDivTest exposing (main)
 
-{-| Test float division.
+{-| `/` on `Float` values for each combination of signs of the dividend and divisor.
 -}
 
 -- CHECK: div1: 2.5

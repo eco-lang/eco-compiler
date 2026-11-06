@@ -1,6 +1,7 @@
 module CaseStringTest exposing (main)
 
-{-| Test case expression on String.
+{-| A case expression on a `String` with two literal patterns and a wildcard
+returns the `Int` of the matching branch.
 -}
 
 -- CHECK: case1: 1

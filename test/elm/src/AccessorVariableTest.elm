@@ -1,6 +1,7 @@
 module AccessorVariableTest exposing (main)
 
-{-| Test accessor function stored in a variable and used on different record types. -}
+{-| A record accessor works when bound to a variable, and `.name` works on lists of two different record types.
+-}
 
 -- CHECK: via_var: 42
 -- CHECK: mapped: [10,20,30]

@@ -1,10 +1,13 @@
 module CompilerIssue2097ExtensibleUnitArgCrashTest exposing (main, f)
 
-{-| An extensible-record alias applied to `()` crashes the compiler instead of reporting an error.
+{-| An extensible-record alias applied to `()` must be rejected with an error report, not crash
+the compiler.
 
 <https://github.com/elm/compiler/issues/2097>
 
-Elm 0.19.1 crashes with "Used toAnnotation on a type that is not well-formed" (Type/Type.hs) and "thread blocked indefinitely in an MVar operation". `()` is not a record, so the program must be rejected with an ordinary error report.
+Elm 0.19.1 crashes with "Used toAnnotation on a type that is not well-formed" (Type/Type.hs) and
+"thread blocked indefinitely in an MVar operation". `()` is not a record, so the program must be
+rejected with an ordinary error report.
 
 -}
 

@@ -1,9 +1,6 @@
 module NameClashTwoLetBindingsOfOneNameTest exposing (..)
 
-{-| NAME CLASH: two let bindings of one name.
-
-From `SourceIR.CanonicalizeFailsCases` (`testValue`), the elm-test catalogue of programs
-the compiler must reject.
+{-| A `let` block that defines `y` twice is rejected with a NAME CLASH error.
 
 -}
 

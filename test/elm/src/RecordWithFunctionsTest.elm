@@ -1,6 +1,10 @@
 module RecordWithFunctionsTest exposing (main)
 
-{-| Test records containing function values in fields. -}
+{-| Functions stored in record fields can be called, composed and replaced with record update.
+
+`ops.add 10` gives 11, `ops.mul 10` gives 20 and `ops.mul (ops.add 10)` gives 22.
+`ops2` replaces `add` with `\x -> x + 2`, so `ops2.add 5` gives 7.
+-}
 
 -- CHECK: apply1: 11
 -- CHECK: apply2: 20

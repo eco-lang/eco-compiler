@@ -734,7 +734,7 @@ plan's ORDER 6 re-census, which follows either way.
   (lssDecoder — positional), :1376-1794 (hash LSS block);
   Builder/Eco/Config.elm:111-274 (env chain), :1724-1730 (updateLss),
   :2104-2188 (the three handlers).
-- test/elm/src/LssGapLambdaStages.elm (probe; regression pin).
+- test/eco-elm/src/LssGapLambdaStages.elm (probe; regression pin).
 - design_docs/invariants.csv — LSS_005, LSS_006, LSS_010, LSS_013,
   LSS_015, LSS_017, LSS_024; FORBID_* before touching codegen-adjacent
   paths.

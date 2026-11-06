@@ -1,6 +1,7 @@
 module ListFoldlTest exposing (main)
 
-{-| Test List.foldl.
+{-| `List.foldl` folds from the left, shown by sum, product and `(++)` on strings,
+where `"cba"` reveals the order.
 -}
 
 -- CHECK: sum: 10

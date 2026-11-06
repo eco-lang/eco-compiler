@@ -1,18 +1,24 @@
 module CharCaseFullRangeTest exposing (main)
 
-{-| The whole case-mapping table, as hashes. For every code point of every plane (surrogates
-and `skip` skipped) it mixes the Char mappings, their re-mappings, Char.toCode, Char.isUpper and
-the one-Char String mappings into one hash per plane ("plane p"); String.toUpper/toLower of each
-block of 0x100 code points (minus `skip`) into a second hash per plane ("strplane p"), which
-covers the whole-string paths with real neighbours; and the sorted list of every toUpper/toLower
-result below U+D800 whose source is not in `skip`, plus its Set size ("sorted"). A mismatch says
-which plane to look at. Expectations recorded from Elm (run-js-e2e.js --record).
+{-| `Char` and `String` case mapping over every code point of every Unicode plane, reduced to one
+hash per plane so that any difference shows which plane it is in.
 
-`skip` holds the code points where eco differs from Elm on purpose (plans/char-simple-case-mapping.md,
-design\_docs/char-case-mapping.md): the 103 whose full case mapping is several code points (Elm's
-results for them are recorded in CaseMappingDivergenceTest), U+1E9E, whose lower case is U+00DF,
-and U+03A3, whose lower case depends on Final\_Sigma. All are in the BMP, so the hashes of planes
-1-16 are what they would be without it.
+The test covers code points 0 to 0x10FFFF, leaving out the surrogates (0xD800 to 0xDFFF) and the
+105 code points in `skip`: 103 whose full Unicode case mapping is more than one code point (such
+as U+00DF, whose upper case is "SS"), U+1E9E, whose lower case is U+00DF, and U+03A3, whose lower
+case inside a string depends on whether it ends a word. All of these are in plane 0, so planes 1
+to 16 are hashed in full.
+
+  - `plane p`: for each code point of plane `p`, its `Char.toUpper` and `Char.toLower`, their
+    codes, the lower case of the upper case and the upper case of the lower case,
+    `String.toUpper` and `String.toLower` of the one-character string, and `Char.isUpper` of the
+    upper case, all folded into one hash.
+  - `strplane p`: `String.toUpper` and `String.toLower` of each run of 0x100 consecutive code
+    points of plane `p`, as one string, so each character is mapped next to its neighbours.
+  - `sorted`: every `Char.toUpper` and `Char.toLower` result for code points below 0xD800, sorted
+    by `List.sort` and hashed, together with the number of distinct results.
+
+The hashes use `mix` and `hashString` from `ConformanceHelp`.
 -}
 
 -- CHECK: plane 0: "818950263"
@@ -60,7 +66,8 @@ isSurrogate cp =
     cp >= 0xD800 && cp <= 0xDFFF
 
 
-{-| The code points left out (see the module comment).
+{-| The code points left out of every hash besides the surrogates, listed in the module
+documentation.
 -}
 skip : Set.Set Int
 skip =
@@ -125,7 +132,6 @@ mixCodePoint cp h =
 
 
 {-| Folds `mixCodePoint` over code points `cp .. last`, skipping surrogates and `skip`.
-Tail-recursive.
 -}
 charLoop : Int -> Int -> Int -> Int
 charLoop cp last h =
@@ -149,7 +155,7 @@ block lo =
         |> String.fromList
 
 
-{-| Folds the String mappings of every 0x100-code-point block of `lo .. last`. Tail-recursive.
+{-| Folds `String.toUpper` and `String.toLower` of every `block` from `lo` to `last` into `h`.
 -}
 blockLoop : Int -> Int -> Int -> Int
 blockLoop lo last h =
@@ -164,6 +170,8 @@ blockLoop lo last h =
         blockLoop (lo + 0x0100) last (hashString (hashString h (String.toUpper s)) (String.toLower s))
 
 
+{-| Returns the `plane p` and `strplane p` rows for plane `p`.
+-}
 planeEntries : Int -> List ( String, String )
 planeEntries p =
     let
@@ -178,6 +186,9 @@ planeEntries p =
     ]
 
 
+{-| The `sorted` row: the hash of every case-mapping result below U+D800, in sorted order,
+mixed with the number of distinct results.
+-}
 sorted : String
 sorted =
     let

@@ -1,9 +1,8 @@
 module TooManyArgsTooManyArgumentsToANullaryConstructorTest exposing (..)
 
-{-| TOO MANY ARGS: too many arguments to a nullary constructor.
+{-| A constructor with no arguments applied to one is rejected with a TOO MANY ARGS error.
 
-From `SourceIR.TypeCheckFailsCases` (`contextCases`), the elm-test catalogue of programs
-the compiler must reject.
+`T` is the only constructor of `type T = T` and takes no arguments; `x` applies it to `1`.
 
 -}
 

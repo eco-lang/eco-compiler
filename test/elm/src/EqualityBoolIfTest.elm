@@ -1,8 +1,11 @@
 module EqualityBoolIfTest exposing (main)
 
-{-| `Bool == Bool` flowing through `if … then … else …`. The result of
-the broken kernel call is re-boxed and then unboxed by the `if` to drive
-control flow, so this is the form the user originally hit.
+{-| The result of `==` and `/=` on `Bool` operands drives an `if` expression
+correctly.
+
+All four `==` comparisons of `True` and `False` choose `"yes"` exactly when the
+operands are equal. The two `/=` cases choose `"yes"` only for `True /= False`.
+
 -}
 
 -- CHECK: ifTT: "yes"

@@ -1,8 +1,8 @@
 module LetNumberArrayMapTest exposing (main)
 
-{-| Probe: a `number` boxed in an `Array`, mapped at `Float`. Extends the boxed
-silent-miscompile family to `Array`. Correct: [45, 60].
-
+{-| An unannotated `let`-bound `Array` of number literals is mapped with a function
+that uses each element as a Float: `x * 1.5` then `round` turns `[30, 40]` into
+`[45,60]`.
 -}
 
 -- CHECK: array: [45,60]

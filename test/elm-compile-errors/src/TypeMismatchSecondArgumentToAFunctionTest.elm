@@ -1,9 +1,8 @@
 module TypeMismatchSecondArgumentToAFunctionTest exposing (..)
 
-{-| TYPE MISMATCH: second argument to a function.
+{-| Passing a number as the second argument of a function that expects a `String` there is rejected with a TYPE MISMATCH.
 
-From `SourceIR.TypeCheckFailsCases` (`contextCases`), the elm-test catalogue of programs
-the compiler must reject.
+`f : Int -> String -> Int` is called as `f 1 2`.
 
 -}
 

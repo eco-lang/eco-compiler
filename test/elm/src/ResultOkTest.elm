@@ -1,6 +1,6 @@
 module ResultOkTest exposing (main)
 
-{-| Test Ok creation.
+{-| Checks that `Ok` builds a `Result` around an `Int` and around a `String`, and that `Debug.log` prints them as `Ok 42` and `Ok "success"`.
 -}
 
 -- CHECK: ok1: Ok 42

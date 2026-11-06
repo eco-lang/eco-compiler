@@ -1,8 +1,6 @@
 module ArrayMapFloatIncrementTest exposing (main)
 
-{-| `Array.map` on `Array Float`. Reaches `JsArray.map`, which re-boxes each
-    unboxed slot as `ElmInt` before the mapper — the increment must still
-    yield correct Float results.
+{-| `Array.map ((+) 0.5)` over an `Array Float` of 1.5 and 2.5 gives exactly 2.0 and 3.0.
 -}
 
 -- CHECK: result: [2,3]

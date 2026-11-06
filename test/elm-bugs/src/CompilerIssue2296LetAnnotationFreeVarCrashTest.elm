@@ -1,10 +1,12 @@
 module CompilerIssue2296LetAnnotationFreeVarCrashTest exposing (main)
 
-{-| A let annotation using a type variable of an unannotated outer function crashes the compiler.
+{-| The compiler reports a type error for a let annotation that uses a type variable belonging to an unannotated enclosing function.
 
 <https://github.com/elm/compiler/issues/2296>
 
-`cells : List (Html msg)` says `cells` works for every `msg`, but it is built from `children`, whose `msg` is fixed by the caller: a type error. Elm 0.19.1 crashes ("msg [rank = 2]", Type/Solve.hs:206, "thread blocked indefinitely in an MVar operation").
+`cells : List (Html msg)` claims `cells` works for every `msg`, but it is built from `children`,
+an argument of `asRow` whose `msg` is fixed by the caller. Elm 0.19.1 crashes instead ("msg [rank =
+2]", Type/Solve.hs:206, "thread blocked indefinitely in an MVar operation").
 
 -}
 

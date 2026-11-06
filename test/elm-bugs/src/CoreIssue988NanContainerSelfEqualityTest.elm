@@ -1,14 +1,14 @@
 module CoreIssue988NanContainerSelfEqualityTest exposing (main)
 
-{-| Any container holding NaN equals itself, because (==) first checks whether the two sides are
-the same object.
+{-| In Elm 0.19.1 any container holding NaN equals itself, because `(==)` first checks whether
+the two sides are the same object.
 
 <https://github.com/elm/core/issues/988>
 
 NaN is not equal to anything, itself included, so no value holding NaN can be equal to anything.
 Elm 0.19.1's `_Utils_eq` returns True as soon as `x === y`, before it looks inside, so a record,
 custom type, `Maybe`, `Array`, `Dict` or `Set` compared with itself is True. The shortcut applies
-at every level: two separately built tuples holding the same inner NaN tuple are equal too.
+at every level: two separately built tuples, or lists, holding the same inner NaN tuple are equal too.
 (CompilerIssue2362NanTupleEqualityTest covers a tuple, CoreIssue988NanEqualityReferenceTest a
 list.)
 

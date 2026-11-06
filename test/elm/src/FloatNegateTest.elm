@@ -1,6 +1,6 @@
 module FloatNegateTest exposing (main)
 
-{-| Test float negation.
+{-| `negate` flips the sign of a positive and a negative Float, and `negate 0.0` prints as 0.
 -}
 
 -- CHECK: neg1: -3.14

@@ -1,10 +1,11 @@
 module CompareTupleWithEmptyListTest exposing (main)
 
-{-| `compare` on tuples whose List field can be `[]` (Const_Nil).
-This is the F2 bug: `compareUnboxableSlot` only special-cases
-`Const_EmptyString` vs heap; Nil-vs-heap falls through to the raw
-constant-byte comparison which produces the wrong sign (Nil=5, heap=0).
-Expected to FAIL on `main` today.
+{-| `compare` on pairs whose `List Int` field may be empty.
+
+Pairs compare by their first element and then their second. With the list in
+either position, an empty list orders before a non-empty one and equal to
+another empty list.
+
 -}
 
 -- CHECK: ee: EQ

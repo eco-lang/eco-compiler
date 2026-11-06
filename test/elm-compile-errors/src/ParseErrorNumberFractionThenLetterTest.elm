@@ -1,8 +1,6 @@
 module ParseErrorNumberFractionThenLetterTest exposing (..)
 
-{-| WEIRD NUMBER: number fraction then letter.
-
-A syntax error the parser must report.
+{-| A float literal followed directly by a letter, `1.5a`, is rejected with a WEIRD NUMBER syntax error.
 
 -}
 

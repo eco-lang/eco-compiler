@@ -972,7 +972,7 @@ inert); `LssSingletonFastDispatchTest` still upgrades (single candidate).
 
 ### Step 3.5.2 — E2E test + census
 
-New `test/elm/src/LssVerbatimCopiesFastDispatchTest.elm`: `runWith` is
+New `test/eco-elm/src/LssVerbatimCopiesFastDispatchTest.elm`: `runWith` is
 polymorphic in a parameter its capturing lambda never touches, so its two
 specializations each contain a VERBATIM copy of the lambda at identical
 layout; the shared `applyN` spec's internal site sees a singleton set

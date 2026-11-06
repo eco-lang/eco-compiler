@@ -1,9 +1,8 @@
 module TypeMismatchAccessorUnderIntTest exposing (..)
 
-{-| TYPE MISMATCH: accessor under Int.
+{-| A field accessor function annotated as `Int` is rejected with a TYPE MISMATCH.
 
-From `SourceIR.TypeCheckFailsCases` (`categoryCases`), the elm-test catalogue of programs
-the compiler must reject.
+`x` is annotated `Int` but defined as `.name`, a function from a record with a `name` field.
 
 -}
 

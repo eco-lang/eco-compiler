@@ -1,6 +1,6 @@
 module FloatTruncateTest exposing (main)
 
-{-| Test truncate function (toward zero).
+{-| `truncate` rounds a Float toward zero: 2.7 and 2.3 give 2, and -2.3 and -2.7 give -2.
 -}
 
 -- CHECK: trunc1: 2

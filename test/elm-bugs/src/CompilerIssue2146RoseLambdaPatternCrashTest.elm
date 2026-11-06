@@ -1,10 +1,14 @@
 module CompilerIssue2146RoseLambdaPatternCrashTest exposing (main)
 
-{-| A type error involving a lambda pattern on a custom type crashes the compiler.
+{-| A type error involving a lambda pattern on a custom type must be reported normally, not crash
+the compiler.
 
 <https://github.com/elm/compiler/issues/2146>
 
-`tail (T f)` applies `f : a -> b` to the children of a `Rose`, so `a` would have to be `Rose a`: a type error. Elm 0.19.1 crashes ("? [rank = 1]", Type/Solve.hs:206, "thread blocked indefinitely in an MVar operation").
+In `tail`, the lambda's pattern `Branch _ xs` makes its argument a `Rose`, and `List.map f xs`
+then needs `f`'s argument type `a` to be a `Rose` too, but the annotation makes `a` an arbitrary
+type: a type error. Elm 0.19.1 crashes ("? [rank = 1]", Type/Solve.hs:206, "thread blocked
+indefinitely in an MVar operation").
 
 -}
 

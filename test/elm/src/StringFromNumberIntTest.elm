@@ -1,7 +1,7 @@
 module StringFromNumberIntTest exposing (main)
 
-{-| `String.fromInt` calls `String.fromNumber` which is migrated in Phase C
-    to `Elm_Kernel_String_fromNumber_Int`.
+{-| `String.fromInt` prints zero, positive and negative integers, including the 32-bit
+signed limits `2147483647` and `-2147483648`.
 -}
 
 -- CHECK: zero: "0"

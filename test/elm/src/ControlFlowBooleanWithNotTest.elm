@@ -1,10 +1,6 @@
 module ControlFlowBooleanWithNotTest exposing (..)
 
-{-| Boolean with not.
-
-From `SourceIR.ControlFlowCases`, a program of the elm-test catalogue, with a
-`main` that logs its `testValue`. The CHECK lines are what Elm 0.19.1 prints for it.
-
+{-| Checks `not` applied to a comparison: `not (n > 0)` for `n = -5` is `True`.
 -}
 
 -- CHECK: testValue: True

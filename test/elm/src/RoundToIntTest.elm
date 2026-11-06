@@ -1,6 +1,6 @@
 module RoundToIntTest exposing (main)
 
-{-| Test round for Float to Int conversion.
+{-| Checks that `round` converts a `Float` to the nearest `Int`: `2.7` gives `3`, `2.3` gives `2` and `-2.7` gives `-3`.
 -}
 
 -- CHECK: round1: 3

@@ -1,18 +1,11 @@
 module DebugLogOrderingTest exposing (main)
 
-{-| Pins design_docs/debug-log-ordering-policy.md **D-3** under BOTH
-ECO_KERNEL_FACTS_DCE flavors: a sequence of wildcard (`_ =`) logging statements
-keeps source order, and no line is duplicated or dropped.
+{-| A sequence of `let` bindings of the form `_ = Debug.log ...` prints its lines
+in source order, each exactly once.
 
-The chain is deliberately wildcard-only. Named `let` bindings are evaluated
-before wildcard statements and not in source order among themselves (measured
-2026-08-12; see the policy's D-3 note), which Elm leaves unspecified — mixing
-the two shapes here would bake that unspecified order into a gate. D-1
-non-deletion is pinned separately by DebugLogNoDropTest.elm.
-
-`CHECK-NEXT` pins presence, order, and absence of duplicates in one directive
-stream: each constraint must match on the line immediately after the previous
-one (test/CheckPatterns.hpp).
+The five bindings are all wildcards. The CHECK-NEXT lines require each label
+to appear on the line straight after the previous one, so a line out of order,
+missing or repeated fails the test.
 
 -}
 

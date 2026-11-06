@@ -1,6 +1,6 @@
 module RecursiveFibonacciTest exposing (main)
 
-{-| Test recursion with multiple recursive calls.
+{-| A top-level `fib` that calls itself twice per step returns 0, 1 and 55 for 0, 1 and 10.
 -}
 
 -- CHECK: fib0: 0

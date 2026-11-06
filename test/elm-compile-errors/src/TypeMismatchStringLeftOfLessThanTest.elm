@@ -1,9 +1,8 @@
 module TypeMismatchStringLeftOfLessThanTest exposing (..)
 
-{-| TYPE MISMATCH: string left of <.
+{-| Comparing a `String` with a number using `<` is rejected with a TYPE MISMATCH.
 
-From `SourceIR.TypeCheckFailsCases` (`operatorCases`), the elm-test catalogue of programs
-the compiler must reject.
+In `"a" < 1` both operands of `<` must have the same `comparable` type.
 
 -}
 

@@ -1,11 +1,11 @@
 module CompilerIssue2014RankCrashIdentityLetAnnotationTest exposing (..)
 
-{-| A let annotation `b : h` in an annotated lambda crashes the compiler with `[rank = 2]`.
+{-| A let annotation `b : h` in a lambda defining an annotated identity function crashes the compiler.
 
 <https://github.com/elm/compiler/issues/2014>
 
-`t` is not polymorphic, so `b : h` is too general. Elm 0.19.1 crashes ("You ran into a compiler
-bug"); it should report a type error.
+`t` has the annotation's type `a`, so `b : h` is too general. Elm 0.19.1 crashes ("You ran into
+a compiler bug"); it should report a type error.
 
 -}
 

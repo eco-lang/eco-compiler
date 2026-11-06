@@ -1,6 +1,6 @@
 module AnonymousFunctionTest exposing (main)
 
-{-| Test anonymous functions (lambdas).
+{-| Anonymous functions work as the function argument of `List.map`, `List.foldl` and `List.filter`.
 -}
 
 -- CHECK: lambda1: [2,4,6]

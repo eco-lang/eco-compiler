@@ -1,6 +1,10 @@
 module DecodeStringTest exposing (main)
 
-{-| Test Bytes.Decode.string decoding.
+{-| Bytes.Decode.string reads back a string written by Bytes.Encode.string.
+
+`"hello"` is encoded and decoded with `string 5`, and the logged result is
+`"hello"`. A failed decode would log `"FAIL"`.
+
 -}
 
 -- CHECK: DecodeStringTest: "hello"

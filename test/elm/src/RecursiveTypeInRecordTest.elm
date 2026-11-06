@@ -1,6 +1,11 @@
 module RecursiveTypeInRecordTest exposing (main)
 
-{-| Test recursive type nested in record field. -}
+{-| Checks that a custom type can recurse through a record carried by one of its constructors.
+
+`Expr` has a constructor `Add` whose payload is a record with two `Expr` fields. The test
+evaluates `Add { left = Lit 1, right = Add { left = Lit 2, right = Lit 3 } }` by pattern
+matching and field access, and expects `6`.
+-}
 
 -- CHECK: eval: 6
 

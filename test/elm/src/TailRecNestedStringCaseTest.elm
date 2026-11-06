@@ -1,11 +1,9 @@
 module TailRecNestedStringCaseTest exposing (main)
 
-{-| Test that tail-recursive functions containing case expressions with
-nested string pattern matching compile and run correctly.
+{-| A self-recursive function whose non-recursive branch matches a `String` against literal patterns returns the matched value after unwrapping several layers.
 
-Regression test for: eco.case with nested string cases inside scf.while
-not being lowered by either SCF or CF passes.
-
+`process` calls itself in tail position through two `Wrapper` layers and then
+maps the leaf name `"answer"` to 42.
 -}
 
 -- CHECK: result: 42

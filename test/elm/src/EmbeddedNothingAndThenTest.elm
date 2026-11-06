@@ -1,6 +1,7 @@
 module EmbeddedNothingAndThenTest exposing (main)
 
-{-| Test Nothing propagation through a chain of Maybe.andThen calls.
+{-| `Nothing` propagates through a chain of `Maybe.andThen` calls, whether it
+starts the chain or is returned partway along it.
 -}
 
 -- CHECK: chain1: Nothing

@@ -1,11 +1,8 @@
 module FromArrayFloatListEqualityTest exposing (main)
 
-{-| Build `Array Float` via `Array.fromList`, convert back to `List Float`
-    via `Array.toList` (the user-facing equivalent of the internal
-    `List.fromArray` kernel), and assert equality with the original list.
+{-| Converting a `List Float` to an `Array` with `Array.fromList` and back with `Array.toList` gives a list equal to the original.
 
-    Exercises the round-trip path through `Elm_Kernel_JsArray_foldr` (used
-    internally by `Array.toList`) on unboxed `Float` leaf slots.
+The values are `[1.5, 2.5, 3.5]`. Only the `==` comparison is logged; `FromArrayFloatListRoundtripTest` also logs the list itself.
 -}
 
 -- CHECK: match: True

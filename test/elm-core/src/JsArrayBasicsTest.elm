@@ -1,5 +1,8 @@
 module JsArrayBasicsTest exposing (main)
 
+{-| `Array.toList`, `Array.length` and `Array.isEmpty` give the expected results on `Array.fromList [1, 2, 3]` and on `Array.empty`.
+-}
+
 -- CHECK: toList: [1,2,3]
 -- CHECK: length: 3
 -- CHECK: isEmpty_empty: True

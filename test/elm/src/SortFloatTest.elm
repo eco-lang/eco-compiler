@@ -1,12 +1,18 @@
 module SortFloatTest exposing (main)
 
-{-| `List.sort`, `List.sortBy`, `List.sortWith` on `List Float`.
+{-| `List.sort`, `List.sortBy` and `List.sortWith` order a `List Float` correctly and keep fractional values intact.
 
-    These functions dispatch to the `Elm_Kernel_List_sortWith` / `sortBy`
-    kernels, which currently re-box each unboxed list head as an `Elm Int`
-    before handing it to the user comparator/key function. For a `List Float`
-    that should pass the float through unchanged, so whole-number inputs
-    must sort to themselves and non-integer inputs must be preserved.
+The test checks five results:
+
+  - `List.sort` on whole-number floats.
+  - `List.sortBy identity` on a list containing `1.5` and `2.5`.
+  - `List.sortWith compare` on a mixed list.
+  - `List.sortWith` with the comparison flipped, giving descending order.
+  - `List.sortBy` with an anonymous identity function.
+
+`Debug.log` prints a whole-number `Float` without a decimal point, so `3.0`
+appears as `3`.
+
 -}
 
 -- CHECK: sort: [1,2,3,4]

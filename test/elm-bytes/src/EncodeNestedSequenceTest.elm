@@ -1,6 +1,9 @@
 module EncodeNestedSequenceTest exposing (main)
 
-{-| Test nested sequence encoding.
+{-| A `Bytes.Encode.sequence` that contains other sequences produces the sum of all their widths.
+
+The outer sequence holds a two-byte inner sequence, a big-endian `unsignedInt16`, and a
+second two-byte inner sequence, so the logged width is 2 + 2 + 2 = 6.
 -}
 
 -- CHECK: EncodeNestedSequenceTest: 6

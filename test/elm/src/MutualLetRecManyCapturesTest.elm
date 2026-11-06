@@ -1,14 +1,11 @@
 module MutualLetRecManyCapturesTest exposing (main)
 
-{-| Bootstrap-stage regression: mutually-recursive closure group where one
-sibling captures several non-sibling variables plus the peer sibling, and
-the other sibling has only the peer-sibling capture (no non-sibling
-captures). This mirrors the shape that the compiler itself emits inside
-`Terminal.Main.lambda_15903$cap` (siblings with `cc=0` and `cc=4`).
+{-| Two mutually recursive `let`-bound functions inside a top-level function, both using all four of the enclosing function's parameters, compute the right result.
 
-The original bug showed as `llvm.call` op operand type mismatch for
-operand 1: 'i64' != '!llvm.ptr<1>' at stage 6 of the bootstrap.
-
+`classify 10 11 12 9 n` alternates between `innerSmall` and `innerBig` until
+`k` reaches `0`, and either base case returns `10 + 11 + 12 + 9 = 42`. The
+extra term in `innerBig` is multiplied by `0`, so every `n` from `3` down to
+`0` logs `42`.
 -}
 
 -- CHECK: go 3: 42
@@ -20,9 +17,8 @@ operand 1: 'i64' != '!llvm.ptr<1>' at stage 6 of the bootstrap.
 import Html exposing (text)
 
 
-{-| `innerSmall` has only the peer capture (`innerBig`) — no non-sibling
-captures. `innerBig` captures four external values (`extA..extD`) plus the
-peer (`innerSmall`). Both siblings have exactly one remaining parameter.
+{-| Returns `extA + extB + extC + extD` for any `n`, reached by alternating between two
+mutually recursive local functions.
 -}
 classify : Int -> Int -> Int -> Int -> Int -> Int
 classify extA extB extC extD n =

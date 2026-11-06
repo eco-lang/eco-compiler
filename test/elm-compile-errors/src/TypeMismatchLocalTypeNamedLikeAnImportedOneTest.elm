@@ -1,9 +1,11 @@
 module TypeMismatchLocalTypeNamedLikeAnImportedOneTest exposing (..)
 
-{-| TYPE MISMATCH: local type named like an imported one.
+{-| A local type named `Maybe` is a different type from the core `Maybe`, so mixing them is rejected with a TYPE MISMATCH.
 
-From `SourceIR.TypeCheckFailsCases` (`printingCases`), the elm-test catalogue of programs
-the compiler must reject.
+The module declares its own `type Maybe a = Maybe a`, so the unqualified `Maybe`
+in `x : Maybe Int` means the local type. The body builds `Maybe.Just 1`, which is
+qualified and therefore the core library's `Maybe`. The two types share a name but
+are unrelated.
 
 -}
 

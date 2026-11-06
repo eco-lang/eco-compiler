@@ -1,10 +1,16 @@
 module SortCharTest exposing (main)
 
-{-| `List.sort`, `List.sortBy`, `List.sortWith` on `List Char`.
+{-| `List.sort`, `List.sortWith` and `List.sortBy` order a `List Char` correctly and return the elements as `Char` values.
 
-    `Char` is unboxed as `u16`. The sort kernels re-box unboxed list heads as
-    `Elm Int`, which corrupts the `Tag_Char` expected by the user comparator.
-    This test pins the IEEE-correct / type-correct behavior.
+The test checks four results:
+
+  - `List.sort` puts `['c', 'a', 'b']` in order.
+  - `List.sortWith compare` puts `['z', 'x', 'y']` in order.
+  - `List.sortWith` with the comparison flipped sorts `['a', 'b', 'c']` into
+    reverse order.
+  - `List.sortBy Char.toCode` orders by character code, so the uppercase
+    letters come before the lowercase ones: `['A','Z','a','z']`.
+
 -}
 
 -- CHECK: sort: ['a','b','c']

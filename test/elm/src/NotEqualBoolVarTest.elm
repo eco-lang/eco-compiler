@@ -1,9 +1,8 @@
 module NotEqualBoolVarTest exposing (main)
 
-{-| Same 2x2 as `NotEqualBoolTest` but operands flow through let-bound
-variables and a non-inlinable helper. If constant folding ever collapsed
-literal `True /= False` to True upstream, this form would still reach
-the runtime kernel.
+{-| `/=` gives the right answer on `Bool` values held in `let`-bound
+variables, and inside a top-level helper `neqBool` that receives both
+operands as arguments, for all four combinations of operands.
 -}
 
 -- CHECK: vTT: False

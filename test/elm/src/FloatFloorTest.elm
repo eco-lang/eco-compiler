@@ -1,6 +1,8 @@
 module FloatFloorTest exposing (main)
 
-{-| Test floor function.
+{-| `floor` rounds a `Float` down towards negative infinity, for positive, whole and negative values.
+
+`floor -2.3` and `floor -2.7` are both -3.
 -}
 
 -- CHECK: floor1: 2

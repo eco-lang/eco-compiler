@@ -1,11 +1,11 @@
 port module PortEchoUnitTest exposing (main)
 
-{-| A `()` out and back in over ports. The harness echo (test/ElmE2ETestBase.hpp
-`installPortEchoBounce` under the JIT, test/aot_port_host.cpp under AOT, and
-test/scripts/run-elm-e2e.js for stock Elm on Node) feeds every `echoOut` payload back
-into `echoIn`. Each value is sent once the previous one
-has come back, so the order is the same on every backend, and the subscription is dropped
-after the last so the program ends. Expected output recorded from Elm on node.
+{-| A `()` sent out through an outgoing port comes back unchanged through an incoming port.
+
+The test host must feed every payload of the outgoing port `echoOut` back into the incoming
+port `echoIn`. The program sends `()` twice, one at a time: each value goes out only after
+the previous one has come back and been logged, so the log order is fixed. After the last
+value it logs `done` and `subscriptions` returns `Sub.none` so the program can finish.
 
 -}
 

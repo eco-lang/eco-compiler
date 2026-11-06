@@ -1,6 +1,8 @@
 module MaybeWithDefaultTest exposing (main)
 
-{-| Test Maybe.withDefault.
+{-| `Maybe.withDefault` returns the wrapped value of a `Just` and the default for `Nothing`.
+
+With default `0`, `Just 42` gives `42` and `Nothing` gives `0`.
 -}
 
 -- CHECK: withDefault1: 42

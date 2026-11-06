@@ -1,9 +1,8 @@
 module TypeMismatchStringAppendedToListTest exposing (..)
 
-{-| TYPE MISMATCH: string appended to list.
+{-| Appending a `String` to a list with `++` is rejected with a TYPE MISMATCH.
 
-From `SourceIR.TypeCheckFailsCases` (`operatorCases`), the elm-test catalogue of programs
-the compiler must reject.
+`[ 1 ] ++ "a"` gives `++` a list on the left and a string on the right; both operands must have the same type.
 
 -}
 

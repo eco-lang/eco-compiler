@@ -10,7 +10,7 @@ build-and-flip). Same-source coverage 79.85 %→83.10 % at EXACTLY neutral
 dispatch. Escape hatch `ECO_MONO_LSS_REF_PAP_SPINE=0`.**
 Date: 2026-08-28. Follows `memory/lss-remaining-unknowns-census.md` (the Aug 28
 census that identified this as the one remaining lever with mass) and
-`test/elm/src/LssGapReturnedClosure.elm` (the probe that isolated the shape).
+`test/eco-elm/src/LssGapReturnedClosure.elm` (the probe that isolated the shape).
 
 ---
 

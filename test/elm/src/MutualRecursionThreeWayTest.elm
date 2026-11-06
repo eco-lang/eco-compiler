@@ -1,6 +1,11 @@
 module MutualRecursionThreeWayTest exposing (main)
 
-{-| Test three-way mutual recursion: funcA calls funcB, funcB calls funcC, funcC calls funcA. -}
+{-| Three top-level functions that call each other in a cycle (`funcA` calls `funcB`, `funcB` calls `funcC`, `funcC` calls `funcA`) recurse correctly.
+
+Each call decrements `n`, and the function reached at `0` decides the result:
+`funcA` gives `0`, `funcB` gives `1`, `funcC` gives `2`. Starting from `funcA`,
+`n` = 10 ends in `funcB` (`1`); `n` = 9, 3 and 0 end in `funcA` (`0`).
+-}
 
 -- CHECK: a10: 1
 -- CHECK: a9: 0

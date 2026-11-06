@@ -1,17 +1,19 @@
 module ContainerEqualityRecordFloatTest exposing (main)
 
-{-| Equality of records whose fields are Float, including NaN, Infinity, and
-    +/- 0.0.
+{-| Checks `==` on records whose fields are `Float`, including NaN, infinities
+and negative zero.
 
-    Records are not Elm `comparable`, so only `==` is exercised (no `compare`
-    or relational operators). Same IEEE/Elm invariants as the tuple tests:
+Record fields are compared with `Float` equality: `NaN` is unequal even to
+itself, `-0.0` equals `0.0`, and `Infinity` equals itself but not `-Infinity`.
+Records are not `comparable`, so only `==` is used.
 
-      - `NaN == NaN` is False everywhere, including inside a record.
-      - `-0.0 == 0.0` is True everywhere, including inside a record.
-      - `Infinity == Infinity` is True; `Infinity == -Infinity` is False.
+  - Two-field records: equal, differing in each field, `0.0` against `-0.0`
+    (True), NaN (False), the same infinity (True) and opposite infinities
+    (False).
+  - Three-field records: equal, differing in the middle, zeros of mixed sign
+    (True), NaN in the middle (False), and infinities with mixed-sign zeros
+    (True).
 
-    This test targets the `Tag_Record` branch of `Utils_equal`, which reads
-    unboxed fields via `.i` (bit compare) rather than IEEE equality.
 -}
 
 -- CHECK: recEqual: True

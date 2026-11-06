@@ -1,9 +1,13 @@
 module LetNumberNestedCustomTest exposing (main)
 
-{-| Probe: `number` nested TWO constructors deep (`Box (NumBox 30)`), projected at
-`Float` via a nested `case` pattern. The shape gate excludes boxed nested customs
-from the eager number path, so this stresses the two-ctor-deep refinement.
-Correct: 30*1.5 = 45.
+{-| An integer literal nested two custom-type constructors deep is used as a
+`Float`: `Box (NumBox 30)`, matched by the pattern `Box (NumBox n)` and
+multiplied by `1.5`, logs 45.
+
+`Box` and `NumBox` are each a single-constructor type with one type parameter;
+`NumBox`'s parameter is named `number`, which makes it a constrained type
+variable.
+
 -}
 
 -- CHECK: nestcustom: 45

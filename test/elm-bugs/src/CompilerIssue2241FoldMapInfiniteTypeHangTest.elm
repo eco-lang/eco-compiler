@@ -1,11 +1,13 @@
 module CompilerIssue2241FoldMapInfiniteTypeHangTest exposing (main)
 
-{-| An infinite type through a fold-like function and a tuple accumulator.
+{-| The compiler rejects, with a type error, a call whose tuple-accumulating lambda does not fit the function it is passed to.
 
 <https://github.com/elm/compiler/issues/2241>
 
-The program is ill-typed, so it must be rejected with a type error. Elm 0.19.1 instead hangs while
-its memory grows without bound (the runner kills it at its compile memory limit), or crashes.
+In `break`, `foldMap` requires its third argument to have type `Float -> ( Float, Float ) -> ( Float, Float )`,
+but the lambda given takes a tuple first and returns a tuple mixing its components with its second argument,
+which leads the type checker to an infinite type. Elm 0.19.1 does not report this: it hangs
+with memory growing without bound, or crashes.
 
 -}
 

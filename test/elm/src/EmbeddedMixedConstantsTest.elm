@@ -1,6 +1,7 @@
 module EmbeddedMixedConstantsTest exposing (main)
 
-{-| Test multiple embedded constants stored together in a tuple and extracted.
+{-| A record holding `Nothing`, `[]`, `True`, `""` and `()` returns each value
+unchanged when its field is read.
 -}
 
 -- CHECK: m: Nothing

@@ -1,6 +1,7 @@
 module EmbeddedConstantsInListTest exposing (main)
 
-{-| Test List.filterMap identity on a list mixing Nothing and Just values.
+{-| `List.filterMap identity` on a list mixing `Nothing` and `Just` values keeps
+the `Just` payloads in order.
 -}
 
 -- CHECK: filtered: [1,2]

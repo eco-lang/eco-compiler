@@ -1,6 +1,11 @@
 module IntCompareTest exposing (main)
 
-{-| Test integer comparisons.
+{-| Checks that the six comparison operators `<`, `>`, `<=`, `>=`, `==` and `/=` give `True` on Int literals.
+
+Each is applied to a pair for which it holds; `<=` and `>=` are each checked
+once with unequal operands and once with equal ones. No comparison that should
+give `False` is checked.
+
 -}
 
 -- CHECK: lt: True

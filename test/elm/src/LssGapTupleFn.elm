@@ -1,6 +1,8 @@
 module LssGapTupleFn exposing (main)
-{-| A function value in a TUPLE — the `TTuple`/`Tuple1` arm of the stamping
-walk, a different container path from records. -}
+{-| A function stored in a tuple is taken out by destructuring and called.
+
+`pair` is `( double, 7 )`, and `useTuple` binds `( f, x )` in a `let` and computes `f x`,
+logging 14. -}
 -- CHECK: tupleFn: 14
 import Html exposing (text)
 double : Int -> Int

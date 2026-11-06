@@ -1,6 +1,6 @@
 module TuplePairTest exposing (main)
 
-{-| Test tuple pair creation.
+{-| Tuple literals of `Int`, `String` and `Bool` components are built and printed correctly.
 -}
 
 -- CHECK: pair1: (1,2)

@@ -1,6 +1,7 @@
 module ListFilterTest exposing (main)
 
-{-| Test List.filter.
+{-| `List.filter` keeps the elements that satisfy a named predicate or a partially
+applied `(==)`, on Int and String lists and on the empty list.
 -}
 
 -- CHECK: even: [2,4]

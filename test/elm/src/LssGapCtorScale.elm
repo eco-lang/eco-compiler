@@ -1,7 +1,10 @@
 module LssGapCtorScale exposing (main)
-{-| Scaling test for the constructor hypothesis: FOUR declared types with
-constructors of increasing arity. If provenance loss scales with constructor
-count/arity, synthesized constructor functions are the cause. -}
+{-| Constructors of arity one to four build values that pattern matches in
+function arguments take apart again.
+
+`A 1`, `B 1 1`, `C 1 1 1` and `D 1 1 1 1` are each unwrapped and their fields
+summed, giving 1 + 2 + 3 + 4 = 10.
+-}
 -- CHECK: ctorScale: 10
 import Html exposing (text)
 type A = A Int

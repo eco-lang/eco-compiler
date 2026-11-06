@@ -1,9 +1,8 @@
 module TypeMismatchRigidVarAsAliasTest exposing (..)
 
-{-| TYPE MISMATCH: rigid var as alias.
+{-| Returning a record-alias value where the annotation promises a type variable `a` is rejected with a TYPE MISMATCH.
 
-From `SourceIR.TypeCheckFailsCases` (`rigidCases`), the elm-test catalogue of programs
-the compiler must reject.
+`f : a -> a` with `f x = p`, where `p : P` and `P` is the record alias `{ y : Int }`: the caller chooses `a`, so it cannot be fixed to `P`.
 
 -}
 

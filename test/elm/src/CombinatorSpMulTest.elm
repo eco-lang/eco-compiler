@@ -1,6 +1,6 @@
 module CombinatorSpMulTest exposing (main)
 
-{-| SP combinator with operator sections: ((+) 1 x) * ((*) 2 x) at x=6 = 84
+{-| The SP combinator with operator sections as its functions: `sp (*) ((+) 1) ((*) 2) 6` is `7 * 12`, which is 84.
 -}
 
 -- CHECK: result: 84

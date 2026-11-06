@@ -1,14 +1,11 @@
 module TailRecBoolCarryTest exposing (main)
 
-{-| Test tail-recursive function that carries a Bool through the loop.
+{-| A self tail-recursive function that carries a `Bool` argument from one call to the
+next, and sets it from a branch inside a `case`, returns the right result.
 
-This exercises the bug where compileTailCallStep yields i1 (SSA type for Bool)
-in a position where the scf.while carry type expects !eco.value (ABI type for Bool).
-
-The pattern:
-  - Tail-recursive function with a Bool parameter (becomes !eco.value carry type)
-  - Case expression inside the loop body (becomes eco.case inside scf.while)
-  - Tail call passes a Bool value (Expr.generateExpr produces i1, but carry expects !eco.value)
+`searchList found acc list` adds every element greater than 5 to `acc` and sets `found` to
+`True` when it meets one. At the end of the list it returns `acc` if `found`, and 0
+otherwise. So `[1, 2, 3, 10]` gives 10, `[1, 2, 3]` gives 0, and `[1, 42]` gives 42.
 -}
 
 -- CHECK: result1: 10
@@ -18,9 +15,8 @@ The pattern:
 import Html exposing (text)
 
 
-{-| A tail-recursive function with a Bool parameter.
-The Bool `found` is carried through the while-loop as !eco.value (ABI type),
-but inside the case branch, the tail call yields it as i1 (SSA type).
+{-| Returns the sum of the elements of `list` greater than 5, added to `acc`, or 0
+if neither `found` was already `True` nor any such element exists.
 -}
 searchList : Bool -> Int -> List Int -> Int
 searchList found acc list =

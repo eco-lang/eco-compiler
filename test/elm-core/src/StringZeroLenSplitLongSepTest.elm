@@ -1,12 +1,13 @@
 module StringZeroLenSplitLongSepTest exposing (main)
 
-{-| Found by the HEAP_071 audit (not a zero-length bug): StringOps::split's
-UTF-16 path scans short separators (1-3 units) with
-`for (i = 0; i <= str_len - sep_len; ++i)` on size_t, so a separator LONGER
-than a non-ASCII input wraps the bound to ~2^64 and reads past the snapshot
-buffer. The UTF-8 path (`i + sep_len <= str_len`) and the >= 4-unit
-Horspool path are not affected. Expected: the input comes back as the single
-part.
+{-| `String.split` with a separator longer than the input returns the input
+unchanged as the single part.
+
+`split_long_sep_utf16` uses the non-ASCII inputs `"é"` and `"éü"` with
+separators of two or three characters (`"ab"`, `"abc"`, `"éé"`, `"üéx"`) and
+compares each result with `==` against the expected one-element list.
+`split_long_sep_ascii` logs `String.split "ab" "a"`, which must be `["a"]`.
+
 -}
 
 -- CHECK: split_long_sep_utf16: [True,True,True,True]
@@ -18,7 +19,7 @@ import Html exposing (text)
 main =
     let
         _ =
-            -- compared with == (Debug.log escapes non-ASCII as \u00XX)
+            -- compared with == so the expected output holds no non-ASCII text
             Debug.log "split_long_sep_utf16"
                 [ String.split "ab" "é" == [ "é" ]
                 , String.split "abc" "é" == [ "é" ]

@@ -1,5 +1,8 @@
 module RoundTripIndexTest exposing (main)
 
+{-| `Json.Decode.index 1` reads the second element of a JSON array encoded from `[ "hello", "world" ]`.
+-}
+
 -- CHECK: rt_index: Ok "world"
 
 import Html exposing (text)

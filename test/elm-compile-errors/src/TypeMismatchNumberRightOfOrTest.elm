@@ -1,9 +1,6 @@
 module TypeMismatchNumberRightOfOrTest exposing (..)
 
-{-| TYPE MISMATCH: number right of ||.
-
-From `SourceIR.TypeCheckFailsCases` (`operatorCases`), the elm-test catalogue of programs
-the compiler must reject.
+{-| A number as the right operand of `||` (`True || 1`) is rejected with a TYPE MISMATCH error, because `||` takes two `Bool`s.
 
 -}
 

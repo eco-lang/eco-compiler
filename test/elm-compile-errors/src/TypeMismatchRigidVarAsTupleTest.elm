@@ -1,9 +1,8 @@
 module TypeMismatchRigidVarAsTupleTest exposing (..)
 
-{-| TYPE MISMATCH: rigid var as tuple.
+{-| A function annotated `a -> a` that returns a tuple is rejected with a TYPE MISMATCH.
 
-From `SourceIR.TypeCheckFailsCases` (`rigidCases`), the elm-test catalogue of programs
-the compiler must reject.
+`f x = ( 1, 2 )` returns a pair, but the annotation promises the type variable `a`, which the body may not specialise.
 
 -}
 

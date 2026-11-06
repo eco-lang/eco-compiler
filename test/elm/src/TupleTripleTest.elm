@@ -1,6 +1,7 @@
 module TupleTripleTest exposing (main)
 
-{-| Test triple creation.
+{-| Checks that 3-tuple literals of `Int`s and of `String`s are built and printed
+by `Debug.log` as `(1,2,3)` and `("a","b","c")`.
 -}
 
 -- CHECK: triple1: (1,2,3)

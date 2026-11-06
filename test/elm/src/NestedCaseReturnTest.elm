@@ -1,7 +1,11 @@
 module NestedCaseReturnTest exposing (main)
 
-{-| Outer case on constructor type with nested case on String.
-Mimics the convertTType pattern: case on type variant, inner string dispatch.
+{-| A `case` on a custom type whose branches return the result of another `case` on a String, either inline or through a helper, returns the right string.
+
+`Primitive` names go through `describePrimitive`, whose fallback is `"other"`;
+`Compound` names are matched inline, with the fallback `"custom " ++ name`;
+`Unit` gives `"empty"`. The test checks two known primitive names, the inline
+`"List"` branch, an unknown primitive (`"Bytes"`) and `Unit`.
 -}
 
 -- CHECK: r1: "integer"

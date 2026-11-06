@@ -1,8 +1,10 @@
 module StringAstralLengthTest exposing (main)
 
-{-| G1/E1: String.length counts UTF-16 code units. An astral char (U+1F600 😀)
-occupies a surrogate pair = 2 code units. Also exercises astral string-literal
-encoding into the MLIR bytecode string section.
+{-| `String.length` counts UTF-16 code units, so a character outside the Basic Multilingual Plane counts as 2.
+
+U+1F600 (😀) is encoded as a surrogate pair. `String.length "😀"` is 2, and
+`String.length "a😀b"` is 4. The test also requires such a character to survive
+inside a string literal.
 -}
 
 -- CHECK: len_astral: 2

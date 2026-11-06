@@ -1,6 +1,7 @@
 module EmbeddedNothingInTupleTest exposing (main)
 
-{-| Test Nothing stored in a tuple, extracted, and pattern-matched.
+{-| A tuple pattern in a `let` takes `Nothing` and `Just 42` back out of a pair,
+and each matches the right pattern.
 -}
 
 -- CHECK: first: "nothing"

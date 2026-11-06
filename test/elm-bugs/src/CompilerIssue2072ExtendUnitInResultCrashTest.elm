@@ -1,10 +1,13 @@
 module CompilerIssue2072ExtendUnitInResultCrashTest exposing (..)
 
-{-| Extending `()` in a function's result annotation crashes the compiler.
+{-| A result annotation that extends `()` as if it were a record must be rejected with an error
+report, not crash the compiler.
 
 <https://github.com/elm/compiler/issues/2072>
 
-`Tagged ()` extends the non-record `()`. Elm 0.19.1 crashes; it should report an error.
+`subscribed` is annotated to return `Tagged ()`, and `Tagged a` is the extensible record
+`{ a | tags : List String }`, so this extends the non-record `()`. Elm 0.19.1 crashes; it should
+report an error.
 
 -}
 

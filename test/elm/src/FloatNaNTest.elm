@@ -1,6 +1,9 @@
 module FloatNaNTest exposing (main)
 
-{-| Test NaN behavior.
+{-| `isNaN` is True for `0.0 / 0.0` and False for 3.14, and adding 1.0 to NaN can be logged.
+
+The last CHECK line matches only the `nanProp` label, so the value printed for `nan + 1.0` is not checked.
+
 -}
 
 -- CHECK: isNaN1: True

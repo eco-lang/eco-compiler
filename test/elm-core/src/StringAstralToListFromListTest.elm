@@ -1,10 +1,14 @@
 module StringAstralToListFromListTest exposing (main)
 
-{-| G1/E3: toList yields one Char per code point, as in Elm (Char is a Unicode
-code point in i32), so "a😀b" gives 3 Chars with the emoji intact (code
-128512). fromList writes a Char above U+FFFF back as a surrogate pair, so the
-fromList ∘ toList round-trip holds and a list built from codes re-encodes to
-the same string (length in UTF-16 units: 4).
+{-| `String.toList` gives one `Char` for a character outside the Basic
+Multilingual Plane, such as an emoji, and `String.fromList` turns it back into
+the same string.
+
+`String.toList "a😀b"` has 3 elements with codes `[97,128512,98]`, and
+`String.fromList` of it equals `"a😀b"`. A list made with `Char.fromCode` from
+`0x61`, `0x1F600` and `0x62` also gives `"a😀b"`, whose `String.length` is 4
+because `String.length` counts UTF-16 units and the emoji takes two.
+
 -}
 
 -- CHECK: tolist_len: 3

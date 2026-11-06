@@ -1,9 +1,11 @@
 module BytesLargeHeterogeneousBufferTest exposing (main)
 
-{-| G2/E9: encode a mixed-width sequence exceeding the 8 KiB large-object
-threshold, then decode values back. Forces a Tag_LargeByteHeader through both the
-encoder and the decoder. width = 1 + 2 + 3000*4 = 12003 bytes; decoded head is
-u8 42, u16 4660, u32 7 -> sum 4709.
+{-| A mixed-width encoding of about 12 KB has the right width, and its first values decode correctly.
+
+The sequence is an unsigned 8-bit 42, a big-endian 16-bit 4660 and 3000
+big-endian 32-bit 7s, so its width is `1 + 2 + 3000 * 4 = 12003` bytes. Decoding
+the first three values and adding them gives `42 + 4660 + 7 = 4709`.
+
 -}
 
 -- CHECK: width: 12003

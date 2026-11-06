@@ -1,6 +1,8 @@
 module FlipFunctionTest exposing (main)
 
-{-| Test flip function with type annotation.
+{-| A locally defined, annotated `flip` swaps the two arguments of the function it is given.
+
+`flip (\a b -> 3.14) "world" 7` calls the lambda with 7 and `"world"`, which ignores both and returns 3.14.
 -}
 
 -- CHECK: result: 3.14

@@ -1,10 +1,10 @@
 module ClosureCapture04Test exposing (main)
 
-{-| Test closure captures two variables both used only in destructs.
+{-| A lambda returned from a function captures two `Maybe Int` arguments, each
+used only as the subject of a `case`, and adds the extracted values.
 
-Uses explicit lambda return to force nested Function nodes.
-Both `mx` and `my` are captured by the inner lambda and appear only
-as roots of destruct paths, never as standalone variable references.
+`Nothing` counts as 0, so the three calls log 30, 10 and 0.
+
 -}
 
 -- CHECK: both: 30

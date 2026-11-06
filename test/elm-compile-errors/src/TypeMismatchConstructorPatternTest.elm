@@ -1,9 +1,6 @@
 module TypeMismatchConstructorPatternTest exposing (..)
 
-{-| TYPE MISMATCH: constructor pattern.
-
-From `SourceIR.TypeCheckFailsCases` (`patternMismatchCases`), the elm-test catalogue of programs
-the compiler must reject.
+{-| A `case` on the number `1` with a `Just a` branch is rejected with a TYPE MISMATCH, because the pattern is a `Maybe` and the value is a number.
 
 -}
 

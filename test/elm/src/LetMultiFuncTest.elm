@@ -1,6 +1,7 @@
 module LetMultiFuncTest exposing (main)
 
-{-| Test let with multiple function definitions.
+{-| Two named functions defined in one `let` and called from later bindings: a local
+`identity` returns its argument (1) and a local `const` returns the first of two (2).
 -}
 
 -- CHECK: r1: 1

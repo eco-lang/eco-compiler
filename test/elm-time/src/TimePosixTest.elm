@@ -1,5 +1,8 @@
 module TimePosixTest exposing (main)
 
+{-| `Time.posixToMillis` gives back the milliseconds a `Time.Posix` was made from with `Time.millisToPosix`.
+-}
+
 -- CHECK: roundtrip: 1000
 
 import Html exposing (text)

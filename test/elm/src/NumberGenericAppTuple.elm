@@ -1,15 +1,8 @@
 module NumberGenericAppTuple exposing (main)
 
-{-| Regression test for the number-multi gate relaxation
-(plans/fix-number-constraint-lost-solver-root-reuse.md §7, Mechanism B).
-
-A scalar `number` literal flows through a generic application — here
-`Tuple.first : ( a, b ) -> a` — so the `let`-binding's RHS is a generic-function
-*call*, not direct numeric data. The number-multi gate (`isNumericDataRhs`)
-rejected such an RHS, so the `number` defaulted to `Int` and miscompiled to `i64`
-when used in the `Float` multiply `1.5 * n` (`mul_Float (f64, i64)` mismatch). The
-binding's `CNumber` constraint is intact (`hasNum=True`) — this is the gate
-mechanism, distinct from the solver-root constraint loss. Correct: 45.
+{-| A number literal passed through a generic function, here `Tuple.first`
+applied to `( 30, "x" )`, keeps the type `number`, so the `let`-bound result
+can be used in `Float` arithmetic: `round (1.5 * n)` logs 45.
 -}
 
 -- CHECK: numgenapp: 45

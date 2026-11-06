@@ -1,10 +1,6 @@
 module TypeMismatchFloatLeftOfIntDivideTest exposing (..)
 
-{-| TYPE MISMATCH: Float left of //.
-
-From `SourceIR.TypeCheckFailsCases` (`operatorCases`), the elm-test catalogue of programs
-the compiler must reject.
-
+{-| The compiler rejects the `Float` literal `1.5` on the left of the integer division operator `//`, with a TYPE MISMATCH error.
 -}
 
 -- COMPILE-ERROR: TYPE MISMATCH, Float left of //

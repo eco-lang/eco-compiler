@@ -1,9 +1,9 @@
 module LetNumberIndirectFoldlTest exposing (main)
 
-{-| Regression test (native/AOT backend): the let-bound-`number`
-mis-specialization (see `LetNumberFloatMulTest`) reached when the `number` is the
-`Float` seed of `List.foldl (+)`. The seed `acc0 = 0` must specialize to `Float`
-because the fold accumulates over a `Float` list. Correct: 0 + 1.5 + 2.5 = 4.
+{-| A let-bound `number` used as the initial accumulator of `List.foldl (+)`
+over a list of `Float`s is a `Float`.
+
+`List.foldl (+) acc0 [ 1.5, 2.5 ]` with `acc0 = 0` is 4.0, logged as 4.
 
 -}
 

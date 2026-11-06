@@ -4,9 +4,9 @@ module CompilerIssue1947MultilineStringInLetBinopTest exposing (..)
 
 <https://github.com/elm/compiler/issues/1947>
 
-The closing `"""` of a multi-line string ends up in column 1, and Elm 0.19.1 then rejects the
-`++` after it with a parse error, as if the string's contents set the indentation. The program is
-valid and should compile.
+The closing `"""` of a multi-line string in a let binding sits in column 1, and Elm 0.19.1
+rejects the `++` that follows it with a parse error. The program is valid; it should compile and
+log the string, a newline followed by `!`.
 
 -}
 

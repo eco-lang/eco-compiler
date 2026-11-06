@@ -1,17 +1,11 @@
 module CombinatorRefIdentityBugTest exposing (main)
 
-{-| Regression pin for `/work/combinator-uf-devirt-error.md`.
+{-| A B combinator defined with all its arguments, `b f g y = s (k s) k f g y`, used in the same program as a separate application of `s` to a different function: `b square inc 4` must still be `square (inc 4)`, which is 25.
 
-`b` is the B combinator written at FULL arity. Two specializations of `s`
-share the erased ABI `(value, value, i64) -> i64` but receive different
-callbacks in `uf` (`inc` here, `double` from `s_feed`). The post-mono inliner
-beta-reduces `b`'s body to a saturated `s (k f) g y`, and the live chain is
-then wired to the `double` specialization: `b square inc 4` prints
-`square (double 4) = 64` instead of `square (inc 4) = 25`.
-
-Both definitions are load-bearing — drop `s_feed` and the answer is right.
-`CombinatorTest.elm` is the point-free spelling of the same program; it stays
-boxed and never reaches the unboxed specialization, which is why it passes.
+`s` is applied to an `Int -> Int` function as its second argument in two
+places: inside `b`, where that function is `inc`, and directly as `s (+) double 5`,
+which is `5 + double 5`, 15. A compiler that mixes up the two calls of `s` would
+print `square (double 4)`, 64, for the first.
 
 -}
 

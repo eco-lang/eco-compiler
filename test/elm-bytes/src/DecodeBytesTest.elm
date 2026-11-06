@@ -1,6 +1,6 @@
 module DecodeBytesTest exposing (main)
 
-{-| Test Bytes.Decode.bytes slicing bytes.
+{-| `Bytes.Decode.bytes 3` takes the first three bytes of a five-byte sequence as a `Bytes` value of width 3.
 -}
 
 -- CHECK: DecodeBytesTest: 3

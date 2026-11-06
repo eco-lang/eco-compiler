@@ -1,11 +1,17 @@
 port module PortEchoIntTest exposing (main)
 
-{-| A `Int` out and back in over ports. The harness echo (test/ElmE2ETestBase.hpp
-`installPortEchoBounce` under the JIT, test/aot_port_host.cpp under AOT, and
-test/scripts/run-elm-e2e.js for stock Elm on Node) feeds every `echoOut` payload back
-into `echoIn`. Each value is sent once the previous one
-has come back, so the order is the same on every backend, and the subscription is dropped
-after the last so the program ends. Expected output recorded from Elm on node.
+{-| An `Int` sent out through a port comes back unchanged through an incoming
+port, for each of seven sample values.
+
+The program assumes a host that passes every value sent out on the `echoOut`
+port straight back in on the `echoIn` port; without one, nothing after `init`
+is logged. It sends the values in `values` one at a time, sending the next only
+after the previous one has come back, logs each value received, logs
+`"done"` after the last one, and then drops its subscription.
+
+The values include 0, -1, the 32-bit signed limits (2147483647 and
+-2147483648), and the largest and smallest integers a JavaScript number holds
+exactly (9007199254740991 and -9007199254740991).
 
 -}
 

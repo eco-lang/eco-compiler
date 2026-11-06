@@ -1,14 +1,10 @@
 module JsonDecoderSelfRecursiveNoLazyTest exposing (main)
 
-{-| Self-recursive Json.Decode.Decoder WITHOUT Json.Decode.lazy.
+{-| A `Json.Decode` decoder that refers to itself without `Json.Decode.lazy` decodes a nested value correctly.
 
-    Same pattern as the Bytes decoder: andThen with a direct self-reference,
-    no lazy wrapper. If this crashes while JsonDecoderSelfRecursiveTest
-    (which uses lazy) passes, it confirms that lazy is the key differentiator.
-
-    Input: {"tag": "node", "kids": [{"tag": "leaf"}]}
-
-    Expected: prints the decoded tree without crashing.
+`tDecoder` reads a `"tag"` field and, through `andThen`, decodes `"kids"` with
+`Json.Decode.list tDecoder` only for the tag `"node"`. Because the self-reference sits inside
+the `andThen` callback, no `lazy` is needed. The input is a node holding one leaf.
 -}
 
 -- CHECK: decoded: Ok (TNode [TLeaf])

@@ -1,6 +1,8 @@
 module EncodeLargeSequenceTest exposing (main)
 
-{-| Test encoding a large sequence.
+{-| `Bytes.Encode.sequence` of 100 `unsignedInt8` encoders produces 100 bytes.
+
+The test encodes a list of 100 zero bytes and logs the width of the result.
 -}
 
 -- CHECK: EncodeLargeSequenceTest: 100
@@ -12,7 +14,6 @@ import Html exposing (text)
 
 main =
     let
-        -- Create 100 bytes
         encoders =
             List.repeat 100 (E.unsignedInt8 0)
 

@@ -1,9 +1,8 @@
 module BadMainTypeThreeArgumentTypeMainTest exposing (..)
 
-{-| BAD MAIN TYPE: three-argument type main.
+{-| A `main` whose type is a custom type with three type parameters is rejected with a BAD MAIN TYPE error.
 
-From `SourceIR.MainFailsCases` (`typeCases`), the elm-test catalogue of programs
-the compiler must reject.
+`main` is `T 1 2 3`, of type `T Int Int Int`.
 
 -}
 

@@ -1,9 +1,13 @@
 module BytesSliceOpMatrixTest exposing (main)
 
-{-| G7/E21: run the safe consumer ops (decode primitives) against one >=32-byte
-slice, to catch any slice-hostile sibling of Bytes.width. Deliberately excludes
-width (covered by E20) so this test reaches all the reads. buffer[0..3] = u32
-0x01020304, so u8 -> 1, u16 BE -> 258, u32 BE -> 16909060.
+{-| Decoding unsigned 8-, 16- and 32-bit integers from a 40-byte `Bytes` value produced by
+`Bytes.Decode.bytes` reads from the start of that value.
+
+The buffer is 50 bytes: the big-endian unsigned 32-bit integer 16909060 (bytes 1, 2, 3, 4)
+followed by 46 bytes of 9. `Bytes.Decode.bytes 40` takes its first 40 bytes.
+Decoding from the start of the result, `unsignedInt8` gives 1, big-endian `unsignedInt16`
+gives 258 (0x0102) and big-endian `unsignedInt32` gives 16909060 (0x01020304).
+
 -}
 
 -- CHECK: slice_u8: 1

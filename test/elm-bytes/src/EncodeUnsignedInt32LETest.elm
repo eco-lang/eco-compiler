@@ -1,6 +1,8 @@
 module EncodeUnsignedInt32LETest exposing (main)
 
-{-| Test Bytes.Encode.unsignedInt32 with LE endianness.
+{-| `Bytes.Encode.unsignedInt32` with little-endian order writes 4 bytes.
+
+The test encodes `0x12345678` and logs the width of the result.
 -}
 
 -- CHECK: EncodeUnsignedInt32LETest: 4

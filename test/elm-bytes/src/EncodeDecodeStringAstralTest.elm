@@ -1,10 +1,12 @@
 module EncodeDecodeStringAstralTest exposing (main)
 
-{-| G1/E8: encode an astral string to UTF-8 bytes and decode it back. The Bytes
-UTF-8 encode/decode paths combine/emit surrogate pairs correctly, so this should
-round-trip. Width of "a😀b" = 1 + 4 (4-byte UTF-8 for U+1F600) + 1 = 6 bytes. The
-content is compared in Elm and logged as a Bool, because Debug.log renders
-non-ASCII / astral chars with \u escapes.
+{-| A string containing a character outside the Basic Multilingual Plane survives
+a round trip through Bytes.Encode.string and Bytes.Decode.string.
+
+The string is `"a😀b"`. U+1F600 takes 4 bytes in UTF-8, so the logged width is
+1 + 4 + 1 = 6. The decoded string is compared with the original, and the
+comparison is logged as `True` when they are equal.
+
 -}
 
 -- CHECK: width: 6

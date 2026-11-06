@@ -10,7 +10,7 @@ the same work:
     general decoder (BFUSE_002). The official Elm compiler treats the two alike.
 
 Bytes are the shape eco's decoder fusion supports today; it does not yet fuse loops over wider
-reads, or records of them (`test/elm-bytes/src/BytesLoopFusionShapesTest.elm`).
+reads, or records of them (`test/eco-mlir/src/BytesLoopFusionShapesTest.elm`).
 
 The decoded list must equal the generated one exactly, and the buffer must be `n` bytes long,
 at every size.

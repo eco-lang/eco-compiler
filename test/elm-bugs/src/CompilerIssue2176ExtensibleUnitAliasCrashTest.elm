@@ -1,10 +1,13 @@
 module CompilerIssue2176ExtensibleUnitAliasCrashTest exposing (main, addExtension)
 
-{-| Converting between records typed with an extensible alias applied to `()` crashes the compiler.
+{-| A function between records typed with an extensible alias applied to `()` must be rejected
+with an error report, not crash the compiler.
 
 <https://github.com/elm/compiler/issues/2176>
 
-`ExtensibleT () dataT` is ill-formed (`()` is not a record). Elm 0.19.1 crashes with "Used toAnnotation on a type that is not well-formed" and "thread blocked indefinitely in an MVar operation" instead of reporting an error.
+`ExtensibleT () dataT` is ill-formed (`()` is not a record). Elm 0.19.1 crashes with "Used
+toAnnotation on a type that is not well-formed" and "thread blocked indefinitely in an MVar
+operation" instead of reporting an error.
 
 -}
 

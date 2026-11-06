@@ -1,6 +1,6 @@
 module CaseCustomType4Test exposing (main)
 
-{-| Test case on custom type with 4 constructors.
+{-| A case on a custom type with four constructors and no arguments, with one branch per constructor, selects the right branch for each.
 -}
 
 -- CHECK: dir1: "up"

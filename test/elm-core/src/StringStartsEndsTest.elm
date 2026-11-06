@@ -1,5 +1,8 @@
 module StringStartsEndsTest exposing (main)
 
+{-| Checks that `String.startsWith` and `String.endsWith` each give `True` for a matching prefix or suffix of `"Hello"` and `False` for one that is not.
+-}
+
 -- CHECK: starts_yes: True
 -- CHECK: starts_no: False
 -- CHECK: ends_yes: True

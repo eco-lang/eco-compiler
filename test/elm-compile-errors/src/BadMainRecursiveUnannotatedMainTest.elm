@@ -1,9 +1,8 @@
 module BadMainRecursiveUnannotatedMainTest exposing (..)
 
-{-| BAD MAIN: recursive unannotated main.
+{-| An unannotated `main` that is mutually recursive with another function is rejected with a BAD MAIN error.
 
-From `SourceIR.MainFailsCases` (`cycleCases`), the elm-test catalogue of programs
-the compiler must reject.
+`main x` calls `f x`, and `f x` calls `main x`; neither has a type annotation.
 
 -}
 

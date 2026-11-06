@@ -1,9 +1,6 @@
 module TooManyArgsTooManyArgumentsToAFunctionTest exposing (..)
 
-{-| TOO MANY ARGS: too many arguments to a function.
-
-From `SourceIR.TypeCheckFailsCases` (`contextCases`), the elm-test catalogue of programs
-the compiler must reject.
+{-| Applying a function to more arguments than it takes, `not True False`, is rejected with a TOO MANY ARGS error.
 
 -}
 

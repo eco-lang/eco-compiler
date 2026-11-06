@@ -1,9 +1,9 @@
 module CovLambdaBoundaryCaseBoundaryUnderAFunctionAliasTest exposing (..)
 
-{-| Case boundary under a function alias.
+{-| A function whose result type is a type alias for a function type, with a `case` that
+returns a different lambda per branch.
 
-From `SourceIR.CovLambdaBoundaryCases`, a program of the elm-test catalogue, with a
-`main` that logs its `testValue`. The CHECK lines are what Elm 0.19.1 prints for it.
+`choose 0` returns `\a -> a + 1`, so `choose 0 3` is `4`.
 
 -}
 

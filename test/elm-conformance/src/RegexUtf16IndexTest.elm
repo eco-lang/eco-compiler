@@ -1,9 +1,11 @@
 module RegexUtf16IndexTest exposing (main)
 
-{-| `Match.index` counts UTF-16 code units, as `String.length` and `String.slice` do, recorded
-from Elm on node (run-js-e2e.js --record). eco 0.2.0 counted code points, so slicing a string at a
-match index went wrong after any character outside the BMP (eco-bugs.md number 4,
-plans/kg-reported-bugs.md step 3). U+1F600 is two units; U+00E9 and U+4E2D are one each.
+{-| `Match.index` counts UTF-16 code units, as `String.length` and `String.slice` do.
+
+U+1F600 is two code units; U+00E9 and U+4E2D are one each. The tests check the index of a match
+after U+1F600, that `String.slice` at that index gives the matched text, the indexes of repeated
+matches between U+1F600s, indexes after one-unit non-ASCII characters, the index passed to a
+`Regex.replace` function, and the index from `Regex.findAtMost`.
 
 -}
 

@@ -1,11 +1,11 @@
 module LssGapBodyTieAnnoAB exposing (main)
 
-{-| Q3 discriminator: does the annotation<->body tie fail because
-`stampArrowRoots` bails at a generalized annotation ROOT, or for every def?
-`adderAnn` and `adderInf` share a body and differ only in having an annotation.
-If `/r` reads var on BOTH, the loss is in consumption (translate stays
-occurrence-keyed); if only on `adderAnn`, it is the stamp walk, and
-[stampguard]/stampwalk: will agree.
+{-| A top-level function that returns a lambda gives the same result whether or
+not it has a type annotation.
+
+`adderAnn` (annotated `Int -> (Int -> Int)`) and `adderInf` (no annotation)
+have identical bodies, `\y -> x + y`. Each is partially applied to 3 and
+passed to `apply`, which calls it with 4, printing 7 for both.
 -}
 
 -- CHECK: bodyTieAnn: 7

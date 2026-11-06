@@ -1,13 +1,13 @@
 module CompilerIssue2268TcoClosureCaptureTest exposing (main)
 
-{-| Tail-call optimization breaks closures that capture an argument of the looping function.
+{-| Lambdas created inside a tail-recursive function each keep the argument value they were created with.
 
 <https://github.com/elm/compiler/issues/2268>
 
-The tail-recursive `tcoMakeLazy` is compiled to a `while` loop that reassigns its arguments; the
-lambdas `\_ -> item` all capture the same JavaScript variable, so after the loop they all see its
-last value. Elm 0.19.1 gives `[3,3,3]`; the correct result is `[3,2,1]`, the same as the
-non-tail-recursive version.
+`tcoMakeLazy` walks `[ 1, 2, 3 ]` and prepends `\_ -> item` to an accumulator, so forcing the
+result gives `[3,2,1]`. `makeLazy` is the same function with its recursive call written using
+`<|`; both must print `[3,2,1]`. Elm 0.19.1 turns the tail call in `tcoMakeLazy` into a loop that
+reassigns `item`, every lambda sees its last value, and the `tco` line prints `[3,3,3]`.
 
 -}
 

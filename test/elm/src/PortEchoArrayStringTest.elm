@@ -1,11 +1,15 @@
 port module PortEchoArrayStringTest exposing (main)
 
-{-| A `Array String` out and back in over ports. The harness echo (test/ElmE2ETestBase.hpp
-`installPortEchoBounce` under the JIT, test/aot_port_host.cpp under AOT, and
-test/scripts/run-elm-e2e.js for stock Elm on Node) feeds every `echoOut` payload back
-into `echoIn`. Each value is sent once the previous one
-has come back, so the order is the same on every backend, and the subscription is dropped
-after the last so the program ends. Expected output recorded from Elm on node.
+{-| An `Array String` sent out through a port comes back unchanged through an incoming
+port, for each of two sample values.
+
+The program assumes a host that passes every value sent out on the `echoOut`
+port straight back in on the `echoIn` port; without one, nothing after `init`
+is logged. It sends the values in `values` one at a time, sending the next only
+after the previous one has come back, logs each value received, logs
+`"done"` after the last one, and then drops its subscription.
+
+The values are an empty array and a three-element array.
 
 -}
 

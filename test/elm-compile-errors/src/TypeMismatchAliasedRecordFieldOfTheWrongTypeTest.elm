@@ -1,9 +1,8 @@
 module TypeMismatchAliasedRecordFieldOfTheWrongTypeTest exposing (..)
 
-{-| TYPE MISMATCH: aliased record field of the wrong type.
+{-| A record whose field has the wrong type for its record alias annotation is rejected with a TYPE MISMATCH.
 
-From `SourceIR.TypeCheckFailsCases` (`recordFieldCases`), the elm-test catalogue of programs
-the compiler must reject.
+`x` is annotated `P`, an alias of `{ a : Int }`, but its field `a` is the string `"s"`.
 
 -}
 

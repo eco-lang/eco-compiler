@@ -1,10 +1,11 @@
 module BytesHostEndiannessTest exposing (main)
 
-{-| `Bytes.getHostEndianness`, recorded from Elm on node (run-js-e2e.js --record) on a
-little-endian host. eco's kernel took no arguments and returned the raw word 0 or 1, neither a
-Task nor an `Endianness`, although elm/bytes calls it as
-`Elm.Kernel.Bytes.getHostEndianness LE BE` (plans/kg-reported-bugs.md step 1, kernel audit).
+{-| `Bytes.getHostEndianness` is a `Task` that succeeds with an `Endianness`, `LE` on a
+little-endian machine.
 
+The program performs the task once at start-up and logs the result as `"LE"` or `"BE"`. The
+expected output is `"LE"`, so the test assumes a little-endian host; on a big-endian machine it
+would fail although `BE` is the correct answer there.
 -}
 
 -- CHECK: host endianness: "LE"

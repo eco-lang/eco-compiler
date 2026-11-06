@@ -1,12 +1,11 @@
 module SortByAlwaysEmptyStringKeyTest exposing (main)
 
-{-| `List.sortBy (always "")` — every key extracted is the embedded
-constant `""`. The F3 bug: `Allocator::resolve(keys[i])` in the
-comparator asserts on `constant != 0`. Expected to FAIL (assert)
-or crash today.
+{-| `List.sortBy` with a key function that returns `""` for every element leaves the list in its original order.
 
-`always` is forced through a non-inlinable helper to defeat any
-intrinsic shortcut that might fold `sortBy (always _)` to `identity`.
+`emptyKey` is a named top-level function that ignores its argument and returns
+`""`. All keys are equal, and `List.sortBy` is stable,
+so `[ 3, 1, 2 ]` stays `[3,1,2]`.
+
 -}
 
 -- CHECK: result: [3,1,2]

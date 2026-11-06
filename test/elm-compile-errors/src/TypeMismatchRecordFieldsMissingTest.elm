@@ -1,9 +1,6 @@
 module TypeMismatchRecordFieldsMissingTest exposing (..)
 
-{-| TYPE MISMATCH: record fields missing.
-
-From `SourceIR.TypeCheckFailsCases` (`recordFieldCases`), the elm-test catalogue of programs
-the compiler must reject.
+{-| Passing the record `{ name = 1 }` to a function annotated to take `{ name : Int, age : Int, size : Int }` is rejected with a TYPE MISMATCH error, because the fields `age` and `size` are missing.
 
 -}
 

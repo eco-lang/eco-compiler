@@ -1,6 +1,6 @@
 module IntMinMaxTest exposing (main)
 
-{-| Test min and max on integers.
+{-| Checks `min` and `max` on Int arguments, including a negative one.
 -}
 
 -- CHECK: min1: 3

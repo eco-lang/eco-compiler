@@ -1,6 +1,6 @@
 module CombinatorSPalindromeTest exposing (main)
 
-{-| S combinator with String.reverse: "straw" ++ reverse "straw" = "strawwarts"
+{-| The S combinator with `String.reverse`: `s (++) String.reverse "straw"` is `"straw" ++ String.reverse "straw"`, which is `"strawwarts"`.
 -}
 
 -- CHECK: result: "strawwarts"

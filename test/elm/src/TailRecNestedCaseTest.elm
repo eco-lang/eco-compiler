@@ -1,7 +1,9 @@
 module TailRecNestedCaseTest exposing (main)
 
-{-| Test tail-recursive function with nested case expressions
-where multiple branches contain tail calls.
+{-| Self-recursive list functions whose tail call sits in an `if` branch or behind a `case` with several list patterns return the right results.
+
+`contains` finds 3 in `[1, 2, 3, 4]` and does not find 5; `myLast` returns 4,
+the last element, using a `x :: []` pattern before the general `_ :: rest` one.
 -}
 
 -- CHECK: find: True

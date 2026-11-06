@@ -1,9 +1,9 @@
 module CovLambdaBoundaryCaseBoundaryInARecursiveValueTest exposing (..)
 
-{-| Case boundary in a recursive value.
+{-| A top-level function defined as a lambda whose `case` returns a different lambda per branch,
+one of which calls the function recursively.
 
-From `SourceIR.CovLambdaBoundaryCases`, a program of the elm-test catalogue, with a
-`main` that logs its `testValue`. The CHECK lines are what Elm 0.19.1 prints for it.
+`pickV 0 3` takes the `0` branch with `a = 3`, which is not above 10, so the result is `4`.
 
 -}
 

@@ -1,8 +1,18 @@
 module DecodeStringNonAsciiTest exposing (main)
 
-{-| W1: non-ASCII payloads must keep the legacy UTF-16 path (the ASCII gate
-rejects them), so decoded values and UTF-16 length semantics are unchanged.
-The source file itself stays ASCII (chars written as \u escapes).
+{-| Bytes.Decode.string round-trips non-ASCII text, and the decoded strings have the
+right `String.length`.
+
+Four strings are encoded to UTF-8 and decoded back using the encoded width:
+`"café"` (with a 2-byte character), `"中"` (3 bytes), `"😀"` (4 bytes, outside the
+Basic Multilingual Plane), and `"A😀Bé"`. The string literals are written
+with `\u{...}` escapes.
+
+  - `NonAscii.values` is `True` when every decoded string equals its original.
+  - `NonAscii.lengths` is `True` when `String.length` of the decoded strings is
+    4, 1, 2 and 5. Elm counts string length in UTF-16 code units, so a
+    character outside the Basic Multilingual Plane counts as 2.
+
 -}
 
 -- CHECK: NonAscii.values: True
@@ -46,7 +56,7 @@ main =
                 && (roundTrip grin == grin)
                 && (roundTrip mixed == mixed)
 
-        -- UTF-16 unit counts: café=4, 中=1, 😀=2, "A😀B é"=1+2+1+1=5
+        -- UTF-16 unit counts: café=4, 中=1, 😀=2, "A😀Bé"=1+2+1+1=5
         lengthsOk =
             (String.length (roundTrip cafe) == 4)
                 && (String.length (roundTrip zhong) == 1)

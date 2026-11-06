@@ -1,9 +1,6 @@
 module NameClashTwoArgumentsOfOneNameTest exposing (..)
 
-{-| NAME CLASH: two arguments of one name.
-
-From `SourceIR.CanonicalizeFailsCases` (`duplicateCases`), the elm-test catalogue of programs
-the compiler must reject.
+{-| A function whose two arguments share one name, `pick a a`, is rejected with a NAME CLASH error.
 
 -}
 

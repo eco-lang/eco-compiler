@@ -1,7 +1,10 @@
 module HeteroClosureIntFloatTest exposing (main)
 
-{-| Test heterogeneous closure ABI: Int (i64) vs Float (f64) captures
-chosen dynamically, then called through the same call site.
+{-| Partial applications of two different functions, one that has been given an `Int` and one that has been given a `Float`, can be chosen by an `if` and then called.
+
+Both have type `Int -> Int`. `f` is `addN 10`, so `f 3` is 13. `g` is
+`mulF 2.5`, so `g 4` is `truncate 10.0`, which is 10.
+
 -}
 
 -- CHECK: hetero_true: 13

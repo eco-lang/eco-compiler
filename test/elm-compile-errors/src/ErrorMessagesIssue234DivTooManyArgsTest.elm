@@ -1,11 +1,11 @@
 module ErrorMessagesIssue234DivTooManyArgsTest exposing (main)
 
-{-| TOO MANY ARGS: `Html.div` given four arguments is reported once.
+{-| `Html.div` applied to four arguments is reported as TOO MANY ARGS, saying it expects 2.
 
 <https://github.com/elm/error-message-catalog/issues/234>
 
-Elm 0.18 gave two reports for `Html.div [] [] [] []`, one saying `div` expects 3 arguments and
-one saying it expects 2. There must be one report, saying it expects 2.
+`main` is `Html.div [] [] [] []`. The report must say `div` expects 2 arguments and got 4,
+and no report may say it expects 3.
 
 -}
 

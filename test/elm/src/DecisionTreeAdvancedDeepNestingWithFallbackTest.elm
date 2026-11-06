@@ -1,9 +1,10 @@
 module DecisionTreeAdvancedDeepNestingWithFallbackTest exposing (..)
 
-{-| Deep nesting with fallback.
+{-| A `case` on a pair of pairs whose first branch matches all-zero literals and
+whose second binds the first and last numbers falls through to the second branch.
 
-From `SourceIR.DecisionTreeAdvancedCases`, a program of the elm-test catalogue, with a
-`main` that logs its `testValue`. The CHECK lines are what Elm 0.19.1 prints for it.
+`extract ( ( 1, 2 ), ( 3, 4 ) )` does not match `( ( 0, 0 ), ( 0, 0 ) )`, so it
+returns `a + d` = 1 + 4 = 5.
 
 -}
 

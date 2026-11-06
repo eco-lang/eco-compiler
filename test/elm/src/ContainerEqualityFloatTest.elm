@@ -1,14 +1,20 @@
 module ContainerEqualityFloatTest exposing (main)
 
-{-| Equality of Float-containing Tuple2, Tuple3, and List values.
+{-| Checks `==` on pairs, triples and lists of `Float`, including NaN,
+infinities and negative zero.
 
-    IEEE / Elm Float equality invariants exercised here:
+`Float` equality inside a container is the same as outside it: `NaN == NaN` is
+False, so a container holding NaN is unequal even to an identical container;
+`-0.0 == 0.0` is True, so `[ 0.0, -0.0 ]` equals `[ -0.0, 0.0 ]`; and
+`Infinity` equals itself but not `-Infinity`.
 
-      - `NaN == NaN` is False, and that propagates through every container:
-        a NaN anywhere on either side makes the whole structural `==` False.
-      - `-0.0 == 0.0` is True, and that too propagates through containers
-        (so a pair of `-0.0`s equals a pair of `0.0`s).
-      - `Infinity == Infinity` is True; `Infinity == -Infinity` is False.
+  - Pairs: equal, differing in either position, `0.0` against `-0.0`, NaN in
+    either position, and infinities of the same and of opposite sign.
+  - Triples: equal, differing in the middle, zeros of mixed sign, NaN in the
+    middle, and infinities with mixed-sign zeros.
+  - Lists: equal, different lengths, two empty lists, zeros of mixed sign, NaN,
+    the same infinities, and the infinities in swapped order.
+
 -}
 
 -- CHECK: pairEqual: True

@@ -1,6 +1,7 @@
 module LssGapNoDecls exposing (main)
-{-| NEGATIVE control: declares no types at all. Must sit exactly on the 122/218
-background, which is what licenses reading the other probes' deltas. -}
+{-| A program with no type declarations calls one annotated top-level function.
+
+`double 7` logs 14. -}
 -- CHECK: noDecls: 14
 import Html exposing (text)
 double : Int -> Int

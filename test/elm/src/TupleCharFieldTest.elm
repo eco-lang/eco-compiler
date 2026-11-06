@@ -1,8 +1,6 @@
 module TupleCharFieldTest exposing (main)
 
-{-| Test that (Int, Char) tuples round-trip correctly through
-heap allocation and projection.
-
+{-| A tuple holding a `Char` and an `Int` (`( 'A', Char.toCode 'A' )`) is built and printed with both components intact.
 -}
 
 -- CHECK: pair: ('A',65)

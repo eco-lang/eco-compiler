@@ -1,6 +1,6 @@
 module TupleMapFirstTest exposing (main)
 
-{-| Test Tuple.mapFirst.
+{-| `Tuple.mapFirst` applies a function to the first component of a pair and leaves the second unchanged.
 -}
 
 -- CHECK: mapFirst1: (2,10)

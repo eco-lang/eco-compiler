@@ -392,7 +392,7 @@ real spec nodes:
      `PsStamp`; `memberClassOf` on a `SourcePap` member is `"l"`.
   7. **Flag-off**: identical stats to today (`g1absentp` count unchanged).
 
-**Runtime — `test/elm/src/PapFastStampTest.elm`**, the R4 fixture, in the
+**Runtime — `test/eco-elm/src/PapFastStampTest.elm`**, the R4 fixture, in the
 `LssMixedSigHonestyTest` mould (non-inlinable recursive HOF, non-inlinable
 callees so the inliner cannot pre-empt the question):
 

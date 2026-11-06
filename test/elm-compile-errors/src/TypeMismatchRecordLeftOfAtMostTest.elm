@@ -1,9 +1,6 @@
 module TypeMismatchRecordLeftOfAtMostTest exposing (..)
 
-{-| TYPE MISMATCH: record left of <=.
-
-From `SourceIR.TypeCheckFailsCases` (`operatorCases`), the elm-test catalogue of programs
-the compiler must reject.
+{-| Comparing two records with `<=` is rejected with a TYPE MISMATCH error, because `<=` takes `comparable` operands and records are not comparable.
 
 -}
 

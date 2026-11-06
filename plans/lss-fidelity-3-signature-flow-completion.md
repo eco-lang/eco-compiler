@@ -744,7 +744,7 @@ arrow annotations (`MFunction Int LambdaSetAnno …` :239, `headAnno` :1088,
 Single-file run:
 `PATH=/work/build/toolchain/bin:$PATH /work/build/toolchain/bin/elm-test-rs --project /work/build/compiler/build-xhr --fuzz 1 /work/build/compiler/build-xhr/tests/TestLogic/Monomorphize/LssSigFlowTest.elm`
 
-**E2E — new `test/elm/src/LssSigFlowTest.elm`** (zero CMake edits — directory
+**E2E — new `test/eco-elm/src/LssSigFlowTest.elm`** (zero CMake edits — directory
 glob through the configure-time symlink; MUST have top-level `main`). House style
 = `LssSharedSpecJoinTest.elm`: doc comment citing this plan + LSS_020; a
 `chooseHandler`-style def; a caller passing a lambda through it into a call site;
@@ -1148,7 +1148,7 @@ If built (both halves artifact-affecting under keying → standard battery each)
   exactly;Compiler/MonoSolver/LssInfer.elm walkExpr/walkMembers/
   bindParamsFromSpine/joinCfHub/joinCallShape + tests:
   compiler/tests/TestLogic/Monomorphize/LssSigFlowTest.elm +
-  test/elm/src/LssSigFlowTest.elm
+  test/eco-elm/src/LssSigFlowTest.elm
 - **LSS_021**;Monomorphization;LambdaSets;implemented;Kernel arrows poison per
   KernelSetFacts — PSFApplies params keep their sets, PSFTunnels params join the
   result (symmetric, set-slot-only), everything else (every PSFOpaque position,
@@ -1225,7 +1225,7 @@ all-honest-or-poison rule, Let rhs joins, slot-only `joinCallShape`,
 `tests/TestLogic/Monomorphize/LssSigFlowTest.elm` (7 tests — 2-set rep
 transport, body-lambda member transport, polymorphic negative control, the
 HONESTY poison pin, the TailDef peel/WpSelf pin, the bySigSize rider);
-`test/elm/src/LssSigFlowTest.elm` (behavior pins valid both flag states —
+`test/eco-elm/src/LssSigFlowTest.elm` (behavior pins valid both flag states —
 `b: 11` is the runtime anti-miscompile check).
 
 **B.7 battery (all green):**

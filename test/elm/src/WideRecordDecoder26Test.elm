@@ -1,7 +1,12 @@
 module WideRecordDecoder26Test exposing (main)
 
-{-| E8: a 26-Int record alias built with the decoder (andMap) pattern; the
-constructor closure has arity 26 and loses param kind 25.
+{-| A 26-field record alias, used as a constructor function, can be filled in one
+argument at a time by an `andMap` pipeline over `Maybe`.
+
+`andMap` is defined here and applies a `Just` function to a `Just` argument.
+`build` starts from `Just R` and supplies the 26 `Int` fields, 1000 to 1025, so
+fields 0, 24 and 25 read back as `Just 1000`, `Just 1024` and `Just 1025`.
+
 -}
 
 -- CHECK: f0000: Just 1000

@@ -1,6 +1,7 @@
 module CaseOrderTest exposing (main)
 
-{-| Test case expression on Order type (LT, EQ, GT).
+{-| Checks that a `case` on an `Order` maps each of `LT`, `EQ` and `GT` to its own
+string, using the results of `compare` on `Int` values.
 -}
 
 -- CHECK: ord1: "less"

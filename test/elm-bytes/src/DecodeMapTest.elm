@@ -1,6 +1,10 @@
 module DecodeMapTest exposing (main)
 
-{-| Test Bytes.Decode.map transformation.
+{-| Bytes.Decode.map applies a function to the value a decoder produces.
+
+A single unsigned byte 42 is decoded through `map (\x -> x * 2)`, so the logged
+result is 84. A failed decode would log -1.
+
 -}
 
 -- CHECK: DecodeMapTest: 84

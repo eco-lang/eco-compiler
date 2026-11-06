@@ -1,6 +1,7 @@
 module EmbeddedNilRecursiveTest exposing (main)
 
-{-| Test empty list as the base case of a recursive list builder.
+{-| A recursive function that returns `[]` for an empty list builds the doubled
+positive elements of its input, skipping the rest.
 -}
 
 -- CHECK: result: [2,4,6]

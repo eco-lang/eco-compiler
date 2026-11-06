@@ -1,8 +1,10 @@
 module SingleCtorPairCharFloatTest exposing (main)
 
-{-| Two single-constructor types: WrapChar (Char, i16 unboxed) and WrapFloat (Float, f64 unboxed).
-Both have unboxed fields but completely different types (i16 vs f64).
-findSingleCtorUnboxedField could return the wrong type entirely.
+{-| Values are extracted correctly from two single-constructor types in one module, one wrapping a `Char` and one wrapping a `Float`.
+
+`unwrapChar` and `unwrapFloat` return the wrapped `'Z'` and `1.5`. `matchChar`
+wraps a `Char`, matches it back out and builds the string `"got_Z"`.
+
 -}
 
 -- CHECK: unwrap_char: 'Z'

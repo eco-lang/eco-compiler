@@ -1,7 +1,9 @@
 module LetNumberDeepNestRecordTest exposing (main)
 
-{-| Probe: deeper boxing nesting — a record inside a record holding a `number`,
-projected at `Float`. Correct: 1.5*30 = 45.
+{-| A `number` literal in a record that is itself a field of a let-bound record
+is read through two field accesses and used as a `Float`.
+
+`outer = { inner = { v = 30 } }` and `round (outer.inner.v * 1.5)` logs 45.
 
 -}
 

@@ -1,7 +1,13 @@
 module CharAstralArrayTest exposing (main)
 
-{-| An astral Char stored unboxed in an Array (JsArray push and set, in the tail
-and in a tree node past 32 elements) reads back as the same code point.
+{-| An astral `Char`, one whose code point is above 0xFFFF and so lies outside the
+Basic Multilingual Plane, keeps its code point when stored in an `Array`.
+
+The test pushes U+1F600 onto a two-element array, sets index 0 of that array to
+U+1D11E, and sets index 5 of a 40-element array to U+1F600. `Array.get` returns
+each code point, an untouched element of the large array is still `'a'`, and
+the small array converted back to a `String` equals `"ab😀"`.
+
 -}
 
 -- CHECK: arr_push: Just 128512

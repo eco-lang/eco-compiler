@@ -1,6 +1,7 @@
 module CaseMaybeTest exposing (main)
 
-{-| Test case expression on Maybe.
+{-| Checks that a `case` on a `Maybe Int` returns the wrapped value for `Just`
+and a default of -1 for `Nothing`.
 -}
 
 -- CHECK: case1: 42

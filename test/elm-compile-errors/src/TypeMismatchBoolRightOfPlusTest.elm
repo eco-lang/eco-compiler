@@ -1,9 +1,6 @@
 module TypeMismatchBoolRightOfPlusTest exposing (..)
 
-{-| TYPE MISMATCH: Bool right of +.
-
-From `SourceIR.TypeCheckFailsCases` (`operatorCases`), the elm-test catalogue of programs
-the compiler must reject.
+{-| `1 + True` is rejected with a TYPE MISMATCH, because `+` takes two numbers and `True` is a `Bool`.
 
 -}
 

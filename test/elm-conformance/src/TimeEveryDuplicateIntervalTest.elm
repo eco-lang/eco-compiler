@@ -1,15 +1,12 @@
 module TimeEveryDuplicateIntervalTest exposing (main)
 
-{-| TIME-07 (plans/kernel-lib-bug-fixes.md): several `Time.every` subscriptions with the same
-interval and different taggers must all tick. elm/time's effect manager keeps, per interval, the
-LIST of taggers and sends each of them the one `Time.now` of that tick (`Dict` of interval to
-taggers; the round goes out in subscription order). Before the fix the native manager (TimeEffectManager.cpp)
-kept one tagger per interval, so only the last-declared one (`Wrap C`) was delivered and
-`a ticked` / `b ticked` printed False; it now keeps them all (`IntervalState.taggerEncs`).
+{-| Several `Time.every` subscriptions with the same interval and different messages all tick, and
+each round gives every one of them the same time, in subscription order.
 
-Three subscriptions share 20 ms: `A`, `B` and `Sub.map Wrap (Time.every 20 C)`. The program stops
-(Sub.none) once any tagger has 5 ticks, waits 100 ms for the rest of that round, then reports.
-Expected output recorded from Elm on node.
+Three subscriptions share 20 ms: `A`, `B`, and `C` wrapped by `Sub.map Wrap`. Once any of them
+has ticked five times the program drops its subscriptions and reports 100 ms later. It checks
+that each one ticked at least four times, that the times line up round by round, and that the
+first round arrived as A, B, C.
 
 -}
 
@@ -55,6 +52,9 @@ record name model =
     { model | order = model.order ++ [ name ] }
 
 
+{-| Marks the model done and asks for a `Report` 100 ms later, the first time any subscription has
+five ticks.
+-}
 stopIfDone : Model -> ( Model, Cmd Msg )
 stopIfDone model =
     if not model.done && (List.length model.a >= 5 || List.length model.b >= 5 || List.length model.c >= 5) then
@@ -64,6 +64,9 @@ stopIfDone model =
         ( model, Cmd.none )
 
 
+{-| Returns whether the three lists of tick times agree round by round, oldest first, as far as
+the shortest list goes.
+-}
 sameTimes : List Int -> List Int -> List Int -> Bool
 sameTimes a b c =
     List.map3 (\x y z -> x == y && y == z) (List.reverse a) (List.reverse b) (List.reverse c)

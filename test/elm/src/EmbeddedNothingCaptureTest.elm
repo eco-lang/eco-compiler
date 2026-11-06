@@ -1,6 +1,7 @@
 module EmbeddedNothingCaptureTest exposing (main)
 
-{-| Test Nothing captured by a closure and later pattern-matched.
+{-| A local function that refers to a `Nothing` defined in the enclosing `let`
+matches it against the `Nothing` pattern.
 -}
 
 -- CHECK: result: -1

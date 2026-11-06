@@ -1,6 +1,6 @@
 module BitwiseComplementTest exposing (main)
 
-{-| Test Bitwise.complement.
+{-| `Bitwise.complement` flips every bit, so the complement of `n` is `-n - 1`.
 -}
 
 -- CHECK: comp1: -1

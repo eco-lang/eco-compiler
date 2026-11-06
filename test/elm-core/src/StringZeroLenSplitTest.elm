@@ -1,11 +1,27 @@
 module StringZeroLenSplitTest exposing (main)
 
-{-| HEAP\_071 audit: split / lines producing EMPTY parts (leading,
-trailing and adjacent separators), on ASCII (UTF-8 byte path) and non-ASCII
-(UTF-16 snapshot path) inputs, plus a large input. Every empty part must be the
-Empty constant.
+{-| `String.split` and `String.lines` return true empty strings for the empty
+parts produced by leading, trailing and adjacent separators.
 
-probe s = length, String.isEmpty, (s == ""), case-on-"" — "0EQC" is correct.
+Each part is passed to `probe`, which checks `String.length`, `String.isEmpty`,
+`== ""` and a `case` on the `""` pattern. An empty part must answer all four as
+empty, `"0EQC"`; the non-empty parts `"a"`, `"b"` and `"é"` read as `"1eqc"`.
+
+  - `split_ascii`, `split_ascii_mixed`, `split_ascii_long_sep`: splitting
+    `","` and `",a,,b,"` on `","`, and `"abcdabcd"` on the four-character
+    separator `"abcd"`.
+  - `split_utf16`, `split_utf16_mixed`, `split_utf16_long_sep`: the same
+    shapes with the separators `"é"` and `"éééé"`.
+  - `split_empty_input`: splitting `""` gives one empty part.
+  - `split_big_bad`: splitting 2000 commas gives 2001 parts, and the number
+    that are not `"0EQC"` must be 0.
+  - `lines_ascii`, `lines_utf16`, `lines_empty`: `String.lines` on
+    `"\n\n\r\n"` (four empty lines, `\r\n` counting as one break), on
+    `"\né\n"`, and on `""`.
+
+After that, the program builds a large comma-joined string of 100,001 numbers
+and probes every empty part again; `after_gc_bad` is the number that no longer
+reads as `"0EQC"`, and must be 0.
 
 -}
 
@@ -25,6 +41,11 @@ probe s = length, String.isEmpty, (s == ""), case-on-"" — "0EQC" is correct.
 import Html exposing (text)
 
 
+{-| Returns a four-character summary of `s`: its length, then `E` if
+`String.isEmpty s` holds (else `e`), `Q` if `s == ""` (else `q`), and `C` if a
+`case` on `s` matches the `""` pattern (else `c`). A correct empty string gives
+`"0EQC"`.
+-}
 probe : String -> String
 probe s =
     String.fromInt (String.length s)
@@ -49,6 +70,8 @@ probe s =
            )
 
 
+{-| Tells whether `s` has length 0; used to keep only the empty parts.
+-}
 isEmptyPart : String -> Bool
 isEmptyPart s =
     String.length s == 0

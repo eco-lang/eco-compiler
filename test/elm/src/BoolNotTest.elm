@@ -1,6 +1,6 @@
 module BoolNotTest exposing (main)
 
-{-| Test not function.
+{-| `not` negates a Bool: `not True` is `False` and `not False` is `True`.
 -}
 
 -- CHECK: not1: False

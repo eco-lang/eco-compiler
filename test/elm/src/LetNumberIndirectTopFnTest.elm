@@ -1,9 +1,10 @@
 module LetNumberIndirectTopFnTest exposing (main)
 
-{-| Regression test (native/AOT backend): the let-bound-`number`
-mis-specialization (see `LetNumberFloatMulTest`) reached when the `number` is
-passed to a top-level function whose parameter is `Float`. The `Float` constraint
-lives in `floatFn`'s signature, not at a use-site operator. Correct: 1.5*30 = 45.
+{-| A let-bound `number` passed to a top-level function annotated
+`Float -> Float` is a `Float`.
+
+The `Float` type comes from `floatFn`'s annotation, not from an operator at the
+use site. With `n = 30`, `floatFn n` is 45.
 
 -}
 

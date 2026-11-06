@@ -1,6 +1,6 @@
 module IntNegateTest exposing (main)
 
-{-| Test integer negation.
+{-| Checks `negate` on a positive Int, a negative Int and zero.
 -}
 
 -- CHECK: neg1: -5

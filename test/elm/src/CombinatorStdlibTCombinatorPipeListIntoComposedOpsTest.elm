@@ -1,9 +1,11 @@
 module CombinatorStdlibTCombinatorPipeListIntoComposedOpsTest exposing (..)
 
-{-| T combinator: pipe list into composed ops.
+{-| The T combinator, built from S and K inside a `let`, passing `[ 1, 2, 3 ]` to the composition of a sum and a doubling map: the result is 12.
 
-From `SourceIR.CombinatorStdlibCases`, a program of the elm-test catalogue, with a
-`main` that logs its `testValue`. The CHECK lines are what Elm 0.19.1 prints for it.
+Every combinator is a local definition in `testValue`: `b = s (k s) k`,
+`c = s (b b s) (k k)`, `i = s k k` and `t = c i`. The composed function is
+`b mySum mapDouble`, where `mySum` is a `List.foldl` and `mapDouble` a
+`List.map`, so `t [ 1, 2, 3 ] composed` is `mySum (mapDouble [ 1, 2, 3 ])`.
 
 -}
 

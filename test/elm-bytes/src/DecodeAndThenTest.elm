@@ -1,6 +1,6 @@
 module DecodeAndThenTest exposing (main)
 
-{-| Test Bytes.Decode.andThen for sequential decoding.
+{-| `Bytes.Decode.andThen` lets a value already decoded choose the next decoder: a length byte followed by that many bytes of string decodes to `"Hi"`.
 -}
 
 -- CHECK: DecodeAndThenTest: "Hi"

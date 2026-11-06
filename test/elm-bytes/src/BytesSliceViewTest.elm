@@ -1,9 +1,12 @@
 module BytesSliceViewTest exposing (main)
 
-{-| G2/E10: produce a >=32-byte slice via `D.bytes 40` (a real Tag_ByteBufferSlice)
-and read a primitive back out of it. Exercises the slice-aware decode read path
-(resolveByteBufferView). Should pass — this is the safe consumer path, distinct
-from Bytes.width (E20). buffer[0..3] = u32 0x01020304 = 16909060.
+{-| Decoding a big-endian unsigned 32-bit integer from a 40-byte `Bytes` value produced by
+`Bytes.Decode.bytes` gives the first four bytes of that value.
+
+The buffer is 50 bytes: the big-endian unsigned 32-bit integer 16909060 (bytes 1, 2, 3, 4)
+followed by 46 bytes of 9. `Bytes.Decode.bytes 40` takes its first 40 bytes.
+Reading a big-endian `unsignedInt32` from the result gives 16909060.
+
 -}
 
 -- CHECK: from_slice: 16909060

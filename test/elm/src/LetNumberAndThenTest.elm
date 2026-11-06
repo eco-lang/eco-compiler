@@ -1,8 +1,7 @@
 module LetNumberAndThenTest exposing (main)
 
-{-| Probe: a `number` boxed in `Maybe`, consumed via `Maybe.andThen` at `Float`.
-Correct: 1.5*30 = 45.
-
+{-| An unannotated `let` binding `Just 30`, whose literal has the constrained type
+`number`, is used at `Float` inside `Maybe.andThen`: `round (30 * 1.5)` gives 45.
 -}
 
 -- CHECK: andthen: 45

@@ -1,9 +1,9 @@
 module HigherOrderFunctionChosenByIfTest exposing (..)
 
-{-| A higher-order function chosen by an `if` and then applied.
+{-| A higher-order function chosen by an `if` and then applied to a function argument gives the right result.
 
-From `Compiler.Monomorphize.Solver.LssSigFlowTest`, an elm-test unit test, with a
-`main` that logs its `testValue`. The CHECK lines are what Elm 0.19.1 prints for it.
+`useH` chooses between two functions of type `(Int -> Int) -> Int`. With
+`True` it picks `\f -> f 1` and applies it to `\x -> x * 2`, giving 2.
 
 -}
 

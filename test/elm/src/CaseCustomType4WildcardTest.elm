@@ -1,6 +1,6 @@
 module CaseCustomType4WildcardTest exposing (main)
 
-{-| Test case on custom type with 4 constructors, 2 explicit cases and wildcard.
+{-| A case on a four-constructor custom type with two explicit branches and a wildcard sends the other two constructors to the wildcard.
 -}
 
 -- CHECK: card1: "hearts"

@@ -1,9 +1,8 @@
 module TypeMismatchRigidExtensionWhereClosedTest exposing (..)
 
-{-| TYPE MISMATCH: rigid extension where closed.
+{-| Returning an extensible record argument where the annotation says a closed record is rejected with a TYPE MISMATCH.
 
-From `SourceIR.TypeCheckFailsCases` (`problemCases`), the elm-test catalogue of programs
-the compiler must reject.
+`g : { r | name : Int } -> { name : Int }` with `g r = r`: the argument may carry fields beyond `name`, which the closed result type `{ name : Int }` does not allow.
 
 -}
 

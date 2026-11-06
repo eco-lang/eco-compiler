@@ -1,9 +1,8 @@
 module TypeMismatchUnitLeftOfAtLeastTest exposing (..)
 
-{-| TYPE MISMATCH: unit left of >=.
+{-| Comparing two unit values with `>=` is rejected with a TYPE MISMATCH error.
 
-From `SourceIR.TypeCheckFailsCases` (`operatorCases`), the elm-test catalogue of programs
-the compiler must reject.
+`>=` takes `comparable` arguments, and `()` is not comparable.
 
 -}
 

@@ -1,9 +1,14 @@
 module FunctionValuesChosenByIfCaseAndTupleTest exposing (..)
 
-{-| Function values chosen by `if`, `case` and a returned tuple, then called.
+{-| Functions chosen at run time by `if`, `case` and a returned tuple are called correctly.
 
-From `Compiler.Monomorphize.Solver.ChosenFunctionValuesTest`, an elm-test unit test, with a
-`main` that logs its `testValue`. The CHECK lines are what Elm 0.19.1 prints for it.
+`chooseA` picks one of two function arguments through an `if`/`else if`
+chain, one branch returning it through a `let`. `chooseB` returns its function
+argument from a `case`, directly, through `identity`, through a `let`, or
+wrapped in a lambda that adds one. `chooseC` returns two functions as a pair,
+swapped when its first argument is not positive. `testValue` sums six calls
+through these choices, including a `chooseA` result passed into `chooseB`:
+5 - 5 + 18 + 14 + 2 + 4 = 38.
 
 -}
 

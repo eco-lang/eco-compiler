@@ -1,9 +1,7 @@
 module UnknownOperatorAnUnknownOperatorTest exposing (..)
 
-{-| UNKNOWN OPERATOR: an unknown operator.
-
-From `SourceIR.CanonicalizeFailsCases` (`testValue`), the elm-test catalogue of programs
-the compiler must reject.
+{-| Using an operator that no module defines, `1 <=> 2`, is rejected with an UNKNOWN OPERATOR
+error.
 
 -}
 

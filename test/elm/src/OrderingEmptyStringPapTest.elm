@@ -1,7 +1,12 @@
 module OrderingEmptyStringPapTest exposing (main)
 
-{-| First-class references to `<`, `<=`, `>`, `>=`, `compare` partially
-applied with `""`. Forces the kernel symbols (no intrinsic shortcut).
+{-| Tests `<`, `<=`, `>`, `>=` and `compare` partially applied to `""` and
+passed as functions to `List.map`.
+
+Each partial application is mapped over `[ "", "a", "ab" ]`, so `""` is always
+the left operand: it compares equal to itself and less than both non-empty
+strings.
+
 -}
 
 -- CHECK: ltEmpty: [False,True,True]

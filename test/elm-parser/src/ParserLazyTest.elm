@@ -1,5 +1,11 @@
 module ParserLazyTest exposing (main)
 
+{-| Checks that `Parser.lazy` lets a parser refer to itself, by matching nested parentheses.
+
+`parens` matches `(`, then either another `parens` or nothing, then `)`.
+`"((()))"` parses successfully.
+-}
+
 -- CHECK: nested: True
 
 import Html exposing (text)

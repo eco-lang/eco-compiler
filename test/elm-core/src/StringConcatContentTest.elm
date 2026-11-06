@@ -1,8 +1,12 @@
 module StringConcatContentTest exposing (main)
 
-{-| G3/E16: many-operand ++ and String.concat, asserting content correctness
-(the gated suite never checks concat output for correctness). A 20-way ++ chain
-and String.concat of 100 "xy" pieces.
+{-| A chain of twenty `++` operations and `String.concat` of a long list both
+produce the right text.
+
+The chain joins the single letters `a` to `j` and `A` to `J`. `String.concat`
+joins 100 copies of `"xy"`; the test logs its length, 200, and its first four
+characters.
+
 -}
 
 -- CHECK: concat20: "abcdefghijABCDEFGHIJ"

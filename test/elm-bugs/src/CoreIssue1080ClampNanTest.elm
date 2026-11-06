@@ -1,12 +1,12 @@
 module CoreIssue1080ClampNanTest exposing (main)
 
-{-| `clamp` returns the upper bound for NaN instead of passing NaN through.
+{-| `clamp -100 100` of NaN returns NaN.
 
 <https://github.com/elm/core/issues/1080>
 
-Elm 0.19.1 gives `clamp -100 100 (0/0) == 100`. `clamp` is defined as "if number < low then low
-else if number > high then high else number"; both comparisons are false for NaN, so the result
-must be NaN.
+`clamp` is documented as returning `low` when the number is below it, `high` when above it, and
+the number otherwise. Both comparisons are false for NaN, so the result must be NaN. Elm 0.19.1
+returns 100.
 
 -}
 

@@ -1,9 +1,9 @@
 module TypeMismatchListEntryPatternTest exposing (..)
 
-{-| TYPE MISMATCH: list entry pattern.
+{-| A list pattern whose entries have different types is rejected with a TYPE MISMATCH.
 
-From `SourceIR.TypeCheckFailsCases` (`patternMismatchCases`), the elm-test catalogue of programs
-the compiler must reject.
+The `case` branch pattern `[ 1, "a" ]` mixes a number pattern and a string pattern
+in one list, and all entries of a list must share one type.
 
 -}
 

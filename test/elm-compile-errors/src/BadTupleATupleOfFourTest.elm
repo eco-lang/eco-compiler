@@ -1,9 +1,8 @@
 module BadTupleATupleOfFourTest exposing (..)
 
-{-| BAD TUPLE: a tuple of four.
+{-| A four-element tuple is rejected with a BAD TUPLE error.
 
-From `SourceIR.CanonicalizeFailsCases` (`testValue`), the elm-test catalogue of programs
-the compiler must reject.
+Elm tuples have at most three elements; `testValue` is `( 1, 2, 3, 4 )`.
 
 -}
 

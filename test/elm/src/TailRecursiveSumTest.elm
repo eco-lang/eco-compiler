@@ -1,6 +1,6 @@
 module TailRecursiveSumTest exposing (main)
 
-{-| Test tail recursion.
+{-| A tail-recursive accumulator function sums the integers from 1 to n correctly for n = 5, 10 and 100.
 -}
 
 -- CHECK: sum1: 15

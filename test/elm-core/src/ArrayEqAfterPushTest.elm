@@ -1,8 +1,7 @@
 module ArrayEqAfterPushTest exposing (main)
 
-{-| Building an `Array` by repeated `Array.push` from empty must produce
-    a value equal to the same-sized `Array.initialize`. Regression guard
-    for the canonical-shape requirement on RRB arrays.
+{-| An `Array` built by `Array.push` from empty is equal under `==` to `Array.initialize` of the
+same elements, for lengths 96, 128 and 160.
 -}
 
 -- CHECK: push96: True

@@ -1,5 +1,8 @@
 module StringToIntFloatTest exposing (main)
 
+{-| Checks that `String.toInt` and `String.toFloat` return `Just` the number for a numeric string and `Nothing` for a non-numeric one.
+-}
+
 -- CHECK: toInt_ok: Just 42
 -- CHECK: toInt_fail: Nothing
 -- CHECK: toFloat_ok: Just 3.14

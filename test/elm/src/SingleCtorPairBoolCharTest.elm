@@ -1,7 +1,11 @@
 module SingleCtorPairBoolCharTest exposing (main)
 
-{-| Two single-constructor types: WrapBool (Bool, boxed) and WrapChar (Char, i16 unboxed).
-Tests that case-matching on WrapBool doesn't use WrapChar's unboxed i16 layout.
+{-| Pattern matching works on two single-constructor types in one module, one wrapping a `Bool` and one wrapping a `Char`.
+
+`matchBool` wraps a `Bool` in `WrapBool` and matches the literal patterns
+`WrapBool True` and `WrapBool False`, giving `"yes"` and `"no"`. `unwrapChar`
+extracts the `Char` from `WrapChar 'x'`.
+
 -}
 
 -- CHECK: match_true: "yes"

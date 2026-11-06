@@ -1,6 +1,7 @@
 module EmbeddedEmptyStringCaptureTest exposing (main)
 
-{-| Test empty string captured by a closure and used in operations.
+{-| A local function that refers to an empty string defined in the enclosing
+`let` sees it as empty, with length 0.
 -}
 
 -- CHECK: isEmpty: True

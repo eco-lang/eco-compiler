@@ -1,8 +1,11 @@
 module StringSplitTest exposing (main)
 
-{-| G3/E17: String.split (no gated coverage today). Results are re-joined with "|"
-so the assertions do not depend on how a List String renders. Single-char,
-multi-char, and trailing-separator cases, plus a piece count.
+{-| Checks `String.split` with a single-character separator, a multi-character separator and a trailing separator, plus the number of pieces.
+
+The pieces are joined with `"|"` before logging, so the expected output does
+not depend on how a `List String` is printed. A trailing separator yields a
+final empty piece: splitting `"a,"` on `","` gives `[ "a", "" ]`.
+
 -}
 
 -- CHECK: split_comma: "a|b|c"

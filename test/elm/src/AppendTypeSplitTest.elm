@@ -1,22 +1,11 @@
 module AppendTypeSplitTest exposing (main)
 
-{-| kernel-opt-05: `++` at mono sites that statically know the operand type
-lowers to `eco.string.append` / `eco.list.append` instead of the polymorphic
-`Elm_Kernel_Utils_append`, which re-derives the type at runtime from two tag
-loads and silently returns its first argument for any pair it does not
-recognise.
+{-| `++` gives the right result on `String`s and `List`s, including empty operands, a long string, slices, nested appends, and a function whose type is `appendable`.
 
-Behaviour must be IDENTICAL in both flavours, so this fixture pins behaviour.
-Both typed exports reach the SAME backends the polymorphic kernel reaches, so
-the cases below deliberately cover the full shape domain rather than just flat
-leaves: an operand may be a rope, a slice/view, a chunk spine, or an embedded
-constant (`""` and `[]` are both `Const_Empty`, for which `Export::toPtr`
-yields null and the wrapper's own guard answers).
-
-The `appendable`-polymorphic helper is here to exercise the residue path: if
-mono settles it to concrete String and List specializations both become typed
-ops, and if any site stays an `MVar` it falls through `utilsIntrinsic`'s final
-wildcard and keeps the kernel call. Either way the answer must not change.
+Each of `String` and `List` is appended with an empty operand on the left, on
+the right, and on both sides. The string cases also append a 140,000-character
+string built by `++`, slices of a string, and a slice taken across the join of
+the long string. The list cases also append a list produced by `List.map`.
 
 -}
 
@@ -39,58 +28,57 @@ wildcard and keeps the kernel call. Either way the answer must not change.
 import Html exposing (text)
 
 
-{-| Both operands are flat leaves.
+{-| Two string literals appended.
 -}
 strs : String
 strs =
     "foo" ++ "bar"
 
 
-{-| Above STRING\_FLATTEN\_LIMIT (131072 units): append builds a rope rather than
-flattening, so the result is a Tag\_StringRope.
+{-| A 140,000-character string: 70,000 `a`s appended to 70,000 `b`s.
 -}
 ropeStr : String
 ropeStr =
     String.repeat 70000 "a" ++ String.repeat 70000 "b"
 
 
-{-| Both operands are interior views over the same source string.
+{-| Two slices of the same string appended.
 -}
 sliceAppend : String
 sliceAppend =
     String.slice 2 5 "hello" ++ String.slice 0 3 "hello"
 
 
-{-| A slice OF a rope: the operand is a view whose base is not a flat leaf.
+{-| The two characters on either side of the join in `ropeStr`.
 -}
 ropeThenSlice : String
 ropeThenSlice =
     String.slice 69999 70001 ropeStr
 
 
-{-| Cons spines from literals.
+{-| Two list literals appended.
 -}
 lists : List Int
 lists =
     [ 1, 2 ] ++ [ 3, 4 ]
 
 
-{-| A combinator-produced spine (which the chunked-list representation may
-build as Tag\_ConsChunk) appended to a literal.
+{-| A list produced by `List.map` appended to a list literal.
 -}
 chunkAppend : List Int
 chunkAppend =
     List.map (\x -> x * 2) [ 1, 2, 3 ] ++ [ 1 ]
 
 
-{-| Nested appends: the result of one append is an operand of the next.
+{-| Three strings appended, where the left operand is itself an append.
 -}
 nested : String
 nested =
     ("ab" ++ "cd") ++ "ef"
 
 
-{-| `appendable`-polymorphic, used at both String and List.
+{-| Returns `x` appended to itself. Its type is `appendable`, and the test uses it
+at `String` and at `List`.
 -}
 twice : appendable -> appendable
 twice x =

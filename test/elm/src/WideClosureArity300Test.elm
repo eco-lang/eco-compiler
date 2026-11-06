@@ -1,6 +1,13 @@
 module WideClosureArity300Test exposing (main)
 
-{-| Arity-300 mixed closure extended in steps 1/7/20/63/64/65/80 (root chunks over 64).
+{-| A function of 300 parameters of mixed types can be partially applied in seven
+stages and gives the right result once the last argument is supplied.
+
+`big` takes `Int`, `Float`, `Char`, `String` and `Bool` arguments and returns an
+`Int`. Starting from the list `[ big ]`, `main` maps `step0` to `step6` over it
+in turn, supplying 1, 7, 20, 63, 64, 65 and 80 arguments. Every list but the
+last holds a partially applied function; the last holds the result, `[1882518]`.
+
 -}
 
 -- CHECK: res: [1882518]

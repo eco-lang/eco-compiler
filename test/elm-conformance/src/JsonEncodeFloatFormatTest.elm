@@ -1,10 +1,16 @@
 module JsonEncodeFloatFormatTest exposing (main)
 
-{-| JSON-NEW-1 (plans/kernel-lib-bug-fixes.md): how `Json.Encode.encode` prints a Float. Elm uses
-`JSON.stringify`, i.e. JS `Number.prototype.toString` (`3`, `1e+21`, `1.5e-7`) and `null` for
-NaN and the infinities. eco's `Elm_Kernel_Json_encode` used nlohmann `json::dump`, which printed
-`3.0`, `0.0`, `-0.0`, `1e-07`. Expected values recorded from Elm on node.
+{-| `Json.Encode.encode` writes a whole Float without a decimal point, uses exponent notation only
+for very large and very small magnitudes, and writes NaN and infinity as `null`.
 
+  - Whole Floats have no decimal point (`0`, `3`, `123456789`), and negative zero is `0`.
+  - Exponent notation is used from 1e21 (`1e+21`) and below 1e-6 (`1.5e-7`), but not at 1e-6
+    (`0.000001`).
+  - `0.1 + 0.2` gives `0.30000000000000004`.
+  - NaN and positive infinity encode as `null`.
+  - `list`: `Json.Encode.list Json.Encode.float` gives `[1,2.5]`.
+  - `value 1.0`: the JSON text `1.0` decoded as a `Value` and re-encoded gives `1`.
+  - `int round trip`: `Json.Encode.float 3` encodes to text that `Json.Decode.int` reads as 3.
 -}
 
 -- CHECK: float 0: "0"

@@ -1,6 +1,7 @@
 module CaseListConsTest exposing (main)
 
-{-| Test case expression on List with [] and x::xs patterns.
+{-| Checks that a recursive function matching a list against `[]` and `x :: xs`
+sums the empty list, a one-element list and a three-element list correctly.
 -}
 
 -- CHECK: sum1: 0

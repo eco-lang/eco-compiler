@@ -1,8 +1,11 @@
 module LetNumberTupleToFnTest exposing (main)
 
-{-| Probe: a `number` pair passed to a function demanding a `Float` tuple. The
-`Float` constraint lives in the parameter type of `useTuple`, reached after a
-boxed tuple projection inside the callee. Correct: 1.5*30 + 1.5*40 = 105.
+{-| A let-bound pair of integer literals passed to a function that takes
+`( Float, Float )` is used at `Float`: `round (useTuple p)` with `p = ( 30, 40 )`
+logs 105.
+
+`useTuple` destructures its argument and returns `a * 1.5 + b * 1.5`; only its
+parameter type fixes the pair's elements to `Float`.
 
 -}
 

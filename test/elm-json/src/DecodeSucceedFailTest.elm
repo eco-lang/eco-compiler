@@ -1,5 +1,8 @@
 module DecodeSucceedFailTest exposing (main)
 
+{-| `Json.Decode.succeed 99` produces `99` whatever the input; here the input is `null`.
+-}
+
 -- CHECK: succeed1: Ok 99
 
 import Html exposing (text)

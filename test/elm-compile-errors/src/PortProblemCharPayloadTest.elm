@@ -1,9 +1,10 @@
 port module PortProblemCharPayloadTest exposing (..)
 
-{-| PORT ERROR: a `Char` port payload. Ports carry `Int`, `Float`, `Bool`, `String`,
-`Json.Encode.Value`, `()`, `List`/`Maybe`/`Array`, tuples and records of those (and `Bytes`,
-an Eco extension), but not `Char`: Elm rejects it and so must Eco
-(`Compiler.Canonicalize.Effects.checkPayload`).
+{-| A port whose payload type is `Char` is rejected with a PORT ERROR naming the port and the `Char` type.
+
+Ports can carry `Int`, `Float`, `Bool`, `String`, `Json.Encode.Value`, `()`, and
+`List`, `Maybe`, `Array`, tuples and records built from those, but not `Char`. Here the
+outgoing port `charOut : Char -> Cmd msg` is declared.
 
 -}
 

@@ -1,9 +1,8 @@
 module HigherOrderReturnLambdaBasedOnConditionTest exposing (..)
 
-{-| Return lambda based on condition.
+{-| A let-bound function that returns one of two lambdas depending on a `Bool` can be applied to a further argument in the same call.
 
-From `SourceIR.HigherOrderCases`, a program of the elm-test catalogue, with a
-`main` that logs its `testValue`. The CHECK lines are what Elm 0.19.1 prints for it.
+`choose True 42` picks `\x -> x` and applies it to 42, giving 42.
 
 -}
 

@@ -1,9 +1,12 @@
 module OrderingMixedCaptureTest exposing (main)
 
-{-| Stress test combining `(<)`, `(<=)`, `(>)`, `(>=)` per-type via
-    higher-order capture. The same shape as the per-type capture tests but
-    interleaved so the kernel symbol table sees calls to all 12 ordering
-    variants in one program.
+{-| Tests `(<)` and `(>=)` passed as arguments to one polymorphic counting
+helper, used at `Int`, `Float` and `Char` in the same program.
+
+`countWith` counts the list elements `x` for which `pred x target` holds. Each
+type uses a five-element list (`1` to `5`, `1.0` to `5.0`, `'a'` to `'e'`) and
+a target fourth in that list, so `(<)` counts 3 and `(>=)` counts 2.
+
 -}
 
 -- CHECK: int_lt_count: 3

@@ -1,6 +1,6 @@
 module CharToUpperTest exposing (main)
 
-{-| Test Char.toUpper.
+{-| `Char.toUpper` maps `'a'` to `'A'` and `'z'` to `'Z'`, and leaves `'0'` unchanged.
 -}
 
 -- CHECK: upper1: 'A'

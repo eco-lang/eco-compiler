@@ -1,23 +1,14 @@
 module MutualLetRecClosuresTest exposing (main)
 
-{-| Stage-6 regression for mutually recursive let-bound closures.
+{-| Two `let`-bound functions that call each other (`evenP` and `oddP`) are mutually recursive, and each returns a record holding a Bool result and a step count.
 
-    Two let-bindings reference each other as captures (e.g. `evenP` calls
-    `oddP` and vice versa via stored function references). Without the
-    compiler's forward-sibling fix, the papCreate for the first binding
-    would emit an SSA operand naming the second binding's placeholder
-    before the second papCreate is emitted — `eco-boot-native` rejects
-    the resulting MLIR with
+Each step decrements `k` and increments `counter`; `evenP` returns `True` and
+`oddP` returns `False` when `k` reaches `0`.
 
-        error: operand #0 does not dominate this use
-
-    The fix replaces the forward operand with a Unit placeholder and
-    emits `eco.closure.patch_capture` after both closures are allocated.
-
-    This pattern is structurally identical to the GLSL-parser's
-    `rassocP` / `rassocP1` (and `lassocP` / `lassocP1`) let-bindings in
-    `buildExpressionParser`, which was the site triggering the bootstrap
-    failure.
+  - `classify 4` starts at `evenP 4`, ends in `evenP 0` after 4 steps, and
+    reports `isEven = True`, `calls = 4`.
+  - `classifyOdd 3` starts at `oddP 3`, ends in `evenP 0` after 3 steps, so the
+    probe result is `True` and `isOdd`, its negation, is `False`.
 
 -}
 

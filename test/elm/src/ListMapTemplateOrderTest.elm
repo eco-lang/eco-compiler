@@ -1,19 +1,12 @@
 module ListMapTemplateOrderTest exposing (main)
 
-{-| Pins the UNLICENSED fallback of the `List.map` forward template
-(plans/list-map-mlir-template.md; policy `D-4a`).
+{-| Checks that `List.map` with a callback that calls `Debug.log` logs the elements
+from last to first.
 
-A callback that references `Debug.*` can never be licensed, so this map keeps
-today's elm/core foldr lowering — which applies the callback **right to left**
-(`foldrHelper`'s `fn a (fn b (fn c (fn d res)))` evaluates the innermost call
-first). The emitted order must therefore be `e, d, c, b, a` with the template
-flag ON and OFF alike: that identity IS the fallback guarantee, and it is the
-pinnable half of D-4a.
-
-The `Debug.log` sits INSIDE the mapped callback on purpose — that is the
-position the licence walk inspects. `DebugLogOrderingTest.elm` pins D-3 over a
-wildcard statement chain; this file pins per-element application order under a
-combinator, which is a different rule.
+elm/core defines `List.map` with `List.foldr`, which, on a list this short,
+applies the callback to the last element first. Mapping
+`\x -> Debug.log "m" x` over `["a", "b", "c", "d", "e"]` therefore logs `"e"`
+through `"a"` in that order, and the mapped list keeps all five elements.
 
 -}
 
@@ -27,7 +20,7 @@ combinator, which is a different rule.
 import Html exposing (text)
 
 
-{-| A logging callback: never licensable, so the lowering must stay foldr's.
+{-| Maps `Debug.log "m"` over `xs`, logging each element.
 -}
 logged : List String -> List String
 logged xs =

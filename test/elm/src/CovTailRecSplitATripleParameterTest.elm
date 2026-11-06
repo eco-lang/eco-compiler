@@ -1,9 +1,10 @@
 module CovTailRecSplitATripleParameterTest exposing (..)
 
-{-| Split a triple parameter.
+{-| A self tail-recursive function that destructures a triple of `Int`, `Int` and `Float` in its
+parameter pattern and rebuilds it on each call.
 
-From `SourceIR.CovTailRecCases`, a program of the elm-test catalogue, with a
-`main` that logs its `testValue`. The CHECK lines are what Elm 0.19.1 prints for it.
+`testValue` takes arguments and is never applied, so the program logs it as `<function>`; the
+test checks that these definitions compile and the program runs.
 
 -}
 

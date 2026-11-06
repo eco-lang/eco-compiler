@@ -1,9 +1,9 @@
 module RedundantPatternABranchAfterAWildcardTest exposing (..)
 
-{-| REDUNDANT PATTERN: a branch after a wildcard.
+{-| A `case` branch placed after a wildcard branch is rejected with a REDUNDANT PATTERN error.
 
-From `SourceIR.PatternFailsCases` (`redundantCases`), the elm-test catalogue of programs
-the compiler must reject.
+In `name`, the `_` branch comes first and matches every value, so the following `0`
+branch can never be reached.
 
 -}
 

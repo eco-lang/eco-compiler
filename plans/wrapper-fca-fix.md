@@ -809,7 +809,7 @@ New fixtures:
    same shape for a mixed-element Tuple2 (`tuple2:i:H` or `tuple2:H:H`).
    FileCheck verifies the wrapper uses `eco.construct.tuple2` and that
    the lowered LLVM IR uses `eco_alloc_tuple2_uninit` + store helpers.
-7. **`test/elm/src/CrossSpecSretMixedRecordTest.elm`** — end-to-end Elm
+7. **`test/eco-elm/src/CrossSpecSretMixedRecordTest.elm`** — end-to-end Elm
    test that returns a 2-tuple `(Int, String)` (mixed `i64` + `!eco.value`)
    from a function. Verifies the optimised binary runs correctly and
    the worker is sret-promoted.

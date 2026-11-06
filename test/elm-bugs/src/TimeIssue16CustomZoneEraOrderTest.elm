@@ -6,8 +6,8 @@ module TimeIssue16CustomZoneEraOrderTest exposing (main)
 
 The documentation says "Human times will be based on the nearest `start`". With the eras listed
 earliest first, `[ { start = 0, offset = 60 }, { start = 1000, offset = 120 } ]`, a time at minute
-2000 must use the nearest start (1000, offset +2h): 2000 min = 33:20 UTC, so 11:20 local. Elm
-0.19.1 (elm/time 1.0.0) takes the first era that started before the time, offset +1h, giving 10:20.
+2000 must use the nearest start (1000, offset +2h): minute 2000 is 09:20 UTC on the second day,
+so 11:20 local. Elm 0.19.1 (elm/time 1.0.0) takes the first era that started before the time, offset +1h, giving 10:20.
 
 -}
 
@@ -18,6 +18,8 @@ import Html exposing (text)
 import Time
 
 
+{-| Returns the local hour and minute in `zone` of the instant 2000 minutes after the epoch.
+-}
 hm : Time.Zone -> ( Int, Int )
 hm zone =
     let

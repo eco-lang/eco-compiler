@@ -1,9 +1,8 @@
 module TypeMismatchOneArgumentFunctionWhereTwoTest exposing (..)
 
-{-| TYPE MISMATCH: one-argument function where two.
+{-| Defining `f : Int -> Int -> Int` as a function of type `Int -> Int` (`f = g`) is rejected with a TYPE MISMATCH error.
 
-From `SourceIR.TypeCheckFailsCases` (`problemCases`), the elm-test catalogue of programs
-the compiler must reject.
+`g` returns an `Int` after one argument, where the annotation of `f` requires it to return another function.
 
 -}
 

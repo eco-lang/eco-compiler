@@ -1,6 +1,11 @@
 module FunctionBasicTest exposing (main)
 
-{-| Test basic function definitions.
+{-| Simple unannotated top-level functions of one and two arguments return the right values.
+
+The test logs `add 2 3` (5), `double 5` (10) and `identity 42` (42), where
+`identity` is a top-level definition in this module that shadows the one from
+`Basics`.
+
 -}
 
 -- CHECK: add1: 5

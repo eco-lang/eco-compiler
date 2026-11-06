@@ -1,9 +1,9 @@
 module TypeMismatchLambdaArgumentPatternTest exposing (..)
 
-{-| TYPE MISMATCH: lambda argument pattern.
+{-| Applying a lambda with a tuple pattern to a number is rejected with a TYPE MISMATCH.
 
-From `SourceIR.TypeCheckFailsCases` (`patternMismatchCases`), the elm-test catalogue of programs
-the compiler must reject.
+The lambda `\( a, b ) -> a` destructures its argument as a pair, but it is applied
+to the number literal `1`, which cannot be a tuple.
 
 -}
 

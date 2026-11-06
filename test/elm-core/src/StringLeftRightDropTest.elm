@@ -1,5 +1,8 @@
 module StringLeftRightDropTest exposing (main)
 
+{-| Checks `String.left`, `String.right`, `String.dropLeft` and `String.dropRight` on `"Hello"`.
+-}
+
 -- CHECK: left1: "Hel"
 -- CHECK: right1: "llo"
 -- CHECK: dropLeft1: "lo"

@@ -1,6 +1,10 @@
 module CaseManyBranchesTest exposing (main)
 
-{-| Test case with many branches.
+{-| Checks that a `case` on an `Int` with seven literal branches and a wildcard
+selects the first, a middle and the last literal branch correctly.
+
+Only the inputs 1, 5 and 7 are tried; the wildcard branch is not reached.
+
 -}
 
 -- CHECK: day1: "Monday"

@@ -1,9 +1,9 @@
 port module CovPortIncomingTripleTest exposing (..)
 
-{-| Incoming triple.
+{-| A port module declaring an incoming port whose values are an `( Int, String, Bool )` triple.
 
-From `SourceIR.CovPortCases`, a program of the elm-test catalogue, with a
-`main` that logs its `testValue`. The CHECK lines are what Elm 0.19.1 prints for it.
+The program never subscribes to the port; the test checks that the declaration is accepted and
+the program runs and logs `1`.
 
 -}
 

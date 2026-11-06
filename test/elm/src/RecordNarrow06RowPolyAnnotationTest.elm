@@ -1,16 +1,11 @@
 module RecordNarrow06RowPolyAnnotationTest exposing (main)
 
-{-| Variation 2: explicit row-polymorphic annotation matching the access.
+{-| A let-bound helper annotated with a nested extensible record type, folded with `List.foldl`, reads the right nested field.
 
-    `buildSibling` has an explicit row-polymorphic type signature naming the
-    three inner fields it accesses. This makes the narrowing explicit in the
-    source rather than inferred.
-
-    Confirms whether the bug is specifically about row polymorphism (whether
-    inferred or annotated). If this test still crashes, the bug is about
-    record polymorphism itself, not about absence of annotation.
-
-    Expected (correct): uid: 1998
+`buildSibling` is annotated
+`( Int, { a | inner : { b | captures : List Int, lambdaId : LambdaId, params : List Int } } ) -> Int -> Int`,
+naming only the fields it reads, while the records passed in have four outer and
+five inner fields. Both members hold `LambdaId 999`, so the sum is 1998.
 -}
 
 -- CHECK: uid: 1998

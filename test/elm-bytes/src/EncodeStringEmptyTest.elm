@@ -1,6 +1,8 @@
 module EncodeStringEmptyTest exposing (main)
 
-{-| Test Bytes.Encode.string with empty string.
+{-| `Bytes.Encode.string ""` produces zero bytes.
+
+The test logs the width of the encoded empty string.
 -}
 
 -- CHECK: EncodeStringEmptyTest: 0

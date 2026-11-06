@@ -1,6 +1,8 @@
 module PipelineTest exposing (main)
 
-{-| Test pipeline operators.
+{-| Tests the pipeline operators `|>` and `<|`: a chain of forward pipes, a
+forward pipe into a partially applied `List.map`, and a chain of backward
+pipes.
 -}
 
 -- CHECK: pipe1: 12

@@ -1,14 +1,8 @@
 module ErasedListSpecializationTest exposing (main)
 
-{-| A self-recursive function at `List Int` and at a list of an erased type
-variable keeps two specializations (REP_BOUNDARY_003).
+{-| A polymorphic self-recursive `count : List a -> Int` gives the right length when called both on `List Int` values and on `[]`, whose element type nothing constrains.
 
-The `List Int` use binds the annotation variable to a number. That binding used
-to leak into the solver's global super table, and the erased specialization was
-then closed to `List Int`. An erased element type only arises for a list nothing
-constrains (here `[]`), so this program checks behaviour across both
-specializations; the layout itself is checked by the elm-test
-`ProjectionHeapLayoutConsistencyTest`.
+`count [ 1, 2 ] + count []` is 2 and `count [ 1, 2, 3 ] + count [] + count []` is 3.
 -}
 
 -- CHECK: n: 2

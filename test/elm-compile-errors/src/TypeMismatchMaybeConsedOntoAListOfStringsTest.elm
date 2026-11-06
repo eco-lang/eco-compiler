@@ -1,9 +1,9 @@
 module TypeMismatchMaybeConsedOntoAListOfStringsTest exposing (..)
 
-{-| TYPE MISMATCH: Maybe consed onto a list of strings.
+{-| Consing a `Maybe` onto a list of strings with `::` is rejected with a TYPE MISMATCH.
 
-From `SourceIR.TypeCheckFailsCases` (`operatorCases`), the elm-test catalogue of programs
-the compiler must reject.
+In `Just 1 :: [ "a" ]` the tail is a `List String`, so the head must be a
+`String`, but it is a `Maybe` of a number.
 
 -}
 

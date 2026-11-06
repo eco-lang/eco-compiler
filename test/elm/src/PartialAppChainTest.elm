@@ -1,6 +1,7 @@
 module PartialAppChainTest exposing (main)
 
-{-| Test chained partial application.
+{-| Tests a three-argument function partially applied one argument at a time,
+`addThree 3`, then `4`, then `3`, against a direct full call.
 -}
 
 -- CHECK: chain1: 10

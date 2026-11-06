@@ -1,9 +1,8 @@
 module HigherOrderTripleNestedFunctionTest exposing (..)
 
-{-| Triple nested function.
+{-| A function whose body is a lambda returning a lambda can be called with all three arguments at once.
 
-From `SourceIR.HigherOrderCases`, a program of the elm-test catalogue, with a
-`main` that logs its `testValue`. The CHECK lines are what Elm 0.19.1 prints for it.
+`triple 1 2 3` gives `[1,2,3]`.
 
 -}
 

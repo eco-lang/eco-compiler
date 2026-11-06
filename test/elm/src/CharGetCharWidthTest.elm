@@ -1,10 +1,11 @@
 module CharGetCharWidthTest exposing (main)
 
-{-| Direct reproduction of the `getCharWidth` pattern from
-`Compiler.Parse.Primitives` that the JSON parser uses. With the i16-zero-
-extension bug, `Char.toCode c` returned a value with garbage in the upper
-bits, making `> 0xFFFF` true for every ASCII character and pushing the
-parser to step by 2 instead of 1.
+{-| A width function comparing `Char.toCode` against `0xFFFF` gives 1 for an
+ASCII character taken from a string with `String.uncons`.
+
+`getCharWidth` returns 2 for a character above `0xFFFF` and 1 otherwise. The
+first character of `"abc"` is `'a'`, so the logged width is 1.
+
 -}
 
 -- CHECK: width: 1

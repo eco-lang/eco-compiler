@@ -1,12 +1,13 @@
 module CompilerIssue2057CallSiteChangesInferredTypeTest exposing (..)
 
-{-| Call sites with rigid type variables break the type of a function inferred from local recursion.
+{-| Two annotated callers of a function with unannotated mutually recursive let functions are wrongly rejected.
 
 <https://github.com/elm/compiler/issues/2057>
 
-Each function is well-typed on its own. Elm 0.19.1 rejects the program ("This `sortWith` call
-produces: List asd / But the type annotation on `sortBy` says it should be: List x"), unifying the
-rigid variables of different functions. It should compile.
+`sortWith` contains the unannotated mutually recursive `f` and `g`, and `sort` and `sortBy` call it
+at their own type variables. Each function is well-typed on its own. Elm 0.19.1 rejects the
+program ("This `sortWith` call produces: List asd / But the type annotation on `sortBy` says it
+should be: List x"), unifying the rigid variables of different functions. It should compile.
 
 -}
 

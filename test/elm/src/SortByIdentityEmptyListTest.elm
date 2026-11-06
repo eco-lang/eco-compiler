@@ -1,8 +1,9 @@
 module SortByIdentityEmptyListTest exposing (main)
 
-{-| `List.sortBy identity` on a list of Lists where some are `[]`.
-Same F3 surface — `[]` values appear as embedded constants when the
-comparator dereferences them.
+{-| `List.sortBy identity` on a list of `List Int` values, two of which are `[]`, puts the empty lists first.
+
+Lists compare element by element, and `[]` is less than any non-empty list, so
+`[ [ 1 ], [], [ 2 ], [] ]` sorts to `[[],[],[1],[2]]`.
 -}
 
 -- CHECK: result: [[],[],[1],[2]]

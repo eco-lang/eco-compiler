@@ -1635,7 +1635,7 @@ check shrank it 170× → soundness analysis closed it. The gates worked,
 in the right order, before any unsound write shipped.
 
 ### §9.15 THE SHAPES, PINNED AS E2E CODE (2026-09-02) —
-### test/elm/src/LssGapLambdaStages.elm
+### test/eco-elm/src/LssGapLambdaStages.elm
 
 The three §9.13/§9.14 shapes now exist as a small E2E probe with CHECKs,
 compiled and measured: (1) `mkAdd3v` — the arity-2-lambda-returning-a-

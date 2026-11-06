@@ -1,14 +1,8 @@
 module DecodeListMaybeTest exposing (main)
 
-{-| Small-scale test that a length-prefixed list of `Maybe` values survives
-    a bytes roundtrip. The inner `Maybe` decoder produces `Nothing` (an
-    embedded-constant HPointer) interleaved with `Just` heap records, which
-    exercises the closure / partial-application path that must accept both
-    constants and real heap pointers in the same slot.
+{-| A list of `Maybe` records, mixing `Just` and `Nothing`, survives encoding to bytes and decoding back unchanged.
 
-    The list is intentionally tiny — no minor GC is expected to fire — so
-    any failure here points at codegen for closure slots or the
-    `eco_resolve_hptr` path rather than at the collector itself.
+The list holds six entries, three `Just { tag, value }` and three `Nothing`. It is written as a 16-bit big-endian count followed by one entry each: a byte `0` for `Nothing`, or a byte `1` followed by the tag as one byte and the value as a 16-bit big-endian integer. The decoder reads the count, then uses `Bytes.Decode.loop` to read that many entries, choosing with `andThen` on the leading byte between `succeed Nothing` and decoding a record wrapped in `Just`. The test prints `True` when the decoded list equals the original.
 -}
 
 -- CHECK: DecodeListMaybeTest: True

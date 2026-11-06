@@ -71,7 +71,7 @@ What the tests establish:
     and the field of a record (6.4).
 
 Among what is not tested: no case checks what `testValue` evaluates to (the E2E
-guard `test/elm/src/Gopt003CaseStagingTest.elm` runs the category 6 shapes); no branch value is a kernel
+guard `test/eco-mlir/src/Gopt003CaseStagingTest.elm` runs the category 6 shapes); no branch value is a kernel
 function or a top-level function; no `caseFunc` is
 polymorphic.
 

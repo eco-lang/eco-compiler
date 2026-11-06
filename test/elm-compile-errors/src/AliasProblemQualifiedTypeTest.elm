@@ -1,9 +1,9 @@
 module AliasProblemQualifiedTypeTest exposing (..)
 
-{-| ALIAS PROBLEM: qualified type.
+{-| A type alias that refers to itself through a qualified type is rejected with an ALIAS PROBLEM.
 
-From `SourceIR.CanonicalizeFailsCases` (`aliasCases`), the elm-test catalogue of programs
-the compiler must reject.
+`A` is defined as `Maybe.Maybe (List A)`. Writing the module-qualified name
+`Maybe.Maybe` does not make the recursion acceptable: a type alias cannot refer to itself.
 
 -}
 

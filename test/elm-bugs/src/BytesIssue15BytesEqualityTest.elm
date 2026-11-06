@@ -5,7 +5,7 @@ module BytesIssue15BytesEqualityTest exposing (main)
 <https://github.com/elm/bytes/issues/15>
 
 Elm 0.19.1 (elm/bytes 1.0.8) compares the underlying DataViews structurally; they have no
-enumerable fields, so an empty `Bytes` equals a 32-byte one. Values with different contents (and
+enumerable fields, so an empty `Bytes` equals a two-byte one. Values with different contents (and
 different widths) must not be equal.
 
 -}

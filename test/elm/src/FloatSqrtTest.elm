@@ -1,6 +1,6 @@
 module FloatSqrtTest exposing (main)
 
-{-| Test square root.
+{-| `sqrt` of 4.0, 9.0 and 0.0 is 2, 3 and 0.
 -}
 
 -- CHECK: sqrt1: 2

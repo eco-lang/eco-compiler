@@ -1,12 +1,12 @@
 module ListLiteralDebugLogKindTest exposing (main)
 
-{-| DEBUGLOG-INT-CMP companion (plans/kernel-lib-bug-fixes.md, Phase 2, X1): a value that came back
-from `Debug.log` used where its static type decides the representation. A list literal used to
-choose each head's slot kind from the element's SSA type, and `Debug.log` yielded its argument
-boxed, so `[ d, d ]` with `d = Debug.log "d" 66108864` built a `List Int` with boxed heads that
-`List.sum` read as raw Ints. The other uses (a closure capture, a tuple, a direct call, `::`, and
-Float, Char and Bool list literals) pin the neighbouring paths. Expected output recorded from Elm
-on node (run-js-e2e.js --record).
+{-| Values returned by `Debug.log` keep their value when used in a closure, a tuple, a function
+argument, a list literal and a `::` cons.
+
+`d` is `Debug.log "d" 66108864`. The tests compare it, through each of those uses, against
+67108864 (2^26) or add it up: `sumLit` sums `[ d, d ]`. A `Float`, a `Char` and a `Bool` from
+`Debug.log` are each put in a one- or two-element list literal and read back.
+
 -}
 
 -- CHECK-DAG: fl: 1.5

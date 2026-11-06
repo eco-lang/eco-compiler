@@ -1,6 +1,7 @@
 module ListReverseTest exposing (main)
 
-{-| Test List.reverse.
+{-| Checks `List.reverse` on an empty list and on lists of three and five
+integers.
 -}
 
 -- CHECK: rev1: []

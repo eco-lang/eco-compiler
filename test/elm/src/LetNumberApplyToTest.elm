@@ -1,9 +1,8 @@
 module LetNumberApplyToTest exposing (main)
 
-{-| Probe: the `Float` constraint is two hops away, inside a lambda passed to a
-generic higher-order combinator `applyTo`. The binding `n` reaches the Float
-multiply only after going through `applyTo (\x -> x * 1.5)`. Correct: 45.
-
+{-| An unannotated `let`-bound number literal reaches a Float multiplication only
+through a generic higher-order function: `round (applyTo (\x -> x * 1.5) n)` with
+`n = 30` gives 45.
 -}
 
 -- CHECK: applyTo: 45

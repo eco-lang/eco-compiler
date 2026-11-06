@@ -1,13 +1,12 @@
 module ParserLoneLowSurrogateTest exposing (main)
 
-{-| PARSE-04 (plans/kernel-lib-bug-fixes.md): `Parser.chompIf` on a source that starts with two
-low surrogates (U+DC00 U+DC01). Elm's JS takes `substr(offset, 2)` as the Char, whose
-`Char.toCode` is the first unit, 0xDC00, and advances 2 units.
+{-| `Parser.chompIf` on a string that starts with two low surrogates (U+DC00 U+DC01) hands its
+predicate a `Char` whose code is 0xDC00 and consumes two UTF-16 code units.
 
-Failed natively before the fix: `isSubChar` paired any surrogate (its `isHighSurrogate` tested
-0xD800-0xDFFF) with a following low surrogate, so the predicate saw the made-up code point 0x110001. Only Int
-code points are compared, never Chars. Expectations recorded from Elm on node
-(run-js-e2e.js --record).
+The string is built with `Char.fromCode`. One predicate checks for the code 0xDC00, one for a
+code above 0x10FFFF, which must never be seen, and the third test logs the length of the chomped
+text.
+
 -}
 
 -- CHECK: code is DC00: "Ok"

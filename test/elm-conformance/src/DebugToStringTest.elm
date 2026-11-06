@@ -1,10 +1,24 @@
 module DebugToStringTest exposing (main)
 
-{-| Debug.toString of every kind of value, recorded from Elm on node (run-js-e2e.js --record),
-so eco's printer can be compared with Elm's exactly: lists and tuples (no space after the
-comma), records (spaces), constructor arguments (parenthesised when they contain a space),
-Floats (JS number formatting), Strings and Chars with escapes, and the Dict, Set and Array
-forms, an Array's elements printed by their type (and an Array of more than 32, held as a tree).
+{-| `Debug.toString` prints every kind of Elm value in the same format as Elm's own printer.
+
+Each row logs `Debug.toString` of one value. The rows cover:
+
+  - lists and tuples, printed with no space after a comma, and the unit value;
+  - records, printed with spaces and with fields in field-name order whatever order the record
+    literal uses, including an empty, a nested and a mixed-type record, and records in a list;
+  - `Maybe`, `Result` and the custom type `Shape`, where an argument is wrapped in parentheses
+    when it is itself a constructor applied to arguments, but a negative number or a string with
+    a space is not;
+  - Floats: a whole Float prints without a decimal point, the switch to exponent notation at
+    1e21 and below 1e-6, negative zero printing as `0`, and the largest and smallest positive
+    Floats;
+  - the Int 2^53 - 1 and a negative Int;
+  - Strings and Chars with quote, backslash, newline and tab escapes, and a String holding
+    non-ASCII characters, logged by its code points (`cps` from `ConformanceHelp`) to show they
+    are printed unescaped;
+  - `Dict`, `Set` and `Array`, printed as `Dict.fromList`, `Set.fromList` (sorted) and
+    `Array.fromList` forms, with Arrays of several element types and a 40-element Array.
 -}
 
 -- CHECK: list int: "[1,2,3]"

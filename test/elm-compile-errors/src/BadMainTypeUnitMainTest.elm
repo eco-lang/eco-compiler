@@ -1,9 +1,6 @@
 module BadMainTypeUnitMainTest exposing (..)
 
-{-| BAD MAIN TYPE: unit main.
-
-From `SourceIR.MainFailsCases` (`typeCases`), the elm-test catalogue of programs
-the compiler must reject.
+{-| A `main` of type `()` is rejected with a BAD MAIN TYPE error.
 
 -}
 

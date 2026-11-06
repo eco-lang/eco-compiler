@@ -1,6 +1,11 @@
 module RoundtripUnsignedInt32Test exposing (main)
 
-{-| Roundtrip test for unsignedInt32.
+{-| Integers survive an `unsignedInt32` encode and decode with elm/bytes in both byte orders.
+
+The values 0 and 0x12345678 are each round-tripped big-endian and then
+little-endian, and the program logs `True` only if all four come back unchanged.
+
+Among what is not tested: values at or above 2^31.
 -}
 
 -- CHECK: RoundtripUnsignedInt32Test: True

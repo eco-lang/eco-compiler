@@ -1,6 +1,7 @@
 module LetMultipleTest exposing (main)
 
-{-| Test let with multiple bindings.
+{-| Five Int bindings in one `let` combined by two later bindings: their sum (15) and
+their product (120).
 -}
 
 -- CHECK: sum: 15

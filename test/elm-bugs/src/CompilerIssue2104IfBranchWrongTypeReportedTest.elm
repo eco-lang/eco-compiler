@@ -1,13 +1,13 @@
 module CompilerIssue2104IfBranchWrongTypeReportedTest exposing (main)
 
-{-| The TYPE MISMATCH report for `if` branches of different arity shows a type that neither
-branch has.
+{-| The TYPE MISMATCH report for `if` branches with different numbers of arguments must show the
+first branch's own type, not a type that neither branch has.
 
 <https://github.com/elm/compiler/issues/2104>
 
 The first branch `takesB` has type `b -> Thing a b -> Thing a b`. Elm 0.19.1 reports the previous
 branches as `Thing a b -> Thing a (Thing a b) -> Thing a (Thing a b)`, a type polluted by the
-failed unification with the second branch.
+failed unification with the second branch `takesString ""`.
 
 -}
 

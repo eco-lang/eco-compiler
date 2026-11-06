@@ -1,11 +1,11 @@
 module CompilerIssue2066RankCrashNumberFloatTest exposing (..)
 
-{-| Annotating `number` arguments compared with a `Float` crashes the type checker with `[rank = 1]`.
+{-| Annotating `number` arguments compared with a `Float` crashes the type checker.
 
 <https://github.com/elm/compiler/issues/2066>
 
-`s >= first` compares a `number` (rigid) with a `Float`. Elm 0.19.1 crashes ("You ran into a
-compiler bug"); it should report a type mismatch.
+In `sumHelper`, `s >= first` compares the annotated `number` argument `s` with a `Float` list
+element. Elm 0.19.1 crashes ("You ran into a compiler bug"); it should report a type mismatch.
 
 -}
 

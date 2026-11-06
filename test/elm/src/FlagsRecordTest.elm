@@ -1,12 +1,8 @@
 module FlagsRecordTest exposing (main)
 
-{-| End-to-end flags test (Phase 5, plans/native-ports-and-embedding.md).
+{-| A `Platform.worker` whose flags are a record of an `Int`, a `String` and a `Bool` receives the decoded record in `init`.
 
-The FLAGS directive below is picked up by the test harness
-(extractFlagsDirective in test/ElmE2ETestBase.hpp) and stashed as JSON via
-PlatformRuntime::setPendingFlagsJson; initWorker decodes it with this
-program's compiler-generated flags decoder and hands the record to `init`.
-
+The `FLAGS` directive supplies the JSON `{"count":42,"label":"native-flags","enabled":true}`. `init` logs `label`, `count + 1` and `enabled`.
 -}
 
 -- SKIP-AOT: needs `-- FLAGS:` JSON, which only the JIT harness can inject (eco_entry.cpp reads no flags)

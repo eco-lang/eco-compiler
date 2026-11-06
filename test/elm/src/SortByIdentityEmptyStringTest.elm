@@ -1,9 +1,9 @@
 module SortByIdentityEmptyStringTest exposing (main)
 
-{-| `List.sortBy identity` on a list of Strings that includes `""` twice.
-Same F3 surface — the input Strings flow through the key extractor
-unchanged, so the `""` values appear as embedded constants when the
-comparator dereferences them.
+{-| `List.sortBy identity` on a list of Strings that contains `""` twice puts both empty strings first.
+
+The empty string is less than any non-empty string, so `[ "", "b", "", "a" ]`
+sorts to `["","","a","b"]`.
 -}
 
 -- CHECK: result: ["","","a","b"]

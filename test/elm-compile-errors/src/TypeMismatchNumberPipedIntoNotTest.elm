@@ -1,9 +1,6 @@
 module TypeMismatchNumberPipedIntoNotTest exposing (..)
 
-{-| TYPE MISMATCH: number piped into not.
-
-From `SourceIR.TypeCheckFailsCases` (`operatorCases`), the elm-test catalogue of programs
-the compiler must reject.
+{-| Piping a number into `not` (`1 |> not`) is rejected with a TYPE MISMATCH error, because `not` takes a `Bool`.
 
 -}
 

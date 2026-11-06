@@ -1,8 +1,7 @@
 module LetNumberCaseLetTest exposing (main)
 
-{-| Probe: binding-site variation — the `number` `let` lives inside a `case`
-branch, used at `Float`. Correct: 1.5*30 = 45.
-
+{-| An unannotated number literal bound by a `let` inside a `case` branch, then used as
+a Float: `round (30 * 1.5)` gives 45.
 -}
 
 -- CHECK: caselet: 45

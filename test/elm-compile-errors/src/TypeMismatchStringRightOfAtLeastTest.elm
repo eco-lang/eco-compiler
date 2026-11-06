@@ -1,9 +1,8 @@
 module TypeMismatchStringRightOfAtLeastTest exposing (..)
 
-{-| TYPE MISMATCH: string right of >=.
+{-| Comparing a number with a `String` using `>=` is rejected with a TYPE MISMATCH.
 
-From `SourceIR.TypeCheckFailsCases` (`operatorCases`), the elm-test catalogue of programs
-the compiler must reject.
+In `1 >= "a"` both operands of `>=` must have the same `comparable` type.
 
 -}
 

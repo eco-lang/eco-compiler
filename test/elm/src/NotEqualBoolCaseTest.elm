@@ -1,8 +1,10 @@
 module NotEqualBoolCaseTest exposing (main)
 
-{-| `case (a /= b) of True -> … ; False -> …`. The decision-tree
-`IsBool` test is correct; the bug enters via the kernel call that
-produces the scrutinee.
+{-| The result of `/=` on two `Bool` literals is matched by a `case` with
+`True` and `False` branches, for all four combinations of operands.
+
+`classify` returns `"yes"` for `True`, so the expected output is `"yes"`
+exactly when the operands differ.
 -}
 
 -- CHECK: cTT: "no"

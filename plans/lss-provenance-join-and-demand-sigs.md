@@ -433,7 +433,7 @@ returned Err (ENC_*/CTOR_JSON_* family split, never bridged). Fixed at the
 escape boundary (`rewrapEscapingResult` + family bridge in JsonExports.cpp,
 kind-aware reads in PlatformRuntime/PortRuntime), invariant HEAP_046 added,
 31 kernel-license rows re-audited (manifest green), regression pin
-test/elm/src/JsonDecodeScalarResult.elm. E2E 1,714/1,714.
+test/eco-mlir/src/JsonDecodeScalarResult.elm. E2E 1,714/1,714.
 
 ## 4.6 ⊤ site-split census (2026-08-29, shipped — rides `lss.arrowCensus`)
 

@@ -1,9 +1,7 @@
 module LetNumberNestedLetTest exposing (main)
 
-{-| Probe: binding-site variation — a `number` flows across nested `let`s before
-the `Float` use. `m = n` re-binds the number; the multiply is on `m`. Correct:
-1.5*30 = 45.
-
+{-| An integer literal bound in one `let` and re-bound in a nested `let` is used as
+a `Float`: `n = 30`, then `m = n`, then `round (m * 1.5)` logs 45.
 -}
 
 -- CHECK: nestedlet: 45

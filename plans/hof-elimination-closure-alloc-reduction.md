@@ -221,7 +221,7 @@ dialect, codegen, and runtime behavior:
   arguments (`EcoToLLVMControlFlow.cpp:147–291`, `eco.yield` → `cf.br`).
 - Cases compile AND RUN in every expression position: function tail,
   let-bound, arithmetic operand, call argument — pinned by the new corpus
-  test `test/elm/src/CasePositionProbe.elm` (mid-block
+  test `test/eco-elm/src/CasePositionProbe.elm` (mid-block
   `%9 = eco.case(…) : (!eco.value) -> i64` feeding `eco.int.add`; JIT-green).
   The "MonoCase-TAIL" assumption in `eco-case-terminator-design.md` describes
   the pre-`eco-case-yield` world; the yield design is what's implemented.
@@ -229,7 +229,7 @@ dialect, codegen, and runtime behavior:
   whitelisted, andThen inlines mechanically and a DIRECT saturated chain
   `andThen λ (andThen λ (parse n))` collapses COMPLETELY — `betaForwards=3`,
   zero papCreate/papExtend, pure nested value-producing cases — and runs
-  correctly (`test/elm/src/AndThenProbe.elm`, kept as a behavioral corpus
+  correctly (`test/eco-mlir/src/AndThenProbe.elm`, kept as a behavioral corpus
   pin; its full collapse re-activates when H2.0 lands). `substitute` already
   renames the MonoCase scrutinee/root names and decider (:1528–1545), so
   beta-substitution over case bodies is sound.
@@ -762,7 +762,7 @@ module's extends).
 (~:3194) therefore returns Nothing for POINT-FREE specs — kernel aliases
 (`and = Elm.Kernel.Bitwise.and`, zero source params) and user aliases
 (`userAnd = Bitwise.and`) — and the merge arm refuses by design.
-`test/elm/src/MergeProbe.elm` pins this end-to-end: both alias styles
+`test/eco-elm/src/MergeProbe.elm` pins this end-to-end: both alias styles
 emit create+extend+extend while direct style emits `eco.int.and`.
 
 *Front-end fix (F3, second wave — value: intrinsics instead of residual
@@ -914,7 +914,7 @@ miniature TypeCheck.IO — keep as the pin; flag-off it must print
      (invariant checker: MonoTailFunc + 3 MonoClosure cases). `mk`'s spec is
      now `(i64)->!eco.value`, the scf.while carries the closure with no
      unbox. Repro is now a permanent E2E pin
-     `test/elm/src/StagedResultTest.elm` (elm-test lacks XFAIL, but the E2E
+     `test/eco-elm/src/StagedResultTest.elm` (elm-test lacks XFAIL, but the E2E
      JIT harness runs it and CHECKs 44/32/1000); full gate 1616/1616. The
      source shape (removed `StagedResultProbe.elm`, no XFAIL in elm tests):
 

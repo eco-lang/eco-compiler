@@ -332,7 +332,7 @@ still registers per result kind). So it declines the candidate outright, which a
 | 1 | flag `inline.callerBinders : Bool` default `False`; decoder `D.optionalField "callerBinders"`; hash token `cbind=`; env `ECO_INLINE_CALLER_BINDERS` via `applyInlineCallerBindersOverride` (record update, copy of `applyInlinePreMonoOverride`) | `Compiler/Eco/Config.elm` (`:998` field, `:1091` default, `:1207` decoder, `:1451` hash), `Builder/Eco/Config.elm` (`:367` read, `:1797` setter) | byte-identical defaults; hash token present |
 | 2 | `Ctx.callerBinders : Maybe (Set String)`; `rewriteGraph` sets it per node from `annotations` (§2.2), restores after; `determines` takes `Ctx` (§2.1); `tryInline` passes it | `InlineSimplify.elm:114`, `:1101`, `:1440`, `:1510` | flag OFF ⇒ EARLY census unchanged to the digit |
 | 3 | `bottomShaped` candidate guard + counter, after `polyKernel` in `buildCandidates`' guard chain (recursive → no params → cost → polyKernel → **bottomShaped** → rowPoly → hofParam → superVar) | `InlineSimplify.elm` `buildCandidates`, `Metrics`, report line | EARLY census `bottomShaped ≥ 1` (`Utils.Crash.crash` is in the compiler's own source) with the flag OFF too — it is candidate-level and unconditional |
-| 4 | tests of §5 (unit + `PreMonoInlineTest` extension) | `compiler/tests/TestLogic/GlobalOpt/InlineSimplifyCallerBindersTest.elm`, `test/elm/src/PreMonoInlineTest.elm` | unit green; E2E BOTH arms 887/889 |
+| 4 | tests of §5 (unit + `PreMonoInlineTest` extension) | `compiler/tests/TestLogic/GlobalOpt/InlineSimplifyCallerBindersTest.elm`, `test/eco-elm/src/PreMonoInlineTest.elm` | unit green; E2E BOTH arms 887/889 |
 | 5 | flag ON census + gates | — | EARLY `undCallerPoly ≤ 10`, `inlined ≈ 2,315` (§6); E2E both arms; `ECO_INLINE_THRESHOLD=0` leg; fixed point |
 | 6 | **BUILT 2026-09-14, ahead of steps 1-5 and on its own flag.** R2 via a separate `determinableTypeVars` collector feeding `Candidate.determineVars` (read by `determines` AND by the census that classifies its declines, so the two cannot disagree); the candidate-level guards keep the full set. Flag `inline.skipRefMetas`, hash `srm=`, env `ECO_INLINE_SKIP_REF_METAS`, DEFAULT-OFF | `InlineSimplify.elm`, `Compiler/Eco/Config.elm`, `Builder/Eco/Config.elm`, `compiler/tests/TestLogic/GlobalOpt/InlineSimplifyRefMetasTest.elm` | unit 7/7; `undBodyOnly = 0` with the flag on and `undLocal` unmoved; E2E both arms; A/B self-compile |
 | 7 | (optional) per-round re-costing (§2.6) | `InlineSimplify.elm:178` | count monotone; census `roundsRun` |
@@ -354,7 +354,7 @@ binops — the harness leaves bare TVars on `Binop` nodes, the pre-existing `POS
 | no annotation ⇒ inert (R6) | a fixture whose caller has no annotation entry (strip it from `annotations` before `optimize`) | `undetermined = 1`, `noCallerAnnotation = 1` |
 | R2 | `isEmptyS : String -> Bool` via `==` is a BINOP — use `String.isEmpty`-shaped `case String.length s of 0 -> True; _ -> False`? still a call with a generic ref… use the real shape from the self-compile census (`String.isEmpty`) through a probe module compiled with the harness; assert `undBodyOnly` drops to 0 with step 6 | R2 |
 
-**`test/elm/src/PreMonoInlineTest.elm`** (existing; CHECK-based, both arms) gains:
+**`test/eco-elm/src/PreMonoInlineTest.elm`** (existing; CHECK-based, both arms) gains:
 
 ```elm
 lenPlus : List a -> Int          -- polymorphic CALLER

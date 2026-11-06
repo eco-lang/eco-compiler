@@ -1,9 +1,9 @@
 module TypeMismatchListPatternTest exposing (..)
 
-{-| TYPE MISMATCH: list pattern.
+{-| Matching a number against a list pattern is rejected with a TYPE MISMATCH.
 
-From `SourceIR.TypeCheckFailsCases` (`patternMismatchCases`), the elm-test catalogue of programs
-the compiler must reject.
+`case 1 of` scrutinises a number, but its first branch uses the empty-list
+pattern `[]`.
 
 -}
 

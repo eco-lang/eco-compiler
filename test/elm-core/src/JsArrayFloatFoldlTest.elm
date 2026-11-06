@@ -1,10 +1,8 @@
 module JsArrayFloatFoldlTest exposing (main)
 
-{-| `Array.foldl` / `Array.foldr` on `Array Float`. Uses `Elm_Kernel_JsArray_foldl`
-    and `foldr`, which re-box each unboxed slot as an `Elm Int` before calling
-    the user fold function. For `Array Float` the accumulator arithmetic must
-    work on the actual float values, not on their raw bit patterns reinterpreted
-    as integers.
+{-| `Array.foldl` and `Array.foldr` over an `Array Float` pass the element values to the folding function.
+
+`foldl` is checked with `(+)` (sum 7), `(*)` (product 24) and `max` (3.5). `foldr (::) []` rebuilds `[1.5, 2.5, 3.0]` in its original order.
 -}
 
 -- CHECK: sum: 7

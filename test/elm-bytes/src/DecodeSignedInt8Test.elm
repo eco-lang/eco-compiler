@@ -1,6 +1,11 @@
 module DecodeSignedInt8Test exposing (main)
 
-{-| Test Bytes.Decode.signedInt8 decoding.
+{-| Bytes.Decode.signedInt8 reads back a negative value written by
+Bytes.Encode.signedInt8.
+
+The value -42 is encoded as one byte and decoded, and the logged result is -42.
+A failed decode would log 0.
+
 -}
 
 -- CHECK: DecodeSignedInt8Test: -42

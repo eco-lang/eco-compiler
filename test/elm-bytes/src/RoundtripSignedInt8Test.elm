@@ -1,6 +1,9 @@
 module RoundtripSignedInt8Test exposing (main)
 
-{-| Roundtrip test for signedInt8.
+{-| Integers survive a `signedInt8` encode and decode with elm/bytes, including both ends of the signed 8-bit range.
+
+The values 0, 1, -1, 127 and -128 are each round-tripped, and the program logs
+`True` only if all of them come back unchanged.
 -}
 
 -- CHECK: RoundtripSignedInt8Test: True

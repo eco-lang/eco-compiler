@@ -1,16 +1,11 @@
 module AnnotatedLetRecFnResultTest exposing (main)
 
-{-| Bug: Compiler.LocalOpt.Typed.Expression.optimizePotentialTailCallDef, Can.TypedDef
-arm, passes the annotation RESULT type (TypedDef stored type) instead of the
-whole function type, so an annotated recursive let def becomes a TailDef typed
-with its result type. Monomorphize.Specialize treats the TailDef type as the
-whole function type (MonoTailFunc), so the local function gets a non-function
-mono type. The same program without the let annotation works.
-Unit test: compiler/tests/Compiler/LocalOpt/Typed/ExpressionTest.elm.
-Fixed 2026-10-28 (plans/review-bug-triage-fixes.md, item 3.3); the text
-below describes the old behaviour.
-Observed: the compiler itself dies with "RangeError: Maximum call stack size
-exceeded" (no .mlir written).
+{-| A recursive let-bound function whose type annotation has a function as its result works.
+
+`go : Int -> (a -> a) -> (a -> a)` composes `f` with itself on each of `n`
+steps, doubling the number of applications each time, so `twice 4` applies
+`\x -> x + 1` sixteen (2 to the power 4) times to 0.
+
 -}
 
 -- CHECK: AnnotatedLetRecFnResultTest: 16

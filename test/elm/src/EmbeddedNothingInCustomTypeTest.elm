@@ -1,6 +1,7 @@
 module EmbeddedNothingInCustomTypeTest exposing (main)
 
-{-| Test Nothing stored in a custom type field, extracted, and pattern-matched.
+{-| A `Nothing` stored in a custom type constructor and taken back out by a
+`case` still matches the `Nothing` pattern.
 -}
 
 -- CHECK: result: -1

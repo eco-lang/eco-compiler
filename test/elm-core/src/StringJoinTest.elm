@@ -1,7 +1,10 @@
 module StringJoinTest exposing (main)
 
-{-| G3/E18: String.join direct (previously only tested indirectly). Multi-char
-separator, empty separator, empty list, and singleton list.
+{-| Checks `String.join` with a multi-character separator, an empty separator, an empty list, a single-element list, and lists of empty strings, plus `String.replace` on an empty string.
+
+`String.join "-" [ "" ]` and `String.join "" [ "", "" ]` must both give the empty
+string, as must replacing `"\n"` with `"|"` in `""`.
+
 -}
 
 -- CHECK: join1: "a, b, c"
@@ -29,8 +32,6 @@ main =
         _ =
             Debug.log "join_single" (String.join "-" [ "only" ])
 
-        -- An all-empty result must be the Empty constant, not a zero-length
-        -- object (HEAP_071): this used to abort in allocAsciiOut(0).
         _ =
             Debug.log "join_all_empty" (String.join "-" [ "" ])
 

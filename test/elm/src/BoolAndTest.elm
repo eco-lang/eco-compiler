@@ -1,6 +1,6 @@
 module BoolAndTest exposing (main)
 
-{-| Test && operator.
+{-| The `&&` operator gives `True` only when both operands are `True`, checked over all four combinations.
 -}
 
 -- CHECK: and1: True

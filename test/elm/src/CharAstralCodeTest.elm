@@ -1,10 +1,12 @@
 module CharAstralCodeTest exposing (main)
 
-{-| G1/E7: a Char is a Unicode code point held in an i32 (REP_ABI_001 /
-CGEN_015), so `Char.fromCode` keeps a supplementary (astral) code point and
-`Char.toCode` gives it back exactly, as in Elm. A code below 0 or above
-0x10FFFF becomes U+FFFD (65533), as elm/core's JS `_Char_fromCode` does; the
-`eco.char.fromInt` intrinsic and the `Elm_Kernel_Char_fromCode` kernel agree.
+{-| `Char.fromCode` and `Char.toCode` round-trip Unicode code points, including
+astral ones (above 0xFFFF) and the largest, 0x10FFFF, and `Char.fromCode` turns
+a code below 0 or above 0x10FFFF into U+FFFD (65533).
+
+The test round-trips U+20AC, U+1F600, U+1D11E and U+10FFFF, and converts -1
+and 0x110000.
+
 -}
 
 -- CHECK: bmp: 8364

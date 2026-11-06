@@ -1,5 +1,8 @@
 module RoundTripObjectTest exposing (main)
 
+{-| `Json.Decode.field "name"` reads the string "tom" from an object built with `Json.Encode.object`.
+-}
+
 -- CHECK: rt_object: Ok "tom"
 
 import Html exposing (text)

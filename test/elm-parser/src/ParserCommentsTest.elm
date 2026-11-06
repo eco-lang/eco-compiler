@@ -1,5 +1,20 @@
 module ParserCommentsTest exposing (main)
 
+{-| `Parser.lineComment` and `Parser.multiComment` succeed on line, block and nested block comments.
+
+The block-comment tests use Elm's own block-comment delimiters as the open
+and close strings.
+
+- `line`: `lineComment "--"` on `"-- comment here"`, with no newline.
+- `block`: `multiComment` with `NotNestable` on a single block comment.
+- `nested`: `multiComment` with `Nestable` on a block comment that contains
+  another.
+
+Each checks only that the run returns `Ok`. No parser ends with `end`, so the
+tests do not show how much input was chomped; in particular `nested` would
+also succeed if the comment stopped at the first closing delimiter.
+-}
+
 -- CHECK: line: True
 -- CHECK: block: True
 -- CHECK: nested: True

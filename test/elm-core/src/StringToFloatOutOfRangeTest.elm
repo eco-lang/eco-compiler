@@ -1,13 +1,8 @@
 module StringToFloatOutOfRangeTest exposing (main)
 
-{-| Checks that `String.toFloat` accepts a well-formed number whose magnitude is
-outside the range of a finite `Float`, as Elm does: an overflow gives
-`Infinity` (or `-Infinity`) and an underflow gives `0`.
+{-| Checks that `String.toFloat` accepts a well-formed number whose magnitude is outside the range of a finite `Float`: an overflow gives `Infinity` (or `-Infinity`) and an underflow gives `0`.
 
-The native kernel answers `Nothing` for these, so `String.toFloat "1e400"`
-differs from Elm. The native-built compiler's float literal parser
-(`Compiler.Parse.Number.number`) also reads literals with `String.toFloat`, so a
-literal such as `1e400` takes its "rejected float" path there.
+A number in range, `"1e300"`, is also parsed, as `Just 1e300`.
 
 -}
 

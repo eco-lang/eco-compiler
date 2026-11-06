@@ -5,7 +5,7 @@ module RegexIssue6SplitEmptyRegexTest exposing (main)
 <https://github.com/elm/regex/issues/6>
 
 `_Regex_splitAtMost` sets `start = re.lastIndex`, which does not advance on an empty match. Elm
-0.19.1 (elm/regex 1.0.0) runs out of memory (the heap is capped here so it fails fast). JavaScript's
+0.19.1 (elm/regex 1.0.0) runs out of memory (the test caps Node's memory so it fails fast). JavaScript's
 `"abc".split(/(?:)/)` gives `["a","b","c"]`; elm/regex is documented as JavaScript regular
 expressions.
 

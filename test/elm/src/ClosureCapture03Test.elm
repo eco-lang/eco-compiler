@@ -1,10 +1,12 @@
 module ClosureCapture03Test exposing (main)
 
-{-| Test closure captures Result variable used only in case destruct.
+{-| A lambda returned from a function captures a value of a two-constructor custom
+type, both of whose constructors carry a payload, and matches on it with `case`
+when called.
 
-Uses explicit lambda return to force nested Function nodes.
-The inner lambda captures `r`, which appears only as the root of
-destruct paths. Tests a two-constructor type where both carry payloads.
+The module defines its own `MyResult` with constructors `Ok` and `Err`. `Ok 42`
+gives 42 and `Err "bad"` gives -1.
+
 -}
 
 -- CHECK: ok: 42

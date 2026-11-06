@@ -1,6 +1,7 @@
 module CompareIntTest exposing (main)
 
-{-| Test compare on Int.
+{-| `compare` on `Int` returns `LT`, `GT` and `EQ` for less, greater and equal
+operands.
 -}
 
 -- CHECK: cmp1: LT

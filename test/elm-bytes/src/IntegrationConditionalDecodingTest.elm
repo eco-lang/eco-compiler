@@ -1,6 +1,13 @@
 module IntegrationConditionalDecodingTest exposing (main)
 
-{-| Test conditional decoding based on tag byte.
+{-| A decoder that reads a tag byte and uses `Bytes.Decode.andThen` to choose between a 32-bit integer and a 64-bit float decodes both variants of a custom type.
+
+Tag 1 is followed by a big-endian `signedInt32` and tag 2 by a big-endian
+`float64`; any other tag fails. `IntVal 42` and `FloatVal 3.14` are each encoded
+and decoded, and the program logs `True` only if both decode to the original
+value.
+
+Among what is not tested: the failing branch for an unknown tag.
 -}
 
 -- CHECK: IntegrationConditionalDecodingTest: True

@@ -1,9 +1,10 @@
 module TailRecMultiCaseWhileTest exposing (main)
 
-{-| Tail-recursive function with outer constructor case containing nested
-string case. The nested string case forces eco.case to survive
-EcoControlFlowToSCF, then CaseOpLowering in EcoToLLVM creates multiple
-blocks inside the scf.while after-region (Bug 2).
+{-| A tail-recursive fold over a list of custom-type values, with a `case` on string literals nested inside one list pattern and tail calls in every branch, accumulates the right pair of totals.
+
+`processItems` walks `[ Plain 3, Named "bonus" 2, Skip, Named "penalty" 1, Plain 2 ]`:
+`"bonus"` adds twice its number, `"penalty"` subtracts its number, and both count
+as special, so the total is 3 + 4 - 1 + 2 = 8 and the special count is 2.
 -}
 
 -- CHECK: total: 8

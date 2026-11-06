@@ -1,9 +1,9 @@
 module CovLambdaSetFunctionsInRecordsTuplesAndMaybeTest exposing (..)
 
-{-| Functions in records, tuples and Maybe.
+{-| Functions stored in record fields, tuples and a `Maybe`, taken out again and applied.
 
-From `SourceIR.CovLambdaSetCases`, a program of the elm-test catalogue, with a
-`main` that logs its `testValue`. The CHECK lines are what Elm 0.19.1 prints for it.
+The four terms are `dbl 3 = 6`, `inc 1 = 2`, `(\x -> x - 1) 2 = 1` and `inc 4 = 5`, which sum
+to `14`.
 
 -}
 

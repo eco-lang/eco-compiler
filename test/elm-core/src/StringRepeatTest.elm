@@ -1,5 +1,8 @@
 module StringRepeatTest exposing (main)
 
+{-| Checks that `String.repeat` concatenates `n` copies of a string, giving the empty string when `n` is 0.
+-}
+
 -- CHECK: repeat1: "abcabcabc"
 -- CHECK: repeat_zero: ""
 

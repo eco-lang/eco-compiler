@@ -1,9 +1,12 @@
 module LetNumberScaleFnTest exposing (main)
 
-{-| Probe (§3.4 of the exploration guide): a record of `number`s passed to a
-user function whose body buries the `Float` constraint. The constraining `Float`
-lives inside `scale`, not at any operator in `main`. Correct: 1.5*30 + 1.5*40 =
-45 + 60 = 105.
+{-| A let-bound record of integer literals passed to a function that takes a record
+of `Float`s is used at `Float`: `round (scale 1.5 p)` with
+`p = { lo = 30, hi = 40 }` logs 105.
+
+`scale` is annotated `Float -> { lo : Float, hi : Float } -> Float` and
+returns `factor * pair.lo + factor * pair.hi`; nothing in `main` other than
+that annotation fixes the fields to `Float`.
 
 -}
 

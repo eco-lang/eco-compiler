@@ -1,22 +1,13 @@
 module ListSortWithKindPreservationTest exposing (main)
 
-{-| `List.sortWith` must return a list at the SAME element representation it
-was given.
+{-| Checks that the result of `List.sortWith` gives correct values when summed,
+folded or searched for its maximum, for `Int`, `Float` and `Char` elements.
 
-Sorting is a permutation: a `List Int` in, a `List Int` out. The kernel export
-materialises the input through an all-HPointer buffer so the user comparator
-can be called with boxed values, and it used to REBUILD the result from that
-buffer — producing boxed cells for a list whose static element kind is
-unboxed. Consumers that read elements at their static kind (arithmetic folds:
-`List.sum`, `List.foldl (+)`, `List.maximum`) then read the pointer words as
-numbers. Nothing crashes; the arithmetic is just silently wrong, which is why
-this went unnoticed — `Debug.log` prints the list correctly because the
-printer consults the cell header instead.
-
-The pre-existing `ListSortWithFloatCompareTest` misses it: it never folds
-arithmetic over the sorted result.
-
-Covers all three unboxed slot kinds (REP_HEAP_002): Int, Float, Char.
+  - `int-sum`, `int-foldl` and `int-max` use `[3, 1, 2]` sorted with
+    `compare`.
+  - `float-sum` and `float-max` use `[3.5, 1.5, 2.5]` sorted with `compare`.
+  - `char-codes` sums the codes of `['c', 'a', 'b']` sorted with `compare`.
+  - `int-desc-sum` sums `[3, 1, 2]` sorted with a descending comparator.
 
 -}
 

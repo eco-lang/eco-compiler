@@ -1,11 +1,12 @@
 module ProcessSpawnRecursiveTest exposing (main)
 
-{-| A fiber that spawns a child, which spawns a grandchild, recursing
-to depth 5. Each level logs its depth; the deepest level logs "bottom".
-After all levels have had time to run, the main fiber logs "done".
+{-| A process spawned with `Process.spawn` can itself spawn a process, nested
+five deep, and every level runs.
 
-Exercises recursive enqueue during an active drain and root
-registration of nested Process objects.
+Level `k` sleeps 10 ms, logs `spawned k`, and then spawns level `k + 1`; level
+5 logs `bottom` instead of spawning. `init` spawns level 1, and the program
+logs `done` after a 300 ms sleep, by which time every level has run.
+
 -}
 
 -- CHECK: recurse: "spawned 1"

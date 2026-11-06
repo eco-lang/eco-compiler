@@ -1,8 +1,10 @@
 module CharToCodeFoldStringTest exposing (main)
 
-{-| Sum char codes by folding over a String. Each fold step receives a Char
-extracted from the String (via the kernel) — exactly the path the JSON
-parser was using when the bootstrap broke.
+{-| `String.foldl` hands each character of a string to a function that sums their
+`Char.toCode` values.
+
+The codes of `"abc"` are 97, 98 and 99, so the logged sum is 294.
+
 -}
 
 -- CHECK: sum: 294

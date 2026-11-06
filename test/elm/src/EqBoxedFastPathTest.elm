@@ -1,24 +1,19 @@
 module EqBoxedFastPathTest exposing (main)
 
-{-| kernel-opt-03 Phase 3: boxed structural equality lowers to `eco.value.eq`
-under `ECO_VALUE_EQ=1`, and Bool equality lowers to `eco.bool.xor`
-unconditionally.
+{-| Structural equality gives the correct answer for strings, lists, tuples,
+records, custom types, unit, empty values, `Bool` and nested containers, through
+both `==` and `/=`.
 
-Behaviour must be IDENTICAL in both flavours, so this fixture pins behaviour.
-Each admissible shape is compared three ways, one per arm of the expansion:
+Each shape is compared with an equal value built separately (`strTwin`,
+`listTwin`, `tupleTwin`, `recordTwin`, `customTwin`, `nestedTwin`) and, except
+the nested one, with a different value (`strDiff`, `listDiff`, `tupleDiff`,
+`recordDiff`, `customDiff`). A string and a list are also compared with
+themselves (`strSame`, `listSame`). `twinA` and `twinB` are computed at run time
+by the same expression, so they are equal strings that are not one literal;
+`List.range 1 3` is compared with the literal `[ 1, 2, 3 ]` for the same reason.
 
-  - with ITSELF, which is arm 1 (word equality) — the arm that must never
-    disagree with the kernel, and does not, because `eqHelp`'s
-    `if (a == b) return true` runs before its tag switch;
-  - with a structurally-equal TWIN built separately, which reaches arm 3 (the
-    kernel call) and must answer True;
-  - with a different value, which answers False through arm 2 or arm 3.
-
-`unitEq` is the pure arm-2 witness reachable from Elm: `()` is the merged
-`Const_Empty` embedded constant, so both operands have `ptr_ind` set.
-
-`notEqual` is emission-side negation (`eco.bool.not` after the op, no second op
-def), so every shape is also exercised through `/=`.
+The remaining cases compare `()` with `()`, `""` with `""`, `[]` with `[]`, and
+the `Bool` constants with each other; `strNe` and `boolNe` check `/=`.
 
 -}
 
@@ -73,8 +68,7 @@ main =
         _ =
             Debug.log "strSame" (s == s)
 
-        -- Built separately, so these are distinct heap pointers with equal
-        -- contents: arm 3.
+        -- Equal strings computed separately, not the same literal.
         _ =
             Debug.log "strTwin" (twinA == twinB)
 
@@ -111,7 +105,6 @@ main =
         _ =
             Debug.log "customDiff" (Rect 2 3 == Circle 2)
 
-        -- Both operands are the merged Const_Empty constant: pure arm 2.
         _ =
             Debug.log "unitEq" (() == ())
 

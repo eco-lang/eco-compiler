@@ -1,8 +1,9 @@
 module LssGapCtorInList exposing (main)
-{-| The one scenario that could still need declaration-site injection: a
-constructor held in a CONTAINER, where the use-site `standaloneArgMember` path
-does not fire. If the list-element position carries the ctor's member, the
-existing machinery already covers it. -}
+{-| A custom type constructor stored in a list can be taken out and applied.
+
+`makers` is `[ Wrap ]`; `runFirst` applies the first function in the list
+and unwraps the result, printing 7.
+-}
 -- CHECK: ctorInList: 7
 import Html exposing (text)
 type Wrap = Wrap Int

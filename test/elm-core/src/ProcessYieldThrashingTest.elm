@@ -1,13 +1,13 @@
 module ProcessYieldThrashingTest exposing (main)
 
-{-| Two sibling fibers, each yielding via Process.sleep 0 between
-log lines. Both fibers are spawned back-to-back and each runs a loop
-of five iterations, so the scheduler alternates between them.
+{-| Two processes that each repeatedly yield with `Process.sleep 0` both run to
+completion.
 
-Exercises the cooperative handoff path: on each yield, the current
-step returns, the run queue is processed, and the timer callback
-re-enqueues the fiber. Each "A" / "B" line proves the scheduler
-re-entered the fiber after a yield.
+Processes `A` and `B` are spawned one after the other. Each runs five
+iterations, and every iteration sleeps 0 ms and then logs its label and
+iteration number. The program logs `done` after a 200 ms sleep, by which time
+both processes have finished.
+
 -}
 
 -- CHECK: yield: "A 1"

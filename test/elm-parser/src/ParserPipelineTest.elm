@@ -1,5 +1,11 @@
 module ParserPipelineTest exposing (main)
 
+{-| Checks that `|=` and `|.` build a record from parsed fields while discarding punctuation.
+
+`point` parses `"(3,4)"` into `Ok { x = 3, y = 4 }` using the `Point` record
+constructor.
+-}
+
 -- CHECK: point: Ok { x = 3, y = 4 }
 
 import Html exposing (text)

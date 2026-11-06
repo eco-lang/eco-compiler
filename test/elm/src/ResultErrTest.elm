@@ -1,6 +1,6 @@
 module ResultErrTest exposing (main)
 
-{-| Test Err creation.
+{-| Checks that `Err` builds a `Result` around a `String` and around an `Int`, and that `Debug.log` prints them as `Err "failed"` and `Err 404`.
 -}
 
 -- CHECK: err1: Err "failed"

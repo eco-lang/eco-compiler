@@ -1,9 +1,8 @@
 module TypeMismatchNegateTest exposing (..)
 
-{-| TYPE MISMATCH: negate.
+{-| Negating a `String` with the prefix minus (`-s`) is rejected with a TYPE MISMATCH error.
 
-From `SourceIR.TypeCheckFailsCases` (`contextCases`), the elm-test catalogue of programs
-the compiler must reject.
+Prefix minus is `negate`, which takes a `number`, and a `String` is not one.
 
 -}
 

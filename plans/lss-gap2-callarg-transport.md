@@ -9,7 +9,7 @@ updated: 2026-10-27
 MEASURED, and DELETED from the tree.**
 
 **What survives, in the tree:** LSS_026(a), honest ∅-as-source, on both
-readers, ungated. It fixes a REAL MISCOMPILE — `test/elm/src/LssMixedSigHonestyTest.elm`
+readers, ungated. It fixes a REAL MISCOMPILE — `test/eco-elm/src/LssMixedSigHonestyTest.elm`
 printed `[42, 42, 42]` for `[41, 42, 82]` at the shipping default (§0.5b) —
 and is provably inert on the compiler's own corpus (`topMixedFlex = 0/0`).
 Pinned at three levels: store (`LssHonestSourcesTest`, both directions of the
@@ -158,7 +158,7 @@ unconditional soundness fix with its own landing, ahead of everything else.**
 **The escalation fired on a RUNTIME WITNESS, not on the census.** Phase 0's
 census counted zero crossings on the self-compile (§2.6 row 2) and the plan
 therefore shipped D0 flag-gated. Phase 1's E2E fixture —
-`test/elm/src/LssMixedSigHonestyTest.elm`, the §0.5 `pick`/`d` construction
+`test/eco-elm/src/LssMixedSigHonestyTest.elm`, the §0.5 `pick`/`d` construction
 with a `g|` member — **miscompiles at the shipping default**:
 
 ```elm
@@ -1252,7 +1252,7 @@ Landed:
      (pipeline level, `LssSigFlowTest` harness precedent) — the §0.5
      `pickG`/`d` fixture in both the `g|` and the lambda variant, the
      unmixed negative control, and the counter-line accounting.
-   - NEW `test/elm/src/LssMixedSigHonestyTest.elm` — the runtime witness.
+   - NEW `test/eco-elm/src/LssMixedSigHonestyTest.elm` — the runtime witness.
 3. ✅ Gates:
    - elm-tests **13,210 passed / 12 failed**; the 12 are byte-for-byte the
      SAME pre-existing typechecker constraint-gen failures as the Phase-0
@@ -1733,7 +1733,7 @@ work started (budget-512 flip); 2, 4 and 5 are Phase-4 measurements.**
    D0 + the connect + three layers of pin: store-level (`LssHonestSourcesTest`,
    both directions of the reader), pipeline-level (`LssCallArgFlowTest`, the
    `pickG`/`d` fixture in `g|` and `l|` variants), and RUNTIME
-   (`test/elm/src/LssMixedSigHonestyTest.elm`, which fails on the pre-fix
+   (`test/eco-elm/src/LssMixedSigHonestyTest.elm`, which fails on the pre-fix
    compiler). On the self-compile the counter reads 0 flag-off AND flag-on,
    and on the fixture it reads 1 flag-off / 0 flag-on — closed, not
    widened-over.

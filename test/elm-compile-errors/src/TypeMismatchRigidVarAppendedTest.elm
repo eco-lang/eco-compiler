@@ -1,9 +1,8 @@
 module TypeMismatchRigidVarAppendedTest exposing (..)
 
-{-| TYPE MISMATCH: rigid var appended.
+{-| Appending two values of an unconstrained annotated type variable with `++` is rejected with a TYPE MISMATCH.
 
-From `SourceIR.TypeCheckFailsCases` (`rigidCases`), the elm-test catalogue of programs
-the compiler must reject.
+`f : a -> a` with `f x = x ++ x`: `++` needs an `appendable`, and the annotation lets the caller choose any type for `a`.
 
 -}
 

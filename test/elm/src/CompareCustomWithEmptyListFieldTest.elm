@@ -1,13 +1,13 @@
 module CompareCustomWithEmptyListFieldTest exposing (main)
 
-{-| Comparison through a Custom shell: Elm Customs aren't `comparable`,
-but extracting the comparable fields reaches the same
-`compareUnboxableSlot` path as bare tuple-field compare, because the
-extracted Lists are compared as Lists (top-level cmp).
+{-| Ordering and equality of a custom type whose `List Int` field may be empty.
 
-Plus an equality leg: `==` on the Customs themselves routes through
-`eqUnboxableSlot` → `resolveAndCompare`, which **does** handle
-const-vs-heap correctly today — regression guard.
+Custom types are not `comparable`, so the test orders two `Wrap` values with a
+hand-written `cmpWrap` that compares the list fields and then the `Int` fields.
+It checks that an empty list orders before `[ 1 ]` and equal to another empty
+list, and that `==` on the `Wrap` values themselves tells an empty-list field
+apart from a non-empty one.
+
 -}
 
 -- CHECK: cmp_ee: EQ

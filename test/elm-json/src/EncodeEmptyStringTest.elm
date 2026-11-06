@@ -1,7 +1,7 @@
 module EncodeEmptyStringTest exposing (main)
 
-{-| `Json.Encode.string ""` must serialize as the two-char JSON `""`, not `null`.
-    Decoding the result back must succeed and yield the empty string.
+{-| `Json.Encode.string ""` encodes to the two-character JSON text `""`, and decoding that
+with `Json.Decode.string` gives back the empty string.
 -}
 
 -- CHECK: encoded: "\"\""

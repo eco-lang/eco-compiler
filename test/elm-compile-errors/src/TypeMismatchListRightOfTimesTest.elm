@@ -1,9 +1,9 @@
 module TypeMismatchListRightOfTimesTest exposing (..)
 
-{-| TYPE MISMATCH: list right of *.
+{-| Multiplying a number by a list with `*` is rejected with a TYPE MISMATCH.
 
-From `SourceIR.TypeCheckFailsCases` (`operatorCases`), the elm-test catalogue of programs
-the compiler must reject.
+`*` needs `number` operands (`Int` or `Float`), and `2 * [ 1 ]` puts a list on
+the right.
 
 -}
 

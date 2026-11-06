@@ -1,6 +1,11 @@
 module DecodeSignedInt32BETest exposing (main)
 
-{-| Test Bytes.Decode.signedInt32 BE decoding.
+{-| Bytes.Decode.signedInt32 BE reads back a negative value written by
+Bytes.Encode.signedInt32 BE.
+
+The value -100000 is encoded and decoded big-endian, and the logged result is
+-100000. A failed decode would log 0.
+
 -}
 
 -- CHECK: DecodeSignedInt32BETest: -100000

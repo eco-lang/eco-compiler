@@ -1,6 +1,11 @@
 module CaseTripleTest exposing (main)
 
-{-| Test case expression on 3-tuples.
+{-| A case expression on a 3-tuple of `Int`s matches literal and wildcard
+patterns in order, taking the first branch that fits.
+
+The patterns are `(0, 0, 0)`, `(0, _, _)`, `(_, _, 0)` and a wildcard, and each
+of the four inputs reaches a different one.
+
 -}
 
 -- CHECK: triple1: "all zero"

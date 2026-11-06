@@ -1,6 +1,6 @@
 module CaseCharTest exposing (main)
 
-{-| Test case expression on Char with wildcard.
+{-| A case on Char with literal vowel branches and a wildcard picks the matching literal, falling back to the wildcard for other characters.
 -}
 
 -- CHECK: char1: "vowel a"

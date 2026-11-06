@@ -1,6 +1,7 @@
 module ListAnyBoolTest exposing (main)
 
-{-| Test List.any with List Bool — exercises papExtend with Bool (i1) elements.
+{-| `List.any` and `List.all` on `List Bool`, with `identity` and `not` as the
+predicate, return the expected `True` or `False`.
 -}
 
 -- CHECK: any_id_true: True

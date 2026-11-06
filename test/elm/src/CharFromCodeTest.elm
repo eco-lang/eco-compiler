@@ -1,6 +1,6 @@
 module CharFromCodeTest exposing (main)
 
-{-| Test Char.fromCode.
+{-| `Char.fromCode` turns the code points 65, 97 and 48 into `'A'`, `'a'` and `'0'`.
 -}
 
 -- CHECK: char1: 'A'

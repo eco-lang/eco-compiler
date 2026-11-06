@@ -28,6 +28,13 @@ set(ELM_TEST_PACKAGES
     elm-conformance
     elm-compile-errors
     eco-divergence
+    eco-mlir
+    eco-elm
+    eco-elm-bytes
+    eco-elm-core
+    eco-elm-json
+    eco-elm-regex
+    eco-elm-conformance
     stress-elm
 )
 include(${CMAKE_SOURCE_DIR}/cmake/EcoCreateDirLink.cmake)

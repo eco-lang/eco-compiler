@@ -1,8 +1,6 @@
 module ParseErrorStringEscapeUnclosedTest exposing (..)
 
-{-| BAD UNICODE ESCAPE: string escape unclosed.
-
-A syntax error the parser must report.
+{-| A Unicode escape in a string with no closing brace, `"\u{12"`, is rejected with a BAD UNICODE ESCAPE syntax error.
 
 -}
 

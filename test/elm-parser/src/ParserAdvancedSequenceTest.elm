@@ -1,5 +1,15 @@
 module ParserAdvancedSequenceTest exposing (main)
 
+{-| `Parser.Advanced.sequence` parses a bracketed, comma-separated list of integers.
+
+The sequence starts with `"["`, ends with `"]"`, separates items with `","`,
+allows `spaces` around them and forbids a trailing separator. Run on
+`"[1,2,3]"`, it returns `Ok [1,2,3]`, the items in input order.
+
+Among what is not tested: whitespace inside the brackets, an empty list, and
+the `Optional` and `Mandatory` trailing modes.
+-}
+
 -- CHECK: list: Ok [1,2,3]
 
 import Html exposing (text)

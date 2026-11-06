@@ -1,6 +1,6 @@
 module TruncateToIntTest exposing (main)
 
-{-| Test truncate for Float to Int conversion.
+{-| `truncate` rounds a `Float` towards zero: 2.7 gives 2 and -2.7 gives -2.
 -}
 
 -- CHECK: trunc1: 2

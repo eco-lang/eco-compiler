@@ -1,9 +1,6 @@
 module TypeMismatchComposedWithANumberTest exposing (..)
 
-{-| TYPE MISMATCH: composed with a number.
-
-From `SourceIR.TypeCheckFailsCases` (`operatorCases`), the elm-test catalogue of programs
-the compiler must reject.
+{-| `not >> 1` is rejected with a TYPE MISMATCH, because `>>` composes two functions and `1` is a number.
 
 -}
 

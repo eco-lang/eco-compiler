@@ -1,5 +1,12 @@
 module CharLiteralPatternMatchVariousTest exposing (main)
 
+{-| A `case` on a Char literal matches a pattern for the same literal, for a double quote,
+`{`, `a`, a backslash, a newline, `0` and a space.
+
+Each case logs `"y"` when the pattern matches. The local `check` function is never called.
+
+-}
+
 -- CHECK: dquote: "y"
 -- CHECK: lbrace: "y"
 -- CHECK: lowerA: "y"

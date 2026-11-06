@@ -1,11 +1,11 @@
 module CoreIssue1001CharToUpperSharpSTest exposing (main)
 
-{-| `Char.toUpper 'ß'` returns a `Char` holding two characters, "SS".
+{-| `Char.toUpper 'ß'` returns a single character.
 
 <https://github.com/elm/core/issues/1001>
 
-Elm 0.19.1 returns `'SS'`, so `String.fromChar` of that Char has length 2. A `Char` is a single
-character, so the result must have length 1 (whatever character it is).
+Elm 0.19.1 returns a `Char` holding "SS", so `String.fromChar` of it has length 2. A `Char` is one
+character, so the length must be 1, whichever character it is.
 
 -}
 

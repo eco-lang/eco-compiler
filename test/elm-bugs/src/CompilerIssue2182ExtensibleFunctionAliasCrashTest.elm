@@ -1,6 +1,7 @@
 module CompilerIssue2182ExtensibleFunctionAliasCrashTest exposing (main)
 
-{-| An annotation with an alias of a function type over an extensible record crashes the compiler.
+{-| A function defined with parameters under an alias of a function type over an extensible record
+compiles and runs.
 
 <https://github.com/elm/compiler/issues/2182>
 

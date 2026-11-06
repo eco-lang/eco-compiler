@@ -1,16 +1,10 @@
 module RecordNarrow04SingleFieldTest exposing (main)
 
-{-| Variation 7: access only ONE inner field.
+{-| A let-bound helper that reads a single field of a nested five-field record, folded with `List.foldl`, gets that field's value.
 
-    The helper only reads `inner.lambdaId`. The narrow inferred type is
-    `{ a | lambdaId }`, so narrow index for lambdaId is 0. The full layout
-    has captureAbi at index 0. With `captureAbi = Nothing`, slot 0 contains
-    Const_Nothing bits.
-
-    Confirms the off-by-N narrowing is general (not specific to N=2).
-
-    Expected (correct): uid: 1998
-    Buggy outcome: native abort in eco_resolve_hptr with constant=6 (Const_Nothing).
+The unannotated helper reads only `member.inner.lambdaId`, so its inferred
+argument type names one field of a record that has five. Both members hold
+`LambdaId 999`, so the sum is 1998.
 -}
 
 -- CHECK: uid: 1998

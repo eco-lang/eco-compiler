@@ -1,9 +1,8 @@
 module TypeMismatchRecordPatternTest exposing (..)
 
-{-| TYPE MISMATCH: record pattern.
+{-| A record pattern on an argument annotated as `Int` is rejected with a TYPE MISMATCH.
 
-From `SourceIR.TypeCheckFailsCases` (`patternMismatchCases`), the elm-test catalogue of programs
-the compiler must reject.
+`f : Int -> Int` with `f { a } = a`: the pattern `{ a }` needs a record, but the annotation says the argument is an `Int`.
 
 -}
 

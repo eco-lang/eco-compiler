@@ -1,6 +1,8 @@
 module EncodeUnsignedInt32BETest exposing (main)
 
-{-| Test Bytes.Encode.unsignedInt32 with BE endianness.
+{-| `Bytes.Encode.unsignedInt32` with big-endian order writes 4 bytes.
+
+The test encodes `0x12345678` and logs the width of the result.
 -}
 
 -- CHECK: EncodeUnsignedInt32BETest: 4

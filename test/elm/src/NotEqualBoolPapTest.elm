@@ -1,8 +1,8 @@
 module NotEqualBoolPapTest exposing (main)
 
-{-| First-class reference to `(/=)` partially applied to a Bool. The
-intrinsic path cannot fire on a value-position `(/=)`, so this must
-land on `Elm_Kernel_Utils_notEqual` — the path under audit.
+{-| `(/=)` partially applied to a `Bool`, as `(/=) True` and `(/=) False`,
+works as a function value passed to `List.map`, `List.filter` and `List.any`
+over `[ True, False, True, False ]`.
 -}
 
 -- CHECK: isNotTrueList: [False,True,False,True]

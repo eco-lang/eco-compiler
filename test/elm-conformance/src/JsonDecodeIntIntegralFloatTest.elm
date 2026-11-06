@@ -1,12 +1,14 @@
 module JsonDecodeIntIntegralFloatTest exposing (main)
 
-{-| JSON-06 (plans/kernel-lib-bug-fixes.md): `Json.Decode.int` on an integral number written
-with a fraction or exponent. Elm accepts any JS number for which `Number.isInteger` holds
-(`1.0`, `1e3`, `-0.0`). eco's `runDecoder` `DEC_INT` used to accept only nlohmann integer nodes,
-so every "Ok" row below was `Err ... Expecting an INT`. Expected values recorded from Elm on node.
-Out-of-i64 integral floats (`1e300`) are a documented divergence (D24) and are tested in
-test/eco-divergence/src/DecodeIntRangeTest.elm instead.
+{-| `Json.Decode.int` accepts a JSON number with a fraction or exponent when its value is a whole
+number, and rejects one that is not.
 
+  - `1.0`, `1e3`, `1E2` and `-0.0` decode to 1, 1000, 100 and 0.
+  - `list`: `D.list D.int` on `[2.0,3]` gives `[2,3]`.
+  - `value float 1`: `decodeValue D.int` of `Json.Encode.float 1` gives 1.
+  - `1.5` and `value float 1.5`: 1.5 fails, from a string and from a `Value`.
+
+Among what is not tested: whole numbers too large for a 64-bit integer, such as `1e300`.
 -}
 
 -- CHECK: 1.0: "Ok 1"

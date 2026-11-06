@@ -1,9 +1,17 @@
 module ContainerEqualityCharTest exposing (main)
 
-{-| Equality of Char-containing Tuple2, Tuple3, and List values.
+{-| Checks `==` on pairs, triples and lists of `Char`.
 
-    Char equality is code-point equality, so the interesting cases are case
-    sensitivity (`'A' /= 'a'`) and non-ASCII BMP code points.
+Two characters are equal exactly when they are the same character, so the cases
+that matter are letter case (`'A'` is not `'a'`) and characters outside ASCII,
+such as `'\u{03BB}'` and `'\u{20AC}'`.
+
+  - Pairs: equal, differing in either position, differing only in case, digits,
+    and non-ASCII characters equal and differing.
+  - Triples: equal, differing in the middle, mixed case, and Greek letters.
+  - Lists: equal, different lengths, two empty lists, differing in case, and
+    non-ASCII contents.
+
 -}
 
 -- CHECK: pairEqual: True

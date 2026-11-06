@@ -1,6 +1,7 @@
 module EmbeddedNothingPolymorphicTest exposing (main)
 
-{-| Test embedded constants flowing through polymorphic identity.
+{-| `Nothing`, `[]` and `""` pass unchanged through the polymorphic `identity`,
+the first two then also through a function with a concrete type.
 -}
 
 -- CHECK: r1: Nothing

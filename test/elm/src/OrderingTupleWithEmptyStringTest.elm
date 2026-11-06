@@ -1,7 +1,8 @@
 module OrderingTupleWithEmptyStringTest exposing (main)
 
-{-| `<`, `<=`, `>`, `>=` on tuples with `""` in a String field. Regression
-guard for the `EmptyString` special-case in `compareUnboxableSlot`.
+{-| Tests `<`, `<=`, `>` and `>=` on `( Int, String )` tuples whose first
+components are equal, so the result is decided by comparing `""` with `"a"`
+in the second component.
 -}
 
 -- CHECK: lt_ee: False

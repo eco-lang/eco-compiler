@@ -1,7 +1,11 @@
 module IntegrationBinaryProtocolTest exposing (main)
 
-{-| Test a complete binary protocol roundtrip.
-    Protocol: [version:u8] [type:u8] [length:u16BE] [payload:bytes]
+{-| A small binary message format round-trips through elm/bytes: a version byte, a type byte, a big-endian 16-bit payload length, then the payload bytes.
+
+The decoder reads the length and then uses `Bytes.Decode.loop` to read exactly
+that many bytes, reversing the accumulated list at the end. A message with
+version 1, type 42 and payload `[ 0xDE, 0xAD, 0xBE, 0xEF ]` is encoded and
+decoded, and the program logs `True` only if all three fields come back equal.
 -}
 
 -- CHECK: IntegrationBinaryProtocolTest: True

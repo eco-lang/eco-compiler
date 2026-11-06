@@ -1,6 +1,10 @@
 module HigherOrderTest exposing (main)
 
-{-| Test higher-order functions.
+{-| Simple higher-order functions apply their function argument the right number of times.
+
+The test logs `apply double 5` (10), `apply square 5` (25) and
+`twice double 5` (20).
+
 -}
 
 -- CHECK: apply1: 10

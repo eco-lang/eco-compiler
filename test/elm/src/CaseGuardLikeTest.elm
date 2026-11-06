@@ -1,6 +1,12 @@
 module CaseGuardLikeTest exposing (main)
 
-{-| Test case with guard-like conditions (case + if).
+{-| Checks that nested `case` expressions on `Bool` comparisons, used in place
+of guards, pick the right branch at each threshold.
+
+`letterGrade` tests `score >= 90`, then `>= 80`, then `>= 70`, each in the
+`False` branch of the previous one. Scores 95, 85, 75 and 50 reach each of the
+four results `"A"`, `"B"`, `"C"` and `"F"` once.
+
 -}
 
 -- CHECK: grade1: "A"

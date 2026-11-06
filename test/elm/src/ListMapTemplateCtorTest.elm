@@ -1,23 +1,14 @@
 module ListMapTemplateCtorTest exposing (main)
 
-{-| F-5B's ctor-as-callback fixture (`plans/list-map-mlir-template.md` F-5B).
+{-| Checks `List.map` with a constructor as the callback, for three kinds of
+constructor: `Just` from elm/core, `Tagged` from a custom type that also has a
+nullary constructor, and `Wrap` from a custom type with a single one-field
+constructor.
 
-Three unary-constructor callbacks, one per origin flavour the licence must
-now admit:
-
-1.  `Just` — an elm/core ctor, minted as a `g|` member (only nullary-enum
-    and box ctors get `c|`), which is exactly why F-5A's origin taxonomy is
-    the precondition.
-2.  `Tagged` — a user-defined unary ctor of a multi-constructor union.
-3.  `Wrap` — a BOX ctor (single-constructor, single-field), the `TOpt.Box`
-    node F-5A also reclassifies.
-
-Behaviourally a licensed and a declined map compute the same list, so the
-CHECK lines pin the values only. The absolute pins live in the F-5B landing
-note's compile-and-grep: on this compile `licensed = 3`,
-`declinedNoStamp = 0`, `declinedUnresolvedMember = 0`,
-`declinedCtorUnresolved = 0`, and the artifact carries `eco.list.map` with
-all three ctor callee symbols.
+Each constructor is mapped over `[1, 2, 3]`. The `Just` list is checked by its
+length, 3. The `Tagged` list is folded with `untag`, which multiplies each
+payload by ten, giving 60, and the `Wrap` list is folded with `unwrap`, which
+gives 6.
 
 -}
 
@@ -70,9 +61,6 @@ main =
         _ =
             Debug.log "justs" (List.length justs)
 
-        -- Folds, not maps: an extra `List.map` here would add recognized
-        -- specs with global-function callbacks and blur the absolute census
-        -- pin this fixture exists to carry.
         _ =
             Debug.log "tagged" (List.foldl (\t acc -> acc + untag t) 0 tagged)
 

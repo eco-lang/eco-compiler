@@ -186,7 +186,7 @@ fix needs to keep green.
 
 ## What changed in the test tree
 
-- `test/elm/src/TupleSlotBoxingMismatchTest.elm` — input changed
+- `test/eco-elm/src/TupleSlotBoxingMismatchTest.elm` — input changed
   from `[ True ]` to `[ False, True ]`. The previous CHECK
   (`"[0,1,1,1,1,2]"`) assumed `capturedIdx == 1`, but with
   `[ True ]` the actual `capturedIdx` would have been `0`. The new

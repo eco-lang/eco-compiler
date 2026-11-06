@@ -1,6 +1,8 @@
 module MaybeMapTest exposing (main)
 
-{-| Test Maybe.map.
+{-| `Maybe.map` applies a function inside `Just` and leaves `Nothing` unchanged.
+
+Doubling `Just 42` gives `Just 84`; doubling `Nothing` gives `Nothing`.
 -}
 
 -- CHECK: map1: Just 84

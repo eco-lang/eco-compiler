@@ -1,6 +1,6 @@
 module CompilerIssue1813TcoClosureCapturesMutatedArgTest exposing (main)
 
-{-| A closure created in a tail-recursive call sees the argument mutated by the TCO loop.
+{-| A lambda created in a self tail call keeps the argument value of its own call.
 
 <https://github.com/elm/compiler/issues/1813>
 

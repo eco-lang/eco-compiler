@@ -1,9 +1,8 @@
 module FromArrayFloatListCompareSortTest exposing (main)
 
-{-| Array.fromList → Array.toList → List.sort on Float. Exercises the full
-    chain: Array build, JsArray foldr round-trip, then `List.sort` (which
-    dispatches to `Elm_Kernel_List_sortWith`). Hits both the JsArray foldr
-    path and the List sort re-box-as-Int path with Float content.
+{-| `List.sort` orders a `List Float` that came out of an `Array` via `Array.fromList` and `Array.toList`.
+
+`[3.0, 1.0, 2.0]` sorts to `[1.0, 2.0, 3.0]`; the test logs the sorted list and compares it with the expected one.
 -}
 
 -- CHECK: sorted: [1,2,3]

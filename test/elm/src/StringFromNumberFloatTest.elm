@@ -1,7 +1,8 @@
 module StringFromNumberFloatTest exposing (main)
 
-{-| `String.fromFloat` calls `String.fromNumber` which is migrated in
-    Phase C to `Elm_Kernel_String_fromNumber_Float`.
+{-| `String.fromFloat` prints zero, positive, negative and small fractions in their
+shortest form, and prints a whole-valued `Float` without a decimal point (`42.0` as `"42"`,
+`0.0` as `"0"`).
 -}
 
 -- CHECK: zero: "0"

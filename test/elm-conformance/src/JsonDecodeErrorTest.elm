@@ -1,16 +1,21 @@
 module JsonDecodeErrorTest exposing (main)
 
-{-| `Json.Decode.Error` values and `errorToString`, recorded from Elm on node (run-js-e2e.js
---record). eco 0.2.0 built every error as the wrong constructor (tag 0, `Field`) with `[]` in
-place of the nested error, so `errorToString` and any `case` on an error segfaulted (eco-bugs.md
-number 2, plans/kg-reported-bugs.md step 2). Each row gives both the structure (`shape`, a `case`
-over the constructors that also encodes `Failure`'s value) and `errorToString`.
+{-| `Json.Decode` failures produce the right `Json.Decode.Error` value and the right
+`Json.Decode.errorToString` text.
 
-A parse error's message ends with the JavaScript engine's own text, which eco cannot reproduce, so
-those rows check only up to "This is not valid JSON! ".
+Each `Row` decodes one JSON string with one decoder; every row is expected to fail. For each
+failure the test logs two lines: `shape`, the error rendered by a `case` over all four
+constructors with each `Failure`'s value re-encoded as JSON, and `text`, the `errorToString`
+message. The rows cover `int`, `string`, `bool` and `float` given the wrong JSON type, `null`, a missing or
+mistyped field, `at`, `index` out of range or on an object, the first failing element of a
+`list`, `array` and `dict`, `keyValuePairs` on an array, `oneOf` with two, nested and no
+alternatives, `fail` and `andThen` into `fail`, the second field of `map2`, `nullable`, and
+three inputs that are not valid JSON. A final row checks `errorToString` for a `decodeValue`
+failure.
 
-The inputs go through `List.map`, so the kernels run at run time, not in a constant fold.
-
+For input that is not valid JSON, the message continues with the JSON parser's own description
+of the problem, which differs between platforms, so those rows log only the text before
+"This is not valid JSON! " and replace the message in `shape` with `<parse error>`.
 -}
 
 -- CHECK: int on string shape: "Failure Expecting an INT \"x\""
@@ -76,6 +81,9 @@ import Json.Decode as D exposing (Decoder)
 import Json.Encode as E
 
 
+{-| Renders `error` by its constructors, writing each `Failure`'s value as JSON and a parse
+error's message as `<parse error>`.
+-}
 shape : D.Error -> String
 shape error =
     case error of
@@ -96,6 +104,8 @@ shape error =
                 "Failure " ++ msg ++ " " ++ E.encode 0 value
 
 
+{-| One decoding case: the label its log lines start with, the decoder, and the JSON text.
+-}
 type alias Row =
     { label : String
     , decoder : Decoder String
@@ -136,6 +146,10 @@ rows =
     ]
 
 
+{-| Decodes `row.input` and returns its `shape` and `text` log lines, or one `ok` line if
+decoding succeeds. For a row whose label starts with `parse`, the text is cut before
+"This is not valid JSON! ".
+-}
 run : Row -> List ( String, String )
 run row =
     case D.decodeString row.decoder row.input of

@@ -1,7 +1,13 @@
 module LargeDispatchCaseTest exposing (main)
 
-{-| Outer case on constructor (list pattern) with nested case on String.
-Mimics generateBasicsCall: case on argument list structure, inner string dispatch.
+{-| Checks a `case` on a list of custom-type values whose branches contain a nested `case` on a String.
+
+`dispatch` matches a one-element and a two-element list of `VInt`, then
+chooses an operation by name. The checks take the `"add"`, `"sub"` and
+`"negate"` branches and the outer default branch, reached with an empty list.
+The other names, the inner default branches and the `VStr` and `VNone`
+constructors are not used.
+
 -}
 
 -- CHECK: r1: 3

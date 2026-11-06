@@ -1,11 +1,13 @@
 module CompilerIssue2105ExtensibleFoldlCrashTest exposing (main, withWindows)
 
-{-| Folding with a function that extends a record type parameter crashes the compiler.
+{-| Folding with a function that extends a record type parameter must produce a complete type
+error report, not crash the compiler.
 
 <https://github.com/elm/compiler/issues/2105>
 
-`List.foldl withWindow room windows` needs `Room a` and `Room { a | withWindow : () }` to be the same type, which they are not. Elm 0.19.1 starts printing the TYPE MISMATCH report, then crashes with "Used toErrorType on a type
-that is not well-formed" (Type/Type.hs:541).
+`List.foldl withWindow room windows` needs `Room a` and `Room { a | withWindow : () }` to be the
+same type, which they are not. Elm 0.19.1 starts printing the TYPE MISMATCH report, then crashes
+with "Used toErrorType on a type that is not well-formed" (Type/Type.hs:541).
 
 -}
 

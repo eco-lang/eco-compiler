@@ -1,8 +1,11 @@
 module LetNumberUnionBranchTest exposing (main)
 
-{-| Probe: `number` carried in a multi-field / multi-branch union, projected at
-`Float`. `Pair 30 40` binds two `number`s in one constructor; the case body uses
-both at `Float`. Correct: 30*1.5 + 40*2.5 = 145.
+{-| Integer literals carried by a constructor of a two-constructor custom type
+with a `number` type parameter are used as `Float`s: `Pair 30 40`, matched by
+`Pair a b` and computing `round (a * 1.5 + b * 2.5)`, logs 145.
+
+The other constructor, `Lone`, has its own branch multiplying by `1.5`, which
+is not taken.
 
 -}
 

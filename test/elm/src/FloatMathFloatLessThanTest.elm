@@ -1,10 +1,6 @@
 module FloatMathFloatLessThanTest exposing (..)
 
-{-| Float less than.
-
-From `SourceIR.FloatMathCases`, a program of the elm-test catalogue, with a
-`main` that logs its `testValue`. The CHECK lines are what Elm 0.19.1 prints for it.
-
+{-| `<` on two Float literals, `1.5 < 2.5`, is True.
 -}
 
 -- CHECK: testValue: True

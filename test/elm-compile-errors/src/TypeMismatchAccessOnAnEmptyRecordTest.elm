@@ -1,9 +1,8 @@
 module TypeMismatchAccessOnAnEmptyRecordTest exposing (..)
 
-{-| TYPE MISMATCH: access on an empty record.
+{-| Reading a field from an empty record is rejected with a TYPE MISMATCH.
 
-From `SourceIR.TypeCheckFailsCases` (`contextCases`), the elm-test catalogue of programs
-the compiler must reject.
+`r` is `{}`, which has no fields, and `x = r.foo` reads a field `foo` from it.
 
 -}
 

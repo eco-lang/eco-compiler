@@ -1,7 +1,7 @@
 module ListSortWithFloatCompareTest exposing (main)
 
-{-| `List.sortWith compare` on `List Float`. Hits `List.sortWith`, which
-    re-boxes both operands as `ElmInt` before calling the comparator.
+{-| Checks `List.sortWith compare` on a `List Float`, by printing the sorted list
+and comparing it with `[1.0, 2.0, 3.0]`.
 -}
 
 -- CHECK: result: [1,2,3]

@@ -1,11 +1,13 @@
 module CompilerIssue2112CaseBranchInfiniteTypeHangTest exposing (main)
 
-{-| `case` branches whose types differ by an infinite type.
+{-| `case` branches that could only agree through an infinite type must be rejected with a type
+error, not hang the compiler.
 
 <https://github.com/elm/compiler/issues/2112>
 
-The program is ill-typed, so it must be rejected with a type error. Elm 0.19.1 instead hangs while
-its memory grows without bound (the runner kills it at its compile memory limit), or crashes.
+In `helper`, the `InputA` branch builds lists of `Maybe (Maybe a)` and the `InputB` branch lists
+of `Maybe a`, so the branches agree only if `a` were `Maybe a`. Elm 0.19.1 instead hangs while its
+memory grows without bound, or crashes.
 
 -}
 

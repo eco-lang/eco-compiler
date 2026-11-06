@@ -1,6 +1,19 @@
 module CombinatorListStringTest exposing (main)
 
-{-| Test SKI-style combinators with lists, strings, and stdlib functions.
+{-| SKI-style combinators applied to lists, strings and library functions, each printing its result.
+
+The combinators are `k`, `s`, and the point-free `i = s k k`, `b = s (k s) k`,
+`c = s (b b s) (k k)` and `t = c i`, together with directly written `sp`
+(`bf (uf1 x) (uf2 x)`), `w` (`bf x x`) and `p` (`bf (uf x) (uf y)`). The tests:
+
+  - `b_sum_map`: `b` composes `List.sum` with `List.map ((+) 1)` over `[ 1, 2, 3 ]`, giving 9.
+  - `sp_mul`: `sp (*) ((+) 1) ((*) 2) 6` is `7 * 12`, giving 84.
+  - `w_concat`: `w (++) "hi"` is `"hihi"`.
+  - `c_cons`: `c (::) [ 2, 3 ] 1` is `[ 1, 2, 3 ]`.
+  - `s_palindrome`: `s (++) String.reverse "straw"` is `"strawwarts"`.
+  - `t_pipe`: `t` passes `[ 1, 2, 3 ]` to the composition of `List.sum` and `List.map ((*) 2)`, giving 12.
+  - `p_lengths`: `p (+) List.length` adds the lengths of a three- and a two-element list, giving 5.
+
 -}
 
 -- CHECK: b_sum_map: 9

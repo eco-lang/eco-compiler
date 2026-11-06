@@ -132,6 +132,12 @@ const std::vector<std::string>& test_package_dirs() {
         BUILD_DIR "/test/elm-regex",
         BUILD_DIR "/test/elm-time",
         BUILD_DIR "/test/elm-url",
+        BUILD_DIR "/test/eco-mlir",
+        BUILD_DIR "/test/eco-elm",
+        BUILD_DIR "/test/eco-elm-bytes",
+        BUILD_DIR "/test/eco-elm-core",
+        BUILD_DIR "/test/eco-elm-json",
+        BUILD_DIR "/test/eco-elm-regex",
         BUILD_DIR "/test/eco-kernel",
         BUILD_DIR "/test/stress-elm",
     };

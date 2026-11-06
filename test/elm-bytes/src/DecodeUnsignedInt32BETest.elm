@@ -1,6 +1,11 @@
 module DecodeUnsignedInt32BETest exposing (main)
 
-{-| Test Bytes.Decode.unsignedInt32 BE decoding.
+{-| Bytes.Decode.unsignedInt32 BE reads back a value written by
+Bytes.Encode.unsignedInt32 BE.
+
+The value 0x12345678 is encoded and decoded big-endian, and the logged result is
+305419896, its decimal form. A failed decode would log -1.
+
 -}
 
 -- CHECK: DecodeUnsignedInt32BETest: 305419896

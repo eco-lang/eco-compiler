@@ -1,6 +1,8 @@
 module EncodeFloat32BETest exposing (main)
 
-{-| Test Bytes.Encode.float32 with BE endianness.
+{-| `Bytes.Encode.float32` with big-endian order writes 4 bytes.
+
+The test encodes `3.14159` and logs the width of the result.
 -}
 
 -- CHECK: EncodeFloat32BETest: 4

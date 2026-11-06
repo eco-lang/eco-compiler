@@ -1,9 +1,8 @@
 module TooManyArgsTooManyArgumentsToALiteralTest exposing (..)
 
-{-| TOO MANY ARGS: too many arguments to a literal.
+{-| An integer literal applied to an argument is rejected with a TOO MANY ARGS error.
 
-From `SourceIR.TypeCheckFailsCases` (`contextCases`), the elm-test catalogue of programs
-the compiler must reject.
+`x = 1 2` applies the literal `1`, which is not a function, to `2`.
 
 -}
 

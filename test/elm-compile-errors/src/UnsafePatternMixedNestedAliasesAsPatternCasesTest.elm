@@ -1,9 +1,11 @@
 module UnsafePatternMixedNestedAliasesAsPatternCasesTest exposing (..)
 
-{-| UNSAFE PATTERN: Mixed nested aliases (AsPatternCases).
+{-| A function parameter pattern `(( { x }, (h :: _) as list ) as all)` is rejected with an
+UNSAFE PATTERN error.
 
-From `SourceIR.PatternFailsCases` (`testValue`), the elm-test catalogue of programs
-the compiler must reject.
+A function's parameter patterns must match every value of their type. The record pattern
+and the `as` aliases always match, but the nested cons pattern `h :: _` fails on the empty
+list.
 
 -}
 

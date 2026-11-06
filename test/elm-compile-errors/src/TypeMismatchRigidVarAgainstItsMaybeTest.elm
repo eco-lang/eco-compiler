@@ -1,9 +1,8 @@
 module TypeMismatchRigidVarAgainstItsMaybeTest exposing (..)
 
-{-| TYPE MISMATCH: rigid var against its Maybe.
+{-| Returning an argument of type `a` where the annotation says `Maybe a` is rejected with a TYPE MISMATCH.
 
-From `SourceIR.TypeCheckFailsCases` (`problemCases`), the elm-test catalogue of programs
-the compiler must reject.
+`f : a -> Maybe a` with `f x = x`: `a` would have to equal `Maybe a`, which no type does.
 
 -}
 

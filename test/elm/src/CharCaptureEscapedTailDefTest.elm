@@ -1,12 +1,14 @@
 module CharCaptureEscapedTailDefTest exposing (main)
 
-{-| Regression: a local tail-recursive def that captures a raw Char (i16)
-and ESCAPES as a value (stored in a list, extracted, then applied). The
-reified loop shell's capture ABI must agree with its papCreate site —
-`mlirTypeToApproxMonoType` used to type I16 captures as boxed (stale
-pre-i16-Char `I32 -> MChar` arm), so the outlined `$cap` said `!eco.value`
-while the creation site passed i16 with unboxed_bitmap=3, tripping
-"Calling a function with a bad signature" at LLVM translation.
+{-| A tail-recursive local function that refers to a `Char` argument of its
+enclosing function still works when it is returned inside a list and called
+later.
+
+`pickers c` defines `go`, which reports whether a `List Char` contains `c`, and
+returns `[ go ]`. The test applies the first function from that list to a list
+containing `'x'`, the same function built for `'q'` to the same list, and every
+function built for `'z'` to `[ 'z' ]`.
+
 -}
 
 import Html exposing (text)

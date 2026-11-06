@@ -1,10 +1,12 @@
 module EqualityBoolCaseTest exposing (main)
 
-{-| `case (a == b) of True -> … ; False -> …`.
+{-| The result of `==` on `Bool` operands drives a `case` on `True` and `False`
+correctly.
 
-The decision tree's `IsBool` test lowers to an i1 xor (Patterns.elm), so
-the *case* itself is correct. The bug enters via the kernel call that
-produces the scrutinee.
+`classify` returns `"yes"` for `True` and `"no"` for `False`. It is applied to
+all four comparisons of `True` and `False`, so equal operands log `"yes"` and
+unequal ones log `"no"`.
+
 -}
 
 -- CHECK: cTT: "yes"

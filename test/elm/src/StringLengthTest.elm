@@ -1,6 +1,7 @@
 module StringLengthTest exposing (main)
 
-{-| Test String.length.
+{-| `String.length` returns 5 for `"Hello"`, 0 for the empty string, and 13 for
+`"Hello, World!"`.
 -}
 
 -- CHECK: len1: 5

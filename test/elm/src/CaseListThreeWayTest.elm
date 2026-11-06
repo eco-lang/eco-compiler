@@ -1,6 +1,11 @@
 module CaseListThreeWayTest exposing (main)
 
-{-| Test case expression on List with [], [x], and x::xs patterns.
+{-| Checks that a `case` on a `List` with `[]`, `[x]` and `x :: xs` patterns, in
+that order, sends a one-element list to `[x]` rather than to the cons pattern.
+
+The three-element list `[1, 2, 3]` reaches `x :: xs`, and its result shows that
+`x` is bound to the head, 1.
+
 -}
 
 -- CHECK: desc1: "empty"

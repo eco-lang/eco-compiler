@@ -1,5 +1,11 @@
 module ListPartitionTest exposing (main)
 
+{-| `List.partition` splits a list into the elements that satisfy a predicate and those that do not, each in its original order.
+
+Partitioning 1 to 5 by `isEven` gives `([2,4],[1,3,5])`.
+
+-}
+
 -- CHECK: partition1: ([2,4],[1,3,5])
 
 import Html exposing (text)

@@ -1,5 +1,11 @@
 module ParserLoopTest exposing (main)
 
+{-| Checks that `Parser.loop` accumulates a list across iterations and ends with `Done`.
+
+`listLoop` parses `"[1,2,3]"` into `Ok [1,2,3]`. Items are collected in
+reverse and reversed when the loop finishes.
+-}
+
 -- CHECK: list: Ok [1,2,3]
 
 import Html exposing (text)
@@ -15,6 +21,8 @@ listLoop =
         |. Parser.symbol "]"
 
 
+{-| Parses one more integer, with an optional following comma, and loops; when no integer follows, finishes with the reversed list.
+-}
 helper : List Int -> Parser.Parser (Parser.Step (List Int) (List Int))
 helper revItems =
     Parser.oneOf

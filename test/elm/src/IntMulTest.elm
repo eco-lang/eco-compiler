@@ -1,6 +1,6 @@
 module IntMulTest exposing (main)
 
-{-| Test integer multiplication.
+{-| Checks integer multiplication `*` with positive, mixed-sign, two negative and zero operands.
 -}
 
 -- CHECK: mul1: 30

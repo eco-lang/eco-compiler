@@ -1,6 +1,6 @@
 module IntPowTest exposing (main)
 
-{-| Test integer exponentiation.
+{-| Checks integer exponentiation `^`, including a zero exponent and a negative base with an odd exponent.
 -}
 
 -- CHECK: pow1: 8

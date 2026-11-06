@@ -1,6 +1,10 @@
 module DecodeMap5Test exposing (main)
 
-{-| Test Bytes.Decode.map5 combining five decoders.
+{-| Bytes.Decode.map5 combines five decoders that read consecutive bytes.
+
+Five unsigned 8-bit values 1 to 5 are encoded, and `map5` reads them in order and
+sums them, so the logged result is 15. A failed decode would log -1.
+
 -}
 
 -- CHECK: DecodeMap5Test: 15

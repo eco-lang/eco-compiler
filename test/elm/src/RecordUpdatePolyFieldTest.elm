@@ -1,11 +1,10 @@
 module RecordUpdatePolyFieldTest exposing (main)
 
-{-| A record updated through a let-polymorphic binding: `r` holds an identity
-function, and `{ r | f = ... }` uses `r` at the type of the new function.
+{-| Updating a function-typed field of a let-bound record whose function is polymorphic gives a record whose new function works.
 
-The update has exactly its record's type, so the use of `r` inside it must be
-typed at `Int -> Int` too (MONO_006); the solver used to leave it at an erased
-type variable.
+`r` holds the identity function `\x -> x`, so its `f` field is polymorphic.
+`{ r | f = \y -> y + 1 }` cannot change a field's type,
+so it uses `r` with `f : Int -> Int`. `r2.f 5` gives 6 and `r2.g` keeps 0.
 -}
 
 -- CHECK: f: 6

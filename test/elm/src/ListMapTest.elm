@@ -1,6 +1,7 @@
 module ListMapTest exposing (main)
 
-{-| Test List.map.
+{-| Checks `List.map` with top-level functions that double and square, on a
+three-element list and on an empty list.
 -}
 
 -- CHECK: map1: [2,4,6]

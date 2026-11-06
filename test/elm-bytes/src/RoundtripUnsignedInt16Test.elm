@@ -1,6 +1,9 @@
 module RoundtripUnsignedInt16Test exposing (main)
 
-{-| Roundtrip test for unsignedInt16 BE/LE.
+{-| Integers survive an `unsignedInt16` encode and decode with elm/bytes in both byte orders.
+
+The values 0, 0xFFFF and 0x1234 are each round-tripped big-endian and then
+little-endian, and the program logs `True` only if all six come back unchanged.
 -}
 
 -- CHECK: RoundtripUnsignedInt16Test: True

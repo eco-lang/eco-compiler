@@ -1,9 +1,14 @@
 module ContainerEqualityIntTest exposing (main)
 
-{-| Equality of Int-containing Tuple2, Tuple3, and List values.
+{-| Checks `==` on pairs, triples and lists of `Int`.
 
-    Int has no IEEE quirks, so the interesting cases are around the sign of
-    each element and around list length.
+  - Pairs: equal, differing in either position, negative numbers, differing
+    only in sign, and zeros.
+  - Triples: equal, differing in the middle, mixed signs, and the 32-bit
+    minimum and maximum values `-2147483648` and `2147483647`.
+  - Lists: equal, the shorter list on either side, two empty lists, negative
+    numbers, and mixed signs.
+
 -}
 
 -- CHECK: pairEqual: True

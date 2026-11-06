@@ -569,7 +569,7 @@ arity split (`zero/under/over` sub-counters) + `resolvePapSuffix`/`papScan` +
 symbol choice in `Expr.elm`, report-line extension (+ E0.8 dbg* cleanup),
 LSS_011 in `invariants.csv`, pins `test/codegen/fast_dispatch_pap_prefix.mlir`
 (JIT, 753 — slot order + merged-ABI lowering) and
-`test/elm/src/HofPapPrefixDispatchTest.elm` (behavioral). Gates: full E2E
+`test/eco-elm/src/HofPapPrefixDispatchTest.elm` (behavioral). Gates: full E2E
 **1620/1620** (default) green incl. both new tests; flag-on JIT correctness of
 the test module (`result: 22564` under solver); flag-on corpus
 **1620/1620 PASSED** under `ECO_MONO_ENGINE=solver` (touch-all first — genuine
@@ -592,7 +592,7 @@ runtime cost: attr-less generic extends lower via `lowerGenericApply` (boxes
 primitives) instead of Layer 1's intended `lowerSegmentationUnknown` (typed
 buffer, no boxing — CGEN_060's explicit no-boxing mandate for this shape).
 **FIXED (2026-07-16, test-first):** the E2E pin
-`test/elm/src/CrossStageCallKindTest.elm` (`-- CHECK-MLIR: segmentation_unknown`
+`test/eco-mlir/src/CrossStageCallKindTest.elm` (`-- CHECK-MLIR: segmentation_unknown`
 + `-- CHECK: result: 8`) reproduced the bug in the harness
 ("MLIR-shape check failed: Missing pattern") BEFORE the fix; the 6-line hoist
 (`callKindAttrs = if isCrossStage then [("_call_kind","segmentation_unknown")]
@@ -762,7 +762,7 @@ wherever it already clears `fastEvaluator`/`captureAbi`, `MonoInlineSimplify.elm
 ### E2.4 Tests
 
 - Unit `.mlir` pins from E2.0 (slot order; `GenericApplyBoxing` prefix-kind case).
-- `test/elm/src/HofPapPrefixDispatchTest.elm` (E2E, run under
+- `test/eco-elm/src/HofPapPrefixDispatchTest.elm` (E2E, run under
   `ECO_MONO_ENGINE=solver`): a 3-arity global partially applied with 2 args, the
   PAP passed **as a function argument** to a consumer whose cost exceeds the inline
   threshold (storing it in a record/ctor field escapes to data and stays `LTop` —
@@ -894,7 +894,7 @@ cross-stage segmentation).
   `f 10 …` applies 2 args over a 1-param instance. RED today
   (`declinedShapeArityOver`), GREEN after: some call has
   `fastEvaluator /= Nothing` AND `|args| > |captureAbi.paramTypes|`.
-- E2E runtime test `test/elm/src/StagedFastDispatchTest.elm` (result CHECK
+- E2E runtime test `test/eco-elm/src/StagedFastDispatchTest.elm` (result CHECK
   only — no CHECK-MLIR: the default corpus runs flag-off where no stamp
   exists).
 - elm-tests baseline; solver+LSS native self-compile — THE gate (thousands
@@ -978,7 +978,7 @@ singleton consumers simply decline non-singletons, exactly as today (LSS_005).
    `_pap_prefix = 1` exists (the E2 stamp firing). This is the AUTOMATED
    flag-on activation pin the E2 phase could not have (unit level — the E2E
    harness sets no env, but TestLogic runs flag-on in-process).
-2. **E2E (manual gate step):** `test/elm/src/HofPapPrefixDispatchTest.elm`
+2. **E2E (manual gate step):** `test/eco-elm/src/HofPapPrefixDispatchTest.elm`
    compiled with `ECO_MONO_ENGINE=solver ECO_MONO_LSS_REPORT=1` (via
    `node /work/compiler/bin/index.js make --optimize … --builddir=<name>` from
    `test/elm/`) reports `stampedPapPrefix=2` on the `lss globalopt:` line —
@@ -1765,7 +1765,7 @@ REMOVED, not converted (`sat` drops with no `fast` gain in the census).
 5. **Pins**: unit `E9CtorDevirtTest` — a ctor passed to a keyed
    recursion-guarded HOF; assert the dispatch site's callee became
    `MonoVarGlobal` (a direct call), RED with the branch neutralized. E2E
-   runtime `test/elm/src/CtorDevirtTest.elm` (result CHECK, engine-neutral).
+   runtime `test/eco-elm/src/CtorDevirtTest.elm` (result CHECK, engine-neutral).
 6. **Gates**: elm-tests baseline; solver+LSS self-compile; flag-off
    byte-identity + flag-on corpus (Run-H legs).
 7. **Run H**: e2v2 vs e9 binaries; unkeyed census (`ctorDevirt` ≈ the 532
@@ -1806,7 +1806,7 @@ expect `lookupVar: unbound mono_inline_N`; (b) add the CURRENT FUNCTION to
 `Context.lookupVar`'s crash (thread `currentFuncName` into `Ctx.Context`,
 set where each func's generation starts — codegen-only state, no output
 impact); (c) read the named function's mono/inlined form, identify the
-shape; (d) minimize into `test/elm/src/FnDevirtInlineTest.elm` — must
+shape; (d) minimize into `test/eco-elm/src/FnDevirtInlineTest.elm` — must
 CRASH the flag-on E2E harness pre-fix (the RED pin) and print a CHECK
 result post-fix.
 
@@ -1997,7 +1997,7 @@ re-translation churn is new — measure the mono wall in Run J and file
 under E9.3 if it moves.
 
 **Step 6 — pins + gates (order).**
-1. `test/elm/src/ConsDevirtTest.elm` — mirror `CtorDevirtTest`'s shape: a
+1. `test/eco-elm/src/ConsDevirtTest.elm` — mirror `CtorDevirtTest`'s shape: a
    LOCAL non-tail fold (single provenance → singleton without keying) with
    `(::)` passed as the HOF value, plus an Int-element leg so the typed
    `cons_Int` variant is observable; `-- CHECK:` the folded result. RED

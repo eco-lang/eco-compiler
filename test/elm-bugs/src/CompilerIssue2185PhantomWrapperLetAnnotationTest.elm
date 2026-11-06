@@ -1,7 +1,6 @@
 module CompilerIssue2185PhantomWrapperLetAnnotationTest exposing (main)
 
-{-| The compiler crashes on a valid let annotation with a type variable around a wrapped phantom
-type.
+{-| A valid `let` annotation with a type variable around a wrapped phantom type compiles and runs.
 
 <https://github.com/elm/compiler/issues/2185>
 

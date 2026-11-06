@@ -1,9 +1,6 @@
 module TypeMismatchExtensibleRecordMissingAFieldTest exposing (..)
 
-{-| TYPE MISMATCH: extensible record missing a field.
-
-From `SourceIR.TypeCheckFailsCases` (`recordFieldCases`), the elm-test catalogue of programs
-the compiler must reject.
+{-| Passing `{ age = 1 }` to a function that takes `{ r | name : Int }` is rejected with a TYPE MISMATCH, because the record has no `name` field.
 
 -}
 

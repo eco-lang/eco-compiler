@@ -1,9 +1,9 @@
 module ShadowingAnArgumentShadowingATopLevelValueTest exposing (..)
 
-{-| SHADOWING: an argument shadowing a top-level value.
+{-| A function argument with the same name as a top-level value is rejected with a SHADOWING error.
 
-From `SourceIR.CanonicalizeFailsCases` (`testValue`), the elm-test catalogue of programs
-the compiler must reject.
+The argument of `double` is named `scale`, which is also a top-level definition in the
+module; Elm does not allow a local name to shadow one already in scope.
 
 -}
 

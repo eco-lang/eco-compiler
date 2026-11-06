@@ -17,6 +17,8 @@ import Html exposing (text)
 import Random
 
 
+{-| Returns 200 values drawn from `gen`, starting from a fixed seed.
+-}
 sample : Random.Generator a -> List a
 sample gen =
     Tuple.first (Random.step (Random.list 200 gen) (Random.initialSeed 42))

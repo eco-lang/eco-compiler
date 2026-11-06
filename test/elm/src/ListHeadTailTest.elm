@@ -1,6 +1,7 @@
 module ListHeadTailTest exposing (main)
 
-{-| Test List.head and List.tail.
+{-| `List.head` and `List.tail` return `Just` for a non-empty list and `Nothing` for
+the empty list.
 -}
 
 -- CHECK: head1: Just 1

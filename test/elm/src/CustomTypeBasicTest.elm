@@ -1,6 +1,10 @@
 module CustomTypeBasicTest exposing (main)
 
-{-| Test basic custom type creation.
+{-| `Debug.log` prints each constructor of a custom type with no arguments by its
+name.
+
+The test logs `Red`, `Green` and `Blue` of the type `Color`.
+
 -}
 
 -- CHECK: color1: Red

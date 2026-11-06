@@ -1,20 +1,18 @@
 module TaskOnErrorCascadeTest exposing (main)
 
-{-| A chain of andThen calls that fails partway, recovers via onError,
-and then continues into another segment. Running three such segments
-sequentially and summing their results exercises the TASK_FAIL /
-TASK_ON_ERROR stack-unwinding path in stepProcess: each fail must walk
-the stack to the nearest ON_ERROR, discard intervening AND_THEN
-frames, and resume with a Task.succeed.
+{-| `Task.onError` recovers a failed `Task.andThen` chain, skipping the steps
+between the failure and the handler, and the recovered task can be chained
+further.
 
-segment step =
-    succeed step
-        |> andThen (\x -> succeed (x + 1))     -- runs
-        |> andThen (\_ -> fail "boom")         -- fails
-        |> andThen (\x -> succeed (x + 100))   -- skipped
-        |> onError (\_ -> succeed (step * 10)) -- recovers
+`segment step` adds 1 to `step`, then fails with `"boom"`, so the following
+`andThen` that would add 100 never runs, and its `onError` handler logs
+`recovered <step>` and succeeds with `step * 10`. `chain` runs segments 1, 2 and
+3 in order and sums their results, so the worker logs the three recoveries in
+order and then `final: 60`.
 
-so segment 1 -> 10, segment 2 -> 20, segment 3 -> 30, total 60.
+Among what is not tested: a handler that fails again, and a failure that reaches
+`Task.attempt` unrecovered.
+
 -}
 
 -- CHECK: onerr: "recovered 1"

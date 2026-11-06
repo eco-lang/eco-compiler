@@ -1,6 +1,7 @@
 module ListMapBoolTest exposing (main)
 
-{-| Test List.map producing Bool results — exercises list head projection with Bool.
+{-| Checks that `List.map` produces correct `List Bool` results, mapping `not` and
+`identity` over `[True, False, True]`.
 -}
 
 -- CHECK: map_not: [False,True,False]

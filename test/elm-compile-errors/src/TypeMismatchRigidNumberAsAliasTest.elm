@@ -1,9 +1,8 @@
 module TypeMismatchRigidNumberAsAliasTest exposing (..)
 
-{-| TYPE MISMATCH: rigid number as alias.
+{-| Returning a record-alias value where the annotation promises a `number` is rejected with a TYPE MISMATCH.
 
-From `SourceIR.TypeCheckFailsCases` (`rigidCases`), the elm-test catalogue of programs
-the compiler must reject.
+`f : number -> number` with `f x = p`, where `p : P` and `P` is the record alias `{ y : Int }`.
 
 -}
 

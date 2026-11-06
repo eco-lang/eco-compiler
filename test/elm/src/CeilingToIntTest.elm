@@ -1,6 +1,7 @@
 module CeilingToIntTest exposing (main)
 
-{-| Test ceiling for Float to Int conversion.
+{-| `ceiling` rounds a `Float` up to an `Int`: `ceiling 2.3` is 3 and
+`ceiling -2.7` is -2.
 -}
 
 -- CHECK: ceil1: 3

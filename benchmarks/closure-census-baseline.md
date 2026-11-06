@@ -362,7 +362,7 @@ second one — staged-result specs were TYPE-FLATTENED at codegen
 `decomposeFunctionType` (drops ALL arrow args to the leaf), collapsing the
 returned closure when a def has fewer value params than arrow args;
 `Context.residualResultType` now re-curries the un-consumed args. Pin:
-`test/elm/src/StagedResultTest.elm` (E2E, 44/32/1000); gate 1616/1616.
+`test/eco-elm/src/StagedResultTest.elm` (E2E, 44/32/1000); gate 1616/1616.
 Layer 3 (unconditional): `ForwardClosure` now betas the FIRST
 stage of a multi-stage single-call application and re-applies the rest —
 the stall that kept `f a s1` alive. Gate 1613/1613 with both

@@ -6,8 +6,8 @@ of spaces.
 <https://github.com/elm/compiler/issues/2147>
 
 For `( T t, T t )` the report should underline the two `t`s. Elm 0.19.1 puts the second caret
-about 65000 columns to the right (a negative column offset wrapped to 16 bits), so the report
-contains a line of tens of thousands of spaces.
+tens of thousands of columns to the right, so the report contains a line of that many spaces.
+The test fails on any run of 201 or more spaces in the output.
 
 Fixed in Elm 0.19.2.
 

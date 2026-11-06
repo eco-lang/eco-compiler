@@ -1,5 +1,13 @@
 module StringSliceTest exposing (main)
 
+{-| Checks `String.slice` with positive indexes and with negative indexes, which count back from the end of the string.
+
+`String.slice 1 -1 "Hello"` drops the first and last characters, giving
+`"ell"`, and `String.slice -3 5 "World"` gives the last three characters,
+`"rld"`.
+
+-}
+
 -- CHECK: slice1: "ell"
 -- CHECK: slice_neg: "ell"
 -- CHECK: slice_start: "Hel"

@@ -1,14 +1,11 @@
 module PureRecursiveValueThunkTest exposing (main)
 
-{-| Minimal reproducer: zero-arity top-level self-recursive value.
+{-| A top-level value that refers to itself inside a lambda can be defined and used.
 
-    The binding `me` is a value (not a function) whose RHS contains a
-    lambda that captures `me` itself. In stock Elm/JS this works because
-    top-level bindings are lazily memoized. In Eco's native lowering,
-    if closure capture eagerly evaluates the captured binding, constructing
-    `me` re-evaluates `me`, producing infinite C-stack recursion at init time.
+`me` is `Box (\_ -> me)`: it is a value, not a function, and refers to itself only inside a
+lambda, which Elm allows. `main` matches `me` against `Box _` and logs `ok: ()`; the lambda
+is never called.
 
-    Expected: prints "ok: ()" without crashing.
 -}
 
 -- CHECK: ok: ()

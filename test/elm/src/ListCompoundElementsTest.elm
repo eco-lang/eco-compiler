@@ -1,6 +1,8 @@
 module ListCompoundElementsTest exposing (main)
 
-{-| Test lists containing compound elements: tuples and records. -}
+{-| Lists whose elements are tuples or records support `List.length`, `List.head`
+and `List.foldl` over a record field.
+-}
 
 -- CHECK: tupleLen: 3
 -- CHECK: firstTuple: (1,"a")

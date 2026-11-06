@@ -1,13 +1,23 @@
 module StringZeroLenJoinUtf16Test exposing (main)
 
-{-| HEAP_071 audit: String.join with a non-ASCII (UTF-16) separator and a
-single empty element. The separator is never emitted, so the result is empty;
-the UTF-16 join path in StringOps.cpp allocates a raw Tag_String of size 0
-(no assertion guards it), producing a zero-length heap string that is NOT
-equal to "". This case is SILENT in every build — only the semantic probe or a
-GC survival check can see it.
+{-| `String.join` with a non-ASCII separator over a single empty element
+returns a true empty string: the separator is never inserted, so the result is
+`""`.
 
-probe s = length, String.isEmpty, (s == ""), case-on-"" — "0EQC" is correct.
+Each result is passed to `probe`, which checks four ways of asking whether a
+string is empty: `String.length`, `String.isEmpty`, `== ""` and a `case` on the
+`""` pattern. An empty result must answer all four as empty, `"0EQC"`.
+
+  - `join_utf16_sep`: the separators `"é"` and `" → "` joining `[ "" ]`, and
+    `"é"` joining a list holding `String.dropLeft 5 "abc"`.
+  - `control`: with two elements the separator does appear, so
+    `String.join "é" [ "", "" ]` has length 1 and `String.join "é" [ "a", "b" ]`
+    length 3.
+
+After that, the program builds a large comma-joined string of 100,001 numbers
+and probes every case result again; `after_gc_bad` is the number that no longer
+reads as `"0EQC"`, and must be 0.
+
 -}
 
 -- CHECK: join_utf16_sep: ["0EQC","0EQC","0EQC"]
@@ -17,6 +27,11 @@ probe s = length, String.isEmpty, (s == ""), case-on-"" — "0EQC" is correct.
 import Html exposing (text)
 
 
+{-| Returns a four-character summary of `s`: its length, then `E` if
+`String.isEmpty s` holds (else `e`), `Q` if `s == ""` (else `q`), and `C` if a
+`case` on `s` matches the `""` pattern (else `c`). A correct empty string gives
+`"0EQC"`.
+-}
 probe : String -> String
 probe s =
     String.fromInt (String.length s)

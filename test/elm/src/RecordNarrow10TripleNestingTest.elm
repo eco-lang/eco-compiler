@@ -1,14 +1,10 @@
 module RecordNarrow10TripleNestingTest exposing (main)
 
-{-| Variation 29: triple nesting.
+{-| A let-bound helper with an inferred extensible-record argument, folded with `List.foldl`, reads a field three records deep.
 
-    Outermost { mid : Middle { inner : Inner } }. The helper reads through
-    three layers: `member.mid.inner.lambdaId`. Each layer uses only one or
-    a few fields, so narrowing could chain through.
-
-    Tests whether the bug surface scales with nesting depth.
-
-    Expected (correct): uid: 1998
+The unannotated helper reads `member.mid.inner`, then `captures`, `params` and
+`lambdaId` of it, so each level's inferred type names only some of that record's
+fields. Both members hold `LambdaId 999`, so the sum is 1998.
 -}
 
 -- CHECK: uid: 1998

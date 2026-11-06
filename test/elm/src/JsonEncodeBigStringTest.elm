@@ -1,10 +1,10 @@
 module JsonEncodeBigStringTest exposing (main)
 
-{-| Json.Encode.string must handle every native string representation.
-Strings above the leaf size classes (built here via String.repeat) are
-stored as ropes / large-block strings; Elm\_Kernel\_Json\_wrap used to
-recognize only flat Tag\_String leaves and rendered everything else as
-JSON null. 5000 chars + 2 quotes = 5002.
+{-| Checks that `Json.Encode.string` encodes a 5000-character string as a quoted JSON string.
+
+The string is built with `String.repeat`, and the length of the encoded text is
+printed: 5000 characters plus two quotes gives 5002.
+
 -}
 
 -- CHECK: JsonEncodeBigStringTest: 5002

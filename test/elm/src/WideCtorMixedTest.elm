@@ -1,6 +1,15 @@
 module WideCtorMixedTest exposing (main)
 
-{-| 60-field mixed constructor: case match on fields 23/24/55/59, ==, Debug.toString.
+{-| A custom type constructor with 60 fields, cycling through `Int`, `Float`,
+`Char`, `String` and `Bool`, supports pattern matching, equality and printing.
+
+The test checks:
+
+  - Pattern matches reading fields 23, 24, 55 and 59.
+  - `==` against a value built from the same input (`True`) and from a
+    different input (`False`).
+  - `Debug.log` printing all 60 fields in order.
+
 -}
 
 -- CHECK: field23: "23s"

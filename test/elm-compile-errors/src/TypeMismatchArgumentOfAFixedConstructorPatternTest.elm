@@ -1,9 +1,8 @@
 module TypeMismatchArgumentOfAFixedConstructorPatternTest exposing (..)
 
-{-| TYPE MISMATCH: argument of a fixed constructor pattern.
+{-| A constructor pattern whose argument has the wrong type is rejected with a TYPE MISMATCH.
 
-From `SourceIR.TypeCheckFailsCases` (`patternMismatchCases`), the elm-test catalogue of programs
-the compiler must reject.
+`T` wraps an `Int`, but the `case` branch matches the pattern `T "a"`.
 
 -}
 

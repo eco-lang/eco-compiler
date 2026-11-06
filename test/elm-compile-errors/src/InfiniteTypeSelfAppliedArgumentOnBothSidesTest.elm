@@ -1,9 +1,10 @@
 module InfiniteTypeSelfAppliedArgumentOnBothSidesTest exposing (..)
 
-{-| INFINITE TYPE: self-applied argument on both sides.
+{-| A function argument applied to itself is rejected with an INFINITE TYPE error.
 
-From `SourceIR.TypeCheckFailsCases` (`problemCases`), the elm-test catalogue of programs
-the compiler must reject.
+In `k x`, the let binding `y = x x` applies `x` to itself, so the type of `x` would have to
+be a function taking its own type. `y` is never used, and the body returns
+`[ ( x, 1 ), ( x, "a" ) ]`.
 
 -}
 

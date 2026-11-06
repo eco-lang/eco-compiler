@@ -1,5 +1,14 @@
 module ParserSequenceTest exposing (main)
 
+{-| Checks `Parser.sequence` with forbidden and with optional trailing separators.
+
+With `Forbidden`, `"[1, 2, 3]"` (spaces after the commas) gives
+`Ok [1,2,3]`. With `Optional`, `"[1,2,]"` gives `Ok [1,2]`.
+
+Among what is not tested: rejection of a trailing separator under `Forbidden`,
+and the `Mandatory` setting.
+-}
+
 -- CHECK: items: Ok [1,2,3]
 -- CHECK: trailing_ok: Ok [1,2]
 

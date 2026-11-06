@@ -1,14 +1,13 @@
 module RegexNonAsciiTest exposing (main)
 
-{-| REGEX-06 (plans/kernel-lib-bug-fixes.md): elm/regex on non-ASCII text, recorded from Elm on
-node (run-js-e2e.js --record). JavaScript regexes without the `u` flag, which elm/regex never
-passes, work on UTF-16 code units: `.` is one unit, so U+00E9 is one match and U+1F600 two (one
-per surrogate). Before the fix the native kernel compiled patterns with `srell::regex`, the `char`
-instantiation, over a UTF-8 copy of the subject, so it matched bytes: `.` takes one byte of a
-multi-byte sequence, a character class or escape naming a non-ASCII character did not match
-it, and case-insensitive matching did not fold it. Matches are shown as their lengths and code
-points (`cps`) or lengths only, so a lone surrogate or a broken byte sequence prints in ASCII. (`Regex.split` with
-an empty pattern is not used: elm/regex's JS kernel loops forever on it.)
+{-| elm/regex matches non-ASCII text by UTF-16 code units: `.` matches U+00E9 once and U+1F600 as
+two separate units.
+
+The tests also check that a character class and a `\u00e9` escape match U+00E9, that a
+case-insensitive pattern for U+00E9 matches U+00C9, that `^.{3}$` matches "aéb", that
+`Regex.replace` replaces each character of "é中" with one "x", and that `Regex.split` splits on
+a non-ASCII separator. Matches are shown as their counts, lengths and code points, so the output
+stays ASCII.
 
 -}
 
@@ -41,7 +40,7 @@ eAcute =
     "\u{00E9}"
 
 
-{-| "<count> [<lengths>] [<code points of each>]" for a list of strings.
+{-| Shows the number of strings, their lengths and their code points.
 -}
 parts : List String -> String
 parts strs =
@@ -53,8 +52,8 @@ parts strs =
         ++ "]"
 
 
-{-| "<count> [<lengths>]". For matches that may be lone surrogates, whose code point Elm's JS
-`Char.toCode` gives as NaN (`cps` would then never finish).
+{-| Shows the number of strings and their lengths. It is used for matches that may be lone
+surrogates, whose code points are not printed.
 -}
 lengths : List String -> String
 lengths strs =
@@ -64,7 +63,7 @@ lengths strs =
         ++ "]"
 
 
-{-| "<count> [<code points of each>]", for parts whose lengths are not interesting.
+{-| Shows the number of strings and their code points.
 -}
 partsCps : List String -> String
 partsCps strs =

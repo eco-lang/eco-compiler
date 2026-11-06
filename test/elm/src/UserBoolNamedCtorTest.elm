@@ -1,18 +1,15 @@
 module UserBoolNamedCtorTest exposing (main)
 
-{-| A program's own constructors named `True` / `False` are ordinary
-constructors, not the built-in Bool singletons.
+{-| A custom type may name its own constructors `True` and `False`, and they behave
+as ordinary constructors, distinct from each other and from `Unknown`.
 
-`Compiler.Data.CtorTag.isEmbeddedConstantCtor` (used by
-`Compiler.Generate.MLIR.Patterns.testToTagInt`, `Functions.generateCtor` /
-`generateEnum` and the spec maps in `Backend.elm`) must recognise `True`,
-`False` and `Nothing` by home module (elm/core `Basics` / `Maybe`) as well as
-name. Matched by bare name, `Tri.True` and `Tri.False` both got the reserved
-constant tag in `eco.case` (tags [65533, 65533, 0] instead of [0, 1, 2]) and
-lowering failed with `'scf.index_switch' op has duplicate case value: 65533`.
+In this module the unqualified names `True` and `False` refer to the local type
+`Tri`, not to `Bool`. The test checks:
 
-(A program's own `Nothing` was matched by name too, but consistently: it was
-the shared empty constant and dispatched on the reserved tag, so it behaved.)
+  - `pick` maps `True`, `False` and `Unknown` to 1, 2 and 3.
+  - `name`, mapped over the list `[ True, False, Unknown ]`, gives
+    `["T","F","U"]`.
+
 -}
 
 -- CHECK: pickTrue: 1

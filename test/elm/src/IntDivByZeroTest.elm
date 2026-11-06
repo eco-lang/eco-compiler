@@ -1,6 +1,6 @@
 module IntDivByZeroTest exposing (main)
 
-{-| Test integer division by zero returns 0 (Elm semantics).
+{-| Checks that integer division `//` by zero gives 0, for a positive and for a negative dividend.
 -}
 
 -- CHECK: divZero1: 0

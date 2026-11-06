@@ -1,12 +1,11 @@
 module CharLiteralPatternMatchMinimalTest exposing (main)
 
-{-| Minimal isolation of the bug exposed by the C/D/E regression tests.
+{-| A Char literal pattern for the double quote `'"'` matches at increasing depths of nesting:
+bare, inside a tuple, inside a `Maybe`, and inside a `Maybe ( Char, String )`.
 
-Tests increasing pattern complexity:
-- bare Char literal
-- Char in tuple
-- Char in Maybe
-- Char in Maybe (Char, X) -- this is the shape from String.uncons
+The last two cases match on the result of `String.uncons "\"x"`, once with the literal
+pattern and once by binding the Char and comparing it with `==`. Every case should log `"y"`.
+
 -}
 
 -- CHECK: m1_bareChar: "y"

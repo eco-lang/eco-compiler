@@ -1,6 +1,13 @@
 module RoundtripStringTest exposing (main)
 
-{-| Roundtrip test for strings.
+{-| Strings survive an elm/bytes encode and decode when `Bytes.Decode.string` is given the string's length.
+
+The strings `""`, `"a"`, `"hello"` and `"Hello, World!"` are each round-tripped,
+and the program logs `True` only if all of them come back unchanged. The length
+passed to the decoder is `String.length`, which equals the UTF-8 byte count only
+because every test string is ASCII.
+
+Among what is not tested: non-ASCII text.
 -}
 
 -- CHECK: RoundtripStringTest: True

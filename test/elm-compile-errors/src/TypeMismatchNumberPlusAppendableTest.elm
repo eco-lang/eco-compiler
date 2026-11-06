@@ -1,9 +1,8 @@
 module TypeMismatchNumberPlusAppendableTest exposing (..)
 
-{-| TYPE MISMATCH: number plus appendable.
+{-| Appending to the result of an addition (`(a + 1) ++ b`) is rejected with a TYPE MISMATCH error.
 
-From `SourceIR.TypeCheckFailsCases` (`operatorCases`), the elm-test catalogue of programs
-the compiler must reject.
+`a + 1` must be a `number` and the left operand of `++` an `appendable`, and no type is both.
 
 -}
 

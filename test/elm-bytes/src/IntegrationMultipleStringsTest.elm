@@ -1,6 +1,10 @@
 module IntegrationMultipleStringsTest exposing (main)
 
-{-| Test encoding/decoding multiple length-prefixed strings.
+{-| Three strings, each prefixed by its length as one byte, are encoded one after another with elm/bytes and decoded back in order.
+
+The strings are `"Hi"`, `"World"` and `"!"`. The decoder combines three
+length-prefixed string decoders with `Bytes.Decode.map3`, and the program logs
+`True` only if the decoded list equals the original three strings in order.
 -}
 
 -- CHECK: IntegrationMultipleStringsTest: True

@@ -1,6 +1,8 @@
 module EncodeFloat32LETest exposing (main)
 
-{-| Test Bytes.Encode.float32 with LE endianness.
+{-| `Bytes.Encode.float32` with little-endian order writes 4 bytes.
+
+The test encodes `3.14159` and logs the width of the result.
 -}
 
 -- CHECK: EncodeFloat32LETest: 4

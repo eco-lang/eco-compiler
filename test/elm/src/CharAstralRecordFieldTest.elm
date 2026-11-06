@@ -1,8 +1,8 @@
 module CharAstralRecordFieldTest exposing (main)
 
-{-| An astral Char stored unboxed in a record field (slot kind 3, the code point
-zero-extended to the 64-bit slot, REP_HEAP_002) reads back as the same code
-point, next to an Int field, and through a record update.
+{-| An astral `Char` (code point above 0xFFFF) in a record field keeps its code
+point, next to an `Int` field and after a record update, and a record holding
+one is equal to a record literal with the same fields.
 -}
 
 -- CHECK: rec_c: 128512

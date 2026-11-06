@@ -1,7 +1,12 @@
 module WideRecordDecoder70Test exposing (main)
 
-{-| E9: a 70-field mixed record built with andMap: papCreate arity 70 (> 63) and
-field_count 70 (> 32).
+{-| A 70-field record alias, used as a constructor function, can be filled in one
+argument at a time by an `andMap` pipeline over `Maybe`.
+
+`andMap` is defined here and applies a `Just` function to a `Just` argument. The
+fields cycle through `Int`, `Float`, `Char`, `String` and `Bool`, and the test
+reads back fields 0, 19, 20, 24, 25, 31, 32, 33, 62, 63, 64 and 69.
+
 -}
 
 -- CHECK: f0000: Just 1000

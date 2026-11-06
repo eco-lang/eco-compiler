@@ -1,6 +1,6 @@
 module MaybeMapIntToBoolTest exposing (main)
 
-{-| Test Maybe.map with Int -> Bool mapping function.
+{-| `Maybe.map` with an Int -> Bool function produces a `Maybe Bool`: mapping `\x -> x > 0` over `Just 42` gives `Just True`.
 -}
 
 -- CHECK: result: Just True

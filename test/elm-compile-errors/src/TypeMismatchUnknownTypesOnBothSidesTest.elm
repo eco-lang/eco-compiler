@@ -1,9 +1,11 @@
 module TypeMismatchUnknownTypesOnBothSidesTest exposing (..)
 
-{-| TYPE MISMATCH: unknown types on both sides.
+{-| A list of pairs `( h, 1 )` and `( h, "a" )`, built inside a case on `[ 1, "a" ]`, is
+rejected with a TYPE MISMATCH error.
 
-From `SourceIR.TypeCheckFailsCases` (`problemCases`), the elm-test catalogue of programs
-the compiler must reject.
+The scrutinee already mixes a number with a `String`, so the type of `h` is unknown; it is
+the same on both sides, and the second components, a number and a `String`, also clash.
+The test checks only that a TYPE MISMATCH is reported.
 
 -}
 

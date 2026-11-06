@@ -1,10 +1,9 @@
 module TypeAliasCtorTest exposing (main)
 
-{-| Test using a type alias name as a record constructor.
+{-| Checks that the name of a record type alias can be used as a function that
+builds the record, taking the fields in the order the alias declares them.
 
-The monomorphizer must recognize alias-derived constructors (e.g. Style)
-that are not custom type constructors but record constructors generated
-from type aliases.
+`Style True 42` builds `{ bold = True, count = 42 }`, which `Debug.log` prints.
 
 -}
 

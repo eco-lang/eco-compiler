@@ -1,9 +1,8 @@
 module TypeMismatchStringLeftOfIntDivideTest exposing (..)
 
-{-| TYPE MISMATCH: String left of //.
+{-| A `String` as the left operand of `//` is rejected with a TYPE MISMATCH.
 
-From `SourceIR.TypeCheckFailsCases` (`operatorCases`), the elm-test catalogue of programs
-the compiler must reject.
+`"a" // 2`: integer division takes two `Int`s.
 
 -}
 

@@ -1,6 +1,10 @@
 module RoundtripFloat64Test exposing (main)
 
-{-| Roundtrip test for float64.
+{-| Floats survive a big-endian `float64` encode and decode with elm/bytes exactly.
+
+The values 0, 1, -1, 3.141592653589793 and the largest finite double,
+1.7976931348623157e308, are each round-tripped and compared with `==`. The
+program logs `True` only if all of them come back unchanged.
 -}
 
 -- CHECK: RoundtripFloat64Test: True

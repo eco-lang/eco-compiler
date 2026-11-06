@@ -1,8 +1,11 @@
 module DecodeArrayShapeTest exposing (main)
 
-{-| The value produced by `Json.Decode.array` must have the same runtime
-    shape as an `Array` built with `Array.fromList` or `Array.initialize`,
-    so that further Array operations (`length`, `get`, `==`) work on it.
+{-| `Json.Decode.array` produces an `Array` that `Array.length`, `Array.get` and `==` treat like
+the one it was encoded from.
+
+`Array.fromList [ 10, 20, 30 ]` is encoded with `Json.Encode.array`, decoded back with
+`Json.Decode.array Json.Decode.int`, and the result's length, its three elements and its
+equality with the original array are logged.
 -}
 
 -- CHECK: length: 3

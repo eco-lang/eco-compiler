@@ -1,6 +1,7 @@
 module TailRecFoldlCaseTest exposing (main)
 
-{-| Test hand-written tail-recursive foldl with case on list.
+{-| A hand-written left fold, defined as a self tail-recursive local function in `main`'s
+`let` and matching on the list with `case`, sums `[ 1, 2, 3 ]` to 6.
 -}
 
 -- CHECK: result: 6

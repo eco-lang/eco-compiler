@@ -1,9 +1,13 @@
 module EqualityBoolVarTest exposing (main)
 
-{-| Same 2x2 as EqualityBoolTest but operands flow through `let`-bound
-variables and a non-inlinable helper. If constant folding were ever to
-collapse literal `True == False` to `False` upstream of the kernel call,
-this form would still go through the runtime path.
+{-| `==` on `Bool` values gives the correct answer when the operands are
+variables or arguments rather than literals.
+
+The first four cases compare the `let`-bound variables `t` and `f`; the other
+four pass literals to `eqBool`, a top-level function that compares its two
+arguments with `==`. Each set covers all four combinations, and only equal
+operands give `True`.
+
 -}
 
 -- CHECK: vTT: True

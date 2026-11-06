@@ -1,6 +1,6 @@
 module BitwiseXorTest exposing (main)
 
-{-| Test Bitwise.xor.
+{-| `Bitwise.xor` gives the bitwise exclusive or of two Ints: 15 xor 8 is 7, 15 xor 16 is 31, and 15 xor 15 is 0.
 -}
 
 -- CHECK: xor1: 7

@@ -1,12 +1,12 @@
 module ErrorMessagesIssue103ImportedModuleWithoutModuleLineTest exposing (..)
 
-{-| MODULE NAME MISSING: an imported module has no `module` line.
+{-| Importing a module whose file has no `module` line is reported as MODULE NAME MISSING.
 
 <https://github.com/elm/error-message-catalog/issues/103>
 
-The imported file `ErrorMessagesIssue103NoModuleLineHelper.elm` has no `module` line. Elm 0.17
-assumed it was called `Main` and reported a name mismatch ("According to the source code it
-should be Main"). The report must say the module line is missing.
+The imported file `ErrorMessagesIssue103NoModuleLineHelper.elm` has no `module` line. The
+report must say the line is missing and suggest `module ErrorMessagesIssue103NoModuleLineHelper exposing (..)`.
+It must not assume the module is called `Main` and report a name mismatch ("should be Main").
 
 -}
 

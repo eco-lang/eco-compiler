@@ -1,11 +1,11 @@
 module ListToArrayFloatRoundtripTest exposing (main)
 
-{-| `List Float → Array Float → List Float` round-trip. Asserts the
-    reconstructed list equals the original literal.
+{-| Converting a `List Float` to an `Array` with `Array.fromList` and back with
+`Array.toList` returns a list equal to the original.
 
-    Exercises the unsafe kernel paths through `Array.fromList` and
-    `Array.toList` (which internally reach `JsArray.foldr` / `List.toArray`)
-    on unboxed `Float` heads.
+The list is `[ 1.5, 2.5, 3.5 ]`. The test logs the round-tripped list and
+whether it is `==` to the original.
+
 -}
 
 -- CHECK: result: [1.5,2.5,3.5]

@@ -1,7 +1,13 @@
 module IntModByTest exposing (main)
 
-{-| Test modBy with all sign combinations.
-    modBy always returns a non-negative result (floored division).
+{-| Checks that `modBy` with a positive modulus gives a non-negative result for a positive, a negative and a zero dividend.
+
+`modBy 4 -7` is 1, not -3: the result takes the sign of the modulus, as with
+floored division. The `mod3` and `mod4` lines repeat the arguments of `mod1` and
+`mod2`.
+
+Among what is not tested: a negative modulus, and `modBy 0`.
+
 -}
 
 -- CHECK: mod1: 3

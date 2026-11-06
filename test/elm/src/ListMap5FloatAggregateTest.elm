@@ -1,7 +1,7 @@
 module ListMap5FloatAggregateTest exposing (main)
 
-{-| `List.map5` on five `List Float`s. Same bug surface — five unboxed heads
-    re-boxed as `ElmInt` before the mapper.
+{-| `List.map5` on five `List Float`s passes the Float elements unchanged to the
+mapping function; the sum of 1 to 5 gives `[ 15.0 ]`.
 -}
 
 -- CHECK: result: [15]

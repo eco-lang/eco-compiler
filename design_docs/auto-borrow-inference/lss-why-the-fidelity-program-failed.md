@@ -195,7 +195,7 @@ has never been built.
 
 **Keep:**
 - **LSS_026(a), honest ∅-as-source, unconditional.** It fixes a *real
-  miscompile* (`test/elm/src/LssMixedSigHonestyTest.elm` printed
+  miscompile* (`test/eco-elm/src/LssMixedSigHonestyTest.elm` printed
   `[42,42,42]` for `[41,42,82]` at the shipping default). This alone
   justifies the plan.
 - The three pin files and the runtime fixture.

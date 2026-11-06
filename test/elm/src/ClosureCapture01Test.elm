@@ -1,11 +1,13 @@
 module ClosureCapture01Test exposing (main)
 
-{-| Test closure captures variable used only in single-ctor destruct.
+{-| A lambda returned from a function captures a single-constructor custom-type
+argument and unwraps it with `case` when called.
 
-Uses explicit lambda return (`f w = \dummy -> ...`) to force nested
-Function nodes in the TypedOpt AST. The inner lambda captures `w`,
-which appears only as the root of a destruct path (MonoRoot).
-This triggers the collectVarTypes traversal asymmetry bug.
+`unwrapLater` takes a `Wrapper Int` and returns a lambda that ignores its own
+argument and pattern matches on the captured wrapper. The wrapper is used only
+as the subject of that `case`. Applied to `Wrap 42` and `Wrap 99`, the lambdas
+return 42 and 99.
+
 -}
 
 -- CHECK: unwrap1: 42

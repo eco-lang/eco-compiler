@@ -1,6 +1,6 @@
 module CaseDeeplyNestedTest exposing (main)
 
-{-| Test deeply nested case expressions (3+ levels).
+{-| Case expressions on `Maybe` nested three levels deep reach the right innermost branch.
 -}
 
 -- CHECK: deep1: "all"

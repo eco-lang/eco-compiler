@@ -1,9 +1,10 @@
 module TypeMismatchUpdateOfANearFieldTest exposing (..)
 
-{-| TYPE MISMATCH: update of a near field.
+{-| A record update that sets a misspelt field, `cuont` on a record whose only field is
+`count`, is rejected with a TYPE MISMATCH error.
 
-From `SourceIR.TypeCheckFailsCases` (`contextCases`), the elm-test catalogue of programs
-the compiler must reject.
+A record update can only change fields the record already has, and `cuont` is not one of
+them.
 
 -}
 

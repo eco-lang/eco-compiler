@@ -1,6 +1,7 @@
 module ListConcatTest exposing (main)
 
-{-| Test List.concat and ++.
+{-| `++` and `List.concat` join lists in order, and appending to the empty list `[]`
+gives the other list.
 -}
 
 -- CHECK: append: [1,2,3,4]

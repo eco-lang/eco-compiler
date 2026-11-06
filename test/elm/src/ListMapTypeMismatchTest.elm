@@ -1,7 +1,7 @@
 module ListMapTypeMismatchTest exposing (main)
 
-{-| Test List.map with Int -> Bool mapping function.
-Same monomorphization issue as Maybe.map but for List.
+{-| Checks `List.map` with a function from `Int` to `Bool`, testing which elements
+of `[1, -1, 2]` are positive.
 -}
 
 -- CHECK: result: [True,False,True]

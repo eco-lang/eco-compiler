@@ -1,5 +1,8 @@
 module DecodeListTest exposing (main)
 
+{-| `Json.Decode.list` decodes a JSON array of numbers to a `List Int`.
+-}
+
 -- CHECK: decode_list: Ok [1,2,3]
 
 import Html exposing (text)

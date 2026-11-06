@@ -1,12 +1,15 @@
 module PapEtaCtorProbe exposing (main)
 
-{-| Coverage probe: top-level eta-reduced PAPs of a two-stage global
-(`bumpA = bumpWith (\st -> ...)`) stored inside a constructor, extracted,
-and applied — the record-update-callback shape AbiCloning's decline
-census uses. Written while hunting the escaped-taildef Char-capture ABI
-bug (see CharCaptureEscapedTailDefTest); this shape does NOT trigger it —
-kept because nothing else in the corpus pins ctor-stored point-free PAPs
-end-to-end.
+{-| Tests point-free top-level functions defined by partially applying a
+two-argument function, stored in a constructor, pattern-matched back out
+and applied.
+
+`bumpA` and `bumpB` are `bumpWith` applied to a record-update lambda; each
+increments `shape` and one of `a` or `b`. `resolve` returns `Stamp n` for
+`n > 4`, else `Decline bumpA` for even `n` and `Decline bumpB` for odd `n`.
+Folding `step` over `[ 1, 2, 3, 4, 9 ]` applies `bumpB`, `bumpA`, `bumpB`,
+`bumpA`, then adds 9 to `depth`.
+
 -}
 
 import Html exposing (text)

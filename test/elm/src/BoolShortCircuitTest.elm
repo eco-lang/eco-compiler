@@ -1,12 +1,9 @@
 module BoolShortCircuitTest exposing (main)
 
-{-| Tests that `&&` and `||` short-circuit, per Elm semantics.
+{-| `&&` and `||` short-circuit: `False && x` and `True || x` never evaluate `x`.
 
-    If the native backend lowers these to a strict bitwise AND / OR (e.g.
-    `arith.andi` / `arith.ori`), the right-hand operand is always evaluated and
-    the test crashes via `stackBomb`. With correct short-circuit semantics, the
-    right-hand operand is never evaluated and both CHECK lines appear.
-
+The right operand calls a function that recurses without end, so the program
+only prints its two lines if that operand is skipped.
 -}
 
 -- CHECK: shortAnd: False
@@ -15,18 +12,14 @@ module BoolShortCircuitTest exposing (main)
 import Html exposing (text)
 
 
-{-| Non-tail-recursive stack bomb. Each call builds up a pending `1 +` frame on
-    the activation stack before the recursive call, so tail-call optimization
-    cannot flatten it into a loop. Invoking it is guaranteed to overflow.
+{-| Recurses without end; never called when the program is correct.
 -}
 stackBomb : Int -> Int
 stackBomb n =
     1 + stackBomb (n + 1)
 
 
-{-| Wraps `stackBomb` as a `Bool`-producing RHS for `&&` / `||`. Used only to
-    make the "never evaluate RHS" contract observable: if this function runs,
-    the process dies before any CHECK line is printed.
+{-| A Bool operand that calls `stackBomb`, so evaluating it never returns.
 -}
 shouldNotRun : () -> Bool
 shouldNotRun _ =

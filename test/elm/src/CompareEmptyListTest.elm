@@ -1,7 +1,11 @@
 module CompareEmptyListTest exposing (main)
 
-{-| `compare` on List values, including `[]` (Const_Nil). Same top-level
-early-return path as empty strings. Regression guard.
+{-| `compare` on `List Int` values, including the empty list.
+
+The empty list is equal to itself and less than any non-empty list. Non-empty
+lists compare element by element, and when one is a prefix of the other the
+shorter list is less.
+
 -}
 
 -- CHECK: ee: EQ

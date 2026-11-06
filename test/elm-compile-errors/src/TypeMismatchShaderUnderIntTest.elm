@@ -1,9 +1,8 @@
 module TypeMismatchShaderUnderIntTest exposing (..)
 
-{-| TYPE MISMATCH: shader under Int.
+{-| A GLSL shader literal annotated as `Int` is rejected with a TYPE MISMATCH.
 
-From `SourceIR.TypeCheckFailsCases` (`categoryCases`), the elm-test catalogue of programs
-the compiler must reject.
+`x : Int` is defined as `[glsl| void main () {} |]`, whose type is a `Shader`, not an `Int`.
 
 -}
 

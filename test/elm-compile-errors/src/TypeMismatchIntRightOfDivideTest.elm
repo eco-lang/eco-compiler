@@ -1,9 +1,9 @@
 module TypeMismatchIntRightOfDivideTest exposing (..)
 
-{-| TYPE MISMATCH: Int right of /.
+{-| Dividing by an `Int` with `/` is rejected with a TYPE MISMATCH.
 
-From `SourceIR.TypeCheckFailsCases` (`operatorCases`), the elm-test catalogue of programs
-the compiler must reject.
+`/` is `Float -> Float -> Float`, and Elm never converts an `Int` to a `Float`
+implicitly, so `2 / n` with `n : Int` must not compile.
 
 -}
 

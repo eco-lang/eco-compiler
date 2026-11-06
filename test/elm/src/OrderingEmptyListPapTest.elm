@@ -1,7 +1,11 @@
 module OrderingEmptyListPapTest exposing (main)
 
-{-| First-class `<`, `<=`, `>`, `>=`, `compare` partially applied with `[]`.
-Forces kernel symbols, no intrinsic shortcut.
+{-| The operators `<`, `<=`, `>` and `>=` and the function `compare`,
+partially applied to the empty list, work as function values passed to
+`List.map` over `[ [], [ 1 ], [ 1, 2 ] ]`.
+
+The empty list is equal to itself and less than any non-empty list.
+
 -}
 
 -- CHECK: ltEmpty: [False,True,True]

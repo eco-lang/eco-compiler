@@ -1,12 +1,8 @@
 module NonZeroArityRecursionTest exposing (main)
 
-{-| Negative control: ordinary recursive function (non-zero arity).
-
-    `countDown : Int -> Int` is a function, not a value. Its "construction"
-    is just installing the function symbol; the recursive call only happens
-    at invocation time. This must always work.
-
-    Expected: prints "countDown: 0" without crashing.
+{-| A self-recursive top-level function, `countDown : Int -> Int`, calls
+itself in tail position from 100 down to 0 and returns 0; the program logs
+`countDown: 0`.
 -}
 
 -- CHECK: countDown: 0

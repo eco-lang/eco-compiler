@@ -1,5 +1,11 @@
 module ParserTokenTest exposing (main)
 
+{-| Checks that `Parser.token` matches a prefix even when an identifier character follows.
+
+`token "let"` succeeds on `"letter"`. Compare `ParserKeywordTest`, where
+`keyword "let"` fails on the same input.
+-}
+
 -- CHECK: letter: True
 
 import Html exposing (text)

@@ -1,6 +1,6 @@
 module CharIsAlphaTest exposing (main)
 
-{-| Test Char.isAlpha.
+{-| `Char.isAlpha` is `True` for `'a'` and `'Z'` and `False` for `'0'` and a space.
 -}
 
 -- CHECK: alpha1: True

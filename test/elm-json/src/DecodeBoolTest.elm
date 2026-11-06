@@ -1,5 +1,8 @@
 module DecodeBoolTest exposing (main)
 
+{-| `Json.Decode.bool` decodes the JSON literals `true` and `false` to `True` and `False`.
+-}
+
 -- CHECK: decode_true: Ok True
 -- CHECK: decode_false: Ok False
 

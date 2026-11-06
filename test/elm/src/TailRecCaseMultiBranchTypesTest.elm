@@ -1,8 +1,12 @@
 module TailRecCaseMultiBranchTypesTest exposing (main)
 
-{-| Tail-recursive search with 4+ branches and nested string case.
-Outer case on constructor list pattern, inner string dispatch for endianness.
-Mimics Compiler.Generate.MLIR.BytesFusion.Reify.reifyEndianness.
+{-| A self tail-recursive search whose outer `case` has one branch per constructor of a
+custom type at the head of a list, with a nested `case` on a `String` inside one branch,
+finds the right element.
+
+`findEndianness` walks a list of `Expr`, counting positions from `idx`, and stops at the
+first `Var "LE"` or `Var "BE"`; every other element is skipped by a tail call. In
+`[ Lit 1, Call "foo" [], Var "LE", Var "other" ]` that is position 2.
 -}
 
 -- CHECK: result: "found LE at 2"

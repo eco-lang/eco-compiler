@@ -1,6 +1,6 @@
 module FloatAbsTest exposing (main)
 
-{-| Test float absolute value.
+{-| `abs` on a positive, a negative and a zero `Float`.
 -}
 
 -- CHECK: abs1: 3.14

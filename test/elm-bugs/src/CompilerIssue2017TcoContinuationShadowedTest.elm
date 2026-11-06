@@ -1,12 +1,12 @@
 module CompilerIssue2017TcoContinuationShadowedTest exposing (main)
 
-{-| A continuation passed through a tail call captures the reassigned argument and calls itself.
+{-| A lambda passed in a self tail call must call the original continuation, not itself.
 
 <https://github.com/elm/compiler/issues/2017>
 
-In Elm 0.19.1 the TCO loop reassigns `continuation`, so the closure
-`\newValue -> continuation newValue` ends up calling itself: the program overflows the stack.
-It should call the original continuation and return 1.
+Elm 0.19.1 compiles the tail call to a loop that reassigns `continuation`, so the lambda
+`\newValue -> continuation (newValue + 1)` ends up calling itself and the program overflows the
+stack. `windDown 1 identity` should call `identity 1` and return 1.
 
 -}
 

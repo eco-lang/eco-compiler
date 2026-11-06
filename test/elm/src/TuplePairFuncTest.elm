@@ -1,6 +1,6 @@
 module TuplePairFuncTest exposing (main)
 
-{-| Test Tuple.pair function.
+{-| `Tuple.pair` builds a pair from two `Int` arguments and from two `String` arguments.
 -}
 
 -- CHECK: pair1: (1,2)

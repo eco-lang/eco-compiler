@@ -1,10 +1,12 @@
 module CompilerIssue2295LambdaLetAnnotationCrashTest exposing (main)
 
-{-| In a lambda, a let annotation with a fresh type variable for a lambda argument crashes the compiler.
+{-| The compiler reports a TYPE MISMATCH for a let annotation `b : b` whose value is a lambda argument.
 
 <https://github.com/elm/compiler/issues/2295>
 
-`b : b` claims `b` is any type, but its body is the lambda argument `a`: a TYPE MISMATCH, which Elm 0.19.1 reports when `a` is a named argument of `test`. With a lambda it crashes ("b [rank = 2]", Type/Solve.hs:206, "thread blocked indefinitely in an MVar operation").
+`b : b` claims `b` can be any type, but its value is the argument `a` of the lambda that defines
+`test`. Elm 0.19.1 crashes instead ("b [rank = 2]", Type/Solve.hs:206, "thread blocked
+indefinitely in an MVar operation").
 
 -}
 

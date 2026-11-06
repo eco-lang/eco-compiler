@@ -1,5 +1,8 @@
 module DecodeIndexTest exposing (main)
 
+{-| `Json.Decode.index 1` decodes the second element of a JSON array.
+-}
+
 -- CHECK: decode_index: Ok "world"
 
 import Html exposing (text)

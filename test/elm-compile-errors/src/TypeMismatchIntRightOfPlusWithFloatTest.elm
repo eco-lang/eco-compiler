@@ -1,9 +1,9 @@
 module TypeMismatchIntRightOfPlusWithFloatTest exposing (..)
 
-{-| TYPE MISMATCH: Int right of + with Float.
+{-| Adding an `Int` to a `Float` with `+` is rejected with a TYPE MISMATCH.
 
-From `SourceIR.TypeCheckFailsCases` (`operatorCases`), the elm-test catalogue of programs
-the compiler must reject.
+`+` takes two operands of the same `number` type. In `f + n` the left side is
+`f : Float` and the right side `n : Int`; Elm does not convert between them.
 
 -}
 

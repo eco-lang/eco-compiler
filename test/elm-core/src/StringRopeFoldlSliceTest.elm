@@ -1,8 +1,11 @@
 module StringRopeFoldlSliceTest exposing (main)
 
-{-| G3/E15: fold and reverse over a rope, asserting content. big is a 40000-char
-rope of ASCII (per-code-unit == per-code-point, so foldl counts 40000). reverse of
-a string ending "...abcdefghij" begins "jihgfedcba".
+{-| Checks `String.foldl` and `String.reverse` over a 40000-character string built by 400 successive appends.
+
+Each append adds `"abcdefghij"` repeated 10 times. Counting characters with
+`String.foldl` must give 40000, and the reversed string must begin with
+`"jihgfedcba"`.
+
 -}
 
 -- CHECK: rope_count: 40000

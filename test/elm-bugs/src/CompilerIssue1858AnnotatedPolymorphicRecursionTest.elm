@@ -5,7 +5,7 @@ module CompilerIssue1858AnnotatedPolymorphicRecursionTest exposing (..)
 <https://github.com/elm/compiler/issues/1858>
 
 `bVals : Silly a b -> Maybe b` is annotated, so the recursive call `bVals nested` at
-`Silly Int b` is well-typed (polymorphic recursion with an annotation; Elm 0.18 accepted it).
+`Silly Int b` is well-typed (polymorphic recursion, allowed because of the annotation).
 Elm 0.19.1 reports a type mismatch saying it needs `Silly a b`.
 
 -}

@@ -1,6 +1,6 @@
 module StringEmptyTest exposing (main)
 
-{-| Test empty string.
+{-| The empty string literal prints as `""` and `String.isEmpty ""` is `True`.
 -}
 
 -- CHECK: empty: ""

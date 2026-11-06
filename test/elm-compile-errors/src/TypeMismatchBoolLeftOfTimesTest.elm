@@ -1,9 +1,8 @@
 module TypeMismatchBoolLeftOfTimesTest exposing (..)
 
-{-| TYPE MISMATCH: Bool left of *.
+{-| A `Bool` on the left of `*` is rejected with a TYPE MISMATCH.
 
-From `SourceIR.TypeCheckFailsCases` (`operatorCases`), the elm-test catalogue of programs
-the compiler must reject.
+`x = True * 2`: `*` needs numbers, and `True` is a `Bool`.
 
 -}
 

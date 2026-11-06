@@ -1,11 +1,11 @@
 module StringMagicPrefixTest exposing (main)
 
-{-| Test that string literals matching internal bytecode magic prefixes
-are encoded and decoded correctly as actual strings, not as MLIR locations.
+{-| String literals whose contents look like internal marker text, such as
+`"__mlir_unknown_loc__"`, `"__mlir_loc__:foo:1:2"` and `"loc:unknown"`, are ordinary
+strings and are printed exactly as written.
 
-Regression test for: bytecode encoder conflating StringAttr values
-containing "__mlir_unknown_loc__" or "__mlir_loc__:" with location attrs.
-
+A compiler that uses text of this kind as a marker in its own output must still treat
+these literals as plain string data.
 -}
 
 -- CHECK: s1: "__mlir_unknown_loc__"

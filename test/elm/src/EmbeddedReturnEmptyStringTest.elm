@@ -1,6 +1,11 @@
 module EmbeddedReturnEmptyStringTest exposing (main)
 
-{-| Test a function that returns empty string, consumed via String.uncons.
+{-| `String.uncons` returns `Just` the first character and the rest of a
+non-empty string, and `Nothing` for the empty string.
+
+The test logs `String.uncons "hello"`, which is `Just ('h',"ello")`, and
+`String.uncons ""`, which is `Nothing`.
+
 -}
 
 -- CHECK: r1: Just ('h',"ello")

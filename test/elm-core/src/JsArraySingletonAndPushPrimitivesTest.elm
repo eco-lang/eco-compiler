@@ -1,8 +1,9 @@
 module JsArraySingletonAndPushPrimitivesTest exposing (main)
 
-{-| `Array.repeat 1 v` routes through `JsArray.singleton` and `Array.push`
-    routes through `JsArray.push`. Each primitive element type lands on the
-    matching per-instance variant (`_Int` / `_Float` / `_Char`).
+{-| `Array.repeat 1` and `Array.push` work on arrays of `Int`, `Float` and `Char`.
+
+For each element type, `Array.repeat 1` makes a one-element array and `Array.push` adds an element to the end of a small array built with `Array.fromList`. Each result is printed through `Array.toList`.
+
 -}
 
 -- CHECK: int_singleton: [42]

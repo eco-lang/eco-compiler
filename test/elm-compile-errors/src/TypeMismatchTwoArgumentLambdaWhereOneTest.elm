@@ -1,9 +1,8 @@
 module TypeMismatchTwoArgumentLambdaWhereOneTest exposing (..)
 
-{-| TYPE MISMATCH: two-argument lambda where one.
+{-| A two-argument lambda annotated as `Int -> Int` is rejected with a TYPE MISMATCH.
 
-From `SourceIR.TypeCheckFailsCases` (`problemCases`), the elm-test catalogue of programs
-the compiler must reject.
+`f = \a b -> a` returns a function after its first argument, but the annotation promises an `Int`.
 
 -}
 

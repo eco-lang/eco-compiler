@@ -1,6 +1,6 @@
 module RecordUpdateTest exposing (main)
 
-{-| Test record update syntax.
+{-| Record update syntax produces a new record with one field changed and leaves the original unchanged.
 -}
 
 -- CHECK: updated: { x = 10, y = 2 }

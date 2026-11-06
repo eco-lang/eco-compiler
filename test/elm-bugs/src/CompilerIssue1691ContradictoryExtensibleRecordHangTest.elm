@@ -1,11 +1,13 @@
 module CompilerIssue1691ContradictoryExtensibleRecordHangTest exposing (main)
 
-{-| A contradictory extensible-record annotation, used point-free.
+{-| A point-free definition whose extensible-record annotations contradict each other is rejected with a type error.
 
 <https://github.com/elm/compiler/issues/1691>
 
-The program is ill-typed, so it must be rejected with a type error. Elm 0.19.1 instead hangs while
-its memory grows without bound (the runner kills it at its compile memory limit), or crashes.
+`combineAB` passes `Just` where `combineMaybeAB` needs a function from `PartialRecordA a` to
+`Maybe (PartialRecordB a)`, which would make `a` contain itself.
+
+Elm 0.19.1 hangs on it, its memory growing without bound, instead of reporting the error.
 
 -}
 

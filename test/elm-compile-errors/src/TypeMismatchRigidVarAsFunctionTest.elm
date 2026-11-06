@@ -1,9 +1,8 @@
 module TypeMismatchRigidVarAsFunctionTest exposing (..)
 
-{-| TYPE MISMATCH: rigid var as function.
+{-| Returning a lambda where the annotation promises a type variable `a` is rejected with a TYPE MISMATCH.
 
-From `SourceIR.TypeCheckFailsCases` (`rigidCases`), the elm-test catalogue of programs
-the compiler must reject.
+`f : a -> a` with `f x = \y -> y`: the caller chooses `a`, so it cannot be fixed to a function type.
 
 -}
 

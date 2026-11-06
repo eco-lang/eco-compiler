@@ -1,12 +1,17 @@
 module StringCaseTest exposing (main)
 
-{-| String.toUpper/toLower where eco and Elm on JS agree: titlecase, astral letters, mixed
-scripts, and capital sigmas that are not word-final. Also Elm's equivalence
-`String.fromList (List.map Char.toUpper (String.toList s)) == String.toUpper s`, and the same
-for toLower when `s` has no capital sigma. The inputs with a multi-code-point full mapping or a
-word-final sigma (Final_Sigma), where eco's simple case mapping differs on purpose, are in
-CaseMappingDivergenceTest (plans/char-simple-case-mapping.md). Expectations recorded from Elm
-(run-js-e2e.js --record).
+{-| `String.toUpper` and `String.toLower` map titlecase letters, letters outside the Basic
+Multilingual Plane, mixed scripts and some capital sigmas one code point to one.
+
+The inputs are "ǅemal" (titlecase U+01C5), two Deseret letters, a mix of Latin, Cyrillic, CJK and
+an emoji, and capital sigma (U+03A3) alone or after a letter, digit or modifier letter, where it
+lower-cases to σ (U+03C3). Results are shown as hexadecimal code points. For the first three
+inputs the test also checks that mapping `Char.toUpper` or `Char.toLower` over the characters
+gives the same string as `String.toUpper` or `String.toLower`.
+
+Among what is not tested: characters whose case mapping is more than one code point, and a sigma
+that lower-cases to final sigma (U+03C2).
+
 -}
 
 -- CHECK: dz emal up: "1C4 45 4D 41 4C"
@@ -69,11 +74,16 @@ caseEntries ( name, s ) =
     ]
 
 
+{-| Applies `f` to each character of `s` and rebuilds the string.
+-}
 viaChars : (Char -> Char) -> String -> String
 viaChars f s =
     String.fromList (List.map f (String.toList s))
 
 
+{-| Returns the checks that `Char`-by-`Char` case mapping matches `String.toUpper`, and
+`String.toLower` too when `s` contains no capital sigma.
+-}
 equivEntries : ( String, String ) -> List ( String, String )
 equivEntries ( name, s ) =
     ( name ++ " equivUp", bool (viaChars Char.toUpper s == String.toUpper s) )

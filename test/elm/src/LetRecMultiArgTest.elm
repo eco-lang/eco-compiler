@@ -1,6 +1,7 @@
 module LetRecMultiArgTest exposing (main)
 
-{-| Test recursive let-bound function with multiple args.
+{-| A recursive two-argument function defined in a `let` block calls itself with
+both arguments changed; `f 1 1` logs `result: 2`.
 -}
 
 -- CHECK: result: 2

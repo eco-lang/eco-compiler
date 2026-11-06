@@ -1,9 +1,8 @@
 module FloatMathSin2PlusCos21Test exposing (..)
 
-{-| sin^2 + cos^2 = 1.
+{-| `sin 1 * sin 1 + cos 1 * cos 1` prints as exactly 1.
 
-From `SourceIR.FloatMathCases`, a program of the elm-test catalogue, with a
-`main` that logs its `testValue`. The CHECK lines are what Elm 0.19.1 prints for it.
+The sum is computed by a top-level function, `pythagorean`, applied to 1.
 
 -}
 

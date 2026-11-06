@@ -1,9 +1,12 @@
 module CompareNestedEmptyListTest exposing (main)
 
-{-| F2 inside `Tag_Cons` heads: comparing `List (List Int)` where some
-inner lists are `[]` reaches `compareUnboxableSlot` on the head field of
-the outer Cons (same path as tuple-field compare). Expected to FAIL
-today: `compare [[]] [[1]]` returns GT instead of LT.
+{-| `compare` on `List (List Int)` values where some inner lists are empty.
+
+The outer lists compare element by element, so each inner list is itself
+compared as a list: `[ [] ]` is less than `[ [ 1 ] ]`, and an empty inner list
+in the middle position decides the result when the elements before it are
+equal.
+
 -}
 
 -- CHECK: ee: EQ

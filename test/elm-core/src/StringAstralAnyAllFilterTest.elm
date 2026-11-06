@@ -1,9 +1,20 @@
 module StringAstralAnyAllFilterTest exposing (main)
 
-{-| String.any, String.all, String.filter and String.foldr see one Char per code
-point, as in Elm (Char is a Unicode code point in i32): a predicate on the
-whole emoji matches it, and no predicate ever sees a surrogate half. filter
-writes a kept astral Char back as a surrogate pair.
+{-| `String.any`, `String.all`, `String.filter` and `String.foldr` see a
+character outside the Basic Multilingual Plane, such as an emoji, as one
+`Char`.
+
+Such a character has a code point above `0xFFFF` and takes two UTF-16 units,
+a surrogate pair, in a string. The test establishes:
+
+  - `any` finds 😀 by its code point in `"a😀b"`, and no character of
+    `"a😀b𝄞"` has a surrogate code point;
+  - `all` with a code-point-above-`0xFFFF` predicate is `True` for `"😀𝄞😀"`
+    and `False` for `"😀a"`;
+  - `filter` keeping those characters of `"a😀b𝄞c"` gives `"😀𝄞"`, whose
+    `String.length` is 4, and dropping them gives `"abc"`;
+  - `foldr String.cons ""` rebuilds `"x😀y𝄞"` unchanged.
+
 -}
 
 -- CHECK: any_emoji: True

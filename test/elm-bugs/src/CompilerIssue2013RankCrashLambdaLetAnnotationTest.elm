@@ -1,11 +1,11 @@
 module CompilerIssue2013RankCrashLambdaLetAnnotationTest exposing (..)
 
-{-| A let annotation `b : h` in a piped lambda crashes the compiler with `[rank = 1]`.
+{-| A let annotation `b : h` in a piped lambda crashes the compiler.
 
 <https://github.com/elm/compiler/issues/2013>
 
-`t` is not polymorphic, so `b : h` is too general. Elm 0.19.1 crashes ("You ran into a compiler
-bug"); it should report a type error.
+`t` is the lambda's argument, not a polymorphic value, so `b : h` is too general. Elm 0.19.1
+crashes ("You ran into a compiler bug"); it should report a type error.
 
 -}
 

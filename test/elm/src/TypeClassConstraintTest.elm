@@ -1,6 +1,15 @@
 module TypeClassConstraintTest exposing (main)
 
-{-| Test number, comparable, and appendable type-class constraints. -}
+{-| Checks functions whose types use the constrained type variables `number`,
+`comparable` and `appendable`.
+
+`zabs` is applied to an `Int` (`-5` gives `5`) and a `Float` (`-3.14` gives
+`3.14`), `zmin` to two `Int`s, and `zconcat` to two `String`s.
+
+Among what is not tested: `zmin` on non-`Int` comparables, and `zconcat` on
+lists.
+
+-}
 
 -- CHECK: absInt: 5
 -- CHECK: absFloat: 3.14

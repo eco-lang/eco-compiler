@@ -1,8 +1,11 @@
 module CaseSharedBranchTest exposing (main)
 
-{-| Outer case on constructor with nested case on String inside a branch.
-The nested string case forces eco.case to survive EcoControlFlowToSCF,
-reaching CaseOpLowering in EcoToLLVM where Bug 1 triggers.
+{-| Checks a `case` on a custom type whose first branch holds a nested `case` on
+the constructor's `String` argument.
+
+The calls cover both string literals (`"hello"`, `"bye"`), the string wildcard,
+and the other constructor, `Fixed`.
+
 -}
 
 -- CHECK: r1: "greeting"

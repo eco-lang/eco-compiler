@@ -1,5 +1,8 @@
 module StringFromIntFloatTest exposing (main)
 
+{-| Checks `String.fromInt`, `String.fromFloat` and `String.fromChar` on one value each: `42`, `3.14` and `'A'`.
+-}
+
 -- CHECK: fromInt1: "42"
 -- CHECK: fromFloat1: "3.14"
 -- CHECK: fromChar1: "A"

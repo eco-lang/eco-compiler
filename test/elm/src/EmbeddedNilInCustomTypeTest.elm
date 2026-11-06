@@ -1,6 +1,7 @@
 module EmbeddedNilInCustomTypeTest exposing (main)
 
-{-| Test empty list stored in a custom type, extracted, and checked.
+{-| An empty list stored in a custom type constructor and taken back out by a
+`case` is still empty, with length 0.
 -}
 
 -- CHECK: isEmpty: True

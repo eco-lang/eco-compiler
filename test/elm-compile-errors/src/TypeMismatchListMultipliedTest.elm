@@ -1,9 +1,9 @@
 module TypeMismatchListMultipliedTest exposing (..)
 
-{-| TYPE MISMATCH: list multiplied.
+{-| Multiplying a list with `*` is rejected with a TYPE MISMATCH.
 
-From `SourceIR.TypeCheckFailsCases` (`operatorCases`), the elm-test catalogue of programs
-the compiler must reject.
+`*` needs `number` operands (`Int` or `Float`), and `[ 1 ] * 2` puts a list on the
+left.
 
 -}
 

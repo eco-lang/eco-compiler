@@ -1,9 +1,10 @@
 module PolyEscapePolymorphicFunctionExtractedFromTupleTest exposing (..)
 
-{-| Polymorphic function extracted from tuple.
+{-| A function stored in a tuple and taken out again by a let-bound pattern-matching
+helper can be applied: `first ( id, 0 ) 42` evaluates to 42.
 
-From `SourceIR.PolyEscapeCases`, a program of the elm-test catalogue, with a
-`main` that logs its `testValue`. The CHECK lines are what Elm 0.19.1 prints for it.
+`id` and `first` are unannotated local functions; `first` returns the first
+component of a pair, here the function `id`, which is then applied to 42.
 
 -}
 

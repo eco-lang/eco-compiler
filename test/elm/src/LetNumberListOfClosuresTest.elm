@@ -1,8 +1,10 @@
 module LetNumberListOfClosuresTest exposing (main)
 
-{-| Probe: a `number` captured by closures stored in a LIST, each applied at
-`Float`. Both closures force the captured `n` to `Float`. Correct: with input
-1.0, [1.0*30, 1.0+30] = [30, 31].
+{-| A let-bound `number` captured by two anonymous functions stored in a list,
+each applied to a `Float`, is a `Float`.
+
+With `n = 30`, `fns = [ \x -> x * n, \x -> x + n ]`, and applying each to 1.0
+gives `[30,31]`.
 
 -}
 

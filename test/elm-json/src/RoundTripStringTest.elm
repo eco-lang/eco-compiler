@@ -1,5 +1,8 @@
 module RoundTripStringTest exposing (main)
 
+{-| The string "hello" encoded with `Json.Encode.string` decodes back to "hello" with `Json.Decode.string`.
+-}
+
 -- CHECK: rt_string: Ok "hello"
 
 import Html exposing (text)

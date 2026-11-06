@@ -1,6 +1,6 @@
 module BitwiseShiftRightZfTest exposing (main)
 
-{-| Test Bitwise.shiftRightZfBy (logical shift).
+{-| `Bitwise.shiftRightZfBy` shifts a positive Int right, filling with zeros: 16 shifted by 4 is 1 and by 1 is 8.
 -}
 
 -- CHECK: shrz1: 1

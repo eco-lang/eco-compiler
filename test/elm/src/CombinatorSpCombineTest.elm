@@ -1,6 +1,6 @@
 module CombinatorSpCombineTest exposing (main)
 
-{-| SP combinator: (inc x) * (double x) on 6 = 84
+{-| The SP combinator, which applies two functions to the same argument and combines the results: `sp mul inc double 6` is `inc 6 * double 6`, which is 84.
 -}
 
 -- CHECK: result: 84

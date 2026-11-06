@@ -1,6 +1,6 @@
 module CharToLowerTest exposing (main)
 
-{-| Test Char.toLower.
+{-| `Char.toLower` maps `'A'` to `'a'` and `'Z'` to `'z'`, and leaves `'0'` unchanged.
 -}
 
 -- CHECK: lower1: 'a'

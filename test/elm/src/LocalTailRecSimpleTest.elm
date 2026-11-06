@@ -1,6 +1,7 @@
 module LocalTailRecSimpleTest exposing (main)
 
-{-| Test a simple local tail-recursive function (MonoTailDef in a let binding).
+{-| An annotated let-bound tail-recursive function with an accumulator computes
+the sum 1 + 2 + ... + 10 = 55.
 -}
 
 -- CHECK: result: 55

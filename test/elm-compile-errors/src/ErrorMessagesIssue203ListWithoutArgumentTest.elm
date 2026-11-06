@@ -1,12 +1,11 @@
 module ErrorMessagesIssue203ListWithoutArgumentTest exposing (..)
 
-{-| TOO FEW ARGS: `List` used in a type annotation without its argument.
+{-| `List` used without its type argument in an annotation is reported as TOO FEW ARGS.
 
 <https://github.com/elm/error-message-catalog/issues/203>
 
-With `foo : List -> List` and a body using `++`, Elm 0.18 crashed while printing the report
-("type applications should start with a type atom"). The report must say `List` needs an
-argument.
+The annotation is `foo : List -> List`, and the body appends two lists with `++`. The report
+must say that `List` needs 1 argument and got 0, and must not mention a "type atom".
 
 -}
 

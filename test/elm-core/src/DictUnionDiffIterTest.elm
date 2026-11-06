@@ -1,9 +1,8 @@
 module DictUnionDiffIterTest exposing (main)
 
-{-| Repeated `Dict.union` / `Dict.diff` over disjoint dictionaries must
-    not crash and must keep returning the expected sizes. Scaled-down
-    regression for a SIGSEGV observed in the stress suite
-    (DictUnionDiff).
+{-| `Dict.union` and `Dict.diff` on two disjoint `Dict Int Int` values give the expected sizes when repeated 50 times.
+
+`left` holds keys 1 to 100 and `right` keys 101 to 200. On each iteration the test checks that their union has 200 entries and that removing `right`'s keys from the union leaves 100. The logged `True` means every iteration passed.
 -}
 
 -- CHECK: done: True

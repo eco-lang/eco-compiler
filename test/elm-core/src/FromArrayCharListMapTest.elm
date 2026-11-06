@@ -1,8 +1,8 @@
 module FromArrayCharListMapTest exposing (main)
 
-{-| Array.fromList → Array.toList → List.map Char.toUpper. Verifies that
-    Char element codes survive the Array → List conversion intact so that
-    `Char.toUpper` receives proper Char values rather than re-boxed Ints.
+{-| `List.map Char.toUpper` works on a `List Char` taken out of an `Array` with `Array.toList`.
+
+`['a', 'b']` goes through `Array.fromList` and `Array.toList` and is upper-cased to `['A', 'B']`.
 -}
 
 -- CHECK: result: ['A','B']

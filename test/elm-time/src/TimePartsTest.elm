@@ -1,5 +1,8 @@
 module TimePartsTest exposing (main)
 
+{-| `Time.toHour`, `Time.toMinute` and `Time.toSecond` in `Time.utc` give 0, 0 and 0 for the Unix epoch.
+-}
+
 -- CHECK: hour: 0
 -- CHECK: minute: 0
 -- CHECK: second: 0

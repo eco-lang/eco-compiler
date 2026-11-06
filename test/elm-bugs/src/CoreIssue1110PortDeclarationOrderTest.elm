@@ -1,15 +1,14 @@
 port module CoreIssue1110PortDeclarationOrderTest exposing (main)
 
-{-| The order of port declarations in the generated JavaScript decides whether a subscription
-returned together with a command sees that command's synchronous reply.
+{-| A subscription returned together with a port command is active in time to receive that command's synchronous reply.
 
 <https://github.com/elm/core/issues/1110>
 
-`update` returns `echoOut "hello"` and a model whose `subscriptions` are `echoIn Got`. The host
-(the test runner) answers every `echoOut` value synchronously through `echoIn`. Only because the
-subscriptions function is named `zsubscriptions` (sorting after `update`), Elm 0.19.1 registers the effect manager of `echoOut` first and dispatches the command
-before the new subscription is in place, so the reply is dropped and `Got` never arrives.
-Subscriptions returned together with a command must be active when the command runs.
+On `Start`, `update` returns `echoOut "hello"` and a model for which `zsubscriptions` returns
+`echoIn Got`. The test's host answers each `echoOut` value synchronously on `echoIn`, so `Got
+"hello"` should arrive. In Elm 0.19.1 the outcome depends on declaration order: with the
+subscriptions function named so that it sorts after `update`, the command is dispatched before the
+new subscription is in place and the reply is dropped.
 
 -}
 

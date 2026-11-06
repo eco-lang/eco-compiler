@@ -1,5 +1,12 @@
 module ParserPositionTest exposing (main)
 
+{-| Checks the position queries `getPosition`, `getRow`, `getCol`, `getOffset` and `getSource`.
+
+After three characters of `"abcdef"` are consumed, the position is row 1,
+column 4 (both 1-based), and the offset is 3 (0-based). `getSource` returns
+the whole input, `"abcdef"`.
+-}
+
 -- CHECK: pos: Ok (1,4)
 -- CHECK: row: Ok 1
 -- CHECK: col: Ok 4
@@ -10,6 +17,8 @@ import Html exposing (text)
 import Parser exposing ((|.), (|=))
 
 
+{-| Consumes any three characters, then runs the given parser.
+-}
 after3 : Parser.Parser a -> Parser.Parser a
 after3 innerP =
     Parser.succeed identity

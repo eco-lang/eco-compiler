@@ -1,6 +1,6 @@
 module RecursiveListLengthTest exposing (main)
 
-{-| Test recursive list traversal.
+{-| A self-recursive function that pattern matches on `[]` and `_ :: rest` counts the elements of lists of length 0, 3 and 5.
 -}
 
 -- CHECK: len0: 0

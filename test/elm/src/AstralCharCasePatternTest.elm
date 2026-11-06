@@ -1,16 +1,12 @@
 module AstralCharCasePatternTest exposing (main)
 
-{-| A Char case pattern above U+FFFF (`'\u{1F600}'`) is decoded by
-`Compiler.Generate.MLIR.Patterns.decodeChrPatternCode`, which combines the
-parser's surrogate-pair escape into the code point, so the `eco.case` tag is
-128512, the same value `Char.fromCode 0x1F600` and the literal produce (Char is
-a Unicode code point in i32, CGEN_015). Before the fix the decoder folded every
-hex digit into one number (928736402944 = 0xD83D00DE00), so the astral branch
-could never match. Also covered by the unit test
-compiler/tests/Compiler/Generate/MLIR/PatternsAstralCharTest.elm.
+{-| A `case` on a `Char` matches a pattern above U+FFFF, `'\u{1F600}'`, against the same character built by `Char.fromCode` or written as a literal.
 
-BMP patterns must still classify. U+DE00 (a lone low surrogate, which
-`Char.fromCode` passes through) is a different Char and must not match.
+A pattern in the Basic Multilingual Plane, `'\u{20AC}'`, still matches, and
+`'a'` falls through to the wildcard. `Char.fromCode 0xDE00` is the low
+surrogate of U+1F600 on its own; it is a different `Char` and does not match
+the U+1F600 pattern.
+
 -}
 
 -- CHECK: a: "other"

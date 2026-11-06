@@ -1,7 +1,8 @@
 module LetNumberRecordDestructureTest exposing (main)
 
-{-| Probe: `number` fields bound by a record DESTRUCTURE pattern (`{ lo, hi } = …`)
-rather than `.field` access, both used at `Float`. Correct: 30*1.5 + 40*1.5 = 105.
+{-| Integer-literal record fields bound by a let destructuring pattern are used as
+`Float`s: `{ lo, hi } = { lo = 30, hi = 40 }` followed by
+`round (lo * 1.5) + round (hi * 1.5)` logs 105.
 -}
 
 -- CHECK: recdestr: 105

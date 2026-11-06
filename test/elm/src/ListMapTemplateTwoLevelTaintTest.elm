@@ -1,19 +1,17 @@
 module ListMapTemplateTwoLevelTaintTest exposing (main)
 
-{-| The TWO-LEVEL canary for the `List.map` template licence
-(`plans/list-map-mlir-template.md`, F-3/F-4 joint-architecture section).
+{-| Checks that `List.map` applies its callback to the elements from last to
+first when the callback passes a logging sorter to a top-level function that
+applies it.
 
-Shape: `\x -> hof sorter x` where `hof h v = h v` is ctor-free (so
-`CsePurity` puts its spec IN `safeSpecs` — it treats the local callee `h`
-as inert) and `sorter` launders `Debug` through a kernel HOF's argument
-position.
-
-The callee is a clean global; the poison rides in through `sorter`, an
-ARGUMENT. This pins that the member table's ARG-EDGES propagate: asking the
-table about `sorter` must return the poison its body earned, not `Clean`.
-
-Same `[1, 1]` / `[2, 2]` construction as the other taint canaries. Expected
-order is foldr's right-to-left.
+elm/core defines `List.map` with `List.foldr`, which, on a list this short,
+applies the callback to the last element first. The callback is
+`\x -> hof sorter x`, where `hof h v` is `h v` and `sorter` sorts with a
+comparator that logs its first argument. The inner lists are `[1, 1]` and
+`[2, 2]`, so the number logged names the list being sorted whichever way the
+comparator's arguments are ordered: the expected output is the log for
+`[2, 2]` immediately followed by the log for `[1, 1]`, then the unchanged
+sorted lists.
 
 -}
 
@@ -33,7 +31,7 @@ loggingCompare a b =
     compare a b
 
 
-{-| Ctor-free and `Debug`-free by inspection: `CsePurity` admits this spec.
+{-| Applies `h` to `v`.
 -}
 hof : (List Int -> List Int) -> List Int -> List Int
 hof h v =

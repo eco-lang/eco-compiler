@@ -1,5 +1,11 @@
 module ParserChompIfTest exposing (main)
 
+{-| `Parser.chompIf` succeeds when the predicate accepts the next character and fails when it does not.
+
+With `Char.isDigit` as the predicate, `digit_ok` runs on `"5"` and checks for
+`Ok`; `alpha_fail` runs on `"a"` and checks for `Err`.
+-}
+
 -- CHECK: digit_ok: True
 -- CHECK: alpha_fail: True
 

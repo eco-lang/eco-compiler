@@ -1,6 +1,9 @@
 module FloatInfinityTest exposing (main)
 
-{-| Test infinity behavior.
+{-| `isInfinite` is True for positive and negative infinity and False for a finite Float.
+
+Both infinities are made by dividing 1.0 and -1.0 by 0.0; the finite value is 3.14.
+
 -}
 
 -- CHECK: isInf1: True

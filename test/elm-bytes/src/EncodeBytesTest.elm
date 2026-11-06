@@ -1,6 +1,10 @@
 module EncodeBytesTest exposing (main)
 
-{-| Test Bytes.Encode.bytes embedding bytes in bytes.
+{-| Bytes.Encode.bytes embeds an existing Bytes value in a new encoding.
+
+A 4-byte value is encoded, then re-encoded with `E.bytes`, and the logged width
+of the result is 4.
+
 -}
 
 -- CHECK: EncodeBytesTest: 4

@@ -1,5 +1,9 @@
 module DebugToStringTest exposing (main)
 
+{-| `Debug.toString` renders an Int, a Float, a Bool, a String (with its quotes), a list, a
+tuple, `Just 5` and `Nothing` as their Elm source text.
+-}
+
 -- CHECK: int_str: "42"
 -- CHECK: float_str: "3.14"
 -- CHECK: bool_str: "True"

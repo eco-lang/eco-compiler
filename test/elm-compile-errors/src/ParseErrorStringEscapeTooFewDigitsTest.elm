@@ -1,8 +1,8 @@
 module ParseErrorStringEscapeTooFewDigitsTest exposing (..)
 
-{-| BAD UNICODE ESCAPE: string escape too few digits.
+{-| A Unicode escape in a string with only two hex digits, `"\u{41}"`, is rejected with a BAD UNICODE ESCAPE syntax error.
 
-A syntax error the parser must report.
+Elm requires four to six hex digits between the braces of a `\u{...}` escape.
 
 -}
 

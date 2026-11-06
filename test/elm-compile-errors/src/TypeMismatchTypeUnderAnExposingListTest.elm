@@ -1,9 +1,10 @@
 module TypeMismatchTypeUnderAnExposingListTest exposing (..)
 
-{-| TYPE MISMATCH: type under an exposing list.
+{-| A value annotated `Int` but defined as `Just 1` is rejected with a TYPE MISMATCH error.
 
-From `SourceIR.TypeCheckFailsCases` (`printingCases`), the elm-test catalogue of programs
-the compiler must reject.
+The module imports `Maybe` with `Maybe` in its exposing list, alongside two other imports
+with exposing lists, so the mismatched type is one the program has brought into scope
+unqualified.
 
 -}
 

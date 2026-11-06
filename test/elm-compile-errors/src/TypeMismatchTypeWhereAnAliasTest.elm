@@ -1,9 +1,10 @@
 module TypeMismatchTypeWhereAnAliasTest exposing (..)
 
-{-| TYPE MISMATCH: type where an alias.
+{-| A value annotated with a type alias of `Int` but defined as a `String` is rejected with a
+TYPE MISMATCH error.
 
-From `SourceIR.TypeCheckFailsCases` (`problemCases`), the elm-test catalogue of programs
-the compiler must reject.
+`type alias P = Int` makes `P` another name for `Int`, so `x : P` expects an `Int`, and
+`"s"` does not fit it.
 
 -}
 

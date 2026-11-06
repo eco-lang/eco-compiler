@@ -1,5 +1,10 @@
 module JsArrayGetSetTest exposing (main)
 
+{-| `Array.get` and `Array.set` on a three-element `Array Int`, at valid indices and out of range.
+
+`get` returns `Just` for indices 0 and 2 and `Nothing` for 5 and -1. `set` at index 1 replaces the middle element, and `set` at index 5 leaves the array unchanged.
+-}
+
 -- CHECK: get_first: Just 10
 -- CHECK: get_last: Just 30
 -- CHECK: get_oob: Nothing

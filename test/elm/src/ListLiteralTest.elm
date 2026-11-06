@@ -1,6 +1,6 @@
 module ListLiteralTest exposing (main)
 
-{-| Test list literal syntax.
+{-| List literals of one, three and five Int elements log their elements in order.
 -}
 
 -- CHECK: list1: [1]

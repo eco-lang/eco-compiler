@@ -1,18 +1,14 @@
 module LetNumberFloatArithCrashTest exposing (main)
 
-{-| Regression test (native/AOT backend): a let-bound, unannotated `number`
-literal used as an operand of a Float kernel is monomorphized to `Int` (lowered
-to an `i64` constant) while the operator instance is specialized to `Float`.
-MLIR codegen registers the Float kernel symbol with two conflicting ABIs and
-crashes (`Kernel signature mismatch …`).
+{-| An unannotated let-bound `number` literal passed to `sqrt`, or combined
+with a `Float` by `(+)`, `(/)` or `(^)`, is a `Float`.
 
-This is the same root cause as `LetNumberFloatMulTest`, generalized across the
-Float arithmetic kernels: `sqrt`, `(+)`, `(/)`, `(^)`. Each `let n = …` is a
-bare `number` binding; an inline literal (`sqrt 144`) would unify correctly —
-only the let-bound `number` defaults to `Int`.
+Each top-level value binds `n` in its own `let` and returns a `Float`:
 
-Compiles+runs only once the monomorphizer specializes the binding to the
-numeric type its use site demands.
+  - `sqrtN` is `sqrt 144`, logged as 12.
+  - `addN` is `30 + 1.4`, which rounds to 31.
+  - `divN` is `30 / 5.0`, logged as 6.
+  - `powN` is `2 ^ 3.0`, logged as 8.
 
 -}
 

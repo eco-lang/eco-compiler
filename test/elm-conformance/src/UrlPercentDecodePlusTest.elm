@@ -1,10 +1,10 @@
 module UrlPercentDecodePlusTest exposing (main)
 
-{-| URL-02 (plans/kernel-lib-bug-fixes.md): `Url.percentDecode` keeps a `+`, like JS
-`decodeURIComponent`, so a query value `c++` reads back as `c++`.
+{-| `Url.percentDecode` leaves a `+` as a `+`, so a query value `c++` reads back as `c++`.
 
-Natively this is `Elm_Kernel_Url_percentDecode` (elm-kernel-cpp/src/url/UrlExports.cpp), which
-once turned `+` into a space. Expectations recorded from Elm on node (run-js-e2e.js --record).
+The tests decode "a+b", decode "c%2B%2B", and parse the query parameter `q` of
+`"http://x/?q=c++"` with `Url.Parser.Query.string`.
+
 -}
 
 -- CHECK: decode plus: "Just \"a+b\""

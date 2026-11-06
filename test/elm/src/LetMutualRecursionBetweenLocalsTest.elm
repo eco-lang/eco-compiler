@@ -1,9 +1,10 @@
 module LetMutualRecursionBetweenLocalsTest exposing (..)
 
-{-| Two local functions of one `let` calling each other.
+{-| Two functions defined in the same `let` call each other.
 
-From `Compiler.LocalOpt.Typed.LocalOptPathsCoverageTest`, an elm-test unit test, with a
-`main` that logs its `testValue`. The CHECK lines are what Elm 0.19.1 prints for it.
+`f` counts `k` up by one until it exceeds 10, then hands it to `g`; `g` doubles it
+and hands it back to `f` until it exceeds 20. From `f 0` the path is 11, then 22,
+so `testValue` is 22.
 
 -}
 

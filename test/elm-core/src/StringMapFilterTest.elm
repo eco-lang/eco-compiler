@@ -1,5 +1,12 @@
 module StringMapFilterTest exposing (main)
 
+{-| Checks that `String.map` transforms every character and `String.filter` keeps only the characters its predicate accepts.
+
+`String.map Char.toUpper "hello"` gives `"HELLO"`, and removing `'e'` and `'o'`
+from `"hello"` gives `"hll"`.
+
+-}
+
 -- CHECK: map1: "HELLO"
 -- CHECK: filter1: "hll"
 

@@ -1,6 +1,12 @@
 module PolyTailRecReverseTest exposing (main)
 
-{-| Test polymorphic tail-recursive reverse at multiple types. -}
+{-| An unannotated, polymorphic, tail-recursive list reverse gives the right
+result at both `Int` and `String` element types.
+
+`myReverse` calls the accumulator-passing `reverseHelper`, which calls itself
+in tail position.
+
+-}
 
 -- CHECK: intRev: [3,2,1]
 -- CHECK: strRev: ["c","b","a"]

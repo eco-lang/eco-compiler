@@ -1,11 +1,12 @@
 module CompilerIssue2214LensSetterArgumentOrderHangTest exposing (main)
 
-{-| An ill-typed lens whose setter takes its arguments in the wrong order.
+{-| The compiler rejects, with a type error, a lens record whose setter takes its arguments in the wrong order.
 
 <https://github.com/elm/compiler/issues/2214>
 
-The program is ill-typed, so it must be rejected with a type error. Elm 0.19.1 instead hangs while
-its memory grows without bound (the runner kills it at its compile memory limit), or crashes.
+`Lens Foo Int` needs a setter of type `Int -> Foo -> Foo`, but `fooN` supplies
+`\foo n -> { foo | n = n }`, which takes the `Foo` first. Elm 0.19.1 does not report this: it
+hangs with memory growing without bound, or crashes.
 
 -}
 

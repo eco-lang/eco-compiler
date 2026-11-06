@@ -1,9 +1,9 @@
 module FunctionUnannotatedCompappendTest exposing (..)
 
-{-| unannotated compappend.
+{-| A module containing an unannotated function that both compares and appends its arguments compiles, with the type `compappend` inferred.
 
-From `SourceIR.FunctionCases`, a program of the elm-test catalogue, with a
-`main` that logs its `testValue`. The CHECK lines are what Elm 0.19.1 prints for it.
+`zsortcat` is never called; the program only logs the constant `testValue`, 0.
+What is tested is that the definition type-checks and the program runs.
 
 -}
 

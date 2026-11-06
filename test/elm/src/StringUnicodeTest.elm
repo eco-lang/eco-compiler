@@ -1,6 +1,10 @@
 module StringUnicodeTest exposing (main)
 
-{-| Test Unicode in strings.
+{-| Three string literals logged under the labels `greek`, `emoji` and `chinese` print
+without error.
+
+Despite the labels, all three strings are plain ASCII (`"alpha beta gamma"` and `"hello"`
+twice), and only the labels are checked, not the logged values.
 -}
 
 -- CHECK: greek

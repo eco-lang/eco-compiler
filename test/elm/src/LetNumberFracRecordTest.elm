@@ -1,11 +1,12 @@
 module LetNumberFracRecordTest exposing (main)
 
-{-| Probe: a record whose two `number` fields are independently specialized —
-one used at `Int` (via `toFloat`), the other at `Float` (via `* 0.1`). The
-record type is `{ intPart : number, fracPart : number1 }` (two independent
-number vars). The Float-demanded field must NOT default to Int.
+{-| The two `number` fields of a let-bound record literal are typed
+independently, one used as an `Int` and the other as a `Float`.
 
-Correct: toFloat 30 + 0.1 * 40 = 30 + 4 = 34.
+`r = { intPart = 30, fracPart = 40 }` has type
+`{ intPart : number, fracPart : number1 }`. `toFloat r.intPart` makes `intPart`
+an `Int` and `0.1 * r.fracPart` makes `fracPart` a `Float`, so the result is
+30 + 4 and the test logs 34.
 
 -}
 

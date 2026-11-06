@@ -1,9 +1,8 @@
 module TooManyArgsAConstructorPatternWithTooManyArgumentsTest exposing (..)
 
-{-| TOO MANY ARGS: a constructor pattern with too many arguments.
+{-| A constructor pattern with more arguments than the constructor takes is rejected with a TOO MANY ARGS error.
 
-From `SourceIR.CanonicalizeFailsCases` (`testValue`), the elm-test catalogue of programs
-the compiler must reject.
+`Just` takes one argument, but the `case` in `f` matches `Just a b`.
 
 -}
 

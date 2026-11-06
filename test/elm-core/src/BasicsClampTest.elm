@@ -1,5 +1,9 @@
 module BasicsClampTest exposing (main)
 
+{-| `clamp 5 10` returns the lower bound for 3, the value itself for 7 and the upper bound for
+15, and `clamp 1.0 5.0` leaves 3.5 unchanged.
+-}
+
 -- CHECK: clamp_low: 5
 -- CHECK: clamp_mid: 7
 -- CHECK: clamp_high: 10

@@ -1,12 +1,12 @@
 module RegexMatchRecordTest exposing (main)
 
-{-| Every field of the `Match` records `Regex.find`, `Regex.findAtMost` and `Regex.replace`
-build, recorded from Elm on node (run-js-e2e.js --record). eco 0.2.0 built them with the fields
-in alphabetical order, while compiled code reads records with their unboxed fields first: `.match`
-segfaulted and `.number` read the string's pointer (eco-bugs.md number 1,
-plans/kg-reported-bugs.md step 1). Also a submatch that did not take part (`Nothing`).
+{-| The `Match` records that `Regex.find`, `Regex.findAtMost` and `Regex.replace` produce carry the
+right `index`, `match`, `number` and `submatches`.
 
-The inputs go through `List.map`, so the kernels run at run time, not in a constant fold.
+Whole records are printed with `Debug.toString`, and single fields are read with `.match`,
+`.number` and `.index`. The pattern `(a)b|(c)` gives submatches with a group that did not take
+part in the match, which must be `Nothing`. The `replace` tests read every field inside the
+replacement function.
 
 -}
 

@@ -1,6 +1,8 @@
 module RecordAccessTest exposing (main)
 
-{-| Test record field access.
+{-| Dot syntax reads fields of let-bound record literals.
+
+`main` logs `point.x`, `point.y` and `person.name`.
 -}
 
 -- CHECK: x: 1

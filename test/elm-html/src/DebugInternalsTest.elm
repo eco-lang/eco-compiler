@@ -1,8 +1,12 @@
 module DebugInternalsTest exposing (main)
 
-{-| Debug.toString on kernel-built values whose heap shape differs from their
-declared type prints `<internals>`, as on JS, instead of asserting
-(plans/elm-html-native-kernel.md D19, P0.1).
+{-| `Debug.toString` prints an `Html` node or a `Json.Encode.Value` as `<internals>`.
+
+These are opaque values whose contents `Debug.toString` does not show. The test
+logs an element with an attribute and a child, a bare text node, an encoded
+JSON string, and a tuple holding a text node and an `Int`, where only the node
+is replaced by `<internals>`.
+
 -}
 
 -- CHECK: html: <internals>

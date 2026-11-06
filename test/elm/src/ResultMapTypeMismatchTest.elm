@@ -1,7 +1,6 @@
 module ResultMapTypeMismatchTest exposing (main)
 
-{-| Test Result.map with Int -> Bool mapping function.
-Same monomorphization issue as Maybe.map but for Result.
+{-| Checks that `Result.map` can change the `Ok` type, here mapping `Ok 42` through `\x -> x > 0` from `Int` to `Bool` to get `Ok True`.
 -}
 
 -- CHECK: result: Ok True

@@ -1,6 +1,9 @@
 module RoundtripMixedTypesTest exposing (main)
 
-{-| Roundtrip test with mixed types in sequence.
+{-| A sequence of an 8-bit integer, a big-endian 16-bit integer and a big-endian 64-bit float is encoded with elm/bytes and decoded back with `Bytes.Decode.map3`.
+
+The values 42, 1000 and 3.14 are encoded, and the program logs `True` only if
+all three decoded fields equal the originals exactly.
 -}
 
 -- CHECK: RoundtripMixedTypesTest: True

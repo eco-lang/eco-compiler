@@ -1,9 +1,8 @@
 module TooManyArgsTooManyArgumentsToALocalTest exposing (..)
 
-{-| TOO MANY ARGS: too many arguments to a local.
+{-| A top-level `Int` value applied to an argument is rejected with a TOO MANY ARGS error.
 
-From `SourceIR.TypeCheckFailsCases` (`contextCases`), the elm-test catalogue of programs
-the compiler must reject.
+`y` is `5`, which is not a function, and `x` applies it to `1`.
 
 -}
 

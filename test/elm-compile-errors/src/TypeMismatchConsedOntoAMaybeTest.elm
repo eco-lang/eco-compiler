@@ -1,9 +1,6 @@
 module TypeMismatchConsedOntoAMaybeTest exposing (..)
 
-{-| TYPE MISMATCH: consed onto a Maybe.
-
-From `SourceIR.TypeCheckFailsCases` (`operatorCases`), the elm-test catalogue of programs
-the compiler must reject.
+{-| `1 :: Just 1` is rejected with a TYPE MISMATCH, because the right side of `::` must be a list and `Just 1` is a `Maybe`.
 
 -}
 

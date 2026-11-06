@@ -1,8 +1,9 @@
 module LetNumberWildcardSlotTest exposing (main)
 
-{-| Probe: 3-tuple destructure with the middle slot wildcarded (`( a, _, c )`),
-the bound slots used at `Float`. Tests filler handling for a genuinely-unused
-slot. Correct: 30*1.5 + 50*1.5 = 45 + 75 = 120.
+{-| The first and last integer literals of a three-element tuple are used as
+`Float`s while the middle one is matched by a wildcard: matching
+`( 30, 40, 50 )` against `( a, _, c )` and adding `round (a * 1.5)` to
+`round (c * 1.5)` logs 120.
 -}
 
 -- CHECK: wildslot: 120

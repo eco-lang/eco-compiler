@@ -1,15 +1,11 @@
 module CaseStringEmptyPatternTest exposing (main)
 
-{-| Test case-match on String against empty-string and non-empty literals.
+{-| A case expression on a `String` matches the empty-string literal `""`
+alongside non-empty literal patterns and a wildcard.
 
-Exercises the lowering path from `parseYesNoResponse`-style patterns that
-calls `Elm_Kernel_Utils_equal` during decision-tree lowering of string
-patterns. Reported at bootstrap stage 6 as:
-
-    'llvm.call' op operand type mismatch for operand 1:
-    'i64' != '!llvm.ptr<1>'
-
-in `Builder_Reporting_parseYesNoResponse_$_30611`.
+`parseYesNo` maps `""`, `"Y"` and `"y"` to `"yes"`, `"n"` to `"no"`, and any
+other string to `"retry"`. The test calls it with each literal and with
+`"maybe"`, which reaches the wildcard.
 
 -}
 

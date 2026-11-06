@@ -1,10 +1,20 @@
 module FloatEdgeTest exposing (main)
 
-{-| Float edge cases where native lowering can differ from Elm on node: round's ties, NaN with
-equality, min/max and compare, truncate of NaN and infinity, a Float inside Just, and an Int power
-past 2^32. Each value is shown with Debug.toString. Expectations recorded from Elm on node
-(run-js-e2e.js --record). Every row here can match natively; the ones that cannot, because Int is
-i64, are in FloatToIntRangeTest.
+{-| Float edge cases: `round` on halves, NaN in equality, `min` and `compare`, `truncate` of NaN,
+and an Int power beyond 2^32.
+
+Most rows log `Debug.toString` of the result.
+
+  - `round` of plus and minus 0.5, 1.5 and 2.5 rounds halves up, towards positive infinity, also
+    when mapped over a list (`map round`).
+  - NaN is not equal to itself (`==`, `/=`, also inside `Just` and a list) or to 1.
+  - `min 1 nan` and `List.foldl min nan [ 1 ]` give NaN.
+  - `compare nan 1` is `GT`, also through a `case` on `compare` (`orderName`) and when the NaN is
+    the first element of a tuple or list; `orderName` also gives `LT` and `EQ` for ordinary
+    numbers.
+  - `truncate nan` is 0.
+  - `String.toFloat "1.5"` gives `Just 1.5`, equal to the literal.
+  - `3 ^ 33` is 5559060566555523, exact as an Int.
 -}
 
 -- CHECK: round 2.5: "3"
@@ -51,7 +61,7 @@ show =
     Debug.toString
 
 
-{-| A case on `compare`, which eco rewrites into direct tests (EcoCompareCaseRewrite).
+{-| Returns the name of `compare a b`, found by a `case` on the `Order`.
 -}
 orderName : Float -> Float -> String
 orderName a b =

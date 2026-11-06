@@ -4,7 +4,11 @@ module CompilerIssue2206RecordUpdateLetCrashTest exposing (main)
 
 <https://github.com/elm/compiler/issues/2206>
 
-`{ item | two = Second room }` gives `two` a `Custom a b` where `Item` needs `()`: a TYPE MISMATCH, which Elm 0.19.1 reports only if the second let binding's name starts with t-z. With this name it crashes with "Data/Vector/Generic/Mutable.hs:709 (modify): index out of bounds (3,3)" and "thread blocked indefinitely in an MVar operation".
+`{ item | two = Second room }` gives `two` a `Custom a b` where `Item` needs `()`, which is a
+TYPE MISMATCH. Elm 0.19.1 reports it only if the second let binding's name starts with a letter
+from t to z. With the name used here it crashes instead, with "index out of bounds" and "thread
+blocked indefinitely in an MVar operation". The test expects the TYPE MISMATCH report and no
+crash.
 
 Fixed in Elm 0.19.3.
 

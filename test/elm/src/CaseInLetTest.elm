@@ -1,6 +1,11 @@
 module CaseInLetTest exposing (main)
 
-{-| Test case expression in let binding.
+{-| Checks that a `case` expression on an `Order` can be the body of a `let`
+binding, with each of `GT`, `EQ` and `LT` selecting its own string.
+
+`classifyNumber` binds the result of `case compare n 0` and returns it; it is
+called with 5, 0 and -3.
+
 -}
 
 -- CHECK: let1: "positive"

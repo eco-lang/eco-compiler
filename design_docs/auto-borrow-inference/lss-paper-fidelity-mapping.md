@@ -371,7 +371,7 @@ Reading a terminal FlexVar source as an ∅ contribution is exact only under
 write-completeness, which the A.1 arg-load leak violates — so a
 members-carrying resolution over a dangling inflow published a false
 COMPLETE set, and LSS_025's post-settle devirt trusted it. Witness and fix:
-`test/elm/src/LssMixedSigHonestyTest.elm`. Zero occurrences on the
+`test/eco-elm/src/LssMixedSigHonestyTest.elm`. Zero occurrences on the
 self-compile; a real miscompile in ordinary Elm.
 
 <details><summary>Original register text (superseded above)</summary>

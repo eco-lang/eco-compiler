@@ -1,9 +1,6 @@
 module TypeMismatchCharUnderIntTest exposing (..)
 
-{-| TYPE MISMATCH: char under Int.
-
-From `SourceIR.TypeCheckFailsCases` (`categoryCases`), the elm-test catalogue of programs
-the compiler must reject.
+{-| A value annotated `Int` but defined as the character `'c'` is rejected with a TYPE MISMATCH.
 
 -}
 

@@ -449,7 +449,7 @@ but the fresh-scope rule stays, because other closed thunks may bind lets.
 | `compiler/src/Compiler/Generate/MLIR/Expr.elm` | `generateVarGlobal` arity-0 arm; `generateConstThunkRef` |
 | `compiler/src/Compiler/Eco/Config.elm`, `compiler/src/Builder/Eco/Config.elm` | `constThunks`, `constThunksReport`, env overrides, hash token |
 | `compiler/src/Builder/Generate.elm` | write the census to stderr |
-| `test/elm/src/ConstThunkFoldTest.elm` (new) | E2E value + `CHECK-MLIR-NOT` pin |
+| `test/eco-mlir/src/ConstThunkFoldTest.elm` (new) | E2E value + `CHECK-MLIR-NOT` pin |
 | `runtime/src/codegen/EcoBackend.cpp` | Step 3: prologue default-off; Step 4 cleanup |
 | `design_docs/invariants.csv` | new CGEN_082 (CGEN_081 is taken by plan 03) |
 
@@ -544,7 +544,7 @@ Nothing -> case Dict.get specId ctx.constThunkBySpec of
 
 ## T5. Tests
 
-- **`test/elm/src/ConstThunkFoldTest.elm`:**
+- **`test/eco-mlir/src/ConstThunkFoldTest.elm`:**
   - top-level thunks: an Int literal, a Float literal, a Char literal, a Bool literal, Unit, an
     alias of the Int literal, `pi`, `shiftLike = ceiling (logBase 2 (toFloat branchLike))`,
     `maskLike = Bitwise.shiftRightZfBy (32 - shiftLike) 0xFFFFFFFF`, and a let-binding thunk

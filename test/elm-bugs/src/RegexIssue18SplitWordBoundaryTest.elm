@@ -5,7 +5,7 @@ module RegexIssue18SplitWordBoundaryTest exposing (main)
 <https://github.com/elm/regex/issues/18>
 
 Elm 0.19.1 (elm/regex 1.0.0) keeps pushing empty pieces without advancing, until "RangeError:
-Invalid array length" or out of memory (the heap is capped here so it fails fast). JavaScript's
+Invalid array length" or out of memory (the test caps Node's memory so it fails fast). JavaScript's
 `"foo bar".split(/\b/)` gives `["foo"," ","bar"]`.
 
 -}

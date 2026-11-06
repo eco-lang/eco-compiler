@@ -1,9 +1,9 @@
 module FunctionChainedPartialApplicationTest exposing (..)
 
-{-| Chained partial application.
+{-| Partially applying a three-argument lambda twice, one argument at a time, gives a function, which `Debug.log` prints as `<function>`.
 
-From `SourceIR.FunctionCases`, a program of the elm-test catalogue, with a
-`main` that logs its `testValue`. The CHECK lines are what Elm 0.19.1 prints for it.
+`f 1` is bound to a name and then applied to `2`, leaving a function still
+waiting for its third argument.
 
 -}
 

@@ -1,6 +1,6 @@
 module IntAbsTest exposing (main)
 
-{-| Test integer absolute value.
+{-| `abs` on an Int returns its magnitude for a positive, a negative and a zero argument.
 -}
 
 -- CHECK: abs1: 5

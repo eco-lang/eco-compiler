@@ -1,10 +1,13 @@
 module CompilerIssue2184LetRecursionTooManyArgsCrashTest exposing (main)
 
-{-| Two let-bound recursive functions called with too many arguments crash the compiler.
+{-| Two let-bound recursive functions that call themselves with too many arguments must be
+reported as a type error, not crash the compiler.
 
 <https://github.com/elm/compiler/issues/2184>
 
-`f1 a b c` and `f2 a d e` pass three arguments to two-argument functions: a TOO MANY ARGS / type error. Elm 0.19.1 crashes ("? [rank = 1]", Type/Solve.hs:206, "thread blocked indefinitely in an MVar operation").
+`f1 a b c` and `f2 a d e` pass three arguments to two-argument functions: a TOO MANY ARGS / type
+error. Elm 0.19.1 crashes ("? [rank = 1]", Type/Solve.hs:206, "thread blocked indefinitely in an
+MVar operation").
 
 -}
 

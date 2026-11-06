@@ -1,19 +1,11 @@
 module WideRecordGcBitmapTest exposing (main)
 
-{-| Regression test for the 32-bit Bitwise wraparound in
-`Types.bitmapSetKind` (MLIR codegen).
+{-| A 17-field record holding one `Int` and sixteen `String`s keeps its field
+values while the program builds large lists before reading them.
 
-Records with more than 16 fields wrapped their high slots onto slots
-0..6 of the 2-bit-per-slot unboxed bitmap (Elm Bitwise shifts are 32-bit,
-so slot 16's mask landed on slot 0) and CLEARED the Int kind at slot 0.
-The GC then scanned the raw Int as a heap pointer and aborted with
-"Pointer below heap base" the first time a minor GC scanned the live
-record — the MonoSolver self-host crash (its 23-field `S` state record).
-
-This builds 17-field records whose single Int field occupies unboxed
-slot 0 (boxed field index 16 is the one that wrapped onto it), keeps
-them live across enough allocation churn to force minor GCs, and reads
-the fields back.
+`w1` is built with a `count` of 50000 (the length of one list), then a list of
+150000 strings is built before `w2` is made and both are read. The test checks
+that the two counts add to 200000 and that `w1.p ++ w2.a` has length 2.
 
 -}
 
@@ -80,12 +72,10 @@ main =
         seed =
             churn 50000 []
 
-        -- Non-constant count so the record construction cannot fold away.
+        -- The count comes from a list length rather than a literal.
         w1 =
             mkWide (List.length seed)
 
-        -- Allocation churn while w1 is live: minor GCs must scan w1 and
-        -- correctly skip its unboxed Int slot.
         more =
             churn 150000 []
 

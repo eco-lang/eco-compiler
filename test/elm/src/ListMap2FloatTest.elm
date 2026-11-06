@@ -1,11 +1,11 @@
 module ListMap2FloatTest exposing (main)
 
-{-| `List.map2` / `List.map3` on lists of `Float`.
+{-| `List.map2` and `List.map3` on `List Float` pass the Float elements unchanged to
+the mapping function, giving the expected sums and products.
 
-    The `Elm_Kernel_List_map2..map5` kernels re-box each unboxed list head
-    as an `Elm Int` before calling the user mapper. With a `List Float` the
-    mapper should receive the float values unchanged, so the sums below must
-    match IEEE addition.
+`Debug.log` prints a whole-number Float without a decimal point, as in
+`[11,22,33]`.
+
 -}
 
 -- CHECK: map2Add: [11,22,33]

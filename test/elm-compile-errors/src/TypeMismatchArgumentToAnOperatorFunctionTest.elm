@@ -1,9 +1,8 @@
 module TypeMismatchArgumentToAnOperatorFunctionTest exposing (..)
 
-{-| TYPE MISMATCH: argument to an operator function.
+{-| A `String` passed to the operator function `(+)` is rejected with a TYPE MISMATCH.
 
-From `SourceIR.TypeCheckFailsCases` (`contextCases`), the elm-test catalogue of programs
-the compiler must reject.
+`x = (+) "a" 1` uses `+` in prefix form; its arguments must be numbers, and `"a"` is a `String`.
 
 -}
 

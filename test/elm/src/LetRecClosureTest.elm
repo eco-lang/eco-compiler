@@ -1,9 +1,13 @@
 module LetRecClosureTest exposing (main)
 
-{-| Test for local recursive closure in let-binding.
-Reproduces the takeListItems pattern from Cheapskate/Parse.elm:
-a local recursive function defined in a let block that captures
-a variable from an outer scope and is used before its definition.
+{-| A recursive function defined in a `let` block captures a parameter of the
+enclosing function and is used by an earlier binding of the same `let`.
+
+`processItems` binds `collected = takeMore rest` before `takeMore` is defined;
+`takeMore` reads the enclosing `threshold` and collects the leading `Num` values
+above it, stopping at the first value that is not or at a `Blank`. On `[ Num 1, Num 2, Num 3, Blank, Num 99 ]` with
+threshold 0 the result is `[1,2,3]`.
+
 -}
 
 -- CHECK: LetRecClosureTest: [1,2,3]

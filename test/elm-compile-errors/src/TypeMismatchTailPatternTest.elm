@@ -1,9 +1,8 @@
 module TypeMismatchTailPatternTest exposing (..)
 
-{-| TYPE MISMATCH: tail pattern.
+{-| A list pattern whose tail is a `String` literal is rejected with a TYPE MISMATCH.
 
-From `SourceIR.TypeCheckFailsCases` (`patternMismatchCases`), the elm-test catalogue of programs
-the compiler must reject.
+The pattern `a :: "s"` puts a string where the tail of the scrutinee `[ 1 ]` must be a list.
 
 -}
 

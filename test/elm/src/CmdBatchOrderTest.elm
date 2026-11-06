@@ -1,16 +1,17 @@
 port module CmdBatchOrderTest exposing (main)
 
-{-| The order in which one effect manager receives the commands of a `Cmd.batch`.
+{-| The order in which an effect manager receives the commands of a `Cmd.batch`: last first, for both a port and `Task.perform`.
 
-Elm 0.19.1 gathers each manager's commands by consing onto a list, so a manager gets a batch's
-commands in reverse order: the port `echoOut` is handed `Cmd.batch [ echoOut 1, echoOut 2,
-Cmd.batch [ echoOut 3, echoOut 4 ], echoOut 5 ]` as 5, 4, 3, 2, 1, and the Task manager runs a
-batch of `Task.perform`s last first. Eco's native port and Task managers handled the commands first
-first instead, delivering 1 to 5, until 2026-11-06 (PORT_005).
+`init` returns one batch holding five `echoOut` port commands (3 and 4 inside a
+nested `Cmd.batch`) and three `Task.perform Ran (Task.succeed n)` commands. Elm
+0.19.1 hands each manager a batch's commands in reverse order, so the tasks
+report 3, 2, 1 and the port is given 5, 4, 3, 2, 1, with the nested batch
+flattened into place.
 
-Found 2026-11-06 by the JS-versus-Node-addon parity host (test/embed/embed_host.js). The harness
-echo feeds each `echoOut` payload back through `echoIn`, in the order the port delivered it.
-Expected output recorded from Elm 0.19.1 on node.
+The tasks' order is logged once all three `Ran` messages have arrived. The
+port's order relies on the host echoing each `echoOut` value back on `echoIn` in
+the order the port delivered it; the list is logged once five values have come
+back.
 
 -}
 

@@ -1,9 +1,8 @@
 module ShadowingShadowingInLambdaTest exposing (..)
 
-{-| SHADOWING: shadowing in lambda.
+{-| A lambda argument with the same name as an argument of the enclosing function is rejected with a SHADOWING error.
 
-From `SourceIR.CanonicalizeFailsCases` (`shadowingCases`), the elm-test catalogue of programs
-the compiler must reject.
+In `test y = \y -> y`, the lambda's `y` shadows the function's `y`.
 
 -}
 

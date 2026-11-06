@@ -1,9 +1,9 @@
 module TypeMismatchTypeOfAModuleThatIsNotImportedTest exposing (..)
 
-{-| TYPE MISMATCH: type of a module that is not imported.
+{-| A value annotated `Int` but defined as `Html.text "a"` is rejected with a TYPE MISMATCH error.
 
-From `SourceIR.TypeCheckFailsCases` (`printingCases`), the elm-test catalogue of programs
-the compiler must reject.
+`Html.text` returns a value of the `Html` module's own type, `Html msg`, so the error has to
+name a type that belongs to another module.
 
 -}
 

@@ -1,12 +1,18 @@
 module CaseNestedRecordAccessTest exposing (main)
 
-{-| Test case where function A calls function B, both have destructuring args
-AND case expressions. After MonoInlineSimplify inlines B, the case root
-variable names collide because both functions consumed the same number of
-Names.generate calls before their case expressions.
+{-| Checks a function that destructures a constructor in its argument and then
+cases on a looked-up value, calling another function that also destructures a
+constructor argument and cases on a record field.
 
-This triggers the SSA redefinition bug when addPlaceholderMappings reuses
-an existing varMapping entry instead of allocating a fresh var.
+`isIrrelevantTo` takes `(Branch _ pathPatterns)`, looks a key up in the list of
+pairs, and returns `True` when the key is missing. When it is found it returns
+the negation of `needsCheck`, which takes `(At _ info)` and cases on the
+eleven-constructor `info.node`.
+
+- `test1` and `test4` look up absent keys and expect `True`.
+- `test2` finds a `Circle`, for which `needsCheck` is `True`, and expects `False`.
+- `test3` finds a `Diamond`, for which `needsCheck` is `False`, and expects `True`.
+
 -}
 
 -- CHECK: test1: True
@@ -66,9 +72,8 @@ listLookup target list =
                 listLookup target rest
 
 
-{-| Small function with a destructuring arg AND a case on a record field.
-The destructuring arg (At _ info) consumes _v0 for the wrapper, making
-the case root _v1, matching the pattern in the caller.
+{-| Returns `True` for `Circle`, `Square` and `Triangle` and `False` for every
+other shape, unwrapping the `At` constructor in its argument pattern.
 -}
 needsCheck : Located Info -> Bool
 needsCheck (At _ info) =
@@ -107,10 +112,8 @@ needsCheck (At _ info) =
             False
 
 
-{-| Function with a destructuring arg AND a case expression.
-The destructuring arg (Branch _ pathPatterns) consumes _v0, making
-the case root _v1 - same as needsCheck's case root after its destructuring.
-After inlining needsCheck, both _v1 names exist in the same scope.
+{-| Returns `True` when the path is absent from the branch's list, and otherwise
+the negation of `needsCheck` for the value found under it.
 -}
 isIrrelevantTo : String -> Branch -> Bool
 isIrrelevantTo selectedPath (Branch _ pathPatterns) =

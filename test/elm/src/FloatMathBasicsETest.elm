@@ -1,10 +1,6 @@
 module FloatMathBasicsETest exposing (..)
 
-{-| Basics.e.
-
-From `SourceIR.FloatMathCases`, a program of the elm-test catalogue, with a
-`main` that logs its `testValue`. The CHECK lines are what Elm 0.19.1 prints for it.
-
+{-| `Basics.e` prints as 2.718281828459045.
 -}
 
 -- CHECK: testValue: 2.718281828459045

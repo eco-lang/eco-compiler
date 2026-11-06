@@ -1,9 +1,17 @@
 module ContainerEqualityStringTest exposing (main)
 
-{-| Equality of String-containing Tuple2, Tuple3, and List values.
+{-| Checks `==` on pairs, triples and lists of `String`.
 
-    Interesting cases: empty strings, case sensitivity, strings where one is
-    a prefix of another, and non-ASCII BMP content.
+The cases that matter are empty strings, letter case, one string being a prefix
+of another, and characters outside ASCII.
+
+  - Pairs: equal, differing in either position, empty strings, differing only
+    in case, `"app"` against `"apple"`, and non-ASCII contents.
+  - Triples: equal, differing in the middle, containing empty strings, and
+    Greek letters.
+  - Lists: equal, different lengths, two empty lists, lists of empty strings,
+    differing in case, and non-ASCII contents.
+
 -}
 
 -- CHECK: pairEqual: True

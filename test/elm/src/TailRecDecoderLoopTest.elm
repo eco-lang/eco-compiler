@@ -1,8 +1,12 @@
 module TailRecDecoderLoopTest exposing (main)
 
-{-| Tail-recursive decoder loop with nested string case inside constructor case.
-Mimics Compiler.LocalOpt.Erased.Port.toDecoder: outer case on type constructors,
-inner string dispatch for known type names.
+{-| A recursive function whose outer `case` is on a custom type and whose inner `case` is
+on a `String` returns the right result for each branch.
+
+`toDecoder` turns a type description into a decoder name. A `TAlias` is unwrapped by a tail
+call, a `TPrim` name is looked up by the inner `case`, and a `TList` recurses in a non-tail
+position inside a string concatenation. The four checks cover a primitive, an alias of a
+primitive, a list of a primitive, and a `TCustom`.
 -}
 
 -- CHECK: r1: "decode_int"

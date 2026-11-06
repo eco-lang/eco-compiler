@@ -1,6 +1,8 @@
 module TailRecClosureAccTest exposing (main)
 
-{-| Test tail-recursive accumulator closure in a let binding.
+{-| A tail-recursive accumulator loop defined as a local function in a `let` gives the
+right result: `go` adds `m` to `acc` while counting `m` down to 0, so `recursiveLet 5` is
+5 + 4 + 3 + 2 + 1 = 15.
 -}
 
 -- CHECK: result: 15

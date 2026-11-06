@@ -1,9 +1,9 @@
 module TypeMismatchAliasNamedLikeAnImportedTypeTest exposing (..)
 
-{-| TYPE MISMATCH: alias named like an imported type.
+{-| A local type alias that shadows an imported type name is a different type from it, so mixing the two is rejected with a TYPE MISMATCH.
 
-From `SourceIR.TypeCheckFailsCases` (`problemCases`), the elm-test catalogue of programs
-the compiler must reject.
+The module defines `type alias Bool = Int`, so `b : Bool` is an `Int`. The list
+`[ b, Basics.True ]` puts it next to the `Bool` from `Basics`, and the two types differ.
 
 -}
 

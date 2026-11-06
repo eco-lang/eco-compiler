@@ -1,10 +1,9 @@
 module MaybeMapTypeMismatchTest exposing (main)
 
-{-| Test Maybe.map where the mapping function's return type differs
-from the input type. The mapping function returns Bool (embedded constant)
-but the input is Float. If the monomorphizer incorrectly unifies input
-and output types, the generated code will try to resolve Bool as a
-heap Float and crash.
+{-| `Maybe.map` with a function whose result type (Bool) differs from its argument type (Float), applied with `|>`, returns the mapped Bool.
+
+Mapping `\x -> x > 0` over `Just 1.0` gives `Just True`, and over `Just -1.0`
+gives `Just False`.
 -}
 
 -- CHECK: r1: Just True

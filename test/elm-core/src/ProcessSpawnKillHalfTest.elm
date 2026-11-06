@@ -1,13 +1,14 @@
 module ProcessSpawnKillHalfTest exposing (main)
 
-{-| Spawn 10 fibers, each of which sleeps briefly and then logs a line.
-Immediately after spawning, kill every even-indexed fiber. Only the
-odd-indexed fibers (1, 3, 5, 7, 9) should log. After waiting long enough
-for any survivors to fire, log "done".
+{-| A process killed with `Process.kill` before its sleep finishes never runs
+the rest of its task, while the processes left alive do.
 
-Exercises Scheduler::killTask, the BINDING.__kill cancel path, and
-verifies that a killed fiber does not execute the continuation after
-its sleep would have fired.
+Ten processes are spawned, numbered 1 to 10; process `i` sleeps `i * 10` ms and
+then logs `fired i`. Straight after spawning them all, the even-numbered ones
+are killed. The program then sleeps 300 ms, longer than the slowest process,
+and logs `done`. Only the odd-numbered processes are expected to log, followed
+by `done`.
+
 -}
 
 -- CHECK: spawnKill: "fired 1"

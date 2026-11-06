@@ -5,9 +5,9 @@ port module CoreIssue1141UnusedPortCallBreaksSubscriptionTest exposing (main)
 <https://github.com/elm/core/issues/1141>
 
 `update` returns `echoOut "hello"` and a model whose `subscriptions` are `echoIn Got`. The host
-(the test runner) answers every `echoOut` value synchronously through `echoIn`. Because of the
-unused `echoOut` call in `init`, Elm 0.19.1 registers the effect manager of `echoOut` first and dispatches the command
-before the new subscription is in place, so the reply is dropped and `Got` never arrives.
+(the test runner) answers every `echoOut` value synchronously through `echoIn`.
+In Elm 0.19.1 the reply is dropped and `Got` never arrives, because the command is dispatched before the new subscription is in place
+(removing the unused `echoOut` call in `init` avoids this).
 Subscriptions returned together with a command must be active when the command runs.
 
 -}
@@ -32,7 +32,7 @@ type Msg
 init : () -> ( Bool, Cmd Msg )
 init _ =
     let
-        -- unused; removing it makes the program work
+        -- unused, but its presence is what triggers the Elm 0.19.1 bug
         _ =
             echoOut "unused"
     in

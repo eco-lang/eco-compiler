@@ -1,11 +1,10 @@
 module SortByEmptyStringKeyMixedTest exposing (main)
 
-{-| `List.sortBy` whose key extractor returns `""` for some inputs and a
-heap String for others. Mixed-key F3: comparator's `Allocator::resolve`
-may hit the constant on either side.
+{-| `List.sortBy` orders by a String key that is `""` for some elements and `"x"` for others.
 
-Elm semantics: `"" < "x"`, so even-numbered inputs (key=`""`) precede
-odd-numbered inputs (key=`"x"`).
+`keyOf` returns `""` for even numbers and `"x"` for odd ones. Since `""` sorts
+before `"x"` and `List.sortBy` is stable, sorting `[ 1, 2, 3, 4 ]` gives the even
+numbers first, each group in its original order: `[2,4,1,3]`.
 -}
 
 -- CHECK: result: [2,4,1,3]

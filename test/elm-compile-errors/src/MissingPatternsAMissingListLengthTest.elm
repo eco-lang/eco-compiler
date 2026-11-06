@@ -1,9 +1,9 @@
 module MissingPatternsAMissingListLengthTest exposing (..)
 
-{-| MISSING PATTERNS: a missing list length.
+{-| A `case` on a list that covers only the empty and one-element lists is rejected with a MISSING PATTERNS error.
 
-From `SourceIR.PatternFailsCases` (`testValue`), the elm-test catalogue of programs
-the compiler must reject.
+`firstOrZero` matches `[]` and `[ x ]` but has no branch for lists of two or more
+elements, so the match is not exhaustive.
 
 -}
 

@@ -1,6 +1,12 @@
 module EmbeddedReturnNothingTest exposing (main)
 
-{-| Test a function that conditionally returns Nothing, consumed by caller.
+{-| A function that returns `Nothing` for one input and `Just` for another is
+consumed by a `case` in the caller.
+
+`safeDivide` returns `Nothing` when the divisor is 0 and otherwise `Just` the
+integer quotient. The caller maps `Nothing` to -1, so dividing 10 by 2 logs 5
+and dividing 10 by 0 logs -1.
+
 -}
 
 -- CHECK: r1: 5

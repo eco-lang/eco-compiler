@@ -1,8 +1,13 @@
 module UtilsEqualityCaptureIntTest exposing (main)
 
-{-| Higher-order capture of `(==)` and `(/=)` on `Int`, routing through
-    `Utils.equal` / `Utils.notEqual` rather than the inline `eco.int.eq`
-    intrinsic.
+{-| `(==)` and `(/=)` on `Int` give the same answers when passed as function
+values as when applied directly.
+
+On the list `[1, 2, 3, 5, 5]` with target `5`, the operators are passed to the
+generic helper `countWith`, giving counts of 2 and 3, and applied in prefix
+form inside `List.filter` lambdas, keeping the two matches and the other three
+elements.
+
 -}
 
 -- CHECK: eq_count: 2
@@ -14,6 +19,8 @@ module UtilsEqualityCaptureIntTest exposing (main)
 import Html exposing (text)
 
 
+{-| Counts the elements `x` of a list for which `pred x target` holds.
+-}
 countWith : (a -> a -> Bool) -> a -> List a -> Int
 countWith pred target =
     List.foldl

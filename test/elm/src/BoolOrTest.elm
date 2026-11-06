@@ -1,6 +1,6 @@
 module BoolOrTest exposing (main)
 
-{-| Test || operator.
+{-| The `||` operator gives `False` only when both operands are `False`, checked over all four combinations.
 -}
 
 -- CHECK: or1: True

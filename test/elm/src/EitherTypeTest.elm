@@ -1,6 +1,13 @@
 module EitherTypeTest exposing (main)
 
-{-| Test Either-like polymorphic type with two constructors and two type parameters. -}
+{-| A custom type with two type parameters and one constructor for each can be
+built, mapped and pattern-matched.
+
+`fromEither` returns the `Left` payload or a default, `mapLeft` applies a
+function to a `Left` payload only, and `isLeft` reports which constructor a
+value has.
+
+-}
 
 -- CHECK: left: 42
 -- CHECK: right: 0

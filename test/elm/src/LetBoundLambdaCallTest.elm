@@ -1,6 +1,7 @@
 module LetBoundLambdaCallTest exposing (main)
 
-{-| Test let-bound lambda expression called with two args.
+{-| A two-argument anonymous function bound in a `let` and then applied to two
+arguments: `(\x y -> x) 1 2` returns the first, 1.
 -}
 
 -- CHECK: result: 1

@@ -1,9 +1,12 @@
 module CovEtaDebugLogTest exposing (main)
 
-{-| A definition annotated `Int -> Fn`, with `Fn` an alias of `Int -> Int`,
-written with one parameter and a `let`-bound helper whose body calls
-`Debug.log`. η-expansion gives `mk` its second parameter and mints the whole
-rewritten body, `Debug.log` reference included. `mk 3 4` logs 7.
+{-| Checks a function defined with fewer parameters than its annotated type:
+`mk : Int -> Fn`, where `Fn` is an alias of `Int -> Int`, takes one parameter
+and returns a `let`-bound function whose body calls `Debug.log`.
+
+`mk 3 4` applies the returned function to 4, which logs 7 under the label
+`eta body`.
+
 -}
 
 -- CHECK: eta body: 7

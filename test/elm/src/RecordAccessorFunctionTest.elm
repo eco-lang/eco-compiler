@@ -1,6 +1,8 @@
 module RecordAccessorFunctionTest exposing (main)
 
-{-| Test .field as a function.
+{-| Record accessor functions such as `.name` work as arguments to `List.map`.
+
+`main` maps `.name` over two people records and `.x` over two point records.
 -}
 
 -- CHECK: names: ["Alice","Bob"]

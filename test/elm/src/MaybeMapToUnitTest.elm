@@ -1,6 +1,6 @@
 module MaybeMapToUnitTest exposing (main)
 
-{-| Test Maybe.map with a -> () mapping function.
+{-| `Maybe.map` with a function returning unit produces a `Maybe ()`: mapping `\_ -> ()` over `Just 42` gives `Just ()`.
 -}
 
 -- CHECK: result: Just ()

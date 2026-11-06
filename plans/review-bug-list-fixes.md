@@ -70,7 +70,7 @@ Exposing tests, all failing today unless marked:
 | 9 | `compiler/tests/Mlir/PrettyTextRoundTripTest.elm` | 9 of 12 |
 | 12 | `compiler/tests/Compiler/Generate/MLIR/UnscopedTailJumpTest.elm` | unscoped `eco.jump` emitted |
 | 16 | `compiler/tests/Compiler/Generate/KernelHomeCollisionTest.elm` | eco/kernel `File` chunk lost |
-| 22 | `test/elm-bytes/src/BytesFusedEncodeCursorSurvivesGCTest.elm`, `test/bf-codegen/bf_cursor_survives_minor_gc.mlir` | corrupt bytes after minor GC |
+| 22 | `test/eco-mlir/src/BytesFusedEncodeCursorSurvivesGCTest.elm`, `test/bf-codegen/bf_cursor_survives_minor_gc.mlir` | corrupt bytes after minor GC |
 | 23 | `compiler/tests/Compiler/Generate/MLIR/BytesFusion/EmitReadUtf8OkTest.elm` | `ok` result unused |
 | 25 | `test/codegen/typetable_polymorphic_constraint.mlir` | constraint byte `\00` |
 | 26 | `test/kernel/UtilsAppendEqualityTest.cpp` (6 `[latent]` cases; 2 controls and 4 SD-17 guards pass) | `""` not equal to a zero-length heap String |

@@ -1,9 +1,12 @@
 module ArrayAppendCanonicalTest exposing (main)
 
-{-| `Array.append` must produce a canonical RRB shape so that the result
-    compares equal to an `Array.initialize` of the same elements. Sizes
-    that are non-power-of-two multiples of the branch factor (32) — e.g.
-    96 and 160 — have been observed to diverge.
+{-| `Array.append` of two halves gives an array equal under `==` to `Array.initialize` of
+the whole, for lengths 32, 64, 96, 128, 160 and 256.
+
+The first half holds `0` to `n // 2 - 1` and the second `n // 2` to `n - 1`, so both sides
+hold the same elements in the same order and each line should log `True`. Lengths 96 and 160
+are multiples of 32 that are not powers of two.
+
 -}
 
 -- CHECK: append32: True

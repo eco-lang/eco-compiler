@@ -1,14 +1,9 @@
 module AstralCharLiteralTest exposing (main)
 
-{-| A Char literal above U+FFFF (`'\u{1F600}'`) is emitted by
-`Compiler.Generate.MLIR.Expr.generateLiteral` as an `i32` constant holding its
-code point, 128512 (Char is a Unicode code point in i32, CGEN_015). Before
-Char was widened the constant was an out-of-range `i16`, and eco-boot-native
-aborted reading the MLIR bytecode (APInt "Value is not an N-bit unsigned
-value"). Also covered by the unit test
-compiler/tests/Compiler/Generate/MLIR/ExprAstralCharTest.elm.
+{-| A `Char` literal above U+FFFF has its full code point: `'\u{1F600}'` is 128512, and equals `Char.fromCode 0x0001F600`.
 
-The literal and `Char.fromCode` of the same code point are the same Char.
+A literal in the Basic Multilingual Plane, `'\u{20AC}'`, is checked as well.
+
 -}
 
 -- CHECK: astral: 128512

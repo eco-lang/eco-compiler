@@ -1,27 +1,17 @@
 module ListMapTemplateLaunderedDebugTest exposing (main)
 
-{-| The KERNEL-HOF canary for the `List.map` template licence
-(`plans/list-map-mlir-template.md` F-4; policy `D-4a`).
+{-| Checks that `List.map` applies its callback to the elements from last to
+first when the callback passes a logging comparator it was given to
+`List.sortWith`.
 
-`ListMapTemplateCapturedDebugTest.elm` covers `Debug` reaching the callback
-through a DIRECTLY applied captured value. This fixture covers the channel
-that one misses: the captured function is never applied by the callback
-itself — it is handed to a **kernel higher-order function** as an ARGUMENT.
-
-`List.sortWith` is a direct kernel alias (`List.elm`:
-`sortWith = Elm.Kernel.List.sortWith`), so the callee position of
-`\x -> List.sortWith g x` resolves to a kernel reference and answers Clean.
-Before F-4 the walk then folded into the args, where `g` — a `MonoVarLocal`
-capture — contributed nothing, and the map licensed. The comparator's
-`Debug` lines would then come out left-to-right instead of foldr's
-right-to-left. F-4's argument-position taint rule is what declines it.
-
-The two sublists are `[1, 1]` and `[2, 2]`, so a comparison inside either
-one logs the SAME number whichever way the kernel orders the pair — the log
-line identifies the sublist, never the argument order.
-
-Expected order is foldr's right-to-left: the `[2, 2]` sublist is compared
-first.
+elm/core defines `List.map` with `List.foldr`, which, on a list this short,
+applies the callback to the last element first. `sortEach g` maps
+`\x -> List.sortWith g x` and never calls `g` itself. With `loggingCompare`,
+which logs its first argument, as `g` and the inner lists `[1, 1]` and
+`[2, 2]`, the number logged names the list being sorted whichever way the
+comparator's arguments are ordered: the expected output is the log for
+`[2, 2]` immediately followed by the log for `[1, 1]`, then the unchanged
+sorted lists.
 
 -}
 
@@ -32,7 +22,7 @@ first.
 import Html exposing (text)
 
 
-{-| The comparator logs. Nothing else in this module mentions `Debug`.
+{-| Compares two integers with `compare`, logging the first.
 -}
 loggingCompare : Int -> Int -> Order
 loggingCompare a b =
@@ -43,8 +33,8 @@ loggingCompare a b =
     compare a b
 
 
-{-| `g` is a captured function value passed to a KERNEL HOF as an argument.
-The callback never applies `g` itself.
+{-| Sorts each inner list of `xs` with the comparator `g`, using `List.map`
+over `List.sortWith`.
 -}
 sortEach : (Int -> Int -> Order) -> List (List Int) -> List (List Int)
 sortEach g xs =

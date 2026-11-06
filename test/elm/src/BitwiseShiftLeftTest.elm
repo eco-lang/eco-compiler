@@ -1,6 +1,6 @@
 module BitwiseShiftLeftTest exposing (main)
 
-{-| Test Bitwise.shiftLeftBy.
+{-| `Bitwise.shiftLeftBy n x` shifts the bits of `x` left by `n` places, multiplying it by 2 to the power `n`.
 -}
 
 -- CHECK: shl1: 16

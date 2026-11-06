@@ -1,9 +1,10 @@
 module ListIndexedMapTest exposing (..)
 
-{-| indexedMap.
+{-| Top-level definitions named `map2`, `range` and `length` take precedence over
+the same names exposed by `import List exposing (..)`.
 
-From `SourceIR.ListCases`, a program of the elm-test catalogue, with a
-`main` that logs its `testValue`. The CHECK lines are what Elm 0.19.1 prints for it.
+The local versions are stubs (`map2` and `range` return `[]`, `length` returns
+0), so the local `indexedMap`, built from them, returns `[]` for `[ 1, 2 ]`.
 
 -}
 

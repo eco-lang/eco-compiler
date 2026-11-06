@@ -1,8 +1,9 @@
 module LetNumberTupleRecordNestTest exposing (main)
 
-{-| Probe: a record nested inside a tuple (`( { lo = 30 }, 40 )`), both the record
-field and the sibling tuple slot used at `Float`. Mixes record-field and
-tuple-slot refinement in one destructure. Correct: 30*1.5 + 40*1.5 = 105.
+{-| An integer-literal record field and an integer-literal tuple element, from a
+record nested in a pair, are both used as `Float`s: matching
+`( { lo = 30 }, 40 )` against `( r, c )` and computing
+`round (r.lo * 1.5) + round (c * 1.5)` logs 105.
 -}
 
 -- CHECK: tuprec: 105

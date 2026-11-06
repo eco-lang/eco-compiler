@@ -1,5 +1,10 @@
 module ParserAdvancedRunTest exposing (main)
 
+{-| `Parser.Advanced.run` returns the value of a parser that succeeds without consuming input.
+
+`succeed 42` is run on the empty string and the result is `Ok 42`.
+-}
+
 -- CHECK: succeeded: Ok 42
 
 import Html exposing (text)

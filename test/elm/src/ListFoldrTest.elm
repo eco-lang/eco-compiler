@@ -1,6 +1,7 @@
 module ListFoldrTest exposing (main)
 
-{-| Test List.foldr.
+{-| `List.foldr` folds from the right, shown by a sum and by `(++)` on strings,
+where `"abc"` reveals the order.
 -}
 
 -- CHECK: sum: 10

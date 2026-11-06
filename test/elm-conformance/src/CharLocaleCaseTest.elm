@@ -1,9 +1,14 @@
 module CharLocaleCaseTest exposing (main)
 
-{-| Char.toLocaleUpper/toLocaleLower. On node with the default locale they equal
-toUpper/toLower (no Turkish or Lithuanian rules), so no i, I or dotted/dotless i inputs. The
-inputs whose full mapping is several code points are in CaseMappingDivergenceTest
-(plans/char-simple-case-mapping.md). Expectations recorded from Elm (run-js-e2e.js --record).
+{-| `Char.toLocaleUpper` and `Char.toLocaleLower` of six characters with no locale-specific case
+rules give the same results as `Char.toUpper` and `Char.toLower`.
+
+The inputs are e acute, capital sigma, the titlecase digraph U+01C5, the Deseret small letter
+U+10428, `'a'` and `'Z'`. Each is logged by its code points (`charCps` from `ConformanceHelp`),
+with its locale upper and lower case.
+
+Among what is not tested: `i`, `I` and the dotted and dotless i, whose mapping differs under
+Turkish and Azeri rules, and any locale whose rules would change the results above.
 -}
 
 -- CHECK: E9 locUp: "C9"

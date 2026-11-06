@@ -1,8 +1,7 @@
 module LetNumberResultMapTest exposing (main)
 
-{-| Probe: a `number` boxed in `Result`, mapped at `Float`. Extends the existing
-tuple/record/list/Maybe boxed cases to `Result`. Correct: 1.5*30 = 45.
-
+{-| An integer literal inside `Ok`, mapped by `Result.map`, is used as a `Float`:
+`Result.map (\x -> round (x * 1.5)) (Ok 30)`, unwrapped by a `case`, logs 45.
 -}
 
 -- CHECK: result: 45

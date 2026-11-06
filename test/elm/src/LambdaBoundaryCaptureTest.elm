@@ -1,14 +1,12 @@
 module LambdaBoundaryCaptureTest exposing (main)
 
-{-| Regression test: variable capture in
-Compiler.LocalOpt.Typed.NormalizeLambdaBoundaries (recomment-bugs.txt,
-NormalizeLambdaBoundaries.elm line 885). The fresh-name counter restarts per
-case boundary and renameExpr does not stop at binders, so merging the outer
-case boundary renames `b` to `a_hl_0`, which the already-merged inner lambda's
-parameter captures: `a + b` computes `100 + 100` instead of `100 + 5`.
+{-| Checks that a lambda nested inside `case` branches refers to the variable it names, not to another binding that appears around it.
 
-Fixed 2026-10-28 (plans/review-bug-triage-fixes.md, item 3.4); the text
-below describes the old behaviour.
+`f False True 5` takes the `False` branch, binding `b` to 5, then calls `apply`,
+which passes 1 and 100 to a lambda that ignores its first argument and returns
+`\a -> a + b` from an inner `case`. The result is `100 + 5`, which is 105; a
+program that confused `b` with the lambda's parameter `a` would print 200.
+
 -}
 
 -- CHECK: result: 105

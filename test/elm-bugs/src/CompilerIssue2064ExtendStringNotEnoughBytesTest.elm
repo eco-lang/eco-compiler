@@ -4,7 +4,8 @@ module CompilerIssue2064ExtendStringNotEnoughBytesTest exposing (..)
 
 <https://github.com/elm/compiler/issues/2064>
 
-`Named String` extends the non-record `String`. Elm 0.19.1 should report an error, not crash.
+`Named String`, a constructor argument of `Something`, extends the non-record `String`. Elm 0.19.1
+crashes; it should report an error.
 
 -}
 

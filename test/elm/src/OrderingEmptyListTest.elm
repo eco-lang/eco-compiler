@@ -1,7 +1,11 @@
 module OrderingEmptyListTest exposing (main)
 
-{-| `<`, `<=`, `>`, `>=` on List Int including `[]`. Each operator
-routes through its own `Elm_Kernel_Utils_*` symbol.
+{-| Tests that `<`, `<=`, `>` and `>=` on `List Int` order the empty list
+before any non-empty list and treat two empty lists as equal.
+
+Each operator is applied directly to every pairing of `[]` and `[ 1 ]`, plus
+`[ 1 ]` against `[ 2 ]`, and each Boolean result is logged.
+
 -}
 
 -- CHECK: lt_ee: False

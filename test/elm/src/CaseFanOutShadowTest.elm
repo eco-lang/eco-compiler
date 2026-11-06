@@ -1,8 +1,6 @@
 module CaseFanOutShadowTest exposing (main)
 
-{-| Test nested case expressions with constructor destructuring.
-Targets the SSA variable name collision bug where placeholder
-variable names collide across case regions.
+{-| A function that destructures a custom type in its parameter and then cases on a `Result` combines the bound field with the `Ok` value, or returns -1 for `Err`.
 -}
 
 -- CHECK: r1: 5

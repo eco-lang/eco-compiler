@@ -1,9 +1,11 @@
 module UnsafePatternTripleNestedPatternsPatternArgCasesTest exposing (..)
 
-{-| UNSAFE PATTERN: Triple nested patterns (PatternArgCases).
+{-| A function parameter pattern `( ( a, b ), { x, y }, h :: t )` is rejected with an UNSAFE
+PATTERN error.
 
-From `SourceIR.PatternFailsCases` (`testValue`), the elm-test catalogue of programs
-the compiler must reject.
+A function's parameter patterns must match every value of their type. The nested tuple and
+the record pattern always match, but the cons pattern `h :: t` in the third position fails
+on the empty list.
 
 -}
 

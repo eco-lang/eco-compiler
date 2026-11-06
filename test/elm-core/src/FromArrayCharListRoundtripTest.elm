@@ -1,7 +1,8 @@
 module FromArrayCharListRoundtripTest exposing (main)
 
-{-| Round-trip identity for `List Char → Array Char → List Char`. Complements
-    the equality variant by inspecting the reconstructed list directly.
+{-| Converting `['a', 'b', 'c']` to an `Array` with `Array.fromList` and back with `Array.toList` gives the same list.
+
+The test logs the reconstructed list as well as the result of comparing it with the original.
 -}
 
 -- CHECK: result: ['a','b','c']

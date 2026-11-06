@@ -17,6 +17,9 @@ import Html exposing (text)
 import Parser.Advanced as A
 
 
+{-| Accepts decimal integers and reports a distinct problem string for every other kind of
+number.
+-}
 numberParser : A.Parser Never String Int
 numberParser =
     A.number

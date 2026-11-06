@@ -577,7 +577,7 @@ Third round (2026-11-04), each exposed first by a new test that failed natively:
   (`Compiler.Monomorphize.KernelAbi.sameTopLevelAbi`, in both mono engines), because an unsigned raw kernel
   reference in a kernel module can otherwise make a list argument an Int and give the kernel a second ABI
   (SourceIR `KernelHigherOrderCases` caught it). HEAP_046 amended. Test:
-  test/elm-conformance/src/ListMapNFunctionValueKindTest.elm. `Array.map` was never affected: elm/core's
+  test/eco-elm-conformance/src/ListMapNFunctionValueKindTest.elm. `Array.map` was never affected: elm/core's
   Array.elm calls the JsArray kernels saturated, and user code cannot name them.
 - HTTPS-04 fallback body FIXED. libcurl 7.88 does not follow `Location: \v` (blank after its whitespace trim)
   or `Location : /` (not its exact field name), while `headerCb` took both for followed redirects, so the
@@ -1697,7 +1697,7 @@ One row per bug; the full proposal is in the appendix.
 #### DEAD-11: static_assert(true) checks nothing
 - **Triage:** CERTAIN · LOW
 - **Test kind:** static check · **Exposes it:** low confidence (all callers pass literals 2 to 5)
-- **Test:** None can fail today. Existing guards for the mapN paths: test/elm/src/RootStackMapNTest.elm and test/elm/src/ListMap5FloatAggregateTest.elm, plus map2/map3 users.
+- **Test:** None can fail today. Existing guards for the mapN paths: test/eco-elm/src/RootStackMapNTest.elm and test/elm/src/ListMap5FloatAggregateTest.elm, plus map2/map3 users.
 - **Fix:** In elm-kernel-cpp/src/core/ListExports.cpp `kernelListMapN` (:426), delete `static_assert(true, ...)` and add `assert(n_args >= 2 && n_args <= kMaxArgs);` right after `constexpr int kMaxArgs = 5;`. Change the doc comment at :419 from "nothing checks it" to "asserted". ListExports.cpp is license-pinned (11 rows), so batch it with DEAD-12's ListExports.cpp edit into one re-audit. Risk: none.
 - **Shares:** DEAD-12 (same file, one re-audit).
 
@@ -3615,7 +3615,7 @@ One row per bug; the full proposal is in the appendix.
     - a `Dict Int Nest` whose values differ at depth 150 → `"False"`
 
     Today eco answers `True` for every unequal row. Mark the file `-- XFAIL-NATIVE: UTILS-05 eqHelp assumes equal past depth 100`.
-  - **(b) Existing test.** test/elm/src/EqDepthCutoffTest.elm pins the bug (`aboveLimit: True`). In the fixing commit, change that CHECK to `aboveLimit: False` and rewrite its doc comment, or delete the test in favour of (a).
+  - **(b) Existing test.** test/eco-elm/src/EqDepthCutoffTest.elm pins the bug (`aboveLimit: True`). In the fixing commit, change that CHECK to `aboveLimit: False` and rewrite its doc comment, or delete the test in favour of (a).
 
   Run both with `TEST_FILTER=elm cmake --build build --target full`.
 - **Fix:** Do it the elm/core JS way. In E/core/Utils.cpp, give `eqHelp` a `std::vector<std::pair<void*,void*>>& deferred` parameter, threaded through `eqUnboxableSlot`, `eqListHybrid` and `dictEq`. At `depth > 100`, push `(a, b)` and return true, instead of returning true outright. The top-level `equal` (:434) loops: it starts with `eqHelp(a, b, 0, stack)`, then pops each deferred pair and calls `eqHelp(pair, 0, stack)` until the stack is empty or a call returns false. Recursion stays bounded at about 100 frames, so the change adds no C-stack-overflow risk, unlike making the recursion unbounded. Raw pointers in the vector are safe only because equality allocates nothing and no GC can run during it, which is the existing premise of `resolveAndCompare`/`safeResolve`. State that in a comment, and keep the vector off the GC heap. Every caller of `eqHelp`/`equal` gets the fix, including `eco.value.eq` arm 3 (the same kernel), `List.member` and Dict/Set. Optionally, `cmp` has no depth limit and is plain recursive; check that it cannot overflow on these inputs (`compare` is not allowed on custom types, so it probably cannot). Risk: low to medium, on the hot path of `==`. Run a benchmark only if the plan's perf gate requires it.

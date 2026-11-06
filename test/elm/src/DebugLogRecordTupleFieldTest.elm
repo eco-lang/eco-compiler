@@ -1,17 +1,13 @@
 module DebugLogRecordTupleFieldTest exposing (main)
 
-{-| A `Debug.log` call used directly as a record field or tuple element whose
-type is unboxable (Int, Float). The `Debug.log` kernel call yields an
-`!eco.value`, but `Expr.generateRecordCreate` and `Expr.generateTupleCreate`
-pass an element the layout stores unboxed through as it is, so the
-`eco.construct.record` / `eco.construct.tuple2` op declares an i64/f64 slot for
-an `!eco.value` operand and the module fails to verify (CGEN\_026): "slot\_kinds[0]
-= 1 does not match operand type '!eco.value'". The same values built as a
-custom-type constructor's arguments or as list items compile fine.
+{-| A `Debug.log` call can be used directly as an `Int` or `Float` component of a
+tuple or field of a record, and the value it returns is stored there.
 
-The record is logged through its fields: Debug.toString of a record lists the
-fields in layout order on eco and by name in Elm, a formatting difference this
-test is not about.
+`pair` builds `( Debug.log "first" n, Debug.log "second" 2.5 )`, and `point`
+builds a record whose `x` and `y` fields are `Debug.log` calls. The test checks
+the lines each `Debug.log` prints and the tuple or record contents logged
+afterwards. The record is logged as a tuple of its fields, so the check does not
+depend on how `Debug.toString` formats a record.
 
 -}
 

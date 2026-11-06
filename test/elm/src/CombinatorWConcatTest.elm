@@ -1,6 +1,6 @@
 module CombinatorWConcatTest exposing (main)
 
-{-| W combinator with string append: w (++) "hi" = "hihi"
+{-| The W combinator, which passes one argument twice, applied to string append: `w (++) "hi"` is `"hihi"`.
 -}
 
 -- CHECK: result: "hihi"

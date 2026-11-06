@@ -95,7 +95,7 @@ next read, and elm/bytes never hands a decoder function to a kernel HOF.
 - `test/bf-codegen/bf_read_utf8_strict.mlir`: the fused lowering.
 - `test/elm-bytes/src/DecodeStringStrict{Fused,Kernel}Test.elm`: 51-case table
   on both paths (the "Fused" file has no MLIR pins until string decodes fuse).
-- `test/elm-bytes/src/DecodeFailureInCombinatorTest.elm`: failures under every
+- `test/eco-mlir/src/DecodeFailureInCombinatorTest.elm`: failures under every
   combinator position, `D.fail`, nested decodes, GC pressure and many repeated
   failures, on the kernel path.
 

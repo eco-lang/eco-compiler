@@ -1,17 +1,12 @@
 module LetNumberBoxedSilentMiscompileTest exposing (main)
 
-{-| Regression test (native/AOT backend) — the DANGEROUS variant of the
-let-bound-`number` mis-specialization (see `LetNumberFloatMulTest`).
+{-| Number literals placed inside a container by an unannotated `let` binding, then
+taken out and used as Floats, give the correct Float results.
 
-When the mistyped `number` is laundered through a box (a tuple / record / list
-/ Maybe element) before reaching the Float operation, no typed-kernel
-signature conflict is registered, so the program compiles and RUNS — but
-produces a silently wrong result: the `i64` bit-pattern of the literal is
-reinterpreted as an `f64` (a denormal ≈ 0), so every result below currently
-prints `0` / `[0, 0]` instead of the correct value.
-
-This is strictly worse than the crash cases: there is no compiler error, just
-incorrect output. The CHECK lines below are the correct answers.
+Each case multiplies by 1.5 and rounds: the first element of a tuple `( 30, 99 )`
+(45), a record field `{ a = 30 }` (45), each element of a list `[ 30, 40 ]`
+(`[45,60]`), the contents of `Just 30` through `Maybe.map` (45), and each element of a
+list held in a record field (`[45]`).
 
 -}
 

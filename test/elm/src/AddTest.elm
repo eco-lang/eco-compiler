@@ -1,15 +1,10 @@
 module AddTest exposing (main)
 
-{-| Simple test that verifies basic Elm operations compile and run.
+{-| `Debug.log` prints an `Int` bound in a `let`.
 
-    This test verifies:
-    1. Elm to MLIR compilation works
-    2. MLIR JIT execution works
-    3. Debug.log works with integers
+Despite the module's name, the program does no addition: it logs the literal
+42.
 
-    Note: Arithmetic operations like (+) currently have a type mismatch
-    between kernel signatures (expecting doubles) and JIT calling convention
-    (passing boxed values). This will be fixed in a future update.
 -}
 
 -- CHECK: AddTest: 42

@@ -1,9 +1,8 @@
 module TypeMismatchSelfAppliedArgumentAgainstARigidVarTest exposing (..)
 
-{-| TYPE MISMATCH: self-applied argument against a rigid var.
+{-| A local function argument that is applied to itself and also listed beside a function involving an annotated type variable is rejected with a TYPE MISMATCH.
 
-From `SourceIR.TypeCheckFailsCases` (`problemCases`), the elm-test catalogue of programs
-the compiler must reject.
+`h : a -> Int` defines a local `k x` whose `let` computes `x x` and whose body puts `x` in a list beside `\v -> always 0 [ v, w ]`, where `w` is `h`'s argument of type `a`. `k` is never called; the definition alone fails to type-check.
 
 -}
 

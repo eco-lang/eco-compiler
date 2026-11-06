@@ -1,6 +1,6 @@
 module ListEmptyTest exposing (main)
 
-{-| Test empty list.
+{-| The empty list `[]` logs as `[]` and `List.isEmpty []` is `True`.
 -}
 
 -- CHECK: empty: []

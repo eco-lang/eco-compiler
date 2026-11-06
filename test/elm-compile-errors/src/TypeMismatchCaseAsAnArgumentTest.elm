@@ -1,9 +1,6 @@
 module TypeMismatchCaseAsAnArgumentTest exposing (..)
 
-{-| TYPE MISMATCH: case as an argument.
-
-From `SourceIR.TypeCheckFailsCases` (`categoryCases`), the elm-test catalogue of programs
-the compiler must reject.
+{-| A `case` expression passed as the argument to `not` is rejected with a TYPE MISMATCH, because its branch yields a number and `not` takes a `Bool`.
 
 -}
 

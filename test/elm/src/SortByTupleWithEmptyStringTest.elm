@@ -1,18 +1,12 @@
 module SortByTupleWithEmptyStringTest exposing (main)
 
-{-| `List.sortBy` returning a tuple key whose second field can be `""`.
-The top-level key (Tuple2) is heap-allocated, so the F3 assert in
-`Allocator::resolve` does NOT fire — but the inner field comparison
-takes the `compareUnboxableSlot` path which IS special-cased for
-EmptyString. Cross between F3 structure and OK regression payload.
+{-| `List.sortBy` with a tuple key whose second component is sometimes `""` orders by the first component, then by the string.
 
-For input `[4, 1, 2, 3]`:
-- 4 → (0, "")   (even ∧ >2)
-- 1 → (1, "x")  (odd ∧ ≤2)
-- 2 → (0, "x")  (even ∧ ≤2)
-- 3 → (1, "")   (odd ∧ >2)
-Sorted by `(parity, suffix)`: (0,""), (0,"x"), (1,""), (1,"x")
-                              → 4,         2,      3,      1
+`keyOf n` is `( modBy 2 n, suffix )`, where `suffix` is `""` when `n > 2` and
+`"x"` otherwise. For `[ 4, 1, 2, 3 ]` the keys are `(0, "")`, `(1, "x")`,
+`(0, "x")` and `(1, "")`. Tuples compare component by component and `""` is less
+than `"x"`, so the sorted keys are `(0, "")`, `(0, "x")`, `(1, "")`, `(1, "x")`,
+giving `[4,2,3,1]`.
 -}
 
 -- CHECK: result: [4,2,3,1]

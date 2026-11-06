@@ -1,6 +1,6 @@
 module BoolTrueFalseTest exposing (main)
 
-{-| Test True and False constants.
+{-| The Bool constants `True` and `False` print as `True` and `False` with `Debug.log`.
 -}
 
 -- CHECK: true: True

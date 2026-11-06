@@ -1,6 +1,13 @@
 module EmbeddedNothingRecursiveTest exposing (main)
 
-{-| Test Nothing as the base case of a recursive function.
+{-| A recursive list search returns `Just` the first matching element, or
+`Nothing` once it reaches the end of the list.
+
+`findFirst` returns `Nothing` from its empty-list case and otherwise recurses on
+the tail. The test logs a search of `[1, 2, 3, 4]` for an element greater than
+2, which finds `Just 3`, and one for an element greater than 10, which finds
+`Nothing`.
+
 -}
 
 -- CHECK: find1: Just 3

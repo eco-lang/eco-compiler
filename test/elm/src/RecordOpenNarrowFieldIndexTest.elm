@@ -1,22 +1,13 @@
 module RecordOpenNarrowFieldIndexTest exposing (main)
 
-{-| Reproducer for the Stage 7 Const_Nil crash.
+{-| A let-bound helper with an inferred extensible-record argument, folded over two nested records with `List.foldl`, reads the right nested field.
 
-    Mirrors `buildSiblingData` inside
-    `Compiler.Generate.MLIR.Expr.generateLetGroup`:
+`buildSibling` has no annotation and reads only `captures`, `params` and
+`lambdaId` of `member.inner`, so its argument's type is inferred as a tuple
+holding extensible records that name only those fields, while the records
+passed in have four outer and five inner fields. Both members hold `LambdaId 999`, so the sum is 1998.
 
-      1. `buildSibling` is a let-bound, row-polymorphic local helper (no
-         type annotation).
-      2. The helper takes a tuple `(Int, ClosureBinding)` and only reads
-         three fields of the nested record (captures, lambdaId, params).
-      3. The helper is passed to `List.foldl`, which forces specialization
-         against a concrete tuple type.
-
-    If MLIR codegen indexes record projections against the row-polymorphic
-    narrow inferred type (`{a | captures, lambdaId, params}`), the read of
-    `inner.lambdaId` uses slot 1, but the heap value has the full 5-field
-    layout (slot 1 = `captures`). Empty captures = [] = Const_Nil → the
-    destructure `(LambdaId uid) = inner.lambdaId` aborts in eco_resolve_hptr.
+The `RecordNarrow` tests are variations of this program.
 -}
 
 -- CHECK: uid: 1998

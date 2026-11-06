@@ -1,9 +1,11 @@
 module WideCtorField24Test exposing (main)
 
-{-| Pins wide constructors end to end: 25 Int fields, a Float and a Char (27 fields). Fields 0..23
-keep their kinds in the Custom header bitmap, fields 24..26 in the first tail kind word
-(HEAP_019). Historically: the verifier rejected > 24 fields, generateCtor declared field 24 as
-!eco.value (B1) and the boxed projection branch read pointer bits (B2).
+{-| A custom type constructor with 27 fields, 25 `Int`s followed by a `Float` and
+a `Char`, keeps every field, and pattern matching reads back the later ones.
+
+`make 1000` builds `Wide 1000 1001 ... 1024 2.5 'z'`. The test reads fields 23
+to 26 and adds field 24 of two separately built values (2048).
+
 -}
 
 -- CHECK: field23: 1023

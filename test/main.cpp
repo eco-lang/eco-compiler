@@ -104,6 +104,13 @@
 #include "elm-conformance/ElmConformanceTest.hpp"
 #include "elm-compile-errors/ElmCompileErrorsTest.hpp"
 #include "eco-divergence/EcoDivergenceTest.hpp"
+#include "eco-mlir/EcoMlirTest.hpp"
+#include "eco-elm/EcoElmTest.hpp"
+#include "eco-elm-bytes/EcoElmBytesTest.hpp"
+#include "eco-elm-core/EcoElmCoreTest.hpp"
+#include "eco-elm-json/EcoElmJsonTest.hpp"
+#include "eco-elm-regex/EcoElmRegexTest.hpp"
+#include "eco-elm-conformance/EcoElmConformanceTest.hpp"
 #include "elm-json/ElmJsonTest.hpp"
 #include "elm-parser/ElmParserTest.hpp"
 #include "elm-regex/ElmRegexTest.hpp"
@@ -1398,6 +1405,14 @@ int main(int argc, char* argv[]) {
     auto elmConformanceTests = ElmConformanceTest::buildElmConformanceTestSuite();
     auto elmCompileErrorsTests = ElmCompileErrorsTest::buildElmCompileErrorsTestSuite();
     auto ecoDivergenceTests = EcoDivergenceTest::buildEcoDivergenceTestSuite();
+    // eco's own E2E tests, moved out of the shared elm-test-suite projects.
+    auto ecoMlirTests = EcoMlirTest::buildEcoMlirTestSuite();
+    auto ecoElmTests = EcoElmTest::buildEcoElmTestSuite();
+    auto ecoElmBytesTests = EcoElmBytesTest::buildEcoElmBytesTestSuite();
+    auto ecoElmCoreTests = EcoElmCoreTest::buildEcoElmCoreTestSuite();
+    auto ecoElmJsonTests = EcoElmJsonTest::buildEcoElmJsonTestSuite();
+    auto ecoElmRegexTests = EcoElmRegexTest::buildEcoElmRegexTestSuite();
+    auto ecoElmConformanceTests = EcoElmConformanceTest::buildEcoElmConformanceTestSuite();
     auto elmJsonTests = ElmJsonTest::buildElmJsonTestSuite();
     auto elmParserTests = ElmParserTest::buildElmParserTestSuite();
     auto elmRegexTests = ElmRegexTest::buildElmRegexTestSuite();
@@ -1456,6 +1471,13 @@ int main(int argc, char* argv[]) {
     suite.add(std::move(elmConformanceTests));
     suite.add(std::move(elmCompileErrorsTests));
     suite.add(std::move(ecoDivergenceTests));
+    suite.add(std::move(ecoMlirTests));
+    suite.add(std::move(ecoElmTests));
+    suite.add(std::move(ecoElmBytesTests));
+    suite.add(std::move(ecoElmCoreTests));
+    suite.add(std::move(ecoElmJsonTests));
+    suite.add(std::move(ecoElmRegexTests));
+    suite.add(std::move(ecoElmConformanceTests));
     suite.add(std::move(elmJsonTests));
     suite.add(std::move(elmParserTests));
     suite.add(std::move(elmRegexTests));

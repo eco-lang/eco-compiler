@@ -1,7 +1,11 @@
 module LetNumberListFixedTest exposing (main)
 
-{-| Probe: fixed-length list pattern (`[ a, b ]`) binding two `number` elements,
-both used at `Float`. Correct: 30*1.5 + 40*1.5 = 45 + 60 = 105.
+{-| Both elements of a list of `number` literals, matched by the fixed-length
+list pattern `[ a, b ]` and multiplied by a `Float`, are `Float`s.
+
+`case [ 30, 40 ] of [ a, b ] -> round (a * 1.5) + round (b * 1.5)` is 45 + 60,
+so the test logs 105.
+
 -}
 
 -- CHECK: listfixed: 105

@@ -1,16 +1,14 @@
 module LocalRecCaptureSplitParamTest exposing (main)
 
-{-| A local recursive function captures a tuple param of an enclosing
-tail-recursive function. The outer loop scalar-splits that param (its
-varMapping is removed; it lives only as slots in `splitAggParams`), so the
-MonoTailDef capture lookup — which only read varMappings — silently DROPPED
-the capture. The lambda body then crashed codegen
-(`lookupVar: unbound variable pair`), and the swallowed crash left a
-truncated .mlir behind while the compiler exited 0.
+{-| A let-bound recursive function reads a tuple parameter of the tail-recursive
+function that encloses it.
 
-outer2 (0,0) 2 -> pair (2,4); loop 0 -> 3 + 2 + 4 = 9 (whole-value use
-via Tuple.first/second). outer3 is the same via a `case` destructure.
-
+`outer2` and `outer3` each call themselves with an updated pair until `n`
+reaches 0, then define a local `loop` that counts to 3 and adds both
+components of the pair. `outer2` reads them with `Tuple.first` and
+`Tuple.second`; `outer3` destructures the pair with `case` inside `loop`.
+From `( 0, 0 )` with n = 2 the pair becomes `( 2, 4 )`, so each prints
+3 + 2 + 4 = 9.
 -}
 
 -- CHECK: o2: 9

@@ -1,14 +1,10 @@
 module AccessorFunctionFieldInListTest exposing (main)
 
-{-| Bug: Compiler.Monomorphize.ResolveAccessorValues leaves a MonoAccessorValue
-in place when its expected type is unknown. List literal elements (and call
-arguments, record-update values) are rewritten with no expected type, and an
-accessor whose field is itself a function is always deferred, so `.op` placed
-in a list literal survives to Compiler.Generate.MLIR.Expr, which crashes on any
-MonoAccessorValue.
+{-| Record accessors for function-typed fields can be used as list elements.
 
-Fixed 2026-10-28 (plans/review-bug-triage-fixes.md, item 3.7); the text
-below describes the old behaviour.
+`.op` and `.op2` read fields of type `Int -> Int`. They are placed in a list of
+type `List (Ops -> Int -> Int)`, and each is applied to one record and then to
+10, giving `10 + 1` and `10 * 2`.
 
 -}
 

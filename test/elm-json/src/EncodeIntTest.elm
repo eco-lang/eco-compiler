@@ -1,7 +1,9 @@
 module EncodeIntTest exposing (main)
 
-{-| `Json.Encode.int` calls `Json.wrap` which is migrated in Phase C to
-    `Elm_Kernel_Json_wrap_Int` for `Int` operands.
+{-| `Json.Encode.int` encodes zero, positive and negative integers, including the 32-bit extremes 2147483647 and -2147483648, as plain decimal JSON numbers.
+
+Each value is encoded with `Json.Encode.encode 0`, so the output has no whitespace, and the
+log shows the encoded string in quotes.
 -}
 
 -- CHECK: zero: "0"

@@ -237,7 +237,7 @@ explicitly root the cursor's underlying buffer.
      reifier extensions (HO specialisation, etc.) are doing real work.
 
 7. **Targeted smoke verification.**
-   - Add a new test fixture `test/elm-bytes/src/FusionPartialOpaqueTest.elm`
+   - Add a new test fixture `test/eco-mlir/src/FusionPartialOpaqueTest.elm`
      covering a mixed shape:
      ```elm
      E.encode (E.sequence

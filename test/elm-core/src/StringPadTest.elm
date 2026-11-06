@@ -1,5 +1,8 @@
 module StringPadTest exposing (main)
 
+{-| Checks that `String.padLeft` and `String.padRight` pad a string to the requested length with the given character.
+-}
+
 -- CHECK: padLeft1: "  hi"
 -- CHECK: padRight1: "hi  "
 -- CHECK: padLeft_char: "00042"

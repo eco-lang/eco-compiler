@@ -1,7 +1,9 @@
 module JsArrayUnsafeSetCharElementTest exposing (main)
 
-{-| `Array.set` on `Array Char` routes through
-    `Elm_Kernel_JsArray_unsafeSet_Char`.
+{-| `Array.set` on an `Array Char` replaces the element at the given index and leaves the original array unchanged.
+
+It sets index 0 and the last index, 3, each starting from the same four-element array.
+
 -}
 
 -- CHECK: original: ['a','b','c','d']

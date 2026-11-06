@@ -1,6 +1,19 @@
 module CombinatorTest exposing (main)
 
-{-| Test SKI-style combinators built from S and K.
+{-| SKI-style combinators, most of them built from S and K, each applied to `Int` arguments and printing its result.
+
+`k a _` is `a` and `s bf uf x` is `bf x (uf x)`. The point-free combinators are
+`b = s (k s) k`, `c = s (b b s) (k k)`, `i = s k k` and `t = c i`; `sp` and `w`
+are written directly. The tests:
+
+  - `b_compose`: `b square inc 4` is `square (inc 4)`, giving 25.
+  - `c_flip`: `c sub 10 3` is `sub 3 10`, giving -7.
+  - `s_feed`: `s (+) double 5` is `5 + double 5`, giving 15.
+  - `sp_combine`: `sp mul inc double 6` is `inc 6 * double 6`, giving 84.
+  - `w_dup`: `w mul 9` is `mul 9 9`, giving 81.
+  - `t_thrush`: `t 7 (\x -> x * 3)` gives 21.
+  - `i_identity`: `i 42` gives 42.
+
 -}
 
 -- CHECK: b_compose: 25

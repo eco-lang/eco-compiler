@@ -1,6 +1,11 @@
 module CaseMultiFieldExtractTest exposing (main)
 
-{-| Test case extracting multiple fields from custom type constructors.
+{-| Checks that a `case` on a custom type binds every argument of a two-argument
+and a four-argument constructor to the right variable.
+
+`Point x y` gives `x + y`, and `Rectangle x1 y1 x2 y2` gives
+`(x2 - x1) * (y2 - y1)`, so a swapped binding would change the printed value.
+
 -}
 
 -- CHECK: point1: 3

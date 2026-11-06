@@ -1,6 +1,7 @@
 module CaseCtorArgPatternTest exposing (main)
 
-{-| Test constructor argument patterns in function parameters. -}
+{-| A single-constructor custom type can be destructured by a pattern in a function parameter, as in `getId (Person id _)`.
+-}
 
 -- CHECK: id: 30
 -- CHECK: age: 25

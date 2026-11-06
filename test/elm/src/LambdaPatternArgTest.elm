@@ -1,6 +1,12 @@
 module LambdaPatternArgTest exposing (main)
 
-{-| Test lambda with tuple and record pattern arguments. -}
+{-| Checks anonymous functions whose parameters are tuple, record and wildcard patterns.
+
+`swap` destructures a pair, `getX` destructures a record with field `x`, and
+`mixed` takes a variable, a pair pattern and a wildcard and returns the pair's
+first element.
+
+-}
 
 -- CHECK: swap: (2,1)
 -- CHECK: getX: 42

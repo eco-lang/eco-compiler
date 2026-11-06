@@ -1,6 +1,6 @@
 module CompilerIssue2006IndexOutOfBoundsMaybeWithDefaultTest exposing (..)
 
-{-| Applying a `Subtype -> Subtype` function to the whole model crashes the compiler.
+{-| Applying a `Subtype -> Subtype` function from `Maybe.withDefault` to the whole model crashes the compiler.
 
 <https://github.com/elm/compiler/issues/2006>
 

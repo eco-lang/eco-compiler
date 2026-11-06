@@ -1,9 +1,9 @@
 module RecordAccessorFunctionCaseTest exposing (..)
 
-{-| Accessor function.
+{-| A record accessor function `.x` stored in a top-level value can be applied to a record.
 
-From `SourceIR.RecordCases`, a program of the elm-test catalogue, with a
-`main` that logs its `testValue`. The CHECK lines are what Elm 0.19.1 prints for it.
+`testFn` is defined as `.x` with no annotation; `testValue` applies it to `{ x = 1 }`, so the
+log shows `testValue: 1`.
 
 -}
 

@@ -143,7 +143,7 @@ should be visible during diagnostic iterations.
 
 ### Step 1 — Write the initial candidate test
 
-File: `test/elm/src/TupleSlotBoxingMismatchTest.elm`. Start minimal
+File: `test/eco-elm/src/TupleSlotBoxingMismatchTest.elm`. Start minimal
 — the same shape vetted in the prior conversation. **Crucially, use
 `Eco.Console.log` (not `Debug.log`)** since the compiler may be run
 under `--optimize` which rejects `Debug.*`:
@@ -244,7 +244,7 @@ Capture two diagnostic-trace streams:
            --kernel-package eco/compiler \
            --local-package eco/kernel=/work/eco-kernel-cpp \
            --output=/tmp/testcase.mlir \
-           /work/test/elm/src/TupleSlotBoxingMismatchTest.elm \
+           /work/test/eco-elm/src/TupleSlotBoxingMismatchTest.elm \
            2>/tmp/test_traces.log
 
 2. **Self-compile-trace** — already on disk as
@@ -538,7 +538,7 @@ task at hand; gate by variable name/id once known.
 
 ## Deliverable
 
-`test/elm/src/TupleSlotBoxingMismatchTest.elm` that fails the runtime
+`test/eco-elm/src/TupleSlotBoxingMismatchTest.elm` that fails the runtime
 assertion on the current (buggy) compiler and would pass once the
 bug is fixed, plus a brief `plans/tuple-slot-boxing-reproducer.md`
 recording the iteration trail and the minimal set of structural

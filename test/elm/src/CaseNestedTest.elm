@@ -1,6 +1,7 @@
 module CaseNestedTest exposing (main)
 
-{-| Test nested case expressions.
+{-| Checks that a `case` on one `Maybe` with a further `case` on a second `Maybe`
+inside each branch reaches all four combinations correctly.
 -}
 
 -- CHECK: nested1: "both"

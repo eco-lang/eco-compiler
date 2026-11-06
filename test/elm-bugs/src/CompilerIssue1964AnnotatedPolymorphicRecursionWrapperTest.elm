@@ -6,7 +6,8 @@ module CompilerIssue1964AnnotatedPolymorphicRecursionWrapperTest exposing (..)
 
 `depth : Nested a -> Int` is annotated, so the recursive call at `Nested (Wrapper a)` is
 well-typed (polymorphic recursion with an annotation). Elm 0.19.1 reports a type mismatch
-(`Nested (Wrapper a)` vs `Nested a`).
+(`Nested (Wrapper a)` vs `Nested a`). It should compile, and `depth` of the two-level `value`
+is 2.
 
 -}
 

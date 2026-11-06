@@ -1,9 +1,8 @@
 module TypeMismatchAccessOnANumberTest exposing (..)
 
-{-| TYPE MISMATCH: access on a number.
+{-| Field access on an `Int` is rejected with a TYPE MISMATCH.
 
-From `SourceIR.TypeCheckFailsCases` (`contextCases`), the elm-test catalogue of programs
-the compiler must reject.
+`n` is annotated `Int`, and `x = n.foo` reads a field `foo` from it.
 
 -}
 

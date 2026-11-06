@@ -1,9 +1,6 @@
 module TypeMismatchCompappendListEntryWithABoolTest exposing (..)
 
-{-| TYPE MISMATCH: compappend list entry with a Bool.
-
-From `SourceIR.TypeCheckFailsCases` (`problemCases`), the elm-test catalogue of programs
-the compiler must reject.
+{-| A list holding a value used with both `++` and `<` alongside `True` is rejected with a TYPE MISMATCH, because `Bool` can be neither appended nor compared.
 
 -}
 

@@ -1,9 +1,8 @@
 module CyclicDefinitionATopLevelValueDefinedByItselfTest exposing (..)
 
-{-| CYCLIC DEFINITION: a top-level value defined by itself.
+{-| A top-level value defined in terms of itself is rejected with a CYCLIC DEFINITION error.
 
-From `SourceIR.CanonicalizeFailsCases` (`otherCases`), the elm-test catalogue of programs
-the compiler must reject.
+`loop` is defined as `loop + 1`. It takes no arguments, so evaluating it would never finish.
 
 -}
 

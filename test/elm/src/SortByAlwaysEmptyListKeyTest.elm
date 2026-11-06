@@ -1,8 +1,10 @@
 module SortByAlwaysEmptyListKeyTest exposing (main)
 
-{-| `List.sortBy` whose key extractor returns the embedded constant `[]`
-for every input. F3 with the Nil-family constant — same assert in
-`Allocator::resolve`.
+{-| `List.sortBy` with a key function that returns `[]` for every element leaves the list in its original order.
+
+`emptyKey` ignores its argument and returns `[]`. All keys are equal, and
+`List.sortBy` is stable, so `[ 3, 1, 2 ]` stays `[3,1,2]`.
+
 -}
 
 -- CHECK: result: [3,1,2]

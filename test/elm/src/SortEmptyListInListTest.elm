@@ -1,8 +1,9 @@
 module SortEmptyListInListTest exposing (main)
 
-{-| `List.sort` on `List (List Int)` that includes `[]` twice.
-Same F3 surface as `SortEmptyStringInListTest` with the Nil-family
-constant.
+{-| `List.sort` on a `List (List Int)` that contains `[]` twice puts the empty lists first.
+
+Lists compare element by element, and `[]` is less than any non-empty list, so
+`[ [ 1 ], [], [ 2 ], [] ]` sorts to `[[],[],[1],[2]]`.
 -}
 
 -- CHECK: result: [[],[],[1],[2]]

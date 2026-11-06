@@ -1,9 +1,11 @@
 module StringRopeContentTest exposing (main)
 
-{-| G3/E14: build a rope via repeated ++ exceeding the 128 Ki-unit flatten limit,
-then assert content (not just length). 1400 appends of a 100-char chunk = 140000
-chars; past 131072 code units (STRING\_FLATTEN\_LIMIT) append builds
-Tag_StringRope nodes. Head and tail must be the intact chunk boundary.
+{-| Checks that a 140000-character string built by 1400 successive appends has the right length and intact content at both ends.
+
+Each append adds `"abcdefghij"` repeated 10 times to the end of the
+accumulator, so the first and the last ten characters must both be
+`"abcdefghij"`.
+
 -}
 
 -- CHECK: rope_len: 140000

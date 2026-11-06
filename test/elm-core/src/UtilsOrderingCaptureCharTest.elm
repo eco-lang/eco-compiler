@@ -1,6 +1,12 @@
 module UtilsOrderingCaptureCharTest exposing (main)
 
-{-| Higher-order capture of `(<)`, `(<=)`, `(>)`, `(>=)` on `Char`.
+{-| `(<)`, `(<=)`, `(>)` and `(>=)` on `Char` give the right answers when
+passed as function values or applied in prefix form.
+
+On the list `['a','b','c','d','e']` with pivot `'c'`, each operator is applied
+in prefix form inside a `List.filter` lambda, and `(<)` and `(>=)` are also passed to the
+generic helper `countWith`, counting 2 and 3 elements.
+
 -}
 
 -- CHECK: lt_filter: ['a','b']
@@ -14,6 +20,8 @@ module UtilsOrderingCaptureCharTest exposing (main)
 import Html exposing (text)
 
 
+{-| Counts the elements `x` of a list for which `pred x target` holds.
+-}
 countWith : (a -> a -> Bool) -> a -> List a -> Int
 countWith pred target =
     List.foldl

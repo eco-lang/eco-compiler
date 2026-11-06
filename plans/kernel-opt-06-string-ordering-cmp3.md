@@ -33,7 +33,7 @@ the string-cmp plumbing shipped Aug 10 2026
 | `compiler/src/Compiler/Generate/MLIR/Expr.elm` | 2 emission sites (:3725-3747, :4199-4220) route through `gateIntrinsic` and take a **list** of ops |
 | `compiler/src/Compiler/Eco/Config.elm` | `stringOrderIntrinsic : Bool` — alias field (after :47), `default` (after :338), decoder `D.apply` (after :361), hash token `strord=1` (after :743) |
 | `compiler/src/Builder/Eco/Config.elm` | `ECO_STRING_ORDER_INTRINSIC` chain entry (after :264) + `applyStringOrderIntrinsicOverride` (mirror of :272-290) |
-| `test/elm/src/StringOrderIntrinsicTest.elm` | NEW — rewrite-case fixture |
+| `test/eco-elm/src/StringOrderIntrinsicTest.elm` | NEW — rewrite-case fixture |
 | `test/elm/src/StringOrderBailTest.elm` | NEW — bail-case fixture (separate file: `CHECK-NOT` is whole-output) |
 | `design_docs/invariants.csv` | CGEN_075 (:639) gains clause (f): the front-end ordering intrinsic is a cmp3 consumer, signed `<0/<=0/>0/>=0` only |
 
@@ -463,7 +463,7 @@ default-on. Two commits:
   loops, followed by `cmake --preset build` (a new file needs a reconfigure).
   Cost: silently changes config for every other test in the suite.
 
-**Fixture 1 — `test/elm/src/StringOrderIntrinsicTest.elm`** (rewrite cases).
+**Fixture 1 — `test/eco-elm/src/StringOrderIntrinsicTest.elm`** (rewrite cases).
 Conventions from `test/elm/src/CompareStringTest.elm` /
 `CompareEmptyStringTest.elm` (module doc, `-- CHECK:` block above the imports,
 one `Debug.log` per case, `text "done"`) plus `-- CHECK-MLIR:` as in

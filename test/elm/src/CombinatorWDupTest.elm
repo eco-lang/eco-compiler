@@ -1,6 +1,6 @@
 module CombinatorWDupTest exposing (main)
 
-{-| W combinator: x * x on 9 = 81
+{-| The W combinator, which passes one argument twice: `w mul 9` is `mul 9 9`, which is 81.
 -}
 
 -- CHECK: result: 81

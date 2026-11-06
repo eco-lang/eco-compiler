@@ -1,9 +1,8 @@
 module TypeMismatchStringRightOfPowerTest exposing (..)
 
-{-| TYPE MISMATCH: string right of ^.
+{-| A `String` as the right operand of `^` is rejected with a TYPE MISMATCH.
 
-From `SourceIR.TypeCheckFailsCases` (`operatorCases`), the elm-test catalogue of programs
-the compiler must reject.
+`2 ^ "a"`: `^` takes two numbers.
 
 -}
 

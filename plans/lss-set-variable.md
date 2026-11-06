@@ -216,7 +216,7 @@ Two pieces are prerequisites under either order and cannot regress anything:
 3. **The completeness oracle is wrong somewhere.** Grounding to ∅ where the
    system is incomplete is the LSS_001 miscompile, not an imprecision. Every
    ∅-grounding site needs the same honesty treatment LSS_026(a) got, and the
-   runtime witness (`test/elm/src/LssMixedSigHonestyTest.elm`) must stay green.
+   runtime witness (`test/eco-elm/src/LssMixedSigHonestyTest.elm`) must stay green.
 4. **`maxSpecsPerGlobal` under §2b.** If key-inclusion is chosen after all, the
    budget stops being fan-out policy and becomes load-bearing again — reversing
    LSS_018's demotion of it.

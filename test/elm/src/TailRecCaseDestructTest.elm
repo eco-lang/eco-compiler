@@ -1,8 +1,11 @@
 module TailRecCaseDestructTest exposing (main)
 
-{-| Test tail-recursive function with case expression and
-pattern destructuring in branches containing tail calls.
-Exercises TailRec.compileCaseStep + compileDestructStep.
+{-| Self tail-recursive functions whose tail calls sit in a `case` branch that
+destructures a list with `x :: xs` give the right results.
+
+  - `myFoldl (+) 0 [1, 2, 3, 4, 5]`, a hand-written left fold, is 15.
+  - `mySum [1, 2, 3, 4]`, which calls `myFoldl` with `(+)`, is 10.
+  - `myCountHelper 0 [10, 20, 30]`, which ignores each element with `_ :: rest`, counts 3.
 -}
 
 -- CHECK: foldl: 15

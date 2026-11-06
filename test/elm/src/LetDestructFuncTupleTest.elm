@@ -1,6 +1,12 @@
 module LetDestructFuncTupleTest exposing (main)
 
-{-| Test let-destructuring a tuple of functions selected by case. -}
+{-| A `let` destructures a pair of functions chosen by a `case`: a field accessor and
+a record-update lambda for the same field.
+
+For `First`, `choose` gets the pair `( .a, \x m -> { m | a = x } )`, reads field `a`
+of `{ a = 10, b = 20 }` (10), and sets it to 99 (99).
+
+-}
 
 -- CHECK: get: 10
 -- CHECK: set: 99

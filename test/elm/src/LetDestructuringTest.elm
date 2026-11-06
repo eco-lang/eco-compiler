@@ -1,6 +1,7 @@
 module LetDestructuringTest exposing (main)
 
-{-| Test pattern destructuring in let.
+{-| Tuple patterns in `let` bindings, for a pair and for a triple; the line labelled
+`head` logs the first element of the triple `(10, 20, 30)`.
 -}
 
 -- CHECK: first: 1

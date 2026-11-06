@@ -1,6 +1,13 @@
 module ClosureCaptureTupleTest exposing (main)
 
-{-| Test closure capturing tuple values. -}
+{-| A lambda returned from a function captures a tuple and destructures it with a
+`let` pattern when called.
+
+`addWithTuple ( 1, 2 ) 3` gives 6. `nestedTuple` destructures a tuple nested
+inside a tuple, and `nestedTuple ( ( 1, 2 ), 3 ) 4` gives 10. `mixedCapture`
+captures an `Int` alongside the tuple, and `mixedCapture 1 ( 2, 3 ) 3` gives 9.
+
+-}
 
 -- CHECK: add: 6
 -- CHECK: nested: 10

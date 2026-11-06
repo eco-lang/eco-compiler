@@ -1,11 +1,13 @@
 module CompilerIssue2108IfBranchExtensibleRecordHangTest exposing (main)
 
-{-| `if` branches of incompatible extensible-record function types.
+{-| `if` branches of incompatible extensible-record function types must be rejected with a type
+error, not hang the compiler.
 
 <https://github.com/elm/compiler/issues/2108>
 
-The program is ill-typed, so it must be rejected with a type error. Elm 0.19.1 instead hangs while
-its memory grows without bound (the runner kills it at its compile memory limit), or crashes.
+One branch is `changesTypeVariable`, from `Thing { b | something : () }` to
+`Thing { b | somethingElse : () }`; the other is `identity`, which needs those two types to be
+equal. Elm 0.19.1 instead hangs while its memory grows without bound, or crashes.
 
 -}
 

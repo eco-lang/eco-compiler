@@ -1,6 +1,10 @@
 module PolyLetConstTest exposing (main)
 
-{-| Test polymorphic let-bound const at two type combos.
+{-| A let-bound polymorphic `const` is used at two different type combinations in
+the same scope, and each use returns its first argument.
+
+`const 1 "hi"` logs 1 and `const "hi" 1` logs `"hi"`.
+
 -}
 
 -- CHECK: r1: 1

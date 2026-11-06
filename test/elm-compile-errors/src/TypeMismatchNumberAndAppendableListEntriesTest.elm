@@ -1,9 +1,8 @@
 module TypeMismatchNumberAndAppendableListEntriesTest exposing (..)
 
-{-| TYPE MISMATCH: number and appendable list entries.
+{-| A list literal whose entries are `a + 1` and `b ++ b` is rejected with a TYPE MISMATCH error.
 
-From `SourceIR.TypeCheckFailsCases` (`problemCases`), the elm-test catalogue of programs
-the compiler must reject.
+All entries of a list share one type. The first entry must be a `number` and the second an `appendable`, and no type is both.
 
 -}
 

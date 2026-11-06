@@ -1,12 +1,23 @@
 module StringZeroLenSliceTest exposing (main)
 
-{-| HEAP_071 audit: every String kernel that cuts a range out of a string, asked
-for an EMPTY range, over every representation: small ASCII (UTF-8 leaf), small
-non-ASCII (UTF-16 leaf), large ASCII (ByteBuffer + UTF-8 view), large
-non-ASCII (split-header UTF-16), a structural slice, and a rope (> the 128K
-flatten limit). Each result must be the Empty constant.
+{-| `String.slice`, `left`, `right`, `dropLeft` and `dropRight` return a true
+empty string when asked for an empty range, for short and long, ASCII and
+non-ASCII inputs.
 
-probe s = length, String.isEmpty, (s == ""), case-on-"" — "0EQC" is correct.
+`emptyCuts` asks for an empty range seven ways, and each result is passed to
+`probe`, which checks `String.length`, `String.isEmpty`, `== ""` and a `case`
+on the `""` pattern. An empty result must answer all four as empty, `"0EQC"`.
+
+The inputs, whose lengths `sizes` logs, are `"abc"` (3), `"éü"` (2), a
+9600-character ASCII string, the same with a leading `é` (9601), a
+9000-character slice of that one, and a 160000-character string made by
+appending two halves. `uncons_rest` checks the rest left by `String.uncons` on
+three one-character strings.
+
+After that, the program builds a large comma-joined string of 100,001 numbers
+and probes every case result again; `after_gc_bad` is the number that no longer
+reads as `"0EQC"`, and must be 0.
+
 -}
 
 -- CHECK: slice_ascii: ["0EQC","0EQC","0EQC","0EQC","0EQC","0EQC","0EQC"]
@@ -22,6 +33,11 @@ probe s = length, String.isEmpty, (s == ""), case-on-"" — "0EQC" is correct.
 import Html exposing (text)
 
 
+{-| Returns a four-character summary of `s`: its length, then `E` if
+`String.isEmpty s` holds (else `e`), `Q` if `s == ""` (else `q`), and `C` if a
+`case` on `s` matches the `""` pattern (else `c`). A correct empty string gives
+`"0EQC"`.
+-}
 probe : String -> String
 probe s =
     String.fromInt (String.length s)
@@ -36,7 +52,10 @@ probe s =
            )
 
 
-{-| Seven ways to ask for an empty range of `s`. -}
+{-| Returns seven empty ranges of `s`: two `String.slice` calls with equal
+indices, one with start past end, `left 0`, `right 0`, and dropping all of `s`
+from either end.
+-}
 emptyCuts : String -> List String
 emptyCuts s =
     let
@@ -53,6 +72,9 @@ emptyCuts s =
     ]
 
 
+{-| Returns what follows the first character of `s`, or `"uncons-failed"` if
+`s` is empty.
+-}
 unconsRest : String -> String
 unconsRest s =
     case String.uncons s of
@@ -77,7 +99,7 @@ main =
         bigUtf16 =
             "é" ++ String.repeat 1200 "abcdefgh"
 
-        -- a structural slice (> tiny limit) over a large UTF-16 parent
+        -- a 9000-character slice of the long non-ASCII string
         sliced =
             String.slice 100 9100 bigUtf16
 

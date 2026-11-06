@@ -1,5 +1,11 @@
 module ParserMapChompedStringTest exposing (main)
 
+{-| Checks that `Parser.mapChompedString` passes the consumed text to its function.
+
+`chompWhile Char.isAlpha` on `"abc"` consumes `"abc"`, and the function
+combines that text with its upper-cased form, giving `Ok "abc-ABC"`.
+-}
+
 -- CHECK: result: Ok "abc-ABC"
 
 import Char

@@ -1,5 +1,13 @@
 module StringFoldlTest exposing (main)
 
+{-| Checks that `String.foldl` visits characters from the left and `String.foldr` from the right.
+
+Both fold `String.cons` over `"hello"` starting from `""`. Consing from the left
+reverses the string, giving `"olleh"`; consing from the right rebuilds it,
+giving `"hello"`.
+
+-}
+
 -- CHECK: foldl1: "olleh"
 -- CHECK: foldr1: "hello"
 

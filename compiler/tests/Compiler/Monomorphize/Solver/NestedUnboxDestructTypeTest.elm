@@ -15,7 +15,7 @@ whose declared type is a bare type parameter, so the field `Inner a` of
 `Outer` gave no `Float` instance and `y` kept the eager `Int`. A real build
 then crashed in codegen with "Kernel signature mismatch for
 Elm\_Kernel\_Basics\_add\_Float: existing (f64, f64 -> f64) vs new
-(i64, f64 -> f64)"; see test/elm/src/NestedUnboxLetDestructFloatTest.elm.
+(i64, f64 -> f64)"; see test/eco-elm/src/NestedUnboxLetDestructFloatTest.elm.
 
 -}
 

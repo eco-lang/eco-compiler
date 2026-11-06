@@ -1,10 +1,12 @@
 module StringAstralReverseTest exposing (main)
 
-{-| G1/E4: reverse keeps a surrogate pair together and in order, as Elm's JS
-`_String_reverse` does, so it equals the code-point reversal
-(fromList ∘ List.reverse ∘ toList, where toList yields one Char per code
-point) and "a😀b" reverses to "b😀a". Asserted as equalities so the output is
-ASCII-only (Debug.log \u-escapes each UTF-16 unit of a non-ASCII string).
+{-| `String.reverse` keeps a character outside the Basic Multilingual Plane,
+such as an emoji, whole, rather than reversing the two UTF-16 units it is
+stored as.
+
+The test checks that reversing `"a😀b"` equals reversing its `String.toList`,
+that it gives `"b😀a"`, and that reversing `"x😀𝄞y"` twice returns it unchanged.
+
 -}
 
 -- CHECK: rev_matches_codepoint: True

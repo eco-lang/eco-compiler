@@ -5,8 +5,8 @@ module CoreIssue1123NestedCmdBatchStackOverflowTest exposing (main)
 <https://github.com/elm/core/issues/1123>
 
 Elm 0.19.1 recurses once per nesting level and throws `RangeError: Maximum call stack size
-exceeded`. Folding many `( model, Cmd )` updates with `Cmd.batch [ cmd, nextCmd ]` builds such a
-nesting; it is a valid command and the program must run it.
+exceeded`. The test nests a `Task.perform` inside `Cmd.batch [ acc, Cmd.none ]` 100000 times. That
+is a valid command, so the program must run it and receive the inner task's result, 1.
 
 -}
 

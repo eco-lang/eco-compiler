@@ -1,6 +1,9 @@
 module FloatSubTest exposing (main)
 
-{-| Test float subtraction.
+{-| Float subtraction gives the expected value, including when the right operand is a negative literal.
+
+The cases are `10.0 - 3.0`, `5.0 - -5.0` and `-2.0 - -3.0`.
+
 -}
 
 -- CHECK: sub1: 7

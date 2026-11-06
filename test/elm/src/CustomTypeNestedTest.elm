@@ -1,6 +1,11 @@
 module CustomTypeNestedTest exposing (main)
 
-{-| Test nested custom types.
+{-| A value of a recursive, parameterised custom type (a binary tree with values
+in its leaves) can be built several levels deep and logged.
+
+The only check is that a line starting with `nested` is printed; the logged
+text itself is not checked.
+
 -}
 
 -- CHECK: nested

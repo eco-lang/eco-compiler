@@ -1,9 +1,10 @@
 module TypeMismatchCompappendAgainstARigidVarTest exposing (..)
 
-{-| TYPE MISMATCH: compappend against a rigid var.
+{-| A value used with both `++` and `<` cannot share a type with an annotation's type variable, and the program is rejected with a TYPE MISMATCH.
 
-From `SourceIR.TypeCheckFailsCases` (`problemCases`), the elm-test catalogue of programs
-the compiler must reject.
+Inside `f : a -> Int`, the lambda's argument `b` is appended and compared, so its type must be
+both appendable and comparable. Putting `x` and `b` in one list forces `b` to have the type
+`a` of `f`'s argument, and `a`, being named in the annotation, stands for any type.
 
 -}
 

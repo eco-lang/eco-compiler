@@ -1,9 +1,10 @@
 port module PortEncodingEncodeTuple2Test exposing (..)
 
-{-| Encode Tuple2.
+{-| A port module declaring an outgoing port that carries `( Int, String )` compiles and runs.
 
-From `SourceIR.PortEncodingCases`, a program of the elm-test catalogue, with a
-`main` that logs its `testValue`. The CHECK lines are what Elm 0.19.1 prints for it.
+The port `out` is declared but never called, so the compiler must still accept `( Int, String )` as
+a type that can be encoded to JavaScript. `main` logs the constant `testValue` and shows a
+text node, so the expected output is `testValue: 0`.
 
 -}
 

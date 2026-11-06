@@ -1,6 +1,9 @@
 module RecordNestedAccessTest exposing (main)
 
-{-| Test nested record chained access. -}
+{-| Chained field access reads through nested record literals two and three levels deep.
+
+`r.nested.value` gives 42 and `s.a.b.c` gives 99.
+-}
 
 -- CHECK: deep: 42
 -- CHECK: chain: 99

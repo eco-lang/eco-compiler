@@ -1,7 +1,8 @@
 module NotEqualBoolIfTest exposing (main)
 
-{-| `Bool /= Bool` flowing through `if … then … else …`. Exercises the
-`Elm_Kernel_Utils_notEqual` symbol on a control-flow scrutinee.
+{-| The result of `/=` on two `Bool` literals is used as the condition of an
+`if`, for all four combinations of operands; each logs `"yes"` exactly when
+the operands differ.
 -}
 
 -- CHECK: ifTT: "no"

@@ -1,11 +1,15 @@
 module NumberDestructFieldTest exposing (main)
 
-{-| Number values destructured through compound constructor fields (finding
-F2). Each `let`-bound value has a `number` variable inside a tuple, list,
-record or `Maybe` field of a constructor, is destructured with a constructor
-pattern, and is used at `Float`; the nested tuple pair is used at both `Float`
-and `Int`. Before the fix the destructured names kept the `Int` default and
-compilation failed on a kernel signature mismatch.
+{-| Number literals stored in a constructor's tuple, list, record or `Maybe`
+field, then destructured in a `let` with a constructor pattern, take the type
+`Float` from how they are later used.
+
+Each of `T`, `L`, `R` and `M` has a type parameter for the number and an
+extra `Int` field; the destructured value is used in `Float` arithmetic. In
+`N ( ( 1, 2 ), 3 )` the pair's two numbers share one type parameter and are
+used as `Float`s, while the third has its own parameter and is not, so
+`nested` logs `(3.5,4)`.
+
 -}
 
 -- CHECK: tuple field: 2.5

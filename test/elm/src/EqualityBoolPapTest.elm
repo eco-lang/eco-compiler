@@ -1,9 +1,13 @@
 module EqualityBoolPapTest exposing (main)
 
-{-| First-class reference to `(==)` partially applied to a Bool. The
-intrinsic path cannot fire on a value-position `(==)`, so this *must*
-land on a kernel symbol. Today that symbol is the unsuffixed
-`Elm_Kernel_Utils_equal` (no `_Bool` variant), exposing the bug.
+{-| `(==)` partially applied to a `Bool` works as an ordinary predicate passed
+to `List.map`, `List.filter` and `List.any`.
+
+`isTrue` is `(==) True` and `isFalse` is `(==) False`. Mapped over `[True,
+False, True, False]` they give the list itself and its negation; filtering keeps
+the two matching elements; and `List.any` is `True` for both, since the list
+contains each value.
+
 -}
 
 -- CHECK: isTrueList: [True,False,True,False]

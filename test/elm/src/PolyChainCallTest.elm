@@ -1,6 +1,13 @@
 module PolyChainCallTest exposing (main)
 
-{-| Test polymorphic chain callers: polymorphic function calling polymorphic callee multiple times. -}
+{-| Tests a polymorphic function that calls another polymorphic function twice,
+building a binary tree of two nodes that is then counted.
+
+`insertTree` makes a new node with the given tree as its left child, so
+`buildTree 1 2` is a node holding 2 whose left child holds 1, and `sizeTree`
+counts 2 nodes.
+
+-}
 
 -- CHECK: size: 2
 

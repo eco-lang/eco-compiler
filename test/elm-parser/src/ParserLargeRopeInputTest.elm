@@ -1,18 +1,17 @@
 module ParserLargeRopeInputTest exposing (main)
 
-{-| PARSE-01 (plans/kernel-lib-bug-fixes.md): the parser kernels must read a source String that
-is a rope or a slice longer than `string_flatten_limit` (131,072 UTF-16 units).
+{-| Checks that `chompWhile`, `symbol`, `chompUntil` and `getOffset` work on long strings built at run time.
 
-Each source is built at run time with `++`, which always makes a rope above the limit, and the
-repeat count comes from `List.length (List.range 1 n)` so no constant folding can turn it into a
-flat literal. One parser per kernel primitive runs on it: `chompWhile` (isSubChar), `symbol`
-(isSubString) and `chompUntil` (findSubString), on an ASCII rope, a rope with UTF-16 leaves and
-a slice of the ASCII rope.
+Each input is about 140,000 characters, made by `String.repeat` and `++` at run
+time, with a repeat count computed from `List.length (List.range 1 70000)`.
+`big` is 70,000 copies of `"ab"` followed by `"x"`; `wide` uses `"\u{00E9}b"`
+instead of `"ab"`; `sliced` is `big` without its first character.
 
-Failed before the fix: `parserFlatten` called `StringOps::ensureFlat`, which leaves a rope or slice above
-the limit as it is, and `parserView` handed it to `flatStringView` (the tag assert aborts in an
-assert build; a release build reads garbage). Expected values are Elm's (checked once with stock
-elm on node) and are plain arithmetic.
+  - `whileThenX` chomps up to the `x`, then requires the `x` and the end of
+    input, and returns the chomped length: 140,000 for `big` and `wide`,
+    139,999 for `sliced`. `é` counts as one character in `String.length`.
+  - `untilX` runs `chompUntil "x"` on `big` and returns the offset, 140,000.
+
 -}
 
 -- CHECK: rope chompWhile: Ok 140000
@@ -24,6 +23,8 @@ import Html exposing (text)
 import Parser exposing ((|.), (|=), Parser)
 
 
+{-| The repeat count, 70,000, computed at run time rather than written as a literal.
+-}
 count : Int
 count =
     List.length (List.range 1 70000)

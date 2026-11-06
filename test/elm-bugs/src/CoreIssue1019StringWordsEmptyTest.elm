@@ -1,11 +1,11 @@
 module CoreIssue1019StringWordsEmptyTest exposing (main)
 
-{-| `String.words` of an empty or blank string returns `[""]`.
+{-| `String.words` of a string with no words returns `[]`.
 
 <https://github.com/elm/core/issues/1019>
 
-Elm 0.19.1 returns `[""]` (JavaScript's `split` always returns one piece). A string with no words
-has no words: the result must be `[]`.
+The test tries the empty string and three strings of only whitespace (spaces; spaces and a
+newline; a tab, newline, carriage return and space). Elm 0.19.1 returns `[""]` for each.
 
 -}
 

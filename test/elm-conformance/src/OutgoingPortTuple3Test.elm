@@ -1,11 +1,11 @@
 port module OutgoingPortTuple3Test exposing (main)
 
-{-| An outgoing port whose payload is a 3-tuple. Its encoder runs when the command is processed,
-whether or not anything subscribes to the port, so the program must get past that point and log
-"after". The erased (JS) port encoder read the third element as `$.cs[0]`, the layout of tuples of
-more than three elements, which an Elm 3-tuple (`{ a, b, c }`) does not have: the encoder threw a
-TypeError and the program died before "after". The native twin of this bug was a compiler crash
-(test/elm/src/OutgoingPortTuple3Test.elm). Expected output recorded from Elm on node.
+{-| A program that sends a 3-tuple through an outgoing port keeps running afterwards.
+
+The port's payload is `( String, Int, List String )`. Nothing subscribes to the port. The command
+is batched with a 10 ms sleep, and the program must log "sent" before it and "after" when the
+sleep ends.
+
 -}
 
 -- CHECK: OutgoingPortTuple3Test: "sent"

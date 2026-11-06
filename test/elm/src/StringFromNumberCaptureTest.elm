@@ -1,8 +1,9 @@
 module StringFromNumberCaptureTest exposing (main)
 
-{-| Higher-order capture of `String.fromInt` / `String.fromFloat` via
-    `List.map`. Forces a closure-call into the migrated `_Int` / `_Float`
-    variants.
+{-| `String.fromInt` and `String.fromFloat` work when passed unapplied, as the function
+argument of `List.map`.
+
+`[1, 2, 3]` becomes `["1","2","3"]`, and `[0.5, 1.5, 2.5]` becomes `["0.5","1.5","2.5"]`.
 -}
 
 -- CHECK: int_strings: ["1","2","3"]

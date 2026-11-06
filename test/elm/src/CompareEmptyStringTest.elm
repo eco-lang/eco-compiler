@@ -1,8 +1,10 @@
 module CompareEmptyStringTest exposing (main)
 
-{-| `compare` on String values, including `""` (Const_EmptyString).
-Top-level path in `Utils::cmp` handles `!a && !b → 0`, `!a → -1`,
-`!b → 1`, so these should all be correct today — regression guard.
+{-| `compare` on `String` values, including the empty string.
+
+The empty string is equal to itself and less than any non-empty string. A
+string that is a prefix of another (`"a"` and `"ab"`) is less than it.
+
 -}
 
 -- CHECK: ee: EQ

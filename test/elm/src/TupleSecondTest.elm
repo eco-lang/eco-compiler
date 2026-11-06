@@ -1,6 +1,6 @@
 module TupleSecondTest exposing (main)
 
-{-| Test Tuple.second.
+{-| `Tuple.second` returns the second component of an `Int` pair and of a `String` pair.
 -}
 
 -- CHECK: second1: 2

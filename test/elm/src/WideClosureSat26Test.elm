@@ -1,6 +1,12 @@
 module WideClosureSat26Test exposing (main)
 
-{-| E5: 26 typed newargs at once to an arity-27 function (eta-flattened mk).
+{-| A function given 26 `Int` arguments at once returns a working one-argument
+function that still sees all 26 of them.
+
+`mk` returns `\x -> x * 7 + a0 * 1 + a1 * 2 + ... + a25 * 26`. With arguments
+1 to 26 the weighted sum is 6201, so mapping the result over `[ 1, 2 ]` gives
+`[6208,6215]`.
+
 -}
 
 -- CHECK: res: [6208,6215]

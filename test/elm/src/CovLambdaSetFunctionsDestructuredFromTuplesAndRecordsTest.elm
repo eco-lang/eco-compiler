@@ -1,9 +1,9 @@
 module CovLambdaSetFunctionsDestructuredFromTuplesAndRecordsTest exposing (..)
 
-{-| Functions destructured from tuples and records.
+{-| Lambdas taken out of a tuple and a record by destructuring `let` patterns, put in a list and
+applied in turn.
 
-From `SourceIR.CovLambdaSetCases`, a program of the elm-test catalogue, with a
-`main` that logs its `testValue`. The CHECK lines are what Elm 0.19.1 prints for it.
+Folding `[ (+1), (*2), (-3) ]` over `5` gives `6`, `12`, then `9`.
 
 -}
 

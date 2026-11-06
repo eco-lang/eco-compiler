@@ -1,6 +1,11 @@
 module DecodeUnsignedInt32LETest exposing (main)
 
-{-| Test Bytes.Decode.unsignedInt32 LE decoding.
+{-| Bytes.Decode.unsignedInt32 LE reads back a value written by
+Bytes.Encode.unsignedInt32 LE.
+
+The value 0x12345678 is encoded and decoded little-endian, and the logged result
+is 305419896, its decimal form. A failed decode would log -1.
+
 -}
 
 -- CHECK: DecodeUnsignedInt32LETest: 305419896

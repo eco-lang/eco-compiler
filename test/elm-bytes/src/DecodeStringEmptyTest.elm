@@ -1,6 +1,10 @@
 module DecodeStringEmptyTest exposing (main)
 
-{-| Test Bytes.Decode.string with empty string.
+{-| Bytes.Decode.string 0 decodes the empty string.
+
+The empty string is encoded, which produces no bytes, and `string 0` reads it
+back. `Debug.log` shows the result as `""`; a failed decode would log `"FAIL"`.
+
 -}
 
 -- CHECK: DecodeStringEmptyTest: ""

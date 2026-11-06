@@ -1,8 +1,7 @@
 module ListSortByFloatIdentityTest exposing (main)
 
-{-| `List.sortBy identity` on `List Float`. Hits `List.sortBy`, which
-    re-boxes each unboxed element as `ElmInt` before calling the key
-    function.
+{-| Checks `List.sortBy identity` on a `List Float`, by printing the sorted list
+and comparing it with `[1.0, 2.0, 3.0]`.
 -}
 
 -- CHECK: result: [1,2,3]

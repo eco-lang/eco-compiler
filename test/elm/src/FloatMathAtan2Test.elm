@@ -1,10 +1,6 @@
 module FloatMathAtan2Test exposing (..)
 
-{-| atan2.
-
-From `SourceIR.FloatMathCases`, a program of the elm-test catalogue, with a
-`main` that logs its `testValue`. The CHECK lines are what Elm 0.19.1 prints for it.
-
+{-| `atan2 1 1` is pi/4, printed as 0.7853981633974483.
 -}
 
 -- CHECK: testValue: 0.7853981633974483

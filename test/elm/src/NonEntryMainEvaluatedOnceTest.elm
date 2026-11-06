@@ -4,12 +4,9 @@ module NonEntryMainEvaluatedOnceTest exposing (main)
 top-level value and is evaluated once, like any other: its `Debug.log` prints
 a single line however many times it is referenced.
 
-`Compiler.Generate.MLIR.Functions.generateNode` treats every global named
-`main`, in whichever module, as the program entry: it removes the CAF
-memoisation of `NonEntryMainAux.main`, so each reference re-evaluates the body
-and `auxMain` is printed once per use (twice here) before `uses`. The CHECK-NOT
-rejects a second `auxMain` line: the CHECK-NEXT pair alone also matches the
-second of two.
+The test references `NonEntryMainAux.main` twice in a list and logs the
+list's length, so `auxMain` must appear once, before `uses: 2`. The CHECK-NOT
+rejects a second `auxMain` line, which the CHECK-NEXT pair alone would accept.
 
 -}
 

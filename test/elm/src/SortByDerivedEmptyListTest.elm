@@ -1,8 +1,11 @@
 module SortByDerivedEmptyListTest exposing (main)
 
-{-| `List.sortBy List.reverse` over a list of Lists where some are `[]`.
-`List.reverse [] = []` so the key extractor produces `[]` for empty
-inputs. Confirms F3 fires even when the constant is derived.
+{-| `List.sortBy List.reverse` sorts a list of lists, two of them empty, by their reversed contents.
+
+The keys are `[2,1]`, `[]`, `[3]` and `[]`. Lists compare element by element and
+`[]` sorts first, so the result is the two empty lists in input order, then
+`[1,2]` (key `[2,1]`), then `[3]`.
+
 -}
 
 -- CHECK: result: [[],[],[1,2],[3]]

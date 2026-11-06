@@ -1,6 +1,6 @@
 module CharIsDigitTest exposing (main)
 
-{-| Test Char.isDigit.
+{-| `Char.isDigit` is `True` for `'0'` and `'9'` and `False` for `'a'` and `'A'`.
 -}
 
 -- CHECK: digit1: True

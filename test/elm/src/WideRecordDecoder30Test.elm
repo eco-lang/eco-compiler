@@ -1,6 +1,13 @@
 module WideRecordDecoder30Test exposing (main)
 
-{-| E8, mixed kinds at declaration positions >= 25 (30 fields).
+{-| A 30-field record alias, used as a constructor function, can be filled in one
+argument at a time by an `andMap` pipeline over `Maybe`, with fields of
+different types near the end.
+
+`andMap` is defined here and applies a `Just` function to a `Just` argument.
+Fields 0 to 24 are `Int`s; fields 25 to 29 are a `Float`, a `Char`, an `Int`, a
+`String` and an `Int`. The test reads back field 0 and fields 24 to 29.
+
 -}
 
 -- CHECK: f0000: Just 1000

@@ -1,6 +1,10 @@
 module DecodeUnsignedInt8Test exposing (main)
 
-{-| Test Bytes.Decode.unsignedInt8 basic decoding.
+{-| Bytes.Decode.unsignedInt8 reads back a byte written by Bytes.Encode.unsignedInt8.
+
+The byte 42 is encoded and decoded, and the logged result is 42. A failed
+decode would log -1.
+
 -}
 
 -- CHECK: DecodeUnsignedInt8Test: 42

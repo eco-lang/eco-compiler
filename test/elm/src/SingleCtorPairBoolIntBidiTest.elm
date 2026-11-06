@@ -1,8 +1,12 @@
 module SingleCtorPairBoolIntBidiTest exposing (main)
 
-{-| Two single-constructor types: WrapBool (Bool, boxed) and WrapInt (Int, i64 unboxed).
-Tests BOTH directions: matching on WrapBool (should not use i64 layout from WrapInt)
-AND matching on WrapInt (should not use boxed layout from WrapBool).
+{-| Pattern matching and value extraction both work on two single-constructor types in one module, one wrapping a `Bool` and one wrapping an `Int`.
+
+`matchBool` matches the literal patterns `WrapBool True` and `WrapBool False`,
+giving `"yes"` and `"no"`. `matchInt` binds the wrapped `Int` and tests its sign,
+giving `"positive"` for 7 and `"non-positive"` for -3. `extractBool` and
+`extractInt` return the wrapped values `True` and `42`.
+
 -}
 
 -- CHECK: match_true: "yes"

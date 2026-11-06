@@ -1,6 +1,11 @@
 module CaseTupleTest exposing (main)
 
-{-| Test case expression on tuples.
+{-| A case expression on a pair of `Int`s matches literal and wildcard patterns
+in order, taking the first branch that fits.
+
+The patterns are `(0, 0)`, `(0, _)`, `(_, 0)` and a wildcard, and each of the
+four inputs reaches a different one.
+
 -}
 
 -- CHECK: pair1: "both zero"

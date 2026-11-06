@@ -21,7 +21,7 @@ divergence and its soundness argued separately.
 
 ## §0 The two gaps, MEASURED
 
-Reproducer in the tree: `test/elm/src/LssTaskSetProbe.elm` (runs green,
+Reproducer in the tree: `test/eco-elm/src/LssTaskSetProbe.elm` (runs green,
 `r: [42, 40]`; it is a *correctness* pin today and becomes the *precision* pin
 when this plan lands). Census under `ECO_MONO_LSS_REPORT=1`:
 
@@ -565,7 +565,7 @@ closes. Each was VERIFIED before being changed, not assumed:
   ("*or carries k*"). A backwards flip would have pushed 4/5 in.
 - For `mixedSigModule` the complete inhabitant set of `d`'s result genuinely is
   `{incr, the one caller's lambda}` — the 2-set now reported.
-- `test/elm/src/LssMixedSigHonestyTest.elm`, the runtime fixture that printed
+- `test/eco-elm/src/LssMixedSigHonestyTest.elm`, the runtime fixture that printed
   `[42,42,42]` for `[41,42,82]` when this miscompile class last regressed,
   PASSES.
 

@@ -1,6 +1,10 @@
 module FunctionMultiArgTest exposing (main)
 
-{-| Test functions with multiple arguments.
+{-| Unannotated top-level functions of three, four and five arguments return the sum of their arguments.
+
+The test logs `addThree 1 2 3` (6), `addFour 1 2 3 4` (10) and
+`addFive 1 2 3 4 5` (15).
+
 -}
 
 -- CHECK: three: 6

@@ -1,7 +1,11 @@
 module IntRemainderByTest exposing (main)
 
-{-| Test remainderBy with all sign combinations.
-    remainderBy preserves the sign of the dividend (truncated division).
+{-| Checks that `remainderBy` gives a result with the sign of the dividend, for all four sign combinations of divisor and dividend.
+
+`remainderBy 4 -7` and `remainderBy -4 -7` are both -3, and the two positive
+dividends give 3 whatever the divisor's sign: the result is that of truncated
+division.
+
 -}
 
 -- CHECK: rem1: 3

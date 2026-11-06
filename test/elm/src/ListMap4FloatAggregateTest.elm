@@ -1,7 +1,7 @@
 module ListMap4FloatAggregateTest exposing (main)
 
-{-| `List.map4` on four `List Float`s. Same bug surface — four unboxed heads
-    re-boxed as `ElmInt` before the mapper receives them.
+{-| `List.map4` on four `List Float`s passes the Float elements unchanged to the
+mapping function; `10 + 1 - 2 - 3` gives `[ 6.0 ]`.
 -}
 
 -- CHECK: result: [6]

@@ -1,5 +1,15 @@
 module ParserAdvancedKeywordTest exposing (main)
 
+{-| `Parser.Advanced.keyword` and `Parser.Advanced.symbol` succeed on input that starts with their token.
+
+`keyword_ok` runs the keyword `"let"` on `"let x"`, where the keyword is
+followed by a space. `symbol_ok` runs the symbol `"="` on `"="`. Each checks
+only that the run returns `Ok`.
+
+Among what is not tested: failures, including a keyword followed by a letter
+or digit, and the problem values reported.
+-}
+
 -- CHECK: keyword_ok: True
 -- CHECK: symbol_ok: True
 

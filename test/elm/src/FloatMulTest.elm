@@ -1,6 +1,9 @@
 module FloatMulTest exposing (main)
 
-{-| Test float multiplication.
+{-| Float multiplication gives the expected sign and value for positive, mixed-sign, two negative and zero operands.
+
+Whole-number results print without a decimal point, so `10.0 * 3.0` prints as 30.
+
 -}
 
 -- CHECK: mul1: 30

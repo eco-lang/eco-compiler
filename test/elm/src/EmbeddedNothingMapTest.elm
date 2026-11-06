@@ -1,6 +1,7 @@
 module EmbeddedNothingMapTest exposing (main)
 
-{-| Test Nothing flowing through List.map and then pattern-matched.
+{-| `List.map` with a function that matches `Maybe` maps each `Nothing` to -1 and
+each `Just` to its payload.
 -}
 
 -- CHECK: results: [-1,1,-1,2]

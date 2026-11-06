@@ -1,7 +1,8 @@
 module CharAstralTupleTest exposing (main)
 
-{-| An astral Char stored unboxed in a tuple slot (kind 3) reads back as the
-same code point, in a Tuple2 and a Tuple3, and Debug.log prints it as itself.
+{-| An astral `Char` (code point above 0xFFFF) in a pair and in a 3-tuple keeps
+its code point when read with `Tuple.second` and with a destructuring `let`
+pattern, and `Debug.log` prints each tuple with the characters themselves.
 -}
 
 -- CHECK: tup2_code: 128512

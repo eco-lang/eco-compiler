@@ -1,12 +1,12 @@
 module ErrorMessagesIssue188TypeAnnotationJuxtapositionTest exposing (..)
 
-{-| A type annotation `() String Float` is a syntax error.
+{-| The type annotation `foo : () String Float` is rejected, and not as a TYPE MISMATCH.
 
 <https://github.com/elm/error-message-catalog/issues/188>
 
-Elm 0.18 parsed `foo : () String Float` and then reported a TYPE MISMATCH between
-`( String, Float )` and `( String, Float )`. The annotation must be rejected when it is
-parsed.
+The annotation places the unit type `()` before `String` and `Float` with no separator. The
+test accepts any error heading except TYPE MISMATCH, which would compare the body
+`( "foo", 3.2 )` against the malformed annotation.
 
 -}
 

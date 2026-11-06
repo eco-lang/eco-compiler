@@ -1,9 +1,9 @@
 module TypeMismatchIntRightOfPowerWithFloatTest exposing (..)
 
-{-| TYPE MISMATCH: Int right of ^ with Float.
+{-| Raising a `Float` to an `Int` power with `^` is rejected with a TYPE MISMATCH.
 
-From `SourceIR.TypeCheckFailsCases` (`operatorCases`), the elm-test catalogue of programs
-the compiler must reject.
+`^` takes two operands of the same `number` type. In `f ^ n` the left side is
+`f : Float` and the right side `n : Int`; Elm does not convert between them.
 
 -}
 

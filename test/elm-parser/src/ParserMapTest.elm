@@ -1,5 +1,8 @@
 module ParserMapTest exposing (main)
 
+{-| Checks that `Parser.map` transforms a parser's result: `map negate int` on `"42"` gives `Ok -42`.
+-}
+
 -- CHECK: neg: Ok -42
 
 import Html exposing (text)

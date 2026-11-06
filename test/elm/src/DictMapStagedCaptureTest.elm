@@ -1,12 +1,14 @@
 module DictMapStagedCaptureTest exposing (main)
 
-{-| Test: captured function parameter applied to multiple args inside Dict.map lambda.
+{-| A two-argument function passed as a parameter and applied to both of its
+arguments inside a `Dict.map` lambda receives both of them.
 
-Reproduces a bug where a captured function with staged type (returns a function)
-is only partially applied inside a closure — the second arg is silently dropped.
+The function passed is `makeAdder`, whose definition takes one argument and
+returns a lambda for the second. `mapTupleDict` hands it to `Dict.map` over a
+dict whose values are `( String, Int )` pairs, and the lambda destructures each
+pair and calls it with both parts. `"hello"` and `"world"` have length 5, so 10
+and 20 become 15 and 25.
 
-The pattern mirrors Data.Map.map: Dict stores (k, v) tuples, and the mapping
-lambda destructures the tuple and applies the captured function to both parts.
 -}
 
 -- CHECK: result: [("a",("hello",15)),("b",("world",25))]
@@ -15,16 +17,15 @@ import Dict
 import Html exposing (text)
 
 
-{-| A function that returns another function (naturally staged).
-makeAdder "hello" returns (\value -> 5 + value).
+{-| Returns a function adding the length of `key` to its argument.
 -}
 makeAdder : String -> (Int -> Int)
 makeAdder key =
     \value -> String.length key + value
 
 
-{-| Dict.map wrapper: captures 'alter' in a lambda that applies it to 2 args.
-This is the pattern from Data.Map.map.
+{-| Replaces the `Int` in each value `( key, value )` of `dict` with
+`alter key value`.
 -}
 mapTupleDict : (String -> Int -> Int) -> Dict.Dict String ( String, Int ) -> Dict.Dict String ( String, Int )
 mapTupleDict alter dict =

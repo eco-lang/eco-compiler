@@ -1,7 +1,9 @@
 module ArrayFoldrFloatSumTest exposing (main)
 
-{-| `Array.foldr (+) 0.0` on `Array Float`. Reaches `JsArray.foldr`, which
-    re-boxes each unboxed slot as `ElmInt` before the fold function.
+{-| `Array.foldr (+) 0.0` sums an `Array Float` of 1.5, 2.5 and 3.0 to exactly 7.0.
+
+The sum is logged as `7`, and compared with `7.0` to check it is the exact value.
+
 -}
 
 -- CHECK: result: 7

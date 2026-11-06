@@ -1,10 +1,13 @@
 module CompilerIssue2153RecursiveCallWrongArgCrashTest exposing (main)
 
-{-| A recursive call with an argument of the wrong type crashes the compiler.
+{-| A recursive call with an argument of the wrong type must be reported as a TYPE MISMATCH, not
+crash the compiler.
 
 <https://github.com/elm/compiler/issues/2153>
 
-`fooHelp toString firstItem remainingItems` passes `firstItem : a` where a `String` is expected: a TYPE MISMATCH. Elm 0.19.1 crashes ("? [rank = 1]", Type/Solve.hs:206, "thread blocked indefinitely in an MVar operation").
+`fooHelp toString firstItem remainingItems` passes `firstItem : a` where a `String` is expected: a
+TYPE MISMATCH. Elm 0.19.1 crashes ("? [rank = 1]", Type/Solve.hs:206, "thread blocked indefinitely
+in an MVar operation").
 
 -}
 

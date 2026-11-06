@@ -1,10 +1,13 @@
 module StringAstralFoldTest exposing (main)
 
-{-| G1/E2: foldl/foldr visit one Char per code point, as in Elm: a surrogate
-pair is combined into one Char (Char is a Unicode code point in i32,
-REP_ABI_001 / CGEN_015), so "😀" folds once and "a😀b" three times. foldr
-walks back and combines a low surrogate with the high one before it, so it
-sees the same Chars in reverse order.
+{-| `String.foldl` and `String.foldr` visit a character outside the Basic
+Multilingual Plane, such as an emoji, once, as one `Char`.
+
+Counting with a fold gives 1 for `"😀"` and 3 for `"a😀b"`, from either end.
+Consing each `Char.toCode` onto a list gives `[98,128512,97]` with `foldl` and
+`[97,128512,98]` with `foldr`, so `foldr` sees the same characters in reverse
+order, with the emoji whole (128512 is `0x1F600`).
+
 -}
 
 -- CHECK: foldl_astral: 1

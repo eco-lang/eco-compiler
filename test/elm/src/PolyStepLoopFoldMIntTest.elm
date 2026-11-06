@@ -1,14 +1,13 @@
 module PolyStepLoopFoldMIntTest exposing (main)
 
-{-| Closer reproduction of the `System.TypeCheck.IO.foldM` / `loop`
-    call shape that fails to lower at stage 6 of the bootstrap.
+{-| A monadic fold, `foldM`, built on a polymorphic `Step`-driven state loop, sums
+a list of `Int`s and threads its state correctly.
 
-    `foldM` builds a `Step (List a, b) b` machine driven by `loop`.
-    Specializing with `b = Int` instantiates `Done b` as `Done Int`, so
-    the `a` slot of `Step` is unboxed. The faulty codegen path emits
-    `eco.project.custom` for the `Done` field as `!eco.value` but
-    constructs the final `(newIOState, b)` tuple with `bitmap` claiming
-    field 1 is unboxed `i64`.
+`IO a` is a function from an `Int` state to a pair of the new state and a
+result. `foldM` runs `loop` over a `( List a, b )` pair whose `Done` value is
+the accumulator `b`, here an `Int`. `addM` adds each element to the accumulator
+and increments the state, so folding `[ 1, 2, 3, 4, 5 ]` from state 99 gives a
+sum of 15 and a final state of 104.
 
 -}
 

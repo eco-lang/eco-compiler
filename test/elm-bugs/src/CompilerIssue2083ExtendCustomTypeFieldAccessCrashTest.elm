@@ -1,11 +1,13 @@
 module CompilerIssue2083ExtendCustomTypeFieldAccessCrashTest exposing (..)
 
-{-| Extending a custom type as if it were a record crashes the compiler.
+{-| Extending a custom type as if it were a record must be rejected with an error report, not
+crash the compiler.
 
 <https://github.com/elm/compiler/issues/2083>
 
-`Article Preview` extends the custom type `Preview`. Elm 0.19.1 crashes ("Used toErrorType on a
-type that is not well-formed"); it should report an error.
+`Article a` is the extensible record `{ a | title : String, tags : List String }`, so `Article
+Preview` extends the custom type `Preview`, and `id` then reads `p.id` from it. Elm 0.19.1 crashes
+("Used toErrorType on a type that is not well-formed"); it should report an error.
 
 -}
 

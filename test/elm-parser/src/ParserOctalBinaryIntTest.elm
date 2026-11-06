@@ -1,5 +1,11 @@
 module ParserOctalBinaryIntTest exposing (main)
 
+{-| Checks that `Parser.number` reads octal and binary integer literals.
+
+`"0o777"` gives `Ok 511` and `"0b1010"` gives `Ok 10`. Hexadecimal and float
+forms are disabled in the configuration and not exercised.
+-}
+
 -- CHECK: octal: Ok 511
 -- CHECK: binary: Ok 10
 

@@ -1,10 +1,7 @@
 module UrlPercentEncodeReservedTest exposing (main)
 
-{-| URL-01 (plans/kernel-lib-bug-fixes.md): `Url.percentEncode` keeps `!*'()` as they are, like
-JS `encodeURIComponent`, and so does `Url.Builder`.
-
-Natively this is `shouldEncode` (elm-kernel-cpp/src/url/UrlExports.cpp), which once left only
-`A-Za-z0-9-_.~` unescaped. Expectations recorded from Elm on node (run-js-e2e.js --record).
+{-| `Url.percentEncode` leaves the characters `!*'()` and `~` unescaped and escapes a space and
+`&`; `Url.Builder` leaves `(`, `)` and `!` unescaped in a path segment and a query value.
 -}
 
 -- CHECK: encode reserved: "a(b)!*'~"

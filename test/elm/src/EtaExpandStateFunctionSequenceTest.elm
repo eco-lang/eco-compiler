@@ -1,10 +1,8 @@
 module EtaExpandStateFunctionSequenceTest exposing (..)
 
-{-| A state-function `sequence` built with `andThen` and `pure` over a function alias.
+{-| A state-passing `sequence` written with `andThen` and `pure` over a function type alias, `St a = Int -> a`, whose definitions take more parameters than their annotations show.
 
-From `Compiler.PreMono.EtaExpandTest`, an elm-test unit test, with a
-`main` that logs its `testValue`. The CHECK lines are what Elm 0.19.1 prints for it.
-
+`andThen` and `pure` are annotated against `St`, so each one's definition names the state as an extra parameter. `sequence []` falls to the wildcard branch, which runs `tick` and then returns `pure []`, so `List.length (sequence [] 0)` is 0.
 -}
 
 -- CHECK: testValue: 0

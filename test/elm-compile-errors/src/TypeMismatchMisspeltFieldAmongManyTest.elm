@@ -1,8 +1,9 @@
 module TypeMismatchMisspeltFieldAmongManyTest exposing (main)
 
-{-| TYPE MISMATCH: misspelt field among many.
+{-| Accessing a misspelt field of a record with many fields is rejected with a TYPE MISMATCH.
 
-From `Compiler.Reporting.Render.TypeLayoutReportTest` (`misspeltFieldMany`), an elm-test program the compiler must reject.
+`r1` has the fields `alpha`, `beta`, `gamma`, `delta` and `epsilon`, and `main`
+reads `r1.alpah`, which none of them is.
 
 -}
 

@@ -1,9 +1,8 @@
 module BadMainTypeTypeVariableMainTest exposing (..)
 
-{-| BAD MAIN TYPE: type variable main.
+{-| An unannotated `main` whose inferred type contains a type variable is rejected with a BAD MAIN TYPE error.
 
-From `SourceIR.MainFailsCases` (`typeCases`), the elm-test catalogue of programs
-the compiler must reject.
+`main = []` has type `List a`.
 
 -}
 

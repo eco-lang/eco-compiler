@@ -1,11 +1,11 @@
 module CompilerIssue2027IncompatibleExtensibleRecordsHangTest exposing (main)
 
-{-| One value used as two incompatible extensible records (`Tricky x x`).
+{-| Using one value as two incompatible extensible records (`Tricky x x`) must be a type error.
 
 <https://github.com/elm/compiler/issues/2027>
 
 The program is ill-typed, so it must be rejected with a type error. Elm 0.19.1 instead hangs while
-its memory grows without bound (the runner kills it at its compile memory limit), or crashes.
+its memory grows without bound, or crashes.
 
 -}
 

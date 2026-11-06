@@ -1,20 +1,13 @@
 module LetNumberListCaseTest exposing (main)
 
-{-| A let-bound `number` value destructured out of a let-bound number list by a
-`case`, then used both at `Int` and at `Float`:
-`xs = [ 1, 2, 3 ]`, `prod = case xs of a :: b :: _ -> a * b`, then
-`prod + 0` as an `Int` and `round (prod * 1.5)`, a `Float`. This is valid Elm (both
-are let-polymorphic in `number`).
+{-| A `number` computed by a `case` over a let-bound list can be used both as an
+`Int` and as a `Float`, because Elm generalizes the type of a `let` binding.
 
-The native build used to give the Float use's `prod` the Int specialization's
-`i64`: `eco make --output=x.mlir` failed with "Kernel signature mismatch for
-Elm_Kernel_Basics_mul_Float", and the E2E harness's MLIR failed verification
-(`eco.float.mul` given an `i64`). The uses of a let-bound number shared one
-type variable, and the list's tail was read from the `Int` instance
-(plans/dead-code-report.md, side finding; see also `LetNumberDualUseTest`).
+`xs = [ 1, 2, 3 ]` and `prod` is the product of its first two elements, matched
+by `a :: b :: _`.
 
-Int use:   1 * 2 + 0   = 2
-Float use: 1 * 2 * 1.5 = 3.0  (round -> 3)
+  - `prod + 0` is used as an `Int` and logs 2.
+  - `round (prod * 1.5)` uses `prod` as a `Float`: 3.0, logged as 3.
 
 -}
 

@@ -1,6 +1,8 @@
 module EncodeUnsignedInt16LETest exposing (main)
 
-{-| Test Bytes.Encode.unsignedInt16 with LE endianness.
+{-| `Bytes.Encode.unsignedInt16` with little-endian order writes 2 bytes.
+
+The test encodes `0x1234` and logs the width of the result.
 -}
 
 -- CHECK: EncodeUnsignedInt16LETest: 2

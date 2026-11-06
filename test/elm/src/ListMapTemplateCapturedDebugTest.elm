@@ -1,22 +1,15 @@
 module ListMapTemplateCapturedDebugTest exposing (main)
 
-{-| The higher-order-poison canary for the `List.map` template licence
-(plans/list-map-mlir-template.md Phase 1.2; policy `D-4a`).
+{-| Checks that `List.map` applies its callback to the elements from last to
+first when the callback logs through a function value it was given rather than
+calling `Debug.log` directly.
 
-`Debug.log` reaches the callback through a **captured function value**, not
-through a direct reference. The `CsePurity` oracle alone would license this:
-its `scanBody` collects only `MonoVarGlobal` callees and treats a `MonoCall`
-through a `MonoVarLocal` as inert, so the captured `g` contributes no poison
-at all and the callback looks Debug-free.
-
-`MapTemplate`'s third component — the higher-order poison arm — must decline
-it. If that arm regresses, the map gets licensed, the template applies the
-callback left-to-right, and these lines come out in the WRONG ORDER. This
-fixture fails loudly in exactly that case, which is the whole point: an
-order-only regression is otherwise invisible.
-
-Expected order is foldr's right-to-left, same as
-`ListMapTemplateOrderTest.elm`.
+elm/core defines `List.map` with `List.foldr`, which, on a list this short,
+applies the callback to the last element first. `mapWith` maps `\x -> g x`,
+and `main` passes it `Debug.log "g"`, so mapping `[10, 20, 30]` logs 30, 20 and
+10 in that order, and the mapped values still sum to 60. A compiler that
+applied the callback from first to last would print the same values in the
+opposite order.
 
 -}
 
@@ -28,7 +21,8 @@ Expected order is foldr's right-to-left, same as
 import Html exposing (text)
 
 
-{-| Debug flows in as a VALUE. `mapWith` never mentions `Debug` itself.
+{-| Maps `\x -> g x` over `xs`. The module never names `Debug` here; any
+logging comes from the `g` it is given.
 -}
 mapWith : (Int -> Int) -> List Int -> List Int
 mapWith g xs =

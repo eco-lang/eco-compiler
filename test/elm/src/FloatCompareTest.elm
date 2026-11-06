@@ -1,6 +1,6 @@
 module FloatCompareTest exposing (main)
 
-{-| Test float comparisons.
+{-| `<`, `>`, `<=`, `>=`, `==` and `/=` on `Float` literals, each in a case where the comparison is `True`.
 -}
 
 -- CHECK: lt: True

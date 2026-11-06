@@ -1,9 +1,8 @@
 module TypeMismatchRigidVarAsRigidNumberTest exposing (..)
 
-{-| TYPE MISMATCH: rigid var as rigid number.
+{-| A function that returns its `number` argument where its annotation promises a different type variable is rejected with a TYPE MISMATCH.
 
-From `SourceIR.TypeCheckFailsCases` (`rigidCases`), the elm-test catalogue of programs
-the compiler must reject.
+`f : a -> number -> a` is defined as `f x y = y`. `a` and `number` are separate type variables chosen by the caller, so a `number` cannot stand in for an `a`.
 
 -}
 

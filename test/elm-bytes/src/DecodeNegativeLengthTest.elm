@@ -1,10 +1,15 @@
 module DecodeNegativeLengthTest exposing (main)
 
-{-| Bytes.Decode.bytes with a negative length read from the input. In Elm on JS, `bytes n` with
-n < 0 throws a RangeError (`new DataView(buffer, offset, -1)`), so the decode is Nothing. Eco's
-kernel path agrees; this pins it (cpp-review-bugs.md "elm\_utf8\_decode has no bounds check": the
-fused bf.require would accept a negative length, test/bf-codegen/bf\_require\_negative.mlir, but no
-decode of a read length fuses today).
+{-| Bytes.Decode.bytes given a negative length fails the decode, giving `Nothing`.
+
+Each case reads a signed length from the input and passes it to `bytes`:
+
+  - `neg8`: a signed 8-bit 0xFF, which is -1, so the decode is `Nothing`.
+  - `neg32`: a big-endian signed 32-bit 0xFFFFFFFF, which is -1, so the decode
+    is `Nothing`.
+  - `control`: a signed 8-bit length of 1 followed by one byte, so `bytes 1`
+    succeeds and the width of the result, `Just 1`, is logged.
+
 -}
 
 -- CHECK: neg8 bytes: Nothing

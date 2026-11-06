@@ -1,9 +1,12 @@
 module LetNumberAsPatternTest exposing (main)
 
-{-| Probe: tuple as-pattern (`( a, b ) as whole`). One slot is used at `Float`
-(`a * 1.5`) while the WHOLE tuple is also consumed, so the slot demand and the
-whole-value materialisation must agree. Since `a` forces `Float`, `whole` is
-`( Float, Float )`. Correct: round (30*1.5) + round (30+40) = 45 + 70 = 115.
+{-| A tuple of number literals matched with an `as` pattern, where one part and the
+whole tuple are both used.
+
+In `case ( 30, 40 ) of (( a, _ ) as whole)`, `a * 1.5` makes the elements Floats, and
+`Tuple.first whole + Tuple.second whole` reads both through the alias. The result is
+`round 45.0 + round 70.0 = 115`.
+
 -}
 
 -- CHECK: aspat: 115

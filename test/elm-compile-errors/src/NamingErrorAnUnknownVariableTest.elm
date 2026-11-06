@@ -1,9 +1,6 @@
 module NamingErrorAnUnknownVariableTest exposing (..)
 
-{-| NAMING ERROR: an unknown variable.
-
-From `SourceIR.CanonicalizeFailsCases` (`testValue`), the elm-test catalogue of programs
-the compiler must reject.
+{-| A reference to a variable that is defined nowhere, `undefinedName`, is rejected with a NAMING ERROR.
 
 -}
 

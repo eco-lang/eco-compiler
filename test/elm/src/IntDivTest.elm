@@ -1,6 +1,10 @@
 module IntDivTest exposing (main)
 
-{-| Test integer division with truncation toward zero.
+{-| Checks that integer division `//` truncates toward zero for all four sign combinations of dividend and divisor.
+
+`10 // 3` and `-10 // -3` give 3; `-10 // 3` and `10 // -3` give -3, where
+flooring division would give -4.
+
 -}
 
 -- CHECK: div1: 3

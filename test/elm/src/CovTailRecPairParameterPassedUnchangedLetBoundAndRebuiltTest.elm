@@ -1,9 +1,10 @@
 module CovTailRecPairParameterPassedUnchangedLetBoundAndRebuiltTest exposing (..)
 
-{-| Pair parameter passed unchanged, let-bound and rebuilt.
+{-| Self tail-recursive functions with a pair parameter that is destructured in a `let`, then
+passed on unchanged, rebuilt with its components swapped, or replaced by a `let`-bound pair.
 
-From `SourceIR.CovTailRecCases`, a program of the elm-test catalogue, with a
-`main` that logs its `testValue`. The CHECK lines are what Elm 0.19.1 prints for it.
+`testValue` takes arguments and is never applied, so the program logs it as `<function>`; the
+test checks that these definitions compile and the program runs.
 
 -}
 

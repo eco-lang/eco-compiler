@@ -1,8 +1,8 @@
 module FromArrayCharListCompareSortTest exposing (main)
 
-{-| Array.fromList → Array.toList → List.sort on Char. Char equivalent of
-    `FromArrayFloatListCompareSortTest`; exercises the JsArray round-trip
-    plus the List sort re-box path with Char content.
+{-| `List.sort` orders a `List Char` that came out of an `Array` via `Array.fromList` and `Array.toList`.
+
+`['c', 'a', 'b']` sorts to `['a', 'b', 'c']`; the test logs the sorted list and compares it with the expected one.
 -}
 
 -- CHECK: sorted: ['a','b','c']

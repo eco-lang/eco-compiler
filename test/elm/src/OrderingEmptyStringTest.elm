@@ -1,9 +1,11 @@
 module OrderingEmptyStringTest exposing (main)
 
-{-| `<`, `<=`, `>`, `>=` on String including `""`. Each operator
-routes through its own `Elm_Kernel_Utils_*` symbol; all share the
-`Export::toPtr` collapse but the current top-level early return in
-`cmp` produces correct results. Regression guard.
+{-| Tests that `<`, `<=`, `>` and `>=` on `String` order `""` before any
+non-empty string and treat two empty strings as equal.
+
+Each operator is applied directly to every pairing of `""` and `"a"`, plus
+`"a"` against `"b"`, and each Boolean result is logged.
+
 -}
 
 -- CHECK: lt_ee: False

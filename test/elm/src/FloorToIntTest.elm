@@ -1,6 +1,6 @@
 module FloorToIntTest exposing (main)
 
-{-| Test floor for Float to Int conversion.
+{-| `floor` rounds a Float down to an Int: 2.7 gives 2 and -2.3 gives -3.
 -}
 
 -- CHECK: floor1: 2

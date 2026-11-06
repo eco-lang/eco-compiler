@@ -1,9 +1,8 @@
 module TypeMismatchStringLeftOfPlusTest exposing (..)
 
-{-| TYPE MISMATCH: string left of +.
+{-| A `String` as the left operand of `+` is rejected with a TYPE MISMATCH.
 
-From `SourceIR.TypeCheckFailsCases` (`operatorCases`), the elm-test catalogue of programs
-the compiler must reject.
+`"a" + 1`: `+` takes two numbers, and strings are joined with `++` instead.
 
 -}
 

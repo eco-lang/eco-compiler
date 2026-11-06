@@ -1,6 +1,6 @@
 module DecodeEmptyBytesTest exposing (main)
 
-{-| Test decoding from empty bytes.
+{-| Decoding an unsigned 8-bit integer from an empty byte sequence returns `Nothing`.
 -}
 
 -- CHECK: DecodeEmptyBytesTest: True

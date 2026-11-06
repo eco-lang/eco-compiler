@@ -1,6 +1,9 @@
 module StringConcatTest exposing (main)
 
-{-| Test string concatenation.
+{-| `++` and `String.append` join strings.
+
+`"Hello" ++ "World"`, a three-part `"Hello" ++ " " ++ "World"`, and
+`String.append "foo" "bar"` are each logged.
 -}
 
 -- CHECK: concat1: "HelloWorld"

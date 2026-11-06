@@ -1,8 +1,8 @@
 module ParseErrorNumberBadHexDigitTest exposing (..)
 
-{-| WEIRD HEXIDECIMAL: number bad hex digit.
+{-| A hexadecimal literal containing a non-hex digit, `0x1g`, is rejected with a WEIRD HEXIDECIMAL syntax error.
 
-A syntax error the parser must report.
+The expected heading keeps the spelling "HEXIDECIMAL" used in Elm's own error message.
 
 -}
 

@@ -1,9 +1,13 @@
 module CompareRecordWithEmptyListFieldTest exposing (main)
 
-{-| Same shape as the Custom variant. Elm records aren't `comparable`,
-but extracting the List field exposes the same compare path; the
-`==` leg tests the `eqUnboxableSlot` path (currently OK — regression
-guard).
+{-| Ordering and equality of a record whose `List Int` field may be empty.
+
+Records are not `comparable`, so the test orders two `Rec` values with a
+hand-written `cmpRec` that compares the `xs` fields and then the `n` fields. It
+checks that an empty `xs` orders before `[ 1 ]` and equal to another empty
+list, and that `==` on the records themselves tells an empty `xs` apart from a
+non-empty one.
+
 -}
 
 -- CHECK: cmp_ee: EQ

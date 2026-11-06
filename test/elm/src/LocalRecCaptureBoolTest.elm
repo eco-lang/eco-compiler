@@ -1,16 +1,13 @@
 module LocalRecCaptureBoolTest exposing (main)
 
-{-| A let-bound local RECURSIVE function captures a Bool computed in the same
-`let`. Previously rejected while lowering:
+{-| A let-bound recursive function reads a Bool defined earlier in the same
+`let`, and the loop takes the step size that Bool selects.
 
-    'eco.papCreate' op captured Bool (i1) at index 0 violates REP_CLOSURE_001
+`count a` sets `flag = a < 2` and loops from 0 until `i >= 3`, stepping by 1
+when `flag` is True and by 2 otherwise. Both values of the flag are covered:
 
-Bool must be boxed to !eco.value at the closure boundary (REP_CLOSURE_001,
-FORBID_CLOSURE_001). Covers both branches of the captured flag.
-
-count 1: flag True  -> 0,1,2,3 -> 3
-count 5: flag False -> 0,2,4   -> 4
-
+  - `count 1`: flag True, i = 0, 1, 2, 3, result 3
+  - `count 5`: flag False, i = 0, 2, 4, result 4
 -}
 
 -- CHECK: count_true: 3

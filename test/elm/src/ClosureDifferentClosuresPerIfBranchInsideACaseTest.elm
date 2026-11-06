@@ -1,9 +1,10 @@
 module ClosureDifferentClosuresPerIfBranchInsideACaseTest exposing (..)
 
-{-| Different closures per if branch inside a case.
+{-| A function whose body is a `case` containing an `if` chain returns a different
+lambda from each branch, and the chosen lambda is applied to a further argument.
 
-From `SourceIR.ClosureCases`, a program of the elm-test catalogue, with a
-`main` that logs its `testValue`. The CHECK lines are what Elm 0.19.1 prints for it.
+`opClosure` returns `\x -> x + 1` for 0, `\x -> x * 2` for 1 and the identity
+otherwise. `opClosure 1 10` is therefore 20.
 
 -}
 

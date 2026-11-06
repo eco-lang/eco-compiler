@@ -1,6 +1,7 @@
 module EmbeddedNilFoldTest exposing (main)
 
-{-| Test empty lists flowing through List.foldl with List.length.
+{-| `List.map List.length` over a list of lists, two of them empty, gives 0 for
+each empty list.
 -}
 
 -- CHECK: lengths: [0,3,0,1]

@@ -1,11 +1,11 @@
 module BytesDecodeFloat64RoundtripTest exposing (main)
 
-{-| Roundtrip: encode a Float64 and decode it back, verifying equality.
+{-| A Float encoded with `Bytes.Encode.float64` little-endian decodes back to exactly the same Float.
 
-    Exercises `makeTuple2_if` in BytesExports.cpp: the float-producing
-    decoders build a `(offset:i64, value:f64)` tuple. A broken 2-bit bitmap
-    (e.g. 3 instead of 9) would misread both slot kinds, misprinting the
-    Float on projection and potentially crashing GC.
+The value is `3.141592653589793`. Between encoding and decoding the program
+builds and concatenates about two thousand strings, so the bytes are decoded after
+other allocation has happened. The logged `True` is the equality check.
+
 -}
 
 -- CHECK: BytesDecodeFloat64RoundtripTest: True
@@ -26,7 +26,7 @@ main =
         bytes =
             E.encode (E.float64 LE original)
 
-        -- Allocate churn between encode and decode to trigger minor GC.
+        -- Allocation between encoding and decoding; the result is unused.
         _ =
             List.range 0 2000
                 |> List.map String.fromInt

@@ -1,6 +1,10 @@
 module ResultAndThenTest exposing (main)
 
-{-| Test Result.andThen.
+{-| Checks that `Result.andThen` passes an `Ok` value to the next step and propagates an `Err` unchanged.
+
+`half` returns `Ok (x // 2)` for an even `x` and `Err "odd"` otherwise. Chained onto
+`Ok 42` it gives `Ok 21`, onto `Ok 41` it gives `Err "odd"`, and onto `Err "original"` the
+error is passed through without calling `half`.
 -}
 
 -- CHECK: andThen1: Ok 21

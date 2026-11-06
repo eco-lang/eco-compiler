@@ -1,10 +1,6 @@
 module TypeMismatchFloatRightOfMinusWithIntTest exposing (..)
 
-{-| TYPE MISMATCH: Float right of - with Int.
-
-From `SourceIR.TypeCheckFailsCases` (`operatorCases`), the elm-test catalogue of programs
-the compiler must reject.
-
+{-| The compiler rejects `n - f`, subtracting a `Float` from an `Int`, with a TYPE MISMATCH error, because Elm has no implicit conversion between the two.
 -}
 
 -- COMPILE-ERROR: TYPE MISMATCH, Float right of - with Int

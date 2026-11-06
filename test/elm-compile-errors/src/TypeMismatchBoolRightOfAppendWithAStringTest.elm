@@ -1,9 +1,8 @@
 module TypeMismatchBoolRightOfAppendWithAStringTest exposing (..)
 
-{-| TYPE MISMATCH: Bool right of ++ with a string.
+{-| A `Bool` on the right of `++` after a `String` is rejected with a TYPE MISMATCH.
 
-From `SourceIR.TypeCheckFailsCases` (`operatorCases`), the elm-test catalogue of programs
-the compiler must reject.
+`x = "a" ++ True`: the left operand fixes the type to `String`, and `True` is a `Bool`.
 
 -}
 

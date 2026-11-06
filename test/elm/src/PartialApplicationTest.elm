@@ -1,6 +1,7 @@
 module PartialApplicationTest exposing (main)
 
-{-| Test partial application (currying).
+{-| Tests partial application of two-argument functions, both called directly
+and passed to `List.map`.
 -}
 
 -- CHECK: partial1: 7

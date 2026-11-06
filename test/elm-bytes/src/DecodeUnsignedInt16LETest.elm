@@ -1,6 +1,11 @@
 module DecodeUnsignedInt16LETest exposing (main)
 
-{-| Test Bytes.Decode.unsignedInt16 LE decoding.
+{-| Bytes.Decode.unsignedInt16 LE reads back a value written by
+Bytes.Encode.unsignedInt16 LE.
+
+The value 0x1234 is encoded and decoded little-endian, and the logged result is
+4660, its decimal form. A failed decode would log -1.
+
 -}
 
 -- CHECK: DecodeUnsignedInt16LETest: 4660

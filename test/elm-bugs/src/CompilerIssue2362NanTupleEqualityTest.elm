@@ -1,12 +1,12 @@
 module CompilerIssue2362NanTupleEqualityTest exposing (main)
 
-{-| (==) on a structure containing NaN depends on whether both sides are the same JS object.
+{-| A tuple holding NaN is not equal to anything, including itself.
 
 <https://github.com/elm/compiler/issues/2362>
 
-NaN is not equal to itself, so `(0/0, 1) == (0/0, 1)` is False, and comparing a tuple holding NaN
-with itself must be False too. Elm 0.19.1 returns True for `p == p` because `_Utils_eq` first
-checks `x === y` (the same object), and False for an equal tuple built separately.
+NaN is not equal to itself, so `p == q`, two separately built `( NaN, 1 )` tuples, and `p == p`,
+one tuple compared with itself, must both be False. Elm 0.19.1 returns False for `p == q` but True
+for `p == p`, because its equality first checks whether both sides are the same JavaScript object.
 
 -}
 

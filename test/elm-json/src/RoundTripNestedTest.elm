@@ -1,5 +1,8 @@
 module RoundTripNestedTest exposing (main)
 
+{-| `Json.Decode.at [ "a", "b" ]` reads the integer 42 from an object nested inside another object.
+-}
+
 -- CHECK: rt_nested: Ok 42
 
 import Html exposing (text)

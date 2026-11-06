@@ -1,6 +1,9 @@
 module CombinatorTPipeTest exposing (main)
 
-{-| T combinator: pipe [1,2,3] into (sum << map ((*) 2)) = 12
+{-| The T combinator, built from S and K, passing `[ 1, 2, 3 ]` to the composition of `List.sum` and `List.map ((*) 2)`: the result is 12.
+
+`t` is `c i`, where `c = s (b b s) (k k)`, `b = s (k s) k` and `i = s k k`.
+
 -}
 
 -- CHECK: result: 12

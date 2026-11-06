@@ -1,6 +1,6 @@
 module DecodeFloat64BETest exposing (main)
 
-{-| Test Bytes.Decode.float64 BE decoding.
+{-| `Bytes.Decode.float64 BE` reads back a 64-bit big-endian float written by `Bytes.Encode.float64 BE`, with every digit of `3.141592653589793` intact.
 -}
 
 -- CHECK: DecodeFloat64BETest: 3.141592653589793

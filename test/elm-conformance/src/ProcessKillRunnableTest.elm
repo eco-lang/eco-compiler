@@ -1,18 +1,16 @@
 module ProcessKillRunnableTest exposing (main)
 
-{-| `Process.kill` must stop a process that is queued to run, not only one parked on a Task binding
-(cpp-review-bugs.md, "Scheduler: Binding re-step, dropped mailbox, wrong latest version", part (c)).
-In elm/core's JS scheduler `_Scheduler_kill` sets the process's root to null, so a killed process
-never takes another step, whatever state it was in. Recorded from Elm on node.
+{-| `Process.kill` stops a process that is waiting in the scheduler's queue to run, not only one
+waiting on a task.
 
-Two children are spawned, each then killed by the parent:
+The parent spawns a child, kills it, and does the same with a second child:
 
-  - `queued`: `Process.spawn` is a binding, so the parent yields after spawning and this child runs to
-    completion before the parent's kill: Elm logs "survived queued" (a control);
-  - `runnable`: its own first step is `Process.spawn`, so it yields too and is runnable again (queued,
-    not parked) when the parent kills it: Elm never logs "survived runnable".
+  - `queuedChild` runs to completion before the parent's kill, because spawning makes the
+    parent yield, so "survived queued" is logged (a control);
+  - `runnableChild` starts with `Process.spawn` itself, so it yields too and is queued to run
+    again when the parent kills it, and "survived runnable" must never be logged.
 
-The parent then sleeps and logs "done".
+The parent then sleeps for 50 ms and logs "done".
 
 -}
 

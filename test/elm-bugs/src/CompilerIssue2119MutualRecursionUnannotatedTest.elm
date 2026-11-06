@@ -1,7 +1,7 @@
 module CompilerIssue2119MutualRecursionUnannotatedTest exposing (main)
 
-{-| Using an exposed, unannotated, mutually recursive function from another module crashes the
-compiler.
+{-| An exposed, unannotated, mutually recursive function used from another module compiles and
+runs.
 
 <https://github.com/elm/compiler/issues/2119>
 

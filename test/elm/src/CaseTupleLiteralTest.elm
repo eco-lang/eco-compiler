@@ -1,6 +1,13 @@
 module CaseTupleLiteralTest exposing (main)
 
-{-| Test case on nested tuple with literal patterns. -}
+{-| A case expression on a pair of `Int`s matches literal and wildcard patterns
+in order, so a pair that fits several patterns takes the first.
+
+The literal pattern `(1, 1)` comes after the three patterns that match a zero,
+and `(2, 3)` matches only the wildcard. The test reaches each of the five
+branches once.
+
+-}
 
 -- CHECK: origin: "origin"
 -- CHECK: xaxis: "x-axis"

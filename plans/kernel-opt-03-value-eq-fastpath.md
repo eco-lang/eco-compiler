@@ -16,7 +16,7 @@ callsite census (design_docs/kernel-boundary/callsite-census-self-compile.txt).
 | File | Change |
 |---|---|
 | `elm-kernel-cpp/src/core/UtilsExports.cpp` | P0: `ECO_VALUE_EQ_CENSUS` arm counters + atexit dump at the top of `Elm_Kernel_Utils_equal` (:107-109) / `_notEqual` (:111-113); reverted before P2 lands |
-| `test/elm/src/EqDepthCutoffTest.elm` | P1 (new): golden pinning `eqHelp`'s `depth > 100 -> true` (Utils.cpp:566-569) |
+| `test/eco-elm/src/EqDepthCutoffTest.elm` | P1 (new): golden pinning `eqHelp`'s `depth > 100 -> true` (Utils.cpp:566-569) |
 | `runtime/src/codegen/Ops.td` | P2: new `Eco_ValueEqOp` def after `Eco_StringCmp3Op` (ends :2793, before the section-12 banner at :2795) |
 | `runtime/src/codegen/Passes/EcoToLLVMArith.cpp` | P2: `ValueEqOpLowering` (marker call) next to `StringCmp3OpLowering` (:1134-1149); add to `populateEcoArithPatternsWithRuntime` (:1242-1258, after the `StringCmp3OpLowering` line at :1257) |
 | `runtime/src/codegen/Passes/EcoToLLVMInternal.h` | P2: **declaration only** — `mlir::LLVM::LLVMFuncOp getOrCreateValueEqMarker(mlir::OpBuilder &) const;` next to the `getOrCreateUtilsEqual` decl (:689). No symbol constant here (see §2.2) |
@@ -133,7 +133,7 @@ the inline arms at 6.47% against this plan's 25% bar; that bar was overruled by 
 the loop's veto criterion is a wall REGRESSION, not a plan-internal payoff gate -- and the
 item was built in full.
 
-- **P1** `test/elm/src/EqDepthCutoffTest.elm` pins the depth-100 cutoff and the iterative
+- **P1** `test/eco-elm/src/EqDepthCutoffTest.elm` pins the depth-100 cutoff and the iterative
   `Tag_Cons` spine walk, so the op provably does not move the boundary it inherits.
 - **P2** op + declare-only marker + the three-arm pre-RS4GC expansion.
 - **P3** emission: `ValueEq`/`BoolEq` ctors with the `boxedComparable` whitelist,
@@ -367,7 +367,7 @@ shipped counter.
 such limit, so `==` and `compare == EQ` can disagree on deep values. The op INHERITS this;
 it must never silently change it. Pin it first.
 
-New file `test/elm/src/EqDepthCutoffTest.elm` (E2E tests are auto-discovered from
+New file `test/eco-elm/src/EqDepthCutoffTest.elm` (E2E tests are auto-discovered from
 `test/elm/src` by `discoverTests`, ElmE2ETestBase.hpp:1089-1106 — every `*.elm` with a
 top-level `main`, no registration step; assertions are `-- CHECK:` lines matched against
 stdout, parsed by `test/CheckPatterns.hpp`. Shape copied verbatim from
@@ -1322,7 +1322,7 @@ tail -20 /tmp/test_output.txt
 - **Item-specific:**
   - Phase-0 arm-hit census archived under `design_docs/kernel-boundary/`, percentages
     recorded above, instrumentation reverted.
-  - `test/elm/src/EqDepthCutoffTest.elm` green and UNCHANGED across P2/P3/P4.
+  - `test/eco-elm/src/EqDepthCutoffTest.elm` green and UNCHANGED across P2/P3/P4.
   - `test/elm/src/EqBoxedFastPathTest.elm` green in BOTH flag states (§3.6).
   - `test/codegen/value_eq_fastpath.mlir` green on all three RUN lines.
   - **Front-end compile:** `cmake --build build --target elm-tests 2>&1 | tee

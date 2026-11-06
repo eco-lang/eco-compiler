@@ -1,6 +1,7 @@
 module CompareFloatTest exposing (main)
 
-{-| Test compare on Float.
+{-| `compare` on `Float` returns `LT`, `GT` and `EQ` for less, greater and equal
+operands.
 -}
 
 -- CHECK: cmp1: LT

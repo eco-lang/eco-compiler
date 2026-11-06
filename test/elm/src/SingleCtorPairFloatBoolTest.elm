@@ -1,8 +1,12 @@
 module SingleCtorPairFloatBoolTest exposing (main)
 
-{-| Two single-constructor types: WrapFloat (Float, f64 unboxed) and WrapBool (Bool, boxed).
-Tests that case-matching on WrapFloat doesn't use WrapBool's boxed layout,
-and that WrapBool matching doesn't use WrapFloat's unboxed f64 layout.
+{-| Pattern matching works on two single-constructor types in one module, one wrapping a `Float` and one wrapping a `Bool`.
+
+`unwrapFloat` returns the wrapped `9.81`. `matchBool` matches the literal
+patterns `WrapBool True` and `WrapBool False`, giving `"yes"` and `"no"`.
+`matchFloat` binds the wrapped `Float` and compares it with 5.0, giving `"big"`
+for 100.0.
+
 -}
 
 -- CHECK: unwrap_float: 9.81

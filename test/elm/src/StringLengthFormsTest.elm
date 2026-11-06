@@ -1,23 +1,13 @@
 module StringLengthFormsTest exposing (main)
 
-{-| kernel-opt-04: `String.length` over every String heap form.
+{-| `String.length` gives the right count for strings built in several different ways,
+not only for literals.
 
-Under `ECO_STRING_LENGTH_OP=1` each call below lowers to `eco.string.length`,
-an inline `header.size` load with an embedded-constant guard, instead of an
-`Elm_Kernel_String_length` call. HEAP\_025/HEAP\_032 say that one word is the
-logical UTF-16 unit count for ALL SIX forms, which is exactly what makes the
-inline read legal without per-tag dispatch — so this fixture's job is to reach
-all six forms and pin that the answer is unchanged in both flavours.
-
-Forms reached, and why each construction reaches it (thresholds from
-AllocatorCommon.hpp): a bare ASCII literal is a `Tag_StringUtf8Leaf`; a literal
-with non-ASCII is a UTF-16 `Tag_String`; `slice` above STRING\_TINY\_SLICE\_LIMIT
-(128 units) allocates a `Tag_StringSlice`/`Tag_StringUtf8View` rather than
-copying; `append` above STRING\_FLATTEN\_LIMIT (131072 units) builds a
-`Tag_StringRope` instead of flattening; and a string at or above
-(8192-8)/2 = 4092 units is a split-header `Tag_LargeStringHeader`. The empty
-string is an embedded constant, which is the guard arm of the inline diamond
-and the one case that never dereferences.
+The strings are: the empty string (0); the ASCII literal `"hello"` (5); the literal
+`"héllo wörld"`, whose accented letters each count as one (11); `String.repeat 5000 "x"`
+(5000); a 290-character `String.slice` of a 500-character string; the `++` of two
+70000-character strings (140000); a 4000-character slice of the 5000-character string; and
+an empty slice of `"hello"` (0).
 
 -}
 
@@ -33,57 +23,57 @@ and the one case that never dereferences.
 import Html exposing (text)
 
 
-{-| Embedded constant: the ptr\_ind guard arm, never dereferenced.
+{-| The empty string.
 -}
 emptyStr : String
 emptyStr =
     ""
 
 
-{-| All-ASCII literal: Tag\_StringUtf8Leaf.
+{-| A literal made only of ASCII characters.
 -}
 asciiStr : String
 asciiStr =
     "hello"
 
 
-{-| Non-ASCII literal: UTF-16 Tag\_String. All chars are BMP, so 11 chars is
-also 11 UTF-16 code units.
+{-| A literal with two non-ASCII letters. Each is a single UTF-16 code unit, so
+the 11 characters have length 11.
 -}
 utf16Str : String
 utf16Str =
     "héllo wörld"
 
 
-{-| At or above 4092 units: split-header Tag_LargeStringHeader.
+{-| A 5000-character string built with `String.repeat`.
 -}
 largeStr : String
 largeStr =
     String.repeat 5000 "x"
 
 
-{-| Above 128 units: an interior view rather than a copy.
+{-| Characters 10 to 299 of a 500-character string, 290 in all.
 -}
 sliceStr : String
 sliceStr =
     String.slice 10 300 (String.repeat 500 "y")
 
 
-{-| Above 131072 units: append builds a Tag_StringRope instead of flattening.
+{-| Two 70000-character strings joined with `++`.
 -}
 ropeStr : String
 ropeStr =
     String.repeat 70000 "a" ++ String.repeat 70000 "b"
 
 
-{-| A view over a large string — the interior-pointer case.
+{-| Characters 500 to 4499 of `largeStr`, 4000 in all.
 -}
 sliceOfLargeStr : String
 sliceOfLargeStr =
     String.slice 500 4500 largeStr
 
 
-{-| A degenerate slice: empty result from a non-empty source.
+{-| An empty slice of a non-empty string.
 -}
 emptySliceStr : String
 emptySliceStr =

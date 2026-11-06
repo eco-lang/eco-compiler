@@ -1,6 +1,12 @@
 module LetDestructTupleNestedTest exposing (main)
 
-{-| Test nested and chained tuple destructuring in let bindings. -}
+{-| Tuple patterns in `let` bindings: a flat pair, a pair of pairs destructured in one
+pattern, and a pair whose second part is bound by name and destructured by a later
+binding.
+
+The nested sum is `3 + 4 + 5 - 6 + 2 = 8`; the chained one is `1 + 2 + 3 = 6`.
+
+-}
 
 -- CHECK: basic: 3
 -- CHECK: nested: 8

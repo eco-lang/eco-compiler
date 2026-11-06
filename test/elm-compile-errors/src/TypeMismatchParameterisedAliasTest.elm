@@ -1,9 +1,8 @@
 module TypeMismatchParameterisedAliasTest exposing (..)
 
-{-| TYPE MISMATCH: parameterised alias.
+{-| Giving a `Box Int` where a `Box String` is annotated is rejected with a TYPE MISMATCH error.
 
-From `SourceIR.TypeCheckFailsCases` (`problemCases`), the elm-test catalogue of programs
-the compiler must reject.
+`Box a` is a record alias `{ v : a }`, so the two instances are records whose `v` fields have different types.
 
 -}
 

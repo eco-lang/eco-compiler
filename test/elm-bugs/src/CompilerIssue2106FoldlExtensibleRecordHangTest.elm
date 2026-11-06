@@ -1,11 +1,13 @@
 module CompilerIssue2106FoldlExtensibleRecordHangTest exposing (main)
 
-{-| An infinite extensible-record type through `List.foldl`.
+{-| A `List.foldl` whose step function extends an extensible-record type parameter must be
+rejected with a type error, not hang the compiler.
 
 <https://github.com/elm/compiler/issues/2106>
 
-The program is ill-typed, so it must be rejected with a type error. Elm 0.19.1 instead hangs while
-its memory grows without bound (the runner kills it at its compile memory limit), or crashes.
+`List.foldl withWindow Room windows` needs `Room a` and `Room { a | withWindow : () }` to be the
+same type, which would make the record type infinite. Elm 0.19.1 instead hangs while its memory
+grows without bound, or crashes.
 
 -}
 

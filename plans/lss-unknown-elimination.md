@@ -1543,7 +1543,7 @@ entirely, this plan is wrong and cheap to abandon.
   WHY: it was the right idea in a representation that could not carry it.
 - **AMEND LSS_026** — clause (a) may relax once dangling sources cannot arise;
   keep it as a safety net, and keep the runtime witness
-  (`test/elm/src/LssMixedSigHonestyTest.elm`) green throughout.
+  (`test/eco-elm/src/LssMixedSigHonestyTest.elm`) green throughout.
 - **NEW — arrow identity.** One id per syntactic `TLambda`, minted once at
   type creation, **only in `AssignMVarIds`**; every `Can.Type Name` carries
   `noArrowId`; structural keying banned; the §4.4 isolation policy stated as a

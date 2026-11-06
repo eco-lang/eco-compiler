@@ -1,11 +1,10 @@
 module CompilerIssue1700InfiniteTypeFoldrLambdaHangTest exposing (main)
 
-{-| An infinite type in a `List.foldr` lambda (`uniq :: elem`).
+{-| A `List.foldr` lambda that conses a list onto an element (`uniq :: elem`) is rejected with an infinite-type error.
 
 <https://github.com/elm/compiler/issues/1700>
 
-The program is ill-typed, so it must be rejected with a type error. Elm 0.19.1 instead hangs while
-its memory grows without bound (the runner kills it at its compile memory limit), or crashes.
+Elm 0.19.1 hangs on it, its memory growing without bound, instead of reporting the error.
 
 -}
 

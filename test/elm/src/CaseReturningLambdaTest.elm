@@ -1,8 +1,14 @@
 module CaseReturningLambdaTest exposing (main)
 
-{-| Outer case on constructor containing nested case on String that returns lambdas.
-Mimics Terminal.Main lambda captures: constructor dispatch with string sub-dispatch
-producing closures.
+{-| Checks a `case` on a custom type whose first branch holds a nested `case` on a
+`String`, where every branch of both returns a two-argument lambda.
+
+`makeOp` returns addition for `"add"`, multiplication for `"mul"`, a constant 0
+for `"const"`, and a constant 99 for `Default`. Each returned function is bound
+first and applied to 1 and 5 afterwards.
+
+Among what is not tested: the wildcard `String` branch, `\a _ -> a`.
+
 -}
 
 -- CHECK: r1: 6

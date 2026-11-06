@@ -1,6 +1,11 @@
 module DecodeSignedInt16BETest exposing (main)
 
-{-| Test Bytes.Decode.signedInt16 BE decoding.
+{-| Bytes.Decode.signedInt16 BE reads back a negative value written by
+Bytes.Encode.signedInt16 BE.
+
+The value -1000 is encoded and decoded big-endian, and the logged result is
+-1000. A failed decode would log 0.
+
 -}
 
 -- CHECK: DecodeSignedInt16BETest: -1000

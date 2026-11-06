@@ -1,6 +1,6 @@
 module BitwiseIdentityTest exposing (main)
 
-{-| Test bitwise identity properties.
+{-| `Bitwise.and` and `Bitwise.or` of a number with itself return the number, and `Bitwise.xor` of a number with itself returns 0.
 -}
 
 -- CHECK: identity1: 42

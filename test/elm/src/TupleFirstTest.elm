@@ -1,6 +1,6 @@
 module TupleFirstTest exposing (main)
 
-{-| Test Tuple.first.
+{-| `Tuple.first` returns the first component of an `Int` pair and of a `String` pair.
 -}
 
 -- CHECK: first1: 1

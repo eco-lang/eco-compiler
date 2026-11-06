@@ -1,10 +1,8 @@
 module FromArrayCharListEqualityTest exposing (main)
 
-{-| Build `Array Char` via `Array.fromList`, convert back to `List Char` via
-    `Array.toList`, and assert equality with the original list.
+{-| Converting a `List Char` to an `Array` with `Array.fromList` and back with `Array.toList` gives a list equal to the original.
 
-    `Char` is unboxed as `u16`, so this exercises the same round-trip path
-    as the Float equivalent but with a different primitive width.
+Only the `==` comparison is logged; `FromArrayCharListRoundtripTest` also logs the list itself.
 -}
 
 -- CHECK: match: True

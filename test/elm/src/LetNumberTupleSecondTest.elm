@@ -1,9 +1,8 @@
 module LetNumberTupleSecondTest exposing (main)
 
-{-| Probe: boxed `number` in a tuple, projected via `Tuple.second` (the existing
-boxed test uses `Tuple.first`). The second slot must specialize to `Float`.
-Correct: 1.5*30 = 45.
-
+{-| The second integer-literal element of a let-bound pair, read with
+`Tuple.second`, is used as a `Float` while the first is never used:
+`round (Tuple.second p * 1.5)` with `p = ( 99, 30 )` logs 45.
 -}
 
 -- CHECK: tup2: 45

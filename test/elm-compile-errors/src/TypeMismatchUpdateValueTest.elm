@@ -1,9 +1,9 @@
 module TypeMismatchUpdateValueTest exposing (..)
 
-{-| TYPE MISMATCH: update value.
+{-| A record update that gives an `Int` field a `String`, `{ r | x = "s" }` with
+`r : { x : Int }`, is rejected with a TYPE MISMATCH error.
 
-From `SourceIR.TypeCheckFailsCases` (`contextCases`), the elm-test catalogue of programs
-the compiler must reject.
+A record update keeps the record's type, so the new value of `x` must still be an `Int`.
 
 -}
 

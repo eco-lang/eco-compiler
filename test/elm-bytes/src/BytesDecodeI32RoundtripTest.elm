@@ -1,11 +1,11 @@
 module BytesDecodeI32RoundtripTest exposing (main)
 
-{-| Roundtrip: encode an Int32 and decode it back, verifying equality.
+{-| An Int encoded with `Bytes.Encode.unsignedInt32` big-endian decodes back to the same Int with `Bytes.Decode.unsignedInt32`.
 
-    Exercises `makeTuple2_ii` in BytesExports.cpp: each decoder step builds
-    a `(offset, value)` tuple with two i64 slots. Under a broken 2-bit
-    bitmap (e.g. 3 instead of 5) GC would treat slot 1 as an HPointer,
-    producing either a crash or a corrupted value after any minor GC.
+The value is `0x12345678`. Between encoding and decoding the program builds and
+concatenates about two thousand strings, so the bytes are decoded after other
+allocation has happened. The logged `True` is the equality check.
+
 -}
 
 -- CHECK: BytesDecodeI32RoundtripTest: True
@@ -26,8 +26,7 @@ main =
         bytes =
             E.encode (E.unsignedInt32 BE original)
 
-        -- Allocate churn between encode and decode to trigger a minor GC
-        -- while the decoder's (offset, value) tuples are live.
+        -- Allocation between encoding and decoding; the result is unused.
         _ =
             List.range 0 2000
                 |> List.map String.fromInt

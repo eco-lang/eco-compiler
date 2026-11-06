@@ -1,5 +1,8 @@
 module RoundTripFloatTest exposing (main)
 
+{-| The float 3.14 encoded with `Json.Encode.float` decodes back to 3.14 with `Json.Decode.float`.
+-}
+
 -- CHECK: rt_float: Ok 3.14
 
 import Html exposing (text)

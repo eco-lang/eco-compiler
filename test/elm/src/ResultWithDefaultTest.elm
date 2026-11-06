@@ -1,6 +1,6 @@
 module ResultWithDefaultTest exposing (main)
 
-{-| Test Result.withDefault.
+{-| Checks that `Result.withDefault` returns the `Ok` value when there is one (`42`) and the default (`0`) for an `Err`.
 -}
 
 -- CHECK: withDefault1: 42

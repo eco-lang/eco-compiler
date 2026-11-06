@@ -102,7 +102,7 @@ Two standing lessons shape every unit below (the tier pattern, now ×6):
 | `Functions.elm:791-806`, `:817-959`, `:973-1090` | Worker/shim emission; `$sret` name `:892`, `$psplit` name `:1046`, shim projection loop `:1063-1090`. Worker split params bind via `ctx.splitAggParams` with `varMapping` **removed** (`:995,:1015-1016`) so bypass reads crash. |
 | `Expr.elm:3173-3185`, `:3210-3242`, `:7503-7607` | Call-site migration: `tryPsplitCall` (freeness `psplitArgFree:3245`, emission `emitPsplitSlotArg:3372`), `trySretLetBinding`/`emitSretLetBinding`. |
 | `Ops.td:113-165`, `:2862-3034` | 6 aggregate types; `eco.make.{tuple2,tuple3,record,custom,cons,closure_env}` (Pure), `eco.to_heap` (GCRootCarrier; **rejects closure_env**), `eco.from_heap`, `eco.make.closure` (`:3034`, the only allocating make). Lowerings `EcoToLLVMValueAgg.cpp:100-949` incl. `ClosureEnvMakeOpLowering:175`, `MakeClosureOpLowering:774`, `ProjectClosureFromEnvLowering:902`; registered `EcoToLLVM.cpp:448`. **No front-end producer exists for `make.record`/`make.cons`/`make.closure_env`** — free headroom. |
-| Fixtures | `compiler/tests/TestLogic/Generate/AggPromoteTest.elm` (unit gate, 10 cases); `test/elm/src/AggPromoteTupleTest.elm` (corpus pin, 35 CHECK lines — every unit extends this file); codegen pins `test/codegen/value_*.mlir` incl. `value_closure_env.mlir`, `value_make_closure.mlir`. |
+| Fixtures | `compiler/tests/TestLogic/Generate/AggPromoteTest.elm` (unit gate, 10 cases); `test/eco-elm/src/AggPromoteTupleTest.elm` (corpus pin, 35 CHECK lines — every unit extends this file); codegen pins `test/codegen/value_*.mlir` incl. `value_closure_env.mlir`, `value_make_closure.mlir`. |
 
 ### The kernel side (OC3)
 

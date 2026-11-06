@@ -1,8 +1,10 @@
 module EqualityFloatViaSetTest exposing (main)
 
-{-| `List.member` on `List Float` exercises the polymorphic-equality path
-    on Float operands (lands on `Utils.equal_Float` if the wrapper bypasses
-    `eco.float.eq`).
+{-| `List.member` finds `Float` values in a list correctly.
+
+`List.member` compares with `==`. Searching `[0.0, 1.5, 2.25, 3.0, 5.5]` finds
+2.25 and 0.0 and does not find 9.99.
+
 -}
 
 -- CHECK: present: True

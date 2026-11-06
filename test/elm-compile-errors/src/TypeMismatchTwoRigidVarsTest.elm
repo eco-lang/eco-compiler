@@ -1,9 +1,8 @@
 module TypeMismatchTwoRigidVarsTest exposing (..)
 
-{-| TYPE MISMATCH: two rigid vars.
+{-| A function annotated `a -> b` that returns its argument is rejected with a TYPE MISMATCH.
 
-From `SourceIR.TypeCheckFailsCases` (`rigidCases`), the elm-test catalogue of programs
-the compiler must reject.
+`f x = x` returns a value of type `a`, but `a` and `b` are separate type variables chosen by the caller.
 
 -}
 

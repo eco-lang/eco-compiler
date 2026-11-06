@@ -1,6 +1,6 @@
 module TupleMapSecondTest exposing (main)
 
-{-| Test Tuple.mapSecond.
+{-| `Tuple.mapSecond` applies a function to the second component of a pair and leaves the first unchanged.
 -}
 
 -- CHECK: mapSecond1: (1,20)

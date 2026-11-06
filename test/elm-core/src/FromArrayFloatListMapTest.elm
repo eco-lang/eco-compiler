@@ -1,8 +1,8 @@
 module FromArrayFloatListMapTest exposing (main)
 
-{-| Array.fromList → Array.toList → List.map (+ 0.5). Verifies that Float
-    element bits survive the Array → List conversion intact so that
-    downstream `List.map` arithmetic produces the right numeric result.
+{-| Floating-point arithmetic in `List.map` works on a `List Float` taken out of an `Array` with `Array.toList`.
+
+`[1.5, 2.5]` goes through `Array.fromList` and `Array.toList`, and adding 0.5 to each element gives `[2.0, 3.0]`.
 -}
 
 -- CHECK: result: [2,3]

@@ -38,7 +38,7 @@ Delivered:
   unlikely). GVN CSEs the header check across sibling field reads. array.set
   stores directly off the fresh clone (no resolve).
 - **P3 (validation + docs):** invariants HEAP_030/031 added, FORBID_HEAP_002
-  reworded. New E2E regression `test/elm/src/ReprDerefStressTest.elm` (deref over
+  reworded. New E2E regression `test/eco-elm/src/ReprDerefStressTest.elm` (deref over
   old-gen-promoted structures). `--inline-deref` flipped default ON.
 - **Bug found + fixed by the C++ JIT codegen tests:** `eco_follow_forward` was
   unresolved in the JIT (AOT statically links it, so bootstrap/E2E were fine);

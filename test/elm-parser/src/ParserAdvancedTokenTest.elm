@@ -1,5 +1,11 @@
 module ParserAdvancedTokenTest exposing (main)
 
+{-| `Parser.Advanced.token` succeeds on input that starts with the token and fails on input that does not.
+
+`matched` runs the token `"="` on `"="` and checks for `Ok`; `failed` runs it
+on `"x"` and checks for `Err`. Neither inspects the dead ends.
+-}
+
 -- CHECK: matched: True
 -- CHECK: failed: True
 

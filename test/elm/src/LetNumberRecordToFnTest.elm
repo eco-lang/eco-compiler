@@ -1,8 +1,11 @@
 module LetNumberRecordToFnTest exposing (main)
 
-{-| Probe: a `number` bound separately, then placed into a record that is passed
-to a function demanding a `Float` field. The constraint is doubly indirect
-(record construction + function parameter type). Correct: 1.5*30 = 45.
+{-| An unannotated let-bound integer literal, placed in a record passed to a
+function that takes `{ v : Float }`, is used as a `Float`:
+`round (useFloat { v = base })` with `base = 30` logs 45.
+
+`base` is fixed to `Float` only by the record parameter type of `useFloat`,
+which multiplies the field by `1.5`.
 
 -}
 

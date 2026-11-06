@@ -1,9 +1,8 @@
 module TypeMismatchTupleComponentPatternTest exposing (..)
 
-{-| TYPE MISMATCH: tuple component pattern.
+{-| A tuple pattern whose first component is a `String` literal, matched against a tuple of numbers, is rejected with a TYPE MISMATCH.
 
-From `SourceIR.TypeCheckFailsCases` (`patternMismatchCases`), the elm-test catalogue of programs
-the compiler must reject.
+The pattern `( "a", b )` is used in a `case` on `( 1, 2 )`.
 
 -}
 

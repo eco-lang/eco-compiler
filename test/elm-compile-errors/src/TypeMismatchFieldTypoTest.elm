@@ -1,10 +1,6 @@
 module TypeMismatchFieldTypoTest exposing (..)
 
-{-| TYPE MISMATCH: field typo.
-
-From `SourceIR.TypeCheckFailsCases` (`contextCases`), the elm-test catalogue of programs
-the compiler must reject.
-
+{-| The compiler rejects access to a misspelled record field, `r.nmae` on a record whose only field is `name`, with a TYPE MISMATCH error.
 -}
 
 -- COMPILE-ERROR: TYPE MISMATCH, field typo

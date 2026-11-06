@@ -1,9 +1,10 @@
 module TypeMismatchDifferentlyNamedFlexVarsTest exposing (..)
 
-{-| TYPE MISMATCH: differently named flex vars.
+{-| A list of two tuples whose first components are values of different custom types is rejected with a TYPE MISMATCH, where the second components are functions annotated with differently named type variables.
 
-From `SourceIR.TypeCheckFailsCases` (`problemCases`), the elm-test catalogue of programs
-the compiler must reject.
+The entries are `( A, id1 )` and `( B, id2 )`, with `id1 : a -> a` and `id2 : b -> b`. `A` and
+`B` belong to the distinct types `A` and `B`, so the entries cannot agree. The two functions
+alone could, since each use of an annotated top-level function gets fresh type variables.
 
 -}
 

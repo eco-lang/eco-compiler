@@ -1,6 +1,12 @@
 module CustomTypeFuncFieldTest exposing (main)
 
-{-| Test custom type wrapping a function field. -}
+{-| A custom type whose single constructor wraps a function can be unwrapped by
+an argument pattern and the function called.
+
+`runOp` applies the wrapped function to 10: with `\x -> x + 1` the result is
+11, and with `\x -> x * 2` it is 20.
+
+-}
 
 -- CHECK: op1: 11
 -- CHECK: op2: 20

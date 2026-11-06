@@ -1,9 +1,8 @@
 module TypeMismatchTriplesDifferTest exposing (..)
 
-{-| TYPE MISMATCH: triples differ.
+{-| A triple whose third component does not match its annotation is rejected with a TYPE MISMATCH.
 
-From `SourceIR.TypeCheckFailsCases` (`problemCases`), the elm-test catalogue of programs
-the compiler must reject.
+`x : ( Int, Int, Int )` is defined as `( 1, 2, "a" )`.
 
 -}
 

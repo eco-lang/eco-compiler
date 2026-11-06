@@ -1,10 +1,11 @@
 module ClosureCapture02Test exposing (main)
 
-{-| Test closure captures Maybe variable used only in case destruct.
+{-| A lambda returned from a function captures a `Maybe String` argument and
+matches on it with `case` when called.
 
-Uses explicit lambda return to force nested Function nodes.
-The inner lambda captures `m`, which appears only as the root of
-destruct paths (MonoRoot) in the case expression.
+The captured value is used only as the subject of the `case`. `Just "hello"`
+gives `"hello"` and `Nothing` gives `"none"`.
+
 -}
 
 -- CHECK: just: "hello"

@@ -1,8 +1,10 @@
 module WeirdElseBranchElseNotIndentedTest exposing (main)
 
-{-| WEIRD ELSE BRANCH: else not indented.
+{-| An `if` inside a `let` binding whose `else` sits at the binding's own column, to the left of
+its `if`, is rejected with a WEIRD ELSE BRANCH error.
 
-From `Compiler.Reporting.SyntaxRegionReportTest` (`elseNotIndented`), an elm-test program the compiler must reject.
+The `else` keyword has to be indented further than the start of the `let` binding `y`, and
+here it is level with it.
 
 -}
 

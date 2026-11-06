@@ -1,6 +1,8 @@
 module DecodeMap3Test exposing (main)
 
-{-| Test Bytes.Decode.map3 combining three decoders.
+{-| `Bytes.Decode.map3` combines three decoders in order, adding three unsigned bytes.
+
+The third byte is written with `Bytes.Encode.unsignedInt8 300`. Only the low eight bits of an out-of-range value are kept, so it is stored as 44, and the sum is 100 + 200 + 44 = 344.
 -}
 
 -- CHECK: DecodeMap3Test: 344

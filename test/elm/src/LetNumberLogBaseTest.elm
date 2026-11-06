@@ -1,8 +1,10 @@
 module LetNumberLogBaseTest exposing (main)
 
-{-| Probe: a non-arithmetic Float consumer — `logBase : Float -> Float -> Float`
-forces the let-bound `number` to `Float` via its argument type, with no `(*)` at
-the use site. Correct: logBase 10 100 = 2.
+{-| An unannotated let-bound integer literal, passed to `logBase`, is used as a
+`Float`: `round (logBase 10 n)` with `n = 100` logs 2.
+
+The literal `100` has the type `number`, and the only thing that fixes it to
+`Float` is the parameter type of `logBase`; no arithmetic operator touches it.
 
 -}
 

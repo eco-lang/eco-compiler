@@ -1,5 +1,12 @@
 module UrlRoundTripTest exposing (main)
 
+{-| `Url.percentDecode` undoes `Url.percentEncode`, giving back `Just` the original string.
+
+The two strings round-tripped contain a space and the URL delimiters
+`/ ? = &`.
+
+-}
+
 -- CHECK: roundtrip1: Just "hello world"
 -- CHECK: roundtrip2: Just "a/b?c=d&e=f"
 

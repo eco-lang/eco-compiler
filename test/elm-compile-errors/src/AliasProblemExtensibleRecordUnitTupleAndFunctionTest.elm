@@ -1,9 +1,10 @@
 module AliasProblemExtensibleRecordUnitTupleAndFunctionTest exposing (..)
 
-{-| ALIAS PROBLEM: extensible record, unit, tuple and function.
+{-| A type alias that refers to itself inside an extensible record is rejected with an ALIAS PROBLEM.
 
-From `SourceIR.CanonicalizeFailsCases` (`aliasCases`), the elm-test catalogue of programs
-the compiler must reject.
+`A r` is an extensible record whose field `f` holds a tuple of a unit, an `A r`
+(parenthesised around a block comment) and a function returning `A r`. A type alias
+cannot be recursive, so the compiler must report the self-reference.
 
 -}
 

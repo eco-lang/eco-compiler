@@ -1280,7 +1280,7 @@ logic: For every MonoCall with CallDirectKnownSegmentation whose callee is a glo
   * MONO_018's pre-GlobalOpt type check is separate and unchanged
 inputs: SourceIR JoinpointABICases (incl. category 6: joins η-expansion cannot dissolve: let-bound, in a list, as an argument, in a record field), compiled through runToGlobalOpt (production pipeline)
 oracle: No call derives a staging from a join whose branches disagree; such calls are CallSegmentationUnknown/CallGenericApply and the runtime applies them by the closure header.
-tests: compiler/tests/TestLogic/Monomorphize/MonoCaseBranchResultType.elm (expectHonestJoinStaging); E2E test/elm/src/Gopt003CaseStagingTest.elm
+tests: compiler/tests/TestLogic/Monomorphize/MonoCaseBranchResultType.elm (expectHonestJoinStaging); E2E test/eco-mlir/src/Gopt003CaseStagingTest.elm
 --
 --
 name: No placeholder CallInfo after GlobalOpt
@@ -1653,7 +1653,7 @@ logic: All eco.construct.* operations produce !eco.value results:
   * eco.make.record, eco.make.cons and eco.make.closure_env have no producer; only hand-written fixtures use them.
 inputs: MLIR with construction ops; lit fixtures for the make.* family
 oracle: construct.* result type is always !eco.value; make.* results are aggregate types and lower without heap allocation.
-tests: compiler/tests/TestLogic/Generate/CodeGen/ConstructResultTypeTest.elm (construct.* half), test/codegen/value_tuple2.mlir, value_tuple3.mlir, value_custom.mlir, value_record3.mlir, value_cons.mlir, value_closure_env.mlir, test/elm/src/AggPromoteTupleTest.elm (make.* half)
+tests: compiler/tests/TestLogic/Generate/CodeGen/ConstructResultTypeTest.elm (construct.* half), test/codegen/value_tuple2.mlir, value_tuple3.mlir, value_custom.mlir, value_record3.mlir, value_cons.mlir, value_closure_env.mlir, test/eco-elm/src/AggPromoteTupleTest.elm (make.* half)
 --
 --
 name: Container construct unboxed_bitmap matches SSA types
@@ -2020,7 +2020,7 @@ logic: For every eco.papExtend that is a saturated call (isSaturatedCall) of som
   * Generic-mode papExtend (no remaining_arity) is excluded: its result is governed by CGEN_034.
 inputs: MLIR with closure applications including both saturated and partial applications
 oracle: Every saturated eco.papExtend has a result type matching the callee func.func's return type; any mismatch is a codegen bug. The C++ verifier also checks it where it can see the evaluator (PapExtendOp::verifySymbolUses, SD-8), and PapExtendOp::verify requires !eco.value for a partial typed extend and !eco.value/i64/f64/i32 for a saturated one.
-tests: compiler/tests/TestLogic/Generate/CodeGen/PapExtendSaturatedResultTypeTest.elm; E2E test/elm/src/HofResidualPartialTest.elm
+tests: compiler/tests/TestLogic/Generate/CodeGen/PapExtendSaturatedResultTypeTest.elm; E2E test/eco-elm/src/HofResidualPartialTest.elm
 --
 --
 name: Kernel declaration completeness
@@ -2376,7 +2376,7 @@ logic: A fused kernel is emitted only when the structure can be statically resol
   * An encoder subtree the reifier does not recognise becomes an `EOpaque` leaf, written through the kernel's own walkers (BFOPS_037); an encoder whose single node is opaque is not fused.
 inputs: Programs with encoders/decoders, including an encoder with an opaque part
 oracle: Decoder fusion is total or absent; encoder fusion may be partial, with opaque parts delegated.
-tests: test/elm-bytes/src/FusionPartialOpaqueTest.elm
+tests: test/eco-mlir/src/FusionPartialOpaqueTest.elm
 --
 --
 name: Dynamic encoders/decoders rejected from fusion
@@ -2434,7 +2434,7 @@ logic: Inspect the lowered fused kernels:
   * Everything else is inlined.
 inputs: Programs with fused encoders (with and without opaque parts) and list decoders
 oracle: No other interpreter or kernel call inside a fused kernel.
-tests: test/elm-bytes/src/FusionPartialOpaqueTest.elm (pins the elm_encoder_write_into delegation)
+tests: test/eco-mlir/src/FusionPartialOpaqueTest.elm (pins the elm_encoder_write_into delegation)
 --
 --
 name: No raw cursor pointer is live across a GC point
@@ -2447,7 +2447,7 @@ logic: Make a GC happen while cursors are live and check the bytes:
   * A cursor with no known buffer, or one used inside a collecting loop it is not threaded through, is a compile error.
 inputs: Hand-written bf fixtures; an Elm program with a fused length-prefixed list encoder
 oracle: Correct bytes; rejection fixtures fail with the BFOPS_039 diagnostic.
-tests: test/bf-codegen/bf_cursor_survives_minor_gc.mlir, test/elm-bytes/src/BytesFusedEncodeCursorSurvivesGCTest.elm, test/bf-codegen/bf_cursor_gc_unknown_buffer_rejected.mlir, test/bf-codegen/bf_cursor_gc_loop_outer_cursor_rejected.mlir
+tests: test/bf-codegen/bf_cursor_survives_minor_gc.mlir, test/eco-mlir/src/BytesFusedEncodeCursorSurvivesGCTest.elm, test/bf-codegen/bf_cursor_gc_unknown_buffer_rejected.mlir, test/bf-codegen/bf_cursor_gc_loop_outer_cursor_rejected.mlir
 --
 
 ---

@@ -1,6 +1,8 @@
 module EncodeUnsignedInt16BETest exposing (main)
 
-{-| Test Bytes.Encode.unsignedInt16 with BE endianness.
+{-| `Bytes.Encode.unsignedInt16` with big-endian order writes 2 bytes.
+
+The test encodes `0x1234` and logs the width of the result.
 -}
 
 -- CHECK: EncodeUnsignedInt16BETest: 2

@@ -1,7 +1,11 @@
 module SingleCtorPairUnitIntTest exposing (main)
 
-{-| Two single-constructor types: WrapUnit ((), boxed/constant) and WrapInt (Int, i64 unboxed).
-Tests that case-matching on WrapUnit doesn't use WrapInt's unboxed layout.
+{-| Pattern matching works on two single-constructor types in one module, one wrapping the unit value `()` and one wrapping an `Int`.
+
+`unwrapUnit` returns the wrapped `()`, and `unwrapInt` the wrapped `77`.
+`matchUnit` wraps `()` and matches it with a wildcard pattern, giving
+`"got_unit"`.
+
 -}
 
 -- CHECK: unwrap_unit: ()

@@ -1,6 +1,7 @@
 module CaseCharManyBranchTest exposing (main)
 
-{-| Test case on Char with many literal patterns (digit detection). -}
+{-| A case on Char with ten literal branches (`'0'` to `'9'`) and a wildcard maps digit characters to their values and anything else to -1.
+-}
 
 -- CHECK: d0: 0
 -- CHECK: d5: 5

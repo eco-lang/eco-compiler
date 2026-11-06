@@ -1,6 +1,7 @@
 module LetNestedTest exposing (main)
 
-{-| Test nested let expressions.
+{-| A `let` expression used as the definition of a binding in an outer `let`: the
+inner binding 10 is multiplied by 3, giving 30.
 -}
 
 -- CHECK: nested: 30

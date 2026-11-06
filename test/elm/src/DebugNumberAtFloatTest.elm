@@ -1,16 +1,14 @@
 module DebugNumberAtFloatTest exposing (main)
 
-{-| A `Debug` kernel used inside an unannotated `number` function that is
-specialized at `Float`.
+{-| Unannotated functions over the `number` type that use `Debug.toString` and
+`Debug.log` give the right results when called with a `Float` and with an `Int`
+in the same program.
 
-MONO_009 says a Debug kernel reference keeps its type variables as
-`CEcoValue`. Both monomorphization engines give those variables fresh ids
-(`Specialize.freshenDebugAbi`, `Translate.deriveKernelAbiTypeWith`, through
-`KernelAbi.remapEcoVarsFresh`). Kept at the `number` variable's id,
-`Compiler.Monomorphize.Prune` closed the variable to `MInt`, so in the Float
-specialization the `Debug.toString` passed to `List.map` got a kernel closure
-declared `Elm_Kernel_Debug_toString : (i64) -> !eco.value` over f64 list
-heads, and the program crashed (SIGSEGV) before printing anything.
+`showAll` maps `Debug.toString` over `[ n, n + n ]`, and `bump` logs `n + 1`.
+The test calls `showAll 1.25`, `bump 2.5` and `showAll 2`, and checks that the
+`Float` values print as `1.25`, `2.5` and `3.5` and the `Int` values as `2` and
+`4`.
+
 -}
 
 -- CHECK: showAll: ["1.25","2.5"]

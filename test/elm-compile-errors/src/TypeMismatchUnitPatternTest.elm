@@ -1,9 +1,10 @@
 module TypeMismatchUnitPatternTest exposing (..)
 
-{-| TYPE MISMATCH: unit pattern.
+{-| A function annotated `Int -> Int` whose parameter is the unit pattern `()` is rejected with
+a TYPE MISMATCH error.
 
-From `SourceIR.TypeCheckFailsCases` (`patternMismatchCases`), the elm-test catalogue of programs
-the compiler must reject.
+The pattern `()` only matches the unit type, which clashes with the annotated `Int`
+argument.
 
 -}
 

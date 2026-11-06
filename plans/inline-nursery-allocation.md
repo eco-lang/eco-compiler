@@ -524,7 +524,7 @@ harness binary cache is mtime-blind — A/B legs need the touch discipline.
    corpus + fixed point.
 3. **N3.3 cons (+ twin)** — adds the per-kind head-store emission (new
    code); deletes 3 calls/cell. Pins: `inline_alloc_cons.mlir` (boxed +
-   unboxed head variants); E2E `test/elm/src/InlineAllocConsTest.elm` —
+   unboxed head variants); E2E `test/eco-elm/src/InlineAllocConsTest.elm` —
    long fold building a list under tiny-nursery `ECO_HEAP_VALIDATE`
    (forces the slow path + GC-moves mid-fold; the List.mapN-scar shape).
 4. **N3.4 box int/float/char** — trivial shape, huge site count.

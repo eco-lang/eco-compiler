@@ -1,6 +1,8 @@
 module MutualRecursionTest exposing (main)
 
-{-| Test mutually recursive functions.
+{-| Two top-level functions that call each other, `isEven` and `isOdd`, decide parity by counting down to zero.
+
+`isEven 0` is `True`, `isEven 5` is `False` and `isOdd 5` is `True`.
 -}
 
 -- CHECK: isEven0: True

@@ -1,12 +1,13 @@
 module JsonLargeUnsignedTest exposing (main)
 
-{-| JSON-05 (plans/kernel-lib-bug-fixes.md): JSON integers above INT64_MAX. nlohmann parses them
-as `number_unsigned`; eco's `jsonToHeap` used to convert that through the i64 branch, so 2^63
-and 2^64-1 wrapped (2^63 became -9223372036854775808). Elm reads every JSON number as a JS
-double, and eco's parser now keeps an integer above INT64_MAX as a double too.
-Expected values recorded from Elm on node. The `value` row also needs JS number formatting
-(JSON-NEW-1): nlohmann would print 9.223372036854776e+18.
+{-| JSON integers above 2^63 - 1 decode as the nearest Float rather than wrapping around to a
+negative number.
 
+  - `float 2^63`, `float 2^64-1` and `float int max`: `Json.Decode.float` reads 2^63, 2^64 - 1
+    and 2^63 - 1, and `String.fromFloat` prints the nearest Float, so 2^63 - 1 and 2^63 both give
+    `9223372036854776000`.
+  - `value 2^63`: 2^63 decoded as a `Value` and re-encoded with `Json.Encode.encode` gives the
+    same digits.
 -}
 
 -- CHECK: float 2^63: "9223372036854776000"

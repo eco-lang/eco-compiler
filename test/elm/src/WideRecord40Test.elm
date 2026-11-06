@@ -1,6 +1,17 @@
 module WideRecord40Test exposing (main)
 
-{-| 40-field mixed record (second ext word boundary not reached; header + 1 ext word).
+{-| A record with 40 fields, cycling through `Int`, `Float`, `Char`, `String` and
+`Bool`, supports field access, record patterns, update, equality and printing.
+
+The test checks:
+
+  - Access to fields 0, 31, 32 and 39.
+  - A record pattern reading the first and last fields.
+  - An update that negates the last field.
+  - `==` against a record built from the same input (`True`) and against the
+    updated record (`False`).
+  - `Debug.log` printing all 40 fields.
+
 -}
 
 -- CHECK: f0000: 1000

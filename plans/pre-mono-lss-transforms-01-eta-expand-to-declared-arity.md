@@ -647,7 +647,7 @@ Full account: `/work/eta-fixed-point-root-cause.md`. Diagnostic kept: `ECO_INLIN
   result set stayed in a disconnected arrow slot while a bare `succeed ()` PAP branch wrote
   `{p|succeed}` into the case slot. Fix: `connectTypes (TOpt.typeOf body) meta.tipe` in the
   `TOpt.Let` and `TOpt.Destruct` arms (+ `joinBranchTypes` hardening of the residual-MVar
-  case/if fallbacks). Regression test `test/elm/src/PapStampTest.elm` (η-free, prints 42).
+  case/if fallbacks). Regression test `test/eco-elm/src/PapStampTest.elm` (η-free, prints 42).
 - §9.4 fixtures: `CrossStageCallKindTest` now routes `caseFunc`'s scrutinee through
   `Debug.log` (never cheap ⇒ η refuses it; shape pin survives under either flag);
   `FusionGlobalMapFnTest` is fixed properly — `BytesFusion.Reify.reifyMapBody` η-reduces an

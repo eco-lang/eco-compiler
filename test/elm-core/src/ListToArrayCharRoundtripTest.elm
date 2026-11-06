@@ -1,9 +1,9 @@
 module ListToArrayCharRoundtripTest exposing (main)
 
-{-| `List Char → Array Char → List Char` round-trip. Asserts the
-    reconstructed list equals the original literal.
+{-| Converting a `List Char` to an array with `Array.fromList` and back with `Array.toList` gives the original list.
 
-    Exercises the unsafe kernel paths with unboxed `Char` (u16) heads.
+The test prints the round-tripped list and whether it is `==` to the original `['a','b','c']`.
+
 -}
 
 -- CHECK: result: ['a','b','c']

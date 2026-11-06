@@ -1,6 +1,8 @@
 module EncodeFloat64BETest exposing (main)
 
-{-| Test Bytes.Encode.float64 with BE endianness.
+{-| `Bytes.Encode.float64` with big-endian order writes 8 bytes.
+
+The test encodes `3.141592653589793` and logs the width of the result.
 -}
 
 -- CHECK: EncodeFloat64BETest: 8

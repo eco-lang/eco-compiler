@@ -1,6 +1,8 @@
 module LssGapRecordFnNoAlias exposing (main)
-{-| Isolates the ALIAS from the record: a function field in an INLINE record
-type, no `type alias`. -}
+{-| A function stored in a field of an unaliased record type is called through that field.
+
+`useIt` takes `{ transform : Int -> Int }` written inline in its annotation, and calling it with
+`{ transform = double }` and 7 logs 14. -}
 -- CHECK: recordFnNoAlias: 14
 import Html exposing (text)
 double : Int -> Int

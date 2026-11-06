@@ -1,11 +1,12 @@
 module CompilerIssue2036LensRecordUpdateHangTest exposing (main)
 
-{-| An ill-typed lens: the setter takes its arguments in the wrong order.
+{-| A lens whose setter takes its arguments in the wrong order must be a type error.
 
 <https://github.com/elm/compiler/issues/2036>
 
-The program is ill-typed, so it must be rejected with a type error. Elm 0.19.1 instead hangs while
-its memory grows without bound (the runner kills it at its compile memory limit), or crashes.
+`set` is declared `b -> a -> a`, but the lambda takes the record first, so the program is
+ill-typed and must be rejected with a type error. Elm 0.19.1 instead hangs while its memory grows
+without bound, or crashes.
 
 -}
 

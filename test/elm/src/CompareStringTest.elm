@@ -1,6 +1,8 @@
 module CompareStringTest exposing (main)
 
-{-| Test compare on String.
+{-| `compare` on `String` returns `LT`, `GT` and `EQ` for strings that are less
+than, greater than and equal to one another, comparing character codes from the
+first character.
 -}
 
 -- CHECK: cmp1: LT

@@ -1,10 +1,11 @@
 module EqualityBoolListMemberTest exposing (main)
 
-{-| `List.member` uses polymorphic `(==)` internally. For `Bool` elements
-there is no `Elm_Kernel_Utils_equal_Bool` suffix (no Phase-C variant),
-so this routes through the unsuffixed kernel.
+{-| `List.member` finds `Bool` values in a list correctly.
 
-Mirrors `EqualityIntPapTest` but on the Bool axis.
+`List.member` compares with `==`. The test looks for `True` and for `False` in
+an all-`True` list, an all-`False` list and a mixed list, and for `True` in an
+empty list, which is `False`.
+
 -}
 
 -- CHECK: memberTrueOfTrues: True

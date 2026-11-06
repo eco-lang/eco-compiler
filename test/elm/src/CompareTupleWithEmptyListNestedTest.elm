@@ -1,9 +1,11 @@
 module CompareTupleWithEmptyListNestedTest exposing (main)
 
-{-| F2 nested two tuple levels deep. The inner Tuple2 is itself a
-heap object whose List Int field can hold Const_Nil; the outer Tuple2
-field comparison routes into the inner Tuple2 → `compareUnboxableSlot`
-on the List field — same bug surface.
+{-| `compare` on tuples nested two deep whose `List Int` field may be empty.
+
+A pair inside a pair, and a triple, are compared position by position; where
+the earlier positions are equal, an empty list orders before `[ 1 ]` and equal
+to another empty list.
+
 -}
 
 -- CHECK: ee: EQ

@@ -59,7 +59,7 @@ The cases, by group and label:
 
 Among what is not tested: a run of the fused code, and the inlined forms that
 a build against the real elm/bytes produces (the E2E suite, with
-`test/elm-bytes/src/BytesLoopNearMissFusionTest.elm`, covers those).
+`test/eco-elm-bytes/src/BytesLoopNearMissFusionTest.elm`, covers those).
 
 -}
 

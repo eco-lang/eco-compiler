@@ -1,6 +1,8 @@
 module EncodeStringTest exposing (main)
 
-{-| Test Bytes.Encode.string encoding.
+{-| `Bytes.Encode.string` writes one byte per ASCII character.
+
+The test encodes `"hello"` and logs the width of the result, 5.
 -}
 
 -- CHECK: EncodeStringTest: 5

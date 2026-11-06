@@ -1,6 +1,6 @@
 module ResultMapTest exposing (main)
 
-{-| Test Result.map.
+{-| Checks that `Result.map` applies its function to an `Ok` value (`Ok 42` doubled gives `Ok 84`) and leaves an `Err` unchanged.
 -}
 
 -- CHECK: map1: Ok 84

@@ -1,7 +1,9 @@
 module JsArrayUnsafeSetFloatElementTest exposing (main)
 
-{-| `Array.set` on `Array Float` routes through
-    `Elm_Kernel_JsArray_unsafeSet_Float`.
+{-| `Array.set` on an `Array Float` replaces the element at the given index and leaves the original array unchanged.
+
+It sets indexes 0 and 2, each starting from the same four-element array. `Debug.log` prints the whole-number floats such as `1.0` without a fractional part, as `1`.
+
 -}
 
 -- CHECK: original: [1,2,3,4]

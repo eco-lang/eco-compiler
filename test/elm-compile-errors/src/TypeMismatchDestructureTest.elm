@@ -1,9 +1,6 @@
 module TypeMismatchDestructureTest exposing (..)
 
-{-| TYPE MISMATCH: destructure.
-
-From `SourceIR.TypeCheckFailsCases` (`contextCases`), the elm-test catalogue of programs
-the compiler must reject.
+{-| Destructuring the number `1` with the tuple pattern `( a, b )` in a `let` is rejected with a TYPE MISMATCH.
 
 -}
 

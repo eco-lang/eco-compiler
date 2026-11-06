@@ -1,8 +1,6 @@
 port module PortProblemDeclarationWithoutNameTest exposing (..)
 
-{-| PORT PROBLEM: declaration without name.
-
-From `SourceIR.CovPortCases` (`?`), an elm-test program the compiler must reject.
+{-| A `port` keyword at the end of a module with no name or type after it is rejected with a PORT PROBLEM syntax error.
 
 -}
 

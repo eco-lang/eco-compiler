@@ -1,6 +1,7 @@
 module CaseDeepNestTest exposing (main)
 
-{-| Test deeply nested case expressions (case inside case branch) with int/string scrutinees. -}
+{-| Case expressions on Int nested two and three levels deep, each with literal branches and a wildcard, reach the right innermost branch.
+-}
 
 -- CHECK: r1: "x=0,y=0"
 -- CHECK: r2: "x=0,y=other"

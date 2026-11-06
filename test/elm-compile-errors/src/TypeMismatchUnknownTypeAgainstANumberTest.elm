@@ -1,9 +1,12 @@
 module TypeMismatchUnknownTypeAgainstANumberTest exposing (..)
 
-{-| TYPE MISMATCH: unknown type against a number.
+{-| A function whose case branches return `( Just 1, h )` and `( True, x + 1 )` is rejected
+with a TYPE MISMATCH error.
 
-From `SourceIR.TypeCheckFailsCases` (`problemCases`), the elm-test catalogue of programs
-the compiler must reject.
+The scrutinee `[ 1, "a" ]` already mixes a number with a `String`, so the type of `h`,
+taken from it, is unknown when it meets the number `x + 1`. The branches' first components,
+a `Maybe` and a `Bool`, also disagree. The test checks only that a TYPE MISMATCH is
+reported.
 
 -}
 

@@ -1,8 +1,10 @@
 module LetNumberListOfRecordsTest exposing (main)
 
-{-| Probe: nested container — a list of records each holding a `number`, mapped
-at `Float`. Exercises numeric specialization through two boxing layers.
-Correct: [45, 60].
+{-| `number` fields of records in a let-bound list, mapped with a `Float`
+multiplication, are `Float`s.
+
+`rs = [ { n = 30 }, { n = 40 } ]`, and `List.map (\r -> round (r.n * 1.5))` logs
+`[45,60]`.
 
 -}
 

@@ -1,26 +1,11 @@
 module AliasForwardTest exposing (main)
 
-{-| Pre-mono alias forwarding, runtime differential
-(`plans/pre-mono-lss-transforms-04-alias-forwarding.md` §6).
+{-| Top-level values defined as another function, `dup = twice` and `plus = (+)`, behave like the function they name.
 
-Every alias shape the pass admits, used in every position it rewrites, with
-the numbers as the guard: the pin must print the same values with
-`ECO_INLINE_ALIAS_FORWARD` on and off, and in the `ECO_INLINE_THRESHOLD=0`
-leg.
-
-  - `dup = twice`: a `ToGlobal` alias of a local function, CALLED at two
-    instantiations (`Int` and `String`) and passed as a VALUE.
-  - `plus = (+)`: `(+)` canonicalizes to `VarGlobal Basics.add`, whose node is
-    the kernel alias `add = Elm.Kernel.Basics.add` — a CHAIN
-    (`plus ↦ Basics.add ↦ Elm.Kernel.Basics.add`). Saturated calls forward to
-    the kernel; the R2 pin applies it at `Int` AND `Float`, so the
-    `_Int`/`_Float` kernel-variant selection is exercised on the forwarded
-    call.
-  - `plus 1` inside `List.map`: an UNDER-applied kernel-alias call, which the
-    §3.2 amendment keeps as a call of the alias.
-  - `plus` as a VALUE in `List.foldl`: kept in v1 (R6).
-
-Results are reduced to Ints before `Debug.log`.
+`dup` is called at `Int` and at `String` and is passed as a value to
+`List.map`. `plus` is called fully applied through `inc`, passed to
+`List.foldl` at `Int` and at `Float`, and partially applied in `List.map`.
+Results are reduced to `Int`s before they are logged.
 
 -}
 

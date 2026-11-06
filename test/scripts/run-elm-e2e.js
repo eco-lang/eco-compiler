@@ -441,7 +441,9 @@ function extractFlags(content) {
 // differs from --optimize throws (patchModeGuard); `allowSkip: false` makes a skip a failure.
 function projectSpecs(repo) {
     const plain = ['elm', 'elm-core', 'elm-bytes', 'elm-json', 'elm-parser', 'elm-regex', 'elm-time',
-        'elm-url', 'elm-html', 'elm-compile-errors'];
+        'elm-url', 'elm-html', 'elm-compile-errors',
+        // eco's own tests: valid Elm, so stock Elm must run them too (CHECK-MLIR lines are skipped).
+        'eco-mlir', 'eco-elm', 'eco-elm-bytes', 'eco-elm-core', 'eco-elm-json', 'eco-elm-regex', 'eco-elm-conformance'];
     return plain.map((name) => ({ name, dir: path.join(repo, 'test', name), modeGuard: false, allowSkip: true }))
         .concat([{ name: 'elm-conformance', dir: path.join(repo, 'test', 'elm-conformance'),
             modeGuard: true, allowSkip: false,

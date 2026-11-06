@@ -1,6 +1,6 @@
 module CaseCustomTypeTest exposing (main)
 
-{-| Test case on custom types.
+{-| A case on a custom type whose constructors carry different numbers of arguments binds those arguments in each branch.
 -}
 
 -- CHECK: shape1: 100

@@ -1,9 +1,10 @@
 module TypeMismatchClosedRecordWhereExtensibleTest exposing (..)
 
-{-| TYPE MISMATCH: closed record where extensible.
+{-| Passing a record that lacks a field the result must have is rejected with a TYPE MISMATCH.
 
-From `SourceIR.TypeCheckFailsCases` (`problemCases`), the elm-test catalogue of programs
-the compiler must reject.
+`g : { r | name : Int } -> { r | name : Int }` returns a record of the same type as its
+argument, so annotating `x = g { name = 1 }` as `{ name : Int, age : Int }` requires the
+argument to have an `age` field, which the record literal `{ name = 1 }` does not.
 
 -}
 

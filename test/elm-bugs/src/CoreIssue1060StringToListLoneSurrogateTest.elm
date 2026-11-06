@@ -1,11 +1,11 @@
 module CoreIssue1060StringToListLoneSurrogateTest exposing (main)
 
-{-| `String.toList` loops forever on a string holding a lone low surrogate.
+{-| `String.toList` of a string holding a lone low surrogate returns one `Char`.
 
 <https://github.com/elm/core/issues/1060>
 
-Elm 0.19.1 hangs on `String.toList "\u{dd56}"` (and runs out of memory; the heap is capped here). It must return a list of
-one Char.
+Elm 0.19.1 loops forever on `String.toList "\u{dd56}"` until it runs out of memory; the test caps
+the JavaScript heap so that this fails quickly.
 
 -}
 

@@ -1,12 +1,8 @@
 module EqualityStringChainCaseTest exposing (main)
 
-{-| Test that string equality in chain patterns (tuple case) coexists with
-direct string equality calls.
+{-| A `case` on a `( String, Bool )` tuple with string-literal patterns selects the right branch, and direct `==` on strings gives the right answer, in the same module.
 
-When a string pattern appears in a tuple case like (String, Bool), the
-decision tree may produce a Chain node with IsStr test, which calls
-Utils_equal with I1 return. Direct (==) on strings calls Utils_equal
-with eco.value return. Both must use the same kernel signature.
+`classify` matches `( "foo", True )` and `( "bar", False )`, and falls through to `"other"` for `( "baz", True )`. `"hello" == "hello"` is `True` and `"hello" == "world"` is `False`.
 -}
 
 -- CHECK: case1: "matched foo+True"

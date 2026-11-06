@@ -1,25 +1,14 @@
 module TailRecDeciderSearchTest exposing (main)
 
-{-| FAILING TEST: SSA dominance violation in let-bound tail-recursive function
-with self-referencing non-tail recursive call.
+{-| A local function defined in a `let` that calls itself both in a tail position and in a
+non-tail position, as the scrutinee of a `case`, gives the right result.
 
-Bug: When a let-bound tail-recursive function (MonoTailDef) makes a NON-tail
-recursive call to itself inside the loop body, the self-reference resolves
-to a stale sibling mapping SSA var from the outer scope, not the correct
-closure reference.
+`firstInlineExpr` searches a binary tree of `Decider` values for the leftmost
+`Leaf (Inline n)`. On a `Chain yes no` it first searches `yes` (the non-tail call) and,
+when that finds nothing, searches `no` (the tail call). In the test tree the only `Inline`
+leaf is the rightmost one, so both calls are taken and the result is 42.
 
-Root cause: Lambdas.generateLambdaFunc merges siblingMappings into varMappings.
-These sibling SSA vars come from the outer function's placeholder allocation.
-Inside the compiled lambda, nextVar is reset, so fresh vars (doneInitVar,
-resInitVar, scf.while results) alias with the sibling mapping vars.
-
-The pattern requires:
-  1. A let-bound tail-recursive function (MonoTailDef -> _tail_ prefix)
-  2. A self-referencing non-tail recursive call in the body
-     (e.g., case firstInlineExpr yes of Just e -> ...; Nothing -> firstInlineExpr no)
-  3. The non-tail call uses eco.papExtend with the function closure as operand
-  4. The closure reference resolves to a sibling mapping SSA var that has been
-     overwritten by doneInitVar or another fresh var in the lambda function
+The module defines its own `Maybe_` type instead of using `Maybe`.
 -}
 
 -- CHECK: found: 42

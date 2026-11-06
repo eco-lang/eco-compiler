@@ -1,10 +1,10 @@
 module CompareIntCaptureTest exposing (main)
 
-{-| Closure-capture form of `compare` on `Int`. `List.sortWith compare`
-    forces a `papCreate` of the `Basics.compare` wrapper closure; whether
-    the underlying kernel symbol `Elm_Kernel_Utils_compare_Int` is reached
-    depends on whether the wrapper body inlines the `eco.int.cmp_order`
-    intrinsic. Either way, the result must be a correctly sorted list.
+{-| `compare` on `Int` passed as a function value to `List.sortWith`.
+
+The list is sorted once with `compare` itself and once with a lambda that
+swaps its arguments, which sorts it in descending order.
+
 -}
 
 -- CHECK: sorted: [1,2,3,4,5]

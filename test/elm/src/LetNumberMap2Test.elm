@@ -1,7 +1,11 @@
 module LetNumberMap2Test exposing (main)
 
-{-| Probe: a list of `number` consumed by `List.map2` at `Float`. Distinct
-combinator from the existing `List.map`/`foldl` cases. Correct: [45, 60].
+{-| A list of integer literals combined with a list of `Float`s by `List.map2` is
+used at `Float`: `[ 30, 40 ]` scaled by 1.5 and rounded logs `[45,60]`.
+
+The list is let-bound with type `List number`. Inside the `List.map2` lambda
+each element is multiplied by `1.5` and added to an element of `[ 0.0, 0.0 ]`,
+which makes it a `Float`.
 
 -}
 

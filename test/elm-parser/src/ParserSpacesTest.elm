@@ -1,5 +1,8 @@
 module ParserSpacesTest exposing (main)
 
+{-| Checks that `Parser.spaces` skips whitespace around a value: `"   42   "` gives `Ok 42`.
+-}
+
 -- CHECK: result: Ok 42
 
 import Html exposing (text)

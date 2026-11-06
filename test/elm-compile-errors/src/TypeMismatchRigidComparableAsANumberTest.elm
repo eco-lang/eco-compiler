@@ -1,9 +1,8 @@
 module TypeMismatchRigidComparableAsANumberTest exposing (..)
 
-{-| TYPE MISMATCH: rigid comparable as a number.
+{-| Returning a number literal where the annotation promises a `comparable` is rejected with a TYPE MISMATCH.
 
-From `SourceIR.TypeCheckFailsCases` (`problemCases`), the elm-test catalogue of programs
-the compiler must reject.
+`f : comparable -> comparable` with `f x = 1`: the caller chooses the `comparable` type (it may be `String`), so the literal `1` cannot stand for it.
 
 -}
 

@@ -1,9 +1,7 @@
 module ArrayUnsafeSetCharOverwriteTest exposing (main)
 
-{-| `Array.set 0 'b' (Array.fromList ['a'])`. Reaches `JsArray.unsafeSet`,
-    which writes the new Char via `unboxInt(value)` — the write reads 8
-    bytes from a 2-byte slot, so non-zero padding can leak into the stored
-    value. The round-trip should still round-trip to `'b'`.
+{-| `Array.set 0 'b'` on a one-element `Array Char` holding `'a'` replaces it, so `Array.get 0`
+then returns `Just 'b'`.
 -}
 
 -- CHECK: result: Just 'b'

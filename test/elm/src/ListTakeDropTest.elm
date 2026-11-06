@@ -1,6 +1,11 @@
 module ListTakeDropTest exposing (main)
 
-{-| Test List.take and List.drop.
+{-| List.take and List.drop return the expected prefix and suffix, including
+for a count of zero.
+
+`List.take 2` keeps the first two elements and `List.take 0` gives the empty
+list; `List.drop 2` removes the first two and `List.drop 0` returns the list
+unchanged.
 -}
 
 -- CHECK: take1: [1,2]

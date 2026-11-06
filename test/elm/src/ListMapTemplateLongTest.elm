@@ -1,21 +1,24 @@
 module ListMapTemplateLongTest exposing (main)
 
-{-| Long-list coverage for the `List.map` forward template
-(plans/list-map-mlir-template.md).
+{-| Checks that `List.map` agrees with a reference map on lists of 2004 to 5000
+elements, around the length at which elm/core's `List.foldr` changes strategy.
 
-**Why these exact lengths.** elm/core's `foldrHelper` is 4-way-unrolled and
-bails past its depth budget to `foldl fn acc (reverse r4)` — a whole extra
-reversed-spine materialization. The threshold is `ctr > 500`, and `ctr`
-advances once per 4-element level, so level 501 covers elements 2005..2008 and
-its `r4` (elements 2009 onward) is what the reverse leg actually processes.
-2004 / 2008 / 2012 / 5000 therefore bracket the TRUE boundary from both sides:
-2004 never reaches the branch, 2008 reaches it with an empty `r4`, 2012 and
-5000 take the reverse leg for real. That branch had zero existing E2E
-coverage, in either lowering.
+elm/core defines `List.map` with `List.foldr`, which recurses over four
+elements per level and counts the levels. On the level where the count first
+exceeds 500, which holds elements 2005 to 2008, it hands the rest of the list
+to `List.foldl` over its reverse instead of recursing further. A list of 2004
+elements never reaches that level, one of 2008 reaches it with nothing left
+over, and lists of 2012 and 5000 send their remaining elements through the
+`List.foldl` path.
 
-The template must agree with the foldr path at every length and for every
-element/result kind, so each case is checked against a reference construction
-built without `List.map`.
+Each `agrees*` function compares `List.map` over `List.range 1 n` with `refMap`,
+which maps with `List.foldl` and `List.reverse`:
+
+  - `String` results at 2004, 2008, 2012 and 5000 elements;
+  - `Int`, `Float` and `Char` results at 2012 elements.
+
+The last two checks map 5000 integers to labels and check the length and the
+first and last labels.
 
 -}
 
@@ -32,9 +35,7 @@ built without `List.map`.
 import Html exposing (text)
 
 
-{-| Reference: build the mapped list WITHOUT List.map, so the comparison is
-against an independent construction rather than another call of the thing
-under test.
+{-| Maps `f` over `xs` without using `List.map`, as an independent reference.
 -}
 refMap : (a -> b) -> List a -> List b
 refMap f xs =

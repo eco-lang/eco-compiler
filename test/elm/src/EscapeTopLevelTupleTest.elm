@@ -1,10 +1,8 @@
 module EscapeTopLevelTupleTest exposing (main)
 
-{-| Phase 2 negative: a tuple bound at module scope cannot be
-rewritten to eco.make.tuple2 (the value crosses a module-global
-boundary, which the conservative escape classifier treats as
-escaping). The program must still produce the correct projected
-values via the heap path with -enable-unboxed-agg on (HISTORICAL — pass deleted 2026-06; kept as behavioral coverage, see plans/opt-tier1-aggregate-promotion.md U-T1.3).
+{-| A tuple defined as a top-level constant is destructured in a `let` pattern into its two components.
+
+`globalPair` is `( 11, 22 )`, so `a` is 11 and `b` is 22.
 -}
 
 -- CHECK: a: 11

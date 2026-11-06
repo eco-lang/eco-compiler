@@ -1,6 +1,8 @@
 module EncodeSignedInt8Test exposing (main)
 
-{-| Test Bytes.Encode.signedInt8 basic encoding.
+{-| `Bytes.Encode.signedInt8` writes 1 byte for a negative value.
+
+The test encodes `-42` and logs the width of the result.
 -}
 
 -- CHECK: EncodeSignedInt8Test: 1

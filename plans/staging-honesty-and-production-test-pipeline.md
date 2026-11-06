@@ -234,7 +234,7 @@ expected to pass with no join of differently staged lambdas left. Add residual f
 - **R4** a join in a record field: `{ op = case x of … }`.
 
 Check each one against the production graph and keep those whose join survives. Add the same shapes
-to `test/elm/src/Gopt003CaseStagingTest.elm`, executing **every** branch with `CHECK:` on the values.
+to `test/eco-mlir/src/Gopt003CaseStagingTest.elm`, executing **every** branch with `CHECK:` on the values.
 
 **2.2 Honest `closureBodyStageArities`.** Return `Just stages` only when **every** branch agrees:
 - for a case, all jump targets **and** all decider `Inline` leaves, through `Chain`/`FanOut`;

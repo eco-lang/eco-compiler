@@ -1,6 +1,6 @@
 module AccessorToLocalFuncTest exposing (main)
 
-{-| Test passing .field accessor to a local function.
+{-| A record accessor can be passed as an argument to a let-bound function.
 -}
 
 -- CHECK: result: 42

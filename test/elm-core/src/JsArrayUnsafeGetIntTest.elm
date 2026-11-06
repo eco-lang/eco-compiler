@@ -1,8 +1,9 @@
 module JsArrayUnsafeGetIntTest exposing (main)
 
-{-| `Array.get` routes through `Elm_Kernel_JsArray_unsafeGet_Int`. Exercise
-    on three primitive element types so the same Int-indexed kernel is
-    invoked over arrays of differing kinds.
+{-| `Array.get` returns `Just` the element at a valid index and `Nothing` for an index past the end.
+
+It reads from arrays of `Int`, `Float` and `Char`. The out-of-range case is index 99 of a three-element `Int` array.
+
 -}
 
 -- CHECK: int_at_0: Just 10

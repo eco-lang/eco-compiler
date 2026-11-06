@@ -1,16 +1,25 @@
 module StringZeroLenJoinTest exposing (main)
 
-{-| HEAP_071 audit: String.join / String.concat / String.replace whose RESULT is
-empty although the list is not. Every empty result must be the Empty constant,
-never a zero-length heap string.
+{-| `String.join`, `String.concat` and `String.replace` return a true empty
+string when the result is empty although the input list or string is not.
 
-`join` (StringOps.cpp) only returns early when the LIST is empty; with a
-non-empty list of empty strings total_len is 0 and the ASCII byte-join path
-calls allocAsciiOut(0), which asserts in -UNDEBUG builds (the macOS/Windows
-bundles) and allocates a header-only leaf otherwise.
+Each result is passed to `probe`, which checks four ways of asking whether a
+string is empty: `String.length`, `String.isEmpty`, `== ""` and a `case` on the
+`""` pattern. An empty result must answer all four as empty, `"0EQC"`.
 
-probe s = length, String.isEmpty, (s == ""), case-on-"" — "0EQC" is a correct
-empty string, "0eqc" is a zero-length heap string that is not "".
+  - `join_ascii`: `String.join` over lists of one or two empty strings, with
+    the separators `", "`, `""` and `"-"`.
+  - `concat`: `String.concat` of one, three or fifty empty strings, and of an
+    empty slice followed by `""`.
+  - `replace`: `String.replace` removing every occurrence of `"a"`, `"ab"` and
+    the non-ASCII `"é"` from strings made only of that pattern.
+  - `controls`: results that are not empty, `"-"` and `"ab"`, read as length 1
+    and 2, and `String.join "-" []` is empty.
+
+After that, the program builds a large comma-joined string of 100,001 numbers
+and probes every case result again; `after_gc_bad` is the number that no longer
+reads as `"0EQC"`, and must be 0.
+
 -}
 
 -- CHECK: join_ascii: ["0EQC","0EQC","0EQC","0EQC"]
@@ -22,6 +31,11 @@ empty string, "0eqc" is a zero-length heap string that is not "".
 import Html exposing (text)
 
 
+{-| Returns a four-character summary of `s`: its length, then `E` if
+`String.isEmpty s` holds (else `e`), `Q` if `s == ""` (else `q`), and `C` if a
+`case` on `s` matches the `""` pattern (else `c`). A correct empty string gives
+`"0EQC"`.
+-}
 probe : String -> String
 probe s =
     String.fromInt (String.length s)
@@ -52,7 +66,6 @@ main =
             , String.concat (List.repeat 50 "")
             ]
 
-        -- replace = join to (split from s): every part empty, empty separator.
         replaces =
             [ String.replace "a" "" "aaa"
             , String.replace "ab" "" "abab"

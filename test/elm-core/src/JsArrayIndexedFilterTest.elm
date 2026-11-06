@@ -1,5 +1,10 @@
 module JsArrayIndexedFilterTest exposing (main)
 
+{-| `Array.indexedMap`, `Array.filter` and `Array.toIndexedList` give the expected results on small `Array Int` values.
+
+`indexedMap` pairing index with value and `toIndexedList` both give `[(0,10),(1,20),(2,30)]` for `[10, 20, 30]`, and filtering `[1, 2, 3, 4, 5, 6]` for even numbers keeps `[2, 4, 6]`.
+-}
+
 -- CHECK: indexedMap1: [(0,10),(1,20),(2,30)]
 -- CHECK: filter1: [2,4,6]
 -- CHECK: toIndexedList1: [(0,10),(1,20),(2,30)]

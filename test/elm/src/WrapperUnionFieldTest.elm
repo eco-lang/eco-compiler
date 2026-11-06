@@ -1,6 +1,11 @@
 module WrapperUnionFieldTest exposing (main)
 
-{-| Test wrapper type holding a record with a union field. -}
+{-| A single-constructor custom type can wrap a record whose field is itself a
+custom type, and a nested `case` reads the payload of that field.
+
+`getTag (Error { tag = B 7, count = 1 })` returns 7.
+
+-}
 
 -- CHECK: result: 7
 

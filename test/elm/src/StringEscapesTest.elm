@@ -1,6 +1,9 @@
 module StringEscapesTest exposing (main)
 
-{-| Test string escape sequences.
+{-| String literals containing the escape sequences `\n`, `\t` and `\"` compile, and
+`Debug.log` prints the string containing an escaped double quote as `"\""`.
+
+The newline and tab strings are logged too, but only their labels are checked.
 -}
 
 -- CHECK: newline

@@ -1,17 +1,18 @@
 module FunctionValueChoiceTest exposing (main)
 
-{-| The programs of findings F14 and F15, run end to end.
+{-| Top-level values defined by an `if` that picks between two lambdas can be both called directly and passed to `List.foldl`, and a function returning a tuple from an `if` can be destructured.
 
-F14: `chooseIf` and `chooseElse` are top-level values, not functions, each
-defined by an `if` choosing between two lambdas, and each is both called and
-passed to `List.foldl`. The two uses demanded the value at types differing only
-in lambda sets, and before the fix the monomorphizer gave one (global, type)
-key two specializations (MONO\_005).
+`chooseIf` and `chooseElse` have no parameters of their own: each is an `if`
+on `sumTo`, choosing multiplication or subtraction. `chooseIf` picks
+multiplication, so `chooseIf 3 4` is 12 and `List.foldl chooseIf 1 [ 1, 2, 3 ]`
+is 6. `chooseElse` picks subtraction, so `chooseElse 3 4` is -1 and
+`List.foldl chooseElse 0 [ 1, 2, 3 ]` is 2 (`foldl` passes the element first,
+then the accumulator).
 
-F15: `chooseC` returns a pair of `Int`s from an `if`, built as a value
-aggregate on its result spine and destructured by the caller, along both
-branches. The case alternatives define values of the same names, which an
-operand type check scoped per function used to report (CGEN\_040).
+`chooseC` returns its last two `Int` arguments as a pair, swapped when its first
+argument is not positive. The test destructures it in a `let` along the `then`
+branch (3 + 4 = 7) and the `else` branch (10 + 7 = 17), and logs the swapped
+pair `(4,3)` directly.
 
 -}
 

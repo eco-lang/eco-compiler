@@ -1,10 +1,6 @@
 module TypeMismatchIfBranchTest exposing (..)
 
-{-| TYPE MISMATCH: if branch.
-
-From `SourceIR.TypeCheckFailsCases` (`contextCases`), the elm-test catalogue of programs
-the compiler must reject.
-
+{-| The compiler rejects an `if` whose `then` branch is a number and whose `else` branch is a `String`, with a TYPE MISMATCH error.
 -}
 
 -- COMPILE-ERROR: TYPE MISMATCH, if branch

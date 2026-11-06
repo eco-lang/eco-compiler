@@ -1,10 +1,9 @@
 module LetNumberIndirectCaptureTest exposing (main)
 
-{-| Regression test (native/AOT backend): the let-bound-`number`
-mis-specialization (see `LetNumberFloatMulTest`) reached when the `number` is
-captured by a closure that is applied at `Float`. The capture `k` must specialize
-to `Float` because the closure multiplies it by a `Float` argument. Correct:
-2.5*30 = 75.
+{-| A let-bound `number` captured by an anonymous function and multiplied by
+that function's `Float` argument is a `Float`.
+
+With `k = 30`, `(\x -> x * k) 2.5` is 75.
 
 -}
 

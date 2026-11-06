@@ -1,6 +1,6 @@
 module IntAddTest exposing (main)
 
-{-| Test integer addition.
+{-| Int addition gives the right sum for two positives, a positive and its negation, and two negatives.
 -}
 
 -- CHECK: add1: 13

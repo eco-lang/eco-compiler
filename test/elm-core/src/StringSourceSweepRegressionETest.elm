@@ -1,7 +1,13 @@
 module StringSourceSweepRegressionETest exposing (main)
 
-{-| Category E — sweep allocation paths that produce the same content
-`"hi"` (4 chars). All should parse to `Just hi` from the inline parser.
+{-| Checks that a small character-by-character parser gives the same answer for the string `"\"hi\""` however that string was built.
+
+`parseQuoted` reads a leading `"` with `String.uncons`, then collects
+characters up to the next `"`. It is run on the same four characters made as a
+literal, by two and by three appends, by `String.fromList`, by `String.left`
+of a longer literal, and by reversing a literal twice; each must give
+`Just "hi"`. A last case appends `"\""`, `"x"` and `"\""` and must give `Just "x"`.
+
 -}
 
 -- CHECK: e14_literal: "Just hi"

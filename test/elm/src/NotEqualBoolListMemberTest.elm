@@ -1,8 +1,10 @@
 module NotEqualBoolListMemberTest exposing (main)
 
-{-| `not (List.member …)` over Bool. `List.member` is implemented via
-`==`, so this test verifies the inverted assertion still holds — and
-will fail today because `True == False` returns True at top level.
+{-| `not (List.member x xs)` gives the right answer for `Bool` values, which
+relies on `List.member` comparing `Bool`s with `==` correctly.
+
+The tests look for `False` among `True`s, `True` among `False`s, each value
+in a list of only that value, and each value in an empty list.
 -}
 
 -- CHECK: notMemberFalseInTrues: True

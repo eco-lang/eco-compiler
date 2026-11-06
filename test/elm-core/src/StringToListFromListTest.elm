@@ -1,5 +1,14 @@
 module StringToListFromListTest exposing (main)
 
+{-| `String.toList` and `String.fromList` convert between a string and its
+characters, in both directions and on empty input.
+
+The program logs `String.toList "hello"`, `String.fromList` of the five
+characters of `hello`, the round trip `String.fromList (String.toList "abc")`,
+and both functions applied to an empty string or list (`[]` and `""`).
+
+-}
+
 -- CHECK: toList1: ['h','e','l','l','o']
 -- CHECK: fromList1: "hello"
 -- CHECK: roundtrip: "abc"

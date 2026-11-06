@@ -1,7 +1,6 @@
 module ArrayUnsafeGetCharElementTest exposing (main)
 
-{-| `Array.get 1 arr` on an `Array Char`. Reaches `JsArray.unsafeGet` on
-    an unboxed `u16` Char slot.
+{-| `Array.get 1` on an `Array Char` of `'x'` and `'y'` returns `Just 'y'`.
 -}
 
 -- CHECK: result: Just 'y'

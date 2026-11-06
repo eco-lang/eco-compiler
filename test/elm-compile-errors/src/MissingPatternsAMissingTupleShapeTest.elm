@@ -1,9 +1,9 @@
 module MissingPatternsAMissingTupleShapeTest exposing (..)
 
-{-| MISSING PATTERNS: a missing tuple shape.
+{-| A `case` on a pair of `Bool`s with no branch for `( False, False )` is rejected with a MISSING PATTERNS error.
 
-From `SourceIR.PatternFailsCases` (`testValue`), the elm-test catalogue of programs
-the compiler must reject.
+`either` matches `( True, _ )` and `( False, True )`; the remaining combination is
+left uncovered.
 
 -}
 

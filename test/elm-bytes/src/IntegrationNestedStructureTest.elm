@@ -1,6 +1,11 @@
 module IntegrationNestedStructureTest exposing (main)
 
-{-| Test encoding/decoding nested structures.
+{-| A record containing another record round-trips through elm/bytes using encoders and decoders composed from per-record parts.
+
+`Outer` is encoded as an `unsignedInt8` id followed by the nested `Inner`, whose
+`x` and `y` are big-endian `unsignedInt16` values. The record with id 42 and
+inner `{ x = 100, y = 200 }` is encoded and decoded, and the program logs `True`
+only if all three numbers come back equal.
 -}
 
 -- CHECK: IntegrationNestedStructureTest: True

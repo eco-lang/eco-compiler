@@ -1,6 +1,9 @@
 module CaseNestedCtorTest exposing (main)
 
-{-| Test nested constructor patterns (Container (Wrap n)). -}
+{-| Checks that constructor patterns can nest: a constructor pattern inside
+another (`Container (Wrap n)`), and a tuple pattern inside a constructor
+(`Box ( a, x )`).
+-}
 
 -- CHECK: single: 42
 -- CHECK: double: 3

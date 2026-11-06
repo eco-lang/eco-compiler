@@ -1,6 +1,11 @@
 module IntegrationRecordEncodingTest exposing (main)
 
-{-| Test encoding/decoding a record structure.
+{-| A record of two bytes and a 32-bit float round-trips through elm/bytes, decoded with `Bytes.Decode.map3`.
+
+`age` and `nameLen` are encoded as `unsignedInt8` and `height` as a big-endian
+`float32`. The record `{ age = 30, height = 1.75, nameLen = 5 }` is encoded and
+decoded; the program logs `True` only if the integers are equal and `height` is
+within 0.01 of 1.75.
 -}
 
 -- CHECK: IntegrationRecordEncodingTest: True

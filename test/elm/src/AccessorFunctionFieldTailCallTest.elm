@@ -1,15 +1,12 @@
 module AccessorFunctionFieldTailCallTest exposing (main)
 
-{-| A record accessor of a function field, passed as a tail-call argument.
+{-| Record accessors for function-typed fields can be passed as arguments of self-recursive tail calls.
 
-Bug (finding F8): Compiler.Monomorphize.ResolveAccessorValues rewrote
-tail-call arguments with no expected type, and an accessor whose field is
-itself a function is always deferred, so `.f` passed in a tail call survived
-as a MonoAccessorValue and MLIR generation crashed on it. Fixed 2026-11-04:
-a tail-call argument takes the type of the parameter it is passed to.
-
-`loop` is a top-level tail-recursive function, `pick` passes the accessor in
-the middle argument, and `inner` is a local tail-recursive function.
+`loop` is a top-level function that passes `.f` to itself, `pick` passes `.fn`
+as the middle of its three arguments, and `inner` is a let-bound function in
+`wrapper` that passes `.f` to itself. `wrapper 0` never reaches the recursive
+call, so its result (142) comes from the lambda it starts with rather than from
+`.f`.
 
 -}
 

@@ -1,7 +1,9 @@
 module ListConsFloatTest exposing (main)
 
-{-| Forces `Elm_Kernel_List_cons_Float` for each cons emitted while building
-    a `List Float` literal.
+{-| A `List Float` literal holds its numbers in order, and `::` prepends a number to it.
+
+The test prints the list, its `List.head`, and the list with `0.0` consed onto the front. `Debug.log` prints the whole-number floats `1.0` and `0.0` as `1` and `0`.
+
 -}
 
 -- CHECK: list: [1,2.5,3.75]

@@ -1,6 +1,6 @@
 module IntSubTest exposing (main)
 
-{-| Test integer subtraction.
+{-| Checks integer subtraction `-`, including subtracting a negative literal.
 -}
 
 -- CHECK: sub1: 7

@@ -1,9 +1,8 @@
 module JsArrayFloatMapTest exposing (main)
 
-{-| `Array.map` on `Array Float`. Uses `Elm_Kernel_JsArray_map` on the leaf
-    `JsArray` blocks of the Array tree, which re-boxes each unboxed slot as
-    an `Elm Int` before calling the user mapper. For `Array Float` the mapper
-    must receive float values unchanged.
+{-| `Array.map` over an `Array Float` passes the element values to the mapping function.
+
+Three arrays are mapped, doubling, adding 1.0 and negating each element, and the results are read back with `Array.toList`.
 -}
 
 -- CHECK: doubled: [2,4,6]

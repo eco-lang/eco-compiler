@@ -1,10 +1,16 @@
 module DecodeStringUtf8ViewTest exposing (main)
 
-{-| Decode a long ASCII string (>= 32 bytes, forcing a zero-copy UTF-8 view)
-and exercise the String API on the decoded value, comparing every result to the
-same operation on the literal-built twin. This validates end-to-end that a
-UTF-8 view behaves identically to a UTF-16 string, including as a Dict key
-(equal/compare across encodings).
+{-| A string produced by Bytes.Decode.string behaves like a string literal with the
+same contents under the String API and as a Dict key.
+
+The fixture is a 54-character ASCII sentence, encoded and decoded back. The
+test logs `True` when the decode succeeds and every one of these holds for the
+decoded string: it equals the original and has the same length; `left`,
+`right` and `slice` give the expected substrings; `dropLeft`, `dropRight`,
+`toUpper`, `reverse`, `split " "` and appending `"!"` give the same results as
+on the original; `contains "brown"`, `startsWith "the"` and `endsWith "789"`
+hold; and looking it up in a Dict whose key is the original finds the value.
+
 -}
 
 -- CHECK: DecodeStringUtf8ViewTest: True

@@ -1,6 +1,6 @@
 module CaseBoolTest exposing (main)
 
-{-| Test case expression on Bool.
+{-| A case expression on a Bool with `True` and `False` branches selects the matching branch.
 -}
 
 -- CHECK: case1: "yes"

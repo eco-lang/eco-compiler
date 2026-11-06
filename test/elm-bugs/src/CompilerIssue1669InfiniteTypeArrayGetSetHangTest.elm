@@ -1,11 +1,10 @@
 module CompilerIssue1669InfiniteTypeArrayGetSetHangTest exposing (main)
 
-{-| An infinite type through `Array.get`/`Array.set` in a pipeline.
+{-| A function whose type would be infinite, built from `Array.get` and `Array.set` in a pipeline, is rejected with a type error.
 
 <https://github.com/elm/compiler/issues/1669>
 
-The program is ill-typed, so it must be rejected with a type error. Elm 0.19.1 instead hangs while
-its memory grows without bound (the runner kills it at its compile memory limit), or crashes.
+Elm 0.19.1 hangs on it, its memory growing without bound, instead of reporting the error.
 
 -}
 

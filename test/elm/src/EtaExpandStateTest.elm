@@ -1,28 +1,10 @@
 module EtaExpandStateTest exposing (main)
 
-{-| Pre-mono η-expansion, runtime differential
-(`plans/pre-mono-lss-transforms-01-eta-expand-to-declared-arity.md` §5).
+{-| A state monad over the function alias `St a = Int -> ( Int, a )`, with `sequence` written recursively using `andThen` and `pure`, threads its state correctly.
 
-This is the `SeqM` probe VERBATIM — the chain written at ALIAS arity, which is
-how all 169 callers of `System.TypeCheck.IO.andThen` are written. The compiler
-must produce `SeqEta`'s result from it: `sequence` gains its state parameter,
-every `andThen` reaches three arguments, and both continuations gain one of
-their own.
+`andThen`, `pure`, `tick` and `tick2` are annotated against `St` and take the state as an extra parameter in their definitions. `sequence` is written without the state parameter: each branch returns a `St` value built by partial application.
 
-The numbers are the guard. η-expansion moves the evaluation of everything left
-of the new binders from once to once per call, and it reassociates nothing —
-so if the state threading, the branch pushing (`pure [] s0` in the `[]` arm) or
-the merge into the under-applied call were wrong in ANY way, these columns
-print different numbers rather than running slower. `sequence` is a `Cycle`
-member with a `case`, so the R8 hazard (a `jumps` entry left holding the
-un-applied PAP while its siblings are saturated) is live in this fixture.
-
-`List.map run [ 1, 2, 3 ]` is load-bearing: a single monomorphic use lets the
-inliner fold the whole question away before any of this is reached.
-
-The pin must print the same numbers in every flag arm — with `etaExpand` on and
-off, and in both inliner positions.
-
+`run n` sequences `[ tick, tick2, pure 5, tick ]` from state `n`, which yields `n`, `10 * (n + 1)`, `5` and `n + 3`, and sums them to `12 * n + 18`. Mapped over `[ 1, 2, 3 ]` that is `[30,42,54]`; a mistake in how the state is threaded changes these numbers.
 -}
 
 import Html exposing (text)

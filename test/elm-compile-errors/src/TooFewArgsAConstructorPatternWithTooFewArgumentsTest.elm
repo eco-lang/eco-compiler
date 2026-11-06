@@ -1,9 +1,8 @@
 module TooFewArgsAConstructorPatternWithTooFewArgumentsTest exposing (..)
 
-{-| TOO FEW ARGS: a constructor pattern with too few arguments.
+{-| A constructor pattern with fewer arguments than the constructor takes is rejected with a TOO FEW ARGS error.
 
-From `SourceIR.CanonicalizeFailsCases` (`testValue`), the elm-test catalogue of programs
-the compiler must reject.
+`Pair` takes two `Int`s, but the argument pattern of `first` is `(Pair a)`.
 
 -}
 

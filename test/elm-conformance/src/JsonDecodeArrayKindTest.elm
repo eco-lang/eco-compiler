@@ -1,11 +1,19 @@
 module JsonDecodeArrayKindTest exposing (main)
 
-{-| `Json.Decode.array` with an element decoder that is not literally `int` or `float` but still
-gives Ints, Floats or Chars, recorded from Elm on node (run-js-e2e.js --record). eco's kernel took
-the elements' slot kind from the element decoder's constructor, so `D.array (D.map identity D.int)`
-stored boxed Int pointers where compiled code reads unboxed Ints: `Array.get` returned the pointer
-bits (plans/kg-reported-bugs.md step 1, kernel audit).
+{-| `Json.Decode.array` with an element decoder built by `map` or `field` gives an Array of Ints,
+Floats or Chars that later Array operations read correctly.
 
+  - `map int get`, `map int sum`, `map int set`, `map int push`: `[7,8,9]` decoded with
+    `D.map identity D.int` supports `Array.get`, `Array.foldl (+)`, `Array.set` and
+    `Array.push`.
+  - `field int`: `D.field "v" D.int` over an array of objects gives `[1,2]`.
+  - `map float` and `map float get`: `D.map (\x -> x * 2) D.float` over `[1.5,2.25]` gives
+    `[3,4.5]`.
+  - `map char`: `D.map firstChar D.string` over `["ab","c"]` gives the characters `a` and `c`,
+    logged by their codes.
+  - `plain int`: plain `D.int` gives `[1,2]`, for comparison.
+
+Each result is logged with `Debug.toString`, as a `Maybe` that is `Nothing` if decoding fails.
 -}
 
 -- CHECK: map int get: "Just 8"
@@ -23,11 +31,15 @@ import ConformanceHelp exposing (logAll, worker)
 import Json.Decode as D
 
 
+{-| Decodes `text` as a JSON array of `decoder` elements, or gives `Nothing`.
+-}
 decode : D.Decoder a -> String -> Maybe (Array a)
 decode decoder text =
     Result.toMaybe (D.decodeString (D.array decoder) text)
 
 
+{-| Returns the first character of `s`, or `'?'` for the empty string.
+-}
 firstChar : String -> Char
 firstChar s =
     Maybe.withDefault '?' (Maybe.map Tuple.first (String.uncons s))

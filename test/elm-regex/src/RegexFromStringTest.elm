@@ -1,5 +1,11 @@
 module RegexFromStringTest exposing (main)
 
+{-| `Regex.fromString` returns `Just` for a valid pattern and `Nothing` for an invalid one.
+
+`[0-9]+` compiles. `[invalid` has an unclosed character class and is rejected.
+
+-}
+
 -- CHECK: from_string: True
 -- CHECK: invalid: False
 

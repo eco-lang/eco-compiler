@@ -589,7 +589,7 @@ purge `build/test/*/eco-stuff` between E2E legs.
   `demandQualified` is rebuilt per item from the (joined) stored demand, so a dirty
   re-translation re-ties identically or ties *more* (never less) — monotone, matches
   LSS_010's lattice argument. Test: an LSS_010-style shared-HOF fixture with a
-  recursive callback (extend `test/elm/src/LssSharedSpecJoinTest.elm` pattern).
+  recursive callback (extend `test/eco-elm/src/LssSharedSpecJoinTest.elm` pattern).
 - **Blocked-member dispatch regression:** sites that today (accidentally,
   budget-truncated) stamp a spiral member will decline post-tie. The runtime dispatch
   census (Run-M methodology, `benchmarks/runtime-calls.md`) bounds the cost; expected

@@ -1,9 +1,12 @@
 module DecodeValueEncodeNullTest exposing (main)
 
-{-| `Json.Decode.decodeValue` over `Json.Encode.null` (plans/elm-html-native-kernel.md
-§14 I2): `Encode.null` is the encoder family's embedded null constant, and
-`Json.run` maps it to the decoder family's null, so `Decode.null`,
-`Decode.nullable` and `Decode.value` treat it exactly like a parsed `null`.
+{-| Decoders given `Json.Encode.null` through `Json.Decode.decodeValue` treat it as JSON `null`.
+
+`Decode.null 0` gives `Ok 0`, `Decode.nullable Decode.int` gives `Ok Nothing`, and
+`Decode.string` fails. Inside a list built with `Json.Encode.list`, a `null` element decodes
+to `Nothing` next to `Just 1`. Decoding it with `Decode.value` and decoding that `Value` again
+with `Decode.null 7` gives `Ok 7`, and `Json.Encode.encode 0 Json.Encode.null` is the text
+`null`.
 -}
 
 -- CHECK: null: Ok 0

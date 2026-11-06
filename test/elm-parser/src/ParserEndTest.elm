@@ -1,5 +1,12 @@
 module ParserEndTest exposing (main)
 
+{-| `Parser.end` succeeds only when no input is left.
+
+The parser reads the symbol `"abc"` and then `end`. `at_end` runs it on
+`"abc"` and checks for `Ok`; `not_end` runs it on `"abcx"` and checks for
+`Err`.
+-}
+
 -- CHECK: at_end: True
 -- CHECK: not_end: True
 

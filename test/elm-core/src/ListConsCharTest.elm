@@ -1,7 +1,9 @@
 module ListConsCharTest exposing (main)
 
-{-| Forces `Elm_Kernel_List_cons_Char` for each cons emitted while building
-    a `List Char` literal.
+{-| A `List Char` literal holds its characters in order, and `::` prepends a character to it.
+
+The test prints the list, its `List.head`, and the list with `'z'` consed onto the front.
+
 -}
 
 -- CHECK: list: ['a','b','c']

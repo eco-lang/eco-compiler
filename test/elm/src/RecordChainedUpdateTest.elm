@@ -1,6 +1,10 @@
 module RecordChainedUpdateTest exposing (main)
 
-{-| Test multi-field record update and chained updates. -}
+{-| A record update can set several fields at once, and updates can be chained through let bindings.
+
+`multi` sets `x` and `z` in one update and keeps `y`; `chain` updates `x`, then updates `y`
+of that result.
+-}
 
 -- CHECK: multi: { x = 100, y = 20, z = 300 }
 -- CHECK: chain: { x = 10, y = 20 }

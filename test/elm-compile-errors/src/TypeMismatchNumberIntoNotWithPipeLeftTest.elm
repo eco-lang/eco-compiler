@@ -1,9 +1,6 @@
 module TypeMismatchNumberIntoNotWithPipeLeftTest exposing (..)
 
-{-| TYPE MISMATCH: number into not with <|.
-
-From `SourceIR.TypeCheckFailsCases` (`operatorCases`), the elm-test catalogue of programs
-the compiler must reject.
+{-| Applying `not` to a number with `<|` (`not <| 1`) is rejected with a TYPE MISMATCH error, because `not` takes a `Bool`.
 
 -}
 

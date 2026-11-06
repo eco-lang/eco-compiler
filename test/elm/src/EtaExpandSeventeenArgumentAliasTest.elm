@@ -1,10 +1,8 @@
 module EtaExpandSeventeenArgumentAliasTest exposing (..)
 
-{-| Functions whose annotation is an alias of a seventeen-argument function type.
+{-| A module whose functions are annotated with a type alias for a function of 2,049 `Int` arguments compiles and runs.
 
-From `Compiler.PreMono.EtaExpandStageCapTest`, an elm-test unit test, with a
-`main` that logs its `testValue`. The CHECK lines are what Elm 0.19.1 prints for it.
-
+`wide` and `wider` are defined with one parameter against the `Big` alias, and `unused` passes a lambda to `useBig`, which takes a `Big`. None of them is called at run time; the program only logs `testValue`, which is 1.
 -}
 
 -- CHECK: testValue: 1

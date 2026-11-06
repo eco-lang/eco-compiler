@@ -1,9 +1,8 @@
 module LetNumberClosureInRecordTest exposing (main)
 
-{-| Probe: a `number` captured by a closure that is STORED in a record field,
-then applied at `Float`. Combines capture + boxing of the closure. Correct:
-1.5*30 = 45.
-
+{-| An anonymous function that uses an unannotated `let`-bound number is stored in a
+record field and then called with a Float: `rec.f 1.5` computes `1.5 * 30`, logged
+rounded as 45.
 -}
 
 -- CHECK: closrec: 45

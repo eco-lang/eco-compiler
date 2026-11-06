@@ -1,9 +1,11 @@
 module PolyChainFoldlLikeCalled8TimesOverTupleKeyedStructureTest exposing (..)
 
-{-| foldl-like called 8 times over tuple-keyed structure.
+{-| Tests a polymorphic fold-like function called eight times in a chain, each
+with a step function over `( List String, Global )` elements and the previous
+call's result as the initial value.
 
-From `SourceIR.PolyChainCases`, a program of the elm-test catalogue, with a
-`main` that logs its `testValue`. The CHECK lines are what Elm 0.19.1 prints for it.
+`myFoldl` ignores its function and list and returns its initial value, so
+every call returns 0.
 
 -}
 

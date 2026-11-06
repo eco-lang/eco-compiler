@@ -1,5 +1,8 @@
 module DecodeFieldTest exposing (main)
 
+{-| `Json.Decode.field` decodes the named field of a JSON object.
+-}
+
 -- CHECK: decode_field: Ok "tom"
 
 import Html exposing (text)

@@ -1,9 +1,8 @@
 module BadMainTypeAliasMainTest exposing (..)
 
-{-| BAD MAIN TYPE: alias main.
+{-| A `main` whose type is a record type alias is rejected with a BAD MAIN TYPE error.
 
-From `SourceIR.MainFailsCases` (`typeCases`), the elm-test catalogue of programs
-the compiler must reject.
+`main` has type `M`, an alias for `{ a : Int }`, which is not a type `main` may have.
 
 -}
 

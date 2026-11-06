@@ -1,6 +1,12 @@
 module CaseInLambdaTest exposing (main)
 
-{-| Test case expression inside a lambda.
+{-| Checks that a `case` expression on a `Bool` inside an anonymous function
+evaluates correctly, both when the lambda is bound to a name and when it is
+passed straight to another function.
+
+`lambda1` and `lambda2` call the let-bound `boolToStr` with `True` and `False`.
+`lambda3` passes an inline lambda to `applyTo`, which applies it to `True`.
+
 -}
 
 -- CHECK: lambda1: "yes"

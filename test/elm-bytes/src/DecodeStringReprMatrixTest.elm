@@ -1,9 +1,16 @@
 module DecodeStringReprMatrixTest exposing (main)
 
-{-| W1: Bytes.Decode.string over ASCII payloads of varying length now yields
-UTF-8 forms (leaf < 32 bytes, zero-copy view >= 32). This test is
-representation-blind: it asserts round-trip value equality and that String ops
-on a decoded (view-backed) string agree with a literal twin.
+{-| Bytes.Decode.string round-trips ASCII strings of several lengths, and String
+operations on a decoded string agree with the same operations on a literal.
+
+  - `ReprMatrix.roundtrip` is `True` when each of `"x"`, `"hello"` and strings of
+    31, 32, 33 and 200 repeated characters decodes to a string equal to the
+    original.
+  - `ReprMatrix.ops` is `True` when a decoded string of 40 `x` characters has
+    length 40, has `"xxxxx"` as its first five characters, contains `"xx"`,
+    equals a literal-built string of 40 `x` characters, and still equals it
+    after `"!"` is appended to both.
+
 -}
 
 -- CHECK: ReprMatrix.roundtrip: True
@@ -40,7 +47,6 @@ main =
         allRoundTrip =
             List.all (\s -> roundTrip s == s) strs
 
-        -- A decoded 40-char string is a zero-copy view; ops must match a twin.
         decoded =
             roundTrip (String.repeat 40 "x")
 

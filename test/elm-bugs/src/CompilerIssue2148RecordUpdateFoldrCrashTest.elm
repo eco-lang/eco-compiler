@@ -1,10 +1,12 @@
 module CompilerIssue2148RecordUpdateFoldrCrashTest exposing (main)
 
-{-| A type error in a fold over records crashes the compiler with an index out of bounds.
+{-| A type error in a `List.foldr` over records must be reported normally, not crash the compiler.
 
 <https://github.com/elm/compiler/issues/2148>
 
-Elm 0.19.1 crashes with "Data/Vector/Generic/Mutable.hs:703 (modify): index out of bounds (3,3)" and "thread blocked indefinitely in an MVar operation". `Model` is `{}`, so `model.a` is a type error that must be reported normally.
+Elm 0.19.1 crashes with "Data/Vector/Generic/Mutable.hs:703 (modify): index out of bounds (3,3)"
+and "thread blocked indefinitely in an MVar operation". `Model` is `{}`, so `model.a` is a type
+error that must be reported normally.
 
 -}
 

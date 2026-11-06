@@ -1,6 +1,9 @@
 module RecordCreateTest exposing (main)
 
-{-| Test record creation.
+{-| Record literals with `Int` and `String` fields print correctly through `Debug.log`.
+
+`Debug.toString` lists a record's fields by field name, so `record2` prints `age`
+before `name` although the literal gives `name` first.
 -}
 
 -- CHECK: record1: { x = 1, y = 2 }

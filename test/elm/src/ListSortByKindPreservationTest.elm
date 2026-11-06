@@ -1,20 +1,16 @@
 module ListSortByKindPreservationTest exposing (main)
 
-{-| `List.sortBy` — and `List.sort`, which is `sortBy identity` — must return a
-list at the SAME element representation they were given.
+{-| Checks that the results of `List.sortBy` and `List.sort` give correct values
+when summed or folded, for `Int`, `Float` and `Char` elements.
 
-Same defect and same reasoning as `ListSortWithKindPreservationTest`: the
-kernel export flattens the input to an all-HPointer buffer for the key
-closure, then rebuilt the result from that buffer, handing back boxed cells
-for a statically-unboxed element type. Arithmetic folds over the result read
-pointer words as numbers.
-
-The pre-existing `ListSortByFloatIdentityTest` misses it: it never folds
-arithmetic over the sorted result.
-
-Also pins the composition that made this easy to hit in practice — sorting
-the output of another list producer (`List.range`, `List.map`) and then
-summing it.
+  - `sortby-sum` and `sortby-negate-sum` sum `[3, 1, 2]` sorted by `identity`
+    and by `negate`.
+  - `sort-sum`, `sort-float-sum` and `sort-char-codes` sum `List.sort` of the
+    `Int`, `Float` and `Char` lists, the characters by their codes.
+  - `sort-of-range` and `sort-of-map` sort the output of `List.range` and
+    `List.map` and sum it.
+  - `sortby-key-order` prints `List.sort` of `[3, 1, 2]`, checking the order,
+    which the sums cannot see.
 
 -}
 
@@ -74,8 +70,7 @@ main =
         _ =
             Debug.log "sort-of-map" (List.sum (List.sort (List.map (\n -> n * 2) ints)))
 
-        -- The ORDER must stay correct too: a kind fix that reordered or
-        -- duplicated elements would still pass the sums above by accident.
+        -- The sums above would not notice elements in the wrong order.
         _ =
             Debug.log "sortby-key-order" (List.sort ints)
     in

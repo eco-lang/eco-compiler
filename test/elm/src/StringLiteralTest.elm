@@ -1,6 +1,7 @@
 module StringLiteralTest exposing (main)
 
-{-| Test basic string literals.
+{-| Plain ASCII string literals, including ones with a comma, a space and digits, are
+printed unchanged by `Debug.log`.
 -}
 
 -- CHECK: str1: "Hello"

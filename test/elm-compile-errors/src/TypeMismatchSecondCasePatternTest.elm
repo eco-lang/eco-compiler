@@ -1,9 +1,8 @@
 module TypeMismatchSecondCasePatternTest exposing (..)
 
-{-| TYPE MISMATCH: second case pattern.
+{-| A `case` on a `String` whose second pattern is a `Char` literal is rejected with a TYPE MISMATCH.
 
-From `SourceIR.TypeCheckFailsCases` (`patternMismatchCases`), the elm-test catalogue of programs
-the compiler must reject.
+The patterns are `"a"`, `'c'` and `_`; the second does not match the type of the scrutinee `"s"`.
 
 -}
 

@@ -1,8 +1,6 @@
 module TaskSucceedAsArgTest exposing (main)
 
-{-| `Task.succeed` passed as a value to a polymorphic function, with the type variable it fills
-instantiated to `Int`, must compile and deliver its value. The compiler used to abort in LLVM
-with "Calling a function with a bad signature!" on this module.
+{-| `Task.succeed`, passed as a function value to a polymorphic `apply : (a -> b) -> a -> b` with `a` instantiated to `Int`, produces a task that `Task.perform` delivers to `update` with the value 7.
 -}
 
 -- CHECK: got: 7

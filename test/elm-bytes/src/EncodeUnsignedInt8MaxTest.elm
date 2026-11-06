@@ -1,6 +1,8 @@
 module EncodeUnsignedInt8MaxTest exposing (main)
 
-{-| Test encoding max value (255).
+{-| `Bytes.Encode.unsignedInt8` writes 1 byte for its largest value, 255.
+
+The test logs the width of the result.
 -}
 
 -- CHECK: EncodeUnsignedInt8MaxTest: 1

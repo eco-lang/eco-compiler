@@ -1,9 +1,8 @@
 module TypeMismatchRecordFieldExtraTest exposing (..)
 
-{-| TYPE MISMATCH: record field extra.
+{-| Passing the record `{ name = 1, age = 2 }` to a function annotated to take exactly `{ name : Int }` is rejected with a TYPE MISMATCH error.
 
-From `SourceIR.TypeCheckFailsCases` (`recordFieldCases`), the elm-test catalogue of programs
-the compiler must reject.
+The annotation is a closed record type, so a record with the extra field `age` does not match it.
 
 -}
 

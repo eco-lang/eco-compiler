@@ -1,9 +1,8 @@
 module TypeMismatchRigidCompappendAsIntTest exposing (..)
 
-{-| TYPE MISMATCH: rigid compappend as Int.
+{-| Returning an annotated `compappend` value where the annotation says `Int` is rejected with a TYPE MISMATCH.
 
-From `SourceIR.TypeCheckFailsCases` (`rigidCases`), the elm-test catalogue of programs
-the compiler must reject.
+`f : compappend -> Int` with `f x = x`: the caller chooses the `compappend` type, so it cannot be assumed to be `Int`.
 
 -}
 

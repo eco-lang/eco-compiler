@@ -1,9 +1,8 @@
 module FloatMathAcosTest exposing (..)
 
-{-| acos.
+{-| `acos 1` is 0.
 
-From `SourceIR.FloatMathCases`, a program of the elm-test catalogue, with a
-`main` that logs its `testValue`. The CHECK lines are what Elm 0.19.1 prints for it.
+A Float that is a whole number is printed by `Debug.log` without a decimal point.
 
 -}
 

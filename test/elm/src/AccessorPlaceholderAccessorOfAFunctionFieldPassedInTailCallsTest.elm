@@ -1,9 +1,11 @@
 module AccessorPlaceholderAccessorOfAFunctionFieldPassedInTailCallsTest exposing (..)
 
-{-| Accessor of a function field passed in tail calls.
+{-| Record accessors for function-typed fields can be passed as arguments of tail calls, at top level and in an unannotated let-bound function.
 
-From `SourceIR.AccessorPlaceholderCases`, a program of the elm-test catalogue, with a
-`main` that logs its `testValue`. The CHECK lines are what Elm 0.19.1 prints for it.
+`testValue` adds four results, each of which is 2. `loop` and `loop2` are
+top-level functions that pass `.f` to themselves, `loop2` with a fixed first
+argument. `inner`, inside `wrapper`, passes `.f` to itself and computes its
+next counter with a partially applied `add3`.
 
 -}
 

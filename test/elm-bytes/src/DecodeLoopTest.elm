@@ -1,6 +1,8 @@
 module DecodeLoopTest exposing (main)
 
-{-| Test Bytes.Decode.loop for iterative decoding.
+{-| `Bytes.Decode.loop` repeats a step decoder until it returns `Done`: three steps over the bytes 1, 2 and 3 sum them to 6.
+
+The module declares its own `Step` type with `Loop` and `Done` constructors, which nothing uses; the step function returns the qualified `D.Loop` and `D.Done` from `Bytes.Decode`.
 -}
 
 -- CHECK: DecodeLoopTest: 6
@@ -18,7 +20,6 @@ type Step state a
 
 main =
     let
-        -- Encode 3 bytes
         bytes =
             E.encode
                 (E.sequence
@@ -28,7 +29,6 @@ main =
                     ]
                 )
 
-        -- Sum up 3 bytes
         step ( count, sum ) =
             if count <= 0 then
                 D.succeed (D.Done sum)

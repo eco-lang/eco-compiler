@@ -1,12 +1,15 @@
 module LambdaCaseBoundaryTest exposing (main)
 
-{-| Test lambda boundary normalization for case expressions.
+{-| Checks functions whose body is a `case` on the first argument that returns a two-parameter lambda in each branch.
 
-This tests that `\x -> case x of ... -> \a b -> expr` is correctly
-optimized by pulling lambda parameters across the case boundary:
-`\x a b -> case x of ... -> expr`
+  - `add`, `sub` and `mul` call `getOp` with all three arguments, once per
+    `Op` constructor.
+  - `nested_add` and `nested_sub` call `nestedCaseOp`, whose first branch's
+    lambda contains another `case` on its own parameter; with `a` = 1 that
+    inner `case` takes its default branch.
+  - `partial_add` applies `getOp Add` to one more argument, binds the
+    resulting function in a `let`, and applies it to the last.
 
-This reduces closure allocation by avoiding intermediate lambdas.
 -}
 
 -- CHECK: add: 7
@@ -25,7 +28,8 @@ type Op
     | Mul
 
 
-{-| Case returning binary lambda - should be normalized to take all args at once.
+{-| Returns the arithmetic operation named by `op`, as a lambda chosen by a
+`case`.
 -}
 getOp : Op -> Int -> Int -> Int
 getOp op =
@@ -40,7 +44,8 @@ getOp op =
             \a b -> a * b
 
 
-{-| Nested case with lambda in inner branches.
+{-| Returns `b` when `x` and `a` are both 0, `a + b` when only `x` is 0, and
+`a - b` otherwise.
 -}
 nestedCaseOp : Int -> Int -> Int -> Int
 nestedCaseOp x =
@@ -58,7 +63,7 @@ nestedCaseOp x =
             \a b -> a - b
 
 
-{-| Test partial application still works after normalization.
+{-| Applies `f` to `x` and 10. Nothing in `main` calls it.
 -}
 applyPartial : (Int -> Int -> Int) -> Int -> Int
 applyPartial f x =
@@ -67,16 +72,13 @@ applyPartial f x =
 
 main =
     let
-        -- Test basic case-boundary normalization
         _ = Debug.log "add" (getOp Add 3 4)
         _ = Debug.log "sub" (getOp Sub 5 2)
         _ = Debug.log "mul" (getOp Mul 4 5)
 
-        -- Test nested case with lambda
         _ = Debug.log "nested_add" (nestedCaseOp 0 1 10)
         _ = Debug.log "nested_sub" (nestedCaseOp 1 5 2)
 
-        -- Test partial application
         addFive = getOp Add 5
         _ = Debug.log "partial_add" (addFive 10)
     in

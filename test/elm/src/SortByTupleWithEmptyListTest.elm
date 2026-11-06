@@ -1,21 +1,12 @@
 module SortByTupleWithEmptyListTest exposing (main)
 
-{-| `List.sortBy` returning a tuple key whose second field can be `[]`.
-F3 structure with F2 payload: the top-level key is a heap Tuple2 (so
-sortBy's `Allocator::resolve` is fine), but the inner field comparison
-hits the F2 bug — `compareUnboxableSlot` falls through to the raw
-constant-byte ordering for Nil-vs-heap, returning the wrong sign.
-Expected to FAIL today via a permutation that differs from the correct
-order.
+{-| `List.sortBy` with a tuple key whose second component is sometimes `[]` orders by the first component, then by the list.
 
-For input `[4, 1, 2, 3]`:
-- 4 → (0, [])   (even ∧ >2)
-- 1 → (1, [1])  (odd ∧ ≤2)
-- 2 → (0, [2])  (even ∧ ≤2)
-- 3 → (1, [])   (odd ∧ >2)
-Sorted by `(parity, suffix)` with correct list ordering ([] < [_]):
-  (0,[]), (0,[2]), (1,[]), (1,[1])
-  → 4,       2,      3,      1
+`keyOf n` is `( modBy 2 n, suffix )`, where `suffix` is `[]` when `n > 2` and
+`[ n ]` otherwise. For `[ 4, 1, 2, 3 ]` the keys are `(0, [])`, `(1, [1])`,
+`(0, [2])` and `(1, [])`. Tuples compare component by component and `[]` is less
+than any non-empty list, so the sorted keys are `(0, [])`, `(0, [2])`, `(1, [])`,
+`(1, [1])`, giving `[4,2,3,1]`.
 -}
 
 -- CHECK: result: [4,2,3,1]

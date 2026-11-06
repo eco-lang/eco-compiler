@@ -1,14 +1,14 @@
 port module PortAliasEchoTest exposing (main)
 
 {-| An outgoing port whose type is written through a type alias,
-`port echoOut : Out msg` with `type alias Out msg = Payload -> Cmd msg`.
+`port echoOut : Out msg` with `type alias Out msg = Payload -> Cmd msg`, sends
+its record payload, and the record comes back unchanged through an incoming
+port.
 
-The monomorphizer's `connectEncoderType` (Compiler.Monomorphize.Solver.Translate)
-unifies an outgoing port's encoder with `payload -> r` only when the port's type
-is a function as written; through an alias it is a `TAlias`, so the encoder is
-left unconnected (plans/dead-code-report.md, b5, Translate.elm:1147). This test
-pins that such a port still encodes its record payload correctly: the harness
-bounces every `echoOut` payload back into `echoIn` (see PortEchoTest).
+The program assumes a host that passes every value sent out on the `echoOut`
+port straight back in on the `echoIn` port; without one, nothing after `init`
+is logged. It sends `{ n = 42, s = "hi" }` once, logs the record received and
+then `"ok"`, and drops its subscription.
 
 -}
 

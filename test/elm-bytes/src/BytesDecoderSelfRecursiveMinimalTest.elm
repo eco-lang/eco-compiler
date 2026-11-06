@@ -1,14 +1,12 @@
 module BytesDecoderSelfRecursiveMinimalTest exposing (main)
 
-{-| Minimal self-recursive Bytes.Decode.Decoder.
+{-| A top-level decoder value that refers to itself inside `Bytes.Decode.andThen` decodes a small tree correctly.
 
-    Mirrors the structure of Compiler.AST.Canonical.typeDecoder: a zero-arity
-    top-level binding whose RHS is `unsignedInt8 |> andThen (... decoder ...)`
-    where one branch references the decoder itself.
+`tDecoder` takes no arguments; it reads a tag byte and, for tag `1`, uses
+itself twice to read the two subtrees of a `TPair`. Tag `0` is `TLeaf`.
 
-    The encoded bytes are: [0, 1, 1] representing TPair TLeaf TLeaf.
+The input `1 0 0` decodes to `Just (TPair TLeaf TLeaf)`.
 
-    Expected: prints "decoded: Just (TPair TLeaf TLeaf)" without crashing.
 -}
 
 -- CHECK: decoded: Just (TPair TLeaf TLeaf)

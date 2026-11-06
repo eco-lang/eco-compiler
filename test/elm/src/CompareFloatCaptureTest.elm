@@ -1,6 +1,10 @@
 module CompareFloatCaptureTest exposing (main)
 
-{-| Closure-capture form of `compare` on `Float`.
+{-| `compare` on `Float` passed as a function value to `List.sortWith`.
+
+The list is sorted once with `compare` itself and once with a lambda that
+swaps its arguments, which sorts it in descending order.
+
 -}
 
 -- CHECK: sorted: [1.5,2,2.75,3,4.25]

@@ -1,10 +1,6 @@
 module TypeMismatchIfConditionIntTest exposing (..)
 
-{-| TYPE MISMATCH: if condition int.
-
-From `SourceIR.TypeCheckFailsCases` (`contextCases`), the elm-test catalogue of programs
-the compiler must reject.
-
+{-| The compiler rejects an `if` whose condition is the number `1` rather than a `Bool`, with a TYPE MISMATCH error.
 -}
 
 -- COMPILE-ERROR: TYPE MISMATCH, if condition int

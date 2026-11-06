@@ -1,14 +1,14 @@
 module LocalRecCaptureKindsTest exposing (main)
 
-{-| A local recursive function (MonoTailDef) capturing one value of each
-capture representation: unboxed Int (i64), Float (f64) and Char (i16), boxed
-Bool (REP_CLOSURE_001: i1 boxed to !eco.value at the closure boundary) and a
-boxed String. The closure is also passed to a HOF so it is called through the
-closure ABI, not only through the direct self-call loop.
+{-| A let-bound recursive function that uses an Int, a Float, a Char, a Bool and a
+String from its enclosing scope gives the same result whether it is called
+directly or passed to `List.map`.
 
-go 0 with k=2, f=0.5, c='b', flag=True, s="xy":
-  i = 0,2,4 -> stop at 4: 4 + round (0.5 * 10) + toCode 'b' (98) + 1 + 2 = 110
-
+`run` calls the local `go` directly; `runHof` defines the same `go` and maps it
+over `[ 0, 2 ]`. With k = 2, f = 0.5, c = 'b', flag = True and s = "xy", `go`
+steps i by 2 until `i >= 4` and returns
+4 + round (0.5 * 10) + Char.toCode 'b' + 1 + String.length "xy" = 4 + 5 + 98 + 1 + 2 = 110.
+Starting from 2 also stops at 4, so the mapped list is `[110,110]`.
 -}
 
 -- CHECK: direct: 110

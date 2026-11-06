@@ -493,7 +493,7 @@ paramArrowAnnos t =
    `(Int -> Int)` anno is `LTop` or CONTAINS k's member — never a k-less
    non-⊤ set (a backwards flip yields exactly that). Exact expected annos
    pinned from the first run; the assertion shape is fixed here.
-7. E2E: `test/elm/src/LssSigFlowTest.elm` unchanged (behavior pins are
+7. E2E: `test/eco-elm/src/LssSigFlowTest.elm` unchanged (behavior pins are
    flag-independent); re-runs in the flag-on battery leg.
 
 ## §8 Phases, batteries, gates

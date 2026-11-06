@@ -1,14 +1,13 @@
 module ProcessSleepNonFiniteTest exposing (main)
 
-{-| TIME-08 (c) (plans/kernel-lib-bug-fixes.md): `Process.sleep` with a non-finite or huge delay.
-On Elm/node `setTimeout` turns any delay outside [1, 2^31-1] (Infinity, NaN, 1e300) into 1 ms, with
-a TimeoutOverflowWarning, so each of these sleeps ends long before a 2000 ms reference sleep
-(decision D30: eco sanitises NaN, +-inf and huge sleeps to 1 ms, and keeps `sleep 0` a yield).
+{-| `Process.sleep` given an infinite, NaN or enormous delay still wakes, and
+wakes before a 2000 ms sleep started at the same time.
 
-Natively the delay goes straight to TimerService::schedule, whose `duration_cast` of a non-finite
-or huge double is undefined behaviour; on x86 it happens to yield "fire at once", so this test
-passes today by luck. It is a regression guard for the clamp the fix adds. Expected output from
-Elm on node.
+Four sleeps are started together from `init`: `1 / 0`, `0 / 0`, `1.0e300` and
+2000 ms. Each of the first three logs whether it woke before or after the
+2000 ms reference. The expected output follows Elm on node, where `setTimeout`
+treats a delay outside its supported range as a delay of about 1 ms, so all
+three are expected to wake first, in any order, and the reference last.
 
 -}
 

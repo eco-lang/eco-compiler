@@ -1,8 +1,10 @@
 module SingleCtorPairCharIntTest exposing (main)
 
-{-| Two single-constructor types: WrapChar (Char, i16 unboxed) and WrapInt (Int, i64 unboxed).
-Both have unboxed fields but different widths (i16 vs i64).
-findSingleCtorUnboxedField could return the wrong width, causing truncation or garbage.
+{-| Values are extracted correctly from two single-constructor types in one module, one wrapping a `Char` and one wrapping an `Int`.
+
+`unwrapChar` and `unwrapInt` return the wrapped `'A'` and `256`. `matchChar`
+wraps a `Char`, matches it back out and builds the string `"got_A"`.
+
 -}
 
 -- CHECK: unwrap_char: 'A'

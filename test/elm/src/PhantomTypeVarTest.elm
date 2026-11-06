@@ -1,13 +1,12 @@
 module PhantomTypeVarTest exposing (main)
 
-{-| Regression test for infinite monomorphization loop caused by phantom
-type variables in constructors.
+{-| Tests a custom type with a type parameter that one of its constructors
+does not use, rebuilt at a new type by generic functions.
 
-    type RStep e a = ROk a | RErr (List e)
-
-`RErr` has phantom `a`. When `mapStep` and `applyR` reconstruct `RErr`
-at a new result type, the phantom type var gets a fresh MVarId each time,
-causing unbounded specialization growth.
+In `type RStep e a = ROk a | RErr (List e)`, the `RErr` constructor has no
+`a` field, so `mapStep` and `applyR` can rebuild an `RErr` at any result
+type. `main` applies an identity function wrapped in `ROk` three times to
+`ROk 42` through `applyR`, and logs the value inside.
 
 -}
 

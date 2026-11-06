@@ -1,6 +1,7 @@
 module LetBasicTest exposing (main)
 
-{-| Test basic let expressions.
+{-| Two groups of `let` bindings, where later bindings use earlier ones: `x + y` on two
+Int literals gives 5, and `"hello" ++ " " ++ "world"` gives `"hello world"`.
 -}
 
 -- CHECK: result1: 5

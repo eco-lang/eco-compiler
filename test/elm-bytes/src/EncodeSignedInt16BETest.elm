@@ -1,6 +1,8 @@
 module EncodeSignedInt16BETest exposing (main)
 
-{-| Test Bytes.Encode.signedInt16 with BE endianness.
+{-| `Bytes.Encode.signedInt16` with big-endian order writes 2 bytes for a negative value.
+
+The test encodes `-1000` and logs the width of the result.
 -}
 
 -- CHECK: EncodeSignedInt16BETest: 2

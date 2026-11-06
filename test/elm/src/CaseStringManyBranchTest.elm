@@ -1,6 +1,12 @@
 module CaseStringManyBranchTest exposing (main)
 
-{-| Test case on String with many literal patterns (day names). -}
+{-| A case expression on a `String` with seven literal patterns (three-letter day
+abbreviations) and a wildcard selects the matching branch.
+
+The test checks the first, fourth and last literals, and a string that matches
+none of them.
+
+-}
 
 -- CHECK: d1: "Monday"
 -- CHECK: d4: "Thursday"

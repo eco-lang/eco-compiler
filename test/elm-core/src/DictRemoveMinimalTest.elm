@@ -1,7 +1,8 @@
 module DictRemoveMinimalTest exposing (main)
 
-{-| Minimal repro for SIGSEGV in Dict.remove:
-    Dict.remove 1 (Dict.insert 2 20 (Dict.singleton 1 10))
+{-| `Dict.remove` deletes the smaller of two keys from a two-entry `Dict Int Int`, leaving a dictionary of size 1.
+
+The dictionary is built with `Dict.singleton 1 10` followed by `Dict.insert 2 20`, and key 1 is removed.
 -}
 
 -- CHECK: size: 1

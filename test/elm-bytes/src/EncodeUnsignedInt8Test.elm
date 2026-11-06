@@ -1,6 +1,8 @@
 module EncodeUnsignedInt8Test exposing (main)
 
-{-| Test Bytes.Encode.unsignedInt8 basic encoding.
+{-| `Bytes.Encode.unsignedInt8` writes 1 byte.
+
+The test encodes `42` and logs the width of the result.
 -}
 
 -- CHECK: EncodeUnsignedInt8Test: 1

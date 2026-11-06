@@ -1022,7 +1022,7 @@ sentinel `cross_spec_mutual_recursive_skipped.mlir`; once 3.2 #1
 lands, that sentinel becomes redundant and can be deleted (or
 re‑purposed as a different negative case).
 
-`test/elm/src/CrossSpecMutualRecursiveTest.elm` — parity‑style
+`test/eco-elm/src/CrossSpecMutualRecursiveTest.elm` — parity‑style
 mutual recursion in real Elm:
 
 ```elm

@@ -1,9 +1,10 @@
 module TypeMismatchUpdateOfAnEmptyRecordTest exposing (..)
 
-{-| TYPE MISMATCH: update of an empty record.
+{-| A record update that sets field `x` on the empty record `{}` is rejected with a TYPE
+MISMATCH error.
 
-From `SourceIR.TypeCheckFailsCases` (`contextCases`), the elm-test catalogue of programs
-the compiler must reject.
+A record update can only change fields the record already has, and the empty record has
+none.
 
 -}
 

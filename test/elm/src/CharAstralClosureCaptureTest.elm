@@ -1,8 +1,13 @@
 module CharAstralClosureCaptureTest exposing (main)
 
-{-| An astral Char captured unboxed by a closure (capture kind 3) and by a
-partial application reads back as the same code point when the closure runs,
-including through List.map (generic apply).
+{-| An astral `Char` (code point above 0xFFFF) referred to by a lambda, or
+supplied as the first argument of a partially applied function, keeps its code
+point when the function is called later through `List.map`.
+
+`addCode` returns a lambda that adds the character's code to its argument, and
+`giveBack` returns a lambda that returns the character. `pairUp '😀'` is
+partially applied and mapped over `[ 1, 2 ]`, and each resulting pair is summed.
+
 -}
 
 -- CHECK: cap_add: [128513,98]

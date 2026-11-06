@@ -1,21 +1,16 @@
 module ListMapTemplateMemberTaintTest exposing (main)
 
-{-| The MEMBER-LEVEL canary for the `List.map` template licence
-(`plans/list-map-mlir-template.md`, F-3/F-4 joint-architecture section).
+{-| Checks that `List.map` applies its callback to the elements from last to
+first when the callback calls a `let`-bound sorting function whose comparator
+logs.
 
-Shape: the callback applies a callee LOCAL (`sortIt`), and that local's own
-body launders `Debug` through a kernel HOF's argument position.
-
-Before F-3, `sortIt` in callee position was declined by the shape-blind
-higher-order arm — sound BY ACCIDENT. F-3 resolves the callee through the
-lambda-set member table, so this shape becomes licensable unless the member
-table is TAINT-AWARE BY CONSTRUCTION: scanning `sortIt`'s body must apply
-the same argument-position rule the licence walk applies, or F-3 licenses
-this map and the comparator's lines reorder.
-
-Same `[1, 1]` / `[2, 2]` construction as
-`ListMapTemplateLaunderedDebugTest.elm` — the logged number names the
-sublist, not the argument order. Expected order is foldr's right-to-left.
+elm/core defines `List.map` with `List.foldr`, which, on a list this short,
+applies the callback to the last element first. The callback calls `sortIt`,
+which sorts with `cmp`, a local name for `loggingCompare`, which logs its first
+argument. The inner lists are `[1, 1]` and `[2, 2]`, so the number logged names
+the list being sorted whichever way the comparator's arguments are ordered: the
+expected output is the log for `[2, 2]` immediately followed by the log for
+`[1, 1]`, then the unchanged sorted lists.
 
 -}
 

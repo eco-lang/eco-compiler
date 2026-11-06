@@ -1,6 +1,6 @@
 module ListConsTest exposing (main)
 
-{-| Test list cons operator.
+{-| The cons operator `::` builds one-, two- and three-element lists onto `[]`.
 -}
 
 -- CHECK: cons1: [1]

@@ -1,9 +1,6 @@
 module TypeMismatchNumberLeftOfPipeLeftTest exposing (..)
 
-{-| TYPE MISMATCH: number left of <|.
-
-From `SourceIR.TypeCheckFailsCases` (`operatorCases`), the elm-test catalogue of programs
-the compiler must reject.
+{-| A number as the left operand of `<|` (`1 <| 2`) is rejected with a TYPE MISMATCH error, because `<|` applies its left operand as a function.
 
 -}
 

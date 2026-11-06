@@ -1,9 +1,8 @@
 module TypeMismatchTupleSizesDifferTest exposing (..)
 
-{-| TYPE MISMATCH: tuple sizes differ.
+{-| A triple given where the annotation promises a pair is rejected with a TYPE MISMATCH.
 
-From `SourceIR.TypeCheckFailsCases` (`problemCases`), the elm-test catalogue of programs
-the compiler must reject.
+`x : ( Int, Int )` is defined as `( 1, 2, 3 )`; tuples of different sizes are different types.
 
 -}
 

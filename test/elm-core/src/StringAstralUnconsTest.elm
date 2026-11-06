@@ -1,9 +1,14 @@
 module StringAstralUnconsTest exposing (main)
 
-{-| G1/E6: uncons splits off one code point, as in Elm (Char is a Unicode code
-point in i32). For "😀b" the head is the whole emoji (code 128512 = 0x1F600)
-and the remainder is "b" (1 UTF-16 unit). cons writes an astral Char back as a
-surrogate pair, so cons ∘ uncons round-trips.
+{-| `String.uncons` splits a whole character outside the Basic Multilingual
+Plane, such as an emoji, off the front of a string, and `String.cons` puts it
+back.
+
+For `"😀b"` the head has code 128512 (`0x1F600`) and the rest is `"b"`, of
+length 1. `String.cons` of the head and the rest gives `"😀b"` again, and
+`String.cons '😀' "b"` has `String.length` 3, since `String.length` counts
+UTF-16 units and the emoji takes two.
+
 -}
 
 -- CHECK: uncons_code: 128512

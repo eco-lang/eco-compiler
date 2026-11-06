@@ -1,10 +1,18 @@
 module StringEscapeCrTest exposing (main)
 
-{-| The `\r` escape in string literals is a carriage return (U+000D). The native
-backend's literal decoders (bytecode `StringTable.unescapeStringSlow`, text
-`Pretty.escapeForMlir`) used to keep it as a backslash and an `r`, while the JS
-backend was right. Every escape is checked by its code points, next to its
-neighbours, in a `"""` string, and as a `case` pattern.
+{-| The `\r` escape in a string literal is a carriage return, code point 13.
+
+Each check logs the character codes of a string:
+
+  - `"\r"` alone;
+  - `\r` among the other escapes `\n`, `\t`, `\\` and `\"`, ordinary letters,
+    and `\u{000D}`;
+  - `"\r\n"`;
+  - `\r` inside a triple-quoted string.
+
+It also checks that a string built from code 13 matches the `"\r"` pattern in a
+`case`, and that `"\r\n"` has length 2.
+
 -}
 
 -- CHECK: cr: [13]

@@ -1,12 +1,17 @@
 module DeepEqualityTest exposing (main)
 
-{-| UTILS-05 (plans/kernel-lib-bug-fixes.md): `==` on values nested deeper than 100 levels.
-elm/core's `_Utils_eqHelp` defers a pair it meets past depth 100 to an explicit stack and
-compares it later, so the answer is always exact. eco's `eqHelp` (elm-kernel-cpp
-src/core/Utils.cpp) returned `true` at depth > 100 instead, so every unequal row below answered
-True; it now defers the pair the same way. Expected values recorded from Elm on node.
-test/elm/src/EqDepthCutoffTest.elm pins the same boundary.
+{-| `==` and `/=` give the exact answer on values nested more than 100 levels deep.
 
+The fixtures are built by folding: `nat n` is `n` applications of `S` to `Z`, `nest n leaf` is
+`n` `Wrap`s around `Leaf leaf`, and `chain n bottom` is `n` records linked through
+`next = Just ...`, ending in one whose `v` is `bottom`.
+
+  - `nat 150 vs 200`: two naturals of different depth are not equal.
+  - `nat 150 vs 150`: two naturals of the same depth are equal.
+  - `nest 120` and `nest 500 /=`: values that differ only in the leaf, 120 and 500 levels down,
+    are not equal.
+  - `record chain 300`: record chains that differ only in the innermost `v` are not equal.
+  - `dict nest 150`: two Dicts whose values under key 1 differ 150 levels down are not equal.
 -}
 
 -- CHECK: nat 150 vs 200: "False"

@@ -1,16 +1,12 @@
 module RecordNarrow02CapturesNothingTest exposing (main)
 
-{-| Variation 15: replace `captures : List Int` with `captures : Maybe Int`.
+{-| A let-bound helper with an inferred extensible-record argument, folded over two records with `List.foldl`, reads the right nested field when its `captures` field is `Nothing`.
 
-    Same shape as the original repro, but captures is now Maybe Int (Nothing).
-    Nothing is the embedded constant Const_Nothing (constant=6), distinct from
-    Const_Nil (constant=5).
-
-    Confirms the misread slot identity by observing a different embedded
-    constant in the crash diagnostic.
-
-    Expected (correct): uid: 1998
-    Buggy outcome: native abort in eco_resolve_hptr with constant=6 (Const_Nothing).
+Each record is built without an annotation, and `buildSibling` is a let-bound
+helper with no annotation, so its argument's type is inferred as an extensible
+record naming only the fields it reads, while the records passed in carry more.
+Here `captures` is `Nothing` rather than a list, and the helper inspects it
+with a `case`. It then unwraps `inner.lambdaId`; both members hold `LambdaId 999`, so the sum is 1998.
 -}
 
 -- CHECK: uid: 1998

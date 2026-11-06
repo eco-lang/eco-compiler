@@ -1,9 +1,6 @@
 module TypeMismatchBoolsComparedTest exposing (..)
 
-{-| TYPE MISMATCH: Bools compared.
-
-From `SourceIR.TypeCheckFailsCases` (`operatorCases`), the elm-test catalogue of programs
-the compiler must reject.
+{-| `True < False` is rejected with a TYPE MISMATCH, because `<` takes comparable values and `Bool` is not comparable.
 
 -}
 

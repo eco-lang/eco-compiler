@@ -1007,7 +1007,7 @@ Smoke-test infrastructure is also in:
 | --- | --- | --- |
 | `-- CHECK-MLIR:` / `-- CHECK-MLIR-NOT:` directive parser | `test/ElmE2ETestBase.hpp` (`extractCheckMlirPatterns`) | landed |
 | `ecoc --emit=mlir` invoker for bytecode → text MLIR | same (`getEcocPath`, `readMlirAsText`) | landed |
-| Smoke-test fixture for the Phase 5 fusion shape | `test/elm-bytes/src/FusionGlobalMapFnTest.elm` | landed — currently failing |
+| Smoke-test fixture for the Phase 5 fusion shape | `test/eco-mlir/src/FusionGlobalMapFnTest.elm` | landed — currently failing |
 
 The cursor-type conversion was needed because `EcoToLLVMPass` marks the
 entire SCF dialect illegal (`Passes/EcoToLLVM.cpp:298`), and the SCF

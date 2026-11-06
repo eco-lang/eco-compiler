@@ -1,8 +1,6 @@
 module TupleIndexedCharTest exposing (main)
 
-{-| Test (Int, Char) tuple construction from List.indexedMap,
-the exact pattern that triggers the bootstrap Stage 6 failure.
-
+{-| `List.indexedMap Tuple.pair` over the characters of `"Hello"` builds `( Int, Char )` pairs, and the first one is `(0,'H')`.
 -}
 
 -- CHECK: first: (0,'H')

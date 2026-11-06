@@ -1,6 +1,6 @@
 module MaybeMapToStringTest exposing (main)
 
-{-| Test Maybe.map with Int -> String mapping function.
+{-| `Maybe.map` with an Int -> String function produces a `Maybe String`: mapping `String.fromInt` over `Just 42` gives `Just "42"`.
 -}
 
 -- CHECK: result: Just "42"

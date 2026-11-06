@@ -1,14 +1,12 @@
 module RecordNarrow03FullAnnotationTest exposing (main)
 
-{-| Variation 1: NEGATIVE CONTROL.
+{-| A let-bound helper annotated with concrete record aliases, folded over two nested records with `List.foldl`, reads the right nested field.
 
-    Same shape as the bug reproducer, but `buildSibling` carries an explicit
-    full-type annotation `(Int, Outer) -> Int -> Int`. The concrete record
-    type should prevent row-polymorphic narrowing, so codegen should use the
-    full 5-field layout indices and the test should PASS.
-
-    Expected (correct): uid: 1998
-    If this test still crashes, the bug is not row-poly-specific.
+This is the fully annotated form of the program in `RecordOpenNarrowFieldIndexTest`:
+`buildSibling : ( Int, Outer ) -> Int -> Int`, with `Outer` and `Inner` closed
+record aliases, so the helper's argument type names every field. The helper
+reads `captures`, `params` and `lambdaId` of `inner`; both members hold
+`LambdaId 999`, so the sum is 1998.
 -}
 
 -- CHECK: uid: 1998

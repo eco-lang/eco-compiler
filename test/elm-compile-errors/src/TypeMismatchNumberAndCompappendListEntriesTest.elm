@@ -1,9 +1,8 @@
 module TypeMismatchNumberAndCompappendListEntriesTest exposing (..)
 
-{-| TYPE MISMATCH: number and compappend list entries.
+{-| A list literal whose entries are `a + 1` and a value `c` that is both appended (`b ++ b`) and compared (`c < c`) is rejected with a TYPE MISMATCH error.
 
-From `SourceIR.TypeCheckFailsCases` (`problemCases`), the elm-test catalogue of programs
-the compiler must reject.
+All entries of a list share one type. `c` must be a `compappend` (appendable and comparable) and `a + 1` a `number`, and no type is both.
 
 -}
 

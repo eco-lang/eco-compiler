@@ -1,10 +1,12 @@
 module NonBmpStringTest exposing (main)
 
-{-| Strings and Chars outside the BMP, recorded from Elm on node (run-js-e2e.js --record).
-`String.length` counts UTF-16 units, but `String.toList`, the folds and the other Char-at-a-time
-functions step by code point, and a Char literal may hold one. eco 0.2.0 stepped by UTF-16 unit
-(two surrogate Chars for U+1F600) and rejected `'😀'` (eco-bugs.md numbers 5 and 9,
-plans/kg-reported-bugs.md step 3). Chars are shown as code points in hex (ConformanceHelp.cps).
+{-| String functions that work a `Char` at a time step over a character outside the Basic
+Multilingual Plane as one `Char`, while `String.length` counts it as two UTF-16 code units.
+
+The text is "a😀b" (U+1F600 between two ASCII letters), and a `Char` literal holds U+1F600. The
+tests check `String.length` (4), `String.toList`, the folds, `uncons`, `map`, `filter`, `any`,
+`all`, `reverse`, `cons`, `fromList` and `fromChar`, and the literal's `Char.toCode`. Characters
+are logged as decimal codes or as hexadecimal code points (`ConformanceHelp.cps`).
 
 -}
 

@@ -1,9 +1,13 @@
 module DecodedStringAsKeyTest exposing (main)
 
-{-| W1: a decoded UTF-8 view/leaf must compare/hash-equal to a literal-built
-twin of the same content (equal/compare have both-UTF-8 and mixed-encoding
-fast paths). Uses a decoded string as a Dict key and looks it up with a
-literal, and mixes in a String.fromInt key.
+{-| Strings produced by Bytes.Decode.string work as Dict keys that are found by
+equal strings built without decoding.
+
+A Dict is built from four keys: a decoded string of 40 `k` characters, the
+literal `"literal"`, `String.fromInt 99`, and a decoded `"abc"`. The test logs
+`True` when each key is found, with the value it was stored under, by looking
+up a string with the same contents built by a literal or `String.repeat`, and the Dict has size 4.
+
 -}
 
 -- CHECK: AsKey.ok: True

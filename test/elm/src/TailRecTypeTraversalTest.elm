@@ -1,9 +1,10 @@
 module TailRecTypeTraversalTest exposing (main)
 
-{-| Tail-recursive type substitution with nested string case.
-Mimics Compiler.Monomorphize.TypeSubst.applySubst: tail-recursive via
-TAlias branch, outer case on type constructor, inner string case for
-primitive type names inside TPrim branch.
+{-| A function over a small type-expression tree, tail-recursive through its alias constructor and matching primitive type names as string literals, resolves an alias chain to the right name.
+
+`resolve` unwraps `TAlias (TAlias (TPrim "Int"))` by tail calls and maps `"Int"`
+to `"integer"`. The `TList` branch, whose recursive call is not in tail
+position, is not exercised.
 -}
 
 -- CHECK: result: "integer"

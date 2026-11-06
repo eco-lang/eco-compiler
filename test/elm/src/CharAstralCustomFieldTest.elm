@@ -1,8 +1,13 @@
 module CharAstralCustomFieldTest exposing (main)
 
-{-| An astral Char stored unboxed in a custom-type field (slot kind 3) reads back
-as the same code point through a case match, in a single-constructor and in a
-multi-constructor type, and Debug.log prints the value with the Char itself.
+{-| An astral `Char` (code point above 0xFFFF) stored in a custom-type
+constructor's field keeps its code point when read back by pattern matching,
+and `Debug.log` prints the value with the character itself.
+
+`Box` has a single constructor and is unwrapped by an argument pattern. `Shape`
+has three constructors, two of which carry a `Char`, and is read with a case
+expression; its `Empty` constructor gives -1.
+
 -}
 
 -- CHECK: box_code: 128512

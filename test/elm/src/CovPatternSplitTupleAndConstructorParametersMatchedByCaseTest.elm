@@ -1,9 +1,10 @@
 module CovPatternSplitTupleAndConstructorParametersMatchedByCaseTest exposing (..)
 
-{-| Split tuple and constructor parameters matched by case.
+{-| Functions that take a tuple or a custom-type value as their parameter and take it apart with
+`case`, including literal patterns (`( 0, b )`, `Q True n`) and a `Float` component.
 
-From `SourceIR.CovPatternCases`, a program of the elm-test catalogue, with a
-`main` that logs its `testValue`. The CHECK lines are what Elm 0.19.1 prints for it.
+`testValue` takes arguments and is never applied, so the program logs it as `<function>`; the
+test checks that these definitions compile and the program runs.
 
 -}
 

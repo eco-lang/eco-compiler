@@ -1,20 +1,13 @@
 module BytesDecoderMixedCycleTwoFunctionsTest exposing (main)
 
-{-| Recursive cycle with one top-level VALUE decoder and two top-level
-    FUNCTION decoders. Every arrow below points from a definition to one
-    of its callees:
+{-| A recursive cycle of one top-level decoder value and two top-level decoder functions decodes a tagged list of bytes correctly.
 
-        listDecoder  -->  decideDispatch
-        decideDispatch  -->  continueList
-        continueList  -->  listDecoder
+Each definition refers to the next, and the last refers back to the first:
+`listDecoder` (a value, taking no arguments) uses `decideDispatch`, which uses
+`continueList`, which uses `listDecoder`.
 
-    All three are in the same SCC. Because `funcDefs` is non-empty,
-    monomorphization routes the group through `specializeFunctionCycle`,
-    which ignores `valueDefs` — so `listDecoder` becomes a Unit stub
-    and the first use crashes in `eco_resolve_hptr`.
-
-    Encoding: each element is preceded by tag `1` and the list is
-    terminated by tag `0`.
+In the encoding each element is preceded by the tag byte `1` and the list ends
+with the tag byte `0`. The input `1 3 1 5 1 7 0` decodes to `Just [3,5,7]`.
 
 -}
 
@@ -25,7 +18,7 @@ import Bytes.Encode as E
 import Html exposing (text)
 
 
-{-| VALUE (zero-arg).  Reads a tag byte, then dispatches.
+{-| A decoder that reads a tag byte and hands it to `decideDispatch`.
 -}
 listDecoder : D.Decoder (List Int)
 listDecoder =
@@ -33,7 +26,7 @@ listDecoder =
         |> D.andThen decideDispatch
 
 
-{-| FUNCTION.  Decides whether we are at end-of-list or need to continue.
+{-| Produces an empty-list decoder for tag `0`, and otherwise `continueList`.
 -}
 decideDispatch : Int -> D.Decoder (List Int)
 decideDispatch flag =
@@ -44,8 +37,8 @@ decideDispatch flag =
         continueList flag
 
 
-{-| FUNCTION.  Reads one element, then recurses via `listDecoder`
-— closing the cycle back to the value.
+{-| Produces a decoder that reads one element byte and conses it onto the rest
+of the list, read by `listDecoder`. The tag argument is ignored.
 -}
 continueList : Int -> D.Decoder (List Int)
 continueList _ =

@@ -1,5 +1,12 @@
 module RegexContainsTest exposing (main)
 
+{-| `Regex.contains` reports whether a regex matches anywhere in a string.
+
+The pattern `[0-9]+` is checked against a string with digits at its end, which
+is `True`, and against one with no digits, which is `False`.
+
+-}
+
 -- CHECK: contains_yes: True
 -- CHECK: contains_no: False
 

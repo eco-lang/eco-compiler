@@ -1,17 +1,21 @@
 module ArrayMapDebugLogKindTest exposing (main)
 
-{-| ARRAY-NEW-1 / ARRAY-05 (plans/kernel-lib-bug-fixes.md): `Array.map` and `Array.initialize`
-with a point-free kernel function whose result type is polymorphic (`Debug.log "x"`). The
-closure of a polymorphic-result kernel returns its result boxed (kind 0). The native JsArray
-kernel used to store each result in the closure's own result kind, so the resulting `Array Int`
-was a kind-0 (boxed) array although every later Int-typed operation treats it as kind 1: `get`
-read a pointer as an Int, and `Array.push` (`elm_array_push_int`) wrote a raw Int into a boxed
-array (ARRAY-05), which a minor GC then traced as a pointer. The compiler now selects the
-`map_Int` / `initialize_Int_Int` kernel variants by the result's element type, and they store
-every element as an Int. The `big` map goes through the RRB tree as well as the tail. `churn`
-depends on `pushed`, so it runs after it, and allocates enough to run minor GCs while the pushed
-array is live; `after-gc` uses the array afterwards. Expected output recorded from Elm on node
-(run-js-e2e.js --record).
+{-| `Array.map` and `Array.initialize` with a point-free `Debug.log` as the function give an
+`Array Int` that later Array operations read correctly.
+
+`Debug.log "x"` returns its argument unchanged and has the polymorphic type `a -> a`, so each
+mapped array's element type is fixed by its input and its `Array Int` annotation. The test builds three such arrays: `m`
+maps `Debug.log "x"` over `[1,2,3]`, `i` is `Array.initialize 3 (Debug.log "i")`, and `big` maps
+`Debug.log "y"` over 1 to 40.
+
+  - `x` and `i`: each element is logged once as it is produced (in any order).
+  - `get0`, `get2i`, `bigGet`: `Array.get` returns the mapped Int, including index 35 of `big`.
+  - `pushed`: `Array.push 4` onto `m` gives `[1,2,3,4]`.
+  - `sum` and `eq`: `Array.foldl (+)` sums `m` to 6, and `m` equals `Array.fromList [1,2,3]`.
+  - `churn` and `after-gc`: after summing the doubles of a 300,000-element list (plus the pushed
+    array's length), the pushed array still converts back to `[1,2,3,4]`.
+
+Among what is not tested: `Debug.log` output for the other 39 elements of `big`.
 -}
 
 -- CHECK-DAG: x: 1

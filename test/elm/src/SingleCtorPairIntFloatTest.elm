@@ -1,8 +1,11 @@
 module SingleCtorPairIntFloatTest exposing (main)
 
-{-| Two single-constructor types: WrapInt (Int, i64 unboxed) and WrapFloat (Float, f64 unboxed).
-Both have unboxed fields but different types. findSingleCtorUnboxedField could return
-the wrong one, causing silent bit-reinterpretation bugs.
+{-| Values are extracted correctly from two single-constructor types in one module, one wrapping an `Int` and one wrapping a `Float`.
+
+`unwrapInt` and `unwrapFloat` return the wrapped `42` and `2.718`. `matchInt`
+gives `"positive"` for 7, and `matchFloat` gives `"big"` for 999.9, which is
+above its threshold of 100.0.
+
 -}
 
 -- CHECK: unwrap_int: 42

@@ -1,10 +1,10 @@
 module LetNumberIndirectDualTest exposing (main)
 
-{-| Regression test (native/AOT backend): the let-bound-`number`
-mis-specialization (see `LetNumberFloatMulTest`) reached when the binding is used
-at both an `Int`-defaulting position and a `Float` position in the same body. The
-`Float` use (`1.5 * n`) must specialize `n` to `Float`; the `n + 1` use stays
-`Float` too. Correct: ( 31, 45 ).
+{-| A let-bound `number` used once in a `Float` multiplication and once in an
+unconstrained addition takes a type at each use independently.
+
+With `n = 30`, the pair `( n + 1, round (1.5 * n) )` logs `(31,45)`. The
+`1.5 * n` use makes that `n` a `Float`; nothing constrains `n + 1` to `Float`.
 
 -}
 

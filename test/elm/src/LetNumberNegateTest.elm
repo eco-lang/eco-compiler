@@ -1,8 +1,10 @@
 module LetNumberNegateTest exposing (main)
 
-{-| Probe: a `number` routed through `negate` (number-polymorphic) before a
-`Float` consumer. The `Float` demand still flows from `sqrt`. Correct:
-sqrt (negate (negate 144)) = 12.
+{-| An unannotated let-bound integer literal passed through `negate` twice and then
+to `sqrt` is used as a `Float`: `round (sqrt (negate (negate n)))` with
+`n = 144` logs 12.
+
+`negate` works on any `number`, so it is `sqrt` that fixes `n` to `Float`.
 
 -}
 

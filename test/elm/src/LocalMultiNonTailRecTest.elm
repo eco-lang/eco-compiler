@@ -1,14 +1,11 @@
 module LocalMultiNonTailRecTest exposing (main)
 
-{-| Regression: a NON-tail-recursive let-bound polymorphic function used at
-two types (Int and Float).
+{-| A let-bound recursive function that is not tail recursive, with an
+unannotated polymorphic type, is used at both Int and Float in the same body.
 
-Each specialisation after the first is a copy named `sumL$1`, ..., but its
-recursive call kept the bare name `sumL`, so it targeted the first instance
-(at the other type). Self-references are now renamed with
-MonoTraverse.renameLocal in both engines (MonoSolver.Translate.buildLocalDefs
-and Specialize.renameMonoDef), as tail defs already were.
-
+`sumL` sums a list with `x + sumL rest`, so its type is `List number -> number`.
+It is applied to `[ 1, 2, 3 ]` (Int, sum 6) and to `[ 0.5, 1.5, 2.0 ]`
+(Float, sum 4). Each use's recursive calls must stay at that use's own type.
 -}
 
 import Html exposing (text)

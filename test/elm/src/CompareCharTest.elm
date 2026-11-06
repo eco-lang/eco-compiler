@@ -1,6 +1,11 @@
 module CompareCharTest exposing (main)
 
-{-| Test compare on Char.
+{-| `compare` on `Char` returns `LT`, `GT` or `EQ` by character code.
+
+  - `cmp1`: `compare 'a' 'b'` is `LT`.
+  - `cmp2`: `compare 'z' 'a'` is `GT`.
+  - `cmp3`: `compare 'x' 'x'` is `EQ`.
+
 -}
 
 -- CHECK: cmp1: LT

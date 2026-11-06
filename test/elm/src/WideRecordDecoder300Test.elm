@@ -1,6 +1,12 @@
 module WideRecordDecoder300Test exposing (main)
 
-{-| A 300-field mixed record built with andMap (closure arity 300, record > 2 KiB).
+{-| A 300-field record alias, used as a constructor function, can be filled in one
+argument at a time by an `andMap` pipeline over `Maybe`.
+
+`andMap` is defined here and applies a `Just` function to a `Just` argument. The
+fields cycle through `Int`, `Float`, `Char`, `String` and `Bool`, and the test
+reads back fields 0, 19, 20, 31, 32, 63, 64, 95, 96, 255, 256 and 299.
+
 -}
 
 -- CHECK: f0000: Just 1000

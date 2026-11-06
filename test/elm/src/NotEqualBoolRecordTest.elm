@@ -1,8 +1,7 @@
 module NotEqualBoolRecordTest exposing (main)
 
-{-| `/=` on a record containing a Bool field. The record is heap, so
-the field-level comparison takes the `resolveAndCompare` path that
-handles const/const correctly today — regression guard.
+{-| `/=` on records of type `{ flag : Bool }` gives the right answer for all
+four combinations of a record holding `True` and one holding `False`.
 -}
 
 -- CHECK: tt: False

@@ -1,9 +1,8 @@
 module FromArrayFloatListRoundtripTest exposing (main)
 
-{-| Round-trip identity for `List Float → Array Float → List Float` via
-    `Array.fromList` and `Array.toList`. Complements
-    `FromArrayFloatListEqualityTest` by also inspecting the reconstructed
-    list value directly so a corrupted round-trip is visible in the output.
+{-| Converting `[1.5, 2.5, 3.5]` to an `Array` with `Array.fromList` and back with `Array.toList` gives the same list.
+
+The test logs the reconstructed list as well as the result of comparing it with the original.
 -}
 
 -- CHECK: result: [1.5,2.5,3.5]

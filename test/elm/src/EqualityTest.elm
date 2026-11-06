@@ -1,6 +1,6 @@
 module EqualityTest exposing (main)
 
-{-| Test equality operators.
+{-| `==` and `/=` give the right answer on `Int` literals, and `==` is `True` for two equal `List Int` literals.
 -}
 
 -- CHECK: eq1: True

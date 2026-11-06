@@ -1,9 +1,8 @@
 module TypeMismatchRigidVarAsUnitTest exposing (..)
 
-{-| TYPE MISMATCH: rigid var as unit.
+{-| A function annotated `a -> a` that returns unit is rejected with a TYPE MISMATCH.
 
-From `SourceIR.TypeCheckFailsCases` (`rigidCases`), the elm-test catalogue of programs
-the compiler must reject.
+`f x = ()` returns `()`, but the annotation promises the type variable `a`, which the body may not specialise.
 
 -}
 

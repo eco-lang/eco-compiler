@@ -1,6 +1,10 @@
 module CaseStringEscapeTest exposing (main)
 
-{-| Test case expression with string patterns containing escape characters.
+{-| A case expression on a `String` matches literal patterns written with escape
+sequences: a newline, a tab and a double quote.
+
+The string `"hello"` matches none of them and reaches the wildcard.
+
 -}
 
 -- CHECK: esc1: "newline"

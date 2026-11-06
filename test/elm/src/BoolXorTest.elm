@@ -1,6 +1,6 @@
 module BoolXorTest exposing (main)
 
-{-| Test xor function.
+{-| The Basics `xor` function gives `True` exactly when its two Bool arguments differ, checked over all four combinations.
 -}
 
 -- CHECK: xor1: False

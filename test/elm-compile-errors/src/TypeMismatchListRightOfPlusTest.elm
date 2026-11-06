@@ -1,9 +1,9 @@
 module TypeMismatchListRightOfPlusTest exposing (..)
 
-{-| TYPE MISMATCH: list right of +.
+{-| Adding a list to a number with `+` is rejected with a TYPE MISMATCH.
 
-From `SourceIR.TypeCheckFailsCases` (`operatorCases`), the elm-test catalogue of programs
-the compiler must reject.
+`+` needs `number` operands (`Int` or `Float`), and `1 + [ 2 ]` puts a list on
+the right.
 
 -}
 

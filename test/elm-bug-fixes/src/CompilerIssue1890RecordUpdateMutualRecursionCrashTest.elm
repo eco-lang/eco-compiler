@@ -5,6 +5,7 @@ module CompilerIssue1890RecordUpdateMutualRecursionCrashTest exposing (..)
 <https://github.com/elm/compiler/issues/1890>
 
 Elm 0.19.1 crashes ("index out of bounds") on this valid program; it should compile.
+The test expects the program to run and log the unchanged record `{ x = (), y = () }`.
 
 Fixed in Elm 0.19.3.
 

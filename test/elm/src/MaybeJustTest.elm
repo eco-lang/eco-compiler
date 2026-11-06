@@ -1,6 +1,6 @@
 module MaybeJustTest exposing (main)
 
-{-| Test Just creation.
+{-| `Just` wraps an Int, a String and a Bool, and `Debug.log` prints each as `Just <value>`.
 -}
 
 -- CHECK: just1: Just 42

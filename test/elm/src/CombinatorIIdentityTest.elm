@@ -1,6 +1,9 @@
 module CombinatorIIdentityTest exposing (main)
 
-{-| I combinator (identity via S K K): i 42 = 42
+{-| The I combinator, identity, written as `s k k`: `i 42` is 42.
+
+`s k k x` is `k x (k x)`, which is `x`.
+
 -}
 
 -- CHECK: result: 42

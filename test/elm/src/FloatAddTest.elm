@@ -1,6 +1,8 @@
 module FloatAddTest exposing (main)
 
-{-| Test float addition.
+{-| `+` on `Float` literals, including negative operands and a sum of zero.
+
+Whole-number `Float` results print without a decimal point, as `13`, `0` and `-5`.
 -}
 
 -- CHECK: add1: 13

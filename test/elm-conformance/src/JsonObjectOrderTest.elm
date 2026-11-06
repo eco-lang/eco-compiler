@@ -1,12 +1,13 @@
 module JsonObjectOrderTest exposing (main)
 
-{-| The order of an object's keys, recorded from Elm on node (run-js-e2e.js --record). Elm builds
-objects as JavaScript objects: keys keep the order they were first added in, except that keys that
-are array indexes ("0", "7", "10", up to 4294967294) come first, in numeric order, and a
-repeated key keeps its first position and takes its last value. eco 0.2.0 sorted every object's
-keys (eco-bugs.md number 10, plans/kg-reported-bugs.md step 4), both when encoding
-(`Json.Encode.object`, `Json.Encode.dict`) and when decoding (`keyValuePairs`, `dict`, a decoded
-`Value` encoded again).
+{-| `Json.Encode` and `Json.Decode` keep an object's keys in JavaScript's order: insertion order,
+except that array-index keys come first in ascending numeric order.
+
+An array-index key is a canonical decimal integer from "0" to "4294967294"; "02", "-1", "1.5"
+and "4294967295" are ordinary keys. A key added twice keeps its first position and takes its last
+value. The tests encode objects built with `Json.Encode.object` (flat, nested, and indented by 4),
+encode a `Dict` (whose keys come out in the `Dict`'s own order), decode objects with
+`keyValuePairs` and `Json.Decode.dict`, and decode objects as a `Value` and encode them again.
 
 -}
 
@@ -29,11 +30,15 @@ import Json.Decode as D
 import Json.Encode as E
 
 
+{-| Encodes an object with `keys` in that order, each mapped to its position in the list.
+-}
 encodeKeys : List String -> String
 encodeKeys keys =
     E.encode 0 (E.object (List.indexedMap (\i k -> ( k, E.int i )) keys))
 
 
+{-| Decodes `text` as a `Value` and encodes it again without indentation.
+-}
 roundTrip : String -> String
 roundTrip text =
     case D.decodeString D.value text of
@@ -44,6 +49,8 @@ roundTrip text =
             D.errorToString e
 
 
+{-| Decodes `text` with `keyValuePairs` and prints the resulting list.
+-}
 pairs : String -> String
 pairs text =
     case D.decodeString (D.keyValuePairs D.int) text of

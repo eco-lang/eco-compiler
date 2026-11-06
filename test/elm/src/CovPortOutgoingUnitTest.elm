@@ -1,9 +1,9 @@
 port module CovPortOutgoingUnitTest exposing (..)
 
-{-| Outgoing unit.
+{-| A port module declaring an outgoing port that sends `()`.
 
-From `SourceIR.CovPortCases`, a program of the elm-test catalogue, with a
-`main` that logs its `testValue`. The CHECK lines are what Elm 0.19.1 prints for it.
+The program never sends on the port; the test checks that the declaration is accepted and the
+program runs and logs `1`.
 
 -}
 

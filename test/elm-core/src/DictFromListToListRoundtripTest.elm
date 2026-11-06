@@ -1,8 +1,12 @@
 module DictFromListToListRoundtripTest exposing (main)
 
-{-| `Dict.fromList (Dict.toList d) == d` must hold regardless of the
-    order in which `d` was originally built. Exposes a tree-shape
-    sensitivity in Dict structural equality.
+{-| `Dict.fromList (Dict.toList d)` is equal under `==` to `d`, and two dicts holding the same
+entries are equal, whatever order the entries were inserted in.
+
+The tests use the keys 1 to 8, each mapped to ten times itself, inserted in a mixed order,
+in descending order and in ascending order. The round trip is checked for the mixed and
+descending dicts, and the descending dict is compared with the ascending one.
+
 -}
 
 -- CHECK: roundtripMixed: True

@@ -1,9 +1,10 @@
 module CovTailRecPairParametersSwappedAndALoopReturningALambdaTest exposing (..)
 
-{-| Pair parameters swapped, and a loop returning a lambda.
+{-| Self tail-recursive functions over pair parameters: one that swaps a pair's components or
+exchanges its two pair arguments, and one that returns a lambda in its base case.
 
-From `SourceIR.CovTailRecCases`, a program of the elm-test catalogue, with a
-`main` that logs its `testValue`. The CHECK lines are what Elm 0.19.1 prints for it.
+`testValue` takes arguments and is never applied, so the program logs it as `<function>`; the
+test checks that these definitions compile and the program runs.
 
 -}
 

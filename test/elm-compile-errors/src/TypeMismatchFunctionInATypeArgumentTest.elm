@@ -1,9 +1,8 @@
 module TypeMismatchFunctionInATypeArgumentTest exposing (..)
 
-{-| TYPE MISMATCH: function in a type argument.
+{-| The compiler rejects a list holding `Just not` as the body of a definition annotated `Maybe (Int -> Int)`, with a TYPE MISMATCH error.
 
-From `SourceIR.TypeCheckFailsCases` (`printingCases`), the elm-test catalogue of programs
-the compiler must reject.
+The annotated type's argument is itself a function type, `Int -> Int`.
 
 -}
 

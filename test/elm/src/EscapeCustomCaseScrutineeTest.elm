@@ -1,9 +1,8 @@
 module EscapeCustomCaseScrutineeTest exposing (main)
 
-{-| Phase 2 negative: a Custom value flowing into a case scrutinee
-(the only way to deconstruct a custom in Elm source) counts as
-escaping under the conservative classifier. eco.make.custom
-rewriting is suppressed; behaviour must match the heap path.
+{-| A value of a user-defined custom type, built in the call and taken apart by a `case` in another function, yields its payload.
+
+`unwrap (Just2 7)` returns 7 and `unwrap Nothing2` returns 0.
 -}
 
 -- CHECK: just: 7

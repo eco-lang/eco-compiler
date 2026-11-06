@@ -1,7 +1,10 @@
 module SingleCtorPairStringIntTest exposing (main)
 
-{-| Two single-constructor types: WrapString (String, boxed) and WrapInt (Int, i64 unboxed).
-Tests that case-matching on WrapString doesn't use WrapInt's unboxed i64 layout.
+{-| Values are extracted correctly from two single-constructor types in one module, one wrapping a `String` and one wrapping an `Int`.
+
+`unwrapString` and `unwrapInt` return the wrapped `"hello"` and `99`.
+`matchString` wraps a `String`, matches it back out and builds `"found_hello"`.
+
 -}
 
 -- CHECK: unwrap_str: "hello"

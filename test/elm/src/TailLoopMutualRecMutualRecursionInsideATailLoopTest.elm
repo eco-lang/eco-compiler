@@ -1,9 +1,12 @@
 module TailLoopMutualRecMutualRecursionInsideATailLoopTest exposing (..)
 
-{-| Mutual recursion inside a tail loop.
+{-| A self tail-recursive function whose loop body defines a pair of mutually recursive
+local functions, and calls one of them to compute the next accumulator, gives the right
+result.
 
-From `SourceIR.TailLoopMutualRecCases`, a program of the elm-test catalogue, with a
-`main` that logs its `testValue`. The CHECK lines are what Elm 0.19.1 prints for it.
+`loop n acc` counts down from `n`, and on each step defines `isEven` and `isOdd` in a
+`let`, each calling the other on `k - 1`. It adds one to the accumulator when `isEven n`
+holds, so `loop 4 0` counts the even numbers 4 and 2 and returns 2.
 
 -}
 

@@ -1,10 +1,6 @@
 module TypeMismatchIntRightOfAppendTest exposing (..)
 
-{-| TYPE MISMATCH: Int right of ++.
-
-From `SourceIR.TypeCheckFailsCases` (`operatorCases`), the elm-test catalogue of programs
-the compiler must reject.
-
+{-| The compiler rejects `"a" ++ n`, appending an `Int` to a `String`, with a TYPE MISMATCH error.
 -}
 
 -- COMPILE-ERROR: TYPE MISMATCH, Int right of ++

@@ -1,13 +1,11 @@
 module StringWordsUnicodeSpaceTest exposing (main)
 
-{-| DEAD-10 guard (plans/kernel-lib-bug-fixes.md, group 01). `String.words` on strings whose
-whitespace is non-ASCII (U+00A0, U+3000), which takes the kernel's UTF-16 branch. DEAD-10 says the
-`if (ranges.empty()) return alloc::listNil();` lines in `words` are unreachable: an empty or
-all-whitespace string has already returned [""], and a trimmed non-empty string has a word. These
-cases sit next to that branch (whitespace around and between words, whitespace only), so the
-assert the fix puts there would fire on them if the reasoning were wrong. Passes today (the branch
-is unreachable, so nothing can expose it). Expectations recorded from Elm (JS `\s` includes both
-characters).
+{-| `String.words` splits on non-ASCII whitespace (U+00A0, U+3000, U+2028) and gives `[""]` for a
+string that is only whitespace.
+
+The inputs have whitespace around one word, between two words, around and between two words,
+and as the whole string.
+
 -}
 
 -- CHECK: nbsp around: ["a"]

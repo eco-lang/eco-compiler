@@ -1,6 +1,13 @@
 module PartialAppCaptureTypesTest exposing (main)
 
-{-| Test partial application capturing Float, Char, Bool, and String values. -}
+{-| Tests partial applications that hold a bound `Float`, `Char`, `Bool` or
+`String` argument and return it when later given the remaining arguments.
+
+`first3` returns its first of three arguments, so each partial application
+logs the value it was given. A last case partially applies `addFloat` to
+`1.5` and adds `2.0`.
+
+-}
 
 -- CHECK: float_cap: 1.5
 -- CHECK: char_cap: 'x'

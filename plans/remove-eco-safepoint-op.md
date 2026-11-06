@@ -254,11 +254,11 @@ as a checklist for Step 4 / Step 5 cleanup.
 
 - `compiler/tests/TestLogic/Generate/CodeGen/SafepointRegionScopingTest.elm`
 - `compiler/tests/TestLogic/Generate/CodeGen/SafepointRegionScoping.elm`
-- `test/elm/src/TailRecFanOutSafepointTest.elm` (back-edge — see Decision 3)
+- `test/eco-elm/src/TailRecFanOutSafepointTest.elm` (back-edge — see Decision 3)
 - `compiler/tests/SourceIR/IfLetSafepointCases.elm`
 - `compiler/tests/SourceIR/CaseSafepointLeakCases.elm`
-- `test/elm/src/IfLetSafepointTest.elm`
-- `test/elm/src/CaseSafepointLeakTest.elm`
+- `test/eco-elm/src/IfLetSafepointTest.elm`
+- `test/eco-elm/src/CaseSafepointLeakTest.elm`
 - `runtime/tests/.../safepoint_explicit.mlir` (or wherever this lives)
 - Any other `.mlir` snapshot containing `eco.safepoint`
 

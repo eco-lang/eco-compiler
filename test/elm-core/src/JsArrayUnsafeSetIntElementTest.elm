@@ -1,7 +1,9 @@
 module JsArrayUnsafeSetIntElementTest exposing (main)
 
-{-| `Array.set` on `Array Int` routes through
-    `Elm_Kernel_JsArray_unsafeSet_Int`.
+{-| `Array.set` on an `Array Int` replaces the element at a valid index, and returns the array unchanged for an index out of range.
+
+It sets index 0 and the last index, 3, each starting from the same four-element array, and then sets index 100, which leaves `[1,2,3,4]`.
+
 -}
 
 -- CHECK: original: [1,2,3,4]

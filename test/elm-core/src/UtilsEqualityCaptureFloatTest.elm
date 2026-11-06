@@ -1,6 +1,13 @@
 module UtilsEqualityCaptureFloatTest exposing (main)
 
-{-| Higher-order capture of `(==)` and `(/=)` on `Float`.
+{-| `(==)` and `(/=)` on `Float` give the same answers when passed as function
+values as when applied directly.
+
+On the list `[0, 2, 3, 1.5, 1.5]` with target `1.5`, the operators are passed
+to the generic helper `countWith`, giving counts of 2 and 3, and applied in prefix
+form inside `List.filter` lambdas, keeping the two matches and the other three
+elements.
+
 -}
 
 -- CHECK: eq_count: 2
@@ -12,6 +19,8 @@ module UtilsEqualityCaptureFloatTest exposing (main)
 import Html exposing (text)
 
 
+{-| Counts the elements `x` of a list for which `pred x target` holds.
+-}
 countWith : (a -> a -> Bool) -> a -> List a -> Int
 countWith pred target =
     List.foldl

@@ -425,7 +425,7 @@ No change to the subst engine: the LSS handshake is inert there.
    tag 0 and the three-component string otherwise (`layoutQualKey` is already
    exposed pure for the §5.1 LSS_024 pins — reuse that door).
 
-**Runtime differential** — `test/elm/src/LssInstanceQualTest.elm`, in the
+**Runtime differential** — `test/eco-elm/src/LssInstanceQualTest.elm`, in the
 `LssMixedSigHonestyTest` mould: two callbacks over one source lambda that
 compute *different* values, so a representative hijack prints the wrong number
 rather than merely being slower. A unit test cannot catch that class; only a
@@ -449,7 +449,7 @@ keyed spec keys feed fan-out. It applies flag-OFF, and that is the rail.
 | E2E | `--target full` at the recorded pass count, both arms |
 | lowering | self-compile **lowers, exit 0, ZERO undefined-`_fast_evaluator` errors** — the LSS_031 class, and the one failure mode that blocks regardless of coverage |
 | bootstrap fixed point | compiler-built-by-compiler reaches a fixed point; this replaces byte-identity as the correctness gate |
-| runtime | `test/elm/src/LssInstanceQualTest.elm` prints the right numbers |
+| runtime | `test/eco-elm/src/LssInstanceQualTest.elm` prints the right numbers |
 
 **A regression from a singleton to a multi-set is not a blocker** (LSS_027's
 governing rule). A lowering failure is.
@@ -1191,7 +1191,7 @@ seconds, the fast gate:
   8. **Census honesty** (B3): a flattened miss still increments
      `declinedShapeArityOver`, unchanged.
 
-Runtime differential: extend `test/elm/src/LssInstanceQualTest.elm` — it
+Runtime differential: extend `test/eco-elm/src/LssInstanceQualTest.elm` — it
 already routes two behaviourally different callbacks through one shared
 `Dict.foldl`-shaped site, which is exactly the §15.0 stack. Its CHECK lines
 must hold in all FOUR arms (flatPeel x instanceQual).

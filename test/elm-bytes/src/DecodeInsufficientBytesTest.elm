@@ -1,6 +1,6 @@
 module DecodeInsufficientBytesTest exposing (main)
 
-{-| Test decoding fails with insufficient bytes.
+{-| Decoding a 32-bit unsigned integer from a single byte returns `Nothing` rather than a partial value.
 -}
 
 -- CHECK: DecodeInsufficientBytesTest: True

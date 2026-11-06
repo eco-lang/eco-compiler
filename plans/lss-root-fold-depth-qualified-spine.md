@@ -348,7 +348,7 @@ Pins:
 ### 7.2 Existing suites that must stay green
 
 `SpinePapDispatchTest`, `LssRootFoldTest` tests 1–N, `LssGroundingTest`,
-`LssSharedSpecJoinTest`, `MuTieTest`; `test/elm/src/HofPapPrefixDispatchTest.elm`
+`LssSharedSpecJoinTest`, `MuTieTest`; `test/eco-elm/src/HofPapPrefixDispatchTest.elm`
 and `StagedFastDispatchTest.elm` (E2E). The flag is OFF in all of them by
 default; 7.1 is the only ON coverage until the flip.
 

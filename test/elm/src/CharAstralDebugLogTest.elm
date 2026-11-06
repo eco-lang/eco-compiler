@@ -1,8 +1,9 @@
 module CharAstralDebugLogTest exposing (main)
 
-{-| Debug.log of an astral Char prints the Char itself in quotes, as Elm's
-Debug.toString does ('😀', emitted as UTF-8), boxed and unboxed. A BMP non-ASCII
-Char prints as itself too.
+{-| `Debug.log` prints an astral `Char` (code point above 0xFFFF) as the
+character itself in single quotes, whether written as a literal, made with
+`Char.fromCode`, or inside `Just`, and prints a non-ASCII character below
+0xFFFF, `'€'`, the same way.
 -}
 
 -- CHECK: dbg_astral: '😀'

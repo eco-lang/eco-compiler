@@ -1,10 +1,10 @@
 module TimerEffectTest exposing (main)
 
-{-| Test that exercises the Platform.worker effect/scheduler mechanism.
+{-| A `Platform.worker` that chains `Process.sleep` timers through `Task.perform` receives each timer message in turn and stops after five.
 
-On init, fire a 100ms timer via Process.sleep + Task.perform.
-Each time it fires, update increments a counter and fires another.
-After 5 firings, return Cmd.none so the program has no pending work.
+`init` starts a 100 ms sleep; each time it ends, `update` logs the count and
+starts another, until the fifth, when it logs `"done"` and returns `Cmd.none`.
+The message is built by a function that ignores the sleep's `()` result.
 -}
 
 -- CHECK: TimerEffectTest: "fired 1"

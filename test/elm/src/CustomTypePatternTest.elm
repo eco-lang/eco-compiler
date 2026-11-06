@@ -1,6 +1,11 @@
 module CustomTypePatternTest exposing (main)
 
-{-| Test pattern matching on custom types with extraction.
+{-| Functions that take apart a custom-type value with a constructor pattern in
+their argument extract the right field.
+
+`getName` and `getAge` each match `Person name age`, ignoring the other field
+with `_`; on `Person "Alice" 30` they return `"Alice"` and 30.
+
 -}
 
 -- CHECK: name: "Alice"

@@ -1,6 +1,6 @@
 module CaseDefaultTest exposing (main)
 
-{-| Test wildcard pattern in case.
+{-| A case on Int with one literal branch and a wildcard sends every other value to the wildcard.
 -}
 
 -- CHECK: default1: "special"

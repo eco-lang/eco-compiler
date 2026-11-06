@@ -282,7 +282,7 @@ in `test/elm-{bytes,json,parser}`).
      so a record element gave an `eco.project.record` on an `i64` and the module failed to parse.
      `BytesFusion.Reify` now carries the element's MonoType into `ELoop`/`WriteEachItem` and
      `Emit` projects the head at its SSA type (REP_BOUNDARY_003); regression test
-     `test/elm-bytes/src/BytesEncodeRecordListFusionTest.elm`. Separately, decoder fusion covers
+     `test/eco-mlir/src/BytesEncodeRecordListFusionTest.elm`. Separately, decoder fusion covers
      only `unsignedInt8` shapes: no wider read, and no `map4` record decoder even outside a loop,
      is fused today (`BytesLoopFusionShapesTest` documents the loop case).
   3. **eco native's elm/parser crashes on a source over 128 Ki characters built by appending**:
@@ -403,7 +403,7 @@ in `test/elm-{bytes,json,parser}`).
      `JsonExports.cpp` `runDecoder` chose each list head's / tuple value's slot kind from the
      element decoder's top constructor; it now takes it from the decoded value (`decodedSlot`:
      Tag_Int / Tag_Float / Tag_Char unboxed, everything else boxed). `Decode.array` was not
-     affected. Regression test `test/elm-json/src/DecodeUnboxedSlotsTest.elm`; the 33 licensed
+     affected. Regression test `test/eco-elm-json/src/DecodeUnboxedSlotsTest.elm`; the 33 licensed
      Json kernel rows (KernelSetFacts / KernelIntrinsics) re-audited (representation only) and
      the LSS_022 manifest updated. The release bundle in `dist/` predates the fix: json-dict
      fails there, as expected, until the bundle is rebuilt.

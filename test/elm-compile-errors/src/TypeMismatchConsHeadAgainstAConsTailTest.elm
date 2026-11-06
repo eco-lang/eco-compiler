@@ -1,9 +1,6 @@
 module TypeMismatchConsHeadAgainstAConsTailTest exposing (..)
 
-{-| TYPE MISMATCH: cons head against a cons tail.
-
-From `SourceIR.TypeCheckFailsCases` (`patternMismatchCases`), the elm-test catalogue of programs
-the compiler must reject.
+{-| A list pattern `1 :: "s" :: rest` is rejected with a TYPE MISMATCH, because it asks for a number and a `String` as elements of the same list.
 
 -}
 

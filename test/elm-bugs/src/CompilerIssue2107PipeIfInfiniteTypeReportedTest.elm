@@ -1,6 +1,7 @@
 module CompilerIssue2107PipeIfInfiniteTypeReportedTest exposing (main)
 
-{-| A TYPE MISMATCH report shows an infinite type `Thing ∞` where no recursive type exists.
+{-| A TYPE MISMATCH report for an `if` piped with `|>` must not show an infinite type `Thing ∞`
+when no type in the program is infinite.
 
 <https://github.com/elm/compiler/issues/2107>
 

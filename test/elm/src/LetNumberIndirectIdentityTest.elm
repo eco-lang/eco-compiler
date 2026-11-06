@@ -1,8 +1,9 @@
 module LetNumberIndirectIdentityTest exposing (main)
 
-{-| Regression test (native/AOT backend): the let-bound-`number`
-mis-specialization (see `LetNumberFloatMulTest`) reached when the `number` is
-laundered through `identity` before the `Float` multiply. Correct: 1.5*30 = 45.
+{-| A let-bound `number` passed through `identity` before a `Float`
+multiplication is a `Float`.
+
+With `n = 30`, `round (identity n * 1.5)` logs 45.
 
 -}
 

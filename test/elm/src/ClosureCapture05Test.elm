@@ -1,11 +1,11 @@
 module ClosureCapture05Test exposing (main)
 
-{-| Test closure captures variable used in nested case destruct.
+{-| A lambda returned from a function captures a custom-type value holding two
+`Maybe String`s, and when called matches on it and then on each `Maybe` in turn.
 
-Uses explicit lambda return to force nested Function nodes.
-The captured variable `pair` is a custom type containing two Maybes.
-The inner lambda destructs `pair` and then further destructs the
-extracted Maybe values.
+The two strings are concatenated, with `Nothing` counting as the empty string,
+so the three calls log `"ab"`, `"a"` and `""`.
+
 -}
 
 -- CHECK: both: "ab"

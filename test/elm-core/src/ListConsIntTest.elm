@@ -1,7 +1,9 @@
 module ListConsIntTest exposing (main)
 
-{-| Forces `Elm_Kernel_List_cons_Int` for each cons emitted while building
-    a `List Int` literal.
+{-| A `List Int` literal holds its numbers in order, and `::` prepends a number to it.
+
+The test prints the list, its `List.head`, and the list with `0` consed onto the front.
+
 -}
 
 -- CHECK: list: [1,2,3]

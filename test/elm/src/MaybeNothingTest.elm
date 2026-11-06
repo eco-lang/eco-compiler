@@ -1,6 +1,6 @@
 module MaybeNothingTest exposing (main)
 
-{-| Test Nothing.
+{-| `Debug.log` prints a bare `Nothing` as `Nothing`.
 -}
 
 -- CHECK: nothing: Nothing

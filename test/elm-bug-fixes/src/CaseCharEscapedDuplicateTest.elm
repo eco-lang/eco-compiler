@@ -3,8 +3,8 @@ module CaseCharEscapedDuplicateTest exposing (main)
 {-| A `case` on Char with two patterns for the same character written differently ('a' and
 '\u{0061}'): the second can never match, so it is a redundant pattern.
 
-Fixed in Elm 0.19.2. Elm 0.19.1 compares Char patterns by their source text, so it accepts this
-program, and the second branch is dead code.
+Elm 0.19.1 treats the two spellings as different patterns, so it accepts this program and the
+second branch is dead code. The correct behaviour is a REDUNDANT PATTERN error. Fixed in Elm 0.19.2.
 
 -}
 

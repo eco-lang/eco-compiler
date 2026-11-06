@@ -11,7 +11,7 @@ loop in the latter.
 
 ## Outcome
 
-`test/elm/src/TupleSlotBoxingMismatchTest.elm` is a runtime-visible
+`test/eco-elm/src/TupleSlotBoxingMismatchTest.elm` is a runtime-visible
 reproducer of the tuple-slot boxing bug. It currently **FAILS** under
 the buggy compiler and would **PASS** once the bug is fixed (Fix A
 from `wrong-unboxed-bitmap-upstream.md` — derive the tuple's MonoType

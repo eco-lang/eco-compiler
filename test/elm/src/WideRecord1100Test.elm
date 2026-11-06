@@ -1,6 +1,16 @@
 module WideRecord1100Test exposing (main)
 
-{-| 1100-field mixed record: > 8 KiB large object (nursery-large / YLOS).
+{-| A record with 1100 fields, cycling through `Int`, `Float`, `Char`, `String`
+and `Bool`, supports field access, record patterns, update and equality.
+
+The test checks:
+
+  - Access to fields 0, 31, 32, 1023, 1024 and 1099.
+  - A record pattern reading the first and last fields.
+  - An update that negates the last field.
+  - `==` against a record built from the same input (`True`) and against the
+    updated record (`False`).
+
 -}
 
 -- CHECK: f0000: 1000

@@ -1,11 +1,12 @@
 module CompilerIssue1975LetOrderCrashTest exposing (..)
 
-{-| A type error in a let block crashes the compiler, depending on the names' alphabetical order.
+{-| A type error in a let block crashes the compiler, depending on the names of its bindings.
 
 <https://github.com/elm/compiler/issues/1975>
 
-`func2 a` passes a record where a `Type` is expected. Elm 0.19.1 crashes ("index out of bounds")
-instead of reporting the type mismatch (renaming `d` to `b` gives the normal report).
+`func2 a` passes `a`, which `func1` uses as a record, where a `Type` is expected. Elm 0.19.1
+crashes ("index out of bounds") instead of reporting the type mismatch (renaming `d` to `b` gives
+the normal report).
 
 -}
 

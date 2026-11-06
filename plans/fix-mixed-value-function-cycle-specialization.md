@@ -499,7 +499,7 @@ no double-wrapping risk exists.
 
 After the change, the following tests should all PASS (they currently crash):
 
-- `test/elm-bytes/src/BytesDecoderMixedValueFunctionCycleTest.elm`
+- `test/eco-elm-bytes/src/BytesDecoderMixedValueFunctionCycleTest.elm`
 - `test/elm-bytes/src/BytesDecoderMixedCycleTwoFunctionsTest.elm`
 - `test/elm-bytes/src/BytesDecoderMixedCycleTwoValuesTest.elm`
 - `test/elm-json/src/JsonDecoderMixedValueFunctionCycleTest.elm`

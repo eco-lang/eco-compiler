@@ -1,6 +1,6 @@
 module BitwiseAndTest exposing (main)
 
-{-| Test Bitwise.and.
+{-| `Bitwise.and` returns the bits two `Int`s have in common.
 -}
 
 -- CHECK: and1: 8

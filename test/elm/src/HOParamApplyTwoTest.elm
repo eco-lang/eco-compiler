@@ -1,6 +1,9 @@
 module HOParamApplyTwoTest exposing (main)
 
-{-| Test higher-order param: apply f a b with a two-arg lambda.
+{-| A let-bound higher-order function that applies its function parameter to two arguments works with a two-parameter lambda.
+
+`applyTwo (\x y -> x) 1 2` returns the first argument, 1.
+
 -}
 
 -- CHECK: result: 1

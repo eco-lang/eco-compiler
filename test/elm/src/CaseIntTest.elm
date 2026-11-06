@@ -1,6 +1,11 @@
 module CaseIntTest exposing (main)
 
-{-| Test case expression on Int.
+{-| Checks that a `case` on an `Int` matches integer literal patterns and falls
+through to the wildcard for any other value.
+
+`describeNum` matches 1 and 2; the third call passes 99, which only the `_`
+branch matches.
+
 -}
 
 -- CHECK: case1: "one"

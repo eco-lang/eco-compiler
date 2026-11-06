@@ -1,10 +1,13 @@
 module CompilerIssue2100LetAnnotationRank2CrashTest exposing (main)
 
-{-| A wrong annotation on a let-bound function that uses an outer argument crashes the compiler.
+{-| A wrong annotation on a let-bound function that uses an outer argument must be reported as a
+TYPE MISMATCH, not crash the compiler.
 
 <https://github.com/elm/compiler/issues/2100>
 
-Elm 0.19.1 crashes ("attributes [rank = 2]", Type/Solve.hs:206, "thread blocked indefinitely in an MVar operation"). The body of `b` returns `()` but its annotation says `{ value : String }`, so this is a TYPE MISMATCH.
+Elm 0.19.1 crashes ("attributes [rank = 2]", Type/Solve.hs:206, "thread blocked indefinitely in an
+MVar operation"). The body of `b` returns `()` but its annotation says `{ value : String }`, so
+this is a TYPE MISMATCH.
 
 -}
 

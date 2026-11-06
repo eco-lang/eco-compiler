@@ -1,6 +1,6 @@
 module ParseErrorCasePatternUnfinishedTest exposing (..)
 
-{-| UNFINISHED PARENTHESES: a case pattern with an unclosed parenthesis.
+{-| A case pattern with an unclosed parenthesis, `(1 ->`, is reported as UNFINISHED PARENTHESES.
 
 Fixed in Elm 0.19.2. Elm 0.19.1 reports this as UNEXPECTED SYMBOL, pointing at the `->`
 rather than at the missing `)`.

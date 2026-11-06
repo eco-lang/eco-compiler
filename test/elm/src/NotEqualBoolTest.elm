@@ -1,10 +1,7 @@
 module NotEqualBoolTest exposing (main)
 
-{-| `/=` over the canonical Bool 2x2. Mirrors `EqualityBoolTest` but
-isolates the `Elm_Kernel_Utils_notEqual` symbol. Same root cause:
-`Export::toPtr` collapses True/False to nullptr before
-`Utils::notEqual = !equal(...)` runs, so any constant-vs-constant
-inequality short-circuits via reference equality.
+{-| `/=` gives the right answer on all four combinations of `Bool` literals,
+and so does `not` applied to each of those results.
 -}
 
 -- CHECK: ntt: False

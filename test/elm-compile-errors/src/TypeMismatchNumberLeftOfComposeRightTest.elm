@@ -1,9 +1,6 @@
 module TypeMismatchNumberLeftOfComposeRightTest exposing (..)
 
-{-| TYPE MISMATCH: number left of >>.
-
-From `SourceIR.TypeCheckFailsCases` (`operatorCases`), the elm-test catalogue of programs
-the compiler must reject.
+{-| A number as the left operand of `>>` (`1 >> not`) is rejected with a TYPE MISMATCH error, because `>>` composes two functions.
 
 -}
 

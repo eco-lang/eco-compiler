@@ -1,8 +1,10 @@
 module TailRecManyBranchStringTest exposing (main)
 
-{-| Test tail-recursive function with >2 constructor alternatives
-and nested string matching, mimicking the Port.toDecoder pattern.
+{-| A self-recursive function over a three-constructor custom type, with a tail call in one branch and a `case` in another that matches a `String` against literal patterns, returns the right string.
 
+`eval` unwraps two `Alias` layers by calling itself in tail position, then
+matches the name `"beta"` in a `case` on string literals and returns
+`"found-beta"`.
 -}
 
 -- CHECK: result: "found-beta"

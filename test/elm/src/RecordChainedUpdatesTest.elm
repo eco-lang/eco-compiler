@@ -1,9 +1,9 @@
 module RecordChainedUpdatesTest exposing (..)
 
-{-| Chained updates.
+{-| A record updated twice in a row, one field per update, keeps both changes.
 
-From `SourceIR.RecordCases`, a program of the elm-test catalogue, with a
-`main` that logs its `testValue`. The CHECK lines are what Elm 0.19.1 prints for it.
+`testValue` sets `x` to 10 in `{ x = 1, y = 2 }`, then `y` to 20 in that result, giving
+`{ x = 10, y = 20 }`.
 
 -}
 

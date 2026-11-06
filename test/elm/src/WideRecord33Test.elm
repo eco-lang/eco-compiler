@@ -1,6 +1,17 @@
 module WideRecord33Test exposing (main)
 
-{-| 33-field mixed record: access, pattern, update, ==, Debug.toString.
+{-| A record with 33 fields, cycling through `Int`, `Float`, `Char`, `String` and
+`Bool`, supports field access, record patterns, update, equality and printing.
+
+The test checks:
+
+  - Access to fields 0, 31 and 32.
+  - A record pattern reading the first and last fields.
+  - An update that sets the last field to `'!'`.
+  - `==` against a record built from the same input (`True`) and against the
+    updated record (`False`).
+  - `Debug.log` printing all 33 fields.
+
 -}
 
 -- CHECK: f0000: 1000

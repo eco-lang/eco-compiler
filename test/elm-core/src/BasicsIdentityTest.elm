@@ -1,5 +1,9 @@
 module BasicsIdentityTest exposing (main)
 
+{-| `identity` returns its argument unchanged for an Int and a String, and `always 99` returns
+99 whatever its second argument.
+-}
+
 -- CHECK: identity_int: 42
 -- CHECK: identity_string: "hello"
 -- CHECK: always_result: 99

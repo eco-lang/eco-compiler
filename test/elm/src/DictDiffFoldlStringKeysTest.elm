@@ -1,18 +1,13 @@
 module DictDiffFoldlStringKeysTest exposing (main)
 
-{-| Test: Dict.diff followed by Dict.foldl over a Dict with String keys.
+{-| `Dict.diff` between two `String`-keyed dicts, followed by `Dict.foldl` over
+the result, keeps exactly the keys missing from the second dict.
 
-Targets the Stage 7 bootstrap crash signature (2026-04-24): a specialized
-`Dict_foldl_$_22024` called from `Dict_diff_$_21988` in the native compiler's
-`Builder.Build.crawlNewDeps` crashed with unbounded recursion because a Dict
-node 3 levels deep had a null `left` field (hptr=0) instead of
-`RBEmpty_elm_builtin`. The runtime's `eco_get_tag(0)` doesn't return the Empty
-tag, so folding never terminated.
+The first dict maps sixteen module-name strings to their positions 0 to 15; the
+second holds the first eight of them. The test logs `True` when the difference
+has size 8, its values sum to 8 + 9 + ... + 15 when folded with `Dict.foldl`, and
+its keys are the last eight names in sorted order.
 
-This small test exercises the same code path (Dict.diff on two String-keyed
-Dicts, then Dict.foldl over the result) but does not exert heavy GC pressure,
-so it may not reproduce the intermittent bug. See `DictDiffFoldlStress.elm`
-for the stress version.
 -}
 
 -- CHECK: ok: True
@@ -55,12 +50,9 @@ main =
         half =
             buildDict (List.take 8 keys)
 
-        -- Dict.diff removes keys present in `half` from `all`.
-        -- Reproduces the Dict.diff + Dict.foldl pattern from crawlNewDeps.
         remaining =
             Dict.diff all half
 
-        -- Fold the result to force traversal of every node (the crash path).
         sumIndexes =
             Dict.foldl (\_ v acc -> acc + v) 0 remaining
 

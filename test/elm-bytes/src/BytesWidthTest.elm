@@ -1,6 +1,10 @@
 module BytesWidthTest exposing (main)
 
-{-| Test Bytes.width function.
+{-| `Bytes.width` gives 1, 2, 4 and 8 for the encodings of an unsigned 8-bit integer, a
+big-endian unsigned 16-bit and 32-bit integer, and a big-endian 64-bit float.
+
+The program logs `True` only when all four widths match.
+
 -}
 
 -- CHECK: BytesWidthTest: True

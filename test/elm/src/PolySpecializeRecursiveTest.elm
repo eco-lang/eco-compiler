@@ -1,6 +1,13 @@
 module PolySpecializeRecursiveTest exposing (main)
 
-{-| Test polymorphic function specialization at multiple types. -}
+{-| Annotated polymorphic recursive functions, `myLength` and `myMap`, give the
+right results when called at both `Int` and `String` element types.
+
+Neither function is tail-recursive. The test logs the lengths of a three-element
+`Int` list and a two-element `String` list, and maps doubling over the `Int`
+list and self-concatenation over the `String` list.
+
+-}
 
 -- CHECK: intLen: 3
 -- CHECK: strLen: 2
