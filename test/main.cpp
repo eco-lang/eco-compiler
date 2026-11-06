@@ -8,6 +8,9 @@
 #include <sstream>
 #include <unordered_set>
 #include <vector>
+#if !defined(_WIN32)
+#include <sys/resource.h>
+#endif
 #include "Allocator.hpp"
 #include "IsolatedTestRunner.hpp"
 #include "allocator/AllocatorCommonTest.hpp"
@@ -794,6 +797,16 @@ static int runIsolatedChild(int argc, char* argv[]) {
 }
 
 int main(int argc, char* argv[]) {
+#if !defined(_WIN32)
+    // Many tests abort on purpose in a forked or spawned child (isolated cases, death tests, ecoc
+    // runs that must fail). Every child inherits this limit, so none of them writes a core file:
+    // with an unlimited core limit each run left ~23 cores of ~800 MB in build/. A crash still
+    // fails its test. Set ECO_TEST_CORE_DUMPS=1 to keep the inherited limit when debugging.
+    if (std::getenv("ECO_TEST_CORE_DUMPS") == nullptr) {
+        struct rlimit noCore = {0, 0};
+        ::setrlimit(RLIMIT_CORE, &noCore);
+    }
+#endif
     // A spawned test child: run the one test and leave without static
     // destructors (the allocator and runtime singletons), as _exit did after
     // a fork.
