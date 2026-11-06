@@ -12,7 +12,6 @@ bounces every `echoOut` payload back into `echoIn` (see PortEchoTest).
 
 -}
 
--- SKIP-AOT: needs the JIT harness echoOut -> echoIn port bounce (a standalone executable has no port host)
 -- CHECK: PortAliasEchoTest got: { n = 42, s = "hi" }
 -- CHECK: PortAliasEchoTest done: "ok"
 

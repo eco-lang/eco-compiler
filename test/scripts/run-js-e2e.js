@@ -26,9 +26,10 @@
 //      A test is recompiled when its .js is older than the test, any helper module,
 //      elm.json, the project's shared inputs, this runner, or guida.js. The first compile of
 //      a project runs alone (it seeds the package caches), the rest in parallel.
-//   3. Each test runs as `node <Name>.run.js` (a two-line launcher installing the
-//      XMLHttpRequest shim js-e2e-xhr.js, which elm/http needs on Node, and calling
-//      Elm.<Name>.init()) in its own child process, with:
+//   3. Each test runs as `node <Name>.run.js` (a launcher installing the XMLHttpRequest shim
+//      js-e2e-xhr.js, which elm/http needs on Node, calling Elm.<Name>.init(), and giving a
+//      program with ports `echoOut` and `echoIn` the JIT harness's echo) in its own child
+//      process, with:
 //        stdin          the `-- STDIN:` text through a pipe, else /dev/null; with
 //                       `-- STDIN-DELAY-MS: <n>` the pipe stays open and empty for n ms
 //        environment    ours, plus `-- ENV: NAME=VALUE` lines (`${VAR}` from the variables
@@ -421,11 +422,16 @@ async function pool(items, jobs, fn) {
     await Promise.all(Array.from({ length: Math.min(jobs, items.length) }, worker));
 }
 
-// The two-line launcher of a test: the XMLHttpRequest shim for elm/http, then the program.
+// The launcher of a test: the XMLHttpRequest shim for elm/http, then the program, then the
+// generic port echo of the JIT harness (ElmE2ETestBase.hpp installPortEchoBounce): a value sent
+// out through `echoOut` comes back in through `echoIn`.
 const xhrShim = path.join(__dirname, 'js-e2e-xhr.js');
 function launcher(name) {
     return 'require(' + JSON.stringify(xhrShim) + ');\n' +
-        "require('./" + name + ".js').Elm." + name + '.init();\n';
+        "const app = require('./" + name + ".js').Elm." + name + '.init();\n' +
+        'if (app && app.ports && app.ports.echoOut && app.ports.echoIn) {\n' +
+        '    app.ports.echoOut.subscribe((v) => app.ports.echoIn.send(v));\n' +
+        '}\n';
 }
 
 // --- Projects --------------------------------------------------------------------------------

@@ -9,6 +9,11 @@
 //   3. Run the ELF, capture stdout/stderr, verify against `-- CHECK:` /
 //      `-- CHECK-NOT:` patterns in the test source.
 //
+// A test that declares ports `echoOut` and `echoIn` talks to the harness through
+// them, which a standalone executable cannot: it is lowered to a shared library
+// (`<name>.so`) instead and run by aot-port-host (aot_port_host.cpp), which gives it
+// the JIT harness's port echo through the embedding API.
+//
 // A test with a `-- SKIP-AOT: <reason>` line is listed as skipped and not run
 // (see skip_aot_reason), as is a `-- LINUX-ONLY: <reason>` test on another host
 // (eco_test::hostSkipReason).
@@ -94,6 +99,7 @@ const char* ECO_BOOT_2_RUNNER = BUILD_DIR "/compiler/build-kernel/bin/eco-boot-2
 const char* ECO_BOOT_NATIVE   = BUILD_DIR "/runtime/src/codegen/eco-boot-native";
 const char* ECO_KERNEL_DIR    = REPO_ROOT "/eco-kernel-cpp";
 const char* ECO_SYSTEM_DIR    = REPO_ROOT "/system-kernel-cpp";
+const char* ECO_AOT_PORT_HOST = AOT_PORT_HOST;
 
 bool preflight() {
     bool ok = true;
@@ -106,6 +112,7 @@ bool preflight() {
     };
     check(ECO_BOOT_2_RUNNER);
     check(ECO_BOOT_NATIVE);
+    check(ECO_AOT_PORT_HOST);
     if (!ok) {
         std::cerr << "Build the eco-boot-2 and eco-boot-native targets first "
                      "(or run guides/bootstrap.md Stages 1..4).\n";
@@ -405,10 +412,25 @@ int exec_wrapped(int argc, char** argv) {
 // Runs the ELF with the test's child-environment directives (CheckPatterns.hpp):
 // `-- ENV:` in its environment (after the ECO_TEST_PORT entry), the rest through
 // exec_wrapped. Throws std::runtime_error on a malformed directive.
+// Whether the test declares both ports of the harness's echo, `echoOut` and
+// `echoIn`, so that it needs a port host (aot-port-host) to run.
+bool uses_port_echo(const std::string& src) {
+    auto declares = [&](const std::string& port) {
+        const std::string decl = "port " + port + " ";
+        for (std::size_t pos = src.find(decl); pos != std::string::npos; pos = src.find(decl, pos + 1))
+            if (pos == 0 || src[pos - 1] == '\n') return true;
+        return false;
+    };
+    return declares("echoOut") && declares("echoIn");
+}
+
+// Runs the lowered test: the ELF itself, or for a port-echo test aot-port-host
+// with the test's shared library.
 ProcResult run_elf(const std::string& elf_path, const std::string& cwd,
                    const std::string& src,
                    const std::optional<std::string>& stdin_text) {
     std::vector<std::string> argv = { elf_path };
+    if (uses_port_echo(src)) argv = { ECO_AOT_PORT_HOST, elf_path };
     // A free port per test, as ECO_TEST_PORT (TestPort.hpp,
     // plans/eco-system-library.md Phase 7 step 7.4).
     std::vector<std::string> env;
@@ -427,6 +449,7 @@ ProcResult run_elf(const std::string& elf_path, const std::string& cwd,
                 fsize ? std::to_string(*fsize) : "-", delay ? std::to_string(*delay) : "-"};
         argv.insert(argv.end(), unset.begin(), unset.end());
         argv.push_back("--");
+        if (uses_port_echo(src)) argv.push_back(ECO_AOT_PORT_HOST);
         argv.push_back(elf_path);
     }
     return spawn_capture(argv, env, cwd, 64 * 1024, stdin_text);
@@ -444,8 +467,14 @@ TestResult run_one_unmarked(const TestCase& tc) {
     fs::create_directories(bin_dir);
     fs::create_directories(run_dir);
 
+    // Read first: a port-echo test is lowered to a shared library (uses_port_echo).
+    auto src = slurp(tc.elm_file);
+    if (!src) {
+        r.failure_reason = "Failed to read source file " + tc.elm_file;
+        return r;
+    }
     const std::string mlir_out = (mlir_dir / (tc.stem + ".mlir")).string();
-    const std::string elf_out  = (bin_dir / tc.stem).string();
+    const std::string elf_out  = (bin_dir / (uses_port_echo(*src) ? tc.stem + ".so" : tc.stem)).string();
     const std::string out_log  = (run_dir / (tc.stem + ".out")).string();
 
     // Wipe any prior outputs.
@@ -476,11 +505,6 @@ TestResult run_one_unmarked(const TestCase& tc) {
 
     // Directives read before the run: `-- STDIN:` feeds the ELF's stdin
     // (default /dev/null), `-- EXIT:` is checked below when present.
-    auto src = slurp(tc.elm_file);
-    if (!src) {
-        r.failure_reason = "Failed to read source file " + tc.elm_file;
-        return r;
-    }
     std::optional<int> expected_exit;
     try {
         expected_exit = eco_test::extractExitDirective(*src);

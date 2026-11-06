@@ -462,9 +462,17 @@ add_executable(aot-e2e-runner
 )
 target_compile_features(aot-e2e-runner PRIVATE cxx_std_20)
 target_compile_options(aot-e2e-runner PRIVATE -fexceptions)
+# The port host of the AOT runner (aot_port_host.cpp): runs a test lowered to a
+# shared library and echoes its `echoOut` port into `echoIn`, as the JIT harness does.
+find_package(Threads REQUIRED)
+add_executable(aot-port-host aot_port_host.cpp)
+target_compile_features(aot-port-host PRIVATE cxx_std_20)
+target_link_libraries(aot-port-host PRIVATE ${CMAKE_DL_LIBS} Threads::Threads)
+
 target_compile_definitions(aot-e2e-runner PRIVATE
         REPO_ROOT="${CMAKE_SOURCE_DIR}"
         BUILD_DIR="${CMAKE_BINARY_DIR}"
+        AOT_PORT_HOST="$<TARGET_FILE:aot-port-host>"
 )
 # TestHttpServer.hpp (included for the in-process elm-http + eco-kernel test
 # server, mirroring ElmHttpTest/EcoKernelTest in the JIT runner) needs libssl
@@ -508,7 +516,7 @@ set(AOT_E2E_BOOTSTRAP_DEPS
 
 add_custom_target(run-aot-e2e
         COMMAND sh -c "$<TARGET_FILE:aot-e2e-runner> $\${TEST_FILTER:+--filter \"$$TEST_FILTER\"}"
-        DEPENDS aot-e2e-runner ${AOT_E2E_BOOTSTRAP_DEPS}
+        DEPENDS aot-e2e-runner aot-port-host ${AOT_E2E_BOOTSTRAP_DEPS}
         WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
         USES_TERMINAL
         COMMENT "Running AOT E2E tests via eco-boot-2.js + eco-boot-native"
