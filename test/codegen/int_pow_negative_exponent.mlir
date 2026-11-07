@@ -1,8 +1,9 @@
 // RUN: %ecoc %s -emit=jit 2>&1 | %FileCheck %s
 //
 // Test eco.int.pow with negative exponent.
-// For integer power, negative exponents return 0 (since 2^(-1) = 0.5 truncates to 0).
-// Note: This implementation treats ALL bases with negative exponents as 0.
+// A negative exponent gives the truncation of the real result (The Definition of Standard Elm,
+// ruling A43): 1 for base 1, 1 or -1 for base -1 by the parity of the exponent, and 0 for every
+// other base (2^(-1) = 0.5 truncates to 0).
 
 module {
   func.func @main() -> i64 {
@@ -34,21 +35,21 @@ module {
     eco.dbg %pow4 : i64
     // CHECK: [eco.dbg] 0
 
-    // 1^(-5) - implementation returns 0 (not mathematically correct 1)
+    // 1^(-5) = 1
     %cn5 = arith.constant -5 : i64
     %pow5 = eco.int.pow %c1, %cn5 : i64
     eco.dbg %pow5 : i64
-    // CHECK: [eco.dbg] 0
+    // CHECK: [eco.dbg] 1
 
-    // (-1)^(-1) - implementation returns 0 (not mathematically correct -1)
+    // (-1)^(-1) = -1 (odd exponent)
     %pow6 = eco.int.pow %cn1, %cn1 : i64
     eco.dbg %pow6 : i64
-    // CHECK: [eco.dbg] 0
+    // CHECK: [eco.dbg] -1
 
-    // (-1)^(-2) - implementation returns 0 (not mathematically correct 1)
+    // (-1)^(-2) = 1 (even exponent)
     %pow7 = eco.int.pow %cn1, %cn2 : i64
     eco.dbg %pow7 : i64
-    // CHECK: [eco.dbg] 0
+    // CHECK: [eco.dbg] 1
 
     // Large base with negative exponent: 1000^(-1) = 0
     %c1000 = arith.constant 1000 : i64
