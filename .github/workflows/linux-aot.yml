@@ -81,10 +81,12 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 300
     # actions: write lets "Prune superseded ccache entries" delete caches
-    # (the repository's default token is read-only).
+    # (the repository's default token is read-only); packages: read lets it
+    # pull the LLVM base image from GHCR even while the package is private.
     permissions:
       contents: read
       actions: write
+      packages: read
     steps:
       - uses: actions/checkout@v4
 
@@ -102,28 +104,27 @@ jobs:
           sudo docker image prune --all --force || true
           df -h /
 
-      - name: Restore LLVM debian base image (from linux-llvm-build-debian)
-        # fail-on-cache-miss: the debian base is warmed by linux-llvm-build-debian
-        # and consumed here, so linux-aot never drops into the slow ~1h inline
-        # LLVM rebuild. A cold cache fails fast and legibly — run
-        # linux-llvm-build-debian first, then re-run. (Same contract as the
-        # alpine base in the bundle job.)
-        uses: actions/cache@v4
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
         with:
-          path: /tmp/eco-llvm-debian.tar.gz
-          # Same key linux-llvm-build-debian writes, so a warm cache is reused.
-          key: eco-llvm-debian-${{ env.LLVM_VERSION }}-${{ hashFiles('docker/llvm-debian.Dockerfile') }}
-          fail-on-cache-miss: true
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Load LLVM debian base image
+      - name: Pull LLVM debian base image (from GHCR, published by linux-llvm-build-debian)
+        # No fallback to a local build: that is a slow ~1h LLVM rebuild. A
+        # missing tag fails fast and legibly — run linux-llvm-build-debian on
+        # master first, then re-run. The tag follows the base Dockerfile's hash,
+        # as linux-llvm-build-debian names it. Re-tagged with the local name
+        # docker/eco-dev.Dockerfile's LLVM_IMAGE defaults to.
         run: |
-          img="eco-llvm-debian:${{ env.LLVM_VERSION }}"
-          echo "Loading cached $img ..."
-          gunzip -c /tmp/eco-llvm-debian.tar.gz | docker load
-          docker image ls "$img"
-          # The image now lives in the Docker store; the multi-GB tarball is
-          # dead weight (a cache hit, so actions/cache has nothing to save).
-          rm -f /tmp/eco-llvm-debian.tar.gz
+          h="${{ hashFiles('docker/llvm-debian.Dockerfile') }}"
+          ref="ghcr.io/${{ github.repository_owner }}/eco-llvm-debian:${LLVM_VERSION}-${h:0:12}"
+          if ! docker pull "$ref"; then
+            echo "::error::$ref is not in GHCR. Run linux-llvm-build-debian on master, then re-run."
+            exit 1
+          fi
+          docker tag "$ref" "eco-llvm-debian:${LLVM_VERSION}"
           df -h /
 
       - name: Build eco-dev image
@@ -255,6 +256,11 @@ jobs:
   bootstrap:
     runs-on: ubuntu-latest
     timeout-minutes: 300
+    # packages: read lets it pull the LLVM base image from GHCR even while the
+    # package is private.
+    permissions:
+      contents: read
+      packages: read
     steps:
       - uses: actions/checkout@v4
 
@@ -272,28 +278,27 @@ jobs:
           sudo docker image prune --all --force || true
           df -h /
 
-      - name: Restore LLVM debian base image (from linux-llvm-build-debian)
-        # fail-on-cache-miss: the debian base is warmed by linux-llvm-build-debian
-        # and consumed here, so linux-aot never drops into the slow ~1h inline
-        # LLVM rebuild. A cold cache fails fast and legibly — run
-        # linux-llvm-build-debian first, then re-run. (Same contract as the
-        # alpine base in the bundle job.)
-        uses: actions/cache@v4
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
         with:
-          path: /tmp/eco-llvm-debian.tar.gz
-          # Same key linux-llvm-build-debian writes, so a warm cache is reused.
-          key: eco-llvm-debian-${{ env.LLVM_VERSION }}-${{ hashFiles('docker/llvm-debian.Dockerfile') }}
-          fail-on-cache-miss: true
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Load LLVM debian base image
+      - name: Pull LLVM debian base image (from GHCR, published by linux-llvm-build-debian)
+        # No fallback to a local build: that is a slow ~1h LLVM rebuild. A
+        # missing tag fails fast and legibly — run linux-llvm-build-debian on
+        # master first, then re-run. The tag follows the base Dockerfile's hash,
+        # as linux-llvm-build-debian names it. Re-tagged with the local name
+        # docker/eco-dev.Dockerfile's LLVM_IMAGE defaults to.
         run: |
-          img="eco-llvm-debian:${{ env.LLVM_VERSION }}"
-          echo "Loading cached $img ..."
-          gunzip -c /tmp/eco-llvm-debian.tar.gz | docker load
-          docker image ls "$img"
-          # The image now lives in the Docker store; the multi-GB tarball is
-          # dead weight (a cache hit, so actions/cache has nothing to save).
-          rm -f /tmp/eco-llvm-debian.tar.gz
+          h="${{ hashFiles('docker/llvm-debian.Dockerfile') }}"
+          ref="ghcr.io/${{ github.repository_owner }}/eco-llvm-debian:${LLVM_VERSION}-${h:0:12}"
+          if ! docker pull "$ref"; then
+            echo "::error::$ref is not in GHCR. Run linux-llvm-build-debian on master, then re-run."
+            exit 1
+          fi
+          docker tag "$ref" "eco-llvm-debian:${LLVM_VERSION}"
           df -h /
 
       - name: Build eco-dev image
@@ -411,21 +416,12 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 300
     # actions: write lets "Prune superseded bundle ccache entries" delete
-    # caches (the repository's default token is read-only).
+    # caches (the repository's default token is read-only); packages: read
+    # lets buildx pull the LLVM base image from GHCR even while it is private.
     permissions:
       contents: read
       actions: write
-    # Throwaway registry on localhost:5000. The cached alpine LLVM base image is
-    # `docker load`ed into the host daemon, but the cache-dance below forces a
-    # `docker-container` buildx driver, which CANNOT see the host daemon's image
-    # store — so `FROM ${LLVM_IMAGE}` would fall through to a Docker Hub pull and
-    # fail. We push the loaded image here and build against localhost:5000 with a
-    # host-networked builder so the base image resolves locally.
-    services:
-      registry:
-        image: registry:2
-        ports:
-          - 5000:5000
+      packages: read
     steps:
       - uses: actions/checkout@v4
         with:
@@ -454,33 +450,27 @@ jobs:
           sudo docker image prune --all --force || true
           df -h /
 
-      - name: Restore LLVM alpine base image (from linux-llvm-build-alpine)
-        # fail-on-cache-miss: the alpine LLVM-from-source rebuild OOMs the
-        # hosted runner (it was the cause of the 3h+ "runner lost
-        # communication" failures), so we DO NOT fall back to a local build.
-        # The cache is populated by linux-llvm-build-alpine and kept warm by the
-        # nightly schedule; a cold cache fails fast and legibly — re-run
-        # linux-llvm-build-alpine.
-        uses: actions/cache@v4
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
         with:
-          path: /tmp/eco-llvm-alpine.tar.gz
-          key: eco-llvm-alpine-${{ env.LLVM_VERSION }}-${{ hashFiles('docker/llvm-alpine.Dockerfile') }}
-          fail-on-cache-miss: true
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Load LLVM alpine base image
+      - name: Find LLVM alpine base image (in GHCR, published by linux-llvm-build-alpine)
+        # No fallback to a local build: the alpine LLVM-from-source build OOMs
+        # the hosted runner (it was the cause of the 3h+ "runner lost
+        # communication" failures). A missing tag fails fast and legibly — run
+        # linux-llvm-build-alpine on master first, then re-run. The buildx
+        # builder below pulls the image itself, so only check it exists here.
         run: |
-          img="eco-llvm-alpine:${{ env.LLVM_VERSION }}"
-          echo "Loading cached $img ..."
-          gunzip -c /tmp/eco-llvm-alpine.tar.gz | docker load
-          docker image ls "$img"
-          # The image now lives in the Docker store; the multi-GB tarball is
-          # dead weight (a cache hit, so actions/cache has nothing to save).
-          rm -f /tmp/eco-llvm-alpine.tar.gz
-          df -h /
-          # Publish to the local registry so the docker-container buildx builder
-          # (which can't see the host daemon store) can resolve it as a base.
-          docker tag "$img" "localhost:5000/$img"
-          docker push "localhost:5000/$img"
+          h="${{ hashFiles('docker/llvm-alpine.Dockerfile') }}"
+          ref="ghcr.io/${{ github.repository_owner }}/eco-llvm-alpine:${LLVM_VERSION}-${h:0:12}"
+          if ! docker manifest inspect "$ref" > /dev/null; then
+            echo "::error::$ref is not in GHCR. Run linux-llvm-build-alpine on master, then re-run."
+            exit 1
+          fi
+          echo "LLVM_ALPINE_IMAGE=$ref" >> "$GITHUB_ENV"
 
       # ccache for the in-Docker eco compile. The cache lives in a BuildKit
       # cache mount (docker/static-build.Dockerfile), which is per-builder and
@@ -489,10 +479,6 @@ jobs:
       # (no speedup); subsequent runs reuse object files for unchanged TUs.
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
-        with:
-          # Host networking so the container-driver builder can reach the
-          # registry service published on localhost:5000.
-          driver-opts: network=host
 
       - name: Restore bundle ccache
         id: bundle-ccache
@@ -516,7 +502,7 @@ jobs:
         # builder whose /ccache mount the cache-dance syncs.
         run: |
           docker buildx build -f docker/static-build.Dockerfile \
-            --build-arg LLVM_IMAGE=localhost:5000/eco-llvm-alpine:${{ env.LLVM_VERSION }} \
+            --build-arg LLVM_IMAGE="$LLVM_ALPINE_IMAGE" \
             --build-arg ECO_VERSION="$ECO_VERSION" \
             -t eco-static-ci .
 
@@ -527,7 +513,7 @@ jobs:
         # configure step, so a different value would rebuild eco from scratch.
         run: |
           docker buildx build -f docker/static-build.Dockerfile --target eco-bundle \
-            --build-arg LLVM_IMAGE=localhost:5000/eco-llvm-alpine:${{ env.LLVM_VERSION }} \
+            --build-arg LLVM_IMAGE="$LLVM_ALPINE_IMAGE" \
             --build-arg ECO_VERSION="$ECO_VERSION" \
             -o ./dist .
           ls -la dist/
@@ -537,7 +523,7 @@ jobs:
           # --load: the buildx container driver does not auto-load -t images
           # into the docker daemon, but the docker create below needs it there.
           docker buildx build -f docker/static-build.Dockerfile --target eco-static \
-            --build-arg LLVM_IMAGE=localhost:5000/eco-llvm-alpine:${{ env.LLVM_VERSION }} \
+            --build-arg LLVM_IMAGE="$LLVM_ALPINE_IMAGE" \
             --build-arg ECO_VERSION="$ECO_VERSION" \
             -t eco-static-ci-bin --load .
           id=$(docker create eco-static-ci-bin)
