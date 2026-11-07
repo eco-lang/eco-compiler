@@ -55,6 +55,11 @@ void testPowIntRegression() {
     TEST_ASSERT(Elm_Kernel_Basics_pow_Int(opaque(-2), opaque(63)) == kMin);
     TEST_ASSERT(Elm_Kernel_Basics_pow_Int(opaque(5), opaque(-1)) == 0);
     TEST_ASSERT(Elm_Kernel_Basics_pow_Int(opaque(0), opaque(0)) == 1);
+    // A negative exponent truncates the real result (ruling A43).
+    TEST_ASSERT(Elm_Kernel_Basics_pow_Int(opaque(1), opaque(-1)) == 1);
+    TEST_ASSERT(Elm_Kernel_Basics_pow_Int(opaque(-1), opaque(-3)) == -1);
+    TEST_ASSERT(Elm_Kernel_Basics_pow_Int(opaque(-1), opaque(-2)) == 1);
+    TEST_ASSERT(Elm_Kernel_Basics_pow_Int(opaque(0), opaque(-1)) == 0);
 }
 
 // BASICS-NEW-1: the runtime helper `eco.int.pow` lowers to, the same values.
@@ -65,6 +70,10 @@ void testEcoIntPowRegression() {
     TEST_ASSERT(eco_int_pow(opaque(-2), opaque(63)) == kMin);
     TEST_ASSERT(eco_int_pow(opaque(5), opaque(-1)) == 0);
     TEST_ASSERT(eco_int_pow(opaque(0), opaque(0)) == 1);
+    TEST_ASSERT(eco_int_pow(opaque(1), opaque(-1)) == 1);
+    TEST_ASSERT(eco_int_pow(opaque(-1), opaque(-3)) == -1);
+    TEST_ASSERT(eco_int_pow(opaque(-1), opaque(-2)) == 1);
+    TEST_ASSERT(eco_int_pow(opaque(kMax), opaque(-1)) == 0);
 }
 
 #if !defined(_WIN32)

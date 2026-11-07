@@ -25,7 +25,20 @@ static_assert(Elm::ecoIntMul(kMax, 2) == -2, "maxInt * 2 wraps to -2");
 static_assert(Elm::ecoIntMul(kMin, -1) == kMin, "minInt * -1 wraps to minInt");
 
 // `^`: results that fit never overflow on the way.
-static_assert(Elm::ecoIntPow(5, -1) == 0, "negative exponent gives 0");
+static_assert(Elm::ecoIntPow(5, -1) == 0, "negative exponent of another base gives 0");
+
+// `^` with a negative exponent: the truncation of the real result (ruling A43).
+static_assert(Elm::ecoIntPow(1, -1) == 1, "1^-1 is 1");
+static_assert(Elm::ecoIntPow(1, kMin) == 1, "1^minInt is 1");
+static_assert(Elm::ecoIntPow(-1, -1) == -1, "(-1)^-1 is -1");
+static_assert(Elm::ecoIntPow(-1, -3) == -1, "(-1)^-3 is -1");
+static_assert(Elm::ecoIntPow(-1, -2) == 1, "(-1)^-2 is 1");
+static_assert(Elm::ecoIntPow(-1, kMin) == 1, "(-1)^minInt is 1 (minInt is even)");
+static_assert(Elm::ecoIntPow(0, -1) == 0, "0^-1 is 0");
+static_assert(Elm::ecoIntPow(2, -1) == 0, "2^-1 is 0");
+static_assert(Elm::ecoIntPow(-2, -1) == 0, "(-2)^-1 is 0");
+static_assert(Elm::ecoIntPow(kMax, -1) == 0, "maxInt^-1 is 0 (base + 1 must not wrap into range)");
+static_assert(Elm::ecoIntPow(kMin, -1) == 0, "minInt^-1 is 0");
 static_assert(Elm::ecoIntPow(0, 0) == 1, "0^0 is 1");
 static_assert(Elm::ecoIntPow(2, 10) == 1024);
 static_assert(Elm::ecoIntPow(2, 62) == 4611686018427387904LL, "2^62 fits");

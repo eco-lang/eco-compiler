@@ -1923,14 +1923,17 @@ def Eco_IntAbsOp : Eco_Op<"int.abs", [Pure]> {
 def Eco_IntPowOp : Eco_Op<"int.pow", [Pure]> {
   let summary = "Elm integer exponentiation";
   let description = [{
-    Integer exponentiation. Returns 0 if exponent is negative
-    (since true result would be fractional, breaking Int type).
-    Overflow wraps.
+    Integer exponentiation. Overflow wraps. A negative exponent gives the
+    truncation of the real result: 1 for base 1, 1 or -1 for base -1 (by the
+    parity of the exponent), and 0 for every other base, 0 included
+    (The Definition of Standard Elm, ruling A43).
 
     Examples:
       2 ^ 3 = 8
       2 ^ 0 = 1
-      2 ^ -1 = 0 (mathematically 0.5, returns 0 to preserve Int)
+      2 ^ -1 = 0 (mathematically 0.5, truncated to keep an Int)
+      1 ^ -1 = 1
+      (-1) ^ -3 = -1
 
     ```mlir
     %pow = eco.int.pow %base, %exp : i64

@@ -47,8 +47,11 @@ Elm's `Int` is a JavaScript number, a double. This gives:
 ### eco
 
 - `Int` is `i64`, unboxed (see invariant REP_* on unboxed Int). Arithmetic wraps on overflow.
-- `^` on Int is integer power. A negative exponent gives `0` (so `2 ^ -1 == 0`), never a
-  fraction. *TODO: confirm what `0 ^ -1` gives and write it down.*
+- `^` on Int is integer power. A negative exponent gives the truncation of the real result,
+  never a fraction: `1 ^ e == 1`, `(-1) ^ e` is `-1` for odd `e` and `1` for even `e`, and every
+  other base gives `0` (so `2 ^ -1 == 0` and `0 ^ -1 == 0`). This follows The Definition of
+  Standard Elm, ruling A43; it is computed branch-free in `Elm::ecoIntPowNegative`
+  (`runtime/src/allocator/IntArith.hpp`).
 - `x // 0 == 0`, and `minInt // -1` wraps to `minInt` (CGEN_084, `elm-kernel-cpp/src/core/Basics.cpp`, `idiv`).
 - `truncate`, `round`, `floor` and `ceiling` all return the full 64-bit result.
 - Float → Int of NaN or ±Infinity, or of a value outside the i64 range: *TODO: decide the
