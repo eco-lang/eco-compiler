@@ -10,8 +10,8 @@ message streamed each way, measured by the process's resident set size (VmRSS, r
   - The server cancels the body: the rest of the message is discarded as it arrives and the
     `sendBinary` task completes; the process is still within 32 MiB of where it started.
   - The same from the server to the client.
-  - Each direction is run once with 8 MiB first, unmeasured, so that warming up (the JS engine
-    sizing its heap and compiling) is not counted.
+  - Each direction is run once with 8 MiB first, unmeasured (and paused only 100 ms), so that
+    warming up (the JS engine sizing its heap and compiling) is not counted.
   - The connection is fine afterwards (a whole message written to the writable arrives as a
     streamed text message), and closes cleanly.
 
@@ -48,11 +48,11 @@ limitKiB =
     32 * 1024
 
 
-{-| `from` sends `chunks` × 64 KiB to `to`, which leaves the body unread for 1.5 s, then cancels
-it.
+{-| `from` sends `chunks` × 64 KiB to `to`, which leaves the body unread for `pauseMs`, then
+cancels it.
 -}
-oneWay : Int -> WebSocket.WebSocket WebSocket.Streamed -> WebSocket.WebSocket WebSocket.Streamed -> Task String String
-oneWay chunks from to =
+oneWay : Int -> Float -> WebSocket.WebSocket WebSocket.Streamed -> WebSocket.WebSocket WebSocket.Streamed -> Task String String
+oneWay chunks pauseMs from to =
     W.rssKiB
         |> Task.andThen
             (\rss0 ->
@@ -64,7 +64,7 @@ oneWay chunks from to =
                                 |> Task.mapError Stream.errorToString
                                 |> Task.andThen
                                     (\m ->
-                                        Process.sleep 1500
+                                        Process.sleep pauseMs
                                             |> Task.andThen (\_ -> W.rssKiB)
                                             |> Task.andThen
                                                 (\rss1 ->
@@ -112,10 +112,10 @@ run _ =
                         )
                     |> Task.andThen
                         (\( client, server ) ->
-                            oneWay 128 client server
-                                |> Task.andThen (\_ -> oneWay 128 server client)
-                                |> Task.andThen (\_ -> oneWay 1600 client server)
-                                |> Task.andThen (\c2s -> oneWay 1600 server client |> Task.map (\s2c -> ( c2s, s2c )))
+                            oneWay 128 100 client server
+                                |> Task.andThen (\_ -> oneWay 128 100 server client)
+                                |> Task.andThen (\_ -> oneWay 1600 1500 client server)
+                                |> Task.andThen (\c2s -> oneWay 1600 1500 server client |> Task.map (\s2c -> ( c2s, s2c )))
                                 |> Task.andThen
                                     (\( c2s, s2c ) ->
                                         Stream.write (WebSocket.Text "after") (WebSocket.writable client)

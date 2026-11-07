@@ -1,10 +1,13 @@
 module WebSocketCloseTimeoutTest exposing (main)
 
 {-| The close timeout (plans/eco-system-websockets.md §4 WS4, Appendix D.5): our client sends a
-Close to a raw server that never answers it; 30 seconds later the connection is aborted and
-`closed` reports `Abnormal`. The `close` task itself completes as soon as the Close is sent.
+Close to a raw server that never answers it; when the close timeout passes the connection is
+aborted and `closed` reports `Abnormal`. The `close` task itself completes as soon as the Close is
+sent. The timeout is always 30 s; the kernel test hook `ECO_WS_CLOSE_TIMEOUT_MS_FOR_TEST` cuts it
+to 2 s here, so the test does not wait 30 s.
 -}
 
+-- ENV: ECO_WS_CLOSE_TIMEOUT_MS_FOR_TEST=2000
 -- CHECK: close: ok
 -- CHECK: raw server got: close 1000 "bye"
 -- CHECK: closed: Abnormal "" clean False after the timeout True
@@ -73,7 +76,7 @@ run _ =
                                                                                                                             , "closed: "
                                                                                                                                 ++ W.closeInfoString info
                                                                                                                                 ++ " after the timeout "
-                                                                                                                                ++ H.boolString (Time.posixToMillis t1 - Time.posixToMillis t0 >= 29000)
+                                                                                                                                ++ H.boolString (Time.posixToMillis t1 - Time.posixToMillis t0 >= 1900)
                                                                                                                             , "readable: " ++ end
                                                                                                                             ]
                                                                                                                         )

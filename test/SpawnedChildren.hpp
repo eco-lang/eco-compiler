@@ -27,10 +27,12 @@
 #include <csignal>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <functional>
+#include <iomanip>
 #include <iterator>
 #include <optional>
 #include <iostream>
@@ -185,11 +187,24 @@ inline std::string signalDescription(int sig) {
 #endif
 }
 
+// ECO_TEST_TIMES=1: each result line also shows the child's wall time (spawn to exit),
+// e.g. `- FooTest [3.42 s]`, to find the slow tests of a suite.
+inline bool showChildTimes() {
+    static const bool on = [] {
+        const char* env = std::getenv("ECO_TEST_TIMES");
+        return env && *env && std::string(env) != "0";
+    }();
+    return on;
+}
+
 inline void printChildResult(const std::string& name, const std::string& output, bool passed,
-                             const std::string& error, const std::string& note = std::string()) {
+                             const std::string& error, const std::string& note = std::string(),
+                             double seconds = -1) {
     namespace Color = Testing::Color;
     std::ostringstream oss;
-    oss << "- " << Color::bold() << name << Color::reset() << "\n";
+    oss << "- " << Color::bold() << name << Color::reset();
+    if (seconds >= 0 && showChildTimes()) oss << " [" << std::fixed << std::setprecision(2) << seconds << " s]";
+    oss << "\n";
     if (!output.empty()) {
         oss << Color::dim() << output << Color::reset();
         if (output.back() != '\n') oss << "\n";
@@ -240,8 +255,8 @@ inline SpawnedRunSummary runSpawnedChildren(
     };
     std::vector<Running> running;
 
-    auto report = [&](size_t idx, const ChildVerdict& v) {
-        printChildResult(names[idx], v.output, v.passed, v.error, v.note);
+    auto report = [&](size_t idx, const ChildVerdict& v, double seconds = -1) {
+        printChildResult(names[idx], v.output, v.passed, v.error, v.note, seconds);
         if (v.passed) {
             summary.passCount++;
             if (!v.note.empty()) summary.xfailCount++;
@@ -256,7 +271,9 @@ inline SpawnedRunSummary runSpawnedChildren(
         o.result.assign(res.begin(), res.end());
         o.result.resize(resultSize, 0);
         Elm::platform::releaseChild(r.child);
-        report(r.index, finish(r.index, o));
+        const double seconds =
+            std::chrono::duration<double>(std::chrono::steady_clock::now() - r.start).count();
+        report(r.index, finish(r.index, o), seconds);
         std::error_code ec;
         std::filesystem::remove(r.resultPath, ec);
         std::filesystem::remove(r.outputPath, ec);

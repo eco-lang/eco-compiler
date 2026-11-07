@@ -20,6 +20,12 @@ The decoder must read what the encoder wrote, and the types cannot check this.
 The native build's twin of this module takes the same encoder and decoder and
 ignores them, so callers are written against one set of signatures.
 
+The built compiler (`guida.js`) does not encode values either:
+`scripts/replacements.js` replaces `stash` and the two `unstashing` functions
+below, so that `put` sends eco-io a 12-byte token for the value, which stays a
+JavaScript object in `bin/eco-io-handler.js`, and `read` and `take` return that
+object. Unpatched, as in this source, they encode and decode.
+
 `read`, `take` and `put` fail with an `IOError` when their request fails, in
 any of the ways `Eco.XHR` describes, as it does for an MVar that was dropped:
 the native kernel module fails them in that case too. `new` and `drop` cannot
@@ -32,6 +38,7 @@ bytes that a decoder cannot read, crashes the program, inside `Eco.XHR`.
 
 -}
 
+import Bytes exposing (Bytes)
 import Bytes.Decode
 import Bytes.Encode
 import Eco.IO.Error as IOErr exposing (IOError)
@@ -73,7 +80,7 @@ read : Bytes.Decode.Decoder a -> MVar a -> Task IOError a
 read decoder (MVar id) =
     Eco.XHR.bytesTask "MVar.read"
         (Encode.object [ ( "id", Encode.int id ) ])
-        decoder
+        (unstashing decoder)
         |> Task.mapError IOErr.ofKernelTuple
 
 
@@ -84,7 +91,7 @@ take : Bytes.Decode.Decoder a -> MVar a -> Task IOError a
 take decoder (MVar id) =
     Eco.XHR.bytesTask "MVar.take"
         (Encode.object [ ( "id", Encode.int id ) ])
-        decoder
+        (unstashingTaken decoder)
         |> Task.mapError IOErr.ofKernelTuple
 
 
@@ -95,7 +102,7 @@ put : (a -> Bytes.Encode.Encoder) -> MVar a -> a -> Task IOError ()
 put encoder (MVar id) value =
     Eco.XHR.sendBytesTask "MVar.put"
         [ Http.header "X-Eco-MVar-Id" (String.fromInt id) ]
-        (Bytes.Encode.encode (encoder value))
+        (stash encoder value)
         |> Task.mapError IOErr.ofKernelTuple
 
 
@@ -115,3 +122,33 @@ drop (MVar id) =
         |> Eco.XHR.orCrash
         |> Task.mapError never
         |> Task.map (\_ -> ())
+
+
+
+-- ====== STASH ======
+-- scripts/replacements.js replaces these three definitions in guida.js by name, and fails the
+-- build when it cannot find one; keep each a top-level function of this exact name and arity.
+
+
+{-| Returns the bytes that `put` sends for `value`: `value` as `encoder` writes it. In
+`guida.js`, a token for `value`, which eco-io-handler.js keeps as it is.
+-}
+stash : (a -> Bytes.Encode.Encoder) -> a -> Bytes
+stash encoder value =
+    Bytes.Encode.encode (encoder value)
+
+
+{-| The decoder `read` uses: `decoder`. In `guida.js`, it returns the value a token stands for
+and leaves the value stashed, and reads anything else with `decoder`.
+-}
+unstashing : Bytes.Decode.Decoder a -> Bytes.Decode.Decoder a
+unstashing decoder =
+    decoder
+
+
+{-| The decoder `take` uses: `decoder`. In `guida.js`, it returns the value a token stands for
+and releases it, as the MVar no longer holds it, and reads anything else with `decoder`.
+-}
+unstashingTaken : Bytes.Decode.Decoder a -> Bytes.Decode.Decoder a
+unstashingTaken decoder =
+    decoder

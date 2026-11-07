@@ -227,6 +227,9 @@ private:
             job.needsFramePointerAttr = true;
             return eco::runEcoBackend(*m, job);
         };
+        // Machine code generation at the same level. At LLVM's default (-O2) it took about two thirds of a
+        // JIT run's time and a test's program usually runs for milliseconds; AOT builds keep optimised codegen.
+        jitOptions.jitCodeGenOptLevel = enableOpt ? llvm::CodeGenOptLevel::Aggressive : llvm::CodeGenOptLevel::None;
 
         auto maybeEngine = eco::EcoJIT::create(module, jitOptions);
         if (!maybeEngine) {

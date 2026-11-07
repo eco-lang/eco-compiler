@@ -98,9 +98,9 @@ struct EcoJITOptions {
     // behaviour otherwise.
     std::function<llvm::Error(llvm::Module *)> transformer = {};
 
-    // A code generation optimisation level to set on the target machine
-    // builder. The compiler `create` installs uses a target machine made
-    // before this is applied, so setting it may change nothing.
+    // The code generation optimisation level of the target machine that
+    // compiles the module (instruction selection, register allocation,
+    // scheduling); unset means LLVM's default (`Default`, i.e. -O2).
     std::optional<llvm::CodeGenOptLevel> jitCodeGenOptLevel;
 };
 

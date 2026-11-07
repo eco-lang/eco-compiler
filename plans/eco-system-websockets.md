@@ -1053,8 +1053,9 @@ Native review (N): 2 BLOCKER, 15 MAJOR, 9 MINOR. WebSocket review (J): 2 BLOCKER
       user's `Content-Length`/`Transfer-Encoding`/`Connection` (it sets them itself).
     - The native manager retries `attachReader` on every `onEffects`; the JS one every 5 ms while
       its listener process lives (it cannot see onEffects).
-    - The close timeout is not configurable, so `WebSocketCloseTimeoutTest` takes 30 s (split out of
-      `WebSocketCloseTest`). `WebSocketExitTest` uses a Node client spawned `Detached` (NoShell).
+    - The close timeout is not configurable (always 30 s); `WebSocketCloseTimeoutTest` (split out of
+      `WebSocketCloseTest`) cuts it to 2 s with the test hook `ECO_WS_CLOSE_TIMEOUT_MS_FOR_TEST`
+      (`ECO_TEST_HOOKS` builds only). `WebSocketExitTest` uses a Node client spawned `Detached` (NoShell).
   - Plan problems / notes for later phases:
     - WS5 (`Http.Server.upgradeRequest`): `takeUpgrade` should park the connection in a
       `HoldProtocol` (WsHandshake.hpp, with the bytes after the head as its leftover) and register it

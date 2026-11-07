@@ -60,6 +60,60 @@ let streamHandleCounter = 1000;
 const mVars = {};
 let mVarNextId = 0;
 
+// The MVar stash (src-xhr/Eco/MVar.elm, "STASH"; patched into guida.js by
+// scripts/replacements.js): `put` sends a 12-byte token, two magic words and an
+// id, and the value itself stays here as the Elm program's own object, so it is
+// never encoded or decoded. An MVar holds the token as it held encoded bytes.
+// A stashed value lives until a `take` returns it or its MVar is dropped.
+const STASH_MAGIC_0 = 0xec0a5745;
+const STASH_MAGIC_1 = 0x4d566172; // "MVar"
+const STASH_TOKEN_WIDTH = 12;
+const stashedValues = new Map();
+let stashNextId = 0;
+
+/** The id of the token at `offset` of DataView `view`, or 0 when there is none. */
+function stashTokenId(view, offset) {
+  if (view.byteLength - offset < STASH_TOKEN_WIDTH) return 0;
+  if (view.getUint32(offset) !== STASH_MAGIC_0 || view.getUint32(offset + 4) !== STASH_MAGIC_1) return 0;
+  return view.getUint32(offset + 8);
+}
+
+const mVarStash = {
+  /** Stashes `value` and returns its token as a DataView. */
+  stash(value) {
+    const id = ++stashNextId;
+    stashedValues.set(id, value);
+    const token = new DataView(new ArrayBuffer(STASH_TOKEN_WIDTH));
+    token.setUint32(0, STASH_MAGIC_0);
+    token.setUint32(4, STASH_MAGIC_1);
+    token.setUint32(8, id);
+    return token;
+  },
+  /**
+   * For a token at `offset` of `view`: `{ value, width }`, releasing the value
+   * when `taken`; for anything else, undefined. Throws for a token whose value
+   * is gone (the decode then fails, which crashes the program in Eco.XHR).
+   */
+  unstash(view, offset, taken) {
+    const id = stashTokenId(view, offset);
+    if (id === 0) return undefined;
+    if (!stashedValues.has(id)) throw new Error("eco-io: MVar stash token " + id + " has no value");
+    const value = stashedValues.get(id);
+    if (taken) stashedValues.delete(id);
+    return { value, width: STASH_TOKEN_WIDTH };
+  },
+};
+globalThis.__ecoMVarStash = mVarStash;
+
+/** Releases the stashed value of MVar bytes `body`, if they are a token. */
+function releaseStashed(body) {
+  if (body === undefined) return;
+  const buf = toArrayBuffer(body);
+  if (!(buf instanceof ArrayBuffer)) return;
+  const id = stashTokenId(new DataView(buf), 0);
+  if (id !== 0) stashedValues.delete(id);
+}
+
 // Console.readAll: stdin can be read to its end once; later calls get "".
 const stdinAll = { state: "idle", waiters: [] }; // idle | reading | ended
 
@@ -705,6 +759,10 @@ function handleEcoIO(parsed, rawRespond) {
       delete mVars[args.id];
       respond(200, JSON.stringify({ value: null }));
       if (dropped) {
+        releaseStashed(dropped.value);
+        for (const w of dropped.waiters) {
+          if (w.action === "put") releaseStashed(w.value);
+        }
         // A waiter on a dropped MVar can never be answered with a value.
         for (const w of dropped.waiters) {
           w.respond(500, JSON.stringify({ error: "MVar " + args.id + " was dropped while waited on" }));
@@ -931,6 +989,7 @@ function handleEcoIOBinary(op, request, rawRespond) {
       const id = parseInt(request.requestHeaders.getHeader("X-Eco-MVar-Id"));
       const mvar = mVars[id];
       if (!mvar) {
+        releaseStashed(request.body);
         respond(500, JSON.stringify({ error: "unknown MVar " + id }));
         break;
       }

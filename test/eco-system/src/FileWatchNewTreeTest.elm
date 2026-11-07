@@ -10,7 +10,7 @@ It failed in inotify mode: one recursive mkdir creates `b` and `c` before any dr
 on `a`, and the new-directory branch of `mapInotify` added the watches (`addTree`) without
 reporting what was already there, so `a/b` and `a/b/c` were never reported (`a/b/c/f` only when
 the write landed after that drain). Fixed: `addTree` reports every entry it finds, after the
-directory's own event. Poll mode passes. A 3 s deadline ends a failing run.
+directory's own event. Poll mode passes. The run ends once all four have arrived; a 3 s deadline ends a failing run.
 
 -}
 
@@ -39,12 +39,14 @@ type Msg
     | Deadline
     | Logged
     | Finished
+    | Exit
 
 
 type alias Model =
     { env : System.Environment
     , dirs : Maybe ( Path, Path )
     , done : Bool
+    , seen : List String
     }
 
 
@@ -79,12 +81,11 @@ steps dir _ =
         |> Task.map (\_ -> ())
 
 
-{-| The run waits for the deadline: the events it expects may arrive in any order, and a
-duplicate may follow.
+{-| The events the run expects, in any order (duplicates allowed); it ends once all have arrived.
 -}
-isLast : String -> Bool
-isLast _ =
-    False
+expected : List String
+expected =
+    [ "[moved a]", "[moved a/b]", "[moved a/b/c]", "[moved a/b/c/f]" ]
 
 
 {-| Ends the run: logs `why`, drops the subscription and removes both directories. -}
@@ -110,7 +111,7 @@ main =
     Platform.worker
         { init =
             \env ->
-                ( { env = env, dirs = Nothing, done = False }
+                ( { env = env, dirs = Nothing, done = False, seen = [] }
                 , Task.map2 Tuple.pair
                     (File.makeTempDirectory "eco-watch-newtree-")
                     (File.makeTempDirectory "eco-watch-newtree-o-")
@@ -145,11 +146,16 @@ main =
                         if model.done then
                             ( model, Cmd.none )
 
-                        else if isLast line then
-                            finish model ("event: " ++ line)
-
                         else
-                            ( model, log model ("event: " ++ line) )
+                            let
+                                seen =
+                                    line :: model.seen
+                            in
+                            if List.all (\e -> List.member e seen) expected then
+                                finish { model | seen = seen } ("event: " ++ line)
+
+                            else
+                                ( { model | seen = seen }, log model ("event: " ++ line) )
 
                     Deadline ->
                         if model.done then
@@ -162,7 +168,11 @@ main =
                         ( model, Cmd.none )
 
                     Finished ->
-                        ( model, log model "watch: done" )
+                        -- Exit, so the pending Deadline sleep does not keep the program alive.
+                        ( model, Task.perform (\_ -> Exit) (Stream.logLine "watch: done" model.env.stdout) )
+
+                    Exit ->
+                        ( model, System.exitWithCode 0 )
         , subscriptions =
             \model ->
                 case ( model.dirs, model.done ) of

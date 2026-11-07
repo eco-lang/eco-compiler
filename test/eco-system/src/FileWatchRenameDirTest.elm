@@ -38,6 +38,7 @@ type Msg
     | Deadline
     | Logged
     | Finished
+    | Exit
 
 
 type alias Model =
@@ -162,7 +163,11 @@ main =
                         ( model, Cmd.none )
 
                     Finished ->
-                        ( model, log model "watch: done" )
+                        -- Exit, so the pending Deadline sleep does not keep the program alive.
+                        ( model, Task.perform (\_ -> Exit) (Stream.logLine "watch: done" model.env.stdout) )
+
+                    Exit ->
+                        ( model, System.exitWithCode 0 )
         , subscriptions =
             \model ->
                 case ( model.dirs, model.done ) of

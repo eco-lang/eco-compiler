@@ -105,4 +105,44 @@ var _Json_encodeBytes = function(bytes) {
 };`
     );
 
-fs.writeFileSync(path, data, { encoding: 'utf8', flag: 'w' });
+/* MVar values stay JavaScript objects (src-xhr/Eco/MVar.elm, "STASH"): `put` sends eco-io a
+   token from bin/eco-io-handler.js's stash instead of the encoded value, and `read` and `take`
+   return the stashed object instead of decoding bytes, as the native MVar does. Each definition is
+   replaced whole. */
+function replaceDefinition(source, name, replacement) {
+    const re = new RegExp('^var \\$author\\$project\\$Eco\\$MVar\\$' + name + ' = [\\s\\S]*?\\n(?=var )', 'gm');
+    const matches = source.match(re) || [];
+    if (matches.length !== 1) {
+        throw new Error(`replacements.js: expected one definition of Eco.MVar.${name}, found ${matches.length}`);
+    }
+    return source.replace(re, () => replacement);
+}
+
+const unstashingDefinition = (name, taken) => `var $author$project$Eco$MVar$${name} = function (decoder) {
+\treturn $elm$bytes$Bytes$Decode$Decoder(F2(function (bytes, offset) {
+\t\tvar hit = globalThis.__ecoMVarStash.unstash(bytes, offset, ${taken});
+\t\treturn hit ? _Utils_Tuple2(offset + hit.width, hit.value) : A2(decoder.a, bytes, offset);
+\t}));
+};
+`;
+
+// Only outputs built from src-xhr have these hooks; eco-boot.js (the kernel build) has a native-style
+// MVar and none of them, and is left as it is. Some but not all of them means the hooks drifted.
+const stashHooks = ['stash', 'unstashing', 'unstashingTaken'].filter((name) =>
+    new RegExp('^var \\$author\\$project\\$Eco\\$MVar\\$' + name + ' = ', 'm').test(data));
+if (stashHooks.length !== 0 && stashHooks.length !== 3) {
+    throw new Error(`replacements.js: only some Eco.MVar stash hooks found: ${stashHooks.join(', ')}`);
+}
+
+let patched = data;
+if (stashHooks.length === 3) {
+patched = replaceDefinition(patched, 'stash', `var $author$project$Eco$MVar$stash = F2(
+\tfunction (encoder, value) {
+\t\treturn globalThis.__ecoMVarStash.stash(value);
+\t});
+`);
+patched = replaceDefinition(patched, 'unstashing', unstashingDefinition('unstashing', false));
+patched = replaceDefinition(patched, 'unstashingTaken', unstashingDefinition('unstashingTaken', true));
+}
+
+fs.writeFileSync(path, patched, { encoding: 'utf8', flag: 'w' });

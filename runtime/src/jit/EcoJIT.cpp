@@ -377,6 +377,8 @@ EcoJIT::create(mlir::Operation *m, const EcoJITOptions &options) {
         llvm::EmitDwarfUnwindType::Always;
 #endif
 
+    if (options.jitCodeGenOptLevel)
+        tmBuilderOrError->setCodeGenOptLevel(*options.jitCodeGenOptLevel);
     auto tmOrError = tmBuilderOrError->createTargetMachine();
     if (!tmOrError)
         return tmOrError.takeError();
@@ -410,13 +412,10 @@ EcoJIT::create(mlir::Operation *m, const EcoJITOptions &options) {
             return objectLayer;
         };
 
-    // The compiler uses `tm`, made above, so the optimisation level set on
-    // `jtmb` does not reach it.
+    // The compiler uses `tm`, made above with `jitCodeGenOptLevel`.
     auto compileFunctionCreator =
-        [&options, &tm](JITTargetMachineBuilder jtmb)
+        [&tm](JITTargetMachineBuilder)
             -> Expected<std::unique_ptr<IRCompileLayer::IRCompiler>> {
-            if (options.jitCodeGenOptLevel)
-                jtmb.setCodeGenOptLevel(*options.jitCodeGenOptLevel);
             return std::make_unique<TMOwningSimpleCompiler>(std::move(tm));
         };
 

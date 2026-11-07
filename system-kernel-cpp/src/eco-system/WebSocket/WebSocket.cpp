@@ -21,7 +21,9 @@
 #include "eco-system/WebSocket/WsHandshake.hpp"
 #include "eco-system/WebSocket/WsProtocol.hpp"
 #include "eco-system/WebSocket/WsTables.hpp"
+#include "platform/TestHooks.hpp"
 
+#include <cstdlib>
 #include <cstring>
 #include <stdexcept>
 #include <unordered_map>
@@ -425,6 +427,19 @@ void wsOpenOnConn(const std::shared_ptr<Conn>& c, const std::shared_ptr<WsCore>&
 }
 #endif // !_WIN32
 
+#if ECO_TEST_HOOKS && !defined(_WIN32)
+// Test-only: `ECO_WS_CLOSE_TIMEOUT_MS_FOR_TEST`, when set to a positive number of milliseconds,
+// replaces every connection's close timeout (always 30 s from Elm), so that
+// WebSocketCloseTimeoutTest need not wait 30 s. Read once.
+static int64_t closeTimeoutOverrideForTest() {
+    static const int64_t ms = [] {
+        const char* v = std::getenv("ECO_WS_CLOSE_TIMEOUT_MS_FOR_TEST");
+        return v && *v ? static_cast<int64_t>(std::atoll(v)) : int64_t{0};
+    }();
+    return ms;
+}
+#endif
+
 HPointer wsOpenBody(HPointer captured, HPointer resume) {
     uint64_t token = 0;
     bool counted = false;
@@ -501,6 +516,9 @@ HPointer wsOpenBody(HPointer captured, HPointer resume) {
         cfg.heartbeatInterval = hbInterval > 0 ? hbInterval : 0;
         cfg.heartbeatTimeout = hbTimeout > 0 ? hbTimeout : 0;
         cfg.closeTimeout = closeTimeout > 0 ? closeTimeout : 30000;
+#if ECO_TEST_HOOKS
+        if (closeTimeoutOverrideForTest() > 0) cfg.closeTimeout = closeTimeoutOverrideForTest();
+#endif
         cfg.streamed = mode == 2;
         cfg.deflate = threshold >= 0;
         cfg.threshold = threshold >= 0 ? threshold : 0;
