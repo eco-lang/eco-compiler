@@ -1,25 +1,26 @@
-# Linux LLVM/MLIR base-image builder + cache warmer — ALPINE (musl) variant.
+# Linux LLVM/MLIR base-image builder — ALPINE (musl) variant.
 #
 # The Linux CI path runs inside Docker. The alpine LLVM/MLIR base image:
 #
-#   eco-llvm-alpine:<ver>  -> consumed by docker/static-build.Dockerfile
-#                             (static musl binary + bundles; linux-aot `bundle`)
+#   ghcr.io/eco-lang/eco-llvm-alpine:<ver>-<hash>
+#       -> consumed by docker/static-build.Dockerfile
+#          (static musl binary + bundles; linux-aot `bundle` job)
 #
-# compiles LLVM+MLIR from source and is rebuilt only when LLVM_VERSION (or the
-# base Dockerfile) changes. This workflow builds it once and stores it as a
-# `docker save | gzip` tarball in the Actions cache, keyed on the base
-# Dockerfile hash. linux-aot's `bundle` job restores the tarball and
-# `docker load`s it in seconds instead of recompiling LLVM.
+# compiles LLVM+MLIR from source and is rebuilt only when LLVM_VERSION or the
+# base Dockerfile changes: <hash> is the first 12 hex digits of the hash of
+# docker/llvm-alpine.Dockerfile, so any change to the recipe gets a new tag.
+# This workflow publishes it to the GitHub Container Registry (GHCR), which
+# keeps it permanently and outside the repository's 10 GB Actions cache.
 #
-# Why a dedicated warmer (unlike the debian base): linux-aot's `bundle` job
-# restores this cache with `fail-on-cache-miss: true` and has NO local-build
-# fallback, because the alpine LLVM-from-source build OOMs the hosted runner
-# mid-link. So the cache MUST be populated here first; a cold cache fails the
-# bundle job fast and legibly — re-run this workflow.
+# It used to live in the Actions cache as a `docker save | gzip` tarball, where
+# its 3 GB pushed the Windows and macOS LLVM install trees out of the cache.
+# While that tarball still exists, this workflow publishes it as is; it never
+# saves a new one. That matters more here than for debian: the alpine
+# LLVM-from-source build OOMs the hosted runner mid-link, so the tarball may be
+# the only copy that can be published from CI.
 #
-# Cache scope note: a cache produced on the default branch (master) is
-# readable from every branch, so warming it here on a master push makes the
-# image available to all subsequent consumer runs.
+# linux-aot does NOT fall back to a local build, so the image MUST be in GHCR
+# first: run this workflow to green before linux-aot uses a new tag.
 name: linux-llvm-build-alpine
 
 on:
@@ -29,11 +30,6 @@ on:
       - 'docker/llvm-alpine.Dockerfile'
       - '.github/workflows/linux-llvm-build-alpine.yml'
   workflow_dispatch:
-  schedule:
-    # Weekly safety touch so the alpine base-image cache never evicts even if
-    # the nightly linux-aot build is paused. A cache hit is a cheap no-op; a cold
-    # cache rebuilds (and re-populates) the base image.
-    - cron: '0 5 * * 1'
 
 env:
   LLVM_VERSION: '21.1.8'
@@ -42,41 +38,76 @@ jobs:
   llvm:
     runs-on: ubuntu-latest
     # LLVM+MLIR Release build from source on a hosted runner is slow; pin
-    # well clear of the cap. A cache hit short-circuits to seconds.
+    # well clear of the cap. An image already in GHCR short-circuits to seconds.
     timeout-minutes: 360
+    permissions:
+      contents: read
+      packages: write
     steps:
       - uses: actions/checkout@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Check GHCR for the image
+        id: ghcr
+        run: |
+          h="${{ hashFiles('docker/llvm-alpine.Dockerfile') }}"
+          ref="ghcr.io/${{ github.repository_owner }}/eco-llvm-alpine:${LLVM_VERSION}-${h:0:12}"
+          echo "ref=$ref" >> "$GITHUB_OUTPUT"
+          if docker manifest inspect "$ref" > /dev/null 2>&1; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+            echo "$ref is already in GHCR; nothing to do."
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            echo "$ref is not in GHCR yet."
+          fi
 
       - name: Free disk space
         # LLVM source builds are disk-hungry; reclaim the preinstalled SDKs
         # the hosted image ships that we never use.
+        if: steps.ghcr.outputs.present != 'true'
         run: |
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
             /opt/hostedtoolcache/CodeQL /usr/local/share/boost || true
           sudo docker image prune -af || true
           df -h /
 
-      - name: Cache LLVM alpine base image
-        id: cache
-        uses: actions/cache@v4
+      - name: Restore the image tarball from the Actions cache (migration only)
+        # Restore only: nothing saves this tarball any more. Once it has been
+        # deleted from the cache, this always misses and the image is built.
+        id: tarball
+        if: steps.ghcr.outputs.present != 'true'
+        uses: actions/cache/restore@v4
         with:
           path: /tmp/eco-llvm-alpine.tar.gz
-          # Bump nothing by hand: the Dockerfile hash + version pin the key,
-          # so any change to the base recipe rebuilds rather than serving a
-          # stale image.
           key: eco-llvm-alpine-${{ env.LLVM_VERSION }}-${{ hashFiles('docker/llvm-alpine.Dockerfile') }}
 
-      - name: Build LLVM + MLIR base image
-        if: steps.cache.outputs.cache-hit != 'true'
+      - name: Load the image from the tarball
+        if: steps.ghcr.outputs.present != 'true' && steps.tarball.outputs.cache-hit == 'true'
         run: |
-          img="eco-llvm-alpine:${{ env.LLVM_VERSION }}"
-          echo "Building $img from docker/llvm-alpine.Dockerfile (no cache hit) ..."
-          docker build -f docker/llvm-alpine.Dockerfile -t "$img" .
-          docker save "$img" | gzip > /tmp/eco-llvm-alpine.tar.gz
-          ls -lh /tmp/eco-llvm-alpine.tar.gz
+          gunzip -c /tmp/eco-llvm-alpine.tar.gz | docker load
+          rm -f /tmp/eco-llvm-alpine.tar.gz
+          docker tag "eco-llvm-alpine:${LLVM_VERSION}" eco-llvm-alpine:base
 
-      - name: Report restored image
-        if: steps.cache.outputs.cache-hit == 'true'
+      - name: Build LLVM + MLIR base image
+        if: steps.ghcr.outputs.present != 'true' && steps.tarball.outputs.cache-hit != 'true'
         run: |
-          ls -lh /tmp/eco-llvm-alpine.tar.gz
-          echo "eco-llvm-alpine:${{ env.LLVM_VERSION }} already cached — rebuild skipped."
+          echo "Building from docker/llvm-alpine.Dockerfile (not in GHCR, no tarball) ..."
+          docker build -f docker/llvm-alpine.Dockerfile -t eco-llvm-alpine:base .
+
+      - name: Push the image to GHCR
+        # The one-line rebuild adds the label that links the package to this
+        # repository, so it shows on the repository page and inherits its access.
+        if: steps.ghcr.outputs.present != 'true'
+        run: |
+          ref="${{ steps.ghcr.outputs.ref }}"
+          echo "FROM eco-llvm-alpine:base" | docker build \
+            --label "org.opencontainers.image.source=https://github.com/${{ github.repository }}" \
+            -t "$ref" -
+          docker push "$ref"
+          echo "Pushed $ref"
