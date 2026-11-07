@@ -37,7 +37,7 @@
 //        RLIMIT_FSIZE   `-- RLIMIT-FSIZE: <bytes>`, through `prlimit` (node ignores SIGXFSZ,
 //                       so writes fail with EFBIG); skipped with a note without prlimit
 //                       (all four directives: test/CheckPatterns.hpp)
-//        ECO_TEST_PORT  a free TCP port (test/TestPort.hpp)
+//        ECO_TEST_PORT  a free TCP port (test/scripts/test-port.js)
 //        ECO_TEST_HTTP_URL, ECO_TEST_HTTPS_URL  the HTTP test server (test/TestServerConfig.hpp;
 //                       no HTTPS here: both name the plain HTTP port)
 //      and passes iff it exits on its own within the timeout (default 60 s) with the
@@ -58,9 +58,9 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const net = require('net');
 const { spawn } = require('child_process');
 const { startTestHttpServer } = require('./js-e2e-http-server');
+const { pickFreePort } = require('./test-port');
 
 // --- Arguments ------------------------------------------------------------------------
 
@@ -388,26 +388,6 @@ function run(cmd, args, options) {
         child.stderr.on('data', (d) => chunks.push(d));
         child.on('error', (e) => chunks.push(Buffer.from(String(e))));
         child.on('close', (code, signal) => resolve({ code, signal, output: Buffer.concat(chunks).toString('utf8') }));
-    });
-}
-
-const recentPorts = [];
-function pickFreePort() {
-    return new Promise((resolve) => {
-        const attempt = (n) => {
-            const srv = net.createServer();
-            srv.once('error', () => resolve(0));
-            srv.listen(0, '127.0.0.1', () => {
-                const port = srv.address().port;
-                srv.close(() => {
-                    if (recentPorts.includes(port) && n < 16) { attempt(n + 1); return; }
-                    recentPorts.push(port);
-                    if (recentPorts.length > 256) recentPorts.shift();
-                    resolve(port);
-                });
-            });
-        };
-        attempt(0);
     });
 }
 

@@ -41,7 +41,7 @@ type alias Model =
 
 
 {-| Sends the opening request; destroys the connection when the close frame (the data after the
-101) arrives.
+101) arrives. It counts bytes, not `data` events: the 101 and the close frame may arrive in one read.
 -}
 client : Int -> String
 client port_ =
@@ -49,7 +49,8 @@ client port_ =
         [ "setTimeout(()=>{const s=require('net').connect(" ++ String.fromInt port_ ++ ",'127.0.0.1',()=>{"
         , "s.write('GET / HTTP/1.1\\r\\nHost: 127.0.0.1\\r\\nUpgrade: websocket\\r\\nConnection: Upgrade\\r\\n"
         , "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\\r\\nSec-WebSocket-Version: 13\\r\\n\\r\\n');});"
-        , "let n=0;s.on('data',()=>{if(++n>=2)s.destroy();});"
+        , "let got=Buffer.alloc(0);s.on('data',(d)=>{got=Buffer.concat([got,d]);"
+        , "const h=got.indexOf('\\r\\n\\r\\n');if(h>=0&&got.length>=h+6)s.destroy();});"
         , "s.on('error',()=>process.exit(0));s.on('close',()=>process.exit(0));},300);"
         , "setTimeout(()=>process.exit(0),20000);"
         ]

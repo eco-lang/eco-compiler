@@ -51,9 +51,9 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const net = require('net');
 const { spawn, spawnSync } = require('child_process');
 const { startTestHttpServer } = require('./js-e2e-http-server');
+const { pickFreePort } = require('./test-port');
 
 // --- Arguments ------------------------------------------------------------------------
 
@@ -375,26 +375,6 @@ function run(cmd, args, options) {
         child.stderr.on('data', (d) => chunks.push(d));
         child.on('error', (e) => chunks.push(Buffer.from(String(e))));
         child.on('close', (code, signal) => resolve({ code, signal, output: Buffer.concat(chunks).toString('utf8') }));
-    });
-}
-
-const recentPorts = [];
-function pickFreePort() {
-    return new Promise((resolve) => {
-        const attempt = (n) => {
-            const srv = net.createServer();
-            srv.once('error', () => resolve(0));
-            srv.listen(0, '127.0.0.1', () => {
-                const port = srv.address().port;
-                srv.close(() => {
-                    if (recentPorts.includes(port) && n < 16) { attempt(n + 1); return; }
-                    recentPorts.push(port);
-                    if (recentPorts.length > 256) recentPorts.shift();
-                    resolve(port);
-                });
-            });
-        };
-        attempt(0);
     });
 }
 

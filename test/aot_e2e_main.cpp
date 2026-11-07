@@ -38,11 +38,13 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <iomanip>
 #include <iostream>
 #include <iterator>
 #include <mutex>
@@ -293,7 +295,14 @@ struct TestResult {
     std::string failure_reason;
     std::string failure_detail;
     std::string xfail_note;    // non-empty: an expected failure reported as a pass
+    // Wall seconds of each step that ran (-1: did not run), shown with ECO_TEST_TIMES=1.
+    double compile_s = -1, lower_s = -1, run_s = -1;
 };
+
+// Seconds since `start`, for TestResult's step times.
+double seconds_since(std::chrono::steady_clock::time_point start) {
+    return std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+}
 
 std::optional<std::string> slurp(const std::string& path) {
     std::ifstream f(path, std::ios::binary);
@@ -487,7 +496,9 @@ TestResult run_one_unmarked(const TestCase& tc) {
 
     // 1. Elm -> MLIR via eco-boot-2-runner.js.
     {
+        const auto t0 = std::chrono::steady_clock::now();
         ProcResult p = compile_to_mlir(tc, mlir_out);
+        r.compile_s = seconds_since(t0);
         if (p.exit_code != 0 || !fs::is_regular_file(mlir_out)) {
             r.failure_reason = "Elm->MLIR failed (exit " + std::to_string(p.exit_code) + ")";
             r.failure_detail = truncated_tail(p.output);
@@ -497,7 +508,9 @@ TestResult run_one_unmarked(const TestCase& tc) {
 
     // 2. MLIR -> ELF via eco-boot-native.
     {
+        const auto t0 = std::chrono::steady_clock::now();
         ProcResult p = lower_to_elf(mlir_out, elf_out, tc.aot_shadow);
+        r.lower_s = seconds_since(t0);
         if (p.exit_code != 0 || !fs::is_regular_file(elf_out)) {
             r.failure_reason = "MLIR->ELF failed (exit " + std::to_string(p.exit_code) + ")";
             r.failure_detail = truncated_tail(p.output);
@@ -530,8 +543,10 @@ TestResult run_one_unmarked(const TestCase& tc) {
     {
         r.ran = true;
         ProcResult p;
+        const auto t0 = std::chrono::steady_clock::now();
         try {
             p = run_elf(elf_out, tc.aot_shadow, *src, stdin_text);
+            r.run_s = seconds_since(t0);
         } catch (const std::exception& e) {
             r.ran = false;   // never an XFAIL
             r.failure_reason = std::string("bad test directive: ") + e.what();
@@ -754,19 +769,30 @@ int main(int argc, char** argv) {
     results.reserve(cases.size());
     std::mutex results_mu;
 
+    // ECO_TEST_TIMES=1 (as for the JIT suites, SpawnedChildren.hpp): each result line also shows
+    // the wall seconds of the compile, lower and run steps, e.g. `[1.92 + 0.80 + 0.01 s]`.
+    const bool show_times = eco_test::showChildTimes();
+    auto step_times = [](const TestResult& r) {
+        std::ostringstream t;
+        t << std::fixed << std::setprecision(2) << " [" << std::max(r.compile_s, 0.0) << " + "
+          << std::max(r.lower_s, 0.0) << " + " << std::max(r.run_s, 0.0) << " s]";
+        return t.str();
+    };
     auto emit = [&](const TestResult& r) {
         std::lock_guard<std::mutex> lk(results_mu);
         if (r.passed) {
             std::cout << g_color.green() << "PASS" << g_color.reset()
                       << "  " << r.display_name;
+            if (show_times) std::cout << step_times(r);
             if (!r.xfail_note.empty()) {
                 std::cout << g_color.dim() << "  (" << r.xfail_note << ")" << g_color.reset();
             }
             std::cout << "\n";
         } else {
             std::cout << g_color.red()   << "FAIL" << g_color.reset()
-                      << "  " << r.display_name
-                      << g_color.dim() << "  (" << r.failure_reason << ")"
+                      << "  " << r.display_name;
+            if (show_times) std::cout << step_times(r);
+            std::cout << g_color.dim() << "  (" << r.failure_reason << ")"
                       << g_color.reset() << "\n";
             if (!r.failure_detail.empty()) {
                 std::cout << g_color.dim() << r.failure_detail
@@ -786,6 +812,24 @@ int main(int argc, char** argv) {
     }
 
     for (const auto& tc : warmup) emit(run_one(tc));
+
+    // Largest sources first: the slowest tests are the huge generated ones (WideRecord1100Test,
+    // WideClosureArity2047Test: 15-65 s of compile and lowering against a median of about 1 s), and
+    // started last, in name order, they ran alone at the end with the other workers idle.
+    {
+        std::vector<std::pair<std::uintmax_t, std::size_t>> bySize;
+        for (std::size_t i = 0; i < rest.size(); ++i) {
+            std::error_code ec;
+            const auto size = fs::file_size(rest[i].elm_file, ec);
+            bySize.push_back({ec ? 0 : size, i});
+        }
+        std::stable_sort(bySize.begin(), bySize.end(),
+                         [](const auto& a, const auto& b) { return a.first > b.first; });
+        std::vector<TestCase> ordered;
+        ordered.reserve(rest.size());
+        for (const auto& [size, i] : bySize) ordered.push_back(std::move(rest[i]));
+        rest = std::move(ordered);
+    }
 
     if (!rest.empty()) {
         std::vector<std::thread> workers;
