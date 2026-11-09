@@ -2837,9 +2837,11 @@ void GCStats::printIncrMarkBlock() const {
                   (unsigned long long)im.closing_units_max);
     std::cout << buf << std::endl;
     std::snprintf(buf, sizeof buf,
-                  "  finishes: schedule %llu, pressure %llu, join %llu",
+                  "  finishes: schedule %llu, pressure %llu (deferred %llu), join %llu;"
+                  " deferred at a finish max %.2f MB",
                   (unsigned long long)im.finish_schedule, (unsigned long long)im.finish_pressure,
-                  (unsigned long long)im.finish_join);
+                  (unsigned long long)im.finish_deferred, (unsigned long long)im.finish_join,
+                  im.deferred_bytes_at_finish_max / (1024.0 * 1024.0));
     std::cout << buf << std::endl;
     std::snprintf(buf, sizeof buf,
                   "  black %.2f MB, traced live %.2f MB, deferred frees %llu (%.2f MB)",

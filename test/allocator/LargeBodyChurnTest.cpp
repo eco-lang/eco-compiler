@@ -12,6 +12,11 @@
  *       must keep the churn alive;
  *   (d) budget 0 turns the debt off;
  *   (e) the HeapConfig / JSON knob.
+ * And the deferred-bytes finish (plans/large-body-deferral-pacing.md, HEAP_084):
+ *   (f) one held body plus churn during a cycle: the bodies the cycle defers
+ *       stay within its bound, and the cycle ends early;
+ *   (g) the finish is deterministic (GC_DET_001);
+ *   (h) its two HeapConfig / JSON knobs.
  *
  * Registered in an isolated (forked) suite: before the fix (a) aborted the
  * whole process.
@@ -19,6 +24,7 @@
 
 #include "LargeBodyChurnTest.hpp"
 
+#include <algorithm>
 #include <cstring>
 #include <stdexcept>
 #include <vector>
@@ -32,6 +38,7 @@
 #include "HeapConfigJson.hpp"
 #include "HeapHelpers.hpp"
 #include "NurserySpace.hpp"
+#include "OldGenSpace.hpp"
 #include "TestHelpers.hpp"
 #include "ThreadLocalHeap.hpp"
 
@@ -59,6 +66,94 @@ constexpr size_t kChurnCount = 20000;      // 1.2 GB of bodies
 
 uint64_t minorSeq(Allocator& alloc) {
     return alloc.getCurrentThreadHeap()->getNursery().minorSeq();
+}
+
+// ----- The deferred-bytes finish (f)-(h) -----
+
+constexpr size_t kHeldBytes = 2 * 1024 * 1024;   // pointer-free: never scanned, not in live_ref
+constexpr size_t kHeldListLength = 20000;         // ~0.6-1 MB of traced cons cells and Ints
+constexpr size_t kHoldChurnCount = 3000;          // ~180 MB of bodies: several full cycles' worth
+
+// What one held-body churn run saw of the cycle it started.
+struct HoldChurnRun {
+    uint64_t max_deferred = 0;    // the most bytes the cycle had deferred at any allocation
+    uint64_t bound = 0;           // max(F x live_ref, floor), from the cycle's t0
+    uint64_t floor = 0;           // ThreadLocalHeap::deferredFinishFloor()
+    uint64_t budget = 0;          // one minor's direct allocation (HEAP_079)
+    uint64_t span_minors = 0;     // minors from t0 to the handoff
+    uint32_t slices = 0;          // the cycle's T
+    std::vector<uint64_t> finish_minors;   // every cycle's handoff, by minor number
+};
+
+// Holds a kHeldBytes body and a list of kHeldListLength Ints, runs one cycle so that the next one's
+// live estimate counts the list (a raw body is never scanned, so it adds nothing to the markers'
+// sums, HEAP_057), then starts a cycle and drops large bodies until kHoldChurnCount have been
+// allocated. Cycles the heap's own triggers start are recorded in finish_minors too.
+HoldChurnRun runHoldChurn(const HeapConfig& cfg) {
+    using OA = OldGenSpaceTestAccess;
+    auto& alloc = initAllocator(cfg);
+    ThreadLocalHeap* heap = alloc.getCurrentThreadHeap();
+    OldGenSpace& og = heap->getOldGen();
+    HoldChurnRun r;
+    r.budget = heap->directAllocBudget();
+
+    HPointer held = alloc.allocLargeByteBuffer(nullptr, kHeldBytes);
+    alloc.getRootSet().addRoot(&held);
+    HPointer list = alloc::listNil();
+    alloc.getRootSet().addRoot(&list);
+    for (size_t i = 0; i < kHeldListLength; ++i) {
+        const HPointer n = alloc::allocInt(static_cast<i64>(i));
+        list = alloc::cons(alloc::boxed(n), list, true);
+    }
+    auto runToHandoff = [&]() {
+        for (int guard = 0; OA::cycleActive(og); ++guard) {
+            if (guard > 100000) throw std::runtime_error("cycle never handed off");
+            alloc.minorGC();
+        }
+    };
+    runToHandoff();
+    heap->test_force_major_trigger_ = true;
+    alloc.minorGC();
+    runToHandoff();
+
+    heap->test_force_major_trigger_ = true;
+    alloc.minorGC();
+    TEST_ASSERT(OA::cycleActive(og));
+    const uint64_t t0 = minorSeq(alloc);
+    r.slices = cfg.incremental_mark_slices;
+    r.floor = heap->deferredFinishFloor();
+    r.bound = std::max<uint64_t>(
+        static_cast<uint64_t>(cfg.incremental_mark_deferred_finish *
+                              static_cast<double>(OA::cycleLiveRef(og))),
+        r.floor);
+    bool first = true;
+    bool was_active = true;
+    for (size_t i = 0; i < kHoldChurnCount; ++i) {
+        (void)alloc.allocLargeByteBuffer(nullptr, kBodyBytes);
+        const bool active = OA::cycleActive(og);
+        if (active && first) r.max_deferred = std::max(r.max_deferred, og.cycleDeferredBytes());
+        if (was_active && !active) {
+            r.finish_minors.push_back(minorSeq(alloc));
+            if (first) r.span_minors = minorSeq(alloc) - t0;
+            first = false;
+        }
+        was_active = active;
+    }
+    runToHandoff();
+    alloc.getRootSet().removeRoot(&list);
+    alloc.getRootSet().removeRoot(&held);
+    TEST_ASSERT(!first);   // the cycle ended within the churn
+    return r;
+}
+
+// churnHeapConfig with the cycle's mode fixed: the test pins its own schedule.
+HeapConfig holdChurnConfig(double deferred_finish) {
+    HeapConfig cfg = churnHeapConfig();
+    cfg.incremental_mark = true;
+    cfg.incremental_mark_slices = 32;
+    cfg.incremental_mark_deferred_finish = deferred_finish;
+    cfg.validate();
+    return cfg;
 }
 
 }  // namespace
@@ -230,6 +325,109 @@ Testing::TestCase testDirectAllocMinorBudgetConfig(
     applyHeapConfigJsonFile(j, path);
     unlink(path);
     TEST_ASSERT(j.direct_alloc_minor_budget == 2.5);
+    j.validate();
+#endif
+});
+
+// ----------------------------------------------------------------------------
+// (f) Held body, churn during a cycle: the deferred bytes stay within
+// max(F x live_ref, floor) plus one minor's direct allocation, and the cycle
+// ends before its schedule. With F = 0 they do not: the control shows the test
+// detects the unbounded deferral it guards against.
+// ----------------------------------------------------------------------------
+
+Testing::TestCase testDeferredFinishBoundsCycle(
+    "LargeBodyChurn: a cycle's deferred large bodies stay bounded (HEAP_084)", []() {
+    const HoldChurnRun on = runHoldChurn(holdChurnConfig(INCREMENTAL_MARK_DEFERRED_FINISH));
+    TEST_ASSERT(on.budget > 0);
+    TEST_ASSERT(on.bound > on.floor);   // the live estimate (the held list) sets the bound
+    TEST_ASSERT(on.max_deferred <= on.bound + on.budget + kBodyBytes);
+    TEST_ASSERT(on.span_minors <= on.slices);   // before the scheduled handoff at T + 1
+#if ENABLE_GC_STATS
+    {
+        const IncrMarkStats& im = Allocator::instance().getCurrentThreadHeap()->getOldGen().getStats().im;
+        TEST_ASSERT(im.finish_deferred >= 1);
+        TEST_ASSERT(im.finish_deferred <= im.finish_pressure);
+        TEST_ASSERT(im.deferred_bytes_at_finish_max >= on.bound);
+    }
+#endif
+
+    const HoldChurnRun off = runHoldChurn(holdChurnConfig(0.0));
+    TEST_ASSERT(off.max_deferred > on.bound + on.budget + kBodyBytes);
+    TEST_ASSERT(off.span_minors == off.slices + 1);
+#if ENABLE_GC_STATS
+    TEST_ASSERT(Allocator::instance().getCurrentThreadHeap()->getOldGen().getStats().im.finish_deferred ==
+                0);
+#endif
+});
+
+// ----------------------------------------------------------------------------
+// (g) Determinism (GC_DET_001): the finish reads only mutator state, so the
+// same allocations finish their cycles at the same minors whether page work
+// and marking run inline or on helper threads.
+// ----------------------------------------------------------------------------
+
+Testing::TestCase testDeferredFinishDeterministic(
+    "LargeBodyChurn: the deferred-bytes finish is deterministic (GC_DET_001)", []() {
+    HeapConfig inline_cfg = holdChurnConfig(INCREMENTAL_MARK_DEFERRED_FINISH);
+    inline_cfg.gc_thread_mode = 0;
+    inline_cfg.conc_mark = 0;
+    inline_cfg.validate();
+    HeapConfig threaded_cfg = holdChurnConfig(INCREMENTAL_MARK_DEFERRED_FINISH);
+    threaded_cfg.gc_thread_mode = 2;
+    threaded_cfg.conc_mark = 2;
+    threaded_cfg.validate();
+
+    const HoldChurnRun a = runHoldChurn(inline_cfg);
+    const HoldChurnRun b = runHoldChurn(threaded_cfg);
+    TEST_ASSERT(!a.finish_minors.empty());
+    TEST_ASSERT(a.finish_minors == b.finish_minors);
+    TEST_ASSERT(a.max_deferred == b.max_deferred);
+});
+
+// ----------------------------------------------------------------------------
+// (h) The knobs: defaults, JSON round trip and validate() ranges.
+// ----------------------------------------------------------------------------
+
+Testing::TestCase testDeferredFinishConfig(
+    "LargeBodyChurn: incremental_mark_deferred_finish / _floor parse and validate", []() {
+    HeapConfig d;
+    TEST_ASSERT(d.incremental_mark_deferred_finish == INCREMENTAL_MARK_DEFERRED_FINISH);
+    TEST_ASSERT(d.incremental_mark_deferred_floor == INCREMENTAL_MARK_DEFERRED_FLOOR);
+
+    auto rejects = [](double finish, double floor) {
+        HeapConfig c;
+        c.incremental_mark_deferred_finish = finish;
+        c.incremental_mark_deferred_floor = floor;
+        try {
+            c.validate();
+        } catch (const std::invalid_argument&) {
+            return true;
+        }
+        return false;
+    };
+    TEST_ASSERT(!rejects(0.0, 1.0));
+    TEST_ASSERT(!rejects(0.25, 1.0));
+    TEST_ASSERT(!rejects(64.0, 1024.0));
+    TEST_ASSERT(rejects(0.1, 1.0));
+    TEST_ASSERT(rejects(-1.0, 1.0));
+    TEST_ASSERT(rejects(65.0, 1.0));
+    TEST_ASSERT(rejects(1.0, 0.5));
+    TEST_ASSERT(rejects(1.0, 2000.0));
+
+#if !defined(_WIN32)
+    char path[] = "/tmp/eco-deferred-finish-cfg-XXXXXX";
+    int fd = mkstemp(path);
+    TEST_ASSERT(fd >= 0);
+    const char* json =
+        "{\"incremental_mark_deferred_finish\": 2.5, \"incremental_mark_deferred_floor\": 8}";
+    TEST_ASSERT(write(fd, json, std::strlen(json)) == static_cast<ssize_t>(std::strlen(json)));
+    close(fd);
+    HeapConfig j;
+    applyHeapConfigJsonFile(j, path);
+    unlink(path);
+    TEST_ASSERT(j.incremental_mark_deferred_finish == 2.5);
+    TEST_ASSERT(j.incremental_mark_deferred_floor == 8.0);
     j.validate();
 #endif
 });

@@ -3,6 +3,8 @@ runtime/src/allocator/OldGenSpace.cpp: deferred_frees_.clear();
 runtime/src/allocator/OldGenSpace.cpp: deferred_frees_.clear();
 runtime/src/allocator/OldGenSpace.cpp: deferred_frees_.clear();
 runtime/src/allocator/OldGenSpace.cpp: deferred_frees_.push_back(m);
+runtime/src/allocator/OldGenSpace.cpp: deferred_summed_bytes_ += deferred_frees_[deferred_summed_n_].cell_size;
+runtime/src/allocator/OldGenSpace.cpp: for (; deferred_summed_n_ < deferred_frees_.size(); ++deferred_summed_n_)
 runtime/src/allocator/OldGenSpace.cpp: for (LargeBodyMeta& m : deferred_frees_) {
 runtime/src/allocator/OldGenSpace.cpp: for (const LargeBodyMeta& m : deferred_frees_) add(m.body_base, m.cell_size);
 runtime/src/allocator/OldGenSpace.cpp: for (const LargeBodyMeta& m : deferred_frees_) cells.push_back(m.body_base);

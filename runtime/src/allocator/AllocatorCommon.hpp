@@ -345,6 +345,13 @@ constexpr double   INCREMENTAL_MARK_PREDICT_GROWTH = 1.25;
 // running mark cycle is due to finish early. The headroom trigger aims to start a cycle so that it ends
 // below this line. It must exceed the global-pressure fraction.
 constexpr double   INCREMENTAL_MARK_FINISH_FRACTION = 0.95;
+// The default factor F of the deferred-bytes finish (HEAP_084): a running mark cycle finishes early once
+// the dead young large bodies it has deferred to its handoff reach F times its live estimate at t0. 0
+// turns the finish off.
+constexpr double   INCREMENTAL_MARK_DEFERRED_FINISH = 1.0;
+// The default least threshold of the deferred-bytes finish, in direct-allocation budgets (HEAP_079), or
+// in minor thresholds when the budget is off.
+constexpr double   INCREMENTAL_MARK_DEFERRED_FLOOR = 1.0;
 
 // The default fraction of a single-size-class block that may be live at the end of a mark for the block to
 // be turned into a mixed block. 0 turns this off.
@@ -790,6 +797,8 @@ struct HeapConfig {
     size_t   incremental_mark_min_slice_units = INCREMENTAL_MARK_MIN_SLICE_UNITS;
     double   incremental_mark_predict_growth = INCREMENTAL_MARK_PREDICT_GROWTH;
     double   incremental_mark_finish_fraction = INCREMENTAL_MARK_FINISH_FRACTION;
+    double   incremental_mark_deferred_finish = INCREMENTAL_MARK_DEFERRED_FINISH;
+    double   incremental_mark_deferred_floor = INCREMENTAL_MARK_DEFERRED_FLOOR;
 
     // In [0, 1]. 0 demotes no block; 1 demotes every single-size-class block.
     double demote_live_fraction = DEMOTE_LIVE_FRACTION;
@@ -1077,6 +1086,14 @@ struct HeapConfig {
             throw std::invalid_argument(
                 "incremental_mark_finish_fraction must be in "
                 "(major_gc_global_pressure_fraction, 1]");
+        }
+        if (!(incremental_mark_deferred_finish == 0.0 ||
+              (incremental_mark_deferred_finish >= 0.25 && incremental_mark_deferred_finish <= 64.0))) {
+            throw std::invalid_argument(
+                "incremental_mark_deferred_finish must be 0 or in [0.25, 64]");
+        }
+        if (!(incremental_mark_deferred_floor >= 1.0 && incremental_mark_deferred_floor <= 1024.0)) {
+            throw std::invalid_argument("incremental_mark_deferred_floor must be in [1, 1024]");
         }
         if (!(demote_live_fraction >= 0.0 && demote_live_fraction <= 1.0)) {
             throw std::invalid_argument("demote_live_fraction must be in [0, 1]");

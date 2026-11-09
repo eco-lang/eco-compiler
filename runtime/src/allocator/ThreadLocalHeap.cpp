@@ -403,6 +403,12 @@ size_t ThreadLocalHeap::directAllocBudget() const {
     return std::max<size_t>(b, 1);
 }
 
+uint64_t ThreadLocalHeap::deferredFinishFloor() const {
+    size_t unit = directAllocBudget();
+    if (unit == 0) unit = nursery_.minorThresholdBytes();
+    return static_cast<uint64_t>(config_->incremental_mark_deferred_floor * static_cast<double>(unit));
+}
+
 void ThreadLocalHeap::noteDirectAlloc(size_t bytes) {
     const uint64_t seq = nursery_.minorSeq();
     if (seq != direct_debt_seq_) {   // a minor has run since the last note
@@ -1187,6 +1193,15 @@ void ThreadLocalHeap::stepMarkCycle() {
         finishMarkCycleNow(OldGenSpace::CycleFinish::Pressure);
         return;
     }
+    // HEAP_084: the cycle has deferred more dead large bodies than the heap should carry to its handoff, so it
+    // finishes now, exactly as a pressure finish does. Before the step, which may reap (M1's trace rule).
+    if (old_gen_.cycleDeferredFinishDue(deferredFinishFloor())) {
+#if ENABLE_GC_STATS
+        old_gen_.getStats().im.finish_deferred++;
+#endif
+        finishMarkCycleNow(OldGenSpace::CycleFinish::Pressure);
+        return;
+    }
     const uint64_t t_start = cycleNowNs();
     const bool conc = old_gen_.concurrentCycle();
     (void)old_gen_.cycleStep();
@@ -1255,6 +1270,13 @@ void ThreadLocalHeap::completeMarkCycle(OldGenSpace::CycleFinish why) {
 #endif
     const uint64_t units = old_gen_.cycleUnitsDone();
     const uint32_t span_minors = old_gen_.cycleMinorsSinceT0();
+    const uint64_t deferred = old_gen_.cycleDeferredBytes();   // the handoff frees them
+#if ENABLE_GC_STATS
+    {
+        IncrMarkStats& im = old_gen_.getStats().im;
+        if (deferred > im.deferred_bytes_at_finish_max) im.deferred_bytes_at_finish_max = deferred;
+    }
+#endif
     const uint64_t t_start = cycleNowNs();
     MajorGCPhaseProfile prof;
 #if ENABLE_GC_STATS
@@ -1273,11 +1295,11 @@ void ThreadLocalHeap::completeMarkCycle(OldGenSpace::CycleFinish why) {
         std::fprintf(stderr,
             "[gc-profile] cycle handoff units=%llu span_minors=%u handoff=%.3fms"
             " tail_sweep=%.3fms live=%zu garbage=%zu alldead=%zu/%zub demoted=%zu/%zub"
-            " sweep_pending=%zu\n",
+            " sweep_pending=%zu deferred=%llu\n",
             (unsigned long long)units, span_minors, dur / 1e6, prof.sweep_ns / 1e6,
             prof.live_bytes_after, prof.garbage_bytes, prof.alldead_blocks_released,
             prof.alldead_bytes_released, prof.demoted_blocks, prof.demoted_bytes,
-            prof.sweep_pending_blocks);
+            prof.sweep_pending_blocks, (unsigned long long)deferred);
         std::fflush(stderr);
     }
     cycle_inpause_ns_ += dur;
@@ -1329,6 +1351,7 @@ void ThreadLocalHeap::completeMarkCycle(OldGenSpace::CycleFinish why) {
 #endif
     (void)span_minors;
     (void)units;
+    (void)deferred;
 }
 // TLA-REGION(TLH.completeMarkCycle) end
 
