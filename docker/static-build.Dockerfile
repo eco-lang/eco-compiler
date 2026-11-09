@@ -295,15 +295,26 @@ RUN cmake --build build-static --target package \
 # Hello.elm is `text "Hello!"` (browser-style Html); on a headless runtime
 # it exits non-zero, so the smoke test does not check ./hello's exit code —
 # only that it runs without crashing and yields a fully-static ELF.
+#
+# The build downloads the example's packages from github.com zipballs, which
+# fail now and then on hosted runners ("unable to unzip the data"), so eco make
+# gets three tries. The braces keep ./hello's exit-code capture inside the &&
+# chain: without them a failed eco make fell through to "OK" (rc=127).
 RUN mkdir -p /tmp/eco-smoke \
  && tar -xzf build-static/eco-*-x86_64-linux-musl.tar.gz -C /tmp/eco-smoke \
  && cp compiler/examples/elm.json      /tmp/eco-smoke/elm.json \
  && mkdir -p /tmp/eco-smoke/src \
  && cp compiler/examples/src/Hello.elm /tmp/eco-smoke/src/Hello.elm \
  && cd /tmp/eco-smoke \
- && ./bin/eco make src/Hello.elm --output=hello \
+ && for attempt in 1 2 3; do \
+        ./bin/eco make src/Hello.elm --output=hello && break; \
+        if [ "$attempt" -eq 3 ]; then \
+            echo "FATAL: eco make src/Hello.elm failed 3 times" >&2; exit 1; \
+        fi; \
+        echo "eco make failed (attempt $attempt of 3); retrying in 30s" >&2; sleep 30; \
+    done \
  && test -x ./hello \
- && hello_rc=0; ./hello >/dev/null 2>&1 || hello_rc=$? \
+ && { hello_rc=0; ./hello >/dev/null 2>&1 || hello_rc=$?; } \
  && if [ "$hello_rc" -eq 139 ] || [ "$hello_rc" -eq 134 ]; then \
         echo "FATAL: hello crashed (rc=$hello_rc — SIGSEGV/SIGABRT)" >&2; exit 1; \
     fi \
