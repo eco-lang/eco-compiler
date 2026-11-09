@@ -20,6 +20,7 @@ trace  M1  M1-snapshot-mark  TraceCycle  TraceCycle.cfg  gc-heap-trace  cycle,le
 trace  M1  M1-snapshot-mark  TraceCycle  TraceCycle.cfg  gc-heap-trace  cycle,parminor-b2   accept
 trace  M1  M1-snapshot-mark  TraceCycle  TraceCycle.cfg  gc-heap-trace  cycle,region-b2     accept
 trace  M1  M1-snapshot-mark  TraceCycle  TraceCycle.cfg  gc-heap-trace  cycle,pressure-b2   accept
+trace  M1  M1-snapshot-mark  TraceCycle  TraceCycle.cfg  gc-heap-trace  cycle,deferred-b2   accept   # large-body-deferral-pacing: the deferred-bytes finish (HEAP_084) traces as pressure
 trace  M1  M1-snapshot-mark  TraceCycle  TraceCycle.cfg  gc-heap-trace  cycle,refuse-b2     accept   # register-fixes Phase 5: refused launches (t0, relaunch) = episodes a fork stopped at once
 # ... and its negative controls: each must be rejected.
 #   no closing join at k = T; a wrong k; a handoff without its minor; a reap before the pressure decision
@@ -27,6 +28,7 @@ trace  M1  M1-snapshot-mark  TraceCycle  TraceCycle.cfg  gc-heap-trace  cycle,le
 trace  M1  M1-snapshot-mark  TraceCycle  TraceCycle.cfg  gc-heap-trace  cycle,legacy-b2     reject  mutate=set:step:2:k=5
 trace  M1  M1-snapshot-mark  TraceCycle  TraceCycle.cfg  gc-heap-trace  cycle,legacy-b2     reject  mutate=drop:minor:6
 trace  M1  M1-snapshot-mark  TraceCycle  TraceCycle.cfg  gc-heap-trace  cycle,pressure-b2   reject  mutate=swap:pressure:1
+trace  M1  M1-snapshot-mark  TraceCycle  TraceCycle.cfg  gc-heap-trace  cycle,deferred-b2   reject  mutate=swap:pressure:1
 trace  M1  M1-snapshot-mark  TraceCycle  TraceCycle.cfg  gc-heap-trace  cycle,refuse-b2     reject  mutate=drop:stop:1
 
 # M1 (b): the tiny graph on the real allocator (plan §8 (b)): <= 8 objects, every scan,

@@ -292,6 +292,9 @@ public:
     // fraction of the nursery's collection threshold, at most a 32nd of the old generation's cap when there is
     // one, and at least 1.
     size_t directAllocBudget() const;
+    // Returns the least threshold of the deferred-bytes finish (HEAP_084): `incremental_mark_deferred_floor`
+    // times directAllocBudget(), or times the nursery's collection threshold when the budget is 0.
+    uint64_t deferredFinishFloor() const;
 
     // ========== Garbage Collection ==========
 
@@ -479,7 +482,8 @@ private:
     // cycle in this pause.
     void startMarkCycle(GCStats::MajorReason reason);
     // Runs the running cycle's step at a minor end: the handoff when it is due, a finish when the old
-    // generation's pressure requires one, and otherwise one step of marking.
+    // generation's pressure or the cycle's deferred large-body bytes (HEAP_084) require one, and otherwise one
+    // step of marking.
     void stepMarkCycle();
     // Finishes the running cycle's mark now and runs its handoff, recording `why`.
     void finishMarkCycleNow(OldGenSpace::CycleFinish why);

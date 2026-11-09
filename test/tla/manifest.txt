@@ -37,7 +37,7 @@ file    5bcf9065bd75d9801cd6c7fc35e8b9ab3964ecb989d234b7543831e2d61828a5  test/g
 file    594aa1d6c5fe377c852fe149f9ac24e35a6a7f1927dccf9ea4009b8c8b84195e  runtime/src/allocator/BlockTable.hpp  -  M8
 
 # ---- regions ----
-region  ba302e5793e8a7396699da96c03bb59979e8b9a4d1a0cc3481357fa9e977f9c8  runtime/src/allocator/OldGenSpace.cpp  OGS.beginMarkCycle  M1
+region  8d544627d1feefff1db57b1aa4c49de8738f5c49f733bb725de132532980c5c8  runtime/src/allocator/OldGenSpace.cpp  OGS.beginMarkCycle  M1
 region  caf7b4704fdb65904bd566bfb75b02e3cf4c80ee326d1a85b46627421ebd0e65  runtime/src/allocator/OldGenSpace.cpp  OGS.snapshotYoungLarge  M1,M5
 region  3bea1fd891bba313259d2ed54d1e960ee03832a979d276c4043e0e7d1d10a016  runtime/src/allocator/OldGenSpace.cpp  OGS.afterSnapshot  M1
 region  0112489150158437accbfb185b02f7ac91efa6a0df8946af6c98c1bd0be53ec1  runtime/src/allocator/OldGenSpace.cpp  OGS.launchBackground  M1,M2,M6
@@ -66,7 +66,7 @@ region  249d2c3046aec31cab85efff72b575cf954e7683f738a7b2e0469b7881e1507e  runtim
 region  1147253a3dbba06d003f851bdff739fd6be5168ec3dce9435c6208240d2971ce  runtime/src/allocator/OldGenSpace.cpp  OGS.resolveMinorThreads  M4,M6
 region  6e22d6808462706b91853c9eb07053679a2f5ecc9a24b79639684bbc4939719e  runtime/src/allocator/OldGenSpace.cpp  OGS.resolveConcMarkThreads  M6
 region  09411e876678a6d29eb518bee594f9e22e85d61b2db55fe65db9e0478e61ced7  runtime/src/allocator/OldGenSpace.cpp  OGS.destructor  M6
-region  08e1c6a835625fcea95f5b481aa5c89be0376d4c2abbbd2218a7f9fd9d84cc5b  runtime/src/allocator/OldGenSpace.cpp  OGS.reset  M6
+region  21305bf2e0ea5a0d5813070bc45266fd92c484604d7dfb6c9136fb3888b306ff  runtime/src/allocator/OldGenSpace.cpp  OGS.reset  M6
 region  2d1af3f18a67b0736080ca86200361dfa72cad8c0c3396d71c27bda6a16319ac  runtime/src/allocator/OldGenSpace.cpp  OGS.initObjectHeaderWithSize  M1,M4,M8
 region  d41274a6baab265c24b59cf33c563a8c1ab6af7ca7cafbf01af207863181ca78  runtime/src/allocator/OldGenSpace.cpp  OGS.finalizeBitmapCell  M1,M4,M8
 region  500cddda22e472f78cdf8620ad28e534b76101aa966bdeddb5e7137047ece7e4  runtime/src/allocator/OldGenSpace.cpp  OGS.resetAllocCursors  M4,M8
@@ -123,9 +123,9 @@ region  896f924a1e351b7c4757782875590c6feddd698f67f14aca3bc010ace0c3a176  runtim
 region  1b502d5256e8648b32227a0033b263b5c043790fdc11d75335136ac422924aad  runtime/src/allocator/ThreadLocalHeap.cpp  TLH.majorGC  M1,M5,M8
 region  7666793086636f0d6bead6c77e7ef2ac981340be56c965639342e1e09bc62287  runtime/src/allocator/ThreadLocalHeap.cpp  TLH.majorGCAndShrink  M1,M4,M8
 region  e089cd52124e93a910f8de68bc11fa4cfb96030c8db8901aa397be88b2c31d54  runtime/src/allocator/ThreadLocalHeap.cpp  TLH.startMarkCycle  M1,M5
-region  f57df5d9b5056118350e4015ce900b9b358661a09b1bfbbaeb9a2c427b7eac91  runtime/src/allocator/ThreadLocalHeap.cpp  TLH.stepMarkCycle  M1
+region  0fdbb7e9cd70fb0ca571f5ce2bbb2ab2d1726d4ab94cd4dbb6718ba611642e34  runtime/src/allocator/ThreadLocalHeap.cpp  TLH.stepMarkCycle  M1
 region  c6fd113f19729e4fa0f2684a008fc9424e865a28d3e397bbcc768ff6f7386aa8  runtime/src/allocator/ThreadLocalHeap.cpp  TLH.finishMarkCycleNow  M1
-region  219f5150bc3f830dfc635616f9cf80b1f5d4e8d92b583cf5318c31b259f6769f  runtime/src/allocator/ThreadLocalHeap.cpp  TLH.completeMarkCycle  M1
+region  3e2395f85ec9ece0cbe982a731a9b4913e825096db2dd54180a4faf1a9b98957  runtime/src/allocator/ThreadLocalHeap.cpp  TLH.completeMarkCycle  M1
 region  e50c08c7f202a7dd15bc4dcfa4d06423815dac28817f0bd8000c91203e5acfca  runtime/src/allocator/ThreadLocalHeap.cpp  TLH.destructor  M6
 region  f5620a4d92860019d4eaaff7d71f495e951b62176cb9495176dfb1d6eff60e44  runtime/src/allocator/NurserySpace.hpp  NSH.forEachYoung  M1,M5
 region  84d977b32a71cbfe1bc35a4287a6dbb1c35a976fa05e09ca13525ccb9934ffea  runtime/src/allocator/NurserySpace.hpp  NSH.forEachSurvivor  M1
@@ -244,7 +244,7 @@ grep    1bdbf8da33c4a0cb38e223f9f0a0bf6202495e468ccc3915203757d21c784f20  -  F.a
 grep    73c591603c9ed6169dee319d46196b877dbb052d89f9da718351428442febfa8  -  F.parPromoActive  M4
 grep    ddd388532f3330e49737fdab318ac63dd0f8c1abc01a65f4c599140d08c58574  -  F.roles  M3
 grep    0f0329f49dab752a7f972b588c1cd0d0690ac6c8a50b2e2c8b463dbdddd56301  -  F.ylobox  M3
-grep    3ebe21704a10620dc0765ab18542bcd8952f788013e5f0199c907a94104420a2  -  F.deferredFrees  M1
+grep    577b224fcc1949328d06d7051e58a242b2fd622b920a1ef430e3baa7ac96a019  -  F.deferredFrees  M1
 grep    5ce7c45aa18dacf6a1301765f2bf11a4f545137526ff34074ec1cd27cdfa896a  -  F.cycleState  M1
 grep    add33fc189d1dd4202c7d37409eb7d9e7acc7f2711f3f76f71ac8aec7d1b178c  -  F.bgEp  M1,M6
 grep    4c5ed5ff4c9e1aa1e55535bf4f3d109f636925e029168ff6485a6c2af9d6ac49  -  F.externalRoots  M1

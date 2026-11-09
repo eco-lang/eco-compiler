@@ -785,3 +785,44 @@ now adds `system-kernel-cpp/src/*/*/*.cpp` and `*.hpp`; the census gains that on
 
 **Verdict: no model change needed.** `tla-check` not re-run (no spec or config change); the change is not in a
 traced path.
+
+## 2026-11-08 — the deferred-bytes finish (plans/large-body-deferral-pacing.md, HEAP_084)
+
+Pins fired: region `runtime/src/allocator/ThreadLocalHeap.cpp` `TLH.stepMarkCycle` (**0fdbb7e9cd70**), region
+`TLH.completeMarkCycle` (**3e2395f85ec9**), region `runtime/src/allocator/OldGenSpace.cpp` `OGS.beginMarkCycle`
+(**8d544627d1fe**), grep `F.deferredFrees` (**577b224fcc19**). (`OGS.reset`, also changed, is M6's: its AUDIT.md.)
+
+Change: a running cycle now also finishes early when the dead young large bodies it has deferred to its handoff
+reach max(`incremental_mark_deferred_finish` x `pacing_t0_.live_ref`, floor).
+- `TLH.stepMarkCycle`: a second finish condition, `old_gen_.cycleDeferredFinishDue(deferredFinishFloor())`,
+  directly after the pressure check and before `cycleStep`; when it holds, a stats counter and
+  `finishMarkCycleNow(CycleFinish::Pressure)`, exactly the pressure finish's path.
+- `TLH.completeMarkCycle`: reads `cycleDeferredBytes()` before the handoff for a stats maximum and the
+  `[gc-profile] cycle handoff ... deferred=` field. Statistics only.
+- `OGS.beginMarkCycle`: resets the accessor's two running-sum fields beside the existing `deferred_frees_.clear()`.
+- `F.deferredFrees`: the new lines are `cycleDeferredBytes`'s loop, which sums `cell_size` over the entries pushed
+  since its last call (`processDeferredFrees` and the t0 clear reset the sums), and `cycleDeferredFinishDue`'s call
+  of it. Region `OGS.sweepNurseryLargeBodies` (the push, pinned to M1, M5, M8) is unchanged.
+
+Re-audit against MAPPING.md:
+- `P_Marking` already chooses `goto P_Pressure` nondeterministically at any `k`, before the step's reap or relaunch
+  ("every real schedule is a model schedule", §2 abstractions). The new condition only adds real schedules that
+  take that branch; the fixed schedule (handoff at t0 + T + 1) is unchanged for cycles where it does not hold.
+  `P_Pressure` → `DrainAll` → `Handoff` is the code's `finishMarkCycleNow` → `drainCycleMark` → `completeMarkCycle`
+  for both reasons.
+- No atomic step, lock, memory order or shared location is added. `cycleDeferredFinishDue` reads
+  `deferred_frees_` (pushed only by `sweepNurseryLargeBodies` in the minor's epilogue, after the parallel minor's
+  join, on the mutator: M3 MAPPING, M5 `MN_Epilogue`), the `mutable` sum fields (mutator only), `pacing_t0_`
+  (written at t0 in the pause) and the configuration. No helper progress (`bg_ep_`, `finishedApprox`) is read: it
+  is a policy decision under IM16's `DecisionScope` (GC_DET_001). `deferred` in the model is unchanged: the same
+  cells are deferred and the same handoff frees them, only sooner.
+- Trace rule (§ trace events): the new finish emits `pressure` from `finishMarkCycleNow` before any reap in that
+  minor, as the old one does, so `TraceCycle` maps it to `P_Marking`'s pressure branch. A new trace row,
+  `cycle,deferred-b2` (`test/gc-heap-tsan/heap_driver.cpp` `deferredKnobs`: 16 dying 60 KiB Bytes per step at the
+  default 512 MiB cap, so the pressure line is never reached and every `pressure` event is the new finish), gives
+  398 of 400 cycles ending `why: "pressure"` (395 at `k` = 2, 2 at `k` = 3, 1 at `k` = 1): accepted (4427 events),
+  and its `swap:pressure:1` negative control is rejected. `tla-check` (M1 quick tier, mutants included): 24/24 as
+  expected; `tla-trace`: 152/152 as expected.
+
+MAPPING.md: the `P_Marking` and `P_Pressure` rows name `cycleDeferredFinishDue` and the current lines; the
+abstractions row "pacing (assist, pressure)" names the new finish. **Verdict: no model change needed.**

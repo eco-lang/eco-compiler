@@ -249,6 +249,8 @@ void applyHeapConfigJsonFile(HeapConfig &cfg, const char *path) {
         "incremental_mark_min_slice_units",
         "incremental_mark_predict_growth",
         "incremental_mark_finish_fraction",
+        "incremental_mark_deferred_finish",
+        "incremental_mark_deferred_floor",
         "demote_live_fraction",
         "garbage_denom_cap",
         "major_gc_live_budget",
@@ -427,6 +429,12 @@ void applyHeapConfigJsonFile(HeapConfig &cfg, const char *path) {
     if (auto it = doc.find("incremental_mark_finish_fraction"); it != doc.end())
         cfg.incremental_mark_finish_fraction =
             parseDouble(*it, "incremental_mark_finish_fraction");
+    if (auto it = doc.find("incremental_mark_deferred_finish"); it != doc.end())
+        cfg.incremental_mark_deferred_finish =
+            parseDouble(*it, "incremental_mark_deferred_finish");
+    if (auto it = doc.find("incremental_mark_deferred_floor"); it != doc.end())
+        cfg.incremental_mark_deferred_floor =
+            parseDouble(*it, "incremental_mark_deferred_floor");
     if (auto it = doc.find("demote_live_fraction"); it != doc.end())
         // parseDouble, not parseFraction: the field is a double, and a float
         // round-trip turns 0.3 into 0.30000001 (validate() checks [0, 1]).

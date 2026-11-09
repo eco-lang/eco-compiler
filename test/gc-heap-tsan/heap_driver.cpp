@@ -74,6 +74,9 @@ struct Knobs {
     bool refuse = false;
     int major_every = 0, major_at = 0;  // an explicit STW major while a cycle runs
     double finish_fraction = 0;         // incremental_mark_finish_fraction; 0 = the default
+    // plans/large-body-deferral-pacing.md: dying 60 KiB Bytes per step, so cycles end on the
+    // deferred-bytes finish.
+    int churn_bodies = 0;
     float global_fraction = 0;          // major_gc_global_pressure_fraction; 0 = the default
     size_t max_heap_mb = 0;             // max_heap_size; 0 = the default (512 MiB)
     const char* trace = nullptr;        // record this scenario's M1 cycle events
@@ -302,6 +305,8 @@ void scenario(unsigned bg, unsigned slices, uint64_t seed, unsigned minor = 1,
                 want[k] = -1000000 - step;
             }
         }
+        // A young body that dies at once: during a cycle its minor defers it to the handoff.
+        for (int i = 0; i < kn.churn_bodies; ++i) (void)a.allocLargeByteBuffer(nullptr, 60 * 1024);
         if (step % 9 == 0) {
             std::vector<u16> big(5000, 'L');
             keep.push_back(std::make_unique<Root>(a, alloc::allocString(big.data(), big.size())));
@@ -483,6 +488,14 @@ Knobs pressureKnobs() {
     k.finish_fraction = 0.7;
     return k;
 }
+// plans/large-body-deferral-pacing.md: large-body churn on a roomy heap, so cycles end early on the
+// deferred-bytes finish (HEAP_084), at the second or third minor end; it traces as a pressure finish.
+// The pressure line itself is never reached at the default fraction of 512 MiB.
+Knobs deferredKnobs() {
+    Knobs k = traceKnobs(3, 37);
+    k.churn_bodies = 16;
+    return k;
+}
 // Register-fixes Phase 5 (CR-013/004): launches refused under a (test) fork hold, at t0
 // and at the relaunch after a fork stop -- to M1, episodes a fork stopped at once.
 Knobs refuseKnobs() {
@@ -496,6 +509,7 @@ const TraceScenario kTraceScenarios[] = {
     {"parminor-b2", 2, 4, 4, false, traceKnobs(3, 41)},
     {"region-b2", 2, 4, 4, true, traceKnobs(2, 43)},
     {"pressure-b2", 2, 8, 1, false, pressureKnobs()},
+    {"deferred-b2", 2, 8, 1, false, deferredKnobs()},
     {"refuse-b2", 2, 4, 1, false, refuseKnobs()},
 };
 

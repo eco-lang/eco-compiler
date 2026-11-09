@@ -697,6 +697,10 @@ static IsolatedSuites buildIsolatedSuites() {
     s.largeBodyChurn->add(testLargeBodyRecoveryWithoutBudget);
     s.largeBodyChurn->add(testLargeBodyBudgetZeroIsOff);
     s.largeBodyChurn->add(testDirectAllocMinorBudgetConfig);
+    // The deferred-bytes finish of a mark cycle (plans/large-body-deferral-pacing.md).
+    s.largeBodyChurn->add(testDeferredFinishBoundsCycle);
+    s.largeBodyChurn->add(testDeferredFinishDeterministic);
+    s.largeBodyChurn->add(testDeferredFinishConfig);
     // The large-object space's free-space manager (plans/large-object-space.md D2).
     s.largeBodyChurn->add(testLosCoalescesBothNeighbours);
     s.largeBodyChurn->add(testLosBestFitAndExactReuse);

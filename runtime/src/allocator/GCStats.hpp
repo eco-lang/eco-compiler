@@ -455,6 +455,9 @@ struct IncrMarkStats {
     uint64_t closing_units_max = 0;
     // Cycles ended for each `OldGenSpace::CycleFinish` reason: Schedule, Pressure and Join.
     uint64_t finish_schedule = 0, finish_pressure = 0, finish_join = 0;
+    // The pressure finishes that the deferred-bytes finish made (HEAP_084), and the most bytes a cycle had
+    // deferred when it finished, for any reason.
+    uint64_t finish_deferred = 0, deferred_bytes_at_finish_max = 0;
     uint64_t black_bytes = 0, traced_live_bytes = 0;
     uint64_t deferred_frees = 0, deferred_free_bytes = 0;
     uint64_t t0_survivors = 0, t0_survivor_bytes = 0, t0_ylos = 0;
@@ -472,6 +475,9 @@ struct IncrMarkStats {
         if (o.closing_units_max > closing_units_max) closing_units_max = o.closing_units_max;
         finish_schedule += o.finish_schedule; finish_pressure += o.finish_pressure;
         finish_join += o.finish_join;
+        finish_deferred += o.finish_deferred;
+        if (o.deferred_bytes_at_finish_max > deferred_bytes_at_finish_max)
+            deferred_bytes_at_finish_max = o.deferred_bytes_at_finish_max;
         black_bytes += o.black_bytes; traced_live_bytes += o.traced_live_bytes;
         deferred_frees += o.deferred_frees; deferred_free_bytes += o.deferred_free_bytes;
         t0_survivors += o.t0_survivors; t0_survivor_bytes += o.t0_survivor_bytes;

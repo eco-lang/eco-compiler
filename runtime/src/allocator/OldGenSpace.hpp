@@ -1590,6 +1590,10 @@ public:
     bool cycleActive() const { return cycle_state_ != CycleState::Idle; }
     // Returns where the mark cycle is.
     CycleState cycleState() const { return cycle_state_; }
+    // Returns the bytes on deferred_frees_: the cells this cycle's minors found dead but may not free
+    // before the handoff. Amortised O(1): it adds only the entries pushed since the last call. Mutator
+    // only, after a minor's join (HEAP_084).
+    uint64_t cycleDeferredBytes() const;
 private:
     // t0: prepares the mark as startMark does, sets the phase to Marking, fixes the cycle's plan of
     // `slices` steps and its predicted mark work, and records the t0 view. Requires bitmap mode and no
@@ -1637,6 +1641,10 @@ private:
     // Returns whether all old generations' committed bytes over the cap have reached
     // `incremental_mark_finish_fraction`; false with no Allocator or a zero cap.
     bool cyclePressureFinishDue() const;
+    // Returns whether the bytes this cycle has deferred reach
+    // max(incremental_mark_deferred_finish x the live estimate at t0, `floor`) (HEAP_084); false when the
+    // factor is 0.
+    bool cycleDeferredFinishDue(uint64_t floor) const;
     // The cycle's planned step count T, the minor ends since t0, the units marked, and the units
     // predicted.
     uint32_t cycleSlicesPlanned() const { return cycle_slices_; }
@@ -1695,6 +1703,9 @@ private:
     size_t   cycle_black_bytes_ = 0;  // bytes allocated black this cycle
     size_t   baseline_black_bytes_ = 0;  // excluded from the trigger baseline until the next major
     std::vector<LargeBodyMeta> deferred_frees_;   // frees put off to the handoff
+    // cycleDeferredBytes()'s running sum: the bytes of deferred_frees_[0, deferred_summed_n_).
+    mutable size_t   deferred_summed_n_ = 0;
+    mutable uint64_t deferred_summed_bytes_ = 0;
 
     // The serial-path forms of scanChildren, greyHPointer and greyObject, on slot 0.
     void markChildren(void *obj);
@@ -2347,6 +2358,8 @@ public:
     static size_t deferredFrees(const OldGenSpace& og) { return og.deferred_frees_.size(); }
     // Returns the live bytes the last major mark found.
     static size_t majorLive(const OldGenSpace& og) { return og.major_live_; }
+    // Returns the live estimate fixed at the running (or last) cycle's t0.
+    static uint64_t cycleLiveRef(const OldGenSpace& og) { return og.pacing_t0_.live_ref; }
     // Returns the post-sweep baseline of the triggers.
     static size_t postSweepLive(const OldGenSpace& og) { return og.post_sweep_live_bytes_; }
     // Returns the markers' live-byte sums taken at the last handoff.

@@ -401,6 +401,8 @@ void OldGenSpace::reset(const HeapConfig* new_config) {
     baseline_black_bytes_ = 0;
     cycle_traced_live_ = 0;
     deferred_frees_.clear();
+    deferred_summed_n_ = 0;
+    deferred_summed_bytes_ = 0;
 #if ECO_HEAP_VALIDATE
     cycle_alloc_log_.clear();
     cycle_t0_blocks_.clear();
@@ -4168,6 +4170,8 @@ void OldGenSpace::beginMarkCycle(Allocator &alloc, uint32_t slices) {
     }
     prev_cycle_occ_t0_ = occ;
     deferred_frees_.clear();
+    deferred_summed_n_ = 0;
+    deferred_summed_bytes_ = 0;
 #if ECO_HEAP_VALIDATE
     cycle_alloc_log_.clear();
     cycle_t0_blocks_ = t0Blocks();
@@ -4261,6 +4265,18 @@ bool OldGenSpace::cyclePressureFinishDue() const {
     return static_cast<double>(allocator_->getOldGenCommittedBytes()) /
                static_cast<double>(cap) >=
            config_->incremental_mark_finish_fraction;
+}
+
+bool OldGenSpace::cycleDeferredFinishDue(uint64_t floor) const {
+#if ECO_HEAP_VALIDATE
+    const DecisionScope im16(*this);   // IM16
+#endif
+    const double f = config_->incremental_mark_deferred_finish;
+    if (!(f > 0.0)) return false;
+    // Every input is mutator state: the minors' own sweeps, the estimate fixed at t0, the configuration.
+    const double line = std::max(f * static_cast<double>(pacing_t0_.live_ref),
+                                 static_cast<double>(floor));
+    return static_cast<double>(cycleDeferredBytes()) >= line;
 }
 
 // TLA-REGION(OGS.handoffMarkCycle) begin
@@ -4863,6 +4879,15 @@ void OldGenSpace::processDeferredFrees() {
         freeLargeBodyCell(m);
     }
     deferred_frees_.clear();
+    deferred_summed_n_ = 0;
+    deferred_summed_bytes_ = 0;
+}
+
+uint64_t OldGenSpace::cycleDeferredBytes() const {
+    // deferred_frees_ only grows between the resets, so only the new tail is summed.
+    for (; deferred_summed_n_ < deferred_frees_.size(); ++deferred_summed_n_)
+        deferred_summed_bytes_ += deferred_frees_[deferred_summed_n_].cell_size;
+    return deferred_summed_bytes_;
 }
 
 #if ECO_HEAP_VALIDATE

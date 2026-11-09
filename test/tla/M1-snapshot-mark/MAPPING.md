@@ -23,7 +23,7 @@ drift. `OGS` = `runtime/src/allocator/OldGenSpace.cpp`; `TLH` = `ThreadLocalHeap
 | `cycle` | `idle` / `marking` / `handoffDue` | `cycle_state_` (`CycleState`) |
 | `k` | minor ends since t0 | `cycle_k_` (`noteCycleMinorEnd`) |
 | `episode` | `none` / `running` / `finished` | `bg_ep_` (`BgEpisode`, `OldGenSpace.hpp:1026`) with the gang's `running()` folded in |
-| `deferred` | dead young large objects waiting for the handoff | `deferred_frees_` (`OGS:7288`) |
+| `deferred` | dead young large objects waiting for the handoff | `deferred_frees_` (pushed `OGS:7377`) |
 | `zombie` | region mode: the dead objects of the extent handed over at the last minor | the Tenuring extent's unzapped dead objects |
 | `minors`, `majors`, `ops`, `opsTotal`, `stops` | exploration bounds | — |
 | ghosts `t0Old`, `t0Ylos`, `t0Reach`, `tSH`, `tNH` | the old set, YLOS cells, reachable old-gen cells (IM1's record) at t0; S_H; N_H | `cycle_t0_reach_` (validate builds); `cycle_t0_blocks_` |
@@ -35,10 +35,10 @@ drift. `OGS` = `runtime/src/allocator/OldGenSpace.cpp`; `TLH` = `ThreadLocalHeap
 | `M_Choose` (each branch) | one Elm or kernel operation between statepoints | one mutator operation; a load reads a field of an immutable or owned object; the P1-violating write (mutant) is one store |
 | `P_Minor` | `NurserySpace::minorGC` / `minorGCRegion`, with `sweepNurseryLargeBodies` (`OGS:7210`) | object-level footprint disjoint from the markers', checked in every state by `MarkerFootprint`; shared metadata delegated (§4) |
 | `P_Handoff`, `H_Free` | `TLH::stepMarkCycle` `:1145-1147` → `completeMarkCycle` `:1191` (IM1 `:1194`, IM2 `:1199`) → `OGS::handoffMarkCycle` `:4258` → `runPostMarkTail` (called `:4305`) with `classifyBlocksAfterMark` (called `:3988`; `retireDeadLargeBodies` `:1657`) and `processDeferredFrees` (called `:3953`) | no marker runs at the handoff (`IM9`); the checks are invariants on the state where `pc = "H_Free"` |
-| `P_Marking` | `noteCycleMinorEnd` (`TLH:1144`), `cyclePressureFinishDue` (`:1149`, before the step, any `k`), then `OGS::runCycleStepConcurrent` `:4660`: `reapBackground` / relaunch `:4688-4699` | mutator-only state plus the reap's acquire load of the episode |
+| `P_Marking` | `noteCycleMinorEnd` (`TLH:1187`), `cyclePressureFinishDue` (`:1192`) and the deferred-bytes finish `cycleDeferredFinishDue` (`:1198`, `OGS:4270`; HEAP_084), both before the step, any `k`, then `OGS::runCycleStepConcurrent` `:4763`: `reapBackground` / relaunch | mutator-only state plus the reap's acquire load of the episode; `cycleDeferredFinishDue` reads only `deferred_frees_` (through `cycleDeferredBytes`, `OGS:4886`), `pacing_t0_.live_ref` and the configuration, all mutator state (GC_DET_001, IM16) |
 | `P_Decide` | the `k >= T` branch (`:4700-4706`), the paced assist (`:4707-4744`) | a decision with no shared reads (IM16) |
 | `P_Closing`, `P_Closing2` | `closingFinish` `:4569` (ends `bg_ep_ = None`, `:4635`) → `cycle_state_ = HandoffDue` | a drain loop, then one assignment |
-| `P_Pressure`, `P_Pressure2` | `TLH::finishMarkCycleNow(Pressure)` `:1178` → `drainCycleMark` `OGS:4195` → `completeMarkCycle` | |
+| `P_Pressure`, `P_Pressure2` | `TLH::finishMarkCycleNow(Pressure)` `:1231` → `drainCycleMark` `OGS:4209` → `completeMarkCycle`; reached from either finish in `stepMarkCycle` (pressure or deferred bytes) | the two finishes differ only in their condition and a stats counter; the path and the trace event (`pressure`) are the same |
 | `P_Trigger` | `evaluateMajorGCTrigger` (called from `TLH::minorGC`) | a decision |
 | `P_T0` | `TLH::startMarkCycle` `:1065`: `beginMarkCycle` (`OGS:4084`, clears marks `:4091`), roots and stores, `snapshotYoungLarge` (`OGS:4173`), the young walk `nursery_.forEachYoung(... markChildren ...)` (`TLH:1102`; `NurserySpace.hpp:800`) | the mutator is stopped and no marker runs yet (IM14, `assertSlotsQuiescent("launch")`) |
 | `P_Sync` | `afterSnapshot` `OGS:4649` with `conc_mark = 1` | drain loop |
@@ -68,7 +68,7 @@ allocation's mark in `M_Choose`. Young large objects are allocated through the s
 | every root kind | `RootSlots` | all are read in the same t0 pause and never after |
 | external root scanners | `CellSlots` | off-heap, overwritable at any time, read at t0 (HEAP_SNAPSHOT_002) |
 | `promotion_age = 1`; builders never aged or promoted | `age ∈ 0..1` | HEAP_BUILDER_001/002; PM5 |
-| pacing (assist, pressure) | nondeterministic choices | every real schedule is a model schedule; the fixed schedule (handoff at minor t0 + T + 1) is kept exactly |
+| pacing (assist, pressure, the deferred-bytes finish) | nondeterministic choices | every real schedule is a model schedule; the fixed schedule (handoff at minor t0 + T + 1) is kept exactly |
 | old garbage collected before the cycle | only by `MajorPause`'s STW step (which also frees unreachable YLOS cells) | adds nothing to the snapshot argument, except in region mode, where it is what leaves a zombie's field dangling (CR-017) |
 | a freed id reused | allowed | `NoLostObject` is checked in every state, so a wrongful free is caught before any reuse |
 | a freed **old-gen cell** reused by a different object at the same address (ABA audit, 2026-09-29) | a configuration with the old id 4 in `YlosIds` (`MC_quick_reuse`, `MC_quick_region_reuse*`): the mutator's `alloc` may then give 4 to a young large object, the one mutator allocation that lands in an old-gen cell | the code hands a freed cell out again through the mixed free lists at any time, during a cycle too: `allocateFromSizeClassBitmap` rungs 2 and 4 (`tryPopFromFreeList`, `tryAllocateBySplittingLarger`, `OGS:973-994`), `allocateFromBagPage` step 1 (`OGS:2581`); `prepareMark` does not clear the free lists at t0. With 4 outside `YlosIds` the model still reuses 4, as a nursery object (not faithful to addresses, harmless to `NoLostObject`). A promotion into a freed cell (a copy of a *different* object) is not expressible: a promotion keeps its id. The structures that remember an id across a free (`deferred`, `t0Ylos`, `grey`, `zombie`) are exactly the code's `deferred_frees_`, `mark_view_.ylos_t0`, the grey entries and the unzapped hand-over extent |

@@ -701,3 +701,13 @@ Re-audit against M6b (`ExitGangs`, `X_Reg` ... `X_Done`):
 
 MAPPING.md §3 gains one abstraction row for these non-modelled exit handlers (the argument above). The spec is
 unchanged, so `tla-check` was not needed. No code defect. **Verdict: no model change needed.**
+
+## 2026-11-08 — OldGenSpace::reset clears the deferred-bytes sums (plans/large-body-deferral-pacing.md)
+
+Pin fired: region `runtime/src/allocator/OldGenSpace.cpp` `OGS.reset` (**21305bf2e0ea**).
+
+Change: beside the existing `deferred_frees_.clear()`, `reset` zeroes `deferred_summed_n_` and
+`deferred_summed_bytes_`, the running sum behind `cycleDeferredBytes()` (HEAP_084, M1's AUDIT.md of the same
+date). Two plain mutator-owned fields, written where the vector they summarise is emptied. `OldGenSpace::reset`
+is not modelled (MAPPING.md §3: a test path, after the mutator's own `stopAndJoin`); nothing here adds a thread,
+lock, atomic or fork interaction. **Verdict: no model change needed.**
