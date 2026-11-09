@@ -1,0 +1,7 @@
+.venv/
+build/
+work/
+eco-stuff/
+mnist/data/
+__pycache__/
+core*
