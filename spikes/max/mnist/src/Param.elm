@@ -1,18 +1,18 @@
 module Param exposing
     ( Spec, Builder, record, weights, zeros
-    , inputs, list, sgd, blockSize, initial, lcg
+    , arg, toList, blockSize, initial, lcg
     )
 
 {-| A network's parameters, described once, in the style of `elm/json` decoders:
 
     params =
         Param.record Params
-            |> Param.weights "w1" .w1 [ 784, 128 ]
-            |> Param.zeros "b1" .b1 [ 128 ]
+            |> Param.weights .w1 [ 784, 128 ]
+            |> Param.zeros .b1 [ 128 ]
 
-The description gives the graph inputs (`inputs`), the list for a graph's input list (`list`), one
-step of gradient descent with its `<name>_next` outputs (`sgd`), the packed byte layout the host
-shares (`blockSize`), and the initial values (`initial`). All parameters are f32.
+The description gives the parameters as a graph argument (`arg`, inputs `param0`, `param1` ..),
+back as a list in the same order (`toList`), the packed byte layout the host shares
+(`blockSize`), and the initial values (`initial`). All parameters are f32.
 
 -}
 
@@ -23,7 +23,7 @@ import Tensor as T exposing (F32, Tensor)
 
 
 type alias Field =
-    { name : String, shape : List Int, init : Init }
+    { shape : List Int, init : Init }
 
 
 type Init
@@ -50,10 +50,10 @@ record constructor =
     Builder { fields = [], get = \_ -> [], make = \ts -> ( constructor, ts ) }
 
 
-field : Init -> String -> (r -> Tensor F32) -> List Int -> Builder r (Tensor F32 -> f) -> Builder r f
-field init name getter shape (Builder b) =
+field : Init -> (r -> Tensor F32) -> List Int -> Builder r (Tensor F32 -> f) -> Builder r f
+field init getter shape (Builder b) =
     Builder
-        { fields = b.fields ++ [ { name = name, shape = shape, init = init } ]
+        { fields = b.fields ++ [ { shape = shape, init = init } ]
         , get = \r -> b.get r ++ [ getter r ]
         , make =
             \ts ->
@@ -66,51 +66,38 @@ field init name getter shape (Builder b) =
                         ( f t, more )
 
                     [] ->
-                        ( f (T.input name T.f32 shape), [] )
+                        ( f (T.constant 0), [] )
         }
 
 
 {-| Weights, initialised He-uniform over the first dimension (the layer's inputs).
 -}
-weights : String -> (r -> Tensor F32) -> List Int -> Builder r (Tensor F32 -> f) -> Builder r f
+weights : (r -> Tensor F32) -> List Int -> Builder r (Tensor F32 -> f) -> Builder r f
 weights =
     field HeUniform
 
 
 {-| Biases, initialised to zero.
 -}
-zeros : String -> (r -> Tensor F32) -> List Int -> Builder r (Tensor F32 -> f) -> Builder r f
+zeros : (r -> Tensor F32) -> List Int -> Builder r (Tensor F32 -> f) -> Builder r f
 zeros =
     field Zeros
 
 
-{-| The parameters as graph inputs, named as described.
+{-| The parameters as a graph argument: one f32 input per parameter, in the order described.
 -}
-inputs : Spec r -> r
-inputs (Builder b) =
-    Tuple.first (b.make (List.map (\f -> T.input f.name T.f32 f.shape) b.fields))
+arg : Spec r -> T.Arg r
+arg (Builder b) =
+    T.floats (List.map .shape b.fields)
+        |> T.label "param"
+        |> T.mapArg (\ts -> Tuple.first (b.make ts))
 
 
-{-| The parameters in the order described, for a graph's input list.
+{-| The parameters in the order described.
 -}
-list : Spec r -> r -> List (Tensor T.Any)
-list (Builder b) r =
-    List.map T.any (b.get r)
-
-
-{-| One step of stochastic gradient descent on `loss`: each parameter minus `rate` times its
-gradient, as the outputs `<name>_next`.
--}
-sgd : Float -> Tensor F32 -> Spec r -> r -> List ( String, Tensor F32 )
-sgd rate loss (Builder b) r =
-    let
-        ws =
-            b.get r
-    in
-    List.map3 (\f w g -> ( f.name ++ "_next", w |> T.minus (g |> T.scale rate) ))
-        b.fields
-        ws
-        (T.grad loss ws)
+toList : Spec r -> r -> List (Tensor F32)
+toList (Builder b) =
+    b.get
 
 
 {-| The bytes of the packed parameter block (`Bridge.packed` per parameter).
