@@ -16,6 +16,7 @@ import Bytes.Encode as Encode
 import Dict exposing (Dict)
 import Graph exposing (DType(..), Graph, Ref)
 import Json.Decode as D
+import MlirBc
 import Platform
 
 
@@ -133,7 +134,7 @@ oneHot n labels g0 =
 {-| One step of stochastic gradient descent: the parameters and a batch in, the updated
 parameters and the batch's loss out.
 -}
-trainStep : Result (List String) String
+trainStep : Built
 trainStep =
     let
         ( g1, p ) =
@@ -173,15 +174,16 @@ trainStep =
         ( g9, updated ) =
             List.foldl descend ( g8, [] ) (List.map2 Tuple.pair [ p.w1, p.b1, p.w2, p.b2 ] grads)
     in
-    Graph.print "train_step"
-        [ ( "w1", p.w1 ), ( "b1", p.b1 ), ( "w2", p.w2 ), ( "b2", p.b2 ), ( "x", x ), ( "y", y ) ]
-        (List.map2 Tuple.pair [ "w1_next", "b1_next", "w2_next", "b2_next" ] updated ++ [ ( "loss", loss ) ])
-        g9
+    { name = "train_step"
+    , inputs = [ ( "w1", p.w1 ), ( "b1", p.b1 ), ( "w2", p.w2 ), ( "b2", p.b2 ), ( "x", x ), ( "y", y ) ]
+    , outputs = List.map2 Tuple.pair [ "w1_next", "b1_next", "w2_next", "b2_next" ] updated ++ [ ( "loss", loss ) ]
+    , graph = g9
+    }
 
 
 {-| How many of the test images the network classifies correctly.
 -}
-evaluate : Result (List String) String
+evaluate : Built
 evaluate =
     let
         ( g1, p ) =
@@ -214,10 +216,60 @@ evaluate =
         ( g10, correct ) =
             Graph.reduceAdd 0 ones g9
     in
-    Graph.print "evaluate"
-        [ ( "w1", p.w1 ), ( "b1", p.b1 ), ( "w2", p.w2 ), ( "b2", p.b2 ), ( "x", x ), ( "y", y ) ]
-        [ ( "correct", correct ) ]
-        g10
+    { name = "evaluate"
+    , inputs = [ ( "w1", p.w1 ), ( "b1", p.b1 ), ( "w2", p.w2 ), ( "b2", p.b2 ), ( "x", x ), ( "y", y ) ]
+    , outputs = [ ( "correct", correct ) ]
+    , graph = g10
+    }
+
+
+
+-- WRITING THE GRAPHS
+
+
+{-| A finished graph with its named inputs and outputs, before it is written out.
+-}
+type alias Built =
+    { name : String, inputs : List ( String, Ref ), outputs : List ( String, Ref ), graph : Graph }
+
+
+{-| How graphs go to MAX: MLIR bytecode written in Elm (`MlirBc`), the same ops as MLIR generic
+text, or MAX's custom `mo` syntax (`Graph.print`).
+-}
+type Format
+    = Bytecode
+    | GenericText
+    | MoText
+
+
+formatName : Format -> String
+formatName format =
+    case format of
+        Bytecode ->
+            "bytecode"
+
+        GenericText ->
+            "generic"
+
+        MoText ->
+            "text"
+
+
+render : Format -> Built -> Result (List String) Bytes
+render format b =
+    let
+        text s =
+            Encode.encode (Encode.string s)
+    in
+    case format of
+        Bytecode ->
+            Graph.toModule b.name b.inputs b.outputs b.graph |> Result.map (\op -> MlirBc.encode [ op ])
+
+        GenericText ->
+            Graph.toModule b.name b.inputs b.outputs b.graph |> Result.map (\op -> text (MlirBc.printGeneric [ op ]))
+
+        MoText ->
+            Graph.print b.name b.inputs b.outputs b.graph |> Result.map text
 
 
 
@@ -358,15 +410,22 @@ init flags =
         dir =
             Result.withDefault "." (D.decodeValue (D.field "dataDir" D.string) flags)
 
+        format =
+            List.filter (\f -> D.decodeValue (D.field "format" D.string) flags == Ok (formatName f)) [ GenericText, MoText ]
+                |> List.head
+                |> Maybe.withDefault Bytecode
+
         compileBoth =
-            case ( trainStep, evaluate ) of
+            case ( render format trainStep, render format evaluate ) of
                 ( Ok train, Ok eval ) ->
                     [ Bridge.log
-                        ("graphs built and checked in Elm: train_step "
-                            ++ String.fromInt (List.length (String.lines train))
-                            ++ " lines, evaluate "
-                            ++ String.fromInt (List.length (String.lines eval))
-                            ++ " lines"
+                        ("graphs built and checked in Elm, as "
+                            ++ formatName format
+                            ++ ": train_step "
+                            ++ String.fromInt (Bytes.width train)
+                            ++ " bytes, evaluate "
+                            ++ String.fromInt (Bytes.width eval)
+                            ++ " bytes"
                         )
                     , Bridge.compile trainId
                         (paramSpecs ++ [ { name = "x", dtype = UI8, shape = [ batchSize, 784 ] }, { name = "y", dtype = UI8, shape = [ batchSize ] } ])

@@ -1,7 +1,8 @@
 // A generic MAX host for an eco program: it knows nothing about MNIST or neural networks.
 //
 // Ports (see src/Bridge.elm for the byte layout):
-//   compileOut (bytes)  [header id] "in name:dtype:AxB ...\nout name:dtype:AxB ...\n" mlir text
+//   compileOut (bytes)  [header id] "in name:dtype:AxB ...\nout name:dtype:AxB ...\n" then MLIR,
+//                       as text or bytecode (told apart by bytecode's magic, "ML\xEFR")
 //                       -> compiled on a worker thread; the answer goes to compiledIn as JSON
 //   runOut (bytes)      [header id] inputs, each padded to 16 bytes
 //                       -> executed on the eco thread with the inputs borrowed in place from the
@@ -132,8 +133,12 @@ void compileGraph(uint32_t id, std::string text) {
   Graph g;
   g.inputs = parseSpecs(text.substr(0, l1));
   g.outputs = parseSpecs(text.substr(l1 + 1, l2 - l1 - 1));
-  const std::string path = workDir + "/graph-" + std::to_string(id) + ".mlir";
-  std::ofstream(path) << text.substr(l2 + 1);
+  // MAX reads text or bytecode from the file alike; the extension only says which it is.
+  const std::string mlir = text.substr(l2 + 1);
+  const bool bytecode = mlir.compare(0, 4, "ML\xEFR") == 0;
+  const std::string path =
+      workDir + "/graph-" + std::to_string(id) + (bytecode ? ".mlirbc" : ".mlir");
+  std::ofstream(path, std::ios::binary).write(mlir.data(), std::streamsize(mlir.size()));
 
   auto t0 = Clock::now();
   M_Status *st = M_newStatus();
@@ -151,8 +156,8 @@ void compileGraph(uint32_t id, std::string text) {
     std::printf("[%7.2fs] HOST compile of graph %u failed: %s\n", secs(), id, M_getError(st));
     reply = "{\"id\":" + std::to_string(id) + ",\"ok\":false}";
   } else {
-    std::printf("[%7.2fs] HOST compiled graph %u (%s, %zu bytes of mo text) in %.1f s\n", secs(), id,
-                path.c_str(), text.size() - l2 - 1, ms / 1000);
+    std::printf("[%7.2fs] HOST compiled graph %u (%s, %zu bytes of %s) in %.1f s\n", secs(), id,
+                path.c_str(), mlir.size(), bytecode ? "MLIR bytecode" : "mo text", ms / 1000);
     for (const Spec &s : g.inputs)
       g.inputSpecs.push_back(M_newTensorSpec(s.shape.data(), int64_t(s.shape.size()), s.dtype,
                                              s.name.c_str(), host));
