@@ -2,22 +2,24 @@ module Mnist exposing (main)
 
 {-| Training a neural network on MNIST with Elm and MAX.
 
-Elm describes the network as a compute graph, derives the training step's gradients itself (MAX
-has no autodiff), owns the parameters and the data, and runs the training loop. MAX compiles the
-two graphs Elm prints, a training step and an evaluation, and executes them.
+Elm describes the network with tensors (`Tensor`), derives the training step's gradients itself
+(MAX has no autodiff), owns the parameters and the data, and runs the training loop. MAX compiles
+the two graphs Elm writes, a training step and an evaluation, and executes them.
 
 -}
 
 import Array exposing (Array)
-import Bridge exposing (TensorSpec)
+import Bridge
 import Bytes exposing (Bytes, Endianness(..))
 import Bytes.Decode as Decode
 import Bytes.Encode as Encode
 import Dict exposing (Dict)
-import Graph exposing (DType(..), Graph, Ref)
+import Graph
 import Json.Decode as D
 import MlirBc
+import Param
 import Platform
+import Tensor as T exposing (F32, Tensor, U8)
 
 
 
@@ -53,184 +55,80 @@ type alias Params a =
     { w1 : a, b1 : a, w2 : a, b2 : a }
 
 
-paramSpecs : List TensorSpec
-paramSpecs =
-    [ { name = "w1", dtype = F32, shape = [ 784, hidden ] }
-    , { name = "b1", dtype = F32, shape = [ hidden ] }
-    , { name = "w2", dtype = F32, shape = [ hidden, 10 ] }
-    , { name = "b2", dtype = F32, shape = [ 10 ] }
-    ]
-
-
-{-| The parameters as graph inputs.
--}
-paramInputs : Graph -> ( Graph, Params Ref )
-paramInputs g0 =
-    let
-        ( g1, w1 ) =
-            Graph.input "w1" F32 [ 784, hidden ] g0
-
-        ( g2, b1 ) =
-            Graph.input "b1" F32 [ hidden ] g1
-
-        ( g3, w2 ) =
-            Graph.input "w2" F32 [ hidden, 10 ] g2
-
-        ( g4, b2 ) =
-            Graph.input "b2" F32 [ 10 ] g3
-    in
-    ( g4, { w1 = w1, b1 = b1, w2 = w2, b2 = b2 } )
+params : Param.Spec (Params (Tensor F32))
+params =
+    Param.record Params
+        |> Param.weights "w1" .w1 [ 784, hidden ]
+        |> Param.zeros "b1" .b1 [ hidden ]
+        |> Param.weights "w2" .w2 [ hidden, 10 ]
+        |> Param.zeros "b2" .b2 [ 10 ]
 
 
 {-| 784 pixels (bytes 0-255) → 128 ReLU units → 10 class scores.
 -}
-forward : Params Ref -> Ref -> Graph -> ( Graph, Ref )
-forward p pixels g0 =
-    let
-        ( g1, x ) =
-            Graph.cast F32 pixels g0
-
-        ( g2, scale ) =
-            Graph.constF (1 / 255) g1
-
-        ( g3, xs ) =
-            Graph.mul x scale g2
-
-        ( g4, z1 ) =
-            Graph.matmul xs p.w1 g3
-
-        ( g5, a1 ) =
-            Graph.add z1 p.b1 g4
-
-        ( g6, h ) =
-            Graph.relu a1 g5
-
-        ( g7, z2 ) =
-            Graph.matmul h p.w2 g6
-    in
-    Graph.add z2 p.b2 g7
-
-
-{-| Labels (bytes 0-9) as one-hot f32 rows.
--}
-oneHot : Int -> Ref -> Graph -> ( Graph, Ref )
-oneHot n labels g0 =
-    let
-        ( g1, l ) =
-            Graph.cast SI64 labels g0
-
-        ( g2, column ) =
-            Graph.reshape [ n, 1 ] l g1
-
-        ( g3, classes ) =
-            Graph.range 10 g2
-
-        ( g4, hit ) =
-            Graph.equal column classes g3
-    in
-    Graph.cast F32 hit g4
+network : Params (Tensor F32) -> Tensor U8 -> Tensor F32
+network p pixels =
+    pixels
+        |> T.toFloat
+        |> T.scale (1 / 255)
+        |> T.matmul p.w1
+        |> T.plus p.b1
+        |> T.relu
+        |> T.matmul p.w2
+        |> T.plus p.b2
 
 
 {-| One step of stochastic gradient descent: the parameters and a batch in, the updated
 parameters and the batch's loss out.
 -}
-trainStep : Built
+trainStep : Result (List String) T.Graph
 trainStep =
     let
-        ( g1, p ) =
-            paramInputs Graph.empty
+        p =
+            Param.inputs params
 
-        ( g2, x ) =
-            Graph.input "x" UI8 [ batchSize, 784 ] g1
+        x =
+            T.input "x" T.u8 [ batchSize, 784 ]
 
-        ( g3, y ) =
-            Graph.input "y" UI8 [ batchSize ] g2
+        y =
+            T.input "y" T.u8 [ batchSize ]
 
-        ( g4, logits ) =
-            forward p x g3
-
-        ( g5, target ) =
-            oneHot batchSize y g4
-
-        ( g6, loss ) =
-            Graph.softmaxXentLoss logits target g5
-
-        ( g7, grads ) =
-            Graph.grad loss [ p.w1, p.b1, p.w2, p.b2 ] g6
-
-        ( g8, lr ) =
-            Graph.constF learningRate g7
-
-        descend ( param, gradient ) ( g, acc ) =
-            let
-                ( ga, s ) =
-                    Graph.mul gradient lr g
-
-                ( gb, new ) =
-                    Graph.sub param s ga
-            in
-            ( gb, acc ++ [ new ] )
-
-        ( g9, updated ) =
-            List.foldl descend ( g8, [] ) (List.map2 Tuple.pair [ p.w1, p.b1, p.w2, p.b2 ] grads)
+        loss =
+            network p x |> T.crossEntropy (T.oneHot 10 y)
     in
-    { name = "train_step"
-    , inputs = [ ( "w1", p.w1 ), ( "b1", p.b1 ), ( "w2", p.w2 ), ( "b2", p.b2 ), ( "x", x ), ( "y", y ) ]
-    , outputs = List.map2 Tuple.pair [ "w1_next", "b1_next", "w2_next", "b2_next" ] updated ++ [ ( "loss", loss ) ]
-    , graph = g9
-    }
+    T.graph "train_step"
+        (Param.list params p ++ [ T.any x, T.any y ])
+        (Param.sgd learningRate loss params p ++ [ ( "loss", loss ) ])
 
 
 {-| How many of the test images the network classifies correctly.
 -}
-evaluate : Built
+evaluate : Result (List String) T.Graph
 evaluate =
     let
-        ( g1, p ) =
-            paramInputs Graph.empty
+        p =
+            Param.inputs params
 
-        ( g2, x ) =
-            Graph.input "x" UI8 [ testSize, 784 ] g1
+        x =
+            T.input "x" T.u8 [ testSize, 784 ]
 
-        ( g3, y ) =
-            Graph.input "y" UI8 [ testSize ] g2
+        y =
+            T.input "y" T.u8 [ testSize ]
 
-        ( g4, logits ) =
-            forward p x g3
-
-        ( g5, guess ) =
-            Graph.argMax 1 logits g4
-
-        ( g6, l ) =
-            Graph.cast SI64 y g5
-
-        ( g7, truth ) =
-            Graph.reshape [ testSize, 1 ] l g6
-
-        ( g8, right ) =
-            Graph.equal guess truth g7
-
-        ( g9, ones ) =
-            Graph.cast F32 right g8
-
-        ( g10, correct ) =
-            Graph.reduceAdd 0 ones g9
+        correct =
+            network p x
+                |> T.argMax 1
+                |> T.equals (y |> T.toInt |> T.column)
+                |> T.toFloat
+                |> T.sum 0
     in
-    { name = "evaluate"
-    , inputs = [ ( "w1", p.w1 ), ( "b1", p.b1 ), ( "w2", p.w2 ), ( "b2", p.b2 ), ( "x", x ), ( "y", y ) ]
-    , outputs = [ ( "correct", correct ) ]
-    , graph = g10
-    }
+    T.graph "evaluate"
+        (Param.list params p ++ [ T.any x, T.any y ])
+        [ ( "correct", correct ) ]
 
 
 
 -- WRITING THE GRAPHS
-
-
-{-| A finished graph with its named inputs and outputs, before it is written out.
--}
-type alias Built =
-    { name : String, inputs : List ( String, Ref ), outputs : List ( String, Ref ), graph : Graph }
 
 
 {-| How graphs go to MAX: MLIR bytecode written in Elm (`MlirBc`), the same ops as MLIR generic
@@ -255,7 +153,7 @@ formatName format =
             "text"
 
 
-render : Format -> Built -> Result (List String) Bytes
+render : Format -> T.Graph -> Result (List String) Bytes
 render format b =
     let
         text s =
@@ -272,67 +170,9 @@ render format b =
             Graph.print b.name b.inputs b.outputs b.graph |> Result.map text
 
 
-
--- INITIAL PARAMETERS
-
-
-{-| A 32-bit linear congruential generator: enough randomness for weight init and shuffling.
--}
-next : Int -> Int
-next seed =
-    modBy 4294967296 (1664525 * seed + 1013904223)
-
-
-{-| He-uniform weights for a layer with `fanIn` inputs, as f32 bytes, and the seed after them.
--}
-uniformWeights : Int -> Int -> Int -> ( Bytes, Int )
-uniformWeights fanIn count seed0 =
-    let
-        bound =
-            sqrt (6 / toFloat fanIn)
-
-        go k seed acc =
-            if k == 0 then
-                ( acc, seed )
-
-            else
-                let
-                    s =
-                        next seed
-
-                    u =
-                        toFloat s / 4294967296
-                in
-                go (k - 1) s (Encode.float32 LE ((2 * u - 1) * bound) :: acc)
-
-        ( encoders, seedOut ) =
-            go count seed0 []
-    in
-    ( Encode.encode (Encode.sequence encoders), seedOut )
-
-
-zeros : Int -> Bytes
-zeros count =
-    Encode.encode (Encode.sequence (List.repeat count (Encode.float32 LE 0)))
-
-
-{-| The packed parameter block: w1, b1, w2, b2, each padded to 16 bytes.
--}
-initialParams : Int -> Bytes
-initialParams seed0 =
-    let
-        ( w1, seed1 ) =
-            uniformWeights 784 (784 * hidden) seed0
-
-        ( w2, _ ) =
-            uniformWeights hidden (hidden * 10) seed1
-    in
-    Encode.encode (Encode.sequence (List.map Bridge.packed [ w1, zeros hidden, w2, zeros 10 ]))
-
-
 paramBlockSize : Int
 paramBlockSize =
-    List.sum (List.map (\s -> Bridge.paddedSize (4 * List.product s.shape)) paramSpecs)
+    Param.blockSize params
 
 
 {-| `list` in a random order (Fisher-Yates), and the seed after it.
@@ -347,7 +187,7 @@ shuffle seed0 list =
             else
                 let
                     s =
-                        next seed
+                        Param.lcg seed
 
                     j =
                         modBy (i + 1) s
@@ -416,7 +256,7 @@ init flags =
                 |> Maybe.withDefault Bytecode
 
         compileBoth =
-            case ( render format trainStep, render format evaluate ) of
+            case ( Result.andThen (render format) trainStep, Result.andThen (render format) evaluate ) of
                 ( Ok train, Ok eval ) ->
                     [ Bridge.log
                         ("graphs built and checked in Elm, as "
@@ -427,14 +267,8 @@ init flags =
                             ++ String.fromInt (Bytes.width eval)
                             ++ " bytes"
                         )
-                    , Bridge.compile trainId
-                        (paramSpecs ++ [ { name = "x", dtype = UI8, shape = [ batchSize, 784 ] }, { name = "y", dtype = UI8, shape = [ batchSize ] } ])
-                        (List.map (\s -> { s | name = s.name ++ "_next" }) paramSpecs ++ [ { name = "loss", dtype = F32, shape = [ 1, 1 ] } ])
-                        train
-                    , Bridge.compile evalId
-                        (paramSpecs ++ [ { name = "x", dtype = UI8, shape = [ testSize, 784 ] }, { name = "y", dtype = UI8, shape = [ testSize ] } ])
-                        [ { name = "correct", dtype = F32, shape = [ 1, 1 ] } ]
-                        eval
+                    , compileGraph trainId trainStep train
+                    , compileGraph evalId evaluate eval
                     ]
 
                 ( train, eval ) ->
@@ -442,7 +276,7 @@ init flags =
     in
     ( { files = Dict.empty
       , compiled = []
-      , params = initialParams 42
+      , params = Param.initial params 42
       , epoch = 0
       , batches = []
       , lossSum = 0
@@ -451,6 +285,18 @@ init flags =
       }
     , Cmd.batch (compileBoth ++ List.map (\( id, f ) -> Bridge.load id (dir ++ "/" ++ f)) files)
     )
+
+
+{-| Sends a checked graph's bytes with the input and output specs it carries.
+-}
+compileGraph : Int -> Result (List String) T.Graph -> Bytes -> Cmd Msg
+compileGraph id built bytes =
+    case built of
+        Ok g ->
+            Bridge.compile id g.inputSpecs g.outputSpecs bytes
+
+        Err _ ->
+            Cmd.none
 
 
 errors : Result (List String) a -> List String

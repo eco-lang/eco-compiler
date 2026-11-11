@@ -52,7 +52,7 @@ $(B)/tensor_bytes.so: embed/bytes/src/TensorBytes.elm
 $(B)/bytes_host: embed/bytes/bytes_host.cpp $(B)/tensor_bytes.so | check-venv
 	$(CXX) $(CXXFLAGS) $< $(B)/tensor_bytes.so -L$(MAX_LIB) -lmax -lm -Wl,-rpath,$(B):$(MAX_LIB) -o $@
 
-$(B)/mnist.so: mnist/src/Mnist.elm mnist/src/Graph.elm mnist/src/Bridge.elm mnist/src/MlirBc.elm
+$(B)/mnist.so: $(wildcard mnist/src/*.elm)
 	$(call elm_so,mnist,Mnist,mnist)
 
 $(B)/max_bridge: mnist/host/max_bridge.cpp $(B)/mnist.so | check-venv

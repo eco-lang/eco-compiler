@@ -2,7 +2,7 @@ module Graph exposing
     ( DType(..), Graph, Ref, Shape
     , empty, input, constF, cast, add, sub, mul, matmul, relu, greater, equal, softmax, logSoftmax
     , reduceAdd, argMax, reshape, transpose, range, softmaxXentLoss
-    , shapeOf, grad, print, toModule, byteSize
+    , negative, shapeOf, dtypeOf, grad, print, toModule, byteSize
     )
 
 {-| A tensor compute graph built in Elm, checked as it is built, differentiated in Elm, and printed
@@ -77,6 +77,11 @@ node g r =
 shapeOf : Graph -> Ref -> Shape
 shapeOf g r =
     (node g r).shape
+
+
+dtypeOf : Graph -> Ref -> DType
+dtypeOf g r =
+    (node g r).dtype
 
 
 push : Op -> DType -> Shape -> Graph -> ( Graph, Ref )
@@ -158,7 +163,7 @@ bin name compare a b g =
                 push (Bin name a b) out sh g
 
             Nothing ->
-                fail (name ++ ": shapes do not broadcast") (Bin name a b) out na.shape g
+                fail (name ++ ": shapes [" ++ ints na.shape ++ "] and [" ++ ints nb.shape ++ "] do not broadcast") (Bin name a b) out na.shape g
 
 
 add : Ref -> Ref -> Graph -> ( Graph, Ref )
@@ -194,7 +199,7 @@ matmul a b g =
                 push (Matmul a b) (node g a).dtype [ m, n ] g
 
             else
-                fail "matmul: inner dims or dtypes differ" (Matmul a b) F32 [ m, n ] g
+                fail ("matmul: [" ++ ints [ m, k ] ++ "] @ [" ++ ints [ k2, n ] ++ "]: inner dims or dtypes differ") (Matmul a b) F32 [ m, n ] g
 
         _ ->
             fail "matmul: needs two rank-2 operands" (Matmul a b) F32 [] g
