@@ -1,6 +1,7 @@
 ---
-status: done
+status: superseded
 updated: 2026-11-11
+superseded_by: "plans/nabla-api-in-elm.md (the eco-lab/tensor package replaced this DSL; MNIST runs bit-identically on it)"
 ---
 
 # Plan: a textbook-style tensor DSL for the MAX spike

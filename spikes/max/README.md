@@ -67,44 +67,72 @@ The stress runs in the white paper repeated the batch list 1,500 times
 (`List.concat (List.repeat 1500 [ 1, 7, 1024, 4096 ])`) and passed a second, uncached model to the
 host so a cold compile ran concurrently.
 
-### `mnist/`: training a neural network on MNIST with Elm and MAX
+### `tensor/`: the typed tensor package (`eco-lab/tensor`)
 
-- `src/Tensor.elm`: tensors as values, so a network reads like the textbook
-  (`x |> matmul w1 |> plus b1 |> relu`); the dtype is a phantom type (mixing dtypes does not
-  compile). A graph is an Elm function with a typed signature (`T.function "f" (T.pair (T.u8 [ n,
-  784 ]) (T.f32 [ 784, 10 ])) body`), lowered onto `Graph` with each tensor shared by a structural
-  key (`plans/tensor-dsl.md`).
-- `src/Param.elm`: a network's parameters described once (`Param.record Params |> Param.weights
-  .w1 [ 784, 128 ] |> ...`): a graph argument, the byte layout and the initial values.
-- `src/Train.elm`: `Train.step params (Train.sgd 0.1) batch loss` builds the training step from a
-  loss alone; `Train.measure` the evaluation; `stepReply`/`measureReply` decode the host's replies.
-- `src/Graph.elm`: the tape behind `Tensor`: shapes and dtypes checked as it is built,
-  reverse-mode autodiff over it, the `mo` printer, and `toModule`, the same graph as generic MLIR
-  ops with the inherent attributes MAX's parser would derive. MAX has no autodiff, so Elm derives the
-  backward pass.
-- `src/MlirBc.elm`: a small generic MLIR IR written as MLIR bytecode (version 6, as MLIR 24.0.0git
-  writes it; builtin attributes and types in the builtin binary encoding, other dialects' as text)
-  or as generic text. No LLVM or MLIR in the process: see `plans/mlir-bytecode-to-max.md`.
-- `src/MnistNet.elm`: the network (784 → 128 ReLU → 10) and its training, and nothing else: the
-  parameters, the forward pass, the training step and the evaluation (SGD, learning rate 0.1, batch
-  100, 5 epochs).
-- `src/Mnist.elm`: runs `MnistNet` on MAX: the graphs' encoding, the data, and the training loop.
-  Elm owns the parameters as one `Bytes` block.
-- `src/Bridge.elm`: the ports and the byte layout shared with the host.
-- `host/max_bridge.cpp`: a generic MAX host that knows nothing about MNIST: it compiles graph text on
-  worker threads, runs graphs on borrowed `Bytes`, and loads files.
-- `ref/numpy_ref.py`: the same run in NumPy (same LCG, init order, shuffles), as an oracle.
+Nabla's API as an Elm package that writes MAX graphs (`plans/nabla-api-in-elm.md`, `tensor/README.md`):
+tensors typed by kind, dtype and a fixed rank of named dimensions (`Tensor Floating F32 (R2 n
+Hidden)`), so mixing up dimensions, axes or dtypes does not compile; reverse- and forward-mode
+autodiff to any order, `vmap` by batching rules, `cond`/`whileLoop` as `mo.if`/`mo.while`, shared
+MAX subgraphs, layers, losses, optimizers, transformers, convolutions, LoRA and QLoRA; MLIR bytecode
+written in Elm. Apps use it through eco's `--local-package eco-lab/tensor=tensor` (the Makefile's
+`LOCAL_PKGS`).
 
-`make run-mnist` and `make run-mnist-ref`. `FORMAT=bytecode` (the default) sends the graphs as
-Elm-written MLIR bytecode, `FORMAT=generic` as MLIR generic text, `FORMAT=text` in MAX's custom `mo`
-syntax; all three give the same run. After a `bytecode` and a `generic` run, `make check-bytecode`
-reads both back with eco's `mlir-opt` (the LLVM commit MAX pins) and requires identical IR.
-`capi/scripts/bc_dump.py FILE.mlirbc` prints a bytecode file's tables and which entries are text. The bridge takes `ECO_MAX_THREADS=N` (MAX's CPU worker
-pool size, applied through the CPU mask MAX sizes it from) and `ECO_MAX_BUSY_WAIT_US=T` (how long an
-idle worker spins; it sets both of MAX's variables, which must agree or MAX aborts). Expected: 14.78% untrained, then 92.52, 94.31, 95.24,
-95.60 and 95.87% test accuracy, with mean train losses 0.4225 → 0.1334 (NumPy agrees to four
-decimals). The first run spends about 27 s compiling; with MAX's cache warm the whole run takes
-about 2.6 s.
+- `tensor-api/`: the API's example programs (must compile) and counterexamples with the errors eco
+  gives (`bad/`, must not compile): `make check-api`.
+- `opcheck/`: every operation and gradient on MAX against NumPy. `OpCheck.elm` (run under node)
+  builds one graph per family of operations and a manifest; `ref.py` runs them through MAX's Python
+  API and checks values in f64 and gradients by central differences: `make check-ops`
+  (`FAMILIES=...` for some), `OPCHECK_FORMAT=bytecode` to run the bytecode, and
+  `make check-opcheck-bytecode` to compare every graph's bytecode and text with eco's `mlir-opt`.
+- `make check-tensor`: the package's own tests (elm-test-rs).
+
+### `bridge/` and `mnist/host/max_bridge.cpp`: the generic MAX host
+
+`max_bridge.cpp` knows nothing about the models: it compiles graphs on worker threads and runs them.
+A graph's specs give each tensor a role: **resident** tensors (parameters, optimizer state) live in
+host buffers that outlive a run; a run reads them and its outputs with the same resident name
+replace them, so only fed tensors (a batch, a seed) cross from Elm and only fed outputs (the loss)
+come back. `bridge/Bridge.elm` is the Elm side every model app shares: `compile`, and commands —
+`run`, `put`, `get`, `save`, `loadInto` — that `send` delivers in one message, in order (separate
+sends to one port arrive in either order). The bridge takes `ECO_MAX_THREADS=N` (MAX's CPU worker
+pool size) and `ECO_MAX_BUSY_WAIT_US=T` (how long an idle worker spins; it sets both of MAX's
+variables, which must agree or MAX aborts).
+
+### `mnist/`: training networks on MNIST with Elm and MAX
+
+- `src/MnistNet.elm`: the network (784 → 128 ReLU → 10) and its SGD training, in the typed API.
+- `src/MnistModels.elm`: the models `make run-mnist MODEL=...` trains: `sgd` (`MnistNet`), `adamw`
+  (the same network, AdamW 1e-3), `stack` (784 → 512 → 256 → 10 with dropout 0.1), `cnn` (two
+  convolutions and poolings), `lora` (`adamw`'s saved network, frozen, with a rank-8 LoRA adapter).
+- `src/Mnist.elm`: runs a model on MAX: the data, the training loop, checkpoints
+  (`work/checkpoints/`; `RELOAD=true` saves, reloads and re-evaluates).
+- `ref/numpy_ref.py`: the `sgd` run in NumPy (same LCG, init order, shuffles), as an oracle.
+
+`make run-mnist` (`MODEL`, `FORMAT=bytecode|generic`, `TRACE=n` logs the first n step losses) and
+`make run-mnist-ref`. After a `bytecode` and a `generic` run, `make check-bytecode` reads both back
+with eco's `mlir-opt` (the LLVM commit MAX pins) and requires identical IR.
+`capi/scripts/bc_dump.py FILE.mlirbc` prints a bytecode file's tables.
+
+Results (MAX 26.7.0, CPU; first runs spend 20–50 s compiling, MAX's cache makes later ones start at
+once):
+
+| Model | Test accuracy |
+|---|---|
+| `sgd` | 14.78% untrained, then 92.52, 94.31, 95.24, 95.60, 95.87% (mean train loss 0.4225 → 0.1334; NumPy agrees to four decimals; the first 100 step losses are bit-identical to the hand-threaded DSL this package replaced) |
+| `adamw` | 97.15% after 5 epochs; the same after saving and reloading the parameters |
+| `stack` | 97.65% after 5 epochs |
+| `cnn` | 98.57% after 2 epochs |
+| `lora` | 97.15% → 97.54% in one epoch; the frozen buffers byte-identical afterwards |
+
+### `models/charlm/`: a character language model
+
+`CharModel.elm`: a pre-norm transformer over windows of 64 bytes (width 64, 4 heads), trained by
+`CharLm.elm` on the repo's `design_docs/theory` (837 KB; 10% held out): `make run-charlm`
+(`LAYERS`, `SHARED=true` for every layer as a call of one MAX subgraph, `STEPS`). Two layers, 1,000
+steps: held-out loss 1.96 nats, against the corpus's unigram entropy of 3.19. `GptBench.elm` and
+`bench.js` build (do not run) a GPT-sized training step (96 layers, width 768, vocabulary 50257,
+sequence 1024, batch 8) under node: 3.7–3.9 s and 0.67 MB of bytecode with shared blocks, 4.0 s and
+0.92 MB inlined.
 
 ### `memgrowth/`: why the MNIST run's RSS grows
 

@@ -1,0 +1,16 @@
+Compiled in DEV mode. Follow the advice at https://elm-lang.org/0.19.1/optimize for better performance and smaller assets.
+Compiling ...Detected problems in 1 module.
+-- TYPE MISMATCH -------------------------------------- bad/BadGradNotScalar.elm
+
+Something is off with the body of the `q` definition:
+
+17|     Transform.grad (T.scale 2)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^
+This `grad` call produces:
+
+    Tensor Floating F32 R0 -> Tensor Floating F32 R0
+
+But the type annotation on `q` says it should be:
+
+    Tensor Floating F32 (R1 Classes) -> Tensor Floating F32 (R1 Classes)
+

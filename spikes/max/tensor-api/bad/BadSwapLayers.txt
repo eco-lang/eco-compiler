@@ -1,0 +1,30 @@
+Compiled in DEV mode. Follow the advice at https://elm-lang.org/0.19.1/optimize for better performance and smaller assets.
+Compiling ...Detected problems in 1 module.
+-- TYPE MISMATCH ----------------------------------------- bad/BadSwapLayers.elm
+
+Something is off with the body of the `f` definition:
+
+16|     x |> T.toFloat |> Linear.apply p.l2 |> T.relu |> Linear.apply p.l1
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+The body is:
+
+    Tensor Floating F32 (R2 n Hidden)
+
+But the type annotation on `f` says it should be:
+
+    Tensor Floating F32 (R2 n Classes)
+
+-- TYPE MISMATCH ----------------------------------------- bad/BadSwapLayers.elm
+
+This function cannot handle the argument sent through the (|>) pipe:
+
+16|     x |> T.toFloat |> Linear.apply p.l2 |> T.relu |> Linear.apply p.l1
+                          ^^^^^^^^^^^^^^^^^
+The argument is:
+
+    Tensor Floating F32 (R2 n Pixels)
+
+But (|>) is piping it to a function that expects:
+
+    Tensor Floating F32 (R2 n Hidden)
+

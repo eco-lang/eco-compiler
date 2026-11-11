@@ -1,0 +1,20 @@
+Compiled in DEV mode. Follow the advice at https://elm-lang.org/0.19.1/optimize for better performance and smaller assets.
+Compiling ...Detected problems in 1 module.
+-- TYPE MISMATCH ------------------------------------------ bad/BadLoraShape.elm
+
+The 2nd argument to `apply` is not what I expect:
+
+19|     x |> Lora.apply base adapter
+                             ^^^^^^^
+This `adapter` value is a:
+
+    Lora F32 Hidden Rank Pixels
+
+But `apply` needs the 2nd argument to be:
+
+    Lora F32 Pixels Rank Hidden
+
+Hint: I always figure out the argument types from left to right. If an argument
+is acceptable, I assume it is "correct" and move on. So the problem may actually
+be in one of the previous arguments!
+

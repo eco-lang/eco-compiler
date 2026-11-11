@@ -4,9 +4,13 @@
 #   make            everything below
 #   make run-capi   hand-written mo text through the C API
 #   make run-bytes  an eco .so and libmax in one process, zero-copy Bytes ports
-#   make run-mnist  train and evaluate the MNIST network (FORMAT=bytecode|generic|text)
+#   make run-mnist  train and evaluate an MNIST model (MODEL=sgd|adamw|stack|cnn|lora, FORMAT=bytecode|generic,
+#                   TRACE=steps, RELOAD=true: save, reload and re-evaluate)
 #   make check-bytecode  the MNIST graphs' Elm-written bytecode against their generic text
 #   make run-churn  the eco-only repro of the MNIST run's memory growth (MODE=hold|both|...)
+#   make check-ops  every tensor operation and gradient on MAX against NumPy (opcheck/)
+#   make check-api  the API's example programs compile, its counterexamples do not (tensor-api/)
+#   make check-tensor  the tensor package's own tests (elm-test-rs, tensor/tests/)
 #
 # Elm programs are compiled with the Stage 1 compiler and lowered to a .so with eco-boot-native, as
 # test/embed/run-node-addon-tests.sh does; the .so then links the host's libstdc++, like libmax.so.
@@ -23,6 +27,9 @@ MAX_LIB   := $(MAX_SITE)/modular/lib
 CXX       ?= g++
 CXXFLAGS  := -std=c++20 -O2 -Wall -Wextra -I$(REPO)/runtime/include -I$(MAX_SITE)/max/include
 B         := $(CURDIR)/build
+# The typed tensor package, and the Elm side of max_bridge every model app shares.
+LOCAL_PKGS := --local-package eco-lab/tensor=$(CURDIR)/tensor
+TENSOR_SRC := $(shell find $(CURDIR)/tensor/src -name '*.elm') $(CURDIR)/bridge/Bridge.elm
 
 all: $(B)/spike $(B)/tensor_host $(B)/bytes_host $(B)/max_bridge $(B)/churn_host
 
@@ -32,7 +39,7 @@ check-venv:
 # An Elm program in project directory $(1), module $(2), as $(B)/$(3).so
 define elm_so
 	mkdir -p $(B)
-	cd $(1) && { ulimit -s unlimited 2>/dev/null || true; } && $(STAGE1) make src/$(2).elm --output=$(B)/$(3).mlir
+	cd $(1) && { ulimit -s unlimited 2>/dev/null || true; } && $(STAGE1) make src/$(2).elm --output=$(B)/$(3).mlir $(LOCAL_PKGS)
 	$(BOOT) $(B)/$(3).mlir -o $(B)/$(3).so > $(B)/$(3).lower.log 2>&1 || { tail -20 $(B)/$(3).lower.log; exit 1; }
 endef
 
@@ -52,11 +59,29 @@ $(B)/tensor_bytes.so: embed/bytes/src/TensorBytes.elm
 $(B)/bytes_host: embed/bytes/bytes_host.cpp $(B)/tensor_bytes.so | check-venv
 	$(CXX) $(CXXFLAGS) $< $(B)/tensor_bytes.so -L$(MAX_LIB) -lmax -lm -Wl,-rpath,$(B):$(MAX_LIB) -o $@
 
-$(B)/mnist.so: $(wildcard mnist/src/*.elm)
+$(B)/mnist.so: $(wildcard mnist/src/*.elm) $(TENSOR_SRC)
 	$(call elm_so,mnist,Mnist,mnist)
 
 $(B)/max_bridge: mnist/host/max_bridge.cpp $(B)/mnist.so | check-venv
 	$(CXX) $(CXXFLAGS) $< $(B)/mnist.so -L$(MAX_LIB) -lmax -lm -pthread -Wl,-rpath,$(B):$(MAX_LIB) -o $@
+
+$(B)/charlm.so: $(wildcard models/charlm/src/*.elm) $(TENSOR_SRC)
+	$(call elm_so,models/charlm,CharLm,charlm)
+
+# The same generic host, linked with the char model.
+$(B)/charlm_bridge: mnist/host/max_bridge.cpp $(B)/charlm.so | check-venv
+	$(CXX) $(CXXFLAGS) $< $(B)/charlm.so -L$(MAX_LIB) -lmax -lm -pthread -Wl,-rpath,$(B):$(MAX_LIB) -o $@
+
+# The corpus: the repo's theory documents, concatenated.
+work/charlm/corpus.txt:
+	mkdir -p work/charlm
+	cat $$(find $(REPO)/design_docs/theory -name '*.md' | sort) > $@
+
+LAYERS ?= 2
+SHARED ?= false
+STEPS ?= 1000
+run-charlm: $(B)/charlm_bridge work/charlm/corpus.txt
+	$(B)/charlm_bridge $(CURDIR)/work/charlm '{"corpus": "$(CURDIR)/work/charlm/corpus.txt", "layers": $(LAYERS), "shared": $(SHARED), "steps": $(STEPS), "trace": $(TRACE)}'
 
 $(B)/churn.so: memgrowth/src/Churn.elm
 	$(call elm_so,memgrowth,Churn,churn)
@@ -74,12 +99,16 @@ run-json: $(B)/tensor_host
 run-bytes: $(B)/bytes_host
 	cd capi && $(B)/bytes_host models/sym_mlp.mlir
 
-# FORMAT: bytecode (MLIR bytecode written by mnist/src/MlirBc.elm), generic (the same ops as MLIR
-# generic text) or text (MAX's custom mo syntax). Graphs land in work/<FORMAT>/graph-<id>.mlir[bc].
+# FORMAT: bytecode (MLIR bytecode written by the tensor package's MlirBc) or generic (the same ops as
+# MLIR generic text). Graphs land in work/<FORMAT>/graph-<id>.mlir[bc]. TRACE=n logs the first n
+# step losses of epoch 1.
 FORMAT ?= bytecode
+TRACE ?= 0
+MODEL ?= sgd
+RELOAD ?= false
 run-mnist: $(B)/max_bridge
-	mkdir -p work/$(FORMAT)
-	$(B)/max_bridge $(CURDIR)/work/$(FORMAT) '{"dataDir": "$(CURDIR)/mnist/data", "format": "$(FORMAT)"}'
+	mkdir -p work/$(FORMAT) work/checkpoints
+	$(B)/max_bridge $(CURDIR)/work/$(FORMAT) '{"dataDir": "$(CURDIR)/mnist/data", "format": "$(FORMAT)", "trace": $(TRACE), "variant": "$(MODEL)", "checkpoints": "$(CURDIR)/work/checkpoints", "reload": $(RELOAD)}'
 
 # The bytecode checked with eco's own LLVM (the commit MAX pins): each graph's bytecode and generic
 # text, from runs with FORMAT=bytecode and FORMAT=generic, must read back as the same IR.
@@ -102,4 +131,33 @@ run-mnist-ref:
 clean:
 	rm -rf $(B) work
 
-.PHONY: all check-venv run-capi run-json run-bytes run-mnist check-bytecode run-churn run-mnist-ref clean
+# Elm programs run under node for the checks (their graphs are the bytes the native build writes).
+ELM_JS = cd $(1) && $(STAGE1) make $(2) --output=$(3) $(LOCAL_PKGS)
+
+FAMILIES ?=
+check-ops: | check-venv
+	mkdir -p work
+	$(call ELM_JS,opcheck,src/OpCheck.elm,$(CURDIR)/work/opcheck.js)
+	node opcheck/emit.js $(CURDIR)/work/opcheck.js $(CURDIR)/work/opcheck
+	$(MAX_VENV)/bin/python -I opcheck/ref.py $(CURDIR)/work/opcheck/manifest.json $(FAMILIES)
+
+# Every op-check family's bytecode and generic text read back as the same IR (eco's mlir-opt).
+check-opcheck-bytecode:
+	@for f in work/opcheck/*.mlir; do \
+	  $(MLIR_OPT) --allow-unregistered-dialect --mlir-print-op-generic $$f > $$f.from-text && \
+	  $(MLIR_OPT) --allow-unregistered-dialect --mlir-print-op-generic $${f}bc > $$f.from-bc && \
+	  cmp -s $$f.from-text $$f.from-bc || { echo "differ: $$f"; exit 1; }; \
+	done; echo "op-check: bytecode and generic text read back identical ($$(ls work/opcheck/*.mlir | wc -l) graphs)"
+
+check-api:
+	$(call ELM_JS,tensor-api,examples/All.elm,/dev/null)
+	@cd tensor-api && for f in bad/*.elm; do \
+	  if $(STAGE1) make $$f --output=/dev/null $(LOCAL_PKGS) > /dev/null 2>&1; then echo "compiled, but must not: $$f"; exit 1; fi; \
+	done; echo "tensor-api: the examples compile; every program in bad/ is refused ($$(ls bad/*.elm | wc -l))"
+
+ELM_TEST_RS ?= $(ECO_BUILD)/toolchain/bin/elm-test-rs
+check-tensor:
+	cd tensor && PATH=$(ECO_BUILD)/toolchain/bin:$$PATH $(ELM_TEST_RS) --fuzz 20
+
+.PHONY: all check-venv run-capi run-json run-bytes run-mnist check-bytecode run-churn run-mnist-ref clean \
+	check-ops check-opcheck-bytecode check-api check-tensor

@@ -1,0 +1,16 @@
+Compiled in DEV mode. Follow the advice at https://elm-lang.org/0.19.1/optimize for better performance and smaller assets.
+Compiling ...Detected problems in 1 module.
+-- TYPE MISMATCH ------------------------------------------- bad/BadMaskMath.elm
+
+The 1st argument to `plus` is not what I expect:
+
+17|     logits |> T.plus (logits |> T.greaterThan (T.zerosLike logits))
+                          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+This argument is:
+
+    Mask (R2 n Classes)
+
+But `plus` needs the 1st argument to be:
+
+    Tensor k d s
+

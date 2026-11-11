@@ -1,22 +1,62 @@
 module MnistNet exposing
     ( Params, params, network, trainStep, evaluate
-    , hidden, batchSize, testSize, learningRate, epochs
+    , Pixels, Hidden, Classes, Batch, Test, pixels, hidden, classes, batch, test
+    , batchSize, testSize, learningRate, epochs
     )
 
-{-| The MNIST network and its training, and nothing else: 784 pixels → 128 ReLU units → 10 class
-scores, trained by stochastic gradient descent on the mean cross-entropy, scored by how many test
-images it classifies correctly. `Mnist` runs it on MAX.
+{-| The MNIST network (784 → 128 ReLU → 10) and its training, written with the typed tensor API
+(`eco-lab/tensor`): the parameters, the forward pass, the training step and the evaluation.
+
+Dimensions are types: swapping the layers, feeding raw pixels to a layer, or a bias with a batch
+dimension does not compile. The network is generic in the number of images `n`, so the training
+batch and the test set use the same function.
 
 -}
 
+import Graph exposing (Graph)
+import Nn
+import Nn.Linear as Linear exposing (Linear)
+import Optim
 import Param
-import Tensor as T exposing (F32, Tensor, U8)
+import Signature as Sig
+import Tensor as T exposing (Dim, F32, Floating, Integral, R2, Tensor, U8)
+import Tensor.Axis as Axis
 import Train
 
 
-hidden : Int
+type Pixels
+    = Pixels
+
+
+type Hidden
+    = Hidden
+
+
+type Classes
+    = Classes
+
+
+type Batch
+    = Batch
+
+
+type Test
+    = Test
+
+
+pixels : Dim Pixels
+pixels =
+    T.dim Pixels 784
+
+
+hidden : Dim Hidden
 hidden =
-    128
+    T.dim Hidden 128
+
+
+classes : Dim Classes
+classes =
+    T.dim Classes 10
 
 
 batchSize : Int
@@ -39,56 +79,55 @@ epochs =
     5
 
 
-type alias Params a =
-    { w1 : a, b1 : a, w2 : a, b2 : a }
+batch : Dim Batch
+batch =
+    T.dim Batch batchSize
 
 
-params : Param.Spec (Params (Tensor F32))
+test : Dim Test
+test =
+    T.dim Test testSize
+
+
+type alias Params =
+    { l1 : Linear F32 Pixels Hidden
+    , l2 : Linear F32 Hidden Classes
+    }
+
+
+params : Param.Spec Params
 params =
     Param.record Params
-        |> Param.weights .w1 [ 784, hidden ]
-        |> Param.zeros .b1 [ hidden ]
-        |> Param.weights .w2 [ hidden, 10 ]
-        |> Param.zeros .b2 [ 10 ]
+        |> Param.sub .l1 (Linear.params T.float32 pixels hidden)
+        |> Param.sub .l2 (Linear.params T.float32 hidden classes)
 
 
-{-| 784 pixels (bytes 0-255) → 128 ReLU units → 10 class scores.
+{-| Any number of images `n`.
 -}
-network : Params (Tensor F32) -> Tensor U8 -> Tensor F32
-network p pixels =
-    pixels
+network : Params -> Tensor Integral U8 (R2 n Pixels) -> Tensor Floating F32 (R2 n Classes)
+network p images =
+    images
         |> T.toFloat
         |> T.scale (1 / 255)
-        |> T.matmul p.w1
-        |> T.plus p.b1
+        |> Linear.apply p.l1
         |> T.relu
-        |> T.matmul p.w2
-        |> T.plus p.b2
+        |> Linear.apply p.l2
 
 
-{-| A batch of `n` images (784 pixel bytes each) and their labels (bytes 0-9).
--}
-batch : Int -> T.Arg ( Tensor U8, Tensor U8 )
-batch n =
-    T.pair (T.u8 [ n, 784 ]) (T.u8 [ n ])
-
-
-{-| One step of stochastic gradient descent on the mean cross-entropy of a batch.
--}
-trainStep : Result (List String) T.Graph
+trainStep : Result (List String) Graph
 trainStep =
-    Train.step params (Train.sgd learningRate) (batch batchSize) <|
-        \p ( x, y ) -> network p x |> T.crossEntropy (T.oneHot 10 y)
+    Train.step params (Optim.sgd learningRate) (Sig.pair (Sig.u8 (T.r2 batch pixels)) (Sig.u8 (T.r1 batch))) <|
+        \p ( x, y ) -> network p x |> Nn.crossEntropyIndices y
 
 
-{-| How many of the test images the network classifies correctly.
+{-| The number of test images the network classifies correctly.
 -}
-evaluate : Result (List String) T.Graph
+evaluate : Result (List String) Graph
 evaluate =
-    Train.measure params (batch testSize) <|
+    Train.measure params (Sig.pair (Sig.u8 (T.r2 test pixels)) (Sig.u8 (T.r1 test))) <|
         \p ( x, y ) ->
             network p x
-                |> T.argMax 1
-                |> T.equals (y |> T.toInt |> T.column)
-                |> T.toFloat
-                |> T.sum 0
+                |> T.argMax Axis.last2
+                |> T.equals (T.toInt y)
+                |> T.indicator T.float32
+                |> T.sumAll
