@@ -15,7 +15,15 @@ import Graph exposing (Graph)
 import Json.Encode as E
 import Nn
 import Nn.Conv2d as Conv2d exposing (Conv2d)
+import Nn.Attention as Attention
+import Nn.Embedding as Embedding
+import Nn.FeedForward as FeedForward
+import Nn.GroupNorm as GroupNorm
+import Nn.KvCache as KvCache
 import Nn.LayerNorm as LayerNorm
+import Nn.RmsNorm as RmsNorm
+import Nn.Rotary as Rotary
+import Nn.Sampling as Sampling
 import Nn.Linear as Linear
 import Platform
 import Param
@@ -186,10 +194,27 @@ family graphName domains ins checks =
                   )
                 , ( "outputs", E.list (.name >> E.string) (Graph.outputs g) )
                 , ( "checks", E.list check checks )
+                , ( "gpu", onGpu g )
                 ]
 
         Err errs ->
             E.object [ ( "graph", E.string graphName ), ( "errors", E.list E.string errs ) ]
+
+
+{-| The family written for GPU 0 (round 2, A3): checked against `mlir-opt` and MAX's own placement
+(`make check-gpu-ir`), not run.
+-}
+onGpu : Graph -> E.Value
+onGpu g =
+    case ( Graph.toGenericTextOn (Graph.Gpu 0) g, Graph.toBytecodeOn (Graph.Gpu 0) g ) of
+        ( Ok text, Ok bytes ) ->
+            E.object [ ( "mlir", E.string text ), ( "bytecode", E.list E.int (byteList bytes) ) ]
+
+        ( Err e, _ ) ->
+            E.object [ ( "errors", E.list E.string e ) ]
+
+        ( _, Err e ) ->
+            E.object [ ( "errors", E.list E.string e ) ]
 
 
 byteList : Bytes.Bytes -> List Int
@@ -657,6 +682,8 @@ dtypes =
         , named "f16" "f16" [ "x" ] [] (\i -> i.x |> T.cast T.float16 |> T.times (T.cast T.float16 i.x) |> T.toFloat)
         , named "f64" "f64" [ "x" ] [] (\i -> i.x |> T.cast T.float64 |> T.exp |> T.toFloat)
         , named "linear" "linear" [ "x" ] [] (\i -> Linear.apply { weight = T.transpose (T.cast T.float32 i.x) |> T.matmul i.x |> T.scale 0.1, bias = T.sum Axis.axis0of2 i.x } i.x)
+        , named "rmsNormBf16" "rmsNormBf16" [ "x" ] [] (\i -> i.x |> T.cast T.bfloat16 |> RmsNorm.apply { scale = T.full T.bfloat16 1 (T.r1 b), epsilon = 1.0e-5 } |> T.toFloat)
+        , named "groupNormBf16" "groupNormBf16" [ "x" ] [] (\i -> i.x |> T.cast T.bfloat16 |> T.reshape (T.r4 (T.dim One1 1) a (T.dim One1 1) b) |> GroupNorm.apply { scale = T.full T.bfloat16 1 (T.r1 b), bias = T.zeros T.bfloat16 (T.r1 b), groups = 2, epsilon = 1.0e-5 } |> T.toFloat)
         , named "qloraDequantize" "nf4" [] [] (\_ -> Qlora.dequantize { codes = T.cast T.uint8 (T.fromList T.int64 (T.r2 d d) [ 0, 7, 15, 3 ]), scales = T.fromList T.float32 (T.r1 (Qlora.blocks 2 d d)) [ 2, 0.5 ], blockSize = 2 })
         ]
 
@@ -773,7 +800,7 @@ type alias VmIn =
     , u : F (R1 C)
     , px : F (R2 B C)
     , idx : Tensor Integral I64 (R1 K)
-    }
+    , r4 : F (R4 A D B D) }
 
 
 vmapFamily : E.Value
@@ -790,6 +817,7 @@ vmapFamily =
                 |> Sig.field .u (Sig.label "u" (Sig.f32 (T.r1 c)))
                 |> Sig.field .px (Sig.label "px" (Sig.f32 (T.r2 b c)))
                 |> Sig.field .idx (Sig.label "idx" (Sig.i64 (T.r1 k2)))
+                |> Sig.field .r4 (Sig.label "r4" (Sig.f32 (T.r4 a d b d)))
 
         v1 f x =
             Transform.vmap Axis.liftRank1 Axis.liftRank1 f x
@@ -828,6 +856,9 @@ vmapFamily =
         , named "vVmap" "vSinMM" [ "mm" ] [] (\i -> Transform.vmap Axis.liftRank2 Axis.liftRank2 (v1 T.sin) i.mm)
         , named "vGradOuter" "vGradOuter" [ "mm" ] [] (\i -> Transform.grad (\x -> v2 (T.softmax Axis.last2) x |> T.times x |> T.sumAll) i.mm)
         , named "vRandom" "rowsDiffer" [ "m" ] [] (\i -> v1 (\r -> Random.uniformLike { low = 0, high = 1 } r (Random.seed (T.int 7))) i.m)
+        , named "vRmsNorm" "vRmsNorm" [ "mm", "u" ] [] (\i -> v2 (RmsNorm.apply { scale = i.u, epsilon = 1.0e-5 }) i.mm)
+        , named "vRotary" "vRotary" [ "r4" ] [] (\i -> Transform.vmap Axis.liftRank3 Axis.liftRank3 (Rotary.apply { base = 10000, pairing = Rotary.Halves } (T.iota b)) i.r4)
+        , named "vRepeatHeads" "vRepeatHeads" [ "r4" ] [] (\i -> Transform.vmap Axis.liftRank3 Axis.liftRank3 (Nn.repeatHeads (T.dim H4 4)) i.r4)
         ]
 
 
@@ -870,7 +901,278 @@ type Wide
 main : Program () () ()
 main =
     Platform.worker
-        { init = \_ -> ( (), Cmd.batch (List.map emit [ unary, positive, unit, binary, integers, reductions, linalg, shapes, nn, transforms, random, dtypes, conv, control, vmapFamily, initFamily ]) )
+        { init = \_ -> ( (), Cmd.batch (List.map emit [ unary, positive, unit, binary, integers, reductions, linalg, shapes, nn, transforms, random, dtypes, conv, control, vmapFamily, initFamily, select, layers ]) )
         , update = \_ m -> ( m, Cmd.none )
         , subscriptions = \_ -> Sub.none
         }
+
+
+
+-- ROUND 2 (plans/tensor-api-round2.md, A1)
+
+
+type H4
+    = H4
+
+
+type H6
+    = H6
+
+
+type W8
+    = W8
+
+
+type T10
+    = T10
+
+
+type M8
+    = M8
+
+
+type Kv4
+    = Kv4
+
+
+type J2
+    = J2
+
+
+type Mw6
+    = Mw6
+
+
+type F6
+    = F6
+
+
+type T6
+    = T6
+
+
+type Four
+    = Four
+
+
+type One1
+    = One1
+
+
+type Rows
+    = Rows
+
+
+type Classes
+    = Classes
+
+
+type alias SelIn =
+    { dist : F (R2 A C), dist3 : F (R3 A C B), x3 : F (R3 A C B), upd1 : F (R3 A D B), upd2 : F (R3 A C D) }
+
+
+select : E.Value
+select =
+    let
+        ins =
+            Sig.record SelIn
+                |> Sig.field .dist (Sig.label "dist" (Sig.f32 (T.r2 a c)))
+                |> Sig.field .dist3 (Sig.label "dist3" (Sig.f32 (T.r3 a c b)))
+                |> Sig.field .x3 (Sig.label "x3" (Sig.f32 (T.r3 a c b)))
+                |> Sig.field .upd1 (Sig.label "upd1" (Sig.f32 (T.r3 a d b)))
+                |> Sig.field .upd2 (Sig.label "upd2" (Sig.f32 (T.r3 a c d)))
+
+        idx1 =
+            T.fromList T.int64 (T.r1 d) [ 3, 0 ]
+
+        idx2 =
+            T.fromList T.int64 (T.r1 d) [ 2, 2 ]
+
+        put1 x u =
+            x |> T.put Axis.retag1of3 idx1 u
+
+        putAdd2 x u =
+            x |> T.putAdd Axis.retag2of3 idx2 u
+
+        rows =
+            T.dim Rows 20000
+
+        big values =
+            T.fromList T.float32 (T.r1 (T.dim Classes (List.length values))) values |> T.broadcastTo rows Axis.axis0of2
+    in
+    family "select" [ ( "dist", "distinct" ), ( "dist3", "distinct" ) ] ins <|
+        [ named "topKValues" "topKValues" [ "dist" ] [] (\i -> T.topK Axis.retag1of2 k2 i.dist |> Tuple.first)
+        , named "topKIndices" "topKIndices" [ "dist" ] [] (\i -> T.topK Axis.retag1of2 k2 i.dist |> Tuple.second)
+        , named "topKMiddle" "topKMiddle" [ "dist3" ] [] (\i -> T.topK Axis.retag1of3 k2 i.dist3 |> Tuple.first)
+        , named "topKMiddleIndices" "topKMiddleIndices" [ "dist3" ] [] (\i -> T.topK Axis.retag1of3 k2 i.dist3 |> Tuple.second)
+        , named "bottomK" "bottomK" [ "dist" ] [] (\i -> T.bottomK Axis.retag1of2 k2 i.dist |> Tuple.first)
+        , named "bottomKIndices" "bottomKIndices" [ "dist" ] [] (\i -> T.bottomK Axis.retag1of2 k2 i.dist |> Tuple.second)
+        , named "sortDesc" "sortDesc" [ "dist" ] [] (\i -> T.sort { descending = True } Axis.last2 i.dist |> Tuple.first)
+        , named "sortDescIndices" "sortDescIndices" [ "dist" ] [] (\i -> T.sort { descending = True } Axis.last2 i.dist |> Tuple.second)
+        , named "sortAscMiddle" "sortAscMiddle" [ "dist3" ] [] (\i -> T.sort { descending = False } Axis.axis1of3 i.dist3 |> Tuple.first)
+        , named "sortAscMiddleIndices" "sortAscMiddleIndices" [ "dist3" ] [] (\i -> T.sort { descending = False } Axis.axis1of3 i.dist3 |> Tuple.second)
+        , named "putAxis1" "putAxis1" [ "x3", "upd1" ] [] (\i -> put1 i.x3 i.upd1)
+        , namedGrad "putAxis1" "putAxis1" [ "x3", "upd1" ] "x3" [] (\i -> gradWrt (\x -> put1 x i.upd1) i.x3)
+        , namedGrad "putAxis1" "putAxis1" [ "x3", "upd1" ] "upd1" [] (\i -> gradWrt (put1 i.x3) i.upd1)
+        , named "putAddAxis2" "putAddAxis2" [ "x3", "upd2" ] [] (\i -> putAdd2 i.x3 i.upd2)
+        , namedGrad "putAddAxis2" "putAddAxis2" [ "x3", "upd2" ] "x3" [] (\i -> gradWrt (\x -> putAdd2 x i.upd2) i.x3)
+        , namedGrad "putAddAxis2" "putAddAxis2" [ "x3", "upd2" ] "upd2" [] (\i -> gradWrt (putAdd2 i.x3) i.upd2)
+        , named "quickGelu" "quickGelu" [ "x3" ] [] (\i -> T.quickGelu i.x3)
+        , namedGrad "quickGelu" "quickGelu" [ "x3" ] "x3" [] (\i -> gradWrt T.quickGelu i.x3)
+        , named "greedy" "greedy" [ "dist" ] [] (\i -> Sampling.greedy i.dist)
+        , named "keepTopK" "keepTopK" [ "dist" ] [ 2 ] (\i -> Sampling.keepTopK 2 i.dist)
+        , named "categorical" "categoricalStats" [] [ 0.5, -1, 2, 0 ] (\_ -> Random.categorical (big [ 0.5, -1, 2, 0 ]) (Random.seed (T.int 3)))
+        , named "nucleus" "nucleusStats" [] [ 0.6, 2, 1.5, 1, 0, -1, -2 ] (\_ -> Sampling.nucleus 0.6 (big [ 2, 1.5, 1, 0, -1, -2 ]) (Random.seed (T.int 4)))
+        ]
+
+
+type alias LyIn =
+    { img : F (R4 D A B D)
+    , steps : F (R1 A)
+    , kvx : F (R3 D A B)
+    , table : F (R2 C B)
+    , seq : F (R2 A B)
+    , scale : F (R1 B)
+    , gimg : F (R4 D A A B)
+    , gbias : F (R1 B)
+    , rx : F (R3 D A B)
+    , xs : F (R2 C M8)
+    , wq : F (R2 M8 M8)
+    , wk : F (R2 M8 Kv4)
+    , wv : F (R2 M8 Kv4)
+    , wk8 : F (R2 M8 M8)
+    , wv8 : F (R2 M8 M8)
+    , wo : F (R2 M8 M8)
+    , mem : F (R2 A Mw6)
+    , wkc : F (R2 Mw6 M8)
+    , wvc : F (R2 Mw6 M8)
+    , gate : F (R2 B F6)
+    , up : F (R2 B F6)
+    , down : F (R2 F6 B)
+    }
+
+
+layers : E.Value
+layers =
+    let
+        m8 =
+            T.dim M8 8
+
+        kv4 =
+            T.dim Kv4 4
+
+        h4 =
+            T.dim H4 4
+
+        j2 =
+            T.dim J2 2
+
+        f6 =
+            T.dim F6 6
+
+        ins =
+            Sig.record LyIn
+                |> Sig.field .img (Sig.label "img" (Sig.f32 (T.r4 d a b d)))
+                |> Sig.field .steps (Sig.label "steps" (Sig.f32 (T.r1 a)))
+                |> Sig.field .kvx (Sig.label "kvx" (Sig.f32 (T.r3 d a b)))
+                |> Sig.field .table (Sig.label "table" (Sig.f32 (T.r2 c b)))
+                |> Sig.field .seq (Sig.label "seq" (Sig.f32 (T.r2 a b)))
+                |> Sig.field .scale (Sig.label "scale" (Sig.f32 (T.r1 b)))
+                |> Sig.field .gimg (Sig.label "gimg" (Sig.f32 (T.r4 d a a b)))
+                |> Sig.field .gbias (Sig.label "gbias" (Sig.f32 (T.r1 b)))
+                |> Sig.field .rx (Sig.label "rx" (Sig.f32 (T.r3 d a b)))
+                |> Sig.field .xs (Sig.label "xs" (Sig.f32 (T.r2 c m8)))
+                |> Sig.field .wq (Sig.label "wq" (Sig.f32 (T.r2 m8 m8)))
+                |> Sig.field .wk (Sig.label "wk" (Sig.f32 (T.r2 m8 kv4)))
+                |> Sig.field .wv (Sig.label "wv" (Sig.f32 (T.r2 m8 kv4)))
+                |> Sig.field .wk8 (Sig.label "wk8" (Sig.f32 (T.r2 m8 m8)))
+                |> Sig.field .wv8 (Sig.label "wv8" (Sig.f32 (T.r2 m8 m8)))
+                |> Sig.field .wo (Sig.label "wo" (Sig.f32 (T.r2 m8 m8)))
+                |> Sig.field .mem (Sig.label "mem" (Sig.f32 (T.r2 a (T.dim Mw6 6))))
+                |> Sig.field .wkc (Sig.label "wkc" (Sig.f32 (T.r2 (T.dim Mw6 6) m8)))
+                |> Sig.field .wvc (Sig.label "wvc" (Sig.f32 (T.r2 (T.dim Mw6 6) m8)))
+                |> Sig.field .gate (Sig.label "gate" (Sig.f32 (T.r2 b f6)))
+                |> Sig.field .up (Sig.label "up" (Sig.f32 (T.r2 b f6)))
+                |> Sig.field .down (Sig.label "down" (Sig.f32 (T.r2 f6 b)))
+
+        lin o w =
+            { weight = w, bias = T.zeros T.float32 (T.r1 o) }
+
+        grouped i =
+            { query = lin m8 i.wq, key = lin kv4 i.wk, value = lin kv4 i.wv, out = lin m8 i.wo, model = m8, kvWidth = kv4, heads = h4, kvHeads = d, headDim = j2 }
+
+        groupedFull i =
+            { query = lin m8 i.wq, key = lin m8 i.wk8, value = lin m8 i.wv8, out = lin m8 i.wo, model = m8, kvWidth = m8, heads = h4, kvHeads = h4, headDim = j2 }
+
+        cross i =
+            { query = lin m8 i.wq, key = lin m8 i.wkc, value = lin m8 i.wvc, out = lin m8 i.wo, model = m8, heads = h4, headDim = j2 }
+
+        interleaved =
+            { base = 10000, pairing = Rotary.Interleaved }
+
+        halves =
+            { base = 10000, pairing = Rotary.Halves }
+
+        upsample x =
+            Nn.upsampleNearest2d 2 (T.dim H6 6) (T.dim W8 8) x
+
+        rms i x =
+            RmsNorm.apply { scale = i.scale, epsilon = 1.0e-5 } x
+
+        gn i x =
+            GroupNorm.apply { scale = i.scale, bias = i.gbias, groups = 2, epsilon = 1.0e-5 } x
+
+        selfG i x =
+            Attention.selfGrouped { causal = True, rotary = Just ( interleaved, T.iota c ) } (grouped i) x
+
+        attendTo i x =
+            x |> Attention.attendTo (cross i) i.mem
+
+        ff i x =
+            FeedForward.applyGated T.silu { gate = lin f6 i.gate, up = lin f6 i.up, down = lin b i.down } x
+
+        cachedLast i =
+            let
+                four =
+                    T.dim Four 4
+
+                t6 =
+                    T.dim T6 6
+
+                g =
+                    grouped i
+
+                empty =
+                    { keys = T.zeros T.float32 (T.r3 d t6 j2), values = T.zeros T.float32 (T.r3 d t6 j2) }
+
+                ( c1, _ ) =
+                    Attention.selfCached { rotary = Just halves } g (T.int 0) empty (T.slice Axis.retag0of2 0 four i.xs)
+            in
+            Attention.selfCached { rotary = Just halves } g (T.int 4) c1 (T.slice Axis.retag0of2 4 (T.dim One1 1) i.xs) |> Tuple.second
+
+        one name args params f wrt g =
+            [ named name name args params f, namedGrad name name args wrt params g ]
+    in
+    family "layers" [] ins <|
+        List.concat
+            [ one "upsample" [ "img" ] [] (\i -> upsample i.img) "img" (\i -> gradWrt upsample i.img)
+            , [ named "timestepEmbedding" "timestepEmbedding" [ "steps" ] [ 0, 0 ] (\i -> Nn.timestepEmbedding { maxPeriod = 10000, cosFirst = False, shift = 0 } (T.dim F6 6) i.steps)
+              , named "timestepEmbeddingFlip" "timestepEmbedding" [ "steps" ] [ 1, 1 ] (\i -> Nn.timestepEmbedding { maxPeriod = 10000, cosFirst = True, shift = 1 } (T.dim F6 6) i.steps)
+              , mvalue "causalMaskAt" [] [ 0 ] (\_ -> Nn.causalMaskAt (T.int 0) a (T.dim T10 10))
+              , { name = "causalMaskAt5", ref = "causalMaskAt", args = [], wrt = "", params = [ 5 ], fn = \_ -> mflat (Nn.causalMaskAt (T.int 5) a (T.dim T10 10)) }
+              ]
+            , one "repeatHeads" [ "kvx" ] [] (\i -> Nn.repeatHeads h4 i.kvx) "kvx" (\i -> gradWrt (Nn.repeatHeads h4) i.kvx)
+            , one "unembed" [ "seq", "table" ] [] (\i -> Embedding.unembed { table = i.table } i.seq) "seq" (\i -> gradWrt (Embedding.unembed { table = i.table }) i.seq)
+            , [ namedGrad "unembed" "unembed" [ "seq", "table" ] "table" [] (\i -> gradWrt (\t -> Embedding.unembed { table = t } i.seq) i.table) ]
+            , one "rmsNorm" [ "seq", "scale" ] [] (\i -> rms i i.seq) "seq" (\i -> gradWrt (rms i) i.seq)
+            , [ namedGrad "rmsNorm" "rmsNorm" [ "seq", "scale" ] "scale" [] (\i -> gradWrt (\s -> RmsNorm.apply { scale = s, epsilon = 1.0e-5 } i.seq) i.scale) ]
+            , one "groupNorm" [ "gimg", "scale", "gbias" ] [] (\i -> gn i i.gimg) "gimg" (\i -> gradWrt (gn i) i.gimg)
+            , [ namedGrad "groupNorm" "groupNorm" [ "gimg", "scale", "gbias" ] "scale" [] (\i -> gradWrt (\s -> GroupNorm.apply { scale = s, bias = i.gbias, groups = 2, epsilon = 1.0e-5 } i.gimg) i.scale) ]
+            , one "rotaryInterleaved" [ "rx" ] [ 0 ] (\i -> Rotary.apply interleaved (T.iota a) i.rx) "rx" (\i -> gradWrt (Rotary.apply interleaved (T.iota a)) i.rx)
+            , one "rotaryHalves" [ "rx" ] [ 7 ] (\i -> Rotary.apply halves (T.arange { start = 7, step = 1 } a) i.rx) "rx" (\i -> gradWrt (Rotary.apply halves (T.arange { start = 7, step = 1 } a)) i.rx)
+            , one "gatedSilu" [ "seq", "gate", "up", "down" ] [] (\i -> ff i i.seq) "seq" (\i -> gradWrt (ff i) i.seq)
+            , one "selfGrouped" [ "xs", "wq", "wk", "wv", "wo" ] [] (\i -> selfG i i.xs) "xs" (\i -> gradWrt (selfG i) i.xs)
+            , [ named "selfGroupedFull" "selfGroupedFull" [ "xs", "wq", "wk8", "wv8", "wo" ] [] (\i -> Attention.selfGrouped { causal = False, rotary = Nothing } (groupedFull i) i.xs) ]
+            , one "attendTo" [ "xs", "mem", "wq", "wkc", "wvc", "wo" ] [] (\i -> attendTo i i.xs) "xs" (\i -> gradWrt (attendTo i) i.xs)
+            , [ named "cachedLast" "cachedLast" [ "xs", "wq", "wk", "wv", "wo" ] [] cachedLast ]
+            ]

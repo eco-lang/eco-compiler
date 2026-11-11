@@ -1,0 +1,17 @@
+Compiled in DEV mode. Follow the advice at https://elm-lang.org/0.19.1/optimize for better performance and smaller assets.
+Compiling ...
+Detected problems in 1 module.
+-- TYPE MISMATCH ------------------------------------- bad/BadCategoricalInt.elm
+
+The 1st argument to `categorical` is not what I expect:
+
+11|     Random.categorical counts seed
+                           ^^^^^^
+This `counts` value is a:
+
+    Tensor Integral I64 (R2 Seq Vocab)
+
+But `categorical` needs the 1st argument to be:
+
+    Tensor T.Floating I64 (R2 Seq Vocab)
+

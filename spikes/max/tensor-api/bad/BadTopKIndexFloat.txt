@@ -1,0 +1,17 @@
+Compiled in DEV mode. Follow the advice at https://elm-lang.org/0.19.1/optimize for better performance and smaller assets.
+Compiling ...
+Detected problems in 1 module.
+-- TYPE MISMATCH ------------------------------------- bad/BadTopKIndexFloat.elm
+
+This function cannot handle the argument sent through the (|>) pipe:
+
+15|     values |> T.plus indices
+                  ^^^^^^^^^^^^^^
+The argument is:
+
+    Tensor Floating F32 (R2 Seq Top)
+
+But (|>) is piping it to a function that expects:
+
+    Tensor T.Integral T.I64 (R2 Seq Top)
+

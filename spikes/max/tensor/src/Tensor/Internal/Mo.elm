@@ -10,6 +10,7 @@ Every axis is written non-negative: MAX's softmax fails to compile on a negative
 
 -}
 
+import Tensor.Internal.Device as Device
 import Tensor.Internal.MlirBc as Bc
 import Tensor.Internal.Prim as P exposing (DT(..), Params, Prim(..))
 import Tensor.Internal.Shape exposing (Meta)
@@ -350,7 +351,7 @@ emit p operands ms params out b =
         Transpose ->
             let
                 ( b1, perm ) =
-                    constant SI64 [ List.length params.a ] (List.map toFloat params.a) b
+                    host <| constant SI64 [ List.length params.a ] (List.map toFloat params.a) b
             in
             simple "rmo.mo.transpose" [ o 0, perm ] out b1
 
@@ -390,10 +391,10 @@ emit p operands ms params out b =
                                 (List.range 0 (r - 1))
 
                         ( b1, padsV ) =
-                            constant SI64 [ 2 * r ] pads b
+                            host <| constant SI64 [ 2 * r ] pads b
 
                         ( b2, valueV ) =
-                            constant out.dtype [] [ Maybe.withDefault 0 (List.head params.f) ] b1
+                            host <| constant out.dtype [] [ Maybe.withDefault 0 (List.head params.f) ] b1
                     in
                     simple "rmo.mo.pad.constant" [ o 0, padsV, valueV ] out b2
 
@@ -409,18 +410,30 @@ emit p operands ms params out b =
         ScatterRowsAdd ->
             simple "rmo.mo.scatter_nd.add" operands out b
 
+        ScatterAxis ->
+            scatterAxisOp False first operands ms out b
+
+        ScatterAxisAdd ->
+            scatterAxisOp True first operands ms out b
+
+        TopKValues ->
+            topKOp params (o 0) (m 0) out b
+
+        TopKIndices ->
+            topKOp params (o 0) (m 0) out b |> Tuple.mapSecond ((+) 1)
+
         BandPart ->
             case params.a of
                 [ lower, upper ] ->
                     let
                         ( b1, l ) =
-                            constant SI64 [] [ toFloat lower ] b
+                            host <| constant SI64 [] [ toFloat lower ] b
 
                         ( b2, u ) =
-                            constant SI64 [] [ toFloat upper ] b1
+                            host <| constant SI64 [] [ toFloat upper ] b1
 
                         ( b3, e ) =
-                            constant Bool [] [ 0 ] b2
+                            host <| constant Bool [] [ 0 ] b2
                     in
                     simple "rmo.mo.linalg.band_part" [ o 0, l, u, e ] out b3
 
@@ -432,13 +445,13 @@ emit p operands ms params out b =
                 [ start, step, n ] ->
                     let
                         ( b1, s0 ) =
-                            constant SI64 [] [ toFloat start ] b
+                            host <| constant SI64 [] [ toFloat start ] b
 
                         ( b2, s1 ) =
-                            constant SI64 [] [ toFloat (start + step * n) ] b1
+                            host <| constant SI64 [] [ toFloat (start + step * n) ] b1
 
                         ( b3, s2 ) =
-                            constant SI64 [] [ toFloat step ] b2
+                            host <| constant SI64 [] [ toFloat step ] b2
                     in
                     simple "rmo.mo.range" [ s0, s1, s2 ] out b3
 
@@ -450,7 +463,7 @@ emit p operands ms params out b =
                 ( kind :: _ :: s, [ lo, hi ] ) ->
                     let
                         ( b1, shapeV ) =
-                            push "rmo.shape_to_tensor" [ ( "shape", shapeAttr s ) ] [] [ tensorType { shape = [ List.length s ], pending = [], dtype = SI64 } ] [] b
+                            host <| push "rmo.shape_to_tensor" [ ( "shape", shapeAttr s ) ] [] [ tensorType { shape = [ List.length s ], pending = [], dtype = SI64 } ] [] b
 
                         paramDt =
                             if kind == 1 then
@@ -460,10 +473,10 @@ emit p operands ms params out b =
                                 out.dtype
 
                         ( b2, a ) =
-                            constant paramDt [] [ lo ] b1
+                            host <| constant paramDt [] [ lo ] b1
 
                         ( b3, c ) =
-                            constant paramDt [] [ hi ] b2
+                            host <| constant paramDt [] [ hi ] b2
                     in
                     simple
                         (if kind == 1 then
@@ -514,7 +527,7 @@ emit p operands ms params out b =
         LayerNorm ->
             let
                 ( b1, eps ) =
-                    constant out.dtype [] [ Maybe.withDefault 1.0e-5 (List.head params.f) ] b
+                    host <| constant out.dtype [] [ Maybe.withDefault 1.0e-5 (List.head params.f) ] b
             in
             simple "mo.reduce.layer_norm" (operands ++ [ eps ]) out b1
 
@@ -540,6 +553,113 @@ emit p operands ms params out b =
 
                 _ ->
                     ( b, -1 )
+
+
+{-| MAX's element-wise scatter along `axis`: the index vector reshaped to the axis and broadcast to
+the updates' shape. `rmo.mo.scatter` takes the axis as an attribute, `rmo.mo.scatter.add` as a rank-0
+si64 operand (`work/inventory/g15_round2.txt`).
+-}
+scatterAxisOp : Bool -> Int -> List Int -> List Meta -> Meta -> Block -> ( Block, Int )
+scatterAxisOp add axis operands ms out b =
+    case ( operands, ms ) of
+        ( [ x, u, i ], [ _, um, im ] ) ->
+            let
+                c =
+                    Maybe.withDefault 1 (List.head im.shape)
+
+                alongAxis =
+                    List.indexedMap
+                        (\k _ ->
+                            if k == axis then
+                                c
+
+                            else
+                                1
+                        )
+                        um.shape
+
+                ( b1, i64 ) =
+                    if im.dtype == SI64 then
+                        ( b, i )
+
+                    else
+                        simple "mo.cast" [ i ] { im | dtype = SI64 } b
+
+                ( b2, reshaped ) =
+                    push "rmo.reshape" [ ( "newShape", shapeAttr alongAxis ) ] [ i64 ] [ tensorType { shape = alongAxis, pending = [], dtype = SI64 } ] [] b1
+
+                ( b3, spread ) =
+                    push "rmo.broadcast_to" [ ( "newShape", shapeAttr um.shape ) ] [ reshaped ] [ tensorType { um | dtype = SI64 } ] [] b2
+            in
+            if add then
+                let
+                    ( b4, ax ) =
+                        host <| constant SI64 [] [ toFloat axis ] b3
+                in
+                simple "rmo.mo.scatter.add" [ x, u, spread, ax ] out b4
+
+            else
+                push "rmo.mo.scatter" [ ( "axis", index axis ) ] [ x, u, spread ] [ tensorType out ] [] b3
+
+        _ ->
+            ( b, -1 )
+
+
+{-| An op that makes a host-side operand (a shape, an axis, a bound): on a GPU it stays on the CPU
+(`Tensor.Internal.Device`).
+-}
+host : ( Block, Int ) -> ( Block, Int )
+host =
+    mark Device.hostMark
+
+
+mark : String -> ( Block, Int ) -> ( Block, Int )
+mark name ( b, v ) =
+    case b.ops of
+        op :: rest ->
+            ( { b | ops = { op | attrs = op.attrs ++ [ ( name, Bc.UnitAttr ) ] } :: rest }, v )
+
+        [] ->
+            ( b, v )
+
+
+{-| `rmo.top_k` (k and axis as si64 attributes) or `rmo.mo.bottom_k` (k, axis and sorted as rank-0
+operands): two results, the values and their si64 indices. The value number is the values'; the
+indices are the next.
+-}
+topKOp : Params -> Int -> Meta -> Meta -> Block -> ( Block, Int )
+topKOp params x xm out b =
+    case params.a of
+        [ axis, k, largest ] ->
+            let
+                results =
+                    [ tensorType { out | dtype = xm.dtype }, tensorType { out | dtype = SI64 } ]
+            in
+            (if axis == List.length out.shape - 1 then
+                identity
+
+             else
+                mark Device.axisNotLastMark
+            )
+            <|
+            if largest == 1 then
+                push "rmo.top_k" [ ( "axis", Bc.IntAttr axis (Bc.SignedIntegerType 64) ), ( "k", Bc.IntAttr k (Bc.SignedIntegerType 64) ) ] [ x ] results [] b
+
+            else
+                let
+                    ( b1, kc ) =
+                        host <| constant SI64 [] [ toFloat k ] b
+
+                    ( b2, ac ) =
+                        host <| constant SI64 [] [ toFloat axis ] b1
+
+                    ( b3, sc ) =
+                        host <| constant Bool [] [ 1 ] b2
+                in
+                push "rmo.mo.bottom_k" [] [ x, kc, ac, sc ] results [] b3
+
+        _ ->
+            ( b, -1 )
 
 
 {-| MAX's reductions keep the axis; dropping it is a reshape.

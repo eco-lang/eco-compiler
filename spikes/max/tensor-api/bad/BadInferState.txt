@@ -1,0 +1,35 @@
+Compiled in DEV mode. Follow the advice at https://elm-lang.org/0.19.1/optimize for better performance and smaller assets.
+Compiling ...
+Detected problems in 1 module.
+-- TYPE MISMATCH ----------------------------------------- bad/BadInferState.elm
+
+The 6th argument to `step` is not what I expect:
+
+12|     Infer.step "step" layerSpec (KvCache.sig T.float32 kvHeads context headDim) (Sig.pair (Sig.i64 T.scalar) (Sig.f32 (T.r2 (T.dim Seq 1) model))) (Sig.f32 (T.r2 (T.dim Seq 1) model)) (\l c ( p, x ) -> ( Tuple.second (step l c p x), x ))
+                                                                                                                                                                                             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+This argument is an anonymous function of type:
+
+    Layer
+    -> Cache
+    -> ( T.Tensor T.Integral T.I64 T.R0
+       , T.Tensor T.Floating T.F32 (T.R2 Seq Model)
+       )
+    -> ( T.Tensor T.Floating T.F32 (T.R2 Seq Model)
+       , T.Tensor T.Floating T.F32 (T.R2 Seq Model)
+       )
+
+But `step` needs the 6th argument to be:
+
+    Layer
+    -> KvCache.Cache T.F32 KvHeads Context HeadDim
+    -> ( T.Tensor T.Integral T.I64 T.R0
+       , T.Tensor T.Floating T.F32 (T.R2 Seq Model)
+       )
+    -> ( KvCache.Cache T.F32 KvHeads Context HeadDim
+       , T.Tensor T.Floating T.F32 (T.R2 Seq Model)
+       )
+
+Hint: I always figure out the argument types from left to right. If an argument
+is acceptable, I assume it is "correct" and move on. So the problem may actually
+be in one of the previous arguments!
+

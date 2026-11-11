@@ -1,6 +1,7 @@
 module Param exposing
     ( Builder, Spec, Field, record, heUniform, heNormal, xavierUniform, xavierNormal, normal, zeros, ones
-    , data, sub, list, config, frozen, sig, initial, initGraph, mapElems, count, byteSize, grad
+    , data, sub, list, config, frozen, named, names, sig, initial, initGraph, initInPlace, importGraph
+    , mapElems, count, byteSize, grad
     )
 
 {-| A network's parameters, described once, in the style of `elm/json` decoders:
@@ -26,6 +27,7 @@ import Tensor exposing (DType, Elems, F32, Floating, R0, Shape, Tensor)
 import Tensor.Internal.Expr as E exposing (Expr)
 import Tensor.Internal.Grad as Grad
 import Tensor.Internal.Host as Host
+import Tensor.Internal.Names as Names
 import Tensor.Internal.Ops as O
 import Tensor.Internal.ParamInit as ParamInit
 import Tensor.Internal.Prim as P exposing (DT(..))
@@ -52,7 +54,7 @@ type alias Field r d s f =
 tensorField : I.FieldKind -> (r -> Tensor k d s) -> DType k d -> Shape s -> Builder r (Tensor k d s -> f) -> Builder r f
 tensorField kind getter (I.DType dt) (I.Shape s) (I.ParamBuilder b) =
     I.ParamBuilder
-        { fields = b.fields ++ [ { dtype = dt, shape = s, kind = kind } ]
+        { fields = b.fields ++ [ { dtype = dt, shape = s, kind = kind, name = Nothing } ]
         , build =
             \es ->
                 let
@@ -261,7 +263,21 @@ by MAX's own random ops (fields named `param0` .., as `sig` names them): for mod
 initialise in Elm.
 -}
 initGraph : String -> Spec r -> Result (List String) Graph
-initGraph graphName (I.ParamBuilder s) =
+initGraph =
+    initWith False
+
+
+{-| The same draws as `initGraph`, written straight into the parameters' resident buffers (named
+as `names` gives them) instead of returned to Elm: for models whose parameters are too large to
+send, and for synthetic models.
+-}
+initInPlace : String -> Spec r -> Result (List String) Graph
+initInPlace =
+    initWith True
+
+
+initWith : Bool -> String -> Spec r -> Result (List String) Graph
+initWith inPlace graphName (I.ParamBuilder s) =
     let
         seedSig =
             I.SigBuilder
@@ -272,7 +288,22 @@ initGraph graphName (I.ParamBuilder s) =
 
         outSig =
             I.SigBuilder
-                { slots = List.map (\f -> { label = ParamInit.kindLabel f.kind, dtype = Just f.dtype, shape = Just f.shape, role = I.Fed }) s.fields
+                { slots =
+                    List.map2
+                        (\f n ->
+                            { label = ParamInit.kindLabel f.kind
+                            , dtype = Just f.dtype
+                            , shape = Just f.shape
+                            , role =
+                                if inPlace then
+                                    I.Resident n
+
+                                else
+                                    I.Fed
+                            }
+                        )
+                        s.fields
+                        (ParamInit.residentNames s.fields)
                 , build = \es -> ( es, [] )
                 , flatten = identity
                 }
@@ -362,3 +393,113 @@ grad : Spec r -> (r -> Tensor Floating d R0) -> r -> r
 grad (I.ParamBuilder s) loss r =
     Grad.gradStructured (\es -> Tuple.first (s.build es)) s.flatten (loss >> I.tensor) r
         |> Tuple.second
+
+
+{-| The resident names of the spec's fields, in order: what `Train`, `Infer` and `importGraph` call
+the host's buffers. Unnamed fields are numbered among themselves by kind (`param0`, `frozen1`,
+`data`); fields of a part marked `named n` are `n.param0` .., wherever the part sits.
+-}
+names : Spec r -> List String
+names (I.ParamBuilder s) =
+    ParamInit.residentNames s.fields
+
+
+{-| The same parameters, with resident names of their own (`n.param0` ..) that do not depend on
+where the part sits in a larger spec, so the part can be imported or saved alone. Names are
+absolute: the innermost `named` wins (write `named "unet.down0"`, not nested names).
+-}
+named : String -> Spec p -> Spec p
+named n (I.ParamBuilder s) =
+    I.ParamBuilder
+        { s
+            | fields =
+                List.map
+                    (\f ->
+                        case f.name of
+                            Nothing ->
+                                { f | name = Just n }
+
+                            Just _ ->
+                                f
+                    )
+                    s.fields
+        }
+
+
+{-| A graph that converts raw checkpoint tensors, already in the host's resident buffers, into the
+spec's parameters, written to their resident buffers (`names`). The raw signature's labels name the
+raw buffers (a label used once is the name; repeated labels are numbered); `convert` is typed Elm:
+transposes, splits of fused weights, casts. Each result must have its field's dtype and shape.
+-}
+importGraph : String -> Spec r -> Sig raw -> (raw -> r) -> Result (List String) Graph
+importGraph graphName (I.ParamBuilder s) (I.SigBuilder raw) convert =
+    let
+        rawNames =
+            Names.names "raw" (List.map .label raw.slots)
+
+        missing =
+            List.filterMap identity
+                (List.map2
+                    (\n sl ->
+                        if sl.dtype == Nothing || sl.shape == Nothing then
+                            Just ("importGraph: raw tensor " ++ n ++ " has no dtype or shape")
+
+                        else
+                            Nothing
+                    )
+                    rawNames
+                    raw.slots
+                )
+
+        paramNames =
+            ParamInit.residentNames s.fields
+
+        inSig =
+            I.SigBuilder
+                { slots = List.map2 (\n sl -> { sl | label = n, role = I.Resident n }) rawNames raw.slots
+                , build = raw.build
+                , flatten = raw.flatten
+                }
+
+        outSig =
+            I.SigBuilder
+                { slots = List.map (\n -> { label = n, dtype = Nothing, shape = Nothing, role = I.Resident n }) paramNames
+                , build = \es -> ( es, [] )
+                , flatten = identity
+                }
+
+        body r =
+            let
+                outs =
+                    s.flatten (convert r)
+            in
+            List.map3
+                (\n f e ->
+                    if E.dtype e == f.dtype && E.shape e == f.shape then
+                        e
+
+                    else
+                        E.failWith
+                            ("importGraph: "
+                                ++ n
+                                ++ " is "
+                                ++ describe (E.dtype e) (E.shape e)
+                                ++ ", the parameter is "
+                                ++ describe f.dtype f.shape
+                            )
+                            e
+                )
+                paramNames
+                s.fields
+                outs
+    in
+    if List.isEmpty missing then
+        Graph.build graphName inSig outSig body
+
+    else
+        Err missing
+
+
+describe : DT -> List Int -> String
+describe dt shape =
+    P.dtName dt ++ "[" ++ String.join "," (List.map String.fromInt shape) ++ "]"

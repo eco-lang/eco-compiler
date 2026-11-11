@@ -203,8 +203,11 @@ type FieldKind
     | Data
 
 
+{-| A parameter field. `name`: set by `Param.named`, it makes the field's resident name absolute
+(`<name>.<kind><i>`) instead of positional.
+-}
 type alias Field =
-    { dtype : DT, shape : List Int, kind : FieldKind }
+    { dtype : DT, shape : List Int, kind : FieldKind, name : Maybe String }
 
 
 type ParamBuilder r f

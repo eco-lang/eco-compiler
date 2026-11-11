@@ -1,9 +1,12 @@
-module Nn exposing (crossEntropy, crossEntropyIndices, mseLoss, dropout, attention, causalAttention, maxPool2d, avgPool2d)
+module Nn exposing
+    ( crossEntropy, crossEntropyIndices, mseLoss, dropout, attention, causalAttention, maxPool2d, avgPool2d
+    , upsampleNearest2d, timestepEmbedding, causalMaskAt, repeatHeads
+    )
 
 {-| Losses, dropout, attention and pooling, as functions.
 -}
 
-import Tensor exposing (Dim, Floating, Integral, Mask, R0, R1, R2, R3, R4, Tensor)
+import Tensor exposing (Dim, Floating, I64, Integral, Mask, R0, R1, R2, R3, R4, Tensor)
 import Tensor.Internal.Expr as E exposing (Expr)
 import Tensor.Internal.Ops as O
 import Tensor.Internal.Prim as P
@@ -106,12 +109,13 @@ attend mask bias k v q =
         scores =
             case mask of
                 Just m ->
-                    O.select (full2 m) scores1 (O.fullLike -1.0e9 scores1)
+                    -- −1e9, or the dtype's lowest where that is higher (f16: −65504)
+                    O.select (full2 m) scores1 (O.fullLike (max -1.0e9 (O.lowest (E.dtype scores1))) scores1)
 
                 Nothing ->
                     scores1
     in
-    O.matmul (O.softmax 2 scores) v
+    O.matmul (O.inF32 (O.softmax 2) scores) v
 
 
 {-| Window = stride = `k`. Build time checks h = k * h2 and w = k * w2.
@@ -138,3 +142,127 @@ checkSpatial (I.Dim h2) (I.Dim w2) e =
 
         _ ->
             e
+
+
+{-| Nearest-neighbour upsampling by `f` in both spatial axes (each pixel becomes an f × f block).
+Build time checks h2 = f · h and w2 = f · w.
+-}
+upsampleNearest2d : Int -> Dim h2 -> Dim w2 -> Tensor Floating d (R4 n h w c) -> Tensor Floating d (R4 n h2 w2 c)
+upsampleNearest2d f (I.Dim h2) (I.Dim w2) x =
+    I.Tensor (upsample f h2 w2 (I.tensor x))
+
+
+upsample : Int -> Int -> Int -> Expr -> Expr
+upsample f h2 w2 x =
+    case E.shape x of
+        [ n, h, w, c ] ->
+            if f < 1 || h2 /= f * h || w2 /= f * w then
+                E.failWith
+                    ("upsampleNearest2d: "
+                        ++ String.fromInt h
+                        ++ " × "
+                        ++ String.fromInt w
+                        ++ " by "
+                        ++ String.fromInt f
+                        ++ " is not "
+                        ++ String.fromInt h2
+                        ++ " × "
+                        ++ String.fromInt w2
+                    )
+                    x
+
+            else
+                -- rank 4 throughout: copies along w, then whole rows along h
+                x
+                    |> O.reshape [ n * h, w, 1, c ]
+                    |> O.broadcastTo [ n * h, w, f, c ]
+                    |> O.reshape [ n, h, 1, w * f * c ]
+                    |> O.broadcastTo [ n, h, f, w * f * c ]
+                    |> O.reshape [ n, h2, w2, c ]
+
+        _ ->
+            E.failWith "upsampleNearest2d: needs an NHWC tensor" x
+
+
+{-| Sinusoidal embeddings of (diffusion) timesteps, as diffusers' `get_timestep_embedding`: for
+i < e/2, frequencies exp(−ln(maxPeriod) · i / (e/2 − shift)); the result is (sin, cos) of t times
+them, or (cos, sin) with `cosFirst` (diffusers' `flip_sin_to_cos`). Build time checks e is even.
+-}
+timestepEmbedding : { maxPeriod : Float, cosFirst : Bool, shift : Float } -> Dim e -> Tensor Floating d (R1 n) -> Tensor Floating d (R2 n e)
+timestepEmbedding cfg (I.Dim e) t =
+    let
+        te =
+            I.tensor t
+    in
+    if modBy 2 e /= 0 then
+        I.Tensor (E.failWith ("timestepEmbedding: " ++ String.fromInt e ++ " features cannot hold sine and cosine halves (it must be even)") te)
+
+    else
+        let
+            half =
+                e // 2
+
+            frequencies =
+                E.const (E.dtype te) [ half ] (List.map (\i -> Basics.e ^ (-(logBase Basics.e cfg.maxPeriod) * toFloat i / (toFloat half - cfg.shift))) (List.range 0 (half - 1)))
+
+            angles =
+                O.mul (O.broadcastAxis 1 te) (O.broadcastAxis 0 frequencies)
+
+            sines =
+                O.unary P.Sin angles
+
+            cosines =
+                O.unary P.Cos angles
+        in
+        I.Tensor
+            (O.concat 1
+                (if cfg.cosFirst then
+                    [ cosines, sines ]
+
+                 else
+                    [ sines, cosines ]
+                )
+            )
+
+
+{-| Which keys each query may see when `s` new queries start at position `p` of a cache of `t`
+positions: query i (at p + i) sees keys 0 .. p + i.
+-}
+causalMaskAt : Tensor Integral I64 R0 -> Dim s -> Dim t -> Mask (R2 s t)
+causalMaskAt p (I.Dim s) (I.Dim t) =
+    let
+        queries =
+            O.add (O.range 0 1 s) (O.broadcastAxis 0 (O.cast P.SI64 (I.tensor p)))
+
+        keys =
+            O.range 0 1 t
+    in
+    I.Mask (O.le (O.broadcastAxis 0 keys) (O.broadcastAxis 1 queries))
+
+
+{-| `g` key/value heads repeated for `h` query heads: head i reads key/value head i // (h / g), as
+llama2.c and Hugging Face's `repeat_kv` do. Build time checks g divides h.
+-}
+repeatHeads : Dim h -> Tensor k d (R3 g t j) -> Tensor k d (R3 h t j)
+repeatHeads (I.Dim h) x =
+    I.Tensor (repeatKv h (I.tensor x))
+
+
+repeatKv : Int -> Expr -> Expr
+repeatKv h x =
+    case E.shape x of
+        [ g, t, j ] ->
+            if g <= 0 || modBy g h /= 0 then
+                E.failWith ("repeatHeads: " ++ String.fromInt h ++ " heads are not a multiple of " ++ String.fromInt g ++ " key/value heads") x
+
+            else if h == g then
+                x
+
+            else
+                x
+                    |> O.reshape [ g, 1, t, j ]
+                    |> O.broadcastTo [ g, h // g, t, j ]
+                    |> O.reshape [ h, t, j ]
+
+        _ ->
+            E.failWith "repeatHeads: needs heads × positions × features" x

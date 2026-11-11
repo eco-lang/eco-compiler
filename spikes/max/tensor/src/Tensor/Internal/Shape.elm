@@ -361,6 +361,18 @@ other p ms params =
         ( ScatterRows, [ x, upd, idx ] ) ->
             scatter x upd idx
 
+        ( ScatterAxis, [ x, upd, idx ] ) ->
+            scatterAxis (first params.a) x upd idx
+
+        ( ScatterAxisAdd, [ x, upd, idx ] ) ->
+            scatterAxis (first params.a) x upd idx
+
+        ( TopKValues, [ m ] ) ->
+            topK params m m.dtype
+
+        ( TopKIndices, [ m ] ) ->
+            topK params m SI64
+
         ( ScatterRowsAdd, [ x, upd, idx ] ) ->
             scatter x upd idx
 
@@ -592,6 +604,48 @@ scatter x upd idx =
 
     else
         Ok x
+
+
+{-| x with the slices at `idx` (an integer vector) along `axis` replaced by `upd`: `upd` is x with
+the indices' length at that axis.
+-}
+scatterAxis : Int -> Meta -> Meta -> Meta -> Result String Meta
+scatterAxis axis x upd idx =
+    if not (P.isInt idx.dtype) || List.length idx.shape /= 1 then
+        Err "indices must be an integer vector"
+
+    else if List.length upd.shape /= List.length x.shape || axis < 0 || axis >= List.length x.shape then
+        Err ("updates " ++ showShape upd.shape ++ " do not fit " ++ showShape x.shape ++ " at axis " ++ String.fromInt axis)
+
+    else if setAt axis 0 upd.shape /= setAt axis 0 x.shape || get axis upd.shape /= List.head idx.shape then
+        Err ("updates " ++ showShape upd.shape ++ " do not fit " ++ showShape x.shape ++ " with " ++ showShape idx.shape ++ " indices at axis " ++ String.fromInt axis)
+
+    else if upd.dtype /= x.dtype then
+        Err "updates and tensor dtypes differ"
+
+    else
+        Ok x
+
+
+{-| The k largest (or smallest) along an axis: x with size k there.
+-}
+topK : Params -> Meta -> DT -> Result String Meta
+topK params m dt =
+    case params.a of
+        [ axis, k, _ ] ->
+            case get axis m.shape of
+                Just size ->
+                    if k < 1 || k > size then
+                        Err ("k = " ++ String.fromInt k ++ " but axis " ++ String.fromInt axis ++ " has size " ++ String.fromInt size)
+
+                    else
+                        Ok { m | shape = setAt axis k m.shape, dtype = dt }
+
+                Nothing ->
+                    Err ("axis " ++ String.fromInt axis ++ " is outside " ++ showShape m.shape)
+
+        _ ->
+            Err "bad parameters"
 
 
 {-| NHWC input, RSCF filter (kernel h, kernel w, in, out); a: strides then four paddings.

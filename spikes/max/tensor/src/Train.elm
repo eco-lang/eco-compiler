@@ -23,6 +23,7 @@ import Tensor exposing (F32, Floating, R0, Tensor)
 import Tensor.Internal.Expr as E exposing (Expr)
 import Tensor.Internal.Grad as Grad
 import Tensor.Internal.Host as Host
+import Tensor.Internal.Io as Io
 import Tensor.Internal.Names exposing (names)
 import Tensor.Internal.Ops as O
 import Tensor.Internal.ParamInit as ParamInit
@@ -47,7 +48,7 @@ layout (I.ParamBuilder ps) (I.Optimizer o) =
             List.filter isTrainable ps.fields
     in
     { fields = ps.fields
-    , paramNames = names "param" (List.map (.kind >> ParamInit.kindLabel) ps.fields)
+    , paramNames = ParamInit.residentNames ps.fields
     , stateNames = names "state" (List.repeat (o.slots * List.length trainable) "state")
     , hasStep = o.slots > 0
     , hasRate = o.rate == I.PerStep
@@ -141,7 +142,7 @@ step ((I.ParamBuilder ps) as spec) ((I.Optimizer o) as opt) (I.SigBuilder bs) lo
                         in
                         ( { params = params, state = st, step = stepE, rate = rateE, batch = b }, r5 )
                 , flatten =
-                    \i -> ps.flatten i.params ++ i.state ++ maybeList (Maybe.map unscalar i.step) ++ maybeList (Maybe.map unscalar i.rate) ++ bs.flatten i.batch
+                    \i -> ps.flatten i.params ++ i.state ++ maybeList (Maybe.map Io.unnarrow i.step) ++ maybeList (Maybe.map Io.unnarrow i.rate) ++ bs.flatten i.batch
                 }
 
         nextNames =
@@ -223,18 +224,6 @@ step ((I.ParamBuilder ps) as spec) ((I.Optimizer o) as opt) (I.SigBuilder bs) lo
             List.map Tuple.first updated ++ List.concatMap Tuple.second updated ++ maybeList (Maybe.map (O.reshape [ 1 ]) newStep) ++ [ l ]
     in
     Graph.build "train_step" inSig outSig body
-
-
-{-| The [1] input a scalar came from (so the signature's round trip finds the input again).
--}
-unscalar : Expr -> Expr
-unscalar e =
-    case E.op e of
-        E.P P.Reshape [ x ] _ ->
-            x
-
-        _ ->
-            e
 
 
 fixedRate : I.Rate -> Float

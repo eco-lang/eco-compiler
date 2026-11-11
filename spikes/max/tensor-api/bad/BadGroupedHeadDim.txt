@@ -1,0 +1,17 @@
+Compiled in DEV mode. Follow the advice at https://elm-lang.org/0.19.1/optimize for better performance and smaller assets.
+Compiling ...
+Detected problems in 1 module.
+-- TYPE MISMATCH ------------------------------------- bad/BadGroupedHeadDim.elm
+
+Something is off with the body of the `bad` definition:
+
+11|     g
+        ^
+This `g` value is a:
+
+    Attention.Grouped F32 Model KvW Heads Heads HeadDim
+
+But the type annotation on `bad` says it should be:
+
+    Attention.Grouped F32 Model KvW Heads KvHeads HeadDim
+

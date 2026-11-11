@@ -1,4 +1,4 @@
-module Graph exposing (Graph, Spec, Role(..), build, function, name, inputs, outputs, toBytecode, toGenericText)
+module Graph exposing (Graph, Spec, Role(..), Device(..), build, function, name, inputs, outputs, toBytecode, toGenericText, toBytecodeOn, toGenericTextOn)
 
 {-| A whole graph, lowered and checked: what the host compiles and runs.
 
@@ -13,6 +13,7 @@ IR. It returns every error at once.
 import Bytes exposing (Bytes)
 import Signature exposing (Sig)
 import Tensor exposing (Tensor)
+import Tensor.Internal.Device as Device
 import Tensor.Internal.Expr as E exposing (Expr)
 import Tensor.Internal.Names exposing (names)
 import Tensor.Internal.Lower as Lower
@@ -180,9 +181,45 @@ outputs (I.Graph g) =
 -}
 toBytecode : Graph -> Bytes
 toBytecode (I.Graph g) =
-    Bc.encode g.ops
+    Bc.encode (cpuOps g.ops)
 
 
 toGenericText : Graph -> String
 toGenericText (I.Graph g) =
-    Bc.printGeneric g.ops
+    Bc.printGeneric (cpuOps g.ops)
+
+
+cpuOps : List Bc.Op -> List Bc.Op
+cpuOps ops =
+    Device.place Device.Cpu ops |> Result.withDefault ops
+
+
+{-| Where a graph runs: the host's CPU, or GPU `n`.
+-}
+type Device
+    = Cpu
+    | Gpu Int
+
+
+internal : Device -> Device.Device
+internal d =
+    case d of
+        Cpu ->
+            Device.Cpu
+
+        Gpu n ->
+            Device.Gpu n
+
+
+{-| The graph written for a device: on a GPU every tensor but the host-side operands (shapes, axes,
+bounds) lives on it. Refused, with the reasons, when the device cannot run something (a top-k off
+the last axis on a GPU). `toBytecodeOn Cpu` is `toBytecode`.
+-}
+toBytecodeOn : Device -> Graph -> Result (List String) Bytes
+toBytecodeOn d (I.Graph g) =
+    Device.place (internal d) g.ops |> Result.map Bc.encode
+
+
+toGenericTextOn : Device -> Graph -> Result (List String) String
+toGenericTextOn d (I.Graph g) =
+    Device.place (internal d) g.ops |> Result.map Bc.printGeneric

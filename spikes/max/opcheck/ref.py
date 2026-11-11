@@ -321,9 +321,120 @@ REF = {
     "nf4": lambda a, p, b: np.array([[NF4[0] * 2, NF4[7] * 2], [NF4[15] * 0.5, NF4[3] * 0.5]]),
 }
 
-TOLERANCE = {"bf16": (2e-2, 2e-2), "f16": (2e-3, 2e-3), "nf4": (1e-6, 1e-6)}
+def sigmoid64(x):
+    return 1 / (1 + np.exp(-x))
 
-STATS = {"zerosStats", "uniformStats", "normalStats", "bernoulliStats", "dropoutStats", "rowsDiffer"}
+
+def put_axis(x, idx, upd, axis, add):
+    y = x.copy()
+    ix = [slice(None)] * x.ndim
+    ix[axis] = idx
+    if add:
+        np.add.at(y, tuple(ix), upd)
+    else:
+        y[tuple(ix)] = upd
+    return y
+
+
+def keep_top_k(x, k):
+    thr = -np.sort(-x, axis=1)[:, k - 1:k]
+    return np.where(x >= thr, x, -3.4028234663852886e38)
+
+
+def temb(t, e, cos_first, shift, max_period=10000.0):
+    half = e // 2
+    f = np.exp(-np.log(max_period) * np.arange(half) / (half - shift))
+    args = t[:, None] * f[None, :]
+    parts = [np.cos(args), np.sin(args)] if cos_first else [np.sin(args), np.cos(args)]
+    return np.concatenate(parts, axis=1)
+
+
+def rms_norm(x, s, eps=1e-5):
+    return x / np.sqrt((x ** 2).mean(-1, keepdims=True) + eps) * s
+
+
+def group_norm(x, g, b, groups, eps=1e-5):
+    n, h, w, c = x.shape
+    r = x.reshape(n, h * w, groups, c // groups)
+    mu = r.mean(axis=(1, 3), keepdims=True)
+    var = ((r - mu) ** 2).mean(axis=(1, 3), keepdims=True)
+    return ((r - mu) / np.sqrt(var + eps)).reshape(n, h, w, c) * g + b
+
+
+def rope(x, pos, pairing, base=10000.0):
+    j = x.shape[-1]
+    half = j // 2
+    ang = np.asarray(pos, dtype=np.float64)[:, None] * (base ** (-2 * np.arange(half) / j))[None, :]
+    c, s = np.cos(ang), np.sin(ang)
+    if pairing == "halves":
+        x1, x2 = x[..., :half], x[..., half:]
+        return np.concatenate([x1 * c - x2 * s, x1 * s + x2 * c], axis=-1)
+    ev, od = x[..., 0::2], x[..., 1::2]
+    out = np.empty_like(x)
+    out[..., 0::2] = ev * c - od * s
+    out[..., 1::2] = ev * s + od * c
+    return out
+
+
+def grouped_attention(x, wq, wk, wv, wo, h, g, j, causal, pairing=None, pos=None, mem=None):
+    s = x.shape[0]
+    src = x if mem is None else mem
+    q = (x @ wq).reshape(s, h, j).transpose(1, 0, 2)
+    k = (src @ wk).reshape(src.shape[0], g, j).transpose(1, 0, 2)
+    v = (src @ wv).reshape(src.shape[0], g, j).transpose(1, 0, 2)
+    if pairing:
+        q, k = rope(q, pos, pairing), rope(k, pos, pairing)
+    k, v = np.repeat(k, h // g, axis=0), np.repeat(v, h // g, axis=0)
+    sc = q @ k.transpose(0, 2, 1) / np.sqrt(j)
+    if causal:
+        sc = np.where(np.tril(np.ones((s, s), dtype=bool)), sc, -1e9)
+    o = softmax(sc, 2) @ v
+    return o.transpose(1, 0, 2).reshape(s, h * j) @ wo
+
+
+REF.update({
+    "topKValues": lambda a, p, b: -np.sort(-a["dist"], axis=1)[:, :2],
+    "topKIndices": lambda a, p, b: np.argsort(-a["dist"], axis=1)[:, :2],
+    "topKMiddle": lambda a, p, b: -np.sort(-a["dist3"], axis=1)[:, :2, :],
+    "topKMiddleIndices": lambda a, p, b: np.argsort(-a["dist3"], axis=1)[:, :2, :],
+    "bottomK": lambda a, p, b: np.sort(a["dist"], axis=1)[:, :2],
+    "bottomKIndices": lambda a, p, b: np.argsort(a["dist"], axis=1)[:, :2],
+    "sortDesc": lambda a, p, b: -np.sort(-a["dist"], axis=1),
+    "sortDescIndices": lambda a, p, b: np.argsort(-a["dist"], axis=1),
+    "sortAscMiddle": lambda a, p, b: np.sort(a["dist3"], axis=1),
+    "sortAscMiddleIndices": lambda a, p, b: np.argsort(a["dist3"], axis=1),
+    "putAxis1": lambda a, p, b: put_axis(a["x3"], [3, 0], a["upd1"], 1, False),
+    "putAddAxis2": lambda a, p, b: put_axis(a["x3"], [2, 2], a["upd2"], 2, True),
+    "quickGelu": lambda a, p, b: a["x3"] * sigmoid64(1.702 * a["x3"]),
+    "greedy": lambda a, p, b: np.argmax(a["dist"], axis=1),
+    "keepTopK": lambda a, p, b: keep_top_k(a["dist"], int(p[0])),
+    "upsample": lambda a, p, b: a["img"].repeat(2, axis=1).repeat(2, axis=2),
+    "timestepEmbedding": lambda a, p, b: temb(a["steps"], 6, bool(p[0]), p[1]),
+    "causalMaskAt": lambda a, p, b: (np.arange(10)[None, :] <= (p[0] + np.arange(3))[:, None]).astype(np.float64),
+    "repeatHeads": lambda a, p, b: np.repeat(a["kvx"], 2, axis=0),
+    "unembed": lambda a, p, b: a["seq"] @ a["table"].T,
+    "rmsNorm": lambda a, p, b: rms_norm(a["seq"], a["scale"]),
+    "groupNorm": lambda a, p, b: group_norm(a["gimg"], a["scale"], a["gbias"], 2),
+    "rotaryInterleaved": lambda a, p, b: rope(a["rx"], np.arange(3) + p[0], "interleaved"),
+    "rotaryHalves": lambda a, p, b: rope(a["rx"], np.arange(3) + p[0], "halves"),
+    "gatedSilu": lambda a, p, b: ((a["seq"] @ a["gate"]) * sigmoid64(a["seq"] @ a["gate"]) * (a["seq"] @ a["up"])) @ a["down"],
+    "selfGrouped": lambda a, p, b: grouped_attention(a["xs"], a["wq"], a["wk"], a["wv"], a["wo"], 4, 2, 2, True, "interleaved", np.arange(5)),
+    "selfGroupedFull": lambda a, p, b: grouped_attention(a["xs"], a["wq"], a["wk8"], a["wv8"], a["wo"], 4, 4, 2, False),
+    "attendTo": lambda a, p, b: grouped_attention(a["xs"], a["wq"], a["wkc"], a["wvc"], a["wo"], 4, 4, 2, False, mem=a["mem"]),
+    "cachedLast": lambda a, p, b: grouped_attention(a["xs"], a["wq"], a["wk"], a["wv"], a["wo"], 4, 2, 2, True, "halves", np.arange(5))[4:5],
+    "vRmsNorm": lambda a, p, b: rms_norm(a["mm"], a["u"]),
+    "vRotary": lambda a, p, b: np.stack([rope(r, np.arange(4), "halves") for r in a["r4"]]),
+    "vRepeatHeads": lambda a, p, b: np.repeat(a["r4"], 2, axis=1),
+})
+
+REF.update({
+    "rmsNormBf16": lambda a, p, b: rms_norm(bf16(a["x"]), 1.0),
+    "groupNormBf16": lambda a, p, b: group_norm(bf16(a["x"]).reshape(1, 3, 1, 4), 1.0, 0.0, 2),
+})
+
+TOLERANCE = {"rmsNormBf16": (2e-2, 2e-2), "groupNormBf16": (2e-2, 2e-2), "bf16": (2e-2, 2e-2), "f16": (2e-3, 2e-3), "nf4": (1e-6, 1e-6)}
+
+STATS = {"categoricalStats", "nucleusStats", "zerosStats", "uniformStats", "normalStats", "bernoulliStats", "dropoutStats", "rowsDiffer"}
 
 
 def reference(check, args, base):
@@ -352,6 +463,8 @@ def inputs_for(family, rng):
             v = rng.permutation(3)[: shape[0]]
         elif dom.startswith("label"):
             v = rng.integers(0, int(dom[5:]), shape)
+        elif dom == "distinct":
+            v = (rng.permutation(int(np.prod(shape))).reshape(shape) * 0.37 - 3).astype(np.float32)
         elif dom == "seed":
             v = np.full(shape, 12345)
         else:
@@ -370,6 +483,20 @@ def check_stats(check, got, all_outputs):
         if check["name"] == "uniformSalted":
             ok = ok and not np.array_equal(got, all_outputs["uniform"])
         return ok, f"mean {got.mean():.4f} min {got.min():.4f} max {got.max():.4f}"
+    if check["ref"] == "categoricalStats":
+        probs = softmax(np.asarray(p, dtype=np.float64), 0)
+        freq = np.bincount(got.astype(int), minlength=len(p)) / len(got)
+        return bool(np.abs(freq - probs).max() < 0.015), "frequencies " + " ".join(f"{f:.3f}" for f in freq) + " vs " + " ".join(f"{q:.3f}" for q in probs)
+    if check["ref"] == "nucleusStats":
+        top, logits = p[0], np.asarray(p[1:], dtype=np.float64)
+        probs = softmax(logits, 0)
+        order = np.argsort(-probs)
+        before = np.cumsum(probs[order]) - probs[order]
+        keep = order[before < top]
+        want = np.zeros_like(probs)
+        want[keep] = probs[keep] / probs[keep].sum()
+        freq = np.bincount(got.astype(int), minlength=len(probs)) / len(got)
+        return bool(np.abs(freq - want).max() < 0.015 and freq[want == 0].sum() == 0), "frequencies " + " ".join(f"{f:.3f}" for f in freq) + " vs " + " ".join(f"{q:.3f}" for q in want)
     if check["ref"] == "zerosStats":
         return bool((got == 0).all()), "all zero" if (got == 0).all() else "not all zero"
     if check["ref"] == "normalStats":

@@ -83,6 +83,33 @@ STEPS ?= 1000
 run-charlm: $(B)/charlm_bridge work/charlm/corpus.txt
 	$(B)/charlm_bridge $(CURDIR)/work/charlm '{"corpus": "$(CURDIR)/work/charlm/corpus.txt", "layers": $(LAYERS), "shared": $(SHARED), "steps": $(STEPS), "trace": $(TRACE)}'
 
+# Round 2's end-to-end API checks on synthetic models (plans/tensor-api-round2.md, A2): CHECK=cache,
+# import or block; check-apicheck runs all three and the block's NumPy reference.
+CHECK ?= cache
+APICHECK_SRC := $(wildcard models/apicheck/src/*.elm) $(shell find $(CURDIR)/models/lib/src -name '*.elm')
+
+$(B)/apicheck.so: $(APICHECK_SRC) $(TENSOR_SRC)
+	$(call elm_so,models/apicheck,ApiCheck,apicheck)
+
+$(B)/apicheck_bridge: mnist/host/max_bridge.cpp $(B)/apicheck.so | check-venv
+	$(CXX) $(CXXFLAGS) $< $(B)/apicheck.so -L$(MAX_LIB) -lmax -lm -pthread -Wl,-rpath,$(B):$(MAX_LIB) -o $@
+
+work/apicheck/synthetic.safetensors: models/apicheck/make_checkpoint.py | check-venv
+	mkdir -p work/apicheck/block
+	$(MAX_VENV)/bin/python -I $< $(CURDIR)/work/apicheck
+
+run-apicheck: $(B)/apicheck_bridge work/apicheck/synthetic.safetensors
+	$(B)/apicheck_bridge $(CURDIR)/work/apicheck '{"check": "$(CHECK)", "dir": "$(CURDIR)/work/apicheck"}'
+
+check-apicheck: $(B)/apicheck_bridge work/apicheck/synthetic.safetensors
+	@for c in cache import block; do \
+	  $(B)/apicheck_bridge $(CURDIR)/work/apicheck '{"check": "'$$c'", "dir": "$(CURDIR)/work/apicheck"}' > work/apicheck/$$c.log 2>&1; \
+	  grep -h -E '"(PASS|FAIL)|HOST residents' work/apicheck/$$c.log | sed 's/^\[[^]]*\] //'; \
+	  if grep -q '"FAIL' work/apicheck/$$c.log || ! grep -q '"PASS' work/apicheck/$$c.log; then echo "apicheck $$c failed (work/apicheck/$$c.log)"; exit 1; fi; \
+	done
+	@grep -q 'HOST residents: 11 buffers' work/apicheck/import.log || { echo "import: raw buffers left resident"; exit 1; }
+	$(MAX_VENV)/bin/python -I models/apicheck/ref_block.py $(CURDIR)/work/apicheck
+
 $(B)/churn.so: memgrowth/src/Churn.elm
 	$(call elm_so,memgrowth,Churn,churn)
 
@@ -149,6 +176,18 @@ check-opcheck-bytecode:
 	  cmp -s $$f.from-text $$f.from-bc || { echo "differ: $$f"; exit 1; }; \
 	done; echo "op-check: bytecode and generic text read back identical ($$(ls work/opcheck/*.mlir | wc -l) graphs)"
 
+# Every op-check family written for GPU 0 (round 2, A3; no GPU needed): bytecode and generic text read
+# back as the same IR, and every op's operands and results placed as MAX's own API places them
+# (work/inventory/g16_gpu.txt). A family a GPU cannot run is listed as refused.
+check-gpu-ir:
+	@for f in work/opcheck/gpu/*.mlir; do \
+	  $(MLIR_OPT) --allow-unregistered-dialect --mlir-print-op-generic $$f > $$f.from-text && \
+	  $(MLIR_OPT) --allow-unregistered-dialect --mlir-print-op-generic $${f}bc > $$f.from-bc && \
+	  cmp -s $$f.from-text $$f.from-bc || { echo "differ: $$f"; exit 1; }; \
+	done; echo "gpu: bytecode and generic text read back identical ($$(ls work/opcheck/gpu/*.mlir | wc -l) graphs)"
+	@for f in work/opcheck/gpu/*.refused; do [ -e "$$f" ] && echo "gpu: refused $$(basename $$f .refused): $$(head -1 $$f)"; done; true
+	$(MAX_VENV)/bin/python -I capi/scripts/inventory/compare_gpu_ir.py work/inventory/g16_gpu.txt work/opcheck/gpu/*.mlir
+
 check-api:
 	$(call ELM_JS,tensor-api,examples/All.elm,/dev/null)
 	@cd tensor-api && for f in bad/*.elm; do \
@@ -160,4 +199,4 @@ check-tensor:
 	cd tensor && PATH=$(ECO_BUILD)/toolchain/bin:$$PATH $(ELM_TEST_RS) --fuzz 20
 
 .PHONY: all check-venv run-capi run-json run-bytes run-mnist check-bytecode run-churn run-mnist-ref clean \
-	check-ops check-opcheck-bytecode check-api check-tensor
+	check-ops check-opcheck-bytecode check-api check-tensor run-apicheck check-apicheck check-gpu-ir

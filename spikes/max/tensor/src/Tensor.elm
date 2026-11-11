@@ -7,12 +7,12 @@ module Tensor exposing
     , float, int, constant, fillLike, zeros, ones, full, fromList, zerosLike, onesLike, fullLike, iota, arange, hannWindow
     , cast, castLike, toFloat, toInt
     , abs, negate, sign, exp, log, log1p, sqrt, rsqrt, sin, cos, acos, atanh, erf, floor, round, truncate
-    , relu, sigmoid, tanh, gelu, geluTanh, silu, isInfinite, isNaN
+    , relu, sigmoid, tanh, gelu, geluTanh, silu, quickGelu, isInfinite, isNaN
     , plus, minus, times, dividedBy, modBy, pow, max, min, scale, shift
     , equals, notEquals, greaterThan, atLeast, lessThan, atMost
     , and, or, xor, not, select, indicator, maskBroadcast
     , matmul, matmul3, matmul4, matmul3By2, vecMat, matVec, dot, outer
-    , sum, mean, maximum, minimum, argMax, argMin, cumsum, cumsumWith, logSumExp
+    , sum, mean, maximum, minimum, argMax, argMin, cumsum, cumsumWith, logSumExp, topK, bottomK, sort
     , sumAll, meanAll, maximumAll, minimumAll, minMax
     , softmax, logSoftmax
     , reshape, flatten, flattenTail3, flattenTail4, factorLast2, factorLast3, factorLast4, mergeLast2, mergeLast3, mergeLast4
@@ -1173,37 +1173,18 @@ pick idx =
     map1 (O.pick (un idx))
 
 
-toFrontPerm : Int -> Int -> List Int
-toFrontPerm i r =
-    i :: List.filter ((/=) i) (List.range 0 (r - 1))
-
-
-inverse : List Int -> List Int
-inverse p =
-    List.indexedMap Tuple.pair p |> List.sortBy Tuple.second |> List.map Tuple.first
-
-
-scatterAlong : (Expr -> Expr -> Expr -> Expr) -> Int -> Expr -> Expr -> Expr -> Expr
-scatterAlong f i idx upd x =
-    let
-        p =
-            toFrontPerm i (E.rank x)
-    in
-    O.transpose (inverse p) (f (O.transpose p x) (O.transpose p upd) (O.cast SI64 idx))
-
-
 {-| `x |> put retag indices updates`: x with the slices at `indices` replaced.
 -}
 put : Retag s t a c -> Tensor Integral i (R1 c) -> Tensor k d t -> Tensor k d s -> Tensor k d s
 put (I.Retag i) idx upd =
-    map1 (scatterAlong O.scatterRows i (un idx) (un upd))
+    map1 (\x -> O.scatterAxis i x (un upd) (O.cast SI64 (un idx)))
 
 
 {-| The same, adding the updates (repeated indices add up).
 -}
 putAdd : Retag s t a c -> Tensor Integral i (R1 c) -> Tensor k d t -> Tensor k d s -> Tensor k d s
 putAdd (I.Retag i) idx upd =
-    map1 (scatterAlong O.scatterRowsAdd i (un idx) (un upd))
+    map1 (\x -> O.scatterAxisAdd i x (un upd) (O.cast SI64 (un idx)))
 
 
 {-| Zero below the k-th diagonal.
@@ -1237,3 +1218,51 @@ tril k =
 stopGradient : Tensor k d s -> Tensor k d s
 stopGradient =
     map1 O.stopGradient
+
+
+{-| `x |> quickGelu`: x · sigmoid(1.702 x), the GELU approximation CLIP uses.
+-}
+quickGelu : Tensor Floating d s -> Tensor Floating d s
+quickGelu =
+    map1 (\e -> O.mul e (O.unary P.Sigmoid (O.mul e (O.scalarLike 1.702 e))))
+
+
+{-| The `k` largest values along the retagged axis, largest first, and their indices:
+`logits |> topK Axis.retag1of2 (T.dim Top 5)`. No gradient (differentiating it is refused).
+-}
+topK : Retag s t a c -> Dim c -> Tensor k d s -> ( Tensor k d t, Tensor Integral I64 t )
+topK (I.Retag i) (I.Dim k) x =
+    let
+        ( v, ix ) =
+            O.topK True i k (un x)
+    in
+    ( wrap v, wrap ix )
+
+
+{-| The `k` smallest, smallest first, and their indices.
+-}
+bottomK : Retag s t a c -> Dim c -> Tensor k d s -> ( Tensor k d t, Tensor Integral I64 t )
+bottomK (I.Retag i) (I.Dim k) x =
+    let
+        ( v, ix ) =
+            O.topK False i k (un x)
+    in
+    ( wrap v, wrap ix )
+
+
+{-| The values along an axis in order, and the indices they came from (`take` with them gives the
+sorted values back). No gradient. On a GPU only the last axis can be sorted.
+-}
+sort : { descending : Bool } -> Axis s r c -> Tensor k d s -> ( Tensor k d s, Tensor Integral I64 s )
+sort cfg (I.Axis i) x =
+    let
+        e =
+            un x
+
+        n =
+            List.drop i (E.shape e) |> List.head |> Maybe.withDefault 1
+
+        ( v, ix ) =
+            O.topK cfg.descending i n e
+    in
+    ( wrap v, wrap ix )

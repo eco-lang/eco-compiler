@@ -1,0 +1,35 @@
+Compiled in DEV mode. Follow the advice at https://elm-lang.org/0.19.1/optimize for better performance and smaller assets.
+Compiling ...
+Detected problems in 1 module.
+-- TYPE MISMATCH ----------------------------------------- bad/BadCrossWidth.elm
+
+This function cannot handle the argument sent through the (|>) pipe:
+
+11|     text |> Attention.attendTo p.cross x
+                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+The argument is:
+
+    Tensor Floating F32 (R2 Text TextWidth)
+
+But (|>) is piping it to a function that expects:
+
+    Tensor Floating F32 (R2 Text Ch)
+
+-- TYPE MISMATCH ----------------------------------------- bad/BadCrossWidth.elm
+
+The 2nd argument to `attendTo` is not what I expect:
+
+11|     text |> Attention.attendTo p.cross x
+                                           ^
+This `x` value is a:
+
+    Tensor Floating F32 (R2 Seq Ch)
+
+But `attendTo` needs the 2nd argument to be:
+
+    Tensor Floating F32 (R2 Seq TextWidth)
+
+Hint: I always figure out the argument types from left to right. If an argument
+is acceptable, I assume it is "correct" and move on. So the problem may actually
+be in one of the previous arguments!
+
