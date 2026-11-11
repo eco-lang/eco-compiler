@@ -71,10 +71,13 @@ host so a cold compile ran concurrently.
 
 - `src/Tensor.elm`: tensors as values, so a network reads like the textbook
   (`x |> matmul w1 |> plus b1 |> relu`); the dtype is a phantom type (mixing dtypes does not
-  compile), and `Tensor.graph` lowers the expressions onto `Graph`, sharing each tensor by a
-  structural key (`plans/tensor-dsl.md`).
+  compile). A graph is an Elm function with a typed signature (`T.function "f" (T.pair (T.u8 [ n,
+  784 ]) (T.f32 [ 784, 10 ])) body`), lowered onto `Graph` with each tensor shared by a structural
+  key (`plans/tensor-dsl.md`).
 - `src/Param.elm`: a network's parameters described once (`Param.record Params |> Param.weights
-  "w1" .w1 [ 784, 128 ] |> ...`): graph inputs, SGD outputs, byte layout and initial values.
+  .w1 [ 784, 128 ] |> ...`): a graph argument, the byte layout and the initial values.
+- `src/Train.elm`: `Train.step params (Train.sgd 0.1) batch loss` builds the training step from a
+  loss alone; `Train.measure` the evaluation; `stepReply`/`measureReply` decode the host's replies.
 - `src/Graph.elm`: the tape behind `Tensor`: shapes and dtypes checked as it is built,
   reverse-mode autodiff over it, the `mo` printer, and `toModule`, the same graph as generic MLIR
   ops with the inherent attributes MAX's parser would derive. MAX has no autodiff, so Elm derives the
@@ -82,9 +85,11 @@ host so a cold compile ran concurrently.
 - `src/MlirBc.elm`: a small generic MLIR IR written as MLIR bytecode (version 6, as MLIR 24.0.0git
   writes it; builtin attributes and types in the builtin binary encoding, other dialects' as text)
   or as generic text. No LLVM or MLIR in the process: see `plans/mlir-bytecode-to-max.md`.
-- `src/Mnist.elm`: the network (784 → 128 ReLU → 10), the `train_step` and `evaluate` graphs, and the
-  training loop (SGD, learning rate 0.1, batch 100, 5 epochs). Elm owns the parameters as one `Bytes`
-  block.
+- `src/MnistNet.elm`: the network (784 → 128 ReLU → 10) and its training, and nothing else: the
+  parameters, the forward pass, the training step and the evaluation (SGD, learning rate 0.1, batch
+  100, 5 epochs).
+- `src/Mnist.elm`: runs `MnistNet` on MAX: the graphs' encoding, the data, and the training loop.
+  Elm owns the parameters as one `Bytes` block.
 - `src/Bridge.elm`: the ports and the byte layout shared with the host.
 - `host/max_bridge.cpp`: a generic MAX host that knows nothing about MNIST: it compiles graph text on
   worker threads, runs graphs on borrowed `Bytes`, and loads files.

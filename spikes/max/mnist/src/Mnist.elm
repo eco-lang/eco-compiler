@@ -2,129 +2,26 @@ module Mnist exposing (main)
 
 {-| Training a neural network on MNIST with Elm and MAX.
 
-Elm describes the network with tensors (`Tensor`), derives the training step's gradients itself
-(MAX has no autodiff), owns the parameters and the data, and runs the training loop. MAX compiles
-the two graphs Elm writes, a training step and an evaluation, and executes them.
+The network and its training step are `MnistNet`, written with tensors (`Tensor`); Elm derives the
+gradients itself (MAX has no autodiff). This module owns the parameters and the data and runs the
+training loop: MAX compiles the two graphs Elm writes, a training step and an evaluation, and
+executes them.
 
 -}
 
 import Array exposing (Array)
 import Bridge
-import Bytes exposing (Bytes, Endianness(..))
-import Bytes.Decode as Decode
+import Bytes exposing (Bytes)
 import Bytes.Encode as Encode
 import Dict exposing (Dict)
 import Graph
 import Json.Decode as D
 import MlirBc
+import MnistNet as Net exposing (batchSize, epochs, testSize)
 import Param
 import Platform
-import Tensor as T exposing (F32, Tensor, U8)
-
-
-
--- THE NETWORK
-
-
-hidden : Int
-hidden =
-    128
-
-
-batchSize : Int
-batchSize =
-    100
-
-
-testSize : Int
-testSize =
-    10000
-
-
-learningRate : Float
-learningRate =
-    0.1
-
-
-epochs : Int
-epochs =
-    5
-
-
-type alias Params a =
-    { w1 : a, b1 : a, w2 : a, b2 : a }
-
-
-params : Param.Spec (Params (Tensor F32))
-params =
-    Param.record Params
-        |> Param.weights "w1" .w1 [ 784, hidden ]
-        |> Param.zeros "b1" .b1 [ hidden ]
-        |> Param.weights "w2" .w2 [ hidden, 10 ]
-        |> Param.zeros "b2" .b2 [ 10 ]
-
-
-{-| 784 pixels (bytes 0-255) → 128 ReLU units → 10 class scores.
--}
-network : Params (Tensor F32) -> Tensor U8 -> Tensor F32
-network p pixels =
-    pixels
-        |> T.toFloat
-        |> T.scale (1 / 255)
-        |> T.matmul p.w1
-        |> T.plus p.b1
-        |> T.relu
-        |> T.matmul p.w2
-        |> T.plus p.b2
-
-
-{-| One step of stochastic gradient descent: the parameters and a batch in, the updated
-parameters and the batch's loss out.
--}
-trainStep : Result (List String) T.Graph
-trainStep =
-    let
-        p =
-            Param.inputs params
-
-        x =
-            T.input "x" T.u8 [ batchSize, 784 ]
-
-        y =
-            T.input "y" T.u8 [ batchSize ]
-
-        loss =
-            network p x |> T.crossEntropy (T.oneHot 10 y)
-    in
-    T.graph "train_step"
-        (Param.list params p ++ [ T.any x, T.any y ])
-        (Param.sgd learningRate loss params p ++ [ ( "loss", loss ) ])
-
-
-{-| How many of the test images the network classifies correctly.
--}
-evaluate : Result (List String) T.Graph
-evaluate =
-    let
-        p =
-            Param.inputs params
-
-        x =
-            T.input "x" T.u8 [ testSize, 784 ]
-
-        y =
-            T.input "y" T.u8 [ testSize ]
-
-        correct =
-            network p x
-                |> T.argMax 1
-                |> T.equals (y |> T.toInt |> T.column)
-                |> T.toFloat
-                |> T.sum 0
-    in
-    T.graph "evaluate"
-        (Param.list params p ++ [ T.any x, T.any y ])
-        [ ( "correct", correct ) ]
+import Tensor as T
+import Train
 
 
 
@@ -168,11 +65,6 @@ render format b =
 
         MoText ->
             Graph.print b.name b.inputs b.outputs b.graph |> Result.map text
-
-
-paramBlockSize : Int
-paramBlockSize =
-    Param.blockSize params
 
 
 {-| `list` in a random order (Fisher-Yates), and the seed after it.
@@ -256,7 +148,7 @@ init flags =
                 |> Maybe.withDefault Bytecode
 
         compileBoth =
-            case ( Result.andThen (render format) trainStep, Result.andThen (render format) evaluate ) of
+            case ( Result.andThen (render format) Net.trainStep, Result.andThen (render format) Net.evaluate ) of
                 ( Ok train, Ok eval ) ->
                     [ Bridge.log
                         ("graphs built and checked in Elm, as "
@@ -267,8 +159,8 @@ init flags =
                             ++ String.fromInt (Bytes.width eval)
                             ++ " bytes"
                         )
-                    , compileGraph trainId trainStep train
-                    , compileGraph evalId evaluate eval
+                    , compileGraph trainId Net.trainStep train
+                    , compileGraph evalId Net.evaluate eval
                     ]
 
                 ( train, eval ) ->
@@ -276,7 +168,7 @@ init flags =
     in
     ( { files = Dict.empty
       , compiled = []
-      , params = Param.initial params 42
+      , params = Param.initial Net.params 42
       , epoch = 0
       , batches = []
       , lossSum = 0
@@ -382,12 +274,12 @@ update msg model =
         Ran bytes ->
             if Bridge.headerId bytes == trainId then
                 let
-                    loss =
-                        Maybe.withDefault 0 (Decode.decode (Decode.float32 LE) (Bridge.slice (16 + paramBlockSize) 4 bytes))
+                    ( newParams, loss ) =
+                        Train.stepReply Net.params bytes
 
                     m =
                         { model
-                            | params = Bridge.slice 16 paramBlockSize bytes
+                            | params = newParams
                             , lossSum = model.lossSum + loss
                             , steps = model.steps + 1
                         }
@@ -402,7 +294,7 @@ update msg model =
             else
                 let
                     correct =
-                        round (Maybe.withDefault 0 (Decode.decode (Decode.float32 LE) (Bridge.slice 16 4 bytes)))
+                        round (Train.measureReply bytes)
 
                     report =
                         "epoch "
