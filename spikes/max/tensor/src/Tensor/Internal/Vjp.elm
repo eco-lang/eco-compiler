@@ -267,6 +267,18 @@ rule p args params out g =
         ( ScatterRowsAdd, [ _, _, idx ] ) ->
             [ Just g, Just (O.gather 0 g (O.flatten idx)), Nothing ]
 
+        ( ScatterAxis, [ _, upd, idx ] ) ->
+            [ Just (O.scatterAxis (first params) g (O.zerosLike upd) idx), Just (O.gather (first params) g idx), Nothing ]
+
+        ( ScatterAxisAdd, [ _, _, idx ] ) ->
+            [ Just g, Just (O.gather (first params) g idx), Nothing ]
+
+        ( TopKValues, [ x ] ) ->
+            [ Just (E.failWith "topK: cannot be differentiated (topK, bottomK and sort have no gradient)" (O.zerosLike x)) ]
+
+        ( TopKIndices, [ _ ] ) ->
+            [ Nothing ]
+
         ( BandPart, [ _ ] ) ->
             case params.a of
                 [ lower, upper ] ->

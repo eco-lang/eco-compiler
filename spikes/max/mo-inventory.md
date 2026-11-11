@@ -429,3 +429,40 @@ of a dialect op: `acos` (`mo.acos`), `argsort` (`mx.argsort`), `repeat_interleav
 Lesson for the Elm DSL: float-only math on an int tensor *builds and verifies* but kills the
 compile with an uninformative error, so the DSL's types must rule it out (Graph.elm's phantom
 dtype already can). Emit every axis non-negative.
+
+## 14. Round 2: scatter along an axis, top-k, and graphs on a GPU  (`work/inventory/g15_round2.txt`, `g16_gpu.txt`)
+
+Scripts: `capi/scripts/inventory/round2_ops.py`, `gpu_ir.py` (MAX's Python API builds GPU graphs
+without a GPU).
+
+| Python | IR | notes |
+|---|---|---|
+| `scatter(x, upd, idx, axis)` | `rmo.mo.scatter(%x, %upd, %idx) [axis = 1]` | element-wise along the axis: indices shaped like the updates; generic `axis = 1 : index` |
+| `scatter_add(x, upd, idx, axis)` | `rmo.mo.scatter.add(%x, %upd, %idx, %axis)` | the axis is a rank-0 si64 **operand** |
+| `top_k(x, k, axis)` | `rmo.top_k(%x) [k, axis]`, two results | si64 attributes; sorted values with k = an axis's size, any axis on the CPU |
+| `bottom_k(x, k)` | `rmo.mo.bottom_k(%x, %k, %axis, %sorted)` | k, axis, sorted as rank-0 operands |
+
+**On a GPU** (`DeviceRef.GPU()`):
+- Every data tensor's type names the device: `!mo.tensor<[2, 3], f32, gpu:0>`, graph arguments and
+  results included. In bytecode the type is its text, so nothing else changes.
+- Element-wise scalar constants are on the GPU too (`mo.constant ... : !mo.tensor<[], f32, gpu:0>`).
+- Operands that are parameters stay on the host, typed without a device: transpose permutations,
+  pad amounts **and pad value**, `band_part`'s bounds, `bottom_k`'s k/axis/sorted, `scatter.add`'s
+  axis, `range`'s bounds (its result is on the GPU), `random`'s shape and bounds, `layer_norm`'s
+  epsilon, `rmo.shape_to_tensor`.
+- `mo.custom` names the device: `device = #M.device_ref<"gpu", 0>`.
+- The conv filter's rebound type keeps its layout after the device:
+  `!mo.tensor<[3, 3, 2, 4], f32, gpu:0, {layout = #mo.layout<RSCF>}>`.
+- `rmo.mo.transfer[%chain] %x : ... to <"cpu", 0>` moves a value, returning it and a new chain. A
+  random seed computed from host constants is transferred to the GPU this way.
+- **Predicates must be on the CPU**: `ops.cond` and `ops.while_loop` refuse a GPU predicate ("must
+  reside on CPU"); MAX's own graphs transfer it first.
+- `top_k` on a middle axis still builds for a GPU; the kernel's docstring says only the last axis is
+  supported there.
+- The module carries `mo.device_info_mapping = {cpu = #M.device_info<...>}` even when built for a GPU
+  without one; eco-lab/tensor writes no such attribute (what a real GPU needs is checked in M4).
+
+eco-lab/tensor (`Tensor.Internal.Device`, `Graph.toBytecodeOn`) writes exactly this placement; `make
+check-gpu-ir` compares every op of every op-check family written for GPU 0 with MAX's placement for
+the same op (1,849 ops, 0 differ) and reads each graph back through `mlir-opt`. Branches and loops,
+and top-k off the last axis, are refused on a GPU until M4.

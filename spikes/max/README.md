@@ -74,7 +74,10 @@ tensors typed by kind, dtype and a fixed rank of named dimensions (`Tensor Float
 Hidden)`), so mixing up dimensions, axes or dtypes does not compile; reverse- and forward-mode
 autodiff to any order, `vmap` by batching rules, `cond`/`whileLoop` as `mo.if`/`mo.while`, shared
 MAX subgraphs, layers, losses, optimizers, transformers, convolutions, LoRA and QLoRA; MLIR bytecode
-written in Elm. Apps use it through eco's `--local-package eco-lab/tensor=tensor` (the Makefile's
+written in Elm. Round 2 (`plans/tensor-api-round2.md`) adds what open-weight language models,
+diffusion and GPUs need: top-k, sorting and sampling; RMS-norm, group-norm, rotary positions, gated
+feed-forward, grouped-query and cross attention with a KV cache, upsampling, timestep embeddings;
+`Infer` graphs with resident state; checkpoint import graphs; graphs written for a GPU. Apps use it through eco's `--local-package eco-lab/tensor=tensor` (the Makefile's
 `LOCAL_PKGS`).
 
 - `tensor-api/`: the API's example programs (must compile) and counterexamples with the errors eco
@@ -84,6 +87,9 @@ written in Elm. Apps use it through eco's `--local-package eco-lab/tensor=tensor
   API and checks values in f64 and gradients by central differences: `make check-ops`
   (`FAMILIES=...` for some), `OPCHECK_FORMAT=bytecode` to run the bytecode, and
   `make check-opcheck-bytecode` to compare every graph's bytecode and text with eco's `mlir-opt`.
+  Each family is also written for GPU 0: `make check-gpu-ir` reads those back through `mlir-opt`
+  and compares every op's device placement with MAX's own (`capi/scripts/inventory/gpu_ir.py`,
+  `compare_gpu_ir.py`); a family a GPU cannot run yet is listed as refused.
 - `make check-tensor`: the package's own tests (elm-test-rs).
 
 ### `bridge/` and `mnist/host/max_bridge.cpp`: the generic MAX host
@@ -92,9 +98,12 @@ written in Elm. Apps use it through eco's `--local-package eco-lab/tensor=tensor
 A graph's specs give each tensor a role: **resident** tensors (parameters, optimizer state) live in
 host buffers that outlive a run; a run reads them and its outputs with the same resident name
 replace them, so only fed tensors (a batch, a seed) cross from Elm and only fed outputs (the loss)
-come back. `bridge/Bridge.elm` is the Elm side every model app shares: `compile`, and commands —
-`run`, `put`, `get`, `save`, `loadInto` — that `send` delivers in one message, in order (separate
-sends to one port arrive in either order). The bridge takes `ECO_MAX_THREADS=N` (MAX's CPU worker
+come back. Resident outputs stay where MAX left them (no copy after a run) unless MAX placed one
+inside an input buffer, which is copied; the exit line counts the buffers and those copies.
+`bridge/Bridge.elm` is the Elm side every model app shares: `compile`, and commands — `run`, `put`,
+`get`, `save`, `loadInto`, `loadRangeInto` (part of a file into a buffer: a checkpoint tensor),
+`loadRange` (part of a file into Elm: a checkpoint header), `drop` — that `send` delivers in one
+message, in order (separate sends to one port arrive in either order). The bridge takes `ECO_MAX_THREADS=N` (MAX's CPU worker
 pool size) and `ECO_MAX_BUSY_WAIT_US=T` (how long an idle worker spins; it sets both of MAX's
 variables, which must agree or MAX aborts).
 
@@ -133,6 +142,21 @@ steps: held-out loss 1.96 nats, against the corpus's unigram entropy of 3.19. `G
 `bench.js` build (do not run) a GPT-sized training step (96 layers, width 768, vocabulary 50257,
 sequence 1024, batch 8) under node: 3.7–3.9 s and 0.67 MB of bytecode with shared blocks, 4.0 s and
 0.92 MB inlined.
+
+### `models/apicheck/` and `models/lib/`: round 2's end-to-end checks
+
+`ApiCheck.elm` checks round 2's API on synthetic models, without downloads: `make check-apicheck`
+(or `make run-apicheck CHECK=cache|import|block`).
+- `cache`: a Llama-shaped model (RMS-norm, grouped-query attention with rotary positions, SwiGLU,
+  tied unembedding) generates 16 tokens with a KV cache through `Infer` and again from a padded
+  full-context graph: logits within 1e-6, the same greedy tokens, for both rotary pairings.
+- `import`: `make_checkpoint.py` writes a safetensors file in PyTorch's layouts; its tensors go from the
+  file into resident buffers (`loadRangeInto`) and through typed import graphs, one named part alone
+  and then the whole, byte-identical to NumPy's conversion; the raw buffers are then dropped.
+- `block`: a UNet-shaped block (convolutions, group-norm, a timestep embedding, upsampling,
+  cross-attention under `vmap`) matches `ref_block.py`'s NumPy forward pass (2e-6) and trains.
+
+`models/lib/src/` holds code model apps share: so far `Checkpoint.Safetensors`.
 
 ### `memgrowth/`: why the MNIST run's RSS grows
 

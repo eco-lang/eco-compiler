@@ -1,14 +1,15 @@
-module Tensor.Random exposing (Seed, seed, salt, sig, uniform, normal, uniformLike, normalLike, bernoulliLike)
+module Tensor.Random exposing (Seed, seed, salt, sig, uniform, normal, uniformLike, normalLike, bernoulliLike, gumbelLike, categorical)
 
 {-| Counter-based randomness: a seed tensor (`ui64 [1]`, a graph input or computed from one) and
 salts. Nothing is hidden: the same seed and shape give the same values.
 -}
 
 import Signature exposing (Sig)
-import Tensor exposing (DType, Floating, I64, Integral, Mask, R0, Shape, Tensor)
+import Tensor exposing (DType, Floating, I64, Integral, Mask, R0, R1, R2, Shape, Tensor)
+import Tensor.Axis as Axis
 import Tensor.Internal.Expr as E exposing (Expr)
 import Tensor.Internal.Ops as O
-import Tensor.Internal.Prim exposing (DT(..))
+import Tensor.Internal.Prim as P exposing (DT(..))
 import Tensor.Internal.Types as I
 
 
@@ -88,3 +89,29 @@ bernoulliLike p x (I.Seed e) =
             O.random 0 F32 (E.shape (I.tensor x)) 0 1 e
     in
     I.Mask (O.lt u (O.scalarLike p u))
+
+
+{-| Gumbel noise, −log(−log u), one draw per element of `x`'s shape. Drawn and transformed in f32 (u in
+(2⁻²³, 1 − 2⁻²³), so the noise is finite), then cast to x's dtype.
+-}
+gumbelLike : Tensor Floating d s -> Seed -> Tensor Floating d s
+gumbelLike x (I.Seed e) =
+    let
+        xe =
+            I.tensor x
+
+        eps =
+            1.1920928955078125e-7
+
+        u =
+            O.random 0 F32 (E.shape xe) eps (1 - eps) e
+    in
+    I.Tensor (O.cast (E.dtype xe) (O.neg (O.unary P.Log (O.neg (O.unary P.Log u)))))
+
+
+{-| One draw from each row's softmax (Gumbel-max): the index of the largest logit plus Gumbel noise.
+Scale the logits by 1 / temperature first for a temperature.
+-}
+categorical : Tensor Floating d (R2 n v) -> Seed -> Tensor Integral I64 (R1 n)
+categorical logits s =
+    logits |> Tensor.plus (gumbelLike logits s) |> Tensor.argMax Axis.last2

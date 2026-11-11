@@ -1,0 +1,35 @@
+Compiled in DEV mode. Follow the advice at https://elm-lang.org/0.19.1/optimize for better performance and smaller assets.
+Compiling ...
+Detected problems in 1 module.
+-- TYPE MISMATCH ------------------------------------------- bad/BadCacheSeq.elm
+
+Something is off with the body of the `f` definition:
+
+11|     KvCache.write position keys keys cache
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+This `write` call produces:
+
+    KvCache.Cache F32 Heads Context HeadDim
+
+But the type annotation on `f` says it should be:
+
+    Cache
+
+-- TYPE MISMATCH ------------------------------------------- bad/BadCacheSeq.elm
+
+The 4th argument to `write` is not what I expect:
+
+11|     KvCache.write position keys keys cache
+                                         ^^^^^
+This `cache` value is a:
+
+    Cache
+
+But `write` needs the 4th argument to be:
+
+    KvCache.Cache F32 Heads Context HeadDim
+
+Hint: I always figure out the argument types from left to right. If an argument
+is acceptable, I assume it is "correct" and move on. So the problem may actually
+be in one of the previous arguments!
+

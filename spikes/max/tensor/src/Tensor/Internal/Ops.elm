@@ -6,6 +6,7 @@ module Tensor.Internal.Ops exposing
     , matmul, transpose, swapLast, reshape, flatten, slice, concat, pad, gather, scatterRows, scatterRowsAdd
     , bandPart, range, random, xent, layerNorm, unbroadcast, oneHot, pick, indicator
     , conv, convTranspose, maxPool, avgPool
+    , scatterAxis, scatterAxisAdd, topK, inF32, lowest, leadingAxes
     )
 
 {-| Untyped builders over `Expr`: the public `Tensor` functions and the gradient rules both use
@@ -522,3 +523,74 @@ unbroadcast target g =
 
     else
         reshape target summed
+
+
+{-| x with the slices at `idx` (an integer vector) along `axis` replaced by `upd`.
+-}
+scatterAxis : Int -> Expr -> Expr -> Expr -> Expr
+scatterAxis axis x upd idx =
+    E.prim ScatterAxis [ x, upd, idx ] (P.ints [ axis ])
+
+
+{-| x with `upd` added to the slices at `idx` along `axis` (repeated indices add up).
+-}
+scatterAxisAdd : Int -> Expr -> Expr -> Expr -> Expr
+scatterAxisAdd axis x upd idx =
+    E.prim ScatterAxisAdd [ x, upd, idx ] (P.ints [ axis ])
+
+
+{-| The k largest (or, `largest = False`, smallest) along `axis`, in order, and their indices.
+-}
+topK : Bool -> Int -> Int -> Expr -> ( Expr, Expr )
+topK largest axis k x =
+    let
+        params =
+            P.ints
+                [ axis
+                , k
+                , if largest then
+                    1
+
+                  else
+                    0
+                ]
+    in
+    ( E.prim TopKValues [ x ] params, E.prim TopKIndices [ x ] params )
+
+
+{-| `f` computed in f32 for a half-precision `x` (cast back after); as it is otherwise.
+-}
+inF32 : (Expr -> Expr) -> Expr -> Expr
+inF32 f x =
+    let
+        dt =
+            E.dtype x
+    in
+    if dt == F16 || dt == BF16 then
+        cast dt (f (cast F32 x))
+
+    else
+        f x
+
+
+{-| The dtype's lowest finite value: what masked logits and scores are set to.
+-}
+lowest : DT -> Float
+lowest dt =
+    case dt of
+        F16 ->
+            -65504
+
+        F64 ->
+            -1.7976931348623157e308
+
+        _ ->
+            -3.4028234663852886e38
+
+
+{-| `k` pending (broadcast) axes in front: a vector of the last axis, ready for an element-wise
+operation with a rank (k + 1) tensor.
+-}
+leadingAxes : Int -> Expr -> Expr
+leadingAxes k e =
+    List.foldl (\_ acc -> broadcastAxis 0 acc) e (List.range 1 k)

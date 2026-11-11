@@ -84,8 +84,8 @@ params (I.DType dt) (I.Dim i) (Seq layers) =
             List.concat
                 (List.map2
                     (\a b ->
-                        [ { dtype = dt, shape = [ a, b ], kind = I.Trainable I.HeUniform }
-                        , { dtype = dt, shape = [ b ], kind = I.Trainable I.Zeros }
+                        [ { dtype = dt, shape = [ a, b ], kind = I.Trainable I.HeUniform, name = Nothing }
+                        , { dtype = dt, shape = [ b ], kind = I.Trainable I.Zeros, name = Nothing }
                         ]
                     )
                     ins

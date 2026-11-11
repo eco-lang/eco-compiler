@@ -272,6 +272,14 @@ type Prim
       -- a: [k]: window = stride = k
     | MaxPool
     | AvgPool
+      -- a: [axis]; operands: x, updates, indices (rank 1, integer); x with the slices at indices along
+      -- axis replaced / added to (MAX's element-wise scatter, indices broadcast over the other axes)
+    | ScatterAxis
+    | ScatterAxisAdd
+      -- a: [axis, k, largest (1) or smallest (0)]; the k values in order / their indices (si64);
+      -- the two lower to one rmo.top_k (or rmo.mo.bottom_k)
+    | TopKValues
+    | TopKIndices
 
 
 type Family
@@ -511,6 +519,18 @@ tag p =
         AvgPool ->
             70
 
+        ScatterAxis ->
+            71
+
+        ScatterAxisAdd ->
+            72
+
+        TopKValues ->
+            73
+
+        TopKIndices ->
+            74
+
 
 {-| The name a build error quotes.
 -}
@@ -726,3 +746,15 @@ name p =
 
         AvgPool ->
             "avgPool2d"
+
+        ScatterAxis ->
+            "scatterAxis"
+
+        ScatterAxisAdd ->
+            "scatterAxisAdd"
+
+        TopKValues ->
+            "topKValues"
+
+        TopKIndices ->
+            "topKIndices"

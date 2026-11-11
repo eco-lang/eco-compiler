@@ -299,6 +299,18 @@ rule n p args params e st =
                 CumSum ->
                     axisRule shifted operands p
 
+                TopKValues ->
+                    axisRule shifted operands p
+
+                TopKIndices ->
+                    axisRule shifted operands p
+
+                ScatterAxis ->
+                    scatterAxisRule shifted full operands p
+
+                ScatterAxisAdd ->
+                    scatterAxisRule shifted full operands p
+
                 Pad ->
                     axisRule shifted operands p
 
@@ -360,6 +372,19 @@ rule n p args params e st =
 
                     else
                         Nothing
+
+
+{-| A scatter along an axis, per example: x and updates given the batch axis, the indices shared; a
+batched index vector has no rule (the trace is unrolled).
+-}
+scatterAxisRule : ((Int -> Int) -> Maybe P.Params) -> (Operand -> Expr) -> List Operand -> Prim -> Maybe Expr
+scatterAxisRule shifted full operands p =
+    case operands of
+        [ x, upd, Plain idx ] ->
+            shifted ((+) 1) |> Maybe.map (\pa -> E.prim p [ full x, full upd, idx ] pa)
+
+        _ ->
+            Nothing
 
 
 axisRule : ((Int -> Int) -> Maybe P.Params) -> List Operand -> Prim -> Maybe Expr

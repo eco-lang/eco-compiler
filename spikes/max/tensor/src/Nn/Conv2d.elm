@@ -1,4 +1,4 @@
-module Nn.Conv2d exposing (Conv2d, KernelH, KernelW, Padding, params, apply, applySame, applyTransposed)
+module Nn.Conv2d exposing (Conv2d, KernelH, KernelW, Padding, kernel, params, apply, applySame, applyTransposed)
 
 {-| 2-D convolution on NHWC tensors, with filters (kernel h, kernel w, in, out) as MAX's RSCF.
 -}
@@ -18,6 +18,14 @@ type KernelH
 
 type KernelW
     = KernelW
+
+
+{-| The kernel's dimensions, for describing a filter outside `params`: a checkpoint's raw filter
+(`Sig.f32 (T.r4 out in kh kw)`, PyTorch's OIHW) before its import graph permutes it to RSCF.
+-}
+kernel : ( Int, Int ) -> ( Dim KernelH, Dim KernelW )
+kernel ( kh, kw ) =
+    ( T.dim KernelH kh, T.dim KernelW kw )
 
 
 type alias Conv2d d c o =

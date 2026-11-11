@@ -1,5 +1,5 @@
 port module Bridge exposing
-    ( Format(..), compile, Command, send, run, load, put, get, save, loadInto, log, done
+    ( Format(..), compile, Command, send, run, load, put, get, save, loadInto, loadRangeInto, loadRange, drop, log, done
     , headerId, payload, packed, slice
     , compiledIn, runIn, loadIn, getIn
     )
@@ -215,6 +215,37 @@ save name path =
 loadInto : String -> String -> Command
 loadInto name path =
     Command (Encode.encode (Encode.sequence [ command 0 5, named name, Encode.string path ]))
+
+
+{-| An offset or length as the host reads it: two u32, low then high (Elm's `Bytes` has no 64-bit
+integers; values up to 2^53 are exact).
+-}
+u64 : Int -> Encode.Encoder
+u64 n =
+    Encode.sequence [ Encode.unsignedInt32 LE (modBy 4294967296 n), Encode.unsignedInt32 LE (n // 4294967296) ]
+
+
+{-| Bytes [offset, offset + length) of the file at `path` into the resident buffer `name`: one
+checkpoint tensor, without passing through Elm.
+-}
+loadRangeInto : String -> String -> Int -> Int -> Command
+loadRangeInto name path offset length =
+    Command (Encode.encode (Encode.sequence [ command 0 7, named name, u64 offset, u64 length, Encode.string path ]))
+
+
+{-| Free the resident buffer `name` (a raw checkpoint tensor after its import).
+-}
+drop : String -> Command
+drop name =
+    Command (Encode.encode (Encode.sequence [ command 0 8, Encode.string name ]))
+
+
+{-| Bytes [offset, offset + length) of the file at `path`; they come back on `loadIn` under `id`, as
+`load`'s do (a checkpoint's header).
+-}
+loadRange : Int -> String -> Int -> Int -> Command
+loadRange id path offset length =
+    Command (Encode.encode (Encode.sequence [ command id 9, u64 offset, u64 length, Encode.string path ]))
 
 
 log : String -> Cmd msg

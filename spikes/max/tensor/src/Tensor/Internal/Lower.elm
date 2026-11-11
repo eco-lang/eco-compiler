@@ -208,6 +208,22 @@ chainType =
     Bc.OpaqueType "!mo.chain"
 
 
+{-| Primitives that are one result of a two-result op, with the other result's primitive and value
+number offset: both lower to one op.
+-}
+sibling : P.Prim -> Maybe ( P.Prim, Int )
+sibling p =
+    case p of
+        P.TopKValues ->
+            Just ( P.TopKIndices, 1 )
+
+        P.TopKIndices ->
+            Just ( P.TopKValues, -1 )
+
+        _ ->
+            Nothing
+
+
 {-| The value of `e` as the top region numbers it: its own, or an enclosing region's as a negative
 operand (-(1 + v) is value v of the region just outside).
 -}
@@ -319,7 +335,17 @@ lowerOne e st =
                     emit (Mo.constant (E.dtype e) (E.shape e) values) (E.key e) st
 
                 E.P p args params ->
-                    emit (Mo.emit p (List.map (valueOf st) args) (List.map E.meta args) params (E.meta e)) (E.key e) st
+                    let
+                        st1 =
+                            emit (Mo.emit p (List.map (valueOf st) args) (List.map E.meta args) params (E.meta e)) (E.key e) st
+                    in
+                    case sibling p of
+                        Just ( other, offset ) ->
+                            -- the op's other result: the same node with the sibling primitive
+                            withTop (\fr -> { fr | values = Dict.insert (E.key (E.prim other args params)) (valueOf st1 e + offset) fr.values }) st1
+
+                        Nothing ->
+                            st1
 
                 E.Proj source i ->
                     let
