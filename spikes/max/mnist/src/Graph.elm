@@ -2,7 +2,7 @@ module Graph exposing
     ( DType(..), Graph, Ref, Shape
     , empty, input, constF, cast, add, sub, mul, matmul, relu, greater, equal, softmax, logSoftmax
     , reduceAdd, argMax, reshape, transpose, range, softmaxXentLoss
-    , shapeOf, grad, print, byteSize
+    , shapeOf, grad, print, toModule, byteSize
     )
 
 {-| A tensor compute graph built in Elm, checked as it is built, differentiated in Elm, and printed
@@ -12,6 +12,8 @@ A graph is a tape: each node is appended with its dtype and shape already inferr
 (mismatched shapes, wrong dtypes) is recorded at the node that made it and `print` refuses the
 graph. MAX must never see text that fails to verify: its C API crashes on it.
 
+`toModule` gives the same graph as generic MLIR ops (`MlirBc`), for MLIR bytecode or generic text.
+
 Builders take the graph last and return it first, so they chain with `|>`-free let blocks:
 
     ( g1, h ) = matmul x w g0
@@ -20,6 +22,7 @@ Builders take the graph last and return it first, so they chain with `|>`-free l
 
 import Array exposing (Array)
 import Dict exposing (Dict)
+import MlirBc
 import Set exposing (Set)
 
 
@@ -747,3 +750,133 @@ print graphName inputs outputs g =
                        ]
                 )
             )
+
+
+
+-- GENERIC OPS
+
+
+{-| The graph as one generic `mo.graph` op, with the inherent attributes MAX's parser would derive
+from the custom syntax `print` writes: `functionType`, `signature` (the same function type as a
+`kgen` generator; no parameters, since every shape is static), the parameter lists, and the names.
+Value numbers: the graph's arguments, then each op's one result, in tape order.
+-}
+toModule : String -> List ( String, Ref ) -> List ( String, Ref ) -> Graph -> Result (List String) MlirBc.Op
+toModule graphName inputs outputs g =
+    if not (List.isEmpty g.errors) then
+        Err (List.reverse g.errors)
+
+    else
+        let
+            ty r =
+                MlirBc.OpaqueType (tensorType (node g r))
+
+            scalarSi64 =
+                MlirBc.OpaqueType "!mo.tensor<[], si64>"
+
+            constant text t =
+                { name = "mo.constant", attrs = [ ( "value", MlirBc.OpaqueAttr text ) ], results = [ t ], operands = [], regions = [] }
+
+            simple opName attrs args t =
+                { name = opName, attrs = attrs, results = [ t ], operands = args, regions = [] }
+
+            -- Fold state: ops so far (reversed), the next value number, and each node's value.
+            step r n st =
+                let
+                    v a =
+                        Maybe.withDefault -1 (Dict.get a st.values)
+
+                    out =
+                        MlirBc.OpaqueType (tensorType n)
+
+                    emit ops =
+                        { ops = List.reverse ops ++ st.ops
+                        , next = st.next + List.length ops
+                        , values = Dict.insert r (st.next + List.length ops - 1) st.values
+                        }
+
+                    k =
+                        st.next
+                in
+                case n.op of
+                    Input _ ->
+                        st
+
+                    XentLoss x ->
+                        { st | values = Dict.insert r (v x.loss) st.values }
+
+                    ConstF f ->
+                        emit [ constant ("#M.dense_array<" ++ floatLit f ++ "> : tensor<f32>") out ]
+
+                    Cast a ->
+                        emit [ simple "mo.cast" [] [ v a ] out ]
+
+                    Bin opName a b ->
+                        emit [ simple ("rmo." ++ opName) [] [ v a, v b ] out ]
+
+                    Matmul a b ->
+                        emit [ simple "rmo.matmul" [] [ v a, v b ] out ]
+
+                    Unary opName a ->
+                        emit [ simple ("rmo.mo." ++ opName) [] [ v a ] out ]
+
+                    Axis opName axis a ->
+                        emit [ simple ("rmo.mo.reduce." ++ opName) [ ( "axis", MlirBc.IntAttr axis MlirBc.IndexType ) ] [ v a ] out ]
+
+                    Reshape a ->
+                        emit [ simple "rmo.reshape" [ ( "newShape", MlirBc.OpaqueAttr ("#mosh<ape[" ++ ints n.shape ++ "]> : !mosh.ape") ) ] [ v a ] out ]
+
+                    Transpose a ->
+                        emit
+                            [ constant "#M.dense_array<1, 0> : tensor<2xsi64>" (MlirBc.OpaqueType "!mo.tensor<[2], si64>")
+                            , simple "rmo.mo.transpose" [] [ v a, k ] out
+                            ]
+
+                    Range count ->
+                        let
+                            c x =
+                                constant ("#M.dense_array<" ++ String.fromInt x ++ "> : tensor<si64>") scalarSi64
+                        in
+                        emit [ c 0, c count, c 1, simple "rmo.mo.range" [] [ k, k + 1, k + 2 ] out ]
+
+            start =
+                { ops = []
+                , next = List.length inputs
+                , values = Dict.fromList (List.indexedMap (\i ( _, r ) -> ( r, i )) inputs)
+                }
+
+            final =
+                List.foldl (\( r, n ) st -> step r n st) start (List.indexedMap Tuple.pair (Array.toList g.nodes))
+
+            outRefs =
+                List.map Tuple.second outputs
+
+            fnType =
+                MlirBc.FunctionType (List.map (Tuple.second >> ty) inputs) (List.map ty outRefs)
+
+            names l =
+                MlirBc.ArrayAttr (List.map (Tuple.first >> MlirBc.StrAttr) l)
+
+            output =
+                { name = "mo.output"
+                , attrs = []
+                , results = []
+                , operands = List.map (\r -> Maybe.withDefault -1 (Dict.get r final.values)) outRefs
+                , regions = []
+                }
+        in
+        Ok
+            { name = "mo.graph"
+            , attrs =
+                [ ( "sym_name", MlirBc.StrAttr graphName )
+                , ( "functionType", MlirBc.TypeAttr fnType )
+                , ( "signature", MlirBc.TypeAttr (MlirBc.OpaqueType ("!kgen.generator<" ++ MlirBc.typeText fnType ++ ">")) )
+                , ( "inputParameters", MlirBc.OpaqueAttr "#kgen<param.decls[]>" )
+                , ( "resultParameters", MlirBc.OpaqueAttr "#kgen<param.decls[]>" )
+                , ( "argument_names", names inputs )
+                , ( "result_names", names outputs )
+                ]
+            , results = []
+            , operands = []
+            , regions = [ MlirBc.Region (List.map (Tuple.second >> ty) inputs) (List.reverse (output :: final.ops)) ]
+            }

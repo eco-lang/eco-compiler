@@ -13,6 +13,9 @@ spikes/max/setup.sh            # .venv with MAX 26.7 (~600 MB), MNIST into mnist
 make -C spikes/max             # needs the eco dev build tree: cmake --preset build; cmake --build build
 ```
 
+On an eco built against MAX's LLVM (below) the tree is elsewhere: pass it, e.g.
+`make -C spikes/max ECO_BUILD=$PWD/build-llvm-git`.
+
 `MAX_VENV=<dir>` reuses an existing venv. Outputs go to `build/` and `work/`; both are ignored, as
 are `.venv/` and `mnist/data/`.
 
@@ -67,8 +70,12 @@ host so a cold compile ran concurrently.
 ### `mnist/`: training a neural network on MNIST with Elm and MAX
 
 - `src/Graph.elm`: a typed graph tape whose shapes and dtypes are checked as it is built,
-  reverse-mode autodiff over it, and the `mo` printer. MAX has no autodiff, so Elm derives the
+  reverse-mode autodiff over it, the `mo` printer, and `toModule`, the same graph as generic MLIR
+  ops with the inherent attributes MAX's parser would derive. MAX has no autodiff, so Elm derives the
   backward pass.
+- `src/MlirBc.elm`: a small generic MLIR IR written as MLIR bytecode (version 6, as MLIR 24.0.0git
+  writes it; builtin attributes and types in the builtin binary encoding, other dialects' as text)
+  or as generic text. No LLVM or MLIR in the process: see `plans/mlir-bytecode-to-max.md`.
 - `src/Mnist.elm`: the network (784 → 128 ReLU → 10), the `train_step` and `evaluate` graphs, and the
   training loop (SGD, learning rate 0.1, batch 100, 5 epochs). Elm owns the parameters as one `Bytes`
   block.
@@ -77,7 +84,11 @@ host so a cold compile ran concurrently.
   worker threads, runs graphs on borrowed `Bytes`, and loads files.
 - `ref/numpy_ref.py`: the same run in NumPy (same LCG, init order, shuffles), as an oracle.
 
-`make run-mnist` and `make run-mnist-ref`. The bridge takes `ECO_MAX_THREADS=N` (MAX's CPU worker
+`make run-mnist` and `make run-mnist-ref`. `FORMAT=bytecode` (the default) sends the graphs as
+Elm-written MLIR bytecode, `FORMAT=generic` as MLIR generic text, `FORMAT=text` in MAX's custom `mo`
+syntax; all three give the same run. After a `bytecode` and a `generic` run, `make check-bytecode`
+reads both back with eco's `mlir-opt` (the LLVM commit MAX pins) and requires identical IR.
+`capi/scripts/bc_dump.py FILE.mlirbc` prints a bytecode file's tables and which entries are text. The bridge takes `ECO_MAX_THREADS=N` (MAX's CPU worker
 pool size, applied through the CPU mask MAX sizes it from) and `ECO_MAX_BUSY_WAIT_US=T` (how long an
 idle worker spins; it sets both of MAX's variables, which must agree or MAX aborts). Expected: 14.78% untrained, then 92.52, 94.31, 95.24,
 95.60 and 95.87% test accuracy, with mean train losses 0.4225 → 0.1334 (NumPy agrees to four

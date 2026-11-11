@@ -4,7 +4,8 @@
 #   make            everything below
 #   make run-capi   hand-written mo text through the C API
 #   make run-bytes  an eco .so and libmax in one process, zero-copy Bytes ports
-#   make run-mnist  train and evaluate the MNIST network
+#   make run-mnist  train and evaluate the MNIST network (FORMAT=bytecode|generic|text)
+#   make check-bytecode  the MNIST graphs' Elm-written bytecode against their generic text
 #   make run-churn  the eco-only repro of the MNIST run's memory growth (MODE=hold|both|...)
 #
 # Elm programs are compiled with the Stage 1 compiler and lowered to a .so with eco-boot-native, as
@@ -13,7 +14,9 @@
 REPO      ?= $(abspath $(CURDIR)/../..)
 ECO_BUILD ?= $(REPO)/build
 BOOT      := $(ECO_BUILD)/runtime/src/codegen/eco-boot-native
-STAGE1    := node --stack-size=500000 $(REPO)/compiler/bin/index.js
+# index.js otherwise loads guida.js from the `build/` preset's tree, not ECO_BUILD's.
+STAGE1    := GUIDA_JS_PATH=$(ECO_BUILD)/compiler/build-xhr/bin/guida.js \
+             node --stack-size=500000 $(REPO)/compiler/bin/index.js
 MAX_VENV  ?= $(CURDIR)/.venv
 MAX_SITE  := $(firstword $(wildcard $(MAX_VENV)/lib/python3*/site-packages))
 MAX_LIB   := $(MAX_SITE)/modular/lib
@@ -49,7 +52,7 @@ $(B)/tensor_bytes.so: embed/bytes/src/TensorBytes.elm
 $(B)/bytes_host: embed/bytes/bytes_host.cpp $(B)/tensor_bytes.so | check-venv
 	$(CXX) $(CXXFLAGS) $< $(B)/tensor_bytes.so -L$(MAX_LIB) -lmax -lm -Wl,-rpath,$(B):$(MAX_LIB) -o $@
 
-$(B)/mnist.so: mnist/src/Mnist.elm mnist/src/Graph.elm mnist/src/Bridge.elm
+$(B)/mnist.so: mnist/src/Mnist.elm mnist/src/Graph.elm mnist/src/Bridge.elm mnist/src/MlirBc.elm
 	$(call elm_so,mnist,Mnist,mnist)
 
 $(B)/max_bridge: mnist/host/max_bridge.cpp $(B)/mnist.so | check-venv
@@ -71,9 +74,23 @@ run-json: $(B)/tensor_host
 run-bytes: $(B)/bytes_host
 	cd capi && $(B)/bytes_host models/sym_mlp.mlir
 
+# FORMAT: bytecode (MLIR bytecode written by mnist/src/MlirBc.elm), generic (the same ops as MLIR
+# generic text) or text (MAX's custom mo syntax). Graphs land in work/<FORMAT>/graph-<id>.mlir[bc].
+FORMAT ?= bytecode
 run-mnist: $(B)/max_bridge
-	mkdir -p work
-	$(B)/max_bridge $(CURDIR)/work '{"dataDir": "$(CURDIR)/mnist/data"}'
+	mkdir -p work/$(FORMAT)
+	$(B)/max_bridge $(CURDIR)/work/$(FORMAT) '{"dataDir": "$(CURDIR)/mnist/data", "format": "$(FORMAT)"}'
+
+# The bytecode checked with eco's own LLVM (the commit MAX pins): each graph's bytecode and generic
+# text, from runs with FORMAT=bytecode and FORMAT=generic, must read back as the same IR.
+MLIR_OPT ?= /opt/llvm-mlir/bin/mlir-opt
+check-bytecode:
+	@for g in 1 2; do \
+	  $(MLIR_OPT) --allow-unregistered-dialect --mlir-print-op-generic work/bytecode/graph-$$g.mlirbc > work/graph-$$g.from-bc.mlir && \
+	  $(MLIR_OPT) --allow-unregistered-dialect --mlir-print-op-generic work/generic/graph-$$g.mlir > work/graph-$$g.from-text.mlir && \
+	  cmp work/graph-$$g.from-bc.mlir work/graph-$$g.from-text.mlir && \
+	  echo "graph $$g: bytecode and generic text read back identical ($$(wc -l < work/graph-$$g.from-bc.mlir) lines)" || exit 1; \
+	done
 
 MODE ?= hold
 run-churn: $(B)/churn_host
@@ -85,4 +102,4 @@ run-mnist-ref:
 clean:
 	rm -rf $(B) work
 
-.PHONY: all check-venv run-capi run-json run-bytes run-mnist run-churn run-mnist-ref clean
+.PHONY: all check-venv run-capi run-json run-bytes run-mnist check-bytecode run-churn run-mnist-ref clean

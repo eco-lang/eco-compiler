@@ -104,15 +104,17 @@ specText tag specs =
     String.join " " (tag :: List.map one specs)
 
 
-{-| Ask the host to compile `mlir` as graph `id`; it answers on `compiledIn`.
+{-| Ask the host to compile graph `id`; it answers on `compiledIn`. The graph is MLIR, as text or
+as bytecode: the host tells them apart by the bytecode's magic number.
 -}
-compile : Int -> List TensorSpec -> List TensorSpec -> String -> Cmd msg
+compile : Int -> List TensorSpec -> List TensorSpec -> Bytes -> Cmd msg
 compile id inputs outputs mlir =
     compileOut
         (Encode.encode
             (Encode.sequence
                 [ header id
-                , Encode.string (specText "in" inputs ++ "\n" ++ specText "out" outputs ++ "\n" ++ mlir)
+                , Encode.string (specText "in" inputs ++ "\n" ++ specText "out" outputs ++ "\n")
+                , Encode.bytes mlir
                 ]
             )
         )
