@@ -723,7 +723,7 @@ int main(int argc, char **argv) {
     std::string tempMlirFile;
     // Removes the front end's temporary MLIR on every return, error returns included. Removing a file
     // that is already gone is harmless, so the explicit removals below stay.
-    auto removeTempMlir = llvm::make_scope_exit([&] {
+    llvm::scope_exit removeTempMlir([&] {
         if (!tempMlirFile.empty())
             llvm::sys::fs::remove(tempMlirFile);
     });
@@ -1025,7 +1025,7 @@ int main(int argc, char **argv) {
     std::string objFile;
     std::string tempObjFile;
     // Removed on every return, as the temporary MLIR is.
-    auto removeTempObj = llvm::make_scope_exit([&] {
+    llvm::scope_exit removeTempObj([&] {
         if (!tempObjFile.empty())
             llvm::sys::fs::remove(tempObjFile);
     });

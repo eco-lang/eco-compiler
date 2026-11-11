@@ -389,9 +389,10 @@ EcoJIT::create(mlir::Operation *m, const EcoJITOptions &options) {
 
     // Each object gets an `EcoSectionMemoryManager`, which on POSIX hosts
     // registers its `.eh_frame`, and the stack map listener sees every object
-    // loaded.
+    // loaded. The JITLink memory manager LLJIT offers goes unused: this is a
+    // RuntimeDyld layer.
     auto objectLinkingLayerCreator =
-        [&engine](ExecutionSession &session) {
+        [&engine](ExecutionSession &session, jitlink::JITLinkMemoryManager &) {
             auto objectLayer = std::make_unique<RTDyldObjectLinkingLayer>(
                 session, [](const MemoryBuffer &) {
                     return std::make_unique<EcoSectionMemoryManager>();

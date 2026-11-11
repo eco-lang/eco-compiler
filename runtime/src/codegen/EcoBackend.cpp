@@ -502,14 +502,14 @@ struct OptPassTimer {
     // Registers this timer's callbacks on `pic`.
     void attach(PassInstrumentationCallbacks &pic) {
         pic.registerBeforeNonSkippedPassCallback(
-            [this](StringRef p, Any) { push(p.str()); });
+            [this](StringRef p, IRUnitRef) { push(p.str()); });
         pic.registerAfterPassCallback(
-            [this](StringRef, Any, const PreservedAnalyses &) { pop(); });
+            [this](StringRef, IRUnitRef, const PreservedAnalyses &) { pop(); });
         pic.registerAfterPassInvalidatedCallback(
             [this](StringRef, const PreservedAnalyses &) { pop(); });
         pic.registerBeforeAnalysisCallback(
-            [this](StringRef p, Any) { push(("analysis: " + p).str()); });
-        pic.registerAfterAnalysisCallback([this](StringRef, Any) { pop(); });
+            [this](StringRef p, IRUnitRef) { push(("analysis: " + p).str()); });
+        pic.registerAfterAnalysisCallback([this](StringRef, IRUnitRef) { pop(); });
     }
     ~OptPassTimer() {
         auto &g = optPassTimesGlobal();
@@ -574,7 +574,7 @@ Error runEcoModuleOpt(Module &m, TargetMachine *tm, CodeGenOptLevel optLevel) {
     pto.SLPVectorization = false;
 
     PassInstrumentationCallbacks pic;
-    pic.registerShouldRunOptionalPassCallback([](StringRef pass, Any) {
+    pic.registerShouldRunOptionalPassCallback([](StringRef pass, IRUnitRef) {
         return pass != "CalledValuePropagationPass";
     });
     std::optional<OptPassTimer> timer;
@@ -919,7 +919,7 @@ std::unique_ptr<TargetMachine> createEcoTargetMachine(Module &module,
     module.setTargetTriple(Triple(triple));
 
     std::string error;
-    const Target *target = TargetRegistry::lookupTarget(triple, error);
+    const Target *target = TargetRegistry::lookupTarget(module.getTargetTriple(), error);
     if (!target) {
         errs() << "Error: Could not find target: " << error << "\n";
         return nullptr;
@@ -1848,7 +1848,7 @@ static void expandSatMarkers(Module &m) {
             BasicBlock::Create(ctx, "eco.sat.maybe", entry->getParent(), slow);
         BasicBlock *fast =
             BasicBlock::Create(ctx, "eco.sat.fast", entry->getParent(), slow);
-        auto *br0 = BranchInst::Create(maybe, slow, ok, entryTerm->getIterator());
+        auto *br0 = CondBrInst::Create(ok, maybe, slow, entryTerm->getIterator());
         (void)br0;
         entryTerm->eraseFromParent();
 
