@@ -1,0 +1,23 @@
+Compiled in DEV mode. Follow the advice at https://elm-lang.org/0.19.1/optimize for better performance and smaller assets.
+Compiling ...Detected problems in 1 module.
+-- TYPE MISMATCH ------------------------------------------ bad/BadBatchBias.elm
+
+This function cannot handle the argument sent through the (|>) pipe:
+
+16|     x |> T.matmul w |> T.plus b
+                           ^^^^^^^^
+The argument is:
+
+    Tensor Floating F32 (R2 n Hidden)
+
+But (|>) is piping it to a function that expects:
+
+    Tensor Floating F32 (R2 Batch Hidden)
+
+Hint: Your type annotation uses type variable `n` which means ANY type of value
+can flow through, but your code is saying it specifically wants a `Batch` value.
+Maybe change your type annotation to be more specific? Maybe change the code to
+be more general?
+
+Read <https://elm-lang.org/0.19.1/type-annotations> for more advice!
+

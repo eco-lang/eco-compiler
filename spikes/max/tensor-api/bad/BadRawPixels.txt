@@ -1,0 +1,16 @@
+Compiled in DEV mode. Follow the advice at https://elm-lang.org/0.19.1/optimize for better performance and smaller assets.
+Compiling ...Detected problems in 1 module.
+-- TYPE MISMATCH ------------------------------------------ bad/BadRawPixels.elm
+
+This function cannot handle the argument sent through the (|>) pipe:
+
+16|     x |> Linear.apply p.l1
+             ^^^^^^^^^^^^^^^^^
+The argument is:
+
+    Tensor Integral U8 (R2 n Pixels)
+
+But (|>) is piping it to a function that expects:
+
+    Tensor Floating F32 (R2 n Pixels)
+

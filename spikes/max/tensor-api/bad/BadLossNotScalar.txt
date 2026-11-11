@@ -1,0 +1,21 @@
+Compiled in DEV mode. Follow the advice at https://elm-lang.org/0.19.1/optimize for better performance and smaller assets.
+Compiling ...Detected problems in 1 module.
+-- TYPE MISMATCH -------------------------------------- bad/BadLossNotScalar.elm
+
+I cannot send this through the (<|) pipe:
+
+15|     Train.step params (Optim.sgd 0.1) (Sig.pair (Sig.u8 (T.r2 batch pixels)) (Sig.u8 (T.r1 batch))) <|
+16|         \p ( x, y ) -> network p x |> T.logSoftmax Axis.last2 |> T.pick (T.toInt y) |> T.negate
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+The argument is:
+
+    Params
+    -> ( Tensor Integral U8 (R2 Batch Pixels), Tensor Integral U8 (R1 Batch) )
+    -> Tensor Floating F32 (R1 Batch)
+
+But (<|) is piping it to a function that expects:
+
+    Params
+    -> ( Tensor Integral U8 (R2 Batch Pixels), Tensor Integral U8 (R1 Batch) )
+    -> Tensor Floating F32 R0
+

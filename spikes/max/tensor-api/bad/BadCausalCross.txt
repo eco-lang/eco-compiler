@@ -1,0 +1,22 @@
+Compiled in DEV mode. Follow the advice at https://elm-lang.org/0.19.1/optimize for better performance and smaller assets.
+Compiling ...Detected problems in 1 module.
+-- TYPE MISMATCH ---------------------------------------- bad/BadCausalCross.elm
+
+This function cannot handle the argument sent through the (|>) pipe:
+
+17|     q |> Nn.causalAttention k v
+             ^^^^^^^^^^^^^^^^^^^^^^
+The argument is:
+
+    Tensor Floating F32 (R3 h s j)
+
+But (|>) is piping it to a function that expects:
+
+    Tensor Floating F32 (R3 h t j)
+
+Hint: Your type annotation uses `s` and `t` as separate type variables. Your
+code seems to be saying they are the same though. Maybe they should be the same
+in your type annotation? Maybe your code uses them in a weird way?
+
+Read <https://elm-lang.org/0.19.1/type-annotations> for more advice!
+

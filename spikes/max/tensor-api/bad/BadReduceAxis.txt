@@ -1,0 +1,23 @@
+Compiled in DEV mode. Follow the advice at https://elm-lang.org/0.19.1/optimize for better performance and smaller assets.
+Compiling ...Detected problems in 1 module.
+-- TYPE MISMATCH ----------------------------------------- bad/BadReduceAxis.elm
+
+Something is off with the body of the `m` definition:
+
+17|     logits |> T.sum Axis.axis0of2
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+The body is:
+
+    Tensor Floating F32 (R1 Classes)
+
+But the type annotation on `m` says it should be:
+
+    Tensor Floating F32 (R1 n)
+
+Hint: Your type annotation uses type variable `n` which means ANY type of value
+can flow through, but your code is saying it specifically wants a `Classes`
+value. Maybe change your type annotation to be more specific? Maybe change the
+code to be more general?
+
+Read <https://elm-lang.org/0.19.1/type-annotations> for more advice!
+

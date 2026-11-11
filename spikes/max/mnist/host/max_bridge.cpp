@@ -1,12 +1,20 @@
 // A generic MAX host for an eco program: it knows nothing about MNIST or neural networks.
 //
 // Ports (see src/Bridge.elm for the byte layout):
-//   compileOut (bytes)  [header id] "in name:dtype:AxB ...\nout name:dtype:AxB ...\n" then MLIR,
-//                       as text or bytecode (told apart by bytecode's magic, "ML\xEFR")
-//                       -> compiled on a worker thread; the answer goes to compiledIn as JSON
-//   runOut (bytes)      [header id] inputs, each padded to 16 bytes
-//                       -> executed on the eco thread with the inputs borrowed in place from the
-//                          Elm heap; outputs emitted on runIn as [header id] outputs, padded to 16
+//   compileOut (bytes)  [header id] "in name:dtype:AxB[:r=RES] ...\nout name:dtype:AxB[:r=RES] ...\n"
+//                       then MLIR, as text or bytecode (told apart by bytecode's magic, "ML\xEFR")
+//                       -> compiled on a worker thread; the answer goes to compiledIn as JSON.
+//                       `r=RES` marks a resident tensor: an input read from the host buffer RES,
+//                       an output that replaces RES after the run (parameters, optimizer state).
+//   hostOut (bytes)     the ordered commands, the header's second u32 saying which:
+//     1 run             [header id] the fed (non-resident) inputs, each padded to 16 bytes
+//                       -> executed on the eco thread with them borrowed in place from the Elm heap
+//                          and the resident inputs from the host's buffers; the fed outputs are
+//                          emitted on runIn as [header id] outputs, padded to 16
+//     2 put             [header] NAME\0 bytes -> the resident buffer NAME
+//     3 get             [header id] NAME -> getIn: [header id] the buffer's bytes
+//     4 save            [header] NAME\0 PATH -> the buffer written to PATH
+//     5 loadInto        [header] NAME\0 PATH -> PATH read into the buffer
 //   loadOut (bytes)     [header id] path -> the file's bytes on loadIn as [header id] contents
 //   logOut (string)     printed with the time since start
 //   doneOut (int)       stops the program with that exit code
@@ -26,6 +34,7 @@
 
 #include <sched.h>
 
+#include <algorithm>
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
@@ -33,6 +42,8 @@
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
+#include <functional>
+#include <span>
 #include <fstream>
 #include <map>
 #include <mutex>
@@ -54,6 +65,7 @@ double msSince(Clock::time_point t0) {
 
 struct Spec {
   std::string name;
+  std::string resident; // empty: fed with every run
   M_Dtype dtype;
   size_t elemSize;
   std::vector<int64_t> shape;
@@ -71,6 +83,8 @@ struct Graph {
   std::vector<Spec> inputs, outputs;
   std::vector<M_TensorSpec *> inputSpecs;
   int runs = 0;
+  // bytes crossing the Elm boundary: run messages in (header and fed inputs), replies out
+  uint64_t bytesIn = 0, bytesOut = 0, maxIn = 0, maxOut = 0;
   double execMs = 0, callbackMs = 0;
 };
 
@@ -79,6 +93,8 @@ M_RuntimeContext *ctx;
 M_Device *host;
 std::mutex graphsMutex;
 std::map<uint32_t, Graph> graphs;
+// Resident buffers by name: parameters and optimizer state that outlive a run (eco thread only).
+std::map<std::string, std::vector<std::byte>> residents;
 std::vector<std::thread> compilers;
 
 std::mutex doneMutex;
@@ -99,30 +115,42 @@ void writeHeader(std::byte *p, uint32_t id) {
   std::memcpy(p, &id, 4);
 }
 
-// "in x:ui8:100x784 y:ui8:100" -> specs
+// "in x:ui8:100x784 y:ui8:100 w:f32:784x128:r=param0" -> specs (a scalar has no dims: "s:f32:")
 std::vector<Spec> parseSpecs(const std::string &line) {
+  static const std::map<std::string, std::pair<M_Dtype, size_t>> dtypes = {
+      {"f16", {M_FLOAT16, 2}}, {"bf16", {M_BFLOAT16, 2}}, {"f32", {M_FLOAT32, 4}},
+      {"f64", {M_FLOAT64, 8}}, {"si8", {M_INT8, 1}},      {"si32", {M_INT32, 4}},
+      {"si64", {M_INT64, 8}},  {"ui8", {M_UINT8, 1}},     {"ui64", {M_UINT64, 8}},
+      {"bool", {M_BOOL, 1}}};
   std::vector<Spec> out;
   std::istringstream words(line);
   std::string word;
   words >> word; // "in" / "out"
   while (words >> word) {
+    std::vector<std::string> parts;
+    std::string part;
+    std::istringstream fields(word);
+    while (std::getline(fields, part, ':'))
+      parts.push_back(part);
+    while (parts.size() < 3)
+      parts.push_back("");
     Spec s;
-    size_t a = word.find(':'), b = word.find(':', a + 1);
-    s.name = word.substr(0, a);
-    std::string dt = word.substr(a + 1, b - a - 1);
-    if (dt == "f32")
-      s.dtype = M_FLOAT32, s.elemSize = 4;
-    else if (dt == "ui8")
-      s.dtype = M_UINT8, s.elemSize = 1;
-    else if (dt == "si64")
-      s.dtype = M_INT64, s.elemSize = 8;
-    else
-      s.dtype = M_BOOL, s.elemSize = 1;
-    std::istringstream dims(word.substr(b + 1));
+    s.name = parts[0];
+    auto dt = dtypes.find(parts[1]);
+    if (dt == dtypes.end()) {
+      std::printf("HOST unknown dtype %s\n", parts[1].c_str());
+      std::fflush(stdout);
+      std::_Exit(1);
+    }
+    s.dtype = dt->second.first;
+    s.elemSize = dt->second.second;
+    std::istringstream dims(parts[2]);
     std::string d;
     while (std::getline(dims, d, 'x'))
       if (!d.empty())
         s.shape.push_back(std::atoll(d.c_str()));
+    if (parts.size() > 3 && parts[3].rfind("r=", 0) == 0)
+      s.resident = parts[3].substr(2);
     out.push_back(s);
   }
   return out;
@@ -209,7 +237,7 @@ int main(int argc, char **argv) {
   sched_setaffinity(0, sizeof saved, &saved); // the eco thread and the host keep every CPU
 
   const eco::BytesOutPort compileOut("compileOut");
-  const eco::BytesOutPort runOut("runOut");
+  const eco::BytesOutPort hostOut("hostOut");
   const eco::BytesOutPort loadOut("loadOut");
   const eco::BytesInPort runIn("runIn");
   const eco::JsonOutPort logOut("logOut");
@@ -238,46 +266,73 @@ int main(int argc, char **argv) {
   });
 
   M_Status *rst = M_newStatus();
-  eco::Subscription s3 = runOut.subscribe([&runIn, rst](const eco::BorrowedBytes &bytes) {
+  auto handleRun = [&runIn, rst](std::span<const std::byte> view) {
     auto t0 = Clock::now();
-    std::span<const std::byte> v = bytes.view();
+    std::span<const std::byte> v = view;
     const uint32_t id = headerId(v.data());
     Graph *g;
     {
       std::lock_guard<std::mutex> lock(graphsMutex);
       g = &graphs.at(id);
     }
-    // Borrow every input in place: no copy out of the Elm heap, and no GC until we return.
+    // Borrow every fed input in place (no copy out of the Elm heap, and no GC until we return) and
+    // every resident input from its host buffer.
     M_AsyncTensorMap *in = M_newAsyncTensorMap(ctx);
     size_t off = 16;
     for (size_t i = 0; i < g->inputs.size(); ++i) {
-      M_borrowTensorInto(in, const_cast<std::byte *>(v.data() + off), g->inputSpecs[i], rst);
-      off += padded(g->inputs[i].bytes());
+      const Spec &s = g->inputs[i];
+      if (!s.resident.empty()) {
+        auto r = residents.find(s.resident);
+        if (r == residents.end() || r->second.size() != s.bytes()) {
+          std::printf("HOST run %u: resident %s is %s (%zu bytes wanted)\n", id, s.resident.c_str(),
+                      r == residents.end() ? "missing" : "the wrong size", s.bytes());
+          std::fflush(stdout);
+      std::_Exit(1);
+        }
+        M_borrowTensorInto(in, r->second.data(), g->inputSpecs[i], rst);
+      } else {
+        M_borrowTensorInto(in, const_cast<std::byte *>(v.data() + off), g->inputSpecs[i], rst);
+        off += padded(s.bytes());
+      }
     }
     if (M_isError(rst) || off != v.size()) {
       std::printf("HOST run %u: bad inputs (%zu of %zu bytes): %s\n", id, off, v.size(),
                   M_getError(rst));
-      std::exit(1);
+      std::fflush(stdout);
+      std::_Exit(1);
     }
     auto t1 = Clock::now();
     M_AsyncTensorMap *outs = M_executeModelSync(ctx, g->model, in, rst);
     if (M_isError(rst)) {
       std::printf("HOST run %u: %s\n", id, M_getError(rst));
-      std::exit(1);
+      std::fflush(stdout);
+      std::_Exit(1);
     }
     g->execMs += msSince(t1);
     std::vector<M_AsyncTensor *> results;
     size_t total = 16;
     for (const Spec &s : g->outputs) {
       results.push_back(M_getTensorByNameFrom(outs, s.name.c_str(), rst));
-      total += padded(s.bytes());
+      if (s.resident.empty())
+        total += padded(s.bytes());
     }
-    // One copy: MAX's outputs straight into a new Elm Bytes.
+    // Resident outputs replace their buffers (after the run: the inputs were read).
+    for (size_t i = 0; i < results.size(); ++i) {
+      const Spec &s = g->outputs[i];
+      if (!s.resident.empty()) {
+        auto &buf = residents[s.resident];
+        buf.resize(s.bytes());
+        std::memcpy(buf.data(), M_getTensorData(results[i]), s.bytes());
+      }
+    }
+    // One copy: MAX's fed outputs straight into a new Elm Bytes.
     runIn.emit(total, [&](std::span<std::byte> dst) {
       std::memset(dst.data(), 0, total);
       writeHeader(dst.data(), id);
       size_t o = 16;
       for (size_t i = 0; i < results.size(); ++i) {
+        if (!g->outputs[i].resident.empty())
+          continue;
         std::memcpy(dst.data() + o, M_getTensorData(results[i]), g->outputs[i].bytes());
         o += padded(g->outputs[i].bytes());
       }
@@ -288,8 +343,91 @@ int main(int argc, char **argv) {
     M_freeAsyncTensorMap(outs);
     M_freeAsyncTensorMap(in);
     g->runs++;
+    g->bytesIn += view.size();
+    g->bytesOut += total;
+    g->maxIn = std::max<uint64_t>(g->maxIn, view.size());
+    g->maxOut = std::max<uint64_t>(g->maxOut, total);
     g->callbackMs += msSince(t0);
-  });
+  };
+
+
+  // "NAME\0rest" after the 16-byte header
+  auto nameAndRest = [](std::span<const std::byte> v) {
+    const char *p = reinterpret_cast<const char *>(v.data()) + 16;
+    const size_t n = v.size() - 16;
+    const size_t z = std::strlen(p) < n ? std::strlen(p) : n;
+    return std::make_pair(std::string(p, z), std::string_view(p + std::min(z + 1, n), n - std::min(z + 1, n)));
+  };
+
+  auto handlePut = [&](std::span<const std::byte> view) {
+    auto [name, rest] = nameAndRest(view);
+    auto &buf = residents[name];
+    buf.resize(rest.size());
+    std::memcpy(buf.data(), rest.data(), rest.size());
+  };
+
+  auto handleGet = [&](std::span<const std::byte> view) {
+    std::span<const std::byte> v = view;
+    const uint32_t id = headerId(v.data());
+    std::string name(reinterpret_cast<const char *>(v.data()) + 16, v.size() - 16);
+    const auto &buf = residents[name];
+    auto *out = static_cast<uint8_t *>(std::malloc(16 + buf.size()));
+    writeHeader(reinterpret_cast<std::byte *>(out), id);
+    std::memcpy(out + 16, buf.data(), buf.size());
+    eco_port_send_bytes("getIn", out, 16 + buf.size(), std::free, out);
+  };
+
+  auto handleSave = [&](std::span<const std::byte> view) {
+    auto [name, path] = nameAndRest(view);
+    const auto &buf = residents[name];
+    std::ofstream(std::string(path), std::ios::binary)
+        .write(reinterpret_cast<const char *>(buf.data()), std::streamsize(buf.size()));
+    std::printf("[%7.2fs] HOST saved %s (%zu bytes) to %.*s\n", secs(), name.c_str(), buf.size(),
+                int(path.size()), path.data());
+    std::fflush(stdout);
+  };
+
+  auto handleLoadInto = [&](std::span<const std::byte> view) {
+    auto [name, path] = nameAndRest(view);
+    std::ifstream f{std::string(path), std::ios::binary | std::ios::ate};
+    const size_t n = f ? size_t(f.tellg()) : 0;
+    auto &buf = residents[name];
+    buf.resize(n);
+    f.seekg(0);
+    f.read(reinterpret_cast<char *>(buf.data()), std::streamsize(n));
+  };
+
+  // Every command whose order matters arrives on one port, so the host sees them in the order the
+  // program sent them (the runtime orders sends per port, not across ports). The header's second
+  // u32 says which command it is.
+  std::function<void(std::span<const std::byte>)> dispatch = [&](std::span<const std::byte> v) {
+    uint32_t code;
+    std::memcpy(&code, v.data() + 4, 4);
+    switch (code) {
+    case 1: handleRun(v); break;
+    case 2: handlePut(v); break;
+    case 3: handleGet(v); break;
+    case 4: handleSave(v); break;
+    case 5: handleLoadInto(v); break;
+    case 6: {
+      // a sequence: each command as [u32 length][the command, with its own header], run in order
+      size_t off = 16;
+      while (off + 4 <= v.size()) {
+        uint32_t len;
+        std::memcpy(&len, v.data() + off, 4);
+        off += 4;
+        dispatch(v.subspan(off, len));
+        off += len;
+      }
+      break;
+    }
+    default:
+      std::printf("HOST unknown command %u\n", code);
+      std::fflush(stdout);
+      std::_Exit(1);
+    }
+  };
+  eco::Subscription sh = hostOut.subscribe([&](const eco::BorrowedBytes &bytes) { dispatch(bytes.view()); });
 
   eco::Subscription s4 = logOut.subscribe([](std::string_view json) {
     std::printf("[%7.2fs] %.*s\n", secs(), int(json.size()), json.data());
@@ -316,8 +454,10 @@ int main(int argc, char **argv) {
   for (std::thread &t : compilers)
     t.join();
   for (auto &[id, g] : graphs)
-    std::printf("HOST graph %u: %d runs, MAX execute %.1f ms total (%.3f ms each), callback %.1f ms total\n",
-                id, g.runs, g.execMs, g.runs ? g.execMs / g.runs : 0.0, g.callbackMs);
+    std::printf("HOST graph %u: %d runs, MAX execute %.1f ms total (%.3f ms each), callback %.1f ms total; "
+                "across the Elm boundary per run at most %llu bytes in, %llu bytes out\n",
+                id, g.runs, g.execMs, g.runs ? g.execMs / g.runs : 0.0, g.callbackMs,
+                (unsigned long long)g.maxIn, (unsigned long long)g.maxOut);
   std::printf("[%7.2fs] HOST exit %d\n", secs(), exitCode);
   return exitCode;
 }

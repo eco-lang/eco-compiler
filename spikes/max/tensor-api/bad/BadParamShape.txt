@@ -1,0 +1,20 @@
+Compiled in DEV mode. Follow the advice at https://elm-lang.org/0.19.1/optimize for better performance and smaller assets.
+Compiling ...Detected problems in 1 module.
+-- TYPE MISMATCH ----------------------------------------- bad/BadParamShape.elm
+
+This function cannot handle the argument sent through the (|>) pipe:
+
+20|     Param.record P2 |> Param.heUniform .w T.float32 (T.r2 hidden pixels)
+                           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+The argument is:
+
+    Param.Builder
+        { a | w : Tensor Floating F32 (R2 Hidden Pixels) }
+        (Tensor Floating F32 (R2 Pixels Hidden) -> P2)
+
+But (|>) is piping it to a function that expects:
+
+    Param.Builder
+        { a | w : Tensor Floating F32 (R2 Hidden Pixels) }
+        (Tensor Floating F32 (R2 Hidden Pixels) -> f)
+

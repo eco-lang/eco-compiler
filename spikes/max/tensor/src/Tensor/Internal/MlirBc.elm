@@ -1,4 +1,4 @@
-module MlirBc exposing
+module Tensor.Internal.MlirBc exposing
     ( Attr(..), Type(..), Op, Region(..)
     , encode, printGeneric, typeText, attrText
     )
@@ -30,6 +30,8 @@ import Dict exposing (Dict)
 type Type
     = IndexType
     | IntegerType Int
+      -- si<width>
+    | SignedIntegerType Int
     | FunctionType (List Type) (List Type)
       -- Any other dialect's type, as its full text: "!mo.tensor<[2], si64>".
     | OpaqueType String
@@ -42,6 +44,10 @@ type Attr
     | IntAttr Int Type
     | TypeAttr Type
     | UnknownLoc
+      -- a unit attribute: `isSubgraph`
+    | UnitAttr
+      -- a flat symbol reference: `@name`
+    | SymbolRefAttr String
       -- Any other dialect's attribute, as its full text: "#kgen<param.decls[]>".
     | OpaqueAttr String
 
@@ -62,6 +68,10 @@ type alias Op =
 -}
 type Region
     = Region (List Type) (List Op)
+      -- A region that is not isolated from above: its ops may use the enclosing region's values, as
+      -- negative operands: -(1 + v) is value v of the enclosing region (in that region's own
+      -- numbering, which may again be negative).
+    | OpenRegion (List Type) (List Op)
 
 
 
@@ -76,6 +86,9 @@ typeText t =
 
         IntegerType w ->
             "i" ++ String.fromInt w
+
+        SignedIntegerType w ->
+            "si" ++ String.fromInt w
 
         FunctionType ins outs ->
             "(" ++ String.join ", " (List.map typeText ins) ++ ") -> " ++ resultTypesText outs
@@ -121,6 +134,12 @@ attrText a =
 
         UnknownLoc ->
             "loc(unknown)"
+
+        UnitAttr ->
+            "unit"
+
+        SymbolRefAttr name ->
+            "@" ++ name
 
         OpaqueAttr s ->
             s
@@ -263,17 +282,19 @@ prints, give or take spacing and the names of values.
 -}
 printGeneric : List Op -> String
 printGeneric ops =
-    String.join "\n" (printOp "" [] 0 (module_ ops) |> Tuple.first) ++ "\n"
+    String.join "\n" (printOp "" Dict.empty 0 ( 0, 0 ) (absolutize (module_ ops)) |> Tuple.first) ++ "\n"
 
 
-{-| Print `op` at `indent`; `scope` holds the names and types of the values numbered so far in the
-enclosing block, and `next` the number its first result gets. Returns the lines and the scope after.
+{-| Print `op` at `indent`; `scope` holds the names and types of the values visible, by value ID;
+`next` is the ID its first result gets; `home` is the base ID and local value count of the region
+holding the op (an open region nested in it numbers its values after all of these). Returns the
+lines and the scope after.
 -}
-printOp : String -> List ( String, Type ) -> Int -> Op -> ( List String, List ( String, Type ) )
-printOp indent scope next op =
+printOp : String -> Dict Int ( String, Type ) -> Int -> ( Int, Int ) -> Op -> ( List String, Dict Int ( String, Type ) )
+printOp indent scope next ( homeBase, homeCount ) op =
     let
         lookup i =
-            List.drop i scope |> List.head |> Maybe.withDefault ( "%<bad " ++ String.fromInt i ++ ">", OpaqueType "none" )
+            Dict.get i scope |> Maybe.withDefault ( "%<bad " ++ String.fromInt i ++ ">", OpaqueType "none" )
 
         operands =
             List.map lookup op.operands
@@ -300,8 +321,16 @@ printOp indent scope next op =
                 _ ->
                     "%" ++ String.fromInt next ++ ":" ++ String.fromInt (List.length op.results) ++ " = "
 
+        nested r =
+            case r of
+                Region _ _ ->
+                    printBlock indent Dict.empty 0 r
+
+                OpenRegion _ _ ->
+                    printBlock indent scope (homeBase + homeCount) r
+
         regionLines =
-            List.concatMap (printBlock indent) op.regions
+            List.concat (List.intersperse [ indent ++ "}, {" ] (List.map nested op.regions))
 
         attrs =
             if List.isEmpty op.attrs then
@@ -322,35 +351,122 @@ printOp indent scope next op =
 
             else
                 (head ++ " ({") :: regionLines ++ [ indent ++ "})" ++ attrs ++ sig ]
+
+        newScope =
+            List.foldl (\( i, nt ) acc -> Dict.insert (next + i) nt acc) scope (List.indexedMap Tuple.pair (List.map2 Tuple.pair resultNames op.results))
     in
-    ( lines, scope ++ List.map2 Tuple.pair resultNames op.results )
+    ( lines, newScope )
 
 
-printBlock : String -> Region -> List String
-printBlock indent (Region argTypes ops) =
+{-| A region's block, its values numbered from `base`, `visible` the enclosing values it may use.
+-}
+printBlock : String -> Dict Int ( String, Type ) -> Int -> Region -> List String
+printBlock indent visible base region =
     let
+        count =
+            localCount (regionArgs region) (regionOps region)
+
         args =
-            List.indexedMap (\i t -> ( "%arg" ++ String.fromInt i, t )) argTypes
+            List.indexedMap (\i t -> ( base + i, ( "%arg" ++ String.fromInt (base + i), t ) )) (regionArgs region)
 
         label =
             if List.isEmpty args then
                 []
 
             else
-                [ indent ++ "^bb0(" ++ String.join ", " (List.map (\( n, t ) -> n ++ ": " ++ typeText t) args) ++ "):" ]
+                [ indent ++ "^bb0(" ++ String.join ", " (List.map (\( _, ( n, t ) ) -> n ++ ": " ++ typeText t) args) ++ "):" ]
 
         step op ( lines, scope, next ) =
             let
                 ( opLines, scope2 ) =
-                    printOp (indent ++ "  ") scope next op
+                    printOp (indent ++ "  ") scope next ( base, count ) op
             in
             ( lines ++ opLines, scope2, next + List.length op.results )
 
         ( body, _, _ ) =
-            List.foldl step ( [], args, 0 ) ops
+            List.foldl step ( [], List.foldl (\( i, nt ) acc -> Dict.insert i nt acc) visible args, base + List.length args ) (regionOps region)
     in
     label ++ body
 
+
+regionArgs : Region -> List Type
+regionArgs r =
+    case r of
+        Region a _ ->
+            a
+
+        OpenRegion a _ ->
+            a
+
+
+regionOps : Region -> List Op
+regionOps r =
+    case r of
+        Region _ o ->
+            o
+
+        OpenRegion _ o ->
+            o
+
+
+isIsolated : Region -> Bool
+isIsolated r =
+    case r of
+        Region _ _ ->
+            True
+
+        OpenRegion _ _ ->
+            False
+
+
+localCount : List Type -> List Op -> Int
+localCount args ops =
+    List.length args + List.sum (List.map (.results >> List.length) ops)
+
+
+{-| Operands as MLIR bytecode numbers values: from the start of the nearest isolated ancestor
+region; an open region's values after all of its enclosing regions' values.
+-}
+absolutize : Op -> Op
+absolutize root =
+    absOp (Ctx 0 Nothing) 0 root
+
+
+{-| A region's base value ID, and the context of the region enclosing it (for negative operands).
+-}
+type Ctx
+    = Ctx Int (Maybe Ctx)
+
+
+resolve : Ctx -> Int -> Int
+resolve (Ctx base parent) v =
+    if v >= 0 then
+        base + v
+
+    else
+        case parent of
+            Just p ->
+                resolve p (-v - 1)
+
+            Nothing ->
+                v
+
+
+{-| `op` in the region of context `ctx`, which defines `homeCount` values of its own.
+-}
+absOp : Ctx -> Int -> Op -> Op
+absOp ((Ctx base _) as ctx) homeCount op =
+    { op | operands = List.map (resolve ctx) op.operands, regions = List.map (absRegion ctx (base + homeCount)) op.regions }
+
+
+absRegion : Ctx -> Int -> Region -> Region
+absRegion parentCtx innerBase region =
+    case region of
+        Region args ops ->
+            Region args (List.map (absOp (Ctx 0 Nothing) (localCount args ops)) ops)
+
+        OpenRegion args ops ->
+            OpenRegion args (List.map (absOp (Ctx innerBase (Just parentCtx)) (localCount args ops)) ops)
 
 
 -- TABLES
@@ -434,6 +550,12 @@ addAttr a t =
             UnknownLoc ->
                 t1
 
+            UnitAttr ->
+                t1
+
+            SymbolRefAttr name ->
+                addAttr (StrAttr name) t1
+
             OpaqueAttr _ ->
                 t1
 
@@ -481,7 +603,7 @@ addOp op t =
         t4 =
             List.foldl addType t3 op.results
     in
-    List.foldl (\(Region args ops) acc -> List.foldl addOp (List.foldl addType acc args) ops) t4 op.regions
+    List.foldl (\r acc -> List.foldl addOp (List.foldl addType acc (regionArgs r)) (regionOps r)) t4 op.regions
 
 
 {-| The final numbering: attributes, types and op names grouped by dialect (in dialect order), first
@@ -658,7 +780,7 @@ encode : List Op -> Bytes
 encode ops =
     let
         root =
-            module_ ops
+            absolutize (module_ ops)
 
         nb =
             number (addOp root { dialects = emptyTable, strings = emptyTable, opNames = emptyTable, attrs = emptyTable, types = emptyTable })
@@ -792,6 +914,13 @@ builtinAttr nb a =
                     else
                         Nothing
 
+                SignedIntegerType w ->
+                    if w <= 8 then
+                        Just (E.sequence [ varint 8, typeRef t, u8 (modBy 256 n) ])
+
+                    else
+                        Just (E.sequence [ varint 8, typeRef t, signedVarint n ])
+
                 IndexType ->
                     Just (E.sequence [ varint 8, typeRef t, signedVarint n ])
 
@@ -800,6 +929,12 @@ builtinAttr nb a =
 
         UnknownLoc ->
             Just (varint 15)
+
+        UnitAttr ->
+            Just (varint 7)
+
+        SymbolRefAttr name ->
+            Just (E.sequence [ varint 4, attrRef (StrAttr name) ])
 
         OpaqueAttr _ ->
             Nothing
@@ -815,6 +950,9 @@ builtinType nb t =
         IntegerType w ->
             -- width << 2 | signedness; 0 is signless.
             Just (E.sequence [ varint 0, varint (w * 4) ])
+
+        SignedIntegerType w ->
+            Just (E.sequence [ varint 0, varint (w * 4 + 1) ])
 
         IndexType ->
             Just (varint 1)
@@ -857,10 +995,15 @@ encodeOp nb op =
         , optional (not (List.isEmpty op.results)) (list (\t -> varint (idx nb.typeIdx (typeText t))) op.results)
         , optional (not (List.isEmpty op.operands)) (list varint op.operands)
         , optional (not (List.isEmpty op.regions))
-            (E.sequence
-                [ varintFlag (List.length op.regions) True
-                , section 4 (E.sequence (List.map (encodeRegion nb) op.regions))
-                ]
+            (if List.all isIsolated op.regions then
+                E.sequence
+                    [ varintFlag (List.length op.regions) True
+                    , section 4 (E.sequence (List.map (encodeRegion nb) op.regions))
+                    ]
+
+             else
+                -- regions that use outer values are encoded inline, in the parent's value scope
+                E.sequence (varintFlag (List.length op.regions) False :: List.map (encodeRegion nb) op.regions)
             )
         ]
 
@@ -868,8 +1011,14 @@ encodeOp nb op =
 {-| A one-block region: block count, the number of values it defines, then the block.
 -}
 encodeRegion : Numbering -> Region -> E.Encoder
-encodeRegion nb (Region args ops) =
+encodeRegion nb region =
     let
+        args =
+            regionArgs region
+
+        ops =
+            regionOps region
+
         hasArgs =
             not (List.isEmpty args)
 

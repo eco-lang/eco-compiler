@@ -1,0 +1,16 @@
+Compiled in DEV mode. Follow the advice at https://elm-lang.org/0.19.1/optimize for better performance and smaller assets.
+Compiling ...Detected problems in 1 module.
+-- TYPE MISMATCH ------------------------------------------ bad/BadNoFlatten.elm
+
+This function cannot handle the argument sent through the (|>) pipe:
+
+17|     x |> Conv2d.applySame conv |> T.relu |> Linear.apply out
+                                                ^^^^^^^^^^^^^^^^
+The argument is:
+
+    Tensor Floating F32 (R4 n a b1 Hidden)
+
+But (|>) is piping it to a function that expects:
+
+    Tensor Floating F32 (R2 n Hidden)
+

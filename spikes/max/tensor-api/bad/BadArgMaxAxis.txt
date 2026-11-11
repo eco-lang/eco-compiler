@@ -1,0 +1,16 @@
+Compiled in DEV mode. Follow the advice at https://elm-lang.org/0.19.1/optimize for better performance and smaller assets.
+Compiling ...Detected problems in 1 module.
+-- TYPE MISMATCH ----------------------------------------- bad/BadArgMaxAxis.elm
+
+This function cannot handle the argument sent through the (|>) pipe:
+
+16|     network p x |> T.argMax Axis.axis0of2 |> T.equals (T.toInt y) |> T.indicator T.float32 |> T.sumAll
+                                                 ^^^^^^^^^^^^^^^^^^^^
+The argument is:
+
+    Tensor Integral I64 (R1 Classes)
+
+But (|>) is piping it to a function that expects:
+
+    Tensor Integral I64 (R1 Test)
+
