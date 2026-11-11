@@ -100,6 +100,17 @@ deferred bytes reach max(F × live estimate, one budget). `hold` peaks at about 
 ending after 2 minors (`deferred=` on the `[gc-profile] cycle handoff` line, `ECO_GC_PHASE_PROFILE=1`).
 `ECO_HEAP_CONFIG=memgrowth/heap-deferred-off.json` restores the old behaviour, for comparison.
 
+## Eco on MAX's LLVM
+
+Eco builds against LLVM 21.1.8; MAX 26.7.0 (and Mojo 1.2.0) pins llvm-project commit
+`8d4fc8f1d17e64e1826346a0230a87b50ec371e4` (2026-10-09, LLVM 24.0.0git) in
+`bazel/public-patches/llvm_source.bzl` at the `max/v26.7.0` tag of github.com/modular/modular, plus
+its own patches. To try eco on that commit, so the two can exchange MLIR without a version gap:
+`docker/llvm-debian-git.Dockerfile` builds `eco-llvm-debian-git:<commit>` (the stable
+configuration, unpatched), and `docker/eco-dev-llvm-git.Dockerfile` layers it onto `eco-dev` as
+`eco-dev-llvm-git:<commit>`. The stable `eco-llvm-debian:21.1.8` and `eco-dev` images, and the
+Dockerfiles CI builds them from, are unchanged. The build commands are in each Dockerfile's header.
+
 ## Known problems these exposed
 
 - libmax segfaults on `mo` text that fails to parse or verify

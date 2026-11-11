@@ -38,6 +38,11 @@ def Eco_Dialect : Dialect {
     - GC integration via safepoints and stack maps
   }];
   let useDefaultTypePrinterParser = 1;
+  // LLVM 24 makes strict properties the default: a custom assembly format must
+  // name every inherent attribute or use `prop-dict`. Eleven eco ops still carry
+  // their attributes in `attr-dict`, so keep the legacy behaviour (deprecated
+  // upstream) until those formats move to `prop-dict`.
+  let useStrictPropertiesInAssemblyFormat = 0;
 }
 
 //===----------------------------------------------------------------------===//
@@ -1605,6 +1610,7 @@ def Eco_AllocateClosureOp : Eco_Op<"allocate_closure", [
 
 def Eco_GlobalOp : Eco_Op<"global", [
     Symbol,
+    SymbolName,
     DeclareOpInterfaceMethods<SymbolUserOpInterface>
 ]> {
   let summary = "Declare global variable";
@@ -1626,6 +1632,17 @@ def Eco_GlobalOp : Eco_Op<"global", [
   let results = (outs);
 
   let assemblyFormat = "$sym_name (`=` $initializer^)? attr-dict";
+
+  // SymbolOpInterface has no default visibility accessors since LLVM 24; these
+  // read and write `sym_visibility` as its old defaults did.
+  let extraClassDeclaration = [{
+    ::mlir::SymbolTable::Visibility getVisibility() {
+      return ::mlir::SymbolTable::getSymbolVisibility(getOperation());
+    }
+    void setVisibility(::mlir::SymbolTable::Visibility vis) {
+      ::mlir::SymbolTable::setSymbolVisibility(getOperation(), vis);
+    }
+  }];
 }
 
 def Eco_LoadGlobalOp : Eco_Op<"load_global", [

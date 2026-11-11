@@ -252,8 +252,12 @@ using eco_test::verifyPatterns;
  * Used for non-JIT tests that need subprocess execution.
  */
 inline std::string getEcocPath() {
-    // Try common locations
+    // This runner's own build tree first, so a runner built in another directory (another LLVM, say)
+    // never picks up the `build/` preset's ecoc; then common locations.
     std::vector<std::string> candidates = {
+#ifdef BUILD_DIR
+        std::string(BUILD_DIR) + "/runtime/src/codegen/ecoc",
+#endif
         "./build/runtime/src/codegen/ecoc",
         "../build/runtime/src/codegen/ecoc",
         "../../build/runtime/src/codegen/ecoc",

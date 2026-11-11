@@ -318,7 +318,7 @@ namespace {
  * NaN, and the pipeline does not want those folded. This pass creates no
  * instructions.
  */
-struct FoldExtractValuePass : public PassInfoMixin<FoldExtractValuePass> {
+struct FoldExtractValuePass : public OptionalPassInfoMixin<FoldExtractValuePass> {
     // Returns whether the index list `a` is a prefix of `b`, or equal to it.
     static bool isPrefix(ArrayRef<unsigned> a, ArrayRef<unsigned> b) {
         if (a.size() > b.size()) return false;
@@ -444,7 +444,7 @@ struct FoldExtractValuePass : public PassInfoMixin<FoldExtractValuePass> {
  * With nothing found it prints `FCA-SCAN: clean`. When `ECO_FCA_SCAN` is
  * unset it does nothing.
  */
-struct FcaScanPass : public PassInfoMixin<FcaScanPass> {
+struct FcaScanPass : public OptionalPassInfoMixin<FcaScanPass> {
     // Returns whether `T` is, or contains as a struct field or array element,
     // `ptr addrspace(1)`. Vectors are not looked into.
     static bool aggWithGCPtr(Type *T) {
@@ -514,9 +514,10 @@ struct FcaScanPass : public PassInfoMixin<FcaScanPass> {
  *
  * A use of a barrier that is not a direct call, or one that survives the
  * replacement, stops the process with `report_fatal_error` in every build: a
- * barrier left in the module would be an undefined symbol at link time.
+ * barrier left in the module would be an undefined symbol at link time. For the
+ * same reason it is a required pass, one the pass manager never skips.
  */
-struct StripEcoCastBarriersPass : public PassInfoMixin<StripEcoCastBarriersPass> {
+struct StripEcoCastBarriersPass : public RequiredPassInfoMixin<StripEcoCastBarriersPass> {
     // Replaces the calls to the barrier named `name` in `M` with `inttoptr`
     // to `ptr addrspace(1)` when `toPtr` is set, or `ptrtoint` to `i64`
     // otherwise, deletes it, and returns whether it was declared.

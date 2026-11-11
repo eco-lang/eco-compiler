@@ -382,6 +382,16 @@ inline std::string getGuidaPath() {
     return "/work/compiler/bin/index.js";
 }
 
+// index.js loads `guida.js` from GUIDA_JS_PATH, or else from the `build/` preset's tree. Point it at
+// this build tree's Stage 1 output, so a runner built in another directory tests its own compiler.
+inline std::string getGuidaEnv() {
+#ifdef BUILD_DIR
+    return "GUIDA_JS_PATH=\"" + std::string(BUILD_DIR) + "/compiler/build-xhr/bin/guida.js\" ";
+#else
+    return "";
+#endif
+}
+
 inline std::string extractExpectedOutput(const std::string& content) {
     std::regex pattern(R"(Expected output:\s*\"([^\"]+)\")");
     std::smatch match;
@@ -521,7 +531,7 @@ inline CompileResult compileElmToMlir(const std::string& testDir, const std::str
 
     // Big stack (NodeBigStack.hpp): the Stage-1 JS compiler recurses deeply on very wide
     // programs and otherwise overflows, writing a truncated .mlir while still exiting 0.
-    std::string compileCmd = "cd \"" + testDir + "\" && sh -c '" + kNodeBigStackScript + "' sh \"" + guidaPath +
+    std::string compileCmd = "cd \"" + testDir + "\" && " + getGuidaEnv() + "sh -c '" + kNodeBigStackScript + "' sh \"" + guidaPath +
                              "\" make \"" + elmPath + "\" --output=\"" + result.mlirPath + "\"" + textMlirFlag;
     if (!buildDir.empty()) {
         compileCmd += " --builddir=\"" + buildDir + "\"";
@@ -572,7 +582,7 @@ inline std::string runCompileErrorTest(const std::string& testDir, const std::st
         return "a COMPILE-ERROR test needs CHECK lines describing the error report";
     }
     const std::string out = testDir + "/eco-stuff/mlir/" + buildDir + ".compile-error.mlir";
-    std::string cmd = "cd \"" + testDir + "\" && sh -c '" + kNodeBigStackScript + "' sh \"" + getGuidaPath() +
+    std::string cmd = "cd \"" + testDir + "\" && " + getGuidaEnv() + "sh -c '" + kNodeBigStackScript + "' sh \"" + getGuidaPath() +
                       "\" make \"" + elmPath + "\" --output=\"" + out + "\" --builddir=\"" + buildDir + "\"" + extraFlags;
     auto [exitCode, output] = executeCommand(cmd);
     const bool produced = std::filesystem::exists(out);

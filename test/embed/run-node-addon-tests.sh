@@ -20,6 +20,9 @@ BUILD=${2:?usage: run-node-addon-tests.sh <repo-root> <build-dir> [node]}
 NODE=${3:-node}
 OUT="$BUILD/test/node-addon"
 BOOT="$BUILD/runtime/src/codegen/eco-boot-native"
+# index.js otherwise loads guida.js from the `build/` preset's tree, not this build's.
+GUIDA_JS_PATH="$BUILD/compiler/build-xhr/bin/guida.js"
+export GUIDA_JS_PATH
 
 rm -rf "$OUT"
 mkdir -p "$OUT"
