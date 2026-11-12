@@ -13,8 +13,8 @@ spikes/max/setup.sh            # .venv with MAX 26.7 (~600 MB), MNIST into mnist
 make -C spikes/max             # needs the eco dev build tree: cmake --preset build; cmake --build build
 ```
 
-On an eco built against MAX's LLVM (below) the tree is elsewhere: pass it, e.g.
-`make -C spikes/max ECO_BUILD=$PWD/build-llvm-git`.
+eco builds against MAX's pinned LLVM (below), so `build/` is that tree; a tree elsewhere is passed
+as `make -C spikes/max ECO_BUILD=<dir>`.
 
 `MAX_VENV=<dir>` reuses an existing venv. Outputs go to `build/` and `work/`; both are ignored, as
 are `.venv/` and `mnist/data/`.
