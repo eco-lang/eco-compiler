@@ -9,6 +9,21 @@ module Transform exposing
 Every transform traces its function on fresh placeholders and differentiates or rewrites the trace,
 so `grad (\y -> y |> T.times x) x` is x (not 2x) and transforms nest.
 
+
+# Gradients
+
+@docs grad, valueAndGrad, gradOf, valueAndGradOf, vjp, jvp, jacobian, hessianVector
+
+
+# Vectorisation
+
+@docs vmap, vmap2, Batch, tensor, keep, pair, vmapWith
+
+
+# Shared subgraphs
+
+@docs Shared, shared, call
+
 -}
 
 import Signature exposing (Sig)
@@ -17,8 +32,8 @@ import Tensor.Internal.Batch as B
 import Tensor.Internal.Expr as E exposing (Expr)
 import Tensor.Internal.Grad as Grad
 import Tensor.Internal.Ops as O
-import Tensor.Internal.Shared as Sh
 import Tensor.Internal.Prim
+import Tensor.Internal.Shared as Sh
 import Tensor.Internal.Types as I
 
 
@@ -29,6 +44,8 @@ grad f x =
     I.Tensor (Grad.grad (\v -> I.tensor (f (I.Tensor v))) (I.tensor x))
 
 
+{-| `grad`, with the function's value.
+-}
 valueAndGrad : (Tensor Floating d s -> Tensor Floating d R0) -> Tensor Floating d s -> ( Tensor Floating d R0, Tensor Floating d s )
 valueAndGrad f x =
     ( f x, grad f x )
@@ -41,6 +58,8 @@ gradOf s f a =
     Tuple.second (valueAndGradOf s f a)
 
 
+{-| `gradOf`, with the function's value.
+-}
 valueAndGradOf : Sig a -> (a -> Tensor Floating d R0) -> a -> ( Tensor Floating d R0, a )
 valueAndGradOf (I.SigBuilder s) f a =
     Grad.gradStructured (\es -> Tuple.first (s.build es)) s.flatten (f >> I.tensor) a
@@ -92,7 +111,22 @@ jacobian f x =
             List.product (E.shape y)
 
         identity =
-            E.const (E.dtype y) [ m, m ] (List.concatMap (\i -> List.map (\j -> if i == j then 1 else 0) (List.range 0 (m - 1))) (List.range 0 (m - 1)))
+            E.const (E.dtype y)
+                [ m, m ]
+                (List.concatMap
+                    (\i ->
+                        List.map
+                            (\j ->
+                                if i == j then
+                                    1
+
+                                else
+                                    0
+                            )
+                            (List.range 0 (m - 1))
+                    )
+                    (List.range 0 (m - 1))
+                )
 
         ( _, rows ) =
             B.vmapRule [ ( identity, True ) ] (\basis -> ( (), pullback basis ))
@@ -115,6 +149,8 @@ vmap ls lu f x =
     vmapWith (tensor ls) (tensor lu) f x
 
 
+{-| `vmap` for a function of two tensors, both batched along the leading axis.
+-}
 vmap2 : I.Lift n s t -> I.Lift n s2 t2 -> I.Lift n u v -> (Tensor k d s -> Tensor k1 d1 s2 -> Tensor k2 d2 u) -> Tensor k d t -> Tensor k1 d1 t2 -> Tensor k2 d2 v
 vmap2 la lb lu f x y =
     vmapWith (pair (tensor la) (tensor lb)) (tensor lu) (\( a, c ) -> f a c) ( x, y )
@@ -165,6 +201,8 @@ keep =
         }
 
 
+{-| Two values, each batched (or kept) by its own `Batch`.
+-}
 pair : Batch a b -> Batch c e -> Batch ( a, c ) ( b, e )
 pair (I.Batch x) (I.Batch y) =
     I.Batch
@@ -218,11 +256,17 @@ type alias Shared a b =
     I.Shared a b
 
 
+{-| `f` as a subgraph named from `name`, its arguments and results described by the two
+signatures. Traced here when the argument signature gives every shape, otherwise at each
+`call`, on the arguments' shapes (identical traces share one subgraph).
+-}
 shared : String -> Sig a -> Sig b -> (a -> b) -> Shared a b
 shared name sa sb f =
     Sh.shared name sa sb f
 
 
+{-| A shared function applied: one `mo.call` of its subgraph.
+-}
 call : Shared a b -> a -> b
 call (I.Shared s) =
     s.apply

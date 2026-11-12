@@ -65,3 +65,5 @@ An application lists `"eco-lab/tensor": "1.0.0"` among its dependencies and is b
 
 `scripts/gen_axis.py` writes `src/Tensor/Axis.elm`; `scripts/gen_support.py` writes
 `src/Tensor/Internal/Support.elm` from the dtype probe (`../capi/scripts/inventory/support_probe.py`).
+Pipe both through `elm-format --stdin`: the sources are kept elm-format clean (elm-format 0.8.7, in
+`build/toolchain/bin`).

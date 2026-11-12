@@ -1,4 +1,9 @@
-module Graph exposing (Graph, Spec, Role(..), Device(..), build, function, name, inputs, outputs, toBytecode, toGenericText, toBytecodeOn, toGenericTextOn)
+module Graph exposing
+    ( Graph, Spec, Role(..), Device(..)
+    , build, function
+    , name, inputs, outputs
+    , toBytecode, toGenericText, toBytecodeOn, toGenericTextOn
+    )
 
 {-| A whole graph, lowered and checked: what the host compiles and runs.
 
@@ -8,6 +13,26 @@ module Graph exposing (Graph, Spec, Role(..), Device(..), build, function, name,
 the second, checks everything that can be checked before MAX sees the graph, and writes it as MAX's
 IR. It returns every error at once.
 
+
+# Types
+
+@docs Graph, Spec, Role, Device
+
+
+# Building
+
+@docs build, function
+
+
+# Inspecting
+
+@docs name, inputs, outputs
+
+
+# Writing
+
+@docs toBytecode, toGenericText, toBytecodeOn, toGenericTextOn
+
 -}
 
 import Bytes exposing (Bytes)
@@ -15,13 +40,15 @@ import Signature exposing (Sig)
 import Tensor exposing (Tensor)
 import Tensor.Internal.Device as Device
 import Tensor.Internal.Expr as E exposing (Expr)
-import Tensor.Internal.Names exposing (names)
 import Tensor.Internal.Lower as Lower
 import Tensor.Internal.MlirBc as Bc
+import Tensor.Internal.Names exposing (names)
 import Tensor.Internal.Prim as P
 import Tensor.Internal.Types as I
 
 
+{-| A graph that `build` accepted: its name, its inputs and outputs, and its ops.
+-}
 type alias Graph =
     I.Graph
 
@@ -34,6 +61,8 @@ type Role
     | Resident String
 
 
+{-| One input or output: its name, dtype (`"f32"`, `"bf16"` ..), shape and role.
+-}
 type alias Spec =
     { name : String, dtype : String, shape : List Int, role : Role }
 
@@ -152,6 +181,8 @@ function graphName ins body =
     build graphName ins (Signature.label "result" Signature.anyTensor) body
 
 
+{-| The name the graph was built with.
+-}
 name : Graph -> String
 name (I.Graph g) =
     g.name
@@ -167,11 +198,16 @@ publicRole r =
             Resident n
 
 
+{-| The graph's inputs, in order, named by the input signature's labels (`Signature.label`).
+-}
 inputs : Graph -> List Spec
 inputs (I.Graph g) =
     List.map (\s -> { name = s.name, dtype = s.dtype, shape = s.shape, role = publicRole s.role }) g.inputs
 
 
+{-| The graph's outputs, in order, named by the output signature's labels (`result`, or
+`result0` .., when unlabelled).
+-}
 outputs : Graph -> List Spec
 outputs (I.Graph g) =
     List.map (\s -> { name = s.name, dtype = s.dtype, shape = s.shape, role = publicRole s.role }) g.outputs
@@ -184,6 +220,9 @@ toBytecode (I.Graph g) =
     Bc.encode (cpuOps g.ops)
 
 
+{-| The graph `toBytecode` writes, as MLIR's generic op text (what `mlir-opt
+--mlir-print-op-generic` prints, give or take spacing and value names).
+-}
 toGenericText : Graph -> String
 toGenericText (I.Graph g) =
     Bc.printGeneric (cpuOps g.ops)
@@ -220,6 +259,8 @@ toBytecodeOn d (I.Graph g) =
     Device.place (internal d) g.ops |> Result.map Bc.encode
 
 
+{-| `toBytecodeOn`, as generic op text (`toGenericText`).
+-}
 toGenericTextOn : Device -> Graph -> Result (List String) String
 toGenericTextOn d (I.Graph g) =
     Device.place (internal d) g.ops |> Result.map Bc.printGeneric

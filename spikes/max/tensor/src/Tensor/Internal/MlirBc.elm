@@ -1,6 +1,12 @@
 module Tensor.Internal.MlirBc exposing
-    ( Attr(..), Type(..), Op, Region(..)
-    , encode, printGeneric, typeText, attrText
+    ( Attr(..)
+    , Op
+    , Region(..)
+    , Type(..)
+    , attrText
+    , encode
+    , printGeneric
+    , typeText
     )
 
 {-| A small generic MLIR IR, written as MLIR bytecode (`encode`) or as MLIR's generic text form
@@ -467,6 +473,7 @@ absRegion parentCtx innerBase region =
 
         OpenRegion args ops ->
             OpenRegion args (List.map (absOp (Ctx innerBase (Just parentCtx)) (localCount args ops)) ops)
+
 
 
 -- TABLES

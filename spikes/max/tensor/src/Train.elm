@@ -1,4 +1,8 @@
-module Train exposing (step, measure, initial, initialFrom, loss, measured)
+module Train exposing
+    ( step, measure
+    , initial, initialFrom
+    , loss, measured
+    )
 
 {-| Training graphs from a loss: the user writes the loss, `Train` writes the rest.
 
@@ -9,6 +13,21 @@ module Train exposing (step, measure, initial, initialFrom, loss, measured)
 The parameters and the optimizer state are **resident**: host buffers that outlive a run, which
 the step's outputs replace. Only the batch (and the rate, for `Optim.PerStep`) crosses from Elm
 with each run, and only the loss comes back.
+
+
+# Graphs
+
+@docs step, measure
+
+
+# Resident buffers
+
+@docs initial, initialFrom
+
+
+# Replies
+
+@docs loss, measured
 
 -}
 
@@ -146,7 +165,18 @@ step ((I.ParamBuilder ps) as spec) ((I.Optimizer o) as opt) (I.SigBuilder bs) lo
                 }
 
         nextNames =
-            List.filterMap identity (List.map2 (\n f -> if isTrainable f then Just n else Nothing) lay.paramNames lay.fields)
+            List.filterMap identity
+                (List.map2
+                    (\n f ->
+                        if isTrainable f then
+                            Just n
+
+                        else
+                            Nothing
+                    )
+                    lay.paramNames
+                    lay.fields
+                )
 
         outSlots =
             List.map (\n -> { label = "next", dtype = Nothing, shape = Nothing, role = I.Resident n }) nextNames
@@ -172,7 +202,19 @@ step ((I.ParamBuilder ps) as spec) ((I.Optimizer o) as opt) (I.SigBuilder bs) lo
                     ps.flatten gradRecord
 
                 pairs =
-                    List.filterMap identity (List.map3 (\f w g -> if isTrainable f then Just ( f, w, g ) else Nothing) lay.fields values grads)
+                    List.filterMap identity
+                        (List.map3
+                            (\f w g ->
+                                if isTrainable f then
+                                    Just ( f, w, g )
+
+                                else
+                                    Nothing
+                            )
+                            lay.fields
+                            values
+                            grads
+                        )
 
                 grads32 =
                     List.map (\( _, _, g ) -> O.cast F32 g) pairs

@@ -1,12 +1,73 @@
 module Tensor.Internal.Ops exposing
-    ( unary, binary, add, sub, mul, div, neg, select, cast, stopGradient
-    , gt, ge, lt, le, eq, ne, and_, or_, not_, sign, square
-    , scalarLike, fullLike, zerosLike, onesLike, broadcastTo, broadcastAxis, insertAxis, dropAxis
-    , reduce, reduceKeep, sumAll, meanAll, maxAll, minAll, softmax, logSoftmax, logSumExp, cumsum
-    , matmul, transpose, swapLast, reshape, flatten, slice, concat, pad, gather, scatterRows, scatterRowsAdd
-    , bandPart, range, random, xent, layerNorm, unbroadcast, oneHot, pick, indicator
-    , conv, convTranspose, maxPool, avgPool
-    , scatterAxis, scatterAxisAdd, topK, inF32, lowest, leadingAxes
+    ( add
+    , and_
+    , avgPool
+    , bandPart
+    , binary
+    , broadcastAxis
+    , broadcastTo
+    , cast
+    , concat
+    , conv
+    , convTranspose
+    , cumsum
+    , div
+    , dropAxis
+    , eq
+    , flatten
+    , fullLike
+    , gather
+    , ge
+    , gt
+    , inF32
+    , indicator
+    , insertAxis
+    , layerNorm
+    , le
+    , leadingAxes
+    , logSoftmax
+    , logSumExp
+    , lowest
+    , lt
+    , matmul
+    , maxAll
+    , maxPool
+    , meanAll
+    , minAll
+    , mul
+    , ne
+    , neg
+    , not_
+    , oneHot
+    , onesLike
+    , or_
+    , pad
+    , pick
+    , random
+    , range
+    , reduce
+    , reduceKeep
+    , reshape
+    , scalarLike
+    , scatterAxis
+    , scatterAxisAdd
+    , scatterRows
+    , scatterRowsAdd
+    , select
+    , sign
+    , slice
+    , softmax
+    , square
+    , stopGradient
+    , sub
+    , sumAll
+    , swapLast
+    , topK
+    , transpose
+    , unary
+    , unbroadcast
+    , xent
+    , zerosLike
     )
 
 {-| Untyped builders over `Expr`: the public `Tensor` functions and the gradient rules both use

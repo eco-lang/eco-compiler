@@ -1,6 +1,26 @@
-module Nn.Conv2d exposing (Conv2d, KernelH, KernelW, Padding, kernel, params, apply, applySame, applyTransposed)
+module Nn.Conv2d exposing
+    ( Conv2d, KernelH, KernelW, Padding
+    , kernel, params
+    , apply, applySame, applyTransposed
+    )
 
 {-| 2-D convolution on NHWC tensors, with filters (kernel h, kernel w, in, out) as MAX's RSCF.
+
+
+# Types
+
+@docs Conv2d, KernelH, KernelW, Padding
+
+
+# Parameters
+
+@docs kernel, params
+
+
+# Applying
+
+@docs apply, applySame, applyTransposed
+
 -}
 
 import Param
@@ -16,6 +36,8 @@ type KernelH
     = KernelH
 
 
+{-| The tag of the kernel's width, as `KernelH` is of its height.
+-}
 type KernelW
     = KernelW
 
@@ -28,10 +50,14 @@ kernel ( kh, kw ) =
     ( T.dim KernelH kh, T.dim KernelW kw )
 
 
+{-| A `filter` (kh, kw, c, o) and a `bias` (o): from `c` channels to `o`.
+-}
 type alias Conv2d d c o =
     { filter : Tensor Floating d (R4 KernelH KernelW c o), bias : Tensor Floating d (R1 o) }
 
 
+{-| Padding of the spatial axes, in pixels per side.
+-}
 type alias Padding =
     { top : Int, bottom : Int, left : Int, right : Int }
 

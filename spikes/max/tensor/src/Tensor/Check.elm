@@ -1,9 +1,18 @@
 module Tensor.Check exposing (allClose)
 
 {-| Numerical comparison of host results, as NumPy's `allclose`: |a - e| <= atol + rtol |e|.
+
+
+# Comparing
+
+@docs allClose
+
 -}
 
 
+{-| `Ok ()` when the lists have the same length and every pair is close (a NaN never is);
+otherwise an `Err` that says how many differ and shows the first.
+-}
 allClose : { rtol : Float, atol : Float } -> List Float -> List Float -> Result String ()
 allClose tol actual expected =
     if List.length actual /= List.length expected then

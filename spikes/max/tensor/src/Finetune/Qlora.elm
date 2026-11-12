@@ -1,10 +1,35 @@
-module Finetune.Qlora exposing (Quantized, Block, blocks, params, quantize, dequantize, apply, codebook)
+module Finetune.Qlora exposing
+    ( Quantized, Block, blocks, params
+    , quantize
+    , dequantize, apply
+    , codebook
+    )
 
 {-| QLoRA (Dettmers et al. 2023): a frozen weight stored as 4-bit NormalFloat codes (one per byte
 here) with one scale per block of weights, plus a trainable LoRA adapter.
 
 The codes and scales are `Param.data`: loaded by the host (`quantize` writes their block), never
 trained.
+
+
+# Quantized weights
+
+@docs Quantized, Block, blocks, params
+
+
+# Host side
+
+@docs quantize
+
+
+# Applying
+
+@docs dequantize, apply
+
+
+# NF4
+
+@docs codebook
 
 -}
 
@@ -20,10 +45,15 @@ import Tensor.Internal.Prim exposing (DT(..))
 import Tensor.Internal.Types as I
 
 
+{-| The tag of the blocks' dimension (see `blocks`).
+-}
 type Block
     = Block
 
 
+{-| A frozen (i, o) weight: one NF4 `codes` index per byte, and one `scales` entry per block of
+`blockSize` consecutive weights in row-major order.
+-}
 type alias Quantized d i o =
     { codes : Tensor Integral U8 (R2 i o), scales : Tensor Floating d (R1 Block), blockSize : Int }
 
@@ -42,6 +72,8 @@ blocks size i o =
     T.dim Block ((T.size i * T.size o) // Basics.max 1 size)
 
 
+{-| `params dt blockSize i o`: codes and scales as `Param.data`, and the block size.
+-}
 params : DType Floating d -> Int -> Dim i -> Dim o -> Param.Spec (Quantized d i o)
 params dt size i o =
     Param.record Quantized

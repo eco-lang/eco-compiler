@@ -222,14 +222,41 @@ rule p args params out g =
                     List.foldl (\sz ( acc, total ) -> ( total :: acc, total + sz )) ( [], 0 ) sizes |> Tuple.first |> List.reverse
 
                 piece x st =
-                    O.slice (List.indexedMap (\i _ -> if i == axis then st else 0) (E.shape x)) (E.shape x) g
+                    O.slice
+                        (List.indexedMap
+                            (\i _ ->
+                                if i == axis then
+                                    st
+
+                                else
+                                    0
+                            )
+                            (E.shape x)
+                        )
+                        (E.shape x)
+                        g
             in
             List.map2 (\x st -> Just (piece x st)) xs starts
 
         ( Pad, [ x ] ) ->
             case params.a of
                 [ axis, before, _ ] ->
-                    [ Just (O.slice (List.indexedMap (\i _ -> if i == axis then before else 0) (E.shape x)) (E.shape x) g) ]
+                    [ Just
+                        (O.slice
+                            (List.indexedMap
+                                (\i _ ->
+                                    if i == axis then
+                                        before
+
+                                    else
+                                        0
+                                )
+                                (E.shape x)
+                            )
+                            (E.shape x)
+                            g
+                        )
+                    ]
 
                 _ ->
                     [ Nothing ]

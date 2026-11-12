@@ -1,9 +1,22 @@
-module Tensor.Control exposing (cond, whileLoop, scan, repeat)
+module Tensor.Control exposing
+    ( cond
+    , whileLoop, scan, repeat
+    )
 
 {-| Control flow inside a graph.
 
 `cond` and `whileLoop` run in MAX (`mo.if`, `mo.while`); `repeat` and `scan` are unrolled when the
 graph is built (as Nabla's scan is), so they differentiate like straight-line code.
+
+
+# Branches
+
+@docs cond
+
+
+# Loops
+
+@docs whileLoop, scan, repeat
 
 -}
 

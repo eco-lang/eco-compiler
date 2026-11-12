@@ -1,6 +1,8 @@
 module Param exposing
-    ( Builder, Spec, Field, record, heUniform, heNormal, xavierUniform, xavierNormal, normal, zeros, ones
-    , data, sub, list, config, frozen, named, names, sig, initial, initGraph, initInPlace, importGraph
+    ( Builder, Spec, Field, record
+    , heUniform, heNormal, xavierUniform, xavierNormal, normal, zeros, ones
+    , data, sub, list, config, frozen, named
+    , names, sig, initial, initGraph, initInPlace, importGraph
     , mapElems, count, byteSize, grad
     )
 
@@ -16,6 +18,31 @@ or `initGraph` for models too large to initialise in Elm), their byte layout, an
 
 Weights are initialised from the fan-in (the product of all dimensions but the last) and the
 fan-out (the last dimension).
+
+
+# Descriptions
+
+@docs Builder, Spec, Field, record
+
+
+# Trainable tensors
+
+@docs heUniform, heNormal, xavierUniform, xavierNormal, normal, zeros, ones
+
+
+# Other fields and parts
+
+@docs data, sub, list, config, frozen, named
+
+
+# Using a description
+
+@docs names, sig, initial, initGraph, initInPlace, importGraph
+
+
+# Working with parameters
+
+@docs mapElems, count, byteSize, grad
 
 -}
 
@@ -34,19 +61,29 @@ import Tensor.Internal.Prim as P exposing (DT(..))
 import Tensor.Internal.Types as I
 
 
+{-| A parameter description under construction, as `Signature.Builder`: `record`, then one
+field per constructor argument.
+-}
 type alias Builder r f =
     I.ParamBuilder r f
 
 
+{-| A complete description of the parameter record `r`.
+-}
 type alias Spec r =
     Builder r r
 
 
+{-| A description from the record's constructor; the fields follow in its argument order.
+-}
 record : f -> Builder r f
 record constructor =
     I.ParamBuilder { fields = [], build = \es -> ( constructor, es ), flatten = \_ -> [], checks = [] }
 
 
+{-| A trainable tensor field (`heUniform` ..): its accessor, dtype and shape, initialised as the
+function's name says.
+-}
 type alias Field r d s f =
     (r -> Tensor Floating d s) -> DType Floating d -> Shape s -> Builder r (Tensor Floating d s -> f) -> Builder r f
 
@@ -93,6 +130,8 @@ xavierUniform =
     tensorField (I.Trainable I.XavierUniform)
 
 
+{-| Normal with standard deviation √(2 / (fan-in + fan-out)).
+-}
 xavierNormal : Field r d s f
 xavierNormal =
     tensorField (I.Trainable I.XavierNormal)
@@ -105,11 +144,15 @@ normal std =
     tensorField (I.Trainable (I.Normal std))
 
 
+{-| All zeros.
+-}
 zeros : Field r d s f
 zeros =
     tensorField (I.Trainable I.Zeros)
 
 
+{-| All ones.
+-}
 ones : Field r d s f
 ones =
     tensorField (I.Trainable I.Ones)
@@ -123,6 +166,8 @@ data =
     tensorField I.Data
 
 
+{-| A field that is a part with its own description (a layer's parameters).
+-}
 sub : (r -> p) -> Spec p -> Builder r (p -> f) -> Builder r f
 sub getter (I.ParamBuilder s) (I.ParamBuilder b) =
     I.ParamBuilder
@@ -375,6 +420,8 @@ mapElems f (I.ParamBuilder s) r =
     Tuple.first (s.build (List.map2 apply s.fields (s.flatten r)))
 
 
+{-| The number of tensor fields (trainable, frozen and data).
+-}
 count : Spec r -> Int
 count (I.ParamBuilder s) =
     List.length s.fields

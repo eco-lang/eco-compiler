@@ -1,12 +1,28 @@
-module Nn.Embedding exposing (Embedding, params, apply, unembed)
+module Nn.Embedding exposing
+    ( Embedding, params
+    , apply, unembed
+    )
 
 {-| A table of vectors looked up by integer index.
+
+
+# Parameters
+
+@docs Embedding, params
+
+
+# Applying
+
+@docs apply, unembed
+
 -}
 
 import Param
 import Tensor as T exposing (DType, Dim, Floating, Integral, R1, R2, Tensor)
 
 
+{-| A `table` of `v` vectors (one per vocabulary entry) of `m` features.
+-}
 type alias Embedding d v m =
     { table : Tensor Floating d (R2 v m) }
 
@@ -19,6 +35,8 @@ params dt v m =
         |> Param.normal 0.02 .table dt (T.r2 v m)
 
 
+{-| The table's row for each of `s` tokens: (s, m).
+-}
 apply : Embedding d v m -> Tensor Integral i (R1 s) -> Tensor Floating d (R2 s m)
 apply p tokens =
     p.table |> T.rowsAt tokens

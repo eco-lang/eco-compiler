@@ -1,9 +1,48 @@
 module Nn exposing
-    ( crossEntropy, crossEntropyIndices, mseLoss, dropout, attention, causalAttention, maxPool2d, avgPool2d
-    , upsampleNearest2d, timestepEmbedding, causalMaskAt, repeatHeads
+    ( crossEntropy, crossEntropyIndices, mseLoss
+    , dropout
+    , attention, causalAttention
+    , maxPool2d, avgPool2d, upsampleNearest2d
+    , timestepEmbedding
+    , causalMaskAt, repeatHeads
     )
 
 {-| Losses, dropout, attention and pooling, as functions.
+
+
+# Losses
+
+@docs crossEntropy, crossEntropyIndices, mseLoss
+
+
+# Dropout
+
+@docs dropout
+
+
+# Attention
+
+@docs attention, causalAttention
+
+
+# Pooling and upsampling
+
+NHWC images; the output's spatial sizes are declared and checked when the graph is built.
+
+@docs maxPool2d, avgPool2d, upsampleNearest2d
+
+
+# Embeddings
+
+@docs timestepEmbedding
+
+
+# Masks and heads
+
+Helpers for attention with a key/value cache and grouped key/value heads.
+
+@docs causalMaskAt, repeatHeads
+
 -}
 
 import Tensor exposing (Dim, Floating, I64, Integral, Mask, R0, R1, R2, R3, R4, Tensor)
@@ -118,13 +157,15 @@ attend mask bias k v q =
     O.matmul (O.inF32 (O.softmax 2) scores) v
 
 
-{-| Window = stride = `k`. Build time checks h = k * h2 and w = k * w2.
+{-| Window = stride = `k`. Build time checks h = k \* h2 and w = k \* w2.
 -}
 maxPool2d : Int -> Dim h2 -> Dim w2 -> Tensor Floating d (R4 n h w c) -> Tensor Floating d (R4 n h2 w2 c)
 maxPool2d k h2 w2 x =
     I.Tensor (checkSpatial h2 w2 (O.maxPool k (I.tensor x)))
 
 
+{-| As `maxPool2d`, taking each window's mean.
+-}
 avgPool2d : Int -> Dim h2 -> Dim w2 -> Tensor Floating d (R4 n h w c) -> Tensor Floating d (R4 n h2 w2 c)
 avgPool2d k h2 w2 x =
     I.Tensor (checkSpatial h2 w2 (O.avgPool k (I.tensor x)))

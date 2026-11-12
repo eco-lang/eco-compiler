@@ -1,4 +1,10 @@
-module Nn.Stack exposing (Seq, Stack, Width, Activation, input, dense, denseTo, relu, gelu, none, params, apply, applyWithDropout)
+module Nn.Stack exposing
+    ( Seq, Stack, Width, Activation
+    , input, dense, denseTo
+    , relu, gelu, none
+    , params
+    , apply, applyWithDropout
+    )
 
 {-| Dense layers of different widths, described in a pipeline:
 
@@ -9,6 +15,31 @@ module Nn.Stack exposing (Seq, Stack, Width, Activation, input, dense, denseTo, 
 
 Hidden widths need no dimension types: they are `Width`, a tag no other code can make, so only the
 ends of a stack are checked against the network around it.
+
+
+# Types
+
+@docs Seq, Stack, Width, Activation
+
+
+# Describing a stack
+
+@docs input, dense, denseTo
+
+
+# Activations
+
+@docs relu, gelu, none
+
+
+# Parameters
+
+@docs params
+
+
+# Applying
+
+@docs apply, applyWithDropout
 
 -}
 
@@ -21,49 +52,70 @@ import Tensor.Internal.Types as I
 import Tensor.Random as Random exposing (Seed)
 
 
+{-| The width of a hidden layer: a tag no other code can make.
+-}
 type Width
     = Width Never
 
 
+{-| What follows a layer's x @ weight + bias.
+-}
 type Activation
     = Relu
     | Gelu
     | None
 
 
+{-| Rectified linear units.
+-}
 relu : Activation
 relu =
     Relu
 
 
+{-| GELU, as `Tensor.gelu`.
+-}
 gelu : Activation
 gelu =
     Gelu
 
 
+{-| No activation: the layer is affine.
+-}
 none : Activation
 none =
     None
 
 
+{-| A description of dense layers from `i` input features to `o` outputs (`Width` when the last
+layer is a hidden one).
+-}
 type Seq i o
     = Seq (List ( Int, Activation ))
 
 
+{-| The parameters of a described stack: a weight and a bias per layer, from `i` features to `o`.
+-}
 type Stack d i o
     = Stack (List ( Expr, Expr, Activation ))
 
 
+{-| No layers yet: the stack's `i` input features.
+-}
 input : Seq i i
 input =
     Seq []
 
 
+{-| A hidden layer of `n` features after the others.
+-}
 dense : Int -> Activation -> Seq i o -> Seq i Width
 dense n act (Seq ls) =
     Seq (ls ++ [ ( n, act ) ])
 
 
+{-| A layer as wide as the given dimension after the others, usually the last.
+-}
 denseTo : Dim o2 -> Activation -> Seq i o -> Seq i o2
 denseTo (I.Dim n) act (Seq ls) =
     Seq (ls ++ [ ( n, act ) ])
@@ -122,6 +174,8 @@ chunk2 l =
             []
 
 
+{-| Rows (n, i) through every layer to (n, o).
+-}
 apply : Stack d i o -> Tensor Floating d (R2 n i) -> Tensor Floating d (R2 n o)
 apply =
     run (\_ h -> h)
@@ -165,7 +219,7 @@ run between (Stack layers) x =
 
                 None ->
                     y
-                    
+
         step ( k, layer ) h =
             let
                 y =

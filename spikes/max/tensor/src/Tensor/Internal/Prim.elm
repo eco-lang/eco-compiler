@@ -1,6 +1,22 @@
 module Tensor.Internal.Prim exposing
-    ( DT(..), dtName, dtTag, dtFromTag, dtSize, isFloat, isInt, isSigned, allDTs
-    , Prim(..), Params, noParams, ints, floats, Family(..), family, tag, name
+    ( DT(..)
+    , Family(..)
+    , Params
+    , Prim(..)
+    , allDTs
+    , dtFromTag
+    , dtName
+    , dtSize
+    , dtTag
+    , family
+    , floats
+    , ints
+    , isFloat
+    , isInt
+    , isSigned
+    , name
+    , noParams
+    , tag
     )
 
 {-| The primitives every tensor expression is built from, with their dtypes and parameters.

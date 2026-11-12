@@ -1,5 +1,14 @@
 module Tensor.Internal.Grad exposing
-    ( postorder, gradWrt, trace, Traced, substitute, grad, vjp, jvp, gradStructured, bodyVarKeys
+    ( Traced
+    , bodyVarKeys
+    , grad
+    , gradStructured
+    , gradWrt
+    , jvp
+    , postorder
+    , substitute
+    , trace
+    , vjp
     )
 
 {-| Reverse-mode differentiation over expression DAGs, the tracing of functions on placeholders,
@@ -8,7 +17,7 @@ and substitution. Every walk is iterative (an explicit stack), so deep graphs ca
 **Placeholders.** A transform traces its function on fresh placeholders and differentiates with
 respect to them, never with respect to an existing node: `grad (\y -> y * x) x` must be x, not 2x.
 Pure Elm has no name supply, so a placeholder's key is made from the transform kind, the keys of the
-actual arguments and the key of a first *probe* trace's result; two nested transforms at one point
+actual arguments and the key of a first _probe_ trace's result; two nested transforms at one point
 then get different placeholders, because the outer body contains the inner one.
 
 -}

@@ -5,7 +5,9 @@ latents) are **resident**, host buffers that outlive a run, and the new state re
 each run; only the inputs cross from Elm and only the outputs come back.
 
     decode =
-        Infer.step "decode" Model.params (Sig.list 2 (KvCache.sig T.float32 kvHeads context headDim))
+        Infer.step "decode"
+            Model.params
+            (Sig.list 2 (KvCache.sig T.float32 kvHeads context headDim))
             (Sig.pair (Sig.i64 (T.r1 one)) (Sig.i64 T.scalar))
             (Sig.f32 (T.r2 one vocab))
             (\p caches ( token, position ) -> Model.step p caches token position)
@@ -13,6 +15,11 @@ each run; only the inputs cross from Elm and only the outputs come back.
 The parameters are resident under `Param.names`; the state under its signature's labels prefixed
 `infer.` (a label used once is the name, repeated ones are numbered: `infer.keys0` ..). Rank-0
 inputs travel as `[1]`, which MAX's C API needs.
+
+
+# Graphs
+
+@docs step, initGraph
 
 -}
 

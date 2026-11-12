@@ -1,7 +1,21 @@
-module Nn.RmsNorm exposing (RmsNorm, params, apply, apply3)
+module Nn.RmsNorm exposing
+    ( RmsNorm, params
+    , apply, apply3
+    )
 
 {-| Root-mean-square normalisation over the last axis with a learned scale (Llama and its family):
 y = x / sqrt (mean x² + ε) · scale. Half-precision inputs are normalised in f32 and cast back.
+
+
+# Parameters
+
+@docs RmsNorm, params
+
+
+# Applying
+
+@docs apply, apply3
+
 -}
 
 import Param
@@ -12,6 +26,8 @@ import Tensor.Internal.Prim as P
 import Tensor.Internal.Types as I
 
 
+{-| The per-feature `scale` over `m` features and the `epsilon` (ε) added to the mean square.
+-}
 type alias RmsNorm d m =
     { scale : Tensor Floating d (R1 m), epsilon : Float }
 
@@ -25,6 +41,8 @@ params dt cfg m =
         |> Param.config .epsilon cfg.epsilon
 
 
+{-| Each row (n, m) normalised over its `m` features.
+-}
 apply : RmsNorm d m -> Tensor Floating d (R2 n m) -> Tensor Floating d (R2 n m)
 apply p x =
     I.Tensor (normalise p.epsilon (I.tensor p.scale) (I.tensor x))

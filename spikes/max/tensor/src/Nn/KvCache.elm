@@ -3,6 +3,12 @@ module Nn.KvCache exposing (Cache, sig, write)
 {-| A key/value cache for generating with attention: `g` key/value heads, room for `t` positions,
 heads of `j` features. It is the state of an `Infer` graph, so it stays in the host's resident
 buffers between steps.
+
+
+# The cache
+
+@docs Cache, sig, write
+
 -}
 
 import Signature as Sig exposing (Sig)
@@ -13,6 +19,8 @@ import Tensor.Internal.Ops as O
 import Tensor.Internal.Types as I
 
 
+{-| The `keys` and the `values`, each (g, t, j).
+-}
 type alias Cache d g t j =
     { keys : Tensor Floating d (R3 g t j), values : Tensor Floating d (R3 g t j) }
 

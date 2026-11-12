@@ -6,6 +6,22 @@ module Nn.Attention exposing
 
 {-| Multi-head attention: query, key, value and output projections of width `m`, split into `h`
 heads of `j` (build time checks h × j = m).
+
+
+# Multi-head attention
+
+@docs Attention, params, paramsWith, self, cross
+
+
+# Grouped-query attention
+
+@docs Grouped, groupedParams, selfGrouped, selfCached
+
+
+# Cross-attention to another width
+
+@docs Cross, crossParams, attendTo
+
 -}
 
 import Nn
@@ -14,12 +30,15 @@ import Nn.Linear as Linear exposing (Linear)
 import Nn.Rotary as Rotary exposing (Rotary)
 import Param
 import Tensor as T exposing (DType, Dim, Floating, I64, Integral, R0, R1, R2, R3, Tensor)
+import Tensor.Axis as Axis
 import Tensor.Internal.Expr as E
 import Tensor.Internal.Ops as O
 import Tensor.Internal.Types as I
-import Tensor.Axis as Axis
 
 
+{-| The `query`, `key`, `value` and `out` projections (m to m) and the dimensions `model` (m),
+`heads` (h) and `headDim` (j).
+-}
 type alias Attention d m h j =
     { query : Linear d m m
     , key : Linear d m m
@@ -31,6 +50,8 @@ type alias Attention d m h j =
     }
 
 
+{-| Every projection a `Linear.params` (He-uniform weights, zero biases).
+-}
 params : DType Floating d -> Dim m -> Dim h -> Dim j -> Param.Spec (Attention d m h j)
 params dt m h j =
     Param.record Attention
@@ -147,6 +168,8 @@ type alias Grouped d m kv h g j =
     }
 
 
+{-| As `paramsWith`: queries and output m to m, keys and values m to kv.
+-}
 groupedParams : DType Floating d -> { projectionBias : Bool, outBias : Bool } -> Dim m -> Dim kv -> Dim h -> Dim g -> Dim j -> Param.Spec (Grouped d m kv h g j)
 groupedParams dt cfg m kv h g j =
     Param.record Grouped
@@ -258,6 +281,8 @@ type alias Cross d m c h j =
     }
 
 
+{-| As `paramsWith`: queries and output m to m, keys and values c to m.
+-}
 crossParams : DType Floating d -> { projectionBias : Bool, outBias : Bool } -> Dim m -> Dim c -> Dim h -> Dim j -> Param.Spec (Cross d m c h j)
 crossParams dt cfg m c h j =
     Param.record Cross

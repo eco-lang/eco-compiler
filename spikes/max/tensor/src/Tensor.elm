@@ -1,19 +1,16 @@
 module Tensor exposing
     ( Tensor, Mask, Dim, Shape, DType, Axis, Retag, Lift, Perm
     , R0, R1, R2, R3, R4, R5, One, Elems
-    , Floating, Integral, F16, BF16, F32, F64, I8, I32, I64, U8, U64
-    , float16, bfloat16, float32, float64, int8, int32, int64, uint8, uint64
+    , Floating, Integral, F16, BF16, F32, F64, I8, I32, I64, U8, U64, float16, bfloat16, float32, float64, int8, int32, int64, uint8, uint64
     , dim, one, size, scalar, r1, r2, r3, r4, r5, shapeOf, dtypeName
     , float, int, constant, fillLike, zeros, ones, full, fromList, zerosLike, onesLike, fullLike, iota, arange, hannWindow
     , cast, castLike, toFloat, toInt
     , abs, negate, sign, exp, log, log1p, sqrt, rsqrt, sin, cos, acos, atanh, erf, floor, round, truncate
     , relu, sigmoid, tanh, gelu, geluTanh, silu, quickGelu, isInfinite, isNaN
     , plus, minus, times, dividedBy, modBy, pow, max, min, scale, shift
-    , equals, notEquals, greaterThan, atLeast, lessThan, atMost
-    , and, or, xor, not, select, indicator, maskBroadcast
+    , equals, notEquals, greaterThan, atLeast, lessThan, atMost, and, or, xor, not, select, indicator, maskBroadcast
     , matmul, matmul3, matmul4, matmul3By2, vecMat, matVec, dot, outer
-    , sum, mean, maximum, minimum, argMax, argMin, cumsum, cumsumWith, logSumExp, topK, bottomK, sort
-    , sumAll, meanAll, maximumAll, minimumAll, minMax
+    , sum, mean, maximum, minimum, argMax, argMin, cumsum, cumsumWith, logSumExp, topK, bottomK, sort, sumAll, meanAll, maximumAll, minimumAll, minMax
     , softmax, logSoftmax
     , reshape, flatten, flattenTail3, flattenTail4, factorLast2, factorLast3, factorLast4, mergeLast2, mergeLast3, mergeLast4
     , transpose, permute, broadcast, broadcastTo, rows, columns, insertOne, dropOne
@@ -31,6 +28,100 @@ graph is built.
 
 Pipelines read left to right: `x |> plus y` is x + y, `x |> matmul w` is x @ w.
 
+
+# Types
+
+@docs Tensor, Mask, Dim, Shape, DType, Axis, Retag, Lift, Perm
+
+
+# Shapes
+
+The ranks a shape type can have, and the tag of a size-1 axis.
+
+@docs R0, R1, R2, R3, R4, R5, One, Elems
+
+
+# Dtypes
+
+@docs Floating, Integral, F16, BF16, F32, F64, I8, I32, I64, U8, U64, float16, bfloat16, float32, float64, int8, int32, int64, uint8, uint64
+
+
+# Dimensions and shapes
+
+@docs dim, one, size, scalar, r1, r2, r3, r4, r5, shapeOf, dtypeName
+
+
+# Construction
+
+@docs float, int, constant, fillLike, zeros, ones, full, fromList, zerosLike, onesLike, fullLike, iota, arange, hannWindow
+
+
+# Casts
+
+@docs cast, castLike, toFloat, toInt
+
+
+# Element-wise functions
+
+@docs abs, negate, sign, exp, log, log1p, sqrt, rsqrt, sin, cos, acos, atanh, erf, floor, round, truncate
+
+
+# Activations
+
+@docs relu, sigmoid, tanh, gelu, geluTanh, silu, quickGelu, isInfinite, isNaN
+
+
+# Arithmetic
+
+Binary operations read left to right in a pipeline: `x |> minus y` is x - y.
+
+@docs plus, minus, times, dividedBy, modBy, pow, max, min, scale, shift
+
+
+# Comparisons and masks
+
+@docs equals, notEquals, greaterThan, atLeast, lessThan, atMost, and, or, xor, not, select, indicator, maskBroadcast
+
+
+# Linear algebra
+
+@docs matmul, matmul3, matmul4, matmul3By2, vecMat, matVec, dot, outer
+
+
+# Reductions
+
+@docs sum, mean, maximum, minimum, argMax, argMin, cumsum, cumsumWith, logSumExp, topK, bottomK, sort, sumAll, meanAll, maximumAll, minimumAll, minMax
+
+
+# Softmax
+
+@docs softmax, logSoftmax
+
+
+# Reshaping
+
+@docs reshape, flatten, flattenTail3, flattenTail4, factorLast2, factorLast3, factorLast4, mergeLast2, mergeLast3, mergeLast4
+
+
+# Axes
+
+@docs transpose, permute, broadcast, broadcastTo, rows, columns, insertOne, dropOne
+
+
+# Slicing and joining
+
+@docs slice, sliceUpdate, concat, concat2, chunks, stack, unstack, flip, pad
+
+
+# Indexing
+
+@docs take, rowsAt, pick, put, putAdd, triu, tril, lowerTriangle
+
+
+# Gradients
+
+@docs stopGradient
+
 -}
 
 import Tensor.Internal.Expr as E exposing (Expr)
@@ -43,66 +134,102 @@ import Tensor.Internal.Types as I
 -- TYPES
 
 
+{-| A tensor expression of a kind (`Floating` or `Integral`), a dtype (`F32`, `I64`, ...) and a shape
+(`R2 Batch Hidden`). Nothing is computed until a `Graph` is built and run.
+-}
 type alias Tensor kind dtype shape =
     I.Tensor kind dtype shape
 
 
+{-| A boolean tensor of a shape: what comparisons make and `select` consumes.
+-}
 type alias Mask shape =
     I.Mask shape
 
 
+{-| A dimension: an axis's size, typed by its tag (a constructor you declare, `type Hidden = Hidden`).
+Made by `dim`.
+-}
 type alias Dim tag =
     I.Dim tag
 
 
+{-| A whole shape, typed by its rank and tags: `r2 batch hidden : Shape (R2 Batch Hidden)`.
+-}
 type alias Shape s =
     I.Shape s
 
 
+{-| An element type and its kind: `float32 : DType Floating F32`.
+-}
 type alias DType kind dtype =
     I.DType kind dtype
 
 
+{-| Which axis an operation removes or inserts, typed by the shape with it (`s`), the shape without it
+(`r`) and its tag (`c`). `Tensor.Axis` has one for every rank and position.
+-}
 type alias Axis s r c =
     I.Axis s r c
 
 
+{-| Which axis an operation resizes: the shape before (`s`) and after (`t`), the axis's tag before
+(`a`) and after (`c`). `Tensor.Axis` has one for every rank and position.
+-}
 type alias Retag s t a c =
     I.Retag s t a c
 
 
+{-| A leading axis tagged `n` prepended: shape `s` becomes `t` (`stack`, `unstack`, `Transform.vmap`).
+-}
 type alias Lift n s t =
     I.Lift n s t
 
 
+{-| A reordering of the axes of shape `s` into shape `t`, as swaps of two axes (`Tensor.Axis.swap01of2`).
+-}
 type alias Perm s t =
     I.Perm s t
 
 
+{-| The shape of a scalar.
+-}
 type alias R0 =
     I.R0
 
 
+{-| The shape of rank 1 whose axis is tagged `a`.
+-}
 type alias R1 a =
     I.R1 a
 
 
+{-| The shape of rank 2 with axes tagged `a` and `b`, outermost first.
+-}
 type alias R2 a b =
     I.R2 a b
 
 
+{-| The shape of rank 3, outermost axis first.
+-}
 type alias R3 a b c =
     I.R3 a b c
 
 
+{-| The shape of rank 4, outermost axis first.
+-}
 type alias R4 a b c d =
     I.R4 a b c d
 
 
+{-| The shape of rank 5, outermost axis first.
+-}
 type alias R5 a b c d e =
     I.R5 a b c d e
 
 
+{-| The tag of a real size-1 axis (`one`, `insertOne`, `dropOne`).
+-}
 type alias One =
     I.One
 
@@ -114,46 +241,68 @@ type alias Elems =
     I.Elems
 
 
+{-| The kind of the floating-point dtypes.
+-}
 type alias Floating =
     I.Floating
 
 
+{-| The kind of the integer dtypes.
+-}
 type alias Integral =
     I.Integral
 
 
+{-| IEEE half precision.
+-}
 type alias F16 =
     I.F16
 
 
+{-| bfloat16: f32's exponent range with an 8-bit significand.
+-}
 type alias BF16 =
     I.BF16
 
 
+{-| IEEE single precision.
+-}
 type alias F32 =
     I.F32
 
 
+{-| IEEE double precision.
+-}
 type alias F64 =
     I.F64
 
 
+{-| Signed 8-bit integers.
+-}
 type alias I8 =
     I.I8
 
 
+{-| Signed 32-bit integers.
+-}
 type alias I32 =
     I.I32
 
 
+{-| Signed 64-bit integers.
+-}
 type alias I64 =
     I.I64
 
 
+{-| Unsigned 8-bit integers.
+-}
 type alias U8 =
     I.U8
 
 
+{-| Unsigned 64-bit integers.
+-}
 type alias U64 =
     I.U64
 
@@ -182,46 +331,64 @@ mask =
 -- DTYPES
 
 
+{-| f16 elements.
+-}
 float16 : DType Floating F16
 float16 =
     I.DType F16
 
 
+{-| bf16 elements.
+-}
 bfloat16 : DType Floating BF16
 bfloat16 =
     I.DType BF16
 
 
+{-| f32 elements.
+-}
 float32 : DType Floating F32
 float32 =
     I.DType F32
 
 
+{-| f64 elements.
+-}
 float64 : DType Floating F64
 float64 =
     I.DType F64
 
 
+{-| Signed 8-bit integer elements.
+-}
 int8 : DType Integral I8
 int8 =
     I.DType SI8
 
 
+{-| Signed 32-bit integer elements.
+-}
 int32 : DType Integral I32
 int32 =
     I.DType SI32
 
 
+{-| Signed 64-bit integer elements.
+-}
 int64 : DType Integral I64
 int64 =
     I.DType SI64
 
 
+{-| Unsigned 8-bit integer elements.
+-}
 uint8 : DType Integral U8
 uint8 =
     I.DType UI8
 
 
+{-| Unsigned 64-bit integer elements.
+-}
 uint64 : DType Integral U64
 uint64 =
     I.DType UI64
@@ -250,36 +417,50 @@ one =
     I.Dim 1
 
 
+{-| The size of a dimension.
+-}
 size : Dim tag -> Int
 size (I.Dim n) =
     n
 
 
+{-| The shape of a scalar.
+-}
 scalar : Shape R0
 scalar =
     I.Shape []
 
 
+{-| A rank-1 shape: `r1 hidden`.
+-}
 r1 : Dim a -> Shape (R1 a)
 r1 (I.Dim a) =
     I.Shape [ a ]
 
 
+{-| A rank-2 shape, outermost dimension first: `r2 batch hidden`.
+-}
 r2 : Dim a -> Dim b -> Shape (R2 a b)
 r2 (I.Dim a) (I.Dim b) =
     I.Shape [ a, b ]
 
 
+{-| A rank-3 shape, outermost dimension first.
+-}
 r3 : Dim a -> Dim b -> Dim c -> Shape (R3 a b c)
 r3 (I.Dim a) (I.Dim b) (I.Dim c) =
     I.Shape [ a, b, c ]
 
 
+{-| A rank-4 shape, outermost dimension first.
+-}
 r4 : Dim a -> Dim b -> Dim c -> Dim d -> Shape (R4 a b c d)
 r4 (I.Dim a) (I.Dim b) (I.Dim c) (I.Dim d) =
     I.Shape [ a, b, c, d ]
 
 
+{-| A rank-5 shape, outermost dimension first.
+-}
 r5 : Dim a -> Dim b -> Dim c -> Dim d -> Dim e -> Shape (R5 a b c d e)
 r5 (I.Dim a) (I.Dim b) (I.Dim c) (I.Dim d) (I.Dim e) =
     I.Shape [ a, b, c, d, e ]
@@ -292,6 +473,8 @@ shapeOf x =
     E.shape (un x)
 
 
+{-| The dtype as MAX names it: `"f32"`, `"bf16"`, `"si64"`, ...
+-}
 dtypeName : Tensor k d s -> String
 dtypeName x =
     P.dtName (E.dtype (un x))
@@ -301,16 +484,22 @@ dtypeName x =
 -- CONSTRUCTION
 
 
+{-| An f32 scalar.
+-}
 float : Float -> Tensor Floating F32 R0
 float f =
     wrap (E.scalar F32 f)
 
 
+{-| An i64 scalar.
+-}
 int : Int -> Tensor Integral I64 R0
 int n =
     wrap (E.scalar SI64 (Basics.toFloat n))
 
 
+{-| A scalar of a dtype: `constant bfloat16 0.5`.
+-}
 constant : DType k d -> Float -> Tensor k d R0
 constant d v =
     wrap (E.scalar (dt d) v)
@@ -323,16 +512,22 @@ fillLike c x =
     wrap (O.broadcastTo (E.shape (un x)) (un c))
 
 
+{-| Every element `v`: `full float32 0.5 (r2 batch hidden)`.
+-}
 full : DType k d -> Float -> Shape s -> Tensor k d s
 full d v (I.Shape s) =
     wrap (O.broadcastTo s (E.scalar (dt d) v))
 
 
+{-| Every element 0.
+-}
 zeros : DType k d -> Shape s -> Tensor k d s
 zeros d =
     full d 0
 
 
+{-| Every element 1.
+-}
 ones : DType k d -> Shape s -> Tensor k d s
 ones d =
     full d 1
@@ -345,16 +540,22 @@ fromList d (I.Shape s) values =
     wrap (E.const (dt d) s values)
 
 
+{-| Zeros of another tensor's dtype and shape.
+-}
 zerosLike : Tensor k d s -> Tensor k d s
 zerosLike =
     map1 O.zerosLike
 
 
+{-| Ones of another tensor's dtype and shape.
+-}
 onesLike : Tensor k d s -> Tensor k d s
 onesLike =
     map1 O.onesLike
 
 
+{-| `v` everywhere, in another tensor's dtype and shape.
+-}
 fullLike : Float -> Tensor k d s -> Tensor k d s
 fullLike v =
     map1 (O.fullLike v)
@@ -367,6 +568,8 @@ iota (I.Dim n) =
     wrap (O.range 0 1 n)
 
 
+{-| `start`, `start + step`, ... : as many values as the dimension says.
+-}
 arange : { start : Int, step : Int } -> Dim n -> Tensor Integral I64 (R1 n)
 arange r (I.Dim n) =
     wrap (O.range r.start r.step n)
@@ -400,21 +603,29 @@ hannWindow cfg d (I.Dim n) =
 -- CASTS
 
 
+{-| Convert the elements to another dtype.
+-}
 cast : DType k d -> Tensor k0 d0 s -> Tensor k d s
 cast d =
     map1 (O.cast (dt d))
 
 
+{-| Convert the elements to another tensor's dtype: `x |> castLike y`.
+-}
 castLike : Tensor k d t -> Tensor k0 d0 s -> Tensor k d s
 castLike t =
     map1 (O.cast (E.dtype (un t)))
 
 
+{-| Convert the elements to f32.
+-}
 toFloat : Tensor k d s -> Tensor Floating F32 s
 toFloat =
     map1 (O.cast F32)
 
 
+{-| Convert the elements to i64.
+-}
 toInt : Tensor k d s -> Tensor Integral I64 s
 toInt =
     map1 (O.cast SI64)
@@ -424,71 +635,99 @@ toInt =
 -- ELEMENT-WISE
 
 
+{-| Absolute value, element-wise.
+-}
 abs : Tensor k d s -> Tensor k d s
 abs =
     map1 (O.unary Abs)
 
 
+{-| -x, element-wise.
+-}
 negate : Tensor k d s -> Tensor k d s
 negate =
     map1 O.neg
 
 
+{-| -1, 0 or 1 by the sign of each element.
+-}
 sign : Tensor k d s -> Tensor k d s
 sign =
     map1 O.sign
 
 
+{-| e \*\* x, element-wise.
+-}
 exp : Tensor Floating d s -> Tensor Floating d s
 exp =
     map1 (O.unary Exp)
 
 
+{-| The natural logarithm, element-wise.
+-}
 log : Tensor Floating d s -> Tensor Floating d s
 log =
     map1 (O.unary Log)
 
 
+{-| log (1 + x), accurate for small x.
+-}
 log1p : Tensor Floating d s -> Tensor Floating d s
 log1p =
     map1 (O.unary Log1p)
 
 
+{-| Square root, element-wise.
+-}
 sqrt : Tensor Floating d s -> Tensor Floating d s
 sqrt =
     map1 (O.unary Sqrt)
 
 
+{-| 1 / sqrt x, element-wise.
+-}
 rsqrt : Tensor Floating d s -> Tensor Floating d s
 rsqrt =
     map1 (O.unary Rsqrt)
 
 
+{-| Sine, element-wise (radians).
+-}
 sin : Tensor Floating d s -> Tensor Floating d s
 sin =
     map1 (O.unary Sin)
 
 
+{-| Cosine, element-wise (radians).
+-}
 cos : Tensor Floating d s -> Tensor Floating d s
 cos =
     map1 (O.unary Cos)
 
 
+{-| Arc cosine, element-wise.
+-}
 acos : Tensor Floating d s -> Tensor Floating d s
 acos =
     map1 (O.unary Acos)
 
 
+{-| Inverse hyperbolic tangent, element-wise.
+-}
 atanh : Tensor Floating d s -> Tensor Floating d s
 atanh =
     map1 (O.unary Atanh)
 
 
+{-| The error function, element-wise.
+-}
 erf : Tensor Floating d s -> Tensor Floating d s
 erf =
     map1 (O.unary Erf)
 
 
+{-| Round down, element-wise.
+-}
 floor : Tensor Floating d s -> Tensor Floating d s
 floor =
     map1 (O.unary Floor)
@@ -501,21 +740,29 @@ round =
     map1 (O.unary Round)
 
 
+{-| Round towards zero, element-wise.
+-}
 truncate : Tensor Floating d s -> Tensor Floating d s
 truncate =
     map1 (O.unary Trunc)
 
 
+{-| max x 0, element-wise.
+-}
 relu : Tensor k d s -> Tensor k d s
 relu =
     map1 (O.unary Relu)
 
 
+{-| 1 / (1 + e \*\* -x), element-wise.
+-}
 sigmoid : Tensor Floating d s -> Tensor Floating d s
 sigmoid =
     map1 (O.unary Sigmoid)
 
 
+{-| Hyperbolic tangent, element-wise.
+-}
 tanh : Tensor Floating d s -> Tensor Floating d s
 tanh =
     map1 (O.unary Tanh)
@@ -528,21 +775,29 @@ gelu =
     map1 (O.unary Gelu)
 
 
+{-| GELU with the tanh approximation.
+-}
 geluTanh : Tensor Floating d s -> Tensor Floating d s
 geluTanh =
     map1 (O.unary GeluTanh)
 
 
+{-| x · sigmoid x (also called swish).
+-}
 silu : Tensor Floating d s -> Tensor Floating d s
 silu =
     map1 (O.unary Silu)
 
 
+{-| Where an element is +∞ or -∞.
+-}
 isInfinite : Tensor Floating d s -> Mask s
 isInfinite x =
     mask (O.unary IsInf (un x))
 
 
+{-| Where an element is NaN.
+-}
 isNaN : Tensor Floating d s -> Mask s
 isNaN x =
     mask (O.unary IsNaN (un x))
@@ -567,6 +822,8 @@ minus =
     map2 O.sub
 
 
+{-| `x |> times y` is x \* y, element-wise.
+-}
 times : Tensor k d s -> Tensor k d s -> Tensor k d s
 times =
     map2 O.mul
@@ -586,7 +843,7 @@ modBy =
     map2 (O.binary Mod)
 
 
-{-| `x |> pow y` is x ** y.
+{-| `x |> pow y` is x \*\* y.
 -}
 pow : Tensor Floating d s -> Tensor Floating d s -> Tensor Floating d s
 pow =
@@ -600,12 +857,14 @@ max =
     map2 (O.binary Max2)
 
 
+{-| Element-wise: `x |> min y`. (`minimum` is the reduction.)
+-}
 min : Tensor k d s -> Tensor k d s -> Tensor k d s
 min =
     map2 (O.binary Min2)
 
 
-{-| `x |> scale k` is x * k.
+{-| `x |> scale k` is x \* k.
 -}
 scale : Float -> Tensor Floating d s -> Tensor Floating d s
 scale k =
@@ -628,11 +887,15 @@ compare f y x =
     mask (f (un x) (un y))
 
 
+{-| `x |> equals y` is x == y.
+-}
 equals : Tensor k d s -> Tensor k d s -> Mask s
 equals =
     compare O.eq
 
 
+{-| `x |> notEquals y` is x /= y.
+-}
 notEquals : Tensor k d s -> Tensor k d s -> Mask s
 notEquals =
     compare O.ne
@@ -645,36 +908,50 @@ greaterThan =
     compare O.gt
 
 
+{-| `x |> atLeast y` is x >= y.
+-}
 atLeast : Tensor k d s -> Tensor k d s -> Mask s
 atLeast =
     compare O.ge
 
 
+{-| `x |> lessThan y` is x < y.
+-}
 lessThan : Tensor k d s -> Tensor k d s -> Mask s
 lessThan =
     compare O.lt
 
 
+{-| `x |> atMost y` is x <= y.
+-}
 atMost : Tensor k d s -> Tensor k d s -> Mask s
 atMost =
     compare O.le
 
 
+{-| Where both masks hold.
+-}
 and : Mask s -> Mask s -> Mask s
 and (I.Mask y) (I.Mask x) =
     mask (O.and_ x y)
 
 
+{-| Where either mask holds.
+-}
 or : Mask s -> Mask s -> Mask s
 or (I.Mask y) (I.Mask x) =
     mask (O.or_ x y)
 
 
+{-| Where exactly one of the masks holds.
+-}
 xor : Mask s -> Mask s -> Mask s
 xor (I.Mask y) (I.Mask x) =
     mask (O.binary Xor x y)
 
 
+{-| Where the mask does not hold.
+-}
 not : Mask s -> Mask s
 not (I.Mask x) =
     mask (O.not_ x)
@@ -694,6 +971,8 @@ indicator d (I.Mask m) =
     wrap (O.indicator (dt d) m)
 
 
+{-| A mask with a new axis that the next operation broadcasts, as `broadcast` does for tensors.
+-}
 maskBroadcast : Axis t s c -> Mask s -> Mask t
 maskBroadcast (I.Axis i) (I.Mask m) =
     mask (O.broadcastAxis i m)
@@ -721,11 +1000,15 @@ matmul w x =
     wrap (O.matmul (un x) (un w))
 
 
+{-| `matmul` for each matrix of a batch: `x |> matmul3 w`.
+-}
 matmul3 : Tensor k d (R3 n b c) -> Tensor k d (R3 n a b) -> Tensor k d (R3 n a c)
 matmul3 w x =
     wrap (O.matmul (un x) (un w))
 
 
+{-| `matmul` over two leading batch axes.
+-}
 matmul4 : Tensor k d (R4 m n b c) -> Tensor k d (R4 m n a b) -> Tensor k d (R4 m n a c)
 matmul4 w x =
     wrap (O.matmul (un x) (un w))
@@ -752,12 +1035,14 @@ matVec v m =
     wrap (O.matmul (un m) (un v))
 
 
+{-| The inner product of two vectors: `x |> dot y`.
+-}
 dot : Tensor k d (R1 a) -> Tensor k d (R1 a) -> Tensor k d R0
 dot y x =
     wrap (O.matmul (un x) (un y))
 
 
-{-| `x |> outer y`: x[i] * y[j].
+{-| `x |> outer y`: x[i] \* y[j].
 -}
 outer : Tensor k d (R1 b) -> Tensor k d (R1 a) -> Tensor k d (R2 a b)
 outer y x =
@@ -775,41 +1060,58 @@ outer y x =
 -- REDUCTIONS
 
 
+{-| The sum along an axis, which the result drops: `x |> sum Axis.axis1of2`.
+-}
 sum : Axis s r c -> Tensor k d s -> Tensor k d r
 sum (I.Axis i) =
     map1 (O.reduce ReduceSum i)
 
 
+{-| The mean along an axis, which the result drops.
+-}
 mean : Axis s r c -> Tensor Floating d s -> Tensor Floating d r
 mean (I.Axis i) =
     map1 (O.reduce ReduceMean i)
 
 
+{-| The largest value along an axis, which the result drops.
+-}
 maximum : Axis s r c -> Tensor k d s -> Tensor k d r
 maximum (I.Axis i) =
     map1 (O.reduce ReduceMax i)
 
 
+{-| The smallest value along an axis, which the result drops.
+-}
 minimum : Axis s r c -> Tensor k d s -> Tensor k d r
 minimum (I.Axis i) =
     map1 (O.reduce ReduceMin i)
 
 
+{-| The index of the largest value along an axis, which the result drops.
+-}
 argMax : Axis s r c -> Tensor k d s -> Tensor Integral I64 r
 argMax (I.Axis i) =
     map1 (O.reduce ArgMax i)
 
 
+{-| The index of the smallest value along an axis, which the result drops.
+-}
 argMin : Axis s r c -> Tensor k d s -> Tensor Integral I64 r
 argMin (I.Axis i) =
     map1 (O.reduce ArgMin i)
 
 
+{-| The running sum along an axis, each element included in its own sum.
+-}
 cumsum : Axis s r c -> Tensor k d s -> Tensor k d s
 cumsum =
     cumsumWith { exclusive = False, reverse = False }
 
 
+{-| `cumsum`, optionally `exclusive` (each element left out of its own sum) or in `reverse` (summing
+from the end of the axis).
+-}
 cumsumWith : { exclusive : Bool, reverse : Bool } -> Axis s r c -> Tensor k d s -> Tensor k d s
 cumsumWith cfg (I.Axis i) =
     map1 (O.cumsum i cfg.exclusive cfg.reverse)
@@ -822,36 +1124,50 @@ logSumExp (I.Axis i) =
     map1 (O.logSumExp i)
 
 
+{-| The sum of every element.
+-}
 sumAll : Tensor k d s -> Tensor k d R0
 sumAll =
     map1 O.sumAll
 
 
+{-| The mean of every element.
+-}
 meanAll : Tensor Floating d s -> Tensor Floating d R0
 meanAll =
     map1 O.meanAll
 
 
+{-| The largest element.
+-}
 maximumAll : Tensor k d s -> Tensor k d R0
 maximumAll =
     map1 O.maxAll
 
 
+{-| The smallest element.
+-}
 minimumAll : Tensor k d s -> Tensor k d R0
 minimumAll =
     map1 O.minAll
 
 
+{-| The smallest and the largest element.
+-}
 minMax : Tensor k d s -> { min : Tensor k d R0, max : Tensor k d R0 }
 minMax x =
     { min = minimumAll x, max = maximumAll x }
 
 
+{-| exp x / sum (exp x) along an axis: each slice along it sums to 1.
+-}
 softmax : Axis s r c -> Tensor Floating d s -> Tensor Floating d s
 softmax (I.Axis i) =
     map1 (O.softmax i)
 
 
+{-| log (softmax x) along an axis, computed stably.
+-}
 logSoftmax : Axis s r c -> Tensor Floating d s -> Tensor Floating d s
 logSoftmax (I.Axis i) =
     map1 (O.logSoftmax i)
@@ -868,6 +1184,8 @@ reshape (I.Shape s) =
     map1 (O.reshape s)
 
 
+{-| Every element in one axis, in row-major order.
+-}
 flatten : Dim m -> Tensor k d s -> Tensor k d (R1 m)
 flatten (I.Dim m) =
     map1 (O.reshape [ m ])
@@ -885,41 +1203,57 @@ flattenTail3 (I.Dim m) =
     map1 (keepFirst 1 [ m ])
 
 
+{-| `flattenTail3` for rank 4 (a batch of multi-channel images to a batch of vectors).
+-}
 flattenTail4 : Dim m -> Tensor k d (R4 n a b c) -> Tensor k d (R2 n m)
 flattenTail4 (I.Dim m) =
     map1 (keepFirst 1 [ m ])
 
 
+{-| A vector as a matrix of the two dimensions, row-major (build time checks the sizes agree).
+-}
 factorLast2 : Dim a -> Dim b -> Tensor k d (R1 m) -> Tensor k d (R2 a b)
 factorLast2 (I.Dim a) (I.Dim b) =
     map1 (keepFirst 0 [ a, b ])
 
 
+{-| The last axis split into two, row-major: the inverse of `mergeLast3`.
+-}
 factorLast3 : Dim a -> Dim b -> Tensor k d (R2 x m) -> Tensor k d (R3 x a b)
 factorLast3 (I.Dim a) (I.Dim b) =
     map1 (keepFirst 1 [ a, b ])
 
 
+{-| The last axis split into two, row-major: the inverse of `mergeLast4`.
+-}
 factorLast4 : Dim a -> Dim b -> Tensor k d (R3 x y m) -> Tensor k d (R4 x y a b)
 factorLast4 (I.Dim a) (I.Dim b) =
     map1 (keepFirst 2 [ a, b ])
 
 
+{-| A matrix as a vector, row-major: the inverse of `factorLast2`.
+-}
 mergeLast2 : Dim m -> Tensor k d (R2 a b) -> Tensor k d (R1 m)
 mergeLast2 (I.Dim m) =
     map1 (keepFirst 0 [ m ])
 
 
+{-| The last two axes as one, row-major (heads × head size back to the model width).
+-}
 mergeLast3 : Dim m -> Tensor k d (R3 x a b) -> Tensor k d (R2 x m)
 mergeLast3 (I.Dim m) =
     map1 (keepFirst 1 [ m ])
 
 
+{-| The last two axes as one, row-major.
+-}
 mergeLast4 : Dim m -> Tensor k d (R4 x y a b) -> Tensor k d (R3 x y m)
 mergeLast4 (I.Dim m) =
     map1 (keepFirst 2 [ m ])
 
 
+{-| Swap a matrix's rows and columns.
+-}
 transpose : Tensor k d (R2 a b) -> Tensor k d (R2 b a)
 transpose =
     map1 (O.transpose [ 1, 0 ])
@@ -955,6 +1289,8 @@ permutation r swaps =
         swaps
 
 
+{-| Reorder the axes: `x |> permute Axis.swap12of4`.
+-}
 permute : Perm s t -> Tensor k d s -> Tensor k d t
 permute (I.Perm swaps) =
     map1 (\x -> O.transpose (permutation (E.rank x) swaps) x)
@@ -968,6 +1304,8 @@ broadcast (I.Axis i) =
     map1 (O.broadcastAxis i)
 
 
+{-| A new axis at the given position, every slice along it a copy of the operand.
+-}
 broadcastTo : Dim c -> Axis t s c -> Tensor k d s -> Tensor k d t
 broadcastTo (I.Dim c) (I.Axis i) =
     map1
@@ -987,16 +1325,22 @@ rows =
     map1 (O.broadcastAxis 0)
 
 
+{-| The vector as every column of a matrix.
+-}
 columns : Tensor k d (R1 a) -> Tensor k d (R2 a b)
 columns =
     map1 (O.broadcastAxis 1)
 
 
+{-| A new axis of size 1 (tagged `One`) at the given position.
+-}
 insertOne : Axis t s One -> Tensor k d s -> Tensor k d t
 insertOne (I.Axis i) =
     map1 (O.insertAxis i)
 
 
+{-| Drop an axis of size 1.
+-}
 dropOne : Axis s r One -> Tensor k d s -> Tensor k d r
 dropOne (I.Axis i) =
     map1 (O.dropAxis i)
@@ -1075,6 +1419,8 @@ sliceUpdate (I.Retag i) start upd x =
         wrap (O.concat i pieces)
 
 
+{-| The tensors one after another along one axis; the dimension is the total size (checked).
+-}
 concat : Retag s t a c -> Dim c -> List (Tensor k d s) -> Tensor k d t
 concat (I.Retag i) (I.Dim c) xs =
     wrap (expectSize i c "concat" (O.concat i (List.map un xs)))
@@ -1123,6 +1469,8 @@ stack _ (I.Dim n) xs =
         wrap e
 
 
+{-| The slices along the leading axis: the inverse of `stack`.
+-}
 unstack : Lift n s t -> Tensor k d t -> List (Tensor k d s)
 unstack _ x =
     let
@@ -1137,6 +1485,8 @@ unstack _ x =
         (List.range 0 (at 0 s - 1))
 
 
+{-| The elements along an axis in reverse order.
+-}
 flip : Axis s r c -> Tensor k d s -> Tensor k d s
 flip (I.Axis i) =
     map1
@@ -1149,6 +1499,9 @@ flip (I.Axis i) =
         )
 
 
+{-| `before` and `after` elements of `value` around one axis; the dimension is the padded size
+(checked).
+-}
 pad : Retag s t a c -> { before : Int, after : Int, value : Float } -> Dim c -> Tensor k d s -> Tensor k d t
 pad (I.Retag i) cfg (I.Dim c) =
     map1 (\x -> expectSize i c "pad" (O.pad i cfg.before cfg.after cfg.value x))
@@ -1161,6 +1514,8 @@ take (I.Retag i) idx =
     map1 (\x -> O.gather i x (O.cast SI64 (un idx)))
 
 
+{-| The rows at the indices, in their order (an embedding lookup): `table |> rowsAt ids`.
+-}
 rowsAt : Tensor Integral i (R1 n) -> Tensor k d (R2 v m) -> Tensor k d (R2 n m)
 rowsAt idx =
     map1 (\x -> O.gather 0 x (O.cast SI64 (un idx)))
@@ -1215,6 +1570,8 @@ tril k =
         )
 
 
+{-| The same value, but no gradient flows back through it.
+-}
 stopGradient : Tensor k d s -> Tensor k d s
 stopGradient =
     map1 O.stopGradient

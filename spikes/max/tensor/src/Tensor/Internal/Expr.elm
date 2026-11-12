@@ -1,8 +1,32 @@
 module Tensor.Internal.Expr exposing
-    ( Expr(..), Node, Op(..), Body, Meta
-    , key, op, node, meta, shape, dtype, pending, problem, poisoned, rank
-    , input, var, const, scalar, prim, call, ifThen, while, proj, failWith
-    , operands, rebuild, shallow
+    ( Body
+    , Expr(..)
+    , Meta
+    , Node
+    , Op(..)
+    , call
+    , const
+    , dtype
+    , failWith
+    , ifThen
+    , input
+    , key
+    , meta
+    , node
+    , op
+    , operands
+    , pending
+    , poisoned
+    , prim
+    , problem
+    , proj
+    , rank
+    , rebuild
+    , scalar
+    , shallow
+    , shape
+    , var
+    , while
     )
 
 {-| Tensor expressions: an operation and the expressions it reads, with a structural key and the
@@ -213,7 +237,6 @@ prim p args params =
 
             else
                 Expr { key = k, op = P p args params, shape = guess.shape, pending = [], dtype = guess.dtype, problem = Just (P.name p ++ ": " ++ msg), poisoned = True, results = [] }
-
 
 
 {-| The dtype support table, probed on MAX: an operation MAX refuses to compile for its operand's

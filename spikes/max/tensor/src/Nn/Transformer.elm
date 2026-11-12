@@ -1,6 +1,20 @@
-module Nn.Transformer exposing (EncoderLayer, DecoderLayer, encoderParams, decoderParams, encode, decode)
+module Nn.Transformer exposing
+    ( EncoderLayer, DecoderLayer, encoderParams, decoderParams
+    , encode, decode
+    )
 
 {-| Pre-norm transformer layers: attention and a GELU feed-forward block, each with a residual.
+
+
+# Layers
+
+@docs EncoderLayer, DecoderLayer, encoderParams, decoderParams
+
+
+# Applying
+
+@docs encode, decode
+
 -}
 
 import Nn
@@ -12,6 +26,9 @@ import Tensor as T exposing (DType, Dim, Floating, R2, Tensor)
 import Tensor.Random exposing (Seed)
 
 
+{-| Layer norms before self-`attention` (`norm1`) and before the feed-forward block (`norm2`), the
+block's `up` (m to f) and `down` (f to m), and the `dropout` rate.
+-}
 type alias EncoderLayer d m h j f =
     { norm1 : LayerNorm d m
     , attention : Attention d m h j
@@ -22,6 +39,9 @@ type alias EncoderLayer d m h j f =
     }
 
 
+{-| As `EncoderLayer` with causal `self` attention and `cross` attention to a memory, each after its
+own layer norm (`norm1`, `norm2`; `norm3` precedes the feed-forward block).
+-}
 type alias DecoderLayer d m h j f =
     { norm1 : LayerNorm d m
     , self : Attention d m h j
@@ -34,6 +54,9 @@ type alias DecoderLayer d m h j f =
     }
 
 
+{-| Each part from its module's `params` (`LayerNorm`, `Attention`, `Linear`); `dropout` is the
+given rate.
+-}
 encoderParams : DType Floating d -> { model : Dim m, heads : Dim h, headDim : Dim j, feedForward : Dim f, dropout : Float } -> Param.Spec (EncoderLayer d m h j f)
 encoderParams dt c =
     Param.record EncoderLayer
@@ -45,6 +68,8 @@ encoderParams dt c =
         |> Param.config .dropout c.dropout
 
 
+{-| As `encoderParams`, for a decoder layer.
+-}
 decoderParams : DType Floating d -> { model : Dim m, heads : Dim h, headDim : Dim j, feedForward : Dim f, dropout : Float } -> Param.Spec (DecoderLayer d m h j f)
 decoderParams dt c =
     Param.record DecoderLayer
@@ -72,6 +97,9 @@ encode cfg seed p x =
     h |> T.plus (h |> LayerNorm.apply p.norm2 |> Linear.apply p.up |> T.gelu |> Linear.apply p.down |> drop 1)
 
 
+{-| `decode cfg seed layer memory x`: pre-norm decoder block, causal self-attention then
+cross-attention to `memory` (t, m); `training` and `seed` drive dropout.
+-}
 decode : { training : Bool } -> Seed -> DecoderLayer d m h j f -> Tensor Floating d (R2 t m) -> Tensor Floating d (R2 s m) -> Tensor Floating d (R2 s m)
 decode cfg seed p memory x =
     let

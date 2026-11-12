@@ -1,6 +1,20 @@
-module Nn.Linear exposing (Linear, params, paramsWithoutBias, apply, apply3)
+module Nn.Linear exposing
+    ( Linear, params, paramsWithoutBias
+    , apply, apply3
+    )
 
 {-| A dense layer: x @ weight + bias.
+
+
+# Parameters
+
+@docs Linear, params, paramsWithoutBias
+
+
+# Applying
+
+@docs apply, apply3
+
 -}
 
 import Param
@@ -8,6 +22,8 @@ import Tensor as T exposing (DType, Dim, Floating, R1, R2, R3, Tensor)
 import Tensor.Axis as Axis
 
 
+{-| A layer from `i` to `o` features: `weight` (i, o) and `bias` (o).
+-}
 type alias Linear d i o =
     { weight : Tensor Floating d (R2 i o), bias : Tensor Floating d (R1 o) }
 
@@ -31,6 +47,8 @@ paramsWithoutBias dt i o =
         |> Param.config .bias (T.zeros dt (T.r1 o))
 
 
+{-| Rows of `i` features (n, i) to rows of `o` features (n, o).
+-}
 apply : Linear d i o -> Tensor Floating d (R2 n i) -> Tensor Floating d (R2 n o)
 apply p x =
     x |> T.matmul p.weight |> T.plus (T.rows p.bias)

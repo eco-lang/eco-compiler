@@ -1,7 +1,33 @@
-module Tensor.Random exposing (Seed, seed, salt, sig, uniform, normal, uniformLike, normalLike, bernoulliLike, gumbelLike, categorical)
+module Tensor.Random exposing
+    ( Seed, seed, salt, sig
+    , uniform, normal
+    , uniformLike, normalLike, bernoulliLike, gumbelLike
+    , categorical
+    )
 
 {-| Counter-based randomness: a seed tensor (`ui64 [1]`, a graph input or computed from one) and
 salts. Nothing is hidden: the same seed and shape give the same values.
+
+
+# Seeds
+
+@docs Seed, seed, salt, sig
+
+
+# Distributions
+
+@docs uniform, normal
+
+
+# Draws shaped like a tensor
+
+@docs uniformLike, normalLike, bernoulliLike, gumbelLike
+
+
+# Sampling
+
+@docs categorical
+
 -}
 
 import Signature exposing (Sig)
@@ -13,6 +39,8 @@ import Tensor.Internal.Prim as P exposing (DT(..))
 import Tensor.Internal.Types as I
 
 
+{-| A seed: a `ui64 [1]` tensor in the graph.
+-}
 type alias Seed =
     I.Seed
 
@@ -57,11 +85,15 @@ uniform r (I.DType dt) (I.Shape s) (I.Seed e) =
     I.Tensor (O.random 0 dt s r.low r.high e)
 
 
+{-| Normal with mean `mean` and standard deviation `std`, drawn in f32 and cast to the dtype.
+-}
 normal : { mean : Float, std : Float } -> DType Floating d -> Shape s -> Seed -> Tensor Floating d s
 normal r (I.DType dt) (I.Shape s) (I.Seed e) =
     I.Tensor (O.cast dt (O.random 1 F32 s r.mean r.std e))
 
 
+{-| `uniform` with `x`'s dtype and shape (one draw per element; `x`'s values are not used).
+-}
 uniformLike : { low : Float, high : Float } -> Tensor Floating d s -> Seed -> Tensor Floating d s
 uniformLike r x (I.Seed e) =
     let
@@ -71,6 +103,8 @@ uniformLike r x (I.Seed e) =
     I.Tensor (O.random 0 (E.dtype xe) (E.shape xe) r.low r.high e)
 
 
+{-| `normal` with `x`'s dtype and shape.
+-}
 normalLike : { mean : Float, std : Float } -> Tensor Floating d s -> Seed -> Tensor Floating d s
 normalLike r x (I.Seed e) =
     let

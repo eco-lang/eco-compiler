@@ -1,6 +1,9 @@
 module Signature exposing
-    ( Sig, Builder, tensor, f32, bf16, i64, u8, mask, anyTensor, unit, pair, triple, list
-    , record, field, map, label
+    ( Sig, Builder
+    , tensor, f32, bf16, i64, u8, mask, anyTensor
+    , unit, pair, triple, list
+    , record, field
+    , map, label
     )
 
 {-| Two-way descriptions of structured values of tensors: they build a value from tensors (a
@@ -12,6 +15,31 @@ operands, a loop's state).
 Records are described like `elm/json` decoders; a graph checks every record and `map` by a round
 trip when it is built (an accessor in the wrong position is an error, not a silent swap).
 
+
+# Signatures
+
+@docs Sig, Builder
+
+
+# Tensors
+
+@docs tensor, f32, bf16, i64, u8, mask, anyTensor
+
+
+# Structures
+
+@docs unit, pair, triple, list
+
+
+# Records
+
+@docs record, field
+
+
+# Changing a signature
+
+@docs map, label
+
 -}
 
 import Tensor exposing (BF16, DType, F32, Floating, I64, Integral, Mask, Shape, Tensor, U8)
@@ -20,10 +48,15 @@ import Tensor.Internal.Prim exposing (DT(..))
 import Tensor.Internal.Types as I
 
 
+{-| A signature under construction, as an `elm/json` decoder pipeline is: it flattens an `r`
+and builds an `f` (`record`, then one `field` per argument).
+-}
 type alias Builder r f =
     I.SigBuilder r f
 
 
+{-| A signature of `a`: builds an `a` from tensors and flattens one back.
+-}
 type alias Sig a =
     Builder a a
 
@@ -44,31 +77,43 @@ one dt s wrap unwrap =
         }
 
 
+{-| One tensor of the given dtype and shape.
+-}
 tensor : DType k d -> Shape s -> Sig (Tensor k d s)
 tensor (I.DType dt) (I.Shape s) =
     one (Just dt) (Just s) I.Tensor I.tensor
 
 
+{-| `tensor` of dtype f32.
+-}
 f32 : Shape s -> Sig (Tensor Floating F32 s)
 f32 =
     tensor Tensor.float32
 
 
+{-| `tensor` of dtype bf16.
+-}
 bf16 : Shape s -> Sig (Tensor Floating BF16 s)
 bf16 =
     tensor Tensor.bfloat16
 
 
+{-| `tensor` of dtype i64.
+-}
 i64 : Shape s -> Sig (Tensor Integral I64 s)
 i64 =
     tensor Tensor.int64
 
 
+{-| `tensor` of dtype u8.
+-}
 u8 : Shape s -> Sig (Tensor Integral U8 s)
 u8 =
     tensor Tensor.uint8
 
 
+{-| A boolean mask of the given shape.
+-}
 mask : Shape s -> Sig (Mask s)
 mask (I.Shape s) =
     one (Just Bool) (Just s) I.Mask I.mask
@@ -81,11 +126,15 @@ anyTensor =
     one Nothing Nothing I.Tensor I.tensor
 
 
+{-| No tensors.
+-}
 unit : Sig ()
 unit =
     I.SigBuilder { slots = [], build = \es -> ( (), es ), flatten = \_ -> [] }
 
 
+{-| Two values: the first's tensors, then the second's.
+-}
 pair : Sig a -> Sig b -> Sig ( a, b )
 pair (I.SigBuilder a) (I.SigBuilder b) =
     I.SigBuilder
@@ -104,6 +153,8 @@ pair (I.SigBuilder a) (I.SigBuilder b) =
         }
 
 
+{-| Three values, in order.
+-}
 triple : Sig a -> Sig b -> Sig c -> Sig ( a, b, c )
 triple sa sb sc =
     map (\( a, ( b, c ) ) -> ( a, b, c )) (\( a, b, c ) -> ( a, ( b, c ) )) (pair sa (pair sb sc))
@@ -132,11 +183,21 @@ list n (I.SigBuilder s) =
         }
 
 
+{-| A record from its constructor; `field` adds the fields in the constructor's argument order.
+
+    Sig.record Batch
+        |> Sig.field .images (Sig.u8 (T.r2 batch pixels))
+        |> Sig.field .labels (Sig.u8 (T.r1 batch))
+
+-}
 record : f -> Builder r f
 record constructor =
     I.SigBuilder { slots = [], build = \es -> ( constructor, es ), flatten = \_ -> [] }
 
 
+{-| The next field: its accessor and its signature. A graph refuses a record whose accessors
+are not in the constructor's order.
+-}
 field : (r -> a) -> Sig a -> Builder r (a -> f) -> Builder r f
 field getter (I.SigBuilder s) (I.SigBuilder b) =
     I.SigBuilder

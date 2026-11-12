@@ -1,5 +1,14 @@
 module Tensor.Internal.Mo exposing
-    ( Block, emptyBlock, push, emit, constant, tensorType, constText, floatLit, shapeAttr, graphOp
+    ( Block
+    , constText
+    , constant
+    , emit
+    , emptyBlock
+    , floatLit
+    , graphOp
+    , push
+    , shapeAttr
+    , tensorType
     )
 
 {-| How each primitive is spelled in MAX's IR, as MAX 26.7.0's own graph API spells it
@@ -642,21 +651,21 @@ topKOp params x xm out b =
                 mark Device.axisNotLastMark
             )
             <|
-            if largest == 1 then
-                push "rmo.top_k" [ ( "axis", Bc.IntAttr axis (Bc.SignedIntegerType 64) ), ( "k", Bc.IntAttr k (Bc.SignedIntegerType 64) ) ] [ x ] results [] b
+                if largest == 1 then
+                    push "rmo.top_k" [ ( "axis", Bc.IntAttr axis (Bc.SignedIntegerType 64) ), ( "k", Bc.IntAttr k (Bc.SignedIntegerType 64) ) ] [ x ] results [] b
 
-            else
-                let
-                    ( b1, kc ) =
-                        host <| constant SI64 [] [ toFloat k ] b
+                else
+                    let
+                        ( b1, kc ) =
+                            host <| constant SI64 [] [ toFloat k ] b
 
-                    ( b2, ac ) =
-                        host <| constant SI64 [] [ toFloat axis ] b1
+                        ( b2, ac ) =
+                            host <| constant SI64 [] [ toFloat axis ] b1
 
-                    ( b3, sc ) =
-                        host <| constant Bool [] [ 1 ] b2
-                in
-                push "rmo.mo.bottom_k" [] [ x, kc, ac, sc ] results [] b3
+                        ( b3, sc ) =
+                            host <| constant Bool [] [ 1 ] b2
+                    in
+                    push "rmo.mo.bottom_k" [] [ x, kc, ac, sc ] results [] b3
 
         _ ->
             ( b, -1 )

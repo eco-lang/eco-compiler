@@ -1,9 +1,23 @@
-module Nn.GroupNorm exposing (GroupNorm, params, apply)
+module Nn.GroupNorm exposing
+    ( GroupNorm, params
+    , apply
+    )
 
 {-| Group normalisation of NHWC images (diffusion UNets and VAEs): the channels are split into
 `groups` groups, each normalised over its channels and all positions, then scaled and shifted per
 channel. The channel axis is factored in place, keeping channel order, so a PyTorch (NCHW) model's
 groups carry over. Half-precision inputs are normalised in f32 and cast back.
+
+
+# Parameters
+
+@docs GroupNorm, params
+
+
+# Applying
+
+@docs apply
+
 -}
 
 import Param
@@ -14,6 +28,9 @@ import Tensor.Internal.Prim as P
 import Tensor.Internal.Types as I
 
 
+{-| Per-channel `scale` and `bias` over `c` channels, the number of `groups`, and the `epsilon`
+added to each group's variance.
+-}
 type alias GroupNorm d c =
     { scale : Tensor Floating d (R1 c), bias : Tensor Floating d (R1 c), groups : Int, epsilon : Float }
 
@@ -29,6 +46,8 @@ params dt cfg c =
         |> Param.config .epsilon cfg.epsilon
 
 
+{-| Images (n, h, w, c) normalised group by group. Build time checks `groups` divides c.
+-}
 apply : GroupNorm d c -> Tensor Floating d (R4 n h w c) -> Tensor Floating d (R4 n h w c)
 apply p x =
     I.Tensor (groupNorm p.groups p.epsilon (I.tensor p.scale) (I.tensor p.bias) (I.tensor x))

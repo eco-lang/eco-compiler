@@ -70,4 +70,3 @@ shared name (I.SigBuilder sa) (I.SigBuilder sb) f =
 bodyKey : E.Body -> K.Key
 bodyKey b =
     List.foldl (\o k -> K.mixKey (E.key o) k) (K.start "body" |> K.mixKey b.scope) b.outputs
-

@@ -1,4 +1,4 @@
-module Tensor.Internal.Host exposing (paddedSize, packed, encodeValues, lcg, draws, normalDraws)
+module Tensor.Internal.Host exposing (draws, encodeValues, lcg, normalDraws, packed, paddedSize)
 
 {-| Byte layouts shared with the host, element encoders for every dtype, and the generator
 `Param.initial` draws from (the MNIST spike's LCG, kept so its runs stay comparable).

@@ -1,10 +1,35 @@
-module Optim exposing (Optimizer, Rate(..), Hyper, sgd, sgdWith, adamW, adamWWith, custom, clipGlobalNorm)
+module Optim exposing
+    ( Optimizer, Rate(..), Hyper
+    , sgd, sgdWith, adamW, adamWWith
+    , custom
+    , clipGlobalNorm
+    )
 
 {-| How parameters move along their gradients. An optimizer is a value: `Train.step` gives it each
 trainable parameter, its gradient and its state slots (tensors of the parameter's shape, zero at
 first), and adds the state to the graph's resident buffers.
 
 Updates are computed in f32 and cast back to each parameter's dtype.
+
+
+# Types
+
+@docs Optimizer, Rate, Hyper
+
+
+# Built in
+
+@docs sgd, sgdWith, adamW, adamWWith
+
+
+# Your own
+
+@docs custom
+
+
+# Clipping
+
+@docs clipGlobalNorm
 
 -}
 
@@ -15,6 +40,9 @@ import Tensor.Internal.Prim exposing (DT(..), Prim(..))
 import Tensor.Internal.Types as I
 
 
+{-| An update rule: its rate, its number of state slots per parameter, and an optional
+gradient clip.
+-}
 type alias Optimizer =
     I.Optimizer
 
@@ -53,6 +81,8 @@ k v x =
     O.scalarLike v x
 
 
+{-| Plain SGD at a fixed rate η: w = w - η g.
+-}
 sgd : Float -> Optimizer
 sgd rate =
     sgdWith { rate = Fixed rate, momentum = 0, weightDecay = 0 }
@@ -94,6 +124,9 @@ sgdWith cfg =
         }
 
 
+{-| `adamWWith` at a fixed rate, with β₁ = 0.9, β₂ = 0.999, ε = 1e-8, no weight decay and bias
+correction.
+-}
 adamW : Float -> Optimizer
 adamW rate =
     adamWWith { rate = Fixed rate, beta1 = 0.9, beta2 = 0.999, epsilon = 1.0e-8, weightDecay = 0, biasCorrection = True }

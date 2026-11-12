@@ -1,4 +1,7 @@
-module Nn.Rotary exposing (Rotary, Pairing(..), apply)
+module Nn.Rotary exposing
+    ( Rotary, Pairing(..)
+    , apply
+    )
 
 {-| Rotary position embeddings (RoPE): each pair of a head's features is rotated by an angle
 proportional to its position, at a frequency base^(−2k/j) for pair k of j features.
@@ -7,6 +10,16 @@ proportional to its position, at a frequency base^(−2k/j) for pair k of j feat
 (k, k + j/2), as Hugging Face's Llama code (`rotate_half`) does. Positions are a tensor, so a cache's
 offset can be a runtime value; their sequence is the queries', so angles for another sequence do not
 compile.
+
+
+# Configuration
+
+@docs Rotary, Pairing
+
+
+# Applying
+
+@docs apply
 
 -}
 
@@ -17,15 +30,22 @@ import Tensor.Internal.Prim as P exposing (DT(..))
 import Tensor.Internal.Types as I
 
 
+{-| Which features rotate together: `Interleaved` (2k, 2k + 1) or `Halves` (k, k + j/2).
+-}
 type Pairing
     = Interleaved
     | Halves
 
 
+{-| The frequency `base` and the features' `pairing`.
+-}
 type alias Rotary =
     { base : Float, pairing : Pairing }
 
 
+{-| `apply r positions x`: each head's features (h, s, j) rotated for its `s` positions, angles
+computed in f32. Build time checks j is even.
+-}
 apply : Rotary -> Tensor Integral I64 (R1 s) -> Tensor Floating d (R3 h s j) -> Tensor Floating d (R3 h s j)
 apply r positions x =
     I.Tensor (rotate r (I.tensor positions) (I.tensor x))

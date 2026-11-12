@@ -84,8 +84,6 @@ initValues f seed =
             ( List.repeat n 0, seed )
 
 
-
-
 {-| The resident names of a spec's fields, in field order: what `Train`, `Infer` and
 `Param.importGraph` call the host's buffers. Unnamed fields are numbered among themselves by kind
 (`param0`, `frozen`, `data1`: a label used once stays unnumbered); fields named by `Param.named n`

@@ -3,7 +3,7 @@
 the (primitive, dtype) pairs MAX refuses to compile on CPU, which the package then refuses when a
 graph is built, with a clear message, instead of MAX's opaque compile failure.
 
-Usage: gen_support.py support.json > src/Tensor/Internal/Support.elm
+Usage: gen_support.py support.json | elm-format --stdin > src/Tensor/Internal/Support.elm
 """
 import json
 import sys

@@ -2,6 +2,12 @@ module Nn.FeedForward exposing (Gated, gatedParams, applyGated)
 
 {-| Gated feed-forward blocks: down (act (gate x) · up x). `applyGated T.silu` is SwiGLU (Llama);
 `applyGated T.gelu` is GEGLU (Stable Diffusion's transformer blocks).
+
+
+# Gated blocks
+
+@docs Gated, gatedParams, applyGated
+
 -}
 
 import Nn.Linear as Linear exposing (Linear)
@@ -9,10 +15,14 @@ import Param
 import Tensor as T exposing (DType, Dim, Floating, R2, Tensor)
 
 
+{-| The `gate` and `up` projections (m to f) and the `down` projection (f to m).
+-}
 type alias Gated d m f =
     { gate : Linear d m f, up : Linear d m f, down : Linear d f m }
 
 
+{-| Each projection a `Linear.params`, or a `Linear.paramsWithoutBias` when `bias` is false.
+-}
 gatedParams : DType Floating d -> { bias : Bool } -> Dim m -> Dim f -> Param.Spec (Gated d m f)
 gatedParams dt cfg m f =
     let
@@ -29,6 +39,8 @@ gatedParams dt cfg m f =
         |> Param.sub .down (linear f m)
 
 
+{-| `applyGated act p x`: down (act (gate x) · up x), rows (n, m) to (n, m).
+-}
 applyGated : (Tensor Floating d (R2 n f) -> Tensor Floating d (R2 n f)) -> Gated d m f -> Tensor Floating d (R2 n m) -> Tensor Floating d (R2 n m)
 applyGated act p x =
     act (Linear.apply p.gate x) |> T.times (Linear.apply p.up x) |> Linear.apply p.down

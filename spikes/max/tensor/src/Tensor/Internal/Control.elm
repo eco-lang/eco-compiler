@@ -2,7 +2,7 @@ module Tensor.Internal.Control exposing (cond, whileLoop)
 
 {-| Branches and loops as single operations MAX runs: `mo.if` and `mo.while`.
 
-Both trace their functions on placeholders. A branch's body is then *closed*: every tensor it reads
+Both trace their functions on placeholders. A branch's body is then _closed_: every tensor it reads
 from outside (a captured value) becomes an extra operand of the `If`, so the branch is a function of
 its operands only, and its gradient (another `If`) gives the captured values their cotangents.
 

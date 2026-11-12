@@ -1,4 +1,4 @@
-module Tensor.Internal.Key exposing (Key, start, mix, mixInts, mixString, mixKey, mixFloat, mixFloats)
+module Tensor.Internal.Key exposing (Key, mix, mixFloat, mixFloats, mixInts, mixKey, mixString, start)
 
 {-| Structural keys: two multiplicative hashes, each below 2^31, so every product stays exact on
 every Elm back end. Equal expressions get equal keys; lowering checks the shallow structure on

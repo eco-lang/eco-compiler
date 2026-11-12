@@ -8,21 +8,21 @@ import Bytes
 import Bytes.Decode as Decode
 import Expect
 import Finetune.Qlora as Qlora
-import Tensor.Check as Check
 import Graph
 import Nn.LayerNorm as LayerNorm
 import Nn.Linear as Linear
 import Param
 import Signature as Sig
-import Tensor.Control as Control
-import Transform
 import Tensor as T exposing (Dim, F32, Floating, R1, R2, Tensor)
 import Tensor.Axis as Axis
+import Tensor.Check as Check
+import Tensor.Control as Control
 import Tensor.Internal.Expr as E
 import Tensor.Internal.Key as K
 import Tensor.Internal.Prim
 import Tensor.Internal.Types as I
 import Test exposing (Test, describe, test)
+import Transform
 
 
 type A
@@ -142,7 +142,7 @@ suite =
             , test "different constants get different keys" <|
                 \_ -> Expect.notEqual (E.key (I.tensor (T.float 2))) (E.key (I.tensor (T.float 3)))
             , test "-0 and 0 differ" <|
-                \_ -> Expect.notEqual (K.mixFloat 0 ( 1, 1 )) (K.mixFloat -0 ( 1, 1 ))
+                \_ -> Expect.notEqual (K.mixFloat 0 ( 1, 1 )) (K.mixFloat 0 ( 1, 1 ))
             , test "NaN keys itself" <|
                 \_ -> Expect.equal (K.mixFloat (0 / 0) ( 1, 1 )) (K.mixFloat (0 / 0) ( 1, 1 ))
             , test "operand order matters" <|
@@ -258,7 +258,17 @@ suite =
                             Param.record identity |> Param.normal 0.5 identity T.float32 (T.r1 (T.dim A 4000))
 
                         values =
-                            Decode.decode (Decode.loop ( 4000, [] ) (\( n, acc ) -> if n == 0 then Decode.succeed (Decode.Done acc) else Decode.map (\v -> Decode.Loop ( n - 1, v :: acc )) (Decode.float32 Bytes.LE))) (Param.initial spec 7)
+                            Decode.decode
+                                (Decode.loop ( 4000, [] )
+                                    (\( n, acc ) ->
+                                        if n == 0 then
+                                            Decode.succeed (Decode.Done acc)
+
+                                        else
+                                            Decode.map (\v -> Decode.Loop ( n - 1, v :: acc )) (Decode.float32 Bytes.LE)
+                                    )
+                                )
+                                (Param.initial spec 7)
                                 |> Maybe.withDefault []
 
                         mean =

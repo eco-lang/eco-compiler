@@ -1,4 +1,4 @@
-module Tensor.Internal.Device exposing (Device(..), place, hostMark, axisNotLastMark)
+module Tensor.Internal.Device exposing (Device(..), axisNotLastMark, hostMark, place)
 
 {-| Writing lowered ops for a device (plans/tensor-api-round2.md, A3; `work/inventory/g16_gpu.txt`).
 

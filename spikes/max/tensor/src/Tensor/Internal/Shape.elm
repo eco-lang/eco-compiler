@@ -1,4 +1,4 @@
-module Tensor.Internal.Shape exposing (Meta, rule, showShape, pendingMessage)
+module Tensor.Internal.Shape exposing (Meta, pendingMessage, rule, showShape)
 
 {-| The value-level shape and dtype of each primitive's result, computed from its operands'.
 
@@ -186,7 +186,18 @@ merge a b =
             |> Result.map
                 (\rs ->
                     { shape = List.map Tuple.first rs
-                    , pending = List.filterMap identity (List.indexedMap (\i ( _, pd ) -> if pd then Just i else Nothing) rs)
+                    , pending =
+                        List.filterMap identity
+                            (List.indexedMap
+                                (\i ( _, pd ) ->
+                                    if pd then
+                                        Just i
+
+                                    else
+                                        Nothing
+                                )
+                                rs
+                            )
                     , dtype = a.dtype
                     }
                 )
@@ -257,7 +268,17 @@ other p ms params =
         ( Reshape, [ m ] ) ->
             let
                 real s pend =
-                    List.product (List.indexedMap (\i d -> if List.member i pend then 1 else d) s)
+                    List.product
+                        (List.indexedMap
+                            (\i d ->
+                                if List.member i pend then
+                                    1
+
+                                else
+                                    d
+                            )
+                            s
+                        )
             in
             if real m.shape m.pending /= List.product params.a then
                 Err ("cannot reshape " ++ showShape m.shape ++ " (" ++ String.fromInt (List.product m.shape) ++ " elements) to " ++ showShape params.a)
@@ -278,7 +299,17 @@ other p ms params =
                         Maybe.withDefault 0 (get i m.shape)
 
                     newPending =
-                        List.filterMap identity (List.indexedMap (\j i -> if List.member i m.pending then Just j else Nothing) params.a)
+                        List.filterMap identity
+                            (List.indexedMap
+                                (\j i ->
+                                    if List.member i m.pending then
+                                        Just j
+
+                                    else
+                                        Nothing
+                                )
+                                params.a
+                            )
                 in
                 Ok { shape = List.map at params.a, pending = newPending, dtype = m.dtype }
 
@@ -302,8 +333,10 @@ other p ms params =
         ( Slice, [ m ] ) ->
             let
                 ok =
-                    List.length params.a == List.length m.shape
-                        && List.length params.b == List.length m.shape
+                    List.length params.a
+                        == List.length m.shape
+                        && List.length params.b
+                        == List.length m.shape
                         && List.all identity (List.map3 (\st sz d -> st >= 0 && sz >= 0 && st + sz <= d) params.a params.b m.shape)
             in
             if ok then
@@ -585,7 +618,18 @@ matmul a b =
             |> Result.map
                 (\bs ->
                     { shape = List.map Tuple.first bs ++ rows ++ cols
-                    , pending = List.filterMap identity (List.indexedMap (\i ( _, pd ) -> if pd then Just i else Nothing) bs)
+                    , pending =
+                        List.filterMap identity
+                            (List.indexedMap
+                                (\i ( _, pd ) ->
+                                    if pd then
+                                        Just i
+
+                                    else
+                                        Nothing
+                                )
+                                bs
+                            )
                     , dtype = a.dtype
                     }
                 )

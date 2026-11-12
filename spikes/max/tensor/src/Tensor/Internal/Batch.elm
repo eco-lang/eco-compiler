@@ -1,4 +1,4 @@
-module Tensor.Internal.Batch exposing (vmapRule, stack, unstack, unstack1)
+module Tensor.Internal.Batch exposing (stack, unstack, unstack1, vmapRule)
 
 {-| Vectorisation over a leading batch axis by batching rules.
 
@@ -444,4 +444,3 @@ matmulRule n operands e =
 
         _ ->
             Nothing
-

@@ -1,6 +1,20 @@
-module Nn.Sampling exposing (greedy, sample, keepTopK, nucleus)
+module Nn.Sampling exposing
+    ( greedy, sample
+    , keepTopK, nucleus
+    )
 
 {-| Choosing the next token from logits (rows: one distribution each).
+
+
+# Choosing
+
+@docs greedy, sample
+
+
+# Top-k and top-p
+
+@docs keepTopK, nucleus
+
 -}
 
 import Tensor as T exposing (Floating, I64, Integral, R1, R2, Tensor)

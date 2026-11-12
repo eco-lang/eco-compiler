@@ -6,17 +6,17 @@ module Round2Tests exposing (suite)
 
 import Expect
 import Graph
-import Tensor.Control as Control
 import Infer
 import Nn
 import Nn.GroupNorm as GroupNorm
-import Nn.Rotary as Rotary
 import Nn.Linear as Linear exposing (Linear)
+import Nn.Rotary as Rotary
 import Optim
 import Param
 import Signature as Sig
 import Tensor as T exposing (Dim, F32, Floating, R1, R2, R3, R4, Tensor)
 import Tensor.Axis as Axis
+import Tensor.Control as Control
 import Test exposing (Test, describe, test)
 import Train
 import Transform
