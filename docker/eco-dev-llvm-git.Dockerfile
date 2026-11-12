@@ -13,9 +13,9 @@
 # chosen by LLVM_COMMIT itself (no separate image argument to get wrong),
 # and the build fails unless the copied tree records that same commit.
 #
-# Configure a separate build directory in it (cmake --preset build -B
-# build-llvm-git): the LLVM path is the same /opt/llvm-mlir, so an existing
-# build/ would mix objects compiled against LLVM 21 with the new libraries.
+# The LLVM path is the same /opt/llvm-mlir, so a build/ tree configured in the
+# LLVM 21 image must be deleted and reconfigured (cmake --preset build), never
+# reused: it would mix objects compiled against LLVM 21 with the new libraries.
 # ============================================================
 ARG LLVM_COMMIT
 ARG DEV_IMAGE=eco-dev
