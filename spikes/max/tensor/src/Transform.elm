@@ -27,7 +27,7 @@ so `grad (\y -> y |> T.times x) x` is x (not 2x) and transforms nest.
 -}
 
 import Signature exposing (Sig)
-import Tensor as T exposing (Floating, R0, R1, R2, Tensor)
+import Tensor as T exposing (R0, R1, R2, Tensor)
 import Tensor.Internal.Batch as B
 import Tensor.Internal.Expr as E exposing (Expr)
 import Tensor.Internal.Grad as Grad
@@ -39,28 +39,28 @@ import Tensor.Internal.Types as I
 
 {-| The gradient of a scalar function.
 -}
-grad : (Tensor Floating d s -> Tensor Floating d R0) -> Tensor Floating d s -> Tensor Floating d s
+grad : (Tensor Float d s -> Tensor Float d R0) -> Tensor Float d s -> Tensor Float d s
 grad f x =
     I.Tensor (Grad.grad (\v -> I.tensor (f (I.Tensor v))) (I.tensor x))
 
 
 {-| `grad`, with the function's value.
 -}
-valueAndGrad : (Tensor Floating d s -> Tensor Floating d R0) -> Tensor Floating d s -> ( Tensor Floating d R0, Tensor Floating d s )
+valueAndGrad : (Tensor Float d s -> Tensor Float d R0) -> Tensor Float d s -> ( Tensor Float d R0, Tensor Float d s )
 valueAndGrad f x =
     ( f x, grad f x )
 
 
 {-| The gradient with respect to every tensor in a structured value (integer tensors get zeros).
 -}
-gradOf : Sig a -> (a -> Tensor Floating d R0) -> a -> a
+gradOf : Sig a -> (a -> Tensor Float d R0) -> a -> a
 gradOf s f a =
     Tuple.second (valueAndGradOf s f a)
 
 
 {-| `gradOf`, with the function's value.
 -}
-valueAndGradOf : Sig a -> (a -> Tensor Floating d R0) -> a -> ( Tensor Floating d R0, a )
+valueAndGradOf : Sig a -> (a -> Tensor Float d R0) -> a -> ( Tensor Float d R0, a )
 valueAndGradOf (I.SigBuilder s) f a =
     Grad.gradStructured (\es -> Tuple.first (s.build es)) s.flatten (f >> I.tensor) a
         |> Tuple.mapFirst I.Tensor
@@ -98,7 +98,7 @@ jvp (I.SigBuilder sa) (I.SigBuilder sb) f a t =
 {-| The Jacobian of a vector function: row i is the gradient of output i, all rows at once (the
 pullback `vmap`ped over the rows of the identity).
 -}
-jacobian : (Tensor Floating d (R1 a) -> Tensor Floating d (R1 b)) -> Tensor Floating d (R1 a) -> Tensor Floating d (R2 b a)
+jacobian : (Tensor Float d (R1 a) -> Tensor Float d (R1 b)) -> Tensor Float d (R1 a) -> Tensor Float d (R2 b a)
 jacobian f x =
     let
         ( outs, pullback ) =
@@ -137,7 +137,7 @@ jacobian f x =
 {-| H v, the Hessian of `f` at `x` times `v`, by differentiating the gradient's projection on `v`
 (`v` may depend on `x`: it is held constant).
 -}
-hessianVector : (Tensor Floating d s -> Tensor Floating d R0) -> Tensor Floating d s -> Tensor Floating d s -> Tensor Floating d s
+hessianVector : (Tensor Float d s -> Tensor Float d R0) -> Tensor Float d s -> Tensor Float d s -> Tensor Float d s
 hessianVector f x v =
     grad (\y -> grad f y |> T.times v |> T.sumAll) x
 

@@ -16,6 +16,7 @@ module Tensor.Internal.Ops exposing
     , eq
     , flatten
     , fullLike
+    , fullLikeValues
     , gather
     , ge
     , gt
@@ -42,6 +43,7 @@ module Tensor.Internal.Ops exposing
     , onesLike
     , or_
     , pad
+    , padInt
     , pick
     , random
     , range
@@ -76,6 +78,7 @@ these, so a gradient is an ordinary expression that can be differentiated again.
 
 import Tensor.Internal.Expr as E exposing (Expr)
 import Tensor.Internal.Prim as P exposing (DT(..), Prim(..), noParams)
+import Tensor.Internal.Values as Values exposing (Values)
 
 
 unary : Prim -> Expr -> Expr
@@ -205,6 +208,13 @@ scalarLike v x =
 fullLike : Float -> Expr -> Expr
 fullLike v x =
     broadcastTo (E.shape x) (scalarLike v x)
+
+
+{-| Exact values (one, for a scalar) spread to x's dtype and shape.
+-}
+fullLikeValues : Values -> Expr -> Expr
+fullLikeValues vs x =
+    broadcastTo (E.shape x) (E.constValues (E.dtype x) [] vs)
 
 
 zerosLike : Expr -> Expr
@@ -444,6 +454,23 @@ pad axis before after value x =
 
     else
         E.prim Pad [ x ] { a = [ axis, before, after ], b = [], f = [ value ] }
+
+
+{-| `pad` with an exact integer fill value (`b`; `f` keeps it as a float for readers of `f`). A value
+outside the dtype's range is a build error.
+-}
+padInt : Int -> Int -> Int -> Int -> Expr -> Expr
+padInt axis before after value x =
+    case Values.fitsDtype (E.dtype x) (Values.IntValues [ value ]) of
+        Just msg ->
+            E.failWith msg (pad axis before after (toFloat value) x)
+
+        Nothing ->
+            if before == 0 && after == 0 then
+                x
+
+            else
+                E.prim Pad [ x ] { a = [ axis, before, after ], b = [ value ], f = [ toFloat value ] }
 
 
 gather : Int -> Expr -> Expr -> Expr

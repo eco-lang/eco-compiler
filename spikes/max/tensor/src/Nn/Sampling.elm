@@ -17,7 +17,7 @@ module Nn.Sampling exposing
 
 -}
 
-import Tensor as T exposing (Floating, I64, Integral, R1, R2, Tensor)
+import Tensor as T exposing (I64, R1, R2, Tensor)
 import Tensor.Axis as Axis
 import Tensor.Internal.Expr as E exposing (Expr)
 import Tensor.Internal.Ops as O
@@ -27,14 +27,14 @@ import Tensor.Random as Random exposing (Seed)
 
 {-| The most likely token of each row.
 -}
-greedy : Tensor Floating d (R2 n v) -> Tensor Integral I64 (R1 n)
+greedy : Tensor Float d (R2 n v) -> Tensor Int I64 (R1 n)
 greedy =
     T.argMax Axis.last2
 
 
 {-| A token drawn from each row's softmax (scale the logits by 1 / temperature first).
 -}
-sample : Tensor Floating d (R2 n v) -> Seed -> Tensor Integral I64 (R1 n)
+sample : Tensor Float d (R2 n v) -> Seed -> Tensor Int I64 (R1 n)
 sample =
     Random.categorical
 
@@ -48,7 +48,7 @@ type K
 {-| The logits with all but each row's k largest set to the dtype's lowest finite value (logits
 equal to the k-th largest are kept too).
 -}
-keepTopK : Int -> Tensor Floating d (R2 n v) -> Tensor Floating d (R2 n v)
+keepTopK : Int -> Tensor Float d (R2 n v) -> Tensor Float d (R2 n v)
 keepTopK k logits =
     let
         ( values, _ ) =
@@ -72,7 +72,7 @@ keepTopK k logits =
 {-| Nucleus (top-p) sampling: a token drawn from the smallest set of most likely tokens whose
 probabilities reach `p`, renormalised.
 -}
-nucleus : Float -> Tensor Floating d (R2 n v) -> Seed -> Tensor Integral I64 (R1 n)
+nucleus : Float -> Tensor Float d (R2 n v) -> Seed -> Tensor Int I64 (R1 n)
 nucleus p logits seed =
     let
         ( sorted, order ) =

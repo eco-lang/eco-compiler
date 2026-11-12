@@ -37,12 +37,13 @@ import Bytes exposing (Bytes)
 import Bytes.Encode as Encode
 import Finetune.Lora as Lora exposing (Lora)
 import Param
-import Tensor as T exposing (DType, Dim, Floating, Integral, R1, R2, Tensor, U8)
+import Tensor as T exposing (DType, Dim, R1, R2, Tensor, U8)
 import Tensor.Internal.Expr as E
 import Tensor.Internal.Host as Host
 import Tensor.Internal.Ops as O
 import Tensor.Internal.Prim exposing (DT(..))
 import Tensor.Internal.Types as I
+import Tensor.Internal.Values as Values
 
 
 {-| The tag of the blocks' dimension (see `blocks`).
@@ -55,7 +56,7 @@ type Block
 `blockSize` consecutive weights in row-major order.
 -}
 type alias Quantized d i o =
-    { codes : Tensor Integral U8 (R2 i o), scales : Tensor Floating d (R1 Block), blockSize : Int }
+    { codes : Tensor Int U8 (R2 i o), scales : Tensor Float d (R1 Block), blockSize : Int }
 
 
 {-| The 16 NF4 values: quantiles of a standard normal, scaled to [-1, 1], with an exact zero.
@@ -74,7 +75,7 @@ blocks size i o =
 
 {-| `params dt blockSize i o`: codes and scales as `Param.data`, and the block size.
 -}
-params : DType Floating d -> Int -> Dim i -> Dim o -> Param.Spec (Quantized d i o)
+params : DType Float d -> Int -> Dim i -> Dim o -> Param.Spec (Quantized d i o)
 params dt size i o =
     Param.record Quantized
         |> Param.data .codes T.uint8 (T.r2 i o)
@@ -120,8 +121,8 @@ quantize size _ _ weights =
     in
     Encode.encode
         (Encode.sequence
-            [ Host.packed (Host.encodeValues UI8 (List.map toFloat codes))
-            , Host.packed (Host.encodeValues F32 scales)
+            [ Host.packed (Host.encodeValues UI8 (Values.IntValues codes))
+            , Host.packed (Host.encodeValues F32 (Values.FloatValues scales))
             ]
         )
 
@@ -143,7 +144,7 @@ nearest v =
 
 {-| The dense weight: each code's codebook value times its block's scale.
 -}
-dequantize : Quantized d i o -> Tensor Floating d (R2 i o)
+dequantize : Quantized d i o -> Tensor Float d (R2 i o)
 dequantize q =
     let
         codes =
@@ -175,6 +176,6 @@ dequantize q =
 
 {-| x @ W + the adapter's update, W dequantized.
 -}
-apply : Quantized d i o -> Lora d i r o -> Tensor Floating d (R2 n i) -> Tensor Floating d (R2 n o)
+apply : Quantized d i o -> Lora d i r o -> Tensor Float d (R2 n i) -> Tensor Float d (R2 n o)
 apply q lora x =
     x |> T.matmul (dequantize q) |> T.plus (x |> T.matmul (Lora.delta lora))

@@ -14,7 +14,7 @@ import Nn.Rotary as Rotary
 import Optim
 import Param
 import Signature as Sig
-import Tensor as T exposing (Dim, F32, Floating, R1, R2, R3, R4, Tensor)
+import Tensor as T exposing (Dim, F32, R1, R2, R3, R4, Tensor)
 import Tensor.Axis as Axis
 import Tensor.Control as Control
 import Test exposing (Test, describe, test)
@@ -115,13 +115,13 @@ biasless =
     Param.record Biasless |> Param.sub .l (Linear.paramsWithoutBias T.float32 a b)
 
 
-net : Two -> Tensor Floating F32 (R2 n A) -> Tensor Floating F32 (R2 n C)
+net : Two -> Tensor Float F32 (R2 n A) -> Tensor Float F32 (R2 n C)
 net p x =
     x |> Linear.apply p.l1 |> T.relu |> Linear.apply p.l2
 
 
 type alias Raw =
-    { w1 : Tensor Floating F32 (R2 B A), b1 : Tensor Floating F32 (R1 B), w2 : Tensor Floating F32 (R2 C B), b2 : Tensor Floating F32 (R1 C) }
+    { w1 : Tensor Float F32 (R2 B A), b1 : Tensor Float F32 (R1 B), w2 : Tensor Float F32 (R2 C B), b2 : Tensor Float F32 (R1 C) }
 
 
 rawSig : Sig.Sig Raw

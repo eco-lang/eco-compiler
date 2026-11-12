@@ -1,6 +1,5 @@
 Compiled in DEV mode. Follow the advice at https://elm-lang.org/0.19.1/optimize for better performance and smaller assets.
-Compiling ...
-Detected problems in 1 module.
+Compiling ...Detected problems in 1 module.
 -- TYPE MISMATCH ------------------------------------------- bad/BadCacheSeq.elm
 
 Something is off with the body of the `f` definition:

@@ -44,7 +44,7 @@ ends of a stack are checked against the network around it.
 -}
 
 import Param
-import Tensor exposing (DType, Dim, Floating, R2, Tensor)
+import Tensor exposing (DType, Dim, R2, Tensor)
 import Tensor.Internal.Expr exposing (Expr)
 import Tensor.Internal.Ops as O
 import Tensor.Internal.Prim as P exposing (DT, Prim(..))
@@ -123,8 +123,8 @@ denseTo (I.Dim n) act (Seq ls) =
 
 {-| He-uniform weights, zero biases, layer by layer.
 -}
-params : DType Floating d -> Dim i -> Seq i o -> Param.Spec (Stack d i o)
-params (I.DType dt) (I.Dim i) (Seq layers) =
+params : DType Float d -> Dim i -> Seq i o -> Param.Spec (Stack d i o)
+params (I.DType dt _) (I.Dim i) (Seq layers) =
     let
         widths =
             List.map Tuple.first layers
@@ -176,14 +176,14 @@ chunk2 l =
 
 {-| Rows (n, i) through every layer to (n, o).
 -}
-apply : Stack d i o -> Tensor Floating d (R2 n i) -> Tensor Floating d (R2 n o)
+apply : Stack d i o -> Tensor Float d (R2 n i) -> Tensor Float d (R2 n o)
 apply =
     run (\_ h -> h)
 
 
 {-| The same with inverted dropout after every hidden layer (each with its own salt of `seed`).
 -}
-applyWithDropout : { rate : Float, training : Bool } -> Seed -> Stack d i o -> Tensor Floating d (R2 n i) -> Tensor Floating d (R2 n o)
+applyWithDropout : { rate : Float, training : Bool } -> Seed -> Stack d i o -> Tensor Float d (R2 n i) -> Tensor Float d (R2 n o)
 applyWithDropout cfg seed =
     run
         (\k h ->
@@ -199,7 +199,7 @@ applyWithDropout cfg seed =
         )
 
 
-run : (Int -> Expr -> Expr) -> Stack d i o -> Tensor Floating d (R2 n i) -> Tensor Floating d (R2 n o)
+run : (Int -> Expr -> Expr) -> Stack d i o -> Tensor Float d (R2 n i) -> Tensor Float d (R2 n o)
 run between (Stack layers) x =
     let
         count =

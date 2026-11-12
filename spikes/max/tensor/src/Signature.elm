@@ -42,7 +42,7 @@ trip when it is built (an accessor in the wrong position is an error, not a sile
 
 -}
 
-import Tensor exposing (BF16, DType, F32, Floating, I64, Integral, Mask, Shape, Tensor, U8)
+import Tensor exposing (BF16, DType, F32, I64, Mask, Shape, Tensor, U8)
 import Tensor.Internal.Expr exposing (Expr)
 import Tensor.Internal.Prim exposing (DT(..))
 import Tensor.Internal.Types as I
@@ -80,34 +80,34 @@ one dt s wrap unwrap =
 {-| One tensor of the given dtype and shape.
 -}
 tensor : DType k d -> Shape s -> Sig (Tensor k d s)
-tensor (I.DType dt) (I.Shape s) =
+tensor (I.DType dt _) (I.Shape s) =
     one (Just dt) (Just s) I.Tensor I.tensor
 
 
 {-| `tensor` of dtype f32.
 -}
-f32 : Shape s -> Sig (Tensor Floating F32 s)
+f32 : Shape s -> Sig (Tensor Float F32 s)
 f32 =
     tensor Tensor.float32
 
 
 {-| `tensor` of dtype bf16.
 -}
-bf16 : Shape s -> Sig (Tensor Floating BF16 s)
+bf16 : Shape s -> Sig (Tensor Float BF16 s)
 bf16 =
     tensor Tensor.bfloat16
 
 
 {-| `tensor` of dtype i64.
 -}
-i64 : Shape s -> Sig (Tensor Integral I64 s)
+i64 : Shape s -> Sig (Tensor Int I64 s)
 i64 =
     tensor Tensor.int64
 
 
 {-| `tensor` of dtype u8.
 -}
-u8 : Shape s -> Sig (Tensor Integral U8 s)
+u8 : Shape s -> Sig (Tensor Int U8 s)
 u8 =
     tensor Tensor.uint8
 

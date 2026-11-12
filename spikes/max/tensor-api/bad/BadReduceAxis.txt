@@ -8,11 +8,11 @@ Something is off with the body of the `m` definition:
         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 The body is:
 
-    Tensor Floating F32 (R1 Classes)
+    Tensor Float F32 (R1 Classes)
 
 But the type annotation on `m` says it should be:
 
-    Tensor Floating F32 (R1 n)
+    Tensor Float F32 (R1 n)
 
 Hint: Your type annotation uses type variable `n` which means ANY type of value
 can flow through, but your code is saying it specifically wants a `Classes`

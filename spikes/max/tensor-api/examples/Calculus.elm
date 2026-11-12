@@ -2,7 +2,7 @@ module Calculus exposing (..)
 
 import Graph exposing (Graph)
 import Signature as Sig
-import Tensor as T exposing (Dim, F32, Floating, Mask, R0, R1, R2, Tensor)
+import Tensor as T exposing (Dim, F32, Mask, R0, R1, R2, Tensor)
 import Tensor.Axis as Axis
 import Tensor.Control as Control
 import Transform
@@ -17,7 +17,7 @@ n =
     T.dim N 16
 
 
-rosenbrock : Tensor Floating F32 (R1 N) -> Tensor Floating F32 R0
+rosenbrock : Tensor Float F32 (R1 N) -> Tensor Float F32 R0
 rosenbrock x =
     x |> T.times x |> T.sumAll
 

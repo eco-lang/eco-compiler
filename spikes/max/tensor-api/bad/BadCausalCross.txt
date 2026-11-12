@@ -8,11 +8,11 @@ This function cannot handle the argument sent through the (|>) pipe:
              ^^^^^^^^^^^^^^^^^^^^^^
 The argument is:
 
-    Tensor Floating F32 (R3 h s j)
+    Tensor Float F32 (R3 h s j)
 
 But (|>) is piping it to a function that expects:
 
-    Tensor Floating F32 (R3 h t j)
+    Tensor Float F32 (R3 h t j)
 
 Hint: Your type annotation uses `s` and `t` as separate type variables. Your
 code seems to be saying they are the same though. Maybe they should be the same

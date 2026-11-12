@@ -8,9 +8,9 @@ This function cannot handle the argument sent through the (|>) pipe:
                   ^^^^^^^^^^^^^^^^
 The argument is:
 
-    Tensor Floating F32 (R2 n Classes)
+    Tensor Float F32 (R2 n Classes)
 
 But (|>) is piping it to a function that expects:
 
-    Tensor Floating F32 (T.R3 a b c)
+    Tensor Float F32 (T.R3 a b c)
 

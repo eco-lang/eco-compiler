@@ -11,6 +11,8 @@ A gradient check differentiates `sumAll (y * stopGradient (cos y))` for y = f x:
 import Finetune.Qlora as Qlora
 import Bytes
 import Bytes.Decode as Decode
+import Dict
+import Json.Decode as D
 import Graph exposing (Graph)
 import Json.Encode as E
 import Nn
@@ -28,14 +30,18 @@ import Nn.Linear as Linear
 import Platform
 import Param
 import Signature as Sig exposing (Sig)
-import Tensor as T exposing (Dim, F32, Floating, I64, Integral, Mask, R0, R1, R2, R3, R4, Tensor)
+import Tensor as T exposing (Dim, F32, I64, Mask, R0, R1, R2, R3, R4, Tensor)
 import Tensor.Axis as Axis
 import Tensor.Control as Control
+import Tensor.Eval as Eval
 import Tensor.Random as Random
 import Transform
 
 
 port emit : E.Value -> Cmd msg
+
+
+port evalOut : E.Value -> Cmd msg
 
 
 type A
@@ -88,7 +94,7 @@ k2 =
 
 
 type alias F s =
-    Tensor Floating F32 s
+    Tensor Float F32 s
 
 
 type alias Out =
@@ -156,14 +162,19 @@ both ref params f x =
     [ value ref [ "x" ] params (x >> f), gradCheck ref [ "x" ] "x" params (\i -> gradWrt f (x i)) ]
 
 
-family : String -> List ( String, String ) -> Sig i -> List (Check i) -> E.Value
+{-| A family: its graph (or build errors), each input's domain (how `ref.py` draws it) and its
+checks (what NumPy computes for each output). `emitFamily` writes it for MAX; `evalFamily` runs it
+with `Tensor.Eval` on the inputs `ref.py --dump-inputs` drew.
+-}
+type alias Family =
+    { graph : String, domains : List ( String, String ), built : Result (List String) Graph, checks : List E.Value }
+
+
+family : String -> List ( String, String ) -> Sig i -> List (Check i) -> Family
 family graphName domains ins checks =
     let
         outs =
             Sig.list (List.length checks) (Sig.label "out" Sig.anyTensor)
-
-        built =
-            Graph.build graphName ins outs (\i -> List.map (\ch -> ch.fn i) checks)
 
         check ch =
             E.object
@@ -174,10 +185,19 @@ family graphName domains ins checks =
                 , ( "params", E.list E.float ch.params )
                 ]
     in
-    case built of
+    { graph = graphName
+    , domains = domains
+    , built = Graph.build graphName ins outs (\i -> List.map (\ch -> ch.fn i) checks)
+    , checks = List.map check checks
+    }
+
+
+emitFamily : Family -> E.Value
+emitFamily fam =
+    case fam.built of
         Ok g ->
             E.object
-                [ ( "graph", E.string graphName )
+                [ ( "graph", E.string fam.graph )
                 , ( "mlir", E.string (Graph.toGenericText g) )
                 , ( "bytecode", E.list E.int (byteList (Graph.toBytecode g)) )
                 , ( "inputs"
@@ -187,18 +207,111 @@ family graphName domains ins checks =
                                 [ ( "name", E.string s.name )
                                 , ( "dtype", E.string s.dtype )
                                 , ( "shape", E.list E.int s.shape )
-                                , ( "domain", E.string (List.filter (\( n, _ ) -> n == s.name) domains |> List.head |> Maybe.map Tuple.second |> Maybe.withDefault "sym2") )
+                                , ( "domain", E.string (List.filter (\( n, _ ) -> n == s.name) fam.domains |> List.head |> Maybe.map Tuple.second |> Maybe.withDefault "sym2") )
                                 ]
                         )
                         (Graph.inputs g)
                   )
                 , ( "outputs", E.list (.name >> E.string) (Graph.outputs g) )
-                , ( "checks", E.list check checks )
+                , ( "checks", E.list identity fam.checks )
                 , ( "gpu", onGpu g )
                 ]
 
         Err errs ->
-            E.object [ ( "graph", E.string graphName ), ( "errors", E.list E.string errs ) ]
+            E.object [ ( "graph", E.string fam.graph ), ( "errors", E.list E.string errs ) ]
+
+
+{-| The family run by `Tensor.Eval` on its inputs (`{ family: { input: [values] } }`, non-finite
+floats as the strings "nan", "inf", "-inf"): `{ graph, outputs: [[values]] }`, or `{ graph, error }`
+when the build or the run fails.
+-}
+evalFamily : D.Value -> Family -> E.Value
+evalFamily inputs fam =
+    let
+        failed e =
+            E.object [ ( "graph", E.string fam.graph ), ( "error", E.string (String.join "; " e) ) ]
+
+        number =
+            D.oneOf
+                [ D.float
+                , D.string
+                    |> D.andThen
+                        (\t ->
+                            case t of
+                                "nan" ->
+                                    D.succeed (0 / 0)
+
+                                "inf" ->
+                                    D.succeed (1 / 0)
+
+                                "-inf" ->
+                                    D.succeed (-1 / 0)
+
+                                _ ->
+                                    D.fail t
+                        )
+                ]
+
+        given =
+            D.decodeValue (D.field fam.graph (D.dict (D.list number))) inputs |> Result.withDefault Dict.empty
+
+        isFloat dt =
+            List.member dt [ "f16", "bf16", "f32", "f64" ]
+
+        inputValue s =
+            ( s.name
+            , { dtype = s.dtype
+              , shape = s.shape
+              , data =
+                    if isFloat s.dtype then
+                        Eval.Floats (Dict.get s.name given |> Maybe.withDefault [])
+
+                    else
+                        Eval.Ints (Dict.get s.name given |> Maybe.withDefault [] |> List.map round)
+              }
+            )
+
+        encodeNumber v =
+            if isNaN v then
+                E.string "nan"
+
+            else if isInfinite v then
+                E.string
+                    (if v > 0 then
+                        "inf"
+
+                     else
+                        "-inf"
+                    )
+
+            else
+                E.float v
+
+        output outs s =
+            case Dict.get s.name outs |> Maybe.map .data of
+                Just (Eval.Floats l) ->
+                    E.list encodeNumber l
+
+                Just (Eval.Ints l) ->
+                    E.list E.int l
+
+                Just (Eval.Bools l) ->
+                    E.list E.bool l
+
+                Nothing ->
+                    E.list E.int []
+    in
+    case fam.built of
+        Err e ->
+            failed e
+
+        Ok g ->
+            case Eval.run g (Dict.fromList (List.map inputValue (Graph.inputs g))) of
+                Ok outs ->
+                    E.object [ ( "graph", E.string fam.graph ), ( "outputs", E.list (output outs) (Graph.outputs g) ) ]
+
+                Err e ->
+                    failed e
 
 
 {-| The family written for GPU 0 (round 2, A3): checked against `mlir-opt` and MAX's own placement
@@ -239,7 +352,7 @@ x34 l =
 -- FAMILIES
 
 
-unary : E.Value
+unary : Family
 unary =
     let
         x =
@@ -268,7 +381,7 @@ unary =
             ]
 
 
-positive : E.Value
+positive : Family
 positive =
     family "positive" [ ( "x", "pos" ) ] (x34 "x") <|
         List.concat
@@ -279,7 +392,7 @@ positive =
             ]
 
 
-unit : E.Value
+unit : Family
 unit =
     family "unit" [ ( "x", "unit" ) ] (x34 "x") <|
         List.concat
@@ -292,7 +405,7 @@ type alias Bin =
     { x : F (R2 A B), y : F (R2 A B), p : F (R2 A B) }
 
 
-binary : E.Value
+binary : Family
 binary =
     let
         ins =
@@ -344,10 +457,10 @@ pos v =
 
 
 type alias Ints =
-    { i : Tensor Integral I64 (R2 A B), m : Tensor Integral I64 (R2 A B), x : F (R2 A B) }
+    { i : Tensor Int I64 (R2 A B), m : Tensor Int I64 (R2 A B), x : F (R2 A B) }
 
 
-integers : E.Value
+integers : Family
 integers =
     let
         ins =
@@ -382,7 +495,7 @@ x345 =
     Sig.label "x" (Sig.f32 (T.r3 a b c))
 
 
-reductions : E.Value
+reductions : Family
 reductions =
     let
         r ref axis f =
@@ -427,7 +540,7 @@ type alias Lin =
     }
 
 
-linalg : E.Value
+linalg : Family
 linalg =
     let
         ins =
@@ -476,8 +589,8 @@ type alias Sh =
     , z : F (R3 A B C)
     , v : F (R1 B)
     , u : F (R1 A)
-    , idx : Tensor Integral I64 (R1 K)
-    , lab : Tensor Integral I64 (R1 A)
+    , idx : Tensor Int I64 (R1 K)
+    , lab : Tensor Int I64 (R1 A)
     , upd : F (R2 K B)
     }
 
@@ -502,7 +615,7 @@ type Twenty
     = Twenty
 
 
-shapes : E.Value
+shapes : Family
 shapes =
     let
         ins =
@@ -563,10 +676,10 @@ shapes =
 
 
 type alias NnIn =
-    { logits : F (R2 A C), soft : F (R2 A C), lab : Tensor Integral I64 (R1 A), x : F (R2 A B), q : F (R3 D A B), kk : F (R3 D C B), vv : F (R3 D C B) }
+    { logits : F (R2 A C), soft : F (R2 A C), lab : Tensor Int I64 (R1 A), x : F (R2 A B), q : F (R3 D A B), kk : F (R3 D C B), vv : F (R3 D C B) }
 
 
-nn : E.Value
+nn : Family
 nn =
     let
         ins =
@@ -614,7 +727,7 @@ type alias Tr =
     { x : F (R1 B), v : F (R1 B), m : F (R2 A B) }
 
 
-transforms : E.Value
+transforms : Family
 transforms =
     let
         ins =
@@ -652,7 +765,7 @@ type Many
     = Many
 
 
-random : E.Value
+random : Family
 random =
     let
         many =
@@ -675,7 +788,7 @@ type alias Dt =
     { x : F (R2 A B) }
 
 
-dtypes : E.Value
+dtypes : Family
 dtypes =
     family "dtypes" [] (Sig.record Dt |> Sig.field .x (x34 "x")) <|
         [ named "bf16" "bf16" [ "x" ] [] (\i -> i.x |> T.cast T.bfloat16 |> T.plus (T.cast T.bfloat16 i.x) |> T.toFloat)
@@ -708,7 +821,7 @@ type alias ConvIn =
     { x : F (T.R4 N H H C3), conv : Conv2d F32 C3 C4, back : Conv2d F32 C4 C3 }
 
 
-conv : E.Value
+conv : Family
 conv =
     let
         n =
@@ -758,7 +871,7 @@ square =
     Transform.shared "square" (Sig.f32 (T.r1 b)) Sig.anyTensor (\v -> v |> T.times v |> T.plus (T.sin v))
 
 
-control : E.Value
+control : Family
 control =
     let
         ins =
@@ -799,11 +912,11 @@ type alias VmIn =
     , v : F (R1 B)
     , u : F (R1 C)
     , px : F (R2 B C)
-    , idx : Tensor Integral I64 (R1 K)
+    , idx : Tensor Int I64 (R1 K)
     , r4 : F (R4 A D B D) }
 
 
-vmapFamily : E.Value
+vmapFamily : Family
 vmapFamily =
     let
         ins =
@@ -864,7 +977,7 @@ vmapFamily =
 
 {-| `Param.initGraph`: MAX draws a linear layer's initial parameters from a seed.
 -}
-initFamily : E.Value
+initFamily : Family
 initFamily =
     let
         wide =
@@ -881,31 +994,42 @@ initFamily =
     in
     case Param.initGraph "init" (Linear.params T.float32 wide (T.dim Flat 50)) of
         Ok g ->
-            E.object
-                [ ( "graph", E.string "init" )
-                , ( "mlir", E.string (Graph.toGenericText g) )
-                , ( "bytecode", E.list E.int (byteList (Graph.toBytecode g)) )
-                , ( "inputs", E.list (\sp -> E.object [ ( "name", E.string sp.name ), ( "dtype", E.string sp.dtype ), ( "shape", E.list E.int sp.shape ), ( "domain", E.string "seed" ) ]) (Graph.inputs g) )
-                , ( "outputs", E.list (.name >> E.string) (Graph.outputs g) )
-                , ( "checks", E.list identity [ check "initWeights" "uniformStats" [ -(sqrt (6 / 200)), sqrt (6 / 200) ], check "initBias" "zerosStats" [] ] )
-                ]
+            { graph = "init"
+            , domains = List.map (\sp -> ( sp.name, "seed" )) (Graph.inputs g)
+            , built = Ok g
+            , checks = [ check "initWeights" "uniformStats" [ -(sqrt (6 / 200)), sqrt (6 / 200) ], check "initBias" "zerosStats" [] ]
+            }
 
         Err errs ->
-            E.object [ ( "graph", E.string "init" ), ( "errors", E.list E.string errs ) ]
+            { graph = "init", domains = [], built = Err errs, checks = [] }
 
 
 type Wide
     = Wide
 
 
-main : Program () () ()
+families : List Family
+families =
+    [ unary, positive, unit, binary, integers, reductions, linalg, shapes, nn, transforms, random, dtypes, conv, control, vmapFamily, initFamily, select, layers, pins, pins64 ]
+
+
+{-| Flags: none to write every family for MAX (`emit`); `{ inputs }` to run them with `Tensor.Eval`
+(`evalOut`, `make check-ops-eval`).
+-}
+main : Program D.Value () ()
 main =
     Platform.worker
-        { init = \_ -> ( (), Cmd.batch (List.map emit [ unary, positive, unit, binary, integers, reductions, linalg, shapes, nn, transforms, random, dtypes, conv, control, vmapFamily, initFamily, select, layers ]) )
+        { init =
+            \flags ->
+                case D.decodeValue (D.field "inputs" D.value) flags of
+                    Ok inputs ->
+                        ( (), Cmd.batch (List.map (evalFamily inputs >> evalOut) families) )
+
+                    Err _ ->
+                        ( (), Cmd.batch (List.map (emitFamily >> emit) families) )
         , update = \_ m -> ( m, Cmd.none )
         , subscriptions = \_ -> Sub.none
         }
-
 
 
 -- ROUND 2 (plans/tensor-api-round2.md, A1)
@@ -971,7 +1095,7 @@ type alias SelIn =
     { dist : F (R2 A C), dist3 : F (R3 A C B), x3 : F (R3 A C B), upd1 : F (R3 A D B), upd2 : F (R3 A C D) }
 
 
-select : E.Value
+select : Family
 select =
     let
         ins =
@@ -1052,7 +1176,7 @@ type alias LyIn =
     }
 
 
-layers : E.Value
+layers : Family
 layers =
     let
         m8 =
@@ -1176,3 +1300,84 @@ layers =
             , one "attendTo" [ "xs", "mem", "wq", "wkc", "wvc", "wo" ] [] (\i -> attendTo i i.xs) "xs" (\i -> gradWrt (attendTo i) i.xs)
             , [ named "cachedLast" "cachedLast" [ "xs", "wq", "wk", "wv", "wo" ] [] cachedLast ]
             ]
+
+
+
+-- PINS (plans/tensor-eval-in-elm.md, §3.6): behaviours where MAX and the evaluator could differ
+
+
+type P8
+    = P8
+
+
+type P6
+    = P6
+
+
+type alias PinIn =
+    { s : F (R1 P8), h : F (R1 P8), t : F (R2 A C), n : Tensor Int I64 (R1 P6), i : Tensor Int I64 (R1 P6) }
+
+
+pins : Family
+pins =
+    let
+        p8 =
+            T.dim P8 8
+
+        p6 =
+            T.dim P6 6
+
+        ins =
+            Sig.record PinIn
+                |> Sig.field .s (Sig.label "s" (Sig.f32 (T.r1 p8)))
+                |> Sig.field .h (Sig.label "h" (Sig.f32 (T.r1 p8)))
+                |> Sig.field .t (Sig.label "t" (Sig.f32 (T.r2 a c)))
+                |> Sig.field .n (Sig.label "n" (Sig.i64 (T.r1 p6)))
+                |> Sig.field .i (Sig.label "i" (Sig.i64 (T.r1 p6)))
+
+        top f x =
+            f x |> Tuple.first
+
+        topI f x =
+            f x |> Tuple.second
+    in
+    family "pins" [ ( "s", "specials" ), ( "h", "halves" ), ( "t", "ties" ), ( "n", "nzint" ), ( "i", "int" ) ] ins <|
+        [ value "roundHalves" [ "h" ] [] (\i -> T.round i.h)
+        , mvalue "neSpecials" [ "s" ] [] (\i -> i.s |> T.notEquals (T.zeros T.float32 (T.r1 p8)))
+        , mvalue "gtSpecials" [ "s" ] [] (\i -> i.s |> T.greaterThan (T.zeros T.float32 (T.r1 p8)))
+        , value "maxSpecials" [ "s" ] [] (\i -> i.s |> T.max (T.flip Axis.axis0of1 i.s))
+        , value "minSpecials" [ "s" ] [] (\i -> i.s |> T.min (T.flip Axis.axis0of1 i.s))
+        , value "maximumAllSpecials" [ "s" ] [] (\i -> T.maximumAll i.s)
+        , value "minimumAllSpecials" [ "s" ] [] (\i -> T.minimumAll i.s)
+        , value "argMaxSpecials" [ "s" ] [] (\i -> T.argMax Axis.last1 i.s)
+        , value "argMinSpecials" [ "s" ] [] (\i -> T.argMin Axis.last1 i.s)
+        , value "argMaxTies" [ "t" ] [] (\i -> T.argMax Axis.last2 i.t)
+        , value "argMinTies" [ "t" ] [] (\i -> T.argMin Axis.last2 i.t)
+        , value "modByNeg" [ "i", "n" ] [] (\i -> i.i |> T.modBy i.n)
+        , value "topKTies" [ "t" ] [] (top (T.topK Axis.retag1of2 k2) << .t)
+        , value "topKTiesIndices" [ "t" ] [] (topI (T.topK Axis.retag1of2 k2) << .t)
+        , value "bottomKTies" [ "t" ] [] (top (T.bottomK Axis.retag1of2 k2) << .t)
+        , value "bottomKTiesIndices" [ "t" ] [] (topI (T.bottomK Axis.retag1of2 k2) << .t)
+        , value "putDup" [ "t" ] [] (\i -> i.t |> T.put Axis.retag0of2 (T.fromList T.int64 (T.r1 a) [ 1, 1, 0 ]) (T.scale 10 i.t))
+        , value "putAxisDup" [ "t" ] [] (\i -> i.t |> T.put Axis.retag1of2 (T.fromList T.int64 (T.r1 d) [ 2, 2 ]) (T.scale 10 (T.slice Axis.retag1of2 0 d i.t)))
+        ]
+
+
+type P5
+    = P5
+
+
+{-| i64 at its extremes: under Node an `Int` is exact only to 2⁵³, so `check-ops-eval` refuses this
+family's inputs; the E2E suite `test/eco-tensor` checks the evaluator's wrapping natively.
+-}
+pins64 : Family
+pins64 =
+    let
+        ins =
+            Sig.label "e" (Sig.i64 (T.r1 (T.dim P5 5)))
+    in
+    family "pins64" [ ( "e", "extremes" ) ] ins <|
+        [ value "negExtremes" [ "e" ] [] T.negate
+        , value "absExtremes" [ "e" ] [] T.abs
+        , value "plusOneExtremes" [ "e" ] [] (\e -> e |> T.plus (T.fullLikeInt 1 e))
+        ]

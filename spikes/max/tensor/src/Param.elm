@@ -50,7 +50,7 @@ import Bytes exposing (Bytes)
 import Bytes.Encode as Encode
 import Graph exposing (Graph)
 import Signature exposing (Sig)
-import Tensor exposing (DType, Elems, F32, Floating, R0, Shape, Tensor)
+import Tensor exposing (DType, Elems, F32, R0, Shape, Tensor)
 import Tensor.Internal.Expr as E exposing (Expr)
 import Tensor.Internal.Grad as Grad
 import Tensor.Internal.Host as Host
@@ -59,6 +59,7 @@ import Tensor.Internal.Ops as O
 import Tensor.Internal.ParamInit as ParamInit
 import Tensor.Internal.Prim as P exposing (DT(..))
 import Tensor.Internal.Types as I
+import Tensor.Internal.Values as Values
 
 
 {-| A parameter description under construction, as `Signature.Builder`: `record`, then one
@@ -85,11 +86,11 @@ record constructor =
 function's name says.
 -}
 type alias Field r d s f =
-    (r -> Tensor Floating d s) -> DType Floating d -> Shape s -> Builder r (Tensor Floating d s -> f) -> Builder r f
+    (r -> Tensor Float d s) -> DType Float d -> Shape s -> Builder r (Tensor Float d s -> f) -> Builder r f
 
 
 tensorField : I.FieldKind -> (r -> Tensor k d s) -> DType k d -> Shape s -> Builder r (Tensor k d s -> f) -> Builder r f
-tensorField kind getter (I.DType dt) (I.Shape s) (I.ParamBuilder b) =
+tensorField kind getter (I.DType dt _) (I.Shape s) (I.ParamBuilder b) =
     I.ParamBuilder
         { fields = b.fields ++ [ { dtype = dt, shape = s, kind = kind, name = Nothing } ]
         , build =
@@ -293,7 +294,7 @@ initial (I.ParamBuilder s) seed0 =
                 ( values, seed1 ) =
                     ParamInit.initValues f seed
             in
-            ( seed1, Host.packed (Host.encodeValues f.dtype values) :: acc )
+            ( seed1, Host.packed (Host.encodeValues f.dtype (Values.forDtype f.dtype values)) :: acc )
         )
         ( seed0, [] )
         s.fields
@@ -359,7 +360,7 @@ initWith inPlace graphName (I.ParamBuilder s) =
                     ParamInit.fans f.shape
 
                 salted =
-                    O.add (O.mul seed (E.const UI64 [ 1 ] [ 25214903917 ])) (E.const UI64 [ 1 ] [ toFloat (2 * i + 1) ])
+                    O.add (O.mul seed (E.constValues UI64 [ 1 ] (Values.IntValues [ 25214903917 ]))) (E.constValues UI64 [ 1 ] (Values.IntValues [ 2 * i + 1 ]))
 
                 drawIn lo hi =
                     O.cast f.dtype (O.random 0 F32 f.shape lo hi salted)
@@ -406,7 +407,7 @@ initWith inPlace graphName (I.ParamBuilder s) =
 {-| The same element-wise function applied to every trainable tensor (in f32; frozen and data
 fields are left as they are).
 -}
-mapElems : (Tensor Floating F32 Elems -> Tensor Floating F32 Elems) -> Spec r -> r -> r
+mapElems : (Tensor Float F32 Elems -> Tensor Float F32 Elems) -> Spec r -> r -> r
 mapElems f (I.ParamBuilder s) r =
     let
         apply field e =
@@ -436,7 +437,7 @@ byteSize (I.ParamBuilder s) =
 
 {-| The gradient of a scalar loss with respect to every parameter: a record of the same type.
 -}
-grad : Spec r -> (r -> Tensor Floating d R0) -> r -> r
+grad : Spec r -> (r -> Tensor Float d R0) -> r -> r
 grad (I.ParamBuilder s) loss r =
     Grad.gradStructured (\es -> Tuple.first (s.build es)) s.flatten (loss >> I.tensor) r
         |> Tuple.second

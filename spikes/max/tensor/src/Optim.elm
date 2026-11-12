@@ -33,7 +33,7 @@ Updates are computed in f32 and cast back to each parameter's dtype.
 
 -}
 
-import Tensor exposing (Elems, F32, Floating, R0, Tensor)
+import Tensor exposing (Elems, F32, R0, Tensor)
 import Tensor.Internal.Expr as E exposing (Expr)
 import Tensor.Internal.Ops as O
 import Tensor.Internal.Prim exposing (DT(..), Prim(..))
@@ -68,7 +68,7 @@ internalRate r =
 {-| What an update sees besides one parameter: the rate and the step number (from 1).
 -}
 type alias Hyper =
-    { rate : Tensor Floating F32 R0, step : Tensor Floating F32 R0 }
+    { rate : Tensor Float F32 R0, step : Tensor Float F32 R0 }
 
 
 times : Expr -> Expr -> Expr
@@ -183,13 +183,13 @@ adamWWith cfg =
 
 
 {-| An optimizer written element-wise: `slots` state tensors per parameter (zeros at first). The
-update sees each parameter as `Tensor Floating F32 Elems`, on which only rank-free operations
+update sees each parameter as `Tensor Float F32 Elems`, on which only rank-free operations
 apply, so one function serves every parameter.
 -}
 custom :
     { rate : Rate
     , slots : Int
-    , update : Hyper -> { param : Tensor Floating F32 Elems, grad : Tensor Floating F32 Elems, state : List (Tensor Floating F32 Elems) } -> { param : Tensor Floating F32 Elems, state : List (Tensor Floating F32 Elems) }
+    , update : Hyper -> { param : Tensor Float F32 Elems, grad : Tensor Float F32 Elems, state : List (Tensor Float F32 Elems) } -> { param : Tensor Float F32 Elems, state : List (Tensor Float F32 Elems) }
     }
     -> Optimizer
 custom cfg =

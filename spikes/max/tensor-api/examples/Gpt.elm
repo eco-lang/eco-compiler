@@ -9,7 +9,7 @@ import Nn.Transformer as Transformer exposing (EncoderLayer)
 import Optim
 import Param
 import Signature as Sig
-import Tensor as T exposing (BF16, Dim, F32, Floating, I64, Integral, R1, R2, R3, Tensor)
+import Tensor as T exposing (BF16, Dim, F32, I64, R1, R2, R3, Tensor)
 import Tensor.Axis as Axis
 import Tensor.Random as Random exposing (Seed)
 import Train
@@ -108,7 +108,7 @@ params =
 {-| One block, traced once (this value is a top-level partial application) and emitted as one MAX
 subgraph that every layer calls. Everything the block reads is an argument: the seed too.
 -}
-block : Bool -> Transform.Shared ( Seed, Block, Tensor Floating F32 (R2 Seq Model) ) (Tensor Floating F32 (R2 Seq Model))
+block : Bool -> Transform.Shared ( Seed, Block, Tensor Float F32 (R2 Seq Model) ) (Tensor Float F32 (R2 Seq Model))
 block training =
     Transform.shared "block"
         (Sig.triple Random.sig (Param.sig blockParams) (Sig.f32 (T.r2 seq model)))
@@ -116,12 +116,12 @@ block training =
         (\( s, bp, h ) -> Transformer.encode { causal = True, training = training } s bp h)
 
 
-trainingBlock : Transform.Shared ( Seed, Block, Tensor Floating F32 (R2 Seq Model) ) (Tensor Floating F32 (R2 Seq Model))
+trainingBlock : Transform.Shared ( Seed, Block, Tensor Float F32 (R2 Seq Model) ) (Tensor Float F32 (R2 Seq Model))
 trainingBlock =
     block True
 
 
-forward : Seed -> Params -> Tensor Integral I64 (R1 Seq) -> Tensor Floating F32 (R2 Seq Vocab)
+forward : Seed -> Params -> Tensor Int I64 (R1 Seq) -> Tensor Float F32 (R2 Seq Vocab)
 forward s p tokens =
     p.blocks
         |> List.indexedMap Tuple.pair
@@ -130,7 +130,7 @@ forward s p tokens =
         |> Linear.apply p.unembed
 
 
-loss : Seed -> Params -> Tensor Integral I64 (R1 Seq) -> Tensor Integral I64 (R1 Seq) -> Tensor Floating F32 T.R0
+loss : Seed -> Params -> Tensor Int I64 (R1 Seq) -> Tensor Int I64 (R1 Seq) -> Tensor Float F32 T.R0
 loss s p tokens targets =
     forward s p tokens |> Nn.crossEntropyIndices targets
 

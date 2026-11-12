@@ -19,7 +19,7 @@ y = x / sqrt (mean x² + ε) · scale. Half-precision inputs are normalised in f
 -}
 
 import Param
-import Tensor as T exposing (DType, Dim, Floating, R1, R2, R3, Tensor)
+import Tensor as T exposing (DType, Dim, R1, R2, R3, Tensor)
 import Tensor.Internal.Expr as E exposing (Expr)
 import Tensor.Internal.Ops as O
 import Tensor.Internal.Prim as P
@@ -29,12 +29,12 @@ import Tensor.Internal.Types as I
 {-| The per-feature `scale` over `m` features and the `epsilon` (ε) added to the mean square.
 -}
 type alias RmsNorm d m =
-    { scale : Tensor Floating d (R1 m), epsilon : Float }
+    { scale : Tensor Float d (R1 m), epsilon : Float }
 
 
 {-| Scale ones.
 -}
-params : DType Floating d -> { epsilon : Float } -> Dim m -> Param.Spec (RmsNorm d m)
+params : DType Float d -> { epsilon : Float } -> Dim m -> Param.Spec (RmsNorm d m)
 params dt cfg m =
     Param.record RmsNorm
         |> Param.ones .scale dt (T.r1 m)
@@ -43,14 +43,14 @@ params dt cfg m =
 
 {-| Each row (n, m) normalised over its `m` features.
 -}
-apply : RmsNorm d m -> Tensor Floating d (R2 n m) -> Tensor Floating d (R2 n m)
+apply : RmsNorm d m -> Tensor Float d (R2 n m) -> Tensor Float d (R2 n m)
 apply p x =
     I.Tensor (normalise p.epsilon (I.tensor p.scale) (I.tensor x))
 
 
 {-| The same over a batch of sequences.
 -}
-apply3 : RmsNorm d m -> Tensor Floating d (R3 b n m) -> Tensor Floating d (R3 b n m)
+apply3 : RmsNorm d m -> Tensor Float d (R3 b n m) -> Tensor Float d (R3 b n m)
 apply3 p x =
     I.Tensor (normalise p.epsilon (I.tensor p.scale) (I.tensor x))
 

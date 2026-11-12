@@ -8,11 +8,11 @@ Something is off with the body of the `f` definition:
         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 The body is:
 
-    Tensor Floating F32 (R2 n Hidden)
+    Tensor Float F32 (R2 n Hidden)
 
 But the type annotation on `f` says it should be:
 
-    Tensor Floating F32 (R2 n Classes)
+    Tensor Float F32 (R2 n Classes)
 
 -- TYPE MISMATCH ----------------------------------------- bad/BadSwapLayers.elm
 
@@ -22,9 +22,9 @@ This function cannot handle the argument sent through the (|>) pipe:
                           ^^^^^^^^^^^^^^^^^
 The argument is:
 
-    Tensor Floating F32 (R2 n Pixels)
+    Tensor Float F32 (R2 n Pixels)
 
 But (|>) is piping it to a function that expects:
 
-    Tensor Floating F32 (R2 n Hidden)
+    Tensor Float F32 (R2 n Hidden)
 

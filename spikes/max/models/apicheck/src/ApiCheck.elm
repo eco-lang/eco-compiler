@@ -12,6 +12,9 @@ downloads. Flag `check`:
   - `block`: a UNet-shaped block (convolutions, GroupNorm, a timestep embedding, upsampling,
     cross-attention under `vmap`) runs once with its parameters and inputs saved for a NumPy
     reference (`ref_block.py`), then trains.
+  - `int64`: integer constants beyond 2⁵³ (si64 ±(2⁶² + 1), the most negative and most positive
+    i64; u64 2⁶⁴ − 1 and 2⁶³) go through MAX and come back exactly (plans/tensor-eval-in-elm.md,
+    V0).
 
 Each prints `PASS` or `FAIL` lines.
 
@@ -20,6 +23,7 @@ Each prints `PASS` or `FAIL` lines.
 import Bridge
 import Bytes exposing (Bytes, Endianness(..))
 import Bytes.Decode as BD
+import Bitwise
 import Bytes.Encode as Encode
 import Checkpoint.Safetensors as Safetensors
 import Dict exposing (Dict)
@@ -41,7 +45,7 @@ import Optim
 import Param
 import Platform
 import Signature as Sig exposing (Sig)
-import Tensor as T exposing (Dim, F16, F32, Floating, I64, Integral, R0, R1, R2, R3, R4, Tensor)
+import Tensor as T exposing (Dim, F16, F32, I64, R0, R1, R2, R3, R4, Tensor)
 import Tensor.Axis as Axis
 import Train
 import Transform
@@ -251,12 +255,12 @@ llama =
         |> Param.sub .norm (RmsNorm.params T.float32 { epsilon = 1.0e-5 } width)
 
 
-feedForward : Layer -> Tensor Floating F32 (R2 s Width) -> Tensor Floating F32 (R2 s Width)
+feedForward : Layer -> Tensor Float F32 (R2 s Width) -> Tensor Float F32 (R2 s Width)
 feedForward l h =
     h |> T.plus (h |> RmsNorm.apply l.norm2 |> FeedForward.applyGated T.silu l.ff)
 
 
-fullForward : Rotary -> Llama -> Tensor Integral I64 (R1 Ctx) -> Tensor Floating F32 (R2 Ctx Vocab)
+fullForward : Rotary -> Llama -> Tensor Int I64 (R1 Ctx) -> Tensor Float F32 (R2 Ctx Vocab)
 fullForward rot p tokens =
     let
         positions =
@@ -281,7 +285,7 @@ cacheSig =
     Sig.list 2 (KvCache.sig T.float32 kvHeads ctx head)
 
 
-stepForward : Rotary -> Llama -> List Cache -> ( Tensor Integral I64 (R1 Now), Tensor Integral I64 R0 ) -> ( List Cache, Tensor Floating F32 (R2 Now Vocab) )
+stepForward : Rotary -> Llama -> List Cache -> ( Tensor Int I64 (R1 Now), Tensor Int I64 R0 ) -> ( List Cache, Tensor Float F32 (R2 Now Vocab) )
 stepForward rot p caches ( token, position ) =
     let
         layer ( l, c ) ( done, h ) =
@@ -413,16 +417,16 @@ importedSpec =
 
 
 type alias RawQkv =
-    { w : Tensor Floating F32 (R2 Fused M), b : Tensor Floating F32 (R1 Fused) }
+    { w : Tensor Float F32 (R2 Fused M), b : Tensor Float F32 (R1 Fused) }
 
 
 type alias Raw =
-    { linW : Tensor Floating F32 (R2 Out In)
-    , linB : Tensor Floating F32 (R1 Out)
-    , convW : Tensor Floating F32 (R4 Cout Cin Conv2d.KernelH Conv2d.KernelW)
-    , convB : Tensor Floating F32 (R1 Cout)
+    { linW : Tensor Float F32 (R2 Out In)
+    , linB : Tensor Float F32 (R1 Out)
+    , convW : Tensor Float F32 (R4 Cout Cin Conv2d.KernelH Conv2d.KernelW)
+    , convB : Tensor Float F32 (R1 Cout)
     , qkv : RawQkv
-    , half : Tensor Floating F16 (R2 Out In)
+    , half : Tensor Float F16 (R2 Out In)
     }
 
 
@@ -606,7 +610,7 @@ blockSpec =
 
 
 type alias BlockIn =
-    { x : Tensor Floating F32 (R4 Batch H W Ch), t : Tensor Floating F32 (R1 Batch), memory : Tensor Floating F32 (R2 Mem MemW) }
+    { x : Tensor Float F32 (R4 Batch H W Ch), t : Tensor Float F32 (R1 Batch), memory : Tensor Float F32 (R2 Mem MemW) }
 
 
 blockInSig : Sig BlockIn
@@ -617,7 +621,7 @@ blockInSig =
         |> Sig.field .memory (Sig.label "memory" (Sig.f32 (T.r2 mem memW)))
 
 
-blockForward : Block -> BlockIn -> Tensor Floating F32 (R4 Batch H2 W2 Ch)
+blockForward : Block -> BlockIn -> Tensor Float F32 (R4 Batch H2 W2 Ch)
 blockForward p i =
     let
         time =
@@ -710,6 +714,9 @@ graphsFor check =
 
         "import" ->
             importGraphs
+
+        "int64" ->
+            int64Graphs
 
         _ ->
             blockGraphs
@@ -821,6 +828,9 @@ start model =
         "import" ->
             startImport model
 
+        "int64" ->
+            ( model, Bridge.send [ Bridge.run 31 [] ] )
+
         _ ->
             let
                 residentNames =
@@ -889,6 +899,9 @@ ran id reply model =
 
         "import" ->
             ( model, Cmd.none )
+
+        "int64" ->
+            ranInt64 id reply model
 
         _ ->
             ranBlock id reply model
@@ -1153,3 +1166,90 @@ startImport model =
             )
         ]
     )
+
+
+
+-- INT64
+
+
+type Two
+    = Two
+
+
+type Four
+    = Four
+
+
+{-| Built at run time: no literal beyond 2⁵³ may appear in the source (eco's front end runs under
+Node and refuses it).
+-}
+signedValues : List Int
+signedValues =
+    let
+        big =
+            Bitwise.shiftLeftBy 62 1 + 1
+
+        minInt =
+            Bitwise.shiftLeftBy 63 1
+    in
+    [ big, negate big, minInt, minInt - 1 ]
+
+
+unsignedValues : List Int
+unsignedValues =
+    [ -1, Bitwise.shiftLeftBy 63 1 ]
+
+
+int64Graphs : List ( Int, Result (List String) Graph )
+int64Graphs =
+    [ ( 31
+      , Graph.build "int64"
+            Sig.unit
+            (Sig.pair (Sig.i64 (T.r1 (T.dim Four 4))) (Sig.tensor T.uint64 (T.r1 (T.dim Two 2))))
+            (\() ->
+                ( T.fromList T.int64 (T.r1 (T.dim Four 4)) signedValues
+                , T.fromList T.uint64 (T.r1 (T.dim Two 2)) unsignedValues
+                )
+            )
+      )
+    ]
+
+
+{-| Little-endian 64-bit integers, read as two u32 halves joined with 64-bit `Bitwise` (eco).
+-}
+decodeI64s : Int -> Bytes -> List Int
+decodeI64s n b =
+    let
+        one =
+            BD.map2 (\lo hi -> Bitwise.or (Bitwise.shiftLeftBy 32 hi) lo) (BD.unsignedInt32 LE) (BD.unsignedInt32 LE)
+    in
+    BD.decode (BD.loop ( n, [] ) (\( k, acc ) -> if k == 0 then BD.succeed (BD.Done (List.reverse acc)) else BD.map (\v -> BD.Loop ( k - 1, v :: acc )) one)) b
+        |> Maybe.withDefault []
+
+
+ranInt64 : Int -> Bytes -> Model -> ( Model, Cmd Msg )
+ranInt64 id reply model =
+    if id == 31 then
+        let
+            body =
+                Bridge.payload reply
+
+            signed =
+                decodeI64s 4 (Bridge.slice 0 32 body)
+
+            unsigned =
+                decodeI64s 2 (Bridge.slice 32 16 body)
+
+            show l =
+                String.join ", " (List.map String.fromInt l)
+
+            ( m1, c1 ) =
+                report (signed == signedValues) ("int64: si64 [" ++ show signed ++ "] (want [" ++ show signedValues ++ "])") model
+
+            ( m2, c2 ) =
+                report (unsigned == unsignedValues) ("int64: ui64 bits [" ++ show unsigned ++ "] (want [" ++ show unsignedValues ++ "])") m1
+        in
+        finish m2 [ c1, c2 ]
+
+    else
+        ( model, Cmd.none )

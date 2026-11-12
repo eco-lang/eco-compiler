@@ -7,7 +7,7 @@ bytecode or generic text, for the CPU or a GPU. The plan, design and results are
 `plans/tensor-api-round2.md`.
 
 ```elm
-network : Params -> Tensor Integral U8 (R2 n Pixels) -> Tensor Floating F32 (R2 n Classes)
+network : Params -> Tensor Int U8 (R2 n Pixels) -> Tensor Float F32 (R2 n Classes)
 network p images =
     images |> T.toFloat |> T.scale (1 / 255) |> Linear.apply p.l1 |> T.relu |> Linear.apply p.l2
 
@@ -16,8 +16,8 @@ trainStep =
         \p ( x, y ) -> network p x |> Nn.crossEntropyIndices y
 ```
 
-A tensor's type carries its kind (`Floating`, `Integral`), dtype and shape, a fixed rank of named
-dimensions (`R2 Batch Hidden`), so mixing up dimensions, axes or dtypes is a compile error at the
+A tensor's type carries its element type (`Float` or `Int`), dtype and shape, a fixed rank of
+named dimensions (`R2 Batch Hidden`), so mixing up dimensions, axes or dtypes is a compile error at the
 faulty line; what types cannot express (a reshape's element count, a declared size) is checked when
 the graph is built, before MAX sees it.
 
@@ -38,6 +38,7 @@ the graph is built, before MAX sees it.
 | `Infer` | graphs that run a model: resident parameters and state (KV caches, latents) that each run replaces; `initGraph` writes the state on the host |
 | `Nn`, `Nn.*` | losses, dropout, attention, pooling, upsampling, timestep embeddings, causal masks at a position, repeated heads; linear (with or without bias), layer-norm, RMS-norm, group-norm, embedding (tied `unembed`), attention (multi-head, grouped-query with a KV cache, cross to another width), rotary positions, gated feed-forward, KV cache, sampling, transformer, convolution, stacks |
 | `Finetune.Lora`, `Finetune.Qlora` | LoRA adapters; NF4-quantised frozen weights |
+| `Tensor.Eval` | runs tensors and graphs in plain Elm, without MAX: tests, examples, a second reference |
 | `Tensor.Check` | numerical comparison |
 
 The internals (`Tensor.Internal.*`, not exposed): expressions with structural keys and value-level
@@ -67,3 +68,36 @@ An application lists `"eco-lab/tensor": "1.0.0"` among its dependencies and is b
 `src/Tensor/Internal/Support.elm` from the dtype probe (`../capi/scripts/inventory/support_probe.py`).
 Pipe both through `elm-format --stdin`: the sources are kept elm-format clean (elm-format 0.8.7, in
 `build/toolchain/bin`).
+
+## Running graphs in Elm: `Tensor.Eval`
+
+`Tensor.Eval` evaluates any tensor or `Graph` the package builds, in plain Elm and with no MAX:
+gradients, `vmap`, `cond`, `whileLoop` and shared functions included. It is meant for small graphs
+(up to about 10⁵–10⁶ element operations a run): tests that check values rather than shapes,
+examples and teaching, and a second reference for the operations MAX runs. `make check-ops-eval` in
+the spike runs every op-check family through it against the same NumPy references as MAX.
+
+```elm
+Eval.floats (T.fromList T.float32 (T.r1 three) [ 1, 2, 3 ] |> T.scale 2)   -- Ok [ 2, 4, 6 ]
+Eval.run trainStep (Dict.union batch residents)                           -- outputs by name
+```
+
+A graph runs as the host runs it: inputs by name (resident inputs by resident name), outputs by
+name; merge each run's outputs into the resident buffers. `Param.initInPlace`, run once with a
+seed, writes the parameters, `Eval.residentZeros` gives the optimizer state, and `Train.step` then
+trains in Elm (`tests/EvalTests.elm` trains a 4 → 8 → 3 network that way).
+
+What it computes:
+
+- **Integers and masks** are exact and wrap as MAX does: i8, u8 and i32 at their widths, i64 and u64
+  as eco's 64-bit `Int` (a u64 is the `Int` with the same bits). Under JavaScript an `Int` is exact
+  only to 2⁵³.
+- **Floats** are computed in f64 whatever the dtype: f32 results are a little more precise than
+  MAX's, and f16/bf16 results are neither rounded nor saturated. They agree with MAX within the op
+  checks' tolerances; masks and indices computed from floats can differ at near-ties.
+- **NaN** follows MAX on CPU, not NumPy: `max`/`min`, the max/min reductions and `argMax`/`argMin`
+  skip NaN, and `notEquals` is false for NaN (the op-check family `pins` checks these on MAX).
+- **Random draws** are deterministic for a seed and shape but are not MAX's: compare statistics.
+- **Errors** are values: an index out of range, `modBy 0`, a cast of NaN or of an out-of-range value
+  to an integer dtype, a `whileLoop` past its guard (`runWith`).
+

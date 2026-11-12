@@ -7,7 +7,7 @@ const src = fs.readFileSync(js, 'utf8');
 const Elm = new Function(src + '; return this.Elm;').call({});
 fs.mkdirSync(outDir, { recursive: true });
 const manifest = [];
-const app = Elm.OpCheck.init();
+const app = Elm.OpCheck.init({ flags: null });
 app.ports.emit.subscribe((family) => {
   if (family.errors) {
     console.error(`${family.graph}: build errors:\n  ` + family.errors.join('\n  '));

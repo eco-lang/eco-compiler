@@ -18,7 +18,7 @@ import Nn.Rotary as Rotary exposing (Rotary)
 import Nn.Sampling as Sampling
 import Param
 import Signature as Sig exposing (Sig)
-import Tensor as T exposing (Dim, F32, Floating, I64, Integral, R0, R1, R2, R3, R4, Tensor)
+import Tensor as T exposing (Dim, F32, I64, R0, R1, R2, R3, R4, Tensor)
 import Tensor.Axis as Axis
 import Tensor.Random as Random
 
@@ -147,7 +147,7 @@ layerSpec =
 
 {-| A whole sequence, causal, rotary at positions 0 ..
 -}
-layer : Layer -> Tensor Floating F32 (R2 Seq Model) -> Tensor Floating F32 (R2 Seq Model)
+layer : Layer -> Tensor Float F32 (R2 Seq Model) -> Tensor Float F32 (R2 Seq Model)
 layer l x =
     let
         positions =
@@ -165,13 +165,13 @@ type alias Cache =
 
 {-| One cached step.
 -}
-step : Layer -> Cache -> Tensor Integral I64 R0 -> Tensor Floating F32 (R2 Seq Model) -> ( Cache, Tensor Floating F32 (R2 Seq Model) )
+step : Layer -> Cache -> Tensor Int I64 R0 -> Tensor Float F32 (R2 Seq Model) -> ( Cache, Tensor Float F32 (R2 Seq Model) )
 step l cache position x =
     Attention.selfCached { rotary = Just rotary } l.attn position cache (RmsNorm.apply l.norm x)
         |> Tuple.mapSecond (T.plus x)
 
 
-decode : Embedding F32 Vocab Model -> Layer -> Cache -> Tensor Integral I64 R0 -> Tensor Integral I64 (R1 Seq) -> ( Cache, Tensor Integral I64 (R1 Seq) )
+decode : Embedding F32 Vocab Model -> Layer -> Cache -> Tensor Int I64 R0 -> Tensor Int I64 (R1 Seq) -> ( Cache, Tensor Int I64 (R1 Seq) )
 decode e l cache position tokens =
     step l cache position (Embedding.apply e tokens)
         |> Tuple.mapSecond (Embedding.unembed e >> Sampling.keepTopK 40 >> (\logits -> Sampling.sample logits (Random.seed position)))
@@ -185,7 +185,7 @@ type alias Block =
     { conv : Conv2d F32 Ch Ch, norm : GroupNorm F32 Ch, cross : Attention.Cross F32 Ch TextWidth Heads HeadDim }
 
 
-block : Block -> Tensor Floating F32 (R2 Text TextWidth) -> Tensor Floating F32 (R4 Batch H W Ch) -> Tensor Floating F32 (R4 Batch H2 W2 Ch)
+block : Block -> Tensor Float F32 (R2 Text TextWidth) -> Tensor Float F32 (R4 Batch H W Ch) -> Tensor Float F32 (R4 Batch H2 W2 Ch)
 block p text x =
     x
         |> Conv2d.applySame p.conv
@@ -194,6 +194,6 @@ block p text x =
         |> Nn.upsampleNearest2d 2 (T.dim H2 16) (T.dim W2 16)
 
 
-topTokens : Tensor Floating F32 (R2 Seq Vocab) -> Tensor Integral I64 (R2 Seq Top)
+topTokens : Tensor Float F32 (R2 Seq Vocab) -> Tensor Int I64 (R2 Seq Top)
 topTokens logits =
     T.topK Axis.retag1of2 (T.dim Top 5) logits |> Tuple.second

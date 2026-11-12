@@ -58,6 +58,29 @@ foreach(pkg IN LISTS ELM_TEST_PACKAGES)
     )
 endforeach()
 
+# Suites whose sources live outside test/: a shadow named for the suite, as above, over the
+# elm.json and src/ of another directory. eco-tensor: the typed tensor package eco-lab/tensor
+# (spikes/max/tensor) on native code, its programs kept with the spike in spikes/max/tensor-e2e
+# (plans/tensor-eval-in-elm.md). JIT only: no AOT shadow.
+set(ELM_TEST_EXTERNAL_PACKAGES
+    "eco-tensor=${CMAKE_SOURCE_DIR}/spikes/max/tensor-e2e"
+)
+foreach(entry IN LISTS ELM_TEST_EXTERNAL_PACKAGES)
+    string(REPLACE "=" ";" _parts "${entry}")
+    list(GET _parts 0 pkg)
+    list(GET _parts 1 _src)
+    set(_shadow "${CMAKE_BINARY_DIR}/test/${pkg}")
+    file(MAKE_DIRECTORY ${_shadow})
+    file(COPY ${_src}/elm.json DESTINATION ${_shadow})
+    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${_src}/elm.json)
+    eco_create_dir_link(${_src}/src ${_shadow}/src)
+    set_property(DIRECTORY APPEND PROPERTY
+            ADDITIONAL_CLEAN_FILES
+                "${_shadow}/eco-stuff"
+                "${_shadow}/elm-stuff"
+    )
+endforeach()
+
 # Parallel shadow tree for the AOT E2E runner (test/aot-e2e/<pkg>/) so its
 # .mlir / ELF / run-capture outputs live alongside, but do not collide with,
 # the JIT E2E suite's outputs under test/<pkg>/. Each AOT shadow holds the

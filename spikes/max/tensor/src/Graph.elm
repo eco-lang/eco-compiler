@@ -47,7 +47,13 @@ import Tensor.Internal.Prim as P
 import Tensor.Internal.Types as I
 
 
-{-| A graph that `build` accepted: its name, its inputs and outputs, and its ops.
+{-| A graph that `build` accepted: its name, its inputs and outputs, its ops, and the expressions it
+was built from (so `Tensor.Eval` can run it in Elm).
+
+Because it keeps those expressions, `==` and `Debug.toString` on a `Graph` walk them as a tree,
+which can take time exponential in the graph's depth: compare `toBytecode` instead. A `Graph` kept
+in a model keeps its expressions alive.
+
 -}
 type alias Graph =
     I.Graph
@@ -145,6 +151,7 @@ build graphName (I.SigBuilder ins) (I.SigBuilder outs) body =
                 , inputs = List.map2 spec namedIn ins.slots
                 , outputs = List.map2 spec namedOut outs.slots
                 , ops = Lower.graph graphName namedIn namedOut
+                , exprs = { inputs = inExprs, outputs = outExprs }
                 }
             )
 

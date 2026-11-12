@@ -24,7 +24,7 @@ module Nn.Conv2d exposing
 -}
 
 import Param
-import Tensor as T exposing (DType, Dim, Floating, R1, R4, Tensor)
+import Tensor as T exposing (DType, Dim, R1, R4, Tensor)
 import Tensor.Internal.Expr as E exposing (Expr)
 import Tensor.Internal.Ops as O
 import Tensor.Internal.Types as I
@@ -53,7 +53,7 @@ kernel ( kh, kw ) =
 {-| A `filter` (kh, kw, c, o) and a `bias` (o): from `c` channels to `o`.
 -}
 type alias Conv2d d c o =
-    { filter : Tensor Floating d (R4 KernelH KernelW c o), bias : Tensor Floating d (R1 o) }
+    { filter : Tensor Float d (R4 KernelH KernelW c o), bias : Tensor Float d (R1 o) }
 
 
 {-| Padding of the spatial axes, in pixels per side.
@@ -64,7 +64,7 @@ type alias Padding =
 
 {-| He-uniform filters (fan-in kh × kw × c), zero biases.
 -}
-params : DType Floating d -> { kernel : ( Int, Int ) } -> Dim c -> Dim o -> Param.Spec (Conv2d d c o)
+params : DType Float d -> { kernel : ( Int, Int ) } -> Dim c -> Dim o -> Param.Spec (Conv2d d c o)
 params dt cfg c o =
     Param.record Conv2d
         |> Param.heUniform .filter dt (T.r4 (T.dim KernelH (Tuple.first cfg.kernel)) (T.dim KernelW (Tuple.second cfg.kernel)) c o)
@@ -99,14 +99,14 @@ check (I.Dim h2) (I.Dim w2) e =
 
 {-| The output's spatial sizes are declared and checked when the graph is built.
 -}
-apply : { stride : ( Int, Int ), padding : Padding } -> Dim h2 -> Dim w2 -> Conv2d d c o -> Tensor Floating d (R4 n h w c) -> Tensor Floating d (R4 n h2 w2 o)
+apply : { stride : ( Int, Int ), padding : Padding } -> Dim h2 -> Dim w2 -> Conv2d d c o -> Tensor Float d (R4 n h w c) -> Tensor Float d (R4 n h2 w2 o)
 apply cfg h2 w2 p x =
     I.Tensor (check h2 w2 (convolve cfg.stride cfg.padding p (I.tensor x)))
 
 
 {-| Stride 1, padding that keeps the spatial size (odd kernels).
 -}
-applySame : Conv2d d c o -> Tensor Floating d (R4 n h w c) -> Tensor Floating d (R4 n h w o)
+applySame : Conv2d d c o -> Tensor Float d (R4 n h w c) -> Tensor Float d (R4 n h w o)
 applySame p x =
     let
         ( kh, kw ) =
@@ -129,7 +129,7 @@ applySame p x =
 
 {-| Transposed convolution with the same filter type as the convolution it inverts (no bias).
 -}
-applyTransposed : { stride : ( Int, Int ), padding : Padding } -> Dim h2 -> Dim w2 -> Conv2d d o c -> Tensor Floating d (R4 n h w c) -> Tensor Floating d (R4 n h2 w2 o)
+applyTransposed : { stride : ( Int, Int ), padding : Padding } -> Dim h2 -> Dim w2 -> Conv2d d o c -> Tensor Float d (R4 n h w c) -> Tensor Float d (R4 n h2 w2 o)
 applyTransposed cfg h2 w2 p x =
     let
         ( sh, sw ) =

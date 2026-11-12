@@ -4,7 +4,7 @@ import Nn
 import Nn.Conv2d as Conv2d exposing (Conv2d)
 import Nn.Linear as Linear exposing (Linear)
 import Param
-import Tensor as T exposing (Dim, F32, Floating, R2, R4, Tensor)
+import Tensor as T exposing (Dim, F32, R2, R4, Tensor)
 
 
 type H28
@@ -86,12 +86,12 @@ params =
         |> Param.sub .out (Linear.params T.float32 flat classes)
 
 
-pool : Dim h2 -> Tensor Floating F32 (R4 n h w c) -> Tensor Floating F32 (R4 n h2 h2 c)
+pool : Dim h2 -> Tensor Float F32 (R4 n h w c) -> Tensor Float F32 (R4 n h2 h2 c)
 pool d =
     Nn.maxPool2d 2 d d
 
 
-network : Params -> Tensor Floating F32 (R4 n H28 H28 Gray) -> Tensor Floating F32 (R2 n Classes)
+network : Params -> Tensor Float F32 (R4 n H28 H28 Gray) -> Tensor Float F32 (R2 n Classes)
 network p images =
     images
         |> Conv2d.applySame p.conv1

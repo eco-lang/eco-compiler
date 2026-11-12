@@ -70,7 +70,7 @@ host so a cold compile ran concurrently.
 ### `tensor/`: the typed tensor package (`eco-lab/tensor`)
 
 Nabla's API as an Elm package that writes MAX graphs (`plans/nabla-api-in-elm.md`, `tensor/README.md`):
-tensors typed by kind, dtype and a fixed rank of named dimensions (`Tensor Floating F32 (R2 n
+tensors typed by element type, dtype and a fixed rank of named dimensions (`Tensor Float F32 (R2 n
 Hidden)`), so mixing up dimensions, axes or dtypes does not compile; reverse- and forward-mode
 autodiff to any order, `vmap` by batching rules, `cond`/`whileLoop` as `mo.if`/`mo.while`, shared
 MAX subgraphs, layers, losses, optimizers, transformers, convolutions, LoRA and QLoRA; MLIR bytecode
@@ -91,6 +91,14 @@ feed-forward, grouped-query and cross attention with a KV cache, upsampling, tim
   and compares every op's device placement with MAX's own (`capi/scripts/inventory/gpu_ir.py`,
   `compare_gpu_ir.py`); a family a GPU cannot run yet is listed as refused.
 - `make check-tensor`: the package's own tests (elm-test-rs).
+- `make check-ops-eval`: the op checks run by `Tensor.Eval`, the package's pure-Elm evaluator,
+  against the same NumPy references, with no MAX (`opcheck/eval.js`, `ref.py --dump-inputs` and
+  `--results`).
+- `tensor-e2e/`: programs that need eco's native 64-bit `Int` (exact constants beyond 2⁵³, the
+  evaluator's i64/u64 arithmetic), run as the repo's E2E suite `eco-tensor` (registered in
+  `test/CMakeLists.txt`): `make check-tensor-native`.
+- `snapshot/`: every model graph and block of initial host bytes, written under Node without MAX:
+  `make snapshot-graphs OUT=dir`, then `make compare-graphs BASE=dir` after a change to the package.
 
 ### `bridge/` and `mnist/host/max_bridge.cpp`: the generic MAX host
 

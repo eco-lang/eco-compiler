@@ -23,7 +23,7 @@ compile.
 
 -}
 
-import Tensor exposing (Floating, I64, Integral, R1, R3, Tensor)
+import Tensor exposing (I64, R1, R3, Tensor)
 import Tensor.Internal.Expr as E exposing (Expr)
 import Tensor.Internal.Ops as O
 import Tensor.Internal.Prim as P exposing (DT(..))
@@ -46,7 +46,7 @@ type alias Rotary =
 {-| `apply r positions x`: each head's features (h, s, j) rotated for its `s` positions, angles
 computed in f32. Build time checks j is even.
 -}
-apply : Rotary -> Tensor Integral I64 (R1 s) -> Tensor Floating d (R3 h s j) -> Tensor Floating d (R3 h s j)
+apply : Rotary -> Tensor Int I64 (R1 s) -> Tensor Float d (R3 h s j) -> Tensor Float d (R3 h s j)
 apply r positions x =
     I.Tensor (rotate r (I.tensor positions) (I.tensor x))
 

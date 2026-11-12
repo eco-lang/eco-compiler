@@ -13,7 +13,7 @@ import Nn.LayerNorm as LayerNorm
 import Nn.Linear as Linear
 import Param
 import Signature as Sig
-import Tensor as T exposing (Dim, F32, Floating, R1, R2, Tensor)
+import Tensor as T exposing (Dim, F32, R1, R2, Tensor)
 import Tensor.Axis as Axis
 import Tensor.Check as Check
 import Tensor.Control as Control
@@ -76,13 +76,13 @@ expectError fragment r =
             Expect.fail ("built, but expected an error containing \"" ++ fragment ++ "\"")
 
 
-f34 : Sig.Sig (Tensor Floating F32 (R2 A B))
+f34 : Sig.Sig (Tensor Float F32 (R2 A B))
 f34 =
     Sig.f32 (T.r2 a b)
 
 
 type alias Pair =
-    { gain : Tensor Floating F32 (R1 B), bias : Tensor Floating F32 (R1 B) }
+    { gain : Tensor Float F32 (R1 B), bias : Tensor Float F32 (R1 B) }
 
 
 suite : Test
@@ -306,17 +306,17 @@ suite =
         ]
 
 
-foreign : () -> Tensor Floating F32 (R2 A B)
+foreign : () -> Tensor Float F32 (R2 A B)
 foreign _ =
     I.Tensor (E.input "first" 0 Tensor.Internal.Prim.F32 [ 3, 4 ])
 
 
-asB : Tensor Floating F32 (R1 B) -> Tensor Floating F32 (R1 B)
+asB : Tensor Float F32 (R1 B) -> Tensor Float F32 (R1 B)
 asB =
     identity
 
 
-asAB : Tensor Floating F32 (R2 A B) -> Tensor Floating F32 (R2 A B)
+asAB : Tensor Float F32 (R2 A B) -> Tensor Float F32 (R2 A B)
 asAB =
     identity
 

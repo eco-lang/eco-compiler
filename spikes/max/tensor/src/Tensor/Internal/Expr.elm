@@ -6,6 +6,7 @@ module Tensor.Internal.Expr exposing
     , Op(..)
     , call
     , const
+    , constValues
     , dtype
     , failWith
     , ifThen
@@ -42,6 +43,7 @@ import Tensor.Internal.Key as K exposing (Key)
 import Tensor.Internal.Prim as P exposing (DT(..), Params, Prim)
 import Tensor.Internal.Shape as Shape
 import Tensor.Internal.Support as Support
+import Tensor.Internal.Values as Values exposing (Values(..))
 
 
 type alias Meta =
@@ -73,7 +75,7 @@ type alias Body =
 type Op
     = Input String Int
     | Var Key Int
-    | Const (List Float)
+    | Const Values
     | P Prim (List Expr) Params
       -- a shared subgraph: its name, its body, the arguments
     | Call String Body (List Expr)
@@ -171,22 +173,53 @@ var scope position dt s =
     plain (K.start "var" |> K.mixKey scope |> K.mix position |> mixMeta m) (Var scope position) m
 
 
-{-| A constant: one value per element, row-major, or a single value for a scalar.
+{-| A constant: one value per element, row-major, or a single value for a scalar. The floats become
+the dtype's values (`Values.forDtype`: rounded for integer dtypes), so a constant made from floats
+and one made from the same integers are the same expression.
 -}
 const : DT -> List Int -> List Float -> Expr
 const dt s values =
+    constWith False dt s (Values.forDtype dt values)
+
+
+{-| A constant from values of the dtype's kind; integer values outside the dtype's range are a
+build error (the public paths: `Tensor.constant`, `full`, `fromList`, ...).
+-}
+constValues : DT -> List Int -> Values -> Expr
+constValues =
+    constWith True
+
+
+constWith : Bool -> DT -> List Int -> Values -> Expr
+constWith checked dt s values =
     let
         m =
             { shape = s, pending = [], dtype = dt }
 
+        mixValues =
+            case values of
+                FloatValues l ->
+                    K.mixFloats l
+
+                IntValues l ->
+                    K.mixInt64s l
+
         e =
-            plain (K.start "const" |> mixMeta m |> K.mixFloats values) (Const values) m
+            plain (K.start "const" |> mixMeta m |> mixValues) (Const values) m
+
+        n =
+            Values.length values
     in
-    if List.length values /= List.product s then
-        failWith ("a constant of shape " ++ Shape.showShape s ++ " needs " ++ String.fromInt (List.product s) ++ " values, not " ++ String.fromInt (List.length values)) e
+    if n /= List.product s then
+        failWith ("a constant of shape " ++ Shape.showShape s ++ " needs " ++ String.fromInt (List.product s) ++ " values, not " ++ String.fromInt n) e
 
     else
-        e
+        case ( checked, Values.fitsDtype dt values ) of
+            ( True, Just msg ) ->
+                failWith msg e
+
+            _ ->
+                e
 
 
 scalar : DT -> Float -> Expr
@@ -366,7 +399,18 @@ shallow (Expr n) =
                     "var " ++ String.fromInt i
 
                 Const vs ->
-                    "const " ++ String.fromInt (List.length vs)
+                    "const "
+                        ++ (case vs of
+                                FloatValues _ ->
+                                    "f"
+
+                                IntValues _ ->
+                                    "i"
+                           )
+                        ++ " "
+                        ++ String.fromInt (Values.length vs)
+                        ++ " "
+                        ++ String.fromInt (Values.altHash vs)
 
                 P p params _ ->
                     "prim " ++ String.fromInt (P.tag p) ++ " " ++ String.fromInt (List.length params)

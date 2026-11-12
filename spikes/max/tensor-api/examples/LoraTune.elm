@@ -8,7 +8,7 @@ import Nn.Linear as Linear exposing (Linear)
 import Optim
 import Param
 import Signature as Sig
-import Tensor as T exposing (Dim, F32, Floating, Integral, R2, Tensor, U8)
+import Tensor as T exposing (Dim, F32, R2, Tensor, U8)
 import Train
 
 
@@ -36,7 +36,7 @@ params =
         |> Param.sub .adapt1 (Lora.params T.float32 { rank = rank, alpha = 16, initStd = 0.01 } pixels hidden)
 
 
-network : Params -> Tensor Integral U8 (R2 n Pixels) -> Tensor Floating F32 (R2 n Classes)
+network : Params -> Tensor Int U8 (R2 n Pixels) -> Tensor Float F32 (R2 n Classes)
 network p x =
     x |> T.toFloat |> T.scale (1 / 255) |> Lora.apply p.base1 p.adapt1 |> T.relu |> Linear.apply p.base2
 

@@ -9,6 +9,7 @@ import Bytes exposing (Bytes, Endianness(..))
 import Bytes.Decode as Decode
 import Bytes.Encode as Encode
 import Tensor.Internal.Prim exposing (DT(..))
+import Tensor.Internal.Values exposing (Values(..))
 
 
 {-| `n` rounded up to a multiple of 16: every tensor in a host message starts 16-aligned.
@@ -27,11 +28,48 @@ packed b =
     Encode.sequence (Encode.bytes b :: List.repeat (paddedSize w - w) (Encode.unsignedInt8 0))
 
 
-{-| Values as little-endian elements of `dt`.
+{-| Values as little-endian elements of `dt`. Integer values are written exactly (u64: the `Int`'s
+64 bits).
 -}
-encodeValues : DT -> List Float -> Bytes
+encodeValues : DT -> Values -> Bytes
 encodeValues dt values =
-    Encode.encode (Encode.sequence (List.map (element dt) values))
+    case values of
+        FloatValues l ->
+            Encode.encode (Encode.sequence (List.map (element dt) l))
+
+        IntValues l ->
+            Encode.encode (Encode.sequence (List.map (intElement dt) l))
+
+
+intElement : DT -> Int -> Encode.Encoder
+intElement dt n =
+    case dt of
+        SI8 ->
+            Encode.signedInt8 n
+
+        UI8 ->
+            Encode.unsignedInt8 n
+
+        SI32 ->
+            Encode.signedInt32 LE n
+
+        SI64 ->
+            int64 n
+
+        UI64 ->
+            int64 n
+
+        Bool ->
+            Encode.unsignedInt8
+                (if n /= 0 then
+                    1
+
+                 else
+                    0
+                )
+
+        _ ->
+            element dt (toFloat n)
 
 
 element : DT -> Float -> Encode.Encoder

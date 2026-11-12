@@ -1,6 +1,5 @@
 Compiled in DEV mode. Follow the advice at https://elm-lang.org/0.19.1/optimize for better performance and smaller assets.
-Compiling ...
-Detected problems in 1 module.
+Compiling ...Detected problems in 1 module.
 -- TYPE MISMATCH ----------------------------------------- bad/BadInferState.elm
 
 The 6th argument to `step` is not what I expect:
@@ -11,22 +10,18 @@ This argument is an anonymous function of type:
 
     Layer
     -> Cache
-    -> ( T.Tensor T.Integral T.I64 T.R0
-       , T.Tensor T.Floating T.F32 (T.R2 Seq Model)
-       )
-    -> ( T.Tensor T.Floating T.F32 (T.R2 Seq Model)
-       , T.Tensor T.Floating T.F32 (T.R2 Seq Model)
+    -> ( T.Tensor Int T.I64 T.R0, T.Tensor Float T.F32 (T.R2 Seq Model) )
+    -> ( T.Tensor Float T.F32 (T.R2 Seq Model)
+       , T.Tensor Float T.F32 (T.R2 Seq Model)
        )
 
 But `step` needs the 6th argument to be:
 
     Layer
     -> KvCache.Cache T.F32 KvHeads Context HeadDim
-    -> ( T.Tensor T.Integral T.I64 T.R0
-       , T.Tensor T.Floating T.F32 (T.R2 Seq Model)
-       )
+    -> ( T.Tensor Int T.I64 T.R0, T.Tensor Float T.F32 (T.R2 Seq Model) )
     -> ( KvCache.Cache T.F32 KvHeads Context HeadDim
-       , T.Tensor T.Floating T.F32 (T.R2 Seq Model)
+       , T.Tensor Float T.F32 (T.R2 Seq Model)
        )
 
 Hint: I always figure out the argument types from left to right. If an argument

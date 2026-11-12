@@ -8,9 +8,13 @@ This function cannot handle the argument sent through the (|>) pipe:
              ^^^^^^
 The argument is:
 
-    Tensor Integral U8 (R1 Batch)
+    Tensor Int U8 (R1 Batch)
 
 But (|>) is piping it to a function that expects:
 
-    Tensor Floating U8 (R1 Batch)
+    Tensor Float U8 (R1 Batch)
+
+Note: Read <https://elm-lang.org/0.19.1/implicit-casts> to learn why Elm does
+not implicitly convert Ints to Floats. Use toFloat and round to do explicit
+conversions.
 

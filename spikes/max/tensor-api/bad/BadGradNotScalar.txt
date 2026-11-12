@@ -8,9 +8,9 @@ Something is off with the body of the `q` definition:
         ^^^^^^^^^^^^^^^^^^^^^^^^^^
 This `grad` call produces:
 
-    Tensor Floating F32 R0 -> Tensor Floating F32 R0
+    Tensor Float F32 R0 -> Tensor Float F32 R0
 
 But the type annotation on `q` says it should be:
 
-    Tensor Floating F32 (R1 Classes) -> Tensor Floating F32 (R1 Classes)
+    Tensor Float F32 (R1 Classes) -> Tensor Float F32 (R1 Classes)
 

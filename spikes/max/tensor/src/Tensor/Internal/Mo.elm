@@ -2,6 +2,7 @@ module Tensor.Internal.Mo exposing
     ( Block
     , constText
     , constant
+    , constantF
     , emit
     , emptyBlock
     , floatLit
@@ -23,6 +24,7 @@ import Tensor.Internal.Device as Device
 import Tensor.Internal.MlirBc as Bc
 import Tensor.Internal.Prim as P exposing (DT(..), Params, Prim(..))
 import Tensor.Internal.Shape exposing (Meta)
+import Tensor.Internal.Values as Values exposing (Values(..))
 
 
 {-| Ops emitted so far into one block (reversed), and the value number the next result gets.
@@ -110,9 +112,27 @@ elementText dt v =
         String.fromInt (round v)
 
 
-{-| `#M.dense_array<...> : tensor<2x3xf32>` (bool as i1).
+intText : DT -> Int -> String
+intText dt n =
+    case dt of
+        Bool ->
+            if n /= 0 then
+                "true"
+
+            else
+                "false"
+
+        UI64 ->
+            Values.u64Text n
+
+        _ ->
+            String.fromInt n
+
+
+{-| `#M.dense_array<...> : tensor<2x3xf32>` (bool as i1). Integer values are written exactly (u64
+as the unsigned decimal of the `Int`'s bits).
 -}
-constText : DT -> List Int -> List Float -> String
+constText : DT -> List Int -> Values -> String
 constText dt s values =
     let
         elem =
@@ -124,13 +144,28 @@ constText dt s values =
 
         dims =
             String.concat (List.map (\d -> String.fromInt d ++ "x") s)
+
+        texts =
+            case values of
+                FloatValues l ->
+                    List.map (elementText dt) l
+
+                IntValues l ->
+                    List.map (intText dt) l
     in
-    "#M.dense_array<" ++ String.join ", " (List.map (elementText dt) values) ++ "> : tensor<" ++ dims ++ elem ++ ">"
+    "#M.dense_array<" ++ String.join ", " texts ++ "> : tensor<" ++ dims ++ elem ++ ">"
 
 
-constant : DT -> List Int -> List Float -> Block -> ( Block, Int )
+constant : DT -> List Int -> Values -> Block -> ( Block, Int )
 constant dt s values =
     push "mo.constant" [ ( "value", Bc.OpaqueAttr (constText dt s values) ) ] [] [ tensorType { shape = s, pending = [], dtype = dt } ] []
+
+
+{-| A constant from floats, as the dtype's values (`Values.forDtype`).
+-}
+constantF : DT -> List Int -> List Float -> Block -> ( Block, Int )
+constantF dt s floats =
+    constant dt s (Values.forDtype dt floats)
 
 
 simple : String -> List Int -> Meta -> Block -> ( Block, Int )
@@ -360,7 +395,7 @@ emit p operands ms params out b =
         Transpose ->
             let
                 ( b1, perm ) =
-                    host <| constant SI64 [ List.length params.a ] (List.map toFloat params.a) b
+                    host <| constant SI64 [ List.length params.a ] (IntValues params.a) b
             in
             simple "rmo.mo.transpose" [ o 0, perm ] out b1
 
@@ -392,7 +427,7 @@ emit p operands ms params out b =
                             List.concatMap
                                 (\i ->
                                     if i == axis then
-                                        [ toFloat before, toFloat after ]
+                                        [ before, after ]
 
                                     else
                                         [ 0, 0 ]
@@ -400,10 +435,10 @@ emit p operands ms params out b =
                                 (List.range 0 (r - 1))
 
                         ( b1, padsV ) =
-                            host <| constant SI64 [ 2 * r ] pads b
+                            host <| constant SI64 [ 2 * r ] (IntValues pads) b
 
                         ( b2, valueV ) =
-                            host <| constant out.dtype [] [ Maybe.withDefault 0 (List.head params.f) ] b1
+                            host <| constant out.dtype [] (padValue out.dtype params) b1
                     in
                     simple "rmo.mo.pad.constant" [ o 0, padsV, valueV ] out b2
 
@@ -436,13 +471,13 @@ emit p operands ms params out b =
                 [ lower, upper ] ->
                     let
                         ( b1, l ) =
-                            host <| constant SI64 [] [ toFloat lower ] b
+                            host <| constant SI64 [] (IntValues [ lower ]) b
 
                         ( b2, u ) =
-                            host <| constant SI64 [] [ toFloat upper ] b1
+                            host <| constant SI64 [] (IntValues [ upper ]) b1
 
                         ( b3, e ) =
-                            host <| constant Bool [] [ 0 ] b2
+                            host <| constant Bool [] (IntValues [ 0 ]) b2
                     in
                     simple "rmo.mo.linalg.band_part" [ o 0, l, u, e ] out b3
 
@@ -454,13 +489,13 @@ emit p operands ms params out b =
                 [ start, step, n ] ->
                     let
                         ( b1, s0 ) =
-                            host <| constant SI64 [] [ toFloat start ] b
+                            host <| constant SI64 [] (IntValues [ start ]) b
 
                         ( b2, s1 ) =
-                            host <| constant SI64 [] [ toFloat (start + step * n) ] b1
+                            host <| constant SI64 [] (IntValues [ start + step * n ]) b1
 
                         ( b3, s2 ) =
-                            host <| constant SI64 [] [ toFloat step ] b2
+                            host <| constant SI64 [] (IntValues [ step ]) b2
                     in
                     simple "rmo.mo.range" [ s0, s1, s2 ] out b3
 
@@ -482,10 +517,10 @@ emit p operands ms params out b =
                                 out.dtype
 
                         ( b2, a ) =
-                            host <| constant paramDt [] [ lo ] b1
+                            host <| constantF paramDt [] [ lo ] b1
 
                         ( b3, c ) =
-                            host <| constant paramDt [] [ hi ] b2
+                            host <| constantF paramDt [] [ hi ] b2
                     in
                     simple
                         (if kind == 1 then
@@ -529,14 +564,14 @@ emit p operands ms params out b =
                     push "rmo.reshape" [ ( "newShape", shapeAttr [] ) ] [ total ] [ tensorType out ] [] b4
 
                 ( b6, k ) =
-                    constant out.dtype [] [ -1 / toFloat n ] b5
+                    constantF out.dtype [] [ -1 / toFloat n ] b5
             in
             simple "rmo.mul" [ flat, k ] out b6
 
         LayerNorm ->
             let
                 ( b1, eps ) =
-                    host <| constant out.dtype [] [ Maybe.withDefault 1.0e-5 (List.head params.f) ] b
+                    host <| constantF out.dtype [] [ Maybe.withDefault 1.0e-5 (List.head params.f) ] b
             in
             simple "mo.reduce.layer_norm" (operands ++ [ eps ]) out b1
 
@@ -603,7 +638,7 @@ scatterAxisOp add axis operands ms out b =
             if add then
                 let
                     ( b4, ax ) =
-                        host <| constant SI64 [] [ toFloat axis ] b3
+                        host <| constant SI64 [] (IntValues [ axis ]) b3
                 in
                 simple "rmo.mo.scatter.add" [ x, u, spread, ax ] out b4
 
@@ -657,13 +692,13 @@ topKOp params x xm out b =
                 else
                     let
                         ( b1, kc ) =
-                            host <| constant SI64 [] [ toFloat k ] b
+                            host <| constant SI64 [] (IntValues [ k ]) b
 
                         ( b2, ac ) =
-                            host <| constant SI64 [] [ toFloat axis ] b1
+                            host <| constant SI64 [] (IntValues [ axis ]) b1
 
                         ( b3, sc ) =
-                            host <| constant Bool [] [ 1 ] b2
+                            host <| constant Bool [] (IntValues [ 1 ]) b2
                     in
                     push "rmo.mo.bottom_k" [] [ x, kc, ac, sc ] results [] b3
 
@@ -787,3 +822,24 @@ graphOp name extra inputs outputs inTypes outTypes region =
     , operands = []
     , regions = [ region ]
     }
+
+
+{-| A pad's fill value: `f` for floating dtypes; for integer dtypes `b` (set by `padInt`), else `f`
+rounded.
+-}
+padValue : DT -> Params -> Values
+padValue dt params =
+    let
+        f =
+            Maybe.withDefault 0 (List.head params.f)
+    in
+    if P.isFloat dt then
+        FloatValues [ f ]
+
+    else
+        case params.b of
+            v :: _ ->
+                IntValues [ v ]
+
+            [] ->
+                IntValues [ round f ]

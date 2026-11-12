@@ -38,7 +38,7 @@ import Graph exposing (Graph)
 import Optim exposing (Optimizer)
 import Param
 import Signature exposing (Sig)
-import Tensor exposing (F32, Floating, R0, Tensor)
+import Tensor exposing (F32, R0, Tensor)
 import Tensor.Internal.Expr as E exposing (Expr)
 import Tensor.Internal.Grad as Grad
 import Tensor.Internal.Host as Host
@@ -48,6 +48,7 @@ import Tensor.Internal.Ops as O
 import Tensor.Internal.ParamInit as ParamInit
 import Tensor.Internal.Prim as P exposing (DT(..))
 import Tensor.Internal.Types as I
+import Tensor.Internal.Values as Values
 
 
 type alias Layout =
@@ -99,7 +100,7 @@ optimizer state (`state0` ..) and step counter (`step`), all resident; then `rat
 `PerStep`, and the batch (`batch0` ..), fed. Outputs: the new parameters and state (replacing their
 buffers) and `loss`.
 -}
-step : Param.Spec r -> Optimizer -> Sig batch -> (r -> batch -> Tensor Floating F32 R0) -> Result (List String) Graph
+step : Param.Spec r -> Optimizer -> Sig batch -> (r -> batch -> Tensor Float F32 R0) -> Result (List String) Graph
 step ((I.ParamBuilder ps) as spec) ((I.Optimizer o) as opt) (I.SigBuilder bs) lossFn =
     let
         lay =
@@ -353,7 +354,7 @@ initial spec opt seed0 =
                         ( values, seed1 ) =
                             ParamInit.initValues f seed
                     in
-                    ( seed1, ( n, Host.encodeValues f.dtype values ) :: acc )
+                    ( seed1, ( n, Host.encodeValues f.dtype (Values.forDtype f.dtype values) ) :: acc )
                 )
                 ( seed0, [] )
                 (List.map2 Tuple.pair lay.paramNames lay.fields)
@@ -370,9 +371,9 @@ zeroState lay =
         shapes =
             List.concatMap (\f -> List.repeat lay.slots f.shape) trainable
     in
-    List.map2 (\n s -> ( n, Host.encodeValues F32 (List.repeat (List.product s) 0) )) lay.stateNames shapes
+    List.map2 (\n s -> ( n, Host.encodeValues F32 (Values.FloatValues (List.repeat (List.product s) 0)) )) lay.stateNames shapes
         ++ (if lay.hasStep then
-                [ ( "step", Host.encodeValues F32 [ 0 ] ) ]
+                [ ( "step", Host.encodeValues F32 (Values.FloatValues [ 0 ]) ) ]
 
             else
                 []

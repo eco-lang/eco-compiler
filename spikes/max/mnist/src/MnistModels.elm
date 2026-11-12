@@ -22,7 +22,7 @@ import Nn.Stack as Stack exposing (Stack)
 import Optim exposing (Optimizer)
 import Param
 import Signature as Sig
-import Tensor as T exposing (Dim, F32, Floating, I64, Integral, R2, R4, Tensor, U8)
+import Tensor as T exposing (Dim, F32, I64, R2, R4, Tensor, U8)
 import Tensor.Axis as Axis
 import Tensor.Random as Random
 import Train
@@ -70,17 +70,17 @@ variant name =
             sgd
 
 
-images : Sig.Sig ( Tensor Integral U8 (R2 Batch Pixels), Tensor Integral U8 (T.R1 Batch) )
+images : Sig.Sig ( Tensor Int U8 (R2 Batch Pixels), Tensor Int U8 (T.R1 Batch) )
 images =
     Sig.pair (Sig.u8 (T.r2 batch pixels)) (Sig.u8 (T.r1 batch))
 
 
-testImages : Sig.Sig ( Tensor Integral U8 (R2 Test Pixels), Tensor Integral U8 (T.R1 Test) )
+testImages : Sig.Sig ( Tensor Int U8 (R2 Test Pixels), Tensor Int U8 (T.R1 Test) )
 testImages =
     Sig.pair (Sig.u8 (T.r2 test pixels)) (Sig.u8 (T.r1 test))
 
 
-correct : Tensor Floating F32 (R2 n Classes) -> Tensor Integral U8 (T.R1 n) -> Tensor Floating F32 T.R0
+correct : Tensor Float F32 (R2 n Classes) -> Tensor Int U8 (T.R1 n) -> Tensor Float F32 T.R0
 correct logits labels =
     logits |> T.argMax Axis.last2 |> T.equals (T.toInt labels) |> T.indicator T.float32 |> T.sumAll
 
@@ -180,7 +180,7 @@ stackParams =
             (Stack.params T.float32 pixels (Stack.input |> Stack.dense 512 Stack.relu |> Stack.dense 256 Stack.relu |> Stack.denseTo classes Stack.none))
 
 
-stackNetwork : { training : Bool } -> Random.Seed -> StackParams -> Tensor Integral U8 (R2 n Pixels) -> Tensor Floating F32 (R2 n Classes)
+stackNetwork : { training : Bool } -> Random.Seed -> StackParams -> Tensor Int U8 (R2 n Pixels) -> Tensor Float F32 (R2 n Classes)
 stackNetwork cfg seed p x =
     x |> T.toFloat |> T.scale (1 / 255) |> Stack.applyWithDropout { rate = 0.1, training = cfg.training } seed p.mlp
 
@@ -255,7 +255,7 @@ cnnParams =
         |> Param.sub .out (Linear.params T.float32 (T.dim Flat (7 * 7 * 64)) classes)
 
 
-cnnNetwork : CnnParams -> Tensor Integral U8 (R2 n Pixels) -> Tensor Floating F32 (R2 n Classes)
+cnnNetwork : CnnParams -> Tensor Int U8 (R2 n Pixels) -> Tensor Float F32 (R2 n Classes)
 cnnNetwork p x =
     x
         |> T.toFloat
@@ -308,7 +308,7 @@ loraParams =
         |> Param.sub .adapt1 (Lora.params T.float32 { rank = T.dim Rank 8, alpha = 16, initStd = 0.01 } pixels hidden)
 
 
-loraNetwork : LoraParams -> Tensor Integral U8 (R2 n Pixels) -> Tensor Floating F32 (R2 n Classes)
+loraNetwork : LoraParams -> Tensor Int U8 (R2 n Pixels) -> Tensor Float F32 (R2 n Classes)
 loraNetwork p x =
     x |> T.toFloat |> T.scale (1 / 255) |> Lora.apply p.base1 p.adapt1 |> T.relu |> Linear.apply p.base2
 

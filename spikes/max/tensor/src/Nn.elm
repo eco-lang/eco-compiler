@@ -45,7 +45,7 @@ Helpers for attention with a key/value cache and grouped key/value heads.
 
 -}
 
-import Tensor exposing (Dim, Floating, I64, Integral, Mask, R0, R1, R2, R3, R4, Tensor)
+import Tensor exposing (Dim, I64, Mask, R0, R1, R2, R3, R4, Tensor)
 import Tensor.Internal.Expr as E exposing (Expr)
 import Tensor.Internal.Ops as O
 import Tensor.Internal.Prim as P
@@ -55,14 +55,14 @@ import Tensor.Random as Random exposing (Seed)
 
 {-| `logits |> crossEntropy targets`: the mean softmax cross-entropy over the batch, targets one-hot.
 -}
-crossEntropy : Tensor Floating d (R2 n c) -> Tensor Floating d (R2 n c) -> Tensor Floating d R0
+crossEntropy : Tensor Float d (R2 n c) -> Tensor Float d (R2 n c) -> Tensor Float d R0
 crossEntropy targets logits =
     I.Tensor (O.xent (I.tensor logits) (I.tensor targets))
 
 
 {-| The same with class indices.
 -}
-crossEntropyIndices : Tensor Integral i (R1 n) -> Tensor Floating d (R2 n c) -> Tensor Floating d R0
+crossEntropyIndices : Tensor Int i (R1 n) -> Tensor Float d (R2 n c) -> Tensor Float d R0
 crossEntropyIndices labels logits =
     let
         l =
@@ -76,7 +76,7 @@ crossEntropyIndices labels logits =
 
 {-| `predictions |> mseLoss targets`: the mean squared error.
 -}
-mseLoss : Tensor Floating d s -> Tensor Floating d s -> Tensor Floating d R0
+mseLoss : Tensor Float d s -> Tensor Float d s -> Tensor Float d R0
 mseLoss targets predictions =
     I.Tensor (O.meanAll (O.square (O.sub (I.tensor predictions) (I.tensor targets))))
 
@@ -84,7 +84,7 @@ mseLoss targets predictions =
 {-| Inverted dropout: elements zeroed with probability `rate`, the rest scaled by 1 / (1 - rate);
 the identity when `training` is false.
 -}
-dropout : { rate : Float, training : Bool } -> Seed -> Tensor Floating d s -> Tensor Floating d s
+dropout : { rate : Float, training : Bool } -> Seed -> Tensor Float d s -> Tensor Float d s
 dropout cfg s x =
     if not cfg.training || cfg.rate <= 0 then
         x
@@ -103,14 +103,14 @@ dropout cfg s x =
 {-| `queries |> attention options keys values`, per head: queries (h, s, j), keys (h, t, j), values
 (h, t, e). `mask` hides key positions (False: not attended); `bias` is added to the scores.
 -}
-attention : { mask : Maybe (Mask (R2 s t)), bias : Maybe (Tensor Floating d (R2 s t)) } -> Tensor Floating d (R3 h t j) -> Tensor Floating d (R3 h t e) -> Tensor Floating d (R3 h s j) -> Tensor Floating d (R3 h s e)
+attention : { mask : Maybe (Mask (R2 s t)), bias : Maybe (Tensor Float d (R2 s t)) } -> Tensor Float d (R3 h t j) -> Tensor Float d (R3 h t e) -> Tensor Float d (R3 h s j) -> Tensor Float d (R3 h s e)
 attention opts k v q =
     I.Tensor (attend (Maybe.map (\(I.Mask m) -> m) opts.mask) (Maybe.map I.tensor opts.bias) (I.tensor k) (I.tensor v) (I.tensor q))
 
 
 {-| Each position attends to itself and earlier ones: queries and keys share the length `s`.
 -}
-causalAttention : Tensor Floating d (R3 h s j) -> Tensor Floating d (R3 h s e) -> Tensor Floating d (R3 h s j) -> Tensor Floating d (R3 h s e)
+causalAttention : Tensor Float d (R3 h s j) -> Tensor Float d (R3 h s e) -> Tensor Float d (R3 h s j) -> Tensor Float d (R3 h s e)
 causalAttention k v q =
     let
         s =
@@ -159,14 +159,14 @@ attend mask bias k v q =
 
 {-| Window = stride = `k`. Build time checks `h = k * h2` and `w = k * w2`.
 -}
-maxPool2d : Int -> Dim h2 -> Dim w2 -> Tensor Floating d (R4 n h w c) -> Tensor Floating d (R4 n h2 w2 c)
+maxPool2d : Int -> Dim h2 -> Dim w2 -> Tensor Float d (R4 n h w c) -> Tensor Float d (R4 n h2 w2 c)
 maxPool2d k h2 w2 x =
     I.Tensor (checkSpatial h2 w2 (O.maxPool k (I.tensor x)))
 
 
 {-| As `maxPool2d`, taking each window's mean.
 -}
-avgPool2d : Int -> Dim h2 -> Dim w2 -> Tensor Floating d (R4 n h w c) -> Tensor Floating d (R4 n h2 w2 c)
+avgPool2d : Int -> Dim h2 -> Dim w2 -> Tensor Float d (R4 n h w c) -> Tensor Float d (R4 n h2 w2 c)
 avgPool2d k h2 w2 x =
     I.Tensor (checkSpatial h2 w2 (O.avgPool k (I.tensor x)))
 
@@ -188,7 +188,7 @@ checkSpatial (I.Dim h2) (I.Dim w2) e =
 {-| Nearest-neighbour upsampling by `f` in both spatial axes (each pixel becomes an f × f block).
 Build time checks h2 = f · h and w2 = f · w.
 -}
-upsampleNearest2d : Int -> Dim h2 -> Dim w2 -> Tensor Floating d (R4 n h w c) -> Tensor Floating d (R4 n h2 w2 c)
+upsampleNearest2d : Int -> Dim h2 -> Dim w2 -> Tensor Float d (R4 n h w c) -> Tensor Float d (R4 n h2 w2 c)
 upsampleNearest2d f (I.Dim h2) (I.Dim w2) x =
     I.Tensor (upsample f h2 w2 (I.tensor x))
 
@@ -229,7 +229,7 @@ upsample f h2 w2 x =
 i < e/2, frequencies exp(−ln(maxPeriod) · i / (e/2 − shift)); the result is (sin, cos) of t times
 them, or (cos, sin) with `cosFirst` (diffusers' `flip_sin_to_cos`). Build time checks e is even.
 -}
-timestepEmbedding : { maxPeriod : Float, cosFirst : Bool, shift : Float } -> Dim e -> Tensor Floating d (R1 n) -> Tensor Floating d (R2 n e)
+timestepEmbedding : { maxPeriod : Float, cosFirst : Bool, shift : Float } -> Dim e -> Tensor Float d (R1 n) -> Tensor Float d (R2 n e)
 timestepEmbedding cfg (I.Dim e) t =
     let
         te =
@@ -269,7 +269,7 @@ timestepEmbedding cfg (I.Dim e) t =
 {-| Which keys each query may see when `s` new queries start at position `p` of a cache of `t`
 positions: query i (at p + i) sees keys 0 .. p + i.
 -}
-causalMaskAt : Tensor Integral I64 R0 -> Dim s -> Dim t -> Mask (R2 s t)
+causalMaskAt : Tensor Int I64 R0 -> Dim s -> Dim t -> Mask (R2 s t)
 causalMaskAt p (I.Dim s) (I.Dim t) =
     let
         queries =

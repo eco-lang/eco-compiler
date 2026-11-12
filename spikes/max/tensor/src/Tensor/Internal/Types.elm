@@ -8,6 +8,7 @@ them.
 import Tensor.Internal.Expr exposing (Expr)
 import Tensor.Internal.MlirBc as Bc
 import Tensor.Internal.Prim exposing (DT)
+import Tensor.Internal.Values exposing (Values)
 
 
 
@@ -30,8 +31,21 @@ type Shape s
     = Shape (List Int)
 
 
+{-| A dtype, with the conversion of its kind's element values (`Float` or `Int`) to a constant's
+values: only the package makes `DType`s, so each holds the right one.
+-}
 type DType kind dtype
-    = DType DT
+    = DType DT (List kind -> Values)
+
+
+dtOf : DType k d -> DT
+dtOf (DType d _) =
+    d
+
+
+valuesOf : DType k d -> List k -> Values
+valuesOf (DType _ conv) =
+    conv
 
 
 {-| The axis an operation removes or inserts.
@@ -88,14 +102,6 @@ type One
 
 type Elems
     = Elems Never
-
-
-type Floating
-    = Floating Never
-
-
-type Integral
-    = Integral Never
 
 
 type F16
@@ -179,8 +185,17 @@ type alias Spec =
     { name : String, dtype : String, shape : List Int, role : Role }
 
 
+{-| A built graph: its specs, its lowered ops, and the expressions it was built from (the input
+placeholders and the outputs, in `inputs` and `outputs` order), which `Tensor.Eval` runs.
+-}
 type Graph
-    = Graph { name : String, inputs : List Spec, outputs : List Spec, ops : List Bc.Op }
+    = Graph
+        { name : String
+        , inputs : List Spec
+        , outputs : List Spec
+        , ops : List Bc.Op
+        , exprs : { inputs : List Expr, outputs : List Expr }
+        }
 
 
 

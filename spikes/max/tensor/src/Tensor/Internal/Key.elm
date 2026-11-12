@@ -1,4 +1,4 @@
-module Tensor.Internal.Key exposing (Key, mix, mixFloat, mixFloats, mixInts, mixKey, mixString, start)
+module Tensor.Internal.Key exposing (Key, mix, mixFloat, mixFloats, mixInt64s, mixInts, mixKey, mixString, start)
 
 {-| Structural keys: two multiplicative hashes, each below 2^31, so every product stays exact on
 every Elm back end. Equal expressions get equal keys; lowering checks the shallow structure on
@@ -57,3 +57,34 @@ mixFloat f k =
 mixFloats : List Float -> Key -> Key
 mixFloats l k =
     List.foldl mixFloat (mix (List.length l) k) l
+
+
+{-| Integer constants' values. An `Int` within ±2⁵³ is mixed as `mixFloat` mixes the same number
+(so a constant's key does not depend on whether it was written as `Float`s or `Int`s, and keys
+match those of earlier versions: shared subgraphs are named by key). A larger one is mixed as a
+marker, 65536 (never a limb), then its 64 bits as four 16-bit limbs (floored division: exact for
+negative values and the most negative `Int`).
+-}
+mixInt64s : List Int -> Key -> Key
+mixInt64s l k =
+    List.foldl mixInt64 (mix (List.length l) k) l
+
+
+mixInt64 : Int -> Key -> Key
+mixInt64 n k =
+    let
+        bound =
+            9007199254740992
+
+        step _ ( m, acc ) =
+            let
+                p =
+                    modBy 65536 m
+            in
+            ( (m - p) // 65536, mix p acc )
+    in
+    if n >= -bound && n <= bound then
+        mixFloat (toFloat n) k
+
+    else
+        List.foldl step ( n, mix 65536 k ) [ 1, 2, 3, 4 ] |> Tuple.second

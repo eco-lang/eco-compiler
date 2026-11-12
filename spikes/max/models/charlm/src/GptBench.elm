@@ -20,7 +20,7 @@ import Optim
 import Param
 import Platform
 import Signature as Sig
-import Tensor as T exposing (Dim, F32, Floating, I64, Integral, R2, R3, Tensor)
+import Tensor as T exposing (Dim, F32, I64, R2, R3, Tensor)
 import Tensor.Axis as Axis
 import Tensor.Random as Random exposing (Seed)
 import Train
@@ -79,7 +79,7 @@ type alias Params =
 
 
 type alias Hidden =
-    Tensor Floating F32 (R3 Batch Seq Model)
+    Tensor Float F32 (R3 Batch Seq Model)
 
 
 build : Cfg -> Result (List String) Graph
@@ -123,7 +123,7 @@ build cfg =
             else
                 layer ( Random.salt i (Random.seed (T.int 0)), bp, h )
 
-        loss : Params -> ( Tensor Integral I64 (R2 Batch Seq), Tensor Integral I64 (R2 Batch Seq) ) -> Tensor Floating F32 T.R0
+        loss : Params -> ( Tensor Int I64 (R2 Batch Seq), Tensor Int I64 (R2 Batch Seq) ) -> Tensor Float F32 T.R0
         loss p ( inputs, targets ) =
             p.embed.table
                 |> T.rowsAt (T.flatten tokens inputs)

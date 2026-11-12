@@ -9,12 +9,12 @@ This function cannot handle the argument sent through the (|>) pipe:
 The argument is:
 
     Param.Builder
-        { a | w : Tensor Floating F32 (R2 Hidden Pixels) }
-        (Tensor Floating F32 (R2 Pixels Hidden) -> P2)
+        { a | w : Tensor Float F32 (R2 Hidden Pixels) }
+        (Tensor Float F32 (R2 Pixels Hidden) -> P2)
 
 But (|>) is piping it to a function that expects:
 
     Param.Builder
-        { a | w : Tensor Floating F32 (R2 Hidden Pixels) }
-        (Tensor Floating F32 (R2 Hidden Pixels) -> f)
+        { a | w : Tensor Float F32 (R2 Hidden Pixels) }
+        (Tensor Float F32 (R2 Hidden Pixels) -> f)
 

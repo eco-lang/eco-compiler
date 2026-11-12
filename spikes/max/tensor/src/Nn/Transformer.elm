@@ -22,7 +22,7 @@ import Nn.Attention as Attention exposing (Attention)
 import Nn.LayerNorm as LayerNorm exposing (LayerNorm)
 import Nn.Linear as Linear exposing (Linear)
 import Param
-import Tensor as T exposing (DType, Dim, Floating, R2, Tensor)
+import Tensor as T exposing (DType, Dim, R2, Tensor)
 import Tensor.Random exposing (Seed)
 
 
@@ -57,7 +57,7 @@ type alias DecoderLayer d m h j f =
 {-| Each part from its module's `params` (`LayerNorm`, `Attention`, `Linear`); `dropout` is the
 given rate.
 -}
-encoderParams : DType Floating d -> { model : Dim m, heads : Dim h, headDim : Dim j, feedForward : Dim f, dropout : Float } -> Param.Spec (EncoderLayer d m h j f)
+encoderParams : DType Float d -> { model : Dim m, heads : Dim h, headDim : Dim j, feedForward : Dim f, dropout : Float } -> Param.Spec (EncoderLayer d m h j f)
 encoderParams dt c =
     Param.record EncoderLayer
         |> Param.sub .norm1 (LayerNorm.params dt c.model)
@@ -70,7 +70,7 @@ encoderParams dt c =
 
 {-| As `encoderParams`, for a decoder layer.
 -}
-decoderParams : DType Floating d -> { model : Dim m, heads : Dim h, headDim : Dim j, feedForward : Dim f, dropout : Float } -> Param.Spec (DecoderLayer d m h j f)
+decoderParams : DType Float d -> { model : Dim m, heads : Dim h, headDim : Dim j, feedForward : Dim f, dropout : Float } -> Param.Spec (DecoderLayer d m h j f)
 decoderParams dt c =
     Param.record DecoderLayer
         |> Param.sub .norm1 (LayerNorm.params dt c.model)
@@ -85,7 +85,7 @@ decoderParams dt c =
 
 {-| Pre-norm encoder block; `training` and `seed` drive dropout.
 -}
-encode : { causal : Bool, training : Bool } -> Seed -> EncoderLayer d m h j f -> Tensor Floating d (R2 s m) -> Tensor Floating d (R2 s m)
+encode : { causal : Bool, training : Bool } -> Seed -> EncoderLayer d m h j f -> Tensor Float d (R2 s m) -> Tensor Float d (R2 s m)
 encode cfg seed p x =
     let
         drop i =
@@ -100,7 +100,7 @@ encode cfg seed p x =
 {-| `decode cfg seed layer memory x`: pre-norm decoder block, causal self-attention then
 cross-attention to `memory` (t, m); `training` and `seed` drive dropout.
 -}
-decode : { training : Bool } -> Seed -> DecoderLayer d m h j f -> Tensor Floating d (R2 t m) -> Tensor Floating d (R2 s m) -> Tensor Floating d (R2 s m)
+decode : { training : Bool } -> Seed -> DecoderLayer d m h j f -> Tensor Float d (R2 t m) -> Tensor Float d (R2 s m) -> Tensor Float d (R2 s m)
 decode cfg seed p memory x =
     let
         drop i =

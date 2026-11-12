@@ -10,6 +10,7 @@
         "Tensor.Control",
         "Tensor.Random",
         "Tensor.Check",
+        "Tensor.Eval",
         "Signature",
         "Graph",
         "Transform",

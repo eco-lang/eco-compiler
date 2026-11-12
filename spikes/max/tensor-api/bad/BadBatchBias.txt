@@ -8,11 +8,11 @@ This function cannot handle the argument sent through the (|>) pipe:
                            ^^^^^^^^
 The argument is:
 
-    Tensor Floating F32 (R2 n Hidden)
+    Tensor Float F32 (R2 n Hidden)
 
 But (|>) is piping it to a function that expects:
 
-    Tensor Floating F32 (R2 Batch Hidden)
+    Tensor Float F32 (R2 Batch Hidden)
 
 Hint: Your type annotation uses type variable `n` which means ANY type of value
 can flow through, but your code is saying it specifically wants a `Batch` value.

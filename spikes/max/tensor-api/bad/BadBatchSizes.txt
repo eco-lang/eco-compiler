@@ -10,12 +10,12 @@ I cannot send this through the (<|) pipe:
 The argument is:
 
     Params
-    -> ( Tensor Integral U8 (R2 Batch Pixels), Tensor Integral U8 (R1 Batch) )
-    -> Tensor Floating F32 R0
+    -> ( Tensor Int U8 (R2 Batch Pixels), Tensor Int U8 (R1 Batch) )
+    -> Tensor Float F32 R0
 
 But (<|) is piping it to a function that expects:
 
     Params
-    -> ( Tensor Integral U8 (R2 Batch Pixels), Tensor Integral U8 (R1 Test) )
-    -> Tensor Floating F32 R0
+    -> ( Tensor Int U8 (R2 Batch Pixels), Tensor Int U8 (R1 Test) )
+    -> Tensor Float F32 R0
 

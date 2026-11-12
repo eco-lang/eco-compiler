@@ -1,9 +1,9 @@
 module Tensor exposing
     ( Tensor, Mask, Dim, Shape, DType, Axis, Retag, Lift, Perm
     , R0, R1, R2, R3, R4, R5, One, Elems
-    , Floating, Integral, F16, BF16, F32, F64, I8, I32, I64, U8, U64, float16, bfloat16, float32, float64, int8, int32, int64, uint8, uint64
+    , F16, BF16, F32, F64, I8, I32, I64, U8, U64, float16, bfloat16, float32, float64, int8, int32, int64, uint8, uint64
     , dim, one, size, scalar, r1, r2, r3, r4, r5, shapeOf, dtypeName
-    , float, int, constant, fillLike, zeros, ones, full, fromList, zerosLike, onesLike, fullLike, iota, arange, hannWindow
+    , float, int, constant, fillLike, zeros, ones, full, fromList, zerosLike, onesLike, fullLike, fullLikeInt, iota, arange, hannWindow
     , cast, castLike, toFloat, toInt
     , abs, negate, sign, exp, log, log1p, sqrt, rsqrt, sin, cos, acos, atanh, erf, floor, round, truncate
     , relu, sigmoid, tanh, gelu, geluTanh, silu, quickGelu, isInfinite, isNaN
@@ -14,14 +14,14 @@ module Tensor exposing
     , softmax, logSoftmax
     , reshape, flatten, flattenTail3, flattenTail4, factorLast2, factorLast3, factorLast4, mergeLast2, mergeLast3, mergeLast4
     , transpose, permute, broadcast, broadcastTo, rows, columns, insertOne, dropOne
-    , slice, sliceUpdate, concat, concat2, chunks, stack, unstack, flip, pad
+    , slice, sliceUpdate, concat, concat2, chunks, stack, unstack, flip, pad, padInt
     , take, rowsAt, pick, put, putAdd, triu, tril, lowerTriangle
     , stopGradient
     )
 
-{-| Tensors as values, typed by kind, dtype and shape.
+{-| Tensors as values, typed by element type, dtype and shape.
 
-A `Tensor kind dtype shape` is an immutable expression: nothing is computed until a `Graph` is built
+A `Tensor e dtype shape` is an immutable expression: nothing is computed until a `Graph` is built
 and run by MAX. The shape is a fixed-rank type of named dimensions, `R2 Batch Hidden`, so mixing up
 dimensions, axes or dtypes is a compile error; sizes the types cannot compute are checked when the
 graph is built.
@@ -43,7 +43,17 @@ The ranks a shape type can have, and the tag of a size-1 axis.
 
 # Dtypes
 
-@docs Floating, Integral, F16, BF16, F32, F64, I8, I32, I64, U8, U64, float16, bfloat16, float32, float64, int8, int32, int64, uint8, uint64
+A tensor's first type parameter is the Elm type of its elements: `Float` for the floating dtypes
+(`Tensor Float F32 s`) and `Int` for the integer ones (`Tensor Int I64 s`). Values given to
+`constant`, `full`, `fromList`, `fullLikeInt` and `padInt` have that type, so integers never pass
+through `Float`: on eco's native code, where `Int` is 64-bit, they are exact to 64 bits. (Under
+JavaScript an `Int` is exact only to 2⁵³.) An integer that does not fit its dtype, such as 300 for
+`uint8`, is a build error.
+
+A u64 element is the `Int` with the same 64 bits: 2⁶³ … 2⁶⁴ − 1 are written and read as negative
+`Int`s (`fromList uint64 shape [ -1 ]` is 2⁶⁴ − 1).
+
+@docs F16, BF16, F32, F64, I8, I32, I64, U8, U64, float16, bfloat16, float32, float64, int8, int32, int64, uint8, uint64
 
 
 # Dimensions and shapes
@@ -53,7 +63,7 @@ The ranks a shape type can have, and the tag of a size-1 axis.
 
 # Construction
 
-@docs float, int, constant, fillLike, zeros, ones, full, fromList, zerosLike, onesLike, fullLike, iota, arange, hannWindow
+@docs float, int, constant, fillLike, zeros, ones, full, fromList, zerosLike, onesLike, fullLike, fullLikeInt, iota, arange, hannWindow
 
 
 # Casts
@@ -110,7 +120,7 @@ Binary operations read left to right in a pipeline: `x |> minus y` is x - y.
 
 # Slicing and joining
 
-@docs slice, sliceUpdate, concat, concat2, chunks, stack, unstack, flip, pad
+@docs slice, sliceUpdate, concat, concat2, chunks, stack, unstack, flip, pad, padInt
 
 
 # Indexing
@@ -128,17 +138,18 @@ import Tensor.Internal.Expr as E exposing (Expr)
 import Tensor.Internal.Ops as O
 import Tensor.Internal.Prim as P exposing (DT(..), Prim(..))
 import Tensor.Internal.Types as I
+import Tensor.Internal.Values as Values
 
 
 
 -- TYPES
 
 
-{-| A tensor expression of a kind (`Floating` or `Integral`), a dtype (`F32`, `I64`, ...) and a shape
+{-| A tensor expression of an element type (`Float` or `Int`), a dtype (`F32`, `I64`, ...) and a shape
 (`R2 Batch Hidden`). Nothing is computed until a `Graph` is built and run.
 -}
-type alias Tensor kind dtype shape =
-    I.Tensor kind dtype shape
+type alias Tensor e dtype shape =
+    I.Tensor e dtype shape
 
 
 {-| A boolean tensor of a shape: what comparisons make and `select` consumes.
@@ -160,10 +171,10 @@ type alias Shape s =
     I.Shape s
 
 
-{-| An element type and its kind: `float32 : DType Floating F32`.
+{-| An element type, with the Elm type of its elements: `float32 : DType Float F32`, `int64 : DType Int I64`.
 -}
-type alias DType kind dtype =
-    I.DType kind dtype
+type alias DType e dtype =
+    I.DType e dtype
 
 
 {-| Which axis an operation removes or inserts, typed by the shape with it (`s`), the shape without it
@@ -239,18 +250,6 @@ operations apply to it.
 -}
 type alias Elems =
     I.Elems
-
-
-{-| The kind of the floating-point dtypes.
--}
-type alias Floating =
-    I.Floating
-
-
-{-| The kind of the integer dtypes.
--}
-type alias Integral =
-    I.Integral
 
 
 {-| IEEE half precision.
@@ -333,70 +332,75 @@ mask =
 
 {-| f16 elements.
 -}
-float16 : DType Floating F16
+float16 : DType Float F16
 float16 =
-    I.DType F16
+    I.DType F16 Values.FloatValues
 
 
 {-| bf16 elements.
 -}
-bfloat16 : DType Floating BF16
+bfloat16 : DType Float BF16
 bfloat16 =
-    I.DType BF16
+    I.DType BF16 Values.FloatValues
 
 
 {-| f32 elements.
 -}
-float32 : DType Floating F32
+float32 : DType Float F32
 float32 =
-    I.DType F32
+    I.DType F32 Values.FloatValues
 
 
 {-| f64 elements.
 -}
-float64 : DType Floating F64
+float64 : DType Float F64
 float64 =
-    I.DType F64
+    I.DType F64 Values.FloatValues
 
 
 {-| Signed 8-bit integer elements.
 -}
-int8 : DType Integral I8
+int8 : DType Int I8
 int8 =
-    I.DType SI8
+    I.DType SI8 Values.IntValues
 
 
 {-| Signed 32-bit integer elements.
 -}
-int32 : DType Integral I32
+int32 : DType Int I32
 int32 =
-    I.DType SI32
+    I.DType SI32 Values.IntValues
 
 
 {-| Signed 64-bit integer elements.
 -}
-int64 : DType Integral I64
+int64 : DType Int I64
 int64 =
-    I.DType SI64
+    I.DType SI64 Values.IntValues
 
 
 {-| Unsigned 8-bit integer elements.
 -}
-uint8 : DType Integral U8
+uint8 : DType Int U8
 uint8 =
-    I.DType UI8
+    I.DType UI8 Values.IntValues
 
 
 {-| Unsigned 64-bit integer elements.
 -}
-uint64 : DType Integral U64
+uint64 : DType Int U64
 uint64 =
-    I.DType UI64
+    I.DType UI64 Values.IntValues
 
 
 dt : DType k d -> DT
-dt (I.DType d) =
-    d
+dt =
+    I.dtOf
+
+
+conv : DType k d -> List k -> Values.Values
+conv =
+    I.valuesOf
 
 
 
@@ -486,23 +490,24 @@ dtypeName x =
 
 {-| An f32 scalar.
 -}
-float : Float -> Tensor Floating F32 R0
+float : Float -> Tensor Float F32 R0
 float f =
     wrap (E.scalar F32 f)
 
 
-{-| An i64 scalar.
+{-| An i64 scalar (exact: the `Int` never passes through `Float`).
 -}
-int : Int -> Tensor Integral I64 R0
+int : Int -> Tensor Int I64 R0
 int n =
-    wrap (E.scalar SI64 (Basics.toFloat n))
+    wrap (E.constValues SI64 [] (Values.IntValues [ n ]))
 
 
-{-| A scalar of a dtype: `constant bfloat16 0.5`.
+{-| A scalar of a dtype, given as the dtype's kind: `constant bfloat16 0.5`, `constant uint8 200`.
+An integer outside the dtype's range (300 for `uint8`) is a build error.
 -}
-constant : DType k d -> Float -> Tensor k d R0
+constant : DType e d -> e -> Tensor e d R0
 constant d v =
-    wrap (E.scalar (dt d) v)
+    wrap (E.constValues (dt d) [] (conv d [ v ]))
 
 
 {-| A scalar spread to the shape of a template: `fillLike rate grad`.
@@ -512,32 +517,34 @@ fillLike c x =
     wrap (O.broadcastTo (E.shape (un x)) (un c))
 
 
-{-| Every element `v`: `full float32 0.5 (r2 batch hidden)`.
+{-| Every element `v`: `full float32 0.5 (r2 batch hidden)`, `full int64 7 (r1 n)`.
 -}
-full : DType k d -> Float -> Shape s -> Tensor k d s
+full : DType e d -> e -> Shape s -> Tensor e d s
 full d v (I.Shape s) =
-    wrap (O.broadcastTo s (E.scalar (dt d) v))
+    wrap (O.broadcastTo s (E.constValues (dt d) [] (conv d [ v ])))
 
 
 {-| Every element 0.
 -}
-zeros : DType k d -> Shape s -> Tensor k d s
-zeros d =
-    full d 0
+zeros : DType e d -> Shape s -> Tensor e d s
+zeros d (I.Shape s) =
+    wrap (O.broadcastTo s (E.scalar (dt d) 0))
 
 
 {-| Every element 1.
 -}
-ones : DType k d -> Shape s -> Tensor k d s
-ones d =
-    full d 1
+ones : DType e d -> Shape s -> Tensor e d s
+ones d (I.Shape s) =
+    wrap (O.broadcastTo s (E.scalar (dt d) 1))
 
 
-{-| Row-major values; their number must be the shape's size (checked when the graph is built).
+{-| Row-major values of the dtype's kind: `fromList float32 (r1 three) [ 1, 2.5, 4 ]`,
+`fromList int64 (r1 two) [ 7, -3 ]`. Their number must be the shape's size, and integers must fit
+the dtype (both checked when the graph is built).
 -}
-fromList : DType k d -> Shape s -> List Float -> Tensor k d s
+fromList : DType e d -> Shape s -> List e -> Tensor e d s
 fromList d (I.Shape s) values =
-    wrap (E.const (dt d) s values)
+    wrap (E.constValues (dt d) s (conv d values))
 
 
 {-| Zeros of another tensor's dtype and shape.
@@ -554,30 +561,37 @@ onesLike =
     map1 O.onesLike
 
 
-{-| `v` everywhere, in another tensor's dtype and shape.
+{-| `v` everywhere, in another floating tensor's dtype and shape.
 -}
-fullLike : Float -> Tensor k d s -> Tensor k d s
+fullLike : Float -> Tensor Float d s -> Tensor Float d s
 fullLike v =
     map1 (O.fullLike v)
 
 
+{-| `v` everywhere, in another integer tensor's dtype and shape (exact; it must fit the dtype).
+-}
+fullLikeInt : Int -> Tensor Int d s -> Tensor Int d s
+fullLikeInt v =
+    map1 (O.fullLikeValues (Values.IntValues [ v ]))
+
+
 {-| 0, 1 .. n - 1.
 -}
-iota : Dim n -> Tensor Integral I64 (R1 n)
+iota : Dim n -> Tensor Int I64 (R1 n)
 iota (I.Dim n) =
     wrap (O.range 0 1 n)
 
 
 {-| `start`, `start + step`, ... : as many values as the dimension says.
 -}
-arange : { start : Int, step : Int } -> Dim n -> Tensor Integral I64 (R1 n)
+arange : { start : Int, step : Int } -> Dim n -> Tensor Int I64 (R1 n)
 arange r (I.Dim n) =
     wrap (O.range r.start r.step n)
 
 
 {-| w[i] = ½ (1 - cos (2π i / N)), N = n if periodic, else n - 1.
 -}
-hannWindow : { periodic : Bool } -> DType Floating d -> Dim n -> Tensor Floating d (R1 n)
+hannWindow : { periodic : Bool } -> DType Float d -> Dim n -> Tensor Float d (R1 n)
 hannWindow cfg d (I.Dim n) =
     let
         big =
@@ -619,14 +633,14 @@ castLike t =
 
 {-| Convert the elements to f32.
 -}
-toFloat : Tensor k d s -> Tensor Floating F32 s
+toFloat : Tensor k d s -> Tensor Float F32 s
 toFloat =
     map1 (O.cast F32)
 
 
 {-| Convert the elements to i64.
 -}
-toInt : Tensor k d s -> Tensor Integral I64 s
+toInt : Tensor k d s -> Tensor Int I64 s
 toInt =
     map1 (O.cast SI64)
 
@@ -658,91 +672,91 @@ sign =
 
 {-| `e ** x`, element-wise.
 -}
-exp : Tensor Floating d s -> Tensor Floating d s
+exp : Tensor Float d s -> Tensor Float d s
 exp =
     map1 (O.unary Exp)
 
 
 {-| The natural logarithm, element-wise.
 -}
-log : Tensor Floating d s -> Tensor Floating d s
+log : Tensor Float d s -> Tensor Float d s
 log =
     map1 (O.unary Log)
 
 
 {-| log (1 + x), accurate for small x.
 -}
-log1p : Tensor Floating d s -> Tensor Floating d s
+log1p : Tensor Float d s -> Tensor Float d s
 log1p =
     map1 (O.unary Log1p)
 
 
 {-| Square root, element-wise.
 -}
-sqrt : Tensor Floating d s -> Tensor Floating d s
+sqrt : Tensor Float d s -> Tensor Float d s
 sqrt =
     map1 (O.unary Sqrt)
 
 
 {-| 1 / sqrt x, element-wise.
 -}
-rsqrt : Tensor Floating d s -> Tensor Floating d s
+rsqrt : Tensor Float d s -> Tensor Float d s
 rsqrt =
     map1 (O.unary Rsqrt)
 
 
 {-| Sine, element-wise (radians).
 -}
-sin : Tensor Floating d s -> Tensor Floating d s
+sin : Tensor Float d s -> Tensor Float d s
 sin =
     map1 (O.unary Sin)
 
 
 {-| Cosine, element-wise (radians).
 -}
-cos : Tensor Floating d s -> Tensor Floating d s
+cos : Tensor Float d s -> Tensor Float d s
 cos =
     map1 (O.unary Cos)
 
 
 {-| Arc cosine, element-wise.
 -}
-acos : Tensor Floating d s -> Tensor Floating d s
+acos : Tensor Float d s -> Tensor Float d s
 acos =
     map1 (O.unary Acos)
 
 
 {-| Inverse hyperbolic tangent, element-wise.
 -}
-atanh : Tensor Floating d s -> Tensor Floating d s
+atanh : Tensor Float d s -> Tensor Float d s
 atanh =
     map1 (O.unary Atanh)
 
 
 {-| The error function, element-wise.
 -}
-erf : Tensor Floating d s -> Tensor Floating d s
+erf : Tensor Float d s -> Tensor Float d s
 erf =
     map1 (O.unary Erf)
 
 
 {-| Round down, element-wise.
 -}
-floor : Tensor Floating d s -> Tensor Floating d s
+floor : Tensor Float d s -> Tensor Float d s
 floor =
     map1 (O.unary Floor)
 
 
 {-| Half to even.
 -}
-round : Tensor Floating d s -> Tensor Floating d s
+round : Tensor Float d s -> Tensor Float d s
 round =
     map1 (O.unary Round)
 
 
 {-| Round towards zero, element-wise.
 -}
-truncate : Tensor Floating d s -> Tensor Floating d s
+truncate : Tensor Float d s -> Tensor Float d s
 truncate =
     map1 (O.unary Trunc)
 
@@ -756,49 +770,49 @@ relu =
 
 {-| `1 / (1 + e ** -x)`, element-wise.
 -}
-sigmoid : Tensor Floating d s -> Tensor Floating d s
+sigmoid : Tensor Float d s -> Tensor Float d s
 sigmoid =
     map1 (O.unary Sigmoid)
 
 
 {-| Hyperbolic tangent, element-wise.
 -}
-tanh : Tensor Floating d s -> Tensor Floating d s
+tanh : Tensor Float d s -> Tensor Float d s
 tanh =
     map1 (O.unary Tanh)
 
 
 {-| x Φ(x), exact.
 -}
-gelu : Tensor Floating d s -> Tensor Floating d s
+gelu : Tensor Float d s -> Tensor Float d s
 gelu =
     map1 (O.unary Gelu)
 
 
 {-| GELU with the tanh approximation.
 -}
-geluTanh : Tensor Floating d s -> Tensor Floating d s
+geluTanh : Tensor Float d s -> Tensor Float d s
 geluTanh =
     map1 (O.unary GeluTanh)
 
 
 {-| x · sigmoid x (also called swish).
 -}
-silu : Tensor Floating d s -> Tensor Floating d s
+silu : Tensor Float d s -> Tensor Float d s
 silu =
     map1 (O.unary Silu)
 
 
 {-| Where an element is +∞ or -∞.
 -}
-isInfinite : Tensor Floating d s -> Mask s
+isInfinite : Tensor Float d s -> Mask s
 isInfinite x =
     mask (O.unary IsInf (un x))
 
 
 {-| Where an element is NaN.
 -}
-isNaN : Tensor Floating d s -> Mask s
+isNaN : Tensor Float d s -> Mask s
 isNaN x =
     mask (O.unary IsNaN (un x))
 
@@ -831,21 +845,21 @@ times =
 
 {-| `x |> dividedBy y` is x / y.
 -}
-dividedBy : Tensor Floating d s -> Tensor Floating d s -> Tensor Floating d s
+dividedBy : Tensor Float d s -> Tensor Float d s -> Tensor Float d s
 dividedBy =
     map2 O.div
 
 
 {-| `x |> modBy m`: the remainder with the sign of `m`, as `Basics.modBy`.
 -}
-modBy : Tensor Integral d s -> Tensor Integral d s -> Tensor Integral d s
+modBy : Tensor Int d s -> Tensor Int d s -> Tensor Int d s
 modBy =
     map2 (O.binary Mod)
 
 
 {-| `x |> pow y` is `x ** y`.
 -}
-pow : Tensor Floating d s -> Tensor Floating d s -> Tensor Floating d s
+pow : Tensor Float d s -> Tensor Float d s -> Tensor Float d s
 pow =
     map2 (O.binary Pow)
 
@@ -866,14 +880,14 @@ min =
 
 {-| `x |> scale k` is `x * k`.
 -}
-scale : Float -> Tensor Floating d s -> Tensor Floating d s
+scale : Float -> Tensor Float d s -> Tensor Float d s
 scale k =
     map1 (\x -> O.mul x (O.scalarLike k x))
 
 
 {-| `x |> shift k` is x + k.
 -}
-shift : Float -> Tensor Floating d s -> Tensor Floating d s
+shift : Float -> Tensor Float d s -> Tensor Float d s
 shift k =
     map1 (\x -> O.add x (O.scalarLike k x))
 
@@ -1069,7 +1083,7 @@ sum (I.Axis i) =
 
 {-| The mean along an axis, which the result drops.
 -}
-mean : Axis s r c -> Tensor Floating d s -> Tensor Floating d r
+mean : Axis s r c -> Tensor Float d s -> Tensor Float d r
 mean (I.Axis i) =
     map1 (O.reduce ReduceMean i)
 
@@ -1090,14 +1104,14 @@ minimum (I.Axis i) =
 
 {-| The index of the largest value along an axis, which the result drops.
 -}
-argMax : Axis s r c -> Tensor k d s -> Tensor Integral I64 r
+argMax : Axis s r c -> Tensor k d s -> Tensor Int I64 r
 argMax (I.Axis i) =
     map1 (O.reduce ArgMax i)
 
 
 {-| The index of the smallest value along an axis, which the result drops.
 -}
-argMin : Axis s r c -> Tensor k d s -> Tensor Integral I64 r
+argMin : Axis s r c -> Tensor k d s -> Tensor Int I64 r
 argMin (I.Axis i) =
     map1 (O.reduce ArgMin i)
 
@@ -1119,7 +1133,7 @@ cumsumWith cfg (I.Axis i) =
 
 {-| log (sum (exp x)), stable.
 -}
-logSumExp : Axis s r c -> Tensor Floating d s -> Tensor Floating d r
+logSumExp : Axis s r c -> Tensor Float d s -> Tensor Float d r
 logSumExp (I.Axis i) =
     map1 (O.logSumExp i)
 
@@ -1133,7 +1147,7 @@ sumAll =
 
 {-| The mean of every element.
 -}
-meanAll : Tensor Floating d s -> Tensor Floating d R0
+meanAll : Tensor Float d s -> Tensor Float d R0
 meanAll =
     map1 O.meanAll
 
@@ -1161,14 +1175,14 @@ minMax x =
 
 {-| exp x / sum (exp x) along an axis: each slice along it sums to 1.
 -}
-softmax : Axis s r c -> Tensor Floating d s -> Tensor Floating d s
+softmax : Axis s r c -> Tensor Float d s -> Tensor Float d s
 softmax (I.Axis i) =
     map1 (O.softmax i)
 
 
 {-| log (softmax x) along an axis, computed stably.
 -}
-logSoftmax : Axis s r c -> Tensor Floating d s -> Tensor Floating d s
+logSoftmax : Axis s r c -> Tensor Float d s -> Tensor Float d s
 logSoftmax (I.Axis i) =
     map1 (O.logSoftmax i)
 
@@ -1502,42 +1516,49 @@ flip (I.Axis i) =
 {-| `before` and `after` elements of `value` around one axis; the dimension is the padded size
 (checked).
 -}
-pad : Retag s t a c -> { before : Int, after : Int, value : Float } -> Dim c -> Tensor k d s -> Tensor k d t
+pad : Retag s t a c -> { before : Int, after : Int, value : Float } -> Dim c -> Tensor Float d s -> Tensor Float d t
 pad (I.Retag i) cfg (I.Dim c) =
     map1 (\x -> expectSize i c "pad" (O.pad i cfg.before cfg.after cfg.value x))
 
 
+{-| `pad` for integer tensors: the fill value is exact and must fit the dtype.
+-}
+padInt : Retag s t a c -> { before : Int, after : Int, value : Int } -> Dim c -> Tensor Int d s -> Tensor Int d t
+padInt (I.Retag i) cfg (I.Dim c) =
+    map1 (\x -> expectSize i c "padInt" (O.padInt i cfg.before cfg.after cfg.value x))
+
+
 {-| Gather along one axis: `x |> take retag indices`.
 -}
-take : Retag s t a c -> Tensor Integral i (R1 c) -> Tensor k d s -> Tensor k d t
+take : Retag s t a c -> Tensor Int i (R1 c) -> Tensor k d s -> Tensor k d t
 take (I.Retag i) idx =
     map1 (\x -> O.gather i x (O.cast SI64 (un idx)))
 
 
 {-| The rows at the indices, in their order (an embedding lookup): `table |> rowsAt ids`.
 -}
-rowsAt : Tensor Integral i (R1 n) -> Tensor k d (R2 v m) -> Tensor k d (R2 n m)
+rowsAt : Tensor Int i (R1 n) -> Tensor k d (R2 v m) -> Tensor k d (R2 n m)
 rowsAt idx =
     map1 (\x -> O.gather 0 x (O.cast SI64 (un idx)))
 
 
 {-| One element per row: `x |> pick indices` is x[i, indices[i]].
 -}
-pick : Tensor Integral i (R1 n) -> Tensor k d (R2 n c) -> Tensor k d (R1 n)
+pick : Tensor Int i (R1 n) -> Tensor k d (R2 n c) -> Tensor k d (R1 n)
 pick idx =
     map1 (O.pick (un idx))
 
 
 {-| `x |> put retag indices updates`: x with the slices at `indices` replaced.
 -}
-put : Retag s t a c -> Tensor Integral i (R1 c) -> Tensor k d t -> Tensor k d s -> Tensor k d s
+put : Retag s t a c -> Tensor Int i (R1 c) -> Tensor k d t -> Tensor k d s -> Tensor k d s
 put (I.Retag i) idx upd =
     map1 (\x -> O.scatterAxis i x (un upd) (O.cast SI64 (un idx)))
 
 
 {-| The same, adding the updates (repeated indices add up).
 -}
-putAdd : Retag s t a c -> Tensor Integral i (R1 c) -> Tensor k d t -> Tensor k d s -> Tensor k d s
+putAdd : Retag s t a c -> Tensor Int i (R1 c) -> Tensor k d t -> Tensor k d s -> Tensor k d s
 putAdd (I.Retag i) idx upd =
     map1 (\x -> O.scatterAxisAdd i x (un upd) (O.cast SI64 (un idx)))
 
@@ -1579,7 +1600,7 @@ stopGradient =
 
 {-| `x |> quickGelu`: x · sigmoid(1.702 x), the GELU approximation CLIP uses.
 -}
-quickGelu : Tensor Floating d s -> Tensor Floating d s
+quickGelu : Tensor Float d s -> Tensor Float d s
 quickGelu =
     map1 (\e -> O.mul e (O.unary P.Sigmoid (O.mul e (O.scalarLike 1.702 e))))
 
@@ -1587,7 +1608,7 @@ quickGelu =
 {-| The `k` largest values along the retagged axis, largest first, and their indices:
 `logits |> topK Axis.retag1of2 (T.dim Top 5)`. No gradient (differentiating it is refused).
 -}
-topK : Retag s t a c -> Dim c -> Tensor k d s -> ( Tensor k d t, Tensor Integral I64 t )
+topK : Retag s t a c -> Dim c -> Tensor k d s -> ( Tensor k d t, Tensor Int I64 t )
 topK (I.Retag i) (I.Dim k) x =
     let
         ( v, ix ) =
@@ -1598,7 +1619,7 @@ topK (I.Retag i) (I.Dim k) x =
 
 {-| The `k` smallest, smallest first, and their indices.
 -}
-bottomK : Retag s t a c -> Dim c -> Tensor k d s -> ( Tensor k d t, Tensor Integral I64 t )
+bottomK : Retag s t a c -> Dim c -> Tensor k d s -> ( Tensor k d t, Tensor Int I64 t )
 bottomK (I.Retag i) (I.Dim k) x =
     let
         ( v, ix ) =
@@ -1610,7 +1631,7 @@ bottomK (I.Retag i) (I.Dim k) x =
 {-| The values along an axis in order, and the indices they came from (`take` with them gives the
 sorted values back). No gradient. On a GPU only the last axis can be sorted.
 -}
-sort : { descending : Bool } -> Axis s r c -> Tensor k d s -> ( Tensor k d s, Tensor Integral I64 s )
+sort : { descending : Bool } -> Axis s r c -> Tensor k d s -> ( Tensor k d s, Tensor Int I64 s )
 sort cfg (I.Axis i) x =
     let
         e =

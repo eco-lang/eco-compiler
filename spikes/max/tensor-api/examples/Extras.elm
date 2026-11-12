@@ -4,7 +4,7 @@ import Finetune.Qlora as Qlora exposing (Quantized)
 import MnistNet exposing (Hidden, Params, Pixels, hidden, pixels, params)
 import Optim
 import Param
-import Tensor as T exposing (Dim, Elems, F32, Floating, R1, R2, Tensor)
+import Tensor as T exposing (Dim, Elems, F32, R1, R2, Tensor)
 import Tensor.Axis as Axis
 import Transform
 
@@ -45,7 +45,7 @@ type Rows
 
 {-| Per-example forward passes of a function of two tensors, one of them shared.
 -}
-perExample : Tensor Floating F32 (R2 Hidden Pixels) -> Tensor Floating F32 (R2 Rows Pixels) -> Tensor Floating F32 (R2 Rows Hidden)
+perExample : Tensor Float F32 (R2 Hidden Pixels) -> Tensor Float F32 (R2 Rows Pixels) -> Tensor Float F32 (R2 Rows Hidden)
 perExample w =
     Transform.vmapWith (Transform.pair Transform.keep (Transform.tensor Axis.liftRank1)) (Transform.tensor Axis.liftRank1)
         (\( wt, x ) -> wt |> T.matVec x)
@@ -66,6 +66,6 @@ three =
     T.dim Rows 3
 
 
-stacked : Tensor Floating F32 (R1 Pixels) -> Tensor Floating F32 (R2 Rows Pixels)
+stacked : Tensor Float F32 (R1 Pixels) -> Tensor Float F32 (R2 Rows Pixels)
 stacked x =
     T.stack Axis.liftRank1 three [ x, x, x ]

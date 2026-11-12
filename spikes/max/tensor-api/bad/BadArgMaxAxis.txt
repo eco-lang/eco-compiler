@@ -8,9 +8,9 @@ This function cannot handle the argument sent through the (|>) pipe:
                                                  ^^^^^^^^^^^^^^^^^^^^
 The argument is:
 
-    Tensor Integral I64 (R1 Classes)
+    Tensor Int I64 (R1 Classes)
 
 But (|>) is piping it to a function that expects:
 
-    Tensor Integral I64 (R1 Test)
+    Tensor Int I64 (R1 Test)
 

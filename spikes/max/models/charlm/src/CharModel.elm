@@ -21,7 +21,7 @@ import Nn.Transformer as Transformer exposing (EncoderLayer)
 import Optim
 import Param
 import Signature as Sig
-import Tensor as T exposing (Dim, F32, Floating, I64, Integral, R1, R2, R3, Tensor, U8)
+import Tensor as T exposing (Dim, F32, I64, R1, R2, R3, Tensor, U8)
 import Tensor.Axis as Axis
 import Tensor.Random as Random exposing (Seed)
 import Train
@@ -130,7 +130,7 @@ type alias Block =
 
 type alias Params =
     { embed : Embedding F32 Vocab Model
-    , position : Tensor Floating F32 (R2 Seq Model)
+    , position : Tensor Float F32 (R2 Seq Model)
     , blocks : List Block
     , final : LayerNorm F32 Model
     , unembed : Linear F32 Model Vocab
@@ -157,7 +157,7 @@ params cfg =
 
 
 type alias Hidden =
-    Tensor Floating F32 (R3 Batch Seq Model)
+    Tensor Float F32 (R3 Batch Seq Model)
 
 
 {-| One layer over the whole batch: the per-sequence layer, vmapped.
@@ -188,7 +188,7 @@ evalLayer =
 {-| The mean next-byte cross-entropy of a batch of windows (each 65 bytes: 64 inputs, and the 64
 bytes after each as targets).
 -}
-loss : Config -> Bool -> Seed -> Params -> Tensor Integral U8 (R2 Batch Window) -> Tensor Floating F32 T.R0
+loss : Config -> Bool -> Seed -> Params -> Tensor Int U8 (R2 Batch Window) -> Tensor Float F32 T.R0
 loss cfg training s p windows =
     let
         inputs =

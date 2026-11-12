@@ -29,7 +29,7 @@ import Nn.KvCache as KvCache
 import Nn.Linear as Linear exposing (Linear)
 import Nn.Rotary as Rotary exposing (Rotary)
 import Param
-import Tensor as T exposing (DType, Dim, Floating, I64, Integral, R0, R1, R2, R3, Tensor)
+import Tensor as T exposing (DType, Dim, I64, R0, R1, R2, R3, Tensor)
 import Tensor.Axis as Axis
 import Tensor.Internal.Expr as E
 import Tensor.Internal.Ops as O
@@ -52,7 +52,7 @@ type alias Attention d m h j =
 
 {-| Every projection a `Linear.params` (He-uniform weights, zero biases).
 -}
-params : DType Floating d -> Dim m -> Dim h -> Dim j -> Param.Spec (Attention d m h j)
+params : DType Float d -> Dim m -> Dim h -> Dim j -> Param.Spec (Attention d m h j)
 params dt m h j =
     Param.record Attention
         |> Param.sub .query (Linear.params dt m m)
@@ -64,19 +64,19 @@ params dt m h j =
         |> Param.config .headDim j
 
 
-heads : Attention d m h j -> Linear d m m -> Tensor Floating d (R2 s m) -> Tensor Floating d (R3 h s j)
+heads : Attention d m h j -> Linear d m m -> Tensor Float d (R2 s m) -> Tensor Float d (R3 h s j)
 heads p l x =
     x |> Linear.apply l |> T.factorLast3 p.heads p.headDim |> T.permute Axis.swap01of3
 
 
-merge : Attention d m h j -> Tensor Floating d (R3 h s j) -> Tensor Floating d (R2 s m)
+merge : Attention d m h j -> Tensor Float d (R3 h s j) -> Tensor Float d (R2 s m)
 merge p o =
     o |> T.permute Axis.swap01of3 |> T.mergeLast3 p.model |> Linear.apply p.out
 
 
 {-| Self-attention over one sequence.
 -}
-self : { causal : Bool } -> Attention d m h j -> Tensor Floating d (R2 s m) -> Tensor Floating d (R2 s m)
+self : { causal : Bool } -> Attention d m h j -> Tensor Float d (R2 s m) -> Tensor Float d (R2 s m)
 self cfg p x =
     let
         q =
@@ -99,7 +99,7 @@ self cfg p x =
 
 {-| Attention from a sequence to a memory (`cross attention memory x`).
 -}
-cross : Attention d m h j -> Tensor Floating d (R2 t m) -> Tensor Floating d (R2 s m) -> Tensor Floating d (R2 s m)
+cross : Attention d m h j -> Tensor Float d (R2 t m) -> Tensor Float d (R2 s m) -> Tensor Float d (R2 s m)
 cross p memory x =
     heads p p.query x
         |> Nn.attention { mask = Nothing, bias = Nothing } (heads p p.key memory) (heads p p.value memory)
@@ -110,7 +110,7 @@ cross p memory x =
 -- PROJECTIONS WITH OR WITHOUT BIASES
 
 
-linearSpec : DType Floating d -> Bool -> Dim i -> Dim o -> Param.Spec (Linear d i o)
+linearSpec : DType Float d -> Bool -> Dim i -> Dim o -> Param.Spec (Linear d i o)
 linearSpec dt bias i o =
     if bias then
         Linear.params dt i o
@@ -122,7 +122,7 @@ linearSpec dt bias i o =
 {-| As `params`, choosing which projections have biases (CLIP and GPT-2: all; Llama: none; Stable
 Diffusion: only the output).
 -}
-paramsWith : DType Floating d -> { projectionBias : Bool, outBias : Bool } -> Dim m -> Dim h -> Dim j -> Param.Spec (Attention d m h j)
+paramsWith : DType Float d -> { projectionBias : Bool, outBias : Bool } -> Dim m -> Dim h -> Dim j -> Param.Spec (Attention d m h j)
 paramsWith dt cfg m h j =
     Param.record Attention
         |> Param.sub .query (linearSpec dt cfg.projectionBias m m)
@@ -137,12 +137,12 @@ paramsWith dt cfg m h j =
 {-| x projected by `l` and split into `heads` heads of `j` (build time checks heads × j is the
 projection's width).
 -}
-split : Dim heads -> Dim j -> Linear d m w -> Tensor Floating d (R2 s m) -> Tensor Floating d (R3 heads s j)
+split : Dim heads -> Dim j -> Linear d m w -> Tensor Float d (R2 s m) -> Tensor Float d (R3 heads s j)
 split hd jd l x =
     x |> Linear.apply l |> T.factorLast3 hd jd |> T.permute Axis.swap01of3
 
 
-mergeOut : Dim m -> Linear d m m -> Tensor Floating d (R3 h s j) -> Tensor Floating d (R2 s m)
+mergeOut : Dim m -> Linear d m m -> Tensor Float d (R3 h s j) -> Tensor Float d (R2 s m)
 mergeOut md l o =
     o |> T.permute Axis.swap01of3 |> T.mergeLast3 md |> Linear.apply l
 
@@ -170,7 +170,7 @@ type alias Grouped d m kv h g j =
 
 {-| As `paramsWith`: queries and output m to m, keys and values m to kv.
 -}
-groupedParams : DType Floating d -> { projectionBias : Bool, outBias : Bool } -> Dim m -> Dim kv -> Dim h -> Dim g -> Dim j -> Param.Spec (Grouped d m kv h g j)
+groupedParams : DType Float d -> { projectionBias : Bool, outBias : Bool } -> Dim m -> Dim kv -> Dim h -> Dim g -> Dim j -> Param.Spec (Grouped d m kv h g j)
 groupedParams dt cfg m kv h g j =
     Param.record Grouped
         |> Param.sub .query (linearSpec dt cfg.projectionBias m m)
@@ -187,7 +187,7 @@ groupedParams dt cfg m kv h g j =
 {-| Self-attention over one sequence; with `rotary`, queries and keys are rotated for the given
 positions.
 -}
-selfGrouped : { causal : Bool, rotary : Maybe ( Rotary, Tensor Integral I64 (R1 s) ) } -> Grouped d m kv h g j -> Tensor Floating d (R2 s m) -> Tensor Floating d (R2 s m)
+selfGrouped : { causal : Bool, rotary : Maybe ( Rotary, Tensor Int I64 (R1 s) ) } -> Grouped d m kv h g j -> Tensor Float d (R2 s m) -> Tensor Float d (R2 s m)
 selfGrouped cfg p x =
     let
         q0 =
@@ -224,7 +224,7 @@ selfGrouped cfg p x =
 earlier positions and to the new ones up to itself). Returns the cache with their keys and values
 written, and their outputs. Positions past the cache's end are the caller's to prevent.
 -}
-selfCached : { rotary : Maybe Rotary } -> Grouped d m kv h g j -> Tensor Integral I64 R0 -> KvCache.Cache d g t j -> Tensor Floating d (R2 s m) -> ( KvCache.Cache d g t j, Tensor Floating d (R2 s m) )
+selfCached : { rotary : Maybe Rotary } -> Grouped d m kv h g j -> Tensor Int I64 R0 -> KvCache.Cache d g t j -> Tensor Float d (R2 s m) -> ( KvCache.Cache d g t j, Tensor Float d (R2 s m) )
 selfCached cfg p position cache x =
     let
         steps =
@@ -283,7 +283,7 @@ type alias Cross d m c h j =
 
 {-| As `paramsWith`: queries and output m to m, keys and values c to m.
 -}
-crossParams : DType Floating d -> { projectionBias : Bool, outBias : Bool } -> Dim m -> Dim c -> Dim h -> Dim j -> Param.Spec (Cross d m c h j)
+crossParams : DType Float d -> { projectionBias : Bool, outBias : Bool } -> Dim m -> Dim c -> Dim h -> Dim j -> Param.Spec (Cross d m c h j)
 crossParams dt cfg m c h j =
     Param.record Cross
         |> Param.sub .query (linearSpec dt cfg.projectionBias m m)
@@ -297,7 +297,7 @@ crossParams dt cfg m c h j =
 
 {-| `x |> attendTo p memory`.
 -}
-attendTo : Cross d m c h j -> Tensor Floating d (R2 t c) -> Tensor Floating d (R2 s m) -> Tensor Floating d (R2 s m)
+attendTo : Cross d m c h j -> Tensor Float d (R2 t c) -> Tensor Float d (R2 s m) -> Tensor Float d (R2 s m)
 attendTo p memory x =
     split p.heads p.headDim p.query x
         |> Nn.attention { mask = Nothing, bias = Nothing } (split p.heads p.headDim p.key memory) (split p.heads p.headDim p.value memory)

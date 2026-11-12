@@ -1,7 +1,11 @@
 """The op-check harness, Python side: run every family graph on MAX and check each output against
 NumPy (in f64): values directly, gradients by central differences on the same NumPy function.
 
-    ref.py MANIFEST.json [FAMILY ...]
+    ref.py MANIFEST.json [FAMILY ...]                    run on MAX (make check-ops)
+    ref.py --dump-inputs MANIFEST.json INPUTS.json       the inputs each family is run on, for
+                                                         Tensor.Eval (make check-ops-eval)
+    ref.py --results RESULTS.json MANIFEST.json [FAMILY ...]
+                                                         check Tensor.Eval's outputs instead of MAX's
 
 A gradient output is d/dx sum(f(x) * w) with w = cos(f(x0)) held fixed (the Elm side writes
 `stopGradient (cos y)`).
@@ -14,8 +18,6 @@ import time
 import zlib
 
 import numpy as np
-from max.driver import CPU
-from max.engine import InferenceSession
 
 erf = np.vectorize(math.erf)
 
@@ -427,6 +429,35 @@ REF.update({
     "vRepeatHeads": lambda a, p, b: np.repeat(a["r4"], 2, axis=1),
 })
 
+# The pins (plans/tensor-eval-in-elm.md, §3.6): NaN, ties, signs and duplicates, as MAX 26.7.0 has
+# them on CPU (probed 2026-11-12). Where MAX differs from NumPy: not-equal is an ordered comparison
+# (NaN != 0 is false); max and min ignore NaN (fmax/fmin), as do the max/min reductions and
+# argMax/argMin. topK with a NaN has no consistent result on MAX ([nan, 2.5, 1.0] for
+# [nan, 1, -inf, 0, -0, 2.5, nan, inf]: inf is dropped), so it is not pinned.
+REF.update({
+    "roundHalves": lambda a, p, b: np.round(a["h"]),
+    "neSpecials": lambda a, p, b: (a["s"] != 0) & ~np.isnan(a["s"]),
+    "gtSpecials": lambda a, p, b: a["s"] > 0,
+    "maxSpecials": lambda a, p, b: np.fmax(a["s"], a["s"][::-1]),
+    "minSpecials": lambda a, p, b: np.fmin(a["s"], a["s"][::-1]),
+    "maximumAllSpecials": lambda a, p, b: np.nanmax(a["s"]),
+    "minimumAllSpecials": lambda a, p, b: np.nanmin(a["s"]),
+    "argMaxSpecials": lambda a, p, b: np.nanargmax(a["s"]),
+    "argMinSpecials": lambda a, p, b: np.nanargmin(a["s"]),
+    "argMaxTies": lambda a, p, b: np.argmax(a["t"], 1),
+    "argMinTies": lambda a, p, b: np.argmin(a["t"], 1),
+    "modByNeg": lambda a, p, b: np.mod(a["i"], a["n"]),
+    "topKTies": lambda a, p, b: -np.sort(-a["t"], axis=1, kind="stable")[:, :2],
+    "topKTiesIndices": lambda a, p, b: np.argsort(-a["t"], axis=1, kind="stable")[:, :2],
+    "bottomKTies": lambda a, p, b: np.sort(a["t"], axis=1, kind="stable")[:, :2],
+    "bottomKTiesIndices": lambda a, p, b: np.argsort(a["t"], axis=1, kind="stable")[:, :2],
+    "putDup": lambda a, p, b: put(a["t"], np.array([1, 1, 0]), 10 * a["t"]),
+    "putAxisDup": lambda a, p, b: put_axis(a["t"], [2, 2], 10 * a["t"][:, 0:2], 1, False),
+    "negExtremes": lambda a, p, b: -a["e"],
+    "absExtremes": lambda a, p, b: np.abs(a["e"]),
+    "plusOneExtremes": lambda a, p, b: a["e"] + np.int64(1),
+})
+
 REF.update({
     "rmsNormBf16": lambda a, p, b: rms_norm(bf16(a["x"]), 1.0),
     "groupNormBf16": lambda a, p, b: group_norm(bf16(a["x"]).reshape(1, 3, 1, 4), 1.0, 0.0, 2),
@@ -467,6 +498,16 @@ def inputs_for(family, rng):
             v = (rng.permutation(int(np.prod(shape))).reshape(shape) * 0.37 - 3).astype(np.float32)
         elif dom == "seed":
             v = np.full(shape, 12345)
+        elif dom == "specials":
+            v = np.array([np.nan, 1.0, -np.inf, 0.0, -0.0, 2.5, np.nan, np.inf])
+        elif dom == "halves":
+            v = np.array([-2.5, -1.5, -0.5, 0.5, 1.5, 2.5, 3.5, -3.5])
+        elif dom == "ties":
+            v = rng.integers(0, 3, shape).astype(np.float64)
+        elif dom == "nzint":
+            v = rng.choice([-5, -4, -3, -2, -1, 1, 2, 3, 4, 5], shape)
+        elif dom == "extremes":
+            v = np.array([-2 ** 63, -1, 0, 1, 2 ** 63 - 1], dtype=np.int64)
         else:
             v = rng.uniform(-2, 2, shape)
         out[name] = np.asarray(v).astype(dtype)
@@ -516,22 +557,90 @@ def check_stats(check, got, all_outputs):
     return False, "unknown statistic"
 
 
+NODE_EXACT = 2 ** 53
+
+
+def exact_under_node(ins):
+    """Whether every integer input is exact as a JavaScript number (Tensor.Eval runs under Node)."""
+    return all(v.dtype.kind not in "iu" or np.abs(v.astype(np.float64)).max(initial=0) <= NODE_EXACT for v in ins.values())
+
+
+def as_reference(v):
+    """Inputs for the NumPy references: f64, except integers beyond 2^53, kept as int64 so they wrap."""
+    if v.dtype.kind in "iu" and np.abs(v.astype(np.float64)).max(initial=0) > NODE_EXACT:
+        return v
+    return v.astype(np.float64)
+
+
+def family_inputs(fam):
+    return inputs_for(fam, np.random.default_rng(zlib.crc32(fam["graph"].encode())))
+
+
+def json_number(v):
+    v = float(v)
+    if math.isnan(v):
+        return "nan"
+    if math.isinf(v):
+        return "inf" if v > 0 else "-inf"
+    return v
+
+
+def from_json(xs):
+    return np.array([float(x) if not isinstance(x, str) else {"nan": np.nan, "inf": np.inf, "-inf": -np.inf}[x] for x in xs], dtype=np.float64)
+
+
+def dump_inputs(manifest_file, out_file):
+    """Every family's inputs, flat, as ref.py draws them; families with integers beyond 2^53 are
+    marked refused (not exact under Node)."""
+    out, refused = {}, []
+    for fam in json.load(open(manifest_file)):
+        ins = family_inputs(fam)
+        if not exact_under_node(ins):
+            refused.append(fam["graph"])
+            continue
+        out[fam["graph"]] = {k: [json_number(x) for x in v.reshape(-1)] for k, v in ins.items()}
+    json.dump({"inputs": out, "refused": refused}, open(out_file, "w"))
+
+
 def main():
+    if sys.argv[1] == "--dump-inputs":
+        dump_inputs(sys.argv[2], sys.argv[3])
+        return
+    results = None
+    if sys.argv[1] == "--results":
+        results = {r["graph"]: r for r in json.load(open(sys.argv[2]))["results"]}
+        refused = json.load(open(sys.argv[2]))["refused"]
+        sys.argv = sys.argv[:1] + sys.argv[3:]
     manifest = json.load(open(sys.argv[1]))
     only = set(sys.argv[2:])
-    session = InferenceSession(devices=[CPU()])
-    failures, passed = [], 0
+    if results is None:
+        from max.driver import CPU
+        from max.engine import InferenceSession
+        session = InferenceSession(devices=[CPU()])
+    failures, passed, skipped = [], 0, []
     for fam in manifest:
         if only and fam["graph"] not in only:
             continue
         t0 = time.time()
-        model = session.load(fam["file"] + ("bc" if os.environ.get("OPCHECK_FORMAT") == "bytecode" else ""))
-        compile_s = time.time() - t0
-        rng = np.random.default_rng(zlib.crc32(fam["graph"].encode()))
-        ins = inputs_for(fam, rng)
-        outs = model.execute(*[ins[s["name"]] for s in fam["inputs"]])
-        outs = [o.to_numpy() if hasattr(o, "to_numpy") else np.asarray(o) for o in outs]
-        base = {k: v.astype(np.float64) for k, v in ins.items()}
+        ins = family_inputs(fam)
+        if results is None:
+            model = session.load(fam["file"] + ("bc" if os.environ.get("OPCHECK_FORMAT") == "bytecode" else ""))
+            compile_s = time.time() - t0
+            outs = model.execute(*[ins[s["name"]] for s in fam["inputs"]])
+            outs = [o.to_numpy() if hasattr(o, "to_numpy") else np.asarray(o) for o in outs]
+        else:
+            compile_s = 0.0
+            if fam["graph"] in refused:
+                skipped.append(fam["graph"])
+                print(f"{fam['graph']:12s} refused: an integer input beyond 2^53 is not exact under Node", flush=True)
+                continue
+            r = results.get(fam["graph"], {"error": "no result"})
+            if "error" in r:
+                failures.append(f"{fam['graph']}: Tensor.Eval: {r['error']}")
+                print(f"{fam['graph']:12s} Tensor.Eval failed: {r['error']}", flush=True)
+                continue
+            outs = [from_json(o) for o in r["outputs"]]
+        base = {k: as_reference(v) for k, v in ins.items()}
         by_name = {c["name"]: o.reshape(-1).astype(np.float64) for c, o in zip(fam["checks"], outs)}
         fam_fail = 0
         for check, out in zip(fam["checks"], outs):
@@ -541,7 +650,7 @@ def main():
             elif check["wrt"] == "":
                 want = np.asarray(reference(check, base, base), dtype=np.float64).reshape(-1)
                 rtol, atol = TOLERANCE.get(check["ref"], (1e-4, 1e-5))
-                ok = want.shape == got.shape and np.allclose(got, want, rtol=rtol, atol=atol)
+                ok = want.shape == got.shape and np.allclose(got, want, rtol=rtol, atol=atol, equal_nan=True)
                 detail = f"max err {np.max(np.abs(got - want)) if want.shape == got.shape else 'shape ' + str(want.shape)}"
             else:
                 w = np.cos(np.asarray(reference(check, base, base), dtype=np.float64))
@@ -567,7 +676,9 @@ def main():
         print(f"{fam['graph']:12s} {len(fam['checks']) - fam_fail:3d}/{len(fam['checks']):3d} passed  (compile {compile_s:.1f} s)", flush=True)
     for f in failures:
         print("FAIL", f)
-    print(f"{passed} passed, {len(failures)} failed")
+    if skipped:
+        print(f"refused (inputs not exact under Node): {', '.join(skipped)}")
+    print(f"{passed} passed, {len(failures)} failed" + (f", {len(skipped)} families refused" if skipped else ""))
     sys.exit(1 if failures else 0)
 
 
