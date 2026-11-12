@@ -142,7 +142,7 @@ suite =
             , test "different constants get different keys" <|
                 \_ -> Expect.notEqual (E.key (I.tensor (T.float 2))) (E.key (I.tensor (T.float 3)))
             , test "-0 and 0 differ" <|
-                \_ -> Expect.notEqual (K.mixFloat 0 ( 1, 1 )) (K.mixFloat 0 ( 1, 1 ))
+                \_ -> Expect.notEqual (K.mixFloat 0 ( 1, 1 )) (K.mixFloat (negate 0) ( 1, 1 ))
             , test "NaN keys itself" <|
                 \_ -> Expect.equal (K.mixFloat (0 / 0) ( 1, 1 )) (K.mixFloat (0 / 0) ( 1, 1 ))
             , test "operand order matters" <|

@@ -656,7 +656,7 @@ sign =
     map1 O.sign
 
 
-{-| e \*\* x, element-wise.
+{-| `e ** x`, element-wise.
 -}
 exp : Tensor Floating d s -> Tensor Floating d s
 exp =
@@ -754,7 +754,7 @@ relu =
     map1 (O.unary Relu)
 
 
-{-| 1 / (1 + e \*\* -x), element-wise.
+{-| `1 / (1 + e ** -x)`, element-wise.
 -}
 sigmoid : Tensor Floating d s -> Tensor Floating d s
 sigmoid =
@@ -822,7 +822,7 @@ minus =
     map2 O.sub
 
 
-{-| `x |> times y` is x \* y, element-wise.
+{-| `x |> times y` is `x * y`, element-wise.
 -}
 times : Tensor k d s -> Tensor k d s -> Tensor k d s
 times =
@@ -843,7 +843,7 @@ modBy =
     map2 (O.binary Mod)
 
 
-{-| `x |> pow y` is x \*\* y.
+{-| `x |> pow y` is `x ** y`.
 -}
 pow : Tensor Floating d s -> Tensor Floating d s -> Tensor Floating d s
 pow =
@@ -864,7 +864,7 @@ min =
     map2 (O.binary Min2)
 
 
-{-| `x |> scale k` is x \* k.
+{-| `x |> scale k` is `x * k`.
 -}
 scale : Float -> Tensor Floating d s -> Tensor Floating d s
 scale k =
@@ -1042,7 +1042,7 @@ dot y x =
     wrap (O.matmul (un x) (un y))
 
 
-{-| `x |> outer y`: x[i] \* y[j].
+{-| `x |> outer y`: `x[i] * y[j]`.
 -}
 outer : Tensor k d (R1 b) -> Tensor k d (R1 a) -> Tensor k d (R2 a b)
 outer y x =

@@ -157,7 +157,7 @@ attend mask bias k v q =
     O.matmul (O.inF32 (O.softmax 2) scores) v
 
 
-{-| Window = stride = `k`. Build time checks h = k \* h2 and w = k \* w2.
+{-| Window = stride = `k`. Build time checks `h = k * h2` and `w = k * w2`.
 -}
 maxPool2d : Int -> Dim h2 -> Dim w2 -> Tensor Floating d (R4 n h w c) -> Tensor Floating d (R4 n h2 w2 c)
 maxPool2d k h2 w2 x =
