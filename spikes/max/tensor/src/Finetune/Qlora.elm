@@ -8,8 +8,8 @@ module Finetune.Qlora exposing
 {-| QLoRA (Dettmers et al. 2023): a frozen weight stored as 4-bit NormalFloat codes (one per byte
 here) with one scale per block of weights, plus a trainable LoRA adapter.
 
-The codes and scales are `Param.data`: loaded by the host (`quantize` writes their block), never
-trained.
+The codes and scales are `Param.data`: given from outside (`quantize` makes them from the weights),
+never trained.
 
 
 # Quantized weights
@@ -17,7 +17,7 @@ trained.
 @docs Quantized, Block, blocks, params
 
 
-# Host side
+# Preparing the weights
 
 @docs quantize
 
@@ -38,8 +38,8 @@ import Bytes.Encode as Encode
 import Finetune.Lora as Lora exposing (Lora)
 import Param
 import Tensor as T exposing (DType, Dim, R1, R2, Tensor, U8)
+import Tensor.Internal.Encode as Elements
 import Tensor.Internal.Expr as E
-import Tensor.Internal.Host as Host
 import Tensor.Internal.Ops as O
 import Tensor.Internal.Prim exposing (DT(..))
 import Tensor.Internal.Types as I
@@ -83,10 +83,11 @@ params dt size i o =
         |> Param.config .blockSize size
 
 
-{-| Host side: row-major f32 weights to the parameter block of `params` (codes, then f32 scales:
-each block's largest magnitude), ready for `Train.initialFrom`.
+{-| Row-major f32 weights to the two tensors of `params`, as bytes (`Train`'s encoding): the NF4
+codes (u8), and the f32 scales (each block's largest magnitude). Give them, under their resident
+names, to `Train.initialFrom` or straight to the runtime.
 -}
-quantize : Int -> Dim i -> Dim o -> List Float -> Bytes
+quantize : Int -> Dim i -> Dim o -> List Float -> { codes : Bytes, scales : Bytes }
 quantize size _ _ weights =
     let
         blocksOf l =
@@ -119,12 +120,9 @@ quantize size _ _ weights =
         scales =
             List.map Tuple.second quantized
     in
-    Encode.encode
-        (Encode.sequence
-            [ Host.packed (Host.encodeValues UI8 (Values.IntValues codes))
-            , Host.packed (Host.encodeValues F32 (Values.FloatValues scales))
-            ]
-        )
+    { codes = Elements.encodeValues UI8 (Values.IntValues codes)
+    , scales = Elements.encodeValues F32 (Values.FloatValues scales)
+    }
 
 
 nearest : Float -> Int

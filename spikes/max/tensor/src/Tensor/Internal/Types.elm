@@ -154,7 +154,7 @@ mask (Mask e) =
 -- SIGNATURES
 
 
-{-| Where a graph input lives: sent with every run, or a host buffer that outlives runs (an output
+{-| Where a graph input lives: sent with every run, or a resident buffer that outlives runs (an output
 with the same resident name replaces it).
 -}
 type Role

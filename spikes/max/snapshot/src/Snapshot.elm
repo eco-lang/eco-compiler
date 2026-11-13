@@ -12,6 +12,7 @@ import Bytes.Encode
 import CharModel
 import Finetune.Qlora as Qlora
 import Graph exposing (Graph)
+import Graph.Max
 import Json.Encode as E
 import MnistModels
 import MnistNet
@@ -36,13 +37,14 @@ items =
         ++ [ G "param-initgraph" (Param.initGraph "init" MnistNet.params)
            , G "param-initinplace" (Param.initInPlace "init" MnistNet.params)
            , G "charlm-initinplace" (Param.initInPlace "init" (CharModel.params { layers = 2, shared = True }))
-           , B "param-initial" (Param.initial MnistNet.params 42)
+           , B "param-initial" (Param.initial MnistNet.params 42 |> List.map (Tuple.second >> padded) |> concat)
            , B "charlm-initial" (Train.initial (CharModel.params { layers = 1, shared = False }) CharModel.optimizer 1 |> List.map Tuple.second |> concat)
            , B "qlora-quantize"
                 (Qlora.quantize 4
                     (T.dim () 2)
                     (T.dim () 4)
                     [ 0.5, -0.25, 0.125, 1.5, -2, 0, 0.75, 0.3 ]
+                    |> (\q -> concat [ padded q.codes, padded q.scales ])
                 )
            ]
 
@@ -74,6 +76,18 @@ charlm cfg =
     [ G (tag ++ "-train") (CharModel.trainStep cfg), G (tag ++ "-validate") (CharModel.validate cfg) ]
 
 
+{-| A tensor's bytes padded to 16, as the old packed blocks were, so these files stay comparable with
+earlier snapshots.
+-}
+padded : Bytes -> Bytes
+padded b =
+    let
+        w =
+            Bytes.width b
+    in
+    Bytes.Encode.encode (Bytes.Encode.sequence (Bytes.Encode.bytes b :: List.repeat (modBy 16 (16 - modBy 16 w)) (Bytes.Encode.unsignedInt8 0)))
+
+
 concat : List Bytes -> Bytes
 concat bs =
     Bytes.Encode.encode (Bytes.Encode.sequence (List.map Bytes.Encode.bytes bs))
@@ -101,8 +115,8 @@ encode item =
         G name (Ok g) ->
             E.object
                 [ ( "name", E.string name )
-                , ( "mlir", E.string (Graph.toGenericText g) )
-                , ( "bytecode", E.list E.int (byteList (Graph.toBytecode g)) )
+                , ( "mlir", E.string (Graph.Max.toGenericText g) )
+                , ( "bytecode", E.list E.int (byteList (Graph.Max.toBytecode g)) )
                 ]
 
         G name (Err es) ->

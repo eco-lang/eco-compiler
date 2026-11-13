@@ -1,22 +1,22 @@
 module Graph exposing
-    ( Graph, Spec, Role(..), Device(..)
+    ( Graph, Spec, Role(..)
     , build, function
     , name, inputs, outputs
-    , toBytecode, toGenericText, toBytecodeOn, toGenericTextOn
     )
 
-{-| A whole graph, lowered and checked: what the host compiles and runs.
+{-| A whole graph, built and checked: what `Tensor.Eval` runs in Elm, and what `Graph.Max` writes
+for MAX.
 
     Graph.build "step" (Sig.pair inputsA inputsB) outputsSig (\( a, b ) -> ...)
 
 `build` applies the function to the inputs the first signature declares, flattens its result with
-the second, checks everything that can be checked before MAX sees the graph, and writes it as MAX's
-IR. It returns every error at once.
+the second, and checks everything that can be checked before the graph runs. It returns every error
+at once.
 
 
 # Types
 
-@docs Graph, Spec, Role, Device
+@docs Graph, Spec, Role
 
 
 # Building
@@ -28,20 +28,12 @@ IR. It returns every error at once.
 
 @docs name, inputs, outputs
 
-
-# Writing
-
-@docs toBytecode, toGenericText, toBytecodeOn, toGenericTextOn
-
 -}
 
-import Bytes exposing (Bytes)
 import Signature exposing (Sig)
 import Tensor exposing (Tensor)
-import Tensor.Internal.Device as Device
 import Tensor.Internal.Expr as E exposing (Expr)
 import Tensor.Internal.Lower as Lower
-import Tensor.Internal.MlirBc as Bc
 import Tensor.Internal.Names exposing (names)
 import Tensor.Internal.Prim as P
 import Tensor.Internal.Types as I
@@ -51,7 +43,7 @@ import Tensor.Internal.Types as I
 was built from (so `Tensor.Eval` can run it in Elm).
 
 Because it keeps those expressions, `==` and `Debug.toString` on a `Graph` walk them as a tree,
-which can take time exponential in the graph's depth: compare `toBytecode` instead. A `Graph` kept
+which can take time exponential in the graph's depth: compare `Graph.Max.toBytecode` instead. A `Graph` kept
 in a model keeps its expressions alive.
 
 -}
@@ -59,8 +51,9 @@ type alias Graph =
     I.Graph
 
 
-{-| `Resident name`: a host buffer that outlives one run (parameters, optimizer state); an output
-with the same resident name replaces it after the run. `Fed`: sent with every run.
+{-| `Resident name`: a buffer that outlives one run (parameters, optimizer state), kept by whatever
+runs the graph; an output with the same resident name replaces it after the run. `Fed`: given with
+every run.
 -}
 type Role
     = Fed
@@ -218,56 +211,3 @@ inputs (I.Graph g) =
 outputs : Graph -> List Spec
 outputs (I.Graph g) =
     List.map (\s -> { name = s.name, dtype = s.dtype, shape = s.shape, role = publicRole s.role }) g.outputs
-
-
-{-| MLIR bytecode, as MLIR 24 writes it (`Tensor.Internal.MlirBc`).
--}
-toBytecode : Graph -> Bytes
-toBytecode (I.Graph g) =
-    Bc.encode (cpuOps g.ops)
-
-
-{-| The graph `toBytecode` writes, as MLIR's generic op text (what `mlir-opt
---mlir-print-op-generic` prints, give or take spacing and value names).
--}
-toGenericText : Graph -> String
-toGenericText (I.Graph g) =
-    Bc.printGeneric (cpuOps g.ops)
-
-
-cpuOps : List Bc.Op -> List Bc.Op
-cpuOps ops =
-    Device.place Device.Cpu ops |> Result.withDefault ops
-
-
-{-| Where a graph runs: the host's CPU, or GPU `n`.
--}
-type Device
-    = Cpu
-    | Gpu Int
-
-
-internal : Device -> Device.Device
-internal d =
-    case d of
-        Cpu ->
-            Device.Cpu
-
-        Gpu n ->
-            Device.Gpu n
-
-
-{-| The graph written for a device: on a GPU every tensor but the host-side operands (shapes, axes,
-bounds) lives on it. Refused, with the reasons, when the device cannot run something (a top-k off
-the last axis on a GPU). `toBytecodeOn Cpu` is `toBytecode`.
--}
-toBytecodeOn : Device -> Graph -> Result (List String) Bytes
-toBytecodeOn d (I.Graph g) =
-    Device.place (internal d) g.ops |> Result.map Bc.encode
-
-
-{-| `toBytecodeOn`, as generic op text (`toGenericText`).
--}
-toGenericTextOn : Device -> Graph -> Result (List String) String
-toGenericTextOn d (I.Graph g) =
-    Device.place (internal d) g.ops |> Result.map Bc.printGeneric

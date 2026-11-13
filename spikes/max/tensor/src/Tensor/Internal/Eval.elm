@@ -1,12 +1,20 @@
-module Tensor.Internal.Eval exposing (Ctx, V(..), evalRoots, postorderPruned)
+module Tensor.Internal.Eval exposing (Ctx, Program, V(..), compile, execute)
 
-{-| The evaluator's engine: expressions evaluated in post-order, each once per frame.
+{-| The evaluator's engine: expressions compiled once into programs, then run any number of times.
+
+A program is its instructions in evaluation order (a post-order of its roots). Each instruction's
+result goes in the next slot of its frame, and each operand is read by position: a slot of this
+frame or of an enclosing one. Nothing is looked up by key when a program runs.
 
 A traced body's nodes have the same keys every time it is evaluated (a `Var`'s key is made from its
-scope and position only), so one memo for the whole graph would make a loop repeat its first
-iteration. As lowering does, every evaluation of a body (a `Call`, the chosen branch of an `If`,
-each test and each step of a `While`) gets a fresh frame, binding the body's `Var`s to its
-arguments; lookups fall through to the outer frames (bodies may read outer expressions).
+scope and position only), so a body cannot share its parent's slots. As lowering does, every body (a
+`Call`, each branch of an `If`, the test and step of a `While`) is compiled to its own program, run
+in a fresh frame whose first slots are its arguments. A body may read outer expressions: from the
+enclosing frame when the enclosing program has computed them before the instruction that runs the
+body, and otherwise by computing them itself.
+
+Errors found while compiling (a function argument read outside its function) become instructions
+that fail when they run, so a branch never taken is not an error.
 
 -}
 
@@ -17,6 +25,8 @@ import Tensor.Internal.Eval.Core as C exposing (T)
 import Tensor.Internal.Eval.Prim as EvalPrim
 import Tensor.Internal.Expr as E exposing (Expr)
 import Tensor.Internal.Key exposing (Key)
+import Tensor.Internal.Prim exposing (Params, Prim)
+import Tensor.Internal.Shape exposing (Meta)
 
 
 {-| One result, or the results of a `Call`, `If` or `While`.
@@ -26,62 +36,180 @@ type V
     | Many (List T)
 
 
-type alias Frame =
-    { memo : Dict Key V, binds : Dict ( Key, Int ) T }
-
-
 {-| The graph's inputs by position, and the `While` guard.
 -}
 type alias Ctx =
     { inputs : Array T, maxIterations : Int }
 
 
-emptyFrame : Frame
-emptyFrame =
-    { memo = Dict.empty, binds = Dict.empty }
+{-| An operand: how many frames out, and the slot there.
+-}
+type Ref
+    = Ref Int Int
 
 
-bindFrame : Key -> List T -> Frame
-bindFrame scope values =
-    { memo = Dict.empty, binds = Dict.fromList (List.indexedMap (\i v -> ( ( scope, i ), v )) values) }
+type Instr
+    = IInput Int
+    | IConst T
+    | IArg Ref
+    | IPrim Prim (List Ref) Params Meta
+    | ICall Program (List Ref)
+    | IIf Ref Program Program (List Ref)
+    | IWhile Program Program (List Ref)
+    | IProj Ref Int
+    | IFail String
 
 
-known : List Frame -> Key -> Bool
-known frames k =
-    List.any (\f -> Dict.member k f.memo) frames
+{-| A compiled body or graph: its instructions, and where its outputs are. Its arguments are the
+first slots of its frame; instruction i writes slot `arity + i`.
+-}
+type Program
+    = Program { arity : Int, code : List Instr, outputs : List Ref }
 
 
-lookup : List Frame -> Key -> Maybe V
-lookup frames k =
-    case frames of
-        [] ->
-            Nothing
 
-        f :: rest ->
-            case Dict.get k f.memo of
-                Just v ->
-                    Just v
-
-                Nothing ->
-                    lookup rest k
+-- COMPILING
 
 
-lookupVar : List Frame -> ( Key, Int ) -> Maybe T
-lookupVar frames k =
-    case frames of
-        [] ->
-            Nothing
-
-        f :: rest ->
-            case Dict.get k f.binds of
-                Just v ->
-                    Just v
-
-                Nothing ->
-                    lookupVar rest k
+{-| What a body being compiled can see of one enclosing (or its own) frame: the function whose
+arguments the frame holds, and the slot of every expression computed so far.
+-}
+type alias Level =
+    { scope : Maybe Key, arity : Int, slots : Dict Key Int }
 
 
-{-| `Grad.postorder`, not descending into what `isKnown` finds already evaluated.
+{-| The program computing `roots` with no arguments, at top level.
+-}
+compile : List Expr -> Program
+compile roots =
+    compileBody [] { scope = Nothing, arity = 0, slots = Dict.empty } roots
+
+
+compileBody : List Level -> Level -> List Expr -> Program
+compileBody outer start roots =
+    let
+        order =
+            postorderPruned (\k -> List.any (\l -> Dict.member k l.slots) outer) roots
+
+        instr level e =
+            let
+                frames =
+                    level :: outer
+            in
+            case E.op e of
+                E.Input _ i ->
+                    IInput i
+
+                E.Var scope i ->
+                    case varRef frames scope i of
+                        Just r ->
+                            IArg r
+
+                        Nothing ->
+                            IFail "internal: a function argument read outside its function"
+
+                E.Const vs ->
+                    IConst (C.fromValues (E.dtype e) (E.shape e) vs)
+
+                E.P p args params ->
+                    withRefs frames args (\rs -> IPrim p rs params (E.meta e))
+
+                E.Proj src i ->
+                    withRefs frames [ src ] (\rs -> List.head rs |> Maybe.map (\r -> IProj r i) |> Maybe.withDefault (IFail "internal"))
+
+                E.Call _ b args ->
+                    withRefs frames args (\rs -> ICall (compileFn frames b) rs)
+
+                E.If pred t f args ->
+                    withRefs frames
+                        (pred :: args)
+                        (\rs ->
+                            case rs of
+                                p :: rest ->
+                                    IIf p (compileFn frames t) (compileFn frames f) rest
+
+                                [] ->
+                                    IFail "internal"
+                        )
+
+                E.While c b init ->
+                    withRefs frames init (\rs -> IWhile (compileFn frames c) (compileFn frames b) rs)
+
+        ( final, code ) =
+            List.foldl
+                (\e ( level, acc ) ->
+                    ( { level | slots = Dict.insert (E.key e) (level.arity + List.length acc) level.slots }
+                    , instr level e :: acc
+                    )
+                )
+                ( start, [] )
+                order
+    in
+    Program
+        { arity = start.arity
+        , code = List.reverse code
+        , outputs = List.map (\r -> refOf (final :: outer) (E.key r) |> Maybe.withDefault (Ref -1 -1)) roots
+        }
+
+
+compileFn : List Level -> E.Body -> Program
+compileFn frames b =
+    compileBody frames { scope = Just b.scope, arity = b.arity, slots = Dict.empty } b.outputs
+
+
+withRefs : List Level -> List Expr -> (List Ref -> Instr) -> Instr
+withRefs frames es k =
+    case refsOf frames es of
+        Just rs ->
+            k rs
+
+        Nothing ->
+            IFail "internal: an operand was not evaluated"
+
+
+refsOf : List Level -> List Expr -> Maybe (List Ref)
+refsOf frames es =
+    List.foldr (\e acc -> Maybe.map2 (::) (refOf frames (E.key e)) acc) (Just []) es
+
+
+refOf : List Level -> Key -> Maybe Ref
+refOf frames k =
+    let
+        go depth ls =
+            case ls of
+                [] ->
+                    Nothing
+
+                l :: rest ->
+                    case Dict.get k l.slots of
+                        Just s ->
+                            Just (Ref depth s)
+
+                        Nothing ->
+                            go (depth + 1) rest
+    in
+    go 0 frames
+
+
+varRef : List Level -> Key -> Int -> Maybe Ref
+varRef frames scope i =
+    let
+        go depth ls =
+            case ls of
+                [] ->
+                    Nothing
+
+                l :: rest ->
+                    if l.scope == Just scope && i < l.arity then
+                        Just (Ref depth i)
+
+                    else
+                        go (depth + 1) rest
+    in
+    go 0 frames
+
+
+{-| `Grad.postorder`, not descending into what `isKnown` finds already computed.
 -}
 postorderPruned : (Key -> Bool) -> List Expr -> List Expr
 postorderPruned isKnown roots =
@@ -114,70 +242,72 @@ postorderPruned isKnown roots =
     go (List.map (\r -> ( r, False )) roots) Set.empty []
 
 
-{-| Evaluate `roots` in a new top frame over `outer`: their values, in order.
+
+-- RUNNING
+
+
+{-| Run a top-level program: its outputs, in order.
 -}
-evalRoots : Ctx -> List Frame -> Frame -> List Expr -> Result String (List V)
-evalRoots ctx outer top roots =
-    evalOrder ctx outer top (postorderPruned (known outer) roots) roots
+execute : Ctx -> Program -> Result String (List V)
+execute ctx prog =
+    runProgram ctx [] prog []
 
 
-evalOrder : Ctx -> List Frame -> Frame -> List Expr -> List Expr -> Result String (List V)
-evalOrder ctx outer top order roots =
+runProgram : Ctx -> List (Array V) -> Program -> List T -> Result String (List V)
+runProgram ctx outer (Program p) args =
     let
-        step es frame =
-            case es of
+        step code frame =
+            case code of
                 [] ->
                     Ok frame
 
-                e :: rest ->
-                    let
-                        k =
-                            E.key e
-                    in
-                    if Dict.member k frame.memo then
-                        step rest frame
+                i :: rest ->
+                    case exec ctx (frame :: outer) i of
+                        Ok v ->
+                            step rest (Array.push v frame)
 
-                    else
-                        case evalNode ctx (frame :: outer) e of
-                            Ok v ->
-                                step rest { frame | memo = Dict.insert k v frame.memo }
-
-                            Err msg ->
-                                Err msg
+                        Err msg ->
+                            Err msg
     in
-    step order top
-        |> Result.andThen
-            (\frame ->
-                List.foldr
-                    (\r acc ->
-                        case lookup (frame :: outer) (E.key r) of
-                            Just v ->
-                                Result.map ((::) v) acc
+    case step p.code (Array.fromList (List.map One args)) of
+        Ok frame ->
+            List.foldr (\r acc -> Result.map2 (::) (get (frame :: outer) r) acc) (Ok []) p.outputs
 
-                            Nothing ->
-                                Err "internal: a root was not evaluated"
-                    )
-                    (Ok [])
-                    roots
-            )
+        Err msg ->
+            Err msg
 
 
-one : List Frame -> Expr -> Result String T
-one frames e =
-    case lookup frames (E.key e) of
-        Just (One t) ->
-            Ok t
+get : List (Array V) -> Ref -> Result String V
+get frames (Ref depth slot) =
+    case List.drop depth frames of
+        f :: _ ->
+            case Array.get slot f of
+                Just v ->
+                    Ok v
 
-        Just (Many _) ->
-            Err "internal: a multi-result operation used as a tensor"
+                Nothing ->
+                    Err "internal: an operand was not evaluated"
 
-        Nothing ->
+        [] ->
             Err "internal: an operand was not evaluated"
 
 
-ones : List Frame -> List Expr -> Result String (List T)
-ones frames es =
-    List.foldr (\e acc -> Result.map2 (::) (one frames e) acc) (Ok []) es
+one : List (Array V) -> Ref -> Result String T
+one frames r =
+    case get frames r of
+        Ok (One t) ->
+            Ok t
+
+        Ok (Many _) ->
+            Err "internal: a multi-result operation used as a tensor"
+
+        Err msg ->
+            Err msg
+
+
+ones : List (Array V) -> List Ref -> Result String (List T)
+ones frames rs =
+    List.foldr (\r acc -> Result.map2 (::) (one frames r) acc) (Ok []) rs
 
 
 tensors : List V -> Result String (List T)
@@ -195,15 +325,15 @@ tensors vs =
         vs
 
 
-body : Ctx -> List Frame -> E.Body -> List T -> Result String (List T)
-body ctx frames b args =
-    evalRoots ctx frames (bindFrame b.scope args) b.outputs |> Result.andThen tensors
+body : Ctx -> List (Array V) -> Program -> List T -> Result String (List T)
+body ctx frames prog args =
+    runProgram ctx frames prog args |> Result.andThen tensors
 
 
-evalNode : Ctx -> List Frame -> Expr -> Result String V
-evalNode ctx frames e =
-    case E.op e of
-        E.Input _ i ->
+exec : Ctx -> List (Array V) -> Instr -> Result String V
+exec ctx frames instr =
+    case instr of
+        IInput i ->
             case Array.get i ctx.inputs of
                 Just t ->
                     Ok (One t)
@@ -211,25 +341,20 @@ evalNode ctx frames e =
                 Nothing ->
                     Err ("input " ++ String.fromInt i ++ " was not given")
 
-        E.Var scope i ->
-            case lookupVar frames ( scope, i ) of
-                Just t ->
-                    Ok (One t)
+        IConst t ->
+            Ok (One t)
 
-                Nothing ->
-                    Err "internal: a function argument read outside its function"
+        IArg r ->
+            Result.map One (one frames r)
 
-        E.Const vs ->
-            Ok (One (C.fromValues (E.dtype e) (E.shape e) vs))
-
-        E.P p args params ->
-            ones frames args
-                |> Result.andThen (\ts -> EvalPrim.apply p ts params (E.meta e))
+        IPrim p rs params meta ->
+            ones frames rs
+                |> Result.andThen (\ts -> EvalPrim.apply p ts params meta)
                 |> Result.map One
 
-        E.Proj src i ->
-            case lookup frames (E.key src) of
-                Just (Many ts) ->
+        IProj r i ->
+            case get frames r of
+                Ok (Many ts) ->
                     case List.drop i ts of
                         t :: _ ->
                             Ok (One t)
@@ -240,49 +365,46 @@ evalNode ctx frames e =
                 _ ->
                     Err "internal: a projection of a single result"
 
-        E.Call _ b args ->
-            ones frames args |> Result.andThen (body ctx frames b) |> Result.map Many
+        ICall b rs ->
+            ones frames rs |> Result.andThen (body ctx frames b) |> Result.map Many
 
-        E.If pred t f args ->
-            Result.map2 Tuple.pair (one frames pred) (ones frames args)
+        IIf pr t f rs ->
+            Result.map2 Tuple.pair (one frames pr) (ones frames rs)
                 |> Result.andThen
                     (\( p, vs ) ->
-                        let
-                            chosen =
-                                if C.getI (C.intsOf p) 0 /= 0 then
-                                    t
+                        body ctx
+                            frames
+                            (if C.getI (C.intsOf p) 0 /= 0 then
+                                t
 
-                                else
-                                    f
-                        in
-                        body ctx frames chosen vs |> Result.map Many
+                             else
+                                f
+                            )
+                            vs
+                            |> Result.map Many
                     )
 
-        E.While c b init ->
-            ones frames init |> Result.andThen (loop ctx frames c b) |> Result.map Many
+        IWhile c b rs ->
+            ones frames rs |> Result.andThen (loop ctx frames c b) |> Result.map Many
+
+        IFail msg ->
+            Err msg
 
 
-{-| Test, then step, until the test is false or the guard is passed. Each body's post-order is
-computed once: the outer frames do not change during the loop.
+{-| Test, then step, until the test is false or the guard is passed.
 -}
-loop : Ctx -> List Frame -> E.Body -> E.Body -> List T -> Result String (List T)
+loop : Ctx -> List (Array V) -> Program -> Program -> List T -> Result String (List T)
 loop ctx frames c b init =
     let
-        cOrder =
-            postorderPruned (known frames) c.outputs
-
-        bOrder =
-            postorderPruned (known frames) b.outputs
-
         go n state =
             if n > ctx.maxIterations then
                 Err ("While: more than " ++ String.fromInt ctx.maxIterations ++ " iterations")
 
             else
-                case evalOrder ctx frames (bindFrame c.scope state) cOrder c.outputs |> Result.andThen tensors of
+                case body ctx frames c state of
                     Ok [ t ] ->
                         if C.getI (C.intsOf t) 0 /= 0 then
-                            case evalOrder ctx frames (bindFrame b.scope state) bOrder b.outputs |> Result.andThen tensors of
+                            case body ctx frames b state of
                                 Ok next ->
                                     go (n + 1) next
 

@@ -1,6 +1,6 @@
 module Tensor.Internal.Io exposing (isScalarSlot, narrowIn, unnarrow, widenSlot)
 
-{-| Graph inputs at the host boundary. MAX's C API takes no rank-0 inputs, so a scalar input slot is
+{-| Graph inputs as MAX's C API sees them. MAX's C API takes no rank-0 inputs, so a scalar input slot is
 declared `[1]` (`widenSlot`), reshaped to `[]` where the graph reads it (`narrowIn`), and found again
 by a signature's round trip through that reshape (`unnarrow`). Outputs may be rank 0.
 -}

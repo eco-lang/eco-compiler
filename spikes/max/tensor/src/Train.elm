@@ -1,7 +1,6 @@
 module Train exposing
     ( step, measure
     , initial, initialFrom
-    , loss, measured
     )
 
 {-| Training graphs from a loss: the user writes the loss, `Train` writes the rest.
@@ -10,9 +9,10 @@ module Train exposing
         Train.step params (Optim.adamW 1.0e-3) (Sig.pair images labels) <|
             \p ( x, y ) -> network p x |> Nn.crossEntropyIndices y
 
-The parameters and the optimizer state are **resident**: host buffers that outlive a run, which
-the step's outputs replace. Only the batch (and the rate, for `Optim.PerStep`) crosses from Elm
-with each run, and only the loss comes back.
+The parameters and the optimizer state are **resident**: buffers that outlive a run, kept by
+whatever runs the graph (MAX, or a `Dict` for `Tensor.Eval`), which the step's outputs replace. Only
+the batch (and the rate, for `Optim.PerStep`) goes in with each run, and only the loss comes back,
+as the step's one fed output.
 
 
 # Graphs
@@ -22,12 +22,13 @@ with each run, and only the loss comes back.
 
 # Resident buffers
 
+Their first contents are named tensors: each a resident name (`Param.names`, and the optimizer's
+state after them) and the tensor's elements as bytes, in the package's one encoding: row-major,
+little-endian, each element at its dtype's width (f16 and bf16 as their 16-bit patterns, masks as one
+byte, 64-bit integers as their 64 bits), nothing between or around them. How they reach the buffers
+is the runtime's business.
+
 @docs initial, initialFrom
-
-
-# Replies
-
-@docs loss, measured
 
 -}
 
@@ -39,9 +40,9 @@ import Optim exposing (Optimizer)
 import Param
 import Signature exposing (Sig)
 import Tensor exposing (F32, R0, Tensor)
+import Tensor.Internal.Encode as Elements
 import Tensor.Internal.Expr as E exposing (Expr)
 import Tensor.Internal.Grad as Grad
-import Tensor.Internal.Host as Host
 import Tensor.Internal.Io as Io
 import Tensor.Internal.Names exposing (names)
 import Tensor.Internal.Ops as O
@@ -339,7 +340,7 @@ measure ((I.ParamBuilder ps) as spec) (I.SigBuilder bs) f =
 
 {-| The resident buffers' first contents, by name: the parameters drawn from `seed` in Elm (as
 `Param.initial` draws them), zero optimizer state. For small models; large ones run
-`Param.initGraph` and `put` its outputs.
+`Param.initInPlace` where the graph runs instead.
 -}
 initial : Param.Spec r -> Optimizer -> Int -> List ( String, Bytes )
 initial spec opt seed0 =
@@ -354,7 +355,7 @@ initial spec opt seed0 =
                         ( values, seed1 ) =
                             ParamInit.initValues f seed
                     in
-                    ( seed1, ( n, Host.encodeValues f.dtype (Values.forDtype f.dtype values) ) :: acc )
+                    ( seed1, ( n, Elements.encodeValues f.dtype (Values.forDtype f.dtype values) ) :: acc )
                 )
                 ( seed0, [] )
                 (List.map2 Tuple.pair lay.paramNames lay.fields)
@@ -371,57 +372,40 @@ zeroState lay =
         shapes =
             List.concatMap (\f -> List.repeat lay.slots f.shape) trainable
     in
-    List.map2 (\n s -> ( n, Host.encodeValues F32 (Values.FloatValues (List.repeat (List.product s) 0)) )) lay.stateNames shapes
+    List.map2 (\n s -> ( n, Elements.encodeValues F32 (Values.FloatValues (List.repeat (List.product s) 0)) )) lay.stateNames shapes
         ++ (if lay.hasStep then
-                [ ( "step", Host.encodeValues F32 (Values.FloatValues [ 0 ]) ) ]
+                [ ( "step", Elements.encodeValues F32 (Values.FloatValues [ 0 ]) ) ]
 
             else
                 []
            )
 
 
-{-| The same, starting from a saved parameter block (`Param.initial`'s layout: every field in
-order, each padded to 16 bytes): a pretrained base, a checkpoint.
+{-| The same, starting from given parameters (a pretrained base, a checkpoint): every one of the
+spec's resident names (`Param.names`) with its tensor's bytes, then zero optimizer state. An error
+names a missing parameter, or one whose bytes do not fit its dtype and shape.
 -}
-initialFrom : Param.Spec r -> Optimizer -> Bytes -> List ( String, Bytes )
-initialFrom spec opt block =
+initialFrom : Param.Spec r -> Optimizer -> List ( String, Bytes ) -> Result String (List ( String, Bytes ))
+initialFrom spec opt given =
     let
         lay =
             layout spec opt
 
-        slice offset len b =
-            Decode.decode (Decode.bytes offset |> Decode.andThen (\_ -> Decode.bytes len)) b
-                |> Maybe.withDefault (Encode.encode (Encode.sequence []))
+        one ( n, f ) acc =
+            let
+                expected =
+                    P.dtSize f.dtype * List.product f.shape
+            in
+            case List.filter (\( m, _ ) -> m == n) given of
+                ( _, b ) :: _ ->
+                    if Bytes.width b == expected then
+                        Result.map ((::) ( n, b )) acc
 
-        ( _, params ) =
-            List.foldl
-                (\( n, f ) ( off, acc ) ->
-                    let
-                        len =
-                            P.dtSize f.dtype * List.product f.shape
-                    in
-                    ( off + Host.paddedSize len, ( n, slice off len block ) :: acc )
-                )
-                ( 0, [] )
-                (List.map2 Tuple.pair lay.paramNames lay.fields)
+                    else
+                        Err (n ++ ": " ++ String.fromInt (Bytes.width b) ++ " bytes, but its dtype and shape take " ++ String.fromInt expected)
+
+                [] ->
+                    Err ("no tensor for " ++ n)
     in
-    List.reverse params ++ zeroState lay
-
-
-{-| The loss in a `step` reply (the host returns only fed outputs, after a 16-byte header).
--}
-loss : Bytes -> Float
-loss =
-    float32At 16
-
-
-{-| The value in a `measure` reply.
--}
-measured : Bytes -> Float
-measured =
-    float32At 16
-
-
-float32At : Int -> Bytes -> Float
-float32At offset b =
-    Decode.decode (Decode.bytes offset |> Decode.andThen (\_ -> Decode.float32 LE)) b |> Maybe.withDefault 0
+    List.foldr one (Ok []) (List.map2 Tuple.pair lay.paramNames lay.fields)
+        |> Result.map (\params -> params ++ zeroState lay)

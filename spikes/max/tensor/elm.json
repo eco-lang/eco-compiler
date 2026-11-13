@@ -13,6 +13,7 @@
         "Tensor.Eval",
         "Signature",
         "Graph",
+        "Graph.Max",
         "Transform",
         "Param",
         "Optim",

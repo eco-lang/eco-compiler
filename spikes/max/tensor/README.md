@@ -28,7 +28,8 @@ the graph is built, before MAX sees it.
 | `Tensor` | types, dimensions, dtypes; construction, element-wise, comparisons and masks, linear algebra, reductions, `topK`/`bottomK`/`sort`, shape |
 | `Tensor.Axis` | generated witnesses: which axis an operation acts on (`last2`, `axis0of3`, `retag1of2`, `liftRank1`, `swap12of4`) |
 | `Signature` | two-way descriptions of structured values: graph inputs and outputs, function arguments |
-| `Graph` | building, checking and writing a graph, for the CPU or a GPU (`toBytecodeOn`); its inputs' and outputs' specs and roles |
+| `Graph` | building and checking a graph; its inputs' and outputs' specs and roles |
+| `Graph.Max` | writing a graph for MAX: MLIR bytecode or generic text, for the CPU or a GPU (`toBytecodeOn`) |
 | `Transform` | `grad`, `valueAndGrad`, `gradOf`, `vjp`, `jvp`, `jacobian`, `hessianVector`; `vmap`; shared subgraphs |
 | `Tensor.Control` | `cond` (`mo.if`), `whileLoop` (`mo.while`), `repeat`, `scan` |
 | `Tensor.Random` | counter-based randomness from a seed tensor; Gumbel noise and `categorical` sampling |

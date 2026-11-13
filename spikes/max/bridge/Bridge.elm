@@ -1,6 +1,6 @@
 port module Bridge exposing
     ( Format(..), compile, Command, send, run, load, put, get, save, loadInto, loadRangeInto, loadRange, drop, log, done
-    , headerId, payload, packed, slice
+    , headerId, payload, packed, slice, loss, measured
     , compiledIn, runIn, loadIn, getIn
     )
 
@@ -20,6 +20,7 @@ import Bytes exposing (Bytes, Endianness(..))
 import Bytes.Decode as Decode
 import Bytes.Encode as Encode
 import Graph exposing (Graph)
+import Graph.Max
 import Json.Decode as D
 
 
@@ -65,6 +66,26 @@ command id code =
 headerId : Bytes -> Int
 headerId b =
     Maybe.withDefault -1 (Decode.decode (Decode.unsignedInt32 LE) b)
+
+
+{-| The loss in a reply to a `Train.step` graph's run: the host returns only fed outputs, after the
+header, and the step's one fed output is the loss (f32).
+-}
+loss : Bytes -> Float
+loss =
+    float32At 16
+
+
+{-| The value in a reply to a `Train.measure` graph's run.
+-}
+measured : Bytes -> Float
+measured =
+    float32At 16
+
+
+float32At : Int -> Bytes -> Float
+float32At offset b =
+    Decode.decode (Decode.bytes offset |> Decode.andThen (\_ -> Decode.float32 LE)) b |> Maybe.withDefault 0
 
 
 {-| A message without its header.
@@ -129,10 +150,10 @@ compile format id graph =
         mlir =
             case format of
                 Bytecode ->
-                    Graph.toBytecode graph
+                    Graph.Max.toBytecode graph
 
                 GenericText ->
-                    Encode.encode (Encode.string (Graph.toGenericText graph))
+                    Encode.encode (Encode.string (Graph.Max.toGenericText graph))
     in
     ( compileOut
         (Encode.encode

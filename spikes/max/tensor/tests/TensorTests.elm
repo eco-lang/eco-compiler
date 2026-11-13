@@ -6,11 +6,14 @@ signatures' round trips, parameter layouts, witnesses. Values on MAX are `opchec
 
 import Bytes
 import Bytes.Decode as Decode
+import Bytes.Encode
 import Expect
 import Finetune.Qlora as Qlora
 import Graph
+import Graph.Max
 import Nn.LayerNorm as LayerNorm
 import Nn.Linear as Linear
+import Optim
 import Param
 import Signature as Sig
 import Tensor as T exposing (Dim, F32, R1, R2, Tensor)
@@ -22,6 +25,7 @@ import Tensor.Internal.Key as K
 import Tensor.Internal.Prim
 import Tensor.Internal.Types as I
 import Test exposing (Test, describe, test)
+import Train
 import Transform
 
 
@@ -173,10 +177,28 @@ suite =
                             Expect.fail (String.join "; " e)
             ]
         , describe "parameters"
-            [ test "the packed block of a linear layer" <|
-                \_ -> Expect.equal (4 * 3 * 4 + 16) (Param.byteSize (Linear.params T.float32 a b))
-            , test "initial bytes match the layout" <|
-                \_ -> Expect.equal (Param.byteSize (Linear.params T.float32 a b)) (Bytes.width (Param.initial (Linear.params T.float32 a b) 42))
+            [ test "initial values: one tensor per field, by resident name, each its dtype × shape in bytes" <|
+                \_ ->
+                    Expect.equal [ ( "param0", 3 * 4 * 4 ), ( "param1", 4 * 4 ) ]
+                        (List.map (Tuple.mapSecond Bytes.width) (Param.initial (Linear.params T.float32 a b) 42))
+            , test "initialFrom takes the parameters by name, checks their sizes, and adds the optimizer state" <|
+                \_ ->
+                    let
+                        spec =
+                            Linear.params T.float32 a b
+
+                        given =
+                            Param.initial spec 42
+                    in
+                    Expect.equal
+                        ( Result.map (List.map Tuple.first) (Train.initialFrom spec (Optim.sgd 0.1) (List.reverse given))
+                        , Train.initialFrom spec (Optim.sgd 0.1) (List.take 1 given) |> Result.map (\_ -> ())
+                        , Train.initialFrom spec (Optim.sgd 0.1) (List.map (Tuple.mapSecond (\_ -> Param.initial spec 1 |> List.head |> Maybe.map Tuple.second |> Maybe.withDefault given0)) given) |> Result.map (\_ -> ())
+                        )
+                        ( Ok (List.map Tuple.first (Train.initial spec (Optim.sgd 0.1) 42))
+                        , Err "no tensor for param1"
+                        , Err "param1: 48 bytes, but its dtype and shape take 16"
+                        )
             , test "a parameter signature names its inputs" <|
                 \_ ->
                     case Graph.function "g" (Param.sig (Linear.params T.float32 a b)) (\p -> T.sumAll p.weight |> T.plus (T.sumAll p.bias)) of
@@ -213,7 +235,7 @@ suite =
                 \_ ->
                     case Graph.function "g" f34 (Transform.vmap Axis.liftRank1 Axis.liftRank1 T.sin) of
                         Ok g ->
-                            Expect.equal ( 1, 0 ) ( occurrences "\"rmo.mo.sin\"" (Graph.toGenericText g), occurrences "\"rmo.slice\"" (Graph.toGenericText g) )
+                            Expect.equal ( 1, 0 ) ( occurrences "\"rmo.mo.sin\"" (Graph.Max.toGenericText g), occurrences "\"rmo.slice\"" (Graph.Max.toGenericText g) )
 
                         Err e ->
                             Expect.fail (String.join "; " e)
@@ -233,24 +255,24 @@ suite =
                             )
                     of
                         Ok g ->
-                            Expect.equal [ 1, 1, 1, 1 ] (List.map (\op -> occurrences op (Graph.toGenericText g)) [ "\"mo.if\"", "\"mo.while\"", "\"mo.call\"", "isSubgraph" ])
+                            Expect.equal [ 1, 1, 1, 1 ] (List.map (\op -> occurrences op (Graph.Max.toGenericText g)) [ "\"mo.if\"", "\"mo.while\"", "\"mo.call\"", "isSubgraph" ])
 
                         Err e ->
                             Expect.fail (String.join "; " e)
             ]
-        , describe "host-side helpers"
+        , describe "preparing values"
             [ test "QLoRA quantises to the nearest NF4 code, per block scaled by its largest magnitude" <|
                 \_ ->
                     let
-                        bytes =
+                        q =
                             Qlora.quantize 2 (T.dim A 2) (T.dim B 2) [ 0.5, -1, 0, 0.25 ]
-
-                        decoder =
-                            Decode.map2 Tuple.pair
-                                (Decode.map4 (\w x y z -> [ w, x, y, z ]) Decode.unsignedInt8 Decode.unsignedInt8 Decode.unsignedInt8 Decode.unsignedInt8)
-                                (Decode.bytes 12 |> Decode.andThen (\_ -> Decode.map2 (\p q -> [ p, q ]) (Decode.float32 Bytes.LE) (Decode.float32 Bytes.LE)))
                     in
-                    Expect.equal (Just ( [ 12, 0, 7, 15 ], [ 1, 0.25 ] )) (Decode.decode decoder bytes)
+                    Expect.equal
+                        ( Decode.decode (Decode.map4 (\w x y z -> [ w, x, y, z ]) Decode.unsignedInt8 Decode.unsignedInt8 Decode.unsignedInt8 Decode.unsignedInt8) q.codes
+                        , Decode.decode (Decode.map2 (\p r -> [ p, r ]) (Decode.float32 Bytes.LE) (Decode.float32 Bytes.LE)) q.scales
+                        , ( Bytes.width q.codes, Bytes.width q.scales )
+                        )
+                        ( Just [ 12, 0, 7, 15 ], Just [ 1, 0.25 ], ( 4, 8 ) )
             , test "normal initialisation has the requested spread" <|
                 \_ ->
                     let
@@ -268,7 +290,7 @@ suite =
                                             Decode.map (\v -> Decode.Loop ( n - 1, v :: acc )) (Decode.float32 Bytes.LE)
                                     )
                                 )
-                                (Param.initial spec 7)
+                                (Param.initial spec 7 |> List.head |> Maybe.map Tuple.second |> Maybe.withDefault given0)
                                 |> Maybe.withDefault []
 
                         mean =
@@ -290,7 +312,7 @@ suite =
                         Ok g ->
                             Expect.equal
                                 [ "\"rmo.mo.relu\"", "\"rmo.mo.reduce.add\"", "{axis = 1 : index}", "newShape = #mosh<ape[3]>" ]
-                                (List.filter (\s -> String.contains s (Graph.toGenericText g)) [ "\"rmo.mo.relu\"", "\"rmo.mo.reduce.add\"", "{axis = 1 : index}", "newShape = #mosh<ape[3]>" ])
+                                (List.filter (\s -> String.contains s (Graph.Max.toGenericText g)) [ "\"rmo.mo.relu\"", "\"rmo.mo.reduce.add\"", "{axis = 1 : index}", "newShape = #mosh<ape[3]>" ])
 
                         Err e ->
                             Expect.fail (String.join "; " e)
@@ -298,7 +320,7 @@ suite =
                 \_ ->
                     case Graph.function "f" (Sig.f32 (T.r3 a b c)) (T.softmax Axis.last3) of
                         Ok g ->
-                            Expect.equal True (String.contains "{axis = 2 : index}" (Graph.toGenericText g))
+                            Expect.equal True (String.contains "{axis = 2 : index}" (Graph.Max.toGenericText g))
 
                         Err e ->
                             Expect.fail (String.join "; " e)
@@ -324,3 +346,8 @@ asAB =
 occurrences : String -> String -> Int
 occurrences needle hay =
     List.length (String.indexes needle hay)
+
+
+given0 : Bytes.Bytes
+given0 =
+    Bytes.Encode.encode (Bytes.Encode.sequence [])

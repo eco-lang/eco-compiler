@@ -1,8 +1,8 @@
 module Infer exposing (step, initGraph)
 
 {-| Graphs that run a model, `Train`'s counterpart: the parameters and a state (KV caches, diffusion
-latents) are **resident**, host buffers that outlive a run, and the new state replaces the old after
-each run; only the inputs cross from Elm and only the outputs come back.
+latents) are **resident**, buffers that outlive a run (kept by whatever runs the graph), and the new
+state replaces the old after each run; only the inputs go in and only the outputs come back.
 
     decode =
         Infer.step "decode"
@@ -163,7 +163,7 @@ describe dt shape =
 
 
 {-| A graph with no inputs that writes `value` (usually zeros) into the state's resident buffers,
-named as `step` names them: the state is made on the host, never sent from Elm.
+named as `step` names them: the state is made where the graph runs, never sent from Elm.
 -}
 initGraph : String -> Sig state -> state -> Result (List String) Graph
 initGraph graphName (I.SigBuilder ss) value =

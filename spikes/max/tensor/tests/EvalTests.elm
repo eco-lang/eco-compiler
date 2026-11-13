@@ -141,6 +141,7 @@ suite =
         , indexing
         , layers
         , control
+        , prepared
         , randomness
         , verification
         ]
@@ -603,6 +604,94 @@ control =
                 case Graph.function "loop" Sig.unit (\() -> Control.whileLoop (Sig.i64 T.scalar) (\_ -> T.lessThan (T.int 1) (T.int 0)) (T.plus (T.int 1)) (T.int 0)) of
                     Ok g ->
                         Eval.runWith { maxIterations = 10 } g Dict.empty |> failsWith "more than 10 iterations"
+
+                    Err e ->
+                        Expect.fail (String.join "; " e)
+        ]
+
+
+
+-- PREPARED GRAPHS
+
+
+{-| A graph with a branch chosen by its input, a loop whose body reads the input, and a shared
+function called twice.
+-}
+busy : Result (List String) Graph.Graph
+busy =
+    let
+        sq =
+            Transform.shared "sq" (Sig.f32 (T.r1 b3)) (Sig.f32 (T.r1 b3)) (\v -> T.times v v)
+    in
+    Graph.function "busy"
+        (Sig.label "x" (Sig.f32 (T.r1 b3)))
+        (\x ->
+            Control.cond (T.sumAll x |> T.greaterThan (T.float 0)) (Sig.f32 (T.r1 b3)) (Sig.f32 (T.r1 b3)) (T.scale 2) (T.scale -1) x
+                |> Control.repeat 3 (Sig.f32 (T.r1 b3)) (\v -> v |> T.times x |> T.plus x)
+                |> (\v -> T.plus (Transform.call sq v) (Transform.call sq x))
+        )
+
+
+prepared : Test
+prepared =
+    let
+        input l =
+            Dict.singleton "x" { dtype = "f32", shape = [ 3 ], data = Floats l }
+    in
+    describe "prepared graphs"
+        [ test "one prepared graph gives what run gives, input after input" <|
+            \_ ->
+                case busy of
+                    Ok g ->
+                        let
+                            p =
+                                Eval.prepare g
+
+                            inputs =
+                                [ [ 1, 2, 3 ], [ -0.5, -1, 0.25 ], [ 0.1, 0, -0.2 ] ]
+                        in
+                        Expect.equal
+                            (List.map (\l -> Eval.runPrepared p (input l)) inputs)
+                            (List.map (\l -> Eval.run g (input l)) inputs)
+
+                    Err e ->
+                        Expect.fail (String.join "; " e)
+        , test "the branches and the loop compute what plain Elm does" <|
+            \_ ->
+                case busy of
+                    Ok g ->
+                        let
+                            plain x =
+                                let
+                                    c =
+                                        if List.sum x > 0 then
+                                            List.map ((*) 2) x
+
+                                        else
+                                            List.map negate x
+
+                                    step v =
+                                        List.map2 (\a b -> a * b + b) v x
+
+                                    r =
+                                        step (step (step c))
+                                in
+                                List.map2 (\a b -> a * a + b * b) r x
+
+                            got l =
+                                Eval.runPrepared (Eval.prepare g) (input l)
+                                    |> Result.map (Dict.values >> List.map .data)
+                        in
+                        Expect.equal ( got [ 1, 2, 3 ], got [ -0.5, -1, 0.25 ] )
+                            ( Ok [ Floats (plain [ 1, 2, 3 ]) ], Ok [ Floats (plain [ -0.5, -1, 0.25 ]) ] )
+
+                    Err e ->
+                        Expect.fail (String.join "; " e)
+        , test "a prepared graph keeps the loop guard" <|
+            \_ ->
+                case Graph.function "loop" Sig.unit (\() -> Control.whileLoop (Sig.i64 T.scalar) (\_ -> T.lessThan (T.int 1) (T.int 0)) (T.plus (T.int 1)) (T.int 0)) of
+                    Ok g ->
+                        Eval.runPreparedWith { maxIterations = 10 } (Eval.prepare g) Dict.empty |> failsWith "more than 10 iterations"
 
                     Err e ->
                         Expect.fail (String.join "; " e)

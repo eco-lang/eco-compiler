@@ -309,7 +309,7 @@ update msg model =
             if Bridge.headerId bytes == trainId then
                 let
                     loss =
-                        Train.loss bytes
+                        Bridge.loss bytes
 
                     m =
                         { model | lossSum = model.lossSum + loss, steps = model.steps + 1 }
@@ -331,7 +331,7 @@ update msg model =
             else
                 let
                     correct =
-                        round (Train.measured bytes)
+                        round (Bridge.measured bytes)
 
                     report =
                         "epoch "
@@ -383,12 +383,13 @@ whenReady model =
     if ready model then
         case model.variant.base of
             Just b ->
-                let
-                    -- the saved parameters as one block in Param.initial's layout
-                    block =
-                        Encode.encode (Encode.sequence (List.map Bridge.packed (Dict.values model.baseFiles)))
-                in
-                Bridge.send (List.map (\( n, bytes ) -> Bridge.put n bytes) (b.residents block) ++ [ evalCommand model ])
+                -- the saved parameters, each named after its file (ids follow `b.files`' order)
+                case b.residents (List.map2 Tuple.pair b.files (Dict.values model.baseFiles)) of
+                    Ok residents ->
+                        Bridge.send (List.map (\( n, bytes ) -> Bridge.put n bytes) residents ++ [ evalCommand model ])
+
+                    Err e ->
+                        Cmd.batch [ Bridge.log ("base: " ++ e), Bridge.done 1 ]
 
             Nothing ->
                 evaluateTest model

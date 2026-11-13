@@ -36,7 +36,7 @@ type alias Variant =
     , epochs : Int
     , loads : List ( String, String )
     , saves : List String
-    , base : Maybe { files : List String, residents : Bytes -> List ( String, Bytes ) }
+    , base : Maybe { files : List String, residents : List ( String, Bytes ) -> Result String (List ( String, Bytes )) }
     }
 
 
@@ -326,11 +326,13 @@ lora =
         Just
             { files = paramNames 4
             , residents =
-                \block ->
-                    -- the saved network as a parameter block of `MnistNet.params`, through
-                    -- Train.initialFrom; its parameters become the frozen layers
-                    Train.initialFrom Net.params adam block
-                        |> List.filter (\( n, _ ) -> String.startsWith "param" n)
-                        |> List.map (\( n, b ) -> ( "frozen" ++ String.dropLeft 5 n, b ))
+                \saved ->
+                    -- the saved network's parameters (named as `MnistNet.params` names them),
+                    -- checked by Train.initialFrom; they become the frozen layers
+                    Train.initialFrom Net.params adam saved
+                        |> Result.map
+                            (List.filter (\( n, _ ) -> String.startsWith "param" n)
+                                >> List.map (\( n, b ) -> ( "frozen" ++ String.dropLeft 5 n, b ))
+                            )
             }
     }

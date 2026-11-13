@@ -219,7 +219,7 @@ update msg model =
             if Bridge.headerId bytes == trainId then
                 let
                     loss =
-                        Train.loss bytes
+                        Bridge.loss bytes
 
                     m =
                         { model | step = model.step + 1, lossSum = model.lossSum + loss, lossCount = model.lossCount + 1 }
@@ -244,7 +244,7 @@ update msg model =
             else
                 let
                     valid =
-                        Train.measured bytes
+                        Bridge.measured bytes
 
                     report =
                         "step "

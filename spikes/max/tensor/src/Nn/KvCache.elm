@@ -1,8 +1,8 @@
 module Nn.KvCache exposing (Cache, sig, write)
 
 {-| A key/value cache for generating with attention: `g` key/value heads, room for `t` positions,
-heads of `j` features. It is the state of an `Infer` graph, so it stays in the host's resident
-buffers between steps.
+heads of `j` features. It is the state of an `Infer` graph, so it stays in resident buffers between
+steps.
 
 
 # The cache

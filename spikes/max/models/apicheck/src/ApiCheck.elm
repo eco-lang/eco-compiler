@@ -1092,7 +1092,7 @@ ranBlock id reply model =
     else if id == 24 then
         let
             losses =
-                model.losses ++ [ Train.loss reply ]
+                model.losses ++ [ Bridge.loss reply ]
 
             m =
                 { model | losses = losses }

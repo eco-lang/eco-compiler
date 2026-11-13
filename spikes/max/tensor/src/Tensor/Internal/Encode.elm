@@ -1,7 +1,8 @@
-module Tensor.Internal.Host exposing (draws, encodeValues, lcg, normalDraws, packed, paddedSize)
+module Tensor.Internal.Encode exposing (draws, encodeValues, lcg, normalDraws)
 
-{-| Byte layouts shared with the host, element encoders for every dtype, and the generator
-`Param.initial` draws from (the MNIST spike's LCG, kept so its runs stay comparable).
+{-| Tensors as bytes, the package's one encoding (`Train` documents it): every element in row-major
+order, little-endian, at its dtype's width. And the generator `Param.initial` draws from (the MNIST
+spike's LCG, kept so its runs stay comparable).
 -}
 
 import Bitwise
@@ -10,22 +11,6 @@ import Bytes.Decode as Decode
 import Bytes.Encode as Encode
 import Tensor.Internal.Prim exposing (DT(..))
 import Tensor.Internal.Values exposing (Values(..))
-
-
-{-| `n` rounded up to a multiple of 16: every tensor in a host message starts 16-aligned.
--}
-paddedSize : Int -> Int
-paddedSize n =
-    n + modBy 16 (16 - modBy 16 n)
-
-
-packed : Bytes -> Encode.Encoder
-packed b =
-    let
-        w =
-            Bytes.width b
-    in
-    Encode.sequence (Encode.bytes b :: List.repeat (paddedSize w - w) (Encode.unsignedInt8 0))
 
 
 {-| Values as little-endian elements of `dt`. Integer values are written exactly (u64: the `Int`'s

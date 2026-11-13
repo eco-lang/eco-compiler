@@ -6,6 +6,7 @@ module Round2Tests exposing (suite)
 
 import Expect
 import Graph
+import Graph.Max
 import Infer
 import Nn
 import Nn.GroupNorm as GroupNorm
@@ -146,7 +147,7 @@ textOf : Result (List String) Graph.Graph -> String
 textOf r =
     case r of
         Ok g ->
-            Graph.toGenericText g
+            Graph.Max.toGenericText g
 
         Err e ->
             "ERRORS: " ++ String.join " | " e
@@ -154,7 +155,7 @@ textOf r =
 
 onGpu : Result (List String) Graph.Graph -> Result (List String) String
 onGpu r =
-    r |> Result.andThen (Graph.toGenericTextOn (Graph.Gpu 0))
+    r |> Result.andThen (Graph.Max.toGenericTextOn (Graph.Max.Gpu 0))
 
 
 suite : Test
@@ -167,7 +168,7 @@ suite =
                         g =
                             Graph.function "g" (Sig.f32 (T.r3 a b c)) (\x -> x |> T.permute Axis.swap01of3 |> T.sin |> T.pad Axis.retag0of3 { before = 1, after = 0, value = 0.5 } (T.dim B 5))
                     in
-                    Expect.equal (Result.map Graph.toGenericText g) (g |> Result.andThen (Graph.toGenericTextOn Graph.Cpu))
+                    Expect.equal (Result.map Graph.Max.toGenericText g) (g |> Result.andThen (Graph.Max.toGenericTextOn Graph.Max.Cpu))
             , test "on a GPU, data on the device, the permutation and paddings on the host" <|
                 \_ ->
                     case onGpu (Graph.function "g" (Sig.f32 (T.r3 a b c)) (\x -> x |> T.permute Axis.swap01of3 |> T.scale 2 |> T.pad Axis.retag0of3 { before = 1, after = 0, value = 0.5 } (T.dim B 5))) of
@@ -187,7 +188,7 @@ suite =
                             Graph.function "g" (Sig.f32 (T.r3 a b c)) (\x -> T.topK Axis.retag1of3 (T.dim K 2) x |> Tuple.first)
                     in
                     Expect.equal ( True, True )
-                        ( Result.map (always ()) (g |> Result.andThen (Graph.toGenericTextOn Graph.Cpu)) == Ok ()
+                        ( Result.map (always ()) (g |> Result.andThen (Graph.Max.toGenericTextOn Graph.Max.Cpu)) == Ok ()
                         , case onGpu g of
                             Err [ e ] ->
                                 String.contains "on a GPU only the last axis" e

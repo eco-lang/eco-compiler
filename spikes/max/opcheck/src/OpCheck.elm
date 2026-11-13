@@ -14,6 +14,7 @@ import Bytes.Decode as Decode
 import Dict
 import Json.Decode as D
 import Graph exposing (Graph)
+import Graph.Max
 import Json.Encode as E
 import Nn
 import Nn.Conv2d as Conv2d exposing (Conv2d)
@@ -198,8 +199,8 @@ emitFamily fam =
         Ok g ->
             E.object
                 [ ( "graph", E.string fam.graph )
-                , ( "mlir", E.string (Graph.toGenericText g) )
-                , ( "bytecode", E.list E.int (byteList (Graph.toBytecode g)) )
+                , ( "mlir", E.string (Graph.Max.toGenericText g) )
+                , ( "bytecode", E.list E.int (byteList (Graph.Max.toBytecode g)) )
                 , ( "inputs"
                   , E.list
                         (\s ->
@@ -319,7 +320,7 @@ evalFamily inputs fam =
 -}
 onGpu : Graph -> E.Value
 onGpu g =
-    case ( Graph.toGenericTextOn (Graph.Gpu 0) g, Graph.toBytecodeOn (Graph.Gpu 0) g ) of
+    case ( Graph.Max.toGenericTextOn (Graph.Max.Gpu 0) g, Graph.Max.toBytecodeOn (Graph.Max.Gpu 0) g ) of
         ( Ok text, Ok bytes ) ->
             E.object [ ( "mlir", E.string text ), ( "bytecode", E.list E.int (byteList bytes) ) ]
 

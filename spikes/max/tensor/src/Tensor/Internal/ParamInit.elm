@@ -3,7 +3,7 @@ module Tensor.Internal.ParamInit exposing (fans, initValues, kindLabel, resident
 {-| Initial values of parameter fields (shared by `Param` and `Train`).
 -}
 
-import Tensor.Internal.Host as Host
+import Tensor.Internal.Encode as Elements
 import Tensor.Internal.Names as Names
 import Tensor.Internal.Types as I
 
@@ -59,23 +59,23 @@ initValues f seed =
                 bound =
                     sqrt (6 / toFloat fanIn)
             in
-            Host.draws (\u -> (2 * u - 1) * bound) n seed
+            Elements.draws (\u -> (2 * u - 1) * bound) n seed
 
         Just I.XavierUniform ->
             let
                 bound =
                     sqrt (6 / toFloat (fanIn + fanOut))
             in
-            Host.draws (\u -> (2 * u - 1) * bound) n seed
+            Elements.draws (\u -> (2 * u - 1) * bound) n seed
 
         Just I.HeNormal ->
-            Host.normalDraws 0 (sqrt (2 / toFloat fanIn)) n seed
+            Elements.normalDraws 0 (sqrt (2 / toFloat fanIn)) n seed
 
         Just I.XavierNormal ->
-            Host.normalDraws 0 (sqrt (2 / toFloat (fanIn + fanOut))) n seed
+            Elements.normalDraws 0 (sqrt (2 / toFloat (fanIn + fanOut))) n seed
 
         Just (I.Normal std) ->
-            Host.normalDraws 0 std n seed
+            Elements.normalDraws 0 std n seed
 
         Just I.Ones ->
             ( List.repeat n 1, seed )
@@ -85,7 +85,7 @@ initValues f seed =
 
 
 {-| The resident names of a spec's fields, in field order: what `Train`, `Infer` and
-`Param.importGraph` call the host's buffers. Unnamed fields are numbered among themselves by kind
+`Param.importGraph` call their resident buffers. Unnamed fields are numbered among themselves by kind
 (`param0`, `frozen`, `data1`: a label used once stays unnumbered); fields named by `Param.named n`
 are numbered among the fields with the same name, as `n.param0`.
 -}

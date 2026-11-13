@@ -47,7 +47,7 @@ type alias Optimizer =
     I.Optimizer
 
 
-{-| A rate fixed in the graph, or passed by the host with every step (so a schedule does not
+{-| A rate fixed in the graph, or given with every step (so a schedule does not
 recompile the graph): `Train.step` then adds a fed input `rate : f32 []`.
 -}
 type Rate

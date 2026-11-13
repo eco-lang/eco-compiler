@@ -1,6 +1,6 @@
 module Tensor.Check exposing (allClose)
 
-{-| Numerical comparison of host results, as NumPy's `allclose`: |a - e| <= atol + rtol |e|.
+{-| Numerical comparison of results, as NumPy's `allclose`: |a - e| <= atol + rtol |e|.
 
 
 # Comparing

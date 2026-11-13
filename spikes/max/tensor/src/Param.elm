@@ -3,7 +3,7 @@ module Param exposing
     , heUniform, heNormal, xavierUniform, xavierNormal, normal, zeros, ones
     , data, sub, list, config, frozen, named
     , names, sig, initial, initGraph, initInPlace, importGraph
-    , mapElems, count, byteSize, grad
+    , mapElems, count, grad
     )
 
 {-| A network's parameters, described once, in the style of `elm/json` decoders:
@@ -42,7 +42,7 @@ fan-out (the last dimension).
 
 # Working with parameters
 
-@docs mapElems, count, byteSize, grad
+@docs mapElems, count, grad
 
 -}
 
@@ -51,9 +51,9 @@ import Bytes.Encode as Encode
 import Graph exposing (Graph)
 import Signature exposing (Sig)
 import Tensor exposing (DType, Elems, F32, R0, Shape, Tensor)
+import Tensor.Internal.Encode as Elements
 import Tensor.Internal.Expr as E exposing (Expr)
 import Tensor.Internal.Grad as Grad
-import Tensor.Internal.Host as Host
 import Tensor.Internal.Names as Names
 import Tensor.Internal.Ops as O
 import Tensor.Internal.ParamInit as ParamInit
@@ -159,8 +159,8 @@ ones =
     tensorField (I.Trainable I.Ones)
 
 
-{-| A tensor of any kind that is never trained and that `initial` leaves zero: the host loads it
-(quantized codes, a pretrained table).
+{-| A tensor of any kind that is never trained and that `initial` leaves zero: it is loaded from
+outside (quantized codes, a pretrained table).
 -}
 data : (r -> Tensor k d s) -> DType k d -> Shape s -> Builder r (Tensor k d s -> f) -> Builder r f
 data =
@@ -284,24 +284,25 @@ sig (I.ParamBuilder s) =
         }
 
 
-{-| Every field's initial bytes in order, each padded to 16 bytes (the host's layout).
+{-| Every field's first value drawn from `seed`, under its resident name (`names`), as bytes (each
+tensor's elements, row-major, little-endian: `Train` documents the encoding). `Train.initial` adds
+the optimizer's state.
 -}
-initial : Spec r -> Int -> Bytes
-initial (I.ParamBuilder s) seed0 =
+initial : Spec r -> Int -> List ( String, Bytes )
+initial ((I.ParamBuilder s) as spec) seed0 =
     List.foldl
         (\f ( seed, acc ) ->
             let
                 ( values, seed1 ) =
                     ParamInit.initValues f seed
             in
-            ( seed1, Host.packed (Host.encodeValues f.dtype (Values.forDtype f.dtype values)) :: acc )
+            ( seed1, Elements.encodeValues f.dtype (Values.forDtype f.dtype values) :: acc )
         )
         ( seed0, [] )
         s.fields
         |> Tuple.second
         |> List.reverse
-        |> Encode.sequence
-        |> Encode.encode
+        |> List.map2 Tuple.pair (names spec)
 
 
 {-| A graph with one input, the seed (`ui64 [1]`), that returns every field's initial values drawn
@@ -428,13 +429,6 @@ count (I.ParamBuilder s) =
     List.length s.fields
 
 
-{-| The bytes of the packed parameter block.
--}
-byteSize : Spec r -> Int
-byteSize (I.ParamBuilder s) =
-    List.sum (List.map (\f -> Host.paddedSize (P.dtSize f.dtype * List.product f.shape)) s.fields)
-
-
 {-| The gradient of a scalar loss with respect to every parameter: a record of the same type.
 -}
 grad : Spec r -> (r -> Tensor Float d R0) -> r -> r
@@ -444,7 +438,7 @@ grad (I.ParamBuilder s) loss r =
 
 
 {-| The resident names of the spec's fields, in order: what `Train`, `Infer` and `importGraph` call
-the host's buffers. Unnamed fields are numbered among themselves by kind (`param0`, `frozen1`,
+their resident buffers. Unnamed fields are numbered among themselves by kind (`param0`, `frozen1`,
 `data`); fields of a part marked `named n` are `n.param0` .., wherever the part sits.
 -}
 names : Spec r -> List String
@@ -474,7 +468,7 @@ named n (I.ParamBuilder s) =
         }
 
 
-{-| A graph that converts raw checkpoint tensors, already in the host's resident buffers, into the
+{-| A graph that converts raw checkpoint tensors, already in resident buffers, into the
 spec's parameters, written to their resident buffers (`names`). The raw signature's labels name the
 raw buffers (a label used once is the name; repeated labels are numbered); `convert` is typed Elm:
 transposes, splits of fused weights, casts. Each result must have its field's dtype and shape.

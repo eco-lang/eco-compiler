@@ -2,13 +2,15 @@ module Tensor.Eval exposing
     ( Data(..), Value
     , floats, ints, mask
     , run, runWith, residentZeros
+    , Prepared, prepare, runPrepared, runPreparedWith
     )
 
 {-| Runs graphs and tensors in Elm, with no MAX: a pure-Elm evaluator of every operation the package
 builds, gradients, `vmap`, branches, loops and shared functions included.
 
 It is for small graphs (up to about 10⁵–10⁶ element operations a run): tests that check values,
-examples, teaching, and a second reference for the operations MAX runs. It is not a fast backend.
+examples, teaching, interactive pages, and a second reference for the operations MAX runs. It is not
+a fast backend.
 
     x = T.fromList T.float32 (T.r1 three) [ 1, 2, 3 ]
 
@@ -45,9 +47,9 @@ naming the operation.
 
 # Graphs
 
-A graph runs as the host runs it: `run` takes each input under its name (a resident input under its
+A graph runs as MAX runs it: `run` takes each input under its name (a resident input under its
 resident name), and returns each output under its name (or its resident name). Keep the resident
-buffers in a `Dict` and merge each run's outputs into it, as the host does:
+buffers in a `Dict` and merge each run's outputs into it, as MAX keeps them:
 
     -- init = Param.initInPlace "init" params: run once with a seed, it writes the parameters;
     -- residentZeros gives the optimizer state and step; step = Train.step ... runs per batch
@@ -69,6 +71,24 @@ buffers in a `Dict` and merge each run's outputs into it, as the host does:
 Each run's outputs also hold the loss (under the step's output name, `Train` documents it).
 
 @docs run, runWith, residentZeros
+
+
+# Running a graph many times
+
+`run` prepares the graph, then runs it. A graph run many times (every animation frame, every
+iteration of a solver) is better prepared once:
+
+    stepper : Eval.Prepared
+    stepper =
+        Eval.prepare stepGraph
+
+    -- each frame
+    Eval.runPrepared stepper inputs
+
+Preparing works out the order the graph's operations run in, and where each reads its operands, so
+that a run only computes values: small graphs run several times faster.
+
+@docs Prepared, prepare, runPrepared, runPreparedWith
 
 -}
 
@@ -130,7 +150,7 @@ evalTensor : Expr -> Result (List String) T
 evalTensor e =
     case Lower.problems "eval" [] [ ( "value", e ) ] of
         [] ->
-            Engine.evalRoots { inputs = Array.empty, maxIterations = defaultIterations } [] { memo = Dict.empty, binds = Dict.empty } [ e ]
+            Engine.execute { inputs = Array.empty, maxIterations = defaultIterations } (Engine.compile [ e ])
                 |> Result.mapError List.singleton
                 |> Result.andThen
                     (\vs ->
@@ -162,7 +182,35 @@ run =
 {-| `run` with another guard on `whileLoop` iterations: past it, the run is an error, not a hang.
 -}
 runWith : { maxIterations : Int } -> Graph -> Dict String Value -> Result (List String) (Dict String Value)
-runWith cfg (I.Graph g) given =
+runWith cfg g =
+    runPreparedWith cfg (prepare g)
+
+
+{-| A graph prepared to run: see `prepare`.
+-}
+type Prepared
+    = Prepared { name : String, inputs : List I.Spec, outputs : List I.Spec, program : Engine.Program }
+
+
+{-| Prepares a graph to be run many times. Preparing cannot fail: whatever `run` would report, running
+the prepared graph reports.
+-}
+prepare : Graph -> Prepared
+prepare (I.Graph g) =
+    Prepared { name = g.name, inputs = g.inputs, outputs = g.outputs, program = Engine.compile g.exprs.outputs }
+
+
+{-| `run` for a prepared graph.
+-}
+runPrepared : Prepared -> Dict String Value -> Result (List String) (Dict String Value)
+runPrepared =
+    runPreparedWith { maxIterations = defaultIterations }
+
+
+{-| `runWith` for a prepared graph.
+-}
+runPreparedWith : { maxIterations : Int } -> Prepared -> Dict String Value -> Result (List String) (Dict String Value)
+runPreparedWith cfg (Prepared g) given =
     let
         key spec =
             case spec.role of
@@ -189,7 +237,7 @@ runWith cfg (I.Graph g) given =
         |> Result.mapError List.singleton
         |> Result.andThen
             (\ts ->
-                Engine.evalRoots { inputs = Array.fromList ts, maxIterations = cfg.maxIterations } [] { memo = Dict.empty, binds = Dict.empty } g.exprs.outputs
+                Engine.execute { inputs = Array.fromList ts, maxIterations = cfg.maxIterations } g.program
                     |> Result.mapError (\m -> [ g.name ++ ": " ++ m ])
             )
         |> Result.map
@@ -210,7 +258,7 @@ runWith cfg (I.Graph g) given =
 
 
 {-| A zero value of the right dtype and shape for every resident input of a graph, under its
-resident name: what `Train.initial` gives the host for the optimizer state and `step`.
+resident name: the optimizer state and `step` that `Train.initial` starts at zero.
 -}
 residentZeros : Graph -> Dict String Value
 residentZeros (I.Graph g) =

@@ -7,6 +7,7 @@ their MLIR text and the range refusal. Values stay within 2⁵³, so these hold 
 
 import Expect
 import Graph
+import Graph.Max
 import Signature as Sig
 import Tensor as T exposing (Dim)
 import Tensor.Axis as Axis
@@ -80,7 +81,7 @@ suite =
                 \_ ->
                     case Graph.function "c" Sig.unit (\_ -> T.fromList T.int64 (T.r1 two) [ 4503599627370497, -9 ]) of
                         Ok g ->
-                            Graph.toGenericText g
+                            Graph.Max.toGenericText g
                                 |> String.contains "#M.dense_array<4503599627370497, -9> : tensor<2xsi64>"
                                 |> Expect.equal True
 
