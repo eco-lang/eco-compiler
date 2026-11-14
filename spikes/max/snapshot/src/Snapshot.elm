@@ -12,8 +12,8 @@ import Bytes.Encode
 import CharModel
 import Finetune.Qlora as Qlora
 import Graph exposing (Graph)
-import Graph.Max
 import Json.Encode as E
+import Max
 import MnistModels
 import MnistNet
 import Param
@@ -117,8 +117,8 @@ encode item =
         G name (Ok g) ->
             E.object
                 [ ( "name", E.string name )
-                , ( "mlir", E.string (Graph.Max.toGenericText g) )
-                , ( "bytecode", E.list E.int (byteList (Graph.Max.toBytecode g)) )
+                , ( "mlir", E.string (Max.toGenericText g) )
+                , ( "bytecode", E.list E.int (byteList (Max.toBytecode g)) )
                 ]
 
         G name (Err es) ->

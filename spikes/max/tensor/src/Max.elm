@@ -1,12 +1,12 @@
-module Graph.Max exposing
+module Max exposing
     ( toBytecode, toGenericText
     , Device(..), toBytecodeOn, toGenericTextOn
     )
 
 {-| Modular MAX takes a graph as an MLIR module, and this module writes a built `Graph` as one: as
 MLIR bytecode, the binary form MAX's graph compiler loads, or as MLIR's generic op text, the same
-module written out to be read. How the bytes reach MAX, and how MAX runs them, is up to the
-caller.
+module written out to be read. A `Max.Session` on the host backend sends these bytes to MAX to compile,
+then runs the graph; a program that talks to MAX some other way can use the bytes itself.
 
 _MLIR_ is a compiler framework in which a program is a tree of operations, each named after the
 _dialect_ it belongs to, as `mo.graph` belongs to `mo`. `Graph.build` has already checked the graph
@@ -121,14 +121,14 @@ toGenericTextOn d (I.Graph g) =
 
 
 {-| Returns `ops` placed for `d` (`Tensor.Internal.Device.place`), or, for a GPU with a negative
-index, the one message "Graph.Max: there is no GPU with the negative index n".
+index, the one message "Max: there is no GPU with the negative index n".
 -}
 place : Device -> List Bc.Op -> Result (List String) (List Bc.Op)
 place d ops =
     case d of
         Gpu n ->
             if n < 0 then
-                Err [ "Graph.Max: there is no GPU with the negative index " ++ String.fromInt n ]
+                Err [ "Max: there is no GPU with the negative index " ++ String.fromInt n ]
 
             else
                 Device.place (internal d) ops

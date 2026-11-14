@@ -8,28 +8,28 @@ A gradient check differentiates `sumAll (y * stopGradient (cos y))` for y = f x:
 
 -}
 
-import Finetune.Qlora as Qlora
 import Bytes
 import Bytes.Decode as Decode
 import Dict
-import Json.Decode as D
+import Finetune.Qlora as Qlora
 import Graph exposing (Graph)
-import Graph.Max
+import Json.Decode as D
 import Json.Encode as E
+import Max
 import Nn
-import Nn.Conv2d as Conv2d exposing (Conv2d)
 import Nn.Attention as Attention
+import Nn.Conv2d as Conv2d exposing (Conv2d)
 import Nn.Embedding as Embedding
 import Nn.FeedForward as FeedForward
 import Nn.GroupNorm as GroupNorm
 import Nn.KvCache as KvCache
 import Nn.LayerNorm as LayerNorm
+import Nn.Linear as Linear
 import Nn.RmsNorm as RmsNorm
 import Nn.Rotary as Rotary
 import Nn.Sampling as Sampling
-import Nn.Linear as Linear
-import Platform
 import Param
+import Platform
 import Signature as Sig exposing (Sig)
 import Tensor as T exposing (Dim, F32, I64, Mask, R0, R1, R2, R3, R4, Tensor)
 import Tensor.Axis as Axis
@@ -131,7 +131,7 @@ mvalue ref args params f =
     { name = ref, ref = ref, args = args, wrt = "", params = params, fn = f >> mflat }
 
 
-{-| d/dx of sumAll (f x * stopGradient (cos (f x))).
+{-| d/dx of sumAll (f x \* stopGradient (cos (f x))).
 -}
 gradWrt : (F s -> F t) -> F s -> F s
 gradWrt f x =
@@ -199,8 +199,8 @@ emitFamily fam =
         Ok g ->
             E.object
                 [ ( "graph", E.string fam.graph )
-                , ( "mlir", E.string (Graph.Max.toGenericText g) )
-                , ( "bytecode", E.list E.int (byteList (Graph.Max.toBytecode g)) )
+                , ( "mlir", E.string (Max.toGenericText g) )
+                , ( "bytecode", E.list E.int (byteList (Max.toBytecode g)) )
                 , ( "inputs"
                   , E.list
                         (\s ->
@@ -320,7 +320,7 @@ evalFamily inputs fam =
 -}
 onGpu : Graph -> E.Value
 onGpu g =
-    case ( Graph.Max.toGenericTextOn (Graph.Max.Gpu 0) g, Graph.Max.toBytecodeOn (Graph.Max.Gpu 0) g ) of
+    case ( Max.toGenericTextOn (Max.Gpu 0) g, Max.toBytecodeOn (Max.Gpu 0) g ) of
         ( Ok text, Ok bytes ) ->
             E.object [ ( "mlir", E.string text ), ( "bytecode", E.list E.int (byteList bytes) ) ]
 
@@ -747,7 +747,7 @@ transforms =
         , named "hessianVector" "hessianVector" [ "x", "v" ] [] (\i -> Transform.hessianVector cube i.x i.v)
         , named "siskind" "ones" [ "x" ] [] (\i -> Transform.grad (\y -> y |> T.times (Transform.grad (\z -> y |> T.plus z |> T.sumAll) y) |> T.sumAll) i.x)
         , named "jvpSin" "jvpSin" [ "x", "v" ] [] (\i -> Tuple.second (Transform.jvp Sig.anyTensor Sig.anyTensor T.sin i.x i.v))
-        , named "vjpSin" "jvpSin" [ "x", "v" ] [] (\i -> (Tuple.second (Transform.vjp Sig.anyTensor Sig.anyTensor T.sin i.x)) i.v)
+        , named "vjpSin" "jvpSin" [ "x", "v" ] [] (\i -> Tuple.second (Transform.vjp Sig.anyTensor Sig.anyTensor T.sin i.x) i.v)
         , named "jacobianSin" "jacobianSin" [ "x" ] [] (\i -> Transform.jacobian T.sin i.x)
         , named "vmapSoftmax" "softmaxRows" [ "m" ] [] (\i -> Transform.vmap Axis.liftRank1 Axis.liftRank1 (T.softmax Axis.last1) i.m)
         , named "vmapWith" "rowsTimesX" [ "m", "x" ] [] (\i -> Transform.vmapWith (Transform.pair (Transform.tensor Axis.liftRank1) Transform.keep) (Transform.tensor Axis.liftRank1) (\( row, x ) -> row |> T.times x) ( i.m, i.x ))
@@ -914,7 +914,8 @@ type alias VmIn =
     , u : F (R1 C)
     , px : F (R2 B C)
     , idx : Tensor Int I64 (R1 K)
-    , r4 : F (R4 A D B D) }
+    , r4 : F (R4 A D B D)
+    }
 
 
 vmapFamily : Family
@@ -1031,6 +1032,7 @@ main =
         , update = \_ m -> ( m, Cmd.none )
         , subscriptions = \_ -> Sub.none
         }
+
 
 
 -- ROUND 2 (plans/tensor-api-round2.md, A1)

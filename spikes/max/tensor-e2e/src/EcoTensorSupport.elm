@@ -5,7 +5,7 @@ module EcoTensorSupport exposing (constants, graphText, two64)
 
 import Bitwise
 import Graph exposing (Graph)
-import Graph.Max
+import Max
 
 
 {-| The generic MLIR text of a built graph, or its build errors.
@@ -14,7 +14,7 @@ graphText : Result (List String) Graph -> String
 graphText r =
     case r of
         Ok g ->
-            Graph.Max.toGenericText g
+            Max.toGenericText g
 
         Err es ->
             "errors: " ++ String.join "; " es

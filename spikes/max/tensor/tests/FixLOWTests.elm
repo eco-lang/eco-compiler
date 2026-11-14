@@ -1,12 +1,12 @@
 module FixLOWTests exposing (suite)
 
 {-| Regression tests for the round-2 LOW fixes: lowering for MAX and graph building (Graph,
-Graph.Max, Signature, Tensor.Internal.Lower, Mo, MlirBc, Device, Shared).
+Max, Signature, Tensor.Internal.Lower, Mo, MlirBc, Device, Shared).
 -}
 
 import Expect exposing (Expectation)
 import Graph
-import Graph.Max
+import Max
 import Signature as Sig
 import Tensor as T
 import Tensor.Axis as Axis
@@ -218,8 +218,8 @@ suite =
                     case Graph.function "g" vec3 T.relu of
                         Ok g ->
                             Expect.equal ( True, True )
-                                ( Graph.Max.toBytecodeOn (Graph.Max.Gpu -1) g |> Result.map (always ()) |> (/=) (Ok ())
-                                , Graph.Max.toGenericTextOn (Graph.Max.Gpu -1) g == Err [ "Graph.Max: there is no GPU with the negative index -1" ]
+                                ( Max.toBytecodeOn (Max.Gpu -1) g |> Result.map (always ()) |> (/=) (Ok ())
+                                , Max.toGenericTextOn (Max.Gpu -1) g == Err [ "Max: there is no GPU with the negative index -1" ]
                                 )
 
                         Err e ->
@@ -250,7 +250,7 @@ suite =
                 \_ ->
                     case Graph.function "g" (Sig.f32 (T.r2 three four)) (\x -> T.bottomK Axis.retag0of2 (T.dim K 2) x |> Tuple.first) of
                         Ok g ->
-                            Expect.equal (Err [ "rmo.mo.bottom_k: on a GPU only the last axis is supported" ]) (Graph.Max.toGenericTextOn (Graph.Max.Gpu 0) g)
+                            Expect.equal (Err [ "rmo.mo.bottom_k: on a GPU only the last axis is supported" ]) (Max.toGenericTextOn (Max.Gpu 0) g)
 
                         Err e ->
                             Expect.fail (String.join " | " e)

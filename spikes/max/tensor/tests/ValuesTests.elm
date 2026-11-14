@@ -33,7 +33,7 @@ What the tests establish, group by group:
   - **MLIR text.** `Mo.constText` writes `si64` values `[7, -3]`, a `ui64` 5, `bool` values as
     `true`/`false` with element type `i1`, and `f32` values `[1, 0.5]` as `1.0, 0.5`, each
     compared with the whole expected `#M.dense_array<…> : tensor<…>` string. The MLIR generic op
-    text `Graph.Max.toGenericText` writes for a graph returning `Tensor.fromList` of `int64` values
+    text `Max.toGenericText` writes for a graph returning `Tensor.fromList` of `int64` values
     `[2⁵² + 1, -9]` contains those two integers in decimal.
   - **Range refusal.** Building a graph fails, with the range message among its errors, for
     `Tensor.fromList uint8` holding 300, `Tensor.constant int8 -129`, and `Tensor.padInt` with a
@@ -52,7 +52,7 @@ dtype holding equal values have different keys; and float text for NaN, an infin
 
 import Expect
 import Graph
-import Graph.Max
+import Max
 import Signature as Sig
 import Tensor as T exposing (Dim)
 import Tensor.Axis as Axis
@@ -138,7 +138,7 @@ suite =
                 \_ ->
                     case Graph.function "c" Sig.unit (\_ -> T.fromList T.int64 (T.r1 two) [ 4503599627370497, -9 ]) of
                         Ok g ->
-                            Graph.Max.toGenericText g
+                            Max.toGenericText g
                                 |> String.contains "#M.dense_array<4503599627370497, -9> : tensor<2xsi64>"
                                 |> Expect.equal True
 

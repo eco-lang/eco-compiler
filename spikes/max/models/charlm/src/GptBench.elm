@@ -9,9 +9,9 @@ Flags: { layers, shared, model, heads, headDim, ffn, vocab, seq, batch }.
 
 import Bytes
 import Graph exposing (Graph)
-import Graph.Max
 import Json.Decode as D
 import Json.Encode as E
+import Max
 import Nn
 import Nn.Embedding as Embedding exposing (Embedding)
 import Nn.LayerNorm as LayerNorm exposing (LayerNorm)
@@ -164,7 +164,7 @@ main =
                         Ok g ->
                             let
                                 bytes =
-                                    Graph.Max.toBytecode g
+                                    Max.toBytecode g
                             in
                             E.object
                                 [ ( "bytecode", E.int (Bytes.width bytes) )

@@ -30,9 +30,11 @@ MAX_LIB   := $(MAX_SITE)/modular/lib
 CXX       ?= g++
 CXXFLAGS  := -std=c++20 -O2 -Wall -Wextra -I$(REPO)/runtime/include -I$(MAX_SITE)/max/include
 B         := $(CURDIR)/build
-# The typed tensor package, and the Elm side of max_bridge every model app shares.
+# The typed tensor package, whose Max.Session is the Elm side of the MAX host every model app links.
 LOCAL_PKGS := --local-package eco-lab/tensor=$(CURDIR)/tensor
-TENSOR_SRC := $(shell find $(CURDIR)/tensor/src -name '*.elm') $(CURDIR)/bridge/Bridge.elm
+TENSOR_SRC := $(shell find $(CURDIR)/tensor/src -name '*.elm')
+# The package's generic MAX host (protocol 2 of Max.Session); each *_bridge is it linked with one app.
+MAX_HOST   := tensor/host/max_host.cpp
 
 all: $(B)/spike $(B)/tensor_host $(B)/bytes_host $(B)/max_bridge $(B)/churn_host
 
@@ -65,14 +67,15 @@ $(B)/bytes_host: embed/bytes/bytes_host.cpp $(B)/tensor_bytes.so | check-venv
 $(B)/mnist.so: $(wildcard mnist/src/*.elm) $(TENSOR_SRC)
 	$(call elm_so,mnist,Mnist,mnist)
 
-$(B)/max_bridge: mnist/host/max_bridge.cpp $(B)/mnist.so | check-venv
+# The generic host, linked with the MNIST model.
+$(B)/max_bridge: $(MAX_HOST) $(B)/mnist.so | check-venv
 	$(CXX) $(CXXFLAGS) $< $(B)/mnist.so -L$(MAX_LIB) -lmax -lm -pthread -Wl,-rpath,$(B):$(MAX_LIB) -o $@
 
 $(B)/charlm.so: $(wildcard models/charlm/src/*.elm) $(TENSOR_SRC)
 	$(call elm_so,models/charlm,CharLm,charlm)
 
 # The same generic host, linked with the char model.
-$(B)/charlm_bridge: mnist/host/max_bridge.cpp $(B)/charlm.so | check-venv
+$(B)/charlm_bridge: $(MAX_HOST) $(B)/charlm.so | check-venv
 	$(CXX) $(CXXFLAGS) $< $(B)/charlm.so -L$(MAX_LIB) -lmax -lm -pthread -Wl,-rpath,$(B):$(MAX_LIB) -o $@
 
 # The corpus: the repo's theory documents, concatenated.
@@ -89,12 +92,13 @@ run-charlm: $(B)/charlm_bridge work/charlm/corpus.txt
 # Round 2's end-to-end API checks on synthetic models (plans/tensor-api-round2.md, A2): CHECK=cache,
 # import, block or int64; check-apicheck runs all four and the block's NumPy reference.
 CHECK ?= cache
-APICHECK_SRC := $(wildcard models/apicheck/src/*.elm) $(shell find $(CURDIR)/models/lib/src -name '*.elm')
+APICHECK_SRC := $(wildcard models/apicheck/src/*.elm)
 
 $(B)/apicheck.so: $(APICHECK_SRC) $(TENSOR_SRC)
 	$(call elm_so,models/apicheck,ApiCheck,apicheck)
 
-$(B)/apicheck_bridge: mnist/host/max_bridge.cpp $(B)/apicheck.so | check-venv
+# The same generic host, linked with the API checks.
+$(B)/apicheck_bridge: $(MAX_HOST) $(B)/apicheck.so | check-venv
 	$(CXX) $(CXXFLAGS) $< $(B)/apicheck.so -L$(MAX_LIB) -lmax -lm -pthread -Wl,-rpath,$(B):$(MAX_LIB) -o $@
 
 work/apicheck/synthetic.safetensors: models/apicheck/make_checkpoint.py | check-venv

@@ -462,7 +462,7 @@ without a GPU).
 - The module carries `mo.device_info_mapping = {cpu = #M.device_info<...>}` even when built for a GPU
   without one; eco-lab/tensor writes no such attribute (what a real GPU needs is checked in M4).
 
-eco-lab/tensor (`Tensor.Internal.Device`, `Graph.Max.toBytecodeOn`) writes exactly this placement; `make
+eco-lab/tensor (`Tensor.Internal.Device`, `Max.toBytecodeOn`) writes exactly this placement; `make
 check-gpu-ir` compares every op of every op-check family written for GPU 0 with MAX's placement for
 the same op (1,849 ops, 0 differ) and reads each graph back through `mlir-opt`. Branches and loops,
 and top-k off the last axis, are refused on a GPU until M4.

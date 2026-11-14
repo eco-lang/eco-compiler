@@ -24,7 +24,7 @@ module Tensor exposing
 
 A tensor is a description of a computation, not its elements. Making one works out its shape and
 dtype, but computes no element values. Those are computed only when the tensor is run: by MAX,
-given a `Graph` that `Graph.Max` writes out, or in plain Elm by `Tensor.Eval`, which runs a `Graph`,
+given a `Graph` that `Max` writes out, or in plain Elm by `Tensor.Eval`, which runs a `Graph`,
 or a tensor that reads no graph input.
 
 A tensor's type, `Tensor kind dtype shape`, has three parameters. The _kind_ is the Elm type of its
@@ -1861,7 +1861,7 @@ axis's size is a build error.
 
 A reverse-mode gradient through the values, such as `Transform.grad` takes, gives a build error,
 reported only if something being built or evaluated depends on that gradient; the positions carry
-no gradient. `Graph.Max` refuses for a GPU a top-k along any axis but the last.
+no gradient. `Max` refuses for a GPU a top-k along any axis but the last.
 
 -}
 topK : Retag s t a c -> Dim c -> Tensor k d s -> ( Tensor k d t, Tensor Int I64 t )

@@ -5,7 +5,7 @@ graph keeps between runs, under its resident name, while a _fed_ one is given or
 every run (`Graph.Role`). `Train.step`, `Infer.step`, `Param.initInPlace` and `Param.importGraph`
 share a parameter's buffer only because each uses the field's resident name from `Param.names`, and
 a graph whose names or roles are wrong still builds. These tests pin the names and roles those
-graphs give. They also check what `Graph.Max` writes for the CPU and for a GPU, and a set of build
+graphs give. They also check what `Max` writes for the CPU and for a GPU, and a set of build
 errors and op counts for operations and layers.
 
 The fixture is three axis tags, `A`, `B` and `C`, whose usual sizes are 3, 4 and 2 (`a`, `b`, `c`),
@@ -78,8 +78,8 @@ frozen and data fields; and the values `Param.initInPlace` writes.
 
 import Expect
 import Graph
-import Graph.Max
 import Infer
+import Max
 import Nn
 import Nn.GroupNorm as GroupNorm
 import Nn.Linear as Linear exposing (Linear)
@@ -299,7 +299,7 @@ textOf : Result (List String) Graph.Graph -> String
 textOf r =
     case r of
         Ok g ->
-            Graph.Max.toGenericText g
+            Max.toGenericText g
 
         Err e ->
             "ERRORS: " ++ String.join " | " e
@@ -310,7 +310,7 @@ the placement.
 -}
 onGpu : Result (List String) Graph.Graph -> Result (List String) String
 onGpu r =
-    r |> Result.andThen (Graph.Max.toGenericTextOn (Graph.Max.Gpu 0))
+    r |> Result.andThen (Max.toGenericTextOn (Max.Gpu 0))
 
 
 {-| The tests the module docstring lists, grouped by subject.
@@ -322,7 +322,7 @@ suite =
             [ test "written for the CPU, a graph is what toGenericText writes" <|
                 \_ ->
                     Graph.function "g" (Sig.f32 (T.r3 a b c)) (\x -> x |> T.permute Axis.swap01of3 |> T.sin |> T.pad Axis.retag0of3 { before = 1, after = 0, value = 0.5 } (T.dim B 5))
-                        |> expectGraph (\g -> Expect.equal (Ok (Graph.Max.toGenericText g)) (Graph.Max.toGenericTextOn Graph.Max.Cpu g))
+                        |> expectGraph (\g -> Expect.equal (Ok (Max.toGenericText g)) (Max.toGenericTextOn Max.Cpu g))
             , test "on a GPU, data on the device, the permutation and paddings on the host" <|
                 \_ ->
                     case onGpu (Graph.function "g" (Sig.f32 (T.r3 a b c)) (\x -> x |> T.permute Axis.swap01of3 |> T.scale 2 |> T.pad Axis.retag0of3 { before = 1, after = 0, value = 0.5 } (T.dim B 5))) of
@@ -343,7 +343,7 @@ suite =
                             Graph.function "g" (Sig.f32 (T.r3 a b c)) (\x -> T.topK Axis.retag1of3 (T.dim K 2) x |> Tuple.first)
                     in
                     Expect.equal ( True, True )
-                        ( Result.map (always ()) (g |> Result.andThen (Graph.Max.toGenericTextOn Graph.Max.Cpu)) == Ok ()
+                        ( Result.map (always ()) (g |> Result.andThen (Max.toGenericTextOn Max.Cpu)) == Ok ()
                         , case onGpu g of
                             Err [ e ] ->
                                 String.contains "on a GPU only the last axis" e

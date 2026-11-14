@@ -11,7 +11,7 @@ There are two forms because making a tensor computes no element values, as `Tens
 choice that depends on a tensor's values, such as which branch to take or whether to go round a
 loop again, therefore cannot be made in Elm. `cond` and `whileLoop` put it into the graph: each
 makes one operation that holds its functions, and the choice is made when the result is run, by
-`Tensor.Eval` or by MAX, given the graph `Graph.Max` writes. To be held in the operation, each
+`Tensor.Eval` or by MAX, given the graph `Max` writes. To be held in the operation, each
 function is _traced_: when `cond` or `whileLoop` is called, the function is applied to stand-in
 tensors with the dtypes and shapes of its argument, and what it returns is kept.
 
@@ -31,7 +31,7 @@ What can be done with the result differs between the forms:
     `Transform`'s module documentation says what reaches a tensor that only the test reads.
   - Under `Transform.vmap`, a `cond` or `whileLoop` that reads the batch (for a loop, in its initial
     state, its test or its step) is written once per example.
-  - For a GPU, `Graph.Max` refuses to write a graph that uses `cond` or `whileLoop`.
+  - For a GPU, `Max` refuses to write a graph that uses `cond` or `whileLoop`.
 
 `cond` and `whileLoop` take signatures (`Signature`) for a branch's argument and result and for a
 loop's state, which may be records, tuples or lists of tensors. They use a signature only to turn

@@ -77,7 +77,9 @@ MAX subgraphs, layers, losses, optimizers, transformers, convolutions, LoRA and 
 written in Elm. Round 2 (`plans/tensor-api-round2.md`) adds what open-weight language models,
 diffusion and GPUs need: top-k, sorting and sampling; RMS-norm, group-norm, rotary positions, gated
 feed-forward, grouped-query and cross attention with a KV cache, upsampling, timestep embeddings;
-`Infer` graphs with resident state; checkpoint import graphs; graphs written for a GPU. Apps use it through eco's `--local-package eco-lab/tensor=tensor` (the Makefile's
+`Infer` graphs with resident state; checkpoint import graphs; graphs written for a GPU. `Max` writes a
+graph as MLIR, and `Max.Session` compiles and runs graphs on MAX through the host
+`tensor/host/max_host.cpp` (or in Elm, with `Tensor.Eval`). Apps use it through eco's `--local-package eco-lab/tensor=tensor` (the Makefile's
 `LOCAL_PKGS`).
 
 - `tensor-api/`: the API's example programs (must compile) and counterexamples with the errors eco
@@ -100,20 +102,22 @@ feed-forward, grouped-query and cross attention with a KV cache, upsampling, tim
 - `snapshot/`: every model graph and block of initial host bytes, written under Node without MAX:
   `make snapshot-graphs OUT=dir`, then `make compare-graphs BASE=dir` after a change to the package.
 
-### `bridge/` and `mnist/host/max_bridge.cpp`: the generic MAX host
+### `tensor/host/max_host.cpp`: the generic MAX host
 
-`max_bridge.cpp` knows nothing about the models: it compiles graphs on worker threads and runs them.
+`max_host.cpp` knows nothing about the models: it compiles graphs on worker threads and runs them.
 A graph's specs give each tensor a role: **resident** tensors (parameters, optimizer state) live in
 host buffers that outlive a run; a run reads them and its outputs with the same resident name
 replace them, so only fed tensors (a batch, a seed) cross from Elm and only fed outputs (the loss)
 come back. Resident outputs stay where MAX left them (no copy after a run) unless MAX placed one
 inside an input buffer, which is copied; the exit line counts the buffers and those copies.
-`bridge/Bridge.elm` is the Elm side every model app shares: `compile`, and commands — `run`, `put`,
-`get`, `save`, `loadInto`, `loadRangeInto` (part of a file into a buffer: a checkpoint tensor),
-`loadRange` (part of a file into Elm: a checkpoint header), `drop` — that `send` delivers in one
-message, in order (separate sends to one port arrive in either order). The bridge takes `ECO_MAX_THREADS=N` (MAX's CPU worker
-pool size) and `ECO_MAX_BUSY_WAIT_US=T` (how long an idle worker spins; it sets both of MAX's
-variables, which must agree or MAX aborts).
+
+Its Elm side is the package's `Max.Session` (see `tensor/README.md`, "Running on MAX"). Each model
+app declares the two ports the host binds by name, `maxOut` and `maxIn` (both `Bytes`), hands them to
+`Max.Session.host`, and declares `logOut : String` for the lines the host prints with timestamps.
+The wire protocol is described in the header comment of `max_host.cpp`. The Makefile links the host
+with each app as `build/max_bridge` (MNIST), `build/charlm_bridge` and `build/apicheck_bridge`. The
+host takes `ECO_MAX_THREADS=N` (MAX's CPU worker pool size) and `ECO_MAX_BUSY_WAIT_US=T` (how long
+an idle worker spins; it sets both of MAX's variables, which must agree or MAX aborts).
 
 ### `mnist/`: training networks on MNIST with Elm and MAX
 
@@ -151,20 +155,21 @@ steps: held-out loss 1.96 nats, against the corpus's unigram entropy of 3.19. `G
 sequence 1024, batch 8) under node: 3.7–3.9 s and 0.67 MB of bytecode with shared blocks, 4.0 s and
 0.92 MB inlined.
 
-### `models/apicheck/` and `models/lib/`: round 2's end-to-end checks
+### `models/apicheck/`: round 2's end-to-end checks
 
 `ApiCheck.elm` checks round 2's API on synthetic models, without downloads: `make check-apicheck`
-(or `make run-apicheck CHECK=cache|import|block`).
+(or `make run-apicheck CHECK=cache|import|block|int64`).
 - `cache`: a Llama-shaped model (RMS-norm, grouped-query attention with rotary positions, SwiGLU,
   tied unembedding) generates 16 tokens with a KV cache through `Infer` and again from a padded
   full-context graph: logits within 1e-6, the same greedy tokens, for both rotary pairings.
-- `import`: `make_checkpoint.py` writes a safetensors file in PyTorch's layouts; its tensors go from the
-  file into resident buffers (`loadRangeInto`) and through typed import graphs, one named part alone
-  and then the whole, byte-identical to NumPy's conversion; the raw buffers are then dropped.
+- `import`: `make_checkpoint.py` writes a safetensors file in PyTorch's layouts; `Max.Safetensors`
+  reads its header, and its tensors go from the file into resident buffers (`loadRangeInto`) and
+  through typed import graphs, one named part alone and then the whole, byte-identical to NumPy's
+  conversion; the raw buffers are then dropped.
 - `block`: a UNet-shaped block (convolutions, group-norm, a timestep embedding, upsampling,
   cross-attention under `vmap`) matches `ref_block.py`'s NumPy forward pass (2e-6) and trains.
-
-`models/lib/src/` holds code model apps share: so far `Checkpoint.Safetensors`.
+- `int64`: integer constants beyond 2⁵³ (signed and unsigned 64-bit) go through MAX and come back
+  exactly.
 
 ### `memgrowth/`: why the MNIST run's RSS grows
 

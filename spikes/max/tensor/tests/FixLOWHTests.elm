@@ -2,7 +2,7 @@ module FixLOWHTests exposing (suite)
 
 import Expect exposing (Expectation)
 import Graph
-import Graph.Max
+import Max
 import Signature as Sig
 import Tensor as T
 import Tensor.Control as Control
@@ -36,7 +36,7 @@ expectValidText r =
         Ok g ->
             let
                 text =
-                    Graph.Max.toGenericText g
+                    Max.toGenericText g
             in
             if String.contains "<bad" text then
                 Expect.fail ("operand out of scope:\n" ++ text)
@@ -52,7 +52,7 @@ textOf : Result (List String) Graph.Graph -> String
 textOf r =
     case r of
         Ok g ->
-            Graph.Max.toGenericText g
+            Max.toGenericText g
 
         Err e ->
             "ERR " ++ String.join "; " e

@@ -3,7 +3,7 @@ module TensorTests exposing (suite)
 {-| Tests of what the package does without running a graph: the errors `Graph.build` reports,
 the keys that identify expressions, the names it gives a graph's inputs and outputs, the bytes
 prepared as the first contents of resident buffers (`Param`), the axis witnesses of `Tensor.Axis`,
-`Check.allClose`'s tolerance rule, and the MLIR text `Graph.Max` writes. Most of these never
+`Check.allClose`'s tolerance rule, and the MLIR text `Max` writes. Most of these never
 appear in a value a graph computes, so they need tests of their own.
 
 `Graph.build` returns either a graph or the list of what it found wrong; `Graph` states what it
@@ -55,7 +55,7 @@ The tests establish:
     (`a loop cannot be differentiated`), and a shared function whose body reads a graph input it was
     not given is refused (`a shared function reads a tensor that is not one of its arguments`).
   - `Transform.vmap` of `T.sin` over the leading axis of a [3, 4] input writes generic text
-    (`Graph.Max.toGenericText`) with exactly one `rmo.mo.sin` and no `rmo.slice`.
+    (`Max.toGenericText`) with exactly one `rmo.mo.sin` and no `rmo.slice`.
   - A `Control.cond`, then a `Control.whileLoop` on its result, then a call of a shared function
     on the loop's result, writes generic text with exactly one each of `mo.if`, `mo.while`,
     `mo.call` and `isSubgraph`.
@@ -77,7 +77,7 @@ Among what is not tested:
     whether other errors come with it.
   - The contents of the entries `Train.initialFrom` returns: only their names and lengths are
     compared.
-  - Bytecode (`Graph.Max.toBytecode`), placement for a GPU, and a `cond` or `whileLoop` nested in
+  - Bytecode (`Max.toBytecode`), placement for a GPU, and a `cond` or `whileLoop` nested in
     another.
 
 -}
@@ -88,7 +88,7 @@ import Bytes.Encode
 import Expect
 import Finetune.Qlora as Qlora
 import Graph
-import Graph.Max
+import Max
 import Nn.LayerNorm as LayerNorm
 import Nn.Linear as Linear
 import Optim
@@ -346,7 +346,7 @@ suite =
                 \_ ->
                     case Graph.function "g" f34 (Transform.vmap Axis.liftRank1 Axis.liftRank1 T.sin) of
                         Ok g ->
-                            Expect.equal ( 1, 0 ) ( occurrences "\"rmo.mo.sin\"" (Graph.Max.toGenericText g), occurrences "\"rmo.slice\"" (Graph.Max.toGenericText g) )
+                            Expect.equal ( 1, 0 ) ( occurrences "\"rmo.mo.sin\"" (Max.toGenericText g), occurrences "\"rmo.slice\"" (Max.toGenericText g) )
 
                         Err e ->
                             Expect.fail (String.join "; " e)
@@ -366,7 +366,7 @@ suite =
                             )
                     of
                         Ok g ->
-                            Expect.equal [ 1, 1, 1, 1 ] (List.map (\op -> occurrences op (Graph.Max.toGenericText g)) [ "\"mo.if\"", "\"mo.while\"", "\"mo.call\"", "isSubgraph" ])
+                            Expect.equal [ 1, 1, 1, 1 ] (List.map (\op -> occurrences op (Max.toGenericText g)) [ "\"mo.if\"", "\"mo.while\"", "\"mo.call\"", "isSubgraph" ])
 
                         Err e ->
                             Expect.fail (String.join "; " e)
@@ -424,7 +424,7 @@ suite =
                         Ok g ->
                             Expect.equal
                                 [ "\"rmo.mo.relu\"", "\"rmo.mo.reduce.add\"", "{axis = 1 : index}", "newShape = #mosh<ape[3]>" ]
-                                (List.filter (\s -> String.contains s (Graph.Max.toGenericText g)) [ "\"rmo.mo.relu\"", "\"rmo.mo.reduce.add\"", "{axis = 1 : index}", "newShape = #mosh<ape[3]>" ])
+                                (List.filter (\s -> String.contains s (Max.toGenericText g)) [ "\"rmo.mo.relu\"", "\"rmo.mo.reduce.add\"", "{axis = 1 : index}", "newShape = #mosh<ape[3]>" ])
 
                         Err e ->
                             Expect.fail (String.join "; " e)
@@ -432,7 +432,7 @@ suite =
                 \_ ->
                     case Graph.function "f" (Sig.f32 (T.r3 a b c)) (T.softmax Axis.last3) of
                         Ok g ->
-                            Expect.equal ( True, False ) ( String.contains "{axis = 2 : index}" (Graph.Max.toGenericText g), String.contains "axis = -" (Graph.Max.toGenericText g) )
+                            Expect.equal ( True, False ) ( String.contains "{axis = 2 : index}" (Max.toGenericText g), String.contains "axis = -" (Max.toGenericText g) )
 
                         Err e ->
                             Expect.fail (String.join "; " e)

@@ -8,7 +8,7 @@ module Graph exposing
 tensors it is given, which it gives back, what each of them is called, and whether it is well
 formed. This module does that. `build` turns a function from tensors to tensors into a `Graph`, the
 value that both ways of running a graph take: `Tensor.Eval` runs a graph in plain Elm, and
-`Graph.Max` writes it out for MAX.
+`Max` writes it out for MAX.
 
     Graph.build "step" (Sig.pair inputsA inputsB) outputsSig (\( a, b ) -> ...)
 
@@ -27,11 +27,11 @@ so the labels `w`, `w`, `w1` give the names `w0`, `w2`, `w1`.
 
 A tensor made from operands that do not fit carries a _build error_, as `Tensor` describes. `build`
 returns either a `Graph` or the list of what it found wrong, which can include build errors, each
-message starting with the graph's name. Some failures come only later. For example, `Graph.Max`
+message starting with the graph's name. Some failures come only later. For example, `Max`
 refuses some operations on a GPU, and `Tensor.Eval` refuses some index values when it runs the
 graph, as `Tensor` describes.
 
-Building a graph also translates it into the operations MAX reads, so that `Graph.Max` has only to
+Building a graph also translates it into the operations MAX reads, so that `Max` has only to
 place them on a device and write them.
 
 
@@ -64,7 +64,7 @@ import Tensor.Internal.Types as I
 
 
 {-| A computation that `build` accepted, with its inputs and outputs named and described: what
-`Tensor.Eval` runs and what `Graph.Max` writes.
+`Tensor.Eval` runs and what `Max` writes.
 
 The only way to make one is `build`, or `function`, which calls it. Holding a `Graph` therefore
 means that every check `build` makes has passed. What `build` does not check can still fail when
@@ -72,7 +72,7 @@ the graph is written for a device or run.
 
 `==` and `Debug.toString` on a graph can go through the whole computation and visit a part once
 for every use of it, which can take time exponential in the computation's depth. Comparing the bytes
-`Graph.Max.toBytecode` writes for two graphs is far cheaper, but those bytes do not record the
+`Max.toBytecode` writes for two graphs is far cheaper, but those bytes do not record the
 roles of the inputs and outputs.
 
 -}

@@ -1,4 +1,4 @@
-module ApiCheck exposing (main)
+port module ApiCheck exposing (main)
 
 {-| End-to-end checks of round 2's API on synthetic models (plans/tensor-api-round2.md, A2), no
 downloads. Flag `check`:
@@ -20,17 +20,17 @@ Each prints `PASS` or `FAIL` lines.
 
 -}
 
-import Bridge
+import Bitwise
 import Bytes exposing (Bytes, Endianness(..))
 import Bytes.Decode as BD
-import Bitwise
 import Bytes.Encode as Encode
-import Checkpoint.Safetensors as Safetensors
 import Dict exposing (Dict)
 import Graph exposing (Graph)
 import Infer
 import Json.Decode as D
 import Json.Encode as JE
+import Max.Safetensors as Safetensors
+import Max.Session as Session exposing (Event(..), Session)
 import Nn
 import Nn.Attention as Attention
 import Nn.Conv2d as Conv2d exposing (Conv2d)
@@ -51,6 +51,15 @@ import Train
 import Transform
 
 
+port maxOut : Bytes -> Cmd msg
+
+
+port maxIn : (Bytes -> msg) -> Sub msg
+
+
+port logOut : String -> Cmd msg
+
+
 
 -- BYTES
 
@@ -60,44 +69,10 @@ f32s values =
     Encode.encode (Encode.sequence (List.map (Encode.float32 LE) values))
 
 
-i64s : List Int -> Bytes
-i64s values =
-    Encode.encode (Encode.sequence (List.concatMap (\v -> [ Encode.unsignedInt32 LE v, Encode.unsignedInt32 LE 0 ]) values))
-
-
-decodeF32s : Bytes -> List Float
-decodeF32s b =
-    let
-        n =
-            Bytes.width b // 4
-    in
-    BD.decode (BD.loop ( n, [] ) (\( k, acc ) -> if k == 0 then BD.succeed (BD.Done (List.reverse acc)) else BD.map (\v -> BD.Loop ( k - 1, v :: acc )) (BD.float32 LE))) b
-        |> Maybe.withDefault []
-
-
 byteList : Bytes -> List Int
 byteList b =
     BD.decode (BD.loop ( Bytes.width b, [] ) (\( k, acc ) -> if k == 0 then BD.succeed (BD.Done (List.reverse acc)) else BD.map (\v -> BD.Loop ( k - 1, v :: acc )) BD.unsignedInt8)) b
         |> Maybe.withDefault []
-
-
-{-| A run's fed outputs: after the 16-byte header, each padded to 16 bytes.
--}
-outputs : List Int -> Bytes -> List (List Float)
-outputs counts reply =
-    let
-        body =
-            Bridge.payload reply
-
-        go offset cs =
-            case cs of
-                n :: rest ->
-                    decodeF32s (Bridge.slice offset (4 * n) body) :: go (offset + (4 * n + 15) // 16 * 16) rest
-
-                [] ->
-                    []
-    in
-    go 0 counts
 
 
 lcg : Int -> Int
@@ -306,19 +281,19 @@ pairings =
     [ ( "interleaved", { base = 10000, pairing = Rotary.Interleaved } ), ( "halves", { base = 10000, pairing = Rotary.Halves } ) ]
 
 
-cacheGraphs : List ( Int, Result (List String) Graph )
+{-| Each pairing's graphs are `full_` and `step_` followed by the pairing's name.
+-}
+cacheGraphs : List (Result (List String) Graph)
 cacheGraphs =
-    ( 1, Param.initInPlace "init_params" llama )
-        :: ( 2, Infer.initGraph "init_cache" cacheSig (List.repeat 2 { keys = T.zeros T.float32 (T.r3 kvHeads ctx head), values = T.zeros T.float32 (T.r3 kvHeads ctx head) }) )
-        :: List.concat
-            (List.indexedMap
-                (\i ( name, rot ) ->
-                    [ ( 3 + 2 * i, Infer.step ("full_" ++ name) llama Sig.unit (Sig.label "tokens" (Sig.i64 (T.r1 ctx))) (Sig.label "logits" (Sig.f32 (T.r2 ctx vocab))) (\p () tokens -> ( (), fullForward rot p tokens )) )
-                    , ( 4 + 2 * i, Infer.step ("step_" ++ name) llama cacheSig (Sig.pair (Sig.label "token" (Sig.i64 (T.r1 now))) (Sig.label "position" (Sig.i64 T.scalar))) (Sig.label "logits" (Sig.f32 (T.r2 now vocab))) (stepForward rot) )
-                    ]
-                )
-                pairings
+    Param.initInPlace "init_params" llama
+        :: Infer.initGraph "init_cache" cacheSig (List.repeat 2 { keys = T.zeros T.float32 (T.r3 kvHeads ctx head), values = T.zeros T.float32 (T.r3 kvHeads ctx head) })
+        :: List.concatMap
+            (\( name, rot ) ->
+                [ Infer.step ("full_" ++ name) llama Sig.unit (Sig.label "tokens" (Sig.i64 (T.r1 ctx))) (Sig.label "logits" (Sig.f32 (T.r2 ctx vocab))) (\p () tokens -> ( (), fullForward rot p tokens ))
+                , Infer.step ("step_" ++ name) llama cacheSig (Sig.pair (Sig.label "token" (Sig.i64 (T.r1 now))) (Sig.label "position" (Sig.i64 T.scalar))) (Sig.label "logits" (Sig.f32 (T.r2 now vocab))) (stepForward rot)
+                ]
             )
+            pairings
 
 
 prompt : List Int
@@ -479,10 +454,10 @@ convert r =
     }
 
 
-importGraphs : List ( Int, Result (List String) Graph )
+importGraphs : List (Result (List String) Graph)
 importGraphs =
-    [ ( 11, Param.importGraph "import_qkv" qkvSpec rawQkvSig convertQkv )
-    , ( 12, Param.importGraph "import_all" importedSpec rawSig convert )
+    [ Param.importGraph "import_qkv" qkvSpec rawQkvSig convertQkv
+    , Param.importGraph "import_all" importedSpec rawSig convert
     ]
 
 
@@ -654,17 +629,27 @@ blockOptim =
     Optim.adamW 3.0e-3
 
 
-blockGraphs : List ( Int, Result (List String) Graph )
+{-| `init_block`, `block` and `train_step`.
+-}
+blockGraphs : List (Result (List String) Graph)
 blockGraphs =
-    [ ( 21, Param.initInPlace "init_block" blockSpec )
-    , ( 23, Infer.step "block" blockSpec Sig.unit blockInSig (Sig.label "y" (Sig.f32 (T.r4 batch h2D w2D ch))) (\p () i -> ( (), blockForward p i )) )
-    , ( 24, Train.step blockSpec blockOptim blockInSig (\p i -> blockForward p i |> Nn.mseLoss (T.zeros T.float32 (T.r4 batch h2D w2D ch))) )
+    [ Param.initInPlace "init_block" blockSpec
+    , Infer.step "block" blockSpec Sig.unit blockInSig (Sig.label "y" (Sig.f32 (T.r4 batch h2D w2D ch))) (\p () i -> ( (), blockForward p i ))
+    , Train.step blockSpec blockOptim blockInSig (\p i -> blockForward p i |> Nn.mseLoss (T.zeros T.float32 (T.r4 batch h2D w2D ch)))
     ]
 
 
 blockInputs : List Bytes
 blockInputs =
     [ f32s (noise 11 (2 * 8 * 8 * 16)), f32s [ 10, 500 ], f32s (noise 12 (6 * 24)) ]
+
+
+{-| `blockInputs` as the fed inputs of a graph that names them `names`: `x`, `t` and `memory` for
+`block`, `batch0` .. `batch2` for `train_step`.
+-}
+blockFeeds : List String -> List ( String, Session.Input )
+blockFeeds names =
+    List.map2 (\n b -> ( n, Session.fromBytes b )) names blockInputs
 
 
 trainSteps : Int
@@ -677,7 +662,9 @@ trainSteps =
 
 
 type alias Model =
-    { check : String
+    { session : Session Msg
+    , graphs : Dict String Session.Handle
+    , check : String
     , dir : String
     , pending : Int
     , failed : Bool
@@ -688,11 +675,10 @@ type alias Model =
     , stepLogits : List (List Float)
 
     -- import
-    , headerLength : Int
+    , headerLength : Maybe Int
     , entries : List Safetensors.Entry
     , expected : Dict String (List Int)
-    , got : Dict Int (List Int)
-    , gets : Dict Int String
+    , got : List ( String, List Int )
 
     -- block
     , losses : List Float
@@ -700,13 +686,10 @@ type alias Model =
 
 
 type Msg
-    = Compiled D.Value
-    | Ran Bytes
-    | Loaded Bytes
-    | Got Bytes
+    = GotMax Session.Message
 
 
-graphsFor : String -> List ( Int, Result (List String) Graph )
+graphsFor : String -> List (Result (List String) Graph)
 graphsFor check =
     case check of
         "cache" ->
@@ -727,21 +710,28 @@ expectedNames =
     Param.names importedSpec
 
 
+checkpointPath : Model -> String
+checkpointPath model =
+    model.dir ++ "/synthetic.safetensors"
+
+
+expectedPath : Model -> String -> String
+expectedPath model name =
+    model.dir ++ "/expected/" ++ name ++ ".bin"
+
+
 init : D.Value -> ( Model, Cmd Msg )
 init flags =
     let
         check =
             D.decodeValue (D.field "check" D.string) flags |> Result.withDefault "cache"
 
-        dir =
-            D.decodeValue (D.field "dir" D.string) flags |> Result.withDefault "."
-
         graphs =
             graphsFor check
 
         errors =
             List.concatMap
-                (\( _, r ) ->
+                (\r ->
                     case r of
                         Err e ->
                             e
@@ -751,44 +741,81 @@ init flags =
                 )
                 graphs
 
-        compiles =
-            List.filterMap (\( id, r ) -> Result.toMaybe r |> Maybe.map (\g -> Tuple.first (Bridge.compile Bridge.Bytecode id g))) graphs
+        compileOne graph ( session, known, cmds ) =
+            let
+                ( s, h, cmd ) =
+                    Session.compile graph session
+            in
+            ( s, Dict.insert (Graph.name graph) h known, cmd :: cmds )
+
+        ( compiled, handles, compiles ) =
+            List.foldl compileOne ( Session.host { send = maxOut, receive = maxIn } GotMax, Dict.empty, [] ) (List.filterMap Result.toMaybe graphs)
 
         model =
-            { check = check
-            , dir = dir
+            { session = compiled
+            , graphs = handles
+            , check = check
+            , dir = D.decodeValue (D.field "dir" D.string) flags |> Result.withDefault "."
             , pending = List.length graphs
             , failed = False
             , pairing = 0
             , fed = []
             , stepLogits = []
-            , headerLength = 0
+            , headerLength = Nothing
             , entries = []
             , expected = Dict.empty
-            , got = Dict.empty
-            , gets = Dict.empty
+            , got = []
             , losses = []
             }
 
-        extra =
+        -- for `import`: the checkpoint's header and the parameters NumPy expects
+        reads =
             if check == "import" then
-                Bridge.send [ Bridge.loadRange 1 (dir ++ "/synthetic.safetensors") 0 8 ]
-                    :: List.indexedMap (\i n -> Bridge.load (200 + i) (dir ++ "/expected/" ++ n ++ ".bin")) expectedNames
+                Safetensors.readLength (checkpointPath model) :: List.map (expectedPath model >> Session.load) expectedNames
 
             else
                 []
+
+        ( m, readCmd ) =
+            send reads { model | pending = model.pending + List.length reads }
     in
     if List.isEmpty errors then
-        ( { model | pending = model.pending + List.length extra }, Cmd.batch (Bridge.log ("apicheck " ++ check) :: compiles ++ extra) )
+        ( m, Cmd.batch (logOut ("apicheck " ++ check) :: List.reverse compiles ++ [ readCmd ]) )
 
     else
-        ( model, Cmd.batch [ Bridge.log ("FAIL graphs: " ++ String.join "; " errors), Bridge.done 1 ] )
+        finish { model | failed = True } [ logOut ("FAIL graphs: " ++ String.join "; " errors) ]
+
+
+send : List Session.Command -> Model -> ( Model, Cmd Msg )
+send commands model =
+    let
+        ( session, cmd ) =
+            Session.send commands model.session
+    in
+    ( { model | session = session }, cmd )
+
+
+{-| The command that runs the graph named `graph`, compiled in `init`.
+-}
+run : String -> List ( String, Session.Input ) -> Model -> List Session.Command
+run graph inputs model =
+    case Dict.get graph model.graphs of
+        Just h ->
+            [ Session.run h inputs ]
+
+        Nothing ->
+            []
+
+
+graphName : Session.Handle -> Model -> String
+graphName h model =
+    Dict.toList model.graphs |> List.filter (\( _, x ) -> x == h) |> List.map Tuple.first |> List.head |> Maybe.withDefault ""
 
 
 report : Bool -> String -> Model -> ( Model, Cmd Msg )
 report ok text model =
     ( { model | failed = model.failed || not ok }
-    , Bridge.log
+    , logOut
         ((if ok then
             "PASS "
 
@@ -800,21 +827,24 @@ report ok text model =
     )
 
 
+{-| Runs `cmds`, then ends the program: exit code 1 if anything failed.
+-}
 finish : Model -> List (Cmd Msg) -> ( Model, Cmd Msg )
 finish model cmds =
-    ( model
-    , Cmd.batch
-        (cmds
-            ++ [ Bridge.done
+    let
+        ( m, cmd ) =
+            send
+                [ Session.finish
                     (if model.failed then
                         1
 
                      else
                         0
                     )
-               ]
-        )
-    )
+                ]
+                model
+    in
+    ( m, Cmd.batch (cmds ++ [ cmd ]) )
 
 
 {-| Everything compiled (and, for `import`, the header and expected files loaded): start.
@@ -823,13 +853,17 @@ start : Model -> ( Model, Cmd Msg )
 start model =
     case model.check of
         "cache" ->
-            ( { model | fed = List.take 1 prompt }, Bridge.send [ Bridge.run 1 [ Bridge.packed (i64s [ 7 ]) ], Bridge.run 2 [], stepRun model 0 (List.head prompt |> Maybe.withDefault 0) ] )
+            let
+                m =
+                    { model | fed = List.take 1 prompt }
+            in
+            send (run "init_params" [ ( "seed", Session.fromInts [ 7 ] ) ] m ++ run "init_cache" [] m ++ stepRun m 0 (List.head prompt |> Maybe.withDefault 0)) m
 
         "import" ->
             startImport model
 
         "int64" ->
-            ( model, Bridge.send [ Bridge.run 31 [] ] )
+            send (run "int64" [] model) model
 
         _ ->
             let
@@ -840,42 +874,57 @@ start model =
                     Train.initial blockSpec blockOptim 1 |> List.filter (\( n, _ ) -> not (List.member n residentNames))
 
                 saves =
-                    List.map (\n -> Bridge.save n (model.dir ++ "/block/" ++ n ++ ".bin")) residentNames
+                    List.map (\n -> Session.save n (model.dir ++ "/block/" ++ n ++ ".bin")) residentNames
             in
-            ( model
-            , Bridge.send
-                (Bridge.run 21 [ Bridge.packed (i64s [ 5 ]) ]
-                    :: List.map (\( n, b ) -> Bridge.put n b) state
+            send
+                (run "init_block" [ ( "seed", Session.fromInts [ 5 ] ) ] model
+                    ++ List.map (\( n, b ) -> Session.put n b) state
                     ++ saves
-                    ++ [ Bridge.run 23 (List.map Bridge.packed blockInputs) ]
+                    ++ run "block" (blockFeeds [ "x", "t", "memory" ]) model
                 )
-            )
+                model
 
 
-stepRun : Model -> Int -> Int -> Bridge.Command
+pairingName : Model -> String
+pairingName model =
+    List.drop model.pairing pairings |> List.head |> Maybe.map Tuple.first |> Maybe.withDefault "?"
+
+
+stepRun : Model -> Int -> Int -> List Session.Command
 stepRun model position token =
-    Bridge.run (4 + 2 * model.pairing) [ Bridge.packed (i64s [ token ]), Bridge.packed (i64s [ position ]) ]
+    run ("step_" ++ pairingName model) [ ( "token", Session.fromInts [ token ] ), ( "position", Session.fromInts [ position ] ) ] model
 
 
 update : Msg -> Model -> ( Model, Cmd Msg )
-update msg model =
-    case msg of
-        Compiled v ->
-            case D.decodeValue (D.field "ok" D.bool) v of
-                Ok True ->
-                    ready { model | pending = model.pending - 1 }
+update (GotMax message) model0 =
+    let
+        ( session, event ) =
+            Session.update message model0.session
 
-                _ ->
-                    finish { model | failed = True } [ Bridge.log "FAIL compile" ]
+        model =
+            { model0 | session = session }
+    in
+    case event of
+        Compiled _ ->
+            ready { model | pending = model.pending - 1 }
 
-        Loaded bytes ->
-            loaded (Bridge.headerId bytes) (Bridge.payload bytes) model
+        CompileFailed h _ ->
+            finish { model | failed = True } [ logOut ("FAIL compile of " ++ graphName h model) ]
 
-        Got bytes ->
-            got (Bridge.headerId bytes) (Bridge.payload bytes) model
+        Loaded path bytes ->
+            loaded path bytes model
 
-        Ran bytes ->
-            ran (Bridge.headerId bytes) bytes model
+        Got name bytes ->
+            got name bytes model
+
+        Ran h outputs ->
+            ran (graphName h model) outputs model
+
+        Failed why ->
+            finish { model | failed = True } [ logOut ("FAIL " ++ why) ]
+
+        Finished _ ->
+            ( model, Cmd.none )
 
 
 ready : Model -> ( Model, Cmd Msg )
@@ -887,36 +936,43 @@ ready model =
         ( model, Cmd.none )
 
 
+{-| The first output named `name`, as floats.
+-}
+floats : String -> Session.Outputs -> List Float
+floats name outputs =
+    Session.floats name outputs |> Maybe.withDefault []
+
+
 
 -- CACHE
 
 
-ran : Int -> Bytes -> Model -> ( Model, Cmd Msg )
-ran id reply model =
+ran : String -> Session.Outputs -> Model -> ( Model, Cmd Msg )
+ran graph outputs model =
     case model.check of
         "cache" ->
-            ranCache id reply model
+            ranCache graph outputs model
 
         "import" ->
             ( model, Cmd.none )
 
         "int64" ->
-            ranInt64 id reply model
+            ranInt64 graph outputs model
 
         _ ->
-            ranBlock id reply model
+            ranBlock graph outputs model
 
 
-ranCache : Int -> Bytes -> Model -> ( Model, Cmd Msg )
-ranCache id reply model =
+ranCache : String -> Session.Outputs -> Model -> ( Model, Cmd Msg )
+ranCache graph outputs model =
     let
         name =
-            List.drop model.pairing pairings |> List.head |> Maybe.map Tuple.first |> Maybe.withDefault "?"
+            pairingName model
     in
-    if id == 4 + 2 * model.pairing then
+    if graph == "step_" ++ name then
         let
             row =
-                outputs [ 256 ] reply |> List.head |> Maybe.withDefault []
+                floats "logits" outputs
 
             position =
                 List.length model.stepLogits
@@ -933,15 +989,19 @@ ranCache id reply model =
                     argmax row
         in
         if position + 1 < generated then
-            ( { m | fed = m.fed ++ [ next ] }, Bridge.send [ stepRun m (position + 1) next ] )
+            let
+                m2 =
+                    { m | fed = m.fed ++ [ next ] }
+            in
+            send (stepRun m2 (position + 1) next) m2
 
         else
-            ( m, Bridge.send [ Bridge.run (3 + 2 * model.pairing) [ Bridge.packed (i64s (m.fed ++ List.repeat (32 - List.length m.fed) 0)) ] ] )
+            send (run ("full_" ++ name) [ ( "tokens", Session.fromInts (m.fed ++ List.repeat (32 - List.length m.fed) 0) ) ] m) m
 
-    else if id == 3 + 2 * model.pairing then
+    else if graph == "full_" ++ name then
         let
             full =
-                outputs [ 32 * 256 ] reply |> List.head |> Maybe.withDefault []
+                floats "logits" outputs
 
             rows =
                 List.range 0 (generated - 1) |> List.map (\p -> List.take 256 (List.drop (256 * p) full))
@@ -968,8 +1028,11 @@ ranCache id reply model =
             let
                 m3 =
                     { m2 | pairing = model.pairing + 1, fed = List.take 1 prompt, stepLogits = [] }
+
+                ( m4, c3 ) =
+                    send (run "init_cache" [] m3 ++ stepRun m3 0 (List.head prompt |> Maybe.withDefault 0)) m3
             in
-            ( m3, Cmd.batch [ c1, c2, Bridge.send [ Bridge.run 2 [], stepRun m3 0 (List.head prompt |> Maybe.withDefault 0) ] ] )
+            ( m4, Cmd.batch [ c1, c2, c3 ] )
 
         else
             finish m2 [ c1, c2 ]
@@ -982,59 +1045,99 @@ ranCache id reply model =
 -- IMPORT
 
 
-loaded : Int -> Bytes -> Model -> ( Model, Cmd Msg )
-loaded id bytes model =
-    if id == 1 then
-        case Safetensors.headerLength bytes of
-            Just n ->
-                ( { model | headerLength = n }, Bridge.send [ Bridge.loadRange 2 (model.dir ++ "/synthetic.safetensors") 8 n ] )
-
+{-| The checkpoint's header length and header, which come in that order, or one of the parameters
+NumPy expects.
+-}
+loaded : String -> Bytes -> Model -> ( Model, Cmd Msg )
+loaded path bytes model =
+    if path == checkpointPath model then
+        case model.headerLength of
             Nothing ->
-                finish { model | failed = True } [ Bridge.log "FAIL header length" ]
+                case Safetensors.headerLength bytes of
+                    Just n ->
+                        send [ Safetensors.readHeader path n ] { model | headerLength = Just n }
 
-    else if id == 2 then
-        case Safetensors.parse bytes of
-            Ok entries ->
-                ready { model | entries = entries, pending = model.pending - 1 }
+                    Nothing ->
+                        finish { model | failed = True } [ logOut "FAIL header length" ]
 
-            Err e ->
-                finish { model | failed = True } [ Bridge.log ("FAIL parse: " ++ e) ]
+            Just _ ->
+                case Safetensors.parse bytes of
+                    Ok entries ->
+                        ready { model | entries = entries, pending = model.pending - 1 }
 
-    else if id >= 200 then
-        let
-            name =
-                List.drop (id - 200) expectedNames |> List.head |> Maybe.withDefault "?"
-        in
-        ready { model | expected = Dict.insert name (byteList bytes) model.expected, pending = model.pending - 1 }
+                    Err e ->
+                        finish { model | failed = True } [ logOut ("FAIL parse: " ++ e) ]
 
     else
-        ( model, Cmd.none )
+        case List.filter (\n -> expectedPath model n == path) expectedNames of
+            name :: _ ->
+                ready { model | expected = Dict.insert name (byteList bytes) model.expected, pending = model.pending - 1 }
+
+            [] ->
+                ( model, Cmd.none )
 
 
-got : Int -> Bytes -> Model -> ( Model, Cmd Msg )
-got id bytes model =
+{-| The graphs compiled, the header parsed, the expected parameters loaded: every raw tensor into a
+resident buffer, the part's import and its parameters, the whole import and its parameters, then
+the raw buffers dropped and one of them asked for.
+-}
+startImport : Model -> ( Model, Cmd Msg )
+startImport model =
+    let
+        path =
+            checkpointPath model
+
+        ( m, cmd ) =
+            send
+                (Safetensors.loadAll path (Safetensors.dataStart (Maybe.withDefault 0 model.headerLength)) (\e -> "raw." ++ e.name) model.entries
+                    ++ run "import_qkv" [] model
+                    ++ List.map Session.get (Param.names qkvSpec)
+                    ++ run "import_all" [] model
+                    ++ List.map Session.get expectedNames
+                    ++ List.map (\e -> Session.drop ("raw." ++ e.name)) model.entries
+                    ++ [ Session.get "raw.lin.weight" ]
+                )
+                model
+    in
+    ( m
+    , Cmd.batch
+        [ logOut ("checkpoint: " ++ String.join ", " (List.map (\e -> e.name ++ " " ++ e.dtype ++ " [" ++ String.join "," (List.map String.fromInt e.shape) ++ "]") model.entries))
+        , cmd
+        ]
+    )
+
+
+{-| The buffers `startImport` asked for, in the order it asked: the part's parameters, the whole's,
+then the dropped raw buffer.
+-}
+got : String -> Bytes -> Model -> ( Model, Cmd Msg )
+got name bytes model =
     let
         m =
-            { model | got = Dict.insert id (byteList bytes) model.got }
+            { model | got = model.got ++ [ ( name, byteList bytes ) ] }
+
+        partCount =
+            List.length (Param.names qkvSpec)
+
+        wholeCount =
+            List.length expectedNames
     in
-    if Dict.size m.got < Dict.size m.gets then
+    if List.length m.got < partCount + wholeCount + 1 then
         ( m, Cmd.none )
 
     else
         let
-            check lo hi =
-                Dict.toList m.gets
-                    |> List.filter (\( i, _ ) -> i >= lo && i < hi)
-                    |> List.map (\( i, n ) -> ( n, Dict.get i m.got == Dict.get n m.expected && Dict.get n m.expected /= Nothing ))
+            check results =
+                List.map (\( n, b ) -> ( n, Dict.get n m.expected == Just b )) results
 
             failures results =
                 List.filter (not << Tuple.second) results |> List.map Tuple.first
 
             part =
-                check 100 120
+                check (List.take partCount m.got)
 
             whole =
-                check 120 199
+                check (List.take wholeCount (List.drop partCount m.got))
 
             ( m1, c1 ) =
                 report (List.isEmpty (failures part)) ("import of the named part qkv alone: " ++ String.fromInt (List.length part) ++ " parameters byte-identical to NumPy's" ++ failureList (failures part)) m
@@ -1043,7 +1146,7 @@ got id bytes model =
                 report (List.isEmpty (failures whole)) ("import of the whole: " ++ String.fromInt (List.length whole) ++ " parameters byte-identical to NumPy's" ++ failureList (failures whole)) m1
 
             ( m3, c3 ) =
-                report (Dict.get 199 m.got == Just []) "raw buffers dropped (get of a dropped name answers nothing)" m2
+                report (List.drop (partCount + wholeCount) m.got == [ ( "raw.lin.weight", [] ) ]) "raw buffers dropped (get of a dropped name answers nothing)" m2
         in
         finish m3 [ c1, c2, c3 ]
 
@@ -1061,12 +1164,12 @@ failureList names =
 -- BLOCK
 
 
-ranBlock : Int -> Bytes -> Model -> ( Model, Cmd Msg )
-ranBlock id reply model =
-    if id == 23 then
+ranBlock : String -> Session.Outputs -> Model -> ( Model, Cmd Msg )
+ranBlock graph outputs model =
+    if graph == "block" then
         let
             y =
-                outputs [ 2 * 16 * 16 * 16 ] reply |> List.head |> Maybe.withDefault []
+                floats "y" outputs
 
             manifest =
                 JE.encode 0
@@ -1077,28 +1180,31 @@ ranBlock id reply model =
                     )
 
             putSave name bytes =
-                [ Bridge.put name bytes, Bridge.save name (model.dir ++ "/block/" ++ name ++ ".bin") ]
+                [ Session.put name bytes, Session.save name (model.dir ++ "/block/" ++ name ++ ".bin") ]
 
             files =
                 List.concat
                     (List.map2 putSave [ "in.x", "in.t", "in.memory" ] blockInputs
                         ++ [ putSave "out.y" (f32s y)
-                           , [ Bridge.put "manifest" (Encode.encode (Encode.string manifest)), Bridge.save "manifest" (model.dir ++ "/block/manifest.json") ]
+                           , [ Session.put "manifest" (Encode.encode (Encode.string manifest)), Session.save "manifest" (model.dir ++ "/block/manifest.json") ]
                            ]
                     )
-        in
-        ( model, Cmd.batch [ Bridge.log ("block output: " ++ String.fromInt (List.length y) ++ " values, saved for ref_block.py"), Bridge.send (files ++ [ Bridge.run 24 (List.map Bridge.packed blockInputs) ]) ] )
 
-    else if id == 24 then
+            ( m, cmd ) =
+                send (files ++ run "train_step" (blockFeeds [ "batch0", "batch1", "batch2" ]) model) model
+        in
+        ( m, Cmd.batch [ logOut ("block output: " ++ String.fromInt (List.length y) ++ " values, saved for ref_block.py"), cmd ] )
+
+    else if graph == "train_step" then
         let
             losses =
-                model.losses ++ [ Bridge.loss reply ]
+                model.losses ++ [ floats "loss" outputs |> List.head |> Maybe.withDefault 0 ]
 
             m =
                 { model | losses = losses }
         in
         if List.length losses < trainSteps then
-            ( m, Bridge.send [ Bridge.run 24 (List.map Bridge.packed blockInputs) ] )
+            send (run "train_step" (blockFeeds [ "batch0", "batch1", "batch2" ]) m) m
 
         else
             let
@@ -1125,47 +1231,8 @@ main =
     Platform.worker
         { init = init
         , update = update
-        , subscriptions = \_ -> Sub.batch [ Bridge.compiledIn Compiled, Bridge.runIn Ran, Bridge.loadIn Loaded, Bridge.getIn Got ]
+        , subscriptions = \model -> Session.subscriptions model.session
         }
-
-
-{-| The graphs compiled, the header parsed, the expected parameters loaded: every raw tensor into a
-resident buffer, the part's import and its parameters, the whole import and its parameters, then
-the raw buffers dropped.
--}
-startImport : Model -> ( Model, Cmd Msg )
-startImport model =
-    let
-        path =
-            model.dir ++ "/synthetic.safetensors"
-
-        qkvNames =
-            Param.names qkvSpec
-
-        gets =
-            Dict.fromList
-                (List.indexedMap (\i n -> ( 100 + i, n )) qkvNames
-                    ++ List.indexedMap (\i n -> ( 120 + i, n )) expectedNames
-                    ++ [ ( 199, "raw.lin.weight" ) ]
-                )
-
-        getCommands lo names =
-            List.indexedMap (\i n -> Bridge.get (lo + i) n) names
-    in
-    ( { model | gets = gets }
-    , Cmd.batch
-        [ Bridge.log ("checkpoint: " ++ String.join ", " (List.map (\e -> e.name ++ " " ++ e.dtype ++ " [" ++ String.join "," (List.map String.fromInt e.shape) ++ "]") model.entries))
-        , Bridge.send
-            (Safetensors.loadAll path (Safetensors.dataStart model.headerLength) (\e -> "raw." ++ e.name) model.entries
-                ++ [ Bridge.run 11 [] ]
-                ++ getCommands 100 qkvNames
-                ++ [ Bridge.run 12 [] ]
-                ++ getCommands 120 expectedNames
-                ++ List.map (\e -> Bridge.drop ("raw." ++ e.name)) model.entries
-                ++ [ Bridge.get 199 "raw.lin.weight" ]
-            )
-        ]
-    )
 
 
 
@@ -1200,45 +1267,31 @@ unsignedValues =
     [ -1, Bitwise.shiftLeftBy 63 1 ]
 
 
-int64Graphs : List ( Int, Result (List String) Graph )
+int64Graphs : List (Result (List String) Graph)
 int64Graphs =
-    [ ( 31
-      , Graph.build "int64"
-            Sig.unit
-            (Sig.pair (Sig.i64 (T.r1 (T.dim Four 4))) (Sig.tensor T.uint64 (T.r1 (T.dim Two 2))))
-            (\() ->
-                ( T.fromList T.int64 (T.r1 (T.dim Four 4)) signedValues
-                , T.fromList T.uint64 (T.r1 (T.dim Two 2)) unsignedValues
-                )
+    [ Graph.build "int64"
+        Sig.unit
+        (Sig.pair (Sig.i64 (T.r1 (T.dim Four 4))) (Sig.tensor T.uint64 (T.r1 (T.dim Two 2))))
+        (\() ->
+            ( T.fromList T.int64 (T.r1 (T.dim Four 4)) signedValues
+            , T.fromList T.uint64 (T.r1 (T.dim Two 2)) unsignedValues
             )
-      )
+        )
     ]
 
 
-{-| Little-endian 64-bit integers, read as two u32 halves joined with 64-bit `Bitwise` (eco).
+{-| The graph's two outputs are unlabelled, so named `result0` and `result1`; a `ui64` element
+comes back as the `Int` with the same 64 bits.
 -}
-decodeI64s : Int -> Bytes -> List Int
-decodeI64s n b =
-    let
-        one =
-            BD.map2 (\lo hi -> Bitwise.or (Bitwise.shiftLeftBy 32 hi) lo) (BD.unsignedInt32 LE) (BD.unsignedInt32 LE)
-    in
-    BD.decode (BD.loop ( n, [] ) (\( k, acc ) -> if k == 0 then BD.succeed (BD.Done (List.reverse acc)) else BD.map (\v -> BD.Loop ( k - 1, v :: acc )) one)) b
-        |> Maybe.withDefault []
-
-
-ranInt64 : Int -> Bytes -> Model -> ( Model, Cmd Msg )
-ranInt64 id reply model =
-    if id == 31 then
+ranInt64 : String -> Session.Outputs -> Model -> ( Model, Cmd Msg )
+ranInt64 graph outputs model =
+    if graph == "int64" then
         let
-            body =
-                Bridge.payload reply
-
             signed =
-                decodeI64s 4 (Bridge.slice 0 32 body)
+                Session.ints "result0" outputs |> Maybe.withDefault []
 
             unsigned =
-                decodeI64s 2 (Bridge.slice 32 16 body)
+                Session.ints "result1" outputs |> Maybe.withDefault []
 
             show l =
                 String.join ", " (List.map String.fromInt l)

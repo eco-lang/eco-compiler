@@ -36,7 +36,7 @@ type, as it is.
 
 `Gpu i` is the GPU with index `i`, written `gpu:i` in tensor types and `#M.device_ref<"gpu", i>` in
 a `device` attribute. The index is written as given: nothing here checks that the GPU exists or
-that `i` is not negative. `Graph.Max.toBytecodeOn` and `Graph.Max.toGenericTextOn` refuse a
+that `i` is not negative. `Max.toBytecodeOn` and `Max.toGenericTextOn` refuse a
 negative index before placing.
 
 -}

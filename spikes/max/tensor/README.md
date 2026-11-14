@@ -29,8 +29,8 @@ can include build errors.
 
 A built `Graph` can be run in two ways:
 
-- **on MAX**: `Graph.Max` writes it as MLIR bytecode or text, for the CPU or a GPU. How the bytes
-  reach MAX, and how MAX runs them, is up to the application.
+- **on MAX**: `Max` writes it as MLIR bytecode or text, for the CPU or a GPU, and `Max.Session`
+  compiles and runs it there, through a host program the application is linked with.
 - **in plain Elm**: `Tensor.Eval` computes it with ordinary Elm arithmetic, wherever Elm runs.
   This suits small graphs: tests that check values, examples, a page in the browser.
 
@@ -102,8 +102,8 @@ outputs are named.
 To write the graph for MAX:
 
 ```elm
-Result.map Graph.Max.toBytecode trainStep                           -- for the CPU
-Result.andThen (Graph.Max.toBytecodeOn (Graph.Max.Gpu 0)) trainStep  -- for a GPU
+Result.map Max.toBytecode trainStep                           -- for the CPU
+Result.andThen (Max.toBytecodeOn (Max.Gpu 0)) trainStep  -- for a GPU
 ```
 
 To compute in Elm instead, `Tensor.Eval` takes a tensor that reads no graph input, or a graph and
@@ -137,7 +137,9 @@ may appear.
 | `Tensor.Random` | Random draws computed from a seed tensor: uniform, normal, Bernoulli and Gumbel, and `categorical` sampling |
 | `Signature` | How a record, tuple or list of tensors corresponds to a graph's ordered inputs or outputs |
 | `Graph` | Building and checking a graph; the names, dtypes, shapes and roles of its inputs and outputs |
-| `Graph.Max` | Writing a graph for MAX: MLIR bytecode or generic text, for the CPU or a GPU |
+| `Max` | Writing a graph for MAX: MLIR bytecode or generic text, for the CPU or a GPU |
+| `Max.Session` | Compiling and running graphs and keeping their resident buffers, on MAX through the host or in Elm |
+| `Max.Safetensors` | Reading a `.safetensors` checkpoint into a session's resident buffers |
 | `Transform` | Derivatives (`grad`, `valueAndGrad`, `vjp`, `jvp`, `jacobian`, `hessianVector` ...), `vmap`, and shared subgraphs |
 | `Param` | Parameter records, described once: their graph inputs, resident names, first values (computed in Elm or drawn by a graph), checkpoint import graphs and gradients |
 | `Optim` | SGD, AdamW, optimizers with an update written by hand, and global-norm gradient clipping |
@@ -162,7 +164,42 @@ may appear.
 
 ## Running on MAX
 
-`Graph.Max.toBytecode` writes MLIR bytecode, the binary form MAX's graph compiler loads, and
+A `Max.Session` compiles graphs, runs them, and keeps their resident buffers from one run to the
+next. The program compiles a graph into it, sends it commands (`run`, `put`, `get`, `save`,
+`loadInto`, `load` ...), and reads the replies as `Event`s in its `update`. A run is given only its
+fed inputs, by name, and gives back only its fed outputs. A session has two backends, and the
+program's code is the same for both.
+
+**The host backend** runs the graphs on MAX, in the C++ host `host/max_host.cpp`. Only an eco
+native program can use it, because the two talk over ports that carry `Bytes`. The program declares
+two ports, with exactly these names, since the host finds them by name:
+
+```elm
+port maxOut : Bytes -> Cmd msg
+
+port maxIn : (Bytes -> msg) -> Sub msg
+```
+
+and makes its session from them:
+
+```elm
+session = Max.Session.host { send = maxOut, receive = maxIn } GotMax
+```
+
+The program, compiled by eco to a shared library, is linked with `host/max_host.cpp` and MAX's
+`libmax`, and started as `max_host WORKDIR FLAGS-JSON`: compiled graphs are written to `WORKDIR`,
+and `FLAGS-JSON` is the program's flags. The command `finish` ends the program with an exit code.
+A program that also declares `port logOut : String -> Cmd msg` has each string it sends there
+printed by the host.
+
+**The in-Elm backend** (`Max.Session.inElm GotMax`) runs the graphs with `Tensor.Eval` and keeps the
+resident buffers in the session. It needs no ports and works wherever Elm runs, in tests or in a
+browser, at `Tensor.Eval`'s speed. It reads no files: `save` and `loadInto` work only over the
+files the session itself saved.
+
+### Writing graphs for MAX
+
+`Max.toBytecode` writes MLIR bytecode, the binary form MAX's graph compiler loads, and
 `toGenericText` writes the same module as text. The bytecode is version 6 of MLIR's bytecode format,
 which the package assumes is the version that MAX 26.7.0 reads.
 

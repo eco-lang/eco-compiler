@@ -1,4 +1,4 @@
-module CharLm exposing (main)
+port module CharLm exposing (main)
 
 {-| Trains `CharModel` on MAX: a byte-level language model over a text corpus (the repo's
 `design_docs/theory`), 90% for training, 10% held out.
@@ -11,30 +11,38 @@ about context cannot beat it.
 
 -}
 
-import Bridge
-import Bytes exposing (Bytes, Endianness(..))
+import Bytes exposing (Bytes)
 import Bytes.Decode as Decode
 import Bytes.Encode as Encode
 import CharModel exposing (batchSize, seqLen)
 import Json.Decode as D
+import Max.Session as Session exposing (Event(..), Session)
 import Platform
 import Train
 
 
-trainId : Int
-trainId =
-    1
+port maxOut : Bytes -> Cmd msg
 
 
-validId : Int
-validId =
-    2
+port maxIn : (Bytes -> msg) -> Sub msg
 
 
-type alias Model =
-    { corpus : Maybe Bytes
+port logOut : String -> Cmd msg
+
+
+{-| `Stopped` when the graphs could not be built: the program is ending.
+-}
+type Model
+    = Running State
+    | Stopped
+
+
+type alias State =
+    { session : Session Msg
+    , train : Session.Handle
+    , valid : Session.Handle
+    , corpus : Maybe Bytes
     , compiled : Int
-    , cfg : CharModel.Config
     , steps : Int
     , step : Int
     , seed : Int
@@ -42,15 +50,12 @@ type alias Model =
     , lossCount : Int
     , trace : Int
     , validateEvery : Int
-    , lastValid : Float
     , entropy : Float
     }
 
 
 type Msg
-    = Loaded Bytes
-    | Compiled D.Value
-    | Ran Bytes
+    = GotMax Session.Message
 
 
 flag : String -> D.Decoder a -> a -> D.Value -> a
@@ -64,42 +69,65 @@ init flags =
         cfg =
             { layers = flag "layers" D.int 2 flags, shared = flag "shared" D.bool False flags }
 
-        initial =
-            Train.initial (CharModel.params cfg) CharModel.optimizer 1
-
-        graphs =
-            case ( CharModel.trainStep cfg, CharModel.validate cfg ) of
-                ( Ok t, Ok v ) ->
-                    let
-                        ( c1, n1 ) =
-                            Bridge.compile Bridge.Bytecode trainId t
-
-                        ( c2, n2 ) =
-                            Bridge.compile Bridge.Bytecode validId v
-                    in
-                    [ Bridge.log ("char model: " ++ String.fromInt cfg.layers ++ " layers" ++ (if cfg.shared then ", shared" else "") ++ "; train_step " ++ String.fromInt n1 ++ " bytes, measure " ++ String.fromInt n2 ++ " bytes")
-                    , c1
-                    , c2
-                    ]
-
-                ( t, v ) ->
-                    [ Bridge.log ("graph errors: " ++ String.join "; " (errs t ++ errs v)), Bridge.done 1 ]
+        session0 =
+            Session.host { send = maxOut, receive = maxIn } GotMax
     in
-    ( { corpus = Nothing
-      , compiled = 0
-      , cfg = cfg
-      , steps = flag "steps" D.int 1000 flags
-      , step = 0
-      , seed = 12345
-      , lossSum = 0
-      , lossCount = 0
-      , trace = flag "trace" D.int 0 flags
-      , validateEvery = flag "validateEvery" D.int 250 flags
-      , lastValid = 0
-      , entropy = 0
-      }
-    , Cmd.batch (Bridge.send (List.map (\( n, b ) -> Bridge.put n b) initial) :: Bridge.load 1 (flag "corpus" D.string "corpus.txt" flags) :: graphs)
-    )
+    case ( CharModel.trainStep cfg, CharModel.validate cfg ) of
+        ( Ok trainGraph, Ok validGraph ) ->
+            let
+                ( session1, train, compileTrain ) =
+                    Session.compile trainGraph session0
+
+                ( session2, valid, compileValid ) =
+                    Session.compile validGraph session1
+
+                ( session3, setUp ) =
+                    Session.send
+                        (List.map (\( n, b ) -> Session.put n b) (Train.initial (CharModel.params cfg) CharModel.optimizer 1)
+                            ++ [ Session.load (flag "corpus" D.string "corpus.txt" flags) ]
+                        )
+                        session2
+            in
+            ( Running
+                { session = session3
+                , train = train
+                , valid = valid
+                , corpus = Nothing
+                , compiled = 0
+                , steps = flag "steps" D.int 1000 flags
+                , step = 0
+                , seed = 12345
+                , lossSum = 0
+                , lossCount = 0
+                , trace = flag "trace" D.int 0 flags
+                , validateEvery = flag "validateEvery" D.int 250 flags
+                , entropy = 0
+                }
+            , Cmd.batch
+                [ logOut
+                    ("char model: "
+                        ++ String.fromInt cfg.layers
+                        ++ " layers"
+                        ++ (if cfg.shared then
+                                ", shared"
+
+                            else
+                                ""
+                           )
+                    )
+                , compileTrain
+                , compileValid
+                , setUp
+                ]
+            )
+
+        ( t, v ) ->
+            ( Stopped
+            , Cmd.batch
+                [ logOut ("graph errors: " ++ String.join "; " (errs t ++ errs v))
+                , Tuple.second (Session.send [ Session.finish 1 ] session0)
+                ]
+            )
 
 
 errs : Result (List String) a -> List String
@@ -117,50 +145,67 @@ lcg s =
     modBy 4294967296 (1664525 * s + 1013904223)
 
 
-corpusBytes : Model -> Bytes
-corpusBytes model =
-    Maybe.withDefault (Encode.encode (Encode.sequence [])) model.corpus
+emptyBytes : Bytes
+emptyBytes =
+    Encode.encode (Encode.sequence [])
 
 
-trainLength : Model -> Int
-trainLength model =
-    Bytes.width (corpusBytes model) * 9 // 10
+corpusBytes : State -> Bytes
+corpusBytes state =
+    Maybe.withDefault emptyBytes state.corpus
 
 
-windows : Model -> List Int -> Encode.Encoder
-windows model offsets =
-    Bridge.packed (Encode.encode (Encode.sequence (List.map (\o -> Encode.bytes (Bridge.slice o (seqLen + 1) (corpusBytes model))) offsets)))
+slice : Int -> Int -> Bytes -> Bytes
+slice offset length b =
+    Decode.decode (Decode.bytes offset |> Decode.andThen (\_ -> Decode.bytes length)) b
+        |> Maybe.withDefault emptyBytes
+
+
+trainLength : State -> Int
+trainLength state =
+    Bytes.width (corpusBytes state) * 9 // 10
+
+
+windows : State -> List Int -> Session.Input
+windows state offsets =
+    Session.fromBytes (Encode.encode (Encode.sequence (List.map (\o -> Encode.bytes (slice o (seqLen + 1) (corpusBytes state))) offsets)))
+
+
+send : List Session.Command -> State -> ( State, Cmd Msg )
+send commands state =
+    let
+        ( session, cmd ) =
+            Session.send commands state.session
+    in
+    ( { state | session = session }, cmd )
 
 
 {-| A training step on 16 random windows of the training part, with a fresh dropout seed.
 -}
-trainCommand : Model -> ( Model, Cmd Msg )
-trainCommand model =
+trainStep : State -> ( State, Cmd Msg )
+trainStep state =
     let
         span =
-            trainLength model - seqLen - 1
+            trainLength state - seqLen - 1
 
         ( offsets, seed ) =
-            List.foldl (\_ ( acc, s ) -> ( modBy span (lcg s) :: acc, lcg s )) ( [], model.seed ) (List.range 1 batchSize)
-
-        seedBytes =
-            Bridge.packed (Encode.encode (Encode.sequence [ Encode.unsignedInt32 LE (model.step + 1), Encode.unsignedInt32 LE 0 ]))
+            List.foldl (\_ ( acc, s ) -> ( modBy span (lcg s) :: acc, lcg s )) ( [], state.seed ) (List.range 1 batchSize)
     in
-    ( { model | seed = seed }, Bridge.send [ Bridge.run trainId [ windows model offsets, seedBytes ] ] )
+    send [ Session.run state.train [ ( "batch0", windows state offsets ), ( "batch1", Session.fromInts [ state.step + 1 ] ) ] ] { state | seed = seed }
 
 
 {-| The held-out loss on 16 fixed windows spread over the last 10%.
 -}
-validCommand : Model -> Cmd Msg
-validCommand model =
+validStep : State -> ( State, Cmd Msg )
+validStep state =
     let
         start =
-            trainLength model
+            trainLength state
 
         span =
-            Bytes.width (corpusBytes model) - start - seqLen - 1
+            Bytes.width (corpusBytes state) - start - seqLen - 1
     in
-    Bridge.send [ Bridge.run validId [ windows model (List.map (\i -> start + i * span // batchSize) (List.range 0 (batchSize - 1))) ] ]
+    send [ Session.run state.valid [ ( "batch", windows state (List.map (\i -> start + i * span // batchSize) (List.range 0 (batchSize - 1))) ) ] ] state
 
 
 byteList : Bytes -> List Int
@@ -176,24 +221,24 @@ byteList bytes =
     Decode.decode (Decode.loop ( Bytes.width bytes, [] ) step) bytes |> Maybe.withDefault []
 
 
-ready : Model -> Bool
-ready model =
-    model.corpus /= Nothing && model.compiled == 2
-
-
-begin : Model -> ( Model, Cmd Msg )
-begin model =
-    if ready model then
+{-| Once the corpus is in and both graphs are compiled, measures the untrained model first.
+-}
+begin : State -> ( State, Cmd Msg )
+begin state =
+    if state.corpus /= Nothing && state.compiled == 2 then
         let
             e =
-                CharModel.unigramEntropy (byteList (Bridge.slice 0 (trainLength model) (corpusBytes model)))
+                CharModel.unigramEntropy (byteList (slice 0 (trainLength state) (corpusBytes state)))
+
+            ( s, cmd ) =
+                validStep { state | entropy = e }
         in
-        ( { model | entropy = e }
-        , Cmd.batch [ Bridge.log ("corpus " ++ String.fromInt (Bytes.width (corpusBytes model)) ++ " bytes; unigram entropy " ++ fmt e ++ " nats"), validCommand model ]
+        ( s
+        , Cmd.batch [ logOut ("corpus " ++ String.fromInt (Bytes.width (corpusBytes state)) ++ " bytes; unigram entropy " ++ fmt e ++ " nats"), cmd ]
         )
 
     else
-        ( model, Cmd.none )
+        ( state, Cmd.none )
 
 
 fmt : Float -> String
@@ -201,98 +246,117 @@ fmt x =
     String.fromFloat (toFloat (round (x * 10000)) / 10000)
 
 
+stop : Int -> List String -> State -> ( State, Cmd Msg )
+stop code lines state =
+    let
+        ( s, cmd ) =
+            send [ Session.finish code ] state
+    in
+    ( s, Cmd.batch (List.map logOut lines ++ [ cmd ]) )
+
+
 update : Msg -> Model -> ( Model, Cmd Msg )
-update msg model =
-    case msg of
-        Loaded bytes ->
-            begin { model | corpus = Just (Bridge.payload bytes) }
+update (GotMax message) model =
+    case model of
+        Running state ->
+            let
+                ( session, event ) =
+                    Session.update message state.session
+            in
+            Tuple.mapFirst Running (onEvent event { state | session = session })
 
-        Compiled v ->
-            case D.decodeValue (D.field "ok" D.bool) v of
-                Ok True ->
-                    begin { model | compiled = model.compiled + 1 }
+        Stopped ->
+            ( model, Cmd.none )
 
-                _ ->
-                    ( model, Cmd.batch [ Bridge.log "compile failed", Bridge.done 1 ] )
 
-        Ran bytes ->
-            if Bridge.headerId bytes == trainId then
-                let
-                    loss =
-                        Bridge.loss bytes
+onEvent : Event -> State -> ( State, Cmd Msg )
+onEvent event state =
+    case event of
+        Loaded _ bytes ->
+            begin { state | corpus = Just bytes }
 
-                    m =
-                        { model | step = model.step + 1, lossSum = model.lossSum + loss, lossCount = model.lossCount + 1 }
+        Compiled _ ->
+            begin { state | compiled = state.compiled + 1 }
 
-                    traceCmd =
-                        if m.step <= m.trace then
-                            Bridge.log ("step " ++ String.fromInt m.step ++ " loss " ++ String.fromFloat loss)
+        CompileFailed _ why ->
+            stop 1 [ "compile failed: " ++ why ] state
 
-                        else
-                            Cmd.none
-                in
-                if modBy m.validateEvery m.step == 0 || m.step >= m.steps then
-                    ( m, Cmd.batch [ traceCmd, validCommand m ] )
+        Failed why ->
+            stop 1 [ why ] state
 
-                else
-                    let
-                        ( m2, cmd ) =
-                            trainCommand m
-                    in
-                    ( m2, Cmd.batch [ traceCmd, cmd ] )
+        Ran graph outputs ->
+            let
+                result name =
+                    Session.floats name outputs |> Maybe.andThen List.head |> Maybe.withDefault 0
+            in
+            if graph == state.train then
+                trained (result "loss") state
 
             else
-                let
-                    valid =
-                        Bridge.measured bytes
+                validated (result "result") state
 
-                    report =
-                        "step "
-                            ++ String.fromInt model.step
-                            ++ ": "
-                            ++ (if model.lossCount > 0 then
-                                    "mean train loss " ++ fmt (model.lossSum / toFloat model.lossCount) ++ ", "
+        Got _ _ ->
+            ( state, Cmd.none )
 
-                                else
-                                    ""
-                               )
-                            ++ "held-out loss "
-                            ++ fmt valid
-                    m =
-                        { model | lastValid = valid, lossSum = 0, lossCount = 0 }
-                in
-                if model.step >= model.steps then
-                    ( m
-                    , Cmd.batch
-                        [ Bridge.log report
-                        , Bridge.log
-                            ("held-out loss "
-                                ++ fmt valid
-                                ++ (if valid < model.entropy then
-                                        " < "
+        Finished _ ->
+            ( state, Cmd.none )
 
-                                    else
-                                        " >= "
-                                   )
-                                ++ "unigram entropy "
-                                ++ fmt model.entropy
-                            )
-                        , Bridge.done
-                            (if valid < model.entropy then
-                                0
 
-                             else
-                                1
-                            )
-                        ]
-                    )
+trained : Float -> State -> ( State, Cmd Msg )
+trained loss state =
+    let
+        s =
+            { state | step = state.step + 1, lossSum = state.lossSum + loss, lossCount = state.lossCount + 1 }
 
-                else
-                    let
-                        ( m2, cmd ) =
-                            trainCommand m
-                    in
-                    ( m2, Cmd.batch [ Bridge.log report, cmd ] )
+        traceLog =
+            if s.step <= s.trace then
+                [ logOut ("step " ++ String.fromInt s.step ++ " loss " ++ String.fromFloat loss) ]
+
+            else
+                []
+
+        ( next, cmd ) =
+            if modBy s.validateEvery s.step == 0 || s.step >= s.steps then
+                validStep s
+
+            else
+                trainStep s
+    in
+    ( next, Cmd.batch (traceLog ++ [ cmd ]) )
+
+
+validated : Float -> State -> ( State, Cmd Msg )
+validated valid state =
+    let
+        report =
+            "step "
+                ++ String.fromInt state.step
+                ++ ": "
+                ++ (if state.lossCount > 0 then
+                        "mean train loss " ++ fmt (state.lossSum / toFloat state.lossCount) ++ ", "
+
+                    else
+                        ""
+                   )
+                ++ "held-out loss "
+                ++ fmt valid
+
+        s =
+            { state | lossSum = 0, lossCount = 0 }
+    in
+    if state.step >= state.steps then
+        if valid < state.entropy then
+            stop 0 [ report, "held-out loss " ++ fmt valid ++ " < unigram entropy " ++ fmt state.entropy ] s
+
+        else
+            stop 1 [ report, "held-out loss " ++ fmt valid ++ " >= unigram entropy " ++ fmt state.entropy ] s
+
+    else
+        let
+            ( next, cmd ) =
+                trainStep s
+        in
+        ( next, Cmd.batch [ logOut report, cmd ] )
 
 
 main : Program D.Value Model Msg
@@ -300,5 +364,12 @@ main =
     Platform.worker
         { init = init
         , update = update
-        , subscriptions = \_ -> Sub.batch [ Bridge.loadIn Loaded, Bridge.compiledIn Compiled, Bridge.runIn Ran ]
+        , subscriptions =
+            \model ->
+                case model of
+                    Running state ->
+                        Session.subscriptions state.session
+
+                    Stopped ->
+                        Sub.none
         }

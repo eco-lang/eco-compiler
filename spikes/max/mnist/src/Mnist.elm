@@ -1,48 +1,57 @@
-module Mnist exposing (main)
+port module Mnist exposing (main)
 
 {-| Training a neural network on MNIST with Elm and MAX.
 
 The network and its training step are `MnistNet`, written with the typed tensor package
 (`eco-lab/tensor`); Elm derives the gradients itself (MAX has no autodiff). This module owns the data
-and runs the training loop: MAX compiles the two graphs Elm writes, a training step and an
-evaluation, and executes them.
+and runs the training loop: a `Max.Session` on the host compiles the two graphs Elm writes, a
+training step and an evaluation, and runs them.
 
-The parameters live on the host as resident buffers: Elm sends their initial values once, then
-only each batch, and gets back only the loss.
+The parameters live in the session's resident buffers: Elm puts their initial values once, then
+sends only each batch, and gets back only the loss.
 
 -}
 
 import Array
-import Bridge
-import Bytes exposing (Bytes, Endianness(..))
+import Bytes exposing (Bytes)
+import Bytes.Decode as Decode
 import Bytes.Encode as Encode
 import Dict exposing (Dict)
 import Json.Decode as D
+import Max
+import Max.Session as Session exposing (Event(..), Session)
 import MnistModels exposing (Variant)
-import MnistNet as Net exposing (batchSize, testSize)
+import MnistNet exposing (batchSize, testSize)
 import Platform
-import Train
 
 
-trainId : Int
-trainId =
-    1
+port maxOut : Bytes -> Cmd msg
 
 
-evalId : Int
-evalId =
-    2
+port maxIn : (Bytes -> msg) -> Sub msg
 
 
-type alias Model =
-    { variant : Variant
-    , name : String
+port logOut : String -> Cmd msg
+
+
+{-| `Stopped` when the graphs could not be built: the program is ending.
+-}
+type Model
+    = Running State
+    | Stopped
+
+
+type alias State =
+    { session : Session Msg
+    , variant : Variant
+    , train : Session.Handle
+    , measure : Session.Handle
+    , dataDir : String
     , checkpoints : String
     , reload : Bool
     , reloaded : Bool
-    , files : Dict Int Bytes
-    , baseFiles : Dict Int Bytes
-    , compiled : List Int
+    , files : Dict String Bytes
+    , compiled : Int
     , epoch : Int
     , batches : List Int
     , lossSum : Float
@@ -53,19 +62,27 @@ type alias Model =
 
 
 type Msg
-    = Loaded Bytes
-    | Compiled D.Value
-    | Ran Bytes
-    | Got Bytes
+    = GotMax Session.Message
 
 
-files : List ( Int, String )
-files =
-    [ ( 1, "train-images-idx3-ubyte" )
-    , ( 2, "train-labels-idx1-ubyte" )
-    , ( 3, "t10k-images-idx3-ubyte" )
-    , ( 4, "t10k-labels-idx1-ubyte" )
-    ]
+trainImages : String
+trainImages =
+    "train-images-idx3-ubyte"
+
+
+trainLabels : String
+trainLabels =
+    "train-labels-idx1-ubyte"
+
+
+testImages : String
+testImages =
+    "t10k-images-idx3-ubyte"
+
+
+testLabels : String
+testLabels =
+    "t10k-labels-idx1-ubyte"
 
 
 lcg : Int -> Int
@@ -104,93 +121,86 @@ shuffle seed0 list =
 init : D.Value -> ( Model, Cmd Msg )
 init flags =
     let
-        dir =
-            Result.withDefault "." (D.decodeValue (D.field "dataDir" D.string) flags)
+        string field default =
+            Result.withDefault default (D.decodeValue (D.field field D.string) flags)
 
-        format =
-            if D.decodeValue (D.field "format" D.string) flags == Ok "generic" then
-                Bridge.GenericText
-
-            else
-                Bridge.Bytecode
-
-        formatName =
-            if format == Bridge.Bytecode then
-                "bytecode"
+        ( format, formatName ) =
+            if string "format" "bytecode" == "generic" then
+                ( Session.GenericText, "generic" )
 
             else
-                "generic"
+                ( Session.Bytecode, "bytecode" )
 
         name =
-            Result.withDefault "sgd" (D.decodeValue (D.field "variant" D.string) flags)
+            string "variant" "sgd"
 
         v =
             MnistModels.variant name
 
-        checkpoints =
-            Result.withDefault "." (D.decodeValue (D.field "checkpoints" D.string) flags)
-
-        loaded =
-            List.map Tuple.first v.loads
-
-        compileBoth =
-            case ( v.train, v.measure ) of
-                ( Ok train, Ok eval ) ->
-                    let
-                        ( c1, n1 ) =
-                            Bridge.compile format trainId train
-
-                        ( c2, n2 ) =
-                            Bridge.compile format evalId eval
-                    in
-                    [ Bridge.log
-                        ("graphs built and checked in Elm, as "
-                            ++ formatName
-                            ++ ": train_step "
-                            ++ String.fromInt n1
-                            ++ " bytes, measure "
-                            ++ String.fromInt n2
-                            ++ " bytes"
-                        )
-                    , c1
-                    , c2
-                    ]
-
-                ( train, eval ) ->
-                    [ Bridge.log ("graph errors: " ++ String.join "; " (errors train ++ errors eval)), Bridge.done 1 ]
+        session0 =
+            Session.host { send = maxOut, receive = maxIn } GotMax
     in
-    ( { variant = v
-      , name = name
-      , checkpoints = checkpoints
-      , reload = D.decodeValue (D.field "reload" D.bool) flags == Ok True
-      , reloaded = False
-      , files = Dict.empty
-      , baseFiles = Dict.empty
-      , compiled = []
-      , epoch = 0
-      , batches = []
-      , lossSum = 0
-      , steps = 0
-      , seed = 7
-      , trace = Result.withDefault 0 (D.decodeValue (D.field "trace" D.int) flags)
-      }
-    , Cmd.batch
-        (Bridge.log ("model " ++ name)
-            :: Bridge.send
-                (List.map (\( n, b ) -> Bridge.put n b) (List.filter (\( n, _ ) -> not (List.member n loaded)) v.initial)
-                    ++ List.map (\( n, f ) -> Bridge.loadInto n (checkpoints ++ "/" ++ f ++ ".bin")) v.loads
-                )
-            :: compileBoth
-            ++ List.map (\( id, f ) -> Bridge.load id (dir ++ "/" ++ f)) files
-            ++ (case v.base of
-                    Just b ->
-                        List.indexedMap (\i f -> Bridge.load (baseId + i) (checkpoints ++ "/" ++ f ++ ".bin")) b.files
+    case ( v.train, v.measure ) of
+        ( Ok trainGraph, Ok measureGraph ) ->
+            let
+                compile =
+                    Session.compileWith { format = format, device = Max.Cpu }
 
-                    Nothing ->
-                        []
-               )
-        )
-    )
+                -- compiled first, so that the host writes them as graph-1 and graph-2
+                ( session1, train, compileTrain ) =
+                    compile trainGraph session0
+
+                ( session2, measure, compileMeasure ) =
+                    compile measureGraph session1
+
+                state =
+                    { session = session2
+                    , variant = v
+                    , train = train
+                    , measure = measure
+                    , dataDir = string "dataDir" "."
+                    , checkpoints = string "checkpoints" "."
+                    , reload = D.decodeValue (D.field "reload" D.bool) flags == Ok True
+                    , reloaded = False
+                    , files = Dict.empty
+                    , compiled = 0
+                    , epoch = 0
+                    , batches = []
+                    , lossSum = 0
+                    , steps = 0
+                    , seed = 7
+                    , trace = Result.withDefault 0 (D.decodeValue (D.field "trace" D.int) flags)
+                    }
+
+                loaded =
+                    List.map Tuple.first v.loads
+
+                ( started, setUp ) =
+                    send
+                        (List.map (\( n, b ) -> Session.put n b) (List.filter (\( n, _ ) -> not (List.member n loaded)) v.initial)
+                            ++ List.map (\( n, f ) -> Session.loadInto n (checkpoint state f)) v.loads
+                            ++ List.map Session.load (wanted state)
+                        )
+                        state
+            in
+            ( Running started
+            , Cmd.batch
+                [ logOut ("model " ++ name)
+                , logOut ("graphs built and checked in Elm, as " ++ formatName)
+                , compileTrain
+                , compileMeasure
+                , setUp
+                ]
+            )
+
+        ( train, measure ) ->
+            ( Stopped
+            , Cmd.batch
+                [ logOut ("model " ++ name)
+                , logOut ("graph errors: " ++ String.join "; " (errors train ++ errors measure))
+                , Tuple.second (Session.send [ Session.finish 1 ] session0)
+                ]
+            )
 
 
 errors : Result (List String) a -> List String
@@ -203,22 +213,69 @@ errors r =
             []
 
 
-file : Int -> Model -> Bytes
-file id model =
-    Maybe.withDefault (Encode.encode (Encode.sequence [])) (Dict.get id model.files)
+checkpoint : State -> String -> String
+checkpoint state name =
+    state.checkpoints ++ "/" ++ name ++ ".bin"
 
 
-{-| Images start after a 16-byte IDX header, labels after an 8-byte one.
+dataPath : State -> String -> String
+dataPath state name =
+    state.dataDir ++ "/" ++ name
+
+
+{-| Every file the run reads into Elm: the data, and the saved network a `base` starts from.
 -}
-trainBatch : Int -> Model -> Cmd Msg
-trainBatch index model =
-    Bridge.send << List.singleton <| Bridge.run trainId
-        ([ Bridge.packed (Bridge.slice (16 + index * batchSize * 784) (batchSize * 784) (file 1 model))
-         , Bridge.packed (Bridge.slice (8 + index * batchSize) batchSize (file 2 model))
-         ]
-            ++ (if model.variant.seeded then
-                    -- a ui64 [1] seed: a different one every step
-                    [ Bridge.packed (Encode.encode (Encode.sequence [ Encode.unsignedInt32 LE (model.epoch * 100000 + model.steps + 1), Encode.unsignedInt32 LE 0 ])) ]
+wanted : State -> List String
+wanted state =
+    List.map (dataPath state) [ trainImages, trainLabels, testImages, testLabels ]
+        ++ (state.variant.base |> Maybe.map (.files >> List.map (checkpoint state)) |> Maybe.withDefault [])
+
+
+file : String -> State -> Bytes
+file path state =
+    Maybe.withDefault (Encode.encode (Encode.sequence [])) (Dict.get path state.files)
+
+
+{-| `length` bytes of a data file from `offset`.
+-}
+slice : String -> Int -> Int -> State -> Session.Input
+slice name offset length state =
+    file (dataPath state name) state
+        |> Decode.decode (Decode.bytes offset |> Decode.andThen (\_ -> Decode.bytes length))
+        |> Maybe.withDefault (Encode.encode (Encode.sequence []))
+        |> Session.fromBytes
+
+
+send : List Session.Command -> State -> ( State, Cmd Msg )
+send commands state =
+    let
+        ( session, cmd ) =
+            Session.send commands state.session
+    in
+    ( { state | session = session }, cmd )
+
+
+{-| Logs `lines`, then ends the program with `code`.
+-}
+stop : Int -> List String -> State -> ( State, Cmd Msg )
+stop code lines state =
+    let
+        ( s, cmd ) =
+            send [ Session.finish code ] state
+    in
+    ( s, Cmd.batch (List.map logOut lines ++ [ cmd ]) )
+
+
+{-| Images start after a 16-byte IDX header, labels after an 8-byte one. The seeded variants take
+a different dropout seed every step, made from the epoch and step of `state`.
+-}
+trainRun : Int -> State -> Session.Command
+trainRun index state =
+    Session.run state.train
+        (( "batch0", slice trainImages (16 + index * batchSize * 784) (batchSize * 784) state )
+            :: ( "batch1", slice trainLabels (8 + index * batchSize) batchSize state )
+            :: (if state.variant.seeded then
+                    [ ( "batch2", Session.fromInts [ state.epoch * 100000 + state.steps + 1 ] ) ]
 
                 else
                     []
@@ -226,176 +283,168 @@ trainBatch index model =
         )
 
 
-evaluateTest : Model -> Cmd Msg
-evaluateTest model =
-    Bridge.send [ evalCommand model ]
-
-
-evalCommand : Model -> Bridge.Command
-evalCommand model =
-    Bridge.run evalId
-        [ Bridge.packed (Bridge.slice 16 (testSize * 784) (file 3 model))
-        , Bridge.packed (Bridge.slice 8 testSize (file 4 model))
+evaluation : State -> Session.Command
+evaluation state =
+    Session.run state.measure
+        [ ( "batch0", slice testImages 16 (testSize * 784) state )
+        , ( "batch1", slice testLabels 8 testSize state )
         ]
 
 
-baseId : Int
-baseId =
-    100
-
-
-baseCount : Model -> Int
-baseCount model =
-    model.variant.base |> Maybe.map (.files >> List.length) |> Maybe.withDefault 0
-
-
-ready : Model -> Bool
-ready model =
-    Dict.size model.files == 4 && List.length model.compiled == 2 && Dict.size model.baseFiles == baseCount model
-
-
-{-| Starts epoch `model.epoch + 1` on a fresh shuffle of the 600 batches.
+{-| Starts epoch `state.epoch + 1` on a fresh shuffle of the 600 batches. Its first step's seed is
+made from the epoch and step before it.
 -}
-startEpoch : Model -> ( Model, Cmd Msg )
-startEpoch model =
+startEpoch : State -> ( State, Cmd Msg )
+startEpoch state =
     let
         ( order, seed ) =
-            shuffle model.seed (List.range 0 (60000 // batchSize - 1))
+            shuffle state.seed (List.range 0 (60000 // batchSize - 1))
     in
     case order of
         first :: rest ->
-            ( { model | epoch = model.epoch + 1, batches = rest, lossSum = 0, steps = 0, seed = seed }
-            , trainBatch first model
-            )
+            send [ trainRun first state ] { state | epoch = state.epoch + 1, batches = rest, lossSum = 0, steps = 0, seed = seed }
 
         [] ->
-            ( model, Bridge.done 1 )
+            stop 1 [] state
 
 
 update : Msg -> Model -> ( Model, Cmd Msg )
-update msg model =
-    case msg of
-        Loaded bytes ->
+update (GotMax message) model =
+    case model of
+        Running state ->
             let
-                id =
-                    Bridge.headerId bytes
-
-                m =
-                    if id >= baseId then
-                        { model | baseFiles = Dict.insert id (Bridge.payload bytes) model.baseFiles }
-
-                    else
-                        { model | files = Dict.insert id (Bridge.payload bytes) model.files }
+                ( session, event ) =
+                    Session.update message state.session
             in
-            ( m, whenReady m )
+            Tuple.mapFirst Running (onEvent event { state | session = session })
 
-        Compiled v ->
-            case D.decodeValue (D.map2 Tuple.pair (D.field "id" D.int) (D.field "ok" D.bool)) v of
-                Ok ( id, True ) ->
-                    let
-                        m =
-                            { model | compiled = id :: model.compiled }
-                    in
-                    ( m, whenReady m )
+        Stopped ->
+            ( model, Cmd.none )
 
-                _ ->
-                    ( model, Cmd.batch [ Bridge.log "compile failed", Bridge.done 1 ] )
 
-        Got _ ->
-            -- the reply to the `get` sent after the saves: they are done
-            ( model, Bridge.done 0 )
+onEvent : Event -> State -> ( State, Cmd Msg )
+onEvent event state =
+    case event of
+        Loaded path bytes ->
+            whenReady { state | files = Dict.insert path bytes state.files }
 
-        Ran bytes ->
-            if Bridge.headerId bytes == trainId then
-                let
-                    loss =
-                        Bridge.loss bytes
+        Compiled _ ->
+            whenReady { state | compiled = state.compiled + 1 }
 
-                    m =
-                        { model | lossSum = model.lossSum + loss, steps = model.steps + 1 }
+        CompileFailed _ why ->
+            stop 1 [ "compile failed: " ++ why ] state
 
-                    traceCmd =
-                        if m.epoch == 1 && m.steps <= m.trace then
-                            Bridge.log ("step " ++ String.fromInt m.steps ++ " loss " ++ String.fromFloat loss)
+        Failed why ->
+            stop 1 [ why ] state
 
-                        else
-                            Cmd.none
-                in
-                case m.batches of
-                    index :: rest ->
-                        ( { m | batches = rest }, Cmd.batch [ traceCmd, trainBatch index m ] )
-
-                    [] ->
-                        ( m, Cmd.batch [ traceCmd, evaluateTest m ] )
+        Ran graph outputs ->
+            let
+                result name =
+                    Session.floats name outputs |> Maybe.andThen List.head |> Maybe.withDefault 0
+            in
+            if graph == state.train then
+                trained (result "loss") state
 
             else
-                let
-                    correct =
-                        round (Bridge.measured bytes)
+                measured (round (result "result")) state
 
-                    report =
-                        "epoch "
-                            ++ String.fromInt model.epoch
-                            ++ ": "
-                            ++ (if model.steps > 0 then
-                                    "mean train loss " ++ String.left 6 (String.fromFloat (model.lossSum / toFloat model.steps)) ++ ", "
+        Got _ _ ->
+            ( state, Cmd.none )
 
-                                else
-                                    "untrained, "
-                               )
-                            ++ "test accuracy "
-                            ++ String.fromFloat (toFloat correct / 100)
-                            ++ "% ("
-                            ++ String.fromInt correct
-                            ++ "/10000)"
-                in
-                if model.reloaded then
-                    ( model, Cmd.batch [ Bridge.log ("after saving and reloading: test accuracy " ++ String.fromFloat (toFloat correct / 100) ++ "%"), Bridge.done 0 ] )
+        Finished _ ->
+            ( state, Cmd.none )
 
-                else if model.epoch >= model.variant.epochs then
-                    let
-                        saves =
-                            List.map (\n -> Bridge.save n (model.checkpoints ++ "/" ++ n ++ ".bin")) model.variant.saves
 
-                        reloads =
-                            List.map (\n -> Bridge.loadInto n (model.checkpoints ++ "/" ++ n ++ ".bin")) model.variant.saves
-                    in
-                    if model.reload && not (List.isEmpty saves) then
-                        ( { model | reloaded = True }
-                        , Cmd.batch [ Bridge.log report, Bridge.send (saves ++ reloads ++ [ evalCommand model ]) ]
-                        )
+trained : Float -> State -> ( State, Cmd Msg )
+trained loss state =
+    let
+        s =
+            { state | lossSum = state.lossSum + loss, steps = state.steps + 1 }
+
+        traceLog =
+            if s.epoch == 1 && s.steps <= s.trace then
+                [ logOut ("step " ++ String.fromInt s.steps ++ " loss " ++ String.fromFloat loss) ]
+
+            else
+                []
+
+        ( next, cmd ) =
+            case s.batches of
+                index :: rest ->
+                    send [ trainRun index s ] { s | batches = rest }
+
+                [] ->
+                    send [ evaluation s ] s
+    in
+    ( next, Cmd.batch (traceLog ++ [ cmd ]) )
+
+
+measured : Int -> State -> ( State, Cmd Msg )
+measured correct state =
+    let
+        accuracy =
+            String.fromFloat (toFloat correct / 100)
+
+        report =
+            "epoch "
+                ++ String.fromInt state.epoch
+                ++ ": "
+                ++ (if state.steps > 0 then
+                        "mean train loss " ++ String.left 6 (String.fromFloat (state.lossSum / toFloat state.steps)) ++ ", "
 
                     else
-                        ( model, Cmd.batch [ Bridge.log report, Bridge.send (saves ++ [ Bridge.get 0 "none" ]) ] )
+                        "untrained, "
+                   )
+                ++ "test accuracy "
+                ++ accuracy
+                ++ "% ("
+                ++ String.fromInt correct
+                ++ "/10000)"
 
-                else
-                    let
-                        ( m, cmd ) =
-                            startEpoch model
-                    in
-                    ( m, Cmd.batch [ Bridge.log report, cmd ] )
+        withReport ( s, cmd ) =
+            ( s, Cmd.batch [ logOut report, cmd ] )
+    in
+    if state.reloaded then
+        stop 0 [ "after saving and reloading: test accuracy " ++ accuracy ++ "%" ] state
 
+    else if state.epoch >= state.variant.epochs then
+        let
+            saves =
+                List.map (\n -> Session.save n (checkpoint state n)) state.variant.saves
 
-{-| Once the data is in and both graphs are compiled, evaluate the untrained network first.
--}
-whenReady : Model -> Cmd Msg
-whenReady model =
-    if ready model then
-        case model.variant.base of
-            Just b ->
-                -- the saved parameters, each named after its file (ids follow `b.files`' order)
-                case b.residents (List.map2 Tuple.pair b.files (Dict.values model.baseFiles)) of
-                    Ok residents ->
-                        Bridge.send (List.map (\( n, bytes ) -> Bridge.put n bytes) residents ++ [ evalCommand model ])
+            reloads =
+                List.map (\n -> Session.loadInto n (checkpoint state n)) state.variant.saves
+        in
+        if state.reload && not (List.isEmpty saves) then
+            withReport (send (saves ++ reloads ++ [ evaluation state ]) { state | reloaded = True })
 
-                    Err e ->
-                        Cmd.batch [ Bridge.log ("base: " ++ e), Bridge.done 1 ]
-
-            Nothing ->
-                evaluateTest model
+        else
+            withReport (send (saves ++ [ Session.finish 0 ]) state)
 
     else
-        Cmd.none
+        withReport (startEpoch state)
+
+
+{-| Once the data is in and both graphs are compiled, evaluates the untrained network first; a
+variant with a `base` first puts the saved network's parameters, each read from its file.
+-}
+whenReady : State -> ( State, Cmd Msg )
+whenReady state =
+    if state.compiled == 2 && List.all (\p -> Dict.member p state.files) (wanted state) then
+        case state.variant.base of
+            Just b ->
+                case b.residents (List.map (\f -> ( f, file (checkpoint state f) state )) b.files) of
+                    Ok residents ->
+                        send (List.map (\( n, bytes ) -> Session.put n bytes) residents ++ [ evaluation state ]) state
+
+                    Err e ->
+                        stop 1 [ "base: " ++ e ] state
+
+            Nothing ->
+                send [ evaluation state ] state
+
+    else
+        ( state, Cmd.none )
 
 
 main : Program D.Value Model Msg
@@ -403,5 +452,12 @@ main =
     Platform.worker
         { init = init
         , update = update
-        , subscriptions = \_ -> Sub.batch [ Bridge.loadIn Loaded, Bridge.compiledIn Compiled, Bridge.runIn Ran, Bridge.getIn Got ]
+        , subscriptions =
+            \model ->
+                case model of
+                    Running state ->
+                        Session.subscriptions state.session
+
+                    Stopped ->
+                        Sub.none
         }
