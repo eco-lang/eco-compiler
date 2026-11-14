@@ -1,9 +1,108 @@
 module EvalTests exposing (suite)
 
-{-| `Tensor.Eval`, the pure-Elm evaluator (plans/tensor-eval-in-elm.md, E0–E2): each primitive on
-small hand-computed cases, control flow, randomness, gradients against finite differences, `vmap`
-against a loop, training a small network, and the refusals. Values stay within 2⁵³ (these run under
-Node); the 64-bit cases are the E2E suite `test/eco-tensor`.
+{-| `Tensor.Eval` computes tensors in plain Elm, and a wrong rule for one primitive there would
+still compile, build and run, giving wrong numbers and no error. Most of these tests check the
+numbers it gives against values found another way: by hand, from a closed form, by finite
+differences, by the same computation written in plain Elm, or by computing one thing two ways.
+
+Most tests build a small constant expression, compute it with `Tensor.Eval.floats`, `ints` or
+`mask`, and compare the elements, in row-major order, with the expected list. Many build the
+expression with the untyped builders of `Tensor.Internal.Ops` and `Tensor.Internal.Expr`, which
+reach one primitive directly with the parameters given; the rest use the public API. Most float
+results are compared with `close`, within a tolerance for a finite wanted value and exactly for an
+infinity or NaN, or with `exactly`. Where two computed `Result`s are compared, `sameOk` and
+`differentOk` pass only when both are `Ok`. Every `Int` the tests write or expect lies far inside
+±2⁵³, so that no expected value depends on whether an `Int` has 64 bits, as natively, or is a
+double, as under JavaScript. A `ui64` element from 2⁶³ up is the negative `Int` with the same bits,
+as `Tensor` describes, so −1 here is 2⁶⁴ − 1.
+
+The tests that run whole graphs use a one-input identity graph, the graph `busy`, a no-input graph
+holding a `whileLoop` whose test never fails, and two graphs of a small multi-layer perceptron
+(MLP): the initialising graph `Param.initInPlace "init" mlpParams`, and the step graph `mlpStep`,
+run on the 12 `points`.
+
+The tests establish:
+
+  - **Plumbing** (`plumbing`): a float and an int constant come back from `floats` and `ints`
+    unchanged, and a comparison of two int constants comes back from `mask`. `run` of the identity
+    graph returns its one input value as its one output. Given no input, `run` returns an error
+    containing `missing input x`, and given shape `[2]` for `[3]`, one containing `shape [2]`.
+    `floats` of a tensor that reads a graph input returns an error containing `input`. The keys of
+    `residentZeros mlpStep` are exactly the resident names among `mlpStep`'s inputs, and also
+    exactly the names `Train.initial` gives for `mlpParams` with the same optimizer.
+  - **Element-wise operations** (`elementwise`): arithmetic, one test with a rank-0 operand; an
+    `si8` sum, a `ui8` difference, an `si32` sum and a `ui8` product wrap to their width;
+    `Tensor.modBy` gives the divisor's sign, and an integer `modBy` with a zero divisor returns an
+    error containing `modBy: integer division by zero`; `ui64` `modBy` of small values; `abs` and
+    negation of `si64`; `relu` of −1, 0 and 2. The float functions exp, log, sqrt, rsqrt, erf, tanh,
+    sigmoid, log1p, atanh, gelu, the tanh form of gelu, and silu are each checked at one to seven
+    arguments against reference values, within tolerances of 1e-15 to 1e-14, including tanh of −30
+    as −1 and sigmoid of −800 as 0. Of exp at its limits, e⁷⁰⁰ is checked to 1e-14 relative, e⁷¹⁰ as
+    ∞, and e⁻⁷⁴⁰ and e⁻⁸⁰⁰ only to within 1e-14 of the wanted values. Floor and truncation of ±1.5;
+    rounding half to even. `max` and `min` give the other operand when one is NaN, and `max` gives
+    NaN when both are. Float greater-than, equal and not-equal are all `False` with a NaN operand.
+    `ui64` greater-than and `max` treat −1 as the larger. `select` by a mask. `and`, `or`, `xor` and
+    `not` of masks; the NaN and infinity test checks the `or` of `isNaN` and `isInfinite` of NaN, 1
+    and ∞, not either alone. Casts: float to `si32` truncates toward zero; `si64` to `ui8` wraps;
+    float to mask is `True` for non-zero and for NaN; NaN to `si64` returns an error containing
+    `cast: cannot convert NaN`, and an `f32` 256 to `ui8` one containing `out of range`; `ui64` −1
+    to `f64` is 2⁶⁴.
+  - **Reductions** (`reductions`): sums along each axis, and with the axis kept; mean, maximum,
+    minimum; an `si8` sum wraps; `argMax` and `argMin` give the lowest index on ties; `argMax` and
+    maximum skip NaN; softmax of `[0, 0, 1000]` is `[0, 0, 1]` and log-softmax of `[0, 0]` is −log 2
+    twice; cumulative sums, inclusive and exclusive, forward and reverse, along axis 0, and along
+    axis 1; matrix products 2 × 3 by 3 × 2, with a rank-1 operand on either side or both, with a
+    batch axis on the left only, and of `si64`.
+  - **Shapes** (`shapes`): reshape; transpose of rank 2 and 3; `broadcastTo` of a row and of a
+    column; slice; concatenation along axis 1; padding with a float fill, with an integer fill
+    (`Tensor.pad`, `Tensor.padInt`), and along axis 1; `flip`; `stack` of a reversed `unstack`.
+  - **Indexing** (`indexing`): gather along axis 0 with a repeated index and along axis 1 with
+    rank-2 indices; a gather index of 3 on an axis of 3 returns an error containing
+    `index 3 is outside`, and one of −1 an error containing `index -1`; `pick`; a row scatter with
+    a repeated index keeps the last write, and the adding row scatter sums them; `put` along axis 1
+    and `putAdd` along axis 0 with a repeated index; the sum of `triu 1` and ten times `tril -1` of
+    a 3 × 3 matrix; `arange` with a negative step plus `iota`.
+  - **Layers** (`layers`): cross-entropy from logits against its closed form; layer norm of one row
+    with ε = 0; convolution with stride 1 and no padding, with stride 2, padding 1 and two output
+    channels, and with dilation 2; for one geometry with unequal strides, uneven padding and a
+    dilation, the transposed convolution has the input's shape, and ⟨conv x, y⟩ and ⟨x, convT y⟩ are
+    equal; max and average pooling; the top-k primitive, for the largest and for the smallest, on a
+    vector with ties, which come lowest index first; `Tensor.sort` of `si64` rows in ascending
+    order, values and indices.
+  - **Control flow** (`control`): a shared function called on two arguments gives each its own
+    result; a `cond` whose predicate is false gives the second function's result, with no error
+    although the first function takes an index out of range; a `whileLoop` adding 3 from 0 while
+    below 10 ends at 12; a loop over a pair gives 55, the first Fibonacci number from 50 up; a loop
+    body reads a tensor from outside its state; a loop inside another loop's body; `scan` gives the
+    total and the running sums of a vector, and `repeat` doubles 1 three times; and a loop whose
+    test never fails, run by `runWith` with a guard of 10, returns an error containing
+    `more than 10 iterations`.
+  - **Prepared graphs** (`prepared`): one prepared `busy` graph run on three inputs in turn gives
+    the same outputs as `run`; its outputs equal the same computation written in plain Elm, for one
+    input with a positive sum and one with a negative sum, so for both branches; and
+    `runPreparedWith`, on the no-input loop graph, keeps the guard, as `runWith` does.
+  - **Randomness** (`randomness`): two equal uniform draws on one seed give equal values; the
+    draws on seeds 3 and 4 give unequal values, and so do those on seed 3 and on seed 3 salted with
+    1; 200 uniform draws between −2 and 3 on seed 9 all lie in −2 ≤ v < 3; and `Random.salt 2`, read
+    as an `si64`, is 5 · 25214903917 + 5 for seed 5, and for seed 731580979, whose product with
+    25214903917 exceeds 2⁶⁴ by 19280243127, is 19280243127 + 5.
+  - **Verification** (`verification`): `Transform.grad` of a scalar `f64` function mixing `sin`,
+    `exp`, `tanh` and products, at one point, agrees with central differences (step 1e-6) within
+    1e-6; `grad` of the sum of the `grad` of the sum of cubes, at `[1, 2]`, is `[6, 12]`; `vmap` of
+    a vector-matrix product followed by `tanh`, over four examples, gives the same values as
+    stacking the function applied to each example, exactly; the mean and variance of 10⁴ uniform
+    draws on [0, 1) and of 10⁴ normal draws with mean 2 and standard deviation 3 lie within fixed
+    bounds of the distribution's (the means within three standard errors); 50 training steps of the
+    MLP give 50 losses, and the mean of the last five is below half that of the first five; and
+    `Random.categorical` on two rows whose one large logit is 50 picks that logit's index in each.
+
+Among what is not tested: agreement with MAX, since nothing here runs MAX, and the tests whose names
+mention MAX check the evaluator against the rule `Tensor.Eval` states; `f16` and `bf16`, which no
+test uses; `Int`s past ±2⁵³; an index out of range in a scatter (`put`, `putAdd` and the row
+scatters); inputs to `run` of the wrong dtype or element count; and the values of any particular
+uniform or normal draw, which are compared only with other draws, with a range and with sample
+statistics.
+
 -}
 
 import Dict
@@ -14,13 +113,13 @@ import Nn.Linear as Linear exposing (Linear)
 import Optim
 import Param
 import Signature as Sig
-import Tensor as T exposing (Dim, R1, R2, Tensor)
+import Tensor as T exposing (Dim)
 import Tensor.Axis as Axis
 import Tensor.Control as Control
 import Tensor.Eval as Eval exposing (Data(..))
 import Tensor.Internal.Expr as E exposing (Expr)
 import Tensor.Internal.Ops as O
-import Tensor.Internal.Prim as P exposing (DT(..), Prim(..))
+import Tensor.Internal.Prim exposing (DT(..), Prim(..))
 import Tensor.Internal.Types as I
 import Tensor.Random as Random
 import Test exposing (Test, describe, test)
@@ -28,28 +127,40 @@ import Train
 import Transform
 
 
+{-| The axis tag of `a2`, and of the long vectors the random draws fill.
+-}
 type A
     = A
 
 
+{-| The axis tag of `b3`.
+-}
 type B
     = B
 
 
+{-| The axis tag of `c4`.
+-}
 type C
     = C
 
 
+{-| An axis of size 2, tagged `A`.
+-}
 a2 : Dim A
 a2 =
     T.dim A 2
 
 
+{-| An axis of size 3, tagged `B`.
+-}
 b3 : Dim B
 b3 =
     T.dim B 3
 
 
+{-| An axis of size 4, tagged `C`.
+-}
 c4 : Dim C
 c4 =
     T.dim C 4
@@ -59,32 +170,47 @@ c4 =
 -- HELPERS
 
 
+{-| Builds an `f32` constant expression with the given shape and elements, in row-major order.
+-}
 f32 : List Int -> List Float -> Expr
 f32 =
     E.const F32
 
 
+{-| Builds an `si64` constant expression with the given shape and elements, in row-major order.
+Each element is written as a `Float` and rounded to an `Int`, unchecked, as
+`Tensor.Internal.Expr.const` describes.
+-}
 i64 : List Int -> List Float -> Expr
 i64 =
     E.const SI64
 
 
+{-| Computes the float elements of the expression `e` with `Tensor.Eval.floats`.
+-}
 evF : Expr -> Result (List String) (List Float)
 evF e =
     Eval.floats (I.Tensor e)
 
 
+{-| Computes the integer elements of the expression `e` with `Tensor.Eval.ints`.
+-}
 evI : Expr -> Result (List String) (List Int)
 evI e =
     Eval.ints (I.Tensor e)
 
 
+{-| Computes the elements of the `bool` expression `e` with `Tensor.Eval.mask`.
+-}
 evB : Expr -> Result (List String) (List Bool)
 evB e =
     Eval.mask (I.Mask e)
 
 
-{-| Equal within a relative (and absolute, near 0) tolerance, NaN equal to NaN.
+{-| Passes when `got` is `Ok` with as many values as `want`, each matching the wanted value at its
+position. A finite wanted value is matched by a value within `tol` of it: relative to the wanted
+value where its magnitude is above 1, and absolute otherwise. A wanted ±∞ is matched only by the
+same infinity, and a wanted NaN only by NaN. An `Err` fails with its messages.
 -}
 close : Float -> List Float -> Result (List String) (List Float) -> Expectation
 close tol want got =
@@ -100,7 +226,11 @@ close tol want got =
                 List.all identity
                     (List.map2
                         (\w v ->
-                            (isNaN w && isNaN v) || w == v || Basics.abs (w - v) <= tol * Basics.max 1 (Basics.abs w)
+                            if isNaN w || isInfinite w then
+                                (isNaN w && isNaN v) || w == v
+
+                            else
+                                w == v || Basics.abs (w - v) <= tol * Basics.max 1 (Basics.abs w)
                         )
                         want
                         vs
@@ -112,11 +242,16 @@ close tol want got =
                 Expect.fail ("want " ++ Debug.toString want ++ ", got " ++ Debug.toString vs)
 
 
+{-| Passes when `got` is `Ok` with exactly the wanted values, position by position. NaN matches
+NaN, and 0 matches −0.
+-}
 exactly : List Float -> Result (List String) (List Float) -> Expectation
 exactly =
     close 0
 
 
+{-| Passes when `r` is an `Err` with at least one message containing `part`.
+-}
 failsWith : String -> Result (List String) a -> Expectation
 failsWith part r =
     case r of
@@ -131,6 +266,47 @@ failsWith part r =
             Expect.fail ("expected an error mentioning " ++ part)
 
 
+{-| Passes when `left` and `right` are both `Ok` and hold equal values. An `Err` on either side
+fails with its messages, so two equal errors do not pass.
+-}
+sameOk : Result (List String) a -> Result (List String) a -> Expectation
+sameOk left right =
+    case ( left, right ) of
+        ( Ok l, Ok r ) ->
+            Expect.equal l r
+
+        ( Err es, _ ) ->
+            Expect.fail ("left: " ++ String.join "; " es)
+
+        ( _, Err es ) ->
+            Expect.fail ("right: " ++ String.join "; " es)
+
+
+{-| Passes when `left` and `right` are both `Ok` and hold unequal values. An `Err` on either side
+fails with its messages.
+-}
+differentOk : Result (List String) a -> Result (List String) a -> Expectation
+differentOk left right =
+    case ( left, right ) of
+        ( Ok l, Ok r ) ->
+            Expect.notEqual l r
+
+        ( Err es, _ ) ->
+            Expect.fail ("left: " ++ String.join "; " es)
+
+        ( _, Err es ) ->
+            Expect.fail ("right: " ++ String.join "; " es)
+
+
+{-| Returns the values of every `Ok` in `rs`, in order, or the messages of the first `Err`.
+-}
+allOk : List (Result (List String) a) -> Result (List String) (List a)
+allOk rs =
+    List.foldr (Result.map2 (::)) (Ok []) rs
+
+
+{-| Every test of `Tensor.Eval`, in one group per topic.
+-}
 suite : Test
 suite =
     describe "Tensor.Eval"
@@ -148,9 +324,13 @@ suite =
 
 
 
--- E0
+-- PLUMBING
 
 
+{-| Tests of the ways into the evaluator: `floats`, `ints` and `mask` on constants, `floats`
+refusing a tensor that reads a graph input, `run` on an identity graph and the errors it returns,
+and `residentZeros` on the MLP's training graph.
+-}
 plumbing : Test
 plumbing =
     describe "plumbing"
@@ -214,6 +394,8 @@ plumbing =
         ]
 
 
+{-| Returns the resident name of a spec whose role is `Resident`, and `Nothing` for a fed one.
+-}
 residentName : Graph.Spec -> Maybe String
 residentName s =
     case s.role of
@@ -225,9 +407,12 @@ residentName s =
 
 
 
--- E1.1
+-- ELEMENT-WISE OPERATIONS
 
 
+{-| Tests of element-wise primitives and casts, each on a few hand-picked elements, including
+wrapping integers, NaN and infinities.
+-}
 elementwise : Test
 elementwise =
     describe "element-wise"
@@ -303,8 +488,8 @@ elementwise =
                     m l =
                         O.cast Bool (i64 [ 4 ] l)
                 in
-                evI (O.concat 0 [ O.cast SI64 (O.binary And (m [ 0, 0, 1, 1 ]) (m [ 0, 1, 0, 1 ])), O.cast SI64 (O.binary Xor (m [ 0, 0, 1, 1 ]) (m [ 0, 1, 0, 1 ])), O.cast SI64 (O.unary Not (m [ 0, 0, 1, 1 ])) ])
-                    |> Expect.equal (Ok [ 0, 0, 0, 1, 0, 1, 1, 0, 1, 1, 0, 0 ])
+                evI (O.concat 0 [ O.cast SI64 (O.binary And (m [ 0, 0, 1, 1 ]) (m [ 0, 1, 0, 1 ])), O.cast SI64 (O.binary Or (m [ 0, 0, 1, 1 ]) (m [ 0, 1, 0, 1 ])), O.cast SI64 (O.binary Xor (m [ 0, 0, 1, 1 ]) (m [ 0, 1, 0, 1 ])), O.cast SI64 (O.unary Not (m [ 0, 0, 1, 1 ])) ])
+                    |> Expect.equal (Ok [ 0, 0, 0, 1, 0, 1, 1, 1, 0, 1, 1, 0, 1, 1, 0, 0 ])
         , test "cast float to int truncates" <|
             \_ -> evI (O.cast SI32 (f32 [ 3 ] [ 1.7, -1.7, 0.2 ])) |> Expect.equal (Ok [ 1, -1, 0 ])
         , test "cast int to int wraps" <|
@@ -321,9 +506,12 @@ elementwise =
 
 
 
--- E1.2
+-- REDUCTIONS
 
 
+{-| Tests of reductions, softmax, cumulative sums and matrix products. Several read `m`, the 2 × 3
+matrix `[[1, 5, 3], [4, 2, 6]]`.
+-}
 reductions : Test
 reductions =
     let
@@ -367,9 +555,12 @@ reductions =
 
 
 
--- E1.3
+-- SHAPES
 
 
+{-| Tests of the operations that rearrange, copy, cut, join, pad or reverse elements without
+computing new ones. Several read `m`, the 2 × 3 matrix `[[1, 2, 3], [4, 5, 6]]`.
+-}
 shapes : Test
 shapes =
     let
@@ -407,9 +598,12 @@ shapes =
 
 
 
--- E1.4
+-- INDEXING
 
 
+{-| Tests of gathers and scatters, the refusal of a gather index outside its axis, `pick`, `triu`
+and `tril`, and `arange` and `iota`.
+-}
 indexing : Test
 indexing =
     describe "indexing"
@@ -449,9 +643,12 @@ indexing =
 
 
 
--- E1.5
+-- LAYERS
 
 
+{-| Tests of the primitives that network layers are built on: cross-entropy, layer norm,
+convolutions, pooling, and the top-k primitive behind `topK`, `bottomK` and `sort`.
+-}
 layers : Test
 layers =
     describe "layers"
@@ -469,7 +666,7 @@ layers =
                     |> exactly [ 6, 8, 12, 14 ]
         , test "conv: padding 1, stride 2, two output channels" <|
             \_ ->
-                -- out (3 × 3 × 2): xpad[2y − 1, 2x − 1], so only (1, 1) reads the input (5)
+                -- Output (y, x) reads input (2y − 1, 2x − 1), in the 3 × 3 input only at (1, 1).
                 evF (O.conv [ 2, 2, 1, 1, 1, 1 ] (f32 [ 1, 3, 3, 1 ] [ 1, 2, 3, 4, 5, 6, 7, 8, 9 ]) (f32 [ 1, 1, 1, 2 ] [ 1, -1 ]))
                     |> exactly [ 0, 0, 0, 0, 0, 0, 0, 0, 5, -5, 0, 0, 0, 0, 0, 0, 0, 0 ]
         , test "conv: dilation 2" <|
@@ -482,7 +679,7 @@ layers =
                     geometry =
                         [ 2, 1, 1, 0, 0, 1, 1, 2 ]
 
-                    -- 5 × 3: conv's output (3 × 2) maps back to exactly 5 × 3
+                    -- 5 × 3 so that conv's 3 × 2 output transposes back to exactly 5 × 3
                     x =
                         f32 [ 1, 5, 3, 2 ] (List.map (\i -> toFloat (modBy 7 (i * 3)) - 3) (List.range 0 29))
 
@@ -498,8 +695,11 @@ layers =
                     ct =
                         O.convTranspose geometry y f
                 in
-                Expect.equal ( E.shape ct, evF (O.reduce ReduceSum 0 (O.reshape [ List.product (E.shape cx) ] (O.mul cx y))) )
-                    ( E.shape x, evF (O.reduce ReduceSum 0 (O.reshape [ 30 ] (O.mul x ct))) )
+                Expect.all
+                    [ \_ -> Expect.equal (E.shape x) (E.shape ct)
+                    , \_ -> sameOk (evF (O.reduce ReduceSum 0 (O.reshape [ List.product (E.shape cx) ] (O.mul cx y)))) (evF (O.reduce ReduceSum 0 (O.reshape [ 30 ] (O.mul x ct))))
+                    ]
+                    ()
         , test "max and average pooling" <|
             \_ ->
                 let
@@ -532,9 +732,12 @@ layers =
 
 
 
--- E1.6
+-- CONTROL FLOW
 
 
+{-| Tests of shared functions, `cond`, `whileLoop`, `scan`, `repeat`, and the guard that stops a
+loop whose test never fails.
+-}
 control : Test
 control =
     describe "control"
@@ -553,7 +756,7 @@ control =
                         T.fromList T.float32 (T.r1 b3) [ 1, 2, 3 ]
 
                     bad v =
-                        -- an index out of range: refused if it ran
+                        -- Index 7 is outside the axis of 3, so running this would be an error.
                         v |> T.take Axis.retag0of1 (T.fromList T.int64 (T.r1 b3) [ 0, 1, 7 ])
                 in
                 Eval.floats (Control.cond (T.float 1 |> T.lessThan (T.float 0)) (Sig.f32 (T.r1 b3)) (Sig.f32 (T.r1 b3)) bad (T.scale 2) x)
@@ -614,8 +817,10 @@ control =
 -- PREPARED GRAPHS
 
 
-{-| A graph with a branch chosen by its input, a loop whose body reads the input, and a shared
-function called twice.
+{-| The graph `busy`, with one input, the `f32` vector `x` of size 3, and one output. It doubles `x`
+when the sum of `x` is above 0 and negates it otherwise, a `cond` whose result is `v`; then three
+times replaces `v` by `v · x + x`, element-wise, which `Control.repeat` unrolls when the graph is
+built; and returns `v · v + x · x`, computing both squares with one shared function called twice.
 -}
 busy : Result (List String) Graph.Graph
 busy =
@@ -632,6 +837,8 @@ busy =
         )
 
 
+{-| Tests of `prepare` and `runPrepared` on `busy`, and of the loop guard of `runPreparedWith`.
+-}
 prepared : Test
 prepared =
     let
@@ -650,9 +857,9 @@ prepared =
                             inputs =
                                 [ [ 1, 2, 3 ], [ -0.5, -1, 0.25 ], [ 0.1, 0, -0.2 ] ]
                         in
-                        Expect.equal
-                            (List.map (\l -> Eval.runPrepared p (input l)) inputs)
-                            (List.map (\l -> Eval.run g (input l)) inputs)
+                        sameOk
+                            (allOk (List.map (\l -> Eval.runPrepared p (input l)) inputs))
+                            (allOk (List.map (\l -> Eval.run g (input l)) inputs))
 
                     Err e ->
                         Expect.fail (String.join "; " e)
@@ -699,9 +906,12 @@ prepared =
 
 
 
--- E1.7
+-- RANDOMNESS
 
 
+{-| Tests of uniform draws in the evaluator on small seeds, and of the arithmetic of
+`Tensor.Random.salt`.
+-}
 randomness : Test
 randomness =
     let
@@ -713,11 +923,11 @@ randomness =
     in
     describe "randomness"
         [ test "the same seed gives the same draws" <|
-            \_ -> Expect.equal (draws (seed 3)) (draws (seed 3))
+            \_ -> sameOk (draws (seed 3)) (draws (seed 3))
         , test "another seed gives other draws" <|
-            \_ -> Expect.notEqual (draws (seed 3)) (draws (seed 4))
+            \_ -> differentOk (draws (seed 3)) (draws (seed 4))
         , test "a salted seed gives other draws" <|
-            \_ -> Expect.notEqual (draws (seed 3)) (draws (Random.salt 1 (seed 3)))
+            \_ -> differentOk (draws (seed 3)) (draws (Random.salt 1 (seed 3)))
         , test "uniform draws lie in [low, high)" <|
             \_ ->
                 Eval.floats (Random.uniform { low = -2, high = 3 } T.float32 (T.r1 (T.dim A 200)) (seed 9))
@@ -725,39 +935,56 @@ randomness =
                     |> Expect.equal (Ok True)
         , test "salt computes seed · 25214903917 + (2i + 1), wrapping" <|
             \_ ->
-                Eval.ints
-                    (T.cast T.int64
-                        (I.Tensor
-                            (case Random.salt 2 (seed 5) of
-                                I.Seed e ->
-                                    e
+                let
+                    salted2 n =
+                        Eval.ints
+                            (T.cast T.int64
+                                (I.Tensor
+                                    (case Random.salt 2 (seed n) of
+                                        I.Seed e ->
+                                            e
+                                    )
+                                )
                             )
-                        )
-                    )
-                    |> Expect.equal (Ok [ 5 * 25214903917 + 5 ])
+                in
+                -- 731580979 · 25214903917 exceeds 2⁶⁴ by 19280243127.
+                Expect.equal ( salted2 5, salted2 731580979 ) ( Ok [ 5 * 25214903917 + 5 ], Ok [ 19280243127 + 5 ] )
         ]
 
 
 
--- E2.1
+-- VERIFICATION
 
 
+{-| The axis tag of the MLP's hidden layer.
+-}
 type Hidden
     = Hidden
 
 
+{-| The axis tag of the MLP's outputs, one per class.
+-}
 type Classes
     = Classes
 
 
+{-| The axis tag of the training points, the batch axis of the MLP's training step.
+-}
 type Pts
     = Pts
 
 
+{-| The axis tag of a training point's features, the MLP's inputs.
+-}
 type Feat
     = Feat
 
 
+{-| Tests that check whole computations rather than single primitives: gradients against finite
+differences and against a known derivative, `vmap` against a loop over the examples, random draws
+against their distributions' mean and variance, training the MLP against a falling loss, and
+categorical draws against logits that leave no real choice.
+-}
 verification : Test
 verification =
     describe "verification"
@@ -818,7 +1045,7 @@ verification =
                     looped =
                         T.stack Axis.liftRank1 c4 (List.map f (T.unstack Axis.liftRank1 xs))
                 in
-                Expect.equal (Eval.floats (Transform.vmap Axis.liftRank1 Axis.liftRank1 f xs)) (Eval.floats looped)
+                sameOk (Eval.floats (Transform.vmap Axis.liftRank1 Axis.liftRank1 f xs)) (Eval.floats looped)
         , test "uniform draws: mean and variance of 10⁴" <|
             \_ ->
                 stats (Eval.floats (Random.uniform { low = 0, high = 1 } T.float32 (T.r1 (T.dim A 10000)) (Random.seed (T.int 1))))
@@ -841,7 +1068,11 @@ verification =
                             mean5 l =
                                 List.sum l / 5
                         in
-                        Expect.lessThan (mean5 (List.take 5 losses) / 2) (mean5 (List.drop 45 losses))
+                        Expect.all
+                            [ \l -> Expect.equal 50 (List.length l)
+                            , \l -> Expect.lessThan (mean5 (List.take 5 l) / 2) (mean5 (List.drop 45 l))
+                            ]
+                            losses
 
                     Err e ->
                         Expect.fail (String.join "; " e)
@@ -852,6 +1083,9 @@ verification =
         ]
 
 
+{-| Returns the mean and the variance of the values in `r`, the variance as the mean squared
+distance from the mean. An `Err` or an empty list gives `( 0, 0 )`.
+-}
 stats : Result (List String) (List Float) -> ( Float, Float )
 stats r =
     let
@@ -871,26 +1105,37 @@ stats r =
 -- THE MLP
 
 
+{-| The number of features of a training point, the MLP's input width.
+-}
 feat : Dim Feat
 feat =
     T.dim Feat 4
 
 
+{-| The width of the MLP's hidden layer.
+-}
 hidden : Dim Hidden
 hidden =
     T.dim Hidden 8
 
 
+{-| The number of classes, the MLP's output width.
+-}
 classes : Dim Classes
 classes =
     T.dim Classes 3
 
 
+{-| The number of training points, all of which make up the batch of every training step.
+-}
 pts : Dim Pts
 pts =
     T.dim Pts 12
 
 
+{-| The parameters of the MLP: an `f32` linear layer from the 4 features to the 8 hidden units, and
+one from those to the 3 classes, each with its weight and bias.
+-}
 mlpParams : Param.Spec { l1 : Linear T.F32 Feat Hidden, l2 : Linear T.F32 Hidden Classes }
 mlpParams =
     Param.record (\l1 l2 -> { l1 = l1, l2 = l2 })
@@ -898,6 +1143,12 @@ mlpParams =
         |> Param.sub .l2 (Linear.params T.float32 hidden classes)
 
 
+{-| The MLP's training-step graph, `Train.step` with plain SGD at rate 0.5. Its loss is the
+cross-entropy, against integer class labels (`Nn.crossEntropyIndices`), of the logits the two
+layers give with `tanh` between them. Its batch is declared as two tensors labelled `x`, `f32`
+12 × 4, and `y`, `si64` of size 12; `Train.step` names the inputs for them `batch0` and `batch1`,
+whatever their labels.
+-}
 mlpStep : Result (List String) Graph.Graph
 mlpStep =
     Train.step mlpParams
@@ -906,7 +1157,14 @@ mlpStep =
         (\p ( x, y ) -> x |> Linear.apply p.l1 |> T.tanh |> Linear.apply p.l2 |> Nn.crossEntropyIndices y)
 
 
-{-| 12 fixed points in 3 classes: the class is which of three directions the point leans to.
+{-| The 12 training points of the MLP: their features, 12 rows of 4 in row-major order, and their
+class labels.
+
+Point `i` is in class `i` modulo 3. Its feature at the index of its class is 1 + s, and its other
+three features are s − 0.5, where s = (`i` // 3) / 4 shifts each group of three points. So the
+feature at the class's index always exceeds the others by 1.5, and feature 3, which belongs to no
+class, never does.
+
 -}
 points : ( List Float, List Int )
 points =
@@ -937,6 +1195,15 @@ points =
     ( List.concatMap Tuple.first all, List.map Tuple.second all )
 
 
+{-| The losses of 50 training steps of the MLP run in `Tensor.Eval`, in order, or the first error.
+
+The parameters start as `Param.initInPlace` draws them from seed 42, merged over `residentZeros` of
+the step graph. Every step is given the same batch, all of `points`, and each step's outputs are
+merged into the resident values, so the next step reads the parameters it wrote. The batch values
+are given to the step's fed inputs by position, because `Train.step` does not keep the batch's
+labels. A step whose fed output is not one float adds no loss, so the list can be shorter than 50.
+
+-}
 trainMlp : Result (List String) (List Float)
 trainMlp =
     Result.map2 Tuple.pair (Param.initInPlace "init" mlpParams) mlpStep

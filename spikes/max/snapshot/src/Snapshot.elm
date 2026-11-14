@@ -40,11 +40,13 @@ items =
            , B "param-initial" (Param.initial MnistNet.params 42 |> List.map (Tuple.second >> padded) |> concat)
            , B "charlm-initial" (Train.initial (CharModel.params { layers = 1, shared = False }) CharModel.optimizer 1 |> List.map Tuple.second |> concat)
            , B "qlora-quantize"
-                (Qlora.quantize 4
+                (Qlora.quantize T.float32
+                    4
                     (T.dim () 2)
                     (T.dim () 4)
                     [ 0.5, -0.25, 0.125, 1.5, -2, 0, 0.75, 0.3 ]
-                    |> (\q -> concat [ padded q.codes, padded q.scales ])
+                    |> Result.map (\q -> concat [ padded q.codes, padded q.scales ])
+                    |> Result.withDefault (concat [])
                 )
            ]
 

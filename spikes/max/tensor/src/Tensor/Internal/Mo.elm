@@ -2,21 +2,44 @@ module Tensor.Internal.Mo exposing
     ( Block
     , constText
     , constant
-    , constantF
     , emit
     , emptyBlock
-    , floatLit
     , graphOp
     , push
-    , shapeAttr
     , tensorType
     )
 
-{-| How each primitive is spelled in MAX's IR, as MAX 26.7.0's own graph API spells it
-(`spikes/max/mo-inventory.md`): `rmo.<op>`, `rmo.mo.<op>` and plain `mo.<op>`, generic form, with
-inherent attributes given as ordinary attributes (MAX moves them into properties).
+{-| A graph is handed to MAX as ops of MAX's graph dialects, `mo` and `rmo`, and this module is the
+one place that knows how each primitive is written as those ops: which op or ops it becomes, with
+which attributes, and which of its numbers are passed as tensor operands rather than attributes.
+The forms written are those this module assumes MAX's graph compiler accepts. Op names take three
+shapes, `rmo.<op>`, `rmo.mo.<op>` and plain `mo.<op>`, and every attribute, an op's inherent ones
+included, is given as an ordinary attribute, as `Tensor.Internal.MlirBc` describes.
 
-Every axis is written non-negative: MAX's softmax fails to compile on a negative one.
+Ops are collected in a _block_ (`Block`): the ops of one region, in the order they are appended.
+Operands and results are _value numbers_, as `Tensor.Internal.MlirBc` defines them: the block's
+arguments first, then each op's results in order. `push` appends one op and returns the number of
+its first result, and `emit` appends whatever one primitive needs, given its operands' numbers and
+metas (shape, pending axes and dtype), and returns the number of its result. Which expression a
+number stands for is not known here.
+
+Most primitives become one op. Where an op reads a number from the primitive's params as a
+tensor, such as a permutation, a padding, a bound or an epsilon, that tensor is made by an op
+appended just before it, usually a constant. A few primitives become several ops: a reduction
+that removes its axis, `XentLogits`, an axis scatter and a convolution, as `emit` describes.
+
+The ops are written in their form for the CPU, with marks that `Tensor.Internal.Device` reads when
+it places them for a device. An op that makes a tensor operand of the kind just described carries
+the host mark, which keeps it on the CPU when the ops are placed for a GPU; a constant that is
+data, such as `XentLogits`'s −1/n, does not. A top-k along an axis other than the last carries the
+axis-not-last mark.
+
+Axes are written as given: nothing here turns a negative axis into a non-negative one, so the axes
+in params must already be non-negative.
+
+Besides the ops of primitives, the module writes a constant's value as text (`constText`) and the
+`mo.graph` op that holds a whole graph (`graphOp`). Most of the file is `emit` and the helpers for
+its longer cases.
 
 -}
 
@@ -27,18 +50,26 @@ import Tensor.Internal.Shape exposing (Meta)
 import Tensor.Internal.Values as Values exposing (Values(..))
 
 
-{-| Ops emitted so far into one block (reversed), and the value number the next result gets.
+{-| The ops appended so far to one block, and the value number the next result will get.
+
+`ops` holds the ops newest first, the reverse of their order in the block.
+
 -}
 type alias Block =
     { ops : List Bc.Op, next : Int }
 
 
+{-| Returns a block with no ops whose first `args` values are its arguments, so the first result
+appended to it is numbered `args`.
+-}
 emptyBlock : Int -> Block
 emptyBlock args =
     { ops = [], next = args }
 
 
-{-| Append one op; returns the value number of its first result.
+{-| Appends an op with the given name, attributes, operands, result types and regions, and returns
+the value number of its first result. Its results are numbered on from `next`; for an op with no
+results the number returned is the one the next result will get.
 -}
 push : String -> List ( String, Bc.Attr ) -> List Int -> List Bc.Type -> List Bc.Region -> Block -> ( Block, Int )
 push name attrs operands results regions b =
@@ -49,42 +80,85 @@ push name attrs operands results regions b =
     )
 
 
+{-| Returns MAX's tensor type for a meta's shape and dtype, as in `!mo.tensor<[2, 3], f32>`. A
+pending axis is written as the size 1 the meta holds for it, and no device is named.
+-}
 tensorType : Meta -> Bc.Type
 tensorType m =
     Bc.OpaqueType ("!mo.tensor<[" ++ ints m.shape ++ "], " ++ P.dtName m.dtype ++ ">")
 
 
+{-| Returns integers as decimal text separated by `", "`, as tensor types and shape attributes
+list them.
+-}
 ints : List Int -> String
 ints l =
     String.join ", " (List.map String.fromInt l)
 
 
+{-| Returns MAX's shape attribute holding the integers `s`, as in `#mosh<ape[2, 3]> : !mosh.ape`.
+Every list of integers this module gives an op as an attribute takes this form: shapes, and also
+slice bounds, strides, dilations, paddings and pool windows.
+-}
 shapeAttr : List Int -> Bc.Attr
 shapeAttr s =
     Bc.OpaqueAttr ("#mosh<ape[" ++ ints s ++ "]> : !mosh.ape")
 
 
+{-| Returns `i` as an integer attribute of MLIR's `index` type, the form this module gives every
+axis attribute except `rmo.top_k`'s, and `CumSum`'s two flags.
+-}
 index : Int -> Bc.Attr
 index i =
     Bc.IntAttr i Bc.IndexType
 
 
-{-| An MLIR float literal: it needs a `.` before any exponent.
+{-| Returns `f` as an MLIR float literal for a constant of the floating-point dtype `dt`. A literal
+needs a `.` before any exponent: `.0` is put before the `e` of text such as `1e-7`, and after text
+with neither, such as `1`. −0 is written `-0.0`.
+
+NaN, +∞ and −∞ are written as hexadecimal bit patterns of the dtype's width, which MLIR reads as
+those bits: `0x7E00`, `0x7C00` and `0xFC00` for f16, `0x7FC0`, `0x7F80` and `0xFF80` for bf16,
+`0x7FF8000000000000`, `0x7FF0000000000000` and `0xFFF0000000000000` for f64, and `0x7FC00000`,
+`0x7F800000` and `0xFF800000` for f32 and any other dtype.
+
 -}
-floatLit : Float -> String
-floatLit f =
+floatLit : DT -> Float -> String
+floatLit dt f =
     let
         s =
             String.fromFloat f
+
+        ( nan, inf, negInf ) =
+            case dt of
+                F16 ->
+                    ( "0x7E00", "0x7C00", "0xFC00" )
+
+                BF16 ->
+                    ( "0x7FC0", "0x7F80", "0xFF80" )
+
+                F64 ->
+                    ( "0x7FF8000000000000", "0x7FF0000000000000", "0xFFF0000000000000" )
+
+                _ ->
+                    ( "0x7FC00000", "0x7F800000", "0xFF800000" )
     in
-    if s == "NaN" then
-        "0x7FC00000"
+    if isNaN f then
+        nan
 
-    else if s == "Infinity" then
-        "0x7F800000"
+    else if isInfinite f then
+        if f > 0 then
+            inf
 
-    else if s == "-Infinity" then
-        "0xFF800000"
+        else
+            negInf
+
+    else if f == 0 then
+        if 1 / f < 0 then
+            "-0.0"
+
+        else
+            "0.0"
 
     else if String.contains "." s then
         s
@@ -96,6 +170,10 @@ floatLit f =
         s ++ ".0"
 
 
+{-| Returns one float element as constant text for dtype `dt`: for `bool`, `true` for any nonzero
+value, NaN included, and `false` for 0; for a floating-point dtype, its `floatLit`; and for an
+integer dtype, the value rounded and written in signed decimal, `ui64` included.
+-}
 elementText : DT -> Float -> String
 elementText dt v =
     if dt == Bool then
@@ -106,12 +184,16 @@ elementText dt v =
             "false"
 
     else if P.isFloat dt then
-        floatLit v
+        floatLit dt v
 
     else
         String.fromInt (round v)
 
 
+{-| Returns one integer element as constant text for dtype `dt`: for `bool`, `true` for any nonzero
+value and `false` for 0; for `ui64`, the unsigned decimal of its 64 bits from `Values.u64Text`;
+and otherwise its decimal from `Values.decimalText`.
+-}
 intText : DT -> Int -> String
 intText dt n =
     case dt of
@@ -126,11 +208,18 @@ intText dt n =
             Values.u64Text n
 
         _ ->
-            String.fromInt n
+            Values.decimalText n
 
 
-{-| `#M.dense_array<...> : tensor<2x3xf32>` (bool as i1). Integer values are written exactly (u64
-as the unsigned decimal of the `Int`'s bits).
+{-| Returns the text of the value attribute of a constant of dtype `dt` and shape `s` holding
+`values`, as in `#M.dense_array<1.0, 0.5> : tensor<2xf32>`.
+
+The element type is the dtype's name, except that `bool` is written `i1`, with elements `true` and
+`false`. Integer values are written from their `Int`s, a `ui64` element as the unsigned decimal of
+its 64 bits (`Values.u64Text`), and any other as its decimal (`Values.decimalText`).
+Float values are written with `floatLit`; given for an integer dtype they are rounded, and given
+for `bool` any nonzero value, NaN included, is `true`.
+
 -}
 constText : DT -> List Int -> Values -> String
 constText dt s values =
@@ -156,23 +245,33 @@ constText dt s values =
     "#M.dense_array<" ++ String.join ", " texts ++ "> : tensor<" ++ dims ++ elem ++ ">"
 
 
+{-| Appends a `mo.constant` op whose result, of dtype `dt` and shape `s`, holds `values`, and
+returns its value number. Nothing checks that the number of values matches the shape.
+-}
 constant : DT -> List Int -> Values -> Block -> ( Block, Int )
 constant dt s values =
     push "mo.constant" [ ( "value", Bc.OpaqueAttr (constText dt s values) ) ] [] [ tensorType { shape = s, pending = [], dtype = dt } ] []
 
 
-{-| A constant from floats, as the dtype's values (`Values.forDtype`).
+{-| Appends a constant as `constant` does, from floats. For an integer dtype or `bool` they are
+rounded as `Values.forDtype` describes, with no check.
 -}
 constantF : DT -> List Int -> List Float -> Block -> ( Block, Int )
 constantF dt s floats =
     constant dt s (Values.forDtype dt floats)
 
 
+{-| Appends the op `name` with no attributes and one result, of `out`'s type, and returns its value
+number.
+-}
 simple : String -> List Int -> Meta -> Block -> ( Block, Int )
 simple name operands out =
     push name [] operands [ tensorType out ] []
 
 
+{-| Returns the name that follows `rmo.mo.` in the op of a one-operand element-wise primitive, such
+as `negative` for `Neg`. A primitive not listed gets `not`, which is `Not`'s.
+-}
 unaryName : Prim -> String
 unaryName p =
     case p of
@@ -246,6 +345,9 @@ unaryName p =
             "not"
 
 
+{-| Returns the name that follows `rmo.` in the op of a two-operand element-wise primitive, such as
+`greater` for `Gt`. A primitive not listed gets `xor`, which is `Xor`'s.
+-}
 binaryName : Prim -> String
 binaryName p =
     case p of
@@ -295,6 +397,9 @@ binaryName p =
             "xor"
 
 
+{-| Returns the name that follows `rmo.mo.reduce.` in the op of a reduction, such as `add` for
+`ReduceSum`. A primitive not listed gets `arg_min`, which is `ArgMin`'s.
+-}
 reduceName : Prim -> String
 reduceName p =
     case p of
@@ -317,8 +422,42 @@ reduceName p =
             "arg_min"
 
 
-{-| The op(s) for one primitive; returns the value number of the result. `operands` are the
-operands' value numbers, `ms` their metas, `out` the result's meta.
+{-| Appends the ops that compute primitive `p` and returns the value number of its result.
+`operands` are the operands' value numbers, `ms` their metas, and `out` the result's meta.
+
+A one-operand element-wise primitive is the op `rmo.mo.<name>` and a two-operand one `rmo.<name>`.
+Most other primitives are one op of their own. The exceptions follow.
+
+`StopGradient` appends nothing and returns its operand's number. `Cast` is `mo.cast`, to `out`'s
+dtype. `Acos` is a `mo.custom` op that calls the symbol `mo.acos`, with a `device` attribute naming
+the CPU.
+
+A reduction that removes its axis is a reduction that keeps it, then a reshape. `XentLogits` is
+spelled out: the `logsoftmax` of the logits along axis 1, times the targets, summed along axis 1
+and then axis 0, reshaped to rank 0, and multiplied by the constant −1/n, where n is the logits'
+first size. An axis scatter first turns its index vector into an index tensor shaped like the
+updates, and a convolution first rebinds its filter to a type that carries its layout.
+`TopKValues` and `TopKIndices` are the two results of one op: either appends that op, and
+`TopKIndices` returns the number of its second result.
+
+Some ops read numbers as tensor operands, each made by an op with the host mark appended just
+before: `Transpose`'s permutation; `Pad`'s paddings and fill value; `BandPart`'s two bounds and a
+`bool` false; `Range`'s start, end (start + step · n) and step; `Random`'s shape, made by
+`rmo.shape_to_tensor`, and its two distribution parameters, in f32 for the normal distribution and
+otherwise in the result's dtype; `LayerNorm`'s epsilon; a bottom-k's `k`, axis and a `bool` true;
+and the axis of `ScatterAxisAdd`. All but `Random`'s shape are `mo.constant` ops.
+
+No error is reported for malformed params. When `a` is empty, `Softmax`, `LogSoftmax`, `Concat`,
+`Gather` and the axis scatters read their axis as 0 and a pool its window as 1, and when `f` is
+empty `LayerNorm` reads its epsilon as 1e-5. `CumSum`, `Pad`, `BandPart`, `Range`, `Random`, the
+reductions and top-k, given params that do not have the layout they read, append nothing and
+return −1, as do a convolution given fewer than six entries in `a` and an axis scatter or a
+convolution given other than as many operands and metas as it reads; `TopKIndices` then returns 0
+instead. An operand that `StopGradient`, `Transpose`, `Pad`, `BandPart`, `Random`, `XentLogits`, a
+reduction or top-k reads and is not given is read as −1. An operand −1 names no value of an
+isolated region, but in an open region it is value 0 of the enclosing region
+(`Tensor.Internal.MlirBc`).
+
 -}
 emit : Prim -> List Int -> List Meta -> Params -> Meta -> Block -> ( Block, Int )
 emit p operands ms params out b =
@@ -537,7 +676,6 @@ emit p operands ms params out b =
                     ( b, -1 )
 
         XentLogits ->
-            -- -(sum (target * logsoftmax logits)) / n
             let
                 lm =
                     m 0
@@ -599,9 +737,16 @@ emit p operands ms params out b =
                     ( b, -1 )
 
 
-{-| MAX's element-wise scatter along `axis`: the index vector reshaped to the axis and broadcast to
-the updates' shape. `rmo.mo.scatter` takes the axis as an attribute, `rmo.mo.scatter.add` as a rank-0
-si64 operand (`work/inventory/g15_round2.txt`).
+{-| Appends the scatter of updates `u` into `x` along `axis`, replacing elements or, with `add`,
+adding to them, and returns its value number. `operands` are `x`, `u` and the index vector `i`, and
+`ms` their metas.
+
+The index operand written is a tensor shaped like the updates: the index vector, cast to `si64`
+when it is not already, reshaped to its first size along `axis` and 1 on every other axis, and
+broadcast to the updates' shape. The axis is an attribute of `rmo.mo.scatter` and an operand of
+`rmo.mo.scatter.add`, a rank-0 `si64` constant with the host mark. Given other than three
+operands and three metas, it appends nothing and returns −1.
+
 -}
 scatterAxisOp : Bool -> Int -> List Int -> List Meta -> Meta -> Block -> ( Block, Int )
 scatterAxisOp add axis operands ms out b =
@@ -649,14 +794,17 @@ scatterAxisOp add axis operands ms out b =
             ( b, -1 )
 
 
-{-| An op that makes a host-side operand (a shape, an axis, a bound): on a GPU it stays on the CPU
-(`Tensor.Internal.Device`).
+{-| Gives the op appended last the host mark, which keeps its results on the CPU when the ops are
+placed for a GPU (`Tensor.Internal.Device`), and passes the value number through.
 -}
 host : ( Block, Int ) -> ( Block, Int )
 host =
     mark Device.hostMark
 
 
+{-| Adds the unit attribute `name` to the op appended last and passes the value number through.
+A block with no ops is returned unchanged.
+-}
 mark : String -> ( Block, Int ) -> ( Block, Int )
 mark name ( b, v ) =
     case b.ops of
@@ -667,9 +815,15 @@ mark name ( b, v ) =
             ( b, v )
 
 
-{-| `rmo.top_k` (k and axis as si64 attributes) or `rmo.mo.bottom_k` (k, axis and sorted as rank-0
-operands): two results, the values and their si64 indices. The value number is the values'; the
-indices are the next.
+{-| Appends the ops of a top-k of `x`, whose meta is `xm`. One op gives both results: the values, in
+`x`'s dtype, and their `si64` indices, both of `out`'s shape. Returns the values' number; the
+indices' is the next.
+
+With `a = [axis, k, largest]` and `largest` 1, the op is `rmo.top_k`, with `axis` and `k` as `si64`
+attributes. Otherwise it is `rmo.mo.bottom_k`, which reads `k`, `axis` and a `bool` true as rank-0
+constants with the host mark. Either op gets the axis-not-last mark when `axis` is not the last
+axis of `out`. Given params of another length, it appends nothing and returns −1.
+
 -}
 topKOp : Params -> Int -> Meta -> Meta -> Block -> ( Block, Int )
 topKOp params x xm out b =
@@ -706,7 +860,12 @@ topKOp params x xm out b =
             ( b, -1 )
 
 
-{-| MAX's reductions keep the axis; dropping it is a reshape.
+{-| Appends the reduction `p` of `x`, whose meta is `xm`, along one axis, and returns the value
+number of its result, given `a = [axis, keep]`.
+
+The reduction op written keeps the axis, with size 1. When `keep` is not 1, a reshape to `out`'s
+shape follows and removes it. Given params of another length, it appends nothing and returns −1.
+
 -}
 reduceOp : Prim -> Params -> Meta -> Int -> Meta -> Block -> ( Block, Int )
 reduceOp p params out x xm b =
@@ -729,7 +888,16 @@ reduceOp p params out x xm b =
             ( b, -1 )
 
 
-{-| The filter's layout travels in its type, set by a rebind (as MAX's own API does).
+{-| Appends a convolution, or with `transposed` a transposed convolution, of an input by a filter,
+the two `operands`, and returns the value number of its result.
+
+The filter's layout travels in its type: the filter is first rebound (`rmo.rebind_tensor_shape`)
+to its own shape and dtype with `layout = #mo.layout<RSCF>` added. Strides, paddings and dilations
+are attributes, the dilations 1 unless exactly two entries follow the six of `a`. A convolution
+also has one group and the input layout `NHWC`, and a transposed one an output padding of 0.
+Given fewer than six entries in `a`, or other than two operands and two metas, it appends nothing
+and returns −1.
+
 -}
 convOp : Bool -> Params -> List Int -> List Meta -> Meta -> Block -> ( Block, Int )
 convOp transposed params operands ms out b =
@@ -767,6 +935,10 @@ convOp transposed params operands ms out b =
             ( b, -1 )
 
 
+{-| Appends the pool op `name` over `k × k` windows with stride `k`, given `a = [k]` (1 when `a`
+is empty), with no padding, a dilation of 1 and `ceil_mode` false, and returns its value number.
+For `rmo.avg_pool` it also sets `count_boundary` to true.
+-}
 poolOp : String -> Params -> List Int -> Meta -> Block -> ( Block, Int )
 poolOp name params operands out b =
     let
@@ -795,8 +967,10 @@ poolOp name params operands out b =
         b
 
 
-{-| A whole `mo.graph`, as `Graph.toModule` wrote it: function type, a `kgen` signature, empty
-parameter lists, names; `extra` adds attributes (`isSubgraph` for a subgraph).
+{-| Builds the `mo.graph` op named `name` that holds `region`. Its attributes are its function
+type, from `inTypes` to `outTypes`; the same type as a `kgen` generator signature; empty `kgen`
+parameter lists; the argument and result names, the first components of `inputs` and `outputs`,
+whose metas are not read; and then `extra`, such as `isSubgraph` for a subgraph.
 -}
 graphOp : String -> List ( String, Bc.Attr ) -> List ( String, Meta ) -> List ( String, Meta ) -> List Bc.Type -> List Bc.Type -> Bc.Region -> Bc.Op
 graphOp name extra inputs outputs inTypes outTypes region =
@@ -824,8 +998,9 @@ graphOp name extra inputs outputs inTypes outTypes region =
     }
 
 
-{-| A pad's fill value: `f` for floating dtypes; for integer dtypes `b` (set by `padInt`), else `f`
-rounded.
+{-| Returns `Pad`'s fill value for dtype `dt`: the first entry of `f` for a floating-point dtype,
+and for any other dtype the first entry of `b` when `b` is not empty, else the first entry of `f`
+rounded, with no range check. A missing `f` entry is 0.
 -}
 padValue : DT -> Params -> Values
 padValue dt params =

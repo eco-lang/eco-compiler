@@ -15,25 +15,56 @@ module Tensor.Internal.Eval.Math exposing
     , truncF
     )
 
-{-| The floating-point functions `Basics` lacks, in f64, as the evaluator computes them: a
-range-reduced `exp`, Kahan's `expm1` and `log1p`, W. J. Cody's `erf`, and whole-number rounding that
-never calls `Basics.floor`/`truncate`/`round` outside their safe range (under JavaScript `truncate`
-is 32-bit; under eco `floor` of |x| ≥ 2⁶³ overflows).
+{-| The evaluator needs functions on floats that `Basics` does not provide, and this module supplies
+them, computed in f64.
+
+`Basics` has no `exp`, no hyperbolic functions and no `erf`, only `logBase` for logarithms, and its
+`floor`, `ceiling`, `round` and `truncate` return an `Int`. Here are `exp`, `log` (the natural
+logarithm), `expm1`, `log1p`, `tanh`, `atanh` and `erf`; the activation functions built from them,
+`sigmoid`, `silu`, `gelu` and `geluTanh`; and `floorF`, `truncF` and `roundEven`, which round to a
+whole number and return it as a `Float`. Each of them gives NaN for NaN.
+
+Two concerns shape the code. The first is accuracy. The direct formulas lose digits: `e ^ x` raises
+an `e` that is already rounded, so its relative error grows with |x|; for a small x, `exp x - 1`
+cancels most of its digits, and `log (1 + x)` loses those that the addition rounds away. So `exp`
+raises `e` only to a small remainder, `expm1` and `log1p` use Kahan's corrections, and `tanh` and
+`atanh` are written in terms of those two so that they stay accurate near 0. The longest function
+by far is `erf`, which is W. J. Cody's rational approximations, one for each of three ranges of |x|.
+
+The second is that an `Int` cannot hold NaN or ±∞, nor natively, where an `Int` has 64 bits, any
+whole float outside −2⁶³ to 2⁶³ − 1. Every float of magnitude 2⁵² or more is already
+a whole number, so the rounding functions return those unchanged and pass only smaller values
+through `Int`, which holds them exactly both under JavaScript and natively. `Basics.truncate` is
+not used, because under JavaScript it goes through a 32-bit integer. An `Int` has no −0, so a zero
+result is given the sign of x, as IEEE rounding gives it.
+
 -}
 
 
+{-| The leading 32 significant bits of ln 2. The rest of its bits are zero, so its product with any
+whole number `exp` multiplies it by is exact.
+-}
 ln2Hi : Float
 ln2Hi =
     6.931471803691238e-1
 
 
+{-| The part of ln 2 that `ln2Hi` leaves out: `ln2Hi + ln2Lo` is ln 2 to about 26 significant
+digits.
+-}
 ln2Lo : Float
 ln2Lo =
     1.9082149292705877e-10
 
 
-{-| eˣ: x = n ln 2 + r with |r| ≤ ln 2 / 2 (Cody–Waite), e^r, then scaled by 2ⁿ in two halves so
-subnormal and overflowing results come out right.
+{-| Returns eˣ. Above 709.8 it returns +∞ and below −745.2 it returns 0, which is what the f64
+result rounds to there.
+
+x is split as n · ln 2 + r, with n a whole number and |r| at most about ln 2 / 2, so that `e` is
+raised only to r. Taking ln 2 in two parts, `ln2Hi` and `ln2Lo`, keeps r accurate (Cody and Waite's
+reduction). The result e^r · 2ⁿ is scaled by 2ⁿ in two halves, because near the ends of the range
+2ⁿ alone would overflow or underflow although the product does not.
+
 -}
 exp : Float -> Float
 exp x =
@@ -60,12 +91,20 @@ exp x =
         (Basics.e ^ r) * (2 ^ toFloat h) * (2 ^ toFloat (n - h))
 
 
+{-| Returns the natural logarithm of x.
+-}
 log : Float -> Float
 log =
     logBase Basics.e
 
 
-{-| eˣ − 1, accurate near 0 (Kahan).
+{-| Returns eˣ − 1, keeping its accuracy for x near 0, where `exp x - 1` would cancel most of
+its digits.
+
+With u = eˣ as computed, the result is (u − 1) · x / ln u, which is Kahan's correction: the error
+in u is divided out again. When u is exactly 1 the result is x itself, when u − 1 rounds to −1 it
+is −1, and when u is +∞ it is +∞.
+
 -}
 expm1 : Float -> Float
 expm1 x =
@@ -91,7 +130,13 @@ expm1 x =
             um1 * x / log u
 
 
-{-| log (1 + x), accurate near 0 (Kahan).
+{-| Returns ln (1 + x), keeping its accuracy for x near 0, where `log (1 + x)` would lose the
+digits of x that the addition rounds away.
+
+With u = 1 + x as computed, the result is ln u · x / (u − 1), which is Kahan's correction: dividing
+by the u − 1 that was actually represented undoes the rounding of the addition. When u is exactly 1
+the result is x itself, and when u is 0 or infinite it is ln u.
+
 -}
 log1p : Float -> Float
 log1p x =
@@ -109,6 +154,13 @@ log1p x =
         log u * x / (u - 1)
 
 
+{-| Returns the hyperbolic tangent of x, computed from `expm1 (2 * x)` so that it stays accurate
+near 0.
+
+Above 20 it returns 1 and below −20 it returns −1, which is what the f64 result rounds to there; for
+large positive x the formula itself would give ∞ / ∞. A zero keeps its sign.
+
+-}
 tanh : Float -> Float
 tanh x =
     if isNaN x then
@@ -131,11 +183,20 @@ tanh x =
         e2 / (e2 + 2)
 
 
+{-| Returns the inverse hyperbolic tangent of x, ½ ln ((1 + x) / (1 − x)), computed as
+½ `log1p` (2x / (1 − x)) so that it stays accurate near 0. 1 gives +∞ and −1 gives −∞.
+-}
 atanh : Float -> Float
 atanh x =
     0.5 * log1p (2 * x / (1 - x))
 
 
+{-| Returns the logistic function of x, 1 / (1 + e⁻ˣ).
+
+It is computed as 1 / (1 + e⁻ˣ) for x ≥ 0 and as eˣ / (1 + eˣ) below, so that `exp` is only ever
+given a number that is not positive and never overflows.
+
+-}
 sigmoid : Float -> Float
 sigmoid x =
     if x >= 0 then
@@ -149,16 +210,24 @@ sigmoid x =
         e / (1 + e)
 
 
+{-| Returns x · `sigmoid` x.
+-}
 silu : Float -> Float
 silu x =
     x * sigmoid x
 
 
+{-| Returns the GELU activation of x in its exact form, ½ x (1 + erf (x / √2)): x times the
+probability that a standard normal variable is at most x.
+-}
 gelu : Float -> Float
 gelu x =
     0.5 * x * (1 + erf (x / sqrt 2))
 
 
+{-| Returns the GELU activation of x by its tanh approximation,
+½ x (1 + tanh (√(2/π) (x + 0.044715 x³))).
+-}
 geluTanh : Float -> Float
 geluTanh x =
     0.5 * x * (1 + tanh (sqrt (2 / pi) * (x + 0.044715 * x * x * x)))
@@ -168,8 +237,12 @@ geluTanh x =
 -- ERF
 
 
-{-| The error function: W. J. Cody's rational Chebyshev approximations (Math. Comp. 1969, the
-CALERF routine of SPECFUN), in three ranges of |x|.
+{-| Returns the error function of x, by W. J. Cody's rational approximations in three ranges of |x|.
+
+Up to 0.46875 one approximation gives erf itself. Above that, one approximation up to 4 and another
+beyond give the complement erfc |x| = 1 − erf |x|, and the result is 1 − erfc |x| with the sign of
+x. From 26.543 up erfc is taken as 0, so the result is ±1, and ±∞ gives ±1.
+
 -}
 erf : Float -> Float
 erf x =
@@ -247,7 +320,13 @@ erf x =
             v
 
 
-{-| exp (−y²) times r, with y² split so its rounding error does not reach the result.
+{-| Returns e^(−y²) · r, which `erf` takes as erfc y for y above 0.46875, with r computed from its
+rational approximations.
+
+y² is not formed directly. With s = y rounded down to a multiple of 1/16, it is split as
+s² + (y − s)(y + s); for the y that `erf` passes, s² is exact, so the rounding of y² never reaches
+the exponent.
+
 -}
 tail : Float -> Float -> Float
 tail y r =
@@ -265,7 +344,8 @@ tail y r =
 -- WHOLE NUMBERS
 
 
-{-| ⌊x⌋ as a float; NaN, ±∞ and |x| ≥ 2⁵² (already whole) unchanged.
+{-| Returns ⌊x⌋, the greatest whole number not above x, as a `Float`. NaN, ±∞ and every x of
+magnitude 2⁵² or more are returned unchanged. −0 gives −0.
 -}
 floorF : Float -> Float
 floorF x =
@@ -273,22 +353,41 @@ floorF x =
         x
 
     else
-        toFloat (Basics.floor x)
+        signedZero x (toFloat (Basics.floor x))
 
 
+{-| Returns `r`, a whole number rounded from `x`, except that a zero `r` takes the sign of `x`:
+x · 0 is −0 for a negative or −0 `x`, and +0 otherwise.
+-}
+signedZero : Float -> Float -> Float
+signedZero x r =
+    if r == 0 then
+        x * 0
+
+    else
+        r
+
+
+{-| Returns x with its fractional part dropped, rounding toward zero, as a `Float`. NaN, ±∞ and
+every x of magnitude 2⁵² or more are returned unchanged. A zero result has the sign of x, so −0 and
+an x between −1 and 0 give −0.
+-}
 truncF : Float -> Float
 truncF x =
     if isNaN x || isInfinite x || Basics.abs x >= 4503599627370496 then
         x
 
     else if x >= 0 then
-        toFloat (Basics.floor x)
+        signedZero x (toFloat (Basics.floor x))
 
     else
-        toFloat (Basics.ceiling x)
+        signedZero x (toFloat (Basics.ceiling x))
 
 
-{-| Rounding half to even, as MAX rounds.
+{-| Returns x rounded to the nearest whole number, as a `Float`, with a value exactly halfway
+going to the even neighbour: 0.5 gives 0, 1.5 and 2.5 give 2. NaN, ±∞ and every x of magnitude 2⁵²
+or more are returned unchanged. A zero result has the sign of x, so −0 and an x from −0.5 up to
+zero give −0.
 -}
 roundEven : Float -> Float
 roundEven x =
@@ -316,8 +415,4 @@ roundEven x =
                 else
                     f + 1
         in
-        if r == 0 && x < 0 then
-            0
-
-        else
-            r
+        signedZero x r

@@ -5,12 +5,15 @@ module Tensor.Eval exposing
     , Prepared, prepare, runPrepared, runPreparedWith
     )
 
-{-| Runs graphs and tensors in Elm, with no MAX: a pure-Elm evaluator of every operation the package
-builds, gradients, `vmap`, branches, loops and shared functions included.
+{-| This module computes tensors in plain Elm, with no MAX, so that their values can be had wherever
+Elm runs: in tests that check values, in examples, in a page in the browser.
 
-It is for small graphs (up to about 10⁵–10⁶ element operations a run): tests that check values,
-examples, teaching, interactive pages, and a second reference for the operations MAX runs. It is not
-a fast backend.
+It computes either a single tensor that reads no graph input (`floats`, `ints`, `mask`) or a whole
+`Graph`, run on input values given by name (`run`). Graphs that use gradients, `vmap`, branches,
+loops and shared functions are computed too. Each element is computed with ordinary Elm arithmetic,
+so the module suits small graphs; it is not a fast way to run a large one.
+
+With `three` a `Dim` of size 3:
 
     x = T.fromList T.float32 (T.r1 three) [ 1, 2, 3 ]
 
@@ -20,19 +23,44 @@ a fast backend.
 
 # What it computes
 
-  - **Integers** (and masks) are exact and wrap as MAX's do: i8, u8 and i32 by their width, i64
-    and u64 by eco's 64-bit `Int`. A u64 element is the `Int` with the same 64 bits (see `Tensor`).
-    Under JavaScript an `Int` is exact only to 2⁵³, so integers beyond that come out wrong there.
-  - **Floating** values are computed in f64, whatever the dtype: f32 results are more precise than
-    MAX's (about 1e-7 relative), and f16 or bf16 results are not rounded or saturated. They agree
-    with MAX within the tolerances of the spike's op checks; masks and indices computed from floats
-    can differ at near-ties.
-  - **Random draws** are deterministic for a seed and shape, but are not MAX's draws: compare
-    statistics.
+Every element is held in an Elm `Float` or `Int`, whatever its dtype, and most of how a result
+relates to its dtype follows from that.
 
-Errors are values: an index out of range, an integer `modBy 0`, a cast of NaN or an out-of-range
-value to an integer dtype, or a `whileLoop` running past its guard each stop the run with a message
-naming the operation.
+  - **Floating-point** elements are 64-bit doubles, and nothing rounds them to their dtype, a cast
+    included: an `f32` result carries more precision than `f32` arithmetic gives, and an `f16` or
+    `bf16` result is neither rounded nor saturated. Results can therefore differ from results
+    computed in the dtype's own precision, and a mask or an index computed from floats can then
+    differ where two values nearly tie.
+  - **Integer** results are wrapped to their dtype's width as two's complement arithmetic wraps
+    them, `si64` and `ui64` ones modulo 2⁶⁴. A `ui64` element is the `Int` with the same 64 bits,
+    as `Tensor` describes, and is ordered, divided and averaged as an unsigned number. An integer
+    mean is the sum, wrapped, divided by the count and rounded toward zero. Natively an `Int` has
+    64 bits and holds every result. Under JavaScript an `Int` is a double, which holds every
+    integer only up to 2⁵³. There the integer arithmetic is done so that a result that a double
+    holds exactly is the native one, and an `si64` or `ui64` sum, difference, product, mean,
+    cumulative sum or matrix product that no double holds exactly is refused as an error rather
+    than rounded. Salting a seed that is already large, as `Tensor.Random.salt` of a salted seed
+    usually does, gives such a product. Other `si64` and `ui64` values past 2⁵³, such as a
+    constant, may be rounded there.
+  - **NaN** is treated as this package takes MAX on the CPU to treat it. A comparison with NaN on
+    either side is false, `notEquals` included. `max`, `min`, `maximum`, `minimum` and
+    `Nn.maxPool2d` ignore NaN, giving NaN only where every value they compare is NaN, and `argMax`
+    and `argMin` skip it. `topK`, `bottomK` and `sort` rank NaN above every number, `relu` keeps
+    it, and a cast to a mask makes it `True`. Sums, means, cumulative sums and softmax let it
+    through their arithmetic.
+  - **Random draws** do not give the values MAX draws for the same seed, and under JavaScript a
+    draw can give different values from the same draw in native code. `Tensor.Random` describes how
+    draws on one seed relate to each other.
+
+Some errors are found while computing, and returned as values: an index outside its axis given to
+`take`, `rowsAt`, `put` or `putAdd`; an integer `modBy` by zero; a cast to an integer dtype of a
+floating-point NaN, ±∞ or value the dtype cannot hold; under JavaScript, an `si64` or `ui64`
+result that no `Int` holds exactly, as described above; a random draw of more than 2³¹ elements;
+and a `whileLoop` whose test still holds after the number of steps loops are allowed. Computing
+stops at the first such error. Its message starts with the name of the operation that failed,
+which can differ from the function called (an index error in `rowsAt` gives a message starting
+`"take: "`), as in `"modBy: integer division by zero"`. `floats`, `ints` and `mask` put `"eval: "`
+before it, and the functions that run a graph put the graph's name and `": "`.
 
 
 # Values
@@ -42,18 +70,25 @@ naming the operation.
 
 # Tensors
 
+A tensor that reads no graph input can be computed on its own, with no graph. It is first checked
+as `Graph.build` checks the one output of a graph named `eval` with no inputs, so every message
+from the check starts `"eval: "`.
+A tensor that passes is computed, and the first error met while computing it is returned with the
+same prefix, as in `"eval: modBy: integer division by zero"`. The guard on loops is 100,000 steps:
+each time a `whileLoop` runs, a test that still holds after that many steps makes the computation
+fail.
+
 @docs floats, ints, mask
 
 
 # Graphs
 
-A graph runs as MAX runs it: `run` takes each input under its name (a resident input under its
-resident name), and returns each output under its name (or its resident name). Keep the resident
-buffers in a `Dict` and merge each run's outputs into it, as MAX keeps them:
+A graph's inputs and outputs travel as a `Dict` of `Value`s. Each one is keyed by its resident name
+if its role is `Resident`, and by its spec's name otherwise (see `Graph.Role`). Whatever runs a
+graph keeps its resident buffers, and here that is the caller: hold them in a `Dict`, and merge each
+run's outputs into it. For a training loop, with `init` the graph `Param.initInPlace` builds and
+`step` the one `Train.step` builds:
 
-    -- init = Param.initInPlace "init" params: run once with a seed, it writes the parameters;
-    -- residentZeros gives the optimizer state and step; step = Train.step ... runs per batch
-    -- (each batch a Dict of the step's fed inputs, by name).
     train : Graph -> Graph -> List (Dict String Value) -> Result (List String) (Dict String Value)
     train init step batches =
         let
@@ -68,15 +103,20 @@ buffers in a `Dict` and merge each run's outputs into it, as MAX keeps them:
             |> Result.map (\params -> Dict.union params (Eval.residentZeros step))
             |> (\start -> List.foldl (\batch acc -> Result.andThen (runStep batch) acc) start batches)
 
-Each run's outputs also hold the loss (under the step's output name, `Train` documents it).
+`init` writes the parameters' first values from the seed. `residentZeros` gives every resident
+input of `step` a zero value, and `Dict.union` keeps the parameters `init` wrote over those zeros.
+Each batch is a `Dict` of the step's fed inputs. The step's fed outputs, such as its loss, are
+merged into the `Dict` as well; a run ignores keys its graph does not take.
 
 @docs run, runWith, residentZeros
 
 
 # Running a graph many times
 
-`run` prepares the graph, then runs it. A graph run many times (every animation frame, every
-iteration of a solver) is better prepared once:
+`run` compiles the graph each time it is called: it works out the order in which the graph's
+expressions are computed and where each one reads its operands. A graph that is run many times,
+every animation frame or every iteration of a solver, can be compiled once by `prepare` and run by
+`runPrepared`:
 
     stepper : Eval.Prepared
     stepper =
@@ -84,9 +124,6 @@ iteration of a solver) is better prepared once:
 
     -- each frame
     Eval.runPrepared stepper inputs
-
-Preparing works out the order the graph's operations run in, and where each reads its operands, so
-that a run only computes values: small graphs run several times faster.
 
 @docs Prepared, prepare, runPrepared, runPreparedWith
 
@@ -105,8 +142,15 @@ import Tensor.Internal.Types as I
 import Tensor.Internal.Values as Values
 
 
-{-| A tensor's elements, row-major: `Floats` for the floating dtypes, `Ints` for the integer ones
-(u64 as the `Int` with the same bits), `Bools` for masks.
+{-| A tensor's elements, as a flat list in row-major order: the last axis varies fastest.
+
+`Floats` holds the elements of a floating-point dtype: `f16`, `bf16`, `f32` or `f64`.
+
+`Ints` holds those of an integer dtype: `si8`, `si32`, `si64`, `ui8` or `ui64`. A `ui64` element
+is the `Int` with the same 64 bits, so 2⁶³ … 2⁶⁴ − 1 are negative `Int`s.
+
+`Bools` holds those of a mask, whose dtype is `bool`.
+
 -}
 type Data
     = Floats (List Float)
@@ -114,14 +158,19 @@ type Data
     | Bools (List Bool)
 
 
-{-| A graph's input or output: its dtype as `Graph.inputs` spells it (`"f32"`, `"si64"`, `"ui64"`,
-`"bool"` …), its shape and its elements.
+{-| The value of one input or output of a graph: its dtype, its shape and its elements.
+
+`dtype` is the dtype's name as `Graph.Spec` gives it: `"f16"`, `"bf16"`, `"f32"`, `"f64"`, `"si8"`,
+`"si32"`, `"si64"`, `"ui8"`, `"ui64"` or `"bool"`, not `"i64"` or `"u8"`. `shape` lists the size of
+each axis, and is `[]` for a scalar, which has one element.
+
 -}
 type alias Value =
     { dtype : String, shape : List Int, data : Data }
 
 
-{-| The elements of a floating tensor that reads no graph input, row-major.
+{-| Computes a floating-point tensor that reads no graph input, and returns its elements in
+row-major order or what is wrong with it, as described under Tensors above.
 -}
 floats : Tensor Float d s -> Result (List String) (List Float)
 floats t =
@@ -129,8 +178,9 @@ floats t =
         |> Result.map (\v -> Array.toList (C.floatsOf v))
 
 
-{-| The elements of an integer tensor that reads no graph input, row-major (u64 as the `Int` with
-the same bits).
+{-| Computes an integer tensor that reads no graph input, and returns its elements in row-major
+order or what is wrong with it, as described under Tensors above. A `ui64` element is returned as
+the `Int` with the same 64 bits.
 -}
 ints : Tensor Int d s -> Result (List String) (List Int)
 ints t =
@@ -138,7 +188,8 @@ ints t =
         |> Result.map (\v -> Array.toList (C.intsOf v))
 
 
-{-| The elements of a mask that reads no graph input, row-major.
+{-| Computes a mask that reads no graph input, and returns its elements in row-major order or what
+is wrong with it, as described under Tensors above.
 -}
 mask : Mask s -> Result (List String) (List Bool)
 mask m =
@@ -146,12 +197,19 @@ mask m =
         |> Result.map (\v -> List.map (\n -> n /= 0) (Array.toList (C.intsOf v)))
 
 
+{-| Computes `e` and returns its value, or what is wrong with it.
+
+`e` is first checked as the one output, named `value`, of a graph named `eval` with no inputs, so
+every message from the check starts `"eval: "`. If the check finds nothing, `e` is compiled and run
+with the default loop guard, and a run-time error is returned with `"eval: "` before it.
+
+-}
 evalTensor : Expr -> Result (List String) T
 evalTensor e =
     case Lower.problems "eval" [] [ ( "value", e ) ] of
         [] ->
             Engine.execute { inputs = Array.empty, maxIterations = defaultIterations } (Engine.compile [ e ])
-                |> Result.mapError List.singleton
+                |> Result.mapError (\m -> [ "eval: " ++ m ])
                 |> Result.andThen
                     (\vs ->
                         case vs of
@@ -166,48 +224,78 @@ evalTensor e =
             Err problems
 
 
+{-| The default guard on loops: the number of steps a `whileLoop` may take each time it runs. A
+loop whose test still holds after that many steps fails the run.
+-}
 defaultIterations : Int
 defaultIterations =
     100000
 
 
-{-| Runs a graph: its inputs by name (a resident input by its resident name), its outputs by name
-(a resident output by its resident name). A `whileLoop` may run 100,000 iterations.
+{-| Runs a graph on the input values in a `Dict`, and returns its output values, or the first error
+met.
+
+Each input and output is keyed by its resident name if its role is `Resident`, and by its spec's
+name otherwise. Each input's `Value` must have the spec's dtype and exactly its shape, so an input
+declared `[1]` is not given as `[]`. Its elements must be `Floats` for a floating-point dtype,
+`Ints` for an integer dtype, and `Bools` for `bool`, as many as the shape holds. `Ints` for `si8`,
+`ui8` or `si32` must fit the dtype: they are refused, not wrapped. Keys the graph does not take are
+ignored.
+
+An error comes back as a list of one message, which starts with the graph's name and `": "`. It is
+about the first input, in the order of the graph's inputs, that is missing
+(`"<name>: missing input <key>"`) or does not fit (`"<name>: input <key>: ..."`), or it is the first
+error met while computing. The guard on loops is 100,000 steps: each time a `whileLoop` runs, a test that
+still holds after that many steps makes the run fail. `runWith` sets another guard.
+
+Names need not be unique, as `Graph` describes. Two inputs with one key read the same entry, and of
+two outputs with one key only the last is returned.
+
+`run` compiles the graph on every call; `prepare` compiles it once.
+
 -}
 run : Graph -> Dict String Value -> Result (List String) (Dict String Value)
 run =
     runWith { maxIterations = defaultIterations }
 
 
-{-| `run` with another guard on `whileLoop` iterations: past it, the run is an error, not a hang.
+{-| Runs a graph as `run` does, with `maxIterations` as the guard on loops: each time a `whileLoop`
+runs, a test that still holds after `maxIterations` steps makes the run fail. The steps of each
+execution of a loop are counted separately, not those of the whole run. A negative `maxIterations`
+is refused, whether or not the graph has a loop, with a message that names it.
 -}
 runWith : { maxIterations : Int } -> Graph -> Dict String Value -> Result (List String) (Dict String Value)
 runWith cfg g =
     runPreparedWith cfg (prepare g)
 
 
-{-| A graph prepared to run: see `prepare`.
+{-| A graph compiled once, so that it can be run many times without being compiled again.
+
+The only way to make one is `prepare`. Running it with `runPrepared` or `runPreparedWith` gives
+what `run` or `runWith` gives on the graph it was prepared from.
+
 -}
 type Prepared
     = Prepared { name : String, inputs : List I.Spec, outputs : List I.Spec, program : Engine.Program }
 
 
-{-| Prepares a graph to be run many times. Preparing cannot fail: whatever `run` would report, running
-the prepared graph reports.
+{-| Compiles a graph once, for `runPrepared` to run many times. Preparing cannot fail: whatever
+`run` would report about the graph is reported each time the prepared graph runs.
 -}
 prepare : Graph -> Prepared
 prepare (I.Graph g) =
     Prepared { name = g.name, inputs = g.inputs, outputs = g.outputs, program = Engine.compile g.exprs.outputs }
 
 
-{-| `run` for a prepared graph.
+{-| Runs a prepared graph as `run` runs the graph it was prepared from, with the guard of 100,000
+loop steps.
 -}
 runPrepared : Prepared -> Dict String Value -> Result (List String) (Dict String Value)
 runPrepared =
     runPreparedWith { maxIterations = defaultIterations }
 
 
-{-| `runWith` for a prepared graph.
+{-| Runs a prepared graph as `runWith` runs the graph it was prepared from.
 -}
 runPreparedWith : { maxIterations : Int } -> Prepared -> Dict String Value -> Result (List String) (Dict String Value)
 runPreparedWith cfg (Prepared g) given =
@@ -232,14 +320,20 @@ runPreparedWith cfg (Prepared g) given =
                 )
                 (Ok [])
                 g.inputs
+
+        checked =
+            if cfg.maxIterations < 0 then
+                Err ("maxIterations must be 0 or more, not " ++ String.fromInt cfg.maxIterations)
+
+            else
+                inputs
     in
-    inputs
-        |> Result.mapError List.singleton
+    checked
         |> Result.andThen
             (\ts ->
                 Engine.execute { inputs = Array.fromList ts, maxIterations = cfg.maxIterations } g.program
-                    |> Result.mapError (\m -> [ g.name ++ ": " ++ m ])
             )
+        |> Result.mapError (\m -> [ g.name ++ ": " ++ m ])
         |> Result.map
             (\vs ->
                 List.map2
@@ -257,8 +351,13 @@ runPreparedWith cfg (Prepared g) given =
             )
 
 
-{-| A zero value of the right dtype and shape for every resident input of a graph, under its
-resident name: the optimizer state and `step` that `Train.initial` starts at zero.
+{-| Returns a zero value for every resident input of a graph, keyed by its resident name, with the
+input's dtype and shape: `Bools` of `False` for `bool`, `Floats` of 0 for a floating-point dtype,
+and `Ints` of 0 for an integer one.
+
+Every resident input gets one, a model's parameters included. To keep values already known, merge
+them over the zeros: `Dict.union params (residentZeros step)` keeps the entries of `params`.
+
 -}
 residentZeros : Graph -> Dict String Value
 residentZeros (I.Graph g) =
@@ -293,11 +392,22 @@ residentZeros (I.Graph g) =
         |> Dict.fromList
 
 
+{-| Returns the dtype whose name, as `Tensor.Internal.Prim.dtName` spells it, is `name`, or
+`Nothing` if no dtype has that name.
+-}
 dtFromName : String -> Maybe DT
 dtFromName name =
     List.filter (\d -> P.dtName d == name) P.allDTs |> List.head
 
 
+{-| Converts `v`, the value given under the key `name`, to the run-time tensor of the input `spec`
+describes, or returns why it does not fit, in a message starting `"input " ++ name ++ ": "`.
+
+It refuses a value whose dtype or shape differs from the spec's, whose `Data` constructor is not
+the one for the spec's dtype, or whose element count is not the shape's; `Ints` for an `si8`, `ui8`
+or `si32` input that do not fit the dtype; and a spec whose dtype has no name it knows.
+
+-}
 toT : String -> I.Spec -> Value -> Result String T
 toT name spec v =
     let
@@ -372,6 +482,10 @@ toT name spec v =
                             Ok (C.fromValues dt spec.shape vs)
 
 
+{-| Converts a run-time tensor to a `Value` with its dtype's name and its shape. Elements held as
+floats become `Floats`, and elements held as integers become `Bools` for `bool` and `Ints`
+otherwise, a `ui64` element as the `Int` with the same 64 bits.
+-}
 fromT : T -> Value
 fromT t =
     { dtype = P.dtName t.dt
@@ -390,6 +504,8 @@ fromT t =
     }
 
 
+{-| Returns the integers in `l` in decimal, separated by commas, for an error message.
+-}
 showInts : List Int -> String
 showInts l =
     String.join ", " (List.map String.fromInt l)

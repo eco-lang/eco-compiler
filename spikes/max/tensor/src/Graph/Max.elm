@@ -3,13 +3,28 @@ module Graph.Max exposing
     , Device(..), toBytecodeOn, toGenericTextOn
     )
 
-{-| A `Graph` written for Modular MAX: its `mo` dialect, as the MLIR bytecode MAX loads, or as
-MLIR's generic op text to read. What carries the bytes to MAX, and how they are run there, is up to
-the application.
+{-| Modular MAX takes a graph as an MLIR module, and this module writes a built `Graph` as one: as
+MLIR bytecode, the binary form MAX's graph compiler loads, or as MLIR's generic op text, the same
+module written out to be read. How the bytes reach MAX, and how MAX runs them, is up to the
+caller.
 
-The bytecode is MLIR's version 6, with the `mo` and `rmo` op and attribute forms of the MAX release
-built on LLVM 24 (commit 8d4fc8f1d17e). `Graph.build` has already checked the graph, so writing it
-for the CPU cannot fail; writing it for a GPU can, when the GPU cannot run something.
+_MLIR_ is a compiler framework in which a program is a tree of operations, each named after the
+_dialect_ it belongs to, as `mo.graph` belongs to `mo`. `Graph.build` has already checked the graph
+and translated it into the operations of MAX's graph dialects, `mo` and `rmo`, so what is left here
+is to place those operations on a device and write them. The bytecode is version 6 of MLIR's
+bytecode format, which this package assumes is the version the MLIR inside MAX 26.7.0 reads.
+
+_Placing_ the operations for a GPU writes into them where their tensors live; placing them for the
+CPU adds nothing to them. Placing for the CPU cannot fail, so `toBytecode` and `toGenericText`
+write for the CPU and return no `Result`. Placing for a GPU can: some operations are not written
+for a GPU, and the graph is then refused with one message for each such operation. They are a
+top-k along any axis but the last (from `Tensor.topK`, `bottomK` or `sort`), and every `cond` and
+every `whileLoop` (`Tensor.Control`), wherever in the graph they appear. A GPU with a negative
+index is refused too.
+
+What is written depends on the graph and the device alone, so writing one graph twice gives the
+same bytes. The bytes hold the graph's name and the names, dtypes and shapes of its inputs and
+outputs, but not their roles (`Graph.Role`).
 
 
 # For the CPU
@@ -30,10 +45,9 @@ import Tensor.Internal.MlirBc as Bc
 import Tensor.Internal.Types as I
 
 
-{-| The graph as MLIR bytecode, for the CPU: what MAX's graph compiler loads.
+{-| Writes the graph as MLIR bytecode, placed for the CPU.
 
-Two graphs that write the same bytes are the same graph, which makes this the cheap way to compare
-graphs (see `Graph.Graph`).
+Two graphs that differ only in the roles of their inputs or outputs write the same bytes.
 
 -}
 toBytecode : Graph -> Bytes
@@ -41,26 +55,36 @@ toBytecode (I.Graph g) =
     Bc.encode (cpuOps g.ops)
 
 
-{-| The graph `toBytecode` writes, as MLIR's generic op text (what `mlir-opt
---mlir-print-op-generic` prints, give or take spacing and value names).
+{-| Writes the module `toBytecode` writes as MLIR's generic op text: each operation with its quoted
+name, its operands, its regions, its attributes and its types, the one text form MLIR reads for an
+operation of any dialect.
 -}
 toGenericText : Graph -> String
 toGenericText (I.Graph g) =
     Bc.printGeneric (cpuOps g.ops)
 
 
+{-| Returns `ops` placed for the CPU. Placing for the CPU never fails, so the fallback to the
+unplaced `ops` is never taken.
+-}
 cpuOps : List Bc.Op -> List Bc.Op
 cpuOps ops =
     Device.place Device.Cpu ops |> Result.withDefault ops
 
 
-{-| Where a graph runs: the CPU, or GPU `n`.
+{-| The device a graph is written for: the CPU, or, as `Gpu n`, the GPU with index `n`.
+
+The index is written into the graph as given. `toBytecodeOn` and `toGenericTextOn` refuse a negative
+`n`; nothing here checks that the GPU exists.
+
 -}
 type Device
     = Cpu
     | Gpu Int
 
 
+{-| Returns the device `Tensor.Internal.Device.place` takes for `d`, with the same GPU index.
+-}
 internal : Device -> Device.Device
 internal d =
     case d of
@@ -71,17 +95,43 @@ internal d =
             Device.Gpu n
 
 
-{-| The graph written for a device. On a GPU every tensor lives on the GPU except the small operands
-MAX keeps on the CPU (shapes, axes, bounds). Refused, with the reasons, when the device cannot run
-something (a top-k off the last axis on a GPU). `toBytecodeOn Cpu` is `toBytecode`.
+{-| Writes the graph as MLIR bytecode, placed for the given device, or returns why it cannot be
+placed there.
+
+For `Gpu n`, the graph's inputs and the tensors its operations compute, constants included, are
+placed on GPU `n`, except values such as shapes and axes that other operations read as operands,
+which stay on the CPU. The result is `Err` when `n` is negative, with one message, and when the
+graph holds a top-k along any axis but the last (from `Tensor.topK`, `bottomK` or `sort`), a `cond`
+or a `whileLoop`, anywhere in it, with one message for each MLIR operation refused, naming it.
+
+`toBytecodeOn Cpu g` is always `Ok (toBytecode g)`.
+
 -}
 toBytecodeOn : Device -> Graph -> Result (List String) Bytes
 toBytecodeOn d (I.Graph g) =
-    Device.place (internal d) g.ops |> Result.map Bc.encode
+    place d g.ops |> Result.map Bc.encode
 
 
-{-| `toBytecodeOn`, as generic op text (`toGenericText`).
+{-| Writes the graph, placed for the given device, as MLIR's generic op text (see `toGenericText`),
+or returns the refusals `toBytecodeOn` returns.
 -}
 toGenericTextOn : Device -> Graph -> Result (List String) String
 toGenericTextOn d (I.Graph g) =
-    Device.place (internal d) g.ops |> Result.map Bc.printGeneric
+    place d g.ops |> Result.map Bc.printGeneric
+
+
+{-| Returns `ops` placed for `d` (`Tensor.Internal.Device.place`), or, for a GPU with a negative
+index, the one message "Graph.Max: there is no GPU with the negative index n".
+-}
+place : Device -> List Bc.Op -> Result (List String) (List Bc.Op)
+place d ops =
+    case d of
+        Gpu n ->
+            if n < 0 then
+                Err [ "Graph.Max: there is no GPU with the negative index " ++ String.fromInt n ]
+
+            else
+                Device.place (internal d) ops
+
+        Cpu ->
+            Device.place (internal d) ops

@@ -1,104 +1,203 @@
 # eco-lab/tensor
 
-Typed tensor graphs for Modular MAX, written in Elm: the API of Nabla
-(<https://www.nablaml.com/api/>) as an Elm package that writes MAX's `mo` graphs directly, as MLIR
-bytecode or generic text, for the CPU or a GPU. The plan, design and results are in
-`plans/nabla-api-in-elm.md`; round 2 (what open-weight language models, diffusion and GPUs need) in
-`plans/tensor-api-round2.md`.
+Write neural networks, their training and their inference in Elm, as typed tensor graphs that
+Modular MAX can compile and run on a CPU or a GPU, or that run in plain Elm for tests and small
+examples. A tensor's type carries its element type, its dtype and the named axes of its shape, so
+mixing up axes, ranks or dtypes is a compile error, and the sizes the types cannot hold are checked
+as the graph is built, before anything runs it.
+
+```sh
+elm install eco-lab/tensor
+```
+
+## The idea
+
+A tensor is a description of a computation, not its elements. Making one works out its shape and
+dtype but computes no element values; those are computed only when it is run, by MAX or by
+`Tensor.Eval`.
+
+A tensor's type, `Tensor kind dtype shape`, has three parameters. The _kind_ is the Elm type of its
+elements, `Float` or `Int`. The _dtype_ is a tag such as `F32`, `BF16`, `I64` or `U8`. The shape is
+a _rank type_, `R0` to `R5`, which fixes the number of axes and gives each a _tag_: a type you
+declare, such as `type Batch = Batch`, that names an axis without giving its size. So
+`Tensor Float F32 (R2 Batch Hidden)` is a matrix of `f32` elements whose rows are tagged `Batch`.
+
+Sizes are not in the types: they are held by `Dim` values, such as `T.dim Batch 64`. An operation
+whose operands do not fit in size still gives a tensor, but one carrying a _build error_ that says
+what did not fit. `Graph.build` returns either a `Graph` or the list of what it found wrong, which
+can include build errors.
+
+A built `Graph` can be run in two ways:
+
+- **on MAX**: `Graph.Max` writes it as MLIR bytecode or text, for the CPU or a GPU. How the bytes
+  reach MAX, and how MAX runs them, is up to the application.
+- **in plain Elm**: `Tensor.Eval` computes it with ordinary Elm arithmetic, wherever Elm runs.
+  This suits small graphs: tests that check values, examples, a page in the browser.
+
+## Getting started
+
+A classifier of 28 × 28 images into 10 classes, and the graph that trains it:
 
 ```elm
+import Graph exposing (Graph)
+import Nn
+import Nn.Linear as Linear exposing (Linear)
+import Optim
+import Param
+import Signature as Sig
+import Tensor as T exposing (F32, R2, Tensor, U8)
+import Train
+
+
+type Batch = Batch
+type Pixels = Pixels
+type Hidden = Hidden
+type Classes = Classes
+
+batch = T.dim Batch 64
+pixels = T.dim Pixels 784
+hidden = T.dim Hidden 128
+classes = T.dim Classes 10
+
+
+type alias Params =
+    { l1 : Linear F32 Pixels Hidden
+    , l2 : Linear F32 Hidden Classes
+    }
+
+
+params : Param.Spec Params
+params =
+    Param.record Params
+        |> Param.sub .l1 (Linear.params T.float32 pixels hidden)
+        |> Param.sub .l2 (Linear.params T.float32 hidden classes)
+
+
 network : Params -> Tensor Int U8 (R2 n Pixels) -> Tensor Float F32 (R2 n Classes)
 network p images =
     images |> T.toFloat |> T.scale (1 / 255) |> Linear.apply p.l1 |> T.relu |> Linear.apply p.l2
 
+
+trainStep : Result (List String) Graph
 trainStep =
-    Train.step params (Optim.adamW 1.0e-3) (Sig.pair (Sig.u8 (T.r2 batch pixels)) (Sig.u8 (T.r1 batch))) <|
-        \p ( x, y ) -> network p x |> Nn.crossEntropyIndices y
+    Train.step params
+        (Optim.adamW 1.0e-3)
+        (Sig.pair (Sig.u8 (T.r2 batch pixels)) (Sig.u8 (T.r1 batch)))
+        (\p ( images, labels ) -> network p images |> Nn.crossEntropyIndices labels)
 ```
 
-A tensor's type carries its element type (`Float` or `Int`), dtype and shape, a fixed rank of
-named dimensions (`R2 Batch Hidden`), so mixing up dimensions, axes or dtypes is a compile error at the
-faulty line; what types cannot express (a reshape's element count, a declared size) is checked when
-the graph is built, before MAX sees it.
+`params` describes the parameter record once; `Param` derives from it the graph inputs that carry
+the parameters, their first values and their gradient. The `Signature` says how the batch, here a
+pair of tensors, becomes the graph's inputs. Handing `network` the labels where it expects images is
+a compile error. Declaring the labels with 32 rows instead of 64 compiles, and `trainStep` is then
+an `Err` whose messages say which sizes differ.
+
+Each run of the graph `trainStep` builds updates the parameters. They live in _resident buffers_:
+buffers that whatever runs the graph keeps from one run to the next, which an input reads and an
+output with the same _resident name_ replaces. So the only inputs given with each run of this graph
+are the batch's two tensors, and its only output handed back is the loss. `Train.initial` gives the
+buffers' first contents as bytes; `Graph.Role` and the `Train` documentation say how the inputs and
+outputs are named.
+
+To write the graph for MAX:
+
+```elm
+Result.map Graph.Max.toBytecode trainStep                           -- for the CPU
+Result.andThen (Graph.Max.toBytecodeOn (Graph.Max.Gpu 0)) trainStep  -- for a GPU
+```
+
+To compute in Elm instead, `Tensor.Eval` takes a tensor that reads no graph input, or a graph and
+its inputs by name. With `Tensor.Eval` imported as `Eval` and `three` a `Dim` of size 3:
+
+```elm
+x = T.fromList T.float32 (T.r1 three) [ 1, 2, 3 ]
+
+Eval.floats (x |> T.times x |> T.plus x)    --> Ok [ 2, 6, 12 ]
+```
+
+The `Tensor.Eval` documentation shows a whole training loop run that way.
+
+### Writing tensor code
+
+Functions take the tensor they act on last, so a pipeline reads left to right: `x |> minus y` is
+x − y, and `x |> matmul w` is x @ w.
+
+An element-wise operation does no implicit broadcasting. Its operands must have one shape, except
+that a scalar is spread over the other operand. To add a vector `v` to every row of a matrix, make
+a broadcast axis for the rows: `m |> T.plus (T.rows v)`. `Tensor` describes where a broadcast axis
+may appear.
 
 ## Modules
 
-| Module | What |
+| Module | What it provides |
 |---|---|
-| `Tensor` | types, dimensions, dtypes; construction, element-wise, comparisons and masks, linear algebra, reductions, `topK`/`bottomK`/`sort`, shape |
-| `Tensor.Axis` | generated witnesses: which axis an operation acts on (`last2`, `axis0of3`, `retag1of2`, `liftRank1`, `swap12of4`) |
-| `Signature` | two-way descriptions of structured values: graph inputs and outputs, function arguments |
-| `Graph` | building and checking a graph; its inputs' and outputs' specs and roles |
-| `Graph.Max` | writing a graph for MAX: MLIR bytecode or generic text, for the CPU or a GPU (`toBytecodeOn`) |
-| `Transform` | `grad`, `valueAndGrad`, `gradOf`, `vjp`, `jvp`, `jacobian`, `hessianVector`; `vmap`; shared subgraphs |
-| `Tensor.Control` | `cond` (`mo.if`), `whileLoop` (`mo.while`), `repeat`, `scan` |
-| `Tensor.Random` | counter-based randomness from a seed tensor; Gumbel noise and `categorical` sampling |
-| `Param` | parameter records: initialisation (in Elm, or on the host: `initGraph`, `initInPlace`), layouts, resident names (`names`, `named`), checkpoint import graphs (`importGraph`), frozen and data fields, gradients |
-| `Optim` | SGD, AdamW, element-wise custom optimizers, global-norm clipping |
-| `Train` | the training step and evaluation graphs, with host-resident parameters and state |
-| `Infer` | graphs that run a model: resident parameters and state (KV caches, latents) that each run replaces; `initGraph` writes the state on the host |
-| `Nn`, `Nn.*` | losses, dropout, attention, pooling, upsampling, timestep embeddings, causal masks at a position, repeated heads; linear (with or without bias), layer-norm, RMS-norm, group-norm, embedding (tied `unembed`), attention (multi-head, grouped-query with a KV cache, cross to another width), rotary positions, gated feed-forward, KV cache, sampling, transformer, convolution, stacks |
-| `Finetune.Lora`, `Finetune.Qlora` | LoRA adapters; NF4-quantised frozen weights |
-| `Tensor.Eval` | runs tensors and graphs in plain Elm, without MAX: tests, examples, a second reference |
-| `Tensor.Check` | numerical comparison |
+| `Tensor` | The `Tensor` type, axis tags, dimensions and dtypes; construction, casts, element-wise functions and activations, arithmetic, comparisons and masks, linear algebra, reductions, sorting and top-k, softmax, reshaping, slicing and indexing |
+| `Tensor.Axis` | Values naming the axes an operation acts on (`last1`, `axis1of2`, `swap12of4` ...), typed by the shapes before and after it |
+| `Tensor.Control` | Branches and loops decided when the graph runs (`cond`, `whileLoop`), and loops of a known count written out in Elm (`repeat`, `scan`) |
+| `Tensor.Random` | Random draws computed from a seed tensor: uniform, normal, Bernoulli and Gumbel, and `categorical` sampling |
+| `Signature` | How a record, tuple or list of tensors corresponds to a graph's ordered inputs or outputs |
+| `Graph` | Building and checking a graph; the names, dtypes, shapes and roles of its inputs and outputs |
+| `Graph.Max` | Writing a graph for MAX: MLIR bytecode or generic text, for the CPU or a GPU |
+| `Transform` | Derivatives (`grad`, `valueAndGrad`, `vjp`, `jvp`, `jacobian`, `hessianVector` ...), `vmap`, and shared subgraphs |
+| `Param` | Parameter records, described once: their graph inputs, resident names, first values (computed in Elm or drawn by a graph), checkpoint import graphs and gradients |
+| `Optim` | SGD, AdamW, optimizers with an update written by hand, and global-norm gradient clipping |
+| `Train` | The training-step graph, a graph that evaluates a function of the parameters and a batch, and the buffers' first contents |
+| `Infer` | Graphs that run a model again and again, keeping its parameters and its state, such as key/value caches, where the graph runs |
+| `Nn` | Parts without parameters: losses, dropout, attention, pooling and upsampling, timestep embeddings, causal masks and repeated attention heads |
+| `Nn.Linear` | Dense layers, with or without a bias |
+| `Nn.LayerNorm`, `Nn.RmsNorm`, `Nn.GroupNorm` | Normalisation layers |
+| `Nn.Embedding` | Token embedding tables, and `unembed`, which scores against the same table |
+| `Nn.Attention` | Multi-head, grouped-query (with a key/value cache) and cross-attention layers |
+| `Nn.Rotary` | Rotary position embeddings |
+| `Nn.KvCache` | A fixed-size key/value cache, from which attention reads the keys and values of earlier positions |
+| `Nn.FeedForward` | Gated feed-forward blocks, such as SwiGLU and GEGLU |
+| `Nn.Transformer` | Pre-norm transformer encoder and decoder layers |
+| `Nn.Conv2d` | 2-D convolution and transposed convolution of NHWC images |
+| `Nn.Stack` | Multilayer perceptrons whose hidden widths need no axis tags |
+| `Nn.Sampling` | Choosing the next token in the graph: greedy, sampled, top-k and nucleus |
+| `Finetune.Lora` | LoRA adapters beside a dense layer |
+| `Finetune.Qlora` | NF4-quantized frozen weights, applied together with a trained LoRA adapter (QLoRA) |
+| `Tensor.Eval` | Computing tensors and graphs in plain Elm |
+| `Tensor.Check` | Comparing lists of floats under a tolerance |
 
-The internals (`Tensor.Internal.*`, not exposed): expressions with structural keys and value-level
-shapes (`Expr`, `Shape`), the primitives (`Prim`), their gradient rules (`Vjp`), reverse mode and
-tracing (`Grad`), batching rules (`Batch`), branches and loops (`Control`), shared subgraphs
-(`Shared`), lowering to MAX ops (`Lower`, `Mo`) and MLIR bytecode (`MlirBc`).
+## Running on MAX
 
-## Use
+`Graph.Max.toBytecode` writes MLIR bytecode, the binary form MAX's graph compiler loads, and
+`toGenericText` writes the same module as text. The bytecode is version 6 of MLIR's bytecode format,
+which the package assumes is the version that MAX 26.7.0 reads.
 
-An application lists `"eco-lab/tensor": "1.0.0"` among its dependencies and is built with
-`--local-package eco-lab/tensor=<this directory>` (see `spikes/max/Makefile`).
+Writing for the CPU cannot fail. Writing for a GPU (`toBytecodeOn`, `toGenericTextOn`) refuses a
+graph that uses `cond` or `whileLoop`, or a top-k along any axis but the last (from `topK`,
+`bottomK` or `sort`).
 
-## Checks (from `spikes/max`)
+The bytes hold the graph's name and the names, dtypes and shapes of its inputs and outputs, but not
+their roles. Whatever runs the graph can learn which ones are resident from `Graph.inputs` and
+`Graph.outputs`.
 
-- `make check-tensor`: this package's tests (`tests/`, elm-test-rs).
-- `make check-api`: the example programs in `../tensor-api/examples` compile against the package, and
-  every program in `../tensor-api/bad` is refused.
-- `make check-ops`: every operation and gradient run on MAX against NumPy (`../opcheck`);
-  `make check-opcheck-bytecode` then compares the bytecode and text of every graph.
-- `make check-apicheck`: round 2's end-to-end checks on synthetic models (`../models/apicheck`): cached
-  against full-context generation, checkpoint import, a UNet-shaped block against NumPy and trained.
-- `make check-gpu-ir`: every op-check family written for a GPU reads back through `mlir-opt` and
-  places every op as MAX's own API does (no GPU needed).
-- The models: `make run-mnist MODEL=sgd|adamw|stack|cnn|lora`, `make run-charlm`.
+## Running in Elm: `Tensor.Eval`
 
-`scripts/gen_axis.py` writes `src/Tensor/Axis.elm`; `scripts/gen_support.py` writes
-`src/Tensor/Internal/Support.elm` from the dtype probe (`../capi/scripts/inventory/support_probe.py`).
-Pipe both through `elm-format --stdin`: the sources are kept elm-format clean (elm-format 0.8.7, in
-`build/toolchain/bin`).
+`Tensor.Eval` computes graphs that use gradients, `vmap`, branches, loops and shared functions. It
+computes each element with ordinary Elm arithmetic, so it is not a fast way to run a large graph.
+Three things about what it computes:
 
-## Running graphs in Elm: `Tensor.Eval`
+- **Floats** are computed as 64-bit doubles whatever their dtype, and are not rounded to it, so an
+  `f32`, `f16` or `bf16` result can differ from one computed in the dtype's own precision.
+- **Random draws** are not the values MAX draws for the same seed.
+- **Errors** found only while computing, such as an index outside its axis or an integer `modBy 0`,
+  are returned as an `Err`.
 
-`Tensor.Eval` evaluates any tensor or `Graph` the package builds, in plain Elm and with no MAX:
-gradients, `vmap`, `cond`, `whileLoop` and shared functions included. It is meant for small graphs
-(up to about 10⁵–10⁶ element operations a run): tests that check values rather than shapes,
-examples and teaching, and a second reference for the operations MAX runs. `make check-ops-eval` in
-the spike runs every op-check family through it against the same NumPy references as MAX.
+## Integers
 
-```elm
-Eval.floats (T.fromList T.float32 (T.r1 three) [ 1, 2, 3 ] |> T.scale 2)   -- Ok [ 2, 4, 6 ]
-Eval.run trainStep (Dict.union batch residents)                           -- outputs by name
-```
+Integer elements are given and read as Elm `Int`s. With a compiler whose `Int` has 64 bits, every
+`i64` and `u64` value is held exactly. Compiled to JavaScript, an `Int` holds every integer exactly
+only up to 2⁵³, so larger values, and some `Tensor.Eval` results, can come out wrong; `Tensor.Eval`
+lists some of them.
 
-A graph runs as the host runs it: inputs by name (resident inputs by resident name), outputs by
-name; merge each run's outputs into the resident buffers. `Param.initInPlace`, run once with a
-seed, writes the parameters, `Eval.residentZeros` gives the optimizer state, and `Train.step` then
-trains in Elm (`tests/EvalTests.elm` trains a 4 → 8 → 3 network that way).
+A `u64` element is the `Int` with the same 64 bits, so values from 2⁶³ up are given and read as
+negative `Int`s.
 
-What it computes:
+## Randomness
 
-- **Integers and masks** are exact and wrap as MAX does: i8, u8 and i32 at their widths, i64 and u64
-  as eco's 64-bit `Int` (a u64 is the `Int` with the same bits). Under JavaScript an `Int` is exact
-  only to 2⁵³.
-- **Floats** are computed in f64 whatever the dtype: f32 results are a little more precise than
-  MAX's, and f16/bf16 results are neither rounded nor saturated. They agree with MAX within the op
-  checks' tolerances; masks and indices computed from floats can differ at near-ties.
-- **NaN** follows MAX on CPU, not NumPy: `max`/`min`, the max/min reductions and `argMax`/`argMin`
-  skip NaN, and `notEquals` is false for NaN (the op-check family `pins` checks these on MAX).
-- **Random draws** are deterministic for a seed and shape but are not MAX's: compare statistics.
-- **Errors** are values: an index out of range, `modBy 0`, a cast of NaN or of an out-of-range value
-  to an integer dtype, a `whileLoop` past its guard (`runWith`).
-
+A random draw is a pure function of its seed, distribution, parameters, dtype and shape: two draws
+equal in all of these are the same tensor, with the same values. Draws that should be independent
+need separate seeds, which `Tensor.Random.salt` derives from one seed inside the graph.

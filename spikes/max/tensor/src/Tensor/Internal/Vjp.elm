@@ -1,10 +1,38 @@
 module Tensor.Internal.Vjp exposing (rule)
 
-{-| The vector-Jacobian product of every primitive, written with the same builders as the forward
-operations (`Tensor.Internal.Ops`), so gradients can be differentiated again.
+{-| Differentiating in reverse needs to know, for each primitive, how a gradient arriving at its
+result passes back to its operands. This module is that knowledge, one rule per primitive, in
+`rule`.
 
-`rule p args params out g` gives one cotangent per operand (`Nothing`: no gradient flows there). For
-element-wise primitives a cotangent has the result's shape; `Grad` sums it down to the operand's.
+The _cotangent_ of an expression is the gradient, with respect to that expression, of the quantity
+being differentiated: it has one element per element of the expression. A primitive's
+_vector-Jacobian product_ turns the cotangent of its result into a cotangent for each operand, the
+part of the operand's gradient that passes through this one node.
+
+Every rule is written with the builders of `Tensor.Internal.Ops`, the same ones the forward
+operations use, so a cotangent is an ordinary expression, which can be batched, lowered and
+evaluated like any other, and, except as described below, differentiated again.
+
+A `TopKValues` cotangent, and the cotangents of a `Conv` with a dilation other than 1, are zeros
+carrying a build error recorded on the cotangent expression. A `Gather` whose indices are not a
+vector gives no gradient, silently.
+
+A strided convolution's filter cotangent cannot be differentiated again: with a stride above 1,
+the filter cotangent of a `Conv` or of a `ConvTranspose` is itself a dilated `Conv`, so
+differentiating it again gives cotangents carrying a build error.
+
+What a rule returns for an operand does not always have the operand's shape. An element-wise
+primitive's operand that the operation broadcast, being rank 0 or having a pending axis (an
+axis held as size 1 whose real size is not known yet, as `Tensor.Internal.Shape` defines it),
+gets back an expression of the result's shape. When both operands of a `MatMul` have rank 2 or
+more, what each gets has the result's batch axes, which an operand with fewer batch axes, or a
+batch axis of size 1 against a larger one, does not have. Such an expression becomes the
+operand's cotangent only once summed down to the operand's shape, as
+`Tensor.Internal.Ops.unbroadcast` does. A rule also builds a cotangent for every operand that
+can have one, whether or not anything will read it.
+
+Most of the file is the one `case` in `rule`. The helpers after it hold the longer rules:
+reductions, matrix products, layer normalisation, convolutions and pooling.
 
 -}
 
@@ -13,6 +41,41 @@ import Tensor.Internal.Ops as O
 import Tensor.Internal.Prim as P exposing (Params, Prim(..))
 
 
+{-| Returns the cotangents of the operands `args` of a node applying `p` with `params`, given the
+node's result `out` and its cotangent `g`: one entry per operand, in operand order, and `Nothing`
+where no gradient flows. Several rules read `out` instead of recomputing it, among them `Exp`,
+`Sqrt`, `Sigmoid`, `Tanh`, `Softmax`, `ReduceMax` and `MaxPool`.
+
+No gradient flows to the operands of the comparisons, the logical operations, `Floor`, `Round`,
+`Trunc`, `IsInf`, `IsNaN`, `Mod`, `ArgMax`, `ArgMin`, `TopKIndices`, `Random` and `StopGradient`;
+through a `Cast` unless both dtypes are floating; to a `Select`'s mask; to the indices of a gather
+or scatter; to either operand of a `Gather` whose indices are not a vector. A `CumSum`, `Pad` or
+`BandPart` whose params do not have the layout
+`Tensor.Internal.Prim` gives, and a node of any primitive but `Concat` with a number of operands
+other than the one its rule matches, give `Nothing` for every operand.
+
+At a tie, `Max2` and `Min2` give the whole cotangent to the first operand, while `ReduceMax`,
+`ReduceMin` and `MaxPool` divide it evenly between the tied elements. `Relu` and `Abs` give 0 at 0.
+
+A `Gather` with vector indices adds the cotangent's slices back at their indices, so a slice
+gathered twice gets both.
+
+A replacing scatter (`ScatterRows`, `ScatterAxis`) gives the replaced rows or slices of the tensor
+a cotangent of 0, and each update the cotangent at the index it names. With a repeated index,
+every update naming it gets that cotangent, although only one of them is in the result.
+
+A `TopKValues` cotangent is zeros carrying a build error whose message begins "topK: cannot be
+differentiated", so the error is on the cotangent, not on the `topK`. Likewise, a `Conv` whose
+params hold more than its six strides and paddings, other than exactly a dilation of `[1, 1]`,
+gives both operands zeros carrying a build error whose message begins "conv: a dilated
+convolution cannot be differentiated".
+
+The `XentLogits` cotangent of the logits is (softmax(logits) · s − target) · g / n, where s is the
+sum of each row of the target and n the number of rows. This is the derivative for targets of any
+row sums: a row of zeros, such as `Nn.crossEntropyIndices` makes for a label out of range, gets a
+cotangent of 0. The target's cotangent is −logSoftmax(logits) · g / n.
+
+-}
 rule : Prim -> List Expr -> Params -> Expr -> Expr -> List (Maybe Expr)
 rule p args params out g =
     case ( p, args ) of
@@ -321,8 +384,11 @@ rule p args params out g =
 
                 scaleBy =
                     O.div g (O.scalarLike (toFloat n) g)
+
+                rowSums =
+                    O.broadcastTo (E.shape target) (O.reduceKeep ReduceSum 1 target)
             in
-            [ Just (O.mul (O.sub (O.softmax 1 logits) target) scaleBy)
+            [ Just (O.mul (O.sub (O.mul (O.softmax 1 logits) rowSums) target) scaleBy)
             , Just (O.mul (O.neg (O.logSoftmax 1 logits)) scaleBy)
             ]
 
@@ -331,7 +397,7 @@ rule p args params out g =
 
         ( Conv, [ x, f ] ) ->
             if List.length params.a > 6 && List.drop 6 params.a /= [ 1, 1 ] then
-                [ Nothing, Nothing ]
+                [ Just (E.failWith dilatedConvMessage (O.zerosLike x)), Just (E.failWith dilatedConvMessage (O.zerosLike f)) ]
 
             else
                 let
@@ -383,12 +449,24 @@ rule p args params out g =
             List.map (\_ -> Nothing) args
 
 
+{-| The build error on the cotangents of a dilated `Conv`, which has no rule. A strided
+convolution's filter cotangent is such a `Conv`, so this is what differentiating it again gives.
+-}
+dilatedConvMessage : String
+dilatedConvMessage =
+    "conv: a dilated convolution cannot be differentiated (nor, therefore, the filter gradient of a strided convolution)"
+
+
+{-| Returns the first integer of `params.a`, or 0 when it is empty. Several rules read an axis this
+way, and the pool rules their window size.
+-}
 first : Params -> Int
 first params =
     Maybe.withDefault 0 (List.head params.a)
 
 
-{-| The cotangent of a reduction spread back over the reduced axis.
+{-| Returns the cotangent `g` of a reduction of `x` repeated along the reduced axis, back to `x`'s
+shape. `params` is the reduction's `[axis, keep]`; params of any other layout give `g` unchanged.
 -}
 spread : Params -> Expr -> Expr -> Expr
 spread params x g =
@@ -408,7 +486,10 @@ spread params x g =
             g
 
 
-{-| Max and min: the cotangent goes to the elements equal to the result, split evenly between ties.
+{-| Returns the cotangent of `x` for its maximum or minimum `out` along an axis, given `out`'s
+cotangent `g`. Each lane's cotangent goes to the elements of the lane equal to `out`, divided evenly
+between them when there are several. `params` is read as for `spread`, and params of any other
+layout give `g` unchanged.
 -}
 extremum : Params -> Expr -> Expr -> Expr -> Expr
 extremum params x out g =
@@ -434,8 +515,11 @@ extremum params x out g =
             g
 
 
-{-| x @ w for every case `Shape.matmul` allows; batch axes the operand lacks or has as 1 are summed
-out by `Grad`'s un-broadcasting.
+{-| Returns the cotangents of `x` and `w` for their matrix product, given its cotangent `g`, in four
+cases by rank: two vectors (a dot product), a vector `x`, a vector `w`, and two operands of rank 2
+or more. A vector's cotangent is summed over the batch axes here. In the last case each cotangent
+has `g`'s batch axes, which an operand with fewer batch axes, or a batch axis of size 1 against a
+larger one, does not have.
 -}
 matmul : Expr -> Expr -> Expr -> List (Maybe Expr)
 matmul x w g =
@@ -479,7 +563,10 @@ matmul x w g =
         [ Just (O.matmul g (O.swapLast w)), Just (O.matmul (O.swapLast x) g) ]
 
 
-{-| Layer norm over the last axis: x̂ = (x - μ)/σ, y = x̂ γ + β.
+{-| Returns the cotangents of `x`, the gain and the bias of a layer normalisation of `x` over its
+last axis, given the result's cotangent `g`. The normalisation is x̂ = (x − μ) / √(σ² + ε) and
+y = x̂ · gain + bias, with ε the first entry of `params.f`, or 1e-5 when it is empty. The gain's and
+the bias's cotangents are summed over every axis but the last.
 -}
 layerNorm : Params -> Expr -> Expr -> Expr -> List (Maybe Expr)
 layerNorm params x gain g =
@@ -538,7 +625,13 @@ layerNorm params x gain g =
     ]
 
 
-{-| Zeros appended (bottom, right) up to `target`'s spatial size: rows no output reached.
+{-| Returns the NHWC tensor `e` with zeros appended below and to the right until its height and
+width are those of the NHWC shape `target`. Shapes of any other rank give `e` unchanged.
+
+A strided convolution may never read the last rows or columns of its input, which therefore have a
+cotangent of 0. The transposed convolution that gives the input's cotangent stops short of them,
+and this fills them in.
+
 -}
 padTo : List Int -> Expr -> Expr
 padTo target e =
@@ -550,9 +643,15 @@ padTo target e =
             e
 
 
-{-| The gradient of a convolution's filter (kh, kw, c, o): the correlation of the input with the
-output's cotangent, written as one more convolution with the batch and channel axes swapped and the
-stride as dilation.
+{-| Returns the cotangent of the filter, of shape `fshape` (kernel height, kernel width, input
+channels, output channels), of a convolution of `x` with the strides and paddings `geometry`, given
+the cotangent `g` of its result. An `fshape` or `geometry` of any other length gives `g` unchanged.
+
+The cotangent is the correlation of `x` with `g`, computed as one more `Conv`: `x` with its batch
+and channel axes swapped is the input, `g` is the filter, and the strides become dilations. Its
+result is cut to the filter's size. With a stride above 1 that `Conv` is dilated, and `rule` gives a
+dilated `Conv` cotangents carrying a build error.
+
 -}
 filterGrad : List Int -> List Int -> Expr -> Expr -> Expr
 filterGrad geometry fshape x g =
@@ -574,8 +673,10 @@ filterGrad geometry fshape x g =
             g
 
 
-{-| An NHWC tensor as (n, h/k, k, w/k, k, c), and a function spreading a pooled (n, h/k, w/k, c)
-tensor over the windows.
+{-| Returns the NHWC tensor `x` regrouped into its `k × k` windows, with shape
+(n, h/k, k, w/k, k, c), and a function that repeats a pooled (n, h/k, w/k, c) tensor over every
+element of its window in that shape. The pool rules of `Tensor.Internal.Shape` require `k` to
+divide the height and the width. An `x` of any other rank gives `x` and `identity`.
 -}
 windows : Int -> Expr -> ( Expr, Expr -> Expr )
 windows k x =
@@ -591,21 +692,30 @@ windows k x =
             ( x, identity )
 
 
-{-| A strided convolution never reads the last (h + pads - k) mod stride padded rows; its transpose
-must not produce them. Padding that is too short for that leaves rows `padTo` fills with zeros.
+{-| Returns `geometry`, the strides and paddings of a convolution of an input of shape `xs` with a
+filter of shape `fs`, with its bottom and right padding cut by the rows and columns the
+convolution never reads, (height + paddings − kernel height) mod stride and likewise for the width,
+but not below 0. The transposed convolution with that geometry gives no rows or columns for them.
+Where the padding is shorter than the cut, the unread rows include rows of the input itself, which
+`padTo` gives a cotangent of 0. Shapes or a `geometry` of any other length, and a stride of 0 or
+less (which `Tensor.Internal.Shape.conv` refuses), give `geometry` unchanged.
 -}
 unusedPaddingDropped : List Int -> List Int -> List Int -> List Int
 unusedPaddingDropped geometry xs fs =
     case ( geometry, xs, fs ) of
         ( [ sh, sw, pt, pb, pl, pr ], [ _, h, w, _ ], [ kh, kw, _, _ ] ) ->
-            let
-                remH =
-                    modBy sh (h + pt + pb - kh)
+            if sh <= 0 || sw <= 0 then
+                geometry
 
-                remW =
-                    modBy sw (w + pl + pr - kw)
-            in
-            [ sh, sw, pt, Basics.max 0 (pb - remH), pl, Basics.max 0 (pr - remW) ]
+            else
+                let
+                    remH =
+                        modBy sh (h + pt + pb - kh)
+
+                    remW =
+                        modBy sw (w + pl + pr - kw)
+                in
+                [ sh, sw, pt, Basics.max 0 (pb - remH), pl, Basics.max 0 (pr - remW) ]
 
         _ ->
             geometry

@@ -1,8 +1,52 @@
 module Tensor.Internal.Eval.Prim exposing (apply)
 
-{-| Every primitive's semantics, as `plans/tensor-eval-in-elm.md` §3.6 gives them. `apply` gets the
-operands' values, the parameters and the result's meta (its shape and dtype, already checked when
-the expression was made), and returns the result or an error naming the primitive.
+{-| The evaluator runs expressions in plain Elm instead of on MAX, and this module holds the
+semantics of every primitive there: `apply` takes a primitive, the values of its operands, its
+params and the meta of its result, and computes the result.
+
+`apply` expects the meta to be the shape and dtype `Tensor.Internal.Shape.rule` gives for the
+primitive and its operands, and relies on it instead of checking again. The result takes its shape
+from the meta, and its dtype too, apart from the few primitives `apply` lists. Operand shapes are
+not compared here, and a read outside an operand through `Tensor.Internal.Eval.Core`'s `getF` or
+`getI` gives 0 rather than an error. Some of the errors `apply` returns are about element values,
+which no shape rule sees: an index outside its axis in a gather or scatter, an integer `Mod` by
+zero, a float cast to an integer dtype that cannot hold it, and, under JavaScript only, an `si64` or
+`ui64` result that no `Int` there holds exactly (described below). A random draw of more than 2³¹
+elements is also refused, and so is a convolution with a stride below 1. The rest refuse operands
+or params of an unexpected form. Every message
+begins with the primitive's `Tensor.Internal.Prim.name` and `": "`, as in
+`"modBy: integer division by zero"`.
+
+Element values are held as `Tensor.Internal.Eval.Core` describes. A float is an f64 whatever its
+dtype, and nothing here rounds it to the dtype, a cast to a float dtype included.
+
+Integer results wrap as fixed-width two's complement arithmetic wraps them, and are meant to be the
+same under JavaScript, where an `Int` is a double that holds every integer only up to 2⁵³, as
+natively, where it has 64 bits. For `si8`, `ui8`, `si32` and `bool` the arithmetic is done on
+`Int`s, with products taken modulo 2³² (`U64.mulLow32`) so that none passes 2⁵³, and the result is
+passed through `wrapInt`: once per element for an element-wise primitive, once per lane
+(`Tensor.Internal.Eval.Core`'s term for the elements along one axis at fixed indices on every other
+axis) for a sum or a mean, and at every step of a dot product, a cumulative sum or a scatter that
+adds. For `si64` and `ui64` the sums, differences, products, means and dot products are those of
+`Tensor.Internal.Eval.U64`, exact modulo 2⁶⁴. Natively every such result is an `Int`; under
+JavaScript one past 2⁵³ that no double holds exactly is refused, with a message saying so, rather
+than rounded. Other primitives on `si64` and `ui64`, such as a negation or a cast, pass their
+result through `wrapInt`, which wraps it modulo 2⁶⁴. A `ui64` element is ordered as an unsigned
+number, its remainder and its mean are taken as one, and equality compares the bits. An integer
+mean is the lane's sum, wrapped for `si64` and `ui64`, divided by its length and rounded toward
+zero.
+
+Most of the care in the float rules is about NaN. The module takes MAX on the CPU to treat NaN as
+follows, and does the same: the comparisons `Gt`, `Ge`, `Eq` and `Ne` are false when either operand
+is NaN, `Ne` included; `Max2`, `Min2`, `ReduceMax`, `ReduceMin` and `MaxPool` ignore NaN, and give
+NaN only when every value they compare is NaN; and `ArgMax` and `ArgMin` skip NaN. Beyond that,
+top-k ranks NaN above every number, `Relu` keeps NaN, and a cast to a mask (a `bool` tensor) makes
+NaN true. Sums, means, cumulative sums, average pooling and softmax treat NaN no differently from
+any other number, so it reaches their results through the arithmetic. Under JavaScript Elm compares
+two variables through a function that answers "greater" whenever either is NaN, so `x > y` is true
+when either is NaN; the rules above therefore test for NaN explicitly instead of relying on a
+comparison.
+
 -}
 
 import Array exposing (Array)
@@ -14,10 +58,22 @@ import Tensor.Internal.Prim as P exposing (DT(..), Params, Prim(..))
 import Tensor.Internal.Shape exposing (Meta)
 
 
+{-| The outcome of computing a primitive: the run-time tensor, or a message saying why it could not
+be computed.
+-}
 type alias Out =
     Result String T
 
 
+{-| Returns the value of primitive `p` applied to the operand values `args` with params `params`,
+where `out` is the meta of the result, or a message beginning with `p`'s name and `": "`.
+
+The result has `out`'s shape and dtype, except that some primitives set their own: `Eq`, `Ne`,
+`Gt`, `Ge`, `IsInf` and `IsNaN` give `bool`; `ArgMax`, `ArgMin`, `TopKIndices` and `Range` give
+`si64`; `Reshape` and `StopGradient` keep the operand's dtype; and `XentLogits` gives the shape
+`[]`. A primitive given a number of operands it does not take is refused.
+
+-}
 apply : Prim -> List T -> Params -> Meta -> Out
 apply p args params out =
     let
@@ -57,6 +113,9 @@ apply p args params out =
 -- ELEMENT-WISE
 
 
+{-| Returns `f` applied to every element of a float tensor, with the meta's dtype and shape, or a
+message refusing integer data.
+-}
 mapF : (Float -> Float) -> T -> Meta -> Out
 mapF f x out =
     case x.data of
@@ -67,6 +126,9 @@ mapF f x out =
             Err ("needs a floating-point tensor, not " ++ P.dtName x.dt)
 
 
+{-| Returns the mask of `f` applied to every element of a float tensor, with the meta's shape, or a
+message refusing integer data.
+-}
 boolsF : (Float -> Bool) -> T -> Meta -> Out
 boolsF f x out =
     case x.data of
@@ -77,6 +139,8 @@ boolsF f x out =
             Err ("needs a floating-point tensor, not " ++ P.dtName x.dt)
 
 
+{-| Returns the mask element for `b`: 1 for `True` and 0 for `False`.
+-}
 fromBool : Bool -> Int
 fromBool b =
     if b then
@@ -86,6 +150,9 @@ fromBool b =
         0
 
 
+{-| Returns `x` with the meta's dtype and shape, and with `f` applied to each element of float
+data, or `g` applied to each element of integer data and the result wrapped to the meta's dtype.
+-}
 mapBoth : (Float -> Float) -> (Int -> Int) -> T -> Meta -> T
 mapBoth f g x out =
     { dt = out.dtype
@@ -100,6 +167,15 @@ mapBoth f g x out =
     }
 
 
+{-| Returns the value of a one-operand element-wise primitive, or a message.
+
+The primitives that need a float operand refuse integer data. `Abs` is the identity on `ui8`,
+`ui64` and `bool`, and `Relu` on `ui8` and `ui64`; on other integers both are wrapped, so `Abs` of
+the `si8` −128 is −128. On floats `Relu` gives 0 for anything not above 0, but keeps NaN. `Round`
+rounds a value halfway between two whole numbers to the even one. `Not` is 1 − n on a mask's
+elements. `StopGradient` returns the operand unchanged but for the meta's shape.
+
+-}
 unary : Prim -> T -> Params -> Meta -> Out
 unary p x params out =
     case p of
@@ -215,8 +291,14 @@ unary p x params out =
             Err "not a unary primitive"
 
 
-{-| float→float unchanged (no rounding yet); int→float by value (u64 unsigned); float→int refuses
-NaN, ±∞ and values outside the target, else truncates; int→int wraps; anything→Bool is x ≠ 0.
+{-| Returns `x` converted to the meta's dtype, or a message.
+
+To a float dtype the elements are read with `C.floatsOf`, so a `ui64` element is read as unsigned,
+and nothing is rounded to the target's precision. To `bool` an element is true when it is not 0,
+and a float NaN is true as well. Between integer dtypes an element is wrapped with `wrapInt`. From a
+float to an integer dtype a value is truncated toward zero; NaN, ±∞ and a value whose truncation the
+dtype cannot hold are refused, and the message names the first such element.
+
 -}
 cast : T -> Meta -> Out
 cast x out =
@@ -270,7 +352,8 @@ cast x out =
                     |> Result.andThen (\l -> done (I (Array.fromList l)))
 
 
-{-| [lo, hi) of an integer dtype, as floats.
+{-| Returns the range of an integer dtype's values as floats, the first bound included and the
+second excluded. Every dtype other than `si8`, `ui8`, `si32` and `ui64` gets the range of `si64`.
 -}
 intRange : DT -> ( Float, Float )
 intRange dt =
@@ -291,7 +374,9 @@ intRange dt =
             ( -(2 ^ 63), 2 ^ 63 )
 
 
-{-| Two operands broadcast to the result's shape.
+{-| Returns `f` of the elements of `a` and `b` at each flat index of `shape`, in row-major order,
+with `ta`'s and `tb`'s shapes broadcast to `shape` by `C.split`. `ta` and `tb` supply only those
+shapes; the elements are read from `a` and `b` with `getA` and `getB`.
 -}
 zip2 : List Int -> T -> T -> (Array a -> Int -> x) -> Array a -> (Array b -> Int -> y) -> Array b -> (x -> y -> c) -> List c
 zip2 shape ta tb getA a getB b f =
@@ -305,6 +390,41 @@ zip2 shape ta tb getA a getB b f =
     List.map (\k -> f (getA a (ia k)) (getB b (ib k))) (List.range 0 (C.size shape - 1))
 
 
+{-| Returns the values in `l`, or, when any is `Nothing`, the message that an element of a result
+of dtype `dt` has no exact `Int`. Only `Tensor.Internal.Eval.U64`'s arithmetic on `si64` and `ui64`
+gives `Nothing`, and only under JavaScript.
+-}
+allExact : DT -> List (Maybe Int) -> Result String (List Int)
+allExact dt l =
+    List.foldr
+        (\m acc ->
+            case m of
+                Just v ->
+                    Result.map ((::) v) acc
+
+                Nothing ->
+                    Err ("an element of the " ++ P.dtName dt ++ " result is past 2^53, where an Int under JavaScript cannot hold it exactly")
+        )
+        (Ok [])
+        l
+
+
+{-| Returns the value of a two-operand element-wise primitive, or a message.
+
+Both operands must hold the same kind of data, floats or integers; otherwise the message is
+`"dtypes differ"`.
+
+On floats, `Mod` is x − y · ⌊x / y⌋, which is NaN when y is 0. `Max2` and `Min2` ignore a NaN
+operand, giving NaN only when both are, and on equal operands, such as 0 and −0, give the first. The
+comparisons are false when either operand is NaN, `Ne` included. `And`, `Or` and `Xor` are refused.
+
+On integers, results are wrapped to the meta's dtype; `Add`, `Sub` and `Mul` on `si64` and `ui64`
+are refused under JavaScript where a result has no exact `Int`. `Mod` is refused if any element of the
+divisor is 0; otherwise it is `modBy`, whose result has the divisor's sign, or `U64.modU` for
+`ui64`. `Max2`, `Min2`, `Gt` and `Ge` order `ui64` elements as unsigned, while `Eq` and `Ne` compare
+the bits. `And`, `Or` and `Xor` take any element other than 0 as true. `Div` and `Pow` are refused.
+
+-}
 binary : Prim -> T -> T -> Meta -> Out
 binary p ta tb out =
     case ( ta.data, tb.data ) of
@@ -335,7 +455,6 @@ binary p ta tb out =
                 Mod ->
                     floats (\x y -> x - y * M.floorF (x / y))
 
-                -- as MAX on CPU: NaN ignored (fmax, fmin); on equal values (0 and -0) the first
                 Max2 ->
                     floats
                         (\x y ->
@@ -356,7 +475,7 @@ binary p ta tb out =
                                 x
                         )
 
-                -- Elm's comparisons are not IEEE's under JavaScript: NaN > 0 is True there
+                -- unlike IEEE, under JavaScript Elm's x > y is True when either is NaN
                 Gt ->
                     bools (\x y -> not (isNaN x || isNaN y) && x > y)
 
@@ -366,7 +485,7 @@ binary p ta tb out =
                 Eq ->
                     bools (\x y -> not (isNaN x || isNaN y) && x == y)
 
-                -- ordered, as MAX: NaN is not unequal to anything
+                -- unlike Elm's /=, false when either is NaN
                 Ne ->
                     bools (\x y -> not (isNaN x || isNaN y) && x /= y)
 
@@ -384,18 +503,37 @@ binary p ta tb out =
                 bools f =
                     Ok { dt = Bool, shape = out.shape, data = I (Array.fromList (zip2 out.shape ta tb getI a getI b (\x y -> fromBool (f x y)))) }
 
+                exact f =
+                    allExact out.dtype (zip2 out.shape ta tb getI a getI b f)
+                        |> Result.map (\l -> { dt = out.dtype, shape = out.shape, data = I (Array.fromList l) })
+
+                wide =
+                    C.isWide out.dtype
+
                 cmp =
                     order ta.dt
             in
             case p of
                 Add ->
-                    ints (+)
+                    if wide then
+                        exact U64.add
+
+                    else
+                        ints (+)
 
                 Sub ->
-                    ints (-)
+                    if wide then
+                        exact U64.sub
+
+                    else
+                        ints (-)
 
                 Mul ->
-                    ints (*)
+                    if wide then
+                        exact U64.mul
+
+                    else
+                        ints U64.mulLow32
 
                 Mod ->
                     if List.member 0 (Array.toList b) then
@@ -455,6 +593,10 @@ binary p ta tb out =
             Err "dtypes differ"
 
 
+{-| Returns, at each element of the meta's shape, `x`'s element where the mask `c` is not 0 and
+`y`'s where it is 0, with all three broadcast to that shape. If `x` and `y` hold different kinds of
+data, one floats and the other integers, `x`'s data is returned unchanged.
+-}
 select : T -> T -> T -> Meta -> T
 select c x y out =
     let
@@ -519,20 +661,63 @@ select c x y out =
 -- EVERYTHING ELSE
 
 
+{-| Returns the value of a primitive outside the element-wise families, or a message. A primitive
+given operands its case does not match is refused with `"not implemented for these operands"`.
+
+The reductions reduce the axis that is the first entry of `params.a`. Keeping the axis with size 1
+or removing it leaves the results in the same order, so only the meta's shape reflects that choice.
+On an empty lane the float mean, maximum and minimum are NaN, and the integer ones are 0.
+
+`Transpose`, `BroadcastTo`, `Slice`, `Pad` and `BandPart` compute no new element: each picks the
+operand's elements, or a fill, with `C.pick`. `Pad` fills float data with the first entry of
+`params.f`, 0 when it is empty. It fills integer data with the first entry of `params.b` when there
+is one, and otherwise with that float fill rounded. `BandPart` sets the elements outside the band
+to 0, which is false in a mask.
+
+`Random` takes as its seed element 0 of its operand, read as an integer. A distribution kind of 1
+draws from `Tensor.Internal.Eval.Random.normal`, and any other kind from its `uniform`. The result
+holds float data whatever the meta's dtype.
+
+`XentLogits` is the mean over rows, the first axis, of minus the sum along the row of target times
+the log-softmax of the logits; the row count is taken as at least 1.
+
+`LayerNorm` normalises each lane along the last axis to (v − mean) / √(variance + ε) · gain + bias,
+where the variance divides by the lane's length, not one less, and ε is the first entry of
+`params.f`, or 10⁻⁵ when it is empty.
+
+-}
 other : Prim -> List T -> Params -> Meta -> Out
 other p args params out =
     case ( p, args ) of
         ( ReduceSum, [ x ] ) ->
-            reduce x params out (List.foldl (+) 0) (List.foldl (+) 0)
+            reduce x
+                params
+                out
+                (List.foldl (+) 0)
+                (if C.isWide out.dtype then
+                    U64.sum
+
+                 else
+                    List.foldl (+) 0 >> Just
+                )
 
         ( ReduceMean, [ x ] ) ->
-            reduce x params out (\l -> List.sum l / toFloat (List.length l)) (\l -> List.sum l // Basics.max 1 (List.length l))
+            reduce x
+                params
+                out
+                (\l -> List.sum l / toFloat (List.length l))
+                (if C.isWide out.dtype then
+                    U64.mean (out.dtype == UI64)
+
+                 else
+                    \l -> Just (List.sum l // Basics.max 1 (List.length l))
+                )
 
         ( ReduceMax, [ x ] ) ->
-            reduce x params out (ignoringNaN Basics.max) (extreme x.dt GT)
+            reduce x params out (ignoringNaN Basics.max) (extreme x.dt GT >> Just)
 
         ( ReduceMin, [ x ] ) ->
-            reduce x params out (ignoringNaN Basics.min) (extreme x.dt LT)
+            reduce x params out (ignoringNaN Basics.min) (extreme x.dt LT >> Just)
 
         ( ArgMax, [ x ] ) ->
             arg x params out GT
@@ -550,7 +735,7 @@ other p args params out =
             cumsum x params out
 
         ( MatMul, [ a, b ] ) ->
-            Ok (matmul a b out)
+            matmul a b out
 
         ( Reshape, [ x ] ) ->
             Ok { x | shape = out.shape }
@@ -795,29 +980,39 @@ other p args params out =
             Err "not implemented for these operands"
 
 
+{-| Returns the list 0, 1, …, n − 1, which is empty when n is 0 or less.
+-}
 range : Int -> List Int
 range n =
     List.range 0 (n - 1)
 
 
+{-| Returns the first entry of a params list, or 0 when it is empty, so a missing axis reads as
+axis 0.
+-}
 first : List Int -> Int
 first l =
     Maybe.withDefault 0 (List.head l)
 
 
+{-| Returns the size of axis `i` of a shape, or 1 when `i` is the shape's rank or more. A negative
+`i` is read as 0.
+-}
 dimAt : Int -> List Int -> Int
 dimAt i l =
     Maybe.withDefault 1 (List.head (List.drop i l))
 
 
-{-| (outer, size, inner) around an axis.
+{-| Returns the product of the sizes before `axis`, the size of `axis`, and the product of the
+sizes after it.
 -}
 dims : List Int -> Int -> ( Int, Int, Int )
 dims shape axis =
     ( C.size (List.take axis shape), dimAt axis shape, C.size (List.drop (axis + 1) shape) )
 
 
-{-| A max or min that skips NaN, as MAX's reductions do on CPU (NaN only when every element is).
+{-| Returns `f` folded over the elements of `l` that are not NaN, or NaN when there is none. With
+`Basics.max` or `Basics.min` it is the largest or smallest number in `l`, ignoring NaN.
 -}
 ignoringNaN : (Float -> Float -> Float) -> List Float -> Float
 ignoringNaN f l =
@@ -829,7 +1024,8 @@ ignoringNaN f l =
             0 / 0
 
 
-{-| The largest (GT) or smallest (LT) of a lane of integers (u64 unsigned).
+{-| Returns the largest (`want` is `GT`) or smallest (`LT`) of a lane of integer elements of dtype
+`dt`, ordered by `order`, or 0 for an empty lane.
 -}
 extreme : DT -> Order -> List Int -> Int
 extreme dt want l =
@@ -850,6 +1046,9 @@ extreme dt want l =
             0
 
 
+{-| Compares two integer elements of dtype `dt`: as unsigned numbers for `ui64`, and as signed
+ones otherwise.
+-}
 order : DT -> Int -> Int -> Order
 order dt a b =
     if dt == UI64 then
@@ -859,7 +1058,12 @@ order dt a b =
         compare a b
 
 
-reduce : T -> Params -> Meta -> (List Float -> Float) -> (List Int -> Int) -> Out
+{-| Returns one element for each lane of `x` along the axis that is the first entry of
+`params.a`, in the order `C.lanes` lists them: `ff` of the lane's elements for float data, or `fi`'s
+result on them, wrapped to the meta's dtype, for integer data. A lane for which `fi` gives `Nothing`
+makes the result a message.
+-}
+reduce : T -> Params -> Meta -> (List Float -> Float) -> (List Int -> Maybe Int) -> Out
 reduce x params out ff fi =
     let
         axis =
@@ -873,11 +1077,16 @@ reduce x params out ff fi =
             Ok { dt = out.dtype, shape = out.shape, data = F (Array.fromList (List.map (\lane -> ff (List.map (getF a) lane)) ls)) }
 
         I a ->
-            Ok { dt = out.dtype, shape = out.shape, data = I (Array.fromList (List.map (\lane -> C.wrapInt out.dtype (fi (List.map (getI a) lane))) ls)) }
+            allExact out.dtype (List.map (\lane -> Maybe.map (C.wrapInt out.dtype) (fi (List.map (getI a) lane))) ls)
+                |> Result.map (\l -> { dt = out.dtype, shape = out.shape, data = I (Array.fromList l) })
 
 
-{-| The index of the largest (GT) or smallest (LT) element of each lane: the lowest on ties; NaN
-skipped, as MAX does on CPU (0 if every element is NaN).
+{-| Returns, as `si64`, the position along the axis that is the first entry of `params.a` of the
+largest (`want` is `GT`) or smallest (`LT`) element of each lane, the lowest position on ties.
+
+Integer elements are ordered by `order`. Float elements that are NaN are skipped, so a lane whose
+elements are all NaN gives 0, as does an empty lane.
+
 -}
 arg : T -> Params -> Meta -> Order -> Out
 arg x params out want =
@@ -912,6 +1121,9 @@ arg x params out want =
             Ok { dt = SI64, shape = out.shape, data = I (Array.fromList (List.map (\lane -> bestI (List.map (getI a) lane)) ls)) }
 
 
+{-| Returns the position in `vs` of the largest (`want` is `GT`) or smallest (`LT`) float that is
+not NaN, the lowest position on ties, or 0 when there is none.
+-}
 bestF : Order -> List Float -> Int
 bestF want vs =
     List.foldl
@@ -937,7 +1149,9 @@ bestF want vs =
         |> Maybe.withDefault 0
 
 
-{-| A function of each float lane along an axis, results laid out with the same shape.
+{-| Returns `x` with `f` applied to each of its lanes along `axis`, read as floats, and each result
+laid out where its lane was. The result holds float data with the meta's dtype and shape, and `f`
+is expected to return a lane as long as the one it was given.
 -}
 alongF : T -> Int -> Meta -> (List Float -> List Float) -> Out
 alongF x axis out f =
@@ -951,6 +1165,10 @@ alongF x axis out f =
     Ok { dt = out.dtype, shape = out.shape, data = F (Array.fromList (C.withLanes x.shape axis (dimAt axis x.shape) (List.map (\lane -> f (List.map (getF a) lane)) ls))) }
 
 
+{-| Returns the softmax of a lane: each eᵛ divided by their sum, computed as e^(v − m), with m the
+lane's maximum, so that no exponential overflows. A lane that holds NaN, or whose maximum is +∞ or
+−∞, gives NaN throughout.
+-}
 softmax : List Float -> List Float
 softmax l =
     let
@@ -966,6 +1184,9 @@ softmax l =
     List.map (\e -> e / s) es
 
 
+{-| Returns the log-softmax of a lane: each v − m − ln Σ e^(v − m), with m the lane's maximum. As
+with `softmax`, a lane that holds NaN, or whose maximum is +∞ or −∞, gives NaN throughout.
+-}
 logSoftmax : List Float -> List Float
 logSoftmax l =
     let
@@ -981,6 +1202,11 @@ logSoftmax l =
     List.map (\v -> v - m - ls) l
 
 
+{-| Returns the running sums of `x` along an axis, with `params.a` holding the axis, the exclusive
+flag and the reverse flag, or a message when it has fewer than three entries. Integer sums are
+wrapped to the meta's dtype at every step; for `si64` and `ui64` a running sum that has no exact
+`Int`, which happens only under JavaScript, is refused.
+-}
 cumsum : T -> Params -> Meta -> Out
 cumsum x params out =
     case params.a of
@@ -1023,18 +1249,35 @@ cumsum x params out =
                     Ok { dt = out.dtype, shape = out.shape, data = F (Array.fromList (C.withLanes x.shape axis n (List.map (\lane -> scan (+) 0 (List.map (getF a) lane)) ls))) }
 
                 I a ->
-                    Ok { dt = out.dtype, shape = out.shape, data = I (Array.fromList (C.withLanes x.shape axis n (List.map (\lane -> scan (\s v -> C.wrapInt out.dtype (s + v)) 0 (List.map (getI a) lane)) ls))) }
+                    let
+                        step =
+                            if C.isWide out.dtype then
+                                \s v -> Maybe.andThen (\s0 -> Maybe.andThen (U64.add s0) v) s
+
+                            else
+                                Maybe.map2 (\s0 v0 -> C.wrapInt out.dtype (s0 + v0))
+                    in
+                    allExact out.dtype (C.withLanes x.shape axis n (List.map (\lane -> scan step (Just 0) (List.map (getI a >> Just) lane)) ls))
+                        |> Result.map (\l -> { dt = out.dtype, shape = out.shape, data = I (Array.fromList l) })
 
         _ ->
             Err "bad parameters"
 
 
-{-| NumPy `matmul`: rank-1 operands promoted (and their axis dropped), batch prefixes broadcast.
+{-| Returns the matrix product of `ta` and `tb` by NumPy's `matmul` rules.
+
+A rank-1 `ta` is read as one row and a rank-1 `tb` as one column; the meta's shape already lacks
+the axis that adds. The axes before the last two are batch axes, broadcast with
+`C.broadcastShapes`. The length summed over is `ta`'s last axis, and `tb`'s is not compared with it.
+An integer dot product is wrapped to the meta's dtype: for `si64` and `ui64` it is
+`U64.dot`, and refused where it has no exact `Int`, which happens only under JavaScript; for the
+other integer dtypes each product is taken modulo 2³² and the running sum wrapped at every step.
+Operands holding different kinds of data give `ta`'s data unchanged.
+
 -}
-matmul : T -> T -> Meta -> T
+matmul : T -> T -> Meta -> Out
 matmul ta tb out =
     let
-        -- rank-1 operands promoted; the result's meta has their axes dropped already
         sa =
             if List.length ta.shape == 1 then
                 1 :: ta.shape
@@ -1098,22 +1341,29 @@ matmul ta tb out =
 
         ks =
             range k
+
+        done data =
+            { dt = out.dtype, shape = out.shape, data = data }
     in
-    { dt = out.dtype
-    , shape = out.shape
-    , data =
-        case ( ta.data, tb.data ) of
-            ( F a, F b ) ->
-                F (Array.fromList (List.map (\( ra0, cb0 ) -> List.foldl (\kk acc -> acc + getF a (ra0 + kk) * getF b (cb0 + kk * n)) 0 ks) cells))
+    case ( ta.data, tb.data ) of
+        ( F a, F b ) ->
+            Ok (done (F (Array.fromList (List.map (\( ra0, cb0 ) -> List.foldl (\kk acc -> acc + getF a (ra0 + kk) * getF b (cb0 + kk * n)) 0 ks) cells))))
 
-            ( I a, I b ) ->
-                I (Array.fromList (List.map (\( ra0, cb0 ) -> C.wrapInt out.dtype (List.foldl (\kk acc -> acc + getI a (ra0 + kk) * getI b (cb0 + kk * n)) 0 ks)) cells))
+        ( I a, I b ) ->
+            if C.isWide out.dtype then
+                allExact out.dtype (List.map (\( ra0, cb0 ) -> U64.dot (List.map (\kk -> ( getI a (ra0 + kk), getI b (cb0 + kk * n) )) ks)) cells)
+                    |> Result.map (Array.fromList >> I >> done)
 
-            _ ->
-                ta.data
-    }
+            else
+                Ok (done (I (Array.fromList (List.map (\( ra0, cb0 ) -> List.foldl (\kk acc -> C.wrapInt out.dtype (acc + U64.mulLow32 (getI a (ra0 + kk)) (getI b (cb0 + kk * n)))) 0 ks) cells))))
+
+        _ ->
+            Ok (done ta.data)
 
 
+{-| Returns the operands joined along `axis`, in order, each read as floats with `C.floatsOf` when
+the meta's dtype is a float dtype and as integers with `C.intsOf` otherwise.
+-}
 concat : Int -> List T -> Meta -> T
 concat axis pieces out =
     let
@@ -1150,6 +1400,10 @@ concat axis pieces out =
     }
 
 
+{-| Returns the slices of `x` along `axis` at the indices in `idx`, in the indices' row-major
+order, or a message naming the first index outside 0 .. n − 1, where n is the size of that axis.
+Indices held as floats are rounded.
+-}
 gather : Int -> T -> T -> Meta -> Out
 gather axis x idx out =
     let
@@ -1174,9 +1428,15 @@ gather axis x idx out =
             Ok (C.pick out.dtype out.shape sources ( 0, 0 ) x.data)
 
 
-{-| x with slices along `axis` at the indices replaced by (or, adding, increased by) the slices of
-`upd` in order: for rows, axis 0 and `upd` has a row per index. Duplicates: the last replacement
-wins; additions all count.
+{-| Returns `x` with its slice along `axis` at each index `idx[k]` replaced by slice k of `upd`
+along that axis, or, with `add`, increased by it, or a message. `upd` is read as one slice along
+`axis` per entry of `idx`.
+
+With a repeated index the last replacement wins, and every addition counts. An integer addition is
+wrapped to the meta's dtype; for `si64` and `ui64` one whose result has no exact `Int`, which
+happens only under JavaScript, is refused. An index outside 0 .. n − 1, where n is the size of the axis, is
+refused, naming the first in `idx`, and so are `x` and `upd` holding different kinds of data.
+
 -}
 scatter : Int -> Bool -> T -> T -> List Int -> Meta -> Out
 scatter axis add x upd idx out =
@@ -1230,17 +1490,55 @@ scatter axis add x upd idx out =
                     Ok { dt = out.dtype, shape = out.shape, data = F (run (+) xa ua) }
 
                 ( I xa, I ua ) ->
-                    Ok { dt = out.dtype, shape = out.shape, data = I (run (\a b -> C.wrapInt out.dtype (a + b)) xa ua) }
+                    if C.isWide out.dtype then
+                        run (\a b -> Maybe.map2 Tuple.pair a b |> Maybe.andThen (\( a0, b0 ) -> U64.add a0 b0)) (Array.map Just xa) (Array.map Just ua)
+                            |> Array.toList
+                            |> allExact out.dtype
+                            |> Result.map (\l -> { dt = out.dtype, shape = out.shape, data = I (Array.fromList l) })
+
+                    else
+                        Ok { dt = out.dtype, shape = out.shape, data = I (run (\a b -> C.wrapInt out.dtype (a + b)) xa ua) }
 
                 _ ->
                     Err "dtypes differ"
 
 
-{-| NHWC input, (kh, kw, c, o) filter; strides, paddings and dilations from `a`. The transposed conv
-is the adjoint: filter (kh, kw, out, in).
+{-| Returns the 2-D convolution of `x` with the filter `f`, or with `transposed` the transposed
+convolution, with the meta's shape, or a message when either is not rank 4, `params.a` has fewer
+than six entries, or either stride is below 1.
+
+`x` is NHWC: batch, height, width, channels. `params.a` holds the two strides sh and sw, then the
+paddings top, bottom, left and right, of which only top (pt) and left (pl) are read, since the
+meta's shape fixes the rest; then the dilations dh and dw, which are used when exactly two entries
+follow the paddings and are 1 otherwise.
+
+Forward, the filter is (kernel height kh, kernel width kw, input channels, result channels), and
+result element [b, p, q, o] is the sum over i, j and c of
+`x`[b, p·sh + i·dh − pt, q·sw + j·dw − pl, c] · `f`[i, j, c, o], with a position outside `x`
+reading 0. Transposed, the filter is (kh, kw, result channels, input channels), and each
+`x`[b, p, q, c] · `f`[i, j, o, c] is added to the result at
+[b, p·sh + i·dh − pt, q·sw + j·dw − pl, o]: the adjoint of the forward convolution with the same
+params. Both read their operands as floats and give float data.
+
 -}
 conv : Bool -> T -> T -> Params -> Meta -> Out
 conv transposed x f params out =
+    case ( x.shape, f.shape, params.a ) of
+        ( _, _, sh :: sw :: _ ) ->
+            if sh < 1 || sw < 1 then
+                Err ("strides must be at least 1, not " ++ String.fromInt sh ++ " and " ++ String.fromInt sw)
+
+            else
+                convChecked transposed x f params out
+
+        _ ->
+            Err "bad shapes or parameters"
+
+
+{-| Returns `conv`'s result, for strides of at least 1.
+-}
+convChecked : Bool -> T -> T -> Params -> Meta -> Out
+convChecked transposed x f params out =
     case ( x.shape, f.shape, params.a ) of
         ( [ nb, h, w, cx ], [ kh, kw, f2, f3 ], sh :: sw :: pt :: _ :: pl :: _ :: dil ) ->
             let
@@ -1281,7 +1579,6 @@ conv transposed x f params out =
                                 (\j -> sumOver (range cx) (\c -> xAt b (y * sh + i * dh - pt) (xx * sw + j * dw - pl) c * fAt i j c o))
                         )
 
-                -- out[b, y·sh + i·dh − pt, x·sw + j·dw − pl, o] += x[b, y, x, c] · f[i, j, o, c]
                 backward b oy ox o =
                     sumOver (range kh)
                         (\i ->
@@ -1323,6 +1620,15 @@ conv transposed x f params out =
             Err "bad shapes or parameters"
 
 
+{-| Returns the maximum, with `isMax`, or else the mean, of each k × k window of the NHWC input `x`,
+with stride k and `params.a = [k]`, or a message when `x` is not rank 4 or `params.a` is not one
+entry.
+
+The number of windows comes from `x`'s own height and width, each divided by k with `//`, not from
+the meta. The input is read as floats. The maximum ignores NaN and is NaN only for a window that is
+all NaN; the mean includes it.
+
+-}
 pool : Bool -> T -> Params -> Meta -> Out
 pool isMax x params out =
     case ( x.shape, params.a ) of
@@ -1350,8 +1656,13 @@ pool isMax x params out =
             Err "bad shapes or parameters"
 
 
-{-| The k largest (descending) or smallest (ascending) of each lane, ties lowest index first, NaN
-above every number; the values or their indices.
+{-| Returns the k largest elements of each lane of `x`, in descending order, or the k smallest, in
+ascending order, or with `indices` their positions along the lane as `si64`, or a message when
+`params.a` is not `[axis, k, largest]`.
+
+Equal elements keep the order of their positions, lowest first. NaN ranks above every number, so it
+comes first among the largest and last among the smallest. `ui64` elements are ordered as unsigned.
+
 -}
 topK : Bool -> T -> Params -> Meta -> Out
 topK indices x params out =

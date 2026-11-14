@@ -1,8 +1,53 @@
 module ValuesTests exposing (suite)
 
-{-| Element values typed by kind (plans/tensor-eval-in-elm.md, V0): constants' values, their keys,
-their MLIR text and the range refusal. Values stay within 2⁵³, so these hold under Node too; the
-64-bit cases are the E2E suite `test/eco-tensor`.
+{-| Integer constants are held as `Int`s rather than `Float`s, so that a 64-bit element is not
+rounded (`Tensor.Internal.Values` states the rule). The tests are in four groups: values, keys
+(the structural hash that stands for an expression's identity, `Tensor.Internal.Key`), MLIR text,
+and range refusal. Without them, a change could hold a constant as the wrong kind of values, key
+an `si64` constant made from floats differently from one made from the same `Int`s, write a
+constant's text wrongly or let an out-of-range integer constant build, and no error would show it.
+
+`N` is an axis tag and `two` a size of 2 along it. Graphs are built with `Graph.function` from
+`Signature.unit`, so they have no inputs. Every integer used but one lies within ±2⁵³ (the largest
+is 2⁵² + 1), so each is exact as a JavaScript `Int`; the other, −2⁶³ given to `Values.u64Text`, is
+a power of two and so exact as well.
+
+`Expr`, `Key`, `Mo`, `Types` and `Values` below are the modules of those names under
+`Tensor.Internal`.
+
+What the tests establish, group by group:
+
+  - **Values.** `Values.forDtype` gives `IntValues` for `si64`, rounding `[3, -2, 2.4, -1.6, 0.6]`
+    to `[3, -2, 2, -2, 1]`, and for `bool` (`[1, 0]`), and `FloatValues` for `f32`.
+    `Values.fitsDtype` refuses 300 and −1 for `ui8` and 2 for `bool`, with messages such as
+    `"value 300 does not fit ui8"`, and accepts −128 for `si8`. `Values.u64Text` gives `"5"` for
+    5, `"18446744073709551615"` for −1 and `"9223372036854775808"` for −2⁶³. `Values.limbs -1` is
+    four 65535s. `Values.altHash` differs for `[1, 2]` and `[2, 1]`.
+  - **Keys.** `Key.mixInt64s` gives different keys for `[-1]` and `[65535]`, and for `[0]` and
+    `[65536]`, and mixes `[7, -3]` exactly as `Key.mixFloats` mixes the same numbers as floats.
+    `Expr.shallow` describes an expression without its key, as a string paired with its operands'
+    keys, so that a key collision can be noticed. An `si64` constant made by `Expr.const` from
+    floats has the same key and the same `Expr.shallow` description as one made by
+    `Expr.constValues` from the same `Int`s; the string differs for two one-element `si64`
+    constants holding 1 and 2.
+  - **MLIR text.** `Mo.constText` writes `si64` values `[7, -3]`, a `ui64` 5, `bool` values as
+    `true`/`false` with element type `i1`, and `f32` values `[1, 0.5]` as `1.0, 0.5`, each
+    compared with the whole expected `#M.dense_array<…> : tensor<…>` string. The MLIR generic op
+    text `Graph.Max.toGenericText` writes for a graph returning `Tensor.fromList` of `int64` values
+    `[2⁵² + 1, -9]` contains those two integers in decimal.
+  - **Range refusal.** Building a graph fails, with the range message among its errors, for
+    `Tensor.fromList uint8` holding 300, `Tensor.constant int8 -129`, and `Tensor.padInt` with a
+    fill of 256 on a `uint8` tensor. A `ui8` constant of 300 made by `Expr.const` records no build
+    error. `Types.valuesOf int64` turns `[1, 2]` into `IntValues [1, 2]`.
+
+Among what is not tested: `Key.mixInt64s` of integers beyond ±2⁵³, which it mixes as a marker and
+four 16-bit pieces rather than as floats; `ui64` elements of 2⁶³ or more, which are negative `Int`s,
+in `Mo.constText`; `Values.forDtype` given NaN, an infinity, an out-of-range float or a value
+halfway between two integers; the `si32` range and the upper end of the `si8` range; that the
+`int64` constant made by `Tensor.fromList` does not pass through `Float` on its way to the text,
+since every value here is exact as a `Float`; that constants of an integer dtype and of a float
+dtype holding equal values have different keys; and float text for NaN, an infinity or `-0.0`.
+
 -}
 
 import Expect
@@ -20,21 +65,27 @@ import Tensor.Internal.Values as Values exposing (Values(..))
 import Test exposing (Test, describe, test)
 
 
+{-| The axis tag of the rank-1 tensors the tests build.
+-}
 type N
     = N
 
 
+{-| A size of 2 along the axis `N`.
+-}
 two : Dim N
 two =
     T.dim N 2
 
 
+{-| The tests of element values, in the four groups the module docstring lists.
+-}
 suite : Test
 suite =
     describe "element values"
         [ describe "Values"
             [ test "forDtype: integer dtypes round to Ints" <|
-                \_ -> Values.forDtype SI64 [ 3, -2 ] |> Expect.equal (IntValues [ 3, -2 ])
+                \_ -> Values.forDtype SI64 [ 3, -2, 2.4, -1.6, 0.6 ] |> Expect.equal (IntValues [ 3, -2, 2, -2, 1 ])
             , test "forDtype: floating dtypes keep Floats" <|
                 \_ -> Values.forDtype F32 [ 3 ] |> Expect.equal (FloatValues [ 3 ])
             , test "forDtype: Bool is integer" <|
@@ -49,6 +100,10 @@ suite =
                         |> Expect.equal ( Just "value -1 does not fit ui8", Just "value 2 does not fit bool" )
             , test "u64Text of a non-negative Int" <|
                 \_ -> Values.u64Text 5 |> Expect.equal "5"
+            , test "u64Text of a negative Int adds 2^64" <|
+                \_ ->
+                    ( Values.u64Text -1, Values.u64Text (-9223372036854775807 - 1) )
+                        |> Expect.equal ( "18446744073709551615", "9223372036854775808" )
             , test "limbs are floored: -1 is four 65535s" <|
                 \_ -> Values.limbs -1 |> Expect.equal [ 65535, 65535, 65535, 65535 ]
             , test "altHash tells apart values of one length" <|
@@ -59,9 +114,11 @@ suite =
                 \_ -> K.mixInt64s [ -1 ] ( 1, 2 ) |> Expect.notEqual (K.mixInt64s [ 65535 ] ( 1, 2 ))
             , test "mixInt64s: 0 and 65536 differ" <|
                 \_ -> K.mixInt64s [ 0 ] ( 1, 2 ) |> Expect.notEqual (K.mixInt64s [ 65536 ] ( 1, 2 ))
-            , test "an integer constant from Floats and from Ints is one expression" <|
-                \_ -> E.key (E.const SI64 [ 2 ] [ 7, -3 ]) |> Expect.equal (E.key (E.constValues SI64 [ 2 ] (IntValues [ 7, -3 ])))
-            , test "an int constant's key is the one a float of the same value had (shared subgraphs are named by key)" <|
+            , test "an integer constant from Floats and from Ints has one key and one shallow description" <|
+                \_ ->
+                    ( E.key (E.const SI64 [ 2 ] [ 7, -3 ]), E.shallow (E.const SI64 [ 2 ] [ 7, -3 ]) )
+                        |> Expect.equal ( E.key (E.constValues SI64 [ 2 ] (IntValues [ 7, -3 ])), E.shallow (E.constValues SI64 [ 2 ] (IntValues [ 7, -3 ])) )
+            , test "mixInt64s mixes small Ints as mixFloats mixes the same numbers" <|
                 \_ -> K.mixInt64s [ 7, -3 ] ( 1, 2 ) |> Expect.equal (K.mixFloats [ 7, -3 ] ( 1, 2 ))
             , test "the shallow text tells two constants of one shape apart" <|
                 \_ ->
@@ -75,7 +132,7 @@ suite =
                 \_ -> Mo.constText UI64 [ 1 ] (IntValues [ 5 ]) |> Expect.equal "#M.dense_array<5> : tensor<1xui64>"
             , test "bool as true/false" <|
                 \_ -> Mo.constText Bool [ 2 ] (IntValues [ 1, 0 ]) |> Expect.equal "#M.dense_array<true, false> : tensor<2xi1>"
-            , test "floats as before" <|
+            , test "f32 as decimal floats" <|
                 \_ -> Mo.constText F32 [ 2 ] (FloatValues [ 1, 0.5 ]) |> Expect.equal "#M.dense_array<1.0, 0.5> : tensor<2xf32>"
             , test "fromList int64 reaches the graph text exactly" <|
                 \_ ->
