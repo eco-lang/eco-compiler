@@ -1,25 +1,38 @@
 module Max.Internal.Elements exposing (byteSize, check, decode, encode)
 
-{-| A tensor crosses between Elm and the MAX host as bytes, and `Tensor.Eval` computes on `Value`s,
-so a session that runs graphs either way needs to turn one into the other. This module does that,
-in both directions, for every dtype the package has.
+{-| A tensor crosses between Elm and the MAX host as bytes, while `Tensor.Eval` computes on
+`Value`s, so a session that runs graphs either way has to turn one into the other. This module
+does that, in both directions and for every dtype the package has, and also checks whether a value
+fits a tensor's dtype and shape.
 
-The bytes are in the package encoding `Train` describes: row-major, little-endian, each element at
-its dtype's width, nothing between or around the elements. Encoding is
-`Tensor.Internal.Encode.encodeValues`, so f16 and bf16 values are rounded as it rounds them.
-Decoding reads what it writes:
+A tensor is described here by any record with a `dtype` and a `shape`, as `Graph.Spec` and
+`Tensor.Eval.Value` both are. The `dtype` is the dtype's name as `Graph.Spec` gives it (`"f32"`,
+`"si64"`, `"bool"`, …). A name the package does not have is refused by `byteSize`, `decode`,
+`encode` and `check` alike.
 
-  - `f16` and `bf16` patterns are read as the numbers they stand for, ±∞ and subnormals included;
-    every NaN pattern gives NaN, without its sign or payload.
+The bytes are in the package encoding that `Train` states: row-major, little-endian, each element
+at its dtype's width, with nothing between or around the elements. `encode` writes them with
+`Tensor.Internal.Encode.encodeValues`, which decides how each value is rounded or converted on the
+way to bytes. `decode` reads the same layout back:
+
+  - `f16` and `bf16` patterns are read as the numbers they stand for, ±∞, signed zeros and
+    subnormals included; every NaN pattern gives NaN, but its sign and payload are not carried
+    over.
   - `f32` and `f64` are read by elm/bytes.
   - `si8`, `si32` and `ui8` are read at their width, signed or not as their names say.
-  - `si64` and `ui64` are read as a low unsigned 32-bit word and a high signed one, so either gives
-    the `Int` with the element's 64 bits: a `ui64` element of 2⁶³ or more is a negative `Int`, as
-    `Tensor.Eval.Data` describes. Under JavaScript an `Int` beyond ±2⁵³ is not held exactly.
+  - `si64` and `ui64` are read as a low unsigned 32-bit word and a high signed one. Natively that
+    gives the `Int` with the element's 64 bits, so a `ui64` element of 2⁶³ or more is a negative
+    `Int`, as `Tensor.Eval.Data` describes. Under JavaScript an `Int` is a double, and an element
+    beyond ±2⁵³ may be read inexactly.
   - a `bool` byte is `True` when it is not 0.
 
-A tensor is described here by a record with a `dtype`, MAX's name for it as `Graph.Spec` gives it,
-and a `shape`.
+Decoding does not undo every encoding. On the way to bytes a float is rounded to its dtype and an
+integer is not range-checked, as `Tensor.Internal.Encode` describes, and an f16 or bf16 NaN does
+not come back with its sign and payload.
+
+`encode` checks nothing but the dtype name. Whether a value fits a tensor is `check`'s question,
+answered by the rule `Tensor.Eval.run` applies to an input value, so its messages are worded for an
+input.
 
 -}
 
@@ -32,24 +45,25 @@ import Tensor.Internal.Prim as P exposing (DT(..))
 import Tensor.Internal.Values as Values
 
 
-{-| Returns the dtype named `name`, or `Nothing` if no dtype has that name.
+{-| Returns the dtype whose name, as `Tensor.Internal.Prim.dtName` spells it, is `name`, or
+`Nothing` if no dtype has that name.
 -}
 dtypeNamed : String -> Maybe DT
 dtypeNamed name =
     List.filter (\d -> P.dtName d == name) P.allDTs |> List.head
 
 
-{-| Returns the number of bytes a tensor of this dtype and shape takes, or `Nothing` for a dtype
-name the package does not have.
+{-| Returns the number of bytes a tensor of the spec's dtype and shape takes in the package
+encoding, or `Nothing` for a dtype name the package does not have.
 -}
 byteSize : { a | dtype : String, shape : List Int } -> Maybe Int
 byteSize spec =
     dtypeNamed spec.dtype |> Maybe.map (\dt -> P.dtSize dt * List.product spec.shape)
 
 
-{-| Reads `bytes` as a tensor of the spec's dtype and shape, or returns why it cannot: a dtype the
-package does not have (`"unknown dtype x"`), or a width other than the spec's
-(`"10 bytes, but si32 [3] takes 12"`).
+{-| Reads `bytes` as a value of the spec's dtype and shape, each dtype as the module docstring
+lists, or returns why it cannot: a dtype the package does not have (`"unknown dtype x"`), or a
+width other than the one `byteSize` gives for the spec (`"10 bytes, but si32 [3] takes 12"`).
 -}
 decode : { a | dtype : String, shape : List Int } -> Bytes -> Result String Value
 decode spec bytes =
@@ -110,8 +124,8 @@ many count element =
         )
 
 
-{-| Produces a decoder for one element of the floating-point dtype `dt`. Given another dtype it
-reads an f32.
+{-| Produces a decoder for one little-endian element of the floating-point dtype `dt`. Any dtype
+other than `F64`, `F16` and `BF16` is read as an f32.
 -}
 floatElement : DT -> Decoder Float
 floatElement dt =
@@ -129,8 +143,9 @@ floatElement dt =
             Decode.float32 LE
 
 
-{-| Produces a decoder for one element of the integer dtype `dt`. Given another dtype it reads one
-unsigned byte.
+{-| Produces a decoder for one element of the integer dtype `dt`, little-endian where it is wider
+than a byte. Any dtype other than `SI8`, `SI32`, `SI64` and `UI64` is read as one unsigned byte,
+which is right for `UI8`.
 -}
 intElement : DT -> Decoder Int
 intElement dt =
@@ -152,14 +167,16 @@ intElement dt =
 
 
 {-| A decoder for a 64-bit integer written as its low 32 bits, unsigned, then its high 32 bits,
-signed: the `Int` with those 64 bits.
+signed, each little-endian. It gives `high * 2³² + low`, which natively is the `Int` with those
+64 bits; under JavaScript it is the nearest double, inexact for some values beyond ±2⁵³.
 -}
 int64 : Decoder Int
 int64 =
     Decode.map2 (\low high -> high * 4294967296 + low) (Decode.unsignedInt32 LE) (Decode.signedInt32 LE)
 
 
-{-| Returns the number the f16 pattern `bits` stands for.
+{-| Returns the number the f16 pattern `bits` stands for. Every NaN pattern gives the NaN `0 / 0`
+gives, so its sign and payload are not carried over.
 -}
 f16Value : Int -> Float
 f16Value bits =
@@ -191,7 +208,9 @@ f16Value bits =
         sign * (1 + m / 1024) * (2 ^ toFloat (e - 15))
 
 
-{-| Returns the number the bf16 pattern `bits` stands for: the f32 whose upper 16 bits they are.
+{-| Returns the number the bf16 pattern `bits` stands for: the f32 whose upper 16 bits are `bits`
+and whose lower 16 bits are zero. Every NaN pattern gives the NaN `0 / 0` gives, so its sign and
+payload are not carried over.
 -}
 bf16Value : Int -> Float
 bf16Value bits =
@@ -223,12 +242,19 @@ bf16Value bits =
         sign * (1 + m / 128) * (2 ^ toFloat (e - 127))
 
 
-{-| Returns why `value` is not a tensor of the spec's dtype and shape, or `Ok ()` if it is one.
+{-| Returns `Ok ()` if `value` is a tensor of the spec's dtype and shape, or why it is not.
 
-It refuses a dtype or shape other than the spec's, a dtype the package does not have, `Data` of
-the wrong kind (`Floats` for a floating-point dtype, `Ints` for an integer one, `Bools` for
-`bool`), a number of elements other than the shape's, and `Ints` that do not fit `si8`, `ui8` or
-`si32`.
+The tests are made in the order below, and the message is that of the first test that fails. The
+spec's dtype must be one the package has. `value` must have the spec's dtype and exactly its shape,
+and as many elements as the shape holds. Its `Data` must be `Floats` for a floating-point dtype,
+`Ints` for an integer dtype and `Bools` for `bool`, and any other kind is refused, as in
+`"Ints for a floating or mask input"`. `Ints` for `si8`, `ui8` or `si32` must fit the dtype's
+range (`"value 300 does not fit ui8"`), while for `si64` and `ui64` any `Int` is accepted.
+
+These are the tests `Tensor.Eval.run` makes of an input value, and the messages are the same
+without the `"<graph>: input <key>: "` that `run` puts before them. `run` tests the kind and the
+range before the element count, so for a value with the wrong number of elements that also has the
+wrong kind of `Data`, or an integer out of range, the two give different messages.
 
 -}
 check : { a | dtype : String, shape : List Int } -> Value -> Result String ()
@@ -298,9 +324,13 @@ showInts l =
     String.join ", " (List.map String.fromInt l)
 
 
-{-| Returns `value`'s elements as bytes of its dtype, or why it cannot: a dtype the package does
-not have. Nothing else is checked here (`check` checks a value against a spec); elements are
-written as `Tensor.Internal.Encode.encodeValues` writes them.
+{-| Returns `value`'s elements as bytes of its dtype in the package encoding, in list order, or
+`"unknown dtype x"` for a dtype the package does not have.
+
+Nothing else is checked: not the shape, not the element count, not the kind of `Data` or the range
+of an integer. Each element is converted as `Tensor.Internal.Encode.encodeValues` converts it, with
+`Bools` given to it as the integers 1 and 0. `check` is the test of whether a value fits.
+
 -}
 encode : Value -> Result String Bytes
 encode value =

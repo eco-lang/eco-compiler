@@ -1,52 +1,111 @@
 module MaxSessionTests exposing (suite)
 
-{-| `Max.Session` talks to the MAX host in bytes whose layout the host reads independently, and runs
-the same commands in Elm, where a wrong layout or a wrong buffer update would still give plausible
-numbers. These tests pin the bytes of every request, the reading of every kind of reply, the
-conversion between bytes and `Tensor.Eval` values for every dtype, and in-Elm sessions run end to
-end; and `Max.Safetensors`' reading of a checkpoint header.
+{-| `Max.Session` sends a C++ host program its requests as bytes that the host parses with code of
+its own, and it runs the same commands in Elm, where a wrong byte layout or a wrong update of a
+buffer would still give plausible numbers. Without these tests a request the host would misread, a
+reply read into the wrong event, or an in-Elm run that drifts from `Tensor.Eval` could go
+unnoticed.
 
-The graphs are `idGraph`, the identity on an `f32` vector of 3 labelled `x`, and the two graphs of a
-small multi-layer perceptron (MLP) of 4 features, 8 hidden units and 3 classes: `mlpStep`, a
-`Train.step` with SGD at rate 0.5, and `mlpMeasure`, a `Train.measure` of the same loss. Both take
-the 12 `points` as their fed inputs `batch0` (`f32` 12 × 4) and `batch1` (`si64` 12). Host sessions
-are made with ports that send and receive nothing, so what they would send is checked through
-`Max.Internal.Session.hostRequests` and `Max.Internal.Protocol.encode`, and replies are handed to
-`Max.Session.update` as bytes. In-Elm sessions are drained by handing `update` one `Next` message
-for each queued reply.
+There are three graphs. `idGraph`, named `id`, is the identity on an `f32` vector of 3, with the
+input `x` and the output `result`. The other two are a small multi-layer perceptron (MLP) with 4
+features, 8 hidden units and 3 classes: `mlpStep`, a `Train.step` with SGD at rate 0.5, and
+`mlpMeasure`, a `Train.measure` of the same loss, named `measure`, whose one output is `result`.
+Both take the 12 `points` as the fed inputs `batch0` (`f32`, 12 × 4) and `batch1` (`si64`, 12).
+Where a test fills their resident buffers, it fills them from `Param.initial` or `Train.initial`
+with seed 1.
+
+A host session here (`hostSession`) has ports that send and receive nothing. The requests it would
+send for commands are read from `Max.Internal.Session.hostRequests` and
+`Max.Internal.Protocol.encode`; the compile request `Max.Session.compile` builds is not read, as
+its `Cmd` is dropped. Replies are handed to `Max.Session.update` as bytes the tests write. The answers a session makes itself are
+collected by handing `update` one `Next` message for each queued reply (`drain`). Many tests
+compare events through `describeEvent`, which keeps of the bytes of `Got` and `Loaded` only their
+number, so there the bytes' contents are not checked.
 
 The tests establish:
 
-  - **Requests** (`requests`): the exact bytes of each of the eleven requests, padding of run
-    inputs to 16 bytes, offsets and lengths of 2³² or more as two words, spec lines with resident
-    roles and a scalar, one request sent as itself and several as a sequence of length-prefixed
-    requests.
-  - **Host sessions** (`hostSessions`): ids given in order from 2 after one compile, a run's fed
-    inputs sent in graph order whatever order they are given in, inputs given as floats and ints
-    encoded by the input's dtype, and a missing input, bytes of the wrong width and ints for a
-    float input refused with `Failed` and nothing to send.
-  - **Replies** (`replies`): `ran` read into named outputs (as floats, bytes and a value), a `ran`
-    of the wrong width, `compiled` with status 0 and 1 (after which a run is refused), `got`
-    matched to the name asked for, `loaded` matched to the path for `load` and for `loadRange`, a
-    failed `loadRange` giving the host's message, and replies that match nothing or are shorter
-    than a header giving `Failed`.
-  - **Elements** (`elements`): the bytes of f16, bf16, si64, ui64 and bool elements, a round trip
-    through bytes for each of the ten dtypes, NaN patterns read as NaN, a width that does not fit
-    refused, and `check` refusing a value of the wrong dtype, shape, kind, count or range.
-  - **In-Elm sessions** (`inElmSessions`): compile, puts and a run of `mlpMeasure` giving exactly
-    what `Tensor.Eval.run` gives on the same buffers; five steps of `mlpStep` giving losses equal
-    to a direct `Tensor.Eval.run` loop whose buffers are rounded to `f32` between steps, within
-    1e-5 of one that keeps doubles, a fifth loss below the first, and every buffer changed; `put` then `get` in one send; save then
-    loadInto; `load`, `loadRange`, `loadRangeInto` and an unsaved `loadInto` failing, with the
-    commands after the first two still run and those after the others skipped; a run with a
-    missing resident buffer failing; `finish` answered by `Finished` and later commands ignored;
-    and a negative GPU refused at compile on both backends.
-  - **Safetensors** (`safetensors`): the header length from 8 bytes, entries parsed in data order
-    with `__metadata__` skipped, three malformed headers refused, and the commands `readLength`,
-    `readHeader` and `loadAll` make.
+  - **Requests** (`requests`):
+      - `run` pads an input of 3 bytes with 13 zero bytes and leaves one of 16 bytes as it is.
+      - `put`, `get`, `save`, `loadInto`, `drop`, `load` and `finish` are each written as exact
+        bytes: the 16-byte header with the request's id and code, then what the request carries.
+      - `loadRangeInto` with an offset of 2³² + 5, and `loadRange` with a length of
+        2 × 2³² + 1, write their offset and length as two words each, low word first.
+      - `compile` writes the spec lines of a fed `ui8` input, a resident `f32` input and a scalar
+        output, then the MLIR bytes.
+      - `encodeAll` writes one request as itself, and two as a sequence in which each request is
+        preceded by its length.
+  - **Host sessions** (`hostSessions`):
+      - After one compile, `get`, `load`, `put`, `loadRange` and `get` are given the ids 2, 3, 0,
+        4 and 5; only each request's id and code are compared.
+      - A run of `mlpStep` given its inputs in reverse order sends them in the graph's order, under
+        the graph's id: `batch0`'s floats as `f32` and `batch1`'s ints as `si64`.
+      - Bytes for `x` of the right width, 12, are sent as they are, followed by 4 zero bytes.
+      - A missing input, bytes of the wrong width, and ints for the float input `x` are each
+        refused: `hostRequests` refuses the whole list, a `put` before the run included, with a
+        message naming the graph and the input, and a `send` of the run alone gives one event,
+        `Failed` with that message.
+  - **Replies** (`replies`):
+      - A run reply holding one padded `f32` output gives `Ran` with the handle `compile` gave;
+        `floats`, `bytes` (without the padding) and `value` read the output `result`, `ints`
+        gives `Nothing` for it, and `floats` gives `Nothing` for `x`, which is an input.
+      - A run reply whose payload lacks the padding gives `Failed`, naming the graph.
+      - A compile reply with status 0 gives `Compiled` with the handle. One with status 1 gives
+        `CompileFailed` with its payload as text, after which a `send` of a run of the handle
+        gives `Failed`: the graph is not compiled in this session.
+      - A `get` reply gives `Got` with the name asked for, a `load` reply `Loaded` with the path,
+        and a `loadRange` reply with status 1 `Failed` with its payload as text; a second reply to
+        the answered `get` gives `Failed`, as matching no request.
+      - A `loadRange` reply with status 0 gives `Loaded` with the path asked for.
+      - A reply of 4 bytes, shorter than a header, gives `Failed`.
+  - **Elements** (`elements`):
+      - `encode` writes the exact bytes expected for the `f16` elements 1 and −2, the `bf16`
+        element 1, the `si64` elements −1 and 2³² + 2, the `ui64` element −1, and the `bool`
+        elements `True` and `False`.
+      - For each of the ten dtypes, the one to six values listed for it decode equal to
+        themselves after `encode`. Among them are `f16`'s 65504, ∞ and 2⁻²⁴, `bf16`'s −∞,
+        the limits of `si8` and `ui8`, and the `ui64` element −1.
+      - The `f16` patterns `0x7E00` and `0xFC01` and the `bf16` pattern `0x7FC0` decode to
+        NaN.
+      - `decode` refuses 10 bytes for an `si32` tensor of shape `[3]`, which takes 12.
+      - `check` refuses a value of another dtype, one of another shape, `Ints` for `f32`, too few
+        elements, and 300 for `ui8`, each with its message, and accepts `Bools` for `bool`.
+  - **In-Elm sessions** (`inElmSessions`):
+      - Compiling `mlpMeasure` gives one `Compiled`, and after `put`s of `Param.initial`'s buffers
+        a run gives exactly the `result` floats that `Tensor.Eval.run` gives on those buffers
+        decoded by their specs.
+      - For `mlpStep` from `Train.initial`'s buffers, the `put`s give no event, and five runs give
+        five losses. These equal the losses of a direct `Tensor.Eval.run` loop that encodes and
+        decodes the resident values in their dtype after each step, and each is within a relative
+        1e-5 of the loss of a loop that does not. The fifth loss is below the first, and a `get` of
+        each buffer afterwards gives bytes other than its first contents.
+      - A `put` of 3 bytes, a `get` of it and a `get` of a name never set, in one `send`, give
+        `Got` with 3 bytes and then `Got` with none.
+      - A `put`, a `save`, another `put`, a `loadInto` from the saved path and a `get` give one
+        event, `Got` with the first bytes.
+      - A `load`, a `loadRange`, a `loadRangeInto`, and a `loadInto` of a path never saved, each
+        followed by a `get`, each give `Failed` with its own message; the `get` is answered after
+        the `load` and the `loadRange`, and skipped after the other two.
+      - A run of `mlpMeasure` with no buffers put gives `Failed` naming the buffer `param0`, and
+        the `get` after it is skipped.
+      - `finish 3` gives `Finished 3`, and a `get` after it gives no event, in the same `send` or
+        in a later one.
+      - `compileWith` for the GPU −1 gives `CompileFailed` with `Max`'s message on both backends.
+  - **Safetensors** (`safetensors`):
+      - `headerLength` reads 16 and 2³² + 3 from 8 little-endian bytes, and `Nothing` from 2
+        bytes.
+      - `parse` of a header listing `b`, `__metadata__` and `a` gives the entries `a` then `b`,
+        without the metadata.
+      - `parse` refuses text that is not JSON, an entry with no `dtype`, and an entry whose
+        `data_offsets` holds one integer.
+      - `readLength`, `readHeader` for a header of 100 bytes, and `loadAll` give a `loadRange` of
+        8 bytes at 0, one of 100 bytes at 8, and a `loadRangeInto` of each entry's bytes counted
+        from 108, under the name given for it.
 
-Among what is not tested: what a host does with the bytes, the `Cmd`s a session returns, and the
-GPU placement of a graph `Max` accepts.
+Among what is not tested: what the host does with any of these bytes, and whether it sends the
+replies written here; the `Cmd`s a session returns, and so the order in which a program receives
+answers; `subscriptions`; a `Message` handed to another session; `drop` through a session, and a
+`save` or `drop` of a missing buffer; `fromValue`; `value` and `bytes` of an in-Elm run's outputs;
+`compileWith` with `GenericText` or a GPU index that is not negative.
 
 -}
 
@@ -73,6 +132,8 @@ import Test exposing (Test, describe, test)
 import Train
 
 
+{-| Every test in this module, in six groups.
+-}
 suite : Test
 suite =
     describe "Max.Session"
@@ -89,7 +150,7 @@ suite =
 -- Bytes
 
 
-{-| Returns the bytes as a list of their values.
+{-| Returns the values of the bytes, in order.
 -}
 toList : Bytes -> List Int
 toList b =
@@ -114,14 +175,15 @@ fromList l =
     BE.encode (BE.sequence (List.map BE.unsignedInt8 l))
 
 
-{-| Returns the four little-endian bytes of `n`.
+{-| Returns the four bytes of `n` written as an unsigned 32-bit little-endian integer.
 -}
 le32 : Int -> List Int
 le32 n =
     toList (BE.encode (BE.unsignedInt32 LE n))
 
 
-{-| Returns a header's 16 bytes.
+{-| Returns the 16 bytes of a message header: `id`, `code`, `status` and a zero word, each as
+`le32` writes it.
 -}
 hdr : Int -> Int -> Int -> List Int
 hdr id code status =
@@ -135,7 +197,7 @@ str s =
     toList (BE.encode (BE.string s))
 
 
-{-| Returns the f32 bytes of the floats.
+{-| Returns the little-endian `f32` bytes of the floats, one after another.
 -}
 f32s : List Float -> List Int
 f32s l =
@@ -153,22 +215,32 @@ bytesAre expected actual =
 -- Fixtures
 
 
+{-| The tag in the type of `idGraph`'s axis.
+-}
 type B
     = B
 
 
+{-| The tag in the type of the MLP's hidden axis.
+-}
 type Hidden
     = Hidden
 
 
+{-| The tag in the type of the MLP's class axis.
+-}
 type Classes
     = Classes
 
 
+{-| The tag in the type of the axis of the training points.
+-}
 type Pts
     = Pts
 
 
+{-| The tag in the type of the MLP's feature axis.
+-}
 type Feat
     = Feat
 
@@ -187,35 +259,36 @@ idGraph =
     Graph.function "id" (Sig.label "x" (Sig.f32 (T.r1 b3))) identity
 
 
-{-| The MLP's 4 features, 8 hidden units, 3 classes and 12 points.
+{-| The axis of the features of one point, which the MLP takes as its input.
 -}
 feat : Dim Feat
 feat =
     T.dim Feat 4
 
 
-{-| The MLP's hidden width.
+{-| The axis of the MLP's hidden units.
 -}
 hidden : Dim Hidden
 hidden =
     T.dim Hidden 8
 
 
-{-| The MLP's classes.
+{-| The axis of the classes the MLP tells apart.
 -}
 classes : Dim Classes
 classes =
     T.dim Classes 3
 
 
-{-| The number of training points.
+{-| The axis of the training points.
 -}
 pts : Dim Pts
 pts =
     T.dim Pts 12
 
 
-{-| The MLP's parameters: two dense layers.
+{-| The description of the MLP's parameters: an `f32` dense layer from the features to the hidden
+units, and one from the hidden units to the classes.
 -}
 mlpParams : Param.Spec { l1 : Linear T.F32 Feat Hidden, l2 : Linear T.F32 Hidden Classes }
 mlpParams =
@@ -224,35 +297,40 @@ mlpParams =
         |> Param.sub .l2 (Linear.params T.float32 hidden classes)
 
 
-{-| The MLP's batch: features and integer labels.
+{-| The signature of the MLP's batch: the features, one row per point, and each point's class as
+an `si64` label.
 -}
 mlpBatch : Sig.Sig ( T.Tensor Float T.F32 (T.R2 Pts Feat), T.Tensor Int T.I64 (T.R1 Pts) )
 mlpBatch =
     Sig.pair (Sig.f32 (T.r2 pts feat)) (Sig.i64 (T.r1 pts))
 
 
-{-| The MLP's loss: cross-entropy of the logits against the labels.
+{-| Returns the cross-entropy of the MLP's logits for the features `x` against the labels `y`. The
+logits are `x` through the first layer, `tanh` and the second layer.
 -}
 mlpLoss : { l1 : Linear T.F32 Feat Hidden, l2 : Linear T.F32 Hidden Classes } -> ( T.Tensor Float T.F32 (T.R2 Pts Feat), T.Tensor Int T.I64 (T.R1 Pts) ) -> T.Tensor Float T.F32 T.R0
 mlpLoss p ( x, y ) =
     x |> Linear.apply p.l1 |> T.tanh |> Linear.apply p.l2 |> Nn.crossEntropyIndices y
 
 
-{-| The MLP's training step, SGD at 0.5.
+{-| The MLP's training graph, built by `Train.step`: one step of SGD at rate 0.5 on `mlpLoss`. Its
+fed output `loss` is the loss on the parameters the run was given.
 -}
 mlpStep : Result (List String) Graph
 mlpStep =
     Train.step mlpParams (Optim.sgd 0.5) mlpBatch mlpLoss
 
 
-{-| The MLP's loss without training.
+{-| The graph `measure`, built by `Train.measure`, that computes `mlpLoss` from the MLP's parameter
+buffers and a batch, without training. Its one output, fed, is `result`.
 -}
 mlpMeasure : Result (List String) Graph
 mlpMeasure =
     Train.measure mlpParams mlpBatch mlpLoss
 
 
-{-| The 12 points: point `i` is in class `i` modulo 3, its feature at its class 1 + s and the others
+{-| The 12 training points, as their 48 features in row-major order and their 12 labels. Point `i`
+is in class `i` modulo 3; its feature at the index of its class is 1 + s and its other features are
 s − 0.5, with s = (`i` // 3) / 4.
 -}
 points : ( List Float, List Int )
@@ -277,14 +355,16 @@ points =
     ( List.concatMap Tuple.first all, List.map Tuple.second all )
 
 
-{-| The batch as fed inputs.
+{-| `points` as the fed inputs of `mlpStep` and `mlpMeasure`: the features as floats under
+`batch0`, and the labels as ints under `batch1`.
 -}
 batchInputs : List ( String, Session.Input )
 batchInputs =
     [ ( "batch0", Session.fromFloats (Tuple.first points) ), ( "batch1", Session.fromInts (Tuple.second points) ) ]
 
 
-{-| The batch as values keyed for `Tensor.Eval.run`.
+{-| `points` as values for `Tensor.Eval.run`, under the fed inputs' names: `batch0` of `f32` and
+shape `[12, 4]`, and `batch1` of `si64` and shape `[12]`.
 -}
 batchValues : Dict String Value
 batchValues =
@@ -294,14 +374,17 @@ batchValues =
         ]
 
 
-{-| The first contents of the step's buffers, from seed 1.
+{-| The first contents of `mlpStep`'s resident buffers, from `Train.initial` with seed 1, as pairs
+of a buffer's name and its bytes.
 -}
 initial : List ( String, Bytes )
 initial =
     Train.initial mlpParams (Optim.sgd 0.5) 1
 
 
-{-| Returns the graph's resident inputs' buffers decoded from `buffers` by their specs.
+{-| Returns the resident inputs of `g`, each decoded by its spec from the buffer of its name in
+`buffers`, keyed by resident name. An input whose buffer is missing or cannot be decoded is left
+out.
 -}
 residentValues : Graph -> List ( String, Bytes ) -> Dict String Value
 residentValues g buffers =
@@ -321,7 +404,8 @@ residentValues g buffers =
         |> Dict.fromList
 
 
-{-| Runs `body` on a graph that must have been built.
+{-| Returns `body`'s expectation for the built graph, or, when the graph could not be built, a
+failure listing the build's errors.
 -}
 withGraph : Result (List String) Graph -> (Graph -> Expectation) -> Expectation
 withGraph r body =
@@ -333,15 +417,16 @@ withGraph r body =
             Expect.fail (String.join "; " e)
 
 
-{-| A host session whose ports send and receive nothing.
+{-| A host session whose ports send and receive nothing, and whose messages are its `Message`s
+unchanged.
 -}
 hostSession : Session.Session Session.Message
 hostSession =
     Session.host { send = \_ -> Cmd.none, receive = \_ -> Sub.none } identity
 
 
-{-| Hands an in-Elm or host session one `Next` for each queued reply, and returns the session and
-the replies in order.
+{-| Hands the session one `Next` message through `update` for each reply in its queue, and returns
+the session, with its queue empty, and the events in the order the replies were queued.
 -}
 drain : Session.Session msg -> ( Session.Session msg, List Event )
 drain s =
@@ -359,14 +444,17 @@ drain s =
         ( s2, e :: es )
 
 
-{-| Sends commands and drains the replies.
+{-| Sends `commands`, then drains the session as `drain` does, and returns the session and the
+events. The `Cmd` that `send` returns is dropped, so from a host session only the replies the
+session queued itself are seen.
 -}
 sendAll : List Session.Command -> Session.Session msg -> ( Session.Session msg, List Event )
 sendAll commands s =
     drain (Tuple.first (Session.send commands s))
 
 
-{-| Compiles a graph and drains the replies.
+{-| Compiles `g`, then drains the session as `drain` does, and returns the session, the graph's
+handle and the events. The `Cmd` that `compile` returns is dropped.
 -}
 compileAll : Graph -> Session.Session msg -> ( Session.Session msg, Session.Handle, List Event )
 compileAll g s =
@@ -380,14 +468,17 @@ compileAll g s =
     ( s2, h, es )
 
 
-{-| Returns the requests a host session would send for `commands`, or the refusal.
+{-| Returns the requests a host session would send for `commands`, or the message with which it
+refuses them.
 -}
 requestsFor : List Session.Command -> Session.Session msg -> Result String (List Request)
 requestsFor commands s =
     S.hostRequests commands s |> Result.map Tuple.second
 
 
-{-| Describes an event briefly, for comparing lists of events.
+{-| Returns a short description of an event, for comparing lists of them: the constructor's name,
+then the message it carries, or its name or path and the number of its bytes, or its exit code.
+Handles, outputs and the contents of bytes are left out.
 -}
 describeEvent : Event -> String
 describeEvent e =
@@ -418,6 +509,8 @@ describeEvent e =
 -- Requests
 
 
+{-| The tests of the bytes `Max.Internal.Protocol` writes for each request.
+-}
 requests : Test
 requests =
     describe "requests"
@@ -469,6 +562,9 @@ requests =
 -- Host sessions
 
 
+{-| The tests of the requests a host session builds from commands, and of the runs it refuses
+before anything is sent.
+-}
 hostSessions : Test
 hostSessions =
     describe "host sessions"
@@ -540,6 +636,8 @@ hostSessions =
 -- Replies
 
 
+{-| The tests of how a host session reads reply bytes, written by the tests, into events.
+-}
 replies : Test
 replies =
     describe "replies"
@@ -635,6 +733,9 @@ replies =
 -- Elements
 
 
+{-| The tests of `Max.Internal.Elements`: the exact bytes `encode` writes for five of the dtypes,
+round trips through `encode` and `decode`, decoding, and `check`.
+-}
 elements : Test
 elements =
     let
@@ -717,14 +818,15 @@ elements =
 -- In-Elm sessions
 
 
-{-| An in-Elm session whose messages are themselves.
+{-| An in-Elm session whose messages are its `Message`s unchanged.
 -}
 elmSession : Session.Session Session.Message
 elmSession =
     Session.inElm identity
 
 
-{-| Returns the float elements of a run's output `name`, or an empty list.
+{-| Returns the float elements of the output `name` of every `Ran` in `events`, joined in order.
+A `Ran` with no such output, and every other event, adds nothing.
 -}
 outFloats : String -> List Event -> List Float
 outFloats name events =
@@ -740,7 +842,7 @@ outFloats name events =
         events
 
 
-{-| Returns the float elements of a value, or an empty list.
+{-| Returns the elements of a value whose data are `Floats`, or an empty list for any other data.
 -}
 floatsOf : Value -> List Float
 floatsOf v =
@@ -752,8 +854,15 @@ floatsOf v =
             []
 
 
-{-| The losses of `n` steps of the MLP run directly with `Tensor.Eval.run`, starting from `initial`;
-with `rounded`, the resident values are rounded to `f32` after each step by a trip through bytes.
+{-| Runs `n` steps of the training graph `step` with `Tensor.Eval.run` on `batchValues`, starting
+from the buffers of `initial`, and returns the loss of each step with the resident values after the
+last, or the errors of the first step that fails. After each step every output but `loss` replaces
+the resident value of its name.
+
+With `rounded`, each new resident value is first encoded in its dtype and decoded again, which
+rounds `f32` values to `f32` as an in-Elm session's buffers do; a value whose encoding or decoding
+fails is kept as it is.
+
 -}
 directLosses : Bool -> Int -> Graph -> Result (List String) ( List Float, Dict String Value )
 directLosses rounded n step =
@@ -783,6 +892,9 @@ directLosses rounded n step =
         (List.range 1 n)
 
 
+{-| The tests of sessions on the in-Elm backend. The last also checks a compile refusal on a host
+session.
+-}
 inElmSessions : Test
 inElmSessions =
     describe "in-Elm sessions"
@@ -943,6 +1055,9 @@ inElmSessions =
 -- Safetensors
 
 
+{-| The tests of `Max.Safetensors`: reading a checkpoint's header length and entries, and the
+commands that read and load a checkpoint.
+-}
 safetensors : Test
 safetensors =
     let

@@ -3,28 +3,34 @@ module Max exposing
     , Device(..), toBytecodeOn, toGenericTextOn
     )
 
-{-| Modular MAX takes a graph as an MLIR module, and this module writes a built `Graph` as one: as
-MLIR bytecode, the binary form MAX's graph compiler loads, or as MLIR's generic op text, the same
-module written out to be read. A `Max.Session` on the host backend sends these bytes to MAX to compile,
-then runs the graph; a program that talks to MAX some other way can use the bytes itself.
+{-| Modular MAX compiles a graph given to it as an _MLIR_ module, and this module writes a built
+`Graph` as one. MLIR is a compiler framework in which a program is a tree of operations, each named
+after the _dialect_ it belongs to, as `mo.graph` belongs to `mo`. The module is written either as
+MLIR bytecode, a binary form, or as MLIR's generic op text, the same module as text that a person
+can read and MLIR can parse.
 
-_MLIR_ is a compiler framework in which a program is a tree of operations, each named after the
-_dialect_ it belongs to, as `mo.graph` belongs to `mo`. `Graph.build` has already checked the graph
-and translated it into the operations of MAX's graph dialects, `mo` and `rmo`, so what is left here
-is to place those operations on a device and write them. The bytecode is version 6 of MLIR's
-bytecode format, which this package assumes is the version the MLIR inside MAX 26.7.0 reads.
+`Graph.build` has already checked the graph and translated it into operations of MAX's graph
+dialects, `mo` and `rmo`, so what is left here is to place those operations on a device and write
+them. The bytecode is version 6 of MLIR's bytecode
+format, which this package assumes is the version the MLIR inside MAX 26.7.0 reads.
 
 _Placing_ the operations for a GPU writes into them where their tensors live; placing them for the
-CPU adds nothing to them. Placing for the CPU cannot fail, so `toBytecode` and `toGenericText`
-write for the CPU and return no `Result`. Placing for a GPU can: some operations are not written
-for a GPU, and the graph is then refused with one message for each such operation. They are a
-top-k along any axis but the last (from `Tensor.topK`, `bottomK` or `sort`), and every `cond` and
-every `whileLoop` (`Tensor.Control`), wherever in the graph they appear. A GPU with a negative
-index is refused too.
+CPU writes no device into them. Placing for the CPU cannot fail, so `toBytecode` and
+`toGenericText` write for the CPU and return no `Result`. Placing for a GPU can fail. A GPU with a
+negative index is refused with one message, before any operation is looked at. Otherwise some
+operations are not written for a GPU, and a graph holding any of them is refused with one message
+for each such operation. They are a top-k along any axis but the last (from `Tensor.topK`,
+`bottomK` or `sort`), and the operations of every `cond` and every `whileLoop` (`Tensor.Control`),
+wherever in the graph they appear. One call can give several: the gradient of a `cond` adds
+another, and under `Transform.vmap` a `cond` or `whileLoop` that reads the batch is written once
+per example.
 
 What is written depends on the graph and the device alone, so writing one graph twice gives the
 same bytes. The bytes hold the graph's name and the names, dtypes and shapes of its inputs and
-outputs, but not their roles (`Graph.Role`).
+outputs, but not their roles (`Graph.Role`), so not which of them are resident or the buffers they
+name.
+
+`Max.Session` compiles and runs graphs, and on its host backend it sends what this module writes.
 
 
 # For the CPU
@@ -72,10 +78,13 @@ cpuOps ops =
     Device.place Device.Cpu ops |> Result.withDefault ops
 
 
-{-| The device a graph is written for: the CPU, or, as `Gpu n`, the GPU with index `n`.
+{-| The device a graph is written for.
 
-The index is written into the graph as given. `toBytecodeOn` and `toGenericTextOn` refuse a negative
-`n`; nothing here checks that the GPU exists.
+`Cpu` is the CPU. Writing a graph for it never fails.
+
+`Gpu n` is the GPU with index `n`, and the index is written into the graph as given.
+`toBytecodeOn` and `toGenericTextOn` refuse a negative `n`; nothing checks that a GPU with a
+non-negative `n` exists.
 
 -}
 type Device
@@ -100,9 +109,10 @@ placed there.
 
 For `Gpu n`, the graph's inputs and the tensors its operations compute, constants included, are
 placed on GPU `n`, except values such as shapes and axes that other operations read as operands,
-which stay on the CPU. The result is `Err` when `n` is negative, with one message, and when the
-graph holds a top-k along any axis but the last (from `Tensor.topK`, `bottomK` or `sort`), a `cond`
-or a `whileLoop`, anywhere in it, with one message for each MLIR operation refused, naming it.
+which stay on the CPU. A negative `n` gives `Err` with one message, "Max: there is no GPU with the
+negative index n", and no other. Otherwise the result is `Err` when the graph holds a top-k along
+any axis but the last (from `Tensor.topK`, `bottomK` or `sort`), a `cond` or a `whileLoop`,
+anywhere in it, with one message for each MLIR operation refused, naming it.
 
 `toBytecodeOn Cpu g` is always `Ok (toBytecode g)`.
 
@@ -120,8 +130,9 @@ toGenericTextOn d (I.Graph g) =
     place d g.ops |> Result.map Bc.printGeneric
 
 
-{-| Returns `ops` placed for `d` (`Tensor.Internal.Device.place`), or, for a GPU with a negative
-index, the one message "Max: there is no GPU with the negative index n".
+{-| Returns `ops` placed for `d`, or the refusals `Tensor.Internal.Device.place` gives. For a GPU
+with a negative index it returns instead the one message "Max: there is no GPU with the negative
+index n", without placing the ops.
 -}
 place : Device -> List Bc.Op -> Result (List String) (List Bc.Op)
 place d ops =

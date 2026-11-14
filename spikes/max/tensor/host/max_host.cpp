@@ -603,7 +603,7 @@ int main(int argc, char **argv) {
     std::fflush(stdout);
   };
 
-  // 5: NAME\0 PATH (a file that cannot be opened gives an empty buffer)
+  // 5: NAME\0 PATH (a file that cannot be opened stops the host)
   auto handleLoadInto = [&](std::span<const std::byte> v) {
     auto [name, path] = nameAndRest(v);
     std::ifstream f{std::string(path), std::ios::binary | std::ios::ate};
