@@ -157,7 +157,7 @@ then each output, separated by spaces, each line ending in a newline.
 A spec is written `name:dtype:AxB`, its sizes joined by `x` (an empty size part for a scalar),
 followed by `:r=NAME` when its role is `Graph.Resident NAME`. Nothing is escaped, so a name, dtype
 or resident name holding a space, a tab, a newline or a colon does not read back as the spec that
-was written.
+was written; the host fails such a compile in all but one case (see `Max.Session.host`).
 
 -}
 specText : List Graph.Spec -> List Graph.Spec -> String

@@ -1,6 +1,6 @@
 // A generic MAX host for an eco program: it compiles the graphs the program sends, keeps its resident
 // buffers and runs the graphs on them, and knows nothing about the models. It speaks version 2 of the
-// wire protocol of the package's `Max.Session` (plans/tensor-max-session.md).
+// wire protocol of the package's `Max.Session` (src/Max/Internal/Protocol.elm).
 //
 // Ports, bound by name:
 //   maxOut (Bytes, out of Elm)   every request, handled in the order the program sent them
@@ -9,7 +9,9 @@
 //
 // Every message starts with a 16-byte header of four little-endian u32: id, code, status, 0. A reply
 // carries its request's id and code, and status 0 for success or 1 for failure, with a UTF-8 message
-// as its payload. Tensors are each padded to 16 bytes; an offset or a length is two u32, low then high.
+// as its payload. A reply is at most 2^32 - 1 bytes, header included; a run or get that would need
+// more stops the host. Tensors are each padded to 16 bytes; a file range's offset and length are each
+// two u32, low then high.
 //
 //   code  request        payload after the header                 reply
 //    1    run            the fed inputs in graph order, padded    the fed outputs in graph order, padded
@@ -24,7 +26,8 @@
 //   10    compile        spec lines, then MLIR                    no payload; status 1 with MAX's error
 //   11    load           PATH                                     the whole file; status 1 if unreadable
 //   12    finish         u32 exit code                            none: the program is stopped, the host
-//                                                                 exits with that code
+//                                                                 exits with that code (its low 8 bits),
+//                                                                 and every later request is ignored
 //
 // The id of a run or a compile is the graph's. A compile's payload is two spec lines then the MLIR, as
 // text or bytecode (told apart by bytecode's magic, "ML\xEFR"):
@@ -215,6 +218,9 @@ int exitCode = 0;
 
 size_t padded(size_t n) { return (n + 15) / 16 * 16; }
 
+// The most bytes one reply can be, header included: the runtime's emit takes no more.
+constexpr uint64_t kMaxReply = UINT32_MAX;
+
 uint32_t u32At(const std::byte *p) {
   uint32_t x;
   std::memcpy(&x, p, 4);
@@ -252,14 +258,15 @@ void sendReply(uint32_t id, uint32_t code, uint32_t status, const std::string &p
   }
 }
 
-// "in x:ui8:100x784 y:ui8:100 w:f32:784x128:r=param0" -> specs (a scalar has no dims: "s:f32:")
-std::vector<Spec> parseSpecs(const std::string &line) {
+// "in x:ui8:100x784 y:ui8:100 w:f32:784x128:r=param0" -> specs (a scalar has no dims: "s:f32:"),
+// appended to `out`; or why the line cannot be read, which fails the compile. A name holding
+// whitespace or a colon makes a word this refuses, since names are written unescaped.
+std::string parseSpecs(const std::string &line, std::vector<Spec> &out) {
   static const std::map<std::string, std::pair<M_Dtype, size_t>> dtypes = {
       {"f16", {M_FLOAT16, 2}}, {"bf16", {M_BFLOAT16, 2}}, {"f32", {M_FLOAT32, 4}},
       {"f64", {M_FLOAT64, 8}}, {"si8", {M_INT8, 1}},      {"si32", {M_INT32, 4}},
       {"si64", {M_INT64, 8}},  {"ui8", {M_UINT8, 1}},     {"ui64", {M_UINT64, 8}},
       {"bool", {M_BOOL, 1}}};
-  std::vector<Spec> out;
   std::istringstream words(line);
   std::string word;
   words >> word; // "in" / "out"
@@ -271,54 +278,77 @@ std::vector<Spec> parseSpecs(const std::string &line) {
       parts.push_back(part);
     while (parts.size() < 3)
       parts.push_back("");
+    const std::string bad = "bad spec word `" + word + "`: ";
+    if (parts.size() > 4 || (parts.size() == 4 && parts[3].rfind("r=", 0) != 0))
+      return bad + "a name holds a colon, or a field is not `r=RESIDENT`";
     Spec s;
     s.name = parts[0];
     auto dt = dtypes.find(parts[1]);
     if (dt == dtypes.end())
-      fatal("unknown dtype " + parts[1]);
+      return bad + "unknown dtype `" + parts[1] + "` (a name holding whitespace or a colon?)";
     s.dtype = dt->second.first;
     s.elemSize = dt->second.second;
     std::istringstream dims(parts[2]);
     std::string d;
-    while (std::getline(dims, d, 'x'))
-      if (!d.empty())
-        s.shape.push_back(std::atoll(d.c_str()));
-    if (parts.size() > 3 && parts[3].rfind("r=", 0) == 0)
+    while (std::getline(dims, d, 'x')) {
+      if (d.empty())
+        continue;
+      if (d.find_first_not_of("0123456789") != std::string::npos)
+        return bad + "dimension `" + d + "` is not a number";
+      s.shape.push_back(std::atoll(d.c_str()));
+    }
+    if (parts.size() == 4)
       s.resident = parts[3].substr(2);
     out.push_back(s);
   }
-  return out;
+  return "";
 }
 
 // Compile number `n` of graph `id` (a worker thread). The reply is queued before the result is
 // settled, so a run waiting for this compile replies after it.
 void compileGraph(uint32_t id, uint32_t n, std::string text) {
+  // Spec lines that cannot be read and a graph file that cannot be written fail the compile, as
+  // MAX's own errors do: every compile is answered, and none ends the program.
+  std::vector<Spec> inputs, outputs;
+  std::string error;
   const size_t l1 = text.find('\n'), l2 = l1 == std::string::npos ? l1 : text.find('\n', l1 + 1);
   if (l2 == std::string::npos)
-    fatal("compile of graph " + std::to_string(id) + ": no `in` and `out` spec lines");
-  std::vector<Spec> inputs = parseSpecs(text.substr(0, l1));
-  std::vector<Spec> outputs = parseSpecs(text.substr(l1 + 1, l2 - l1 - 1));
+    error = "no `in` and `out` spec lines";
+  else if (error = parseSpecs(text.substr(0, l1), inputs); error.empty())
+    error = parseSpecs(text.substr(l1 + 1, l2 - l1 - 1), outputs);
   // MAX reads text or bytecode from the file alike; the extension only says which it is.
-  const std::string mlir = text.substr(l2 + 1);
+  const std::string mlir = l2 == std::string::npos ? std::string() : text.substr(l2 + 1);
   const bool bytecode = mlir.compare(0, 4, "ML\xEFR") == 0;
   const std::string path =
       workDir + "/graph-" + std::to_string(id) + (bytecode ? ".mlirbc" : ".mlir");
-  std::ofstream(path, std::ios::binary).write(mlir.data(), std::streamsize(mlir.size()));
+  if (error.empty()) {
+    std::ofstream file(path, std::ios::binary);
+    file.write(mlir.data(), std::streamsize(mlir.size()));
+    file.close(); // sets failbit if the last bytes cannot be flushed
+    if (!file)
+      error = "cannot write " + path;
+  }
 
   auto t0 = Clock::now();
   M_Status *st = M_newStatus();
-  M_CompileConfig *cc = M_newCompileConfig();
-  M_setModelPath(cc, path.c_str());
-  M_AsyncCompiledModel *compiled = M_compileModelSync(ctx, &cc, st);
+  M_AsyncCompiledModel *compiled = nullptr;
   M_AsyncModel *model = nullptr;
-  if (!M_isError(st)) {
-    model = M_initModel(ctx, compiled, nullptr, st);
-    if (!M_isError(st))
-      M_waitForModel(model, st);
+  if (error.empty()) {
+    M_CompileConfig *cc = M_newCompileConfig();
+    M_setModelPath(cc, path.c_str());
+    compiled = M_compileModelSync(ctx, &cc, st);
+    if (!M_isError(st)) {
+      model = M_initModel(ctx, compiled, nullptr, st);
+      if (!M_isError(st))
+        M_waitForModel(model, st);
+    }
+    if (M_isError(st)) {
+      const char *why = M_getError(st);
+      error = why && *why ? why : "MAX gave no error text";
+    }
   }
+  const bool ok = error.empty();
   const double ms = msSince(t0);
-  const bool ok = !M_isError(st);
-  const std::string error = ok ? "" : M_getError(st);
   std::vector<M_TensorSpec *> inputSpecs;
   if (ok) {
     std::printf("[%7.2fs] HOST compiled graph %u (%s, %zu bytes of %s) in %.1f s\n", secs(), id,
@@ -445,6 +475,9 @@ int main(int argc, char **argv) {
   // Replies on the eco thread: emitted, so they are written straight into the Elm heap.
   auto reply = [&](uint32_t id, uint32_t code, uint32_t status, std::span<const std::byte> payload) {
     const size_t total = 16 + payload.size();
+    if (total > kMaxReply) // a get of a buffer this large, the only reply that can be
+      fatal("reply to request " + std::to_string(id) + " (code " + std::to_string(code) + ") of " +
+            std::to_string(total) + " bytes is too large for one reply");
     const eco::EmitResult r = maxIn.emit(total, [&](std::span<std::byte> dst) {
       writeHeader(dst.data(), id, code, status);
       if (!payload.empty())
@@ -475,6 +508,13 @@ int main(int argc, char **argv) {
   auto handleRun = [&](std::span<const std::byte> v) {
     const uint32_t id = u32At(v.data());
     Graph *g = &compiledGraph(id);
+    size_t replySize = 16;
+    for (const Spec &s : g->outputs)
+      if (s.resident.empty())
+        replySize += padded(s.bytes());
+    if (replySize > kMaxReply) // refused before the run, so no resident buffer is replaced
+      fatal("run " + std::to_string(id) + ": its fed outputs (" + std::to_string(replySize) +
+            " bytes with the header) are too large for one reply");
     auto t0 = Clock::now(); // after any wait for the compile
     // Borrow every fed input in place (no copy out of the Elm heap, and no GC until we return) and
     // every resident input from its host buffer.
@@ -596,25 +636,32 @@ int main(int argc, char **argv) {
   auto handleSave = [&](std::span<const std::byte> v) {
     auto [name, path] = nameAndRest(v);
     const Resident &buf = findResident(name, "save");
-    std::ofstream(std::string(path), std::ios::binary)
-        .write(reinterpret_cast<const char *>(buf.data()), std::streamsize(buf.size));
+    std::ofstream f(std::string(path), std::ios::binary);
+    f.write(reinterpret_cast<const char *>(buf.data()), std::streamsize(buf.size));
+    f.close(); // sets failbit if the last bytes cannot be flushed
+    if (!f)
+      fatal("save: cannot write " + name + " to " + std::string(path));
     std::printf("[%7.2fs] HOST saved %s (%zu bytes) to %.*s\n", secs(), name.c_str(), buf.size,
                 int(path.size()), path.data());
     std::fflush(stdout);
   };
 
-  // 5: NAME\0 PATH (a file that cannot be opened stops the host)
+  // 5: NAME\0 PATH (a file that cannot be opened or read stops the host)
   auto handleLoadInto = [&](std::span<const std::byte> v) {
     auto [name, path] = nameAndRest(v);
     std::ifstream f{std::string(path), std::ios::binary | std::ios::ate};
     if (!f)
       fatal("loadInto: cannot open " + std::string(path));
-    const size_t n = size_t(f.tellg());
+    const std::streamoff end = f.tellg(); // -1 for a file that cannot be sized, such as a pipe
+    if (end < 0)
+      fatal("loadInto: cannot read the size of " + std::string(path));
+    const size_t n = size_t(end);
     Resident r;
     r.bytes.resize(n);
     r.size = n;
     f.seekg(0);
-    f.read(reinterpret_cast<char *>(r.bytes.data()), std::streamsize(n));
+    if (!f.read(reinterpret_cast<char *>(r.bytes.data()), std::streamsize(n)))
+      fatal("loadInto: cannot read " + std::string(path));
     residents.insert_or_assign(std::string(name), std::move(r));
   };
 
@@ -652,7 +699,7 @@ int main(int argc, char **argv) {
     std::ifstream f;
     if (std::string why = openRange(f, path, whole, offset, length); !why.empty())
       return replyFailure(id, code, command + why);
-    if (length > (uint64_t(1) << 32) - 16) // a reply is at most 4 GiB
+    if (length > kMaxReply - 16)
       return replyFailure(id, code, command + std::to_string(length) + " bytes of " + path +
                                         " are too many for one reply");
     const size_t total = 16 + length;
@@ -687,6 +734,10 @@ int main(int argc, char **argv) {
     replyFile(u32At(v.data()), Load, afterHeader(v), true, 0, 0);
   };
 
+  // Set by finish (the eco thread): every request after it, later in the same sequence or in a later
+  // message, is ignored, as the in-Elm backend ignores them.
+  bool stopping = false;
+
   // 12: u32 exit code -> main stops the program and exits with it
   auto handleFinish = [&](std::span<const std::byte> v) {
     if (v.size() < 20)
@@ -694,12 +745,15 @@ int main(int argc, char **argv) {
     std::lock_guard<std::mutex> lock(doneMutex);
     exitCode = int(u32At(v.data() + 16));
     finished = true;
+    stopping = true; // dispatch handles nothing more
     doneChanged.notify_all();
   };
 
   // Every request arrives on maxOut, so the host sees them in the order the program sent them (the
   // runtime orders sends per port, not across ports). The header's second u32 says which it is.
   std::function<void(std::span<const std::byte>)> dispatch = [&](std::span<const std::byte> v) {
+    if (stopping)
+      return;
     if (v.size() < 16)
       fatal("request of " + std::to_string(v.size()) + " bytes, shorter than its header");
     const uint32_t code = u32At(v.data() + 4);
@@ -712,7 +766,7 @@ int main(int argc, char **argv) {
     case Sequence: {
       // each command as [u32 length][the command, with its own header], run in order
       size_t off = 16;
-      while (off < v.size()) {
+      while (off < v.size() && !stopping) {
         if (v.size() - off < 4 || v.size() - off - 4 < u32At(v.data() + off))
           fatal("sequence: a command overruns the message");
         const uint32_t len = u32At(v.data() + off);

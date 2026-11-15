@@ -21,16 +21,14 @@ A session has one of two _backends_, and the program's code is the same for both
     with this package, which the compiled Elm program is linked with. The two talk over two ports
     carrying `Bytes`, which the program declares and hands to the session (`Ports`). Only an eco
     native program can declare ports that carry `Bytes`, so only such a program, linked with the
-    host, can use this backend. A reply of 4 GiB or more is not delivered: it is dropped with no
-    event.
+    host, can use this backend.
   - **Elm** (`inElm`): `Tensor.Eval` runs the graphs. This works wherever Elm runs, in tests or a
     browser; it reads and writes no files, and it is as slow as `Tensor.Eval`.
 
 The backends differ most in how a failure shows. On the in-Elm backend every command that fails
 is answered with a `Failed` event. The host itself answers a failure only of a compile, a `load` or
-a `loadRange`; most other failures it detects, such as a run whose resident buffer is missing, end
-the program with no event, and a reply too large to send is dropped with no event, as `Event`
-describes.
+a `loadRange`; any other failure it detects, such as a run whose resident buffer is missing, ends
+the program with no event, as `Event` describes.
 
 A _resident buffer_ is a named buffer of bytes that the backend keeps from one run to the next,
 such as a model's parameters: a graph's input whose role is `Graph.Resident n` reads the buffer
@@ -174,8 +172,9 @@ Names and paths go to the host as they are, with nothing escaped. A buffer name 
 byte is cut short at it by `put`, `save`, `loadInto` and `loadRangeInto`, but not by `get` or
 `drop`, and the rest of the name is read as the start of what follows it: the bytes `put` stores,
 the path, or the offset and length of `loadRangeInto`. An input's or output's name, or a resident
-name, holding ASCII whitespace or a colon does not reach the host as written: its compile can end
-the program, or a run can read and replace another buffer.
+name, holding ASCII whitespace or a colon does not reach the host as written, and the host answers
+its compile with `CompileFailed`; the one exception is a resident name whose part after the
+whitespace reads as a spec of its own, which the host takes for one more input or output.
 
 -}
 host : Ports msg -> (Message -> msg) -> Session msg
@@ -257,7 +256,8 @@ when it runs it. On the host a compile reply is not matched against the session'
 a number the session never gave a graph, or meant for another session on the same host (see
 `host`), still gives `Compiled` or `CompileFailed` for the handle with that number.
 
-`CompileFailed` says that the graph cannot be compiled: on the host, with MAX's message; on either
+`CompileFailed` says that the graph cannot be compiled: on the host, with MAX's message, or the
+host's when it cannot read a name in the graph or write the graph's file; on either
 backend, before anything is sent, with the reasons `Max` gives for not writing the graph for its
 device, one per line. A run of a graph `Max` refused gives `Failed`. A run of a graph MAX failed to
 compile gives `Failed` once its `CompileFailed` has been passed to `update`; sent before that, it
@@ -279,22 +279,22 @@ the session cannot match to a graph it holds or a request it is waiting on gives
 a message starting `"Max.Session: "`, unless it is a compile reply; so does the signal to hand out
 an answer when the session has none waiting.
 
-On the host backend most other failures the host detects end the program with no event: the host
+On the host backend every other failure the host detects ends the program with no event: the host
 prints a line starting `HOST` and exits with code 1. These failures include a run of a graph whose
 compile failed or whose compile the host has not received; a run whose resident input's buffer is
 missing or does not hold exactly as many bytes as the input's dtype and shape take; a run MAX
-cannot execute; a `save` or `drop` of a buffer that does not exist; a `loadInto` of a file that
-cannot be opened; and a `loadRangeInto` of a file that cannot be opened or read, or of a range past
-its end. A reply of 4 GiB or more does not end the program: it is dropped with no event, and the
-program goes on (see `Command`). A `save` to a file that cannot be written is not detected (see
-`save`).
+cannot execute; a `run` or `get` whose reply would be 4 GiB or more; a `save` or `drop` of a
+buffer that does not exist; a `save` to a file that cannot be written; a `loadInto` of a file that
+cannot be opened or read; and a `loadRangeInto` of a file that cannot be opened or read, or of a
+range past its end.
 
 On the host a compile finishes on a thread of its own: its `Compiled` comes before any `Ran` of
 that graph, and may come before or after any other reply. Runs are answered in the order they were
 sent, on both backends, and that order is the only thing that tells two `Ran`s of one graph apart.
 
 `Finished` carries the exit code of a `finish` run by the in-Elm backend, which cannot stop the
-program. On the host, `finish` stops the program and nothing answers it.
+program. On the host, `finish` stops the program and nothing answers it. On both backends nothing
+after a `finish` is answered.
 
 -}
 type Event
@@ -357,8 +357,8 @@ type Format
 
 {-| Compiles a graph for the CPU, and returns the session, the graph's handle and the `Cmd` for the
 program to perform; on the host backend the graph is sent as MLIR bytecode. `Compiled` or
-`CompileFailed` answers it, unless, on the host, a name in the graph holds whitespace or a colon
-(see `host`); for the CPU, `Max` refuses no graph, so only the host's MAX can.
+`CompileFailed` answers it; for the CPU, `Max` refuses no graph, so only the host can: MAX, or the
+host itself for a name it cannot read (see `host`).
 
 The session accepts a run of the handle as soon as `compile` returns. On the in-Elm backend that
 run can be sent at once. On the host backend the host waits for a compile it has received, but a
@@ -382,7 +382,7 @@ this package creates only a CPU device, and gives every input that device.
 
 On the in-Elm backend the format is ignored, and the device only decides whether `Max` refuses the
 graph: a graph it does not refuse is `Compiled` at once and run with `Tensor.Eval`, whatever the
-device. A compile is answered there even after a `finish`.
+device. A compile is answered there even after a `finish`, while the host handles none.
 
 -}
 compileWith : { format : Format, device : Max.Device } -> Graph -> Session msg -> ( Session msg, Handle, Cmd msg )
@@ -457,9 +457,8 @@ next toMsg =
 end of the program. Commands do nothing until `send` sends them. Compiling is not a command:
 `compile` and `compileWith` do not go through `send`.
 
-When it runs and succeeds, a `run`, `get`, `load` or `loadRange` is answered with an event (on the
-host, a reply under 4 GiB), and
-no other command is, except a `finish` on the in-Elm backend (`Finished`). How a failure is
+When it runs and succeeds, a `run`, `get`, `load` or `loadRange` is answered with an event, and no
+other command is, except a `finish` on the in-Elm backend (`Finished`). How a failure is
 answered differs between the backends, as `Event` describes.
 
 -}
@@ -509,8 +508,7 @@ send commands ((S.Session s) as session) =
 
 {-| Creates the command that runs a compiled graph once, on its resident buffers and on the fed
 inputs given by name: the name of each input's spec in `Graph.inputs`. `Ran` answers it with the fed
-outputs (on the host, a reply under 4 GiB), and the resident outputs replace their buffers once the
-whole run has succeeded.
+outputs, and the resident outputs replace their buffers once the whole run has succeeded.
 
 Every fed input must be given. An input given twice is taken from its first entry, and names the
 graph has no fed input for are ignored. Each input must fit its spec:
@@ -535,7 +533,8 @@ are read as the input's. A buffer that does not pass gives `Failed` on the in-El
 the program on the host.
 
 A run that fails while it runs, one `Tensor.Eval` or MAX cannot execute, gives `Failed` on the
-in-Elm backend and ends the program on the host, as `Event` describes.
+in-Elm backend and ends the program on the host, as `Event` describes. On the host, a run whose
+fed outputs, padded, come to more than 2³² − 17 bytes ends the program before it runs.
 
 -}
 run : Handle -> List ( String, Input ) -> Command
@@ -594,7 +593,8 @@ put =
 
 
 {-| Creates the command that reads the resident buffer `name`. `Got` answers it with the buffer's
-bytes, or with none when no buffer has that name (on the host, a reply under 4 GiB).
+bytes, or with none when no buffer has that name. On the host, a buffer of more than 2³² − 17
+bytes, more than one reply carries, ends the program.
 -}
 get : String -> Command
 get =
@@ -604,8 +604,8 @@ get =
 {-| Creates the command that writes the resident buffer `name` to the file at `path`, as its bytes
 and nothing else. Nothing answers it when it succeeds.
 
-On the host a buffer that does not exist ends the program, and a file that cannot be written is
-not written, with no event to say so. On the in-Elm backend no file is written: the bytes are kept
+On the host a buffer that does not exist, or a file that cannot be written, ends the program. On
+the in-Elm backend no file is written: the bytes are kept
 in the session under `path`, for `loadInto` to read, and a buffer that does not exist gives
 `Failed`.
 
@@ -617,7 +617,8 @@ save name path =
 
 {-| Creates the command that sets the resident buffer `name` to the whole contents of the file at
 `path`, whatever they are. Nothing answers it when it succeeds. On the host, a file that cannot be
-opened ends the program; on the in-Elm backend, a path the session did not save gives `Failed`.
+opened or read ends the program; on the in-Elm backend, a path the session did not save gives
+`Failed`.
 -}
 loadInto : String -> String -> Command
 loadInto name path =
@@ -650,8 +651,7 @@ drop =
 
 {-| Creates the command that reads the file at `path`. On the host `Loaded` answers it with the
 whole file, or `Failed` with why it cannot be read: the file cannot be opened or read, or holds
-more than 2³² − 16 bytes. One reply carries at most 2³² − 17 bytes: a file of exactly 2³² − 16
-is neither delivered nor refused, and nothing answers it. A reply that cannot be allocated
+more than 2³² − 17 bytes, which is more than one reply carries. A reply that cannot be allocated
 ends the program instead, with no event. The in-Elm backend reads no files, and answers `Failed`
 each time it runs one.
 -}
@@ -663,8 +663,7 @@ load =
 {-| Creates the command that reads `length` bytes of the file at `path`, starting at byte `offset`,
 such as a checkpoint's header. On the host `Loaded` answers it with those bytes, or `Failed` with
 why they cannot be read: the file cannot be opened or read, the range runs past its end, or
-`length` is more than 2³² − 16. A `length` of exactly 2³² − 16 is neither delivered nor refused,
-and nothing answers it. A reply that cannot be allocated ends the program instead, with no
+`length` is more than 2³² − 17. A reply that cannot be allocated ends the program instead, with no
 event. The in-Elm backend reads no files, and answers `Failed` each time it runs one.
 
 `offset` and `length` must not be negative: nothing refuses a negative one, and the host reads it
@@ -678,15 +677,14 @@ loadRange path offset length =
 
 {-| Creates the command that asks the backend to end the program with an exit code.
 
-On the host nothing answers it: the host stops the program and exits with the code, unless a
-failure the host detects after the `finish`, in a later command of the same `send` or in a compile
-still running, ends the program first with code 1. A `finish`
-does not stop the host from handling the commands after it in the same `send`, and nothing ensures
-that messages sent later are handled.
+On the host nothing answers it: the host stops the program and exits with the code. The process's
+exit status keeps only the code's low 8 bits, as on any POSIX system, so only a code from 0 to 255
+comes out as given; -1 comes out as 255. The host handles nothing sent after a `finish`: not the
+commands after it in the same `send`, nor a later `send` or `compile`.
 
-The in-Elm backend cannot stop the program: it answers `Finished` with the code, and ignores every
-later command, in this `send` and in later ones, with no answer. A later `compile` is still
-answered.
+The in-Elm backend cannot stop the program: it answers `Finished` with the code as given, and
+ignores every later command, in this `send` and in later ones, with no answer. A later `compile` is
+still answered.
 
 -}
 finish : Int -> Command
