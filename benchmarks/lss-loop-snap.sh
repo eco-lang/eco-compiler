@@ -21,7 +21,7 @@
 
 ROOT=/work
 SNAPS=$ROOT/snapshots/lss-loop
-DIRS="compiler/src compiler/src-xhr runtime/src elm-kernel-cpp/src eco-kernel-cpp/src compiler/tests test/eco-kernel/src test/allocator test/gc-helper-tsan test/gc-heap-tsan"
+DIRS="compiler/src compiler/mlir/src compiler/src-xhr runtime/src elm-kernel-cpp/src eco-kernel-cpp/src compiler/tests test/eco-kernel/src test/allocator test/gc-helper-tsan test/gc-heap-tsan"
 # threaded-gc-06: the allocator unit tests and the TSan harnesses joined the list (a snapshot
 # taken before that simply lacks them and they are skipped, as for FILES below).
 # Individual files a step may change. Build files matter because a step that ADDS a source file

@@ -205,6 +205,8 @@ def build_instrumented_guida(root, out_dir, data_dir):
     os.makedirs(data_dir, exist_ok=True)
     shutil.copytree(os.path.join(inst, "src"), os.path.join(out_dir, "src"), symlinks=True)
     shutil.copytree(os.path.join(inst, "src-xhr"), os.path.join(out_dir, "src-xhr"), symlinks=True)
+    # the-sett/elm-mlir (compiler/mlir), a source directory of the compiler; not instrumented
+    shutil.copytree(f"{COMPILER}/mlir/src", os.path.join(out_dir, "mlir-src"), symlinks=True)
     shutil.copytree(f"{BUILD}/compiler/version", os.path.join(out_dir, "version"), symlinks=True)
     shutil.copy(f"{BUILD}/compiler/build-xhr/elm.json", out_dir)
     guida = os.path.join(out_dir, "bin", "guida.js")
@@ -990,7 +992,7 @@ def workspace_root(name):
 
 def cmd_workspace(a):
     """Creates (or, with --reset, recreates) /tmp/eco-cov-agents/NAME/compiler: src, src-xhr and
-    src-version are symlinks to /work/compiler (agents of the loop do not edit the compiler), tests/
+    src-version (and mlir/src) are symlinks to /work/compiler (agents of the loop do not edit the compiler), tests/
     and elm.json are copies the agent edits. Its quick runs are tagged NAME."""
     root = workspace_root(a.name)
     if os.path.exists(root):
@@ -1001,6 +1003,8 @@ def cmd_workspace(a):
     os.makedirs(root)
     for d in ("src", "src-xhr", "src-version"):
         os.symlink(f"{COMPILER}/{d}", f"{root}/{d}")
+    os.makedirs(f"{root}/mlir")
+    os.symlink(f"{COMPILER}/mlir/src", f"{root}/mlir/src")
     shutil.copy(f"{COMPILER}/elm.json", root)
     shutil.copytree(f"{COMPILER}/tests", f"{root}/tests", symlinks=True,
                     ignore=shutil.ignore_patterns("elm-stuff"))

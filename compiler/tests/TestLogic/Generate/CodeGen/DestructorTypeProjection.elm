@@ -324,6 +324,12 @@ typeToString t =
         FunctionType _ ->
             "function"
 
+        IndexType ->
+            "index"
+
+        SignedIntegerType w ->
+            "si" ++ String.fromInt w
+
 
 {-| Returns the number of spurious unboxes in the module's top-level `func.func`
 ops: `eco.unbox` ops with one operand and one result, whose result is `i64`,

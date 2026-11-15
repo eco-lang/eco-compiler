@@ -7,14 +7,13 @@ module Mlir.Mlir exposing
     , OpBuilderFns, OpBuilder, opBuilder, mlirOp
     )
 
-{-| The compiler's native back end produces an MLIR program, and this module is
-the in-memory form that program takes between being generated and being written
-out as text or as bytecode.
+{-| An MLIR program in memory: the form a program takes between being built in
+Elm and being written out as text (`Mlir.Pretty`) or as bytecode
+(`Mlir.Bytecode.StreamEncode`).
 
 MLIR is a compiler framework whose programs are built from _operations_. An
 operation has a name of the form `dialect.op`, where a _dialect_ is a named
-family of operations and types, such as `func`, `arith` or the compiler's own
-`eco`. It reads values, its _operands_, and defines new ones, its _results_. It
+family of operations and types, such as `func`, `arith` or `llvm`. It reads values, its _operands_, and defines new ones, its _results_. It
 carries _attributes_, which are constant data such as a callee's name or an
 integer flag, and it may contain _regions_ of nested code. A region is a list
 of _blocks_, and a block is a straight run of operations that ends in a
@@ -26,8 +25,8 @@ The model is generic. An operation is described by its name string and its
 fields, not by a type of its own, so nothing here knows which operations exist
 or checks that an operation's operands, results or attributes make sense for
 it. The names of values and of blocks are plain strings. The attributes and
-types are a fixed set, the ones the compiler uses, rather than all that MLIR
-allows.
+types are a fixed set rather than all that MLIR allows, with an opaque form,
+written as its text, for any other attribute or dialect type.
 
 Most of the module is that model. The rest is the _op builder_: `mlirOp` starts
 an operation and draws its `id` from an environment, the fields of `opBuilder`
@@ -103,6 +102,14 @@ without MLIR's leading `@`.
 `UnitAttr` carries no value; its presence under a name is the whole of what it
 says.
 
+`DictAttr` is a dictionary of named attributes used as a value, such as an
+empty `parameters = {}`. Its entries are kept, and written, in name order.
+
+`OpaqueAttr` is any other attribute, as its full assembly text, such as
+`#mosh<ape[2]> : !mosh.ape`. It is written as that text, which MLIR parses when
+it reads it. Its dialect is the name after the leading `#`, up to the first `.`
+or `<`; text that does not start with `#` belongs to the builtin dialect.
+
 -}
 type MlirAttr
     = StringAttr String
@@ -114,6 +121,8 @@ type MlirAttr
     | SymbolRefAttr String
     | VisibilityAttr Visibility
     | UnitAttr
+    | DictAttr (Dict String MlirAttr)
+    | OpaqueAttr String
 
 
 {-| The visibility a `VisibilityAttr` can give a symbol. `Private` is the only
@@ -129,12 +138,12 @@ type Visibility
 
 {-| The type of an SSA value, or of an attribute's contents.
 
-MLIR has no fixed list of types: each dialect may define its own. This is the
-handful of built-in types the compiler uses, plus a way to name any dialect's
-type.
+MLIR has no fixed list of types: each dialect may define its own. This is a
+handful of builtin types, plus a way to name any dialect's type.
 
-`I1`, `I8`, `I32` and `I64` are integers of that many bits, and `F64` is a
-64-bit float.
+`I1`, `I8`, `I32` and `I64` are signless integers of that many bits, and `F64`
+is a 64-bit float. `SignedIntegerType w` is the signed integer of `w` bits, such
+as `si64`, and `IndexType` is MLIR's `index`.
 
 `NamedStruct` names a type defined by a dialect, in full and without MLIR's
 leading `!`, such as `eco.value`. The part before the first `.` is the
@@ -152,6 +161,8 @@ type MlirType
     | F64
     | NamedStruct String
     | FunctionType { inputs : List MlirType, results : List MlirType }
+    | IndexType
+    | SignedIntegerType Int
 
 
 

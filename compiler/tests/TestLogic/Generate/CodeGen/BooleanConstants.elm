@@ -210,3 +210,9 @@ typeToString t =
 
         FunctionType _ ->
             "function"
+
+        IndexType ->
+            "index"
+
+        SignedIntegerType w ->
+            "si" ++ String.fromInt w

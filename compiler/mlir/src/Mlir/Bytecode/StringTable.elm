@@ -1,4 +1,4 @@
-module Mlir.Bytecode.StringTable exposing (StringTable, indexOf, encode, addString, empty, collectOp, splitDialect)
+module Mlir.Bytecode.StringTable exposing (StringTable, indexOf, encode, addString, empty, collectOp, splitDialect, opaqueAttrDialect)
 
 {-| MLIR bytecode refers to many of its strings, such as dialect names,
 operation names and the text of string attributes, by their index in one string
@@ -167,6 +167,39 @@ splitDialect name =
             ( name, "" )
 
 
+{-| Returns the dialect of an `OpaqueAttr`'s text: the name after its leading
+`#`, up to the first `.` or `<`, so `#mosh<ape[2]>` gives `mosh` and
+`#M.device_ref<...>` gives `M`. Text that does not start with `#` is a builtin
+attribute, and gives `builtin`.
+-}
+opaqueAttrDialect : String -> String
+opaqueAttrDialect text =
+    if String.startsWith "#" text then
+        String.dropLeft 1 text
+            |> String.toList
+            |> takeWhile (\c -> c /= '.' && c /= '<')
+            |> String.fromList
+
+    else
+        "builtin"
+
+
+{-| Returns the longest prefix of `l` whose elements all satisfy `ok`.
+-}
+takeWhile : (a -> Bool) -> List a -> List a
+takeWhile ok l =
+    case l of
+        x :: rest ->
+            if ok x then
+                x :: takeWhile ok rest
+
+            else
+                []
+
+        [] ->
+            []
+
+
 {-| Adds an attribute's name `key` and the strings in its value.
 -}
 collectAttrEntry : String -> MlirAttr -> StringTable -> StringTable
@@ -178,8 +211,9 @@ collectAttrEntry key attr st =
 
 {-| Adds the strings in an attribute value: the text of a `StringAttr` or
 `SymbolRefAttr`, `"private"` for a `VisibilityAttr`, the strings in the type of
-a `TypeAttr` or `TypedFloatAttr`, and those of every element of an
-`ArrayAttr`. The type an `IntAttr` or `ArrayAttr` carries is not visited.
+a `TypeAttr` or `TypedFloatAttr`, those of every element of an `ArrayAttr`,
+each name and value of a `DictAttr`, and the dialect of an `OpaqueAttr`. The
+type an `IntAttr` or `ArrayAttr` carries is not visited.
 -}
 collectAttr : MlirAttr -> StringTable -> StringTable
 collectAttr attr st =
@@ -211,6 +245,12 @@ collectAttr attr st =
         UnitAttr ->
             st
 
+        DictAttr d ->
+            Dict.foldl collectAttrEntry st d
+
+        OpaqueAttr s ->
+            addString (opaqueAttrDialect s) st
+
 
 {-| Adds the strings in a type. Only a `NamedStruct` has any: its dialect, the
 text before the first `.`, and its full name. A `FunctionType` adds those of
@@ -236,6 +276,12 @@ collectType ty st =
 
         NamedStruct s ->
             st |> addString (Tuple.first (splitDialect s)) |> addString s
+
+        IndexType ->
+            st
+
+        SignedIntegerType _ ->
+            st
 
         FunctionType sig ->
             let

@@ -16,8 +16,9 @@ this:
     of this count.
   - A region is _isolated_ when it cannot see values defined outside it. Its
     numbering starts at 0, and it is written inside an IR section of its own.
-    Only the regions of `func.func` and `builtin.module` are treated as
-    isolated.
+    The regions of the operations named in the `isolated` set the caller
+    gives are treated as isolated; `Mlir.Bytecode.StreamEncode` describes its
+    default.
   - Any other region carries on from where the numbering of the region around
     it stopped, after all of that region's values. Sibling regions of one
     operation, such as the two branches of an `scf.if`, each start from that
@@ -60,6 +61,7 @@ import Mlir.Mlir
         , MlirType
         )
 import OrderedDict
+import Set exposing (Set)
 
 
 
@@ -248,8 +250,8 @@ define, then the entry block and the labelled blocks in order. Successors are
 resolved against this region's blocks.
 
 -}
-encodeRegion : DialectRegistry -> AttrTypeTable -> ValueEnv -> MlirRegion -> BE.Encoder
-encodeRegion dialectReg attrTypeTable valueEnv (MlirRegion r) =
+encodeRegion : Set String -> DialectRegistry -> AttrTypeTable -> ValueEnv -> MlirRegion -> BE.Encoder
+encodeRegion isolated dialectReg attrTypeTable valueEnv (MlirRegion r) =
     let
         namedBlocks =
             OrderedDict.toList r.blocks
@@ -264,11 +266,11 @@ encodeRegion dialectReg attrTypeTable valueEnv (MlirRegion r) =
             countRegionValues (MlirRegion r)
 
         entryEncoder =
-            encodeBlock dialectReg attrTypeTable valueEnv blockEnv r.entry
+            encodeBlock isolated dialectReg attrTypeTable valueEnv blockEnv r.entry
 
         namedEncoders =
             namedBlocks
-                |> List.map (\( _, blk ) -> encodeBlock dialectReg attrTypeTable valueEnv blockEnv blk)
+                |> List.map (\( _, blk ) -> encodeBlock isolated dialectReg attrTypeTable valueEnv blockEnv blk)
     in
     BE.sequence
         (encodeVarInt numBlocks
@@ -285,8 +287,8 @@ The operations written are those of `body` whose `isTerminator` is not set,
 followed by `terminator`.
 
 -}
-encodeBlock : DialectRegistry -> AttrTypeTable -> ValueEnv -> BlockEnv -> MlirBlock -> BE.Encoder
-encodeBlock dialectReg attrTypeTable valueEnv blockEnv blk =
+encodeBlock : Set String -> DialectRegistry -> AttrTypeTable -> ValueEnv -> BlockEnv -> MlirBlock -> BE.Encoder
+encodeBlock isolated dialectReg attrTypeTable valueEnv blockEnv blk =
     let
         hasBlockArgs =
             not (List.isEmpty blk.args)
@@ -317,7 +319,7 @@ encodeBlock dialectReg attrTypeTable valueEnv blockEnv blk =
 
         opEncoders =
             allOps
-                |> List.map (encodeOp dialectReg attrTypeTable valueEnv blockEnv)
+                |> List.map (encodeOp isolated dialectReg attrTypeTable valueEnv blockEnv)
     in
     BE.sequence
         (encodeVarInt blockHeader
@@ -380,15 +382,15 @@ successors and each one's block index, looked up with one leading `^` removed;
 and the regions.
 
 The regions start with one number holding their count shifted left one bit,
-with the low bit set when they are isolated, which is decided by the
-operation's name. An isolated region is numbered from 0 and wrapped in an IR
+with the low bit set when they are isolated, which they are when the
+operation's name is in `isolated`. An isolated region is numbered from 0 and wrapped in an IR
 section of its own. Every other region is numbered on from `valueEnv`, each
 separately, so siblings start from the same index and see the names in
 `valueEnv` but not each other's values.
 
 -}
-encodeOp : DialectRegistry -> AttrTypeTable -> ValueEnv -> BlockEnv -> MlirOp -> BE.Encoder
-encodeOp dialectReg attrTypeTable valueEnv blockEnv op =
+encodeOp : Set String -> DialectRegistry -> AttrTypeTable -> ValueEnv -> BlockEnv -> MlirOp -> BE.Encoder
+encodeOp isolated dialectReg attrTypeTable valueEnv blockEnv op =
     let
         nameIdx =
             DialectSection.opIndex op.name dialectReg
@@ -526,7 +528,7 @@ encodeOp dialectReg attrTypeTable valueEnv blockEnv op =
                         List.length op.regions
 
                     isIsolated =
-                        isIsolatedOp op.name
+                        Set.member op.name isolated
 
                     regionEncoding =
                         Bitwise.or
@@ -551,14 +553,14 @@ encodeOp dialectReg attrTypeTable valueEnv blockEnv op =
                                                 numberRegion emptyValueEnv region
                                         in
                                         Section.encodeSection Section.sectionId.ir
-                                            (encodeRegion dialectReg attrTypeTable isoEnv region)
+                                            (encodeRegion isolated dialectReg attrTypeTable isoEnv region)
 
                                     else
                                         let
                                             altEnv =
                                                 numberRegion regionBaseEnv region
                                         in
-                                        encodeRegion dialectReg attrTypeTable altEnv region
+                                        encodeRegion isolated dialectReg attrTypeTable altEnv region
                                 )
                 in
                 encodeVarInt regionEncoding :: regionEncoders
@@ -586,20 +588,13 @@ time.
 The operation is encoded with an empty value environment and no block
 indices. An isolated region inside it, such as a `func.func`'s body, is
 numbered from 0 as usual, but an operand of the operation itself is written as
--1 and a successor as block 0.
+-1 and a successor as block 0. The regions of the operations named in
+`isolated` are isolated.
 
 -}
-encodeFuncOp : DialectRegistry -> AttrTypeTable -> MlirOp -> BE.Encoder
-encodeFuncOp dialectReg attrTypeTable op =
-    encodeOp dialectReg attrTypeTable emptyValueEnv Dict.empty op
-
-
-{-| Tells whether an operation with the given name is treated as having
-isolated regions: true only for `func.func` and `builtin.module`.
--}
-isIsolatedOp : String -> Bool
-isIsolatedOp name =
-    name == "func.func" || name == "builtin.module"
+encodeFuncOp : Set String -> DialectRegistry -> AttrTypeTable -> MlirOp -> BE.Encoder
+encodeFuncOp isolated dialectReg attrTypeTable op =
+    encodeOp isolated dialectReg attrTypeTable emptyValueEnv Dict.empty op
 
 
 {-| Returns the number of values defined in a region's blocks: block arguments

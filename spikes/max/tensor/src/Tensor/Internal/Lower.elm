@@ -5,7 +5,7 @@ into those ops (`graph`). It also collects the graph's build errors (`problems`)
 nothing itself and assumes that list was empty.
 
 _Lowering_ goes through the expressions the outputs read, each after its operands, and gives each
-one a _value number_ in the region being written (`Tensor.Internal.MlirBc` defines regions and
+one a _value number_ in the region being written (`Tensor.Internal.Ir` defines regions and
 value numbers). Expressions are told apart by key, so an expression read in several places is
 lowered once and its number reused, within the limits regions set, described next. How a primitive
 is spelled as ops is `Tensor.Internal.Mo`'s concern; this module deals in value numbers.
@@ -14,8 +14,8 @@ A graph is one region, the block of its `mo.graph`. A branch (`If`) becomes an `
 (`While`) an `mo.while`, each holding two regions nested in the one being written, so lowering
 keeps a stack of _frames_, one per region being written, innermost on top. The nested regions are
 open regions: their ops may read values of the regions outside them, up to the graph's region, as
-negative operands, which this module assigns (`Tensor.Internal.MlirBc.outer`, once per region
-crossed) and `MlirBc` resolves. An expression already lowered in an enclosing region is read from
+negative operands, which this module assigns (`Tensor.Internal.Ir.outer`, once per region
+crossed) and `Tensor.Internal.Ir` resolves. An expression already lowered in an enclosing region is read from
 there, however many regions out. One first lowered inside a nested region is forgotten when that
 region ends, and is lowered again if it is needed after it.
 
@@ -39,7 +39,7 @@ import Set exposing (Set)
 import Tensor.Internal.Expr as E exposing (Expr)
 import Tensor.Internal.Grad as Grad
 import Tensor.Internal.Key as K exposing (Key)
-import Tensor.Internal.MlirBc as Bc
+import Tensor.Internal.Ir as Ir
 import Tensor.Internal.Mo as Mo
 import Tensor.Internal.Prim as P
 import Tensor.Internal.Shape as Shape
@@ -187,7 +187,7 @@ collisionCheck order =
 
 
 {-| One region being written: its block of ops so far, and the value numbers it gives expressions,
-in its own numbering (`Tensor.Internal.MlirBc.Region`).
+in its own numbering (`Tensor.Internal.Ir.Region`).
 
 `values` holds what was lowered in this region, by key, and in the main graph's frame also its
 inputs, as the block's arguments. `binds` holds the placeholders this region's body reads, bound
@@ -216,7 +216,7 @@ name of its subgraph.
 type alias St =
     { frames : List Frame
     , chain : Maybe Int
-    , subgraphs : Dict String Bc.Op
+    , subgraphs : Dict String Ir.Op
     , order : List String
     , symbols : Dict String (List ( BodyId, String ))
     }
@@ -238,10 +238,10 @@ subgraph first called from inside another comes before it.
 
 It assumes `problems` found nothing. An expression that no region has a value for, such as an
 input not among `inputs`, is read as the operand 10⁹, which names no value in any region, so
-`Tensor.Internal.MlirBc.unboundOperands` finds it.
+`Tensor.Internal.Ir.unboundOperands` finds it.
 
 -}
-graph : String -> List ( String, Expr ) -> List ( String, Expr ) -> List Bc.Op
+graph : String -> List ( String, Expr ) -> List ( String, Expr ) -> List Ir.Op
 graph name inputs outputs =
     let
         frame =
@@ -279,16 +279,16 @@ graph name inputs outputs =
                 (List.map (Tuple.mapSecond E.meta) outputs)
                 inTypes
                 outTypes
-                (Bc.Region inTypes (List.reverse (output :: top.block.ops)))
+                (Ir.Region inTypes (List.reverse (output :: top.block.ops)))
     in
     main :: List.filterMap (\n -> Dict.get n st1.subgraphs) (List.reverse st1.order)
 
 
 {-| The type of the chain, `!mo.chain`.
 -}
-chainType : Bc.Type
+chainType : Ir.Type
 chainType =
-    Bc.OpaqueType "!mo.chain"
+    Ir.OpaqueType "!mo.chain"
 
 
 {-| Returns, for a primitive that `Tensor.Internal.Mo` writes as one result of a two-result op, the
@@ -310,7 +310,7 @@ sibling p =
 
 {-| Returns the value number of key `k` as the top frame numbers it: the top frame's own value or
 bound placeholder, or else the number the nearest enclosing frame has for it, turned by
-`Tensor.Internal.MlirBc.outer` once for each region crossed. `Nothing` when no frame has it.
+`Tensor.Internal.Ir.outer` once for each region crossed. `Nothing` when no frame has it.
 -}
 lookup : St -> Key -> Maybe Int
 lookup st k =
@@ -328,7 +328,7 @@ lookup st k =
                                     Just v
 
                                 Nothing ->
-                                    go outer |> Maybe.map Bc.outer
+                                    go outer |> Maybe.map Ir.outer
 
                 [] ->
                     Nothing
@@ -338,8 +338,8 @@ lookup st k =
 
 {-| Returns the value number of `e` as the top frame numbers it, as `lookup` gives it, or 10⁹ when
 no frame has a value for it: an operand that names no value of the region it is read in, nor, once
-`Tensor.Internal.MlirBc.outer` has turned it for an enclosed region, of any region it can reach
-from there, so `Tensor.Internal.MlirBc.unboundOperands` reports it.
+`Tensor.Internal.Ir.outer` has turned it for an enclosed region, of any region it can reach
+from there, so `Tensor.Internal.Ir.unboundOperands` reports it.
 -}
 valueOf : St -> Expr -> Int
 valueOf st e =
@@ -413,7 +413,7 @@ ensureChain st =
 
 
 {-| Returns the chain's value number as the top frame numbers it, by applying
-`Tensor.Internal.MlirBc.outer` once for each frame above the bottom one. With no chain, it starts
+`Tensor.Internal.Ir.outer` once for each frame above the bottom one. With no chain, it starts
 from −1.
 -}
 chainValue : St -> Int
@@ -425,7 +425,7 @@ chainValue st =
         base =
             Maybe.withDefault -1 st.chain
     in
-    List.foldl (\_ v -> Bc.outer v) base (List.range 1 depth)
+    List.foldl (\_ v -> Ir.outer v) base (List.range 1 depth)
 
 
 {-| Lowers `e` into the top frame and records its value number, unless some frame already has a
@@ -499,7 +499,7 @@ What was lowered in the region is forgotten when it ends, so an expression first
 lowered again where it is needed after it.
 
 -}
-region : Bool -> List Bc.Type -> Dict Key Int -> List Expr -> (St -> List Int -> Bc.Op) -> St -> ( St, Bc.Region )
+region : Bool -> List Ir.Type -> Dict Key Int -> List Expr -> (St -> List Int -> Ir.Op) -> St -> ( St, Ir.Region )
 region withArgs argTypes binds outputs terminator st =
     let
         frame =
@@ -523,10 +523,10 @@ region withArgs argTypes binds outputs terminator st =
 
         r =
             if withArgs then
-                Bc.OpenRegion argTypes ops
+                Ir.OpenRegion argTypes ops
 
             else
-                Bc.OpenRegion [] ops
+                Ir.OpenRegion [] ops
     in
     ( { inner | frames = List.drop 1 inner.frames }, r )
 
@@ -589,7 +589,7 @@ readVars scope roots =
 first, and the op reads only `pred`.
 
 Its two regions have no arguments. Each binds the placeholders `bodyVars` finds in its branch to
-`args`, each numbered `Tensor.Internal.MlirBc.outer v` from the number `v` the top frame gives it,
+`args`, each numbered `Tensor.Internal.Ir.outer v` from the number `v` the top frame gives it,
 and ends in an `mo.yield` of its branch's outputs and the chain as `chainValue` gives it. A branch
 thus reads its arguments, like any other value from outside, as negative operands. The op's results
 are `t`'s outputs and the chain.
@@ -606,7 +606,7 @@ lowerIf e pred t f args st0 =
 
         argValues frame0 =
             -- the operands as a region nested in the current top names them
-            List.map (\a -> Bc.outer (valueOf frame0 a)) args
+            List.map (\a -> Ir.outer (valueOf frame0 a)) args
 
         yield inner vs =
             { name = "mo.yield", attrs = [], results = [], operands = vs ++ [ chainValue inner ], regions = [] }
@@ -622,7 +622,7 @@ lowerIf e pred t f args st0 =
     in
     emit
         (Mo.push "mo.if"
-            [ ( "outputParamDecls", Bc.OpaqueAttr "#kgen<param.decls[]>" ) ]
+            [ ( "outputParamDecls", Ir.OpaqueAttr "#kgen<param.decls[]>" ) ]
             [ valueOf st4 pred ]
             results
             [ thenRegion, elseRegion ]
@@ -773,7 +773,7 @@ lowerCall e name body args st0 =
         st4 =
             emit
                 (Mo.push "mo.call"
-                    [ ( "callee", Bc.SymbolRefAttr symbol ), ( "outputParamDecls", Bc.OpaqueAttr "#kgen<param.decls[]>" ), ( "prefix", Bc.StrAttr "" ) ]
+                    [ ( "callee", Ir.SymbolRefAttr symbol ), ( "outputParamDecls", Ir.OpaqueAttr "#kgen<param.decls[]>" ), ( "prefix", Ir.StrAttr "" ) ]
                     (List.map (valueOf st3) args ++ [ chain ])
                     results
                     []
@@ -821,7 +821,7 @@ bodyId body =
 {-| Returns `name` when no subgraph in `subgraphs` has it, and otherwise the first of
 `name ++ "_c1"`, `name ++ "_c2"`, … that none has.
 -}
-freshSymbol : String -> Dict String Bc.Op -> String
+freshSymbol : String -> Dict String Ir.Op -> String
 freshSymbol name subgraphs =
     let
         go k =
@@ -891,7 +891,7 @@ subgraph name body args caller =
             List.indexedMap (\i o -> ( "output" ++ String.fromInt i, E.meta o )) body.outputs ++ [ ( "output" ++ String.fromInt (List.length body.outputs), { shape = [], pending = [], dtype = P.F32 } ) ]
 
         op =
-            Mo.graphOp name [ ( "isSubgraph", Bc.UnitAttr ) ] inNames outNames inTypes outTypes (Bc.Region inTypes (List.reverse (output :: top.block.ops)))
+            Mo.graphOp name [ ( "isSubgraph", Ir.UnitAttr ) ] inNames outNames inTypes outTypes (Ir.Region inTypes (List.reverse (output :: top.block.ops)))
     in
     { caller | subgraphs = Dict.insert name op st.subgraphs, order = name :: st.order, symbols = st.symbols }
 
@@ -899,6 +899,6 @@ subgraph name body args caller =
 {-| An empty `mo.output` op that holds a subgraph's place in the table while its body is lowered.
 `subgraph` replaces it once the body is done, so it is never among the ops `graph` returns.
 -}
-placeholderOp : Bc.Op
+placeholderOp : Ir.Op
 placeholderOp =
     { name = "mo.output", attrs = [], results = [], operands = [], regions = [] }

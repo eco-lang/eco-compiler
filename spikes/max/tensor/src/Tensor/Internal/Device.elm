@@ -26,7 +26,7 @@ and it never refuses.
 
 -}
 
-import Tensor.Internal.MlirBc as Bc
+import Tensor.Internal.Ir as Ir
 
 
 {-| The device a graph's ops are placed for.
@@ -76,7 +76,7 @@ attribute that is a type, and every `device` attribute written as text replaced 
 `#M.device_ref<"gpu", i>`.
 
 -}
-place : Device -> List Bc.Op -> Result (List String) (List Bc.Op)
+place : Device -> List Ir.Op -> Result (List String) (List Ir.Op)
 place device ops =
     let
         refusals =
@@ -97,7 +97,7 @@ place device ops =
 {-| Returns the reasons `op`, and the ops in its regions at any depth, cannot be placed on a GPU:
 one message for each refused op, `op`'s own first.
 -}
-notOnGpu : Bc.Op -> List String
+notOnGpu : Ir.Op -> List String
 notOnGpu op =
     (if List.any (\( n, _ ) -> n == axisNotLastMark) op.attrs then
         [ op.name ++ ": on a GPU only the last axis is supported" ]
@@ -113,19 +113,19 @@ notOnGpu op =
 
 {-| Returns the ops of a region, isolated or open.
 -}
-regionOps : Bc.Region -> List Bc.Op
+regionOps : Ir.Region -> List Ir.Op
 regionOps r =
     case r of
-        Bc.Region _ ops ->
+        Ir.Region _ ops ->
             ops
 
-        Bc.OpenRegion _ ops ->
+        Ir.OpenRegion _ ops ->
             ops
 
 
 {-| Tells whether an attribute is the host mark or the axis-not-last mark, by its name alone.
 -}
-isMark : ( String, Bc.Attr ) -> Bool
+isMark : ( String, Ir.Attr ) -> Bool
 isMark ( n, _ ) =
     n == hostMark || n == axisNotLastMark
 
@@ -133,7 +133,7 @@ isMark ( n, _ ) =
 {-| Places one op for `device`, and the ops of its regions with it: removes its marks, places its
 attributes, its regions and, unless it carries the host mark, its result types.
 -}
-placeOp : Device -> Bc.Op -> Bc.Op
+placeOp : Device -> Ir.Op -> Ir.Op
 placeOp device op =
     let
         onHost =
@@ -157,14 +157,14 @@ placeOp device op =
 {-| Places a region's argument types and its ops for `device`, keeping it isolated or open as it
 was.
 -}
-placeRegion : Device -> Bc.Region -> Bc.Region
+placeRegion : Device -> Ir.Region -> Ir.Region
 placeRegion device r =
     case r of
-        Bc.Region args ops ->
-            Bc.Region (List.map (placeType device) args) (List.map (placeOp device) ops)
+        Ir.Region args ops ->
+            Ir.Region (List.map (placeType device) args) (List.map (placeOp device) ops)
 
-        Bc.OpenRegion args ops ->
-            Bc.OpenRegion (List.map (placeType device) args) (List.map (placeOp device) ops)
+        Ir.OpenRegion args ops ->
+            Ir.OpenRegion (List.map (placeType device) args) (List.map (placeOp device) ops)
 
 
 {-| Places one named attribute for `device`.
@@ -175,21 +175,21 @@ CPU, is returned unchanged; in particular, types inside an array or dictionary a
 placed.
 
 -}
-placeAttr : Device -> ( String, Bc.Attr ) -> ( String, Bc.Attr )
+placeAttr : Device -> ( String, Ir.Attr ) -> ( String, Ir.Attr )
 placeAttr device ( n, a ) =
     case ( device, a ) of
         ( Cpu, _ ) ->
             ( n, a )
 
-        ( Gpu i, Bc.OpaqueAttr _ ) ->
+        ( Gpu i, Ir.OpaqueAttr _ ) ->
             if n == "device" then
-                ( n, Bc.OpaqueAttr ("#M.device_ref<\"gpu\", " ++ String.fromInt i ++ ">") )
+                ( n, Ir.OpaqueAttr ("#M.device_ref<\"gpu\", " ++ String.fromInt i ++ ">") )
 
             else
                 ( n, a )
 
-        ( _, Bc.TypeAttr t ) ->
-            ( n, Bc.TypeAttr (placeType device t) )
+        ( _, Ir.TypeAttr t ) ->
+            ( n, Ir.TypeAttr (placeType device t) )
 
         _ ->
             ( n, a )
@@ -202,17 +202,17 @@ function type has its argument and result types placed. Any other type, and ever
 CPU, is returned unchanged.
 
 -}
-placeType : Device -> Bc.Type -> Bc.Type
+placeType : Device -> Ir.Type -> Ir.Type
 placeType device t =
     case ( device, t ) of
         ( Cpu, _ ) ->
             t
 
-        ( Gpu i, Bc.OpaqueType text ) ->
-            Bc.OpaqueType (onDevice i text)
+        ( Gpu i, Ir.OpaqueType text ) ->
+            Ir.OpaqueType (onDevice i text)
 
-        ( _, Bc.FunctionType ins outs ) ->
-            Bc.FunctionType (List.map (placeType device) ins) (List.map (placeType device) outs)
+        ( _, Ir.FunctionType ins outs ) ->
+            Ir.FunctionType (List.map (placeType device) ins) (List.map (placeType device) outs)
 
         _ ->
             t

@@ -1,6 +1,7 @@
 module Mlir.Bytecode.AttrType exposing
     ( AttrTypeTable, typeIndex, locIndex, dictAttrIndex, bytecodeAttrs
     , StreamAccum, encodeDataAndOffsets, finalizeStreamAccum, initStreamAccum, streamAccumEncodingView, streamCollectOp
+    , entryDialects
     )
 
 {-| MLIR bytecode writes each distinct attribute and type once, in a section of
@@ -43,9 +44,9 @@ and whose indices never change once given, so an operation can be encoded as
 soon as it has been collected.
 
 In the data section, attributes and builtin types are written in the binary
-form of MLIR's builtin dialect. A `NamedStruct`, such as `!eco.value`, is
-written instead as its assembly text, the way it is spelt in an MLIR text file,
-with the text before its first `.` as its dialect. The offset section gives the
+form of MLIR's builtin dialect. A `NamedStruct`, such as `!eco.value`, and an
+`OpaqueAttr` are written instead as their assembly text, the way they are spelt
+in an MLIR text file, under the dialect their text names. The offset section gives the
 length of each entry and the dialect it belongs to, in _dialect groups_: runs
 of consecutive entries of one dialect. String attributes are written as indices
 into a `Mlir.Bytecode.StringTable`, and dialects as indices into a
@@ -54,6 +55,7 @@ and a string or dialect missing from them is written as -1 too.
 
 @docs AttrTypeTable, typeIndex, locIndex, dictAttrIndex, bytecodeAttrs
 @docs StreamAccum, encodeDataAndOffsets, finalizeStreamAccum, initStreamAccum, streamAccumEncodingView, streamCollectOp
+@docs entryDialects
 
 -}
 
@@ -61,7 +63,7 @@ import Bitwise
 import Bytes
 import Bytes.Decode as BD
 import Bytes.Encode as BE
-import Data.Int64 as Int64
+import Mlir.Bytecode.Int64 as Int64
 import Dict exposing (Dict)
 import Mlir.Bytecode.DialectSection as DialectSection exposing (DialectRegistry)
 import Mlir.Bytecode.StringTable as StringTable exposing (StringTable)
@@ -120,6 +122,13 @@ indices.
 name's first `.` as its dialect, and the type's assembly text, such as
 `!eco.value`, which is written in place of a binary form.
 
+`EIndexType` is MLIR's `index` type, and `ESignedIntegerType` a signed integer
+type of the width it carries.
+
+`EAsmAttr` is the entry for an `OpaqueAttr`: its dialect, as
+`Mlir.Bytecode.StringTable.opaqueAttrDialect` reads it, and its assembly text,
+written in place of a binary form.
+
 -}
 type Entry
     = EUnknownLoc
@@ -137,6 +146,9 @@ type Entry
     | EFloat64Type
     | EFunctionType (List MlirType) (List MlirType)
     | EAsmType String String
+    | EIndexType
+    | ESignedIntegerType Int
+    | EAsmAttr String String
 
 
 
@@ -162,6 +174,14 @@ type AttrTypeTable
         , numAttrs : Int
         , numTypes : Int
         }
+
+
+{-| Returns the dialect of every entry of a finished table, attributes then
+types, in index order, repeats included.
+-}
+entryDialects : AttrTypeTable -> List String
+entryDialects (AttrTypeTable tbl) =
+    List.map Tuple.first tbl.attrEntries ++ List.map Tuple.first tbl.typeEntries
 
 
 {-| Returns the index of `attr` in the attribute list, or -1 if the table does
@@ -290,6 +310,12 @@ attrToKey attr =
         UnitAttr ->
             "u:"
 
+        DictAttr d ->
+            dictToKey d
+
+        OpaqueAttr s ->
+            "o:" ++ s
+
 
 {-| The elements of a dense array as digit characters, when every element is an
 `IntAttr` between 0 and 9 (always the case for `slot_kinds`); `Nothing`
@@ -367,6 +393,12 @@ typeToKey ty =
 
         FunctionType sig ->
             "fn(" ++ String.join "," (List.map typeToKey sig.inputs) ++ ")->(" ++ String.join "," (List.map typeToKey sig.results) ++ ")"
+
+        IndexType ->
+            "index"
+
+        SignedIntegerType w ->
+            "si" ++ String.fromInt w
 
 
 {-| Returns the entry key of `loc`.
@@ -542,9 +574,13 @@ addAttrEntry attr acc =
             acc
 
         Nothing ->
+            let
+                entry =
+                    attrToEntry attr
+            in
             { acc
                 | attrKeys = Dict.insert key acc.nextAttr acc.attrKeys
-                , attrEntries = ( "builtin", attrToEntry attr ) :: acc.attrEntries
+                , attrEntries = ( attrEntryDialect entry, entry ) :: acc.attrEntries
                 , nextAttr = acc.nextAttr + 1
             }
 
@@ -667,6 +703,25 @@ attrToEntry attr =
         UnitAttr ->
             EUnitAttr
 
+        DictAttr d ->
+            EDictAttr d
+
+        OpaqueAttr s ->
+            EAsmAttr (StringTable.opaqueAttrDialect s) s
+
+
+{-| Returns the dialect an attribute entry belongs to: the dialect an `EAsmAttr`
+carries, and `builtin` for any other entry.
+-}
+attrEntryDialect : Entry -> String
+attrEntryDialect entry =
+    case entry of
+        EAsmAttr d _ ->
+            d
+
+        _ ->
+            "builtin"
+
 
 {-| Returns the entry `ty` is encoded as.
 
@@ -698,6 +753,12 @@ typeToEntry ty =
 
         FunctionType sig ->
             EFunctionType sig.inputs sig.results
+
+        IndexType ->
+            EIndexType
+
+        SignedIntegerType w ->
+            ESignedIntegerType w
 
 
 {-| Returns the dialect a type entry belongs to: the dialect an `EAsmType`
@@ -811,6 +872,9 @@ collectAttrDeep attr acc =
         SymbolRefAttr s ->
             addAttrEntry (StringAttr s) acc
 
+        DictAttr d ->
+            collectDictContents d acc
+
         _ ->
             acc
 
@@ -897,6 +961,9 @@ computeEncodedGroups st ((AttrTypeTable tbl) as table) =
                     EAsmType _ _ ->
                         False
 
+                    EAsmAttr _ _ ->
+                        False
+
                     _ ->
                         True
             }
@@ -963,7 +1030,7 @@ denseElemBytes ty =
 
 
 {-| One dense array element `v` in `w` bytes, little-endian two's complement.
-An 8-byte element carries all 64 bits (`Data.Int64.toWords`); the
+An 8-byte element carries all 64 bits (`Mlir.Bytecode.Int64.toWords`); the
 common case of a value in [0, 2^31) skips the split.
 -}
 encodeDenseElem : Int -> Int -> BE.Encoder
@@ -1058,8 +1125,8 @@ encodeDataAndOffsets st dialectRegistry ((AttrTypeTable tbl) as table) =
 {-| Creates an encoder for one entry, in the form the builtin dialect's bytecode
 gives it: a number naming the kind of attribute or type, then its fields, with
 other entries written as their indices in `tbl` and a string attribute's text
-as its index in `st`. An `EAsmType` is instead its assembly text followed by
-a zero byte.
+as its index in `st`. An `EAsmType` or `EAsmAttr` is instead its assembly
+text followed by a zero byte.
 
 An integer attribute's value is a single byte when its type is 8 bits wide or
 less, and otherwise a zigzag-encoded varint. A dense array's elements are 8
@@ -1196,6 +1263,16 @@ encodeEntry st tbl entry =
         EAsmType _ asm ->
             BE.sequence [ BE.string asm, BE.unsignedInt8 0x00 ]
 
+        EIndexType ->
+            encodeVarInt 1
+
+        ESignedIntegerType width ->
+            -- width << 2 | signedness, where 1 is signed
+            BE.sequence [ encodeVarInt 0, encodeVarInt (Bitwise.shiftLeftBy 2 width + 1) ]
+
+        EAsmAttr _ asm ->
+            BE.sequence [ BE.string asm, BE.unsignedInt8 0x00 ]
+
 
 {-| Creates an encoder that writes the index of `s` in the string table, or -1
 if the table does not hold it.
@@ -1285,6 +1362,9 @@ typeWidth ty =
 
         F64 ->
             64
+
+        SignedIntegerType w ->
+            w
 
         _ ->
             64

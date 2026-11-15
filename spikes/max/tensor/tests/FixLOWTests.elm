@@ -1,7 +1,7 @@
 module FixLOWTests exposing (suite)
 
 {-| Regression tests for the round-2 LOW fixes: lowering for MAX and graph building (Graph,
-Max, Signature, Tensor.Internal.Lower, Mo, MlirBc, Device, Shared).
+Max, Signature, Tensor.Internal.Lower, Mo, Ir, Device, Shared).
 -}
 
 import Expect exposing (Expectation)
@@ -13,7 +13,7 @@ import Tensor.Axis as Axis
 import Tensor.Control as Control
 import Tensor.Internal.Expr as E
 import Tensor.Internal.Lower as Lower
-import Tensor.Internal.MlirBc as Bc
+import Tensor.Internal.Ir as Ir
 import Tensor.Internal.Mo as Mo
 import Tensor.Internal.Prim as P
 import Tensor.Internal.Types as I
@@ -100,7 +100,7 @@ suite =
                         ops =
                             Lower.graph "g" [] [ ( "result", I.tensor (T.relu stray) ) ]
                     in
-                    Expect.notEqual [] (Bc.unboundOperands ops)
+                    Expect.notEqual [] (Ir.unboundOperands ops)
             , test "a cond in a cond branch reading the graph input has every operand bound" <|
                 \_ ->
                     let
@@ -117,7 +117,7 @@ suite =
                     in
                     case Graph.function "g" vec3 nested of
                         Ok (I.Graph gr) ->
-                            Expect.equal [] (Bc.unboundOperands gr.ops)
+                            Expect.equal [] (Ir.unboundOperands gr.ops)
 
                         Err e ->
                             Expect.fail (String.join " | " e)

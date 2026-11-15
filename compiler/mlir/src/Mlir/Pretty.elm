@@ -344,8 +344,8 @@ ppOp indent env op =
 
 
 {-| Returns the MLIR spelling of a type. A `NamedStruct` gets MLIR's leading
-`!`, and a `FunctionType` puts its result types in parentheses even when there
-is one.
+`!`, a `FunctionType` puts its result types in parentheses even when there
+is one, a `SignedIntegerType w` is `siW` and `IndexType` is `index`.
 -}
 ppType : MlirType -> String
 ppType ty =
@@ -377,6 +377,12 @@ ppType ty =
                     sig.results |> List.map ppType |> String.join ", "
             in
             "(" ++ ins ++ ") -> (" ++ outs ++ ")"
+
+        IndexType ->
+            "index"
+
+        SignedIntegerType w ->
+            "si" ++ String.fromInt w
 
 
 {-| Returns the leading spaces for indent level `n`, two per level.
@@ -666,7 +672,9 @@ is followed by `: type` when it has a type, and a `TypedFloatAttr` always is;
 `ArrayAttr (Just t)` prints as `array<t: ...>` (`array<t>` when empty) and an `ArrayAttr Nothing` as
 `[...]`, with each element spelled by this function. A `SymbolRefAttr` gets
 MLIR's leading `@`, a `UnitAttr` prints as `unit`, and a `VisibilityAttr`
-of `Private` prints as the quoted string `"private"`.
+of `Private` prints as the quoted string `"private"`. A `DictAttr` prints as
+`{key = value, ...}` in key order, a `UnitAttr` entry as its key alone, and an
+`OpaqueAttr` as its text.
 
 -}
 ppAttr : MlirAttr -> String
@@ -718,3 +726,22 @@ ppAttr attr =
             case v of
                 Private ->
                     "\"private\""
+
+        DictAttr d ->
+            "{"
+                ++ (Dict.toList d
+                        |> List.map
+                            (\( k, a ) ->
+                                case a of
+                                    UnitAttr ->
+                                        k
+
+                                    _ ->
+                                        k ++ " = " ++ ppAttr a
+                            )
+                        |> String.join ", "
+                   )
+                ++ "}"
+
+        OpaqueAttr s ->
+            s

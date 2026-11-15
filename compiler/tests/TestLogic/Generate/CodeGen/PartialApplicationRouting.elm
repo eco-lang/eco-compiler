@@ -178,3 +178,9 @@ typeToString t =
                 ++ ") -> ("
                 ++ String.join ", " (List.map typeToString results)
                 ++ ")"
+
+        IndexType ->
+            "index"
+
+        SignedIntegerType w ->
+            "si" ++ String.fromInt w

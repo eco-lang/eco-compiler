@@ -56,7 +56,7 @@ import Signature exposing (Sig)
 import Tensor exposing (Tensor)
 import Tensor.Internal.Expr as E exposing (Expr)
 import Tensor.Internal.Lower as Lower
-import Tensor.Internal.MlirBc as Bc
+import Tensor.Internal.Ir as Ir
 import Tensor.Internal.Names exposing (names)
 import Tensor.Internal.Prim as P
 import Tensor.Internal.Shape as Shape
@@ -137,7 +137,7 @@ It refuses:
         shared function;
   - some cases of two different tensors sharing one key, reported as an internal error;
   - an operation written, while translating the graph for MAX, with an operand that names no
-    value where it is read (`Tensor.Internal.MlirBc.unboundOperands`), reported as an internal
+    value where it is read (`Tensor.Internal.Ir.unboundOperands`), reported as an internal
     error. This is looked for only when nothing else was found.
 
 Every message starts with `graphName ++ ": "`, and a message found more than once is listed once.
@@ -258,7 +258,7 @@ build graphName (I.SigBuilder ins) (I.SigBuilder outs) body =
             ops =
                 Lower.graph graphName namedIn namedOut
         in
-        case Bc.unboundOperands ops of
+        case Ir.unboundOperands ops of
             [] ->
                 Ok
                     (I.Graph

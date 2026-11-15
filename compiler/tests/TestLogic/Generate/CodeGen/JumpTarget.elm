@@ -250,3 +250,9 @@ typeToString t =
 
         Mlir.Mlir.FunctionType _ ->
             "function"
+
+        Mlir.Mlir.IndexType ->
+            "index"
+
+        Mlir.Mlir.SignedIntegerType w ->
+            "si" ++ String.fromInt w

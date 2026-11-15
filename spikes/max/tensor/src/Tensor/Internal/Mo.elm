@@ -14,10 +14,10 @@ one place that knows how each primitive is written as those ops: which op or ops
 which attributes, and which of its numbers are passed as tensor operands rather than attributes.
 The forms written are those this module assumes MAX's graph compiler accepts. Op names take three
 shapes, `rmo.<op>`, `rmo.mo.<op>` and plain `mo.<op>`, and every attribute, an op's inherent ones
-included, is given as an ordinary attribute, as `Tensor.Internal.MlirBc` describes.
+included, is given as an ordinary attribute, as `Tensor.Internal.Ir` describes.
 
 Ops are collected in a _block_ (`Block`): the ops of one region, in the order they are appended.
-Operands and results are _value numbers_, as `Tensor.Internal.MlirBc` defines them: the block's
+Operands and results are _value numbers_, as `Tensor.Internal.Ir` defines them: the block's
 arguments first, then each op's results in order. `push` appends one op and returns the number of
 its first result, and `emit` appends whatever one primitive needs, given its operands' numbers and
 metas (shape, pending axes and dtype), and returns the number of its result. Which expression a
@@ -44,7 +44,7 @@ its longer cases.
 -}
 
 import Tensor.Internal.Device as Device
-import Tensor.Internal.MlirBc as Bc
+import Tensor.Internal.Ir as Ir
 import Tensor.Internal.Prim as P exposing (DT(..), Params, Prim(..))
 import Tensor.Internal.Shape exposing (Meta)
 import Tensor.Internal.Values as Values exposing (Values(..))
@@ -56,7 +56,7 @@ import Tensor.Internal.Values as Values exposing (Values(..))
 
 -}
 type alias Block =
-    { ops : List Bc.Op, next : Int }
+    { ops : List Ir.Op, next : Int }
 
 
 {-| Returns a block with no ops whose first `args` values are its arguments, so the first result
@@ -71,7 +71,7 @@ emptyBlock args =
 the value number of its first result. Its results are numbered on from `next`; for an op with no
 results the number returned is the one the next result will get.
 -}
-push : String -> List ( String, Bc.Attr ) -> List Int -> List Bc.Type -> List Bc.Region -> Block -> ( Block, Int )
+push : String -> List ( String, Ir.Attr ) -> List Int -> List Ir.Type -> List Ir.Region -> Block -> ( Block, Int )
 push name attrs operands results regions b =
     ( { ops = { name = name, attrs = attrs, results = results, operands = operands, regions = regions } :: b.ops
       , next = b.next + List.length results
@@ -83,9 +83,9 @@ push name attrs operands results regions b =
 {-| Returns MAX's tensor type for a meta's shape and dtype, as in `!mo.tensor<[2, 3], f32>`. A
 pending axis is written as the size 1 the meta holds for it, and no device is named.
 -}
-tensorType : Meta -> Bc.Type
+tensorType : Meta -> Ir.Type
 tensorType m =
-    Bc.OpaqueType ("!mo.tensor<[" ++ ints m.shape ++ "], " ++ P.dtName m.dtype ++ ">")
+    Ir.OpaqueType ("!mo.tensor<[" ++ ints m.shape ++ "], " ++ P.dtName m.dtype ++ ">")
 
 
 {-| Returns integers as decimal text separated by `", "`, as tensor types and shape attributes
@@ -100,17 +100,17 @@ ints l =
 Every list of integers this module gives an op as an attribute takes this form: shapes, and also
 slice bounds, strides, dilations, paddings and pool windows.
 -}
-shapeAttr : List Int -> Bc.Attr
+shapeAttr : List Int -> Ir.Attr
 shapeAttr s =
-    Bc.OpaqueAttr ("#mosh<ape[" ++ ints s ++ "]> : !mosh.ape")
+    Ir.OpaqueAttr ("#mosh<ape[" ++ ints s ++ "]> : !mosh.ape")
 
 
 {-| Returns `i` as an integer attribute of MLIR's `index` type, the form this module gives every
 axis attribute except `rmo.top_k`'s, and `CumSum`'s two flags.
 -}
-index : Int -> Bc.Attr
+index : Int -> Ir.Attr
 index i =
-    Bc.IntAttr i Bc.IndexType
+    Ir.IntAttr i Ir.IndexType
 
 
 {-| Returns `f` as an MLIR float literal for a constant of the floating-point dtype `dt`. A literal
@@ -250,7 +250,7 @@ returns its value number. Nothing checks that the number of values matches the s
 -}
 constant : DT -> List Int -> Values -> Block -> ( Block, Int )
 constant dt s values =
-    push "mo.constant" [ ( "value", Bc.OpaqueAttr (constText dt s values) ) ] [] [ tensorType { shape = s, pending = [], dtype = dt } ] []
+    push "mo.constant" [ ( "value", Ir.OpaqueAttr (constText dt s values) ) ] [] [ tensorType { shape = s, pending = [], dtype = dt } ] []
 
 
 {-| Appends a constant as `constant` does, from floats. For an integer dtype or `bool` they are
@@ -456,7 +456,7 @@ convolution given other than as many operands and metas as it reads; `TopKIndice
 instead. An operand that `StopGradient`, `Transpose`, `Pad`, `BandPart`, `Random`, `XentLogits`, a
 reduction or top-k reads and is not given is read as −1. An operand −1 names no value of an
 isolated region, but in an open region it is value 0 of the enclosing region
-(`Tensor.Internal.MlirBc`).
+(`Tensor.Internal.Ir`).
 
 -}
 emit : Prim -> List Int -> List Meta -> Params -> Meta -> Block -> ( Block, Int )
@@ -480,10 +480,10 @@ emit p operands ms params out b =
 
         Acos ->
             push "mo.custom"
-                [ ( "symbol", Bc.StrAttr "mo.acos" )
-                , ( "parameters", Bc.DictAttr [] )
-                , ( "device", Bc.OpaqueAttr "#M.device_ref<\"cpu\", 0>" )
-                , ( "outputParamDecls", Bc.OpaqueAttr "#kgen<param.decls[]>" )
+                [ ( "symbol", Ir.StrAttr "mo.acos" )
+                , ( "parameters", Ir.DictAttr [] )
+                , ( "device", Ir.OpaqueAttr "#M.device_ref<\"cpu\", 0>" )
+                , ( "outputParamDecls", Ir.OpaqueAttr "#kgen<param.decls[]>" )
                 ]
                 operands
                 [ tensorType out ]
@@ -809,7 +809,7 @@ mark : String -> ( Block, Int ) -> ( Block, Int )
 mark name ( b, v ) =
     case b.ops of
         op :: rest ->
-            ( { b | ops = { op | attrs = op.attrs ++ [ ( name, Bc.UnitAttr ) ] } :: rest }, v )
+            ( { b | ops = { op | attrs = op.attrs ++ [ ( name, Ir.UnitAttr ) ] } :: rest }, v )
 
         [] ->
             ( b, v )
@@ -841,7 +841,7 @@ topKOp params x xm out b =
             )
             <|
                 if largest == 1 then
-                    push "rmo.top_k" [ ( "axis", Bc.IntAttr axis (Bc.SignedIntegerType 64) ), ( "k", Bc.IntAttr k (Bc.SignedIntegerType 64) ) ] [ x ] results [] b
+                    push "rmo.top_k" [ ( "axis", Ir.IntAttr axis (Ir.SignedIntegerType 64) ), ( "k", Ir.IntAttr k (Ir.SignedIntegerType 64) ) ] [ x ] results [] b
 
                 else
                     let
@@ -914,10 +914,10 @@ convOp transposed params operands ms out b =
         ( [ sh, sw, pt, pb, pl, pr ], [ x, f ], [ _, fm ] ) ->
             let
                 fType =
-                    Bc.OpaqueType ("!mo.tensor<[" ++ ints fm.shape ++ "], " ++ P.dtName fm.dtype ++ ", {layout = #mo.layout<RSCF>}>")
+                    Ir.OpaqueType ("!mo.tensor<[" ++ ints fm.shape ++ "], " ++ P.dtName fm.dtype ++ ", {layout = #mo.layout<RSCF>}>")
 
                 ( b1, fr ) =
-                    push "rmo.rebind_tensor_shape" [ ( "message", Bc.StrAttr "" ) ] [ f ] [ fType ] [] b
+                    push "rmo.rebind_tensor_shape" [ ( "message", Ir.StrAttr "" ) ] [ f ] [ fType ] [] b
 
                 common =
                     [ ( "strides", shapeAttr [ sh, sw ] )
@@ -929,7 +929,7 @@ convOp transposed params operands ms out b =
                 push "rmo.conv_transpose" (common ++ [ ( "output_paddings", shapeAttr [ 0, 0 ] ) ]) [ x, fr ] [ tensorType out ] [] b1
 
             else
-                push "rmo.conv" (common ++ [ ( "num_groups", Bc.IntAttr 1 (Bc.SignedIntegerType 64) ), ( "input_layout", Bc.StrAttr "NHWC" ) ]) [ x, fr ] [ tensorType out ] [] b1
+                push "rmo.conv" (common ++ [ ( "num_groups", Ir.IntAttr 1 (Ir.SignedIntegerType 64) ), ( "input_layout", Ir.StrAttr "NHWC" ) ]) [ x, fr ] [ tensorType out ] [] b1
 
         _ ->
             ( b, -1 )
@@ -947,7 +947,7 @@ poolOp name params operands out b =
 
         extra =
             if name == "rmo.avg_pool" then
-                [ ( "count_boundary", Bc.OpaqueAttr "true" ) ]
+                [ ( "count_boundary", Ir.OpaqueAttr "true" ) ]
 
             else
                 []
@@ -957,7 +957,7 @@ poolOp name params operands out b =
          , ( "strides", shapeAttr [ k, k ] )
          , ( "dilations", shapeAttr [ 1, 1 ] )
          , ( "paddings", shapeAttr [ 0, 0, 0, 0 ] )
-         , ( "ceil_mode", Bc.OpaqueAttr "false" )
+         , ( "ceil_mode", Ir.OpaqueAttr "false" )
          ]
             ++ extra
         )
@@ -972,22 +972,22 @@ type, from `inTypes` to `outTypes`; the same type as a `kgen` generator signatur
 parameter lists; the argument and result names, the first components of `inputs` and `outputs`,
 whose metas are not read; and then `extra`, such as `isSubgraph` for a subgraph.
 -}
-graphOp : String -> List ( String, Bc.Attr ) -> List ( String, Meta ) -> List ( String, Meta ) -> List Bc.Type -> List Bc.Type -> Bc.Region -> Bc.Op
+graphOp : String -> List ( String, Ir.Attr ) -> List ( String, Meta ) -> List ( String, Meta ) -> List Ir.Type -> List Ir.Type -> Ir.Region -> Ir.Op
 graphOp name extra inputs outputs inTypes outTypes region =
     let
         fnType =
-            Bc.FunctionType inTypes outTypes
+            Ir.FunctionType inTypes outTypes
 
         names l =
-            Bc.ArrayAttr (List.map (Tuple.first >> Bc.StrAttr) l)
+            Ir.ArrayAttr (List.map (Tuple.first >> Ir.StrAttr) l)
     in
     { name = "mo.graph"
     , attrs =
-        [ ( "sym_name", Bc.StrAttr name )
-        , ( "functionType", Bc.TypeAttr fnType )
-        , ( "signature", Bc.TypeAttr (Bc.OpaqueType ("!kgen.generator<" ++ Bc.typeText fnType ++ ">")) )
-        , ( "inputParameters", Bc.OpaqueAttr "#kgen<param.decls[]>" )
-        , ( "resultParameters", Bc.OpaqueAttr "#kgen<param.decls[]>" )
+        [ ( "sym_name", Ir.StrAttr name )
+        , ( "functionType", Ir.TypeAttr fnType )
+        , ( "signature", Ir.TypeAttr (Ir.OpaqueType ("!kgen.generator<" ++ Ir.typeText fnType ++ ">")) )
+        , ( "inputParameters", Ir.OpaqueAttr "#kgen<param.decls[]>" )
+        , ( "resultParameters", Ir.OpaqueAttr "#kgen<param.decls[]>" )
         , ( "argument_names", names inputs )
         , ( "result_names", names outputs )
         ]

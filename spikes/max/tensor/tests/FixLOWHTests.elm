@@ -9,7 +9,7 @@ import Tensor.Control as Control
 import Tensor.Internal.Expr as E
 import Tensor.Internal.Key as K
 import Tensor.Internal.Lower as Lower
-import Tensor.Internal.MlirBc as Bc
+import Tensor.Internal.Ir as Ir
 import Tensor.Internal.Prim as P
 import Test exposing (Test, describe, test)
 import Transform
@@ -200,7 +200,7 @@ suite =
                             E.proj (E.call "sym" (body "one" P.Neg) [ c2 ]) 0
 
                         text =
-                            Bc.printGeneric (Lower.graph "g" [ ( "x", x ) ] [ ( "a", c1 ), ( "b", c3 ) ])
+                            Ir.printGeneric (Lower.graph "g" [ ( "x", x ) ] [ ( "a", c1 ), ( "b", c3 ) ])
 
                         callees =
                             linesWith "\"mo.call\"" text
@@ -246,7 +246,7 @@ suite =
                             E.proj (E.call "sym" (body "two") [ c1 ]) 0
 
                         text =
-                            Bc.printGeneric (Lower.graph "g" [ ( "x", x ) ] [ ( "a", c2 ) ])
+                            Ir.printGeneric (Lower.graph "g" [ ( "x", x ) ] [ ( "a", c2 ) ])
                     in
                     Expect.all
                         [ \t -> Expect.equal 2 (List.length (linesWith "callee = @sym," t))

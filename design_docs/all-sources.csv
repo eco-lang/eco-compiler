@@ -233,9 +233,9 @@ compiler/src/Data,Map.elm
 compiler/src/Data,Set.elm
 compiler/src/Data,Vector.elm
 compiler/src/Data/Vector,Mutable.elm
-compiler/src/Mlir,Loc.elm
-compiler/src/Mlir,Mlir.elm
-compiler/src/Mlir,Pretty.elm
+compiler/mlir/src/Mlir,Loc.elm
+compiler/mlir/src/Mlir,Mlir.elm
+compiler/mlir/src/Mlir,Pretty.elm
 compiler/src,Prelude.elm
 compiler/src/System,Exit.elm
 compiler/src/System,IO.elm

@@ -12,6 +12,7 @@
 #   make check-ops-eval  the same checks run by Tensor.Eval, the package's evaluator (no MAX)
 #   make check-api  the API's example programs compile, its counterexamples do not (tensor-api/)
 #   make check-tensor  the tensor package's own tests (elm-test-rs, tensor/tests/)
+#   make docs-tensor  the tensor package's docs.json
 #   make snapshot-graphs OUT=dir / compare-graphs BASE=dir  every model graph and host block, without MAX
 #   make check-tensor-native  the E2E suite eco-tensor, tensor-e2e/ (native code, 64-bit Int)
 #
@@ -30,9 +31,11 @@ MAX_LIB   := $(MAX_SITE)/modular/lib
 CXX       ?= g++
 CXXFLAGS  := -std=c++20 -O2 -Wall -Wextra -I$(REPO)/runtime/include -I$(MAX_SITE)/max/include
 B         := $(CURDIR)/build
-# The typed tensor package, whose Max.Session is the Elm side of the MAX host every model app links.
-LOCAL_PKGS := --local-package eco-lab/tensor=$(CURDIR)/tensor
-TENSOR_SRC := $(shell find $(CURDIR)/tensor/src -name '*.elm')
+# The typed tensor package, whose Max.Session is the Elm side of the MAX host every model app links,
+# and the MLIR package it writes its graphs with (the compiler's, compiler/mlir).
+MLIR_PKG   := $(REPO)/compiler/mlir
+LOCAL_PKGS := --local-package eco-lab/tensor=$(CURDIR)/tensor --local-package the-sett/elm-mlir=$(MLIR_PKG)
+TENSOR_SRC := $(shell find $(CURDIR)/tensor/src $(MLIR_PKG)/src -name '*.elm')
 # The package's generic MAX host (protocol 2 of Max.Session); each *_bridge is it linked with one app.
 MAX_HOST   := tensor/host/max_host.cpp
 
@@ -133,7 +136,7 @@ run-json: $(B)/tensor_host
 run-bytes: $(B)/bytes_host
 	cd capi && $(B)/bytes_host models/sym_mlp.mlir
 
-# FORMAT: bytecode (MLIR bytecode written by the tensor package's MlirBc) or generic (the same ops as
+# FORMAT: bytecode (MLIR bytecode written with the-sett/elm-mlir) or generic (the same ops as
 # MLIR generic text). Graphs land in work/<FORMAT>/graph-<id>.mlir[bc]. TRACE=n logs the first n
 # step losses of epoch 1.
 FORMAT ?= bytecode
@@ -255,9 +258,24 @@ check-tensor-native:
 	  && echo "eco-tensor E2E: $$(grep -E '^Tests passed' /tmp/test_output.txt)"
 
 ELM_TEST_RS ?= $(ECO_BUILD)/toolchain/bin/elm-test-rs
+# Stock Elm cannot resolve the-sett/elm-mlir until it is published, so the tests run from an
+# application over the package's sources and the MLIR package's (tensor-tests.elm.json).
 check-tensor:
-	cd tensor && PATH=$(ECO_BUILD)/toolchain/bin:$$PATH $(ELM_TEST_RS) --fuzz 20
+	mkdir -p $(B)/tensor-test && cp tensor-tests.elm.json $(B)/tensor-test/elm.json
+	ln -sfn ../../tensor/tests $(B)/tensor-test/tests
+	cd $(B)/tensor-test && PATH=$(ECO_BUILD)/toolchain/bin:$$PATH $(ELM_TEST_RS) --fuzz 20
+
+# The tensor package's docs.json, with stock Elm. Until the-sett/elm-mlir is published, stock Elm
+# cannot resolve it as a dependency, so the docs are built from a copy of the package without that
+# dependency, whose src holds the MLIR package's modules too; they are not exposed, so they do not
+# appear in the docs.
+docs-tensor:
+	rm -rf $(B)/tensor-docs && mkdir -p $(B)/tensor-docs/src
+	cp -r tensor/src/. $(MLIR_PKG)/src/. $(B)/tensor-docs/src/
+	cp tensor/README.md $(B)/tensor-docs/
+	python3 -c 'import json,sys; j=json.load(open("tensor/elm.json")); del j["dependencies"]["the-sett/elm-mlir"]; json.dump(j, open(sys.argv[1], "w"), indent=4)' $(B)/tensor-docs/elm.json
+	cd $(B)/tensor-docs && PATH=$(ECO_BUILD)/toolchain/bin:$$PATH elm make --docs=$(CURDIR)/tensor/docs.json
 
 .PHONY: all check-venv run-capi run-json run-bytes run-mnist check-bytecode run-churn run-mnist-ref clean \
 	check-ops check-opcheck-bytecode check-api check-tensor run-apicheck check-apicheck check-gpu-ir \
-	snapshot-graphs compare-graphs check-tensor-native check-ops-eval
+	snapshot-graphs compare-graphs check-tensor-native check-ops-eval docs-tensor

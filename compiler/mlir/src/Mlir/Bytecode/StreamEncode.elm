@@ -1,4 +1,4 @@
-module Mlir.Bytecode.StreamEncode exposing (StreamTables, emptyStreamTables, collectAndEncodeOps, assembleModule)
+module Mlir.Bytecode.StreamEncode exposing (StreamTables, emptyStreamTables, isolating, collectAndEncodeOps, assembleModule)
 
 {-| Writes an MLIR bytecode file from operations handed over a batch at a time,
 so that a program's operations need not all be held in memory at once: each
@@ -27,8 +27,9 @@ at the position it was numbered. The attribute and type offset section is
 grouped in runs for the same reason, as
 `Mlir.Bytecode.AttrType.finalizeStreamAccum` describes.
 
-`emptyStreamTables` starts the tables, `collectAndEncodeOps` adds a batch, and
-`assembleModule` writes the file. An operation is encoded only after every
+`emptyStreamTables` starts the tables, `isolating` names any further
+operations whose regions are isolated from above, `collectAndEncodeOps` adds a
+batch, and `assembleModule` writes the file. An operation is encoded only after every
 operation of its batch has been collected into the tables. A lookup is not
 checked: anything missing from the tables is written as the index -1, so the
 file is corrupt rather than the encoding failing.
@@ -38,7 +39,7 @@ The file declares bytecode version 4. Its operations sit in one
 the order they were added. The lengths that frame the IR section are computed
 from the widths of the bytes already encoded.
 
-@docs StreamTables, emptyStreamTables, collectAndEncodeOps, assembleModule
+@docs StreamTables, emptyStreamTables, isolating, collectAndEncodeOps, assembleModule
 
 -}
 
@@ -60,6 +61,7 @@ import Mlir.Mlir
         , MlirRegion(..)
         )
 import OrderedDict
+import Set exposing (Set)
 
 
 
@@ -81,6 +83,7 @@ type StreamTables
         , attrAccum : AttrType.StreamAccum
         , encodedOps : List Bytes -- newest first
         , numOps : Int
+        , isolated : Set String
         }
 
 
@@ -90,6 +93,9 @@ They already hold the names the enclosing `builtin.module` operation needs,
 since that operation is in no batch: the strings `builtin` and `module`, and
 the operation name `builtin.module`, numbered 0 in a dialect `builtin`
 numbered 0. They also hold `Mlir.Loc.unknown`.
+
+The regions of `func.func` and `builtin.module` are isolated from above, and
+those of no other operation until `isolating` names it.
 
 -}
 emptyStreamTables : StreamTables
@@ -103,7 +109,26 @@ emptyStreamTables =
         , attrAccum = AttrType.initStreamAccum
         , encodedOps = []
         , numOps = 0
+        , isolated = Set.fromList [ "func.func", "builtin.module" ]
         }
+
+
+{-| Adds operations, by name, to those whose regions are isolated from above.
+
+An isolated region sees no value defined outside it, and bytecode numbers its
+values from 0, so the writer must know which regions are isolated, and an
+operation's name is all it goes by. An operation that MLIR's definition marks
+`IsolatedFromAbove`, such as a dialect's own function operation, must be named
+here, or the values its regions read are numbered wrongly. Name them before
+adding any operation: a batch already added was encoded without them.
+
+    StreamEncode.emptyStreamTables
+        |> StreamEncode.isolating [ "mo.graph" ]
+
+-}
+isolating : List String -> StreamTables -> StreamTables
+isolating names (StreamTables st) =
+    StreamTables { st | isolated = List.foldl Set.insert st.isolated names }
 
 
 {-| Adds `ops`, a batch of top-level operations, to the tables and encodes each
@@ -138,7 +163,7 @@ collectAndEncodeOps ops (StreamTables st) =
         newEncodedOps =
             List.foldl
                 (\op acc ->
-                    BE.encode (IrSection.encodeFuncOp encDialectReg encAttrTable op) :: acc
+                    BE.encode (IrSection.encodeFuncOp st.isolated encDialectReg encAttrTable op) :: acc
                 )
                 st.encodedOps
                 ops
@@ -149,6 +174,7 @@ collectAndEncodeOps ops (StreamTables st) =
         , attrAccum = newAttrAccum
         , encodedOps = newEncodedOps
         , numOps = st.numOps + List.length ops
+        , isolated = st.isolated
         }
 
 
@@ -173,11 +199,15 @@ assembleModule (StreamTables st) moduleLoc =
         stringTable =
             st.stringTable
 
-        dialectRegistry =
-            finalizeDialectBuilder st.dialectBuilder
-
         attrTypeTable =
             AttrType.finalizeStreamAccum st.attrAccum
+
+        -- A dialect that only attributes or types belong to, such as the
+        -- dialect of an `OpaqueAttr`, is numbered after every dialect an
+        -- operation name brought in.
+        dialectRegistry =
+            finalizeDialectBuilder
+                (List.foldl addDialect st.dialectBuilder (AttrType.entryDialects attrTypeTable))
 
         stringSectionBody =
             StringTable.encode stringTable
@@ -401,6 +431,23 @@ addDialectOp fullName (StreamDialectBuilder b) =
                 , opSet = Dict.insert fullName b.nextOpIndex b.opSet
                 , nextOpIndex = b.nextOpIndex + 1
                 }
+
+
+{-| Numbers `dialect` with the next free dialect index, without any operation
+name, unless it is numbered already.
+-}
+addDialect : String -> StreamDialectBuilder -> StreamDialectBuilder
+addDialect dialect (StreamDialectBuilder b) =
+    if Dict.member dialect b.dialectSet then
+        StreamDialectBuilder b
+
+    else
+        StreamDialectBuilder
+            { b
+                | dialectList = dialect :: b.dialectList
+                , dialectSet = Dict.insert dialect b.numDialects b.dialectSet
+                , numDialects = b.numDialects + 1
+            }
 
 
 {-| Returns every operation name numbered so far, written in full, with its

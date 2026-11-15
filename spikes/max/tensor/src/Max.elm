@@ -11,8 +11,8 @@ can read and MLIR can parse.
 
 `Graph.build` has already checked the graph and translated it into operations of MAX's graph
 dialects, `mo` and `rmo`, so what is left here is to place those operations on a device and write
-them. The bytecode is version 6 of MLIR's bytecode
-format, which this package assumes is the version the MLIR inside MAX 26.7.0 reads.
+them, which the-sett/elm-mlir does. The bytecode is version 4 of MLIR's bytecode format, which the
+MLIR inside MAX 26.7.0 reads (it reads every version up to 6).
 
 _Placing_ the operations for a GPU writes into them where their tensors live; placing them for the
 CPU writes no device into them. Placing for the CPU cannot fail, so `toBytecode` and
@@ -47,7 +47,7 @@ name.
 import Bytes exposing (Bytes)
 import Graph exposing (Graph)
 import Tensor.Internal.Device as Device
-import Tensor.Internal.MlirBc as Bc
+import Tensor.Internal.Ir as Ir
 import Tensor.Internal.Types as I
 
 
@@ -58,7 +58,7 @@ Two graphs that differ only in the roles of their inputs or outputs write the sa
 -}
 toBytecode : Graph -> Bytes
 toBytecode (I.Graph g) =
-    Bc.encode (cpuOps g.ops)
+    Ir.encode (cpuOps g.ops)
 
 
 {-| Writes the module `toBytecode` writes as MLIR's generic op text: each operation with its quoted
@@ -67,13 +67,13 @@ operation of any dialect.
 -}
 toGenericText : Graph -> String
 toGenericText (I.Graph g) =
-    Bc.printGeneric (cpuOps g.ops)
+    Ir.printGeneric (cpuOps g.ops)
 
 
 {-| Returns `ops` placed for the CPU. Placing for the CPU never fails, so the fallback to the
 unplaced `ops` is never taken.
 -}
-cpuOps : List Bc.Op -> List Bc.Op
+cpuOps : List Ir.Op -> List Ir.Op
 cpuOps ops =
     Device.place Device.Cpu ops |> Result.withDefault ops
 
@@ -119,7 +119,7 @@ anywhere in it, with one message for each MLIR operation refused, naming it.
 -}
 toBytecodeOn : Device -> Graph -> Result (List String) Bytes
 toBytecodeOn d (I.Graph g) =
-    place d g.ops |> Result.map Bc.encode
+    place d g.ops |> Result.map Ir.encode
 
 
 {-| Writes the graph, placed for the given device, as MLIR's generic op text (see `toGenericText`),
@@ -127,14 +127,14 @@ or returns the refusals `toBytecodeOn` returns.
 -}
 toGenericTextOn : Device -> Graph -> Result (List String) String
 toGenericTextOn d (I.Graph g) =
-    place d g.ops |> Result.map Bc.printGeneric
+    place d g.ops |> Result.map Ir.printGeneric
 
 
 {-| Returns `ops` placed for `d`, or the refusals `Tensor.Internal.Device.place` gives. For a GPU
 with a negative index it returns instead the one message "Max: there is no GPU with the negative
 index n", without placing the ops.
 -}
-place : Device -> List Bc.Op -> Result (List String) (List Bc.Op)
+place : Device -> List Ir.Op -> Result (List String) (List Ir.Op)
 place d ops =
     case d of
         Gpu n ->

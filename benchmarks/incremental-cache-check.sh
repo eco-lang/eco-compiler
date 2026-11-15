@@ -141,7 +141,7 @@ setup_project() {   # $1 = project, $2 = tree; sets ENTRY HUB LEAF FLAGS PHASES
       FLAGS=(--local-package "eco/kernel=$REPO/eco-kernel-cpp")
       PHASES="touch body iface" ;;
     compiler)
-      cp -r "$REPO/compiler/src" "$t/src" && cp "$REPO/compiler/cmake/bootstrap/build-kernel/elm.json" "$t/" || return 1
+      cp -r "$REPO/compiler/src" "$t/src" && cp -r "$REPO/compiler/mlir/src" "$t/mlir-src" && cp "$REPO/compiler/cmake/bootstrap/build-kernel/elm.json" "$t/" || return 1
       ENTRY=src/Terminal/Main.elm; HUB=src/Compiler/Core/Name.elm; LEAF=src/Terminal/Bump.elm
       FLAGS=(--optimize --kernel-package eco/compiler --local-package "eco/kernel=$REPO/eco-kernel-cpp")
       PHASES="touch body iface" ;;

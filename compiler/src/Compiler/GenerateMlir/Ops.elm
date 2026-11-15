@@ -408,8 +408,8 @@ ecoProjectTuple3 ctx resultVar field resultType tupleVar =
 
 
 {-| Returns the text of one slot type inside a value aggregate type: the type's
-own name for an integer or float type, `!` followed by the name for a named
-type, and `!eco.value` for a function type.
+own name for an integer, index or float type, `!` followed by the name for a
+named type, and `!eco.value` for a function type.
 -}
 aggSlotTypeString : MlirType -> String
 aggSlotTypeString ty =
@@ -435,6 +435,12 @@ aggSlotTypeString ty =
         FunctionType _ ->
             -- A closure in a slot is an !eco.value.
             "!eco.value"
+
+        IndexType ->
+            "index"
+
+        SignedIntegerType w ->
+            "si" ++ String.fromInt w
 
 
 {-| Returns the value tuple type for the given slot types, such as

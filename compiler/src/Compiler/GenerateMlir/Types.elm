@@ -286,6 +286,12 @@ mlirTypeToString ty =
             in
             "(" ++ ins ++ ") -> (" ++ outs ++ ")"
 
+        IndexType ->
+            "index"
+
+        SignedIntegerType w ->
+            "si" ++ String.fromInt w
+
 
 
 -- RUNTIME LAYOUTS

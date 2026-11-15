@@ -10,7 +10,7 @@ containing one or two apostrophes are logged and must print as written.
 Exercises the MLIR string literal emitter: it must not write a backslash
 escape before an apostrophe, since MLIR only accepts backslash, double quote,
 n, t and hex escapes inside double-quoted strings. The TEXT-MLIR directive
-routes the program through the MLIR text printer (compiler/src/Mlir/Pretty.elm),
+routes the program through the MLIR text printer (compiler/mlir/src/Mlir/Pretty.elm),
 where such an escape would make the output unparseable.
 
 -}

@@ -35,7 +35,7 @@ built graphs, parameter descriptions, seeds, shared functions, batch description
 -}
 
 import Tensor.Internal.Expr exposing (Expr)
-import Tensor.Internal.MlirBc as Bc
+import Tensor.Internal.Ir as Ir
 import Tensor.Internal.Prim exposing (DT)
 import Tensor.Internal.Values exposing (Values)
 
@@ -316,7 +316,7 @@ type alias Spec =
 {-| A graph that `Graph.build` accepted, which is the only place one is made.
 
 It holds its name, the specs of its inputs and outputs in order, and the graph twice over: `ops`,
-the expressions lowered to MLIR ops (`Tensor.Internal.MlirBc`), for writing the graph for MAX; and
+the expressions lowered to MLIR ops (`Tensor.Internal.Ir`), for writing the graph for MAX; and
 `exprs`, the input expressions (`Input` nodes) and the output expressions, each in the order of
 the specs. Running the graph in Elm reads the output expressions.
 
@@ -326,7 +326,7 @@ type Graph
         { name : String
         , inputs : List Spec
         , outputs : List Spec
-        , ops : List Bc.Op
+        , ops : List Ir.Op
         , exprs : { inputs : List Expr, outputs : List Expr }
         }
 

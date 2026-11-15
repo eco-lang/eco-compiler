@@ -11,7 +11,7 @@ through to the wildcard and give `"other"`.
 An Int pattern at or above 2^32 is stored in the `eco.case` `tags` dense i64
 array. Two fixed bugs made 705032704 take the 5000000000 branch:
 
-compiler/src/Mlir/Bytecode/AttrType.elm wrote each dense-array element as its
+compiler/mlir/src/Mlir/Bytecode/AttrType.elm wrote each dense-array element as its
 low 32 bits followed by zero bytes (unit test:
 compiler/tests/Mlir/Bytecode/AttrTypeTest.elm).
 

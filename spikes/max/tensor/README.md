@@ -200,8 +200,10 @@ files the session itself saved.
 ### Writing graphs for MAX
 
 `Max.toBytecode` writes MLIR bytecode, the binary form MAX's graph compiler loads, and
-`toGenericText` writes the same module as text. The bytecode is version 6 of MLIR's bytecode format,
-which the package assumes is the version that MAX 26.7.0 reads.
+`toGenericText` writes the same module as text. Both are written with
+`the-sett/elm-mlir`, the MLIR package of the eco compiler. The bytecode is
+version 4 of MLIR's bytecode format, which the MLIR inside MAX 26.7.0 reads (it reads every version
+up to 6).
 
 Writing for the CPU cannot fail. Writing for a GPU (`toBytecodeOn`, `toGenericTextOn`) refuses a
 graph that uses `cond` or `whileLoop`, or a top-k along any axis but the last (from `topK`,

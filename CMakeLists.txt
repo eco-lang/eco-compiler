@@ -1658,6 +1658,8 @@ add_custom_target(full
     # (plans/compiler-source-tree-reorganization.md, rule 4).
     COMMAND python3 ${CMAKE_SOURCE_DIR}/compiler/scripts/check-folder-cycles.py ${CMAKE_SOURCE_DIR}/compiler/src
     COMMAND python3 ${CMAKE_SOURCE_DIR}/compiler/scripts/check-folder-cycles.py ${CMAKE_SOURCE_DIR}/compiler/src --merge
+    # The compiler imports only the modules the-sett/elm-mlir exposes (plans/mlir-package.md).
+    COMMAND sh ${CMAKE_SOURCE_DIR}/compiler/scripts/check-mlir-api.sh ${CMAKE_SOURCE_DIR}/compiler
     ${_full_casemap_check}
     COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR} --target clean
     COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR}

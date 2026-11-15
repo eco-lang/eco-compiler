@@ -133,6 +133,8 @@ file(COPY ${COMPILER_DIR}/elm-application.json
     DESTINATION ${BUILD_XHR_DIR})
 include(${CMAKE_SOURCE_DIR}/cmake/EcoCreateDirLink.cmake)
 eco_create_dir_link(${COMPILER_DIR}/src     ${BUILD_XHR_DIR}/src)
+# the-sett/elm-mlir (compiler/mlir, plans/mlir-package.md), a source directory of the compiler
+eco_create_dir_link(${COMPILER_DIR}/mlir/src ${BUILD_XHR_DIR}/mlir-src)
 eco_create_dir_link(${COMPILER_DIR}/src-xhr ${BUILD_XHR_DIR}/src-xhr)
 eco_create_dir_link(${COMPILER_DIR}/tests   ${BUILD_XHR_DIR}/tests)
 eco_create_dir_link(${ECO_VERSION_GEN_DIR}  ${BUILD_XHR_DIR}/version)
@@ -144,6 +146,7 @@ set(ELM_ENTRY "${COMPILER_DIR}/src/Terminal/Main.elm")
 # Collect all Elm source files for dependency tracking
 file(GLOB_RECURSE ELM_SOURCES
     "${COMPILER_DIR}/src/*.elm"
+    "${COMPILER_DIR}/mlir/src/*.elm"
     "${COMPILER_DIR}/src-xhr/*.elm"
 )
 list(APPEND ELM_SOURCES "${ECO_VERSION_BUILD_ELM}")
@@ -277,13 +280,26 @@ if(NOT WIN32)
     )
 endif()
 
+# The the-sett/elm-mlir package's own tests (compiler/mlir/tests), with stock elm 0.19.1, and the
+# check that the compiler imports only the modules the package exposes (plans/mlir-package.md): a
+# source directory does not enforce the package's exposed-modules.
+add_custom_target(elm-mlir-tests
+    COMMAND sh ${COMPILER_DIR}/scripts/check-mlir-api.sh ${COMPILER_DIR}
+    COMMAND ${CMAKE_COMMAND} -E env "PATH=${TOOLCHAIN_BIN}${_path_sep}$ENV{PATH}"
+        ${ELM_TEST_RS_EXECUTABLE} --compiler ${ELM_EXECUTABLE} --fuzz 1
+    WORKING_DIRECTORY ${COMPILER_DIR}/mlir
+    COMMENT "Running elm-test-rs for the-sett/elm-mlir (compiler/mlir/tests)"
+    USES_TERMINAL
+    VERBATIM
+)
+
 add_custom_target(elm-tests
     # The harness must compile through Compiler.Pipeline.Steps, as a build does
     # (plans/staging-honesty-and-production-test-pipeline.md P1.3).
     COMMAND sh ${CMAKE_SOURCE_DIR}/test/scripts/check-test-pipeline-production.sh ${CMAKE_SOURCE_DIR}
     COMMAND ${CMAKE_COMMAND} -E env "PATH=${TOOLCHAIN_BIN}${_path_sep}$ENV{PATH}"
         ${ELM_TEST_RS_EXECUTABLE} --project ${BUILD_XHR_DIR} --fuzz 1
-    DEPENDS guida eco-system-elm-tests
+    DEPENDS guida eco-system-elm-tests elm-mlir-tests
     WORKING_DIRECTORY ${COMPILER_DIR}
     COMMENT "Running elm-test-rs against build-xhr shadow root"
     USES_TERMINAL
@@ -302,6 +318,7 @@ file(COPY
     ${COMPILER_DIR}/cmake/bootstrap/build-kernel/run-eol2.js
     DESTINATION ${BUILD_KERNEL_DIR})
 eco_create_dir_link(${COMPILER_DIR}/src                   ${BUILD_KERNEL_DIR}/src)
+eco_create_dir_link(${COMPILER_DIR}/mlir/src              ${BUILD_KERNEL_DIR}/mlir-src)
 eco_create_dir_link(${ECO_VERSION_GEN_DIR}                 ${BUILD_KERNEL_DIR}/version)
 eco_create_dir_link(${CMAKE_SOURCE_DIR}/eco-kernel-cpp/src ${BUILD_KERNEL_DIR}/src-kernel)
 # Mirror the install layout in the build tree so the build-tree `eco` / `eco-quick`
