@@ -31,7 +31,7 @@ and succeed decoders, `index` (which returns the inner decoder's result
 directly), the `decodeValue` entry point, and a partial constructor
 application completed in Elm and destructured to unboxed fields. The
 TEXT-MLIR directive also routes the program through the MLIR text printer
-(compiler/mlir/src/Mlir/Pretty.elm).
+(`Mlir.Pretty` in the-sett/elm-mlir).
 
 -}
 

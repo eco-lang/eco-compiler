@@ -10,8 +10,8 @@ inexact above 2^53 (`Compiler.Data.Int64` now reads the text exactly), and
 -9223372036854775808.
 A plain negative literal (-3000000000) does not reach the bug: the compiler
 emits it as a positive constant plus eco.int.negate.
-Also covered by the unit tests compiler/tests/Mlir/Bytecode/VarIntTest.elm and
-compiler/tests/Parse/NumberTests.elm.
+Also covered by the unit tests compiler/tests/Parse/NumberTests.elm and, in the
+the-sett/elm-mlir package, tests/Mlir/Bytecode/VarIntTest.elm.
 -}
 
 -- DIVERGENCE: Int is 64-bit in eco; Elm 0.19.1 rejects the hex literal 0xFFFFFFFFC0000000 as too big

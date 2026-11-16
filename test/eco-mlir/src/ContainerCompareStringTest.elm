@@ -14,7 +14,7 @@ Exercises eco's structural `compare` on String-containing Tuple2, Tuple3
 and List values: the container comparison walks the elements and defers to
 string comparison, which is lexicographic by UTF-16 code unit. The TEXT-MLIR
 directive also routes this program through the MLIR text printer
-(compiler/mlir/src/Mlir/Pretty.elm) so that printer stays covered end to end.
+(`Mlir.Pretty` in the-sett/elm-mlir) so that printer stays covered end to end.
 
 -}
 

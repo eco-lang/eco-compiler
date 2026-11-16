@@ -396,7 +396,7 @@ finishBytecode main ports flagsDecoder target ( ctxAfterNodes, tablesAfterNodes 
                 |> StreamEncode.collectAndEncodeOps [ trailer.typeTableOp ]
 
         bytecodeBytes =
-            StreamEncode.assembleModule finalTables Loc.unknown
+            StreamEncode.assembleModule "eco" finalTables Loc.unknown
     in
     Utils.dirCreateDirectoryIfMissing True (Utils.fpTakeDirectory target)
         |> Task.andThen (\_ -> Eco.File.writeBytes target bytecodeBytes |> IO.crashOnError)

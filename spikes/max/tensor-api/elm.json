@@ -20,7 +20,7 @@
         "indirect": {
             "elm/virtual-dom": "1.0.3",
             "j-maas/elm-ordered-containers": "1.0.0",
-            "the-sett/elm-mlir": "1.0.0"
+            "the-sett/elm-mlir": "6.0.0"
         }
     },
     "test-dependencies": {

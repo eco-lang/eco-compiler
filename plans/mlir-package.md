@@ -1,6 +1,7 @@
 ---
-status: done
-updated: 2026-11-15
+status: superseded
+updated: 2026-11-16
+superseded_by: "the-sett/elm-mlir 6.0.0, published from its own repository; compiler/mlir was removed and the compiler and the MAX spike depend on the published package (2026-11-16)"
 ---
 
 # The MLIR library as its own Elm package

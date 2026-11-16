@@ -11,9 +11,9 @@ through to the wildcard and give `"other"`.
 An Int pattern at or above 2^32 is stored in the `eco.case` `tags` dense i64
 array. Two fixed bugs made 705032704 take the 5000000000 branch:
 
-compiler/mlir/src/Mlir/Bytecode/AttrType.elm wrote each dense-array element as its
-low 32 bits followed by zero bytes (unit test:
-compiler/tests/Mlir/Bytecode/AttrTypeTest.elm).
+The bytecode writer of the-sett/elm-mlir wrote each dense-array element as its
+low 32 bits followed by zero bytes (unit test: tests/Mlir/Bytecode/AttrTypeTest.elm
+in that package).
 
 runtime/src/codegen/Passes/EcoControlFlowToSCF.cpp lowered every int
 `eco.case` with non-negative tags to `scf.index_switch`, whose upstream

@@ -13,7 +13,7 @@ The edge values covered:
 ## eco
 
 The TEXT-MLIR directive compiles this test through the textual MLIR printer
-(compiler/mlir/src/Mlir/Pretty.elm) rather than the default path, so the printer stays covered and
+(`Mlir.Pretty` in the-sett/elm-mlir) rather than the default path, so the printer stays covered and
 checked end to end. Container comparison of `Float` elements also exercises unboxed `Float`
 fields in tuple and list cells (REP_HEAP_002 in design_docs/invariants.csv).
 

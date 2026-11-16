@@ -411,7 +411,7 @@ the regions of each op that holds only `Region`s marked isolated.
 -}
 encode : List Op -> Bytes
 encode ops =
-    StreamEncode.assembleModule
+    StreamEncode.assembleModule "eco-lab/tensor"
         (StreamEncode.emptyStreamTables
             |> StreamEncode.isolating (isolatedOpNames ops)
             |> StreamEncode.collectAndEncodeOps (toMlir ops)

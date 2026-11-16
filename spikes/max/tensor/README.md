@@ -201,7 +201,7 @@ files the session itself saved.
 
 `Max.toBytecode` writes MLIR bytecode, the binary form MAX's graph compiler loads, and
 `toGenericText` writes the same module as text. Both are written with
-`the-sett/elm-mlir`, the MLIR package of the eco compiler. The bytecode is
+`the-sett/elm-mlir`. The bytecode is
 version 4 of MLIR's bytecode format, which the MLIR inside MAX 26.7.0 reads (it reads every version
 up to 6).
 
