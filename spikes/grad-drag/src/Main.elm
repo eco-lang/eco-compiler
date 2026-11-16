@@ -1,7 +1,7 @@
 module Main exposing (main)
 
 {-| Dragging through gradients: evg's declarative dragging (`Evg.Drag`) with solvers that use exact
-derivatives from the eco-lab/tensor package, evaluated in the browser by `Tensor.Eval`.
+derivatives from the the-sett/elm-max package, evaluated in the browser by `Tensor.Eval`.
 -}
 
 import Bezier
@@ -326,7 +326,7 @@ view model =
             , Html.text ", in Elm as evg's "
             , code "Evg.Drag"
             , Html.text "): it says which numbers a drag may change, and a solver finds the values that put the grabbed point under the pointer. evg's own solver tries values and re-renders the drawing for every derivative. Here, a model of the drawing written with the "
-            , code "eco-lab/tensor"
+            , code "the-sett/elm-max"
             , Html.text " package gives exact derivatives instead, computed by its automatic differentiation and evaluated in your browser by "
             , code "Tensor.Eval"
             , Html.text ", in plain Elm."
@@ -399,7 +399,7 @@ view model =
             , code "declarative-dragging"
             , Html.text " branch with one addition ("
             , code "Drag.varyWith"
-            , Html.text ", a solver of your own), and the eco-lab/tensor package, which writes the same graphs as MLIR for Modular MAX."
+            , Html.text ", a solver of your own), and the the-sett/elm-max package, which writes the same graphs as MLIR for Modular MAX."
             ]
         ]
 

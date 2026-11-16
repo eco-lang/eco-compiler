@@ -1,7 +1,7 @@
 # Dragging through gradients
 
 A browser demo that joins evg's declarative dragging with the automatic differentiation of the
-eco-lab/tensor package (`spikes/max/tensor`), running in plain Elm. Plans and results:
+the-sett/elm-max package, running in plain Elm. Plans and results:
 `plans/grad-drag-spike.md` (the tentacle, cannon and fit), `plans/grad-drag-round2.md`
 (`Eval.prepare`, the lens and the boundary) and `plans/grad-drag-round3.md` (the cube, the
 interference pattern, the epidemic, the layout and the Bézier curve).
@@ -99,9 +99,9 @@ make bench      # times the solvers under Node
 make smoke      # real drags in headless Chromium (CHROME=path to headless_shell)
 ```
 
-It uses stock Elm 0.19.1 from the repo's `build/toolchain/bin`. The sources are `src/`, the tensor
-package's `../max/tensor/src`, and evg in `vendor/evg/src` (the `declarative-dragging` branch with
-the patch described in `vendor/evg/PATCH.md`).
+It uses stock Elm 0.19.1 from the repo's `build/toolchain/bin`. The sources are `src/` and evg
+in `vendor/evg/src` (the `declarative-dragging` branch with the patch described in
+`vendor/evg/PATCH.md`); the-sett/elm-max comes from the package registry.
 
 ## Results (`make bench`, Node 22, 2026-11-13, with `Eval.prepare`)
 

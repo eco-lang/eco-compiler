@@ -3,7 +3,7 @@ port module Mnist exposing (main)
 {-| Training a neural network on MNIST with Elm and MAX.
 
 The network and its training step are `MnistNet`, written with the typed tensor package
-(`eco-lab/tensor`); Elm derives the gradients itself (MAX has no autodiff). This module owns the data
+(`the-sett/elm-max`); Elm derives the gradients itself (MAX has no autodiff). This module owns the data
 and runs the training loop: a `Max.Session` on the host compiles the two graphs Elm writes, a
 training step and an evaluation, and runs them.
 

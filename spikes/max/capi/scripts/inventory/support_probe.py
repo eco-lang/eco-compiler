@@ -1,5 +1,5 @@
 """Which primitive compiles for which dtype on MAX (CPU): the table the tensor package's build-time
-dtype check uses (tensor/src/Tensor/Internal/Support.elm, written by tensor/scripts/gen_support.py).
+dtype check uses (src/Tensor/Internal/Support.elm in the-sett/elm-max, written by its scripts/gen_support.py).
 
 One graph per dtype holds every primitive under test; a graph that fails to compile is bisected
 until each failing primitive is found. Writes support.json: {dtype: {primitive: true|false}}.
@@ -22,7 +22,7 @@ DTYPES = {
 }
 FLOATS = {"f16", "bf16", "f32", "f64"}
 
-# primitive name (as tensor/src/Tensor/Internal/Prim.elm's `name`) -> how to apply it to x, y
+# primitive name (as the-sett/elm-max's src/Tensor/Internal/Prim.elm's `name`) -> how to apply it to x, y
 UNARY_ANY = {
     "abs": lambda x: ops.abs(x), "negate": lambda x: ops.negate(x), "relu": lambda x: ops.relu(x),
 }

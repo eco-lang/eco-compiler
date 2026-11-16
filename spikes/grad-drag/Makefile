@@ -1,5 +1,5 @@
 # Dragging through gradients (plans/grad-drag-spike.md): evg's declarative dragging with solvers that
-# use exact derivatives from eco-lab/tensor, run in the browser by Tensor.Eval. Stock Elm 0.19.1.
+# use exact derivatives from the-sett/elm-max, run in the browser by Tensor.Eval. Stock Elm 0.19.1.
 #
 #   make            build/main.js (open index.html)
 #   make page       build/grad-drag.html: one self-contained file
@@ -11,7 +11,7 @@
 REPO      ?= $(abspath $(CURDIR)/../..)
 TOOLCHAIN ?= $(REPO)/build/toolchain/bin
 ELM       := PATH=$(TOOLCHAIN):$$PATH elm
-SOURCES   := $(wildcard src/*.elm) $(shell find vendor/evg/src ../max/tensor/src -name '*.elm')
+SOURCES   := $(wildcard src/*.elm) $(shell find vendor/evg/src -name '*.elm')
 
 all: build/main.js
 

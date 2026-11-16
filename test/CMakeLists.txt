@@ -59,8 +59,8 @@ foreach(pkg IN LISTS ELM_TEST_PACKAGES)
 endforeach()
 
 # Suites whose sources live outside test/: a shadow named for the suite, as above, over the
-# elm.json and src/ of another directory. eco-tensor: the typed tensor package eco-lab/tensor
-# (spikes/max/tensor) on native code, its programs kept with the spike in spikes/max/tensor-e2e
+# elm.json and src/ of another directory. eco-tensor: the published typed tensor package
+# the-sett/elm-max on native code, its programs kept with the spike in spikes/max/tensor-e2e
 # (plans/tensor-eval-in-elm.md). JIT only: no AOT shadow.
 set(ELM_TEST_EXTERNAL_PACKAGES
     "eco-tensor=${CMAKE_SOURCE_DIR}/spikes/max/tensor-e2e"

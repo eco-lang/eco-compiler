@@ -11,8 +11,6 @@
 #   make check-ops  every tensor operation and gradient on MAX against NumPy (opcheck/)
 #   make check-ops-eval  the same checks run by Tensor.Eval, the package's evaluator (no MAX)
 #   make check-api  the API's example programs compile, its counterexamples do not (tensor-api/)
-#   make check-tensor  the tensor package's own tests (elm-test-rs, tensor/tests/)
-#   make docs-tensor  the tensor package's docs.json
 #   make snapshot-graphs OUT=dir / compare-graphs BASE=dir  every model graph and host block, without MAX
 #   make check-tensor-native  the E2E suite eco-tensor, tensor-e2e/ (native code, 64-bit Int)
 #
@@ -31,12 +29,17 @@ MAX_LIB   := $(MAX_SITE)/modular/lib
 CXX       ?= g++
 CXXFLAGS  := -std=c++20 -O2 -Wall -Wextra -I$(REPO)/runtime/include -I$(MAX_SITE)/max/include
 B         := $(CURDIR)/build
-# The typed tensor package, whose Max.Session is the Elm side of the MAX host every model app links.
-# It writes its graphs with the published package the-sett/elm-mlir.
-LOCAL_PKGS := --local-package eco-lab/tensor=$(CURDIR)/tensor
-TENSOR_SRC := $(shell find $(CURDIR)/tensor/src -name '*.elm')
+# The apps depend on the published packages the-sett/elm-max (typed tensor graphs, whose Max.Session
+# is the Elm side of the MAX host every model app links) and the-sett/elm-mlir, resolved by eco from
+# the package registry. LOCAL_PKGS stays empty unless a local copy is to be tried instead, e.g.
+# LOCAL_PKGS="--local-package the-sett/elm-max=$HOME/elm-max".
+LOCAL_PKGS ?=
 # The package's generic MAX host (protocol 2 of Max.Session); each *_bridge is it linked with one app.
-MAX_HOST   := tensor/host/max_host.cpp
+# A package install keeps only an Elm package's src/, so the host source is taken from the same
+# release on GitHub, checked against the hash package.elm-lang.org publishes for it.
+ELM_MAX_VERSION := 1.0.0
+ELM_MAX_SHA1    := 404f558b6054959afe2af8fedd4f2a0cae131f97
+MAX_HOST        := $(B)/elm-max-$(ELM_MAX_VERSION)/host/max_host.cpp
 
 all: $(B)/spike $(B)/tensor_host $(B)/bytes_host $(B)/max_bridge $(B)/churn_host
 
@@ -66,14 +69,14 @@ $(B)/tensor_bytes.so: embed/bytes/src/TensorBytes.elm
 $(B)/bytes_host: embed/bytes/bytes_host.cpp $(B)/tensor_bytes.so | check-venv
 	$(CXX) $(CXXFLAGS) $< $(B)/tensor_bytes.so -L$(MAX_LIB) -lmax -lm -Wl,-rpath,$(B):$(MAX_LIB) -o $@
 
-$(B)/mnist.so: $(wildcard mnist/src/*.elm) $(TENSOR_SRC)
+$(B)/mnist.so: $(wildcard mnist/src/*.elm) mnist/elm.json
 	$(call elm_so,mnist,Mnist,mnist)
 
 # The generic host, linked with the MNIST model.
 $(B)/max_bridge: $(MAX_HOST) $(B)/mnist.so | check-venv
 	$(CXX) $(CXXFLAGS) $< $(B)/mnist.so -L$(MAX_LIB) -lmax -lm -pthread -Wl,-rpath,$(B):$(MAX_LIB) -o $@
 
-$(B)/charlm.so: $(wildcard models/charlm/src/*.elm) $(TENSOR_SRC)
+$(B)/charlm.so: $(wildcard models/charlm/src/*.elm) models/charlm/elm.json
 	$(call elm_so,models/charlm,CharLm,charlm)
 
 # The same generic host, linked with the char model.
@@ -96,7 +99,7 @@ run-charlm: $(B)/charlm_bridge work/charlm/corpus.txt
 CHECK ?= cache
 APICHECK_SRC := $(wildcard models/apicheck/src/*.elm)
 
-$(B)/apicheck.so: $(APICHECK_SRC) $(TENSOR_SRC)
+$(B)/apicheck.so: $(APICHECK_SRC) models/apicheck/elm.json
 	$(call elm_so,models/apicheck,ApiCheck,apicheck)
 
 # The same generic host, linked with the API checks.
@@ -256,14 +259,17 @@ check-tensor-native:
 	@grep -qE '^Tests run: +[1-9]' /tmp/test_output.txt && grep -qE '^Tests failed: +0$$' /tmp/test_output.txt \
 	  && echo "eco-tensor E2E: $$(grep -E '^Tests passed' /tmp/test_output.txt)"
 
-ELM_TEST_RS ?= $(ECO_BUILD)/toolchain/bin/elm-test-rs
-check-tensor:
-	cd tensor && PATH=$(ECO_BUILD)/toolchain/bin:$$PATH $(ELM_TEST_RS) --fuzz 20
-
-# The tensor package's docs.json, with stock Elm.
-docs-tensor:
-	cd tensor && PATH=$(ECO_BUILD)/toolchain/bin:$$PATH elm make --docs=docs.json
+$(MAX_HOST):
+	mkdir -p $(dir $(MAX_HOST))
+	curl -sSfL -o $(B)/elm-max-$(ELM_MAX_VERSION).zip \
+	  https://github.com/the-sett/elm-max/zipball/$(ELM_MAX_VERSION)/
+	echo "$(ELM_MAX_SHA1)  $(B)/elm-max-$(ELM_MAX_VERSION).zip" | sha1sum -c --quiet
+	python3 -I -c 'import sys, zipfile; z = zipfile.ZipFile(sys.argv[1]); \
+	  n = [x for x in z.namelist() if x.endswith("/host/max_host.cpp")][0]; \
+	  open(sys.argv[2], "wb").write(z.read(n))' \
+	  $(B)/elm-max-$(ELM_MAX_VERSION).zip $(MAX_HOST).tmp
+	mv $(MAX_HOST).tmp $(MAX_HOST)
 
 .PHONY: all check-venv run-capi run-json run-bytes run-mnist check-bytecode run-churn run-mnist-ref clean \
-	check-ops check-opcheck-bytecode check-api check-tensor run-apicheck check-apicheck check-gpu-ir \
-	snapshot-graphs compare-graphs check-tensor-native check-ops-eval docs-tensor
+	check-ops check-opcheck-bytecode check-api run-apicheck check-apicheck check-gpu-ir \
+	snapshot-graphs compare-graphs check-tensor-native check-ops-eval

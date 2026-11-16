@@ -67,9 +67,10 @@ The stress runs in the white paper repeated the batch list 1,500 times
 (`List.concat (List.repeat 1500 [ 1, 7, 1024, 4096 ])`) and passed a second, uncached model to the
 host so a cold compile ran concurrently.
 
-### `tensor/`: the typed tensor package (`eco-lab/tensor`)
+### The typed tensor package `the-sett/elm-max`
 
-Nabla's API as an Elm package that writes MAX graphs (`plans/nabla-api-in-elm.md`, `tensor/README.md`):
+Nabla's API as an Elm package that writes MAX graphs (`plans/nabla-api-in-elm.md`), developed here
+and now published as `the-sett/elm-max` (it writes its MLIR with `the-sett/elm-mlir`):
 tensors typed by element type, dtype and a fixed rank of named dimensions (`Tensor Float F32 (R2 n
 Hidden)`), so mixing up dimensions, axes or dtypes does not compile; reverse- and forward-mode
 autodiff to any order, `vmap` by batching rules, `cond`/`whileLoop` as `mo.if`/`mo.while`, shared
@@ -78,9 +79,12 @@ written in Elm. Round 2 (`plans/tensor-api-round2.md`) adds what open-weight lan
 diffusion and GPUs need: top-k, sorting and sampling; RMS-norm, group-norm, rotary positions, gated
 feed-forward, grouped-query and cross attention with a KV cache, upsampling, timestep embeddings;
 `Infer` graphs with resident state; checkpoint import graphs; graphs written for a GPU. `Max` writes a
-graph as MLIR, and `Max.Session` compiles and runs graphs on MAX through the host
-`tensor/host/max_host.cpp` (or in Elm, with `Tensor.Eval`). Apps use it through eco's `--local-package eco-lab/tensor=tensor` (the Makefile's
-`LOCAL_PKGS`).
+graph as MLIR, and `Max.Session` compiles and runs graphs on MAX through the package's host
+`host/max_host.cpp` (or in Elm, with `Tensor.Eval`). The apps list `the-sett/elm-max` 1.0.0 in their
+`elm.json`, and eco fetches it from the package registry. A package install keeps only `src/`, so
+the Makefile downloads the same release from GitHub, checks it against the registry's hash and
+builds the bridges from its `host/max_host.cpp` (`build/elm-max-1.0.0/`). To try a local copy of
+the package instead, pass `LOCAL_PKGS="--local-package the-sett/elm-max=DIR"`.
 
 - `tensor-api/`: the API's example programs (must compile) and counterexamples with the errors eco
   gives (`bad/`, must not compile): `make check-api`.
@@ -92,7 +96,6 @@ graph as MLIR, and `Max.Session` compiles and runs graphs on MAX through the hos
   Each family is also written for GPU 0: `make check-gpu-ir` reads those back through `mlir-opt`
   and compares every op's device placement with MAX's own (`capi/scripts/inventory/gpu_ir.py`,
   `compare_gpu_ir.py`); a family a GPU cannot run yet is listed as refused.
-- `make check-tensor`: the package's own tests (elm-test-rs).
 - `make check-ops-eval`: the op checks run by `Tensor.Eval`, the package's pure-Elm evaluator,
   against the same NumPy references, with no MAX (`opcheck/eval.js`, `ref.py --dump-inputs` and
   `--results`).
@@ -102,7 +105,7 @@ graph as MLIR, and `Max.Session` compiles and runs graphs on MAX through the hos
 - `snapshot/`: every model graph and block of initial host bytes, written under Node without MAX:
   `make snapshot-graphs OUT=dir`, then `make compare-graphs BASE=dir` after a change to the package.
 
-### `tensor/host/max_host.cpp`: the generic MAX host
+### `host/max_host.cpp`: the package's generic MAX host
 
 `max_host.cpp` knows nothing about the models: it compiles graphs on worker threads and runs them.
 A graph's specs give each tensor a role: **resident** tensors (parameters, optimizer state) live in
@@ -111,7 +114,7 @@ replace them, so only fed tensors (a batch, a seed) cross from Elm and only fed 
 come back. Resident outputs stay where MAX left them (no copy after a run) unless MAX placed one
 inside an input buffer, which is copied; the exit line counts the buffers and those copies.
 
-Its Elm side is the package's `Max.Session` (see `tensor/README.md`, "Running on MAX"). Each model
+Its Elm side is the package's `Max.Session` (see the package README, "Running on MAX"). Each model
 app declares the two ports the host binds by name, `maxOut` and `maxIn` (both `Bytes`), hands them to
 `Max.Session.host`, and declares `logOut : String` for the lines the host prints with timestamps.
 The wire protocol is described in the header comment of `max_host.cpp`. The Makefile links the host

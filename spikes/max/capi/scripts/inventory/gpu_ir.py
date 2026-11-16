@@ -1,5 +1,5 @@
 """Round 2, A3: how a graph's IR changes when it runs on a GPU. Builds one small graph per lowering
-pattern eco-lab/tensor uses with DeviceRef.GPU() (no GPU needed to build) and writes
+pattern the-sett/elm-max uses with DeviceRef.GPU() (no GPU needed to build) and writes
 work/inventory/g16_gpu.txt (custom and generic forms).
 """
 import sys

@@ -1,4 +1,4 @@
-"""Round 2, A3: does eco-lab/tensor place every op's operands and results on the GPU or the host as
+"""Round 2, A3: does the-sett/elm-max place every op's operands and results on the GPU or the host as
 MAX's own Python API does? Learns, per op name, which operand and result positions carry `gpu:` from
 MAX's graphs (an inventory dump with generic forms), then checks every op in our GPU graphs.
 

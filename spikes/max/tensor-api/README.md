@@ -1,6 +1,6 @@
 # The tensor API's example programs and counterexamples
 
-The contract the package `eco-lab/tensor` (`../tensor`) was written to, and the evidence for the
+The contract the package `the-sett/elm-max` was written to, and the evidence for the
 typing claims in `plans/nabla-api-in-elm.md`. It began as a type-only stub of every public
 signature; that stub became the package's `src/`, and this directory keeps the programs:
 

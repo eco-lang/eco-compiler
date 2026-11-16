@@ -1,5 +1,5 @@
 """A2.2: a synthetic safetensors checkpoint in PyTorch's layouts, and the parameters it should become in
-eco-lab/tensor's layouts (one file per resident name, as Param.names gives them).
+the-sett/elm-max's layouts (one file per resident name, as Param.names gives them).
 
     make_checkpoint.py OUT_DIR
 """

@@ -5,7 +5,7 @@ module MnistNet exposing
     )
 
 {-| The MNIST network (784 → 128 ReLU → 10) and its training, written with the typed tensor API
-(`eco-lab/tensor`): the parameters, the forward pass, the training step and the evaluation.
+(`the-sett/elm-max`): the parameters, the forward pass, the training step and the evaluation.
 
 Dimensions are types: swapping the layers, feeding raw pixels to a layer, or a bias with a batch
 dimension does not compile. The network is generic in the number of images `n`, so the training
