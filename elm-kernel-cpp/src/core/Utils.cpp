@@ -153,6 +153,20 @@ static int compareChar(u32 a, u32 b) {
     return a < b ? -1 : (a > b ? 1 : 0);
 }
 
+/// Returns the order of the unboxed slots `a` and `b`, which must both have kind `kind`: 1 (Int), 2 (Float)
+/// or 3 (Char). It orders them as `compareUnboxableSlot` does.
+static inline int compareUnboxedSlot(Elm::Unboxable a, Elm::Unboxable b, uint32_t kind) {
+    switch (kind) {
+        case 1:
+            if (a.i == b.i) return 0;
+            return a.i < b.i ? -1 : 1;
+        case 2:
+            return compareFloat(a.f, b.f);
+        default:
+            return compareChar(a.c, b.c);
+    }
+}
+
 /// Returns the order of slots `a` and `b`, which must both have kind `kind`, with `cmpFn` used to compare
 /// two boxed heap values.
 ///
@@ -295,6 +309,21 @@ static int cmp(void* a, void* b) {
 
     Tag tagA = getTag(a);
     Tag tagB = getTag(b);
+
+    // Two pairs whose fields are unboxed Ints, Floats or Chars of the same kinds, such as the
+    // `( Char, Char )` keys of a Dict, compare without the general slot walk below.
+    if (tagA == Tag_Tuple2 && tagB == Tag_Tuple2) {
+        u32 kinds = getHeader(a)->unboxed & 0xFU;
+        u32 k0 = Elm::tupleFieldKind(kinds, 0);
+        u32 k1 = Elm::tupleFieldKind(kinds, 1);
+        if (k0 != 0 && k1 != 0 && (getHeader(b)->unboxed & 0xFU) == kinds) {
+            Elm::Tuple2* atup = static_cast<Elm::Tuple2*>(a);
+            Elm::Tuple2* btup = static_cast<Elm::Tuple2*>(b);
+            int ord = compareUnboxedSlot(atup->a, btup->a, k0);
+            if (ord != 0) return ord;
+            return compareUnboxedSlot(atup->b, btup->b, k1);
+        }
+    }
 
     // Checked before the tags, which differ between String forms.
     if (alloc::isString(a) && alloc::isString(b)) {
