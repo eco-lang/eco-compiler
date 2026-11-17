@@ -672,6 +672,19 @@ namespace {
 struct LiteralTable {
     uint64_t generation = 0;  // The `Allocator::heapGeneration` the cache was built under.
     std::unordered_map<const void*, Elm::HPointer*> byGlobal;
+    // A direct-mapped cache in front of `byGlobal`, indexed by the key's address bits: compiled code
+    // interns a capture-free closure every time it evaluates one (`eco_intern_closure0`), so a hash
+    // map lookup per evaluation showed up in profiles.
+    static constexpr size_t kRecent = 512;
+    struct Recent {
+        const void* key;
+        Elm::HPointer* slot;
+    };
+    Recent recent[kRecent] = {};
+
+    static size_t recentIndex(const void* key) {
+        return (reinterpret_cast<uintptr_t>(key) >> 3) & (kRecent - 1);
+    }
     // The slots, in fixed-size chunks so that growing the table moves none of them.
     std::deque<std::array<Elm::HPointer, 64>> chunks;
     size_t nextSlot = 64;  // Next free index in the last chunk; 64 means a new chunk is needed.
@@ -681,6 +694,7 @@ struct LiteralTable {
     void syncEpoch(uint64_t gen) {
         if (gen != generation) {
             byGlobal.clear();
+            for (Recent& r : recent) r = Recent{};
             chunks.clear();
             nextSlot = 64;
             generation = gen;
@@ -739,14 +753,21 @@ template <class AllocFn>
 inline HPtr internLiteral(const void* key, AllocFn&& alloc) {
     LiteralTable& table = literalTable();
     table.syncEpoch(Allocator::instance().heapGeneration());
+    LiteralTable::Recent& recent = table.recent[LiteralTable::recentIndex(key)];
+    if (recent.key == key) {
+        return HPtr::fromHPointer(*recent.slot);
+    }
     auto it = table.byGlobal.find(key);
     if (it != table.byGlobal.end()) {
+        recent = LiteralTable::Recent{key, it->second};
         return HPtr::fromHPointer(*it->second);
     }
     HPtr result = alloc();
     Elm::HPointer* slot = table.newSlot();
     *slot = result.toHPointer();
     table.byGlobal[key] = slot;
+    // `alloc` may have collected, but nothing in `table` moves; the reference is still good.
+    recent = LiteralTable::Recent{key, slot};
     uint64_t raw = result.toBits();
     if (!Elm::isConstantBits(raw) &&
         !Elm::PermanentSpace::instance().contains(
