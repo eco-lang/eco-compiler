@@ -918,6 +918,12 @@ set(ECO_SYSTEM_MODS Core System Stream FileSystem ChildProcess Terminal HttpServ
     CACHE INTERNAL "Eco system module names — drives static lib targets and bundle install"
 )
 
+# Kernel modules of the public eco/containers package (containers-kernel-cpp/). Each
+# names a static lib EcoContainers_<mod>.
+set(ECO_CONTAINERS_MODS FNV JsArray2
+    CACHE INTERNAL "Eco containers module names — drives static lib targets and bundle install"
+)
+
 #------------------------------------------------------------------------------
 # Phase 3: linker + crt path discovery for direct ld invocation.
 #
@@ -1325,6 +1331,11 @@ foreach(mod ${ECO_SYSTEM_MODS})
     string(APPEND ECO_BOOT_CONFIG_CONTENT
         "        {\"libEcoSystem_${mod}.a\", \"project\", \"$<TARGET_FILE:EcoSystem_${mod}>\"},\n")
 endforeach()
+# eco/containers' kernels are linked like eco/system's, so they share its list.
+foreach(mod ${ECO_CONTAINERS_MODS})
+    string(APPEND ECO_BOOT_CONFIG_CONTENT
+        "        {\"libEcoContainers_${mod}.a\", \"project\", \"$<TARGET_FILE:EcoContainers_${mod}>\"},\n")
+endforeach()
 string(APPEND ECO_BOOT_CONFIG_CONTENT "    };\n}\n\n")
 
 # --- LLVM libunwind ------------------------------------------------------
@@ -1536,6 +1547,10 @@ foreach(mod ${ECO_SYSTEM_MODS})
     string(APPEND ECO_BOOT_CONFIG_CONTENT
         "        {\"libEcoSystem_${mod}.a\", \"glibc/project\", \"\"},\n")
 endforeach()
+foreach(mod ${ECO_CONTAINERS_MODS})
+    string(APPEND ECO_BOOT_CONFIG_CONTENT
+        "        {\"libEcoContainers_${mod}.a\", \"glibc/project\", \"\"},\n")
+endforeach()
 string(APPEND ECO_BOOT_CONFIG_CONTENT "    };\n}\n\n")
 
 #--- Phase 3 (Darwin): AOT link driver config ------------------------------
@@ -1618,6 +1633,9 @@ foreach(mod ${ECO_KERNEL_MODS})
 endforeach()
 foreach(mod ${ECO_SYSTEM_MODS})
     list(APPEND ECO_BOOT_NATIVE_RUNTIME_DEPS EcoSystem_${mod})
+endforeach()
+foreach(mod ${ECO_CONTAINERS_MODS})
+    list(APPEND ECO_BOOT_NATIVE_RUNTIME_DEPS EcoContainers_${mod})
 endforeach()
 if(ECO_STATIC_MUSL)
     # mimalloc.o and memfuncs.o are linked into every program

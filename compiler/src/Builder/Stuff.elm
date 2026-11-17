@@ -363,6 +363,7 @@ bundledPackages : List ( Pkg.Name, FilePath )
 bundledPackages =
     [ ( Pkg.ecoKernel, "../share/eco/kernel/eco-kernel-cpp" )
     , ( Pkg.ecoSystem, "../share/eco/system/system-kernel-cpp" )
+    , ( Pkg.ecoContainers, "../share/eco/containers/containers-kernel-cpp" )
     ]
 
 

@@ -111,6 +111,7 @@
 #include "eco-elm/EcoElmTest.hpp"
 #include "eco-elm-bytes/EcoElmBytesTest.hpp"
 #include "eco-elm-core/EcoElmCoreTest.hpp"
+#include "eco-containers/EcoContainersTest.hpp"
 #include "eco-elm-json/EcoElmJsonTest.hpp"
 #include "eco-elm-regex/EcoElmRegexTest.hpp"
 #include "eco-elm-conformance/EcoElmConformanceTest.hpp"
@@ -1423,6 +1424,7 @@ int main(int argc, char* argv[]) {
     auto ecoElmTests = EcoElmTest::buildEcoElmTestSuite();
     auto ecoElmBytesTests = EcoElmBytesTest::buildEcoElmBytesTestSuite();
     auto ecoElmCoreTests = EcoElmCoreTest::buildEcoElmCoreTestSuite();
+    auto ecoContainersTests = EcoContainersTest::buildEcoContainersTestSuite();
     auto ecoElmJsonTests = EcoElmJsonTest::buildEcoElmJsonTestSuite();
     auto ecoElmRegexTests = EcoElmRegexTest::buildEcoElmRegexTestSuite();
     auto ecoElmConformanceTests = EcoElmConformanceTest::buildEcoElmConformanceTestSuite();
@@ -1488,6 +1490,7 @@ int main(int argc, char* argv[]) {
     suite.add(std::move(ecoElmTests));
     suite.add(std::move(ecoElmBytesTests));
     suite.add(std::move(ecoElmCoreTests));
+    suite.add(std::move(ecoContainersTests));
     suite.add(std::move(ecoElmJsonTests));
     suite.add(std::move(ecoElmRegexTests));
     suite.add(std::move(ecoElmConformanceTests));
