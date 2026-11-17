@@ -80,7 +80,7 @@ struct EcoBoxedStoreVerifyPass
             OpBuilder builder(module.getBodyRegion());
             builder.setInsertionPointToStart(module.getBody());
             auto fnTy = LLVM::LLVMFunctionType::get(voidTy, {i64Ty});
-            validatorFn = builder.create<LLVM::LLVMFuncOp>(
+            validatorFn = LLVM::LLVMFuncOp::create(builder,
                 module.getLoc(), fnName, fnTy);
         }
 
@@ -92,7 +92,7 @@ struct EcoBoxedStoreVerifyPass
                 continue;
 
             OpBuilder builder(store);
-            builder.create<LLVM::CallOp>(store.getLoc(), validatorFn,
+            LLVM::CallOp::create(builder, store.getLoc(), validatorFn,
                                          ValueRange{value});
         }
 #endif

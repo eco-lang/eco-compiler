@@ -51,9 +51,9 @@ namespace {
 // `elements[i]`.
 static Value buildStruct(ConversionPatternRewriter &rewriter, Location loc,
                          Type structTy, ValueRange elements) {
-    Value agg = rewriter.create<LLVM::UndefOp>(loc, structTy);
+    Value agg = LLVM::UndefOp::create(rewriter, loc, structTy);
     for (auto [i, e] : llvm::enumerate(elements)) {
-        agg = rewriter.create<LLVM::InsertValueOp>(
+        agg = LLVM::InsertValueOp::create(rewriter,
             loc, agg, e, ArrayRef<int64_t>{static_cast<int64_t>(i)});
     }
     return agg;
@@ -73,9 +73,9 @@ static Value widenFieldToI64Local(Value val, Location loc,
         return heapStoreValueToI64(rewriter, loc, val);
     if (auto intTy = dyn_cast<IntegerType>(ty)) {
         if (intTy.getWidth() < 64)
-            return rewriter.create<LLVM::ZExtOp>(loc, i64Ty, val);
+            return LLVM::ZExtOp::create(rewriter, loc, i64Ty, val);
     } else if (ty.isF64()) {
-        return rewriter.create<LLVM::BitcastOp>(loc, i64Ty, val);
+        return LLVM::BitcastOp::create(rewriter, loc, i64Ty, val);
     }
     return val;
 }
@@ -96,7 +96,7 @@ static int64_t kindBitmapFor(ArrayRef<Type> elements) {
 // Returns field `index` of the struct value `agg`, of LLVM type `fieldTy`.
 static Value extractField(ConversionPatternRewriter &rewriter, Location loc,
                           Value agg, int64_t index, Type fieldTy) {
-    return rewriter.create<LLVM::ExtractValueOp>(
+    return LLVM::ExtractValueOp::create(rewriter,
         loc, fieldTy, agg, ArrayRef<int64_t>{index});
 }
 
@@ -273,7 +273,7 @@ struct ToHeapOpLowering : public OpConversionPattern<ToHeapOp> {
                 return success();
             }
 
-            auto unboxedVal = rewriter.create<LLVM::ConstantOp>(
+            auto unboxedVal = LLVM::ConstantOp::create(rewriter,
                 loc, i32Ty, static_cast<int32_t>(mask));
 
             // The kinds are passed to the allocation itself, so the header
@@ -294,20 +294,20 @@ struct ToHeapOpLowering : public OpConversionPattern<ToHeapOp> {
                         layout::HeaderSize + int64_t(idx) * layout::PtrSize, v, origTy);
                     return;
                 }
-                auto idxVal = rewriter.create<LLVM::ConstantOp>(loc, i32Ty,
+                auto idxVal = LLVM::ConstantOp::create(rewriter, loc, i32Ty,
                     static_cast<int32_t>(idx));
                 if (origTy.isF64()) {
-                    rewriter.create<LLVM::CallOp>(loc, storeFieldF64,
+                    LLVM::CallOp::create(rewriter, loc, storeFieldF64,
                         ValueRange{tuple, idxVal, v});
                 } else if (origTy.isInteger(64)) {
-                    rewriter.create<LLVM::CallOp>(loc, storeFieldI64,
+                    LLVM::CallOp::create(rewriter, loc, storeFieldI64,
                         ValueRange{tuple, idxVal, v});
                 } else if (origTy.isInteger(1) || eco::isEcoCharType(origTy)) {
                     Value widened = widenFieldToI64Local(v, loc, rewriter);
-                    rewriter.create<LLVM::CallOp>(loc, storeFieldI64,
+                    LLVM::CallOp::create(rewriter, loc, storeFieldI64,
                         ValueRange{tuple, idxVal, widened});
                 } else {
-                    rewriter.create<LLVM::CallOp>(loc, storeFieldBoxed,
+                    LLVM::CallOp::create(rewriter, loc, storeFieldBoxed,
                         ValueRange{tuple, idxVal, v});
                 }
             };
@@ -347,7 +347,7 @@ struct ToHeapOpLowering : public OpConversionPattern<ToHeapOp> {
                 return success();
             }
 
-            auto unboxedVal = rewriter.create<LLVM::ConstantOp>(
+            auto unboxedVal = LLVM::ConstantOp::create(rewriter,
                 loc, i32Ty, static_cast<int32_t>(mask));
 
             Value tuple = emitAllocWithSafepoint(
@@ -366,20 +366,20 @@ struct ToHeapOpLowering : public OpConversionPattern<ToHeapOp> {
                         layout::HeaderSize + int64_t(idx) * layout::PtrSize, v, origTy);
                     return;
                 }
-                auto idxVal = rewriter.create<LLVM::ConstantOp>(loc, i32Ty,
+                auto idxVal = LLVM::ConstantOp::create(rewriter, loc, i32Ty,
                     static_cast<int32_t>(idx));
                 if (origTy.isF64()) {
-                    rewriter.create<LLVM::CallOp>(loc, storeFieldF64,
+                    LLVM::CallOp::create(rewriter, loc, storeFieldF64,
                         ValueRange{tuple, idxVal, v});
                 } else if (origTy.isInteger(64)) {
-                    rewriter.create<LLVM::CallOp>(loc, storeFieldI64,
+                    LLVM::CallOp::create(rewriter, loc, storeFieldI64,
                         ValueRange{tuple, idxVal, v});
                 } else if (origTy.isInteger(1) || eco::isEcoCharType(origTy)) {
                     Value widened = widenFieldToI64Local(v, loc, rewriter);
-                    rewriter.create<LLVM::CallOp>(loc, storeFieldI64,
+                    LLVM::CallOp::create(rewriter, loc, storeFieldI64,
                         ValueRange{tuple, idxVal, widened});
                 } else {
-                    rewriter.create<LLVM::CallOp>(loc, storeFieldBoxed,
+                    LLVM::CallOp::create(rewriter, loc, storeFieldBoxed,
                         ValueRange{tuple, idxVal, v});
                 }
             };
@@ -428,9 +428,9 @@ struct ToHeapOpLowering : public OpConversionPattern<ToHeapOp> {
                 return success();
             }
 
-            auto fieldCountVal = rewriter.create<LLVM::ConstantOp>(
+            auto fieldCountVal = LLVM::ConstantOp::create(rewriter,
                 loc, i32Ty, static_cast<int32_t>(fieldCount));
-            auto unboxedBitmapVal = rewriter.create<LLVM::ConstantOp>(
+            auto unboxedBitmapVal = LLVM::ConstantOp::create(rewriter,
                 loc, i64Ty, mask);
 
             Value objHPtr = emitAllocWithSafepoint(
@@ -451,20 +451,20 @@ struct ToHeapOpLowering : public OpConversionPattern<ToHeapOp> {
                         layout::RecordFieldsOffset + i * layout::PtrSize, fieldVal, origTy);
                     continue;
                 }
-                auto idx = rewriter.create<LLVM::ConstantOp>(
+                auto idx = LLVM::ConstantOp::create(rewriter,
                     loc, i32Ty, static_cast<int32_t>(i));
                 if (origTy.isF64()) {
-                    rewriter.create<LLVM::CallOp>(loc, storeF64Func,
+                    LLVM::CallOp::create(rewriter, loc, storeF64Func,
                         ValueRange{objHPtr, idx, fieldVal});
                 } else if (origTy.isInteger(64)) {
-                    rewriter.create<LLVM::CallOp>(loc, storeI64Func,
+                    LLVM::CallOp::create(rewriter, loc, storeI64Func,
                         ValueRange{objHPtr, idx, fieldVal});
                 } else if (origTy.isInteger(1) || eco::isEcoCharType(origTy)) {
                     Value widened = widenFieldToI64Local(fieldVal, loc, rewriter);
-                    rewriter.create<LLVM::CallOp>(loc, storeI64Func,
+                    LLVM::CallOp::create(rewriter, loc, storeI64Func,
                         ValueRange{objHPtr, idx, widened});
                 } else {
-                    rewriter.create<LLVM::CallOp>(loc, storeFunc,
+                    LLVM::CallOp::create(rewriter, loc, storeFunc,
                         ValueRange{objHPtr, idx, fieldVal});
                 }
             }
@@ -518,9 +518,9 @@ struct ToHeapOpLowering : public OpConversionPattern<ToHeapOp> {
                 return success();
             }
 
-            auto tagVal = rewriter.create<LLVM::ConstantOp>(
+            auto tagVal = LLVM::ConstantOp::create(rewriter,
                 loc, i32Ty, static_cast<int32_t>(op.getTag()));
-            auto sizeVal = rewriter.create<LLVM::ConstantOp>(
+            auto sizeVal = LLVM::ConstantOp::create(rewriter,
                 loc, i32Ty, static_cast<int32_t>(fieldCount));
 
             Value objHPtr = emitAllocWithSafepoint(
@@ -542,29 +542,29 @@ struct ToHeapOpLowering : public OpConversionPattern<ToHeapOp> {
                         layout::CustomFieldsOffset + i * layout::PtrSize, fieldVal, origTy);
                     continue;
                 }
-                auto idx = rewriter.create<LLVM::ConstantOp>(
+                auto idx = LLVM::ConstantOp::create(rewriter,
                     loc, i32Ty, static_cast<int32_t>(i));
                 if (origTy.isF64()) {
-                    rewriter.create<LLVM::CallOp>(loc, storeF64Func,
+                    LLVM::CallOp::create(rewriter, loc, storeF64Func,
                         ValueRange{objHPtr, idx, fieldVal});
                 } else if (origTy.isInteger(64)) {
-                    rewriter.create<LLVM::CallOp>(loc, storeI64Func,
+                    LLVM::CallOp::create(rewriter, loc, storeI64Func,
                         ValueRange{objHPtr, idx, fieldVal});
                 } else if (origTy.isInteger(1) || eco::isEcoCharType(origTy)) {
                     Value widened = widenFieldToI64Local(fieldVal, loc, rewriter);
-                    rewriter.create<LLVM::CallOp>(loc, storeI64Func,
+                    LLVM::CallOp::create(rewriter, loc, storeI64Func,
                         ValueRange{objHPtr, idx, widened});
                 } else {
-                    rewriter.create<LLVM::CallOp>(loc, storeFunc,
+                    LLVM::CallOp::create(rewriter, loc, storeFunc,
                         ValueRange{objHPtr, idx, fieldVal});
                 }
             }
             emitExtKindWordStoresCall(rewriter, loc, objHPtr, layout::CustomFieldsOffset,
                                       static_cast<uint64_t>(fieldCount), pk.ext, storeI64Func);
             if (mask != 0) {
-                auto bitmapVal = rewriter.create<LLVM::ConstantOp>(
+                auto bitmapVal = LLVM::ConstantOp::create(rewriter,
                     loc, i64Ty, mask);
-                rewriter.create<LLVM::CallOp>(loc, setUnboxed,
+                LLVM::CallOp::create(rewriter, loc, setUnboxed,
                     ValueRange{objHPtr, bitmapVal});
             }
             rewriter.replaceOp(op, objHPtr);
@@ -610,7 +610,7 @@ struct ToHeapOpLowering : public OpConversionPattern<ToHeapOp> {
                 return success();
             }
 
-            auto kindVal = rewriter.create<LLVM::ConstantOp>(loc, i32Ty,
+            auto kindVal = LLVM::ConstantOp::create(rewriter, loc, i32Ty,
                 static_cast<int32_t>(kind));
 
             // The head kind is passed to the allocation itself, so the header
@@ -621,21 +621,21 @@ struct ToHeapOpLowering : public OpConversionPattern<ToHeapOp> {
                 ValueRange{kindVal});
 
             if (kind == 0) {
-                rewriter.create<LLVM::CallOp>(loc,
+                LLVM::CallOp::create(rewriter, loc,
                     runtime.getOrCreateStoreConsHead(rewriter),
                     ValueRange{consHPtr, head});
             } else if (kind == 2) {
-                rewriter.create<LLVM::CallOp>(loc,
+                LLVM::CallOp::create(rewriter, loc,
                     runtime.getOrCreateStoreConsHeadF64(rewriter),
                     ValueRange{consHPtr, head});
             } else {
                 // Int or Char.
                 Value widened = widenFieldToI64Local(head, loc, rewriter);
-                rewriter.create<LLVM::CallOp>(loc,
+                LLVM::CallOp::create(rewriter, loc,
                     runtime.getOrCreateStoreConsHeadI64(rewriter),
                     ValueRange{consHPtr, widened});
             }
-            rewriter.create<LLVM::CallOp>(loc,
+            LLVM::CallOp::create(rewriter, loc,
                 runtime.getOrCreateStoreConsTail(rewriter),
                 ValueRange{consHPtr, tail});
             rewriter.replaceOp(op, consHPtr);
@@ -681,25 +681,25 @@ struct FromHeapOpLowering : public OpConversionPattern<FromHeapOp> {
         auto i8Ty = IntegerType::get(ctx, 8);
         auto ptrTy = LLVM::LLVMPointerType::get(ctx);
 
-        auto offset = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, offsetBytes);
+        auto offset = LLVM::ConstantOp::create(rewriter, loc, i64Ty, offsetBytes);
         Type gepTy = isHPtrLLVMType(ptr.getType())
                          ? static_cast<Type>(getHPtrLLVMType(*ctx))
                          : static_cast<Type>(ptrTy);
-        auto fieldPtr = rewriter.create<LLVM::GEPOp>(loc, gepTy, i8Ty, ptr,
+        auto fieldPtr = LLVM::GEPOp::create(rewriter, loc, gepTy, i8Ty, ptr,
                                                      ValueRange{offset});
         if (isHPtrLLVMType(elemTy)) {
-            Value loaded = rewriter.create<LLVM::LoadOp>(loc, i64Ty, fieldPtr);
+            Value loaded = LLVM::LoadOp::create(rewriter, loc, i64Ty, fieldPtr);
             return heapLoadI64ToValue(rewriter, loc, loaded);
         }
-        Value slot = rewriter.create<LLVM::LoadOp>(loc, i64Ty, fieldPtr);
+        Value slot = LLVM::LoadOp::create(rewriter, loc, i64Ty, fieldPtr);
         if (elemTy.isInteger(64)) return slot;
         if (elemTy.isF64())
-            return rewriter.create<LLVM::BitcastOp>(loc, elemTy, slot);
+            return LLVM::BitcastOp::create(rewriter, loc, elemTy, slot);
         if (auto intTy = dyn_cast<IntegerType>(elemTy)) {
             if (intTy.getWidth() < 64)
-                return rewriter.create<LLVM::TruncOp>(loc, elemTy, slot);
+                return LLVM::TruncOp::create(rewriter, loc, elemTy, slot);
         }
-        return rewriter.create<LLVM::LoadOp>(loc, elemTy, fieldPtr);
+        return LLVM::LoadOp::create(rewriter, loc, elemTy, fieldPtr);
     }
 
     LogicalResult
@@ -717,7 +717,7 @@ struct FromHeapOpLowering : public OpConversionPattern<FromHeapOp> {
             ptr = inlineResolvedBase(rewriter, loc, adaptor.getValue(), runtime);
         } else {
             auto resolveFunc = runtime.getOrCreateResolveHPtr(rewriter);
-            auto resolveCall = rewriter.create<LLVM::CallOp>(
+            auto resolveCall = LLVM::CallOp::create(rewriter,
                 loc, resolveFunc, ValueRange{adaptor.getValue()});
             ptr = resolveCall.getResult();
         }
@@ -837,15 +837,15 @@ struct MakeClosureOpLowering : public OpConversionPattern<MakeClosureOp> {
                 value_enc::TagClosure, 0, static_cast<uint64_t>(arity + numExt));
             closureHPtr = emitInlineAllocWithHeader(
                 rewriter, loc, runtime, cloByteSize, header);
-            auto evOff = rewriter.create<LLVM::ConstantOp>(loc, i64Ty,
+            auto evOff = LLVM::ConstantOp::create(rewriter, loc, i64Ty,
                 static_cast<int64_t>(layout::ClosureEvaluatorOffset));
-            auto evSlot = rewriter.create<LLVM::GEPOp>(
+            auto evSlot = LLVM::GEPOp::create(rewriter,
                 loc, getHPtrLLVMType(*ctx), i8Ty, closureHPtr,
                 ValueRange{evOff});
-            rewriter.create<LLVM::StoreOp>(loc, funcPtr, evSlot,
+            LLVM::StoreOp::create(rewriter, loc, funcPtr, evSlot,
                                            /*alignment=*/8);
         } else {
-            auto arityConst = rewriter.create<LLVM::ConstantOp>(
+            auto arityConst = LLVM::ConstantOp::create(rewriter,
                 loc, i32Ty, static_cast<int32_t>(arity));
             closureHPtr = emitAllocWithSafepoint(
                 op, rewriter, runtime,
@@ -862,7 +862,7 @@ struct MakeClosureOpLowering : public OpConversionPattern<MakeClosureOp> {
             storeGepTy = getHPtrLLVMType(*ctx);
         } else {
             auto resolveFunc = runtime.getOrCreateResolveHPtr(rewriter);
-            auto resolveCall = rewriter.create<LLVM::CallOp>(
+            auto resolveCall = LLVM::CallOp::create(rewriter,
                 loc, resolveFunc, ValueRange{closureHPtr});
             closurePtr = resolveCall.getResult();
             storeGepTy = ptrTy;
@@ -876,13 +876,13 @@ struct MakeClosureOpLowering : public OpConversionPattern<MakeClosureOp> {
         uint64_t packed = packClosureWord(
             static_cast<uint32_t>(numCaptured), static_cast<uint32_t>(arity),
             resultKind, pk.hdrBits);
-        auto packedConst = rewriter.create<LLVM::ConstantOp>(
+        auto packedConst = LLVM::ConstantOp::create(rewriter,
             loc, i64Ty, rewriter.getI64IntegerAttr(static_cast<int64_t>(packed)));
-        auto offset8 = rewriter.create<LLVM::ConstantOp>(
+        auto offset8 = LLVM::ConstantOp::create(rewriter,
             loc, i64Ty, rewriter.getI64IntegerAttr(layout::ClosurePackedOffset));
-        auto packedPtr = rewriter.create<LLVM::GEPOp>(
+        auto packedPtr = LLVM::GEPOp::create(rewriter,
             loc, storeGepTy, i8Ty, closurePtr, ValueRange{offset8});
-        rewriter.create<LLVM::StoreOp>(loc, packedConst, packedPtr);
+        LLVM::StoreOp::create(rewriter, loc, packedConst, packedPtr);
 
         for (int64_t i = 0; i < numCaptured; ++i) {
             Type llvmElt = getTypeConverter()->convertType(captures[i]);
@@ -890,31 +890,31 @@ struct MakeClosureOpLowering : public OpConversionPattern<MakeClosureOp> {
 
             if (auto intTy = dyn_cast<IntegerType>(cap.getType());
                 intTy && intTy.getWidth() < 64) {
-                cap = rewriter.create<LLVM::ZExtOp>(loc, i64Ty, cap);
+                cap = LLVM::ZExtOp::create(rewriter, loc, i64Ty, cap);
             } else if (cap.getType() == f64Ty) {
-                cap = rewriter.create<LLVM::BitcastOp>(loc, i64Ty, cap);
+                cap = LLVM::BitcastOp::create(rewriter, loc, i64Ty, cap);
             } else if (isa<LLVM::LLVMPointerType>(cap.getType())) {
                 cap = closureStoreValueToI64(rewriter, loc, cap);
             }
 
             int64_t off = layout::ClosureValuesOffset + i * layout::PtrSize;
-            auto offConst = rewriter.create<LLVM::ConstantOp>(
+            auto offConst = LLVM::ConstantOp::create(rewriter,
                 loc, i64Ty, rewriter.getI64IntegerAttr(off));
-            auto slotPtr = rewriter.create<LLVM::GEPOp>(
+            auto slotPtr = LLVM::GEPOp::create(rewriter,
                 loc, storeGepTy, i8Ty, closurePtr, ValueRange{offConst});
-            rewriter.create<LLVM::StoreOp>(loc, cap, slotPtr);
+            LLVM::StoreOp::create(rewriter, loc, cap, slotPtr);
         }
 
         // Extension kind words, zero words included (HEAP_077).
         for (int64_t j = 0; j < numExt; ++j) {
             int64_t off = layout::ClosureValuesOffset + (arity + j) * layout::PtrSize;
-            auto offConst = rewriter.create<LLVM::ConstantOp>(
+            auto offConst = LLVM::ConstantOp::create(rewriter,
                 loc, i64Ty, rewriter.getI64IntegerAttr(off));
-            auto slotPtr = rewriter.create<LLVM::GEPOp>(
+            auto slotPtr = LLVM::GEPOp::create(rewriter,
                 loc, storeGepTy, i8Ty, closurePtr, ValueRange{offConst});
-            auto w = rewriter.create<LLVM::ConstantOp>(
+            auto w = LLVM::ConstantOp::create(rewriter,
                 loc, i64Ty, rewriter.getI64IntegerAttr(static_cast<int64_t>(pk.ext[j])));
-            rewriter.create<LLVM::StoreOp>(loc, w, slotPtr);
+            LLVM::StoreOp::create(rewriter, loc, w, slotPtr);
         }
 
         rewriter.replaceOp(op, closureHPtr);
@@ -954,7 +954,7 @@ struct ProjectClosureFromEnvLowering
         Type resultLLVMTy = getTypeConverter()->convertType(op.getResult().getType());
         if (!resultLLVMTy)
             return failure();
-        Value result = rewriter.create<LLVM::ExtractValueOp>(
+        Value result = LLVM::ExtractValueOp::create(rewriter,
             op.getLoc(), resultLLVMTy, env,
             ArrayRef<int64_t>{static_cast<int64_t>(op.getIndex())});
         rewriter.replaceOp(op, result);

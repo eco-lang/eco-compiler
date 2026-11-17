@@ -102,7 +102,7 @@ struct KernelFuncOpLowering : public OpConversionPattern<func::FuncOp> {
 
         auto llvmFuncType = LLVM::LLVMFunctionType::get(llvmResultType, argTypes);
 
-        auto llvmFunc = rewriter.create<LLVM::LLVMFuncOp>(
+        auto llvmFunc = LLVM::LLVMFuncOp::create(rewriter,
             loc, funcOp.getName(), llvmFuncType);
 
         llvmFunc.setLinkage(LLVM::Linkage::External);
@@ -168,7 +168,7 @@ struct SretFuncOpLowering : public OpConversionPattern<func::FuncOp> {
         auto llvmFuncType =
             LLVM::LLVMFunctionType::get(LLVM::LLVMVoidType::get(ctx), argTypes);
         auto llvmFunc =
-            rewriter.create<LLVM::LLVMFuncOp>(loc, funcOp.getName(), llvmFuncType);
+            LLVM::LLVMFuncOp::create(rewriter, loc, funcOp.getName(), llvmFuncType);
         llvmFunc.setLinkage(funcOp.isPublic() ? LLVM::Linkage::External
                                               : LLVM::Linkage::Internal);
 
@@ -227,26 +227,26 @@ ShadowRootFrame eco::detail::installShadowRootPrologue(
 
     builder.setInsertionPointToStart(&entryBlock);
 
-    auto countConst = builder.create<LLVM::ConstantOp>(loc, i64Ty, N);
-    frame.basePtr = builder.create<LLVM::AllocaOp>(loc, ptrTy, i64Ty, countConst);
+    auto countConst = LLVM::ConstantOp::create(builder, loc, i64Ty, N);
+    frame.basePtr = LLVM::AllocaOp::create(builder, loc, ptrTy, i64Ty, countConst);
 
-    auto zeroVal = builder.create<LLVM::ConstantOp>(loc, i8Ty, 0);
-    auto bytesLen = builder.create<LLVM::ConstantOp>(loc, i64Ty, N * 8);
-    builder.create<LLVM::MemsetOp>(loc, frame.basePtr, zeroVal, bytesLen,
+    auto zeroVal = LLVM::ConstantOp::create(builder, loc, i8Ty, 0);
+    auto bytesLen = LLVM::ConstantOp::create(builder, loc, i64Ty, N * 8);
+    LLVM::MemsetOp::create(builder, loc, frame.basePtr, zeroVal, bytesLen,
                                    /*isVolatile=*/false);
 
     // The root-range restore point, taken before the pushes below.
     auto rangePointFunc = runtime.getOrCreateGcStackRangePoint(builder);
     frame.savedPoint =
-        builder.create<LLVM::CallOp>(loc, rangePointFunc, ValueRange{})
+        LLVM::CallOp::create(builder, loc, rangePointFunc, ValueRange{})
             .getResult();
 
     for (int64_t i = 0; i < N; ++i) {
-        auto idx = builder.create<LLVM::ConstantOp>(loc, i64Ty, i);
-        auto slot = builder.create<LLVM::GEPOp>(loc, ptrTy, i64Ty,
+        auto idx = LLVM::ConstantOp::create(builder, loc, i64Ty, i);
+        auto slot = LLVM::GEPOp::create(builder, loc, ptrTy, i64Ty,
                                                  frame.basePtr, ValueRange{idx});
-        auto hp = builder.create<LLVM::PtrToIntOp>(loc, i64Ty, gcArgs[i]);
-        builder.create<LLVM::StoreOp>(loc, hp, slot);
+        auto hp = LLVM::PtrToIntOp::create(builder, loc, i64Ty, gcArgs[i]);
+        LLVM::StoreOp::create(builder, loc, hp, slot);
         frame.slotForArg[gcArgs[i]] = slot;
     }
 
@@ -270,8 +270,8 @@ Value eco::detail::loadValueFromShadowSlot(
     auto i64Ty = IntegerType::get(builder.getContext(), 64);
     auto hptrTy = LLVM::LLVMPointerType::get(builder.getContext(), /*addressSpace=*/1);
 
-    Value hp = builder.create<LLVM::LoadOp>(loc, i64Ty, slot);
-    Value v = builder.create<LLVM::IntToPtrOp>(loc, hptrTy, hp);
+    Value hp = LLVM::LoadOp::create(builder, loc, i64Ty, slot);
+    Value v = LLVM::IntToPtrOp::create(builder, loc, hptrTy, hp);
     return v;
 }
 
@@ -319,7 +319,7 @@ void eco::detail::emitShadowRootEpilogues(
 
     func.walk([&](LLVM::ReturnOp retOp) {
         builder.setInsertionPoint(retOp);
-        builder.create<LLVM::CallOp>(retOp.getLoc(), restoreFunc,
+        LLVM::CallOp::create(builder, retOp.getLoc(), restoreFunc,
                                      ValueRange{frame.savedPoint});
     });
 }

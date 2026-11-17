@@ -1,6 +1,6 @@
 # Windows — full bootstrap + every test gateway, and the shippable Win64
 # distribution bundle, as two parallel jobs like linux-aot's test and bundle.
-# win-llvm-build stays as the LLVM base-image cache-warmer.
+# LLVM comes prebuilt from the llvm-build workflow (.github/actions/fetch-llvm).
 #
 #   aot (win-build preset: RelWithDebInfo, asserts and GC stats on), steps
 #   cheap -> expensive (fail-fast):
@@ -34,13 +34,15 @@ on:
       - 'CMakeLists.txt'
       - 'CMakePresets.json'
       - 'version.txt'
+      - 'deps/**'
+      - 'scripts/deps.sh'
+      - '.github/actions/fetch-llvm/**'
       - '.github/workflows/win-aot.yml'
       - '.github/scripts/prune-caches.sh'
       - '.github/scripts/eco-version.sh'
   workflow_dispatch:
   schedule:
-    # Nightly build keeps the LLVM-MSVC install-tree cache accessed (a restore
-    # resets GitHub's 7-day eviction timer). Inert until merged to master.
+    # Nightly build of master. Inert until merged to master.
     - cron: '0 0 * * *'
 
 # A newer push to the same branch cancels this run. Master and tag runs each
@@ -60,6 +62,7 @@ jobs:
     permissions:
       contents: read
       actions: write
+      packages: read
     env:
       # Elm package cache, restored and saved by "Restore Elm package and toolchain cache".
       ELM_HOME: ${{ github.workspace }}\.elm-home
@@ -94,15 +97,13 @@ jobs:
         with:
           arch: x64
 
-      - name: Restore LLVM 21.1.8 install tree (from win-llvm-build / E-W3)
-        # fail-on-cache-miss: the LLVM source build is the job of win-llvm-build
-        # (kept warm by the nightly schedule). A cold cache fails fast and
-        # legibly — re-run win-llvm-build — rather than silently degrading.
-        uses: actions/cache@v4
+      - name: Pull the LLVM install tree (published by llvm-build)
+        # The LLVM source build is llvm-build's job (2-4 h on this runner); a
+        # missing artifact fails here, naming it, rather than building inline.
+        uses: ./.github/actions/fetch-llvm
         with:
-          path: experiments/win-llvm-build/out/llvm-install
-          key: llvm-mlir-21.1.8-x86_64-pc-windows-msvc-x86-release-mt-v1
-          fail-on-cache-miss: true
+          platform: windows
+          dest: experiments/win-llvm-build/out/llvm-install
 
       - name: Install pnpm
         run: npm install -g pnpm
@@ -336,6 +337,7 @@ jobs:
     permissions:
       contents: read
       actions: write
+      packages: read
     env:
       # Elm package cache, restored and saved by "Restore Elm package and toolchain cache".
       ELM_HOME: ${{ github.workspace }}\.elm-home
@@ -370,15 +372,13 @@ jobs:
         with:
           arch: x64
 
-      - name: Restore LLVM 21.1.8 install tree (from win-llvm-build / E-W3)
-        # fail-on-cache-miss: the LLVM source build is the job of win-llvm-build
-        # (kept warm by the nightly schedule). A cold cache fails fast and
-        # legibly — re-run win-llvm-build — rather than silently degrading.
-        uses: actions/cache@v4
+      - name: Pull the LLVM install tree (published by llvm-build)
+        # The LLVM source build is llvm-build's job (2-4 h on this runner); a
+        # missing artifact fails here, naming it, rather than building inline.
+        uses: ./.github/actions/fetch-llvm
         with:
-          path: experiments/win-llvm-build/out/llvm-install
-          key: llvm-mlir-21.1.8-x86_64-pc-windows-msvc-x86-release-mt-v1
-          fail-on-cache-miss: true
+          platform: windows
+          dest: experiments/win-llvm-build/out/llvm-install
 
       - name: Install pnpm
         run: npm install -g pnpm

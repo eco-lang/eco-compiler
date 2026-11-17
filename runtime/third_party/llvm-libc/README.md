@@ -14,7 +14,10 @@ it, on copies of 0 to 64 bytes.
 ## Provenance
 
 - Origin: llvm-project, `libc/` (https://github.com/llvm/llvm-project)
-- Release: **21.1.8** (`llvmorg-21.1.8`), the same release as eco's LLVM
+- Release: **21.1.8** (`llvmorg-21.1.8`). This is the vendored code's own pin, independent of
+  the LLVM eco builds against (`deps/versions.env`, a trunk commit since the LLVM 24 upgrade):
+  the files are verbatim sources compiled into eco, not linked from that LLVM. Refresh them
+  (`update.sh`) only for a reason of their own, such as a faster `memcpy`.
 - Copied from `llvm-project-21.1.8.src.tar.xz`, SHA-256
   `4633a23617fa31a3ea51242586ea7fb1da7140e426bd62fc164261fe036aa142`
 - License: **Apache-2.0 WITH LLVM-exception** (`LICENSE.TXT`), the same as LLVM itself

@@ -106,15 +106,15 @@ struct IntDivOpLowering : public OpConversionPattern<IntDivOp> {
         // `sdiv` by 0, or of the minimum Int by -1, is undefined, so a divisor in {-1, 0} (tested with
         // one unsigned compare, rhs + 1 <=u 1) divides by 1 instead, and the result is rhs * lhs,
         // which is 0 or the wrapping negation.
-        auto one = rewriter.create<arith::ConstantIntOp>(loc, 1, /*width=*/64);
-        auto rhsPlus1 = rewriter.create<arith::AddIOp>(loc, rhs, one);
-        auto isSpecial = rewriter.create<arith::CmpIOp>(loc, arith::CmpIPredicate::ule,
+        auto one = arith::ConstantIntOp::create(rewriter, loc, 1, /*width=*/64);
+        auto rhsPlus1 = arith::AddIOp::create(rewriter, loc, rhs, one);
+        auto isSpecial = arith::CmpIOp::create(rewriter, loc, arith::CmpIPredicate::ule,
                                                          rhsPlus1, one);
-        auto safeRhs = rewriter.create<arith::SelectOp>(loc, isSpecial, one, rhs);
+        auto safeRhs = arith::SelectOp::create(rewriter, loc, isSpecial, one, rhs);
 
-        auto divResult = rewriter.create<arith::DivSIOp>(loc, lhs, safeRhs);
-        auto specialResult = rewriter.create<arith::MulIOp>(loc, rhs, lhs);
-        auto result = rewriter.create<arith::SelectOp>(loc, isSpecial, specialResult,
+        auto divResult = arith::DivSIOp::create(rewriter, loc, lhs, safeRhs);
+        auto specialResult = arith::MulIOp::create(rewriter, loc, rhs, lhs);
+        auto result = arith::SelectOp::create(rewriter, loc, isSpecial, specialResult,
                                                        divResult);
 
         rewriter.replaceOp(op, result);
@@ -139,27 +139,27 @@ struct IntModByOpLowering : public OpConversionPattern<IntModByOp> {
 
         // r = x srem m; a non-zero r whose sign differs from m's ((r ^ m) < 0) has m added.
 
-        auto zero = rewriter.create<arith::ConstantIntOp>(loc, 0, /*width=*/64);
+        auto zero = arith::ConstantIntOp::create(rewriter, loc, 0, /*width=*/64);
 
         // `srem` by 0, or of the minimum Int by -1, is undefined, so a modulus in {-1, 0} (m + 1 <=u 1)
         // is replaced by 1. The floored remainder by 1 is 0 for every x, so no final select is needed.
-        auto one = rewriter.create<arith::ConstantIntOp>(loc, 1, /*width=*/64);
-        auto modPlus1 = rewriter.create<arith::AddIOp>(loc, modulus, one);
-        auto isSpecial = rewriter.create<arith::CmpIOp>(loc, arith::CmpIPredicate::ule,
+        auto one = arith::ConstantIntOp::create(rewriter, loc, 1, /*width=*/64);
+        auto modPlus1 = arith::AddIOp::create(rewriter, loc, modulus, one);
+        auto isSpecial = arith::CmpIOp::create(rewriter, loc, arith::CmpIPredicate::ule,
                                                          modPlus1, one);
-        auto safeModulus = rewriter.create<arith::SelectOp>(loc, isSpecial, one, modulus);
+        auto safeModulus = arith::SelectOp::create(rewriter, loc, isSpecial, one, modulus);
 
-        auto truncRem = rewriter.create<arith::RemSIOp>(loc, x, safeModulus);
+        auto truncRem = arith::RemSIOp::create(rewriter, loc, x, safeModulus);
 
-        auto remIsNonZero = rewriter.create<arith::CmpIOp>(loc, arith::CmpIPredicate::ne,
+        auto remIsNonZero = arith::CmpIOp::create(rewriter, loc, arith::CmpIPredicate::ne,
                                                             truncRem, zero);
-        auto xorVal = rewriter.create<arith::XOrIOp>(loc, truncRem, safeModulus);
-        auto signsDiffer = rewriter.create<arith::CmpIOp>(loc, arith::CmpIPredicate::slt,
+        auto xorVal = arith::XOrIOp::create(rewriter, loc, truncRem, safeModulus);
+        auto signsDiffer = arith::CmpIOp::create(rewriter, loc, arith::CmpIPredicate::slt,
                                                            xorVal, zero);
-        auto needsAdjust = rewriter.create<arith::AndIOp>(loc, remIsNonZero, signsDiffer);
+        auto needsAdjust = arith::AndIOp::create(rewriter, loc, remIsNonZero, signsDiffer);
 
-        auto adjusted = rewriter.create<arith::AddIOp>(loc, truncRem, safeModulus);
-        auto result = rewriter.create<arith::SelectOp>(loc, needsAdjust, adjusted, truncRem);
+        auto adjusted = arith::AddIOp::create(rewriter, loc, truncRem, safeModulus);
+        auto result = arith::SelectOp::create(rewriter, loc, needsAdjust, adjusted, truncRem);
 
         rewriter.replaceOp(op, result);
         return success();
@@ -183,13 +183,13 @@ struct IntRemainderByOpLowering : public OpConversionPattern<IntRemainderByOp> {
 
         // `srem` by 0, or of the minimum Int by -1, is undefined, so a divisor in {-1, 0} (d + 1 <=u 1)
         // is replaced by 1, whose remainder is 0 for every x.
-        auto one = rewriter.create<arith::ConstantIntOp>(loc, 1, /*width=*/64);
-        auto divPlus1 = rewriter.create<arith::AddIOp>(loc, divisor, one);
-        auto isSpecial = rewriter.create<arith::CmpIOp>(loc, arith::CmpIPredicate::ule,
+        auto one = arith::ConstantIntOp::create(rewriter, loc, 1, /*width=*/64);
+        auto divPlus1 = arith::AddIOp::create(rewriter, loc, divisor, one);
+        auto isSpecial = arith::CmpIOp::create(rewriter, loc, arith::CmpIPredicate::ule,
                                                          divPlus1, one);
-        auto safeDivisor = rewriter.create<arith::SelectOp>(loc, isSpecial, one, divisor);
+        auto safeDivisor = arith::SelectOp::create(rewriter, loc, isSpecial, one, divisor);
 
-        auto result = rewriter.create<arith::RemSIOp>(loc, x, safeDivisor);
+        auto result = arith::RemSIOp::create(rewriter, loc, x, safeDivisor);
 
         rewriter.replaceOp(op, result);
         return success();
@@ -206,7 +206,7 @@ struct IntNegateOpLowering : public OpConversionPattern<IntNegateOp> {
     matchAndRewrite(IntNegateOp op, OpAdaptor adaptor,
                     ConversionPatternRewriter &rewriter) const override {
         auto loc = op.getLoc();
-        auto zero = rewriter.create<arith::ConstantIntOp>(loc, 0, /*width=*/64);
+        auto zero = arith::ConstantIntOp::create(rewriter, loc, 0, /*width=*/64);
         rewriter.replaceOpWithNewOp<arith::SubIOp>(op, zero, adaptor.getValue());
         return success();
     }
@@ -224,9 +224,9 @@ struct IntAbsOpLowering : public OpConversionPattern<IntAbsOp> {
         auto loc = op.getLoc();
         Value x = adaptor.getValue();
 
-        auto zero = rewriter.create<arith::ConstantIntOp>(loc, 0, /*width=*/64);
-        auto isNeg = rewriter.create<arith::CmpIOp>(loc, arith::CmpIPredicate::slt, x, zero);
-        auto negX = rewriter.create<arith::SubIOp>(loc, zero, x);
+        auto zero = arith::ConstantIntOp::create(rewriter, loc, 0, /*width=*/64);
+        auto isNeg = arith::CmpIOp::create(rewriter, loc, arith::CmpIPredicate::slt, x, zero);
+        auto negX = arith::SubIOp::create(rewriter, loc, zero, x);
         rewriter.replaceOpWithNewOp<arith::SelectOp>(op, isNeg, negX, x);
         return success();
     }
@@ -250,7 +250,7 @@ struct IntPowOpLowering : public OpConversionPattern<IntPowOp> {
         auto loc = op.getLoc();
 
         auto func = runtime.getOrCreateIntPow(rewriter);
-        auto call = rewriter.create<LLVM::CallOp>(loc, func,
+        auto call = LLVM::CallOp::create(rewriter, loc, func,
             ValueRange{adaptor.getBase(), adaptor.getExp()});
         rewriter.replaceOp(op, call.getResult());
         return success();
@@ -412,8 +412,8 @@ struct FloatTanOpLowering : public OpConversionPattern<FloatTanOp> {
                     ConversionPatternRewriter &rewriter) const override {
         auto loc = op.getLoc();
         Value x = adaptor.getValue();
-        auto sinX = rewriter.create<LLVM::SinOp>(loc, x);
-        auto cosX = rewriter.create<LLVM::CosOp>(loc, x);
+        auto sinX = LLVM::SinOp::create(rewriter, loc, x);
+        auto cosX = LLVM::CosOp::create(rewriter, loc, x);
         rewriter.replaceOpWithNewOp<arith::DivFOp>(op, sinX, cosX);
         return success();
     }
@@ -436,7 +436,7 @@ struct FloatAsinOpLowering : public OpConversionPattern<FloatAsinOp> {
                     ConversionPatternRewriter &rewriter) const override {
         auto loc = op.getLoc();
         auto func = runtime.getOrCreateAsin(rewriter);
-        auto call = rewriter.create<LLVM::CallOp>(loc, func, ValueRange{adaptor.getValue()});
+        auto call = LLVM::CallOp::create(rewriter, loc, func, ValueRange{adaptor.getValue()});
         rewriter.replaceOp(op, call.getResult());
         return success();
     }
@@ -459,7 +459,7 @@ struct FloatAcosOpLowering : public OpConversionPattern<FloatAcosOp> {
                     ConversionPatternRewriter &rewriter) const override {
         auto loc = op.getLoc();
         auto func = runtime.getOrCreateAcos(rewriter);
-        auto call = rewriter.create<LLVM::CallOp>(loc, func, ValueRange{adaptor.getValue()});
+        auto call = LLVM::CallOp::create(rewriter, loc, func, ValueRange{adaptor.getValue()});
         rewriter.replaceOp(op, call.getResult());
         return success();
     }
@@ -482,7 +482,7 @@ struct FloatAtanOpLowering : public OpConversionPattern<FloatAtanOp> {
                     ConversionPatternRewriter &rewriter) const override {
         auto loc = op.getLoc();
         auto func = runtime.getOrCreateAtan(rewriter);
-        auto call = rewriter.create<LLVM::CallOp>(loc, func, ValueRange{adaptor.getValue()});
+        auto call = LLVM::CallOp::create(rewriter, loc, func, ValueRange{adaptor.getValue()});
         rewriter.replaceOp(op, call.getResult());
         return success();
     }
@@ -505,7 +505,7 @@ struct FloatAtan2OpLowering : public OpConversionPattern<FloatAtan2Op> {
                     ConversionPatternRewriter &rewriter) const override {
         auto loc = op.getLoc();
         auto func = runtime.getOrCreateAtan2(rewriter);
-        auto call = rewriter.create<LLVM::CallOp>(loc, func,
+        auto call = LLVM::CallOp::create(rewriter, loc, func,
             ValueRange{adaptor.getY(), adaptor.getX()});
         rewriter.replaceOp(op, call.getResult());
         return success();
@@ -555,8 +555,8 @@ struct FloatIsInfiniteOpLowering : public OpConversionPattern<FloatIsInfiniteOp>
         auto f64Ty = Float64Type::get(ctx);
 
         Value x = adaptor.getValue();
-        auto absX = rewriter.create<LLVM::FAbsOp>(loc, x);
-        auto inf = rewriter.create<arith::ConstantOp>(loc, f64Ty,
+        auto absX = LLVM::FAbsOp::create(rewriter, loc, x);
+        auto inf = arith::ConstantOp::create(rewriter, loc, f64Ty,
             rewriter.getF64FloatAttr(std::numeric_limits<double>::infinity()));
         rewriter.replaceOpWithNewOp<arith::CmpFOp>(op, arith::CmpFPredicate::OEQ, absX, inf);
         return success();
@@ -593,18 +593,18 @@ static Value emitSatFPToSI(Location loc, Value x, ConversionPatternRewriter &rew
     auto i64Ty = rewriter.getIntegerType(64);
     auto f64Ty = rewriter.getF64Type();
     auto fconst = [&](double v) -> Value {
-        return rewriter.create<arith::ConstantOp>(loc, rewriter.getFloatAttr(f64Ty, v));
+        return arith::ConstantOp::create(rewriter, loc, rewriter.getFloatAttr(f64Ty, v));
     };
     auto iconst = [&](int64_t v) -> Value {
-        return rewriter.create<arith::ConstantOp>(loc, rewriter.getI64IntegerAttr(v));
+        return arith::ConstantOp::create(rewriter, loc, rewriter.getI64IntegerAttr(v));
     };
-    Value conv = rewriter.create<arith::FPToSIOp>(loc, i64Ty, x);
-    Value isNaN = rewriter.create<arith::CmpFOp>(loc, arith::CmpFPredicate::UNO, x, x);
-    Value tooHigh = rewriter.create<arith::CmpFOp>(loc, arith::CmpFPredicate::OGE, x, fconst(9223372036854775808.0));
-    Value tooLow = rewriter.create<arith::CmpFOp>(loc, arith::CmpFPredicate::OLT, x, fconst(-9223372036854775808.0));
-    Value v = rewriter.create<arith::SelectOp>(loc, isNaN, iconst(0), conv);
-    v = rewriter.create<arith::SelectOp>(loc, tooLow, iconst(INT64_MIN), v);
-    return rewriter.create<arith::SelectOp>(loc, tooHigh, iconst(INT64_MAX), v);
+    Value conv = arith::FPToSIOp::create(rewriter, loc, i64Ty, x);
+    Value isNaN = arith::CmpFOp::create(rewriter, loc, arith::CmpFPredicate::UNO, x, x);
+    Value tooHigh = arith::CmpFOp::create(rewriter, loc, arith::CmpFPredicate::OGE, x, fconst(9223372036854775808.0));
+    Value tooLow = arith::CmpFOp::create(rewriter, loc, arith::CmpFPredicate::OLT, x, fconst(-9223372036854775808.0));
+    Value v = arith::SelectOp::create(rewriter, loc, isNaN, iconst(0), conv);
+    v = arith::SelectOp::create(rewriter, loc, tooLow, iconst(INT64_MIN), v);
+    return arith::SelectOp::create(rewriter, loc, tooHigh, iconst(INT64_MAX), v);
 }
 
 /**
@@ -625,13 +625,13 @@ struct FloatRoundOpLowering : public OpConversionPattern<FloatRoundOp> {
         // toward +infinity (llvm.round ties away from zero). x - floor(x) is exact for a double.
         auto f64Ty = rewriter.getF64Type();
         Value x = adaptor.getValue();
-        Value fl = rewriter.create<LLVM::FFloorOp>(loc, x);
-        Value frac = rewriter.create<arith::SubFOp>(loc, x, fl);
-        Value half = rewriter.create<arith::ConstantOp>(loc, rewriter.getFloatAttr(f64Ty, 0.5));
-        Value one = rewriter.create<arith::ConstantOp>(loc, rewriter.getFloatAttr(f64Ty, 1.0));
-        Value up = rewriter.create<arith::CmpFOp>(loc, arith::CmpFPredicate::OGE, frac, half);
-        Value next = rewriter.create<arith::AddFOp>(loc, fl, one);
-        Value rounded = rewriter.create<arith::SelectOp>(loc, up, next, fl);
+        Value fl = LLVM::FFloorOp::create(rewriter, loc, x);
+        Value frac = arith::SubFOp::create(rewriter, loc, x, fl);
+        Value half = arith::ConstantOp::create(rewriter, loc, rewriter.getFloatAttr(f64Ty, 0.5));
+        Value one = arith::ConstantOp::create(rewriter, loc, rewriter.getFloatAttr(f64Ty, 1.0));
+        Value up = arith::CmpFOp::create(rewriter, loc, arith::CmpFPredicate::OGE, frac, half);
+        Value next = arith::AddFOp::create(rewriter, loc, fl, one);
+        Value rounded = arith::SelectOp::create(rewriter, loc, up, next, fl);
         rewriter.replaceOp(op, emitSatFPToSI(loc, rounded, rewriter));
         return success();
     }
@@ -650,7 +650,7 @@ struct FloatFloorOpLowering : public OpConversionPattern<FloatFloorOp> {
         auto *ctx = rewriter.getContext();
         auto i64Ty = IntegerType::get(ctx, 64);
 
-        auto floored = rewriter.create<LLVM::FFloorOp>(loc, adaptor.getValue());
+        auto floored = LLVM::FFloorOp::create(rewriter, loc, adaptor.getValue());
         rewriter.replaceOp(op, emitSatFPToSI(loc, floored, rewriter));
         return success();
     }
@@ -669,7 +669,7 @@ struct FloatCeilingOpLowering : public OpConversionPattern<FloatCeilingOp> {
         auto *ctx = rewriter.getContext();
         auto i64Ty = IntegerType::get(ctx, 64);
 
-        auto ceiled = rewriter.create<LLVM::FCeilOp>(loc, adaptor.getValue());
+        auto ceiled = LLVM::FCeilOp::create(rewriter, loc, adaptor.getValue());
         rewriter.replaceOp(op, emitSatFPToSI(loc, ceiled, rewriter));
         return success();
     }
@@ -999,7 +999,7 @@ struct IntComplementOpLowering : public OpConversionPattern<IntComplementOp> {
                     ConversionPatternRewriter &rewriter) const override {
         auto loc = op.getLoc();
 
-        auto allOnes = rewriter.create<arith::ConstantIntOp>(loc, -1, /*width=*/64);
+        auto allOnes = arith::ConstantIntOp::create(rewriter, loc, -1, /*width=*/64);
         rewriter.replaceOpWithNewOp<arith::XOrIOp>(op, adaptor.getValue(), allOnes);
         return success();
     }
@@ -1009,8 +1009,8 @@ struct IntComplementOpLowering : public OpConversionPattern<IntComplementOp> {
 // LLVM shift by 64 or more is poison, so every shift here takes its count through this function.
 static Value shiftAmountMod64(ConversionPatternRewriter &rewriter, Location loc,
                               Value amount) {
-    auto mask = rewriter.create<arith::ConstantIntOp>(loc, 63, /*width=*/64);
-    return rewriter.create<arith::AndIOp>(loc, amount, mask);
+    auto mask = arith::ConstantIntOp::create(rewriter, loc, 63, /*width=*/64);
+    return arith::AndIOp::create(rewriter, loc, amount, mask);
 }
 
 /**
@@ -1072,7 +1072,7 @@ struct BoolNotOpLowering : public OpConversionPattern<BoolNotOp> {
     matchAndRewrite(BoolNotOp op, OpAdaptor adaptor,
                     ConversionPatternRewriter &rewriter) const override {
         auto loc = op.getLoc();
-        auto one = rewriter.create<arith::ConstantIntOp>(loc, 1, /*width=*/1);
+        auto one = arith::ConstantIntOp::create(rewriter, loc, 1, /*width=*/1);
         rewriter.replaceOpWithNewOp<arith::XOrIOp>(op, adaptor.getValue(), one);
         return success();
     }
@@ -1156,12 +1156,12 @@ struct CharFromIntOpLowering : public OpConversionPattern<CharFromIntOp> {
 
         // One unsigned compare checks both ends: a negative Int is a huge
         // unsigned value.
-        Value limit = rewriter.create<arith::ConstantIntOp>(loc, 0x110000, /*width=*/64);
-        Value inRange = rewriter.create<arith::CmpIOp>(
+        Value limit = arith::ConstantIntOp::create(rewriter, loc, 0x110000, /*width=*/64);
+        Value inRange = arith::CmpIOp::create(rewriter,
             loc, arith::CmpIPredicate::ult, input, limit);
-        Value truncated = rewriter.create<arith::TruncIOp>(loc, charTy, input);
+        Value truncated = arith::TruncIOp::create(rewriter, loc, charTy, input);
         Value replacement =
-            rewriter.create<arith::ConstantIntOp>(loc, 0xFFFD, /*width=*/eco::kEcoCharBits);
+            arith::ConstantIntOp::create(rewriter, loc, 0xFFFD, /*width=*/eco::kEcoCharBits);
         rewriter.replaceOpWithNewOp<arith::SelectOp>(op, inRange, truncated, replacement);
         return success();
     }
@@ -1293,26 +1293,26 @@ static Value emitOrderSelect(Location loc, Value isLt, Value isGt,
                               ConversionPatternRewriter &rewriter) {
     if (orderFromSignEnabled()) {
         auto i64Ty = rewriter.getIntegerType(64);
-        Value neg1 = rewriter.create<LLVM::ConstantOp>(
+        Value neg1 = LLVM::ConstantOp::create(rewriter,
             loc, i64Ty, rewriter.getI64IntegerAttr(-1));
-        Value zero = rewriter.create<LLVM::ConstantOp>(
+        Value zero = LLVM::ConstantOp::create(rewriter,
             loc, i64Ty, rewriter.getI64IntegerAttr(0));
-        Value one = rewriter.create<LLVM::ConstantOp>(
+        Value one = LLVM::ConstantOp::create(rewriter,
             loc, i64Ty, rewriter.getI64IntegerAttr(1));
-        Value gtOrEq = rewriter.create<LLVM::SelectOp>(loc, isGt, one, zero);
-        Value sign = rewriter.create<LLVM::SelectOp>(loc, isLt, neg1, gtOrEq);
+        Value gtOrEq = LLVM::SelectOp::create(rewriter, loc, isGt, one, zero);
+        Value sign = LLVM::SelectOp::create(rewriter, loc, isLt, neg1, gtOrEq);
         auto fn = runtime.getOrCreateOrderFromSign(rewriter);
-        return rewriter.create<LLVM::CallOp>(loc, fn, ValueRange{sign})
+        return LLVM::CallOp::create(rewriter, loc, fn, ValueRange{sign})
             .getResult();
     }
     auto ltFn = runtime.getOrCreateGetOrderLT(rewriter);
     auto eqFn = runtime.getOrCreateGetOrderEQ(rewriter);
     auto gtFn = runtime.getOrCreateGetOrderGT(rewriter);
-    Value lt = rewriter.create<LLVM::CallOp>(loc, ltFn, ValueRange{}).getResult();
-    Value eq = rewriter.create<LLVM::CallOp>(loc, eqFn, ValueRange{}).getResult();
-    Value gt = rewriter.create<LLVM::CallOp>(loc, gtFn, ValueRange{}).getResult();
-    Value gtOrEq = rewriter.create<LLVM::SelectOp>(loc, isGt, gt, eq);
-    return rewriter.create<LLVM::SelectOp>(loc, isLt, lt, gtOrEq);
+    Value lt = LLVM::CallOp::create(rewriter, loc, ltFn, ValueRange{}).getResult();
+    Value eq = LLVM::CallOp::create(rewriter, loc, eqFn, ValueRange{}).getResult();
+    Value gt = LLVM::CallOp::create(rewriter, loc, gtFn, ValueRange{}).getResult();
+    Value gtOrEq = LLVM::SelectOp::create(rewriter, loc, isGt, gt, eq);
+    return LLVM::SelectOp::create(rewriter, loc, isLt, lt, gtOrEq);
 }
 
 } // namespace
@@ -1333,9 +1333,9 @@ struct IntCmpOrderOpLowering : public OpConversionPattern<IntCmpOrderOp> {
     matchAndRewrite(IntCmpOrderOp op, OpAdaptor adaptor,
                     ConversionPatternRewriter &rewriter) const override {
         auto loc = op.getLoc();
-        Value isLt = rewriter.create<arith::CmpIOp>(
+        Value isLt = arith::CmpIOp::create(rewriter,
             loc, arith::CmpIPredicate::slt, adaptor.getLhs(), adaptor.getRhs());
-        Value isGt = rewriter.create<arith::CmpIOp>(
+        Value isGt = arith::CmpIOp::create(rewriter,
             loc, arith::CmpIPredicate::sgt, adaptor.getLhs(), adaptor.getRhs());
         rewriter.replaceOp(op, emitOrderSelect(loc, isLt, isGt, runtime, rewriter));
         return success();
@@ -1363,16 +1363,16 @@ struct FloatCmpOrderOpLowering : public OpConversionPattern<FloatCmpOrderOp> {
         auto loc = op.getLoc();
         Value a = adaptor.getLhs(), b = adaptor.getRhs();
         auto cmp = [&](arith::CmpFPredicate p, Value x, Value y) -> Value {
-            return rewriter.create<arith::CmpFOp>(loc, p, x, y);
+            return arith::CmpFOp::create(rewriter, loc, p, x, y);
         };
         Value aNaN = cmp(arith::CmpFPredicate::UNO, a, a);
         Value bNaN = cmp(arith::CmpFPredicate::UNO, b, b);
         Value aNum = cmp(arith::CmpFPredicate::ORD, a, a);
         Value bNum = cmp(arith::CmpFPredicate::ORD, b, b);
-        Value isLt = rewriter.create<arith::OrIOp>(
-            loc, cmp(arith::CmpFPredicate::OLT, a, b), rewriter.create<arith::AndIOp>(loc, bNaN, aNum));
-        Value isGt = rewriter.create<arith::OrIOp>(
-            loc, cmp(arith::CmpFPredicate::OGT, a, b), rewriter.create<arith::AndIOp>(loc, aNaN, bNum));
+        Value isLt = arith::OrIOp::create(rewriter,
+            loc, cmp(arith::CmpFPredicate::OLT, a, b), arith::AndIOp::create(rewriter, loc, bNaN, aNum));
+        Value isGt = arith::OrIOp::create(rewriter,
+            loc, cmp(arith::CmpFPredicate::OGT, a, b), arith::AndIOp::create(rewriter, loc, aNaN, bNum));
         rewriter.replaceOp(op, emitOrderSelect(loc, isLt, isGt, runtime, rewriter));
         return success();
     }
@@ -1396,9 +1396,9 @@ struct CharCmpOrderOpLowering : public OpConversionPattern<CharCmpOrderOp> {
         auto loc = op.getLoc();
         Value lhs = adaptor.getLhs();
         Value rhs = adaptor.getRhs();
-        Value isLt = rewriter.create<arith::CmpIOp>(
+        Value isLt = arith::CmpIOp::create(rewriter,
             loc, arith::CmpIPredicate::ult, lhs, rhs);
-        Value isGt = rewriter.create<arith::CmpIOp>(
+        Value isGt = arith::CmpIOp::create(rewriter,
             loc, arith::CmpIPredicate::ugt, lhs, rhs);
         rewriter.replaceOp(op, emitOrderSelect(loc, isLt, isGt, runtime, rewriter));
         return success();

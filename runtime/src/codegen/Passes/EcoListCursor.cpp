@@ -165,7 +165,7 @@ struct EcoListCursorPass
         OpBuilder b(m.getContext());
         b.setInsertionPointToEnd(m.getBody());
         auto ft = LLVM::LLVMFunctionType::get(res, args);
-        return b.create<LLVM::LLVMFuncOp>(m.getLoc(), name, ft);
+        return LLVM::LLVMFuncOp::create(b, m.getLoc(), name, ft);
     }
 
     // Rewrites every accepted loop in the module, in module order, inner loops before the loops that contain them.
@@ -455,7 +455,7 @@ struct EcoListCursorPass
             carried.push_back(es.pos);
         unsigned k = carried.size();
 
-        Value c0 = b.create<arith::ConstantOp>(loc, b.getI64IntegerAttr(0));
+        Value c0 = arith::ConstantOp::create(b, loc, b.getI64IntegerAttr(0));
         SmallVector<Value> inits(w.getInits().begin(), w.getInits().end());
         SmallVector<Type> resTys(w.getResultTypes().begin(),
                                  w.getResultTypes().end());
@@ -464,7 +464,7 @@ struct EcoListCursorPass
             resTys.push_back(i64);
         }
 
-        auto nw = b.create<scf::WhileOp>(loc, resTys, inits);
+        auto nw = scf::WhileOp::create(b, loc, resTys, inits);
         nw.getBefore().takeBody(w.getBefore());
         nw.getAfter().takeBody(w.getAfter());
         SmallVector<Value, 4> beforeIdx, afterIdx;
@@ -481,7 +481,7 @@ struct EcoListCursorPass
                                     condOp.getArgs().end());
             for (unsigned i = 0; i < k; ++i)
                 args.push_back(beforeIdx[i]);
-            cb.create<scf::ConditionOp>(condOp.getLoc(),
+            scf::ConditionOp::create(cb, condOp.getLoc(),
                                         condOp.getCondition(), args);
             condOp.erase();
         }
@@ -498,7 +498,7 @@ struct EcoListCursorPass
                 Value node = inAfter ? afterArg : beforeArg;
                 Value idx = inAfter ? afterIdx[i] : beforeIdx[i];
                 OpBuilder hb(hc);
-                auto cur = hb.create<LLVM::CallOp>(
+                auto cur = LLVM::CallOp::create(hb,
                     hc.getLoc(), TypeRange{hc->getResult(0).getType()},
                     SymbolRefAttr::get(ctx, curMarkerFor(*hc.getCallee())),
                     ValueRange{node, idx});
@@ -571,10 +571,10 @@ struct EcoListCursorPass
                 Value node = call.getArgOperands()[0];
                 Value cur = argIdx.lookup(node);
                 OpBuilder cb(call);
-                auto sn = cb.create<LLVM::CallOp>(
+                auto sn = LLVM::CallOp::create(cb,
                     call.getLoc(), TypeRange{as1},
                     SymbolRefAttr::get(ctx, kStepNode), ValueRange{node, cur});
-                auto si = cb.create<LLVM::CallOp>(
+                auto si = LLVM::CallOp::create(cb,
                     call.getLoc(), TypeRange{i64},
                     SymbolRefAttr::get(ctx, kStepIdx), ValueRange{node, cur});
                 call->getResult(0).replaceAllUsesWith(sn->getResult(0));
@@ -586,7 +586,7 @@ struct EcoListCursorPass
                 if (auto it = idxOf.find({def, cast<OpResult>(o).getResultNumber()}); it != idxOf.end())
                     return {o, it->second};
             OpBuilder zb(term);
-            return {o, zb.create<arith::ConstantOp>(term->getLoc(), zb.getI64IntegerAttr(0))};
+            return {o, arith::ConstantOp::create(zb, term->getLoc(), zb.getI64IntegerAttr(0))};
         };
 
         // Each interior op is replaced once, by a copy with one more i64 result per needed result.
@@ -600,7 +600,7 @@ struct EcoListCursorPass
             OpBuilder ob(def);
             Operation *nd = nullptr;
             if (auto ifOp = dyn_cast<scf::IfOp>(def)) {
-                auto ni = ob.create<scf::IfOp>(ifOp.getLoc(), newTys,
+                auto ni = scf::IfOp::create(ob, ifOp.getLoc(), newTys,
                                                ifOp.getCondition(),
                                                /*withElseRegion=*/true);
                 ni.getThenRegion().takeBody(ifOp.getThenRegion());
@@ -608,7 +608,7 @@ struct EcoListCursorPass
                 nd = ni;
             } else {
                 auto sw = cast<scf::IndexSwitchOp>(def);
-                auto ns = ob.create<scf::IndexSwitchOp>(
+                auto ns = scf::IndexSwitchOp::create(ob,
                     sw.getLoc(), newTys, sw.getArg(), sw.getCases(),
                     sw.getCases().size());
                 ns.getDefaultRegion().takeBody(sw.getDefaultRegion());
@@ -626,7 +626,7 @@ struct EcoListCursorPass
                     ops.push_back(pr.second);
                 }
                 OpBuilder yb(term);
-                yb.create<scf::YieldOp>(term.getLoc(), ops);
+                scf::YieldOp::create(yb, term.getLoc(), ops);
                 term.erase();
             }
             for (unsigned i = 0; i < oldN; ++i)
@@ -645,7 +645,7 @@ struct EcoListCursorPass
         }
         {
             OpBuilder yb(yieldOp);
-            yb.create<scf::YieldOp>(yieldOp.getLoc(), yields);
+            scf::YieldOp::create(yb, yieldOp.getLoc(), yields);
             yieldOp.erase();
         }
 
@@ -657,7 +657,7 @@ struct EcoListCursorPass
             auto it = llvm::find(carried, p);
             if (it != carried.end() && !oldRes.use_empty()) {
                 Value idx = nw.getResult(n + static_cast<unsigned>(it - carried.begin()));
-                auto pv = rb.create<LLVM::CallOp>(
+                auto pv = LLVM::CallOp::create(rb,
                     loc, TypeRange{as1}, SymbolRefAttr::get(ctx, kPosView),
                     ValueRange{newRes, idx});
                 oldRes.replaceAllUsesWith(pv->getResult(0));

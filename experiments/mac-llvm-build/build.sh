@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# mac-llvm-build (plans/mac-self-contained-bundle.md step 2): LLVM 21.1.8 + MLIR
-# source build for arm64 macOS, Release, AArch64 backend only, static
+# mac-llvm-build (plans/mac-self-contained-bundle.md step 2): LLVM + MLIR at
+# the llvm-project commit deps/versions.env pins (LLVM_COMMIT), built from
+# source for arm64 macOS, Release, AArch64 backend only, static
 # libraries only, minimum macOS 15.0. eco links these archives statically, so
 # the installed eco loads nothing from Homebrew (brew's llvm@21 is built to use
 # its shared libLLVM.dylib, which the Darwin bundle cannot rely on).
@@ -8,7 +9,10 @@
 # Same LLVM pin and shape as experiments/win-llvm-build/build.ps1 (Windows) and
 # docker/llvm-alpine.Dockerfile (Linux). RTTI is on and assertions off, as in
 # the brew llvm@21 build eco used before, so eco's own compile flags are
-# unchanged.
+# unchanged. The install tree records the commit in ECO_LLVM_COMMIT, which
+# eco's CMake checks against the pin. CI builds this once per commit and
+# recipe and publishes it (the llvm-build workflow; scripts/deps.sh artifact
+# macos names it).
 #
 # Runnable on a developer Mac too (roughly an hour on an M-series machine).
 # Needs Xcode or the Command Line Tools, cmake and ninja; ccache is used when
@@ -22,27 +26,26 @@
 set -euo pipefail
 
 here="$(cd "$(dirname "$0")" && pwd)"
-llvm_version=21.1.8
+llvm_commit="$("$here/../../scripts/deps.sh" get LLVM_COMMIT)"
 macos_min="${ECO_MACOS_MIN:-15.0}"
 out_dir="$here/out"
-src_root="$out_dir/llvm-project-$llvm_version.src"
+src_root="$out_dir/llvm-project"
 build_dir="$out_dir/build"
 install_dir="${LLVM_INSTALL_DIR:-$out_dir/llvm-install}"
 
 mkdir -p "$out_dir"
 
-# Source: the release umbrella tarball, as build.ps1 does — deterministic and
-# much smaller than a git clone.
-if [ ! -f "$src_root/llvm/CMakeLists.txt" ]; then
-    tarball="$out_dir/llvm-project-$llvm_version.src.tar.xz"
-    if [ ! -f "$tarball" ]; then
-        echo "=== downloading $tarball ==="
-        curl -fL --retry 3 -o "$tarball" \
-            "https://github.com/llvm/llvm-project/releases/download/llvmorg-$llvm_version/llvm-project-$llvm_version.src.tar.xz"
-    fi
-    echo "=== extracting LLVM source ==="
-    tar -xf "$tarball" -C "$out_dir"
+# Source: a shallow fetch of the one commit (GitHub serves any reachable commit
+# by hash); the rev-parse check makes the checkout prove it is that commit.
+if [ "$(git -C "$src_root" rev-parse HEAD 2>/dev/null || true)" != "$llvm_commit" ]; then
+    echo "=== fetching llvm-project $llvm_commit ==="
+    rm -rf "$src_root"
+    git init -q "$src_root"
+    git -C "$src_root" remote add origin https://github.com/llvm/llvm-project.git
+    git -C "$src_root" fetch -q --depth=1 origin "$llvm_commit"
+    git -C "$src_root" checkout -q FETCH_HEAD
 fi
+test "$(git -C "$src_root" rev-parse HEAD)" = "$llvm_commit"
 
 launcher=()
 if command -v ccache >/dev/null 2>&1; then
@@ -91,6 +94,8 @@ echo "=== build + install ==="
 start=$(date +%s)
 cmake --build "$build_dir" --target install
 echo "=== build+install elapsed: $(( ($(date +%s) - start) / 60 )) min ==="
+
+printf '%s\n' "$llvm_commit" > "$install_dir/ECO_LLVM_COMMIT"
 
 echo "=== install tree size ==="
 du -sh "$install_dir"

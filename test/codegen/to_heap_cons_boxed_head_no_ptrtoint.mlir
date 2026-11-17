@@ -11,7 +11,7 @@ module {
   func.func @to_heap_cons_boxed_head(%h: !eco.value, %t: !eco.value) -> !eco.value {
     %c = eco.make.cons %h, %t
        : (!eco.value, !eco.value) -> !eco.cons<!eco.value, !eco.value>
-    %r = eco.to_heap %c {head_kind = 0 : i64, head_unboxed = false}
+    %r = eco.to_heap %c <{head_kind = 0 : i64, head_unboxed = false}>
        : (!eco.cons<!eco.value, !eco.value>) -> !eco.value
     return %r : !eco.value
   }

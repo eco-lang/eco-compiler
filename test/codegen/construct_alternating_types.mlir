@@ -17,7 +17,7 @@ module {
     // field 2: i32 (unboxed)
     // field 3: !eco.value (boxed)
     // slot_kinds: fields 0, 1, 2 unboxed, field 3 boxed
-    %ctor = eco.construct.custom(%int_val, %float_val, %char_val, %boxed_val) {tag = 0 : i64, size = 4 : i64, slot_kinds = array<i8: 1, 2, 3, 0>} : (i64, f64, i32, !eco.value) -> !eco.value
+    %ctor = eco.construct.custom(%int_val, %float_val, %char_val, %boxed_val) <{tag = 0 : i64, size = 4 : i64, slot_kinds = array<i8: 1, 2, 3, 0>}> : (i64, f64, i32, !eco.value) -> !eco.value
 
     // Project and print each field
     %p0 = eco.project.custom %ctor[0] : !eco.value -> i64

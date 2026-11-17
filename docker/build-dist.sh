@@ -8,6 +8,9 @@
 # The ~ stays in the file names in ./dist; published nightly assets differ, because
 # .github/workflows/publish-nightly.yml renames them (~ -> - in the archives, ~ -> . in the .deb).
 #
+# The musl LLVM image is the pinned one (scripts/deps.sh artifact alpine), pulled from GHCR or built
+# with local-dev/build-images.sh --local --static.
+#
 # Run from anywhere; extra arguments are passed on to docker build.
 set -euo pipefail
 
@@ -32,6 +35,7 @@ version="${base}~b${n}.g${hash}"
 echo "Building eco $version"
 
 docker build -f docker/static-build.Dockerfile --target eco-bundle \
+    --build-arg LLVM_IMAGE="$(scripts/deps.sh artifact alpine)" \
     --build-arg ECO_VERSION="$version" -o ./dist "$@" .
 
 echo "Built eco $version into ./dist"

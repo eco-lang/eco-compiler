@@ -1,15 +1,20 @@
 # syntax=docker/dockerfile:1
 # ============================================================================
-# Builder image for LLVM + MLIR (Alpine / MUSL + libc++ variant).
+# LLVM + MLIR for eco's static musl builds (Alpine / MUSL + libc++), at the
+# llvm-project commit deps/versions.env pins (LLVM_COMMIT), as
+# docker/llvm-debian.Dockerfile is for glibc.
 # ============================================================================
-# Built once, then consumed by:
-#   - docker/static-build.Dockerfile (the static eco binary)
+# Consumed by:
+#   - docker/static-build.Dockerfile (the static eco binary and the release)
 #   - docker/static-dev.Dockerfile   (interactive dev image for Stage B)
-# Both COPY /opt/llvm-mlir from this image. Bump the tag in lockstep with
-# LLVM_VERSION.
+# Both COPY /opt/llvm-mlir out of it, and the final stage holds nothing else.
 #
-# Build with:
-#   docker build -f docker/llvm-alpine.Dockerfile -t eco-llvm-alpine:21.1.8 .
+# CI builds and publishes it (the llvm-build workflow) as
+#   $(scripts/deps.sh artifact alpine)
+# To build it locally:
+#   docker build -f docker/llvm-alpine.Dockerfile \
+#     --build-arg LLVM_COMMIT=$(scripts/deps.sh get LLVM_COMMIT) \
+#     -t "$(scripts/deps.sh artifact alpine)" .
 #
 # Toolchain facts (verified against alpine:3.21 / clang 19.1.4):
 #   - libc++ is packaged as libc++ / libc++-dev / libc++-static (NOT the
@@ -30,8 +35,17 @@
 # with docker/static-build.Dockerfile / docker/static-dev.Dockerfile.
 ARG ALPINE_DIGEST=sha256:48b0309ca019d89d40f670aa1bc06e426dc0931948452e8491e3d65087abc07d
 
-FROM alpine@${ALPINE_DIGEST}
-ARG LLVM_VERSION=21.1.8
+FROM alpine@${ALPINE_DIGEST} AS build
+ARG LLVM_COMMIT
+
+RUN case "${LLVM_COMMIT}" in \
+      *[!0-9a-f]*|"") ok=0 ;; \
+      *) [ "${#LLVM_COMMIT}" -eq 40 ] && ok=1 || ok=0 ;; \
+    esac \
+ && if [ "$ok" != 1 ]; then \
+        echo "FATAL: pass --build-arg LLVM_COMMIT=<40 lowercase hex digits>, got '${LLVM_COMMIT}'" >&2; \
+        exit 1; \
+    fi
 
 # build-base provides make + musl-dev; libc++-dev / libc++-static are the
 # bootstrap libc++ used to compile LLVM with -stdlib=libc++. compiler-rt +
@@ -45,10 +59,15 @@ RUN apk add --no-cache \
       libc++ libc++-dev libc++-static \
       compiler-rt llvm-libunwind llvm-libunwind-static
 
+# A shallow fetch of one commit; the rev-parse check makes the checkout prove
+# it is that commit.
 WORKDIR /src
-RUN git clone --depth=1 --single-branch \
-      --branch "llvmorg-${LLVM_VERSION}" \
-      https://github.com/llvm/llvm-project.git
+RUN git init -q llvm-project \
+ && cd llvm-project \
+ && git remote add origin https://github.com/llvm/llvm-project.git \
+ && git fetch -q --depth=1 origin "${LLVM_COMMIT}" \
+ && git checkout -q FETCH_HEAD \
+ && test "$(git rev-parse HEAD)" = "${LLVM_COMMIT}"
 
 # Mirrors the main (debian) LLVM configuration, with the MUSL deltas:
 #   - compile with -stdlib=libc++ (+ -lc++abi so the LLVM tools link),
@@ -97,4 +116,14 @@ RUN cmake -S llvm -B build -G Ninja \
  && echo "OK: /opt/llvm-mlir/libexec/eco-bundle/ld.lld is fully static (no NEEDED, no interpreter)" \
  && rm -f /opt/llvm-mlir/bin/ld.lld \
  && echo "Bundled the resolved static lld and dropped the bin/ld.lld symlink so a downstream" \
- && echo "clang -fuse-ld=lld picks the zlib-capable system /usr/bin/ld.lld for the eco link."
+ && echo "clang -fuse-ld=lld picks the zlib-capable system /usr/bin/ld.lld for the eco link." \
+ && printf '%s\n' "${LLVM_COMMIT}" > /opt/llvm-mlir/ECO_LLVM_COMMIT \
+ && echo "Built LLVM $(/opt/llvm-mlir/bin/llvm-config --version) at ${LLVM_COMMIT}"
+
+# Only the install tree: consumers COPY /opt/llvm-mlir and nothing else.
+FROM scratch
+ARG LLVM_COMMIT
+LABEL org.opencontainers.image.description="eco's LLVM/MLIR (Alpine musl) at llvm-project ${LLVM_COMMIT}"
+LABEL org.opencontainers.image.source="https://github.com/eco-lang/eco-compiler"
+LABEL org.eco.llvm.commit="${LLVM_COMMIT}"
+COPY --from=build /opt/llvm-mlir /opt/llvm-mlir

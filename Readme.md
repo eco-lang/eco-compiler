@@ -52,18 +52,25 @@ See [docs/getting-started.md](docs/getting-started.md).
 ## Development Environment
 
 The recommended path is the Docker dev image, which bundles LLVM/MLIR, the C++
-toolchain, and the Elm tooling. Build the base and dev images (one-off,
-~30–60 min for LLVM), then build and test:
+toolchain, and the Elm tooling. eco builds against the llvm-project commit that
+Modular MAX pins, and against that MAX; both versions live in
+[`deps/versions.env`](deps/versions.env) (`scripts/deps.sh show` prints them).
+Build the images (the LLVM image is pulled prebuilt from GHCR), then build and
+test:
 
 ```bash
-# Build the LLVM/MLIR base and the dev image (see docs/building.md for detail).
-docker build -f docker/llvm-debian.Dockerfile -t eco-llvm-debian:21.1.8 .
-docker build -f docker/eco-dev.Dockerfile -t eco-dev .
+# Pull the pinned LLVM/MLIR and build the dev images (see docs/building.md).
+local-dev/build-images.sh
 
 # Configure and run the full build + test suite inside the image.
 docker run --rm -v "$PWD":/work eco-dev bash -c \
   "cmake --preset build && cmake --build build --target full"
 ```
+
+The configure step also installs the pinned [Modular MAX](https://www.modular.com/max)
+(with uv, from PyPI) on Linux glibc and macOS arm64, for eco's tensor work. eco
+loads it only when used and never ships it; MAX comes under its own licence,
+and eco turns MAX's telemetry off unless `MODULAR_TELEMETRY_ENABLED` is set.
 
 Once the compiler is bootstrapped, compile and run an Elm program with the
 unified `eco` binary — a drop-in replacement for `elm make`:

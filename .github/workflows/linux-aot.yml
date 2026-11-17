@@ -23,9 +23,9 @@
 # We ship the musl-static binary (portability) but validate the suite on
 # glibc, where the dev toolchain lives and the self-host bootstrap is reliable
 # (the musl self-host has a known-flaky `Map.!` readdir-ordering bug — see
-# plans/static-link-eco-binary.md). The two slow LLVM base images are restored
-# from the Actions cache populated by linux-llvm-build-debian (glibc) and
-# linux-llvm-build-alpine (musl).
+# plans/static-link-eco-binary.md). The two slow LLVM base images are pulled
+# from GHCR, where the llvm-build workflow publishes them for the llvm-project
+# commit in deps/versions.env (.github/actions/fetch-llvm).
 name: linux-aot
 
 on:
@@ -50,17 +50,18 @@ on:
       - 'docker/static-build.Dockerfile'
       - 'docker/llvm-alpine.Dockerfile'
       - '.dockerignore'
+      - 'deps/**'
+      - 'scripts/deps.sh'
+      - '.github/actions/fetch-llvm/**'
       - '.github/workflows/linux-aot.yml'
       - '.github/scripts/prune-caches.sh'
       - '.github/scripts/eco-version.sh'
   workflow_dispatch:
   schedule:
-    # Nightly build keeps the debian + alpine LLVM caches accessed (a restore
-    # resets GitHub's 7-day eviction timer). Inert until merged to master.
+    # Nightly build of master. Inert until merged to master.
     - cron: '0 0 * * *'
 
 env:
-  LLVM_VERSION: '21.1.8'
   DOCKER_BUILDKIT: '1'
 
 # A newer push to the same branch cancels this run. Master and tag runs each
@@ -81,14 +82,18 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 300
     # actions: write lets "Prune superseded ccache entries" delete caches
-    # (the repository's default token is read-only); packages: read lets it
-    # pull the LLVM base image from GHCR even while the package is private.
+    # (the repository's default token is read-only).
     permissions:
       contents: read
       actions: write
       packages: read
     steps:
       - uses: actions/checkout@v4
+
+      - name: Check the pinned versions
+        # deps/versions.env is the only place versions are written, deps/max/ is in step with it,
+        # and LLVM_COMMIT is MAX_VERSION's own pin.
+        run: scripts/deps.sh check
 
       - name: Free disk space
         # The Docker builds run close to the runner's disk limit; a scheduled
@@ -104,34 +109,21 @@ jobs:
           sudo docker image prune --all --force || true
           df -h /
 
-      - name: Log in to GHCR
-        uses: docker/login-action@v3
+      - name: Pull the LLVM debian base image (published by llvm-build)
+        id: llvm
+        uses: ./.github/actions/fetch-llvm
         with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Pull LLVM debian base image (from GHCR, published by linux-llvm-build-debian)
-        # No fallback to a local build: that is a slow ~1h LLVM rebuild. A
-        # missing tag fails fast and legibly — run linux-llvm-build-debian on
-        # master first, then re-run. The tag follows the base Dockerfile's hash,
-        # as linux-llvm-build-debian names it. Re-tagged with the local name
-        # docker/eco-dev.Dockerfile's LLVM_IMAGE defaults to.
-        run: |
-          h="${{ hashFiles('docker/llvm-debian.Dockerfile') }}"
-          ref="ghcr.io/${{ github.repository_owner }}/eco-llvm-debian:${LLVM_VERSION}-${h:0:12}"
-          if ! docker pull "$ref"; then
-            echo "::error::$ref is not in GHCR. Run linux-llvm-build-debian on master, then re-run."
-            exit 1
-          fi
-          docker tag "$ref" "eco-llvm-debian:${LLVM_VERSION}"
-          df -h /
+          platform: debian
 
       - name: Build eco-dev image
         # INSTALL_TLA=0: CI runs no TLA+ model checks (they are local gates),
         # so skip the JRE, the TLA+ jars and Apalache (~240 MB of downloads).
         run: |
-          docker build --build-arg INSTALL_TLA=0 -f docker/eco-dev.Dockerfile -t eco-dev .
+          docker build --build-arg INSTALL_TLA=0 \
+            --build-arg LLVM_IMAGE="${{ steps.llvm.outputs.ref }}" \
+            --build-arg LLVM_COMMIT="${{ steps.llvm.outputs.commit }}" \
+            --build-arg UV_VERSION="$(scripts/deps.sh get UV_VERSION)" \
+            -f docker/eco-dev.Dockerfile -t eco-dev .
           docker builder prune --force
           df -h /
 
@@ -151,10 +143,17 @@ jobs:
           key: elm-deps-linux-${{ hashFiles('compiler/cmake/toolchain.cmake', '**/elm.json') }}
           restore-keys: elm-deps-linux-
 
+      - name: Restore the uv download cache (MAX wheels)
+        # The pinned MAX is about 600 MB of wheels; cached once per lock.
+        uses: actions/cache@v4
+        with:
+          path: .uv-cache
+          key: uv-linux-${{ hashFiles('deps/max/uv.lock') }}
+
       - name: Restore ccache
         # Restore only: branch runs read master's newest ccache and never save
-        # one, so per-commit entries cannot pile up and evict the LLVM caches
-        # (10 GB Actions cache limit). Saved by the test job's "Save ccache" on
+        # one, so per-commit entries cannot pile up past the 10 GB Actions
+        # cache limit. Saved by the test job's "Save ccache" on
         # master only; the bootstrap job compiles the same C++ and reuses it.
         uses: actions/cache/restore@v4
         with:
@@ -178,11 +177,13 @@ jobs:
           # (which runs outside the container) can collect them.
           mkdir -p /work/ci-logs
 
-          echo "::group::Configure (build preset)"
-          cmake --preset build
+          echo "::group::Configure (build preset, MAX required)"
+          # ECO_MAX=ON: configure fails unless the pinned MAX installs, and `full` runs its smoke
+          # test (max-smoke-test). uv keeps its download cache in /work/.uv-cache (UV_CACHE_DIR).
+          cmake --preset build -DECO_MAX=ON
           echo "::endgroup::"
 
-          echo "::group::Gate A — clean rebuild + JIT E2E (target: full)"
+          echo "::group::Gate A — clean rebuild + JIT E2E + MAX smoke test (target: full)"
           cmake --build build --target full
           echo "::endgroup::"
 
@@ -212,6 +213,7 @@ jobs:
             -v "$PWD":/work \
             -e HOST_UID="$(id -u)" -e HOST_GID="$(id -g)" \
             -e ELM_HOME=/work/.elm-home \
+            -e UV_CACHE_DIR=/work/.uv-cache \
             eco-dev bash /work/ci-linux-test.sh
 
       - name: Save ccache (master only)
@@ -226,7 +228,7 @@ jobs:
       - name: Prune superseded ccache entries
         # Keep only the newest linux-bootstrap-ccache-* entry on master (the one just saved):
         # restore-keys only ever reads the newest, and per-commit entries
-        # otherwise pile up and push the LLVM caches out of the 10 GB limit.
+        # otherwise pile up past the 10 GB limit.
         # Other refs save nothing, so they dry-run it instead: list what
         # master's prune would delete and check the token may delete caches.
         if: success()
@@ -256,8 +258,6 @@ jobs:
   bootstrap:
     runs-on: ubuntu-latest
     timeout-minutes: 300
-    # packages: read lets it pull the LLVM base image from GHCR even while the
-    # package is private.
     permissions:
       contents: read
       packages: read
@@ -278,34 +278,21 @@ jobs:
           sudo docker image prune --all --force || true
           df -h /
 
-      - name: Log in to GHCR
-        uses: docker/login-action@v3
+      - name: Pull the LLVM debian base image (published by llvm-build)
+        id: llvm
+        uses: ./.github/actions/fetch-llvm
         with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Pull LLVM debian base image (from GHCR, published by linux-llvm-build-debian)
-        # No fallback to a local build: that is a slow ~1h LLVM rebuild. A
-        # missing tag fails fast and legibly — run linux-llvm-build-debian on
-        # master first, then re-run. The tag follows the base Dockerfile's hash,
-        # as linux-llvm-build-debian names it. Re-tagged with the local name
-        # docker/eco-dev.Dockerfile's LLVM_IMAGE defaults to.
-        run: |
-          h="${{ hashFiles('docker/llvm-debian.Dockerfile') }}"
-          ref="ghcr.io/${{ github.repository_owner }}/eco-llvm-debian:${LLVM_VERSION}-${h:0:12}"
-          if ! docker pull "$ref"; then
-            echo "::error::$ref is not in GHCR. Run linux-llvm-build-debian on master, then re-run."
-            exit 1
-          fi
-          docker tag "$ref" "eco-llvm-debian:${LLVM_VERSION}"
-          df -h /
+          platform: debian
 
       - name: Build eco-dev image
         # INSTALL_TLA=0: CI runs no TLA+ model checks (they are local gates),
         # so skip the JRE, the TLA+ jars and Apalache (~240 MB of downloads).
         run: |
-          docker build --build-arg INSTALL_TLA=0 -f docker/eco-dev.Dockerfile -t eco-dev .
+          docker build --build-arg INSTALL_TLA=0 \
+            --build-arg LLVM_IMAGE="${{ steps.llvm.outputs.ref }}" \
+            --build-arg LLVM_COMMIT="${{ steps.llvm.outputs.commit }}" \
+            --build-arg UV_VERSION="$(scripts/deps.sh get UV_VERSION)" \
+            -f docker/eco-dev.Dockerfile -t eco-dev .
           docker builder prune --force
           df -h /
 
@@ -327,8 +314,8 @@ jobs:
 
       - name: Restore ccache
         # Restore only: branch runs read master's newest ccache and never save
-        # one, so per-commit entries cannot pile up and evict the LLVM caches
-        # (10 GB Actions cache limit). Saved by the test job's "Save ccache" on
+        # one, so per-commit entries cannot pile up past the 10 GB Actions
+        # cache limit. Saved by the test job's "Save ccache" on
         # master only; the bootstrap job compiles the same C++ and reuses it.
         uses: actions/cache/restore@v4
         with:
@@ -349,8 +336,9 @@ jobs:
           # (which runs outside the container) can collect them.
           mkdir -p /work/ci-logs
 
-          echo "::group::Configure (build preset)"
-          cmake --preset build
+          echo "::group::Configure (build preset, no MAX)"
+          # The bootstrap does not use MAX; the test job covers it.
+          cmake --preset build -DECO_MAX=OFF
           echo "::endgroup::"
 
           echo "::group::Build (runtime, kernels, eco-boot-native)"
@@ -416,8 +404,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 300
     # actions: write lets "Prune superseded bundle ccache entries" delete
-    # caches (the repository's default token is read-only); packages: read
-    # lets buildx pull the LLVM base image from GHCR even while it is private.
+    # caches (the repository's default token is read-only).
     permissions:
       contents: read
       actions: write
@@ -450,27 +437,16 @@ jobs:
           sudo docker image prune --all --force || true
           df -h /
 
-      - name: Log in to GHCR
-        uses: docker/login-action@v3
+      - name: Pull the LLVM alpine base image (published by llvm-build)
+        # The alpine LLVM-from-source build does not survive next to this job's
+        # work on a hosted runner, so it is only ever built by llvm-build; a
+        # missing image fails here, naming that workflow. The pull also logs
+        # the buildx builder below in to GHCR, from where it resolves
+        # `FROM ${LLVM_IMAGE}` itself.
+        id: llvm
+        uses: ./.github/actions/fetch-llvm
         with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Find LLVM alpine base image (in GHCR, published by linux-llvm-build-alpine)
-        # No fallback to a local build: the alpine LLVM-from-source build OOMs
-        # the hosted runner (it was the cause of the 3h+ "runner lost
-        # communication" failures). A missing tag fails fast and legibly — run
-        # linux-llvm-build-alpine on master first, then re-run. The buildx
-        # builder below pulls the image itself, so only check it exists here.
-        run: |
-          h="${{ hashFiles('docker/llvm-alpine.Dockerfile') }}"
-          ref="ghcr.io/${{ github.repository_owner }}/eco-llvm-alpine:${LLVM_VERSION}-${h:0:12}"
-          if ! docker manifest inspect "$ref" > /dev/null; then
-            echo "::error::$ref is not in GHCR. Run linux-llvm-build-alpine on master, then re-run."
-            exit 1
-          fi
-          echo "LLVM_ALPINE_IMAGE=$ref" >> "$GITHUB_ENV"
+          platform: alpine
 
       # ccache for the in-Docker eco compile. The cache lives in a BuildKit
       # cache mount (docker/static-build.Dockerfile), which is per-builder and
@@ -502,7 +478,7 @@ jobs:
         # builder whose /ccache mount the cache-dance syncs.
         run: |
           docker buildx build -f docker/static-build.Dockerfile \
-            --build-arg LLVM_IMAGE="$LLVM_ALPINE_IMAGE" \
+            --build-arg LLVM_IMAGE="${{ steps.llvm.outputs.ref }}" \
             --build-arg ECO_VERSION="$ECO_VERSION" \
             -t eco-static-ci .
 
@@ -513,7 +489,7 @@ jobs:
         # configure step, so a different value would rebuild eco from scratch.
         run: |
           docker buildx build -f docker/static-build.Dockerfile --target eco-bundle \
-            --build-arg LLVM_IMAGE="$LLVM_ALPINE_IMAGE" \
+            --build-arg LLVM_IMAGE="${{ steps.llvm.outputs.ref }}" \
             --build-arg ECO_VERSION="$ECO_VERSION" \
             -o ./dist .
           ls -la dist/
@@ -523,7 +499,7 @@ jobs:
           # --load: the buildx container driver does not auto-load -t images
           # into the docker daemon, but the docker create below needs it there.
           docker buildx build -f docker/static-build.Dockerfile --target eco-static \
-            --build-arg LLVM_IMAGE="$LLVM_ALPINE_IMAGE" \
+            --build-arg LLVM_IMAGE="${{ steps.llvm.outputs.ref }}" \
             --build-arg ECO_VERSION="$ECO_VERSION" \
             -t eco-static-ci-bin --load .
           id=$(docker create eco-static-ci-bin)

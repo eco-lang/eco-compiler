@@ -26,7 +26,7 @@ module {
   }
 
   func.func @mk(%env: !eco.closure_env<i64, !eco.value>) -> !eco.value {
-    %clo = eco.make.closure @stub_evaluator, %env {arity = 3 : i64}
+    %clo = eco.make.closure @stub_evaluator, %env <{arity = 3 : i64}>
          : (!eco.closure_env<i64, !eco.value>) -> !eco.value
     return %clo : !eco.value
   }

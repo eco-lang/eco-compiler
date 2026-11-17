@@ -55,8 +55,8 @@ struct ConstantOpLowering : public OpConversionPattern<ConstantOp> {
         int64_t kindValue = static_cast<int64_t>(op.getKind());
         int64_t encoded = value_enc::encodeConstant(kindValue);
 
-        Value i64Val = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, encoded);
-        Value result = rewriter.create<LLVM::IntToPtrOp>(loc, hptrTy, i64Val);
+        Value i64Val = LLVM::ConstantOp::create(rewriter, loc, i64Ty, encoded);
+        Value result = LLVM::IntToPtrOp::create(rewriter, loc, hptrTy, i64Val);
         rewriter.replaceOp(op, result);
         return success();
     }
@@ -94,8 +94,8 @@ struct ConstantNullConsOpLowering
         int64_t encoded =
             value_enc::encodeNullCons(static_cast<uint64_t>(tag));
 
-        Value i64Val = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, encoded);
-        Value result = rewriter.create<LLVM::IntToPtrOp>(loc, hptrTy, i64Val);
+        Value i64Val = LLVM::ConstantOp::create(rewriter, loc, i64Ty, encoded);
+        Value result = LLVM::IntToPtrOp::create(rewriter, loc, hptrTy, i64Val);
         rewriter.replaceOp(op, result);
         return success();
     }
@@ -149,8 +149,8 @@ struct StringLiteralOpLowering : public OpConversionPattern<StringLiteralOp> {
 
         if (value.empty()) {
             int64_t encoded = value_enc::encodeConstant(value_enc::Empty);
-            Value i64Val = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, encoded);
-            Value result = rewriter.create<LLVM::IntToPtrOp>(loc, hptrTy, i64Val);
+            Value i64Val = LLVM::ConstantOp::create(rewriter, loc, i64Ty, encoded);
+            Value result = LLVM::IntToPtrOp::create(rewriter, loc, hptrTy, i64Val);
             rewriter.replaceOp(op, result);
             return success();
         }
@@ -160,13 +160,13 @@ struct StringLiteralOpLowering : public OpConversionPattern<StringLiteralOp> {
         assert(idxIt != runtime.stringLiteralIndexForOp.end() &&
                "string-literal global not pre-materialized");
         std::string globalName = "__eco_str_" + std::to_string(idxIt->second);
-        auto addrOf = rewriter.create<LLVM::AddressOfOp>(loc, ptrTy, globalName);
+        auto addrOf = LLVM::AddressOfOp::create(rewriter, loc, ptrTy, globalName);
 
         if (isAsciiLiteral(value)) {
             auto func = runtime.getOrCreateAllocStringLiteralUtf8(rewriter);
-            auto lenVal = rewriter.create<LLVM::ConstantOp>(loc, i32Ty,
+            auto lenVal = LLVM::ConstantOp::create(rewriter, loc, i32Ty,
                 static_cast<int32_t>(value.size()));
-            auto call = rewriter.create<LLVM::CallOp>(loc, func,
+            auto call = LLVM::CallOp::create(rewriter, loc, func,
                 ValueRange{addrOf, lenVal});
             rewriter.replaceOp(op, call.getResult());
             return success();
@@ -175,9 +175,9 @@ struct StringLiteralOpLowering : public OpConversionPattern<StringLiteralOp> {
         std::vector<uint16_t> utf16 = utf8ToUtf16(value);
         size_t length = utf16.size();
         auto func = runtime.getOrCreateAllocStringLiteral(rewriter);
-        auto lengthVal = rewriter.create<LLVM::ConstantOp>(loc, i32Ty,
+        auto lengthVal = LLVM::ConstantOp::create(rewriter, loc, i32Ty,
             static_cast<int32_t>(length));
-        auto call = rewriter.create<LLVM::CallOp>(loc, func,
+        auto call = LLVM::CallOp::create(rewriter, loc, func,
             ValueRange{addrOf, lengthVal});
 
         rewriter.replaceOp(op, call.getResult());
@@ -222,7 +222,7 @@ void eco::detail::preMaterializeStringLiterals(
         if (isAsciiLiteral(value)) {
             size_t byteLen = value.size();
             auto arrayTy = LLVM::LLVMArrayType::get(i8Ty, byteLen);
-            auto globalOp = builder.create<LLVM::GlobalOp>(
+            auto globalOp = LLVM::GlobalOp::create(builder,
                 op.getLoc(), arrayTy, /*isConstant=*/true,
                 LLVM::Linkage::Internal, globalName, Attribute{});
             // Capturing `value` by copy is safe in a deferred job: it points into attribute storage, which
@@ -238,8 +238,8 @@ void eco::detail::preMaterializeStringLiterals(
                     RankedTensorType::get({static_cast<int64_t>(byteLen)}, i8Ty),
                     ArrayRef<int8_t>(byteValues));
                 Value arrayVal =
-                    builder.create<LLVM::ConstantOp>(loc, arrayTy, denseAttr);
-                builder.create<LLVM::ReturnOp>(loc, arrayVal);
+                    LLVM::ConstantOp::create(builder, loc, arrayTy, denseAttr);
+                LLVM::ReturnOp::create(builder, loc, arrayVal);
             }, builder);
             return;
         }
@@ -247,7 +247,7 @@ void eco::detail::preMaterializeStringLiterals(
         std::vector<uint16_t> utf16 = utf8ToUtf16(value);
         size_t length = utf16.size();
         auto arrayTy = LLVM::LLVMArrayType::get(utf16UnitTy, length);
-        auto globalOp = builder.create<LLVM::GlobalOp>(
+        auto globalOp = LLVM::GlobalOp::create(builder,
             op.getLoc(), arrayTy, /*isConstant=*/true,
             LLVM::Linkage::Internal, globalName, Attribute{});
         Location loc = op.getLoc();
@@ -261,8 +261,8 @@ void eco::detail::preMaterializeStringLiterals(
                 RankedTensorType::get({static_cast<int64_t>(length)}, utf16UnitTy),
                 ArrayRef<int16_t>(charValues));
             Value arrayVal =
-                builder.create<LLVM::ConstantOp>(loc, arrayTy, denseAttr);
-            builder.create<LLVM::ReturnOp>(loc, arrayVal);
+                LLVM::ConstantOp::create(builder, loc, arrayTy, denseAttr);
+            LLVM::ReturnOp::create(builder, loc, arrayVal);
         }, builder);
     };
     for (const PreMatDemand &d : demand)

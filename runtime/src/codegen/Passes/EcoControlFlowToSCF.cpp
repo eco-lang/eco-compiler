@@ -275,9 +275,9 @@ struct CaseToScfIfPattern : public OpRewritePattern<CaseOp> {
             if (tags[1] == 1) {
                 cond = op.getScrutinee();
             } else {
-                auto trueConst = rewriter.create<arith::ConstantOp>(
+                auto trueConst = arith::ConstantOp::create(rewriter,
                     loc, rewriter.getI1Type(), rewriter.getIntegerAttr(rewriter.getI1Type(), 1));
-                cond = rewriter.create<arith::XOrIOp>(loc, op.getScrutinee(), trueConst);
+                cond = arith::XOrIOp::create(rewriter, loc, op.getScrutinee(), trueConst);
             }
         } else if (isIntegerCase(op)) {
             auto i64Ty = rewriter.getI64Type();
@@ -286,12 +286,12 @@ struct CaseToScfIfPattern : public OpRewritePattern<CaseOp> {
             if (scrutinee.getType() == i64Ty) {
                 intVal = scrutinee;
             } else {
-                intVal = rewriter.create<UnboxOp>(loc, i64Ty, scrutinee);
+                intVal = UnboxOp::create(rewriter, loc, i64Ty, scrutinee);
             }
 
-            auto tagConstant = rewriter.create<arith::ConstantOp>(
+            auto tagConstant = arith::ConstantOp::create(rewriter,
                 loc, rewriter.getI64IntegerAttr(tags[1]));
-            cond = rewriter.create<arith::CmpIOp>(
+            cond = arith::CmpIOp::create(rewriter,
                 loc, arith::CmpIPredicate::eq, intVal, tagConstant);
         } else if (isCharCase(op)) {
             auto charTy = eco::getEcoCharType(rewriter.getContext());
@@ -300,25 +300,25 @@ struct CaseToScfIfPattern : public OpRewritePattern<CaseOp> {
             if (eco::isEcoCharType(scrutinee.getType())) {
                 charVal = scrutinee;
             } else {
-                charVal = rewriter.create<UnboxOp>(loc, charTy, scrutinee);
+                charVal = UnboxOp::create(rewriter, loc, charTy, scrutinee);
             }
 
             // A tag is a code point, at most 0x10FFFF, so it fits in `i32` unchanged.
-            auto tagConstant = rewriter.create<arith::ConstantOp>(
+            auto tagConstant = arith::ConstantOp::create(rewriter,
                 loc, rewriter.getIntegerAttr(charTy, tags[1]));
-            cond = rewriter.create<arith::CmpIOp>(
+            cond = arith::CmpIOp::create(rewriter,
                 loc, arith::CmpIPredicate::eq, charVal, tagConstant);
         } else {
-            auto tag = rewriter.create<GetTagOp>(loc, rewriter.getI32Type(),
+            auto tag = GetTagOp::create(rewriter, loc, rewriter.getI32Type(),
                                                  op.getScrutinee());
 
-            auto tagConstant = rewriter.create<arith::ConstantOp>(
+            auto tagConstant = arith::ConstantOp::create(rewriter,
                 loc, rewriter.getI32IntegerAttr(tags[1]));
-            cond = rewriter.create<arith::CmpIOp>(
+            cond = arith::CmpIOp::create(rewriter,
                 loc, arith::CmpIPredicate::eq, tag, tagConstant);
         }
 
-        auto ifOp = rewriter.create<scf::IfOp>(loc, resultTypes, cond,
+        auto ifOp = scf::IfOp::create(rewriter, loc, resultTypes, cond,
                                                /*withElseRegion=*/true);
 
         {
@@ -344,7 +344,7 @@ struct CaseToScfIfPattern : public OpRewritePattern<CaseOp> {
                     SmallVector<Value> yieldOperands;
                     for (Value operand : yieldOp.getOperands())
                         yieldOperands.push_back(mapping.lookupOrDefault(operand));
-                    rewriter.create<scf::YieldOp>(loc, yieldOperands);
+                    scf::YieldOp::create(rewriter, loc, yieldOperands);
                     break;  // YieldOp is last
                 }
                 rewriter.clone(bodyOp, mapping);  // includes nested eco.case
@@ -373,7 +373,7 @@ struct CaseToScfIfPattern : public OpRewritePattern<CaseOp> {
                     SmallVector<Value> yieldOperands;
                     for (Value operand : yieldOp.getOperands())
                         yieldOperands.push_back(mapping.lookupOrDefault(operand));
-                    rewriter.create<scf::YieldOp>(loc, yieldOperands);
+                    scf::YieldOp::create(rewriter, loc, yieldOperands);
                     break;  // YieldOp is last
                 }
                 rewriter.clone(bodyOp, mapping);  // includes nested eco.case
@@ -447,9 +447,9 @@ struct CaseToScfIndexSwitchPattern : public OpRewritePattern<CaseOp> {
             if (eco::isEcoCharType(scrutineeType)) {
                 charVal = scrutinee;
             } else {
-                charVal = rewriter.create<UnboxOp>(loc, charTy, scrutinee);
+                charVal = UnboxOp::create(rewriter, loc, charTy, scrutinee);
             }
-            indexTag = rewriter.create<arith::IndexCastUIOp>(
+            indexTag = arith::IndexCastUIOp::create(rewriter,
                 loc, rewriter.getIndexType(), charVal);
         } else if (isIntegerCase(op)) {
             auto i64Ty = rewriter.getI64Type();
@@ -457,7 +457,7 @@ struct CaseToScfIndexSwitchPattern : public OpRewritePattern<CaseOp> {
             if (scrutineeType == i64Ty) {
                 intVal = scrutinee;
             } else {
-                intVal = rewriter.create<UnboxOp>(loc, i64Ty, scrutinee);
+                intVal = UnboxOp::create(rewriter, loc, i64Ty, scrutinee);
             }
             // The SCF->CF lowering truncates the selector to i32, so a
             // scrutinee outside [0, INT32_MAX] (2^32 + 7, or a negative one)
@@ -472,21 +472,21 @@ struct CaseToScfIndexSwitchPattern : public OpRewritePattern<CaseOp> {
                 while (caseTags.contains(sentinel))
                     ++sentinel;
             }
-            auto maxC = rewriter.create<arith::ConstantOp>(
+            auto maxC = arith::ConstantOp::create(rewriter,
                 loc, rewriter.getI64IntegerAttr(INT32_MAX));
             // Unsigned compare: negative scrutinees are out of range too.
-            auto inRange = rewriter.create<arith::CmpIOp>(
+            auto inRange = arith::CmpIOp::create(rewriter,
                 loc, arith::CmpIPredicate::ule, intVal, maxC);
-            auto sentC = rewriter.create<arith::ConstantOp>(
+            auto sentC = arith::ConstantOp::create(rewriter,
                 loc, rewriter.getI64IntegerAttr(sentinel));
-            Value clamped = rewriter.create<arith::SelectOp>(
+            Value clamped = arith::SelectOp::create(rewriter,
                 loc, inRange, intVal, sentC);
-            indexTag = rewriter.create<arith::IndexCastOp>(
+            indexTag = arith::IndexCastOp::create(rewriter,
                 loc, rewriter.getIndexType(), clamped);
         } else {
-            auto tag = rewriter.create<GetTagOp>(loc, rewriter.getI32Type(),
+            auto tag = GetTagOp::create(rewriter, loc, rewriter.getI32Type(),
                                                  scrutinee);
-            indexTag = rewriter.create<arith::IndexCastOp>(
+            indexTag = arith::IndexCastOp::create(rewriter,
                 loc, rewriter.getIndexType(), tag);
         }
 
@@ -496,7 +496,7 @@ struct CaseToScfIndexSwitchPattern : public OpRewritePattern<CaseOp> {
             caseValues.push_back(tags[i]);
         }
 
-        auto switchOp = rewriter.create<scf::IndexSwitchOp>(
+        auto switchOp = scf::IndexSwitchOp::create(rewriter,
             loc, resultTypes, indexTag, caseValues, caseValues.size());
 
         for (size_t i = 0; i < alts.size() - 1; ++i) {
@@ -513,7 +513,7 @@ struct CaseToScfIndexSwitchPattern : public OpRewritePattern<CaseOp> {
                     SmallVector<Value> yieldOperands;
                     for (Value operand : yieldOp.getOperands())
                         yieldOperands.push_back(mapping.lookupOrDefault(operand));
-                    rewriter.create<scf::YieldOp>(loc, yieldOperands);
+                    scf::YieldOp::create(rewriter, loc, yieldOperands);
                     break;  // YieldOp is last
                 }
                 rewriter.clone(bodyOp, mapping);  // includes nested eco.case
@@ -534,7 +534,7 @@ struct CaseToScfIndexSwitchPattern : public OpRewritePattern<CaseOp> {
                     SmallVector<Value> yieldOperands;
                     for (Value operand : yieldOp.getOperands())
                         yieldOperands.push_back(mapping.lookupOrDefault(operand));
-                    rewriter.create<scf::YieldOp>(loc, yieldOperands);
+                    scf::YieldOp::create(rewriter, loc, yieldOperands);
                     break;  // YieldOp is last
                 }
                 rewriter.clone(bodyOp, mapping);  // includes nested eco.case
@@ -561,7 +561,7 @@ static void cloneAlternativeWithScfYield(Region &alt, PatternRewriter &rewriter,
             SmallVector<Value> yieldOperands;
             for (Value operand : yieldOp.getOperands())
                 yieldOperands.push_back(mapping.lookupOrDefault(operand));
-            rewriter.create<scf::YieldOp>(loc, yieldOperands);
+            scf::YieldOp::create(rewriter, loc, yieldOperands);
             break;  // YieldOp is last
         }
         Operation *cloned = rewriter.clone(bodyOp, mapping);
@@ -630,7 +630,7 @@ private:
         if (scrutinee.getType() == i64Ty) {
             unboxed = scrutinee;
         } else {
-            unboxed = rewriter.create<UnboxOp>(loc, i64Ty, scrutinee);
+            unboxed = UnboxOp::create(rewriter, loc, i64Ty, scrutinee);
         }
 
         size_t numAlts = alts.size();
@@ -649,12 +649,12 @@ private:
                                MutableArrayRef<Region> alts,
                                SmallVector<Type> &resultTypes,
                                size_t altIdx, size_t numAlts) const {
-        auto tagConst = rewriter.create<arith::ConstantOp>(
+        auto tagConst = arith::ConstantOp::create(rewriter,
             loc, rewriter.getI64IntegerAttr(tags[altIdx]));
-        auto cond = rewriter.create<arith::CmpIOp>(
+        auto cond = arith::CmpIOp::create(rewriter,
             loc, arith::CmpIPredicate::eq, unboxed, tagConst);
 
-        auto ifOp = rewriter.create<scf::IfOp>(loc, resultTypes, cond,
+        auto ifOp = scf::IfOp::create(rewriter, loc, resultTypes, cond,
                                                /*withElseRegion=*/true);
 
         {
@@ -684,7 +684,7 @@ private:
                 // The recursive call moved the insertion point into its own
                 // regions; the yield belongs after the inner scf.if.
                 rewriter.setInsertionPointToEnd(elseBlock);
-                rewriter.create<scf::YieldOp>(loc, inner);
+                scf::YieldOp::create(rewriter, loc, inner);
             }
         }
 
@@ -780,7 +780,7 @@ private:
         rewriter.setInsertionPointToStart(module.getBody());
         auto ecoValueTy = eco::ValueType::get(rewriter.getContext());
         auto funcTy = rewriter.getFunctionType({ecoValueTy, ecoValueTy}, {ecoValueTy});
-        auto funcOp = rewriter.create<func::FuncOp>(loc, "Elm_Kernel_Utils_equal", funcTy);
+        auto funcOp = func::FuncOp::create(rewriter, loc, "Elm_Kernel_Utils_equal", funcTy);
         funcOp.setPrivate();
         rewriter.restoreInsertionPoint(savedInsertPoint);
     }
@@ -802,23 +802,23 @@ private:
         // The last test: its else region is the default alternative.
         if (altIdx == numAlts - 2) {
             auto patternStr = cast<StringAttr>(stringPatterns[altIdx]).getValue();
-            auto strLitOp = rewriter.create<StringLiteralOp>(loc,
+            auto strLitOp = StringLiteralOp::create(rewriter, loc,
                 eco::ValueType::get(rewriter.getContext()), patternStr);
             auto ecoValueTy = eco::ValueType::get(rewriter.getContext());
             Value cond;
             if (valueEqStrCaseEnabled()) {
-                cond = rewriter.create<eco::ValueEqOp>(
+                cond = eco::ValueEqOp::create(rewriter,
                     loc, rewriter.getI1Type(), scrutinee, strLitOp);
             } else {
-                auto callOp = rewriter.create<func::CallOp>(
+                auto callOp = func::CallOp::create(rewriter,
                     loc, "Elm_Kernel_Utils_equal",
                     TypeRange{ecoValueTy},
                     ValueRange{scrutinee, strLitOp});
-                cond = rewriter.create<UnboxOp>(loc, rewriter.getI1Type(),
+                cond = UnboxOp::create(rewriter, loc, rewriter.getI1Type(),
                                                 callOp.getResult(0));
             }
 
-            auto ifOp = rewriter.create<scf::IfOp>(loc, resultTypes, cond,
+            auto ifOp = scf::IfOp::create(rewriter, loc, resultTypes, cond,
                                                     /*withElseRegion=*/true);
             {
                 Block *thenBlock = &ifOp.getThenRegion().front();
@@ -842,23 +842,23 @@ private:
         }
 
         auto patternStr = cast<StringAttr>(stringPatterns[altIdx]).getValue();
-        auto strLitOp = rewriter.create<StringLiteralOp>(loc,
+        auto strLitOp = StringLiteralOp::create(rewriter, loc,
             eco::ValueType::get(rewriter.getContext()), patternStr);
 
         auto ecoValueTy = eco::ValueType::get(rewriter.getContext());
         auto i1Ty = rewriter.getI1Type();
         Value cond;
         if (valueEqStrCaseEnabled()) {
-            cond = rewriter.create<eco::ValueEqOp>(loc, i1Ty, scrutinee, strLitOp);
+            cond = eco::ValueEqOp::create(rewriter, loc, i1Ty, scrutinee, strLitOp);
         } else {
-            auto callOp = rewriter.create<func::CallOp>(
+            auto callOp = func::CallOp::create(rewriter,
                 loc, "Elm_Kernel_Utils_equal",
                 TypeRange{ecoValueTy},
                 ValueRange{scrutinee, strLitOp});
-            cond = rewriter.create<UnboxOp>(loc, i1Ty, callOp.getResult(0));
+            cond = UnboxOp::create(rewriter, loc, i1Ty, callOp.getResult(0));
         }
 
-        auto ifOp = rewriter.create<scf::IfOp>(loc, resultTypes, cond,
+        auto ifOp = scf::IfOp::create(rewriter, loc, resultTypes, cond,
                                                 /*withElseRegion=*/true);
 
         {
@@ -883,7 +883,7 @@ private:
                                                    altIdx + 1, numAlts);
             // The recursive call leaves the insertion point inside the inner scf.if.
             rewriter.setInsertionPointToEnd(elseBlock);
-            rewriter.create<scf::YieldOp>(loc, innerIfOp->getResults());
+            scf::YieldOp::create(rewriter, loc, innerIfOp->getResults());
         }
 
         return ifOp;
@@ -1038,7 +1038,7 @@ struct JoinpointToScfWhilePattern : public OpRewritePattern<JoinpointOp> {
         if (loopStateTypes.empty())
             return failure();
 
-        auto whileOp = rewriter.create<scf::WhileOp>(
+        auto whileOp = scf::WhileOp::create(rewriter,
             loc, loopStateTypes, initialValues);
 
         // The before region: the exit test.
@@ -1058,18 +1058,18 @@ struct JoinpointToScfWhilePattern : public OpRewritePattern<JoinpointOp> {
             Value scrutinee = topCase.getScrutinee();
             Value mappedScrutinee = condMapping.lookupOrDefault(scrutinee);
 
-            auto tag = rewriter.create<GetTagOp>(loc, rewriter.getI32Type(), mappedScrutinee);
+            auto tag = GetTagOp::create(rewriter, loc, rewriter.getI32Type(), mappedScrutinee);
 
-            auto exitTagConst = rewriter.create<arith::ConstantOp>(
+            auto exitTagConst = arith::ConstantOp::create(rewriter,
                 loc, rewriter.getI32IntegerAttr(exitTag));
-            auto continueLoop = rewriter.create<arith::CmpIOp>(
+            auto continueLoop = arith::CmpIOp::create(rewriter,
                 loc, arith::CmpIPredicate::ne, tag, exitTagConst);
 
             SmallVector<Value> condArgs;
             for (auto arg : beforeBlock->getArguments())
                 condArgs.push_back(arg);
 
-            rewriter.create<scf::ConditionOp>(loc, continueLoop, condArgs);
+            scf::ConditionOp::create(rewriter, loc, continueLoop, condArgs);
         }
 
         // The after region: the loop alternative.
@@ -1098,7 +1098,7 @@ struct JoinpointToScfWhilePattern : public OpRewritePattern<JoinpointOp> {
                 yieldValues.push_back(bodyMapping.lookupOrDefault(arg));
             }
 
-            rewriter.create<scf::YieldOp>(loc, yieldValues);
+            scf::YieldOp::create(rewriter, loc, yieldValues);
         }
 
         rewriter.setInsertionPointAfter(whileOp);
@@ -1169,7 +1169,7 @@ struct EcoControlFlowToSCFPass
                 auto ecoValueTy = eco::ValueType::get(ctx);
                 auto funcTy =
                     b.getFunctionType({ecoValueTy, ecoValueTy}, {ecoValueTy});
-                auto funcOp = b.create<func::FuncOp>(
+                auto funcOp = func::FuncOp::create(b,
                     *firstLoc, "Elm_Kernel_Utils_equal", funcTy);
                 funcOp.setPrivate();
             }

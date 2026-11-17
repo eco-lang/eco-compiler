@@ -5,7 +5,7 @@
 
 module {
   func.func @value_custom_just(%inner: !eco.value) -> !eco.value {
-    %c = eco.make.custom(%inner) {tag = 1 : i64, constructor = "Just"}
+    %c = eco.make.custom(%inner) <{tag = 1 : i64, constructor = "Just"}>
        : (!eco.value) -> !eco.custom<!eco.value>
     %v = eco.project.custom %c[0] : !eco.custom<!eco.value> -> !eco.value
     return %v : !eco.value

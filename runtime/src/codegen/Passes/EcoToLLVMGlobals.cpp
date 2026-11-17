@@ -100,10 +100,10 @@ struct LoadGlobalOpLowering : public OpConversionPattern<LoadGlobalOp> {
         auto i64Ty = IntegerType::get(ctx, 64);
         auto ptrTy = LLVM::LLVMPointerType::get(ctx);
 
-        auto globalAddr = rewriter.create<LLVM::AddressOfOp>(
+        auto globalAddr = LLVM::AddressOfOp::create(rewriter,
             loc, ptrTy, op.getGlobal());
 
-        auto loadedValue = rewriter.create<LLVM::LoadOp>(loc, i64Ty, globalAddr);
+        auto loadedValue = LLVM::LoadOp::create(rewriter, loc, i64Ty, globalAddr);
         Value result = globalLoadI64ToValue(rewriter, loc, loadedValue.getResult());
 
         rewriter.replaceOp(op, result);
@@ -129,11 +129,11 @@ struct StoreGlobalOpLowering : public OpConversionPattern<StoreGlobalOp> {
         auto *ctx = rewriter.getContext();
         auto ptrTy = LLVM::LLVMPointerType::get(ctx);
 
-        auto globalAddr = rewriter.create<LLVM::AddressOfOp>(
+        auto globalAddr = LLVM::AddressOfOp::create(rewriter,
             loc, ptrTy, op.getGlobal());
 
         Value valI64 = globalStoreValueToI64(rewriter, loc, adaptor.getValue());
-        rewriter.create<LLVM::StoreOp>(loc, valI64, globalAddr);
+        LLVM::StoreOp::create(rewriter, loc, valI64, globalAddr);
 
         rewriter.eraseOp(op);
         return success();
@@ -207,7 +207,7 @@ struct TypeTableOpLowering : public OpConversionPattern<TypeTableOp> {
         auto emitByteBlobGlobal = [&](StringRef name, const std::string &bytes,
                                       uint64_t align) -> LLVM::GlobalOp {
             auto arrTy = LLVM::LLVMArrayType::get(i8Ty, bytes.size());
-            auto g = rewriter.create<LLVM::GlobalOp>(
+            auto g = LLVM::GlobalOp::create(rewriter,
                 loc, arrTy, /*isConstant=*/true, LLVM::Linkage::Private, name,
                 rewriter.getStringAttr(StringRef(bytes.data(), bytes.size())));
             g.setAlignment(align);
@@ -233,7 +233,7 @@ struct TypeTableOpLowering : public OpConversionPattern<TypeTableOp> {
                 auto strType = LLVM::LLVMArrayType::get(i8Ty, strValue.size() + 1);
 
                 std::string globalName = "__eco_typestr_" + std::to_string(i);
-                auto strGlobal = rewriter.create<LLVM::GlobalOp>(
+                auto strGlobal = LLVM::GlobalOp::create(rewriter,
                     loc, strType, /*isConstant=*/true,
                     LLVM::Linkage::Private, globalName,
                     rewriter.getStringAttr(std::string(strValue) + '\0'));
@@ -241,19 +241,19 @@ struct TypeTableOpLowering : public OpConversionPattern<TypeTableOp> {
             }
 
             auto strPtrArrayTy = LLVM::LLVMArrayType::get(ptrTy, stringCount);
-            stringsGlobal = rewriter.create<LLVM::GlobalOp>(
+            stringsGlobal = LLVM::GlobalOp::create(rewriter,
                 loc, strPtrArrayTy, /*isConstant=*/true,
                 LLVM::Linkage::Private, "__eco_strings_array",
                 Attribute());
 
             Block *strInitBlock = rewriter.createBlock(&stringsGlobal.getInitializerRegion());
             rewriter.setInsertionPointToStart(strInitBlock);
-            Value strArray = rewriter.create<LLVM::UndefOp>(loc, strPtrArrayTy);
+            Value strArray = LLVM::UndefOp::create(rewriter, loc, strPtrArrayTy);
             for (size_t i = 0; i < stringGlobals.size(); i++) {
-                auto addr = rewriter.create<LLVM::AddressOfOp>(loc, ptrTy, stringGlobals[i].getSymName());
-                strArray = rewriter.create<LLVM::InsertValueOp>(loc, strArray, addr, ArrayRef<int64_t>{(int64_t)i});
+                auto addr = LLVM::AddressOfOp::create(rewriter, loc, ptrTy, stringGlobals[i].getSymName());
+                strArray = LLVM::InsertValueOp::create(rewriter, loc, strArray, addr, ArrayRef<int64_t>{(int64_t)i});
             }
-            rewriter.create<LLVM::ReturnOp>(loc, strArray);
+            LLVM::ReturnOp::create(rewriter, loc, strArray);
             rewriter.setInsertionPointToStart(module.getBody());
         }
 
@@ -393,7 +393,7 @@ struct TypeTableOpLowering : public OpConversionPattern<TypeTableOp> {
                 emitByteBlobGlobal("__eco_types_array", bytes, /*align=*/8);
         }
 
-        auto typeGraphGlobal = rewriter.create<LLVM::GlobalOp>(
+        auto typeGraphGlobal = LLVM::GlobalOp::create(rewriter,
             loc, typeGraphTy, /*isConstant=*/true,
             LLVM::Linkage::External, "__eco_type_graph",
             Attribute());
@@ -401,62 +401,62 @@ struct TypeTableOpLowering : public OpConversionPattern<TypeTableOp> {
         Block *graphInitBlock = rewriter.createBlock(&typeGraphGlobal.getInitializerRegion());
         rewriter.setInsertionPointToStart(graphInitBlock);
 
-        auto zero32 = rewriter.create<LLVM::ConstantOp>(loc, i32Ty, 0);
-        auto nullPtr = rewriter.create<LLVM::ZeroOp>(loc, ptrTy);
+        auto zero32 = LLVM::ConstantOp::create(rewriter, loc, i32Ty, 0);
+        auto nullPtr = LLVM::ZeroOp::create(rewriter, loc, ptrTy);
 
-        Value structVal = rewriter.create<LLVM::UndefOp>(loc, typeGraphTy);
+        Value structVal = LLVM::UndefOp::create(rewriter, loc, typeGraphTy);
 
         if (typesGlobal) {
-            auto typesAddr = rewriter.create<LLVM::AddressOfOp>(loc, ptrTy, typesGlobal.getSymName());
-            structVal = rewriter.create<LLVM::InsertValueOp>(loc, structVal, typesAddr, ArrayRef<int64_t>{0});
+            auto typesAddr = LLVM::AddressOfOp::create(rewriter, loc, ptrTy, typesGlobal.getSymName());
+            structVal = LLVM::InsertValueOp::create(rewriter, loc, structVal, typesAddr, ArrayRef<int64_t>{0});
         } else {
-            structVal = rewriter.create<LLVM::InsertValueOp>(loc, structVal, nullPtr, ArrayRef<int64_t>{0});
+            structVal = LLVM::InsertValueOp::create(rewriter, loc, structVal, nullPtr, ArrayRef<int64_t>{0});
         }
-        auto typeCountCst = rewriter.create<LLVM::ConstantOp>(loc, i32Ty, (int64_t)typeCount);
-        structVal = rewriter.create<LLVM::InsertValueOp>(loc, structVal, typeCountCst, ArrayRef<int64_t>{1});
-        structVal = rewriter.create<LLVM::InsertValueOp>(loc, structVal, zero32, ArrayRef<int64_t>{2}); // padding
+        auto typeCountCst = LLVM::ConstantOp::create(rewriter, loc, i32Ty, (int64_t)typeCount);
+        structVal = LLVM::InsertValueOp::create(rewriter, loc, structVal, typeCountCst, ArrayRef<int64_t>{1});
+        structVal = LLVM::InsertValueOp::create(rewriter, loc, structVal, zero32, ArrayRef<int64_t>{2}); // padding
 
         if (fieldsGlobal) {
-            auto fieldsAddr = rewriter.create<LLVM::AddressOfOp>(loc, ptrTy, fieldsGlobal.getSymName());
-            structVal = rewriter.create<LLVM::InsertValueOp>(loc, structVal, fieldsAddr, ArrayRef<int64_t>{3});
+            auto fieldsAddr = LLVM::AddressOfOp::create(rewriter, loc, ptrTy, fieldsGlobal.getSymName());
+            structVal = LLVM::InsertValueOp::create(rewriter, loc, structVal, fieldsAddr, ArrayRef<int64_t>{3});
         } else {
-            structVal = rewriter.create<LLVM::InsertValueOp>(loc, structVal, nullPtr, ArrayRef<int64_t>{3});
+            structVal = LLVM::InsertValueOp::create(rewriter, loc, structVal, nullPtr, ArrayRef<int64_t>{3});
         }
-        auto fieldCountCst = rewriter.create<LLVM::ConstantOp>(loc, i32Ty, (int64_t)fieldCount);
-        structVal = rewriter.create<LLVM::InsertValueOp>(loc, structVal, fieldCountCst, ArrayRef<int64_t>{4});
-        structVal = rewriter.create<LLVM::InsertValueOp>(loc, structVal, zero32, ArrayRef<int64_t>{5}); // padding
+        auto fieldCountCst = LLVM::ConstantOp::create(rewriter, loc, i32Ty, (int64_t)fieldCount);
+        structVal = LLVM::InsertValueOp::create(rewriter, loc, structVal, fieldCountCst, ArrayRef<int64_t>{4});
+        structVal = LLVM::InsertValueOp::create(rewriter, loc, structVal, zero32, ArrayRef<int64_t>{5}); // padding
 
         if (ctorsGlobal) {
-            auto ctorsAddr = rewriter.create<LLVM::AddressOfOp>(loc, ptrTy, ctorsGlobal.getSymName());
-            structVal = rewriter.create<LLVM::InsertValueOp>(loc, structVal, ctorsAddr, ArrayRef<int64_t>{6});
+            auto ctorsAddr = LLVM::AddressOfOp::create(rewriter, loc, ptrTy, ctorsGlobal.getSymName());
+            structVal = LLVM::InsertValueOp::create(rewriter, loc, structVal, ctorsAddr, ArrayRef<int64_t>{6});
         } else {
-            structVal = rewriter.create<LLVM::InsertValueOp>(loc, structVal, nullPtr, ArrayRef<int64_t>{6});
+            structVal = LLVM::InsertValueOp::create(rewriter, loc, structVal, nullPtr, ArrayRef<int64_t>{6});
         }
-        auto ctorCountCst = rewriter.create<LLVM::ConstantOp>(loc, i32Ty, (int64_t)ctorCount);
-        structVal = rewriter.create<LLVM::InsertValueOp>(loc, structVal, ctorCountCst, ArrayRef<int64_t>{7});
-        structVal = rewriter.create<LLVM::InsertValueOp>(loc, structVal, zero32, ArrayRef<int64_t>{8}); // padding
+        auto ctorCountCst = LLVM::ConstantOp::create(rewriter, loc, i32Ty, (int64_t)ctorCount);
+        structVal = LLVM::InsertValueOp::create(rewriter, loc, structVal, ctorCountCst, ArrayRef<int64_t>{7});
+        structVal = LLVM::InsertValueOp::create(rewriter, loc, structVal, zero32, ArrayRef<int64_t>{8}); // padding
 
         if (funcArgsGlobal) {
-            auto funcArgsAddr = rewriter.create<LLVM::AddressOfOp>(loc, ptrTy, funcArgsGlobal.getSymName());
-            structVal = rewriter.create<LLVM::InsertValueOp>(loc, structVal, funcArgsAddr, ArrayRef<int64_t>{9});
+            auto funcArgsAddr = LLVM::AddressOfOp::create(rewriter, loc, ptrTy, funcArgsGlobal.getSymName());
+            structVal = LLVM::InsertValueOp::create(rewriter, loc, structVal, funcArgsAddr, ArrayRef<int64_t>{9});
         } else {
-            structVal = rewriter.create<LLVM::InsertValueOp>(loc, structVal, nullPtr, ArrayRef<int64_t>{9});
+            structVal = LLVM::InsertValueOp::create(rewriter, loc, structVal, nullPtr, ArrayRef<int64_t>{9});
         }
-        auto funcArgCountCst = rewriter.create<LLVM::ConstantOp>(loc, i32Ty, (int64_t)funcArgCount);
-        structVal = rewriter.create<LLVM::InsertValueOp>(loc, structVal, funcArgCountCst, ArrayRef<int64_t>{10});
-        structVal = rewriter.create<LLVM::InsertValueOp>(loc, structVal, zero32, ArrayRef<int64_t>{11}); // padding
+        auto funcArgCountCst = LLVM::ConstantOp::create(rewriter, loc, i32Ty, (int64_t)funcArgCount);
+        structVal = LLVM::InsertValueOp::create(rewriter, loc, structVal, funcArgCountCst, ArrayRef<int64_t>{10});
+        structVal = LLVM::InsertValueOp::create(rewriter, loc, structVal, zero32, ArrayRef<int64_t>{11}); // padding
 
         if (stringsGlobal) {
-            auto stringsAddr = rewriter.create<LLVM::AddressOfOp>(loc, ptrTy, stringsGlobal.getSymName());
-            structVal = rewriter.create<LLVM::InsertValueOp>(loc, structVal, stringsAddr, ArrayRef<int64_t>{12});
+            auto stringsAddr = LLVM::AddressOfOp::create(rewriter, loc, ptrTy, stringsGlobal.getSymName());
+            structVal = LLVM::InsertValueOp::create(rewriter, loc, structVal, stringsAddr, ArrayRef<int64_t>{12});
         } else {
-            structVal = rewriter.create<LLVM::InsertValueOp>(loc, structVal, nullPtr, ArrayRef<int64_t>{12});
+            structVal = LLVM::InsertValueOp::create(rewriter, loc, structVal, nullPtr, ArrayRef<int64_t>{12});
         }
-        auto stringCountCst = rewriter.create<LLVM::ConstantOp>(loc, i32Ty, (int64_t)stringCount);
-        structVal = rewriter.create<LLVM::InsertValueOp>(loc, structVal, stringCountCst, ArrayRef<int64_t>{13});
-        structVal = rewriter.create<LLVM::InsertValueOp>(loc, structVal, zero32, ArrayRef<int64_t>{14}); // padding
+        auto stringCountCst = LLVM::ConstantOp::create(rewriter, loc, i32Ty, (int64_t)stringCount);
+        structVal = LLVM::InsertValueOp::create(rewriter, loc, structVal, stringCountCst, ArrayRef<int64_t>{13});
+        structVal = LLVM::InsertValueOp::create(rewriter, loc, structVal, zero32, ArrayRef<int64_t>{14}); // padding
 
-        rewriter.create<LLVM::ReturnOp>(loc, structVal);
+        LLVM::ReturnOp::create(rewriter, loc, structVal);
 
         rewriter.eraseOp(op);
         return success();
@@ -520,7 +520,7 @@ void eco::detail::createGlobalRootInitFunction(
     auto voidTy = LLVM::LLVMVoidType::get(ctx);
 
     auto initFuncType = LLVM::LLVMFunctionType::get(voidTy, {});
-    auto initFunc = builder.create<LLVM::LLVMFuncOp>(
+    auto initFunc = LLVM::LLVMFuncOp::create(builder,
         loc, "__eco_init_globals", initFuncType);
     initFunc.setLinkage(LLVM::Linkage::External);
 
@@ -529,21 +529,21 @@ void eco::detail::createGlobalRootInitFunction(
 
     if (typeGraphGlobal) {
         auto regFunc = runtime.getOrCreateRegisterTypeGraph(builder);
-        auto typeGraphAddr = builder.create<LLVM::AddressOfOp>(
+        auto typeGraphAddr = LLVM::AddressOfOp::create(builder,
             loc, ptrTy, typeGraphGlobal.getSymName());
-        builder.create<LLVM::CallOp>(loc, regFunc, ValueRange{typeGraphAddr});
+        LLVM::CallOp::create(builder, loc, regFunc, ValueRange{typeGraphAddr});
     }
 
     if (!ecoGlobals.empty()) {
         auto addRootFunc = runtime.getOrCreateGcAddRoot(builder);
         for (auto globalOp : ecoGlobals) {
-            auto globalAddr = builder.create<LLVM::AddressOfOp>(
+            auto globalAddr = LLVM::AddressOfOp::create(builder,
                 loc, ptrTy, globalOp.getSymName());
-            builder.create<LLVM::CallOp>(loc, addRootFunc, ValueRange{globalAddr});
+            LLVM::CallOp::create(builder, loc, addRootFunc, ValueRange{globalAddr});
         }
     }
 
-    builder.create<LLVM::ReturnOp>(loc, ValueRange{});
+    LLVM::ReturnOp::create(builder, loc, ValueRange{});
 }
 
 //===----------------------------------------------------------------------===//
@@ -572,7 +572,7 @@ void eco::detail::declareCafPromote(ModuleOp module, Location loc) {
     auto ptrTy = LLVM::LLVMPointerType::get(ctx);
     OpBuilder mb = OpBuilder::atBlockEnd(module.getBody());
     auto promoteTy = LLVM::LLVMFunctionType::get(i64Ty, {i64Ty, ptrTy});
-    auto decl = mb.create<LLVM::LLVMFuncOp>(loc, "eco_caf_promote", promoteTy);
+    auto decl = LLVM::LLVMFuncOp::create(mb, loc, "eco_caf_promote", promoteTy);
     decl->setAttr("passthrough",
                   ArrayAttr::get(ctx, {StringAttr::get(ctx, "gc-leaf-function")}));
 }
@@ -613,12 +613,12 @@ LogicalResult eco::detail::installCafMemoGuard(LLVM::LLVMFuncOp func,
     body.walk([&](LLVM::ReturnOp r) { rets.push_back(r); });
     for (LLVM::ReturnOp r : rets) {
         builder.setInsertionPoint(r);
-        auto addr = builder.create<LLVM::AddressOfOp>(loc, ptrTy, slotName);
+        auto addr = LLVM::AddressOfOp::create(builder, loc, ptrTy, slotName);
         Value bits = globalStoreValueToI64(builder, loc, r.getOperand(0));
-        auto perm = builder.create<LLVM::CallOp>(
+        auto perm = LLVM::CallOp::create(builder,
             loc, TypeRange{i64Ty}, llvm::StringRef("eco_caf_promote"),
             ValueRange{bits, addr});
-        builder.create<LLVM::StoreOp>(loc, perm.getResult(), addr);
+        LLVM::StoreOp::create(builder, loc, perm.getResult(), addr);
         Value promoted = globalLoadI64ToValue(builder, loc, perm.getResult());
         r.setOperand(0, promoted);
     }
@@ -630,16 +630,16 @@ LogicalResult eco::detail::installCafMemoGuard(LLVM::LLVMFuncOp func,
     body.push_back(hit);
 
     builder.setInsertionPointToEnd(entry);
-    auto addr = builder.create<LLVM::AddressOfOp>(loc, ptrTy, slotName);
-    auto bits = builder.create<LLVM::LoadOp>(loc, i64Ty, addr);
-    auto zero = builder.create<LLVM::ConstantOp>(loc, i64Ty, 0);
-    auto isSet = builder.create<LLVM::ICmpOp>(loc, LLVM::ICmpPredicate::ne,
+    auto addr = LLVM::AddressOfOp::create(builder, loc, ptrTy, slotName);
+    auto bits = LLVM::LoadOp::create(builder, loc, i64Ty, addr);
+    auto zero = LLVM::ConstantOp::create(builder, loc, i64Ty, 0);
+    auto isSet = LLVM::ICmpOp::create(builder, loc, LLVM::ICmpPredicate::ne,
                                               bits, zero);
-    builder.create<LLVM::CondBrOp>(loc, isSet, hit, oldEntry);
+    LLVM::CondBrOp::create(builder, loc, isSet, hit, oldEntry);
 
     builder.setInsertionPointToEnd(hit);
     Value cached = globalLoadI64ToValue(builder, loc, bits);
-    builder.create<LLVM::ReturnOp>(loc, ValueRange{cached});
+    LLVM::ReturnOp::create(builder, loc, ValueRange{cached});
 
     return success();
 }
@@ -690,19 +690,19 @@ void eco::detail::rewriteCafCallSitesFast(
         std::string slotName = ("__eco_caf$" + *call.getCallee()).str();
 
         OpBuilder bb(call);
-        auto addr = bb.create<LLVM::AddressOfOp>(loc, ptrTy, slotName);
-        auto bits = bb.create<LLVM::LoadOp>(loc, i64Ty, addr);
-        auto zero = bb.create<LLVM::ConstantOp>(loc, i64Ty, 0);
+        auto addr = LLVM::AddressOfOp::create(bb, loc, ptrTy, slotName);
+        auto bits = LLVM::LoadOp::create(bb, loc, i64Ty, addr);
+        auto zero = LLVM::ConstantOp::create(bb, loc, i64Ty, 0);
         auto isSet =
-            bb.create<LLVM::ICmpOp>(loc, LLVM::ICmpPredicate::ne, bits, zero);
+            LLVM::ICmpOp::create(bb, loc, LLVM::ICmpPredicate::ne, bits, zero);
 
-        auto ifOp = bb.create<scf::IfOp>(loc, TypeRange{hptrTy}, isSet,
+        auto ifOp = scf::IfOp::create(bb, loc, TypeRange{hptrTy}, isSet,
                                          /*withElseRegion=*/true);
 
         {
             OpBuilder hb = OpBuilder::atBlockBegin(ifOp.thenBlock());
             Value cached = globalLoadI64ToValue(hb, loc, bits);
-            hb.create<scf::YieldOp>(loc, ValueRange{cached});
+            scf::YieldOp::create(hb, loc, ValueRange{cached});
         }
 
         // The miss arm is the original call, moved.
@@ -710,7 +710,7 @@ void eco::detail::rewriteCafCallSitesFast(
         call->moveBefore(ifOp.elseBlock(), ifOp.elseBlock()->end());
         {
             OpBuilder mb = OpBuilder::atBlockEnd(ifOp.elseBlock());
-            mb.create<scf::YieldOp>(loc, ValueRange{call->getResult(0)});
+            scf::YieldOp::create(mb, loc, ValueRange{call->getResult(0)});
         }
     }
 }
@@ -795,7 +795,7 @@ void eco::detail::materializeStringLiteralSlots(ModuleOp module,
         std::string slotName = ("__eco_strlit$" + name).str();
         if (!slots.insert(slotName).second)
             continue;
-        builder.create<LLVM::GlobalOp>(loc, i64Ty, /*isConstant=*/false,
+        LLVM::GlobalOp::create(builder, loc, i64Ty, /*isConstant=*/false,
                                        LLVM::Linkage::Internal, slotName,
                                        builder.getI64IntegerAttr(0));
     }
@@ -807,7 +807,7 @@ void eco::detail::materializeStringLiteralSlots(ModuleOp module,
         if (module.lookupSymbol<LLVM::LLVMFuncOp>(name))
             continue;
         auto fnTy = LLVM::LLVMFunctionType::get(hptrTy, {ptrTy, i32Ty, ptrTy});
-        builder.create<LLVM::LLVMFuncOp>(loc, name, fnTy);
+        LLVM::LLVMFuncOp::create(builder, loc, name, fnTy);
     }
 }
 
@@ -851,23 +851,23 @@ void eco::detail::rewriteStringLiteralCallSitesFast(
         Value len = call->getOperand(1);
 
         OpBuilder bb(call);
-        auto slotAddr = bb.create<LLVM::AddressOfOp>(loc, ptrTy, slotName);
-        auto bits = bb.create<LLVM::LoadOp>(loc, i64Ty, slotAddr);
-        auto zero = bb.create<LLVM::ConstantOp>(loc, i64Ty, 0);
+        auto slotAddr = LLVM::AddressOfOp::create(bb, loc, ptrTy, slotName);
+        auto bits = LLVM::LoadOp::create(bb, loc, i64Ty, slotAddr);
+        auto zero = LLVM::ConstantOp::create(bb, loc, i64Ty, 0);
         auto isSet =
-            bb.create<LLVM::ICmpOp>(loc, LLVM::ICmpPredicate::ne, bits, zero);
-        auto ifOp = bb.create<scf::IfOp>(loc, TypeRange{hptrTy}, isSet,
+            LLVM::ICmpOp::create(bb, loc, LLVM::ICmpPredicate::ne, bits, zero);
+        auto ifOp = scf::IfOp::create(bb, loc, TypeRange{hptrTy}, isSet,
                                          /*withElseRegion=*/true);
         {
             OpBuilder hb = OpBuilder::atBlockBegin(ifOp.thenBlock());
             Value cached = globalLoadI64ToValue(hb, loc, bits);
-            hb.create<scf::YieldOp>(loc, ValueRange{cached});
+            scf::YieldOp::create(hb, loc, ValueRange{cached});
         }
         {
             OpBuilder mb = OpBuilder::atBlockEnd(ifOp.elseBlock());
-            auto fill = mb.create<LLVM::CallOp>(loc, TypeRange{hptrTy}, fillName,
+            auto fill = LLVM::CallOp::create(mb, loc, TypeRange{hptrTy}, fillName,
                                                 ValueRange{bytes, len, slotAddr});
-            mb.create<scf::YieldOp>(loc, ValueRange{fill.getResult()});
+            scf::YieldOp::create(mb, loc, ValueRange{fill.getResult()});
         }
 
         call->getResult(0).replaceAllUsesWith(ifOp.getResult(0));

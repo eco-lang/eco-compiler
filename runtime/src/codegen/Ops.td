@@ -38,11 +38,9 @@ def Eco_Dialect : Dialect {
     - GC integration via safepoints and stack maps
   }];
   let useDefaultTypePrinterParser = 1;
-  // LLVM 24 makes strict properties the default: a custom assembly format must
-  // name every inherent attribute or use `prop-dict`. Eleven eco ops still carry
-  // their attributes in `attr-dict`, so keep the legacy behaviour (deprecated
-  // upstream) until those formats move to `prop-dict`.
-  let useStrictPropertiesInAssemblyFormat = 0;
+  // Strict properties (LLVM's default since 24): a custom assembly format names
+  // every inherent attribute or prints them with `prop-dict`, never through the
+  // discardable `attr-dict`.
 }
 
 //===----------------------------------------------------------------------===//
@@ -509,7 +507,7 @@ def Eco_DbgOp : Eco_Op<"dbg"> {
     Example:
     ```mlir
     eco.dbg %value1, %value2 : !eco.value, i64
-    eco.dbg %x : !eco.value { arg_type_ids = [0 : i64] }
+    eco.dbg %x : !eco.value <{arg_type_ids = [0 : i64]}>
     ```
   }];
 
@@ -519,7 +517,7 @@ def Eco_DbgOp : Eco_Op<"dbg"> {
   );
   let results = (outs);
 
-  let assemblyFormat = "($args^ `:` type($args))? attr-dict";
+  let assemblyFormat = "($args^ `:` type($args))? prop-dict attr-dict";
 }
 
 def Eco_TypeTableOp : Eco_Op<"type_table", [HasParent<"::mlir::ModuleOp">]> {
@@ -534,13 +532,7 @@ def Eco_TypeTableOp : Eco_Op<"type_table", [HasParent<"::mlir::ModuleOp">]> {
 
     Example:
     ```mlir
-    eco.type_table {
-      types = [...],
-      fields = [...],
-      ctors = [...],
-      func_args = [...],
-      strings = [...]
-    }
+    eco.type_table <{types = [...], fields = [...], ctors = [...], func_args = [...], strings = [...]}>
     ```
   }];
 
@@ -553,7 +545,7 @@ def Eco_TypeTableOp : Eco_Op<"type_table", [HasParent<"::mlir::ModuleOp">]> {
   );
   let results = (outs);
 
-  let assemblyFormat = "attr-dict";
+  let assemblyFormat = "prop-dict attr-dict";
 }
 
 //===----------------------------------------------------------------------===//
@@ -608,7 +600,7 @@ def Eco_ListConstructOp : Eco_Op<"construct.list", [Pure]> {
 
     Example:
     ```mlir
-    %cons = eco.construct.list %head, %tail {head_unboxed = false, head_kind = 0}
+    %cons = eco.construct.list %head, %tail <{head_unboxed = false, head_kind = 0}>
       : !eco.value, !eco.value -> !eco.value
     ```
   }];
@@ -624,7 +616,7 @@ def Eco_ListConstructOp : Eco_Op<"construct.list", [Pure]> {
   // SD-4: head_kind must equal the head's type kind (CGEN_026).
   let hasVerifier = 1;
 
-  let assemblyFormat = "$head `,` $tail attr-dict `:` type($head) `,` type($tail) `->` type($result)";
+  let assemblyFormat = "$head `,` $tail prop-dict attr-dict `:` type($head) `,` type($tail) `->` type($result)";
 }
 
 def Eco_ListHeadOp : Eco_Op<"project.list_head", [Pure]> {
@@ -751,7 +743,7 @@ def Eco_ListMapOp : Eco_Op<"list.map"> {
 
   let assemblyFormat = [{
     $input `,` $callback (`captures` `(` $captures^ `:` type($captures) `)`)?
-    attr-dict `:` type($result)
+    prop-dict attr-dict `:` type($result)
   }];
 
   let hasVerifier = 1;
@@ -773,7 +765,7 @@ def Eco_Tuple2ConstructOp : Eco_Op<"construct.tuple2", [Pure]> {
 
     Example:
     ```mlir
-    %tuple = eco.construct.tuple2 %a, %b {unboxed_bitmap = 0}
+    %tuple = eco.construct.tuple2 %a, %b <{unboxed_bitmap = 0}>
       : !eco.value, !eco.value -> !eco.value
     ```
   }];
@@ -788,7 +780,7 @@ def Eco_Tuple2ConstructOp : Eco_Op<"construct.tuple2", [Pure]> {
   // SD-4: unboxed_bitmap must equal the operand type kinds (CGEN_026).
   let hasVerifier = 1;
 
-  let assemblyFormat = "$a `,` $b attr-dict `:` type($a) `,` type($b) `->` type($result)";
+  let assemblyFormat = "$a `,` $b prop-dict attr-dict `:` type($a) `,` type($b) `->` type($result)";
 }
 
 def Eco_Tuple3ConstructOp : Eco_Op<"construct.tuple3", [Pure]> {
@@ -802,7 +794,7 @@ def Eco_Tuple3ConstructOp : Eco_Op<"construct.tuple3", [Pure]> {
 
     Example:
     ```mlir
-    %tuple = eco.construct.tuple3 %a, %b, %c {unboxed_bitmap = 0}
+    %tuple = eco.construct.tuple3 %a, %b, %c <{unboxed_bitmap = 0}>
       : !eco.value, !eco.value, !eco.value -> !eco.value
     ```
   }];
@@ -818,7 +810,7 @@ def Eco_Tuple3ConstructOp : Eco_Op<"construct.tuple3", [Pure]> {
   // SD-4: unboxed_bitmap must equal the operand type kinds (CGEN_026).
   let hasVerifier = 1;
 
-  let assemblyFormat = "$a `,` $b `,` $c attr-dict `:` type($a) `,` type($b) `,` type($c) `->` type($result)";
+  let assemblyFormat = "$a `,` $b `,` $c prop-dict attr-dict `:` type($a) `,` type($b) `,` type($c) `->` type($result)";
 }
 
 def Eco_Tuple2ProjectOp : Eco_Op<"project.tuple2", [Pure]> {
@@ -883,7 +875,7 @@ def Eco_RecordConstructOp : Eco_Op<"construct.record", [Pure]> {
 
     Example:
     ```mlir
-    %rec = eco.construct.record(%x, %y) {field_count = 2, slot_kinds = array<i8: 0, 0>}
+    %rec = eco.construct.record(%x, %y) <{field_count = 2, slot_kinds = array<i8: 0, 0>}>
       : (!eco.value, !eco.value) -> !eco.value
     ```
   }];
@@ -896,7 +888,7 @@ def Eco_RecordConstructOp : Eco_Op<"construct.record", [Pure]> {
   );
   let results = (outs Eco_Value:$result);
 
-  let assemblyFormat = "`(` $fields `)` attr-dict `:` functional-type($fields, $result)";
+  let assemblyFormat = "`(` $fields `)` prop-dict attr-dict `:` functional-type($fields, $result)";
 
   let hasVerifier = 1;
 }
@@ -950,12 +942,7 @@ def Eco_CustomConstructOp : Eco_Op<"construct.custom", [Pure]> {
 
     Example:
     ```mlir
-    %just = eco.construct.custom(%inner) {
-      tag = 1,
-      size = 1,
-      slot_kinds = array<i8: 0>,
-      constructor = "Just"
-    } : (!eco.value) -> !eco.value
+    %just = eco.construct.custom(%inner) <{tag = 1, size = 1, slot_kinds = array<i8: 0>, constructor = "Just"}> : (!eco.value) -> !eco.value
     ```
   }];
 
@@ -971,7 +958,7 @@ def Eco_CustomConstructOp : Eco_Op<"construct.custom", [Pure]> {
 
   let hasVerifier = 1;
 
-  let assemblyFormat = "`(` $fields `)` attr-dict `:` functional-type($fields, $result)";
+  let assemblyFormat = "`(` $fields `)` prop-dict attr-dict `:` functional-type($fields, $result)";
 }
 
 def Eco_CustomProjectOp : Eco_Op<"project.custom", [Pure]> {
@@ -1537,10 +1524,7 @@ def Eco_AllocateOp : Eco_Op<"allocate"> {
 
     Example:
     ```mlir
-    %obj = eco.allocate %size {
-      type = @"Custom.MyType",
-      needs_root = true
-    } : (i64) -> !eco.value
+    %obj = eco.allocate %size <{type = @"Custom.MyType", needs_root = true}> : (i64) -> !eco.value
     ```
   }];
 
@@ -1551,7 +1535,7 @@ def Eco_AllocateOp : Eco_Op<"allocate"> {
   );
   let results = (outs Eco_Value:$result);
 
-  let assemblyFormat = "$size attr-dict `:` type($size) `->` type($result)";
+  let assemblyFormat = "$size prop-dict attr-dict `:` type($size) `->` type($result)";
 }
 
 def Eco_AllocateStringOp : Eco_Op<"allocate_string"> {
@@ -1566,7 +1550,7 @@ def Eco_AllocateStringOp : Eco_Op<"allocate_string"> {
 
     Example:
     ```mlir
-    %str = eco.allocate_string {length = 100 : i64} : !eco.value
+    %str = eco.allocate_string <{length = 100 : i64}> : !eco.value
     ```
   }];
 
@@ -1575,7 +1559,7 @@ def Eco_AllocateStringOp : Eco_Op<"allocate_string"> {
   );
   let results = (outs Eco_Value:$result);
 
-  let assemblyFormat = "attr-dict `:` type($result)";
+  let assemblyFormat = "prop-dict attr-dict `:` type($result)";
 }
 
 def Eco_AllocateClosureOp : Eco_Op<"allocate_closure", [
@@ -1588,10 +1572,7 @@ def Eco_AllocateClosureOp : Eco_Op<"allocate_closure", [
 
     Example:
     ```mlir
-    %closure = eco.allocate_closure {
-      function = @my_func,
-      arity = 3 : i64
-    } : !eco.value
+    %closure = eco.allocate_closure <{function = @my_func, arity = 3 : i64}> : !eco.value
     ```
   }];
 
@@ -1601,7 +1582,7 @@ def Eco_AllocateClosureOp : Eco_Op<"allocate_closure", [
   );
   let results = (outs Eco_Value:$result);
 
-  let assemblyFormat = "attr-dict `:` type($result)";
+  let assemblyFormat = "prop-dict attr-dict `:` type($result)";
 }
 
 //===----------------------------------------------------------------------===//
@@ -3096,7 +3077,7 @@ def Eco_CustomMakeOp : Eco_Op<"make.custom", [Pure]> {
     OptionalAttr<StrAttr>:$constructor
   );
   let results = (outs Eco_Custom:$result);
-  let assemblyFormat = "`(` $fields `)` attr-dict `:` functional-type($fields, $result)";
+  let assemblyFormat = "`(` $fields `)` prop-dict attr-dict `:` functional-type($fields, $result)";
 
   let hasVerifier = 1;
 }
@@ -3177,7 +3158,7 @@ def Eco_ToHeapOp : Eco_Op<"to_heap"> {
   let hasVerifier = 1;
 
   let assemblyFormat =
-    "$value attr-dict "
+    "$value prop-dict attr-dict "
     "`:` functional-type($value, $result)";
 }
 
@@ -3242,6 +3223,6 @@ def Eco_MakeClosureOp : Eco_Op<"make.closure", [
   let hasVerifier = 1;
 
   let assemblyFormat =
-    "$function `,` $env attr-dict "
+    "$function `,` $env prop-dict attr-dict "
     "`:` functional-type($env, $result)";
 }

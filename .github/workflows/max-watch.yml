@@ -1,0 +1,49 @@
+# Watches for Modular MAX releases newer than the one eco pins (deps/versions.env MAX_VERSION),
+# and opens an issue for each: the release, the llvm-project commit it pins, and whether moving to
+# it means an LLVM build and port or only a re-lock (plans/llvm-24-upgrade.md §10.6). It builds
+# nothing; moving the pin stays a deliberate change (scripts/deps.sh max <version>).
+name: max-watch
+
+on:
+  schedule:
+    - cron: '0 6 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Compare the newest MAX with the pin
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          pinned=$(scripts/deps.sh get MAX_VERSION)
+          ours=$(scripts/deps.sh get LLVM_COMMIT)
+          read -r latest pin < <(scripts/deps.sh latest-max)
+          echo "pinned MAX $pinned (LLVM $ours); newest MAX $latest (LLVM $pin)"
+          if [ "$latest" = "$pinned" ]; then
+            echo "eco is on the newest MAX."
+            exit 0
+          fi
+          title="MAX $latest is out (eco pins $pinned)"
+          if gh issue list --state all --search "in:title \"MAX $latest is out\"" --json title --jq '.[].title' | grep -qF "MAX $latest is out"; then
+            echo "An issue for MAX $latest exists already."
+            exit 0
+          fi
+          if [ "$pin" = "$ours" ]; then
+            cost="It pins the same llvm-project commit as eco, so moving is a re-lock only: no LLVM build, no port."
+          else
+            cost="It pins llvm-project \`$pin\` (eco is on \`$ours\`), so moving means an LLVM build (the llvm-build workflow, hours) and usually a few LLVM API fixes (docs/llvm-pins.md)."
+          fi
+          gh issue create --title "$title" --body "Modular MAX $latest is on PyPI; eco pins $pinned (deps/versions.env).
+
+          $cost
+
+          To move: on a \`ci/\` branch, run \`scripts/deps.sh max $latest\`, push, and follow plans/llvm-24-upgrade.md §9."

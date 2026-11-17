@@ -26,7 +26,7 @@ module {
     %b8 = eco.box %c8 : i64 -> !eco.value
 
     // Constructor with 8 fields
-    %ctor8 = eco.construct.custom(%b1, %b2, %b3, %b4, %b5, %b6, %b7, %b8) {slot_kinds = array<i8: 0, 0, 0, 0, 0, 0, 0, 0>, tag = 0 : i64, size = 8 : i64} : (!eco.value, !eco.value, !eco.value, !eco.value, !eco.value, !eco.value, !eco.value, !eco.value) -> !eco.value
+    %ctor8 = eco.construct.custom(%b1, %b2, %b3, %b4, %b5, %b6, %b7, %b8) <{slot_kinds = array<i8: 0, 0, 0, 0, 0, 0, 0, 0>, tag = 0 : i64, size = 8 : i64}> : (!eco.value, !eco.value, !eco.value, !eco.value, !eco.value, !eco.value, !eco.value, !eco.value) -> !eco.value
 
     // Project each field and sum
     %p1 = eco.project.custom %ctor8[0] : !eco.value -> !eco.value

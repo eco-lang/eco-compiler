@@ -14,7 +14,7 @@ module {
 
     // Construct with unboxed i32 fields
     // bitmap bit 0 and 1 set for i32 fields
-    %ctor = eco.construct.custom(%char_A, %char_z) {tag = 0 : i64, size = 2 : i64, slot_kinds = array<i8: 3, 3>} : (i32, i32) -> !eco.value
+    %ctor = eco.construct.custom(%char_A, %char_z) <{tag = 0 : i64, size = 2 : i64, slot_kinds = array<i8: 3, 3>}> : (i32, i32) -> !eco.value
 
     eco.dbg %ctor : !eco.value
     // CHECK: [eco.dbg] Ctor0 'A' 'z'
@@ -29,14 +29,14 @@ module {
     // CHECK: [eco.dbg] 'z'
 
     // Test with a BMP Unicode code point (prints as UTF-8)
-    %ctor2 = eco.construct.custom(%char_emoji) {tag = 1 : i64, size = 1 : i64, slot_kinds = array<i8: 3>} : (i32) -> !eco.value
+    %ctor2 = eco.construct.custom(%char_emoji) <{tag = 1 : i64, size = 1 : i64, slot_kinds = array<i8: 3>}> : (i32) -> !eco.value
     %p2 = eco.project.custom %ctor2[0] : !eco.value -> i32
     eco.dbg %p2 : i32
     // CHECK: [eco.dbg] '☺'
 
     // Mix boxed eco.value and unboxed i32
     %boxed = eco.box %char_A : i32 -> !eco.value
-    %ctor3 = eco.construct.custom(%boxed, %char_z) {tag = 2 : i64, size = 2 : i64, slot_kinds = array<i8: 0, 3>} : (!eco.value, i32) -> !eco.value
+    %ctor3 = eco.construct.custom(%boxed, %char_z) <{tag = 2 : i64, size = 2 : i64, slot_kinds = array<i8: 0, 3>}> : (!eco.value, i32) -> !eco.value
 
     %p3_boxed = eco.project.custom %ctor3[0] : !eco.value -> !eco.value
     eco.dbg %p3_boxed : !eco.value
@@ -49,7 +49,7 @@ module {
     // Astral code point U+1F600 in a Char field: the full i32 survives the
     // heap word and the projection
     %char_astral = arith.constant 128512 : i32
-    %ctor4 = eco.construct.custom(%char_astral, %char_A) {tag = 3 : i64, size = 2 : i64, slot_kinds = array<i8: 3, 3>} : (i32, i32) -> !eco.value
+    %ctor4 = eco.construct.custom(%char_astral, %char_A) <{tag = 3 : i64, size = 2 : i64, slot_kinds = array<i8: 3, 3>}> : (i32, i32) -> !eco.value
     eco.dbg %ctor4 : !eco.value
     // CHECK: [eco.dbg] Ctor3 '😀' 'A'
     %p4 = eco.project.custom %ctor4[0] : !eco.value -> i32

@@ -14,11 +14,7 @@ module {
     %b30 = eco.box %i30 : i64 -> !eco.value
 
     // Pattern: boxed, unboxed, boxed (bitmap = 0b010 = 2)
-    %obj1 = eco.construct.custom(%b10, %i20, %b30) {
-      tag = 0 : i64,
-      size = 3 : i64,
-      slot_kinds = array<i8: 0, 1, 0>
-    } : (!eco.value, i64, !eco.value) -> !eco.value
+    %obj1 = eco.construct.custom(%b10, %i20, %b30) <{tag = 0 : i64, size = 3 : i64, slot_kinds = array<i8: 0, 1, 0>}> : (!eco.value, i64, !eco.value) -> !eco.value
     eco.dbg %obj1 : !eco.value
     // CHECK: Ctor
 
@@ -36,11 +32,7 @@ module {
     // Pattern: unboxed, boxed, unboxed, boxed (bitmap = 0b0101 = 5)
     %i40 = arith.constant 40 : i64
     %b40 = eco.box %i40 : i64 -> !eco.value
-    %obj2 = eco.construct.custom(%i10, %b20, %i30, %b40) {
-      tag = 1 : i64,
-      size = 4 : i64,
-      slot_kinds = array<i8: 1, 0, 1, 0>
-    } : (i64, !eco.value, i64, !eco.value) -> !eco.value
+    %obj2 = eco.construct.custom(%i10, %b20, %i30, %b40) <{tag = 1 : i64, size = 4 : i64, slot_kinds = array<i8: 1, 0, 1, 0>}> : (i64, !eco.value, i64, !eco.value) -> !eco.value
     eco.dbg %obj2 : !eco.value
     // CHECK: Ctor
 
@@ -58,11 +50,7 @@ module {
     // CHECK: 40
 
     // Pattern: first unboxed, rest boxed (bitmap = 0b0001 = 1)
-    %obj3 = eco.construct.custom(%i10, %b20, %b30, %b40) {
-      tag = 2 : i64,
-      size = 4 : i64,
-      slot_kinds = array<i8: 1, 0, 0, 0>
-    } : (i64, !eco.value, !eco.value, !eco.value) -> !eco.value
+    %obj3 = eco.construct.custom(%i10, %b20, %b30, %b40) <{tag = 2 : i64, size = 4 : i64, slot_kinds = array<i8: 1, 0, 0, 0>}> : (i64, !eco.value, !eco.value, !eco.value) -> !eco.value
     eco.dbg %obj3 : !eco.value
     // CHECK: Ctor
 
@@ -74,11 +62,7 @@ module {
     // CHECK: 20
 
     // Pattern: last unboxed, rest boxed (bitmap = 0b1000 = 8)
-    %obj4 = eco.construct.custom(%b10, %b20, %b30, %i40) {
-      tag = 3 : i64,
-      size = 4 : i64,
-      slot_kinds = array<i8: 0, 0, 0, 1>
-    } : (!eco.value, !eco.value, !eco.value, i64) -> !eco.value
+    %obj4 = eco.construct.custom(%b10, %b20, %b30, %i40) <{tag = 3 : i64, size = 4 : i64, slot_kinds = array<i8: 0, 0, 0, 1>}> : (!eco.value, !eco.value, !eco.value, i64) -> !eco.value
     eco.dbg %obj4 : !eco.value
     // CHECK: Ctor
 

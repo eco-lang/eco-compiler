@@ -15,7 +15,7 @@ module {
   func.func @make_closure_packed(%cap0: i64, %cap1: !eco.value) -> !eco.value {
     %env = eco.make.closure_env(%cap0, %cap1)
          : (i64, !eco.value) -> !eco.closure_env<i64, !eco.value>
-    %clo = eco.make.closure @stub_evaluator, %env {arity = 3 : i64}
+    %clo = eco.make.closure @stub_evaluator, %env <{arity = 3 : i64}>
          : (!eco.closure_env<i64, !eco.value>) -> !eco.value
     return %clo : !eco.value
   }
@@ -23,7 +23,7 @@ module {
   func.func @make_closure_rk1(%cap0: i64, %cap1: !eco.value) -> !eco.value {
     %env = eco.make.closure_env(%cap0, %cap1)
          : (i64, !eco.value) -> !eco.closure_env<i64, !eco.value>
-    %clo = eco.make.closure @stub_evaluator, %env {arity = 3 : i64, _result_kind = 1 : i8}
+    %clo = eco.make.closure @stub_evaluator, %env <{arity = 3 : i64}> {_result_kind = 1 : i8}
          : (!eco.closure_env<i64, !eco.value>) -> !eco.value
     return %clo : !eco.value
   }

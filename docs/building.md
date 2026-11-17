@@ -9,14 +9,19 @@ end of this document. For macOS and Windows hosts, see
 
 ## Docker Setup
 
-The Docker setup is built from four images: two LLVM/MLIR base images (slow,
-rebuilt only when `LLVM_VERSION` changes) and consumer images that
-`COPY /opt/llvm-mlir` from a base.
+The Docker setup is built from two LLVM/MLIR base images and the consumer
+images that `COPY /opt/llvm-mlir` from a base. The base images are built at the
+llvm-project commit [`deps/versions.env`](../deps/versions.env) pins
+(`LLVM_COMMIT`: the commit Modular MAX pins). The `llvm-build` workflow builds
+each once per commit and recipe and publishes it to GHCR, named by
+`scripts/deps.sh artifact debian|alpine`
+(`ghcr.io/eco-lang/eco-llvm-<platform>:<commit>-<recipe hash>`), so a dev box
+pulls it instead of building LLVM.
 
 ```
-eco-llvm-debian:21.1.8 ──► eco-dev                  (glibc dev shell)
-eco-llvm-alpine:21.1.8 ─┬► eco-static               (static `eco` binary)
-                        └► eco-static-dev:local     (musl dev shell)
+eco-llvm-debian:<commit>-<hash> ──► eco-dev                  (glibc dev shell)
+eco-llvm-alpine:<commit>-<hash> ─┬► eco-static               (static `eco` binary)
+                                 └► eco-static-dev:local     (musl dev shell)
 ```
 
 ### 1. Creating all the images
@@ -24,24 +29,42 @@ eco-llvm-alpine:21.1.8 ─┬► eco-static               (static `eco` binary)
 From `/work`:
 
 ```bash
-# 1a. LLVM/MLIR base images (~30–60 min each, independent — can run in
-#     parallel). Only re-run when LLVM_VERSION changes.
-docker build -f docker/llvm-debian.Dockerfile -t eco-llvm-debian:21.1.8 .
-docker build -f docker/llvm-alpine.Dockerfile -t eco-llvm-alpine:21.1.8 .
+# 1a + 1b. Pull the pinned LLVM images and build eco-dev and eco-local-dev
+#     (--static adds the musl images; --local builds LLVM here instead of
+#     pulling it, ~30-60 min per image). While the eco-lang packages are
+#     private, log in first:
+#       gh auth token | docker login ghcr.io -u <github user> --password-stdin
+local-dev/build-images.sh --static
 
-# 1b. Glibc dev image (needs eco-llvm-debian).
-docker build -f docker/eco-dev.Dockerfile -t eco-dev .
-
-# 1c. Static `eco` binary (FROM scratch; needs eco-llvm-alpine). This makes an
+# 1c. Static `eco` binary (FROM scratch; needs the alpine LLVM). This makes an
 #     image, not files on the host: for the release bundles in dist/, see
 #     section 2 (--target eco-bundle -o ./dist).
-docker build -f docker/static-build.Dockerfile --target eco-static -t eco-static .
-
-# 1d. Musl interactive dev image (needs eco-llvm-alpine).
-docker build -f docker/static-dev.Dockerfile -t eco-static-dev:local .
+docker build -f docker/static-build.Dockerfile \
+  --build-arg LLVM_IMAGE="$(scripts/deps.sh artifact alpine)" \
+  --target eco-static -t eco-static .
 ```
 
-Each consumer image (1b/1c/1d) only needs its corresponding base from 1a.
+`build-images.sh` runs the chain in order: the LLVM image(s), then `eco-dev`
+(with the LLVM image, its commit and the pinned uv as build arguments, none of
+which has a default), then `eco-local-dev`, and with `--static`,
+`eco-static-dev:local`. `local-dev/dev.sh` refuses to start an image whose LLVM
+is not the pinned one, and CMake refuses a build tree configured against
+another LLVM (`cmake/EcoLlvmPin.cmake`): after a pin moves, re-run
+`build-images.sh` and delete old build trees.
+
+### Moving a pin
+
+`scripts/deps.sh` changes the versions, and nothing else needs editing by hand:
+
+```bash
+scripts/deps.sh max 26.8.0     # MAX, and (LLVM_FOLLOWS=max) LLVM to MAX's own pin
+scripts/deps.sh check          # everything consistent? (CI runs this)
+```
+
+A MAX release that keeps its LLVM commit needs no LLVM build: push, and CI
+re-syncs MAX. One that moves it starts the `llvm-build` workflow (hours,
+unattended) and usually a few LLVM API fixes; log them in
+[`docs/llvm-pins.md`](llvm-pins.md). See `plans/llvm-24-upgrade.md` §9.
 
 **Optional: GenMC for the GC's weak-memory checks** (`test/genmc/`, target
 `genmc-check`; not used by CI). GenMC is an opt-in layer on top of eco-dev, so the
@@ -199,6 +222,17 @@ The Elm toolchain itself (`elm 0.19.1`, `elm-format`, `elm-test-rs`) is **not**
 pulled from npm. CMake fetches those binaries with SHA256-pinned URLs from
 upstream GitHub releases into `build/toolchain/bin/` (see
 `compiler/cmake/toolchain.cmake`). You do not need to `npm install` them.
+
+eco also needs its pinned LLVM/MLIR at `/opt/llvm-mlir` (on `CMAKE_PREFIX_PATH`).
+The simplest source is the published image, which holds only that tree:
+
+```bash
+id=$(docker create "$(scripts/deps.sh artifact debian)" true)
+sudo docker cp "$id:/opt/llvm-mlir" /opt/ && docker rm "$id"
+```
+
+and, for MAX, [uv](https://docs.astral.sh/uv/) at least at `UV_VERSION` from
+`deps/versions.env` (without it, configure turns MAX off).
 
 Then configure and build with any of the presets above:
 

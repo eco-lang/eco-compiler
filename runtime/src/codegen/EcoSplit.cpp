@@ -361,7 +361,7 @@ llvm::Expected<SplitPlan> buildPartitions(ModuleOp src, unsigned N, bool imports
             }
         }
         if (listChunks && !sawFlags)
-            b.create<LLVM::ModuleFlagsOp>(
+            LLVM::ModuleFlagsOp::create(b,
                 src.getLoc(),
                 ArrayAttr::get(ctx, {LLVM::ModuleFlagAttr::get(
                                         ctx, LLVM::ModFlagBehavior::Warning,

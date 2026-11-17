@@ -11,11 +11,7 @@ module {
     %i3 = arith.constant 300 : i64
     %i4 = arith.constant 400 : i64
 
-    %obj1 = eco.construct.custom(%i1, %i2, %i3, %i4) {
-      tag = 0 : i64,
-      size = 4 : i64,
-      slot_kinds = array<i8: 1, 1, 1, 1>
-    } : (i64, i64, i64, i64) -> !eco.value
+    %obj1 = eco.construct.custom(%i1, %i2, %i3, %i4) <{tag = 0 : i64, size = 4 : i64, slot_kinds = array<i8: 1, 1, 1, 1>}> : (i64, i64, i64, i64) -> !eco.value
     eco.dbg %obj1 : !eco.value
     // CHECK: Ctor
 
@@ -37,11 +33,7 @@ module {
     // Fields 0 and 2 are unboxed, fields 1 and 3 are boxed
     %b10 = eco.box %i1 : i64 -> !eco.value
     %b30 = eco.box %i3 : i64 -> !eco.value
-    %obj2 = eco.construct.custom(%i1, %b10, %i3, %b30) {
-      tag = 1 : i64,
-      size = 4 : i64,
-      slot_kinds = array<i8: 1, 0, 1, 0>
-    } : (i64, !eco.value, i64, !eco.value) -> !eco.value
+    %obj2 = eco.construct.custom(%i1, %b10, %i3, %b30) <{tag = 1 : i64, size = 4 : i64, slot_kinds = array<i8: 1, 0, 1, 0>}> : (i64, !eco.value, i64, !eco.value) -> !eco.value
     eco.dbg %obj2 : !eco.value
     // CHECK: Ctor
 
@@ -60,11 +52,7 @@ module {
     // CHECK: 300
 
     // Construct with bitmap = 0b1010 = 10 (fields 1, 3 unboxed)
-    %obj3 = eco.construct.custom(%b10, %i2, %b30, %i4) {
-      tag = 2 : i64,
-      size = 4 : i64,
-      slot_kinds = array<i8: 0, 1, 0, 1>
-    } : (!eco.value, i64, !eco.value, i64) -> !eco.value
+    %obj3 = eco.construct.custom(%b10, %i2, %b30, %i4) <{tag = 2 : i64, size = 4 : i64, slot_kinds = array<i8: 0, 1, 0, 1>}> : (!eco.value, i64, !eco.value, i64) -> !eco.value
     eco.dbg %obj3 : !eco.value
     // CHECK: Ctor
 

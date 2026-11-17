@@ -18,7 +18,7 @@ module {
 
     // (i64, f64): 2-bit kinds Int|Float -> mask 0b1001 = 9.
     // Header word = Tag_Tuple2(4) | 9<<10 | 24<<32.
-    %t2 = eco.construct.tuple2 %a, %f {unboxed_bitmap = 9} : i64, f64 -> !eco.value
+    %t2 = eco.construct.tuple2 %a, %f <{unboxed_bitmap = 9}> : i64, f64 -> !eco.value
     %p0 = eco.project.tuple2 %t2[0] : !eco.value -> i64
     eco.dbg %p0 : i64
     // JIT: 42
@@ -29,14 +29,14 @@ module {
     // Boxed second slot (kind 00): the fresh store must go through the
     // REP_LLVM_002 barriered helper (eco.boxed_slot-tagged).
     %boxed = eco.box %a : i64 -> !eco.value
-    %t2b = eco.construct.tuple2 %a, %boxed {unboxed_bitmap = 1} : i64, !eco.value -> !eco.value
+    %t2b = eco.construct.tuple2 %a, %boxed <{unboxed_bitmap = 1}> : i64, !eco.value -> !eco.value
     %q1 = eco.project.tuple2 %t2b[1] : !eco.value -> !eco.value
     %q1u = eco.unbox %q1 : !eco.value -> i64
     eco.dbg %q1u : i64
     // JIT: 42
 
     // Tuple3 (i64, i64, f64): kinds 01|01|10 -> mask 0b100101 = 37.
-    %t3 = eco.construct.tuple3 %a, %p0, %f {unboxed_bitmap = 37} : i64, i64, f64 -> !eco.value
+    %t3 = eco.construct.tuple3 %a, %p0, %f <{unboxed_bitmap = 37}> : i64, i64, f64 -> !eco.value
     %r2 = eco.project.tuple3 %t3[2] : !eco.value -> f64
     eco.dbg %r2 : f64
     // JIT: 2.5

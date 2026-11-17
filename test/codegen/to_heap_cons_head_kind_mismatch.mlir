@@ -15,7 +15,7 @@ module {
   func.func @bad(%h: !eco.value, %t: !eco.value) -> !eco.value {
     %c = eco.make.cons %h, %t
        : (!eco.value, !eco.value) -> !eco.cons<!eco.value, !eco.value>
-    %r = eco.to_heap %c {head_kind = 1 : i64, head_unboxed = true}
+    %r = eco.to_heap %c <{head_kind = 1 : i64, head_unboxed = true}>
        : (!eco.cons<!eco.value, !eco.value>) -> !eco.value
     return %r : !eco.value
   }

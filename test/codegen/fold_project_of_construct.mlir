@@ -25,7 +25,7 @@ module {
     %b9 = eco.box %c9 : i64 -> !eco.value
 
     // Two-field custom, tag 3: field 0 boxed, field 1 boxed.
-    %ctor = eco.construct.custom(%b7, %b9) {slot_kinds = array<i8: 0, 0>, tag = 3 : i64, size = 2 : i64} : (!eco.value, !eco.value) -> !eco.value
+    %ctor = eco.construct.custom(%b7, %b9) <{slot_kinds = array<i8: 0, 0>, tag = 3 : i64, size = 2 : i64}> : (!eco.value, !eco.value) -> !eco.value
 
     // Positive: project.custom of construct.custom, types match (!eco.value).
     // Folds to %b7 / %b9; unbox must print the same values either way.
@@ -49,7 +49,7 @@ module {
     // type, and the fold must return the raw i64 only when the projection asks
     // for i64.
     %nil = eco.constant Empty : !eco.value
-    %cons = eco.construct.list %c7, %nil {head_kind = 1 : i64, head_unboxed = true} : i64, !eco.value -> !eco.value
+    %cons = eco.construct.list %c7, %nil <{head_kind = 1 : i64, head_unboxed = true}> : i64, !eco.value -> !eco.value
 
     %h = eco.project.list_head %cons : !eco.value -> i64
     eco.dbg %h : i64
@@ -58,7 +58,7 @@ module {
     // Tail folds to %nil; projecting its emptiness via get_tag would need a
     // case; instead re-cons and take the head again through the folded tail.
     %t = eco.project.list_tail %cons : !eco.value -> !eco.value
-    %cons2 = eco.construct.list %c9, %t {head_kind = 1 : i64, head_unboxed = true} : i64, !eco.value -> !eco.value
+    %cons2 = eco.construct.list %c9, %t <{head_kind = 1 : i64, head_unboxed = true}> : i64, !eco.value -> !eco.value
     %h2 = eco.project.list_head %cons2 : !eco.value -> i64
     eco.dbg %h2 : i64
     // CHECK: [eco.dbg] 9

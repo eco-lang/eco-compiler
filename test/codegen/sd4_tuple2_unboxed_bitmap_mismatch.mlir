@@ -14,7 +14,7 @@ module {
   func.func @main() -> !eco.value {
     %a = arith.constant 42 : i64
     %b = eco.constant Empty : !eco.value
-    %t = eco.construct.tuple2 %a, %b {unboxed_bitmap = 4} : i64, !eco.value -> !eco.value
+    %t = eco.construct.tuple2 %a, %b <{unboxed_bitmap = 4}> : i64, !eco.value -> !eco.value
     eco.return %t : !eco.value
   }
 }

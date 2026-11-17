@@ -112,10 +112,10 @@ struct ReturnOpLowering : public OpConversionPattern<ReturnOp> {
             auto structTy = LLVM::LLVMStructType::getLiteral(ctx, fieldTys);
             auto ptrTy = LLVM::LLVMPointerType::get(ctx);
             for (auto [i, v] : llvm::enumerate(adaptor.getResults())) {
-                Value gep = rewriter.create<LLVM::GEPOp>(
+                Value gep = LLVM::GEPOp::create(rewriter,
                     loc, ptrTy, structTy, slot,
                     ArrayRef<LLVM::GEPArg>{0, static_cast<int32_t>(i)});
-                rewriter.create<LLVM::StoreOp>(loc, v, gep);
+                LLVM::StoreOp::create(rewriter, loc, v, gep);
             }
             rewriter.replaceOpWithNewOp<func::ReturnOp>(op);
             return success();
@@ -155,7 +155,7 @@ struct GetTagOpLowering : public OpConversionPattern<GetTagOp> {
 
         if (!inlineDerefExtEnabled()) {
             auto getTagFunc = runtime.getOrCreateGetTag(rewriter);
-            auto call = rewriter.create<LLVM::CallOp>(loc, getTagFunc, ValueRange{value});
+            auto call = LLVM::CallOp::create(rewriter, loc, getTagFunc, ValueRange{value});
             rewriter.replaceOp(op, call.getResult());
             return success();
         }
@@ -163,7 +163,7 @@ struct GetTagOpLowering : public OpConversionPattern<GetTagOp> {
         // A marker, not inline blocks: this op may be inside an scf region,
         // which must stay a single block.
         auto markerFunc = runtime.getOrCreateGetTagInlineMarker(rewriter);
-        auto call = rewriter.create<LLVM::CallOp>(loc, markerFunc, ValueRange{value});
+        auto call = LLVM::CallOp::create(rewriter, loc, markerFunc, ValueRange{value});
         rewriter.replaceOp(op, call.getResult());
         return success();
     }
@@ -220,14 +220,14 @@ struct CaseOpLowering : public OpConversionPattern<CaseOp> {
             unboxedValue = scrutinee;
             // For char case, truncate to the i32 code point
             if (!isIntCase) {
-                unboxedValue = rewriter.create<LLVM::TruncOp>(loc, charTy, unboxedValue);
+                unboxedValue = LLVM::TruncOp::create(rewriter, loc, charTy, unboxedValue);
             }
         } else if (eco::isEcoCharType(scrutineeType)) {
             // Already unboxed i32 (char) - use directly
             unboxedValue = scrutinee;
             // For int case, extend to i64
             if (isIntCase) {
-                unboxedValue = rewriter.create<LLVM::ZExtOp>(loc, i64Ty, unboxedValue);
+                unboxedValue = LLVM::ZExtOp::create(rewriter, loc, i64Ty, unboxedValue);
             }
         } else {
             // A boxed Int or Char is a heap box, never an embedded constant,
@@ -236,22 +236,22 @@ struct CaseOpLowering : public OpConversionPattern<CaseOp> {
             if (inlineDerefExtEnabled()) {
                 auto hptrTy = getHPtrLLVMType(*ctx);
                 Value base = inlineResolvedBase(rewriter, loc, scrutinee, runtime);
-                auto offset = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, layout::HeaderSize);
-                auto valuePtr = rewriter.create<LLVM::GEPOp>(loc, hptrTy, i8Ty, base, ValueRange{offset});
-                unboxedValue = rewriter.create<LLVM::LoadOp>(loc, i64Ty, valuePtr, layout::Alignment);
+                auto offset = LLVM::ConstantOp::create(rewriter, loc, i64Ty, layout::HeaderSize);
+                auto valuePtr = LLVM::GEPOp::create(rewriter, loc, hptrTy, i8Ty, base, ValueRange{offset});
+                unboxedValue = LLVM::LoadOp::create(rewriter, loc, i64Ty, valuePtr, layout::Alignment);
             } else {
                 auto resolveFunc = runtime.getOrCreateResolveHPtr(rewriter);
-                auto resolveCall = rewriter.create<LLVM::CallOp>(loc, resolveFunc, ValueRange{scrutinee});
+                auto resolveCall = LLVM::CallOp::create(rewriter, loc, resolveFunc, ValueRange{scrutinee});
                 Value ptr = resolveCall.getResult();
-                auto offset = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, layout::HeaderSize);
-                auto valuePtr = rewriter.create<LLVM::GEPOp>(loc, ptrTy, i8Ty, ptr, ValueRange{offset});
-                unboxedValue = rewriter.create<LLVM::LoadOp>(loc, i64Ty, valuePtr);
+                auto offset = LLVM::ConstantOp::create(rewriter, loc, i64Ty, layout::HeaderSize);
+                auto valuePtr = LLVM::GEPOp::create(rewriter, loc, ptrTy, i8Ty, ptr, ValueRange{offset});
+                unboxedValue = LLVM::LoadOp::create(rewriter, loc, i64Ty, valuePtr);
             }
 
             // For char case, truncate to the i32 code point (ElmChar.value
             // is the low half of the payload word; the high half is padding)
             if (!isIntCase) {
-                unboxedValue = rewriter.create<LLVM::TruncOp>(loc, charTy, unboxedValue);
+                unboxedValue = LLVM::TruncOp::create(rewriter, loc, charTy, unboxedValue);
             }
         }
 
@@ -314,7 +314,7 @@ struct CaseOpLowering : public OpConversionPattern<CaseOp> {
             caseValuesAPInt.push_back(llvm::APInt(bitWidth, v));
         }
 
-        rewriter.create<cf::SwitchOp>(
+        cf::SwitchOp::create(rewriter,
             loc, unboxedValue, defaultBlock, ValueRange{},
             ArrayRef<llvm::APInt>(caseValuesAPInt),
             caseDests, caseOperands);
@@ -344,7 +344,7 @@ struct CaseOpLowering : public OpConversionPattern<CaseOp> {
                         }
                     }
                 } else {
-                    rewriter.create<cf::BranchOp>(loc, mergeBlock);
+                    cf::BranchOp::create(rewriter, loc, mergeBlock);
                 }
                 continue;
             }
@@ -376,16 +376,16 @@ struct CaseOpLowering : public OpConversionPattern<CaseOp> {
                         // Convert type if needed
                         Type converted = getTypeConverter()->convertType(v.getType());
                         if (converted != v.getType()) {
-                            v = rewriter.create<UnrealizedConversionCastOp>(
+                            v = UnrealizedConversionCastOp::create(rewriter,
                                 loc, converted, v).getResult(0);
                         }
                         branchArgs.push_back(v);
                     }
-                    rewriter.create<cf::BranchOp>(loc, mergeBlock, branchArgs);
+                    cf::BranchOp::create(rewriter, loc, mergeBlock, branchArgs);
                     rewriter.eraseOp(term);
                 } else if (isa<ReturnOp>(term)) {
                     rewriter.setInsertionPoint(term);
-                    rewriter.create<cf::BranchOp>(loc, mergeBlock);
+                    cf::BranchOp::create(rewriter, loc, mergeBlock);
                     rewriter.eraseOp(term);
                 }
             }
@@ -495,8 +495,8 @@ struct CaseOpLowering : public OpConversionPattern<CaseOp> {
                 // ptr(1) so both operands have the same type.
                 int64_t emptyStringVal = value_enc::encodeConstant(value_enc::Empty);
                 auto hptrTy = getHPtrLLVMType(*ctx);
-                Value emptyI64 = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, emptyStringVal);
-                patternValue = rewriter.create<LLVM::IntToPtrOp>(loc, hptrTy, emptyI64);
+                Value emptyI64 = LLVM::ConstantOp::create(rewriter, loc, i64Ty, emptyStringVal);
+                patternValue = LLVM::IntToPtrOp::create(rewriter, loc, hptrTy, emptyI64);
             } else {
                 // The ASCII test must agree with preMaterializeStringCases,
                 // which chose the global's element type with it: [N x i8]
@@ -506,22 +506,22 @@ struct CaseOpLowering : public OpConversionPattern<CaseOp> {
                     llvm::raw_svector_ostream os(globalName);
                     os << "__eco_str_case_" << caseId << "_" << i;
                 }
-                auto addrOf = rewriter.create<LLVM::AddressOfOp>(loc, ptrTy, globalName);
+                auto addrOf = LLVM::AddressOfOp::create(rewriter, loc, ptrTy, globalName);
 
                 if (isAsciiCasePattern(pattern)) {
                     auto allocFunc = runtime.getOrCreateAllocStringLiteralUtf8(rewriter);
-                    auto lenVal = rewriter.create<LLVM::ConstantOp>(loc, i32Ty,
+                    auto lenVal = LLVM::ConstantOp::create(rewriter, loc, i32Ty,
                         static_cast<int32_t>(pattern.size()));
-                    auto allocCall = rewriter.create<LLVM::CallOp>(loc, allocFunc,
+                    auto allocCall = LLVM::CallOp::create(rewriter, loc, allocFunc,
                         ValueRange{addrOf, lenVal});
                     patternValue = allocCall.getResult();
                 } else {
                     std::vector<uint16_t> utf16 = utf8ToUtf16(pattern);
                     size_t length = utf16.size();
                     auto allocFunc = runtime.getOrCreateAllocStringLiteral(rewriter);
-                    auto lengthVal = rewriter.create<LLVM::ConstantOp>(loc, i32Ty,
+                    auto lengthVal = LLVM::ConstantOp::create(rewriter, loc, i32Ty,
                         static_cast<int32_t>(length));
-                    auto allocCall = rewriter.create<LLVM::CallOp>(loc, allocFunc,
+                    auto allocCall = LLVM::CallOp::create(rewriter, loc, allocFunc,
                         ValueRange{addrOf, lengthVal});
                     patternValue = allocCall.getResult();
                 }
@@ -529,7 +529,7 @@ struct CaseOpLowering : public OpConversionPattern<CaseOp> {
 
             // The marker returns i1; Elm_Kernel_Utils_equal returns a boxed Bool,
             // compared with the True word.
-            auto cmpCall = rewriter.create<LLVM::CallOp>(loc, equalFunc,
+            auto cmpCall = LLVM::CallOp::create(rewriter, loc, equalFunc,
                 ValueRange{scrutinee, patternValue});
             Value isEqual;
             if (valueEqStrCaseEnabled()) {
@@ -537,11 +537,11 @@ struct CaseOpLowering : public OpConversionPattern<CaseOp> {
             } else {
                 Value boxedResult = cmpCall.getResult();
                 auto hptrTy = getHPtrLLVMType(*ctx);
-                Value trueI64 = rewriter.create<LLVM::ConstantOp>(
+                Value trueI64 = LLVM::ConstantOp::create(rewriter,
                     loc, i64Ty, value_enc::encodeConstant(value_enc::True));
                 Value trueConst =
-                    rewriter.create<LLVM::IntToPtrOp>(loc, hptrTy, trueI64);
-                isEqual = rewriter.create<LLVM::ICmpOp>(
+                    LLVM::IntToPtrOp::create(rewriter, loc, hptrTy, trueI64);
+                isEqual = LLVM::ICmpOp::create(rewriter,
                     loc, LLVM::ICmpPredicate::eq, boxedResult, trueConst);
             }
 
@@ -557,7 +557,7 @@ struct CaseOpLowering : public OpConversionPattern<CaseOp> {
             }
 
             rewriter.setInsertionPointToEnd(compareBlock);
-            rewriter.create<cf::CondBranchOp>(loc, isEqual,
+            cf::CondBranchOp::create(rewriter, loc, isEqual,
                 caseBlocks[i], ValueRange{}, elseBlock, ValueRange{});
 
             if (i + 1 < numPatterns) {
@@ -567,7 +567,7 @@ struct CaseOpLowering : public OpConversionPattern<CaseOp> {
 
         // If there are no patterns, branch directly to default
         if (numPatterns == 0) {
-            rewriter.create<cf::BranchOp>(loc, caseBlocks.back());
+            cf::BranchOp::create(rewriter, loc, caseBlocks.back());
         }
 
         Value originalScrutinee = op->getOperand(0);
@@ -593,7 +593,7 @@ struct CaseOpLowering : public OpConversionPattern<CaseOp> {
                         }
                     }
                 } else {
-                    rewriter.create<cf::BranchOp>(loc, mergeBlock);
+                    cf::BranchOp::create(rewriter, loc, mergeBlock);
                 }
                 continue;
             }
@@ -625,16 +625,16 @@ struct CaseOpLowering : public OpConversionPattern<CaseOp> {
                         // Convert type if needed
                         Type converted = getTypeConverter()->convertType(v.getType());
                         if (converted != v.getType()) {
-                            v = rewriter.create<UnrealizedConversionCastOp>(
+                            v = UnrealizedConversionCastOp::create(rewriter,
                                 loc, converted, v).getResult(0);
                         }
                         branchArgs.push_back(v);
                     }
-                    rewriter.create<cf::BranchOp>(loc, mergeBlock, branchArgs);
+                    cf::BranchOp::create(rewriter, loc, mergeBlock, branchArgs);
                     rewriter.eraseOp(term);
                 } else if (isa<ReturnOp>(term)) {
                     rewriter.setInsertionPoint(term);
-                    rewriter.create<cf::BranchOp>(loc, mergeBlock);
+                    cf::BranchOp::create(rewriter, loc, mergeBlock);
                     rewriter.eraseOp(term);
                 }
             }
@@ -697,30 +697,30 @@ struct CaseOpLowering : public OpConversionPattern<CaseOp> {
         Block *embHeapBlock = nullptr;
 
         if (isI1Scrutinee) {
-            ctorTag = rewriter.create<LLVM::ZExtOp>(loc, i32Ty, scrutinee);
+            ctorTag = LLVM::ZExtOp::create(rewriter, loc, i32Ty, scrutinee);
         } else {
             // The integer form of the scrutinee is used only in this block;
             // every shift and mask on it is done here (REP_LLVM_001(d)), and
             // the constant block uses only the masked results.
             Value scrutineeI64 = caseScrutineeToI64(rewriter, loc, scrutinee);
 
-            auto ptrIndShift = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, value_enc::PtrIndBit);
-            auto ptrIndShifted = rewriter.create<LLVM::LShrOp>(loc, scrutineeI64, ptrIndShift);
-            auto one64 = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, 1);
-            auto ptrIndBit = rewriter.create<LLVM::AndOp>(loc, ptrIndShifted, one64);
-            auto maskF = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, value_enc::ConstFieldMask);
-            auto constField = rewriter.create<LLVM::AndOp>(loc, scrutineeI64, maskF);
+            auto ptrIndShift = LLVM::ConstantOp::create(rewriter, loc, i64Ty, value_enc::PtrIndBit);
+            auto ptrIndShifted = LLVM::LShrOp::create(rewriter, loc, scrutineeI64, ptrIndShift);
+            auto one64 = LLVM::ConstantOp::create(rewriter, loc, i64Ty, 1);
+            auto ptrIndBit = LLVM::AndOp::create(rewriter, loc, ptrIndShifted, one64);
+            auto maskF = LLVM::ConstantOp::create(rewriter, loc, i64Ty, value_enc::ConstFieldMask);
+            auto constField = LLVM::AndOp::create(rewriter, loc, scrutineeI64, maskF);
             // The null-constructor index (HEAP_044).
-            auto nullConsShiftC = rewriter.create<LLVM::ConstantOp>(
+            auto nullConsShiftC = LLVM::ConstantOp::create(rewriter,
                 loc, i64Ty, value_enc::NullConsShift);
             auto nullConsShifted =
-                rewriter.create<LLVM::LShrOp>(loc, scrutineeI64, nullConsShiftC);
-            auto nullConsMaxC = rewriter.create<LLVM::ConstantOp>(
+                LLVM::LShrOp::create(rewriter, loc, scrutineeI64, nullConsShiftC);
+            auto nullConsMaxC = LLVM::ConstantOp::create(rewriter,
                 loc, i64Ty, static_cast<int64_t>(value_enc::NullConsMax));
             auto nullConsIdx64 =
-                rewriter.create<LLVM::AndOp>(loc, nullConsShifted, nullConsMaxC);
-            auto zero64 = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, 0);
-            isConstant = rewriter.create<LLVM::ICmpOp>(loc, LLVM::ICmpPredicate::ne,
+                LLVM::AndOp::create(rewriter, loc, nullConsShifted, nullConsMaxC);
+            auto zero64 = LLVM::ConstantOp::create(rewriter, loc, i64Ty, 0);
+            isConstant = LLVM::ICmpOp::create(rewriter, loc, LLVM::ICmpPredicate::ne,
                                                              ptrIndBit, zero64);
 
             embConstBlock = rewriter.createBlock(parentRegion);
@@ -731,24 +731,24 @@ struct CaseOpLowering : public OpConversionPattern<CaseOp> {
             // Embedded constant: the tag comes from the word alone, without
             // the scrutinee's type.
             rewriter.setInsertionPointToStart(embConstBlock);
-            auto trueConst = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, value_enc::True);
-            auto falseConst = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, value_enc::False);
-            auto isTrue = rewriter.create<LLVM::ICmpOp>(loc, LLVM::ICmpPredicate::eq,
+            auto trueConst = LLVM::ConstantOp::create(rewriter, loc, i64Ty, value_enc::True);
+            auto falseConst = LLVM::ConstantOp::create(rewriter, loc, i64Ty, value_enc::False);
+            auto isTrue = LLVM::ICmpOp::create(rewriter, loc, LLVM::ICmpPredicate::eq,
                                                         constField, trueConst);
-            auto isFalse = rewriter.create<LLVM::ICmpOp>(loc, LLVM::ICmpPredicate::eq,
+            auto isFalse = LLVM::ICmpOp::create(rewriter, loc, LLVM::ICmpPredicate::eq,
                                                          constField, falseConst);
-            auto isBool = rewriter.create<LLVM::OrOp>(loc, isTrue, isFalse);
-            auto boolTag64 = rewriter.create<LLVM::ZExtOp>(loc, i64Ty, isTrue);
-            auto constantTagC = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, value_enc::ConstantTag);
-            auto nullConsConst = rewriter.create<LLVM::ConstantOp>(
+            auto isBool = LLVM::OrOp::create(rewriter, loc, isTrue, isFalse);
+            auto boolTag64 = LLVM::ZExtOp::create(rewriter, loc, i64Ty, isTrue);
+            auto constantTagC = LLVM::ConstantOp::create(rewriter, loc, i64Ty, value_enc::ConstantTag);
+            auto nullConsConst = LLVM::ConstantOp::create(rewriter,
                 loc, i64Ty, static_cast<int64_t>(value_enc::NullCons));
-            auto isNullCons = rewriter.create<LLVM::ICmpOp>(
+            auto isNullCons = LLVM::ICmpOp::create(rewriter,
                 loc, LLVM::ICmpPredicate::eq, constField, nullConsConst);
-            auto legacyTag64 = rewriter.create<LLVM::SelectOp>(loc, isBool, boolTag64, constantTagC);
-            auto constTag64 = rewriter.create<LLVM::SelectOp>(
+            auto legacyTag64 = LLVM::SelectOp::create(rewriter, loc, isBool, boolTag64, constantTagC);
+            auto constTag64 = LLVM::SelectOp::create(rewriter,
                 loc, isNullCons, nullConsIdx64, legacyTag64);
-            auto constTag = rewriter.create<LLVM::TruncOp>(loc, i32Ty, constTag64);
-            rewriter.create<cf::BranchOp>(loc, tagMergeBlock, ValueRange{constTag});
+            auto constTag = LLVM::TruncOp::create(rewriter, loc, i32Ty, constTag64);
+            cf::BranchOp::create(rewriter, loc, tagMergeBlock, ValueRange{constTag});
 
             // Heap object: only real heap pointers reach this block, so the
             // forwarding-check marker can be used directly.
@@ -761,21 +761,21 @@ struct CaseOpLowering : public OpConversionPattern<CaseOp> {
                 ctorGepTy = getHPtrLLVMType(*ctx);
             } else {
                 auto resolveFunc = runtime.getOrCreateResolveHPtr(rewriter);
-                auto resolveCall = rewriter.create<LLVM::CallOp>(
+                auto resolveCall = LLVM::CallOp::create(rewriter,
                     loc, resolveFunc, ValueRange{scrutinee});
                 ptr = resolveCall.getResult();
                 ctorGepTy = ptrTy;
             }
 
-            auto offset8 = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, layout::CustomCtorOffset);
-            auto ctorPtr = rewriter.create<LLVM::GEPOp>(loc, ctorGepTy, i8Ty, ptr,
+            auto offset8 = LLVM::ConstantOp::create(rewriter, loc, i64Ty, layout::CustomCtorOffset);
+            auto ctorPtr = LLVM::GEPOp::create(rewriter, loc, ctorGepTy, i8Ty, ptr,
                                                         ValueRange{offset8});
             // The ctor shares its word with the unboxed-slot bits, so a load
             // wider than 16 bits would mix them into the tag.
             auto ctorFieldTy = getU16StorageType(ctx);  // u16 ctor, not Char
-            auto ctorU16 = rewriter.create<LLVM::LoadOp>(loc, ctorFieldTy, ctorPtr);
-            auto ctorFromHeap = rewriter.create<LLVM::ZExtOp>(loc, i32Ty, ctorU16);
-            rewriter.create<cf::BranchOp>(loc, tagMergeBlock, ValueRange{ctorFromHeap});
+            auto ctorU16 = LLVM::LoadOp::create(rewriter, loc, ctorFieldTy, ctorPtr);
+            auto ctorFromHeap = LLVM::ZExtOp::create(rewriter, loc, i32Ty, ctorU16);
+            cf::BranchOp::create(rewriter, loc, tagMergeBlock, ValueRange{ctorFromHeap});
 
             rewriter.setInsertionPointToStart(tagMergeBlock);
             ctorTag = tagMergeBlock->getArgument(0);
@@ -824,7 +824,7 @@ struct CaseOpLowering : public OpConversionPattern<CaseOp> {
         // Create CondBranchOp for embedded constant handling
         if (!isI1Scrutinee) {
             rewriter.setInsertionPointToEnd(originalOpBlock);
-            rewriter.create<cf::CondBranchOp>(loc, isConstant, embConstBlock, embHeapBlock);
+            cf::CondBranchOp::create(rewriter, loc, isConstant, embConstBlock, embHeapBlock);
         }
 
         rewriter.setInsertionPointToEnd(currentBlock);
@@ -841,7 +841,7 @@ struct CaseOpLowering : public OpConversionPattern<CaseOp> {
 
         SmallVector<ValueRange> caseOperands(switchCaseDests.size(), ValueRange{});
 
-        rewriter.create<cf::SwitchOp>(
+        cf::SwitchOp::create(rewriter,
             loc, ctorTag, defaultBlock, ValueRange{},
             ArrayRef<int32_t>(switchCaseValues),
             switchCaseDests, caseOperands);
@@ -869,7 +869,7 @@ struct CaseOpLowering : public OpConversionPattern<CaseOp> {
                         }
                     }
                 } else {
-                    rewriter.create<cf::BranchOp>(loc, mergeBlock);
+                    cf::BranchOp::create(rewriter, loc, mergeBlock);
                 }
                 continue;
             }
@@ -917,16 +917,16 @@ struct CaseOpLowering : public OpConversionPattern<CaseOp> {
                         // Convert type if needed
                         Type converted = getTypeConverter()->convertType(v.getType());
                         if (converted != v.getType()) {
-                            v = rewriter.create<UnrealizedConversionCastOp>(
+                            v = UnrealizedConversionCastOp::create(rewriter,
                                 loc, converted, v).getResult(0);
                         }
                         branchArgs.push_back(v);
                     }
-                    rewriter.create<cf::BranchOp>(loc, mergeBlock, branchArgs);
+                    cf::BranchOp::create(rewriter, loc, mergeBlock, branchArgs);
                     rewriter.eraseOp(term);
                 } else if (isa<ReturnOp>(term)) {
                     rewriter.setInsertionPoint(term);
-                    rewriter.create<cf::BranchOp>(loc, mergeBlock);
+                    cf::BranchOp::create(rewriter, loc, mergeBlock);
                     rewriter.eraseOp(term);
                 }
             }
@@ -938,7 +938,7 @@ struct CaseOpLowering : public OpConversionPattern<CaseOp> {
         // branch here targets it: the switch default is the last alternative.
         if (isTerminalCase && !isValueProducing && mergeBlock->empty()) {
             rewriter.setInsertionPointToEnd(mergeBlock);
-            rewriter.create<LLVM::UnreachableOp>(loc);
+            LLVM::UnreachableOp::create(rewriter, loc);
         }
 
         // Replace uses of eco.case results with merge block arguments
@@ -1005,7 +1005,7 @@ static void lowerNestedJoinpoint(
     contBlock->moveBefore(jpBlock);
 
     rewriter.setInsertionPointToEnd(insertBlock);
-    rewriter.create<cf::BranchOp>(loc, contBlock);
+    cf::BranchOp::create(rewriter, loc, contBlock);
 
     IRMapping bodyMapping(mapping);
     for (auto [oldArg, newArg] : llvm::zip(bodyEntry.getArguments(),
@@ -1038,7 +1038,7 @@ static void lowerJoinpointRegion(
 
     for (Operation &innerOp : llvm::make_early_inc_range(sourceBlock)) {
         if (isa<ReturnOp>(&innerOp)) {
-            rewriter.create<cf::BranchOp>(loc, exitBlock);
+            cf::BranchOp::create(rewriter, loc, exitBlock);
         } else if (isa<JumpOp>(&innerOp)) {
             rewriter.clone(innerOp, mapping);
         } else if (auto nestedJP = dyn_cast<JoinpointOp>(&innerOp)) {
@@ -1112,7 +1112,7 @@ struct JoinpointOpLowering : public OpConversionPattern<JoinpointOp> {
         contBlock->moveBefore(jpBlock);
 
         rewriter.setInsertionPointToEnd(currentBlock);
-        rewriter.create<cf::BranchOp>(loc, contBlock);
+        cf::BranchOp::create(rewriter, loc, contBlock);
 
         IRMapping mapping;
         for (auto [oldArg, newArg] : llvm::zip(bodyEntry.getArguments(),
@@ -1250,7 +1250,7 @@ void eco::detail::preMaterializeStringCases(
             if (isAsciiCasePattern(pattern)) {
                 size_t byteLen = pattern.size();
                 auto arrayTy = LLVM::LLVMArrayType::get(i8Ty, byteLen);
-                auto globalOp = builder.create<LLVM::GlobalOp>(
+                auto globalOp = LLVM::GlobalOp::create(builder,
                     op.getLoc(), arrayTy, /*isConstant=*/true,
                     LLVM::Linkage::Internal, globalName, /*value=*/Attribute{});
                 Block *initBlock =
@@ -1262,16 +1262,16 @@ void eco::detail::preMaterializeStringCases(
                 auto denseAttr = DenseElementsAttr::get(
                     RankedTensorType::get({static_cast<int64_t>(byteLen)}, i8Ty),
                     ArrayRef<int8_t>(byteValues));
-                auto initValue = builder.create<LLVM::ConstantOp>(
+                auto initValue = LLVM::ConstantOp::create(builder,
                     op.getLoc(), arrayTy, denseAttr);
-                builder.create<LLVM::ReturnOp>(op.getLoc(), initValue.getResult());
+                LLVM::ReturnOp::create(builder, op.getLoc(), initValue.getResult());
                 continue;
             }
 
             std::vector<uint16_t> utf16 = utf8ToUtf16(pattern);
             size_t length = utf16.size();
             auto arrayTy = LLVM::LLVMArrayType::get(utf16UnitTy, length);
-            auto globalOp = builder.create<LLVM::GlobalOp>(
+            auto globalOp = LLVM::GlobalOp::create(builder,
                 op.getLoc(), arrayTy, /*isConstant=*/true,
                 LLVM::Linkage::Internal, globalName, /*value=*/Attribute{});
             Block *initBlock =
@@ -1284,8 +1284,8 @@ void eco::detail::preMaterializeStringCases(
                 RankedTensorType::get({static_cast<int64_t>(length)}, utf16UnitTy),
                 ArrayRef<int16_t>(charValues));
             auto initValue =
-                builder.create<LLVM::ConstantOp>(op.getLoc(), arrayTy, denseAttr);
-            builder.create<LLVM::ReturnOp>(op.getLoc(), initValue.getResult());
+                LLVM::ConstantOp::create(builder, op.getLoc(), arrayTy, denseAttr);
+            LLVM::ReturnOp::create(builder, op.getLoc(), initValue.getResult());
         }
     };
     for (const PreMatDemand &d : demand)

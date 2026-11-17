@@ -1,0 +1,17 @@
+# The Modular MAX engine eco builds and tests against: the wheel carries libmax, its C API headers
+# (max/include) and its kernel packages. Not a Python package of eco's: uv only installs it.
+#
+# Do not edit the versions here by hand: scripts/deps.sh writes them from deps/versions.env
+# (MAX_VERSION, PYTHON_VERSION, UV_VERSION) and re-locks.
+[project]
+name = "eco-max"
+version = "0"
+description = "Modular MAX, pinned for eco"
+requires-python = "==3.11.*"
+dependencies = [
+    "max==26.7.0",
+]
+
+[tool.uv]
+required-version = ">=0.13.5"
+package = false

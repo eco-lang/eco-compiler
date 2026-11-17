@@ -85,9 +85,9 @@ struct DbgOpLowering : public OpConversionPattern<DbgOp> {
 
             auto valArrayTy = LLVM::LLVMArrayType::get(i64Ty, numArgs);
             auto typeArrayTy = LLVM::LLVMArrayType::get(i32Ty, numArgs);
-            auto one = rewriter.create<LLVM::ConstantOp>(loc, i32Ty, 1);
-            auto valuesAlloca = rewriter.create<LLVM::AllocaOp>(loc, ptrTy, valArrayTy, one);
-            auto typesAlloca = rewriter.create<LLVM::AllocaOp>(loc, ptrTy, typeArrayTy, one);
+            auto one = LLVM::ConstantOp::create(rewriter, loc, i32Ty, 1);
+            auto valuesAlloca = LLVM::AllocaOp::create(rewriter, loc, ptrTy, valArrayTy, one);
+            auto typesAlloca = LLVM::AllocaOp::create(rewriter, loc, ptrTy, typeArrayTy, one);
 
             for (size_t i = 0; i < numArgs; i++) {
                 Value arg = args[i];
@@ -99,20 +99,20 @@ struct DbgOpLowering : public OpConversionPattern<DbgOp> {
                 // slot.
                 Value valAsI64 = valueToI64(rewriter, loc, arg);
 
-                auto idx = rewriter.create<LLVM::ConstantOp>(loc, i32Ty, (int64_t)i);
-                auto zero = rewriter.create<LLVM::ConstantOp>(loc, i32Ty, 0);
-                auto valGep = rewriter.create<LLVM::GEPOp>(loc, ptrTy, valArrayTy, valuesAlloca,
+                auto idx = LLVM::ConstantOp::create(rewriter, loc, i32Ty, (int64_t)i);
+                auto zero = LLVM::ConstantOp::create(rewriter, loc, i32Ty, 0);
+                auto valGep = LLVM::GEPOp::create(rewriter, loc, ptrTy, valArrayTy, valuesAlloca,
                                                           ValueRange{zero, idx});
-                rewriter.create<LLVM::StoreOp>(loc, valAsI64, valGep);
+                LLVM::StoreOp::create(rewriter, loc, valAsI64, valGep);
 
-                auto typeIdCst = rewriter.create<LLVM::ConstantOp>(loc, i32Ty, (int64_t)typeId);
-                auto typeGep = rewriter.create<LLVM::GEPOp>(loc, ptrTy, typeArrayTy, typesAlloca,
+                auto typeIdCst = LLVM::ConstantOp::create(rewriter, loc, i32Ty, (int64_t)typeId);
+                auto typeGep = LLVM::GEPOp::create(rewriter, loc, ptrTy, typeArrayTy, typesAlloca,
                                                            ValueRange{zero, idx});
-                rewriter.create<LLVM::StoreOp>(loc, typeIdCst, typeGep);
+                LLVM::StoreOp::create(rewriter, loc, typeIdCst, typeGep);
             }
 
-            auto numArgsCst = rewriter.create<LLVM::ConstantOp>(loc, i32Ty, (int64_t)numArgs);
-            rewriter.create<LLVM::CallOp>(loc, func, ValueRange{valuesAlloca, typesAlloca, numArgsCst});
+            auto numArgsCst = LLVM::ConstantOp::create(rewriter, loc, i32Ty, (int64_t)numArgs);
+            LLVM::CallOp::create(rewriter, loc, func, ValueRange{valuesAlloca, typesAlloca, numArgsCst});
         } else {
             for (size_t i = 0; i < args.size(); i++) {
                 Type origType = origArgs[i].getType();
@@ -120,27 +120,27 @@ struct DbgOpLowering : public OpConversionPattern<DbgOp> {
 
                 if (origType.isInteger(64)) {
                     auto func = runtime.getOrCreateDbgPrintInt(rewriter);
-                    rewriter.create<LLVM::CallOp>(loc, func, ValueRange{arg});
+                    LLVM::CallOp::create(rewriter, loc, func, ValueRange{arg});
                 } else if (origType.isF64()) {
                     auto func = runtime.getOrCreateDbgPrintFloat(rewriter);
-                    rewriter.create<LLVM::CallOp>(loc, func, ValueRange{arg});
+                    LLVM::CallOp::create(rewriter, loc, func, ValueRange{arg});
                 } else if (eco::isEcoCharType(origType)) {
                     auto func = runtime.getOrCreateDbgPrintChar(rewriter);
-                    rewriter.create<LLVM::CallOp>(loc, func, ValueRange{arg});
+                    LLVM::CallOp::create(rewriter, loc, func, ValueRange{arg});
                 } else {
                     auto func = runtime.getOrCreateDbgPrint(rewriter);
 
                     auto arrayTy = LLVM::LLVMArrayType::get(i64Ty, 1);
-                    auto one = rewriter.create<LLVM::ConstantOp>(loc, i32Ty, 1);
-                    auto alloca = rewriter.create<LLVM::AllocaOp>(loc, ptrTy, arrayTy, one);
+                    auto one = LLVM::ConstantOp::create(rewriter, loc, i32Ty, 1);
+                    auto alloca = LLVM::AllocaOp::create(rewriter, loc, ptrTy, arrayTy, one);
 
-                    auto zero = rewriter.create<LLVM::ConstantOp>(loc, i32Ty, 0);
-                    auto gep = rewriter.create<LLVM::GEPOp>(loc, ptrTy, arrayTy, alloca,
+                    auto zero = LLVM::ConstantOp::create(rewriter, loc, i32Ty, 0);
+                    auto gep = LLVM::GEPOp::create(rewriter, loc, ptrTy, arrayTy, alloca,
                                                             ValueRange{zero, zero});
                     Value argI64 = valueToI64(rewriter, loc, arg);
-                    rewriter.create<LLVM::StoreOp>(loc, argI64, gep);
+                    LLVM::StoreOp::create(rewriter, loc, argI64, gep);
 
-                    rewriter.create<LLVM::CallOp>(loc, func, ValueRange{alloca, one});
+                    LLVM::CallOp::create(rewriter, loc, func, ValueRange{alloca, one});
                 }
             }
         }
@@ -181,10 +181,10 @@ struct CrashOpLowering : public OpConversionPattern<CrashOp> {
         // is declared to take.
         Value msg = adaptor.getMessage();
 
-        rewriter.create<LLVM::CallOp>(loc, func, ValueRange{msg});
+        LLVM::CallOp::create(rewriter, loc, func, ValueRange{msg});
 
         // `eco.crash` is a terminator, so the block needs one in its place.
-        rewriter.create<LLVM::UnreachableOp>(loc);
+        LLVM::UnreachableOp::create(rewriter, loc);
 
         rewriter.eraseOp(op);
         return success();
@@ -229,11 +229,11 @@ struct ExpectOpLowering : public OpConversionPattern<ExpectOp> {
 
         rewriter.setInsertionPointToStart(crashBlock);
         Value msg = adaptor.getMessage();
-        rewriter.create<LLVM::CallOp>(loc, func, ValueRange{msg});
-        rewriter.create<LLVM::UnreachableOp>(loc);
+        LLVM::CallOp::create(rewriter, loc, func, ValueRange{msg});
+        LLVM::UnreachableOp::create(rewriter, loc);
 
         rewriter.setInsertionPointToEnd(currentBlock);
-        rewriter.create<cf::CondBranchOp>(loc, adaptor.getCondition(),
+        cf::CondBranchOp::create(rewriter, loc, adaptor.getCondition(),
                                           continueBlock, crashBlock);
 
         rewriter.setInsertionPointToStart(continueBlock);

@@ -37,8 +37,8 @@
     },
     {
       "name": "mac-build",
-      "displayName": "Mac build (RelWithDebInfo, static LLVM 21.1.8 via $ECO_MAC_DEPS_DIR, full runtime)",
-      "description": "Full configure on macOS (arm64): runtime, kernels, tests, compiler. LLVM/MLIR 21.1.8 static archives from the install tree experiments/mac-llvm-build/build.sh produces; set ECO_MAC_DEPS_DIR to that prefix before running this preset. AppleClang + ld64 (no lld). Minimum macOS comes from CMAKE_OSX_DEPLOYMENT_TARGET (15.0, top-level CMakeLists.txt). Mac CI tests and bootstraps from this tree; the Darwin bundle comes from mac-release. See plans/mac-self-contained-bundle.md.",
+      "displayName": "Mac build (RelWithDebInfo, static pinned LLVM via $ECO_MAC_DEPS_DIR, full runtime)",
+      "description": "Full configure on macOS (arm64): runtime, kernels, tests, compiler. LLVM/MLIR static archives (at the commit deps/versions.env pins) from the install tree experiments/mac-llvm-build/build.sh produces, or the llvm-build workflow publishes; set ECO_MAC_DEPS_DIR to that prefix before running this preset. AppleClang + ld64 (no lld). Minimum macOS comes from CMAKE_OSX_DEPLOYMENT_TARGET (15.0, top-level CMakeLists.txt). Mac CI tests and bootstraps from this tree; the Darwin bundle comes from mac-release. See plans/mac-self-contained-bundle.md.",
       "generator": "Ninja",
       "binaryDir": "${sourceDir}/build",
       "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Darwin" },
@@ -58,6 +58,7 @@
       "binaryDir": "${sourceDir}/build-release",
       "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Darwin" },
       "cacheVariables": {
+        "ECO_MAX": "OFF",
         "CMAKE_BUILD_TYPE": "Release",
         "CMAKE_C_FLAGS_RELEASE": "-O2 -DNDEBUG",
         "CMAKE_CXX_FLAGS_RELEASE": "-O2 -DNDEBUG",
@@ -93,12 +94,13 @@
     },
     {
       "name": "win-build",
-      "displayName": "Windows build (clang-cl + lld-link, /MT static CRT, LLVM 21.1.8 via $LLVM_DIR)",
-      "description": "Full configure on Windows: runtime, kernels, tests, compiler. clang-cl targeting x86_64-pc-windows-msvc + lld-link; CMAKE_PREFIX_PATH expands $LLVM_DIR — set it to the prefix containing the LLVM 21.1.8 install produced by experiments/win-llvm-build before running this preset (no default; CMake's find_package(MLIR REQUIRED) will fail loudly with a list of expected file names if LLVM_DIR is unset). See plans/build-on-windows.md.",
+      "displayName": "Windows build (clang-cl + lld-link, /MT static CRT, pinned LLVM via $LLVM_DIR)",
+      "description": "Full configure on Windows: runtime, kernels, tests, compiler. clang-cl targeting x86_64-pc-windows-msvc + lld-link; CMAKE_PREFIX_PATH expands $LLVM_DIR — set it to the prefix containing the LLVM install (at the commit deps/versions.env pins) produced by experiments/win-llvm-build or published by the llvm-build workflow before running this preset (no default; CMake's find_package(MLIR REQUIRED) will fail loudly with a list of expected file names if LLVM_DIR is unset). See plans/build-on-windows.md.",
       "generator": "Ninja",
       "binaryDir": "${sourceDir}/build",
       "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Windows" },
       "cacheVariables": {
+        "ECO_MAX": "OFF",
         "CMAKE_C_COMPILER": "clang-cl",
         "CMAKE_CXX_COMPILER": "clang-cl",
         "CMAKE_LINKER_TYPE": "LLD",
@@ -121,6 +123,7 @@
       "binaryDir": "${sourceDir}/build-release",
       "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Windows" },
       "cacheVariables": {
+        "ECO_MAX": "OFF",
         "CMAKE_C_COMPILER": "clang-cl",
         "CMAKE_CXX_COMPILER": "clang-cl",
         "CMAKE_LINKER_TYPE": "LLD",
@@ -142,6 +145,7 @@
       "generator": "Ninja",
       "binaryDir": "${sourceDir}/build-static",
       "cacheVariables": {
+        "ECO_MAX": "OFF",
         "CMAKE_C_COMPILER": "clang",
         "CMAKE_CXX_COMPILER": "clang++",
         "CMAKE_BUILD_TYPE": "Release",

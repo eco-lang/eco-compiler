@@ -126,7 +126,7 @@ inline mlir::Value valueToI64(mlir::OpBuilder &builder, mlir::Location loc, mlir
         return v;
     if (isHPtrLLVMType(v.getType())) {
         auto i64Ty = mlir::IntegerType::get(builder.getContext(), 64);
-        return builder.create<mlir::LLVM::PtrToIntOp>(loc, i64Ty, v);
+        return mlir::LLVM::PtrToIntOp::create(builder, loc, i64Ty, v);
     }
     return v;
 }
@@ -141,7 +141,7 @@ inline mlir::Value i64ToValue(mlir::OpBuilder &builder, mlir::Location loc, mlir
         return v;
     if (v.getType().isInteger(64)) {
         auto hptrTy = mlir::LLVM::LLVMPointerType::get(builder.getContext(), /*addressSpace=*/1);
-        return builder.create<mlir::LLVM::IntToPtrOp>(loc, hptrTy, v);
+        return mlir::LLVM::IntToPtrOp::create(builder, loc, hptrTy, v);
     }
     return v;
 }
@@ -168,12 +168,10 @@ inline mlir::Value slotValueToI64(mlir::OpBuilder &builder, mlir::Location loc, 
     if (isHPtrLLVMType(v.getType())) {
         auto i64Ty = mlir::IntegerType::get(builder.getContext(), 64);
         if (slotCastBarriersEnabled())
-            return builder
-                .create<mlir::LLVM::CallOp>(loc, mlir::TypeRange{i64Ty},
-                                            llvm::StringRef(kHPtrToSlotSym),
-                                            mlir::ValueRange{v})
+            return mlir::LLVM::CallOp::create(builder, loc, mlir::TypeRange{i64Ty},
+                                              llvm::StringRef(kHPtrToSlotSym), mlir::ValueRange{v})
                 .getResult();
-        return builder.create<mlir::LLVM::PtrToIntOp>(loc, i64Ty, v);
+        return mlir::LLVM::PtrToIntOp::create(builder, loc, i64Ty, v);
     }
     return v;
 }
@@ -187,12 +185,10 @@ inline mlir::Value slotI64ToValue(mlir::OpBuilder &builder, mlir::Location loc, 
     if (v.getType().isInteger(64)) {
         auto hptrTy = mlir::LLVM::LLVMPointerType::get(builder.getContext(), /*addressSpace=*/1);
         if (slotCastBarriersEnabled())
-            return builder
-                .create<mlir::LLVM::CallOp>(loc, mlir::TypeRange{hptrTy},
-                                            llvm::StringRef(kSlotToHPtrSym),
-                                            mlir::ValueRange{v})
+            return mlir::LLVM::CallOp::create(builder, loc, mlir::TypeRange{hptrTy},
+                                              llvm::StringRef(kSlotToHPtrSym), mlir::ValueRange{v})
                 .getResult();
-        return builder.create<mlir::LLVM::IntToPtrOp>(loc, hptrTy, v);
+        return mlir::LLVM::IntToPtrOp::create(builder, loc, hptrTy, v);
     }
     return v;
 }
@@ -275,7 +271,7 @@ inline mlir::Value caseScrutineeToI64(mlir::OpBuilder &b, mlir::Location loc, ml
 inline mlir::Value wrapperReturnValueToPtr0(mlir::OpBuilder &b, mlir::Location loc,
                                             mlir::Value v, mlir::Type retPtrTy) {
     mlir::Value asI64 = valueToI64(b, loc, v);
-    return b.create<mlir::LLVM::IntToPtrOp>(loc, retPtrTy, mlir::ValueRange{asI64});
+    return mlir::LLVM::IntToPtrOp::create(b, loc, retPtrTy, mlir::ValueRange{asI64});
 }
 
 // Returns the word `loadedI64`, loaded from an evaluator wrapper's argument
@@ -289,7 +285,7 @@ inline mlir::Value wrapperLoadArgSlotToValue(mlir::OpBuilder &b, mlir::Location 
     if (isHPtrLLVMType(targetType))
         return slotI64ToValue(b, loc, loadedI64);
     if (mlir::isa<mlir::LLVM::LLVMPointerType>(targetType))
-        return b.create<mlir::LLVM::IntToPtrOp>(loc, targetType, mlir::ValueRange{loadedI64});
+        return mlir::LLVM::IntToPtrOp::create(b, loc, targetType, mlir::ValueRange{loadedI64});
     return loadedI64;
 }
 
@@ -1311,7 +1307,7 @@ inline mlir::Value inlineResolvedBase(mlir::OpBuilder &b, mlir::Location loc,
                                       mlir::Value hptr,
                                       const EcoRuntime &runtime) {
     auto marker = runtime.getOrCreateResolveFwdMarker(b);
-    return b.create<mlir::LLVM::CallOp>(loc, marker, mlir::ValueRange{hptr})
+    return mlir::LLVM::CallOp::create(b, loc, marker, mlir::ValueRange{hptr})
         .getResult();
 }
 
@@ -1334,24 +1330,24 @@ inline void emitFreshFieldStore(mlir::OpBuilder &b, mlir::Location loc,
     auto i8Ty = mlir::IntegerType::get(ctx, 8);
     auto hptrTy = getHPtrLLVMType(*ctx);
 
-    auto off = b.create<mlir::LLVM::ConstantOp>(loc, i64Ty, byteOffset);
-    auto slotPtr = b.create<mlir::LLVM::GEPOp>(loc, hptrTy, i8Ty, baseHptr,
+    auto off = mlir::LLVM::ConstantOp::create(b, loc, i64Ty, byteOffset);
+    auto slotPtr = mlir::LLVM::GEPOp::create(b, loc, hptrTy, i8Ty, baseHptr,
                                                mlir::ValueRange{off});
 
     bool boxed = false;
     mlir::Value word;
     if (origType.isF64()) {
-        word = b.create<mlir::LLVM::BitcastOp>(loc, i64Ty, fieldVal);
+        word = mlir::LLVM::BitcastOp::create(b, loc, i64Ty, fieldVal);
     } else if (origType.isInteger(64)) {
         word = fieldVal;
     } else if (auto intTy = mlir::dyn_cast<mlir::IntegerType>(origType);
                intTy && intTy.getWidth() < 64) {
-        word = b.create<mlir::LLVM::ZExtOp>(loc, i64Ty, fieldVal);
+        word = mlir::LLVM::ZExtOp::create(b, loc, i64Ty, fieldVal);
     } else {
         boxed = true;
         word = heapStoreValueToI64(b, loc, fieldVal);
     }
-    auto store = b.create<mlir::LLVM::StoreOp>(loc, word, slotPtr);
+    auto store = mlir::LLVM::StoreOp::create(b, loc, word, slotPtr);
     if (boxed)
         store->setAttr("eco.boxed_slot", mlir::UnitAttr::get(ctx));
 }
@@ -1367,7 +1363,7 @@ inline void emitExtKindWordStores(mlir::OpBuilder &b, mlir::Location loc,
                                   uint64_t n, llvm::ArrayRef<uint64_t> ext) {
     auto i64Ty = mlir::IntegerType::get(b.getContext(), 64);
     for (size_t j = 0; j < ext.size(); ++j) {
-        mlir::Value w = b.create<mlir::LLVM::ConstantOp>(
+        mlir::Value w = mlir::LLVM::ConstantOp::create(b,
             loc, i64Ty, static_cast<int64_t>(ext[j]));
         emitFreshFieldStore(b, loc, obj,
                             static_cast<int64_t>(fieldsOffset + (n + j) * layout::PtrSize),
@@ -1397,9 +1393,9 @@ inline void emitExtKindWordStoresCall(mlir::OpBuilder &b, mlir::Location loc,
     auto i32Ty = mlir::IntegerType::get(b.getContext(), 32);
     auto i64Ty = mlir::IntegerType::get(b.getContext(), 64);
     for (size_t j = 0; j < ext.size(); ++j) {
-        auto idx = b.create<mlir::LLVM::ConstantOp>(loc, i32Ty, static_cast<int32_t>(n + j));
-        auto w = b.create<mlir::LLVM::ConstantOp>(loc, i64Ty, static_cast<int64_t>(ext[j]));
-        b.create<mlir::LLVM::CallOp>(loc, storeI64Func, mlir::ValueRange{obj, idx, w});
+        auto idx = mlir::LLVM::ConstantOp::create(b, loc, i32Ty, static_cast<int32_t>(n + j));
+        auto w = mlir::LLVM::ConstantOp::create(b, loc, i64Ty, static_cast<int64_t>(ext[j]));
+        mlir::LLVM::CallOp::create(b, loc, storeI64Func, mlir::ValueRange{obj, idx, w});
     }
 }
 
@@ -1446,30 +1442,30 @@ inline mlir::Value emitInlineAllocWithHeader(mlir::OpBuilder &b,
     auto hptrTy = getHPtrLLVMType(*ctx);
 
     auto marker = runtime.getOrCreateAllocInlineMarker(b);
-    auto sizeConst = b.create<mlir::LLVM::ConstantOp>(
+    auto sizeConst = mlir::LLVM::ConstantOp::create(b,
         loc, i64Ty, static_cast<int64_t>(byteSize));
     mlir::Value obj =
-        b.create<mlir::LLVM::CallOp>(loc, marker, mlir::ValueRange{sizeConst})
+        mlir::LLVM::CallOp::create(b, loc, marker, mlir::ValueRange{sizeConst})
             .getResult();
 
     if (inlineZeroPayload(zeroPayload) && byteSize > 8) {
         auto i8Ty = mlir::IntegerType::get(ctx, 8);
-        auto zeroI8 = b.create<mlir::LLVM::ConstantOp>(
+        auto zeroI8 = mlir::LLVM::ConstantOp::create(b,
             loc, i8Ty, b.getI8IntegerAttr(0));
-        auto eight = b.create<mlir::LLVM::ConstantOp>(loc, i64Ty,
+        auto eight = mlir::LLVM::ConstantOp::create(b, loc, i64Ty,
                                                       static_cast<int64_t>(8));
-        mlir::Value payload = b.create<mlir::LLVM::GEPOp>(
+        mlir::Value payload = mlir::LLVM::GEPOp::create(b,
             loc, obj.getType(), i8Ty, obj, mlir::ValueRange{eight});
-        auto lenConst = b.create<mlir::LLVM::ConstantOp>(
+        auto lenConst = mlir::LLVM::ConstantOp::create(b,
             loc, i64Ty, static_cast<int64_t>(byteSize - 8));
-        b.create<mlir::LLVM::MemsetOp>(loc, payload, zeroI8, lenConst,
+        mlir::LLVM::MemsetOp::create(b, loc, payload, zeroI8, lenConst,
                                        /*isVolatile=*/false);
     }
 
-    auto headerConst = b.create<mlir::LLVM::ConstantOp>(
+    auto headerConst = mlir::LLVM::ConstantOp::create(b,
         loc, i64Ty, static_cast<int64_t>(headerWord));
     // The object's address is the address of its header.
-    b.create<mlir::LLVM::StoreOp>(loc, headerConst, obj, /*alignment=*/8);
+    mlir::LLVM::StoreOp::create(b, loc, headerConst, obj, /*alignment=*/8);
 
     return obj;
 }
@@ -1482,13 +1478,13 @@ inline void emitInlineAllocMetaWord(mlir::OpBuilder &b, mlir::Location loc,
     auto i64Ty = mlir::IntegerType::get(ctx, 64);
     auto i8Ty = mlir::IntegerType::get(ctx, 8);
     auto hptrTy = getHPtrLLVMType(*ctx);
-    auto off = b.create<mlir::LLVM::ConstantOp>(loc, i64Ty,
+    auto off = mlir::LLVM::ConstantOp::create(b, loc, i64Ty,
                                                 static_cast<int64_t>(8));
-    auto slot = b.create<mlir::LLVM::GEPOp>(loc, hptrTy, i8Ty, obj,
+    auto slot = mlir::LLVM::GEPOp::create(b, loc, hptrTy, i8Ty, obj,
                                             mlir::ValueRange{off});
-    auto metaConst = b.create<mlir::LLVM::ConstantOp>(
+    auto metaConst = mlir::LLVM::ConstantOp::create(b,
         loc, i64Ty, static_cast<int64_t>(metaWord));
-    b.create<mlir::LLVM::StoreOp>(loc, metaConst, slot, /*alignment=*/8);
+    mlir::LLVM::StoreOp::create(b, loc, metaConst, slot, /*alignment=*/8);
 }
 
 //===----------------------------------------------------------------------===//
@@ -1908,14 +1904,14 @@ inline void emitChunkedRootPush(mlir::OpBuilder &b, mlir::Location loc,
         if (!m) continue;
         mlir::Value p = base;
         if (off) {
-            auto offC = b.create<mlir::LLVM::ConstantOp>(loc, i64, static_cast<int64_t>(off));
-            p = b.create<mlir::LLVM::GEPOp>(loc, base.getType(), i64, base,
+            auto offC = mlir::LLVM::ConstantOp::create(b, loc, i64, static_cast<int64_t>(off));
+            p = mlir::LLVM::GEPOp::create(b, loc, base.getType(), i64, base,
                                             mlir::ValueRange{offC});
         }
-        auto cnt = b.create<mlir::LLVM::ConstantOp>(loc, i64, static_cast<int64_t>(c));
-        auto mask = b.create<mlir::LLVM::ConstantOp>(
+        auto cnt = mlir::LLVM::ConstantOp::create(b, loc, i64, static_cast<int64_t>(c));
+        auto mask = mlir::LLVM::ConstantOp::create(b,
             loc, i64, b.getI64IntegerAttr(static_cast<int64_t>(m)));
-        b.create<mlir::LLVM::CallOp>(loc, push, mlir::ValueRange{p, cnt, mask});
+        mlir::LLVM::CallOp::create(b, loc, push, mlir::ValueRange{p, cnt, mask});
     }
 }
 

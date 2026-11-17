@@ -10,9 +10,9 @@
 # Produces a single `eco` executable with ZERO shared-library dependencies
 # (verified below with `readelf -d`). Stages:
 #
-#   1. llvm          — FROM eco-llvm-alpine:21.1.8 (built once by
-#                      docker/llvm-alpine.Dockerfile). LLVM 21.1.8 + MLIR
-#                      from source, MUSL + libc++.
+#   1. llvm          — FROM ${LLVM_IMAGE}: docker/llvm-alpine.Dockerfile's
+#                      image, LLVM + MLIR from source at the llvm-project
+#                      commit deps/versions.env pins, MUSL + libc++.
 #   2. glibc-runtime — FROM debian:bookworm, self-contained: apt toolchain +
 #                      LLVM runtime statics from apt (libc++-14-dev etc. —
 #                      mirroring how the musl side takes libc++ from Alpine
@@ -32,16 +32,20 @@
 #                      LAST stage on purpose: a plain `docker build` (no
 #                      --target) runs every smoke gate.
 #
-# PREREQUISITE IMAGE — one, as before Stage D (eco-llvm-debian remains
-# dev-environment-only). One-off, slow; rebuild only when LLVM_VERSION
-# changes:
-#   docker build -f docker/llvm-alpine.Dockerfile -t eco-llvm-alpine:21.1.8 .
+# PREREQUISITE IMAGE — one, as before Stage D (the debian LLVM image remains
+# dev-environment-only): the pinned musl LLVM, which the llvm-build workflow
+# publishes and local-dev/build-images.sh --static pulls (or builds, with
+# --local). Pass it as LLVM_IMAGE (no default, so a forgotten one fails):
+#   L="$(scripts/deps.sh artifact alpine)"
 # Build + run all smoke gates (fast — pulls /opt/llvm-mlir from the images):
-#   docker build -f docker/static-build.Dockerfile .
-# Extract the bundles (cached if the smoke build above already ran):
-#   docker build -f docker/static-build.Dockerfile --target eco-bundle -o ./dist .
+#   docker build -f docker/static-build.Dockerfile --build-arg LLVM_IMAGE="$L" .
+# Extract the bundles (cached if the smoke build above already ran;
+# docker/build-dist.sh does this with a build version):
+#   docker build -f docker/static-build.Dockerfile --build-arg LLVM_IMAGE="$L" \
+#     --target eco-bundle -o ./dist .
 # Extract just the binary:
-#   docker build -f docker/static-build.Dockerfile --target eco-static -t eco-static .
+#   docker build -f docker/static-build.Dockerfile --build-arg LLVM_IMAGE="$L" \
+#     --target eco-static -t eco-static .
 #   id=$(docker create eco-static); docker cp "$id:/eco" ./eco; docker rm "$id"
 #
 # Toolchain facts (eco-builder stage only — LLVM-stage facts live in
@@ -58,10 +62,10 @@ ARG ALPINE_DIGEST=sha256:48b0309ca019d89d40f670aa1bc06e426dc0931948452e8491e3d65
 
 # ============================================================================
 # Stage 1: pre-built LLVM + MLIR (Alpine / MUSL + libc++)
-# Produced by docker/llvm-alpine.Dockerfile. Override with --build-arg
-# LLVM_IMAGE=... if tagged differently.
+# Produced by docker/llvm-alpine.Dockerfile; passed as --build-arg
+# LLVM_IMAGE="$(scripts/deps.sh artifact alpine)".
 # ============================================================================
-ARG LLVM_IMAGE=eco-llvm-alpine:21.1.8
+ARG LLVM_IMAGE
 
 # Base image for the Stage D glibc-runtime stage (used at the FROM below).
 # Declared HERE, in the global scope before the first FROM, because Docker

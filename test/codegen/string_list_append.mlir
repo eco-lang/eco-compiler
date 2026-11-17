@@ -45,8 +45,8 @@ module {
     %n0 = arith.constant 1 : i64
     %n1 = arith.constant 2 : i64
     %nil = eco.constant Empty : !eco.value
-    %l1 = eco.construct.list %n1, %nil {head_kind = 1 : i64, head_unboxed = true} : i64, !eco.value -> !eco.value
-    %l2 = eco.construct.list %n0, %l1 {head_kind = 1 : i64, head_unboxed = true} : i64, !eco.value -> !eco.value
+    %l1 = eco.construct.list %n1, %nil <{head_kind = 1 : i64, head_unboxed = true}> : i64, !eco.value -> !eco.value
+    %l2 = eco.construct.list %n0, %l1 <{head_kind = 1 : i64, head_unboxed = true}> : i64, !eco.value -> !eco.value
     %l3 = eco.list.append %l2, %l2 : !eco.value
 
     // [1,2] ++ [1,2] == [1,2,1,2]; sum the head of the shared rhs spine to

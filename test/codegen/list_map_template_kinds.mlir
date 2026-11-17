@@ -23,13 +23,13 @@ module {
 
   // Int elements -> boxed results: in_kind=1, out_kind=0 -> push_boxed.
   func.func @main(%xs: !eco.value, %f: !eco.value, %c: !eco.value) -> !eco.value attributes {eco.list_chunks} {
-    %r = eco.list.map %xs, %f captures(%c : !eco.value) {callee = @boxcb$cap, in_kind = 1 : i64, out_kind = 0 : i64} : !eco.value
+    %r = eco.list.map %xs, %f captures(%c : !eco.value) <{callee = @boxcb$cap, in_kind = 1 : i64, out_kind = 0 : i64}> : !eco.value
     eco.return %r : !eco.value
   }
 
   // Int elements -> Int results: in_kind=1, out_kind=1 -> push_scalar.
   func.func @scalar_out(%xs: !eco.value, %f: !eco.value, %c: !eco.value) -> !eco.value attributes {eco.list_chunks} {
-    %r = eco.list.map %xs, %f captures(%c : !eco.value) {callee = @intcb$cap, in_kind = 1 : i64, out_kind = 1 : i64} : !eco.value
+    %r = eco.list.map %xs, %f captures(%c : !eco.value) <{callee = @intcb$cap, in_kind = 1 : i64, out_kind = 1 : i64}> : !eco.value
     eco.return %r : !eco.value
   }
 }

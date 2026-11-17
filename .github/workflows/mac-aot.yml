@@ -35,6 +35,9 @@ on:
       - 'CMakePresets.json'
       - 'version.txt'
       - 'system-kernel-cpp/**'
+      - 'deps/**'
+      - 'scripts/deps.sh'
+      - '.github/actions/fetch-llvm/**'
       - '.github/workflows/mac-aot.yml'
       - '.github/scripts/prune-caches.sh'
       - '.github/scripts/eco-version.sh'
@@ -61,6 +64,7 @@ jobs:
     permissions:
       contents: read
       actions: write
+      packages: read
     env:
       # Elm package cache, restored and saved by "Restore Elm package and toolchain cache".
       ELM_HOME: ${{ github.workspace }}/.elm-home
@@ -79,15 +83,14 @@ jobs:
           echo "ECO_VERSION=$v" >> "$GITHUB_ENV"
           echo "Building eco $v"
 
-      - name: Restore LLVM 21.1.8 install tree (from mac-llvm-build)
-        # fail-on-cache-miss: the LLVM source build is mac-llvm-build's job
-        # (2-3 h). A cold cache fails fast and legibly — run mac-llvm-build,
-        # then re-run this. Same contract as win-aot and linux-aot.
-        uses: actions/cache/restore@v4
+      - name: Pull the LLVM install tree (published by llvm-build)
+        # The LLVM source build is llvm-build's job (2-3 h on this runner); a
+        # missing artifact fails here, naming it. Same contract as win-aot and
+        # linux-aot.
+        uses: ./.github/actions/fetch-llvm
         with:
-          path: experiments/mac-llvm-build/out/llvm-install
-          key: mac-llvm-mlir-21.1.8-arm64-macos15.0-release-v1
-          fail-on-cache-miss: true
+          platform: macos
+          dest: experiments/mac-llvm-build/out/llvm-install
 
       - name: Install dependencies
         run: |
@@ -140,12 +143,25 @@ jobs:
           key: mac-aot-ccache-${{ github.sha }}
           restore-keys: mac-aot-ccache-
 
-      - name: Configure (mac-build preset, full)
+      - name: Pinned uv version
+        run: echo "UV_VERSION=$(scripts/deps.sh get UV_VERSION)" >> "$GITHUB_ENV"
+
+      - name: Set up uv (installs the pinned MAX at configure time)
+        uses: astral-sh/setup-uv@v6
+        with:
+          version: ${{ env.UV_VERSION }}
+          # The MAX wheels (about 600 MB), cached once per lock.
+          enable-cache: true
+          cache-dependency-glob: deps/max/uv.lock
+
+      - name: Configure (mac-build preset, full, MAX required)
         # ECO_VERSION_OVERRIDE stamps eco --version and the bundle name.
+        # ECO_MAX=ON: configure fails unless the pinned MAX installs.
         run: |
           cmake --preset mac-build \
             -DCMAKE_C_COMPILER_LAUNCHER=ccache \
             -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
+            -DECO_MAX=ON \
             -DECO_VERSION_OVERRIDE="$ECO_VERSION"
 
       # ---- Gateway 1: front-end (stages 1-5). Pure Node — fails a front-end
@@ -194,6 +210,11 @@ jobs:
           rc=${PIPESTATUS[0]}
           tail -30 /tmp/test_output.txt
           exit $rc
+
+      - name: MAX smoke test
+        # Loads the pinned MAX, compiles and runs a small graph, and checks the
+        # guard that keeps malformed modules away from it.
+        run: cmake --build build --target run-max-smoke
 
       # ---- Gateway 4: the full Stage 6-9 self-host chain. `--target eco`
       #      transitively pulls Stage 6 (eco-compiler Mach-O), 7a/7b
@@ -291,6 +312,7 @@ jobs:
     permissions:
       contents: read
       actions: write
+      packages: read
     env:
       # Elm package cache, restored and saved by "Restore Elm package and toolchain cache".
       ELM_HOME: ${{ github.workspace }}/.elm-home
@@ -307,15 +329,14 @@ jobs:
           echo "ECO_VERSION=$v" >> "$GITHUB_ENV"
           echo "Building eco $v"
 
-      - name: Restore LLVM 21.1.8 install tree (from mac-llvm-build)
-        # fail-on-cache-miss: the LLVM source build is mac-llvm-build's job
-        # (2-3 h). A cold cache fails fast and legibly — run mac-llvm-build,
-        # then re-run this. Same contract as win-aot and linux-aot.
-        uses: actions/cache/restore@v4
+      - name: Pull the LLVM install tree (published by llvm-build)
+        # The LLVM source build is llvm-build's job (2-3 h on this runner); a
+        # missing artifact fails here, naming it. Same contract as win-aot and
+        # linux-aot.
+        uses: ./.github/actions/fetch-llvm
         with:
-          path: experiments/mac-llvm-build/out/llvm-install
-          key: mac-llvm-mlir-21.1.8-arm64-macos15.0-release-v1
-          fail-on-cache-miss: true
+          platform: macos
+          dest: experiments/mac-llvm-build/out/llvm-install
 
       - name: Install dependencies
         run: |

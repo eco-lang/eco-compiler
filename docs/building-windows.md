@@ -8,8 +8,8 @@ single [`win-aot.yml`][win-aot] workflow — front-end Stages 1–5, the
 elm-tests suite, runtime + JIT E2E, the Stage 6 → 9 AOT self-host chain,
 and, in a parallel job built with the `win-release` preset, the unified
 bundle smoke-tested with `eco.exe --help` — backed by
-[`win-llvm-build.yml`][win-llvm-build], the cached LLVM-MSVC base-image
-warmer. (`win-aot` supersedes the former `win-bootstrap` + `win-runtime`
+[`llvm-build.yml`][llvm-build], which builds and publishes the LLVM-MSVC
+install tree once per pinned commit. (`win-aot` supersedes the former `win-bootstrap` + `win-runtime`
 workflows, folded in as gateway steps.) See
 [Known limitations](#known-limitations-v1) for the pieces still deferred
 behind explicit gates.
@@ -27,8 +27,8 @@ behind explicit gates.
   `npm install -g pnpm`.
 - **PowerShell 5.1+** or pwsh 7+ — used for the toolchain extraction step
   in `compiler/cmake/toolchain.cmake`.
-- **LLVM 21.1.8 + MLIR** built from source — see [LLVM build](#llvm-build)
-  below.
+- **LLVM + MLIR** at the pinned llvm-project commit — see
+  [LLVM build](#llvm-build) below.
 
 ## Open a Developer Command Prompt
 
@@ -47,11 +47,20 @@ once per session:
 
 ## LLVM build
 
-The Windows port pins **LLVM 21.1.8 with MLIR**, X86 backend only, Release,
-static MSVC runtime. The `experiments/win-llvm-build/build.ps1` script is
-the source of truth — invoke it directly, or copy its `cmake` invocation
-into your own script. The build takes ~2-4 h on a 4-vCPU laptop; the
-resulting install tree is ~2.5 GB.
+The Windows port builds **LLVM with MLIR** at the llvm-project commit
+[`deps/versions.env`](../deps/versions.env) pins (`LLVM_COMMIT`, the commit
+Modular MAX pins), X86 backend only, Release, static MSVC runtime. CI's
+`llvm-build` workflow builds it once per commit and publishes the install tree
+to GHCR (`scripts/deps.sh artifact windows` names it; pull it with
+[ORAS](https://oras.land) and unpack `llvm-install.tar.gz`). To build it
+yourself, the `experiments/win-llvm-build/build.ps1` script is the source of
+truth — invoke it directly, or copy its `cmake` invocation into your own
+script. The build takes ~2-4 h on a 4-vCPU laptop; the resulting install tree
+is ~2.5 GB. It records the commit in `ECO_LLVM_COMMIT`, which CMake checks
+against the pin.
+
+MAX publishes no Windows build, so Windows builds have no MAX (`ECO_MAX` is
+off in the Windows presets).
 
 ```powershell
 # From a Developer Command Prompt:
@@ -145,5 +154,5 @@ when invoked:
   `cmake/EcoCreateDirLink.cmake`.
 
 [win-aot]: ../.github/workflows/win-aot.yml
-[win-llvm-build]: ../.github/workflows/win-llvm-build.yml
+[llvm-build]: ../.github/workflows/llvm-build.yml
 [presets]: ../CMakePresets.json

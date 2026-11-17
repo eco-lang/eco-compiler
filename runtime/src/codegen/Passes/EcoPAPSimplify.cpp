@@ -138,7 +138,7 @@ struct SaturatedPapToCallPattern : public OpRewritePattern<PapExtendOp> {
 
         Type resultType = extendOp.getResult().getType();
 
-        auto callOp = rewriter.create<CallOp>(
+        auto callOp = CallOp::create(rewriter,
             extendOp.getLoc(),
             TypeRange{resultType},
             allOperands,
@@ -214,7 +214,7 @@ struct MultiUsePapElisionPattern : public OpRewritePattern<PapCreateOp> {
             Type resultType = ext.getResult().getType();
 
             rewriter.setInsertionPoint(ext);
-            auto callOp = rewriter.create<CallOp>(
+            auto callOp = CallOp::create(rewriter,
                 ext.getLoc(),
                 TypeRange{resultType},
                 allOperands,
@@ -286,7 +286,7 @@ struct FusePapExtendChainPattern : public OpRewritePattern<PapExtendOp> {
         Type resultType = extendOp.getResult().getType();
 
         // Builder arguments: result, closure, newargs, remaining_arity, slot_kinds, _fast_evaluator, _call_kind.
-        auto fusedOp = rewriter.create<PapExtendOp>(
+        auto fusedOp = PapExtendOp::create(rewriter,
             extendOp.getLoc(),
             resultType,                             // Result type
             prevExtend.getClosure(),                // Original closure (skip intermediate)

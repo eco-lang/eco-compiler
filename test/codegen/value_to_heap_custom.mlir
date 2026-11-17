@@ -4,9 +4,9 @@
 
 module {
   func.func @value_to_heap_custom(%inner: !eco.value) -> !eco.value {
-    %c = eco.make.custom(%inner) {tag = 1 : i64, constructor = "Just"}
+    %c = eco.make.custom(%inner) <{tag = 1 : i64, constructor = "Just"}>
        : (!eco.value) -> !eco.custom<!eco.value>
-    %h = eco.to_heap %c {tag = 1 : i64} : (!eco.custom<!eco.value>) -> !eco.value
+    %h = eco.to_heap %c <{tag = 1 : i64}> : (!eco.custom<!eco.value>) -> !eco.value
     return %h : !eco.value
   }
 }

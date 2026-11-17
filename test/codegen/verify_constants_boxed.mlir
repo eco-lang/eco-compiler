@@ -22,37 +22,37 @@ module {
 
     // Store each constant in a structure field and project back
     // All fields are !eco.value, so every slot kind is 0
-    %s1 = eco.construct.custom(%nil) {slot_kinds = array<i8: 0>, tag = 1 : i64, size = 1 : i64} : (!eco.value) -> !eco.value
+    %s1 = eco.construct.custom(%nil) <{slot_kinds = array<i8: 0>, tag = 1 : i64, size = 1 : i64}> : (!eco.value) -> !eco.value
     %p1 = eco.project.custom %s1[0] : !eco.value -> !eco.value
     eco.dbg %p1 : !eco.value
     // CHECK: <empty>
 
-    %s2 = eco.construct.custom(%true) {slot_kinds = array<i8: 0>, tag = 2 : i64, size = 1 : i64} : (!eco.value) -> !eco.value
+    %s2 = eco.construct.custom(%true) <{slot_kinds = array<i8: 0>, tag = 2 : i64, size = 1 : i64}> : (!eco.value) -> !eco.value
     %p2 = eco.project.custom %s2[0] : !eco.value -> !eco.value
     eco.dbg %p2 : !eco.value
     // CHECK: True
 
-    %s3 = eco.construct.custom(%false) {slot_kinds = array<i8: 0>, tag = 3 : i64, size = 1 : i64} : (!eco.value) -> !eco.value
+    %s3 = eco.construct.custom(%false) <{slot_kinds = array<i8: 0>, tag = 3 : i64, size = 1 : i64}> : (!eco.value) -> !eco.value
     %p3 = eco.project.custom %s3[0] : !eco.value -> !eco.value
     eco.dbg %p3 : !eco.value
     // CHECK: False
 
-    %s4 = eco.construct.custom(%unit) {slot_kinds = array<i8: 0>, tag = 4 : i64, size = 1 : i64} : (!eco.value) -> !eco.value
+    %s4 = eco.construct.custom(%unit) <{slot_kinds = array<i8: 0>, tag = 4 : i64, size = 1 : i64}> : (!eco.value) -> !eco.value
     %p4 = eco.project.custom %s4[0] : !eco.value -> !eco.value
     eco.dbg %p4 : !eco.value
     // CHECK: <empty>
 
-    %s5 = eco.construct.custom(%nothing) {slot_kinds = array<i8: 0>, tag = 5 : i64, size = 1 : i64} : (!eco.value) -> !eco.value
+    %s5 = eco.construct.custom(%nothing) <{slot_kinds = array<i8: 0>, tag = 5 : i64, size = 1 : i64}> : (!eco.value) -> !eco.value
     %p5 = eco.project.custom %s5[0] : !eco.value -> !eco.value
     eco.dbg %p5 : !eco.value
     // CHECK: <empty>
 
-    %s6 = eco.construct.custom(%empty_str) {slot_kinds = array<i8: 0>, tag = 6 : i64, size = 1 : i64} : (!eco.value) -> !eco.value
+    %s6 = eco.construct.custom(%empty_str) <{slot_kinds = array<i8: 0>, tag = 6 : i64, size = 1 : i64}> : (!eco.value) -> !eco.value
     %p6 = eco.project.custom %s6[0] : !eco.value -> !eco.value
     eco.dbg %p6 : !eco.value
     // CHECK: <empty>
 
-    %s7 = eco.construct.custom(%empty_rec) {slot_kinds = array<i8: 0>, tag = 7 : i64, size = 1 : i64} : (!eco.value) -> !eco.value
+    %s7 = eco.construct.custom(%empty_rec) <{slot_kinds = array<i8: 0>, tag = 7 : i64, size = 1 : i64}> : (!eco.value) -> !eco.value
     %p7 = eco.project.custom %s7[0] : !eco.value -> !eco.value
     eco.dbg %p7 : !eco.value
     // CHECK: <empty>
@@ -62,7 +62,7 @@ module {
     %b42 = eco.box %i42 : i64 -> !eco.value
 
     // Both are !eco.value (boxed), slot kinds 0
-    %mix1 = eco.construct.custom(%b42, %nil) {tag = 10 : i64, size = 2 : i64, slot_kinds = array<i8: 0, 0>} : (!eco.value, !eco.value) -> !eco.value
+    %mix1 = eco.construct.custom(%b42, %nil) <{tag = 10 : i64, size = 2 : i64, slot_kinds = array<i8: 0, 0>}> : (!eco.value, !eco.value) -> !eco.value
     eco.dbg %mix1 : !eco.value
     // CHECK: Ctor10 42 <empty>
 
@@ -78,7 +78,7 @@ module {
     // Here we have: i64 (unboxed), !eco.value (constant, boxed)
     // slot_kinds: only field 0 is unboxed
     %raw42 = arith.constant 42 : i64
-    %mix2 = eco.construct.custom(%raw42, %true) {tag = 11 : i64, size = 2 : i64, slot_kinds = array<i8: 1, 0>} : (i64, !eco.value) -> !eco.value
+    %mix2 = eco.construct.custom(%raw42, %true) <{tag = 11 : i64, size = 2 : i64, slot_kinds = array<i8: 1, 0>}> : (i64, !eco.value) -> !eco.value
     eco.dbg %mix2 : !eco.value
     // CHECK: Ctor11 42 True
 
@@ -93,7 +93,7 @@ module {
     // === Test constant at end of structure with multiple unboxed fields ===
     // i64, f64, !eco.value - fields 0 and 1 are unboxed
     %pi = arith.constant 3.14159 : f64
-    %mix3 = eco.construct.custom(%raw42, %pi, %false) {tag = 12 : i64, size = 3 : i64, slot_kinds = array<i8: 1, 2, 0>} : (i64, f64, !eco.value) -> !eco.value
+    %mix3 = eco.construct.custom(%raw42, %pi, %false) <{tag = 12 : i64, size = 3 : i64, slot_kinds = array<i8: 1, 2, 0>}> : (i64, f64, !eco.value) -> !eco.value
     eco.dbg %mix3 : !eco.value
     // CHECK: Ctor12
 
@@ -104,7 +104,7 @@ module {
     // === Test constant in middle of structure ===
     // i64, !eco.value, i64 - fields 0 and 2 are unboxed
     %i99 = arith.constant 99 : i64
-    %mix4 = eco.construct.custom(%raw42, %nil, %i99) {tag = 13 : i64, size = 3 : i64, slot_kinds = array<i8: 1, 0, 1>} : (i64, !eco.value, i64) -> !eco.value
+    %mix4 = eco.construct.custom(%raw42, %nil, %i99) <{tag = 13 : i64, size = 3 : i64, slot_kinds = array<i8: 1, 0, 1>}> : (i64, !eco.value, i64) -> !eco.value
     eco.dbg %mix4 : !eco.value
     // CHECK: Ctor13 42 <empty> 99
 
@@ -115,7 +115,7 @@ module {
     // === Test Cons cells with constant Nil tail ===
     // This is the most common pattern - lists ending with Nil
     // head (!eco.value), tail (!eco.value = Nil) - both boxed
-    %list1 = eco.construct.custom(%b42, %nil) {tag = 0 : i64, size = 2 : i64, slot_kinds = array<i8: 0, 0>} : (!eco.value, !eco.value) -> !eco.value
+    %list1 = eco.construct.custom(%b42, %nil) <{tag = 0 : i64, size = 2 : i64, slot_kinds = array<i8: 0, 0>}> : (!eco.value, !eco.value) -> !eco.value
     eco.dbg %list1 : !eco.value
     // CHECK: Ctor0 42 <empty>
 
@@ -124,13 +124,13 @@ module {
     %i2 = arith.constant 2 : i64
     %b1 = eco.box %i1 : i64 -> !eco.value
     %b2 = eco.box %i2 : i64 -> !eco.value
-    %l2 = eco.construct.custom(%b2, %nil) {tag = 0 : i64, size = 2 : i64, slot_kinds = array<i8: 0, 0>} : (!eco.value, !eco.value) -> !eco.value
-    %l1 = eco.construct.custom(%b1, %l2) {tag = 0 : i64, size = 2 : i64, slot_kinds = array<i8: 0, 0>} : (!eco.value, !eco.value) -> !eco.value
+    %l2 = eco.construct.custom(%b2, %nil) <{tag = 0 : i64, size = 2 : i64, slot_kinds = array<i8: 0, 0>}> : (!eco.value, !eco.value) -> !eco.value
+    %l1 = eco.construct.custom(%b1, %l2) <{tag = 0 : i64, size = 2 : i64, slot_kinds = array<i8: 0, 0>}> : (!eco.value, !eco.value) -> !eco.value
     eco.dbg %l1 : !eco.value
     // CHECK: Ctor0 1 (Ctor0 2 <empty>)
 
     // === Test structure containing only constants ===
-    %all_consts = eco.construct.custom(%nil, %true, %false) {slot_kinds = array<i8: 0, 0, 0>, tag = 20 : i64, size = 3 : i64} : (!eco.value, !eco.value, !eco.value) -> !eco.value
+    %all_consts = eco.construct.custom(%nil, %true, %false) <{slot_kinds = array<i8: 0, 0, 0>, tag = 20 : i64, size = 3 : i64}> : (!eco.value, !eco.value, !eco.value) -> !eco.value
     eco.dbg %all_consts : !eco.value
     // CHECK: Ctor20 <empty> True False
 

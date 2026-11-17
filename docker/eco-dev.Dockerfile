@@ -1,11 +1,22 @@
 # ============================================================
-# LLVM/MLIR comes from a pre-built image produced by
-# docker/llvm-debian.Dockerfile. Build that once with:
-#   docker build -f docker/llvm-debian.Dockerfile -t eco-llvm-debian:21.1.8 .
-# Bump LLVM_IMAGE's tag in lockstep with the LLVM version there.
+# eco's glibc development image. LLVM/MLIR comes from the image
+# docker/llvm-debian.Dockerfile builds for the llvm-project commit
+# deps/versions.env pins, and uv (which installs the pinned MAX) from
+# Astral's image at the pinned UV_VERSION. All three are build arguments
+# without defaults, so a build that forgets one fails instead of picking
+# a stale version. local-dev/build-images.sh passes them:
+#   docker build -f docker/eco-dev.Dockerfile \
+#     --build-arg LLVM_IMAGE="$(scripts/deps.sh artifact debian)" \
+#     --build-arg LLVM_COMMIT="$(scripts/deps.sh get LLVM_COMMIT)" \
+#     --build-arg UV_VERSION="$(scripts/deps.sh get UV_VERSION)" \
+#     -t eco-dev .
+# The image is labelled org.eco.llvm.commit, which local-dev/dev.sh
+# compares with the pin before starting it.
 # ============================================================
-ARG LLVM_IMAGE=eco-llvm-debian:21.1.8
+ARG LLVM_IMAGE
+ARG UV_VERSION
 FROM ${LLVM_IMAGE} AS llvm
+FROM ghcr.io/astral-sh/uv:${UV_VERSION} AS uv
 
 # ============================================================
 # Runtime stage: tools + installed MLIR, non-root entrypoint
@@ -61,8 +72,14 @@ RUN mkdir -p -m 755 /etc/apt/keyrings \
     && rm -rf /var/lib/apt/lists/* \
     && gh --version
 
-# Installed LLVM/MLIR
+# Installed LLVM/MLIR, checked against the commit this image is labelled with.
+ARG LLVM_COMMIT
+LABEL org.eco.llvm.commit="${LLVM_COMMIT}"
 COPY --from=llvm /opt/llvm-mlir /opt/llvm-mlir
+RUN test -n "${LLVM_COMMIT}" \
+ && test "$(cat /opt/llvm-mlir/ECO_LLVM_COMMIT)" = "${LLVM_COMMIT}" \
+ && echo "eco-dev on LLVM $(/opt/llvm-mlir/bin/llvm-config --version) at ${LLVM_COMMIT}"
+ENV ECO_LLVM_COMMIT=${LLVM_COMMIT}
 
 # Install RapidCheck from source (not available in apt)
 # RapidCheck is used for property-based testing
@@ -80,9 +97,10 @@ RUN git clone --depth=1 https://github.com/emil-e/rapidcheck.git /tmp/rapidcheck
 COPY docker/install_claude.sh .
 RUN ./install_claude.sh && rm ./install_claude.sh
 
-# Install uv (Python package manager from Astral) system-wide
-ENV UV_INSTALL_DIR="/usr/local/bin"
-RUN curl -LsSf https://astral.sh/uv/install.sh | sh
+# uv (Astral's Python package manager), at the pinned version, from its own
+# image rather than an install script. It installs the pinned MAX (deps/max/)
+# at configure time; its download cache is ~/.cache/uv, on the home volume.
+COPY --from=uv /uv /uvx /usr/local/bin/
 
 # FlameGraph tools for perf visualization (put on PATH by the ENV PATH near the
 # end of this file, which replaces PATH wholesale)

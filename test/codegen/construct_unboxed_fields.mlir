@@ -11,7 +11,7 @@ module {
     // slot_kinds[0] = 1: field 0 (head) is an unboxed Int
     // tag = 0 (ctor tag) with size = 2 is treated as a list Cons cell
     %i42 = arith.constant 42 : i64
-    %cons_int = eco.construct.custom(%i42, %nil) {tag = 0 : i64, size = 2 : i64, slot_kinds = array<i8: 1, 0>} : (i64, !eco.value) -> !eco.value
+    %cons_int = eco.construct.custom(%i42, %nil) <{tag = 0 : i64, size = 2 : i64, slot_kinds = array<i8: 1, 0>}> : (i64, !eco.value) -> !eco.value
     eco.dbg %cons_int : !eco.value
     // CHECK: Ctor0 42 <empty>
 
@@ -19,9 +19,9 @@ module {
     %i1 = arith.constant 1 : i64
     %i2 = arith.constant 2 : i64
     %i3 = arith.constant 3 : i64
-    %l3 = eco.construct.custom(%i3, %nil) {tag = 0 : i64, size = 2 : i64, slot_kinds = array<i8: 1, 0>} : (i64, !eco.value) -> !eco.value
-    %l2 = eco.construct.custom(%i2, %l3) {tag = 0 : i64, size = 2 : i64, slot_kinds = array<i8: 1, 0>} : (i64, !eco.value) -> !eco.value
-    %list_ints = eco.construct.custom(%i1, %l2) {tag = 0 : i64, size = 2 : i64, slot_kinds = array<i8: 1, 0>} : (i64, !eco.value) -> !eco.value
+    %l3 = eco.construct.custom(%i3, %nil) <{tag = 0 : i64, size = 2 : i64, slot_kinds = array<i8: 1, 0>}> : (i64, !eco.value) -> !eco.value
+    %l2 = eco.construct.custom(%i2, %l3) <{tag = 0 : i64, size = 2 : i64, slot_kinds = array<i8: 1, 0>}> : (i64, !eco.value) -> !eco.value
+    %list_ints = eco.construct.custom(%i1, %l2) <{tag = 0 : i64, size = 2 : i64, slot_kinds = array<i8: 1, 0>}> : (i64, !eco.value) -> !eco.value
     eco.dbg %list_ints : !eco.value
     // CHECK: Ctor0 1 (Ctor0 2 (Ctor0 3 <empty>))
 
@@ -30,7 +30,7 @@ module {
     // slot_kinds: both fields are unboxed
     %i10 = arith.constant 10 : i64
     %i20 = arith.constant 20 : i64
-    %pair_ints = eco.construct.custom(%i10, %i20) {tag = 10 : i64, size = 2 : i64, slot_kinds = array<i8: 1, 1>} : (i64, i64) -> !eco.value
+    %pair_ints = eco.construct.custom(%i10, %i20) <{tag = 10 : i64, size = 2 : i64, slot_kinds = array<i8: 1, 1>}> : (i64, i64) -> !eco.value
     eco.dbg %pair_ints : !eco.value
     // CHECK: Ctor10 10 20
 
@@ -48,7 +48,7 @@ module {
     %i100 = arith.constant 100 : i64
     %i200 = arith.constant 200 : i64
     %i300 = arith.constant 300 : i64
-    %triple_ints = eco.construct.custom(%i100, %i200, %i300) {tag = 11 : i64, size = 3 : i64, slot_kinds = array<i8: 1, 1, 1>} : (i64, i64, i64) -> !eco.value
+    %triple_ints = eco.construct.custom(%i100, %i200, %i300) <{tag = 11 : i64, size = 3 : i64, slot_kinds = array<i8: 1, 1, 1>}> : (i64, i64, i64) -> !eco.value
     eco.dbg %triple_ints : !eco.value
     // CHECK: Ctor11 100 200 300
 
@@ -61,7 +61,7 @@ module {
     // slot_kinds: only field 1 is unboxed
     %b42 = eco.box %i42 : i64 -> !eco.value
     %i99 = arith.constant 99 : i64
-    %mixed = eco.construct.custom(%b42, %i99) {tag = 5 : i64, size = 2 : i64, slot_kinds = array<i8: 0, 1>} : (!eco.value, i64) -> !eco.value
+    %mixed = eco.construct.custom(%b42, %i99) <{tag = 5 : i64, size = 2 : i64, slot_kinds = array<i8: 0, 1>}> : (!eco.value, i64) -> !eco.value
     eco.dbg %mixed : !eco.value
     // CHECK: Ctor5 42 99
 
@@ -75,7 +75,7 @@ module {
     // The eco.project verifies the values are stored correctly
     %f1 = arith.constant 3.14 : f64
     %f2 = arith.constant 2.718 : f64
-    %pair_floats = eco.construct.custom(%f1, %f2) {tag = 1 : i64, size = 2 : i64, slot_kinds = array<i8: 2, 2>} : (f64, f64) -> !eco.value
+    %pair_floats = eco.construct.custom(%f1, %f2) <{tag = 1 : i64, size = 2 : i64, slot_kinds = array<i8: 2, 2>}> : (f64, f64) -> !eco.value
     eco.dbg %pair_floats : !eco.value
     // CHECK: Ctor1 3.14 2.718
 
@@ -89,7 +89,7 @@ module {
     // The eco.project verifies the values are stored correctly
     %cA = arith.constant 65 : i32
     %cB = arith.constant 66 : i32
-    %pair_chars = eco.construct.custom(%cA, %cB) {tag = 2 : i64, size = 2 : i64, slot_kinds = array<i8: 3, 3>} : (i32, i32) -> !eco.value
+    %pair_chars = eco.construct.custom(%cA, %cB) <{tag = 2 : i64, size = 2 : i64, slot_kinds = array<i8: 3, 3>}> : (i32, i32) -> !eco.value
     eco.dbg %pair_chars : !eco.value
     // CHECK: Ctor2 'A' 'B'
 
@@ -100,7 +100,7 @@ module {
 
     // === Negative integer in unboxed field (in list) ===
     %ineg = arith.constant -42 : i64
-    %cons_neg = eco.construct.custom(%ineg, %nil) {tag = 0 : i64, size = 2 : i64, slot_kinds = array<i8: 1, 0>} : (i64, !eco.value) -> !eco.value
+    %cons_neg = eco.construct.custom(%ineg, %nil) <{tag = 0 : i64, size = 2 : i64, slot_kinds = array<i8: 1, 0>}> : (i64, !eco.value) -> !eco.value
     eco.dbg %cons_neg : !eco.value
     // CHECK: Ctor0 -42 <empty>
 

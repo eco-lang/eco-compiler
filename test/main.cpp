@@ -1412,16 +1412,6 @@ int main(int argc, char* argv[]) {
     // --local-package eco/kernel so imports resolve to eco-kernel-cpp.
     auto ecoKernelTests = EcoKernelTest::buildEcoKernelTestSuite();
 
-    // the-sett/elm-max E2E tests: the published typed tensor package (which depends
-    // on the-sett/elm-mlir) on native code, where Int is 64-bit — exact constants and its pure-Elm
-    // evaluator (plans/tensor-eval-in-elm.md). The programs live with the spike
-    // in spikes/max/tensor-e2e (shadowed as test/eco-tensor, test/CMakeLists.txt).
-    // The runner recompiles a test only when its own .elm changes, so after a
-    // package edit run the spike's `make check-tensor-native`, which clears the
-    // suite's caches first.
-    auto ecoTensorTests = ElmE2EBase::buildTestSuite(
-        "eco-tensor", "Eco Tensor E2E", "eco-tensor/");
-
     // eco/system E2E tests — compiled with --local-package eco/system; run in
     // process-output mode (CHECK sees raw fd output, EXIT enforced, stdin
     // /dev/null or `-- STDIN:`).
@@ -1493,7 +1483,6 @@ int main(int argc, char* argv[]) {
     suite.add(std::move(elmE2ETests));
     suite.add(std::move(elmBytesTests));
     suite.add(std::move(ecoKernelTests));
-    suite.add(std::move(ecoTensorTests));
     suite.add(std::move(ecoSystemTests));
     suite.add(std::move(elmCoreTests));
     suite.add(std::move(elmConformanceTests));

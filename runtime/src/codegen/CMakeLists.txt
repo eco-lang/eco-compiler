@@ -52,6 +52,11 @@ find_package(MLIR REQUIRED CONFIG)
 message(STATUS "Using MLIRConfig.cmake in: ${MLIR_DIR}")
 message(STATUS "Using LLVMConfig.cmake in: ${LLVM_DIR}")
 
+# The LLVM found must be the llvm-project commit deps/versions.env pins, and a
+# build tree stays on the commit it was configured against.
+include("${CMAKE_SOURCE_DIR}/cmake/EcoLlvmPin.cmake")
+eco_check_llvm_pin()
+
 # Add MLIR and LLVM CMake modules to the module path
 list(APPEND CMAKE_MODULE_PATH "${MLIR_CMAKE_DIR}")
 list(APPEND CMAKE_MODULE_PATH "${LLVM_CMAKE_DIR}")
@@ -66,6 +71,10 @@ include(HandleLLVMOptions)
 include_directories(${LLVM_INCLUDE_DIRS})
 include_directories(${MLIR_INCLUDE_DIRS})
 
+# Modular MAX (cmake/EcoMax.cmake): the run-time loader, its module check and
+# the smoke test, built when ECO_MAX turns MAX on. It uses MLIR, set up above.
+add_subdirectory("${CMAKE_SOURCE_DIR}/runtime/src/max" "${CMAKE_BINARY_DIR}/runtime/src/max")
+
 # createEcoTargetMachine (EcoBackend.cpp) stamps AOT objects with the same
 # minimum macOS version as eco itself; see ECO_MACOS_MIN in the top-level
 # CMakeLists.txt.
@@ -74,9 +83,9 @@ if(APPLE)
 endif()
 
 # --- LLVM/MLIR linkage -------------------------------------------------------
-# Every platform links LLVM/MLIR as static component archives from a pinned
-# LLVM 21.1.8 tree: /opt/llvm-mlir on Linux, experiments/win-llvm-build on
-# Windows, experiments/mac-llvm-build on macOS. macOS used brew's aggregate
+# Every platform links LLVM/MLIR as static component archives from a tree built
+# at the llvm-project commit deps/versions.env pins: /opt/llvm-mlir on Linux,
+# experiments/win-llvm-build on Windows, experiments/mac-llvm-build on macOS. macOS used brew's aggregate
 # libLLVM/libMLIR dylibs until plans/mac-self-contained-bundle.md step 2,
 # which the shipped eco could not rely on; with no dylib in the tree there is
 # exactly one copy of LLVM/MLIR global state per binary everywhere.
@@ -926,7 +935,7 @@ set(ECO_SYSTEM_MODS Core System Stream FileSystem ChildProcess Terminal HttpServ
 # crtn.o / libgcc.a / libstdc++ / the dynamic linker live — paths the driver
 # normally figures out for us. Discover them once at configure time via
 # `clang -print-file-name=…` and bake the results into EcoBootConfig.h. lld
-# can't be embedded as a library (the LLVM 21 install doesn't ship lld dev
+# can't be embedded as a library (eco's Debian LLVM install doesn't ship lld dev
 # files); we use ld.bfd because it's what `-fuse-ld=bfd` uses and it
 # successfully handles the absolute R_X86_64_64 relocations the Elm-compiled
 # object carries in .llvm_stackmaps (lld rejects those in PIE mode).
@@ -934,7 +943,7 @@ set(ECO_SYSTEM_MODS Core System Stream FileSystem ChildProcess Terminal HttpServ
 
 # Linker choice for the AOT path.
 #   - Glibc (Stage A.5): ld.bfd. lld-14 on Debian rejects our PIE stackmap
-#     relocations, and LLVM 21 lld isn't on the Debian image.
+#     relocations, and eco's own LLVM build has no lld on the Debian image.
 #   - musl/Stage B.5: ld.lld. Q3 RESOLVED in lld's favour for Stage B (non-PIE
 #     static — lld accepts the stackmap relocs there). BFD is the documented
 #     fallback (binutils is in the Stage B image) if ld.lld is absent.

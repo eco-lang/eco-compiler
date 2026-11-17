@@ -112,7 +112,7 @@ struct IndexSwitchOpTypeConversion : public OpConversionPattern<scf::IndexSwitch
         auto loc = op.getLoc();
 
         // The original selector, not the adaptor's: scf.index_switch needs an `index` operand.
-        auto newOp = rewriter.create<scf::IndexSwitchOp>(
+        auto newOp = scf::IndexSwitchOp::create(rewriter,
             loc, convertedTypes, op.getArg(), op.getCases(), op.getCases().size());
 
         for (auto [oldRegion, newRegion] : llvm::zip(op.getCaseRegions(), newOp.getCaseRegions())) {
@@ -329,7 +329,7 @@ struct EcoToLLVMPass : public PassWrapper<EcoToLLVMPass, OperationPass<ModuleOp>
                         LLVM::LLVMFunctionType::get(
                             LLVM::LLVMVoidType::get(ctx), {}),
                         /*gcLeaf=*/true);
-                    eb.create<LLVM::CallOp>(mainFn.getLoc(), enableFn,
+                    LLVM::CallOp::create(eb, mainFn.getLoc(), enableFn,
                                             ValueRange{});
                 }
             }
@@ -345,7 +345,7 @@ struct EcoToLLVMPass : public PassWrapper<EcoToLLVMPass, OperationPass<ModuleOp>
                 std::string text = schema.getValue().str();
                 text.push_back('\0');
                 auto arrayTy = LLVM::LLVMArrayType::get(IntegerType::get(ctx, 8), text.size());
-                gb.create<LLVM::GlobalOp>(mainFn.getLoc(), arrayTy, /*isConstant=*/true,
+                LLVM::GlobalOp::create(gb, mainFn.getLoc(), arrayTy, /*isConstant=*/true,
                                           LLVM::Linkage::External, "__eco_flags_schema",
                                           gb.getStringAttr(text));
             }

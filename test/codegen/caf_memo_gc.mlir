@@ -21,7 +21,7 @@ module {
     %b = arith.constant 43 : i64
     %ba = eco.box %a : i64 -> !eco.value
     %bb = eco.box %b : i64 -> !eco.value
-    %t = eco.construct.tuple2 %ba, %bb {unboxed_bitmap = 0} : !eco.value, !eco.value -> !eco.value
+    %t = eco.construct.tuple2 %ba, %bb <{unboxed_bitmap = 0}> : !eco.value, !eco.value -> !eco.value
     eco.return %t : !eco.value
   }
 

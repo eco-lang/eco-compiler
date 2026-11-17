@@ -86,7 +86,7 @@ public:
                                     ValueRange inputs, Location loc) -> Value {
             if (inputs.size() != 1)
                 return nullptr;
-            return builder.create<UnrealizedConversionCastOp>(
+            return UnrealizedConversionCastOp::create(builder,
                 loc, resultType, inputs).getResult(0);
         });
 
@@ -94,7 +94,7 @@ public:
                                     ValueRange inputs, Location loc) -> Value {
             if (inputs.size() != 1)
                 return nullptr;
-            return builder.create<UnrealizedConversionCastOp>(
+            return UnrealizedConversionCastOp::create(builder,
                 loc, resultType, inputs).getResult(0);
         });
     }
@@ -141,7 +141,7 @@ static BFRuntimeFuncs ensureRuntimeFunctions(ModuleOp module, OpBuilder &builder
             return existing;
         auto funcType = LLVM::LLVMFunctionType::get(resultType, argTypes);
         builder.setInsertionPointToStart(module.getBody());
-        auto func = builder.create<LLVM::LLVMFuncOp>(loc, name, funcType);
+        auto func = LLVM::LLVMFuncOp::create(builder, loc, name, funcType);
         symTable.insert(func);
         return func;
     };
@@ -182,10 +182,10 @@ static BFRuntimeFuncs ensureRuntimeFunctions(ModuleOp module, OpBuilder &builder
 // and `end`.
 static Value createCursor(OpBuilder &builder, Location loc, Value ptr,
                           Value end, Type cursorLLVMType) {
-    Value cursor = builder.create<LLVM::UndefOp>(loc, cursorLLVMType);
-    cursor = builder.create<LLVM::InsertValueOp>(loc, cursor, ptr,
+    Value cursor = LLVM::UndefOp::create(builder, loc, cursorLLVMType);
+    cursor = LLVM::InsertValueOp::create(builder, loc, cursor, ptr,
                                                   ArrayRef<int64_t>{0});
-    cursor = builder.create<LLVM::InsertValueOp>(loc, cursor, end,
+    cursor = LLVM::InsertValueOp::create(builder, loc, cursor, end,
                                                   ArrayRef<int64_t>{1});
     return cursor;
 }
@@ -193,14 +193,14 @@ static Value createCursor(OpBuilder &builder, Location loc, Value ptr,
 // Returns the current pointer of a lowered `cursor`.
 static Value extractPtr(OpBuilder &builder, Location loc, Value cursor) {
     auto ptrType = LLVM::LLVMPointerType::get(builder.getContext());
-    return builder.create<LLVM::ExtractValueOp>(loc, ptrType, cursor,
+    return LLVM::ExtractValueOp::create(builder, loc, ptrType, cursor,
                                                  ArrayRef<int64_t>{0});
 }
 
 // Returns the end pointer of a lowered `cursor`.
 static Value extractEnd(OpBuilder &builder, Location loc, Value cursor) {
     auto ptrType = LLVM::LLVMPointerType::get(builder.getContext());
-    return builder.create<LLVM::ExtractValueOp>(loc, ptrType, cursor,
+    return LLVM::ExtractValueOp::create(builder, loc, ptrType, cursor,
                                                  ArrayRef<int64_t>{1});
 }
 
@@ -211,7 +211,7 @@ static Value advanceCursor(OpBuilder &builder, Location loc, Value cursor,
     Value ptr = extractPtr(builder, loc, cursor);
     Value end = extractEnd(builder, loc, cursor);
 
-    Value newPtr = builder.create<LLVM::GEPOp>(
+    Value newPtr = LLVM::GEPOp::create(builder,
         loc, ptr.getType(), builder.getI8Type(), ptr, bytes);
 
     return createCursor(builder, loc, newPtr, end, cursorLLVMType);
@@ -548,10 +548,10 @@ private:
                         return failure();
                     Location loc = gcPoint->getLoc();
                     builder.setInsertionPoint(gcPoint);
-                    auto offsets = builder.create<bf::CursorOffsetsOp>(
+                    auto offsets = bf::CursorOffsetsOp::create(builder,
                         loc, builder.getI64Type(), builder.getI64Type(), cursor, buffer);
                     builder.setInsertionPointAfter(gcPoint);
-                    auto rebase = builder.create<bf::CursorRebaseOp>(
+                    auto rebase = bf::CursorRebaseOp::create(builder,
                         loc, cursor.getType(), buffer, offsets.getPos(), offsets.getEnd());
                     Value fresh = rebase.getCursor();
                     cursor.replaceUsesWithIf(fresh, [&](OpOperand &use) {
@@ -626,9 +626,9 @@ private:
                 }
             }
             builder.setInsertionPointAfter(alloc);
-            builder.create<bf::BuilderBeginOp>(alloc.getLoc(), buffer);
+            bf::BuilderBeginOp::create(builder, alloc.getLoc(), buffer);
             builder.setInsertionPointAfter(last);
-            builder.create<bf::BuilderEndOp>(last->getLoc(), buffer);
+            bf::BuilderEndOp::create(builder, last->getLoc(), buffer);
         }
         return success();
     }
@@ -716,7 +716,7 @@ struct AllocOpLowering : public OpConversionPattern<bf::AllocOp> {
                     ConversionPatternRewriter &rewriter) const override {
         auto loc = op.getLoc();
 
-        auto result = rewriter.create<LLVM::CallOp>(
+        auto result = LLVM::CallOp::create(rewriter,
             loc, rt.allocBytebuffer, ValueRange{adaptor.getSize()});
 
         rewriter.replaceOp(op, result.getResult());
@@ -739,15 +739,15 @@ struct CursorInitOpLowering : public OpConversionPattern<bf::CursorInitOp> {
                     ConversionPatternRewriter &rewriter) const override {
         auto loc = op.getLoc();
 
-        auto dataCall = rewriter.create<LLVM::CallOp>(
+        auto dataCall = LLVM::CallOp::create(rewriter,
             loc, rt.bytebufferData, ValueRange{adaptor.getBuffer()});
         Value ptr = dataCall.getResult();
 
-        auto lenCall = rewriter.create<LLVM::CallOp>(
+        auto lenCall = LLVM::CallOp::create(rewriter,
             loc, rt.bytebufferLen, ValueRange{adaptor.getBuffer()});
         Value len = lenCall.getResult();
 
-        Value end = rewriter.create<LLVM::GEPOp>(
+        Value end = LLVM::GEPOp::create(rewriter,
             loc, ptr.getType(), rewriter.getI8Type(), ptr, len);
 
         Type cursorType = getTypeConverter()->convertType(op.getType());
@@ -773,12 +773,12 @@ struct WriteU8OpLowering : public OpConversionPattern<bf::WriteU8Op> {
 
         Value ptr = extractPtr(rewriter, loc, adaptor.getCursor());
 
-        Value byte = rewriter.create<LLVM::TruncOp>(
+        Value byte = LLVM::TruncOp::create(rewriter,
             loc, rewriter.getI8Type(), adaptor.getValue());
 
-        rewriter.create<LLVM::StoreOp>(loc, byte, ptr);
+        LLVM::StoreOp::create(rewriter, loc, byte, ptr);
 
-        Value one = rewriter.create<LLVM::ConstantOp>(
+        Value one = LLVM::ConstantOp::create(rewriter,
             loc, rewriter.getI32Type(), 1);
         Value newCursor = advanceCursor(rewriter, loc, adaptor.getCursor(),
                                         one, cursorType);
@@ -807,16 +807,16 @@ struct WriteU16OpLowering : public OpConversionPattern<bf::WriteU16Op> {
 
         Value ptr = extractPtr(rewriter, loc, adaptor.getCursor());
 
-        Value val16 = rewriter.create<LLVM::TruncOp>(
+        Value val16 = LLVM::TruncOp::create(rewriter,
             loc, rewriter.getI16Type(), adaptor.getValue());
 
         if (op.getEndianness() == bf::Endianness::BE) {
-            val16 = rewriter.create<LLVM::ByteSwapOp>(loc, val16);
+            val16 = LLVM::ByteSwapOp::create(rewriter, loc, val16);
         }
 
-        rewriter.create<LLVM::StoreOp>(loc, val16, ptr, /*alignment=*/1);
+        LLVM::StoreOp::create(rewriter, loc, val16, ptr, /*alignment=*/1);
 
-        Value two = rewriter.create<LLVM::ConstantOp>(
+        Value two = LLVM::ConstantOp::create(rewriter,
             loc, rewriter.getI32Type(), 2);
         Value newCursor = advanceCursor(rewriter, loc, adaptor.getCursor(),
                                         two, cursorType);
@@ -841,16 +841,16 @@ struct WriteU32OpLowering : public OpConversionPattern<bf::WriteU32Op> {
 
         Value ptr = extractPtr(rewriter, loc, adaptor.getCursor());
 
-        Value val32 = rewriter.create<LLVM::TruncOp>(
+        Value val32 = LLVM::TruncOp::create(rewriter,
             loc, rewriter.getI32Type(), adaptor.getValue());
 
         if (op.getEndianness() == bf::Endianness::BE) {
-            val32 = rewriter.create<LLVM::ByteSwapOp>(loc, val32);
+            val32 = LLVM::ByteSwapOp::create(rewriter, loc, val32);
         }
 
-        rewriter.create<LLVM::StoreOp>(loc, val32, ptr, /*alignment=*/1);
+        LLVM::StoreOp::create(rewriter, loc, val32, ptr, /*alignment=*/1);
 
-        Value four = rewriter.create<LLVM::ConstantOp>(
+        Value four = LLVM::ConstantOp::create(rewriter,
             loc, rewriter.getI32Type(), 4);
         Value newCursor = advanceCursor(rewriter, loc, adaptor.getCursor(),
                                         four, cursorType);
@@ -875,22 +875,22 @@ struct WriteF32OpLowering : public OpConversionPattern<bf::WriteF32Op> {
 
         Value ptr = extractPtr(rewriter, loc, adaptor.getCursor());
 
-        Value val32 = rewriter.create<LLVM::FPTruncOp>(
+        Value val32 = LLVM::FPTruncOp::create(rewriter,
             loc, rewriter.getF32Type(), adaptor.getValue());
 
         // Bitcast f32 to i32 for byte swapping
-        Value asInt = rewriter.create<LLVM::BitcastOp>(
+        Value asInt = LLVM::BitcastOp::create(rewriter,
             loc, rewriter.getI32Type(), val32);
 
         if (op.getEndianness() == bf::Endianness::BE) {
-            asInt = rewriter.create<LLVM::ByteSwapOp>(loc, asInt);
+            asInt = LLVM::ByteSwapOp::create(rewriter, loc, asInt);
         }
 
-        val32 = rewriter.create<LLVM::BitcastOp>(loc, rewriter.getF32Type(), asInt);
+        val32 = LLVM::BitcastOp::create(rewriter, loc, rewriter.getF32Type(), asInt);
 
-        rewriter.create<LLVM::StoreOp>(loc, val32, ptr, /*alignment=*/1);
+        LLVM::StoreOp::create(rewriter, loc, val32, ptr, /*alignment=*/1);
 
-        Value four = rewriter.create<LLVM::ConstantOp>(
+        Value four = LLVM::ConstantOp::create(rewriter,
             loc, rewriter.getI32Type(), 4);
         Value newCursor = advanceCursor(rewriter, loc, adaptor.getCursor(),
                                         four, cursorType);
@@ -917,18 +917,18 @@ struct WriteF64OpLowering : public OpConversionPattern<bf::WriteF64Op> {
         Value val64 = adaptor.getValue();
 
         // Bitcast f64 to i64 for byte swapping
-        Value asInt = rewriter.create<LLVM::BitcastOp>(
+        Value asInt = LLVM::BitcastOp::create(rewriter,
             loc, rewriter.getI64Type(), val64);
 
         if (op.getEndianness() == bf::Endianness::BE) {
-            asInt = rewriter.create<LLVM::ByteSwapOp>(loc, asInt);
+            asInt = LLVM::ByteSwapOp::create(rewriter, loc, asInt);
         }
 
-        val64 = rewriter.create<LLVM::BitcastOp>(loc, rewriter.getF64Type(), asInt);
+        val64 = LLVM::BitcastOp::create(rewriter, loc, rewriter.getF64Type(), asInt);
 
-        rewriter.create<LLVM::StoreOp>(loc, val64, ptr, /*alignment=*/1);
+        LLVM::StoreOp::create(rewriter, loc, val64, ptr, /*alignment=*/1);
 
-        Value eight = rewriter.create<LLVM::ConstantOp>(
+        Value eight = LLVM::ConstantOp::create(rewriter,
             loc, rewriter.getI32Type(), 8);
         Value newCursor = advanceCursor(rewriter, loc, adaptor.getCursor(),
                                         eight, cursorType);
@@ -956,18 +956,18 @@ struct WriteBytesOpLowering : public OpConversionPattern<bf::WriteBytesOp> {
 
         Value ptr = extractPtr(rewriter, loc, adaptor.getCursor());
 
-        auto srcDataCall = rewriter.create<LLVM::CallOp>(
+        auto srcDataCall = LLVM::CallOp::create(rewriter,
             loc, rt.bytebufferData, ValueRange{adaptor.getBytes()});
         Value srcPtr = srcDataCall.getResult();
 
-        auto srcLenCall = rewriter.create<LLVM::CallOp>(
+        auto srcLenCall = LLVM::CallOp::create(rewriter,
             loc, rt.bytebufferLen, ValueRange{adaptor.getBytes()});
         Value len = srcLenCall.getResult();
 
-        Value len64 = rewriter.create<LLVM::ZExtOp>(
+        Value len64 = LLVM::ZExtOp::create(rewriter,
             loc, rewriter.getI64Type(), len);
 
-        rewriter.create<LLVM::MemcpyOp>(
+        LLVM::MemcpyOp::create(rewriter,
             loc, ptr, srcPtr, len64, /*isVolatile=*/false);
 
         Value newCursor = advanceCursor(rewriter, loc, adaptor.getCursor(),
@@ -996,7 +996,7 @@ struct WriteUtf8OpLowering : public OpConversionPattern<bf::WriteUtf8Op> {
 
         Value ptr = extractPtr(rewriter, loc, adaptor.getCursor());
 
-        auto copyCall = rewriter.create<LLVM::CallOp>(
+        auto copyCall = LLVM::CallOp::create(rewriter,
             loc, rt.utf8Copy, ValueRange{adaptor.getString(), ptr});
         Value bytesWritten = copyCall.getResult();
 
@@ -1022,7 +1022,7 @@ struct Utf8WidthOpLowering : public OpConversionPattern<bf::Utf8WidthOp> {
                     ConversionPatternRewriter &rewriter) const override {
         auto loc = op.getLoc();
 
-        auto result = rewriter.create<LLVM::CallOp>(
+        auto result = LLVM::CallOp::create(rewriter,
             loc, rt.utf8Width, ValueRange{adaptor.getString()});
         rewriter.replaceOp(op, result.getResult());
         return success();
@@ -1043,7 +1043,7 @@ struct BytesWidthOpLowering : public OpConversionPattern<bf::BytesWidthOp> {
                     ConversionPatternRewriter &rewriter) const override {
         auto loc = op.getLoc();
 
-        auto result = rewriter.create<LLVM::CallOp>(
+        auto result = LLVM::CallOp::create(rewriter,
             loc, rt.bytebufferLen, ValueRange{adaptor.getBuffer()});
         rewriter.replaceOp(op, result.getResult());
         return success();
@@ -1065,7 +1065,7 @@ struct EncoderWidthOpLowering : public OpConversionPattern<bf::EncoderWidthOp> {
                     ConversionPatternRewriter &rewriter) const override {
         auto loc = op.getLoc();
 
-        auto result = rewriter.create<LLVM::CallOp>(
+        auto result = LLVM::CallOp::create(rewriter,
             loc, rt.encoderSize, ValueRange{adaptor.getEncoder()});
         rewriter.replaceOp(op, result.getResult());
         return success();
@@ -1094,7 +1094,7 @@ struct WriteEncoderOpLowering : public OpConversionPattern<bf::WriteEncoderOp> {
 
         Value ptr = extractPtr(rewriter, loc, adaptor.getCursor());
 
-        auto writeCall = rewriter.create<LLVM::CallOp>(
+        auto writeCall = LLVM::CallOp::create(rewriter,
             loc, rt.encoderWriteInto, ValueRange{adaptor.getEncoder(), ptr});
         Value bytesWritten = writeCall.getResult();
 
@@ -1121,10 +1121,10 @@ struct RequireOpLowering : public OpConversionPattern<bf::RequireOp> {
         Value ptr = extractPtr(rewriter, loc, adaptor.getCursor());
         Value end = extractEnd(rewriter, loc, adaptor.getCursor());
 
-        Value newPtr = rewriter.create<LLVM::GEPOp>(
+        Value newPtr = LLVM::GEPOp::create(rewriter,
             loc, ptr.getType(), rewriter.getI8Type(), ptr, adaptor.getBytes());
 
-        Value ok = rewriter.create<LLVM::ICmpOp>(
+        Value ok = LLVM::ICmpOp::create(rewriter,
             loc, LLVM::ICmpPredicate::ule, newPtr, end);
 
         rewriter.replaceOp(op, ok);
@@ -1156,11 +1156,11 @@ struct ReadU8OpLowering : public OpConversionPattern<bf::ReadU8Op> {
 
         Value ptr = extractPtr(rewriter, loc, adaptor.getCursor());
 
-        Value byte = rewriter.create<LLVM::LoadOp>(loc, rewriter.getI8Type(), ptr);
+        Value byte = LLVM::LoadOp::create(rewriter, loc, rewriter.getI8Type(), ptr);
 
-        Value value = rewriter.create<LLVM::ZExtOp>(loc, rewriter.getI64Type(), byte);
+        Value value = LLVM::ZExtOp::create(rewriter, loc, rewriter.getI64Type(), byte);
 
-        Value one = rewriter.create<LLVM::ConstantOp>(loc, rewriter.getI32Type(), 1);
+        Value one = LLVM::ConstantOp::create(rewriter, loc, rewriter.getI32Type(), 1);
         Value newCursor = advanceCursor(rewriter, loc, adaptor.getCursor(), one, cursorType);
 
         rewriter.replaceOp(op, {value, newCursor});
@@ -1182,11 +1182,11 @@ struct ReadI8OpLowering : public OpConversionPattern<bf::ReadI8Op> {
 
         Value ptr = extractPtr(rewriter, loc, adaptor.getCursor());
 
-        Value byte = rewriter.create<LLVM::LoadOp>(loc, rewriter.getI8Type(), ptr);
+        Value byte = LLVM::LoadOp::create(rewriter, loc, rewriter.getI8Type(), ptr);
 
-        Value value = rewriter.create<LLVM::SExtOp>(loc, rewriter.getI64Type(), byte);
+        Value value = LLVM::SExtOp::create(rewriter, loc, rewriter.getI64Type(), byte);
 
-        Value one = rewriter.create<LLVM::ConstantOp>(loc, rewriter.getI32Type(), 1);
+        Value one = LLVM::ConstantOp::create(rewriter, loc, rewriter.getI32Type(), 1);
         Value newCursor = advanceCursor(rewriter, loc, adaptor.getCursor(), one, cursorType);
 
         rewriter.replaceOp(op, {value, newCursor});
@@ -1208,30 +1208,30 @@ struct ReadU16OpLowering : public OpConversionPattern<bf::ReadU16Op> {
 
         Value ptr = extractPtr(rewriter, loc, adaptor.getCursor());
 
-        Value b0 = rewriter.create<LLVM::LoadOp>(loc, rewriter.getI8Type(), ptr);
-        Value oneVal = rewriter.create<LLVM::ConstantOp>(loc, rewriter.getI32Type(), 1);
-        Value ptr1 = rewriter.create<LLVM::GEPOp>(
+        Value b0 = LLVM::LoadOp::create(rewriter, loc, rewriter.getI8Type(), ptr);
+        Value oneVal = LLVM::ConstantOp::create(rewriter, loc, rewriter.getI32Type(), 1);
+        Value ptr1 = LLVM::GEPOp::create(rewriter,
             loc, ptr.getType(), rewriter.getI8Type(), ptr, oneVal);
-        Value b1 = rewriter.create<LLVM::LoadOp>(loc, rewriter.getI8Type(), ptr1);
+        Value b1 = LLVM::LoadOp::create(rewriter, loc, rewriter.getI8Type(), ptr1);
 
-        Value b0_16 = rewriter.create<LLVM::ZExtOp>(loc, rewriter.getI16Type(), b0);
-        Value b1_16 = rewriter.create<LLVM::ZExtOp>(loc, rewriter.getI16Type(), b1);
+        Value b0_16 = LLVM::ZExtOp::create(rewriter, loc, rewriter.getI16Type(), b0);
+        Value b1_16 = LLVM::ZExtOp::create(rewriter, loc, rewriter.getI16Type(), b1);
 
-        Value eight = rewriter.create<LLVM::ConstantOp>(loc, rewriter.getI16Type(), 8);
+        Value eight = LLVM::ConstantOp::create(rewriter, loc, rewriter.getI16Type(), 8);
         Value val16;
         if (op.getEndianness() == bf::Endianness::BE) {
             // Big-endian: (b0 << 8) | b1
-            Value shifted = rewriter.create<LLVM::ShlOp>(loc, b0_16, eight);
-            val16 = rewriter.create<LLVM::OrOp>(loc, shifted, b1_16);
+            Value shifted = LLVM::ShlOp::create(rewriter, loc, b0_16, eight);
+            val16 = LLVM::OrOp::create(rewriter, loc, shifted, b1_16);
         } else {
             // Little-endian: (b1 << 8) | b0
-            Value shifted = rewriter.create<LLVM::ShlOp>(loc, b1_16, eight);
-            val16 = rewriter.create<LLVM::OrOp>(loc, shifted, b0_16);
+            Value shifted = LLVM::ShlOp::create(rewriter, loc, b1_16, eight);
+            val16 = LLVM::OrOp::create(rewriter, loc, shifted, b0_16);
         }
 
-        Value value = rewriter.create<LLVM::ZExtOp>(loc, rewriter.getI64Type(), val16);
+        Value value = LLVM::ZExtOp::create(rewriter, loc, rewriter.getI64Type(), val16);
 
-        Value two = rewriter.create<LLVM::ConstantOp>(loc, rewriter.getI32Type(), 2);
+        Value two = LLVM::ConstantOp::create(rewriter, loc, rewriter.getI32Type(), 2);
         Value newCursor = advanceCursor(rewriter, loc, adaptor.getCursor(), two, cursorType);
 
         rewriter.replaceOp(op, {value, newCursor});
@@ -1253,28 +1253,28 @@ struct ReadI16OpLowering : public OpConversionPattern<bf::ReadI16Op> {
 
         Value ptr = extractPtr(rewriter, loc, adaptor.getCursor());
 
-        Value b0 = rewriter.create<LLVM::LoadOp>(loc, rewriter.getI8Type(), ptr);
-        Value oneVal = rewriter.create<LLVM::ConstantOp>(loc, rewriter.getI32Type(), 1);
-        Value ptr1 = rewriter.create<LLVM::GEPOp>(
+        Value b0 = LLVM::LoadOp::create(rewriter, loc, rewriter.getI8Type(), ptr);
+        Value oneVal = LLVM::ConstantOp::create(rewriter, loc, rewriter.getI32Type(), 1);
+        Value ptr1 = LLVM::GEPOp::create(rewriter,
             loc, ptr.getType(), rewriter.getI8Type(), ptr, oneVal);
-        Value b1 = rewriter.create<LLVM::LoadOp>(loc, rewriter.getI8Type(), ptr1);
+        Value b1 = LLVM::LoadOp::create(rewriter, loc, rewriter.getI8Type(), ptr1);
 
-        Value b0_16 = rewriter.create<LLVM::ZExtOp>(loc, rewriter.getI16Type(), b0);
-        Value b1_16 = rewriter.create<LLVM::ZExtOp>(loc, rewriter.getI16Type(), b1);
+        Value b0_16 = LLVM::ZExtOp::create(rewriter, loc, rewriter.getI16Type(), b0);
+        Value b1_16 = LLVM::ZExtOp::create(rewriter, loc, rewriter.getI16Type(), b1);
 
-        Value eight = rewriter.create<LLVM::ConstantOp>(loc, rewriter.getI16Type(), 8);
+        Value eight = LLVM::ConstantOp::create(rewriter, loc, rewriter.getI16Type(), 8);
         Value val16;
         if (op.getEndianness() == bf::Endianness::BE) {
-            Value shifted = rewriter.create<LLVM::ShlOp>(loc, b0_16, eight);
-            val16 = rewriter.create<LLVM::OrOp>(loc, shifted, b1_16);
+            Value shifted = LLVM::ShlOp::create(rewriter, loc, b0_16, eight);
+            val16 = LLVM::OrOp::create(rewriter, loc, shifted, b1_16);
         } else {
-            Value shifted = rewriter.create<LLVM::ShlOp>(loc, b1_16, eight);
-            val16 = rewriter.create<LLVM::OrOp>(loc, shifted, b0_16);
+            Value shifted = LLVM::ShlOp::create(rewriter, loc, b1_16, eight);
+            val16 = LLVM::OrOp::create(rewriter, loc, shifted, b0_16);
         }
 
-        Value value = rewriter.create<LLVM::SExtOp>(loc, rewriter.getI64Type(), val16);
+        Value value = LLVM::SExtOp::create(rewriter, loc, rewriter.getI64Type(), val16);
 
-        Value two = rewriter.create<LLVM::ConstantOp>(loc, rewriter.getI32Type(), 2);
+        Value two = LLVM::ConstantOp::create(rewriter, loc, rewriter.getI32Type(), 2);
         Value newCursor = advanceCursor(rewriter, loc, adaptor.getCursor(), two, cursorType);
 
         rewriter.replaceOp(op, {value, newCursor});
@@ -1298,28 +1298,28 @@ struct ReadU32OpLowering : public OpConversionPattern<bf::ReadU32Op> {
 
         Value bytes[4];
         for (int i = 0; i < 4; ++i) {
-            Value offset = rewriter.create<LLVM::ConstantOp>(loc, rewriter.getI32Type(), i);
-            Value ptrI = rewriter.create<LLVM::GEPOp>(
+            Value offset = LLVM::ConstantOp::create(rewriter, loc, rewriter.getI32Type(), i);
+            Value ptrI = LLVM::GEPOp::create(rewriter,
                 loc, ptr.getType(), rewriter.getI8Type(), ptr, offset);
-            bytes[i] = rewriter.create<LLVM::LoadOp>(loc, rewriter.getI8Type(), ptrI);
+            bytes[i] = LLVM::LoadOp::create(rewriter, loc, rewriter.getI8Type(), ptrI);
         }
 
-        Value val32 = rewriter.create<LLVM::ConstantOp>(loc, rewriter.getI32Type(), 0);
+        Value val32 = LLVM::ConstantOp::create(rewriter, loc, rewriter.getI32Type(), 0);
         for (int i = 0; i < 4; ++i) {
             int byteIdx = (op.getEndianness() == bf::Endianness::BE) ? i : (3 - i);
-            Value ext = rewriter.create<LLVM::ZExtOp>(loc, rewriter.getI32Type(), bytes[byteIdx]);
+            Value ext = LLVM::ZExtOp::create(rewriter, loc, rewriter.getI32Type(), bytes[byteIdx]);
             int shift = (3 - i) * 8;
             if (shift > 0) {
-                Value shiftAmt = rewriter.create<LLVM::ConstantOp>(
+                Value shiftAmt = LLVM::ConstantOp::create(rewriter,
                     loc, rewriter.getI32Type(), shift);
-                ext = rewriter.create<LLVM::ShlOp>(loc, ext, shiftAmt);
+                ext = LLVM::ShlOp::create(rewriter, loc, ext, shiftAmt);
             }
-            val32 = rewriter.create<LLVM::OrOp>(loc, val32, ext);
+            val32 = LLVM::OrOp::create(rewriter, loc, val32, ext);
         }
 
-        Value value = rewriter.create<LLVM::ZExtOp>(loc, rewriter.getI64Type(), val32);
+        Value value = LLVM::ZExtOp::create(rewriter, loc, rewriter.getI64Type(), val32);
 
-        Value four = rewriter.create<LLVM::ConstantOp>(loc, rewriter.getI32Type(), 4);
+        Value four = LLVM::ConstantOp::create(rewriter, loc, rewriter.getI32Type(), 4);
         Value newCursor = advanceCursor(rewriter, loc, adaptor.getCursor(), four, cursorType);
 
         rewriter.replaceOp(op, {value, newCursor});
@@ -1343,28 +1343,28 @@ struct ReadI32OpLowering : public OpConversionPattern<bf::ReadI32Op> {
 
         Value bytes[4];
         for (int i = 0; i < 4; ++i) {
-            Value offset = rewriter.create<LLVM::ConstantOp>(loc, rewriter.getI32Type(), i);
-            Value ptrI = rewriter.create<LLVM::GEPOp>(
+            Value offset = LLVM::ConstantOp::create(rewriter, loc, rewriter.getI32Type(), i);
+            Value ptrI = LLVM::GEPOp::create(rewriter,
                 loc, ptr.getType(), rewriter.getI8Type(), ptr, offset);
-            bytes[i] = rewriter.create<LLVM::LoadOp>(loc, rewriter.getI8Type(), ptrI);
+            bytes[i] = LLVM::LoadOp::create(rewriter, loc, rewriter.getI8Type(), ptrI);
         }
 
-        Value val32 = rewriter.create<LLVM::ConstantOp>(loc, rewriter.getI32Type(), 0);
+        Value val32 = LLVM::ConstantOp::create(rewriter, loc, rewriter.getI32Type(), 0);
         for (int i = 0; i < 4; ++i) {
             int byteIdx = (op.getEndianness() == bf::Endianness::BE) ? i : (3 - i);
-            Value ext = rewriter.create<LLVM::ZExtOp>(loc, rewriter.getI32Type(), bytes[byteIdx]);
+            Value ext = LLVM::ZExtOp::create(rewriter, loc, rewriter.getI32Type(), bytes[byteIdx]);
             int shift = (3 - i) * 8;
             if (shift > 0) {
-                Value shiftAmt = rewriter.create<LLVM::ConstantOp>(
+                Value shiftAmt = LLVM::ConstantOp::create(rewriter,
                     loc, rewriter.getI32Type(), shift);
-                ext = rewriter.create<LLVM::ShlOp>(loc, ext, shiftAmt);
+                ext = LLVM::ShlOp::create(rewriter, loc, ext, shiftAmt);
             }
-            val32 = rewriter.create<LLVM::OrOp>(loc, val32, ext);
+            val32 = LLVM::OrOp::create(rewriter, loc, val32, ext);
         }
 
-        Value value = rewriter.create<LLVM::SExtOp>(loc, rewriter.getI64Type(), val32);
+        Value value = LLVM::SExtOp::create(rewriter, loc, rewriter.getI64Type(), val32);
 
-        Value four = rewriter.create<LLVM::ConstantOp>(loc, rewriter.getI32Type(), 4);
+        Value four = LLVM::ConstantOp::create(rewriter, loc, rewriter.getI32Type(), 4);
         Value newCursor = advanceCursor(rewriter, loc, adaptor.getCursor(), four, cursorType);
 
         rewriter.replaceOp(op, {value, newCursor});
@@ -1388,30 +1388,30 @@ struct ReadF32OpLowering : public OpConversionPattern<bf::ReadF32Op> {
 
         Value bytes[4];
         for (int i = 0; i < 4; ++i) {
-            Value offset = rewriter.create<LLVM::ConstantOp>(loc, rewriter.getI32Type(), i);
-            Value ptrI = rewriter.create<LLVM::GEPOp>(
+            Value offset = LLVM::ConstantOp::create(rewriter, loc, rewriter.getI32Type(), i);
+            Value ptrI = LLVM::GEPOp::create(rewriter,
                 loc, ptr.getType(), rewriter.getI8Type(), ptr, offset);
-            bytes[i] = rewriter.create<LLVM::LoadOp>(loc, rewriter.getI8Type(), ptrI);
+            bytes[i] = LLVM::LoadOp::create(rewriter, loc, rewriter.getI8Type(), ptrI);
         }
 
-        Value val32 = rewriter.create<LLVM::ConstantOp>(loc, rewriter.getI32Type(), 0);
+        Value val32 = LLVM::ConstantOp::create(rewriter, loc, rewriter.getI32Type(), 0);
         for (int i = 0; i < 4; ++i) {
             int byteIdx = (op.getEndianness() == bf::Endianness::BE) ? i : (3 - i);
-            Value ext = rewriter.create<LLVM::ZExtOp>(loc, rewriter.getI32Type(), bytes[byteIdx]);
+            Value ext = LLVM::ZExtOp::create(rewriter, loc, rewriter.getI32Type(), bytes[byteIdx]);
             int shift = (3 - i) * 8;
             if (shift > 0) {
-                Value shiftAmt = rewriter.create<LLVM::ConstantOp>(
+                Value shiftAmt = LLVM::ConstantOp::create(rewriter,
                     loc, rewriter.getI32Type(), shift);
-                ext = rewriter.create<LLVM::ShlOp>(loc, ext, shiftAmt);
+                ext = LLVM::ShlOp::create(rewriter, loc, ext, shiftAmt);
             }
-            val32 = rewriter.create<LLVM::OrOp>(loc, val32, ext);
+            val32 = LLVM::OrOp::create(rewriter, loc, val32, ext);
         }
 
-        Value f32Val = rewriter.create<LLVM::BitcastOp>(loc, rewriter.getF32Type(), val32);
+        Value f32Val = LLVM::BitcastOp::create(rewriter, loc, rewriter.getF32Type(), val32);
 
-        Value value = rewriter.create<LLVM::FPExtOp>(loc, rewriter.getF64Type(), f32Val);
+        Value value = LLVM::FPExtOp::create(rewriter, loc, rewriter.getF64Type(), f32Val);
 
-        Value four = rewriter.create<LLVM::ConstantOp>(loc, rewriter.getI32Type(), 4);
+        Value four = LLVM::ConstantOp::create(rewriter, loc, rewriter.getI32Type(), 4);
         Value newCursor = advanceCursor(rewriter, loc, adaptor.getCursor(), four, cursorType);
 
         rewriter.replaceOp(op, {value, newCursor});
@@ -1435,28 +1435,28 @@ struct ReadF64OpLowering : public OpConversionPattern<bf::ReadF64Op> {
 
         Value bytes[8];
         for (int i = 0; i < 8; ++i) {
-            Value offset = rewriter.create<LLVM::ConstantOp>(loc, rewriter.getI32Type(), i);
-            Value ptrI = rewriter.create<LLVM::GEPOp>(
+            Value offset = LLVM::ConstantOp::create(rewriter, loc, rewriter.getI32Type(), i);
+            Value ptrI = LLVM::GEPOp::create(rewriter,
                 loc, ptr.getType(), rewriter.getI8Type(), ptr, offset);
-            bytes[i] = rewriter.create<LLVM::LoadOp>(loc, rewriter.getI8Type(), ptrI);
+            bytes[i] = LLVM::LoadOp::create(rewriter, loc, rewriter.getI8Type(), ptrI);
         }
 
-        Value val64 = rewriter.create<LLVM::ConstantOp>(loc, rewriter.getI64Type(), 0);
+        Value val64 = LLVM::ConstantOp::create(rewriter, loc, rewriter.getI64Type(), 0);
         for (int i = 0; i < 8; ++i) {
             int byteIdx = (op.getEndianness() == bf::Endianness::BE) ? i : (7 - i);
-            Value ext = rewriter.create<LLVM::ZExtOp>(loc, rewriter.getI64Type(), bytes[byteIdx]);
+            Value ext = LLVM::ZExtOp::create(rewriter, loc, rewriter.getI64Type(), bytes[byteIdx]);
             int shift = (7 - i) * 8;
             if (shift > 0) {
-                Value shiftAmt = rewriter.create<LLVM::ConstantOp>(
+                Value shiftAmt = LLVM::ConstantOp::create(rewriter,
                     loc, rewriter.getI64Type(), shift);
-                ext = rewriter.create<LLVM::ShlOp>(loc, ext, shiftAmt);
+                ext = LLVM::ShlOp::create(rewriter, loc, ext, shiftAmt);
             }
-            val64 = rewriter.create<LLVM::OrOp>(loc, val64, ext);
+            val64 = LLVM::OrOp::create(rewriter, loc, val64, ext);
         }
 
-        Value value = rewriter.create<LLVM::BitcastOp>(loc, rewriter.getF64Type(), val64);
+        Value value = LLVM::BitcastOp::create(rewriter, loc, rewriter.getF64Type(), val64);
 
-        Value eight = rewriter.create<LLVM::ConstantOp>(loc, rewriter.getI32Type(), 8);
+        Value eight = LLVM::ConstantOp::create(rewriter, loc, rewriter.getI32Type(), 8);
         Value newCursor = advanceCursor(rewriter, loc, adaptor.getCursor(), eight, cursorType);
 
         rewriter.replaceOp(op, {value, newCursor});
@@ -1477,11 +1477,11 @@ static Value convertedBufferOf(CursorGCSafety &gc, Value cursor,
 static std::pair<Value, Value> cursorOffsets(OpBuilder &builder, Location loc,
                                              Value cursor, Value data) {
     auto i64 = builder.getI64Type();
-    Value base = builder.create<LLVM::PtrToIntOp>(loc, i64, data);
-    Value ptr = builder.create<LLVM::PtrToIntOp>(loc, i64, extractPtr(builder, loc, cursor));
-    Value end = builder.create<LLVM::PtrToIntOp>(loc, i64, extractEnd(builder, loc, cursor));
-    return {builder.create<LLVM::SubOp>(loc, ptr, base),
-            builder.create<LLVM::SubOp>(loc, end, base)};
+    Value base = LLVM::PtrToIntOp::create(builder, loc, i64, data);
+    Value ptr = LLVM::PtrToIntOp::create(builder, loc, i64, extractPtr(builder, loc, cursor));
+    Value end = LLVM::PtrToIntOp::create(builder, loc, i64, extractEnd(builder, loc, cursor));
+    return {LLVM::SubOp::create(builder, loc, ptr, base),
+            LLVM::SubOp::create(builder, loc, end, base)};
 }
 
 /**
@@ -1498,7 +1498,7 @@ struct CursorOffsetsOpLowering : public OpConversionPattern<bf::CursorOffsetsOp>
     matchAndRewrite(bf::CursorOffsetsOp op, OpAdaptor adaptor,
                     ConversionPatternRewriter &rewriter) const override {
         auto loc = op.getLoc();
-        Value data = rewriter.create<LLVM::CallOp>(
+        Value data = LLVM::CallOp::create(rewriter,
             loc, rt.bytebufferData, ValueRange{adaptor.getBuffer()}).getResult();
         auto [pos, end] = cursorOffsets(rewriter, loc, adaptor.getCursor(), data);
         rewriter.replaceOp(op, {pos, end});
@@ -1520,11 +1520,11 @@ struct CursorRebaseOpLowering : public OpConversionPattern<bf::CursorRebaseOp> {
     matchAndRewrite(bf::CursorRebaseOp op, OpAdaptor adaptor,
                     ConversionPatternRewriter &rewriter) const override {
         auto loc = op.getLoc();
-        Value data = rewriter.create<LLVM::CallOp>(
+        Value data = LLVM::CallOp::create(rewriter,
             loc, rt.bytebufferData, ValueRange{adaptor.getBuffer()}).getResult();
-        Value ptr = rewriter.create<LLVM::GEPOp>(
+        Value ptr = LLVM::GEPOp::create(rewriter,
             loc, data.getType(), rewriter.getI8Type(), data, adaptor.getPos());
-        Value end = rewriter.create<LLVM::GEPOp>(
+        Value end = LLVM::GEPOp::create(rewriter,
             loc, data.getType(), rewriter.getI8Type(), data, adaptor.getEnd());
         Type cursorType = getTypeConverter()->convertType(op.getType());
         rewriter.replaceOp(op, createCursor(rewriter, loc, ptr, end, cursorType));
@@ -1547,7 +1547,7 @@ struct BuilderBitOpLowering : public OpConversionPattern<OpT> {
     LogicalResult
     matchAndRewrite(OpT op, typename OpT::Adaptor adaptor,
                     ConversionPatternRewriter &rewriter) const override {
-        rewriter.create<LLVM::CallOp>(op.getLoc(), fn, ValueRange{adaptor.getBuffer()});
+        LLVM::CallOp::create(rewriter, op.getLoc(), fn, ValueRange{adaptor.getBuffer()});
         rewriter.eraseOp(op);
         return success();
     }
@@ -1581,36 +1581,36 @@ struct ReadBytesOpLowering : public OpConversionPattern<bf::ReadBytesOp> {
             return rewriter.notifyMatchFailure(op, "buffer of the cursor unknown");
 
         // Offsets of the cursor in the source, before the allocation.
-        Value data0 = rewriter.create<LLVM::CallOp>(
+        Value data0 = LLVM::CallOp::create(rewriter,
             loc, rt.bytebufferData, ValueRange{source}).getResult();
         auto [pos, endOff] = cursorOffsets(rewriter, loc, adaptor.getCursor(), data0);
 
-        auto allocCall = rewriter.create<LLVM::CallOp>(
+        auto allocCall = LLVM::CallOp::create(rewriter,
             loc, rt.allocBytebuffer, ValueRange{adaptor.getLen()});
         Value newBuffer = allocCall.getResult();
 
         // Re-derive the source pointer from the relocated buffer.
-        Value data1 = rewriter.create<LLVM::CallOp>(
+        Value data1 = LLVM::CallOp::create(rewriter,
             loc, rt.bytebufferData, ValueRange{source}).getResult();
-        Value srcPtr = rewriter.create<LLVM::GEPOp>(
+        Value srcPtr = LLVM::GEPOp::create(rewriter,
             loc, data1.getType(), rewriter.getI8Type(), data1, pos);
-        Value end = rewriter.create<LLVM::GEPOp>(
+        Value end = LLVM::GEPOp::create(rewriter,
             loc, data1.getType(), rewriter.getI8Type(), data1, endOff);
 
-        auto dataCall = rewriter.create<LLVM::CallOp>(
+        auto dataCall = LLVM::CallOp::create(rewriter,
             loc, rt.bytebufferData, ValueRange{newBuffer});
         Value dstPtr = dataCall.getResult();
 
-        Value len64 = rewriter.create<LLVM::ZExtOp>(
+        Value len64 = LLVM::ZExtOp::create(rewriter,
             loc, rewriter.getI64Type(), adaptor.getLen());
-        rewriter.create<LLVM::MemcpyOp>(loc, dstPtr, srcPtr, len64, /*isVolatile=*/false);
+        LLVM::MemcpyOp::create(rewriter, loc, dstPtr, srcPtr, len64, /*isVolatile=*/false);
 
         Value newCursor = advanceCursor(
             rewriter, loc, createCursor(rewriter, loc, srcPtr, end, cursorType),
             adaptor.getLen(), cursorType);
 
         // The allocation is assumed to succeed.
-        Value ok = rewriter.create<LLVM::ConstantOp>(
+        Value ok = LLVM::ConstantOp::create(rewriter,
             loc, rewriter.getI1Type(), 1);
 
         rewriter.replaceOp(op, {newBuffer, newCursor, ok});
@@ -1646,27 +1646,27 @@ struct ReadUtf8OpLowering : public OpConversionPattern<bf::ReadUtf8Op> {
         if (!source)
             return rewriter.notifyMatchFailure(op, "buffer of the cursor unknown");
 
-        Value data0 = rewriter.create<LLVM::CallOp>(
+        Value data0 = LLVM::CallOp::create(rewriter,
             loc, rt.bytebufferData, ValueRange{source}).getResult();
         auto [pos, endOff] = cursorOffsets(rewriter, loc, adaptor.getCursor(), data0);
-        Value pos32 = rewriter.create<LLVM::TruncOp>(loc, rewriter.getI32Type(), pos);
+        Value pos32 = LLVM::TruncOp::create(rewriter, loc, rewriter.getI32Type(), pos);
 
         // elm_utf8_decode returns null for invalid UTF-8.
-        auto decodeCall = rewriter.create<LLVM::CallOp>(
+        auto decodeCall = LLVM::CallOp::create(rewriter,
             loc, rt.utf8Decode, ValueRange{source, pos32, adaptor.getLen()});
         Value stringVal = decodeCall.getResult();
 
         auto hptrTy = LLVM::LLVMPointerType::get(rewriter.getContext(), 1);
-        Value nullPtr = rewriter.create<LLVM::ZeroOp>(loc, hptrTy);
-        Value ok = rewriter.create<LLVM::ICmpOp>(
+        Value nullPtr = LLVM::ZeroOp::create(rewriter, loc, hptrTy);
+        Value ok = LLVM::ICmpOp::create(rewriter,
             loc, LLVM::ICmpPredicate::ne, stringVal, nullPtr);
 
         // Re-derive the cursor from the relocated buffer, advanced by len.
-        Value data1 = rewriter.create<LLVM::CallOp>(
+        Value data1 = LLVM::CallOp::create(rewriter,
             loc, rt.bytebufferData, ValueRange{source}).getResult();
-        Value ptr = rewriter.create<LLVM::GEPOp>(
+        Value ptr = LLVM::GEPOp::create(rewriter,
             loc, data1.getType(), rewriter.getI8Type(), data1, pos);
-        Value end = rewriter.create<LLVM::GEPOp>(
+        Value end = LLVM::GEPOp::create(rewriter,
             loc, data1.getType(), rewriter.getI8Type(), data1, endOff);
         Value newCursor = advanceCursor(
             rewriter, loc, createCursor(rewriter, loc, ptr, end, cursorType),
@@ -1691,15 +1691,15 @@ struct DecoderCursorInitOpLowering : public OpConversionPattern<bf::DecoderCurso
                     ConversionPatternRewriter &rewriter) const override {
         auto loc = op.getLoc();
 
-        auto dataCall = rewriter.create<LLVM::CallOp>(
+        auto dataCall = LLVM::CallOp::create(rewriter,
             loc, rt.bytebufferData, ValueRange{adaptor.getBytes()});
         Value ptr = dataCall.getResult();
 
-        auto lenCall = rewriter.create<LLVM::CallOp>(
+        auto lenCall = LLVM::CallOp::create(rewriter,
             loc, rt.bytebufferLen, ValueRange{adaptor.getBytes()});
         Value len = lenCall.getResult();
 
-        Value end = rewriter.create<LLVM::GEPOp>(
+        Value end = LLVM::GEPOp::create(rewriter,
             loc, ptr.getType(), rewriter.getI8Type(), ptr, len);
 
         Type cursorType = getTypeConverter()->convertType(op.getType());
@@ -1721,7 +1721,7 @@ struct CursorPtrOpLowering : public OpConversionPattern<bf::CursorPtrOp> {
                     ConversionPatternRewriter &rewriter) const override {
         auto loc = op.getLoc();
         Value ptr = extractPtr(rewriter, loc, adaptor.getCursor());
-        Value ptrAsInt = rewriter.create<LLVM::PtrToIntOp>(
+        Value ptrAsInt = LLVM::PtrToIntOp::create(rewriter,
             loc, rewriter.getI64Type(), ptr);
         rewriter.replaceOp(op, ptrAsInt);
         return success();

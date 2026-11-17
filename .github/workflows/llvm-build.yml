@@ -1,0 +1,227 @@
+# Builds eco's LLVM/MLIR for every platform, once per llvm-project commit and build recipe, and
+# publishes it to GHCR, where the -aot workflows on any branch and any dev box can pull it.
+# Replaces the four per-platform workflows (linux-llvm-build-debian, linux-llvm-build-alpine,
+# mac-llvm-build, win-llvm-build) and their Actions-cache entries (plans/llvm-24-upgrade.md, §2).
+#
+#   debian, alpine   images (docker/llvm-{debian,alpine}.Dockerfile), consumed by eco-dev,
+#                    static-dev and static-build
+#   macos, windows   the install trees (experiments/{mac,win}-llvm-build), as OCI artifacts holding
+#                    llvm-install.tar.gz, pushed and pulled with ORAS
+#
+# Each artifact is named by `scripts/deps.sh artifact <platform>`: the pinned commit plus a hash of
+# the platform's recipe, so a recipe change builds a new artifact and nothing is ever overwritten.
+# A leg whose artifact already exists stops at once, so re-running this is cheap. A build made on
+# a ci/ branch is the same artifact master uses after the merge: nothing is built twice.
+#
+# Runs when the pin or a recipe changes. The -aot workflows fail fast, naming this workflow, when
+# their artifact is missing; run it (workflow_dispatch) on that branch, then re-run them.
+name: llvm-build
+
+on:
+  push:
+    branches: ['ci/**', 'master']
+    paths:
+      - 'deps/versions.env'
+      - 'docker/llvm-debian.Dockerfile'
+      - 'docker/llvm-alpine.Dockerfile'
+      - 'experiments/mac-llvm-build/**'
+      - 'experiments/win-llvm-build/**'
+      - 'test/scripts/check-macho-floor.sh'
+      - 'scripts/deps.sh'
+      - '.github/workflows/llvm-build.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+# Never cancel a build in progress: a half-built LLVM is hours lost.
+concurrency:
+  group: llvm-build-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  linux:
+    name: linux (${{ matrix.platform }})
+    runs-on: ubuntu-latest
+    # LLVM+MLIR Release from source on a hosted runner: 1-3 h cold.
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: [debian, alpine]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Name the artifact
+        id: name
+        run: |
+          echo "ref=$(scripts/deps.sh artifact ${{ matrix.platform }})" >> "$GITHUB_OUTPUT"
+          echo "commit=$(scripts/deps.sh get LLVM_COMMIT)" >> "$GITHUB_OUTPUT"
+
+      - name: Log in to GHCR
+        run: echo "${{ github.token }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      - name: Already published?
+        id: have
+        run: |
+          if docker manifest inspect "${{ steps.name.outputs.ref }}" >/dev/null 2>&1; then
+            echo "hit=true" >> "$GITHUB_OUTPUT"
+            echo "Already published: ${{ steps.name.outputs.ref }}"
+          else
+            echo "hit=false" >> "$GITHUB_OUTPUT"
+            echo "Not published yet: ${{ steps.name.outputs.ref }}"
+          fi
+
+      - name: Free disk space
+        # LLVM source builds are disk-hungry; reclaim the preinstalled SDKs we never use.
+        if: steps.have.outputs.hit != 'true'
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+            /opt/hostedtoolcache/CodeQL /usr/local/share/boost || true
+          sudo docker image prune -af || true
+          df -h /
+
+      - name: Build and publish
+        if: steps.have.outputs.hit != 'true'
+        run: |
+          ref="${{ steps.name.outputs.ref }}"
+          docker build -f docker/llvm-${{ matrix.platform }}.Dockerfile \
+            --build-arg LLVM_COMMIT="${{ steps.name.outputs.commit }}" -t "$ref" .
+          docker push "$ref"
+          echo "Published $ref"
+
+  macos:
+    runs-on: macos-15
+    # LLVM+MLIR Release on the 3-vCPU arm64 runner: 2-3 h cold.
+    timeout-minutes: 330
+    env:
+      LLVM_INSTALL_DIR: ${{ github.workspace }}/experiments/mac-llvm-build/out/llvm-install
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Name the artifact
+        id: name
+        run: |
+          echo "ref=$(scripts/deps.sh artifact macos)" >> "$GITHUB_OUTPUT"
+          echo "commit=$(scripts/deps.sh get LLVM_COMMIT)" >> "$GITHUB_OUTPUT"
+
+      - uses: oras-project/setup-oras@v1
+        with:
+          version: 1.2.0
+
+      - name: Log in to GHCR
+        run: echo "${{ github.token }}" | oras login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      - name: Already published?
+        id: have
+        run: |
+          if oras manifest fetch "${{ steps.name.outputs.ref }}" >/dev/null 2>&1; then
+            echo "hit=true" >> "$GITHUB_OUTPUT"
+            echo "Already published: ${{ steps.name.outputs.ref }}"
+          else
+            echo "hit=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Install build tools
+        if: steps.have.outputs.hit != 'true'
+        run: brew install ninja
+
+      - name: Build LLVM + MLIR
+        if: steps.have.outputs.hit != 'true'
+        run: experiments/mac-llvm-build/build.sh
+
+      - name: Publish
+        if: steps.have.outputs.hit != 'true'
+        run: |
+          cd "$RUNNER_TEMP"
+          tar -C "$LLVM_INSTALL_DIR" -czf llvm-install.tar.gz .
+          ls -lh llvm-install.tar.gz
+          oras push "${{ steps.name.outputs.ref }}" \
+            --artifact-type application/vnd.eco.llvm-install \
+            --annotation "org.eco.llvm.commit=${{ steps.name.outputs.commit }}" \
+            llvm-install.tar.gz:application/vnd.eco.llvm-install.tar+gzip
+          echo "Published ${{ steps.name.outputs.ref }}"
+
+      - name: Upload configure logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: llvm-build-macos-logs
+          path: |
+            experiments/mac-llvm-build/out/build/CMakeCache.txt
+            experiments/mac-llvm-build/out/build/CMakeFiles/CMakeConfigureLog.yaml
+          if-no-files-found: warn
+
+  windows:
+    runs-on: windows-latest
+    # LLVM+MLIR Release on 4 vCPUs: 2-4 h cold.
+    timeout-minutes: 330
+    env:
+      LLVM_INSTALL_DIR: ${{ github.workspace }}\experiments\win-llvm-build\out\llvm-install
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Name the artifact
+        id: name
+        shell: bash
+        run: |
+          echo "ref=$(scripts/deps.sh artifact windows)" >> "$GITHUB_OUTPUT"
+          echo "commit=$(scripts/deps.sh get LLVM_COMMIT)" >> "$GITHUB_OUTPUT"
+
+      - uses: oras-project/setup-oras@v1
+        with:
+          version: 1.2.0
+
+      - name: Log in to GHCR
+        shell: bash
+        run: echo "${{ github.token }}" | oras login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      - name: Already published?
+        id: have
+        shell: bash
+        run: |
+          if oras manifest fetch "${{ steps.name.outputs.ref }}" >/dev/null 2>&1; then
+            echo "hit=true" >> "$GITHUB_OUTPUT"
+            echo "Already published: ${{ steps.name.outputs.ref }}"
+          else
+            echo "hit=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Set up MSVC dev environment
+        # LLVM's BLAKE3 lib has SSE2/AVX2 ASM stubs assembled by ml64.exe, which is not on the
+        # default PATH; this sources vcvarsall x64. clang-cl still drives the C++ compile.
+        if: steps.have.outputs.hit != 'true'
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Build LLVM + MLIR
+        if: steps.have.outputs.hit != 'true'
+        shell: pwsh
+        run: experiments/win-llvm-build/build.ps1
+
+      - name: Publish
+        if: steps.have.outputs.hit != 'true'
+        shell: pwsh
+        run: |
+          Set-Location $env:RUNNER_TEMP
+          & "$env:SystemRoot\System32\tar.exe" -C $env:LLVM_INSTALL_DIR -czf llvm-install.tar.gz .
+          if ($LASTEXITCODE -ne 0) { throw "tar failed: $LASTEXITCODE" }
+          Get-Item llvm-install.tar.gz | Format-List Length
+          oras push "${{ steps.name.outputs.ref }}" `
+            --artifact-type application/vnd.eco.llvm-install `
+            --annotation "org.eco.llvm.commit=${{ steps.name.outputs.commit }}" `
+            llvm-install.tar.gz:application/vnd.eco.llvm-install.tar+gzip
+          if ($LASTEXITCODE -ne 0) { throw "oras push failed: $LASTEXITCODE" }
+          Write-Host "Published ${{ steps.name.outputs.ref }}"
+
+      - name: Upload configure logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: llvm-build-windows-logs
+          path: |
+            experiments/win-llvm-build/out/build/CMakeCache.txt
+            experiments/win-llvm-build/out/build/CMakeFiles/CMakeConfigureLog.yaml
+          if-no-files-found: warn

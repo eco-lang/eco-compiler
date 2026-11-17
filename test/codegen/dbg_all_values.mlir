@@ -155,38 +155,38 @@ module {
 
     // === Lists (Cons cells) ===
     // Boxed values, so every slot kind is 0
-    %l1 = eco.construct.custom(%b42, %nil) {tag = 0 : i64, size = 2 : i64, slot_kinds = array<i8: 0, 0>} : (!eco.value, !eco.value) -> !eco.value
+    %l1 = eco.construct.custom(%b42, %nil) <{tag = 0 : i64, size = 2 : i64, slot_kinds = array<i8: 0, 0>}> : (!eco.value, !eco.value) -> !eco.value
     eco.dbg %l1 : !eco.value
     // CHECK: Ctor0 42 <empty>
 
-    %l2 = eco.construct.custom(%b0, %l1) {tag = 0 : i64, size = 2 : i64, slot_kinds = array<i8: 0, 0>} : (!eco.value, !eco.value) -> !eco.value
+    %l2 = eco.construct.custom(%b0, %l1) <{tag = 0 : i64, size = 2 : i64, slot_kinds = array<i8: 0, 0>}> : (!eco.value, !eco.value) -> !eco.value
     eco.dbg %l2 : !eco.value
     // CHECK: Ctor0 0 (Ctor0 42 <empty>)
 
     // === Custom Constructors ===
 
     // Single field
-    %ctor1 = eco.construct.custom(%b42) {slot_kinds = array<i8: 0>, tag = 0 : i64, size = 1 : i64} : (!eco.value) -> !eco.value
+    %ctor1 = eco.construct.custom(%b42) <{slot_kinds = array<i8: 0>, tag = 0 : i64, size = 1 : i64}> : (!eco.value) -> !eco.value
     eco.dbg %ctor1 : !eco.value
     // CHECK: Ctor0 42
 
     // Multiple fields
-    %ctor2 = eco.construct.custom(%b42, %bpi, %bA) {slot_kinds = array<i8: 0, 0, 0>, tag = 5 : i64, size = 3 : i64} : (!eco.value, !eco.value, !eco.value) -> !eco.value
+    %ctor2 = eco.construct.custom(%b42, %bpi, %bA) <{slot_kinds = array<i8: 0, 0, 0>, tag = 5 : i64, size = 3 : i64}> : (!eco.value, !eco.value, !eco.value) -> !eco.value
     eco.dbg %ctor2 : !eco.value
     // CHECK: Ctor5 42 3.14159 'A'
 
     // Nested constructor
-    %nested = eco.construct.custom(%ctor1) {slot_kinds = array<i8: 0>, tag = 1 : i64, size = 1 : i64} : (!eco.value) -> !eco.value
+    %nested = eco.construct.custom(%ctor1) <{slot_kinds = array<i8: 0>, tag = 1 : i64, size = 1 : i64}> : (!eco.value) -> !eco.value
     eco.dbg %nested : !eco.value
     // CHECK: Ctor1 (Ctor0 42)
 
     // === Allocated Objects ===
 
-    %alloc_ctor = eco.construct.custom(%b42, %bA) {slot_kinds = array<i8: 0, 0>, tag = 99 : i64, size = 2 : i64} : (!eco.value, !eco.value) -> !eco.value
+    %alloc_ctor = eco.construct.custom(%b42, %bA) <{slot_kinds = array<i8: 0, 0>, tag = 99 : i64, size = 2 : i64}> : (!eco.value, !eco.value) -> !eco.value
     eco.dbg %alloc_ctor : !eco.value
     // CHECK: Ctor99 42 'A'
 
-    %alloc_str = eco.allocate_string {length = 10 : i64} : !eco.value
+    %alloc_str = eco.allocate_string <{length = 10 : i64}> : !eco.value
     eco.dbg %alloc_str : !eco.value
     // CHECK: "\0\0\0\0\0\0\0\0\0\0"
 

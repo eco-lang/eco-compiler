@@ -15,7 +15,7 @@ module {
     %nil = eco.constant Empty : !eco.value
     %i42 = arith.constant 42 : i64
     %h = eco.box %i42 : i64 -> !eco.value
-    %l = eco.construct.list %h, %nil {head_unboxed = true, head_kind = 1} : !eco.value, !eco.value -> !eco.value
+    %l = eco.construct.list %h, %nil <{head_unboxed = true, head_kind = 1}> : !eco.value, !eco.value -> !eco.value
     eco.return %l : !eco.value
   }
 }

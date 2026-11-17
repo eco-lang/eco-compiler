@@ -17,9 +17,11 @@
 # docker/llvm-alpine.Dockerfile, shared with docker/static-build.Dockerfile).
 #
 # ---- Build (LLVM image built once, then shared) ----------------------------
-#   docker build -f docker/llvm-alpine.Dockerfile \
-#       -t eco-llvm-alpine:21.1.8 .             # ~30-60 min the first time
-#   docker build -f docker/static-dev.Dockerfile -t eco-static-dev:local .
+#   local-dev/build-images.sh --static      # pulls (or --local builds) the
+#                                           # pinned musl LLVM, then runs:
+#   docker build -f docker/static-dev.Dockerfile \
+#       --build-arg LLVM_IMAGE="$(scripts/deps.sh artifact alpine)" \
+#       -t eco-static-dev:local .
 #
 # ---- Run interactively -----------------------------------------------------
 # The musl preset writes into `build-static/` (see CMakePresets.json) rather
@@ -41,9 +43,9 @@
 # ============================================================================
 
 ARG ALPINE_DIGEST=sha256:48b0309ca019d89d40f670aa1bc06e426dc0931948452e8491e3d65087abc07d
-# Image holding the MUSL /opt/llvm-mlir (produced by docker/llvm-alpine.Dockerfile).
-# Override with --build-arg LLVM_IMAGE=... if tagged differently.
-ARG LLVM_IMAGE=eco-llvm-alpine:21.1.8
+# Image holding the MUSL /opt/llvm-mlir (produced by docker/llvm-alpine.Dockerfile),
+# passed as --build-arg LLVM_IMAGE (no default).
+ARG LLVM_IMAGE
 
 # Stage alias for the pre-built LLVM image; only /opt/llvm-mlir is copied below.
 FROM ${LLVM_IMAGE} AS llvm

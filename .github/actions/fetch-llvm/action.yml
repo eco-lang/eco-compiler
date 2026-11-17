@@ -1,0 +1,107 @@
+# Fetches eco's prebuilt LLVM/MLIR for one platform: the artifact the llvm-build workflow publishes
+# for the llvm-project commit in deps/versions.env and the platform's current build recipe
+# (`scripts/deps.sh artifact <platform>` names it).
+#
+#   debian, alpine   docker pull of the image; its name is the `ref` output (FROM it, or pass it as
+#                    the LLVM_IMAGE build argument)
+#   macos, windows   the install tree, unpacked into `dest`
+#
+# A missing artifact fails here, naming the workflow to run, instead of building LLVM inline (hours,
+# and the alpine build does not survive next to other work on a hosted runner).
+name: fetch-llvm
+description: Pull eco's prebuilt LLVM/MLIR for the pinned llvm-project commit
+inputs:
+  platform:
+    description: debian, alpine, macos or windows
+    required: true
+  dest:
+    description: macos and windows only - the directory to unpack the install tree into
+    required: false
+    default: ''
+  token:
+    description: a token that may read the eco-lang packages
+    required: false
+    default: ${{ github.token }}
+outputs:
+  ref:
+    description: the artifact's registry reference
+    value: ${{ steps.name.outputs.ref }}
+  commit:
+    description: the llvm-project commit
+    value: ${{ steps.name.outputs.commit }}
+runs:
+  using: composite
+  steps:
+    - name: Name the LLVM artifact
+      id: name
+      shell: bash
+      run: |
+        echo "ref=$(scripts/deps.sh artifact '${{ inputs.platform }}')" >> "$GITHUB_OUTPUT"
+        echo "commit=$(scripts/deps.sh get LLVM_COMMIT)" >> "$GITHUB_OUTPUT"
+
+    - name: Pull the LLVM image
+      if: inputs.platform == 'debian' || inputs.platform == 'alpine'
+      shell: bash
+      env:
+        REF: ${{ steps.name.outputs.ref }}
+        TOKEN: ${{ inputs.token }}
+      run: |
+        echo "$TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+        if ! docker pull "$REF"; then
+          echo "::error::no prebuilt LLVM at $REF: run the llvm-build workflow on this branch, then re-run this one"
+          exit 1
+        fi
+        commit=$(docker image inspect --format '{{ index .Config.Labels "org.eco.llvm.commit" }}' "$REF")
+        [ "$commit" = "${{ steps.name.outputs.commit }}" ] || {
+          echo "::error::$REF is labelled with LLVM $commit, not the pinned ${{ steps.name.outputs.commit }}"; exit 1; }
+
+    - name: Set up ORAS
+      if: inputs.platform == 'macos' || inputs.platform == 'windows'
+      uses: oras-project/setup-oras@v1
+      with:
+        version: 1.2.0
+
+    - name: Pull the LLVM install tree
+      if: inputs.platform == 'macos' || inputs.platform == 'windows'
+      shell: bash
+      env:
+        REF: ${{ steps.name.outputs.ref }}
+        TOKEN: ${{ inputs.token }}
+      run: |
+        echo "$TOKEN" | oras login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+        out="$RUNNER_TEMP/eco-llvm-download"
+        rm -rf "$out" && mkdir -p "$out"
+        if ! oras pull "$REF" -o "$out"; then
+          echo "::error::no prebuilt LLVM at $REF: run the llvm-build workflow on this branch, then re-run this one"
+          exit 1
+        fi
+        ls -la "$out"
+
+    # Unpacked by each OS's own tar: Git Bash's GNU tar reads "D:\..." as a remote host.
+    - name: Unpack the LLVM install tree (macOS)
+      if: inputs.platform == 'macos'
+      shell: bash
+      run: |
+        rm -rf "${{ inputs.dest }}" && mkdir -p "${{ inputs.dest }}"
+        tar -xzf "$RUNNER_TEMP/eco-llvm-download/llvm-install.tar.gz" -C "${{ inputs.dest }}"
+        rm -rf "$RUNNER_TEMP/eco-llvm-download"
+
+    - name: Unpack the LLVM install tree (Windows)
+      if: inputs.platform == 'windows'
+      shell: pwsh
+      run: |
+        $dest = '${{ inputs.dest }}'
+        if (Test-Path $dest) { Remove-Item -Recurse -Force $dest }
+        New-Item -ItemType Directory -Force -Path $dest | Out-Null
+        & "$env:SystemRoot\System32\tar.exe" -xzf "$env:RUNNER_TEMP\eco-llvm-download\llvm-install.tar.gz" -C $dest
+        if ($LASTEXITCODE -ne 0) { throw "tar failed: $LASTEXITCODE" }
+        Remove-Item -Recurse -Force "$env:RUNNER_TEMP\eco-llvm-download"
+
+    - name: Check the install tree's commit
+      if: inputs.platform == 'macos' || inputs.platform == 'windows'
+      shell: bash
+      run: |
+        got=$(tr -d '\r\n' < "${{ inputs.dest }}/ECO_LLVM_COMMIT")
+        [ "$got" = "${{ steps.name.outputs.commit }}" ] || {
+          echo "::error::the install tree records LLVM $got, not the pinned ${{ steps.name.outputs.commit }}"; exit 1; }
+        echo "LLVM $got in ${{ inputs.dest }}"

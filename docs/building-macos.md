@@ -68,12 +68,27 @@ brew install rapidcheck    # required by the runtime test harness
 FetchContent on macOS so the AOT bundle ships its own `libzip.a` without
 a `/opt/homebrew` runtime dep.
 
-### 3. LLVM/MLIR 21.1.8 (static)
+### 3. LLVM/MLIR (static, pinned)
 
-`eco` links LLVM and MLIR statically from a pinned 21.1.8 install tree, the
-same version as the Linux and Windows builds. Homebrew's `llvm@21` is not
-used: it is built around its shared `libLLVM.dylib`, which a shipped `eco`
-cannot rely on. Build the tree once (roughly an hour on an M-series Mac):
+`eco` links LLVM and MLIR statically from an install tree built at the
+llvm-project commit [`deps/versions.env`](../deps/versions.env) pins
+(`LLVM_COMMIT`, the commit Modular MAX pins), the same commit as the Linux and
+Windows builds. Homebrew's LLVM is not used: it is a different version, built
+around its shared `libLLVM.dylib`, which a shipped `eco` cannot rely on.
+
+CI's `llvm-build` workflow builds the tree once per commit and publishes it to
+GHCR; pull it with [ORAS](https://oras.land) (`brew install oras`; while the
+eco-lang packages are private, `gh auth token | oras login ghcr.io -u <user>
+--password-stdin` first):
+
+```bash
+oras pull "$(scripts/deps.sh artifact macos)" -o /tmp/eco-llvm
+mkdir -p experiments/mac-llvm-build/out/llvm-install
+tar -xzf /tmp/eco-llvm/llvm-install.tar.gz -C experiments/mac-llvm-build/out/llvm-install
+export ECO_MAC_DEPS_DIR=$PWD/experiments/mac-llvm-build/out/llvm-install
+```
+
+or build it yourself (roughly an hour on an M-series Mac):
 
 ```bash
 experiments/mac-llvm-build/build.sh     # → experiments/mac-llvm-build/out/llvm-install
@@ -81,7 +96,15 @@ export ECO_MAC_DEPS_DIR=$PWD/experiments/mac-llvm-build/out/llvm-install
 ```
 
 The `mac-build` preset reads `ECO_MAC_DEPS_DIR` as its `CMAKE_PREFIX_PATH`.
-CI builds the same tree in the `mac-llvm-build` workflow and caches it.
+CMake checks the tree's `ECO_LLVM_COMMIT` against the pin, so after a pin moves
+it says to fetch the new tree (and to delete the old `build/`).
+
+### 4. uv (for MAX)
+
+Configure installs the pinned Modular MAX (`deps/max/`) with
+[uv](https://docs.astral.sh/uv/) when uv is on `PATH` (`brew install uv`, at
+least `UV_VERSION` from `deps/versions.env`); without uv, MAX is off and the
+rest of eco builds as before. `-DECO_MAX=ON` makes it required.
 
 ## CMake presets
 
@@ -90,7 +113,7 @@ Two macOS-specific presets:
 | Preset | Build dir | Purpose |
 |---|---|---|
 | `mac-frontend` | `build/` | Front-end only. Configures `compiler/` via `ECO_FRONTEND_ONLY=ON`; pure Node/Elm bootstrap through Stage 5 (eco-compiler.mlir). No LLVM/MLIR / runtime / kernels / tests. Fast (~4 min on a clean build). |
-| `mac-build` | `build/` | Full configure: runtime, kernels, tests, compiler. Static LLVM/MLIR 21.1.8 from `$ECO_MAC_DEPS_DIR`. AppleClang + ld64 (no lld). |
+| `mac-build` | `build/` | Full configure: runtime, kernels, tests, compiler. Static pinned LLVM/MLIR from `$ECO_MAC_DEPS_DIR`. AppleClang + ld64 (no lld). MAX when uv is installed. |
 | `mac-release` | `build-release/` | The same configure in Release mode (`-O2 -DNDEBUG`, no asserts, no GC stats, stripped links), as `release` is for Linux. CI builds the Darwin bundle from it. |
 
 Both are gated on `${hostSystemName} == Darwin` so they only appear in
@@ -199,8 +222,8 @@ workflow under `.github/workflows/`:
 
 | Workflow | What it checks (cheap → expensive, fail-fast) |
 |---|---|
-| `mac-llvm-build` | Builds the static LLVM/MLIR 21.1.8 tree (`experiments/mac-llvm-build/build.sh`, 2-3 h cold) and caches it; a weekly run keeps the cache warm. |
-| `mac-aot` | Restores that tree. Its `aot` job does a full configure (`mac-build`); front-end Stages 1-5; the elm-tests suite; runtime + JIT E2E test binary; the full Stage 9 bootstrap (`--target eco`); Mach-O verification (`file` + `codesign -dv` + `--help`). In parallel, its `bundle` job configures `mac-release`, runs the Stage 9 bootstrap in Release mode, then builds the CPack bundle, smoke-tests it by building `Hello.elm`, and runs the macOS-floor and linked-library gate. Its `bundle-smoke` job then installs the bundle on a fresh runner with only the Command Line Tools (Xcode app and Homebrew LLVM/OpenSSL moved aside, clean `HOME`, minimal `PATH`) and builds and runs two programs. |
+| `llvm-build` | Builds the static LLVM/MLIR tree for the pinned commit (`experiments/mac-llvm-build/build.sh`, 2-3 h cold) once, and publishes it to GHCR (alongside the Linux and Windows builds). |
+| `mac-aot` | Pulls that tree. Its `aot` job does a full configure (`mac-build`, with MAX required) and runs the MAX smoke test; front-end Stages 1-5; the elm-tests suite; runtime + JIT E2E test binary; the full Stage 9 bootstrap (`--target eco`); Mach-O verification (`file` + `codesign -dv` + `--help`). In parallel, its `bundle` job configures `mac-release`, runs the Stage 9 bootstrap in Release mode, then builds the CPack bundle, smoke-tests it by building `Hello.elm`, and runs the macOS-floor and linked-library gate. Its `bundle-smoke` job then installs the bundle on a fresh runner with only the Command Line Tools (Xcode app and Homebrew LLVM/OpenSSL moved aside, clean `HOME`, minimal `PATH`) and builds and runs two programs. |
 
 `mac-aot` runs on the free `macos-15` (arm64, M-class) hosted runner.
 It supersedes the former `mac-bootstrap` (front-end) and `mac-runtime`

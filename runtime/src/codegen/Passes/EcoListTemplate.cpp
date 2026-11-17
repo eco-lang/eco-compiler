@@ -368,7 +368,7 @@ void ensureDecl(ModuleOp m, StringRef name, FunctionType ft,
         return;
     OpBuilder b(m.getContext());
     b.setInsertionPointToEnd(m.getBody());
-    auto f = b.create<func::FuncOp>(m.getLoc(), name, ft);
+    auto f = func::FuncOp::create(b, m.getLoc(), name, ft);
     f.setPrivate();
     f->setAttr("is_kernel", b.getBoolAttr(true));
     f->setAttr("eco.logical_param_types", b.getStrArrayAttr(paramKinds));
@@ -732,7 +732,7 @@ struct EcoListTemplatePass
                        {"i64", "value", "i64"}, {"value"});
         }
 
-        auto mark = b.create<eco::CallOp>(
+        auto mark = eco::CallOp::create(b,
             loc, TypeRange{i64}, ValueRange{},
             FlatSymbolRefAttr::get(ctx, kMarkFn), nullptr, nullptr);
 
@@ -742,19 +742,19 @@ struct EcoListTemplatePass
             Location cl = c->getLoc();
             Value h = c->getOperand(0);
             if (isa<eco::ValueType>(h.getType())) {
-                cb.create<eco::CallOp>(
+                eco::CallOp::create(cb,
                     cl, TypeRange{}, ValueRange{h},
                     FlatSymbolRefAttr::get(ctx, kPushBoxedFn), nullptr,
                     nullptr);
             } else {
                 Value bits = h;
                 if (h.getType().isF64())
-                    bits = cb.create<arith::BitcastOp>(cl, i64, h);
+                    bits = arith::BitcastOp::create(cb, cl, i64, h);
                 else if (eco::isEcoCharType(h.getType()))
-                    bits = cb.create<arith::ExtUIOp>(cl, i64, h);
-                Value kc = cb.create<arith::ConstantOp>(
+                    bits = arith::ExtUIOp::create(cb, cl, i64, h);
+                Value kc = arith::ConstantOp::create(cb,
                     cl, cb.getI64IntegerAttr(kind));
-                cb.create<eco::CallOp>(
+                eco::CallOp::create(cb,
                     cl, TypeRange{}, ValueRange{bits, kc},
                     FlatSymbolRefAttr::get(ctx, kPushScalarFn), nullptr,
                     nullptr);
@@ -766,8 +766,8 @@ struct EcoListTemplatePass
         b.setInsertionPointAfter(w);
         Value res = w.getResult(p);
         Value kc =
-            b.create<arith::ConstantOp>(loc, b.getI64IntegerAttr(kind));
-        auto fin = b.create<eco::CallOp>(
+            arith::ConstantOp::create(b, loc, b.getI64IntegerAttr(kind));
+        auto fin = eco::CallOp::create(b,
             loc, TypeRange{value}, ValueRange{mark.getResults()[0], res, kc},
             FlatSymbolRefAttr::get(ctx, kFinishFn), nullptr, nullptr);
         res.replaceAllUsesExcept(fin.getResults()[0], fin);
@@ -851,18 +851,18 @@ struct EcoListTemplatePass
                   int64_t outKind) {
         Type i64 = IntegerType::get(ctx, 64);
         if (isa<eco::ValueType>(y.getType())) {
-            b.create<eco::CallOp>(loc, TypeRange{}, ValueRange{y},
+            eco::CallOp::create(b, loc, TypeRange{}, ValueRange{y},
                                   FlatSymbolRefAttr::get(ctx, kPushBoxedFn),
                                   nullptr, nullptr);
             return;
         }
         Value bits = y;
         if (y.getType().isF64())
-            bits = b.create<arith::BitcastOp>(loc, i64, y);
+            bits = arith::BitcastOp::create(b, loc, i64, y);
         else if (eco::isEcoCharType(y.getType()))
-            bits = b.create<arith::ExtUIOp>(loc, i64, y);
-        Value kc = b.create<arith::ConstantOp>(loc, b.getI64IntegerAttr(outKind));
-        b.create<eco::CallOp>(loc, TypeRange{}, ValueRange{bits, kc},
+            bits = arith::ExtUIOp::create(b, loc, i64, y);
+        Value kc = arith::ConstantOp::create(b, loc, b.getI64IntegerAttr(outKind));
+        eco::CallOp::create(b, loc, TypeRange{}, ValueRange{bits, kc},
                               FlatSymbolRefAttr::get(ctx, kPushScalarFn),
                               nullptr, nullptr);
     }
@@ -880,12 +880,12 @@ struct EcoListTemplatePass
             SmallVector<Value, 4> args(op.getCaptures().begin(),
                                        op.getCaptures().end());
             args.push_back(x);
-            auto call = b.create<eco::CallOp>(loc, TypeRange{resultTy}, args,
+            auto call = eco::CallOp::create(b, loc, TypeRange{resultTy}, args,
                                               callee, nullptr, nullptr);
             return call.getResults()[0];
         }
         // Generic arm: saturated indirect call through the closure value.
-        auto call = b.create<eco::CallOp>(
+        auto call = eco::CallOp::create(b,
             loc, TypeRange{resultTy}, ValueRange{op.getCallback(), x},
             /*callee=*/nullptr, /*musttail=*/nullptr,
             /*remaining_arity=*/b.getI64IntegerAttr(1));
@@ -900,7 +900,7 @@ struct EcoListTemplatePass
         Type value = eco::ValueType::get(ctx);
         Type i32 = IntegerType::get(ctx, 32);
 
-        auto whileOp = b.create<scf::WhileOp>(loc, TypeRange{value},
+        auto whileOp = scf::WhileOp::create(b, loc, TypeRange{value},
                                               ValueRange{input});
 
         // Before region: non-empty test, forwarding the cursor unchanged.
@@ -910,14 +910,14 @@ struct EcoListTemplatePass
                 ensureRegionBlock(b, whileOp.getBefore(), {value}, loc);
             b.setInsertionPointToEnd(before);
             Value cur = before->getArgument(0);
-            Value tag = b.create<eco::GetTagOp>(loc, i32, cur);
+            Value tag = eco::GetTagOp::create(b, loc, i32, cur);
             // eco_get_tag gives the list Cons tag 1 for both a cell and a chunk
             // (RuntimeExports.cpp), and the empty list is the Empty constant, whose
             // tag is not 1.
-            Value one = b.create<arith::ConstantOp>(loc, b.getI32IntegerAttr(1));
-            Value nonEmpty = b.create<arith::CmpIOp>(
+            Value one = arith::ConstantOp::create(b, loc, b.getI32IntegerAttr(1));
+            Value nonEmpty = arith::CmpIOp::create(b,
                 loc, arith::CmpIPredicate::eq, tag, one);
-            b.create<scf::ConditionOp>(loc, nonEmpty, ValueRange{cur});
+            scf::ConditionOp::create(b, loc, nonEmpty, ValueRange{cur});
         }
 
         // After region: project, apply, push, step.
@@ -928,11 +928,11 @@ struct EcoListTemplatePass
             b.setInsertionPointToEnd(after);
             Value cur = after->getArgument(0);
             Type headTy = headTypeForKind(ctx, op.getInKind());
-            Value x = b.create<eco::ListHeadOp>(loc, headTy, cur);
+            Value x = eco::ListHeadOp::create(b, loc, headTy, cur);
             Value y = emitCallback(b, loc, ctx, op, x, resultTy);
             emitPush(b, loc, ctx, y, op.getOutKind());
-            Value next = b.create<eco::ListTailOp>(loc, value, cur);
-            b.create<scf::YieldOp>(loc, ValueRange{next});
+            Value next = eco::ListTailOp::create(b, loc, value, cur);
+            scf::YieldOp::create(b, loc, ValueRange{next});
         }
     }
 
@@ -951,16 +951,16 @@ struct EcoListTemplatePass
         Type i64 = IntegerType::get(ctx, 64);
 
         Value reversed =
-            b.create<eco::CallOp>(
+            eco::CallOp::create(b,
                  loc, TypeRange{value}, ValueRange{op.getInput()},
                  FlatSymbolRefAttr::get(ctx, kReverseFn), nullptr, nullptr)
                 .getResults()[0];
 
         // Walk the reversed spine, consing each result onto the accumulator.
         // Cons order over a reversed input reproduces the forward result.
-        Value nil = b.create<eco::ConstantOp>(loc, value,
+        Value nil = eco::ConstantOp::create(b, loc, value,
                                               eco::ConstantKind::Empty);
-        auto whileOp = b.create<scf::WhileOp>(loc, TypeRange{value, value},
+        auto whileOp = scf::WhileOp::create(b, loc, TypeRange{value, value},
                                               ValueRange{reversed, nil});
         {
             OpBuilder::InsertionGuard guard(b);
@@ -969,11 +969,11 @@ struct EcoListTemplatePass
             b.setInsertionPointToEnd(before);
             Value cur = before->getArgument(0);
             Value acc = before->getArgument(1);
-            Value tag = b.create<eco::GetTagOp>(loc, i32, cur);
-            Value one = b.create<arith::ConstantOp>(loc, b.getI32IntegerAttr(1));
-            Value nonEmpty = b.create<arith::CmpIOp>(
+            Value tag = eco::GetTagOp::create(b, loc, i32, cur);
+            Value one = arith::ConstantOp::create(b, loc, b.getI32IntegerAttr(1));
+            Value nonEmpty = arith::CmpIOp::create(b,
                 loc, arith::CmpIPredicate::eq, tag, one);
-            b.create<scf::ConditionOp>(loc, nonEmpty, ValueRange{cur, acc});
+            scf::ConditionOp::create(b, loc, nonEmpty, ValueRange{cur, acc});
         }
         {
             OpBuilder::InsertionGuard guard(b);
@@ -983,14 +983,14 @@ struct EcoListTemplatePass
             Value cur = after->getArgument(0);
             Value acc = after->getArgument(1);
             Type headTy = headTypeForKind(ctx, op.getInKind());
-            Value x = b.create<eco::ListHeadOp>(loc, headTy, cur);
+            Value x = eco::ListHeadOp::create(b, loc, headTy, cur);
             Value y = emitCallback(b, loc, ctx, op, x, resultTy);
-            Value newAcc = b.create<eco::ListConstructOp>(
+            Value newAcc = eco::ListConstructOp::create(b,
                 loc, value, y, acc,
                 /*head_unboxed=*/!isa<eco::ValueType>(y.getType()),
                 /*head_kind=*/op.getOutKind());
-            Value next = b.create<eco::ListTailOp>(loc, value, cur);
-            b.create<scf::YieldOp>(loc, ValueRange{next, newAcc});
+            Value next = eco::ListTailOp::create(b, loc, value, cur);
+            scf::YieldOp::create(b, loc, ValueRange{next, newAcc});
         }
         (void)i64;
         return whileOp.getResult(1);
@@ -1052,16 +1052,16 @@ struct EcoListTemplatePass
 
             Value replacement;
             if (forward) {
-                auto mark = b.create<eco::CallOp>(
+                auto mark = eco::CallOp::create(b,
                     loc, TypeRange{i64}, ValueRange{},
                     FlatSymbolRefAttr::get(ctx, kMarkFn), nullptr, nullptr);
                 emitForwardLoop(b, loc, ctx, op, op.getInput(), resultTy);
-                Value nil = b.create<eco::ConstantOp>(loc, value,
+                Value nil = eco::ConstantOp::create(b, loc, value,
                                                       eco::ConstantKind::Empty);
-                Value kc = b.create<arith::ConstantOp>(
+                Value kc = arith::ConstantOp::create(b,
                     loc, b.getI64IntegerAttr(op.getOutKind()));
                 replacement =
-                    b.create<eco::CallOp>(
+                    eco::CallOp::create(b,
                          loc, TypeRange{value},
                          ValueRange{mark.getResults()[0], nil, kc},
                          FlatSymbolRefAttr::get(ctx, kFinishFwdFn), nullptr,
@@ -1393,19 +1393,19 @@ struct EcoListTemplatePass
             Location cl = l.cons->getLoc();
             Value h = l.cons->getOperand(0);
             if (isa<eco::ValueType>(h.getType())) {
-                cb.create<eco::CallOp>(
+                eco::CallOp::create(cb,
                     cl, TypeRange{}, ValueRange{h},
                     FlatSymbolRefAttr::get(ctx, kPushBoxedFn), nullptr,
                     nullptr);
             } else {
                 Value bits = h;
                 if (h.getType().isF64())
-                    bits = cb.create<arith::BitcastOp>(cl, i64, h);
+                    bits = arith::BitcastOp::create(cb, cl, i64, h);
                 else if (eco::isEcoCharType(h.getType()))
-                    bits = cb.create<arith::ExtUIOp>(cl, i64, h);
-                Value kc = cb.create<arith::ConstantOp>(
+                    bits = arith::ExtUIOp::create(cb, cl, i64, h);
+                Value kc = arith::ConstantOp::create(cb,
                     cl, cb.getI64IntegerAttr(kind));
-                cb.create<eco::CallOp>(
+                eco::CallOp::create(cb,
                     cl, TypeRange{}, ValueRange{bits, kc},
                     FlatSymbolRefAttr::get(ctx, kPushScalarFn), nullptr,
                     nullptr);
@@ -1419,13 +1419,13 @@ struct EcoListTemplatePass
         for (auto call : outerSites) {
             OpBuilder b(call);
             Location loc = call.getLoc();
-            auto mark = b.create<eco::CallOp>(
+            auto mark = eco::CallOp::create(b,
                 loc, TypeRange{i64}, ValueRange{},
                 FlatSymbolRefAttr::get(ctx, kMarkFn), nullptr, nullptr);
             b.setInsertionPointAfter(call);
             Value kc =
-                b.create<arith::ConstantOp>(loc, b.getI64IntegerAttr(kind));
-            auto fin = b.create<eco::CallOp>(
+                arith::ConstantOp::create(b, loc, b.getI64IntegerAttr(kind));
+            auto fin = eco::CallOp::create(b,
                 loc, TypeRange{value},
                 ValueRange{mark.getResults()[0], call->getResult(0), kc},
                 FlatSymbolRefAttr::get(ctx, kFinishFwdFn), nullptr, nullptr);

@@ -98,14 +98,14 @@ EcoTypeConverter::EcoTypeConverter(MLIRContext *ctx)
                                 ValueRange inputs, Location loc) -> Value {
         if (inputs.size() != 1)
             return nullptr;
-        return builder.create<UnrealizedConversionCastOp>(loc, resultType, inputs).getResult(0);
+        return UnrealizedConversionCastOp::create(builder, loc, resultType, inputs).getResult(0);
     });
 
     addTargetMaterialization([](OpBuilder &builder, Type resultType,
                                 ValueRange inputs, Location loc) -> Value {
         if (inputs.size() != 1)
             return nullptr;
-        return builder.create<UnrealizedConversionCastOp>(loc, resultType, inputs).getResult(0);
+        return UnrealizedConversionCastOp::create(builder, loc, resultType, inputs).getResult(0);
     });
 }
 
@@ -129,7 +129,7 @@ LLVM::LLVMFuncOp EcoRuntime::getOrCreateFunc(
 
     OpBuilder::InsertionGuard guard(builder);
     builder.setInsertionPointToStart(module.getBody());
-    auto newFunc = builder.create<LLVM::LLVMFuncOp>(module.getLoc(), name, funcType);
+    auto newFunc = LLVM::LLVMFuncOp::create(builder, module.getLoc(), name, funcType);
 
     if (gcLeaf)
         attachGcLeafPassthrough(builder, newFunc);
@@ -1131,7 +1131,7 @@ Value eco::detail::emitAllocWithSafepoint(
     const EcoRuntime &runtime,
     LLVM::LLVMFuncOp allocFunc,
     ValueRange args) {
-    auto allocCall = rewriter.create<LLVM::CallOp>(op->getLoc(), allocFunc, args);
+    auto allocCall = LLVM::CallOp::create(rewriter, op->getLoc(), allocFunc, args);
     return allocCall.getResult();
 }
 

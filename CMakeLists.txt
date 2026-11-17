@@ -1634,6 +1634,11 @@ if(TARGET elm-kernel-time-test)
     set(_full_time_test_target elm-kernel-time-test)
     set(_full_time_test COMMAND ${CMAKE_BINARY_DIR}/elm-kernel-cpp/elm-kernel-time-test)
 endif()
+# The MAX smoke test (runtime/src/max, test/max), when ECO_MAX turned MAX on.
+set(_full_max_smoke)
+if(TARGET run-max-smoke)
+    set(_full_max_smoke COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR} --target run-max-smoke)
+endif()
 add_custom_target(full
     COMMAND python3 ${CMAKE_SOURCE_DIR}/test/scripts/check-root-bounded.py ${CMAKE_SOURCE_DIR}
     # Large bodies only through the accessors, never resolved (plans/large-object-space.md D4).
@@ -1676,6 +1681,7 @@ add_custom_target(full
     ${_full_js_e2e}
     ${_full_node_addon}
     ${_full_driver_cli}
-    COMMENT "Gate A: clean, rebuild default ALL + Stage 1, run eco/system Core unit tests, JIT E2E, the JS eco-system E2E, the Node addon tests and the driver CLI checks"
+    ${_full_max_smoke}
+    COMMENT "Gate A: clean, rebuild default ALL + Stage 1, run eco/system Core unit tests, JIT E2E, the JS eco-system E2E, the Node addon tests, the driver CLI checks and (with MAX) the MAX smoke test"
     USES_TERMINAL
 )

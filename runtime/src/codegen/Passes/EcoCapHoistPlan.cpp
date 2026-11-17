@@ -467,7 +467,7 @@ void EcoCapHoistPlanPass::runOnOperation() {
         existing.setFlagsAttr(ArrayAttr::get(ctx, flags));
     } else {
         OpBuilder b = OpBuilder::atBlockEnd(module.getBody());
-        b.create<LLVM::ModuleFlagsOp>(module.getLoc(),
+        LLVM::ModuleFlagsOp::create(b, module.getLoc(),
                                       ArrayAttr::get(ctx, {flag}));
     }
 

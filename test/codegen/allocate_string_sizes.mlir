@@ -7,23 +7,23 @@ module {
   func.func @main() -> i64 {
     // Allocate empty string (length 0): HEAP_071 makes this the embedded
     // Empty constant, which the untyped eco.dbg printer shows as <empty>.
-    %s0 = eco.allocate_string {length = 0 : i64} : !eco.value
+    %s0 = eco.allocate_string <{length = 0 : i64}> : !eco.value
     eco.dbg %s0 : !eco.value
     // CHECK: [eco.dbg] <empty>
 
     // Allocate small string
-    %s1 = eco.allocate_string {length = 1 : i64} : !eco.value
+    %s1 = eco.allocate_string <{length = 1 : i64}> : !eco.value
     eco.dbg %s1 : !eco.value
     // Uninitialized string has null bytes
     // CHECK: "\0"
 
     // Allocate medium string
-    %s10 = eco.allocate_string {length = 10 : i64} : !eco.value
+    %s10 = eco.allocate_string <{length = 10 : i64}> : !eco.value
     eco.dbg %s10 : !eco.value
     // CHECK: "\0\0\0\0\0\0\0\0\0\0"
 
     // Allocate larger string (just verify it prints without crashing)
-    %s100 = eco.allocate_string {length = 100 : i64} : !eco.value
+    %s100 = eco.allocate_string <{length = 100 : i64}> : !eco.value
     eco.dbg %s100 : !eco.value
     // Skip checking the 100-char string content
 

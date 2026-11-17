@@ -9,9 +9,9 @@
 
 module {
   func.func @to_heap_custom_two_boxed(%x: !eco.value, %y: !eco.value) -> !eco.value {
-    %c = eco.make.custom(%x, %y) {tag = 0 : i64}
+    %c = eco.make.custom(%x, %y) <{tag = 0 : i64}>
        : (!eco.value, !eco.value) -> !eco.custom<!eco.value, !eco.value>
-    %h = eco.to_heap %c {tag = 0 : i64}
+    %h = eco.to_heap %c <{tag = 0 : i64}>
        : (!eco.custom<!eco.value, !eco.value>) -> !eco.value
     return %h : !eco.value
   }

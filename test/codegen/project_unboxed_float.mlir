@@ -11,11 +11,7 @@ module {
 
     // All f64 unboxed (bitmap bits would need to cover f64)
     // Since f64 and i64 are same size, both are typed slots (slot_kinds 2 / 1)
-    %obj1 = eco.construct.custom(%f1, %f2, %f3) {
-      tag = 0 : i64,
-      size = 3 : i64,
-      slot_kinds = array<i8: 2, 2, 2>
-    } : (f64, f64, f64) -> !eco.value
+    %obj1 = eco.construct.custom(%f1, %f2, %f3) <{tag = 0 : i64, size = 3 : i64, slot_kinds = array<i8: 2, 2, 2>}> : (f64, f64, f64) -> !eco.value
     eco.dbg %obj1 : !eco.value
     // CHECK: Ctor
 
@@ -42,11 +38,7 @@ module {
 
     // Mixed f64 and boxed values
     %b100 = eco.box %f1 : f64 -> !eco.value
-    %obj2 = eco.construct.custom(%f1, %b100, %f2) {
-      tag = 1 : i64,
-      size = 3 : i64,
-      slot_kinds = array<i8: 2, 0, 2>
-    } : (f64, !eco.value, f64) -> !eco.value
+    %obj2 = eco.construct.custom(%f1, %b100, %f2) <{tag = 1 : i64, size = 3 : i64, slot_kinds = array<i8: 2, 0, 2>}> : (f64, !eco.value, f64) -> !eco.value
     eco.dbg %obj2 : !eco.value
     // CHECK: Ctor
 

@@ -16,7 +16,7 @@
 // CHECK: @__eco_types_array = private constant [40 x i8] c"\00\00\00\00\06\00\00\00\01\00\00\00\00\00\00\00\00\00\00\00\01\00\00\00\06\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00"
 
 module {
-  eco.type_table {types = [[0, 6, 1], [1, 6, 0]], fields = [], ctors = [], func_args = [], strings = []}
+  eco.type_table <{types = [[0, 6, 1], [1, 6, 0]], fields = [], ctors = [], func_args = [], strings = []}>
   func.func @main() -> i64 {
     %z = arith.constant 0 : i64
     return %z : i64

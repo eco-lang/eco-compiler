@@ -113,7 +113,7 @@ void foldFunction(func::FuncOp func, FoldCounts &c) {
             if (!typed)
                 return;
             OpBuilder b(op);
-            Value cst = b.create<arith::ConstantOp>(op->getLoc(), typed);
+            Value cst = arith::ConstantOp::create(b, op->getLoc(), typed);
             op->getResult(0).replaceAllUsesWith(cst);
             dead.push_back(op);
             ++c.tagFolded;

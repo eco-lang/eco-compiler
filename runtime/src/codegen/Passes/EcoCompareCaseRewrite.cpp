@@ -169,7 +169,7 @@ void ensureUtilsCmp3Decl(ModuleOp m) {
     auto valueTy = ValueType::get(m.getContext());
     auto i64Ty = b.getIntegerType(64);
     auto ft = b.getFunctionType({valueTy, valueTy}, {i64Ty});
-    auto f = b.create<func::FuncOp>(m.getLoc(), "Elm_Kernel_Utils_cmp3", ft);
+    auto f = func::FuncOp::create(b, m.getLoc(), "Elm_Kernel_Utils_cmp3", ft);
     f.setPrivate();
     f->setAttr("is_kernel", b.getBoolAttr(true));
     f->setAttr("eco.logical_param_types", b.getStrArrayAttr({"value", "value"}));
@@ -187,42 +187,42 @@ std::pair<Value, Value> emitTests(OpBuilder &b, Location loc,
     Type i1Ty = b.getI1Type();
     switch (p.kind) {
     case ProducerKind::Int:
-        return {b.create<IntLtOp>(loc, i1Ty, p.lhs, p.rhs),
-                b.create<IntGtOp>(loc, i1Ty, p.lhs, p.rhs)};
+        return {IntLtOp::create(b, loc, i1Ty, p.lhs, p.rhs),
+                IntGtOp::create(b, loc, i1Ty, p.lhs, p.rhs)};
     case ProducerKind::Float: {
         // Float's total order: NaN equals NaN and is above every number.
-        Value t = b.create<arith::ConstantOp>(loc, b.getBoolAttr(true));
-        Value aNaN = b.create<FloatIsNaNOp>(loc, i1Ty, p.lhs);
-        Value bNaN = b.create<FloatIsNaNOp>(loc, i1Ty, p.rhs);
-        Value aNum = b.create<arith::XOrIOp>(loc, aNaN, t);
-        Value bNum = b.create<arith::XOrIOp>(loc, bNaN, t);
-        Value lt = b.create<arith::OrIOp>(loc, b.create<FloatLtOp>(loc, i1Ty, p.lhs, p.rhs),
-                                          b.create<arith::AndIOp>(loc, bNaN, aNum));
-        Value gt = b.create<arith::OrIOp>(loc, b.create<FloatGtOp>(loc, i1Ty, p.lhs, p.rhs),
-                                          b.create<arith::AndIOp>(loc, aNaN, bNum));
+        Value t = arith::ConstantOp::create(b, loc, b.getBoolAttr(true));
+        Value aNaN = FloatIsNaNOp::create(b, loc, i1Ty, p.lhs);
+        Value bNaN = FloatIsNaNOp::create(b, loc, i1Ty, p.rhs);
+        Value aNum = arith::XOrIOp::create(b, loc, aNaN, t);
+        Value bNum = arith::XOrIOp::create(b, loc, bNaN, t);
+        Value lt = arith::OrIOp::create(b, loc, FloatLtOp::create(b, loc, i1Ty, p.lhs, p.rhs),
+                                          arith::AndIOp::create(b, loc, bNaN, aNum));
+        Value gt = arith::OrIOp::create(b, loc, FloatGtOp::create(b, loc, i1Ty, p.lhs, p.rhs),
+                                          arith::AndIOp::create(b, loc, aNaN, bNum));
         return {lt, gt};
     }
     case ProducerKind::Char:
-        return {b.create<CharLtOp>(loc, i1Ty, p.lhs, p.rhs),
-                b.create<CharGtOp>(loc, i1Ty, p.lhs, p.rhs)};
+        return {CharLtOp::create(b, loc, i1Ty, p.lhs, p.rhs),
+                CharGtOp::create(b, loc, i1Ty, p.lhs, p.rhs)};
     case ProducerKind::String:
     case ProducerKind::BoxedKernel: {
         auto i64Ty = b.getIntegerType(64);
         Value sign;
         if (p.kind == ProducerKind::String) {
-            sign = b.create<StringCmp3Op>(loc, i64Ty, p.lhs, p.rhs);
+            sign = StringCmp3Op::create(b, loc, i64Ty, p.lhs, p.rhs);
         } else {
             ensureUtilsCmp3Decl(module);
-            auto call = b.create<eco::CallOp>(
+            auto call = eco::CallOp::create(b,
                 loc, TypeRange{i64Ty}, ValueRange{p.lhs, p.rhs},
                 FlatSymbolRefAttr::get(b.getContext(), "Elm_Kernel_Utils_cmp3"),
                 /*musttail=*/nullptr, /*remaining_arity=*/nullptr);
             sign = call.getResult(0);
         }
         // The sign is not clamped to -1/0/1, so test against 0.
-        Value zero = b.create<arith::ConstantOp>(loc, b.getI64IntegerAttr(0));
-        return {b.create<IntLtOp>(loc, i1Ty, sign, zero),
-                b.create<IntGtOp>(loc, i1Ty, sign, zero)};
+        Value zero = arith::ConstantOp::create(b, loc, b.getI64IntegerAttr(0));
+        return {IntLtOp::create(b, loc, i1Ty, sign, zero),
+                IntGtOp::create(b, loc, i1Ty, sign, zero)};
     }
     }
     llvm_unreachable("unhandled ProducerKind");
@@ -281,7 +281,7 @@ bool tryRewrite(Operation *prodOp, ModuleOp module) {
     // dominates the case, so they may be used here.
     auto [isLt, isGt] = emitTests(b, loc, p, module);
 
-    auto outer = b.create<CaseOp>(loc, resultTypes, isLt,
+    auto outer = CaseOp::create(b, loc, resultTypes, isLt,
                                   b.getDenseI64ArrayAttr({1, 0}),
                                   b.getStringAttr("bool"),
                                   /*string_patterns=*/nullptr,
@@ -296,14 +296,14 @@ bool tryRewrite(Operation *prodOp, ModuleOp module) {
     {
         OpBuilder eb(b.getContext());
         eb.setInsertionPointToEnd(elseBlk);
-        auto inner = eb.create<CaseOp>(loc, resultTypes, isGt,
+        auto inner = CaseOp::create(eb, loc, resultTypes, isGt,
                                        eb.getDenseI64ArrayAttr({1, 0}),
                                        eb.getStringAttr("bool"),
                                        /*string_patterns=*/nullptr,
                                        /*alternativesCount=*/2);
         inner.getAlternatives()[0].takeBody(caseOp.getAlternatives()[gtIdx]);
         inner.getAlternatives()[1].takeBody(caseOp.getAlternatives()[eqIdx]);
-        eb.create<YieldOp>(loc, inner.getResults());
+        YieldOp::create(eb, loc, inner.getResults());
     }
 
     caseOp.replaceAllUsesWith(outer.getResults());

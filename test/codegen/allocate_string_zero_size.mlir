@@ -10,12 +10,12 @@
 module {
   func.func @main() -> i64 {
     // Allocate an empty string
-    %empty = eco.allocate_string {length = 0 : i64} : !eco.value
+    %empty = eco.allocate_string <{length = 0 : i64}> : !eco.value
     eco.dbg %empty : !eco.value
     // CHECK: [eco.dbg] <empty>
 
     // Allocate another empty string
-    %empty2 = eco.allocate_string {length = 0 : i64} : !eco.value
+    %empty2 = eco.allocate_string <{length = 0 : i64}> : !eco.value
     eco.dbg %empty2 : !eco.value
     // CHECK: [eco.dbg] <empty>
 

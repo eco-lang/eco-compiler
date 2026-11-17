@@ -15,7 +15,7 @@
 # compiles its input to LLVM 19 IR), links /usr/local/bin/genmc, and runs the
 # same smoke test as the GenMC image (message passing passes, its relaxed mutant
 # is flagged, a C++20 std::atomic_ref program compiles and passes). The
-# project's own LLVM 21 is not involved. Bump GENMC_IMAGE's tag in lockstep with
+# project's own LLVM (deps/versions.env) is not involved. Bump GENMC_IMAGE's tag in lockstep with
 # the pins in docker/install-genmc.sh.
 # ============================================================
 ARG GENMC_IMAGE=eco-genmc:0.19.0-llvm19

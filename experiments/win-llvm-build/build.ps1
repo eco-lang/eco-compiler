@@ -1,4 +1,5 @@
-# E-W3 from plans/build-on-windows.md: LLVM 21.1.8 + MLIR source build for
+# E-W3 from plans/build-on-windows.md: LLVM + MLIR source build, at the
+# llvm-project commit deps/versions.env pins (LLVM_COMMIT), for
 # x86_64-pc-windows-msvc, Release, X86 backend only, no examples/tests/docs.
 # The one-off enabler — produces the install tree the rest of the Windows
 # port consumes (cached at the workflow layer so subsequent jobs restore in
@@ -7,42 +8,51 @@
 # Inputs (env): none required.
 # Outputs:
 #   - $env:LLVM_INSTALL_DIR (default: out/llvm-install)  — the install tree
-#     CMake will point ECO_LLVM_DIR at downstream.
+#     CMake will point ECO_LLVM_DIR at downstream. It records the commit in
+#     ECO_LLVM_COMMIT, which eco's CMake checks against the pin. CI builds it
+#     once per commit and recipe and publishes it (the llvm-build workflow;
+#     scripts/deps.sh artifact windows names it).
 #   - logs in out/
 
 $ErrorActionPreference = 'Stop'
 Set-Location -Path $PSScriptRoot
 
-$LlvmVersion = '21.1.8'
-$Tag         = "llvmorg-$LlvmVersion"
+$Versions    = Join-Path $PSScriptRoot '..\..\deps\versions.env'
+$LlvmCommit  = (Get-Content $Versions | Where-Object { $_ -match '^LLVM_COMMIT=' } |
+                ForEach-Object { $_.Substring('LLVM_COMMIT='.Length).Trim() })
+if ($LlvmCommit -notmatch '^[0-9a-f]{40}$') { throw "LLVM_COMMIT in deps/versions.env is not a 40-hex commit: '$LlvmCommit'" }
 $OutDir      = Join-Path $PSScriptRoot 'out'
-$SrcRoot     = Join-Path $OutDir "llvm-project-$LlvmVersion.src"
+$SrcRoot     = Join-Path $OutDir 'llvm-project'   # short: Windows paths are tight
 $BuildDir    = Join-Path $OutDir 'build'
 $InstallDir  = if ($env:LLVM_INSTALL_DIR) { $env:LLVM_INSTALL_DIR } else { Join-Path $OutDir 'llvm-install' }
 
 New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
 
-# Source: prefer the bundled umbrella tarball (~150 MB compressed, 1.6 GB
-# expanded) over `git clone` so the download is deterministic and small.
-if (-not (Test-Path (Join-Path $SrcRoot 'llvm\CMakeLists.txt'))) {
-    $tarball = Join-Path $OutDir "llvm-project-$LlvmVersion.src.tar.xz"
-    if (-not (Test-Path $tarball)) {
-        Write-Host "=== downloading $tarball ==="
-        $url = "https://github.com/llvm/llvm-project/releases/download/$Tag/llvm-project-$LlvmVersion.src.tar.xz"
-        Invoke-WebRequest -Uri $url -OutFile $tarball -UseBasicParsing
-    }
-    Write-Host "=== extracting LLVM source (bsdtar handles .tar.xz) ==="
-    & tar -xf $tarball -C $OutDir
-    if ($LASTEXITCODE -ne 0) { throw "tar extract failed: $LASTEXITCODE" }
+# Source: a shallow fetch of the one commit (GitHub serves any reachable commit
+# by hash); the rev-parse check makes the checkout prove it is that commit.
+$Have = if (Test-Path (Join-Path $SrcRoot '.git')) { (& git -C $SrcRoot rev-parse HEAD 2>$null) } else { '' }
+if ("$Have".Trim() -ne $LlvmCommit) {
+    Write-Host "=== fetching llvm-project $LlvmCommit ==="
+    if (Test-Path $SrcRoot) { Remove-Item -Recurse -Force $SrcRoot }
+    & git init -q $SrcRoot
+    # LLVM's tree has paths past MAX_PATH, and its sources build as committed (LF).
+    & git -C $SrcRoot config core.longpaths true
+    & git -C $SrcRoot config core.autocrlf false
+    & git -C $SrcRoot remote add origin https://github.com/llvm/llvm-project.git
+    & git -C $SrcRoot fetch -q --depth=1 origin $LlvmCommit
+    if ($LASTEXITCODE -ne 0) { throw "git fetch of $LlvmCommit failed: $LASTEXITCODE" }
+    & git -C $SrcRoot checkout -q FETCH_HEAD
+    if ($LASTEXITCODE -ne 0) { throw "git checkout failed: $LASTEXITCODE" }
 }
+$Head = (& git -C $SrcRoot rev-parse HEAD).Trim()
+if ($Head -ne $LlvmCommit) { throw "checkout is $Head, not $LlvmCommit" }
 
 Write-Host "=== source at $SrcRoot ==="
 Write-Host "=== build dir $BuildDir, install prefix $InstallDir ==="
 
 New-Item -ItemType Directory -Force -Path $BuildDir | Out-Null
 
-# Configure. clang-cl is preinstalled on windows-latest (LLVM 20.1.8) and is
-# the supported host compiler for an LLVM 21 build. Ninja is also preinstalled.
+# Configure. clang-cl is preinstalled on windows-latest and builds LLVM trunk. Ninja is also preinstalled.
 # Flags follow upstream's recommended Windows minimum: Release, no
 # examples/tests/docs/benchmarks, X86-only, MLIR, no PDB (saves ~1 GB of
 # build artefacts). Static MSVC runtime so the install tree is binary-stable
@@ -79,6 +89,8 @@ $startTime = Get-Date
 if ($LASTEXITCODE -ne 0) { throw "cmake build failed: $LASTEXITCODE" }
 $elapsed = (Get-Date) - $startTime
 Write-Host "=== build+install elapsed: $($elapsed.TotalMinutes) min ==="
+
+[System.IO.File]::WriteAllText((Join-Path $InstallDir 'ECO_LLVM_COMMIT'), "$LlvmCommit`n")
 
 Write-Host "=== install tree size ==="
 $sz = (Get-ChildItem $InstallDir -Recurse -ErrorAction SilentlyContinue |

@@ -17,32 +17,32 @@ module {
     %b3 = eco.box %c3 : i64 -> !eco.value
 
     // tag=5, 2 fields
-    %ctor_obj = eco.construct.custom(%b1, %b2) {slot_kinds = array<i8: 0, 0>, tag = 5 : i64, size = 2 : i64} : (!eco.value, !eco.value) -> !eco.value
+    %ctor_obj = eco.construct.custom(%b1, %b2) <{slot_kinds = array<i8: 0, 0>, tag = 5 : i64, size = 2 : i64}> : (!eco.value, !eco.value) -> !eco.value
     eco.dbg %ctor_obj : !eco.value
     // CHECK: Ctor5 1 2
 
     // different tag, 3 fields
-    %ctor_obj2 = eco.construct.custom(%b1, %b2, %b3) {slot_kinds = array<i8: 0, 0, 0>, tag = 0 : i64, size = 3 : i64} : (!eco.value, !eco.value, !eco.value) -> !eco.value
+    %ctor_obj2 = eco.construct.custom(%b1, %b2, %b3) <{slot_kinds = array<i8: 0, 0, 0>, tag = 0 : i64, size = 3 : i64}> : (!eco.value, !eco.value, !eco.value) -> !eco.value
     eco.dbg %ctor_obj2 : !eco.value
     // CHECK: Ctor0 1 2 3
 
     // tag 10, 1 field
-    %ctor_obj3 = eco.construct.custom(%b3) {slot_kinds = array<i8: 0>, tag = 10 : i64, size = 1 : i64} : (!eco.value) -> !eco.value
+    %ctor_obj3 = eco.construct.custom(%b3) <{slot_kinds = array<i8: 0>, tag = 10 : i64, size = 1 : i64}> : (!eco.value) -> !eco.value
     eco.dbg %ctor_obj3 : !eco.value
     // CHECK: Ctor10 3
 
     // eco.allocate_string - allocate string storage
-    %str_storage = eco.allocate_string {length = 5 : i64} : !eco.value
+    %str_storage = eco.allocate_string <{length = 5 : i64}> : !eco.value
     eco.dbg %str_storage : !eco.value
     // CHECK: "
 
     // eco.allocate_string with different length
-    %str_storage2 = eco.allocate_string {length = 10 : i64} : !eco.value
+    %str_storage2 = eco.allocate_string <{length = 10 : i64}> : !eco.value
     eco.dbg %str_storage2 : !eco.value
     // CHECK: "
 
     // a 2-field ctor nesting another
-    %ctor = eco.construct.custom(%ctor_obj3, %b2) {slot_kinds = array<i8: 0, 0>, tag = 7 : i64, size = 2 : i64} : (!eco.value, !eco.value) -> !eco.value
+    %ctor = eco.construct.custom(%ctor_obj3, %b2) <{slot_kinds = array<i8: 0, 0>, tag = 7 : i64, size = 2 : i64}> : (!eco.value, !eco.value) -> !eco.value
     eco.dbg %ctor : !eco.value
     // CHECK: Ctor7 (Ctor10 3) 2
 
