@@ -593,10 +593,14 @@ private:
         X509_gmtime_adj(X509_getm_notBefore(x509), 0);
         X509_gmtime_adj(X509_getm_notAfter(x509), 60L * 60L * 24L * 365L);
         X509_set_pubkey(x509, pkey);
-        X509_NAME* name = X509_get_subject_name(x509);
+        // Build the name and set it (both calls copy it): OpenSSL 4 returns the
+        // certificate's own subject name as const.
+        X509_NAME* name = X509_NAME_new();
         X509_NAME_add_entry_by_txt(name, "CN", MBSTRING_ASC,
             reinterpret_cast<const unsigned char*>("127.0.0.1"), -1, -1, 0);
+        X509_set_subject_name(x509, name);
         X509_set_issuer_name(x509, name);
+        X509_NAME_free(name);
         // SubjectAltName (iPAddress) so curl's host verification accepts the IP
         // literal — modern curl/OpenSSL will not match an IP against the CN.
         // Mark CA:TRUE so the self-signed cert is usable as its own trust anchor.
