@@ -259,6 +259,12 @@ int main(void) { return 0; }
             "with '${_eco_no_hardening}'; the bundle runtime would be built hardened "
             "(plans/bundle-runtime-performance.md, A).")
     endif()
+
+    # Give eco's own threads glibc's 8 MiB stack. musl's default thread stack is 128 KiB, too
+    # small for LLVM's optimizer and code generator, which eco-boot-native and eco run on
+    # std::thread partition workers and MLIR's thread pool; under LLVM 24 Stage 6 overflowed it
+    # (signal 11). musl takes the default from PT_GNU_STACK's size, up to 8 MiB.
+    add_link_options(LINKER:-z,stack-size=8388608)
 endif()
 
 # Stage D: archive-only configure mode for the glibc OUTPUT runtime — the
