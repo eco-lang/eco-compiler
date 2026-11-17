@@ -270,13 +270,7 @@ RUN if [ -n "$ECO_VERSION" ]; then \
 # and persisted between CI runs by the buildkit-cache-dance step; ccache stats
 # afterward make the hit rate visible in the build log.
 RUN --mount=type=cache,target=/ccache,sharing=locked \
-    cmake --build build-static --target eco && ccache --show-stats \
- || { echo "TEMP(diag): re-running Stage 6 under gdb"; apk add --no-cache gdb >/dev/null; \
-      readelf -lW build-static/runtime/src/codegen/eco-boot-native | grep -A1 GNU_STACK; \
-      cd build-static/compiler && gdb -batch -ex run -ex 'info threads' -ex 'bt 40' \
-        -ex 'thread apply all bt 6' --args /eco/build-static/runtime/src/codegen/eco-boot-native \
-        /eco/build-static/compiler/build-kernel/bin/eco-compiler.mlir -o /tmp/eco-diag 2>&1 | tail -400; \
-      exit 1; }
+    cmake --build build-static --target eco && ccache --show-stats
 
 # Strip, then HARD-FAIL the build if the binary still has any dynamic NEEDED
 # entries — the whole point of Stage B is a zero-deps executable.
