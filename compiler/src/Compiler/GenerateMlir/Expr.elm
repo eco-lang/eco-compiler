@@ -2702,18 +2702,37 @@ bfExprCompiler fusedLets monoExpr compilerCtx =
     }
 
 
-{-| Returns `expr` with each local variable that has no entry in `varMappings`
-replaced by the expression it is bound to, recursively: first from
+{-| Returns `expr` with each local variable that has no entry in `varMappings`,
+and that no destructuring inside `expr` binds, replaced by the expression it is
+bound to, recursively: first from
 `fusedLets`, then from a let anywhere in the context's inlined bodies
 (`findLetInInlineBodies`). A variable found in neither is left as it is.
 -}
 resolveFusedLets : Dict.Dict Name.Name Mono.MonoExpr -> Ctx.Context -> Mono.MonoExpr -> Mono.MonoExpr
 resolveFusedLets fusedLets ctx expr =
+    let
+        -- A name a destructuring inside `expr` binds is defined where it is
+        -- used, so it is not looked up elsewhere: a let of the same name in
+        -- some inlined body is a different variable.
+        destructured : Set.Set Name.Name
+        destructured =
+            MonoTraverse.foldExpr
+                (\e acc ->
+                    case e of
+                        Mono.MonoDestruct (Mono.MonoDestructor n _ _) _ _ ->
+                            Set.insert n acc
+
+                        _ ->
+                            acc
+                )
+                Set.empty
+                expr
+    in
     MonoTraverse.mapExpr
         (\e ->
             case e of
                 Mono.MonoVarLocal name _ ->
-                    if Dict.member name ctx.varMappings then
+                    if Dict.member name ctx.varMappings || Set.member name destructured then
                         Nothing
 
                     else
@@ -2976,6 +2995,58 @@ compileSkippedBindings ctx bindings =
             ( exprResult.ops ++ restOps, ctxFinal )
 
 
+{-| Returns, outermost first, the bindings of `innermostFirst` (a let chain,
+innermost binding first) that `exprs` need, directly or through other needed
+bindings.
+
+The bindings above a fused encoder are compiled before it, and most of them
+only built the encoder that fusion replaces, such as the list of item encoders
+of `sequence (List.map f xs)`. Compiling those would build the whole unused
+encoder at run time.
+
+-}
+liveBindings : List Mono.MonoExpr -> List ( Name.Name, Mono.MonoExpr ) -> List ( Name.Name, Mono.MonoExpr )
+liveBindings exprs innermostFirst =
+    let
+        localsOf : Mono.MonoExpr -> Set.Set Name.Name -> Set.Set Name.Name
+        localsOf expr acc =
+            MonoTraverse.foldExpr
+                (\e names ->
+                    case e of
+                        Mono.MonoVarLocal n _ ->
+                            Set.insert n names
+
+                        Mono.MonoTailCall n _ _ ->
+                            Set.insert n names
+
+                        Mono.MonoClosure info _ _ ->
+                            List.foldl (\( n, _, _ ) ns -> Set.insert n ns) names info.captures
+
+                        Mono.MonoCase _ root _ _ _ ->
+                            Set.insert root names
+
+                        Mono.MonoDestruct (Mono.MonoDestructor _ path _) _ _ ->
+                            Set.insert (pathRootName path) names
+
+                        _ ->
+                            names
+                )
+                acc
+                expr
+    in
+    List.foldl
+        (\( name, expr ) ( needed, kept ) ->
+            if Set.member name needed then
+                ( localsOf expr needed, ( name, expr ) :: kept )
+
+            else
+                ( needed, kept )
+        )
+        ( List.foldl localsOf Set.empty exprs, [] )
+        innermostFirst
+        |> Tuple.second
+
+
 {-| Generates a fused encode of `encoderExpr`, or returns `Nothing` when the
 configuration's `bytesFusion` flag is off or the encoder cannot be reified.
 
@@ -3014,8 +3085,11 @@ tryEncoderFusionWithBindings ctx accumulated encoderExpr =
                 else
                     Nothing
             of
-                Just nodes ->
+                Just reifiedNodes ->
                     let
+                        ( loopLists, nodes ) =
+                            BFReify.bindLoopLists reifiedNodes
+
                         loopOps =
                             BFReify.nodesToOps nodes
 
@@ -3024,13 +3098,28 @@ tryEncoderFusionWithBindings ctx accumulated encoderExpr =
                             bfExprCompiler (fusedLetsFromChain accumulated encoderExpr)
 
                         ( bindingOps, ctxAfterBindings ) =
-                            compileSkippedBindings ctx (List.reverse accumulated)
+                            compileSkippedBindings ctx (liveBindings (BFReify.nodeExprs reifiedNodes) accumulated)
+
+                        -- Each list a loop counts at run time, compiled once.
+                        ( loopListOps, ctxAfterLists ) =
+                            List.foldl
+                                (\( name, listExpr ) ( opsAcc, ctxAcc ) ->
+                                    let
+                                        listResult =
+                                            exprCompiler listExpr ctxAcc
+                                    in
+                                    ( opsAcc ++ listResult.ops
+                                    , Ctx.addVarMapping name listResult.resultVar listResult.resultType listResult.ctx
+                                    )
+                                )
+                                ( [], ctxAfterBindings )
+                                loopLists
 
                         ( mlirOps, bufferVar, ctx2 ) =
-                            BFEmit.emitFusedEncoder exprCompiler ctxAfterBindings loopOps
+                            BFEmit.emitFusedEncoder exprCompiler ctxAfterLists loopOps
                     in
                     Just
-                        { ops = bindingOps ++ mlirOps
+                        { ops = bindingOps ++ loopListOps ++ mlirOps
                         , resultVar = bufferVar
                         , resultType = Types.ecoValue
                         , ctx = ctx2
