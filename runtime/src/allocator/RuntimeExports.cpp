@@ -2256,6 +2256,92 @@ void deliverPrimitiveFromBoxed(HPtr boxed, uint8_t desired_kind, void* result_sl
     }
 }
 
+// The common case of `eco_apply_closure_eval`: the arguments exactly fill the closure, each already has the
+// kind of its slot, and the result needs no conversion that the general path would reject. Calls the
+// closure's evaluator straight from an argument array on the stack, without the general path's kind
+// snapshot, zeroing and per-argument conversion, and returns true. Returns false, having done nothing,
+// when the case does not apply.
+//
+// Nothing allocates between reading the closure and the call, so the closure needs no root; the argument
+// array is rooted for the call, as `invokeSaturatedTyped` roots it, for an evaluator that reads it late.
+// Kernels call closures through here once per element (String.foldl, List.map2 and the like), which is why
+// the general path's fixed cost matters.
+inline bool tryInvokeSaturatedDirect(Closure* closure,
+                                     int64_t* typed_args,
+                                     uint32_t num_args,
+                                     const EvalParamLayout* args_layout,
+                                     uint8_t K,
+                                     uint8_t desired_kind,
+                                     void* result_slot) {
+#if ECO_HEAP_VALIDATE
+    // The general path checks each boxed argument for staleness; validating builds keep that.
+    return false;
+#endif
+    constexpr uint32_t kMaxDirect = 16;
+    const uint32_t n_values = closure->n_values;
+    const uint32_t max_values = closure->max_values;
+    if (max_values > kMaxDirect || max_values >= CLOSURE_HDR_SLOTS) return false;
+    if (!(desired_kind == K || desired_kind == 0 || K == 0)) return false;
+    if (dispatchStatsEnabled()) return false;
+
+    uint64_t args[kMaxDirect];
+    uint64_t pointerMask = 0;
+    for (uint32_t i = 0; i < n_values; ++i) {
+        args[i] = static_cast<uint64_t>(closure->values[i].i);
+        if (closureSlotKind(closure, i) == 0) pointerMask |= uint64_t{1} << i;
+    }
+    for (uint32_t i = 0; i < num_args; ++i) {
+        const uint32_t slot = n_values + i;
+        const uint32_t slotKind = closureSlotKind(closure, slot);
+        const uint32_t callerKind = args_layout ? (args_layout->kinds[i] & 0x3u) : 0u;
+        if (slotKind != callerKind) return false;
+        args[slot] = static_cast<uint64_t>(typed_args[i]);
+        if (slotKind == 0) pointerMask |= uint64_t{1} << slot;
+    }
+
+    EcoRootMark saved_range = ecoRootMark();
+    if (pointerMask) eco_gc_push_stack_range(args, max_values, pointerMask);
+    void* eval = reinterpret_cast<void*>(closure->evaluator->generic);
+    void** argv = reinterpret_cast<void**>(args);
+    switch (K) {
+        case 0: {
+            using FnT = void* (*)(void**);
+            HPtr boxed = HPtr::fromBits(reinterpret_cast<uint64_t>(reinterpret_cast<FnT>(eval)(argv)));
+            ecoRootRelease(saved_range);
+            if (desired_kind == 0) *static_cast<HPtr*>(result_slot) = boxed;
+            else deliverPrimitiveFromBoxed(boxed, desired_kind, result_slot);
+            return true;
+        }
+        case 1: {
+            using FnT = int64_t (*)(void**);
+            int64_t r = reinterpret_cast<FnT>(eval)(argv);
+            ecoRootRelease(saved_range);
+            if (desired_kind == 1) *static_cast<int64_t*>(result_slot) = r;
+            else *static_cast<HPtr*>(result_slot) = eco_alloc_int(r);
+            return true;
+        }
+        case 2: {
+            using FnT = double (*)(void**);
+            double r = reinterpret_cast<FnT>(eval)(argv);
+            ecoRootRelease(saved_range);
+            if (desired_kind == 2) *static_cast<double*>(result_slot) = r;
+            else *static_cast<HPtr*>(result_slot) = eco_alloc_float(r);
+            return true;
+        }
+        case 3: {
+            using FnT = uint32_t (*)(void**);
+            uint32_t r = reinterpret_cast<FnT>(eval)(argv);
+            ecoRootRelease(saved_range);
+            if (desired_kind == 3) *static_cast<uint32_t*>(result_slot) = r;
+            else *static_cast<HPtr*>(result_slot) = eco_alloc_char(r);
+            return true;
+        }
+        default:
+            ecoRootRelease(saved_range);
+            return false;
+    }
+}
+
 } // anonymous namespace
 
 extern "C" void eco_apply_closure_eval(HPtr closure_hptr,
@@ -2293,6 +2379,11 @@ extern "C" void eco_apply_closure_eval(HPtr closure_hptr,
         assert(desired_kind == 0 &&
                "eco_apply_closure_eval: no-op apply requires PK_Boxed desired_kind");
         *static_cast<HPtr*>(result_slot) = closure_hptr;
+        return;
+    }
+
+    if (num_args == remaining && tryInvokeSaturatedDirect(closure, typed_args, num_args, args_layout, K,
+                                                          desired_kind, result_slot)) {
         return;
     }
 
