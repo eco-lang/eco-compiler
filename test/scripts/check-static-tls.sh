@@ -6,8 +6,9 @@
 #
 # Sums the defined TLS symbols (readelf -s type TLS) of the archives a program links: the runtime's
 # EcoRuntimeStatic, EcoEntryStatic, EcoEmbedStatic and EcoNodeGlue, and every kernel archive (elm-kernel-cpp
-# ElmKernel_*, eco-kernel-cpp EcoKernel_*, system-kernel-cpp EcoSystem_*). The sum over all of them bounds any
-# one program. Fails if it exceeds 1,024 B or if one symbol exceeds 512 B (as LiteralTable's static_assert);
+# ElmKernel_*, eco-kernel-cpp EcoKernel_*, system-kernel-cpp EcoSystem_*, containers-kernel-cpp
+# EcoContainers_*). The sum over all of them bounds any one program. Fails if it exceeds 1,024 B or if one
+# symbol exceeds 512 B (as LiteralTable's static_assert);
 # keep a large per-thread buffer on the heap behind a thread_local pointer instead.
 #
 # Build directory: $ECO_BUILD_DIR, else <repo-root>/build, so run it after the build.
@@ -19,7 +20,8 @@ symbol_max=512
 archives=$(ls "$build"/runtime/src/codegen/libEcoRuntimeStatic.a "$build"/runtime/src/codegen/libEcoEntryStatic.a \
                "$build"/runtime/src/codegen/libEcoEmbedStatic.a "$build"/runtime/src/codegen/libEcoNodeGlue.a \
                "$build"/elm-kernel-cpp/libElmKernel_*.a "$build"/eco-kernel-cpp/libEcoKernel_*.a \
-               "$build"/system-kernel-cpp/libEcoSystem_*.a 2>/dev/null)
+               "$build"/system-kernel-cpp/libEcoSystem_*.a "$build"/containers-kernel-cpp/libEcoContainers_*.a \
+               2>/dev/null)
 [ -n "$archives" ] || { echo "no runtime or kernel archives under $build (build first)"; exit 2; }
 for a in $archives; do
     readelf -sW "$a" 2>/dev/null | awk -v a="${a#$root/}" '

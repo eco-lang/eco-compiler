@@ -593,6 +593,9 @@ if(NOT ECO_FRONTEND_ONLY)
 
     # Eco system C++ implementation (kernels of the public eco/system package)
     add_subdirectory(system-kernel-cpp)
+
+    # Kernels of the public eco/containers package (SeqDict, SeqSet)
+    add_subdirectory(containers-kernel-cpp)
 endif()
 
 # Guida compiler (Elm compiler written in Elm). Gated off in the Stage D
@@ -684,6 +687,9 @@ if(ECO_STATIC_MUSL)
     foreach(mod ${ECO_SYSTEM_MODS})
         list(APPEND _eco_project_targets EcoSystem_${mod})
     endforeach()
+    foreach(mod ${ECO_CONTAINERS_MODS})
+        list(APPEND _eco_project_targets EcoContainers_${mod})
+    endforeach()
     install(TARGETS ${_eco_project_targets}
             ARCHIVE DESTINATION lib/eco-runtime/project
             COMPONENT Bundle)
@@ -731,6 +737,22 @@ if(ECO_STATIC_MUSL)
                 REGEX "/scripts(/|$)" EXCLUDE
                 REGEX "/\\.docs-package(/|$)" EXCLUDE
                 REGEX "/src/eco-system(/|$)" EXCLUDE)
+
+    # eco/containers Elm package — the C++ under src/eco-containers/ ships as the
+    # EcoContainers_* archives, and tests/ is the package's own test program.
+    install(DIRECTORY ${CMAKE_SOURCE_DIR}/containers-kernel-cpp/
+            DESTINATION share/eco/containers/containers-kernel-cpp
+            COMPONENT Bundle
+            FILES_MATCHING
+                PATTERN "elm.json"
+                PATTERN "*.elm"
+                PATTERN "*.js"
+                PATTERN "LICENSE"
+                PATTERN "docs.json"
+                REGEX "/elm-stuff(/|$)" EXCLUDE
+                REGEX "/eco-stuff(/|$)" EXCLUDE
+                REGEX "/tests(/|$)" EXCLUDE
+                REGEX "/src/eco-containers(/|$)" EXCLUDE)
 
     # The embedding headers, for hosts that link a program built as a library (`.so`/`.node`):
     # <prefix>/include/eco/eco_embed.h (C) and eco_embed.hpp (C++20). plans/native-bytes-ports-2.md §2.12.
@@ -829,6 +851,7 @@ endif()
 #   <prefix>/lib/eco-runtime/project/{libzip,libssl,libcrypto}.a
 #   <prefix>/share/eco/kernel/eco-kernel-cpp/
 #   <prefix>/share/eco/system/system-kernel-cpp/
+#   <prefix>/share/eco/containers/containers-kernel-cpp/
 #   <prefix>/share/eco/examples/
 #
 # Notes vs Linux Stage C:
@@ -854,6 +877,9 @@ if(APPLE AND NOT ECO_GLIBC_OUTPUT_RUNTIME AND NOT ECO_FRONTEND_ONLY)
     endforeach()
     foreach(mod ${ECO_SYSTEM_MODS})
         list(APPEND _eco_project_targets EcoSystem_${mod})
+    endforeach()
+    foreach(mod ${ECO_CONTAINERS_MODS})
+        list(APPEND _eco_project_targets EcoContainers_${mod})
     endforeach()
     install(TARGETS ${_eco_project_targets}
             ARCHIVE DESTINATION lib/eco-runtime/project
@@ -914,6 +940,22 @@ if(APPLE AND NOT ECO_GLIBC_OUTPUT_RUNTIME AND NOT ECO_FRONTEND_ONLY)
                 REGEX "/\\.docs-package(/|$)" EXCLUDE
                 REGEX "/src/eco-system(/|$)" EXCLUDE)
 
+    # eco/containers Elm package — the C++ under src/eco-containers/ ships as the
+    # EcoContainers_* archives, and tests/ is the package's own test program.
+    install(DIRECTORY ${CMAKE_SOURCE_DIR}/containers-kernel-cpp/
+            DESTINATION share/eco/containers/containers-kernel-cpp
+            COMPONENT BundleDarwin
+            FILES_MATCHING
+                PATTERN "elm.json"
+                PATTERN "*.elm"
+                PATTERN "*.js"
+                PATTERN "LICENSE"
+                PATTERN "docs.json"
+                REGEX "/elm-stuff(/|$)" EXCLUDE
+                REGEX "/eco-stuff(/|$)" EXCLUDE
+                REGEX "/tests(/|$)" EXCLUDE
+                REGEX "/src/eco-containers(/|$)" EXCLUDE)
+
     # The embedding headers, for hosts that link a program built as a library (`.so`/`.node`):
     # <prefix>/include/eco/eco_embed.h (C) and eco_embed.hpp (C++20). plans/native-bytes-ports-2.md §2.12.
     install(DIRECTORY ${CMAKE_SOURCE_DIR}/runtime/include/eco/
@@ -967,6 +1009,9 @@ if(WIN32 AND NOT ECO_FRONTEND_ONLY)
     foreach(mod ${ECO_SYSTEM_MODS})
         list(APPEND _eco_project_targets_win EcoSystem_${mod})
     endforeach()
+    foreach(mod ${ECO_CONTAINERS_MODS})
+        list(APPEND _eco_project_targets_win EcoContainers_${mod})
+    endforeach()
     install(TARGETS ${_eco_project_targets_win}
             ARCHIVE DESTINATION lib/eco-runtime/project
             COMPONENT BundleWindows)
@@ -1015,6 +1060,22 @@ if(WIN32 AND NOT ECO_FRONTEND_ONLY)
                 REGEX "/scripts(/|$)" EXCLUDE
                 REGEX "/\\.docs-package(/|$)" EXCLUDE
                 REGEX "/src/eco-system(/|$)" EXCLUDE)
+
+    # eco/containers Elm package — the C++ under src/eco-containers/ ships as the
+    # EcoContainers_* archives, and tests/ is the package's own test program.
+    install(DIRECTORY ${CMAKE_SOURCE_DIR}/containers-kernel-cpp/
+            DESTINATION share/eco/containers/containers-kernel-cpp
+            COMPONENT BundleWindows
+            FILES_MATCHING
+                PATTERN "elm.json"
+                PATTERN "*.elm"
+                PATTERN "*.js"
+                PATTERN "LICENSE"
+                PATTERN "docs.json"
+                REGEX "/elm-stuff(/|$)" EXCLUDE
+                REGEX "/eco-stuff(/|$)" EXCLUDE
+                REGEX "/tests(/|$)" EXCLUDE
+                REGEX "/src/eco-containers(/|$)" EXCLUDE)
 
     # The embedding headers, for hosts that link a program built as a library (`.so`/`.node`):
     # <prefix>/include/eco/eco_embed.h (C) and eco_embed.hpp (C++20). plans/native-bytes-ports-2.md §2.12.
@@ -1151,6 +1212,10 @@ if(ECO_GLIBC_OUTPUT_RUNTIME)
     foreach(mod ${ECO_SYSTEM_MODS})
         list(APPEND _glibc_project_files $<TARGET_FILE:EcoSystem_${mod}>)
         list(APPEND _glibc_tree_deps EcoSystem_${mod})
+    endforeach()
+    foreach(mod ${ECO_CONTAINERS_MODS})
+        list(APPEND _glibc_project_files $<TARGET_FILE:EcoContainers_${mod}>)
+        list(APPEND _glibc_tree_deps EcoContainers_${mod})
     endforeach()
 
     set(_tree "${ECO_GLIBC_RUNTIME_TREE_OUT}")

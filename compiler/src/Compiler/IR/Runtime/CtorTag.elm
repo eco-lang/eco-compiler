@@ -12,10 +12,12 @@ type's constructors built it. For most constructors it is the zero-based
 position at which the constructor is declared in its type, its declaration
 index. The exception is a reserved tag: a value at the top of the 16-bit range
 the runtime keeps tags in, which the runtime recognises and treats specially.
-The one reserved tag given to a constructor is 0xFFFF, for `elm/core`'s
-`Dict.RBNode_elm_builtin`, so that the runtime compares two dictionaries by
-their contents in key order rather than by the shape of their trees.
-`effective` computes the tag.
+Two constructors get one: 0xFFFF, for `elm/core`'s `Dict.RBNode_elm_builtin`,
+so that the runtime compares two dictionaries by their contents in key order
+rather than by the shape of their trees; and 0xFFFB, for `eco/containers`'
+`SeqDict.SeqDict_elm_builtin`, so that it compares two of those by their entries
+in insertion order rather than by their hash trie and the holes that removing
+entries leaves. `effective` computes the tag.
 
 A nullary constructor, one with no fields, needs no heap object. It can be
 represented by a single word marked as a constant that holds the constructor's
@@ -34,6 +36,7 @@ constructor's name and the module that declares it, so a program's own
 constructor named `Nothing`, `True` or `False` is an ordinary one.
 
 The numbers here must equal the runtime's: 0xFFFF its `CTOR_DICT_RBNODE`,
+0xFFFB its `CTOR_SEQDICT`,
 0xFFFD its `CONSTANT_TAG`, and 1023 (`HeapLimits.maxNullaryCtorIndex`) its
 `NULL_CONS_MAX`. Nothing in the compiler checks that they agree.
 
@@ -45,6 +48,7 @@ The numbers here must equal the runtime's: 0xFFFF its `CTOR_DICT_RBNODE`,
 import Compiler.Core.Index as Index
 import Compiler.Core.Name exposing (Name)
 import Compiler.Elm.ModuleName as ModuleName
+import Compiler.Elm.Package as Pkg
 import Compiler.IR.Runtime.HeapLimits as HeapLimits
 import System.Crash exposing (crash)
 
@@ -67,6 +71,21 @@ nullary constructors.
 dictRBNode : Int
 dictRBNode =
     0xFFFF
+
+
+{-| The reserved runtime tag of `eco/containers`' `SeqDict.SeqDict_elm_builtin`,
+the one constructor of a `SeqDict`. It must equal the runtime's `CTOR_SEQDICT`.
+-}
+seqDict : Int
+seqDict =
+    0xFFFB
+
+
+{-| The module that declares `SeqDict_elm_builtin`.
+-}
+seqDictModule : ModuleName.Canonical
+seqDictModule =
+    ModuleName.Canonical Pkg.ecoContainers "SeqDict"
 
 
 {-| The runtime tag reported for the shared empty constant word, which
@@ -158,7 +177,8 @@ checkNullConsCapacity name tag =
 
 {-| Returns the runtime tag of the constructor `name`, declared at position
 `index` in a type of module `home`. This is the declaration index, except for
-`Dict.RBNode_elm_builtin` in `elm/core`, which gets the reserved tag 0xFFFF.
+`Dict.RBNode_elm_builtin` in `elm/core`, which gets the reserved tag 0xFFFF, and
+`SeqDict.SeqDict_elm_builtin` in `eco/containers`, which gets 0xFFFB.
 
 For `Nothing` the result is still its declaration index, although at run time a
 `Nothing` reports `constantTag`.
@@ -166,12 +186,11 @@ For `Nothing` the result is still its declaration index, although at run time a
 -}
 effective : ModuleName.Canonical -> Name -> Index.ZeroBased -> Int
 effective home name index =
-    if home == ModuleName.dict then
-        if name == "RBNode_elm_builtin" then
-            dictRBNode
+    if home == ModuleName.dict && name == "RBNode_elm_builtin" then
+        dictRBNode
 
-        else
-            Index.toMachine index
+    else if name == "SeqDict_elm_builtin" && home == seqDictModule then
+        seqDict
 
     else
         Index.toMachine index

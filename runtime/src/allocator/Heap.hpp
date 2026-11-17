@@ -389,6 +389,7 @@ inline u64 nullConsWordFor(u32 idx) {
 // The top of the u16 range is reserved for tags the compiler never gives a declared constructor, and its
 // four values are distinct: 0xFFFC `CTOR_Router` and 0xFFFE `CTOR_StackFrame` (HeapHelpers.hpp), 0xFFFD
 // this one, and 0xFFFF `CTOR_DICT_RBNODE` (Dict nodes, elm-kernel-cpp and `Compiler.IR.Runtime.CtorTag`).
+// 0xFFFB is `CTOR_SEQDICT`, the constructor of an eco/containers SeqDict (elm-kernel-cpp core/SeqDict.hpp).
 #define CONSTANT_TAG 0xFFFD
 
 // Returns the `Forward::forward_ptr` value for the address `newObj`: the address divided by 8.

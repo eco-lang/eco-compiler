@@ -4,6 +4,7 @@
 #include "allocator/RuntimeExports.h"
 #include "allocator/StringOps.hpp"
 #include "allocator/ListOps.hpp"
+#include "SeqDict.hpp"
 
 #include <cassert>
 #include <utility>
@@ -101,6 +102,7 @@ using EqDeferred = std::vector<std::pair<void*, void*>>;
 
 static bool eqHelp(void* a, void* b, int depth, EqDeferred& deferred);
 static bool dictEq(void* a, void* b, int depth, EqDeferred& deferred);
+static bool seqDictEq(Custom* a, Custom* b, int depth, EqDeferred& deferred);
 
 /// Returns whether slots `a` and `b`, of kinds `aKind` and `bKind`, hold equal values, with `depth` the
 /// nesting depth `eqHelp` bounds and `deferred` the pairs it leaves for `equal`.
@@ -660,6 +662,11 @@ static bool eqHelp(void* a, void* b, int depth, EqDeferred& deferred) {
                 return dictEq(a, b, depth, deferred);
             }
 
+            // Two SeqDicts with the same entries in the same order may differ inside (see SeqDict.hpp).
+            if (ac->ctor == CTOR_SEQDICT && bc->ctor == CTOR_SEQDICT) {
+                return seqDictEq(ac, bc, depth, deferred);
+            }
+
             if (ac->ctor != bc->ctor) return false;
 
             u32 fieldCount = ac->header.size;
@@ -723,6 +730,31 @@ static bool eqHelp(void* a, void* b, int depth, EqDeferred& deferred) {
         default:
             return false;
     }
+}
+
+/// Returns whether the SeqDicts `a` and `b` hold equal entries in the same insertion order, with `depth` the
+/// nesting depth `eqHelp` bounds and `deferred` the pairs it leaves for `equal`.
+static bool seqDictEq(Custom* a, Custom* b, int depth, EqDeferred& deferred) {
+    struct Entry { Elm::Unboxable key, value; uint32_t keyKind, valueKind; };
+    std::vector<Entry> as, bs;
+    auto collect = [](std::vector<Entry>& out) {
+        return [&out](Elm::Unboxable k, uint32_t kk, Elm::Unboxable v, uint32_t vk) {
+            out.push_back(Entry{k, v, kk, vk});
+            return true;
+        };
+    };
+    forEachSeqDictEntry(a, collect(as));
+    forEachSeqDictEntry(b, collect(bs));
+    if (as.size() != bs.size()) return false;
+    auto& allocator = Allocator::instance();
+    for (size_t i = 0; i < as.size(); ++i) {
+        if (!eqUnboxableSlot(allocator, as[i].key, bs[i].key, as[i].keyKind, bs[i].keyKind, depth, deferred) ||
+            !eqUnboxableSlot(allocator, as[i].value, bs[i].value, as[i].valueKind, bs[i].valueKind, depth,
+                             deferred)) {
+            return false;
+        }
+    }
+    return true;
 }
 
 /// Returns whether the Dicts whose root nodes are at `a` and `b` hold equal key/value pairs in the same

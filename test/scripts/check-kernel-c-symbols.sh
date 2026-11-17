@@ -3,8 +3,9 @@
 # block is exported under its bare, unmangled name into the global symbol namespace of every program.
 #
 # Runs `nm -A -g --defined-only` over the built kernel archives (elm-kernel-cpp ElmKernel_*, eco-kernel-cpp
-# EcoKernel_*, system-kernel-cpp EcoSystem_*) and, for the members compiled from our own C++ (`*.cpp.o`;
-# vendored C such as llhttp/nghttp2 is `*.c.o`), reports every defined global function symbol that is neither
+# EcoKernel_*, system-kernel-cpp EcoSystem_*, containers-kernel-cpp EcoContainers_*) and, for the members
+# compiled from our own C++ (`*.cpp.o`; vendored C such as llhttp/nghttp2 is `*.c.o`), reports every
+# defined global function symbol that is neither
 # C++-mangled (`_Z...`) nor in the export namespace: the prefixes `Elm_Kernel_`, `Eco_Kernel_`, `EcoSystem_`,
 # `Eco_Http_`, `Eco_Runtime_`, `Eco_System_`, `eco_`, `elm_` (runtime ABI names), plus the allowlisted names
 # `ecoSystemSignalHandler` (a deliberate C signal handler) and `__clang_call_terminate`.
@@ -14,7 +15,8 @@
 root=${1:-.}
 build=${ECO_BUILD_DIR:-$root/build}
 archives=$(ls "$build"/elm-kernel-cpp/libElmKernel_*.a "$build"/eco-kernel-cpp/libEcoKernel_*.a \
-               "$build"/system-kernel-cpp/libEcoSystem_*.a 2>/dev/null)
+               "$build"/system-kernel-cpp/libEcoSystem_*.a "$build"/containers-kernel-cpp/libEcoContainers_*.a \
+               2>/dev/null)
 [ -n "$archives" ] || { echo "no kernel archives under $build (build the kernels first)"; exit 2; }
 found=0
 for a in $archives; do
