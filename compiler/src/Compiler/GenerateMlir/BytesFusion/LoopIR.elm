@@ -65,6 +65,9 @@ occupies when encoded as UTF-8, which is not its length in characters.
 time. It sizes a loop that writes the same number of bytes for every item. Its
 expression must produce the count as an integer.
 
+`WListWalkMul` is the same for a loop with no count at hand: its expression
+produces the list itself, whose elements are counted at run time.
+
 `WOpaqueWidth` is the size, measured at run time, of an encoder value that was
 not recognised and is written as a whole.
 
@@ -75,6 +78,7 @@ type WidthExpr
     | WStringUtf8Width Mono.MonoExpr
     | WBytesWidth Mono.MonoExpr
     | WListLengthMul Mono.MonoExpr Int
+    | WListWalkMul Mono.MonoExpr Int
     | WOpaqueWidth Mono.MonoExpr
 
 

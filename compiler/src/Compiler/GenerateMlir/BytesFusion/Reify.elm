@@ -1,7 +1,7 @@
 module Compiler.GenerateMlir.BytesFusion.Reify exposing
     ( EncoderNode, DecoderNode, BodyLookup
     , reifyEncoderWith, reifyDecoder
-    , nodesToOps, decoderNodeToOps
+    , nodesToOps, decoderNodeToOps, bindLoopLists, nodeExprs
     , CountSource, LengthDecoder
     )
 
@@ -56,7 +56,7 @@ through those as well as through calls.
 
 # Loop IR Conversion
 
-@docs nodesToOps, decoderNodeToOps
+@docs nodesToOps, decoderNodeToOps, bindLoopLists, nodeExprs
 
 
 # Auxiliary Types
@@ -110,6 +110,10 @@ name by which `itemWrites` refer to the current element, and `itemType` is its
 type. `iterExpr` is `xs`, and `countExpr` is the `List.length xs` call itself,
 also used to size the buffer.
 
+The same loop with no length before it, `sequence (List.map f xs)`, reifies to
+an `ELoop` alone whose `countExpr` is `Nothing`: the buffer is then sized by
+counting the list's elements at run time.
+
 `EOpaque` is an encoder subtree that was not recognised. It is written at run
 time by the ordinary encoder, and its width is measured at run time too.
 
@@ -127,7 +131,7 @@ type EncoderNode
         , itemType : Mono.MonoType
         , itemWrites : List FixedWrite
         , iterExpr : Mono.MonoExpr
-        , countExpr : Mono.MonoExpr
+        , countExpr : Maybe Mono.MonoExpr
         }
     | EOpaque Mono.MonoExpr
 
@@ -262,7 +266,8 @@ is not recognised.
 
 Recognised forms are a call of a `Bytes.Encode` function, directly, curried,
 or through a local variable bound to a partial call; a `let`, whose binding is
-added to `exprCache`; and a local variable bound in `exprCache`. The encoders
+added to `exprCache`; a destructuring, which is put around every value under
+it (see `destructInNode`); and a local variable bound in `exprCache`. The encoders
 inside a recognised `sequence` are reified with `reifyEncoderHelp`, so they may
 still be opaque.
 
@@ -342,8 +347,176 @@ reifyEncoderHelpStrict bodyLookup registry exprCache expr =
                 Nothing ->
                     Nothing
 
+        Mono.MonoDestruct destructor body _ ->
+            Just (List.map (destructInNode destructor) (reifyEncoderHelp bodyLookup registry exprCache body))
+
         _ ->
             Nothing
+
+
+{-| Gives the list of each loop that counts its list at run time (an `ELoop`
+whose `countExpr` is `Nothing`) a name of its own, and returns the names with
+the expressions they stand for, and the nodes with each such list replaced by
+its name.
+
+Such a list is read twice, once to count it and once to write it. Compiling
+its expression once, bound to the name, before the fused encoder, keeps the
+two from computing it twice, and from defining the names bound inside it
+twice.
+
+-}
+bindLoopLists : List EncoderNode -> ( List ( Name, Mono.MonoExpr ), List EncoderNode )
+bindLoopLists nodes =
+    List.foldl
+        (\node ( binds, acc ) ->
+            case node of
+                ELoop r ->
+                    case r.countExpr of
+                        Nothing ->
+                            let
+                                name : Name
+                                name =
+                                    "bf$list" ++ String.fromInt (List.length binds)
+                            in
+                            ( ( name, r.iterExpr ) :: binds
+                            , ELoop { r | iterExpr = Mono.MonoVarLocal name (Mono.typeOf r.iterExpr) } :: acc
+                            )
+
+                        Just _ ->
+                            ( binds, node :: acc )
+
+                _ ->
+                    ( binds, node :: acc )
+        )
+        ( [], [] )
+        nodes
+        |> (\( binds, acc ) -> ( List.reverse binds, List.reverse acc ))
+
+
+{-| Returns every expression the nodes compute at run time: each write's
+value, and each loop's list, count and item values. A loop's item values may
+refer to its `itemVar`, which none of the other expressions can see.
+-}
+nodeExprs : List EncoderNode -> List Mono.MonoExpr
+nodeExprs nodes =
+    let
+        fixedExpr : FixedWrite -> Mono.MonoExpr
+        fixedExpr write =
+            case write of
+                FU8 expr ->
+                    expr
+
+                FU16 _ expr ->
+                    expr
+
+                FU32 _ expr ->
+                    expr
+
+                FF32 _ expr ->
+                    expr
+
+                FF64 _ expr ->
+                    expr
+
+        exprsOf : EncoderNode -> List Mono.MonoExpr
+        exprsOf node =
+            case node of
+                EU8 expr ->
+                    [ expr ]
+
+                EU16 _ expr ->
+                    [ expr ]
+
+                EU32 _ expr ->
+                    [ expr ]
+
+                EF32 _ expr ->
+                    [ expr ]
+
+                EF64 _ expr ->
+                    [ expr ]
+
+                EBytes expr ->
+                    [ expr ]
+
+                EUtf8 expr ->
+                    [ expr ]
+
+                ELoop r ->
+                    r.iterExpr :: (Maybe.withDefault [] (Maybe.map List.singleton r.countExpr) ++ List.map fixedExpr r.itemWrites)
+
+                EOpaque expr ->
+                    [ expr ]
+    in
+    List.concatMap exprsOf nodes
+
+
+{-| Puts the destructuring `destructor` around every expression in `node`.
+
+A function whose parameter is a pattern, such as `encode (Triangle t) = ...`,
+starts with a destructuring that binds `t`, and the values its writes take
+refer to `t`. Each of those values is compiled on its own, so each gets the
+destructuring that binds what it refers to; the repeated projections are
+pure and are merged later.
+
+-}
+destructInNode : Mono.MonoDestructor -> EncoderNode -> EncoderNode
+destructInNode destructor node =
+    let
+        wrap : Mono.MonoExpr -> Mono.MonoExpr
+        wrap expr =
+            Mono.MonoDestruct destructor expr (Mono.typeOf expr)
+
+        wrapFixed : FixedWrite -> FixedWrite
+        wrapFixed write =
+            case write of
+                FU8 expr ->
+                    FU8 (wrap expr)
+
+                FU16 endian expr ->
+                    FU16 endian (wrap expr)
+
+                FU32 endian expr ->
+                    FU32 endian (wrap expr)
+
+                FF32 endian expr ->
+                    FF32 endian (wrap expr)
+
+                FF64 endian expr ->
+                    FF64 endian (wrap expr)
+    in
+    case node of
+        EU8 expr ->
+            EU8 (wrap expr)
+
+        EU16 endian expr ->
+            EU16 endian (wrap expr)
+
+        EU32 endian expr ->
+            EU32 endian (wrap expr)
+
+        EF32 endian expr ->
+            EF32 endian (wrap expr)
+
+        EF64 endian expr ->
+            EF64 endian (wrap expr)
+
+        EBytes expr ->
+            EBytes (wrap expr)
+
+        EUtf8 expr ->
+            EUtf8 (wrap expr)
+
+        ELoop r ->
+            ELoop
+                { r
+                    | itemWrites = List.map wrapFixed r.itemWrites
+                    , iterExpr = wrap r.iterExpr
+                    , countExpr = Maybe.map wrap r.countExpr
+                }
+
+        EOpaque expr ->
+            EOpaque (wrap expr)
 
 
 {-| Reifies a saturated call of the `Bytes.Encode` function or constructor
@@ -445,8 +618,9 @@ reifyBytesEncodeCall bodyLookup registry exprCache name args =
 encoders, in order, or returns `Nothing` when the list's shape is not known.
 
 The list is recognised as a list literal, whose elements are each reified with
-`reifyEncoderHelp`, or as the length-prefixed shape `header :: List.map f xs`
-(see `reifyLengthPrefixedLoop`). A `let` around the list, or a local variable
+`reifyEncoderHelp`, as the length-prefixed shape `header :: List.map f xs`
+(see `reifyLengthPrefixedLoop`), or as `List.map f xs` alone (see
+`reifyUncountedLoop`). A `let` around the list, or a local variable
 standing for it, is seen through with `exprCache`, which is how a list bound by
 an inlined helper's `let` is still recognised.
 
@@ -463,7 +637,7 @@ reifyEncoderList bodyLookup registry exprCache listExpr =
                     reifyLengthPrefixedLoop bodyLookup registry exprCache headerExpr tailExpr
 
                 _ ->
-                    Nothing
+                    reifyUncountedLoop bodyLookup registry exprCache listExpr
 
         Mono.MonoLet (Mono.MonoDef name boundExpr) body _ ->
             reifyEncoderList bodyLookup registry (Dict.insert name boundExpr exprCache) body
@@ -584,12 +758,31 @@ reifyLengthPrefixedLoop bodyLookup registry exprCache headerExpr tailExpr =
                     Nothing
 
                 Just ( headerNode, countExpr ) ->
-                    case reifyMapBody bodyLookup registry exprCache mapFn iterExpr countExpr of
+                    case reifyMapBody bodyLookup registry exprCache mapFn iterExpr (Just countExpr) of
                         Nothing ->
                             Nothing
 
                         Just loopNode ->
                             Just [ headerNode, loopNode ]
+
+
+{-| Reifies `List.map f xs`, the list of a `sequence` with no length written
+before it, as an `ELoop` that counts `xs` at run time, or returns `Nothing` when
+it is not one.
+
+`xs` must be a local variable, because the loop reads it twice: once to count
+it and once to write it. `f` must be as `reifyMapBody` requires.
+
+-}
+reifyUncountedLoop : BodyLookup -> Mono.SpecializationRegistry -> Dict String Mono.MonoExpr -> Mono.MonoExpr -> Maybe (List EncoderNode)
+reifyUncountedLoop bodyLookup registry exprCache listExpr =
+    case reifyListMapCall registry listExpr of
+        Just ( mapFn, (Mono.MonoVarLocal _ _) as iterExpr ) ->
+            reifyMapBody bodyLookup registry exprCache mapFn iterExpr Nothing
+                |> Maybe.map List.singleton
+
+        _ ->
+            Nothing
 
 
 {-| Matches the header of a length-prefixed list: a call of the `Bytes.Encode`
@@ -629,7 +822,7 @@ matchLengthPrefixHeader registry headerExpr iterExpr =
 
 
 {-| Builds the `ELoop` for `List.map mapFn iterExpr`, with `countExpr` as its
-count, or returns `Nothing` when `mapFn`'s body is not known or not
+count (`Nothing` to count the list at run time), or returns `Nothing` when `mapFn`'s body is not known or not
 constant-width.
 
 `mapFn` may be a lambda of one parameter, or a named function found in
@@ -642,7 +835,7 @@ The body must reify to fixed-width numeric writes only (see
 width.
 
 -}
-reifyMapBody : BodyLookup -> Mono.SpecializationRegistry -> Dict String Mono.MonoExpr -> Mono.MonoExpr -> Mono.MonoExpr -> Mono.MonoExpr -> Maybe EncoderNode
+reifyMapBody : BodyLookup -> Mono.SpecializationRegistry -> Dict String Mono.MonoExpr -> Mono.MonoExpr -> Mono.MonoExpr -> Maybe Mono.MonoExpr -> Maybe EncoderNode
 reifyMapBody bodyLookup registry exprCache mapFn iterExpr countExpr =
     case mapFn of
         Mono.MonoClosure _ _ _ ->
@@ -696,7 +889,7 @@ are numeric but the element they read from may be of any type, a record for
 instance.
 
 -}
-buildLoopNode : BodyLookup -> Mono.SpecializationRegistry -> Dict String Mono.MonoExpr -> String -> Mono.MonoType -> Mono.MonoExpr -> Mono.MonoExpr -> Mono.MonoExpr -> Maybe EncoderNode
+buildLoopNode : BodyLookup -> Mono.SpecializationRegistry -> Dict String Mono.MonoExpr -> String -> Mono.MonoType -> Mono.MonoExpr -> Mono.MonoExpr -> Maybe Mono.MonoExpr -> Maybe EncoderNode
 buildLoopNode bodyLookup registry exprCache paramName paramType body iterExpr countExpr =
     reifyEncoderHelp bodyLookup registry exprCache body
         |> traverseMaybe asFixedWrite
@@ -949,7 +1142,12 @@ addNodeWidth node acc =
             addWidth acc (WStringUtf8Width stringExpr)
 
         ELoop r ->
-            addWidth acc (WListLengthMul r.countExpr (sumFixedWidths r.itemWrites))
+            case r.countExpr of
+                Just countExpr ->
+                    addWidth acc (WListLengthMul countExpr (sumFixedWidths r.itemWrites))
+
+                Nothing ->
+                    addWidth acc (WListWalkMul r.iterExpr (sumFixedWidths r.itemWrites))
 
         EOpaque expr ->
             addWidth acc (WOpaqueWidth expr)

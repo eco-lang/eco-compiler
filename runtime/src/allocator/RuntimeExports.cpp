@@ -72,7 +72,13 @@ inline void* hpointerToPtr(uint64_t val) {
     if (hp.ptr_ind != 0) {
         return nullptr;
     }
+#if ECO_HEAP_VALIDATE
     return Allocator::instance().resolve(hp);
+#else
+    // Inline unless the object has been forwarded, which happens only during a collection: this runs
+    // several times on every closure call.
+    return Allocator::resolveFast(hp);
+#endif
 }
 
 } // anonymous namespace
@@ -666,6 +672,19 @@ namespace {
 struct LiteralTable {
     uint64_t generation = 0;  // The `Allocator::heapGeneration` the cache was built under.
     std::unordered_map<const void*, Elm::HPointer*> byGlobal;
+    // A direct-mapped cache in front of `byGlobal`, indexed by the key's address bits: compiled code
+    // interns a capture-free closure every time it evaluates one (`eco_intern_closure0`), so a hash
+    // map lookup per evaluation showed up in profiles.
+    static constexpr size_t kRecent = 512;
+    struct Recent {
+        const void* key;
+        Elm::HPointer* slot;
+    };
+    Recent recent[kRecent] = {};
+
+    static size_t recentIndex(const void* key) {
+        return (reinterpret_cast<uintptr_t>(key) >> 3) & (kRecent - 1);
+    }
     // The slots, in fixed-size chunks so that growing the table moves none of them.
     std::deque<std::array<Elm::HPointer, 64>> chunks;
     size_t nextSlot = 64;  // Next free index in the last chunk; 64 means a new chunk is needed.
@@ -675,6 +694,7 @@ struct LiteralTable {
     void syncEpoch(uint64_t gen) {
         if (gen != generation) {
             byGlobal.clear();
+            for (Recent& r : recent) r = Recent{};
             chunks.clear();
             nextSlot = 64;
             generation = gen;
@@ -733,14 +753,21 @@ template <class AllocFn>
 inline HPtr internLiteral(const void* key, AllocFn&& alloc) {
     LiteralTable& table = literalTable();
     table.syncEpoch(Allocator::instance().heapGeneration());
+    LiteralTable::Recent& recent = table.recent[LiteralTable::recentIndex(key)];
+    if (recent.key == key) {
+        return HPtr::fromHPointer(*recent.slot);
+    }
     auto it = table.byGlobal.find(key);
     if (it != table.byGlobal.end()) {
+        recent = LiteralTable::Recent{key, it->second};
         return HPtr::fromHPointer(*it->second);
     }
     HPtr result = alloc();
     Elm::HPointer* slot = table.newSlot();
     *slot = result.toHPointer();
     table.byGlobal[key] = slot;
+    // `alloc` may have collected, but nothing in `table` moves; the reference is still good.
+    recent = LiteralTable::Recent{key, slot};
     uint64_t raw = result.toBits();
     if (!Elm::isConstantBits(raw) &&
         !Elm::PermanentSpace::instance().contains(
@@ -2229,6 +2256,92 @@ void deliverPrimitiveFromBoxed(HPtr boxed, uint8_t desired_kind, void* result_sl
     }
 }
 
+// The common case of `eco_apply_closure_eval`: the arguments exactly fill the closure, each already has the
+// kind of its slot, and the result needs no conversion that the general path would reject. Calls the
+// closure's evaluator straight from an argument array on the stack, without the general path's kind
+// snapshot, zeroing and per-argument conversion, and returns true. Returns false, having done nothing,
+// when the case does not apply.
+//
+// Nothing allocates between reading the closure and the call, so the closure needs no root; the argument
+// array is rooted for the call, as `invokeSaturatedTyped` roots it, for an evaluator that reads it late.
+// Kernels call closures through here once per element (String.foldl, List.map2 and the like), which is why
+// the general path's fixed cost matters.
+inline bool tryInvokeSaturatedDirect(Closure* closure,
+                                     int64_t* typed_args,
+                                     uint32_t num_args,
+                                     const EvalParamLayout* args_layout,
+                                     uint8_t K,
+                                     uint8_t desired_kind,
+                                     void* result_slot) {
+#if ECO_HEAP_VALIDATE
+    // The general path checks each boxed argument for staleness; validating builds keep that.
+    return false;
+#endif
+    constexpr uint32_t kMaxDirect = 16;
+    const uint32_t n_values = closure->n_values;
+    const uint32_t max_values = closure->max_values;
+    if (max_values > kMaxDirect || max_values >= CLOSURE_HDR_SLOTS) return false;
+    if (!(desired_kind == K || desired_kind == 0 || K == 0)) return false;
+    if (dispatchStatsEnabled()) return false;
+
+    uint64_t args[kMaxDirect];
+    uint64_t pointerMask = 0;
+    for (uint32_t i = 0; i < n_values; ++i) {
+        args[i] = static_cast<uint64_t>(closure->values[i].i);
+        if (closureSlotKind(closure, i) == 0) pointerMask |= uint64_t{1} << i;
+    }
+    for (uint32_t i = 0; i < num_args; ++i) {
+        const uint32_t slot = n_values + i;
+        const uint32_t slotKind = closureSlotKind(closure, slot);
+        const uint32_t callerKind = args_layout ? (args_layout->kinds[i] & 0x3u) : 0u;
+        if (slotKind != callerKind) return false;
+        args[slot] = static_cast<uint64_t>(typed_args[i]);
+        if (slotKind == 0) pointerMask |= uint64_t{1} << slot;
+    }
+
+    EcoRootMark saved_range = ecoRootMark();
+    if (pointerMask) eco_gc_push_stack_range(args, max_values, pointerMask);
+    void* eval = reinterpret_cast<void*>(closure->evaluator->generic);
+    void** argv = reinterpret_cast<void**>(args);
+    switch (K) {
+        case 0: {
+            using FnT = void* (*)(void**);
+            HPtr boxed = HPtr::fromBits(reinterpret_cast<uint64_t>(reinterpret_cast<FnT>(eval)(argv)));
+            ecoRootRelease(saved_range);
+            if (desired_kind == 0) *static_cast<HPtr*>(result_slot) = boxed;
+            else deliverPrimitiveFromBoxed(boxed, desired_kind, result_slot);
+            return true;
+        }
+        case 1: {
+            using FnT = int64_t (*)(void**);
+            int64_t r = reinterpret_cast<FnT>(eval)(argv);
+            ecoRootRelease(saved_range);
+            if (desired_kind == 1) *static_cast<int64_t*>(result_slot) = r;
+            else *static_cast<HPtr*>(result_slot) = eco_alloc_int(r);
+            return true;
+        }
+        case 2: {
+            using FnT = double (*)(void**);
+            double r = reinterpret_cast<FnT>(eval)(argv);
+            ecoRootRelease(saved_range);
+            if (desired_kind == 2) *static_cast<double*>(result_slot) = r;
+            else *static_cast<HPtr*>(result_slot) = eco_alloc_float(r);
+            return true;
+        }
+        case 3: {
+            using FnT = uint32_t (*)(void**);
+            uint32_t r = reinterpret_cast<FnT>(eval)(argv);
+            ecoRootRelease(saved_range);
+            if (desired_kind == 3) *static_cast<uint32_t*>(result_slot) = r;
+            else *static_cast<HPtr*>(result_slot) = eco_alloc_char(r);
+            return true;
+        }
+        default:
+            ecoRootRelease(saved_range);
+            return false;
+    }
+}
+
 } // anonymous namespace
 
 extern "C" void eco_apply_closure_eval(HPtr closure_hptr,
@@ -2266,6 +2379,11 @@ extern "C" void eco_apply_closure_eval(HPtr closure_hptr,
         assert(desired_kind == 0 &&
                "eco_apply_closure_eval: no-op apply requires PK_Boxed desired_kind");
         *static_cast<HPtr*>(result_slot) = closure_hptr;
+        return;
+    }
+
+    if (num_args == remaining && tryInvokeSaturatedDirect(closure, typed_args, num_args, args_layout, K,
+                                                          desired_kind, result_slot)) {
         return;
     }
 

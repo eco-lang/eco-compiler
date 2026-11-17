@@ -381,6 +381,38 @@ emitWidthExpr compileExpr expr ctx =
             in
             ( exprResult.ops ++ [ widthOp ], resultVar, ctx3 )
 
+        WListWalkMul listExpr constWidth ->
+            let
+                listResult =
+                    compileExpr listExpr ctx
+
+                ( countOps, countVar, ctx1 ) =
+                    emitListCount listResult.resultVar listResult.ctx
+
+                ( constVar, ctx2 ) =
+                    Context.freshVar ctx1
+
+                ( ctx3, constOp ) =
+                    Ops.mlirOp ctx2 "arith.constant"
+                        |> Ops.opBuilder.withResults [ ( constVar, I32 ) ]
+                        |> Ops.opBuilder.withAttrs (Dict.singleton "value" (IntAttr (Just I32) constWidth))
+                        |> Ops.opBuilder.build
+
+                ( mulVar, ctx4 ) =
+                    Context.freshVar ctx3
+
+                ( ctx5, mulOp ) =
+                    Ops.mlirOp ctx4 "arith.muli"
+                        |> Ops.opBuilder.withOperands [ countVar, constVar ]
+                        |> Ops.opBuilder.withResults [ ( mulVar, I32 ) ]
+                        |> Ops.opBuilder.withAttrs
+                            (Dict.singleton "_operand_types"
+                                (ArrayAttr Nothing [ TypeAttr I32, TypeAttr I32 ])
+                            )
+                        |> Ops.opBuilder.build
+            in
+            ( listResult.ops ++ countOps ++ [ constOp, mulOp ], mulVar, ctx5 )
+
         WListLengthMul countExpr constWidth ->
             -- The count is truncated to i32 as it stands, so it must compile to
             -- an unboxed integer, not an !eco.value.
@@ -424,6 +456,167 @@ emitWidthExpr compileExpr expr ctx =
                         |> Ops.opBuilder.build
             in
             ( countResult.ops ++ [ trunciOp, constOp, mulOp ], mulVar, ctx7 )
+
+
+{-| Emits a loop that counts the elements of the list `listVar`, as an `i32`.
+Returns the ops, the SSA name of the count, and the context after them.
+
+    %n, %rest = scf.while (%k = 0, %lst = %list) {
+      %is_cons = <tag of %lst is not the constant tag>
+      scf.condition (%is_cons) %k, %lst
+    } do {
+    ^bb0(%k, %lst):
+      %tail = eco.project.list_tail %lst
+      %k1 = arith.addi %k, 1
+      scf.yield %k1, %tail
+    }
+
+It reads only list cells and allocates nothing, so it is a cheap pass before
+the buffer is allocated, for a list loop with no length written before it.
+
+-}
+emitListCount : String -> Context -> ( List MlirOp, String, Context )
+emitListCount listVar ctx0 =
+    let
+        ( zeroVar, ctx1 ) =
+            Context.freshVar ctx0
+
+        ( ctx2, zeroOp ) =
+            Ops.mlirOp ctx1 "arith.constant"
+                |> Ops.opBuilder.withResults [ ( zeroVar, I32 ) ]
+                |> Ops.opBuilder.withAttrs (Dict.singleton "value" (IntAttr (Just I32) 0))
+                |> Ops.opBuilder.build
+
+        ( countResult, ctx3 ) =
+            Context.freshVar ctx2
+
+        ( listResult, ctx4 ) =
+            Context.freshVar ctx3
+
+        ( beforeCount, ctx5 ) =
+            Context.freshVar ctx4
+
+        ( beforeList, ctx6 ) =
+            Context.freshVar ctx5
+
+        ( tagVar, ctx7 ) =
+            Context.freshVar ctx6
+
+        ( ctx8, tagOp ) =
+            Ops.mlirOp ctx7 "eco.get_tag"
+                |> Ops.opBuilder.withOperands [ beforeList ]
+                |> Ops.opBuilder.withResults [ ( tagVar, I32 ) ]
+                |> Ops.opBuilder.withAttrs
+                    (Dict.singleton "_operand_types"
+                        (ArrayAttr Nothing [ TypeAttr Types.ecoValue ])
+                    )
+                |> Ops.opBuilder.build
+
+        -- The empty list is an embedded constant, whose tag reads as
+        -- CtorTag.constantTag, not 0.
+        ( nilTagVar, ctx9 ) =
+            Context.freshVar ctx8
+
+        ( ctx10, nilTagOp ) =
+            Ops.mlirOp ctx9 "arith.constant"
+                |> Ops.opBuilder.withResults [ ( nilTagVar, I32 ) ]
+                |> Ops.opBuilder.withAttrs (Dict.singleton "value" (IntAttr (Just I32) CtorTag.constantTag))
+                |> Ops.opBuilder.build
+
+        ( isConsVar, ctx11 ) =
+            Context.freshVar ctx10
+
+        -- Predicate 1 is ne.
+        ( ctx12, cmpNeOp ) =
+            Ops.mlirOp ctx11 "arith.cmpi"
+                |> Ops.opBuilder.withOperands [ tagVar, nilTagVar ]
+                |> Ops.opBuilder.withResults [ ( isConsVar, I1 ) ]
+                |> Ops.opBuilder.withAttrs
+                    (Dict.fromList
+                        [ ( "predicate", IntAttr Nothing 1 )
+                        , ( "_operand_types", ArrayAttr Nothing [ TypeAttr I32, TypeAttr I32 ] )
+                        ]
+                    )
+                |> Ops.opBuilder.build
+
+        ( ctx13, conditionOp ) =
+            Ops.scfCondition ctx12
+                isConsVar
+                [ ( beforeCount, I32 )
+                , ( beforeList, Types.ecoValue )
+                ]
+
+        beforeRegion =
+            Ops.mkRegion
+                [ ( beforeCount, I32 )
+                , ( beforeList, Types.ecoValue )
+                ]
+                [ tagOp, nilTagOp, cmpNeOp ]
+                conditionOp
+
+        ( afterCount, ctx14 ) =
+            Context.freshVar ctx13
+
+        ( afterList, ctx15 ) =
+            Context.freshVar ctx14
+
+        ( tailVar, ctx16 ) =
+            Context.freshVar ctx15
+
+        ( ctx17, tailOp ) =
+            Ops.mlirOp ctx16 "eco.project.list_tail"
+                |> Ops.opBuilder.withOperands [ afterList ]
+                |> Ops.opBuilder.withResults [ ( tailVar, Types.ecoValue ) ]
+                |> Ops.opBuilder.withAttrs
+                    (Dict.singleton "_operand_types"
+                        (ArrayAttr Nothing [ TypeAttr Types.ecoValue ])
+                    )
+                |> Ops.opBuilder.build
+
+        ( oneVar, ctx18 ) =
+            Context.freshVar ctx17
+
+        ( ctx19, oneOp ) =
+            Ops.mlirOp ctx18 "arith.constant"
+                |> Ops.opBuilder.withResults [ ( oneVar, I32 ) ]
+                |> Ops.opBuilder.withAttrs (Dict.singleton "value" (IntAttr (Just I32) 1))
+                |> Ops.opBuilder.build
+
+        ( nextCount, ctx20 ) =
+            Context.freshVar ctx19
+
+        ( ctx21, addOp ) =
+            Ops.mlirOp ctx20 "arith.addi"
+                |> Ops.opBuilder.withOperands [ afterCount, oneVar ]
+                |> Ops.opBuilder.withResults [ ( nextCount, I32 ) ]
+                |> Ops.opBuilder.build
+
+        ( ctx22, yieldOp ) =
+            Ops.mlirOp ctx21 "scf.yield"
+                |> Ops.opBuilder.withOperands [ nextCount, tailVar ]
+                |> Ops.opBuilder.withAttrs
+                    (Dict.singleton "_operand_types"
+                        (ArrayAttr Nothing [ TypeAttr I32, TypeAttr Types.ecoValue ])
+                    )
+                |> Ops.opBuilder.build
+
+        afterRegion =
+            Ops.mkRegion
+                [ ( afterCount, I32 )
+                , ( afterList, Types.ecoValue )
+                ]
+                [ tailOp, oneOp, addOp ]
+                yieldOp
+
+        ( ctx23, whileOp ) =
+            Ops.scfWhile ctx22
+                [ ( countResult, zeroVar, I32 )
+                , ( listResult, listVar, Types.ecoValue )
+                ]
+                beforeRegion
+                afterRegion
+    in
+    ( [ zeroOp, whileOp ], countResult, ctx23 )
 
 
 {-| Returns the `endianness` attribute of a `bf` read or write: the `i32` 0 for
@@ -914,8 +1107,13 @@ emitWriteEachItem r state =
                     )
                 |> Ops.opBuilder.build
 
+        -- The body comes from the mapped function, whose local names can
+        -- equal names of the enclosing let chain, so the chain's placeholders
+        -- must not be visible inside it: a `let` there of a name the chain
+        -- also binds would otherwise be given, and define, the chain's
+        -- placeholder for that name.
         ctxBody =
-            Context.addVarMapping r.itemVar headVar headType ctx21
+            Context.addVarMapping r.itemVar headVar headType { ctx21 | currentLetSiblings = Dict.empty }
 
         -- The body's ops go inside the region, and its values are compiled
         -- there, not taken from the hoisted ones.
@@ -954,7 +1152,19 @@ emitWriteEachItem r state =
                 afterRegion
     in
     { state
-        | ctx = ctx24
+        | -- The item and whatever the body bound are in scope only inside the
+          -- loop. Left mapped, the item's name would stand for an SSA value of
+          -- the loop region in the code after it, where a later binding of the
+          -- same name (a callee's parameter name such as `_v0` is common)
+          -- would find it already defined. The tables keyed by local name
+          -- are restored for the same reason.
+          ctx =
+            { ctx24
+                | varMappings = ctx0.varMappings
+                , currentLetSiblings = ctx0.currentLetSiblings
+                , decoderExprs = ctx0.decoderExprs
+                , localEvaluatorParams = ctx0.localEvaluatorParams
+            }
         , cursor = whileCursorResult
         , hoisted = hoisted
         , ops = whileOp :: (List.reverse iterResult.ops ++ state.ops)

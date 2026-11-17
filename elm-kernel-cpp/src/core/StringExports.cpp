@@ -8,6 +8,7 @@
 #include "allocator/RuntimeExports.h"
 #include "allocator/StringOps.hpp"
 #include <cassert>
+#include <cstring>
 #include <vector>
 
 using namespace Elm;
@@ -213,19 +214,52 @@ static uint64_t callFoldClosure(HPtr closure_hptr, uint32_t c, uint64_t acc) {
     return eco_apply_closure_typed(closure_hptr, args, 2, layout).toBits();
 }
 
-// Returns a copy of the UTF-16 units of the String `str`, of any form, or an empty vector for
-// null. The copy is C++ memory, outside the collected heap, so closures called while it is walked
-// may allocate without invalidating it. A UTF-8 form's bytes are ASCII, so each is copied as one
-// unit.
-static std::vector<u16> snapshotChars(void* str) {
-    if (!str) return {};
-    if (Elm::StringOps::isUtf8(str)) {
-        auto pr = Elm::StringOps::utf8Bytes(str);
-        return std::vector<u16>(pr.first, pr.first + pr.second);
+// A copy of the UTF-16 units of the String `str`, of any form, empty for null. The copy is C++
+// memory, outside the collected heap, so closures called while it is walked may allocate without
+// invalidating it. A UTF-8 form's bytes are ASCII, so each is copied as one unit.
+//
+// Most strings these kernels see are short (a word, a line of text), so up to `kInline` units are
+// copied into the object itself, on the caller's stack, and only a longer string is copied to the C
+// heap. The kernels that use it call a closure per character, and two heap allocations per call (the
+// u16string and then the vector) used to cost as much as a short string's closure calls.
+class CharSnapshot {
+public:
+    explicit CharSnapshot(void* str) {
+        if (!str) return;
+        n_ = static_cast<Header*>(str)->size;
+        u16* dst = inline_;
+        if (n_ > kInline) {
+            heap_.resize(n_);
+            dst = heap_.data();
+        }
+        data_ = dst;
+        if (Elm::StringOps::isUtf8(str)) {
+            auto pr = Elm::StringOps::utf8Bytes(str);
+            n_ = pr.second;
+            for (size_t i = 0; i < n_; ++i) dst[i] = pr.first[i];
+            return;
+        }
+        size_t at = 0;
+        Elm::StringOps::forEachSegment(str, [&](const u16* p, u32 k) {
+            std::memcpy(dst + at, p, k * sizeof(u16));
+            at += k;
+        });
+        n_ = at;
     }
-    auto u16str = Elm::StringOps::toStdU16String(str);
-    return std::vector<u16>(u16str.begin(), u16str.end());
-}
+    CharSnapshot(const CharSnapshot&) = delete;
+    CharSnapshot& operator=(const CharSnapshot&) = delete;
+
+    const u16* data() const { return data_; }
+    size_t size() const { return n_; }
+    bool empty() const { return n_ == 0; }
+
+private:
+    static constexpr size_t kInline = 256;
+    u16 inline_[kInline];
+    std::vector<u16> heap_;
+    const u16* data_ = inline_;
+    size_t n_ = 0;
+};
 
 // Returns the String of the UTF-16 units in `result`: the Empty constant when there are none, a
 // UTF-8 form when they are all ASCII and UTF-8 Strings are enabled, and a UTF-16 String otherwise.
@@ -244,7 +278,7 @@ static HPtr materializeString(const std::vector<u16>& result) {
 }
 
 HPtr Elm_Kernel_String_map(HPtr closure, HPtr str) {
-    auto chars = snapshotChars(Export::toPtr(str.toBits()));
+    CharSnapshot chars(Export::toPtr(str.toBits()));
     if (chars.empty()) {
         return HPtr::fromBits(Export::encode(Elm::alloc::emptyString()));
     }
@@ -264,7 +298,7 @@ HPtr Elm_Kernel_String_map(HPtr closure, HPtr str) {
 }
 
 HPtr Elm_Kernel_String_filter(HPtr closure, HPtr str) {
-    auto chars = snapshotChars(Export::toPtr(str.toBits()));
+    CharSnapshot chars(Export::toPtr(str.toBits()));
     if (chars.empty()) {
         return HPtr::fromBits(Export::encode(Elm::alloc::emptyString()));
     }
@@ -281,13 +315,13 @@ HPtr Elm_Kernel_String_filter(HPtr closure, HPtr str) {
         HPtr cl = HPtr::fromBits(Export::encode(closureHP));
         // The kept Char's own units are copied, so a lone surrogate stays as it was.
         if (callCharToBoolClosure(cl, c))
-            result.insert(result.end(), chars.begin() + start, chars.begin() + i);
+            result.insert(result.end(), chars.data() + start, chars.data() + i);
     }
     return materializeString(result);
 }
 
 HPtr Elm_Kernel_String_any(HPtr closure, HPtr str) {
-    auto chars = snapshotChars(Export::toPtr(str.toBits()));
+    CharSnapshot chars(Export::toPtr(str.toBits()));
     if (chars.empty()) {
         return HPtr::fromBits(Export::encodeBoxedBool(false));
     }
@@ -307,7 +341,7 @@ HPtr Elm_Kernel_String_any(HPtr closure, HPtr str) {
 }
 
 HPtr Elm_Kernel_String_all(HPtr closure, HPtr str) {
-    auto chars = snapshotChars(Export::toPtr(str.toBits()));
+    CharSnapshot chars(Export::toPtr(str.toBits()));
     if (chars.empty()) {
         return HPtr::fromBits(Export::encodeBoxedBool(true));
     }
@@ -327,7 +361,7 @@ HPtr Elm_Kernel_String_all(HPtr closure, HPtr str) {
 }
 
 HPtr Elm_Kernel_String_foldl(HPtr closure, HPtr acc, HPtr str) {
-    auto chars = snapshotChars(Export::toPtr(str.toBits()));
+    CharSnapshot chars(Export::toPtr(str.toBits()));
     if (chars.empty()) return acc;
 
     HPointer closureHP = Export::decode(closure.toBits());
@@ -345,7 +379,7 @@ HPtr Elm_Kernel_String_foldl(HPtr closure, HPtr acc, HPtr str) {
 }
 
 HPtr Elm_Kernel_String_foldr(HPtr closure, HPtr acc, HPtr str) {
-    auto chars = snapshotChars(Export::toPtr(str.toBits()));
+    CharSnapshot chars(Export::toPtr(str.toBits()));
     if (chars.empty()) return acc;
 
     HPointer closureHP = Export::decode(closure.toBits());
