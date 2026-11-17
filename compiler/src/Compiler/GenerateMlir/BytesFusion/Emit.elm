@@ -914,8 +914,13 @@ emitWriteEachItem r state =
                     )
                 |> Ops.opBuilder.build
 
+        -- The body comes from the mapped function, whose local names can
+        -- equal names of the enclosing let chain, so the chain's placeholders
+        -- must not be visible inside it: a `let` there of a name the chain
+        -- also binds would otherwise be given, and define, the chain's
+        -- placeholder for that name.
         ctxBody =
-            Context.addVarMapping r.itemVar headVar headType ctx21
+            Context.addVarMapping r.itemVar headVar headType { ctx21 | currentLetSiblings = Dict.empty }
 
         -- The body's ops go inside the region, and its values are compiled
         -- there, not taken from the hoisted ones.
@@ -954,7 +959,19 @@ emitWriteEachItem r state =
                 afterRegion
     in
     { state
-        | ctx = ctx24
+        | -- The item and whatever the body bound are in scope only inside the
+          -- loop. Left mapped, the item's name would stand for an SSA value of
+          -- the loop region in the code after it, where a later binding of the
+          -- same name (a callee's parameter name such as `_v0` is common)
+          -- would find it already defined. The tables keyed by local name
+          -- are restored for the same reason.
+          ctx =
+            { ctx24
+                | varMappings = ctx0.varMappings
+                , currentLetSiblings = ctx0.currentLetSiblings
+                , decoderExprs = ctx0.decoderExprs
+                , localEvaluatorParams = ctx0.localEvaluatorParams
+            }
         , cursor = whileCursorResult
         , hoisted = hoisted
         , ops = whileOp :: (List.reverse iterResult.ops ++ state.ops)

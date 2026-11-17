@@ -4928,7 +4928,9 @@ generateLetSingle ctx def body =
                                         ++ placeholderVar
                                         ++ " for let-bound name '"
                                         ++ name
-                                        ++ "' is already defined - duplicate let name reached codegen"
+                                        ++ "' is already defined - duplicate let name reached codegen (in "
+                                        ++ ctx.currentFuncName
+                                        ++ ")"
                                     )
 
                             else
