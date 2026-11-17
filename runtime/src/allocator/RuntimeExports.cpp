@@ -72,7 +72,13 @@ inline void* hpointerToPtr(uint64_t val) {
     if (hp.ptr_ind != 0) {
         return nullptr;
     }
+#if ECO_HEAP_VALIDATE
     return Allocator::instance().resolve(hp);
+#else
+    // Inline unless the object has been forwarded, which happens only during a collection: this runs
+    // several times on every closure call.
+    return Allocator::resolveFast(hp);
+#endif
 }
 
 } // anonymous namespace
