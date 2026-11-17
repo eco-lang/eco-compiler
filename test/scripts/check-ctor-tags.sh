@@ -5,6 +5,7 @@
 # HeapLimits.elm, that must equal the C++ runtime's (its module doc: "Nothing in the compiler checks
 # that they agree"):
 #   dictRBNode       == CTOR_DICT_RBNODE  (elm-kernel-cpp core/Utils.cpp, http/HttpExports.cpp)
+#   seqDict          == CTOR_SEQDICT      (elm-kernel-cpp core/SeqDict.hpp)
 #   constantTag      == CONSTANT_TAG      (runtime/src/allocator/Heap.hpp)
 #                    == value_enc::ConstantTag (runtime/src/codegen/Passes/EcoToLLVMInternal.h)
 #   nullConsCapacity == NULL_CONS_MAX     (runtime/src/allocator/Heap.hpp; the codegen copy
@@ -47,6 +48,7 @@ same() {
 }
 
 rbnode=$(elm_const dictRBNode)
+seqdict=$(elm_const seqDict)
 consttag=$(elm_const constantTag)
 # CtorTag.nullConsCapacity must be defined as HeapLimits.maxNullaryCtorIndex, whose literal is compared.
 if [ "$(elm_const nullConsCapacity)" != "HeapLimits.maxNullaryCtorIndex" ]; then
@@ -62,6 +64,8 @@ same "dictRBNode vs core/Utils.cpp CTOR_DICT_RBNODE" "$rbnode" \
     "$(cpp_const "$root/elm-kernel-cpp/src/core/Utils.cpp" 'CTOR_DICT_RBNODE[ \t]*=')"
 same "dictRBNode vs http/HttpExports.cpp CTOR_DICT_RBNODE" "$rbnode" \
     "$(cpp_const "$root/elm-kernel-cpp/src/http/HttpExports.cpp" 'CTOR_DICT_RBNODE[ \t]*=')"
+same "seqDict vs core/SeqDict.hpp CTOR_SEQDICT" "$seqdict" \
+    "$(cpp_const "$root/elm-kernel-cpp/src/core/SeqDict.hpp" 'CTOR_SEQDICT[ \t]*=')"
 same "constantTag vs Heap.hpp CONSTANT_TAG" "$consttag" \
     "$(cpp_const "$heap" '^#define[ \t]+CONSTANT_TAG[ \t]')"
 same "constantTag vs EcoToLLVMInternal.h ConstantTag" "$consttag" \
@@ -72,4 +76,4 @@ same "nullConsCapacity vs Heap.hpp NULL_CONS_MAX" "$nullmax" \
 if [ "$fail" -ne 0 ]; then
     exit 1
 fi
-echo "check-ctor-tags: OK (dictRBNode=$rbnode constantTag=$consttag nullConsCapacity=$nullmax)"
+echo "check-ctor-tags: OK (dictRBNode=$rbnode seqDict=$seqdict constantTag=$consttag nullConsCapacity=$nullmax)"

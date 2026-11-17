@@ -2,7 +2,7 @@ module Compiler.Elm.Package exposing
     ( Name, Author, Project
     , compareName, toString, toChars, toUrl, toJsonString
     , isKernel
-    , dummyName, kernel, ecoKernel, ecoSystem, core, virtualDom, json, bytes, webgl, linearAlgebra
+    , dummyName, kernel, ecoKernel, ecoSystem, ecoContainers, core, virtualDom, json, bytes, webgl, linearAlgebra
     , suggestions, nearbyNames
     , encode, decoder, keyDecoder
     , nameEncoder, nameDecoder, parser
@@ -223,6 +223,13 @@ ecoKernel =
 ecoSystem : Name
 ecoSystem =
     toName eco "system"
+
+
+{-| The package name `eco/containers`.
+-}
+ecoContainers : Name
+ecoContainers =
+    toName eco "containers"
 
 
 {-| The package name `elm/core`.
