@@ -1155,6 +1155,29 @@ Default leg (flag off):
   undone by hand. `try-fe-ctorlayouts` and `step-fe-ctorlayouts.patch` stay as the record. Before the revert, a
   partial gate run on this tree passed bootstrap, elm-tests, JIT E2E and the MLIR corpus diff; AOT was stopped.
 
+### llvm24: LLVM/MLIR 21.1.8 → 24.0.0git (llvm-project `8d4fc8f1d17e`, MAX 26.7.0 pin; docs/llvm-pins.md, 2026-11-18): **regression check, single run: no regression (wall −0.27 s vs nofcf, every phase flat)**
+
+| run | wall (s) | parse/check/build (s) | mono (s) | MLIR codegen (s) | GC time (s) | minor GC | major GC | promoted MiB | max RSS (kB) | out.mlir (B) | fixed point |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| r1 | 66.69 | 26.2 | 26.2 | 8.7 | 2.92 | 1350 | 8 | 6492 | 6247864 | 12370367 | same |
+| Δ vs nofcf (last kept, median) | −0.27 (nofcf spread 0.20; one run, no own spread) | −0.2 | −0.2 | 0.0 | −0.01 | −27 | 0 | −6 | −54,652 | +27,227 (+0.22 %, source moved) | |
+| Δ vs ctorlay control `eco-optnofcf` (68.39, latest measurement) | −1.70 | −1.4 | −0.3 | +0.1 | −0.15 | −86 | — | −354 | −294,168 | +18,092 | |
+
+- **What:** not a front-end step. The tree's LLVM/MLIR moved from 21.1.8 to 24.0.0git (about 15 months of
+  trunk); the Elm compiler source is unchanged by the port, but the tree also took the work since nofcf
+  (native Bytes ports, test speedups, etc.). The front end itself is Elm, so LLVM can only reach this
+  workload through the code `eco-boot-native` generates for the compiler binary: this row is the
+  recursive tax of the upgrade. The candidate is today's bootstrap `eco-compiler-boot` (fresh `build/`,
+  `cmake --preset build` + `--target bootstrap`, copied to `eco-optllvm24`; its self-output
+  `eco-compiler-boot-2.mlir` to `ecollvm24.mlir`). **One timed run only, by request.** Package
+  `*artifacts.dat` caches were warm from the bootstrap. Registry: `~/.eco/0.2.0/packages/registry.dat`.
+- **Checks:** rc 0, no `[gc-stats] SIG`, r1 equals `ecollvm24.mlir` (fixed point). `.ecot` 8,325,002 B
+  (−97,639 vs nofcf).
+- **Verdict:** wall −0.27 s against nofcf, inside its band: **FLAT, no regression from LLVM 24.** Every phase
+  is at or below the reference (parse/check/build 26.2 s, mono 26.2 s, codegen 8.7 s), GC time and counters are
+  flat, and RSS is −55 MB. Against the latest measured number (the ctorlay control, 68.39 s) it is −1.70 s.
+- **Gates:** `bootstrap` only (4b and 8c fixed points pass on the fresh tree). The E2E suites were not run.
+
 ## 6a. Batched end-of-series gates (run once each, after S8)
 
 - **G5 `TypedOptimizedCodecTest` (new):** 135/135 standard-suite modules round-trip the v2 codec
@@ -1440,3 +1463,4 @@ same-sitting control run, not the `ref` row's recorded wall. Details live in eac
 | dc | 70.96 | +0.71 | 1392 | 8 | 6492 | 6295092 | — (regression check, ONE run, across a moved tree: dead-code removal; FLAT inside the CharSimple band; parse/check/build 26.2 s (−1.3), mono −0.9 s, MLIR codegen +3.3 s = source move (kfix control 12.9 s on today's source; findConcreteCtorField 7× calls); promoted −394 MiB; fixed point) | kfix |
 | nofcf | 66.96 | -4.00 | 1377 | 8 | 6498 | 6302516 | WIN (findConcreteCtorField removed; MLIR codegen 12.6 -> 8.7 s; E2E MLIR corpus byte-identical) | dc |
 | ctorlay | 68.46 | +1.50 | 1436 | 8 | 6855 | 6515840 | FLAT vs same-source control 68.39 (workload +1.5 s from grown source); REVERTED (no advantage) | nofcf |
+| llvm24 | 66.69 | -0.27 | 1350 | 8 | 6492 | 6247864 | — (regression check, ONE run: LLVM 21.1.8 -> 24.0.0git; FLAT, no regression; parse/check/build 26.2 s, mono 26.2 s, codegen 8.7 s; ctorlay control 68.39 -> -1.70 s; fixed point) | nofcf |

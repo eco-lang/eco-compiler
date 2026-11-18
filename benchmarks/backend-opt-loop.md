@@ -2362,6 +2362,82 @@ MLIR passes (wall clock, may overlap with phases):
 
 </details>
 
+### LLVM24: LLVM/MLIR 21.1.8 → 24.0.0git (llvm-project `8d4fc8f1d17e`, MAX 26.7.0 pin; docs/llvm-pins.md, 2026-11-18): regression check, not a step
+
+| step | wall (s) | Δ vs ref (s) | user CPU (s) | max RSS (kB) | MLIR pipeline (s) | whole-module opt (s) | partition emit Σ (s) | verdict | ref |
+|---|---|---|---|---|---|---|---|---|---|
+| LLVM24 | 18.92 | -0.77 | 335.76 | 7,206,392 | 2.31 | — | 152.39 | FLAT, no regression (input moved, see below) | P11 |
+
+**The fixed input could not be used.** `ecoGCR.mlir` was deleted with the old `build/`; its copy
+`stats-backend-opt/p04/base.mlir` (same 13,249,839 B, the P07/P11 input) predates the wide-object
+`slot_kinds` change (2026-10-05), and today's `eco-boot-native` rejects it at verify (`stale attribute
+'unboxed_bitmap'`, `requires attribute 'slot_kinds'`). The run lowers today's compiler self-output
+instead: `build/compiler/build-kernel/bin/eco-compiler-boot.mlir` (Stage 7a of a fresh bootstrap,
+12,370,367 B bytecode). Same program, six weeks of source later, so the Δ vs P11 crosses a moved input.
+
+- Tool: `eco-boot-native` from a fresh `cmake --preset build` tree, built against LLVM/MLIR 24.0.0git.
+  Shipped defaults, no flags. rc 0, output 98,078,016 B, **byte-identical to the bootstrap's own Stage
+  7b `eco-compiler-boot`** (same input, separate run), stats banner complete.
+- Wall −0.77 s vs P11, inside the 1.0 s floor: **FLAT, no regression from LLVM 24.** The bootstrap's
+  Stage 7b on the same input read 18.72 s.
+- Phase sums all fell: partition opt 126.59 → 118.33 s, translate 33.42 → 27.61 s, RS4GC 11.48 →
+  10.33 s, emit 154.39 → 152.39 s, MLIR pipeline 2.52 → 2.31 s; user CPU −11.9 s. Max RSS +472 MB.
+  None of this is attributable to LLVM alone, because the input changed too.
+- The GNU ld `DT_TEXTREL` / `.llvm_stackmaps` relocation warnings are the same two lines P11 printed.
+- Not codegen-changing by itself as a step, but LLVM moved under the opt pipeline; the recursive tax is
+  the front-end self-compile in `benchmarks/fe-opt-loop.md` row `llvm24` (66.69 s, flat vs nofcf).
+- Log: `stats-backend-opt/LLVM24.{stats,time}`.
+
+<details><summary>--lowering-stats banner</summary>
+
+```
+=== eco-boot-native lowering stats ===
+
+Phases (wall clock):
+  name                                        time         %      calls   
+  ------------------------------------------------------------------------
+    partition emit (sum over workers)             152.39 s   43.8%      24
+    partition opt (sum over workers)              118.33 s   34.0%      24
+    partition translate (sum over workers)         27.61 s    7.9%      24
+  LLVM backend (EcoSplit: translate + lower...     14.55 s    4.2%       1
+    parallel lower drain (post-split wait)         14.13 s    4.1%       1
+    partition RS4GC (sum over workers)             10.33 s    3.0%      24
+    capacity-hoist analysis (serial)                2.75 s    0.8%      24
+  MLIR lowering pipeline                            2.31 s    0.7%       1
+    $cap inline prepass (sum over workers)          2.24 s    0.6%      24
+    gc-free leaf propagation (serial)               1.20 s    0.3%      24
+  Link (clang++ driver)                             1.18 s    0.3%       1
+  MLIR parse + verify                            694.34 ms    0.2%       1
+    EcoSplit build (parallel clone)              383.95 ms    0.1%       1
+  ------------------------------------------------------------------------
+  total                                           348.09 s
+
+MLIR passes (wall clock, may overlap with phases):
+  name                                        time         %      calls   
+  ------------------------------------------------------------------------
+  (anonymous namespace)::EcoToLLVMPass           960.51 ms    0.3%       1
+  (anonymous namespace)::EcoTailConversions...   291.11 ms    0.1%       1
+  (anonymous namespace)::EcoControlFlowToSC...   238.39 ms    0.1%       1
+  (anonymous namespace)::EcoCapHoistPlanPass     191.76 ms    0.1%       1
+  (anonymous namespace)::EcoListCursorPass       142.64 ms    0.0%       1
+  (anonymous namespace)::EcoReachabilityPass     117.23 ms    0.0%       1
+  (anonymous namespace)::EcoPAPSimplifyPass       88.80 ms    0.0%       1
+  (anonymous namespace)::EcoListTemplatePass      78.15 ms    0.0%       1
+  (anonymous namespace)::EcoGcFreePropagati...    64.20 ms    0.0%       1
+  (anonymous namespace)::EcoMarkGCLeafCalls...    29.31 ms    0.0%       1
+  (anonymous namespace)::EcoCompareCaseRewr...    27.21 ms    0.0%       1
+  (anonymous namespace)::RCEliminationPass        22.60 ms    0.0%       1
+  (anonymous namespace)::UndefinedFunctionPass    21.41 ms    0.0%       1
+  (anonymous namespace)::JoinpointNormaliza...    15.35 ms    0.0%       1
+  (anonymous namespace)::BFToLLVMPass             10.55 ms    0.0%       1
+  (anonymous namespace)::EcoGCPreparePass          6.41 ms    0.0%       1
+  (anonymous namespace)::EcoFoldProjectPass        5.19 ms    0.0%       1
+  ------------------------------------------------------------------------
+  total                                             2.31 s
+```
+
+</details>
+
 ## 8. Summary
 
 | step | wall (s) | Δ vs ref (s) | user CPU (s) | max RSS (kB) | MLIR pipeline (s) | whole-module opt (s) | partition emit Σ (s) | verdict | ref |
@@ -2396,3 +2472,4 @@ MLIR passes (wall clock, may overlap with phases):
 | B4X | 25.59 | +0.06 | 361.69 | 7,691,812 | 8.32 | — | 154.09 | FLAT, kept (deletes work: 2,262 dead $cap bodies; −0.76 % binary) | ES |
 | P07 | 20.04 | -5.06 | 345.74 | 6,681,892 | 2.74 | — | 153.06 | WIN (byte-identical; plan 07, 11 steps) | B4X (re-measured 25.10) |
 | P11 | 19.69 | -0.35 | 347.68 | 6,734,428 | 2.52 | — | — | WIN (amendment-1: stage 2b 0.51→0.32 s; byte-identical) | P07 |
+| LLVM24 | 18.92 | -0.77 | 335.76 | 7,206,392 | 2.31 | — | 152.39 | — (regression check, ONE run: LLVM 21.1.8 -> 24.0.0git; FLAT; input = today's eco-compiler-boot.mlir, old fixed input no longer verifies) | P11 |
