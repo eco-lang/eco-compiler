@@ -28,6 +28,7 @@ on:
       - 'experiments/win-llvm-build/**'
       - 'test/scripts/check-macho-floor.sh'
       - 'scripts/deps.sh'
+      - '.github/actions/setup-clang-cl/**'
       - '.github/workflows/llvm-build.yml'
   workflow_dispatch:
 

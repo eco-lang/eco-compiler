@@ -37,6 +37,7 @@ on:
       - 'deps/**'
       - 'scripts/deps.sh'
       - '.github/actions/fetch-llvm/**'
+      - '.github/actions/setup-clang-cl/**'
       - '.github/workflows/win-aot.yml'
       - '.github/scripts/prune-caches.sh'
       - '.github/scripts/eco-version.sh'
