@@ -16,6 +16,7 @@ import BinaryFormat
 import BinaryTrees
 import Brainfuck
 import BytesCodec
+import BytesFrame
 import BytesRows
 import Crc32
 import CsvParser
@@ -32,6 +33,7 @@ import Fib
 import FloatSum
 import FloodFill
 import FloydWarshall
+import HotLambda
 import JsonCoords
 import JsonDecoders
 import JsonDict
@@ -39,6 +41,7 @@ import JsonEncode
 import JsonParser
 import JsonShapes
 import KNucleotide
+import KernelCallbacks
 import Levenshtein
 import Lexer
 import Life
@@ -54,6 +57,7 @@ import NBody
 import NQueens
 import NSieve
 import NSieveBits
+import PairKeys
 import Platform
 import Popcount
 import Prng
@@ -66,6 +70,7 @@ import ShuffleSort
 import Sort
 import SpectralNorm
 import StringBuild
+import StringCallbacks
 import Sudoku
 import UnicodeString
 import Utf8Bytes
@@ -281,6 +286,27 @@ bench name =
 
         "decoded-snapshot" ->
             Just DecodedSnapshot.bench
+
+        "bytes-frame" ->
+            Just BytesFrame.bench
+
+        "bytes-frame-prefixed" ->
+            Just BytesFrame.benchPrefixed
+
+        "string-callbacks" ->
+            Just StringCallbacks.bench
+
+        "dict-char-pairs" ->
+            Just PairKeys.benchCharPairs
+
+        "set-float-pairs" ->
+            Just PairKeys.benchFloatPairs
+
+        "kernel-callbacks" ->
+            Just KernelCallbacks.bench
+
+        "hot-lambda" ->
+            Just HotLambda.bench
 
         _ ->
             Nothing

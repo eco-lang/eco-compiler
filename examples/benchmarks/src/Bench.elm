@@ -41,6 +41,7 @@ import BinaryFormat
 import BinaryTrees
 import Brainfuck
 import BytesCodec
+import BytesFrame
 import BytesRows
 import Crc32
 import CsvParser
@@ -57,6 +58,7 @@ import Fib
 import FloatSum
 import FloodFill
 import FloydWarshall
+import HotLambda
 import Json.Encode as Encode
 import JsonCoords
 import JsonDecoders
@@ -65,6 +67,7 @@ import JsonEncode
 import JsonParser
 import JsonShapes
 import KNucleotide
+import KernelCallbacks
 import Levenshtein
 import Lexer
 import Life
@@ -80,6 +83,7 @@ import NBody
 import NQueens
 import NSieve
 import NSieveBits
+import PairKeys
 import Popcount
 import Prng
 import RevComp
@@ -92,6 +96,7 @@ import Sort
 import SpectralNorm
 import Stream
 import StringBuild
+import StringCallbacks
 import Sudoku
 import System
 import Task exposing (Task)
@@ -183,6 +188,13 @@ workloads =
     , Workload "bytes-f32-rows" "encode and decode size rows of 384 float32s, a loop per row" BytesRows.benchF32 1000 Nothing
     , Workload "bytes-u8-rows" "the same with unsignedInt8s" BytesRows.benchU8 1200 Nothing
     , Workload "decoded-snapshot" "decode size records into a Dict String of records, all live" DecodedSnapshot.bench 5500 Nothing
+    , Workload "bytes-frame" "encode a scene of 2,000 16-byte records size times: sequence (List.map f xs)" BytesFrame.bench 1500 Nothing
+    , Workload "bytes-frame-prefixed" "the same with a u32 length before the records" BytesFrame.benchPrefixed 1500 Nothing
+    , Workload "string-callbacks" "String.foldl, any, all, filter and map over 2,000 short words, size passes" StringCallbacks.bench 150 Nothing
+    , Workload "dict-char-pairs" "bigram counts of size characters in a Dict (Char, Char) Int" PairKeys.benchCharPairs 1000000 Nothing
+    , Workload "set-float-pairs" "Set.fromList of size (Float, Float) points, a quarter distinct" PairKeys.benchFloatPairs 600000 Nothing
+    , Workload "kernel-callbacks" "List.sortBy, Array.initialize/map/foldl and List.map2 over size elements" KernelCallbacks.bench 300000 Nothing
+    , Workload "hot-lambda" "size calls that build capture-free functions for List.map/filter/foldl" HotLambda.bench 2000000 Nothing
     ]
 
 

@@ -31,7 +31,11 @@ Each workload checks itself as strongly as it can, at whatever size it runs:
   json-encode (both texts' lengths from the value, and the round trip), lexer (the
   generator's token counts), list-walk-map and list-walk-take (the dot products recomputed with
   `Int`s), bytes-f32-rows and bytes-u8-rows (the generated rows) and decoded-snapshot (the
-  generator's totals, recomputed with `Int`s). spectral-norm must lie within `6 / n^3` of its limit (a bound
+  generator's totals, recomputed with `Int`s), bytes-frame and bytes-frame-prefixed (every frame's
+  width, and the last frame decoded back to the scene), string-callbacks (the same figures from the
+  generator's `List Char`s), dict-char-pairs (bigram counts in an `Array`), set-float-pairs (its
+  size and coordinate sums), kernel-callbacks (closed forms and a `List.foldl` recount) and
+  hot-lambda (a closed form). spectral-norm must lie within `6 / n^3` of its limit (a bound
   measured with a C program from 1 to 5,500).
 - Exactly against a table that covers every feasible size: fannkuch-redux (1-12 items, from the
   standard C algorithm), nsieve (2-14, from a separate sieve), n-queens (up to 18, OEIS
@@ -114,4 +118,8 @@ Batch 3 completes the plan: dict-algebra and dict-int / dict-string / dict-tuple
 set-algebra and set-distinct (Set), shuffle-sort and array-build (Array), csv-split and
 string-append / string-join / string-concat (String), prng and popcount (Bitwise),
 binary-format and adler32 (Bytes), json-dict and json-encode (JSON), csv-parser and lexer
-(Parser).
+(Parser). A later group targets the runtime's per-call costs: bytes-frame and bytes-frame-prefixed
+(a renderer's unchanged frame of fixed-width records, plain and length-prefixed), string-callbacks
+(String kernels that call a function per character, on short words), dict-char-pairs and
+set-float-pairs (keys that are pairs of unboxed values), kernel-callbacks (library functions that
+call a function per element) and hot-lambda (function values that capture nothing, made per call).
