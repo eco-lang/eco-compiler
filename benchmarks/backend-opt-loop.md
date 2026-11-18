@@ -2438,6 +2438,82 @@ MLIR passes (wall clock, may overlap with phases):
 
 </details>
 
+### P08: plan 08 split-inlining defaults (2026-11-18): regression check, not a step
+
+| step | wall (s) | Δ vs ref (s) | user CPU (s) | max RSS (kB) | MLIR pipeline (s) | whole-module opt (s) | partition emit Σ (s) | verdict | ref |
+|---|---|---|---|---|---|---|---|---|---|
+| P08 | 20.78 | +1.86 | 371.73 | 7,633,416 | 2.42 | — | 161.21 | accepted cost (codegen-changing; input moved, see below) | LLVM24 |
+
+`plans/mlir-split-backend-08-partition-invariant-inlining.md` made default: EcoSplit leaf import copies of
+GC-free functions up to 128 MLIR ops (`ECO_SPLIT_IMPORT_LEAF_MAX_OPS`), GC-free `$cap` copies kept past the
+prepass (`ECO_SPLIT_KEEP_LEAF_CAP_COPIES`), `function-inline-threshold=15225` on solo callees
+(`ECO_SPLIT_SOLO_INLINE_THRESHOLD`), and 32 B innermost-loop alignment
+(`-x86-experimental-pref-innermost-loop-alignment=5`, passed through the command line). **Codegen-changing.**
+
+- Input: today's `eco-compiler-boot.mlir` (12,627,686 B, PR #17 source), not LLVM24's (12,370,367 B), so the
+  Δ vs LLVM24 crosses a +2.1 % input. ONE run, shipped defaults, no flags. rc 0, output 100,623,504 B,
+  byte-identical to the build's own `eco-compiler-boot`, stats banner complete.
+- **Same-input reference:** plan 08 lowered this input with every plan-08 default off at 19.30–19.53 s
+  (median 19.43 s, six runs, §2c). Against that P08 is about +1.35 s (+7 %) wall, user CPU +20 s (352 → 372 s),
+  RSS +0.4 GB, binary 98.66 → 100.62 MB: the price of the copies (about 240 leaf copies and 3,495 solo stamps)
+  and the extra inlining, measured and accepted in the plan. By the §4 rule against LLVM24 it reads as a
+  LOSS (+1.86 s > 1.0 s floor); it is kept by decision, not by the rule.
+- Phase sums vs LLVM24: partition opt 118.33 → 140.62 s, emit 152.39 → 161.21 s, translate 27.61 → 29.73 s,
+  RS4GC 10.33 → 11.56 s, MLIR pipeline 2.31 → 2.42 s, EcoSplit build 0.38 → 0.45 s.
+- Recursive tax: front-end self-compile `benchmarks/fe-opt-loop.md` row `p08`, 64.33 s (−1.73 s vs pr17,
+  fixed point).
+- Log: `stats-backend-opt/P08.{stats,time}`.
+
+<details><summary>--lowering-stats banner</summary>
+
+```
+=== eco-boot-native lowering stats ===
+
+Phases (wall clock):
+  name                                        time         %      calls   
+  ------------------------------------------------------------------------
+    partition emit (sum over workers)             161.21 s   41.7%      24
+    partition opt (sum over workers)              140.62 s   36.4%      24
+    partition translate (sum over workers)         29.73 s    7.7%      24
+  LLVM backend (EcoSplit: translate + lower...     16.34 s    4.2%       1
+    parallel lower drain (post-split wait)         15.84 s    4.1%       1
+    partition RS4GC (sum over workers)             11.56 s    3.0%      24
+    capacity-hoist analysis (serial)                2.98 s    0.8%      24
+  MLIR lowering pipeline                            2.42 s    0.6%       1
+    $cap inline prepass (sum over workers)          2.30 s    0.6%      24
+    gc-free leaf propagation (serial)               1.34 s    0.3%      24
+  Link (clang++ driver)                             1.18 s    0.3%       1
+  MLIR parse + verify                            694.54 ms    0.2%       1
+    EcoSplit build (parallel clone)              449.45 ms    0.1%       1
+  ------------------------------------------------------------------------
+  total                                           386.66 s
+
+MLIR passes (wall clock, may overlap with phases):
+  name                                        time         %      calls   
+  ------------------------------------------------------------------------
+  (anonymous namespace)::EcoToLLVMPass           965.74 ms    0.2%       1
+  (anonymous namespace)::EcoControlFlowToSC...   317.04 ms    0.1%       1
+  (anonymous namespace)::EcoTailConversions...   302.15 ms    0.1%       1
+  (anonymous namespace)::EcoCapHoistPlanPass     195.42 ms    0.1%       1
+  (anonymous namespace)::EcoListCursorPass       134.14 ms    0.0%       1
+  (anonymous namespace)::EcoReachabilityPass     117.43 ms    0.0%       1
+  (anonymous namespace)::EcoPAPSimplifyPass       87.00 ms    0.0%       1
+  (anonymous namespace)::EcoListTemplatePass      80.93 ms    0.0%       1
+  (anonymous namespace)::EcoGcFreePropagati...    65.15 ms    0.0%       1
+  (anonymous namespace)::EcoMarkGCLeafCalls...    29.56 ms    0.0%       1
+  (anonymous namespace)::EcoCompareCaseRewr...    27.05 ms    0.0%       1
+  (anonymous namespace)::RCEliminationPass        21.95 ms    0.0%       1
+  (anonymous namespace)::BFToLLVMPass             21.71 ms    0.0%       1
+  (anonymous namespace)::UndefinedFunctionPass    20.56 ms    0.0%       1
+  (anonymous namespace)::JoinpointNormaliza...    15.64 ms    0.0%       1
+  (anonymous namespace)::EcoGCPreparePass          7.14 ms    0.0%       1
+  (anonymous namespace)::EcoFoldProjectPass        5.36 ms    0.0%       1
+  ------------------------------------------------------------------------
+  total                                             2.41 s
+```
+
+</details>
+
 ## 8. Summary
 
 | step | wall (s) | Δ vs ref (s) | user CPU (s) | max RSS (kB) | MLIR pipeline (s) | whole-module opt (s) | partition emit Σ (s) | verdict | ref |
@@ -2473,3 +2549,4 @@ MLIR passes (wall clock, may overlap with phases):
 | P07 | 20.04 | -5.06 | 345.74 | 6,681,892 | 2.74 | — | 153.06 | WIN (byte-identical; plan 07, 11 steps) | B4X (re-measured 25.10) |
 | P11 | 19.69 | -0.35 | 347.68 | 6,734,428 | 2.52 | — | — | WIN (amendment-1: stage 2b 0.51→0.32 s; byte-identical) | P07 |
 | LLVM24 | 18.92 | -0.77 | 335.76 | 7,206,392 | 2.31 | — | 152.39 | — (regression check, ONE run: LLVM 21.1.8 -> 24.0.0git; FLAT; input = today's eco-compiler-boot.mlir, old fixed input no longer verifies) | P11 |
+| P08 | 20.78 | +1.86 | 371.73 | 7,633,416 | 2.42 | — | 161.21 | — (regression check, ONE run: plan 08 split-inlining defaults; codegen-changing; input moved to the PR #17 source (+2.1 %); ≈ +1.35 s vs the same input with plan 08 off (19.43 s), accepted cost; recursive tax fe-opt-loop p08 −1.73 s) | LLVM24 |

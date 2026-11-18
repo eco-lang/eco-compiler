@@ -1178,6 +1178,56 @@ Default leg (flag off):
   flat, and RSS is −55 MB. Against the latest measured number (the ctorlay control, 68.39 s) it is −1.70 s.
 - **Gates:** `bootstrap` only (4b and 8c fixed points pass on the fresh tree). The E2E suites were not run.
 
+### pr17: eco-compiler PR #17 (Bytes `sequence (List.map f xs)` fusion, kernel closure fast path, String snapshot, unboxed-pair compare, intern cache; 2026-11-18): **regression check, single run: no regression (wall −0.63 s vs llvm24, every phase flat)**
+
+| run | wall (s) | parse/check/build (s) | mono (s) | MLIR codegen (s) | GC time (s) | minor GC | major GC | promoted MiB | max RSS (kB) | out.mlir (B) | fixed point |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| r1 | 66.06 | 26.1 | 25.7 | 8.8 | 3.01 | 1361 | 8 | 6559 | 6458644 | 12627686 | same |
+| Δ vs llvm24 (2026-11-18, one run) | −0.63 (no spread on either row; nofcf spread 0.20) | −0.1 | −0.5 | +0.1 | +0.09 | +11 | 0 | +67 | +210,780 (+3.4 %) | +257,319 (+2.1 %, source moved) | |
+
+- **What:** not a front-end step. The tree is llvm24's plus PR #17 squashed (rebased onto master): Bytes encoder
+  fusion of `sequence (List.map f xs)` without a length prefix (`WListWalkMul`, `liveBindings`, the fused-loop
+  scope fix), the saturated-closure fast path in `eco_apply_closure_eval`, `CharSnapshot` in the String kernels,
+  the unboxed `Tuple2` compare in `Utils::cmp`, `resolveFast` in `hpointerToPtr`, and the 512-entry recent cache in
+  front of the literal intern table. The candidate is the bootstrap's `eco-compiler-boot` (15:48 build, runtime
+  with the intern cache, which matches the tree), copied to `eco-optpr17`, its self-output
+  `eco-compiler-boot-2.mlir` to `ecopr17.mlir`. **One timed run only, by request**, judged against the previous
+  row (llvm24). Package caches warm from the bootstrap. Registry: `~/.eco/0.2.0/packages/registry.dat`.
+- **Checks:** rc 0, no `[gc-stats] SIG`, r1 equals `ecopr17.mlir` (fixed point). `.ecot` 8,344,556 B (+19,554).
+- **Verdict:** wall −0.63 s, inside the band: **FLAT, no regression from the PR.** The phase split is flat
+  (parse/check/build 26.1 s, mono 25.7 s, codegen 8.8 s) and GC counters move with the larger source (+11 minors,
+  +67 MiB promoted). RSS +211 MB is the one figure outside the usual drift; with one run it is not attributed.
+  out.mlir grows 2.1 % because the compiler's own source grew (the fusion code), so the workload moved. The PR's
+  runtime gains are on kernel-callback, String, tuple-key and Bytes-encode code
+  (`examples/benchmarks`: bytes-frame 10×, string-callbacks −28 %, dict-char-pairs −20 %), little of which the
+  self-compile exercises.
+- **Gates:** `eco` bootstrap chain with the PR (4b and 8c fixed points pass, two builds). `eco-verify`, the E2E
+  suites and the kernel license re-audit (38 kernels in `StringExports.cpp` / `Utils.cpp`) are still owed.
+
+### p08: plan 08 split-inlining defaults (leaf copies K = 128, GC-free `$cap` copies kept, solo-callee inline threshold, 32 B innermost-loop alignment; 2026-11-18): **regression check, single run: WIN-sized but unattributed (wall −1.73 s vs pr17, mono −1.0 s)**
+
+| run | wall (s) | parse/check/build (s) | mono (s) | MLIR codegen (s) | GC time (s) | minor GC | major GC | promoted MiB | max RSS (kB) | out.mlir (B) | fixed point |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| r1 | 64.33 | 25.6 | 24.7 | 8.9 | 2.89 | 1361 | 8 | 6559 | 6422536 | 12627686 | same |
+| Δ vs pr17 (2026-11-18, one run) | −1.73 (no spread on either row; nofcf spread 0.20) | −0.5 | −1.0 | +0.1 | −0.12 | 0 | 0 | 0 | −36,108 | 0 (same source) | |
+
+- **What:** not a front-end step. The Elm source is pr17's; only the lowering of the compiler binary changed
+  (`plans/mlir-split-backend-08-partition-invariant-inlining.md`, now the defaults): EcoSplit copies GC-free
+  functions of at most 128 MLIR ops into every partition that calls them (`ECO_SPLIT_IMPORT_LEAF_MAX_OPS`),
+  the backend keeps GC-free `$cap` copies past the prepass (`ECO_SPLIT_KEEP_LEAF_CAP_COPIES`), solo callees get
+  `function-inline-threshold=15225` (`ECO_SPLIT_SOLO_INLINE_THRESHOLD`), and innermost loops are aligned to
+  32 B. The candidate is `eco-boot-native`'s lowering of today's `eco-compiler-boot.mlir` (byte-identical to the
+  `eco-compiler-boot` the build produced), copied to `eco-optP08`, the MLIR to `ecoP08.mlir`. **One timed run
+  only, by request**, judged against the previous row (pr17). Package caches warm. Registry:
+  `~/.eco/0.2.0/packages/registry.dat`.
+- **Checks:** rc 0, no `[gc-stats] SIG`, r1 equals `ecoP08.mlir` (fixed point). `.ecot` 8,344,556 B (same).
+- **Verdict:** wall −1.73 s, beyond the 0.20 s nofcf spread, with every GC counter, the promoted bytes and the
+  output identical to pr17's, so the gain is mutator code quality: monomorphization −1.0 s, parse/check/build
+  −0.5 s. Same direction as plan 08's own runs (pr17 lowering 65.72 s → K = 40 64.57 s, one run each). One run
+  per row, so the size is not established; the split-inlining work is about consistency, and this row shows no
+  regression from it.
+- **Gates:** see the plan; bootstrap run after this row.
+
 ## 6a. Batched end-of-series gates (run once each, after S8)
 
 - **G5 `TypedOptimizedCodecTest` (new):** 135/135 standard-suite modules round-trip the v2 codec
@@ -1464,3 +1514,5 @@ same-sitting control run, not the `ref` row's recorded wall. Details live in eac
 | nofcf | 66.96 | -4.00 | 1377 | 8 | 6498 | 6302516 | WIN (findConcreteCtorField removed; MLIR codegen 12.6 -> 8.7 s; E2E MLIR corpus byte-identical) | dc |
 | ctorlay | 68.46 | +1.50 | 1436 | 8 | 6855 | 6515840 | FLAT vs same-source control 68.39 (workload +1.5 s from grown source); REVERTED (no advantage) | nofcf |
 | llvm24 | 66.69 | -0.27 | 1350 | 8 | 6492 | 6247864 | — (regression check, ONE run: LLVM 21.1.8 -> 24.0.0git; FLAT, no regression; parse/check/build 26.2 s, mono 26.2 s, codegen 8.7 s; ctorlay control 68.39 -> -1.70 s; fixed point) | nofcf |
+| pr17 | 66.06 | -0.63 | 1361 | 8 | 6559 | 6458644 | — (regression check, ONE run: PR #17 (Bytes list fusion, closure fast path, String snapshot, pair compare, intern cache); FLAT, no regression; parse/check/build 26.1 s, mono 25.7 s, codegen 8.8 s; out.mlir +2.1 % from grown source; fixed point) | llvm24 |
+| p08 | 64.33 | -1.73 | 1361 | 8 | 6559 | 6422536 | — (regression check, ONE run: plan 08 split-inlining defaults (K = 128 leaf copies, GC-free $cap copies kept, solo inline threshold, 32 B innermost loops); no regression, −1.73 s (mono −1.0 s), GC counters identical; fixed point) | pr17 |

@@ -71,6 +71,53 @@ unsigned capInlineMaxInsts() {
     return 64;
 }
 
+// Returns plan 08 option P's op cap, from `ECO_SPLIT_IMPORT_LEAF_MAX_OPS`, or
+// 128 by default; 0 turns leaf import copies off. With a cap K above 0, a
+// function stamped `gc-leaf-function` with at most K MLIR ops is also
+// import-copied into every partition that reaches it by direct calls, as
+// `EcoSplit.h` describes.
+unsigned importLeafMaxOps() {
+    static const unsigned k = [] {
+        if (const char *e = ::getenv("ECO_SPLIT_IMPORT_LEAF_MAX_OPS"))
+            return (unsigned)strtoul(e, nullptr, 10);
+        return 128u;
+    }();
+    return k;
+}
+
+// Returns the inline threshold stamped on solo callees (plan 08 §2d), from
+// `ECO_SPLIT_SOLO_INLINE_THRESHOLD`, or 15225 by default (LLVM's default
+// threshold of 225 plus its 15,000 bonus for the last call to a local
+// function); 0 turns the stamp off.
+unsigned soloInlineThreshold() {
+    static const unsigned t = [] {
+        if (const char *e = ::getenv("ECO_SPLIT_SOLO_INLINE_THRESHOLD"))
+            return (unsigned)strtoul(e, nullptr, 10);
+        return 15225u;
+    }();
+    return t;
+}
+
+// Appends the passthrough entry `key`=`value` to `op`.
+void addPassthroughValue(Operation *op, StringRef key, StringRef value) {
+    Builder b(op->getContext());
+    SmallVector<Attribute> pt;
+    if (auto a = op->getAttrOfType<ArrayAttr>("passthrough"))
+        pt.append(a.begin(), a.end());
+    pt.push_back(b.getArrayAttr({b.getStringAttr(key), b.getStringAttr(value)}));
+    op->setAttr("passthrough", b.getArrayAttr(pt));
+}
+
+// Returns whether `op` carries the passthrough `gc-leaf-function`.
+bool isGcLeafOp(Operation *op) {
+    if (auto pt = op->getAttrOfType<ArrayAttr>("passthrough"))
+        for (Attribute a : pt)
+            if (auto s = dyn_cast<StringAttr>(a);
+                s && s.getValue() == "gc-leaf-function")
+                return true;
+    return false;
+}
+
 // Returns the `eco-cap-*` entries of `op`'s `passthrough` attribute as one
 // string, sorted, so that two ops' facts can be compared for equality.
 std::string capFacts(Operation *op) {
@@ -129,11 +176,17 @@ struct SplitPlan {
 };
 
 // Builds `N` partitions of `src`, as `EcoSplit.h`'s file comment describes,
-// making import copies only when `imports` is set. `N` must be at least 1.
+// making `$cap` import copies only when `imports` is set, and leaf import
+// copies of at most `leafMaxOps` ops only when it is above 0. When
+// `soloThreshold` is above 0, every definition of a solo callee in the
+// partitions, owned or copied, gets `function-inline-threshold` set to it.
+// `N` must be at least 1.
 // `src` is not changed. Returns an error if a declaration or copy fails the
 // fact check. With `ECO_MLIR_SPLIT_STATS` set to a value other than empty or
 // `0`, prints a summary of the split to stderr.
-llvm::Expected<SplitPlan> buildPartitions(ModuleOp src, unsigned N, bool imports) {
+llvm::Expected<SplitPlan> buildPartitions(ModuleOp src, unsigned N, bool imports,
+                                          unsigned leafMaxOps,
+                                          unsigned soloThreshold) {
     auto T0 = Clock::now();
     MLIRContext *ctx = src.getContext();
     symgraph::Graph g = symgraph::build(src, /*keepUnusedAddressOf=*/true);
@@ -194,24 +247,77 @@ llvm::Expected<SplitPlan> buildPartitions(ModuleOp src, unsigned N, bool imports
                g.nodes[i].name.getValue().ends_with("$cap");
     };
 
+    // Solo callees (plan 08 §2d): GC-free functions other than `main` with
+    // exactly one direct call site in the module, no address taken and no
+    // reference from a non-symbol operation. In the whole module LLVM inlines
+    // such a callee at almost any size, because it is local and the call is
+    // its last use; in a partition it is often exported, which loses that
+    // bonus, so its definitions get an explicit inline threshold instead.
+    std::vector<char> solo(n, 0);
+    if (soloThreshold > 0) {
+        std::vector<int> caller(n, -1);
+        std::vector<char> bad(n, 0);
+        for (uint32_t t : g.extraRoots)
+            bad[t] = 1;
+        for (uint32_t i = 0; i < n; ++i)
+            for (uint32_t e = g.outBegin[i]; e < g.outBegin[i + 1]; ++e) {
+                uint32_t t = g.outTarget[e];
+                if (symgraph::takesAddress(g.outKind[e]) || t == i ||
+                    caller[t] >= 0 || !g.nodes[i].isFunc ||
+                    !g.nodes[i].isDef)
+                    bad[t] = 1;
+                else
+                    caller[t] = (int)i;
+            }
+        std::vector<uint32_t> cand;
+        for (uint32_t t = 0; t < n; ++t)
+            if (!bad[t] && caller[t] >= 0 && g.nodes[t].isFunc &&
+                g.nodes[t].isDef && isGcLeafOp(g.nodes[t].op) &&
+                g.nodes[t].name.getValue() != "main")
+                cand.push_back(t);
+        // One call site, not just one calling function.
+        eco::forEachChunk(ctx, cand.size(), [&](size_t lo, size_t hi) {
+            for (size_t k = lo; k < hi; ++k) {
+                uint32_t t = cand[k];
+                unsigned sites = 0;
+                g.nodes[caller[t]].op->walk([&](LLVM::CallOp c) {
+                    if (auto cal = c.getCalleeAttr())
+                        if (cal.getAttr() == g.nodes[t].name)
+                            ++sites;
+                });
+                solo[t] = sites == 1;
+            }
+        });
+    }
+
     // Per-partition membership: 1 = owned, 2 = import copy, 3 = declaration.
     std::vector<std::vector<uint8_t>> role(N, std::vector<uint8_t>(n, 0));
     for (uint32_t i = 0; i < n; ++i)
         if (owner[i] >= 0)
             role[owner[i]][i] = 1;
 
-    // Imports: the closure over direct-call edges into `$cap` bodies owned elsewhere
-    // (AlwaysInliner inlines recursively), only when the prepass will run.
-    std::vector<uint64_t> importCount(N, 0);
-    if (imports) {
+    // Small GC-free functions, the leaf import candidates (plan 08 P). A leaf
+    // `$cap` is a `$cap` import, never a leaf one.
+    auto isSmallLeaf = [&](uint32_t i) {
+        return leafMaxOps > 0 && g.nodes[i].isFunc && g.nodes[i].isDef &&
+               !isCap(i) && cost[i] <= leafMaxOps &&
+               isGcLeafOp(g.nodes[i].op);
+    };
+
+    // Imports: the closure over direct-call edges into `$cap` bodies owned
+    // elsewhere (AlwaysInliner inlines recursively), only when the prepass
+    // will run, and into small leaf functions (the -O2 inliner is recursive
+    // too) when `leafMaxOps` is above 0.
+    std::vector<uint64_t> importCount(N, 0), leafImportCount(N, 0);
+    if (imports || leafMaxOps > 0) {
         parallelForEach(ctx, llvm::seq<unsigned>(0, N), [&](unsigned p) {
             std::vector<uint32_t> work;
             auto visit = [&](uint32_t src) {
                 for (uint32_t e = g.outBegin[src]; e < g.outBegin[src + 1];
                      ++e) {
                     uint32_t t = g.outTarget[e];
-                    if ((g.outKind[e] & symgraph::Call) && isCap(t) &&
-                        role[p][t] == 0) {
+                    if ((g.outKind[e] & symgraph::Call) && role[p][t] == 0 &&
+                        ((imports && isCap(t)) || isSmallLeaf(t))) {
                         role[p][t] = 2;
                         work.push_back(t);
                     }
@@ -223,7 +329,7 @@ llvm::Expected<SplitPlan> buildPartitions(ModuleOp src, unsigned N, bool imports
             while (!work.empty()) {
                 uint32_t t = work.back();
                 work.pop_back();
-                ++importCount[p];
+                ++(isCap(t) ? importCount : leafImportCount)[p];
                 visit(t);
             }
         });
@@ -308,11 +414,18 @@ llvm::Expected<SplitPlan> buildPartitions(ModuleOp src, unsigned N, bool imports
         for (uint32_t i = 0; i < n; ++i) {
             Operation *op = g.nodes[i].op;
             switch (role[p][i]) {
-            case 1:
-                b.clone(*op);
+            case 1: {
+                Operation *c = b.clone(*op);
+                if (solo[i])
+                    addPassthroughValue(c, "function-inline-threshold",
+                                        std::to_string(soloThreshold));
                 break;
+            }
             case 2: {
                 Operation *c = b.clone(*op);
+                if (solo[i])
+                    addPassthroughValue(c, "function-inline-threshold",
+                                        std::to_string(soloThreshold));
                 cast<LLVM::LLVMFuncOp>(c).setLinkage(
                     LLVM::Linkage::AvailableExternally);
                 if (faultHits(g.nodes[i].name.getValue()))
@@ -387,12 +500,35 @@ llvm::Expected<SplitPlan> buildPartitions(ModuleOp src, unsigned N, bool imports
                 "not carry its owner's eco-cap facts (01 S6)",
                 p, s6[p].c_str());
 
+    // Plan 08 S0/S1 census: with `ECO_MLIR_SPLIT_OWNERS` set to a path, writes
+    // one line per defined function: name, owner, op count, `leaf` when it
+    // carries `gc-leaf-function` (else `gc`), and the partitions holding an
+    // import copy of it.
+    if (const char *path = ::getenv("ECO_MLIR_SPLIT_OWNERS"); path && *path) {
+        std::ofstream os(path);
+        for (uint32_t i : defFns) {
+            bool leaf = isGcLeafOp(g.nodes[i].op);
+            os << g.nodes[i].name.getValue().str() << ' ' << owner[i] << ' '
+               << cost[i] << ' ' << (leaf ? "leaf" : "gc") << ' ';
+            bool any = false;
+            for (unsigned p = 0; p < N; ++p)
+                if (role[p][i] == 2) {
+                    os << (any ? "," : "") << p;
+                    any = true;
+                }
+            os << (any ? "\n" : "-\n");
+        }
+    }
+
     if (envOn("ECO_MLIR_SPLIT_STATS")) {
-        uint64_t imin = UINT64_MAX, imax = 0, isum = 0, decls = 0, exps = 0;
+        uint64_t imin = UINT64_MAX, imax = 0, isum = 0, decls = 0, exps = 0,
+                 lsum = 0, lmax0 = 0;
         for (unsigned p = 0; p < N; ++p) {
             imin = std::min(imin, importCount[p]);
             imax = std::max(imax, importCount[p]);
             isum += importCount[p];
+            lsum += leafImportCount[p];
+            lmax0 = std::max(lmax0, leafImportCount[p]);
             exps += plan.exports[p].size();
             for (uint32_t i = 0; i < n; ++i)
                 decls += role[p][i] == 3;
@@ -404,7 +540,10 @@ llvm::Expected<SplitPlan> buildPartitions(ModuleOp src, unsigned N, bool imports
         uint64_t lmax = *std::max_element(load.begin(), load.end());
         llvm::errs() << "[mlir-split] N=" << N << " defined=" << defFns.size()
                      << " imports(min/avg/max)=" << imin << "/" << isum / N
-                     << "/" << imax << " exports=" << exps
+                     << "/" << imax << " leafImports(avg/max)=" << lsum / N
+                     << "/" << lmax0 << " solo="
+                     << std::count(solo.begin(), solo.end(), 1)
+                     << " exports=" << exps
                      << " decls=" << decls << " ops(min/max)=" << lmin << "/"
                      << lmax << " chunks=" << listChunks
                      << " build=" << secs(T0) << "s\n";
@@ -446,7 +585,10 @@ llvm::Error lowerMlirSplit(ModuleOp module, const EcoBackendJob &base,
         if (base.stats)
             s = std::make_unique<LoweringStats::Scope>(
                 *base.stats, "  EcoSplit build (parallel clone)");
-        auto planOr = buildPartitions(module, N, imports);
+        auto planOr = buildPartitions(
+            module, N, imports,
+            base.parallelOpt == ParallelOpt::Cgu ? importLeafMaxOps() : 0,
+            base.parallelOpt == ParallelOpt::Cgu ? soloInlineThreshold() : 0);
         if (!planOr)
             return planOr.takeError();
         plan = std::move(*planOr);

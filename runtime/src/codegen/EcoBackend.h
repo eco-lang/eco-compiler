@@ -95,6 +95,23 @@ inline constexpr const char *kEcoTargetFeatures = "";
 std::unique_ptr<llvm::TargetMachine>
 createEcoTargetMachine(llvm::Module &module, unsigned optLevel);
 
+// Returns eco's default LLVM code generation options that have no
+// `TargetOptions` field, as command-line arguments: innermost loops aligned to
+// 32 bytes (`-x86-experimental-pref-innermost-loop-alignment=5`, x86 hosts
+// only; plans/mlir-split-backend-08-partition-invariant-inlining.md §2e).
+// They are set through the command line because LLVM's option registry does
+// not hold these target options outside `llvm::cl::ParseCommandLineOptions`.
+std::vector<const char *> defaultCodegenArgs();
+
+// Returns `argv` with each of `defaultCodegenArgs` appended that `argv` does
+// not already set, for a tool that parses its own command line.
+std::vector<const char *> withDefaultCodegenArgs(int argc, char **argv);
+
+// Parses `defaultCodegenArgs` once per process, for a driver that never calls
+// `llvm::cl::ParseCommandLineOptions` itself. Call it after the native target
+// is initialized.
+void setDefaultCodegenOptions();
+
 /**
  * The settings for one `runRS4GCAndMaybeFramePointers` run.
  */

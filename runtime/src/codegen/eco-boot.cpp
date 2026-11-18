@@ -690,7 +690,8 @@ int main(int argc, char **argv) {
     registerMLIRContextCLOptions();
     registerPassManagerCLOptions();
 
-    cl::ParseCommandLineOptions(argc, argv,
+    std::vector<const char *> args = eco::withDefaultCodegenArgs(argc, argv);
+    cl::ParseCommandLineOptions((int)args.size(), args.data(),
         "Eco native compiler\n\n"
         "Compiles Elm source files or MLIR to native x86-64 Linux executables.\n");
 

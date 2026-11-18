@@ -24,6 +24,27 @@
 // `$cap` reachable from the partition's own definitions through direct calls,
 // because inlining is recursive.
 //
+// A *leaf import copy* (plan 08, option P) is an `available_externally` clone
+// of a function owned elsewhere that is stamped `gc-leaf-function`, is not a
+// `$cap`, and has at most K MLIR operations, where K comes from
+// `ECO_SPLIT_IMPORT_LEAF_MAX_OPS` (default 128; 0 turns them off). They are
+// made only under parallel-opt `cgu`, for every such function reachable
+// through direct calls from the partition's own definitions or copies. Unlike
+// `$cap` copies they survive the prepass and RS4GC, which gives them no
+// statepoint, so the -O2 inliner can inline them; the rest are discarded and
+// never emitted. Under `cgu` the backend also keeps a `$cap` import copy
+// stamped `gc-leaf-function` the same way, unless
+// `ECO_SPLIT_KEEP_LEAF_CAP_COPIES` is `0`.
+//
+// A *solo callee* is a GC-free function other than `main` with exactly one
+// direct call site in the module, no address taken and no reference from a
+// non-symbol operation. In the whole module LLVM would inline it at almost
+// any size, as the last use of a local function; in a partition it is often
+// exported, which loses that bonus. So under `cgu` every definition of a solo
+// callee, owned or copied, carries `function-inline-threshold`, 15225 by
+// default (LLVM's 225 plus its 15,000 bonus), from
+// `ECO_SPLIT_SOLO_INLINE_THRESHOLD`; 0 turns the stamp off.
+//
 // The backend's capacity-check hoisting reads the `eco-cap-*` function
 // attributes of callees, and a declaration or import copy missing one of its
 // owner's, such as `eco-cap-covered`, could corrupt the heap. So the split

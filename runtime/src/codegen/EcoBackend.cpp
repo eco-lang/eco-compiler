@@ -627,7 +627,9 @@ static void collectGcLeafReport(const Module &m, GcLeafPartitionReport &r) {
         return;
     for (const Function &f : m) {
         const bool leaf = f.hasFnAttribute("gc-leaf-function");
-        if (f.isDeclaration()) {
+        // A leaf import copy is checked like a declaration: its owner must be
+        // stamped too.
+        if (f.isDeclaration() || f.hasAvailableExternallyLinkage()) {
             if (leaf)
                 r.leafDecls.push_back(f.getName().str());
             continue;
@@ -904,6 +906,39 @@ unsigned choosePartitionCount(const Module &m, unsigned request, bool eligible) 
 
 } // namespace
 
+std::vector<const char *> defaultCodegenArgs() {
+#if defined(__x86_64__) || defined(_M_X64)
+    return {"-x86-experimental-pref-innermost-loop-alignment=5"};
+#else
+    return {};
+#endif
+}
+
+std::vector<const char *> withDefaultCodegenArgs(int argc, char **argv) {
+    std::vector<const char *> out(argv, argv + argc);
+    for (const char *d : defaultCodegenArgs()) {
+        StringRef name = StringRef(d).ltrim('-').split('=').first;
+        bool given = false;
+        for (int i = 1; i < argc; ++i)
+            given |= StringRef(argv[i]).ltrim('-').split('=').first == name;
+        if (!given)
+            out.push_back(d);
+    }
+    return out;
+}
+
+void setDefaultCodegenOptions() {
+    static std::once_flag once;
+    std::call_once(once, [] {
+        std::vector<const char *> args = {"eco"};
+        for (const char *d : defaultCodegenArgs())
+            args.push_back(d);
+        if (args.size() > 1)
+            cl::ParseCommandLineOptions((int)args.size(), args.data(), "",
+                                        &nulls());
+    });
+}
+
 std::unique_ptr<TargetMachine> createEcoTargetMachine(Module &module,
                                                       unsigned optLevel) {
     std::string triple = sys::getDefaultTargetTriple();
@@ -947,9 +982,32 @@ std::unique_ptr<TargetMachine> createEcoTargetMachine(Module &module,
     return std::unique_ptr<TargetMachine>(tm);
 }
 
+// Returns whether `f` is an EcoSplit import copy stamped
+// `gc-leaf-function`: an `available_externally` definition with that stamp.
+// Only EcoSplit makes `available_externally` definitions. Such a copy is
+// either a leaf import copy (plan 08 P) or a `$cap` import copy kept past
+// the prepass (`keepLeafCapCopies`); the partition worker drops every other
+// copy before RS4GC.
+static bool isLeafImportCopy(const Function &f) {
+    return !f.isDeclaration() && f.hasAvailableExternallyLinkage() &&
+           f.hasFnAttribute("gc-leaf-function");
+}
+
+// Returns whether a partition worker under parallel-opt `cgu` keeps a `$cap`
+// import copy stamped `gc-leaf-function` past the prepass, so the -O2
+// inliner can inline it at the sites the prepass did not (plan 08 step 5).
+// On unless `ECO_SPLIT_KEEP_LEAF_CAP_COPIES` is `0`.
+static bool keepLeafCapCopies() {
+    static const bool on = [] {
+        const char *e = ::getenv("ECO_SPLIT_KEEP_LEAF_CAP_COPIES");
+        return !(e && std::strcmp(e, "0") == 0);
+    }();
+    return on;
+}
+
 // Stops the process with a fatal error if a definition in `m` stamped
-// `gc-leaf-function` has interposable or `available_externally` linkage, or
-// makes a call that `llvm::callsGCLeafFunction` does not count as leaf, that
+// `gc-leaf-function` has interposable linkage, or makes a call that
+// `llvm::callsGCLeafFunction` does not count as leaf, that
 // is, a call RS4GC would statepoint. The check does not depend on `hasGC()`,
 // so it also covers functions RS4GC never processes, where the check after
 // RS4GC in `runRS4GCAndMaybeFramePointers` finds nothing.
@@ -959,11 +1017,9 @@ static void checkStampedBodies(Module &m) {
     for (Function &f : m) {
         if (f.isDeclaration() || !f.hasFnAttribute("gc-leaf-function"))
             continue;
-        if (f.isInterposable() || f.hasAvailableExternallyLinkage())
+        if (f.isInterposable())
             report_fatal_error(Twine("[gcfree] stamped function '") +
-                               f.getName() +
-                               "' has interposable or available_externally "
-                               "linkage");
+                               f.getName() + "' has interposable linkage");
         for (BasicBlock &bb : f)
             for (Instruction &i : bb)
                 if (auto *cb = dyn_cast<CallBase>(&i))
@@ -4224,12 +4280,20 @@ Error runEcoBackend(Module &m, const EcoBackendJob &job,
         }
     }
 
-    // EcoSplit import copies (available_externally) exist only to be inlined
-    // by the prepass. Whatever survives becomes a declaration again,
+    // EcoSplit `$cap` import copies (available_externally) exist only to be
+    // inlined by the prepass. Whatever survives becomes a declaration again,
     // unconditionally (also at -O0): a statepointed copy must never reach the
-    // post-RS4GC inliner.
+    // post-RS4GC inliner. Leaf import copies (plan 08 P) stay: they are
+    // stamped GC-free, so RS4GC gives them no statepoint, and the -O2 inliner
+    // may inline them as it would an owned body. A `$cap` copy stamped
+    // GC-free stays too under `cgu` when `keepLeafCapCopies` is on.
+    const bool keepCap = job.partition &&
+                         job.parallelOpt == ParallelOpt::Cgu &&
+                         keepLeafCapCopies();
     for (Function &f : m)
-        if (!f.isDeclaration() && f.hasAvailableExternallyLinkage()) {
+        if (!f.isDeclaration() && f.hasAvailableExternallyLinkage() &&
+            !(isLeafImportCopy(f) &&
+              (keepCap || !f.getName().ends_with("$cap")))) {
             f.deleteBody();
             f.setLinkage(GlobalValue::ExternalLinkage);
         }
@@ -4270,9 +4334,9 @@ Error runEcoBackend(Module &m, const EcoBackendJob &job,
                     "externalized name would collide across partitions)");
         externalizeAllLocals(m);
     }
-    // No import copy may reach RS4GC, in any mode.
+    // No import copy may reach RS4GC, in any mode, except a leaf import copy.
     for (Function &f : m)
-        if (f.hasAvailableExternallyLinkage())
+        if (f.hasAvailableExternallyLinkage() && !isLeafImportCopy(f))
             return createStringError(
                 std::errc::invalid_argument,
                 "available_externally function '%s' reached RS4GC",

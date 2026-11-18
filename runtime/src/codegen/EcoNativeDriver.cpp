@@ -439,6 +439,7 @@ void initializeLLVMNativeTarget() {
     llvm::InitializeNativeTarget();
     llvm::InitializeNativeTargetAsmPrinter();
     llvm::InitializeNativeTargetAsmParser();
+    eco::setDefaultCodegenOptions();
 }
 
 int compileMlirFileToExecutable(const std::string &mlirPath,
