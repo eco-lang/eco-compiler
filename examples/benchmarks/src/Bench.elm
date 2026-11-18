@@ -188,8 +188,8 @@ workloads =
     , Workload "bytes-f32-rows" "encode and decode size rows of 384 float32s, a loop per row" BytesRows.benchF32 1000 Nothing
     , Workload "bytes-u8-rows" "the same with unsignedInt8s" BytesRows.benchU8 1200 Nothing
     , Workload "decoded-snapshot" "decode size records into a Dict String of records, all live" DecodedSnapshot.bench 5500 Nothing
-    , Workload "bytes-frame" "encode a scene of 2,000 16-byte records size times: sequence (List.map f xs)" BytesFrame.bench 1500 Nothing
-    , Workload "bytes-frame-prefixed" "the same with a u32 length before the records" BytesFrame.benchPrefixed 1500 Nothing
+    , Workload "bytes-frame" "encode a scene of 2,000 16-byte records size times: sequence (List.map f xs)" BytesFrame.bench 15000 Nothing
+    , Workload "bytes-frame-prefixed" "the same with a u32 length before the records" BytesFrame.benchPrefixed 15000 Nothing
     , Workload "string-callbacks" "String.foldl, any, all, filter and map over 2,000 short words, size passes" StringCallbacks.bench 150 Nothing
     , Workload "dict-char-pairs" "bigram counts of size characters in a Dict (Char, Char) Int" PairKeys.benchCharPairs 1000000 Nothing
     , Workload "set-float-pairs" "Set.fromList of size (Float, Float) points, a quarter distinct" PairKeys.benchFloatPairs 600000 Nothing
