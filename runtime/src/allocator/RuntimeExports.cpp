@@ -675,12 +675,18 @@ struct LiteralTable {
     // A direct-mapped cache in front of `byGlobal`, indexed by the key's address bits: compiled code
     // interns a capture-free closure every time it evaluates one (`eco_intern_closure0`), so a hash
     // map lookup per evaluation showed up in profiles.
+    //
+    // The entries are on the C heap, not in the table. The table is a `thread_local`, and the runtime's
+    // initial-exec thread-locals (Allocator.hpp, RootSet.hpp) put the library's whole TLS segment in
+    // the static TLS block, whose spare room for a library loaded with dlopen (a Node addon's
+    // `elm.node`) is a few KB on glibc. 8 KB of entries inline in the table made the addon fail to
+    // load ("cannot allocate memory in static TLS block").
     static constexpr size_t kRecent = 512;
     struct Recent {
         const void* key;
         Elm::HPointer* slot;
     };
-    Recent recent[kRecent] = {};
+    std::unique_ptr<Recent[]> recent = std::make_unique<Recent[]>(kRecent);  // Value-initialised: all null.
 
     static size_t recentIndex(const void* key) {
         return (reinterpret_cast<uintptr_t>(key) >> 3) & (kRecent - 1);
@@ -694,7 +700,7 @@ struct LiteralTable {
     void syncEpoch(uint64_t gen) {
         if (gen != generation) {
             byGlobal.clear();
-            for (Recent& r : recent) r = Recent{};
+            std::fill_n(recent.get(), kRecent, Recent{});
             chunks.clear();
             nextSlot = 64;
             generation = gen;
@@ -712,6 +718,9 @@ struct LiteralTable {
         return slot;
     }
 };
+
+// The table lives in static TLS (see `recent`); keep anything large out of it.
+static_assert(sizeof(LiteralTable) <= 512, "LiteralTable is a thread_local in static TLS: keep it small");
 
 // Returns the calling thread's interning cache.
 LiteralTable& literalTable() {

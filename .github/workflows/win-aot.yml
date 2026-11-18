@@ -97,6 +97,11 @@ jobs:
         with:
           arch: x64
 
+      - name: Install the pinned clang-cl
+        # The image's clang-cl can lag its MSVC (MSVC 14.52 refuses Clang < 22); every build here
+        # finds clang-cl on PATH, so this one, pinned in deps/versions.env, is used from now on.
+        uses: ./.github/actions/setup-clang-cl
+
       - name: Pull the LLVM install tree (published by llvm-build)
         # The LLVM source build is llvm-build's job (2-4 h on this runner); a
         # missing artifact fails here, naming it, rather than building inline.
@@ -371,6 +376,11 @@ jobs:
         uses: ilammy/msvc-dev-cmd@v1
         with:
           arch: x64
+
+      - name: Install the pinned clang-cl
+        # The image's clang-cl can lag its MSVC (MSVC 14.52 refuses Clang < 22); every build here
+        # finds clang-cl on PATH, so this one, pinned in deps/versions.env, is used from now on.
+        uses: ./.github/actions/setup-clang-cl
 
       - name: Pull the LLVM install tree (published by llvm-build)
         # The LLVM source build is llvm-build's job (2-4 h on this runner); a

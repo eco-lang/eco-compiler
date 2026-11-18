@@ -1,0 +1,54 @@
+# Puts the pinned clang-cl first on PATH: the official LLVM release WIN_CLANG_VERSION in
+# deps/versions.env, its clang+llvm x86_64-pc-windows-msvc archive checked against WIN_CLANG_SHA256.
+#
+# Every Windows build finds clang-cl (and lld-link) by name, so this replaces the runner image's own
+# LLVM for the rest of the job. The image's clang-cl lags its MSVC: MSVC 14.52's STL refuses Clang
+# older than 22 (error STL1000), and windows-2025-vs2026 shipped 14.52 with Clang 20.1.8.
+# Run it after ilammy/msvc-dev-cmd. Change the pin with `scripts/deps.sh win-clang VERSION`.
+name: setup-clang-cl
+description: Install the pinned clang-cl (deps/versions.env WIN_CLANG_VERSION) and put it first on PATH
+runs:
+  using: composite
+  steps:
+    - name: Install the pinned clang-cl
+      shell: pwsh
+      run: |
+        $ErrorActionPreference = 'Stop'
+        $pins = @{}
+        Get-Content deps/versions.env | Where-Object { $_ -match '^([A-Z_]+)=(.*)$' } |
+          ForEach-Object { $pins[$Matches[1]] = $Matches[2].Trim() }
+        $version = $pins['WIN_CLANG_VERSION']
+        $want = $pins['WIN_CLANG_SHA256']
+        if (-not $version -or -not $want) { throw "deps/versions.env has no WIN_CLANG_VERSION/WIN_CLANG_SHA256" }
+
+        $asset = "clang+llvm-$version-x86_64-pc-windows-msvc.tar.zst"
+        $url = "https://github.com/llvm/llvm-project/releases/download/llvmorg-$version/$asset"
+        $work = Join-Path $env:RUNNER_TEMP 'clang-cl'
+        New-Item -ItemType Directory -Force -Path $work | Out-Null
+        $zst = Join-Path $work $asset
+        Write-Host "Downloading $url"
+        curl.exe -fsSL --retry 3 -o $zst $url
+        if ($LASTEXITCODE -ne 0) { throw "download failed: $url" }
+        $got = (Get-FileHash -Algorithm SHA256 $zst).Hash.ToLowerInvariant()
+        if ($got -ne $want) { throw "$asset has sha256 $got, not the pinned $want" }
+
+        # zstd and tar are on the image; tar.exe is bsdtar, which unpacks the decompressed stream.
+        $tar = Join-Path $work 'clang.tar'
+        zstd -q -d -f $zst -o $tar
+        if ($LASTEXITCODE -ne 0) { throw "zstd failed: $LASTEXITCODE" }
+        $root = Join-Path $work 'root'
+        New-Item -ItemType Directory -Force -Path $root | Out-Null
+        & "$env:SystemRoot\System32\tar.exe" -xf $tar -C $root
+        if ($LASTEXITCODE -ne 0) { throw "tar failed: $LASTEXITCODE" }
+        Remove-Item $zst, $tar
+
+        $exe = Get-ChildItem -Path $root -Recurse -Filter clang-cl.exe |
+          Where-Object { $_.Directory.Name -eq 'bin' } | Select-Object -First 1
+        if (-not $exe) { throw "no bin\clang-cl.exe in $asset" }
+        $bin = $exe.DirectoryName
+        $reported = (& $exe.FullName --version | Select-Object -First 1)
+        if ($reported -notmatch [regex]::Escape("version $version")) {
+          throw "$($exe.FullName) reports '$reported', not LLVM $version"
+        }
+        $bin | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+        Write-Host "clang-cl: $reported ($bin), first on PATH from the next step"

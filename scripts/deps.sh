@@ -11,6 +11,8 @@
 #   scripts/deps.sh follow-max         LLVM_FOLLOWS=max again, LLVM_COMMIT = MAX_VERSION's pin
 #   scripts/deps.sh uv VERSION         pin uv
 #   scripts/deps.sh python VERSION     pin the Python MAX is installed for (major.minor)
+#   scripts/deps.sh win-clang VERSION  pin the clang-cl Windows CI compiles with (an LLVM release,
+#                                      e.g. 23.1.5): records its x86_64-pc-windows-msvc archive's sha256
 #   scripts/deps.sh lock               rewrite deps/max/pyproject.toml from the pins and re-lock
 #   scripts/deps.sh check [--offline]  fail on any inconsistency (CI runs this); --offline skips the
 #                                      look-up of MAX's LLVM pin
@@ -139,6 +141,7 @@ show() {
     echo "LLVM_COMMIT     $(get LLVM_COMMIT) ($(get LLVM_DESCRIBE))"
     echo "UV_VERSION      $(get UV_VERSION)"
     echo "PYTHON_VERSION  $(get PYTHON_VERSION)"
+    echo "WIN_CLANG       $(get WIN_CLANG_VERSION) (archive sha256 $(get WIN_CLANG_SHA256 | cut -c1-12)...)"
     echo "this machine's LLVM: $(installed_llvm)"
     if command -v uv >/dev/null 2>&1; then echo "this machine's uv:   $(uv --version)"; fi
 }
@@ -149,6 +152,10 @@ check() {
     is_commit "$c" || { echo "deps: LLVM_COMMIT is not 40 lowercase hex digits: $c" >&2; bad=1; }
     follows=$(get LLVM_FOLLOWS)
     case "$follows" in max|independent) ;; *) echo "deps: LLVM_FOLLOWS must be max or independent" >&2; bad=1 ;; esac
+    get WIN_CLANG_VERSION | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$' \
+        || { echo "deps: WIN_CLANG_VERSION is not an LLVM release number (N.N.N)" >&2; bad=1; }
+    get WIN_CLANG_SHA256 | grep -qE '^[0-9a-f]{64}$' \
+        || { echo "deps: WIN_CLANG_SHA256 is not 64 lowercase hex digits; run scripts/deps.sh win-clang" >&2; bad=1; }
 
     # deps/max/ in step with the pins.
     grep -q "^    \"max==$(get MAX_VERSION)\",\$" "$maxdir/pyproject.toml" \
@@ -225,6 +232,20 @@ case "$cmd" in
         ;;
     uv) [ $# = 1 ] || die "usage: deps.sh uv VERSION"; set_var UV_VERSION "$1"; lock ;;
     python) [ $# = 1 ] || die "usage: deps.sh python MAJOR.MINOR"; set_var PYTHON_VERSION "$1"; lock ;;
+    win-clang)
+        [ $# = 1 ] || die "usage: deps.sh win-clang VERSION (an LLVM release, e.g. 23.1.5)"
+        asset="clang+llvm-$1-x86_64-pc-windows-msvc.tar.zst"
+        # GitHub records each release asset's sha256 as its `digest`.
+        sum=$(fetch "https://api.github.com/repos/llvm/llvm-project/releases/tags/llvmorg-$1" \
+              | python3 -c 'import json,sys
+a = [x for x in json.load(sys.stdin)["assets"] if x["name"] == sys.argv[1]]
+d = a[0].get("digest") or "" if a else ""
+print(d[len("sha256:"):] if d.startswith("sha256:") else "")' "$asset")
+        [ -n "$sum" ] || die "LLVM $1 has no $asset with a sha256 digest"
+        set_var WIN_CLANG_VERSION "$1"
+        set_var WIN_CLANG_SHA256 "$sum"
+        echo "deps: Windows CI clang-cl pinned to LLVM $1 ($asset, sha256 $sum)"
+        ;;
     lock) lock ;;
     check) check "${1:-}" ;;
     max-pin) [ $# = 1 ] || die "usage: deps.sh max-pin VERSION"; max_pin "$1" ;;

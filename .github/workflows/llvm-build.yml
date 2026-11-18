@@ -196,6 +196,12 @@ jobs:
         with:
           arch: x64
 
+      - name: Install the pinned clang-cl
+        # LLVM is built with clang-cl from PATH (experiments/win-llvm-build/build.ps1); the image's
+        # own can lag its MSVC, so use the one deps/versions.env pins.
+        if: steps.have.outputs.hit != 'true'
+        uses: ./.github/actions/setup-clang-cl
+
       - name: Build LLVM + MLIR
         if: steps.have.outputs.hit != 'true'
         shell: pwsh
