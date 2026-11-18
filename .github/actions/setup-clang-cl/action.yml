@@ -41,8 +41,9 @@ runs:
         if ($got -ne $want) { throw "$asset has sha256 $got, not the pinned $want" }
 
         # zstd and tar are on the image; tar.exe is bsdtar, which unpacks the decompressed stream.
+        # LLVM's archives use a 1 GiB long-range window, past zstd's default 128 MiB decode limit.
         $tar = Join-Path $work 'clang.tar'
-        zstd -q -d -f $zst -o $tar
+        zstd -q -d -f --long=31 $zst -o $tar
         if ($LASTEXITCODE -ne 0) { throw "zstd failed: $LASTEXITCODE" }
         $root = Join-Path $work 'root'
         New-Item -ItemType Directory -Force -Path $root | Out-Null
