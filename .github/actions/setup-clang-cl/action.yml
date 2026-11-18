@@ -14,12 +14,20 @@ runs:
       shell: pwsh
       run: |
         $ErrorActionPreference = 'Stop'
+        # KEY=VALUE lines, split at the first '='. (Not -match in a Where-Object block: the $Matches
+        # it sets is not visible to a following ForEach-Object, which read every pin as missing.)
         $pins = @{}
-        Get-Content deps/versions.env | Where-Object { $_ -match '^([A-Z_]+)=(.*)$' } |
-          ForEach-Object { $pins[$Matches[1]] = $Matches[2].Trim() }
+        foreach ($line in Get-Content -LiteralPath deps/versions.env) {
+          $i = $line.IndexOf('=')
+          if (-not $line.StartsWith('#') -and $i -gt 0) {
+            $pins[$line.Substring(0, $i).Trim()] = $line.Substring($i + 1).Trim()
+          }
+        }
         $version = $pins['WIN_CLANG_VERSION']
         $want = $pins['WIN_CLANG_SHA256']
-        if (-not $version -or -not $want) { throw "deps/versions.env has no WIN_CLANG_VERSION/WIN_CLANG_SHA256" }
+        if (-not $version -or -not $want) {
+          throw "deps/versions.env has no WIN_CLANG_VERSION/WIN_CLANG_SHA256 (read: $($pins.Keys -join ', '))"
+        }
 
         $asset = "clang+llvm-$version-x86_64-pc-windows-msvc.tar.zst"
         $url = "https://github.com/llvm/llvm-project/releases/download/llvmorg-$version/$asset"
