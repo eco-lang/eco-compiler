@@ -38,8 +38,11 @@
 //                       so writes fail with EFBIG); skipped with a note without prlimit
 //                       (all four directives: test/CheckPatterns.hpp)
 //        ECO_TEST_PORT  a free TCP port (test/scripts/test-port.js)
-//        ECO_TEST_HTTP_URL, ECO_TEST_HTTPS_URL  the HTTP test server (test/TestServerConfig.hpp;
-//                       no HTTPS here: both name the plain HTTP port)
+//        ECO_TEST_HTTP_URL, ECO_TEST_HTTPS_URL, CURL_CA_BUNDLE  the HTTP test server and its
+//                       TLS port and certificate (test/TestServerConfig.hpp); without `openssl`
+//                       there is no TLS port, ECO_TEST_HTTPS_URL names the plain one, and a
+//                       test that uses either HTTPS or the proxy is skipped with a note
+//        ECO_TEST_PROXY_URL  the server's CONNECT proxy (test/TestHttpServer.hpp)
 //      and passes iff it exits on its own within the timeout (default 60 s) with the
 //      `-- EXIT: <n>` status (default 0) and its stdout+stderr satisfy the CHECK-family
 //      directives (test/CheckPatterns.hpp semantics: CHECK, CHECK-NOT, CHECK-DAG,
@@ -505,8 +508,10 @@ async function runProject(spec, opts, server) {
 
     const serverEnv = {
         ECO_TEST_HTTP_URL: 'http://127.0.0.1:' + server.port,
-        ECO_TEST_HTTPS_URL: 'https://127.0.0.1:' + server.port,
+        ECO_TEST_HTTPS_URL: 'https://127.0.0.1:' + (server.httpsPort || server.port),
+        ECO_TEST_PROXY_URL: 'http://127.0.0.1:' + server.proxyPort,
     };
+    if (server.certPath) serverEnv.CURL_CA_BUNDLE = server.certPath;
 
     const selected = opts.record
         ? tests.filter((t) => t.name === opts.record)
@@ -532,6 +537,9 @@ async function runProject(spec, opts, server) {
             t.stdinDelay = extractCount(t.content, '-- STDIN-DELAY-MS:');
             if (skip === null && t.fsize !== null && !findPrlimit()) {
                 skip = 'RLIMIT-FSIZE needs prlimit (util-linux), not found on this host';
+            }
+            if (skip === null && !server.httpsPort && /httpsBaseUrl|ECO_TEST_PROXY_URL/.test(t.content)) {
+                skip = 'the HTTPS test server needs openssl, not found on this host';
             }
         } catch (e) {
             results.set(t.name, { status: 'fail', message: String(e.message || e) });

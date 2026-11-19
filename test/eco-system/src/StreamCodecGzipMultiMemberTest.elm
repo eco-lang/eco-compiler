@@ -9,8 +9,9 @@ matching WHATWG `DecompressionStream`), so the test PINS the rejection, and the 
 The input is `zlib.gzipSync('hello ')` (26 bytes) followed by `zlib.gzipSync('world')` (25 bytes),
 written by node and fed three ways: as one chunk, split exactly at the member boundary, and in
 1-byte chunks (the second member's `1f 8b` straddles a chunk boundary). The pinned lines were
-recorded from the native build. The JS backend does NOT agree: node's DecompressionStream decodes
-both members and prints `hello world` three times (run-js-e2e.js, 2026-11-04), hence SKIP-JS.
+recorded from the native build. On JS, node's Gunzip would decode both members (`hello world`), so
+the JS twin (Eco/Kernel/Stream.js `_Stream_zlibCodec`) parses the gzip framing itself around an
+InflateRaw and rejects the second member as native does.
 
 -}
 
@@ -18,7 +19,6 @@ both members and prints `hello world` three times (run-js-e2e.js, 2026-11-04), h
 -- CHECK: boundary split: err Failed: Junk found after end of compressed data.
 -- CHECK: byte chunks: err Failed: Junk found after end of compressed data.
 -- EXIT: 0
--- SKIP-JS: node's DecompressionStream accepts concatenated gzip members (prints hello world); native rejects them by design (D30)
 
 import Bytes exposing (Bytes)
 import Stream

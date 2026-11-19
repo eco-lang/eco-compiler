@@ -33,6 +33,13 @@ import Eco.Kernel.Stream exposing (createChannelSource, createChannelSink, pipeS
 //     After the headers only a pending read of the body keeps the program alive (the
 //     §3.4 keep-alive rule): the socket is unref'd while nobody waits on it.
 //   * The kill handle (Process.kill before the headers) aborts the transfer.
+//   * Proxies come from the environment, as libcurl takes them: `http_proxy` (lower case
+//     only) for http: URLs, `https_proxy` / `HTTPS_PROXY` for https:, else `all_proxy` /
+//     `ALL_PROXY`; `no_proxy` / `NO_PROXY` lists hosts (and their subdomains) to reach
+//     directly, `*` all of them. Only http:// proxies (the scheme may be left out), with
+//     optional user:password; an http: request goes to the proxy in absolute form, an
+//     https: one through a CONNECT tunnel, whose answer is never taken as the response.
+//     Any other proxy, or a refused tunnel, is NetworkError_.
 //   * A stream body is piped (Stream's pipeStreams) into a channel sink over the request;
 //     a read-locked body stream resolves with NetworkError_ at once; cancelling the body
 //     stream aborts the transfer (NetworkError_ before the headers). Upload writes and
@@ -238,6 +245,113 @@ function _HttpStream_finish(t, errReason)
 }
 
 
+// --- Proxies ---------------------------------------------------------------------------------
+
+function _HttpStream_env(name)
+{
+	var v = process.env[name];
+	return v ? v : null;
+}
+
+// Whether no_proxy / NO_PROXY says to reach `host` (a URL hostname) directly.
+function _HttpStream_noProxy(host)
+{
+	var list = _HttpStream_env('no_proxy') || _HttpStream_env('NO_PROXY');
+	if (!list) return false;
+	host = host.replace(/^\[|\]$/g, '').toLowerCase();
+	var entries = list.split(',');
+	for (var i = 0; i < entries.length; i++)
+	{
+		var e = entries[i].trim().toLowerCase().replace(/^\[|\]$/g, '');
+		if (e === '*') return true;
+		e = e.replace(/^\./, '');
+		if (e && (host === e || host.endsWith('.' + e))) return true;
+	}
+	return false;
+}
+
+// The proxy for URL `u`: null for none, else the proxy's URL. Throws on a proxy that
+// cannot be used.
+function _HttpStream_proxyFor(u)
+{
+	var v = u.protocol === 'https:'
+		? _HttpStream_env('https_proxy') || _HttpStream_env('HTTPS_PROXY')
+		: _HttpStream_env('http_proxy');
+	v = v || _HttpStream_env('all_proxy') || _HttpStream_env('ALL_PROXY');
+	if (!v || _HttpStream_noProxy(u.hostname)) return null;
+	var p;
+	try
+	{
+		p = new URL(/^[A-Za-z][A-Za-z0-9+.-]*:\/\//.test(v) ? v : 'http://' + v);
+	}
+	catch (e)
+	{
+		throw new Error('bad proxy URL: ' + v);
+	}
+	if (p.protocol !== 'http:') throw new Error('unsupported proxy scheme: ' + p.protocol);
+	return p;
+}
+
+// The Proxy-Authorization header value for proxy `p`, or null.
+function _HttpStream_proxyAuth(p)
+{
+	if (!p.username && !p.password) return null;
+	var cred = decodeURIComponent(p.username) + ':' + decodeURIComponent(p.password);
+	return 'Basic ' + Buffer.from(cred).toString('base64');
+}
+
+// A createConnection for node:https that opens a CONNECT tunnel through proxy `p` to the
+// host of `u`, then starts TLS over it.
+function _HttpStream_tunnel(p, u, ca)
+{
+	return function(opts, callback)
+	{
+		var host = u.hostname.replace(/^\[|\]$/g, '');
+		var authority = (host.indexOf(':') >= 0 ? '[' + host + ']' : host) + ':' + (u.port || 443);
+		var headers = { Host: authority };
+		var auth = _HttpStream_proxyAuth(p);
+		if (auth) headers['Proxy-Authorization'] = auth;
+		var connectReq = require('http').request({
+			host: p.hostname.replace(/^\[|\]$/g, ''),
+			port: p.port || 80,
+			method: 'CONNECT',
+			path: authority,
+			headers: headers,
+			agent: false
+		});
+		var done = false;
+		var settle = function(err, socket)
+		{
+			if (done) return;
+			done = true;
+			callback(err, socket);
+		};
+		connectReq.on('connect', function(res, socket, head)
+		{
+			if (res.statusCode < 200 || res.statusCode > 299)
+			{
+				socket.destroy();
+				settle(new Error('CONNECT tunnel failed, response ' + res.statusCode));
+				return;
+			}
+			if (head && head.length) socket.unshift(head);
+			// `host` names the peer the certificate must match (else node checks 'localhost')
+			var options = { socket: socket, host: host, ALPNProtocols: ['http/1.1'] };
+			if (!require('net').isIP(host)) options.servername = host;
+			if (ca) options.ca = ca;
+			settle(null, require('tls').connect(options));
+		});
+		connectReq.on('response', function(res)
+		{
+			res.resume();
+			settle(new Error('CONNECT tunnel failed, response ' + res.statusCode));
+		});
+		connectReq.on('error', function(e) { settle(e); });
+		connectReq.end();
+	};
+}
+
+
 // --- One request (hop) ---------------------------------------------------------------------
 
 function _HttpStream_startHop(t)
@@ -254,7 +368,22 @@ function _HttpStream_startHop(t)
 	var req;
 	try
 	{
-		req = require(https ? 'https' : 'http').request(u, options);
+		var proxy = _HttpStream_proxyFor(u);
+		var target = u;
+		if (proxy && https)
+		{
+			delete options.agent;   // so that node uses createConnection
+			options.createConnection = _HttpStream_tunnel(proxy, u, options.ca);
+		}
+		else if (proxy)
+		{
+			target = proxy;
+			options.path = u.href;
+			options.headers = { Host: u.host };
+			var auth = _HttpStream_proxyAuth(proxy);
+			if (auth) options.headers['Proxy-Authorization'] = auth;
+		}
+		req = require(https ? 'https' : 'http').request(target, options);
 	}
 	catch (e)
 	{

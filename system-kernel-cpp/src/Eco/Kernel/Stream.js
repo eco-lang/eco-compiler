@@ -1904,25 +1904,34 @@ function _Stream_nodeDuplexChannels(socket, options)
 // is processed with Z_NO_FLUSH, like the C++ codec, and the close flushes with Z_FINISH;
 // output arrives in chunks of at most 64 KiB. Node's error messages are zlib's
 // ("incorrect header check"); a decompression ended early reports "Unexpected end of
-// compressed data." as the C++ codec does. Unlike the C++ codec, data after the end of a
-// deflate / raw stream is ignored, and after a gzip member it must be another gzip member
-// (node's multi-member handling) or it fails.
+// compressed data." as the C++ codec does, and any input after the end of the compressed
+// data fails with "Junk found after end of compressed data." (decision D30: one gzip
+// member only). node's Gunzip would decode a second member instead, so gzip decompression
+// runs an InflateRaw between a header and a trailer parsed here (RFC 1952), with zlib's
+// messages for their errors.
 
 function _Stream_zlibCodec(compress, algorithm)
 {
 	var zlib = require('zlib');
+	var gzipIn = !compress && algorithm === 0;
 	var ctors = compress
 		? [zlib.Gzip, zlib.Deflate, zlib.DeflateRaw]
-		: [zlib.Gunzip, zlib.Inflate, zlib.InflateRaw];
+		: [zlib.InflateRaw, zlib.Inflate, zlib.InflateRaw];
 	var Ctor = ctors[algorithm] || ctors[2];
 	var z = new Ctor({ chunkSize: 64 * 1024 });
-	var state = { __err: null, __failed: false };
+	// __ended: decompression only, zlib has seen the end of the compressed data.
+	var state = { __err: null, __failed: false, __ended: false };
+	// The gzip framing (gzipIn): __phase 0 header, 1 deflate data, 2 trailer, 3 done.
+	var gz = { __phase: 0, __head: [], __tail: [], __crc: 0, __size: 0 };
 	z._handle.onerror = function(message, errno)
 	{
 		state.__err = message || ('zlib error ' + errno);
 	};
 	var C = zlib.constants;
+	var junk = 'Junk found after end of compressed data.';
 
+	// Writes `input` to zlib and returns an error or null. When decompression reaches the
+	// end of the compressed data, the input left over is returned as `state.__rest`.
 	function run(input, flush, outs)
 	{
 		var handle = z._handle;
@@ -1930,6 +1939,7 @@ function _Stream_zlibCodec(compress, algorithm)
 		var size = z._chunkSize;
 		var inOff = 0;
 		var availIn = input.byteLength;
+		state.__rest = null;
 		for (;;)
 		{
 			var out = Buffer.allocUnsafe(size);
@@ -1938,11 +1948,123 @@ function _Stream_zlibCodec(compress, algorithm)
 			var availOutAfter = ws[0];
 			var availInAfter = ws[1];
 			var have = size - availOutAfter;
-			if (have > 0) outs.push(_Stream_toBytes(new Uint8Array(out.buffer, out.byteOffset, have)));
+			if (have > 0)
+			{
+				var bytes = new Uint8Array(out.buffer, out.byteOffset, have);
+				if (gzipIn)
+				{
+					gz.__crc = zlib.crc32(bytes, gz.__crc);
+					gz.__size = (gz.__size + have) >>> 0;
+				}
+				outs.push(_Stream_toBytes(bytes));
+			}
 			inOff += availIn - availInAfter;
 			availIn = availInAfter;
-			if (availOutAfter !== 0) return null;
+			if (availOutAfter !== 0)
+			{
+				// Output room left over with input unread: zlib has ended (inflate always
+				// makes progress otherwise).
+				if (!compress && availIn > 0)
+				{
+					state.__ended = true;
+					state.__rest = input.subarray(inOff, inOff + availIn);
+				}
+				return null;
+			}
 		}
+	}
+
+	// Reads the gzip header from `input` at `off`; returns the offset after what it used,
+	// or an error string.
+	function header(input, off)
+	{
+		var h = gz.__head;
+		while (off < input.length)
+		{
+			h.push(input[off++]);
+			var n = h.length;
+			if (n === 2 && (h[0] !== 0x1f || h[1] !== 0x8b)) return 'incorrect header check';
+			if (n === 3 && h[2] !== 8) return 'unknown compression method';
+			if (n === 4 && (h[3] & 0xe0)) return 'unknown header flags set';
+			var end = headerEnd(h);
+			if (end === -2) return 'header crc mismatch';
+			if (end >= 0)
+			{
+				gz.__phase = 1;
+				return off;
+			}
+		}
+		return off;
+	}
+
+	// The length of the complete gzip header `h`, -1 if more bytes are needed, or -2 if its
+	// header CRC is wrong.
+	function headerEnd(h)
+	{
+		if (h.length < 10) return -1;
+		var flg = h[3];
+		var p = 10;
+		if (flg & 4)
+		{
+			if (h.length < p + 2) return -1;
+			p += 2 + (h[p] | (h[p + 1] << 8));
+			if (h.length < p) return -1;
+		}
+		for (var bit = 8; bit <= 16; bit <<= 1)   // FNAME, FCOMMENT: zero-terminated
+		{
+			if (!(flg & bit)) continue;
+			while (p < h.length && h[p] !== 0) p++;
+			if (p >= h.length) return -1;
+			p++;
+		}
+		if (flg & 2)
+		{
+			if (h.length < p + 2) return -1;
+			var crc = zlib.crc32(Uint8Array.from(h.slice(0, p))) & 0xffff;
+			if (crc !== (h[p] | (h[p + 1] << 8))) return -2;
+			p += 2;
+		}
+		return h.length === p ? p : -1;
+	}
+
+	// Reads the gzip trailer from `input`; returns the input left after it, or an error.
+	function trailer(input)
+	{
+		var t = gz.__tail;
+		var off = 0;
+		while (off < input.length && t.length < 8) t.push(input[off++]);
+		if (t.length < 8) return input.subarray(off);
+		var u32 = function(i) { return (t[i] | (t[i + 1] << 8) | (t[i + 2] << 16) | (t[i + 3] << 24)) >>> 0; };
+		if (u32(0) !== gz.__crc) return 'incorrect data check';
+		if (u32(4) !== gz.__size) return 'incorrect length check';
+		gz.__phase = 3;
+		return input.subarray(off);
+	}
+
+	// Decompresses one chunk of gzip input.
+	function gunzip(input, outs)
+	{
+		var off = 0;
+		if (gz.__phase === 0)
+		{
+			var r = header(input, 0);
+			if (typeof r === 'string') return r;
+			off = r;
+		}
+		var rest = input.subarray(off);
+		if (gz.__phase === 1 && rest.length)
+		{
+			var err = run(rest, C.Z_NO_FLUSH, outs);
+			if (err) return err;
+			rest = state.__rest || rest.subarray(rest.length);
+			if (state.__ended) gz.__phase = 2;
+		}
+		if (gz.__phase === 2 && rest.length)
+		{
+			rest = trailer(rest);
+			if (typeof rest === 'string') return rest;
+		}
+		return gz.__phase === 3 && rest.length ? junk : null;
 	}
 
 	function fail(err)
@@ -1959,13 +2081,23 @@ function _Stream_zlibCodec(compress, algorithm)
 			if (state.__failed) return 'The compression stream has failed.';
 			if (!value.byteLength) return null;
 			var input = Buffer.from(value.buffer, value.byteOffset, value.byteLength);
+			if (gzipIn)
+			{
+				var gerr = gunzip(input, outs);
+				return gerr ? fail(gerr) : null;
+			}
+			if (!compress && state.__ended) return fail(junk);
 			var err = run(input, C.Z_NO_FLUSH, outs);
+			if (!err && state.__rest) err = junk;
 			return err ? fail(err) : null;
 		},
 		__flush: function(outs)
 		{
 			if (state.__failed) return 'The compression stream has failed.';
-			var err = run(Buffer.alloc(0), C.Z_FINISH, outs);
+			var err = gzipIn && gz.__phase !== 1
+				? (gz.__phase === 3 ? null : 'unexpected end of file')
+				: run(Buffer.alloc(0), C.Z_FINISH, outs);
+			if (!err && gzipIn && gz.__phase === 1) err = 'unexpected end of file';   // no trailer
 			if (err)
 			{
 				return fail(!compress && /unexpected end of file/.test(err)

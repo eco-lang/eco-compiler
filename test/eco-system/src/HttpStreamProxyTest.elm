@@ -15,12 +15,12 @@ established` head to the header callback (no CURLOPT_SUPPRESS_CONNECT_HEADERS
 in S/HttpStream/HttpTransfer.cpp `configure`), and the kernel posted it as the
 final response: `GoodStatus 200 Connection established` with no headers.
 
-The JS runner has neither an HTTPS server (both URLs name its plain port) nor
-the CONNECT proxy (no `ECO_TEST_PROXY_URL`), so the test is native-only.
+On JS the runner's server (test/scripts/js-e2e-http-server.js) has the same
+HTTPS port and CONNECT proxy, and the JS twin (Eco/Kernel/HttpStream.js) takes
+the proxy from the environment as libcurl does.
 
 -}
 
--- SKIP-JS: the JS runner has no HTTPS test server and no CONNECT proxy (ECO_TEST_PROXY_URL)
 -- ENV: https_proxy=${ECO_TEST_PROXY_URL}
 -- ENV: HTTPS_PROXY=${ECO_TEST_PROXY_URL}
 -- UNSETENV: no_proxy NO_PROXY http_proxy HTTP_PROXY all_proxy ALL_PROXY

@@ -20,12 +20,27 @@
 //   /redirect-empty-location  302 Found with an empty `Location:` header
 //   /redirect-vt-location  302 Found "moved", `Location:` value one vertical tab
 //   /redirect-spaced-location  302 Found "moved", `Location : /` (space before the colon)
+//   /proxy-connects        200 text/plain: how many CONNECT tunnels the proxy port has opened
 //   anything else          404 "Not Found", text/plain "not found"
-// HTTPS (TestHttpServer's second port), its CONNECT proxy port (ECO_TEST_PROXY_URL),
-// /package.zip, /package-short.zip, /status-zip/<n> and /proxy-connects are not served.
+// /package.zip, /package-short.zip and /status-zip/<n> are not served.
+//
+// As TestHttpServer.hpp, a second port serves the same routes over TLS, with a throwaway
+// self-signed certificate (CN and SAN IP 127.0.0.1, CA:TRUE) written to `certPath` for
+// CURL_CA_BUNDLE; it is made with the `openssl` command, and without one there is no HTTPS
+// port (`httpsPort` and `certPath` are null). A third port is an HTTP proxy that only does
+// CONNECT, to 127.0.0.1 or localhost (other hosts 403, other methods 405, an unreachable
+// port 502), for ECO_TEST_PROXY_URL.
 'use strict';
 
+const childProcess = require('child_process');
+const fs = require('fs');
 const net = require('net');
+const os = require('os');
+const path = require('path');
+const tls = require('tls');
+
+// CONNECT tunnels opened by the proxy port (/proxy-connects).
+let proxyConnects = 0;
 
 function queryLong(query, key, def) {
     const pat = key + '=';
@@ -182,6 +197,9 @@ function handle(socket, req) {
     } else if (route === '/redirect-spaced-location') {
         send(response(302, 'Found', 'text/plain', 'moved', 'Location : /\r\nX-Test: kept\r\n'));
         finish();
+    } else if (route === '/proxy-connects') {
+        send(response(200, 'OK', 'text/plain', String(proxyConnects)));
+        finish();
     } else if (route === '/redirect') {
         send(response(302, 'Found', 'text/plain', '', 'Location: /anything\r\n'));
         finish();
@@ -191,37 +209,125 @@ function handle(socket, req) {
     }
 }
 
-// Starts the server on 127.0.0.1:<preferredPort> (0 = any; a busy preferred port falls
-// back to any). Resolves to { port, close() }.
-function startTestHttpServer(preferredPort) {
-    const server = net.createServer((socket) => {
-        let buf = '';
-        let handled = false;
-        socket.on('error', () => {});   // clients hang up mid-body (Http.Stream kill tests)
-        socket.on('data', (chunk) => {
-            if (handled) return;
-            buf += chunk.toString('latin1');
-            if (buf.length > (1 << 20) && buf.indexOf('\r\n\r\n') < 0) { socket.destroy(); return; }
-            const req = parseRequest(buf);
-            if (!req) return;
-            handled = true;
-            handle(socket, req);
-        });
+// Serves one connection (plain or TLS): reads one request and answers it.
+function onConnection(socket) {
+    let buf = '';
+    let handled = false;
+    socket.on('error', () => {});   // clients hang up mid-body (Http.Stream kill tests)
+    socket.on('data', (chunk) => {
+        if (handled) return;
+        buf += chunk.toString('latin1');
+        if (buf.length > (1 << 20) && buf.indexOf('\r\n\r\n') < 0) { socket.destroy(); return; }
+        const req = parseRequest(buf);
+        if (!req) return;
+        handled = true;
+        handle(socket, req);
     });
-    const listen = (port) => new Promise((resolve, reject) => {
+}
+
+// One connection to the proxy port: reads the CONNECT request head, opens the tunnel to the
+// loopback target, then relays bytes both ways (TestHttpServer.hpp handleProxyConnection).
+function onProxyConnection(client) {
+    let buf = Buffer.alloc(0);
+    client.on('error', () => {});
+    const reply = (status) =>
+        client.end('HTTP/1.1 ' + status + '\r\nContent-Length: 0\r\nConnection: close\r\n\r\n');
+    const onData = (chunk) => {
+        buf = Buffer.concat([buf, chunk]);
+        const headerEnd = buf.indexOf('\r\n\r\n');
+        if (headerEnd < 0) {
+            if (buf.length > 65536) client.destroy();
+            return;
+        }
+        client.removeListener('data', onData);
+        client.pause();
+        const [method = '', target = ''] = buf.subarray(0, buf.indexOf('\r\n')).toString('latin1').split(/\s+/);
+        if (method !== 'CONNECT') return reply('405 Method Not Allowed');
+        const colon = target.lastIndexOf(':');
+        const host = colon < 0 ? target : target.slice(0, colon);
+        const port = colon < 0 ? 0 : parseInt(target.slice(colon + 1), 10) || 0;
+        if ((host !== '127.0.0.1' && host !== 'localhost') || port <= 0 || port > 65535) {
+            return reply('403 Forbidden');
+        }
+        let open = false;
+        const up = net.connect(port, '127.0.0.1');
+        up.on('error', () => { if (open) client.destroy(); else reply('502 Bad Gateway'); });
+        up.on('connect', () => {
+            open = true;
+            proxyConnects++;
+            client.write('HTTP/1.1 200 Connection established\r\n\r\n');
+            const early = buf.subarray(headerEnd + 4);   // client bytes sent with the head
+            if (early.length) up.write(early);
+            client.pipe(up);
+            up.pipe(client);
+            client.resume();
+        });
+        client.on('close', () => up.destroy());
+    };
+    client.on('data', onData);
+}
+
+// A throwaway self-signed certificate for 127.0.0.1 in a new directory under the temporary
+// directory: { dir, key, cert } (file paths), or null when `openssl` fails.
+function makeCertificate() {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'eco-js-e2e-tls-'));
+    const key = path.join(dir, 'key.pem');
+    const cert = path.join(dir, 'cert.pem');
+    try {
+        childProcess.execFileSync('openssl', [
+            'req', '-x509', '-newkey', 'ec', '-pkeyopt', 'ec_paramgen_curve:prime256v1', '-nodes',
+            '-keyout', key, '-out', cert, '-days', '2', '-subj', '/CN=127.0.0.1',
+            '-addext', 'subjectAltName=IP:127.0.0.1', '-addext', 'basicConstraints=critical,CA:TRUE',
+        ], { stdio: 'ignore' });
+        return { dir, key, cert };
+    } catch (e) {
+        fs.rmSync(dir, { recursive: true, force: true });
+        return null;
+    }
+}
+
+function listenOn(server, port) {
+    return new Promise((resolve, reject) => {
         const onError = (e) => { server.removeListener('listening', onListening); reject(e); };
-        const onListening = () => { server.removeListener('error', onError); resolve(); };
+        const onListening = () => { server.removeListener('error', onError); resolve(server.address().port); };
         server.once('error', onError);
         server.once('listening', onListening);
         server.listen(port, '127.0.0.1', 64);
     });
-    return listen(preferredPort || 0)
-        .catch(() => listen(0))
-        .then(() => ({
-            port: server.address().port,
-            close: () => new Promise((resolve) => server.close(() => resolve())),
-            unref: () => server.unref(),
-        }));
+}
+
+// Starts the server on 127.0.0.1:<preferredPort> (0 = any; a busy preferred port falls
+// back to any), with its HTTPS and proxy ports on any free port. Resolves to
+// { port, httpsPort, proxyPort, certPath, close(), unref() }.
+async function startTestHttpServer(preferredPort) {
+    const server = net.createServer(onConnection);
+    const port = await listenOn(server, preferredPort || 0).catch(() => listenOn(server, 0));
+    const servers = [server];
+    const proxy = net.createServer(onProxyConnection);
+    const proxyPort = await listenOn(proxy, 0);
+    servers.push(proxy);
+    const certificate = makeCertificate();
+    let httpsPort = null;
+    if (certificate) {
+        const secure = tls.createServer({
+            key: fs.readFileSync(certificate.key),
+            cert: fs.readFileSync(certificate.cert),
+        }, onConnection);
+        secure.on('tlsClientError', () => {});
+        httpsPort = await listenOn(secure, 0);
+        servers.push(secure);
+    }
+    return {
+        port,
+        httpsPort,
+        proxyPort,
+        certPath: certificate ? certificate.cert : null,
+        close: async () => {
+            await Promise.all(servers.map((s) => new Promise((resolve) => s.close(() => resolve()))));
+            if (certificate) fs.rmSync(certificate.dir, { recursive: true, force: true });
+        },
+        unref: () => servers.forEach((s) => s.unref()),
+    };
 }
 
 module.exports = { startTestHttpServer };
