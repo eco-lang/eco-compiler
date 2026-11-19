@@ -1,6 +1,7 @@
 module Compiler.IR.Runtime.CtorTag exposing
     ( effective
     , checkNullConsCapacity, constantTag, embedsAsNullCons, isEmbeddedConstantCtor
+    , seqDictModule
     )
 
 {-| The tag a constructor carries at run time must be worked out the same way
@@ -42,6 +43,7 @@ The numbers here must equal the runtime's: 0xFFFF its `CTOR_DICT_RBNODE`,
 
 @docs effective
 @docs checkNullConsCapacity, constantTag, embedsAsNullCons, isEmbeddedConstantCtor
+@docs seqDictModule
 
 -}
 
@@ -81,7 +83,9 @@ seqDict =
     0xFFFB
 
 
-{-| The module that declares `SeqDict_elm_builtin`.
+{-| The module that declares `SeqDict_elm_builtin`, whose constructor gets a
+reserved tag natively (`seqDict`) and in an `--optimize` JavaScript build
+(`ctorToInt` in `Compiler.GenerateJs.Expression`).
 -}
 seqDictModule : ModuleName.Canonical
 seqDictModule =

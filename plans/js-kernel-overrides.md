@@ -239,15 +239,59 @@ the override files (`file(GLOB ... CONFIGURE_DEPENDS)`) instead of `R`.
 The eco-built stages (`eco-boot.js`, `eco-boot-2.js`, `eco-boot-3.js`) get no post-processing at all:
 eco's backend emits their kernel overrides, and they have no MVar hooks.
 
-## 5. SeqDict `==` on JS (first package-side user; separate work)
+## 5. SeqDict `==` on JS
 
-eco/system's SeqDict needs `_Utils_eqHelp` to compare two SeqDicts by their entries on JS. It should
-**not** be a compiler override: `Elm.Kernel.Utils` is in every program, so the wrapper would cost every
-`==` in programs that never use SeqDict. It belongs in eco/system's own `src/Eco/Kernel/FNV.js`, which
-is in a program exactly when SeqDict is, runs after Utils (it imports it) and, being kernel code,
-before every Elm value (§1). There it is kernel-parsed, so it can use `__$field` tags for record
-fields. Its prod-mode constructor tag comes from `ctorToInt` in `GenerateJs/Expression.elm`. Same
-mechanism, different owner; tracked with the SeqDict JS work.
+On JS, `==` is elm/core's `_Utils_eqHelp`, which compares a SeqDict field by field, holes left by removed
+entries included; eco's native `==` compares two SeqDicts by their entries in insertion order
+(`seqDictEq`, `CtorTag.seqDict`). FNV's JS hash likewise hashes a SeqDict's structure, so a SeqDict used
+as a key misses an equal one. Both are fixed by splitting the work by owner:
+
+1. **`compiler/kernel-overrides/SeqDictEquality.js`** (`requires Elm.Kernel.Utils`,
+   `requires Eco.Kernel.FNV`, `package elm/core 1.0.5`): rebinds `_Utils_eqHelp` to a wrapper that,
+   when `x` is a SeqDict, compares `_Eco_FNV_seqDictEntries(x)` and `(y)` with the stock function, and
+   otherwise calls the stock function unchanged. It changes stock elm/core, so JSGEN_001 puts it here.
+   It needs FNV, so it is emitted exactly in programs that use SeqDict (SeqDict imports FNV) and costs
+   nothing elsewhere; Stage 1 never has FNV, so apply-overrides.js skips it. Because elm/core's
+   `_Utils_eq` and `_Utils_eqHelp` call `_Utils_eqHelp` by name, SeqDicts nested in tuples, lists,
+   records, `Maybe` and SeqSets are covered too.
+2. **eco/system's `src/Eco/Kernel/FNV.js`**: what eco/system knows about its own SeqDict, as two
+   helpers, emitted as `_Eco_FNV_isSeqDict` and `_Eco_FNV_seqDictEntries`:
+   - `isSeqDict(x)`: `x.$ === 'SeqDict_elm_builtin' || x.$ === -3`, both modes in one test, as FNV
+     already recognises Dict nodes (`'RBNode_elm_builtin'` or `-1`);
+   - `seqDictEntries(d)`: an Elm `List ( k, v )` of the entries in insertion order, read from the
+     insertion-order record's `array` field with the kernel tag `__$array` (which follows
+     `--optimize`'s field renaming) and `__Array_foldl`, skipping holes (`Nothing`).
+
+   FNV's own hash hashes a SeqDict as its entries, as it hashes a Dict by its entries. These are
+   kernel-parsed, so they can use mode-independent tests and field tags; the override is plain JS and
+   can do neither, which is why it calls them instead of reading SeqDict itself.
+3. **`ctorToInt` in `GenerateJs/Expression.elm`**: `SeqDict_elm_builtin` in eco/system's `SeqDict`
+   (`CtorTag.seqDictModule`) gets the reserved production tag `-3`, after Dict's `-1` and `-2`, so that a
+   SeqDict can be told apart in an `--optimize` build, where every other one-constructor type is `0`.
+   `ctorToInt` is used both where constructors are built and in `case` tests, so the two agree. Stock
+   elm/core's only use of a negative tag is `_Utils_eqHelp`'s `x.$ < 0` Dict branch, which never sees a
+   SeqDict because the wrapper runs first.
+
+In `--optimize` builds `SeqSet_elm_builtin`, a one-argument constructor, is erased to its SeqDict, which
+the wrapper handles directly.
+
+**Versions (checked 2026-11-19):** `_Utils_eq` is identical in elm/core 1.0.0–1.0.5, and `_Utils_eqHelp`
+differs only in 1.0.0–1.0.2, which check the depth limit before the identity test instead of after it;
+the signature `(x, y, depth, stack)`, the result and the by-name recursion are the same in all six, so
+the delegating wrapper is right for any version a program can pin.
+
+**Tests.**
+- **Dev mode:** remove `-- SKIP-JS` from `SeqDictEqualityTest` and `SeqDictRandomizedTest`; `run-js-e2e`
+  runs them on JS as on native.
+- **`--optimize`:** `--optimize` rejects programs that use `Debug` (`Builder.Reporting.Exit`), and both
+  tests log with `Debug.log`, so they cannot be compiled in production mode. Instead
+  `js-kernel-overrides.test.js` compiles one port program, which uses no `Debug` and reports a list of
+  Bools through a port, both without and with `--optimize`, and checks the same list in both: a SeqDict
+  with a hole equals one without; a different order or a different value is unequal; SeqDicts nested in
+  a tuple and a list; SeqSets with and without a removed element; a SeqDict with a hole as a key finds an
+  equal SeqDict's entry; a compacted SeqDict equals a fresh one. It also checks that a program without
+  SeqDict gets no `_Utils_eqHelp` rebinding.
+- **Native:** the same E2E tests on JIT and AOT, unchanged.
 
 ## 6. Steps
 
@@ -320,6 +364,22 @@ Implemented as §2–§6 describe; `compiler/scripts/replacements.js` is deleted
 | `bootstrap` | pass: 4b, 8c, 9b; `eco-boot.js`, `-2`, `-3` each hold the override section once and one `_Json_decodeBytes` (was two) |
 | `build.sh api`, `build.sh bin`, `cov.py quick --e2e-js` | pass; the overrides applied to stock and `fake-elm` output |
 
+**§5, SeqDict `==` on JS (2026-11-19):**
+
+| check | result |
+|---|---|
+| version check | `_Utils_eq` identical in elm/core 1.0.0–1.0.5; `_Utils_eqHelp` differs only in where 1.0.0–1.0.2 check the depth limit |
+| `SeqDictEqualityTest`, `SeqDictRandomizedTest` on JS, `SKIP-JS` removed | pass (forced earlier, before this: 5 checks and 3 model failures) |
+| `--optimize` port program (`js-kernel-overrides.test.js`) | the same nine results as the development build; the output tags SeqDicts `-3` |
+| negative control: wrapper that never matches | both the development and `--optimize` tests fail |
+| no SeqDict in the program | no `_Utils_eqHelp` rebinding emitted |
+| `full` | pass: 3,100 unit + JIT E2E; JS E2E 272 passed, 8 skipped (eco-system 237 / 8, was 235 / 10); override tests 15/15 |
+| `bootstrap` | pass: 4b, 8c, 9b |
+| AOT, the six SeqDict/SeqSet tests, normal and `ECO_SPLIT_MIN_FUNCS=1` | pass |
+
+Override files must be printable ASCII (plus tab and newline), checked by `kernel-overrides-lib.js`: the
+generated module must stay as elm-format writes it, and elm-format writes non-ASCII literally.
+
 One deviation from §6 step 6: `cli-errors.test.js` now also asserts that `apply-overrides.js` exits 0
 (it ignored `replacements.js`'s status). The marker check in `apply-overrides.js` matches a whole line,
 because the compiler's own output also holds the marker inside a string constant
@@ -348,6 +408,6 @@ because the compiler's own output also holds the marker inside a string constant
 ## 8. Non-goals
 
 - Building Stage 1 with eco instead of stock Elm (§0 constraint).
-- Overrides shipped by packages (a declarative header in a package's own kernel file). §5 shows a
-  package can rebind from its own kernel today.
+- Overrides shipped by packages (a declarative header in a package's own kernel file). §5 keeps the
+  stock-kernel change in compiler/kernel-overrides and the package's knowledge in the package.
 - Changing `Debug.toString` or any other elm/core behaviour beyond §0.

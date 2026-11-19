@@ -7,7 +7,8 @@
 //   package <author>/<name> <version>      kernel: one or more; the stock package the body was written against
 //   value <js global>                      value: exactly one; the Elm top-level value the body replaces
 //   group <name>                           value: exactly one; a group applies all-or-none
-// The body is plain JavaScript, emitted as written (no kernel `__` tags, no record fields).
+// The body is plain JavaScript, emitted as written (no kernel `__` tags, no record fields). Files are
+// printable ASCII, tabs and newlines only.
 "use strict";
 
 const fs = require("node:fs");
@@ -28,6 +29,10 @@ function parse(file, text) {
     throw new OverrideError(`${file}:${line}: ${msg}`);
   };
   if (!text.startsWith("/*\n")) fail(1, "must start with a `/*` line opening the header");
+  // ASCII only: the generated Elm module must stay what elm-format would write, and elm-format's
+  // handling of other characters in string literals is not worth reproducing.
+  const nonAscii = text.search(/[^\x09\x0a\x20-\x7e]/);
+  if (nonAscii >= 0) fail(text.slice(0, nonAscii).split("\n").length, "only printable ASCII, tabs and newlines are allowed");
   const close = text.indexOf("\n*/\n");
   if (close < 0) fail(1, "no `*/` line closing the header");
   const lines = text.slice(3, close + 1).split("\n").slice(0, -1);

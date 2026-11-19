@@ -27,11 +27,12 @@ const ELM_JSON = {
   "test-dependencies": { direct: {}, indirect: {} },
 };
 
-// A private eco home with the dependencies copied from the real one, each with an `st.src` link.
-function privateEcoHome() {
+// A private eco home with the dependencies of `elmJson` copied from the real one, each with an `st.src`
+// link. A local package (eco/system) is passed with --local-package and is not copied.
+function privateEcoHome(elmJson) {
   const realHome = process.env.ECO_HOME || path.join(os.homedir(), ".eco");
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "eco-ko-home-"));
-  const deps = Object.assign({}, ELM_JSON.dependencies.direct, ELM_JSON.dependencies.indirect);
+  const deps = Object.assign({}, elmJson.dependencies.direct, elmJson.dependencies.indirect);
   for (const ver of fs.readdirSync(realHome)) {
     const pkgs = path.join(realHome, ver, "packages");
     if (!fs.existsSync(pkgs)) continue;
@@ -47,13 +48,15 @@ function privateEcoHome() {
   return home;
 }
 
-let ecoHome = null;
+const ecoHomes = new Map();
 
-// Compiles `main` (the text of src/Main.elm) and returns the generated JavaScript.
-function compile(main, extraArgs = []) {
-  if (ecoHome === null) ecoHome = privateEcoHome();
+// Compiles `main` (the text of src/Main.elm) with `elmJson` and returns the generated JavaScript.
+function compile(main, extraArgs = [], elmJson = ELM_JSON) {
+  const key = JSON.stringify(elmJson.dependencies);
+  if (!ecoHomes.has(key)) ecoHomes.set(key, privateEcoHome(elmJson));
+  const ecoHome = ecoHomes.get(key);
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "eco-ko-"));
-  fs.writeFileSync(path.join(dir, "elm.json"), JSON.stringify(ELM_JSON, null, 4));
+  fs.writeFileSync(path.join(dir, "elm.json"), JSON.stringify(elmJson, null, 4));
   fs.mkdirSync(path.join(dir, "src"));
   fs.writeFileSync(path.join(dir, "src/Main.elm"), main);
   const env = Object.assign({}, process.env, { ECO_HOME: ecoHome });
@@ -212,6 +215,81 @@ test("a program without the Bytes kernel gets no _Bytes_read_string override", (
   assert.strictEqual(count(js, "_Bytes_read_string"), 0, "no Bytes kernel, so no Bytes override");
   assert.strictEqual(count(js, "\nvar _Json_decodeBytes = "), 1, "the Json kernel is in every program, so BytesForPorts.js is");
   load(js).Main.init();
+});
+
+// ====== SeqDict `==` (compiler/kernel-overrides/SeqDictEquality.js, plans/js-kernel-overrides.md §5) ======
+
+// test/eco-system's dependencies, with eco/system as a local package, as run-js-e2e.js compiles it.
+const SYSTEM_ELM_JSON = JSON.parse(fs.readFileSync(path.join(REPO, "test/eco-system/elm.json"), "utf8"));
+const SYSTEM_PACKAGE = ["--local-package", "eco/system=" + path.join(REPO, "system-kernel-cpp")];
+
+// No Debug (--optimize rejects it): the results go out through a port. `checks` is a top-level value,
+// built when the program loads, after the override section.
+const SEQDICT_EQ_MAIN = `port module Main exposing (main)
+
+import SeqDict
+import SeqSet
+
+
+port results : List Bool -> Cmd msg
+
+
+main : Program () () ()
+main =
+    Platform.worker
+        { init = \\_ -> ( (), results checks )
+        , update = \\_ m -> ( m, Cmd.none )
+        , subscriptions = \\_ -> Sub.none
+        }
+
+
+checks : List Bool
+checks =
+    let
+        withHole =
+            SeqDict.fromList [ ( 1, "a" ), ( 2, "b" ), ( 3, "c" ) ] |> SeqDict.remove 2
+
+        withoutHole =
+            SeqDict.fromList [ ( 1, "a" ), ( 3, "c" ) ]
+
+        compacted =
+            List.foldl SeqDict.remove (SeqDict.fromList (List.map (\\i -> ( i, i )) (List.range 1 1000))) (List.range 1 900)
+
+        fresh =
+            SeqDict.fromList (List.map (\\i -> ( i, i )) (List.range 901 1000))
+    in
+    [ withHole == withoutHole
+    , withoutHole == SeqDict.fromList [ ( 3, "c" ), ( 1, "a" ) ]
+    , withHole == SeqDict.fromList [ ( 1, "a" ), ( 3, "x" ) ]
+    , ( withHole, [ withHole ] ) == ( withoutHole, [ withoutHole ] )
+    , SeqSet.remove 2 (SeqSet.fromList [ 1, 2, 3 ]) == SeqSet.fromList [ 1, 3 ]
+    , SeqSet.fromList [ 1, 2 ] == SeqSet.fromList [ 2, 1 ]
+    , SeqDict.get withoutHole (SeqDict.singleton withHole "s") == Just "s"
+    , compacted == fresh
+    , Just withHole /= Just withoutHole
+    ]
+`;
+
+// hole, order, value, nested, SeqSet hole, SeqSet order, SeqDict key, compacted, /=
+const SEQDICT_EQ_EXPECTED = [true, false, false, true, true, false, true, true, false];
+
+for (const [label, args] of [["development", []], ["--optimize", ["--optimize"]]]) {
+  test(`SeqDict == compares entries in a ${label} build`, async () => {
+    const js = compile(SEQDICT_EQ_MAIN, [...args, ...SYSTEM_PACKAGE], SYSTEM_ELM_JSON);
+    assert.strictEqual(count(js, "\n_Utils_eqHelp = function("), 1, "SeqDictEquality.js must be emitted once");
+    if (args.includes("--optimize")) {
+      assert.match(js, /\$: -3\b/, "an --optimize build tags SeqDict_elm_builtin -3 (ctorToInt)");
+    }
+    const app = load(js).Main.init();
+    const got = await new Promise((resolve) => app.ports.results.subscribe(resolve));
+    assert.deepStrictEqual(got, SEQDICT_EQ_EXPECTED);
+  });
+}
+
+test("a program without SeqDict gets no _Utils_eqHelp rebinding", () => {
+  const js = compile(NO_BYTES_MAIN);
+  assert.strictEqual(count(js, "_Utils_eqHelp = function("), 0);
+  assert.strictEqual(count(js, "_KernelOverride_stockEqHelp"), 0);
 });
 
 // ====== apply-overrides.js on small synthetic stock-Elm outputs ======

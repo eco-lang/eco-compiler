@@ -3,7 +3,8 @@ module SeqDictModel exposing (run)
 {-| Checks SeqDict and SeqSet against a plain list of pairs, with keys of many kinds.
 `run` returns the failures: none when everything passes. `contentEquality` adds the checks of
 `==` on SeqDicts, which need eco's SeqDict-aware `==` (`CtorTag.seqDict`, `seqDictEq` in
-elm-kernel-cpp/src/core/Utils.cpp); elm/core's JavaScript `==` compares them structurally.
+elm-kernel-cpp/src/core/Utils.cpp natively; compiler/kernel-overrides/SeqDictEquality.js on
+JavaScript).
 -}
 
 import Dict

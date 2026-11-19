@@ -1,10 +1,19 @@
 /*
 
+import Array exposing (foldl)
+import Elm.Kernel.List exposing (fromArray)
+import Elm.Kernel.Utils exposing (Tuple2)
+
 */
 
 // FNV.hash for the JavaScript backend: FNV-1a over a value's content, in [0, 2^32). Equal values must hash
-// alike, so a Dict is hashed by its entries in key order, not by its tree's shape. The native kernel
-// (src/eco-system/FNV/FNVExports.cpp) gives other numbers; nothing compares the two.
+// alike, so a Dict is hashed by its entries in key order and a SeqDict by its entries in insertion order,
+// not by their trees' shapes. The native kernel (src/eco-system/FNV/FNVExports.cpp) gives other numbers;
+// nothing compares the two.
+//
+// isSeqDict and seqDictEntries are also what compiler/kernel-overrides/SeqDictEquality.js calls (as
+// _Eco_FNV_isSeqDict and _Eco_FNV_seqDictEntries) to make elm/core's `==` compare SeqDicts by their
+// entries, as eco's native `==` does (plans/js-kernel-overrides.md §5). Keep both names.
 
 var _FNV_prime = 16777619;
 var _FNV_offset = 2166136261;
@@ -36,6 +45,9 @@ function _FNV_hashHelp(h, value, depth) {
         if (value.$ === 'RBNode_elm_builtin' || value.$ === -1) {
             return _FNV_hashDict(_FNV_mix(h, 5), value, depth);
         }
+        if (_FNV_isSeqDict(value)) {
+            return _FNV_hashHelp(_FNV_mix(h, 6), _FNV_seqDictEntries(value), depth + 1);
+        }
         for (var key in value) {
             h = _FNV_hashHelp(h, value[key], depth + 1);
         }
@@ -55,4 +67,24 @@ function _FNV_hashDict(h, node, depth) {
         node = node.e;
     }
     return h;
+}
+
+// Whether `value`, an object, is a SeqDict: its one constructor is `SeqDict_elm_builtin` in a development
+// build and the reserved tag -3 in an --optimize build (ctorToInt in Compiler/GenerateJs/Expression.elm),
+// as Dict's nodes are 'RBNode_elm_builtin' or -1. No other value has either.
+function _FNV_isSeqDict(value) {
+    return value.$ === 'SeqDict_elm_builtin' || value.$ === -3;
+}
+
+// The entries of the SeqDict `seqDict` in insertion order, as an Elm List ( k, v ). A SeqDict's fields are
+// its trie's bitmap and nodes and, third (c), the record whose `array` holds Maybe ( hash, k, v ) in
+// insertion order, Nothing where an entry was removed. `__$array` follows --optimize's field renaming.
+function _FNV_seqDictEntries(seqDict) {
+    var entries = A3(__Array_foldl, F2(function (slot, acc) {
+        if (slot.a !== undefined) {
+            acc.push(__Utils_Tuple2(slot.a.b, slot.a.c));
+        }
+        return acc;
+    }), [], seqDict.c.__$array);
+    return __List_fromArray(entries);
 }

@@ -19,7 +19,8 @@ const lib = require("./kernel-overrides-lib.js");
 const here = path.dirname(fileURLToPath(import.meta.url));
 const PINS = path.resolve(here, "../cmake/bootstrap/build-xhr/elm.json");
 
-// `s` as an Elm string literal: printable ASCII as is, the usual escapes, and \u{...} for the rest.
+// `s` as an Elm string literal: printable ASCII as is, and the usual escapes for tab and newline
+// (kernel-overrides-lib.js allows nothing else in an override file).
 function elmString(s) {
   let out = '"';
   for (const ch of s) {

@@ -5,12 +5,12 @@ module SeqDictEqualityTest exposing (main)
 Removing an entry leaves a hole in a SeqDict's insertion-order Array, so a SeqDict that had an entry
 removed and one built without it hold the same entries but differ structurally; they must be equal.
 The same entries in another order, or different entries, are not equal. SeqDicts nested in other
-values, and Dicts and SeqDicts used as keys, compare the same way. Native only: elm/core's
-JavaScript `==` compares SeqDicts structurally.
+values, and Dicts and SeqDicts used as keys, compare the same way. Natively this is eco's `==`
+(`seqDictEq`); on JavaScript it is the kernel override `compiler/kernel-overrides/SeqDictEquality.js`
+with eco/system's FNV kernel (plans/js-kernel-overrides.md, section 5).
 
 -}
 
--- SKIP-JS: elm/core's JavaScript `==` compares SeqDicts structurally, holes included; eco's native `==` compares their entries
 -- CHECK: hole: True
 -- CHECK: holeSet: True
 -- CHECK: order: False

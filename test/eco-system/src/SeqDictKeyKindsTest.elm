@@ -10,7 +10,7 @@ module SeqDictKeyKindsTest exposing (main)
   - Keys that differ only beyond the hash's bounds (4096 String units, 256 list items, 16 levels of
     nesting) hash alike, so the trie must tell them apart with `==`.
 
-A SeqDict used as a key is in SeqDictEqualityTest, since it needs eco's native `==`.
+A SeqDict used as a key is in SeqDictEqualityTest, with the other checks of `==` on SeqDicts.
 
 -}
 

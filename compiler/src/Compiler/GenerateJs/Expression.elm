@@ -78,6 +78,7 @@ import Compiler.IR.Canonical as Can
 import Compiler.IR.DecisionTree.Path as Path
 import Compiler.IR.DecisionTree.Test as Test
 import Compiler.IR.Optimized as Opt
+import Compiler.IR.Runtime.CtorTag as CtorTag
 import Compiler.IR.Source.Shader as Shader
 import Compiler.Json.Encode as Encode
 import Compiler.LocalOpt.Erased.DecisionTree as DT
@@ -420,13 +421,22 @@ generateCtor mode (Opt.Global home name) index arity =
 
 
 {-| Returns the production-mode tag of a constructor: its zero-based index,
-except that `Dict`'s `RBNode_elm_builtin` and `RBEmpty_elm_builtin` get the
-negative of their one-based index (`-1` and `-2`).
+except for the reserved negative tags. `Dict`'s `RBNode_elm_builtin` and
+`RBEmpty_elm_builtin` get the negative of their one-based index (`-1` and
+`-2`), which elm/core's `_Utils_eqHelp` relies on. eco/system's
+`SeqDict.SeqDict_elm_builtin` (`CtorTag.seqDictModule`) gets `-3`, so that
+eco/system's FNV kernel (`_FNV_isSeqDict`) and the kernel override
+`compiler/kernel-overrides/SeqDictEquality.js` can tell a SeqDict from every
+other one-constructor value, which is `0` (plans/js-kernel-overrides.md §5).
+The tag is used where a constructor is built and in `case` tests alike.
 -}
 ctorToInt : ModuleName.Canonical -> Name.Name -> Index.ZeroBased -> Int
 ctorToInt home name index =
     if home == ModuleName.dict && (name == "RBNode_elm_builtin" || name == "RBEmpty_elm_builtin") then
         -(Index.toHuman index)
+
+    else if home == CtorTag.seqDictModule && name == "SeqDict_elm_builtin" then
+        -3
 
     else
         Index.toMachine index
