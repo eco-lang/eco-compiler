@@ -1,7 +1,7 @@
 ---
-status: partial
-updated: 2026-10-27
-remaining: "W3 / option (b): disjoint-payload unboxing of multi-ctor single-field unions (a new CtorOpts case, tag-disjointness analysis, tag-dispatch lowering) was never built, and the plan's precondition for it (re-measure after W2) was never run. The W1 static census half is moot now that W2 has shipped."
+status: superseded
+updated: 2026-11-19
+superseded_by: "plans/constructor-representation-levels.md (its remaining option (b) is unit N2 there)"
 ---
 
 # Sum-type wrapper unboxing — closing the `CtorOpts` gap
