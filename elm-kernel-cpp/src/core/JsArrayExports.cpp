@@ -27,6 +27,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "../KernelExports.h"
+#include "../DirectCall.hpp"
 #include "../ExportHelpers.hpp"
 #include "JsArray.hpp"
 #include "allocator/Heap.hpp"
@@ -586,6 +587,38 @@ static HPtr foldImpl(HPtr closure, HPtr acc, HPtr array, bool forward) {
         alloc::validateArrayKind(src0, "JsArray map/fold");
         len = src0->length;
         srcKind = src0->header.unboxed & 0x3;
+    }
+
+    // The fast path: a step whose element slot takes the array's own kind, or boxed, and whose
+    // accumulator slot takes the kind it returns. Elements of an unboxed array are then passed raw
+    // when the step takes them raw, and the accumulator stays in the step's kind throughout.
+    {
+        StackRootGuard dcRoots(&srcHP, &accHP, &closureHP);
+        Elm::DirectCall dc(&closureHP, 2);
+        const uint32_t ek = dc.ok() ? dc.argKind(0) : 0;
+        if (dc.ok() && dc.argKind(1) == dc.resultKind() && (ek == srcKind || ek == 0)) {
+            const uint32_t ak = dc.resultKind();
+            uint64_t a = Elm::DirectCall::unbox(Export::encode(accHP), ak);
+            for (uint32_t step = 0; step < len; ++step) {
+                uint32_t idx = forward ? step : (len - 1 - step);
+                uint64_t elem;
+                if (srcKind == 0) {
+                    elem = Export::encode(static_cast<ElmArray*>(allocator.resolve(srcHP))->elements[idx].p);
+                } else if (ek == srcKind) {
+                    Unboxable u = static_cast<ElmArray*>(allocator.resolve(srcHP))->elements[idx];
+                    elem = (srcKind == 3) ? (static_cast<uint64_t>(u.i) & 0xFFFFFFFFu) : static_cast<uint64_t>(u.i);
+                } else {
+                    // Boxing allocates; a boxed accumulator is kept current in the rooted accHP.
+                    Unboxable u = static_cast<ElmArray*>(allocator.resolve(srcHP))->elements[idx];
+                    elem = Export::encode(alloc::boxElement(u, srcKind));
+                }
+                uint64_t args[2] = { elem, ak == 0 ? Export::encode(accHP) : a };
+                a = dc.call(args);
+                if (ak == 0) accHP = Export::decode(a);
+            }
+            if (ak == 0) return HPtr::fromBits(Export::encode(accHP));
+            return HPtr::fromBits(Elm::DirectCall::box(a, ak));
+        }
     }
 
     // accBits + accKind track the current accumulator's representation.
