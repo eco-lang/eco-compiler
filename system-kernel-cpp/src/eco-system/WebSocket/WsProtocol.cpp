@@ -17,6 +17,7 @@
 #include <cerrno>
 #include <cstdlib>
 #include <cstring>
+#include <memory>
 #include <utility>
 
 namespace Eco::System {
@@ -31,17 +32,27 @@ constexpr int64_t kDefaultPingTimeoutMs = 30000;
 // Returns the reactor's monotonic clock in milliseconds.
 int64_t nowMs() { return IoReactor::instance().nowMs(); }
 
+// A thread's pool of masking-key bytes. The bytes are on the heap, not in the pool: the pool is a
+// `thread_local`, and a program loaded as a shared library (a Node addon, aot-port-host) must fit its
+// thread_locals in glibc's small static TLS surplus, or dlopen fails.
+struct MaskPool {
+    static constexpr size_t kSize = 4096;
+    std::unique_ptr<unsigned char[]> bytes;
+    size_t at = kSize;
+};
+static_assert(sizeof(MaskPool) <= 64, "MaskPool is a thread_local in static TLS: keep it small");
+
 // Writes the next 4-byte masking key to `out`, taken from a per-thread pool of 4096 bytes that wsRandomBytes
 // refills when it runs out.
 void nextMask(unsigned char out[4]) {
-    thread_local unsigned char pool[4096];
-    thread_local size_t at = sizeof pool;
-    if (at + 4 > sizeof pool) {
-        wsRandomBytes(pool, sizeof pool);
-        at = 0;
+    thread_local MaskPool pool;
+    if (pool.at + 4 > MaskPool::kSize) {
+        if (!pool.bytes) pool.bytes = std::make_unique<unsigned char[]>(MaskPool::kSize);
+        wsRandomBytes(pool.bytes.get(), MaskPool::kSize);
+        pool.at = 0;
     }
-    std::memcpy(out, pool + at, 4);
-    at += 4;
+    std::memcpy(out, pool.bytes.get() + pool.at, 4);
+    pool.at += 4;
 }
 
 // Returns the readable's failure reason for a connection failed with `code` and `text`.

@@ -1561,6 +1561,9 @@ add_custom_target(check
     COMMAND sh ${CMAKE_SOURCE_DIR}/test/scripts/run-static-asserts.sh ${CMAKE_BINARY_DIR}
     COMMAND ${CMAKE_COMMAND} -E env ECO_BUILD_DIR=${CMAKE_BINARY_DIR}
         sh ${CMAKE_SOURCE_DIR}/test/scripts/check-kernel-c-symbols.sh ${CMAKE_SOURCE_DIR}
+    # The program archives' thread_locals fit the static TLS a dlopened program gets (Node addon, .so).
+    COMMAND ${CMAKE_COMMAND} -E env ECO_BUILD_DIR=${CMAKE_BINARY_DIR}
+        sh ${CMAKE_SOURCE_DIR}/test/scripts/check-static-tls.sh ${CMAKE_SOURCE_DIR}
     COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR} --target test
     COMMAND sh -c "${CMAKE_BINARY_DIR}/test/test $\${TEST_FILTER:+--filter \"$$TEST_FILTER\"}"
     COMMENT "Gate A (incremental): build default ALL + Stage 1, run JIT E2E"
@@ -1677,6 +1680,9 @@ add_custom_target(full
     COMMAND sh ${CMAKE_SOURCE_DIR}/test/scripts/run-static-asserts.sh ${CMAKE_BINARY_DIR}
     COMMAND ${CMAKE_COMMAND} -E env ECO_BUILD_DIR=${CMAKE_BINARY_DIR}
         sh ${CMAKE_SOURCE_DIR}/test/scripts/check-kernel-c-symbols.sh ${CMAKE_SOURCE_DIR}
+    # The program archives' thread_locals fit the static TLS a dlopened program gets (Node addon, .so).
+    COMMAND ${CMAKE_COMMAND} -E env ECO_BUILD_DIR=${CMAKE_BINARY_DIR}
+        sh ${CMAKE_SOURCE_DIR}/test/scripts/check-static-tls.sh ${CMAKE_SOURCE_DIR}
     COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR} --target test eco-system-core-test eco-system-examples
         ${_full_time_test_target}
     COMMAND ${CMAKE_BINARY_DIR}/system-kernel-cpp/eco-system-core-test

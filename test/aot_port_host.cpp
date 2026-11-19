@@ -16,7 +16,8 @@
 // `emitVerdict` as the JIT harness answers it. This host cannot see the runtime's emit counters, so its
 // verdict is always 1, and ops 7 and 8, which need the runtime's test hooks, are served as op 0.
 //
-// The program is started with `args` as its command line and no flags. When its event
+// The program is started with `args` as its command line, and with the flags JSON in
+// ECO_AOT_FLAGS_JSON if that is set (a stress program's StressFlags), else none. When its event
 // loop reports idle (eco_set_idle_hook: nothing left to do but wait for the host), the
 // host stops it, waits for it, and exits with the program's exit code. A program's
 // output goes to this process's stdout and stderr, which the runner captures.
@@ -26,6 +27,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <mutex>
 #include <thread>
 #include <vector>
@@ -210,7 +212,7 @@ int main(int argc, char** argv) {
     api.port_subscribe_borrowed(api.port_get("emitOut"), onEmitRequest, nullptr, nullptr);
     api.set_idle_hook(onActivity, nullptr);
 
-    if (int rc = api.app_start(argc - 1, argv + 1, nullptr); rc != 0) {
+    if (int rc = api.app_start(argc - 1, argv + 1, std::getenv("ECO_AOT_FLAGS_JSON")); rc != 0) {
         std::fprintf(stderr, "aot-port-host: eco_app_start failed (%d)\n", rc);
         return 127;
     }

@@ -1,7 +1,6 @@
 ---
-status: partial
-updated: 2026-11-18
-remaining: "Defaults on (K = 128, $cap copies kept, solo threshold, 32 B loops; §2e). Owed: eco-verify, full, run-aot-e2e with a forced split, stress with the defaults (bootstrap run 2026-11-18)"
+status: done
+updated: 2026-11-19
 ---
 
 # MLIR split backend 08: inlining of small callees that does not depend on the partition
@@ -360,6 +359,28 @@ byte-identical to the shipped binary; with the defaults it is byte-identical to 
 Self-compile: lowering 20.78 s (≈ +1.35 s vs the same input with plan 08 off; `backend-opt-loop.md` P08),
 self-compile runtime 64.33 s (−1.73 s vs pr17, fixed point; `fe-opt-loop.md` p08).
 
+### 2f. Gates (2026-11-19, after the rebase onto master)
+
+All on the defaults (§2e), self-compile input `eco-compiler-boot.mlir` from the rebased tree.
+
+| gate | result |
+|---|---|
+| `bootstrap` (4b, 8c, 9b) and `eco-verify` | pass |
+| `full` (Gate A: static checks, unit + JIT E2E 3,093, eco-system 231, JS E2E 265, node addon, driver CLI, MAX smoke) | pass |
+| `run-aot-e2e`, `ECO_SPLIT_MIN_FUNCS=1` (every program split; probe: 260 functions → N = 2, leaf copies, 2 solo stamps) | 1,480 / 1,480 |
+| stress programs AOT under the same forced split (`ECO_AOT_PACKAGES=stress-elm`, run as `.so` with `stress-test`'s default flags) | 114 / 114 |
+| `stress` (JIT) | 114 / 114 |
+| G2: pre-RS4GC IR per function, `ECO_MLIR_SPLIT=0` vs 24 partitions, plan 05's normalizer plus sorted phi incomings | 75,940 common, **0 body differences**, 0 new-only, 0 old-only; 6,707 copied functions, every copy body equal to its owner's; negative control (one `add` → `sub` in an owned body) reports 1 difference |
+| determinism | the G2 split lowering is byte-identical to Stage 7b's `eco-compiler-boot` (two independent lowerings, ELF level; `--emit=llvm` does not take the split path) |
+| recursive tax: self-compile with the compiler lowered plan 08 off (all three switches 0, 16 B loops) vs on, N = 3 interleaved, cold, fixed point every run | off 66.21 / 65.50 / 64.70 s (mean 65.47), on 64.26 / 64.80 / 64.08 s (mean 64.38): **−1.7 %**, gate ≤ +3 % |
+| lowering wall (P's budget: backend-loop noise floor, 1 s or 1 %) | **over: ≈ +1.35 s** (19.43 → 20.78 s, `backend-opt-loop.md` P08), accepted: K = 128 was chosen over K = 56 for fewer lost sites, knowing the cost (§2c) |
+| invariants | CGEN_083 amended (§2e); CGEN_072 amended: the stamped-body check covers `available_externally` copies (no linkage exemption), clause (d) holds across partitions through them |
+
+Found on the way, not plan 08: two static-TLS overflows that stop a program loading as a shared library
+(PR #17's `LiteralTable`, fixed on master; WebSocket `nextMask`'s 4 KB `thread_local` pool, moved to the
+heap), now guarded by `test/scripts/check-static-tls.sh` in `check` and `full` (program archives ≤ 1,024 B
+of TLS, ≤ 512 B per symbol; glibc 2.36 here dlopens 1,664 B but not 2,048 B).
+
 ## 3. Options
 
 ### P (primary): copy small GC-free callees into the partitions that call them
@@ -408,8 +429,8 @@ the 1.05 × mean balance cap. This is plan 06's D1/D3 restricted to small callee
 
 1. **S0, S1, S2** (above). Done 2026-11-18, §2a: unsplit buys 1.8 % geomean, sha256 and
    spectral-norm are P-class; continue with P.
-2. **P behind an env flag** (`ECO_SPLIT_IMPORT_LEAF_MAX_OPS`, 0 = off). Built and measured at
-   K = 40, 2026-11-18, §2b; gates not yet run. Original spec: candidate selection in
+2. **P behind an env flag** (`ECO_SPLIT_IMPORT_LEAF_MAX_OPS`, 0 = off). Done: built and measured
+   at K = 40, 2026-11-18, §2b; swept §2c; gates §2f. Original spec: candidate selection in
    `ES` `buildPartitions`, the lifetime change in `EB`'s partition worker (keep gc-leaf copies past
    the prepass drop), the RS4GC guard narrowed, the validate assertion. Measure:
    - S1 lost inlines (target: GC-free lost inlines → ~0 for callees ≤ K);
@@ -420,10 +441,14 @@ the 1.05 × mean balance cap. This is plan 06's D1/D3 restricted to small callee
      that sha256-class swings are gone;
    - self-compile runtime (fe-opt-loop, one run).
 3. Choose `K` from step 2 (smallest that removes the observed lost inlines without wall cost) and
-   flip the default on.
+   flip the default on. Done (§2e): K = 128, where P saturates; it costs lowering wall over the
+   1 s budget (§2f), accepted.
 4. **Q or R** only if step 1 showed lost inlines that P cannot reach and that carry runtime weight.
-5. **Keep GC-free `$cap` copies to `-O2`. Built 2026-11-18 behind `ECO_SPLIT_KEEP_LEAF_CAP_COPIES`
-   (default off, `cgu` only); gates not run.** P excludes `$cap`
+   Closed, not built: R was measured as the §2d affinity knob (lost 31 → 30) and removed; Q has no
+   case (S0 put both known regressions in P's class, and Q changes unsplit codegen too). The 31 sites
+   left after T1 (§2d) carry no attributed runtime weight.
+5. **Keep GC-free `$cap` copies to `-O2`. Done: built 2026-11-18 behind
+   `ECO_SPLIT_KEEP_LEAF_CAP_COPIES` (`cgu` only), default on since §2e; gates §2f.** P excludes `$cap`
    callees, and `$cap` import copies are dropped after the prepass. When the prepass does not
    inline a site (e.g. a signature-mismatched site, not yet checked), the post-RS4GC `-O2`
    inliner never sees the body, although the single-partition build inlines it there because
@@ -451,6 +476,8 @@ the 1.05 × mean balance cap. This is plan 06's D1/D3 restricted to small callee
    large-callee class (§2c). P saturates at K = 128: K = 192 and 256 copy almost nothing new.
 
 ## 5. Gates
+
+All run 2026-11-19; results in §2f.
 
 - `bootstrap` (4b and 8c fixed points) and `eco-verify`.
 - `full` (JIT E2E), `run-aot-e2e` normal and with a forced split (`ECO_SPLIT_MIN_FNS` low), `stress`.

@@ -156,13 +156,24 @@ struct TestCase {
 // Packages contributing E2E test sources. Matches the JIT runner's
 // ELM_TEST_PACKAGES minus `stress-elm` (those are large, long-running, and
 // covered by the separate `stress-test` binary) and `elm-compile-errors` (compile-only
-// tests, run by the JIT harness).
+// tests, run by the JIT harness). ECO_AOT_PACKAGES, a space-separated list,
+// replaces it (e.g. ECO_AOT_PACKAGES=stress-elm runs the stress programs AOT).
 const std::vector<std::string>& aot_test_packages() {
-    static const std::vector<std::string> pkgs = {
-        "elm", "elm-bytes", "eco-kernel", "eco-system", "elm-core", "elm-html", "elm-http",
-        "elm-json", "elm-parser", "elm-regex", "elm-time", "elm-url", "elm-conformance", "eco-divergence",
-        "eco-mlir", "eco-elm", "eco-elm-bytes", "eco-elm-core", "eco-elm-json", "eco-elm-regex", "eco-elm-conformance",
-    };
+    static const std::vector<std::string> pkgs = [] {
+        if (const char* env = std::getenv("ECO_AOT_PACKAGES")) {
+            std::vector<std::string> out;
+            std::istringstream iss(env);
+            std::string pkg;
+            while (iss >> pkg)
+                out.push_back(pkg);
+            return out;
+        }
+        return std::vector<std::string>{
+            "elm", "elm-bytes", "eco-kernel", "eco-system", "elm-core", "elm-html", "elm-http",
+            "elm-json", "elm-parser", "elm-regex", "elm-time", "elm-url", "elm-conformance", "eco-divergence",
+            "eco-mlir", "eco-elm", "eco-elm-bytes", "eco-elm-core", "eco-elm-json", "eco-elm-regex", "eco-elm-conformance",
+        };
+    }();
     return pkgs;
 }
 
@@ -218,8 +229,9 @@ std::vector<TestCase> discover_all() {
             const fs::path& p = ent.path();
             if (p.extension() != ".elm") continue;
             const std::string stem = p.stem().string();
-            // Accept only *Test.elm sources (matches the JIT E2E convention).
-            if (stem.size() < 4 || stem.rfind("Test") != stem.size() - 4)
+            // Accept only *Test.elm sources (matches the JIT E2E convention), except in
+            // stress-elm, whose programs the stress harness takes by `main` alone.
+            if (pkg != "stress-elm" && (stem.size() < 4 || stem.rfind("Test") != stem.size() - 4))
                 continue;
             if (!has_top_level_main(p)) continue;
 
@@ -435,16 +447,37 @@ bool uses_port_echo(const std::string& src) {
     return (declares("echoOut") && declares("echoIn")) || (declares("emitOut") && declares("emitIn"));
 }
 
-// Runs the lowered test: the ELF itself, or for a port-echo test aot-port-host
-// with the test's shared library.
+// Whether the test is a stress program (`Program StressFlags ...`, test/stress-elm),
+// which needs its flags and so a port host to pass them.
+bool uses_stress_flags(const std::string& src) {
+    return src.find("Program StressFlags ") != std::string::npos;
+}
+
+// Whether the test is lowered to a shared library and run by aot-port-host.
+bool needs_port_host(const std::string& src) {
+    return uses_port_echo(src) || uses_stress_flags(src);
+}
+
+// The flags a stress program gets: stress-test's defaults (test/stress-elm/main.cpp),
+// with startMs now, as ElmE2EParallelTestSuite refreshes it per run.
+std::string stress_flags_json() {
+    const long long now = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::system_clock::now().time_since_epoch()).count();
+    return "{\"maxSize\":100,\"numLoops\":100,\"seed\":0,\"startMs\":" + std::to_string(now) +
+           ",\"timeoutMs\":0,\"verbose\":false}";
+}
+
+// Runs the lowered test: the ELF itself, or for a port-echo or stress test
+// aot-port-host with the test's shared library.
 ProcResult run_elf(const std::string& elf_path, const std::string& cwd,
                    const std::string& src,
                    const std::optional<std::string>& stdin_text) {
     std::vector<std::string> argv = { elf_path };
-    if (uses_port_echo(src)) argv = { ECO_AOT_PORT_HOST, elf_path };
+    if (needs_port_host(src)) argv = { ECO_AOT_PORT_HOST, elf_path };
     // A free port per test, as ECO_TEST_PORT (TestPort.hpp,
     // plans/eco-system-library.md Phase 7 step 7.4).
     std::vector<std::string> env;
+    if (uses_stress_flags(src)) env.push_back("ECO_AOT_FLAGS_JSON=" + stress_flags_json());
     std::vector<std::pair<std::string, std::string>> known;
     if (int port = eco_test::pickFreeTcpPort(); port > 0) {
         env.push_back(eco_test::testPortEnvEntry(port));
@@ -460,7 +493,7 @@ ProcResult run_elf(const std::string& elf_path, const std::string& cwd,
                 fsize ? std::to_string(*fsize) : "-", delay ? std::to_string(*delay) : "-"};
         argv.insert(argv.end(), unset.begin(), unset.end());
         argv.push_back("--");
-        if (uses_port_echo(src)) argv.push_back(ECO_AOT_PORT_HOST);
+        if (needs_port_host(src)) argv.push_back(ECO_AOT_PORT_HOST);
         argv.push_back(elf_path);
     }
     return spawn_capture(argv, env, cwd, 64 * 1024, stdin_text);
@@ -478,14 +511,14 @@ TestResult run_one_unmarked(const TestCase& tc) {
     fs::create_directories(bin_dir);
     fs::create_directories(run_dir);
 
-    // Read first: a port-echo test is lowered to a shared library (uses_port_echo).
+    // Read first: a port-echo or stress test is lowered to a shared library (needs_port_host).
     auto src = slurp(tc.elm_file);
     if (!src) {
         r.failure_reason = "Failed to read source file " + tc.elm_file;
         return r;
     }
     const std::string mlir_out = (mlir_dir / (tc.stem + ".mlir")).string();
-    const std::string elf_out  = (bin_dir / (uses_port_echo(*src) ? tc.stem + ".so" : tc.stem)).string();
+    const std::string elf_out  = (bin_dir / (needs_port_host(*src) ? tc.stem + ".so" : tc.stem)).string();
     const std::string out_log  = (run_dir / (tc.stem + ".out")).string();
 
     // Wipe any prior outputs.
