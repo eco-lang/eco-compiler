@@ -297,7 +297,9 @@ function apiRunner() {
   const build = spawnSync(elm, ["make", `--output=${out}/api.js`, path.resolve(__dirname, "../../compiler/src/API/Main.elm")],
     { cwd: shadow, encoding: "utf8", timeout: 600000 });
   assert.strictEqual(build.status, 0, (build.stdout || "") + (build.stderr || ""));
-  spawnSync(process.execPath, [path.resolve(__dirname, "../../compiler/scripts/replacements.js"), `${out}/api.js`]);
+  const applied = spawnSync(process.execPath, [path.resolve(__dirname, "../../compiler/scripts/apply-overrides.js"), `${out}/api.js`],
+    { encoding: "utf8" });
+  assert.strictEqual(applied.status, 0, (applied.stdout || "") + (applied.stderr || ""));
   const bin = path.resolve(__dirname, "../../compiler/bin");
   fs.writeFileSync(`${out}/run.js`, fs.readFileSync(path.join(bin, "index.js"), "utf8")
     .replace('require("./eco-io-handler")', `require(${JSON.stringify(path.join(bin, "eco-io-handler"))})`)

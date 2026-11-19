@@ -1564,6 +1564,8 @@ add_custom_target(check
     # The program archives' thread_locals fit the static TLS a dlopened program gets (Node addon, .so).
     COMMAND ${CMAKE_COMMAND} -E env ECO_BUILD_DIR=${CMAKE_BINARY_DIR}
         sh ${CMAKE_SOURCE_DIR}/test/scripts/check-static-tls.sh ${CMAKE_SOURCE_DIR}
+    # The generated JS kernel override module matches compiler/kernel-overrides (plans/js-kernel-overrides.md).
+    COMMAND sh ${CMAKE_SOURCE_DIR}/test/scripts/check-kernel-overrides.sh ${CMAKE_SOURCE_DIR} ${NODE_EXECUTABLE}
     COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR} --target test
     COMMAND sh -c "${CMAKE_BINARY_DIR}/test/test $\${TEST_FILTER:+--filter \"$$TEST_FILTER\"}"
     COMMENT "Gate A (incremental): build default ALL + Stage 1, run JIT E2E"
@@ -1629,7 +1631,8 @@ endif()
 set(_full_js_e2e)
 set(_full_casemap_check)
 if(NOT WIN32)
-    set(_full_js_e2e COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR} --target run-js-e2e)
+    set(_full_js_e2e COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR} --target run-js-e2e
+        COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR} --target run-js-kernel-override-tests)
     # The case tables must be what the vendored UCD generates, and node's Unicode version must be
     # theirs (plans/char-simple-case-mapping.md).
     set(_full_casemap_check COMMAND sh ${CMAKE_SOURCE_DIR}/test/scripts/check-casemap-tables.sh
@@ -1683,6 +1686,8 @@ add_custom_target(full
     # The program archives' thread_locals fit the static TLS a dlopened program gets (Node addon, .so).
     COMMAND ${CMAKE_COMMAND} -E env ECO_BUILD_DIR=${CMAKE_BINARY_DIR}
         sh ${CMAKE_SOURCE_DIR}/test/scripts/check-static-tls.sh ${CMAKE_SOURCE_DIR}
+    # The generated JS kernel override module matches compiler/kernel-overrides (plans/js-kernel-overrides.md).
+    COMMAND sh ${CMAKE_SOURCE_DIR}/test/scripts/check-kernel-overrides.sh ${CMAKE_SOURCE_DIR} ${NODE_EXECUTABLE}
     COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR} --target test eco-system-core-test eco-system-examples
         ${_full_time_test_target}
     COMMAND ${CMAKE_BINARY_DIR}/system-kernel-cpp/eco-system-core-test

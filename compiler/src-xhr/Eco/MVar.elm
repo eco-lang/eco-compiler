@@ -20,9 +20,10 @@ The decoder must read what the encoder wrote, and the types cannot check this.
 The native build's twin of this module takes the same encoder and decoder and
 ignores them, so callers are written against one set of signatures.
 
-The built compiler (`guida.js`) does not encode values either:
-`scripts/replacements.js` replaces `stash` and the two `unstashing` functions
-below, so that `put` sends eco-io a 12-byte token for the value, which stays a
+The built compiler (`guida.js`) does not encode values either: the value
+overrides `kernel-overrides/MVar*.js`, which `scripts/apply-overrides.js`
+applies to `guida.js`, replace `stash` and the two `unstashing` functions below,
+so that `put` sends eco-io a 12-byte token for the value, which stays a
 JavaScript object in `bin/eco-io-handler.js`, and `read` and `take` return that
 object. Unpatched, as in this source, they encode and decode.
 
@@ -126,8 +127,9 @@ drop (MVar id) =
 
 
 -- ====== STASH ======
--- scripts/replacements.js replaces these three definitions in guida.js by name, and fails the
--- build when it cannot find one; keep each a top-level function of this exact name and arity.
+-- kernel-overrides/MVar*.js (value overrides, group mvar-stash) replace these three definitions in
+-- guida.js by name, through scripts/apply-overrides.js, which fails the build when it finds only some
+-- of them; keep each a top-level function of this exact name and arity.
 
 
 {-| Returns the bytes that `put` sends for `value`: `value` as `encoder` writes it. In

@@ -60,8 +60,8 @@ let streamHandleCounter = 1000;
 const mVars = {};
 let mVarNextId = 0;
 
-// The MVar stash (src-xhr/Eco/MVar.elm, "STASH"; patched into guida.js by
-// scripts/replacements.js): `put` sends a 12-byte token, two magic words and an
+// The MVar stash (src-xhr/Eco/MVar.elm, "STASH"; patched into guida.js by the
+// kernel-overrides/MVar*.js value overrides): `put` sends a 12-byte token, two magic words and an
 // id, and the value itself stays here as the Elm program's own object, so it is
 // never encoded or decoded. An MVar holds the token as it held encoded bytes.
 // A stashed value lives until a `take` returns it or its MVar is dropped.

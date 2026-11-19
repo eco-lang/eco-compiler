@@ -138,7 +138,7 @@ def cmd_format(out):
                       "src/API/Main.elm"], shadow)
     if code != 0:
         sys.exit(text.decode())
-    run(["node", f"{REPO}/compiler/scripts/replacements.js", f"{tmp}/api.js"], tmp)
+    run(["node", f"{REPO}/compiler/scripts/apply-overrides.js", f"{tmp}/api.js"], tmp)
     runner = runner_js(tmp, "API.Main")
     env = dict(os.environ, GUIDA_JS_PATH=f"{tmp}/api.js")
     files = []

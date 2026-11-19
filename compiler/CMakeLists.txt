@@ -153,8 +153,12 @@ set(COMPILER_CONFIG_FILES
     "${BUILD_XHR_DIR}/elm.json"
     "${COMPILER_DIR}/package.json"
     "${COMPILER_DIR}/pnpm-lock.yaml"
-    "${COMPILER_DIR}/scripts/replacements.js"
+    "${COMPILER_DIR}/scripts/apply-overrides.js"
+    "${COMPILER_DIR}/scripts/kernel-overrides-lib.js"
 )
+# The JS kernel overrides (plans/js-kernel-overrides.md): apply-overrides.js applies them to Stage 1.
+file(GLOB _kernel_override_files CONFIGURE_DEPENDS "${COMPILER_DIR}/kernel-overrides/*.js")
+list(APPEND COMPILER_CONFIG_FILES ${_kernel_override_files})
 
 # Install Node runtime libraries via pnpm. The Elm toolchain itself is no
 # longer in package.json; cmake/toolchain.cmake fetches those binaries with
@@ -175,7 +179,8 @@ add_custom_command(
 add_custom_command(
     OUTPUT ${COMPILER_OUTPUT}
     COMMAND ${ELM_EXECUTABLE} make --output=${COMPILER_OUTPUT} ${ELM_ENTRY}
-    COMMAND ${NODE_EXECUTABLE} ${COMPILER_DIR}/scripts/replacements.js ${COMPILER_OUTPUT}
+    # Stock elm knows nothing about kernel overrides; eco's backend emits them for every later stage.
+    COMMAND ${NODE_EXECUTABLE} ${COMPILER_DIR}/scripts/apply-overrides.js ${COMPILER_OUTPUT}
     DEPENDS ${NPM_STAMP} ${ELM_SOURCES} ${COMPILER_CONFIG_FILES}
     WORKING_DIRECTORY ${BUILD_XHR_DIR}
     COMMENT "Building guida compiler (step 1: XHR)"
@@ -273,6 +278,16 @@ if(NOT WIN32)
             sh -c "${NODE_EXECUTABLE} ${CMAKE_SOURCE_DIR}/test/scripts/run-js-e2e.js --build-dir ${CMAKE_BINARY_DIR} --repo-root ${CMAKE_SOURCE_DIR} $\${TEST_FILTER:+--filter \"$$TEST_FILTER\"}"
         DEPENDS guida
         COMMENT "Running the eco-system and elm-conformance E2E tests on the JS target (node)"
+        USES_TERMINAL
+    )
+    # The JS kernel overrides (plans/js-kernel-overrides.md): what the JS backend emits between the
+    # kernel code and the Elm code, the source-map offset that counts it, and apply-overrides.js on
+    # small synthetic stock-Elm outputs. `full` runs it after run-js-e2e.
+    add_custom_target(run-js-kernel-override-tests
+        COMMAND ${CMAKE_COMMAND} -E env GUIDA_JS_PATH=${BUILD_XHR_DIR}/bin/guida.js
+            ${NODE_EXECUTABLE} --test ${CMAKE_SOURCE_DIR}/test/scripts/js-kernel-overrides.test.js
+        DEPENDS guida
+        COMMENT "Running the JS kernel override tests (node)"
         USES_TERMINAL
     )
 endif()
@@ -408,7 +423,6 @@ add_custom_command(
         --local-package eco/kernel=${COMPILER_DIR}/../eco-kernel-cpp
         --output=${ECO_BOOT_OUTPUT}
         ${ELM_ENTRY}
-    COMMAND ${NODE_EXECUTABLE} ${COMPILER_DIR}/scripts/replacements.js ${ECO_BOOT_OUTPUT}
     COMMAND ${CMAKE_COMMAND} -E copy ${ECO_BOOT_RUNNER_TEMPLATE} ${ECO_BOOT_RUNNER_OUTPUT}
     # KERNEL_NODE_MODULES_STAMP: the kernel-shadow node_modules link must
     # exist before Stage 2 runs — Eco.Kernel.Http.js requires 'adm-zip' and
@@ -437,7 +451,6 @@ add_custom_command(
         --local-package eco/kernel=${COMPILER_DIR}/../eco-kernel-cpp
         --output=bin/eco-boot-2.js
         ${ELM_ENTRY}
-    COMMAND ${NODE_EXECUTABLE} ${COMPILER_DIR}/scripts/replacements.js ${ECO_BOOT_2_OUTPUT}
     COMMAND ${CMAKE_COMMAND} -E copy ${ECO_BOOT_2_RUNNER_TEMPLATE} ${ECO_BOOT_2_RUNNER_OUTPUT}
     DEPENDS ${ECO_BOOT_OUTPUT} ${ECO_BOOT_RUNNER_OUTPUT} ${ELM_SOURCES} ${KERNEL_SOURCES}
         ${ECO_BOOT_2_RUNNER_TEMPLATE}
@@ -468,7 +481,6 @@ add_custom_command(
         --local-package eco/kernel=${COMPILER_DIR}/../eco-kernel-cpp
         --output=bin/eco-boot-3.js
         ${ELM_ENTRY}
-    COMMAND ${NODE_EXECUTABLE} ${COMPILER_DIR}/scripts/replacements.js ${ECO_BOOT_3_OUTPUT}
     DEPENDS ${ECO_BOOT_2_OUTPUT} ${ECO_BOOT_2_RUNNER_OUTPUT}
         ${ELM_SOURCES} ${KERNEL_SOURCES}
     WORKING_DIRECTORY ${BUILD_KERNEL_DIR}

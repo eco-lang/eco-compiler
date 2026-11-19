@@ -212,7 +212,7 @@ def build_instrumented_guida(root, out_dir, data_dir):
             cwd=out_dir, env=tool_env({"ELM_COVERAGE_DIR": data_dir}))
     if r.returncode != 0 or not os.path.exists(guida):
         sys.exit("building the instrumented guida.js failed")
-    run(["node", f"{COMPILER}/scripts/replacements.js", guida], check=True)
+    run(["node", f"{COMPILER}/scripts/apply-overrides.js", guida], check=True)
     with open(guida) as f:
         if "INJECTED COVERAGE FIXTURE" not in f.read():
             sys.exit("the coverage hook was not injected into guida.js")

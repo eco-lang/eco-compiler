@@ -34,4 +34,4 @@ js="$filepath.js"
 
 cd "$BUILD_XHR_DIR"
 $ELM make --output=$js $elm_entry
-node "$COMPILER_DIR/scripts/replacements.js" $js
+node "$COMPILER_DIR/scripts/apply-overrides.js" $js

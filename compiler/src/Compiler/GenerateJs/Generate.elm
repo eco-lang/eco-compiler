@@ -15,7 +15,8 @@ A node becomes a `var`, a constructor, a group of mutually recursive
 definitions, an effect manager registration, a port, or the text of a _kernel
 module_, which is hand-written JavaScript from a package, split into chunks by
 `Compiler.Parse.Kernel`. Kernel text is collected apart from the rest and placed
-before all other generated code.
+before all other generated code, followed by the kernel overrides of
+`Compiler.GenerateJs.KernelOverride` that the program's kernel modules call for.
 
 `generate` wraps the program in a function that is called at once with
 `this`, after the `F`/`A` helpers of `Compiler.GenerateJs.Functions`.
@@ -46,6 +47,8 @@ import Compiler.GenerateJs.Builder as JS
 import Compiler.GenerateJs.CodeGen as CodeGen
 import Compiler.GenerateJs.Expression as Expr
 import Compiler.GenerateJs.Functions as Functions
+import Compiler.GenerateJs.KernelOverride as KernelOverride
+import Compiler.GenerateJs.KernelOverride.Files as KernelOverrideFiles
 import Compiler.GenerateJs.Mode as Mode
 import Compiler.GenerateJs.Name as JsName
 import Compiler.GenerateJs.SourceMap as SourceMap
@@ -91,8 +94,8 @@ prelude mode =
 
 The text is one function called at once with `this`. Inside it are
 the runtime helpers, a console warning unless `mode` is production, the kernel
-code, a few definitions that let ports carry `Bytes`, every global reachable
-from a `main` in dependency order, and the export of the `main`s.
+code, the kernel overrides it calls for (`kernelSection`), every global
+reachable from a `main` in dependency order, and the export of the `main`s.
 
 With source maps the text ends with a source map comment. `leadingLines` is
 the number of lines that will come before this text in the file it is written
@@ -116,8 +119,8 @@ generate sourceMaps leadingLines mode (Opt.GlobalGraph graph _) mains =
 {-| Returns the source map comment for the code in `state`, or the empty string
 without source maps.
 
-The builder counts lines from the end of the prelude, so the lines of the kernel
-code, which goes in before the builder's text, are added here.
+The builder counts lines from the end of the prelude, so the lines of
+`kernelSection`, which goes in before the builder's text, are added here.
 
 -}
 generateSourceMaps : CodeGen.SourceMaps -> Int -> State -> String
@@ -130,9 +133,7 @@ generateSourceMaps sourceMaps leadingLines state =
             let
                 kernelLeadingLines : Int
                 kernelLeadingLines =
-                    stateKernels state
-                        |> List.map (String.length << String.filter ((==) '\n'))
-                        |> List.sum
+                    String.length (String.filter ((==) '\n') (kernelSection state))
             in
             SourceMap.generate leadingLines kernelLeadingLines moduleSources (stateToMappings state)
 
@@ -179,47 +180,33 @@ emptyState startingLine =
     State (JS.emptyBuilder startingLine) EverySet.empty
 
 
-{-| Returns the code in the state: the kernel code in the order it was added,
-then `bytesForPorts`, then the rest of the generated code.
+{-| Returns the code in the state: `kernelSection`, then the rest of the
+generated code.
 -}
 stateToBuilder : State -> String
-stateToBuilder (State (JS.Builder b) _) =
-    prependBuilders b.revKernels (bytesForPorts ++ b.revBuilders)
+stateToBuilder ((State (JS.Builder b) _) as state) =
+    kernelSection state ++ b.revBuilders
 
 
-{-| The JavaScript definitions of `_Json_decodeBytes` and `_Json_encodeBytes`.
-The decoder accepts a `Uint8Array`, an `ArrayBuffer` or a `DataView` and gives a
-`DataView`; the encoder gives a `Uint8Array` over the same bytes.
+{-| Returns the text that goes before the Elm code: the kernel code in the order
+it was added, then the kernel overrides (`Compiler.GenerateJs.KernelOverride`)
+whose required kernel modules were all added. `stateToBuilder` emits it and
+`generateSourceMaps` counts its lines, so the two cannot disagree.
 -}
-bytesForPorts : String
-bytesForPorts =
-    """
-// BYTES FOR PORTS
-var _Json_decodeBytes = _Json_decodePrim(function(value) {
-    if (value instanceof Uint8Array) {
-        return $elm$core$Result$Ok(new DataView(value.buffer, value.byteOffset, value.byteLength));
-    }
-    if (value instanceof ArrayBuffer) {
-        return $elm$core$Result$Ok(new DataView(value));
-    }
-    if (value instanceof DataView) {
-        return $elm$core$Result$Ok(value);
-    }
-    return _Json_expecting('a BYTES value (Uint8Array, ArrayBuffer, or DataView)', value);
-});
-
-var _Json_encodeBytes = function(bytes) {
-    return _Json_wrap(new Uint8Array(bytes.buffer, bytes.byteOffset, bytes.byteLength));
-};
-"""
+kernelSection : State -> String
+kernelSection (State (JS.Builder b) seen) =
+    String.concat (List.reverse b.revKernels)
+        ++ KernelOverride.section (isKernelPresent seen) KernelOverrideFiles.all
 
 
-{-| Returns `monolith` with the pieces of `revBuilders`, which are newest first,
-put before it oldest first.
+{-| Returns whether the kernel module of `prefix` and `home`, such as ( "Elm",
+"Bytes" ), was added to the state. A kernel module's global is in `seen` once
+its text is added, except the debugger's in a build that is not for debugging,
+which no override needs.
 -}
-prependBuilders : List String -> String -> String
-prependBuilders revBuilders monolith =
-    List.foldl (\b m -> b ++ m) monolith revBuilders
+isKernelPresent : EverySet String Opt.Global -> ( String, String ) -> Bool
+isKernelPresent seen ( prefix, home ) =
+    EverySet.member Opt.toComparableGlobal (Opt.toKernelGlobal prefix home) seen
 
 
 {-| Returns the source map mappings recorded in the state, newest first.
@@ -227,13 +214,6 @@ prependBuilders revBuilders monolith =
 stateToMappings : State -> List JS.Mapping
 stateToMappings (State (JS.Builder b) _) =
     b.mappings
-
-
-{-| Returns the kernel code in the state, newest first.
--}
-stateKernels : State -> List String
-stateKernels (State (JS.Builder b) _) =
-    b.revKernels
 
 
 {-| Adds `global` and everything it depends on to the state, unless it has
