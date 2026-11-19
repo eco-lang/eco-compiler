@@ -759,11 +759,10 @@ bool startsWith(void* prefix, void* str);
 // a non-null one no null `str`. Does not allocate on the Elm heap.
 bool endsWith(void* suffix, void* str);
 
-// Returns an Elm list of every unit index at which `needle` occurs in `haystack`, in increasing
-// order, overlapping occurrences included.
+// Returns an Elm list of the unit indexes at which `needle` occurs in `haystack`, in increasing
+// order. Occurrences do not overlap, as in elm/core: each search resumes after the previous match.
 //
-// A null `haystack` gives the empty list. An empty or null `needle` gives every index from 0 to
-// the length of `haystack` inclusive. A GC point.
+// A null `haystack`, or an empty or null `needle`, gives the empty list. A GC point.
 HPointer indexes(void* needle, void* haystack);
 
 // ============================================================================

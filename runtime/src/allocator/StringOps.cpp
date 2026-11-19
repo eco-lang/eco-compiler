@@ -713,7 +713,7 @@ bool contains(void* needle, void* haystack) {
     if (h.ok() && n.ok()) {
         bool found = false;
         withUnitRuns(h, n, [&](auto hp, auto np) {
-            forEachUnitMatch(hp, h.n, np, n.n, true, [&](size_t) { found = true; return false; });
+            forEachUnitMatch(hp, h.n, np, n.n, false, [&](size_t) { found = true; return false; });
         });
         return found;
     }
@@ -780,6 +780,9 @@ HPointer indexes(void* needle, void* haystack) {
     // below 1. A null pointer is the empty string.
     if (!haystack || !needle) return alloc::listNil();
 
+    // Occurrences do not overlap: as elm/core's `_String_indexes`, the search resumes after the end
+    // of each match, so `indexes "aa" "aaaa"` is [0,2].
+    //
     // Any pairing of flat, slice and UTF-8 forms is searched where its units lie, without copying
     // either String. Most calls find a few indexes, which are kept on the stack.
     UnitRun h = unitRun(haystack);
@@ -790,7 +793,7 @@ HPointer indexes(void* needle, void* haystack) {
         std::vector<i64> moreIdx;
         size_t count = 0;
         withUnitRuns(h, n, [&](auto hp, auto np) {
-            forEachUnitMatch(hp, h.n, np, n.n, true, [&](size_t i) {
+            forEachUnitMatch(hp, h.n, np, n.n, false, [&](size_t i) {
                 if (count < kInline) {
                     inlineIdx[count] = static_cast<i64>(i);
                 } else {
@@ -820,7 +823,7 @@ HPointer indexes(void* needle, void* haystack) {
     auto haystackBuf = toStdU16String(haystack);
     std::vector<i64> indices;
     forEachUnitMatch(reinterpret_cast<const u16*>(haystackBuf.data()), haystackBuf.size(),
-                     reinterpret_cast<const u16*>(needleBuf.data()), needleBuf.size(), true,
+                     reinterpret_cast<const u16*>(needleBuf.data()), needleBuf.size(), false,
                      [&](size_t i) { indices.push_back(static_cast<i64>(i)); return true; });
     return alloc::listFromInts(indices);
 }
