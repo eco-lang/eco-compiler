@@ -1,4 +1,4 @@
-//===- FNVExports.cpp - C-linkage export for eco/containers' FNV.hash -----===//
+//===- FNVExports.cpp - C-linkage export for eco/system's FNV.hash --------===//
 //
 // `FNV.hash : a -> Int` is the hash SeqDict and SeqSet key their trie on. It must give equal hashes for
 // any two values `==` (elm/core's `Utils.equal`) finds equal; unequal values may collide, since SeqDict
@@ -207,7 +207,7 @@ u32 fmix32(u32 h) {
 
 } // namespace
 
-extern "C" int64_t Elm_Kernel_FNV_hash(HPtr value) {
+extern "C" int64_t Eco_Kernel_FNV_hash(HPtr value) {
     Hasher hasher;
     hasher.boxed(Export::decode(value.toBits()), 0);
     return static_cast<int64_t>(fmix32(hasher.h));

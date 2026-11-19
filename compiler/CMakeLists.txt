@@ -320,9 +320,6 @@ eco_create_dir_link(${CMAKE_SOURCE_DIR}/eco-kernel-cpp ${BUILD_KERNEL_DIR}/share
 # also probes dirname(exe)/../share/eco/system/system-kernel-cpp.
 file(MAKE_DIRECTORY ${BUILD_KERNEL_DIR}/share/eco/system)
 eco_create_dir_link(${CMAKE_SOURCE_DIR}/system-kernel-cpp ${BUILD_KERNEL_DIR}/share/eco/system/system-kernel-cpp)
-# And for the bundled `eco/containers` package.
-file(MAKE_DIRECTORY ${BUILD_KERNEL_DIR}/share/eco/containers)
-eco_create_dir_link(${CMAKE_SOURCE_DIR}/containers-kernel-cpp ${BUILD_KERNEL_DIR}/share/eco/containers/containers-kernel-cpp)
 # Eco.Kernel.Http.js does `require('adm-zip')` when downloading package
 # archives. Without this link, node walks up from eco-boot.js's location
 # (.../build-kernel/bin/) and never reaches ${COMPILER_DIR}/node_modules,
@@ -838,11 +835,6 @@ function(eco_apply_unified_link target)
     foreach(mod ${ECO_SYSTEM_MODS})
         if(TARGET EcoSystem_${mod})
             add_dependencies(${target} EcoSystem_${mod})
-        endif()
-    endforeach()
-    foreach(mod ${ECO_CONTAINERS_MODS})
-        if(TARGET EcoContainers_${mod})
-            add_dependencies(${target} EcoContainers_${mod})
         endif()
     endforeach()
 

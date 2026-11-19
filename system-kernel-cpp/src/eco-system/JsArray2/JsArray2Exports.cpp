@@ -1,4 +1,4 @@
-//===- JsArray2Exports.cpp - C-linkage exports for eco/containers' JsArray2 -===//
+//===- JsArray2Exports.cpp - C-linkage exports for eco/system's JsArray2 ---===//
 //
 // `JsArray2` is elm/core's `JsArray` with two more operations, `unsafeInsert` and `removeIndex`, which
 // SeqDict needs. It is the same heap object (`Tag_Array`, an `ElmArray`), so most entry points forward to
@@ -65,25 +65,25 @@ HPointer copyArray(HPtr array, int64_t skip, uint32_t extra, uint32_t& outLen, u
 
 extern "C" {
 
-HPtr Elm_Kernel_JsArray2_empty() { return Elm_Kernel_JsArray_empty(); }
+HPtr Eco_Kernel_JsArray2_empty() { return Elm_Kernel_JsArray_empty(); }
 
-HPtr Elm_Kernel_JsArray2_singleton(HPtr value) { return Elm_Kernel_JsArray_singleton(value); }
+HPtr Eco_Kernel_JsArray2_singleton(HPtr value) { return Elm_Kernel_JsArray_singleton(value); }
 
-int64_t Elm_Kernel_JsArray2_length(HPtr array) { return Elm_Kernel_JsArray_length(array); }
+int64_t Eco_Kernel_JsArray2_length(HPtr array) { return Elm_Kernel_JsArray_length(array); }
 
-HPtr Elm_Kernel_JsArray2_initialize(int64_t size, int64_t offset, HPtr closure) {
+HPtr Eco_Kernel_JsArray2_initialize(int64_t size, int64_t offset, HPtr closure) {
     return Elm_Kernel_JsArray_initialize_Int(size, offset, closure);
 }
 
-HPtr Elm_Kernel_JsArray2_initializeFromList(int64_t max, HPtr list) {
+HPtr Eco_Kernel_JsArray2_initializeFromList(int64_t max, HPtr list) {
     return Elm_Kernel_JsArray_initializeFromList_Int(max, list);
 }
 
-HPtr Elm_Kernel_JsArray2_unsafeGet(int64_t index, HPtr array) {
+HPtr Eco_Kernel_JsArray2_unsafeGet(int64_t index, HPtr array) {
     return Elm_Kernel_JsArray_unsafeGet_Int(index, array);
 }
 
-HPtr Elm_Kernel_JsArray2_unsafeSet(int64_t index, HPtr value, HPtr array) {
+HPtr Eco_Kernel_JsArray2_unsafeSet(int64_t index, HPtr value, HPtr array) {
     auto& allocator = Allocator::instance();
     HPointer valHP = Export::decode(value.toBits());
     StackRootGuard guard(&valHP);
@@ -98,7 +98,7 @@ HPtr Elm_Kernel_JsArray2_unsafeSet(int64_t index, HPtr value, HPtr array) {
 }
 
 // Inserts `value` before slot `index`, shifting the rest up by one. An index past the end appends.
-HPtr Elm_Kernel_JsArray2_unsafeInsert(int64_t index, HPtr value, HPtr array) {
+HPtr Eco_Kernel_JsArray2_unsafeInsert(int64_t index, HPtr value, HPtr array) {
     auto& allocator = Allocator::instance();
     HPointer valHP = Export::decode(value.toBits());
     StackRootGuard guard(&valHP);
@@ -118,33 +118,33 @@ HPtr Elm_Kernel_JsArray2_unsafeInsert(int64_t index, HPtr value, HPtr array) {
 }
 
 // Returns the array without slot `index`, or a copy of it when `index` is out of range.
-HPtr Elm_Kernel_JsArray2_removeIndex(int64_t index, HPtr array) {
+HPtr Eco_Kernel_JsArray2_removeIndex(int64_t index, HPtr array) {
     uint32_t len, kind;
     HPointer result = copyArray(array, index, 0, len, kind);
     return HPtr::fromBits(Export::encode(result));
 }
 
-HPtr Elm_Kernel_JsArray2_push(HPtr value, HPtr array) { return Elm_Kernel_JsArray_push(value, array); }
+HPtr Eco_Kernel_JsArray2_push(HPtr value, HPtr array) { return Elm_Kernel_JsArray_push(value, array); }
 
-HPtr Elm_Kernel_JsArray2_foldl(HPtr closure, HPtr acc, HPtr array) {
+HPtr Eco_Kernel_JsArray2_foldl(HPtr closure, HPtr acc, HPtr array) {
     return Elm_Kernel_JsArray_foldl(closure, acc, array);
 }
 
-HPtr Elm_Kernel_JsArray2_foldr(HPtr closure, HPtr acc, HPtr array) {
+HPtr Eco_Kernel_JsArray2_foldr(HPtr closure, HPtr acc, HPtr array) {
     return Elm_Kernel_JsArray_foldr(closure, acc, array);
 }
 
-HPtr Elm_Kernel_JsArray2_map(HPtr closure, HPtr array) { return Elm_Kernel_JsArray_map(closure, array); }
+HPtr Eco_Kernel_JsArray2_map(HPtr closure, HPtr array) { return Elm_Kernel_JsArray_map(closure, array); }
 
-HPtr Elm_Kernel_JsArray2_indexedMap(HPtr closure, int64_t offset, HPtr array) {
+HPtr Eco_Kernel_JsArray2_indexedMap(HPtr closure, int64_t offset, HPtr array) {
     return Elm_Kernel_JsArray_indexedMap_Int(closure, offset, array);
 }
 
-HPtr Elm_Kernel_JsArray2_slice(int64_t from, int64_t to, HPtr array) {
+HPtr Eco_Kernel_JsArray2_slice(int64_t from, int64_t to, HPtr array) {
     return Elm_Kernel_JsArray_slice_Int(from, to, array);
 }
 
-HPtr Elm_Kernel_JsArray2_appendN(int64_t n, HPtr dest, HPtr source) {
+HPtr Eco_Kernel_JsArray2_appendN(int64_t n, HPtr dest, HPtr source) {
     return Elm_Kernel_JsArray_appendN_Int(n, dest, source);
 }
 

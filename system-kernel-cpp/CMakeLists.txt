@@ -319,6 +319,18 @@ eco_system_module(Dom          POSIX
     src/eco-system/Dom/DomExports.cpp)
 target_link_libraries(EcoSystem_Dom PRIVATE ElmKernel_VirtualDom)
 
+# SeqDict's and SeqSet's kernels (README, "SeqDict, SeqSet"): FNV hashes any value by content as
+# elm/core's `==` compares it (sharing core/SeqDict.hpp with Utils.cpp), and JsArray2 forwards to
+# elm/core's JsArray kernel, so both build against elm-kernel-cpp's headers.
+eco_system_module(FNV          POSIX
+    src/eco-system/FNV/FNVExports.cpp)
+eco_system_module(JsArray2     POSIX
+    src/eco-system/JsArray2/JsArray2Exports.cpp)
+foreach(mod FNV JsArray2)
+    target_include_directories(EcoSystem_${mod} PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/../elm-kernel-cpp/src)
+endforeach()
+target_link_libraries(EcoSystem_JsArray2 PRIVATE ElmKernel_JsArray)
+
 # Every module listed in ECO_SYSTEM_MODS must have a target here.
 foreach(mod ${ECO_SYSTEM_MODS})
     if(NOT TARGET EcoSystem_${mod})

@@ -32,7 +32,6 @@ set(ELM_TEST_PACKAGES
     eco-elm
     eco-elm-bytes
     eco-elm-core
-    eco-containers
     eco-elm-json
     eco-elm-regex
     eco-elm-conformance
@@ -354,11 +353,6 @@ function(eco_test_link_eco_system tgt)
     foreach(mod ${ECO_SYSTEM_MODS})
         if(TARGET EcoSystem_${mod})
             list(APPEND _libs EcoSystem_${mod})
-        endif()
-    endforeach()
-    foreach(mod ${ECO_CONTAINERS_MODS})
-        if(TARGET EcoContainers_${mod})
-            list(APPEND _libs EcoContainers_${mod})
         endif()
     endforeach()
     if(NOT _libs)

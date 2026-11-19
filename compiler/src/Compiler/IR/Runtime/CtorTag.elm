@@ -14,7 +14,7 @@ index. The exception is a reserved tag: a value at the top of the 16-bit range
 the runtime keeps tags in, which the runtime recognises and treats specially.
 Two constructors get one: 0xFFFF, for `elm/core`'s `Dict.RBNode_elm_builtin`,
 so that the runtime compares two dictionaries by their contents in key order
-rather than by the shape of their trees; and 0xFFFB, for `eco/containers`'
+rather than by the shape of their trees; and 0xFFFB, for `eco/system`'s
 `SeqDict.SeqDict_elm_builtin`, so that it compares two of those by their entries
 in insertion order rather than by their hash trie and the holes that removing
 entries leaves. `effective` computes the tag.
@@ -73,7 +73,7 @@ dictRBNode =
     0xFFFF
 
 
-{-| The reserved runtime tag of `eco/containers`' `SeqDict.SeqDict_elm_builtin`,
+{-| The reserved runtime tag of `eco/system`'s `SeqDict.SeqDict_elm_builtin`,
 the one constructor of a `SeqDict`. It must equal the runtime's `CTOR_SEQDICT`.
 -}
 seqDict : Int
@@ -85,7 +85,7 @@ seqDict =
 -}
 seqDictModule : ModuleName.Canonical
 seqDictModule =
-    ModuleName.Canonical Pkg.ecoContainers "SeqDict"
+    ModuleName.Canonical Pkg.ecoSystem "SeqDict"
 
 
 {-| The runtime tag reported for the shared empty constant word, which
@@ -178,7 +178,7 @@ checkNullConsCapacity name tag =
 {-| Returns the runtime tag of the constructor `name`, declared at position
 `index` in a type of module `home`. This is the declaration index, except for
 `Dict.RBNode_elm_builtin` in `elm/core`, which gets the reserved tag 0xFFFF, and
-`SeqDict.SeqDict_elm_builtin` in `eco/containers`, which gets 0xFFFB.
+`SeqDict.SeqDict_elm_builtin` in `eco/system`, which gets 0xFFFB.
 
 For `Nothing` the result is still its declaration index, although at run time a
 `Nothing` reports `constantTag`.

@@ -12,20 +12,28 @@ Array, so two SeqDicts with the same entries can differ structurally.
 
 -}
 
--- CHECK: eco/containers: "PASS"
+-- SKIP-JS: checks `==` on SeqDicts (contentEquality), which needs eco's native SeqDict-aware `==`
+-- CHECK: SeqDictRandomized: "PASS"
 
-import Html exposing (text)
 import SeqDictModel
+import System
+import Task
 
 
+main : Platform.Program System.Environment () ()
 main =
+    System.simpleProgram (\_ -> Task.succeed (report ()))
+
+
+report : () -> ()
+report () =
     let
         _ =
             case SeqDictModel.run { contentEquality = True } of
                 [] ->
-                    Debug.log "eco/containers" "PASS"
+                    Debug.log "SeqDictRandomized" "PASS"
 
                 errors ->
-                    Debug.log "eco/containers" (String.join "\n" errors)
+                    Debug.log "SeqDictRandomized" (String.join "\n" errors)
     in
-    text "done"
+    ()

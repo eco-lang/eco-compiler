@@ -1,6 +1,6 @@
-//===- SeqDict.hpp - Walking the entries of an eco/containers SeqDict -------===//
+//===- SeqDict.hpp - Walking the entries of an eco/system SeqDict -----------===//
 //
-// `eco/containers`' `SeqDict` keeps its entries twice: in a hash trie, for lookups, and in insertion order
+// `eco/system`'s `SeqDict` keeps its entries twice: in a hash trie, for lookups, and in insertion order
 // in an Elm `Array (Maybe ( Int, k, v ))`, where removing an entry leaves a `Nothing`. Two SeqDicts that
 // hold the same entries in the same order can differ in both (a removed entry leaves a hole in one but not
 // the other), so `==` and `FNV.hash` compare and hash the entries in insertion order instead, which
@@ -24,7 +24,7 @@
 
 namespace Elm::Kernel {
 
-/// The constructor tag the compiler gives `SeqDict.SeqDict_elm_builtin` in eco/containers.
+/// The constructor tag the compiler gives `SeqDict.SeqDict_elm_builtin` in eco/system.
 constexpr u16 CTOR_SEQDICT = 0xFFFB;
 
 namespace SeqDictDetail {

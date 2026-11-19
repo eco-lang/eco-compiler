@@ -4,7 +4,7 @@
 
 // FNV.hash for the JavaScript backend: FNV-1a over a value's content, in [0, 2^32). Equal values must hash
 // alike, so a Dict is hashed by its entries in key order, not by its tree's shape. The native kernel
-// (src/eco-containers/FNVExports.cpp) gives other numbers; nothing compares the two.
+// (src/eco-system/FNV/FNVExports.cpp) gives other numbers; nothing compares the two.
 
 var _FNV_prime = 16777619;
 var _FNV_offset = 2166136261;

@@ -42,6 +42,17 @@ an HTTP client, use [elm/http](https://package.elm-lang.org/packages/elm/http/la
   plain or TLS, and over HTTP/2: RFC 8441), with whole or streamed messages, a ping/pong heartbeat,
   and permessage-deflate compression (RFC 7692; on by default, without context takeover). Checked
   locally against the Autobahn|Testsuite (`test/conformance/` in the eco repository).
+- `SeqDict`, `SeqSet`: a Dict and a Set whose keys can be any value `==` can compare, not only
+  `comparable` ones, and whose `toList`, `foldl` and the rest go in insertion order. The API and
+  behaviour are [lamdera/containers](https://github.com/lamdera/containers)'s (without its
+  lamdera/codecs encoders), and so is most of the implementation: a hash trie keyed by `FNV.hash`,
+  with an insertion-order `Array`. `FNV.hash` is a kernel that walks any value by content, never by
+  representation (`src/eco-system/FNV/FNVExports.cpp`, and `src/Eco/Kernel/FNV.js` in JavaScript),
+  so it agrees with `==`; `JsArray2` is elm/core's `JsArray` plus the `unsafeSet`, `unsafeInsert` and
+  `removeIndex` SeqDict needs (`src/eco-system/JsArray2/`). Removing an entry leaves a hole in the
+  insertion-order `Array`, so natively the compiler gives `SeqDict_elm_builtin` the reserved
+  constructor tag 0xFFFB and `==` compares two SeqDicts by their entries in insertion order; on the
+  JS target `==` is elm/core's and compares them structurally.
 
 ## Example
 
@@ -99,3 +110,32 @@ Both are distributed under the MIT License:
     NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM,
     DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
     OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+`SeqDict`, `SeqSet`, `FNV` and `JsArray2` (Elm and JavaScript) are derived from
+[lamdera/containers](https://github.com/lamdera/containers), distributed under this license:
+
+    Copyright (c) 2018, Robin Heggelund Hansen
+    All rights reserved.
+
+    Redistribution and use in source and binary forms, with or without modification, are permitted
+    provided that the following conditions are met:
+
+        * Redistributions of source code must retain the above copyright notice, this list of
+          conditions and the following disclaimer.
+
+        * Redistributions in binary form must reproduce the above copyright notice, this list of
+          conditions and the following disclaimer in the documentation and/or other materials
+          provided with the distribution.
+
+        * Neither the name of Robin Heggelund Hansen nor the names of other contributors may be
+          used to endorse or promote products derived from this software without specific prior
+          written permission.
+
+    THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR
+    IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND
+    FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR
+    CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+    DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
+    DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY,
+    WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY
+    WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
