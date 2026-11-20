@@ -6,7 +6,7 @@ Elm's kernel functions are implemented in `elm-kernel-cpp/`, a C++ library that 
 
 The contract a kernel keeps is the one its JavaScript original defines: the same arity, the same argument values and a result of the shape the Elm wrapper expects. The same `Json/Decode.elm`, `Http.elm` and `Html.elm` therefore compile to JavaScript and to native code without a line changed. The packages belong to the Elm project, and forking them for native code would mean Eco-specific packages for every program and two copies of each package that drift apart. Holding the C++ to the JavaScript behavior keeps one set of Elm sources for both targets.
 
-The library is written function by function from the JavaScript kernel sources. A table of the JavaScript kernel surface, `design_docs/elm_kernel_functions.csv`, records what exists to port. It lists the JavaScript functions, including packages Eco has no C++ for, and it leaves out the typed variants and helpers the C++ adds, so the list of what is implemented is the export header, not the table.
+The library is written function by function from the JavaScript kernel sources. A table of the kernel surface, `design_docs/elm_kernel_functions.csv`, lists every `Elm.Kernel.*` and `Eco.Kernel.*` function that package Elm source references, including packages Eco has no C++ for, with whether a C++ export exists for it and which packages reference it. It leaves out the typed variants and helpers the C++ adds, so the list of what is implemented is the export header, not the table.
 
 Matching JavaScript extends to characters. Elm's JavaScript kernels store a string as UTF-16 and give a Char one Unicode code point, and Eco does the same: a Char is a 32-bit code point, and `Char.fromCode` gives U+FFFD for a number outside 0 to 0x10FFFF. The String kernels that produce Chars (`toList`, `uncons`, the folds, `map`, `filter`, `any`, `all`) combine a surrogate pair into one Char, the ones that take Chars (`cons`, `fromChar`, `fromList`) write a Char above 0xFFFF as a pair, and `length`, slicing, the index functions and the parser kernels' offsets count UTF-16 units as JavaScript's `charCodeAt` does. A program then gets the same characters and positions on both targets, including for text outside the 16-bit range. Two differences remain. A lone surrogate is a Char of its own unit value and is never glued to a neighbouring unit, as JavaScript's folds do, so `String.fromList (String.toList s) == s` always holds.
 
@@ -150,7 +150,7 @@ Code:
 
 Documents:
 
-- `design_docs/elm_kernel_functions.csv`: the JavaScript kernel inventory.
+- `design_docs/elm_kernel_functions.csv`: the kernel inventory (`Elm.Kernel` and `Eco.Kernel`).
 - `design_docs/kernel-boundary-reduction.md`: the measurement of boundary cost; a snapshot whose figures and line numbers are out of date.
 
 Invariants (`design_docs/invariants.csv`):

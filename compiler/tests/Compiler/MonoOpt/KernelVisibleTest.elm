@@ -8,7 +8,7 @@ The type environment comes from monomorphizing a small program declaring
 hand-built kernel calls over those types and `Rec = { n : Int }`, so that each
 test exercises one rule:
 
-  - `W` passed to a kernel the table does not list (here `String.foldl`) is
+  - `W` passed to a kernel the table does not list (here `Debugger.unsafeCoerce`) is
     kernel-visible: the deny-all closure of the call's argument and result
     types;
   - `V` passed only to `List.cons`, which the table lists `Transparent`, is
@@ -20,7 +20,13 @@ test exercises one rule:
     the type constructor `Maybe` is then visible: the set keeps both, so that
     `NullableMaybe`, which decides per instantiation, is not stopped by one
     kernel's `Maybe`;
-  - a kernel that never returns (`Crash.crash`) marks nothing.
+  - a kernel that never returns (`Crash.crash`) marks nothing;
+  - `Bytes.decode` pins the `Maybe` it builds, but not the payload it copies
+    out of the decoder's result without looking at it (`W` stays erasable);
+  - from the kernel review (`design_docs/elm_kernel_functions.csv`):
+    `String.foldl` only moves its accumulator, `Process.sleep` is found under
+    its own home, and `HttpServer.createServerWith`, which reads a `Maybe`
+    option's tag and field, keeps that instantiation boxed.
 
 An effect manager's command type (the `MonoManagerLeaf` rule) is covered by the
 E2E test `ProcessSpawnExternalTest`, whose `Maybe` the C++ manager builds.
@@ -82,6 +88,11 @@ rec =
 maybeOf : Mono.MonoType -> Mono.MonoType
 maybeOf t =
     Mono.mCustom ModuleName.maybe "Maybe" [ t ]
+
+
+taskOf : Mono.MonoType -> Mono.MonoType -> Mono.MonoType
+taskOf x a =
+    Mono.mCustom ModuleName.platform "Task" [ x, a ]
 
 
 fn : List Mono.MonoType -> Mono.MonoType -> Mono.MonoType
@@ -150,13 +161,13 @@ suite =
     describe "Compiler.MonoOpt.KernelVisible"
         [ test "a wrapper passed to an unlisted kernel is visible" <|
             withKv (\kv w _ -> visible kv w |> Expect.equal True)
-                (\w _ -> [ kernelCall "String" "foldl" [ local "f" (fn [ Mono.MChar, w ] w), local "z" w, local "s" Mono.MString ] w ])
+                (\w _ -> [ kernelCall "Debugger" "unsafeCoerce" [ local "x" w ] w ])
         , test "a wrapper passed only to a transparent kernel is not visible" <|
             withKv (\kv _ v -> visible kv v |> Expect.equal False)
                 (\_ v -> [ kernelCall "List" "cons" [ local "x" v, local "xs" (Mono.mList v) ] (Mono.mList v) ])
         , test "a kernel used as a value closes over its own type" <|
             withKv (\kv w _ -> visible kv w |> Expect.equal True)
-                (\w _ -> [ Mono.MonoVarKernel region "Elm" "String" "foldl" (fn [ fn [ Mono.MChar, w ] w, w, Mono.MString ] w) ])
+                (\w _ -> [ Mono.MonoVarKernel region "Elm" "Debugger" "unsafeCoerce" (fn [ w ] w) ])
         , test "a kernel's Maybe Int is a visible instantiation; a Maybe Rec no kernel touches is not" <|
             withKv
                 (\kv _ _ ->
@@ -175,4 +186,35 @@ suite =
         , test "a kernel that never returns marks nothing" <|
             withKv (\kv w _ -> visible kv w |> Expect.equal False)
                 (\w _ -> [ kernelCall "Crash" "crash" [ local "s" Mono.MString ] w ])
+        , test "Bytes.decode builds the Maybe but never looks into its payload" <|
+            withKv
+                (\kv w _ ->
+                    Expect.all
+                        [ \_ -> visible kv w |> Expect.equal False
+                        , \_ -> KernelVisible.isVisibleInstance kv (maybeOf w) |> Expect.equal True
+                        ]
+                        ()
+                )
+                (\w _ ->
+                    let
+                        bytesType =
+                            Mono.mCustom ModuleName.bytes "Bytes" []
+                    in
+                    [ kernelCall "Bytes"
+                        "decode"
+                        [ local "d" (fn [ bytesType, Mono.MInt ] (Mono.mTuple (Mono.T2 Mono.MInt w)))
+                        , local "bs" bytesType
+                        ]
+                        (maybeOf w)
+                    ]
+                )
+        , test "String.foldl moves its accumulator without looking at it" <|
+            withKv (\kv w _ -> visible kv w |> Expect.equal False)
+                (\w _ -> [ kernelCall "String" "foldl" [ local "f" (fn [ Mono.MChar, w ] w), local "z" w, local "s" Mono.MString ] w ])
+        , test "Process.sleep is listed under its own home: the task's error type stays erasable" <|
+            withKv (\kv w _ -> visible kv w |> Expect.equal False)
+                (\w _ -> [ kernelCall "Process" "sleep" [ local "ms" Mono.MFloat ] (taskOf w Mono.MUnit) ])
+        , test "HttpServer.createServerWith reads its Maybe option: that instantiation stays boxed" <|
+            withKv (\kv _ _ -> KernelVisible.isVisibleInstance kv (maybeOf rec) |> Expect.equal True)
+                (\_ _ -> [ kernelCall "HttpServer" "createServerWith" [ local "host" Mono.MString, local "tls" (maybeOf rec) ] Mono.MInt ])
         ]
