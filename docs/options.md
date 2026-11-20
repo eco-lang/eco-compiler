@@ -198,6 +198,14 @@ Parsing classes (inputs are trimmed and lower-cased unless stated otherwise):
 | `ECO_PSPLIT_PARAMS` | B4; on | Feature: projection-only aggregate params get a `$psplit` worker (hash `psplit`) | compiler/src/Builder/Eco/Config.elm:356 |
 | `ECO_SRET_TAILFUNC` | B4; on | Feature: widens sret to tail funcs; no-op unless SRET_RESULTS (hash `srtf=`) | compiler/src/Builder/Eco/Config.elm:361 |
 | `ECO_SRET_FRESH` | B4; on | Feature: widens sret to helper-mediated results; no-op unless SRET_RESULTS (hash `sretf=`) | compiler/src/Builder/Eco/Config.elm:366 |
+| `ECO_ERASE_WRAPPERS` | B4; on | Feature: values of one-constructor one-field types are represented as their field (`Compiler.MonoOpt.EraseWrappers`, MONO_031; hash `ew=`) | compiler/src/Builder/Eco/Config.elm (`applyReprBoolEnv`) |
+| `ECO_ERASE_UNBOXED` | B4; on | Feature: extends `ECO_ERASE_WRAPPERS` to Int/Float/Char fields per instantiation; no-op without it (hash `ewu=`) | compiler/src/Builder/Eco/Config.elm |
+| `ECO_NULLABLE_MAYBE` | B4; on | Feature: `Just x` is represented as `x` where `x` can never be Empty (`Compiler.MonoOpt.NullableMaybe`, MONO_033, REP_CONSTANT_003; hash `nm=`) | compiler/src/Builder/Eco/Config.elm |
+| `ECO_NULLABLE_USER` | B4; on | Feature: extends `ECO_NULLABLE_MAYBE` to Maybe-shaped user types whose field holds no constant; no-op without it (hash `nmu=`) | compiler/src/Builder/Eco/Config.elm |
+| `ECO_KNOWN_CTOR_CASE` | B4; off | Feature: a `case` on a value built by a known constructor in the same function is folded after inlining (`Compiler.MonoOpt.KnownCtorCase`; hash `kcc=`). Its census line prints under `ECO_INLINE_REPORT` either way | compiler/src/Builder/Eco/Config.elm |
+| `ECO_SRET_CTORS` | B4; on | Feature: extends sret to returned one-constructor customs with 2-3 fields (CGEN_088); no-op unless SRET_RESULTS (hash `sretc=`) | compiler/src/Builder/Eco/Config.elm |
+| `ECO_REPR_VALIDATE` | B4; off | Check: MONO_031 and the representation-meets check after the representation passes (also on under `mono.validate`). With every pass off it reports the pre-existing differing-slot-kind meets under `ECO_INLINE_REPORT` (no-hash) | compiler/src/Builder/Eco/Config.elm |
+| `ECO_CTOR_CENSUS` | path; unset | Census: tags every constructor the program builds with its census class and writes the class table to the path (`Compiler.GenerateMlir.CtorCensus`; hash `ctorc=`). Join with the runtime's `ECO_CTOR_CENSUS_OUT` by `scripts/ctor-census.py` | compiler/src/Builder/Eco/Config.elm (`applyCtorCensusOverride`) |
 | `ECO_STRING_LENGTH_OP` | B4; on | Feature: emits the inline `eco.string.length` op (hash `strlen=`) | compiler/src/Builder/Eco/Config.elm:376 |
 | `ECO_APPEND_SPLIT` | B4; on | Feature: typed `eco.string.append` / `eco.list.append` where the type is known (hash `apsplit=`) | compiler/src/Builder/Eco/Config.elm:381 |
 | `ECO_STRING_ORDER_INTRINSIC` | B4; on | Feature: String `lt/le/gt/ge` lower to `eco.string.cmp3` (hash `strord=`) | compiler/src/Builder/Eco/Config.elm:386 |
@@ -256,6 +264,8 @@ Parsing classes (inputs are trimmed and lower-cased unless stated otherwise):
 | `list.{chunks,consIntrinsic,mapTemplate}` | true / true / false | `list.report` is env-only | compiler/src/Compiler/Config.elm:769-771 |
 | `cse.{enabled,minCost,maxPerDef}` | false / 5 / 64 | `cse.report` is env-only | compiler/src/Compiler/Config.elm:782-784 |
 | `aggPromote`, `ctorInline`, `sretResults`, `psplitParams`, `sretFresh`, `sretTailFuncs`, `stringLengthOp`, `appendSplit`, `stringOrderIntrinsic`, `valueEq`, `kernelGcLeaf`, `callPurityAttrs` | bool; all true | Top-level feature switches (see the env rows) | compiler/src/Compiler/Config.elm:741-752 |
+| `repr.eraseWrappers`, `repr.eraseUnboxed`, `repr.nullableMaybe`, `repr.nullableUser`, `repr.knownCtorCase`, `repr.sretCtors`, `repr.validate` | bool; all true but `knownCtorCase` and `validate` | The representation switches of plans/constructor-representation-levels.md (see the env rows) | compiler/src/Compiler/Config.elm (`defaultRepr`) |
+| `repr.census` | string; unset | The constructor census table path (see `ECO_CTOR_CENSUS`) | compiler/src/Compiler/Config.elm |
 | (env-only fields) `mono.diffDump`, `mono.validate` | false | Only the env vars can set these | compiler/src/Compiler/Config.elm:893-894 |
 
 Hard-coded source constants that behave like tuning knobs but have no switch:
@@ -462,6 +472,7 @@ These are read by the runtime (`runtime/src/allocator/RuntimeExports.cpp`) when 
 | Name | Values / default | Effect | Source |
 |---|---|---|---|
 | `ECO_DISPATCH_STATS` | non-empty, not `0` | At exit, dumps the per-closure-evaluator sat/gen/fast dispatch table, plus the `ECO_CALL_CENSUS` tables if they were compiled in | `runtime/src/allocator/RuntimeExports.cpp:1043`, `:1141` |
+| `ECO_CTOR_CENSUS_OUT` | path | Writes the constructor census counts (`id alloc ssa promoted` per census id) at exit, for a program compiled with `ECO_CTOR_CENSUS`. Promotions are counted only in builds with GC stats (`ECO_GC_STATS`) | `runtime/src/allocator/RuntimeExports.cpp` (`ctorCensusDump`) |
 | `ECO_CLOSURE_STATS` | non-empty, not `0` | At exit, dumps per-evaluator closure creates/extends (blind at inline-alloc sites; build with `ECO_INLINE_ALLOC=0`) | `runtime/src/allocator/RuntimeExports.cpp:877` |
 | `ECO_CONS_SITES` | presence | Tallies cons allocations per site and dumps them at exit | `runtime/src/allocator/RuntimeExports.cpp:368` |
 | `ECO_GC_EXIT_MAJOR` | exactly-`1` prefix (`[0]=='1'`) | Forces one major GC after `eco_main` returns, so the exit stats show the live retained set (GC section cross-reference) | `runtime/src/codegen/eco_entry.cpp:132`, `:200` |

@@ -1228,6 +1228,66 @@ Default leg (flag off):
   regression from it.
 - **Gates:** see the plan; bootstrap run after this row.
 
+### ctorrep: constructor representation passes (plans/constructor-representation-levels.md: EraseWrappers, NullableMaybe, `$sret` for constructors, census plumbing; 2026-11-19): **regression check, single run: REGRESSION (wall +13.45 s vs p08, mono +10.7 s)**
+
+| run | wall (s) | parse/check/build (s) | mono (s) | MLIR codegen (s) | GC time (s) | minor GC | major GC | promoted MiB | max RSS (kB) | out.mlir (B) | fixed point |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| r1 | 77.78 | 27.6 | 35.4 | 9.0 | 3.33 | 1565 | 8 | 7230 | 7125676 | 12552792 | same |
+| Δ vs p08 (2026-11-18, one run) | +13.45 (no spread on either row; nofcf spread 0.20) | +2.0 | +10.7 | +0.1 | +0.44 | +204 | 0 | +671 | +703,140 (+10.9 %) | −74,894 (−0.6 %, source grew) | |
+
+- **What:** the tree is p08's plus the constructor-representation plan with its defaults: `EraseWrappers`
+  (E1a + unboxed E1b), `NullableMaybe` (N1, `Maybe` and Maybe-shaped user types), `$sret` for one-constructor
+  customs (S1), the kernel-visibility and representation-meet analyses they rely on, and the census plumbing
+  (off); `KnownCtorCase` is built but off. The candidate is the bootstrap's `eco-compiler-boot` (20:39 build,
+  Stage 8c passed), copied to `eco-optCTOR`, its self-output `eco-compiler-boot-2.mlir` to `ecoCTOR.mlir`.
+  **One timed run only, by request**, judged against the previous row (p08). Package caches cold (eco-stuff
+  wiped, registry touched). Registry: `~/.eco/0.2.0/packages/registry.dat`.
+- **Checks:** rc 0, no `[gc-stats] SIG`, r1 equals `ecoCTOR.mlir` (fixed point). `.ecot` 8,593,903 B (+249,347,
+  the new modules).
+- **Verdict:** wall +13.45 s, far outside any band: **a regression**, and it sits in monomorphization (+10.7 s),
+  where the new passes run (`Steps.representation`: kernel visibility, the meet collection, erasure, the
+  nullable rewrite, the validation against the pre-pass graph). parse/check/build +2.0 s is the larger source.
+  The allocation counters rise with it (+204 minors, +671 MiB promoted), which is the passes' own work on the
+  compiler's large MonoGraph, not the compiled code. Not separated by this run (no control, by request);
+  two on/off measurements on 2026-11-19 (same binary, the passes switched by their `ECO_*` variables, one run
+  each) put them at +8.9 s (77.5 vs 68.6 s) and +11.5 s (81.94 vs 70.44 s), which matches. The output is 0.6 % smaller despite the
+  larger source: the representation changes take effect. Their runtime gain does not show in this
+  workload: the census self-compile measured −22.5 % constructor allocations but a flat wall (71.9 → 71.3 s).
+- **Next:** the passes' compile-time cost is the follow-up the plan records; until it is cut, the passes cost
+  more on this workload than they save.
+
+### R0–R4: the representation passes' compile-time cost (plans/constructor-representation-levels.md §13, 2026-11-19/20): **WIN: wall 77.03 → 69.72 s, the `representation` phase 8.7 → 1.7 s**
+
+One timed run per unit, by the plan; each candidate compiled by the previous kept compiler and lowered
+by `eco-boot-native` (Phase 1.3/1.4), the timed run under §2's protocol. `representation` is the
+phase R0 split out of `monomorphization`. Every row is at its fixed point; every unit's `full` is
+3,118/3,118 with the E2E MLIR corpus (1,544 files) byte-identical to the pre-R0 baseline.
+
+| row | wall (s) | parse/check/build (s) | mono (s) | representation (s) | MLIR codegen (s) | GC time (s) | minor GC | major GC | promoted MiB | max RSS (kB) | out.mlir (B) | verdict |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| R0 (timer + sizes) | 77.03 | 27.1 | 26.4 | 8.7 | 8.9 | 3.26 | 1565 | 8 | 7234 | 7147148 | 12554349 | measurement |
+| R1 (layout-hash keys) | 72.28 | 27.5 | 27.1 | 2.5 | 9.3 | 3.31 | 1409 | 8 | 7207 | 7161396 | 12564984 | WIN, kept |
+| R2 (KV + meets once) | 72.15 | 27.7 | 27.3 | 2.1 | 9.2 | 3.32 | 1402 | 8 | 7202 | 7153028 | 12569109 | kept (−0.4 s) |
+| R3 (one rewrite loop) | 70.63 | 27.2 | 26.5 | 2.1 | 8.8 | 3.38 | 1403 | 8 | 7197 | 7139836 | 12577043 | FLAT, kept (deletes the second node loop) |
+| R4 (first try) | 70.51 | 27.1 | 26.4 | 2.5 | 8.9 | 3.19 | 1421 | 8 | 7173 | 7067736 | 12600044 | LOSS on the phase (+0.4 s), REVISED |
+| R4b (two-flag skip) | 70.83 | 27.3 | 26.4 | 2.2 | 8.9 | 3.30 | 1406 | 8 | 7146 | 7023076 | 12591262 | FLAT, kept (deletes work; −51 MiB promoted) |
+| R4d (subtree sharing, MONO_019 fix) | 71.14 | 27.5 | 26.8 | 2.0 | 9.0 | 3.22 | 1400 | 8 | 7147 | 6998348 | 12627382 | kept (−0.2 s) |
+| R4e (+ composed `setPrintType`) | 70.73 | 27.1 | 27.0 | 1.8 | 9.1 | 3.06 | 1402 | 8 | 7170 | 6996864 | 12627256 | FAILED its gate (7 E2E: Debug printing), not kept |
+| R4f (R4d + layout-hash lookups) | 71.52 | 27.6 | 27.0 | 1.8 | 9.0 | 3.20 | 1402 | 8 | 7169 | 7043692 | 12626740 | WIN on the phase (−0.4 s vs R4b); full 3,119/3,119 |
+| R4i (final: R3.1 composed exactly, R2.4 checks, one-descent `eraseType`) | 69.72 | 27.0 | 26.3 | 1.7 | 8.9 | 3.16 | 1401 | 8 | 7159 | 6997140 | 12630260 | kept; full 3,119/3,119, validation self-compile clean |
+
+- **What:** see the plan's §13. R0's perf put 70 % of the 8.9 s phase in building and comparing
+  `toComparableLayoutType` strings inside `EraseWrappers` (`mentions`, `choose`); R1 replaced every such
+  key with the layout hash (`Mono.LayoutMap`/`LayoutSet`) and a type-name pre-filter: −6.2 s on the phase.
+  R2–R4 remove repeated work (a second KV and meets collection, a second node loop, the rebuild of nodes
+  no pass changes) and are worth 0.3 s together.
+- **Verdict:** the step's cost against `ctorrep` (passes on, 77.78 s) is down to 1.8 s, under the
+  plan's 2 s target; the wall rows (70.5–71.5 s from R3 on) sit inside the run-to-run band, against
+  the passes-off 69.37 s. The last 0.4 s came from the re-profile after R4b: the name pre-filter's
+  `Set String` compares (dropped for the layout-hash lookup) and subtree sharing in the type rewrite.
+  R4d also fixed a MONO_019 crash in the nullable pass (plan §13.6).
+- **Gates (end, final tree R4i):** elm-tests 22,007/0; `full` 3,119/3,119; bootstrap rc 0 through Stage 8c and 9b; validation self-compile clean; canary passing.
+
 ## 6a. Batched end-of-series gates (run once each, after S8)
 
 - **G5 `TypedOptimizedCodecTest` (new):** 135/135 standard-suite modules round-trip the v2 codec
@@ -1516,3 +1576,11 @@ same-sitting control run, not the `ref` row's recorded wall. Details live in eac
 | llvm24 | 66.69 | -0.27 | 1350 | 8 | 6492 | 6247864 | — (regression check, ONE run: LLVM 21.1.8 -> 24.0.0git; FLAT, no regression; parse/check/build 26.2 s, mono 26.2 s, codegen 8.7 s; ctorlay control 68.39 -> -1.70 s; fixed point) | nofcf |
 | pr17 | 66.06 | -0.63 | 1361 | 8 | 6559 | 6458644 | — (regression check, ONE run: PR #17 (Bytes list fusion, closure fast path, String snapshot, pair compare, intern cache); FLAT, no regression; parse/check/build 26.1 s, mono 25.7 s, codegen 8.8 s; out.mlir +2.1 % from grown source; fixed point) | llvm24 |
 | p08 | 64.33 | -1.73 | 1361 | 8 | 6559 | 6422536 | — (regression check, ONE run: plan 08 split-inlining defaults (K = 128 leaf copies, GC-free $cap copies kept, solo inline threshold, 32 B innermost loops); no regression, −1.73 s (mono −1.0 s), GC counters identical; fixed point) | pr17 |
+| ctorrep | 77.78 | +13.45 | 1565 | 8 | 7230 | 7125676 | — (regression check, ONE run: constructor representation passes (EraseWrappers, NullableMaybe, ctor $sret) default-on; REGRESSION, mono +10.7 s (the passes' own cost, +8.9 to +11.5 s measured on/off), pcb +2.0 s, out.mlir −0.6 %; fixed point) | p08 |
+| R1 | 72.28 | -5.50 | 1409 | 8 | 7207 | 7161396 | WIN (representation passes: layout-hash keys; representation phase 8.7 -> 2.5 s; corpus identical; fixed point) | ctorrep |
+| R2 | 72.15 | -0.13 | 1402 | 8 | 7202 | 7153028 | kept (KV + meets once; representation 2.5 -> 2.1 s) | R1 |
+| R3 | 70.63 | -1.52 | 1403 | 8 | 7197 | 7139836 | FLAT on the phase (2.1 s), kept: one rewrite loop deletes the second node loop | R2 |
+| R4 | 70.51 | -0.12 | 1421 | 8 | 7173 | 7067736 | LOSS on the phase (2.1 -> 2.5 s), revised as R4b | R3 |
+| R4b | 70.83 | +0.20 | 1406 | 8 | 7146 | 7023076 | FLAT (2.2 s), kept: skips unaffected nodes, promoted -51 MiB | R3 |
+| R4f | 71.52 | +0.69 | 1402 | 8 | 7169 | 7043692 | WIN on the representation phase (2.2 -> 1.8 s; wall inside the band): subtree-sharing type rewrite, layout-hash lookups, MONO_019 fix in NullableMaybe | R4b |
+| R4i | 69.72 | -1.80 | 1401 | 8 | 7159 | 6997140 | final of plan §13 (representation phase 1.7 s): R3.1 composed exactly, R2.4 checks as written, one-descent eraseType | R4f |

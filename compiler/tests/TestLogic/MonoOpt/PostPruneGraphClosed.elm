@@ -82,7 +82,7 @@ expectClosedAfterPrune srcModule =
                     Pipeline.productionConfig
 
                 pruned =
-                    Steps.prune config (Tuple.first (Steps.inline config artifacts.monoGraph))
+                    Steps.prune config (Tuple.first (Steps.knownCtorCase config (Tuple.first (Steps.inline config artifacts.monoGraph))))
 
                 optimized =
                     artifacts.optimizedMonoGraph

@@ -1,6 +1,7 @@
 module Compiler.Config exposing
     ( EcoConfig, InlineConfig, BytesFusionConfig, LogicalTypesConfig
     , default, decoder, hash, clamp
+    , ReprConfig, defaultRepr
     , BorrowConfig, BorrowReify(..), CafHoistConfig, CafMemoConfig, CseConfig, GcConfig, ListConfig, LssConfig, LssStampConfig, MonoConfig, MonoEngine(..), SpecLimits, defaultLimits, defaultLss, monoEngineFromString
     )
 
@@ -47,6 +48,7 @@ order swap their values and still compile.
 
 @docs EcoConfig, InlineConfig, BytesFusionConfig, LogicalTypesConfig
 @docs default, decoder, hash, clamp
+@docs ReprConfig, defaultRepr
 @docs BorrowConfig, BorrowReify, CafHoistConfig, CafMemoConfig, CseConfig, GcConfig, ListConfig, LssConfig, LssStampConfig, MonoConfig, MonoEngine, SpecLimits, defaultLimits, defaultLss, monoEngineFromString
 
 -}
@@ -113,6 +115,48 @@ type alias EcoConfig =
     , constThunksReport : Bool
     , cse : CseConfig
     , gc : GcConfig
+    , repr : ReprConfig
+    }
+
+
+{-| The settings of plans/constructor-representation-levels.md, which change
+how values of custom types are represented. Each switch puts a token in `hash`
+when on.
+
+`eraseWrappers` (`ECO_ERASE_WRAPPERS`) represents a value of a type with one
+constructor of one field as its field (`Compiler.MonoOpt.EraseWrappers`).
+`eraseUnboxed` (`ECO_ERASE_UNBOXED`) extends it to a wrapper of an Int, Float or
+Char, per instantiation, where every view of the value agrees
+(`EraseWrappers.consistentWith`); it does nothing while `eraseWrappers` is
+off.
+`nullableMaybe` (`ECO_NULLABLE_MAYBE`) represents `Just x` as `x` where `x`
+can never be the Empty constant (`Compiler.MonoOpt.NullableMaybe`);
+`nullableUser` (`ECO_NULLABLE_USER`) extends it to Maybe-shaped user types whose
+field holds no embedded constant, and does nothing while `nullableMaybe` is
+off.
+`knownCtorCase` (`ECO_KNOWN_CTOR_CASE`) folds a `case` on a value built by a
+known constructor in the inliner. `sretCtors` (`ECO_SRET_CTORS`) extends
+`sretResults` to returned single-constructor values with two or three fields.
+
+`validate` (`ECO_REPR_VALIDATE=1`, also on under `mono.validate`) checks the
+graph after the passes: MONO_031 and the representation-meets check of
+`Compiler.Monomorphize.ValidateRepresentation`. It changes no output and has
+no token.
+
+`census` (`ECO_CTOR_CENSUS=<path>`) tags every constructor the program builds
+with its census class and writes the class table to the path
+(`Compiler.GenerateMlir.CtorCensus`); it has the token `ctorc=1`.
+
+-}
+type alias ReprConfig =
+    { eraseWrappers : Bool
+    , eraseUnboxed : Bool
+    , nullableMaybe : Bool
+    , nullableUser : Bool
+    , knownCtorCase : Bool
+    , sretCtors : Bool
+    , census : Maybe String
+    , validate : Bool
     }
 
 
@@ -554,6 +598,25 @@ default =
     , kernelGcLeaf = True
     , constThunks = 2
     , constThunksReport = False
+    , repr = defaultRepr
+    }
+
+
+{-| The `repr` settings of `default`: every representation pass on except
+`knownCtorCase`, and the census and the validation off. `knownCtorCase` failed
+its gate (K0-D: at least 100 sites in the self-compile; it found none), so it
+stays opt-in.
+-}
+defaultRepr : ReprConfig
+defaultRepr =
+    { eraseWrappers = True
+    , eraseUnboxed = True
+    , nullableMaybe = True
+    , nullableUser = True
+    , knownCtorCase = False
+    , sretCtors = True
+    , census = Nothing
+    , validate = False
     }
 
 
@@ -600,6 +663,22 @@ decoder =
         |> D.apply (D.optionalField "constThunksReport" D.bool default.constThunksReport)
         |> D.apply (D.optionalField "cse" cseDecoder default.cse)
         |> D.apply (D.optionalField "gc" gcDecoder default.gc)
+        |> D.apply (D.optionalField "repr" reprDecoder default.repr)
+
+
+{-| A decoder for the `repr` object, each key falling back to `default`.
+-}
+reprDecoder : D.Decoder x ReprConfig
+reprDecoder =
+    D.pure ReprConfig
+        |> D.apply (D.optionalField "eraseWrappers" D.bool defaultRepr.eraseWrappers)
+        |> D.apply (D.optionalField "eraseUnboxed" D.bool defaultRepr.eraseUnboxed)
+        |> D.apply (D.optionalField "nullableMaybe" D.bool defaultRepr.nullableMaybe)
+        |> D.apply (D.optionalField "nullableUser" D.bool defaultRepr.nullableUser)
+        |> D.apply (D.optionalField "knownCtorCase" D.bool defaultRepr.knownCtorCase)
+        |> D.apply (D.optionalField "sretCtors" D.bool defaultRepr.sretCtors)
+        |> D.apply (D.optionalField "census" (D.map Just D.string) defaultRepr.census)
+        |> D.apply (D.optionalField "validate" D.bool defaultRepr.validate)
 
 
 {-| A decoder for the `gc` object, each key falling back to `default`.
@@ -1150,6 +1229,7 @@ hash cfg =
                 else
                     []
                )
+            ++ reprHashTokens cfg.repr
             ++ (if cfg.sretResults then
                     [ "sretr=1" ]
 
@@ -1211,3 +1291,47 @@ hash cfg =
                     []
                )
         )
+
+
+{-| The `hash` tokens of the `repr` settings that are on.
+-}
+reprHashTokens : ReprConfig -> List String
+reprHashTokens repr =
+    List.filterMap identity
+        [ if repr.eraseWrappers then
+            Just "ew=1"
+
+          else
+            Nothing
+        , if repr.eraseUnboxed then
+            Just "ewu=1"
+
+          else
+            Nothing
+        , if repr.nullableMaybe then
+            Just "nm=1"
+
+          else
+            Nothing
+        , if repr.nullableUser then
+            Just "nmu=1"
+
+          else
+            Nothing
+        , if repr.knownCtorCase then
+            Just "kcc=1"
+
+          else
+            Nothing
+        , if repr.sretCtors then
+            Just "sretc=1"
+
+          else
+            Nothing
+        , case repr.census of
+            Just _ ->
+                Just "ctorc=1"
+
+            Nothing ->
+                Nothing
+        ]

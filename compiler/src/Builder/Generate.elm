@@ -968,6 +968,7 @@ monoPipelineFrom ecoConfig stats globalTypeEnv assigned =
                                         Task.throw (Exit.GenerateMonomorphizationError message)
                             )
         )
+        |> Task.andThen (runRepresentationPhase ecoConfig stats globalTypeEnv)
         -- A separate function, so that the monomorphizer's inputs can be collected.
         |> Task.andThen (runInlineSimplifyPhase ecoConfig stats)
         |> Task.andThen
@@ -984,6 +985,29 @@ monoPipelineFrom ecoConfig stats globalTypeEnv assigned =
                     Err message ->
                         Task.throw (Exit.GenerateMonomorphizationError message)
             )
+
+
+{-| Runs the representation passes (`Compiler.Pipeline.Steps.representation`)
+as their own `--stats` phase, writing their report lines to stderr under
+`inline.report`.
+-}
+runRepresentationPhase : Config.EcoConfig -> FEStats.Handle -> TypeEnv.GlobalTypeEnv -> Mono.MonoGraph -> Task Exit.Generate Mono.MonoGraph
+runRepresentationPhase ecoConfig stats globalTypeEnv g =
+    FEStats.withPhaseLazy stats
+        FEStats.PhaseRepresentation
+        (\() ->
+            case Steps.representation ecoConfig globalTypeEnv g of
+                Ok ( g1, reports ) ->
+                    if ecoConfig.inline.report && not (List.isEmpty reports) then
+                        Task.io (System.IO.writeLn System.IO.stderr (String.join "\n" reports))
+                            |> Task.map (\_ -> g1)
+
+                    else
+                        Task.succeed g1
+
+                Err message ->
+                    Task.throw (Exit.GenerateMonomorphizationError message)
+        )
 
 
 {-| Returns the graph, or fails with a `STAGE ARITY LIMIT` error listing every
@@ -1013,12 +1037,21 @@ runInlineSimplifyPhase ecoConfig stats monoGraph0 =
         FEStats.PhaseInlineSimplify
         (\() ->
             let
-                ( inlinedGraph, inlineMetrics ) =
+                ( inlinedGraph0, inlineMetrics ) =
                     Steps.inline ecoConfig monoGraph0
+
+                ( inlinedGraph, knownCtorReport ) =
+                    Steps.knownCtorCase ecoConfig inlinedGraph0
             in
             -- The prune runs in the next step: this callback captures
             -- `monoGraph0`, which stays alive until the callback returns.
-            Task.succeed ( inlinedGraph, inlineMetrics )
+            (if ecoConfig.inline.report && knownCtorReport /= "" then
+                Task.io (System.IO.writeLn System.IO.stderr knownCtorReport)
+
+             else
+                Task.succeed ()
+            )
+                |> Task.map (\_ -> ( inlinedGraph, inlineMetrics ))
                 |> Task.andThen (pruneAndReportInline ecoConfig)
         )
         |> Task.andThen (runGlobalOptPhase ecoConfig ecoConfig.mono.lss.report ecoConfig.list.report ecoConfig.borrow ecoConfig.cafMemo ecoConfig.cse stats)
@@ -2126,11 +2159,27 @@ to stderr when `constThunksReport` is on.
 -}
 constThunkCensus : Config.EcoConfig -> Mono.MonoGraph -> Task x ()
 constThunkCensus ecoConfig monoGraph =
-    if ecoConfig.constThunksReport then
+    (if ecoConfig.constThunksReport then
         Task.io (System.IO.writeLn System.IO.stderr (MLIR.constThunkReport ecoConfig monoGraph))
 
-    else
+     else
         Task.succeed ()
+    )
+        |> Task.andThen (\_ -> ctorCensusTable ecoConfig monoGraph)
+
+
+{-| Writes the constructor census table (`Compiler.GenerateMlir.CtorCensus`) to
+the file `repr.census` names, when it is set.
+-}
+ctorCensusTable : Config.EcoConfig -> Mono.MonoGraph -> Task x ()
+ctorCensusTable ecoConfig monoGraph =
+    case ecoConfig.repr.census of
+        Just path ->
+            File.writeUtf8 path (MLIR.ctorCensusText ecoConfig monoGraph)
+                |> Task.mapError never
+
+        Nothing ->
+            Task.succeed ()
 
 
 {-| The first of the build's roots.

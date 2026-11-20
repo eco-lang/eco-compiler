@@ -1105,15 +1105,30 @@ struct CustomConstructOpLowering : public OpConversionPattern<CustomConstructOp>
             layout::CustomHdrSlots);
         const uint64_t K = pk.ext.size();
 
+        // The constructor census (plans/constructor-representation-levels.md, M0): count the
+        // allocation, and keep the class id in the header's 15 `refcount` bits so that the minor
+        // GC can attribute the object's promotion.
+        uint64_t censusId = 0;
+        auto censusAttr = op->getAttrOfType<IntegerAttr>("_census_id");
+        if (censusAttr)
+            censusId = static_cast<uint64_t>(censusAttr.getInt()) & 0x7FFF;
+
         // As for a record; the meta word also carries the constructor tag.
         uint64_t cusByteSize = layout::customByteSize(static_cast<uint64_t>(opSize));
         if (inlineAllocEnabled() && cusByteSize <= 4096) {
             uint64_t bitmap = pk.hdrBits;
             assert((bitmap >> 48) == 0 && "Custom unboxed bitmap overflow (>48 bits)");
             uint64_t header = value_enc::composeHeader(
-                value_enc::TagCustom, K, static_cast<uint64_t>(opSize));
+                value_enc::TagCustom, K, static_cast<uint64_t>(opSize))
+                | (censusId << value_enc::HeaderRefcountShift);
             uint64_t meta = (static_cast<uint64_t>(op.getTag()) & 0xFFFF)
                           | (bitmap << 16);
+            if (censusAttr) {
+                auto idVal = LLVM::ConstantOp::create(rewriter, loc, i32Ty, static_cast<int32_t>(censusId));
+                auto whichVal = LLVM::ConstantOp::create(rewriter, loc, i32Ty, 0);
+                LLVM::CallOp::create(rewriter, loc, runtime.getOrCreateCtorCensusCount(rewriter),
+                                     ValueRange{idVal, whichVal});
+            }
             Value objHPtr = emitInlineAllocWithHeader(
                 rewriter, loc, runtime, cusByteSize, header);
             emitInlineAllocMetaWord(rewriter, loc, objHPtr, meta);
@@ -1139,6 +1154,11 @@ struct CustomConstructOpLowering : public OpConversionPattern<CustomConstructOp>
             op, rewriter, runtime,
             runtime.getOrCreateAllocCustom(rewriter),
             ValueRange{tag, size});
+        if (censusAttr) {
+            auto idVal = LLVM::ConstantOp::create(rewriter, loc, i32Ty, static_cast<int32_t>(censusId));
+            LLVM::CallOp::create(rewriter, loc, runtime.getOrCreateCtorCensusMark(rewriter),
+                                 ValueRange{objHPtr, idVal});
+        }
 
         auto origFields = op.getFields();
         for (int64_t i = 0; i < opSize; i++) {
@@ -1928,6 +1948,14 @@ static void emitFieldStoresForOp(
         auto setUnboxedFunc = runtime.getOrCreateSetUnboxed(builder);
         int64_t opSize = customOp.getSize();
         auto fields = customOp.getFields();
+
+        // The constructor census (M0): count the allocation and stamp its class id in the header.
+        if (auto idAttr = customOp->getAttrOfType<IntegerAttr>("_census_id")) {
+            auto idVal = LLVM::ConstantOp::create(builder, loc, i32Ty,
+                                                  static_cast<int32_t>(idAttr.getInt() & 0x7FFF));
+            LLVM::CallOp::create(builder, loc, runtime.getOrCreateCtorCensusMark(builder),
+                                 ValueRange{hptr, idVal});
+        }
 
         for (int64_t i = 0; i < opSize; i++) {
             auto idx = LLVM::ConstantOp::create(builder, loc, i32Ty, static_cast<int32_t>(i));

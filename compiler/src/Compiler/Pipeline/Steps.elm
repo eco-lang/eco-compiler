@@ -2,7 +2,8 @@ module Compiler.Pipeline.Steps exposing
     ( assignFlagsFor, prepareRoot
     , PreMono, preMono, checkMinted
     , monomorphize, monomorphizeEntry, checkStageArity, checkLayout
-    , inline, prune, checkPruned
+    , representation
+    , inline, knownCtorCase, prune, checkPruned
     , GlobalOptResult, globalOptCore, cse, dedupe, hoist, checkClosureStaging
     )
 
@@ -47,9 +48,14 @@ under `mono.validate`.
 @docs monomorphize, monomorphizeEntry, checkStageArity, checkLayout
 
 
+# Representation
+
+@docs representation
+
+
 # Post-monomorphization inlining
 
-@docs inline, prune, checkPruned
+@docs inline, knownCtorCase, prune, checkPruned
 
 
 # Global optimization
@@ -71,12 +77,18 @@ import Compiler.MonoOpt.CafDedupe as CafDedupe
 import Compiler.MonoOpt.CafHoist as CafHoist
 import Compiler.MonoOpt.Cse as MonoCse
 import Compiler.MonoOpt.CseCensus as CseCensus
+import Compiler.MonoOpt.EraseWrappers as EraseWrappers
 import Compiler.MonoOpt.FloatMinMax as FloatMinMax
 import Compiler.MonoOpt.GlobalOptimize as MonoGlobalOptimize
 import Compiler.MonoOpt.InlineSimplify as MonoInlineSimplify
+import Compiler.MonoOpt.KernelVisible as KernelVisible
+import Compiler.MonoOpt.KnownCtorCase as KnownCtorCase
+import Compiler.MonoOpt.NullableMaybe as NullableMaybe
+import Compiler.MonoOpt.Representation as Representation
 import Compiler.MonoOpt.Staging as Staging
 import Compiler.Monomorphize.Diff as MonoDiff
 import Compiler.Monomorphize.Prune as Prune
+import Compiler.Monomorphize.RepresentationMeets as RepresentationMeets
 import Compiler.Monomorphize.Solver.Monomorphize as MonoSolver
 import Compiler.Monomorphize.Subst.Monomorphize as Monomorphize
 import Compiler.Monomorphize.ValidateLayout as ValidateLayout
@@ -86,6 +98,7 @@ import Compiler.PreMono.EntryPrep as EntryPrep
 import Compiler.PreMono.EtaExpand as EtaExpand
 import Compiler.PreMono.Fresh as Fresh
 import Compiler.PreMono.InlineSimplify as InlineSimplify
+import Set
 
 
 
@@ -305,6 +318,250 @@ checkLayout ecoConfig g =
 
 
 -- ============================================================================
+-- REPRESENTATION
+-- ============================================================================
+
+
+{-| Runs the representation passes of plans/constructor-representation-levels.md
+that `repr` switches on, between `checkLayout` and `inline`: `EraseWrappers`
+under `repr.eraseWrappers`. Returns the graph with one report line per pass
+that ran.
+
+Under `mono.validate` or `repr.validate` it then checks the result, with or
+without the passes: MONO_031 (`EraseWrappers.check`) and the representation
+meets (`RepresentationMeets.validate`, MONO_029 interior slot kinds and
+MONO_033), and returns `Err` with every violation. With every switch off the
+graph is returned unchanged and nothing is computed.
+
+-}
+representation : Config.EcoConfig -> TypeEnv.GlobalTypeEnv -> Mono.MonoGraph -> Result String ( Mono.MonoGraph, List String )
+representation ecoConfig typeEnv graph =
+    let
+        anyPass =
+            ecoConfig.repr.eraseWrappers || ecoConfig.repr.nullableMaybe
+
+        checks =
+            ecoConfig.mono.validate || ecoConfig.repr.validate
+
+        -- The constructor census marks the kernel-visible classes (KV0), with or without the passes.
+        withCensusKv g =
+            case ( ecoConfig.repr.census, g ) of
+                ( Just _, Mono.MonoGraph r ) ->
+                    let
+                        repr =
+                            r.repr
+                    in
+                    Mono.MonoGraph { r | repr = { repr | kernelVisible = KernelVisible.ctorList (KernelVisible.compute typeEnv g) } }
+
+                ( Nothing, _ ) ->
+                    g
+    in
+    if not anyPass && not checks then
+        Ok ( withCensusKv graph, [] )
+
+    else
+        let
+            -- Kernel visibility and the meets are taken once, on the graph before the passes; the
+            -- nullable pass gets them carried over the erasure (`eraseType`), which is what a second
+            -- collection on the erased graph would find, up to the meets of removed constructor calls.
+            -- Under `checks` the nullable decision is compared with one taken from a second collection.
+            kv =
+                if anyPass then
+                    KernelVisible.compute typeEnv graph
+
+                else
+                    KernelVisible.empty
+
+            meets =
+                if anyPass then
+                    RepresentationMeets.collect graph
+
+                else
+                    []
+
+            -- The decisions first (`EraseWrappers.plan`, `NullableMaybe.choose`), then one rewrite of the
+            -- nodes for both (`Representation.run`).
+            plan =
+                if ecoConfig.repr.eraseWrappers then
+                    EraseWrappers.plan
+                        (if ecoConfig.repr.eraseUnboxed then
+                            { allowUnboxed = True
+                            , meetsOk = EraseWrappers.consistentWith meets
+                            , meets = meets
+                            }
+
+                         else
+                            { allowUnboxed = False, meetsOk = identity, meets = meets }
+                        )
+                        kv
+                        graph
+
+                else
+                    EraseWrappers.noPlan graph
+
+            erasing =
+                not (EraseWrappers.erasableIsEmpty plan.erasable)
+
+            -- Erasure changes the instantiations the set and the meets hold (`Maybe (W Rec)` becomes
+            -- `Maybe Rec`), so both are carried over it.
+            ( kvErased, meetsErased ) =
+                if erasing then
+                    ( EraseWrappers.translateKv plan.erasable kv
+                    , RepresentationMeets.translate (EraseWrappers.eraseType plan.erasable) meets
+                    )
+
+                else
+                    ( kv, meets )
+
+            nullOpts =
+                { userTypes = ecoConfig.repr.nullableUser }
+
+            choice =
+                if ecoConfig.repr.nullableMaybe then
+                    Just (NullableMaybe.choose nullOpts kvErased meetsErased plan.ctorShapes)
+
+                else
+                    Nothing
+
+            ( nulled, eraseStats, nullStats ) =
+                Representation.run plan choice graph
+
+            eraseReport =
+                if ecoConfig.repr.eraseWrappers then
+                    [ EraseWrappers.renderStats eraseStats
+                        ++ "; kernel-visible type constructors "
+                        ++ String.fromInt (KernelVisible.size kv)
+                        ++ " (from "
+                        ++ String.fromInt (KernelVisible.rootCount kv)
+                        ++ " root types); meets "
+                        ++ String.fromInt (List.length meets)
+                    ]
+
+                else
+                    []
+
+            nullReport =
+                case nullStats of
+                    Just st ->
+                        [ NullableMaybe.renderStats st ]
+
+                    Nothing ->
+                        []
+
+            -- The carried-over set and meets against a second collection on the erased graph: the
+            -- recollected instance set must be within the carried-over one, the two meet lists must hold
+            -- the same meets (by layout keys and `root`), and the nullable decision must be the same.
+            carryViolations =
+                case ( checks, erasing ) of
+                    ( True, True ) ->
+                        let
+                            ( erased, _, _ ) =
+                                Representation.run plan Nothing graph
+
+                            kvRecollected =
+                                KernelVisible.compute typeEnv erased
+
+                            meetsRecollected =
+                                RepresentationMeets.collect erased
+
+                            meetKeys ms =
+                                List.map
+                                    (\m ->
+                                        Mono.toComparableLayoutType m.a
+                                            ++ " | "
+                                            ++ Mono.toComparableLayoutType m.b
+                                            ++ (if m.root then
+                                                    " | root"
+
+                                                else
+                                                    " | interior"
+                                               )
+                                    )
+                                    ms
+                                    |> Set.fromList
+
+                            carriedKeys =
+                                meetKeys meetsErased
+
+                            recollectedKeys =
+                                meetKeys meetsRecollected
+
+                            nullableKeys (Mono.MonoGraph r) =
+                                Mono.layoutMapFoldl (\t _ acc -> Mono.toComparableLayoutType t :: acc) [] r.repr.nullable
+                                    |> Set.fromList
+
+                            decisionDiffers =
+                                ecoConfig.repr.nullableMaybe
+                                    && (nullableKeys (Tuple.first (NullableMaybe.run nullOpts kvRecollected meetsRecollected erased))
+                                            /= nullableKeys nulled
+                                       )
+
+                            sample keys =
+                                Set.toList keys |> List.take 5 |> String.join "; "
+                        in
+                        List.filterMap identity
+                            [ if KernelVisible.instancesSubset kvRecollected kvErased then
+                                Nothing
+
+                              else
+                                Just "representation: the kernel-visibility set carried over the erasure misses an instance a second collection finds"
+                            , if carriedKeys == recollectedKeys then
+                                Nothing
+
+                              else
+                                Just
+                                    ("representation: the meets carried over the erasure differ from a second collection; only carried: "
+                                        ++ sample (Set.diff carriedKeys recollectedKeys)
+                                        ++ "; only recollected: "
+                                        ++ sample (Set.diff recollectedKeys carriedKeys)
+                                    )
+                            , if decisionDiffers then
+                                Just "representation: the nullable types chosen from the kernel-visibility set and meets carried over the erasure differ from those chosen from a second collection"
+
+                              else
+                                Nothing
+                            ]
+
+                    _ ->
+                        []
+
+            -- RepresentationMeets reports the meets of the graph as it is. Some exist before any pass
+            -- (MONO_021: a spec that keeps a type variable nothing fixed, reached by a concrete view
+            -- whose values it never reads), so with a pass on only the violations it introduced count.
+            ( violations, baselineReport ) =
+                if checks then
+                    let
+                        after =
+                            RepresentationMeets.validate nulled
+                    in
+                    if anyPass then
+                        let
+                            before =
+                                Set.fromList (RepresentationMeets.validate graph)
+                        in
+                        ( carryViolations ++ EraseWrappers.check nulled ++ List.filter (\v -> not (Set.member v before)) after, [] )
+
+                    else
+                        ( [], [ "repr-validate: " ++ String.fromInt (List.length after) ++ " pre-existing interior meets of differing slot kinds" ++ String.concat (List.map (\v -> "\n  " ++ v) after) ] )
+
+                else
+                    ( [], [] )
+        in
+        case violations of
+            [] ->
+                Ok ( withCensusKv nulled, eraseReport ++ nullReport ++ baselineReport )
+
+            _ ->
+                Err
+                    ("ECO_REPR_VALIDATE: "
+                        ++ String.fromInt (List.length violations)
+                        ++ " representation violations\n"
+                        ++ String.join "\n" violations
+                    )
+
+
+
+-- ============================================================================
 -- POST-MONOMORPHIZATION INLINING
 -- ============================================================================
 
@@ -361,6 +618,22 @@ inline ecoConfig monoGraph0 =
 
     else
         ( monoGraph1, MonoInlineSimplify.emptyMetrics )
+
+
+{-| Folds each `case` on a value built by a known constructor in the same
+function (`Compiler.MonoOpt.KnownCtorCase`, plans/constructor-representation-levels.md
+K1) under `repr.knownCtorCase`, and returns the graph with the census line of
+such sites (K0), which is counted whether or not the fold is on. Run after
+`inline`, whose inlining creates most of the sites.
+-}
+knownCtorCase : Config.EcoConfig -> Mono.MonoGraph -> ( Mono.MonoGraph, String )
+knownCtorCase ecoConfig graph =
+    if ecoConfig.repr.knownCtorCase || ecoConfig.inline.report then
+        KnownCtorCase.run { fold = ecoConfig.repr.knownCtorCase } graph
+            |> Tuple.mapSecond KnownCtorCase.renderStats
+
+    else
+        ( graph, "" )
 
 
 {-| Returns the graph with the specializations that nothing reachable still

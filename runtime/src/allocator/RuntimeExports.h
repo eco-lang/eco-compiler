@@ -272,6 +272,14 @@ void eco_enable_list_chunks(void);
 void eco_dispatch_stats_fast(void* evaluator_fp);
 void eco_gencall_stats(int32_t reason);
 
+// Constructor-census hook, emitted only for ops carrying `_census_id` (plans/constructor-representation-
+// levels.md, M0): counts one execution of census id `id`, an allocation (`which` 0, eco.construct.custom)
+// or an SSA construction (`which` 1, eco.make.custom).
+void eco_ctor_census_count(int32_t id, int32_t which);
+// Counts one allocation of census id `id` and stamps the id in `obj`'s header (`refcount` bits), for
+// the allocation paths that do not compose the header inline.
+void eco_ctor_census_mark(HPtr obj, int32_t id);
+
 // The head and the tail of a list that may be a chunk chain or cons cells (chunked-list mode).
 HPtr eco_list_head_hybrid(HPtr list);
 HPtr eco_list_tail_hybrid(HPtr list);

@@ -280,6 +280,7 @@ void* NurserySpace::copyClaimed(MinorWorker& w, void* obj, uint64_t hw, bool par
         ++w.n_prom;
 #if ENABLE_GC_STATS
         w.copies.promotion(static_cast<Tag>(hd.tag), size, hd.size);
+        ctorCensusPromoted(hd);
 #endif
 #if ECO_HEAP_VALIDATE || P1_CENSUS_COMPILED
         w.promoted_log.push_back(dst);

@@ -169,6 +169,28 @@ struct GetTagOpLowering : public OpConversionPattern<GetTagOp> {
     }
 };
 
+/**
+ * The lowering of `eco.is_constant` to a test of the value's `ptr_ind` bit (bit 2): `(word & 4) != 0`
+ * (HEAP_014, CGEN_087). A heap pointer has the bit clear and every embedded constant has it set.
+ */
+struct IsConstantOpLowering : public OpConversionPattern<IsConstantOp> {
+    using OpConversionPattern::OpConversionPattern;
+
+    LogicalResult
+    matchAndRewrite(IsConstantOp op, OpAdaptor adaptor,
+                    ConversionPatternRewriter &rewriter) const override {
+        auto loc = op.getLoc();
+        auto i64Ty = rewriter.getI64Type();
+        Value bits = valueToI64(rewriter, loc, adaptor.getValue());
+        Value four = LLVM::ConstantOp::create(rewriter, loc, i64Ty, rewriter.getI64IntegerAttr(4));
+        Value zero = LLVM::ConstantOp::create(rewriter, loc, i64Ty, rewriter.getI64IntegerAttr(0));
+        Value masked = LLVM::AndOp::create(rewriter, loc, bits, four);
+        Value isConst = LLVM::ICmpOp::create(rewriter, loc, LLVM::ICmpPredicate::ne, masked, zero);
+        rewriter.replaceOp(op, isConst);
+        return success();
+    }
+};
+
 //===----------------------------------------------------------------------===//
 // eco.case -> cf.switch on constructor tag
 //===----------------------------------------------------------------------===//
@@ -1207,6 +1229,7 @@ void eco::detail::populateEcoControlFlowPatterns(
     auto *ctx = patterns.getContext();
     patterns.add<ReturnOpLowering>(typeConverter, ctx);
     patterns.add<GetTagOpLowering>(typeConverter, ctx, runtime);
+    patterns.add<IsConstantOpLowering>(typeConverter, ctx);
     patterns.add<CaseOpLowering>(typeConverter, ctx, runtime);
     patterns.add<YieldOpLowering>(typeConverter, ctx);
     patterns.add<JoinpointOpLowering>(typeConverter, ctx, cfCtx);

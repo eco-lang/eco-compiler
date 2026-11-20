@@ -12,6 +12,7 @@
 #include "RuntimeExports.h"
 #include "Allocator.hpp"
 #include "Heap.hpp"
+#include "GCStats.hpp"
 #include "HeapHelpers.hpp"
 #include "IntArith.hpp"
 #include "PermanentSpace.hpp"
@@ -1296,6 +1297,75 @@ extern "C" void eco_call_census_register(const void* counts, const void* names,
 
 // Prints the call census now, as the exit dump would, if it has not been printed. Not declared in a header.
 extern "C" void eco_call_census_dump(void) { callCensusDumpImpl(); }
+
+//===----------------------------------------------------------------------===//
+// Constructor census (plans/constructor-representation-levels.md, unit M0)
+//===----------------------------------------------------------------------===//
+
+// The counters `GCStats.hpp` declares. Compiled code built with `ECO_CTOR_CENSUS` increments the
+// first two, non-atomically (one mutator, HEAP_007); the promotion paths increment the third. They are
+// always defined, so census-compiled code links against every build of the runtime.
+extern "C" {
+uint64_t eco_ctor_census_alloc[kCtorCensusIds];
+uint64_t eco_ctor_census_ssa[kCtorCensusIds];
+uint64_t eco_ctor_census_promoted[kCtorCensusIds];
+bool eco_ctor_census_on = false;
+}
+
+// Writes `id alloc ssa promoted` for every id with a nonzero count to the file `ECO_CTOR_CENSUS_OUT`
+// names; `scripts/ctor-census.py` joins it with the compiler's class table. Called at exit and each
+// time the GC statistics are printed (a test child prints them and may then end without running
+// `atexit` handlers); each call rewrites the file with the counts so far.
+extern "C" void eco_ctor_census_dump(void) {
+    const char* path = std::getenv("ECO_CTOR_CENSUS_OUT");
+    if (!path || !*path) return;
+    // A process that ran no census-compiled code (a test runner whose children ran the program)
+    // leaves the file to the process that did.
+    bool any = false;
+    for (unsigned id = 0; id < kCtorCensusIds && !any; ++id)
+        any = (eco_ctor_census_alloc[id] | eco_ctor_census_ssa[id] | eco_ctor_census_promoted[id]) != 0;
+    if (!any) return;
+    FILE* f = std::fopen(path, "w");
+    if (!f) {
+        std::fprintf(stderr, "[ctor-census] cannot open %s\n", path);
+        return;
+    }
+    std::fprintf(f, "id\talloc\tssa\tpromoted\n");
+    for (unsigned id = 0; id < kCtorCensusIds; ++id) {
+        uint64_t a = eco_ctor_census_alloc[id], s = eco_ctor_census_ssa[id], p = eco_ctor_census_promoted[id];
+        if (a | s | p)
+            std::fprintf(f, "%u\t%llu\t%llu\t%llu\n", id, static_cast<unsigned long long>(a),
+                         static_cast<unsigned long long>(s), static_cast<unsigned long long>(p));
+    }
+    std::fclose(f);
+}
+
+extern "C" void eco_ctor_census_mark(HPtr obj, int32_t id) {
+    const unsigned i = static_cast<unsigned>(id) & (kCtorCensusIds - 1);
+    ++eco_ctor_census_alloc[i];
+    void* p = hpointerToPtr(obj.toBits());
+    if (p) static_cast<Header*>(p)->refcount = i;
+}
+
+extern "C" void eco_ctor_census_count(int32_t id, int32_t which) {
+    const unsigned i = static_cast<unsigned>(id) & (kCtorCensusIds - 1);
+    if (which == 0) ++eco_ctor_census_alloc[i];
+    else ++eco_ctor_census_ssa[i];
+}
+
+namespace {
+
+// Turns the census on and registers its exit dump when `ECO_CTOR_CENSUS_OUT` is set.
+const bool g_ctor_census_init = [] {
+    const char* path = std::getenv("ECO_CTOR_CENSUS_OUT");
+    if (path && *path) {
+        eco_ctor_census_on = true;
+        std::atexit(eco_ctor_census_dump);
+    }
+    return true;
+}();
+
+} // anonymous namespace
 
 //===----------------------------------------------------------------------===//
 // Kernel evaluator descriptors
@@ -3611,10 +3681,14 @@ extern "C" void eco_dbg_print_typed(uint64_t* values, uint32_t* type_ids, uint32
 // Prints the slot word `bits` of slot kind `slotKind` (0 boxed, 1 Int, 2 Float, 3 Char) whose declared
 // type is `type_id`: an unboxed slot as the primitive its type names (or its slot kind says, when the type
 // is not a primitive), a boxed one with the typed printer one level deeper than `depth`.
+static void print_wrapper(uint64_t bits, uint32_t slotKind, const Elm::EcoTypeInfo* t, int depth);
+
 static void print_typed_slot(uint64_t bits, uint32_t slotKind, uint32_t type_id, int depth) {
     if (slotKind != 0) {
         const Elm::EcoTypeInfo* t = &g_type_graph->types[type_id];
-        if (t->kind == Elm::EcoTypeKind::Primitive) {
+        if (t->kind == Elm::EcoTypeKind::Wrapper) {
+            print_wrapper(bits, slotKind, t, depth);
+        } else if (t->kind == Elm::EcoTypeKind::Primitive) {
             printPrimitive(bits, t->data.primitive.prim_kind);
         } else {
             printPrimitive(bits, primKindOfSlotKind(slotKind));
@@ -3622,6 +3696,35 @@ static void print_typed_slot(uint64_t bits, uint32_t slotKind, uint32_t type_id,
     } else {
         print_typed_value(bits, type_id, depth + 1);
     }
+}
+
+// Prints the value `bits` of the erased wrapper type `t` (MONO_031), held in a slot of kind `slotKind`
+// (0 when boxed): the constructor's name and then the value as the constructor's field, which is what the
+// value is. A wrapper of a Dict named `Set_elm_builtin` is elm/core's Set and prints as `Set.fromList`.
+static void print_dict_entries(uint64_t node, uint32_t dict_type_id, int depth, bool keysOnly, bool& first);
+
+static void print_wrapper(uint64_t bits, uint32_t slotKind, const Elm::EcoTypeInfo* t, int depth) {
+    if (t->data.custom.ctor_count != 1 || !g_type_graph->ctors || !g_type_graph->fields) {
+        output_text("<internals>");
+        return;
+    }
+    const Elm::EcoCtorInfo* ci = &g_type_graph->ctors[t->data.custom.first_ctor];
+    if (ci->field_count != 1 || ci->name_index >= g_type_graph->string_count) {
+        output_text("<internals>");
+        return;
+    }
+    const char* name = g_type_graph->strings[ci->name_index];
+    uint32_t payload_type_id = g_type_graph->fields[ci->first_field].type_id;
+    if (std::strcmp(name, "Set_elm_builtin") == 0 && slotKind == 0) {
+        bool first = true;
+        output_text("Set.fromList [");
+        print_dict_entries(bits, payload_type_id, depth + 1, true, first);
+        output_char(']');
+        return;
+    }
+    output_text(name);
+    output_char(' ');
+    print_ctor_arg([&] { print_typed_slot(bits, slotKind, payload_type_id, depth); });
 }
 
 // Returns the constructor of the custom type `t` whose id is `ctor_id`, or null.
@@ -3880,6 +3983,8 @@ static void print_typed_value(uint64_t value, uint32_t type_id, int depth) {
                             &g_type_graph->types[elem_type_id];
                         if (elemType->kind == Elm::EcoTypeKind::Primitive) {
                             printPrimitive(hv, elemType->data.primitive.prim_kind);
+                        } else if (elemType->kind == Elm::EcoTypeKind::Wrapper) {
+                            print_typed_slot(hv, ubKind, elem_type_id, depth);
                         } else {
                             printPrimitive(hv, primKindOfSlotKind(ubKind));
                         }
@@ -3906,6 +4011,8 @@ static void print_typed_value(uint64_t value, uint32_t type_id, int depth) {
                 const Elm::EcoTypeInfo* elemType = &g_type_graph->types[elem_type_id];
                 if (elemType->kind == Elm::EcoTypeKind::Primitive) {
                     printPrimitive(head_val, elemType->data.primitive.prim_kind);
+                } else if (elemType->kind == Elm::EcoTypeKind::Wrapper) {
+                    print_typed_slot(head_val, head_kind, elem_type_id, depth);
                 } else if (elemType->kind == Elm::EcoTypeKind::Polymorphic) {
                     // An element type left as a type variable: the cell's slot kind says what the head is.
                     printPrimitive(head_val, primKindOfSlotKind(head_kind));
@@ -3957,20 +4064,16 @@ static void print_typed_value(uint64_t value, uint32_t type_id, int depth) {
             output_char('(');
             // Field a
             if (tupleFieldKind(unboxed, 0) != 0) {
-                const Elm::EcoTypeInfo* ft = &g_type_graph->types[type_a];
-                assert(ft->kind == Elm::EcoTypeKind::Primitive &&
-                       "Tuple field a is unboxed but type is not primitive");
-                printPrimitive(static_cast<uint64_t>(tuple->a.i), ft->data.primitive.prim_kind);
+                // A primitive, or a wrapper of one that EraseWrappers erased (E2b).
+                print_typed_slot(static_cast<uint64_t>(tuple->a.i), tupleFieldKind(unboxed, 0), type_a, depth - 1);
             } else {
                 print_typed_value(static_cast<uint64_t>(tuple->a.i), type_a, depth + 1);
             }
             output_char(',');
             // Field b
             if (tupleFieldKind(unboxed, 1) != 0) {
-                const Elm::EcoTypeInfo* ft = &g_type_graph->types[type_b];
-                assert(ft->kind == Elm::EcoTypeKind::Primitive &&
-                       "Tuple field b is unboxed but type is not primitive");
-                printPrimitive(static_cast<uint64_t>(tuple->b.i), ft->data.primitive.prim_kind);
+                // A primitive, or a wrapper of one that EraseWrappers erased (E2b).
+                print_typed_slot(static_cast<uint64_t>(tuple->b.i), tupleFieldKind(unboxed, 1), type_b, depth - 1);
             } else {
                 print_typed_value(static_cast<uint64_t>(tuple->b.i), type_b, depth + 1);
             }
@@ -3985,30 +4088,24 @@ static void print_typed_value(uint64_t value, uint32_t type_id, int depth) {
             output_char('(');
             // Field a
             if (tupleFieldKind(unboxed, 0) != 0) {
-                const Elm::EcoTypeInfo* ft = &g_type_graph->types[type_a];
-                assert(ft->kind == Elm::EcoTypeKind::Primitive &&
-                       "Tuple3 field a is unboxed but type is not primitive");
-                printPrimitive(static_cast<uint64_t>(tuple->a.i), ft->data.primitive.prim_kind);
+                // A primitive, or a wrapper of one that EraseWrappers erased (E2b).
+                print_typed_slot(static_cast<uint64_t>(tuple->a.i), tupleFieldKind(unboxed, 0), type_a, depth - 1);
             } else {
                 print_typed_value(static_cast<uint64_t>(tuple->a.i), type_a, depth + 1);
             }
             output_char(',');
             // Field b
             if (tupleFieldKind(unboxed, 1) != 0) {
-                const Elm::EcoTypeInfo* ft = &g_type_graph->types[type_b];
-                assert(ft->kind == Elm::EcoTypeKind::Primitive &&
-                       "Tuple3 field b is unboxed but type is not primitive");
-                printPrimitive(static_cast<uint64_t>(tuple->b.i), ft->data.primitive.prim_kind);
+                // A primitive, or a wrapper of one that EraseWrappers erased (E2b).
+                print_typed_slot(static_cast<uint64_t>(tuple->b.i), tupleFieldKind(unboxed, 1), type_b, depth - 1);
             } else {
                 print_typed_value(static_cast<uint64_t>(tuple->b.i), type_b, depth + 1);
             }
             output_char(',');
             // Field c
             if (tupleFieldKind(unboxed, 2) != 0) {
-                const Elm::EcoTypeInfo* ft = &g_type_graph->types[type_c];
-                assert(ft->kind == Elm::EcoTypeKind::Primitive &&
-                       "Tuple3 field c is unboxed but type is not primitive");
-                printPrimitive(static_cast<uint64_t>(tuple->c.i), ft->data.primitive.prim_kind);
+                // A primitive, or a wrapper of one that EraseWrappers erased (E2b).
+                print_typed_slot(static_cast<uint64_t>(tuple->c.i), tupleFieldKind(unboxed, 2), type_c, depth - 1);
             } else {
                 print_typed_value(static_cast<uint64_t>(tuple->c.i), type_c, depth + 1);
             }
@@ -4083,10 +4180,8 @@ static void print_typed_value(uint64_t value, uint32_t type_id, int depth) {
                 bool is_unboxed = recordSlotKind(record, i) != 0;
 
                 if (is_unboxed) {
-                    const Elm::EcoTypeInfo* ft = &g_type_graph->types[field->type_id];
-                    assert(ft->kind == Elm::EcoTypeKind::Primitive &&
-                           "Record field is unboxed but type is not primitive");
-                    printPrimitive(field_val, ft->data.primitive.prim_kind);
+                    // A primitive, or a wrapper of one that EraseWrappers erased (E2b).
+                    print_typed_slot(field_val, recordSlotKind(record, i), field->type_id, depth - 1);
                 } else {
                     print_typed_value(field_val, field->type_id, depth + 1);
                 }
@@ -4207,15 +4302,39 @@ static void print_typed_value(uint64_t value, uint32_t type_id, int depth) {
 
                 print_ctor_arg([&] {
                     if (is_unboxed) {
-                        const Elm::EcoTypeInfo* ft = &g_type_graph->types[field_type_id];
-                        assert(ft->kind == Elm::EcoTypeKind::Primitive &&
-                               "Custom field is unboxed but type is not primitive");
-                        printPrimitive(field_val, ft->data.primitive.prim_kind);
+                        // A primitive, or a wrapper of one that EraseWrappers erased (E2b).
+                        print_typed_slot(field_val, customSlotKind(custom, i), field_type_id, depth - 1);
                     } else {
                         print_typed_value(field_val, field_type_id, depth + 1);
                     }
                 });
             }
+        }
+        break;
+    }
+
+    case Elm::EcoTypeKind::Wrapper:
+        print_wrapper(value, 0, typeInfo, depth);
+        break;
+
+    case Elm::EcoTypeKind::Nullable: {
+        // REP_CONSTANT_003: `Nothing` is Empty (a Maybe-shaped user type's nullary constructor is a
+        // null-cons word, the only constant among its values); any other value is the field itself.
+        const auto& n = typeInfo->data.nullable;
+        bool constantBit = (n.null_name & 0x80000000u) != 0;
+        uint32_t nullName = n.null_name & 0x7FFFFFFFu;
+        bool isNull = constantBit ? isConstantBits(value) : (isEmptyBits(value) && !isNullConsBits(value));
+        if (!g_type_graph->strings || nullName >= g_type_graph->string_count ||
+            n.value_name >= g_type_graph->string_count) {
+            output_text("<internals>");
+            break;
+        }
+        if (isNull) {
+            output_text(g_type_graph->strings[nullName]);
+        } else {
+            output_text(g_type_graph->strings[n.value_name]);
+            output_char(' ');
+            print_ctor_arg([&] { print_typed_value(value, n.field_type_id, depth + 1); });
         }
         break;
     }

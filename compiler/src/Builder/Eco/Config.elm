@@ -456,6 +456,70 @@ applyEnvOverrides cfg =
                 (Utils.envLookupEnv "ECO_GC_REPORT" |> Task.mapError never)
                     |> Task.map (\v -> applyGcBoolOverride (\b g -> { g | report = b }) v cfgGcReport)
             )
+        |> Task.andThen (applyReprBoolEnv "ECO_ERASE_WRAPPERS" (\b r -> { r | eraseWrappers = b }))
+        |> Task.andThen (applyReprBoolEnv "ECO_ERASE_UNBOXED" (\b r -> { r | eraseUnboxed = b }))
+        |> Task.andThen (applyReprBoolEnv "ECO_NULLABLE_MAYBE" (\b r -> { r | nullableMaybe = b }))
+        |> Task.andThen (applyReprBoolEnv "ECO_NULLABLE_USER" (\b r -> { r | nullableUser = b }))
+        |> Task.andThen (applyReprBoolEnv "ECO_KNOWN_CTOR_CASE" (\b r -> { r | knownCtorCase = b }))
+        |> Task.andThen (applyReprBoolEnv "ECO_SRET_CTORS" (\b r -> { r | sretCtors = b }))
+        |> Task.andThen (applyReprBoolEnv "ECO_REPR_VALIDATE" (\b r -> { r | validate = b }))
+        |> Task.andThen
+            (\cfgCensus ->
+                (Utils.envLookupEnv "ECO_CTOR_CENSUS" |> Task.mapError never)
+                    |> Task.map (\v -> applyCtorCensusOverride v cfgCensus)
+            )
+
+
+{-| Returns `cfg` with the `repr` switch that `set` updates switched on when the
+environment variable `var` is `1`, `true`, `yes` or `on`, and off when it is
+`0`, `false`, `no` or `off`.
+-}
+applyReprBoolEnv : String -> (Bool -> Config.ReprConfig -> Config.ReprConfig) -> EcoConfig -> Task Exit.Make EcoConfig
+applyReprBoolEnv var set cfg =
+    (Utils.envLookupEnv var |> Task.mapError never)
+        |> Task.map
+            (\maybeVal ->
+                case maybeVal of
+                    Nothing ->
+                        cfg
+
+                    Just raw ->
+                        let
+                            t =
+                                String.toLower (String.trim raw)
+                        in
+                        if t == "1" || t == "true" || t == "yes" || t == "on" then
+                            { cfg | repr = set True cfg.repr }
+
+                        else if t == "0" || t == "false" || t == "no" || t == "off" then
+                            { cfg | repr = set False cfg.repr }
+
+                        else
+                            cfg
+            )
+
+
+{-| Returns `cfg` with `repr.census` set to the path in `ECO_CTOR_CENSUS`, and
+unset when it is empty or `0`.
+-}
+applyCtorCensusOverride : Maybe String -> EcoConfig -> EcoConfig
+applyCtorCensusOverride maybeVal cfg =
+    let
+        repr =
+            cfg.repr
+    in
+    case Maybe.map String.trim maybeVal of
+        Nothing ->
+            cfg
+
+        Just "" ->
+            { cfg | repr = { repr | census = Nothing } }
+
+        Just "0" ->
+            { cfg | repr = { repr | census = Nothing } }
+
+        Just path ->
+            { cfg | repr = { repr | census = Just path } }
 
 
 {-| Returns `cfg` with `aggPromote` switched on when `ECO_AGG_PROMOTE` is `1`,

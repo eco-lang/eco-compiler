@@ -405,5 +405,6 @@ run memberOrigins registry exprs =
             , lssMemberOrigins = memberOrigins
             , lssMemberKinds = Dict.empty
             , lssBlockedMembers = Dict.empty
+            , repr = Mono.emptyReprInfo
             }
         )

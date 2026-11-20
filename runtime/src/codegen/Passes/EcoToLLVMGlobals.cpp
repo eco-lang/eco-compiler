@@ -365,6 +365,7 @@ struct TypeTableOpLowering : public OpConversionPattern<TypeTableOp> {
                     }
                     break;
                 case 4: // Custom: first_ctor (u32) @0, ctor_count (u32) @4
+                case 7: // Wrapper (an erased wrapper, MONO_031): laid out as Custom
                     if (typeArr.size() >= 4) {
                         putU32(0, intAt(typeArr, 2));
                         putU32(4, intAt(typeArr, 3));
@@ -381,6 +382,16 @@ struct TypeTableOpLowering : public OpConversionPattern<TypeTableOp> {
                 case 6: // Polymorphic: constraint (u8) @0, an
                         // EcoConstraintKind.
                     data[0] = char(intAt(typeArr, 2) & 0xFF);
+                    break;
+                case 8: // Nullable (REP_CONSTANT_003): field_type_id (u32) @0,
+                        // null_name (u32) @4 with constant_bit_test in bit 31,
+                        // value_name (u32) @8
+                    if (typeArr.size() >= 6) {
+                        putU32(0, intAt(typeArr, 2));
+                        putU32(4, (intAt(typeArr, 3) & 0x7FFFFFFF)
+                                      | (intAt(typeArr, 5) ? 0x80000000u : 0u));
+                        putU32(8, intAt(typeArr, 4));
+                    }
                     break;
                 }
 

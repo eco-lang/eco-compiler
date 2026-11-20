@@ -162,13 +162,27 @@ struct RecordMakeOpLowering : public OpConversionPattern<RecordMakeOp> {
  * The lowering of `eco.make.custom` to a struct built from its operands, in order.
  */
 struct CustomMakeOpLowering : public OpConversionPattern<CustomMakeOp> {
-    using OpConversionPattern::OpConversionPattern;
+    const EcoRuntime &runtime; // Declares the census counter; must outlive the pattern.
+
+    // Creates the pattern, which keeps a reference to `runtime`.
+    CustomMakeOpLowering(EcoTypeConverter &typeConverter, MLIRContext *ctx,
+                         const EcoRuntime &runtime)
+        : OpConversionPattern(typeConverter, ctx), runtime(runtime) {}
 
     LogicalResult
     matchAndRewrite(CustomMakeOp op, OpAdaptor adaptor,
                     ConversionPatternRewriter &rewriter) const override {
         Type structTy = getTypeConverter()->convertType(op.getResult().getType());
         if (!structTy) return failure();
+        // The constructor census counts an SSA construction (M0).
+        if (auto idAttr = op->getAttrOfType<IntegerAttr>("_census_id")) {
+            auto i32Ty = rewriter.getI32Type();
+            auto idVal = LLVM::ConstantOp::create(rewriter, op.getLoc(), i32Ty,
+                                                  static_cast<int32_t>(idAttr.getInt() & 0x7FFF));
+            auto whichVal = LLVM::ConstantOp::create(rewriter, op.getLoc(), i32Ty, 1);
+            LLVM::CallOp::create(rewriter, op.getLoc(), runtime.getOrCreateCtorCensusCount(rewriter),
+                                 ValueRange{idVal, whichVal});
+        }
         Value result = buildStruct(rewriter, op.getLoc(), structTy,
                                    adaptor.getFields());
         rewriter.replaceOp(op, result);
@@ -977,7 +991,7 @@ void eco::detail::populateEcoValueAggPatterns(
     patterns.add<Tuple2MakeOpLowering>(typeConverter, ctx);
     patterns.add<Tuple3MakeOpLowering>(typeConverter, ctx);
     patterns.add<RecordMakeOpLowering>(typeConverter, ctx);
-    patterns.add<CustomMakeOpLowering>(typeConverter, ctx);
+    patterns.add<CustomMakeOpLowering>(typeConverter, ctx, runtime);
     patterns.add<ConsMakeOpLowering>(typeConverter, ctx);
     patterns.add<ClosureEnvMakeOpLowering>(typeConverter, ctx);
     patterns.add<ToHeapOpLowering>(typeConverter, ctx, runtime);

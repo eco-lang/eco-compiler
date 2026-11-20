@@ -366,6 +366,9 @@ constexpr int64_t TagCustom = 7;
 constexpr unsigned HeaderUnboxedShift = 10;  // tag:5 + color:2 + pin:1 + age:2
 // The bit at which the header word holds `Header.size`.
 constexpr unsigned HeaderSizeShift = 32;
+// The bit position of `Header.refcount` (15 bits), which a live object leaves unused; the constructor
+// census keeps a class id there (plans/constructor-representation-levels.md, M0).
+constexpr unsigned HeaderRefcountShift = 16;  // tag:5 + color:2 + pin:1 + age:2 + unboxed:6
 // Returns the header word of a newly allocated object with tag `tag`,
 // `Header.unboxed` equal to `unboxedBits` and `Header.size` equal to
 // `sizeField`, with every other field 0.
@@ -1114,6 +1117,11 @@ struct EcoRuntime {
     mlir::LLVM::LLVMFuncOp getOrCreateDispatchStatsFast(mlir::OpBuilder &builder) const;
     // Declares `eco_gencall_stats`, gc-leaf, a statistics counter.
     mlir::LLVM::LLVMFuncOp getOrCreateGencallStats(mlir::OpBuilder &builder) const;
+    // Declares `eco_ctor_census_count`, gc-leaf, the constructor-census counter.
+    mlir::LLVM::LLVMFuncOp getOrCreateCtorCensusCount(mlir::OpBuilder &builder) const;
+    // Declares `eco_ctor_census_mark`, gc-leaf: counts an allocation and stamps its census id in
+    // the object's header (the allocation-group and out-of-line paths).
+    mlir::LLVM::LLVMFuncOp getOrCreateCtorCensusMark(mlir::OpBuilder &builder) const;
     // Declares the slot-crossing barrier `__eco_slot_to_hptr`, gc-leaf and with no
     // other attribute.
     mlir::LLVM::LLVMFuncOp getOrCreateSlotToHPtr(mlir::OpBuilder &builder) const;

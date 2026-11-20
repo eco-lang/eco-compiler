@@ -42,6 +42,7 @@ import Compiler.Core.Name as Name
 import Compiler.Elm.ModuleName as ModuleName
 import Compiler.Elm.Package as Pkg
 import Compiler.GenerateMlir.Context as Ctx
+import Compiler.GenerateMlir.CtorCensus as CtorCensus
 import Compiler.GenerateMlir.Expr as Expr
 import Compiler.GenerateMlir.LogicalTypes as LogicalTypes
 import Compiler.GenerateMlir.Names as Names
@@ -1037,6 +1038,7 @@ generateSretWorkerAndShim ctx funcName closureInfo body extractedReturnType sret
                 | nextVar = List.length closureInfo.params
                 , varMappings = freshVarMappings
                 , sretTailLayout = Just sretInfo.layout
+                , sretTailCtor = Maybe.map .name sretInfo.ctor
             }
                 |> Ctx.resetDefinedSsaVars paramSsaVars
 
@@ -1094,12 +1096,7 @@ generateSretWorkerAndShim ctx funcName closureInfo body extractedReturnType sret
             Ctx.freshVar ctxS2
 
         ( ctxS4, sConstructOp ) =
-            case sResultPairs of
-                Mono.T2 a b ->
-                    Ops.ecoConstructTuple2 ctxS3 sBoxVar a b sretInfo.layout.unboxedBitmap
-
-                Mono.T3 a b c ->
-                    Ops.ecoConstructTuple3 ctxS3 sBoxVar a b c sretInfo.layout.unboxedBitmap
+            sretShimConstruct ctxS3 sBoxVar sResultPairs sretInfo
 
         ( _, sReturnOp ) =
             Ops.ecoReturn ctxS4 sBoxVar Types.ecoValue
@@ -1125,6 +1122,33 @@ generateSretWorkerAndShim ctx funcName closureInfo body extractedReturnType sret
             { ctxS5 | sretTailLayout = Nothing }
     in
     ( [ workerOp, shimWithLogical ], ctxOut )
+
+
+{-| Builds the boxed result of a `$sret` shim from the worker's results: the
+tuple, or for a custom result (S1) the constructor's heap value.
+-}
+sretShimConstruct : Ctx.Context -> String -> Mono.TupleShape ( String, MlirType ) -> Ctx.SretInfo -> ( Ctx.Context, MlirOp )
+sretShimConstruct ctx boxVar resultPairs sretInfo =
+    case sretInfo.ctor of
+        Just shape ->
+            let
+                ctorLayout =
+                    Types.computeCtorLayout shape
+            in
+            Ops.ecoConstructCustom ctx
+                boxVar
+                ctorLayout.tag
+                (Name.toElmString shape.name)
+                (List.map (\( v, t ) -> ( v, t, Types.mlirTypeToKind t )) (Mono.tupleToList resultPairs))
+                |> Tuple.mapSecond (Ops.withCensusId (CtorCensus.idForShape ctx.ctorCensus shape.name shape.fieldTypes))
+
+        Nothing ->
+            case resultPairs of
+                Mono.T2 a b ->
+                    Ops.ecoConstructTuple2 ctx boxVar a b sretInfo.layout.unboxedBitmap
+
+                Mono.T3 a b c ->
+                    Ops.ecoConstructTuple3 ctx boxVar a b c sretInfo.layout.unboxedBitmap
 
 
 {-| Builds the `$psplit` worker and the shim of the closure `funcName`, whose
@@ -1376,12 +1400,7 @@ generateTailFunc ctx funcName params expr monoType maybeSret =
                     Ctx.freshVar ctxS2
 
                 ( ctxS4, sConstructOp ) =
-                    case sResultPairs of
-                        Mono.T2 a b ->
-                            Ops.ecoConstructTuple2 ctxS3 sBoxVar a b sretInfo.layout.unboxedBitmap
-
-                        Mono.T3 a b c ->
-                            Ops.ecoConstructTuple3 ctxS3 sBoxVar a b c sretInfo.layout.unboxedBitmap
+                    sretShimConstruct ctxS3 sBoxVar sResultPairs sretInfo
 
                 ( _, sReturnOp ) =
                     Ops.ecoReturn ctxS4 sBoxVar Types.ecoValue
@@ -1532,15 +1551,39 @@ generateCtor ctx funcName home ctorLayout monoType =
             ( resultVar, ctx1 ) =
                 Ctx.freshVar ctxBoxed
 
-            ( ctx2, constructOp ) =
-                Ops.ecoConstructCustom ctx1 resultVar ctorLayout.tag constructorName (List.map2 (\( v, t ) k -> ( v, t, k )) (List.reverse slotPairsRev) (Types.ctorSlotKinds ctorLayout))
+            -- The field constructor of a nullable type returns its (boxed) argument itself
+            -- (REP_CONSTANT_003).
+            nullableField =
+                case ( Ctx.nullableInfo ctxBoxed ctorResultMonoType, slotPairsRev ) of
+                    ( Just info, [ ( slotVar, _ ) ] ) ->
+                        if info.valueCtor == ctorLayout.name then
+                            Just slotVar
+
+                        else
+                            Nothing
+
+                    _ ->
+                        Nothing
+
+            ( ctx2, constructOps, returnVar ) =
+                case nullableField of
+                    Just slotVar ->
+                        ( ctx1, [], slotVar )
+
+                    Nothing ->
+                        let
+                            ( ctxC, constructOp ) =
+                                Ops.ecoConstructCustom ctx1 resultVar ctorLayout.tag constructorName (List.map2 (\( v, t ) k -> ( v, t, k )) (List.reverse slotPairsRev) (Types.ctorSlotKinds ctorLayout))
+                                    |> Tuple.mapSecond (Ops.withCensusId (CtorCensus.idForShape ctx1.ctorCensus ctorLayout.name (List.map .monoType ctorLayout.fields)))
+                        in
+                        ( ctxC, [ constructOp ], resultVar )
 
             ( _, returnOp ) =
-                Ops.ecoReturn ctx2 resultVar Types.ecoValue
+                Ops.ecoReturn ctx2 returnVar Types.ecoValue
 
             region : MlirRegion
             region =
-                Ops.mkRegion argPairs (List.reverse boxOpsRev ++ [ constructOp ]) returnOp
+                Ops.mkRegion argPairs (List.reverse boxOpsRev ++ constructOps) returnOp
 
             ( ctxOut, funcOp ) =
                 Ops.funcFunc ctx2 funcName argPairs Types.ecoValue region

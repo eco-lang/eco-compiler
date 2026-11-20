@@ -124,6 +124,7 @@ struct NurserySpace::TenureHeapEnv {
         }
 #if ENABLE_GC_STATS
         J.copies.promotion(static_cast<Tag>(h->tag), size, h->size);
+        ctorCensusPromoted(*h);
 #endif
 #if ECO_HEAP_VALIDATE || P1_CENSUS_COMPILED
         J.promoted_log.push_back(dst);
@@ -1102,6 +1103,7 @@ struct NurserySpace::TenureParEnv {
         w.b_surv += size;   // here, the bytes this worker tenured
 #if ENABLE_GC_STATS
         w.copies.promotion(static_cast<Tag>(h->tag), size, h->size);
+        ctorCensusPromoted(*h);
 #endif
 #if ECO_HEAP_VALIDATE || P1_CENSUS_COMPILED
         w.promoted_log.push_back(dst);

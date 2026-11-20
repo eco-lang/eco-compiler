@@ -865,6 +865,18 @@ LLVM::LLVMFuncOp EcoRuntime::getOrCreateDispatchStatsFast(OpBuilder &builder) co
     return getOrCreateFunc(builder, "eco_dispatch_stats_fast", funcTy, /*gcLeaf=*/true);
 }
 
+LLVM::LLVMFuncOp EcoRuntime::getOrCreateCtorCensusCount(OpBuilder &builder) const {
+    // eco_ctor_census_count(id: i32, which: i32) -> void
+    auto funcTy = LLVM::LLVMFunctionType::get(VOID_TY, {I32_TY, I32_TY});
+    return getOrCreateFunc(builder, "eco_ctor_census_count", funcTy, /*gcLeaf=*/true);
+}
+
+LLVM::LLVMFuncOp EcoRuntime::getOrCreateCtorCensusMark(OpBuilder &builder) const {
+    // eco_ctor_census_mark(obj: hptr, id: i32) -> void
+    auto funcTy = LLVM::LLVMFunctionType::get(VOID_TY, {HPTR_TY, I32_TY});
+    return getOrCreateFunc(builder, "eco_ctor_census_mark", funcTy, /*gcLeaf=*/true);
+}
+
 LLVM::LLVMFuncOp EcoRuntime::getOrCreateGencallStats(OpBuilder &builder) const {
     // eco_gencall_stats(reason: i32) -> void
     auto funcTy = LLVM::LLVMFunctionType::get(VOID_TY, {I32_TY});
@@ -1238,6 +1250,7 @@ void EcoRuntime::materializeAllRuntimeDecls(OpBuilder &b) const {
     getOrCreateGcPushStackRange(b); getOrCreateGcRestoreStackRangePoint(b);
     getOrCreateSatBeginMarker(b); getOrCreateSatEndMarker(b);
     getOrCreateRegisterTypeGraph(b); getOrCreateDispatchStatsFast(b); getOrCreateGencallStats(b);
+    getOrCreateCtorCensusCount(b); getOrCreateCtorCensusMark(b);
     getOrCreateSlotToHPtr(b); getOrCreateHPtrToSlot(b);
     getOrCreateIntPow(b); getOrCreateUtilsEqual(b);
     getOrCreateValueEqMarker(b);

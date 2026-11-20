@@ -53,6 +53,10 @@ enum class EcoTypeKind : uint8_t {
     Custom,      // A custom type (algebraic data type), described by its constructors.
     Function,    // Printed as `<function>`; its argument and result types are not read by the printer.
     Polymorphic, // A type variable left after monomorphization. Printed by `print_value` without type info.
+    Wrapper,     // A wrapper type the compiler erased (MONO_031): laid out as `Custom` with its one
+                 // constructor, but a value is the constructor's field itself, not a heap Custom.
+    Nullable,    // A Maybe-shaped type the compiler made nullable (REP_CONSTANT_003): the nullary
+                 // constructor is a constant word, and any other value is the other constructor's field.
 };
 
 /**
@@ -141,11 +145,21 @@ struct EcoTypeInfo {
             uint32_t field_count;
         } record;
 
-        // For Custom types (ADTs)
+        // For Custom types (ADTs), and for Wrapper types (their one constructor)
         struct {
             uint32_t first_ctor;    // Index of the first constructor's entry in `EcoTypeGraph::ctors`.
             uint32_t ctor_count;
         } custom;
+
+        // For Nullable types
+        struct {
+            uint32_t field_type_id;  // The type of the field constructor's one field.
+            uint32_t null_name;      // Bits 0-30: the nullary constructor's name in `strings`. Bit 31: set when
+                                     // that constructor is tested by the constant bit (a Maybe-shaped user
+                                     // type, whose constructor is a null-cons word), clear for `Maybe`
+                                     // (whose `Nothing` is the Empty constant).
+            uint32_t value_name;     // The field constructor's name in `strings`.
+        } nullable;
 
         // For Function types
         struct {

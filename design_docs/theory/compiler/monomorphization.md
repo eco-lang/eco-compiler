@@ -176,6 +176,15 @@ The engine's state records are compiled by Eco itself, and comments in the engin
 
 Both engines create specializations that turn out unreachable, and the post-monomorphization inliner orphans more. Reachability is exact only after the inliner and before global optimization adds references by other routes, so a second prune runs there. It collects edges again from the rewritten bodies and does no closing of numbers. Pruned entries are emptied, never renumbered, because lambda-set members, call edges and later passes all hold specialization numbers.
 
+## Representation passes after the engines
+
+Between the layout check and the post-monomorphization inliner, `Compiler.Pipeline.Steps.representation` may change how values of some custom types are laid out (plans/constructor-representation-levels.md). Each pass is behind a `repr` switch and records what it changed in the graph's `repr` field, which the code generator and the type table read.
+
+- `EraseWrappers` (MONO_031) represents a value of a type with one constructor of one field as its field, as Elm's own `Unbox` optimization and the JS back end do. Each erased constructor's node becomes an identity function at the same SpecId, so every reference stays valid.
+- `NullableMaybe` (MONO_033, REP_CONSTANT_003) represents `Just x` as `x` itself where `x` can never be the Empty constant, keeping `Nothing` as Empty, and rewrites each test of `Just` into the negated test of `Nothing`.
+
+Both passes are safe only where every view of a value agrees on its representation, which is a stronger statement than the layout check makes. `Compiler.Monomorphize.RepresentationMeets` finds every pair of types the graph records for one value: an argument and its parameter, a binding and its use, a branch and its case. The passes exclude what a disagreeing view would read wrongly, including any value viewed through a type variable, which an erased view reads untyped. `Compiler.MonoOpt.KernelVisible` (MONO_032) excludes the types the C++ kernels build or read in a known shape, from the table in `Compiler.IR.Kernel.Visibility`. After the inliner, `KnownCtorCase` folds a `case` on a value built by a known constructor in the same function.
+
 ## Examples of changes that fit the theory
 A change fits when it adds an equality to an item's store, a demand to the list or a check that reports a property of the program, and leaves staging, layout and calling conventions to later passes.
 

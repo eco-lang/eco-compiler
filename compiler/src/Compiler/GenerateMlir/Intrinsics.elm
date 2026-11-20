@@ -1,4 +1,4 @@
-module Compiler.GenerateMlir.Intrinsics exposing (operationResultMlirType, unboxOperands, unboxToType, generateOperationOps)
+module Compiler.GenerateMlir.Intrinsics exposing (operationResultMlirType, unboxOperands, unboxToType, boxFromType, generateOperationOps)
 
 {-| Emits the MLIR for an intrinsic `Operation`: a kernel call that the back
 end lowers to inline operations instead of a call to the kernel function.
@@ -24,7 +24,7 @@ without `negate` (`==`) is `eco.bool.xor` followed by `eco.bool.not`, since
 `eco.bool.xor` already computes `/=`. `generateOperationOps` emits every
 operation, these included.
 
-@docs operationResultMlirType, unboxOperands, unboxToType, generateOperationOps
+@docs operationResultMlirType, unboxOperands, unboxToType, boxFromType, generateOperationOps
 
 -}
 
@@ -183,6 +183,28 @@ unboxToType ctx var targetType =
                 |> Ops.opBuilder.build
     in
     ( [ unboxOp ], unboxedVar, ctx2 )
+
+
+{-| Returns the ops that box the primitive or `i1` value `var` of type
+`fromType` as an `!eco.value`, with the boxed variable.
+-}
+boxFromType : Ctx.Context -> String -> MlirType -> ( List MlirOp, String, Ctx.Context )
+boxFromType ctx var fromType =
+    let
+        ( boxedVar, ctx1 ) =
+            Ctx.freshVar ctx
+
+        attrs =
+            Dict.singleton "_operand_types" (ArrayAttr Nothing [ TypeAttr fromType ])
+
+        ( ctx2, boxOp ) =
+            Ops.mlirOp ctx1 "eco.box"
+                |> Ops.opBuilder.withOperands [ var ]
+                |> Ops.opBuilder.withResults [ ( boxedVar, Types.ecoValue ) ]
+                |> Ops.opBuilder.withAttrs attrs
+                |> Ops.opBuilder.build
+    in
+    ( [ boxOp ], boxedVar, ctx2 )
 
 
 {-| Returns the operation with each operand, a variable and its SSA type,

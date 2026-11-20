@@ -98,6 +98,7 @@ import Compiler.Elm.Package as Pkg
 import Compiler.GenerateMlir.BytesFusion.Emit as BFEmit
 import Compiler.GenerateMlir.BytesFusion.Reify as BFReify
 import Compiler.GenerateMlir.Context as Ctx
+import Compiler.GenerateMlir.CtorCensus as CtorCensus
 import Compiler.GenerateMlir.Intrinsics as Intrinsics
 import Compiler.GenerateMlir.KernelAbi as KernelAbi
 import Compiler.GenerateMlir.Names as Names
@@ -488,12 +489,17 @@ generateExpr ctx0 expr =
             generateClosure ctx closureInfo body monoType
 
         Mono.MonoCall _ func args resultType callInfo ->
-            case trySretFreshLeaf ctx0 func args of
+            case trySretCtorLeaf ctx0 func args of
                 Just res ->
                     res
 
                 Nothing ->
-                    generateCall ctx func args resultType callInfo
+                    case trySretFreshLeaf ctx0 func args of
+                        Just res ->
+                            res
+
+                        Nothing ->
+                            generateCall ctx func args resultType callInfo
 
         Mono.MonoTailCall name _ _ ->
             crash (unscopedTailCallError name)
@@ -1647,7 +1653,7 @@ generateCall ctx func args resultType callInfo =
                             }
 
         Mono.CallDirectFlat ->
-            if Types.isFunctionType resultType then
+            if Types.isFunctionType resultType && not (isDebugLogCall func args) then
                 generateClosureApplication ctx DirectFlat func args resultType callInfo
 
             else
@@ -1733,6 +1739,22 @@ gencallCalleeReason func =
 
         _ ->
             6
+
+
+{-| Returns whether a call is `Debug.log label value` with both arguments. It
+logs at once, as Elm does, even when `value` is a function, so it is generated
+as a saturated kernel call and not as a partial application of the kernel's
+flattened type; a wrapper of a function erased by `EraseWrappers` then still
+prints its constructor.
+-}
+isDebugLogCall : Mono.MonoExpr -> List Mono.MonoExpr -> Bool
+isDebugLogCall func args =
+    case ( func, args ) of
+        ( Mono.MonoVarKernel _ _ "Debug" "log" _, [ _, _ ] ) ->
+            True
+
+        _ ->
+            False
 
 
 {-| The call kinds that `generateCall` sends to `generateClosureApplication`
@@ -3533,6 +3555,58 @@ any other callee.
 -}
 tryCtorInline : Ctx.Context -> Mono.MonoExpr -> List Mono.MonoExpr -> Mono.MonoType -> Maybe ExprResult
 tryCtorInline ctx func args resultType =
+    case nullableValueCall ctx func args resultType of
+        Just arg ->
+            Just (generateNullableValue ctx arg)
+
+        Nothing ->
+            tryCtorInlineHeap ctx func args resultType
+
+
+{-| Returns the argument of a saturated call to the field constructor of a
+nullable type (`Just x` of a `Maybe` that `NullableMaybe` made nullable), whose
+value is the argument itself (REP\_CONSTANT\_003).
+-}
+nullableValueCall : Ctx.Context -> Mono.MonoExpr -> List Mono.MonoExpr -> Mono.MonoType -> Maybe Mono.MonoExpr
+nullableValueCall ctx func args resultType =
+    case ( func, args, Ctx.nullableInfo ctx resultType ) of
+        ( Mono.MonoVarGlobal _ specId _, [ arg ], Just info ) ->
+            case Dict.get specId ctx.ctorBySpec of
+                Just shape ->
+                    if shape.name == info.valueCtor then
+                        Just arg
+
+                    else
+                        Nothing
+
+                Nothing ->
+                    Nothing
+
+        _ ->
+            Nothing
+
+
+{-| Generates the value of a nullable type's field constructor applied to
+`arg`: `arg` itself, as an `!eco.value` (a Bool is boxed to its constant).
+-}
+generateNullableValue : Ctx.Context -> Mono.MonoExpr -> ExprResult
+generateNullableValue ctx arg =
+    let
+        argResult =
+            generateExpr ctx arg
+
+        ( coerceOps, var, ctx1 ) =
+            coerceResultToType argResult.ctx argResult.resultVar argResult.resultType Types.ecoValue
+    in
+    { ops = argResult.ops ++ coerceOps
+    , resultVar = var
+    , resultType = Types.ecoValue
+    , ctx = ctx1
+    }
+
+
+tryCtorInlineHeap : Ctx.Context -> Mono.MonoExpr -> List Mono.MonoExpr -> Mono.MonoType -> Maybe ExprResult
+tryCtorInlineHeap ctx func args resultType =
     if not ctx.ecoConfig.ctorInline then
         Nothing
 
@@ -3808,7 +3882,7 @@ generateSaturatedCallNoFusion ctx kind func args resultType callInfo =
                     let
                         valueMonoType : Mono.MonoType
                         valueMonoType =
-                            Mono.typeOf valueExpr
+                            Maybe.withDefault (Mono.typeOf valueExpr) callInfo.printType
 
                         ( labelTypeId, ctx1a_ ) =
                             Ctx.getOrCreateTypeIdForMonoType Mono.MString ctx1
@@ -3868,7 +3942,7 @@ generateSaturatedCallNoFusion ctx kind func args resultType callInfo =
                     let
                         valueMonoType : Mono.MonoType
                         valueMonoType =
-                            Mono.typeOf valueExpr
+                            Maybe.withDefault (Mono.typeOf valueExpr) callInfo.printType
 
                         ( typeId, ctx1b ) =
                             Ctx.getOrCreateTypeIdForMonoType valueMonoType ctx1
@@ -6418,6 +6492,10 @@ promotableCtorCall ctx name specId cargs resultType callInfo body =
     else if not saturatedDirect then
         Nothing
 
+    else if Ctx.nullableInfo ctx resultType /= Nothing then
+        -- A nullable value is its field, never an aggregate (REP_CONSTANT_003).
+        Nothing
+
     else
         case Dict.get specId ctx.ctorBySpec of
             Just shape ->
@@ -6585,7 +6663,7 @@ trySretFreshLeaf ctx0 func args =
         ( Just layout, Mono.MonoVarGlobal _ sid _ ) ->
             case Dict.get sid ctx0.sretPromoted of
                 Just info ->
-                    if info.slotTypes == Types.tupleSlotTypes layout then
+                    if info.slotTypes == Types.tupleSlotTypes layout && Maybe.map .name info.ctor == ctx0.sretTailCtor then
                         let
                             ( callOps, resultPairs, ctxA ) =
                                 emitSretCallMulti { ctx0 | sretTailLayout = Nothing } sid args info
@@ -6610,6 +6688,59 @@ trySretFreshLeaf ctx0 func args =
 
                     else
                         Nothing
+
+                Nothing ->
+                    Nothing
+
+        _ ->
+            Nothing
+
+
+{-| Generates, on the result spine of a `$sret` worker whose result is a custom
+type (`sretTailCtor`, plans/constructor-representation-levels.md S1), a call
+of that constructor as a value tuple of its fields, which the worker returns
+as separate results; no `Custom` is allocated. `Nothing` for any other call.
+-}
+trySretCtorLeaf : Ctx.Context -> Mono.MonoExpr -> List Mono.MonoExpr -> Maybe ExprResult
+trySretCtorLeaf ctx0 func args =
+    case ( ctx0.sretTailLayout, ctx0.sretTailCtor, func ) of
+        ( Just layout, Just ctorName, Mono.MonoVarGlobal _ sid _ ) ->
+            case Dict.get sid ctx0.ctorBySpec of
+                Just shape ->
+                    let
+                        asTuple =
+                            case ( args, shape.fieldTypes ) of
+                                ( [ a, b ], [ ta, tb ] ) ->
+                                    Just ( Mono.T2 a b, Mono.mTuple (Mono.T2 ta tb) )
+
+                                ( [ a, b, c ], [ ta, tb, tc ] ) ->
+                                    Just ( Mono.T3 a b c, Mono.mTuple (Mono.T3 ta tb tc) )
+
+                                _ ->
+                                    Nothing
+                    in
+                    case asTuple of
+                        Just ( elements, tupleType ) ->
+                            if
+                                shape.name
+                                    == ctorName
+                                    && Types.tupleSlotTypes (Tuple.first (tupleLiteralLayout elements tupleType))
+                                    == Types.tupleSlotTypes layout
+                            then
+                                let
+                                    res =
+                                        generateTupleCreateValue { ctx0 | sretTailLayout = Nothing } elements tupleType
+
+                                    resCtx =
+                                        res.ctx
+                                in
+                                Just { res | ctx = { resCtx | sretTailLayout = ctx0.sretTailLayout } }
+
+                            else
+                                Nothing
+
+                        Nothing ->
+                            Nothing
 
                 Nothing ->
                     Nothing
@@ -6695,7 +6826,7 @@ trySretLetBinding ctx ctxWithPlaceholders name expr body =
                         if
                             saturatedDirect
                                 && chainHeadSafe
-                                && tupleBinderPromotable ctx.splitAggParams ctx.psplitPromoted ctx.fwdRefdLetNames name (Mono.tupleContainerKind info.layout.elements) analysisBody
+                                && tupleBinderPromotable ctx.splitAggParams ctx.psplitPromoted ctx.fwdRefdLetNames name (sretContainerKind info) analysisBody
                         then
                             Just (emitSretLetBinding ctx ctxWithPlaceholders name specId cargs info body)
 
@@ -6707,6 +6838,20 @@ trySretLetBinding ctx ctxWithPlaceholders name expr body =
 
             _ ->
                 Nothing
+
+
+{-| The container kind through which the uses of a `$sret` call's let-bound
+result read its fields: the tuple's, or the constructor's for a custom result
+(S1).
+-}
+sretContainerKind : Ctx.SretInfo -> Mono.ContainerKind
+sretContainerKind info =
+    case info.ctor of
+        Just shape ->
+            Mono.CustomContainer shape.name
+
+        Nothing ->
+            Mono.tupleContainerKind info.layout.elements
 
 
 {-| Generates the let binding of `name` as a call to the `$sret` worker of
@@ -6732,7 +6877,15 @@ emitSretLetBinding ctx ctxWithPlaceholders name specId cargs info body =
                 | varMappings = Dict.remove name ctxD.varMappings
                 , splitAggParams =
                     Dict.insert name
-                        { slots = Mono.tupleToList resultPairs, split = Ctx.SplitTuple info.layout }
+                        { slots = Mono.tupleToList resultPairs
+                        , split =
+                            case info.ctor of
+                                Just shape ->
+                                    Ctx.SplitCtor (Types.computeCtorLayout shape)
+
+                                Nothing ->
+                                    Ctx.SplitTuple info.layout
+                        }
                         ctxD.splitAggParams
                 , sretTailLayout = ctx.sretTailLayout
             }
@@ -7217,6 +7370,7 @@ generateCustomCreateValue ctx shape args =
 
         ( ctx4, makeOp ) =
             Ops.ecoMakeCustom ctx3 resultVar layout.tag shape.name slotPairs
+                |> Tuple.mapSecond (Ops.withCensusId (CtorCensus.idForShape ctx3.ctorCensus shape.name shape.fieldTypes))
     in
     { ops = prepOps ++ [ makeOp ]
     , resultVar = resultVar
@@ -7247,6 +7401,7 @@ generateCustomCreateHeap ctx shape args =
                 layout.tag
                 (Name.toElmString layout.name)
                 (List.map2 (\( v, t ) k -> ( v, t, k )) slotPairs (Types.ctorSlotKinds layout))
+                |> Tuple.mapSecond (Ops.withCensusId (CtorCensus.idForShape ctx3.ctorCensus shape.name shape.fieldTypes))
     in
     { ops = prepOps ++ [ constructOp ]
     , resultVar = resultVar

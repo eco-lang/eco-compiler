@@ -553,5 +553,6 @@ run memberOrigins registry specNodes exprs =
             , lssMemberOrigins = memberOrigins
             , lssMemberKinds = Dict.empty
             , lssBlockedMembers = Dict.empty
+            , repr = Mono.emptyReprInfo
             }
         )

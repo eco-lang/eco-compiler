@@ -39,6 +39,7 @@ import Compiler.Core.Index as Index
 import Compiler.Core.Name as Name
 import Compiler.Elm.ModuleName as ModuleName
 import Compiler.GenerateMlir.Context as Ctx
+import Compiler.GenerateMlir.CtorCensus as CtorCensus
 import Compiler.GenerateMlir.Intrinsics as Intrinsics
 import Compiler.GenerateMlir.Ops as Ops
 import Compiler.GenerateMlir.Types as Types
@@ -163,6 +164,41 @@ generateMonoTest ctx ( dtPath, test ) =
     in
     case test of
         Test.IsCtor home ctorName index _ _ ->
+            case Ctx.nullableInfo ctx1 (Mono.dtPathType dtPath) of
+                Just info ->
+                    if ctorName /= info.nullCtor then
+                        System.Crash.crash ("N1: unrewritten test of the field constructor " ++ ctorName ++ " on a nullable value (NullableMaybe rewrites it)")
+
+                    else if info.constantBitTest then
+                        -- A Maybe-shaped user type: its nullary constructor is the only embedded
+                        -- constant among its values (decision D2), so the constant bit decides.
+                        let
+                            ( resVar, ctx2 ) =
+                                Ctx.freshVar ctx1
+
+                            ( ctx3, isConstOp ) =
+                                Ops.ecoIsConstant ctx2 resVar valVar
+                        in
+                        ( pathOps ++ [ isConstOp ], resVar, ctx3 )
+
+                    else
+                        generateCtorTagTest ctx1 pathOps valVar home ctorName index
+
+                Nothing ->
+                    generateCtorTagTest ctx1 pathOps valVar home ctorName index
+
+        Test.IsBool expected ->
+            generateMonoTestRest ctx1 pathOps valVar test
+
+        _ ->
+            generateMonoTestRest ctx1 pathOps valVar test
+
+
+{-| The `eco.get_tag` comparison that tests whether `valVar` is the
+constructor `ctorName`, with the tag an `eco.case` dispatch uses.
+-}
+generateCtorTagTest : Ctx.Context -> List MlirOp -> String -> ModuleName.Canonical -> Name.Name -> Index.ZeroBased -> ( List MlirOp, String, Ctx.Context )
+generateCtorTagTest ctx1 pathOps valVar home ctorName index =
             let
                 -- The same tag an eco.case dispatch uses, so both agree.
                 expectedTag =
@@ -187,6 +223,16 @@ generateMonoTest ctx ( dtPath, test ) =
                     Ops.arithCmpI ctx6 Ops.CmpEq resVar ( tagVar, I32 ) ( constVar, I32 )
             in
             ( pathOps ++ [ tagOp, constOp, cmpOp ], resVar, ctx7 )
+
+
+{-| The tests other than a constructor test, on the value `valVar` that
+`pathOps` read.
+-}
+generateMonoTestRest : Ctx.Context -> List MlirOp -> String -> DT.Test -> ( List MlirOp, String, Ctx.Context )
+generateMonoTestRest ctx1 pathOps valVar test =
+    case test of
+        Test.IsCtor home ctorName index _ _ ->
+            generateCtorTagTest ctx1 pathOps valVar home ctorName index
 
         Test.IsBool expected ->
             if expected then
@@ -261,7 +307,7 @@ generateMonoTest ctx ( dtPath, test ) =
                 -- Both operands are Strings, so both are !eco.value and need
                 -- no type check before eco.value.eq.
                 ( eqOps, resVar, ctx6 ) =
-                    if ctx.ecoConfig.valueEq then
+                    if ctx1.ecoConfig.valueEq then
                         let
                             ( ctx5, veqOp ) =
                                 Ops.ecoBinaryOp ctx4 "eco.value.eq" eqVar ( valVar, Types.ecoValue ) ( strVar, Types.ecoValue ) I1
@@ -363,6 +409,7 @@ materializeSplitParam ctx info =
             let
                 ( ctx2, op ) =
                     Ops.ecoConstructCustom ctx1 resultVar layout.tag layout.name (List.map2 (\( v, t ) k -> ( v, t, k )) info.slots (Types.ctorSlotKinds layout))
+                        |> Tuple.mapSecond (Ops.withCensusId (CtorCensus.idForShape ctx1.ctorCensus layout.name (List.map .monoType layout.fields)))
             in
             ( [ op ], resultVar, ctx2 )
 
@@ -461,6 +508,15 @@ generateMonoRootOnHeap ctx name targetType revAcc =
                 Intrinsics.unboxToType ctx varName targetType
         in
         ( List.foldl (::) revAcc unboxOps, unboxedVar, ctxU )
+
+    else if Types.isEcoValueType targetType && (actualType == I1 || Types.isUnboxable actualType) then
+        -- A path that is only its root, which `EraseWrappers` leaves where it removed the
+        -- unbox step of an erased wrapper: a primitive or Bool variable read as a boxed value.
+        let
+            ( boxOps, boxedVar, ctxB ) =
+                Intrinsics.boxFromType ctx varName actualType
+        in
+        ( List.foldl (::) revAcc boxOps, boxedVar, ctxB )
 
     else
         ( revAcc, varName, ctx )
@@ -631,7 +687,16 @@ generateMonoIndexOnHeap ctx targetType revAcc index containerKind resultType sub
                         fieldInfo =
                             lookupCtorFieldInfo ctx2 containerType ctorName index
                     in
-                    if fieldInfo.isUnboxed then
+                    if Ctx.nullableInfo ctx2 containerType /= Nothing then
+                        -- The field of a nullable value is the value itself (REP_CONSTANT_003).
+                        if targetType == I1 || Types.isUnboxable targetType then
+                            Intrinsics.unboxToType ctx2 subVar targetType
+                                |> (\( unboxOps, unboxedVar, ctxU ) -> ( unboxOps, unboxedVar, ctxU ))
+
+                        else
+                            ( [], subVar, ctx2 )
+
+                    else if fieldInfo.isUnboxed then
                         -- The registry's field type, not `resultType`, which
                         -- can still be a type variable for a specialized
                         -- polymorphic constructor such as `Done a` at `a = Int`.

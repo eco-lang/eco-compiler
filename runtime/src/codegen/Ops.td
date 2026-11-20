@@ -573,6 +573,26 @@ def Eco_GetTagOp : Eco_Op<"get_tag", [Pure]> {
   let hasFolder = 1; // kernel-opt-10: fold through a dominating eco.construct.*
 }
 
+def Eco_IsConstantOp : Eco_Op<"is_constant", [Pure]> {
+  let summary = "Test whether a value is an embedded constant";
+  let description = [{
+    True when `value` is an embedded constant: its `ptr_ind` bit (bit 2) is set
+    (HEAP_014, FORBID_HEAP_001). The compiler uses it to test for the nullary
+    constructor of a nullable Maybe-shaped user type, whose other values are
+    never constants (CGEN_087, plans/constructor-representation-levels.md N1b).
+
+    Example:
+    ```mlir
+    %c = eco.is_constant %value : !eco.value -> i1
+    ```
+  }];
+
+  let arguments = (ins Eco_Value:$value);
+  let results = (outs I1:$result);
+
+  let assemblyFormat = "$value attr-dict `:` type($value) `->` type($result)";
+}
+
 //===----------------------------------------------------------------------===//
 // 2b. Type-Specific Construction and Projection Operations
 //===----------------------------------------------------------------------===//

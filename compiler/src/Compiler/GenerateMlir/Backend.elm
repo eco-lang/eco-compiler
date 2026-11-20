@@ -1,7 +1,7 @@
 module Compiler.GenerateMlir.Backend exposing
     ( streamMlirToWriter, streamMlirBytecode
     , buildContext, generateNodeOps, Trailer, generateTrailer
-    , constThunkReport
+    , constThunkReport, ctorCensusText
     )
 
 {-| The entry point of MLIR generation: it turns a whole monomorphized program
@@ -51,7 +51,7 @@ module in memory.
 
 @docs streamMlirToWriter, streamMlirBytecode
 @docs buildContext, generateNodeOps, Trailer, generateTrailer
-@docs constThunkReport
+@docs constThunkReport, ctorCensusText
 
 -}
 
@@ -61,6 +61,7 @@ import Compiler.Core.Name as Name
 import Compiler.Elm.ModuleName as ModuleName
 import Compiler.GenerateMlir.ConstThunks as ConstThunks
 import Compiler.GenerateMlir.Context as Ctx
+import Compiler.GenerateMlir.CtorCensus as CtorCensus
 import Compiler.GenerateMlir.Expr as Expr
 import Compiler.GenerateMlir.Functions as Functions
 import Compiler.GenerateMlir.Lambdas as Lambdas
@@ -97,7 +98,7 @@ constant constructors, constant thunks, result and parameter promotion, and
 buildContext : Config.EcoConfig -> Mono.MonoGraph -> Ctx.Context
 buildContext ecoConfig monoGraph0 =
     let
-        (Mono.MonoGraph { nodes, main, registry, ctorShapes, flagsSchema }) =
+        (Mono.MonoGraph { nodes, main, registry, ctorShapes, flagsSchema, repr }) =
             monoGraph0
 
         signatures =
@@ -119,10 +120,20 @@ buildContext ecoConfig monoGraph0 =
                 (buildNullConsBySpec nodes)
                 (buildConstCtorBySpec nodes)
             )
-        |> Ctx.withSretPromoted (buildSretPromoted ecoConfig nodes)
-        |> Ctx.withPsplitPromoted (buildPsplitPromoted ecoConfig ctorShapes (buildCtorBySpec nodes) (buildSretPromoted ecoConfig nodes) nodes)
+        |> Ctx.withSretPromoted (buildSretPromoted ecoConfig ctorShapes nodes)
+        |> Ctx.withPsplitPromoted (buildPsplitPromoted ecoConfig ctorShapes (buildCtorBySpec nodes) (buildSretPromoted ecoConfig ctorShapes nodes) nodes)
         |> Ctx.withMapTemplates (MapTemplate.derive ecoConfig monoGraph0)
         |> Ctx.withEntryMain main
+        |> Ctx.withCtorCensus (ctorCensusTable ecoConfig monoGraph0)
+        |> Ctx.withReprInfo repr
+
+
+{-| The constructor census table of the program
+(`Compiler.GenerateMlir.CtorCensus`), empty unless `repr.census` is set.
+-}
+ctorCensusTable : Config.EcoConfig -> Mono.MonoGraph -> CtorCensus.Table
+ctorCensusTable ecoConfig (Mono.MonoGraph { ctorShapes, repr }) =
+    CtorCensus.build (ecoConfig.repr.census /= Nothing) repr.kernelVisible ctorShapes
 
 
 {-| Generates the ops of the node `specId`, and returns them with the context
@@ -402,22 +413,114 @@ finishBytecode main ports flagsDecoder target ( ctxAfterNodes, tablesAfterNodes 
         |> Task.andThen (\_ -> Eco.File.writeBytes target bytecodeBytes |> IO.crashOnError)
 
 
+{-| What the result-promotion rules need to know about constructors: the
+program's constructor shapes, the constructor of each constructor spec, and
+whether a single-constructor custom result with two or three fields may be
+promoted too (`repr.sretCtors`, plans/constructor-representation-levels.md S1).
+-}
+type alias SretEnv =
+    { ctorShapes : Mono.LayoutMap (List Mono.CtorShape)
+    , ctorBySpec : Dict.Dict Int Mono.CtorShape
+    , ctors : Bool
+    }
+
+
 {-| Returns the result promotion of a function whose result type is
 `resultType`: its tuple layout and slot types, when `resultType` is a tuple
-(of two or three elements), and `Nothing` for any other type.
+(of two or three elements), or, under `env.ctors`, a custom type with one
+constructor of two or three fields, whose fields are then laid out as a tuple's
+(S1); and `Nothing` for any other type.
 -}
-sretInfoOf : Mono.MonoType -> Maybe Ctx.SretInfo
-sretInfoOf resultType =
+sretInfoOf : SretEnv -> Mono.MonoType -> Maybe Ctx.SretInfo
+sretInfoOf env resultType =
     case resultType of
         Mono.MTuple _ ts ->
             let
                 layout =
                     Types.computeTupleLayout ts
             in
-            Just { layout = layout, slotTypes = Types.tupleSlotTypes layout }
+            Just { layout = layout, slotTypes = Types.tupleSlotTypes layout, ctor = Nothing }
+
+        Mono.MCustom _ _ _ _ ->
+            if env.ctors then
+                case Mono.layoutMapGet resultType env.ctorShapes of
+                    Just [ shape ] ->
+                        case shape.fieldTypes of
+                            [ a, b ] ->
+                                let
+                                    layout =
+                                        Types.computeTupleLayout (Mono.T2 a b)
+                                in
+                                Just { layout = layout, slotTypes = Types.tupleSlotTypes layout, ctor = Just shape }
+
+                            [ a, b, c ] ->
+                                let
+                                    layout =
+                                        Types.computeTupleLayout (Mono.T3 a b c)
+                                in
+                                Just { layout = layout, slotTypes = Types.tupleSlotTypes layout, ctor = Just shape }
+
+                            _ ->
+                                Nothing
+
+                    _ ->
+                        Nothing
+
+            else
+                Nothing
 
         _ ->
             Nothing
+
+
+{-| What a result-spine leaf must be for a promotion: its slot types, the
+constructor it must call when the result is a custom type (S1), and the
+program's constructor specs to recognise the call.
+-}
+type alias SretKey =
+    { slotTys : List MlirType
+    , ctor : Maybe Name.Name
+    , ctorBySpec : Dict.Dict Int Mono.CtorShape
+    }
+
+
+keyOf : SretEnv -> Ctx.SretInfo -> SretKey
+keyOf env info =
+    { slotTys = Mono.tupleToList info.slotTypes
+    , ctor = Maybe.map .name info.ctor
+    , ctorBySpec = env.ctorBySpec
+    }
+
+
+{-| Tells whether `e` is a saturated call of the constructor `key.ctor` whose
+fields have the slot types `key.slotTys` (S1).
+-}
+sretCtorLeafOk : SretKey -> Mono.MonoExpr -> Bool
+sretCtorLeafOk key e =
+    case ( key.ctor, e ) of
+        ( Just ctorName, Mono.MonoCall _ (Mono.MonoVarGlobal _ sid _) args _ _ ) ->
+            case Dict.get sid key.ctorBySpec of
+                Just shape ->
+                    shape.name
+                        == ctorName
+                        && List.length args
+                        == List.length shape.fieldTypes
+                        && (case shape.fieldTypes of
+                                [ a, b ] ->
+                                    Mono.tupleToList (Types.tupleSlotTypes (Types.computeTupleLayout (Mono.T2 a b))) == key.slotTys
+
+                                [ a, b, c ] ->
+                                    Mono.tupleToList (Types.tupleSlotTypes (Types.computeTupleLayout (Mono.T3 a b c))) == key.slotTys
+
+                                _ ->
+                                    False
+                           )
+
+                Nothing ->
+                    False
+
+        _ ->
+            False
 
 
 {-| Returns the result-promotion table: the specs that get a `$sret` worker,
@@ -445,13 +548,16 @@ that has a let-bound call site; if it does not settle in time, the least
 fixpoint grown from the base members is used instead.
 
 -}
-buildSretPromoted : Config.EcoConfig -> Array (Maybe Mono.MonoNode) -> Dict.Dict Int Ctx.SretInfo
-buildSretPromoted config nodes =
+buildSretPromoted : Config.EcoConfig -> Mono.LayoutMap (List Mono.CtorShape) -> Array (Maybe Mono.MonoNode) -> Dict.Dict Int Ctx.SretInfo
+buildSretPromoted config ctorShapes nodes =
     if not config.sretResults then
         Dict.empty
 
     else
         let
+            env =
+                { ctorShapes = ctorShapes, ctorBySpec = buildCtorBySpec nodes, ctors = config.repr.sretCtors }
+
             candidates =
                 Tuple.second
                     (Array.foldl
@@ -459,9 +565,9 @@ buildSretPromoted config nodes =
                             case maybeNode of
                                 Just (Mono.MonoDefine (Mono.MonoClosure cinfo cbody _) monoType) ->
                                     if not (List.isEmpty cinfo.params) then
-                                        case sretInfoOf (Ctx.closureResultType monoType) of
+                                        case sretInfoOf env (Ctx.closureResultType monoType) of
                                             Just info ->
-                                                if sretTailOk (Mono.tupleToList info.slotTypes) cbody then
+                                                if sretTailOk (keyOf env info) cbody then
                                                     ( specId + 1, Dict.insert specId info acc )
 
                                                 else
@@ -474,9 +580,9 @@ buildSretPromoted config nodes =
                                         ( specId + 1, acc )
 
                                 Just (Mono.MonoTailFunc tparams tbody monoType) ->
-                                    case sretInfoOf (Ctx.residualResultType (List.length tparams) monoType) of
+                                    case sretInfoOf env (Ctx.residualResultType (List.length tparams) monoType) of
                                         Just info ->
-                                            if config.sretTailFuncs && sretTailFuncOk (Mono.tupleToList info.slotTypes) tbody then
+                                            if config.sretTailFuncs && sretTailFuncOk (keyOf env info) tbody then
                                                 ( specId + 1, Dict.insert specId info acc )
 
                                             else
@@ -522,7 +628,7 @@ buildSretPromoted config nodes =
                             case maybeNode of
                                 Just (Mono.MonoDefine (Mono.MonoClosure cinfo _ _) monoType) ->
                                     if not (List.isEmpty cinfo.params) && Set.member specId calledInLetPosition && not (Dict.member specId acc) then
-                                        case sretInfoOf (Ctx.closureResultType monoType) of
+                                        case sretInfoOf env (Ctx.closureResultType monoType) of
                                             Just info ->
                                                 ( specId + 1, Dict.insert specId info acc )
 
@@ -540,14 +646,14 @@ buildSretPromoted config nodes =
                     )
         in
         if config.sretFresh then
-            case sretFreshGreatest nodes 0 optimistic of
+            case sretFreshGreatest env nodes 0 optimistic of
                 Just settled ->
                     settled
 
                 Nothing ->
                     -- A least fixpoint only ever adds members whose call leaves
                     -- are already members, so it is consistent at every round.
-                    sretFreshFixpoint calledInLetPosition nodes 0 base
+                    sretFreshFixpoint env calledInLetPosition nodes 0 base
 
         else
             base
@@ -573,15 +679,15 @@ A table left part-way through the drops may not be consistent, hence `Nothing`
 rather than the last table.
 
 -}
-sretFreshGreatest : Array (Maybe Mono.MonoNode) -> Int -> Dict.Dict Int Ctx.SretInfo -> Maybe (Dict.Dict Int Ctx.SretInfo)
-sretFreshGreatest nodes iter table =
+sretFreshGreatest : SretEnv -> Array (Maybe Mono.MonoNode) -> Int -> Dict.Dict Int Ctx.SretInfo -> Maybe (Dict.Dict Int Ctx.SretInfo)
+sretFreshGreatest env nodes iter table =
     let
         ( _, dropped, next ) =
             Array.foldl
                 (\maybeNode ( sid, shrank, acc ) ->
                     case ( maybeNode, Dict.get sid acc ) of
                         ( Just (Mono.MonoDefine (Mono.MonoClosure _ cbody _) _), Just info ) ->
-                            if sretFreshTailOk acc (Mono.tupleToList info.slotTypes) cbody then
+                            if sretFreshTailOk acc (keyOf env info) cbody then
                                 ( sid + 1, shrank, acc )
 
                             else
@@ -600,7 +706,7 @@ sretFreshGreatest nodes iter table =
         Nothing
 
     else
-        sretFreshGreatest nodes (iter + 1) next
+        sretFreshGreatest env nodes (iter + 1) next
 
 
 {-| Returns `table` grown by the `sretFresh` admission rule: each pass adds every
@@ -613,8 +719,8 @@ Members are only added, and only when their call leaves are already members,
 so the table is consistent after any number of passes.
 
 -}
-sretFreshFixpoint : Set.Set Int -> Array (Maybe Mono.MonoNode) -> Int -> Dict.Dict Int Ctx.SretInfo -> Dict.Dict Int Ctx.SretInfo
-sretFreshFixpoint letPos nodes iter table =
+sretFreshFixpoint : SretEnv -> Set.Set Int -> Array (Maybe Mono.MonoNode) -> Int -> Dict.Dict Int Ctx.SretInfo -> Dict.Dict Int Ctx.SretInfo
+sretFreshFixpoint env letPos nodes iter table =
     let
         -- The guard excludes members already in `acc`, so every insert adds one.
         ( _, added, next ) =
@@ -623,9 +729,9 @@ sretFreshFixpoint letPos nodes iter table =
                     case maybeNode of
                         Just (Mono.MonoDefine (Mono.MonoClosure cinfo cbody _) monoType) ->
                             if not (List.isEmpty cinfo.params) && not (Dict.member sid acc) && Set.member sid letPos then
-                                case sretInfoOf (Ctx.closureResultType monoType) of
+                                case sretInfoOf env (Ctx.closureResultType monoType) of
                                     Just info ->
-                                        if sretFreshTailOk acc (Mono.tupleToList info.slotTypes) cbody then
+                                        if sretFreshTailOk acc (keyOf env info) cbody then
                                             ( sid + 1, True, Dict.insert sid info acc )
 
                                         else
@@ -647,34 +753,35 @@ sretFreshFixpoint letPos nodes iter table =
         next
 
     else
-        sretFreshFixpoint letPos nodes (iter + 1) next
+        sretFreshFixpoint env letPos nodes (iter + 1) next
 
 
 {-| Tells whether every leaf of the result spine of `e` is either a tuple literal
 with slot types `slotTys` or a direct call to a member of `table` with those
 slot types. Any other leaf fails.
 -}
-sretFreshTailOk : Dict.Dict Int Ctx.SretInfo -> List MlirType -> Mono.MonoExpr -> Bool
-sretFreshTailOk table slotTys e =
+sretFreshTailOk : Dict.Dict Int Ctx.SretInfo -> SretKey -> Mono.MonoExpr -> Bool
+sretFreshTailOk table key e =
     case e of
         Mono.MonoTupleCreate _ _ leafTy ->
-            sretLeafMatches slotTys leafTy
+            key.ctor == Nothing && sretLeafMatches key.slotTys leafTy
 
         Mono.MonoCall _ (Mono.MonoVarGlobal _ sid _) _ _ _ ->
-            (Dict.get sid table |> Maybe.map (.slotTypes >> Mono.tupleToList)) == Just slotTys
+            sretCtorLeafOk key e
+                || (Dict.get sid table |> Maybe.map (\i -> ( Mono.tupleToList i.slotTypes, Maybe.map .name i.ctor ))) == Just ( key.slotTys, key.ctor )
 
         Mono.MonoLet _ b _ ->
-            sretFreshTailOk table slotTys b
+            sretFreshTailOk table key b
 
         Mono.MonoDestruct _ b _ ->
-            sretFreshTailOk table slotTys b
+            sretFreshTailOk table key b
 
         Mono.MonoIf brs fin _ ->
-            List.all (sretFreshTailOk table slotTys) (fin :: List.map Tuple.second brs)
+            List.all (sretFreshTailOk table key) (fin :: List.map Tuple.second brs)
 
         Mono.MonoCase _ _ decider jumps _ ->
-            sretFreshDeciderOk table slotTys decider
-                && List.all (\( _, je ) -> sretFreshTailOk table slotTys je) jumps
+            sretFreshDeciderOk table key decider
+                && List.all (\( _, je ) -> sretFreshTailOk table key je) jumps
 
         _ ->
             False
@@ -683,21 +790,21 @@ sretFreshTailOk table slotTys e =
 {-| Applies `sretFreshTailOk` to every inline leaf of a `case` decision tree. A
 jump leaf passes here; its target is checked with the `case`'s jumps.
 -}
-sretFreshDeciderOk : Dict.Dict Int Ctx.SretInfo -> List MlirType -> Mono.Decider Mono.MonoChoice -> Bool
-sretFreshDeciderOk table slotTys d =
+sretFreshDeciderOk : Dict.Dict Int Ctx.SretInfo -> SretKey -> Mono.Decider Mono.MonoChoice -> Bool
+sretFreshDeciderOk table key d =
     case d of
         Mono.Leaf (Mono.Inline e) ->
-            sretFreshTailOk table slotTys e
+            sretFreshTailOk table key e
 
         Mono.Leaf (Mono.Jump _) ->
             True
 
         Mono.Chain _ s f ->
-            sretFreshDeciderOk table slotTys s && sretFreshDeciderOk table slotTys f
+            sretFreshDeciderOk table key s && sretFreshDeciderOk table key f
 
         Mono.FanOut _ edges fb ->
-            List.all (\( _, sub ) -> sretFreshDeciderOk table slotTys sub) (NE.toList edges)
-                && sretFreshDeciderOk table slotTys fb
+            List.all (\( _, sub ) -> sretFreshDeciderOk table key sub) (NE.toList edges)
+                && sretFreshDeciderOk table key fb
 
 
 {-| Returns the body of a define or a tail-recursive function, and nothing for
@@ -733,27 +840,30 @@ collectSretSites e acc =
 body `e` is a tuple literal with slot types `slotTys` or a tail call. A tail
 call goes round the loop again rather than returning, so it passes.
 -}
-sretTailFuncOk : List MlirType -> Mono.MonoExpr -> Bool
-sretTailFuncOk slotTys e =
+sretTailFuncOk : SretKey -> Mono.MonoExpr -> Bool
+sretTailFuncOk key e =
     case e of
         Mono.MonoTailCall _ _ _ ->
             True
 
         Mono.MonoTupleCreate _ _ leafTy ->
-            sretLeafMatches slotTys leafTy
+            key.ctor == Nothing && sretLeafMatches key.slotTys leafTy
 
         Mono.MonoLet _ b _ ->
-            sretTailFuncOk slotTys b
+            sretTailFuncOk key b
 
         Mono.MonoDestruct _ b _ ->
-            sretTailFuncOk slotTys b
+            sretTailFuncOk key b
 
         Mono.MonoIf brs fin _ ->
-            List.all (sretTailFuncOk slotTys) (fin :: List.map Tuple.second brs)
+            List.all (sretTailFuncOk key) (fin :: List.map Tuple.second brs)
 
         Mono.MonoCase _ _ decider jumps _ ->
-            sretTailFuncDeciderOk slotTys decider
-                && List.all (\( _, je ) -> sretTailFuncOk slotTys je) jumps
+            sretTailFuncDeciderOk key decider
+                && List.all (\( _, je ) -> sretTailFuncOk key je) jumps
+
+        Mono.MonoCall _ _ _ _ _ ->
+            sretCtorLeafOk key e
 
         _ ->
             False
@@ -762,21 +872,21 @@ sretTailFuncOk slotTys e =
 {-| Applies `sretTailFuncOk` to every inline leaf of a `case` decision tree. A
 jump leaf passes here; its target is checked with the `case`'s jumps.
 -}
-sretTailFuncDeciderOk : List MlirType -> Mono.Decider Mono.MonoChoice -> Bool
-sretTailFuncDeciderOk slotTys d =
+sretTailFuncDeciderOk : SretKey -> Mono.Decider Mono.MonoChoice -> Bool
+sretTailFuncDeciderOk key d =
     case d of
         Mono.Leaf (Mono.Inline e) ->
-            sretTailFuncOk slotTys e
+            sretTailFuncOk key e
 
         Mono.Leaf (Mono.Jump _) ->
             True
 
         Mono.Chain _ s f ->
-            sretTailFuncDeciderOk slotTys s && sretTailFuncDeciderOk slotTys f
+            sretTailFuncDeciderOk key s && sretTailFuncDeciderOk key f
 
         Mono.FanOut _ edges fb ->
-            List.all (\( _, sub ) -> sretTailFuncDeciderOk slotTys sub) (NE.toList edges)
-                && sretTailFuncDeciderOk slotTys fb
+            List.all (\( _, sub ) -> sretTailFuncDeciderOk key sub) (NE.toList edges)
+                && sretTailFuncDeciderOk key fb
 
 
 {-| Tells whether a tuple literal of type `leafMonoType` has exactly the slot
@@ -800,24 +910,27 @@ sretLeafMatches slotTys leafMonoType =
 {-| Tells whether every leaf of the result spine of `e` is a tuple literal with
 slot types `slotTys`.
 -}
-sretTailOk : List MlirType -> Mono.MonoExpr -> Bool
-sretTailOk slotTys e =
+sretTailOk : SretKey -> Mono.MonoExpr -> Bool
+sretTailOk key e =
     case e of
         Mono.MonoTupleCreate _ _ leafTy ->
-            sretLeafMatches slotTys leafTy
+            key.ctor == Nothing && sretLeafMatches key.slotTys leafTy
 
         Mono.MonoLet _ b _ ->
-            sretTailOk slotTys b
+            sretTailOk key b
 
         Mono.MonoDestruct _ b _ ->
-            sretTailOk slotTys b
+            sretTailOk key b
 
         Mono.MonoIf brs fin _ ->
-            List.all (sretTailOk slotTys) (fin :: List.map Tuple.second brs)
+            List.all (sretTailOk key) (fin :: List.map Tuple.second brs)
 
         Mono.MonoCase _ _ decider jumps _ ->
-            sretDeciderTailOk slotTys decider
-                && List.all (\( _, je ) -> sretTailOk slotTys je) jumps
+            sretDeciderTailOk key decider
+                && List.all (\( _, je ) -> sretTailOk key je) jumps
+
+        Mono.MonoCall _ _ _ _ _ ->
+            sretCtorLeafOk key e
 
         _ ->
             False
@@ -826,21 +939,21 @@ sretTailOk slotTys e =
 {-| Applies `sretTailOk` to every inline leaf of a `case` decision tree. A jump
 leaf passes here; its target is checked with the `case`'s jumps.
 -}
-sretDeciderTailOk : List MlirType -> Mono.Decider Mono.MonoChoice -> Bool
-sretDeciderTailOk slotTys d =
+sretDeciderTailOk : SretKey -> Mono.Decider Mono.MonoChoice -> Bool
+sretDeciderTailOk key d =
     case d of
         Mono.Leaf (Mono.Inline e) ->
-            sretTailOk slotTys e
+            sretTailOk key e
 
         Mono.Leaf (Mono.Jump _) ->
             True
 
         Mono.Chain _ s f ->
-            sretDeciderTailOk slotTys s && sretDeciderTailOk slotTys f
+            sretDeciderTailOk key s && sretDeciderTailOk key f
 
         Mono.FanOut _ edges fb ->
-            List.all (\( _, sub ) -> sretDeciderTailOk slotTys sub) (NE.toList edges)
-                && sretDeciderTailOk slotTys fb
+            List.all (\( _, sub ) -> sretDeciderTailOk key sub) (NE.toList edges)
+                && sretDeciderTailOk key fb
 
 
 {-| Returns the parameter-promotion table: the specs that get a `$psplit` worker,
@@ -1381,3 +1494,11 @@ buildNullConsBySpec nodes =
             ( 0, Dict.empty )
             nodes
         )
+
+
+{-| The constructor census table of the program as `CtorCensus.render`
+writes it, for the file named by `repr.census`.
+-}
+ctorCensusText : Config.EcoConfig -> Mono.MonoGraph -> String
+ctorCensusText ecoConfig monoGraph =
+    CtorCensus.render (ctorCensusTable ecoConfig monoGraph)

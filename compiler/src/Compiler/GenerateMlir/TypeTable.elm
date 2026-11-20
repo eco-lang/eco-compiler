@@ -62,6 +62,16 @@ must agree with its own numbering of type kinds.
 
 `TKPolymorphic` is a type variable left open by monomorphization.
 
+`TKWrapper` (7) is a type `EraseWrappers` erased (MONO_031): it is laid out like
+a `TKCustom` with its one constructor, but a value of it is the constructor's
+field itself, so the printer prints the constructor's name and then the value
+as that field's type.
+
+`TKNullable` (8) is a type `NullableMaybe` made nullable (REP_CONSTANT_003):
+`[typeId, 8, fieldTypeId, nullNameIndex, valueNameIndex, constantBitTest]`. A
+value that is the nullary constructor's constant prints as its name; any other
+value is the field constructor's field.
+
 -}
 type TypeKind
     = TKPrimitive
@@ -71,6 +81,8 @@ type TypeKind
     | TKCustom
     | TKFunction
     | TKPolymorphic
+    | TKWrapper
+    | TKNullable
 
 
 {-| The primitive type a `TKPrimitive` descriptor stands for.
@@ -115,6 +127,12 @@ typeKindToTag kind =
         TKPolymorphic ->
             6
 
+        TKWrapper ->
+            7
+
+        TKNullable ->
+            8
+
 
 {-| Returns the integer written into a primitive descriptor for `primKind`.
 -}
@@ -147,9 +165,9 @@ primKindToTag primKind =
 {-| The type table part-built: the arrays so far, each held newest first, and
 the position the next entry of each will take.
 
-`strings` maps each name to its index in the string array. `ctorShapes` is the
-registry's constructor table, carried so that a custom type can find its
-constructors.
+`strings` maps each name to its index in the string array. `registry` is the
+context's type registry, carried so that a custom type can find its
+constructors (`Ctx.printShapesOf`) and whether it was erased.
 
 -}
 type alias TypeTableAccum =
@@ -162,7 +180,7 @@ type alias TypeTableAccum =
     , funcArgs : List Int
     , nextFuncArgIndex : Int
     , typeAttrs : List MlirAttr
-    , ctorShapes : Mono.LayoutMap (List Mono.CtorShape)
+    , registry : Ctx.TypeRegistry
     }
 
 
@@ -190,7 +208,7 @@ generateTypeTable ctx =
             , funcArgs = []
             , nextFuncArgIndex = 0
             , typeAttrs = []
-            , ctorShapes = ctx.typeRegistry.ctorShapes
+            , registry = ctx.typeRegistry
             }
 
         finalAccum =
@@ -285,7 +303,12 @@ processType typeIds ( typeId, monoType ) accum =
             addRecordType typeIds typeId (Types.computeRecordLayout fields) accum
 
         Mono.MCustom _ _ _ _ ->
-            addCustomType typeIds typeId monoType accum
+            case Mono.layoutMapGet monoType accum.registry.nullable of
+                Just info ->
+                    addNullableType typeIds typeId monoType info accum
+
+                Nothing ->
+                    addCustomType typeIds typeId monoType accum
 
         Mono.MFunction _ _ argTypes resultType ->
             addFunctionType typeIds typeId argTypes resultType accum
@@ -471,9 +494,15 @@ addCustomType : Mono.LayoutMap Int -> Int -> Mono.MonoType -> TypeTableAccum -> 
 addCustomType typeIds typeId monoType accum =
     let
         ctorShapes =
-            Mono.layoutMapGet monoType accum.ctorShapes
-                |> Maybe.withDefault []
+            Ctx.printShapesOf accum.registry monoType
                 |> List.sortBy .tag
+
+        kind =
+            if Mono.layoutMapMember monoType accum.registry.erasedKeys then
+                TKWrapper
+
+            else
+                TKCustom
 
         firstCtor =
             accum.nextCtorIndex
@@ -487,12 +516,49 @@ addCustomType typeIds typeId monoType accum =
         typeAttr =
             ArrayAttr Nothing
                 [ IntAttr Nothing typeId
-                , IntAttr Nothing (typeKindToTag TKCustom)
+                , IntAttr Nothing (typeKindToTag kind)
                 , IntAttr Nothing firstCtor
                 , IntAttr Nothing ctorCount
                 ]
     in
     { accumWithCtors | typeAttrs = typeAttr :: accumWithCtors.typeAttrs }
+
+
+{-| Adds the descriptor of a nullable type (`TKNullable`).
+-}
+addNullableType : Mono.LayoutMap Int -> Int -> Mono.MonoType -> Mono.NullableInfo -> TypeTableAccum -> TypeTableAccum
+addNullableType typeIds typeId monoType info accum =
+    let
+        fieldType =
+            Ctx.printShapesOf accum.registry monoType
+                |> List.filter (\s -> s.name == info.valueCtor)
+                |> List.concatMap .fieldTypes
+                |> List.head
+                |> Maybe.withDefault Mono.MUnit
+
+        ( nullIndex, accum1 ) =
+            getOrCreateStringIndex (Name.toElmString info.nullCtor) accum
+
+        ( valueIndex, accum2 ) =
+            getOrCreateStringIndex (Name.toElmString info.valueCtor) accum1
+
+        typeAttr =
+            ArrayAttr Nothing
+                [ IntAttr Nothing typeId
+                , IntAttr Nothing (typeKindToTag TKNullable)
+                , IntAttr Nothing (lookupTypeId typeIds fieldType)
+                , IntAttr Nothing nullIndex
+                , IntAttr Nothing valueIndex
+                , IntAttr Nothing
+                    (if info.constantBitTest then
+                        1
+
+                     else
+                        0
+                    )
+                ]
+    in
+    { accum2 | typeAttrs = typeAttr :: accum2.typeAttrs }
 
 
 {-| Adds one constructor's entry and its field entries, named `field0`,

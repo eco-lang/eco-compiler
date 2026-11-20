@@ -70,7 +70,39 @@
 #define ENABLE_GC_STATS 0
 #endif
 
+// ============================================================================
+// Constructor census (plans/constructor-representation-levels.md, unit M0)
+// ============================================================================
+
+// The number of constructor-census ids: the ids live in `Header.refcount` (15 bits), and id 0 is
+// "unattributed" (an object built by kernel code or by the out-of-line allocation path).
+constexpr unsigned kCtorCensusIds = 1u << 15;
+
+extern "C" {
+// Per census id: the `eco.construct.custom` executions, the `eco.make.custom` executions, and the
+// promotions out of the nursery. Compiled code increments the first two directly; the minor GC's
+// promotion paths increment the third through `ctorCensusPromoted`. Defined in RuntimeExports.cpp.
+extern uint64_t eco_ctor_census_alloc[kCtorCensusIds];
+extern uint64_t eco_ctor_census_ssa[kCtorCensusIds];
+extern uint64_t eco_ctor_census_promoted[kCtorCensusIds];
+// Whether `ECO_CTOR_CENSUS_OUT` names a file to write the census to at exit.
+extern bool eco_ctor_census_on;
+// Writes the census counts to `ECO_CTOR_CENSUS_OUT`, when it is set. Defined in RuntimeExports.cpp.
+void eco_ctor_census_dump(void);
+}
+
 namespace Elm {
+
+// Counts the promotion of an object whose header is `h` in the constructor census, when the census
+// is on. Safe from parallel minor workers (relaxed atomic add); costs one predictable branch when off.
+inline void ctorCensusPromoted(const Header& h) {
+#if ENABLE_GC_STATS
+    if (__builtin_expect(eco_ctor_census_on, 0) && h.tag == Tag_Custom && h.refcount != 0)
+        __atomic_fetch_add(&eco_ctor_census_promoted[h.refcount], 1, __ATOMIC_RELAXED);
+#else
+    (void)h;
+#endif
+}
 
 // ============================================================================
 // Minor-GC phase breakdown and pause accounting

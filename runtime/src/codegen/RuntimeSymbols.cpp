@@ -109,6 +109,14 @@ static llvm::orc::SymbolMap buildRuntimeSymbolMap(
                 llvm::JITSymbolFlags::Exported);
         // Typed field getters (tuples, records, arrays), the hybrid list head / tail of chunked-list
         // mode, and the dispatch-census hooks (ECO_DISPATCH_STATS).
+        symbolMap[interner("eco_ctor_census_mark")] =
+            llvm::orc::ExecutorSymbolDef(
+                llvm::orc::ExecutorAddr::fromPtr(&eco_ctor_census_mark),
+                llvm::JITSymbolFlags::Exported);
+        symbolMap[interner("eco_ctor_census_count")] =
+            llvm::orc::ExecutorSymbolDef(
+                llvm::orc::ExecutorAddr::fromPtr(&eco_ctor_census_count),
+                llvm::JITSymbolFlags::Exported);
         symbolMap[interner("eco_gencall_stats")] =
             llvm::orc::ExecutorSymbolDef(
                 llvm::orc::ExecutorAddr::fromPtr(&eco_gencall_stats),

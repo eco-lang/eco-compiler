@@ -26,6 +26,10 @@ module TestLogic.TestPipeline exposing
     , runToGlobalOptNoPreMono
     , runToGlobalOptStage5
     , runToMlir
+    , runToMlirWith
+    , runToMonoWith
+    , withoutReprPasses
+    , runToGlobalOptWith
     , runToMlirNoPreMono
     , runToMlirStage5
     , runToMono
@@ -631,6 +635,7 @@ monoStepsFrom ecoConfig passes { canonical, annotations, nodeTypes, kernelEnv, l
             (\( g, report ) ->
                 Steps.checkStageArity g
                     |> Result.andThen (Steps.checkLayout ecoConfig)
+                    |> Result.andThen (Steps.representation ecoConfig globalTypeEnv >> Result.map Tuple.first)
                     |> Result.map (\g1 -> ( g1, report ))
             )
         |> Result.map
@@ -677,7 +682,7 @@ globalOptStepsFrom : Config.EcoConfig -> MonoArtifacts -> Result String GlobalOp
 globalOptStepsFrom ecoConfig a =
     let
         simplified =
-            Steps.prune ecoConfig (Tuple.first (Steps.inline ecoConfig a.monoGraph))
+            Steps.prune ecoConfig (Tuple.first (Steps.knownCtorCase ecoConfig (Tuple.first (Steps.inline ecoConfig a.monoGraph))))
     in
     Steps.checkPruned ecoConfig simplified
         |> Result.andThen (\_ -> Steps.checkStageArity (Tuple.first (globalOpt ecoConfig simplified)))
@@ -746,6 +751,51 @@ is the printed text of `mlirModule`.
 runToMlir : Src.Module -> Result String MlirArtifacts
 runToMlir =
     mlirWith productionConfig WithPreMono
+
+
+{-| `runToMono` under the given configuration instead of `productionConfig`.
+-}
+runToMonoWith : Config.EcoConfig -> Src.Module -> Result String MonoArtifacts
+runToMonoWith ecoConfig =
+    monoWith ecoConfig WithPreMono >> Result.map Tuple.first
+
+
+{-| `cfg` with every representation pass of plans/constructor-representation-levels.md
+switched off, for a test of what those passes remove: the unbox path of a
+wrapper, the shape of a wrapper type, a `case` on a constructor built in the
+same function.
+-}
+withoutReprPasses : Config.EcoConfig -> Config.EcoConfig
+withoutReprPasses cfg =
+    let
+        repr =
+            cfg.repr
+    in
+    { cfg
+        | repr =
+            { repr
+                | eraseWrappers = False
+                , eraseUnboxed = False
+                , nullableMaybe = False
+                , nullableUser = False
+                , knownCtorCase = False
+                , sretCtors = False
+            }
+    }
+
+
+{-| `runToGlobalOpt` under the given configuration instead of `productionConfig`.
+-}
+runToGlobalOptWith : Config.EcoConfig -> Src.Module -> Result String GlobalOptArtifacts
+runToGlobalOptWith ecoConfig =
+    globalOptWith ecoConfig WithPreMono
+
+
+{-| `runToMlir` under the given configuration instead of `productionConfig`.
+-}
+runToMlirWith : Config.EcoConfig -> Src.Module -> Result String MlirArtifacts
+runToMlirWith ecoConfig =
+    mlirWith ecoConfig WithPreMono
 
 
 {-| `runToMono` under `stage5Config` (the substitution engine, as bootstrap

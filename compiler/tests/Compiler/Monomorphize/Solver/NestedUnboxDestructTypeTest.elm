@@ -5,6 +5,10 @@ destructure that reaches a number-polymorphic value through two nested
 single-constructor wrappers (`(Outer (Inner y)) = o` with
 `o = Outer (Inner 1)` and `y` used as a `Float`).
 
+The tests run with the representation passes off
+(`TestPipeline.withoutReprPasses`): wrapper erasure removes the unbox steps
+they look at.
+
 The default solver engine (`TestPipeline.runToMono`) used to type the
 destructor `y` as `MInt` even though `y + 0.5` is `Float` arithmetic. The typed
 optimizer's output is as designed: `_v0 = o` keeps `o`'s scheme type
@@ -141,7 +145,7 @@ check src run _ =
 suite : Test
 suite =
     Test.describe "nested Unbox let destructure of a number-polymorphic value used as Float"
-        [ Test.test "solver engine (default)" (check source (Pipeline.runToMono >> Result.map .monoGraph))
-        , Test.test "solver engine, destructure of the constructed value" (check sourceDirect (Pipeline.runToMono >> Result.map .monoGraph))
-        , Test.test "solver engine, Normal constructor field" (check sourceNormal (Pipeline.runToMono >> Result.map .monoGraph))
+        [ Test.test "solver engine (default)" (check source (Pipeline.runToMonoWith (Pipeline.withoutReprPasses Pipeline.productionConfig) >> Result.map .monoGraph))
+        , Test.test "solver engine, destructure of the constructed value" (check sourceDirect (Pipeline.runToMonoWith (Pipeline.withoutReprPasses Pipeline.productionConfig) >> Result.map .monoGraph))
+        , Test.test "solver engine, Normal constructor field" (check sourceNormal (Pipeline.runToMonoWith (Pipeline.withoutReprPasses Pipeline.productionConfig) >> Result.map .monoGraph))
         ]

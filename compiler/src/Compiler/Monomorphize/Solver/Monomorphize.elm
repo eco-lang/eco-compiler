@@ -4432,6 +4432,7 @@ assembleRawGraph s mainSpecId flagsDecoderSpecId flagsSchemaStr =
             else
                 Dict.empty
         , lssBlockedMembers = s.lssMemberTable.muTied
+        , repr = Mono.emptyReprInfo
         }
 
 

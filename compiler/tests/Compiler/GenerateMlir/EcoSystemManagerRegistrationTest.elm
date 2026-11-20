@@ -186,6 +186,7 @@ generate leaves withFlags =
                 , lssMemberOrigins = Dict.empty
                 , lssMemberKinds = Dict.empty
                 , lssBlockedMembers = Dict.empty
+                , repr = Mono.emptyReprInfo
                 }
     in
     Backend.generateProgram Config.default graph

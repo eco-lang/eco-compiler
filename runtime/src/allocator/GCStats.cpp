@@ -973,6 +973,7 @@ void GCStats::combine(const GCStats& other) {
 }
 
 void GCStats::print() const {
+    if (eco_ctor_census_on) eco_ctor_census_dump();
     std::cout << "\n=== GC Statistics ===" << std::endl;
     std::cout << std::endl;
 

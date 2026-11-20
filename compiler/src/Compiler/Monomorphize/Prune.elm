@@ -392,4 +392,5 @@ rebuild live edges closer (Mono.MonoGraph record) =
         , lssMemberOrigins = record.lssMemberOrigins
         , lssMemberKinds = record.lssMemberKinds
         , lssBlockedMembers = record.lssBlockedMembers
+        , repr = record.repr
         }

@@ -6,13 +6,16 @@ module Compiler.IR.Mono exposing
     , MonoExpr(..), MonoGraph(..), MonoNode(..), MonoPath(..), MonoType(..), PortRegistration
     , TupleShape(..), tupleArity, tupleContainerKind, tupleIndexedMap, tupleMap, tupleMap2, tupleMapAccum, tupleMapAccumR, tupleOf, tupleToList
     , SpecId, SpecKey(..), SpecKeyMap, SpecMap, SpecializationRegistry
+    , ReprInfo, NullableInfo, emptyReprInfo
     , annoCoverage, annoCovers, clearLssTables, collectAnnoMembers
     , containsAnyMVar, decomposeFunctionType, defaultCallInfo, dtPathType, emptyAnnoCoverage
     , enrichAnnotations, enrichAnnotationsTopOnly, eqKeyLayout, eqKeySpec, eqLayout, eqModuloTopLabel
     , getMonoPathType, hasTopAnno, hasVarAnno, headAnno, isFunctionType, isTopAnno
     , portCarriesBytes, payloadSchema, flagsSchema
     , joinAnnotationsChanged, joinCollisionCells, layoutHashOf, layoutMapEmpty, layoutMapFoldl, layoutMapGet
-    , layoutMapInsert, layoutMapMap, layoutMapMember, layoutMapValues, mCustom, mFunction
+    , layoutMapInsert, layoutMapMap, layoutMapMember, layoutMapValues, layoutMapSize, layoutMapIsEmpty
+    , LayoutSet, layoutSetEmpty, layoutSetInsert, layoutSetMember, layoutSetFromList, layoutSetUnion, layoutSetSize
+    , mCustom, mFunction
     , mList, mRecord, mTuple, monoTypeToDebugString, nodeType, overlayAnnotations
     , recoverStoredSets, resolveNumberType, resultTypeOf, shallowLayoutKey, singletonHeadMember
     , specHashOf, specKeyMapEmpty, specKeyMapGet, specKeyMapInsert, specMapEmpty, specMapFoldl
@@ -20,7 +23,7 @@ module Compiler.IR.Mono exposing
     , specMapToList, specMapValues, stageParamTypes, stageReturnType, tkClassCall, tkClassCase
     , tkClassDestr, tkClassIf, tkClassLambda, tkClassLet, tkClassLit, tkClassLocal
     , tkClassMisc, tkClassParam, tkEdge, tkLegacy, tkPoison, tkWiden
-    , toComparableGlobal, toComparableMonoType, topAbi, topDeclOther, topDeclStoreC, topDeclZonk
+    , toComparableGlobal, toComparableMonoType, toComparableLayoutType, topAbi, topDeclOther, topDeclStoreC, topDeclZonk
     , topEdge, topKindLabel, topLegacy, topOfKind, topPoison, topSynth
     , topWiden, typeHasResidualNumber, typeNodesWithin, typeOf, unionAnno, unionSortedInts
     , widenSets
@@ -91,6 +94,7 @@ made.
 @docs MonoExpr, MonoGraph, MonoNode, MonoPath, MonoType, PortRegistration
 @docs TupleShape, tupleArity, tupleContainerKind, tupleIndexedMap, tupleMap, tupleMap2, tupleMapAccum, tupleMapAccumR, tupleOf, tupleToList
 @docs SpecId, SpecKey, SpecKeyMap, SpecMap, SpecializationRegistry
+@docs ReprInfo, NullableInfo, emptyReprInfo
 
 
 # Functions
@@ -101,7 +105,9 @@ made.
 @docs getMonoPathType, hasTopAnno, hasVarAnno, headAnno, isFunctionType, isTopAnno
 @docs portCarriesBytes, payloadSchema, flagsSchema
 @docs joinAnnotationsChanged, joinCollisionCells, layoutHashOf, layoutMapEmpty, layoutMapFoldl, layoutMapGet
-@docs layoutMapInsert, layoutMapMap, layoutMapMember, layoutMapValues, mCustom, mFunction
+@docs layoutMapInsert, layoutMapMap, layoutMapMember, layoutMapValues, layoutMapSize, layoutMapIsEmpty
+@docs LayoutSet, layoutSetEmpty, layoutSetInsert, layoutSetMember, layoutSetFromList, layoutSetUnion, layoutSetSize
+@docs mCustom, mFunction
 @docs mList, mRecord, mTuple, monoTypeToDebugString, nodeType, overlayAnnotations
 @docs recoverStoredSets, resolveNumberType, resultTypeOf, shallowLayoutKey, singletonHeadMember
 @docs specHashOf, specKeyMapEmpty, specKeyMapGet, specKeyMapInsert, specMapEmpty, specMapFoldl
@@ -109,7 +115,7 @@ made.
 @docs specMapToList, specMapValues, stageParamTypes, stageReturnType, tkClassCall, tkClassCase
 @docs tkClassDestr, tkClassIf, tkClassLambda, tkClassLet, tkClassLit, tkClassLocal
 @docs tkClassMisc, tkClassParam, tkEdge, tkLegacy, tkPoison, tkWiden
-@docs toComparableGlobal, toComparableMonoType, topAbi, topDeclOther, topDeclStoreC, topDeclZonk
+@docs toComparableGlobal, toComparableMonoType, toComparableLayoutType, topAbi, topDeclOther, topDeclStoreC, topDeclZonk
 @docs topEdge, topKindLabel, topLegacy, topOfKind, topPoison, topSynth
 @docs topWiden, typeHasResidualNumber, typeNodesWithin, typeOf, unionAnno, unionSortedInts
 @docs widenSets
@@ -842,6 +848,75 @@ removed and inserted again counting as new.
 layoutMapValues : LayoutMap v -> List v
 layoutMapValues m =
     HashMap.values m
+
+
+{-| The number of entries of a layout-keyed map.
+-}
+layoutMapSize : LayoutMap v -> Int
+layoutMapSize m =
+    HashMap.size m
+
+
+{-| Returns whether a layout-keyed map has no entries.
+-}
+layoutMapIsEmpty : LayoutMap v -> Bool
+layoutMapIsEmpty m =
+    HashMap.isEmpty m
+
+
+{-| A set of types under the layout key: a `LayoutMap` with nothing stored.
+Membership costs a hash of the type (read off the type, not built) and an
+`eqKeyLayout` on a collision, where a `Set String` of
+`toComparableLayoutType` keys builds the whole key string each time.
+-}
+type alias LayoutSet =
+    LayoutMap ()
+
+
+{-| An empty layout-keyed set.
+-}
+layoutSetEmpty : LayoutSet
+layoutSetEmpty =
+    HashMap.empty
+
+
+{-| Returns the set with `t` in it.
+-}
+layoutSetInsert : MonoType -> LayoutSet -> LayoutSet
+layoutSetInsert t s =
+    if layoutMapMember t s then
+        s
+
+    else
+        layoutMapInsert t () s
+
+
+{-| Returns whether `t`, under the layout key, is in the set.
+-}
+layoutSetMember : MonoType -> LayoutSet -> Bool
+layoutSetMember =
+    layoutMapMember
+
+
+{-| The set of the types of a list.
+-}
+layoutSetFromList : List MonoType -> LayoutSet
+layoutSetFromList ts =
+    List.foldl layoutSetInsert layoutSetEmpty ts
+
+
+{-| The types of either set; the second set's types are added to the first.
+-}
+layoutSetUnion : LayoutSet -> LayoutSet -> LayoutSet
+layoutSetUnion a b =
+    layoutMapFoldl (\t () acc -> layoutSetInsert t acc) a b
+
+
+{-| The number of types in the set.
+-}
+layoutSetSize : LayoutSet -> Int
+layoutSetSize =
+    layoutMapSize
 
 
 {-| Returns a hash of a global, for tables keyed by globals. Equal globals have
@@ -3015,7 +3090,54 @@ type MonoGraph
         , lssMemberOrigins : Dict Int MemberOrigin -- for members that are not lambdas
         , lssMemberKinds : Dict Int String -- member id to its interned key, for reports
         , lssBlockedMembers : Dict Int () -- members ABI cloning must not stamp
+        , repr : ReprInfo -- what the representation passes changed (plans/constructor-representation-levels.md)
         }
+
+
+{-| What the representation passes of plans/constructor-representation-levels.md
+changed in a graph, for the code generator and the type table.
+
+`printShapes` is the graph's `ctorShapes` from before `EraseWrappers`, and
+`erasedKeys` every custom type it erased, by its type from before erasure: the
+type table describes those as wrappers (MONO_031), so that `Debug.toString`
+still prints the constructor. `nullable` holds every `Maybe`-shaped type
+`NullableMaybe` represents as its payload, with its constructor names
+(MONO_033, REP_CONSTANT_003). `kernelVisible` lists the kernel-visible type
+constructors (MONO_032), by home and name, for the constructor census; it is
+filled only when the census is on. All four are empty while the passes are off.
+
+-}
+type alias ReprInfo =
+    { printShapes : LayoutMap (List CtorShape)
+    , erasedKeys : LayoutMap ()
+    , nullable : LayoutMap NullableInfo
+    , kernelVisible : List ( String, String )
+    }
+
+
+{-| How a nullable type is represented: its value with no fields (`nullCtor`)
+is a constant word, and its value with one field (`valueCtor`) is the field
+itself. `constantBitTest` is `False` for `Maybe`, whose `Nothing` is the Empty
+constant and is tested by its tag, and `True` for a Maybe-shaped user type,
+whose nullary constructor is a null-cons word and is tested by the constant
+bit (`eco.is_constant`).
+-}
+type alias NullableInfo =
+    { nullCtor : Name
+    , valueCtor : Name
+    , constantBitTest : Bool
+    }
+
+
+{-| A `ReprInfo` with nothing in it.
+-}
+emptyReprInfo : ReprInfo
+emptyReprInfo =
+    { printShapes = layoutMapEmpty
+    , erasedKeys = layoutMapEmpty
+    , nullable = layoutMapEmpty
+    , kernelVisible = []
+    }
 
 
 {-| Returns the graph with these tables emptied, to free memory:
@@ -3654,10 +3776,19 @@ toComparableMonoType monoType =
     String.concat (toComparableFragments True monoType [])
 
 
+{-| Returns the layout key of a type as a string: `toComparableMonoType` with
+every function arrow written alike, so that two types that differ only in
+lambda sets (`eqKeyLayout`) give the same string. The representation passes of
+plans/constructor-representation-levels.md key their tables with it.
+-}
+toComparableLayoutType : MonoType -> String
+toComparableLayoutType monoType =
+    String.concat (toComparableFragments False monoType [])
+
+
 {-| Returns the pieces of the string `toComparableMonoType` builds for `mt`, put in
 front of `tail`. With `annoSensitive` set to `False`, every arrow is written
-alike, giving the layout key instead, but `toComparableMonoType`, its only
-caller, passes `True`.
+alike, giving the layout key instead (`toComparableLayoutType`).
 
 Arguments, tuple elements and custom-type arguments are written last first,
 and record fields in descending order of name. The recursion is as deep as the
@@ -3908,6 +4039,12 @@ type alias CallInfo =
     , fastPapPrefix : Maybe Int
     , callKind : CallKind
     , evaluatorReturnType : MonoType
+
+    -- For a call of `Debug.log` or `Debug.toString`: the printed argument's type
+    -- from before `EraseWrappers`, when erasure changed it, so that the type
+    -- table can still describe the wrappers (MONO_031). Not rewritten by
+    -- `Traverse.mapNodeTypes`.
+    , printType : Maybe MonoType
     }
 
 
@@ -3929,6 +4066,7 @@ defaultCallInfo =
     , fastPapPrefix = Nothing
     , callKind = CallGenericApply
     , evaluatorReturnType = MUnit
+    , printType = Nothing
     }
 
 

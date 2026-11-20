@@ -300,6 +300,7 @@ testGraph =
         , lssMemberOrigins = Dict.empty
         , lssMemberKinds = Dict.empty
         , lssBlockedMembers = Dict.empty
+        , repr = Mono.emptyReprInfo
         }
 
 

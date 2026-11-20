@@ -1244,6 +1244,7 @@ void NurserySpace::evacuate(HPointer &ptr, OldGenSpace &oldgen, std::vector<void
         // The source's colour should already be white; it is reset anyway so that the copy does not depend on
         // that.
         new_hdr->color = static_cast<u32>(Color::White);
+        ctorCensusPromoted(*new_hdr);
 #if ECO_HEAP_VALIDATE
         assertHeaderPreservedAcrossCopy(srcHdr, new_hdr);
 #endif

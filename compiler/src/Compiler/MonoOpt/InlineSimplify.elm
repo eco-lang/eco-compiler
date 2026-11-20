@@ -902,7 +902,7 @@ copied closure. Every other field of the graph is passed through.
 optimize : Config.InlineConfig -> MonoGraph -> ( MonoGraph, Metrics )
 optimize inlineConfig graph =
     let
-        (MonoGraph { nodes, main, registry, ctorShapes, nextLambdaIndex, callEdges, ports, flagsDecoder, flagsSchema, lssMemberOrigins, lssMemberKinds, lssBlockedMembers }) =
+        (MonoGraph { nodes, main, registry, ctorShapes, nextLambdaIndex, callEdges, ports, flagsDecoder, flagsSchema, lssMemberOrigins, lssMemberKinds, lssBlockedMembers, repr }) =
             graph
 
         ( raisedNodes, raiseCounters ) =
@@ -945,7 +945,7 @@ optimize inlineConfig graph =
     in
     -- A separate function, so that the input array is out of scope while the
     -- nodes are rewritten.
-    optimizeNodes nodesList ctx main registry ctorShapes ports flagsDecoder flagsSchema lssMemberOrigins lssMemberKinds lssBlockedMembers
+    optimizeNodes nodesList ctx main registry ctorShapes ports flagsDecoder flagsSchema lssMemberOrigins lssMemberKinds lssBlockedMembers repr
         |> Tuple.mapSecond
             (\m ->
                 { m
@@ -971,8 +971,9 @@ optimizeNodes :
     -> Dict Int Mono.MemberOrigin
     -> Dict Int String
     -> Dict Int ()
+    -> Mono.ReprInfo
     -> ( MonoGraph, Metrics )
-optimizeNodes nodesList ctx main registry ctorShapes ports flagsDecoder flagsSchema lssMemberOrigins lssMemberKinds lssBlockedMembers =
+optimizeNodes nodesList ctx main registry ctorShapes ports flagsDecoder flagsSchema lssMemberOrigins lssMemberKinds lssBlockedMembers repr =
     let
         ( optimizedNodesList, finalCtx, _ ) =
             List.foldl
@@ -1012,6 +1013,7 @@ optimizeNodes nodesList ctx main registry ctorShapes ports flagsDecoder flagsSch
         , lssMemberOrigins = lssMemberOrigins
         , lssMemberKinds = lssMemberKinds
         , lssBlockedMembers = lssBlockedMembers
+        , repr = repr
         }
     , metrics
     )

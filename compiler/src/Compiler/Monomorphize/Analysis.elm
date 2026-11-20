@@ -1,5 +1,5 @@
 module Compiler.Monomorphize.Analysis exposing
-    ( computeCtorShapesForGraph
+    ( computeCtorShapesForGraph, ctorShapesOf
     , lookupUnion
     , convertCanTypeNameToMVarId, instantiateCtorField
     )
@@ -23,7 +23,7 @@ the first step.
 `lookupUnion` and `convertCanTypeNameToMVarId` are the two pieces of the second
 step that other modules use as well.
 
-@docs computeCtorShapesForGraph
+@docs computeCtorShapesForGraph, ctorShapesOf
 
 @docs lookupUnion
 
@@ -577,6 +577,31 @@ computeCtorShapesForGraph globalTypeEnv nodes =
     Mono.layoutMapFoldl processCustomType
         Mono.layoutMapEmpty
         customTypes
+
+
+{-| Returns the ctor shapes of the custom type `monoType` computed from its
+union declaration, as `computeCtorShapesForGraph` computes them for the types
+it collects, or `Nothing` for a type that is not a custom type or whose
+declaration `globalTypeEnv` does not hold. For a type the graph's table may
+not list, such as an effect manager's command type, which only a
+`MonoManagerLeaf` node's type mentions.
+-}
+ctorShapesOf : TypeEnv.GlobalTypeEnv -> Mono.MonoType -> Maybe (List Mono.CtorShape)
+ctorShapesOf globalTypeEnv monoType =
+    case monoType of
+        Mono.MCustom _ canonical typeName monoArgs ->
+            case lookupUnion globalTypeEnv canonical typeName of
+                Just (Can.Union unionData) ->
+                    Just
+                        (Tuple.first
+                            (buildCompleteCtorShapes canonical (State.initMVarEnv TypeIds.firstMVarId Dict.empty) unionData.vars monoArgs unionData.alts)
+                        )
+
+                Nothing ->
+                    Nothing
+
+        _ ->
+            Nothing
 
 
 {-| Returns a constructor field's declared type `fieldType` with the custom

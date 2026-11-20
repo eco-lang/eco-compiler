@@ -1,3 +1,4 @@
+__atomic_fetch_add(&eco_ctor_census_promoted[h.refcount], 1, __ATOMIC_RELAXED);
 promo_mutex_acquires += o.promo_mutex_acquires;
 promo_mutex_wait_ns += o.promo_mutex_wait_ns;
 uint64_t mutex_wait_ns = 0;

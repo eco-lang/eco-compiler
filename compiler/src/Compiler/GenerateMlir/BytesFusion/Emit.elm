@@ -36,6 +36,7 @@ decoder that reaches its end gives `Just` its result value.
 
 import Compiler.GenerateMlir.BytesFusion.LoopIR as IR exposing (DecoderOp(..), Endianness(..), Op(..), WidthExpr(..))
 import Compiler.GenerateMlir.Context as Context exposing (Context)
+import Compiler.GenerateMlir.CtorCensus as CtorCensus
 import Compiler.GenerateMlir.Ops as Ops
 import Compiler.GenerateMlir.Types as Types
 import Compiler.IR.Mono as Mono
@@ -2029,6 +2030,7 @@ emitJustResultWithVar varName state =
 
             ( ctx2, justOp ) =
                 Ops.ecoConstructCustom ctx1 justVar 0 "Just" [ ( varName, varType, Types.mlirTypeToKind varType ) ]
+                    |> Tuple.mapSecond (Ops.withCensusId (CtorCensus.idForBytesFusionJust ctx1.ctorCensus))
         in
         ( [ justOp ], justVar, ctx2 )
 
@@ -2039,6 +2041,7 @@ emitJustResultWithVar varName state =
 
             ( ctx2, justOp ) =
                 Ops.ecoConstructCustom ctx1 justVar 0 "Just" [ ( varName, Types.ecoValue, 0 ) ]
+                    |> Tuple.mapSecond (Ops.withCensusId (CtorCensus.idForBytesFusionJust ctx1.ctorCensus))
         in
         ( [ justOp ], justVar, ctx2 )
 

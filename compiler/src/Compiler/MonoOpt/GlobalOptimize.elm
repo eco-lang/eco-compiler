@@ -568,6 +568,7 @@ annotateExprCalls graph env expr =
                         , fastEvaluator = existingCallInfo.fastEvaluator
                         , fastEvaluatorSpec = existingCallInfo.fastEvaluatorSpec
                         , fastPapPrefix = existingCallInfo.fastPapPrefix
+                        , printType = existingCallInfo.printType
                     }
             in
             Mono.MonoCall region newFunc newArgs resultType callInfo
@@ -1347,6 +1348,7 @@ computeCallInfo graph env func args resultType =
             , fastPapPrefix = Nothing
             , callKind = Mono.CallDirectFlat
             , evaluatorReturnType = resultType
+            , printType = Nothing
             }
 
         Mono.StageCurried ->
@@ -1449,4 +1451,5 @@ computeCallInfo graph env func args resultType =
             , fastPapPrefix = Nothing
             , callKind = callKind
             , evaluatorReturnType = evaluatorReturnType
+            , printType = Nothing
             }

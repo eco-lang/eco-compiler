@@ -93,7 +93,8 @@ run src engine k _ =
 
 solver : Src.Module -> Result String Mono.MonoGraph
 solver =
-    Pipeline.runToMono >> Result.map .monoGraph
+    -- Wrapper erasure would remove the shapes of the wrapper types under test.
+    Pipeline.runToMonoWith (Pipeline.withoutReprPasses Pipeline.productionConfig) >> Result.map .monoGraph
 
 
 

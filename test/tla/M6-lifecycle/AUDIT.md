@@ -711,3 +711,11 @@ Change: beside the existing `deferred_frees_.clear()`, `reset` zeroes `deferred_
 date). Two plain mutator-owned fields, written where the vector they summarise is emptied. `OldGenSpace::reset`
 is not modelled (MAPPING.md §3: a test path, after the mutator's own `stopAndJoin`); nothing here adds a thread,
 lock, atomic or fork interaction. **Verdict: no model change needed.**
+
+## 2026-11-19 — constructor census promotion counter (test/tla/README.md "The canary")
+
+Pins fired: grep `F.atexit` (**f453020be9cc**: the new `std::atexit(eco_ctor_census_dump)` in `RuntimeExports.cpp`).
+
+Change (plans/constructor-representation-levels.md, unit M0, the constructor census): each nursery promotion path (the parallel minor's `copyClaimed`, the tenure gang's heap and parallel arms, the serial `NurserySpace` copy) now calls `ctorCensusPromoted(h)` inside its `ENABLE_GC_STATS` block, after the copy, beside the existing `copies.promotion` statistics call. With the census on (`ECO_CTOR_CENSUS_OUT` set) it does one relaxed `__atomic_fetch_add` on `eco_ctor_census_promoted[h.refcount]`, a statistics-only array no GC code reads; with it off, one predictable branch. `h` is the header of the object just copied, read by the worker that copied it. The census id lives in `Header.refcount` (15 bits), set by the mutator in `eco_ctor_census_mark` when it allocates the object, before the object is published; no model gives `refcount` a meaning, and the old generation uses it only on `Tag_Free` cells, which the hook skips (it counts `Tag_Custom` only). A static initializer registers `std::atexit(eco_ctor_census_dump)` when the variable is set: the handler reads the arrays and writes a file, takes no lock and touches no allocator state, and runs on the exiting mutator after every minor pause has joined its workers, so it cannot block a forked child or race a promotion.
+
+No atomic step, lock, shared heap location or memory order of any modelled protocol is added, removed or reordered: the new RMW is on a location outside every model's state, relaxed and write-only during GC. **Verdict: no model change needed.**

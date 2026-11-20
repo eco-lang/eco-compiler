@@ -16,7 +16,9 @@ escapes. The full rule, with its exceptions, belongs to
 `Compiler.GenerateMlir.Expr.promotableCtorCall`, which these tests call.
 
 The fixture is one source module, `fixtureModule`, with one function per
-scenario. Every test runs it through `TestLogic.TestPipeline.runToGlobalOpt`
+scenario. Every test runs it, with the representation passes off (a `case` on a
+constructor built in the same function would be folded away by
+`KnownCtorCase`), through `TestLogic.TestPipeline.runToGlobalOpt`
 (the production pipeline up to and including global optimization) and asks for a verdict on the optimized graph. A function is
 found as the first specialization, in SpecId order, whose comparable global
 name contains the function's name and which yields a verdict, so no scenario
@@ -130,7 +132,7 @@ its message.
 -}
 expectCtorVerdict : String -> Maybe Bool -> Expect.Expectation
 expectCtorVerdict defName expected =
-    case Pipeline.runToGlobalOpt fixtureModule of
+    case Pipeline.runToGlobalOptWith (Pipeline.withoutReprPasses Pipeline.productionConfig) fixtureModule of
         Err msg ->
             Expect.fail ("pipeline: " ++ msg)
 
@@ -243,7 +245,7 @@ If `Pipeline.runToGlobalOpt` returns an error, the test fails with its message.
 -}
 expectVerdict : String -> Maybe Bool -> Expect.Expectation
 expectVerdict defName expected =
-    case Pipeline.runToGlobalOpt fixtureModule of
+    case Pipeline.runToGlobalOptWith (Pipeline.withoutReprPasses Pipeline.productionConfig) fixtureModule of
         Err msg ->
             Expect.fail ("pipeline: " ++ msg)
 

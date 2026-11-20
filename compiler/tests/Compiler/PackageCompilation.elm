@@ -630,6 +630,7 @@ monomorphize entry results =
                 |> Result.andThen (\_ -> Steps.monomorphizeEntry cfg entry globalTypeEnv assigned)
                 |> Result.andThen (\( g, _ ) -> Steps.checkStageArity g)
                 |> Result.andThen (Steps.checkLayout cfg)
+                |> Result.andThen (Steps.representation cfg globalTypeEnv >> Result.map Tuple.first)
                 |> Result.mapError MonomorphizeError
 
 
@@ -678,7 +679,7 @@ generateMLIR monoGraph =
             Pipeline.productionConfig
 
         simplified =
-            Steps.prune cfg (Tuple.first (Steps.inline cfg monoGraph))
+            Steps.prune cfg (Tuple.first (Steps.knownCtorCase cfg (Tuple.first (Steps.inline cfg monoGraph))))
     in
     MLIR.generateProgram cfg (Tuple.first (Pipeline.globalOpt cfg simplified))
 

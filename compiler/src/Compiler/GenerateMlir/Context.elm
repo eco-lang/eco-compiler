@@ -6,7 +6,7 @@ module Compiler.GenerateMlir.Context exposing
     , buildSignatures, signatureOf, kernelFuncSignatureFromType
     , KernelDeclInfo
     , registerKernelInstance
-    , PsplitInfo, SlotPlan, SplitParamInfo, SplitSpec(..), SretInfo, freshSlotVars, residualResultType, closureResultType, withConstCtorBySpec, withConstThunkBySpec, withNullConsBySpec, withPsplitPromoted, withSretPromoted
+    , PsplitInfo, SlotPlan, SplitParamInfo, SplitSpec(..), SretInfo, freshSlotVars, residualResultType, closureResultType, withConstCtorBySpec, withCtorCensus, withReprInfo, printShapesOf, nullableInfo, withConstThunkBySpec, withNullConsBySpec, withPsplitPromoted, withSretPromoted
     )
 
 {-| MLIR code generation is a pure fold over each function's expression
@@ -85,12 +85,13 @@ type before the type itself.
 
 # Promotions and constant tables
 
-@docs PsplitInfo, SlotPlan, SplitParamInfo, SplitSpec, SretInfo, freshSlotVars, residualResultType, closureResultType, withConstCtorBySpec, withConstThunkBySpec, withNullConsBySpec, withPsplitPromoted, withSretPromoted
+@docs PsplitInfo, SlotPlan, SplitParamInfo, SplitSpec, SretInfo, freshSlotVars, residualResultType, closureResultType, withConstCtorBySpec, withCtorCensus, withReprInfo, printShapesOf, nullableInfo, withConstThunkBySpec, withNullConsBySpec, withPsplitPromoted, withSretPromoted
 
 -}
 
 import Array exposing (Array)
 import Compiler.Config as Config
+import Compiler.GenerateMlir.CtorCensus as CtorCensus
 import Compiler.Core.Name as Name
 import Compiler.GenerateMlir.KernelAbi as KernelAbi
 import Compiler.GenerateMlir.Types as Types
@@ -157,10 +158,16 @@ separate result instead of one boxed tuple.
 
 `slotTypes` are the MLIR types of those results, in the order of `layout`.
 
+`ctor` is `Just` the constructor when the result is a custom type with one
+constructor of two or three fields (plans/constructor-representation-levels.md
+S1): its fields are then laid out and returned as a tuple's, a result leaf is a
+call of that constructor, and the shim rebuilds the custom value.
+
 -}
 type alias SretInfo =
     { layout : Types.TupleLayout
     , slotTypes : Mono.TupleShape MlirType
+    , ctor : Maybe Mono.CtorShape
     }
 
 
@@ -301,9 +308,12 @@ type alias Context =
     , sretPromoted : Dict.Dict Int SretInfo
     , psplitPromoted : Dict.Dict Int PsplitInfo
     , sretTailLayout : Maybe Types.TupleLayout
+    , sretTailCtor : Maybe Name.Name -- the constructor of a custom `$sret` result (S1), with `sretTailLayout`
     , ecoConfig : Config.EcoConfig
     , mapTemplates : MapTemplate.Templates
     , entryMainSpec : Maybe Mono.SpecId
+    , ctorCensus : CtorCensus.Table
+    , nullable : Mono.LayoutMap Mono.NullableInfo
     }
 
 
@@ -314,12 +324,22 @@ type alias Context =
 constructors of each custom type, so that their field types are registered
 too.
 
+`printShapes` and `erasedKeys` are the graph's `repr` tables from
+`EraseWrappers` (MONO_031): the constructors of the types as they were before
+erasure, and the types it erased. The debug type graph describes a type by
+`printShapes` first, so that a `Debug.toString` type from before erasure
+(`CallInfo.printType`) is described in full, and an erased type as a wrapper.
+Neither is used for heap layout, which reads `ctorShapes` only.
+
 -}
 type alias TypeRegistry =
     { nextTypeId : Int
     , typeIds : Mono.LayoutMap Int
     , typeInfos : List ( Int, Mono.MonoType )
     , ctorShapes : Mono.LayoutMap (List Mono.CtorShape)
+    , printShapes : Mono.LayoutMap (List Mono.CtorShape)
+    , erasedKeys : Mono.LayoutMap ()
+    , nullable : Mono.LayoutMap Mono.NullableInfo
     }
 
 
@@ -378,9 +398,12 @@ initContext registry signatures initialCtorShapes =
     , sretPromoted = Dict.empty
     , psplitPromoted = Dict.empty
     , sretTailLayout = Nothing
+    , sretTailCtor = Nothing
     , ecoConfig = Config.default
     , mapTemplates = MapTemplate.empty
     , entryMainSpec = Nothing
+    , ctorCensus = CtorCensus.empty
+    , nullable = Mono.layoutMapEmpty
     }
 
 
@@ -391,6 +414,14 @@ encoder fusion reads it to see into the functions an encoder calls.
 withInlineBodies : Dict.Dict Int ( List ( Name.Name, Mono.MonoType ), Mono.MonoExpr ) -> Context -> Context
 withInlineBodies bodies ctx =
     { ctx | inlineBodies = bodies }
+
+
+{-| Returns the context with the constructor census table installed
+(`Compiler.GenerateMlir.CtorCensus`).
+-}
+withCtorCensus : CtorCensus.Table -> Context -> Context
+withCtorCensus table ctx =
+    { ctx | ctorCensus = table }
 
 
 {-| Returns the context with the constructor shape of each constructor spec
@@ -462,7 +493,51 @@ emptyTypeRegistry =
     , typeIds = Mono.layoutMapEmpty
     , typeInfos = []
     , ctorShapes = Mono.layoutMapEmpty
+    , printShapes = Mono.layoutMapEmpty
+    , erasedKeys = Mono.layoutMapEmpty
+    , nullable = Mono.layoutMapEmpty
     }
+
+
+{-| Returns the constructors the debug type graph describes the custom type
+`mt` with: from `printShapes` when it has the type, else from `ctorShapes`.
+-}
+printShapesOf : TypeRegistry -> Mono.MonoType -> List Mono.CtorShape
+printShapesOf reg mt =
+    case Mono.layoutMapGet mt reg.printShapes of
+        Just shapes ->
+            shapes
+
+        Nothing ->
+            Mono.layoutMapGet mt reg.ctorShapes |> Maybe.withDefault []
+
+
+{-| Returns the context with the graph's `repr` tables from `EraseWrappers`
+installed in its type registry.
+-}
+withReprInfo : Mono.ReprInfo -> Context -> Context
+withReprInfo repr ctx =
+    let
+        reg =
+            ctx.typeRegistry
+    in
+    { ctx
+        | typeRegistry = { reg | printShapes = repr.printShapes, erasedKeys = repr.erasedKeys, nullable = repr.nullable }
+        , nullable = repr.nullable
+    }
+
+
+{-| Returns how the type `t` is represented when `NullableMaybe` made it
+nullable (REP_CONSTANT_003), and `Nothing` otherwise.
+-}
+nullableInfo : Context -> Mono.MonoType -> Maybe Mono.NullableInfo
+nullableInfo ctx t =
+    case t of
+        Mono.MCustom _ _ _ _ ->
+            Mono.layoutMapGet t ctx.nullable
+
+        _ ->
+            Nothing
 
 
 {-| Returns the TypeId of `monoType`, registering it first if it is new.
@@ -493,8 +568,7 @@ getOrCreateTypeIdForMonoType monoType ctx =
                 Mono.MCustom _ _ _ args ->
                     let
                         ctorShapesForType =
-                            Mono.layoutMapGet mt c.typeRegistry.ctorShapes
-                                |> Maybe.withDefault []
+                            printShapesOf c.typeRegistry mt
 
                         fieldTypes =
                             List.concatMap .fieldTypes ctorShapesForType
@@ -545,6 +619,9 @@ getOrCreateTypeIdForMonoType monoType ctx =
                     , typeIds = Mono.layoutMapInsert mt typeId reg.typeIds
                     , typeInfos = ( typeId, mt ) :: reg.typeInfos
                     , ctorShapes = reg.ctorShapes
+                    , printShapes = reg.printShapes
+                    , erasedKeys = reg.erasedKeys
+                    , nullable = reg.nullable
                     }
             in
             { c | typeRegistry = newReg }

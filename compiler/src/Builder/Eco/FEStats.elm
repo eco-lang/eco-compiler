@@ -77,6 +77,7 @@ type PhaseName
     = PhaseDeps
     | PhaseLocal
     | PhaseMono
+    | PhaseRepresentation
     | PhaseInlineSimplify
     | PhaseGlobalOpt
     | PhaseMlir
@@ -767,6 +768,9 @@ phaseLabel phase =
         PhaseMono ->
             "monomorphization"
 
+        PhaseRepresentation ->
+            "representation"
+
         PhaseInlineSimplify ->
             "inline + simplify"
 
@@ -806,14 +810,17 @@ phaseOrd phase =
         PhaseMono ->
             2
 
-        PhaseInlineSimplify ->
+        PhaseRepresentation ->
             3
 
-        PhaseGlobalOpt ->
+        PhaseInlineSimplify ->
             4
 
-        PhaseMlir ->
+        PhaseGlobalOpt ->
             5
+
+        PhaseMlir ->
+            6
 
 
 {-| Returns the key `stage` is stored under.
@@ -835,7 +842,7 @@ stageOrd stage =
 -}
 allPhases : List PhaseName
 allPhases =
-    [ PhaseDeps, PhaseLocal, PhaseMono, PhaseInlineSimplify, PhaseGlobalOpt, PhaseMlir ]
+    [ PhaseDeps, PhaseLocal, PhaseMono, PhaseRepresentation, PhaseInlineSimplify, PhaseGlobalOpt, PhaseMlir ]
 
 
 {-| Every module stage, in report order.

@@ -1011,7 +1011,7 @@ compileBaseReturnStep ctx loopSpec expr =
                 Just info ->
                     let
                         raw =
-                            Expr.generateExpr { ctx | sretTailLayout = Just info.layout } expr
+                            Expr.generateExpr { ctx | sretTailLayout = Just info.layout, sretTailCtor = Maybe.map .name info.ctor } expr
 
                         rawCtx =
                             raw.ctx

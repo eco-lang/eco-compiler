@@ -1,9 +1,9 @@
 module Compiler.GenerateMlir.Ops exposing
     ( opBuilder, mlirOp, mkRegion, funcFunc
     , ecoConstantUnit, ecoConstantEmptyRec, ecoConstantNil, ecoConstantNothing, ecoConstantEmptyString, ecoConstantNullCons
-    , ecoConstructList, ecoConstructTuple2, ecoConstructTuple3, ecoConstructRecord, ecoConstructCustom
+    , ecoConstructList, ecoConstructTuple2, ecoConstructTuple3, ecoConstructRecord, ecoConstructCustom, withCensusId
     , ecoProjectListHead, ecoProjectListTail, ecoProjectTuple2, ecoProjectTuple3, ecoProjectRecord, ecoProjectCustom
-    , ecoCallNamed, ecoReturn, ecoYield, ecoStringLiteral, ecoUnaryOp, ecoBinaryOp, ecoTernaryOp, ecoCase, ecoCaseString, ecoGetTag
+    , ecoCallNamed, ecoReturn, ecoYield, ecoStringLiteral, ecoUnaryOp, ecoBinaryOp, ecoTernaryOp, ecoCase, ecoCaseString, ecoGetTag, ecoIsConstant
     , ecoArrayGet, ecoArraySet, ecoArrayLength
     , arithConstantInt, arithConstantInt32, arithConstantFloat, arithConstantBool, arithConstantChar, CmpIPred(..), arithCmpI
     , scfWhile, scfCondition
@@ -54,7 +54,7 @@ Several facts recur across the builders:
 
 # Eco Constructors
 
-@docs ecoConstructList, ecoConstructTuple2, ecoConstructTuple3, ecoConstructRecord, ecoConstructCustom
+@docs ecoConstructList, ecoConstructTuple2, ecoConstructTuple3, ecoConstructRecord, ecoConstructCustom, withCensusId
 
 
 # Eco Projections
@@ -64,7 +64,7 @@ Several facts recur across the builders:
 
 # Eco Operations
 
-@docs ecoCallNamed, ecoReturn, ecoYield, ecoStringLiteral, ecoUnaryOp, ecoBinaryOp, ecoTernaryOp, ecoCase, ecoCaseString, ecoGetTag
+@docs ecoCallNamed, ecoReturn, ecoYield, ecoStringLiteral, ecoUnaryOp, ecoBinaryOp, ecoTernaryOp, ecoCase, ecoCaseString, ecoGetTag, ecoIsConstant
 
 
 # Eco Array Operations
@@ -301,6 +301,20 @@ ecoConstructRecord ctx resultVar fields =
         |> opBuilder.withResults [ ( resultVar, Types.ecoValue ) ]
         |> opBuilder.withAttrs attrs
         |> opBuilder.build
+
+
+{-| Returns `op` with the constructor-census attribute `_census_id` added when
+`maybeId` is given (`Compiler.GenerateMlir.CtorCensus`); the backend counts the
+op's executions under that id.
+-}
+withCensusId : Maybe Int -> MlirOp -> MlirOp
+withCensusId maybeId op =
+    case maybeId of
+        Just id ->
+            { op | attrs = Dict.insert "_census_id" (IntAttr Nothing id) op.attrs }
+
+        Nothing ->
+            op
 
 
 {-| Builds an `eco.construct.custom` heap value of the constructor
@@ -1194,6 +1208,23 @@ ecoGetTag ctx resultVar operand =
     mlirOp ctx "eco.get_tag"
         |> opBuilder.withOperands [ operand ]
         |> opBuilder.withResults [ ( resultVar, I32 ) ]
+        |> opBuilder.withAttrs attrs
+        |> opBuilder.build
+
+
+{-| Builds an `eco.is_constant`, which is true when an `!eco.value` is an
+embedded constant (its `ptr_ind` bit is set, HEAP_014): the test of the nullary
+constructor of a nullable Maybe-shaped user type (CGEN_087).
+-}
+ecoIsConstant : Ctx.Context -> String -> String -> ( Ctx.Context, MlirOp )
+ecoIsConstant ctx resultVar operand =
+    let
+        attrs =
+            Dict.singleton "_operand_types" (ArrayAttr Nothing [ TypeAttr Types.ecoValue ])
+    in
+    mlirOp ctx "eco.is_constant"
+        |> opBuilder.withOperands [ operand ]
+        |> opBuilder.withResults [ ( resultVar, I1 ) ]
         |> opBuilder.withAttrs attrs
         |> opBuilder.build
 

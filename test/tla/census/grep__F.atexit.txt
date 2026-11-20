@@ -7,6 +7,7 @@ runtime/src/allocator/RuntimeExports.cpp: if (tables.empty()) std::atexit(callCe
 runtime/src/allocator/RuntimeExports.cpp: std::atexit([] {
 runtime/src/allocator/RuntimeExports.cpp: std::atexit(closureStatsDumpImpl);
 runtime/src/allocator/RuntimeExports.cpp: std::atexit(dispatchStatsDumpImpl);
+runtime/src/allocator/RuntimeExports.cpp: std::atexit(eco_ctor_census_dump);
 runtime/src/codegen/eco_entry.cpp: std::atexit(atexitPrintStats);
 runtime/src/embed/eco_embed.cpp: std::atexit(atexitStopEcoThread);
 system-kernel-cpp/src/eco-system/Terminal/Terminal.cpp: std::atexit(&restoreAtExit);
