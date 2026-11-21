@@ -1,7 +1,7 @@
 ---
 status: partial
-updated: 2026-11-19
-remaining: "Section 13 R0-R4 done as written, with dated amendments (representation step 8.7 s -> 1.7 s, under the 2 s target; see 13.6). Not built, each by its gate (see section 12): S2 (S2-D failed, 2.0 MiB projected); N2 (re-measured after N1, under 0.2% of allocations reachable; not planned); K2 (K0 re-run with K1 on finds 0 sites). K1 is built but default off (K0-D failed: 0 sites), and was built before K0-D was measured, against the plan's order."
+updated: 2026-11-21
+remaining: "Section 13 R0-R4 done as written, with dated amendments (representation step 8.7 s -> 1.7 s, under the 2 s target; see 13.6). Not built, each by its gate (see section 12): S2 (S2-D failed, 2.0 MiB projected); N2 (re-measured after N1, under 0.2% of allocations reachable; not planned); K2 (K0 re-run with K1 on finds 0 sites). K1 was built before K0-D was measured, against the plan's order; K0-D failed (0 sites), and K1 is default on since 2026-11-21 under a new gate (E2E fixtures, see section 14)."
 ---
 
 # Constructor representation: four levels of custom-type unboxing
@@ -1406,6 +1406,7 @@ re-measuring with the census):**
   measurement needs the bootstrap's native compiler, which needed K1 in the
   sources). K0-D then failed (0 sites), so K1 stays in the tree, tested, and
   default off. This departs from the plan's order (measure, then build).
+  Since 2026-11-21 it is default on under a different gate (section 14).
 - **N2** is decided against. After N1, the level-3 classes still allocating are
   `Array.Node`'s `Leaf` and `SubTree` (55M together; both hold a JsArray, so
   their payloads share one runtime tag, which N2 requires to be distinct; and
@@ -1853,4 +1854,34 @@ the name `Set String` was dropped for the layout-hash lookup (R4f, above). Final
 the target; this section is closed.
 
 **End gates (final tree, R4j):** `full` 3,119/3,119; elm-tests 22,007/0; `bootstrap` rc 0 through Stage 8c (native fixed point) and 9b; an `ECO_REPR_VALIDATE=1` self-compile clean with unchanged output; canary passing.
+
+
+## 14. K1 default on (2026-11-21)
+
+The gate for K1 is now the E2E fixtures instead of K0-D's self-compile site count (user
+direction): `test/eco-mlir/src/KnownCtorCaseFoldTest.elm` (new) and
+`test/elm/src/KnownCtorCaseTest.elm`, which until now only ever ran with the pass off.
+
+- **New fixture.** Seven scenarios checked against Elm's output (node): a direct `let`, a builder
+  and a matcher both inlined, a literal and a top-level argument, a 1,000,000-iteration
+  tail-recursive loop, a nullary constructor, a value still used after the `case`, a `String`
+  field. Its CHECK-MLIR-NOT lines assert that no `eco.construct.custom` names the folded
+  constructors (`KcPair`, `KcRect`, `KcLit`, `KcStep`), and a CHECK-MLIR line that `KcKeep`, used
+  after its `case`, is still built. With the pass off the fixture fails on those lines.
+- **Exposed and fixed.** Inlining a function that builds the value (`helper`) gave no site:
+  `InlineSimplify` binds each parameter to a fresh name, so the value's binding is
+  `x = (let p = a in ... C p ...)`, and `knownOf` only recognised a bare constructor call.
+  `KnownCtorCase.floatOut` floats such a chain above the binding (pure and strict, so evaluation
+  order is unchanged; only when no floated name is used by the body). Unit test `wrapped` in
+  `Compiler/MonoOpt/KnownCtorCaseTest` (red before the fix: 4 sites, not 5). With it the fixture's
+  census is `sites=7 folded=7 bindingsDropped=6`.
+- **Gates** (unit `K`, snapshot `repr-K`, full chain against `eco-optF1d`): full 3,141/3,141
+  (both fixtures pass), elm-tests 22,043/0, bootstrap 8c/9b, AOT 1,513/1,513, stress 114/114 in both
+  configs, TLA canary, fixed point, `ECO_REPR_VALIDATE` self-compile identical.
+- **Self-compile** (quiet machine, alternating, 3 runs each): `eco-optF1d` 77.55 / 76.33 / 75.71 s
+  (median 76.33), `eco-optK` 77.18 / 77.42 / 76.12 s (median 77.18): +1.1 % median, +0.5 % mean,
+  inside the 1.3 % noise; output byte-identical. The self-compile still has 0 sites with the
+  floating (`ECO_INLINE_REPORT=1`): its matching functions exceed the post-mono inline budget
+  (`postMonoThreshold` 10), so they are not inlined where their argument is built. The pass pays in
+  programs whose small matchers do inline.
 

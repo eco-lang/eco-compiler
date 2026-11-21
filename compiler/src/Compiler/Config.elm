@@ -607,10 +607,12 @@ default =
     }
 
 
-{-| The `repr` settings of `default`: every representation pass on except
-`knownCtorCase`, and the census and the validation off. `knownCtorCase` failed
-its gate (K0-D: at least 100 sites in the self-compile; it found none), so it
-stays opt-in.
+{-| The `repr` settings of `default`: every representation pass on, and the
+census and the validation off. `knownCtorCase` was opt-in while its gate was the
+self-compile's site count (K0-D, which found none); its gate is now the E2E
+fixtures `test/eco-mlir/src/KnownCtorCaseFoldTest.elm` and
+`test/elm/src/KnownCtorCaseTest.elm` (plans/constructor-representation-levels.md
+§8.2, 2026-11-21).
 -}
 defaultRepr : ReprConfig
 defaultRepr =
@@ -618,7 +620,7 @@ defaultRepr =
     , eraseUnboxed = True
     , nullableMaybe = True
     , nullableUser = True
-    , knownCtorCase = False
+    , knownCtorCase = True
     , sretCtors = True
     , taggedUnions = True
     , census = Nothing

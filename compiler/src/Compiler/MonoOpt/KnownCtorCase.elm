@@ -21,6 +21,10 @@ A site is folded only when
   - no binding between the constructor call and the `case` rebinds `x` or a
     variable among the arguments.
 
+A binding `x = (let a = e in ... C a ...)`, which inlining a function that builds the value
+leaves, has its `let` chain floated above it first (`floatOut`), so that `C ...` is what `x` is
+bound to.
+
 After folding, a binding `x = C ...` that nothing uses any more is dropped.
 
 `run` always counts the sites (the K0 census: `sites`, `trivialArgs`,
@@ -238,33 +242,68 @@ shadow names knowns =
         Dict.filter (\x k -> not (Set.member x ns) && not (List.any (\a -> Set.member a ns) (argNames k))) knowns
 
 
+{-| `let name = (let inner = e in rest) in body` as `let inner = e in let name = rest in body`,
+when `rest` is a `let` chain that ends in a known constructor value and `body` does not use
+`inner`. Inlining a function that builds the value leaves this shape (`InlineSimplify` binds each
+parameter to a fresh name); floating the chain out makes the constructor call `name`'s bound
+expression. The program is pure and strict, so the order of evaluation is unchanged.
+-}
+floatOut : Env -> String -> MonoExpr -> MonoExpr -> Mono.MonoType -> Maybe MonoExpr
+floatOut env name bound body t =
+    case bound of
+        MonoLet (Mono.MonoDef inner innerBound) rest _ ->
+            if inner /= name && knownOf env (chainEnd rest) /= Nothing && not (usesName inner body) then
+                Just (MonoLet (Mono.MonoDef inner innerBound) (MonoLet (Mono.MonoDef name rest) body t) t)
+
+            else
+                Nothing
+
+        _ ->
+            Nothing
+
+
+chainEnd : MonoExpr -> MonoExpr
+chainEnd e =
+    case e of
+        MonoLet (Mono.MonoDef _ _) rest _ ->
+            chainEnd rest
+
+        _ ->
+            e
+
+
 walk : Env -> Dict String Known -> MonoExpr -> Stats -> ( MonoExpr, Stats )
 walk env knowns expr st =
     case expr of
         MonoLet (Mono.MonoDef name bound) body t ->
-            let
-                ( bound1, st1 ) =
-                    walk env knowns bound st
+            case floatOut env name bound body t of
+                Just floated ->
+                    walk env knowns floated st
 
-                knowns1 =
-                    shadow [ name ] knowns
-                        |> (case knownOf env bound1 of
-                                Just k ->
-                                    Dict.insert name k
+                Nothing ->
+                    let
+                        ( bound1, st1 ) =
+                            walk env knowns bound st
 
-                                Nothing ->
-                                    identity
-                           )
+                        knowns1 =
+                            shadow [ name ] knowns
+                                |> (case knownOf env bound1 of
+                                        Just k ->
+                                            Dict.insert name k
 
-                ( body1, st2 ) =
-                    walk env knowns1 body st1
-            in
-            -- A constructor value is pure: once no case or other use reads it, the binding goes.
-            if env.fold && knownOf env bound1 /= Nothing && st2.folded > st1.folded && not (usesName name body1) then
-                ( body1, { st2 | bindingsDropped = st2.bindingsDropped + 1 } )
+                                        Nothing ->
+                                            identity
+                                   )
 
-            else
-                ( MonoLet (Mono.MonoDef name bound1) body1 t, st2 )
+                        ( body1, st2 ) =
+                            walk env knowns1 body st1
+                    in
+                    -- A constructor value is pure: once no case or other use reads it, the binding goes.
+                    if env.fold && knownOf env bound1 /= Nothing && st2.folded > st1.folded && not (usesName name body1) then
+                        ( body1, { st2 | bindingsDropped = st2.bindingsDropped + 1 } )
+
+                    else
+                        ( MonoLet (Mono.MonoDef name bound1) body1 t, st2 )
 
         MonoLet (Mono.MonoTailDef name params bound) body t ->
             let

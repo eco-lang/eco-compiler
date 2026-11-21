@@ -10,6 +10,7 @@ module Compiler.MonoOpt.KnownCtorCaseTest exposing (suite)
     callArg x = let w = WorkB (x * 3) 1 in case w of WorkB a _ -> a ; _ -> 0
     nested x = let m = Full (WorkA x) in case m of Full (WorkA n) -> n ; _ -> 0
     enum x = let w = Idle in case w of Idle -> x ; _ -> 0
+    wrapped x = let w = (let a = x + 1 in WorkB a a) in case w of WorkB p _ -> p ; _ -> 0
 
 A local `Holder` stands in for `Maybe`: in this test pipeline the elm/core
 constructors are externs (interfaces only), with no constructor node to know.
@@ -20,9 +21,12 @@ The tests establish:
     value, how many have only trivial arguments, and how many are decided by
     root tests alone, and changes nothing;
   - with `fold = True` the sites with trivial arguments and root-only tests are
-    folded (`direct` and `enum`), and their bindings, used by nothing else
-    after the fold, are dropped; `callArg` (an argument that is a call) and
+    folded (`direct`, `enum` and `wrapped`), and their bindings, used by nothing
+    else after the fold, are dropped; `callArg` (an argument that is a call) and
     `nested` (a test on a field) are left alone;
+  - a constructor call at the end of a `let` chain, the shape inlining a function that builds
+    the value leaves (`wrapped`), is a site: the chain's bindings are floated above the
+    constructor's binding;
   - after the fold no `case` in the graph still scrutinizes a folded binding.
 
 -}
@@ -113,6 +117,19 @@ program =
                     (caseExpr (varExpr "w") [ ( pCtor "Idle" [], varExpr "x" ), ( pAnything, intExpr 0 ) ])
                 )
 
+        wrapped : TypedDef
+        wrapped =
+            fn "wrapped"
+                (letExpr
+                    [ define "w"
+                        []
+                        (letExpr [ define "a" [] (binopsExpr [ ( varExpr "x", "+" ) ] (intExpr 1)) ]
+                            (callExpr (ctorExpr "WorkB") [ varExpr "a", varExpr "a" ])
+                        )
+                    ]
+                    (caseExpr (varExpr "w") [ ( pCtor "WorkB" [ pVar "p", pAnything ], varExpr "p" ), ( pAnything, intExpr 0 ) ])
+                )
+
         testValue : TypedDef
         testValue =
             { name = "testValue"
@@ -123,11 +140,12 @@ program =
                     [ ( callExpr (varExpr "direct") [ intExpr 1 ], "+" )
                     , ( callExpr (varExpr "callArg") [ intExpr 2 ], "+" )
                     , ( callExpr (varExpr "nested") [ intExpr 3 ], "+" )
+                    , ( callExpr (varExpr "wrapped") [ intExpr 5 ], "+" )
                     ]
                     (callExpr (varExpr "enum") [ intExpr 4 ])
             }
     in
-    makeModuleWithTypedDefsUnionsAliases "TestMod" [ direct, callArg, nested, enum, testValue ] [ work, holder ] []
+    makeModuleWithTypedDefsUnionsAliases "TestMod" [ direct, callArg, nested, enum, wrapped, testValue ] [ work, holder ] []
 
 
 graph : () -> Result String Mono.MonoGraph
@@ -178,9 +196,9 @@ suite =
                                 KnownCtorCase.run { fold = False } g
                         in
                         Expect.all
-                            [ \_ -> Expect.equal stats.sites 4
-                            , \_ -> Expect.equal stats.trivialArgs 2
-                            , \_ -> Expect.equal stats.rootOnly 3
+                            [ \_ -> Expect.equal stats.sites 5
+                            , \_ -> Expect.equal stats.trivialArgs 3
+                            , \_ -> Expect.equal stats.rootOnly 4
                             , \_ -> Expect.equal stats.folded 0
                             , \_ -> Expect.equal (scrutinees g1) (scrutinees g)
                             ]
@@ -197,9 +215,9 @@ suite =
                                 KnownCtorCase.run { fold = True } g
                         in
                         Expect.all
-                            [ \_ -> Expect.equal stats.folded 2
-                            , \_ -> Expect.equal stats.bindingsDropped 2
-                            , \_ -> Expect.equal (List.length (scrutinees g1)) (List.length (scrutinees g) - 2)
+                            [ \_ -> Expect.equal stats.folded 3
+                            , \_ -> Expect.equal stats.bindingsDropped 3
+                            , \_ -> Expect.equal (List.length (scrutinees g1)) (List.length (scrutinees g) - 3)
                             ]
                             ()
         ]
