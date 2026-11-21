@@ -342,10 +342,13 @@ suite =
                 )
         , test "Maybe Rec only moved through a listed kernel alias's type variable stays nullable (F4)" <|
             run { userTypes = False }
-                -- The meets `splitAt` builds for `List (Maybe Rec)` used as the alias's `List a`.
-                [ { a = Mono.mList maybeRec, b = Mono.mList (Mono.MVar TypeIds.firstMVarId Mono.CEcoValue), root = True, spec = 0, site = "global->1", via = RepresentationMeets.ViaKernelAlias "List" "append" }
-                , { a = maybeRec, b = Mono.MVar TypeIds.firstMVarId Mono.CEcoValue, root = False, spec = 0, site = "global->1", via = RepresentationMeets.ViaKernelAlias "List" "append" }
-                ]
+                -- The meets `splitAt` builds for `List (Maybe Rec)` used as the alias's `List a`, as the
+                -- pipeline gives them (`collect`/`translate`, which drop the move-only one).
+                (RepresentationMeets.translate identity
+                    [ { a = Mono.mList maybeRec, b = Mono.mList (Mono.MVar TypeIds.firstMVarId Mono.CEcoValue), root = True, spec = 0, site = "global->1", via = RepresentationMeets.ViaKernelAlias "List" "append" }
+                    , { a = maybeRec, b = Mono.MVar TypeIds.firstMVarId Mono.CEcoValue, root = False, spec = 0, site = "global->1", via = RepresentationMeets.ViaKernelAlias "List" "append" }
+                    ]
+                )
                 (\_ after -> Expect.equal (List.member "Just" (nullableNames after)) True)
         , test "Maybe Rec met as Maybe a through a listed kernel alias is excluded" <|
             run { userTypes = False }

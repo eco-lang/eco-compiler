@@ -3597,15 +3597,21 @@ value is the argument itself (REP\_CONSTANT\_003).
 -}
 nullableValueCall : Ctx.Context -> Mono.MonoExpr -> List Mono.MonoExpr -> Mono.MonoType -> Maybe Mono.MonoExpr
 nullableValueCall ctx func args resultType =
-    case ( func, args, Ctx.nullableInfo ctx resultType ) of
-        ( Mono.MonoVarGlobal _ specId _, [ arg ], Just info ) ->
+    -- The type lookup last: most calls are not of a one-field constructor.
+    case ( func, args ) of
+        ( Mono.MonoVarGlobal _ specId _, [ arg ] ) ->
             case Dict.get specId ctx.ctorBySpec of
                 Just shape ->
-                    if shape.name == info.valueCtor then
-                        Just arg
+                    case Ctx.nullableInfo ctx resultType of
+                        Just info ->
+                            if shape.name == info.valueCtor then
+                                Just arg
 
-                    else
-                        Nothing
+                            else
+                                Nothing
+
+                        Nothing ->
+                            Nothing
 
                 Nothing ->
                     Nothing

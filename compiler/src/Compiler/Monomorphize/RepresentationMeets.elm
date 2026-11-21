@@ -1,5 +1,5 @@
 module Compiler.Monomorphize.RepresentationMeets exposing
-    ( Meet, Via(..), collect, translate, Components, components, componentOf
+    ( Meet, Via(..), collect, collectWithMoveOnly, translate, Components, components, componentOf
     , SlotKind(..), slotKindOf
     , movesOnly
     , validate
@@ -25,7 +25,7 @@ value (`root`) or inside it, under a constructor, list, tuple, record or
 function arrow. Call-boundary boxing (CGEN_001) repairs a root disagreement
 between an unboxed primitive and `!eco.value`; nothing repairs an interior one.
 
-@docs Meet, Via, collect, translate, Components, components, componentOf
+@docs Meet, Via, collect, collectWithMoveOnly, translate, Components, components, componentOf
 @docs SlotKind, slotKindOf
 @docs movesOnly
 @docs validate
@@ -129,39 +129,67 @@ type alias Env =
     Dict String Mono.MonoType
 
 
-{-| Every meet of two different types in `graph`, each split into its parts.
+{-| Every meet of two different types in `graph`, each split into its parts, except the meets
+that only move a value through a kernel alias's type variable (`movesOnly`): no representation
+choice is constrained by one (plans/constructor-representation-followups.md F4), so they are not
+collected.
 -}
 collect : Mono.MonoGraph -> List Meet
-collect (Mono.MonoGraph g) =
+collect graph =
+    collectWith False graph
+
+
+{-| `collect` with the move-only meets kept, for the census that counts them.
+-}
+collectWithMoveOnly : Mono.MonoGraph -> List Meet
+collectWithMoveOnly graph =
+    collectWith True graph
+
+
+collectWith : Bool -> Mono.MonoGraph -> List Meet
+collectWith keepMoveOnly (Mono.MonoGraph g) =
     let
+        -- Each node's type once, not at every reference to it (a constructor's is built).
+        nodeTypes : Array.Array (Maybe ( Mono.MonoType, Via ))
+        nodeTypes =
+            Array.map (Maybe.andThen nodeTypeOfNode) g.nodes
+
         nodeTypeOf : Int -> Maybe ( Mono.MonoType, Via )
         nodeTypeOf specId =
-            case Array.get specId g.nodes |> Maybe.andThen identity of
-                Just (Mono.MonoCtor _ shape t) ->
+            Array.get specId nodeTypes |> Maybe.andThen identity
+
+        nodeTypeOfNode : Mono.MonoNode -> Maybe ( Mono.MonoType, Via )
+        nodeTypeOfNode node =
+            case node of
+                Mono.MonoCtor _ shape t ->
                     if List.isEmpty shape.fieldTypes then
                         Just ( t, ViaOther )
 
                     else
                         Just ( Mono.mFunction Mono.topSynth shape.fieldTypes t, ViaOther )
 
-                Just (Mono.MonoEnum _ _ _ t) ->
+                Mono.MonoEnum _ _ _ t ->
                     Just ( t, ViaOther )
 
-                Just ((Mono.MonoDefine (Mono.MonoVarKernel _ _ home name _) _) as node) ->
+                Mono.MonoDefine (Mono.MonoVarKernel _ _ home name _) _ ->
                     Just ( Mono.nodeType node, ViaKernelAlias home name )
 
-                Just node ->
+                _ ->
                     Just ( Mono.nodeType node, ViaOther )
-
-                Nothing ->
-                    Nothing
     in
     Array.foldl
         (\maybeNode ( acc, i ) ->
             case maybeNode of
                 Just node ->
                     ( nodeMeets nodeTypeOf node []
-                        |> List.map (\m -> { m | spec = i })
+                        |> List.filterMap
+                            (\m ->
+                                if keepMoveOnly || not (movesOnly m) then
+                                    Just { m | spec = i }
+
+                                else
+                                    Nothing
+                            )
                         |> (\ms -> ms ++ acc)
                     , i + 1
                     )
@@ -201,12 +229,26 @@ instead of collecting again. It is not the same list as a fresh `collect`: an
 expression the pass removes (an erased constructor call) leaves its meets
 behind, rewritten. `Compiler.Pipeline.Steps.representation` checks, under
 validation, that the difference never changes a decision taken from the meets.
+A meet the rewrite makes move-only (an erased wrapper of a type variable on the
+node side) is dropped, as `collect` drops one.
 -}
 translate : (Mono.MonoType -> Mono.MonoType) -> List Meet -> List Meet
 translate f meets =
     List.foldl
         (\m acc ->
-            List.map (\m1 -> { m1 | spec = m.spec, via = m.via }) (splitAt m.site (f m.a) (f m.b) m.root [])
+            List.filterMap
+                (\m1 ->
+                    let
+                        m2 =
+                            { m1 | spec = m.spec, via = m.via }
+                    in
+                    if movesOnly m2 then
+                        Nothing
+
+                    else
+                        Just m2
+                )
+                (splitAt m.site (f m.a) (f m.b) m.root [])
                 ++ acc
         )
         []
@@ -325,8 +367,12 @@ exprMeets nodeTypeOf env expr acc =
         Mono.MonoVarGlobal _ specId t ->
             case nodeTypeOf specId of
                 Just ( nt, via ) ->
-                    List.map (\m -> { m | via = via }) (splitAt ("global->" ++ String.fromInt specId) t nt True [])
-                        ++ acc
+                    if Mono.eqKeyLayout t nt then
+                        acc
+
+                    else
+                        List.map (\m -> { m | via = via }) (splitAt ("global->" ++ String.fromInt specId) t nt True [])
+                            ++ acc
 
                 Nothing ->
                     acc
@@ -647,9 +693,9 @@ componentOf comps t =
 
 {-| Checks a graph after the representation passes: every interior meet joins
 two types of the same slot kind (MONO_029), and no meet joins a nullable type
-(`Mono.ReprInfo.nullable`) to any other type (MONO_033), except a meet that only
-moves its value through a kernel alias's type variable (`movesOnly`). Returns
-one message per violation, at most 50.
+(`Mono.ReprInfo.nullable`) to any other type (MONO_033). A meet that only moves
+its value through a kernel alias's type variable is not collected (`collect`).
+Returns one message per violation, at most 50.
 -}
 validate : Mono.MonoGraph -> List String
 validate ((Mono.MonoGraph g) as graph) =
@@ -658,10 +704,7 @@ validate ((Mono.MonoGraph g) as graph) =
             Mono.layoutMapMember t g.repr.nullable
 
         bad m =
-            if movesOnly m then
-                Nothing
-
-            else if not m.root && slotKindOf m.a /= slotKindOf m.b then
+            if not m.root && slotKindOf m.a /= slotKindOf m.b then
                 Just
                     ("MONO_029 violation (spec " ++ String.fromInt m.spec ++ " " ++ m.site ++ "): interior slot kinds differ: "
                         ++ Mono.monoTypeToDebugString m.a

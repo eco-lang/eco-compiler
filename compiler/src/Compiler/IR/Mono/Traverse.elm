@@ -1107,66 +1107,80 @@ mapNodeTypes f node =
 
 
 {-| `mapNodeTypes` for an `f` that returns `Nothing` for a type it leaves as it
-is. Returns `Nothing` when no type of `node` changes; otherwise the node with
-every type mapped, in which each subtree (expression, path, decision tree,
-closure or call record, type list) that `f` leaves alone is the same value as
-before, not a copy. It reaches the same positions as `mapNodeTypes`.
+is, with a state threaded through every call of `f` (a memo of the types already
+mapped, say). Returns `Nothing` when no type of `node` changes; otherwise the
+node with every type mapped, in which each subtree (expression, path, decision
+tree, closure or call record, type list) that `f` leaves alone is the same value
+as before, not a copy. It reaches the same positions as `mapNodeTypes`, each once.
 -}
-mapNodeTypesMaybe : (MonoType -> Maybe MonoType) -> MonoNode -> Maybe MonoNode
-mapNodeTypesMaybe f node =
+mapNodeTypesMaybe : (MonoType -> st -> ( Maybe MonoType, st )) -> st -> MonoNode -> ( Maybe MonoNode, st )
+mapNodeTypesMaybe f st0 node =
     let
         g =
             mapExprTypesMaybe f
     in
     case node of
         Mono.MonoDefine expr t ->
-            case ( g expr, f t ) of
-                ( Nothing, Nothing ) ->
-                    Nothing
+            let
+                ( me, st1 ) =
+                    g expr st0
 
-                ( me, mt ) ->
-                    Just (Mono.MonoDefine (keep expr me) (keep t mt))
+                ( mt, st2 ) =
+                    f t st1
+            in
+            ( changed2 Mono.MonoDefine expr me t mt, st2 )
 
         Mono.MonoTailFunc params expr t ->
-            case ( listMaybe (pairSecond f) params, g expr, f t ) of
-                ( Nothing, Nothing, Nothing ) ->
-                    Nothing
+            let
+                ( mp, st1 ) =
+                    listMaybe (pairSecond f) params st0
 
-                ( mp, me, mt ) ->
-                    Just (Mono.MonoTailFunc (keep params mp) (keep expr me) (keep t mt))
+                ( me, st2 ) =
+                    g expr st1
+
+                ( mt, st3 ) =
+                    f t st2
+            in
+            ( changed3 Mono.MonoTailFunc params mp expr me t mt, st3 )
 
         Mono.MonoCtor home shape t ->
-            case ( listMaybe f shape.fieldTypes, f t ) of
-                ( Nothing, Nothing ) ->
-                    Nothing
+            let
+                ( mfs, st1 ) =
+                    listMaybe f shape.fieldTypes st0
 
-                ( mfs, mt ) ->
-                    Just (Mono.MonoCtor home { shape | fieldTypes = keep shape.fieldTypes mfs } (keep t mt))
+                ( mt, st2 ) =
+                    f t st1
+            in
+            ( changed2 (\fs t1 -> Mono.MonoCtor home { shape | fieldTypes = fs } t1) shape.fieldTypes mfs t mt, st2 )
 
         Mono.MonoEnum home name i t ->
-            Maybe.map (Mono.MonoEnum home name i) (f t)
+            Tuple.mapFirst (Maybe.map (Mono.MonoEnum home name i)) (f t st0)
 
         Mono.MonoExtern t ->
-            Maybe.map Mono.MonoExtern (f t)
+            Tuple.mapFirst (Maybe.map Mono.MonoExtern) (f t st0)
 
-        Mono.MonoManagerLeaf s t ->
-            Maybe.map (Mono.MonoManagerLeaf s) (f t)
+        Mono.MonoManagerLeaf leaf t ->
+            Tuple.mapFirst (Maybe.map (Mono.MonoManagerLeaf leaf)) (f t st0)
 
         Mono.MonoPortIncoming expr t ->
-            case ( g expr, f t ) of
-                ( Nothing, Nothing ) ->
-                    Nothing
+            let
+                ( me, st1 ) =
+                    g expr st0
 
-                ( me, mt ) ->
-                    Just (Mono.MonoPortIncoming (keep expr me) (keep t mt))
+                ( mt, st2 ) =
+                    f t st1
+            in
+            ( changed2 Mono.MonoPortIncoming expr me t mt, st2 )
 
         Mono.MonoPortOutgoing expr t ->
-            case ( g expr, f t ) of
-                ( Nothing, Nothing ) ->
-                    Nothing
+            let
+                ( me, st1 ) =
+                    g expr st0
 
-                ( me, mt ) ->
-                    Just (Mono.MonoPortOutgoing (keep expr me) (keep t mt))
+                ( mt, st2 ) =
+                    f t st1
+            in
+            ( changed2 Mono.MonoPortOutgoing expr me t mt, st2 )
 
 
 keep : a -> Maybe a -> a
@@ -1174,325 +1188,459 @@ keep x m =
     Maybe.withDefault x m
 
 
+{-| `Nothing` when neither part changed; otherwise `build` applied to the parts,
+each changed one replaced.
+-}
+changed2 : (a -> b -> c) -> a -> Maybe a -> b -> Maybe b -> Maybe c
+changed2 build a ma b mb =
+    case ( ma, mb ) of
+        ( Nothing, Nothing ) ->
+            Nothing
+
+        _ ->
+            Just (build (keep a ma) (keep b mb))
+
+
+changed3 : (a -> b -> c -> d) -> a -> Maybe a -> b -> Maybe b -> c -> Maybe c -> Maybe d
+changed3 build a ma b mb c mc =
+    case ( ma, mb, mc ) of
+        ( Nothing, Nothing, Nothing ) ->
+            Nothing
+
+        _ ->
+            Just (build (keep a ma) (keep b mb) (keep c mc))
+
+
+changed4 : (a -> b -> c -> d -> e) -> a -> Maybe a -> b -> Maybe b -> c -> Maybe c -> d -> Maybe d -> Maybe e
+changed4 build a ma b mb c mc d md =
+    case ( ma, mb, ( mc, md ) ) of
+        ( Nothing, Nothing, ( Nothing, Nothing ) ) ->
+            Nothing
+
+        _ ->
+            Just (build (keep a ma) (keep b mb) (keep c mc) (keep d md))
+
+
 {-| `Nothing` when `f` leaves every element alone; otherwise the list with the
 changed elements replaced, sharing the unchanged tail.
 -}
-listMaybe : (a -> Maybe a) -> List a -> Maybe (List a)
-listMaybe f xs =
+listMaybe : (a -> st -> ( Maybe a, st )) -> List a -> st -> ( Maybe (List a), st )
+listMaybe f xs st =
     case xs of
         [] ->
-            Nothing
+            ( Nothing, st )
 
         x :: rest ->
-            case ( f x, listMaybe f rest ) of
-                ( Nothing, Nothing ) ->
-                    Nothing
+            let
+                ( mx, st1 ) =
+                    f x st
 
-                ( mx, mr ) ->
-                    Just (keep x mx :: keep rest mr)
-
-
-pairSecond : (b -> Maybe b) -> ( a, b ) -> Maybe ( a, b )
-pairSecond f ( a, b ) =
-    Maybe.map (Tuple.pair a) (f b)
+                ( mr, st2 ) =
+                    listMaybe f rest st1
+            in
+            ( changed2 (::) x mx rest mr, st2 )
 
 
-mapExprTypesMaybe : (MonoType -> Maybe MonoType) -> MonoExpr -> Maybe MonoExpr
-mapExprTypesMaybe f expr =
+pairSecond : (b -> st -> ( Maybe b, st )) -> ( a, b ) -> st -> ( Maybe ( a, b ), st )
+pairSecond f ( a, b ) st =
+    Tuple.mapFirst (Maybe.map (Tuple.pair a)) (f b st)
+
+
+tupleMaybe : (a -> st -> ( Maybe a, st )) -> Mono.TupleShape a -> st -> ( Maybe (Mono.TupleShape a), st )
+tupleMaybe f shape st =
+    case shape of
+        Mono.T2 a b ->
+            let
+                ( ma, st1 ) =
+                    f a st
+
+                ( mb, st2 ) =
+                    f b st1
+            in
+            ( changed2 Mono.T2 a ma b mb, st2 )
+
+        Mono.T3 a b c ->
+            let
+                ( ma, st1 ) =
+                    f a st
+
+                ( mb, st2 ) =
+                    f b st1
+
+                ( mc, st3 ) =
+                    f c st2
+            in
+            ( changed3 Mono.T3 a ma b mb c mc, st3 )
+
+
+mapExprTypesMaybe : (MonoType -> st -> ( Maybe MonoType, st )) -> MonoExpr -> st -> ( Maybe MonoExpr, st )
+mapExprTypesMaybe f expr st0 =
     let
         g =
             mapExprTypesMaybe f
     in
     case expr of
         Mono.MonoLiteral lit t ->
-            Maybe.map (Mono.MonoLiteral lit) (f t)
+            Tuple.mapFirst (Maybe.map (Mono.MonoLiteral lit)) (f t st0)
 
         Mono.MonoVarLocal n t ->
-            Maybe.map (Mono.MonoVarLocal n) (f t)
+            Tuple.mapFirst (Maybe.map (Mono.MonoVarLocal n)) (f t st0)
 
         Mono.MonoVarGlobal r sp t ->
-            Maybe.map (Mono.MonoVarGlobal r sp) (f t)
+            Tuple.mapFirst (Maybe.map (Mono.MonoVarGlobal r sp)) (f t st0)
 
         Mono.MonoVarKernel r a b c t ->
-            Maybe.map (Mono.MonoVarKernel r a b c) (f t)
+            Tuple.mapFirst (Maybe.map (Mono.MonoVarKernel r a b c)) (f t st0)
 
         Mono.MonoList r elems t ->
-            case ( listMaybe g elems, f t ) of
-                ( Nothing, Nothing ) ->
-                    Nothing
+            let
+                ( me, st1 ) =
+                    listMaybe g elems st0
 
-                ( me, mt ) ->
-                    Just (Mono.MonoList r (keep elems me) (keep t mt))
+                ( mt, st2 ) =
+                    f t st1
+            in
+            ( changed2 (Mono.MonoList r) elems me t mt, st2 )
 
         Mono.MonoClosure info body t ->
-            case ( closureInfoTypesMaybe f info, g body, f t ) of
-                ( Nothing, Nothing, Nothing ) ->
-                    Nothing
+            let
+                ( mi, st1 ) =
+                    closureInfoTypesMaybe f info st0
 
-                ( mi, mb, mt ) ->
-                    Just (Mono.MonoClosure (keep info mi) (keep body mb) (keep t mt))
+                ( mb, st2 ) =
+                    g body st1
+
+                ( mt, st3 ) =
+                    f t st2
+            in
+            ( changed3 Mono.MonoClosure info mi body mb t mt, st3 )
 
         Mono.MonoCall r fn args t info ->
-            case ( ( g fn, listMaybe g args ), ( f t, callInfoTypesMaybe f info ) ) of
-                ( ( Nothing, Nothing ), ( Nothing, Nothing ) ) ->
-                    Nothing
+            let
+                ( mf, st1 ) =
+                    g fn st0
 
-                ( ( mf, ma ), ( mt, mi ) ) ->
-                    Just (Mono.MonoCall r (keep fn mf) (keep args ma) (keep t mt) (keep info mi))
+                ( ma, st2 ) =
+                    listMaybe g args st1
+
+                ( mt, st3 ) =
+                    f t st2
+
+                ( mi, st4 ) =
+                    callInfoTypesMaybe f info st3
+            in
+            ( changed4 (Mono.MonoCall r) fn mf args ma t mt info mi, st4 )
 
         Mono.MonoTailCall n args t ->
-            case ( listMaybe (pairSecond g) args, f t ) of
-                ( Nothing, Nothing ) ->
-                    Nothing
+            let
+                ( ma, st1 ) =
+                    listMaybe (pairSecond g) args st0
 
-                ( ma, mt ) ->
-                    Just (Mono.MonoTailCall n (keep args ma) (keep t mt))
+                ( mt, st2 ) =
+                    f t st1
+            in
+            ( changed2 (Mono.MonoTailCall n) args ma t mt, st2 )
 
         Mono.MonoIf branches elseExpr t ->
             let
-                branch ( c, e ) =
-                    case ( g c, g e ) of
-                        ( Nothing, Nothing ) ->
-                            Nothing
+                branch ( c, e ) st =
+                    let
+                        ( mCond, stA ) =
+                            g c st
 
-                        ( mc, me ) ->
-                            Just ( keep c mc, keep e me )
+                        ( mThen, stB ) =
+                            g e stA
+                    in
+                    ( changed2 Tuple.pair c mCond e mThen, stB )
+
+                ( mb, st1 ) =
+                    listMaybe branch branches st0
+
+                ( me, st2 ) =
+                    g elseExpr st1
+
+                ( mt, st3 ) =
+                    f t st2
             in
-            case ( listMaybe branch branches, g elseExpr, f t ) of
-                ( Nothing, Nothing, Nothing ) ->
-                    Nothing
-
-                ( mb, me, mt ) ->
-                    Just (Mono.MonoIf (keep branches mb) (keep elseExpr me) (keep t mt))
+            ( changed3 Mono.MonoIf branches mb elseExpr me t mt, st3 )
 
         Mono.MonoLet def body t ->
-            case ( defTypesMaybe f def, g body, f t ) of
-                ( Nothing, Nothing, Nothing ) ->
-                    Nothing
+            let
+                ( md, st1 ) =
+                    defTypesMaybe f def st0
 
-                ( md, mb, mt ) ->
-                    Just (Mono.MonoLet (keep def md) (keep body mb) (keep t mt))
+                ( mb, st2 ) =
+                    g body st1
+
+                ( mt, st3 ) =
+                    f t st2
+            in
+            ( changed3 Mono.MonoLet def md body mb t mt, st3 )
 
         Mono.MonoDestruct (Mono.MonoDestructor dn path dt) body t ->
-            case ( ( pathTypesMaybe f path, f dt ), g body, f t ) of
-                ( ( Nothing, Nothing ), Nothing, Nothing ) ->
-                    Nothing
+            let
+                ( mp, st1 ) =
+                    pathTypesMaybe f path st0
 
-                ( ( mp, mdt ), mb, mt ) ->
-                    Just (Mono.MonoDestruct (Mono.MonoDestructor dn (keep path mp) (keep dt mdt)) (keep body mb) (keep t mt))
+                ( mdt, st2 ) =
+                    f dt st1
+
+                ( mb, st3 ) =
+                    g body st2
+
+                ( mt, st4 ) =
+                    f t st3
+            in
+            ( changed4 (\p d b t1 -> Mono.MonoDestruct (Mono.MonoDestructor dn p d) b t1) path mp dt mdt body mb t mt, st4 )
 
         Mono.MonoCase n1 n2 decider jumps t ->
-            case ( deciderTypesMaybe f decider, listMaybe (pairSecond g) jumps, f t ) of
-                ( Nothing, Nothing, Nothing ) ->
-                    Nothing
+            let
+                ( md, st1 ) =
+                    deciderTypesMaybe f decider st0
 
-                ( md, mj, mt ) ->
-                    Just (Mono.MonoCase n1 n2 (keep decider md) (keep jumps mj) (keep t mt))
+                ( mj, st2 ) =
+                    listMaybe (pairSecond g) jumps st1
+
+                ( mt, st3 ) =
+                    f t st2
+            in
+            ( changed3 (Mono.MonoCase n1 n2) decider md jumps mj t mt, st3 )
 
         Mono.MonoRecordCreate fields t ->
-            case ( listMaybe (pairSecond g) fields, f t ) of
-                ( Nothing, Nothing ) ->
-                    Nothing
+            let
+                ( mf, st1 ) =
+                    listMaybe (pairSecond g) fields st0
 
-                ( mf, mt ) ->
-                    Just (Mono.MonoRecordCreate (keep fields mf) (keep t mt))
+                ( mt, st2 ) =
+                    f t st1
+            in
+            ( changed2 Mono.MonoRecordCreate fields mf t mt, st2 )
 
         Mono.MonoRecordAccess e n t ->
-            case ( g e, f t ) of
-                ( Nothing, Nothing ) ->
-                    Nothing
+            let
+                ( me, st1 ) =
+                    g e st0
 
-                ( me, mt ) ->
-                    Just (Mono.MonoRecordAccess (keep e me) n (keep t mt))
+                ( mt, st2 ) =
+                    f t st1
+            in
+            ( changed2 (\e1 t1 -> Mono.MonoRecordAccess e1 n t1) e me t mt, st2 )
 
         Mono.MonoRecordUpdate e fields t ->
-            case ( g e, listMaybe (pairSecond g) fields, f t ) of
-                ( Nothing, Nothing, Nothing ) ->
-                    Nothing
+            let
+                ( me, st1 ) =
+                    g e st0
 
-                ( me, mf, mt ) ->
-                    Just (Mono.MonoRecordUpdate (keep e me) (keep fields mf) (keep t mt))
+                ( mf, st2 ) =
+                    listMaybe (pairSecond g) fields st1
+
+                ( mt, st3 ) =
+                    f t st2
+            in
+            ( changed3 Mono.MonoRecordUpdate e me fields mf t mt, st3 )
 
         Mono.MonoTupleCreate r elems t ->
             let
-                changed =
-                    List.any (\x -> g x /= Nothing) (Mono.tupleToList elems)
+                ( me, st1 ) =
+                    tupleMaybe g elems st0
+
+                ( mt, st2 ) =
+                    f t st1
             in
-            case ( changed, f t ) of
-                ( False, Nothing ) ->
-                    Nothing
-
-                ( _, mt ) ->
-                    Just
-                        (Mono.MonoTupleCreate r
-                            (if changed then
-                                Mono.tupleMap (\x -> keep x (g x)) elems
-
-                             else
-                                elems
-                            )
-                            (keep t mt)
-                        )
+            ( changed2 (Mono.MonoTupleCreate r) elems me t mt, st2 )
 
         Mono.MonoUnit ->
-            Nothing
+            ( Nothing, st0 )
 
         Mono.MonoAccessorValue r n t ->
-            Maybe.map (Mono.MonoAccessorValue r n) (f t)
+            Tuple.mapFirst (Maybe.map (Mono.MonoAccessorValue r n)) (f t st0)
 
 
-closureInfoTypesMaybe : (MonoType -> Maybe MonoType) -> ClosureInfo -> Maybe ClosureInfo
-closureInfoTypesMaybe f info =
+closureInfoTypesMaybe : (MonoType -> st -> ( Maybe MonoType, st )) -> ClosureInfo -> st -> ( Maybe ClosureInfo, st )
+closureInfoTypesMaybe f info st0 =
     let
-        capture ( n, e, b ) =
-            Maybe.map (\e1 -> ( n, e1, b )) (mapExprTypesMaybe f e)
+        capture ( n, e, b ) st =
+            Tuple.mapFirst (Maybe.map (\e1 -> ( n, e1, b ))) (mapExprTypesMaybe f e st)
+
+        ( mc, st1 ) =
+            listMaybe capture info.captures st0
+
+        ( mp, st2 ) =
+            listMaybe (pairSecond f) info.params st1
+
+        ( ma, st3 ) =
+            captureAbiMaybe f info.captureAbi st2
     in
-    case ( listMaybe capture info.captures, listMaybe (pairSecond f) info.params, captureAbiMaybe f info.captureAbi ) of
-        ( Nothing, Nothing, Nothing ) ->
-            Nothing
-
-        ( mc, mp, ma ) ->
-            Just { info | captures = keep info.captures mc, params = keep info.params mp, captureAbi = keep info.captureAbi ma }
+    ( changed3 (\c p a -> { info | captures = c, params = p, captureAbi = a }) info.captures mc info.params mp info.captureAbi ma, st3 )
 
 
-callInfoTypesMaybe : (MonoType -> Maybe MonoType) -> CallInfo -> Maybe CallInfo
-callInfoTypesMaybe f info =
-    case ( captureAbiMaybe f info.captureAbi, f info.evaluatorReturnType ) of
-        ( Nothing, Nothing ) ->
-            Nothing
+callInfoTypesMaybe : (MonoType -> st -> ( Maybe MonoType, st )) -> CallInfo -> st -> ( Maybe CallInfo, st )
+callInfoTypesMaybe f info st0 =
+    let
+        ( ma, st1 ) =
+            captureAbiMaybe f info.captureAbi st0
 
-        ( ma, mr ) ->
-            Just { info | captureAbi = keep info.captureAbi ma, evaluatorReturnType = keep info.evaluatorReturnType mr }
+        ( mr, st2 ) =
+            f info.evaluatorReturnType st1
+    in
+    ( changed2 (\a r -> { info | captureAbi = a, evaluatorReturnType = r }) info.captureAbi ma info.evaluatorReturnType mr, st2 )
 
 
-captureAbiMaybe : (MonoType -> Maybe MonoType) -> Maybe CaptureABI -> Maybe (Maybe CaptureABI)
-captureAbiMaybe f mAbi =
+captureAbiMaybe : (MonoType -> st -> ( Maybe MonoType, st )) -> Maybe CaptureABI -> st -> ( Maybe (Maybe CaptureABI), st )
+captureAbiMaybe f mAbi st0 =
     case mAbi of
         Nothing ->
-            Nothing
+            ( Nothing, st0 )
 
         Just abi ->
-            case ( listMaybe f abi.captureTypes, listMaybe f abi.paramTypes, f abi.returnType ) of
-                ( Nothing, Nothing, Nothing ) ->
-                    Nothing
+            let
+                ( mc, st1 ) =
+                    listMaybe f abi.captureTypes st0
 
-                ( mc, mp, mr ) ->
-                    Just (Just { abi | captureTypes = keep abi.captureTypes mc, paramTypes = keep abi.paramTypes mp, returnType = keep abi.returnType mr })
+                ( mp, st2 ) =
+                    listMaybe f abi.paramTypes st1
+
+                ( mr, st3 ) =
+                    f abi.returnType st2
+            in
+            ( changed3 (\c p r -> Just { abi | captureTypes = c, paramTypes = p, returnType = r }) abi.captureTypes mc abi.paramTypes mp abi.returnType mr, st3 )
 
 
-defTypesMaybe : (MonoType -> Maybe MonoType) -> MonoDef -> Maybe MonoDef
-defTypesMaybe f def =
+defTypesMaybe : (MonoType -> st -> ( Maybe MonoType, st )) -> MonoDef -> st -> ( Maybe MonoDef, st )
+defTypesMaybe f def st0 =
     case def of
         Mono.MonoDef n e ->
-            Maybe.map (Mono.MonoDef n) (mapExprTypesMaybe f e)
+            Tuple.mapFirst (Maybe.map (Mono.MonoDef n)) (mapExprTypesMaybe f e st0)
 
         Mono.MonoTailDef n params e ->
-            case ( listMaybe (pairSecond f) params, mapExprTypesMaybe f e ) of
-                ( Nothing, Nothing ) ->
-                    Nothing
+            let
+                ( mp, st1 ) =
+                    listMaybe (pairSecond f) params st0
 
-                ( mp, me ) ->
-                    Just (Mono.MonoTailDef n (keep params mp) (keep e me))
+                ( me, st2 ) =
+                    mapExprTypesMaybe f e st1
+            in
+            ( changed2 (Mono.MonoTailDef n) params mp e me, st2 )
 
 
-pathTypesMaybe : (MonoType -> Maybe MonoType) -> MonoPath -> Maybe MonoPath
-pathTypesMaybe f path =
+pathTypesMaybe : (MonoType -> st -> ( Maybe MonoType, st )) -> MonoPath -> st -> ( Maybe MonoPath, st )
+pathTypesMaybe f path st0 =
     case path of
         Mono.MonoIndex i ck t rest ->
-            case ( f t, pathTypesMaybe f rest ) of
-                ( Nothing, Nothing ) ->
-                    Nothing
+            let
+                ( mt, st1 ) =
+                    f t st0
 
-                ( mt, mr ) ->
-                    Just (Mono.MonoIndex i ck (keep t mt) (keep rest mr))
+                ( mr, st2 ) =
+                    pathTypesMaybe f rest st1
+            in
+            ( changed2 (Mono.MonoIndex i ck) t mt rest mr, st2 )
 
         Mono.MonoField n t rest ->
-            case ( f t, pathTypesMaybe f rest ) of
-                ( Nothing, Nothing ) ->
-                    Nothing
+            let
+                ( mt, st1 ) =
+                    f t st0
 
-                ( mt, mr ) ->
-                    Just (Mono.MonoField n (keep t mt) (keep rest mr))
+                ( mr, st2 ) =
+                    pathTypesMaybe f rest st1
+            in
+            ( changed2 (Mono.MonoField n) t mt rest mr, st2 )
 
         Mono.MonoUnbox t rest ->
-            case ( f t, pathTypesMaybe f rest ) of
-                ( Nothing, Nothing ) ->
-                    Nothing
+            let
+                ( mt, st1 ) =
+                    f t st0
 
-                ( mt, mr ) ->
-                    Just (Mono.MonoUnbox (keep t mt) (keep rest mr))
+                ( mr, st2 ) =
+                    pathTypesMaybe f rest st1
+            in
+            ( changed2 Mono.MonoUnbox t mt rest mr, st2 )
 
         Mono.MonoRoot n t ->
-            Maybe.map (Mono.MonoRoot n) (f t)
+            Tuple.mapFirst (Maybe.map (Mono.MonoRoot n)) (f t st0)
 
 
-dtPathTypesMaybe : (MonoType -> Maybe MonoType) -> MonoDtPath -> Maybe MonoDtPath
-dtPathTypesMaybe f path =
+dtPathTypesMaybe : (MonoType -> st -> ( Maybe MonoType, st )) -> MonoDtPath -> st -> ( Maybe MonoDtPath, st )
+dtPathTypesMaybe f path st0 =
     case path of
         Mono.DtRoot n t ->
-            Maybe.map (Mono.DtRoot n) (f t)
+            Tuple.mapFirst (Maybe.map (Mono.DtRoot n)) (f t st0)
 
         Mono.DtIndex i ck t rest ->
-            case ( f t, dtPathTypesMaybe f rest ) of
-                ( Nothing, Nothing ) ->
-                    Nothing
+            let
+                ( mt, st1 ) =
+                    f t st0
 
-                ( mt, mr ) ->
-                    Just (Mono.DtIndex i ck (keep t mt) (keep rest mr))
+                ( mr, st2 ) =
+                    dtPathTypesMaybe f rest st1
+            in
+            ( changed2 (Mono.DtIndex i ck) t mt rest mr, st2 )
 
         Mono.DtUnbox t rest ->
-            case ( f t, dtPathTypesMaybe f rest ) of
-                ( Nothing, Nothing ) ->
-                    Nothing
+            let
+                ( mt, st1 ) =
+                    f t st0
 
-                ( mt, mr ) ->
-                    Just (Mono.DtUnbox (keep t mt) (keep rest mr))
-
-
-nonemptyMaybe : (a -> Maybe a) -> NE.Nonempty a -> Maybe (NE.Nonempty a)
-nonemptyMaybe f (NE.Nonempty x rest) =
-    case ( f x, listMaybe f rest ) of
-        ( Nothing, Nothing ) ->
-            Nothing
-
-        ( mx, mr ) ->
-            Just (NE.Nonempty (keep x mx) (keep rest mr))
+                ( mr, st2 ) =
+                    dtPathTypesMaybe f rest st1
+            in
+            ( changed2 Mono.DtUnbox t mt rest mr, st2 )
 
 
-deciderTypesMaybe : (MonoType -> Maybe MonoType) -> Decider MonoChoice -> Maybe (Decider MonoChoice)
-deciderTypesMaybe f decider =
+nonemptyMaybe : (a -> st -> ( Maybe a, st )) -> NE.Nonempty a -> st -> ( Maybe (NE.Nonempty a), st )
+nonemptyMaybe f (NE.Nonempty x rest) st0 =
+    let
+        ( mx, st1 ) =
+            f x st0
+
+        ( mr, st2 ) =
+            listMaybe f rest st1
+    in
+    ( changed2 NE.Nonempty x mx rest mr, st2 )
+
+
+deciderTypesMaybe : (MonoType -> st -> ( Maybe MonoType, st )) -> Decider MonoChoice -> st -> ( Maybe (Decider MonoChoice), st )
+deciderTypesMaybe f decider st0 =
     case decider of
         Mono.Leaf choice ->
             case choice of
                 Mono.Inline e ->
-                    Maybe.map (Mono.Leaf << Mono.Inline) (mapExprTypesMaybe f e)
+                    Tuple.mapFirst (Maybe.map (Mono.Leaf << Mono.Inline)) (mapExprTypesMaybe f e st0)
 
                 Mono.Jump _ ->
-                    Nothing
+                    ( Nothing, st0 )
 
         Mono.Chain tests ifDec elseDec ->
             let
-                test ( p, t ) =
-                    Maybe.map (\p1 -> ( p1, t )) (dtPathTypesMaybe f p)
-            in
-            case ( nonemptyMaybe test tests, deciderTypesMaybe f ifDec, deciderTypesMaybe f elseDec ) of
-                ( Nothing, Nothing, Nothing ) ->
-                    Nothing
+                test ( p, t ) st =
+                    Tuple.mapFirst (Maybe.map (\p1 -> ( p1, t ))) (dtPathTypesMaybe f p st)
 
-                ( mt, mi, me ) ->
-                    Just (Mono.Chain (keep tests mt) (keep ifDec mi) (keep elseDec me))
+                ( mt, st1 ) =
+                    nonemptyMaybe test tests st0
+
+                ( mi, st2 ) =
+                    deciderTypesMaybe f ifDec st1
+
+                ( me, st3 ) =
+                    deciderTypesMaybe f elseDec st2
+            in
+            ( changed3 Mono.Chain tests mt ifDec mi elseDec me, st3 )
 
         Mono.FanOut p edges fallback ->
             let
-                edge ( t, d ) =
-                    Maybe.map (Tuple.pair t) (deciderTypesMaybe f d)
-            in
-            case ( dtPathTypesMaybe f p, nonemptyMaybe edge edges, deciderTypesMaybe f fallback ) of
-                ( Nothing, Nothing, Nothing ) ->
-                    Nothing
+                edge ( t, d ) st =
+                    Tuple.mapFirst (Maybe.map (Tuple.pair t)) (deciderTypesMaybe f d st)
 
-                ( mp, me, mf ) ->
-                    Just (Mono.FanOut (keep p mp) (keep edges me) (keep fallback mf))
+                ( mp, st1 ) =
+                    dtPathTypesMaybe f p st0
+
+                ( me, st2 ) =
+                    nonemptyMaybe edge edges st1
+
+                ( mf, st3 ) =
+                    deciderTypesMaybe f fallback st2
+            in
+            ( changed3 Mono.FanOut p mp edges me fallback mf, st3 )
 
 
 {-| Applies `f` to each field type of a constructor shape.

@@ -93,7 +93,7 @@ choose kv meets nullable ctorShapes =
         meetsOther =
             List.foldl
                 (\m acc ->
-                    if RepresentationMeets.movesOnly m || Mono.eqKeyLayout m.a m.b then
+                    if Mono.eqKeyLayout m.a m.b then
                         acc
 
                     else
@@ -143,13 +143,18 @@ choose kv meets nullable ctorShapes =
                 []
                 ctorShapes
 
-        excluded : List ( Mono.MonoType, String )
-        excluded =
-            List.filterMap (\( key, shapes ) -> Maybe.map (\r -> ( key, r )) (exclusion key shapes)) multi
+        ( excluded, candidates0 ) =
+            List.foldr
+                (\( key, shapes ) ( exc, cands ) ->
+                    case exclusion key shapes of
+                        Just reason ->
+                            ( ( key, reason ) :: exc, cands )
 
-        candidates0 : List ( Mono.MonoType, List Mono.CtorShape )
-        candidates0 =
-            List.filter (\( key, shapes ) -> exclusion key shapes == Nothing) multi
+                        Nothing ->
+                            ( exc, ( key, shapes ) :: cands )
+                )
+                ( [], [] )
+                multi
 
         fieldForm : Mono.LayoutSet -> Mono.MonoType -> CtorForm
         fieldForm tagged f =

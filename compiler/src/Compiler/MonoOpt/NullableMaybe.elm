@@ -2,7 +2,7 @@ module Compiler.MonoOpt.NullableMaybe exposing
     ( admissiblePayload, censusClass
     , isMaybeType
     , NullStats, run, renderStats
-    , Info, Choice, choose, rewriteStep, touches, recordNullable
+    , Info, Choice, choose, rewriteStep, touchesNode, recordNullable
     )
 
 {-| The nullable representation of `Maybe` and of Maybe-shaped user types
@@ -17,7 +17,7 @@ type's own (`assignNullWords`).
 @docs admissiblePayload, censusClass
 @docs isMaybeType
 @docs NullStats, run, renderStats
-@docs Info, Choice, choose, rewriteStep, touches, recordNullable
+@docs Info, Choice, choose, rewriteStep, touchesNode, recordNullable
 
 -}
 
@@ -470,11 +470,7 @@ choose opts kv meets ctorShapes =
         excluded =
             List.foldl
                 (\m acc ->
-                    if RepresentationMeets.movesOnly m then
-                        -- Only moved through a kernel alias's type variable (F4).
-                        acc
-
-                    else if (isCand m.a || isCand m.b) && not (Mono.eqKeyLayout m.a m.b) then
+                    if (isCand m.a || isCand m.b) && not (Mono.eqKeyLayout m.a m.b) then
                         acc
                             |> (if isCand m.a then
                                     Mono.layoutSetInsert m.a
@@ -566,53 +562,68 @@ rewriteStep norm nullable cnt expr =
         rewriteCase (\path -> Mono.layoutMapGet (norm (Mono.dtPathType path)) nullable) cnt expr
 
 
-{-| Returns whether `t` holds a custom type with the name of a nullable type:
-whether a node with `t` in it can have a test `rewriteStep` rewrites. It reads
-names only, so it may say yes for a type of that name that is not nullable (a
-`Maybe` at another payload), never no for one that is; a type that a pass in
-the same traversal erases to a nullable one is that pass's to report.
+{-| Returns whether `node` has a `case` whose decision tree tests a value of a
+nullable type: whether `rewriteStep` can rewrite anything in it. The types are
+looked up as they stand, so a type that a pass in the same traversal erases to a
+nullable one is that pass's to report (`EraseWrappers.rewriteNodes` asks only
+about a node that mentions no erased type). It reads the decision trees only,
+not the types of the node's other expressions.
 -}
-touches : Mono.LayoutMap Info -> Mono.MonoType -> Bool
-touches nullable =
+touchesNode : Mono.LayoutMap Info -> Mono.MonoNode -> Bool
+touchesNode nullable node =
     let
-        names =
-            Mono.layoutMapFoldl
-                (\t _ acc ->
-                    case t of
-                        Mono.MCustom _ _ name _ ->
-                            Set.insert name acc
+        hit path =
+            Mono.layoutMapMember (Mono.dtPathType path) nullable
 
-                        _ ->
-                            acc
-                )
-                Set.empty
-                nullable
-
-        go t =
-            case t of
-                Mono.MCustom _ _ name args ->
-                    Set.member name names || List.any go args
-
-                Mono.MList _ x ->
-                    go x
-
-                Mono.MTuple _ shape ->
-                    List.any go (Mono.tupleToList shape)
-
-                Mono.MRecord _ fields ->
-                    List.any go (Dict.values fields)
-
-                Mono.MFunction _ _ ps res ->
-                    go res || List.any go ps
-
-                _ ->
+        deciderHits decider =
+            case decider of
+                Mono.Leaf _ ->
                     False
+
+                Mono.Chain tests success failure ->
+                    List.any (\( path, _ ) -> hit path) (NE.toList tests)
+                        || deciderHits success
+                        || deciderHits failure
+
+                Mono.FanOut path edges fallback ->
+                    hit path
+                        || List.any (\( _, d ) -> deciderHits d) (NE.toList edges)
+                        || deciderHits fallback
+
+        exprHits expr =
+            Traverse.foldExpr
+                (\x found ->
+                    found
+                        || (case x of
+                                Mono.MonoCase _ _ decider _ _ ->
+                                    deciderHits decider
+
+                                _ ->
+                                    False
+                           )
+                )
+                False
+                expr
     in
-    if Set.isEmpty names then
-        \_ -> False
+    if Mono.layoutMapIsEmpty nullable then
+        False
 
     else
-        go
+        case node of
+            Mono.MonoDefine expr _ ->
+                exprHits expr
+
+            Mono.MonoTailFunc _ expr _ ->
+                exprHits expr
+
+            Mono.MonoPortIncoming expr _ ->
+                exprHits expr
+
+            Mono.MonoPortOutgoing expr _ ->
+                exprHits expr
+
+            _ ->
+                False
 
 
 rewriteCase : (Mono.MonoDtPath -> Maybe Info) -> Int -> Mono.MonoExpr -> ( Maybe Mono.MonoExpr, Int )

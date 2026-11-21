@@ -148,13 +148,43 @@ rewriteNode : Env -> Mono.MonoNode -> Stats -> ( Mono.MonoNode, Stats )
 rewriteNode env node st =
     case node of
         Mono.MonoDefine expr t ->
-            Tuple.mapFirst (\e -> Mono.MonoDefine e t) (walk env Dict.empty expr st)
+            if hasCandidate env expr then
+                Tuple.mapFirst (\e -> Mono.MonoDefine e t) (walk env Dict.empty expr st)
+
+            else
+                ( node, st )
 
         Mono.MonoTailFunc params expr t ->
-            Tuple.mapFirst (\e -> Mono.MonoTailFunc params e t) (walk env Dict.empty expr st)
+            if hasCandidate env expr then
+                Tuple.mapFirst (\e -> Mono.MonoTailFunc params e t) (walk env Dict.empty expr st)
+
+            else
+                ( node, st )
 
         _ ->
             ( node, st )
+
+
+{-| Whether `expr` binds a known constructor value with a `let`, directly or at
+the end of a `let` chain (`floatOut`): only then can it hold a site. A read-only
+scan, so that `walk`, which rebuilds what it visits, runs only where it can
+count or fold something.
+-}
+hasCandidate : Env -> MonoExpr -> Bool
+hasCandidate env expr =
+    Traverse.foldExpr
+        (\sub found ->
+            found
+                || (case sub of
+                        MonoLet (Mono.MonoDef _ bound) _ _ ->
+                            knownOf env (chainEnd bound) /= Nothing
+
+                        _ ->
+                            False
+                   )
+        )
+        False
+        expr
 
 
 isTrivial : MonoExpr -> Bool

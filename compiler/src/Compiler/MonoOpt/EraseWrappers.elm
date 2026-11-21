@@ -51,6 +51,7 @@ import Compiler.IR.Mono as Mono
 import Compiler.IR.Mono.Traverse as Traverse
 import Compiler.MonoOpt.KernelVisible as KernelVisible
 import Compiler.Monomorphize.RepresentationMeets as RepresentationMeets
+import Data.HashMap as HashMap
 import Data.NonEmptyList as NE
 import Dict exposing (Dict)
 import Set exposing (Set)
@@ -280,15 +281,41 @@ eraseTypeMaybe e t =
             Maybe.map Mono.mList (eraseTypeMaybe e inner)
 
         Mono.MTuple _ shape ->
-            if List.any (mentions e) (Mono.tupleToList shape) then
-                Just (Mono.mTuple (Mono.tupleMap (eraseType e) shape))
+            case shape of
+                Mono.T2 a b ->
+                    case ( eraseTypeMaybe e a, eraseTypeMaybe e b ) of
+                        ( Nothing, Nothing ) ->
+                            Nothing
 
-            else
-                Nothing
+                        ( ma, mb ) ->
+                            Just (Mono.mTuple (Mono.T2 (Maybe.withDefault a ma) (Maybe.withDefault b mb)))
+
+                Mono.T3 a b c ->
+                    case ( eraseTypeMaybe e a, eraseTypeMaybe e b, eraseTypeMaybe e c ) of
+                        ( Nothing, Nothing, Nothing ) ->
+                            Nothing
+
+                        ( ma, mb, mc ) ->
+                            Just (Mono.mTuple (Mono.T3 (Maybe.withDefault a ma) (Maybe.withDefault b mb) (Maybe.withDefault c mc)))
 
         Mono.MRecord _ fields ->
-            if Dict.foldl (\_ ft acc -> acc || mentions e ft) False fields then
-                Just (Mono.mRecord (Dict.map (\_ ft -> eraseType e ft) fields))
+            -- Only a field that changes is written back; an unchanged record allocates nothing.
+            let
+                ( changed, fields1 ) =
+                    Dict.foldl
+                        (\name ft ( ch, acc ) ->
+                            case eraseTypeMaybe e ft of
+                                Just ft1 ->
+                                    ( True, Dict.insert name ft1 acc )
+
+                                Nothing ->
+                                    ( ch, acc )
+                        )
+                        ( False, fields )
+                        fields
+            in
+            if changed then
+                Just (Mono.mRecord fields1)
 
             else
                 Nothing
@@ -303,6 +330,55 @@ eraseTypeMaybe e t =
 
         _ ->
             Nothing
+
+
+{-| The types `eraseTypeMemo` has erased, keyed by spec hash and confirmed with
+`==`: the result keeps the input's lambda sets and type-variable ids, which the
+keys do not tell apart, so only an equal type may share it.
+-}
+type alias EraseMemo =
+    HashMap.HashMap Mono.MonoType (Maybe Mono.MonoType)
+
+
+{-| `eraseTypeMaybe`, remembered for each composite type: the graph's types
+repeat (every use of a variable carries its type), so most lookups hit, and
+`==` confirms a hit at once when the two are the same value. A leaf or type
+variable is never erased and is not remembered.
+-}
+eraseTypeMemo : Erasable -> Mono.MonoType -> EraseMemo -> ( Maybe Mono.MonoType, EraseMemo )
+eraseTypeMemo e t memo =
+    case t of
+        Mono.MList _ _ ->
+            eraseTypeRemember e t memo
+
+        Mono.MTuple _ _ ->
+            eraseTypeRemember e t memo
+
+        Mono.MRecord _ _ ->
+            eraseTypeRemember e t memo
+
+        Mono.MCustom _ _ _ _ ->
+            eraseTypeRemember e t memo
+
+        Mono.MFunction _ _ _ _ ->
+            eraseTypeRemember e t memo
+
+        _ ->
+            ( Nothing, memo )
+
+
+eraseTypeRemember : Erasable -> Mono.MonoType -> EraseMemo -> ( Maybe Mono.MonoType, EraseMemo )
+eraseTypeRemember e t memo =
+    case HashMap.get Mono.specHashOf (==) t memo of
+        Just r ->
+            ( r, memo )
+
+        Nothing ->
+            let
+                r =
+                    eraseTypeMaybe e t
+            in
+            ( r, HashMap.insert Mono.specHashOf (==) t r memo )
 
 
 eraseList : Erasable -> List Mono.MonoType -> Maybe (List Mono.MonoType)
@@ -453,11 +529,7 @@ consistentWith meets tentative =
                                 && kindAfter m.a /= kindAfter m.b
                                 && RepresentationMeets.slotKindOf m.a == RepresentationMeets.slotKindOf m.b
                     in
-                    if RepresentationMeets.movesOnly m then
-                        -- The type-variable side boxes and unboxes at run time (F4).
-                        []
-
-                    else if mixed then
+                    if mixed then
                         List.filter isErased [ m.a, m.b ]
 
                     else if kindClash then
@@ -554,7 +626,6 @@ type alias Choice =
     , ctors : Set CtorKey
     , excludedKv : Int
     , excludedMeetsVar : Int
-    , skippedMoveOnly : Int
     , excludedCycle : Int
     , excludedUnboxed : Int
     }
@@ -722,20 +793,15 @@ choose opts kv ctorShapes =
         meetsVar =
             List.foldl
                 (\m acc ->
-                    if RepresentationMeets.movesOnly m then
-                        -- Only moved through a kernel alias's type variable (F4): no view reads it.
-                        acc
+                    case ( m.a, m.b ) of
+                        ( Mono.MVar _ _, other ) ->
+                            List.foldl Mono.layoutSetInsert acc (customsWithin other)
 
-                    else
-                        case ( m.a, m.b ) of
-                            ( Mono.MVar _ _, other ) ->
-                                List.foldl Mono.layoutSetInsert acc (customsWithin other)
+                        ( other, Mono.MVar _ _ ) ->
+                            List.foldl Mono.layoutSetInsert acc (customsWithin other)
 
-                            ( other, Mono.MVar _ _ ) ->
-                                List.foldl Mono.layoutSetInsert acc (customsWithin other)
-
-                            _ ->
-                                acc
+                        _ ->
+                            acc
                 )
                 Mono.layoutSetEmpty
                 opts.meets
@@ -799,7 +865,6 @@ choose opts kv ctorShapes =
     , ctors = erasedCtors
     , excludedKv = Dict.size groups0 - Dict.size notKvOnly
     , excludedMeetsVar = Dict.size notKvOnly - Dict.size notKv
-    , skippedMoveOnly = List.length (List.filter RepresentationMeets.movesOnly opts.meets)
     , excludedCycle = Set.size cyc
     , excludedUnboxed = Dict.size acyclic - Set.size erasedCtors
     }
@@ -930,7 +995,7 @@ plan opts kv (Mono.MonoGraph g) =
 noPlan : Mono.MonoGraph -> Plan
 noPlan (Mono.MonoGraph g) =
     { erasable = emptyErasable
-    , choice = { erasable = emptyErasable, ctors = Set.empty, excludedKv = 0, excludedMeetsVar = 0, skippedMoveOnly = 0, excludedCycle = 0, excludedUnboxed = 0 }
+    , choice = { erasable = emptyErasable, ctors = Set.empty, excludedKv = 0, excludedMeetsVar = 0, excludedCycle = 0, excludedUnboxed = 0 }
     , ctorSpecs = Dict.empty
     , ctorShapes = g.ctorShapes
     }
@@ -938,7 +1003,7 @@ noPlan (Mono.MonoGraph g) =
 
 choiceStats : Choice -> EraseStats
 choiceStats choice =
-    { emptyStats | excludedKv = choice.excludedKv, excludedMeetsVar = choice.excludedMeetsVar, skippedMoveOnly = choice.skippedMoveOnly, excludedCycle = choice.excludedCycle, excludedUnboxed = choice.excludedUnboxed }
+    { emptyStats | excludedKv = choice.excludedKv, excludedMeetsVar = choice.excludedMeetsVar, excludedCycle = choice.excludedCycle, excludedUnboxed = choice.excludedUnboxed }
 
 
 {-| The nodes of a graph after `rewriteNodes`: the erased constructors' nodes
@@ -962,14 +1027,15 @@ rewrite shares the traversal), and then its types erased. `extra` sees the
 node's types before erasure; a pass that looks types up applies `eraseType`
 first (`NullableMaybe.rewriteStep`).
 
-Only a node one of whose types mentions an erased type, or satisfies
-`extraTouches` (what `extra` can rewrite), is visited; read-only scans
-(`Traverse.anyNodeType`) decide, and every other node is kept as the same
-value. A node that only satisfies `extraTouches` gets the traversal alone, not
-the erasure's `Debug` pre-walk or type rewrite. `visited` holds the SpecIds of
-the visited and replaced nodes.
+Only a node one of whose types mentions an erased type (a read-only scan,
+`Traverse.anyNodeType`), or that `extraTouches` says `extra` can rewrite, is
+visited; every other node is kept as the same value. `extraTouches` is asked
+only about a node that mentions no erased type, and such a node gets the
+traversal alone, not the erasure's `Debug` pre-walk or type rewrite. The type
+rewrite remembers what it erased across the nodes (`eraseTypeMemo`). `visited`
+holds the SpecIds of the visited and replaced nodes.
 -}
-rewriteNodes : Plan -> (Mono.MonoType -> Bool) -> (ctx -> Mono.MonoExpr -> ( Maybe Mono.MonoExpr, ctx )) -> ctx -> Mono.MonoGraph -> Rewritten ctx
+rewriteNodes : Plan -> (Mono.MonoNode -> Bool) -> (ctx -> Mono.MonoExpr -> ( Maybe Mono.MonoExpr, ctx )) -> ctx -> Mono.MonoGraph -> Rewritten ctx
 rewriteNodes p extraTouches extra ctx0 (Mono.MonoGraph g) =
     let
         e =
@@ -978,19 +1044,19 @@ rewriteNodes p extraTouches extra ctx0 (Mono.MonoGraph g) =
         erasing =
             not (erasableIsEmpty e)
 
-        eraseTypes node =
+        eraseTypes node memo =
             if erasing then
-                Traverse.mapNodeTypesMaybe (eraseTypeMaybe e) node |> Maybe.withDefault node
+                Tuple.mapFirst (Maybe.withDefault node) (Traverse.mapNodeTypesMaybe (eraseTypeMemo e) memo node)
 
             else
-                node
+                ( node, memo )
 
         mentionsErased node =
             erasing && Traverse.anyNodeType (mentions e) node
 
-        ( nodes, ( _, lam, ( counts, ctx, visited ) ) ) =
+        ( nodes, ( _, lam, ( counts, ctx, ( visited, _ ) ) ) ) =
             Array.foldl
-                (\maybeNode ( acc, ( i, l, ( cnt, x, vis ) ) ) ->
+                (\maybeNode ( acc, ( i, l, ( cnt, x, ( vis, memo ) ) ) ) ->
                     let
                         st =
                             ( cnt, x )
@@ -1009,30 +1075,37 @@ rewriteNodes p extraTouches extra ctx0 (Mono.MonoGraph g) =
                                         _ ->
                                             List.head shape.fieldTypes |> Maybe.withDefault Mono.MUnit
                             in
-                            ( Array.push (Just (eraseTypes (identityNode home payload l))) acc, ( i + 1, l + 1, ( cnt, x, Set.insert i vis ) ) )
+                            let
+                                ( node1, memo1 ) =
+                                    eraseTypes (identityNode home payload l) memo
+                            in
+                            ( Array.push (Just node1) acc, ( i + 1, l + 1, ( cnt, x, ( Set.insert i vis, memo1 ) ) ) )
 
                         ( Just node, Nothing ) ->
                             if mentionsErased node then
                                 let
                                     ( node1, ( cnt1, x1 ) ) =
                                         rewriteNodeExprs True e p.ctorSpecs extra node st
-                                in
-                                ( Array.push (Just (eraseTypes node1)) acc, ( i + 1, l, ( cnt1, x1, Set.insert i vis ) ) )
 
-                            else if Traverse.anyNodeType extraTouches node then
+                                    ( node2, memo1 ) =
+                                        eraseTypes node1 memo
+                                in
+                                ( Array.push (Just node2) acc, ( i + 1, l, ( cnt1, x1, ( Set.insert i vis, memo1 ) ) ) )
+
+                            else if extraTouches node then
                                 let
                                     ( node1, ( cnt1, x1 ) ) =
                                         rewriteNodeExprs False e p.ctorSpecs extra node st
                                 in
-                                ( Array.push (Just node1) acc, ( i + 1, l, ( cnt1, x1, Set.insert i vis ) ) )
+                                ( Array.push (Just node1) acc, ( i + 1, l, ( cnt1, x1, ( Set.insert i vis, memo ) ) ) )
 
                             else
-                                ( Array.push maybeNode acc, ( i + 1, l, ( cnt, x, vis ) ) )
+                                ( Array.push maybeNode acc, ( i + 1, l, ( cnt, x, ( vis, memo ) ) ) )
 
                         ( Nothing, _ ) ->
-                            ( Array.push Nothing acc, ( i + 1, l, ( cnt, x, vis ) ) )
+                            ( Array.push Nothing acc, ( i + 1, l, ( cnt, x, ( vis, memo ) ) ) )
                 )
-                ( Array.empty, ( 0, g.nextLambdaIndex, ( { calls = 0, steps = 0, lastRemoved = Nothing }, ctx0, Set.empty ) ) )
+                ( Array.empty, ( 0, g.nextLambdaIndex, ( { calls = 0, steps = 0, lastRemoved = Nothing }, ctx0, ( Set.empty, HashMap.empty ) ) ) )
                 g.nodes
     in
     { nodes = nodes, nextLambda = lam, counts = counts, extra = ctx, visited = visited }
@@ -1098,7 +1171,21 @@ finish p rewritten (Mono.MonoGraph g) =
                 , registry =
                     { registry
                         | reverseMapping =
-                            Array.map (Maybe.map (\( gl, t ) -> ( gl, eraseType e t ))) registry.reverseMapping
+                            Array.map
+                                (\entry ->
+                                    case entry of
+                                        Just ( gl, t ) ->
+                                            case eraseTypeMaybe e t of
+                                                Just t1 ->
+                                                    Just ( gl, t1 )
+
+                                                Nothing ->
+                                                    entry
+
+                                        Nothing ->
+                                            entry
+                                )
+                                registry.reverseMapping
                     }
                 , lssMemberOrigins =
                     Dict.map

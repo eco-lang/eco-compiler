@@ -359,10 +359,17 @@ representation ecoConfig typeEnv graph =
         checks =
             ecoConfig.mono.validate || ecoConfig.repr.validate
 
+        tagNeeded =
+            ecoConfig.repr.taggedUnions || ecoConfig.repr.census /= Nothing
+
         -- The tagged unions (F1, `TaggedUnions.choose`) are chosen last, on the graph after erasure and the
-        -- nullable choice, with the kernel-visibility set and meets of that graph. The constructor census
-        -- marks the kernel-visible classes (KV0) and the tagged forms, with or without the passes.
-        withCensusKv g =
+        -- nullable choice, with the kernel-visibility set of that graph and its meets: with a pass on, the
+        -- meets carried over the erasure (the nullable rewrite changes no type). The set is computed
+        -- again: the carried one can miss an instance the erasure exposes (a wrapper of a type variable,
+        -- whose field the closure does not follow, erased to a type whose fields it does). The
+        -- constructor census marks the kernel-visible classes (KV0) and the tagged forms, with or without
+        -- the passes.
+        withCensusKv kvFinal meetsFinal g =
             let
                 (Mono.MonoGraph r) =
                     g
@@ -370,16 +377,13 @@ representation ecoConfig typeEnv graph =
                 repr =
                     r.repr
             in
-            if not ecoConfig.repr.taggedUnions && ecoConfig.repr.census == Nothing then
+            if not tagNeeded then
                 ( g, [] )
 
             else
                 let
-                    kvFinal =
-                        KernelVisible.compute typeEnv g
-
                     tagChoice =
-                        TaggedUnions.choose kvFinal (RepresentationMeets.collect g) repr.nullable r.ctorShapes
+                        TaggedUnions.choose kvFinal meetsFinal repr.nullable r.ctorShapes
 
                     withTagged =
                         if ecoConfig.repr.taggedUnions then
@@ -400,7 +404,7 @@ representation ecoConfig typeEnv graph =
                                 withTagged
                 in
                 ( Mono.MonoGraph { r | repr = withCensus }
-                , if ecoConfig.repr.taggedUnions then
+                , if ecoConfig.repr.taggedUnions && ecoConfig.inline.report then
                     [ TaggedUnions.renderStats tagChoice ]
 
                   else
@@ -408,23 +412,30 @@ representation ecoConfig typeEnv graph =
                 )
     in
     if not anyPass && not checks then
-        Ok (withCensusKv graph)
+        Ok
+            (if tagNeeded then
+                withCensusKv (KernelVisible.compute typeEnv graph) (RepresentationMeets.collect graph) graph
+
+             else
+                ( graph, [] )
+            )
 
     else
         let
             -- Kernel visibility and the meets are taken once, on the graph before the passes; the
-            -- nullable pass gets them carried over the erasure (`eraseType`), which is what a second
-            -- collection on the erased graph would find, up to the meets of removed constructor calls.
-            -- Under `checks` the nullable decision is compared with one taken from a second collection.
+            -- nullable pass gets them carried over the erasure (`eraseType`), and the tagged-union choice
+            -- the meets, which is what a second collection on the erased graph would find, up to the meets
+            -- of removed constructor calls. Under `checks` both decisions are compared with ones taken
+            -- from a second collection.
             kv =
-                if anyPass then
+                if anyPass || tagNeeded then
                     KernelVisible.compute typeEnv graph
 
                 else
                     KernelVisible.empty
 
             meets =
-                if anyPass then
+                if anyPass || tagNeeded then
                     RepresentationMeets.collect graph
 
                 else
@@ -477,16 +488,23 @@ representation ecoConfig typeEnv graph =
             ( nulled, eraseStats, nullStats ) =
                 Representation.run plan choice graph
 
+            -- Report lines are built only to be printed (`inline.report`); the census walks every meet.
+            -- The passes never see a move-only meet (`RepresentationMeets.collect`); the report counts
+            -- them from a collection that keeps them.
             eraseReport =
-                if ecoConfig.repr.eraseWrappers then
-                    [ EraseWrappers.renderStats eraseStats
+                if ecoConfig.repr.eraseWrappers && ecoConfig.inline.report then
+                    let
+                        allMeets =
+                            RepresentationMeets.collectWithMoveOnly graph
+                    in
+                    [ EraseWrappers.renderStats { eraseStats | skippedMoveOnly = List.length (List.filter RepresentationMeets.movesOnly allMeets) }
                         ++ "; kernel-visible type constructors "
                         ++ String.fromInt (KernelVisible.size kv)
                         ++ " (from "
                         ++ String.fromInt (KernelVisible.rootCount kv)
                         ++ " root types); meets "
-                        ++ String.fromInt (List.length meets)
-                    , meetsVarCensus meets
+                        ++ String.fromInt (List.length allMeets)
+                    , meetsVarCensus allMeets
                     ]
 
                 else
@@ -548,6 +566,23 @@ representation ecoConfig typeEnv graph =
                                             /= nullableKeys nulled
                                        )
 
+                            tagKeys kvX meetsX =
+                                Mono.layoutMapFoldl
+                                    (\t decision acc ->
+                                        case decision of
+                                            Ok _ ->
+                                                Mono.toComparableLayoutType t :: acc
+
+                                            Err _ ->
+                                                acc
+                                    )
+                                    []
+                                    (TaggedUnions.choose kvX meetsX ((\(Mono.MonoGraph r) -> r.repr.nullable) nulled) ((\(Mono.MonoGraph r) -> r.ctorShapes) nulled))
+                                    |> Set.fromList
+
+                            tagDiffers =
+                                tagNeeded && tagKeys kvRecollected meetsErased /= tagKeys kvRecollected meetsRecollected
+
                             sample keys =
                                 Set.toList keys |> List.take 5 |> String.join "; "
                         in
@@ -569,6 +604,11 @@ representation ecoConfig typeEnv graph =
                                     )
                             , if decisionDiffers then
                                 Just "representation: the nullable types chosen from the kernel-visibility set and meets carried over the erasure differ from those chosen from a second collection"
+
+                              else
+                                Nothing
+                            , if tagDiffers then
+                                Just "representation: the tagged unions chosen with the meets carried over the erasure differ from those chosen with a second collection"
 
                               else
                                 Nothing
@@ -603,7 +643,15 @@ representation ecoConfig typeEnv graph =
             [] ->
                 let
                     ( final, tagReport ) =
-                        withCensusKv nulled
+                        withCensusKv
+                            (if erasing then
+                                KernelVisible.compute typeEnv nulled
+
+                             else
+                                kv
+                            )
+                            meetsErased
+                            nulled
                 in
                 Ok ( final, eraseReport ++ nullReport ++ tagReport ++ baselineReport )
 

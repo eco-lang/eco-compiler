@@ -649,7 +649,9 @@ which the key treats as one.
 -}
 eqKeyLayout : MonoType -> MonoType -> Bool
 eqKeyLayout a b =
-    identicalOr False a b
+    -- Equal layout keys have equal layout hashes, which a composite carries: most differing pairs
+    -- are told apart here, without `==` or the walk.
+    layoutHashOf a == layoutHashOf b && identicalOr False a b
 
 
 {-| Returns whether two types have the same key, trying `a == b` before the

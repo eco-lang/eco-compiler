@@ -129,7 +129,9 @@ suite =
                     |> Expect.equal False
         , test "an unboxed erasure only moved through a listed kernel alias's type variable is kept (F4)" <|
             \_ ->
-                EraseWrappers.consistentWith [ { a = q, b = var, root = False, spec = 0, site = "global->1", via = RepresentationMeets.ViaKernelAlias "JsArray" "push" } ] erasable
+                -- The meet reaches the pass as the pipeline gives it, through `collect`/`translate`, which
+                -- drop a move-only meet.
+                EraseWrappers.consistentWith (RepresentationMeets.translate identity [ { a = q, b = var, root = False, spec = 0, site = "global->1", via = RepresentationMeets.ViaKernelAlias "JsArray" "push" } ]) erasable
                     |> (\e -> EraseWrappers.isErasable e q)
                     |> Expect.equal True
         , test "an unboxed erasure met through an unlisted kernel alias's type variable is dropped" <|

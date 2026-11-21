@@ -35,7 +35,7 @@ run plan choice graph =
             else
                 Just
                     (EraseWrappers.rewriteNodes plan
-                        (NullableMaybe.touches nullable)
+                        (NullableMaybe.touchesNode nullable)
                         (NullableMaybe.rewriteStep (EraseWrappers.eraseType plan.erasable) nullable)
                         0
                         graph

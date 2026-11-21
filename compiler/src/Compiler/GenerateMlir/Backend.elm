@@ -103,26 +103,39 @@ buildContext ecoConfig monoGraph0 =
 
         signatures =
             Ctx.buildSignatures nodes
+
+        -- Each whole-program table is built once; several readers share it.
+        ctorBySpec =
+            buildCtorBySpec nodes
+
+        nullConsBySpec =
+            buildNullConsBySpec nodes
+
+        constCtorBySpec =
+            buildConstCtorBySpec nodes
+
+        sretPromoted =
+            buildSretPromoted ecoConfig ctorShapes ctorBySpec nodes
     in
     Ctx.initContext registry signatures ctorShapes
         |> Ctx.withInlineBodies (MonoInlineSimplify.buildBodyLookup monoGraph0)
         |> Ctx.withEcoConfig ecoConfig
         |> Ctx.withFlagsSchema flagsSchema
-        |> Ctx.withCtorBySpec (buildCtorBySpec nodes)
-        |> Ctx.withNullConsBySpec (buildNullConsBySpec nodes)
+        |> Ctx.withCtorBySpec ctorBySpec
+        |> Ctx.withNullConsBySpec nullConsBySpec
         |> Ctx.withNullWordBySpec (buildNullWordBySpec repr.nullable nodes)
-        |> Ctx.withConstCtorBySpec (buildConstCtorBySpec nodes)
+        |> Ctx.withConstCtorBySpec constCtorBySpec
         |> Ctx.withConstThunkBySpec
             (ConstThunks.build ecoConfig.constThunks
                 registry
                 signatures
                 nodes
                 main
-                (buildNullConsBySpec nodes)
-                (buildConstCtorBySpec nodes)
+                nullConsBySpec
+                constCtorBySpec
             )
-        |> Ctx.withSretPromoted (buildSretPromoted ecoConfig ctorShapes nodes)
-        |> Ctx.withPsplitPromoted (buildPsplitPromoted ecoConfig ctorShapes (buildCtorBySpec nodes) (buildSretPromoted ecoConfig ctorShapes nodes) nodes)
+        |> Ctx.withSretPromoted sretPromoted
+        |> Ctx.withPsplitPromoted (buildPsplitPromoted ecoConfig ctorShapes ctorBySpec sretPromoted nodes)
         |> Ctx.withMapTemplates (MapTemplate.derive ecoConfig monoGraph0)
         |> Ctx.withEntryMain main
         |> Ctx.withCtorCensus (ctorCensusTable ecoConfig monoGraph0)
@@ -549,15 +562,15 @@ that has a let-bound call site; if it does not settle in time, the least
 fixpoint grown from the base members is used instead.
 
 -}
-buildSretPromoted : Config.EcoConfig -> Mono.LayoutMap (List Mono.CtorShape) -> Array (Maybe Mono.MonoNode) -> Dict.Dict Int Ctx.SretInfo
-buildSretPromoted config ctorShapes nodes =
+buildSretPromoted : Config.EcoConfig -> Mono.LayoutMap (List Mono.CtorShape) -> Dict.Dict Int Mono.CtorShape -> Array (Maybe Mono.MonoNode) -> Dict.Dict Int Ctx.SretInfo
+buildSretPromoted config ctorShapes ctorBySpec nodes =
     if not config.sretResults then
         Dict.empty
 
     else
         let
             env =
-                { ctorShapes = ctorShapes, ctorBySpec = buildCtorBySpec nodes, ctors = config.repr.sretCtors }
+                { ctorShapes = ctorShapes, ctorBySpec = ctorBySpec, ctors = config.repr.sretCtors }
 
             candidates =
                 Tuple.second
