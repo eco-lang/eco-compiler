@@ -803,8 +803,19 @@ generateVarGlobal ctx specId monoType =
             List.length sig.paramTypes
     in
     if arity == 0 then
-        case Dict.get specId ctx.nullConsBySpec of
-            Just nullConsTag ->
+        case ( Dict.get specId ctx.nullWordBySpec, Dict.get specId ctx.nullConsBySpec ) of
+            ( Just nullWord, _ ) ->
+                let
+                    ( ctx2, constOp ) =
+                        Ops.ecoNullWord ctx1 var nullWord
+                in
+                { ops = [ constOp ]
+                , resultVar = var
+                , resultType = Types.ecoValue
+                , ctx = ctx2
+                }
+
+            ( Nothing, Just nullConsTag ) ->
                 let
                     ( ctx2, constOp ) =
                         Ops.ecoConstantNullCons ctx1 var nullConsTag
@@ -815,7 +826,7 @@ generateVarGlobal ctx specId monoType =
                 , ctx = ctx2
                 }
 
-            Nothing ->
+            ( Nothing, Nothing ) ->
                 case Dict.get specId ctx.constCtorBySpec of
                     Just _ ->
                         let
@@ -1392,6 +1403,23 @@ gateIntrinsic ctx intrinsic =
 
                 _ ->
                     Just intrinsic
+
+
+{-| The kernel home whose intrinsics a call of an elm/core global of module
+`moduleName` may use. `Elm.JsArray`'s definitions are aliases of the `JsArray`
+kernel (`Elm.JsArray.unsafeGet = Elm.Kernel.JsArray.unsafeGet`), so a call of
+one is matched as a call of the kernel, with the call's own argument and result
+types: `Array.get` on an `Array Int` becomes an inline `eco.array.get`. That
+read is a plain load, sound because a primitive `JsArray` is always of its
+primitive kind (HEAP_046). Every other module is its own home.
+-}
+coreIntrinsicHome : String -> String
+coreIntrinsicHome moduleName =
+    if moduleName == "Elm.JsArray" then
+        "JsArray"
+
+    else
+        moduleName
 
 
 {-| Returns the intrinsic a call of kernel function `name` from kernel module
@@ -3622,7 +3650,12 @@ tryCtorInlineHeap ctx func args resultType =
                             (List.length args == List.length shape.fieldTypes)
                                 && not (List.isEmpty args)
                         then
-                            Just (generateCustomCreateHeap ctx shape args)
+                            case Ctx.tagFormOf ctx resultType shape.name of
+                                Just ( index, form ) ->
+                                    Just (generateTaggedCreate ctx shape args index form)
+
+                                Nothing ->
+                                    Just (generateCustomCreateHeap ctx shape args)
 
                         else
                             Nothing
@@ -3687,7 +3720,7 @@ generateSaturatedCallNoFusion ctx kind func args resultType callInfo =
                     case Registry.lookupSpecKey specId ctx.registry of
                         Just ( Mono.Global (ModuleName.Canonical pkg moduleName) name, _ ) ->
                             if pkg == Pkg.core then
-                                Just ( moduleName, name )
+                                Just ( coreIntrinsicHome moduleName, name )
 
                             else
                                 Nothing
@@ -5932,17 +5965,36 @@ generateFanOutWithJumps ctx path ((NE.Nonempty ( firstTest, _ ) _) as nonemptyEd
         edgeTests =
             List.map Tuple.first edges
 
+        -- A tagged union (HEAP_086) is dispatched on the index its word carries, as an Int case.
+        tagged =
+            Patterns.caseKindFromTest firstTest == "ctor" && Ctx.isTagged ctx (Mono.dtPathType path)
+
         caseKind =
-            Patterns.caseKindFromTest firstTest
+            if tagged then
+                "int"
+
+            else
+                Patterns.caseKindFromTest firstTest
 
         scrutineeType =
             Patterns.scrutineeTypeFromCaseKind caseKind
 
         ( pathOps, scrutineeVar, ctx1 ) =
-            Patterns.generateMonoDtPath ctx path scrutineeType
+            if tagged then
+                Patterns.generateWordTagScrutinee ctx path
+
+            else
+                Patterns.generateMonoDtPath ctx path scrutineeType
 
         ( tags, stringPatterns ) =
-            if caseKind == "str" then
+            if tagged then
+                let
+                    edgeTags =
+                        List.map (\( test, _ ) -> Patterns.tagIndexOfTest test) edges
+                in
+                ( edgeTags ++ [ Patterns.firstUnusedIndex edgeTags ], Nothing )
+
+            else if caseKind == "str" then
                 let
                     edgeCount =
                         List.length edges
@@ -6494,6 +6546,10 @@ promotableCtorCall ctx name specId cargs resultType callInfo body =
 
     else if Ctx.nullableInfo ctx resultType /= Nothing then
         -- A nullable value is its field, never an aggregate (REP_CONSTANT_003).
+        Nothing
+
+    else if Ctx.isTagged ctx resultType then
+        -- A tagged union's value is a tagged word, never an aggregate (HEAP_086).
         Nothing
 
     else
@@ -7408,6 +7464,49 @@ generateCustomCreateHeap ctx shape args =
     , resultType = Types.ecoValue
     , ctx = ctx4
     }
+
+
+{-| Generates a call of the constructor `shape`, of declaration index `index`,
+of a tagged union (HEAP_086): a `Bare` constructor's one field, tagged with
+`eco.tag_word`, allocating nothing; a `Boxed` one's `eco.construct.custom`,
+tagged when `index` is not 0.
+-}
+generateTaggedCreate : Ctx.Context -> Mono.CtorShape -> List Mono.MonoExpr -> Int -> Mono.TagForm -> ExprResult
+generateTaggedCreate ctx shape args index form =
+    let
+        ( baseOps, baseVar, ctx1 ) =
+            case form of
+                Mono.TagBare ->
+                    let
+                        ( prepOps, slotPairs, ctxP ) =
+                            prepareCtorSlots ctx (Types.computeCtorLayout shape) args
+                    in
+                    case slotPairs of
+                        [ ( fieldVar, _ ) ] ->
+                            ( prepOps, fieldVar, ctxP )
+
+                        _ ->
+                            System.Crash.crash "generateTaggedCreate: a bare constructor without exactly one field"
+
+                _ ->
+                    let
+                        r =
+                            generateCustomCreateHeap ctx shape args
+                    in
+                    ( r.ops, r.resultVar, r.ctx )
+    in
+    if index == 0 then
+        { ops = baseOps, resultVar = baseVar, resultType = Types.ecoValue, ctx = ctx1 }
+
+    else
+        let
+            ( taggedVar, ctx2 ) =
+                Ctx.freshVar ctx1
+
+            ( ctx3, tagOp ) =
+                Ops.ecoTagWord ctx2 taggedVar baseVar index
+        in
+        { ops = baseOps ++ [ tagOp ], resultVar = taggedVar, resultType = Types.ecoValue, ctx = ctx3 }
 
 
 {-| Generates the constructor's arguments and converts each to its slot type in

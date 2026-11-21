@@ -124,12 +124,27 @@ suite =
                     |> Expect.equal 3
         , test "an unboxed erasure meeting a type variable inside a list is dropped" <|
             \_ ->
-                EraseWrappers.consistentWith [ { a = q, b = var, root = False, spec = 0, site = "t" } ] erasable
+                EraseWrappers.consistentWith [ { a = q, b = var, root = False, spec = 0, site = "t", via = RepresentationMeets.ViaOther } ] erasable
+                    |> (\e -> EraseWrappers.isErasable e q)
+                    |> Expect.equal False
+        , test "an unboxed erasure only moved through a listed kernel alias's type variable is kept (F4)" <|
+            \_ ->
+                EraseWrappers.consistentWith [ { a = q, b = var, root = False, spec = 0, site = "global->1", via = RepresentationMeets.ViaKernelAlias "JsArray" "push" } ] erasable
+                    |> (\e -> EraseWrappers.isErasable e q)
+                    |> Expect.equal True
+        , test "an unboxed erasure met through an unlisted kernel alias's type variable is dropped" <|
+            \_ ->
+                EraseWrappers.consistentWith [ { a = q, b = var, root = False, spec = 0, site = "global->1", via = RepresentationMeets.ViaKernelAlias "Debugger" "unsafeCoerce" } ] erasable
+                    |> (\e -> EraseWrappers.isErasable e q)
+                    |> Expect.equal False
+        , test "an unboxed erasure met through a Debug alias's type variable is dropped" <|
+            \_ ->
+                EraseWrappers.consistentWith [ { a = q, b = var, root = False, spec = 0, site = "global->1", via = RepresentationMeets.ViaKernelAlias "Debug" "toString" } ] erasable
                     |> (\e -> EraseWrappers.isErasable e q)
                     |> Expect.equal False
         , test "an unboxed erasure meeting a type variable at the root is kept" <|
             \_ ->
-                EraseWrappers.consistentWith [ { a = q, b = var, root = True, spec = 0, site = "t" } ] erasable
+                EraseWrappers.consistentWith [ { a = q, b = var, root = True, spec = 0, site = "t", via = RepresentationMeets.ViaOther } ] erasable
                     |> (\e -> EraseWrappers.isErasable e q)
                     |> Expect.equal True
         , test "an erased instantiation meeting a kept one of the same wrapper is dropped" <|
@@ -144,8 +159,8 @@ suite =
                     meets =
                         -- `Box Int` meets a type variable inside a list, so it stays a heap value; then
                         -- `Box String`, which some value is viewed as along with `Box Int`, must too.
-                        [ { a = box Mono.MInt, b = var, root = False, spec = 0, site = "t" }
-                        , { a = box Mono.MString, b = box Mono.MInt, root = True, spec = 0, site = "t" }
+                        [ { a = box Mono.MInt, b = var, root = False, spec = 0, site = "t", via = RepresentationMeets.ViaOther }
+                        , { a = box Mono.MString, b = box Mono.MInt, root = True, spec = 0, site = "t", via = RepresentationMeets.ViaOther }
                         ]
                 in
                 EraseWrappers.consistentWith meets tentative

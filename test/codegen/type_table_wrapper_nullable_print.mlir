@@ -4,15 +4,15 @@
 // passes (plans/constructor-representation-levels.md E2, E2b, N1):
 //
 //   type 0: Float;  type 1: Wrapper `Q` over type 0 (an erased `type Q = Q Float`, MONO_031);
-//   type 2: String; type 3: Nullable `Maybe String` (Nothing = Empty, Just x = x, REP_CONSTANT_003);
-//   type 4: List of type 1.
+//   type 2: String; type 3: Nullable `Maybe String` (Just x = x, REP_CONSTANT_003; Nothing is the spare
+//   word of level 1, HEAP_085, since `Just ""` is Empty); type 4: List of type 1.
 //
 // A wrapper prints its constructor and then the value as its field, whether the value is a boxed
-// word or an unboxed list head (E2b); a nullable prints `Nothing` for Empty and `Just` and the value
-// for anything else.
+// word or an unboxed list head (E2b); a nullable prints `Nothing` for exactly its null word and `Just`
+// and the value for anything else, Empty (`Just ""`) included.
 
 module {
-  eco.type_table <{types = [[0, 0, 1], [1, 7, 0, 1], [2, 0, 4], [3, 8, 2, 2, 3, 0], [4, 1, 1]],
+  eco.type_table <{types = [[0, 0, 1], [1, 7, 0, 1], [2, 0, 4], [3, 8, 2, 2, 3, 0, 1], [4, 1, 1]],
                    fields = [[1, 0]],
                    ctors = [[0, 0, 0, 1]],
                    func_args = [],
@@ -23,9 +23,12 @@ module {
     "eco.dbg"(%bf) {arg_type_ids = array<i64: 1>} : (!eco.value) -> ()
     // CHECK: Q 1.5
 
+    %nothing = eco.constant.spare 1 : !eco.value
+    "eco.dbg"(%nothing) {arg_type_ids = array<i64: 3>} : (!eco.value) -> ()
+    // CHECK: Nothing
     %empty = eco.constant Empty : !eco.value
     "eco.dbg"(%empty) {arg_type_ids = array<i64: 3>} : (!eco.value) -> ()
-    // CHECK: Nothing
+    // CHECK: Just ""
     %s = eco.string_literal "x" : !eco.value
     "eco.dbg"(%s) {arg_type_ids = array<i64: 3>} : (!eco.value) -> ()
     // CHECK: Just "x"

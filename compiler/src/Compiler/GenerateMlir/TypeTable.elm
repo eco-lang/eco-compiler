@@ -68,9 +68,15 @@ field itself, so the printer prints the constructor's name and then the value
 as that field's type.
 
 `TKNullable` (8) is a type `NullableMaybe` made nullable (REP_CONSTANT_003):
-`[typeId, 8, fieldTypeId, nullNameIndex, valueNameIndex, constantBitTest]`. A
-value that is the nullary constructor's constant prints as its name; any other
-value is the field constructor's field.
+`[typeId, 8, fieldTypeId, nullNameIndex, valueNameIndex, nullCons, index]`,
+where `nullCons` (1 or 0) and `index` are the parts of the type's null word
+(`Mono.NullWord`). A value that is exactly the null word prints as the nullary
+constructor's name; any other value is the field constructor's field.
+
+`TKTagged` (9) is a tagged union (`Compiler.MonoOpt.TaggedUnions`, HEAP_086),
+laid out as a `TKCustom`: its word carries the constructor's index in bits
+43-52, and the field count of a bare constructor's entry has bit 31 set (its
+value is its one field's word, tagged).
 
 -}
 type TypeKind
@@ -83,6 +89,7 @@ type TypeKind
     | TKPolymorphic
     | TKWrapper
     | TKNullable
+    | TKTagged
 
 
 {-| The primitive type a `TKPrimitive` descriptor stands for.
@@ -132,6 +139,9 @@ typeKindToTag kind =
 
         TKNullable ->
             8
+
+        TKTagged ->
+            9
 
 
 {-| Returns the integer written into a primitive descriptor for `primKind`.
@@ -303,12 +313,17 @@ processType typeIds ( typeId, monoType ) accum =
             addRecordType typeIds typeId (Types.computeRecordLayout fields) accum
 
         Mono.MCustom _ _ _ _ ->
-            case Mono.layoutMapGet monoType accum.registry.nullable of
+            case Ctx.nullableOfPrintType accum.registry monoType of
                 Just info ->
                     addNullableType typeIds typeId monoType info accum
 
                 Nothing ->
-                    addCustomType typeIds typeId monoType accum
+                    case Ctx.taggedOfPrintType accum.registry monoType of
+                        Just forms ->
+                            addTaggedType typeIds typeId monoType forms accum
+
+                        Nothing ->
+                            addCustomType typeIds typeId monoType accum
 
         Mono.MFunction _ _ argTypes resultType ->
             addFunctionType typeIds typeId argTypes resultType accum
@@ -524,6 +539,36 @@ addCustomType typeIds typeId monoType accum =
     { accumWithCtors | typeAttrs = typeAttr :: accumWithCtors.typeAttrs }
 
 
+{-| Adds the descriptor of a tagged union (`TKTagged`) and its constructors, as
+`addCustomType` does, with bit 31 set in a bare constructor's field count.
+-}
+addTaggedType : Mono.LayoutMap Int -> Int -> Mono.MonoType -> List ( Name.Name, Mono.TagForm ) -> TypeTableAccum -> TypeTableAccum
+addTaggedType typeIds typeId monoType forms accum =
+    let
+        ctorShapes =
+            Ctx.printShapesOf accum.registry monoType
+                |> List.sortBy .tag
+
+        firstCtor =
+            accum.nextCtorIndex
+
+        isBare shape =
+            List.member ( shape.name, Mono.TagBare ) forms
+
+        accumWithCtors =
+            List.foldl (\shape acc -> addCtorInfoFlagged typeIds (isBare shape) shape acc) accum ctorShapes
+
+        typeAttr =
+            ArrayAttr Nothing
+                [ IntAttr Nothing typeId
+                , IntAttr Nothing (typeKindToTag TKTagged)
+                , IntAttr Nothing firstCtor
+                , IntAttr Nothing (List.length ctorShapes)
+                ]
+    in
+    { accumWithCtors | typeAttrs = typeAttr :: accumWithCtors.typeAttrs }
+
+
 {-| Adds the descriptor of a nullable type (`TKNullable`).
 -}
 addNullableType : Mono.LayoutMap Int -> Int -> Mono.MonoType -> Mono.NullableInfo -> TypeTableAccum -> TypeTableAccum
@@ -550,12 +595,13 @@ addNullableType typeIds typeId monoType info accum =
                 , IntAttr Nothing nullIndex
                 , IntAttr Nothing valueIndex
                 , IntAttr Nothing
-                    (if info.constantBitTest then
+                    (if info.nullWord.nullCons then
                         1
 
                      else
                         0
                     )
+                , IntAttr Nothing info.nullWord.index
                 ]
     in
     { accum2 | typeAttrs = typeAttr :: accum2.typeAttrs }
@@ -566,6 +612,14 @@ addNullableType typeIds typeId monoType info accum =
 -}
 addCtorInfo : Mono.LayoutMap Int -> Mono.CtorShape -> TypeTableAccum -> TypeTableAccum
 addCtorInfo typeIds ctorShape accum =
+    addCtorInfoFlagged typeIds False ctorShape accum
+
+
+{-| `addCtorInfo`, with bit 31 of the field count set when `bare` (a bare
+constructor of a tagged union, HEAP_086).
+-}
+addCtorInfoFlagged : Mono.LayoutMap Int -> Bool -> Mono.CtorShape -> TypeTableAccum -> TypeTableAccum
+addCtorInfoFlagged typeIds bare ctorShape accum =
     let
         ctorLayout =
             Types.computeCtorLayout ctorShape
@@ -608,7 +662,13 @@ addCtorInfo typeIds ctorShape accum =
                 [ IntAttr Nothing ctorLayout.tag
                 , IntAttr Nothing nameIndex
                 , IntAttr Nothing firstField
-                , IntAttr Nothing fieldCount
+                , IntAttr Nothing
+                    (if bare then
+                        fieldCount + 2147483648
+
+                     else
+                        fieldCount
+                    )
                 ]
     in
     { accumWithFields

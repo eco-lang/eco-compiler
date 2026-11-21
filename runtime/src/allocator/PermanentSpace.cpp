@@ -182,7 +182,7 @@ extern "C" std::uint64_t eco_caf_promote(std::uint64_t bits,
                 fixed = false; // the filter differs from phase 1's
                 return;
             }
-            hp = hpFromBits(reinterpret_cast<std::uint64_t>(it->second));
+            hp = retarget(hp, it->second);   // keeps a tagged word's bits 43-52 (HEAP_086)
         });
         if (!r || !fixed) {
             fixed = false;
@@ -199,5 +199,5 @@ extern "C" std::uint64_t eco_caf_promote(std::uint64_t bits,
     perm.stats.values_promoted++;
     perm.stats.objects_copied += order.size();
     perm.stats.bytes_copied += total;
-    return reinterpret_cast<std::uint64_t>(map[root]);
+    return hpBits(retarget(hpFromBits(bits), map[root]));   // the root word keeps its tag (HEAP_086)
 }

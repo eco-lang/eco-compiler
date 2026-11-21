@@ -70,6 +70,9 @@ static void* safeResolve(Allocator& allocator, HPointer p) {
 /// is the Empty constant and the other a String of length 0. `*aOut` and `*bOut` are then not written.
 /// Returns 1 when both are heap words, with their addresses in `*aOut` and `*bOut` and `*eqResult` not
 /// written.
+///
+/// The tags of tagged-union words (bits 43-52, HEAP_086) are compared first: words whose tags differ are
+/// two constructors and unequal (returns 0, `*eqResult` false), even over one address (`A s` and `B s`).
 static int resolveAndCompare(Allocator& allocator, HPointer ap, HPointer bp,
                               void** aOut, void** bOut, bool* eqResult) {
     bool aConst = alloc::isConstant(ap);
@@ -83,9 +86,17 @@ static int resolveAndCompare(Allocator& allocator, HPointer ap, HPointer bp,
         if (!*eqResult && aConst != bConst) {
             HPointer c = aConst ? ap : bp;
             HPointer h = aConst ? bp : ap;
-            *eqResult = alloc::isEmptyString(c) &&
+            // The same tag, then the exact Empty word under it: a spare null word (HEAP_085) is not the empty
+            // String, and a bare `A ""` (a tagged Empty, HEAP_086) equals a bare `A` over a String of length 0.
+            *eqResult = wordTag(hpBits(c)) == wordTag(hpBits(h)) &&
+                        isExactEmptyBits(hpBits(c) & ~WORD_TAG_MASK) &&
                         alloc::isZeroLengthString(allocator.resolve(h));
         }
+        return 0;
+    }
+
+    if (wordTag(hpBits(ap)) != wordTag(hpBits(bp))) {
+        *eqResult = false;
         return 0;
     }
 
@@ -195,13 +206,13 @@ static int compareUnboxableSlot(Allocator& allocator,
                 bool bConst = alloc::isConstant(b.p);
 
                 // `header.size` is the length in UTF-16 units in every String form.
-                if (alloc::isEmptyString(a.p) && !bConst) {
+                if (isExactEmptyBits(hpBits(a.p)) && !bConst) {
                     void* bo2 = allocator.resolve(b.p);
                     if (alloc::isString(bo2)) {
                         return static_cast<Header*>(bo2)->size == 0 ? 0 : -1;
                     }
                 }
-                if (alloc::isEmptyString(b.p) && !aConst) {
+                if (isExactEmptyBits(hpBits(b.p)) && !aConst) {
                     void* ao2 = allocator.resolve(a.p);
                     if (alloc::isString(ao2)) {
                         return static_cast<Header*>(ao2)->size == 0 ? 0 : 1;
@@ -706,8 +717,9 @@ static bool eqHelp(void* a, void* b, int depth, EqDeferred& deferred) {
             uint32_t aKind = aa->header.unboxed & 0x3;
             uint32_t bKind = ba->header.unboxed & 0x3;
 
-            // One kind covers every element. Two arrays with the same elements may still differ in it, for
-            // example one decoded from JSON with an Int decoder and one built from a list of boxed Ints.
+            // One kind covers every element. Under HEAP_046 two non-empty arrays with equal elements have
+            // the same kind (a primitive array is always of its primitive kind); comparing slot by slot with
+            // both kinds stays correct if one were not.
             for (u32 i = 0; i < aa->length; ++i) {
                 if (!eqUnboxableSlot(allocator, aa->elements[i], ba->elements[i], aKind, bKind, depth, deferred)) return false;
             }

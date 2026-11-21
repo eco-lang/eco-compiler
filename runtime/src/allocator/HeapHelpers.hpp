@@ -1753,8 +1753,10 @@ inline size_t arrayCapacity(void* arr) {
 // Appends `value` to the array object `arr` and returns true, or returns false if the array is full.
 //
 // All of an array's elements have one slot kind. The first push sets it, to boxed when `is_boxed` is true
-// and to Int when it is false; later pushes must agree, and nothing checks that they do. `arr` must be a
-// builder or must not yet have survived a collection; only builds with the P1 census check. Does not allocate.
+// and to Int when it is false; later pushes must agree, and nothing checks that they do. The caller keeps
+// HEAP_046 (a boxed Int, Float or Char never goes into a kind-0 array); `arrayPushConverted` does it for a
+// caller whose values may arrive boxed. `arr` must be a builder or must not yet have survived a
+// collection; only builds with the P1 census check. Does not allocate.
 inline bool arrayPush(void* arr, Unboxable value, bool is_boxed) {
     ElmArray* a = static_cast<ElmArray*>(arr);
     if (a->length >= a->header.size) {
@@ -1778,7 +1780,7 @@ inline bool arrayPush(void* arr, Unboxable value, bool is_boxed) {
 }
 
 // Appends `value`, of slot kind `kind` (low 2 bits used), as `arrayPush` does: the first push sets the
-// array's kind and later pushes must agree, unchecked.
+// array's kind and later pushes must agree, unchecked; the caller keeps HEAP_046.
 inline bool arrayPushKind(void* arr, Unboxable value, u8 kind) {
     ElmArray* a = static_cast<ElmArray*>(arr);
     if (a->length >= a->header.size) return false;
@@ -1931,6 +1933,75 @@ inline HPointer boxElement(Unboxable v, u32 kind) {
         case 3: return allocChar(v.c);
         default: return v.p;
     }
+}
+
+// The slot kind a JsArray stores the value `v` in when it arrives with kind `srcKind` (0 a boxed word,
+// 1 to 3 a raw Int, Float or Char): `srcKind` itself for a raw value; for a boxed word, 1, 2 or 3 when
+// it names a boxed Int, Float or Char, and 0 otherwise. HEAP_046: a JsArray holding primitives is of
+// their primitive kind, so the first element of an array binds its kind by this. Does not allocate.
+inline u8 arrayKindOf(Unboxable v, u8 srcKind) {
+    if (srcKind != 0) return srcKind & 0x3;
+    void* obj = resolveOrNull(v.p);
+    if (!obj) return 0;
+    switch (getHeader(obj)->tag) {
+        case Tag_Int: return 1;
+        case Tag_Float: return 2;
+        case Tag_Char: return 3;
+        default: return 0;
+    }
+}
+
+// Returns `v`, which has kind `srcKind`, as a slot of kind `dstKind` (HEAP_046): unchanged when the kinds
+// agree, and a boxed Int, Float or Char unboxed into a primitive slot. A raw value never goes into a
+// boxed slot and a word that is not the matching boxed primitive never into a primitive slot; both are
+// asserted. A Char slot is zero-extended. Does not allocate.
+inline Unboxable convertToKind(Unboxable v, u8 srcKind, u8 dstKind) {
+    srcKind &= 0x3;
+    dstKind &= 0x3;
+    if (srcKind == dstKind) return v;
+    assert(srcKind == 0 && "convertToKind: a raw primitive into a slot of another kind (HEAP_046)");
+    void* obj = resolveOrNull(v.p);
+    assert(obj && "convertToKind: a primitive slot wanted, the value is an embedded constant");
+    Unboxable u;
+    switch (dstKind) {
+        case 1:
+            assert(getHeader(obj)->tag == Tag_Int && "convertToKind: Int slot wanted, value is not an Int");
+            u.i = static_cast<ElmInt*>(obj)->value;
+            return u;
+        case 2:
+            assert(getHeader(obj)->tag == Tag_Float && "convertToKind: Float slot wanted, value is not a Float");
+            u.f = static_cast<ElmFloat*>(obj)->value;
+            return u;
+        default:
+            assert(getHeader(obj)->tag == Tag_Char && "convertToKind: Char slot wanted, value is not a Char");
+            return unboxedChar(static_cast<ElmChar*>(obj)->value);
+    }
+}
+
+// Appends `v`, which has kind `srcKind`, to the array object `arr` as `arrayPushKind` does, keeping
+// HEAP_046: the first element binds the array's kind (`arrayKindOf`), and every element is converted to
+// that kind (`convertToKind`). Returns false, storing nothing, when the array is full. Does not allocate.
+inline bool arrayPushConverted(void* arr, Unboxable v, u8 srcKind) {
+    ElmArray* a = static_cast<ElmArray*>(arr);
+    u8 kind = (a->length == 0) ? arrayKindOf(v, srcKind) : static_cast<u8>(a->header.unboxed & 0x3);
+    return arrayPushKind(arr, convertToKind(v, srcKind, kind), kind);
+}
+
+// Under ECO_HEAP_VALIDATE, asserts that the array object `arr` keeps HEAP_046: a non-empty kind-0 array
+// holds no boxed Int, Float or Char. Every element is checked; `where` names the caller in the message.
+// A no-op otherwise. Does not allocate.
+inline void validateArrayKind([[maybe_unused]] const void* arr, [[maybe_unused]] const char* where) {
+#if ECO_HEAP_VALIDATE
+    const ElmArray* a = static_cast<const ElmArray*>(arr);
+    if ((a->header.unboxed & 0x3) != 0) return;
+    for (u32 i = 0; i < a->length; i++) {
+        if (arrayKindOf(a->elements[i], 0) != 0) {
+            std::fprintf(stderr, "HEAP_046 violation at %s: kind-0 array (length %u) holds a boxed primitive at %u\n",
+                         where, a->length, i);
+            std::abort();
+        }
+    }
+#endif
 }
 
 // ============================================================================

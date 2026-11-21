@@ -28,23 +28,8 @@ inline constexpr int kKeepElementKind = -1;
 /// `ElmInt`, `ElmFloat` or `ElmChar` that `boxed` names. A Char slot is zero-extended (REP_HEAP_002).
 /// `boxed` must name a heap object of that type, which is asserted. Does not allocate.
 inline Unboxable unboxByKind(HPointer boxed, u32 kind) {
-    void* obj = Allocator::instance().resolve(boxed);
-    assert(obj && "unboxByKind: expected a boxed Int, Float or Char, got an embedded constant");
-    Unboxable u;
-    switch (kind) {
-        case 1:
-            assert(getHeader(obj)->tag == Tag_Int && "unboxByKind: Int slot wanted, element is not an Int");
-            u.i = static_cast<ElmInt*>(obj)->value;
-            return u;
-        case 2:
-            assert(getHeader(obj)->tag == Tag_Float && "unboxByKind: Float slot wanted, element is not a Float");
-            u.f = static_cast<ElmFloat*>(obj)->value;
-            return u;
-        default:
-            assert(kind == 3 && getHeader(obj)->tag == Tag_Char &&
-                   "unboxByKind: Char slot wanted, element is not a Char");
-            return alloc::unboxedChar(static_cast<ElmChar*>(obj)->value);
-    }
+    assert(kind >= 1 && kind <= 3 && "unboxByKind: kind must be Int, Float or Char");
+    return alloc::convertToKind(alloc::boxed(boxed), 0, static_cast<u8>(kind));
 }
 
 /// Builds an array from the first `max` elements of `list`, and returns the pair (array, rest of the
@@ -52,9 +37,9 @@ inline Unboxable unboxByKind(HPointer boxed, u32 kind) {
 ///
 /// The array has room for `max` elements whatever the length of `list`. With `wantedKind` 1, 2 or 3 (the
 /// slot kind of the call site's element type, Int, Float or Char) every element is stored in that kind,
-/// a boxed list head being unboxed. With `kKeepElementKind` the array takes the slot kind of the list's
-/// first element, or is boxed if it takes none, and later elements are assumed to have the same kind,
-/// unchecked. `list` must be current on entry. Allocates, so it is a GC point.
+/// a boxed list head being unboxed. With `kKeepElementKind` the first element binds the array's kind
+/// (a boxed Int, Float or Char binds its primitive kind, HEAP_046) and every later element is converted
+/// to it (`alloc::arrayPushConverted`). `list` must be current on entry. Allocates, so it is a GC point.
 HPointer initializeFromList(u32 max, HPointer list, int wantedKind = kKeepElementKind);
 
 } // namespace Elm::Kernel::JsArray

@@ -44,7 +44,7 @@ constexpr i64 kMaxUnits = 4096;
 // Markers mixed in before a value of each kind, so that, for example, a Char and a one-unit String differ.
 enum Marker : u32 {
     kInt = 1, kFloat, kChar, kString, kEmpty, kConst, kTuple, kList, kListEnd, kCustom, kRecord,
-    kArray, kDict, kSeqDict, kOther
+    kArray, kDict, kSeqDict, kOther, kTag
 };
 
 struct Hasher {
@@ -100,6 +100,14 @@ struct Hasher {
     }
 
     void boxed(HPointer p, int depth) {
+        // A word's bits 43-52 (a tagged union's constructor, HEAP_086, or a null-cons or spare word's index)
+        // are mixed in first, and the rest of the word is hashed without them, as `==` compares tags first
+        // and then the untagged words.
+        if (const u32 tag = wordTag(hpBits(p)); tag != 0) {
+            mix(kTag);
+            mix(tag);
+            p = hpFromBits(hpBits(p) & ~WORD_TAG_MASK);
+        }
         if (alloc::isConstant(p)) {
             if (alloc::isEmptyString(p)) { mix(kEmpty); return; }
             u64 bits;

@@ -1477,17 +1477,23 @@ generateCtor ctx funcName home ctorLayout monoType =
                 Ctx.freshVar ctxWithType
 
             ( ctx2, valueOp ) =
-                case wellKnownName of
-                    Just "Nothing" ->
-                        Ops.ecoConstantNothing ctx1 resultVar
+                case Ctx.nullableInfo ctx1 ctorResultMonoType of
+                    Just info ->
+                        -- The nullary constructor of a nullable type is its null word (HEAP_085).
+                        Ops.ecoNullWord ctx1 resultVar info.nullWord
 
-                    _ ->
-                        Ops.ecoConstantNullCons ctx1
-                            resultVar
-                            (CtorTag.checkNullConsCapacity
-                                (Name.toElmString ctorLayout.name)
-                                ctorLayout.tag
-                            )
+                    Nothing ->
+                        case wellKnownName of
+                            Just "Nothing" ->
+                                Ops.ecoConstantNothing ctx1 resultVar
+
+                            _ ->
+                                Ops.ecoConstantNullCons ctx1
+                                    resultVar
+                                    (CtorTag.checkNullConsCapacity
+                                        (Name.toElmString ctorLayout.name)
+                                        ctorLayout.tag
+                                    )
 
             ( ctx3, returnOp ) =
                 Ops.ecoReturn ctx2 resultVar Types.ecoValue
@@ -1565,18 +1571,48 @@ generateCtor ctx funcName home ctorLayout monoType =
                     _ ->
                         Nothing
 
-            ( ctx2, constructOps, returnVar ) =
-                case nullableField of
-                    Just slotVar ->
-                        ( ctx1, [], slotVar )
+            -- A constructor of a tagged union (HEAP_086): a bare one returns its field, tagged; a boxed one
+            -- its Custom, tagged when its index is not 0.
+            tagForm =
+                Ctx.tagFormOf ctxBoxed ctorResultMonoType ctorLayout.name
+
+            tagged ctxT var =
+                case tagForm of
+                    Just ( index, _ ) ->
+                        if index == 0 then
+                            ( ctxT, [], var )
+
+                        else
+                            let
+                                ( tv, ctxT1 ) =
+                                    Ctx.freshVar ctxT
+
+                                ( ctxT2, tagOp ) =
+                                    Ops.ecoTagWord ctxT1 tv var index
+                            in
+                            ( ctxT2, [ tagOp ], tv )
 
                     Nothing ->
+                        ( ctxT, [], var )
+
+            ( ctx2, constructOps, returnVar ) =
+                case ( nullableField, tagForm, slotPairsRev ) of
+                    ( Just slotVar, _, _ ) ->
+                        ( ctx1, [], slotVar )
+
+                    ( Nothing, Just ( _, Mono.TagBare ), [ ( slotVar, _ ) ] ) ->
+                        tagged ctx1 slotVar
+
+                    _ ->
                         let
                             ( ctxC, constructOp ) =
                                 Ops.ecoConstructCustom ctx1 resultVar ctorLayout.tag constructorName (List.map2 (\( v, t ) k -> ( v, t, k )) (List.reverse slotPairsRev) (Types.ctorSlotKinds ctorLayout))
                                     |> Tuple.mapSecond (Ops.withCensusId (CtorCensus.idForShape ctx1.ctorCensus ctorLayout.name (List.map .monoType ctorLayout.fields)))
+
+                            ( ctxT, tagOps, tv ) =
+                                tagged ctxC resultVar
                         in
-                        ( ctxC, [ constructOp ], resultVar )
+                        ( ctxT, constructOp :: tagOps, tv )
 
             ( _, returnOp ) =
                 Ops.ecoReturn ctx2 returnVar Types.ecoValue

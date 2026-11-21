@@ -548,14 +548,14 @@ void NurserySpace::evacuateR(MinorWorker& w, region::RegionWorker& rw, HPointer&
             for (;;) {
                 if (mw::isForwardWord(hw)) {
                     if (hw == mw::kBusy) { hw = waitPublishedP(w, obj); continue; }
-                    slot = Allocator::toPointerRaw(mw::fwdAddr(hw));
+                    slot = retarget(slot, mw::fwdAddr(hw));   // keeps a tagged word's bits 43-52 (HEAP_086)
                     return;
                 }
                 if (mw::claim(obj, hw)) break;
                 ++w.claim_races;
             }
             void* dst = copyClaimedR(w, rw, obj, hw);
-            slot = Allocator::toPointerRaw(dst);
+            slot = retarget(slot, dst);   // keeps a tagged word's bits 43-52 (HEAP_086)
             const Header* dh = getHeader(dst);
             if (nurseryTagHasChildren(dh->tag))
                 pushGreyP(w, mk::objEntry(dst, dh->builder ? kColBuilder : kColSurv));
@@ -582,7 +582,7 @@ void NurserySpace::evacuateR(MinorWorker& w, region::RegionWorker& rw, HPointer&
             rw.SA.push_back(obj);
             return;
         case Role::Retire:
-            slot = Allocator::toPointerRaw(resolveRetire(obj, &rw));
+            slot = retarget(slot, resolveRetire(obj, &rw));
             return;
         case Role::Fill:
             // Already a copy. A root slot can be listed twice (two root sets,
@@ -658,7 +658,7 @@ void NurserySpace::spineRunR(MinorWorker& w, region::RegionWorker& rw, Cons* pre
         uint64_t hw = mw::loadHeader(obj);
         if (mw::isForwardWord(hw)) {
             if (hw == mw::kBusy) hw = waitPublishedP(w, obj);
-            prev->tail = Allocator::toPointerRaw(mw::fwdAddr(hw));
+            prev->tail = retarget(t, mw::fwdAddr(hw));
             break;
         }
         const Header hd = headerOfWord(hw);
@@ -672,7 +672,7 @@ void NurserySpace::spineRunR(MinorWorker& w, region::RegionWorker& rw, Cons* pre
         if (!mw::claim(obj, hw)) { ++w.claim_races; continue; }
         Cons* cc = static_cast<Cons*>(copyClaimedR(w, rw, obj, hw));
         if (Elm::tupleFieldKind(cc->header.unboxed, 0) == 0 && cc->head.p.ptr_ind == 0) needs_heads = true;
-        prev->tail = Allocator::toPointerRaw(cc);
+        prev->tail = retarget(t, cc);
         if (k == 0) first = cc;
         prev = cc;
         pcol = kColSurv;
@@ -944,11 +944,12 @@ void NurserySpace::minorGCRegion(OldGenSpace& oldgen, const StackMapRoots& stack
     for (uint64_t* root : root_set.getJitRoots()) {
         const uint64_t raw = *root;
         if (isConstantBits(raw) || raw == 0) continue;
-        char* p = reinterpret_cast<char*>(raw);
+        // A tagged word (HEAP_086) is decoded to its address for the range test, and keeps its tag.
+        char* p = static_cast<char*>(hpToAddr(hpFromBits(raw)));
         if (p < heap_base_ || p >= heap_base_ + heap_reserved_) continue;
-        HPointer hp = Allocator::toPointerRaw(p);
+        HPointer hp = hpFromBits(raw);
         evacuateR(w0, rw0, hp, kColRoot);   // a Hand target stays (S holds it)
-        *root = reinterpret_cast<uint64_t>(Allocator::fromPointerRaw(hp));
+        *root = hpBits(hp);
     }
     for (const auto& range : root_set.getStackRootRanges()) {
         for (size_t i = 0; i < range.count; ++i)

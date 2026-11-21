@@ -1434,10 +1434,11 @@ struct ArrayGetOpLowering : public OpConversionPattern<ArrayGetOp> {
 /**
  * The pattern that lowers `eco.array.set`, which returns a copy of an array with element `index` replaced.
  *
- * `eco_clone_array` makes the copy. `eco_array_set_fix_kind` then sets the copy's element kind to that of the
- * new value, since a copy whose kind says boxed, such as one made from an empty array, would otherwise have
- * an Int element traced as a pointer. The element is stored directly into the copy, without the forwarding
- * check. `index` is not checked against the length.
+ * `eco_clone_array` makes the copy, which keeps the source's element kind. By HEAP_046 that is already the
+ * new value's kind (a non-empty Int, Float or Char array is of that primitive kind), so nothing is
+ * relabelled; a codegen built with ECO_HEAP_VALIDATE calls `eco_array_check_kind` to check it. The element
+ * is stored directly into the copy, without the forwarding check. `index` is not checked against the
+ * length.
  */
 struct ArraySetOpLowering : public OpConversionPattern<ArraySetOp> {
     const EcoRuntime &runtime; // Declares the runtime functions and markers; must outlive the pattern.
@@ -1469,12 +1470,18 @@ struct ArraySetOpLowering : public OpConversionPattern<ArraySetOp> {
         else if (setValueType.isInteger(64))         intendedKind = 1;
         else if (setValueType.isF64())               intendedKind = 2;
         else if (eco::isEcoCharType(setValueType))         intendedKind = 3;
+#if ECO_HEAP_VALIDATE
+        // HEAP_046: the copy already has the value's kind (a primitive array is always of its primitive
+        // kind), so nothing is relabelled; a validating build checks it.
         auto kindConst = LLVM::ConstantOp::create(rewriter,
             loc, IntegerType::get(ctx, 32),
             static_cast<int64_t>(intendedKind));
-        auto fixKindFn = runtime.getOrCreateArraySetFixKind(rewriter);
+        auto checkKindFn = runtime.getOrCreateArrayCheckKind(rewriter);
         LLVM::CallOp::create(rewriter,
-            loc, fixKindFn, ValueRange{newArrayHPtr, kindConst});
+            loc, checkKindFn, ValueRange{newArrayHPtr, kindConst});
+#else
+        (void)intendedKind;
+#endif
 
         auto baseOffset = LLVM::ConstantOp::create(rewriter,
             loc, i64Ty, static_cast<int64_t>(layout::ArrayElementsOffset));

@@ -6,7 +6,7 @@ module Compiler.GenerateMlir.Context exposing
     , buildSignatures, signatureOf, kernelFuncSignatureFromType
     , KernelDeclInfo
     , registerKernelInstance
-    , PsplitInfo, SlotPlan, SplitParamInfo, SplitSpec(..), SretInfo, freshSlotVars, residualResultType, closureResultType, withConstCtorBySpec, withCtorCensus, withReprInfo, printShapesOf, nullableInfo, withConstThunkBySpec, withNullConsBySpec, withPsplitPromoted, withSretPromoted
+    , PsplitInfo, SlotPlan, SplitParamInfo, SplitSpec(..), SretInfo, freshSlotVars, residualResultType, closureResultType, withConstCtorBySpec, withCtorCensus, withReprInfo, printShapesOf, nullableInfo, nullableOfPrintType, taggedOfPrintType, tagFormOf, isTagged, withConstThunkBySpec, withNullConsBySpec, withNullWordBySpec, withPsplitPromoted, withSretPromoted
     )
 
 {-| MLIR code generation is a pure fold over each function's expression
@@ -85,7 +85,7 @@ type before the type itself.
 
 # Promotions and constant tables
 
-@docs PsplitInfo, SlotPlan, SplitParamInfo, SplitSpec, SretInfo, freshSlotVars, residualResultType, closureResultType, withConstCtorBySpec, withCtorCensus, withReprInfo, printShapesOf, nullableInfo, withConstThunkBySpec, withNullConsBySpec, withPsplitPromoted, withSretPromoted
+@docs PsplitInfo, SlotPlan, SplitParamInfo, SplitSpec, SretInfo, freshSlotVars, residualResultType, closureResultType, withConstCtorBySpec, withCtorCensus, withReprInfo, printShapesOf, nullableInfo, nullableOfPrintType, taggedOfPrintType, tagFormOf, isTagged, withConstThunkBySpec, withNullConsBySpec, withNullWordBySpec, withPsplitPromoted, withSretPromoted
 
 -}
 
@@ -97,6 +97,7 @@ import Compiler.GenerateMlir.KernelAbi as KernelAbi
 import Compiler.GenerateMlir.Types as Types
 import Compiler.IR.Kernel.Facts as KernelFacts
 import Compiler.IR.Mono as Mono
+import Compiler.MonoOpt.EraseWrappers as EraseWrappers
 import Compiler.MonoOpt.MapTemplate as MapTemplate
 import Dict
 import Mlir.Mlir exposing (MlirOp, MlirType)
@@ -270,6 +271,8 @@ value, or the thunk's body, in place of a call; the spec's own function is
 still emitted. `nullConsBySpec` gives the tag of a nullary constructor or
 enum that is a null-cons constant, and `constCtorBySpec` the name of a
 nullary constructor that is a well-known constant such as `Nothing`.
+`nullWordBySpec`, consulted first, gives the null word of the nullary
+constructor of a nullable type.
 
 An absent entry in `mapTemplates` means the `List.map` spec has no licence
 for the template; the table is empty when the `list.mapTemplate` setting is
@@ -300,6 +303,7 @@ type alias Context =
     , inlineBodies : Dict.Dict Int ( List ( Name.Name, Mono.MonoType ), Mono.MonoExpr )
     , ctorBySpec : Dict.Dict Int Mono.CtorShape
     , nullConsBySpec : Dict.Dict Int Int
+    , nullWordBySpec : Dict.Dict Int Mono.NullWord
     , constThunkBySpec : Dict.Dict Int Mono.MonoExpr
     , constCtorBySpec : Dict.Dict Int String
     , fwdRefdLetNames : Set.Set String
@@ -314,6 +318,7 @@ type alias Context =
     , entryMainSpec : Maybe Mono.SpecId
     , ctorCensus : CtorCensus.Table
     , nullable : Mono.LayoutMap Mono.NullableInfo
+    , tagged : Mono.LayoutMap (List ( Name.Name, Mono.TagForm ))
     }
 
 
@@ -339,7 +344,9 @@ type alias TypeRegistry =
     , ctorShapes : Mono.LayoutMap (List Mono.CtorShape)
     , printShapes : Mono.LayoutMap (List Mono.CtorShape)
     , erasedKeys : Mono.LayoutMap ()
+    , erasable : EraseWrappers.Erasable
     , nullable : Mono.LayoutMap Mono.NullableInfo
+    , tagged : Mono.LayoutMap (List ( Name.Name, Mono.TagForm ))
     }
 
 
@@ -390,6 +397,7 @@ initContext registry signatures initialCtorShapes =
     , inlineBodies = Dict.empty
     , ctorBySpec = Dict.empty
     , nullConsBySpec = Dict.empty
+    , nullWordBySpec = Dict.empty
     , constCtorBySpec = Dict.empty
     , constThunkBySpec = Dict.empty
     , fwdRefdLetNames = Set.empty
@@ -404,6 +412,7 @@ initContext registry signatures initialCtorShapes =
     , entryMainSpec = Nothing
     , ctorCensus = CtorCensus.empty
     , nullable = Mono.layoutMapEmpty
+    , tagged = Mono.layoutMapEmpty
     }
 
 
@@ -438,6 +447,16 @@ nullary constructor or enum spec that is a null-cons constant, its tag.
 withNullConsBySpec : Dict.Dict Int Int -> Context -> Context
 withNullConsBySpec d ctx =
     { ctx | nullConsBySpec = d }
+
+
+{-| Returns the context with the null-word map installed: for each nullary
+constructor spec of a nullable type, the type's null word (HEAP_085). A
+reference to such a spec takes this map before the null-cons and well-known
+constant maps.
+-}
+withNullWordBySpec : Dict.Dict Int Mono.NullWord -> Context -> Context
+withNullWordBySpec d ctx =
+    { ctx | nullWordBySpec = d }
 
 
 {-| Returns the context with the well-known constant map installed: for each
@@ -495,7 +514,9 @@ emptyTypeRegistry =
     , ctorShapes = Mono.layoutMapEmpty
     , printShapes = Mono.layoutMapEmpty
     , erasedKeys = Mono.layoutMapEmpty
+    , erasable = EraseWrappers.erasableFromList []
     , nullable = Mono.layoutMapEmpty
+    , tagged = Mono.layoutMapEmpty
     }
 
 
@@ -522,9 +543,111 @@ withReprInfo repr ctx =
             ctx.typeRegistry
     in
     { ctx
-        | typeRegistry = { reg | printShapes = repr.printShapes, erasedKeys = repr.erasedKeys, nullable = repr.nullable }
+        | typeRegistry =
+            { reg
+                | printShapes = repr.printShapes
+                , erasedKeys = repr.erasedKeys
+                , erasable = erasableOf repr
+                , nullable = repr.nullable
+                , tagged = repr.tagged
+            }
         , nullable = repr.nullable
+        , tagged = repr.tagged
     }
+
+
+{-| The wrappers `EraseWrappers` erased, each with the field type it became,
+from the graph's `repr` tables.
+-}
+erasableOf : Mono.ReprInfo -> EraseWrappers.Erasable
+erasableOf repr =
+    Mono.layoutMapFoldl
+        (\key _ acc ->
+            case Mono.layoutMapGet key repr.printShapes of
+                Just [ { fieldTypes } ] ->
+                    case fieldTypes of
+                        [ field ] ->
+                            ( key, field ) :: acc
+
+                        _ ->
+                            acc
+
+                _ ->
+                    acc
+        )
+        []
+        repr.erasedKeys
+        |> EraseWrappers.erasableFromList
+
+
+{-| Returns the declaration index and form of the constructor `ctorName` of `t`
+when `t` is a tagged union (`Compiler.MonoOpt.TaggedUnions`, HEAP_086), and
+`Nothing` otherwise.
+-}
+tagFormOf : Context -> Mono.MonoType -> Name.Name -> Maybe ( Int, Mono.TagForm )
+tagFormOf ctx t ctorName =
+    case t of
+        Mono.MCustom _ _ _ _ ->
+            case Mono.layoutMapGet t ctx.tagged of
+                Just forms ->
+                    case ( List.filter (\( n, _ ) -> n == ctorName) forms, Mono.layoutMapGet t ctx.typeRegistry.ctorShapes ) of
+                        ( ( _, form ) :: _, Just shapes ) ->
+                            case List.filter (\sh -> sh.name == ctorName) shapes of
+                                sh :: _ ->
+                                    Just ( sh.tag, form )
+
+                                [] ->
+                                    Nothing
+
+                        _ ->
+                            Nothing
+
+                Nothing ->
+                    Nothing
+
+        _ ->
+            Nothing
+
+
+{-| Returns whether `t` is a tagged union (HEAP_086).
+-}
+isTagged : Context -> Mono.MonoType -> Bool
+isTagged ctx t =
+    case t of
+        Mono.MCustom _ _ _ _ ->
+            Mono.layoutMapMember t ctx.tagged
+
+        _ ->
+            False
+
+
+{-| Returns the constructor forms of the type `printType` of the debug type graph
+when its erased form is a tagged union (HEAP_086), as `nullableOfPrintType`
+does for nullable types.
+-}
+taggedOfPrintType : TypeRegistry -> Mono.MonoType -> Maybe (List ( Name.Name, Mono.TagForm ))
+taggedOfPrintType reg printType =
+    case printType of
+        Mono.MCustom _ _ _ _ ->
+            Mono.layoutMapGet (EraseWrappers.eraseType reg.erasable printType) reg.tagged
+
+        _ ->
+            Nothing
+
+
+{-| Returns how the type `printType` of the debug type graph is represented when
+its erased form (`EraseWrappers.eraseType`) is nullable: a type registered for
+printing keeps its erased wrappers (`Maybe (Box String)`), while `nullable` is
+keyed by the types after erasure (`Maybe String`).
+-}
+nullableOfPrintType : TypeRegistry -> Mono.MonoType -> Maybe Mono.NullableInfo
+nullableOfPrintType reg printType =
+    case printType of
+        Mono.MCustom _ _ _ _ ->
+            Mono.layoutMapGet (EraseWrappers.eraseType reg.erasable printType) reg.nullable
+
+        _ ->
+            Nothing
 
 
 {-| Returns how the type `t` is represented when `NullableMaybe` made it
@@ -621,7 +744,9 @@ getOrCreateTypeIdForMonoType monoType ctx =
                     , ctorShapes = reg.ctorShapes
                     , printShapes = reg.printShapes
                     , erasedKeys = reg.erasedKeys
+                    , erasable = reg.erasable
                     , nullable = reg.nullable
+                    , tagged = reg.tagged
                     }
             in
             { c | typeRegistry = newReg }

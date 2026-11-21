@@ -1,9 +1,9 @@
 module Compiler.GenerateMlir.Ops exposing
     ( opBuilder, mlirOp, mkRegion, funcFunc
-    , ecoConstantUnit, ecoConstantEmptyRec, ecoConstantNil, ecoConstantNothing, ecoConstantEmptyString, ecoConstantNullCons
+    , ecoConstantUnit, ecoConstantEmptyRec, ecoConstantNil, ecoConstantNothing, ecoConstantEmptyString, ecoConstantNullCons, ecoConstantSpare, ecoNullWord
     , ecoConstructList, ecoConstructTuple2, ecoConstructTuple3, ecoConstructRecord, ecoConstructCustom, withCensusId
     , ecoProjectListHead, ecoProjectListTail, ecoProjectTuple2, ecoProjectTuple3, ecoProjectRecord, ecoProjectCustom
-    , ecoCallNamed, ecoReturn, ecoYield, ecoStringLiteral, ecoUnaryOp, ecoBinaryOp, ecoTernaryOp, ecoCase, ecoCaseString, ecoGetTag, ecoIsConstant
+    , ecoCallNamed, ecoReturn, ecoYield, ecoStringLiteral, ecoUnaryOp, ecoBinaryOp, ecoTernaryOp, ecoCase, ecoCaseString, ecoGetTag, ecoIsWord, ecoWordTag, ecoTagWord, ecoUntag
     , ecoArrayGet, ecoArraySet, ecoArrayLength
     , arithConstantInt, arithConstantInt32, arithConstantFloat, arithConstantBool, arithConstantChar, CmpIPred(..), arithCmpI
     , scfWhile, scfCondition
@@ -49,7 +49,7 @@ Several facts recur across the builders:
 
 # Eco Constants
 
-@docs ecoConstantUnit, ecoConstantEmptyRec, ecoConstantNil, ecoConstantNothing, ecoConstantEmptyString, ecoConstantNullCons
+@docs ecoConstantUnit, ecoConstantEmptyRec, ecoConstantNil, ecoConstantNothing, ecoConstantEmptyString, ecoConstantNullCons, ecoConstantSpare, ecoNullWord
 
 
 # Eco Constructors
@@ -64,7 +64,7 @@ Several facts recur across the builders:
 
 # Eco Operations
 
-@docs ecoCallNamed, ecoReturn, ecoYield, ecoStringLiteral, ecoUnaryOp, ecoBinaryOp, ecoTernaryOp, ecoCase, ecoCaseString, ecoGetTag, ecoIsConstant
+@docs ecoCallNamed, ecoReturn, ecoYield, ecoStringLiteral, ecoUnaryOp, ecoBinaryOp, ecoTernaryOp, ecoCase, ecoCaseString, ecoGetTag, ecoIsWord, ecoWordTag, ecoTagWord, ecoUntag
 
 
 # Eco Array Operations
@@ -99,6 +99,7 @@ Several facts recur across the builders:
 -}
 
 import Compiler.GenerateMlir.Context as Ctx
+import Compiler.IR.Mono as Mono
 import Compiler.GenerateMlir.Types as Types
 import Compiler.IR.Kernel.Facts as KernelFacts
 import Compiler.IR.Runtime.HeapLimits as HeapLimits
@@ -196,6 +197,34 @@ ecoConstantNullCons ctx resultVar tag =
         |> opBuilder.withResults [ ( resultVar, Types.ecoValue ) ]
         |> opBuilder.withAttrs (Dict.singleton "tag" (IntAttr Nothing tag))
         |> opBuilder.build
+
+
+
+{-| Builds the `eco.constant.spare` of level `level` (1 to 1023): the spare null
+word `0x6 | (level << 43)` of a nullable type whose field type can be Empty or a
+null-cons word (plans/constructor-representation-followups.md F2, CGEN_089).
+-}
+ecoConstantSpare : Ctx.Context -> String -> Int -> ( Ctx.Context, MlirOp )
+ecoConstantSpare ctx resultVar level =
+    mlirOp ctx "eco.constant.spare"
+        |> opBuilder.withResults [ ( resultVar, Types.ecoValue ) ]
+        |> opBuilder.withAttrs (Dict.singleton "level" (IntAttr Nothing level))
+        |> opBuilder.build
+
+
+{-| Builds the null word `nullWord` of a nullable type: the Empty constant, a
+null-cons word or a spare word.
+-}
+ecoNullWord : Ctx.Context -> String -> Mono.NullWord -> ( Ctx.Context, MlirOp )
+ecoNullWord ctx resultVar nullWord =
+    if nullWord.nullCons then
+        ecoConstantNullCons ctx resultVar nullWord.index
+
+    else if nullWord.index == 0 then
+        ecoConstantEmpty ctx resultVar
+
+    else
+        ecoConstantSpare ctx resultVar nullWord.index
 
 
 
@@ -1212,17 +1241,70 @@ ecoGetTag ctx resultVar operand =
         |> opBuilder.build
 
 
-{-| Builds an `eco.is_constant`, which is true when an `!eco.value` is an
-embedded constant (its `ptr_ind` bit is set, HEAP_014): the test of the nullary
-constructor of a nullable Maybe-shaped user type (CGEN_087).
+{-| Builds the `eco.word_tag` that reads the constructor index a tagged-union
+word carries in bits 43-52, as an `i64` (CGEN_091, HEAP_086).
 -}
-ecoIsConstant : Ctx.Context -> String -> String -> ( Ctx.Context, MlirOp )
-ecoIsConstant ctx resultVar operand =
+ecoWordTag : Ctx.Context -> String -> String -> ( Ctx.Context, MlirOp )
+ecoWordTag ctx resultVar operand =
+    mlirOp ctx "eco.word_tag"
+        |> opBuilder.withOperands [ operand ]
+        |> opBuilder.withResults [ ( resultVar, I64 ) ]
+        |> opBuilder.withAttrs (Dict.singleton "_operand_types" (ArrayAttr Nothing [ TypeAttr Types.ecoValue ]))
+        |> opBuilder.build
+
+
+{-| Builds the `eco.tag_word` that tags the word `operand` with the constructor
+index `index` (CGEN_092, HEAP_086).
+-}
+ecoTagWord : Ctx.Context -> String -> String -> Int -> ( Ctx.Context, MlirOp )
+ecoTagWord ctx resultVar operand index =
+    mlirOp ctx "eco.tag_word"
+        |> opBuilder.withOperands [ operand ]
+        |> opBuilder.withResults [ ( resultVar, Types.ecoValue ) ]
+        |> opBuilder.withAttrs
+            (Dict.fromList
+                [ ( "_operand_types", ArrayAttr Nothing [ TypeAttr Types.ecoValue ] )
+                , ( "index", IntAttr Nothing index )
+                ]
+            )
+        |> opBuilder.build
+
+
+{-| Builds the `eco.untag` that clears a tagged-union word's constructor index
+(CGEN_093, HEAP_086).
+-}
+ecoUntag : Ctx.Context -> String -> String -> ( Ctx.Context, MlirOp )
+ecoUntag ctx resultVar operand =
+    mlirOp ctx "eco.untag"
+        |> opBuilder.withOperands [ operand ]
+        |> opBuilder.withResults [ ( resultVar, Types.ecoValue ) ]
+        |> opBuilder.withAttrs (Dict.singleton "_operand_types" (ArrayAttr Nothing [ TypeAttr Types.ecoValue ]))
+        |> opBuilder.build
+
+
+{-| Builds the `eco.is_word` that tests whether `operand` is exactly the null
+word `nullWord` (CGEN_090). The op carries the word's two parts, its constant
+code and its index, so that no attribute needs more than 52 bits.
+-}
+ecoIsWord : Ctx.Context -> String -> String -> Mono.NullWord -> ( Ctx.Context, MlirOp )
+ecoIsWord ctx resultVar operand nullWord =
     let
         attrs =
-            Dict.singleton "_operand_types" (ArrayAttr Nothing [ TypeAttr Types.ecoValue ])
+            Dict.fromList
+                [ ( "_operand_types", ArrayAttr Nothing [ TypeAttr Types.ecoValue ] )
+                , ( "constant"
+                  , IntAttr Nothing
+                        (if nullWord.nullCons then
+                            3
+
+                         else
+                            2
+                        )
+                  )
+                , ( "index", IntAttr Nothing nullWord.index )
+                ]
     in
-    mlirOp ctx "eco.is_constant"
+    mlirOp ctx "eco.is_word"
         |> opBuilder.withOperands [ operand ]
         |> opBuilder.withResults [ ( resultVar, I1 ) ]
         |> opBuilder.withAttrs attrs

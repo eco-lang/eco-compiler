@@ -44,7 +44,7 @@ namespace eco {
  * load, a `ptrtoint`, a call or invoke, an `extractvalue`, or a phi or select
  * built from the first three.
  */
-struct EcoPtrIntVerifyPass : public llvm::PassInfoMixin<EcoPtrIntVerifyPass> {
+struct EcoPtrIntVerifyPass : public llvm::RequiredPassInfoMixin<EcoPtrIntVerifyPass> {
     // Checks every conversion in `F`, and does nothing for a declaration.
     llvm::PreservedAnalyses run(llvm::Function &F,
                                 llvm::FunctionAnalysisManager &FAM);

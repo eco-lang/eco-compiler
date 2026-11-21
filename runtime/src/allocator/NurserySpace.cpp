@@ -1217,7 +1217,7 @@ void NurserySpace::evacuate(HPointer &ptr, OldGenSpace &oldgen, std::vector<void
             }
         }
 #endif
-        ptr = Allocator::toPointerRaw(tgt);
+        ptr = retarget(ptr, tgt);   // keeps a tagged word's bits 43-52 (HEAP_086)
         return;
     }
 
@@ -1331,7 +1331,7 @@ void NurserySpace::evacuate(HPointer &ptr, OldGenSpace &oldgen, std::vector<void
     fwd->header.forward_ptr = encodeForwardPtr(new_obj, heap_base);
     fwd->header.unused = 0;
 
-    ptr = Allocator::toPointerRaw(new_obj);
+    ptr = retarget(ptr, new_obj);   // keeps a tagged word's bits 43-52 (HEAP_086)
 }
 
 
@@ -1341,8 +1341,9 @@ void NurserySpace::evacuateJitPtr(uint64_t &ptr, OldGenSpace &oldgen, std::vecto
         return;
     }
 
-    // An address outside the heap is left as it is. Unlike `evacuate`, validate builds do not check it.
-    char *p = reinterpret_cast<char*>(ptr);
+    // An address outside the heap is left as it is. Unlike `evacuate`, validate builds do not check it. A tagged
+    // word (HEAP_086) is decoded to its address first, and its tag is kept on the word written back.
+    char *p = static_cast<char*>(hpToAddr(hpFromBits(ptr)));
     if (p < heap_base_ || p >= heap_base_ + heap_reserved_) {
         return;
     }
@@ -1350,9 +1351,9 @@ void NurserySpace::evacuateJitPtr(uint64_t &ptr, OldGenSpace &oldgen, std::vecto
     // Everything else is `evacuate`'s, through an `HPointer`, as the parallel and region minors do: a promotion
     // then transfers a large String or Bytes body to the old generation (`promoteLargeHeader`, HEAP_026) and resets
     // the copy's colour, which a copy of its own here once skipped.
-    HPointer hp = Allocator::toPointerRaw(p);
+    HPointer hp = hpFromBits(ptr);
     evacuate(hp, oldgen, promoted_objects);
-    ptr = reinterpret_cast<uint64_t>(Allocator::fromPointerRaw(hp));
+    ptr = hpBits(hp);
 }
 
 void NurserySpace::evacuateValueSlot(uint64_t &encoded, OldGenSpace &oldgen,
@@ -1811,7 +1812,7 @@ void* NurserySpace::evacuateListSpine(HPointer &ptr, OldGenSpace &oldgen,
         // Already forwarded? Update pointer and stop - rest of list already copied
         if (hdr->tag == Tag_Forward) {
             Forward* fwd = static_cast<Forward*>(obj);
-            HPointer forwarded = Allocator::toPointerRaw(decodeForwardPtr(fwd->header.forward_ptr, heap_base));
+            HPointer forwarded = retarget(current, decodeForwardPtr(fwd->header.forward_ptr, heap_base));
 
             if (prev_copied) {
                 // Link previous copied cell to the forwarded location
@@ -1903,11 +1904,11 @@ void* NurserySpace::evacuateListSpine(HPointer &ptr, OldGenSpace &oldgen,
         // Link previous cell to this new cell
         if (prev_copied) {
             Cons* prev_cons = static_cast<Cons*>(prev_copied);
-            prev_cons->tail = Allocator::toPointerRaw(new_obj);
+            prev_cons->tail = retarget(current, new_obj);
         } else {
             // This is the first cell - update the original pointer
             first_copied = new_obj;
-            ptr = Allocator::toPointerRaw(new_obj);
+            ptr = retarget(ptr, new_obj);
         }
 
         prev_copied = new_obj;

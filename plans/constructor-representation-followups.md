@@ -1,6 +1,6 @@
 ---
-status: not-started
-updated: 2026-11-20
+status: done
+updated: 2026-11-21
 ---
 
 # Constructor representation: follow-ups
@@ -20,7 +20,7 @@ found and what changed.
 
 | Unit | What it does | Who gains |
 |---|---|---|
-| F5 | Fixes two live array-kind bugs (`Array.set` and the boxed push relabel an array's element kind without converting its elements); then `Array.get` on an `Array Int`/`Float`/`Char` reads the raw slot instead of boxing and unboxing each element, and `JsArray` callbacks get raw elements | every program using primitive arrays; a latent use-after-free closed |
+| F5 | Makes a `JsArray` of boxed primitives impossible by construction (producers derive the kind from the value; the two relabelling paths assert instead), then `Array.get` on an `Array Int`/`Float`/`Char` is an inline load instead of a kernel call that boxes each element, and `JsArray` callbacks get raw elements | every program using primitive arrays; a latent kind/GC hazard closed |
 | F3 | `Debug.toString` / `Debug.log` used as function values print like direct calls (today `Ctor0 "x"`, `{ f0 = 1 }`) | `Debug` output matches Elm |
 | F4 | Wrappers and `Maybe`s that are only *moved* through a type variable (shared kernel-alias specializations) can be erased or made nullable | the wrapper types and `Maybe`s excluded today for "a type-variable view", e.g. `TypeVars.Point` |
 | F2 | Nullable types whose payload can itself be a constant (`Maybe String`, `Maybe (List a)`, `Maybe ()`, `Maybe (Maybe Rec)`, user `Opt Bool`) get a reserved "empty" word, so `Just x` is `x` there too; no GC change. Every nullable test becomes an exact word compare | the `Just` allocations N1 cannot reach |
@@ -63,11 +63,18 @@ runtime cost, F1-C codegen spike).
    - the TLA canary (`test/scripts/check-tla-manifest.sh /work`): a firing names models to audit
      against their MAPPING, record the verdict in their `AUDIT.md`, then `--update`; never just
      repin;
-   - the heap-validate gate (memory: never a validate self-compile): the `build-validate` tree's
-     unit tests, E2E, and the GC-pressure stress suite;
+   - the stress suite (`build/test/stress-test`, built by name) in the normal tree, once at the
+     default heap config and once under GC pressure (`ECO_HEAP_CONFIG` naming a JSON file with
+     `{"nursery_regions": 0}` and a small `nursery_block_count`/`nursery_max_block_count`, so that
+     the legacy nursery collects often; a region-mode nursery must keep at least one heap slot);
+   - the `ECO_HEAP_VALIDATE` tree (`build-validate`: its unit tests, E2E and stress) is run **once,
+     after the whole plan is complete** (user direction, 2026-11-20: validate builds take too long per
+     unit; the normal-tree E2E and stress runs stay in every gate). F5a's probe and F1.1's
+     validate-build asserts are read in that run (memory: never a validate self-compile);
    - the AOT E2E (`cmake --build build --target run-aot-e2e`): new symbols must link;
-   - lowering validation: a tree configured with `-DECO_LOWERING_VALIDATION=ON` (EcoPtrIntVerify is
-     compiled only then), running `full`;
+   - lowering validation, for a unit that adds or changes an LLVM lowering pattern (F2, F1): a tree
+     configured with `-DECO_LOWERING_VALIDATION=ON` (EcoPtrIntVerify is compiled only then), running
+     `full`;
    - `stress-test` with a small nursery (`ECO_HEAP_CONFIG` naming a 4 MiB nursery): the default
      config runs zero minors in the stress suite.
 
@@ -80,160 +87,227 @@ runtime cost, F1-C codegen spike).
 
 ---
 
-## 2. F5. Array element kinds: two fixes, then typed reads
+## 2. F5. Array element kinds: an invariant, then typed reads
 
 ### 2.1 Facts
 
-- A `JsArray`'s element kind is `header.unboxed & 3` (0 boxed, 1 Int, 2 Float, 3 Char). The GC
-  traces elements only when the kind is 0.
-- **Live bug 1**: `Array.set` on an `Array Int` is forwarded (`unsafeSet` is suffix-selecting) and
-  becomes the inline `eco.array.set`. `ArraySetOpLowering` (`EcoToLLVMHeap.cpp:1442-1515`) clones the
-  array and calls `eco_array_set_fix_kind(copy, kind)` (`RuntimeExports.cpp:4997-5005`), which sets
-  `header.unboxed = kind` without converting the existing elements. On a non-empty kind-0 copy, the
-  other elements become pointer bits read as Ints, and their boxes are no longer traced
-  (use-after-free).
-- **Live bug 2**: `elm_array_push_box` (`JsArrayExports.cpp:753-772`) sets kind 0 over a primitive-kind
-  source without boxing its elements: raw Ints traced as pointers.
-- The kernel paths are correct: `bindPrimitiveKind` (`JsArrayExports.cpp:363-378`) unboxes a kind-0
-  source in place; `unsafeSet` stores by kind (`:421`).
-- `Array.get` (elm/core `Array.elm:269`, and `getHelp`'s `Leaf` arm `:285`) calls the alias
-  `Elm.JsArray.unsafeGet = Elm.Kernel.JsArray.unsafeGet`. AliasForward keeps it (`abiFixed` false),
-  so the call reaches the shared specialization and `Elm_Kernel_JsArray_unsafeGet_Int`
-  (`JsArrayExports.cpp:842`, `_Int` = the index), which boxes a primitive element (`boxElement`) for
-  the caller to unbox. The compiler itself does this (`LocalOpt/Typed/Case.elm:213-228`,
-  `arrayGetOr` on an `Array Int`).
+- A `JsArray`'s element kind is `header.unboxed & 3` (0 boxed, 1 Int, 2 Float, 3 Char). Readers and
+  the GC trust it; the GC traces array elements only at kind 0 (`NurserySpace.cpp:1700`,
+  `NurseryRegion.cpp:739-741`, `NurseryParallel.cpp:574-576`).
+- The kind is set dynamically by the first store, so the runtime *permits* a kind-0 array of boxed
+  Ints. The compiler avoids building one wherever the element type is known:
+  - at a concrete element type the `push`/`singleton`/`unsafeSet` intrinsics unbox the value to the
+    static element type (`Compiler/IR/Kernel/Intrinsics.elm:670-685`), and the kernels pick
+    `_Int`/`_Float`/`_Char` variants;
+  - since ARRAY-NEW-1 (2026-11-04), `initialize`/`map`/`indexedMap`/`initializeFromList` take the
+    element kind from the call site's static type;
+  - every element-building call in elm/core `Array.elm` is saturated (`:184,203,241,346,436,521-530,
+    551,559`), so it is specialized at the concrete element type;
+  - JSON `Decode.array` derives the kind from the decoded values' runtime tags
+    (`JsonExports.cpp:1335-1342`, `decodedSlot` `:1005-1022`).
+- A kind-0 primitive array can come only from a boxed root path, used where the element's static
+  type is a type variable while the values are primitives. No Elm program is known to reach one.
+  The producers that can (verified, review of 2026-11-20):
+
+  | Producer | Today |
+  |---|---|
+  | `Elm_Kernel_JsArray_singleton` (`JsArrayExports.cpp:388-393`) | kind 0 (`arrayFromPointers`) |
+  | `elm_array_singleton_box` (`:709-720`) | kind 0 |
+  | `Elm_Kernel_JsArray_push` onto an empty array (`:427-460`) | kind 0 |
+  | `elm_array_push_box` (`:753-772`) | kind 0, **relabelling** a primitive source |
+  | `initializeImpl`/`mapImpl` with `kKeepElementKind` (`:225-300`, `:567-583`, `:890-904`) via `pushTypedResult` (`:150-172`) | a result_kind-0 closure's boxed primitives at kind 0 |
+  | `JsArray::initializeFromList` with `kKeepElementKind` (`JsArray.cpp:26-35`) | first head binds; later heads of another kind stored **unconverted** |
+  | `eco_clone_array` + `eco_array_set_fix_kind` (`RuntimeExports.cpp:4997-5038`, `eco.array.set`) | **relabels** without converting |
+  | eco/system `JsArray2` `unsafeInsert` onto empty / `unsafeSet` / `copyArray` (`JsArray2Exports.cpp:37-107`) | kind 0 (reached only by `SeqDict` with `Node` elements) |
+
+  `Elm_Kernel_JsArray_unsafeSet`'s boxed root (`:403-425`) and `slice`/`appendN` (`:463-561`,
+  `:774-808`, `:944-997`) store by kind or copy the source; `List.toArray`'s array is always empty
+  (`ListExports.cpp:612-638`); JSON's internal arrays hold Customs.
+- A boxed Int/Float/Char exists only for a static `Int`/`Float`/`Char` (verified: nullable types
+  exclude primitive payloads, MONO_033; erased wrappers become `MInt`; JSON values are wrapped;
+  `number` resolves by MONO_028; Bool/Order/unit are constants). This is what makes tag-derived
+  kinds sound.
+- An empty array may carry a primitive kind (`slice` to length 0 keeps the source's kind), so "no kind
+  yet" means *length 0*, whatever the header says.
+- `Array.get` (elm/core `Array.elm:269`, `getHelp`'s `Leaf` arm `:285`) calls the global alias
+  `Elm.JsArray.unsafeGet` (`Elm/JsArray.elm:105-107`). AliasForward keeps the call (`abiFixed` false),
+  so it reaches the shared specialization and `Elm_Kernel_JsArray_unsafeGet_Int`
+  (`JsArrayExports.cpp:842`), which boxes a primitive element for the caller to unbox. The compiler
+  itself does this (`LocalOpt/Typed/Case.elm:213-228`, `arrayGetOr` on an `Array Int`).
+- Calls to elm/core globals already try intrinsics: `Expr.elm:3685-3699` (`maybeCoreInfo`) passes the
+  global's module name to `admittedIntrinsic` (`:1401-1404`) → `KernelIntrinsics.kernelIntrinsicOn`
+  (`Intrinsics.elm:149-175`), which dispatches on the kernel home. The module `Elm.JsArray` does not
+  match the home `"JsArray"`, so no `JsArray` intrinsic fires for the alias calls. A call whose result
+  is a function goes to `generateClosureApplication` first (`Expr.elm:1655-1660`) and never reaches
+  the intrinsic check.
 - `mapImpl` (`:283-287`) and `foldImpl` (`:619-625`) box each primitive element before each callback
   call, through `callUnaryMapClosureTyped` (`:209`), `callBinaryIndexMapClosureTyped` (`:177`) and
   `callBinaryFoldClosureTyped` (`:194`), whose layouts give the element kind 0.
-- `eco.array.get` is declared `[Pure]` (`Ops.td:1011`), i.e. also `AlwaysSpeculatable`.
-- Lowering patterns may run inside `scf` regions, which must stay single-block
-  (`EcoToLLVMGlobals.cpp:28-29`): a branch inside a lowering is an `scf.if`.
+- License pins (`compiler/src/Compiler/Monomorphize/Solver/kernel-license-files.csv`): the 14
+  `Elm.JsArray.*` kernels have 21 rows over `JsArrayExports.cpp`, `JsArray.cpp` and `JsArray.hpp`
+  (`JsArray.hpp` for initialize, indexedMap, initializeFromList, map, push, unsafeSet). `JsArray2`,
+  `HeapHelpers.hpp` and `RuntimeExports.cpp` are not license-pinned; none of the F5 files holds a TLA
+  region (`RuntimeExports.cpp` and `NurserySpace.cpp` carry census pins, which hash concurrency lines
+  only).
 
-### 2.2 F5a. Fix the two kind bugs (first)
+### 2.2 F5a. A primitive `JsArray` is always of its primitive kind
 
-1. **Tests first.**
-   - `test/codegen/array_kind_set.mlir` (FileCheck, `// RUN: %ecoc %s -emit=jit 2>&1 | %FileCheck %s`):
-     build a kind-0 `JsArray` of boxed Ints with `eco.array.push` of `!eco.value` operands (this
-     lowers to `elm_array_push_box`), `eco.array.set : i64` one element, force a minor GC
-     (`eco_gc_minor` or the runtime test hook used by existing codegen GC tests), then
-     `eco.array.get : i64` every element and print. Expected: the values, not pointer bits.
-   - The mirror case: a kind-1 array (push of `i64`), then `eco.array.push` of `!eco.value` (the
-     boxed push), then read all elements boxed after a GC.
-   - `test/kernel/JsArrayKernelTest.cpp`: `elm_array_push_box` onto a kind-1 array keeps every
-     element readable.
-2. **Fix `eco_array_set_fix_kind`** (`RuntimeExports.cpp:4997`): rename to
-   `eco_array_set_bind_kind`. If the copy's kind equals the intended kind, or the copy is empty,
-   set the kind as today. If the copy is kind 0 and the intended kind is primitive, unbox every
-   element in place (the loop of `bindPrimitiveKind`; the copy is fresh and unshared). The function
-   must not allocate (it runs between the clone and the store). Update its declaration in
-   `EcoToLLVMRuntime.cpp` and the call in `ArraySetOpLowering`, and the lowering's doc comment.
-   Because `runtime/src/allocator` cannot include `elm-kernel-cpp/src/core/JsArray.hpp`, add a
-   runtime-side `unboxElementInPlace(Unboxable&, kind)` in `HeapHelpers.hpp` next to `boxElement`
-   (`:1927`), and make `JsArray::unboxByKind` call it.
-3. **Fix `elm_array_push_box`** (`JsArrayExports.cpp:753-772`): when the source kind is primitive,
-   box the pushed value into the source's kind instead (unbox it: the value is a boxed primitive of
-   that kind by MONO_028) and keep the kind; only an empty or kind-0 source stays kind 0. This
-   mirrors `elm_array_push_*` for primitives.
-4. **Invariant**: amend HEAP_046's JsArray paragraph: an array's element kind is set by its first
-   store; every later store converts the value to that kind, and a kind change converts every
-   element (never relabels).
-5. **License manifest**: the 14 `Elm.JsArray.*` rows pin `JsArrayExports.cpp`. Add one re-audit line
-   per kernel to `compiler/src/Compiler/Monomorphize/Solver/kernel-license-audit.csv`, stamped with
-   `date -u +%Y-%m-%dT%H:%M:%S`, then `test/scripts/check-kernel-license-manifest.sh /work --update`.
-6. **Gates**: §1.2 items 1–3, 6 and 7 (runtime change). Identity oracle: no MLIR change expected.
+**Invariant** (HEAP_046, extended): a non-empty `JsArray` holding `Int`, `Float` or `Char` values is
+of that primitive kind; a non-empty kind-0 array holds no boxed `Int`/`Float`/`Char`. Producers bind
+an array's kind from its first element (by the element's runtime tag when it arrives boxed) and
+convert every later element to that kind; nothing relabels a non-empty array. A length-0 array has no
+kind, whatever its header says.
 
-### 2.3 F5b. Typed `Array.get`
-
-1. **Tests first.**
-   - `test/codegen/array_get_kind.mlir`: `eco.array.get : i64` / `f64` / `i32` on a kind-0 array (built
-     by the boxed push) returns the unboxed values; on a kind-1/2/3 array, the raw values.
-   - `test/elm-core/src/ArrayGetPrimitiveTest.elm`: `Array.get` on `Array Int`, `Float`, `Char` built
-     by `fromList`, `initialize`, `push`, `set`, `append` and `slice`, at indices below 32 and at 35+
-     (`getHelp`'s leaf arm), and on an `Array (Int -> Int)` (call the result). Output recorded from
-     Elm. Passes before and after.
-   - `test/eco-mlir/src/ArrayGetIntInlineTest.elm`: `-- CHECK-MLIR: eco.array.get` and
-     `-- CHECK-MLIR-NOT: Elm_Kernel_JsArray_unsafeGet_Int(` for `Array.get` on an `Array Int`. Fails
-     before.
-   - `compiler/tests/Compiler/GenerateMlir/KernelAbiTest.elm` (copy the `initialize_Int_Float` case,
-     `:544-553`): `jsArrayKey "unsafeGet" [ Mono.MInt, jsArrayOf X ] X` gives
-     `Elm_Kernel_JsArray_unsafeGet_Int_Int` / `_Int_Float` / `_Int_Char` with `abiResultType`
-     `ecoInt` / `ecoFloat` / `ecoChar`; `X = Mono.MString` gives `Elm_Kernel_JsArray_unsafeGet_Int`;
-     `X = MVar CEcoValue` gives `…_unsafeGet_Int`; `X = MVar CNumber` gives `…_unsafeGet_Int_Int`.
-   - `compiler/tests/Compiler/PreMono/AliasForwardTest.elm`: copy `kernelConsModule` (`:930-945`)
-     with a `qualVarExpr "Elm.Kernel.JsArray" "unsafeGet"` body: the call is forwarded.
-   - `test/kernel/JsArrayKernelTest.cpp`: each `unsafeGet_Int_X` on kind 0 and on its own kind.
-2. **Forward the call.** `compiler/src/Compiler/IR/Kernel/Abi.elm`: add `( "JsArray", "unsafeGet" )`
-   to `suffixSelectingKernels` (`:62-87`); **not** to `boxedAbiKernels`. Update the docstring
-   (`:42-61`). Effects: `AliasForward.abiFixedBy` (`:240-245`) becomes true; the subst engine keeps
-   the concrete type when `isFullyMonomorphicType` holds (`Specialize.deriveKernelAbiType`
-   `:5366-5395`), the solver keeps the read-back type (`Translate.deriveKernelAbiTypeKeeping`
-   `:3997-4039`); a residual `JsArray a` stays boxed and the intrinsic declines on `MVar`
-   (`Intrinsics.elm:716-720`). Update AliasForward's comments `:34-35` and `:548-549` ("an `abiFixed`
-   kernel does not return a function" is no longer true: `unsafeGet` can return a function).
-3. **Symbol choice.** `compiler/src/Compiler/GenerateMlir/KernelAbi.elm`, `kernelInstanceSymbol`
-   (`:296-297`): replace `( "JsArray", "unsafeGet", [ Mono.MInt, _ ] ) -> suffixed "_Int"` by
-   `suffixed ("_Int" ++ abiElementSuffix key.resultType)`, with
-
-   ```elm
-   abiElementSuffix : Mono.MonoType -> String
-   abiElementSuffix t =
-       case Types.monoTypeToAbi t of
-           Mlir.I64 -> "_Int"
-           Mlir.F64 -> "_Float"
-           Mlir.I32 -> "_Char"
-           _ -> ""
-   ```
-
-   (matching the ABI covers an open `number` variable, whose ABI is `i64`). Update the module and
-   function docstrings (`:19-39`, `:139-146`).
-4. **Kernel variants** (`elm-kernel-cpp/src/core/JsArrayExports.cpp`, beside `unsafeGet_Int` `:842`),
-   reached by value references and partial applications of the alias:
+1. **Shared helpers**, `runtime/src/allocator/HeapHelpers.hpp`, beside `boxElement` (`:1927`), in
+   namespace `alloc` (the file already uses `Allocator::resolve`, `resolveOrNull`, `ElmInt`,
+   `ElmFloat`, `ElmChar`):
 
    ```cpp
-   int64_t Elm_Kernel_JsArray_unsafeGet_Int_Int(int64_t idx, HPtr array) {
-       ElmArray* arr = static_cast<ElmArray*>(Export::toPtr(array.toBits()));
-       assert(inRange(idx, arr->length) && "JsArray.unsafeGet: index out of range");
-       uint32_t kind = arr->header.unboxed & 0x3;
-       if (kind == 1) return arr->elements[idx].i;
-       assert(kind == 0 && "unsafeGet_Int_Int: array of another primitive kind");
-       return JsArray::unboxByKind(arr->elements[idx].p, 1).i;
-   }
+   // The slot kind a JsArray stores `v` in when it arrives with kind `srcKind` (0 boxed word, 1-3 raw):
+   // `srcKind` itself for a raw value, and for a boxed word 1, 2 or 3 if it names a boxed Int, Float or
+   // Char, else 0 (HEAP_046). Does not allocate.
+   inline u8 arrayKindOf(Unboxable v, u8 srcKind);
+
+   // `v` (of kind `srcKind`) as a slot of kind `dstKind`: unchanged when the kinds agree; a boxed
+   // Int/Float/Char unboxed when `dstKind` is 1-3. A raw value never goes into a boxed (kind 0) slot,
+   // and a non-primitive word never into a primitive one: both assert (plain `assert`). Does not
+   // allocate.
+   inline Unboxable convertToKind(Unboxable v, u8 srcKind, u8 dstKind);
+
+   // Under ECO_HEAP_VALIDATE: asserts that the array object `arr` keeps HEAP_046 (a non-empty kind-0
+   // array holds no boxed Int, Float or Char), checking every element. A no-op otherwise.
+   inline void validateArrayKind(const void* arr, const char* where);
    ```
 
-   `_Int_Float` (kind 2, `.f`, `double`) and `_Int_Char` (kind 3, `static_cast<uint32_t>(.c)`,
-   `uint32_t`) likewise. None allocates. Declare them in `elm-kernel-cpp/src/KernelExports.h`
-   (beside `:422`) and add `KERNEL_SYM(...)` lines in `runtime/src/codegen/RuntimeSymbols.cpp`
-   (beside `:929`). `unsafeGet_Int` is unchanged (eco/system's JsArray2 forwards to it).
-5. **Kind-aware inline read.** `ArrayGetOpLowering` (`EcoToLLVMHeap.cpp:1382-1425`), for an `i64`,
-   `f64` or Char (`i32`) result only:
-   - compute the resolved base as today (`emitResolvedBase`); load the header's first `i32`;
-     `kind = (hdr >> layout::HeaderUnboxedShift) & 3` (`EcoToLLVMInternal.h:366`);
-   - `scf.if (kind == expected)` → load the slot as today; `else` → `llvm.call` of
-     `Elm_Kernel_JsArray_unsafeGet_Int_X(index, array)` (one kind-aware reader; declare it in the
-     lowering's runtime-declaration table with the `gc-leaf-function` attribute, as it never
-     allocates);
-   - a `!eco.value` result keeps the plain load (an array of a non-primitive static element type is
-     always kind 0).
-6. **Not speculatable.** `runtime/src/codegen/Ops.td:1011`: replace `[Pure]` on `Eco_ArrayGetOp` by
-   `[NoMemoryEffect]` (no `AlwaysSpeculatable`), so MLIR cannot hoist it above `Array.get`'s bounds
-   check now that it may call into the kernel. Run the CSE codegen tests
-   (`test/codegen/cse_pure_dedup.mlir`): CSE needs only no side effects.
-7. **Policy and manifests.**
-   - `compiler/tests/TestLogic/Generate/CodeGen/KernelDeclAbiPolicy.elm`: add
-     `"_JsArray_unsafeGet_Int"` to `elementSelected` (`:177-187`) and update its docstring
-     (`:25-30`); without it `_Int_Float`/`_Int_Char` are reported.
-   - License manifest re-audit as in F5a step 5 (if F5a's re-audit is older than this edit).
-8. **Facts row.** `compiler/src/Compiler/IR/Kernel/Facts.elm:909-916` (`Elm.JsArray.unsafeGet`): fix
-   the stale evidence cite (`:210-223` → `:401`, `:842`). The row is keyed without suffix, so the
-   `_Int_X` variants cannot be gc-leaf through it; the value-reference path keeps a statepoint
-   (acceptable: it is not the hot path).
+   `JsArray::unboxByKind` (`elm-kernel-cpp/src/core/JsArray.hpp:30-48`) becomes a call of
+   `convertToKind(boxed(p), 0, kind)`, keeping its asserts' messages.
+2. **Producers** (each: `existing = number of elements already in the destination`;
+   `k = existing == 0 ? alloc::arrayKindOf(v, srcKind) : (dst->header.unboxed & 3)`;
+   `dst->elements[i] = alloc::convertToKind(v, srcKind, k)`; `dst->header.unboxed = k`):
+   - `Elm_Kernel_JsArray_singleton` and `elm_array_singleton_box`: allocate one slot (root the value
+     across `allocArray`, as `elm_array_singleton_box` does), store with the rule;
+   - `Elm_Kernel_JsArray_push` and `elm_array_push_box`: after `copyAndExtendForPush`, store with the
+     rule (`existing = len`); `push_box` keeps a primitive source's kind instead of relabelling;
+   - `pushTypedResult` (`JsArrayExports.cpp:150-172`): replace the per-kind `arrayPush`/`arrayPushKind`
+     calls by the rule with `srcKind = result_kind` (`existing = arr->length`), then `length++`;
+   - `JsArray::initializeFromList` (`JsArray.cpp:26-35`), the `kKeepElementKind` branch: the rule per
+     head with `srcKind` the cell's head kind;
+   - delete `pushUnboxedResult` (`JsArrayExports.cpp:119-146`; its comment says nothing calls it);
+   - `JsArray2Exports.cpp`: `unsafeInsert`, `unsafeSet` (and the `slotFor` helper, `:16-29`) store with
+     the rule.
+   `elm_array_push_int/float/char` and the `_Int`/`_Float`/`_Char` kernel variants keep
+   `bindPrimitiveKind` (`:363-378`); its kind-0 branch stays as a defensive conversion and its comment
+   changes ("a boxed source cannot hold primitives under HEAP_046; converted defensively").
+3. **No relabel in `Array.set`.** `eco_array_set_fix_kind` becomes `eco_array_check_kind(array, kind)`:
+   `assert(len == 0 || (unboxed & 3) == kind)` plus `validateArrayKind`; it never writes. The lowering
+   (`ArraySetOpLowering`, `EcoToLLVMHeap.cpp:1442-1515`) emits the call only when the codegen is built
+   with `ECO_HEAP_VALIDATE` (`#if ECO_HEAP_VALIDATE` around the call emission), so ordinary builds pay
+   no call per `Array.set`. Rename at all five sites: `RuntimeExports.cpp:4997` (definition),
+   `RuntimeExports.h:926`, `runtime/src/codegen/RuntimeSymbols.cpp:589-591` (JIT symbol map),
+   `EcoToLLVMInternal.h:1170-1171` (declaration helper; mark gc-leaf, it never allocates),
+   `EcoToLLVMRuntime.cpp:1261` (pre-declaration list); update the lowering's doc comment
+   (`EcoToLLVMHeap.cpp:1436-1441`).
+4. **Read-side validation** (the probe; independent of GC mode, touches no TLA region): call
+   `alloc::validateArrayKind` on the array argument at the entry points that already resolve every
+   array Elm hands the kernels: `copyAndExtendForPush` (`:302`), `copyForUnsafeSet` (`:336`),
+   `Elm_Kernel_JsArray_slice` and `elm_array_slice`, `appendN` and `elm_array_append_n` (both
+   operands), `mapImpl`, `foldImpl`, `Elm_Kernel_JsArray_unsafeGet_Int`, `eco_clone_array`
+   (`RuntimeExports.cpp:5007`), and `JsArray2`'s `copyArray`. Not in the GC: synthetic GC tests
+   (`MinorWorkload.hpp:83,135-139`, `ParallelMinorTest`, `ConcurrentTenureTest`, `HeapHelpersTest`,
+   `gc-heap-tsan/heap_driver.cpp`) build kind-0 arrays of boxed Ints on purpose and never pass
+   through these entry points.
+5. **Tests.**
+   - `test/kernel/JsArrayKernelTest.cpp`: for each producer of step 2, boxed Ints, Floats and Chars
+     build an array of the primitive kind (header checked) whose elements read back; `push_box` onto a
+     kind-1 array keeps kind 1 and every element; a minor GC (`eco_minor_gc`) in between leaves all
+     elements intact. Update ARRAY-05 (`:253-254`), whose fixture builds a kind-0 array with
+     `elm_array_push_box(boxedInt(..))`: build the fixture by hand (`allocArray` + `alloc::arrayPush(...,
+     true)`) to keep testing `bindPrimitiveKind`'s defensive branch; update the file header (`:2-4`).
+   - `test/codegen/array_kind_set.mlir` (FileCheck, `// RUN: %ecoc %s -emit=jit 2>&1 | %FileCheck %s`,
+     after `test/codegen/caf_memo_gc.mlir:14-31`): `eco.array.push` of `!eco.value` Int operands (which
+     lowers to `elm_array_push_box`), `eco.array.set : i64`, `eco_minor_gc`, then `eco.array.get : i64`
+     of every element: the values (the kind is checked indirectly, by correct reads after a GC).
+   - Existing tests keep passing: `test/elm-conformance/src/ArrayMapDebugLogKindTest.elm`,
+     `test/elm-core/src/ArrayUnsafeGet{Char,Float}ElementTest.elm`, `HeapHelpersTest` (it tests the
+     low-level `arrayPush`, which is unchanged).
+6. **Comments** that describe the old behaviour: `bindPrimitiveKind` (`JsArrayExports.cpp:358-378`),
+   `Utils.cpp:707-708`, `JsArray.hpp:53-57` (kKeep "unchecked"), `HeapHelpers.hpp:1753-1756`
+   (`arrayPush`/`arrayPushKind` "later pushes must agree, unchecked": now "callers keep HEAP_046").
+7. **Invariant**: amend HEAP_046's JsArray paragraph (the invariant above, the helpers, the read-side
+   validation, the length-0 rule).
+8. **License manifest**: one re-audit line for every row of the 14 `Elm.JsArray.*` kernels (21 rows,
+   three files) in `compiler/src/Compiler/Monomorphize/Solver/kernel-license-audit.csv`, stamped
+   `date -u +%Y-%m-%dT%H:%M:%S`, then `test/scripts/check-kernel-license-manifest.sh /work --update`.
+9. **Probe and gates.** Configure and build the validate tree (`cmake -S /work -B /work/build-validate
+   -DECO_HEAP_VALIDATE=ON` if it has no cache; `cmake --build build-validate --target test
+   stress-test` by name, they are not in `all`), run its unit tests, `check` E2E and the stress suite
+   under a 4 MiB nursery. Record in §9 whether `validateArrayKind` or a `convertToKind` assert fired,
+   and where. Then §1.2 items 1–3, 6 and 7. Identity oracle: no MLIR change (the codegen change in step
+   3 is under `ECO_HEAP_VALIDATE` only).
+
+### 2.3 F5b. `Array.get` as an inline read
+
+With F5a, a primitive `JsArray` holds raw slots, so `eco.array.get` (already a plain load for
+`!eco.value`, `i64`, `f64` and `i32`, `EcoToLLVMHeap.cpp:1382-1425`) is correct for every static
+element type: a primitive static element means a primitive-kind array, a non-primitive one a kind-0
+array.
+
+*(Found while implementing, 2026-11-20.)* In an optimized build the post-mono inliner already inlines
+the `Elm.JsArray.unsafeGet` alias into a direct kernel call, which reaches the intrinsic: the
+`repr-KV2` self-compile has 120 inline `eco.array.get`s and no `unsafeGet` kernel call. Those
+existing inline reads were relying on the invariant F5a now enforces. F5b therefore only changes
+alias calls the inliner leaves in place (inlining off, or over budget); its test compiles with the
+post-mono inliner off (`Compiler.GenerateMlir.ArrayGetIntrinsicTest`), and the E2E MLIR test is a
+regression lock (it passes with either compiler, the inliner being on in E2E).
+
+1. **Tests first.**
+   - `test/elm-core/src/ArrayGetPrimitiveTest.elm`: `Array.get` and `Array.length` on `Array Int`,
+     `Float`, `Char`, `String` and `(Int -> Int)` (call the result), built by `fromList`,
+     `initialize`, `push`, `set`, `append` and `slice`, at indices below 32 and at 35+ (`getHelp`'s
+     leaf arm), and out of range. Output recorded from Elm. Passes before and after.
+   - `compiler/tests/Compiler/GenerateMlir/ArrayGetIntrinsicTest.elm`: `JsArray.unsafeGet 1
+     (JsArray.push 5 (JsArray.push 4 JsArray.empty))` compiled with `inline.postMono = False` emits
+     `eco.array.get` and no `Elm_Kernel_JsArray_unsafeGet_Int`. Fails before. (The test interface
+     `compiler/tests/Compiler/Elm/Interface/JsArray.elm` gains `unsafeGet`.)
+   - `test/eco-mlir/src/ArrayGetIntInlineTest.elm`: for `Array.get` on an `Array Int`,
+     `-- CHECK-MLIR: eco.array.get` and `-- CHECK-MLIR-NOT: Elm_Kernel_JsArray_unsafeGet_Int` (a
+     regression lock).
+2. **Map the module.** `compiler/src/Compiler/GenerateMlir/Expr.elm:3685-3699`, `maybeCoreInfo`: return
+   `( coreIntrinsicHome moduleName, name )` with
+
+   ```elm
+   {-| The kernel home whose intrinsics a call of an elm/core global of module `moduleName` may use:
+   `Elm.JsArray`'s definitions are aliases of the `JsArray` kernel (`Elm.JsArray.unsafeGet =
+   Elm.Kernel.JsArray.unsafeGet`), so a call of one is matched as a call of the kernel, with the
+   call's own argument and result types. Every other module is its own home.
+   -}
+   coreIntrinsicHome : String -> String
+   coreIntrinsicHome moduleName =
+       if moduleName == "Elm.JsArray" then
+           "JsArray"
+
+       else
+           moduleName
+   ```
+
+   Every `jsArrayIntrinsic` (`singleton`, `push`, `slice`, `appendN`, `length`, `unsafeGet`,
+   `unsafeSet`) is the operation the forwarded kernel calls already use; each declines when the
+   array's element type is a type variable (`Intrinsics.elm:714-719` for `unsafeGet`), so shared
+   specializations keep their kernel calls. No change to `suffixSelectingKernels`, AliasForward or
+   either mono engine: a call whose result is a function keeps today's path (`Expr.elm:1655-1660`).
+3. **Invariant**: amend HEAP_046 (compiled code reads `JsArray` elements directly, relying on the
+   invariant) and the CGEN row that describes the JsArray intrinsics if one exists (`grep -n
+   "eco.array.get" design_docs/invariants.csv`).
+4. **Gates**: §1.2 in full; two fixed-point rounds (the compiler's own `Array.get` calls inline).
+   Identity oracle: programs that call `Array.get`/`Array.length` change.
 
 ### 2.4 F5c. Raw elements to `JsArray` callbacks (C++ only)
 
-1. **Test first**: `test/kernel/JsArrayKernelTest.cpp`: `foldl`/`map` over a kind-1 array with a
-   closure compiled for `Int` and with a boxed closure (a shared-spec closure taking `!eco.value`):
-   both give the right result; a count of `boxElement` calls (the allocation census or a test hook)
-   is 0 for the typed closure.
+1. **Test**: `test/elm-core/src/ArrayCallbackKindsTest.elm` (recorded from Elm): `map`,
+   `indexedMap`, `foldl`, `foldr` over 40-element `Int`, `Float` and `Char` arrays with closures
+   typed at the element, with `(::)` and with a function value polymorphic in the element (the last
+   two take the element boxed). Behaviour is unchanged by F5c, so this is a correctness lock rather
+   than a failing-first test; the change is measured by the benchmarks of §2.5.
 2. Add an element-kind parameter to `callUnaryMapClosureTyped`, `callBinaryIndexMapClosureTyped` and
    `callBinaryFoldClosureTyped` and put it in their `EvalParamLayout` (`{elemKind}`,
    `{1, elemKind}`, `{elemKind, accKind}`). In `mapImpl` and `foldImpl`, pass `src->elements[i].bits`
@@ -309,10 +383,17 @@ Mono then specializes each lambda at the type its context gives: in argument pos
 resolve a pending lambda against the callee's parameter type, so the body is a saturated call at a
 concrete type and prints typed.
 
-**Limitation (kept, tested, documented).** Where the context does not fix the type — a let-bound
-`f = Debug.toString` used later, a record field, a list element, an `if` branch — the binder may stay
-a residual type variable (MONO_021) and the body prints untyped, as today. These cases get
-`-- XFAIL-NATIVE:` tests so the gap is visible.
+**Positions where the context fixes the type later** — a let-bound `f = Debug.toString` used later,
+a record field, a list element, an `if` branch — were expected to leave the binder a residual type
+variable. *(Found while implementing, 2026-11-20: they do not; monomorphization resolves the
+parameter in all four, and `DebugValueContextTest` passes without `XFAIL-NATIVE`.)* A `Debug` value
+whose argument type is genuinely a type variable still prints untyped.
+
+*(Implementation note, 2026-11-20.)* The pass matches a direct kernel reference
+(`Elm.Kernel.Debug.toString`/`log`, `TOpt.VarKernel`) as well as `TOpt.VarDebug`, except a node whose
+whole body is such a reference (a kernel alias). The compiler's unit-test environment has no `Debug`
+module and refers to the kernels directly (as `SourceIR.DebugKernelCases` does), so the unit test
+exercises that form and the E2E tests the `VarDebug` form.
 
 ### 3.3 Steps
 
@@ -340,8 +421,8 @@ a residual type variable (MONO_021) and the body prints untyped, as today. These
    `pre-debug-values: rewritten=… flattened=…` under `inline.report`. The `*NoPreMono` test runners
    (`TestPipeline.elm:578-583`) skip `preMono` and so skip F3; say so in their docstring.
 4. **Collateral**: `test/elm-conformance/src/ArrayMapDebugLogKindTest.elm` builds its kind-0 array with
-   a point-free `Debug.log`, which F3 types; update its docstring (it no longer builds kind 0, F5a's
-   MLIR tests cover kind 0).
+   a point-free `Debug.log`, which F3 types; update its docstring (after F5a no producer builds a
+   kind-0 primitive array; F5a's kernel tests cover the producers).
 5. **Invariant**: a `documented` row MONO_034: a
    `Debug.toString`/`Debug.log` value whose type the context fixes reaches codegen as a saturated
    typed call.
@@ -423,6 +504,26 @@ Take a meet whose node-side type is an `MVar`, at a `global->N` site where N is
 6. **Invariants**: amend MONO_029 and MONO_033 (the move-only exemption, its exact conditions, and
    that `RepresentationMeets.validate` applies it) and MONO_032 (kernel visibility does not follow
    alias meets; the move-only rule's exclusion of unlisted kernels covers that case).
+*(Implementation notes, 2026-11-20.)* `nodeTypeOf` in `collect` returns the `Via` with the node type
+(one lookup, instead of a separate `nodeOf`); the `global->` arm tags every meet `splitAt` builds for
+it, and `splitAt` itself builds `ViaOther`. The stat is `EraseStats.skippedMoveOnly` (rendered "move-only
+meets skipped N"). The census is `Steps.meetsVarCensus`, written with the erase report. The pipeline
+test with `repr.validate` passes with `movesOnly` off too (that program has no type-variable meet in
+the unit-test environment); the E2E `EraseWrapperMoveOnlyTest` shows the effect (`P` and `Q` built
+before F4, not after). Found while testing: `Array.slice` keeps an element wrapper boxed through
+elm/core `sliceLeft`'s let-bound `helper` (`other:callArg`, a MONO_021 residual), outside F4's rule;
+the test slices a separate wrapper `R`.
+
+*(Found by the F4 gate, 2026-11-20.)* `SeqSetTest`, `SeqDictEqualityTest` and `SeqDictRandomizedTest`
+crashed (SIGSEGV in `Utils.equal` → `seqDictEq`). F4 let `SeqDict`'s `Array (Maybe ( Int, k, v ))`
+elements become nullable (they meet type variables only through `JsArray` aliases), and
+`elm-kernel-cpp/src/core/SeqDict.hpp`, shared by `==` and `FNV.hash`, read each element as a `Just`
+Custom. Kernel visibility never covered them: `Utils.equal` declares `SeqDict` inspected, but the
+declared closure stops at `JsArray`'s type-variable element field. Fix: the walker reads both forms
+by heap tag (a `Tag_Tuple3` element is the nullable `Just`'s payload). MONO_032 amended. **F1 must
+exclude** `elm/core:Array`'s `Node` (and audit any other type C++ reads behind an opaque container):
+`SeqDict.hpp` and the Array kernels read it as a Custom by constructor index.
+
 7. **Gates and measurement**: all of §1.2 (two fixed-point rounds). Re-take the baseline counts on
    the post-F5/F3 tree first (F5 makes `unsafeGet` calls concrete, which removes some of the 417
    meets). Report wrapper types erased, `Maybe`s made nullable, the census, wall. `Point` stays
@@ -533,6 +634,46 @@ Take a meet whose node-side type is an `MVar`, at a `global->N` site where N is
    amend HEAP_044 (`null_cons_idx` is non-zero in null-cons words and in spare words),
    REP_CONSTANT_003 and MONO_033 (exact-word tests, the new admissibility), CGEN_087 (`is_constant`
    no longer used for nullable tests).
+*(Implementation notes, 2026-11-20 — deviations from the steps above, each for a reason found while
+building.)*
+- **Null word by the payload's words, not by "can be a constant".** A null word only has to differ
+  from every word a payload value can be, since the test is exact. `NullableMaybe.assignNullWords`
+  computes, bottom-up over nullable payloads, whether a payload can be Empty or a null-cons word:
+  `Maybe` keeps Empty unless the payload can be Empty, a user type keeps its null-cons word unless
+  the payload can be a null-cons word, otherwise the spare word one level above the payload's
+  highest. So `Maybe Bool`, `Maybe Color` and `Opt String` are unchanged in encoding, and
+  `Maybe (Opt String)` gets a spare word: §5.2's "custom payload ⇒ never Empty" is false once
+  `Opt String` is nullable (`Some ""` is Empty).
+- **Recursive candidates are dropped** (`type L = N | C L`: `C N` would be `N`'s word under any
+  encoding; the old "no constants in the payload" rule excluded them by accident). Counted as
+  `recursive` in the `nullable-maybe` report.
+- **Levels run to 1023** (all of `null_cons_idx`), not 127.
+- **`eco.is_word %v [constant, index]`**, not `{word : i64}`: null-cons words reach ~9e15, above the
+  2^52 the JavaScript-hosted compiler's bytecode writer encodes exactly.
+- **`null_name` packing**: bits 0-19 name index (checked), bit 20 null-cons flag, bits 21-30 index;
+  the printer decodes it with `Heap.hpp`'s `nullableNullWord` and compares the exact word.
+- `Mono.NullableInfo.constantBitTest` is replaced by `nullWord : Mono.NullWord`; `Ops.ecoIsConstant`
+  (no longer emitted) is removed; references to a nullable type's nullary constructor go through a
+  new `Context.nullWordBySpec`, consulted before the null-cons and well-known-constant maps.
+- Census class `spare` (via `NullableMaybe.censusClass`).
+
+*(Found by the first F2 gate run, 2026-11-20; both fixed, re-gated as `repr-F2b`.)*
+- **Kernel visibility did not see through kernel aliases.** `Socket.Tls.info` calls
+  `kInfo = Eco.Kernel.Tls.info`, whose shared alias node has type variables where the kernel's types
+  are, so `Tls.info`'s declared `Maybe` was never found at `Maybe String`; with `Maybe String` now
+  nullable, the kernel's `Nothing` (Empty) read as `Just ""` (`SocketTls*Test`, 4 tests). Latent
+  since kernel aliases existed (deny-all kernels behind an alias were exposed the same way, and F4's
+  move-only rule removed the type-variable meet that had hidden it). Fix: `KernelVisible` takes a
+  reference to a kernel-alias global as a reference to the kernel at the use site's type
+  (MONO_032 amended; two `KernelVisibleTest` cases, failing before the fix).
+- **The type table decided nullability on the print type.** A type registered for printing keeps
+  its erased wrappers (`Maybe (Box String)`), while `repr.nullable` is keyed after erasure
+  (`Maybe String`), so the entry was a `Custom` and the printer showed `<internals>`
+  (`EraseWrapperDebugTest`, `EraseWrapperSetDictTest`). Fix: `Context.nullableOfPrintType` erases
+  the print type first (an `Erasable` built from `repr.erasedKeys`/`printShapes`).
+- Expected updates: `CtorCensusTest` (`Maybe String` is `spare`) and
+  `test/codegen/type_table_wrapper_nullable_print.mlir` (the new null-word packing).
+
 9. **Gates and measurement**: all of §1.2 (two rounds; every nullable program's MLIR changes, from
    `get_tag`/`is_constant` tests to `is_word`: list them as such in the identity-oracle record).
    Census: `Just` allocations still allocated, by payload class; `node examples/benchmarks/run.mjs
@@ -702,9 +843,15 @@ The spike, in a tree configured with `-DECO_LOWERING_VALIDATION=ON`:
   application that captures the id; kept as the fallback if the rewrite cannot reach some uses); an
   optional type id on the existing symbols (rejected: every kernel-closure path would need a
   `Debug` special case, against the separate-symbol decision in `DebugExports.cpp`).
-- **D2** (2026-11-20): F5 makes the inline `eco.array.get` kind-aware (with an `scf.if` slow path into
-  the kernel variant) rather than declining the intrinsic for primitive elements, so the hot path
-  stays a load; the two live kind bugs are fixed first (F5a).
+- **D2** (2026-11-20, revised twice the same day): a `JsArray` holding primitives is always of
+  that primitive kind (HEAP_046), enforced at the producers (kind from the stored value's runtime tag)
+  and checked, under `ECO_HEAP_VALIDATE`, at the kernel entry points that read arrays. `eco.array.get`
+  stays a plain load. `Array.get` reaches it by matching calls of the `Elm.JsArray` aliases against
+  the `JsArray` intrinsics (`maybeCoreInfo`), not by forwarding `unsafeGet` through
+  `suffixSelectingKernels`: forwarding gave a kernel call whose concrete type, at a function element,
+  flattens to three parameters and miscompiles (review finding F5-B1), and needed new kernel symbols.
+  Rejected: a kind-aware `eco.array.get` with an `scf.if` slow path, defending every reader against
+  a state no Elm program is known to produce.
 - **D3** (2026-11-20): F2 precedes F1: it needs no GC change, and F1's census then counts only what
   F2 cannot reach. Every nullable test becomes an exact word compare (needed once spare words exist).
 - **D4** (2026-11-20): F1 masks with explicit ops at the sites the compiler emits for tagged types,
@@ -723,16 +870,16 @@ Two reviewers read the proposal against the code. Findings and how the plan chan
 | 3 | blocker | `RepresentationMeets.validate` would reject every meet F4 skips | `validate` applies `movesOnly`; elm-test with `repr.validate` |
 | 4 | blocker | under core `Maybe`, a spare word reads as `Nothing` (`get_tag`/`isEmptyBits`) | every nullable test becomes an exact word compare; nullable payloads count as "can be a constant" |
 | 5 | blocker | D4 refuted: `Maybe T` with a tagged T dereferences T's word unmasked, and `A ""` at index 0 equals `Nothing` | MONO_035: a nullable payload is never tagged |
-| 6 | major | `eco.array.set` relabels a kind-0 copy's kind without converting (live); `elm_array_push_box` the reverse | new F5a fixes both first, with tests |
-| 7 | major | the kind branch cannot be new blocks inside a lowering (`scf` regions) | `scf.if` |
-| 8 | major | F5's planned kind-0 E2E construction no longer builds kind 0 (and F3 would type it) | kind 0 tested by hand-written MLIR and kernel unit tests; collateral docstring fix |
+| 6 | major | `eco.array.set` relabels a kind-0 copy's kind without converting; `elm_array_push_box` the reverse | F5a: no Elm program is known to reach either (user review); boxed primitive arrays made impossible at the producers, relabels assert, a validate-build probe records whether any construction reaches them |
+| 7 | major | the kind branch cannot be new blocks inside a lowering (`scf` regions) | moot: F5b has no kind branch (D2 revised) |
+| 8 | major | F5's planned kind-0 E2E construction no longer builds kind 0 (and F3 would type it) | producers tested by kernel unit tests and hand-written MLIR; the F5a probe looks for any real construction |
 | 9 | major | F3 outside argument position stays untyped | documented limitation with `XFAIL-NATIVE` tests |
 | 10 | major | F1 and F2 can produce the same word | covered by #5's exclusion |
 | 11 | major | F2 missed the producers of `Nothing` | enumerated, plus a codegen assertion |
 | 12 | major | gates never ran EcoPtrIntVerify, heap-validate, AOT E2E; `~/.eco` caches not wiped | §1.2 extended |
 | 13 | major | runtime tolerance turns missed sites into silent wrong answers | validate-build asserts in the out-of-line entry points |
 | 14 | major | four construct sites and sret/psplit/aggPromote not covered | enumerated; tagged types excluded from the splitting paths |
-| 15 | minor | `eco.array.get` is `[Pure]`, so its slow path could be speculated | `[NoMemoryEffect]` |
+| 15 | minor | `eco.array.get` is `[Pure]`, so its slow path could be speculated | moot: no slow path (D2 revised) |
 | 16 | minor | the F5c C++ named the wrong helpers | named the three `call…Typed` helpers |
 | 17 | minor | F4's second "pure forward" shape has no producer; `via` must thread through `splitAt`; node side must be the `MVar` | §4.3 step 2 |
 | 18 | minor | baselines stale after F5 | re-take before F4 |
@@ -741,8 +888,15 @@ Two reviewers read the proposal against the code. Findings and how the plan chan
 | 21 | minor | equality tag compare must happen where the word is in hand | §6.3 step 6 |
 | 22 | minor | GC-exercising tests need a mechanism and a check | `-- ENV:` nursery config and a GC-stats CHECK |
 | 23 | minor | `bench.sh` is not in the repo; small line-number drifts; Facts cite stale; AliasForward comment | §1.3 names the repo scripts; fixed in place |
+| 24 | blocker | (F5 re-review) forwarding `unsafeGet` with its concrete type gives, at a function element, a kernel type whose flattened arity is 3: the call becomes a partial application of the unsuffixed root with a raw index | F5b matches the `Elm.JsArray` alias calls against the existing intrinsics instead (`coreIntrinsicHome`); no forwarding, no new symbols |
+| 25 | major | (F5 re-review) the validator check was placed in dead code on a GC path region mode never takes | read-side `validateArrayKind` at the kernel entry points |
+| 26 | major | (F5 re-review) GC unit tests and ARRAY-05 build kind-0 arrays of boxed Ints on purpose | the check stays out of the GC; ARRAY-05's fixture rebuilt by hand |
+| 27 | major | (F5 re-review) JsArray2 producers and the boxed `unsafeSet` root missing; store asserts blind to first stores and copies | producer table in §2.1; read-side checks see every array |
+| 28 | major | (F5 re-review) `initializeFromList` already mixes kinds; a helper taking `HPointer` cannot convert raw inputs | `arrayKindOf` / `convertToKind` over `(Unboxable, srcKind)` |
+| 29 | major | (F5 re-review) the `fix_kind` rename misses three sites; every `Array.set` pays a no-op call | all five sites named; the call is emitted only in validate builds |
+| 30 | minor | (F5 re-review) license pins are 21 rows over three files; empty arrays may carry a kind; stale comments; FileCheck cannot see the header | §2.1, §2.2 steps 5–8 |
 
-Claims the reviewers confirmed: the F5 forwarding chain; the HPointer layout and that nothing
+Claims the reviewers confirmed: the F5 forwarding chain (as a chain; it is no longer used, row 24); the HPointer layout and that nothing
 produces `0x6 | (k << 43)` today; F2 needs no GC change; F5c's raw callback elements are sound; the
 stack-map scanner treats every slot as an independent root; the GC write-back inventory and the TLA
 pins; F4's kernel-visibility reasoning and its need for the `Debug` exclusion.
@@ -751,3 +905,293 @@ pins; F4's kernel-visibility reasoning and its need for the `Debug` exclusion.
 
 (Filled in as units land: each unit's gates, identity-oracle differences, measurements, and gate
 decisions F1-D, F1-G, F1-C, F1-W.)
+
+### F5 (snapshot `repr-F5b`, 2026-11-20)
+
+- **Gates**: `full` 3,125/3,125; elm-tests 22,012/0; bootstrap rc 0 through Stage 8c and 9b; AOT E2E
+  1,506/1,506; TLA canary clean; fixed point holds in **one** round (the compiler's own MLIR is
+  unchanged: see F5b). Identity oracle: no existing program's MLIR changed; the only differences are
+  the new tests (`ArrayGetIntInlineTest`, `ArrayGetPrimitiveTest`, `ArrayCallbackKindsTest`,
+  `ListMapNFunctionResultTest`) and `NullableChainClosureTest` (new since the base corpus).
+- **Self-compile**: 71.0 s (base 70.05 s; within noise), minor GCs 1,403, promoted 7,167 MiB.
+  `ECO_REPR_VALIDATE=1` self-compile: clean, output identical.
+- **Stress** (normal tree): 114/114 at the default config; 114/114 under GC pressure
+  (`{"nursery_regions": 0, "nursery_block_count": 2, "nursery_max_block_count": 2}`, 48,269 minor
+  GCs in the first test's stats).
+- **Live bug confirmed**: before F5a, `test/codegen/array_kind_set.mlir` read `[eco.dbg] 1120986464800`
+  (pointer bits) for the untouched elements after `eco.array.push` of boxed Ints and an
+  `eco.array.set : i64`; after, `10, 99, 30`.
+- **F5b finding**: optimized builds already inline `Array.get` into `eco.array.get` (120 in the
+  self-compile, no boxing kernel call), so F5b changes no existing MLIR; it covers alias calls the
+  inliner leaves (tested with the inliner off). The existing inline reads relied on F5a's invariant.
+- **Existing bug found and fixed** (by `ArrayGetPrimitiveTest`): `Array.initialize`/`map`/`indexedMap`/
+  `foldl`/`foldr` and `List.map2`..`map5`, on the path that keeps the closure's own result kind, asked
+  an under-saturated call (a merged lambda such as `\i -> \x -> x + i` applied to fewer arguments than
+  its stage takes) for the closure's saturated primitive result kind, and `eco_apply_closure_eval`
+  aborted. `readClosureResultKind`/`callResultKind` (`JsArrayExports.cpp`) and `kernelListMapN`
+  (`ListExports.cpp`) now ask for a boxed result unless the call saturates the closure. Pinned by
+  `test/elm-core/src/ListMapNFunctionResultTest.elm` (crashed before, passes after).
+- **Deferred to the final `ECO_HEAP_VALIDATE` run** (user direction): F5a's probe. A first validate-tree run
+  showed (a) its `full` failing to link `elm-kernel-time-test` (undefined
+  `PlatformRuntime::decodeFlags` from `libEcoRuntimeStatic.a`), to be checked against the base tree,
+  and (b) that the stress suite's small-nursery config must keep a region at least one heap slot
+  (`{"nursery_region_bytes":"4M"}` is refused in region mode; use `nursery_regions: 0` or a larger
+  region). The validate tree's unit tests passed (3,126/3,126).
+- **Not measured yet**: the user-program benchmarks of §2.5 (to run with the final measurements).
+
+### F3 (snapshot `repr-F3`, 2026-11-20)
+
+- **Gates**: `full` 3,127/3,127; elm-tests 22,020/0 (8 new in `TypedDebugValuesTest`); bootstrap rc 0
+  through Stage 8c and 9b; AOT E2E 1,508/1,508; stress 114/114 at the default config and under GC
+  pressure; TLA canary clean; fixed point in one round; `ECO_REPR_VALIDATE=1` self-compile clean,
+  output identical.
+- **Self-compile**: 70.9 s, minor GCs 1,407, promoted 7,185 MiB (F5: 71.0 s, 1,403, 7,167 MiB).
+  `pre-debug-values` report line added.
+- **Identity oracle**: 13 existing programs' MLIR changed, each of which uses `Debug.toString` or
+  `Debug.log` as a function value (`show = Debug.toString`, `D.map Debug.toString`, `List.map
+  (Debug.log "x")`, a `Debug.log "g"` argument); all still pass. No other program changed.
+- **Tests expose the gap**: with the pass bypassed in `Steps.preMono`, the two MLIR tests of
+  `TypedDebugValuesTest` (solver and substitution engines) fail; with it, they pass.
+- **Finding**: the let-bound, record-field, list and `if`-branch positions print typed too
+  (`DebugValueContextTest` passes without `XFAIL-NATIVE`), contrary to §3's expected limitation.
+
+### F4 (snapshot `repr-F4b`, 2026-11-20)
+
+- **First gate run (`repr-F4`) failed**: `full` 3,125/3,128 and AOT 1,506/1,509, the three `SeqDict`
+  tests crashing in `Utils.equal` (see §4.3's finding). Fixed in `core/SeqDict.hpp`; the rest of that
+  run (elm-tests 22,027/0, bootstrap 8c/9b, stress 114/114 both configs, canary) was already green.
+- **Gates (`repr-F4b`)**: `full` 3,128/3,128; elm-tests 22,027/0; bootstrap rc 0 through Stage 8c and
+  9b; AOT E2E 1,509/1,509; stress 114/114 at the default config and under GC pressure; TLA canary
+  clean; fixed point holds on the second round (eco-optF4 → eco-optF4b); `ECO_REPR_VALIDATE=1`
+  self-compile clean, output identical.
+- **Self-compile**: 72.2 s, minor GCs 1,426, promoted 7,412 MiB (F3: 70.9 s, 1,407, 7,185 MiB);
+  representation phase 1.7 → 2.6 s. Within run-to-run noise on wall; the extra promotion is the
+  representation passes' larger meet lists.
+- **Identity oracle**: 206 programs' MLIR changed against F3 (more wrappers erased and more `Maybe`s
+  nullable where the only type-variable meets were kernel-alias moves), all passing.
+- **Fixture**: before F4, `EraseWrapperMoveOnlyTest`'s `P` and `Q` were built as heap constructors;
+  after, neither is. `repr-meets-var` on it: every kernel-alias meet move-only; one `other:callArg`
+  (elm/core `sliceLeft`'s `helper`) remains.
+
+### F2 (snapshot `repr-F2b`, 2026-11-20)
+
+- **First gate run (`repr-F2`) failed**: `full` 3,123/3,130, AOT 1,504/1,510, elm-tests 22,033/1 — two
+  latent bugs F2 exposed (kernel visibility through kernel aliases, nullability of print types) and
+  two expected test updates; see §5.3's findings. Bootstrap, stress (both configs) and the canary
+  were already green.
+- **Gates (`repr-F2b`)**: `full` 3,130/3,130; elm-tests 22,036/0; bootstrap rc 0 through Stage 8c
+  and 9b; AOT E2E 1,510/1,510; stress 114/114 at the default config and under GC pressure; TLA
+  canary clean; `ECO_REPR_VALIDATE=1` self-compile clean, output identical. **Fixed point**: needed a
+  third round (eco-optF2 had the kernel-visibility bug, so eco-optF2 → eco-optF2b differs);
+  eco-optF2b → eco-optF2c is a fixed point.
+- **Self-compile**: 72.6 s, minor GCs 1,438, promoted 7,577 MiB (F4b: 72.2 s, 1,426, 7,412 MiB).
+- **Identity oracle**: 360 programs' MLIR changed against F4b (every nullable test is now
+  `eco.is_word`; newly nullable `Maybe String`/`Maybe (List a)`/nested types), all passing.
+- **New tests**: `test/codegen/spare_word.mlir` (ops, exactness, `select`, survival across a minor
+  GC), `test/elm/src/NullableSpareWordTest.elm` (Elm-recorded, uses `eco.constant.spare` and
+  `eco.is_word`), `NullableMaybeTest` rewritten (null words, levels, recursion), two
+  `KernelVisibleTest` alias cases.
+
+### F1.0 — census and gate F1-D (2026-11-20)
+
+- **Built**: `Compiler.MonoOpt.TaggedUnions` (`choose`, `censusLabels`; report-only, run by
+  `Steps.representation`'s census hook only when `ECO_CTOR_CENSUS` is set, so no output changes
+  otherwise), `Mono.ReprInfo.tagCensus`, the census's `tagged` column, `scripts/ctor-census.py --by
+  tagged` (several counts files summed, the F1-D line), `benchmarks/ctor-census-bench.sh`. Unit tests
+  `TaggedUnionsTest` (7) and `CtorCensusTest` pass.
+- **Gate F1-D — PASSES (narrowly), on the benchmark aggregate**:
+
+  | workload | bare allocations | of attributed custom allocations | share |
+  |---|---|---|---|
+  | self-compile (Stage 7a, census compiler from eco-optF1a) | 25.45M | 975.56M | **2.6 %** |
+  | benchmarks (74 workloads, default sizes, one run each) | 13.85M | 272.85M | **5.1 %** |
+
+  The benchmark bare share is `Bytes.Decode.Step.Loop` 1.53 %, `Parser.Problem.ExpectingSymbol`
+  1.43 %, `Parser.Step.Loop`/`Done` 1.21 %, `ExpectingKeyword` 0.32 %, `Result.Ok` 0.26 %, then user
+  types. What blocks the rest: self-compile — kernel-owned 44.4 % (`Dict`), **nullable-payload
+  18.5 %** (types F2 made the payload of a nullable `Maybe`; F1 and F2 compete for these), no `bare`
+  constructor 10.8 %, kernel-visible 6.1 %; benchmarks — kernel-owned 32.6 %, no-bare 32.4 %,
+  kernel-visible 20.5 %. `elm/core:Array.Node` is excluded (meets, no-bare), as F4 requires.
+
+### F1.1 — runtime tolerance (2026-11-20, in progress)
+
+- **Tests first**: `test/allocator/TaggedWordGcTest.cpp` (7 tests: serial, parallel and region minors, region
+  minors through tenuring, a major, CAF promotion, `==`/`FNV.hash`). Each tagged payload is also held by an
+  untagged root and the tagged word must name the same (moved) object, so a word a collector skipped fails
+  too. Before the change all six collection tests failed (every write-back dropped the tag; the region
+  minor through tenuring also left a tagged JIT root naming the stale copy); after, all seven pass.
+- **Write-back**: `Heap.hpp` `WORD_TAG_MASK`, `wordTag`, `retarget(old, newAddr)`; every forwarding/copy
+  write-back in `NurserySpace.cpp` (evacuate, list spine), `NurseryParallel.cpp` (evacuateP, spineRunP),
+  `NurseryRegion.cpp` (evacuateR incl. the Retire arm, spineRunR), `NurseryTenure.cpp` (TenureParEnv
+  childOfCopy/spineRun, the YLOS slot rewrite, both heal loops), `TenureWork.hpp` (`Env::word(old, obj)`),
+  `OldGenSpace::fixHPointer`, `PermanentSpace.cpp` (`eco_caf_promote`: fields and the returned root word).
+- **Raw roots**: `evacuateJitPtr`, `evacuateRawP`, the region JIT-root loop, `markJitRootRaw` (a tagged JIT
+  root would otherwise go unmarked and be freed), `traceOldReachableForValidation`, `Export::toPtr`.
+- **Equality and hashing**: `resolveAndCompare` and `equalRespectingConstants` compare tags first; FNV
+  mixes a non-zero tag and hashes the untagged word (marker `kTag` appended); the inline `eco.value.eq` fast
+  path sends a tagged Empty against a heap word to the kernel.
+- **Validate asserts**: `eco_get_tag`, `eco_custom_get_{i64,f64,char}`, `eco_resolve_hptr`,
+  `eco_follow_forward` abort on a tagged heap word under `ECO_HEAP_VALIDATE`.
+- **TLA canary**: 11 pins fired (M1, M2, M3, M5, M7, W5, w_running_chain); audited — each store is the same
+  owner-only whole-word store, merged with the slot's own previous bits — **no model change needed**;
+  entries in each AUDIT.md, manifest updated. Kernel license re-audits for the `ExportHelpers.hpp`/`Utils`
+  changes. HEAP_086 added.
+- **Re-wrap audit** (step 6, read-only, 2026-11-20): no kernel in `elm-kernel-cpp`, `system-kernel-cpp`,
+  `HeapHelpers.hpp`, ListOps or StringOps turns a generic element back into a word through an address;
+  every store of an element copies the word (`Export::decode`/`encode`, `Unboxable` assignment,
+  `convertToKind` at kind 0, root-guard memcpy). The 54 re-wraps found are of objects the kernel just
+  allocated (42), List spines (8, never tagged), Strings (3) and `++` operands (1). `Export::fromPtr` has no
+  callers. The address-identity shortcut in `Utils.cpp` `eqHelp` (`a == b`) is reached only after the tag
+  comparison (`equalRespectingConstants`, `resolveAndCompare`); a new caller of `Utils::equal` must compare
+  tags first. Untyped `Debug.toString` of a bare tagged value would print the field: F1.5's typed `Tagged`
+  arm covers it.
+- **First F1-G run (`repr-F1a`)**: `full` 3,136/3,137 — `VirtualDomKernel V5 raw literal arguments`
+  failed: `Export::toPtr` masked every non-constant word to 43 bits, which corrupts a raw C++ static's
+  address above 2^43. Fixed: the whole word is tested against the heap first, and only then the masked
+  address (a tagged heap word). Everything else in that run passed (self-compile fixed point, repr
+  validate, elm-tests 22,043/0, bootstrap 8c/9b, AOT 1,510/1,510, stress both configs, canary).
+
+- **Gate F1-G — PASSES (`repr-F1b`)**: `full` 3,137/3,137; elm-tests 22,043/0; bootstrap rc 0 through
+  Stage 8c and 9b; AOT 1,510/1,510; stress 114/114 at the default config and under GC pressure; TLA
+  canary clean; fixed point in one round; `ECO_REPR_VALIDATE=1` self-compile clean, output identical.
+  Self-compile GC time 3.25 s (F2: 3.14-3.39 s across runs); wall 73.75 s against 72.64 s for F2 (+1.5 %,
+  at the edge of the recorded 1.31 % noise; accepted by the user, 2026-11-20).
+
+### F1.2 — codegen spike and gate F1-C (2026-11-20)
+
+- **Ops**: `eco.word_tag %v -> i64` (`(ptrtoint v >> 43) & 1023`; an `i64` so that it is an `int` case's
+  scrutinee as it is, not the plan's `i16`), `eco.tag_word %v [idx]` (`getelementptr i8, ptr addrspace(1) v, i64 (idx << 43)`, not
+  `inbounds`; index 0 is `v`), `eco.untag %v` (`llvm.ptrmask(v, ~(1023 << 43))`). Verifier on `tag_word`'s
+  index.
+- **Spike** `test/codegen/tagged_words.mlir`: a bare word over a record (tag 5), a boxed Custom (tag 3) and
+  tag 0, live across two minor collections, read back with `word_tag` and `untag` + projection: 5, 41, 3,
+  7, 0. RS4GC relocates the untagged bases and rematerializes the tagging GEPs after the statepoint
+  (`%.remat = getelementptr … %base.relocated, i64 idx<<43`), so the stack maps hold only untagged
+  bases; `EcoPtrIntVerify` needs no new blessed pattern (`word_tag`'s `ptrtoint` feeds `lshr`/`and`/
+  `trunc` in its block; the GEP and `ptrmask` make no integer round trip).
+- **Gate F1-C — PASSES**: the spike passes in the default tree and in `build-lowval`
+  (`-DECO_LOWERING_VALIDATION=ON`). That tree did not compile before: `EcoPtrIntVerify.h` still used
+  `llvm::PassInfoMixin`, which this LLVM moved to `detail` (the file's other passes already used
+  `Required/OptionalPassInfoMixin`); fixed to `RequiredPassInfoMixin`.
+
+### F1.3-F1.6 — build (2026-11-20)
+
+- **F1.3 choice**: `TaggedUnions.choose` now applies (`repr.taggedUnions`, default on, `ECO_TAGGED_UNIONS`,
+  token `tu=1`): `Steps.representation` records `repr.tagged : LayoutMap (List ( Name, Mono.TagForm ))`
+  and writes `tagged-unions: N types, M bare constructors; excluded …`. No node changes. One-constructor
+  types are never tagged, so `sret`, psplit and the tail split (all `Just [ shape ]`) never see one;
+  `promotableCtorCall` excludes tagged types as it does nullable ones.
+- **F1.4 codegen**: constructor tests (`Patterns.generateWordTagTest`: `word_tag == index`); fan-outs in
+  `Expr` and `TailRec` (`generateWordTagScrutinee`: an `int` case on the declaration indices); field
+  projection (`generateMonoIndexOnHeap`: `eco.untag` the container, a `Bare` field is the untagged word,
+  a `Boxed` one projected from it; `generateMonoUnboxOnHeap` crashes on a tagged type); construction in
+  the constructor node (`Functions.generateCtor`) and inline (`Expr.generateTaggedCreate`).
+  `Context.tagFormOf`/`isTagged`.
+- **F1.5 printing**: type-table kind 9 `Tagged` (`TypeTable.addTaggedType`, bit 31 of a bare
+  constructor's field count; `EcoToLLVMGlobals` packs it as `Custom`); the runtime's `Tagged` arm reads the
+  index with `wordTag` and prints a nullary name, a bare name + untagged field, or a boxed untagged Custom
+  (`print_custom_heap`, factored out of the `Custom` arm).
+- **Bugs found while building** (each fixed):
+  1. `Export::toPtr` returned a tagged word whose address is in **PermanentSpace** (a tagged interned
+     literal, `Named "a"`) as a raw address — `==` segfaulted. It now also accepts a masked PermanentSpace
+     address.
+  2. **LLVM `-O0` assertion** (`StatepointLoweringState::clear`, "cleared before statepoint sequence
+     completed"): RS4GC rematerialized tagged GEPs after a statepoint that nothing used, leaving dead
+     `gc.relocate`s that `-O0` instruction selection skips (the JIT's level; `-O2` cleaned them up).
+     `addEcoGCPipeline` now runs `DCEPass` after RS4GC.
+  3. My print-helper extraction turned a loop `break` into `return` (every Custom printed empty).
+  4. `BasicsExports.cpp`'s `inline` helpers in `extern "C"` became out-of-line unmangled symbols once
+     `toPtr` grew (`check-kernel-c-symbols`); now `static inline`.
+- **Tests**: `test/elm/src/TaggedUnionTest.elm` (Elm-recorded; `Shape`, `Expr`, `Result String Rec`
+  tagged — 3 types, 4 bare constructors; `case`, `==` across constructors over one String, `Debug.toString`,
+  records, lists, arrays, `Dict`, closures, a CAF, constructors as functions; 3,000,000-element churn with
+  12 minor collections, then the values read again) and `TaggedUnionDerefExtTest.elm` (the same with
+  `ECO_INLINE_DEREF_EXT=0`). Native `-O2` and `-O0` and the JIT all give Elm's output. A `Maybe Shape`
+  made `Shape` a nullable payload in the first version of the test, so it was not tagged (the census's
+  `nullable-payload` competition, now visible per program).
+- **F1.6 invariants**: MONO_035, CGEN_091-093 added; HEAP_086 gains its codegen paragraph; HEAP_044,
+  FORBID_HEAP_001/002, REP_LLVM_001, REP_CONSTANT_001/002 amended.
+
+- **First F1-W run (`repr-F1c`)**: `full` 3,115/3,140 and AOT 1,487/1,512 (25 HTTP and WebSocket tests),
+  stress 112/114 (two `EcoSystemHttpServer*`); bootstrap, elm-tests 22,043/0, the fixed point and the
+  canary were green. Cause: `Http.Response` was tagged (`BadUrl_` bare) although the HTTP kernel builds
+  it: `Http.toTask` calls the closure `Http.expect` stored with a `Response` it makes, `Response` appears
+  in no type of `toTask`'s own, and `expect` declared only `Expect` and `Resolver`. **Fix**: `Http.expect`
+  declares `Response` too (Visibility table and `design_docs/elm_kernel_functions.csv`). This is the
+  general shape of the gap: a kernel that stores a closure another kernel later calls must declare the
+  closure's parameter types. After the fix: the HTTP family 95/95, WebSocket 33/33, the stress programs
+  3/3.
+- **Closure-argument audit** (read-only, 2026-11-21): every C++ call of an Elm closure (`callClosure1-4`,
+  `eco_apply_closure*`) across `elm-kernel-cpp`, `system-kernel-cpp` and `runtime/src/platform` hands it a
+  primitive, tuple, record, list or String, a type variable, a kernel-owned type, or a type declared for
+  its entry point (the declared closure follows a declared type's closure fields' parameter types). No
+  other gap of the `expect`/`toTask` shape. The `Response` gap existed only because `Http.Expect` is
+  opaque (no field leads from it to the stored closure); weak spots, not gaps today: FileSystem's and
+  ChildProcess's `Maybe` are covered because their `MySub`/`MyCmd` keep the tagger as a visible field,
+  and `managerUses` only reaches types visible through the manager's own type.
+- **Gate F1-W gates (`repr-F1d`)**: `full` 3,140/3,140; elm-tests 22,043/0; bootstrap rc 0 through Stage 8c
+  and 9b; AOT 1,512/1,512; stress 114/114 at the default config and under GC pressure; TLA canary clean;
+  fixed point in one round; `ECO_REPR_VALIDATE=1` self-compile clean, output identical. Identity oracle:
+  522 programs' MLIR differ from the base (tagged unions in programs with multi-constructor types).
+  Self-compile 75.7 s, minor GCs 1,464, promoted 7,709 MiB (F2: 72.6 s, 1,438, 7,577 MiB): **wall +4.2 %**,
+  near the 5 % the user asked to be flagged; to be examined in the end-of-plan wall pass.
+- **Gate F1-W allocations — MET** (census, eco-optF1d, the program compiled with `ECO_TAGGED_UNIONS=1`
+  vs `=0`): benchmarks 272.85M → 259.05M custom allocations (−13.80M, −5.1 %; census prediction 13.85M,
+  0.04M bare left); self-compile 992.66M → 966.98M (−25.68M, −2.6 %; prediction 25.45M). Promotions
+  161.04M → 159.99M (self), 2.16M → 2.09M (bench).
+- **Gate F1-W wall — NOT MET yet**: the instrumented census self-compile took 90.2 s with tagging vs
+  82.4 s without (single runs); the gate's plain self-compile 75.7 s vs F2's 72.6 s (+4.2 %). Being
+  measured A/B (two compilers differing only in `ECO_TAGGED_UNIONS`), see below.
+- **Gate F1-W wall — MET** (2026-11-21, quiet machine, A/B of two compilers built from the same source that
+  differ only in `ECO_TAGGED_UNIONS`, alternating, three runs each): tagging off 76.42 / 75.18 / 74.99 s
+  (median 75.18 s), tagging on 74.74 / 74.26 / 75.66 s (median 74.74 s, −0.6 %, within noise); GC time
+  3.32-3.47 s for both. The earlier +4.2 % against F2 compared runs hours apart (drift), not tagging.
+  **F1 ships default-on.**
+
+### End of plan (2026-11-21)
+
+- **`ECO_HEAP_VALIDATE` run** (the one validate run, user direction): `build-validate` main suite (unit +
+  E2E) 3,141/3,141; validate stress 114/114 at the default config. Under GC pressure (2-block legacy
+  nursery) 110/114: `EcoSystemHttpServerKeepAlive`, `EcoSystemSocket`, `EcoSystemTransformChain` and
+  `EcoSystemWebSocket` exceeded the 60 s limit with no validation abort (100 % CPU, heap validation at every
+  collection). **Rerun, all four passing** (one at a time, same pressure.json, the child watchdog raised
+  with `ECO_TEST_TIMEOUT_SECONDS=5400`): `WebSocket` 131 s, `HttpServerKeepAlive` 142 s, `TransformChain`
+  377 s, `Socket` 505 s; no validation abort. (An earlier rerun used `--timeout`, which also sets
+  `StressFlags.timeoutMs` and turns each program into a soak until the deadline, so its timeouts and its
+  `WebSocket` failure are not results. Soaking `WebSocket` exposed a pre-existing issue, see open items.)
+  Fixed for the run:
+  `elm-kernel-time-test`'s link order (`ElmKernel_Json` listed after `EcoRuntimeStatic`), which had kept the
+  validate tree's `full` from linking.
+- **Benchmarks** (Bench.elm compiled by the base compiler `eco-optKV2` and the final `eco-optF1d`, `-O 2`,
+  each workload in its own process, warmup 3, 10 runs, median): array-build 0.0 %, dijkstra +0.8 %,
+  floyd-warshall −2.5 %, life +2.1 % (rerun +1.5 %), flood-fill +1.8 %, kernel-callbacks +1.6 %,
+  dict-char-pairs 0.0 %, json-decoders −0.7 %, csv-parser +4.0 % (rerun ≈ +1 %), lexer −3.4 %,
+  **word-freq +7.5 % (rerun +5 to +6 %)**, json-parser −2.6 %, expr-parser −1.0 %, sexpr −2.7 %,
+  bytes-dynamic −2.3 %, binary-format +3.5 % (rerun ≈ +1 %). The `word-freq` regression was bisected with
+  each unit's gate compiler: KV2 123, F5b 121, F3 122, **F4b 126-132**, F2c 127-130, F1d 126 ms (and the
+  final compiler with tagging off, 124-127 ms): it enters with **F4** (one more wrapper type erased in the
+  benchmark program, 3 instantiations, 12 constructor calls removed). `perf` shows the same profile shape
+  (String compare, `resolve`, Dict) with a small shift to GC work; no new hot path. Recorded for the
+  end-of-arc wall pass (user: small regressions acceptable, flag ~5 %).
+- **Self-compile** across the plan (gate runs, one machine, different hours): KV2 70.1 s, F5 71.0, F3 70.9,
+  F4 72.2, F2 72.6, F1 75.7 s; the quiet-machine A/B of F1 (above) shows tagging itself −0.6 %, so the
+  drift between gate runs is not a per-unit cost. **Same-session A/B (2026-11-21, quiet machine,
+  alternating, 3 runs each):** base `eco-optKV2` 74.14 / 74.05 / 73.91 s (median 74.05), final
+  `eco-optF1d` 75.69 / 75.20 / 74.13 s (median 75.20): **+1.6 %** (mean +1.3 %), GC/alloc time equal
+  (3.35 vs 3.35 s median), out.mlir −0.7 %. Below the 5 % flag; most of the 70 → 75.7 s gate-run drift
+  was the machine (the base compiler itself now takes 74 s).
+- **`word-freq` resolved (2026-11-21)**: comparing every function of the benchmark program's MLIR
+  between the F3 and F4b compilers, ignoring SSA names, spec ids and generated helper numbers, the
+  functions that changed are the `Set` ones (F4 erased `Set_elm_builtin`: `Set_empty`, its CAF, the
+  `List.foldl` instances over sets), Sudoku (`Sudoku_cands` builds three more heap `Just`s: one `Maybe`
+  lost its nullable form through the erasure), and a few lambdas. **None of `word-freq`'s path changed**:
+  its own functions and every `Dict` function are identical. With identical code and the same profile
+  shape, its ±5 % is code placement in the one binary that holds all 74 workloads (functions move when
+  other code changes; the alignment effect this project has met before), not a cost of F4.
+- **Open items** (for a follow-up, none blocking): the +1.6 % self-compile wall (above); F1 and F2
+  compete for the same types (`nullable-payload` was 18.5 % of the self-compile's custom allocations in
+  the F1.0 census: a type that is a nullable `Maybe`'s payload cannot be tagged); pre-existing, not from
+  this plan (it reproduces with tagging off): `EcoSystemWebSocket` peaks at 3.6 GB RSS in its normal
+  20-wave run, almost all off-heap (live heap ≈ 11 MB), and under `--timeout` soak grows ≈ 1 GB/s to the
+  machine's 15 GB: native per-connection WebSocket state (deflate streams, write buffers) is released
+  late or not at all.

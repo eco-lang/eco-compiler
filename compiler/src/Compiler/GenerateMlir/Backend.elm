@@ -110,6 +110,7 @@ buildContext ecoConfig monoGraph0 =
         |> Ctx.withFlagsSchema flagsSchema
         |> Ctx.withCtorBySpec (buildCtorBySpec nodes)
         |> Ctx.withNullConsBySpec (buildNullConsBySpec nodes)
+        |> Ctx.withNullWordBySpec (buildNullWordBySpec repr.nullable nodes)
         |> Ctx.withConstCtorBySpec (buildConstCtorBySpec nodes)
         |> Ctx.withConstThunkBySpec
             (ConstThunks.build ecoConfig.constThunks
@@ -133,7 +134,7 @@ buildContext ecoConfig monoGraph0 =
 -}
 ctorCensusTable : Config.EcoConfig -> Mono.MonoGraph -> CtorCensus.Table
 ctorCensusTable ecoConfig (Mono.MonoGraph { ctorShapes, repr }) =
-    CtorCensus.build (ecoConfig.repr.census /= Nothing) repr.kernelVisible ctorShapes
+    CtorCensus.build (ecoConfig.repr.census /= Nothing) repr.kernelVisible repr.tagCensus ctorShapes
 
 
 {-| Generates the ops of the node `specId`, and returns them with the context
@@ -1441,6 +1442,33 @@ buildConstCtorBySpec nodes =
 
                         else
                             acc
+
+                    _ ->
+                        acc
+                )
+            )
+            ( 0, Dict.empty )
+            nodes
+        )
+
+
+{-| The null word of each nullary constructor spec whose type is nullable
+(`repr.nullable`), by SpecId.
+-}
+buildNullWordBySpec : Mono.LayoutMap Mono.NullableInfo -> Array (Maybe Mono.MonoNode) -> Dict.Dict Int Mono.NullWord
+buildNullWordBySpec nullable nodes =
+    Tuple.second
+        (Array.foldl
+            (\maybeNode ( specId, acc ) ->
+                ( specId + 1
+                , case maybeNode of
+                    Just (Mono.MonoCtor _ shape t) ->
+                        case ( shape.fieldTypes, Mono.layoutMapGet t nullable ) of
+                            ( [], Just info ) ->
+                                Dict.insert specId info.nullWord acc
+
+                            _ ->
+                                acc
 
                     _ ->
                         acc

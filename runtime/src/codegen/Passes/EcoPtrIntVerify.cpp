@@ -20,6 +20,7 @@
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Transforms/Scalar/RewriteStatepointsForGC.h"
+#include "llvm/Transforms/Scalar/DCE.h"
 #include "llvm/Transforms/Scalar/SROA.h"
 #include "llvm/Transforms/Utils/Local.h"
 #include "llvm/Transforms/Utils/Mem2Reg.h"
@@ -43,16 +44,24 @@ static bool isGCLeafCallee(Function *F) {
     return F && F->hasFnAttribute("gc-leaf-function");
 }
 
-// Returns whether `V` is an integer constant equal to the word of the False,
-// True or Empty embedded constant.
+// Returns whether `V` is an integer constant equal to an embedded constant
+// word: False, True, Empty, a null-cons word (constant code 3) or a spare word
+// (constant code 2 with a non-zero index, HEAP_085). The latter two have their
+// index in bits 43-52 and no other bit above bit 2.
 static bool isEmbeddedConstant(Value *V) {
     auto *CI = dyn_cast<ConstantInt>(V);
     if (!CI) return false;
     int64_t val = CI->getSExtValue();
     namespace ve = eco::detail::value_enc;
-    return val == ve::encodeConstant(ve::False) ||
-           val == ve::encodeConstant(ve::True) ||
-           val == ve::encodeConstant(ve::Empty);
+    if (val == ve::encodeConstant(ve::False) ||
+        val == ve::encodeConstant(ve::True) ||
+        val == ve::encodeConstant(ve::Empty))
+        return true;
+    uint64_t bits = static_cast<uint64_t>(val);
+    uint64_t indexMask = static_cast<uint64_t>(ve::NullConsMax) << ve::NullConsShift;
+    uint64_t low = bits & ~indexMask;
+    return low == static_cast<uint64_t>(ve::encodeConstant(ve::NullCons)) ||
+           (low == static_cast<uint64_t>(ve::encodeConstant(ve::Empty)) && (bits & indexMask) != 0);
 }
 
 // Returns the allocas in `F` whose address, through casts and GEPs, is the
@@ -582,6 +591,12 @@ void eco::addEcoGCPipeline(ModulePassManager &MPM) {
     // caller's statepoints, whose relocations are already explicit SSA values
     // that no fold can bridge.
     MPM.addPass(StripEcoCastBarriersPass());
+    // RS4GC can leave a rematerialized derived pointer unused after its statepoint (a tagged word, HEAP_086,
+    // `getelementptr base, idx << 43`, live into the statepoint but not after it), and with it the
+    // `gc.relocate` of its base. At -O0 instruction selection skips such a dead relocate, so the statepoint's
+    // lowering finishes with a relocate still pending and asserts (StatepointLoweringState::clear). Dead-code
+    // elimination removes both; statepoints have side effects and stay.
+    MPM.addPass(createModuleToFunctionPassAdaptor(DCEPass()));
 #ifdef ECO_LOWERING_VALIDATION
     MPM.addPass(createModuleToFunctionPassAdaptor(EcoPtrIntVerifyPass()));
 #endif

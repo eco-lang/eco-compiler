@@ -1,5 +1,5 @@
 module Compiler.GenerateMlir.Patterns exposing
-    ( generateMonoPath, generateMonoDtPath, generateMonoTest, testToTagInt, caseKindFromTest, scrutineeTypeFromCaseKind, computeFallbackTag, resolvePathResultType
+    ( generateMonoPath, generateMonoDtPath, generateMonoTest, generateWordTagScrutinee, tagIndexOfTest, firstUnusedIndex, testToTagInt, caseKindFromTest, scrutineeTypeFromCaseKind, computeFallbackTag, resolvePathResultType
     , materializeSplitParam
     )
 
@@ -30,7 +30,7 @@ constructor that a tail-recursive loop holds as one SSA variable per field
 variable directly. A path never reads the whole value or tests its shape;
 `materializeSplitParam` rebuilds it on the heap for the expression code.
 
-@docs generateMonoPath, generateMonoDtPath, generateMonoTest, testToTagInt, caseKindFromTest, scrutineeTypeFromCaseKind, computeFallbackTag, resolvePathResultType
+@docs generateMonoPath, generateMonoDtPath, generateMonoTest, generateWordTagScrutinee, tagIndexOfTest, firstUnusedIndex, testToTagInt, caseKindFromTest, scrutineeTypeFromCaseKind, computeFallbackTag, resolvePathResultType
 @docs materializeSplitParam
 
 -}
@@ -169,23 +169,25 @@ generateMonoTest ctx ( dtPath, test ) =
                     if ctorName /= info.nullCtor then
                         System.Crash.crash ("N1: unrewritten test of the field constructor " ++ ctorName ++ " on a nullable value (NullableMaybe rewrites it)")
 
-                    else if info.constantBitTest then
-                        -- A Maybe-shaped user type: its nullary constructor is the only embedded
-                        -- constant among its values (decision D2), so the constant bit decides.
+                    else
+                        -- The nullary constructor is exactly the type's null word, which no value of
+                        -- the field type can be (MONO_033, HEAP_085).
                         let
                             ( resVar, ctx2 ) =
                                 Ctx.freshVar ctx1
 
-                            ( ctx3, isConstOp ) =
-                                Ops.ecoIsConstant ctx2 resVar valVar
+                            ( ctx3, isWordOp ) =
+                                Ops.ecoIsWord ctx2 resVar valVar info.nullWord
                         in
-                        ( pathOps ++ [ isConstOp ], resVar, ctx3 )
-
-                    else
-                        generateCtorTagTest ctx1 pathOps valVar home ctorName index
+                        ( pathOps ++ [ isWordOp ], resVar, ctx3 )
 
                 Nothing ->
-                    generateCtorTagTest ctx1 pathOps valVar home ctorName index
+                    case Ctx.tagFormOf ctx1 (Mono.dtPathType dtPath) ctorName of
+                        Just ( tagIndex, _ ) ->
+                            generateWordTagTest ctx1 pathOps valVar tagIndex
+
+                        Nothing ->
+                            generateCtorTagTest ctx1 pathOps valVar home ctorName index
 
         Test.IsBool expected ->
             generateMonoTestRest ctx1 pathOps valVar test
@@ -223,6 +225,73 @@ generateCtorTagTest ctx1 pathOps valVar home ctorName index =
                     Ops.arithCmpI ctx6 Ops.CmpEq resVar ( tagVar, I32 ) ( constVar, I32 )
             in
             ( pathOps ++ [ tagOp, constOp, cmpOp ], resVar, ctx7 )
+
+
+{-| The test of a constructor of a tagged union (HEAP_086): whether the index
+`eco.word_tag` reads from `valVar`'s word is `tagIndex`.
+-}
+generateWordTagTest : Ctx.Context -> List MlirOp -> String -> Int -> ( List MlirOp, String, Ctx.Context )
+generateWordTagTest ctx1 pathOps valVar tagIndex =
+    let
+        ( tagVar, ctx2 ) =
+            Ctx.freshVar ctx1
+
+        ( ctx3, tagOp ) =
+            Ops.ecoWordTag ctx2 tagVar valVar
+
+        ( constVar, ctx4 ) =
+            Ctx.freshVar ctx3
+
+        ( ctx5, constOp ) =
+            Ops.arithConstantInt ctx4 constVar tagIndex
+
+        ( resVar, ctx6 ) =
+            Ctx.freshVar ctx5
+
+        ( ctx7, cmpOp ) =
+            Ops.arithCmpI ctx6 Ops.CmpEq resVar ( tagVar, I64 ) ( constVar, I64 )
+    in
+    ( pathOps ++ [ tagOp, constOp, cmpOp ], resVar, ctx7 )
+
+
+{-| The ops that compute the dispatch value of a fan-out on a tagged union at
+`path` (HEAP_086): the value at the path, then the constructor index
+`eco.word_tag` reads from its word, as the `i64` scrutinee of an `int` case.
+-}
+generateWordTagScrutinee : Ctx.Context -> Mono.MonoDtPath -> ( List MlirOp, String, Ctx.Context )
+generateWordTagScrutinee ctx path =
+    let
+        ( pathOps, valVar, ctx1 ) =
+            generateMonoDtPath ctx path Types.ecoValue
+
+        ( tagVar, ctx2 ) =
+            Ctx.freshVar ctx1
+
+        ( ctx3, tagOp ) =
+            Ops.ecoWordTag ctx2 tagVar valVar
+    in
+    ( pathOps ++ [ tagOp ], tagVar, ctx3 )
+
+
+{-| The constructor's declaration index of a constructor fan-out test, the
+alternative a tagged union's `int` dispatch uses (HEAP_086).
+-}
+tagIndexOfTest : Test.FanTest -> Int
+tagIndexOfTest test =
+    case test of
+        Test.FCtor _ _ index _ _ ->
+            Index.toMachine index
+
+        _ ->
+            testToTagInt test
+
+
+{-| The smallest non-negative integer not among `used`: the fallback
+alternative of a tagged union's dispatch.
+-}
+firstUnusedIndex : List Int -> Int
+firstUnusedIndex used =
+    firstUnusedTag 0 (List.sort used)
 
 
 {-| The tests other than a constructor test, on the value `valVar` that
@@ -536,8 +605,33 @@ generateMonoIndexOnHeap ctx targetType revAcc index containerKind resultType sub
     let
         -- The container is an !eco.value, except a root variable held as a
         -- value aggregate, whose type `aggOperand` carries to the projection.
-        ( revAcc1, subVar, ctx1 ) =
+        ( revAcc0, subVar0, ctx0 ) =
             generateMonoPathHelper ctx subPath Types.ecoValue revAcc
+
+        -- A constructor of a tagged union (HEAP_086): the container word is untagged first. A `Bare`
+        -- constructor's field is then the untagged word itself; a `Boxed` one is projected from it.
+        tagForm =
+            case containerKind of
+                Mono.CustomContainer ctorName ->
+                    Ctx.tagFormOf ctx0 (Mono.getMonoPathType subPath) ctorName |> Maybe.map Tuple.second
+
+                _ ->
+                    Nothing
+
+        ( revAcc1, subVar, ctx1 ) =
+            case tagForm of
+                Just _ ->
+                    let
+                        ( untaggedVar, ctxU ) =
+                            Ctx.freshVar ctx0
+
+                        ( ctxU2, untagOp ) =
+                            Ops.ecoUntag ctxU untaggedVar subVar0
+                    in
+                    ( untagOp :: revAcc0, untaggedVar, ctxU2 )
+
+                Nothing ->
+                    ( revAcc0, subVar0, ctx0 )
 
         aggOperand =
             case subPath of
@@ -687,7 +781,15 @@ generateMonoIndexOnHeap ctx targetType revAcc index containerKind resultType sub
                         fieldInfo =
                             lookupCtorFieldInfo ctx2 containerType ctorName index
                     in
-                    if Ctx.nullableInfo ctx2 containerType /= Nothing then
+                    if tagForm == Just Mono.TagBare then
+                        -- The one field of a bare constructor is the untagged word (HEAP_086).
+                        if targetType == I1 || Types.isUnboxable targetType then
+                            Intrinsics.unboxToType ctx2 subVar targetType
+
+                        else
+                            ( [], subVar, ctx2 )
+
+                    else if Ctx.nullableInfo ctx2 containerType /= Nothing then
                         -- The field of a nullable value is the value itself (REP_CONSTANT_003).
                         if targetType == I1 || Types.isUnboxable targetType then
                             Intrinsics.unboxToType ctx2 subVar targetType
@@ -812,6 +914,14 @@ generateMonoUnboxOnHeap ctx targetType revAcc subPath =
     let
         containerType =
             Mono.getMonoPathType subPath
+
+        -- An unbox reads the field of a one-constructor type, which is never tagged (MONO_035).
+        _ =
+            if Ctx.isTagged ctx containerType then
+                System.Crash.crash "generateMonoUnboxOnHeap: an unbox step on a tagged union (HEAP_086)"
+
+            else
+                ()
 
         ( revAcc1, subVar, ctx1 ) =
             generateMonoPathHelper ctx subPath Types.ecoValue revAcc

@@ -366,6 +366,8 @@ struct TypeTableOpLowering : public OpConversionPattern<TypeTableOp> {
                     break;
                 case 4: // Custom: first_ctor (u32) @0, ctor_count (u32) @4
                 case 7: // Wrapper (an erased wrapper, MONO_031): laid out as Custom
+                case 9: // Tagged (a tagged union, HEAP_086): laid out as Custom; a bare
+                        // constructor's field_count carries bit 31
                     if (typeArr.size() >= 4) {
                         putU32(0, intAt(typeArr, 2));
                         putU32(4, intAt(typeArr, 3));
@@ -384,12 +386,22 @@ struct TypeTableOpLowering : public OpConversionPattern<TypeTableOp> {
                     data[0] = char(intAt(typeArr, 2) & 0xFF);
                     break;
                 case 8: // Nullable (REP_CONSTANT_003): field_type_id (u32) @0,
-                        // null_name (u32) @4 with constant_bit_test in bit 31,
-                        // value_name (u32) @8
-                    if (typeArr.size() >= 6) {
+                        // null_name (u32) @4 holding the name's string index in bits
+                        // 0-19, the null word's null-cons flag in bit 20 and its index
+                        // in bits 21-30 (HEAP_085), value_name (u32) @8
+                    if (typeArr.size() >= 7) {
+                        int64_t nameIdx = intAt(typeArr, 3);
+                        int64_t wordIdx = intAt(typeArr, 6);
+                        if (nameIdx < 0 || nameIdx >= (1 << 20))
+                            llvm::report_fatal_error("type table: a nullable type's constructor name index "
+                                                     "does not fit 20 bits");
+                        if (wordIdx < 0 || wordIdx > 1023)
+                            llvm::report_fatal_error("type table: a nullable type's null-word index is "
+                                                     "outside [0, 1023] (HEAP_085)");
                         putU32(0, intAt(typeArr, 2));
-                        putU32(4, (intAt(typeArr, 3) & 0x7FFFFFFF)
-                                      | (intAt(typeArr, 5) ? 0x80000000u : 0u));
+                        putU32(4, static_cast<uint32_t>(nameIdx)
+                                      | (intAt(typeArr, 5) ? (1u << 20) : 0u)
+                                      | (static_cast<uint32_t>(wordIdx) << 21));
                         putU32(8, intAt(typeArr, 4));
                     }
                     break;

@@ -63,6 +63,7 @@ type alias EraseStats =
     , erasedKeys : Int
     , excludedKv : Int
     , excludedMeetsVar : Int
+    , skippedMoveOnly : Int
     , excludedCycle : Int
     , excludedUnboxed : Int
     , ctorCallsRemoved : Int
@@ -74,7 +75,7 @@ type alias EraseStats =
 -}
 emptyStats : EraseStats
 emptyStats =
-    { erasedCtors = 0, erasedKeys = 0, excludedKv = 0, excludedMeetsVar = 0, excludedCycle = 0, excludedUnboxed = 0, ctorCallsRemoved = 0, unboxStepsRemoved = 0 }
+    { erasedCtors = 0, erasedKeys = 0, excludedKv = 0, excludedMeetsVar = 0, skippedMoveOnly = 0, excludedCycle = 0, excludedUnboxed = 0, ctorCallsRemoved = 0, unboxStepsRemoved = 0 }
 
 
 {-| The statistics as one line for the inline report.
@@ -89,7 +90,9 @@ renderStats s =
         ++ String.fromInt s.excludedKv
         ++ ", viewed through a type variable "
         ++ String.fromInt s.excludedMeetsVar
-        ++ ", cyclic "
+        ++ " (move-only meets skipped "
+        ++ String.fromInt s.skippedMoveOnly
+        ++ "), cyclic "
         ++ String.fromInt s.excludedCycle
         ++ ", unboxed "
         ++ String.fromInt s.excludedUnboxed
@@ -450,7 +453,11 @@ consistentWith meets tentative =
                                 && kindAfter m.a /= kindAfter m.b
                                 && RepresentationMeets.slotKindOf m.a == RepresentationMeets.slotKindOf m.b
                     in
-                    if mixed then
+                    if RepresentationMeets.movesOnly m then
+                        -- The type-variable side boxes and unboxes at run time (F4).
+                        []
+
+                    else if mixed then
                         List.filter isErased [ m.a, m.b ]
 
                     else if kindClash then
@@ -547,6 +554,7 @@ type alias Choice =
     , ctors : Set CtorKey
     , excludedKv : Int
     , excludedMeetsVar : Int
+    , skippedMoveOnly : Int
     , excludedCycle : Int
     , excludedUnboxed : Int
     }
@@ -714,15 +722,20 @@ choose opts kv ctorShapes =
         meetsVar =
             List.foldl
                 (\m acc ->
-                    case ( m.a, m.b ) of
-                        ( Mono.MVar _ _, other ) ->
-                            List.foldl Mono.layoutSetInsert acc (customsWithin other)
+                    if RepresentationMeets.movesOnly m then
+                        -- Only moved through a kernel alias's type variable (F4): no view reads it.
+                        acc
 
-                        ( other, Mono.MVar _ _ ) ->
-                            List.foldl Mono.layoutSetInsert acc (customsWithin other)
+                    else
+                        case ( m.a, m.b ) of
+                            ( Mono.MVar _ _, other ) ->
+                                List.foldl Mono.layoutSetInsert acc (customsWithin other)
 
-                        _ ->
-                            acc
+                            ( other, Mono.MVar _ _ ) ->
+                                List.foldl Mono.layoutSetInsert acc (customsWithin other)
+
+                            _ ->
+                                acc
                 )
                 Mono.layoutSetEmpty
                 opts.meets
@@ -786,6 +799,7 @@ choose opts kv ctorShapes =
     , ctors = erasedCtors
     , excludedKv = Dict.size groups0 - Dict.size notKvOnly
     , excludedMeetsVar = Dict.size notKvOnly - Dict.size notKv
+    , skippedMoveOnly = List.length (List.filter RepresentationMeets.movesOnly opts.meets)
     , excludedCycle = Set.size cyc
     , excludedUnboxed = Dict.size acyclic - Set.size erasedCtors
     }
@@ -916,7 +930,7 @@ plan opts kv (Mono.MonoGraph g) =
 noPlan : Mono.MonoGraph -> Plan
 noPlan (Mono.MonoGraph g) =
     { erasable = emptyErasable
-    , choice = { erasable = emptyErasable, ctors = Set.empty, excludedKv = 0, excludedMeetsVar = 0, excludedCycle = 0, excludedUnboxed = 0 }
+    , choice = { erasable = emptyErasable, ctors = Set.empty, excludedKv = 0, excludedMeetsVar = 0, skippedMoveOnly = 0, excludedCycle = 0, excludedUnboxed = 0 }
     , ctorSpecs = Dict.empty
     , ctorShapes = g.ctorShapes
     }
@@ -924,7 +938,7 @@ noPlan (Mono.MonoGraph g) =
 
 choiceStats : Choice -> EraseStats
 choiceStats choice =
-    { emptyStats | excludedKv = choice.excludedKv, excludedMeetsVar = choice.excludedMeetsVar, excludedCycle = choice.excludedCycle, excludedUnboxed = choice.excludedUnboxed }
+    { emptyStats | excludedKv = choice.excludedKv, excludedMeetsVar = choice.excludedMeetsVar, skippedMoveOnly = choice.skippedMoveOnly, excludedCycle = choice.excludedCycle, excludedUnboxed = choice.excludedUnboxed }
 
 
 {-| The nodes of a graph after `rewriteNodes`: the erased constructors' nodes

@@ -892,6 +892,15 @@ runMonoOptPipeline ecoConfig stats globalTypeEnv assignedRaw =
     in
     writeReport (renderPreAliasForwardReport ecoConfig.inline.aliasForward pre.aliasForward)
         |> Task.andThen (\_ -> writeReport (renderPreEtaReport ecoConfig.inline.etaExpand pre.etaExpand))
+        |> Task.andThen
+            (\_ ->
+                writeReport
+                    ("pre-debug-values: rewritten="
+                        ++ String.fromInt pre.debugValues.rewritten
+                        ++ " flattened="
+                        ++ String.fromInt pre.debugValues.flattened
+                    )
+            )
         |> Task.andThen (\_ -> writeReport (renderPreInlineReport pre.inline))
         |> Task.andThen (\_ -> preLiftReport ())
         |> Task.andThen (\_ -> validateMinted ecoConfig assigned1)

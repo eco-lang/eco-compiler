@@ -14,6 +14,11 @@
 //
 // The walk allocates nothing, so no collection can run, and no object moves, while it runs.
 //
+// The compiler chooses the representation of `Maybe ( Int, k, v )`: a `Just` heap Custom holding the
+// tuple, or, when it makes the type nullable (MONO_033), the tuple itself. Kernel visibility does not
+// protect it, since its values sit behind `JsArray`'s type-variable element field, which the declared
+// closure does not follow (MONO_032); so the walk reads both forms, by the element's heap tag.
+//
 //===----------------------------------------------------------------------===//
 
 #pragma once
@@ -41,8 +46,12 @@ bool eachEntryIn(HPointer hp, F& f) {
     for (u32 i = 0; i < arr->length; ++i) {
         HPointer elem = arr->elements[i].p; // `Maybe` elements are boxed.
         if (alloc::isConstant(elem)) continue; // Nothing: a removed entry.
-        auto* just = static_cast<Custom*>(Allocator::instance().resolve(elem));
-        auto* t = static_cast<Tuple3*>(Allocator::instance().resolve(just->values[0].p));
+        void* obj = Allocator::instance().resolve(elem);
+        // A nullable `Maybe`'s `Just t` is `t` itself; otherwise it is a Custom holding `t`.
+        auto* t = static_cast<Header*>(obj)->tag == Tag_Tuple3
+                      ? static_cast<Tuple3*>(obj)
+                      : static_cast<Tuple3*>(Allocator::instance().resolve(static_cast<Custom*>(obj)->values[0].p));
+        assert(t->header.tag == Tag_Tuple3 && "SeqDict entry is not a ( Int, k, v ) tuple");
         u32 kinds = t->header.unboxed;
         if (!f(t->b, tupleFieldKind(kinds, 1), t->c, tupleFieldKind(kinds, 2))) return false;
     }

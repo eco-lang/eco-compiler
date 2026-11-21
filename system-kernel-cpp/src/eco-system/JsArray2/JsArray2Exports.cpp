@@ -26,9 +26,9 @@ using namespace Elm::Kernel;
 namespace {
 
 // Returns the slot that holds the boxed value `val` in an array of kind `kind`: the value itself in a boxed
-// array (kind 0), or the raw value in an Int, Float or Char array (kind 1 to 3).
+// array (kind 0), or the raw value in an Int, Float or Char array (kind 1 to 3) (HEAP_046).
 Unboxable slotFor(HPointer val, uint32_t kind) {
-    return kind == 0 ? alloc::boxed(val) : JsArray::unboxByKind(val, kind);
+    return alloc::convertToKind(alloc::boxed(val), 0, static_cast<u8>(kind));
 }
 
 // Returns a new array, the copy of `array` with its slot `skip` left out (when `skip` is an index of it)
@@ -41,6 +41,7 @@ HPointer copyArray(HPtr array, int64_t skip, uint32_t extra, uint32_t& outLen, u
     StackRootGuard guard(&srcHP);
 
     ElmArray* src = static_cast<ElmArray*>(allocator.resolve(srcHP));
+    alloc::validateArrayKind(src, "JsArray2 copyArray");
     uint32_t len = src->length;
     uint32_t kind = src->header.unboxed & 0x3;
     bool skipping = skip >= 0 && static_cast<uint64_t>(skip) < len;
@@ -110,9 +111,11 @@ HPtr Eco_Kernel_JsArray2_unsafeInsert(int64_t index, HPtr value, HPtr array) {
     for (uint32_t i = len; i > at; i--) {
         dst->elements[i] = dst->elements[i - 1];
     }
-    // An empty array has no kind yet: a boxed value makes it a boxed array.
-    dst->elements[at] = slotFor(valHP, len == 0 ? 0 : kind);
-    if (len == 0) dst->header.unboxed = 0;
+    // An empty array has no kind yet: the value binds it, a boxed Int, Float or Char its primitive kind
+    // (HEAP_046).
+    uint32_t k = (len == 0) ? alloc::arrayKindOf(alloc::boxed(valHP), 0) : kind;
+    dst->elements[at] = slotFor(valHP, k);
+    dst->header.unboxed = k;
     dst->length = len + 1;
     return HPtr::fromBits(Export::encode(result));
 }

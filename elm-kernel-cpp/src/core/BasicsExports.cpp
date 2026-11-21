@@ -62,30 +62,30 @@ namespace {
 ///
 /// `p` must refer to a heap object. An Int or Float is never an embedded constant, so a boxed number
 /// always qualifies; an embedded constant would be dereferenced as an address.
-inline Elm::Tag tagOfBoxed(HPtr p) {
+static inline Elm::Tag tagOfBoxed(HPtr p) {
     void* obj = Elm::Kernel::Export::toPtr(p.toBits());
     return Elm::alloc::getTag(obj);
 }
 
 /// Returns the value of the heap `ElmInt` that `p` refers to. The tag is not checked.
-inline int64_t intOfBoxed(HPtr p) {
+static inline int64_t intOfBoxed(HPtr p) {
     void* obj = Elm::Kernel::Export::toPtr(p.toBits());
     return static_cast<Elm::ElmInt*>(obj)->value;
 }
 
 /// Returns the value of the heap `ElmFloat` that `p` refers to. The tag is not checked.
-inline double floatOfBoxed(HPtr p) {
+static inline double floatOfBoxed(HPtr p) {
     void* obj = Elm::Kernel::Export::toPtr(p.toBits());
     return static_cast<Elm::ElmFloat*>(obj)->value;
 }
 
 /// Allocates a heap `ElmInt` holding `v` and returns its word. The allocation is a GC point.
-inline HPtr boxInt(int64_t v) {
+static inline HPtr boxInt(int64_t v) {
     return HPtr::fromBits(Elm::Kernel::Export::encode(Elm::alloc::allocInt(v)));
 }
 
 /// Allocates a heap `ElmFloat` holding `v` and returns its word. The allocation is a GC point.
-inline HPtr boxFloat(double v) {
+static inline HPtr boxFloat(double v) {
     return HPtr::fromBits(Elm::Kernel::Export::encode(Elm::alloc::allocFloat(v)));
 }
 

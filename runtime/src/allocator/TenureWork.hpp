@@ -254,7 +254,8 @@ inline long ylosFind(const std::vector<YlosEntry>& ys, const void* p) {
 //
 // `Env` must provide the following, all over data that is private to the job or does not change while it runs:
 //   void*     target(uint64_t word)           the heap object a slot word names, or nullptr
-//   uint64_t  word(const void* obj)           the slot word that names obj
+//   uint64_t  word(uint64_t old, const void* obj)  the slot word that names obj, keeping the tag bits (43-52) of
+//                                             old, the word that named obj's original (HEAP_086)
 //   bool      inTenuring(const void* p)       whether p is in the tenuring extent's survivor part
 //   bool      ylosMaybe(const void* p)        a cheap filter: false only if p is not in the YLOS snapshot
 //   bool      youngElsewhere(const void* p)   whether p is in the nursery but outside the tenuring extent
@@ -535,7 +536,7 @@ private:
                       "tgt", ::Elm::tlatrace::obj(t));
         if (t == nullptr) return;
         if (env_.inTenuring(t)) {
-            *s = env_.word(tenure(t));
+            *s = env_.word(*s, tenure(t));
             ECO_TLA_TRACE("tfix", "par", ::Elm::tlatrace::obj(parent), "off",
                           static_cast<int64_t>(reinterpret_cast<char*>(s) - static_cast<char*>(parent)),
                           "val", ::Elm::tlatrace::obj(env_.target(*s)));
@@ -590,7 +591,7 @@ private:
             void* t = env_.target(*tail);
             if (t == nullptr) break;
             if (!env_.inTenuring(t)) { childOfCopy(prev, tail); break; }
-            if (char* d = lookup(env_.shadow(t), env_.gen())) { *tail = env_.word(d); break; }
+            if (char* d = lookup(env_.shadow(t), env_.gen())) { *tail = env_.word(*tail, d); break; }
             if (env_.consTail(t) == nullptr) { childOfCopy(prev, tail); break; }   // not a list cell
             if (k == kSpineRun) {
                 st_.stack.push_back(prev);
@@ -598,7 +599,7 @@ private:
                 break;
             }
             char* d = tenure(t, /*push=*/false);
-            *tail = env_.word(d);
+            *tail = env_.word(*tail, d);
             run[k++] = d;
             prev = d;
         }

@@ -104,9 +104,14 @@ static bool equalRespectingConstants(uint64_t aBits, uint64_t bBits) {
     if (aConst || bConst) {
         if (aBits == bBits) return true;
         if (aConst == bConst) return false;
-        return isEmptyBits(aConst ? aBits : bBits) &&
+        // The same tag (HEAP_086), then the exact Empty word under it: a spare null word (HEAP_085) is not the
+        // empty String, and a bare `A ""` equals a bare `A` over a String of length 0.
+        return wordTag(aBits) == wordTag(bBits) &&
+               isExactEmptyBits((aConst ? aBits : bBits) & ~WORD_TAG_MASK) &&
                alloc::isZeroLengthString(Export::toPtr(aConst ? bBits : aBits));
     }
+    // Two heap words of different constructors of a tagged union are unequal, even over one address (HEAP_086).
+    if (wordTag(aBits) != wordTag(bBits)) return false;
     return Utils::equal(Export::toPtr(aBits), Export::toPtr(bBits));
 }
 

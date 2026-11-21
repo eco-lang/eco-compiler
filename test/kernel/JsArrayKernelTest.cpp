@@ -12,7 +12,13 @@
 //   boxed-push (ARRAY-03)       the boxed push on a Float or Char array copied the 64 bits after the value's
 //                               header (a Char's padding included) and marked the copy kind 1.
 //   push-int (ARRAY-05)         elm_array_push_int on a nonempty kind-0 (boxed) array stored the raw Int in a
-//                               slot the GC traces as a pointer, and kept kind 0.
+//                               slot the GC traces as a pointer, and kept kind 0. Under HEAP_046 no producer
+//                               builds such an array any more, so the fixture is built by hand; the case keeps
+//                               testing bindPrimitiveKind's defensive conversion.
+//   HEAP_046                    every producer binds an array holding boxed Ints, Floats or Chars to their
+//                               primitive kind and stores them unboxed; before, singleton, push onto an empty
+//                               array, push_box and the kKeep builders made kind-0 arrays of boxed primitives,
+//                               and push_box relabelled a primitive array boxed.
 //
 // Each case runs in its own spawned process: it initializes the allocator, and the cases that may crash run in
 // a forked child (ForkedChild::runInChild).
@@ -250,7 +256,14 @@ void testArray05PushIntIntoBoxed() {
     std::cout << "  skipped on Windows (fork)\n";
 #else
     initAllocator();
-    HPtr arr = elm_array_push_box(boxedInt(2), elm_array_push_box(boxedInt(1), Elm_Kernel_JsArray_empty()));
+    // A kind-0 array of boxed Ints, which no producer builds under HEAP_046, built by hand.
+    HPointer one = alloc::allocInt(1);
+    HPointer two = alloc::allocInt(2);
+    HPointer raw = alloc::allocArray(2);
+    void* rawObj = Allocator::instance().resolve(raw);
+    alloc::arrayPush(rawObj, alloc::boxed(one), true);
+    alloc::arrayPush(rawObj, alloc::boxed(two), true);
+    HPtr arr = enc(raw);
     TEST_ASSERT(kindOf(arr) == 0 && arrayOf(arr)->length == 2);
 
     const auto r = ForkedChild::runInChild([arr]() -> int {
@@ -268,6 +281,57 @@ void testArray05PushIntIntoBoxed() {
     if (!(fixedConvert || fixedAbort)) TEST_FAIL("ARRAY-05: " + describeStatus(r));
 #endif
 }
+
+// ---- HEAP_046 ---------------------------------------------------------------
+
+// Each producer that receives boxed values builds an array of the values' primitive kind, holding them raw,
+// and keeps it through a minor collection. A boxed non-primitive (a String) still gives a kind-0 array.
+void testHeap046ProducersBindPrimitiveKind() {
+    initAllocator();
+    std::ostringstream how;
+    bool defect = false;
+    auto check = [&](const char* what, HPtr a, uint32_t wantKind, uint32_t wantLen) {
+        const bool ok = kindOf(a) == wantKind && arrayOf(a)->length == wantLen;
+        if (!ok) { defect = true; how << what << ": " << describeArray(a) << " (want kind " << wantKind << "); "; }
+    };
+
+    check("singleton_box Int", elm_array_singleton_box(boxedInt(5)), 1, 1);
+    check("singleton_box Float", elm_array_singleton_box(boxedFloat(1.5)), 2, 1);
+    check("singleton_box Char", elm_array_singleton_box(boxedChar('q')), 3, 1);
+    check("singleton_box String", elm_array_singleton_box(enc(alloc::allocStringFromUTF8("s"))), 0, 1);
+    check("JsArray.singleton Int", Elm_Kernel_JsArray_singleton(boxedInt(6)), 1, 1);
+    check("JsArray.push onto empty", Elm_Kernel_JsArray_push(boxedInt(7), Elm_Kernel_JsArray_empty()), 1, 1);
+    check("push_box onto empty", elm_array_push_box(boxedInt(8), Elm_Kernel_JsArray_empty()), 1, 1);
+
+    HPtr ints = elm_array_push_int(2, elm_array_push_int(1, Elm_Kernel_JsArray_empty()));
+    HPtr pushed = elm_array_push_box(boxedInt(9), ints);
+    check("push_box onto kind 1", pushed, 1, 3);
+    if (arrayOf(pushed)->elements[2].i != 9) { defect = true; how << "push_box element 2 not 9; "; }
+
+    // kKeep: a list of boxed Ints gives an Int array.
+    std::vector<HPointer> heads = {alloc::allocInt(10), alloc::allocInt(11), alloc::allocInt(12)};
+    HPointer list = alloc::listFromPointers(heads);
+    HPtr pair = Elm_Kernel_JsArray_initializeFromList(boxedInt(8), enc(list));
+    HPtr fromList = enc(static_cast<Tuple2*>(Ex::toPtr(pair.toBits()))->a.p);
+    check("initializeFromList kKeep", fromList, 1, 3);
+
+    // The values survive a minor collection, read raw.
+    uint64_t roots[2] = {pushed.toBits(), fromList.toBits()};
+    eco_gc_add_value_root(&roots[0]);
+    eco_gc_add_value_root(&roots[1]);
+    eco_minor_gc();
+    ElmArray* p = arrayOf(HPtr::fromBits(roots[0]));
+    ElmArray* f = arrayOf(HPtr::fromBits(roots[1]));
+    if (!(p->elements[0].i == 1 && p->elements[1].i == 2 && p->elements[2].i == 9)) {
+        defect = true; how << "after GC push_box: " << describeArray(HPtr::fromBits(roots[0])) << "; ";
+    }
+    if (!(f->elements[0].i == 10 && f->elements[1].i == 11 && f->elements[2].i == 12)) {
+        defect = true; how << "after GC initializeFromList: " << describeArray(HPtr::fromBits(roots[1])) << "; ";
+    }
+    eco_gc_remove_value_root(&roots[0]);
+    eco_gc_remove_value_root(&roots[1]);
+    if (defect) TEST_FAIL("HEAP_046: " + how.str());
+}
 }  // namespace
 
 void registerJsArrayKernelTests(IsolatedTestRunner::IsolatedTestCaseSuite& suite) {
@@ -275,4 +339,5 @@ void registerJsArrayKernelTests(IsolatedTestRunner::IsolatedTestCaseSuite& suite
     suite.add(Testing::TestCase("js-array-kernel/boxed-unsafe-set-keeps-float-char-kind", testArray02BoxedUnsafeSetKind));
     suite.add(Testing::TestCase("js-array-kernel/boxed-push-keeps-kind-and-zero-char-padding", testArray03BoxedPushKind));
     suite.add(Testing::TestCase("js-array-kernel/push-int-into-nonempty-boxed-array", testArray05PushIntIntoBoxed));
+    suite.add(Testing::TestCase("js-array-kernel/producers-bind-primitive-kind", testHeap046ProducersBindPrimitiveKind));
 }

@@ -460,6 +460,7 @@ applyEnvOverrides cfg =
         |> Task.andThen (applyReprBoolEnv "ECO_ERASE_UNBOXED" (\b r -> { r | eraseUnboxed = b }))
         |> Task.andThen (applyReprBoolEnv "ECO_NULLABLE_MAYBE" (\b r -> { r | nullableMaybe = b }))
         |> Task.andThen (applyReprBoolEnv "ECO_NULLABLE_USER" (\b r -> { r | nullableUser = b }))
+        |> Task.andThen (applyReprBoolEnv "ECO_TAGGED_UNIONS" (\b r -> { r | taggedUnions = b }))
         |> Task.andThen (applyReprBoolEnv "ECO_KNOWN_CTOR_CASE" (\b r -> { r | knownCtorCase = b }))
         |> Task.andThen (applyReprBoolEnv "ECO_SRET_CTORS" (\b r -> { r | sretCtors = b }))
         |> Task.andThen (applyReprBoolEnv "ECO_REPR_VALIDATE" (\b r -> { r | validate = b }))

@@ -28,10 +28,11 @@ HPointer initializeFromList(u32 max, HPointer list, int wantedKind) {
             Unboxable v = (kind == 0) ? unboxByKind(head.p, static_cast<u32>(wantedKind)) : head;
             assert((kind == 0 || kind == wantedKind) && "JsArray.initializeFromList: list head kind mismatch");
             alloc::arrayPushKind(arrObj, v, static_cast<u8>(wantedKind));
-        } else if (kind == 0) {
-            alloc::arrayPush(arrObj, alloc::boxed(head.p), true);
         } else {
-            alloc::arrayPushKind(arrObj, head, static_cast<u8>(kind));
+            // The element type is boxed or not known: the first head binds the array's kind, a boxed
+            // Int, Float or Char binding its primitive kind, and every later head is converted to it
+            // (HEAP_046).
+            alloc::arrayPushConverted(arrObj, head, kind);
         }
         cursor.advance();
         ++count;

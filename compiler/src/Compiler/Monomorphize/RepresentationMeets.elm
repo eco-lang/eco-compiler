@@ -1,6 +1,7 @@
 module Compiler.Monomorphize.RepresentationMeets exposing
-    ( Meet, collect, translate, Components, components, componentOf
+    ( Meet, Via(..), collect, translate, Components, components, componentOf
     , SlotKind(..), slotKindOf
+    , movesOnly
     , validate
     )
 
@@ -24,13 +25,15 @@ value (`root`) or inside it, under a constructor, list, tuple, record or
 function arrow. Call-boundary boxing (CGEN_001) repairs a root disagreement
 between an unboxed primitive and `!eco.value`; nothing repairs an interior one.
 
-@docs Meet, collect, translate, Components, components, componentOf
+@docs Meet, Via, collect, translate, Components, components, componentOf
 @docs SlotKind, slotKindOf
+@docs movesOnly
 @docs validate
 
 -}
 
 import Array
+import Compiler.IR.Kernel.Visibility as Visibility
 import Compiler.IR.Mono as Mono
 import Compiler.IR.Mono.Traverse as Traverse
 import Data.NonEmptyList as NE
@@ -49,7 +52,44 @@ type alias Meet =
     , root : Bool
     , spec : Int
     , site : String
+    , via : Via
     }
+
+
+{-| What the second view of a meet is (plans/constructor-representation-followups.md
+F4). `ViaKernelAlias home name` marks a meet between a use of a global and the
+global's node when that node is a pure forward of the kernel `home.name`
+(`MonoDefine (MonoVarKernel …)`): the shared specialization AliasForward keeps
+for a kernel whose ABI is not fixed, whose types are the kernel's, with type
+variables where the kernel's are. Every other meet is `ViaOther`. A meet's `b`
+is the node's view (`splitAt site useType nodeType`), at every interior position
+too.
+-}
+type Via
+    = ViaKernelAlias String String
+    | ViaOther
+
+
+{-| Whether the meet `m` only moves its value through a type variable: its
+second view is a type variable (`m.b`, the node's side) of a pure-forward alias
+of a kernel that `Compiler.IR.Kernel.Visibility.kernelUse` lists and that is not
+a `Debug` kernel. Such a kernel never looks inside a value of a type variable
+(the review that built the table defines it so); a single value crosses into it
+boxed (REP_ABI_001) and a container carries the slot kinds the kernel reads, as
+`List Float` and `Array Int` already do. So the meet constrains no
+representation: `EraseWrappers`, `NullableMaybe` and `validate` skip it. A
+`Debug` kernel at a type variable prints untyped, and an unlisted kernel may
+look inside, so neither is move-only; kernel visibility does not see through an
+alias's type variable, so for those this rule is the only protection.
+-}
+movesOnly : Meet -> Bool
+movesOnly m =
+    case ( m.via, m.b ) of
+        ( ViaKernelAlias home name, Mono.MVar _ _ ) ->
+            home /= "Debug" && Dict.member ( home, name ) Visibility.kernelUse
+
+        _ ->
+            False
 
 
 {-| How a value of a type is held in a heap slot: unboxed as an Int, a Float or
@@ -94,21 +134,24 @@ type alias Env =
 collect : Mono.MonoGraph -> List Meet
 collect (Mono.MonoGraph g) =
     let
-        nodeTypeOf : Int -> Maybe Mono.MonoType
+        nodeTypeOf : Int -> Maybe ( Mono.MonoType, Via )
         nodeTypeOf specId =
             case Array.get specId g.nodes |> Maybe.andThen identity of
                 Just (Mono.MonoCtor _ shape t) ->
                     if List.isEmpty shape.fieldTypes then
-                        Just t
+                        Just ( t, ViaOther )
 
                     else
-                        Just (Mono.mFunction Mono.topSynth shape.fieldTypes t)
+                        Just ( Mono.mFunction Mono.topSynth shape.fieldTypes t, ViaOther )
 
                 Just (Mono.MonoEnum _ _ _ t) ->
-                    Just t
+                    Just ( t, ViaOther )
+
+                Just ((Mono.MonoDefine (Mono.MonoVarKernel _ _ home name _) _) as node) ->
+                    Just ( Mono.nodeType node, ViaKernelAlias home name )
 
                 Just node ->
-                    Just (Mono.nodeType node)
+                    Just ( Mono.nodeType node, ViaOther )
 
                 Nothing ->
                     Nothing
@@ -131,7 +174,7 @@ collect (Mono.MonoGraph g) =
         |> Tuple.first
 
 
-nodeMeets : (Int -> Maybe Mono.MonoType) -> Mono.MonoNode -> List Meet -> List Meet
+nodeMeets : (Int -> Maybe ( Mono.MonoType, Via )) -> Mono.MonoNode -> List Meet -> List Meet
 nodeMeets nodeTypeOf node acc =
     case node of
         Mono.MonoDefine expr t ->
@@ -163,7 +206,7 @@ translate : (Mono.MonoType -> Mono.MonoType) -> List Meet -> List Meet
 translate f meets =
     List.foldl
         (\m acc ->
-            List.map (\m1 -> { m1 | spec = m.spec }) (splitAt m.site (f m.a) (f m.b) m.root [])
+            List.map (\m1 -> { m1 | spec = m.spec, via = m.via }) (splitAt m.site (f m.a) (f m.b) m.root [])
                 ++ acc
         )
         []
@@ -188,17 +231,17 @@ splitAt site a b root acc =
     else
         case ( a, b ) of
             ( Mono.MVar _ _, _ ) ->
-                { a = a, b = b, root = root, spec = -1, site = site } :: acc
+                { a = a, b = b, root = root, spec = -1, site = site, via = ViaOther } :: acc
 
             ( _, Mono.MVar _ _ ) ->
-                { a = a, b = b, root = root, spec = -1, site = site } :: acc
+                { a = a, b = b, root = root, spec = -1, site = site, via = ViaOther } :: acc
 
             ( Mono.MList _ x, Mono.MList _ y ) ->
-                splitAt site x y False ({ a = a, b = b, root = root, spec = -1, site = site } :: acc)
+                splitAt site x y False ({ a = a, b = b, root = root, spec = -1, site = site, via = ViaOther } :: acc)
 
             ( Mono.MTuple _ xs, Mono.MTuple _ ys ) ->
                 List.foldl (\( x, y ) ac -> splitAt site x y False ac)
-                    ({ a = a, b = b, root = root, spec = -1, site = site } :: acc)
+                    ({ a = a, b = b, root = root, spec = -1, site = site, via = ViaOther } :: acc)
                     (List.map2 Tuple.pair (Mono.tupleToList xs) (Mono.tupleToList ys))
 
             ( Mono.MRecord _ xs, Mono.MRecord _ ys ) ->
@@ -211,29 +254,29 @@ splitAt site a b root acc =
                             Nothing ->
                                 ac
                     )
-                    ({ a = a, b = b, root = root, spec = -1, site = site } :: acc)
+                    ({ a = a, b = b, root = root, spec = -1, site = site, via = ViaOther } :: acc)
                     xs
 
             ( Mono.MCustom _ h1 n1 xs, Mono.MCustom _ h2 n2 ys ) ->
                 if h1 == h2 && n1 == n2 then
                     List.foldl (\( x, y ) ac -> splitAt site x y False ac)
-                        ({ a = a, b = b, root = root, spec = -1, site = site } :: acc)
+                        ({ a = a, b = b, root = root, spec = -1, site = site, via = ViaOther } :: acc)
                         (List.map2 Tuple.pair xs ys)
 
                 else
-                    { a = a, b = b, root = root, spec = -1, site = site } :: acc
+                    { a = a, b = b, root = root, spec = -1, site = site, via = ViaOther } :: acc
 
             ( Mono.MFunction _ _ ps r, Mono.MFunction _ _ qs s ) ->
                 if List.length ps == List.length qs then
                     List.foldl (\( x, y ) ac -> splitAt site x y False ac)
-                        (splitAt site r s False ({ a = a, b = b, root = root, spec = -1, site = site } :: acc))
+                        (splitAt site r s False ({ a = a, b = b, root = root, spec = -1, site = site, via = ViaOther } :: acc))
                         (List.map2 Tuple.pair ps qs)
 
                 else
-                    { a = a, b = b, root = root, spec = -1, site = site } :: acc
+                    { a = a, b = b, root = root, spec = -1, site = site, via = ViaOther } :: acc
 
             _ ->
-                { a = a, b = b, root = root, spec = -1, site = site } :: acc
+                { a = a, b = b, root = root, spec = -1, site = site, via = ViaOther } :: acc
 
 
 {-| The type left after applying a function of type `t` to `n` arguments, when
@@ -261,7 +304,7 @@ applied n t =
                 Nothing
 
 
-exprMeets : (Int -> Maybe Mono.MonoType) -> Env -> Mono.MonoExpr -> List Meet -> List Meet
+exprMeets : (Int -> Maybe ( Mono.MonoType, Via )) -> Env -> Mono.MonoExpr -> List Meet -> List Meet
 exprMeets nodeTypeOf env expr acc =
     let
         recur e a =
@@ -281,8 +324,9 @@ exprMeets nodeTypeOf env expr acc =
 
         Mono.MonoVarGlobal _ specId t ->
             case nodeTypeOf specId of
-                Just nt ->
-                    splitAt ("global->" ++ String.fromInt specId) t nt True acc
+                Just ( nt, via ) ->
+                    List.map (\m -> { m | via = via }) (splitAt ("global->" ++ String.fromInt specId) t nt True [])
+                        ++ acc
 
                 Nothing ->
                     acc
@@ -603,8 +647,9 @@ componentOf comps t =
 
 {-| Checks a graph after the representation passes: every interior meet joins
 two types of the same slot kind (MONO_029), and no meet joins a nullable type
-(`Mono.ReprInfo.nullable`) to any other type (MONO_033). Returns one message
-per violation, at most 50.
+(`Mono.ReprInfo.nullable`) to any other type (MONO_033), except a meet that only
+moves its value through a kernel alias's type variable (`movesOnly`). Returns
+one message per violation, at most 50.
 -}
 validate : Mono.MonoGraph -> List String
 validate ((Mono.MonoGraph g) as graph) =
@@ -613,7 +658,10 @@ validate ((Mono.MonoGraph g) as graph) =
             Mono.layoutMapMember t g.repr.nullable
 
         bad m =
-            if not m.root && slotKindOf m.a /= slotKindOf m.b then
+            if movesOnly m then
+                Nothing
+
+            else if not m.root && slotKindOf m.a /= slotKindOf m.b then
                 Just
                     ("MONO_029 violation (spec " ++ String.fromInt m.spec ++ " " ++ m.site ++ "): interior slot kinds differ: "
                         ++ Mono.monoTypeToDebugString m.a

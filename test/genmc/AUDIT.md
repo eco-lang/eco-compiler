@@ -568,3 +568,27 @@ Pins fired: region `NP.copyClaimed` (**c63cd4dd8cbf**); region `NT.TenureParEnv`
 Change (plans/constructor-representation-levels.md, unit M0, the constructor census): each nursery promotion path (the parallel minor's `copyClaimed`, the tenure gang's heap and parallel arms, the serial `NurserySpace` copy) now calls `ctorCensusPromoted(h)` inside its `ENABLE_GC_STATS` block, after the copy, beside the existing `copies.promotion` statistics call. With the census on (`ECO_CTOR_CENSUS_OUT` set) it does one relaxed `__atomic_fetch_add` on `eco_ctor_census_promoted[h.refcount]`, a statistics-only array no GC code reads; with it off, one predictable branch. `h` is the header of the object just copied, read by the worker that copied it. The census id lives in `Header.refcount` (15 bits), set by the mutator in `eco_ctor_census_mark` when it allocates the object, before the object is published; no model gives `refcount` a meaning, and the old generation uses it only on `Tag_Free` cells, which the hook skips (it counts `Tag_Custom` only). A static initializer registers `std::atexit(eco_ctor_census_dump)` when the variable is set: the handler reads the arrays and writes a file, takes no lock and touches no allocator state, and runs on the exiting mutator after every minor pause has joined its workers, so it cannot block a forked child or race a promotion.
 
 No atomic step, lock, shared heap location or memory order of any modelled protocol is added, removed or reordered: the new RMW is on a location outside every model's state, relaxed and write-only during GC. **Verdict: no model change needed.**
+
+## 2026-11-20 — tag-preserving write-back (F1.1, HEAP_086)
+
+Pins fired: file `runtime/src/allocator/TenureWork.hpp` (**918efd38c3df**); region `NP.evacuateP` (**7a2ae0cfa0ed**); region `NT.TenureParEnv` (**608715e7670a**).
+
+Change (plans/constructor-representation-followups.md F1.1, HEAP_086 — the runtime tolerates tagged-union
+heap words, `addr | (idx << 43)`): every place a collector writes a slot word back after forwarding or
+copying its object — `slot = Allocator::toPointerRaw(addr)` — now writes `slot = retarget(slot, addr)`
+(`Heap.hpp`), the new address with bits 43-52 of the word it replaces. The tenure engine's `Env::word(obj)`
+became `word(old, obj)` with the same meaning (`*s = env_.word(*s, tenure(t))`), so `TenureWork.hpp`'s
+contract comment and three call sites changed; the GenMC drivers' `CollectorEnv` never instantiates `word`.
+The JIT-root loops (`NR.minorGCRegion`, the serial `evacuateJitPtr`, `evacuateRawP`) decode the word with
+`hpToAddr` before their heap-range test and write back `hpBits` of the evacuated `HPointer` instead of
+round-tripping through `fromPointerRaw`; for every untagged word (all words today: nothing produces a tagged
+one before F1.4) the values computed and stored are bit-identical to before.
+
+Each store is the same single 64-bit store to the same slot by the same thread as before; the extra input is
+the slot's own previous value, which that thread had already read (to find the object) and which no other
+thread writes (M3 A2: "slots are whole words, owner-only"; the heal slots are written only by the merge's
+heal, serially or one contiguous range per gang member). No atomic step, lock, shared location or memory
+order is added, removed or reordered, and no footprint row changes meaning. The bits the store keeps are
+outside every model's abstraction of a slot (a reference to an object). **Verdict: no model change needed.**
+Covered by `test/allocator/TaggedWordGcTest.cpp` (serial, parallel and region minors, tenuring, a major, CAF
+promotion), which failed before the change and passes after.

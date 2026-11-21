@@ -1,15 +1,20 @@
 module Compiler.MonoOpt.NullableMaybe exposing
-    ( admissible, admissibleNoConstants
+    ( admissiblePayload, censusClass
     , isMaybeType
     , NullStats, run, renderStats
     , Info, Choice, choose, rewriteStep, touches, recordNullable
     )
 
-{-| The nullable representation of `Maybe` (plans/constructor-representation-levels.md
-§7): `Nothing` is the Empty constant and `Just x` is `x` itself, for a payload
-type whose runtime word can never be Empty.
+{-| The nullable representation of `Maybe` and of Maybe-shaped user types
+(plans/constructor-representation-levels.md §7, plans/constructor-representation-followups.md
+F2): the field constructor's value is its field itself, and the nullary
+constructor's is a constant word, the type's null word, that no value of the
+field type can be. `Maybe`'s is the Empty constant and a user type's its
+nullary constructor's null-cons word, unless the field type can be that word;
+then it is a spare word, `0x6 | (level << 43)`, one level above the field
+type's own (`assignNullWords`).
 
-@docs admissible, admissibleNoConstants
+@docs admissiblePayload, censusClass
 @docs isMaybeType
 @docs NullStats, run, renderStats
 @docs Info, Choice, choose, rewriteStep, touches, recordNullable
@@ -43,16 +48,78 @@ isMaybeType t =
             False
 
 
-{-| Returns whether a value of type `t` is a boxed word that can never be the
-Empty constant, so that `Maybe t` may represent `Just x` as `x` (MONO_033).
+-- ====== NULL WORDS (plans/constructor-representation-followups.md F2) ======
 
-Every `MonoType` constructor is answered explicitly, so that a new one forces
-a decision. A kernel-owned custom type is not admissible, because the kernel
-chooses its word (`type Bytes = Bytes` has Empty for its empty value).
 
+{-| What words a value of a type can be, as far as choosing a null word needs:
+whether it can be the Empty constant, whether it can be a null-cons word (of
+any index), and the highest spare-word level it can be (0 for none).
 -}
-admissible : Mono.MonoType -> Bool
-admissible t =
+type alias Words =
+    { empty : Bool
+    , nullCons : Bool
+    , maxSpare : Int
+    }
+
+
+noWords : Words
+noWords =
+    { empty = False, nullCons = False, maxSpare = 0 }
+
+
+unionWords : Words -> Words -> Words
+unionWords a b =
+    { empty = a.empty || b.empty, nullCons = a.nullCons || b.nullCons, maxSpare = max a.maxSpare b.maxSpare }
+
+
+{-| The words of `t` that are not heap pointers, outside the nullable
+representation: a nullable type answers through `nullableWords`.
+-}
+plainWords : (Mono.MonoType -> Maybe (List Mono.CtorShape)) -> Mono.MonoType -> Words
+plainWords shapesOf t =
+    case t of
+        Mono.MString ->
+            { noWords | empty = True }
+
+        Mono.MUnit ->
+            { noWords | empty = True }
+
+        Mono.MList _ _ ->
+            { noWords | empty = True }
+
+        Mono.MRecord _ fields ->
+            if Dict.isEmpty fields then
+                { noWords | empty = True }
+
+            else
+                noWords
+
+        Mono.MCustom _ home name _ ->
+            if isMaybeType t then
+                { noWords | empty = True }
+
+            else if Visibility.isKernelOwned (ModuleName.toComparableCanonical home) name then
+                -- The kernel chooses its words (`Bytes`'s empty value is Empty).
+                { noWords | empty = True, nullCons = True }
+
+            else
+                case shapesOf t of
+                    Just shapes ->
+                        { noWords | nullCons = List.any (\s -> List.isEmpty s.fieldTypes) shapes }
+
+                    Nothing ->
+                        { noWords | empty = True, nullCons = True }
+
+        _ ->
+            noWords
+
+
+{-| Returns whether `t` can be a nullable type's payload at all: its values
+must be boxed words of a known shape, so not Int, Float, Char, a type variable
+or a kernel-owned type.
+-}
+admissiblePayload : Mono.MonoType -> Bool
+admissiblePayload t =
     case t of
         Mono.MInt ->
             False
@@ -63,85 +130,131 @@ admissible t =
         Mono.MChar ->
             False
 
-        Mono.MBool ->
-            True
-
-        Mono.MString ->
-            False
-
-        Mono.MUnit ->
-            False
-
-        Mono.MList _ _ ->
-            False
-
-        Mono.MTuple _ _ ->
-            True
-
-        Mono.MRecord _ fields ->
-            not (Dict.isEmpty fields)
-
-        Mono.MCustom _ home name _ ->
-            not (isMaybeType t)
-                && not (Visibility.isKernelOwned (ModuleName.toComparableCanonical home) name)
-
-        Mono.MFunction _ _ _ _ ->
-            True
-
         Mono.MVar _ _ ->
             False
-
-
-{-| Returns whether no value of type `t` is an embedded constant (Empty,
-True, False or a null-cons word), which a Maybe-shaped user type needs of its
-payload (decision D2). `shapesOf` gives a custom type's constructors.
--}
-admissibleNoConstants : (Mono.MonoType -> Maybe (List Mono.CtorShape)) -> Mono.MonoType -> Bool
-admissibleNoConstants shapesOf t =
-    case t of
-        Mono.MTuple _ _ ->
-            True
-
-        Mono.MRecord _ fields ->
-            not (Dict.isEmpty fields)
-
-        Mono.MFunction _ _ _ _ ->
-            True
 
         Mono.MCustom _ home name _ ->
             not (Visibility.isKernelOwned (ModuleName.toComparableCanonical home) name)
-                && (case shapesOf t of
-                        Just shapes ->
-                            not (List.isEmpty shapes) && List.all (\s -> not (List.isEmpty s.fieldTypes)) shapes
 
+        _ ->
+            True
+
+
+{-| The null words of the nullable types `cands` (each with its payload and
+whether it is a `Maybe`), and the candidates dropped: those whose payload,
+followed through nullable payloads, comes back to themselves (`type L = N | C L`,
+where `C N` would be `N`'s word under any encoding), and those that would need a
+level above `Mono.nullWordMaxIndex`. Each null word differs from every word the
+payload can be: `Maybe` takes Empty unless the payload can be Empty, a user type
+its nullary constructor's null-cons word unless the payload can be a null-cons
+word, and otherwise a spare word one level above the payload's highest.
+Dropping a candidate changes the words of the others, so it repeats until none
+is dropped.
+-}
+assignNullWords :
+    (Mono.MonoType -> Maybe (List Mono.CtorShape))
+    -> List ( Mono.MonoType, { payload : Mono.MonoType, isMaybe : Bool, nullIndex : Int } )
+    -> ( Mono.LayoutMap Mono.NullWord, List Mono.MonoType )
+assignNullWords shapesOf cands =
+    let
+        attempt live dropped =
+            let
+                candMap =
+                    List.foldl (\( k, c ) acc -> Mono.layoutMapInsert k c acc) Mono.layoutMapEmpty live
+
+                -- The words of `t`, with the null words found so far; `Err t` names a candidate on a cycle
+                -- or over the level limit.
+                wordsOf visiting memo t =
+                    case Mono.layoutMapGet t candMap of
                         Nothing ->
-                            False
-                   )
+                            Ok ( plainWords shapesOf t, memo )
 
-        Mono.MInt ->
-            False
+                        Just c ->
+                            case Mono.layoutMapGet t memo of
+                                Just nw ->
+                                    wordsOf visiting memo c.payload
+                                        |> Result.map (\( w, m ) -> ( unionWords (wordOfNull nw) w, m ))
 
-        Mono.MFloat ->
-            False
+                                Nothing ->
+                                    if Mono.layoutSetMember t visiting then
+                                        Err t
 
-        Mono.MChar ->
-            False
+                                    else
+                                        wordsOf (Mono.layoutSetInsert t visiting) memo c.payload
+                                            |> Result.andThen
+                                                (\( w, m ) ->
+                                                    let
+                                                        nw =
+                                                            chooseNull c w
+                                                    in
+                                                    if nw.index > Mono.nullWordMaxIndex then
+                                                        Err t
 
-        Mono.MBool ->
-            False
+                                                    else
+                                                        Ok ( unionWords (wordOfNull nw) w, Mono.layoutMapInsert t nw m )
+                                                )
 
-        Mono.MString ->
-            False
+                result =
+                    List.foldl
+                        (\( k, _ ) acc -> Result.andThen (\memo -> Result.map Tuple.second (wordsOf Mono.layoutSetEmpty memo k)) acc)
+                        (Ok Mono.layoutMapEmpty)
+                        live
+            in
+            case result of
+                Ok memo ->
+                    ( memo, dropped )
 
-        Mono.MUnit ->
-            False
+                Err bad ->
+                    attempt (List.filter (\( k, _ ) -> not (Mono.eqKeyLayout k bad)) live) (bad :: dropped)
+    in
+    attempt cands []
 
-        Mono.MList _ _ ->
-            False
 
-        Mono.MVar _ _ ->
-            False
+chooseNull : { payload : Mono.MonoType, isMaybe : Bool, nullIndex : Int } -> Words -> Mono.NullWord
+chooseNull c w =
+    if c.isMaybe && not w.empty then
+        Mono.emptyNullWord
 
+    else if not c.isMaybe && not w.nullCons then
+        { nullCons = True, index = c.nullIndex }
+
+    else
+        { nullCons = False, index = w.maxSpare + 1 }
+
+
+wordOfNull : Mono.NullWord -> Words
+wordOfNull nw =
+    if nw.nullCons then
+        { noWords | nullCons = True }
+
+    else if nw.index == 0 then
+        { noWords | empty = True }
+
+    else
+        { noWords | maxSpare = nw.index }
+
+
+{-| The census class of a nullable candidate's payload `t` (`CtorCensus`):
+"inadm" when it cannot be a payload (`admissiblePayload`), "spare" when, outside
+the nullable representation, a value of `t` can be the word the type would
+otherwise take (Empty for `Maybe`, a null-cons word for a user type), and "adm"
+otherwise.
+-}
+censusClass : (Mono.MonoType -> Maybe (List Mono.CtorShape)) -> Bool -> Mono.MonoType -> String
+censusClass shapesOf isMaybe t =
+    if not (admissiblePayload t) then
+        "inadm"
+
+    else
+        let
+            w =
+                plainWords shapesOf t
+        in
+        if (isMaybe && w.empty) || (not isMaybe && w.nullCons) then
+            "spare"
+
+        else
+            "adm"
 
 
 -- ====== THE PASS ======
@@ -154,6 +267,8 @@ type alias NullStats =
     , nullable : Int
     , excludedKv : Int
     , excludedMeets : Int
+    , excludedRecursive : Int
+    , spare : Int
     , testsRewritten : Int
     }
 
@@ -170,6 +285,10 @@ renderStats s =
         ++ String.fromInt s.excludedKv
         ++ ", meeting another view "
         ++ String.fromInt s.excludedMeets
+        ++ ", recursive "
+        ++ String.fromInt s.excludedRecursive
+        ++ "; spare null words "
+        ++ String.fromInt s.spare
         ++ "; rewrote "
         ++ String.fromInt s.testsRewritten
         ++ " decision-tree tests"
@@ -213,10 +332,10 @@ indexOf n =
 {-| Chooses the nullable types of `graph` and rewrites its decision trees
 (plans/constructor-representation-levels.md §7, N1a and, with `userTypes`, N1b).
 
-A candidate is a `Maybe t` whose `t` is `admissible`, or with `userTypes` a
-Maybe-shaped user type whose field type has no embedded constants
-(`admissibleNoConstants`, decision D2), that is not kernel-visible at that
-instantiation. A candidate that meets any other view in `meets` (taken on the
+A candidate is a `Maybe t`, or with `userTypes` a Maybe-shaped user type that
+is not kernel-owned, whose field type `t` is `admissiblePayload`, that is not
+kernel-visible at that instantiation. Each chosen type's null word is chosen by
+`assignNullWords`, which drops a recursive candidate. A candidate that meets any other view in `meets` (taken on the
 graph this pass runs on) is excluded: an erased `Maybe a` reading a bare value
 would take it for a `Custom`.
 
@@ -293,7 +412,7 @@ choose opts kv meets ctorShapes =
             Mono.layoutMapGet t ctorShapes
 
         -- Admissible candidates, before the kernel-visibility and meet exclusions.
-        admissibleCands : List ( Mono.MonoType, Info )
+        admissibleCands : List ( Mono.MonoType, ( Info, { payload : Mono.MonoType, isMaybe : Bool, nullIndex : Int } ) )
         admissibleCands =
             Mono.layoutMapFoldl
                 (\key shapes acc ->
@@ -304,23 +423,24 @@ choose opts kv meets ctorShapes =
                                     List.head valueShape.fieldTypes |> Maybe.withDefault Mono.MUnit
 
                                 ok =
-                                    if isMaybeType key then
-                                        admissible payload
-
-                                    else
-                                        opts.userTypes
-                                            && not (Visibility.isKernelOwned (ModuleName.toComparableCanonical home) name)
-                                            && admissibleNoConstants shapesOf payload
+                                    admissiblePayload payload
+                                        && (isMaybeType key
+                                                || (opts.userTypes
+                                                        && not (Visibility.isKernelOwned (ModuleName.toComparableCanonical home) name)
+                                                   )
+                                           )
                             in
                             if ok then
                                 ( key
-                                , { info =
+                                , ( { info =
                                         { nullCtor = nullShape.name
                                         , valueCtor = valueShape.name
-                                        , constantBitTest = not (isMaybeType key)
+                                        , nullWord = Mono.emptyNullWord
                                         }
-                                  , nullIndex = indexOf nullShape.tag
-                                  }
+                                    , nullIndex = indexOf nullShape.tag
+                                    }
+                                  , { payload = payload, isMaybe = isMaybeType key, nullIndex = nullShape.tag }
+                                  )
                                 )
                                     :: acc
 
@@ -350,7 +470,11 @@ choose opts kv meets ctorShapes =
         excluded =
             List.foldl
                 (\m acc ->
-                    if (isCand m.a || isCand m.b) && not (Mono.eqKeyLayout m.a m.b) then
+                    if RepresentationMeets.movesOnly m then
+                        -- Only moved through a kernel alias's type variable (F4).
+                        acc
+
+                    else if (isCand m.a || isCand m.b) && not (Mono.eqKeyLayout m.a m.b) then
                         acc
                             |> (if isCand m.a then
                                     Mono.layoutSetInsert m.a
@@ -371,8 +495,19 @@ choose opts kv meets ctorShapes =
                 Mono.layoutSetEmpty
                 meets
 
-        chosen =
+        unexcluded =
             List.filter (\( key, _ ) -> not (Mono.layoutSetMember key excluded)) notKv
+
+        ( nullWords, recursive ) =
+            assignNullWords shapesOf (List.map (\( key, ( _, c ) ) -> ( key, c )) unexcluded)
+
+        chosen =
+            List.filterMap
+                (\( key, ( info, _ ) ) ->
+                    Mono.layoutMapGet key nullWords
+                        |> Maybe.map (\nw -> ( key, { info | info = { nullCtor = info.info.nullCtor, valueCtor = info.info.valueCtor, nullWord = nw } } ))
+                )
+                unexcluded
 
         nullable : Mono.LayoutMap Info
         nullable =
@@ -384,7 +519,9 @@ choose opts kv meets ctorShapes =
         { candidates = List.length admissibleCands
         , nullable = List.length chosen
         , excludedKv = List.length admissibleCands - List.length notKv
-        , excludedMeets = List.length notKv - List.length chosen
+        , excludedMeets = List.length notKv - List.length unexcluded
+        , excludedRecursive = List.length recursive
+        , spare = List.length (List.filter (\( _, i ) -> not i.info.nullWord.nullCons && i.info.nullWord.index > 0) chosen)
         , testsRewritten = 0
         }
     }

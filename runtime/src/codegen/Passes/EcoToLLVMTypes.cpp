@@ -1,7 +1,7 @@
 //===- EcoToLLVMTypes.cpp - Type and constant lowering patterns -----------===//
 //
 // The eco-to-llvm conversion patterns for the operations that produce an Elm value without allocating a new
-// object: `eco.constant`, `eco.constant.null_cons` and `eco.string_literal`.
+// object: `eco.constant`, `eco.constant.null_cons`, `eco.constant.spare` and `eco.string_literal`.
 //
 // The two constant operations need no heap object at all. An embedded constant (False, True, or Empty, which
 // stands for Unit, Nil, Nothing and the empty String among others) and a null-cons word (a nullary constructor
@@ -93,6 +93,40 @@ struct ConstantNullConsOpLowering
                 "null_cons_idx capacity (HEAP_044)");
         int64_t encoded =
             value_enc::encodeNullCons(static_cast<uint64_t>(tag));
+
+        Value i64Val = LLVM::ConstantOp::create(rewriter, loc, i64Ty, encoded);
+        Value result = LLVM::IntToPtrOp::create(rewriter, loc, hptrTy, i64Val);
+        rewriter.replaceOp(op, result);
+        return success();
+    }
+};
+
+//===----------------------------------------------------------------------===//
+// eco.constant.spare -> inttoptr of the spare word (HEAP_085)
+//===----------------------------------------------------------------------===//
+
+/**
+ * The pattern that lowers `eco.constant.spare` to the spare word of its level, as a `ptr addrspace(1)`.
+ *
+ * A level below 1 or above `value_enc::NullConsMax` aborts the compiler with `report_fatal_error`.
+ */
+struct ConstantSpareOpLowering : public OpConversionPattern<ConstantSpareOp> {
+    using OpConversionPattern::OpConversionPattern;
+
+    LogicalResult
+    matchAndRewrite(ConstantSpareOp op, OpAdaptor adaptor,
+                    ConversionPatternRewriter &rewriter) const override {
+        auto loc = op.getLoc();
+        auto *ctx = rewriter.getContext();
+        auto i64Ty = IntegerType::get(ctx, 64);
+        auto hptrTy = getHPtrLLVMType(*ctx);
+
+        // The op verifier already rejects this range; the check here does not depend on verification having
+        // run.
+        int64_t level = op.getLevel();
+        if (level < 1 || level > static_cast<int64_t>(value_enc::NullConsMax))
+            llvm::report_fatal_error("eco.constant.spare: level outside [1, 1023] (HEAP_085)");
+        int64_t encoded = value_enc::encodeSpare(static_cast<uint64_t>(level));
 
         Value i64Val = LLVM::ConstantOp::create(rewriter, loc, i64Ty, encoded);
         Value result = LLVM::IntToPtrOp::create(rewriter, loc, hptrTy, i64Val);
@@ -199,6 +233,7 @@ void eco::detail::populateEcoTypePatterns(
     auto *ctx = patterns.getContext();
     patterns.add<ConstantOpLowering>(typeConverter, ctx);
     patterns.add<ConstantNullConsOpLowering>(typeConverter, ctx);
+    patterns.add<ConstantSpareOpLowering>(typeConverter, ctx);
     patterns.add<StringLiteralOpLowering>(typeConverter, ctx, runtime);
 }
 

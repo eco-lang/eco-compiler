@@ -344,6 +344,23 @@ inline int64_t encodeNullCons(uint64_t idx) {
                                 | static_cast<uint64_t>(NullCons));
 }
 
+// Returns the spare word of level `level`: `(level << 43) | 0b110`, the Empty constant with a non-zero
+// `null_cons_idx`, the word Heap.hpp's `spareWordFor` gives (HEAP_085). `level` must be 1 to `NullConsMax`;
+// nothing here checks it.
+inline int64_t encodeSpare(uint64_t level) {
+    return static_cast<int64_t>((level << NullConsShift)
+                                | (uint64_t{1} << PtrIndBit)
+                                | static_cast<uint64_t>(Empty));
+}
+
+// Returns the embedded constant word `(index << 43) | 0b100 | constant`, for `constant` 2 or 3: Empty, a
+// spare word or a null-cons word, as `eco.is_word` names it.
+inline int64_t encodeConstantWord(uint64_t constant, uint64_t index) {
+    return static_cast<int64_t>((index << NullConsShift)
+                                | (uint64_t{1} << PtrIndBit)
+                                | constant);
+}
+
 // The constructor tag that case dispatch gives the Empty constant
 // (`CONSTANT_TAG`). The compiler uses the same value.
 constexpr int64_t ConstantTag = 0xFFFD;
@@ -1167,8 +1184,8 @@ struct EcoRuntime {
 
     // Declares `eco_clone_array`, which may collect.
     mlir::LLVM::LLVMFuncOp getOrCreateCloneArray(mlir::OpBuilder &builder) const;
-    // Declares `eco_array_set_fix_kind`. It is not gc-leaf.
-    mlir::LLVM::LLVMFuncOp getOrCreateArraySetFixKind(mlir::OpBuilder &builder) const;
+    // Declares `eco_array_check_kind`, a HEAP_046 check that never allocates (gc-leaf).
+    mlir::LLVM::LLVMFuncOp getOrCreateArrayCheckKind(mlir::OpBuilder &builder) const;
     // Declares `elm_array_empty`. It is not gc-leaf.
     mlir::LLVM::LLVMFuncOp getOrCreateArrayEmpty(mlir::OpBuilder &builder) const;
     // Declares `elm_array_singleton_int`, which may collect.

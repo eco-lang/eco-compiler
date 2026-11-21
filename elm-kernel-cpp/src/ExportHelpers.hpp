@@ -17,6 +17,7 @@
 #include "allocator/Heap.hpp"
 #include "allocator/Allocator.hpp"
 #include "allocator/HeapHelpers.hpp"
+#include "allocator/PermanentSpace.hpp"
 #include <cstdint>
 
 namespace Elm::Kernel::Export {
@@ -60,6 +61,15 @@ inline void* toPtr(uint64_t val) {
 
     if (Allocator::instance().isInHeap(raw)) {
         return Allocator::resolveFast(h);
+    }
+    // A heap word of a tagged union carries its constructor index in bits 43-52 (HEAP_086), so the whole
+    // word is outside the heap while its low 43 bits are the object's address, in the heap or in
+    // PermanentSpace (a tagged interned literal). A raw address that is not a heap word (a C++ static) can
+    // lie above 2^43, so the masked tests come second.
+    if (h.ptr_ind == 0 && (val & WORD_TAG_MASK) != 0) {
+        void* masked = hpToAddr(h);
+        if (Allocator::instance().isInHeap(masked)) return Allocator::resolveFast(h);
+        if (PermanentSpace::instance().contains(masked)) return masked;
     }
     return raw;
 }

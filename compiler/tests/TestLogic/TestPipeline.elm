@@ -780,6 +780,7 @@ withoutReprPasses cfg =
                 , nullableUser = False
                 , knownCtorCase = False
                 , sretCtors = False
+                , taggedUnions = False
             }
     }
 
@@ -823,7 +824,8 @@ runToMlirStage5 =
 {-| `runToMono` WITHOUT the pre-monomorphization passes. Not a production
 pipeline: a test may use it only to exercise a later pass on input that alias
 forwarding or η-expansion would have rewritten first, and each caller says why
-in a comment.
+in a comment. It also skips `Compiler.PreMono.TypedDebugValues`, so a `Debug`
+function used as a value stays a kernel closure here.
 -}
 runToMonoNoPreMono : Src.Module -> Result String MonoArtifacts
 runToMonoNoPreMono =

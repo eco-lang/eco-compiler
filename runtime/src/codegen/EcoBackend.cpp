@@ -2351,15 +2351,20 @@ static void expandValueEqFastPath(Module &m, bool planVeq) {
         // HEAP_071: the Empty constant equals a zero-length heap
         // String, so Empty vs a heap pointer is not decided by the words: it
         // takes the slow arm (Utils_equal checks the length). Every other
-        // pair with a constant is unequal.
+        // pair with a constant is unequal. The Empty test ignores bits 43-52,
+        // so a tagged Empty (a bare `A ""` of a tagged union, HEAP_086) against
+        // a heap word also takes the slow arm, which compares the tags and
+        // then the length; so does a spare null word (HEAP_085), which the
+        // kernel finds unequal.
         Value *zero = ConstantInt::get(i64Ty, 0);
         Value *cb = ConstantInt::get(i64Ty, constBit);
         Value *ew = ConstantInt::get(i64Ty, emptyWord);
+        Value *untag = ConstantInt::get(i64Ty, ~(0x3FFULL << 43));
         Value *aHeap = tb.CreateICmpEQ(tb.CreateAnd(aw, cb), zero);
         Value *bHeap = tb.CreateICmpEQ(tb.CreateAnd(bw, cb), zero);
         Value *emptyVsHeap = tb.CreateOr(
-            tb.CreateAnd(tb.CreateICmpEQ(aw, ew), bHeap),
-            tb.CreateAnd(tb.CreateICmpEQ(bw, ew), aHeap), "eq.emptyvsheap");
+            tb.CreateAnd(tb.CreateICmpEQ(tb.CreateAnd(aw, untag), ew), bHeap),
+            tb.CreateAnd(tb.CreateICmpEQ(tb.CreateAnd(bw, untag), ew), aHeap), "eq.emptyvsheap");
         Value *decided = tb.CreateAnd(any, tb.CreateNot(emptyVsHeap), "eq.decided");
         tb.CreateCondBr(decided, contBB, slowBB);
 

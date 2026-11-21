@@ -289,8 +289,13 @@ HPointer kernelListMapN(int n_args, HPointer* lists, HPointer& closureHP, int wa
         closureSlotKinds[i] = closureNewArgKind(meta, static_cast<uint32_t>(i));
     }
     assert(wantedKind >= kKeepResultKind && wantedKind <= 3 && "kernelListMapN: bad wantedKind");
+    // An under-saturated call (a merged multi-parameter lambda, such as `\a b -> \c -> ...`, applied to
+    // `n_args` of its arguments) returns a partial application, a function value, which is boxed whatever
+    // kind the closure returns once saturated.
+    const bool saturates = meta.n_values + static_cast<uint32_t>(n_args) >= meta.max_values;
     const uint8_t resultKind =
-        wantedKind == kKeepResultKind ? meta.result_kind : static_cast<uint8_t>(wantedKind);
+        wantedKind == kKeepResultKind ? (saturates ? meta.result_kind : uint8_t{0})
+                                      : static_cast<uint8_t>(wantedKind);
 
     std::vector<Unboxable> results;
 

@@ -11,7 +11,8 @@ The tests establish:
     several fields level 2, several constructors of at most one field level 3,
     and anything else level 4;
   - a level-1 field of type Int, Float or Char is `unboxed`, any other `boxed`;
-  - `Maybe` of a record is `adm`, of an `Int` or a `String` is `inadm`;
+  - `Maybe` of a record is `adm`, of an `Int` is `inadm`, of a `String` is
+    `spare` (it is nullable with a spare null word, since `Just ""` is Empty);
   - with the census off every lookup gives `Nothing`; with it on, two shapes
     of the same constructor and field types share an id, an unknown shape gets
     id 0, and the rendered table has one row per class.
@@ -69,10 +70,10 @@ suite =
                 , cls (maybeOf Mono.MInt) (maybeShapes Mono.MInt)
                 , cls (maybeOf Mono.MString) (maybeShapes Mono.MString)
                 ]
-                    |> Expect.equal [ "unboxed", "boxed", "adm", "inadm", "inadm" ]
+                    |> Expect.equal [ "unboxed", "boxed", "adm", "inadm", "spare" ]
         , test "off gives no ids" <|
             \_ ->
-                CtorCensus.idForShape (CtorCensus.build False [] Mono.layoutMapEmpty) "Just" [ rec ]
+                CtorCensus.idForShape (CtorCensus.build False [] Mono.layoutMapEmpty Mono.layoutMapEmpty) "Just" [ rec ]
                     |> Expect.equal Nothing
         , test "on: ids by shape, unknown shape is 0, one row per class" <|
             \_ ->
@@ -83,7 +84,7 @@ suite =
                             |> Mono.layoutMapInsert (maybeOf Mono.MInt) (maybeShapes Mono.MInt)
 
                     table =
-                        CtorCensus.build True [] shapes
+                        CtorCensus.build True [] Mono.layoutMapEmpty shapes
 
                     idRec =
                         CtorCensus.idForShape table "Just" [ rec ]

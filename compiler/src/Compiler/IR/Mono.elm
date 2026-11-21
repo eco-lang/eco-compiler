@@ -6,7 +6,7 @@ module Compiler.IR.Mono exposing
     , MonoExpr(..), MonoGraph(..), MonoNode(..), MonoPath(..), MonoType(..), PortRegistration
     , TupleShape(..), tupleArity, tupleContainerKind, tupleIndexedMap, tupleMap, tupleMap2, tupleMapAccum, tupleMapAccumR, tupleOf, tupleToList
     , SpecId, SpecKey(..), SpecKeyMap, SpecMap, SpecializationRegistry
-    , ReprInfo, NullableInfo, emptyReprInfo
+    , ReprInfo, NullableInfo, NullWord, emptyNullWord, nullWordMaxIndex, TagForm(..), emptyReprInfo
     , annoCoverage, annoCovers, clearLssTables, collectAnnoMembers
     , containsAnyMVar, decomposeFunctionType, defaultCallInfo, dtPathType, emptyAnnoCoverage
     , enrichAnnotations, enrichAnnotationsTopOnly, eqKeyLayout, eqKeySpec, eqLayout, eqModuloTopLabel
@@ -94,7 +94,7 @@ made.
 @docs MonoExpr, MonoGraph, MonoNode, MonoPath, MonoType, PortRegistration
 @docs TupleShape, tupleArity, tupleContainerKind, tupleIndexedMap, tupleMap, tupleMap2, tupleMapAccum, tupleMapAccumR, tupleOf, tupleToList
 @docs SpecId, SpecKey, SpecKeyMap, SpecMap, SpecializationRegistry
-@docs ReprInfo, NullableInfo, emptyReprInfo
+@docs ReprInfo, NullableInfo, NullWord, emptyNullWord, nullWordMaxIndex, TagForm, emptyReprInfo
 
 
 # Functions
@@ -3103,8 +3103,12 @@ type table describes those as wrappers (MONO_031), so that `Debug.toString`
 still prints the constructor. `nullable` holds every `Maybe`-shaped type
 `NullableMaybe` represents as its payload, with its constructor names
 (MONO_033, REP_CONSTANT_003). `kernelVisible` lists the kernel-visible type
-constructors (MONO_032), by home and name, for the constructor census; it is
-filled only when the census is on. All four are empty while the passes are off.
+constructors (MONO_032), by home and name, for the constructor census, and
+`tagCensus` the F1 tagged-word form of each constructor of every
+multi-constructor type (`Compiler.MonoOpt.TaggedUnions.censusLabels`); both are
+filled only when the census is on. `tagged` holds every tagged union
+(`Compiler.MonoOpt.TaggedUnions`) with the form of each constructor, by name.
+All are empty while the passes are off.
 
 -}
 type alias ReprInfo =
@@ -3112,21 +3116,61 @@ type alias ReprInfo =
     , erasedKeys : LayoutMap ()
     , nullable : LayoutMap NullableInfo
     , kernelVisible : List ( String, String )
+    , tagCensus : LayoutMap (List ( Name, String ))
+    , tagged : LayoutMap (List ( Name, TagForm ))
     }
 
 
+{-| How a constructor of a tagged union is represented
+(plans/constructor-representation-followups.md F1, MONO_035, HEAP_086): every
+word of the type carries the constructor's declaration index in bits 43-52.
+`TagNullary` is the constructor's null-cons word, which holds its index already;
+`TagBare` is its one boxed field's word, tagged (`eco.tag_word`), with no heap
+object; `TagBoxed` is a heap `Custom` as usual, its pointer tagged.
+-}
+type TagForm
+    = TagNullary
+    | TagBare
+    | TagBoxed
+
+
 {-| How a nullable type is represented: its value with no fields (`nullCtor`)
-is a constant word, and its value with one field (`valueCtor`) is the field
-itself. `constantBitTest` is `False` for `Maybe`, whose `Nothing` is the Empty
-constant and is tested by its tag, and `True` for a Maybe-shaped user type,
-whose nullary constructor is a null-cons word and is tested by the constant
-bit (`eco.is_constant`).
+is the constant word `nullWord`, and its value with one field (`valueCtor`) is
+the field itself. A value is the null constructor exactly when it is that word
+(`eco.is_word`).
 -}
 type alias NullableInfo =
     { nullCtor : Name
     , valueCtor : Name
-    , constantBitTest : Bool
+    , nullWord : NullWord
     }
+
+
+{-| The null word of a nullable type (plans/constructor-representation-followups.md
+F2, HEAP_085): `(index << 43) | 0b1_00 | constant`, where `constant` is 3 for a
+null-cons word (`nullCons`, `index` the nullary constructor's declaration
+index) and 2 otherwise: the Empty constant at `index` 0, and the spare word of
+level `index` above it.
+-}
+type alias NullWord =
+    { nullCons : Bool
+    , index : Int
+    }
+
+
+{-| The Empty constant as a null word: `Maybe`'s `Nothing` when its payload can
+never be Empty.
+-}
+emptyNullWord : NullWord
+emptyNullWord =
+    { nullCons = False, index = 0 }
+
+
+{-| The largest `NullWord.index`: the 10 bits of `HPointer.null_cons_idx`.
+-}
+nullWordMaxIndex : Int
+nullWordMaxIndex =
+    1023
 
 
 {-| A `ReprInfo` with nothing in it.
@@ -3137,6 +3181,8 @@ emptyReprInfo =
     , erasedKeys = layoutMapEmpty
     , nullable = layoutMapEmpty
     , kernelVisible = []
+    , tagCensus = layoutMapEmpty
+    , tagged = layoutMapEmpty
     }
 
 

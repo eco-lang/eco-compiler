@@ -3894,6 +3894,75 @@ static void print_builtin_container(uint64_t value, uint32_t type_id, BuiltinCon
     }
 }
 
+// Prints the heap Custom `value` names, one of the `ctor_count` constructors from `first_ctor` of its type,
+// as `print_typed_value`'s `Custom` arm does for a heap word; the `Tagged` arm prints a boxed constructor's
+// untagged word with it (HEAP_086).
+static void print_custom_heap(uint64_t value, uint32_t first_ctor, uint32_t ctor_count, int depth) {
+    void* ptr = hpointerToPtr(value);
+    if (!ptr) {
+        output_text("<null>");
+        return;
+    }
+
+    Header* header = static_cast<Header*>(ptr);
+    if (header->tag != Tag_Custom) {
+        output_text("<internals>");
+        return;
+    }
+
+    Custom* custom = static_cast<Custom*>(ptr);
+    uint32_t ctor_id = custom->ctor;
+    uint32_t size = custom->header.size;
+
+    assert(g_type_graph->ctors && "Type graph has no ctors array");
+
+    // A constructor id need not be its index among the type's constructors, so they are searched.
+    const Elm::EcoCtorInfo* ctor_info = nullptr;
+    for (uint32_t ci = 0; ci < ctor_count; ++ci) {
+        if (g_type_graph->ctors[first_ctor + ci].ctor_id == ctor_id) {
+            ctor_info = &g_type_graph->ctors[first_ctor + ci];
+            break;
+        }
+    }
+    if (ctor_info == nullptr || ctor_info->field_count != size) {
+        output_text("<internals>");
+        return;
+    }
+
+    assert(g_type_graph->strings && "Type graph has no strings array");
+    assert(ctor_info->name_index < g_type_graph->string_count &&
+           "Constructor name_index out of bounds");
+
+    output_text(g_type_graph->strings[ctor_info->name_index]);
+
+    if (size > 0) {
+        assert(g_type_graph->fields && "Type graph has no fields array");
+        assert(ctor_info->first_field + size <= g_type_graph->field_count &&
+               "Field indices out of bounds");
+
+        for (uint32_t i = 0; i < size; i++) {
+            output_char(' ');
+
+            uint64_t field_val = static_cast<uint64_t>(custom->values[i].i);
+            bool is_unboxed = customSlotKind(custom, i) != 0;
+
+            uint32_t field_type_id = g_type_graph->fields[ctor_info->first_field + i].type_id;
+
+            assert(field_type_id < g_type_graph->type_count &&
+                   "Invalid field type_id in Custom type graph");
+
+            print_ctor_arg([&] {
+                if (is_unboxed) {
+                    // A primitive, or a wrapper of one that EraseWrappers erased (E2b).
+                    print_typed_slot(field_val, customSlotKind(custom, i), field_type_id, depth - 1);
+                } else {
+                    print_typed_value(field_val, field_type_id, depth + 1);
+                }
+            });
+        }
+    }
+}
+
 static void print_typed_value(uint64_t value, uint32_t type_id, int depth) {
     if (depth > kMaxPrintDepth) {
         output_text("...");
@@ -4247,68 +4316,38 @@ static void print_typed_value(uint64_t value, uint32_t type_id, int depth) {
             break;
         }
 
-        void* ptr = hpointerToPtr(value);
-        if (!ptr) {
-            output_text("<null>");
-            break;
-        }
+        print_custom_heap(value, first_ctor, ctor_count, depth);
+        break;
+    }
 
-        Header* header = static_cast<Header*>(ptr);
-        if (header->tag != Tag_Custom) {
-            output_text("<internals>");
-            break;
-        }
-
-        Custom* custom = static_cast<Custom*>(ptr);
-        uint32_t ctor_id = custom->ctor;
-        uint32_t size = custom->header.size;
-
-        assert(g_type_graph->ctors && "Type graph has no ctors array");
-
-        // A constructor id need not be its index among the type's constructors, so they are searched.
-        const Elm::EcoCtorInfo* ctor_info = nullptr;
+    case Elm::EcoTypeKind::Tagged: {
+        // HEAP_086: the word's bits 43-52 name the constructor (for a nullary one, its null-cons word's index).
+        const uint32_t first_ctor = typeInfo->data.custom.first_ctor;
+        const uint32_t ctor_count = typeInfo->data.custom.ctor_count;
+        const uint32_t want = wordTag(value);
+        const Elm::EcoCtorInfo* info = nullptr;
         for (uint32_t ci = 0; ci < ctor_count; ++ci) {
-            if (g_type_graph->ctors[first_ctor + ci].ctor_id == ctor_id) {
-                ctor_info = &g_type_graph->ctors[first_ctor + ci];
+            if (g_type_graph->ctors[first_ctor + ci].ctor_id == want) {
+                info = &g_type_graph->ctors[first_ctor + ci];
                 break;
             }
         }
-        if (ctor_info == nullptr || ctor_info->field_count != size) {
+        if (info == nullptr) {
             output_text("<internals>");
             break;
         }
-
-        assert(g_type_graph->strings && "Type graph has no strings array");
-        assert(ctor_info->name_index < g_type_graph->string_count &&
-               "Constructor name_index out of bounds");
-
-        output_text(g_type_graph->strings[ctor_info->name_index]);
-
-        if (size > 0) {
-            assert(g_type_graph->fields && "Type graph has no fields array");
-            assert(ctor_info->first_field + size <= g_type_graph->field_count &&
-                   "Field indices out of bounds");
-
-            for (uint32_t i = 0; i < size; i++) {
-                output_char(' ');
-
-                uint64_t field_val = static_cast<uint64_t>(custom->values[i].i);
-                bool is_unboxed = customSlotKind(custom, i) != 0;
-
-                uint32_t field_type_id = g_type_graph->fields[ctor_info->first_field + i].type_id;
-
-                assert(field_type_id < g_type_graph->type_count &&
-                       "Invalid field type_id in Custom type graph");
-
-                print_ctor_arg([&] {
-                    if (is_unboxed) {
-                        // A primitive, or a wrapper of one that EraseWrappers erased (E2b).
-                        print_typed_slot(field_val, customSlotKind(custom, i), field_type_id, depth - 1);
-                    } else {
-                        print_typed_value(field_val, field_type_id, depth + 1);
-                    }
-                });
-            }
+        const bool bare = (info->field_count & 0x80000000u) != 0;
+        const uint32_t nfields = info->field_count & 0x7FFFFFFFu;
+        const uint64_t untagged = value & ~WORD_TAG_MASK;
+        if (nfields == 0) {
+            output_text(g_type_graph->strings[info->name_index]);
+        } else if (bare) {
+            output_text(g_type_graph->strings[info->name_index]);
+            output_char(' ');
+            const uint32_t field_type_id = g_type_graph->fields[info->first_field].type_id;
+            print_ctor_arg([&] { print_typed_value(untagged, field_type_id, depth + 1); });
+        } else {
+            print_custom_heap(untagged, first_ctor, ctor_count, depth);
         }
         break;
     }
@@ -4318,12 +4357,11 @@ static void print_typed_value(uint64_t value, uint32_t type_id, int depth) {
         break;
 
     case Elm::EcoTypeKind::Nullable: {
-        // REP_CONSTANT_003: `Nothing` is Empty (a Maybe-shaped user type's nullary constructor is a
-        // null-cons word, the only constant among its values); any other value is the field itself.
+        // REP_CONSTANT_003, HEAP_085: the nullary constructor is exactly the type's null word (Empty, a
+        // null-cons word or a spare word); any other value is the field itself.
         const auto& n = typeInfo->data.nullable;
-        bool constantBit = (n.null_name & 0x80000000u) != 0;
-        uint32_t nullName = n.null_name & 0x7FFFFFFFu;
-        bool isNull = constantBit ? isConstantBits(value) : (isEmptyBits(value) && !isNullConsBits(value));
+        uint32_t nullName = n.null_name & 0xFFFFFu;
+        bool isNull = value == nullableNullWord(n.null_name);
         if (!g_type_graph->strings || nullName >= g_type_graph->string_count ||
             n.value_name >= g_type_graph->string_count) {
             output_text("<internals>");
@@ -4507,10 +4545,24 @@ extern "C" uint32_t eco_get_custom_ctor(HPtr obj_hptr) {
     return custom->ctor;
 }
 
+// Under ECO_HEAP_VALIDATE, aborts when `bits` is a heap word with bits 43-52 set: a tagged-union word
+// (HEAP_086), which compiled code reads with `eco.word_tag` and `eco.untag`, never through the out-of-line
+// entry points below. A missed site fails here instead of reading the field's object as the union's.
+static inline void assertUntaggedHeapWord([[maybe_unused]] uint64_t bits, [[maybe_unused]] const char* where) {
+#if ECO_HEAP_VALIDATE
+    if (!isConstantBits(bits) && (bits & WORD_TAG_MASK) != 0) {
+        std::fprintf(stderr, "%s: received a tagged heap word 0x%016llx (HEAP_086)\n", where,
+                     static_cast<unsigned long long>(bits));
+        std::abort();
+    }
+#endif
+}
+
 extern "C" uint32_t eco_get_tag(HPtr val) {
     // A 0 word is an uninitialised field or a stale reference; reading it as an object would return a
     // made-up tag.
     assert(val.bits != 0 && "eco_get_tag: null HPointer");
+    assertUntaggedHeapWord(val.bits, "eco_get_tag");
     HPointer hp = val.toHPointer();
     // The null-cons test must come first: the last line reads any other non-Empty constant as a Bool.
     if (isConstantBits(val.bits)) {
@@ -4928,18 +4980,21 @@ extern "C" uint32_t eco_record_get_char(HPtr rec, uint32_t field_index) {
 }
 
 extern "C" int64_t eco_custom_get_i64(HPtr val, uint32_t field_index) {
+    assertUntaggedHeapWord(val.bits, "eco_custom_get_i64");
     void* obj = Allocator::instance().resolve(val.toHPointer());
     assert(obj != nullptr && "eco_custom_get_i64: null resolve");
     return static_cast<Custom*>(obj)->values[field_index].i;
 }
 
 extern "C" double eco_custom_get_f64(HPtr val, uint32_t field_index) {
+    assertUntaggedHeapWord(val.bits, "eco_custom_get_f64");
     void* obj = Allocator::instance().resolve(val.toHPointer());
     assert(obj != nullptr && "eco_custom_get_f64: null resolve");
     return static_cast<Custom*>(obj)->values[field_index].f;
 }
 
 extern "C" uint32_t eco_custom_get_char(HPtr val, uint32_t field_index) {
+    assertUntaggedHeapWord(val.bits, "eco_custom_get_char");
     void* obj = Allocator::instance().resolve(val.toHPointer());
     assert(obj != nullptr && "eco_custom_get_char: null resolve");
     return static_cast<uint32_t>(static_cast<Custom*>(obj)->values[field_index].c);
@@ -4976,6 +5031,7 @@ extern "C" int64_t eco_int_pow(int64_t base, int64_t exp) {
 //===----------------------------------------------------------------------===//
 
 extern "C" void* eco_resolve_hptr(HPtr hptr) {
+    assertUntaggedHeapWord(hptr.bits, "eco_resolve_hptr");
     void* ptr = hpointerToPtr(hptr.toBits());
 #if ECO_HEAP_VALIDATE
     assert(ptr && "eco_resolve_hptr: received an embedded constant (not a heap pointer)");
@@ -4984,6 +5040,7 @@ extern "C" void* eco_resolve_hptr(HPtr hptr) {
 }
 
 extern "C" void* eco_follow_forward(HPtr hptr) {
+    assertUntaggedHeapWord(hptr.bits, "eco_follow_forward");
     void* obj = Elm::hpToAddr(hptr.toHPointer());
     Elm::Header* hdr = static_cast<Elm::Header*>(obj);
     while (__builtin_expect(hdr->tag == Elm::Tag_Forward, 1)) {
@@ -4994,14 +5051,15 @@ extern "C" void* eco_follow_forward(HPtr hptr) {
     return obj;
 }
 
-extern "C" void eco_array_set_fix_kind(HPtr array_hptr, uint32_t intended_kind) {
+extern "C" void eco_array_check_kind([[maybe_unused]] HPtr array_hptr, [[maybe_unused]] uint32_t intended_kind) {
     HPointer hp;
     uint64_t bits = array_hptr.toBits();
     std::memcpy(&hp, &bits, sizeof(hp));
     if (hp.ptr_ind != 0) return;
-    void* ptr = Allocator::instance().resolve(hp);
-    ElmArray* arr = static_cast<ElmArray*>(ptr);
-    arr->header.unboxed = intended_kind & 0x3F;
+    [[maybe_unused]] ElmArray* arr = static_cast<ElmArray*>(Allocator::instance().resolve(hp));
+    assert((arr->length == 0 || (arr->header.unboxed & 0x3) == (intended_kind & 0x3)) &&
+           "eco.array.set: the array is not of the stored value's kind (HEAP_046)");
+    alloc::validateArrayKind(arr, "eco.array.set");
 }
 
 extern "C" HPtr eco_clone_array(HPtr array_hptr) {
@@ -5013,6 +5071,7 @@ extern "C" HPtr eco_clone_array(HPtr array_hptr) {
 
     void* srcPtr = hpointerToPtr(array_bits);
     ElmArray* src = static_cast<ElmArray*>(srcPtr);
+    alloc::validateArrayKind(src, "eco_clone_array");
     uint32_t len = src->length;
 
     HPointer resultHp = alloc::allocArray(len);

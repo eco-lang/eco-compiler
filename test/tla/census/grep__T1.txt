@@ -22,7 +22,7 @@ runtime/src/allocator/NurseryTenure.cpp: J.surv_top = X.surv_top;
 runtime/src/allocator/NurseryTenure.cpp: const size_t granules = static_cast<size_t>(A.surv_top - A.base) >> 3;
 runtime/src/allocator/NurseryTenure.cpp: for (char* p = J.base; p < J.surv_top;) {
 runtime/src/allocator/NurseryTenure.cpp: if (c < J.base || c >= J.surv_top) {
-runtime/src/allocator/NurseryTenure.cpp: if (c >= J.base && c < J.surv_top) hp = Allocator::toPointerRaw(resolveT(c));
+runtime/src/allocator/NurseryTenure.cpp: if (c >= J.base && c < J.surv_top) hp = retarget(hp, resolveT(c));
 runtime/src/allocator/NurseryTenure.cpp: if (c2 < J.base || c2 >= J.surv_top) continue;
 runtime/src/allocator/NurseryTenure.cpp: if (parent != nullptr && q >= J.base && q < J.surv_top) {
 runtime/src/allocator/NurseryTenure.cpp: return q >= J.base && q < J.surv_top;

@@ -316,7 +316,7 @@ suite =
                         ]
                         ()
                 )
-        , test "with userTypes the Maybe-shaped Opt is nullable by the constant bit" <|
+        , test "with userTypes the Maybe-shaped Opt is nullable with a null-cons null word" <|
             run { userTypes = True }
                 []
                 (\_ (Mono.MonoGraph g) ->
@@ -325,14 +325,14 @@ suite =
                             Mono.layoutMapValues g.repr.nullable |> List.filter (\i -> i.valueCtor == "Some")
                     in
                     Expect.all
-                        [ \_ -> Expect.equal (List.map .constantBitTest opts) [ True ]
+                        [ \_ -> Expect.equal (List.map (.nullWord >> .nullCons) opts) [ True ]
                         , \_ -> Expect.equal (List.member "Some" (testedCtors (Mono.MonoGraph g))) False
                         ]
                         ()
                 )
         , test "a meet with another view excludes the type, and nothing is rewritten" <|
             run { userTypes = False }
-                [ { a = maybeRec, b = Mono.mCustom ModuleName.maybe "Maybe" [ Mono.MVar TypeIds.firstMVarId Mono.CEcoValue ], root = True, spec = 0, site = "test" } ]
+                [ { a = maybeRec, b = Mono.mCustom ModuleName.maybe "Maybe" [ Mono.MVar TypeIds.firstMVarId Mono.CEcoValue ], root = True, spec = 0, site = "test", via = RepresentationMeets.ViaOther } ]
                 (\before after ->
                     Expect.all
                         [ \_ -> Expect.equal (nullableNames after) []
@@ -340,6 +340,17 @@ suite =
                         ]
                         ()
                 )
+        , test "Maybe Rec only moved through a listed kernel alias's type variable stays nullable (F4)" <|
+            run { userTypes = False }
+                -- The meets `splitAt` builds for `List (Maybe Rec)` used as the alias's `List a`.
+                [ { a = Mono.mList maybeRec, b = Mono.mList (Mono.MVar TypeIds.firstMVarId Mono.CEcoValue), root = True, spec = 0, site = "global->1", via = RepresentationMeets.ViaKernelAlias "List" "append" }
+                , { a = maybeRec, b = Mono.MVar TypeIds.firstMVarId Mono.CEcoValue, root = False, spec = 0, site = "global->1", via = RepresentationMeets.ViaKernelAlias "List" "append" }
+                ]
+                (\_ after -> Expect.equal (List.member "Just" (nullableNames after)) True)
+        , test "Maybe Rec met as Maybe a through a listed kernel alias is excluded" <|
+            run { userTypes = False }
+                [ { a = maybeRec, b = Mono.mCustom ModuleName.maybe "Maybe" [ Mono.MVar TypeIds.firstMVarId Mono.CEcoValue ], root = True, spec = 0, site = "global->1", via = RepresentationMeets.ViaKernelAlias "List" "append" } ]
+                (\_ after -> Expect.equal (nullableNames after) [])
         , test "splitting a chain of tests duplicates no lambda (MONO_019)" <|
             run { userTypes = False }
                 []

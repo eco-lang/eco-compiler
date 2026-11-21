@@ -25,7 +25,13 @@ monomorphization from the table in `Compiler.IR.Kernel.Visibility`:
     followed, and of a function only the parameters are followed (the kernel builds those; it passes the
     results on without looking at them);
   - the types of ports, and the type of the flags decoder, closed deny-all;
-  - every kernel-owned type (`Visibility.kernelOwned`) the program reaches.
+  - every kernel-owned type (`Visibility.kernelOwned`) the program reaches;
+  - a reference to a kernel alias (a global whose node is
+    `MonoDefine (MonoVarKernel …)`, the shared specialization AliasForward
+    keeps, with type variables where the kernel's types are) is taken as a
+    reference to that kernel at the use site's type, so the table's rule applies
+    to the types the kernel really receives and returns
+    (plans/constructor-representation-followups.md F2).
 
 A `Transparent` kernel adds nothing. The closure needs no fixed point with
 erasure: it already holds every type nested in a root, and erasure only removes
@@ -151,13 +157,32 @@ type alias Acc =
 compute : TypeEnv.GlobalTypeEnv -> Mono.MonoGraph -> KvSet
 compute typeEnv ((Mono.MonoGraph g) as graph) =
     let
+        -- The kernel each kernel-alias node forwards to, by SpecId.
+        aliases : Dict.Dict Int ( String, String )
+        aliases =
+            Tuple.second
+                (Array.foldl
+                    (\maybeNode ( i, acc ) ->
+                        ( i + 1
+                        , case maybeNode of
+                            Just (Mono.MonoDefine (Mono.MonoVarKernel _ _ home name _) _) ->
+                                Dict.insert i ( home, name ) acc
+
+                            _ ->
+                                acc
+                        )
+                    )
+                    ( 0, Dict.empty )
+                    g.nodes
+                )
+
         roots : List ( Mode, Mono.MonoType )
         roots =
             Array.foldl
                 (\maybeNode acc ->
                     case maybeNode of
                         Just node ->
-                            nodeRoots node ++ acc
+                            nodeRoots aliases node ++ acc
 
                         Nothing ->
                             acc
@@ -238,20 +263,20 @@ flagsRoots (Mono.MonoGraph g) =
             []
 
 
-nodeRoots : Mono.MonoNode -> List ( Mode, Mono.MonoType )
-nodeRoots node =
+nodeRoots : Dict.Dict Int ( String, String ) -> Mono.MonoNode -> List ( Mode, Mono.MonoType )
+nodeRoots aliases node =
     case node of
         Mono.MonoDefine expr _ ->
-            exprRoots expr []
+            exprRoots aliases expr []
 
         Mono.MonoTailFunc _ expr _ ->
-            exprRoots expr []
+            exprRoots aliases expr []
 
         Mono.MonoPortIncoming expr t ->
-            ( DenyAll, t ) :: exprRoots expr []
+            ( DenyAll, t ) :: exprRoots aliases expr []
 
         Mono.MonoPortOutgoing expr t ->
-            ( DenyAll, t ) :: exprRoots expr []
+            ( DenyAll, t ) :: exprRoots aliases expr []
 
         Mono.MonoManagerLeaf home t ->
             case Dict.get (ModuleName.toComparableCanonical home) Visibility.managerUses of
@@ -271,8 +296,8 @@ nodeRoots node =
             []
 
 
-exprRoots : Mono.MonoExpr -> List ( Mode, Mono.MonoType ) -> List ( Mode, Mono.MonoType )
-exprRoots expr acc =
+exprRoots : Dict.Dict Int ( String, String ) -> Mono.MonoExpr -> List ( Mode, Mono.MonoType ) -> List ( Mode, Mono.MonoType )
+exprRoots aliases expr acc =
     case expr of
         Mono.MonoCall _ (Mono.MonoVarKernel _ _ home name _) args resultType _ ->
             let
@@ -290,22 +315,39 @@ exprRoots expr acc =
                         Nothing ->
                             List.map (\t -> ( DenyAll, t )) types ++ acc
             in
-            List.foldl exprRoots acc1 args
+            List.foldl (exprRoots aliases) acc1 args
 
         Mono.MonoVarKernel _ _ home name t ->
             -- A kernel used as a value: its table entry applies to its own type as to a call's.
-            case Dict.get ( home, name ) Visibility.kernelUse of
-                Just Visibility.Transparent ->
-                    acc
+            kernelValueRoots home name t acc
 
-                Just (Visibility.Inspects refs) ->
-                    ( Declared (Set.fromList refs), t ) :: acc
+        Mono.MonoVarGlobal _ specId t ->
+            -- A kernel alias, at this use's type (a call of it closes over the same parameter and
+            -- result types as the function type does).
+            case Dict.get specId aliases of
+                Just ( home, name ) ->
+                    kernelValueRoots home name t acc
 
                 Nothing ->
-                    ( DenyAll, t ) :: acc
+                    acc
 
         _ ->
-            List.foldl exprRoots acc (Traverse.childrenOf expr)
+            List.foldl (exprRoots aliases) acc (Traverse.childrenOf expr)
+
+
+{-| The roots of the kernel `home.name` used as a value of type `t`.
+-}
+kernelValueRoots : String -> String -> Mono.MonoType -> List ( Mode, Mono.MonoType ) -> List ( Mode, Mono.MonoType )
+kernelValueRoots home name t acc =
+    case Dict.get ( home, name ) Visibility.kernelUse of
+        Just Visibility.Transparent ->
+            acc
+
+        Just (Visibility.Inspects refs) ->
+            ( Declared (Set.fromList refs), t ) :: acc
+
+        Nothing ->
+            ( DenyAll, t ) :: acc
 
 
 addCtor : ModuleName.Canonical -> String -> Mono.MonoType -> Acc -> Acc

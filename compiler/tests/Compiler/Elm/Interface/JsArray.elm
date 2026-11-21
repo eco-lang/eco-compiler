@@ -10,10 +10,10 @@ operators. `jsArrayInterface` is that record for `Elm.JsArray`, the elm/core
 module that defines the `JsArray` type.
 
 It is a mock, and it differs from the elm/core source that
-`Compiler.PackageCompilation.JsArraySource` carries in one way: it declares only eight
+`Compiler.PackageCompilation.JsArraySource` carries in one way: it declares only nine
 functions, `empty`, `push`, `length`, `slice`, `foldl`, `foldr`,
-`initializeFromList` and `map`. Others in that source, such as `singleton`,
-`initialize` and `unsafeGet`, are not in it. Its `JsArray a` union is the one
+`initializeFromList`, `map` and `unsafeGet`. Others in that source, such as
+`singleton` and `initialize`, are not in it. Its `JsArray a` union is the one
 compiling that source gives: `type JsArray a = JsArray a`, exposed without its
 constructor.
 
@@ -203,7 +203,7 @@ jsArrayUnions =
 -- ============================================================================
 
 
-{-| The annotations of the eight functions the mock module exposes, keyed by
+{-| The annotations of the nine functions the mock module exposes, keyed by
 name.
 -}
 jsArrayValues : Dict Name (Can.Annotation Name)
@@ -256,6 +256,12 @@ jsArrayValues =
                         (Can.TTuple jsArrayA listA Nothing)
                     )
                 )
+          )
+
+        -- unsafeGet : Int -> JsArray a -> a
+        , ( "unsafeGet"
+          , mkAnnotation
+                (Can.tLambda intType (Can.tLambda jsArrayA aVar))
           )
 
         -- map : (a -> b) -> JsArray a -> JsArray b

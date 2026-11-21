@@ -918,12 +918,11 @@ void eco_validate_nursery_hptr_bits(uint64_t bits);
 // `array_hptr` must be a heap Array, not an embedded constant.
 HPtr eco_clone_array(HPtr array_hptr);
 
-// Sets the element kind of the Array `array_hptr` to `intended_kind`, and does nothing if it is an
-// embedded constant. It neither allocates nor collects.
-//
-// The kind is stored masked to 6 bits, not 2, so `intended_kind` must be at most 3. The array must be a
-// builder, and its elements must be of the new kind before the next collection reads them.
-void eco_array_set_fix_kind(HPtr array_hptr, uint32_t intended_kind);
+// Checks HEAP_046 on the copy an `eco.array.set` stores into: the Array `array_hptr` is empty, or its
+// element kind is `intended_kind` (0 boxed, 1 Int, 2 Float, 3 Char), and a kind-0 array holds no boxed
+// Int, Float or Char. Asserts; never writes, allocates or collects. Only a codegen built with
+// ECO_HEAP_VALIDATE emits calls of it.
+void eco_array_check_kind(HPtr array_hptr, uint32_t intended_kind);
 
 } // extern "C"
 

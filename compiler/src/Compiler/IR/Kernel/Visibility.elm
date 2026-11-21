@@ -331,7 +331,7 @@ inspectingKernels =
     , -- Http: eco-kernel-cpp/src/eco-kernel/HttpExports.cpp, elm-kernel-cpp/src/http/HttpExports.cpp
       List.map (\n -> ( ( "Http", n ), Inspects [ ( "elm/http:Http", "Expect" ) ] )) [ "mapExpect" ]
     , -- Http: eco-kernel-cpp/src/eco-kernel/HttpExports.cpp, elm-kernel-cpp/src/http/HttpExports.cpp
-      List.map (\n -> ( ( "Http", n ), Inspects [ ( "elm/http:Http", "Expect" ), ( "elm/http:Http", "Resolver" ) ] )) [ "expect" ]
+      List.map (\n -> ( ( "Http", n ), Inspects [ ( "elm/http:Http", "Expect" ), ( "elm/http:Http", "Resolver" ), ( "elm/http:Http", "Response" ) ] )) [ "expect" ]
     , -- HttpServer: system-kernel-cpp/src/eco-system/HttpServer/HttpServerExports.cpp
       List.map (\n -> ( ( "HttpServer", n ), Inspects [ ( "eco/system:Html.Dom", "Fact" ), ( "eco/system:Html.Dom", "Node" ), ( "elm/core:Maybe", "Maybe" ), ( "elm/json:Json.Encode", "Value" ) ] )) [ "respondHtml" ]
     , -- HttpServer: system-kernel-cpp/src/eco-system/HttpServer/HttpServerExports.cpp

@@ -347,27 +347,28 @@ void NurserySpace::evacuateP(MinorWorker& w, HPointer& slot, bool parent_old) {
     for (;;) {
         if (mw::isForwardWord(hw)) {
             if (hw == mw::kBusy) { hw = waitPublishedP(w, obj); continue; }
-            slot = Allocator::toPointerRaw(mw::fwdAddr(hw));
+            slot = retarget(slot, mw::fwdAddr(hw));   // keeps a tagged word's bits 43-52 (HEAP_086)
             return;
         }
         if (mw::claim(obj, hw)) break;
         ++w.claim_races;
     }
     void* dst = copyClaimed(w, obj, hw, parent_old);
-    slot = Allocator::toPointerRaw(dst);
+    slot = retarget(slot, dst);   // keeps a tagged word's bits 43-52 (HEAP_086)
     if (tagHasChildren(headerOf(hw).tag)) pushGreyP(w, mk::objEntry(dst, 0));
 }
 // TLA-REGION(NP.evacuateP) end
 
 void NurserySpace::evacuateRawP(MinorWorker& w, uint64_t& raw) {
     if (isConstantBits(raw)) return;
-    void* obj = reinterpret_cast<void*>(raw);
+    // A tagged word (HEAP_086) is decoded to its address for the range test, and keeps its tag.
+    void* obj = hpToAddr(hpFromBits(raw));
     if (obj == nullptr) return;
     char* p = static_cast<char*>(obj);
     if (p < heap_base_ || p >= heap_base_ + heap_reserved_) return;
-    HPointer hp = Allocator::toPointerRaw(obj);
+    HPointer hp = hpFromBits(raw);
     evacuateP(w, hp, /*parent_old=*/false);
-    raw = reinterpret_cast<uint64_t>(Allocator::fromPointerRaw(hp));
+    raw = hpBits(hp);
 }
 
 // TLA-REGION(NP.reachYoungLargeP) begin
@@ -426,7 +427,7 @@ void NurserySpace::spineRunP(MinorWorker& w, Cons* prev) {
         uint64_t hw = mw::loadHeader(obj);
         if (mw::isForwardWord(hw)) {
             if (hw == mw::kBusy) hw = waitPublishedP(w, obj);
-            prev->tail = Allocator::toPointerRaw(mw::fwdAddr(hw));
+            prev->tail = retarget(t, mw::fwdAddr(hw));
             break;
         }
         if (headerOf(hw).tag != Tag_Cons) { evacuateP(w, prev->tail, prev_old); break; }
@@ -441,7 +442,7 @@ void NurserySpace::spineRunP(MinorWorker& w, Cons* prev) {
         Cons* cc = static_cast<Cons*>(copyClaimed(w, obj, hw, prev_old));
         if (Elm::tupleFieldKind(cc->header.unboxed, 0) == 0 && cc->head.p.ptr_ind == 0)
             needs_heads = true;
-        prev->tail = Allocator::toPointerRaw(cc);
+        prev->tail = retarget(t, cc);
         if (k == 0) first = cc;
         prev = cc;
         ++k;

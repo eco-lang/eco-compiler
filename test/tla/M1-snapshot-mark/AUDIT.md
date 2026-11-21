@@ -826,3 +826,27 @@ Re-audit against MAPPING.md:
 
 MAPPING.md: the `P_Marking` and `P_Pressure` rows name `cycleDeferredFinishDue` and the current lines; the
 abstractions row "pacing (assist, pressure)" names the new finish. **Verdict: no model change needed.**
+
+## 2026-11-20 — tag-preserving write-back (F1.1, HEAP_086)
+
+Pins fired: region `NR.minorGCRegion` (**63ba92283901**); region `NT.mergeJob` (**76a020e69d9e**).
+
+Change (plans/constructor-representation-followups.md F1.1, HEAP_086 — the runtime tolerates tagged-union
+heap words, `addr | (idx << 43)`): every place a collector writes a slot word back after forwarding or
+copying its object — `slot = Allocator::toPointerRaw(addr)` — now writes `slot = retarget(slot, addr)`
+(`Heap.hpp`), the new address with bits 43-52 of the word it replaces. The tenure engine's `Env::word(obj)`
+became `word(old, obj)` with the same meaning (`*s = env_.word(*s, tenure(t))`), so `TenureWork.hpp`'s
+contract comment and three call sites changed; the GenMC drivers' `CollectorEnv` never instantiates `word`.
+The JIT-root loops (`NR.minorGCRegion`, the serial `evacuateJitPtr`, `evacuateRawP`) decode the word with
+`hpToAddr` before their heap-range test and write back `hpBits` of the evacuated `HPointer` instead of
+round-tripping through `fromPointerRaw`; for every untagged word (all words today: nothing produces a tagged
+one before F1.4) the values computed and stored are bit-identical to before.
+
+Each store is the same single 64-bit store to the same slot by the same thread as before; the extra input is
+the slot's own previous value, which that thread had already read (to find the object) and which no other
+thread writes (M3 A2: "slots are whole words, owner-only"; the heal slots are written only by the merge's
+heal, serially or one contiguous range per gang member). No atomic step, lock, shared location or memory
+order is added, removed or reordered, and no footprint row changes meaning. The bits the store keeps are
+outside every model's abstraction of a slot (a reference to an object). **Verdict: no model change needed.**
+Covered by `test/allocator/TaggedWordGcTest.cpp` (serial, parallel and region minors, tenuring, a major, CAF
+promotion), which failed before the change and passes after.

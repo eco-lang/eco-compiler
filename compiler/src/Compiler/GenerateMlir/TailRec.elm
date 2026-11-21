@@ -1273,17 +1273,36 @@ compileCaseFanOutStep ctx loopSpec path ((NE.Nonempty ( firstTest, _ ) _) as non
         edgeTests =
             List.map Tuple.first edges
 
+        -- A tagged union (HEAP_086) is dispatched on the index its word carries, as an Int case.
+        tagged =
+            Patterns.caseKindFromTest firstTest == "ctor" && Ctx.isTagged ctx (Mono.dtPathType path)
+
         caseKind =
-            Patterns.caseKindFromTest firstTest
+            if tagged then
+                "int"
+
+            else
+                Patterns.caseKindFromTest firstTest
 
         scrutineeType =
             Patterns.scrutineeTypeFromCaseKind caseKind
 
         ( pathOps, scrutineeVar, ctx1 ) =
-            Patterns.generateMonoDtPath ctx path scrutineeType
+            if tagged then
+                Patterns.generateWordTagScrutinee ctx path
+
+            else
+                Patterns.generateMonoDtPath ctx path scrutineeType
 
         ( tags, stringPatterns ) =
-            if caseKind == "str" then
+            if tagged then
+                let
+                    edgeTags =
+                        List.map (\( test, _ ) -> Patterns.tagIndexOfTest test) edges
+                in
+                ( edgeTags ++ [ Patterns.firstUnusedIndex edgeTags ], Nothing )
+
+            else if caseKind == "str" then
                 let
                     edgeCount =
                         List.length edges

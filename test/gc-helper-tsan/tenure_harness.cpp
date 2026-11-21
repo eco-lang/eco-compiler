@@ -246,7 +246,9 @@ struct Env {
     Heap& h;
     std::vector<uintptr_t>* layout = nullptr;
     void* target(uint64_t w) const { return isPtr(w) ? obj(w) : nullptr; }
-    uint64_t word(const void* o) const { return reinterpret_cast<uint64_t>(o); }
+    uint64_t word(uint64_t old, const void* o) const {
+        return reinterpret_cast<uint64_t>(o) | (old & (0x3FFULL << 43));   // keeps the tag (HEAP_086)
+    }
     bool inTenuring(const void* p) const { return h.ten.has(p); }
     bool ylosMaybe(const void* p) const { return h.ylos.has(p); }
     bool youngElsewhere(const void* p) const { return h.fresh.has(p); }

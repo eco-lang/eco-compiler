@@ -75,17 +75,23 @@ static inline bool inRange(int64_t idx, uint32_t len) {
 // wanted primitive kind.
 
 // Returns the slot kind (0 boxed, 1 Int, 2 Float, 3 Char) in which the closure `closureHP` names returns
-// its result. `closureHP` must name a heap closure.
-static uint8_t readClosureResultKind(HPointer closureHP) {
+// the result of a call with `nArgs` more arguments. That is the closure's own result kind when the call
+// saturates it, and boxed when it does not: an under-saturated call returns a partial application, a
+// function value (a closure's stage can take more parameters than the element type's arrow, as
+// `Array.initialize n (\i -> \x -> x + i)` merges into one two-parameter lambda). `closureHP` must name a
+// heap closure.
+static uint8_t readClosureResultKind(HPointer closureHP, uint32_t nArgs) {
     auto* cl = static_cast<Elm::Closure*>(
         Elm::Allocator::instance().resolve(closureHP));
+    if (cl->n_values + nArgs < cl->max_values) return 0;
     return static_cast<uint8_t>(cl->result_kind);
 }
 
-// Returns the slot kind to ask the closure `closureHP` names for its result in: `wantedKind` itself when
-// it is a kind, and the closure's own result kind for `JsArray::kKeepElementKind`.
-static uint8_t callResultKind(HPointer closureHP, int wantedKind) {
-    return wantedKind == JsArray::kKeepElementKind ? readClosureResultKind(closureHP)
+// Returns the slot kind to ask the closure `closureHP` names for the result of a call with `nArgs`
+// arguments in: `wantedKind` itself when it is a kind, and the closure's own result kind for that call
+// (`readClosureResultKind`) for `JsArray::kKeepElementKind`.
+static uint8_t callResultKind(HPointer closureHP, int wantedKind, uint32_t nArgs) {
+    return wantedKind == JsArray::kKeepElementKind ? readClosureResultKind(closureHP, nArgs)
                                                    : static_cast<uint8_t>(wantedKind);
 }
 
@@ -107,7 +113,7 @@ static uint8_t callUnaryInitClosureTyped(HPointer closureHP,
                                           int64_t index,
                                           ResultSlot* slot,
                                           int wantedKind) {
-    uint8_t resultKind = callResultKind(closureHP, wantedKind);
+    uint8_t resultKind = callResultKind(closureHP, wantedKind, 1);
     const auto lb = Elm::makeEvalParamLayout<1>(resultKind, {1});   // (Int)
     const auto* layout = Elm::asLayout(&lb);
     uint64_t args[1] = { static_cast<uint64_t>(index) };
@@ -116,70 +122,43 @@ static uint8_t callUnaryInitClosureTyped(HPointer closureHP,
     return resultKind;
 }
 
-// Appends the value the encoded word `result` names to the array object `arrObj`, as a raw slot of kind
-// Int, Float or Char when it is a boxed Int, Float or Char, and as a boxed slot otherwise. Nothing calls
-// it.
-static void pushUnboxedResult(void* arrObj, uint64_t result) {
-    auto& allocator = Allocator::instance();
-    HPointer hp = Export::decode(result);
-    void* elemPtr = alloc::resolveOrNull(hp);
-    if (elemPtr) {
-        Header* hdr = static_cast<Header*>(elemPtr);
-        if (hdr->tag == Tag_Int) {
-            Unboxable u; u.i = static_cast<ElmInt*>(elemPtr)->value;
-            alloc::arrayPushKind(arrObj, u, 1);
-            return;
-        }
-        if (hdr->tag == Tag_Float) {
-            Unboxable u; u.f = static_cast<ElmFloat*>(elemPtr)->value;
-            alloc::arrayPushKind(arrObj, u, 2);
-            return;
-        }
-        if (hdr->tag == Tag_Char) {
-            Unboxable u = alloc::unboxedChar(static_cast<ElmChar*>(elemPtr)->value);
-            alloc::arrayPushKind(arrObj, u, 3);
-            return;
-        }
-    }
-    Unboxable u; u.p = hp;
-    alloc::arrayPush(arrObj, u, true);  // boxed
-}
-
-// Appends the closure result in `slot`, of kind `result_kind`, to the array object `arrObj` as a slot of
-// that kind. Any kind above 2 is taken as Char. The first push sets the array's kind, and later pushes are
-// assumed to agree, unchecked. The array must have room: a push into a full array is ignored. Does not
-// allocate.
+// Appends the closure result in `slot`, of kind `result_kind` (any kind above 2 is taken as Char), to the
+// array object `arrObj`, keeping HEAP_046: the first result binds the array's kind, a boxed Int, Float or
+// Char binding its primitive kind, and later results are converted to it (`alloc::arrayPushConverted`).
+// The array must have room: a push into a full array is ignored. Does not allocate.
 static void pushTypedResult(void* arrObj, const ResultSlot& slot,
                             uint8_t result_kind) {
     Unboxable u;
     switch (result_kind) {
         case 0:
             u.p = Elm::Kernel::Export::decode(slot.p.toBits());
-            alloc::arrayPush(arrObj, u, /*boxed=*/true);
+            alloc::arrayPushConverted(arrObj, u, 0);
             return;
         case 1:
             u.i = slot.i;
-            alloc::arrayPushKind(arrObj, u, 1);
+            alloc::arrayPushConverted(arrObj, u, 1);
             return;
         case 2:
             u.f = slot.f;
-            alloc::arrayPushKind(arrObj, u, 2);
+            alloc::arrayPushConverted(arrObj, u, 2);
             return;
         default:
             u = alloc::unboxedChar(slot.c);
-            alloc::arrayPushKind(arrObj, u, 3);
+            alloc::arrayPushConverted(arrObj, u, 3);
             return;
     }
 }
 
-// Applies the closure `closureHP` names to the raw Int `index` and the encoded boxed element `elem`, and
-// writes and returns the result as `callUnaryInitClosureTyped` does.
+// Applies the closure `closureHP` names to the raw Int `index` and the element `elem`, held in slot kind
+// `elemKind` (0 an encoded HPointer, 1 to 3 the raw bits of an Int, Float or Char; the runtime boxes or
+// unboxes it to the kind the closure expects, REP_CLOSURE_002), and writes and returns the result as
+// `callUnaryInitClosureTyped` does.
 static uint8_t callBinaryIndexMapClosureTyped(HPointer closureHP,
-                                              int64_t index, uint64_t elem,
+                                              int64_t index, uint64_t elem, uint8_t elemKind,
                                               ResultSlot* slot,
                                               int wantedKind) {
-    uint8_t resultKind = callResultKind(closureHP, wantedKind);
-    const auto lb = Elm::makeEvalParamLayout<2>(resultKind, {1, 0});   // (Int, a)
+    uint8_t resultKind = callResultKind(closureHP, wantedKind, 2);
+    const auto lb = Elm::makeEvalParamLayout<2>(resultKind, {1, elemKind});   // (Int, a)
     const auto* layout = Elm::asLayout(&lb);
     uint64_t args[2] = { static_cast<uint64_t>(index), elem };
     Elm::HPtr cl = Elm::HPtr::fromBits(Elm::Kernel::Export::encode(closureHP));
@@ -187,16 +166,16 @@ static uint8_t callBinaryIndexMapClosureTyped(HPointer closureHP,
     return resultKind;
 }
 
-// Applies the closure `closureHP` names to the encoded boxed element `elem` and the accumulator `acc`,
-// and writes and returns the result as `callUnaryInitClosureTyped` does. `accKind` is the slot kind `acc`
-// is held in: 0 for an encoded HPointer, 1 to 3 for the raw bits of an Int, Float or Char. The runtime
-// boxes or unboxes `acc` if the closure expects it in another kind.
+// Applies the closure `closureHP` names to the element `elem` and the accumulator `acc`, and writes and
+// returns the result as `callUnaryInitClosureTyped` does. `elemKind` and `accKind` are the slot kinds
+// `elem` and `acc` are held in: 0 for an encoded HPointer, 1 to 3 for the raw bits of an Int, Float or
+// Char. The runtime boxes or unboxes each if the closure expects it in another kind.
 static uint8_t callBinaryFoldClosureTyped(HPointer closureHP,
-                                          uint64_t elem,
+                                          uint64_t elem, uint8_t elemKind,
                                           uint64_t acc, uint8_t accKind,
                                           ResultSlot* slot) {
-    uint8_t resultKind = readClosureResultKind(closureHP);
-    const auto lb = Elm::makeEvalParamLayout<2>(resultKind, {/*elem*/0, accKind});
+    uint8_t resultKind = readClosureResultKind(closureHP, 2);
+    const auto lb = Elm::makeEvalParamLayout<2>(resultKind, {elemKind, accKind});
     const auto* layout = Elm::asLayout(&lb);
     uint64_t args[2] = { elem, acc };
     Elm::HPtr cl = Elm::HPtr::fromBits(Elm::Kernel::Export::encode(closureHP));
@@ -204,12 +183,12 @@ static uint8_t callBinaryFoldClosureTyped(HPointer closureHP,
     return resultKind;
 }
 
-// Applies the closure `closureHP` names to the encoded boxed element `elem`, and writes and returns the
-// result as `callUnaryInitClosureTyped` does.
-static uint8_t callUnaryMapClosureTyped(HPointer closureHP, uint64_t elem,
+// Applies the closure `closureHP` names to the element `elem`, held in slot kind `elemKind` as for
+// `callBinaryIndexMapClosureTyped`, and writes and returns the result as `callUnaryInitClosureTyped` does.
+static uint8_t callUnaryMapClosureTyped(HPointer closureHP, uint64_t elem, uint8_t elemKind,
                                         ResultSlot* slot, int wantedKind) {
-    uint8_t resultKind = callResultKind(closureHP, wantedKind);
-    const auto lb = Elm::makeEvalParamLayout<1>(resultKind, {0});   // (a)
+    uint8_t resultKind = callResultKind(closureHP, wantedKind, 1);
+    const auto lb = Elm::makeEvalParamLayout<1>(resultKind, {elemKind});   // (a)
     const auto* layout = Elm::asLayout(&lb);
     uint64_t args[1] = { elem };
     Elm::HPtr cl = Elm::HPtr::fromBits(Elm::Kernel::Export::encode(closureHP));
@@ -258,6 +237,7 @@ static HPtr mapImpl(HPtr closure, HPtr array, bool indexed, int64_t offset, int 
     uint32_t srcKind;
     {
         ElmArray* src0 = static_cast<ElmArray*>(allocator.resolve(srcHP));
+        alloc::validateArrayKind(src0, "JsArray map/fold");
         len = src0->length;
         srcKind = src0->header.unboxed & 0x3;
     }
@@ -278,16 +258,14 @@ static HPtr mapImpl(HPtr closure, HPtr array, bool indexed, int64_t offset, int 
     ResultSlot slot{};
     for (uint32_t i = 0; i < len; i++) {
         ElmArray* src = static_cast<ElmArray*>(allocator.resolve(srcHP));
-        // The element is passed boxed.
-        uint64_t elem;
-        if (srcKind != 0) {
-            elem = Export::encode(alloc::boxElement(src->elements[i], srcKind));
-        } else {
-            elem = Export::encode(src->elements[i].p);
-        }
+        // The element is passed in the array's kind: a raw Int, Float or Char is boxed by the runtime only
+        // if the closure takes it boxed (REP_CLOSURE_002).
+        uint64_t elem = (srcKind != 0) ? static_cast<uint64_t>(src->elements[i].i)
+                                       : Export::encode(src->elements[i].p);
+        uint8_t ek = static_cast<uint8_t>(srcKind);
         uint8_t rk = indexed
-                         ? callBinaryIndexMapClosureTyped(closureHP, offset + i, elem, &slot, wantedKind)
-                         : callUnaryMapClosureTyped(closureHP, elem, &slot, wantedKind);
+                         ? callBinaryIndexMapClosureTyped(closureHP, offset + i, elem, ek, &slot, wantedKind)
+                         : callUnaryMapClosureTyped(closureHP, elem, ek, &slot, wantedKind);
         void* arrObj = allocator.resolve(arr);
         pushTypedResult(arrObj, slot, rk);
     }
@@ -306,6 +284,7 @@ static HPointer copyAndExtendForPush(HPtr array, uint32_t &outSrcLen,
     StackRootGuard guard(&srcHP);
 
     ElmArray* src = static_cast<ElmArray*>(allocator.resolve(srcHP));
+    alloc::validateArrayKind(src, "JsArray push (copyAndExtendForPush)");
     uint32_t len = src->length;
     uint32_t srcKind = src->header.unboxed & 0x3;
 
@@ -341,6 +320,7 @@ static HPointer copyForUnsafeSet(HPtr array, uint32_t &outLen, uint32_t &outKind
     StackRootGuard guard(&srcHP);
 
     ElmArray* src = static_cast<ElmArray*>(allocator.resolve(srcHP));
+    alloc::validateArrayKind(src, "JsArray unsafeSet (copyForUnsafeSet)");
     uint32_t len = src->length;
     uint32_t kind = src->header.unboxed & 0x3;
 
@@ -362,8 +342,9 @@ static HPointer copyForUnsafeSet(HPtr array, uint32_t &outLen, uint32_t &outKind
 // Makes the copy `dst`, whose first `len` slots were copied from an array of kind `kind`, an array of the
 // primitive kind `wanted` (1 Int, 2 Float, 3 Char), before a raw `wanted` value is written into it:
 //   - an empty source has no kind yet, so `wanted` binds it;
-//   - a boxed (kind 0) source holds boxed values of the wanted type (an array built from boxed closure
-//     results), which are unboxed in place;
+//   - a boxed (kind 0) source cannot hold values of the wanted type under HEAP_046 (every producer binds a
+//     primitive array to its primitive kind); were it to, they would be boxed values, converted in place
+//     defensively;
 //   - any other kind would be a type error, which is asserted.
 // Does not allocate, so a caller may run it between the copy and its own last write.
 static void bindPrimitiveKind(ElmArray* dst, uint32_t len, uint32_t kind, uint32_t wanted) {
@@ -385,11 +366,10 @@ HPtr Elm_Kernel_JsArray_empty() {
     return HPtr::fromBits(Export::encode(arr));
 }
 
+// The boxed root takes the value boxed. A boxed Int, Float or Char gives an array of that primitive kind,
+// stored unboxed (HEAP_046); any other value a boxed array.
 HPtr Elm_Kernel_JsArray_singleton(HPtr value) {
-    uint64_t value_bits = value.toBits();
-    std::vector<HPointer> vals = {Export::decode(value_bits)};
-    HPointer arr = alloc::arrayFromPointers(vals);
-    return HPtr::fromBits(Export::encode(arr));
+    return elm_array_singleton_box(value);
 }
 
 int64_t Elm_Kernel_JsArray_length(HPtr array) {
@@ -443,12 +423,12 @@ HPtr Elm_Kernel_JsArray_push(HPtr value, HPtr array) {
     uint32_t len, kind;
     HPointer result = copyAndExtendForPush(array, len, kind);
     ElmArray* dst = static_cast<ElmArray*>(allocator.resolve(result));
-    if (len != 0 && kind != 0) {
-        dst->elements[len] = JsArray::unboxByKind(valHP, kind);
-    } else {
-        dst->elements[len] = alloc::boxed(valHP);
-        dst->header.unboxed = 0;
-    }
+    // HEAP_046: onto an empty array the value binds the kind (a boxed Int, Float or Char its primitive
+    // kind); onto a nonempty one it is converted to the array's kind.
+    Unboxable v = alloc::boxed(valHP);
+    u8 k = (len == 0) ? alloc::arrayKindOf(v, 0) : static_cast<u8>(kind);
+    dst->elements[len] = alloc::convertToKind(v, 0, k);
+    dst->header.unboxed = k;
 
 #if ECO_HEAP_VALIDATE
     if ((dst->header.unboxed & 0x3) == 0) {
@@ -469,6 +449,7 @@ HPtr Elm_Kernel_JsArray_slice(HPtr start_val, HPtr end_val, HPtr array) {
     StackRootGuard guard(&srcHP);
 
     ElmArray* src = static_cast<ElmArray*>(allocator.resolve(srcHP));
+    alloc::validateArrayKind(src, "JsArray slice");
     int64_t len = static_cast<int64_t>(src->length);
 
     if (start < 0) start += len;
@@ -508,6 +489,8 @@ HPtr Elm_Kernel_JsArray_appendN(HPtr n_val, HPtr dest, HPtr source) {
 
     ElmArray* destArr = static_cast<ElmArray*>(allocator.resolve(destHP));
     ElmArray* srcArr  = static_cast<ElmArray*>(allocator.resolve(srcHP));
+    alloc::validateArrayKind(destArr, "JsArray appendN (dest)");
+    alloc::validateArrayKind(srcArr, "JsArray appendN (source)");
 
     uint32_t destLen = destArr->length;
     uint32_t srcLen = srcArr->length;
@@ -586,8 +569,9 @@ HPtr Elm_Kernel_JsArray_indexedMap(HPtr closure, HPtr offset_val, HPtr array) {
 // the final accumulator boxed. With `forward` the elements are taken first to last (foldl), otherwise
 // last to first (foldr). An empty array gives `acc` itself.
 //
-// Each element is passed boxed. The accumulator is passed to each call in the kind the previous call
-// returned it in, so a closure that returns a raw Int, Float or Char has its accumulator boxed once, at
+// Each element is passed in the array's kind (raw for an Int, Float or Char array; the runtime boxes it
+// only for a closure that takes it boxed). The accumulator is passed to each call in the kind the
+// previous call returned it in, so a closure that returns a raw Int, Float or Char has its accumulator boxed once, at
 // the end, and not at every step.
 static HPtr foldImpl(HPtr closure, HPtr acc, HPtr array, bool forward) {
     auto& allocator = Allocator::instance();
@@ -599,6 +583,7 @@ static HPtr foldImpl(HPtr closure, HPtr acc, HPtr array, bool forward) {
     uint32_t srcKind;
     {
         ElmArray* src0 = static_cast<ElmArray*>(allocator.resolve(srcHP));
+        alloc::validateArrayKind(src0, "JsArray map/fold");
         len = src0->length;
         srcKind = src0->header.unboxed & 0x3;
     }
@@ -618,19 +603,15 @@ static HPtr foldImpl(HPtr closure, HPtr acc, HPtr array, bool forward) {
     for (uint32_t step = 0; step < len; ++step) {
         uint32_t idx = forward ? step : (len - 1 - step);
         ElmArray* src = static_cast<ElmArray*>(allocator.resolve(srcHP));
-        uint64_t elem;
-        if (srcKind != 0) {
-            elem = Export::encode(alloc::boxElement(src->elements[idx], srcKind));
-        } else {
-            elem = Export::encode(src->elements[idx].p);
-        }
-        // Refresh accBits for the boxed-acc case: a GC inside boxElement
-        // (above) may have moved the underlying ElmInt etc., and accHP
-        // (rooted via `loopRoots`) holds the up-to-date HPointer.
+        // The element is passed in the array's kind: a raw Int, Float or Char is boxed by the runtime only
+        // if the closure takes it boxed (REP_CLOSURE_002).
+        uint64_t elem = (srcKind != 0) ? static_cast<uint64_t>(src->elements[idx].i)
+                                       : Export::encode(src->elements[idx].p);
+        // accHP (rooted via `loopRoots`) holds the up-to-date HPointer of a boxed accumulator.
         if (accKind == 0) accBits = Export::encode(accHP);
 
         uint8_t resultKind = callBinaryFoldClosureTyped(
-            closureHP, elem, accBits, accKind, &slot);
+            closureHP, elem, static_cast<uint8_t>(srcKind), accBits, accKind, &slot);
 
         // Truncate this thread's root-range stack to the point taken just after `loopRoots`, discarding the
         // ranges pushed since. `accHP` stays rooted by `loopRoots`, so a boxed result stored in it is kept
@@ -713,8 +694,8 @@ HPtr elm_array_singleton_box(HPtr value) {
     StackRootGuard guard(&hp);
     HPointer arr = alloc::allocArray(1);
     void* arrObj = Allocator::instance().resolve(arr);
-    Unboxable u; u.p = hp;
-    alloc::arrayPush(arrObj, u, /*is_boxed=*/true);
+    // HEAP_046: a boxed Int, Float or Char binds its primitive kind and is stored unboxed.
+    alloc::arrayPushConverted(arrObj, alloc::boxed(hp), 0);
     return HPtr::fromBits(Export::encode(arr));
 }
 
@@ -756,20 +737,26 @@ HPtr elm_array_push_box(HPtr value, HPtr array) {
     auto& allocator = Allocator::instance();
     StackRootGuard guard(&srcHP, &valHP);
 
-    uint32_t len = static_cast<ElmArray*>(allocator.resolve(srcHP))->length;
+    ElmArray* src0 = static_cast<ElmArray*>(allocator.resolve(srcHP));
+    alloc::validateArrayKind(src0, "elm_array_push_box");
+    uint32_t len = src0->length;
     HPointer result = alloc::allocArray(len + 1);
     ElmArray* src = static_cast<ElmArray*>(allocator.resolve(srcHP));
     ElmArray* dst = static_cast<ElmArray*>(allocator.resolve(result));
     for (uint32_t i = 0; i < len; i++) dst->elements[i] = src->elements[i];
     dst->length = len + 1;
-    dst->header.unboxed = 0;
-    dst->elements[len].p = valHP;
+    // HEAP_046: the value is converted to the source's kind, or binds the kind of an empty source; a
+    // primitive source is never relabelled boxed.
+    Unboxable v = alloc::boxed(valHP);
+    u8 k = (len == 0) ? alloc::arrayKindOf(v, 0) : static_cast<u8>(src->header.unboxed & 0x3);
+    dst->header.unboxed = k;
+    dst->elements[len] = alloc::convertToKind(v, 0, k);
 
 #if ECO_HEAP_VALIDATE
-    // Always boxed (kind=0). Validate the copied prefix and the new slot.
-    for (uint32_t i = 0; i < len; i++)
-        alloc::validateNurseryHPtr(dst->elements[i].p);
-    alloc::validateNurseryHPtr(valHP);
+    if (k == 0) {
+        for (uint32_t i = 0; i <= len; i++)
+            alloc::validateNurseryHPtr(dst->elements[i].p);
+    }
 #endif
 
     return HPtr::fromBits(Export::encode(result));
@@ -781,6 +768,7 @@ HPtr elm_array_slice(int64_t start, int64_t end, HPtr array) {
     StackRootGuard guard(&srcHP);
 
     ElmArray* src = static_cast<ElmArray*>(allocator.resolve(srcHP));
+    alloc::validateArrayKind(src, "JsArray slice");
     int64_t len = static_cast<int64_t>(src->length);
 
     if (start < 0) start += len;
@@ -843,6 +831,7 @@ HPtr Elm_Kernel_JsArray_unsafeGet_Int(int64_t idx, HPtr array) {
     uint64_t array_bits = array.toBits();
     void* ptr = Export::toPtr(array_bits);
     ElmArray* arr = static_cast<ElmArray*>(ptr);
+    alloc::validateArrayKind(arr, "JsArray unsafeGet");
     assert(inRange(idx, arr->length) && "JsArray.unsafeGet: index out of range");
     Unboxable val = alloc::arrayGet(ptr, static_cast<size_t>(idx));
 
@@ -950,6 +939,8 @@ HPtr elm_array_append_n(int64_t n_signed, HPtr dest, HPtr source) {
 
     ElmArray* destArr = static_cast<ElmArray*>(allocator.resolve(destHP));
     ElmArray* srcArr  = static_cast<ElmArray*>(allocator.resolve(srcHP));
+    alloc::validateArrayKind(destArr, "JsArray appendN (dest)");
+    alloc::validateArrayKind(srcArr, "JsArray appendN (source)");
 
     uint32_t destLen = destArr->length;
     uint32_t srcLen = srcArr->length;

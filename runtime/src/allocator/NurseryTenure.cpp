@@ -88,11 +88,8 @@ struct NurserySpace::TenureHeapEnv {
         if (hp.ptr_ind != 0 || hp.ptr == 0) return nullptr;
         return Allocator::fromPointerRaw(hp);
     }
-    uint64_t word(const void* obj) const {
-        const HPointer hp = Allocator::toPointerRaw(const_cast<void*>(obj));
-        uint64_t w;
-        std::memcpy(&w, &hp, sizeof(w));
-        return w;
+    uint64_t word(uint64_t old, const void* obj) const {
+        return hpBits(retarget(hpFromBits(old), const_cast<void*>(obj)));   // keeps the tag (HEAP_086)
     }
     bool inTenuring(const void* p) const {
         const char* q = static_cast<const char*>(p);
@@ -803,7 +800,7 @@ void NurserySpace::mergeJob(OldGenSpace& oldgen, bool heal, MinorGCRecord* rec) 
             forEachChildSlot(y, [&](HPointer& hp) {
                 if (hp.ptr_ind != 0 || hp.ptr == 0) return;
                 char* c = static_cast<char*>(Allocator::fromPointerRaw(hp));
-                if (c >= J.base && c < J.surv_top) hp = Allocator::toPointerRaw(resolveT(c));
+                if (c >= J.base && c < J.surv_top) hp = retarget(hp, resolveT(c));
             });
 #if ECO_HEAP_VALIDATE || P1_CENSUS_COMPILED
             ylos_prom_log.push_back(y);
@@ -842,7 +839,7 @@ void NurserySpace::mergeJob(OldGenSpace& oldgen, bool heal, MinorGCRecord* rec) 
                 if (c2 < J.base || c2 >= J.surv_top) continue;
                 char* d = tw::lookup(J.shadow + (static_cast<size_t>(c2 - J.base) >> J.shadow_shift), J.gen);
                 if (d == nullptr) tenureFatal("TV1: resolve found no forwarding in the parallel heal", c2);
-                hp = Allocator::toPointerRaw(d);
+                hp = retarget(hp, d);
             }
         }, &hc, n);
         healed = st.heal.size();
@@ -864,7 +861,7 @@ void NurserySpace::mergeJob(OldGenSpace& oldgen, bool heal, MinorGCRecord* rec) 
                 continue;
             }
             if (skip_one) { skip_one = false; continue; }   // negative control
-            hp = Allocator::toPointerRaw(resolveT(c));
+            hp = retarget(hp, resolveT(c));
             ++healed;
         }
         const uint64_t dh = nowNs() - th;
@@ -1128,7 +1125,7 @@ struct NurserySpace::TenureParEnv {
         if (hp.ptr_ind != 0 || hp.ptr == 0) return;
         void* t = Allocator::fromPointerRaw(hp);
         const char* q = static_cast<const char*>(t);
-        if (inT(t)) { hp = Allocator::toPointerRaw(tenure(w, t, true)); return; }
+        if (inT(t)) { hp = retarget(hp, tenure(w, t, true)); return; }
         if (q >= J.ylos_lo && q < J.ylos_hi) { reachYlos(w, t); return; }
         if (q >= J.slot_lo && q < J.slot_hi)
             tenureFatal("TV6: a promoted object has a young child outside the tenuring extent", parent, t);
@@ -1156,11 +1153,11 @@ struct NurserySpace::TenureParEnv {
             // A cell someone else already forwarded (or is copying) ends the run.
             const uint64_t e = tw::ref(sw(t)).load(std::memory_order_acquire);
             if (tw::genOf(e) == (J.gen & tw::kGenMask) && tw::stateOf(e) != 0) {
-                tail = Allocator::toPointerRaw(tenure(w, t, true));
+                tail = retarget(tail, tenure(w, t, true));
                 break;
             }
             Cons* d = reinterpret_cast<Cons*>(tenure(w, t, false));
-            tail = Allocator::toPointerRaw(d);
+            tail = retarget(tail, d);
             run[k++] = d;
             prev = d;
         }

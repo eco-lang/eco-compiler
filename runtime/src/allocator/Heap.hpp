@@ -337,6 +337,20 @@ inline void* hpToAddr(HPointer hp) {
     return reinterpret_cast<void*>(hpBits(hp) & ((1ULL << (POINTER_BITS + 3)) - 1));
 }
 
+// The mask of bits 43-52 of a word, `null_cons_idx`. In a heap word of a tagged union (F1, HEAP_086)
+// they hold the constructor's declaration index, `addr | (idx << 43)`; `hpToAddr` ignores them.
+#define WORD_TAG_MASK (0x3FFULL << 43)
+
+// Returns the constructor index a tagged heap word carries in bits 43-52 (0 for an untagged word).
+inline u32 wordTag(u64 b) { return static_cast<u32>((b & WORD_TAG_MASK) >> 43); }
+
+// Returns the heap word for the object now at `newAddr` that keeps the tag bits (43-52) of `old`: what
+// every collector writes back after moving or forwarding the object `old` named (HEAP_086). `newAddr`
+// must be 8-byte aligned and below 2^43.
+inline HPointer retarget(HPointer old, void* newAddr) {
+    return hpFromBits(reinterpret_cast<u64>(newAddr) | (hpBits(old) & WORD_TAG_MASK));
+}
+
 // Returns whether the word `b` is an embedded constant or null-cons word rather than a heap
 // pointer, by its `ptr_ind` bit. The null word 0 is not a constant.
 inline bool isConstantBits(u64 b) { return hpFromBits(b).ptr_ind != 0; }
@@ -377,6 +391,36 @@ inline u32 nullConsTagBits(u64 b) {
 inline u64 nullConsWordFor(u32 idx) {
     return (static_cast<u64>(idx) << NULL_CONS_SHIFT)
          | (1ULL << PTR_IND_BIT) | Const_NullCons;                  // …0b111
+}
+
+// Returns the spare word of level `level`: the Empty constant with `level` in `null_cons_idx`,
+// `(level << NULL_CONS_SHIFT) | 0b110` (HEAP_085). It is the null word of a nullable type whose field
+// type can be Empty or a null-cons word; only compiled code of such a type makes it. Every classifier
+// that reads the `constant` field takes it for Empty, so a test for the Empty word itself must use
+// `isExactEmptyBits`. `level` must be 1 to `NULL_CONS_MAX`; nothing here checks it.
+inline u64 spareWordFor(u32 level) {
+    return (static_cast<u64>(level) << NULL_CONS_SHIFT)
+         | (1ULL << PTR_IND_BIT) | Const_Empty;                     // …0b110
+}
+
+// Returns whether the word `b` is a spare word (HEAP_085).
+inline bool isSpareWord(u64 b) {
+    HPointer hp = hpFromBits(b);
+    return hp.ptr_ind != 0 && hp.constant == Const_Empty && hp.null_cons_idx != 0;
+}
+
+// Returns whether the word `b` is exactly the Empty constant, 0x6: not a spare word, which
+// `isEmptyBits` also accepts.
+inline bool isExactEmptyBits(u64 b) {
+    return b == ((1ULL << PTR_IND_BIT) | Const_Empty);
+}
+
+// Returns the null word that the type table's packed `null_name` of a nullable type names: bit 20 set
+// for a null-cons word, clear for Empty or a spare word, and bits 21-30 the word's index (HEAP_085).
+inline u64 nullableNullWord(u32 packedNullName) {
+    u64 index = (packedNullName >> 21) & 0x3FFu;
+    u64 constant = (packedNullName & (1u << 20)) ? Const_NullCons : Const_Empty;
+    return (index << NULL_CONS_SHIFT) | (1ULL << PTR_IND_BIT) | constant;
 }
 
 // The constructor tag reported for the Empty constant, which stands for several types' empty

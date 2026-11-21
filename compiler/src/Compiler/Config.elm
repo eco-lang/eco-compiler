@@ -137,6 +137,10 @@ off.
 `knownCtorCase` (`ECO_KNOWN_CTOR_CASE`) folds a `case` on a value built by a
 known constructor in the inliner. `sretCtors` (`ECO_SRET_CTORS`) extends
 `sretResults` to returned single-constructor values with two or three fields.
+`taggedUnions` (`ECO_TAGGED_UNIONS`) represents a constructor of a
+multi-constructor type whose one field is boxed as that field's word tagged
+with its index (`Compiler.MonoOpt.TaggedUnions`,
+plans/constructor-representation-followups.md F1).
 
 `validate` (`ECO_REPR_VALIDATE=1`, also on under `mono.validate`) checks the
 graph after the passes: MONO_031 and the representation-meets check of
@@ -155,6 +159,7 @@ type alias ReprConfig =
     , nullableUser : Bool
     , knownCtorCase : Bool
     , sretCtors : Bool
+    , taggedUnions : Bool
     , census : Maybe String
     , validate : Bool
     }
@@ -615,6 +620,7 @@ defaultRepr =
     , nullableUser = True
     , knownCtorCase = False
     , sretCtors = True
+    , taggedUnions = True
     , census = Nothing
     , validate = False
     }
@@ -677,6 +683,7 @@ reprDecoder =
         |> D.apply (D.optionalField "nullableUser" D.bool defaultRepr.nullableUser)
         |> D.apply (D.optionalField "knownCtorCase" D.bool defaultRepr.knownCtorCase)
         |> D.apply (D.optionalField "sretCtors" D.bool defaultRepr.sretCtors)
+        |> D.apply (D.optionalField "taggedUnions" D.bool defaultRepr.taggedUnions)
         |> D.apply (D.optionalField "census" (D.map Just D.string) defaultRepr.census)
         |> D.apply (D.optionalField "validate" D.bool defaultRepr.validate)
 
@@ -1325,6 +1332,11 @@ reprHashTokens repr =
             Nothing
         , if repr.sretCtors then
             Just "sretc=1"
+
+          else
+            Nothing
+        , if repr.taggedUnions then
+            Just "tu=1"
 
           else
             Nothing

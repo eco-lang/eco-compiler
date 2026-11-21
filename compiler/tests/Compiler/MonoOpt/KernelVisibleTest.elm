@@ -28,6 +28,13 @@ test exercises one rule:
     its own home, and `HttpServer.createServerWith`, which reads a `Maybe`
     option's tag and field, keeps that instantiation boxed.
 
+  - a kernel reached only through an alias global (`kInfo = Eco.Kernel.Tls.info`,
+    whose shared node has type variables where the kernel's types are) is
+    applied at each use site's type: `Tls.info`'s declared `Maybe` is visible at
+    the instantiation a use returns, and a wrapper passed to an unlisted
+    kernel's alias is visible (plans/constructor-representation-followups.md F2,
+    found by the `SocketTls*` E2E tests).
+
 An effect manager's command type (the `MonoManagerLeaf` rule) is covered by the
 E2E test `ProcessSpawnExternalTest`, whose `Maybe` the C++ manager builds.
 
@@ -45,6 +52,7 @@ import Compiler.AST.SourceBuilder
         , recordExpr
         , tType
         )
+import Compiler.Core.TypeIds as TypeIds
 import Compiler.Elm.ModuleName as ModuleName
 import Compiler.IR.Mono as Mono
 import Compiler.IR.Source as Src
@@ -98,6 +106,11 @@ taskOf x a =
 fn : List Mono.MonoType -> Mono.MonoType -> Mono.MonoType
 fn =
     Mono.mFunction Mono.topSynth
+
+
+var : Mono.MonoType
+var =
+    Mono.MVar TypeIds.firstMVarId Mono.CEcoValue
 
 
 region : A.Region
@@ -206,6 +219,24 @@ suite =
                         , local "bs" bytesType
                         ]
                         (maybeOf w)
+                    ]
+                )
+        , test "a declared kernel reached through an alias inspects the use site's type" <|
+            withKv (\kv _ _ -> KernelVisible.isVisibleInstance kv (maybeOf rec) |> Expect.equal True)
+                (\_ _ ->
+                    [ Mono.MonoVarKernel region "Eco" "Tls" "info" (fn [ Mono.MInt ] (taskOf var var))
+                    , Mono.MonoCall region
+                        (Mono.MonoVarGlobal region 0 (fn [ Mono.MInt ] (taskOf Mono.MString (maybeOf rec))))
+                        [ local "i" Mono.MInt ]
+                        (taskOf Mono.MString (maybeOf rec))
+                        Mono.defaultCallInfo
+                    ]
+                )
+        , test "a wrapper passed to an unlisted kernel's alias is visible" <|
+            withKv (\kv w _ -> visible kv w |> Expect.equal True)
+                (\w _ ->
+                    [ Mono.MonoVarKernel region "Elm" "Debugger" "unsafeCoerce" (fn [ var ] var)
+                    , Mono.MonoCall region (Mono.MonoVarGlobal region 0 (fn [ w ] w)) [ local "x" w ] w Mono.defaultCallInfo
                     ]
                 )
         , test "String.foldl moves its accumulator without looking at it" <|

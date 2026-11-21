@@ -576,6 +576,32 @@ LogicalResult ConstantNullConsOp::verify() {
   return success();
 }
 
+// Checks that a spare word's level is 1 to `NULL_CONS_MAX`: level 0 would be the Empty constant (HEAP_085).
+LogicalResult ConstantSpareOp::verify() {
+  if (getLevel() < 1 || getLevel() > static_cast<int64_t>(NULL_CONS_MAX)) {
+    return emitOpError("spare level ")
+           << getLevel() << " outside [1, " << NULL_CONS_MAX << "] (HEAP_085)";
+  }
+  return success();
+}
+
+// Checks that `eco.tag_word`'s index fits the 10 bits of `null_cons_idx` (HEAP_086).
+LogicalResult TagWordOp::verify() {
+  if (getIndex() < 0 || getIndex() > static_cast<int64_t>(NULL_CONS_MAX))
+    return emitOpError("index ") << getIndex() << " outside [0, " << NULL_CONS_MAX << "] (HEAP_086)";
+  return success();
+}
+
+// Checks that `eco.is_word` names an embedded constant word: constant code 2 (Empty or a spare word) or 3 (a
+// null-cons word), and an index in the 10 bits of `null_cons_idx` (CGEN_090).
+LogicalResult IsWordOp::verify() {
+  if (getConstant() != 2 && getConstant() != 3)
+    return emitOpError("constant code ") << getConstant() << " is neither 2 (Empty/spare) nor 3 (null-cons)";
+  if (getIndex() < 0 || getIndex() > static_cast<int64_t>(NULL_CONS_MAX))
+    return emitOpError("index ") << getIndex() << " outside [0, " << NULL_CONS_MAX << "] (HEAP_085)";
+  return success();
+}
+
 //===----------------------------------------------------------------------===//
 // Custom/Record slot kinds
 //===----------------------------------------------------------------------===//

@@ -376,9 +376,11 @@ if(NOT WIN32 AND TARGET EcoRuntimeStatic)
     target_compile_features(elm-kernel-time-test PRIVATE cxx_std_20)
     target_link_libraries(elm-kernel-time-test PRIVATE
         ElmKernel_Time ElmKernel_Platform ElmKernel_Scheduler ElmKernel_EffectRegistry
-        # The runtime's PlatformRuntime/PortRuntime call the Json kernel (flags, ports).
+        # The runtime's PlatformRuntime/PortRuntime call the Json kernel (flags, ports), so it is
+        # listed again after EcoRuntimeStatic: a static library only resolves the references of the
+        # ones before it (the validate tree's link failed without it).
         ElmKernel_Json
-        EcoRuntimeStatic Threads::Threads)
+        EcoRuntimeStatic ElmKernel_Json Threads::Threads)
     if(ECO_ASSERTS_ON)
         target_compile_options(elm-kernel-time-test PRIVATE -UNDEBUG)
     endif()

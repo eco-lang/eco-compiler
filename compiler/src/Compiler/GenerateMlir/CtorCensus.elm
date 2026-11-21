@@ -19,9 +19,14 @@ payload class:
   - the payload class says, for a level-1 constructor, whether its field is
     `boxed` or `unboxed` (Int, Float, Char), and for a one-field constructor of
     a level-3 type, whether the field type is admissible for the nullable
-    representation (`adm`, `inadm`; see `Compiler.MonoOpt.NullableMaybe`).
+    representation (`adm`, `spare` when it needs a spare null word, `inadm`; see
+    `Compiler.MonoOpt.NullableMaybe.censusClass`).
     It is `-` otherwise. A `+kv` suffix marks a kernel-visible type
     (`Compiler.MonoOpt.KernelVisible`, MONO_032).
+  - the tagged column is the F1 tagged-word form of a constructor of a type with
+    two or more constructors (`Compiler.MonoOpt.TaggedUnions`,
+    plans/constructor-representation-followups.md F1.0): `bare`, an `alloc-*`
+    reason, or `excluded-<reason>`; `-` for a one-constructor type.
 
 Ids start at 1 and are at most 32,767, the width of the header field the
 runtime keeps them in; id 0 is "unattributed". The table is written by
@@ -112,18 +117,10 @@ payloadClass shapesOf customType shapes shape =
 
         ( 3, [ field ] ) ->
             if NullableMaybe.isMaybeType customType then
-                if NullableMaybe.admissible field then
-                    "adm"
-
-                else
-                    "inadm"
+                NullableMaybe.censusClass shapesOf True field
 
             else if maybeShaped shapes then
-                if NullableMaybe.admissibleNoConstants shapesOf field then
-                    "adm"
-
-                else
-                    "inadm"
+                NullableMaybe.censusClass shapesOf False field
 
             else
                 "-"
@@ -150,8 +147,8 @@ shapeKey ctorName fieldTypes =
 {-| Builds the census table from the program's constructor shapes, or `empty`
 when `on` is false.
 -}
-build : Bool -> List ( String, String ) -> Mono.LayoutMap (List Mono.CtorShape) -> Table
-build on kernelVisible ctorShapes =
+build : Bool -> List ( String, String ) -> Mono.LayoutMap (List ( String, String )) -> Mono.LayoutMap (List Mono.CtorShape) -> Table
+build on kernelVisible tagCensus ctorShapes =
     if not on then
         empty
 
@@ -190,6 +187,10 @@ build on kernelVisible ctorShapes =
                                                             else
                                                                 ""
                                                            )
+                                                    , Mono.layoutMapGet key tagCensus
+                                                        |> Maybe.andThen (List.filter (\( c, _ ) -> c == shape.name) >> List.head)
+                                                        |> Maybe.map Tuple.second
+                                                        |> Maybe.withDefault "-"
                                                     ]
                                                 , shapeKey shape.name shape.fieldTypes
                                                 )
@@ -255,7 +256,7 @@ build on kernelVisible ctorShapes =
 
 bytesFusionJustClass : String
 bytesFusionJustClass =
-    String.join "\t" [ "3", ModuleName.toComparableCanonical ModuleName.maybe, "Maybe", "Just", "1", "bf" ]
+    String.join "\t" [ "3", ModuleName.toComparableCanonical ModuleName.maybe, "Maybe", "Just", "1", "bf", "-" ]
 
 
 bytesFusionJustKey : String
@@ -289,9 +290,9 @@ idForBytesFusionJust table =
 
 
 {-| The table as tab-separated text, one class per line:
-`id level home type ctor fields payload`.
+`id level home type ctor fields payload tagged`.
 -}
 render : Table -> String
 render table =
-    "id\tlevel\thome\ttype\tctor\tfields\tpayload\n"
+    "id\tlevel\thome\ttype\tctor\tfields\tpayload\ttagged\n"
         ++ String.concat (List.map (\( id, cls ) -> String.fromInt id ++ "\t" ++ cls ++ "\n") table.rows)

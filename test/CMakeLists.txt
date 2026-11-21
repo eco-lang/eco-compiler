@@ -137,6 +137,7 @@ add_executable(test
         allocator/Utf8StringTest.cpp
         allocator/StringOpsTest.cpp
         allocator/GcSafetyReproTest.cpp
+        allocator/TaggedWordGcTest.cpp
         allocator/ReviewBugGuardsTest.cpp
         codegen/RuntimeSymbolMapTest.cpp
         allocator/CaseMapTest.cpp

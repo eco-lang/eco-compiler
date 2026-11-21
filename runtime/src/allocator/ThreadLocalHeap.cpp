@@ -1373,7 +1373,7 @@ std::vector<void*> ThreadLocalHeap::traceOldReachableForValidation(bool* complet
     for (uint64_t* root : root_set.getJitRoots()) {
         const uint64_t val = *root;
         if (isConstantBits(val)) continue;
-        void* o = reinterpret_cast<void*>(val);
+        void* o = hpToAddr(hpFromBits(val));   // a tagged word (HEAP_086) decoded to its address
         if (o && parent_->isInHeap(o) && seen.insert(o).second) stack.push_back(o);
     }
     forEachMajorRoot(root_set, [&](HPointer& hp, int) { push(hp); });

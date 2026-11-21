@@ -593,6 +593,94 @@ def Eco_IsConstantOp : Eco_Op<"is_constant", [Pure]> {
   let assemblyFormat = "$value attr-dict `:` type($value) `->` type($result)";
 }
 
+def Eco_WordTagOp : Eco_Op<"word_tag", [Pure]> {
+  let summary = "Constructor index of a tagged-union word";
+  let description = [{
+    The constructor declaration index a value of a tagged union carries in bits
+    43-52 of its word (HEAP_086): `(ptrtoint v >> 43) & 1023`, for a heap word
+    and for a constant word alike (a null-cons word's index is in the same bits).
+    Lowered to a same-block `ptrtoint`, `lshr`, `and` (REP_LLVM_001(d)). An `i64`,
+    so that it is the scrutinee of an `int` `eco.case` as it is. Emitted only for
+    tagged types (CGEN_091).
+
+    Example:
+    ```mlir
+    %idx = eco.word_tag %v : !eco.value -> i64
+    ```
+  }];
+
+  let arguments = (ins Eco_Value:$value);
+  let results = (outs I64:$tag);
+
+  let assemblyFormat = "$value attr-dict `:` type($value) `->` type($tag)";
+}
+
+def Eco_TagWordOp : Eco_Op<"tag_word", [Pure]> {
+  let summary = "Tag a word with a constructor index";
+  let description = [{
+    The word `v | (index << 43)` (HEAP_086): for a heap word, a pointer derived
+    from `v` by `getelementptr i8, ptr addrspace(1) v, i64 (index << 43)` (not
+    `inbounds`), which the collectors relocate keeping its tag; for a constant
+    word, the same bits. `index` is 0 to 1023; 0 gives `v` itself. Emitted only
+    for tagged types (CGEN_092).
+
+    Example:
+    ```mlir
+    %t = eco.tag_word %v [3] : !eco.value -> !eco.value
+    ```
+  }];
+
+  let arguments = (ins Eco_Value:$value, I64Attr:$index);
+  let results = (outs Eco_Value:$result);
+
+  let hasVerifier = 1;
+
+  let assemblyFormat = "$value `[` $index `]` attr-dict `:` type($value) `->` type($result)";
+}
+
+def Eco_UntagOp : Eco_Op<"untag", [Pure]> {
+  let summary = "Clear a tagged-union word's constructor index";
+  let description = [{
+    The word with bits 43-52 cleared (HEAP_086): `llvm.ptrmask(v, ~(1023 << 43))`,
+    which keeps the result a pointer derived from `v`. Emitted only for tagged
+    types, before a projection or before passing a bare field on (CGEN_093).
+
+    Example:
+    ```mlir
+    %f = eco.untag %t : !eco.value -> !eco.value
+    ```
+  }];
+
+  let arguments = (ins Eco_Value:$value);
+  let results = (outs Eco_Value:$result);
+
+  let assemblyFormat = "$value attr-dict `:` type($value) `->` type($result)";
+}
+
+def Eco_IsWordOp : Eco_Op<"is_word", [Pure]> {
+  let summary = "Test whether a value is exactly one embedded constant word";
+  let description = [{
+    True when `value` is the word `(index << 43) | 0b100 | constant`: with
+    `constant` 2, the Empty constant (`index` 0) or the spare word of level
+    `index`; with `constant` 3, the null-cons word of declaration index `index`.
+    The compiler uses it to test for the nullary constructor of a nullable type,
+    which is that type's null word (CGEN_090, HEAP_085). The word is given by its
+    two parts so that no attribute is wider than 52 bits.
+
+    Example:
+    ```mlir
+    %c = eco.is_word %value [2, 1] : !eco.value -> i1
+    ```
+  }];
+
+  let arguments = (ins Eco_Value:$value, I64Attr:$constant, I64Attr:$index);
+  let results = (outs I1:$result);
+
+  let hasVerifier = 1;
+
+  let assemblyFormat = "$value `[` $constant `,` $index `]` attr-dict `:` type($value) `->` type($result)";
+}
+
 //===----------------------------------------------------------------------===//
 // 2b. Type-Specific Construction and Projection Operations
 //===----------------------------------------------------------------------===//
@@ -1782,6 +1870,29 @@ def Eco_ConstantNullConsOp : Eco_Op<"constant.null_cons", [Pure]> {
   let hasVerifier = 1;
 
   let assemblyFormat = "$tag attr-dict `:` type($result)";
+}
+
+def Eco_ConstantSpareOp : Eco_Op<"constant.spare", [Pure]> {
+  let summary = "Spare null word of a nullable type";
+  let description = [{
+    Materializes the spare word of level `level`: `(level << 43) | 0b110`, the
+    Empty constant's word with a non-zero `null_cons_idx` (HEAP_085). It is the
+    null word of a nullable type whose field type can be the Empty constant or a
+    null-cons word (plans/constructor-representation-followups.md F2); levels
+    1 to 1023 keep nested nullable types apart.
+
+    Example:
+    ```mlir
+    %n = eco.constant.spare 1 : !eco.value
+    ```
+  }];
+
+  let arguments = (ins I64Attr:$level);
+  let results = (outs Eco_Value:$result);
+
+  let hasVerifier = 1;
+
+  let assemblyFormat = "$level attr-dict `:` type($result)";
 }
 
 //===----------------------------------------------------------------------===//

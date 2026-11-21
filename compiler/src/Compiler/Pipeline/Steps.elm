@@ -84,6 +84,7 @@ import Compiler.MonoOpt.InlineSimplify as MonoInlineSimplify
 import Compiler.MonoOpt.KernelVisible as KernelVisible
 import Compiler.MonoOpt.KnownCtorCase as KnownCtorCase
 import Compiler.MonoOpt.NullableMaybe as NullableMaybe
+import Compiler.MonoOpt.TaggedUnions as TaggedUnions
 import Compiler.MonoOpt.Representation as Representation
 import Compiler.MonoOpt.Staging as Staging
 import Compiler.Monomorphize.Diff as MonoDiff
@@ -98,6 +99,8 @@ import Compiler.PreMono.EntryPrep as EntryPrep
 import Compiler.PreMono.EtaExpand as EtaExpand
 import Compiler.PreMono.Fresh as Fresh
 import Compiler.PreMono.InlineSimplify as InlineSimplify
+import Compiler.PreMono.TypedDebugValues as TypedDebugValues
+import Dict
 import Set
 
 
@@ -153,6 +156,7 @@ type alias PreMono =
     { assigned : EntryPrep.Assigned
     , aliasForward : AliasForward.Metrics
     , etaExpand : EtaExpand.Metrics
+    , debugValues : TypedDebugValues.Metrics
     , inline : InlineSimplify.Metrics
     }
 
@@ -168,6 +172,10 @@ The passes run in this order, each on the output of the one before:
     after forwarding that is the target's arity.
   - η-expansion to declared arity (`Compiler.PreMono.EtaExpand`).
     It runs before the inliner, so that the inliner sees saturated calls.
+  - Typed `Debug` values (`Compiler.PreMono.TypedDebugValues`), always run: a
+    correctness rewrite that makes `Debug.toString`/`Debug.log` used as function
+    values print through the type table
+    (plans/constructor-representation-followups.md F3).
   - The pre-mono inliner (`Compiler.PreMono.InlineSimplify`), run only when
     `inline.preMono` is on.
 
@@ -202,20 +210,28 @@ preMono ecoConfig assignedRaw =
             else
                 ( assigned0, EtaExpand.emptyMetrics )
 
+        ( assignedDebug, debugMetrics ) =
+            let
+                ( gDebug, stateDebug, metrics ) =
+                    TypedDebugValues.run assignedEta.mvarState assignedEta.graph
+            in
+            ( { assignedEta | graph = gDebug, mvarState = stateDebug }, metrics )
+
         ( assigned1, preInlineMetrics ) =
             if ecoConfig.inline.preMono then
                 let
                     ( g1, state1, metrics ) =
-                        InlineSimplify.optimize ecoConfig.inline assignedEta.mvarState assignedEta.graph
+                        InlineSimplify.optimize ecoConfig.inline assignedDebug.mvarState assignedDebug.graph
                 in
-                ( { assignedEta | graph = g1, mvarState = state1 }, metrics )
+                ( { assignedDebug | graph = g1, mvarState = state1 }, metrics )
 
             else
-                ( assignedEta, InlineSimplify.emptyMetrics )
+                ( assignedDebug, InlineSimplify.emptyMetrics )
     in
     { assigned = assigned1
     , aliasForward = afwdMetrics
     , etaExpand = etaMetrics
+    , debugValues = debugMetrics
     , inline = preInlineMetrics
     }
 
@@ -343,21 +359,56 @@ representation ecoConfig typeEnv graph =
         checks =
             ecoConfig.mono.validate || ecoConfig.repr.validate
 
-        -- The constructor census marks the kernel-visible classes (KV0), with or without the passes.
+        -- The tagged unions (F1, `TaggedUnions.choose`) are chosen last, on the graph after erasure and the
+        -- nullable choice, with the kernel-visibility set and meets of that graph. The constructor census
+        -- marks the kernel-visible classes (KV0) and the tagged forms, with or without the passes.
         withCensusKv g =
-            case ( ecoConfig.repr.census, g ) of
-                ( Just _, Mono.MonoGraph r ) ->
-                    let
-                        repr =
-                            r.repr
-                    in
-                    Mono.MonoGraph { r | repr = { repr | kernelVisible = KernelVisible.ctorList (KernelVisible.compute typeEnv g) } }
-
-                ( Nothing, _ ) ->
+            let
+                (Mono.MonoGraph r) =
                     g
+
+                repr =
+                    r.repr
+            in
+            if not ecoConfig.repr.taggedUnions && ecoConfig.repr.census == Nothing then
+                ( g, [] )
+
+            else
+                let
+                    kvFinal =
+                        KernelVisible.compute typeEnv g
+
+                    tagChoice =
+                        TaggedUnions.choose kvFinal (RepresentationMeets.collect g) repr.nullable r.ctorShapes
+
+                    withTagged =
+                        if ecoConfig.repr.taggedUnions then
+                            { repr | tagged = TaggedUnions.taggedForms tagChoice }
+
+                        else
+                            repr
+
+                    withCensus =
+                        case ecoConfig.repr.census of
+                            Just _ ->
+                                { withTagged
+                                    | kernelVisible = KernelVisible.ctorList kvFinal
+                                    , tagCensus = TaggedUnions.censusLabels r.ctorShapes tagChoice
+                                }
+
+                            Nothing ->
+                                withTagged
+                in
+                ( Mono.MonoGraph { r | repr = withCensus }
+                , if ecoConfig.repr.taggedUnions then
+                    [ TaggedUnions.renderStats tagChoice ]
+
+                  else
+                    []
+                )
     in
     if not anyPass && not checks then
-        Ok ( withCensusKv graph, [] )
+        Ok (withCensusKv graph)
 
     else
         let
@@ -435,6 +486,7 @@ representation ecoConfig typeEnv graph =
                         ++ String.fromInt (KernelVisible.rootCount kv)
                         ++ " root types); meets "
                         ++ String.fromInt (List.length meets)
+                    , meetsVarCensus meets
                     ]
 
                 else
@@ -549,7 +601,11 @@ representation ecoConfig typeEnv graph =
         in
         case violations of
             [] ->
-                Ok ( withCensusKv nulled, eraseReport ++ nullReport ++ baselineReport )
+                let
+                    ( final, tagReport ) =
+                        withCensusKv nulled
+                in
+                Ok ( final, eraseReport ++ nullReport ++ tagReport ++ baselineReport )
 
             _ ->
                 Err
@@ -880,3 +936,65 @@ checkClosureStaging ecoConfig g =
 
     else
         Ok g
+
+
+{-| The census of the meets with a type variable on either side, by what their
+second view is: `Home.name` for a kernel alias (`RepresentationMeets.ViaKernelAlias`),
+else the meet's site with any spec id dropped. Each entry gives the count and,
+after a `/`, how many of those `RepresentationMeets.movesOnly` skips. The 20
+largest entries, so that what still blocks a representation choice is visible
+(plans/constructor-representation-followups.md F4).
+-}
+meetsVarCensus : List RepresentationMeets.Meet -> String
+meetsVarCensus meets =
+    let
+        isVar t =
+            case t of
+                Mono.MVar _ _ ->
+                    True
+
+                _ ->
+                    False
+
+        label m =
+            case m.via of
+                RepresentationMeets.ViaKernelAlias home name ->
+                    home ++ "." ++ name
+
+                RepresentationMeets.ViaOther ->
+                    "other:" ++ Maybe.withDefault m.site (List.head (String.split "->" m.site))
+
+        counts =
+            List.foldl
+                (\m acc ->
+                    if isVar m.a || isVar m.b then
+                        Dict.update (label m)
+                            (\entry ->
+                                let
+                                    ( n, skipped ) =
+                                        Maybe.withDefault ( 0, 0 ) entry
+                                in
+                                Just
+                                    ( n + 1
+                                    , if RepresentationMeets.movesOnly m then
+                                        skipped + 1
+
+                                      else
+                                        skipped
+                                    )
+                            )
+                            acc
+
+                    else
+                        acc
+                )
+                Dict.empty
+                meets
+    in
+    "repr-meets-var: "
+        ++ (Dict.toList counts
+                |> List.sortBy (\( _, ( n, _ ) ) -> negate n)
+                |> List.take 20
+                |> List.map (\( l, ( n, skipped ) ) -> l ++ "=" ++ String.fromInt n ++ "/" ++ String.fromInt skipped)
+                |> String.join " "
+           )

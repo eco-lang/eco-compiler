@@ -191,6 +191,93 @@ struct IsConstantOpLowering : public OpConversionPattern<IsConstantOp> {
     }
 };
 
+/**
+ * The lowering of `eco.word_tag` to `(ptrtoint v >> 43) & 1023`, in one block (CGEN_091, REP_LLVM_001(d)).
+ */
+struct WordTagOpLowering : public OpConversionPattern<WordTagOp> {
+    using OpConversionPattern::OpConversionPattern;
+
+    LogicalResult
+    matchAndRewrite(WordTagOp op, OpAdaptor adaptor,
+                    ConversionPatternRewriter &rewriter) const override {
+        auto loc = op.getLoc();
+        auto i64Ty = rewriter.getI64Type();
+        Value bits = valueToI64(rewriter, loc, adaptor.getValue());
+        Value shift = LLVM::ConstantOp::create(rewriter, loc, i64Ty, rewriter.getI64IntegerAttr(43));
+        Value mask = LLVM::ConstantOp::create(rewriter, loc, i64Ty, rewriter.getI64IntegerAttr(1023));
+        Value idx = LLVM::AndOp::create(rewriter, loc, LLVM::LShrOp::create(rewriter, loc, bits, shift), mask);
+        rewriter.replaceOp(op, idx);
+        return success();
+    }
+};
+
+/**
+ * The lowering of `eco.tag_word` to `getelementptr i8, ptr addrspace(1) v, i64 (index << 43)`, a pointer
+ * derived from `v` (CGEN_092). Index 0 is `v` itself.
+ */
+struct TagWordOpLowering : public OpConversionPattern<TagWordOp> {
+    using OpConversionPattern::OpConversionPattern;
+
+    LogicalResult
+    matchAndRewrite(TagWordOp op, OpAdaptor adaptor,
+                    ConversionPatternRewriter &rewriter) const override {
+        Value v = adaptor.getValue();
+        if (op.getIndex() == 0) {
+            rewriter.replaceOp(op, v);
+            return success();
+        }
+        auto loc = op.getLoc();
+        auto i64Ty = rewriter.getI64Type();
+        Value off = LLVM::ConstantOp::create(rewriter, loc, i64Ty,
+                                             rewriter.getI64IntegerAttr(op.getIndex() << 43));
+        Value r = LLVM::GEPOp::create(rewriter, loc, v.getType(), rewriter.getI8Type(), v, ValueRange{off});
+        rewriter.replaceOp(op, r);
+        return success();
+    }
+};
+
+/**
+ * The lowering of `eco.untag` to `llvm.ptrmask(v, ~(1023 << 43))` (CGEN_093).
+ */
+struct UntagOpLowering : public OpConversionPattern<UntagOp> {
+    using OpConversionPattern::OpConversionPattern;
+
+    LogicalResult
+    matchAndRewrite(UntagOp op, OpAdaptor adaptor,
+                    ConversionPatternRewriter &rewriter) const override {
+        auto loc = op.getLoc();
+        auto i64Ty = rewriter.getI64Type();
+        Value v = adaptor.getValue();
+        Value mask = LLVM::ConstantOp::create(rewriter, loc, i64Ty,
+                                              rewriter.getI64IntegerAttr(static_cast<int64_t>(~(0x3FFULL << 43))));
+        Value r = LLVM::PtrMaskOp::create(rewriter, loc, v.getType(), v, mask);
+        rewriter.replaceOp(op, r);
+        return success();
+    }
+};
+
+/**
+ * The lowering of `eco.is_word` to a comparison of the value's word with one embedded constant word,
+ * `(index << 43) | 0b100 | constant` (CGEN_090, HEAP_085).
+ */
+struct IsWordOpLowering : public OpConversionPattern<IsWordOp> {
+    using OpConversionPattern::OpConversionPattern;
+
+    LogicalResult
+    matchAndRewrite(IsWordOp op, OpAdaptor adaptor,
+                    ConversionPatternRewriter &rewriter) const override {
+        auto loc = op.getLoc();
+        auto i64Ty = rewriter.getI64Type();
+        Value bits = valueToI64(rewriter, loc, adaptor.getValue());
+        int64_t word = value_enc::encodeConstantWord(static_cast<uint64_t>(op.getConstant()),
+                                                     static_cast<uint64_t>(op.getIndex()));
+        Value expected = LLVM::ConstantOp::create(rewriter, loc, i64Ty, rewriter.getI64IntegerAttr(word));
+        Value isWord = LLVM::ICmpOp::create(rewriter, loc, LLVM::ICmpPredicate::eq, bits, expected);
+        rewriter.replaceOp(op, isWord);
+        return success();
+    }
+};
+
 //===----------------------------------------------------------------------===//
 // eco.case -> cf.switch on constructor tag
 //===----------------------------------------------------------------------===//
@@ -1230,6 +1317,10 @@ void eco::detail::populateEcoControlFlowPatterns(
     patterns.add<ReturnOpLowering>(typeConverter, ctx);
     patterns.add<GetTagOpLowering>(typeConverter, ctx, runtime);
     patterns.add<IsConstantOpLowering>(typeConverter, ctx);
+    patterns.add<IsWordOpLowering>(typeConverter, ctx);
+    patterns.add<WordTagOpLowering>(typeConverter, ctx);
+    patterns.add<TagWordOpLowering>(typeConverter, ctx);
+    patterns.add<UntagOpLowering>(typeConverter, ctx);
     patterns.add<CaseOpLowering>(typeConverter, ctx, runtime);
     patterns.add<YieldOpLowering>(typeConverter, ctx);
     patterns.add<JoinpointOpLowering>(typeConverter, ctx, cfCtx);

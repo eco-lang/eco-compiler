@@ -57,6 +57,9 @@ enum class EcoTypeKind : uint8_t {
                  // constructor, but a value is the constructor's field itself, not a heap Custom.
     Nullable,    // A Maybe-shaped type the compiler made nullable (REP_CONSTANT_003): the nullary
                  // constructor is a constant word, and any other value is the other constructor's field.
+    Tagged,      // A tagged union (HEAP_086): described by its constructors as `Custom` is, every word carries
+                 // its constructor's index in bits 43-52, and a constructor whose `field_count` has bit 31
+                 // set is bare: its value is its one field's word, tagged, not a heap Custom.
 };
 
 /**
@@ -154,10 +157,10 @@ struct EcoTypeInfo {
         // For Nullable types
         struct {
             uint32_t field_type_id;  // The type of the field constructor's one field.
-            uint32_t null_name;      // Bits 0-30: the nullary constructor's name in `strings`. Bit 31: set when
-                                     // that constructor is tested by the constant bit (a Maybe-shaped user
-                                     // type, whose constructor is a null-cons word), clear for `Maybe`
-                                     // (whose `Nothing` is the Empty constant).
+            uint32_t null_name;      // Bits 0-19: the nullary constructor's name in `strings`. Bits 20-30: the
+                                     // type's null word, which that constructor is (HEAP_085): bit 20 set for
+                                     // a null-cons word, clear for Empty or a spare word, and bits 21-30 its
+                                     // index (`nullableNullWord` decodes it).
             uint32_t value_name;     // The field constructor's name in `strings`.
         } nullable;
 

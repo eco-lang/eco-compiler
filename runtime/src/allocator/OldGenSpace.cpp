@@ -2877,7 +2877,8 @@ void OldGenSpace::markJitRootRaw(uint64_t val, Allocator &alloc) {
     if (isConstantBits(val)) {
         return;  // Skip embedded constants.
     }
-    void *obj = reinterpret_cast<void*>(val);
+    // A tagged word (HEAP_086) is decoded to its address.
+    void *obj = hpToAddr(hpFromBits(val));
     if (obj && alloc.isInHeap(obj)) {
         pushMarkRoot(obj);
     }
@@ -6790,7 +6791,7 @@ void OldGenSpace::fixHPointer(HPointer& ptr) {
 
     void* fwd = getForwardingAddress(obj);
     if (fwd != nullptr) {
-        ptr = Allocator::toPointerRaw(fwd);
+        ptr = retarget(ptr, fwd);   // keeps a tagged word's bits 43-52 (HEAP_086)
     }
 }
 

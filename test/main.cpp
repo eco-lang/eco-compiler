@@ -45,6 +45,7 @@
 #include "allocator/Utf8StringTest.hpp"
 #include "allocator/StringOpsTest.hpp"
 #include "allocator/GcSafetyReproTest.hpp"
+#include "allocator/TaggedWordGcTest.hpp"
 #include "allocator/ReviewBugGuardsTest.hpp"
 #include "codegen/RuntimeSymbolMapTest.hpp"
 #include "allocator/CaseMapTest.hpp"
@@ -1215,6 +1216,10 @@ int main(int argc, char* argv[]) {
     Testing::TestSuite gcSafetyReproTests("GcSafetyRepro");
     registerGcSafetyReproTests(gcSafetyReproTests);
 
+    // Tagged heap words (F1, HEAP_086) survive every collection
+    Testing::TestSuite taggedWordGcTests("TaggedWordGc");
+    registerTaggedWordGcTests(taggedWordGcTests);
+
     // Regression tests for runtime-review defects (cpp-review-bugs.md, RB-<line>)
     Testing::TestSuite reviewBugGuards("ReviewBugGuards");
     registerReviewBugGuards(reviewBugGuards);
@@ -1450,6 +1455,7 @@ int main(int argc, char* argv[]) {
     suite.add(std::move(utf8StringTests));
     suite.add(std::move(stringOpsTests));
     suite.add(std::move(gcSafetyReproTests));
+    suite.add(std::move(taggedWordGcTests));
     suite.add(std::move(reviewBugGuards));
     suite.add(std::move(runtimeSymbolMapTests));
     suite.add(std::move(caseMapTests));

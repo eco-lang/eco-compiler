@@ -993,12 +993,12 @@ LLVM::LLVMFuncOp EcoRuntime::getOrCreateCloneArray(OpBuilder &builder) const {
     return getOrCreateFunc(builder, "eco_clone_array", funcTy);
 }
 
-LLVM::LLVMFuncOp EcoRuntime::getOrCreateArraySetFixKind(OpBuilder &builder) const {
-    // eco_array_set_fix_kind(array_hptr: hptr, intended_kind: i32) -> void
+LLVM::LLVMFuncOp EcoRuntime::getOrCreateArrayCheckKind(OpBuilder &builder) const {
+    // eco_array_check_kind(array_hptr: hptr, intended_kind: i32) -> void; reads only, never allocates.
     auto i32Ty = mlir::IntegerType::get(builder.getContext(), 32);
     auto voidTy = LLVM::LLVMVoidType::get(builder.getContext());
     auto funcTy = LLVM::LLVMFunctionType::get(voidTy, {HPTR_TY, i32Ty});
-    return getOrCreateFunc(builder, "eco_array_set_fix_kind", funcTy);
+    return getOrCreateFunc(builder, "eco_array_check_kind", funcTy, /*gcLeaf=*/true);
 }
 
 LLVM::LLVMFuncOp EcoRuntime::getOrCreateStringFromInt(OpBuilder &builder) const {
@@ -1258,7 +1258,7 @@ void EcoRuntime::materializeAllRuntimeDecls(OpBuilder &b) const {
     getOrCreateStringCmp3(b); getOrCreateStringCmpOrder(b); getOrCreateUtilsCmp3(b);
     getOrCreateStringLenInlineMarker(b); getOrCreateStringLength(b);
     getOrCreateOrderFromSign(b);
-    getOrCreateCloneArray(b); getOrCreateArraySetFixKind(b); getOrCreateArrayEmpty(b);
+    getOrCreateCloneArray(b); getOrCreateArrayCheckKind(b); getOrCreateArrayEmpty(b);
     getOrCreateArraySingletonInt(b); getOrCreateArraySingletonFloat(b);
     getOrCreateArraySingletonChar(b); getOrCreateArraySingletonBox(b);
     getOrCreateArrayPushInt(b); getOrCreateArrayPushFloat(b); getOrCreateArrayPushChar(b);
