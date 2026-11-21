@@ -2,7 +2,7 @@ module Compiler.MonoOpt.KernelVisible exposing
     ( KvSet, compute, empty
     , isVisible, isVisibleCtor, isVisibleInstance
     , size, ctorList, rootCount
-    , mapInstances, instancesSubset
+    , mapInstances
     )
 
 {-| The kernel-visibility set of a program (plans/constructor-representation-levels.md
@@ -89,13 +89,6 @@ computing it again on the rewritten graph.
 mapInstances : (Mono.MonoType -> Mono.MonoType) -> KvSet -> KvSet
 mapInstances f (KvSet kv) =
     KvSet { kv | instances = Mono.layoutMapFoldl (\t () acc -> Mono.layoutSetInsert (f t) acc) Mono.layoutSetEmpty kv.instances }
-
-
-{-| Returns whether every instance type of the first set is in the second.
--}
-instancesSubset : KvSet -> KvSet -> Bool
-instancesSubset (KvSet a) (KvSet b) =
-    Mono.layoutMapFoldl (\t () ok -> ok && Mono.layoutSetMember t b.instances) True a.instances
 
 
 {-| The number of root types the set was computed from.

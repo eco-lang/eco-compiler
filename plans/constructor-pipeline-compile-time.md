@@ -37,9 +37,9 @@ codegen setup built several whole-program tables more than once.
 3. **`exprMeets`** builds a `global->N` site string only for a meet, and each node's type once
    (a constructor's was built at every reference).
 4. **Report lines only under `inline.report`** (`meetsVarCensus` walked every meet on every compile).
-5. **F1 reuses the carried meets** instead of collecting them again; the kernel-visibility set is
-   still recomputed on the final graph (see "Found" below). Under validation, the tag choice from
-   the carried meets is compared with one from a second collection.
+5. **F1 reuses the carried meets** instead of collecting them again; the kernel-visibility set was
+   still recomputed on the final graph. Under validation, the tag choice from the carried meets is
+   compared with one from a second collection.
 6. **The nullable traversal visits only nodes with a `case` testing a nullable value**
    (`NullableMaybe.touchesNode`, reading decision trees), not every node mentioning a type named
    like a nullable one; `rewriteNodes` takes a node predicate.
@@ -76,17 +76,15 @@ Gates (`repr-CT3`, chain against `eco-optK`): full 3,141/3,141, the E2E MLIR cor
 to `repr-K` (0 of 1,556 files differ), elm-tests 22,043/0, bootstrap 8c/9b, AOT 1,513/1,513, stress
 114/114 in both configs, TLA canary, fixed point, `ECO_REPR_VALIDATE` self-compile identical.
 
-## Found on the way (open)
+## Found on the way
 
-- **The carried kernel-visibility set is not sound** (pre-existing, §13 R2.1 of the levels plan).
-  `EraseWrappers.translateKv` assumes a recomputation after erasure only finds fewer instances. It
-  can find more: the visibility closure stops at a field that is a bare type variable (`W a = W a`),
-  and erasing `W X` to `X` lets the closure reach `X`'s fields. `ECO_REPR_VALIDATE=1` on
-  `test/eco-kernel/src/FileCanonicalizeEmptyTest.elm` reports "the kernel-visibility set carried
-  over the erasure misses an instance a second collection finds". Before this pass F1 hid it for
-  tagging by recomputing; F1 still recomputes (change 5). The nullable choice uses the carried set
-  and is exposed to the same gap; in that program its decision does not change (the nullable check
-  passes), but nothing guarantees it in general.
+- **`ECO_REPR_VALIDATE=1` failed on `test/eco-kernel/src/FileCanonicalizeEmptyTest.elm`**
+  (pre-existing, §13 R2.4 of the levels plan): a second collection of the kernel-visibility set
+  after erasure finds an instance the carried set lacks. The carried set is right and the
+  recollection over-approximates, so the validator no longer compares the set (§15 of the levels
+  plan). Computing the set from erased roots was tried and reverted. The search found an unrelated
+  open bug: `Debug` printing of an erased wrapper over a nullable or tagged `Maybe`
+  (`test/elm/src/EraseWrapperNullableDebugTest.elm`, XFAIL).
 - The first attempt at change 5 also reused the carried set for tagging; it changed the output of
   11 eco/system E2E programs (one more type tagged) and was corrected before the final gate.
 - Still costly but not changed: the node-loop pre-scan (`anyNodeType mentions`, ≈ 0.1 s) and the

@@ -518,9 +518,12 @@ representation ecoConfig typeEnv graph =
                     Nothing ->
                         []
 
-            -- The carried-over set and meets against a second collection on the erased graph: the
-            -- recollected instance set must be within the carried-over one, the two meet lists must hold
-            -- the same meets (by layout keys and `root`), and the nullable decision must be the same.
+            -- The carried-over meets against a second collection on the erased graph: the two meet lists
+            -- must hold the same meets (by layout keys and `root`), and the nullable and tagged-union
+            -- decisions taken from them must be the same. The kernel-visibility set is not compared: a
+            -- second collection over-approximates it (it descends into the field of an erased wrapper
+            -- standing for a kernel's type variable, e.g. `Maybe String` in `Bytes.decode`'s `Maybe W`,
+            -- `type W = W (Maybe String)`), so the carried set is used on both sides.
             carryViolations =
                 case ( checks, erasing ) of
                     ( True, True ) ->
@@ -562,7 +565,7 @@ representation ecoConfig typeEnv graph =
 
                             decisionDiffers =
                                 ecoConfig.repr.nullableMaybe
-                                    && (nullableKeys (Tuple.first (NullableMaybe.run nullOpts kvRecollected meetsRecollected erased))
+                                    && (nullableKeys (Tuple.first (NullableMaybe.run nullOpts kvErased meetsRecollected erased))
                                             /= nullableKeys nulled
                                        )
 
@@ -587,12 +590,7 @@ representation ecoConfig typeEnv graph =
                                 Set.toList keys |> List.take 5 |> String.join "; "
                         in
                         List.filterMap identity
-                            [ if KernelVisible.instancesSubset kvRecollected kvErased then
-                                Nothing
-
-                              else
-                                Just "representation: the kernel-visibility set carried over the erasure misses an instance a second collection finds"
-                            , if carriedKeys == recollectedKeys then
+                            [ if carriedKeys == recollectedKeys then
                                 Nothing
 
                               else

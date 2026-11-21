@@ -1,7 +1,7 @@
 ---
 status: partial
 updated: 2026-11-21
-remaining: "Section 13 R0-R4 done as written, with dated amendments (representation step 8.7 s -> 1.7 s, under the 2 s target; see 13.6). Not built, each by its gate (see section 12): S2 (S2-D failed, 2.0 MiB projected); N2 (re-measured after N1, under 0.2% of allocations reachable; not planned); K2 (K0 re-run with K1 on finds 0 sites). K1 was built before K0-D was measured, against the plan's order; K0-D failed (0 sites), and K1 is default on since 2026-11-21 under a new gate (E2E fixtures, see section 14)."
+remaining: "Section 13 R0-R4 done as written, with dated amendments (representation step 8.7 s -> 1.7 s, under the 2 s target; see 13.6). Open: an erased wrapper over a nullable or tagged Maybe prints without its constructor under Debug (section 15, XFAIL EraseWrapperNullableDebugTest). Not built, each by its gate (see section 12): S2 (S2-D failed, 2.0 MiB projected); N2 (re-measured after N1, under 0.2% of allocations reachable; not planned); K2 (K0 re-run with K1 on finds 0 sites). K1 was built before K0-D was measured, against the plan's order; K0-D failed (0 sites), and K1 is default on since 2026-11-21 under a new gate (E2E fixtures, see section 14)."
 ---
 
 # Constructor representation: four levels of custom-type unboxing
@@ -1885,3 +1885,37 @@ direction): `test/eco-mlir/src/KnownCtorCaseFoldTest.elm` (new) and
   (`postMonoThreshold` 10), so they are not inlined where their argument is built. The pass pays in
   programs whose small matchers do inline.
 
+
+## 15. Amendment to R2.1 and R2.4: a second collection over-approximates the kernel-visibility set (2026-11-21)
+
+R2.1 assumed a recomputation after erasure finds only fewer instances. It can find more: the
+search for a kernel's listed types (`KernelVisible.declared`) descends type arguments but not the
+fields of an unlisted type, so erasing `W` in `Maybe W`, `type W = W (Maybe String)`, puts
+`Maybe String` where the search finds it. R2.4's subset check then failed under
+`ECO_REPR_VALIDATE=1` (`test/eco-kernel/src/FileCanonicalizeEmptyTest.elm`, where
+`Platform.worker` sees the `Result` an erased `Msg` wrapped, and a `Bytes.decode` of a `Maybe W`),
+and the nullable decision taken from the recollected set differed.
+
+**The carried set is right; the recollection is not.** An instance only the recollection finds was
+inside the field of an erased wrapper. That wrapper was not kernel-visible, so it stood at a type
+variable of the kernel's signature or inside a type the kernel does not open, and the kernel does
+not read the value's structure there. The instances the kernel can read are reached before erasure
+through type arguments and fields the closure marks (so not erased), and the carried set holds
+their erased forms. No program was found that `translateKv` miscompiles in a normal compile.
+A recollection that stops at those type variables needs the kernels' polymorphic signatures, which
+the monomorphized graph does not carry for direct calls (stopping at the arguments of field-less
+types instead would lose `Env.lookup`'s `Task Never (Maybe String)`, a `Maybe` the kernel builds).
+
+**R2.4 amended:** the kernel-visibility set is no longer compared with a second collection
+(`KernelVisible.instancesSubset` removed), and the nullable decision is compared using the carried
+set on both sides, so it checks the carried meets only (as the tagged-union check already did).
+Both programs above now validate, with output identical to an unvalidated compile.
+
+Tried and reverted: computing the set of the erased graph from erased roots
+(`KernelVisible.computeErased`). It made the validator agree but fixed no miscompile; in the
+`Bytes.decode` program it only hid the bug below, by making `Maybe String` kernel-visible.
+
+**Open bug found on the way:** `Debug.log` / `Debug.toString` of an erased wrapper whose field is a
+`Maybe` made nullable (or tagged, with the nullable pass off) drop the constructor: `Just (W Nothing)`
+prints as `Just Nothing`. It is independent of kernel visibility (pure Elm, default settings).
+Exposed by `test/elm/src/EraseWrapperNullableDebugTest.elm` (`XFAIL-NATIVE`), not yet fixed.
