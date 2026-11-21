@@ -13,7 +13,9 @@ constructor census (`censusLabels`), to measure how many allocations `Bare`
 constructors would save (gate F1-D).
 
 A type with two or more constructors is a candidate unless (MONO_035) it is
-kernel-owned or kernel-visible at that instantiation, it has more than 1,023
+kernel-owned, elm/core's `Maybe` (whose `Nothing` is always emitted as the
+`eco.constant Nothing` word, which carries no constructor index), or
+kernel-visible at that instantiation, it has more than 1,023
 constructors, it is nullable, it is the payload of a nullable type (whose tests
 and `Just x = x` read its words in their own encoding), or it meets another
 view other than a move-only one (`RepresentationMeets.movesOnly`). A
@@ -35,6 +37,7 @@ import Compiler.Elm.ModuleName as ModuleName
 import Compiler.IR.Kernel.Visibility as Visibility
 import Compiler.IR.Mono as Mono
 import Compiler.MonoOpt.KernelVisible as KernelVisible
+import Compiler.MonoOpt.NullableMaybe as NullableMaybe
 import Compiler.Monomorphize.RepresentationMeets as RepresentationMeets
 import Dict
 
@@ -108,6 +111,9 @@ choose kv meets nullable ctorShapes =
                 Mono.MCustom _ home name _ ->
                     if Visibility.isKernelOwned (ModuleName.toComparableCanonical home) name then
                         Just "kernel-owned"
+
+                    else if NullableMaybe.isMaybeType key then
+                        Just "maybe"
 
                     else if KernelVisible.isVisibleInstance kv key then
                         Just "kernel-visible"

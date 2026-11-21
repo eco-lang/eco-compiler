@@ -623,13 +623,17 @@ isTagged ctx t =
 
 {-| Returns the constructor forms of the type `printType` of the debug type graph
 when its erased form is a tagged union (HEAP_086), as `nullableOfPrintType`
-does for nullable types.
+does for nullable types (and, as there, `Nothing` for an erased wrapper).
 -}
 taggedOfPrintType : TypeRegistry -> Mono.MonoType -> Maybe (List ( Name.Name, Mono.TagForm ))
 taggedOfPrintType reg printType =
     case printType of
         Mono.MCustom _ _ _ _ ->
-            Mono.layoutMapGet (EraseWrappers.eraseType reg.erasable printType) reg.tagged
+            if Mono.layoutMapMember printType reg.erasedKeys then
+                Nothing
+
+            else
+                Mono.layoutMapGet (EraseWrappers.eraseType reg.erasable printType) reg.tagged
 
         _ ->
             Nothing
@@ -638,13 +642,20 @@ taggedOfPrintType reg printType =
 {-| Returns how the type `printType` of the debug type graph is represented when
 its erased form (`EraseWrappers.eraseType`) is nullable: a type registered for
 printing keeps its erased wrappers (`Maybe (Box String)`), while `nullable` is
-keyed by the types after erasure (`Maybe String`).
+keyed by the types after erasure (`Maybe String`). An erased wrapper is
+`Nothing`: it is described as a wrapper (`TKWrapper`), and its field's type
+carries the representation, so `W` of `type W = W (Maybe String)` still prints
+its constructor although its erased form is nullable.
 -}
 nullableOfPrintType : TypeRegistry -> Mono.MonoType -> Maybe Mono.NullableInfo
 nullableOfPrintType reg printType =
     case printType of
         Mono.MCustom _ _ _ _ ->
-            Mono.layoutMapGet (EraseWrappers.eraseType reg.erasable printType) reg.nullable
+            if Mono.layoutMapMember printType reg.erasedKeys then
+                Nothing
+
+            else
+                Mono.layoutMapGet (EraseWrappers.eraseType reg.erasable printType) reg.nullable
 
         _ ->
             Nothing

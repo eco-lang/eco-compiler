@@ -3,13 +3,12 @@ module EraseWrapperNullableDebugTest exposing (main)
 {-| `Debug.log` and `Debug.toString` of an erased wrapper whose field is a
 `Maybe` with its own representation print the constructor. `W` is erased
 (`EraseWrappers`) and `Maybe String` is made nullable (`NullableMaybe`), or
-tagged (`TaggedUnions`) with the nullable pass off; either way the printer drops
-the `W` (`Just Nothing` for `Just (W Nothing)`). With wrapper erasure off, or
-both other passes off, the output is right. Expected output from elm make + node.
+tagged (`TaggedUnions`) with the nullable pass off. The debug type table used to
+describe `W` by its erased form, so the printer dropped the `W` (`Just Nothing`
+for `Just (W Nothing)`). Expected output from elm make + node.
 
 -}
 
--- XFAIL-NATIVE: an erased wrapper over a nullable or tagged Maybe prints without its constructor
 -- CHECK: ws: [Nothing,Just (W Nothing),Just (W (Just "2"))]
 -- CHECK: str: ["Nothing","Just (W Nothing)","Just (W (Just \"2\"))"]
 -- CHECK: w: [W Nothing,W (Just "2")]
