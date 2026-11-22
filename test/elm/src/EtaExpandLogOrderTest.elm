@@ -7,24 +7,10 @@ The `CHECK-NEXT` chain pins the EXACT interleaving of `Debug.log` output, and
 it must print identically with `etaExpand` on and off. That is the guard: the
 transform reassociates nothing and re-times nothing.
 
-**What this fixture MEASURED, and what it corrects.** It was written to pin
-"`init` fires once, at CAF init, because the gate refuses this body" — and the
-flag-OFF baseline printed `init` THREE times, once per call. The reason is
-`MonoGlobalOptimize.ensureCallableForNode` (:584): every top-level node whose
-MonoType is an `MFunction` is wrapped by `makeGeneralClosureGO` (:541) into
-`MonoClosure params (MonoCall <original body> params)` — the original body sits
-INSIDE the closure and runs per call. So a definition of alias-arrow type is
-never a memoised CAF to begin with, and the plan's R1 ("an arity-0 spec is a
-memoised CAF slot; after η it is evaluated per call") does not reach the
-DEFINITION rule at all: GlobalOpt already performs that same η-expansion one
-phase later. What η-expansion changes for a definition is WHERE the wrapping
-happens — early enough for the new arguments to merge into the under-applied
-call and for the analysis to see a saturated one — not how often the body runs.
-
-The cheapness gate is kept regardless: it is still load-bearing for the
-CONTINUATION rule, where a lambda's body genuinely moves from once per closure
-application to once per SECOND application, and a continuation's result can be
-shared. `counted` is the fixture that pins the definition-rule half.
+`counted` is a definition of alias-arrow type whose body the gate refuses. It
+is evaluated once, as Elm evaluates it: `GlobalOptimize` makes a function-typed
+definition a closure, but one whose body computes its value is first moved into
+a memoised CAF that the closure calls (MONO\_004), so `init` is logged once.
 
 `chained` is the positive arm: a cheap two-of-three chain the pass DOES expand,
 printing the same numbers either way.
@@ -34,12 +20,9 @@ import Html exposing (text)
 
 
 
--- DIVERGENCE: eco evaluates a top-level value of function type per call, so its Debug.log runs each time; Elm logs it once
 -- CHECK: init: 0
 -- CHECK-NEXT: a: 1
--- CHECK-NEXT: init: 0
 -- CHECK-NEXT: b: 2
--- CHECK-NEXT: init: 0
 -- CHECK-NEXT: c: 3
 -- CHECK-NEXT: chained: [11,12,13]
 
@@ -68,9 +51,8 @@ tick s =
 
 
 {-| REFUSED by the gate (`Debug.log` is a `VarDebug` call and no cheap arm
-admits one), so the pass leaves this definition exactly as written. The
-per-call `init` in the expected output is `ensureCallableForNode`'s doing, not
-this pass's — see the module comment.
+admits one), so the pass leaves this definition exactly as written.
+It logs `init` once, as the module comment describes.
 -}
 counted : St Int
 counted =

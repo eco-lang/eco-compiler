@@ -33,6 +33,7 @@ import Fib
 import FloatSum
 import FloodFill
 import FloydWarshall
+import CtorLoops
 import HotLambda
 import JsonCoords
 import JsonDecoders
@@ -307,6 +308,24 @@ bench name =
 
         "hot-lambda" ->
             Just HotLambda.bench
+
+        "ctor-wrapper" ->
+            Just CtorLoops.benchWrapper
+
+        "ctor-maybe" ->
+            Just CtorLoops.benchMaybe
+
+        "ctor-step" ->
+            Just CtorLoops.benchStep
+
+        "ctor-tokens" ->
+            Just CtorLoops.benchTokens
+
+        "ctor-sret" ->
+            Just CtorLoops.benchSret
+
+        "ctor-known" ->
+            Just CtorLoops.benchKnown
 
         _ ->
             Nothing

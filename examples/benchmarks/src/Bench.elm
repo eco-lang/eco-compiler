@@ -58,6 +58,7 @@ import Fib
 import FloatSum
 import FloodFill
 import FloydWarshall
+import CtorLoops
 import HotLambda
 import Json.Encode as Encode
 import JsonCoords
@@ -195,6 +196,12 @@ workloads =
     , Workload "set-float-pairs" "Set.fromList of size (Float, Float) points, a quarter distinct" PairKeys.benchFloatPairs 600000 Nothing
     , Workload "kernel-callbacks" "List.sortBy, Array.initialize/map/foldl and List.map2 over size elements" KernelCallbacks.bench 300000 Nothing
     , Workload "hot-lambda" "size calls that build capture-free functions for List.map/filter/foldl" HotLambda.bench 2000000 Nothing
+    , Workload "ctor-wrapper" "size iterations through two one-constructor wrappers, Total Int and Label String" CtorLoops.benchWrapper 10000000 Nothing
+    , Workload "ctor-maybe" "size iterations that get, andThen and match a Maybe of a record" CtorLoops.benchMaybe 10000000 Nothing
+    , Workload "ctor-step" "a Continue s | Finish a driver run for size steps over a record state" CtorLoops.benchStep 10000000 Nothing
+    , Workload "ctor-tokens" "a list of size tokens of a four-constructor type, built and scored" CtorLoops.benchTokens 2000000 Nothing
+    , Workload "ctor-sret" "digit count and sum of 0 .. size-1 by a recursion returning a Pair Int Int" CtorLoops.benchSret 3000000 Nothing
+    , Workload "ctor-known" "size iterations of a case on Rect and Square values built in place" CtorLoops.benchKnown 10000000 Nothing
     ]
 
 

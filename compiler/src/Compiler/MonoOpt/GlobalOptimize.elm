@@ -19,7 +19,10 @@ suggests.
 
 1.  Every top-level define or port whose type is a function and whose
     expression is not already a closure is wrapped in one, with fresh
-    anonymous lambda ids.
+    anonymous lambda ids. A define whose expression computes its function
+    (anything but a closure or a reference to a global or kernel) is first
+    moved into a new define of its own, a CAF, so that it is still computed
+    once, and every other reference to the define is made to the CAF.
 2.  `Compiler.MonoOpt.Staging.regroup` rewrites the types of closures in
     defines and tail functions so that each one's first stage takes exactly its
     parameters.
@@ -52,6 +55,7 @@ import Compiler.Core.Name exposing (Name)
 import Compiler.Elm.ModuleName as ModuleName
 import Compiler.IR.Mono as Mono
 import Compiler.IR.Mono.Closure as Closure
+import Compiler.IR.Mono.Traverse as Traverse
 import Compiler.MonoOpt.AbiCloning as AbiCloning
 import Compiler.MonoOpt.Borrow as Borrow
 import Compiler.MonoOpt.GenCallCensus as GenCallCensus
@@ -73,16 +77,33 @@ lambda index.
 type alias GlobalCtx =
     { registry : Mono.SpecializationRegistry
     , lambdaCounter : Int
+    , nextSpecId : Int
+    , cafs : List MovedCaf
+    }
+
+
+{-| A define step 1 moved into a new one: the original's SpecId, the new
+define's SpecId, name, expression and type.
+-}
+type alias MovedCaf =
+    { specId : Int
+    , cafId : Int
+    , global : Mono.Global
+    , expr : Mono.MonoExpr
+    , tipe : Mono.MonoType
     }
 
 
 {-| Returns the wrapping state for a graph, starting the lambda counter at the
-graph's `nextLambdaIndex`.
+graph's `nextLambdaIndex` and new SpecIds at its registry's `nextId`. `cafs`
+holds the defines step 1 has moved out so far, the most recent first.
 -}
 initGlobalCtx : Mono.MonoGraph -> GlobalCtx
 initGlobalCtx (Mono.MonoGraph record) =
     { registry = record.registry
     , lambdaCounter = record.nextLambdaIndex
+    , nextSpecId = record.registry.nextId
+    , cafs = []
     }
 
 
@@ -384,6 +405,19 @@ ensureCallableForNode home expr monoType ctx =
 {-| Returns the graph with every define and port whose type is a function
 wrapped in a closure, as `ensureCallableForNode` describes, and the graph's
 `nextLambdaIndex` advanced past the lambda ids the wrappers took.
+
+A define whose expression computes its function value, such as
+`parser = term |> andThen f` once `Parser` is erased, would be computed again
+at every call of the closure. Its expression is moved into a new define, a CAF
+computed once, and the closure calls that (`callableDefine`). Every other
+reference to the define, in any node, is made to the CAF instead, so that a
+value such as `term` passed to `andThen` is the CAF's closure itself rather
+than a closure that calls the CAF and applies what it returns. The new defines
+are appended to `nodes` and the registry's `reverseMapping`, numbered from its
+`nextId`, under the original's name with `_caf` added; the forward `mapping`,
+`countByGlobal` and `callEdges` are not extended, as for
+`Compiler.MonoOpt.CafHoist`.
+
 -}
 wrapTopLevelCallables : Mono.MonoGraph -> Mono.MonoGraph
 wrapTopLevelCallables (Mono.MonoGraph record0) =
@@ -401,7 +435,7 @@ wrapTopLevelCallables (Mono.MonoGraph record0) =
                                     specHome accCtx.registry specId
 
                                 ( newNode, accCtx1 ) =
-                                    wrapNodeCallables home node accCtx
+                                    wrapNodeCallables home specId node accCtx
                             in
                             ( Array.push (Just newNode) accNodes, specId + 1, accCtx1 )
 
@@ -411,24 +445,85 @@ wrapTopLevelCallables (Mono.MonoGraph record0) =
                 ( Array.empty, 0, ctx0 )
                 record0.nodes
                 |> (\( n, _, c ) -> ( n, c ))
+
+        cafsInOrder =
+            List.reverse finalCtx.cafs
+
+        cafOf : Dict Int Int
+        cafOf =
+            List.foldl (\c acc -> Dict.insert c.specId c.cafId acc) Dict.empty cafsInOrder
+
+        toCaf : Mono.MonoExpr -> Maybe Mono.MonoExpr
+        toCaf expr =
+            case expr of
+                Mono.MonoVarGlobal region specId tipe ->
+                    Dict.get specId cafOf
+                        |> Maybe.map (\cafId -> Mono.MonoVarGlobal region cafId tipe)
+
+                _ ->
+                    Nothing
+
+        redirect : Mono.MonoNode -> Mono.MonoNode
+        redirect node =
+            case node of
+                Mono.MonoDefine expr tipe ->
+                    Mono.MonoDefine (Traverse.mapExpr toCaf expr) tipe
+
+                Mono.MonoTailFunc params body tipe ->
+                    Mono.MonoTailFunc params (Traverse.mapExpr toCaf body) tipe
+
+                Mono.MonoPortIncoming expr tipe ->
+                    Mono.MonoPortIncoming (Traverse.mapExpr toCaf expr) tipe
+
+                Mono.MonoPortOutgoing expr tipe ->
+                    Mono.MonoPortOutgoing (Traverse.mapExpr toCaf expr) tipe
+
+                _ ->
+                    node
+
+        registry0 =
+            record0.registry
     in
-    Mono.MonoGraph { record0 | nodes = newNodes, nextLambdaIndex = finalCtx.lambdaCounter }
+    Mono.MonoGraph
+        { record0
+            | nodes =
+                List.foldl (\c acc -> Array.push (Just (Mono.MonoDefine c.expr c.tipe)) acc)
+                    newNodes
+                    cafsInOrder
+                    |> (if Dict.isEmpty cafOf then
+                            identity
+
+                        else
+                            Array.map (Maybe.map redirect)
+                       )
+            , registry =
+                { registry0
+                    | nextId = finalCtx.nextSpecId
+                    , reverseMapping =
+                        List.foldl (\c acc -> Array.push (Just ( c.global, c.tipe )) acc)
+                            registry0.reverseMapping
+                            cafsInOrder
+                }
+            , nextLambdaIndex = finalCtx.lambdaCounter
+        }
 
 
-{-| Returns a define or port node with its expression made a closure, as
-`ensureCallableForNode` describes, and any other node unchanged.
+{-| Returns a define or port node with its expression made a closure, a
+define's as `callableDefine` describes and a port's as `ensureCallableForNode`
+does, and any other node unchanged. `specId` is the node's.
 -}
 wrapNodeCallables :
     ModuleName.Canonical
+    -> Int
     -> Mono.MonoNode
     -> GlobalCtx
     -> ( Mono.MonoNode, GlobalCtx )
-wrapNodeCallables home node ctx =
+wrapNodeCallables home specId node ctx =
     case node of
         Mono.MonoDefine expr tipe ->
             let
                 ( callableExpr, ctx1 ) =
-                    ensureCallableForNode home expr tipe ctx
+                    callableDefine home specId expr tipe ctx
             in
             ( Mono.MonoDefine callableExpr tipe, ctx1 )
 
@@ -460,6 +555,62 @@ wrapNodeCallables home node ctx =
 
         Mono.MonoManagerLeaf leafHome tipe ->
             ( Mono.MonoManagerLeaf leafHome tipe, ctx )
+
+
+
+{-| Returns the expression of define `specId` made a closure, as
+`ensureCallableForNode` does, except when its type is a function and the
+expression computes it, that is, is not a closure or a reference to a global or
+kernel. That expression is recorded in `cafs` as a new define, named after
+`specId`'s global with `_caf` added and numbered `nextSpecId`, and the result is
+the closure `ensureCallableForNode` makes for a reference to it.
+-}
+callableDefine :
+    ModuleName.Canonical
+    -> Int
+    -> Mono.MonoExpr
+    -> Mono.MonoType
+    -> GlobalCtx
+    -> ( Mono.MonoExpr, GlobalCtx )
+callableDefine home specId expr monoType ctx =
+    let
+        computes =
+            case expr of
+                Mono.MonoClosure _ _ _ ->
+                    False
+
+                Mono.MonoVarGlobal _ _ _ ->
+                    False
+
+                Mono.MonoVarKernel _ _ _ _ _ ->
+                    False
+
+                _ ->
+                    True
+    in
+    if Mono.isFunctionType monoType && computes then
+        let
+            cafId =
+                ctx.nextSpecId
+
+            cafGlobal =
+                case Array.get specId ctx.registry.reverseMapping |> Maybe.andThen identity of
+                    Just ( Mono.Global globalHome name, _ ) ->
+                        Mono.Global globalHome (name ++ "_caf")
+
+                    _ ->
+                        Mono.Global home ("caf_" ++ String.fromInt specId)
+        in
+        ensureCallableForNode home
+            (Mono.MonoVarGlobal (Closure.extractRegion expr) cafId monoType)
+            monoType
+            { ctx
+                | nextSpecId = cafId + 1
+                , cafs = { specId = specId, cafId = cafId, global = cafGlobal, expr = expr, tipe = monoType } :: ctx.cafs
+            }
+
+    else
+        ensureCallableForNode home expr monoType ctx
 
 
 

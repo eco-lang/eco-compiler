@@ -35,7 +35,8 @@ Each workload checks itself as strongly as it can, at whatever size it runs:
   width, and the last frame decoded back to the scene), string-callbacks (the same figures from the
   generator's `List Char`s), dict-char-pairs (bigram counts in an `Array`), set-float-pairs (its
   size and coordinate sums), kernel-callbacks (closed forms and a `List.foldl` recount) and
-  hot-lambda (a closed form). spectral-norm must lie within `6 / n^3` of its limit (a bound
+  hot-lambda (a closed form), and ctor-wrapper, ctor-maybe, ctor-step, ctor-tokens, ctor-sret and
+  ctor-known (the same figure computed with `Int`s only). spectral-norm must lie within `6 / n^3` of its limit (a bound
   measured with a C program from 1 to 5,500).
 - Exactly against a table that covers every feasible size: fannkuch-redux (1-12 items, from the
   standard C algorithm), nsieve (2-14, from a separate sieve), n-queens (up to 18, OEIS
@@ -123,3 +124,7 @@ binary-format and adler32 (Bytes), json-dict and json-encode (JSON), csv-parser 
 (String kernels that call a function per character, on short words), dict-char-pairs and
 set-float-pairs (keys that are pairs of unboxed values), kernel-callbacks (library functions that
 call a function per element) and hot-lambda (function values that capture nothing, made per call).
+The ctor-* group (`src/CtorLoops.elm`) is tight loops over custom-type values, one per constructor
+representation eco can choose: wrapper erasure (ctor-wrapper), nullable `Maybe` (ctor-maybe),
+tagged unions (ctor-step, ctor-tokens), constructors returned through a caller's slot (ctor-sret)
+and `case` on a known constructor (ctor-known).
