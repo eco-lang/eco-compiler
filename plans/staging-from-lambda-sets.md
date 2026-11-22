@@ -606,36 +606,58 @@ The execution census was rerun on the P2 compiler, with a temporary build (since
 made two changes:
 - it put the class codes at 16 to 25, clear of the callee-shape reasons 1 to 6, which calls not
   stamped by the census keep;
-- it counted each runtime generic entry under the reason of the extend that reached it.
+- it counted each runtime generic entry under the reason of the last counted extend (flawed; see
+  the correction below).
 
-Self-compile, in executions and in runtime entries:
+Self-compile executions per class, and how many of them fail the guard of the `sat[N]` fast edge
+(from the corrected census below):
 
-| class | executions | runtime entries |
+| class | executions | guard fails |
 |---|---:|---:|
-| exact | 76.9 M | 22.6 M |
+| exact | 76.9 M | 0 |
 | over (now the first stage of a split) | 13.8 M | 0 |
-| hinted split tails (reason 11) | 15.1 M | 3.8 M |
-| under | 1.1 M | 0.63 M |
-| ⊤ | 102.2 M | 13.4 M |
-| var | 8.3 M | 1.8 M |
-| not stamped by the census (reasons 1 to 6) | 72.0 M | 5.7 M |
+| hinted split tails (reason 11) | 15.1 M | 1.2 M (over) |
+| under | 1.1 M | 0.71 M (under) |
+| ⊤ | 102.2 M | 18.2 M (11.7 M under, 5.5 M over, 1.1 M no `sat` entry) |
+| var | 8.3 M | 0.9 M (over) |
+| not stamped by the census (reasons 1 to 6, 9) | 91.3 M | 0.14 M (over) |
 
-B would only change exact and under calls:
-- Exact calls that take the fast edge would lose a guard of a few loads and compares.
-- Exact calls that miss it would go through the typed `eco_closure_call_saturated` instead of
-  `eco_apply_closure_eval`. That is still a runtime call, so it saves less than turning a
-  runtime entry into a fast-edge call.
-- P2 removed 27.9 M runtime entries that way with no measurable wall change (< ~0.5 %). That puts
-  the cost of a runtime entry against the fast edge at no more than ~13 ns.
+B would only change exact and under calls. Exact calls all take the fast edge, so B would save
+only their guard, a few loads and compares: about 77 M × ~1 ns ≈ 0.08 s, about 0.1 % of the 74 s
+self-compile, below the ~1 % bar. B stops here, and the §5 preconditions stay recorded for whoever
+reopens it.
 
-So B is worth at most ~22.6 M × 13 ns + 54 M × ~1 ns ≈ 0.35 s, about 0.5 % of the 74 s
-self-compile, below the ~1 % bar. B stops here, and the §5 preconditions stay recorded for
-whoever reopens it.
+**Correction (2026-11-22, follow-up).** The first version of this table gave exact calls 22.6 M
+runtime entries and proposed finding which guard check they fail. They fail none. The temporary
+census credited each runtime entry to the reason of the last counted extend on the thread, which
+was never cleared, so entries made by kernels calling closures were charged to whatever generated
+call ran before them, mostly exact ones. A second census replayed the guard at every counted site
+(closure, N, slot kinds, result kind, and whether the site has a marker at all) and counted the
+first check that fails; every exact execution passes all of them. It also attributed each runtime
+entry to the site that made it:
 
-**Follow-up (not in this plan):** 22.6 M of the 76.9 M exact executions miss the fast edge,
-although their closures take exactly the arguments passed. The guard also checks the result kind,
-the slot kinds, the stage arity limit, and that a `sat` entry exists. Finding which check fails is
-the next lever for these calls, and needs no trust.
+- 32.9 M of the 49.3 M runtime generic entries come from no generated site. They are kernels
+  calling closures: `Array.foldl`/`foldr` 9.4 M, `List.map2`..`map5` 8.1 M, `Array.initialize`
+  6.9 M, `eco_apply_closure_typed` callers 6.2 M, `Array.map` 2.0 M, `String.map` 0.5 M. Outside
+  the census these take `tryInvokeSaturatedDirect`, which the census switches off, so they are not
+  the general path in a normal run.
+- The rest are generated sites whose closure does not match the call: ⊤ under-applications (a
+  closure built by `eco_pap_extend_l`, not a missed fast edge), over-applications of ⊤, var and
+  split-tail calls, and 1.1 M calls of the `Bytes.read_u8`/`read_u16` kernel closures, whose
+  descriptors have no `sat[2]` entry.
+
+No generated call with a complete set misses the fast edge, so there is no follow-up for them. The
+remaining generated-site misses are ⊤ calls, which have no set arity to act on.
+
+**Kernel callers at default settings (2026-11-22).** A third temporary census left the direct path
+on (no `ECO_DISPATCH_STATS`) and recorded, per caller of `eco_apply_closure_eval`, whether
+`tryInvokeSaturatedDirect` applies or which of its checks rules it out. Of the kernel and runtime
+callers' 33.1 M calls, 32.87 M take the direct path; 204 k are partial applications (two arguments
+to a three-argument closure) and 47 k fail the slot-kind check (`List.sortBy` 43 k and the
+scheduler 4 k, passing a boxed argument to an unboxed slot). No other check fails anywhere: 2
+calls are too wide and none has an incompatible result kind. The 7.67 M over-application tails
+also all take the direct path. So kernel closure calls are not a lever either; the general path
+is reached only by ⊤ under- and over-applications from generated code.
 
 ## 9. Review log (2026-11-22)
 

@@ -1288,6 +1288,26 @@ phase R0 split out of `monomorphization`. Every row is at its fixed point; every
   R4d also fixed a MONO_019 crash in the nullable pass (plan §13.6).
 - **Gates (end, final tree R4i):** elm-tests 22,007/0; `full` 3,119/3,119; bootstrap rc 0 through Stage 8c and 9b; validation self-compile clean; canary passing.
 
+### now: the tree of 2026-11-22 (constructor follow-ups F1–F5 with tagged unions and `knownCtorCase` default-on, the constructor pipeline compile-time pass, and stage hints from lambda sets): **regression check, single run: REGRESSION (wall +4.14 s, +5.9 % vs R4i; parse/check/build +2.0 s, mono +1.6 s)**
+
+| run | wall (s) | parse/check/build (s) | mono (s) | representation (s) | MLIR codegen (s) | GC time (s) | minor GC | major GC | promoted MiB | max RSS (kB) | out.mlir (B) | fixed point |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| r1 | 73.86 | 29.0 | 27.9 | 1.4 | 9.1 | 3.33 | 1448 | 8 | 7506 | 7400224 | 12793574 | same |
+| Δ vs R4i (one run each) | +4.14 (+5.9 %) | +2.0 | +1.6 | −0.3 | +0.2 | +0.17 | +47 | 0 | +347 | +403,084 (+5.8 %) | +163,314 (+1.3 %, source moved) | |
+
+- **What:** not a front-end step: the current tree, measured against R4i, the most recent row. The candidate
+  MLIR `ecoNOW.mlir` was compiled by `eco-optSH2` (the stage-hint compiler at its fixed point), lowered by
+  `eco-boot-native` to `eco-optNOW`, and timed once under §2 (`ECO_MONO_ENGINE=solver ECO_MONO_LSS=1`, cold
+  `eco-stuff`, registry `~/.eco/0.2.0/packages/registry.dat` touched). **One timed run only, by request.**
+- **Checks:** rc 0, no `[gc-stats] SIG`, r1 equals `ecoNOW.mlir` (fixed point). `.ecot` 8,816,675 B.
+- **Verdict:** wall +4.14 s, past the ~1.3 % band and the 5 % flag: **REGRESSION, unattributed.** It sits in
+  parse/check/build (+2.0 s) and mono (+1.6 s); representation is 0.3 s faster and codegen flat. The workload
+  grew (out.mlir +1.3 %), which accounts for some of it, and GC is up with it (+47 minors, +347 MiB promoted,
+  RSS +5.8 %). Several landings fall between the two rows and none was measured under this protocol, so one
+  run cannot split the regression between them. Their same-session A/Bs were: the constructor follow-ups
+  +1.6 % (tagged unions on vs off −0.6 %), `knownCtorCase` +0.5 % (flat), the compile-time pass −3.1 %
+  (77.22 → 74.84 s), stage hints flat (73.99 → 74.15 s).
+
 ## 6a. Batched end-of-series gates (run once each, after S8)
 
 - **G5 `TypedOptimizedCodecTest` (new):** 135/135 standard-suite modules round-trip the v2 codec
@@ -1584,3 +1604,4 @@ same-sitting control run, not the `ref` row's recorded wall. Details live in eac
 | R4b | 70.83 | +0.20 | 1406 | 8 | 7146 | 7023076 | FLAT (2.2 s), kept: skips unaffected nodes, promoted -51 MiB | R3 |
 | R4f | 71.52 | +0.69 | 1402 | 8 | 7169 | 7043692 | WIN on the representation phase (2.2 -> 1.8 s; wall inside the band): subtree-sharing type rewrite, layout-hash lookups, MONO_019 fix in NullableMaybe | R4b |
 | R4i | 69.72 | -1.80 | 1401 | 8 | 7159 | 6997140 | final of plan §13 (representation phase 1.7 s): R3.1 composed exactly, R2.4 checks as written, one-descent eraseType | R4f |
+| now | 73.86 | +4.14 | 1448 | 8 | 7506 | 7400224 | — (regression check, ONE run, across a moved tree: constructor follow-ups F1–F5 + knownCtorCase, ctor compile-time pass, stage hints; REGRESSION +5.9 %, parse/check/build +2.0 s, mono +1.6 s, representation −0.3 s; out.mlir +1.3 %; fixed point) | R4i |
