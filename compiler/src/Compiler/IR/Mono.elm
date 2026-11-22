@@ -8,7 +8,7 @@ module Compiler.IR.Mono exposing
     , SpecId, SpecKey(..), SpecKeyMap, SpecMap, SpecializationRegistry
     , ReprInfo, NullableInfo, NullWord, emptyNullWord, nullWordMaxIndex, TagForm(..), emptyReprInfo
     , annoCoverage, annoCovers, clearLssTables, collectAnnoMembers
-    , containsAnyMVar, decomposeFunctionType, defaultCallInfo, dtPathType, emptyAnnoCoverage
+    , containsAnyMVar, decomposeFunctionType, peelArgs, defaultCallInfo, dtPathType, emptyAnnoCoverage
     , enrichAnnotations, enrichAnnotationsTopOnly, eqKeyLayout, eqKeySpec, eqLayout, eqModuloTopLabel
     , getMonoPathType, hasTopAnno, hasVarAnno, headAnno, isFunctionType, isTopAnno
     , portCarriesBytes, payloadSchema, flagsSchema
@@ -100,7 +100,7 @@ made.
 # Functions
 
 @docs annoCoverage, annoCovers, clearLssTables, collectAnnoMembers
-@docs containsAnyMVar, decomposeFunctionType, defaultCallInfo, dtPathType, emptyAnnoCoverage
+@docs containsAnyMVar, decomposeFunctionType, peelArgs, defaultCallInfo, dtPathType, emptyAnnoCoverage
 @docs enrichAnnotations, enrichAnnotationsTopOnly, eqKeyLayout, eqKeySpec, eqLayout, eqModuloTopLabel
 @docs getMonoPathType, hasTopAnno, hasVarAnno, headAnno, isFunctionType, isTopAnno
 @docs portCarriesBytes, payloadSchema, flagsSchema
@@ -4009,6 +4009,33 @@ decomposeFunctionType monoType =
             ( [], other )
 
 
+{-| Returns the type of what is left of a function of type `monoType` once `k`
+arguments are applied, counting parameters across its stages. When the `k`th
+argument falls inside a stage, the rest of that stage is kept, with its
+annotation. A non-function type, or `k` of 0 or less, is returned unchanged.
+-}
+peelArgs : Int -> MonoType -> MonoType
+peelArgs k monoType =
+    if k <= 0 then
+        monoType
+
+    else
+        case monoType of
+            MFunction n anno argTypes result ->
+                let
+                    p =
+                        List.length argTypes
+                in
+                if k >= p then
+                    peelArgs (k - p) result
+
+                else
+                    MFunction n anno (List.drop k argTypes) result
+
+            other ->
+                other
+
+
 {-| How a callee takes its arguments. `FlattenedExternal` takes all of them in one
 flat call, and `StageCurried` takes them stage by stage, as its type's
 segmentation groups them.
@@ -4093,6 +4120,12 @@ type alias CallInfo =
     -- table can still describe the wrappers (MONO_031). Not rewritten by
     -- `Traverse.mapNodeTypes`.
     , printType : Maybe MonoType
+
+    -- For a generic call (`CallSegmentationUnknown`, `CallGenericApply`): the
+    -- first-stage arity every member of the callee's lambda set agrees on
+    -- (`MemberArity.setArity`). Advisory: code generation uses it only behind
+    -- run-time guards (CGEN_094).
+    , setArity : Maybe Int
     }
 
 
@@ -4115,6 +4148,7 @@ defaultCallInfo =
     , callKind = CallGenericApply
     , evaluatorReturnType = MUnit
     , printType = Nothing
+    , setArity = Nothing
     }
 
 

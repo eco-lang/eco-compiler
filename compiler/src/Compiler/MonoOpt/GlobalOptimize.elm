@@ -29,11 +29,15 @@ suggests.
 3.  `Compiler.MonoOpt.AbiCloning.abiCloningPass` stamps calls whose target it
     can prove. It comes after regrouping so that the stamps see the final
     closure types.
-4.  The lambda-set tables are emptied (`Mono.clearLssTables`), keeping
-    `lssMemberOrigins` only when borrow inference or the `List.map` template
-    is on.
+4.  The first-stage arities of the lambda-set members are read
+    (`Compiler.MonoOpt.MemberArity.memberArities`), then the lambda-set tables
+    are emptied (`Mono.clearLssTables`), keeping `lssMemberOrigins` only when
+    borrow inference or the `List.map` template is on.
 5.  Every `MonoCall` gets a `CallInfo`: its call model, segmentation, source
-    arity, the stages left after the first, and how the call is to be made.
+    arity, the stages left after the first, and how the call is to be made. A
+    generic call also gets the arity its callee's lambda set agrees on
+    (`setArity`), a hint that code generation uses only behind run-time guards
+    (CGEN_094).
 6.  Borrow inference runs, when it is enabled.
 
 Most of the file is step 5. Its rule is to trust only what a producer shows:
@@ -59,6 +63,7 @@ import Compiler.IR.Mono.Traverse as Traverse
 import Compiler.MonoOpt.AbiCloning as AbiCloning
 import Compiler.MonoOpt.Borrow as Borrow
 import Compiler.MonoOpt.GenCallCensus as GenCallCensus
+import Compiler.MonoOpt.MemberArity as MemberArity
 import Compiler.MonoOpt.ReturnArity as MonoReturnArity
 import Compiler.MonoOpt.Staging as Staging
 import Data.NonEmptyList as NE
@@ -143,6 +148,7 @@ type alias CallEnv =
     , varBodyStageArities : Dict Name (List Int)
     , dynamicParams : Set Name
     , varPolymorphicReturn : Set Name
+    , memberArities : Dict Int MemberArity.MemberArity
     }
 
 
@@ -155,6 +161,7 @@ emptyCallEnv =
     , varBodyStageArities = Dict.empty
     , dynamicParams = Set.empty
     , varPolymorphicReturn = Set.empty
+    , memberArities = Dict.empty
     }
 
 
@@ -197,13 +204,17 @@ globalOptimizeWithStats census stagingCensus borrowCfg listMapTemplate graph0a =
         ( graph4Full, abiStats ) =
             AbiCloning.abiCloningPass census graph2
 
+        -- Read before `clearLssTables` empties `lssMemberOrigins`.
+        arities =
+            MemberArity.memberArities graph4Full
+
         graph4 =
             Mono.clearLssTables
                 { keepOrigins = borrowCfg.enabled || listMapTemplate }
                 graph4Full
 
         graph5 =
-            annotateCallStaging graph4
+            annotateCallStaging arities graph4
 
         ( graph6, borrowStats ) =
             if borrowCfg.enabled then
@@ -215,7 +226,7 @@ globalOptimizeWithStats census stagingCensus borrowCfg listMapTemplate graph0a =
     ( graph6
     , { genCalls =
             if stagingCensus then
-                GenCallCensus.census graph5
+                GenCallCensus.census arities graph5
 
             else
                 Dict.empty
@@ -618,7 +629,7 @@ callableDefine home specId expr monoType ctx =
 
 
 {-| Returns the graph with a `CallInfo` on every `MonoCall` in its defines,
-tail functions and ports.
+tail functions and ports, given the graph's lambda-set member arities.
 
 Every call gets one derived by `computeCallInfo`, into which the fields
 AbiCloning stamps (`closureKind`, `captureAbi`, `fastEvaluator`,
@@ -626,14 +637,14 @@ AbiCloning stamps (`closureKind`, `captureAbi`, `fastEvaluator`,
 `CallInfo`, since the derivation knows nothing of them.
 
 -}
-annotateCallStaging : Mono.MonoGraph -> Mono.MonoGraph
-annotateCallStaging graph =
+annotateCallStaging : Dict Int MemberArity.MemberArity -> Mono.MonoGraph -> Mono.MonoGraph
+annotateCallStaging arities graph =
     let
         (Mono.MonoGraph record) =
             graph
 
         env =
-            emptyCallEnv
+            { emptyCallEnv | memberArities = arities }
 
         newNodes =
             Array.map (Maybe.map (annotateNodeCalls graph env)) record.nodes
@@ -1500,6 +1511,7 @@ computeCallInfo graph env func args resultType =
             , callKind = Mono.CallDirectFlat
             , evaluatorReturnType = resultType
             , printType = Nothing
+            , setArity = Nothing
             }
 
         Mono.StageCurried ->
@@ -1586,6 +1598,19 @@ computeCallInfo graph env func args resultType =
                 totalArgsConsumed =
                     initialRemaining + List.sum remainingStageArities
 
+                -- What the callee's lambda set says, for a generic call only (CGEN_094).
+                setArity : Maybe Int
+                setArity =
+                    case callKind of
+                        Mono.CallSegmentationUnknown ->
+                            MemberArity.setArity env.memberArities funcType
+
+                        Mono.CallGenericApply ->
+                            MemberArity.setArity env.memberArities funcType
+
+                        _ ->
+                            Nothing
+
                 evaluatorReturnType : Mono.MonoType
                 evaluatorReturnType =
                     saturatingEvaluatorReturnType resultType totalArgsConsumed funcType
@@ -1603,4 +1628,5 @@ computeCallInfo graph env func args resultType =
             , callKind = callKind
             , evaluatorReturnType = evaluatorReturnType
             , printType = Nothing
+            , setArity = setArity
             }

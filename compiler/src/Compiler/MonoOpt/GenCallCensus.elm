@@ -20,6 +20,21 @@ expression in function position:
   - `global`: a global reference;
   - `other`: anything else.
 
+Each such call is also counted under `lss<Class>:<tag>`, the class saying what
+the lambda set on its callee's type (`Mono.headAnno`) knows about the closures
+that can be called (`Compiler.MonoOpt.MemberArity.classify`):
+
+  - `lssTop`, `lssVar`, `lssPartial`: the set is ⊤, a set variable, or only a
+    lower bound, so it names no complete set of closures; `lssTopWhy+<label>`
+    counts the ⊤s by provenance;
+  - `lssUnresolved`: a complete set with a member whose arity is not known;
+    `lssUnresolvedWhy+<why>` counts them by reason;
+  - `lssEmpty`: a complete set with no members;
+  - `lssDisagree`: a complete set whose members' arities differ;
+  - `lssExact`, `lssOver`, `lssUnder`: a complete set whose members all take
+    the same number of arguments, which the call supplies exactly, more of, or
+    fewer of.
+
 The count reads the graph and changes nothing.
 
 @docs census, render
@@ -30,6 +45,7 @@ import Array
 import Compiler.Core.Name exposing (Name)
 import Compiler.IR.Mono as Mono
 import Compiler.IR.Mono.Traverse as MonoTraverse
+import Compiler.MonoOpt.MemberArity as MemberArity
 import Dict exposing (Dict)
 import Set exposing (Set)
 
@@ -79,8 +95,8 @@ tail-recursive definition inside it, so they are not scoped to the function
 that contains the call.
 
 -}
-census : Mono.MonoGraph -> Dict String Int
-census (Mono.MonoGraph mono) =
+census : Dict Int MemberArity.MemberArity -> Mono.MonoGraph -> Dict String Int
+census arities (Mono.MonoGraph mono) =
     let
         paramNames acc e =
             case e of
@@ -95,13 +111,20 @@ census (Mono.MonoGraph mono) =
 
         count params acc e =
             case e of
-                Mono.MonoCall _ callee _ _ info ->
+                Mono.MonoCall _ callee args _ info ->
+                    let
+                        tag =
+                            calleeTag params callee
+
+                        lss a =
+                            List.foldl bump a (lssKeys arities tag callee (List.length args))
+                    in
                     case ( info.callModel, info.callKind ) of
                         ( Mono.StageCurried, Mono.CallSegmentationUnknown ) ->
-                            bump ("segunk:" ++ calleeTag params callee) acc
+                            lss (bump ("segunk:" ++ tag) acc)
 
                         ( Mono.StageCurried, Mono.CallGenericApply ) ->
-                            bump ("generic:" ++ calleeTag params callee) acc
+                            lss (bump ("generic:" ++ tag) acc)
 
                         _ ->
                             acc
@@ -139,6 +162,45 @@ census (Mono.MonoGraph mono) =
         )
         Dict.empty
         mono.nodes
+
+
+{-| The keys a generic call through `callee` with `argCount` arguments adds
+for the lambda set on the callee's type, as the module docstring describes.
+-}
+lssKeys : Dict Int MemberArity.MemberArity -> String -> Mono.MonoExpr -> Int -> List String
+lssKeys arities tag callee argCount =
+    let
+        keyed cls =
+            [ cls ++ ":" ++ tag ]
+    in
+    case MemberArity.classify arities (Mono.typeOf callee) of
+        MemberArity.SetTop label ->
+            ("lssTopWhy+" ++ label) :: keyed "lssTop"
+
+        MemberArity.SetVar ->
+            keyed "lssVar"
+
+        MemberArity.SetPartial ->
+            keyed "lssPartial"
+
+        MemberArity.SetUnresolved why ->
+            ("lssUnresolvedWhy+" ++ why) :: keyed "lssUnresolved"
+
+        MemberArity.SetEmpty ->
+            keyed "lssEmpty"
+
+        MemberArity.SetDisagree ->
+            keyed "lssDisagree"
+
+        MemberArity.SetAgree arity ->
+            if argCount == arity then
+                keyed "lssExact"
+
+            else if argCount > arity then
+                keyed "lssOver"
+
+            else
+                keyed "lssUnder"
 
 
 {-| Renders the counts as `key=count` pairs in key order, separated by single

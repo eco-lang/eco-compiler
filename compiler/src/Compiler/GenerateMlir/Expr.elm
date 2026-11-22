@@ -1614,11 +1614,14 @@ supplies more, the first stage is a fast dispatch and the rest is applied
 generically (`generateStagedFastDispatchCall`). Without a usable stamp:
 
   - `CallGenericApply` becomes a generic `eco.papExtend`
-    (`generateGenericApply`).
+    (`generateGenericApply`), split in two when the callee's lambda set says
+    its first stage takes fewer arguments than the call passes
+    (`hintedGenericCall`, CGEN_094).
   - `CallSegmentationUnknown` becomes an `eco.papExtend` without
     `remaining_arity` whose arguments are boxed to what the callee's evaluator
-    takes, if that is known (`generateUnknownSegmentationCall`). With no
-    arguments it is just the callee's value, which need not be a closure.
+    takes, if that is known (`generateUnknownSegmentationCall`), and is
+    split like `CallGenericApply`. With no arguments it is just the callee's
+    value, which need not be a closure.
   - `CallDirectFlat` is a saturated call (`generateSaturatedCall`), or a
     partial application when `resultType` is a function.
   - `CallDirectKnownSegmentation` is a saturated call when it saturates one
@@ -1641,7 +1644,7 @@ generateCall ctx func args resultType callInfo =
                             generateStagedFastDispatchCall ctx func args resultType fastLambdaId fastAbi
 
                         Nothing ->
-                            generateGenericApplyCoerced ctx func args resultType
+                            generateGenericApplyCoerced ctx callInfo.setArity func args resultType
 
         Mono.CallSegmentationUnknown ->
             case fastDispatchStamp callInfo args of
@@ -1663,7 +1666,7 @@ generateCall ctx func args resultType callInfo =
                                         generateExpr ctx func
 
                                     else
-                                        generateUnknownSegmentationCall ctx func args resultType
+                                        hintedGenericCall SegUnknownArm ctx callInfo.setArity func args resultType
 
                                 expectedType =
                                     Types.monoTypeToAbi resultType
@@ -1727,7 +1730,8 @@ is off.
 
 The reasons written here are 1 to 6 for the shape of the callee
 (`gencallCalleeReason`), 7 for a batch after the first in a stage-by-stage
-application, and 9 for the arguments beyond the first stage of a stamped call.
+application, 9 for the arguments beyond the first stage of a stamped call, and
+11 for the arguments beyond a hinted first stage (`generateHintedSplitCall`).
 The number 8 is not used.
 
 -}
@@ -1813,14 +1817,15 @@ directCallKindAttr kind =
 that the runtime decides from the closure whether the call is saturated.
 
 Only Bool arguments are boxed; Int, Float and Char arguments are passed
-unboxed, with their kinds in `slot_kinds`. The op's result type follows the ABI
+unboxed, with their kinds in `slot_kinds`. A `stageHint` is written as
+`_stage_hint` (CGEN_094). The op's result type follows the ABI
 of `resultType`: a primitive, with the matching `_result_kind`, when that is
 `i64`, `f64` or `i32`, and `!eco.value` otherwise. The result is not coerced
 further.
 
 -}
-generateGenericApply : Ctx.Context -> Mono.MonoExpr -> List Mono.MonoExpr -> Mono.MonoType -> ExprResult
-generateGenericApply ctx func args resultType =
+generateGenericApply : Ctx.Context -> Maybe Int -> Mono.MonoExpr -> List Mono.MonoExpr -> Mono.MonoType -> ExprResult
+generateGenericApply ctx stageHint func args resultType =
     let
         funcResult : ExprResult
         funcResult =
@@ -1832,63 +1837,88 @@ generateGenericApply ctx func args resultType =
         ( boxOps, argsForClosure, ctx2 ) =
             boxArgsForClosureBoundary ctx1 argsWithTypes
 
-        allOperandNames =
-            funcResult.resultVar :: List.map Tuple.first argsForClosure
+        ext =
+            emitGenericPapExtend ctx2
+                { callKind = "generic_apply", reason = gencallCalleeReason func, stageHint = stageHint }
+                ( funcResult.resultVar, funcResult.resultType )
+                argsForClosure
+                resultType
+    in
+    { ext | ops = funcResult.ops ++ argOps ++ boxOps ++ ext.ops }
 
-        allOperandTypes =
-            funcResult.resultType :: List.map Tuple.second argsForClosure
 
-        newargsSlotKinds =
-            Ops.slotKindsAttr (List.map Tuple.second argsForClosure)
+{-| Returns an `eco.papExtend` without `remaining_arity` that applies the
+closure `( closureVar, closureType )` to the prepared `args`.
 
-        ( resVar, ctx3 ) =
-            Ctx.freshVar ctx2
+`callKind` is the `_call_kind`, `reason` the `_gencall_reason` (written only
+under the census, `gencallReasonAttr`) and `stageHint` the `_stage_hint`
+(CGEN_094), written when present. The op's result type follows the ABI of
+`resultType`: a primitive, with the matching `_result_kind`, when that is
+`i64`, `f64` or `i32`, and `!eco.value` otherwise.
+
+-}
+emitGenericPapExtend :
+    Ctx.Context
+    -> { callKind : String, reason : Int, stageHint : Maybe Int }
+    -> ( String, MlirType )
+    -> List ( String, MlirType )
+    -> Mono.MonoType
+    -> ExprResult
+emitGenericPapExtend ctx how ( closureVar, closureType ) args resultType =
+    let
+        ( resVar, ctx1 ) =
+            Ctx.freshVar ctx
 
         callResultMlirType =
             Types.monoTypeToAbi resultType
 
-        genericApplyResultKind =
+        resultKind =
             Types.mlirTypeToKind callResultMlirType
 
         resultMlirType =
-            if genericApplyResultKind == 0 then
+            if resultKind == 0 then
                 Types.ecoValue
 
             else
                 callResultMlirType
 
-        genericApplyResultKindAttr =
-            if genericApplyResultKind == 0 then
+        resultKindAttr =
+            if resultKind == 0 then
                 []
 
             else
-                [ ( "_result_kind", IntAttr (Just I8) genericApplyResultKind ) ]
+                [ ( "_result_kind", IntAttr (Just I8) resultKind ) ]
+
+        stageHintAttr =
+            case how.stageHint of
+                Just h ->
+                    [ ( "_stage_hint", IntAttr Nothing h ) ]
+
+                Nothing ->
+                    []
 
         papExtendAttrs =
             Dict.fromList
                 ([ ( "_operand_types"
                    , ArrayAttr Nothing
-                        (List.map TypeAttr allOperandTypes)
+                        (List.map TypeAttr (closureType :: List.map Tuple.second args))
                    )
-                 , ( "slot_kinds", newargsSlotKinds )
-                 , ( "_call_kind", StringAttr "generic_apply" )
+                 , ( "slot_kinds", Ops.slotKindsAttr (List.map Tuple.second args) )
+                 , ( "_call_kind", StringAttr how.callKind )
                  ]
-                    ++ gencallReasonAttr ctx (gencallCalleeReason func)
-                    ++ genericApplyResultKindAttr
+                    ++ gencallReasonAttr ctx how.reason
+                    ++ resultKindAttr
+                    ++ stageHintAttr
                 )
 
-        ( ctx4, papExtendOp ) =
-            Ops.mlirOp ctx3 "eco.papExtend"
-                |> Ops.opBuilder.withOperands allOperandNames
+        ( ctx2, papExtendOp ) =
+            Ops.mlirOp ctx1 "eco.papExtend"
+                |> Ops.opBuilder.withOperands (closureVar :: List.map Tuple.first args)
                 |> Ops.opBuilder.withResults [ ( resVar, resultMlirType ) ]
                 |> Ops.opBuilder.withAttrs papExtendAttrs
                 |> Ops.opBuilder.build
     in
-    { ops = funcResult.ops ++ argOps ++ boxOps ++ [ papExtendOp ]
-    , resultVar = resVar
-    , resultType = resultMlirType
-    , ctx = ctx4
-    }
+    { ops = [ papExtendOp ], resultVar = resVar, resultType = resultMlirType, ctx = ctx2 }
 
 
 {-| Generates an application of the callee value to `args` when the callee's
@@ -1903,8 +1933,8 @@ evaluator, if that is known, is `!eco.value`, and a Bool argument always is
 the ABI of `resultType` as in `generateGenericApply`.
 
 -}
-generateUnknownSegmentationCall : Ctx.Context -> Mono.MonoExpr -> List Mono.MonoExpr -> Mono.MonoType -> ExprResult
-generateUnknownSegmentationCall ctx func args resultType =
+generateUnknownSegmentationCall : Ctx.Context -> Maybe Int -> Mono.MonoExpr -> List Mono.MonoExpr -> Mono.MonoType -> ExprResult
+generateUnknownSegmentationCall ctx stageHint func args resultType =
     let
         funcResult : ExprResult
         funcResult =
@@ -1916,63 +1946,14 @@ generateUnknownSegmentationCall ctx func args resultType =
         ( boxOps, argsForClosure, ctx2 ) =
             boxArgsToEvaluatorParams (knownEvaluatorParamAbi ctx func) ctx1 argsWithTypes
 
-        allOperandNames =
-            funcResult.resultVar :: List.map Tuple.first argsForClosure
-
-        allOperandTypes =
-            funcResult.resultType :: List.map Tuple.second argsForClosure
-
-        newargsSlotKinds =
-            Ops.slotKindsAttr (List.map Tuple.second argsForClosure)
-
-        ( resVar, ctx3 ) =
-            Ctx.freshVar ctx2
-
-        callResultMlirType =
-            Types.monoTypeToAbi resultType
-
-        unknownSegResultKind =
-            Types.mlirTypeToKind callResultMlirType
-
-        resultMlirType =
-            if unknownSegResultKind == 0 then
-                Types.ecoValue
-
-            else
-                callResultMlirType
-
-        unknownSegResultKindAttr =
-            if unknownSegResultKind == 0 then
-                []
-
-            else
-                [ ( "_result_kind", IntAttr (Just I8) unknownSegResultKind ) ]
-
-        papExtendAttrs =
-            Dict.fromList
-                ([ ( "_operand_types"
-                   , ArrayAttr Nothing
-                        (List.map TypeAttr allOperandTypes)
-                   )
-                 , ( "slot_kinds", newargsSlotKinds )
-                 , ( "_call_kind", StringAttr "segmentation_unknown" )
-                 ]
-                    ++ gencallReasonAttr ctx (gencallCalleeReason func)
-                    ++ unknownSegResultKindAttr
-                )
-
-        ( ctx4, papExtendOp ) =
-            Ops.mlirOp ctx3 "eco.papExtend"
-                |> Ops.opBuilder.withOperands allOperandNames
-                |> Ops.opBuilder.withResults [ ( resVar, resultMlirType ) ]
-                |> Ops.opBuilder.withAttrs papExtendAttrs
-                |> Ops.opBuilder.build
+        ext =
+            emitGenericPapExtend ctx2
+                { callKind = "segmentation_unknown", reason = gencallCalleeReason func, stageHint = stageHint }
+                ( funcResult.resultVar, funcResult.resultType )
+                argsForClosure
+                resultType
     in
-    { ops = funcResult.ops ++ argOps ++ boxOps ++ [ papExtendOp ]
-    , resultVar = resVar
-    , resultType = resultMlirType
-    , ctx = ctx4
-    }
+    { ext | ops = funcResult.ops ++ argOps ++ boxOps ++ ext.ops }
 
 
 {-| Returns the fast-dispatch stamp of a call that supplies more arguments than
@@ -2019,7 +2000,7 @@ generateStagedFastDispatchCall ctx func args resultType fastRef abi =
             generateFastDispatchCall ctx func batch1 abi.returnType fastRef abi 0
 
         tailRes =
-            applySegUnknownToVar innerRes.ctx innerRes.resultVar innerRes.resultType rest resultType
+            applySegUnknownToVar innerRes.ctx 9 innerRes.resultVar innerRes.resultType rest resultType
     in
     { ops = innerRes.ops ++ tailRes.ops
     , resultVar = tailRes.resultVar
@@ -2029,12 +2010,13 @@ generateStagedFastDispatchCall ctx func args resultType fastRef abi =
 
 
 {-| Generates the application of `args` to the closure already held in
-`funcVar`: one `eco.papExtend` with `_call_kind` `segmentation_unknown` and no
-`remaining_arity`, coerced to the ABI of `resultType`. Nothing is known about
-the closure, so only Bool arguments are boxed.
+`funcVar`: one `eco.papExtend` with `_call_kind` `segmentation_unknown`, no
+`remaining_arity` and `_gencall_reason` `reason`, coerced to the ABI of
+`resultType`. Nothing is known about the closure, so only Bool arguments are
+boxed.
 -}
-applySegUnknownToVar : Ctx.Context -> String -> MlirType -> List Mono.MonoExpr -> Mono.MonoType -> ExprResult
-applySegUnknownToVar ctx funcVar funcMlirType args resultType =
+applySegUnknownToVar : Ctx.Context -> Int -> String -> MlirType -> List Mono.MonoExpr -> Mono.MonoType -> ExprResult
+applySegUnknownToVar ctx reason funcVar funcMlirType args resultType =
     let
         ( argOps, argsWithTypes, ctx1 ) =
             generateExprListTyped ctx args
@@ -2042,76 +2024,34 @@ applySegUnknownToVar ctx funcVar funcMlirType args resultType =
         ( boxOps, argsForClosure, ctx2 ) =
             boxArgsForClosureBoundary ctx1 argsWithTypes
 
-        allOperandNames =
-            funcVar :: List.map Tuple.first argsForClosure
-
-        allOperandTypes =
-            funcMlirType :: List.map Tuple.second argsForClosure
-
-        newargsSlotKinds =
-            Ops.slotKindsAttr (List.map Tuple.second argsForClosure)
-
-        ( resVar, ctx3 ) =
-            Ctx.freshVar ctx2
+        ext =
+            emitGenericPapExtend ctx2
+                { callKind = "segmentation_unknown", reason = reason, stageHint = Nothing }
+                ( funcVar, funcMlirType )
+                argsForClosure
+                resultType
 
         callResultMlirType =
             Types.monoTypeToAbi resultType
 
-        segResultKind =
-            Types.mlirTypeToKind callResultMlirType
-
-        resultMlirType =
-            if segResultKind == 0 then
-                Types.ecoValue
-
-            else
-                callResultMlirType
-
-        segResultKindAttr =
-            if segResultKind == 0 then
-                []
-
-            else
-                [ ( "_result_kind", IntAttr (Just I8) segResultKind ) ]
-
-        papExtendAttrs =
-            Dict.fromList
-                ([ ( "_operand_types"
-                   , ArrayAttr Nothing
-                        (List.map TypeAttr allOperandTypes)
-                   )
-                 , ( "slot_kinds", newargsSlotKinds )
-                 , ( "_call_kind", StringAttr "segmentation_unknown" )
-                 ]
-                    ++ gencallReasonAttr ctx 9
-                    ++ segResultKindAttr
-                )
-
-        ( ctx4, papExtendOp ) =
-            Ops.mlirOp ctx3 "eco.papExtend"
-                |> Ops.opBuilder.withOperands allOperandNames
-                |> Ops.opBuilder.withResults [ ( resVar, resultMlirType ) ]
-                |> Ops.opBuilder.withAttrs papExtendAttrs
-                |> Ops.opBuilder.build
-
         ( coerceOps, finalVar, finalCtx ) =
-            coerceResultToType ctx4 resVar resultMlirType callResultMlirType
+            coerceResultToType ext.ctx ext.resultVar ext.resultType callResultMlirType
     in
-    { ops = argOps ++ boxOps ++ [ papExtendOp ] ++ coerceOps
+    { ops = argOps ++ boxOps ++ ext.ops ++ coerceOps
     , resultVar = finalVar
     , resultType = callResultMlirType
     , ctx = finalCtx
     }
 
 
-{-| Generates a generic application (`generateGenericApply`) and coerces its
-value to the ABI of `resultType`.
+{-| Generates a generic application, using the call's lambda-set hint
+(`hintedGenericCall`), and coerces its value to the ABI of `resultType`.
 -}
-generateGenericApplyCoerced : Ctx.Context -> Mono.MonoExpr -> List Mono.MonoExpr -> Mono.MonoType -> ExprResult
-generateGenericApplyCoerced ctx func args resultType =
+generateGenericApplyCoerced : Ctx.Context -> Maybe Int -> Mono.MonoExpr -> List Mono.MonoExpr -> Mono.MonoType -> ExprResult
+generateGenericApplyCoerced ctx setArity func args resultType =
     let
         genericRes =
-            generateGenericApply ctx func args resultType
+            hintedGenericCall GenericApplyArm ctx setArity func args resultType
 
         expectedType =
             Types.monoTypeToAbi resultType
@@ -2127,6 +2067,132 @@ generateGenericApplyCoerced ctx func args resultType =
     , resultType = expectedType
     , ctx = finalCtx
     }
+
+
+{-| The largest stage hint the front end writes. The guarded `sat[N]` fast
+edge exists only for sites of 1 to 8 new arguments (`emitSatBegin` in
+EcoToLLVMClosures.cpp), and a hint is worth acting on only where it lets a call
+take that edge: splitting a wider call would make two runtime calls where the
+unsplit call makes one.
+-}
+stageHintMaxArgs : Int
+stageHintMaxArgs =
+    8
+
+
+{-| The two generic call kinds a lambda-set hint applies to, which differ in
+the `_call_kind` of the extend and in how arguments are boxed
+(`generateGenericApply`, `generateUnknownSegmentationCall`).
+-}
+type GenericArm
+    = GenericApplyArm
+    | SegUnknownArm
+
+
+{-| Generates a generic call using `setArity`, the first-stage arity all
+members of the callee's lambda set agree on (CGEN_094). A hint `h` of 1 to
+`stageHintMaxArgs` is written as `_stage_hint = h` on the extend, so that
+EcoPAPSimplify does not fuse a following extend past it; when the call passes
+more than `h` arguments it is split there (`generateHintedSplitCall`). Every
+fast path this enables is the guarded `sat[N]` edge, so a wrong hint costs
+speed only. The result is not coerced.
+-}
+hintedGenericCall : GenericArm -> Ctx.Context -> Maybe Int -> Mono.MonoExpr -> List Mono.MonoExpr -> Mono.MonoType -> ExprResult
+hintedGenericCall arm ctx setArity func args resultType =
+    let
+        hint =
+            case setArity of
+                Just h ->
+                    if h >= 1 && h <= stageHintMaxArgs then
+                        Just h
+
+                    else
+                        Nothing
+
+                Nothing ->
+                    Nothing
+    in
+    case hint of
+        Just h ->
+            if h < List.length args then
+                generateHintedSplitCall arm ctx func h args resultType
+
+            else
+                genericArmCall arm ctx hint func args resultType
+
+        Nothing ->
+            genericArmCall arm ctx Nothing func args resultType
+
+
+{-| Generates the single generic extend of `arm` (`generateGenericApply` or
+`generateUnknownSegmentationCall`).
+-}
+genericArmCall : GenericArm -> Ctx.Context -> Maybe Int -> Mono.MonoExpr -> List Mono.MonoExpr -> Mono.MonoType -> ExprResult
+genericArmCall arm =
+    case arm of
+        GenericApplyArm ->
+            generateGenericApply
+
+        SegUnknownArm ->
+            generateUnknownSegmentationCall
+
+
+{-| Generates a generic call that passes more than `h` arguments, where `h` is
+the arity its callee's lambda set agrees on, as two extends: one of the first
+`h` arguments, carrying `_stage_hint = h`, which can take the guarded `sat[h]`
+edge, and a `segmentation_unknown` extend of the rest applied to its result
+(`_gencall_reason` 11). That is what the runtime's generic apply does with the
+unsplit call (CGEN_058), so the two agree whatever the closure's arity.
+
+All the arguments are evaluated before either extend, as in the unsplit call,
+so a `Debug.log` in the closure's first stage still logs after them. The first
+batch is boxed as `arm` boxes, and the rest as for any closure.
+
+-}
+generateHintedSplitCall : GenericArm -> Ctx.Context -> Mono.MonoExpr -> Int -> List Mono.MonoExpr -> Mono.MonoType -> ExprResult
+generateHintedSplitCall arm ctx func h args resultType =
+    let
+        funcResult : ExprResult
+        funcResult =
+            generateExpr ctx func
+
+        ( argOps, argsWithTypes, ctx1 ) =
+            generateExprListTyped funcResult.ctx args
+
+        ( boxOps1, batch1, ctx2 ) =
+            case arm of
+                GenericApplyArm ->
+                    boxArgsForClosureBoundary ctx1 (List.take h argsWithTypes)
+
+                SegUnknownArm ->
+                    boxArgsToEvaluatorParams (knownEvaluatorParamAbi ctx func) ctx1 (List.take h argsWithTypes)
+
+        ( boxOps2, rest, ctx3 ) =
+            boxArgsForClosureBoundary ctx2 (List.drop h argsWithTypes)
+
+        firstKind =
+            case arm of
+                GenericApplyArm ->
+                    "generic_apply"
+
+                SegUnknownArm ->
+                    "segmentation_unknown"
+
+        first =
+            emitGenericPapExtend ctx3
+                { callKind = firstKind, reason = gencallCalleeReason func, stageHint = Just h }
+                ( funcResult.resultVar, funcResult.resultType )
+                batch1
+                (Mono.peelArgs h (Mono.typeOf func))
+
+        restRes =
+            emitGenericPapExtend first.ctx
+                { callKind = "segmentation_unknown", reason = 11, stageHint = Nothing }
+                ( first.resultVar, first.resultType )
+                rest
+                resultType
+    in
+    { restRes | ops = funcResult.ops ++ argOps ++ boxOps1 ++ boxOps2 ++ first.ops ++ restRes.ops }
 
 
 {-| Returns the call's fast-dispatch stamp when the call supplies exactly the

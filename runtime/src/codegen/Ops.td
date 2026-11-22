@@ -1541,6 +1541,12 @@ def Eco_PapExtendOp : Eco_Op<"papExtend", [
     (e.g. "generic_apply", "segmentation_unknown", "singleton_fast",
     "direct_known_segmentation"); only generic-mode lowering reads it.
 
+    `_stage_hint = h` (a discardable i64 attribute of generic mode, not
+    declared below) says that the closure's lambda set takes h arguments in
+    its first stage. It is advisory (CGEN_094): only EcoPAPSimplify reads it,
+    to keep from fusing a following extend into this one past h, and no
+    lowering does.
+
     Examples:
     ```mlir
     // Typed mode: saturated call with known remaining arity

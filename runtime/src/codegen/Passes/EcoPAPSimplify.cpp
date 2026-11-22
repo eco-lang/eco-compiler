@@ -244,6 +244,11 @@ struct MultiUsePapElisionPattern : public OpRewritePattern<PapCreateOp> {
  * the closure once it has enough arguments and applies the rest to the result, so one extend with `%a ++ %b`
  * behaves as the two in sequence. `_gencall_reason` is taken from the second extend, else the first, else set to
  * 10 for a generic fusion. It does not fire when the fused newargs would exceed `kClosureMaxArity`.
+ *
+ * It does not fire either when the first extend carries `_stage_hint = h` (CGEN_094) and the fused extend would
+ * have more than h newargs: the first extend's closure takes h arguments in its first stage, so the fused extend
+ * would be an over-application, which the guarded `sat[N]` edge cannot take, where the two extends can each take
+ * it. When it does fire on such an extend, the generic fused extend keeps the hint.
  */
 struct FusePapExtendChainPattern : public OpRewritePattern<PapExtendOp> {
     using OpRewritePattern::OpRewritePattern;
@@ -259,12 +264,19 @@ struct FusePapExtendChainPattern : public OpRewritePattern<PapExtendOp> {
         if (!extendOp.getClosure().hasOneUse())
             return failure();
 
+        auto prevNewargs = prevExtend.getNewargs();
+        auto curNewargs = extendOp.getNewargs();
+
+        // A generic extend carrying `_stage_hint = h` applies a closure whose lambda set says it takes h arguments
+        // in its first stage (CGEN_094). Fusing a following extend past h would turn a call that can take the
+        // guarded `sat[h]` edge into an over-application, which cannot.
+        auto stageHint = prevExtend->getAttrOfType<IntegerAttr>("_stage_hint");
+        if (stageHint && static_cast<int64_t>(prevNewargs.size() + curNewargs.size()) > stageHint.getInt())
+            return failure();
+
         auto prevRemainingAttr = prevExtend.getRemainingArityAttr();
         auto curRemainingAttr = extendOp.getRemainingArityAttr();
         bool bothTyped = static_cast<bool>(prevRemainingAttr) && static_cast<bool>(curRemainingAttr);
-
-        auto prevNewargs = prevExtend.getNewargs();
-        auto curNewargs = extendOp.getNewargs();
 
         // A typed first extend that saturates is a call, and a typed fusion must not fold a call away. A generic
         // first extend may saturate too, but the fused extend is then generic and makes the same call.
@@ -308,6 +320,9 @@ struct FusePapExtendChainPattern : public OpRewritePattern<PapExtendOp> {
             fusedOp->setAttr("_gencall_reason", prevReason);
         else if (!bothTyped)
             fusedOp->setAttr("_gencall_reason", rewriter.getI64IntegerAttr(10));
+        // The fused extend stays within the hint, and keeps it so that a further extend is held to it too.
+        if (stageHint && !bothTyped)
+            fusedOp->setAttr("_stage_hint", stageHint);
 
         rewriter.replaceOp(extendOp, fusedOp.getResult());
         // The first extend is now unused, but it is not Pure, so the driver would leave it to run as a discarded

@@ -136,6 +136,8 @@ callKind =
 
 Notice that a known segmentation needs every test to pass, and an arity read only from the type never claims one. Each fallback is a call the runtime can execute from the closure header: with unknown segmentation the runtime splits the arguments by the header, and a generic apply does all of it at run time. A dynamic callee is a function-typed parameter of the enclosing tail-recursive function. These are the only places a whole-program staging analysis would mark dynamic, so a direct test on the callee does that analysis's job. A callee that traces back to a partial application with a polymorphic return is generic too, because what the producer shows does not describe the function that comes back.
 
+A generic call also records `setArity`: the first-stage arity on which every member of its callee's complete lambda set agrees. The members' arities are read from closures, from the nodes of globals and from kernels' flattened types (`Compiler.MonoOpt.MemberArity`), before the lambda-set tables are emptied. The call kind does not change. A wrong `setArity` costs only speed, since code generation uses it only as a hint behind the run-time guards of the fast edge (CGEN_094, and see `closures-and-calls.md`). Trusting it as a producer would make the lambda set a fourth source of known staging; that step is deferred (plans/staging-from-lambda-sets.md, part B).
+
 A `case` or `if` that produces a closure yields known stages only when every branch, including branches inlined into the decision tree, is a closure with the same stages. Eco does not re-stage branches so that they agree. A join whose branches differ is left to the runtime, which applies it from the closure header.
 
 ## One kernel table, and the rule about `Debug`
