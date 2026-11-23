@@ -7,7 +7,7 @@ module Compiler.IR.Mono exposing
     , TupleShape(..), tupleArity, tupleContainerKind, tupleIndexedMap, tupleMap, tupleMap2, tupleMapAccum, tupleMapAccumR, tupleOf, tupleToList
     , SpecId, SpecKey(..), SpecKeyMap, SpecMap, SpecializationRegistry
     , ReprInfo, NullableInfo, NullWord, emptyNullWord, nullWordMaxIndex, TagForm(..), emptyReprInfo
-    , annoCoverage, annoCovers, clearLssTables, collectAnnoMembers
+    , annoCoverage, annoCovers, arrowAnnosInOrder, clearLssTables, collectAnnoMembers
     , containsAnyMVar, decomposeFunctionType, peelArgs, defaultCallInfo, dtPathType, emptyAnnoCoverage
     , enrichAnnotations, enrichAnnotationsTopOnly, eqKeyLayout, eqKeySpec, eqLayout, eqModuloTopLabel
     , getMonoPathType, hasTopAnno, hasVarAnno, headAnno, isFunctionType, isTopAnno
@@ -99,7 +99,7 @@ made.
 
 # Functions
 
-@docs annoCoverage, annoCovers, clearLssTables, collectAnnoMembers
+@docs annoCoverage, annoCovers, arrowAnnosInOrder, clearLssTables, collectAnnoMembers
 @docs containsAnyMVar, decomposeFunctionType, peelArgs, defaultCallInfo, dtPathType, emptyAnnoCoverage
 @docs enrichAnnotations, enrichAnnotationsTopOnly, eqKeyLayout, eqKeySpec, eqLayout, eqModuloTopLabel
 @docs getMonoPathType, hasTopAnno, hasVarAnno, headAnno, isFunctionType, isTopAnno
@@ -1584,6 +1584,47 @@ typeNodesGoStep t b =
 typeNodesGoList : List MonoType -> Int -> Int
 typeNodesGoList ts b =
     List.foldl typeNodesGoStep b ts
+
+
+{-| Returns the annotation of every arrow in the type, in a fixed order: for a
+function type its own annotation, then those in its argument types from left to
+right, then those in its result type; through list elements, tuple elements in
+order, record fields in ascending name order and custom-type arguments in order.
+Other types have no arrows. A type with no arrow gives the empty list.
+
+Two types give equal lists exactly when their arrows, met in this order, carry
+equal annotations, which is what a capture signature compares
+(`Compiler.Monomorphize.Solver.Engine.renderCaptureSig`).
+
+-}
+arrowAnnosInOrder : MonoType -> List LambdaSetAnno
+arrowAnnosInOrder monoType =
+    List.reverse (arrowAnnosGo monoType [])
+
+
+{-| Returns `acc` with the annotations of the type's arrows put in front of it,
+the last one first, for `arrowAnnosInOrder`.
+-}
+arrowAnnosGo : MonoType -> List LambdaSetAnno -> List LambdaSetAnno
+arrowAnnosGo monoType acc =
+    case monoType of
+        MFunction _ anno args result ->
+            arrowAnnosGo result (List.foldl arrowAnnosGo (anno :: acc) args)
+
+        MList _ inner ->
+            arrowAnnosGo inner acc
+
+        MTuple _ elems ->
+            List.foldl arrowAnnosGo acc (tupleToList elems)
+
+        MRecord _ fields ->
+            Dict.foldl (\_ t a -> arrowAnnosGo t a) acc fields
+
+        MCustom _ _ _ args ->
+            List.foldl arrowAnnosGo acc args
+
+        _ ->
+            acc
 
 
 {-| Returns the members named by every `LSet` and `LPartial` annotation in the

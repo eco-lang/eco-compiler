@@ -9,44 +9,47 @@ an annotation saying which function values can flow through it. Each such
 value is a _member_, named by an interned integer id. A _specialization_
 (spec) is one instantiation of a definition at a `MonoType`, numbered by a
 `SpecId`. When a spec's body is translated, each lambda in it, other than the
-definition's own root lambda, is keyed by a _layout-qualified key_, which
-`Engine.layoutQualKey` builds as `l|<raw lambda id>|<widened key>`. The
-_widened key_ is the `toComparableMonoType` string of the spec's type with
-every arrow annotation replaced by top (`LTop`), the widened annotation that
-does not restrict which function values flow, as `Mono.widenSets` does,
-recorded when the spec is created. Two specs whose types differ only in
-annotations therefore have equal widened keys, and the same lambda minted in
-either is keyed alike, while specs whose types differ in layout key it
-differently. The exception is a spec whose demand already carries a different
-id for that lambda: that id is reused and recorded as tied, which blocks it.
-A spec with no recorded widened key has its `SpecId` in that position
-instead, which the solver counts as a _fallback_. A non-zero _instance tag_,
-which distinguishes the instances of a let-bound function translated more
-than once, adds `|#<tag>` to the end of the key.
+definition's own root lambda, is keyed by its _family key_, which
+`Engine.layoutQualKey` builds as `l|<raw lambda id>|<widened key>`, followed
+by its _capture signature_ when that is not empty. The _widened key_ is the
+`toComparableMonoType` string of the spec's type with every arrow annotation
+replaced by top (`LTop`), the widened annotation that does not restrict which
+function values flow, as `Mono.widenSets` does, recorded when the spec is
+created. The capture signature (plans/lss-capture-qualified-members.md) names
+the lambda sets of the function values the lambda's body uses without binding
+them. Two specs whose types differ only in annotations the lambda does not
+capture therefore key it alike, while specs whose types differ in layout, or in
+the set of a function the lambda captures, key it differently. The exception
+is a spec whose demand already carries a different id for that lambda: that id
+is reused and recorded as tied, which blocks it. A spec with no recorded
+widened key has its `SpecId` in that position instead, which the solver counts
+as a _fallback_. A non-zero _instance tag_, which distinguishes the instances
+of a let-bound function translated more than once, adds `|#<tag>` to the end
+of the family key.
 
-Two pipeline fixtures run the solver engine with its lambda-set report on,
-through `TestLogic.TestPipeline.runSolverMonoWithReport`, and read three
-counters from the report's `layoutQual` line: `shared`, mints whose id was
-first minted under a different spec; `fallback`, mints keyed by a `SpecId`;
-and `tieBypass`, mints where the id carried in by the spec's demand equals
-the id the mint interns, so that nothing is recorded as tied. The tests
-read `shared` only as at least one; since folded root-lambda mints also bump
-it, they also read the closure member ids in each spec's body directly.
+Three pipeline fixtures run the solver engine with its lambda-set report on,
+through `TestLogic.TestPipeline.runSolverMonoWithReport`, and read counters
+from the report's `layoutQual` line: `fallback`, mints keyed by a `SpecId`, and
+`capQual`, mints whose key carries a capture signature. They also read the
+closure member ids in each spec's body directly.
 
 The _spiral_ fixture is `loop n f`, which calls itself, outside tail
 position, with a new lambda wrapping `f`, and `testValue`, which calls
 `loop 3` with an identity lambda. Each recursive call demands `loop` at a
 type whose callback annotation names the lambda minted by the caller's spec.
-Because those specs differ only in annotations, they mint that lambda under
-one key; had they minted different ids, the solver would close the spiral by
-recording the member as tied, which blocks it.
+The second spec's copy of that lambda captures `f` with the first copy in its
+set, so its key differs, and the solver closes the spiral by reusing the
+first copy's id, recorded as tied, which blocks it.
 `Compiler.Monomorphize.Solver.MuTieTest` builds the same `loop`.
 
 The _split_ fixture is `mid f x = applyHof (\v -> f (v + x)) x` with
 `applyHof g y = g y`, and `testValue` calls `mid inc 1` and `mid dec 2`.
 The two calls give `mid` types that differ only in the annotation on `f`,
 so `mid` has two specs, and each mints its own copy of the inner lambda and
-passes it to `applyHof`.
+passes it to `applyHof`. The copies capture `f` with different sets.
+
+The _non-capturing split_ fixture is the same with
+`mid2 f x = f x + applyHof (\v -> v + x) x`: the inner lambda uses only `x`.
 
 The tests establish:
 
@@ -68,25 +71,25 @@ The tests establish:
     is not 0, the tag that means no instance.
   - Interning one key twice with `Engine.internMemberKey` gives the same id
     and leaves the next free id unchanged.
-  - The spiral fixture finishes with no blocked members, at most three specs
-    of `loop`, `tieBypass` and `shared` at least one, `fallback` zero, and
-    every `loop` spec carrying the same two closure member ids (its root
-    lambda and the inner lambda).
-  - The split fixture gives two specs of `mid` and one of `applyHof`, with
-    `shared` at least one, `fallback` zero, and both `mid` specs carrying
-    the same two closure member ids.
+  - The spiral fixture finishes with one blocked member, at most three specs
+    of `loop`, `fallback` zero, and every `loop` spec carrying the same two
+    closure member ids (its root lambda and the inner lambda).
+  - The split fixture gives two specs of `mid` and two of `applyHof`, with
+    `fallback` zero, `capQual` at least two, and the two `mid` specs sharing
+    their root lambda's id but each carrying its own id for the inner lambda.
   - The split fixture with a budget of one spec per global
     (`maxSpecsPerGlobal = 1`), past which a global's new specs are keyed by
-    their widened type, gives `shared` at least one, `fallback` zero, both
-    `mid` specs carrying the same two closure member ids, and one spec of
-    `applyHof`: the demand past the budget creates a second spec, whose
-    stored type ends equal to the first's, and the solver merges the two
-    (`mergeConvergedSpecs`, MONO\_005).
+    their widened type, still gives the inner lambda two ids and `applyHof`
+    two specs: a spec past the budget stores the demand's type, sets
+    included, and the two `applyHof` specs' stored types never converge.
+  - The non-capturing split fixture gives two specs of `mid2` and one of
+    `applyHof`, both `mid2` specs carrying the same two closure member ids.
 
-Among what is not tested: a tie to a different id, which records the member
-as blocked; the folding of a definition's own root lambda into its global's
-`g|` key; instance tags produced by translating a real let-bound function;
-the values of the ids the fixtures' lambdas get; and the generated code.
+Among what is not tested: the folding of a definition's own root lambda into
+its global's `g|` key; instance tags produced by translating a real let-bound
+function; the values of the ids the fixtures' lambdas get; and the generated
+code. `Compiler.Monomorphize.Solver.CaptureQualTest` tests capture signatures
+themselves, agreement of a lambda's id across mint sites, and termination.
 
 -}
 
@@ -119,7 +122,7 @@ import TestLogic.TestPipeline as Pipeline
 
 
 {-| The tests of layout-qualified member keys: the pure key functions, the
-spiral fixture and the split fixture.
+spiral fixture and the split fixtures.
 -}
 suite : Test
 suite =
@@ -340,6 +343,56 @@ expectSameMembers count perSpec =
 
 
 
+{-| Passes when there are `count` lists in `perSpec`, each holding two distinct
+member ids, exactly one id is carried by every spec, and the other ids are all
+different. Each spec of the split fixtures holds two closures with member ids,
+the definition's own root lambda, whose `g|` id is the same in every spec, and
+the inner lambda, so this says that every spec minted the inner lambda under
+its own id.
+-}
+expectSplitInner : Int -> List (List Int) -> Expect.Expectation
+expectSplitInner count perSpec =
+    let
+        common =
+            case perSpec of
+                first :: rest ->
+                    List.filter (\m -> List.all (List.member m) rest) first
+
+                [] ->
+                    []
+
+        others =
+            List.concatMap (List.filter (\m -> not (List.member m common))) perSpec
+
+        distinct =
+            List.foldl
+                (\m acc ->
+                    if List.member m acc then
+                        acc
+
+                    else
+                        m :: acc
+                )
+                []
+                others
+    in
+    if
+        List.length perSpec
+            == count
+            && List.all (\ms -> List.length ms == 2) perSpec
+            && List.length common
+            == 1
+            && List.length others
+            == count
+            && List.length distinct
+            == count
+    then
+        Expect.pass
+
+    else
+        Expect.fail ("expected " ++ String.fromInt count ++ " specs sharing one closure member and each with its own second member, got " ++ Debug.toString perSpec)
+
+
 -- ====== 2. SPIRAL PINS (MuTieTest fixture) ======
 
 
@@ -450,7 +503,12 @@ leadingDigits s =
 -}
 spiralPins : List Test
 spiralPins =
-    [ Test.test "equal-id bypass — the spiral closes, nothing recorded, tieBypass counts" <|
+    [ -- plans/lss-capture-qualified-members.md §3.6: the second generation's inner lambda
+      -- captures `f` with the first generation's member in its set, so its key differs and
+      -- the mint ties to that member, which blocks it. Before capture signatures the two
+      -- generations shared one key and the equal-id bypass closed the spiral with nothing
+      -- blocked; the call through `f` was declined by the fingerprint fence instead.
+      Test.test "the spiral closes by a μ-tie: one member blocked, at most three specs" <|
         \() ->
             case runSpiral of
                 Err msg ->
@@ -458,29 +516,18 @@ spiralPins =
 
                 Ok f ->
                     Expect.all
-                        [ \x -> Expect.equal 0 x.blockedCount
+                        [ \x -> Expect.equal 1 x.blockedCount
                         , \x ->
                             if x.loopSpecs <= 3 then
                                 Expect.pass
 
                             else
                                 Expect.fail ("spiral did not close: loopSpecs=" ++ String.fromInt x.loopSpecs)
-                        , \x ->
-                            if counterOf "tieBypass=" x.report >= 1 then
-                                Expect.pass
-
-                            else
-                                Expect.fail ("expected tieBypass >= 1 in: " ++ x.report)
-                        , \x ->
-                            if counterOf "shared=" x.report >= 1 then
-                                Expect.pass
-
-                            else
-                                Expect.fail ("expected shared >= 1 in: " ++ x.report)
                         , \x -> Expect.equal 0 (counterOf "fallback=" x.report)
 
-                        -- What `shared` shows only in part: every spec of
-                        -- `loop` minted its inner lambda under one id.
+                        -- The tie gives the second generation's closure the
+                        -- first generation's id, so every spec of `loop`
+                        -- carries the same two closure members.
                         , \x -> expectSameMembers x.loopSpecs x.loopInner
                         ]
                         f
@@ -542,12 +589,40 @@ runSplitWithBudget budget =
             )
 
 
+{-| The spec counts of `mid2` and `applyHof` and the report text for the
+non-capturing split fixture under the default spec budget, or the pipeline's
+error.
+-}
+runSplitNoCapture : Result String SplitFacts
+runSplitNoCapture =
+    let
+        defaults =
+            Config.defaultLss
+    in
+    Pipeline.runSolverMonoWithReport
+        Config.defaultLimits
+        { defaults | enabled = True }
+        splitNoCaptureModule
+        |> Result.map
+            (\( Mono.MonoGraph g, maybeReport ) ->
+                { midSpecs = specCount "mid2" g
+                , hofSpecs = specCount "applyHof" g
+                , midInner = closureMembersPerSpec "mid2" g
+                , report = Maybe.withDefault "" maybeReport
+                }
+            )
+
+
 {-| The tests of the split fixture, with an unlimited budget and with a
-budget of one spec per global.
+budget of one spec per global, and of the non-capturing split fixture.
 -}
 splitPins : List Test
 splitPins =
-    [ Test.test "mid's root split persists, the PROPAGATED applyHof split collapses to 1" <|
+    [ -- plans/lss-capture-qualified-members.md: this pin was "the PROPAGATED applyHof split
+      -- collapses to 1". The inner lambda captures `f`, whose set is {inc} in one spec of
+      -- `mid` and {dec} in the other, so its two copies are now two members, `applyHof` is
+      -- demanded once for each, and each copy of `applyHof` sees a one-member set.
+      Test.test "mid's root split persists, and the inner lambda's capture splits applyHof" <|
         \() ->
             case runSplit of
                 Err msg ->
@@ -556,21 +631,23 @@ splitPins =
                 Ok f ->
                     Expect.all
                         [ \x -> Expect.equal 2 x.midSpecs
-                        , \x -> Expect.equal 1 x.hofSpecs
+                        , \x -> Expect.equal 2 x.hofSpecs
+                        , \x -> Expect.equal 0 (counterOf "fallback=" x.report)
                         , \x ->
-                            if counterOf "shared=" x.report >= 1 then
+                            if counterOf "capQual=" x.report >= 2 then
                                 Expect.pass
 
                             else
-                                Expect.fail ("expected shared >= 1 in: " ++ x.report)
-                        , \x -> Expect.equal 0 (counterOf "fallback=" x.report)
-
-                        -- `shared` is also bumped by root-lambda folds, so
-                        -- read the inner lambda's ids directly.
-                        , \x -> expectSameMembers 2 x.midInner
+                                Expect.fail ("expected capQual >= 2 in: " ++ x.report)
+                        , \x -> expectSplitInner 2 x.midInner
                         ]
                         f
-    , Test.test "budget twins share: annotation-created + budget-widened specs of one global mint ONE id" <|
+    , -- plans/lss-capture-qualified-members.md: this pin was "budget twins share ... ONE id".
+      -- `mid`'s second spec is past the budget, but its stored type still carries `f:{dec}`
+      -- (the registry stores the demand), so the inner lambda's ids differ. `applyHof`'s
+      -- second demand, past its budget, is keyed by its widened type and creates a second
+      -- spec, and the two stored types ({L1} and {L2}) never converge, so nothing merges them.
+      Test.test "budget twins: a capture that differs still splits past the budget" <|
         \() ->
             case runSplitWithBudget 1 of
                 Err msg ->
@@ -578,20 +655,27 @@ splitPins =
 
                 Ok f ->
                     Expect.all
-                        [ \x ->
-                            if counterOf "shared=" x.report >= 1 then
-                                Expect.pass
+                        [ \x -> Expect.equal 0 (counterOf "fallback=" x.report)
+                        , \x -> expectSplitInner 2 x.midInner
+                        , \x -> Expect.equal 2 x.hofSpecs
+                        ]
+                        f
+    , -- plans/lss-capture-qualified-members.md §5 step 1, T2: the sharing guard. The two
+      -- specs of `mid2` differ only in the set on `f`, which the inner lambda does not
+      -- capture, so the lambda keeps one id and `applyHof` keeps one spec, as before
+      -- capture signatures.
+      Test.test "a split the inner lambda does not capture still collapses applyHof to 1" <|
+        \() ->
+            case runSplitNoCapture of
+                Err msg ->
+                    Expect.fail msg
 
-                            else
-                                Expect.fail ("expected shared >= 1 in: " ++ x.report)
+                Ok f ->
+                    Expect.all
+                        [ \x -> Expect.equal 2 x.midSpecs
+                        , \x -> Expect.equal 1 x.hofSpecs
                         , \x -> Expect.equal 0 (counterOf "fallback=" x.report)
                         , \x -> expectSameMembers 2 x.midInner
-
-                        -- Past its budget of one spec, `applyHof`'s next
-                        -- demand is keyed by its widened type, which gives
-                        -- a second spec; its stored type ends equal to the
-                        -- first's, so `mergeConvergedSpecs` merges the two.
-                        , \x -> Expect.equal 1 x.hofSpecs
                         ]
                         f
     ]
@@ -660,10 +744,10 @@ spiralValueDef =
 
 The two calls of `mid` give its `f` arrow different member sets at the same
 layout, so `mid` has two specs, and each mints its own copy of the inner
-lambda. The two specs have equal widened keys, so the two copies are keyed
-alike, although they capture different functions `f`. Whether a call through
-the id minted under that key may be dispatched directly is left to
-`Compiler.MonoOpt.AbiCloning`, and is not tested here.
+lambda. The two specs have equal widened keys, but the copies capture `f` with
+different sets, so their capture signatures differ and they get two ids
+(plans/lss-capture-qualified-members.md). `applyHof` is then demanded once for
+each id.
 
 -}
 splitModule : Src.Module
@@ -707,5 +791,61 @@ splitModule =
                 binopsExpr
                     [ ( callExpr (varExpr "mid") [ varExpr "inc", intExpr 1 ], "+" ) ]
                     (callExpr (varExpr "mid") [ varExpr "dec", intExpr 2 ])
+          }
+        ]
+
+
+{-| The non-capturing split fixture: `inc`, `dec` and `applyHof` as in
+`splitModule`, `mid2 f x = f x + applyHof (\v -> v + x) x`, and
+`testValue = mid2 inc 1 + mid2 dec 2`, all annotated with `Int` types.
+
+The two calls of `mid2` give its `f` arrow different member sets, so `mid2` has
+two specs, but the inner lambda uses only `x`, an `Int`, so its capture
+signature is empty in both and it keeps one id: `applyHof` is demanded at one
+key (plans/lss-capture-qualified-members.md §5 step 1, T2).
+
+-}
+splitNoCaptureModule : Src.Module
+splitNoCaptureModule =
+    makeModuleWithTypedDefs "Test"
+        [ { name = "inc"
+          , args = [ pVar "x" ]
+          , tipe = tLambda (tType "Int" []) (tType "Int" [])
+          , body = binopsExpr [ ( varExpr "x", "+" ) ] (intExpr 1)
+          }
+        , { name = "dec"
+          , args = [ pVar "x" ]
+          , tipe = tLambda (tType "Int" []) (tType "Int" [])
+          , body = binopsExpr [ ( varExpr "x", "-" ) ] (intExpr 1)
+          }
+        , { name = "applyHof"
+          , args = [ pVar "g", pVar "y" ]
+          , tipe =
+                tLambda (tLambda (tType "Int" []) (tType "Int" []))
+                    (tLambda (tType "Int" []) (tType "Int" []))
+          , body = callExpr (varExpr "g") [ varExpr "y" ]
+          }
+        , { name = "mid2"
+          , args = [ pVar "f", pVar "x" ]
+          , tipe =
+                tLambda (tLambda (tType "Int" []) (tType "Int" []))
+                    (tLambda (tType "Int" []) (tType "Int" []))
+          , body =
+                binopsExpr
+                    [ ( callExpr (varExpr "f") [ varExpr "x" ], "+" ) ]
+                    (callExpr (varExpr "applyHof")
+                        [ lambdaExpr [ pVar "v" ]
+                            (binopsExpr [ ( varExpr "v", "+" ) ] (varExpr "x"))
+                        , varExpr "x"
+                        ]
+                    )
+          }
+        , { name = "testValue"
+          , args = []
+          , tipe = tType "Int" []
+          , body =
+                binopsExpr
+                    [ ( callExpr (varExpr "mid2") [ varExpr "inc", intExpr 1 ], "+" ) ]
+                    (callExpr (varExpr "mid2") [ varExpr "dec", intExpr 2 ])
           }
         ]

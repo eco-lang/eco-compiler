@@ -16,13 +16,17 @@ recursive call, the qualified member is part of the type the call demands, so
 the call can key a new specialization of the same function. If translating that
 one minted the lambda under a different qualifier, that member could key a
 third, and so on. The Elm type stays `Int -> Int` throughout; only the member
-ids differ. This cycle is the _qualification spiral_. Two things in
-`Compiler.Monomorphize.Solver.Engine` stop it. Two specializations that differ only in
-their lambda sets, with both widened types recorded, give the lambda the same
-id. And where the id the specialization's demand already carries for the same
-lambda differs from the one the mint would give, the _μ-tie_ reuses the
-demand-carried id instead. Member ids reused by a μ-tie are listed in the
-graph's `lssBlockedMembers`.
+ids differ. This cycle is the _qualification spiral_. Since capture signatures
+(plans/lss-capture-qualified-members.md) the lambda here is keyed by the set of
+`f` it captures too, so the second specialization's copy, which captures `f`
+with the first copy in its set, gets a different key. Two things in
+`Compiler.Monomorphize.Solver.Engine` stop the spiral. Where the id the
+specialization's demand already carries for the same lambda differs from the
+one the mint would give, the _μ-tie_ reuses the demand-carried id instead; that
+is what closes this fixture. And a capture signature names a captured lambda by
+its family, never by its own capture signature, so keys cannot nest without
+end even where no tie applies (`CaptureQualTest` covers that case). Member ids
+reused by a μ-tie are listed in the graph's `lssBlockedMembers`.
 
 The fixture is one module, `Test`:
 

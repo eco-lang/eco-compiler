@@ -1723,7 +1723,7 @@ translated once whichever way the call goes.
 -}
 translateIndirectCallBody : A.Region -> TOpt.Expr TypeIds.MVarId -> List (TOpt.Expr TypeIds.MVarId) -> Can.Type TypeIds.MVarId -> Step Mono.MonoExpr
 translateIndirectCallBody region func args callCanType s0 =
-    case Engine.traverse translate args s0 of
+    case translateArgsLambdasLast args s0 of
         ( monoArgs, s1 ) ->
             case translate func s1 of
                 ( monoFunc, s2 ) ->
@@ -2576,7 +2576,7 @@ translateGlobalCallFast region funcRegion global funcCanType args callCanType s0
                         else
                             demandUnify callCanType resultMonoType s2
                 in
-                case Engine.traverse translate args s3 of
+                case translateArgsLambdasLast args s3 of
                     ( monoArgs, s4 ) ->
                         case enqueueSpecStamped global funcMonoType s4 of
                             ( specId, s5 ) ->
@@ -2640,7 +2640,7 @@ translateGlobalCallGroundMemo region funcRegion global funcCanType args callCanT
                         ( funcMonoType, s4 ) ->
                             case callResultType (List.length args) funcMonoType callCanType s4 of
                                 ( resultMonoType, s5 ) ->
-                                    case Engine.traverse translate args s5 of
+                                    case translateArgsLambdasLast args s5 of
                                         ( monoArgs, s6 ) ->
                                             case enqueueSpecStamped global funcMonoType s6 of
                                                 ( specId, s7 ) ->
@@ -3191,7 +3191,7 @@ translated normally. The stash has one entry per argument.
 -}
 translateArgsWith : List ArgStash -> List (TOpt.Expr TypeIds.MVarId) -> Step (List Mono.MonoExpr)
 translateArgsWith stash args s0 =
-    Engine.traverse
+    traverseLambdasLast (\( _, arg ) -> isLambdaLiteral arg)
         (\( entry, arg ) ->
             case ( entry, accessedLocalName arg ) of
                 ( StashLocalMulti v, Just localName ) ->
@@ -3218,6 +3218,55 @@ translateArgsWith stash args s0 =
         )
         (List.map2 Tuple.pair stash args)
         s0
+
+
+{-| Translates a call's arguments, translating the lambda literals among them
+after the other arguments, and returns them in their original order
+(`traverseLambdasLast`).
+-}
+translateArgsLambdasLast : List (TOpt.Expr TypeIds.MVarId) -> Step (List Mono.MonoExpr)
+translateArgsLambdasLast args =
+    traverseLambdasLast isLambdaLiteral translate args
+
+
+{-| Runs `step` over `items` and returns the results in the order of `items`,
+but, with LSS on, runs it over the items `isLambda` selects only after all the
+others.
+
+Translating a lambda literal reads its type back and files the demands of the
+calls in its body, so the lambda sets on its parameters must already hold
+every function value that can reach them. A sibling argument can add to those
+sets: in `List.foldl (\x acc -> andThen (\_ -> f x) acc) (pure ()) xs` the
+accumulator's set gets `pure ()`'s member only when the call `pure ()` is
+translated. Translated first, the lambda would see a set without it, file
+`andThen` at a one-member set, and the call `acc s` inside `andThen` would be
+stamped as a direct call to the lambda, which is wrong for the first
+iteration. A lambda literal's own member is written before any argument is
+translated (`injectArgLambdaMember`), so lambdas lose nothing by going last.
+This is the rule `translateLocalMultiLet` follows for let-bound functions,
+whose right-hand sides are translated after the uses in the let body.
+
+-}
+traverseLambdasLast : (a -> Bool) -> (a -> Step b) -> List a -> Step (List b)
+traverseLambdasLast isLambda step items s0 =
+    if not s0.env.lss.enabled || not (List.any isLambda items) || List.all isLambda items then
+        Engine.traverse step items s0
+
+    else
+        let
+            ( lambdas, others ) =
+                List.partition (\( _, item ) -> isLambda item) (List.indexedMap Tuple.pair items)
+
+            indexedStep ( i, item ) sx =
+                case step item sx of
+                    ( result, sy ) ->
+                        ( ( i, result ), sy )
+        in
+        case Engine.traverse indexedStep others s0 of
+            ( otherResults, s1 ) ->
+                case Engine.traverse indexedStep lambdas s1 of
+                    ( lambdaResults, s2 ) ->
+                        ( List.map Tuple.second (List.sortBy Tuple.first (otherResults ++ lambdaResults)), s2 )
 
 
 {-| Returns the source lambda id and parameter count of a let-bound

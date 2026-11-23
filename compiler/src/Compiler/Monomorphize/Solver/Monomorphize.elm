@@ -72,6 +72,7 @@ import Compiler.IR.Mono.Intern as Intern
 import Compiler.IR.Mono.Registry as Registry
 import Compiler.IR.Mono.Traverse as Traverse
 import Compiler.IR.Runtime.CtorTag as CtorTag
+import Compiler.IR.Typed.FreeLocals as FreeLocals
 import Compiler.IR.Typed.Optimized as TOpt
 import Compiler.IR.Typed.TypeEnv as TypeEnv
 import Compiler.IR.Typed.TypeVars as Vars
@@ -3407,7 +3408,7 @@ renderLssReport sFinal (Mono.MonoGraph g) =
                , "devirtDirect=" ++ String.fromInt stats.devirtDirect ++ " devirtKernel=" ++ String.fromInt stats.devirtKernel ++ " unqualifiedLambdaMints=" ++ String.fromInt stats.unqualifiedLambdaMints
                , "muTie: tied=" ++ String.fromInt (Dict.size sFinal.lssMemberTable.muTied) ++ " qualifiedRecorded=" ++ String.fromInt (Dict.size sFinal.lssMemberTable.lambdaQualified)
                , "grounding: grounded=" ++ String.fromInt stats.grounding.grounded ++ " deferred=" ++ String.fromInt stats.grounding.deferred
-               , "layoutQual: mints=" ++ String.fromInt stats.layoutQual.mints ++ " shared=" ++ String.fromInt stats.layoutQual.shared ++ " fallback=" ++ String.fromInt stats.layoutQual.fallback ++ " tieBypass=" ++ String.fromInt stats.layoutQual.tieBypass
+               , "layoutQual: mints=" ++ String.fromInt stats.layoutQual.mints ++ " shared=" ++ String.fromInt stats.layoutQual.shared ++ " fallback=" ++ String.fromInt stats.layoutQual.fallback ++ " tieBypass=" ++ String.fromInt stats.layoutQual.tieBypass ++ " capQual=" ++ String.fromInt stats.layoutQual.capQualified ++ " capOpaque=" ++ String.fromInt stats.layoutQual.capOpaque ++ " capMissing=" ++ String.fromInt stats.layoutQual.capMissing ++ " memoHit=" ++ String.fromInt stats.layoutQual.memoHit ++ " sigDrift=" ++ String.fromInt stats.layoutQual.sigDrift ++ " capFamiliesSplit=" ++ String.fromInt (capFamiliesSplit sFinal.lssMemberTable)
                , "instanceQual: applied=" ++ String.fromInt stats.layoutQual.instApplied ++ " capped=" ++ String.fromInt stats.layoutQual.instCapped ++ " rootSkip=" ++ String.fromInt stats.layoutQual.instRootSkip
                , "sigflow: widenedByCf=" ++ String.fromInt stats.sigStats.widenedByCf ++ " kernelFactHits=" ++ String.fromInt stats.sigStats.kernelFactHits ++ " kernelLicensed=" ++ String.fromInt stats.sigStats.kernelLicensed ++ " edges=" ++ String.fromInt stats.sigStats.edgesInstalled ++ " degraded=" ++ String.fromInt stats.sigStats.flowDegraded
                , "honestSources: topMixedFlex=" ++ String.fromInt stats.sigStats.topMixedFlexSig ++ "/" ++ String.fromInt stats.sigStats.topMixedFlexDemand
@@ -3533,6 +3534,12 @@ initState lssConfig limits currentModule nodes annotations globalTypeEnv mvarSta
         , stampArrowsInNone = mvarState.arrowsInNone
         , stampArrowsUnstampedInPartial = mvarState.arrowsUnstampedInPartial
         , limits = limits
+        , lambdaFreeLocals =
+            if lssConfig.enabled then
+                FreeLocals.lambdaTable nodes
+
+            else
+                Dict.empty
         }
     , currentGlobal = Nothing
     , store = Engine.freshStore
@@ -3922,6 +3929,17 @@ demandQualifiedFor monoType s =
             )
             Dict.empty
             (Mono.collectAnnoMembers monoType)
+
+
+{-| Returns how many lambda families hold two or more member ids
+(`LssMemberTable.familyOf`): the source-lambda instances that capture signatures
+split (plans/lss-capture-qualified-members.md).
+-}
+capFamiliesSplit : Engine.LssMemberTable -> Int
+capFamiliesSplit table =
+    Dict.foldl (\_ fam acc -> Dict.update fam (\n -> Just (Maybe.withDefault 0 n + 1)) acc) Dict.empty table.familyOf
+        |> Dict.filter (\_ n -> n >= 2)
+        |> Dict.size
 
 
 {-| Returns the node `specializeNode` gives, translating again against the same

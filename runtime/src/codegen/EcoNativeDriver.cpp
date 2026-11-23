@@ -1117,6 +1117,45 @@ int linkExecutable(const std::vector<std::string> &objectFiles,
                                      : eco::config::ecoSystemLibs())
         ecoKernelFiles.push_back(lib);
 
+    // Stable runtime placement (plans/lss-capture-qualified-members.md §9.6).
+    // By default the linker lays out .text in input order: the C runtime
+    // start files, then the program's objects, then the archive members they
+    // pull in. Every byte of generated code therefore moves the runtime and
+    // kernel code, and with it the alignment of their hot loops, so two builds
+    // of one program that differ only in unrelated generated code could run
+    // identical runtime code 5-10 % apart. An augmenting script gives the
+    // project archives' code an output section of its own placed before
+    // .text, right after the fixed-size PLT sections, where its offset does
+    // not depend on the program. Input-section rules match first-come in
+    // script order, so the section must come BEFORE .text to claim them.
+    // Executables only; both ld.bfd and ld.lld honour `INSERT BEFORE`.
+    std::string runtimeTextScript;
+    if (!sharedLib) {
+        llvm::SmallString<256> scriptPath;
+        if (!llvm::sys::fs::createTemporaryFile("eco-runtime-text", "ld",
+                                                scriptPath)) {
+            std::error_code ec;
+            llvm::raw_fd_ostream os(scriptPath, ec);
+            if (!ec) {
+                os << "SECTIONS { .text.eco_runtime : {";
+                auto archive = [&](const eco::config::RuntimeFile &f) {
+                    os << " *" << f.basename << ":*(.text .text.*)";
+                };
+                archive(eco::config::entryLib);
+                archive(runtimeLibFile);
+                for (const auto &lib : elmKernelFiles)
+                    archive(lib);
+                for (const auto &lib : ecoKernelFiles)
+                    archive(lib);
+                os << " } } INSERT BEFORE .text;\n";
+                os.close();
+                runtimeTextScript = std::string(scriptPath);
+                args.push_back(push("-T"));
+                args.push_back(push(runtimeTextScript));
+            }
+        }
+    }
+
     // Project static archives, wrapped in --start-group so cyclic deps
     // between EffectRegistry / Time / Http effect managers and the
     // Scheduler / Platform helpers resolve.
@@ -1323,6 +1362,8 @@ int linkExecutable(const std::vector<std::string> &objectFiles,
                                        /*memoryLimit=*/0, &errMsg);
     if (!gcSectionsScript.empty())
         llvm::sys::fs::remove(gcSectionsScript);
+    if (!runtimeTextScript.empty())
+        llvm::sys::fs::remove(runtimeTextScript);
     if (rc != 0) {
         llvm::errs() << "Error: ld link failed (rc=" << rc << ")";
         if (!errMsg.empty())

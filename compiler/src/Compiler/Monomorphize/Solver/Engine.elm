@@ -4,7 +4,7 @@ module Compiler.Monomorphize.Solver.Engine exposing
     , freshVar, enqueueSpec
     , freshStore, resetItem
     , mvarIdKey, pointKey
-    , AliasKey, AliasVerdict(..), ArrowFact, Env, GroundingStats, ItemAux, LayoutQualStats, LssMemberTable, LssSignature, LssStats, MemberSource(..), MonoMemo, NodeResolution, NumberInstance, NumberMultiEntry, QEntry(..), QPre(..), QShadowStats, SettledStats, SigFlowStats, SpecTally, aliasKeyEq, aliasKeyHash, bumpAppliedArrow, bumpArgFlowCensus, bumpArgFlowCensusBy, bumpCompletionJoin, bumpCompletionJoinNoop, bumpEdgeInstalled, bumpFlowDegraded, bumpKernelFactHit, bumpKernelLicensed, bumpTopMixedFlexSig, bumpWidenedByCf, bumpWidenedByKernel, bumpWidenedBySigSize, clearResidualReads, clearedAux, consS, crashFailure, emptyItemAux, emptyLssStats, emptyMemberTable, emptyMonoMemo, groundSetMembers, groundStandaloneMemberIdFor, harvestSuperTableExcept, insertVar, internMemberKey, isLocalMultiTarget, isScalarVar, kernelMemberIdFor, lambdaInstanceMemberId, layoutQualKey, localInstanceTagFor, localVarInfo, lookupCallMemo, lookupSchemeMono, lookupVar, markFlexCtorSpec, memberIdFor, membersClass, memoizedSignatureTrivial, mixTag, notePendingFailure, numberMultiRootType, papMemberIdFor, papMemberKey, putAliasVerdict, putCallMemo, putSchemeMono, recordLocalInstance, recordNumberInstance, recordSpecWidenedKey, renderFailure, restoredAux, scoped, specIdsForGlobal, srcLambdaKey, standaloneMemberGlobal, standaloneMemberIdFor, standaloneMemberKernel, trivialSignature, withLocalMulti, withNumberMulti, withScratchStore
+    , AliasKey, AliasVerdict(..), ArrowFact, Env, GroundingStats, ItemAux, LayoutQualStats, LssMemberTable, LssSignature, LssStats, MemberSource(..), MonoMemo, NodeResolution, NumberInstance, NumberMultiEntry, QEntry(..), QPre(..), QShadowStats, SettledStats, SigFlowStats, SpecTally, aliasKeyEq, aliasKeyHash, bumpAppliedArrow, bumpArgFlowCensus, bumpArgFlowCensusBy, bumpCompletionJoin, bumpCompletionJoinNoop, bumpEdgeInstalled, bumpFlowDegraded, bumpKernelFactHit, bumpKernelLicensed, bumpTopMixedFlexSig, bumpWidenedByCf, bumpWidenedByKernel, bumpWidenedBySigSize, clearResidualReads, clearedAux, consS, crashFailure, emptyItemAux, emptyLssStats, emptyMemberTable, emptyMonoMemo, groundSetMembers, groundStandaloneMemberIdFor, harvestSuperTableExcept, insertVar, internMemberKey, isLocalMultiTarget, isScalarVar, kernelMemberIdFor, annoToken, lambdaInstanceMemberId, layoutQualKey, localInstanceTagFor, localVarInfo, lookupCallMemo, lookupSchemeMono, lookupVar, markFlexCtorSpec, memberIdFor, memberTokens, membersClass, memoizedSignatureTrivial, mixTag, notePendingFailure, numberMultiRootType, papMemberIdFor, papMemberKey, putAliasVerdict, putCallMemo, putSchemeMono, recordLocalInstance, recordNumberInstance, recordSpecWidenedKey, renderCaptureSig, renderFailure, restoredAux, scoped, specIdsForGlobal, srcLambdaKey, standaloneMemberGlobal, standaloneMemberIdFor, standaloneMemberKernel, trivialSignature, withCaptureSig, withLocalMulti, withNumberMulti, withScratchStore
     )
 
 {-| The state the solver-based monomorphizer threads through all of its work,
@@ -78,7 +78,7 @@ always. Two fields of `LssStats` are also read by the engine (see `LssStats`).
 @docs freshVar, enqueueSpec
 @docs freshStore, resetItem
 @docs mvarIdKey, pointKey
-@docs AliasKey, AliasVerdict, ArrowFact, Env, GroundingStats, ItemAux, LayoutQualStats, LssMemberTable, LssSignature, LssStats, MemberSource, MonoMemo, NodeResolution, NumberInstance, NumberMultiEntry, QEntry, QPre, QShadowStats, SettledStats, SigFlowStats, SpecTally, aliasKeyEq, aliasKeyHash, bumpAppliedArrow, bumpArgFlowCensus, bumpArgFlowCensusBy, bumpCompletionJoin, bumpCompletionJoinNoop, bumpEdgeInstalled, bumpFlowDegraded, bumpKernelFactHit, bumpKernelLicensed, bumpTopMixedFlexSig, bumpWidenedByCf, bumpWidenedByKernel, bumpWidenedBySigSize, clearResidualReads, clearedAux, consS, crashFailure, emptyItemAux, emptyLssStats, emptyMemberTable, emptyMonoMemo, groundSetMembers, groundStandaloneMemberIdFor, harvestSuperTableExcept, insertVar, internMemberKey, isLocalMultiTarget, isScalarVar, kernelMemberIdFor, lambdaInstanceMemberId, layoutQualKey, localInstanceTagFor, localVarInfo, lookupCallMemo, lookupSchemeMono, lookupVar, markFlexCtorSpec, memberIdFor, membersClass, memoizedSignatureTrivial, mixTag, notePendingFailure, numberMultiRootType, papMemberIdFor, papMemberKey, putAliasVerdict, putCallMemo, putSchemeMono, recordLocalInstance, recordNumberInstance, recordSpecWidenedKey, renderFailure, restoredAux, scoped, specIdsForGlobal, srcLambdaKey, standaloneMemberGlobal, standaloneMemberIdFor, standaloneMemberKernel, trivialSignature, withLocalMulti, withNumberMulti, withScratchStore
+@docs AliasKey, AliasVerdict, ArrowFact, Env, GroundingStats, ItemAux, LayoutQualStats, LssMemberTable, LssSignature, LssStats, MemberSource, MonoMemo, NodeResolution, NumberInstance, NumberMultiEntry, QEntry, QPre, QShadowStats, SettledStats, SigFlowStats, SpecTally, aliasKeyEq, aliasKeyHash, bumpAppliedArrow, bumpArgFlowCensus, bumpArgFlowCensusBy, bumpCompletionJoin, bumpCompletionJoinNoop, bumpEdgeInstalled, bumpFlowDegraded, bumpKernelFactHit, bumpKernelLicensed, bumpTopMixedFlexSig, bumpWidenedByCf, bumpWidenedByKernel, bumpWidenedBySigSize, clearResidualReads, clearedAux, consS, crashFailure, emptyItemAux, emptyLssStats, emptyMemberTable, emptyMonoMemo, groundSetMembers, groundStandaloneMemberIdFor, harvestSuperTableExcept, insertVar, internMemberKey, isLocalMultiTarget, isScalarVar, kernelMemberIdFor, annoToken, lambdaInstanceMemberId, layoutQualKey, localInstanceTagFor, localVarInfo, lookupCallMemo, lookupSchemeMono, lookupVar, markFlexCtorSpec, memberIdFor, memberTokens, membersClass, memoizedSignatureTrivial, mixTag, notePendingFailure, numberMultiRootType, papMemberIdFor, papMemberKey, putAliasVerdict, putCallMemo, putSchemeMono, recordLocalInstance, recordNumberInstance, recordSpecWidenedKey, renderCaptureSig, renderFailure, restoredAux, scoped, specIdsForGlobal, srcLambdaKey, standaloneMemberGlobal, standaloneMemberIdFor, standaloneMemberKernel, trivialSignature, withCaptureSig, withLocalMulti, withNumberMulti, withScratchStore
 
 -}
 
@@ -249,6 +249,15 @@ counts mints that carried an instance tag, `instCapped` the instance tags
 refused at the `maxInstances` cap, and `instRootSkip` the tags refused because
 the lambda is a definition's root lambda.
 
+The capture counters (plans/lss-capture-qualified-members.md):
+`capQualified` counts plain mints whose key carries a capture signature
+(`captureSigFor`); `capOpaque` the free locals left out of a signature because
+they are local-multi functions or have no `varEnv` entry; `capMissing` the
+mints of a lambda with no `Env.lambdaFreeLocals` entry; `memoHit` the mints
+answered from `LssMemberTable.firstMint`; and `sigDrift`, under `lss.report`
+only, the memo hits whose freshly rendered key differs from the one the id was
+minted under.
+
 -}
 type alias LayoutQualStats =
     { mints : Int
@@ -258,6 +267,11 @@ type alias LayoutQualStats =
     , instApplied : Int
     , instCapped : Int
     , instRootSkip : Int
+    , capQualified : Int
+    , capOpaque : Int
+    , capMissing : Int
+    , memoHit : Int
+    , sigDrift : Int
     }
 
 
@@ -423,6 +437,15 @@ annotation-widened rendering of its creation type, recorded once when the spec
 is created. `rootLamOf` maps a raw lambda id to the global whose definition it
 is the root lambda of; a lambda absent from it mints an `l|` key.
 
+`firstMint` maps `( specId, lambda key )` to the id and key of that lambda
+instance's first plain mint in that spec, so that every later mint of the
+instance in the spec, at any mint site, in any saturation pass and in any
+re-translation, returns the same id (see `lambdaMemberLayoutQualified`).
+`familyOf` maps an `l|` member to the number of its _family key_, the key
+`layoutQualKey` gives (the key without its capture signature), and `families`
+interns family keys to those numbers in order of first use; a capture signature
+names a captured lambda member by its family number (`memberTokens`).
+
 -}
 type alias LssMemberTable =
     { byKey : CoreDict.Dict String Int
@@ -432,6 +455,9 @@ type alias LssMemberTable =
     , provisionalStandalone : CoreDict.Dict Int TOpt.Global
     , specWidenedKeys : CoreDict.Dict Int String
     , rootLamOf : CoreDict.Dict Int TOpt.Global
+    , firstMint : CoreDict.Dict ( Int, Int ) ( Int, String )
+    , familyOf : CoreDict.Dict Int Int
+    , families : CoreDict.Dict String Int
     }
 
 
@@ -518,7 +544,7 @@ putAliasVerdict key v s =
 -}
 emptyMemberTable : LssMemberTable
 emptyMemberTable =
-    { byKey = CoreDict.empty, sources = CoreDict.empty, lambdaQualified = CoreDict.empty, muTied = CoreDict.empty, provisionalStandalone = CoreDict.empty, specWidenedKeys = CoreDict.empty, rootLamOf = CoreDict.empty }
+    { byKey = CoreDict.empty, sources = CoreDict.empty, lambdaQualified = CoreDict.empty, muTied = CoreDict.empty, provisionalStandalone = CoreDict.empty, specWidenedKeys = CoreDict.empty, rootLamOf = CoreDict.empty, firstMint = CoreDict.empty, familyOf = CoreDict.empty, families = CoreDict.empty }
 
 
 {-| Adds a key and its member id to the interning table.
@@ -554,7 +580,7 @@ insertMemberProvisional mid g t =
 -}
 emptyLssStats : LssStats
 emptyLssStats =
-    { setsZonked = 0, flexCtorSpecs = CoreDict.empty, joinRounds = 0, retranslations = 0, widenedBySize = 0, widenedByKernel = 0, widenedByBudget = 0, devirtDirect = 0, devirtKernel = 0, sizeHist = CoreDict.empty, unqualifiedLambdaMints = 0, declinedKernelShape = 0, declinedKernelCNumber = 0, declinedKernelEmission = 0, declinedKernelArity = 0, kernelUnsolvedHist = CoreDict.empty, kernelMissHist = CoreDict.empty, setWriteSkip = 0, setWriteFlex = 0, setWriteTopJoin = 0, setWriteUnion = 0, joinIdenticalHit = 0, joinNoop = 0, joinChanged = 0, completionJoins = 0, completionJoinNoop = 0, widenedSizeHist = CoreDict.empty, slotsMinted = 0, grounding = { grounded = 0, deferred = 0 }, sigStats = { widenedBySigSize = 0, widenedByCf = 0, kernelFactHits = 0, kernelLicensed = 0, edgesInstalled = 0, flowDegraded = 0, multiSetsByArrow = CoreDict.empty, appliedArrows = CoreDict.empty, topMixedFlexSig = 0, topMixedFlexDemand = 0, argFlowCensus = CoreDict.empty, settled = emptySettledStats, qShadow = emptyQShadowStats, qInfer = emptyQShadowStats }, layoutQual = { mints = 0, shared = 0, fallback = 0, tieBypass = 0, instApplied = 0, instCapped = 0, instRootSkip = 0 } }
+    { setsZonked = 0, flexCtorSpecs = CoreDict.empty, joinRounds = 0, retranslations = 0, widenedBySize = 0, widenedByKernel = 0, widenedByBudget = 0, devirtDirect = 0, devirtKernel = 0, sizeHist = CoreDict.empty, unqualifiedLambdaMints = 0, declinedKernelShape = 0, declinedKernelCNumber = 0, declinedKernelEmission = 0, declinedKernelArity = 0, kernelUnsolvedHist = CoreDict.empty, kernelMissHist = CoreDict.empty, setWriteSkip = 0, setWriteFlex = 0, setWriteTopJoin = 0, setWriteUnion = 0, joinIdenticalHit = 0, joinNoop = 0, joinChanged = 0, completionJoins = 0, completionJoinNoop = 0, widenedSizeHist = CoreDict.empty, slotsMinted = 0, grounding = { grounded = 0, deferred = 0 }, sigStats = { widenedBySigSize = 0, widenedByCf = 0, kernelFactHits = 0, kernelLicensed = 0, edgesInstalled = 0, flowDegraded = 0, multiSetsByArrow = CoreDict.empty, appliedArrows = CoreDict.empty, topMixedFlexSig = 0, topMixedFlexDemand = 0, argFlowCensus = CoreDict.empty, settled = emptySettledStats, qShadow = emptyQShadowStats, qInfer = emptyQShadowStats }, layoutQual = { mints = 0, shared = 0, fallback = 0, tieBypass = 0, instApplied = 0, instCapped = 0, instRootSkip = 0, capQualified = 0, capOpaque = 0, capMissing = 0, memoHit = 0, sigDrift = 0 } }
 
 
 {-| The signature that says nothing: no arrow facts, and trivial, so no
@@ -709,9 +735,10 @@ one member. With LSS on and a spec being translated
 (`ItemAux.currentSpecId`), the id is interned under a key qualified by that
 spec, as `lambdaMemberLayoutQualified` describes: by the spec's
 annotation-widened creation key, so that specs differing only in lambda sets
-share the id, and by the instance tag when the lambda is inside an instance of
-a let-bound function. A definition's root lambda uses its global's `g|` key
-instead. Interning is get-or-create, so the same key always gives the same id.
+the lambda does not capture share the id, by the instance tag when the lambda
+is inside an instance of a let-bound function, and by its capture signature.
+A definition's root lambda uses its global's `g|` key instead. One lambda
+instance in one spec always gets one id, the id of its first mint there.
 
 With LSS off the raw id (`srcLambdaKey`) is returned. With LSS on and no spec
 being translated the raw id is returned too, and `unqualifiedLambdaMints` is
@@ -753,54 +780,367 @@ lambdaInstanceMemberGo raw instTag specId s0 =
 {-| Returns the member id for lambda `raw`, under instance tag `instTag`,
 minted while translating spec `specId`.
 
-The key is `layoutQualKey`'s: `l|<raw>|<widened key>` from the spec's
-annotation-widened creation key in `specWidenedKeys`, or `l|<raw>|<specId>`
-when none was recorded, with the instance tag appended when it is not 0. Two
-specs whose types differ only in their lambda sets have equal widened keys, so
-the lambda gets one id in both. When `raw` is a definition's root lambda
-(`rootLamOf`), the `l|<raw>` head of the key is replaced by `g|<global>`, so
-the id is the one grounding gives a reference to that global at the same
-layout, and the id is recorded as a `SourceGlobal`.
+The key starts with the lambda's _family key_, `layoutQualKey`'s:
+`l|<raw>|<widened key>` from the spec's annotation-widened creation key in
+`specWidenedKeys`, or `l|<raw>|<specId>` when none was recorded, with the
+instance tag appended when it is not 0. A lambda that is not a root lambda then
+adds its _capture signature_ (`captureSigFor`, `withCaptureSig`): the lambda
+sets of the function values its body uses without binding them, with a
+captured lambda member named by its family. Two specs whose types differ only
+in lambda sets that the lambda does not capture therefore give it one id, while
+two copies of the lambda capturing functions with different sets get two ids,
+and whatever receives them is specialized once for each
+(plans/lss-capture-qualified-members.md). When `raw` is a definition's root
+lambda (`rootLamOf`), the `l|<raw>` head of the family key is replaced by
+`g|<global>`, so the id is the one grounding gives a reference to that global
+at the same layout, and the id is recorded as a `SourceGlobal`.
+
+The first plain mint of a lambda instance in a spec is recorded in
+`LssMemberTable.firstMint`, and every later mint of that instance in that spec
+returns the recorded id without rendering a signature again. Every mint site
+(`classifyLambdaHead`, argument injection, a local-multi use, a recursive
+self-reference) therefore gives the closure and the arrows it flows through one
+id, whatever the variable environment held at each, and so does every
+saturation pass and every re-translation of the spec.
 
 Before minting, the spec's stored demand is consulted (`ItemAux.demandQualified`,
 keyed by `qualifiedRawKey`). If the demand already carries an id for this
-lambda and that id differs from the one the key has interned, the demand's id
-is returned instead and recorded in `muTied`: this is the _μ-tie_. It stops a
-recursive function whose specs keep feeding their own lambda back into their
-demand from minting a new id, and so a new spec, at every step. When the
-demand's id is the one the key has interned, nothing is recorded in `muTied`
-and the mint is counted as a `tieBypass`. So one lambda in two same-layout
-specs can still get two ids, when a demand carries a different one.
+lambda and that id differs from the id this spec's mint gives (the recorded
+first mint, or else the id the key has interned), the demand's id is returned
+instead and recorded in `muTied`: this is the _μ-tie_. It stops a recursive
+function whose specs keep feeding their own lambda back into their demand from
+minting a new id, and so a new spec, at every step. A tie is never recorded as
+a first mint, so a later re-translation ties afresh. When the demand's id is
+the one the mint gives, nothing is recorded in `muTied` and the mint is counted
+as a `tieBypass`. So one lambda in two same-layout specs can still get two ids,
+when a demand carries a different one.
 
 -}
 lambdaMemberLayoutQualified : Int -> Int -> Int -> S -> ( Int, S )
 lambdaMemberLayoutQualified raw instTag specId s0 =
     let
-        ( plainKey, isFallback ) =
-            layoutQualKey s0.lssMemberTable.specWidenedKeys raw instTag specId
+        qrk =
+            qualifiedRawKey raw instTag
+    in
+    case CoreDict.get ( specId, qrk ) s0.lssMemberTable.firstMint of
+        Just ( mid, mintedKey ) ->
+            case CoreDict.get qrk s0.itemAux.demandQualified of
+                Just tiedId ->
+                    if tiedId == mid then
+                        ( mid, bumpInstanceQual (\lq -> { lq | memoHit = lq.memoHit + 1, tieBypass = lq.tieBypass + 1 }) s0 )
 
-        ( key, foldedTo ) =
-            case CoreDict.get raw s0.lssMemberTable.rootLamOf of
-                Just g ->
-                    ( "g|"
-                        ++ TOpt.toComparableGlobal g
-                        ++ String.dropLeft (String.length ("l|" ++ String.fromInt raw)) plainKey
-                    , Just g
-                    )
+                    else
+                        ( tiedId, recordMuTied tiedId s0 )
 
                 Nothing ->
-                    ( plainKey, Nothing )
-    in
-    case CoreDict.get (qualifiedRawKey raw instTag) s0.itemAux.demandQualified of
-        Just tiedId ->
-            if CoreDict.get key s0.lssMemberTable.byKey == Just tiedId then
-                mintLayoutQualifiedFold foldedTo key raw instTag specId isFallback True s0
-
-            else
-                ( tiedId, recordMuTied tiedId s0 )
+                    ( mid, noteMemoHit raw instTag specId mintedKey s0 )
 
         Nothing ->
-            mintLayoutQualifiedFold foldedTo key raw instTag specId isFallback False s0
+            case mintKeyFor raw instTag specId s0 of
+                ( mk, s1 ) ->
+                    case CoreDict.get qrk s1.itemAux.demandQualified of
+                        Just tiedId ->
+                            if CoreDict.get mk.key s1.lssMemberTable.byKey == Just tiedId then
+                                recordFirstMint mk qrk specId (mintLayoutQualifiedFold mk.foldedTo mk.key raw instTag specId mk.isFallback True s1)
+
+                            else
+                                ( tiedId, recordMuTied tiedId s1 )
+
+                        Nothing ->
+                            recordFirstMint mk qrk specId (mintLayoutQualifiedFold mk.foldedTo mk.key raw instTag specId mk.isFallback False s1)
+
+
+{-| The key a lambda instance mints under, as `mintKeyFor` builds it: `key` is
+interned; `familyKey` is `layoutQualKey`'s key, without the capture signature;
+`isFallback` says the spec had no widened key; `foldedTo` is the global whose
+root lambda this is, whose `g|` key `key` then is; `sig` is the capture
+signature, empty for a root lambda.
+-}
+type alias MintKey =
+    { key : String
+    , familyKey : String
+    , isFallback : Bool
+    , foldedTo : Maybe TOpt.Global
+    , sig : String
+    }
+
+
+{-| Returns the key lambda `raw` under instance tag `instTag` mints in spec
+`specId`. A definition's root lambda (`rootLamOf`) has the `l|<raw>` head of
+its family key replaced by `g|<global>`, so its id is the one grounding gives a
+reference to that global at the same layout, and it gets no capture signature,
+as it gets no instance tag (`instanceQualTagFor`). Any other lambda's key is its
+family key with its capture signature appended (`withCaptureSig`).
+-}
+mintKeyFor : Int -> Int -> Int -> S -> ( MintKey, S )
+mintKeyFor raw instTag specId s0 =
+    let
+        ( familyKey, isFallback ) =
+            layoutQualKey s0.lssMemberTable.specWidenedKeys raw instTag specId
+    in
+    case CoreDict.get raw s0.lssMemberTable.rootLamOf of
+        Just g ->
+            ( { key =
+                    "g|"
+                        ++ TOpt.toComparableGlobal g
+                        ++ String.dropLeft (String.length ("l|" ++ String.fromInt raw)) familyKey
+              , familyKey = familyKey
+              , isFallback = isFallback
+              , foldedTo = Just g
+              , sig = ""
+              }
+            , s0
+            )
+
+        Nothing ->
+            case captureSigFor raw s0 of
+                ( sig, s1 ) ->
+                    ( { key = withCaptureSig familyKey sig
+                      , familyKey = familyKey
+                      , isFallback = isFallback
+                      , foldedTo = Nothing
+                      , sig = sig
+                      }
+                    , s1
+                    )
+
+
+{-| Records the plain mint `( mid, s )` of key `mk` as the first mint of lambda
+key `qrk` in spec `specId` (`LssMemberTable.firstMint`). An `l|` member also has
+its family recorded (`familyOf`), and a key with a capture signature is counted
+as `capQualified`.
+-}
+recordFirstMint : MintKey -> Int -> Int -> ( Int, S ) -> ( Int, S )
+recordFirstMint mk qrk specId ( mid, s ) =
+    let
+        table =
+            s.lssMemberTable
+
+        table1 =
+            { table | firstMint = CoreDict.insert ( specId, qrk ) ( mid, mk.key ) table.firstMint }
+
+        table2 =
+            case mk.foldedTo of
+                Just _ ->
+                    table1
+
+                Nothing ->
+                    case CoreDict.get mk.familyKey table1.families of
+                        Just fam ->
+                            { table1 | familyOf = CoreDict.insert mid fam table1.familyOf }
+
+                        Nothing ->
+                            let
+                                fam =
+                                    CoreDict.size table1.families
+                            in
+                            { table1
+                                | families = CoreDict.insert mk.familyKey fam table1.families
+                                , familyOf = CoreDict.insert mid fam table1.familyOf
+                            }
+
+        s1 =
+            { s | lssMemberTable = table2 }
+    in
+    if mk.sig == "" then
+        ( mid, s1 )
+
+    else
+        ( mid, bumpInstanceQual (\lq -> { lq | capQualified = lq.capQualified + 1 }) s1 )
+
+
+{-| Counts a mint answered from `firstMint` as `memoHit`. Under `lss.report` it
+also renders the key afresh and counts `sigDrift` when the key differs from
+`mintedKey`, the key the recorded id was minted under; the capture counters the
+fresh rendering bumps are restored, so they count each instance once.
+-}
+noteMemoHit : Int -> Int -> Int -> String -> S -> S
+noteMemoHit raw instTag specId mintedKey s0 =
+    let
+        s1 =
+            bumpInstanceQual (\lq -> { lq | memoHit = lq.memoHit + 1 }) s0
+    in
+    if not s1.env.lss.report then
+        s1
+
+    else
+        case mintKeyFor raw instTag specId s1 of
+            ( mk, s2 ) ->
+                let
+                    lq1 =
+                        s1.lssStats.layoutQual
+
+                    restore lq =
+                        { lq | capOpaque = lq1.capOpaque, capMissing = lq1.capMissing }
+                in
+                if mk.key == mintedKey then
+                    bumpInstanceQual restore s2
+
+                else
+                    bumpInstanceQual (\lq -> restore { lq | sigDrift = lq.sigDrift + 1 }) s2
+
+
+{-| Returns `familyKey` with the capture signature `sig` appended as
+`|c:<sig>`, or `familyKey` unchanged when `sig` is empty, so that a lambda that
+captures no function value keeps the key it had before capture signatures.
+A family key never contains `|c:` (it is `l|`, digits, a type rendering and an
+optional `|#<tag>`), so a signed key never equals another lambda's family key.
+-}
+withCaptureSig : String -> String -> String
+withCaptureSig familyKey sig =
+    if sig == "" then
+        familyKey
+
+    else
+        familyKey ++ "|c:" ++ sig
+
+
+{-| Returns the capture signature of source lambda `raw`, from its free locals
+in `Env.lambdaFreeLocals` and their types in the variable environment
+(plans/lss-capture-qualified-members.md §3.2).
+
+A free local that is a local-multi function, or has no `varEnv` entry, is
+_opaque_: which instance or type it has is not known before the body is
+translated, so it is left out and counted in `capOpaque`. A lambda with no
+table entry gets the empty signature and is counted in `capMissing`. The rest
+are rendered by `renderCaptureSig`.
+
+-}
+captureSigFor : Int -> S -> ( String, S )
+captureSigFor raw s =
+    case CoreDict.get raw s.env.lambdaFreeLocals of
+        Nothing ->
+            ( "", bumpInstanceQual (\lq -> { lq | capMissing = lq.capMissing + 1 }) s )
+
+        Just names ->
+            case captureEntries names s of
+                ( pairs, opaque ) ->
+                    ( renderCaptureSig s.lssMemberTable.familyOf pairs
+                    , if opaque == 0 then
+                        s
+
+                      else
+                        bumpInstanceQual (\lq -> { lq | capOpaque = lq.capOpaque + opaque }) s
+                    )
+
+
+{-| Returns the free locals in `names` that have a type in the variable
+environment and are not local-multi functions, each with that type, in the
+order of `names`, and how many were left out.
+-}
+captureEntries : List String -> S -> ( List ( String, Mono.MonoType ), Int )
+captureEntries names s =
+    List.foldr
+        (\name ( acc, opaque ) ->
+            if List.any (\e -> e.defName == name) s.localMulti then
+                ( acc, opaque + 1 )
+
+            else
+                case CoreDict.get name s.varEnv of
+                    Just t ->
+                        ( ( name, t ) :: acc, opaque )
+
+                    Nothing ->
+                        ( acc, opaque + 1 )
+        )
+        ( [], 0 )
+        names
+
+
+{-| Renders a capture signature from `( name, type )` pairs given in ascending
+name order. A name whose type has no arrow is left out. Each other name gives
+`name=` followed by the annotations of its type's arrows in
+`Mono.arrowAnnosInOrder` order, each rendered by `annoToken` and joined with
+`,`; the names are joined with `;`. No pair with an arrow gives the empty
+string.
+-}
+renderCaptureSig : CoreDict.Dict Int Int -> List ( String, Mono.MonoType ) -> String
+renderCaptureSig familyOf pairs =
+    String.join ";"
+        (List.filterMap
+            (\( name, t ) ->
+                case Mono.arrowAnnosInOrder t of
+                    [] ->
+                        Nothing
+
+                    annos ->
+                        Just (name ++ "=" ++ String.join "," (List.map (annoToken familyOf) annos))
+            )
+            pairs
+        )
+
+
+{-| Renders one arrow annotation for a capture signature: `[m1,m2]` for an
+`LSet`, `~[m1,m2]` for an `LPartial`, and `?` for both `LTop` and `LVar`. A set
+variable is numbered per zonk, so the same unknown could otherwise render two
+ways, and neither ⊤ nor an unknown licenses a stamp. Members are rendered by
+`memberTokens`.
+-}
+annoToken : CoreDict.Dict Int Int -> Mono.LambdaSetAnno -> String
+annoToken familyOf anno =
+    case anno of
+        Mono.LSet ms ->
+            "[" ++ memberTokens familyOf ms ++ "]"
+
+        Mono.LPartial ms ->
+            "~[" ++ memberTokens familyOf ms ++ "]"
+
+        Mono.LTop _ ->
+            "?"
+
+        Mono.LVar _ ->
+            "?"
+
+
+{-| Renders the members of a set for a capture signature, sorted and without
+duplicates, joined with `,`. A lambda member with a family in `familyOf` is
+rendered `f<family>`, not by its own id; any other member by its id.
+
+Naming a captured lambda by its family bounds a key's nesting at one level: a
+lambda's key names the families of the lambdas it captures, never their
+capture signatures. That is what keeps the set of keys finite, and so
+monomorphization terminating, when recursion wraps lambdas inside lambdas that
+alternate between recursion levels, which the μ-tie alone does not stop
+(plans/lss-capture-qualified-members.md §3.2).
+
+-}
+memberTokens : CoreDict.Dict Int Int -> List Int -> String
+memberTokens familyOf ms =
+    String.join ","
+        (sortedUnique
+            (List.map
+                (\m ->
+                    case CoreDict.get m familyOf of
+                        Just fam ->
+                            "f" ++ String.fromInt fam
+
+                        Nothing ->
+                            String.fromInt m
+                )
+                ms
+            )
+        )
+
+
+{-| Returns `xs` sorted, with each string once.
+-}
+sortedUnique : List String -> List String
+sortedUnique xs =
+    List.foldr
+        (\x acc ->
+            case acc of
+                y :: _ ->
+                    if x == y then
+                        acc
+
+                    else
+                        x :: acc
+
+                [] ->
+                    [ x ]
+        )
+        []
+        (List.sort xs)
 
 
 {-| Returns the key a lambda mint interns, and whether it fell back to the
@@ -879,8 +1219,9 @@ mintLayoutQualified key raw instTag specId isFallback isTieBypass s0 =
                         | lssStats =
                             { stats
                                 | layoutQual =
-                                    { mints = lq.mints + 1
-                                    , shared = lq.shared + sharedInc
+                                    { lq
+                                        | mints = lq.mints + 1
+                                        , shared = lq.shared + sharedInc
                                     , fallback =
                                         lq.fallback
                                             + (if isFallback then
@@ -905,8 +1246,6 @@ mintLayoutQualified key raw instTag specId isFallback isTieBypass s0 =
                                                else
                                                 0
                                               )
-                                    , instCapped = lq.instCapped
-                                    , instRootSkip = lq.instRootSkip
                                     }
                             }
                     }
@@ -1530,6 +1869,10 @@ after the initial state is built.
 gains what work items discover. `lamLabels` and the `arrowTotal` and `stamp*`
 counts are read only by the LSS report: they describe the arrows that
 `AssignMVarIds` gave ids to. `limits` holds the spec watchdog limits.
+`lambdaFreeLocals` maps each source lambda's id (`srcLambdaKey`) to the sorted
+local names its body uses without binding them
+(`Compiler.IR.Typed.FreeLocals.lambdaTable`); it is empty with LSS off, and
+`captureSigFor` reads it.
 
 -}
 type alias Env =
@@ -1547,6 +1890,7 @@ type alias Env =
     , stampArrowsInNone : Int
     , stampArrowsUnstampedInPartial : Int
     , limits : Config.SpecLimits
+    , lambdaFreeLocals : CoreDict.Dict Int (List String)
     }
 
 

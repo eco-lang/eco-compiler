@@ -143,9 +143,12 @@ if ( cd "$EX/proj" \
     head -c 3000000 /dev/urandom | base64 > "$EX/in.txt"
     bytes=$(wc -c < "$EX/in.txt"); lines=$(wc -l < "$EX/in.txt")
     want="summary: {\"bytes\":$bytes,\"chunks\":$(( (bytes + 65535) / 65536 )),\"hostBytes\":$bytes,\"lines\":$lines}"
+    # A heap-validate build's runtime appends its P1 tripwire report ([p1-census] and
+    # [survivor-write-census] lines, P1Census.cpp) to stderr at exit; it is the runtime's own
+    # diagnostic, not the example's output, so it is left out of the comparison.
     if timeout 60 "$EX/upcase" < "$EX/in.txt" > "$EX/out.txt" 2> "$EX/err.txt" \
        && tr a-z A-Z < "$EX/in.txt" | cmp -s - "$EX/out.txt" \
-       && [ "$(cat "$EX/err.txt")" = "$want" ]; then
+       && [ "$(grep -v '^\[p1-census\]\|^\[survivor-write-census\]' "$EX/err.txt")" = "$want" ]; then
         echo "PASS node-addon/cpp-ports-example"
     else
         echo "FAIL node-addon/cpp-ports-example (want: $want)"; sed 's/^/    /' "$EX/err.txt"
