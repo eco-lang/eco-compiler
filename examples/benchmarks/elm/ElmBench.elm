@@ -73,6 +73,7 @@ import SpectralNorm
 import StringBuild
 import StringCallbacks
 import Sudoku
+import TypeKeys
 import UnicodeString
 import Utf8Bytes
 import WordFreq
@@ -326,6 +327,18 @@ bench name =
 
         "ctor-known" ->
             Just CtorLoops.benchKnown
+
+        "dict-union-small" ->
+            Just DictAlgebra.benchUnionSmall
+
+        "dict-longkey" ->
+            Just TypeKeys.benchDictLongKey
+
+        "intern-cached-hash" ->
+            Just TypeKeys.benchInternCached
+
+        "intern-rehash" ->
+            Just TypeKeys.benchInternRehash
 
         _ ->
             Nothing

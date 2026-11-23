@@ -36,7 +36,8 @@ Each workload checks itself as strongly as it can, at whatever size it runs:
   generator's `List Char`s), dict-char-pairs (bigram counts in an `Array`), set-float-pairs (its
   size and coordinate sums), kernel-callbacks (closed forms and a `List.foldl` recount) and
   hot-lambda (a closed form), and ctor-wrapper, ctor-maybe, ctor-step, ctor-tokens, ctor-sret and
-  ctor-known (the same figure computed with `Int`s only). spectral-norm must lie within `6 / n^3` of its limit (a bound
+  ctor-known (the same figure computed with `Int`s only), and the seqdict-* and seqset-* workloads
+  (each module's documentation says how). spectral-norm must lie within `6 / n^3` of its limit (a bound
   measured with a C program from 1 to 5,500).
 - Exactly against a table that covers every feasible size: fannkuch-redux (1-12 items, from the
   standard C algorithm), nsieve (2-14, from a separate sieve), n-queens (up to 18, OEIS
@@ -77,7 +78,11 @@ size is measured too, covering start-up, the warm-up and the timed runs; the tab
 Some workloads come in pairs that do the same work in two ways, so the ratio between them is
 the figure to watch: bytes-static and bytes-dynamic, and list-walk-map and list-walk-take (a list
 built by `List.map` against an equal one built by `List.take`). decoded-snapshot is mostly
-about its peak RSS. Set `ECO` or `ELM` to use
+about its peak RSS. The seqdict-* and seqset-* workloads exercise eco/system's `SeqDict` and
+`SeqSet`, which the official compiler cannot build, so they run on eco's two backends only and
+their elm column shows `-`; where one mirrors a portable workload (seqdict-int and dict-int,
+seqset-distinct and set-distinct, and so on) it does the same work at the same default size, so
+the two figures compare directly. Set `ECO` or `ELM` to use
 binaries that are not on the PATH.
 
 `run.mjs` runs each workload on each backend in a process of its own, so a workload's timings do
@@ -128,3 +133,21 @@ The ctor-* group (`src/CtorLoops.elm`) is tight loops over custom-type values, o
 representation eco can choose: wrapper erasure (ctor-wrapper), nullable `Maybe` (ctor-maybe),
 tagged unions (ctor-step, ctor-tokens), constructors returned through a caller's slot (ctor-sret)
 and `case` on a known constructor (ctor-known).
+
+The seq group (`src/SeqDictKeys.elm`, `SeqDictOps.elm`, `SeqDictAlgebra.elm` and `SeqSetOps.elm`)
+measures eco/system's `SeqDict` and `SeqSet` for `plans/seq-data-structures-performance.md`:
+lookups by key type (seqdict-int, -string, -tuple and -custom, the last with keys `Dict` cannot
+take), removal (seqdict-churn), value replacement (seqdict-update), iteration (seqdict-iterate),
+small dicts (seqdict-small), equality (seqdict-equality) and bulk operations (seqdict-algebra,
+seqset-distinct, seqset-algebra, and seqdict-union-small and seqset-union-small, which merge small
+collections into a large one; dict-union-small is their portable twin). They are eco-only, and `/work/local-dev/pre-seq-bench.json`
+holds their baseline before that plan changed anything.
+
+The large-key group models keys the eco compiler itself uses. `src/TypeKeys.elm` is portable:
+dict-longkey keys a `Dict String` on member-key-shaped Strings of about 190 characters that share
+long prefixes (the LSS member table's `byKey`), and intern-cached-hash and intern-rehash hash-cons
+`MonoType`-shaped trees into `Dict Int` buckets (`Compiler.IR.Mono.Intern` over `Data.HashMap`),
+with each node's hash stored when it is built, or recomputed by walking it at every probe.
+`src/SeqLargeKeys.elm` is their eco-only twin on `SeqDict`: seqdict-longkey, seqdict-longkey-reuse
+(the same key String objects looked up again, the case a cached String hash serves) and
+seqdict-intern (the trees themselves as `SeqDict` keys).

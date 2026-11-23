@@ -45,14 +45,17 @@ an HTTP client, use [elm/http](https://package.elm-lang.org/packages/elm/http/la
 - `SeqDict`, `SeqSet`: a Dict and a Set whose keys can be any value `==` can compare, not only
   `comparable` ones, and whose `toList`, `foldl` and the rest go in insertion order. The API and
   behaviour are [lamdera/containers](https://github.com/lamdera/containers)'s (without its
-  lamdera/codecs encoders), and so is most of the implementation: a hash trie keyed by `FNV.hash`,
-  with an insertion-order `Array`. `FNV.hash` is a kernel that walks any value by content, never by
-  representation (`src/eco-system/FNV/FNVExports.cpp`, and `src/Eco/Kernel/FNV.js` in JavaScript),
-  so it agrees with `==`; `JsArray2` is elm/core's `JsArray` plus the `unsafeSet`, `unsafeInsert` and
-  `removeIndex` SeqDict needs (`src/eco-system/JsArray2/`). Removing an entry leaves a hole in the
-  insertion-order `Array`, so natively the compiler gives `SeqDict_elm_builtin` the reserved
-  constructor tag 0xFFFB and `==` compares two SeqDicts by their entries in insertion order; on the
-  JS target `==` is elm/core's and compares them structurally.
+  lamdera/codecs encoders). The implementation is eco's (plans/seq-data-structures-performance.md in
+  the eco repository): a canonical hash trie keyed by `FNV.hash` whose slots are tagged words, and an
+  insertion-order `Array`, the two sharing one `Entry` object per key. `Bitmap` counts trie bits
+  (a hardware popcount natively, `src/eco-system/Bitmap/`), and `JsArray2` is elm/core's `JsArray`
+  plus the `unsafeSet`, `unsafeInsert` and `removeIndex` SeqDict needs (`src/eco-system/JsArray2/`).
+  Removing an entry leaves a hole in the insertion-order `Array`, so the compiler gives
+  `SeqDict_elm_builtin` a reserved constructor tag (0xFFFB natively, -3 in JavaScript) and `==`
+  compares two SeqDicts by their entries in insertion order on both backends.
+- `Hash`: `Hash.hash` hashes any value by content, as `==` compares it (`FNV.hash` underneath:
+  `src/eco-system/FNV/FNVExports.cpp`, and `src/Eco/Kernel/FNV.js` in JavaScript). The numbers are
+  deterministic within one program on one backend and must not be stored.
 
 ## Example
 

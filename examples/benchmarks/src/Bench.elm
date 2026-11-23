@@ -89,6 +89,11 @@ import Popcount
 import Prng
 import RevComp
 import SExpr
+import SeqDictAlgebra
+import SeqDictKeys
+import SeqDictOps
+import SeqLargeKeys
+import SeqSetOps
 import SetAlgebra
 import SetDistinct
 import Sha256
@@ -102,6 +107,7 @@ import Sudoku
 import System
 import Task exposing (Task)
 import Time
+import TypeKeys
 import UnicodeString
 import Utf8Bytes
 import WordFreq
@@ -120,8 +126,18 @@ type alias Workload =
     }
 
 
+{-| Every workload: the portable ones, then the eco-only ones.
+-}
 workloads : List Workload
 workloads =
+    portableWorkloads ++ ecoOnlyWorkloads
+
+
+{-| The workloads that use only elm/core, elm/json, elm/bytes and elm/parser, which `ElmBench.elm`
+also runs on the official compiler.
+-}
+portableWorkloads : List Workload
+portableWorkloads =
     [ Workload "fib" "naive recursion: calls and integer arithmetic" Fib.bench 38 Nothing
     , Workload "binary-trees" "allocation and GC churn: trees of depth 14, size times" BinaryTrees.bench 1100 Nothing
     , Workload "list-map" "range, map, sum" ListMap.bench 2000000 Nothing
@@ -202,6 +218,36 @@ workloads =
     , Workload "ctor-tokens" "a list of size tokens of a four-constructor type, built and scored" CtorLoops.benchTokens 2000000 Nothing
     , Workload "ctor-sret" "digit count and sum of 0 .. size-1 by a recursion returning a Pair Int Int" CtorLoops.benchSret 3000000 Nothing
     , Workload "ctor-known" "size iterations of a case on Rect and Square values built in place" CtorLoops.benchKnown 10000000 Nothing
+    , Workload "dict-union-small" "Dict union of 64 small dicts into one of size keys, and diff by 64 small ones" DictAlgebra.benchUnionSmall 200000 Nothing
+    , Workload "dict-longkey" "Dict String build and lookup of size 190-character member-key Strings" TypeKeys.benchDictLongKey 40000 Nothing
+    , Workload "intern-cached-hash" "hash-cons size type trees, each node's hash stored when it is built" TypeKeys.benchInternCached 40000 Nothing
+    , Workload "intern-rehash" "the same, each node's hash recomputed by walking it at every probe" TypeKeys.benchInternRehash 40000 Nothing
+    ]
+
+
+{-| The workloads of eco/system's `SeqDict` and `SeqSet`, which the official compiler cannot build
+(their hashing is an eco/system kernel). Each one that mirrors a portable workload takes that
+workload's default size, so the two figures can be compared.
+-}
+ecoOnlyWorkloads : List Workload
+ecoOnlyWorkloads =
+    [ Workload "seqdict-int" "SeqDict build and lookup of size Int keys (dict-int's work)" SeqDictKeys.benchInt 200000 Nothing
+    , Workload "seqdict-string" "the same with String keys (dict-string's)" SeqDictKeys.benchString 130000 Nothing
+    , Workload "seqdict-tuple" "the same with (Int, Int) keys (dict-tuple's)" SeqDictKeys.benchTuple 150000 Nothing
+    , Workload "seqdict-custom" "the same with Cell Int Int | Label String keys, which Dict cannot take" SeqDictKeys.benchCustom 150000 Nothing
+    , Workload "seqdict-churn" "size inserts into a sliding window of 1,024 keys, each with a remove and a get" SeqDictOps.benchChurn 300000 Nothing
+    , Workload "seqdict-update" "SeqDict.update counts of size keys from a range of size / 16" SeqDictOps.benchUpdate 300000 Nothing
+    , Workload "seqdict-iterate" "ten passes of foldl, foldr, toList, keys, values, map and filter over size entries" SeqDictOps.benchIterate 100000 Nothing
+    , Workload "seqdict-small" "size dicts of 1 to 8 entries, each built and probed" SeqDictOps.benchSmall 300000 Nothing
+    , Workload "seqdict-equality" "== and unorderedEquals, ten times, on dicts of size entries" SeqDictOps.benchEquality 100000 Nothing
+    , Workload "seqdict-algebra" "SeqDict union, intersect, diff and merge over size keys (dict-algebra's work)" SeqDictAlgebra.bench 56000 Nothing
+    , Workload "seqset-distinct" "SeqSet.fromList of size values, mostly duplicates (set-distinct's work)" SeqSetOps.benchDistinct 230000 Nothing
+    , Workload "seqset-algebra" "SeqSet union, intersect, diff and filter over size members (set-algebra's work)" SeqSetOps.benchAlgebra 70000 Nothing
+    , Workload "seqdict-union-small" "dict-union-small's work on SeqDict: small into large, insert-sized" SeqDictAlgebra.benchUnionSmall 200000 Nothing
+    , Workload "seqset-union-small" "the same on SeqSet" SeqSetOps.benchUnionSmall 200000 Nothing
+    , Workload "seqdict-longkey" "dict-longkey's work on SeqDict String: every key hashed in full" SeqLargeKeys.benchLongKey 40000 Nothing
+    , Workload "seqdict-longkey-reuse" "size long key Strings built once, then looked up four times over" SeqLargeKeys.benchLongKeyReuse 40000 Nothing
+    , Workload "seqdict-intern" "intern-cached-hash's work with a SeqDict keyed by the type trees" SeqLargeKeys.benchIntern 40000 Nothing
     ]
 
 
@@ -482,7 +528,14 @@ listWorkloads env options =
         Encode.object
             [ ( "workloads"
               , Encode.list
-                    (\w -> Encode.object [ ( "name", Encode.string w.name ), ( "size", Encode.int w.size ), ( "about", Encode.string w.about ) ])
+                    (\w ->
+                        Encode.object
+                            [ ( "name", Encode.string w.name )
+                            , ( "size", Encode.int w.size )
+                            , ( "about", Encode.string w.about )
+                            , ( "ecoOnly", Encode.bool (List.member w.name (List.map .name ecoOnlyWorkloads)) )
+                            ]
+                    )
                     workloads
               )
             ]

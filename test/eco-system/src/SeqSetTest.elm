@@ -7,6 +7,7 @@ order while `unorderedEquals` does not.
 
 -}
 
+-- ENV: ECO_SEQDICT_VALIDATE=1
 -- CHECK: fromList: [3,1,2]
 -- CHECK: insertKeepsPosition: [3,1,2]
 -- CHECK: reinsertAppends: [1,2,3]

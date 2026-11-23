@@ -25,7 +25,8 @@
         "Http.Stream",
         "Html.Dom",
         "SeqDict",
-        "SeqSet"
+        "SeqSet",
+        "Hash"
     ],
     "elm-version": "0.19.0 <= v < 0.20.0",
     "dependencies": {

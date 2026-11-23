@@ -154,11 +154,17 @@ kernelIntrinsicOn home name args resultType =
         "Bitwise" ->
             bitwiseIntrinsic name args |> Maybe.map Operation
 
+        "Bitmap" ->
+            bitmapIntrinsic name args |> Maybe.map Operation
+
         "Utils" ->
             utilsIntrinsic name args |> Maybe.map Operation
 
         "JsArray" ->
             jsArrayIntrinsic name args resultType |> Maybe.map Operation
+
+        "JsArray2" ->
+            jsArray2Intrinsic name args resultType |> Maybe.map Operation
 
         "List" ->
             listIntrinsic name args resultType
@@ -412,6 +418,24 @@ bitwiseIntrinsic name args =
             Nothing
 
 
+{-| Returns the operation for a call of eco/system's `Bitmap` kernel function `name`
+(`system-kernel-cpp/src/Bitmap.elm`) with Int arguments: `index` becomes
+`eco.int.bitmap_index` and `popCount32` becomes `eco.int.popcount32`, both
+lowered to a hardware population count.
+-}
+bitmapIntrinsic : Name.Name -> List ( a, Mono.MonoType ) -> Maybe (Operation a)
+bitmapIntrinsic name args =
+    case ( name, args ) of
+        ( "index", [ ( a, Mono.MInt ), ( b, Mono.MInt ) ] ) ->
+            Just (BinaryInt { op = "eco.int.bitmap_index" } a b)
+
+        ( "popCount32", [ ( a, Mono.MInt ) ] ) ->
+            Just (UnaryInt { op = "eco.int.popcount32" } a)
+
+        _ ->
+            Nothing
+
+
 {-| Returns the intrinsic for a call of the `Utils` kernel function `name`:
 equality, ordering, `compare` and `++`.
 
@@ -629,7 +653,7 @@ concreteArraySet elt index value array =
             Just (ArraySet { elementMlirType = MonoAbi.monoTypeToAbi elt } index value array)
 
 
-{-| Returns the element type of `ty` when it is a `JsArray` or an `Array` with
+{-| Returns the element type of `ty` when it is a `JsArray`, eco/system's `JsArray2` or an `Array` with
 its one type argument, and `Nothing` for any other type.
 
 The element type of a `JsArray` call is read from here, because the array
@@ -643,11 +667,31 @@ arrayElementType ty =
         Mono.MCustom _ _ "JsArray" [ elt ] ->
             Just elt
 
+        Mono.MCustom _ _ "JsArray2" [ elt ] ->
+            Just elt
+
         Mono.MCustom _ _ "Array" [ elt ] ->
             Just elt
 
         _ ->
             Nothing
+
+
+{-| Returns the intrinsic for a call of eco/system's `JsArray2` kernel function `name`
+(`system-kernel-cpp/src/JsArray2.elm`, plans/seq-data-structures-performance.md A2). A `JsArray2` is
+the same heap object as a `JsArray`, and its `unsafeGet`, `unsafeSet`, `length`, `push` and
+`singleton` mean what `JsArray`'s do, so they take `jsArrayIntrinsic`'s operations; its element type
+is read from the `JsArray2` type (`arrayElementType`). `unsafeInsert`, `removeIndex` and the rest stay
+kernel calls. Like `JsArray`'s, `unsafeSet` is only called in range (SeqDict's trie): out of range, the
+inline `eco.array.set` does not check, where the C++ export returns a copy.
+-}
+jsArray2Intrinsic : Name.Name -> List ( a, Mono.MonoType ) -> Mono.MonoType -> Maybe (Operation a)
+jsArray2Intrinsic name args resultType =
+    if List.member name [ "unsafeGet", "unsafeSet", "length", "push", "singleton" ] then
+        jsArrayIntrinsic name args resultType
+
+    else
+        Nothing
 
 
 {-| Returns the intrinsic for a call of the `JsArray` kernel function `name`.

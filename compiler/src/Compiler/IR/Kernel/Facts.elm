@@ -518,6 +518,21 @@ rows =
             , evidence = "elm-kernel-cpp/src/core/UtilsExports.cpp:107-109 (equalRespectingConstants :94-105); elm-kernel-cpp/src/core/Utils.cpp:470-472 (eqHelp :521-734, dictEq :747-797); runtime/src/allocator/StringOps.hpp:1486-1533; runtime/src/allocator/HeapHelpers.hpp:822"
         }
       )
+    , ( ( "Eco", "Bitmap", "index" )
+        -- Two raw Ints in, a raw Int out: no heap value read or built.
+      , { auditedPure
+            | params = [ PBorrowed, PBorrowed ]
+            , gcAlloc = GcNone
+            , evidence = "system-kernel-cpp/src/eco-system/Bitmap/BitmapExports.cpp:15-18"
+        }
+      )
+    , ( ( "Eco", "Bitmap", "popCount32" )
+      , { auditedPure
+            | params = [ PBorrowed ]
+            , gcAlloc = GcNone
+            , evidence = "system-kernel-cpp/src/eco-system/Bitmap/BitmapExports.cpp:20-22"
+        }
+      )
     , ( ( "Elm", "Utils", "notEqual" )
         -- The export is the negation of `equal`'s, so the audited fields of
         -- this row must match the `equal` row's.

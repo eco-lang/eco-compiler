@@ -719,3 +719,22 @@ Pins fired: grep `F.atexit` (**f453020be9cc**: the new `std::atexit(eco_ctor_cen
 Change (plans/constructor-representation-levels.md, unit M0, the constructor census): each nursery promotion path (the parallel minor's `copyClaimed`, the tenure gang's heap and parallel arms, the serial `NurserySpace` copy) now calls `ctorCensusPromoted(h)` inside its `ENABLE_GC_STATS` block, after the copy, beside the existing `copies.promotion` statistics call. With the census on (`ECO_CTOR_CENSUS_OUT` set) it does one relaxed `__atomic_fetch_add` on `eco_ctor_census_promoted[h.refcount]`, a statistics-only array no GC code reads; with it off, one predictable branch. `h` is the header of the object just copied, read by the worker that copied it. The census id lives in `Header.refcount` (15 bits), set by the mutator in `eco_ctor_census_mark` when it allocates the object, before the object is published; no model gives `refcount` a meaning, and the old generation uses it only on `Tag_Free` cells, which the hook skips (it counts `Tag_Custom` only). A static initializer registers `std::atexit(eco_ctor_census_dump)` when the variable is set: the handler reads the arrays and writes a file, takes no lock and touches no allocator state, and runs on the exiting mutator after every minor pause has joined its workers, so it cannot block a forked child or race a promotion.
 
 No atomic step, lock, shared heap location or memory order of any modelled protocol is added, removed or reordered: the new RMW is on a location outside every model's state, relaxed and write-only during GC. **Verdict: no model change needed.**
+
+## 2026-11-23 — value-hash String census dump (test/tla/README.md "The canary")
+
+Pins fired: grep `F.atexit` (**4871e5146a7a**: the new `std::atexit(print)` in `runtime/src/allocator/ValueHash.cpp`).
+
+Change (plans/seq-data-structures-performance.md D4, the String hash census): with `ECO_HASH_CENSUS=1`, the value
+hash's String path counts each String it reads into plain counters and a per-minor-epoch address table, all owned by
+the mutator (the hash runs only on the mutator; no GC thread calls it), and registers, lazily at the first counted
+hash, `std::atexit(census::print)`. Like the stats and census dumps of MAPPING.md's "other `std::atexit` handlers"
+row, it may therefore be registered after the first gang's constructor and run BEFORE `stopAllAtExit`, while members
+may still run. The handler only reads those mutator-owned counters and writes to stderr: it takes no gang, registry,
+pool or allocator lock, reads or writes no gang state and touches no heap object, and it runs on the exiting mutator,
+which is the only writer of what it reads. So it commutes with every M6 step and cannot block one. Off (the default),
+nothing is registered.
+
+No atomic step, lock, shared heap location or memory order of any modelled protocol is added, removed or reordered.
+MAPPING.md's row for the other `std::atexit` handlers now names the value-hash census dump. **Verdict: no model
+change needed.**
+

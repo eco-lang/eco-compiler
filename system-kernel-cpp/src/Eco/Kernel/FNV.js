@@ -77,14 +77,15 @@ function _FNV_isSeqDict(value) {
 }
 
 // The entries of the SeqDict `seqDict` in insertion order, as an Elm List ( k, v ). A SeqDict's fields are
-// its trie's bitmap and nodes and, third (c), the record whose `array` holds Maybe ( hash, k, v ) in
-// insertion order, Nothing where an entry was removed. `__$array` follows --optimize's field renaming.
+// its trie's root and, second (b), the record whose `array` holds Maybe (Entry hash index key value) in
+// insertion order, Nothing where an entry was removed; an Entry's key and value are its fields c and d.
+// `__$array` follows --optimize's field renaming.
 function _FNV_seqDictEntries(seqDict) {
     var entries = A3(__Array_foldl, F2(function (slot, acc) {
         if (slot.a !== undefined) {
-            acc.push(__Utils_Tuple2(slot.a.b, slot.a.c));
+            acc.push(__Utils_Tuple2(slot.a.c, slot.a.d));
         }
         return acc;
-    }), [], seqDict.c.__$array);
+    }), [], seqDict.b.__$array);
     return __List_fromArray(entries);
 }

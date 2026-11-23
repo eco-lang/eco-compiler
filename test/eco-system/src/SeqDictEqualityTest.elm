@@ -11,6 +11,7 @@ with eco/system's FNV kernel (plans/js-kernel-overrides.md, section 5).
 
 -}
 
+-- ENV: ECO_SEQDICT_VALIDATE=1
 -- CHECK: hole: True
 -- CHECK: holeSet: True
 -- CHECK: order: False

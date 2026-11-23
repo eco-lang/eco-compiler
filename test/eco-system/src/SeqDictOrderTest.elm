@@ -8,6 +8,7 @@ the right-only keys.
 
 -}
 
+-- ENV: ECO_SEQDICT_VALIDATE=1
 -- CHECK: insertKeepsPosition: [("a",10),("b",2),("c",3)]
 -- CHECK: reinsertAppends: [("b",2),("c",3),("a",1)]
 -- CHECK: fromListDuplicate: [("x",3),("y",2)]

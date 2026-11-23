@@ -13,6 +13,7 @@ insertion-order Array, so two SeqDicts with the same entries can differ structur
 
 -}
 
+-- ENV: ECO_SEQDICT_VALIDATE=1
 -- CHECK: SeqDictRandomized: "PASS"
 
 import SeqDictModel

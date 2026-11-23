@@ -15,6 +15,9 @@
 //   node run.mjs --skip-elm              without the official compiler (also --skip-js)
 //   node run.mjs --no-build              reuse the programs in build/
 //
+// Workloads that `--list --json` marks `ecoOnly` (eco/system's SeqDict and SeqSet) run on eco's
+// two backends only; their elm column shows "-".
+//
 // Each workload runs on each backend in a process of its own, so no workload's timings depend on
 // the ones before it. Every workload checks its own result (see Bench.elm); if a check fails on
 // any backend the script exits with status 1. Times are medians in milliseconds after the warm-up
@@ -207,16 +210,17 @@ const chosen = opts.selected.length
       if (!w) fail(`unknown workload ${name} (see ${path.relative(process.cwd(), nativeBin) || "bench"} --list)`);
       const n = size === undefined ? w.size : Number(size);
       if (!Number.isInteger(n) || n < 1) fail(`${name} needs a whole-number size of at least 1`);
-      return { name: w.name, size: n };
+      return { name: w.name, size: n, ecoOnly: !!w.ecoOnly };
     })
-  : all.map((w) => ({ name: w.name, size: w.size }));
+  : all.map((w) => ({ name: w.name, size: w.size, ecoOnly: !!w.ecoOnly }));
 
 const mib = (kib) => (kib == null ? null : Math.round(kib / 102.4) / 10);
 const problems = [];
 const rows = [];
 for (const w of chosen) {
   console.log(`running ${w.name} (size ${w.size}) ...`);
-  const e = opts.skipElm ? null : runElm(w);
+  // An eco-only workload (eco/system's SeqDict and SeqSet) has no official-compiler build.
+  const e = opts.skipElm || w.ecoOnly ? null : runElm(w);
   const js = opts.skipJs ? null : runEco(process.execPath, [ecoJsLauncher], w, "eco JavaScript");
   const n = runEco(nativeBin, [], w, "eco native");
   const failed = [["elm", e], ["eco-js", js], ["eco-native", n]].filter(([, r]) => r && !r.ok).map(([b]) => b);

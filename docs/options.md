@@ -430,6 +430,7 @@ These are not command-line flags, but they are how startup options reach a compi
 | `ECO_ECO2LLVM_PARALLEL` | default-on, `0` = serial | Per-function body conversion in EcoToLLVM runs in parallel; `0` forces serial (determinism bisection) | `runtime/src/codegen/Passes/EcoToLLVM.cpp:469` |
 | `ECO_ECO2LLVM_STATS` | presence | Prints wall-time for EcoToLLVM's serial sub-stages | `runtime/src/codegen/Passes/EcoToLLVM.cpp:160` |
 | `ECO_INLINE_ALLOC` | default-on, `0` = off | Inline nursery bump allocation (HEAP_034); `0` emits `eco_alloc_*` calls instead (needed for `ECO_CLOSURE_STATS` and GC-stats census) | `runtime/src/codegen/Passes/EcoToLLVMInternal.h:812` |
+| `ECO_HASH_INLINE` | default-on, `0` = off | `eco.hash` of an Int, Float, Char or Bool is computed inline; `0` calls the runtime walker (`eco_hash_i64` etc.) instead, which gives the same numbers (the identity switch of `test/eco-system/src/HashIdentityGenericTest.elm`, plans/seq-data-structures-performance.md D1) | `runtime/src/codegen/Passes/EcoToLLVMArith.cpp` (`valuehash::inlineEnabled`) |
 | `ECO_INLINE_DEREF_EXT` | default-on, `0` = off | Extended inline HPointer deref classes; `0` restores out-of-line `eco_resolve_hptr`/`eco_get_tag` | `runtime/src/codegen/Passes/EcoToLLVMInternal.h:794` |
 | `ECO_INLINE_ZERO` | default-off; value starting with `1` = on | Forces payload zeroing on every inline allocation (bisection only; changes code) | `runtime/src/codegen/Passes/EcoToLLVMInternal.h:959` |
 | `ECO_KERNEL_GCLEAF` | default-on, `0` = off | Honours the `eco.gc_leaf` attribute on kernel declarations; `0` ignores it everywhere, which also disables `ECO_GCLEAF_MARK` | `runtime/src/codegen/Passes/EcoToLLVMInternal.h:832` |
@@ -474,6 +475,7 @@ These are read by the runtime (`runtime/src/allocator/RuntimeExports.cpp`) when 
 | `ECO_DISPATCH_STATS` | non-empty, not `0` | At exit, dumps the per-closure-evaluator sat/gen/fast dispatch table, plus the `ECO_CALL_CENSUS` tables if they were compiled in | `runtime/src/allocator/RuntimeExports.cpp:1043`, `:1141` |
 | `ECO_CTOR_CENSUS_OUT` | path | Writes the constructor census counts (`id alloc ssa promoted` per census id) at exit, for a program compiled with `ECO_CTOR_CENSUS`. Promotions are counted only in builds with GC stats (`ECO_GC_STATS`) | `runtime/src/allocator/RuntimeExports.cpp` (`ctorCensusDump`) |
 | `ECO_CLOSURE_STATS` | non-empty, not `0` | At exit, dumps per-evaluator closure creates/extends (blind at inline-alloc sites; build with `ECO_INLINE_ALLOC=0`) | `runtime/src/allocator/RuntimeExports.cpp:877` |
+| `ECO_HASH_CENSUS` | `1` | At exit, prints the value hash's String census to stderr: String hashes and units read by form, length, where the String lived at hash time (nursery age 0, survived, old generation, PermanentSpace) and nesting, and repeated hashes of the same object within a minor epoch (plans/seq-data-structures-performance.md D4) | `runtime/src/allocator/ValueHash.cpp` (`census`) |
 | `ECO_CONS_SITES` | presence | Tallies cons allocations per site and dumps them at exit | `runtime/src/allocator/RuntimeExports.cpp:368` |
 | `ECO_GC_EXIT_MAJOR` | exactly-`1` prefix (`[0]=='1'`) | Forces one major GC after `eco_main` returns, so the exit stats show the live retained set (GC section cross-reference) | `runtime/src/codegen/eco_entry.cpp:132`, `:200` |
 
@@ -481,6 +483,7 @@ These are read by the runtime (`runtime/src/allocator/RuntimeExports.cpp`) when 
 
 | Name | Values / default | Effect | Source |
 |---|---|---|---|
+| `ECO_SEQDICT_VALIDATE` | `1` | Before comparing two SeqDicts with `==`, checks both for the layout invariants of plans/seq-data-structures-performance.md §4.2 (order array, trie reachability, bitmaps, canonical form) and aborts with the broken one; the eco-system SeqDict tests set it | `elm-kernel-cpp/src/core/Utils.cpp` (`seqDictEq`), `elm-kernel-cpp/src/core/SeqDict.hpp` (`validateSeqDict`) |
 | `TZ` | IANA name, optional leading `:` | `Time.here`/zone name: used before `/etc/localtime` on Linux, macOS and Windows | `elm-kernel-cpp/src/time/TimeExports.cpp:92`, `:130`, `:151` |
 | `CURL_CA_BUNDLE` | path | CA bundle for HTTPS when the request has no explicit `caInfo` (libcurl does not read this itself). The AOT E2E runner sets it to its test server's cert | `runtime/src/platform/HttpService.cpp:229`, `test/aot_e2e_main.cpp:127` |
 | `PATH` (Windows also `Path`) | standard | `Eco.File.findExecutable` search path | `eco-kernel-cpp/src/eco-kernel/File.cpp:190` |

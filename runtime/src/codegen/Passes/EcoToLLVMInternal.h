@@ -1147,6 +1147,17 @@ struct EcoRuntime {
     mlir::LLVM::LLVMFuncOp getOrCreateHPtrToSlot(mlir::OpBuilder &builder) const;
     // Declares `eco_int_pow`, gc-leaf.
     mlir::LLVM::LLVMFuncOp getOrCreateIntPow(mlir::OpBuilder &builder) const;
+
+    // Declares the value-hash entry points of runtime/src/allocator/ValueHash.hpp, each returning an
+    // i64: `eco_hash_value` and `eco_hash_string` take a boxed value, `eco_hash_i64`, `eco_hash_f64`
+    // and `eco_hash_char` an i64, f64 and i32. None allocates, so all are gc-leaf.
+    mlir::LLVM::LLVMFuncOp getOrCreateHashValue(mlir::OpBuilder &builder) const;
+    mlir::LLVM::LLVMFuncOp getOrCreateHashString(mlir::OpBuilder &builder) const;
+    mlir::LLVM::LLVMFuncOp getOrCreateHashI64(mlir::OpBuilder &builder) const;
+    mlir::LLVM::LLVMFuncOp getOrCreateHashF64(mlir::OpBuilder &builder) const;
+    mlir::LLVM::LLVMFuncOp getOrCreateHashChar(mlir::OpBuilder &builder) const;
+    // Declares `eco_hash_mix_string(h: i64, s: hptr) -> i64`, gc-leaf (eco.hash.mix of a String).
+    mlir::LLVM::LLVMFuncOp getOrCreateHashMixString(mlir::OpBuilder &builder) const;
     // Declares `Elm_Kernel_Utils_equal`, gc-leaf when `kernelGcLeafEnabled()`.
     mlir::LLVM::LLVMFuncOp getOrCreateUtilsEqual(mlir::OpBuilder &builder) const;
     // Declares the marker `__eco_value_eq`, gc-leaf, which the backend replaces

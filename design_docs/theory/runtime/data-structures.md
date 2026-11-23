@@ -117,6 +117,17 @@ Strings and Bytes meet without copying in two places. Decoding a string from ASC
 
 Arrays have one form, and their layout is described in [value-representation.md](../value-representation.md).
 
+## SeqDict and the value hash
+
+eco/system's `SeqDict` (and `SeqSet`, a `SeqDict a Bool`) is a library type in Elm, not a runtime form, but
+the runtime reads it in two places, so its layout is fixed by KERN_009: a canonical hash trie whose slots are
+tagged words, and an insertion-order `Array` of entries, each `Entry hash index key value` one object shared
+by the two. `==` and the value hash read only the order array, through `forEachSeqDictEntry`
+(`SeqDictLayout.hpp`), which accepts either form the compiler may give its `Maybe` elements. The trie is keyed
+on eco's value hash, a function of the value `==` compares ([value-hash.md](value-hash.md)): the runtime walker
+`eco_hash_value` defines it, and the compiler's `eco.hash` ops compute the same numbers inline where the type
+is known (CGEN_095). plans/seq-data-structures-performance.md records the design and its measurements.
+
 ## Who may look inside
 
 Outside the runtime, strings are reached only through the `StringOps` interface: length, `charAt`, conversion to a C++ string, `ensureFlat`, and the test for UTF-8 with access to its bytes, which the parser uses. A kernel may read a flat leaf's code units directly only after `ensureFlat`. Compiled code reads the length from the header inline and calls `charAt` as a call that cannot collect, fused encoders and decoders reach strings and Bytes through the helpers that [bytes-fusion.md](../compiler/bytes-fusion.md) describes, and every other string operation is a call into the kernel or the runtime. Lists are reached through the cursors and the list builders, and Bytes through `byteBufferView`.

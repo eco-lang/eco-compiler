@@ -1,4 +1,4 @@
-module DictAlgebra exposing (bench)
+module DictAlgebra exposing (bench, benchUnionSmall)
 
 {-| Dict set algebra: `Dict.union`, `intersect`, `diff` and `merge` on two large dicts whose keys
 overlap in a known way (multiples of 2 and multiples of 3 below `n`), repeated three times with
@@ -95,3 +95,49 @@ pass n shift =
 bench : Int -> Bool
 bench n =
     List.all (pass n) [ 1, 2, 3 ]
+
+
+{-| `union` of 64 small dicts (each `n / 64` keys, disjoint from the large one) into one large dict of `n`
+keys, and `diff` of the large dict and 64 small dicts of keys it holds: the shape `insert`ing a few keys
+into a big map takes, where a rebuild of the whole result would cost the big map's size every time.
+Checked in closed form: every result's size, and lookups of its first, last and boundary keys.
+-}
+benchUnionSmall : Int -> Bool
+benchUnionSmall n =
+    let
+        m =
+            max 1 (n // 64)
+
+        big =
+            Dict.fromList (List.map (\k -> ( k, k )) (List.range 0 (n - 1)))
+
+        round r ok =
+            let
+                outside =
+                    Dict.fromList (List.map (\k -> ( k, 2 * k )) (List.range (n + r * m) (n + r * m + m - 1)))
+
+                inside =
+                    Dict.fromList (List.map (\k -> ( k, 2 * k )) (List.range (modBy n (r * m)) (modBy n (r * m) + m - 1)))
+
+                unioned =
+                    Dict.union outside big
+
+                diffed =
+                    Dict.diff big inside
+
+                lo =
+                    modBy n (r * m)
+
+                insideCount =
+                    min m (n - lo)
+            in
+            ok
+                && (Dict.size unioned == n + m)
+                && (Dict.get (n + r * m) unioned == Just (2 * (n + r * m)))
+                && (Dict.get (n + r * m + m - 1) unioned == Just (2 * (n + r * m + m - 1)))
+                && (Dict.get (n - 1) unioned == Just (n - 1))
+                && (Dict.size diffed == n - insideCount)
+                && (Dict.get lo diffed == Nothing)
+                && (lo + m >= n || Dict.get (lo + m) diffed == Just (lo + m))
+    in
+    List.foldl round True (List.range 0 63)

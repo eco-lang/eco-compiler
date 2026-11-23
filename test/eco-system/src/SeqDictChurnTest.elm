@@ -8,6 +8,7 @@ go to the end.
 
 -}
 
+-- ENV: ECO_SEQDICT_VALIDATE=1
 -- CHECK: built: (50000,True)
 -- CHECK: stringKeys: (20000,True)
 -- CHECK: afterRemovingOdds: (25000,True,True)

@@ -514,6 +514,7 @@ add_llvm_executable(ecoc
     ../allocator/ThreadLocalHeap.cpp
     ../allocator/GCStats.cpp
     ../allocator/StringOps.cpp
+    ../allocator/ValueHash.cpp
     ../allocator/ListOps.cpp
     ../allocator/BytesOps.cpp
     ../allocator/ElmBytesRuntime.cpp
@@ -618,6 +619,7 @@ add_mlir_library(EcoRunner
     ../allocator/ThreadLocalHeap.cpp
     ../allocator/GCStats.cpp
     ../allocator/StringOps.cpp
+    ../allocator/ValueHash.cpp
     ../allocator/ListOps.cpp
     ../allocator/BytesOps.cpp
     ../allocator/ElmBytesRuntime.cpp
@@ -704,6 +706,7 @@ add_library(EcoRuntimeStatic STATIC
     ../allocator/StackMap.cpp
     ../allocator/StackUnwind.cpp
     ../allocator/StringOps.cpp
+    ../allocator/ValueHash.cpp
     ../allocator/ListOps.cpp
     ../allocator/BytesOps.cpp
     ../allocator/ElmBytesRuntime.cpp
@@ -923,7 +926,7 @@ set(ECO_KERNEL_MODS File Console Env Process MVar Hash NativeDriver Runtime GC H
 # Kernel modules of the public eco/system package (system-kernel-cpp/). Each
 # names a static lib EcoSystem_<mod>.
 set(ECO_SYSTEM_MODS Core System Stream FileSystem ChildProcess Terminal HttpServer HttpStream
-    Socket Tls WebSocket Dom FNV JsArray2
+    Socket Tls WebSocket Dom FNV JsArray2 Bitmap
     CACHE INTERNAL "Eco system module names — drives static lib targets and bundle install"
 )
 

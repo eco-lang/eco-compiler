@@ -79,9 +79,14 @@ kernelOwned =
         , ( "elm/core:Array", "Array" )
 
         -- Reserved tags (CtorTag.elm), Utils.cpp eqHelp/FNV special cases, HttpExports.cpp builds nodes.
+        -- core/SeqDict.hpp's validateSeqDict (ECO_SEQDICT_VALIDATE=1) also reads SeqDict internals, but
+        -- through heap tags, word tag bits and slot kinds only, so it pins no representation.
         , ( "elm/core:Dict", "Dict" )
         , ( "eco/system:SeqDict", "SeqDict" )
-        , ( "eco/system:SeqDict", "Node" )
+
+        -- SeqDict's trie types (Node, Slot, Entry) are not kernel-owned: no C++ reads them in a fixed
+        -- shape (the validator reads every representation), so the representation passes may tag
+        -- Slot and make Maybe (Entry k v) nullable (plans/seq-data-structures-performance.md §4.1).
 
         -- From scripts/check-kernel-opaque.py: dummy declarations of kernel-produced values,
         -- and types the kernels build or read.
@@ -210,6 +215,8 @@ transparentKernels : List ( String, List String )
 transparentKernels =
     [ -- Basics: elm-kernel-cpp/src/core/BasicsExports.cpp
       ( "Basics", [ "acos", "add", "and", "asin", "atan", "atan2", "ceiling", "cos", "e", "fdiv", "floor", "idiv", "isInfinite", "isNaN", "log", "modBy", "mul", "not", "or", "pi", "pow", "remainderBy", "round", "sin", "sqrt", "sub", "tan", "toFloat", "truncate", "xor" ] )
+    , -- Bitmap: system-kernel-cpp/src/eco-system/Bitmap/BitmapExports.cpp
+      ( "Bitmap", [ "index", "popCount32" ] )
     , -- Bitwise: elm-kernel-cpp/src/core/BitwiseExports.cpp
       ( "Bitwise", [ "and", "complement", "or", "shiftLeftBy", "shiftRightBy", "shiftRightZfBy", "xor" ] )
     , -- Browser: elm-kernel-cpp/src/browser/BrowserExports.cpp
@@ -397,7 +404,7 @@ inspectingKernels =
     , -- Url: elm-kernel-cpp/src/url/UrlExports.cpp
       List.map (\n -> ( ( "Url", n ), Inspects [ ( "elm/core:Maybe", "Maybe" ) ] )) [ "percentDecode" ]
     , -- Utils: elm-kernel-cpp/src/core/UtilsExports.cpp
-      List.map (\n -> ( ( "Utils", n ), Inspects [ ( "eco/system:SeqDict", "Node" ), ( "eco/system:SeqDict", "SeqDict" ), ( "elm/core:Dict", "Dict" ) ] )) [ "equal", "notEqual" ]
+      List.map (\n -> ( ( "Utils", n ), Inspects [ ( "eco/system:SeqDict", "SeqDict" ), ( "elm/core:Dict", "Dict" ) ] )) [ "equal", "notEqual" ]
     , -- Utils: elm-kernel-cpp/src/core/UtilsExports.cpp
       List.map (\n -> ( ( "Utils", n ), Inspects [ ( "elm/core:Basics", "Order" ) ] )) [ "compare" ]
     , -- VirtualDom: elm-kernel-cpp/src/virtual-dom/VirtualDomExports.cpp

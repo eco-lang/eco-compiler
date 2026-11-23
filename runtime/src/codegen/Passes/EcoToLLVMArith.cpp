@@ -946,6 +946,237 @@ struct FloatMaxOpLowering : public OpConversionPattern<FloatMaxOp> {
 // Bitwise Operations
 //===----------------------------------------------------------------------===//
 
+// The value hash's inline arithmetic (design_docs/theory/runtime/value-hash.md, which
+// runtime/src/allocator/ValueHash.cpp implements): a 32-bit FNV-1a state, the walker's markers, and
+// fmix32 with 0 mapped to 1. Shared by the lowerings of `eco.hash`, `eco.hash.mix` and
+// `eco.hash.finish`.
+namespace valuehash {
+
+constexpr uint32_t kOffset = 2166136261u, kPrime = 16777619u;
+constexpr uint32_t kInt = 1, kFloat = 2, kChar = 3, kConst = 6;
+
+Value c32(OpBuilder &b, Location loc, uint32_t x) {
+    return arith::ConstantIntOp::create(b, loc, b.getI32Type(), static_cast<int64_t>(x)).getResult();
+}
+
+Value mix(OpBuilder &b, Location loc, Value h, Value x) {
+    return arith::MulIOp::create(b, loc, arith::XOrIOp::create(b, loc, h, x), c32(b, loc, kPrime)).getResult();
+}
+
+Value lo32(OpBuilder &b, Location loc, Value x64) {
+    return arith::TruncIOp::create(b, loc, b.getI32Type(), x64).getResult();
+}
+
+Value hi32(OpBuilder &b, Location loc, Value x64) {
+    Value sh = arith::ShRUIOp::create(b, loc, x64, arith::ConstantIntOp::create(b, loc, b.getI64Type(), 32));
+    return lo32(b, loc, sh);
+}
+
+// The walker's step for an unboxed primitive of `kind` (`int` i64, `float` f64, `char` i32, `bool` i1)
+// applied to the state `h` (i32): its marker, then its words.
+Value mixPrimitive(OpBuilder &b, Location loc, Value h, Value v, llvm::StringRef kind) {
+    if (kind == "int")
+        return mix(b, loc, mix(b, loc, mix(b, loc, h, c32(b, loc, kInt)), lo32(b, loc, v)), hi32(b, loc, v));
+    if (kind == "float") {
+        // -0.0 hashes as 0.0, since `==` finds them equal.
+        Value zero = arith::ConstantFloatOp::create(b, loc, b.getF64Type(), llvm::APFloat(0.0));
+        Value isZero = arith::CmpFOp::create(b, loc, arith::CmpFPredicate::OEQ, v, zero);
+        Value norm = arith::SelectOp::create(b, loc, isZero, zero, v);
+        Value bits = arith::BitcastOp::create(b, loc, b.getI64Type(), norm);
+        return mix(b, loc, mix(b, loc, mix(b, loc, h, c32(b, loc, kFloat)), lo32(b, loc, bits)), hi32(b, loc, bits));
+    }
+    if (kind == "char")
+        return mix(b, loc, mix(b, loc, h, c32(b, loc, kChar)), v);
+    // A Bool is the True or False constant word (0x5 or 0x4): `kConst`, then the word's halves.
+    Value word = arith::SelectOp::create(b, loc, v, c32(b, loc, 5), c32(b, loc, 4));
+    return mix(b, loc, mix(b, loc, mix(b, loc, h, c32(b, loc, kConst)), word), c32(b, loc, 0));
+}
+
+// fmix32 of `h` (i32), 0 mapped to 1, zero-extended to i64.
+Value finish(OpBuilder &b, Location loc, Value h) {
+    auto shr = [&](Value x, unsigned n) { return arith::ShRUIOp::create(b, loc, x, c32(b, loc, n)).getResult(); };
+    auto xorv = [&](Value a, Value c) { return arith::XOrIOp::create(b, loc, a, c).getResult(); };
+    auto mul = [&](Value a, uint32_t k) { return arith::MulIOp::create(b, loc, a, c32(b, loc, k)).getResult(); };
+    h = xorv(h, shr(h, 16));
+    h = mul(h, 0x85ebca6bu);
+    h = xorv(h, shr(h, 13));
+    h = mul(h, 0xc2b2ae35u);
+    h = xorv(h, shr(h, 16));
+    Value isZero = arith::CmpIOp::create(b, loc, arith::CmpIPredicate::eq, h, c32(b, loc, 0));
+    h = arith::SelectOp::create(b, loc, isZero, c32(b, loc, 1), h);
+    return arith::ExtUIOp::create(b, loc, b.getI64Type(), h).getResult();
+}
+
+bool inlineEnabled() {
+    static const bool on = [] {
+        const char *v = std::getenv("ECO_HASH_INLINE");
+        return !(v != nullptr && std::string(v) == "0");
+    }();
+    return on;
+}
+
+} // namespace valuehash
+
+/**
+ * Lowers `eco.hash` (plans/seq-data-structures-performance.md D1).
+ *
+ * An Int, Float, Char or Bool operand is hashed inline exactly as the runtime walker hashes the value
+ * (`valuehash`). A String calls `eco_hash_string`, any other value `eco_hash_value`. With
+ * ECO_HASH_INLINE=0 in the environment at lowering time every kind calls the runtime (`eco_hash_i64`
+ * etc.) instead: the switch the HashIdentity tests use to compare the inline code with the walker.
+ */
+struct HashOpLowering : public OpConversionPattern<HashOp> {
+    // Declares the runtime functions this pattern calls.
+    const EcoRuntime &runtime;
+
+    // Creates the pattern. It keeps references to `typeConverter` and `runtime`, which must outlive it.
+    HashOpLowering(EcoTypeConverter &typeConverter, MLIRContext *ctx, const EcoRuntime &runtime)
+        : OpConversionPattern(typeConverter, ctx), runtime(runtime) {}
+
+    LogicalResult
+    matchAndRewrite(HashOp op, OpAdaptor adaptor,
+                    ConversionPatternRewriter &rewriter) const override {
+        Location loc = op.getLoc();
+        Type i64Ty = rewriter.getI64Type();
+        llvm::StringRef kind = op.getKind();
+        Value v = adaptor.getValue();
+
+        auto call = [&](LLVM::LLVMFuncOp func, Value arg) {
+            return LLVM::CallOp::create(rewriter, loc, func, ValueRange{arg}).getResult();
+        };
+
+        if (kind == "string") {
+            rewriter.replaceOp(op, call(runtime.getOrCreateHashString(rewriter), v));
+            return success();
+        }
+        if (kind == "value") {
+            rewriter.replaceOp(op, call(runtime.getOrCreateHashValue(rewriter), v));
+            return success();
+        }
+        if (!valuehash::inlineEnabled()) {
+            if (kind == "int") rewriter.replaceOp(op, call(runtime.getOrCreateHashI64(rewriter), v));
+            else if (kind == "float") rewriter.replaceOp(op, call(runtime.getOrCreateHashF64(rewriter), v));
+            else if (kind == "char") rewriter.replaceOp(op, call(runtime.getOrCreateHashChar(rewriter), v));
+            else {
+                // A Bool is the True or False constant word (0x5 or 0x4), boxed.
+                Value t = arith::ConstantIntOp::create(rewriter, loc, i64Ty, 5);
+                Value f = arith::ConstantIntOp::create(rewriter, loc, i64Ty, 4);
+                Value word = arith::SelectOp::create(rewriter, loc, v, t, f);
+                Value ptr = LLVM::IntToPtrOp::create(rewriter, loc,
+                                                     LLVM::LLVMPointerType::get(rewriter.getContext(), 1), word);
+                rewriter.replaceOp(op, call(runtime.getOrCreateHashValue(rewriter), ptr));
+            }
+            return success();
+        }
+        Value h = valuehash::mixPrimitive(rewriter, loc, valuehash::c32(rewriter, loc, valuehash::kOffset), v, kind);
+        rewriter.replaceOp(op, valuehash::finish(rewriter, loc, h));
+        return success();
+    }
+};
+
+/**
+ * Lowers `eco.hash.mix` (D2): the walker's step for one field applied to the running state, inline for
+ * an Int, Float, Char or Bool, through `eco_hash_mix_string` for a String; a bare marker for kind
+ * `marker`.
+ */
+struct HashMixOpLowering : public OpConversionPattern<HashMixOp> {
+    // Declares the runtime functions this pattern calls.
+    const EcoRuntime &runtime;
+
+    // Creates the pattern. It keeps references to `typeConverter` and `runtime`, which must outlive it.
+    HashMixOpLowering(EcoTypeConverter &typeConverter, MLIRContext *ctx, const EcoRuntime &runtime)
+        : OpConversionPattern(typeConverter, ctx), runtime(runtime) {}
+
+    LogicalResult
+    matchAndRewrite(HashMixOp op, OpAdaptor adaptor,
+                    ConversionPatternRewriter &rewriter) const override {
+        Location loc = op.getLoc();
+        llvm::StringRef kind = op.getKind();
+        if (kind == "string") {
+            auto func = runtime.getOrCreateHashMixString(rewriter);
+            rewriter.replaceOp(op, LLVM::CallOp::create(rewriter, loc, func,
+                                                        ValueRange{adaptor.getState(), adaptor.getValue()})
+                                       .getResult());
+            return success();
+        }
+        Value h = valuehash::lo32(rewriter, loc, adaptor.getState());
+        if (kind == "boolword") {
+            // The True or False constant word (0x5 or 0x4), hashed as the walker hashes a constant:
+            // `kConst`, then the word's halves. The word is compared with True rather than converted to
+            // an integer, so no pointer becomes an i64 (REP_LLVM_001).
+            Value five = arith::ConstantIntOp::create(rewriter, loc, rewriter.getI64Type(), 5).getResult();
+            Value trueWord = LLVM::IntToPtrOp::create(rewriter, loc, adaptor.getValue().getType(), five);
+            Value isTrue = LLVM::ICmpOp::create(rewriter, loc, LLVM::ICmpPredicate::eq, adaptor.getValue(), trueWord);
+            rewriter.replaceOpWithNewOp<arith::ExtUIOp>(
+                op, rewriter.getI64Type(), valuehash::mixPrimitive(rewriter, loc, h, isTrue, "bool"));
+            return success();
+        }
+        if (kind == "marker")
+            h = valuehash::mix(rewriter, loc, h, valuehash::c32(rewriter, loc, static_cast<uint32_t>(*op.getMarker())));
+        else
+            h = valuehash::mixPrimitive(rewriter, loc, h, adaptor.getValue(), kind);
+        rewriter.replaceOpWithNewOp<arith::ExtUIOp>(op, rewriter.getI64Type(), h);
+        return success();
+    }
+};
+
+/**
+ * Lowers `eco.hash.finish` (D2): fmix32 of the running state, 0 mapped to 1.
+ */
+struct HashFinishOpLowering : public OpConversionPattern<HashFinishOp> {
+    using OpConversionPattern::OpConversionPattern;
+
+    LogicalResult
+    matchAndRewrite(HashFinishOp op, OpAdaptor adaptor,
+                    ConversionPatternRewriter &rewriter) const override {
+        Location loc = op.getLoc();
+        rewriter.replaceOp(op, valuehash::finish(rewriter, loc, valuehash::lo32(rewriter, loc, adaptor.getState())));
+        return success();
+    }
+};
+
+/**
+ * Lowers `eco.int.bitmap_index` to a population count of the bitmap's bits below `index & 31`:
+ * `ctpop(bitmap & ((1 << (index & 31)) - 1))`. The mask is below 2^31, so it also clears bits 32-63.
+ * On x86-64-v3 LLVM selects `bzhi` and `popcnt`.
+ */
+struct IntBitmapIndexOpLowering : public OpConversionPattern<IntBitmapIndexOp> {
+    using OpConversionPattern::OpConversionPattern;
+
+    LogicalResult
+    matchAndRewrite(IntBitmapIndexOp op, OpAdaptor adaptor,
+                    ConversionPatternRewriter &rewriter) const override {
+        Location loc = op.getLoc();
+        Type i64Ty = rewriter.getI64Type();
+        Value c31 = arith::ConstantIntOp::create(rewriter, loc, i64Ty, 31);
+        Value one = arith::ConstantIntOp::create(rewriter, loc, i64Ty, 1);
+        Value idx = arith::AndIOp::create(rewriter, loc, adaptor.getIndex(), c31);
+        Value bit = arith::ShLIOp::create(rewriter, loc, one, idx);
+        Value mask = arith::SubIOp::create(rewriter, loc, bit, one);
+        Value below = arith::AndIOp::create(rewriter, loc, adaptor.getBitmap(), mask);
+        rewriter.replaceOpWithNewOp<LLVM::CtPopOp>(op, i64Ty, below);
+        return success();
+    }
+};
+
+/**
+ * Lowers `eco.int.popcount32` to `ctpop(value & 0xFFFFFFFF)`.
+ */
+struct IntPopCount32OpLowering : public OpConversionPattern<IntPopCount32Op> {
+    using OpConversionPattern::OpConversionPattern;
+
+    LogicalResult
+    matchAndRewrite(IntPopCount32Op op, OpAdaptor adaptor,
+                    ConversionPatternRewriter &rewriter) const override {
+        Location loc = op.getLoc();
+        Type i64Ty = rewriter.getI64Type();
+        Value low = arith::ConstantIntOp::create(rewriter, loc, i64Ty, 0xFFFFFFFFll);
+        Value masked = arith::AndIOp::create(rewriter, loc, adaptor.getValue(), low);
+        rewriter.replaceOpWithNewOp<LLVM::CtPopOp>(op, i64Ty, masked);
+        return success();
+    }
+};
+
 /**
  * Lowers `Bitwise.and` to `arith.andi`.
  */
@@ -1542,6 +1773,9 @@ void eco::detail::populateEcoArithPatterns(
         FloatMinOpLowering,
         FloatMaxOpLowering,
         // Bitwise
+        HashFinishOpLowering,
+        IntBitmapIndexOpLowering,
+        IntPopCount32OpLowering,
         IntAndOpLowering,
         IntOrOpLowering,
         IntXorOpLowering,
@@ -1573,6 +1807,8 @@ void eco::detail::populateEcoArithPatternsWithRuntime(
 
     auto *ctx = patterns.getContext();
     patterns.add<IntPowOpLowering>(typeConverter, ctx, runtime);
+    patterns.add<HashOpLowering>(typeConverter, ctx, runtime);
+    patterns.add<HashMixOpLowering>(typeConverter, ctx, runtime);
     patterns.add<FloatAsinOpLowering>(typeConverter, ctx, runtime);
     patterns.add<FloatAcosOpLowering>(typeConverter, ctx, runtime);
     patterns.add<FloatAtanOpLowering>(typeConverter, ctx, runtime);

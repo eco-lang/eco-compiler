@@ -38,6 +38,34 @@ static LogicalResult verifySymRef(Operation *op, FlatSymbolRefAttr sym,
 // Checks a direct call's callee: it must exist, and when it is a `func.func` the call's operand and result types
 // must equal its signature exactly (CGEN_011). An indirect call passes. A callee already lowered to an `llvm.func`
 // is not compared.
+// `eco.hash.mix`: the field's type must be the one its `kind` names; `marker` needs a `marker`.
+LogicalResult HashMixOp::verify() {
+    Type t = getValue().getType();
+    llvm::StringRef kind = getKind();
+    if (kind == "marker") {
+        if (!getMarker()) return emitOpError("kind 'marker' needs a marker attribute");
+        return success();
+    }
+    bool ok = (kind == "int" && t.isInteger(64)) || (kind == "float" && t.isF64()) ||
+              (kind == "char" && t.isInteger(32)) || (kind == "bool" && t.isInteger(1)) ||
+              ((kind == "string" || kind == "boolword") && isa<ValueType>(t));
+    if (!ok)
+        return emitOpError("operand type ") << t << " does not match kind '" << kind << "'";
+    return success();
+}
+
+// `eco.hash`: the operand's type must be the one its `kind` names.
+LogicalResult HashOp::verify() {
+    Type t = getValue().getType();
+    llvm::StringRef kind = getKind();
+    bool ok = (kind == "int" && t.isInteger(64)) || (kind == "float" && t.isF64()) ||
+              (kind == "char" && t.isInteger(32)) || (kind == "bool" && t.isInteger(1)) ||
+              ((kind == "string" || kind == "value") && isa<ValueType>(t));
+    if (!ok)
+        return emitOpError("operand type ") << t << " does not match kind '" << kind << "'";
+    return success();
+}
+
 LogicalResult CallOp::verifySymbolUses(SymbolTableCollection &symbolTable) {
   auto callee = getCalleeAttr();
   if (!callee)

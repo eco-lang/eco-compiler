@@ -2729,6 +2729,84 @@ def Eco_IntComplementOp : Eco_Op<"int.complement", [Pure]> {
   let assemblyFormat = "$value attr-dict `:` type($result)";
 }
 
+def Eco_HashOp : Eco_Op<"hash", [Pure]> {
+  let summary = "The value hash of a value of a known type";
+  let description = [{
+    eco's value hash (design_docs/theory/runtime/value-hash.md; eco/system's `Hash.hash` and
+    `FNV.hash`), emitted by the front end where the hash kernel is called at a known type
+    (plans/seq-data-structures-performance.md D1). `kind` says how the operand is held: `int` (i64),
+    `float` (f64), `char` (i32) and `bool` (i1) are hashed inline exactly as the runtime walker hashes
+    them; `string` and `value` (`!eco.value`) call `eco_hash_string` and `eco_hash_value`. The result is
+    in [1, 2^32). With ECO_HASH_INLINE=0 at lowering time every kind calls the runtime instead.
+
+    ```mlir
+    %h = eco.hash %k <{kind = "int"}> : i64 -> i64
+    ```
+  }];
+  let arguments = (ins AnyType:$value, StrAttr:$kind, OptionalAttr<I64Attr>:$type_id);
+  let results = (outs Eco_Int:$result);
+  let assemblyFormat = "$value prop-dict attr-dict `:` type($value) `->` type($result)";
+  let hasVerifier = 1;
+}
+
+def Eco_HashMixOp : Eco_Op<"hash.mix", [Pure]> {
+  let summary = "One step of the value hash: a field mixed into the running state";
+  let description = [{
+    The runtime walker's step for one field of a tuple or record (design_docs/theory/runtime/
+    value-hash.md), applied to the running 32-bit FNV state `state` (held in an i64), for a field of
+    kind `int` (i64), `float` (f64), `char` (i32), `bool` (i1), `boolword` (a Bool as its True or False
+    constant word, `!eco.value`) or `string` (`!eco.value`, through `eco_hash_mix_string`), or the bare
+    marker `marker` when `kind` is `marker` (operand unused, i64).
+    The front end emits a chain of these for `eco.hash` of a tuple or record of such fields, ending in
+    `eco.hash.finish` (plans/seq-data-structures-performance.md D2).
+  }];
+  let arguments = (ins Eco_Int:$state, AnyType:$value, StrAttr:$kind, OptionalAttr<I64Attr>:$marker);
+  let results = (outs Eco_Int:$result);
+  let assemblyFormat = "$state `,` $value prop-dict attr-dict `:` type($value) `->` type($result)";
+  let hasVerifier = 1;
+}
+
+def Eco_HashFinishOp : Eco_Op<"hash.finish", [Pure]> {
+  let summary = "The value hash's finaliser";
+  let description = [{
+    fmix32 of the running 32-bit FNV state, with 0 mapped to 1: the end of an `eco.hash.mix` chain.
+  }];
+  let arguments = (ins Eco_Int:$state);
+  let results = (outs Eco_Int:$result);
+  let assemblyFormat = "$state attr-dict `:` type($result)";
+}
+
+def Eco_IntBitmapIndexOp : Eco_Op<"int.bitmap_index", [Pure]> {
+  let summary = "Count the set bits of a 32-bit bitmap below a bit index";
+  let description = [{
+    The number of set bits of `bitmap & (2^(index & 31) - 1) & 0xFFFFFFFF`: only the low 32 bits of
+    `bitmap` count, and `index` is taken mod 32. eco/system's `Bitmap.index`
+    (Compiler.IR.Kernel.Intrinsics); it lowers to `llvm.intr.ctpop`.
+
+    ```mlir
+    %i = eco.int.bitmap_index %bitmap, %index : i64
+    ```
+  }];
+  let arguments = (ins Eco_Int:$bitmap, Eco_Int:$index);
+  let results = (outs Eco_Int:$result);
+  let assemblyFormat = "$bitmap `,` $index attr-dict `:` type($result)";
+}
+
+def Eco_IntPopCount32Op : Eco_Op<"int.popcount32", [Pure]> {
+  let summary = "Count the set bits among the low 32 bits of an integer";
+  let description = [{
+    The number of set bits of `value & 0xFFFFFFFF`. eco/system's `Bitmap.popCount32`; it lowers to
+    `llvm.intr.ctpop`.
+
+    ```mlir
+    %n = eco.int.popcount32 %x : i64
+    ```
+  }];
+  let arguments = (ins Eco_Int:$value);
+  let results = (outs Eco_Int:$result);
+  let assemblyFormat = "$value attr-dict `:` type($result)";
+}
+
 def Eco_IntShiftLeftOp : Eco_Op<"int.shl", [Pure]> {
   let summary = "Shift left by n bits";
   let description = [{

@@ -326,6 +326,9 @@ eco_system_module(FNV          POSIX
     src/eco-system/FNV/FNVExports.cpp)
 eco_system_module(JsArray2     POSIX
     src/eco-system/JsArray2/JsArray2Exports.cpp)
+# Bitmap counts set bits for SeqDict's trie (BitmapExports.cpp); the compiler makes most calls intrinsics.
+eco_system_module(Bitmap       POSIX
+    src/eco-system/Bitmap/BitmapExports.cpp)
 foreach(mod FNV JsArray2)
     target_include_directories(EcoSystem_${mod} PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/../elm-kernel-cpp/src)
 endforeach()

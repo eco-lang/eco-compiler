@@ -16,6 +16,7 @@
 
 #include "../allocator/RuntimeExports.h"
 #include "../allocator/PermanentSpace.hpp"
+#include "../allocator/ValueHash.hpp"
 
 #include "../allocator/ElmBytesRuntime.h"
 
@@ -579,6 +580,17 @@ static llvm::orc::SymbolMap buildRuntimeSymbolMap(
             llvm::orc::ExecutorSymbolDef(
                 llvm::orc::ExecutorAddr::fromPtr(&eco_int_pow),
                 llvm::JITSymbolFlags::Exported);
+
+        // The value hash (eco.hash, ValueHash.hpp).
+        for (auto [name, fn] : {std::pair<const char*, void*>{"eco_hash_value", reinterpret_cast<void*>(&eco_hash_value)},
+                                {"eco_hash_string", reinterpret_cast<void*>(&eco_hash_string)},
+                                {"eco_hash_i64", reinterpret_cast<void*>(&eco_hash_i64)},
+                                {"eco_hash_f64", reinterpret_cast<void*>(&eco_hash_f64)},
+                                {"eco_hash_char", reinterpret_cast<void*>(&eco_hash_char)},
+                                {"eco_hash_mix_string", reinterpret_cast<void*>(&eco_hash_mix_string)}}) {
+            symbolMap[interner(name)] = llvm::orc::ExecutorSymbolDef(
+                llvm::orc::ExecutorAddr::fromPtr(fn), llvm::JITSymbolFlags::Exported);
+        }
 
         // Array cloning (for immutable Array.set operations).
         symbolMap[interner("eco_clone_array")] =

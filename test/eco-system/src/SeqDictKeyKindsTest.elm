@@ -14,6 +14,7 @@ A SeqDict used as a key is in SeqDictEqualityTest, with the other checks of `==`
 
 -}
 
+-- ENV: ECO_SEQDICT_VALIDATE=1
 -- CHECK: floats: [Just "b",Just "c",Just "zero"]
 -- CHECK: floatSize: 4
 -- CHECK: strings: [Just 1,Just 1,Just 1,Nothing]

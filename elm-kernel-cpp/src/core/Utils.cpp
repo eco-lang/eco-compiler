@@ -7,6 +7,9 @@
 #include "SeqDict.hpp"
 
 #include <cassert>
+#include <cstdio>
+#include <cstdlib>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -747,6 +750,21 @@ static bool eqHelp(void* a, void* b, int depth, EqDeferred& deferred) {
 /// Returns whether the SeqDicts `a` and `b` hold equal entries in the same insertion order, with `depth` the
 /// nesting depth `eqHelp` bounds and `deferred` the pairs it leaves for `equal`.
 static bool seqDictEq(Custom* a, Custom* b, int depth, EqDeferred& deferred) {
+    // ECO_SEQDICT_VALIDATE=1 checks the structure of both operands first (core/SeqDict.hpp); the
+    // eco-system SeqDict tests set it.
+    static const bool validate = [] {
+        const char* v = std::getenv("ECO_SEQDICT_VALIDATE");
+        return v != nullptr && std::string(v) == "1";
+    }();
+    if (validate) {
+        for (Custom* d : {a, b}) {
+            std::string why;
+            if (!validateSeqDict(d, &why)) {
+                std::fprintf(stderr, "SeqDict validation failed: %s\n", why.c_str());
+                std::abort();
+            }
+        }
+    }
     struct Entry { Elm::Unboxable key, value; uint32_t keyKind, valueKind; };
     std::vector<Entry> as, bs;
     auto collect = [](std::vector<Entry>& out) {
