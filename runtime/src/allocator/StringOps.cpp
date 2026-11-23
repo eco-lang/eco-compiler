@@ -698,57 +698,133 @@ HPointer join(void* sep, HPointer stringList) {
     return buildBalancedRope(parts);
 }
 
+bool contains(void* needle, void* haystack) {
+    if (!needle) return true;
+    if (!haystack) return false;
+
+    size_t needle_len = rawLen(needle);
+    size_t haystack_len = rawLen(haystack);
+    if (needle_len == 0) return true;
+    if (needle_len > haystack_len) return false;
+
+    // Any pairing of flat, slice and UTF-8 forms: search the units where they lie.
+    UnitRun h = unitRun(haystack);
+    UnitRun n = unitRun(needle);
+    if (h.ok() && n.ok()) {
+        bool found = false;
+        withUnitRuns(h, n, [&](auto hp, auto np) {
+            forEachUnitMatch(hp, h.n, np, n.n, false, [&](size_t) { found = true; return false; });
+        });
+        return found;
+    }
+
+    // A rope: compare unit by unit through charAt.
+    for (size_t i = 0; i <= haystack_len - needle_len; ++i) {
+        bool match = true;
+        for (size_t j = 0; j < needle_len && match; ++j) {
+            if (charAt(haystack, static_cast<i64>(i + j)) !=
+                charAt(needle, static_cast<i64>(j))) match = false;
+        }
+        if (match) return true;
+    }
+    return false;
+}
+
+bool startsWith(void* prefix, void* str) {
+    if (!prefix) return true;
+    if (!str) return false;
+
+    size_t prefix_len = rawLen(prefix);
+    size_t str_len = rawLen(str);
+    if (prefix_len > str_len) return false;
+    if (prefix_len == 0) return true;
+
+    UnitRun s = unitRun(str);
+    UnitRun p = unitRun(prefix);
+    if (s.ok() && p.ok()) {
+        return withUnitRuns(s, p, [&](auto sp, auto pp) { return unitsEqual(sp, pp, prefix_len); });
+    }
+
+    for (size_t i = 0; i < prefix_len; ++i) {
+        if (charAt(str, static_cast<i64>(i)) != charAt(prefix, static_cast<i64>(i))) return false;
+    }
+    return true;
+}
+
+bool endsWith(void* suffix, void* str) {
+    if (!suffix) return true;
+    if (!str) return false;
+
+    size_t suffix_len = rawLen(suffix);
+    size_t str_len = rawLen(str);
+    if (suffix_len > str_len) return false;
+    if (suffix_len == 0) return true;
+
+    size_t offset = str_len - suffix_len;
+
+    UnitRun s = unitRun(str);
+    UnitRun x = unitRun(suffix);
+    if (s.ok() && x.ok()) {
+        return withUnitRuns(s, x, [&](auto sp, auto xp) { return unitsEqual(sp + offset, xp, suffix_len); });
+    }
+
+    for (size_t i = 0; i < suffix_len; ++i) {
+        if (charAt(str, static_cast<i64>(offset + i)) !=
+            charAt(suffix, static_cast<i64>(i))) return false;
+    }
+    return true;
+}
+
 HPointer indexes(void* needle, void* haystack) {
     // An empty needle has no index, as elm/core's `_String_indexes` returns [] when the needle's length is
     // below 1. A null pointer is the empty string.
-    if (!haystack || !needle) return alloc::listFromInts({});
+    if (!haystack || !needle) return alloc::listNil();
 
+    // Occurrences do not overlap: as elm/core's `_String_indexes`, the search resumes after the end
+    // of each match, so `indexes "aa" "aaaa"` is [0,2].
+    //
+    // Any pairing of flat, slice and UTF-8 forms is searched where its units lie, without copying
+    // either String. Most calls find a few indexes, which are kept on the stack.
+    UnitRun h = unitRun(haystack);
+    UnitRun n = unitRun(needle);
+    if (h.ok() && n.ok()) {
+        constexpr size_t kInline = 16;
+        i64 inlineIdx[kInline];
+        std::vector<i64> moreIdx;
+        size_t count = 0;
+        withUnitRuns(h, n, [&](auto hp, auto np) {
+            forEachUnitMatch(hp, h.n, np, n.n, false, [&](size_t i) {
+                if (count < kInline) {
+                    inlineIdx[count] = static_cast<i64>(i);
+                } else {
+                    if (count == kInline) moreIdx.assign(inlineIdx, inlineIdx + kInline);
+                    moreIdx.push_back(static_cast<i64>(i));
+                }
+                ++count;
+                return true;
+            });
+        });
+        if (count > kInline) return alloc::listFromInts(moreIdx);
+        // As listFromInts builds a list too short for a chunk chain, or a longer one.
+        if (count >= 4) return alloc::listFromInts(std::vector<i64>(inlineIdx, inlineIdx + count));
+        HPointer result = alloc::listNil();
+        for (size_t k = count; k > 0; --k) {
+            result = alloc::cons(alloc::unboxedInt(inlineIdx[k - 1]), result, static_cast<u8>(1));
+        }
+        return result;
+    }
+
+    // A rope: copy both into C++ memory and search the copies.
     if (isUtf8(needle))
         GC_STATS_UTF8_WIDEN_SITE(UTF8_WIDEN_INDEXES, static_cast<Header*>(needle)->size);
     if (isUtf8(haystack))
         GC_STATS_UTF8_WIDEN_SITE(UTF8_WIDEN_INDEXES, static_cast<Header*>(haystack)->size);
     auto needleBuf = toStdU16String(needle);
     auto haystackBuf = toStdU16String(haystack);
-    const u16* nPtr = reinterpret_cast<const u16*>(needleBuf.data());
-    const u16* hPtr = reinterpret_cast<const u16*>(haystackBuf.data());
-    size_t needle_len = needleBuf.size();
-    size_t haystack_len = haystackBuf.size();
-
     std::vector<i64> indices;
-    if (needle_len == 0) {
-        // No index, as above.
-    } else if (needle_len <= haystack_len) {
-        // Boyer-Moore-Horspool for a needle of 4 or more units, and a direct scan otherwise. The skip
-        // table is indexed by a unit's low byte, so units that share it share an entry.
-        if (needle_len >= 4) {
-            u32 skip[256];
-            for (u32 i = 0; i < 256; ++i) skip[i] = static_cast<u32>(needle_len);
-            for (size_t i = 0; i + 1 < needle_len; ++i) {
-                skip[nPtr[i] & 0xFF] = static_cast<u32>(needle_len - 1 - i);
-            }
-            size_t i = 0;
-            while (i + needle_len <= haystack_len) {
-                size_t j = needle_len;
-                while (j > 0 && hPtr[i + j - 1] == nPtr[j - 1]) --j;
-                if (j == 0) {
-                    indices.push_back(static_cast<i64>(i));
-                    ++i;  // By one, so that overlapping occurrences are found too.
-                } else {
-                    i += skip[hPtr[i + needle_len - 1] & 0xFF];
-                }
-            }
-        } else {
-            for (size_t i = 0; i <= haystack_len - needle_len; ++i) {
-                bool match = true;
-                for (size_t j = 0; j < needle_len && match; ++j) {
-                    if (hPtr[i + j] != nPtr[j]) match = false;
-                }
-                if (match) {
-                    indices.push_back(static_cast<i64>(i));
-                }
-            }
-        }
-    }
+    forEachUnitMatch(reinterpret_cast<const u16*>(haystackBuf.data()), haystackBuf.size(),
+                     reinterpret_cast<const u16*>(needleBuf.data()), needleBuf.size(), false,
+                     [&](size_t i) { indices.push_back(static_cast<i64>(i)); return true; });
     return alloc::listFromInts(indices);
 }
 
@@ -768,39 +844,21 @@ HPointer split(void* sep, void* str) {
         return toList(str);
     }
 
-    // Both UTF-8: search the bytes, and make each piece with slice(), so pieces stay UTF-8 and
-    // long ones share the source. Mixed forms fall through to the UTF-16 copy below.
-    if (isUtf8(str) && isUtf8(sep) &&
-        Allocator::instance().getConfig().utf8_strings_enabled) {
+    // Any pairing of flat, slice and UTF-8 forms: search the units where they lie, and make each
+    // piece with slice(), so long pieces share the source and short ASCII ones are UTF-8 leaves.
+    // A rope falls through to the UTF-16 copy below.
+    UnitRun strRun = unitRun(str);
+    UnitRun sepRun = unitRun(sep);
+    if (strRun.ok() && sepRun.ok()) {
         auto& allocator = Allocator::instance();
-        // Phase 1: search over raw bytes. No Elm allocation here, so the
-        // in-place payload pointers stay valid for the whole scan.
-        auto sp = utf8Bytes(str);
-        auto np = utf8Bytes(sep);
-        const u8* strB = sp.first;
-        const u8* sepB = np.first;
+        // Phase 1: search the units in place. No Elm allocation here, so the
+        // payload pointers stay valid for the whole scan.
         std::vector<size_t> splitPositions;
-        if (sep_len >= 4) {
-            u32 skip[256];
-            for (u32 i = 0; i < 256; ++i) skip[i] = static_cast<u32>(sep_len);
-            for (size_t i = 0; i + 1 < sep_len; ++i)
-                skip[sepB[i]] = static_cast<u32>(sep_len - 1 - i);
-            size_t i = 0;
-            while (i + sep_len <= str_len) {
-                size_t j = sep_len;
-                while (j > 0 && strB[i + j - 1] == sepB[j - 1]) --j;
-                if (j == 0) { splitPositions.push_back(i); i += sep_len; }
-                else { i += skip[strB[i + sep_len - 1]]; }
-            }
-        } else {
-            for (size_t i = 0; i + sep_len <= str_len; ++i) {
-                bool match = true;
-                for (size_t j = 0; j < sep_len && match; ++j)
-                    if (strB[i + j] != sepB[j]) match = false;
-                if (match) { splitPositions.push_back(i); i += sep_len - 1; }
-            }
-        }
-        // Phase 2: build parts via slice() (UTF-8 sub-forms). slice allocates,
+        withUnitRuns(strRun, sepRun, [&](auto hp, auto np) {
+            forEachUnitMatch(hp, strRun.n, np, sepRun.n, false,
+                             [&](size_t i) { splitPositions.push_back(i); return true; });
+        });
+        // Phase 2: build parts via slice(). slice allocates,
         // so root the source + parts and re-resolve the source each iteration.
         size_t numParts = splitPositions.size() + 1;
         std::vector<HPointer> parts(numParts, alloc::listNil());
@@ -835,40 +893,9 @@ HPointer split(void* sep, void* str) {
     const u16* strData = reinterpret_cast<const u16*>(strU16.data());
     const u16* sepData = reinterpret_cast<const u16*>(sepU16.data());
 
-    // Boyer-Moore-Horspool for a separator of 4 or more units, and a direct scan otherwise.
     std::vector<size_t> splitPositions;
-    if (sep_len >= 4) {
-        // Indexed by a unit's low byte, so units that share it share an entry.
-        u32 skip[256];
-        for (u32 i = 0; i < 256; ++i) skip[i] = static_cast<u32>(sep_len);
-        for (size_t i = 0; i + 1 < sep_len; ++i) {
-            skip[sepData[i] & 0xFF] = static_cast<u32>(sep_len - 1 - i);
-        }
-        size_t i = 0;
-        while (i + sep_len <= str_len) {
-            size_t j = sep_len;
-            while (j > 0 && strData[i + j - 1] == sepData[j - 1]) --j;
-            if (j == 0) {
-                splitPositions.push_back(i);
-                i += sep_len;
-            } else {
-                i += skip[strData[i + sep_len - 1] & 0xFF];
-            }
-        }
-    } else {
-        // `i + sep_len <= str_len`, not `i <= str_len - sep_len`: size_t
-        // underflows when the separator is longer than the input.
-        for (size_t i = 0; i + sep_len <= str_len; ++i) {
-            bool match = true;
-            for (size_t j = 0; j < sep_len && match; ++j) {
-                if (strData[i + j] != sepData[j]) match = false;
-            }
-            if (match) {
-                splitPositions.push_back(i);
-                i += sep_len - 1;
-            }
-        }
-    }
+    forEachUnitMatch(strData, strU16.size(), sepData, sepU16.size(), false,
+                     [&](size_t i) { splitPositions.push_back(i); return true; });
 
     size_t numParts = splitPositions.size() + 1;
     std::vector<HPointer> parts(numParts, alloc::listNil());

@@ -641,109 +641,128 @@ inline std::pair<const u16*, u32> singleSegmentView(void* str) {
     return {nullptr, 0};
 }
 
+// The units of a String that lie contiguously in memory, read without copying: UTF-16 units
+// (`wide`) for a UTF-16 leaf, a large String or a slice, or bytes (`bytes`) for a UTF-8 form, whose
+// bytes are ASCII and so each one UTF-16 unit. Both are null for null, a rope, or a view whose base
+// is the null word. The pointers are valid as `singleSegmentView`'s and `utf8Bytes`'s are.
+struct UnitRun {
+    const u16* wide = nullptr;
+    const u8* bytes = nullptr;
+    u32 n = 0;
+    bool ok() const { return wide || bytes; }
+};
+
+inline UnitRun unitRun(void* str) {
+    UnitRun r;
+    if (!str) return r;
+    if (isUtf8(str)) {
+        auto pr = utf8Bytes(str);
+        r.bytes = pr.first;
+        r.n = pr.first ? pr.second : 0;
+        return r;
+    }
+    auto [p, n] = singleSegmentView(str);
+    r.wide = p;
+    r.n = p ? n : 0;
+    return r;
+}
+
+// Calls `f(h, n)` with the haystack's and the needle's runs as typed pointers (`const u8*` or
+// `const u16*`), so that one search template serves the four pairings of forms. Both runs must be
+// `ok()`.
+template <class F>
+inline decltype(auto) withUnitRuns(const UnitRun& h, const UnitRun& n, F&& f) {
+    if (h.bytes) {
+        if (n.bytes) return f(h.bytes, n.bytes);
+        return f(h.bytes, n.wide);
+    }
+    if (n.bytes) return f(h.wide, n.bytes);
+    return f(h.wide, n.wide);
+}
+
+// Calls `onMatch(i)` for each index `i` at which the `nn` units of `nd` occur in the `hn` units of
+// `h`, in increasing order, and stops early when it returns false. Units compare by value, so an
+// ASCII byte matches the UTF-16 unit of the same value. With `overlapping` the search resumes one
+// unit after a match, otherwise after its end. `nn` must be positive.
+//
+// A needle of 4 or more units is found with Boyer-Moore-Horspool, its skip table indexed by a unit's
+// low byte; a shorter one by scanning for its first unit, with memchr over bytes. Neither allocates.
+template <class H, class N, class F>
+inline void forEachUnitMatch(const H* h, size_t hn, const N* nd, size_t nn, bool overlapping,
+                             F&& onMatch) {
+    if (nn == 0 || nn > hn) return;
+    const size_t step = overlapping ? 1 : nn;
+    if (nn >= 4) {
+        u32 skip[256];
+        for (u32 i = 0; i < 256; ++i) skip[i] = static_cast<u32>(nn);
+        for (size_t i = 0; i + 1 < nn; ++i) skip[nd[i] & 0xFF] = static_cast<u32>(nn - 1 - i);
+        size_t i = 0;
+        while (i + nn <= hn) {
+            size_t j = nn;
+            while (j > 0 && static_cast<u16>(h[i + j - 1]) == static_cast<u16>(nd[j - 1])) --j;
+            if (j == 0) {
+                if (!onMatch(i)) return;
+                i += step;
+            } else {
+                i += skip[h[i + nn - 1] & 0xFF];
+            }
+        }
+        return;
+    }
+    const u16 first = static_cast<u16>(nd[0]);
+    const size_t last = hn - nn;
+    size_t i = 0;
+    while (i <= last) {
+        if constexpr (sizeof(H) == 1) {
+            if (first >= 0x80) return;  // An ASCII haystack has no such unit.
+            const void* hit = std::memchr(h + i, first, last - i + 1);
+            if (!hit) return;
+            i = static_cast<size_t>(static_cast<const H*>(hit) - h);
+        } else {
+            while (i <= last && h[i] != first) ++i;
+            if (i > last) return;
+        }
+        size_t j = 1;
+        while (j < nn && static_cast<u16>(h[i + j]) == static_cast<u16>(nd[j])) ++j;
+        if (j == nn) {
+            if (!onMatch(i)) return;
+            i += step;
+        } else {
+            ++i;
+        }
+    }
+}
+
+// Returns whether the `n` units at `a` equal those at `b`, units compared by value.
+template <class A, class B>
+inline bool unitsEqual(const A* a, const B* b, size_t n) {
+    if constexpr (sizeof(A) == sizeof(B)) {
+        return std::memcmp(a, b, n * sizeof(A)) == 0;
+    } else {
+        for (size_t i = 0; i < n; ++i)
+            if (static_cast<u16>(a[i]) != static_cast<u16>(b[i])) return false;
+        return true;
+    }
+}
+
 // Returns whether the units of `needle` occur in `haystack`. A null `needle` occurs in anything, and
 // a non-null one in no null `haystack`. Does not allocate on the Elm heap.
-inline bool contains(void* needle, void* haystack) {
-    if (!needle) return true;
-    if (!haystack) return false;
-
-    size_t needle_len = rawLen(needle);
-    size_t haystack_len = rawLen(haystack);
-    if (needle_len == 0) return true;
-    if (needle_len > haystack_len) return false;
-
-    // Both UTF-8: each byte is one unit, so a byte match is a unit match.
-    if (isUtf8(needle) && isUtf8(haystack)) {
-        auto n = utf8Bytes(needle);
-        auto h = utf8Bytes(haystack);
-        return std::search(h.first, h.first + h.second, n.first,
-                           n.first + n.second) != h.first + h.second;
-    }
-
-    auto [nPtr, nLen] = singleSegmentView(needle);
-    auto [hPtr, hLen] = singleSegmentView(haystack);
-    if (nPtr && hPtr) {
-        return std::search(hPtr, hPtr + hLen, nPtr, nPtr + nLen) != hPtr + hLen;
-    }
-
-    // A rope, or a UTF-8 form against a UTF-16 one: compare unit by unit through charAt.
-    for (size_t i = 0; i <= haystack_len - needle_len; ++i) {
-        bool match = true;
-        for (size_t j = 0; j < needle_len && match; ++j) {
-            if (charAt(haystack, static_cast<i64>(i + j)) !=
-                charAt(needle, static_cast<i64>(j))) match = false;
-        }
-        if (match) return true;
-    }
-    return false;
-}
+//
+// Defined out of line in StringOps.cpp, as are startsWith and endsWith.
+bool contains(void* needle, void* haystack);
 
 // Returns whether the units of `str` begin with those of `prefix`. A null `prefix` begins anything,
 // and a non-null one no null `str`. Does not allocate on the Elm heap.
-inline bool startsWith(void* prefix, void* str) {
-    if (!prefix) return true;
-    if (!str) return false;
-
-    size_t prefix_len = rawLen(prefix);
-    size_t str_len = rawLen(str);
-    if (prefix_len > str_len) return false;
-    if (prefix_len == 0) return true;
-
-    if (isUtf8(prefix) && isUtf8(str)) {
-        auto p = utf8Bytes(prefix);
-        auto s = utf8Bytes(str);
-        return std::memcmp(s.first, p.first, prefix_len) == 0;
-    }
-
-    auto [pPtr, pLen] = singleSegmentView(prefix);
-    auto [sPtr, sLen] = singleSegmentView(str);
-    if (pPtr && sPtr) {
-        return std::memcmp(sPtr, pPtr, prefix_len * sizeof(u16)) == 0;
-    }
-
-    for (size_t i = 0; i < prefix_len; ++i) {
-        if (charAt(str, static_cast<i64>(i)) != charAt(prefix, static_cast<i64>(i))) return false;
-    }
-    return true;
-}
+bool startsWith(void* prefix, void* str);
 
 // Returns whether the units of `str` end with those of `suffix`. A null `suffix` ends anything, and
 // a non-null one no null `str`. Does not allocate on the Elm heap.
-inline bool endsWith(void* suffix, void* str) {
-    if (!suffix) return true;
-    if (!str) return false;
+bool endsWith(void* suffix, void* str);
 
-    size_t suffix_len = rawLen(suffix);
-    size_t str_len = rawLen(str);
-    if (suffix_len > str_len) return false;
-    if (suffix_len == 0) return true;
-
-    size_t offset = str_len - suffix_len;
-
-    if (isUtf8(suffix) && isUtf8(str)) {
-        auto suf = utf8Bytes(suffix);
-        auto s = utf8Bytes(str);
-        return std::memcmp(s.first + offset, suf.first, suffix_len) == 0;
-    }
-
-    auto [sufPtr, sufLen] = singleSegmentView(suffix);
-    auto [sPtr, sLen]     = singleSegmentView(str);
-    if (sufPtr && sPtr) {
-        return std::memcmp(sPtr + offset, sufPtr, suffix_len * sizeof(u16)) == 0;
-    }
-
-    for (size_t i = 0; i < suffix_len; ++i) {
-        if (charAt(str, static_cast<i64>(offset + i)) !=
-            charAt(suffix, static_cast<i64>(i))) return false;
-    }
-    return true;
-}
-
-// Returns an Elm list of every unit index at which `needle` occurs in `haystack`, in increasing
-// order, overlapping occurrences included.
+// Returns an Elm list of the unit indexes at which `needle` occurs in `haystack`, in increasing
+// order. Occurrences do not overlap, as in elm/core: each search resumes after the previous match.
 //
-// A null `haystack` gives the empty list. An empty or null `needle` gives every index from 0 to
-// the length of `haystack` inclusive. A GC point.
+// A null `haystack`, or an empty or null `needle`, gives the empty list. A GC point.
 HPointer indexes(void* needle, void* haystack);
 
 // ============================================================================

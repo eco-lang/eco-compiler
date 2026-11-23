@@ -2,6 +2,7 @@
 
 #include "../KernelExports.h"
 #include "../ExportHelpers.hpp"
+#include "../DirectCall.hpp"
 #include "String.hpp"
 #include "allocator/Heap.hpp"
 #include "allocator/HeapHelpers.hpp"
@@ -214,6 +215,15 @@ static uint64_t callFoldClosure(HPtr closure_hptr, uint32_t c, uint64_t acc) {
     return eco_apply_closure_typed(closure_hptr, args, 2, layout).toBits();
 }
 
+// Whether a fold step can be called through `dc` with the Char unboxed and the accumulator in
+// one kind, `accKind`, that its slot takes and the step returns: then the fold carries the
+// accumulator in that kind, unboxed for an Int, Float or Char, from one call to the next.
+static bool foldCallFits(const Elm::DirectCall& dc, uint32_t& accKind) {
+    if (!dc.ok() || dc.argKind(0) != 3 || dc.argKind(1) != dc.resultKind()) return false;
+    accKind = dc.resultKind();
+    return true;
+}
+
 // A copy of the UTF-16 units of the String `str`, of any form, empty for null. The copy is C++
 // memory, outside the collected heap, so closures called while it is walked may allocate without
 // invalidating it. A UTF-8 form's bytes are ASCII, so each is copied as one unit.
@@ -369,6 +379,21 @@ HPtr Elm_Kernel_String_foldl(HPtr closure, HPtr acc, HPtr str) {
     Elm::StackRootGuard loopRoots(&closureHP, &accHP);
 
     const size_t n = chars.size();
+    {
+        Elm::DirectCall dc(&closureHP, 2);
+        uint32_t ak;
+        if (foldCallFits(dc, ak)) {
+            uint64_t a = Elm::DirectCall::unbox(Export::encode(accHP), ak);
+            for (size_t i = 0; i < n;) {
+                uint32_t c = Elm::StringOps::nextCodePoint(chars.data(), n, i);
+                uint64_t args[2] = { c, ak == 0 ? Export::encode(accHP) : a };
+                a = dc.call(args);
+                if (ak == 0) accHP = Export::decode(a);
+            }
+            if (ak != 0) return HPtr::fromBits(Elm::DirectCall::box(a, ak));
+            return HPtr::fromBits(Export::encode(accHP));
+        }
+    }
     for (size_t i = 0; i < n;) {
         uint32_t c = Elm::StringOps::nextCodePoint(chars.data(), n, i);
         HPtr cl = HPtr::fromBits(Export::encode(closureHP));
@@ -388,6 +413,21 @@ HPtr Elm_Kernel_String_foldr(HPtr closure, HPtr acc, HPtr str) {
 
     // Walk back by code point: a low surrogate combines only with a
     // preceding high one (StringOps::prevCodePoint).
+    {
+        Elm::DirectCall dc(&closureHP, 2);
+        uint32_t ak;
+        if (foldCallFits(dc, ak)) {
+            uint64_t a = Elm::DirectCall::unbox(Export::encode(accHP), ak);
+            for (size_t i = chars.size(); i > 0;) {
+                uint32_t c = Elm::StringOps::prevCodePoint(chars.data(), i);
+                uint64_t args[2] = { c, ak == 0 ? Export::encode(accHP) : a };
+                a = dc.call(args);
+                if (ak == 0) accHP = Export::decode(a);
+            }
+            if (ak != 0) return HPtr::fromBits(Elm::DirectCall::box(a, ak));
+            return HPtr::fromBits(Export::encode(accHP));
+        }
+    }
     for (size_t i = chars.size(); i > 0;) {
         uint32_t c = Elm::StringOps::prevCodePoint(chars.data(), i);
         HPtr cl = HPtr::fromBits(Export::encode(closureHP));
