@@ -1308,6 +1308,30 @@ phase R0 split out of `monomorphization`. Every row is at its fixed point; every
   +1.6 % (tagged unions on vs off −0.6 %), `knownCtorCase` +0.5 % (flat), the compile-time pass −3.1 %
   (77.22 → 74.84 s), stage hints flat (73.99 → 74.15 s).
 
+### cq: capture-qualified lambda members, lambda arguments last, runtime-first link (plans/lss-capture-qualified-members.md, 2026-11-23): **regression check, single run: wall +3.44 s (+4.7 % vs now), inside the 5 % flag; mono +2.2 s on a workload 4.7 % larger**
+
+| run | wall (s) | parse/check/build (s) | mono (s) | representation (s) | MLIR codegen (s) | GC time (s) | minor GC | major GC | promoted MiB | max RSS (kB) | out.mlir (B) | fixed point |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| r1 | 77.30 | 29.4 | 30.1 | 1.6 | 9.5 | 3.47 | 1525 | 8 | 7700 | 7552708 | 13395924 | same |
+| Δ vs now (one run each) | +3.44 (+4.7 %) | +0.4 | +2.2 | +0.2 | +0.4 | +0.14 | +77 | 0 | +194 | +152,484 (+2.1 %) | +602,350 (+4.7 %, workload moved) | |
+
+- **What:** not a front-end step: the tree after plans/lss-capture-qualified-members.md (LSS_042 capture
+  signatures, LSS_043 lambda-literal arguments translated after their siblings, and the native link that
+  places the project archives' code before `.text`), measured against `now`, the most recent row. The
+  candidate MLIR `ecoCQ.mlir` was compiled by `eco-optCQ` (that plan's bootstrap compiler; the MLIR equals
+  its fixed point byte for byte), lowered by the current `eco-boot-native` (with the runtime-first link) to
+  `eco-optCQF`, and timed once under §2 (`ECO_MONO_ENGINE=solver ECO_MONO_LSS=1`, cold `eco-stuff`,
+  `~/.eco/0.2.0/packages/registry.dat` touched). **One timed run only, by request.**
+- **Checks:** rc 0, no `[gc-stats] SIG`, r1 equals `ecoCQ.mlir` (fixed point). `.ecot` 8,833,772 B
+  (+17,097 B vs now: source added).
+- **Verdict:** wall +3.44 s, past the ~1.3 % band but under the 5 % flag. Most of it is monomorphization
+  (+2.2 s), where the change does its work: capture signatures are rendered at first mint, and HOF callees
+  are now specialized per captured function (out.mlir +4.7 %, GC +77 minors and +194 MiB promoted with it).
+  This row compares two compilers each compiling its OWN source, so the workload moved with the change. The
+  plan's same-input A/B (both compilers compiling the same tree, `--no-cache`, three alternating cold runs,
+  plan §9.6) measured C's code at B's speed or better (68.66 → 68.36 s) while C produces the larger output,
+  so the compiler's own code did not get slower; the increase here is the extra specialization work.
+
 ## 6a. Batched end-of-series gates (run once each, after S8)
 
 - **G5 `TypedOptimizedCodecTest` (new):** 135/135 standard-suite modules round-trip the v2 codec
@@ -1605,3 +1629,4 @@ same-sitting control run, not the `ref` row's recorded wall. Details live in eac
 | R4f | 71.52 | +0.69 | 1402 | 8 | 7169 | 7043692 | WIN on the representation phase (2.2 -> 1.8 s; wall inside the band): subtree-sharing type rewrite, layout-hash lookups, MONO_019 fix in NullableMaybe | R4b |
 | R4i | 69.72 | -1.80 | 1401 | 8 | 7159 | 6997140 | final of plan §13 (representation phase 1.7 s): R3.1 composed exactly, R2.4 checks as written, one-descent eraseType | R4f |
 | now | 73.86 | +4.14 | 1448 | 8 | 7506 | 7400224 | — (regression check, ONE run, across a moved tree: constructor follow-ups F1–F5 + knownCtorCase, ctor compile-time pass, stage hints; REGRESSION +5.9 %, parse/check/build +2.0 s, mono +1.6 s, representation −0.3 s; out.mlir +1.3 %; fixed point) | R4i |
+| cq | 77.30 | +3.44 | 1525 | 8 | 7700 | 7552708 | — (regression check, ONE run, across a moved tree: capture-qualified lambda members (LSS_042), lambda arguments translated last (LSS_043), runtime-first native link; +4.7 %, inside the 5 % flag; parse/check/build +0.4 s, mono +2.2 s, representation +0.2 s, codegen +0.4 s; out.mlir +4.7 % (per-capture HOF specialization); same-input A/B in the plan §9.6: C 68.36 vs B 68.66 s; fixed point) | now |
