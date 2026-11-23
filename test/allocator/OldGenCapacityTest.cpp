@@ -24,10 +24,12 @@ namespace {
 HeapConfig capacityHeapConfig() {
     HeapConfig cfg;
     cfg.alloc_buffer_size       = 64 * 1024;
-    cfg.nursery_block_count     = 4;                // 256 KiB nursery.
+    cfg.nursery_block_count     = 8;                // 512 KiB nursery.
     // plans/region-nursery-everywhere.md Phase 3: a fixed nursery, so the region
     // layout's heap slot (extents x the max nursery side) fits this small heap.
-    cfg.nursery_max_block_count = 4;
+    // HEAP_087: 256 KiB per side is the first block multiple of at least three
+    // of the 65,528-byte reserve a 64 KiB threshold implies.
+    cfg.nursery_max_block_count = 8;
     cfg.initial_old_gen_size    = 256 * 1024;       // 4 pages committed at init.
     cfg.max_heap_size           = 64ULL * 1024 * 1024;
     cfg.large_object_threshold  = 64 * 1024;

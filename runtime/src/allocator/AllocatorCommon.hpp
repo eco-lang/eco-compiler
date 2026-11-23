@@ -889,6 +889,14 @@ struct HeapConfig {
         return (nursery_block_count / 2) * alloc_buffer_size;
     }
 
+    // Returns the largest allocation the nursery must take with no fallback (HEAP_087): the largest 8-aligned
+    // size below `large_object_threshold`, or the 4 KiB bound of an inline allocation or a headroom request
+    // (HEAP_034, HEAP_041) if that is larger. A minor collection always leaves eden at least this much.
+    size_t nurseryReserveBytes() const {
+        const size_t below_threshold = large_object_threshold > 8 ? (large_object_threshold - 1) & ~size_t{7} : 0;
+        return below_threshold > 4096 ? below_threshold : 4096;
+    }
+
     // ---- Region nursery geometry (HEAP_069) ----
     //
     // In the region nursery each heap gets one slot of `regionExtents` extents, each starting
@@ -1257,6 +1265,17 @@ struct HeapConfig {
                 "(otherwise objects in [alloc_buffer_size, "
                 "large_object_threshold) take the nursery path but cannot "
                 "fit in a single nursery block)");
+        }
+
+        // The minor trigger holds back `nurseryReserveBytes` so that eden has room for the largest nursery
+        // object after any minor (HEAP_087). That bound needs a nursery of at least three such objects: after a
+        // minor that leaves less than the reserve below the trigger, eden may fill past it, and the next minor's
+        // survivors can then reach twice the reserve.
+        if (nurseryInitialPerSideBytes() < 3 * nurseryReserveBytes()) {
+            throw std::invalid_argument(
+                "the initial nursery is too small for its largest object: nursery_block_count/2 * "
+                "alloc_buffer_size must be at least 3 x " + std::to_string(nurseryReserveBytes()) +
+                " bytes (the largest object below large_object_threshold, or 4 KiB), HEAP_087");
         }
 
         if (large_ptr_nursery_max_size % 8 != 0) {

@@ -124,6 +124,7 @@ add_executable(test
         allocator/OldGenSpaceTest.cpp
         allocator/OldGenCapacityTest.cpp
         allocator/LargeBodyChurnTest.cpp
+        allocator/NurseryLogJamTest.cpp
         allocator/LargeObjectSpaceTest.cpp
         allocator/OldGenLazySweepTest.cpp
         allocator/OldGenSweepOnDemandTest.cpp

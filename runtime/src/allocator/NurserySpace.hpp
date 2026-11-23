@@ -328,7 +328,8 @@ private:
 
     // ========== Collection state ==========
 
-    // The number of object bytes at which a minor collection becomes due: the capacity times `gc_threshold_`.
+    // The number of object bytes at which a minor collection becomes due: the capacity times `gc_threshold_`, but
+    // no more than the capacity less `HeapConfig::nurseryReserveBytes` (HEAP_087).
     size_t threshold_total_bytes_;
 
     RootSet root_set;

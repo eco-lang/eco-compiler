@@ -270,6 +270,13 @@ void NurserySpace::refreshCapacityCaches() {
     from_capacity_bytes_ = rg_ ? rg_->set.capacity : slice_.capacity;
     threshold_total_bytes_ =
         static_cast<size_t>(static_cast<double>(from_capacity_bytes_) * gc_threshold_);
+    // A minor's survivors can reach the threshold, and eden then gets only the capacity less them, so the
+    // threshold holds back room for the largest nursery object (HEAP_087).
+    if (config_ != nullptr) {
+        const size_t reserve = config_->nurseryReserveBytes();
+        const size_t limit = from_capacity_bytes_ > reserve ? from_capacity_bytes_ - reserve : 0;
+        if (threshold_total_bytes_ > limit) threshold_total_bytes_ = limit;
+    }
 }
 
 char* NurserySpace::computeAllocEnd() {

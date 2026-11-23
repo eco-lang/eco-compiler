@@ -62,6 +62,7 @@
 #include "allocator/EcoApplyClosureTypedTest.hpp"
 #include "allocator/EcoApplyClosureEvalChainTest.hpp"
 #include "allocator/GCPressureTest.hpp"
+#include "allocator/NurseryLogJamTest.hpp"
 #include "allocator/EnsureHeadroomTest.hpp"
 #include "allocator/NurseryFillerTest.hpp"
 #include "allocator/ParallelMinorTest.hpp"
@@ -757,6 +758,10 @@ static IsolatedSuites buildIsolatedSuites() {
     s.gcPressure->add(testGrowthCountsObjectBytes);
     s.gcPressure->add(testFailSoftUsesObjectBytes);
     s.gcPressure->add(testAllocEndCappedCounted);
+    // The nursery reserve (HEAP_087, plans/jsonlargearray-nursery-oom-under-pressure.md).
+    s.gcPressure->add(testNurseryLogJamRegion);
+    s.gcPressure->add(testNurseryLogJamLegacy);
+    s.gcPressure->add(testNurseryReserveRule);
     // Group G — contiguous nursery extents + the slice layer (HEAP_042).
     // Reconfigures the heap geometry, so it rides the same child-process isolation.
     s.gcPressure->add(testNurseryExtentsAreContiguousAndMirrored);

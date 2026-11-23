@@ -523,7 +523,9 @@ static void test_seed_constructors() {
 // vacuous. A missing snapshot then reads from-space: in an ECO_HEAP_VALIDATE
 // build that memory is poisoned and the content check fails (negative
 // control); a normal build leaves it readable. Lengths straddle the 256-byte
-// C-stack buffer.
+// C-stack buffer. A varying amount of garbage before each source shifts where
+// the minors fall: with a fixed period every minor can land on the source's
+// allocation and none inside the call.
 static void test_leaf_from_heap_bytes_under_gc() {
     auto& alloc = initAllocator(pressureHeapConfig());
     const u32 lens[] = {1, 31, 128, 256, 257};
@@ -532,6 +534,7 @@ static void test_leaf_from_heap_bytes_under_gc() {
         u32 len = lens[iter % 5];
         std::string want(len, ' ');
         for (u32 i = 0; i < len; ++i) want[i] = static_cast<char>('a' + (i * 7 + iter) % 26);
+        for (int g = 0; g < iter % 13; ++g) (void)alloc::allocInt(g);
         HPointer bb = alloc::allocByteBuffer(reinterpret_cast<const u8*>(want.data()), len);
         alloc.getRootSet().addRoot(&bb);
         const u8* src = alloc::byteBufferData(Allocator::instance().resolve(bb));
