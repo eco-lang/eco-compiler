@@ -153,7 +153,8 @@ void runLogJam(Mode mode) {
 #endif
 }
 
-// A per-side nursery 8 bytes short of three reserves is rejected; one of exactly three is accepted.
+// A per-side nursery of 16 KiB, under three reserves, is rejected; one of 32 KiB is accepted. The small nursery has
+// fewer blocks rather than smaller ones, so that its blocks stay a whole 16 KiB page on Apple Silicon.
 void checkReserveRule() {
     HeapConfig cfg;
     cfg.alloc_buffer_size = 16 * 1024;
@@ -165,7 +166,7 @@ void checkReserveRule() {
     cfg.validate();   // 32 KiB per side >= 3 x 8,184
 
     HeapConfig small = cfg;
-    small.alloc_buffer_size = 8 * 1024;   // 16 KiB per side
+    small.nursery_block_count = 2;   // 16 KiB per side, and still page-sized on Apple Silicon
     bool rejected = false;
     try {
         small.validate();
