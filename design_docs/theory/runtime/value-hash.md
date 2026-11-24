@@ -66,3 +66,18 @@ Three changes to v1, everything else unchanged:
 2. **Units are read from contiguous segments** (`StringOps::forEachSegmentEx`), never one at a time
    through `charAt`. (Implementation only; the numbers follow from 1.)
 3. **The result is never 0**: a 0 from `fmix32` becomes 1, so 0 can mean "not cached".
+
+## Typed hashing (`eco.hash.mix` chains, D2)
+
+`Hash.hash` at a known tuple or record type is compiled to a chain that computes exactly the walker's
+number. The value's type gives a plan: an Int, Float, Char, Bool or String field is one `eco.hash.mix`;
+a nested tuple or record is unrolled (its marker, then its fields one level deeper); anything else (a
+list, a custom type in any representation, unit) is `eco.hash.walk`, the walker's `boxed(value, depth)`
+resumed from the chain's state and item budget (`eco_hash_walk`). The bounds follow the walker: depth
+is known statically, so an aggregate at depth 16 or more contributes nothing; the items left are an
+`i64` threaded through the chain, starting at 256, and an aggregate with none left, or a record field
+with none left, keeps the old state through an `arith.select` (a record field uses an item up even
+when it took the last one, so the count can go negative). Primitives and Strings are mixed whatever
+the bounds, as in the walker. A plan of more than 64 nodes, and any value that is not a tuple or
+record, is hashed whole (`eco.hash` of kind `value`). `test/eco-system/src/HashTypedTest.elm` compares
+the chains with the walker, bounds included.

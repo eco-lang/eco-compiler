@@ -1,7 +1,7 @@
 ---
 status: partial
-remaining: "Final gates; stage X (exploration, at the end)"
-updated: 2026-11-23
+remaining: "D5 not built (no-go by D4, as the plan requires; a P1-carve-out version is a pending user decision); D2 without separate per-type functions (custom types and lists go to the resumed walker; pending user decision)"
+updated: 2026-11-24
 ---
 
 # Faster SeqDict and SeqSet, and `eco.hash`
@@ -1057,3 +1057,81 @@ Adversarial review of the medium-detail plan, 2026-11-23 (16 findings). Changes 
   counts), KERN_009 (SeqDict layout); `design_docs/theory/runtime/data-structures.md` gains a "SeqDict
   and the value hash" section; `docs/options.md` lists `ECO_HASH_INLINE`, `ECO_HASH_CENSUS`,
   `ECO_SEQDICT_VALIDATE`.
+- **2026-11-23 Final gates green.** Normal tree: wipe, `full`, `elm-tests` (918 + 22,087), `bootstrap`,
+  unit 3,170, AOT 254, JS 246 + 35, overrides, pressure stress 114. `ECO_HEAP_VALIDATE` tree
+  (`build-validate`): unit + E2E 3,170/3,170 (P1 census 0 violations; the one `survivor-write-census`
+  Array mismatch is the known deliberate-write test of plans/threaded-gc-05a-incremental-marking.md),
+  pressure stress 114/114. The first validate run failed 9 tests because only its `test` and
+  `stress-test` targets were built, leaving that tree's `ecoc` and Stage-1 compiler stale; after
+  `cmake --build build-validate` all passed. Lesson: build the whole validate tree before running it.
+- **Open after this plan:** `map`'s regression (seqdict-iterate native +18 %, peak 386 → 477 MiB; JS
+  +21 %; see §4.5: the per-call flattening of the new order array); JS seqdict-equality +20 % (one
+  wrapper object per trie slot); a String hash cache with a P1 carve-out for a write-once word is under
+  discussion with the user (D5 was a no-go only under the young-only rule).
+- **2026-11-23 `map` follow-up.** Option 1 (one list feeding the flat array and `Array.fromList`) was
+  flat (191 → 194 ms) and reverted. The profile put the cost in per-slot closure calls, allocator
+  `resolve` in the node copies, and cache misses from the hash-order walk. New kernel
+  `SeqDictTrie.remap` (C++ + JS twin) copies the trie with the entries `map` built in Elm; it reads
+  every Slot/Maybe representation and builds slots in the form of a probe slot (`gone`) of the result
+  type, since MONO_035 chooses per instantiation. `map` ×10 on 100,000 entries 189 → 163 ms (−14 %),
+  seqdict-iterate about −4 % (still ≈ +18 % over pre-plan: the remaining cost is the hash-order cache
+  misses, inherent to sharing entries). First version lost (193 ms) to out-of-line `Allocator::resolve`
+  and a vector per node; `resolveFast` and a stack root buffer fixed it. Test `SeqDictMapTest.elm`
+  (deep trie with holes, collisions, value-type changes, map of map; validator on); all SeqDict tests
+  also pass under `ECO_TAGGED_UNIONS=0` and `ECO_NULLABLE_MAYBE=0` (one-off runs) and on JS.
+- **2026-11-23 compiler bug found and fixed (user: "Yes fix the bug").** A let-bound value of a
+  polymorphic function used at two types was built a second time with the other instantiation's
+  specializations (`test/elm/src/LetValueSpecializedAtTwoTypesTest.elm`, plain elm/core Dict). Cause:
+  the solver engine's `isNumberMultiEligible` took the number-per-use path when a variable of the let's
+  type was `number` in the super table, even where the classified type (`Dict Int String`) held no
+  unresolved `number` (the `Int` key made it a "numeric shape"); a use under `==` then re-specialized it
+  through a fresh copy defaulted to `Int`. Fix: also require `containsCNumber` of the classified type.
+  The `subst` engine was unaffected; `ECO_MONO_VALIDATE`'s duplicate-ArrowId report on `check` is the
+  solver-root arrow sharing by design, not this bug. All 69 `elm/Let*` E2E tests pass.
+- **2026-11-23 `ECO_HASH_INTRINSIC` + `HashIntrinsicTest.elm` built** (the D1 deviation closed):
+  config flag `hashIntrinsic` (token `hash=1`), off = kernel call; compiler test on a hand-built Mono
+  graph (Int and String kinds, flag off → `Eco_Kernel_FNV_hash`).
+- **2026-11-24 JS regressions.** After the kernel `map` (whose JS twin replaces the per-slot Elm
+  closures), JS seqdict-iterate is 849 → 865 ms (+2 %, was +21 %). JS `==` on SeqDicts no longer builds
+  two Elm lists of tuples: `_Eco_FNV_seqDictEntryArray` walks the order Array's tree into a JS array of
+  entries and the override compares keys and values pairwise one level deeper (depth > 100 still goes
+  to the stock function, which defers the pair): seqdict-equality 1,127 → 868 ms, now −8 % against the
+  pre-plan 947. Left over tolerance by 1-2 points: seqdict-string +10-11 % and seqdict-union-small
+  +11-12 % (three runs each). Their profile is the insert path itself: `Tuple3` results, a wrapper
+  object per slot, kernel calls through `A2`/`A3` and the GC they cause (27 %), i.e. JS having no
+  tagged words. Recorded as the JS cost of the native layout; a JS-only insert would be needed to
+  remove it. Full re-measure: local-dev/kmap-seq-bench.json (before the equality change).
+- **2026-11-24 D2 extended (no longer reduced to flat shapes).** Typed chains now unroll nested tuples
+  and records and hand every other field (lists, custom types in any representation, unit) to the
+  walker resumed from the chain's state (`eco.hash.walk` → `eco_hash_walk`, result `items << 32 | h`,
+  items signed). The walker's bounds are kept exactly: depth statically, items as an `i64` gated with
+  `arith.select`. `ECO_HASH_INTRINSIC` (flag) and `HashIntrinsicTest.elm` built. `HashTypedTest.elm`
+  extended (lists, tagged and nullary constructors, Maybe of a record, records in tuples, depth > 16,
+  a 300-element list exhausting the items before further fields); negative control (state + 1 in
+  `eco_hash_walk`) fails nested/bounds. Deviation kept from the D2 spec: no separate generated
+  function per type (`__eco_hash$<id>`); a custom type, list or recursive type at the top level, or
+  as a field, is hashed by the walker (resumed), not by type-directed code. Gate and exit benchmarks:
+  see the next entry.
+- **2026-11-24 D2 gate and exit.** Full gate green (unit 3,171, bootstrap, AOT, JS, overrides,
+  pressure stress). Exit benchmarks against `local-dev/post-seq-bench.json`, native: seqdict-custom
+  101 → 86 ms, seqdict-tuple 91 → 75, seqdict-intern 343 → 328 (none slower).
+- **2026-11-24 JS insert path tried, reverted.** Writing `chunkAt` out and comparing hashes as
+  `Bitwise.xor h hash == 0` makes the JS inline arithmetic and `===`, but seqdict-string (247 ms) and
+  seqdict-union-small (950 ms) did not move: V8 already inlined those calls. Their cost is allocation
+  (a `Tuple3` per trie level, slot wrapper objects, array copies) and the GC it causes. Open: both
+  stay 1-2 points over the 10 % eco-js limit; removing it needs a different JS insert (for example no
+  tuple per level), which would change the native code too.
+- **2026-11-24 JS insert restructure tried, reverted.** Looking the key up first and placing the entry
+  with a `putHelp` that returns the node (no `Tuple3` per level, no order threaded) gave, against the
+  kmap state (local-dev/put-seq-bench.json vs kmap-seq-bench.json): JS seqdict-union-small 971 → 936,
+  seqdict-string 245 → 239, but JS seqdict-int 284 → 290, seqdict-small 363 → 403, seqdict-churn 340 →
+  427, and native seqdict-iterate 521 → 551 (the added lookup). No net gain, so the insert is unchanged.
+  JS over the 10 % limit against pre-plan stays at 1-2 points: seqdict-int +10 %, seqdict-string
+  +10-13 %, seqdict-union-small +11-12 %.
+- **2026-11-24 `ECO_HEAP_VALIDATE` gate on the current tree** (kernel `map`, let-number fix, D2 walk,
+  JS equality): whole `build-validate` rebuilt; unit + E2E 3,172/3,172 (P1 census 0 violations; the one
+  `survivor-write-census` Array mismatch is the known deliberate-write test), pressure stress 114/114.
+- **2026-11-24 eco-js overshoot accepted (user decision).** The 1-2 points over the 10 % eco-js limit
+  (seqdict-int +10 %, seqdict-string +10-13 %, seqdict-union-small +11-12 %) are accepted as the JS
+  cost of the native slot layout (no tagged words on JS); no JS-only insert path. D5 (P1 carve-out)
+  and the D2 per-type functions stay open for a later user decision.

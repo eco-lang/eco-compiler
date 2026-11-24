@@ -1121,6 +1121,39 @@ struct HashMixOpLowering : public OpConversionPattern<HashMixOp> {
 };
 
 /**
+ * Lowers `eco.hash.walk` (D2) to `eco_hash_walk(state, items, value, depth)`, whose result packs the new
+ * state in bits 0-31 and the items left (signed) in bits 32-63.
+ */
+struct HashWalkOpLowering : public OpConversionPattern<HashWalkOp> {
+    // Declares the runtime function this pattern calls.
+    const EcoRuntime &runtime;
+
+    // Creates the pattern. It keeps references to `typeConverter` and `runtime`, which must outlive it.
+    HashWalkOpLowering(EcoTypeConverter &typeConverter, MLIRContext *ctx, const EcoRuntime &runtime)
+        : OpConversionPattern(typeConverter, ctx), runtime(runtime) {}
+
+    LogicalResult
+    matchAndRewrite(HashWalkOp op, OpAdaptor adaptor,
+                    ConversionPatternRewriter &rewriter) const override {
+        Location loc = op.getLoc();
+        Type i64Ty = rewriter.getI64Type();
+        auto func = runtime.getOrCreateHashWalk(rewriter);
+        Value depth = arith::ConstantIntOp::create(rewriter, loc, i64Ty, static_cast<int64_t>(op.getDepth())).getResult();
+        Value packed = LLVM::CallOp::create(rewriter, loc, func,
+                                            ValueRange{adaptor.getState(), adaptor.getItems(), adaptor.getValue(), depth})
+                           .getResult();
+        Value mask = arith::ConstantIntOp::create(rewriter, loc, i64Ty, 0xFFFFFFFFLL).getResult();
+        Value c32 = arith::ConstantIntOp::create(rewriter, loc, i64Ty, 32).getResult();
+        Value state = arith::AndIOp::create(rewriter, loc, packed, mask);
+        // `items` can be negative (a record uses one up after a field that took the last), so the shift
+        // is arithmetic.
+        Value items = arith::ShRSIOp::create(rewriter, loc, packed, c32);
+        rewriter.replaceOp(op, ValueRange{state, items});
+        return success();
+    }
+};
+
+/**
  * Lowers `eco.hash.finish` (D2): fmix32 of the running state, 0 mapped to 1.
  */
 struct HashFinishOpLowering : public OpConversionPattern<HashFinishOp> {
@@ -1809,6 +1842,7 @@ void eco::detail::populateEcoArithPatternsWithRuntime(
     patterns.add<IntPowOpLowering>(typeConverter, ctx, runtime);
     patterns.add<HashOpLowering>(typeConverter, ctx, runtime);
     patterns.add<HashMixOpLowering>(typeConverter, ctx, runtime);
+    patterns.add<HashWalkOpLowering>(typeConverter, ctx, runtime);
     patterns.add<FloatAsinOpLowering>(typeConverter, ctx, runtime);
     patterns.add<FloatAcosOpLowering>(typeConverter, ctx, runtime);
     patterns.add<FloatAtanOpLowering>(typeConverter, ctx, runtime);

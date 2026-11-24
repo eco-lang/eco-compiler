@@ -11,8 +11,8 @@ import Elm.Kernel.Utils exposing (Tuple2)
 // not by their trees' shapes. The native kernel (src/eco-system/FNV/FNVExports.cpp) gives other numbers;
 // nothing compares the two.
 //
-// isSeqDict and seqDictEntries are also what compiler/kernel-overrides/SeqDictEquality.js calls (as
-// _Eco_FNV_isSeqDict and _Eco_FNV_seqDictEntries) to make elm/core's `==` compare SeqDicts by their
+// isSeqDict and seqDictEntryArray are also what compiler/kernel-overrides/SeqDictEquality.js calls (as
+// _Eco_FNV_isSeqDict and _Eco_FNV_seqDictEntryArray) to make elm/core's `==` compare SeqDicts by their
 // entries, as eco's native `==` does (plans/js-kernel-overrides.md §5). Keep both names.
 
 var _FNV_prime = 16777619;
@@ -74,6 +74,38 @@ function _FNV_hashDict(h, node, depth) {
 // as Dict's nodes are 'RBNode_elm_builtin' or -1. No other value has either.
 function _FNV_isSeqDict(value) {
     return value.$ === 'SeqDict_elm_builtin' || value.$ === -3;
+}
+
+// The Entry objects of the SeqDict `seqDict` in insertion order, as a JS array: a walk of the order
+// Array's tree (field c: a JS array of SubTree and Leaf nodes, `$` 'SubTree'/0 and 'Leaf'/1, each
+// holding a JS array) and its tail (field d), skipping the Nothings (no field a). What
+// compiler/kernel-overrides/SeqDictEquality.js compares, as _Eco_FNV_seqDictEntryArray; keep the name.
+function _FNV_seqDictEntryArray(seqDict) {
+    var out = [];
+    var array = seqDict.b.__$array;
+    _FNV_collectTree(array.c, out);
+    _FNV_collectLeaf(array.d, out);
+    return out;
+}
+
+function _FNV_collectTree(tree, out) {
+    for (var i = 0; i < tree.length; i++) {
+        var node = tree[i];
+        if (node.$ === 'SubTree' || node.$ === 0) {
+            _FNV_collectTree(node.a, out);
+        } else {
+            _FNV_collectLeaf(node.a, out);
+        }
+    }
+}
+
+function _FNV_collectLeaf(leaf, out) {
+    for (var i = 0; i < leaf.length; i++) {
+        var slot = leaf[i];
+        if (slot.a !== undefined) {
+            out.push(slot.a);
+        }
+    }
 }
 
 // The entries of the SeqDict `seqDict` in insertion order, as an Elm List ( k, v ). A SeqDict's fields are

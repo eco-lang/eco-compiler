@@ -587,7 +587,8 @@ static llvm::orc::SymbolMap buildRuntimeSymbolMap(
                                 {"eco_hash_i64", reinterpret_cast<void*>(&eco_hash_i64)},
                                 {"eco_hash_f64", reinterpret_cast<void*>(&eco_hash_f64)},
                                 {"eco_hash_char", reinterpret_cast<void*>(&eco_hash_char)},
-                                {"eco_hash_mix_string", reinterpret_cast<void*>(&eco_hash_mix_string)}}) {
+                                {"eco_hash_mix_string", reinterpret_cast<void*>(&eco_hash_mix_string)},
+                                {"eco_hash_walk", reinterpret_cast<void*>(&eco_hash_walk)}}) {
             symbolMap[interner(name)] = llvm::orc::ExecutorSymbolDef(
                 llvm::orc::ExecutorAddr::fromPtr(fn), llvm::JITSymbolFlags::Exported);
         }

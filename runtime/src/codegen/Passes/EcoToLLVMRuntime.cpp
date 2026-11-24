@@ -933,6 +933,11 @@ LLVM::LLVMFuncOp EcoRuntime::getOrCreateHashMixString(OpBuilder &builder) const 
     return getOrCreateFunc(builder, "eco_hash_mix_string", funcTy, /*gcLeaf=*/true);
 }
 
+LLVM::LLVMFuncOp EcoRuntime::getOrCreateHashWalk(OpBuilder &builder) const {
+    auto funcTy = LLVM::LLVMFunctionType::get(I64_TY, {I64_TY, I64_TY, HPTR_TY, I64_TY});
+    return getOrCreateFunc(builder, "eco_hash_walk", funcTy, /*gcLeaf=*/true);
+}
+
 LLVM::LLVMFuncOp EcoRuntime::getOrCreateUtilsEqual(OpBuilder &builder) const {
     // Elm_Kernel_Utils_equal(a: hptr, b: hptr) -> hptr (boxed Bool).
     auto funcTy = LLVM::LLVMFunctionType::get(HPTR_TY, {HPTR_TY, HPTR_TY});
@@ -1259,7 +1264,7 @@ void EcoRuntime::materializeAllRuntimeDecls(OpBuilder &b) const {
     getOrCreateStoreConsTail(b);
     getOrCreatePapExtendL(b); getOrCreateClosureCallSaturated(b);
     getOrCreateHashValue(b); getOrCreateHashString(b); getOrCreateHashI64(b);
-    getOrCreateHashF64(b); getOrCreateHashChar(b); getOrCreateHashMixString(b);
+    getOrCreateHashF64(b); getOrCreateHashChar(b); getOrCreateHashMixString(b); getOrCreateHashWalk(b);
     getOrCreateClosureCallSaturatedEval(b); getOrCreateApplyClosure(b);
     getOrCreateApplyClosureTyped(b); getOrCreateApplyClosureEval(b);
     getOrCreateResolveHPtr(b); getOrCreateGetTag(b);

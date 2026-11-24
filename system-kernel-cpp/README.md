@@ -50,6 +50,9 @@ an HTTP client, use [elm/http](https://package.elm-lang.org/packages/elm/http/la
   insertion-order `Array`, the two sharing one `Entry` object per key. `Bitmap` counts trie bits
   (a hardware popcount natively, `src/eco-system/Bitmap/`), and `JsArray2` is elm/core's `JsArray`
   plus the `unsafeSet`, `unsafeInsert` and `removeIndex` SeqDict needs (`src/eco-system/JsArray2/`).
+  `SeqDict.map` builds the new entries in Elm and copies the trie in the `SeqDictTrie` kernel
+  (`src/eco-system/SeqDictTrie/`, `src/Eco/Kernel/SeqDictTrie.js`), which builds slots in the form
+  the compiler chose for the result's type.
   Removing an entry leaves a hole in the insertion-order `Array`, so the compiler gives
   `SeqDict_elm_builtin` a reserved constructor tag (0xFFFB natively, -3 in JavaScript) and `==`
   compares two SeqDicts by their entries in insertion order on both backends.

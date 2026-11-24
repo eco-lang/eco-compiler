@@ -2766,6 +2766,20 @@ def Eco_HashMixOp : Eco_Op<"hash.mix", [Pure]> {
   let hasVerifier = 1;
 }
 
+def Eco_HashWalkOp : Eco_Op<"hash.walk", [Pure]> {
+  let summary = "The runtime walker resumed for one field of a typed hash chain";
+  let description = [{
+    The walker's `boxed(value, depth)` (design_docs/theory/runtime/value-hash.md) applied to the
+    running 32-bit FNV state `state` with `items` items left, for a field the front end does not unroll
+    (a list, a custom type, any other boxed value; plans/seq-data-structures-performance.md D2). Its
+    results are the new state and the items left. Lowers to one call of `eco_hash_walk`, which
+    allocates nothing.
+  }];
+  let arguments = (ins Eco_Int:$state, Eco_Int:$items, Eco_Value:$value, I64Attr:$depth);
+  let results = (outs Eco_Int:$newState, Eco_Int:$newItems);
+  let assemblyFormat = "$state `,` $items `,` $value prop-dict attr-dict `:` type($value)";
+}
+
 def Eco_HashFinishOp : Eco_Op<"hash.finish", [Pure]> {
   let summary = "The value hash's finaliser";
   let description = [{

@@ -1158,6 +1158,9 @@ struct EcoRuntime {
     mlir::LLVM::LLVMFuncOp getOrCreateHashChar(mlir::OpBuilder &builder) const;
     // Declares `eco_hash_mix_string(h: i64, s: hptr) -> i64`, gc-leaf (eco.hash.mix of a String).
     mlir::LLVM::LLVMFuncOp getOrCreateHashMixString(mlir::OpBuilder &builder) const;
+    // Declares `eco_hash_walk(h: i64, items: i64, value: hptr, depth: i64) -> i64`, gc-leaf
+    // (eco.hash.walk; the result packs `items << 32 | h`).
+    mlir::LLVM::LLVMFuncOp getOrCreateHashWalk(mlir::OpBuilder &builder) const;
     // Declares `Elm_Kernel_Utils_equal`, gc-leaf when `kernelGcLeafEnabled()`.
     mlir::LLVM::LLVMFuncOp getOrCreateUtilsEqual(mlir::OpBuilder &builder) const;
     // Declares the marker `__eco_value_eq`, gc-leaf, which the backend replaces

@@ -4970,7 +4970,12 @@ retranslateWithTag instTag retranslating defBody instType s0 =
 {-| Tells whether a `let` definition of type `defCanType` should be
 specialized per use type as a number: its type has a free variable constrained
 to `number` in the item's super table, and its classified type is a numeric
-shape (`isNumericFixableShape`).
+shape (`isNumericFixableShape`) that still holds an unresolved `number`
+variable. A classified type with none, such as `Dict Int String` in a
+specialization where the variable is already decided, has one type at every
+use; taking the per-use path for it re-specialized the value at a use whose
+type came from a fresh copy defaulted to `Int`
+(test/elm/src/LetValueSpecializedAtTwoTypesTest.elm).
 -}
 isNumberMultiEligible : Can.Type TypeIds.MVarId -> Step Bool
 isNumberMultiEligible defCanType s0 =
@@ -4978,7 +4983,7 @@ isNumberMultiEligible defCanType s0 =
         ( True, s1 ) ->
             case classifyAs Mono.tkClassLet defCanType s1 of
                 ( t, s2 ) ->
-                    ( isNumericFixableShape t, s2 )
+                    ( isNumericFixableShape t && containsCNumber t, s2 )
 
         ( False, s1 ) ->
             ( False, s1 )

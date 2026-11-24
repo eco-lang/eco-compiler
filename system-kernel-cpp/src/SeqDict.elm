@@ -50,6 +50,7 @@ import Bitmap
 import Bitwise
 import FNV
 import JsArray2 exposing (JsArray2)
+import SeqDictTrie
 
 
 {-| A dictionary of keys and values. So a `(Dict String User)` is a dictionary
@@ -810,41 +811,16 @@ map fn (SeqDict_elm_builtin root order) =
         newArray =
             Array.map (Maybe.map (\(Entry hash i key value) -> Entry hash i key (fn key value))) order.array
     in
-    SeqDict_elm_builtin (mapNode fn (flatArray (Array.length newArray) (Array.toList newArray)) root) { size = order.size, array = newArray }
+    SeqDict_elm_builtin (remapTrie (flatArray (Array.length newArray) (Array.toList newArray)) gone root) { size = order.size, array = newArray }
 
 
-{-| Copies the trie's shape, replacing every entry by the mapped entry at its index in `newArray`,
-so that the trie and the order array share the new entry objects.
+{-| Copies the trie's shape, replacing every entry by the entry at its index in `newArray`, in the
+kernel (`SeqDictTrie.remap`: no closure call per slot). `gone` tells the native kernel how the result's
+slots are represented, as `probe`.
 -}
-mapNode : (k -> a -> b) -> JsArray2 (Maybe (Entry k b)) -> Node k a -> Node k b
-mapNode fn newArray node =
-    case node of
-        Branch bitmap slots ->
-            Branch bitmap (JsArray2.map (mapSlot fn newArray) slots)
-
-        Collision h entries ->
-            Collision h (List.map (mappedEntry fn newArray) entries)
-
-
-mapSlot : (k -> a -> b) -> JsArray2 (Maybe (Entry k b)) -> Slot k a -> Slot k b
-mapSlot fn newArray slot =
-    case slot of
-        Data entry ->
-            Data (mappedEntry fn newArray entry)
-
-        Sub node ->
-            Sub (mapNode fn newArray node)
-
-
-mappedEntry : (k -> a -> b) -> JsArray2 (Maybe (Entry k b)) -> Entry k a -> Entry k b
-mappedEntry fn newArray (Entry hash i key value) =
-    case JsArray2.unsafeGet i newArray of
-        Just entry ->
-            entry
-
-        Nothing ->
-            -- Unreachable: every trie entry is live in the order array.
-            Entry hash i key (fn key value)
+remapTrie : JsArray2 (Maybe (Entry k b)) -> Slot k b -> Node k a -> Node k b
+remapTrie newArray probe root =
+    SeqDictTrie.remap newArray probe root
 
 
 {-| Keep a key-value pair when it satisfies a predicate.

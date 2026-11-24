@@ -28,6 +28,12 @@ int64_t eco_hash_string(Elm::HPtr value);
 /// the running state `h` (a 32-bit FNV state in an i64): `eco.hash.mix` of kind `string` (D2).
 int64_t eco_hash_mix_string(int64_t h, Elm::HPtr value);
 
+/// The walker's `boxed(value, depth)` resumed from the running state `h` with `items` items left: what a
+/// typed hash chain does for a field it does not unroll (a list, a custom type, any other boxed value;
+/// `eco.hash.walk`, D2). Returns `items << 32 | h`, the new state and the items left, which may be
+/// negative (a record uses one up after a field that took the last).
+int64_t eco_hash_walk(int64_t h, int64_t items, Elm::HPtr value, int64_t depth);
+
 /// The hash of an Int, a Float and a Char, as `eco_hash_value` gives for them boxed.
 int64_t eco_hash_i64(int64_t value);
 int64_t eco_hash_f64(double value);

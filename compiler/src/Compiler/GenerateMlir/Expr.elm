@@ -3941,6 +3941,63 @@ generateSaturatedCallNoFusion ctx kind func args resultType callInfo =
                 argTypes : List Mono.MonoType
                 argTypes =
                     List.map Mono.typeOf args
+
+                -- the kernel call itself, or the intrinsic it is admitted as
+                genericKernelCall () =
+                    case admittedIntrinsic ctx1 home name argTypes argsWithTypes resultType of
+                        Just intrinsic ->
+                            generateIntrinsic ctx1 argOps intrinsic
+
+                        Nothing ->
+                            let
+                                policy : KernelAbi.KernelBackendAbiPolicy
+                                policy =
+                                    KernelAbi.kernelBackendAbiPolicy
+                            in
+                            case policy of
+                                KernelAbi.ElmDerived ->
+                                    -- The declared ABI and boxToMatchSignatureTyped
+                                    -- both come from monoTypeToAbi of the same
+                                    -- types, so the arguments match the declaration.
+                                    let
+                                        elmSig : Ctx.FuncSignature
+                                        elmSig =
+                                            Ctx.kernelFuncSignatureFromType funcType
+
+                                        ( boxOps, argVarPairs, ctx1b ) =
+                                            boxToMatchSignatureTyped ctx1 argsWithTypes elmSig.paramTypes
+
+                                        instanceKey : KernelAbi.KernelInstanceKey
+                                        instanceKey =
+                                            { prefix = kernelPrefix
+                                            , home = home
+                                            , name = name
+                                            , argTypes = elmSig.paramTypes
+                                            , resultType = KernelAbi.callInstanceResultType home name elmSig.returnType resultType
+                                            }
+
+                                        ( instanceAbi, ctx1c ) =
+                                            Ctx.registerKernelInstance instanceKey ctx1b
+
+                                        ( resVar, ctx2 ) =
+                                            Ctx.freshVar ctx1c
+
+                                        kernelName : String
+                                        kernelName =
+                                            instanceAbi.symbolName
+
+                                        resultMlirType : MlirType
+                                        resultMlirType =
+                                            instanceAbi.abiResultType
+
+                                        ( ctx3, callOp ) =
+                                            Ops.ecoCallNamed ctx2 resVar kernelName argVarPairs resultMlirType
+                                    in
+                                    { ops = argOps ++ boxOps ++ [ callOp ]
+                                    , resultVar = resVar
+                                    , resultType = resultMlirType
+                                    , ctx = ctx3
+                                    }
             in
             case ( home, name, List.map2 Tuple.pair args argsWithTypes ) of
                 ( "Basics", "logBase", [ ( _, ( baseVar, baseType ) ), ( _, ( xVar, xType ) ) ] ) ->
@@ -4043,9 +4100,13 @@ generateSaturatedCallNoFusion ctx kind func args resultType callInfo =
                 ( "FNV", "hash", [ ( valueExpr, ( valueVar, valueType ) ) ] ) ->
                     -- eco/system's value hash (Hash.hash, FNV.hash) at a known type becomes the
                     -- eco.hash op, computed inline for Int, Float, Char and Bool
-                    -- (plans/seq-data-structures-performance.md D1). An FNV.hash used as a function
-                    -- value still calls the kernel.
-                    generateHashOp ctx1 argOps valueExpr valueVar valueType
+                    -- (plans/seq-data-structures-performance.md D1), unless `hashIntrinsic` is off.
+                    -- An FNV.hash used as a function value still calls the kernel.
+                    if ctx1.ecoConfig.hashIntrinsic then
+                        generateHashOp ctx1 argOps valueExpr valueVar valueType
+
+                    else
+                        genericKernelCall ()
 
                 ( "Debug", "toString", [ ( valueExpr, ( valueVar, valueType ) ) ] ) ->
                     -- The type id lets the typed kernel print constructor
@@ -4159,60 +4220,8 @@ generateSaturatedCallNoFusion ctx kind func args resultType callInfo =
                             }
 
                 _ ->
-                    case admittedIntrinsic ctx1 home name argTypes argsWithTypes resultType of
-                        Just intrinsic ->
-                            generateIntrinsic ctx1 argOps intrinsic
+                    genericKernelCall ()
 
-                        Nothing ->
-                            let
-                                policy : KernelAbi.KernelBackendAbiPolicy
-                                policy =
-                                    KernelAbi.kernelBackendAbiPolicy
-                            in
-                            case policy of
-                                KernelAbi.ElmDerived ->
-                                    -- The declared ABI and boxToMatchSignatureTyped
-                                    -- both come from monoTypeToAbi of the same
-                                    -- types, so the arguments match the declaration.
-                                    let
-                                        elmSig : Ctx.FuncSignature
-                                        elmSig =
-                                            Ctx.kernelFuncSignatureFromType funcType
-
-                                        ( boxOps, argVarPairs, ctx1b ) =
-                                            boxToMatchSignatureTyped ctx1 argsWithTypes elmSig.paramTypes
-
-                                        instanceKey : KernelAbi.KernelInstanceKey
-                                        instanceKey =
-                                            { prefix = kernelPrefix
-                                            , home = home
-                                            , name = name
-                                            , argTypes = elmSig.paramTypes
-                                            , resultType = KernelAbi.callInstanceResultType home name elmSig.returnType resultType
-                                            }
-
-                                        ( instanceAbi, ctx1c ) =
-                                            Ctx.registerKernelInstance instanceKey ctx1b
-
-                                        ( resVar, ctx2 ) =
-                                            Ctx.freshVar ctx1c
-
-                                        kernelName : String
-                                        kernelName =
-                                            instanceAbi.symbolName
-
-                                        resultMlirType : MlirType
-                                        resultMlirType =
-                                            instanceAbi.abiResultType
-
-                                        ( ctx3, callOp ) =
-                                            Ops.ecoCallNamed ctx2 resVar kernelName argVarPairs resultMlirType
-                                    in
-                                    { ops = argOps ++ boxOps ++ [ callOp ]
-                                    , resultVar = resVar
-                                    , resultType = resultMlirType
-                                    , ctx = ctx3
-                                    }
 
         Mono.MonoVarLocal name _ ->
             let
@@ -7711,111 +7720,139 @@ pairsToSparseArray pairs =
 
 {-| Emits `eco.hash` of `valueVar` (SSA type `valueType`, Elm value `valueExpr`), after `argOps`. The
 `kind` says how the operand is held: `int`, `float`, `char` and `bool` for an unboxed primitive,
-`string` for a String, and `value` for anything else, boxed first if it is an SSA aggregate.
+`string` for a String, and `value` for anything else, boxed first if it is an SSA aggregate. A tuple or
+record is hashed by a typed chain instead (`generateTypedHash`).
 -}
 generateHashOp : Ctx.Context -> List MlirOp -> Mono.MonoExpr -> String -> MlirType -> ExprResult
 generateHashOp ctx argOps valueExpr valueVar valueType =
-    case hashPlanOf valueType (Mono.typeOf valueExpr) of
-        Just ( marker, fields ) ->
-            generateTypedHash ctx argOps valueExpr valueVar valueType marker fields
-
-        Nothing ->
-            generateHashOpWhole ctx argOps valueExpr valueVar valueType
-
-
-{-| How `generateTypedHash` hashes a tuple or record (plans/seq-data-structures-performance.md D2):
-the walker's marker for the container (`kTuple` 7 or `kRecord` 11) and, in the order the walker
-visits them (a record's in heap slot order), each field's path from the value, its `eco.hash.mix` kind
-and the MLIR type it is read at. Only for an aggregate value (not an Int, Float, Char or Bool) whose
-fields are all Int, Float, Char, Bool or String, and a record of 1 to 256 fields, so that the
-walker's depth and item checks always pass and the hash needs no run-time bookkeeping.
--}
-hashPlanOf : MlirType -> Mono.MonoType -> Maybe ( Int, List ( Mono.MonoPath -> Mono.MonoPath, String, MlirType ) )
-hashPlanOf valueType monoType =
     let
-        fieldKind ty =
-            case ty of
-                Mono.MInt ->
-                    Just ( "int", I64 )
+        plan =
+            hashPlanFor (Mono.typeOf valueExpr)
 
-                Mono.MFloat ->
-                    Just ( "float", F64 )
+        unrolled =
+            case plan of
+                HashTuple _ ->
+                    True
 
-                Mono.MChar ->
-                    Just ( "char", I32 )
-
-                Mono.MBool ->
-                    -- stored as its True or False constant word, and hashed as that word
-                    Just ( "boolword", Types.ecoValue )
-
-                Mono.MString ->
-                    Just ( "string", Types.ecoValue )
+                HashRecord _ ->
+                    True
 
                 _ ->
-                    Nothing
-
-        allFields plans =
-            if List.all (\( _, k ) -> k /= Nothing) plans then
-                Just (List.filterMap (\( path, k ) -> Maybe.map (\( kind, t ) -> ( path, kind, t )) k) plans)
-
-            else
-                Nothing
+                    False
     in
-    case ( valueType, monoType ) of
-        ( I64, _ ) ->
-            Nothing
+    -- an unboxed primitive, or a plan too big to unroll, is hashed whole
+    if unrolled && not (List.member valueType [ I64, F64, I32, I1 ]) && hashPlanSize plan <= 64 then
+        generateTypedHash ctx argOps valueExpr valueVar valueType plan
 
-        ( F64, _ ) ->
-            Nothing
+    else
+        generateHashOpWhole ctx argOps valueExpr valueVar valueType
 
-        ( I32, _ ) ->
-            Nothing
 
-        ( I1, _ ) ->
-            Nothing
+{-| How a typed chain hashes a value of a given type, in the order the runtime walker visits it
+(plans/seq-data-structures-performance.md D2, design_docs/theory/runtime/value-hash.md):
 
-        ( _, Mono.MTuple _ shape ) ->
-            let
-                elems =
-                    Mono.tupleToList shape
+  - `HashPrim kind mlirType`: an Int, Float or Char (by its ABI type), a Bool (`boolword`, its True or
+    False constant word) or a String, mixed by one `eco.hash.mix` of that kind;
+  - `HashTuple` / `HashRecord`: the fields, each with its path from the value, a record's in heap slot
+    order; unrolled inline;
+  - `HashWalk`: anything else (a list, a custom type in any representation, unit, a function), read as
+    its boxed word and handed to the walker resumed from the chain's state (`eco.hash.walk`).
 
-                container =
-                    if List.length elems == 2 then
-                        Mono.Tuple2Container
+-}
+type HashPlan
+    = HashPrim String MlirType
+    | HashTuple (List ( Mono.MonoPath -> Mono.MonoPath, HashPlan ))
+    | HashRecord (List ( Mono.MonoPath -> Mono.MonoPath, HashPlan ))
+    | HashWalk
 
-                    else
-                        Mono.Tuple3Container
-            in
-            List.indexedMap (\i elemType -> ( \root -> Mono.MonoIndex i container elemType root, fieldKind elemType )) elems
-                |> allFields
-                |> Maybe.map (Tuple.pair 7)
 
-        ( _, Mono.MRecord _ fields ) ->
-            let
-                layout =
-                    Types.computeRecordLayout fields
-            in
-            if layout.fieldCount < 1 || layout.fieldCount > 256 then
-                Nothing
+{-| The `HashPlan` of a value of type `monoType`.
+-}
+hashPlanFor : Mono.MonoType -> HashPlan
+hashPlanFor monoType =
+    case Types.monoTypeToAbi monoType of
+        I64 ->
+            HashPrim "int" I64
 
-            else
-                layout.fields
-                    |> List.sortBy .index
-                    |> List.map (\f -> ( \root -> Mono.MonoField f.name f.monoType root, fieldKind f.monoType ))
-                    |> allFields
-                    |> Maybe.map (Tuple.pair 11)
+        F64 ->
+            HashPrim "float" F64
+
+        I32 ->
+            HashPrim "char" I32
 
         _ ->
-            Nothing
+            case monoType of
+                Mono.MBool ->
+                    HashPrim "boolword" Types.ecoValue
+
+                Mono.MString ->
+                    HashPrim "string" Types.ecoValue
+
+                Mono.MTuple _ shape ->
+                    let
+                        elems =
+                            Mono.tupleToList shape
+
+                        container =
+                            if List.length elems == 2 then
+                                Mono.Tuple2Container
+
+                            else
+                                Mono.Tuple3Container
+                    in
+                    HashTuple (List.indexedMap (\i elemType -> ( \root -> Mono.MonoIndex i container elemType root, hashPlanFor elemType )) elems)
+
+                Mono.MRecord _ fields ->
+                    let
+                        layout =
+                            Types.computeRecordLayout fields
+                    in
+                    if layout.fieldCount < 1 then
+                        HashWalk
+
+                    else
+                        layout.fields
+                            |> List.sortBy .index
+                            |> List.map (\f -> ( \root -> Mono.MonoField f.name f.monoType root, hashPlanFor f.monoType ))
+                            |> HashRecord
+
+                _ ->
+                    HashWalk
 
 
-{-| Emits the hash of a tuple or record per `hashPlanOf`'s plan: the FNV offset basis, `eco.hash.mix`
-of the container's marker, an `eco.hash.mix` per field (read with the pattern-matching path code),
-then `eco.hash.finish`. It gives the number the runtime walker gives for the value (D2's identity
-test checks it).
+{-| The number of nodes of a plan, which bounds the code a typed chain emits.
 -}
-generateTypedHash : Ctx.Context -> List MlirOp -> Mono.MonoExpr -> String -> MlirType -> Int -> List ( Mono.MonoPath -> Mono.MonoPath, String, MlirType ) -> ExprResult
-generateTypedHash ctx argOps valueExpr valueVar valueType marker fields =
+hashPlanSize : HashPlan -> Int
+hashPlanSize plan =
+    case plan of
+        HashTuple fields ->
+            1 + List.sum (List.map (Tuple.second >> hashPlanSize) fields)
+
+        HashRecord fields ->
+            1 + List.sum (List.map (Tuple.second >> hashPlanSize) fields)
+
+        _ ->
+            1
+
+
+{-| The runtime walker's bounds (`kMaxDepth`, `kMaxItems` in ValueHash.cpp).
+-}
+hashMaxDepth : Int
+hashMaxDepth =
+    16
+
+
+hashMaxItems : Int
+hashMaxItems =
+    256
+
+
+{-| Emits the hash of a tuple or record per its `HashPlan`: from the FNV offset basis and the walker's
+item budget, the chain of `hashNodeOps`, then `eco.hash.finish`. It gives the number the runtime walker
+gives for the value, bounds included (D2's identity tests check it).
+-}
+generateTypedHash : Ctx.Context -> List MlirOp -> Mono.MonoExpr -> String -> MlirType -> HashPlan -> ExprResult
+generateTypedHash ctx argOps valueExpr valueVar valueType plan =
     let
         monoType =
             Mono.typeOf valueExpr
@@ -7832,60 +7869,211 @@ generateTypedHash ctx argOps valueExpr valueVar valueType marker fields =
         ( ctx2, offsetOp ) =
             Ops.arithConstantInt ctx1 offsetVar 2166136261
 
-        mixOp ctxM state operand operandType kind extraAttrs =
-            let
-                ( resVar, ctxA ) =
-                    Ctx.freshVar ctxM
+        ( itemsVar, ctx3 ) =
+            Ctx.freshVar ctx2
 
-                ( ctxB, op ) =
-                    Ops.mlirOp ctxA "eco.hash.mix"
-                        |> Ops.opBuilder.withOperands [ state, operand ]
-                        |> Ops.opBuilder.withResults [ ( resVar, I64 ) ]
-                        |> Ops.opBuilder.withAttrs
-                            (Dict.fromList
-                                ([ ( "_operand_types", ArrayAttr Nothing [ TypeAttr I64, TypeAttr operandType ] )
-                                 , ( "kind", StringAttr kind )
-                                 ]
-                                    ++ extraAttrs
-                                )
-                            )
-                        |> Ops.opBuilder.build
-            in
-            ( op, resVar, ctxB )
+        ( ctx4, itemsOp ) =
+            Ops.arithConstantInt ctx3 itemsVar hashMaxItems
 
-        ( markerOp, markedVar, ctx3 ) =
-            mixOp ctx2 offsetVar offsetVar I64 "marker" [ ( "marker", IntAttr (Just I64) marker ) ]
+        ( chainOps, ( stateVar, _ ), ctx5 ) =
+            hashNodeOps ctx4 (Mono.MonoRoot rootName monoType) plan 0 ( offsetVar, itemsVar )
 
-        ( fieldOps, stateVar, ctx4 ) =
-            List.foldl
-                (\( path, kind, fieldType ) ( opsAcc, state, ctxF ) ->
-                    let
-                        ( projOps, fieldVar, ctxG ) =
-                            Patterns.generateMonoPath ctxF (path (Mono.MonoRoot rootName monoType)) fieldType
+        ( resultVar, ctx6 ) =
+            Ctx.freshVar ctx5
 
-                        ( op, next, ctxH ) =
-                            mixOp ctxG state fieldVar fieldType kind []
-                    in
-                    ( opsAcc ++ projOps ++ [ op ], next, ctxH )
-                )
-                ( [], markedVar, ctx3 )
-                fields
-
-        ( resultVar, ctx5 ) =
-            Ctx.freshVar ctx4
-
-        ( ctx6, finishOp ) =
-            Ops.mlirOp ctx5 "eco.hash.finish"
+        ( ctx7, finishOp ) =
+            Ops.mlirOp ctx6 "eco.hash.finish"
                 |> Ops.opBuilder.withOperands [ stateVar ]
                 |> Ops.opBuilder.withResults [ ( resultVar, I64 ) ]
                 |> Ops.opBuilder.withAttrs (Dict.singleton "_operand_types" (ArrayAttr Nothing [ TypeAttr I64 ]))
                 |> Ops.opBuilder.build
     in
-    { ops = argOps ++ [ offsetOp, markerOp ] ++ fieldOps ++ [ finishOp ]
+    { ops = argOps ++ [ offsetOp, itemsOp ] ++ chainOps ++ [ finishOp ]
     , resultVar = resultVar
     , resultType = I64
-    , ctx = ctx6
+    , ctx = ctx7
     }
+
+
+{-| Emits the walker's step for the value at `path` (read with the pattern-matching path code) at
+nesting `depth`, from the state `( h, items )` (both `i64`), and returns the ops and the new state.
+As in the walker: an Int, Float, Char, Bool or String is mixed whatever the bounds; a tuple or record
+is skipped at `hashMaxDepth` or deeper (statically) and when no items are left (an `arith.select`
+keeps the old state); its marker comes first, a record's fields each need an item left and use one
+up, a tuple's fields use none, and every field is one level deeper; anything else is
+`eco.hash.walk`.
+-}
+hashNodeOps : Ctx.Context -> Mono.MonoPath -> HashPlan -> Int -> ( String, String ) -> ( List MlirOp, ( String, String ), Ctx.Context )
+hashNodeOps ctx path plan depth ( h, items ) =
+    case plan of
+        HashPrim kind mlirType ->
+            let
+                ( projOps, fieldVar, ctx1 ) =
+                    Patterns.generateMonoPath ctx path mlirType
+
+                ( mixOp, h1, ctx2 ) =
+                    hashMixOp ctx1 h fieldVar mlirType kind []
+            in
+            ( projOps ++ [ mixOp ], ( h1, items ), ctx2 )
+
+        HashWalk ->
+            let
+                ( projOps, fieldVar, ctx1 ) =
+                    Patterns.generateMonoPath ctx path Types.ecoValue
+
+                ( h1, ctx2 ) =
+                    Ctx.freshVar ctx1
+
+                ( items1, ctx3 ) =
+                    Ctx.freshVar ctx2
+
+                ( ctx4, walkOp ) =
+                    Ops.mlirOp ctx3 "eco.hash.walk"
+                        |> Ops.opBuilder.withOperands [ h, items, fieldVar ]
+                        |> Ops.opBuilder.withResults [ ( h1, I64 ), ( items1, I64 ) ]
+                        |> Ops.opBuilder.withAttrs
+                            (Dict.fromList
+                                [ ( "_operand_types", ArrayAttr Nothing [ TypeAttr I64, TypeAttr I64, TypeAttr Types.ecoValue ] )
+                                , ( "depth", IntAttr (Just I64) depth )
+                                ]
+                            )
+                        |> Ops.opBuilder.build
+            in
+            ( projOps ++ [ walkOp ], ( h1, items1 ), ctx4 )
+
+        HashTuple fields ->
+            hashAggregateOps ctx path 7 False fields depth ( h, items )
+
+        HashRecord fields ->
+            hashAggregateOps ctx path 11 True fields depth ( h, items )
+
+
+{-| The step for a tuple (`marker` 7, `counted` False) or a record (11, True); see `hashNodeOps`.
+-}
+hashAggregateOps : Ctx.Context -> Mono.MonoPath -> Int -> Bool -> List ( Mono.MonoPath -> Mono.MonoPath, HashPlan ) -> Int -> ( String, String ) -> ( List MlirOp, ( String, String ), Ctx.Context )
+hashAggregateOps ctx path marker counted fields depth ( h, items ) =
+    if depth >= hashMaxDepth then
+        ( [], ( h, items ), ctx )
+
+    else
+        let
+            ( markOp, hm, ctx1 ) =
+                hashMixOp ctx h h I64 "marker" [ ( "marker", IntAttr (Just I64) marker ) ]
+
+            ( fieldOps, ( hEnd, itemsEnd ), ctx2 ) =
+                List.foldl
+                    (\( fieldPath, sub ) ( opsAcc, ( hf, itf ), ctxF ) ->
+                        let
+                            ( subOps, ( hs, its ), ctxS ) =
+                                hashNodeOps ctxF (fieldPath path) sub (depth + 1) ( hf, itf )
+                        in
+                        if counted then
+                            let
+                                ( gateOps, ( hg, itg ), ctxG ) =
+                                    hashGateOps ctxS itf ( hs, its, True ) ( hf, itf )
+                            in
+                            ( opsAcc ++ subOps ++ gateOps, ( hg, itg ), ctxG )
+
+                        else
+                            ( opsAcc ++ subOps, ( hs, its ), ctxS )
+                    )
+                    ( [ markOp ], ( hm, items ), ctx1 )
+                    fields
+
+            ( outerOps, out, ctx3 ) =
+                hashGateOps ctx2 items ( hEnd, itemsEnd, False ) ( h, items )
+        in
+        ( fieldOps ++ outerOps, out, ctx3 )
+
+
+{-| Selects, by `itemsBefore > 0`, the state `( hNew, itemsNew )` (with one item used up when `consume`)
+or the state `( hOld, itemsOld )`.
+-}
+hashGateOps : Ctx.Context -> String -> ( String, String, Bool ) -> ( String, String ) -> ( List MlirOp, ( String, String ), Ctx.Context )
+hashGateOps ctx itemsBefore ( hNew, itemsNew, consume ) ( hOld, itemsOld ) =
+    let
+        ( zeroVar, ctx1 ) =
+            Ctx.freshVar ctx
+
+        ( ctx2, zeroOp ) =
+            Ops.arithConstantInt ctx1 zeroVar 0
+
+        ( condVar, ctx3 ) =
+            Ctx.freshVar ctx2
+
+        ( ctx4, condOp ) =
+            Ops.arithCmpI ctx3 Ops.CmpSgt condVar ( itemsBefore, I64 ) ( zeroVar, I64 )
+
+        ( usedOps, itemsUsed, ctx5 ) =
+            if consume then
+                let
+                    ( oneVar, c1 ) =
+                        Ctx.freshVar ctx4
+
+                    ( c2, oneOp ) =
+                        Ops.arithConstantInt c1 oneVar 1
+
+                    ( subVar, c3 ) =
+                        Ctx.freshVar c2
+
+                    ( c4, subOp ) =
+                        Ops.mlirOp c3 "arith.subi"
+                            |> Ops.opBuilder.withOperands [ itemsNew, oneVar ]
+                            |> Ops.opBuilder.withResults [ ( subVar, I64 ) ]
+                            |> Ops.opBuilder.withAttrs (Dict.singleton "_operand_types" (ArrayAttr Nothing [ TypeAttr I64, TypeAttr I64 ]))
+                            |> Ops.opBuilder.build
+                in
+                ( [ oneOp, subOp ], subVar, c4 )
+
+            else
+                ( [], itemsNew, ctx4 )
+
+        select c a b ctxS =
+            let
+                ( var, ctxT ) =
+                    Ctx.freshVar ctxS
+
+                ( ctxU, op ) =
+                    Ops.mlirOp ctxT "arith.select"
+                        |> Ops.opBuilder.withOperands [ c, a, b ]
+                        |> Ops.opBuilder.withResults [ ( var, I64 ) ]
+                        |> Ops.opBuilder.withAttrs (Dict.singleton "_operand_types" (ArrayAttr Nothing [ TypeAttr I1, TypeAttr I64, TypeAttr I64 ]))
+                        |> Ops.opBuilder.build
+            in
+            ( op, var, ctxU )
+
+        ( hSel, hVar, ctx6 ) =
+            select condVar hNew hOld ctx5
+
+        ( itSel, itVar, ctx7 ) =
+            select condVar itemsUsed itemsOld ctx6
+    in
+    ( [ zeroOp, condOp ] ++ usedOps ++ [ hSel, itSel ], ( hVar, itVar ), ctx7 )
+
+
+{-| An `eco.hash.mix` of `operand` (of type `operandType`) of kind `kind` into the state `state`.
+-}
+hashMixOp : Ctx.Context -> String -> String -> MlirType -> String -> List ( String, MlirAttr ) -> ( MlirOp, String, Ctx.Context )
+hashMixOp ctx state operand operandType kind extraAttrs =
+    let
+        ( resVar, ctxA ) =
+            Ctx.freshVar ctx
+
+        ( ctxB, op ) =
+            Ops.mlirOp ctxA "eco.hash.mix"
+                |> Ops.opBuilder.withOperands [ state, operand ]
+                |> Ops.opBuilder.withResults [ ( resVar, I64 ) ]
+                |> Ops.opBuilder.withAttrs
+                    (Dict.fromList
+                        ([ ( "_operand_types", ArrayAttr Nothing [ TypeAttr I64, TypeAttr operandType ] )
+                         , ( "kind", StringAttr kind )
+                         ]
+                            ++ extraAttrs
+                        )
+                    )
+                |> Ops.opBuilder.build
+    in
+    ( op, resVar, ctxB )
 
 
 {-| `eco.hash` of the whole value: inline for an Int, Float, Char or Bool, the runtime otherwise.

@@ -377,6 +377,11 @@ applyEnvOverrides cfg =
                     |> Task.map (\veVal -> applyValueEqOverride veVal cfg33)
             )
         |> Task.andThen
+            (\cfgHash ->
+                (Utils.envLookupEnv "ECO_HASH_INTRINSIC" |> Task.mapError never)
+                    |> Task.map (\v -> applyHashIntrinsicOverride v cfgHash)
+            )
+        |> Task.andThen
             (\cfg33b ->
                 (Utils.envLookupEnv "ECO_CONST_THUNKS" |> Task.mapError never)
                     |> Task.map (\ctVal -> applyConstThunksOverride ctVal cfg33b)
@@ -889,6 +894,30 @@ applyStringOrderIntrinsicOverride maybeVal cfg =
 
             else if t == "0" || t == "off" then
                 { cfg | stringOrderIntrinsic = False }
+
+            else
+                cfg
+
+
+{-| Returns `cfg` with `hashIntrinsic` switched on when `ECO_HASH_INTRINSIC` is
+`1`, `true`, `yes` or `on`, and off when it is `0` or `off`.
+-}
+applyHashIntrinsicOverride : Maybe String -> EcoConfig -> EcoConfig
+applyHashIntrinsicOverride maybeVal cfg =
+    case maybeVal of
+        Nothing ->
+            cfg
+
+        Just raw ->
+            let
+                t =
+                    String.toLower (String.trim raw)
+            in
+            if t == "1" || t == "true" || t == "yes" || t == "on" then
+                { cfg | hashIntrinsic = True }
+
+            else if t == "0" || t == "off" then
+                { cfg | hashIntrinsic = False }
 
             else
                 cfg

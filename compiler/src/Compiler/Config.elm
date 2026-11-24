@@ -75,10 +75,11 @@ that returns the tuple's fields as separate results. `sretFresh` and
 single-constructor parameter is used only through projections a worker that
 takes the fields instead.
 
-`stringLengthOp`, `appendSplit`, `stringOrderIntrinsic` and `valueEq` each let
-a kernel call be lowered to an MLIR op instead: string length, string or list
-append, string ordering comparisons, and structural equality of two boxed
-values. `valueEq` also applies to the tests of string-literal patterns.
+`stringLengthOp`, `appendSplit`, `stringOrderIntrinsic`, `valueEq` and
+`hashIntrinsic` each let a kernel call be lowered to an MLIR op instead: string
+length, string or list append, string ordering comparisons, structural equality
+of two boxed values, and eco/system's value hash (`eco.hash`). `valueEq` also
+applies to the tests of string-literal patterns.
 
 `kernelGcLeaf` marks the declarations of kernels that cannot trigger garbage
 collection with `eco.gc_leaf`, and `callPurityAttrs` marks direct calls to
@@ -109,6 +110,7 @@ type alias EcoConfig =
     , appendSplit : Bool
     , stringOrderIntrinsic : Bool
     , valueEq : Bool
+    , hashIntrinsic : Bool
     , kernelGcLeaf : Bool
     , callPurityAttrs : Bool
     , constThunks : Int
@@ -600,6 +602,7 @@ default =
     , appendSplit = True
     , stringOrderIntrinsic = True
     , valueEq = True
+    , hashIntrinsic = True
     , kernelGcLeaf = True
     , constThunks = 2
     , constThunksReport = False
@@ -665,6 +668,7 @@ decoder =
         |> D.apply (D.optionalField "appendSplit" D.bool default.appendSplit)
         |> D.apply (D.optionalField "stringOrderIntrinsic" D.bool default.stringOrderIntrinsic)
         |> D.apply (D.optionalField "valueEq" D.bool default.valueEq)
+        |> D.apply (D.optionalField "hashIntrinsic" D.bool default.hashIntrinsic)
         |> D.apply (D.optionalField "kernelGcLeaf" D.bool default.kernelGcLeaf)
         |> D.apply (D.optionalField "callPurityAttrs" D.bool default.callPurityAttrs)
         |> D.apply (D.optionalField "constThunks" D.int default.constThunks)
@@ -1283,6 +1287,12 @@ hash cfg =
                )
             ++ (if cfg.valueEq then
                     [ "veq=1" ]
+
+                else
+                    []
+               )
+            ++ (if cfg.hashIntrinsic then
+                    [ "hash=1" ]
 
                 else
                     []

@@ -240,6 +240,10 @@ transparentKernels =
       ( "Env", [ "rawArgs" ] )
     , -- FNV: system-kernel-cpp/src/eco-system/FNV/FNVExports.cpp
       ( "FNV", [ "hash" ] )
+    , -- SeqDictTrie: system-kernel-cpp/src/eco-system/SeqDictTrie/SeqDictTrieExports.cpp
+      -- copies a SeqDict trie reading every representation of Slot and Maybe (Entry k v), and builds
+      -- slots in the form of a probe slot compiled code passes, so it pins no representation.
+      ( "SeqDictTrie", [ "remap" ] )
     , -- File: eco-kernel-cpp/src/eco-kernel/FileExports.cpp, elm-kernel-cpp/src/file/FileExports.cpp
       ( "File", [ "appDataDir", "canonicalize", "close", "createDir", "decoder", "dirExists", "download", "downloadUrl", "fileExists", "getCwd", "hWriteString", "lastModified", "list", "lock", "makeBytesSafeForInternetExplorer", "mime", "modificationTime", "name", "open", "readString", "removeDir", "removeFile", "setCwd", "size", "toBytes", "toString", "toUrl", "touch", "unlock", "uploadOne", "uploadOneOrMore", "writeString" ] )
     , -- FileSystem: system-kernel-cpp/src/eco-system/FileSystem/FileSystemExports.cpp

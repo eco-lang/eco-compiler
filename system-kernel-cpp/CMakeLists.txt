@@ -329,7 +329,10 @@ eco_system_module(JsArray2     POSIX
 # Bitmap counts set bits for SeqDict's trie (BitmapExports.cpp); the compiler makes most calls intrinsics.
 eco_system_module(Bitmap       POSIX
     src/eco-system/Bitmap/BitmapExports.cpp)
-foreach(mod FNV JsArray2)
+# SeqDictTrie copies a SeqDict trie for SeqDict.map (SeqDictTrieExports.cpp).
+eco_system_module(SeqDictTrie  POSIX
+    src/eco-system/SeqDictTrie/SeqDictTrieExports.cpp)
+foreach(mod FNV JsArray2 SeqDictTrie)
     target_include_directories(EcoSystem_${mod} PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/../elm-kernel-cpp/src)
 endforeach()
 target_link_libraries(EcoSystem_JsArray2 PRIVATE ElmKernel_JsArray)

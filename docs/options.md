@@ -210,6 +210,7 @@ Parsing classes (inputs are trimmed and lower-cased unless stated otherwise):
 | `ECO_APPEND_SPLIT` | B4; on | Feature: typed `eco.string.append` / `eco.list.append` where the type is known (hash `apsplit=`) | compiler/src/Builder/Eco/Config.elm:381 |
 | `ECO_STRING_ORDER_INTRINSIC` | B4; on | Feature: String `lt/le/gt/ge` lower to `eco.string.cmp3` (hash `strord=`) | compiler/src/Builder/Eco/Config.elm:386 |
 | `ECO_VALUE_EQ` | B4; on | Feature: boxed structural `==` lowers to `eco.value.eq` (hash `veq=`) | compiler/src/Builder/Eco/Config.elm:391 |
+| `ECO_HASH_INTRINSIC` | B4; on | Feature: eco/system's `Hash.hash` / `FNV.hash` at a known type lowers to `eco.hash` (and typed `eco.hash.mix` chains); off = every call goes to the kernel (hash `hash=`) | compiler/src/Builder/Eco/Config.elm:381 |
 | `ECO_KERNEL_GCLEAF_EMIT` | B4; on | Feature: stamps `eco.gc_leaf` on eligible kernel declarations. This is the front-end switch; the backend switch is `ECO_KERNEL_GCLEAF` (hash `kgcl=`) | compiler/src/Builder/Eco/Config.elm:396 |
 | `ECO_KERNEL_FACTS_DCE` | B4; on | Feature: the dead-let gate may drop droppable kernel calls (hash `kfdce=`) | compiler/src/Builder/Eco/Config.elm:401 |
 | `ECO_KERNEL_COST_CLASSES` | B4; on | Feature: the inliner prices kernel calls by KernelFacts cost class instead of a flat 6 (hash `kcc=`) | compiler/src/Builder/Eco/Config.elm:406 |

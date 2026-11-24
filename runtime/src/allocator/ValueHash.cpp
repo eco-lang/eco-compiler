@@ -414,3 +414,11 @@ extern "C" int64_t eco_hash_mix_string(int64_t h, HPtr value) {
     }
     return static_cast<int64_t>(hasher.h);
 }
+
+extern "C" int64_t eco_hash_walk(int64_t h, int64_t items, HPtr value, int64_t depth) {
+    Hasher hasher;
+    hasher.h = static_cast<u32>(h);
+    hasher.items = static_cast<int>(items);
+    hasher.boxed(value.toHPointer(), static_cast<int>(depth));
+    return (static_cast<int64_t>(hasher.items) << 32) | static_cast<int64_t>(hasher.h);
+}
