@@ -1332,6 +1332,31 @@ phase R0 split out of `monomorphization`. Every row is at its fixed point; every
   plan §9.6) measured C's code at B's speed or better (68.66 → 68.36 s) while C produces the larger output,
   so the compiler's own code did not get slower; the increase here is the extra specialization work.
 
+### hashonce: the tree of 2026-11-24 (SeqDict/SeqSet plan, whole-String hash v3, hash-once per function; plans/seq-data-structures-performance.md, plans/seqdict-hash-once-per-function.md): **regression check, single run: wall +1.27 s (+1.6 % vs cq), inside the 5 % flag; every phase within 0.6 s**
+
+| run | wall (s) | parse/check/build (s) | mono (s) | representation (s) | MLIR codegen (s) | GC time (s) | minor GC | major GC | promoted MiB | max RSS (kB) | out.mlir (B) | fixed point |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| r1 | 78.57 | 30.0 | 30.4 | 1.5 | 9.5 | 3.58 | 1516 | 8 | 7811 | 7661484 | 13438258 | same |
+| Δ vs cq (one run each) | +1.27 (+1.6 %) | +0.6 | +0.3 | −0.1 | 0.0 | +0.11 | −9 | 0 | +111 | +108,776 (+1.4 %) | +42,334 (+0.3 %, workload moved) | |
+
+- **What:** not a front-end step: the tree after the SeqDict/SeqSet plan (trie rewrite, kernel `map`, the
+  solver let-number fix in `Translate.isNumberMultiEligible`, typed hash chains), the whole-String hash
+  (definition v3, runtime only) and plans/seqdict-hash-once-per-function.md (package-qualified inliner
+  whitelist names, the `FNV.hash` `KernelFacts` row, SeqDict/SeqSet wrappers always inlined, and the
+  default-on hash-only mode of `Compiler.MonoOpt.Cse`), measured against `cq`, the most recent row. The
+  candidate MLIR `ecoHO.mlir` was compiled by the bootstrapped `build-kernel/bin/eco` of the same tree
+  (untimed, cold `eco-stuff`), lowered by `eco-boot-native` to `eco-optHO`, and timed once under §2
+  (`ECO_MONO_ENGINE=solver ECO_MONO_LSS=1`, cold `eco-stuff`, `~/.eco/0.2.0/packages/registry.dat`
+  touched). **One timed run only, by request.**
+- **Checks:** rc 0, no `[gc-stats] SIG`, r1 equals `ecoHO.mlir` (fixed point). `.ecot` 8,883,403 B
+  (+49,631 vs cq: source added).
+- **Verdict:** +1.27 s, about the ~1.3 % band and well under the 5 % flag; no phase moves by more than
+  0.6 s. The compiler uses neither SeqDict nor `FNV.hash` (its hash maps are `Data.HashMap` with
+  `Eco.Hash`), so the hash work cannot speed it up; the costs it could add are the hash CSE pass (on
+  by default, but it skips every body with fewer than two hash calls and runs no purity analysis) and
+  the qualified whitelist lookups, both small. The rest is the moved tree (source +0.3 % out.mlir,
+  +0.6 % `.ecot`). Single run, so unattributed between those.
+
 ## 6a. Batched end-of-series gates (run once each, after S8)
 
 - **G5 `TypedOptimizedCodecTest` (new):** 135/135 standard-suite modules round-trip the v2 codec
@@ -1630,3 +1655,4 @@ same-sitting control run, not the `ref` row's recorded wall. Details live in eac
 | R4i | 69.72 | -1.80 | 1401 | 8 | 7159 | 6997140 | final of plan §13 (representation phase 1.7 s): R3.1 composed exactly, R2.4 checks as written, one-descent eraseType | R4f |
 | now | 73.86 | +4.14 | 1448 | 8 | 7506 | 7400224 | — (regression check, ONE run, across a moved tree: constructor follow-ups F1–F5 + knownCtorCase, ctor compile-time pass, stage hints; REGRESSION +5.9 %, parse/check/build +2.0 s, mono +1.6 s, representation −0.3 s; out.mlir +1.3 %; fixed point) | R4i |
 | cq | 77.30 | +3.44 | 1525 | 8 | 7700 | 7552708 | — (regression check, ONE run, across a moved tree: capture-qualified lambda members (LSS_042), lambda arguments translated last (LSS_043), runtime-first native link; +4.7 %, inside the 5 % flag; parse/check/build +0.4 s, mono +2.2 s, representation +0.2 s, codegen +0.4 s; out.mlir +4.7 % (per-capture HOF specialization); same-input A/B in the plan §9.6: C 68.36 vs B 68.66 s; fixed point) | now |
+| hashonce | 78.57 | +1.27 | 1516 | 8 | 7811 | 7661484 | — (regression check, ONE run, across a moved tree: SeqDict/SeqSet plan, whole-String hash v3, hash-once per function (qualified inliner whitelist names, FNV.hash KernelFacts row, inlined SeqDict/SeqSet wrappers, default-on Mono hash CSE); +1.6 %, inside the 5 % flag; parse/check/build +0.6 s, mono +0.3 s, representation −0.1 s, codegen 0.0 s; out.mlir +0.3 %; fixed point) | cq |
