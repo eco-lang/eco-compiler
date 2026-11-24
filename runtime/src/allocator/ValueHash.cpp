@@ -220,7 +220,7 @@ const char* const kForms[] = {"flat UTF-16", "UTF-8 leaf", "slice", "rope", "lar
 const char* const kLengths[] = {"< 32", "32-255", "256-4095", ">= 4096"};
 const char* const kAges[] = {"nursery, age 0", "nursery, survived", "old generation", "permanent"};
 
-Counts byForm[7], byLength[4], byAge[4], topLevel, nested, repeated;
+Counts byForm[7], byLength[4], byAge[4], topLevel, nested, repeated, cached;
 std::vector<const void*> seen;
 size_t seenCount = 0;
 uint64_t epoch = ~0ULL;
@@ -250,6 +250,7 @@ void print() {
     row("top-level", topLevel);
     row("nested", nested);
     row("repeat (same object)", repeated);
+    row("served by hash slot", cached);
 }
 
 int formOf(void* s) {
@@ -302,6 +303,9 @@ void note(void* s, int64_t n, bool top) {
     if (seenBefore(s)) add(repeated, units);
 }
 
+// Counts a hash of the String `s` (`n` units) that its hash slot answered.
+void noteCached(int64_t n) { add(cached, static_cast<uint64_t>(n)); }
+
 } // namespace census
 
 struct Hasher {
@@ -331,12 +335,26 @@ struct Hasher {
 
     // Hashes the String `s`; `top` says it is the hashed value itself rather than nested in one (for
     // the census only).
+    //
+    // `stringHash(s)` comes from the String's hash slot when it has one that is filled, and is stored in
+    // an empty one (HEAP_088). The store may land in an object that has survived a collection, or in
+    // PermanentSpace: the carve-out HEAP_088 makes from HEAP_SNAPSHOT_001 and HEAP_036. The value depends
+    // only on the units, so every writer writes the same number, and a store a concurrent tenure copy
+    // misses only costs a recomputation.
     void string(void* s, bool top = false) {
         i64 n = StringOps::length(s);
         if (n == 0) { mix(kEmpty); return; }
         if (census::enabled()) census::note(s, n, top);
+        u32* slot = stringHashSlot(s);
+        u32 sh = slot ? __atomic_load_n(slot, __ATOMIC_RELAXED) : 0;
+        if (sh != 0) {
+            if (census::enabled()) census::noteCached(n);
+        } else {
+            sh = stringHash(s, n);
+            if (slot) __atomic_store_n(slot, sh, __ATOMIC_RELAXED);
+        }
         mix(kString);
-        mix(stringHash(s, n));
+        mix(sh);
     }
 
     // Hashes the entries of the Dict tree at `p` in key order: left subtree, key, value, right subtree.
@@ -460,6 +478,25 @@ struct Hasher {
 u32 finish(const Hasher& h) { return nonZero(fmix32(h.h)); }
 
 } // namespace
+
+uint32_t Elm::stringHashUncached(void* s) {
+    return stringHash(s, StringOps::length(s));
+}
+
+const char* Elm::checkStringHashSlot(void* obj) {
+    u32* slot = stringHashSlot(obj);
+    if (slot == nullptr) return nullptr;
+    const u32 tag = static_cast<Header*>(obj)->tag;
+    if ((tag == Tag_String || tag == Tag_StringUtf8Leaf) && slot[1] != 0)
+        return "the high half of a flat String's hash slot word is not 0 (an allocation left it unwritten)";
+    const u32 v = __atomic_load_n(slot, __ATOMIC_RELAXED);
+    if (v == 0) return nullptr;
+    if (tag == Tag_LargeStringHeader && static_cast<LargeStringHeader*>(obj)->body.ptr == 0)
+        return "a large String header without a body has a filled hash slot";
+    if (v != stringHash(obj, StringOps::length(obj)))
+        return "a String's hash slot holds a number that is not the hash of its units";
+    return nullptr;
+}
 
 extern "C" int64_t eco_hash_value(HPtr value) {
     Hasher hasher;

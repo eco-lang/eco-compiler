@@ -1098,3 +1098,30 @@ order is added, removed or reordered, and no footprint row changes meaning. The 
 outside every model's abstraction of a slot (a reference to an object). **Verdict: no model change needed.**
 Covered by `test/allocator/TaggedWordGcTest.cpp` (serial, parallel and region minors, tenuring, a major, CAF
 promotion), which failed before the change and passes after.
+
+
+## 2026-11-24 — String hash slots (HEAP_088, plans/hash-reuse-explicit-vs-cached.md Part B)
+
+Pins fired: region `NR.minorGCRegion` (**41a2e6dcdb60**); region `NT.TenureHeapEnv` (**3bf5f5f1eeea**);
+region `NT.TenureParEnv` (**2f401dc5b602**).
+
+Change: a String may cache the hash of its units in a 32-bit hash slot (slice/view/rope/large: a field;
+flat Strings of 32+ units: a tail word). The mutator's value hash fills an empty slot with a relaxed atomic
+32-bit store, possibly after the String survived a collection: the one write HEAP_088 allows into an object
+that P1 (HEAP_SNAPSHOT_001) otherwise freezes. Every writer stores the same number (it depends only on the
+String's units). (1) Both tenure engines' copy (`TenureHeapEnv::copy` and the concurrent parallel engine,
+`NT.TenureParEnv`) now call `copyObjectForTenure`, which is `memcpy` except that a String's slot word is read
+with a relaxed atomic load, so a concurrent fill is not a C++ data race; the copy holds 0 or the final hash,
+and a fill it misses only costs a recomputation. (2) `NR.minorGCRegion`'s validate-only eden pre-walk also
+calls `checkStringHashSlot` (a read of each young object, inside `#if ECO_HEAP_VALIDATE`, in the exclusive
+pause).
+
+Against the model: the slot is a non-pointer word. This model's cells are a logical id, `NF` pointer fields
+and a builder flag (MAPPING §"abstractions": only pointer structure matters to forwarding), so the slot and
+its store are outside the model's state. No pointer field, shadow word, grant cell, claim or publish changes;
+`E_Copy` is still one grant allocation plus a copy of the object's words. The T1 footprint row ("written by
+nobody while the job runs (P1)") gains one exception, recorded in MAPPING.md: the hash slot, a word no
+collector decision reads. The pre-walk adds only reads in the pause. No atomic step, lock, shared location of
+any modelled protocol or memory order is added, removed or reordered. **Verdict: no model change needed**
+(MAPPING.md T1 row amended). Covered by `test/allocator/StringHashSlotTest.cpp` (fill, minor and major
+collections keep the slot, every allocation route zeroes it).

@@ -115,7 +115,12 @@ void initHeaderForTag(Header* hdr, Tag tag, size_t size) {
 
     switch (tag) {
         case Tag_String:
-            h.size = (size - sizeof(ElmString)) / sizeof(u16);
+            // An upper bound on the length (callers set the exact one). A String with a hash slot word has
+            // at least kStringHashSlotMinUnits units; the slot is the object's last word, zeroed here.
+            h.size = (size >= 16 && (size - 16) / sizeof(u16) >= kStringHashSlotMinUnits)
+                ? static_cast<u32>((size - 16) / sizeof(u16))
+                : static_cast<u32>((size - sizeof(ElmString)) / sizeof(u16));
+            if (size >= 16) std::memset(reinterpret_cast<char*>(hdr) + size - 8, 0, 8);
             break;
         case Tag_StringSlice:
         case Tag_StringRope:
@@ -124,8 +129,11 @@ void initHeaderForTag(Header* hdr, Tag tag, size_t size) {
             h.size = 0;
             break;
         case Tag_StringUtf8Leaf:
-            // One unit per payload byte.
-            h.size = static_cast<u32>(size - sizeof(ElmStringUtf8Leaf));
+            // One unit per payload byte, as an upper bound and with the hash slot word, as for Tag_String.
+            h.size = (size >= 16 && size - 16 >= kStringHashSlotMinUnits)
+                ? static_cast<u32>(size - 16)
+                : static_cast<u32>(size - sizeof(ElmStringUtf8Leaf));
+            if (size >= 16) std::memset(reinterpret_cast<char*>(hdr) + size - 8, 0, 8);
             break;
         case Tag_Custom:
         case Tag_Record: {
@@ -489,6 +497,8 @@ HPointer ThreadLocalHeap::allocLargeString(const u16* chars, size_t length) {
         LargeStringHeader* h = static_cast<LargeStringHeader*>(header_obj);
         h->header.size = static_cast<u32>(length);
         h->body = hpFromBits(0);  // null HPointer (all fields zero)
+        h->hashSlot = 0;
+        h->_padding = 0;
         HPointer header_hp = parent_->wrap(header_obj);
 
         // This cannot collect, so header_obj stays where it is.

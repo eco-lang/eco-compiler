@@ -53,6 +53,7 @@
 #include "allocator/ListOpsTest.hpp"
 #include "allocator/ChunkedListTest.hpp"
 #include "allocator/BytesOpsTest.hpp"
+#include "allocator/StringHashSlotTest.hpp"
 #include "allocator/RuntimeExportsTest.hpp"
 #include "allocator/GenericApplyBoxingTest.hpp"
 #include "allocator/WideObjectPinsTest.hpp"
@@ -1253,6 +1254,10 @@ int main(int argc, char* argv[]) {
     Testing::TestSuite bytesOpsTests("BytesOps");
     registerBytesOpsTests(bytesOpsTests);
 
+    // String hash slots (HEAP_088)
+    Testing::TestSuite stringHashSlotTests("StringHashSlot");
+    registerStringHashSlotTests(stringHashSlotTests);
+
     // Runtime exports tests (C-linkage functions for JIT)
     Testing::TestSuite runtimeExportsTests("RuntimeExports");
     registerRuntimeExportsTests(runtimeExportsTests);
@@ -1468,6 +1473,7 @@ int main(int argc, char* argv[]) {
     suite.add(std::move(listOpsTests));
     suite.add(std::move(chunkedListTests));
     suite.add(std::move(bytesOpsTests));
+    suite.add(std::move(stringHashSlotTests));
     suite.add(std::move(runtimeExportsTests));
     suite.add(std::move(genericApplyBoxingTests));
     suite.add(std::move(wideObjectPinsTests));

@@ -154,4 +154,6 @@ long prefixes (the LSS member table's `byKey`), and intern-cached-hash and inter
 with each node's hash stored when it is built, or recomputed by walking it at every probe.
 `src/SeqLargeKeys.elm` is their eco-only twin on `SeqDict`: seqdict-longkey, seqdict-longkey-reuse
 (the same key String objects looked up again, the case a cached String hash serves) and
-seqdict-intern (the trees themselves as `SeqDict` keys).
+seqdict-intern (the trees themselves as `SeqDict` keys). seqset-prefixkey-rounds tests membership
+of 500-character keys in a `SeqSet` 32 times over. string-eq-hashed is string-eq-prefix's work after every
+key was hashed once, the case where cached String hashes let `==` answer from two hashes.

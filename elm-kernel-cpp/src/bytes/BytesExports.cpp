@@ -661,8 +661,7 @@ HPtr Elm_Kernel_Bytes_read_string(int64_t length, HPtr bytes, int64_t offset) {
 
     size_t utf16Count = scan.utf16Units;
 
-    size_t strAllocSize = sizeof(ElmString) + utf16Count * sizeof(u16);
-    strAllocSize = (strAllocSize + 7) & ~7;
+    size_t strAllocSize = flatStringByteSize(utf16Count, sizeof(u16));
 
     uint64_t roots[1];
     std::memcpy(&roots[0], &srcHP, sizeof(srcHP));
@@ -670,6 +669,7 @@ HPtr Elm_Kernel_Bytes_read_string(int64_t length, HPtr bytes, int64_t offset) {
         eco_alloc_with_roots(Tag_String, strAllocSize, roots, 1, 0x1));
     std::memcpy(&srcHP, &roots[0], sizeof(srcHP));
     str->header.size = static_cast<u32>(utf16Count);
+    initStringHashSlot(str);
 
     src_view = alloc::byteBufferView(allocator.resolve(srcHP));
     src = src_view.data + offset;

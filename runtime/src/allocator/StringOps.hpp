@@ -116,16 +116,17 @@ inline std::pair<const u8*, u32> utf8Bytes(void* o) {
         // Tag_ByteBuffer
         p = static_cast<ByteBuffer*>(base)->bytes;
     }
-    return {p + v->offset, v->byteLen};
+    return {p + v->offset, v->header.size};
 }
 
 // Returns the length of `obj` in UTF-16 units, which every form keeps in `header.size`.
 inline u32 rawLen(void* obj) { return static_cast<Header*>(obj)->size; }
 
-// Returns the height of `obj` as a rope tree: a rope's stored height, and 0 for every other form.
+// Returns the height of `obj` as a rope tree: a rope's stored height (saturated at `kRopeHeightMax`),
+// and 0 for every other form.
 inline u32 heightOf(void* obj) {
     Tag t = alloc::getTag(obj);
-    if (t == Tag_StringRope) return static_cast<ElmStringRope*>(obj)->height;
+    if (t == Tag_StringRope) return static_cast<ElmStringRope*>(obj)->header.unboxed;
     return 0;
 }
 
@@ -1620,11 +1621,20 @@ inline u16 segElemAt(const SegView& s, u32 i) {
 
 // Returns whether `a` and `b` hold the same units, whatever their forms. Null equals only null.
 // Does not allocate on the Elm heap.
+//
+// Two Strings of at least `kStringHashSlotMinUnits` units whose hash slots are both filled and differ
+// are unequal without reading a unit: a slot holds the hash of the units, the same for every form
+// (HEAP_088). `equal` never computes a hash.
 inline bool equal(void* a, void* b) {
     if (!a || !b) return a == b;
     Header* ha = static_cast<Header*>(a);
     Header* hb = static_cast<Header*>(b);
     if (ha->size != hb->size) return false;
+    if (ha->size >= kStringHashSlotMinUnits) {
+        const u32 sa = loadStringHashSlot(a);
+        const u32 sb = loadStringHashSlot(b);
+        if (sa != 0 && sb != 0 && sa != sb) return false;
+    }
 
     if (ha->tag == Tag_String && hb->tag == Tag_String) {
         ElmString* sa = static_cast<ElmString*>(a);

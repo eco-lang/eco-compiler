@@ -11,6 +11,7 @@
 // The rest of the file is checks compiled only into validate builds, and the survivor-write census.
 
 #include "NurserySpace.hpp"
+#include "ValueHash.hpp"
 #include "HeapChildWalk.hpp"
 #if !defined(_WIN32)
 #include <sys/resource.h>
@@ -2041,6 +2042,12 @@ void NurserySpace::preEvacuationFromSpaceWalk() {
                 "%zu at obj=%p tag=%u extent in [%p,%p)\n",
                 sz, (void*)scan, (unsigned)h->tag,
                 (void*)base, (void*)end);
+            std::fflush(stderr);
+            std::abort();
+        }
+        if (const char* bad = checkStringHashSlot(scan)) {
+            std::fprintf(stderr, "[heap-validate] from-space pre-walk: obj=%p tag=%u: %s (HEAP_088)\n",
+                         (void*)scan, (unsigned)h->tag, bad);
             std::fflush(stderr);
             std::abort();
         }

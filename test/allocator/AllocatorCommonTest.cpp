@@ -158,6 +158,8 @@ Testing::TestCase testGetObjectSizeString("getObjectSize returns correct size fo
 
         size_t base_size = sizeof(ElmString);  // Just the header
         size_t expected = (base_size + num_chars * sizeof(u16) + 7) & ~7;
+        // A String of kStringHashSlotMinUnits units or more has a hash slot word (HEAP_088).
+        if (num_chars >= kStringHashSlotMinUnits) expected += 8;
         RC_ASSERT(getObjectSize(obj) == expected);
     });
 });
@@ -187,6 +189,12 @@ Testing::TestCase testGetObjectSizeStringEdgeCases("getObjectSize handles ElmStr
         hdr->size = 5;
         RC_ASSERT(getObjectSize(obj) == ((sizeof(ElmString) + 5 * sizeof(u16) + 7) & ~7));
         RC_ASSERT(getObjectSize(obj) == 24);  // 8 + 10 = 18, rounded to 24
+
+        // The shortest String with a hash slot word (HEAP_088), and the longest without.
+        hdr->size = 31;
+        RC_ASSERT(getObjectSize(obj) == 72);  // 8 + 62 = 70, rounded to 72
+        hdr->size = 32;
+        RC_ASSERT(getObjectSize(obj) == 80);  // 8 + 64 = 72, plus the slot word
     });
 });
 

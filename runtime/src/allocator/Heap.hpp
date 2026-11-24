@@ -485,7 +485,8 @@ typedef struct {
  * A String stored as UTF-16 code units in the object.
  *
  * `header.size` is the length in UTF-16 units. A String of length 0 is never allocated; the empty
- * String is the Empty constant (HEAP_071).
+ * String is the Empty constant (HEAP_071). A String of at least `kStringHashSlotMinUnits` units has
+ * a hash slot word after its padded units (`flatStringByteSize`, `stringHashSlot`).
  */
 struct ALIGN(8) elm_string {
     Header header; // header.size = length in UTF-16 units.
@@ -497,13 +498,14 @@ typedef struct elm_string ElmString;
  * A String that is a run of the UTF-16 units of another String, shared rather than copied.
  *
  * `header.size` is the length of the run and `offset` its first index in `base`'s units. `base` is
- * the only field a collector traces; `header.unboxed` is 0.
+ * the only field a collector traces; `header.unboxed` is 0. `hashSlot` is the String's hash slot
+ * (`stringHashSlot`).
  */
 struct ALIGN(8) elm_string_slice {
     Header header;
     HPointer base;
     u32 offset;
-    u32 _padding;
+    u32 hashSlot;
 };
 typedef struct elm_string_slice ElmStringSlice;
 
@@ -511,14 +513,16 @@ typedef struct elm_string_slice ElmStringSlice;
  * A String that is the concatenation of two others, `left` then `right`.
  *
  * `header.size` is the total length in UTF-16 units. `left` and `right` are the only fields a
- * collector traces; `header.unboxed` is 0. `height` and `leafCount` are used to keep the tree
- * balanced.
+ * collector traces. `header.unboxed` is the rope's height, 1 + the greater height of `left` and
+ * `right` (a non-rope String has height 0), saturated at `kRopeHeightMax`: nothing bounds the height
+ * of a chain of appends, and nothing decides anything on it. `leafCount` is the leaf count of `left`
+ * plus that of `right`. `hashSlot` is the String's hash slot (`stringHashSlot`).
  */
 struct ALIGN(8) elm_string_rope {
     Header header;
     HPointer left;
     HPointer right;
-    u32 height;     // 1 + the greater height of `left` and `right`; a non-rope String has height 0.
+    u32 hashSlot;
     u32 leafCount;  // The leaf count of `left` plus that of `right`.
 };
 typedef struct elm_string_rope ElmStringRope;
@@ -534,6 +538,8 @@ typedef struct elm_string_rope ElmStringRope;
 struct ALIGN(8) elm_large_string_header {
     Header header;     // header.size = length in UTF-16 units.
     HPointer body;     // The address of the first unit.
+    u32 hashSlot;      // The String's hash slot (`stringHashSlot`).
+    u32 _padding;
 };
 typedef struct elm_large_string_header LargeStringHeader;
 
@@ -546,7 +552,7 @@ struct ALIGN(8) elm_large_byte_header {
     HPointer body;     // The address of the first byte.
 };
 typedef struct elm_large_byte_header LargeByteHeader;
-static_assert(sizeof(LargeStringHeader) == 16, "LargeStringHeader must be 16 bytes");
+static_assert(sizeof(LargeStringHeader) == 24, "LargeStringHeader must be 24 bytes");
 static_assert(sizeof(LargeByteHeader) == 16, "LargeByteHeader must be 16 bytes");
 
 // These accessors are the only code that reads a large body; check-large-body-access.sh rejects
@@ -1022,28 +1028,99 @@ typedef struct elm_bytebuffer ByteBuffer;
  * An all-ASCII String that is a run of the bytes of another object, shared rather than copied.
  *
  * Every byte is below 0x80 and so is one UTF-16 unit, which makes `header.size`, the length in
- * UTF-16 units, equal to `byteLen`. `base` is a `ByteBuffer`, a `LargeByteHeader` (the header
+ * UTF-16 units, also the length in bytes. `base` is a `ByteBuffer`, a `LargeByteHeader` (the header
  * object, never its body) or an `ElmStringUtf8Leaf`, and is the only field a collector traces.
- * Nothing here checks that the bytes are ASCII; the code that makes one must.
+ * Nothing here checks that the bytes are ASCII; the code that makes one must. `hashSlot` is the
+ * String's hash slot (`stringHashSlot`).
  */
 struct ALIGN(8) elm_string_utf8_view {
     Header header;
     HPointer base;
     u32 offset;    // byte offset into base's payload
-    u32 byteLen;   // == header.size
+    u32 hashSlot;
 };
 typedef struct elm_string_utf8_view ElmStringUtf8View;
 static_assert(sizeof(ElmStringUtf8View) == 24, "ElmStringUtf8View must be 24 bytes");
 
 /**
  * An all-ASCII String held in the object, one byte per character, with no terminating nul.
- * `header.size` is both the length in bytes and in UTF-16 units. It holds no HPointers.
+ * `header.size` is both the length in bytes and in UTF-16 units. It holds no HPointers. A leaf of at
+ * least `kStringHashSlotMinUnits` bytes has a hash slot word after its padded bytes
+ * (`flatStringByteSize`, `stringHashSlot`).
  */
 struct ALIGN(8) elm_string_utf8_leaf {
     Header header;  // header.size = byte count == UTF-16 unit count
     u8 bytes[];     // Each below 0x80.
 };
 typedef struct elm_string_utf8_leaf ElmStringUtf8Leaf;
+
+// ============================================================================
+// String hash slots (HEAP_088)
+// ============================================================================
+//
+// A String may cache `stringHash` of its units (design_docs/theory/runtime/value-hash.md) in a 32-bit
+// hash slot: slices, ropes, UTF-8 views and large Strings always have one, in a field; a flat UTF-16
+// String or UTF-8 leaf has one when it is at least `kStringHashSlotMinUnits` long, in a tail word after
+// its padded payload (the slot is that word's low half, and its high half is 0). 0 means not computed.
+// Every allocation writes 0; the value hash fills the slot the first time it hashes the String, with
+// relaxed atomic accesses, and the value depends only on the units, so every writer writes the same
+// number. A collector copies the slot with the object.
+
+// The shortest flat String with a hash slot. Shorter ones hash in a few nanoseconds; a slot would add
+// 8 bytes to each of them (plans/hash-reuse-explicit-vs-cached.md B0).
+constexpr u32 kStringHashSlotMinUnits = 32;
+// The greatest rope height `header.unboxed` holds; greater heights are stored as this.
+constexpr u32 kRopeHeightMax = 63;
+
+// Returns the offset of the tail word of a flat String of `n` units of `unit` bytes each: its header and
+// payload, rounded up to 8.
+constexpr size_t flatStringTailOffset(size_t n, size_t unit) {
+    return (sizeof(Header) + n * unit + 7) & ~static_cast<size_t>(7);
+}
+// Returns the size in bytes of a flat String of `n` units of `unit` bytes each (2 for an `ElmString`, 1
+// for an `ElmStringUtf8Leaf`), hash slot word included when it has one.
+constexpr size_t flatStringByteSize(size_t n, size_t unit) {
+    return flatStringTailOffset(n, unit) + (n >= kStringHashSlotMinUnits ? 8 : 0);
+}
+static_assert(flatStringByteSize(31, 2) == 72 && flatStringByteSize(32, 2) == 80 &&
+              flatStringByteSize(31, 1) == 40 && flatStringByteSize(32, 1) == 48);
+
+// Returns the hash slot of the String object `s`, or null when it has none (a flat String shorter than
+// `kStringHashSlotMinUnits`, or an object that is not a String).
+inline u32* stringHashSlot(void* s) {
+    Header* h = static_cast<Header*>(s);
+    char* p = static_cast<char*>(s);
+    switch (h->tag) {
+        case Tag_String:
+            return h->size >= kStringHashSlotMinUnits
+                ? reinterpret_cast<u32*>(p + flatStringTailOffset(h->size, sizeof(u16))) : nullptr;
+        case Tag_StringUtf8Leaf:
+            return h->size >= kStringHashSlotMinUnits
+                ? reinterpret_cast<u32*>(p + flatStringTailOffset(h->size, sizeof(u8))) : nullptr;
+        case Tag_StringSlice: return &static_cast<ElmStringSlice*>(s)->hashSlot;
+        case Tag_StringRope: return &static_cast<ElmStringRope*>(s)->hashSlot;
+        case Tag_StringUtf8View: return &static_cast<ElmStringUtf8View*>(s)->hashSlot;
+        case Tag_LargeStringHeader: return &static_cast<LargeStringHeader*>(s)->hashSlot;
+        default: return nullptr;
+    }
+}
+
+// Writes 0 to the hash slot of the new String `s`, and the whole tail word of a flat one, whose header
+// must already hold the String's tag and length. Every String allocation calls it (or zeroes the tail word
+// another way, as `initHeaderForTag` does) before the String can be read.
+inline void initStringHashSlot(void* s) {
+    if (u32* slot = stringHashSlot(s)) {
+        const u32 tag = static_cast<Header*>(s)->tag;
+        if (tag == Tag_String || tag == Tag_StringUtf8Leaf) *reinterpret_cast<u64*>(slot) = 0;
+        else *slot = 0;
+    }
+}
+
+// Returns the cached hash of the String `s` (0 when not computed or when `s` has no slot).
+inline u32 loadStringHashSlot(void* s) {
+    u32* slot = stringHashSlot(s);
+    return slot ? __atomic_load_n(slot, __ATOMIC_RELAXED) : 0;
+}
 
 /**
  * An array of Elm values, all of one kind.

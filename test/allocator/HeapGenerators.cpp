@@ -197,9 +197,11 @@ std::vector<void *> allocateHeapGraph(const std::vector<HeapObjectDesc> &nodes) 
                     std::abort();
                 }
 
-                size_t size = sizeof(ElmString) + desc.string_chars.size() * sizeof(u16);
+                size_t size = flatStringByteSize(desc.string_chars.size(), sizeof(u16));
                 obj = alloc.allocate(size, Tag_String);
                 ElmString *elm_string = static_cast<ElmString *>(obj);
+                elm_string->header.size = static_cast<u32>(desc.string_chars.size());
+                initStringHashSlot(elm_string);
                 for (size_t i = 0; i < desc.string_chars.size(); i++) {
                     elm_string->chars[i] = desc.string_chars[i];
                 }
@@ -406,12 +408,13 @@ std::vector<void *> allocateHeapGraphInOldGen(OldGenSpace& oldgen,
                     std::abort();
                 }
 
-                size_t size = sizeof(ElmString) + desc.string_chars.size() * sizeof(u16);
+                size_t size = flatStringByteSize(desc.string_chars.size(), sizeof(u16));
                 obj = allocInOldGen(size, Tag_String);
                 if (!obj) break;
                 ElmString *elm_string = static_cast<ElmString *>(obj);
                 Header* hdr = getHeader(obj);
                 hdr->size = desc.string_chars.size();  // Required for getObjectSize()
+                initStringHashSlot(elm_string);
                 for (size_t i = 0; i < desc.string_chars.size(); i++) {
                     elm_string->chars[i] = desc.string_chars[i];
                 }

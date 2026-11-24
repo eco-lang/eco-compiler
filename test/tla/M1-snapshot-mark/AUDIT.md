@@ -850,3 +850,12 @@ order is added, removed or reordered, and no footprint row changes meaning. The 
 outside every model's abstraction of a slot (a reference to an object). **Verdict: no model change needed.**
 Covered by `test/allocator/TaggedWordGcTest.cpp` (serial, parallel and region minors, tenuring, a major, CAF
 promotion), which failed before the change and passes after.
+
+
+## 2026-11-24 — String hash slots (HEAP_088, plans/hash-reuse-explicit-vs-cached.md Part B)
+
+Pins fired: region `NR.minorGCRegion` (**41a2e6dcdb60**).
+
+Change: the region minor's validate-only eden pre-walk (`#if ECO_HEAP_VALIDATE`) also calls `checkStringHashSlot` on each young object: reads only, in the exclusive pause. Full argument in test/tla/M5-tenuring/AUDIT.md (same date): the hash slot is a non-pointer
+word outside this model's state; no atomic step, lock, shared location of a modelled protocol or memory order
+is added, removed or reordered. **Verdict: no model change needed.**

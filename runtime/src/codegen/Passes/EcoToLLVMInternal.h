@@ -553,6 +553,14 @@ constexpr uint64_t recordByteSize(uint64_t n) {
 constexpr uint64_t customByteSize(uint64_t n) {
     return CustomBaseSize + (n + extWords(n, CustomHdrSlots)) * PtrSize;
 }
+// The shortest flat String with a hash slot word (Heap.hpp `kStringHashSlotMinUnits`, HEAP_088).
+constexpr uint64_t StringHashSlotMinUnits = 32;
+// Returns the size in bytes of a flat UTF-16 String of `n` units: header and units rounded up to 8,
+// and the hash slot word when `n` is at least `StringHashSlotMinUnits` (Heap.hpp
+// `flatStringByteSize(n, 2)`).
+constexpr uint64_t utf16StringByteSize(uint64_t n) {
+    return ((HeaderSize + n * 2 + 7) & ~uint64_t{7}) + (n >= StringHashSlotMinUnits ? PtrSize : 0);
+}
 static_assert(recordByteSize(32) == 16 + 32 * 8 && recordByteSize(33) == 16 + 34 * 8);
 static_assert(customByteSize(24) == 16 + 24 * 8 && customByteSize(60) == 16 + 62 * 8);
 static_assert(extWords(2047, RecordHdrSlots) == 63 && extWords(2040, CustomHdrSlots) == 63);

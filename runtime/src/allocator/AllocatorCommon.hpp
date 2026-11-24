@@ -471,7 +471,7 @@ inline size_t getObjectSizeFromHeader(const Header *hdr) {
             size = sizeof(ElmChar);
             break;
         case Tag_String:
-            size = sizeof(ElmString) + hdr->size * sizeof(u16);
+            size = flatStringByteSize(hdr->size, sizeof(u16));
             break;
         case Tag_StringSlice:
             size = sizeof(ElmStringSlice);
@@ -547,7 +547,7 @@ inline size_t getObjectSizeFromHeader(const Header *hdr) {
             size = sizeof(ElmStringUtf8View);
             break;
         case Tag_StringUtf8Leaf:
-            size = sizeof(ElmStringUtf8Leaf) + hdr->size * sizeof(u8);
+            size = flatStringByteSize(hdr->size, sizeof(u8));
             break;
         default:
             size = sizeof(Header);

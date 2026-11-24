@@ -21,6 +21,7 @@
 // with the claim and publish protocol of MinorWork.hpp deciding which thread copies each object.
 
 #include "NurserySpace.hpp"
+#include "ValueHash.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -782,6 +783,12 @@ void NurserySpace::minorGCRegion(OldGenSpace& oldgen, const StackMapRoots& stack
         if (h->tag > Tag_Forward || sz == 0 || p + sz > bump_.ptr) {
             std::fprintf(stderr, "[heap-validate] eden pre-walk: bad object at %p (tag %u size %zu)\n",
                          (void*)p, (unsigned)h->tag, sz);
+            std::fflush(stderr);
+            std::abort();
+        }
+        if (const char* bad = checkStringHashSlot(p)) {
+            std::fprintf(stderr, "[heap-validate] eden pre-walk: obj=%p tag=%u: %s (HEAP_088)\n",
+                         (void*)p, (unsigned)h->tag, bad);
             std::fflush(stderr);
             std::abort();
         }

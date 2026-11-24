@@ -29,7 +29,7 @@ HPointer makeSlice(HPointer base, u32 offset, u32 len) {
     slc->header.size = len;
     std::memcpy(&slc->base, &roots[0], sizeof(slc->base));
     slc->offset = offset;
-    slc->_padding = 0;
+    slc->hashSlot = 0;
     return Allocator::instance().wrap(slc);
 }
 
@@ -58,14 +58,14 @@ HPointer makeRope(HPointer left, HPointer right) {
         Tag t = alloc::getTag(obj);
         if (t == Tag_StringRope) {
             ElmStringRope* r = static_cast<ElmStringRope*>(obj);
-            return {r->height, r->leafCount};
+            return {static_cast<u32>(r->header.unboxed), r->leafCount};
         }
         return {0, 1};
     };
 
     auto [lh, lc] = heightLeafOf(left);
     auto [rh, rc] = heightLeafOf(right);
-    u32 newHeight = 1 + std::max(lh, rh);
+    u32 newHeight = std::min<u32>(1 + std::max(lh, rh), kRopeHeightMax);
     u32 newLeafCount = lc + rc;
 
     size_t total_size = sizeof(ElmStringRope);
@@ -80,7 +80,8 @@ HPointer makeRope(HPointer left, HPointer right) {
     rope->header.size = leftLen + rightLen;
     std::memcpy(&rope->left,  &roots[0], sizeof(rope->left));
     std::memcpy(&rope->right, &roots[1], sizeof(rope->right));
-    rope->height = newHeight;
+    rope->header.unboxed = newHeight;
+    rope->hashSlot = 0;
     rope->leafCount = newLeafCount;
     return allocator.wrap(rope);
 }
@@ -114,7 +115,7 @@ HPointer makeUtf8View(HPointer base, u32 byteOffset, u32 len) {
     v->header.size = len;
     std::memcpy(&v->base, &roots[0], sizeof(v->base));
     v->offset = byteOffset;
-    v->byteLen = len;
+    v->hashSlot = 0;
     return allocator.wrap(v);
 }
 
@@ -128,7 +129,7 @@ HPointer makeUtf8LeafFromBytes(const u8* bytes, u32 len) {
         return alloc::allocString(wide.data(), len);
     }
 
-    size_t total_size = (sizeof(ElmStringUtf8Leaf) + len + 7) & ~7;
+    size_t total_size = flatStringByteSize(len, sizeof(u8));
     if (total_size >= allocator.getLargeObjectThreshold()) {
         // There is no large UTF-8 form, so this becomes a large UTF-16 String. `bytes` is copied
         // into `wide` before the allocation, so a collection cannot invalidate it.
@@ -155,6 +156,7 @@ HPointer makeUtf8LeafFromBytes(const u8* bytes, u32 len) {
     void* obj = eco_alloc_with_roots(Tag_StringUtf8Leaf, total_size, nullptr, 0, 0);
     ElmStringUtf8Leaf* leaf = static_cast<ElmStringUtf8Leaf*>(obj);
     leaf->header.size = len;
+    initStringHashSlot(leaf);
     std::memcpy(leaf->bytes, src, len);
 #if ECO_HEAP_VALIDATE
     for (u32 i = 0; i < len; ++i)
@@ -171,7 +173,7 @@ bool tryMakeAsciiString(const char* data, size_t len, HPointer* out) {
     if (len == 0 || len > 0xFFFFFFFFull) return false;
     const u8* bytes = reinterpret_cast<const u8*>(data);
     if (!Utf8::allAscii(bytes, len)) return false;
-    size_t leafSize = (sizeof(ElmStringUtf8Leaf) + len + 7) & ~static_cast<size_t>(7);
+    size_t leafSize = flatStringByteSize(len, sizeof(u8));
     if (leafSize < allocator.getLargeObjectThreshold()) {
         *out = makeUtf8LeafFromBytes(bytes, static_cast<u32>(len));
         return true;
@@ -187,11 +189,12 @@ AsciiOut allocAsciiOut(size_t len) {
     // A zero-length leaf would be a header-only 8-byte object (HEAP_071).
     assert(len > 0 && "allocAsciiOut: empty strings are the Empty constant");
     auto& allocator = Allocator::instance();
-    size_t leafSize = (sizeof(ElmStringUtf8Leaf) + len + 7) & ~static_cast<size_t>(7);
+    size_t leafSize = flatStringByteSize(len, sizeof(u8));
     if (leafSize < allocator.getLargeObjectThreshold()) {
         ElmStringUtf8Leaf* leaf = static_cast<ElmStringUtf8Leaf*>(
             eco_alloc_with_roots(Tag_StringUtf8Leaf, leafSize, nullptr, 0, 0));
         leaf->header.size = static_cast<u32>(len);
+        initStringHashSlot(leaf);
         return AsciiOut{allocator.wrap(leaf), leaf->bytes, static_cast<u32>(len), true};
     }
     // At or above the threshold, allocByteBufferBlank makes large Bytes, whose body is pinned.
@@ -540,9 +543,7 @@ HPointer concat(HPointer stringList) {
             return finishAsciiOut(out);
         }
 
-        size_t data_size = total_len * sizeof(u16);
-        size_t total_size = sizeof(ElmString) + data_size;
-        total_size = (total_size + 7) & ~7;
+        size_t total_size = flatStringByteSize(total_len, sizeof(u16));
 
         uint64_t roots[1];
         std::memcpy(&roots[0], &stringList, sizeof(stringList));
@@ -550,6 +551,7 @@ HPointer concat(HPointer stringList) {
             eco_alloc_with_roots(Tag_String, total_size, roots, 1, 0x1));
         std::memcpy(&stringList, &roots[0], sizeof(stringList));
         result->header.size = static_cast<u32>(total_len);
+        initStringHashSlot(result);
 
         size_t offset = 0;
         for (alloc::ListCursor lc(stringList); !lc.done(); lc.next()) {
@@ -640,9 +642,7 @@ HPointer join(void* sep, HPointer stringList) {
             return finishAsciiOut(out);
         }
 
-        size_t data_size = total_len * sizeof(u16);
-        size_t total_size = sizeof(ElmString) + data_size;
-        total_size = (total_size + 7) & ~7;
+        size_t total_size = flatStringByteSize(total_len, sizeof(u16));
 
         uint64_t roots[2];
         std::memcpy(&roots[0], &stringList, sizeof(stringList));
@@ -652,6 +652,7 @@ HPointer join(void* sep, HPointer stringList) {
         std::memcpy(&stringList, &roots[0], sizeof(stringList));
         std::memcpy(&sepHp, &roots[1], sizeof(sepHp));
         result->header.size = static_cast<u32>(total_len);
+        initStringHashSlot(result);
 
         size_t offset = 0;
         bool first = true;

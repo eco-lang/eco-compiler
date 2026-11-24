@@ -406,9 +406,7 @@ inline HPointer allocString(const u16* chars, size_t length) {
 
     auto& allocator = Allocator::instance();
     size_t data_size = length * sizeof(u16);
-    size_t total_size = sizeof(ElmString) + data_size;
-    // Round up to 8-byte alignment
-    total_size = (total_size + 7) & ~7;
+    size_t total_size = flatStringByteSize(length, sizeof(u16));
 
     // Recorded before the large/leaf split so each call counts once whichever path it takes.
     GC_STATS_STRING_RECORD_ALLOC(total_size);
@@ -420,6 +418,7 @@ inline HPointer allocString(const u16* chars, size_t length) {
     ElmString* str = static_cast<ElmString*>(
         eco_alloc_with_roots(Tag_String, total_size, nullptr, 0, 0));
     str->header.size = static_cast<u32>(length);
+    initStringHashSlot(str);
     std::memcpy(str->chars, chars, data_size);
 
     return allocator.wrap(str);
@@ -452,9 +451,7 @@ inline BlankString allocStringBlank(size_t length) {
     }
 
     auto& allocator = Allocator::instance();
-    size_t data_size = length * sizeof(u16);
-    size_t total_size = sizeof(ElmString) + data_size;
-    total_size = (total_size + 7) & ~7;
+    size_t total_size = flatStringByteSize(length, sizeof(u16));
 
     GC_STATS_STRING_RECORD_ALLOC(total_size);
 
@@ -469,6 +466,7 @@ inline BlankString allocStringBlank(size_t length) {
     ElmString* str = static_cast<ElmString*>(
         eco_alloc_with_roots(Tag_String, total_size, nullptr, 0, 0));
     str->header.size = static_cast<u32>(length);
+    initStringHashSlot(str);
     HPointer hp = allocator.wrap(str);
     return BlankString{hp, str->chars, static_cast<u32>(length)};
 }

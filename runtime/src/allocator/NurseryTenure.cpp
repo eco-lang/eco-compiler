@@ -62,6 +62,24 @@ namespace {
     std::abort();
 }
 
+// Copies the `size`-byte object at `obj` to `dst` while the mutator may be running. Every field is frozen
+// (HEAP_SNAPSHOT_001) except a String's hash slot, which the mutator may fill at any time (HEAP_088): that
+// word is read with a relaxed atomic load, so the copy holds 0 or the final hash, never a torn value, and
+// the race is not a data race. A fill the copy misses only costs a recomputation.
+inline void copyObjectForTenure(char* dst, const void* obj, size_t size) {
+    const u32* slot = stringHashSlot(const_cast<void*>(obj));
+    if (slot == nullptr) {
+        std::memcpy(dst, obj, size);
+        return;
+    }
+    const char* src = static_cast<const char*>(obj);
+    const size_t at = reinterpret_cast<const char*>(slot) - src;
+    std::memcpy(dst, src, at);
+    const u32 v = __atomic_load_n(slot, __ATOMIC_RELAXED);
+    std::memcpy(dst + at, &v, sizeof v);
+    std::memcpy(dst + at + sizeof v, src + at + sizeof v, size - at - sizeof v);
+}
+
 // Returns the steady clock's time in nanoseconds.
 inline uint64_t nowNs() {
     return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
@@ -111,7 +129,7 @@ struct NurserySpace::TenureHeapEnv {
     void* copy(const void* obj, size_t size) {
         const size_t cls = OldGenSpace::sizeClass(size);
         char* dst = static_cast<char*>(og.grantAllocate(J.grant, cls, size));
-        std::memcpy(dst, obj, size);
+        copyObjectForTenure(dst, obj, size);
         Header* h = getHeader(dst);
         // As in any promotion, only the age and colour of the copy change.
         h->age = 0;
@@ -1090,7 +1108,7 @@ struct NurserySpace::TenureParEnv {
             ? static_cast<char*>(og.allocatePromotion(ctx->w[w.index], size, /*per_alloc_sweep=*/false))
             : static_cast<char*>(og.grantAllocateShared(J.grant, mcs[w.index], OldGenSpace::sizeClass(size), size));
         if (dst == nullptr) tenureFatal("old-gen allocation failed in the parallel tenure engine", obj, nullptr, size);
-        std::memcpy(dst, obj, size);
+        copyObjectForTenure(dst, obj, size);
         Header* h = getHeader(dst);
         h->age = 0;
         h->color = static_cast<u32>(Color::White);

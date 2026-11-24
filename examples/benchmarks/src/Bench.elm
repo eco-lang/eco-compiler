@@ -256,6 +256,8 @@ ecoOnlyWorkloads =
     , Workload "seqdict-prefixkey-fresh" "the same, each lookup key freshly built" SeqLargeKeys.benchPrefixKeyFresh 20000 Nothing
     , Workload "seqdict-collide" "size 4,200-character keys differing only after unit 4,096, past a prefix-only String hash" SeqLargeKeys.benchCollide 1500 Nothing
     , Workload "seqdict-multi-lookup" "size type-tree keys, each looked up in three dicts and then got-or-inserted: one key, several operations per function" SeqLargeKeys.benchMultiLookup 40000 Nothing
+    , Workload "seqset-prefixkey-rounds" "size 500-character keys sharing all but their last 6 in a SeqSet, member-tested 32 times over" SeqLargeKeys.benchSetPrefixRounds 15000 Nothing
+    , Workload "string-eq-hashed" "string-eq-prefix's work after every key was hashed once with Hash.hash: == can answer False from cached String hashes" SeqLargeKeys.benchEqHashed 400 Nothing
     ]
 
 

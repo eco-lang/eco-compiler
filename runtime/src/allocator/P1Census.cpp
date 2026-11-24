@@ -199,6 +199,29 @@ inline uint64_t loadWord(const char* obj, size_t i) {
     return w;
 }
 
+// The word of an object that holds a String's hash slot, and the bits of the slot in it. The slot may be
+// filled after the object survived a collection (HEAP_088), so the census ignores it.
+struct SlotMask {
+    size_t word = SIZE_MAX;
+    uint64_t bits = 0;
+};
+
+inline SlotMask slotMask(const char* obj) {
+    SlotMask m;
+    if (const u32* slot = stringHashSlot(const_cast<char*>(obj))) {
+        const size_t at = reinterpret_cast<const char*>(slot) - obj;
+        m.word = at / 8;
+        m.bits = uint64_t{0xFFFFFFFF} << (8 * (at % 8));
+    }
+    return m;
+}
+
+// Returns word `i` of `obj` as `loadWord` does, with the hash slot bits of `m` cleared.
+inline uint64_t loadWordMasked(const char* obj, size_t i, const SlotMask& m) {
+    const uint64_t w = loadWord(obj, i);
+    return i == m.word ? (w & ~m.bits) : w;
+}
+
 // Returns whether `p` is in the sample of one address in `s`, `s` being a
 // power of two; every address is when `s` is at most 1.
 inline bool sampled(const void* p, uint32_t s) {
@@ -366,7 +389,8 @@ uint32_t every() { return census().every; }
 uint64_t hashObject(const char* obj, size_t size) {
     uint64_t h = 0xcbf29ce484222325ull ^ size;
     const size_t n = size / 8;
-    for (size_t i = 0; i < n; ++i) h = mix(h, loadWord(obj, i));
+    const SlotMask m = slotMask(obj);
+    for (size_t i = 0; i < n; ++i) h = mix(h, loadWordMasked(obj, i, m));
     return h;
 }
 
@@ -375,8 +399,9 @@ uint64_t wordSignature(const char* obj, size_t size) {
     // word 1 time in 256).
     uint64_t sig = 0;
     const size_t n = std::min<size_t>(size / 8, 8);
+    const SlotMask m = slotMask(obj);
     for (size_t i = 0; i < n; ++i) {
-        const uint64_t hw = mix(0x51ED270B27B1A3C5ull + i, loadWord(obj, i));
+        const uint64_t hw = mix(0x51ED270B27B1A3C5ull + i, loadWordMasked(obj, i, m));
         sig |= (hw & 0xFF) << (8 * i);
     }
     return sig;

@@ -68,6 +68,13 @@ static_assert(eco::detail::value_enc::NullCons == Elm::Const_NullCons,
 // 32 KiB, EcoGCPrepare's `GroupLargeObjectThreshold`.
 static_assert(eco::detail::layout::CustomHdrSlots == Elm::CUSTOM_HDR_SLOTS);
 static_assert(eco::detail::layout::RecordHdrSlots == Elm::RECORD_HDR_SLOTS);
+// The flat String size, hash slot word included (HEAP_088).
+static_assert(eco::detail::layout::StringHashSlotMinUnits == Elm::kStringHashSlotMinUnits);
+static_assert(eco::detail::layout::utf16StringByteSize(1) == Elm::flatStringByteSize(1, 2) &&
+              eco::detail::layout::utf16StringByteSize(31) == Elm::flatStringByteSize(31, 2) &&
+              eco::detail::layout::utf16StringByteSize(32) == Elm::flatStringByteSize(32, 2) &&
+              eco::detail::layout::utf16StringByteSize(33) == Elm::flatStringByteSize(33, 2) &&
+              eco::detail::layout::utf16StringByteSize(1000) == Elm::flatStringByteSize(1000, 2));
 static_assert(eco::detail::layout::SlotsPerExtWord == Elm::SLOTS_PER_EXT_WORD);
 static_assert(eco::detail::layout::recordByteSize(Elm::RECORD_MAX_FIELDS) < 32 * 1024,
               "wide records must stay below GroupLargeObjectThreshold (young, no barrier needed)");
@@ -169,12 +176,8 @@ static Value emitInlinePrimLoad(Value hptr, int64_t offsetBytes, Type primTy,
 // known here, including a box of a Bool. It must agree byte for byte with `getFixedAllocSizeForGrouping` in
 // EcoGCPrepare.cpp, which sizes the same groups; the two are separate copies.
 static int64_t computeAllocSize(Operation *op) {
-    constexpr int64_t HeaderSize = 8; // Bytes in an object header.
-
-    if (auto allocStr = dyn_cast<eco::AllocateStringOp>(op)) {
-        int64_t size = HeaderSize + allocStr.getLength() * 2;
-        return (size + 7) & ~7;
-    }
+    if (auto allocStr = dyn_cast<eco::AllocateStringOp>(op))
+        return static_cast<int64_t>(layout::utf16StringByteSize(allocStr.getLength()));
     if (isa<eco::ListConstructOp>(op)) return 24;
     if (isa<eco::Tuple2ConstructOp>(op)) return 24;
     if (isa<eco::Tuple3ConstructOp>(op)) return 32;

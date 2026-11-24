@@ -102,12 +102,8 @@ static bool hasFixedAllocSize(Operation *op) {
 // The values must agree with `computeAllocSize` in EcoToLLVMHeap.cpp, which the group lowering
 // uses to size the region.
 static int64_t getFixedAllocSizeForGrouping(Operation *op) {
-    constexpr int64_t HeaderSize = 8;
-
-    if (auto allocStr = dyn_cast<eco::AllocateStringOp>(op)) {
-        int64_t size = HeaderSize + allocStr.getLength() * 2;
-        return (size + 7) & ~7;
-    }
+    if (auto allocStr = dyn_cast<eco::AllocateStringOp>(op))
+        return static_cast<int64_t>(eco::detail::layout::utf16StringByteSize(allocStr.getLength()));
     if (isa<eco::ListConstructOp>(op)) return 24;
     if (isa<eco::Tuple2ConstructOp>(op)) return 24;
     if (isa<eco::Tuple3ConstructOp>(op)) return 32;

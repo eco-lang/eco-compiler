@@ -9,6 +9,7 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "ValueHash.hpp"
 #include "RuntimeExports.h"
 #include "Allocator.hpp"
 #include "Heap.hpp"
@@ -642,8 +643,7 @@ extern "C" HPtr eco_alloc_string(uint32_t length) {
     // A header-only heap String would also compare unequal to "".
     if (length == 0) return HPtr::fromHPointer(alloc::emptyString());
 
-    size_t size = sizeof(Header) + length * sizeof(u16);
-    size = (size + 7) & ~7;
+    size_t size = flatStringByteSize(length, sizeof(u16));
 
     void* obj = eco_alloc_with_roots(Tag_String, size, nullptr, 0, 0);
     if (!obj) return HPtr::fromBits(0);
@@ -652,6 +652,7 @@ extern "C" HPtr eco_alloc_string(uint32_t length) {
     // `length` whenever `length` is not a multiple of 4.
     ElmString* str = static_cast<ElmString*>(obj);
     str->header.size = length;
+    initStringHashSlot(str);
     return ptrToHPointer(obj);
 }
 
@@ -755,6 +756,12 @@ inline void* allocInternObject(Elm::Tag tag, size_t size) {
     return Allocator::instance().allocatePermanent(size, tag);
 }
 
+// Stores the hash of the new literal String `s` in its hash slot, if it has one, before the literal is
+// published (HEAP_088): literals are hashed often (as keys and nested in keys) and live for the whole run.
+inline void fillLiteralHashSlot(void* s) {
+    if (u32* slot = stringHashSlot(s)) __atomic_store_n(slot, stringHashUncached(s), __ATOMIC_RELAXED);
+}
+
 // Returns the word interned on the calling thread for `key`, calling `alloc` to build it on a miss.
 //
 // `alloc` must return the new object's HPointer word. A result that is neither an embedded constant nor
@@ -791,13 +798,14 @@ inline HPtr internLiteral(const void* key, AllocFn&& alloc) {
 
 extern "C" HPtr eco_alloc_string_literal(const uint16_t* chars, uint32_t length) {
     return internLiteral(chars, [&]() -> HPtr {
-        size_t size = sizeof(Header) + length * sizeof(u16);
-        size = (size + 7) & ~7;
+        size_t size = flatStringByteSize(length, sizeof(u16));
         void* obj = allocInternObject(Tag_String, size);
         if (!obj) return HPtr::fromBits(0);
         ElmString* str = static_cast<ElmString*>(obj);
         str->header.size = length;
+        initStringHashSlot(str);
         std::memcpy(str->chars, chars, length * sizeof(u16));
+        fillLiteralHashSlot(str);
         return ptrToHPointer(obj);
     });
 }
@@ -806,24 +814,26 @@ extern "C" HPtr eco_alloc_string_literal_utf8(const uint8_t* bytes,
                                               uint32_t byteLen) {
     return internLiteral(bytes, [&]() -> HPtr {
         if (!Allocator::instance().getConfig().utf8_strings_enabled) {
-            size_t size = sizeof(Header) + byteLen * sizeof(u16);
-            size = (size + 7) & ~7;
+            size_t size = flatStringByteSize(byteLen, sizeof(u16));
             void* obj = allocInternObject(Tag_String, size);
             if (!obj) return HPtr::fromBits(0);
             ElmString* str = static_cast<ElmString*>(obj);
             str->header.size = byteLen;
+            initStringHashSlot(str);
             for (uint32_t i = 0; i < byteLen; ++i)
                 str->chars[i] = static_cast<u16>(bytes[i]);
+            fillLiteralHashSlot(str);
             return ptrToHPointer(obj);
         }
-        size_t size = sizeof(ElmStringUtf8Leaf) + byteLen * sizeof(u8);
-        size = (size + 7) & ~7;
+        size_t size = flatStringByteSize(byteLen, sizeof(u8));
         void* obj =
             allocInternObject(Tag_StringUtf8Leaf, size);
         if (!obj) return HPtr::fromBits(0);
         ElmStringUtf8Leaf* leaf = static_cast<ElmStringUtf8Leaf*>(obj);
         leaf->header.size = byteLen;
+        initStringHashSlot(leaf);
         std::memcpy(leaf->bytes, bytes, byteLen);
+        fillLiteralHashSlot(leaf);
         return ptrToHPointer(obj);
     });
 }
@@ -1743,8 +1753,7 @@ extern "C" HPtr eco_alloc_record_slow(uint32_t field_count, uint64_t unboxed_bit
 }
 
 extern "C" HPtr eco_alloc_string_fast(uint32_t length) {
-    size_t size = sizeof(Header) + length * sizeof(u16);
-    size = (size + 7) & ~7;
+    size_t size = flatStringByteSize(length, sizeof(u16));
     void* obj = Allocator::instance().allocateFast(size);
     if (!obj) return HPtr::fromBits(0);
 
@@ -1752,18 +1761,19 @@ extern "C" HPtr eco_alloc_string_fast(uint32_t length) {
     zeroNewObject(hdr, size);
     hdr->tag = Tag_String;
     hdr->size = length;
+    initStringHashSlot(obj);
 
     return ptrToHPointer(obj);
 }
 
 extern "C" HPtr eco_alloc_string_slow(uint32_t length) {
-    size_t size = sizeof(Header) + length * sizeof(u16);
-    size = (size + 7) & ~7;
+    size_t size = flatStringByteSize(length, sizeof(u16));
     void* obj = Allocator::instance().allocateSlow(size, Tag_String);
     if (!obj) return HPtr::fromBits(0);
 
     ElmString* str = static_cast<ElmString*>(obj);
     str->header.size = length;
+    initStringHashSlot(str);
 
     return ptrToHPointer(obj);
 }
@@ -2053,9 +2063,10 @@ extern "C" HPtr eco_init_custom_at(void* obj, uint32_t ctor_id, uint32_t field_c
 
 extern "C" HPtr eco_init_string_at(void* obj, uint32_t length) {
     Header* hdr = getHeader(obj);
-    zeroNewObject(hdr, (sizeof(Header) + length * sizeof(u16) + 7) & ~size_t{7});
+    zeroNewObject(hdr, flatStringByteSize(length, sizeof(u16)));
     hdr->tag = Tag_String;
     hdr->size = length;
+    initStringHashSlot(obj);
     return ptrToHPointer(obj);
 }
 

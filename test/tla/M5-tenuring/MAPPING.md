@@ -119,7 +119,7 @@ Functions are named too, because lines drift. Abbreviations: `TW` = `TenureWork.
 
 | Row | Location | Model |
 |---|---|---|
-| T1 | tenuring objects `[base, surv_top)` | `heap` S cells of `job.x`: read by the collector (`E_Item`, `E_Copy`), written by nobody while the job runs (P1) |
+| T1 | tenuring objects `[base, surv_top)` | `heap` S cells of `job.x`: read by the collector (`E_Item`, `E_Copy`), written by nobody while the job runs (P1), except a String's hash slot, a non-pointer word the mutator may fill with a relaxed atomic store and the copy reads with a relaxed atomic load (HEAP_088; outside the model's state) |
 | T2 | heal slots `*heal[i]` in Fresh objects and generation YLOS | `heap[jheal[·]]`: read by the collector (`E_Item`), written only in `J_Merge`; `HealYoungOnly` |
 | T3 | generation-YLOS objects, `reached[]` | Y cells and `ys` (pause), `jreached` (job-private); read-only in the job (`E_Item` scanYlos); promoted and resolved in `J_Merge` |
 | T4 | the tenuring extent's shadow | `shadow[job.x]`: `E_Load`, `E_Claim`, `E_Pub`; read by the pause after the join (`MN_Classify` resolve, `J_Merge`, `Redir`) |

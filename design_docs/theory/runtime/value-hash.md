@@ -94,6 +94,20 @@ The padding is told apart from real zero units by `n`. A String costs time linea
 implementation streams the String's contiguous segments (`forEachSegmentEx`) through a 32-unit
 buffer, widening UTF-8 bytes four at a time, so every form gives the same number.
 
+## Cached String hashes (HEAP_088)
+
+`stringHash(s)` is cached in the String: slices, ropes, UTF-8 views and large Strings have a 32-bit
+hash slot in a field, and a flat UTF-16 String or UTF-8 leaf has one in a tail word when it is at least
+`kStringHashSlotMinUnits` = 32 units long (shorter ones hash in a few nanoseconds, and a slot would add
+8 bytes to each). The slot holds `stringHash(s)`, never 0, or 0 when not yet computed. The walker's
+String step (`mix(kString); mix(stringHash(s))`, and so `eco_hash_string`, `eco_hash_mix_string`, the
+typed chains' String fields and nested Strings) reads a filled slot instead of the units and fills an
+empty one; literals of 32+ units are filled when they are interned. A hash is therefore computed once per
+String object, however often and in however many dicts or keys it is used. The numbers are unchanged: the
+slot only caches them. `StringOps::equal` also answers False for two Strings whose slots are filled and
+differ. Filling the slot is a write after publication that HEAP_088 allows as an exception to P1
+(HEAP_SNAPSHOT_001): see that row for the concurrency argument and the validate-build checks.
+
 ## One hash per key per function
 
 Natively, the eco/system SeqDict and SeqSet wrappers that hash their key (`get`, `member`,

@@ -1,6 +1,7 @@
 ---
-status: not-started
+status: partial
 updated: 2026-11-24
+remaining: "Part A on branch hash-explicit (not gated); Part B implemented on hash-cache (B0-B4; B5 v4 skipped, B6 not done, B8 not done); owed: full gate and the full ECO_HEAP_VALIDATE gate (B7: only targeted validate tests run), compiler self-build cost check, A-vs-B choice (USER)"
 ---
 
 # Hash reuse: explicit `Hashed` keys against a transparent String hash cache
@@ -406,14 +407,16 @@ overridden (`compiler/kernel-overrides/SeqDictEquality.js`), but that does not i
     `c600662`, `c5330492`, `c11005860` (SeqDictCollisionTest), `( String, Int )` tuples, records
     with a String field, and a custom-type tree. Build dict P with the plain operations and dict H
     with the twins (`insertHashed`, `removeHashed` of every 3rd key, `updateHashed` and
-    `updateIfExistsHashed` on every 5th). Print `P == H` (`ECO_SEQDICT_VALIDATE=1` validates both
-    operands of `==`, including that each entry sits under its hash's path, T1) and
-    `SeqDict.toList P == SeqDict.toList H`. Print the results of `getHashed`/`memberHashed` for
-    present and absent keys against `get`/`member`.
+    `updateIfExistsHashed` on every 5th). Print `P == H` and `SeqDict.toList P == SeqDict.toList H`.
+    `ECO_SEQDICT_VALIDATE=1` validates both operands of `==`, but its T1 only checks that each
+    entry sits under its **stored** hash's path, not that the stored hash is `FNV.hash key`. A
+    consistently wrong hash passes it and passes `==` (the negative control showed this). So the
+    lookups must cross over: for present and absent keys, plain `get`/`member` of H and
+    `getHashed`/`memberHashed` of P must agree with plain lookups of P.
   - The same for SeqSet.
   - `Hash.hashOf (Hash.hashed x) == Hash.hash x` for every key; `Hash.value (Hash.hashed x) == x`.
   - **Negative control** (run once by hand, not committed): make `hashed` store `hash v + 1`.
-    The test must fail (validator T1 abort or a mismatch). Record the outcome in §7.
+    The test must fail on every line (the cross lookups). Record the outcome in §7.
   - Run natively: `cmake --build build --target test`, then
     `./build/test/test --filter SeqDictHashed 2>&1 | tee /tmp/test_output.txt`. On JS:
     `TEST_FILTER=SeqDictHashed cmake --build build --target run-js-e2e 2>&1 | tee /tmp/test_output.txt`.
@@ -697,3 +700,131 @@ choice between them is the user's: the table states both gains and both costs si
 ## 7. Progress log
 
 - **2026-11-24 Reviewed and lowered** (§0). Plan otherwise not started; base not yet committed.
+- **2026-11-24 Part A implemented** (user request; in the working tree, no branch: the user manages
+  branches). `Hash.elm`: `Hashed`, `hashed`, `value`, `hashOf`. `SeqDict.elm`: `getHashed`,
+  `memberHashed`, `insertHashed`, `removeHashed`, `updateHashed`, `updateIfExistsHashed` (copies
+  of the plain bodies; plain functions unchanged). `SeqSet.elm`: `memberHashed`, `insertHashed`,
+  `removeHashed`. `InlineSimplify.defaultWhitelist`: the seven twins of the whitelisted wrappers.
+  `system-kernel-cpp/docs.json` regenerated (`eco-system-docs`, stock elm type-checks the package).
+  Benchmarks: SeqLargeKeys.elm `benchPrefixKeyHashed`, `benchLongKeyReuseHashed`,
+  `benchInternHashed`, `benchSetPrefixRounds` (15,000 keys; 5,000 ran in 12 ms) and
+  `benchSetPrefixRoundsHashed`, registered in Bench.elm; README paragraph.
+  - **Tests.** New `test/eco-system/src/SeqDictHashedTest.elm`: native 1/1, with all 14
+    eco-system Seq* and 4 Hash* tests green; JS (`run-js-e2e`, filter SeqDict,SeqSet,Hash) 16 pass,
+    2 skipped (HashIdentity*: JS numbers differ, by design); compiler `elm-test-rs --filter
+    whitelist` 7/7. Caches wiped first (`build/test/*/eco-stuff`, `~/.eco/0.2.0` package `.dat`
+    artifacts; the `eco/kernel` and `eco/system` package copies moved to the session scratchpad).
+  - **Negative control** (`hashed` stores `hash v + 1`, by hand, reverted, file diffed against a
+    copy): the first version of the test failed only on its `hash:` line. `P == H` and twin-vs-twin
+    lookups passed, because `ECO_SEQDICT_VALIDATE`'s T1 checks an entry against its *stored* hash,
+    not against `FNV.hash key` (A3 text corrected). Cross lookups added (plain lookups of the
+    twin-built dict, twin lookups of the plain-built dict); with them every line fails under the
+    control, and the real code passes.
+  - **Benchmarks**, whole suite, warmup 1 / runs 5 like the reference
+    (`local-dev/hashreuse/post-part-a-bench.json` against `local-dev/post-hash-inline-bench.json`;
+    `local-dev/hashreuse/compare.py`). All 113 ok. Native ms (JS ms):
+
+    | workload | reference | plain now | `-hashed` | hashed vs plain |
+    |---|--:|--:|--:|--:|
+    | seqdict-prefixkey | 135 (556) | 135 (559) | 56 (197) | −58.5 % (−64.8 %) |
+    | seqset-prefixkey-rounds | – | 184 (745) | 48 (192) | −73.9 % (−74.2 %) |
+    | seqdict-longkey-reuse | 294 (823) | 289 (822) | 265 (761) | −8.3 % (−7.4 %) |
+    | seqdict-intern (control) | 315 (1,302) | 315 (1,320) | 320 (1,227) | +1.6 % (−7.0 %) |
+
+    Peak RSS unchanged (prefixkey 610 → 611 MiB, longkey-reuse 377 → 384). Suite geometric mean
+    vs the reference: native 1.002, JS 1.000 (non-Seq/String workloads 1.002 both). The gains are
+    far above §1.1's estimate (−27 % ceiling on seqdict-prefixkey). Likely reason (not profiled):
+    the estimate used cache-hot hash cost (255 ns per 2,000 units), but the 40,000 keys (~80 MB)
+    are read from DRAM at every plain lookup; with a `Hashed` key a hit compares the key with
+    itself (same object), so a lookup reads no key bytes at all.
+  - **A/B confirmation** of native moves > 5 % (`ab-interleave.sh`, 5 alternations of
+    `bench-base`, built from a scratch copy of the sources with Part A removed, and
+    `bench-parta`; `local-dev/hashreuse/ab-results.txt`): seqdict-update +3.3 %, seqdict-custom
+    −2.1 %, seqdict-tuple +1.3 %, string-eq-prefix 0, set-float-pairs −1.6 %, seqdict-string 0,
+    plain seqdict-prefixkey −1.5 %, seqdict-longkey-reuse −1.0 %, seqdict-intern −0.9 %: noise.
+    **fib +16.0 % and dict-char-pairs +6.9 % are stable but are layout:** `Fib_fib`'s machine
+    code is instruction-identical in both binaries, and only its address moved (offset 32 → 0
+    within a 64-byte line). dict-char-pairs (elm/core `Dict`, untouched code) is presumed the
+    same (not disassembled). Part A changes no plain workload's code.
+  - **Not done:** full gate (owed before the USER commit); compiler self-build (Part A cannot
+    change it: the compiler uses no SeqDict); A0 profile; A5 docs; the ecosyskernel stubs (USER).
+- **2026-11-24 Part B implemented** (branch `hash-cache`, user request; base = the user's branch point,
+  with step M's seqset-prefixkey-rounds restored from local-dev/hashreuse/stepM and the Part A log above
+  restored from local-dev/hashreuse/plan-after-part-a.md).
+  - **B0 decisions.** T = 32 (`kStringHashSlotMinUnits`): `local-dev/hashreuse/b0/t.cpp` (v3 as in
+    ValueHash.cpp, UTF-8 leaf path) gives hash 10-31 ns at 8-190 units, a slot hit 0.5 ns, a first hash
+    plus fill +0.2-0.3 ns over a plain hash. Every length pays on CPU, so T is a memory choice: below
+    32 units the +8 bytes would be +20-33 % of the object. **v4 / composition (B5) not built:** it
+    pays only when both sides of a `++` were already hashed, which no suite workload does
+    (seqdict-prefixkey-fresh concatenates a never-hashed prefix), against a hash-definition change
+    (new pins, new colliding keys, a linear hash's quality risk). B6 (eager hashing) not built.
+  - **B1 layout.** Heap.hpp: `hashSlot` replaces slice `_padding`, view `byteLen` (its one reader uses
+    `header.size`) and rope `height` (now `header.unboxed`, saturated at `kRopeHeightMax` = 63:
+    nothing bounds a chain's height and nothing decides on it, §0 item 6); `LargeStringHeader` 16 ->
+    24 bytes; flat Strings of 32+ units get a tail word (`flatStringByteSize`, `stringHashSlot`,
+    `initStringHashSlot`, `loadStringHashSlot`). Sizes: AllocatorCommon `getObjectSizeFromHeader`,
+    HeapHelpers `allocString`/`allocStringBlank`, StringOps (utf8 leaf builders, `concat`, `join`),
+    RuntimeExports (`eco_alloc_string`, literals, `_fast`, `_slow`, `eco_init_string_at`), BytesExports
+    `read_string`; codegen `layout::utf16StringByteSize` (EcoToLLVMInternal.h, static_assert-tied to
+    Heap.hpp in EcoToLLVMHeap.cpp) for `computeAllocSize` and `getFixedAllocSizeForGrouping`. Zeroing:
+    `initStringHashSlot` at every route, plus `initHeaderForTag` zeroes a flat String's last word as a
+    catch-all (every runtime route except `_fast` and `eco_init_string_at` passes through it). No
+    kernel shrinks a String in place (checked).
+  - **B2 fill.** `Hasher::string` (ValueHash.cpp) reads/fills the slot with relaxed atomics (census
+    gains "served by hash slot"); `Elm::stringHashUncached`, `Elm::checkStringHashSlot` exported.
+    `copyObjectForTenure` in both tenure engines (NurseryTenure.cpp). P1Census `hashObject` and
+    `wordSignature` mask the slot (both detectors use them). Validate pre-walks (NurserySpace,
+    NurseryRegion) call `checkStringHashSlot`. Invariants: new HEAP_088; HEAP_SNAPSHOT_001 and HEAP_036
+    amended; Ops.td `[Pure]` notes; value-hash.md "Cached String hashes".
+  - **B3** literals of 32+ units filled at intern (`fillLiteralHashSlot`). **B4** `StringOps::equal`
+    returns False on two filled, different slots (only for 32+ units).
+  - **Paperwork.** Kernel license: BytesExports.cpp pins 26 Elm.Bytes kernels; re-audit lines added
+    (the change is inside `read_string`'s body only) and `check-kernel-license-manifest.sh --update`.
+    TLA canary (NR.minorGCRegion, NT.TenureHeapEnv, NT.TenureParEnv): AUDIT.md entries in M1, M2, M3,
+    M5, M7 and test/genmc (W5); verdict no model change (the slot is a non-pointer word outside every
+    model's state); M5 MAPPING.md T1 row amended; manifest re-pinned.
+  - **Tests.** New `test/allocator/StringHashSlotTest.cpp` (7 tests: every route zeroes the slot in a
+    nursery dirtied with filled slots; fill/hit/forms/nested; minor and major GC keep it; literals;
+    rope height saturates; checkStringHashSlot rejects a wrong slot; equal fast-reject; fill after
+    survival). AllocatorCommonTest and HeapGenerators sizes updated. Whole `build/test/test` (unit +
+    JIT E2E) **3,178/3,178** after a cache wipe. Validate tree (`build-validate`, built in full) with
+    `ECO_NURSERY_POISON=1`: HEAP_088 7/7, HEAP_025 1/1, eco-system Seq* 13/13, Hash* 4/4. Negative
+    controls (by hand, reverted, files diffed): no zeroing in `initHeaderForTag` and `allocString` ->
+    the route test fails at `allocString n=32`; no P1 masking -> the validate census aborts
+    ("VIOLATION (old gen, major-start) ... StringUtf8Leaf ... written after promotion").
+  - **Workload trap found:** string-eq-hashed first measured no gain because its hash sum was used only
+    in the final check, and the compiler evaluated that once-used `let` after the `==` loop (inferred:
+    making the loop's start value depend on it fixed it, 135 -> 12 ms). Benchmarks that pre-hash must
+    make the later work depend on the hashing.
+  - **Benchmarks**, whole suite, warmup 1 / runs 5 (`local-dev/hashreuse/post-part-b-bench.json`, all
+    110 ok; `compare3.py`). Native ms (Part B is native only; its JS numbers move only by noise, up to
+    ±30 % on ctor-wrapper):
+
+    | workload | reference | plain (A run) | Part A `-hashed` | Part B plain |
+    |---|--:|--:|--:|--:|
+    | seqdict-prefixkey | 135 | 135 | 56 | 69 (−49 %) |
+    | seqset-prefixkey-rounds | – | 184 | 48 | 65 (−65 %) |
+    | seqdict-longkey-reuse | 294 | 289 | 265 | 267 (−8 %) |
+    | seqdict-intern (control) | 315 | 315 | 320 | 326 (A/B +1.3 %) |
+    | string-eq-hashed (B4) | – | (eq-prefix 115) | – | 12 |
+
+    Suite geometric mean B vs the A run: native 0.987 (non-Seq/String 1.002), peak RSS 1.000
+    (seqset-prefixkey-rounds 267 -> 275 MiB, +3 %).
+  - **A/B confirmation** against `bench-base` (pre-Part-B runtime), 5 alternations
+    (`local-dev/hashreuse/ab-results-b.txt`): noise: sha256 +2.7, fasta +0.4, dict-int −7.9, nsieve
+    +2.2, seqdict-collide 0, seqdict-string 0, seqdict-update −5.7, fib 0. Stable: levenshtein +14.2 %
+    and decoded-snapshot +7.5 % are **layout** (`perf stat`: instructions +0.02 % / +0.14 %, IPC 4.86 ->
+    4.25 on levenshtein, cache misses not up). **Real Part B costs**: seqdict-prefixkey-fresh +6.0 %
+    (instructions +1.8 %, cache misses +10 %: each fresh 2,000-unit key is 8 bytes bigger and hashed once,
+    and `==` on an equal key loads the cold stored key's slot before its memcmp), string-concat +4.5 %
+    (misses +15 %), csv-split +2.9 % (instructions +1.9 %, misses +15 %): the slot word on every String of
+    32+ units, its zeroing, and the slot loads in `equal`.
+  - **A versus B** (for the user's choice, §5): Part A gains more where it is used (prefixkey 56 vs 69 ms,
+    set rounds 48 vs 65: a `Hashed` key skips even the slot load, and needs no fill) and costs nothing
+    elsewhere, but only programs that opt in gain. Part B gains −49/−65/−8 % with no program change,
+    serves Strings nested in keys and `==` (string-eq-hashed 115 -> 12 ms), and costs 3-6 % on
+    String-building workloads, a heap-layout change and a P1 carve-out (HEAP_088). Both pass §5's rule
+    (1) only if the 6 % on seqdict-prefixkey-fresh and 4.5 % on string-concat are accepted (the rule
+    says 3 %). Not measured: compiler self-build (B's 8 bytes per 32+-unit String do apply there);
+    String bytes allocated (`dev` build).
+

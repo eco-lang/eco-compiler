@@ -1276,6 +1276,8 @@ def Eco_StringFromFloatOp : Eco_Op<"string.from_float"> {
 // StringOps.hpp targets a freshly allocated, not-yet-published `out` object) and
 // SSA dominance already prevents motion above the operand's def. If a mutable
 // string form (in-place builder) is ever added, revisit these traits FIRST.
+// The one later write into a String, its hash slot (HEAP_088), is invisible to
+// Elm: it caches a number that depends only on the units, which never change.
 
 def Eco_StringLengthOp : Eco_Op<"string.length", [Pure]> {
   let summary = "Logical UTF-16 length of a String (String.length)";
@@ -3069,7 +3071,9 @@ def Eco_CharCmpOrderOp : Eco_Op<"char.cmp_order", [Pure]> {
 // construction: every chars[]/byte write in StringOps.hpp targets a freshly
 // allocated, not-yet-published `out` object, and SSA dominance already prevents
 // motion above the operands' defs. If a mutable string form (in-place builder)
-// is ever added, revisit these traits FIRST.
+// is ever added, revisit these traits FIRST. The hash slot fill (HEAP_088) is
+// invisible to Elm and to these ops: equality only uses a filled slot to answer
+// False sooner, and a slot holds the hash of units that never change.
 
 def Eco_StringCmpOrderOp : Eco_Op<"string.cmp_order", [Pure]> {
   let summary = "Compare two strings; return Order singleton (LT/EQ/GT)";

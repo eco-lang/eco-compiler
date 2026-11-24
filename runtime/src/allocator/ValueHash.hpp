@@ -16,6 +16,16 @@
 
 #include <cstdint>
 
+namespace Elm {
+// Returns `stringHash` of the non-empty String `s` (any form), computed from its units without reading or
+// writing its hash slot (HEAP_088): the number a filled slot must hold. For validation and tests.
+uint32_t stringHashUncached(void* s);
+// Checks the hash slot of the heap object `obj` (HEAP_088): returns null when `obj` is not a String, has
+// no slot, or its slot is 0 or holds `stringHashUncached(obj)` (and, for a flat String, the rest of the
+// slot word is 0); otherwise what is wrong. Validate builds call it on every young object at each minor.
+const char* checkStringHashSlot(void* obj);
+} // namespace Elm
+
 extern "C" {
 
 /// The hash of any boxed value.

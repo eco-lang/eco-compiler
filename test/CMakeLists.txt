@@ -146,6 +146,7 @@ add_executable(test
         allocator/ListOpsTest.cpp
         allocator/ChunkedListTest.cpp
         allocator/BytesOpsTest.cpp
+        allocator/StringHashSlotTest.cpp
         allocator/RuntimeExportsTest.cpp
         allocator/GenericApplyBoxingTest.cpp
         allocator/WideObjectPinsTest.cpp
