@@ -2,7 +2,7 @@
 
 eco hashes any Elm value with one function, defined here. eco/system's `SeqDict` and `SeqSet` key
 their tries on it. The native definition lives in the generic walker
-(`system-kernel-cpp/src/eco-system/FNV/FNVExports.cpp`, `Hasher`); every specialised path must
+(`runtime/src/allocator/ValueHash.cpp`, `Hasher` and `stringHash`); every specialised path must
 give bit-identical results to it on the same value (plans/seq-data-structures-performance.md §4.6).
 The JavaScript backend has its own function (`system-kernel-cpp/src/Eco/Kernel/FNV.js`) with the same
 guarantee and different numbers.
@@ -10,7 +10,7 @@ guarantee and different numbers.
 ## Guarantees
 
 - Values that `==` finds equal hash equal, within one compiled program on one backend.
-- The result is in `[0, 2^32)`; on the native backend it is never 0 (v2).
+- The result is in `[0, 2^32)`; on the native backend it is never 0 (since v2).
 - Nothing else: the numbers differ between backends, programs, compiler versions and build modes
   (they follow the heap representation the compiler chose), and must not be persisted.
 
@@ -37,7 +37,8 @@ unboxed field:
   Any other constant word: `mix(kConst); mix64(word bits)`.
 - **String** of length `n` (every form: flat UTF-16, slice, rope, UTF-8 leaf or view, large):
   `n == 0` → `mix(kEmpty)`; otherwise `mix(kString); mix64(n)`, then each of the first
-  `kMaxUnits = 4096` UTF-16 units (a UTF-8 form's bytes, which are ASCII) with `mix(unit)`.
+  `kMaxUnits = 4096` UTF-16 units (a UTF-8 form's bytes, which are ASCII) with `mix(unit)`. (v3 drops
+  the cap.)
 - Strings and primitives are hashed at any depth. For everything below, nothing more is mixed once
   `depth >= kMaxDepth (16)` or `items <= 0`:
   - **Tuple2/Tuple3**: `mix(kTuple)`, then each field at `depth + 1`.
@@ -54,7 +55,7 @@ unboxed field:
   - **Anything else** (Bytes, closures, …): `mix(kOther); mix(tag)`.
 - **Finaliser**: the result is MurmurHash3's `fmix32(h)`, zero-extended.
 
-## Definition v2 (current since D0, 2026-11-23)
+## Definition v2 (D0, 2026-11-23, until v3)
 
 Three changes to v1, everything else unchanged:
 
@@ -66,6 +67,32 @@ Three changes to v1, everything else unchanged:
 2. **Units are read from contiguous segments** (`StringOps::forEachSegmentEx`), never one at a time
    through `charAt`. (Implementation only; the numbers follow from 1.)
 3. **The result is never 0**: a 0 from `fmix32` becomes 1, so 0 can mean "not cached".
+
+## Definition v3 (current since 2026-11-24)
+
+One change to v2: `stringHash(s)` reads **every** unit of the String (no `kMaxUnits` cap) and is a
+word-at-a-time hash instead of FNV-1a, so that a long key costs a few cycles per 32 units instead of
+one multiply per two, and Strings that agree in a long prefix no longer collide. Everything else,
+including how the result is mixed into the walk (`mix(kString); mix(stringHash(s))`), is unchanged.
+
+- `mum(a, b)`: the 128-bit product of two `u64`s, its low and high halves XORed (wyhash's step).
+- Constants: `kWordKey = 0xa0761d6478bd642f`; lane seeds `S0 = 0xe7037ed1a0b428db`,
+  `S1 = 0x8ebc6af09c88c6e3`, `S2 = 0x589965cc75374cc3`, `S3 = 0x1d8e4e27c47d124f`.
+- The `n` UTF-16 units (a UTF-8 form's bytes are its units), zero-padded to a multiple of 32, are
+  read as words of four units, `w = u0 | u1 << 16 | u2 << 32 | u3 << 48`.
+- Otherwise lanes start at `S0..S3`. Each round of 32 units (words `w0..w7`) updates every lane:
+  `lane[j] = mum(w[2j] ^ kWordKey, w[2j+1] ^ lane[j])`. The four multiplies are independent.
+- `h = mum(lane0 ^ S1, lane1 ^ S2) ^ mum(lane2 ^ S3, lane3 ^ S0)`, then
+  `h = mum(h ^ kWordKey, n ^ S0)`; the result is `low32(h ^ (h >> 32))`, and 0 becomes 1.
+- **Short Strings** (`n <= 8`): no lanes. The units, zero-padded to 8, are two words `w0, w1`;
+  `h = mum(w0 ^ kWordKey, w1 ^ S0)`, then the same final step `h = mum(h ^ kWordKey, n ^ S0)` and
+  reduction. This keeps short keys as cheap as v2's FNV-1a (seqdict-string was 10-15 % slower with
+  the lanes alone).
+
+The padding is told apart from real zero units by `n`. A String costs time linear in its length, as
+`==` on it does; the walk's other bounds (depth 16, 256 items) still apply to structures. The
+implementation streams the String's contiguous segments (`forEachSegmentEx`) through a 32-unit
+buffer, widening UTF-8 bytes four at a time, so every form gives the same number.
 
 ## Typed hashing (`eco.hash.mix` chains, D2)
 

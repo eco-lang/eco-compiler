@@ -11,8 +11,9 @@ HashIdentityTest.elm's.
 -- CHECK: floats: [1251439042,1251439042,593676089,2902364805,2409162822]
 -- CHECK: chars: [2277228005,583401031,2642981514]
 -- CHECK: bools: [311195553,601926293]
--- CHECK: strings: [92598572,991678686,618780984,3719206139]
--- CHECK: values: [3633460323,866040821,3732251940,2612630852,2240964614]
+-- CHECK: strings: [92598572,3742794350,2092909604,991594886]
+-- CHECK: collide: [3789589045,3789589045,3789589045]
+-- CHECK: values: [686438709,866040821,3732251940,2612630852,2240964614]
 -- ENV: ECO_HASH_INLINE=0
 import Hash
 import System
@@ -47,6 +48,11 @@ report () =
 
         _ =
             Debug.log "strings" ([ Hash.hash (""), Hash.hash ("a"), Hash.hash ("hello world"), Hash.hash (String.repeat 5000 "xy") ])
+
+        -- Three Strings found by search to share a String hash (two of at most 8 units, one longer):
+        -- SeqDictCollisionTest and SeqDictMapTest use them.
+        _ =
+            Debug.log "collide" [ Hash.hash "c600662", Hash.hash "c5330492", Hash.hash "c11005860" ]
 
         _ =
             Debug.log "values"

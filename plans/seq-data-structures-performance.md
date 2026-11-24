@@ -1,6 +1,6 @@
 ---
 status: partial
-remaining: "D5 not built (no-go by D4, as the plan requires; a P1-carve-out version is a pending user decision); D2 without separate per-type functions (custom types and lists go to the resumed walker; pending user decision)"
+remaining: "D5 not built (no-go by D4, as the plan requires; a P1-carve-out version is a pending user decision)"
 updated: 2026-11-24
 ---
 
@@ -1135,3 +1135,48 @@ Adversarial review of the medium-detail plan, 2026-11-23 (16 findings). Changes 
   (seqdict-int +10 %, seqdict-string +10-13 %, seqdict-union-small +11-12 %) are accepted as the JS
   cost of the native slot layout (no tagged words on JS); no JS-only insert path. D5 (P1 carve-out)
   and the D2 per-type functions stay open for a later user decision.
+- **2026-11-24 D2 accepted as built (user decision).** No separate generated function per type
+  (`__eco_hash$<id>`): custom types, lists and recursive types stay with the resumed walker. A
+  profile of seqdict-custom (`Cell Int Int | Label String` keys, the best case for it) puts all
+  hashing at ~2.3 % of samples (`eco_hash_value` 1.1 %, `Hasher::string` 0.8 %, `Hasher::boxed`
+  0.3 %); per-type code could remove only the walker's call and tag dispatch, about 1-1.5 %, since
+  the String inside `Label` costs the same either way. Not worth a new compiler module.
+- **2026-11-24 D5 re-examined: long-String benchmarks and estimate.** New workloads
+  (`examples/benchmarks/src/StringCompare.elm`, `SeqLargeKeys.elm`): string-eq-prefix (== of
+  4,000-character keys differing in the last 6), string-eq-same (== with equal copies),
+  string-compare-prefix (sort of 2,000-character keys sharing all but 6), seqdict-prefixkey (2,000
+  characters, keys built once, looked up 4 times), seqdict-prefixkey-fresh (each lookup key rebuilt)
+  and seqdict-collide (4,200 characters differing only after unit 4,096). One run, native / eco-js
+  ms: 89 / 154, 176 / 205, 67 / 137, 255 / 623, 308 / 672, **758 / 61**. Native seqdict-collide is
+  12x slower than JS because `stringHash` reads at most `kMaxUnits` = 4,096 units, so the keys all
+  collide and every operation walks one collision list with a 4,100-unit memcmp per entry (memcmp
+  84 % of samples); JS hashes whole Strings. Profiles (share of the main thread): `Hasher::string`
+  80 % of seqdict-prefixkey, 71 % of -fresh, 11 % of seqdict-longkey-reuse, 3.5 % of seqdict-longkey;
+  memcmp 89 % of string-eq-prefix, which never hashes. Estimates: a cache (with a P1 carve-out)
+  removes 8 of every 9 hashes in seqdict-prefixkey (about −70 %) and about −9 % in
+  seqdict-longkey-reuse, nothing where keys are rebuilt or never hashed, and nothing for
+  seqdict-collide (equal hashes); its `==` fast-reject only applies to two already-hashed Strings
+  of equal length, which SeqDict never compares (it compares keys only on equal hashes). A
+  word-at-a-time `stringHash` (16 bytes per step, 64-bit multiply mix; microbenchmark 4.6x faster
+  at 2,000 units, 3.7x at 4,096, 5.8x at 190) needs no heap change or P1 exception and gives about
+  −60 % on seqdict-prefixkey, −53 % on -fresh, −8 % on -longkey-reuse, −2.5 % on -longkey.
+  seqdict-collide needs the hash to see past unit 4,096 (for example the length plus the last units
+  as well as the first 4,096); a cache would make a whole-String hash affordable.
+- **2026-11-24 String hash definition v3 (user request, from the D5 profiling).** `stringHash`
+  (`runtime/src/allocator/ValueHash.cpp`) now reads every unit (no `kMaxUnits` cap): units in words
+  of four, 32 per round over four independent `mum` lanes, folded with the length; up to 8 units, one
+  `mum` and the fold (design_docs/theory/runtime/value-hash.md, Definition v3). Pins in
+  HashIdentityTest/-GenericTest recomputed with an independent Python reference (which reproduces the
+  v2 pins exactly); SeqDictCollisionTest and SeqDictMapTest now collide on three searched Strings
+  (`c600662`, `c5330492`, `c11005860`, pinned as colliding in HashIdentityTest) instead of
+  4,096-unit prefixes; HashTest gains a `forms` check (flat, sliced and rope forms, UTF-8 and UTF-16
+  leaves, lengths 1-81, 100, 140,000). Negative controls: a buffering bug fails `forms`, a UTF-8 tail
+  bug fails `forms`, a length-7-only bug fails HashIdentityTest's pins. Distribution: 1 M short keys
+  120 equal-hash pairs (random 116), every 5-bit group uniform (chi^2 < 99.9 % bound). Targeted tests
+  green (native Hash/SeqDict/SeqSet 16/16, JS 14 + 2 skipped); full gate NOT run (owed before
+  commit). Benchmarks, full suite (local-dev/pre- vs post-string-hash-opt-bench.json), native:
+  seqdict-collide 683 → 10 ms, seqdict-prefixkey 230 → 127, -fresh 273 → 146, string-eq-prefix
+  136 → 113, seqdict-longkey-reuse 305 → 291; the 81 workloads that do not hash: geometric mean
+  +0.2 % (noise). seqdict-string read +10 % in the suite and +3-7 % in alternating A/B runs, but
+  main-thread cycles differ by 0.7 % (within run-to-run spread), so short keys cost at most ~1 %.
+  JS unchanged (its hash already read whole Strings). D5 is not needed for long keys any more.

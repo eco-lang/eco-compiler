@@ -14,9 +14,10 @@
 //   - a Dict hashes its key-value pairs in key order, as `==` compares Dicts by content, not tree shape;
 //   - a SeqDict hashes its key-value pairs in insertion order, as `==` compares them (SeqDictLayout.hpp).
 //
-// The walk is bounded so that a hash costs O(1) for a large key: at most `kMaxDepth` levels of nesting,
-// `kMaxItems` list elements, Dict entries and fields in all, and `kMaxUnits` units of each String (its
-// length is hashed too). The bounds count content only, so they cut equal values at the same place. The
+// The walk is bounded so that a hash costs O(1) in the size of a large structure: at most `kMaxDepth`
+// levels of nesting, and `kMaxItems` list elements, Dict entries and fields in all. Every String is
+// hashed whole (definition v3), so a String costs time linear in its length, as `==` on it does. The
+// bounds count content only, so they cut equal values at the same place. The
 // walk allocates nothing, so no collection can run and no object moves while it runs.
 //
 //===----------------------------------------------------------------------===//
@@ -31,11 +32,16 @@
 #include "PermanentSpace.hpp"
 #include "ThreadLocalHeap.hpp"
 
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <string>
 #include <vector>
+
+#if defined(_MSC_VER) && !defined(__clang__)
+#include <intrin.h>
+#endif
 
 using namespace Elm;
 
@@ -47,7 +53,6 @@ constexpr u16 kCtorDictNode = 0xFFFF;
 
 constexpr int kMaxDepth = 16;
 constexpr int kMaxItems = 256;
-constexpr i64 kMaxUnits = 4096;
 
 // Markers mixed in before a value of each kind, so that, for example, a Char and a one-unit String differ.
 enum Marker : u32 {
@@ -69,36 +74,128 @@ u32 fmix32(u32 h) {
 // value-hash.md).
 u32 nonZero(u32 h) { return h == 0 ? 1u : h; }
 
-// The String's own finished hash (definition v2): a fresh FNV-1a state over the length and the first
-// `kMaxUnits` UTF-16 units, two per step (`u1 | u2 << 16`, a last odd unit alone), read a contiguous
-// segment at a time (a UTF-8 form's bytes are its units), then `fmix32`, never 0. `n` is the length.
-u32 stringHash(void* s, i64 n) {
-    u32 x = 2166136261u;
-    auto mixs = [&x](u32 v) { x = (x ^ v) * 16777619u; };
-    mixs(static_cast<u32>(n));
-    mixs(static_cast<u32>(static_cast<u64>(n) >> 32));
-    i64 left = kMaxUnits;
-    bool pending = false;
-    u32 low = 0;
-    auto unit = [&](u32 u) {
-        if (pending) {
-            mixs(low | (u << 16));
-            pending = false;
-        } else {
-            low = u;
-            pending = true;
+// The String's own finished hash (definition v3, design_docs/theory/runtime/value-hash.md): every
+// UTF-16 unit of the String (a UTF-8 form's bytes are its units), whatever its length and form. The
+// units, zero-padded to a multiple of 32, are read as little-endian 64-bit words of four units; each
+// round of 32 units (words w0..w7) steps four independent lanes, lane j = mum(w[2j] ^ kWordKey,
+// w[2j+1] ^ lane j), so a round costs four multiplies that run in parallel. The lanes are then
+// folded with the length and the result reduced to 32 bits, never 0. `n` is the length. A String of
+// at most 8 units takes the short path below instead.
+//
+// mum is the 64 x 64 -> 128-bit product folded to 64 bits (wyhash's mixing step). Words are loaded
+// little-endian (every supported target), so a UTF-16 run and its widened UTF-8 bytes give one word.
+
+constexpr u64 kWordKey = 0xa0761d6478bd642full;
+constexpr u64 kLaneSeed[4] = {0xe7037ed1a0b428dbull, 0x8ebc6af09c88c6e3ull, 0x589965cc75374cc3ull,
+                              0x1d8e4e27c47d124full};
+
+inline u64 mum(u64 a, u64 b) {
+#if defined(_MSC_VER) && !defined(__clang__)
+    u64 hi;
+    u64 lo = _umul128(a, b, &hi);
+    return lo ^ hi;
+#else
+    __uint128_t r = static_cast<__uint128_t>(a) * b;
+    return static_cast<u64>(r) ^ static_cast<u64>(r >> 64);
+#endif
+}
+
+// Four bytes, each widened to a 16-bit unit: the word four UTF-16 units of the same values make.
+inline u64 widen4(u32 bytes) {
+    u64 v = bytes;
+    v = (v | (v << 16)) & 0x0000FFFF0000FFFFull;
+    v = (v | (v << 8)) & 0x00FF00FF00FF00FFull;
+    return v;
+}
+
+struct StringHasher {
+    u64 lane[4] = {kLaneSeed[0], kLaneSeed[1], kLaneSeed[2], kLaneSeed[3]};
+    u16 buf[32];
+    u32 fill = 0;
+
+    void round(const u64* w) {
+        lane[0] = mum(w[0] ^ kWordKey, w[1] ^ lane[0]);
+        lane[1] = mum(w[2] ^ kWordKey, w[3] ^ lane[1]);
+        lane[2] = mum(w[4] ^ kWordKey, w[5] ^ lane[2]);
+        lane[3] = mum(w[6] ^ kWordKey, w[7] ^ lane[3]);
+    }
+    void round16(const u16* p) {
+        u64 w[8];
+        memcpy(w, p, sizeof w);
+        round(w);
+    }
+    void round8(const u8* p) {
+        u64 w[8];
+        for (int k = 0; k < 8; ++k) {
+            u32 b;
+            memcpy(&b, p + 4 * k, 4);
+            w[k] = widen4(b);
         }
-    };
+        round(w);
+    }
+
+    void units16(const u16* p, u32 len) {
+        u32 i = 0;
+        if (fill) {
+            u32 take = std::min<u32>(32 - fill, len);
+            memcpy(buf + fill, p, take * sizeof(u16));
+            fill += take;
+            i = take;
+            if (fill < 32) return;
+            round16(buf);
+            fill = 0;
+        }
+        for (; i + 32 <= len; i += 32) round16(p + i);
+        fill = len - i;
+        memcpy(buf, p + i, fill * sizeof(u16));
+    }
+    void units8(const u8* p, u32 len) {
+        u32 i = 0;
+        if (fill) {
+            for (; i < len && fill < 32; ++i) buf[fill++] = p[i];
+            if (fill < 32) return;
+            round16(buf);
+            fill = 0;
+        }
+        for (; i + 32 <= len; i += 32) round8(p + i);
+        for (; i < len; ++i) buf[fill++] = p[i];
+    }
+
+    u32 finish(i64 n) {
+        if (fill) {
+            memset(buf + fill, 0, (32 - fill) * sizeof(u16));
+            round16(buf);
+        }
+        u64 h = mum(lane[0] ^ kLaneSeed[1], lane[1] ^ kLaneSeed[2]) ^ mum(lane[2] ^ kLaneSeed[3], lane[3] ^ kLaneSeed[0]);
+        h = mum(h ^ kWordKey, static_cast<u64>(n) ^ kLaneSeed[0]);
+        return nonZero(static_cast<u32>(h ^ (h >> 32)));
+    }
+};
+
+// A String of at most 8 units is one round of two words, without the lanes: one multiply and the
+// final fold, so that short keys cost no more than the FNV-1a hash of v2 did.
+u32 shortStringHash(void* s, i64 n) {
+    u16 buf[8] = {0};
+    u32 at = 0;
     StringOps::forEachSegmentEx(
         s,
-        [&](const u16* p, u32 len) {
-            for (u32 i = 0; i < len && left > 0; ++i, --left) unit(p[i]);
-        },
-        [&](const u8* p, u32 len) {
-            for (u32 i = 0; i < len && left > 0; ++i, --left) unit(p[i]);
-        });
-    if (pending) mixs(low);
-    return nonZero(fmix32(x));
+        [&](const u16* p, u32 len) { memcpy(buf + at, p, len * sizeof(u16)); at += len; },
+        [&](const u8* p, u32 len) { for (u32 i = 0; i < len; ++i) buf[at++] = p[i]; });
+    u64 w[2];
+    memcpy(w, buf, sizeof w);
+    u64 h = mum(w[0] ^ kWordKey, w[1] ^ kLaneSeed[0]);
+    h = mum(h ^ kWordKey, static_cast<u64>(n) ^ kLaneSeed[0]);
+    return nonZero(static_cast<u32>(h ^ (h >> 32)));
+}
+
+u32 stringHash(void* s, i64 n) {
+    if (n <= 8) return shortStringHash(s, n);
+    StringHasher sh;
+    StringOps::forEachSegmentEx(
+        s,
+        [&](const u16* p, u32 len) { sh.units16(p, len); },
+        [&](const u8* p, u32 len) { sh.units8(p, len); });
+    return sh.finish(n);
 }
 
 
@@ -193,7 +290,7 @@ void note(void* s, int64_t n, bool top) {
         registered = true;
         std::atexit(print);
     }
-    uint64_t units = static_cast<uint64_t>(n < kMaxUnits ? n : kMaxUnits);
+    uint64_t units = static_cast<uint64_t>(n);
     add(byForm[formOf(s)], units);
     add(byLength[n < 32 ? 0 : n < 256 ? 1 : n < 4096 ? 2 : 3], units);
     int age;

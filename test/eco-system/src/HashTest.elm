@@ -1,13 +1,15 @@
 module HashTest exposing (main)
 
 {-| `Hash.hash` gives equal values equal hashes, whatever their representation: Strings built in
-different ways, `0` and `-0`, records, tuples, custom types (an erased wrapper, a Maybe-shaped type,
+different ways (and, for lengths across the String hash's 32-unit rounds, flat copies, slices and
+ropes of many short UTF-8 and UTF-16 leaves), `0` and `-0`, records, tuples, custom types (an erased wrapper, a Maybe-shaped type,
 a tagged union), lists built by `::` and by `List.range`, Dicts and SeqDicts built in different
 orders. No hash number is pinned: they differ between backends and programs.
 
 -}
 
 -- CHECK: strings: [True,True,True,True]
+-- CHECK: forms: [True,True]
 -- CHECK: numbers: [True,True,True]
 -- CHECK: structures: [True,True,True,True,True,True]
 -- CHECK: containers: [True,True,True]
@@ -55,6 +57,45 @@ report () =
                 , same (String.repeat 3000 "ab") (String.concat (List.repeat 1500 "abab"))
                 , same "" (String.left 0 "abc")
                 ]
+
+        -- k two-unit pieces, every 13th non-ASCII when `wide` (UTF-16 leaves among UTF-8 ones)
+        pieces wide k =
+            List.map
+                (\i ->
+                    String.fromInt (modBy 10 i)
+                        ++ (if wide && modBy 13 i == 0 then
+                                "\u{00E9}"
+
+                            else
+                                "x"
+                           )
+                )
+                (List.range 1 k)
+
+        -- `s`, a copy of it built from its Chars, and a slice of it out of a UTF-16 String
+        formsOf s =
+            let
+                flat =
+                    String.fromList (String.toList s)
+
+                sliced =
+                    String.slice 3 (3 + String.length s) ("ab\u{00E9}" ++ s ++ "xyz")
+            in
+            same s flat && same flat sliced
+
+        -- every length: the joined pieces, and the same without their last unit
+        allForms wide k =
+            let
+                joined =
+                    String.concat (pieces wide k)
+            in
+            formsOf joined && formsOf (String.dropRight 1 joined)
+
+        sizes =
+            List.range 1 40 ++ [ 100, 70000 ]
+
+        _ =
+            Debug.log "forms" [ List.all (allForms False) sizes, List.all (allForms True) sizes ]
 
         _ =
             Debug.log "numbers" [ same 0.0 -0.0, same 42 (40 + 2), same 'x' (Char.fromCode 120) ]

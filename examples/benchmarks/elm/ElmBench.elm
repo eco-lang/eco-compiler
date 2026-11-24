@@ -72,6 +72,7 @@ import Sort
 import SpectralNorm
 import StringBuild
 import StringCallbacks
+import StringCompare
 import Sudoku
 import TypeKeys
 import UnicodeString
@@ -339,6 +340,15 @@ bench name =
 
         "intern-rehash" ->
             Just TypeKeys.benchInternRehash
+
+        "string-eq-prefix" ->
+            Just StringCompare.benchEqPrefix
+
+        "string-eq-same" ->
+            Just StringCompare.benchEqSame
+
+        "string-compare-prefix" ->
+            Just StringCompare.benchComparePrefix
 
         _ ->
             Nothing

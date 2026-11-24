@@ -2,7 +2,7 @@ module SeqDictMapTest exposing (main)
 
 {-| `SeqDict.map` on tries of every shape: 20,000 Int keys with every seventh removed (a deep trie
 over an order array with holes), colliding keys mixed with plain ones (collision nodes below shared
-branches; natively Strings equal in their first 4096 units, on JS Floats with the same integer part),
+branches; natively three Strings that share a hash (as in SeqDictCollisionTest), on JS Floats with the same integer part),
 the empty dict, one entry, and a map of a map. Values change type (Int to String, to Float, to a
 record) and keep it (Int to Int). For each: the entries are those of `List.map` over `toList`, in
 order; every key is found with its new value; the result equals a freshly built dict; and an insert
@@ -91,9 +91,6 @@ colliding coll =
 report : () -> ()
 report () =
     let
-        prefix =
-            String.repeat 4096 "x"
-
         _ =
             let
                 d =
@@ -149,7 +146,7 @@ report () =
         _ =
             let
                 d =
-                    (colliding [ prefix ++ "a", prefix ++ "b", prefix ++ "c" ])
+                    (colliding [ "c600662", "c5330492", "c11005860" ])
 
                 f =
                     (\_ v -> v + 1)

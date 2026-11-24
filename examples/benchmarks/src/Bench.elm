@@ -103,6 +103,7 @@ import SpectralNorm
 import Stream
 import StringBuild
 import StringCallbacks
+import StringCompare
 import Sudoku
 import System
 import Task exposing (Task)
@@ -222,6 +223,9 @@ portableWorkloads =
     , Workload "dict-longkey" "Dict String build and lookup of size 190-character member-key Strings" TypeKeys.benchDictLongKey 40000 Nothing
     , Workload "intern-cached-hash" "hash-cons size type trees, each node's hash stored when it is built" TypeKeys.benchInternCached 40000 Nothing
     , Workload "intern-rehash" "the same, each node's hash recomputed by walking it at every probe" TypeKeys.benchInternRehash 40000 Nothing
+    , Workload "string-eq-prefix" "== of 2,000 distinct 4,000-character keys sharing all but their last 6, size rounds" StringCompare.benchEqPrefix 400 Nothing
+    , Workload "string-eq-same" "== of the same keys with equal copies, size rounds" StringCompare.benchEqSame 300 Nothing
+    , Workload "string-compare-prefix" "List.sort of size 2,000-character keys sharing all but their last 6" StringCompare.benchComparePrefix 30000 Nothing
     ]
 
 
@@ -248,6 +252,9 @@ ecoOnlyWorkloads =
     , Workload "seqdict-longkey" "dict-longkey's work on SeqDict String: every key hashed in full" SeqLargeKeys.benchLongKey 40000 Nothing
     , Workload "seqdict-longkey-reuse" "size long key Strings built once, then looked up four times over" SeqLargeKeys.benchLongKeyReuse 40000 Nothing
     , Workload "seqdict-intern" "intern-cached-hash's work with a SeqDict keyed by the type trees" SeqLargeKeys.benchIntern 40000 Nothing
+    , Workload "seqdict-prefixkey" "size 2,000-character keys sharing all but their last 6, built once, looked up four times over" SeqLargeKeys.benchPrefixKey 20000 Nothing
+    , Workload "seqdict-prefixkey-fresh" "the same, each lookup key freshly built" SeqLargeKeys.benchPrefixKeyFresh 20000 Nothing
+    , Workload "seqdict-collide" "size 4,200-character keys differing only after unit 4,096, past a prefix-only String hash" SeqLargeKeys.benchCollide 1500 Nothing
     ]
 
 

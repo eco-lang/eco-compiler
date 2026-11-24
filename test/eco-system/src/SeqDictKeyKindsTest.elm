@@ -7,8 +7,9 @@ module SeqDictKeyKindsTest exposing (main)
   - Strings built by `++`, `String.slice` and `String.fromList` find a literal's entry.
   - Records with their fields written in another order, custom types, tuples and lists.
   - Dicts built in another order, as keys.
-  - Keys that differ only beyond the hash's bounds (4096 String units, 256 list items, 16 levels of
-    nesting) hash alike, so the trie must tell them apart with `==`.
+  - Long Strings that differ only in their last unit, past 4,096 units (the String hash reads every
+    unit), and keys that differ only beyond the hash's bounds (256 list items, 16 levels of nesting),
+    which hash alike, so the trie must tell them apart with `==`.
 
 A SeqDict used as a key is in SeqDictEqualityTest, with the other checks of `==` on SeqDicts.
 
@@ -124,7 +125,8 @@ report () =
                     (SeqDict.singleton (Dict.fromList [ ( 1, "x" ), ( 2, "y" ), ( 3, "z" ) ]) "d")
                 )
 
-        -- Past the hash's bounds the keys collide, and `==` must separate them.
+        -- Long Strings differing only at the end; past the hash's bounds lists and nesting collide,
+        -- and `==` must separate them.
         longA =
             String.repeat 5000 "a" ++ "1"
 

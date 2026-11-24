@@ -1,8 +1,8 @@
 module SeqDictCollisionTest exposing (main)
 
-{-| SeqDict with keys whose hashes collide in full, on either backend: natively, Strings equal in
-their first 4096 units, lists equal in their first 256 items, and values that differ only below
-nesting depth 16 (the native hash's bounds); on JS, Floats with the same integer part and the same
+{-| SeqDict with keys whose hashes collide in full, on either backend: natively, three Strings found
+by search to share a hash (HashIdentityTest checks that they do), lists equal in their first 256
+items, and values that differ only below nesting depth 16 (the native hash's bounds); on JS, Floats with the same integer part and the same
 deep nesting. Each group is mixed with 2,000 Int keys, so that collision nodes are pushed below
 branches that other keys share and are hoisted again when those keys go. For each group the checks
 are: every key found; replacing a value inside a collision; removing collision keys one by one down
@@ -104,11 +104,8 @@ group colliding =
 report : () -> ()
 report () =
     let
-        prefix =
-            String.repeat 4096 "x"
-
         _ =
-            Debug.log "strings" (group [ prefix ++ "a", prefix ++ "b", prefix ++ "c" ])
+            Debug.log "strings" (group [ "c600662", "c5330492", "c11005860" ])
 
         _ =
             Debug.log "lists" (group [ List.repeat 256 7 ++ [ 1 ], List.repeat 256 7 ++ [ 2 ], List.repeat 256 7 ++ [ 3 ] ])
