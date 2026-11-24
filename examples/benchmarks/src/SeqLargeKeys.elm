@@ -1,4 +1,4 @@
-module SeqLargeKeys exposing (benchCollide, benchEqHashed, benchIntern, benchLongKey, benchLongKeyReuse, benchMultiLookup, benchPrefixKey, benchPrefixKeyFresh, benchSetPrefixRounds)
+module SeqLargeKeys exposing (benchCollide, benchIntern, benchLongKey, benchLongKeyReuse, benchMultiLookup, benchPrefixKey, benchPrefixKeyFresh, benchSetPrefixRounds)
 
 {-| `TypeKeys`' large-key workloads on eco/system's `SeqDict`, where every operation hashes the
 whole key with `FNV.hash` (up to its bounds) instead of comparing it.
@@ -38,16 +38,10 @@ whole key with `FNV.hash` (up to its bounds) instead of comparing it.
     but their last six (`StringCompare.prefixKey`) into a `SeqSet String`, then tests membership of
     every present key and as many absent ones in 32 rounds: hashing-dominated reuse at a moderate
     length. Checked in closed form.
-  - `benchEqHashed` (string-eq-hashed) is string-eq-prefix's work (2,000 keys of 4,000 characters
-    differing in their last six, each compared with the next `size` times over) after every key has
-    been hashed once with `Hash.hash`: with cached String hashes (HEAP_088) each `==` can answer
-    `False` from the two hashes. The hash sum is part of the check, so the hashing is not dead code.
-    Checked in closed form.
 
 -}
 
 import Array
-import Hash
 import SeqDict exposing (SeqDict)
 import SeqSet
 import StringCompare
@@ -359,44 +353,3 @@ benchSetPrefixRounds n =
             List.foldl (\_ acc -> count absent (count present acc)) 0 (List.range 1 setRounds)
     in
     (SeqSet.size set == n) && (hits == setRounds * n)
-
-
-benchEqHashed : Int -> Bool
-benchEqHashed eqRounds =
-    let
-        keyCount =
-            2000
-
-        prefix =
-            StringCompare.prefixOf 4000
-
-        keys =
-            List.map (StringCompare.prefixKey prefix) (permutation keyCount)
-
-        hashed =
-            List.foldl (\k acc -> acc + Hash.hash k) 0 keys
-
-        pairs =
-            List.map2 Tuple.pair keys (List.drop 1 keys)
-
-        -- Starting from a number that needs `hashed` makes every key hashed before the first `==`
-        -- (a let used once may be evaluated where it is used).
-        unequal =
-            List.foldl
-                (\_ acc ->
-                    List.foldl
-                        (\( a, b ) c ->
-                            if a == b then
-                                c
-
-                            else
-                                c + 1
-                        )
-                        acc
-                        pairs
-                )
-                (if hashed > 0 then 0 else 1)
-                (List.range 1 eqRounds)
-    in
-    unequal == eqRounds * (keyCount - 1)
-

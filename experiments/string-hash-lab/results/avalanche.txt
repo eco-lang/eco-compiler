@@ -1,0 +1,38 @@
+rabin64 P = x^64 + 0xbe5818203131c5f3
+
+## Avalanche: bias |2p-1| over (input bit, output bit) cells, worst and mean, against a perfect hash's expected values
+method            units  samples     worst   perfect  ratio      mean   perfect  ratio
+v3                    4   937500    0.353%    0.403%   0.88   0.0792%   0.0824%   0.96   worst cell: input bit 55 (unit 3) -> output bit 10
+v3                    8   468750    0.516%    0.596%   0.87   0.1154%   0.1165%   0.99   worst cell: input bit 7 (unit 0) -> output bit 6
+v3                   31   120967    1.229%    1.265%   0.97   0.2296%   0.2294%   1.00   worst cell: input bit 110 (unit 6) -> output bit 16
+v3                   64    58593    1.753%    1.884%   0.93   0.3287%   0.3296%   1.00   worst cell: input bit 704 (unit 44) -> output bit 26
+v3                  256    14648    3.659%    4.011%   0.91   0.6601%   0.6593%   1.00   worst cell: input bit 4039 (unit 252) -> output bit 31
+crc32c-fold128        4   937500    0.322%    0.403%   0.80   0.0828%   0.0824%   1.00   worst cell: input bit 15 (unit 0) -> output bit 2
+crc32c-fold128        8   468750    0.580%    0.596%   0.97   0.1164%   0.1165%   1.00   worst cell: input bit 41 (unit 2) -> output bit 26
+crc32c-fold128       31   120967    1.039%    1.265%   0.82   0.2333%   0.2294%   1.02   worst cell: input bit 225 (unit 14) -> output bit 24
+crc32c-fold128       64    58593    1.753%    1.884%   0.93   0.3295%   0.3296%   1.00   worst cell: input bit 812 (unit 50) -> output bit 21
+crc32c-fold128      256    14648    3.577%    4.011%   0.89   0.6591%   0.6593%   1.00   worst cell: input bit 738 (unit 46) -> output bit 10
+rabin64-fold128       4   937500    0.356%    0.403%   0.88   0.0814%   0.0824%   0.99   worst cell: input bit 35 (unit 2) -> output bit 25
+rabin64-fold128       8   468750    0.567%    0.596%   0.95   0.1147%   0.1165%   0.98   worst cell: input bit 90 (unit 5) -> output bit 22
+rabin64-fold128      31   120967    1.264%    1.265%   1.00   0.2279%   0.2294%   0.99   worst cell: input bit 33 (unit 2) -> output bit 29
+rabin64-fold128      64    58593    1.818%    1.884%   0.96   0.3282%   0.3296%   1.00   worst cell: input bit 275 (unit 17) -> output bit 26
+rabin64-fold128     256    14648    3.850%    4.011%   0.96   0.6600%   0.6593%   1.00   worst cell: input bit 2033 (unit 127) -> output bit 16
+poly61-avx2           4   937500    0.340%    0.403%   0.84   0.0800%   0.0824%   0.97   worst cell: input bit 26 (unit 1) -> output bit 20
+poly61-avx2           8   468750    0.627%    0.596%   1.05   0.1132%   0.1165%   0.97   worst cell: input bit 100 (unit 6) -> output bit 29
+poly61-avx2          31   120967    1.254%    1.265%   0.99   0.2274%   0.2294%   0.99   worst cell: input bit 3 (unit 0) -> output bit 21
+poly61-avx2          64    58593    2.084%    1.884%   1.11   0.3299%   0.3296%   1.00   worst cell: input bit 446 (unit 27) -> output bit 26
+poly61-avx2         256    14648    3.618%    4.011%   0.90   0.6600%   0.6593%   1.00   worst cell: input bit 2551 (unit 159) -> output bit 23
+poly52-ifma           4   937500    0.401%    0.403%   0.99   0.0821%   0.0824%   1.00   worst cell: input bit 58 (unit 3) -> output bit 26
+poly52-ifma           8   468750    0.605%    0.596%   1.02   0.1168%   0.1165%   1.00   worst cell: input bit 75 (unit 4) -> output bit 8
+poly52-ifma          31   120967    1.094%    1.265%   0.86   0.2279%   0.2294%   0.99   worst cell: input bit 68 (unit 4) -> output bit 26
+poly52-ifma          64    58593    1.783%    1.884%   0.95   0.3283%   0.3296%   1.00   worst cell: input bit 971 (unit 60) -> output bit 0
+poly52-ifma         256    14648    3.850%    4.011%   0.96   0.6593%   0.6593%   1.00   worst cell: input bit 191 (unit 11) -> output bit 0
+control:raw-crc       4   937500  100.000%    0.403% 247.95 100.0000%   0.0824% 1213.52   worst cell: input bit 0 (unit 0) -> output bit 0
+control:raw-crc       8   468750  100.000%    0.596% 167.86 100.0000%   0.1165% 858.09   worst cell: input bit 0 (unit 0) -> output bit 0
+control:raw-crc      31   120967  100.000%    1.265%  79.08 100.0000%   0.2294% 435.91   worst cell: input bit 0 (unit 0) -> output bit 0
+control:raw-crc      64    58593  100.000%    1.884%  53.08 100.0000%   0.3296% 303.38   worst cell: input bit 0 (unit 0) -> output bit 0
+control:raw-crc     256    14648  100.000%    4.011%  24.93 100.0000%   0.6593% 151.69   worst cell: input bit 0 (unit 0) -> output bit 0
+
+real	0m37.528s
+user	0m37.520s
+sys	0m0.004s

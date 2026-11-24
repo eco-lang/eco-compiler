@@ -1,0 +1,14 @@
+rabin64 P = x^64 + 0xbe5818203131c5f3
+
+## Every window: worst |z| over 75 windows (w-bit window at offset o shown as w@o), and windows with |z| > 4
+method           | prefix 500 + 6 digits      | String.fromInt 0..2^20     | 64 zeros, two units set    | random 32 units           
+v3               | z   2.36 at 12@7   >4:  0 | z   3.30 at 12@0   >4:  0 | z   3.59 at 5@14   >4:  0 | z   2.65 at 8@5    >4:  0
+crc32c-fold128   | z   2.79 at 5@24   >4:  0 | z   2.91 at 5@14   >4:  0 | z   3.39 at 5@23   >4:  0 | z  -2.78 at 12@20  >4:  0
+rabin64-fold128  | z  -3.92 at 12@20  >4:  0 | z   2.45 at 5@12   >4:  0 | z   2.80 at 5@11   >4:  0 | z  -2.67 at 8@13   >4:  0
+poly61-avx2      | z  -2.19 at 8@6    >4:  0 | z   3.11 at 5@1    >4:  0 | z  -2.27 at 12@6   >4:  0 | z   2.48 at 5@12   >4:  0
+poly52-ifma      | z  -2.00 at 12@5   >4:  0 | z   2.13 at 12@1   >4:  0 | z   3.19 at 5@25   >4:  0 | z   2.38 at 5@11   >4:  0
+control:raw-crc  | z  80.54 at 8@14   >4: 46 | z -42.13 at 12@17  >4: 44 | z   4.54 at 5@15   >4:  2 | z   2.99 at 5@26   >4:  0
+
+real	0m5.676s
+user	0m4.696s
+sys	0m0.980s

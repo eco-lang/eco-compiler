@@ -1,0 +1,13 @@
+rabin64 P = x^64 + 0xbe5818203131c5f3; poly52 p = 2^52 - 47
+
+## Quality: 32-bit hash collisions (expected for random hashes in brackets) and chi-square of 5-bit groups 0 and 1 (31 dof: 95% < 45)
+method                     | prefix 500 + 6 digits       | String.fromInt 0..2^20      | 64 zeros, two units set     | random 32 units            
+v3                         |   117 [ 128] chi    24    27 |   128 [ 128] chi    31    47 |   127 [ 126] chi    34    50 |   129 [ 128] chi    29    38
+crc32c-fold                |     0 [ 128] chi    38    27 |     0 [ 128] chi    50    24 |   106 [ 126] chi    44    32 |   136 [ 128] chi    29    20
+rabin64                    |   126 [ 128] chi    31    18 |   111 [ 128] chi    20    37 |   141 [ 126] chi    48    35 |   131 [ 128] chi    33    35
+poly61-avx512              |   123 [ 128] chi    29    37 |   119 [ 128] chi    49    32 |   136 [ 126] chi    30    30 |   110 [ 128] chi    40    36
+poly52-ifma                |   119 [ 128] chi    37    42 |   115 [ 128] chi    31    35 |   106 [ 126] chi    26    26 |   120 [ 128] chi    45    36
+
+real	0m4.666s
+user	0m3.761s
+sys	0m0.904s

@@ -66,7 +66,9 @@ branches or commits yourself.
       nothing there. A literal hashed at intern (B3) helps only literals ≥ T, so B3 is expected
       flat.
   11. The `==` fast-reject (B4) had no workload. SeqDict compares keys only when their hashes are
-      equal, and string-eq-prefix never hashes. Step M adds `string-eq-hashed`.
+      equal, and string-eq-prefix never hashes. B4 is measured by string-eq-prefix alone: with empty
+      slots the check must cost nothing (string-eq-hashed, a pre-hashed variant, was added and
+      then dropped, see the Part B log).
   12. The measuring scripts lived only in `/tmp/seqwork`, which a reboot clears. `ab.sh` there only
       rebuilds and copies a bench binary; it does no interleaved A/B runs. Step M makes persistent
       scripts under `local-dev/hashreuse/` (gitignored, so they survive branch switches) and adds
@@ -242,10 +244,6 @@ neighbours do.
 - **seqdict-shortkey-reuse** (`SeqLargeKeys.benchShortKeyReuse`): seqdict-string's keys
   (`String.fromInt k`, < 8 units), built once into a list, inserted, then 8 rounds of
   `SeqDict.get`. Check the sum of found values. It catches overhead where reuse cannot matter.
-- **string-eq-hashed** (`StringCompare.benchEqHashed`): string-eq-prefix's keys (`benchEqPrefix`,
-  :68), but first `List.foldl (\k acc -> acc + Hash.hash k) 0 keys` (kept in the result check so
-  it is not dead), then the same `countPairs` rounds. On the base it equals string-eq-prefix plus one
-  hash per key. It is B4's workload.
 - seqdict-prefixkey, seqdict-longkey-reuse and seqdict-intern exist and are unchanged.
 
 M3. A paragraph in `examples/benchmarks/README.md`: the `-hashed` workload variants exist only on
@@ -649,7 +647,7 @@ for the same units.
 - **B4. Equality fast-reject** (§4.1.7). Unit tests: equal Strings in different forms with filled
   slots compare equal; different Strings with filled slots compare unequal without reading units
   (check with a String whose units were altered in a test-only copy: the fast path must answer
-  before memcmp). Measure string-eq-hashed and the String compare workloads.
+  before memcmp). Measure string-eq-prefix and the String compare workloads.
 - **B5. v4 and composition** (only if B0 chose v4). Switch `stringHash` (ValueHash.cpp:191) to v4.
   Recompute the pins in HashIdentityTest/-GenericTest with an independent Python reference, as v3
   did (plans/seq-data-structures-performance.md log, 2026-11-24 v3). Re-check the colliding-key
@@ -680,7 +678,7 @@ One table, each branch against `local-dev/hashreuse-base-bench.json`:
 | seqdict-prefixkey / seqset-prefixkey-rounds / seqdict-longkey-reuse | | `-hashed` variants | plain |
 | seqdict-intern (control: expected flat on both) | | `-hashed` | plain |
 | seqdict-shortkey-reuse, seqdict-string (overhead) | | | |
-| string-eq-hashed | | (n/a) | plain |
+| string-eq-prefix | | plain | plain |
 | whole suite, workloads moving > 5 % (A/B-confirmed) | | | |
 | compiler cold self-build wall / peak RSS | | | |
 | String allocation (`dev` build: bytes_allocated, histogram) | | | |
@@ -796,6 +794,13 @@ choice between them is the user's: the table states both gains and both costs si
     in the final check, and the compiler evaluated that once-used `let` after the `==` loop (inferred:
     making the loop's start value depend on it fixed it, 135 -> 12 ms). Benchmarks that pre-hash must
     make the later work depend on the hashing.
+  - **string-eq-hashed dropped** (user, 2026-11-24): it called `Hash.hash` on every key by hand so
+    that `==` would find filled slots, which no program does for `==`'s sake (String `==` never
+    hashes). The fair comparison across base, A and B is string-eq-prefix: interleaved 114 / 115 / 116 ms
+    native (`ab3-results.txt`; the reference suite run's 142 was run-to-run noise), i.e. B4's check
+    costs nothing measurable when the slots are empty. `==` computing hashes on demand was
+    considered and rejected: hashing reads both Strings whole, where an unequal compare usually stops
+    early, so it would only pay for the same long near-equal String objects compared repeatedly.
   - **Benchmarks**, whole suite, warmup 1 / runs 5 (`local-dev/hashreuse/post-part-b-bench.json`, all
     110 ok; `compare3.py`). Native ms (Part B is native only; its JS numbers move only by noise, up to
     ±30 % on ctor-wrapper):
@@ -806,7 +811,7 @@ choice between them is the user's: the table states both gains and both costs si
     | seqset-prefixkey-rounds | – | 184 | 48 | 65 (−65 %) |
     | seqdict-longkey-reuse | 294 | 289 | 265 | 267 (−8 %) |
     | seqdict-intern (control) | 315 | 315 | 320 | 326 (A/B +1.3 %) |
-    | string-eq-hashed (B4) | – | (eq-prefix 115) | – | 12 |
+    | string-eq-prefix (B4) | 114 | 115 | – | 116 (interleaved) |
 
     Suite geometric mean B vs the A run: native 0.987 (non-Seq/String 1.002), peak RSS 1.000
     (seqset-prefixkey-rounds 267 -> 275 MiB, +3 %).
@@ -822,7 +827,7 @@ choice between them is the user's: the table states both gains and both costs si
   - **A versus B** (for the user's choice, §5): Part A gains more where it is used (prefixkey 56 vs 69 ms,
     set rounds 48 vs 65: a `Hashed` key skips even the slot load, and needs no fill) and costs nothing
     elsewhere, but only programs that opt in gain. Part B gains −49/−65/−8 % with no program change,
-    serves Strings nested in keys and `==` (string-eq-hashed 115 -> 12 ms), and costs 3-6 % on
+    serves Strings nested in keys, and costs 3-6 % on
     String-building workloads, a heap-layout change and a P1 carve-out (HEAP_088). Both pass §5's rule
     (1) only if the 6 % on seqdict-prefixkey-fresh and 4.5 % on string-concat are accepted (the rule
     says 3 %). Not measured: compiler self-build (B's 8 bytes per 32+-unit String do apply there);
