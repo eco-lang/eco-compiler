@@ -1,5 +1,6 @@
 module Compiler.MonoOpt.InlineSimplify exposing
-    ( Metrics, emptyMetrics, optimize, buildBodyLookup, countClosures
+    ( Metrics, emptyMetrics, optimize, buildBodyLookup, countClosures, unmatchedBareNames
+    , InlineNameSet, resolveInlineNames, isWhitelisted
     , functionResultCensus, reshapeCensus, reshapeReturnedUids, residualTaxonomy
     )
 
@@ -32,7 +33,9 @@ these rewrites:
 
   - beta reduction of a call whose callee is a closure literal;
   - inlining of a call to an _inline candidate_: a non-recursive `MonoDefine`
-    that is within the cost budget or whitelisted, and not blacklisted;
+    that is within the cost budget or whitelisted, and not blacklisted (lists
+    name functions as `package:Module.name`, or `Module.name` for the
+    program's own package, `Compiler.Config.parseInlineName`);
   - _loopification_ of a call that passes a lambda literal to a tail-recursive
     specialization: the call becomes a local loop, a copy of the
     specialization with the lambda in place of the parameter;
@@ -70,7 +73,8 @@ The module also exposes the censuses the inline report prints:
 `countClosures`, `residualTaxonomy`, `functionResultCensus`, `reshapeCensus` and
 `reshapeReturnedUids`, and `buildBodyLookup`, a table of inlinable bodies.
 
-@docs Metrics, emptyMetrics, optimize, buildBodyLookup, countClosures
+@docs Metrics, emptyMetrics, optimize, buildBodyLookup, countClosures, unmatchedBareNames
+@docs InlineNameSet, resolveInlineNames, isWhitelisted
 @docs functionResultCensus, reshapeCensus, reshapeReturnedUids, residualTaxonomy
 
 -}
@@ -936,7 +940,7 @@ optimize inlineConfig graph =
             buildCallGraph rNodes callEdges
 
         ctx =
-            initRewriteCtx inlineConfig rNodes registry callGraph nextLambdaIndex
+            initRewriteCtx inlineConfig (rootPackageOf registry main) rNodes registry callGraph nextLambdaIndex
 
         -- A list, so that the part of the input already folded over can be
         -- freed while the output is built.
@@ -1025,23 +1029,40 @@ optimizeNodes nodesList ctx main registry ctorShapes ports flagsDecoder flagsSch
 -- ============================================================================
 
 
-{-| Qualified names, `Module.Path.name`, of functions inlined whatever their
-cost. This is a name for `List String`: nothing checks that a name is
-well formed or names a function.
+{-| Names of functions inlined whatever their cost, each `package:Module.name`
+or, for a definition of the program being compiled, a bare `Module.name`
+(`Compiler.Config.parseInlineName`). This is a name for `List String`; an entry
+that does not parse matches nothing.
 -}
 type alias InlineWhitelist =
     List String
 
 
+{-| A whitelist or blacklist resolved for one program: `( author/project,
+Module, name )` triples, a bare name resolved to the program's own package.
+-}
+type alias InlineNameSet =
+    Set.Set ( String, String, String )
+
+
 {-| The built-in whitelist: the functions inlined whatever their cost, as long
 as they are not recursive and not blacklisted.
 
-The `Bytes.Encode` and `Bytes.Decode` entries are thin wrappers around
-elm/bytes' encoder constructors and decoder primitives, and its small
-combinators. The `Utils.Bytes.Encode`, `Utils.Bytes.Decode` and `Mlir.Bytecode`
-entries are compositions of those. Inlining them leaves the elm/bytes
-primitives themselves at each call site. `Bytes.Encode.encode` and
-`Bytes.Decode.decode` are not listed.
+The `elm/bytes` entries are thin wrappers around elm/bytes' encoder
+constructors and decoder primitives, and its small combinators. The
+`Utils.Bytes.Encode` and `Utils.Bytes.Decode` entries are bare: they are the
+compiler's own modules, and match only when the compiler itself is compiled.
+The `the-sett/elm-mlir` entries are compositions of the elm/bytes ones in the
+package the compiler writes its MLIR bytecode with. Inlining them leaves the
+elm/bytes primitives themselves at each call site. `Bytes.Encode.encode` and
+`Bytes.Decode.decode` are not listed. (The compiler-specific entries are to be
+reviewed: plans/seqdict-hash-once-per-function.md §12.)
+
+The `eco/system` entries are the SeqDict and SeqSet wrappers that hash their
+key and call the worker that takes the hash. Inlined, the `FNV.hash` call is in
+the caller, where the hash mode of `Compiler.MonoOpt.Cse` merges it with
+another hash of the same key (plans/seqdict-hash-once-per-function.md).
+`update` and `updateIfExists` are not listed: each already hashes once.
 
 A recursive function on the list is never inlined, because no recursive
 specialization is an inline candidate.
@@ -1050,38 +1071,38 @@ specialization is an inline candidate.
 defaultWhitelist : InlineWhitelist
 defaultWhitelist =
     [ -- elm/bytes encoder primitives (constructor wrappers + small helpers)
-      "Bytes.Encode.signedInt8"
-    , "Bytes.Encode.signedInt16"
-    , "Bytes.Encode.signedInt32"
-    , "Bytes.Encode.unsignedInt8"
-    , "Bytes.Encode.unsignedInt16"
-    , "Bytes.Encode.unsignedInt32"
-    , "Bytes.Encode.float32"
-    , "Bytes.Encode.float64"
-    , "Bytes.Encode.bytes"
-    , "Bytes.Encode.string"
-    , "Bytes.Encode.sequence"
-    , "Bytes.Encode.getStringWidth"
+      "elm/bytes:Bytes.Encode.signedInt8"
+    , "elm/bytes:Bytes.Encode.signedInt16"
+    , "elm/bytes:Bytes.Encode.signedInt32"
+    , "elm/bytes:Bytes.Encode.unsignedInt8"
+    , "elm/bytes:Bytes.Encode.unsignedInt16"
+    , "elm/bytes:Bytes.Encode.unsignedInt32"
+    , "elm/bytes:Bytes.Encode.float32"
+    , "elm/bytes:Bytes.Encode.float64"
+    , "elm/bytes:Bytes.Encode.bytes"
+    , "elm/bytes:Bytes.Encode.string"
+    , "elm/bytes:Bytes.Encode.sequence"
+    , "elm/bytes:Bytes.Encode.getStringWidth"
 
     -- elm/bytes decoder primitives + combinators
-    , "Bytes.Decode.signedInt8"
-    , "Bytes.Decode.signedInt16"
-    , "Bytes.Decode.signedInt32"
-    , "Bytes.Decode.unsignedInt8"
-    , "Bytes.Decode.unsignedInt16"
-    , "Bytes.Decode.unsignedInt32"
-    , "Bytes.Decode.float32"
-    , "Bytes.Decode.float64"
-    , "Bytes.Decode.bytes"
-    , "Bytes.Decode.string"
-    , "Bytes.Decode.succeed"
-    , "Bytes.Decode.fail"
-    , "Bytes.Decode.map"
-    , "Bytes.Decode.map2"
-    , "Bytes.Decode.map3"
-    , "Bytes.Decode.map4"
-    , "Bytes.Decode.map5"
-    , "Bytes.Decode.andThen"
+    , "elm/bytes:Bytes.Decode.signedInt8"
+    , "elm/bytes:Bytes.Decode.signedInt16"
+    , "elm/bytes:Bytes.Decode.signedInt32"
+    , "elm/bytes:Bytes.Decode.unsignedInt8"
+    , "elm/bytes:Bytes.Decode.unsignedInt16"
+    , "elm/bytes:Bytes.Decode.unsignedInt32"
+    , "elm/bytes:Bytes.Decode.float32"
+    , "elm/bytes:Bytes.Decode.float64"
+    , "elm/bytes:Bytes.Decode.bytes"
+    , "elm/bytes:Bytes.Decode.string"
+    , "elm/bytes:Bytes.Decode.succeed"
+    , "elm/bytes:Bytes.Decode.fail"
+    , "elm/bytes:Bytes.Decode.map"
+    , "elm/bytes:Bytes.Decode.map2"
+    , "elm/bytes:Bytes.Decode.map3"
+    , "elm/bytes:Bytes.Decode.map4"
+    , "elm/bytes:Bytes.Decode.map5"
+    , "elm/bytes:Bytes.Decode.andThen"
 
     -- Eco-internal encoder helpers
     , "Utils.Bytes.Encode.unit"
@@ -1115,10 +1136,19 @@ defaultWhitelist =
     , "Utils.Bytes.Decode.jsonPair"
     , "Utils.Bytes.Decode.oneOrMore"
 
-    -- MLIR bytecode encoder helpers used in the compiler's own .mlir output
-    , "Mlir.Bytecode.VarInt.encodeVarInt"
-    , "Mlir.Bytecode.VarInt.encodeSignedVarInt"
-    , "Mlir.Bytecode.Section.encodeSection"
+    -- MLIR bytecode encoder helpers of the-sett/elm-mlir, used in the compiler's own .mlir output
+    , "the-sett/elm-mlir:Mlir.Bytecode.VarInt.encodeVarInt"
+    , "the-sett/elm-mlir:Mlir.Bytecode.VarInt.encodeSignedVarInt"
+    , "the-sett/elm-mlir:Mlir.Bytecode.Section.encodeSection"
+
+    -- eco/system SeqDict and SeqSet wrappers that hash their key (see the docstring)
+    , "eco/system:SeqDict.get"
+    , "eco/system:SeqDict.member"
+    , "eco/system:SeqDict.insert"
+    , "eco/system:SeqDict.remove"
+    , "eco/system:SeqSet.member"
+    , "eco/system:SeqSet.insert"
+    , "eco/system:SeqSet.remove"
     ]
 
 
@@ -1135,17 +1165,108 @@ globalToQualifiedName global =
             Nothing
 
 
-{-| Returns whether `global`'s qualified name is in `whitelist`. The blacklist
-is checked with it too.
+{-| Returns whether `global` is in `names`, a resolved whitelist or blacklist.
+A record accessor never is. (Exposed, with `resolveInlineNames`, for
+tests/Compiler/MonoOpt/InlineSimplifyWhitelistTest.elm.)
 -}
-isWhitelisted : InlineWhitelist -> Mono.Global -> Bool
-isWhitelisted whitelist global =
-    case globalToQualifiedName global of
-        Just qualifiedName ->
-            List.member qualifiedName whitelist
+isWhitelisted : InlineNameSet -> Mono.Global -> Bool
+isWhitelisted names global =
+    case global of
+        Mono.Global (ModuleName.Canonical ( author, project ) moduleName) name ->
+            Set.member ( author ++ "/" ++ project, moduleName, name ) names
 
-        Nothing ->
+        Mono.Accessor _ ->
             False
+
+
+{-| Returns `entries` resolved against `rootPackage` (`author/project`), the
+package a bare name means. An entry that does not parse is left out.
+-}
+resolveInlineNames : String -> List String -> InlineNameSet
+resolveInlineNames rootPackage entries =
+    List.foldl
+        (\entry acc ->
+            case Config.parseInlineName entry of
+                Just n ->
+                    Set.insert ( Maybe.withDefault rootPackage n.package, n.moduleName, n.name ) acc
+
+                Nothing ->
+                    acc
+        )
+        Set.empty
+        entries
+
+
+{-| Returns the package (`author/project`) of the program's `main`, the package a
+bare whitelist or blacklist name means: `author/project` for an application.
+-}
+rootPackageOf : Mono.SpecializationRegistry -> Mono.MainInfo -> String
+rootPackageOf registry (Mono.StaticMain mainId) =
+    case Array.get mainId registry.reverseMapping |> Maybe.andThen identity of
+        Just ( Mono.Global (ModuleName.Canonical ( author, project ) _) _, _ ) ->
+            author ++ "/" ++ project
+
+        _ ->
+            "author/project"
+
+
+{-| Returns a warning for each bare `inline.whitelist` or `inline.blacklist` name
+in `inlineConfig` that names no definition of the program's own package but
+names one in another package of `graph`, suggesting the qualified form. A bare
+name means the program's own package only, so such an entry matches nothing.
+The inline report prints them.
+-}
+unmatchedBareNames : Config.InlineConfig -> MonoGraph -> List String
+unmatchedBareNames inlineConfig (MonoGraph { main, registry }) =
+    let
+        root =
+            rootPackageOf registry main
+
+        -- every ( package, Module, name ) the graph has a specialization of
+        known =
+            Array.foldl
+                (\entry acc ->
+                    case entry of
+                        Just ( Mono.Global (ModuleName.Canonical ( author, project ) moduleName) name, _ ) ->
+                            Set.insert ( author ++ "/" ++ project, moduleName, name ) acc
+
+                        _ ->
+                            acc
+                )
+                Set.empty
+                registry.reverseMapping
+
+        otherPackages moduleName name =
+            Set.foldl
+                (\( pkg, m, n ) acc ->
+                    if m == moduleName && n == name && pkg /= root then
+                        pkg :: acc
+
+                    else
+                        acc
+                )
+                []
+                known
+    in
+    List.filterMap
+        (\entry ->
+            case Config.parseInlineName entry of
+                Just { package, moduleName, name } ->
+                    if package == Nothing && not (Set.member ( root, moduleName, name ) known) then
+                        case otherPackages moduleName name of
+                            pkg :: _ ->
+                                Just ("inline: \"" ++ entry ++ "\" names no definition of this program; did you mean \"" ++ pkg ++ ":" ++ entry ++ "\"?")
+
+                            [] ->
+                                Nothing
+
+                    else
+                        Nothing
+
+                Nothing ->
+                    Nothing
+        )
+        (inlineConfig.whitelist ++ inlineConfig.blacklist)
 
 
 
@@ -1507,7 +1628,7 @@ type alias RewriteCtx =
     , kernelFactsDce : Bool
     , preserveSets : Bool
     , registry : Mono.SpecializationRegistry
-    , whitelist : InlineWhitelist
+    , whitelist : InlineNameSet
     , maxInlinesPerFunction : Int
     , maxIterations : Int
     , inlineCountThisFunction : Int
@@ -2551,18 +2672,24 @@ more than `postMonoThreshold` but no more than the larger of that and
 `hofThreshold`, and calls one of its function parameters. A candidate over
 `postMonoThreshold` and not whitelisted is exact-only, unless it is
 hof-admitted and `partialHof` is on. The whitelist is `defaultWhitelist` and
-the configured names, less the blacklisted ones.
+the configured names, less the blacklisted ones, resolved against
+`rootPackage`, the package a bare name means.
 
 -}
-initRewriteCtx : Config.InlineConfig -> Array (Maybe MonoNode) -> Mono.SpecializationRegistry -> CallGraph -> Int -> RewriteCtx
-initRewriteCtx inlineConfig nodes registry callGraph nextLambdaIndex =
+initRewriteCtx : Config.InlineConfig -> String -> Array (Maybe MonoNode) -> Mono.SpecializationRegistry -> CallGraph -> Int -> RewriteCtx
+initRewriteCtx inlineConfig rootPackage nodes registry callGraph nextLambdaIndex =
     let
         -- Effective whitelist: built-in defaults plus config additions, minus
-        -- the config blacklist (see Compiler.Config.InlineConfig).
+        -- the config blacklist (see Compiler.Config.InlineConfig), resolved
+        -- against the program's package.
         effectiveWhitelist =
             List.filter
                 (\name -> not (List.member name inlineConfig.blacklist))
                 (defaultWhitelist ++ inlineConfig.whitelist)
+                |> resolveInlineNames rootPackage
+
+        blacklistNames =
+            resolveInlineNames rootPackage inlineConfig.blacklist
 
         -- The budget of a candidate that calls a function parameter. `max`,
         -- so that it is never below the general budget.
@@ -2610,7 +2737,7 @@ initRewriteCtx inlineConfig nodes registry callGraph nextLambdaIndex =
                                             -- off the whitelist.
                                             blacklisted =
                                                 maybeGlobal
-                                                    |> Maybe.map (isWhitelisted inlineConfig.blacklist)
+                                                    |> Maybe.map (isWhitelisted blacklistNames)
                                                     |> Maybe.withDefault False
 
                                             -- Admitted only by the hof

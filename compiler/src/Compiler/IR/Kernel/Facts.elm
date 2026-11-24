@@ -533,6 +533,17 @@ rows =
             , evidence = "system-kernel-cpp/src/eco-system/Bitmap/BitmapExports.cpp:20-22"
         }
       )
+    , ( ( "Eco", "FNV", "hash" )
+        -- The value hash (design_docs/theory/runtime/value-hash.md): a bounded
+        -- read-only walk (depth 16, 256 items, every String unit once) that
+        -- allocates nothing and never runs Elm code. Only the ECO_HASH_CENSUS=1
+        -- diagnostic path uses a std::vector; cppAlloc describes normal runs.
+      , { auditedPure
+            | params = [ PBorrowed ]
+            , gcAlloc = GcNone
+            , evidence = "system-kernel-cpp/src/eco-system/FNV/FNVExports.cpp:14-16; runtime/src/allocator/ValueHash.cpp:464-468 (eco_hash_value), :307 (Hasher), :224-233 (census only)"
+        }
+      )
     , ( ( "Elm", "Utils", "notEqual" )
         -- The export is the negation of `equal`'s, so the audited fields of
         -- this row must match the `equal` row's.

@@ -1,6 +1,7 @@
 module Compiler.Config exposing
     ( EcoConfig, InlineConfig, BytesFusionConfig, LogicalTypesConfig
     , default, decoder, hash, clamp
+    , InlineName, parseInlineName
     , ReprConfig, defaultRepr
     , BorrowConfig, BorrowReify(..), CafHoistConfig, CafMemoConfig, CseConfig, GcConfig, ListConfig, LssConfig, LssStampConfig, MonoConfig, MonoEngine(..), SpecLimits, defaultLimits, defaultLss, monoEngineFromString
     )
@@ -48,6 +49,7 @@ order swap their values and still compile.
 
 @docs EcoConfig, InlineConfig, BytesFusionConfig, LogicalTypesConfig
 @docs default, decoder, hash, clamp
+@docs InlineName, parseInlineName
 @docs ReprConfig, defaultRepr
 @docs BorrowConfig, BorrowReify, CafHoistConfig, CafMemoConfig, CseConfig, GcConfig, ListConfig, LssConfig, LssStampConfig, MonoConfig, MonoEngine, SpecLimits, defaultLimits, defaultLss, monoEngineFromString
 
@@ -191,12 +193,19 @@ prints a census on stderr and cannot be set from the file.
 `enabled` is off by default. When it is on, `hash` gets `cse=1`, and a token
 for each of the two limits that differs from `default`. `report` has no token.
 
+`hashMerge`, on by default, runs the pass in its hash-only mode when `enabled`
+is off: it merges the repeated hashes (`FNV.hash`) of one value within a
+function, and nothing else (plans/seqdict-hash-once-per-function.md). When it
+is on, `hash` gets `hcse=1`. With `enabled` on, hashes are merged as part of
+the general pass whatever `hashMerge` says.
+
 -}
 type alias CseConfig =
     { enabled : Bool
     , report : Bool
     , minCost : Int
     , maxPerDef : Int
+    , hashMerge : Bool
     }
 
 
@@ -421,7 +430,11 @@ The rest belong to `MonoInlineSimplify`:
     in `blacklist` are removed from the result and never inlined. A
     whitelisted function is exempt from the cost budget; being listed is not
     needed for a function within the budget to be a candidate. A recursive
-    specialization is never a candidate, listed or not.
+    specialization is never a candidate, listed or not. A name is
+    `package:Module.name`, such as `elm/core:List.map`, or a bare
+    `Module.name` for a definition of the program being compiled (its own
+    package: `author/project` for an application); see `parseInlineName`.
+    `clamp` drops a name that does not parse, with a warning.
   - `hofThreshold` is a wider budget for a function that calls one of its
     parameters: the budget for such a function is the larger of it and
     `postMonoThreshold`. A function admitted only by this budget is inlined
@@ -584,7 +597,7 @@ default =
         , aliasForward = True
         }
     , callPurityAttrs = True
-    , cse = { enabled = False, report = False, minCost = 5, maxPerDef = 64 }
+    , cse = { enabled = False, report = False, minCost = 5, maxPerDef = 64, hashMerge = True }
     , gc = { preLink = True, report = False }
     , bytesFusion = { enabled = True }
     , logicalTypes = { customMaxFields = 8 }
@@ -726,10 +739,11 @@ listDecoder =
 -}
 cseDecoder : D.Decoder x CseConfig
 cseDecoder =
-    D.pure (\enabled minCost maxPerDef -> CseConfig enabled default.cse.report minCost maxPerDef)
+    D.pure (\enabled minCost maxPerDef hashMerge -> CseConfig enabled default.cse.report minCost maxPerDef hashMerge)
         |> D.apply (D.optionalField "enabled" D.bool default.cse.enabled)
         |> D.apply (D.optionalField "minCost" D.int default.cse.minCost)
         |> D.apply (D.optionalField "maxPerDef" D.int default.cse.maxPerDef)
+        |> D.apply (D.optionalField "hashMerge" D.bool default.cse.hashMerge)
 
 
 {-| A decoder for the `inline` object, which has a key for every field of
@@ -927,8 +941,9 @@ monoEngineFromString s =
 {-| Returns `cfg` with every setting that has hard bounds brought within them,
 together with a warning for each setting it changed.
 
-The only such setting is `logicalTypes.customMaxFields`, which is brought
-within 1 to 24.
+`logicalTypes.customMaxFields` is brought within 1 to 24, and an
+`inline.whitelist` or `inline.blacklist` entry that `parseInlineName` rejects
+is dropped.
 
 -}
 clamp : EcoConfig -> ( EcoConfig, List String )
@@ -936,23 +951,128 @@ clamp cfg =
     let
         cmf =
             cfg.logicalTypes.customMaxFields
-    in
-    if cmf < 1 || cmf > 24 then
-        let
-            clamped =
-                Basics.clamp 1 24 cmf
-        in
-        ( { cfg | logicalTypes = { customMaxFields = clamped } }
-        , [ "eco-config.json: logicalTypes.customMaxFields "
-                ++ String.fromInt cmf
-                ++ " is out of range [1,24]; clamped to "
-                ++ String.fromInt clamped
-                ++ "."
-          ]
-        )
 
-    else
-        ( cfg, [] )
+        ( cfg1, cmfWarnings ) =
+            if cmf < 1 || cmf > 24 then
+                let
+                    clamped =
+                        Basics.clamp 1 24 cmf
+                in
+                ( { cfg | logicalTypes = { customMaxFields = clamped } }
+                , [ "eco-config.json: logicalTypes.customMaxFields "
+                        ++ String.fromInt cmf
+                        ++ " is out of range [1,24]; clamped to "
+                        ++ String.fromInt clamped
+                        ++ "."
+                  ]
+                )
+
+            else
+                ( cfg, [] )
+
+        ( whitelist, whitelistWarnings ) =
+            keepInlineNames "whitelist" cfg1.inline.whitelist
+
+        ( blacklist, blacklistWarnings ) =
+            keepInlineNames "blacklist" cfg1.inline.blacklist
+
+        inline =
+            cfg1.inline
+    in
+    ( { cfg1 | inline = { inline | whitelist = whitelist, blacklist = blacklist } }
+    , cmfWarnings ++ whitelistWarnings ++ blacklistWarnings
+    )
+
+
+{-| Returns the entries of the inline list `field` that `parseInlineName`
+accepts, and a warning for each one it rejects.
+-}
+keepInlineNames : String -> List String -> ( List String, List String )
+keepInlineNames field entries =
+    List.foldr
+        (\entry ( kept, warnings ) ->
+            case parseInlineName entry of
+                Just _ ->
+                    ( entry :: kept, warnings )
+
+                Nothing ->
+                    ( kept
+                    , ("eco-config.json: inline."
+                        ++ field
+                        ++ " entry \""
+                        ++ entry
+                        ++ "\" is not package:Module.name or Module.name; ignored."
+                      )
+                        :: warnings
+                    )
+        )
+        ( [], [] )
+        entries
+
+
+
+-- INLINE NAMES
+
+
+{-| An inliner whitelist or blacklist entry, parsed: the package as
+`author/project`, or `Nothing` for a bare name, which names a definition of
+the program being compiled; the module; and the definition.
+-}
+type alias InlineName =
+    { package : Maybe String
+    , moduleName : String
+    , name : String
+    }
+
+
+{-| Parses an inliner whitelist or blacklist entry: `package:Module.name`, such
+as `elm/core:List.map`, or a bare `Module.name`. The module is everything before
+the last `.`.
+
+It answers `Nothing` for anything else: no `.`, an empty module, module part or
+name, more than one `:`, or a package that is not two non-empty names around one
+`/`. It lives here rather than beside the inliner so that this module, which
+the inliner imports, can check the entries of `eco-config.json` without
+importing the inliner.
+
+-}
+parseInlineName : String -> Maybe InlineName
+parseInlineName entry =
+    let
+        qualified pkg qn =
+            case List.reverse (String.split "." qn) of
+                name :: revModule ->
+                    let
+                        moduleParts =
+                            List.reverse revModule
+                    in
+                    if name == "" || List.isEmpty moduleParts || List.any String.isEmpty moduleParts then
+                        Nothing
+
+                    else
+                        Just { package = pkg, moduleName = String.join "." moduleParts, name = name }
+
+                [] ->
+                    Nothing
+    in
+    case String.split ":" entry of
+        [ qn ] ->
+            qualified Nothing qn
+
+        [ pkg, qn ] ->
+            case String.split "/" pkg of
+                [ author, project ] ->
+                    if author == "" || project == "" then
+                        Nothing
+
+                    else
+                        qualified (Just pkg) qn
+
+                _ ->
+                    Nothing
+
+        _ ->
+            Nothing
 
 
 {-| Returns the cache key for `cfg`: a version token, then tokens for its
@@ -1293,6 +1413,12 @@ hash cfg =
                )
             ++ (if cfg.hashIntrinsic then
                     [ "hash=1" ]
+
+                else
+                    []
+               )
+            ++ (if cfg.cse.hashMerge then
+                    [ "hcse=1" ]
 
                 else
                     []

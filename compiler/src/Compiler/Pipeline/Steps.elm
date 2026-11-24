@@ -686,14 +686,14 @@ inline ecoConfig monoGraph0 =
     let
         chunkBlacklist =
             if ecoConfig.list.chunks then
-                [ "List.reverse", "List.append", "List.concat", "List.take", "List.drop" ]
+                [ "elm/core:List.reverse", "elm/core:List.append", "elm/core:List.concat", "elm/core:List.take", "elm/core:List.drop" ]
 
             else
                 []
 
         mapTemplateBlacklist =
             if ecoConfig.list.mapTemplate then
-                [ "List.map" ]
+                [ "elm/core:List.map" ]
 
             else
                 []
@@ -870,7 +870,8 @@ globalOptCore ecoConfig simplifiedGraph =
 
 
 {-| Returns the graph after common subexpression elimination of pure calls
-(`Compiler.MonoOpt.Cse`) when `cse.enabled` is on, and starts the
+(`Compiler.MonoOpt.Cse`) when `cse.enabled` is on, or of hash calls only when
+`cse.hashMerge` is on instead, and starts the
 `GlobalOptResult` with the global optimization statistics it is given.
 
 Under `cse.report`, the CSE census is taken of the input graph, before
@@ -890,10 +891,17 @@ cse ecoConfig ( goGraph, goStats ) =
             else
                 Nothing
 
+        -- General CSE merges hashes too; otherwise the hash-only mode, on by
+        -- default, merges repeated hashes of one value.
         ( cseGraph, cseStats ) =
             if cseCfg.enabled then
                 MonoCse.run
-                    { minCost = cseCfg.minCost, maxPerDef = cseCfg.maxPerDef }
+                    { minCost = cseCfg.minCost, maxPerDef = cseCfg.maxPerDef, mode = MonoCse.General }
+                    goGraph
+
+            else if cseCfg.hashMerge then
+                MonoCse.run
+                    { minCost = cseCfg.minCost, maxPerDef = cseCfg.maxPerDef, mode = MonoCse.HashOnly }
                     goGraph
 
             else

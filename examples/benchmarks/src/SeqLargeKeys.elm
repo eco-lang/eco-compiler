@@ -1,4 +1,4 @@
-module SeqLargeKeys exposing (benchCollide, benchIntern, benchLongKey, benchLongKeyReuse, benchPrefixKey, benchPrefixKeyFresh)
+module SeqLargeKeys exposing (benchCollide, benchIntern, benchLongKey, benchLongKeyReuse, benchMultiLookup, benchPrefixKey, benchPrefixKeyFresh)
 
 {-| `TypeKeys`' large-key workloads on eco/system's `SeqDict`, where every operation hashes the
 whole key with `FNV.hash` (up to its bounds) instead of comparing it.
@@ -26,6 +26,14 @@ whole key with `FNV.hash` (up to its bounds) instead of comparing it.
     4,096 units) gives them all one hash and one collision list, so that every insert and lookup
     compares the key with the keys before it, each comparison reading 4,100 characters. Checked in
     closed form.
+  - `benchMultiLookup` (seqdict-multi-lookup) uses each of `size` type-tree keys
+    (`TypeKeys.topOfCode`, all distinct) several times in one function: `member` in three dicts
+    holding every 2nd, 3rd and 5th key (`member k d1 && member k d2 && member k d3`), then a `get`
+    and, on a miss, an `insert` into a fourth dict. Natively each of those operations hashes the key
+    again unless the compiler merges the hashes of one key within the function
+    (plans/seqdict-hash-once-per-function.md). Checked in closed form: the hit count is the number
+    of indexes divisible by 30, and the fourth dict ends up with every key, its values summing to
+    the triangle number.
 
 -}
 
@@ -244,4 +252,59 @@ benchCollide n =
     (SeqDict.size d == n)
         && (hits == n)
         && (SeqDict.foldl (\_ v s -> s + v) 0 d == TypeKeys.triangle n)
+
+
+benchMultiLookup : Int -> Bool
+benchMultiLookup n =
+    let
+        -- distinct codes below 20^6, so distinct trees (7919 is prime to 20^6)
+        keyOf i =
+            TypeKeys.topOfCode 20 (modBy 64000000 (i * 7919 + 13))
+
+        indexed =
+            List.map (\i -> ( i, keyOf i )) (List.range 0 (n - 1))
+
+        every m =
+            List.foldl
+                (\( i, k ) acc ->
+                    if modBy m i == 0 then
+                        SeqDict.insert k i acc
+
+                    else
+                        acc
+                )
+                SeqDict.empty
+                indexed
+
+        d1 =
+            every 2
+
+        d2 =
+            every 3
+
+        d3 =
+            every 5
+
+        ( hits, all ) =
+            List.foldl
+                (\( i, k ) ( h, d ) ->
+                    ( if SeqDict.member k d1 && SeqDict.member k d2 && SeqDict.member k d3 then
+                        h + 1
+
+                      else
+                        h
+                    , case SeqDict.get k d of
+                        Just _ ->
+                            d
+
+                        Nothing ->
+                            SeqDict.insert k i d
+                    )
+                )
+                ( 0, d1 )
+                indexed
+    in
+    (hits == (n + 29) // 30)
+        && (SeqDict.size all == n)
+        && (SeqDict.foldl (\_ v s -> s + v) 0 all == TypeKeys.triangle n)
 

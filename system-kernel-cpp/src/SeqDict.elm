@@ -12,6 +12,10 @@ module SeqDict exposing
 `Debug.toString` of a `SeqDict` shows its internal structure, which is not specified and may change;
 print `toList` instead.
 
+Each operation hashes its key with `Hash.hash`. In native code a function that uses one key in
+several of `get`, `member`, `insert` and `remove` (on one dict or several) hashes it once: the
+compiler inlines those operations and merges the repeated hashes of the key.
+
 
 # Seq Dictionary
 

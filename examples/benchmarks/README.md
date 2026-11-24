@@ -81,7 +81,8 @@ the figure to watch: bytes-static and bytes-dynamic, and list-walk-map and list-
 built by `List.map` against an equal one built by `List.take`). decoded-snapshot is mostly
 about its peak RSS. string-eq-prefix, string-eq-same, string-compare-prefix and their SeqDict
 counterparts (seqdict-prefixkey, seqdict-prefixkey-fresh, seqdict-collide) compare and hash long
-Strings that share a long prefix, the worst case for both. The seqdict-* and seqset-* workloads exercise eco/system's `SeqDict` and
+Strings that share a long prefix, the worst case for both. seqdict-multi-lookup uses one type-tree key in several
+SeqDict operations per function, the case where the compiler can hash a key once. The seqdict-* and seqset-* workloads exercise eco/system's `SeqDict` and
 `SeqSet`, which the official compiler cannot build, so they run on eco's two backends only and
 their elm column shows `-`; where one mirrors a portable workload (seqdict-int and dict-int,
 seqset-distinct and set-distinct, and so on) it does the same work at the same default size, so

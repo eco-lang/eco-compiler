@@ -94,6 +94,15 @@ The padding is told apart from real zero units by `n`. A String costs time linea
 implementation streams the String's contiguous segments (`forEachSegmentEx`) through a 32-unit
 buffer, widening UTF-8 bytes four at a time, so every form gives the same number.
 
+## One hash per key per function
+
+Natively, the eco/system SeqDict and SeqSet wrappers that hash their key (`get`, `member`,
+`insert`, `remove`) are always inlined, and the hash mode of the Mono CSE pass
+(`Compiler.MonoOpt.Cse`, `cse.hashMerge`, on by default) binds repeated `FNV.hash` calls of one
+value in a function once (invariant CSE_001; plans/seqdict-hash-once-per-function.md). It runs
+before code generation, so a tuple or record key's typed chain below is generated once too. The
+merge changes no hash value, only how many times one is computed.
+
 ## Typed hashing (`eco.hash.mix` chains, D2)
 
 `Hash.hash` at a known tuple or record type is compiled to a chain that computes exactly the walker's

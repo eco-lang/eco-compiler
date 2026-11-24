@@ -20,9 +20,9 @@ compiler chose to lay the value out in memory, so they differ between the native
 backends, between programs, between compiler versions and between build modes. Never store a hash
 or send it elsewhere; compute it again where it is needed.
 
-The hash looks at a bounded part of a large value (at most 4,096 units of a `String`, 256 elements,
-entries or fields in all, and 16 levels of nesting), so values that differ only beyond those bounds
-hash alike. Functions, `Bytes` and other values that `==` does not compare by content hash by their
+The hash reads every unit of a `String`, but only a bounded part of a large structure (256
+elements, entries or fields in all, and 16 levels of nesting), so structures that differ only
+beyond those bounds hash alike. Functions, `Bytes` and other values that `==` does not compare by content hash by their
 kind only.
 
 -}

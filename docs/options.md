@@ -219,7 +219,8 @@ Parsing classes (inputs are trimmed and lower-cased unless stated otherwise):
 | `ECO_KERNEL_COST_ALLOC` | INT >= 0; 8 | Tuning: cost of a CAlloc kernel call | compiler/src/Builder/Eco/Config.elm:421 |
 | `ECO_KERNEL_COST_HOF` | INT >= 0; 20 | Tuning: cost of a CHof kernel call | compiler/src/Builder/Eco/Config.elm:426 |
 | `ECO_CSE` | `1\|true\|yes\|on` / `0\|false\|no\|off`; off | Feature: Mono-level CSE of pure calls (hash `cse=`) | compiler/src/Builder/Eco/Config.elm:431 |
-| `ECO_CSE_REPORT` | same as ECO_CSE; off | Census: CSE C1 census to stderr (no-hash) | compiler/src/Builder/Eco/Config.elm:436 |
+| `ECO_CSE_REPORT` | same as ECO_CSE; off | Census: CSE C1 census to stderr, and the `mono-cse:` stats line of either mode (no-hash). Without it no stats line is printed, also under `ECO_CSE=1` | compiler/src/Builder/Eco/Config.elm:436 |
+| `ECO_HASH_CSE` | same as ECO_CSE; **on** | Feature: the CSE hash mode, `cse.hashMerge`: repeated `FNV.hash` calls of one value in a function are merged (plans/seqdict-hash-once-per-function.md) (hash `hcse=`) | compiler/src/Builder/Eco/Config.elm |
 | `ECO_CSE_MIN_COST` | INT >= 0; 5 | Tuning: cost floor for a CSE candidate (hash only when CSE is on) | compiler/src/Builder/Eco/Config.elm:441 |
 | `ECO_CSE_MAX_PER_DEF` | INT >= 0; 64 | Tuning: cap on merge groups per definition (hash only when CSE is on) | compiler/src/Builder/Eco/Config.elm:446 |
 | `ECO_CALL_PURITY` | B4; on | Feature: stamps `eco.cse_safe` on droppable direct kernel calls (hash `cpur=`) | compiler/src/Builder/Eco/Config.elm:451 |
@@ -243,7 +244,7 @@ Parsing classes (inputs are trimmed and lower-cased unless stated otherwise):
 | Name | Values / default | Effect | Source |
 |---|---|---|---|
 | `inline.{preMonoThreshold,postMonoThreshold,etaThreshold}` | int; 10 / 10 / 10 | Per-pass size budgets | compiler/src/Compiler/Config.elm:790-792 |
-| `inline.whitelist` / `inline.blacklist` | string list; [] / [] | Whitelist is added to the built-in `defaultWhitelist` (MonoInlineSimplify.elm:990, Bytes.Encode primitives and similar); blacklist is subtracted | compiler/src/Compiler/Config.elm:793-794 |
+| `inline.whitelist` / `inline.blacklist` | string list; [] / [] | Whitelist is added to the built-in `defaultWhitelist` (`Compiler/MonoOpt/InlineSimplify.elm`: elm/bytes primitives, the eco/system SeqDict/SeqSet wrappers and similar); blacklist is subtracted. An entry is `package:Module.name` (`elm/core:List.map`) or a bare `Module.name`, which names a definition of the program being compiled only; a malformed entry is dropped with a warning, and `inline.report` warns about a bare name that matches only another package | compiler/src/Compiler/Config.elm (`parseInlineName`) |
 | `inline.maxPerFunction` | int; 1000 | Maximum inlines per function | compiler/src/Compiler/Config.elm:795 |
 | `inline.{pre,post}MonoFixpointIterations` | int; 4 / 4 | Round counts | compiler/src/Compiler/Config.elm:796-797 |
 | `inline.hofThreshold` | int; 25 | HOF budget | compiler/src/Compiler/Config.elm:798 |
@@ -263,7 +264,7 @@ Parsing classes (inputs are trimmed and lower-cased unless stated otherwise):
 | `mono.limits.{specTypeNodes,specBreadth}` | 400000 / 50000 | Watchdogs | compiler/src/Compiler/Config.elm:909-910 |
 | `borrow.{enabled,reify,report,validate}` | false / `"off"` (`off\|rc`) / false / false | Borrow. **`validate` is JSON-only** | compiler/src/Compiler/Config.elm:735-738 |
 | `list.{chunks,consIntrinsic,mapTemplate}` | true / true / false | `list.report` is env-only | compiler/src/Compiler/Config.elm:769-771 |
-| `cse.{enabled,minCost,maxPerDef}` | false / 5 / 64 | `cse.report` is env-only | compiler/src/Compiler/Config.elm:782-784 |
+| `cse.{enabled,minCost,maxPerDef,hashMerge}` | false / 5 / 64 / true | `cse.report` is env-only; `hashMerge` is the hash-only mode (`ECO_HASH_CSE`) | compiler/src/Compiler/Config.elm |
 | `aggPromote`, `ctorInline`, `sretResults`, `psplitParams`, `sretFresh`, `sretTailFuncs`, `stringLengthOp`, `appendSplit`, `stringOrderIntrinsic`, `valueEq`, `kernelGcLeaf`, `callPurityAttrs` | bool; all true | Top-level feature switches (see the env rows) | compiler/src/Compiler/Config.elm:741-752 |
 | `repr.eraseWrappers`, `repr.eraseUnboxed`, `repr.nullableMaybe`, `repr.nullableUser`, `repr.knownCtorCase`, `repr.sretCtors`, `repr.validate` | bool; all true but `knownCtorCase` and `validate` | The representation switches of plans/constructor-representation-levels.md (see the env rows) | compiler/src/Compiler/Config.elm (`defaultRepr`) |
 | `repr.census` | string; unset | The constructor census table path (see `ECO_CTOR_CENSUS`) | compiler/src/Compiler/Config.elm |

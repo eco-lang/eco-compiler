@@ -45,9 +45,10 @@ The tests establish:
     `gcLeafEligibleFor` and `droppableFor` of its key agree with
     `gcLeafEligible` and `droppable` of its record, and all three key forms
     (with `hoistableFor`) are False for the unlisted `( "Elm", "Platform", "sendToApp" )`.
-  - Test 7: the table has 77 rows and 77 distinct keys (57, plus the 18 audited
+  - Test 7: the table has 78 rows and 78 distinct keys (57, plus the 18 audited
     `VirtualDom` rows of plans/elm-html-native-kernel.md P8, plus eco/system's two `Bitmap` rows of
-    plans/seq-data-structures-performance.md A1).
+    plans/seq-data-structures-performance.md A1, plus eco/system's `FNV.hash` row of
+    plans/seqdict-hash-once-per-function.md A2).
   - Test 8: the kernel prefix is part of the key (SD-16,
     plans/kernel-table-prefix-keys.md). A row is found only under its own
     kernel's prefix, by `lookup` and by `lookupSymbol` alike: `Utils.equal` and
@@ -149,7 +150,7 @@ suite =
                     ]
                     ()
         , Test.test "7. the table has the expected size and no duplicate keys" <|
-            \_ -> Expect.equal ( 77, 77 ) ( List.length KF.rows, List.length (uniqueKeys KF.rows) )
+            \_ -> Expect.equal ( 78, 78 ) ( List.length KF.rows, List.length (uniqueKeys KF.rows) )
         , Test.test "8. the kernel prefix is part of the key (SD-16)" <|
             \_ ->
                 Expect.all
@@ -209,13 +210,15 @@ that `not` returns one of the embedded `True` and `False` constants and that
 `round`'s only export takes and returns unboxed numbers, so neither allocates.
 The two `VirtualDom` URI filters return their argument or the embedded empty
 string, copying it only into C++ memory, so they do not allocate either.
-eco/system's two `Bitmap` kernels count bits of raw Ints.
+eco/system's two `Bitmap` kernels count bits of raw Ints, and its `FNV.hash` walks its
+argument without allocating (plans/seqdict-hash-once-per-function.md A2).
 
 -}
 stampable : List ( String, String, String )
 stampable =
     [ ( "Eco", "Bitmap", "index" )
     , ( "Eco", "Bitmap", "popCount32" )
+    , ( "Eco", "FNV", "hash" )
     , ( "Elm", "Basics", "not" )
     , ( "Elm", "Basics", "round" )
     , ( "Elm", "Utils", "equal" )
@@ -242,8 +245,8 @@ stampable =
 Each of these rows carries a devirtualization registration, which lets a call
 site call the kernel directly rather than through a closure, and a filled-in
 `params` list. The shim answers for any row whose `params` is non-empty, so
-these kernels are among its answers. The two `Bitmap` rows have no registration, but their
-`params` are filled in, so the shim answers for them too. Test 4 checks only that the shim answers
+these kernels are among its answers. The two `Bitmap` rows and the `FNV.hash` row have no
+registration, but their `params` are filled in, so the shim answers for them too. Test 4 checks only that the shim answers
 for them; test 3 does not check their signatures.
 
 -}
@@ -251,6 +254,7 @@ wave3BorrowAdditions : List ( String, String, String )
 wave3BorrowAdditions =
     [ ( "Eco", "Bitmap", "index" )
     , ( "Eco", "Bitmap", "popCount32" )
+    , ( "Eco", "FNV", "hash" )
     , ( "Elm", "Basics", "not" )
     , ( "Elm", "Basics", "add" )
     , ( "Elm", "Basics", "round" )

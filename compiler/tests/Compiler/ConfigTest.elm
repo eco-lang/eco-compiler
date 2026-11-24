@@ -19,8 +19,19 @@ What the tests establish:
     decodes to `default`'s engine.
   - An explicit `"engine": "subst"` decodes to `EngineSubst`.
 
+It also tests inliner whitelist and blacklist names
+(plans/seqdict-hash-once-per-function.md, A1):
+
+  - `Config.parseInlineName` reads `package:Module.name` and a bare
+    `Module.name` (module = everything before the last `.`), and rejects an
+    entry with no `.`, an empty module part or name, more than one `:`, or a
+    package that is not two non-empty names around one `/`.
+  - `Config.clamp` drops a malformed `inline.whitelist` or `inline.blacklist`
+    entry with one warning each and keeps the well-formed ones in order.
+  - `cse.hashMerge` is on by default and decodes from the file.
+
 Among what is not tested: the `"solver"` and `"diff"` engine strings, an
-unrecognized engine string, and every setting other than `mono.engine`.
+unrecognized engine string, and every other setting.
 
 -}
 
@@ -74,4 +85,79 @@ suite =
             \_ ->
                 engineOf "{ \"mono\": { \"engine\": \"subst\" } }"
                     |> Expect.equal (Ok Config.EngineSubst)
+        , inlineNameTests
+        , Test.test "cse.hashMerge is on by default and decodes from the file" <|
+            \_ ->
+                Expect.equal ( True, Ok False )
+                    ( Config.default.cse.hashMerge
+                    , decodeWith (\cfg -> cfg.cse.hashMerge) "{ \"cse\": { \"hashMerge\": false } }"
+                    )
+        ]
+
+
+{-| Returns `f` of the configuration `Config.decoder` reads from `src`, or an
+error message quoting `src`.
+-}
+decodeWith : (Config.EcoConfig -> a) -> String -> Result String a
+decodeWith f src =
+    let
+        decoder : D.Decoder () Config.EcoConfig
+        decoder =
+            Config.decoder
+    in
+    case D.fromByteString decoder src of
+        Ok cfg ->
+            Ok (f cfg)
+
+        Err _ ->
+            Err ("eco-config did not decode: " ++ src)
+
+
+{-| The `parseInlineName` and `clamp` tests of the module docstring.
+-}
+inlineNameTests : Test
+inlineNameTests =
+    let
+        parses entry expected =
+            Test.test ("parses " ++ entry) <|
+                \_ -> Expect.equal expected (Config.parseInlineName entry)
+
+        rejects entry =
+            Test.test ("rejects " ++ entry) <|
+                \_ -> Expect.equal Nothing (Config.parseInlineName entry)
+
+        base =
+            Config.default
+
+        inline =
+            base.inline
+
+        withLists white black =
+            { base | inline = { inline | whitelist = white, blacklist = black } }
+    in
+    Test.describe "inline names"
+        [ parses "elm/core:List.map" (Just { package = Just "elm/core", moduleName = "List", name = "map" })
+        , parses "eco/system:SeqDict.get" (Just { package = Just "eco/system", moduleName = "SeqDict", name = "get" })
+        , parses "the-sett/elm-mlir:Mlir.Bytecode.VarInt.encodeVarInt"
+            (Just { package = Just "the-sett/elm-mlir", moduleName = "Mlir.Bytecode.VarInt", name = "encodeVarInt" })
+        , parses "Utils.Bytes.Encode.int" (Just { package = Nothing, moduleName = "Utils.Bytes.Encode", name = "int" })
+        , rejects "map"
+        , rejects "List."
+        , rejects ".map"
+        , rejects "List..map"
+        , rejects "elm/core:"
+        , rejects "elm/core:map"
+        , rejects "a:b:List.map"
+        , rejects "core:List.map"
+        , rejects "elm/:List.map"
+        , rejects "elm/core/x:List.map"
+        , Test.test "clamp drops malformed entries with a warning each" <|
+            \_ ->
+                let
+                    ( cfg, warnings ) =
+                        Config.clamp (withLists [ "elm/core:List.map", "bad", "M.f" ] [ "x:y" ])
+                in
+                Expect.equal
+                    ( [ "elm/core:List.map", "M.f" ], [], 2 )
+                    ( cfg.inline.whitelist, cfg.inline.blacklist, List.length warnings )
         ]

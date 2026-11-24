@@ -447,6 +447,11 @@ applyEnvOverrides cfg =
                     |> Task.map (\v -> applyCseMaxPerDefOverride v cfgeco_cse_max_per_def)
             )
         |> Task.andThen
+            (\cfgeco_hash_cse ->
+                (Utils.envLookupEnv "ECO_HASH_CSE" |> Task.mapError never)
+                    |> Task.map (\v -> applyHashCseOverride v cfgeco_hash_cse)
+            )
+        |> Task.andThen
             (\cfgCpur ->
                 (Utils.envLookupEnv "ECO_CALL_PURITY" |> Task.mapError never)
                     |> Task.map (\v -> applyCallPurityOverride v cfgCpur)
@@ -677,6 +682,14 @@ applyGcBoolOverride set maybeVal cfg =
 
             else
                 cfg
+
+
+{-| Returns `cfg` with `cse.hashMerge` set from `ECO_HASH_CSE`, which accepts what
+`applyCseBoolOverride` describes.
+-}
+applyHashCseOverride : Maybe String -> EcoConfig -> EcoConfig
+applyHashCseOverride =
+    applyCseBoolOverride (\b c -> { c | hashMerge = b })
 
 
 {-| Returns `cfg` with `cse.enabled` set from `ECO_CSE`, which accepts what

@@ -1071,7 +1071,9 @@ unreferenced (`Compiler.Pipeline.Steps.prune`); otherwise the graph is
 unchanged. It checks the result with `validatePruned`.
 
 Under `inline.report` it first writes the inline and prune census lines, taken
-of the pruned graph.
+of the pruned graph, and a warning for each bare whitelist or blacklist name
+that matches only another package's definition
+(`MonoInlineSimplify.unmatchedBareNames`).
 
 -}
 pruneAndReportInline : Config.EcoConfig -> ( Mono.MonoGraph, MonoInlineSimplify.Metrics ) -> Task Exit.Generate Mono.MonoGraph
@@ -1086,6 +1088,10 @@ pruneAndReportInline ecoConfig ( inlinedGraph, inlineMetrics ) =
                 (renderInlineReportWith ecoConfig.inline inlineMetrics simplifiedGraph
                     ++ "\n"
                     ++ renderPruneReport inlinedGraph simplifiedGraph
+                    ++ String.concat
+                        (List.map (\w -> "\n" ++ w)
+                            (MonoInlineSimplify.unmatchedBareNames ecoConfig.inline inlinedGraph)
+                        )
                 )
             )
             |> Task.andThen (\_ -> validatePruned ecoConfig simplifiedGraph)
@@ -1704,7 +1710,7 @@ globalOptReportStep cfg ( hoistedGraph, carry ) =
     )
         |> Task.andThen
             (\_ ->
-                if cseCfg.enabled then
+                if cseCfg.report && (cseCfg.enabled || cseCfg.hashMerge) then
                     writeLnErr (MonoCse.renderStats cseStats)
 
                 else
