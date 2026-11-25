@@ -2827,15 +2827,22 @@ bound to, recursively: first from
 resolveFusedLets : Dict.Dict Name.Name Mono.MonoExpr -> Ctx.Context -> Mono.MonoExpr -> Mono.MonoExpr
 resolveFusedLets fusedLets ctx expr =
     let
-        -- A name a destructuring inside `expr` binds is defined where it is
-        -- used, so it is not looked up elsewhere: a let of the same name in
-        -- some inlined body is a different variable.
+        -- A name a destructuring or a let inside `expr` binds is defined
+        -- where it is used, so it is not looked up elsewhere: a let of the
+        -- same name in some inlined body is a different variable, perhaps of
+        -- another type.
         destructured : Set.Set Name.Name
         destructured =
             MonoTraverse.foldExpr
                 (\e acc ->
                     case e of
                         Mono.MonoDestruct (Mono.MonoDestructor n _ _) _ _ ->
+                            Set.insert n acc
+
+                        Mono.MonoLet (Mono.MonoDef n _) _ _ ->
+                            Set.insert n acc
+
+                        Mono.MonoLet (Mono.MonoTailDef n _ _) _ _ ->
                             Set.insert n acc
 
                         _ ->
