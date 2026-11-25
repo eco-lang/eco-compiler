@@ -8,15 +8,16 @@
 // design_docs/theory/runtime/value-hash.md defines it exactly (definition v2). The walk follows
 // content, never representation, so that equal values hash alike whatever form they are stored in:
 //   - Int, Float and Char hash their value, whether boxed or unboxed in their container;
-//   - a String is hashed on its own (`stringHash`: its length and UTF-16 units, whatever its form) and
-//     mixed in as one word, and the Empty constant hashes as the String "" does;
+//   - a String is hashed on its own (`stringHash`: CRC32C of its UTF-16 units and its length, whatever
+//     its form, definition v4) and mixed in as one word, and the Empty constant hashes as the String ""
+//     does;
 //   - a list hashes its elements, whatever mix of cells and chunk views its spine is;
 //   - a Dict hashes its key-value pairs in key order, as `==` compares Dicts by content, not tree shape;
 //   - a SeqDict hashes its key-value pairs in insertion order, as `==` compares them (SeqDictLayout.hpp).
 //
 // The walk is bounded so that a hash costs O(1) in the size of a large structure: at most `kMaxDepth`
 // levels of nesting, and `kMaxItems` list elements, Dict entries and fields in all. Every String is
-// hashed whole (definition v3), so a String costs time linear in its length, as `==` on it does. The
+// hashed whole (definition v4), so a String costs time linear in its length, as `==` on it does. The
 // bounds count content only, so they cut equal values at the same place. The
 // walk allocates nothing, so no collection can run and no object moves while it runs.
 //
@@ -25,6 +26,7 @@
 #include "ValueHash.hpp"
 
 #include "Allocator.hpp"
+#include "Crc32c.hpp"
 #include "HeapHelpers.hpp"
 #include "SeqDictLayout.hpp"
 #include "StringOps.hpp"
@@ -74,128 +76,45 @@ u32 fmix32(u32 h) {
 // value-hash.md).
 u32 nonZero(u32 h) { return h == 0 ? 1u : h; }
 
-// The String's own finished hash (definition v3, design_docs/theory/runtime/value-hash.md): every
-// UTF-16 unit of the String (a UTF-8 form's bytes are its units), whatever its length and form. The
-// units, zero-padded to a multiple of 32, are read as little-endian 64-bit words of four units; each
-// round of 32 units (words w0..w7) steps four independent lanes, lane j = mum(w[2j] ^ kWordKey,
-// w[2j+1] ^ lane j), so a round costs four multiplies that run in parallel. The lanes are then
-// folded with the length and the result reduced to 32 bits, never 0. `n` is the length. A String of
-// at most 8 units takes the short path below instead.
-//
-// mum is the 64 x 64 -> 128-bit product folded to 64 bits (wyhash's mixing step). Words are loaded
-// little-endian (every supported target), so a UTF-16 run and its widened UTF-8 bytes give one word.
+// The String's own hash, definition v4 (design_docs/theory/runtime/value-hash.md): its raw state is
+// CRC32C over its UTF-16 units (a UTF-8 form's bytes are its units; Crc32c.hpp), and its hash is
+// `nonZero(fmix32(raw ^ n))`, n its length. A String's hash slot (HEAP_088) holds the raw state, so
+// that a String built from parts can be given its raw state from theirs (`crc32c::combine`,
+// plans/hash-reuse-explicit-vs-cached.md §4.1.5), and so can a rope from its children.
 
-constexpr u64 kWordKey = 0xa0761d6478bd642full;
-constexpr u64 kLaneSeed[4] = {0xe7037ed1a0b428dbull, 0x8ebc6af09c88c6e3ull, 0x589965cc75374cc3ull,
-                              0x1d8e4e27c47d124full};
+u32 hashFromRaw(u32 raw, i64 n) { return nonZero(fmix32(raw ^ static_cast<u32>(n))); }
 
-inline u64 mum(u64 a, u64 b) {
-#if defined(_MSC_VER) && !defined(__clang__)
-    u64 hi;
-    u64 lo = _umul128(a, b, &hi);
-    return lo ^ hi;
-#else
-    __uint128_t r = static_cast<__uint128_t>(a) * b;
-    return static_cast<u64>(r) ^ static_cast<u64>(r >> 64);
-#endif
+// The raw state of the String `s`, computed from its units: reads and writes no slot.
+u32 rawFromUnits(void* s) {
+    u32 c = crc32c::kEmpty;
+    StringOps::forEachSegmentEx(
+        s,
+        [&](const u16* p, u32 len) { c = crc32c::update16(c, p, len); },
+        [&](const u8* p, u32 len) { c = crc32c::update8(c, p, len); });
+    return c;
 }
 
-// Four bytes, each widened to a 16-bit unit: the word four UTF-16 units of the same values make.
-inline u64 widen4(u32 bytes) {
-    u64 v = bytes;
-    v = (v | (v << 16)) & 0x0000FFFF0000FFFFull;
-    v = (v | (v << 8)) & 0x00FF00FF00FF00FFull;
+// The raw state of the non-empty String `s`: its slot when filled, otherwise computed and stored in
+// its slot, if it has one. A rope below the saturated height is composed from its children, each
+// read, or computed and stored, the same way, so ropes that share a child never read it again; the
+// height (at most kRopeHeightMax) bounds the recursion. A saturated rope is read from its units.
+u32 rawFill(void* s) {
+    u32* slot = stringHashSlot(s);
+    if (slot) {
+        const u32 v = __atomic_load_n(slot, __ATOMIC_RELAXED);
+        if (v != 0) return v;
+    }
+    u32 v;
+    if (static_cast<Header*>(s)->tag == Tag_StringRope && StringOps::heightOf(s) < kRopeHeightMax) {
+        auto* r = static_cast<ElmStringRope*>(s);
+        void* left = Allocator::resolveFast(r->left);
+        void* right = Allocator::resolveFast(r->right);
+        v = crc32c::combine(rawFill(left), rawFill(right), static_cast<u64>(StringOps::length(right)));
+    } else {
+        v = rawFromUnits(s);
+    }
+    if (slot && v != 0) __atomic_store_n(slot, v, __ATOMIC_RELAXED);
     return v;
-}
-
-struct StringHasher {
-    u64 lane[4] = {kLaneSeed[0], kLaneSeed[1], kLaneSeed[2], kLaneSeed[3]};
-    u16 buf[32];
-    u32 fill = 0;
-
-    void round(const u64* w) {
-        lane[0] = mum(w[0] ^ kWordKey, w[1] ^ lane[0]);
-        lane[1] = mum(w[2] ^ kWordKey, w[3] ^ lane[1]);
-        lane[2] = mum(w[4] ^ kWordKey, w[5] ^ lane[2]);
-        lane[3] = mum(w[6] ^ kWordKey, w[7] ^ lane[3]);
-    }
-    void round16(const u16* p) {
-        u64 w[8];
-        memcpy(w, p, sizeof w);
-        round(w);
-    }
-    void round8(const u8* p) {
-        u64 w[8];
-        for (int k = 0; k < 8; ++k) {
-            u32 b;
-            memcpy(&b, p + 4 * k, 4);
-            w[k] = widen4(b);
-        }
-        round(w);
-    }
-
-    void units16(const u16* p, u32 len) {
-        u32 i = 0;
-        if (fill) {
-            u32 take = std::min<u32>(32 - fill, len);
-            memcpy(buf + fill, p, take * sizeof(u16));
-            fill += take;
-            i = take;
-            if (fill < 32) return;
-            round16(buf);
-            fill = 0;
-        }
-        for (; i + 32 <= len; i += 32) round16(p + i);
-        fill = len - i;
-        memcpy(buf, p + i, fill * sizeof(u16));
-    }
-    void units8(const u8* p, u32 len) {
-        u32 i = 0;
-        if (fill) {
-            for (; i < len && fill < 32; ++i) buf[fill++] = p[i];
-            if (fill < 32) return;
-            round16(buf);
-            fill = 0;
-        }
-        for (; i + 32 <= len; i += 32) round8(p + i);
-        for (; i < len; ++i) buf[fill++] = p[i];
-    }
-
-    u32 finish(i64 n) {
-        if (fill) {
-            memset(buf + fill, 0, (32 - fill) * sizeof(u16));
-            round16(buf);
-        }
-        u64 h = mum(lane[0] ^ kLaneSeed[1], lane[1] ^ kLaneSeed[2]) ^ mum(lane[2] ^ kLaneSeed[3], lane[3] ^ kLaneSeed[0]);
-        h = mum(h ^ kWordKey, static_cast<u64>(n) ^ kLaneSeed[0]);
-        return nonZero(static_cast<u32>(h ^ (h >> 32)));
-    }
-};
-
-// A String of at most 8 units is one round of two words, without the lanes: one multiply and the
-// final fold, so that short keys cost no more than the FNV-1a hash of v2 did.
-u32 shortStringHash(void* s, i64 n) {
-    u16 buf[8] = {0};
-    u32 at = 0;
-    StringOps::forEachSegmentEx(
-        s,
-        [&](const u16* p, u32 len) { memcpy(buf + at, p, len * sizeof(u16)); at += len; },
-        [&](const u8* p, u32 len) { for (u32 i = 0; i < len; ++i) buf[at++] = p[i]; });
-    u64 w[2];
-    memcpy(w, buf, sizeof w);
-    u64 h = mum(w[0] ^ kWordKey, w[1] ^ kLaneSeed[0]);
-    h = mum(h ^ kWordKey, static_cast<u64>(n) ^ kLaneSeed[0]);
-    return nonZero(static_cast<u32>(h ^ (h >> 32)));
-}
-
-u32 stringHash(void* s, i64 n) {
-    if (n <= 8) return shortStringHash(s, n);
-    StringHasher sh;
-    StringOps::forEachSegmentEx(
-        s,
-        [&](const u16* p, u32 len) { sh.units16(p, len); },
-        [&](const u8* p, u32 len) { sh.units8(p, len); });
-    return sh.finish(n);
 }
 
 
@@ -225,6 +144,44 @@ std::vector<const void*> seen;
 size_t seenCount = 0;
 uint64_t epoch = ~0ULL;
 
+// Build sites (plans/hash-reuse-explicit-vs-cached.md B5c and B6's census): per site, the Strings with a hash
+// slot it built, how many were given their raw state at build, the units read to do so, and how many
+// of each were hashed before the next minor collection (a table of the built objects' addresses,
+// cleared with the epoch, as `seen`): a lower bound on how many builds a given hash serves.
+const char* const kSites[] = {"append", "concat", "join", "rope", "cons", "propagate"};
+struct SiteCounts {
+    uint64_t built = 0, given = 0, unitsHashed = 0, hashedLater = 0, hashedLaterGiven = 0;
+};
+SiteCounts sites[Elm::kBuildSiteCount];
+struct Built {
+    const void* obj;
+    uint8_t site;
+    bool given;
+    bool counted;
+};
+std::vector<Built> built;
+size_t builtCount = 0;
+uint64_t builtEpoch = ~0ULL;
+
+size_t builtIndex(const void* s, bool insert) {
+    uint64_t now = Allocator::instance().getCurrentThreadHeap()->getNursery().minorSeq();
+    if (now != builtEpoch || built.empty()) {
+        builtEpoch = now;
+        built.assign(1u << 20, Built{nullptr, 0, false, false});
+        builtCount = 0;
+    }
+    size_t mask = built.size() - 1;
+    size_t i = (reinterpret_cast<uintptr_t>(s) >> 3) * 0x9E3779B97F4A7C15ULL >> 40 & mask;
+    while (built[i].obj != nullptr) {
+        if (built[i].obj == s) return i;
+        i = (i + 1) & mask;
+    }
+    if (!insert || builtCount * 2 >= built.size()) return SIZE_MAX;
+    built[i].obj = s;
+    builtCount++;
+    return i;
+}
+
 bool enabled() {
     static const bool on = [] {
         const char* v = std::getenv("ECO_HASH_CENSUS");
@@ -251,6 +208,16 @@ void print() {
     row("nested", nested);
     row("repeat (same object)", repeated);
     row("served by hash slot", cached);
+    std::fprintf(stderr, "  build site     %10s %10s %14s %12s %12s\n", "built", "given", "units read", "hashed",
+                 "hashed+given");
+    for (int i = 0; i < Elm::kBuildSiteCount; ++i) {
+        const SiteCounts& c = sites[i];
+        if (!c.built) continue;
+        std::fprintf(stderr, "  %-14s %10llu %10llu %14llu %12llu %12llu\n", kSites[i],
+                     static_cast<unsigned long long>(c.built), static_cast<unsigned long long>(c.given),
+                     static_cast<unsigned long long>(c.unitsHashed), static_cast<unsigned long long>(c.hashedLater),
+                     static_cast<unsigned long long>(c.hashedLaterGiven));
+    }
 }
 
 int formOf(void* s) {
@@ -285,12 +252,17 @@ bool seenBefore(void* s) {
     return false;
 }
 
-void note(void* s, int64_t n, bool top) {
+// Prints the census at exit, from the first String hashed or built.
+void registerPrint() {
     static bool registered = false;
     if (!registered) {
         registered = true;
         std::atexit(print);
     }
+}
+
+void note(void* s, int64_t n, bool top) {
+    registerPrint();
     uint64_t units = static_cast<uint64_t>(n);
     add(byForm[formOf(s)], units);
     add(byLength[n < 32 ? 0 : n < 256 ? 1 : n < 4096 ? 2 : 3], units);
@@ -301,6 +273,12 @@ void note(void* s, int64_t n, bool top) {
     add(byAge[age], units);
     add(top ? topLevel : nested, units);
     if (seenBefore(s)) add(repeated, units);
+    const size_t b = builtIndex(s, false);
+    if (b != SIZE_MAX && !built[b].counted) {
+        built[b].counted = true;
+        sites[built[b].site].hashedLater++;
+        if (built[b].given) sites[built[b].site].hashedLaterGiven++;
+    }
 }
 
 // Counts a hash of the String `s` (`n` units) that its hash slot answered.
@@ -336,25 +314,24 @@ struct Hasher {
     // Hashes the String `s`; `top` says it is the hashed value itself rather than nested in one (for
     // the census only).
     //
-    // `stringHash(s)` comes from the String's hash slot when it has one that is filled, and is stored in
-    // an empty one (HEAP_088). The store may land in an object that has survived a collection, or in
-    // PermanentSpace: the carve-out HEAP_088 makes from HEAP_SNAPSHOT_001 and HEAP_036. The value depends
-    // only on the units, so every writer writes the same number, and a store a concurrent tenure copy
-    // misses only costs a recomputation.
+    // The raw state comes from the String's hash slot when it is filled, and is otherwise computed and
+    // stored there (`rawFill`, HEAP_088). The store may land in an object that has survived a collection,
+    // or in PermanentSpace: the carve-out HEAP_088 makes from HEAP_SNAPSHOT_001 and HEAP_036. The value
+    // depends only on the units, so every writer writes the same number, and a store a concurrent tenure
+    // copy misses only costs a recomputation.
     void string(void* s, bool top = false) {
         i64 n = StringOps::length(s);
         if (n == 0) { mix(kEmpty); return; }
         if (census::enabled()) census::note(s, n, top);
         u32* slot = stringHashSlot(s);
-        u32 sh = slot ? __atomic_load_n(slot, __ATOMIC_RELAXED) : 0;
-        if (sh != 0) {
+        u32 raw = slot ? __atomic_load_n(slot, __ATOMIC_RELAXED) : 0;
+        if (raw != 0) {
             if (census::enabled()) census::noteCached(n);
         } else {
-            sh = stringHash(s, n);
-            if (slot) __atomic_store_n(slot, sh, __ATOMIC_RELAXED);
+            raw = rawFill(s);
         }
         mix(kString);
-        mix(sh);
+        mix(hashFromRaw(raw, n));
     }
 
     // Hashes the entries of the Dict tree at `p` in key order: left subtree, key, value, right subtree.
@@ -480,7 +457,27 @@ u32 finish(const Hasher& h) { return nonZero(fmix32(h.h)); }
 } // namespace
 
 uint32_t Elm::stringHashUncached(void* s) {
-    return stringHash(s, StringOps::length(s));
+    return hashFromRaw(rawFromUnits(s), StringOps::length(s));
+}
+
+uint32_t Elm::stringRawUncached(void* s) { return rawFromUnits(s); }
+
+uint32_t Elm::stringRaw(void* s) { return rawFill(s); }
+
+bool Elm::hashCensusEnabled() { return census::enabled(); }
+
+void Elm::hashCensusNoteBuilt(void* obj, int site, bool given, uint64_t unitsHashed) {
+    census::registerPrint();
+    census::SiteCounts& c = census::sites[site];
+    c.built++;
+    if (given) c.given++;
+    c.unitsHashed += unitsHashed;
+    const size_t i = census::builtIndex(obj, true);
+    if (i != SIZE_MAX) {
+        census::built[i].site = static_cast<uint8_t>(site);
+        census::built[i].given = given;
+        census::built[i].counted = false;
+    }
 }
 
 const char* Elm::checkStringHashSlot(void* obj) {
@@ -493,8 +490,8 @@ const char* Elm::checkStringHashSlot(void* obj) {
     if (v == 0) return nullptr;
     if (tag == Tag_LargeStringHeader && static_cast<LargeStringHeader*>(obj)->body.ptr == 0)
         return "a large String header without a body has a filled hash slot";
-    if (v != stringHash(obj, StringOps::length(obj)))
-        return "a String's hash slot holds a number that is not the hash of its units";
+    if (v != rawFromUnits(obj))
+        return "a String's hash slot holds a number that is not the raw CRC32C of its units";
     return nullptr;
 }
 

@@ -756,10 +756,10 @@ inline void* allocInternObject(Elm::Tag tag, size_t size) {
     return Allocator::instance().allocatePermanent(size, tag);
 }
 
-// Stores the hash of the new literal String `s` in its hash slot, if it has one, before the literal is
-// published (HEAP_088): literals are hashed often (as keys and nested in keys) and live for the whole run.
+// Stores the raw hash state of the new literal String `s` in its hash slot, if it has one, before the
+// literal is published (HEAP_088): literals are hashed often (as keys and nested in keys) and live for the whole run.
 inline void fillLiteralHashSlot(void* s) {
-    if (u32* slot = stringHashSlot(s)) __atomic_store_n(slot, stringHashUncached(s), __ATOMIC_RELAXED);
+    if (u32* slot = stringHashSlot(s)) __atomic_store_n(slot, stringRawUncached(s), __ATOMIC_RELAXED);
 }
 
 // Returns the word interned on the calling thread for `key`, calling `alloc` to build it on a miss.

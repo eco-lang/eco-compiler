@@ -8,6 +8,80 @@ namespace StringOps {
 // Constructors of the forms, and flattening
 // ============================================================================
 
+// ============================================================================
+// Hashes given at build (StringOps.hpp; plans/hash-reuse-explicit-vs-cached.md §4.1.5 policies 3 and 4)
+// ============================================================================
+
+BuildHashConfig& buildHashConfig() {
+    static BuildHashConfig c;
+    return c;
+}
+
+u32 slotRaw(void* s) {
+    if (!s) return 0;
+    u32* slot = stringHashSlot(s);
+    return slot ? __atomic_load_n(slot, __ATOMIC_RELAXED) : 0;
+}
+
+u32 partRaw(void* s, BuildHashing& bh) {
+    if (!s) return crc32c::kEmpty;
+    const u32 n = static_cast<Header*>(s)->size;
+    if (n == 0) return crc32c::kEmpty;
+    u32* slot = stringHashSlot(s);
+    if (slot) {
+        const u32 v = __atomic_load_n(slot, __ATOMIC_RELAXED);
+        if (v != 0) return v;
+    }
+    if (n < kStringHashSlotMinUnits) {
+        // A short part: hashed directly, within the budget. A short slice, view or rope has a slot,
+        // which is filled too (a content-determined write, HEAP_088).
+        if (n > bh.budget) return 0;
+        bh.budget -= n;
+        bh.hashed += n;
+        const u32 v = stringRawUncached(s);
+        if (slot && v != 0) __atomic_store_n(slot, v, __ATOMIC_RELAXED);
+        return v;
+    }
+    if (!bh.hashUnknown) return 0;
+    // A long part with an empty slot: hashed, and its slot filled, so that the next build from it reads
+    // nothing (a content-determined write after publication, HEAP_088's exception to P1).
+    bh.hashed += n;
+    return stringRaw(s);
+}
+
+void ComposeCheck::add(void* s, const BuildHashConfig& hc) {
+    if (!s) return;
+    const Header* h = static_cast<Header*>(s);
+    const u32 n = h->size;
+    if (n == 0) return;
+    if (n < kStringHashSlotMinUnits) {
+        // A short flat String has no slot; a short slice, view or rope may have a filled one.
+        const bool flat = h->tag == Tag_String || h->tag == Tag_StringUtf8Leaf;
+        if (!flat && slotRaw(s) != 0) {
+            anchors++;
+        } else {
+            shortUnits += n;
+            // Over the budget: nothing will compose, so the caller stops adding parts.
+            if (shortUnits > hc.shortBudget) blocked = true;
+        }
+    } else {
+        anchors++;
+        if (!hc.hashUnknown && slotRaw(s) == 0) blocked = true;
+    }
+}
+
+u32 composeRaw(u32 a, u32 b, u64 nb) { return (a != 0 && b != 0) ? crc32c::combine(a, b, nb) : 0; }
+
+HPointer giveBuiltHash(HPointer r, u32 raw, int site, u64 hashed) {
+    if (alloc::isEmbeddedConstant(r)) return r;
+    void* o = Allocator::resolveFast(r);
+    u32* slot = o ? stringHashSlot(o) : nullptr;
+    if (!slot) return r;
+    if (raw != 0) __atomic_store_n(slot, raw, __ATOMIC_RELAXED);
+    if (hashCensusEnabled()) hashCensusNoteBuilt(o, site, raw != 0, hashed);
+    return r;
+}
+
 HPointer makeLeafFromBuffer(const u16* data, u32 len) {
     if (len == 0) return alloc::emptyString();
     return alloc::allocString(data, len);
@@ -68,6 +142,25 @@ HPointer makeRope(HPointer left, HPointer right) {
     u32 newHeight = std::min<u32>(1 + std::max(lh, rh), kRopeHeightMax);
     u32 newLeafCount = lc + rc;
 
+    // The rope's raw state from its children's when both are known (policy 4). A long child is never read
+    // here: a rope exists so as not to copy it.
+    u32 raw = 0;
+    u64 hashed = 0;
+    const BuildHashConfig& hc = buildHashConfig();
+    if (hc.compose) {
+        BuildHashConfig known = hc;
+        known.hashUnknown = false;
+        ComposeCheck cc;
+        cc.add(Allocator::resolveFast(left), known);
+        cc.add(Allocator::resolveFast(right), known);
+        if (cc.ok(known)) {
+            BuildHashing bh(known);
+            const u32 lr = partRaw(Allocator::resolveFast(left), bh);
+            raw = lr ? composeRaw(lr, partRaw(Allocator::resolveFast(right), bh), rightLen) : 0;
+            hashed = bh.hashed;
+        }
+    }
+
     size_t total_size = sizeof(ElmStringRope);
     total_size = (total_size + 7) & ~7;
 
@@ -83,7 +176,7 @@ HPointer makeRope(HPointer left, HPointer right) {
     rope->header.unboxed = newHeight;
     rope->hashSlot = 0;
     rope->leafCount = newLeafCount;
-    return allocator.wrap(rope);
+    return giveBuiltHash(allocator.wrap(rope), raw, kBuildRope, hashed);
 }
 
 HPointer makeUtf8View(HPointer base, u32 byteOffset, u32 len) {
@@ -225,14 +318,16 @@ HPointer flattenToLeaf(HPointer s) {
     if (hdr->tag == Tag_LargeStringHeader) return s;
     if (hdr->size == 0) return alloc::emptyString();
 
-    // Copy the units out before allocating, while `obj` is still valid.
+    // Copy the units out before allocating, while `obj` is still valid. The copy has the same units, so
+    // it keeps `obj`'s hash (policy 3).
     if (isUtf8(obj))
         GC_STATS_UTF8_WIDEN_SITE(UTF8_WIDEN_ENSURE_FLAT, hdr->size);
     std::u16string buf = toStdU16String(obj);
+    const u32 raw = buildHashConfig().propagate ? slotRaw(obj) : 0;
 
     // Nothing on the Elm heap is read after the allocation, so `s` need not be rooted.
-    return alloc::allocString(reinterpret_cast<const u16*>(buf.data()),
-                              buf.size());
+    return giveBuiltHash(alloc::allocString(reinterpret_cast<const u16*>(buf.data()), buf.size()), raw,
+                         kBuildPropagate, 0);
 }
 
 HPointer ensureFlat(HPointer s) {
@@ -483,23 +578,24 @@ static HPointer buildBalancedRope(std::vector<HPointer>& parts) {
 // Returns the UTF-16 leaf `leafHp` as a new UTF-8 form when its units are all ASCII and UTF-8
 // Strings are enabled, and `leafHp` unchanged otherwise, including when it is not a UTF-16 leaf.
 // This keeps an ASCII result built through UTF-16, because one element was a UTF-16 String, from
-// making the operations it later enters widen. A GC point.
-static HPointer healAsciiResult(HPointer leafHp) {
+// making the operations it later enters widen. Either way the result is given the raw state `raw`
+// (`giveBuiltHash`, census site `site`, `hashed` units read). A GC point.
+static HPointer healAsciiResult(HPointer leafHp, u32 raw, int site, u64 hashed) {
     auto& allocator = Allocator::instance();
-    if (!allocator.getConfig().utf8_strings_enabled) return leafHp;
+    if (!allocator.getConfig().utf8_strings_enabled) return giveBuiltHash(leafHp, raw, site, hashed);
     if (alloc::isEmbeddedConstant(leafHp)) return leafHp;
     void* obj = Allocator::resolveFast(leafHp);
-    if (!obj || static_cast<Header*>(obj)->tag != Tag_String) return leafHp;
+    if (!obj || static_cast<Header*>(obj)->tag != Tag_String) return giveBuiltHash(leafHp, raw, site, hashed);
     ElmString* s = static_cast<ElmString*>(obj);
     size_t n = s->header.size;
     u16 acc = 0;
     for (size_t i = 0; i < n; ++i) acc |= s->chars[i];
-    if (acc >= 0x80 || n == 0) return leafHp;
+    if (acc >= 0x80 || n == 0) return giveBuiltHash(leafHp, raw, site, hashed);
     AsciiOut out;
     { Elm::StackRootGuard guard(&leafHp); out = allocAsciiOut(n); }
     ElmString* s2 = static_cast<ElmString*>(Allocator::resolveFast(leafHp));
     for (size_t i = 0; i < n; ++i) out.dst[i] = static_cast<u8>(s2->chars[i]);
-    return finishAsciiOut(out);
+    return giveBuiltHash(finishAsciiOut(out), raw, site, hashed);
 }
 
 HPointer concat(HPointer stringList) {
@@ -525,6 +621,26 @@ HPointer concat(HPointer stringList) {
     // The list is walked again after the allocation, so it is rooted across it in both copy paths
     // below and re-read afterwards.
     if (total_len <= allocator.getConfig().string_flatten_limit) {
+        // The result's raw state from the parts' (policy 4), before anything allocates.
+        u32 raw = 0;
+        u64 hashed = 0;
+        const BuildHashConfig& hc = buildHashConfig();
+        ComposeCheck cc;
+        if (hc.compose && total_len >= kStringHashSlotMinUnits) {
+            for (alloc::ListCursor lc(stringList); !lc.done() && !cc.blocked; lc.next())
+                if (!alloc::isEmptyString(lc.current().p)) cc.add(Allocator::resolveFast(lc.current().p), hc);
+        }
+        if (hc.compose && total_len >= kStringHashSlotMinUnits && cc.ok(hc)) {
+            BuildHashing bh(hc);
+            u32 r = crc32c::kEmpty;
+            for (alloc::ListCursor lc(stringList); !lc.done() && r != 0; lc.next()) {
+                if (alloc::isEmptyString(lc.current().p)) continue;
+                void* strObj = Allocator::resolveFast(lc.current().p);
+                if (strObj) r = composeRaw(r, partRaw(strObj, bh), static_cast<Header*>(strObj)->size);
+            }
+            raw = r;
+            hashed = bh.hashed;
+        }
         if (allUtf8 && allocator.getConfig().utf8_strings_enabled) {
             HPointer listHp = stringList;
             AsciiOut out;
@@ -540,7 +656,7 @@ HPointer concat(HPointer stringList) {
                     }
                 }
             }
-            return finishAsciiOut(out);
+            return giveBuiltHash(finishAsciiOut(out), raw, kBuildConcat, hashed);
         }
 
         size_t total_size = flatStringByteSize(total_len, sizeof(u16));
@@ -566,7 +682,7 @@ HPointer concat(HPointer stringList) {
             }
         }
 
-        return healAsciiResult(allocator.wrap(result));
+        return healAsciiResult(allocator.wrap(result), raw, kBuildConcat, hashed);
     }
 
     std::vector<HPointer> parts;
@@ -617,6 +733,33 @@ HPointer join(void* sep, HPointer stringList) {
     bool sepUtf8 = (sep_len == 0) || (sep && isUtf8(sep));
 
     if (total_len <= allocator.getConfig().string_flatten_limit) {
+        // The result's raw state from the parts' and the separator's (policy 4), before anything
+        // allocates. The separator's is computed once.
+        u32 raw = 0;
+        u64 hashed = 0;
+        const BuildHashConfig& hc = buildHashConfig();
+        ComposeCheck cc;
+        if (hc.compose && total_len >= kStringHashSlotMinUnits) {
+            // The separator's units count once: its raw state is computed once.
+            if (sep_len > 0) cc.add(sep, hc);
+            for (alloc::ListCursor lc(stringList); !lc.done() && !cc.blocked; lc.next())
+                if (!alloc::isEmptyString(lc.current().p)) cc.add(Allocator::resolveFast(lc.current().p), hc);
+        }
+        if (hc.compose && total_len >= kStringHashSlotMinUnits && cc.ok(hc)) {
+            BuildHashing bh(hc);
+            const u32 sepRaw = sep_len > 0 ? partRaw(sep, bh) : crc32c::kEmpty;
+            u32 r = sepRaw != 0 ? crc32c::kEmpty : 0;
+            bool firstPart = true;
+            for (alloc::ListCursor lc(stringList); !lc.done() && r != 0; lc.next()) {
+                if (!firstPart && sep_len > 0) r = composeRaw(r, sepRaw, sep_len);
+                firstPart = false;
+                if (alloc::isEmptyString(lc.current().p)) continue;
+                void* strObj = Allocator::resolveFast(lc.current().p);
+                if (strObj) r = composeRaw(r, partRaw(strObj, bh), static_cast<Header*>(strObj)->size);
+            }
+            raw = r;
+            hashed = bh.hashed;
+        }
         if (allUtf8 && sepUtf8 && allocator.getConfig().utf8_strings_enabled) {
             HPointer listHp = stringList;
             AsciiOut out;
@@ -639,7 +782,7 @@ HPointer join(void* sep, HPointer stringList) {
                     }
                 }
             }
-            return finishAsciiOut(out);
+            return giveBuiltHash(finishAsciiOut(out), raw, kBuildJoin, hashed);
         }
 
         size_t total_size = flatStringByteSize(total_len, sizeof(u16));
@@ -676,7 +819,7 @@ HPointer join(void* sep, HPointer stringList) {
                 }
             }
         }
-        return healAsciiResult(allocator.wrap(result));
+        return healAsciiResult(allocator.wrap(result), raw, kBuildJoin, hashed);
     }
 
     std::vector<HPointer> parts;

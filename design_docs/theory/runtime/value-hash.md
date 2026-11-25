@@ -68,7 +68,7 @@ Three changes to v1, everything else unchanged:
    through `charAt`. (Implementation only; the numbers follow from 1.)
 3. **The result is never 0**: a 0 from `fmix32` becomes 1, so 0 can mean "not cached".
 
-## Definition v3 (current since 2026-11-24)
+## Definition v3 (2026-11-24, until v4)
 
 One change to v2: `stringHash(s)` reads **every** unit of the String (no `kMaxUnits` cap) and is a
 word-at-a-time hash instead of FNV-1a, so that a long key costs a few cycles per 32 units instead of
@@ -94,17 +94,45 @@ The padding is told apart from real zero units by `n`. A String costs time linea
 implementation streams the String's contiguous segments (`forEachSegmentEx`) through a 32-unit
 buffer, widening UTF-8 bytes four at a time, so every form gives the same number.
 
+## Definition v4 (current since 2026-11-24)
+
+One change to v3: `stringHash(s)` is CRC32C, which composes, so that a String built from parts can be
+given its hash from theirs (plans/hash-reuse-explicit-vs-cached.md §4.2; the choice and its
+measurements: design_docs/string-hash-algorithm.md). Everything else, including how the result is
+mixed into the walk (`mix(kString); mix(stringHash(s))`), is unchanged.
+
+- `raw(s)`: the CRC32C register (Castagnoli, reflected polynomial `0x82F63B78`) after the String's
+  `n` UTF-16 units, each as two little-endian bytes, starting from `0xFFFFFFFF`, without the final
+  inversion. A UTF-8 form's bytes are its units, each widened to the byte pair `(b, 0)`.
+  `raw("") = 0xFFFFFFFF`.
+- `stringHash(s) = nonZero(fmix32(raw(s) ^ n))`.
+- **Composition:** `raw(a ++ b) = combine(raw(a), raw(b), |b|) = (raw(a) ^ 0xFFFFFFFF) · x^(16|b|) ^ raw(b)`
+  mod P. The runtime multiplies with one carry-less multiply reduced by the `crc32` instruction, from a
+  table of `x^(2^k)`: a few nanoseconds at any length (`runtime/src/allocator/Crc32c.cpp`).
+
+Every form gives the same number. `Crc32c.cpp` folds long runs 64 bytes per step with PCLMULQDQ and
+runs three `crc32` instruction streams below 64 units, on x86-64 CPUs that have SSE4.2 and PCLMULQDQ
+(checked once); elsewhere a table-driven CRC gives the same numbers. CRC32C is linear over GF(2): two
+Strings of one length whose XOR is a multiple of P (for example P·x^s) have one hash, which the
+SeqDict collision tests use to build colliding keys (`experiments/string-hash-lab/v4ref.py`); no
+two Strings of one length that differ only within 32 consecutive bits collide.
+
 ## Cached String hashes (HEAP_088)
 
 `stringHash(s)` is cached in the String: slices, ropes, UTF-8 views and large Strings have a 32-bit
 hash slot in a field, and a flat UTF-16 String or UTF-8 leaf has one in a tail word when it is at least
 `kStringHashSlotMinUnits` = 32 units long (shorter ones hash in a few nanoseconds, and a slot would add
-8 bytes to each). The slot holds `stringHash(s)`, never 0, or 0 when not yet computed. The walker's
-String step (`mix(kString); mix(stringHash(s))`, and so `eco_hash_string`, `eco_hash_mix_string`, the
-typed chains' String fields and nested Strings) reads a filled slot instead of the units and fills an
-empty one; literals of 32+ units are filled when they are interned. A hash is therefore computed once per
-String object, however often and in however many dicts or keys it is used. The numbers are unchanged: the
-slot only caches them. `StringOps::equal` also answers False for two Strings whose slots are filled and
+8 bytes to each). Under v4 the slot holds `raw(s)`, or 0 when not yet computed (a String whose raw state
+is 0 is never cached). The walker's String step (`mix(kString); mix(stringHash(s))`, and so
+`eco_hash_string`, `eco_hash_mix_string`, the typed chains' String fields and nested Strings) reads a
+filled slot instead of the units and fills an empty one; a rope's raw state is composed from its
+children's, whose slots are filled on the way; literals of 32+ units are filled when they are interned.
+A String built from parts (`++`, `concat`, `join`, `cons`, a rope) is given its raw state at build by
+composing its parts' when they are known (a filled slot, or a part short enough to hash on the spot), and
+a long part whose slot is empty is hashed on the way and its slot filled; a new form of a String
+(`flattenToLeaf`) keeps its slot. A hash is therefore computed once per String object, however often and
+in however many dicts or keys it is used, and often not at all. The numbers are unchanged: the slot only
+caches them. `StringOps::equal` also answers False for two Strings whose slots are filled and
 differ. Filling the slot is a write after publication that HEAP_088 allows as an exception to P1
 (HEAP_SNAPSHOT_001): see that row for the concurrency argument and the validate-build checks.
 

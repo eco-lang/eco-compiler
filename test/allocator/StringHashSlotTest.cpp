@@ -4,8 +4,9 @@
  * Every allocation route gives a String whose object size is what `getObjectSize` computes and whose
  * hash slot, when its form has one, is 0 (and a flat String's whole tail word is 0). The nursery is
  * dirtied first with Strings whose slots are filled, so a route that leaves the slot unwritten reads
- * garbage rather than a lucky 0. The value hash fills a slot with `stringHashUncached`, reads it back,
- * and the slot survives minor and major collections. `checkStringHashSlot` rejects a wrong slot.
+ * garbage rather than a lucky 0. The value hash fills a slot with `stringRawUncached` (the raw CRC32C
+ * of definition v4), reads it back, and the slot survives minor and major collections.
+ * `checkStringHashSlot` rejects a wrong slot.
  */
 
 #include "StringHashSlotTest.hpp"
@@ -136,7 +137,7 @@ void test_every_route_writes_a_zero_slot() {
                                                             static_cast<u32>(lit16.size()))))),
                     p.obj(p.put(hp(eco_alloc_string_literal_utf8(reinterpret_cast<const uint8_t*>(lit8.data()),
                                                                  static_cast<u32>(lit8.size())))))}) {
-        if (loadStringHashSlot(o) != stringHashUncached(o)) TEST_FAIL("a literal's slot is not filled at intern");
+        if (loadStringHashSlot(o) != stringRawUncached(o)) TEST_FAIL("a literal's slot is not filled at intern");
         if (const char* bad = checkStringHashSlot(o)) TEST_FAIL(std::string("literal: ") + bad);
     }
 
@@ -179,7 +180,7 @@ void test_fill_and_survive_gc() {
                                                          static_cast<u32>(longer.size())));
     ids.push_back(p.put(StringOps::makeUtf8View(p.slot[b8], 2, 300)));
 
-    const u32 want = stringHashUncached(p.obj(ids[0]));
+    const u32 want = stringRawUncached(p.obj(ids[0]));
     int64_t first = 0;
     for (unsigned i : ids) {
         void* o = p.obj(i);
@@ -187,7 +188,7 @@ void test_fill_and_survive_gc() {
         int64_t h = eco_hash_string(HPtr::fromHPointer(p.slot[i]));
         if (first == 0) first = h;
         if (h != first) TEST_FAIL("equal units in two forms hash differently");
-        if (loadStringHashSlot(p.obj(i)) != want) TEST_FAIL("slot not filled with stringHashUncached");
+        if (loadStringHashSlot(p.obj(i)) != want) TEST_FAIL("slot not filled with stringRawUncached");
         if (eco_hash_string(HPtr::fromHPointer(p.slot[i])) != h) TEST_FAIL("a slot hit gives another hash");
     }
     // A String nested in a tuple fills through the walker.
@@ -198,7 +199,7 @@ void test_fill_and_survive_gc() {
     b.i = 7;
     unsigned tup = p.put(alloc::tuple2(a, b, 1u << 2));  // slot 1 holds an unboxed Int (kind 1)
     eco_hash_value(HPtr::fromHPointer(p.slot[tup]));
-    if (loadStringHashSlot(p.obj(nested)) != stringHashUncached(p.obj(nested)))
+    if (loadStringHashSlot(p.obj(nested)) != stringRawUncached(p.obj(nested)))
         TEST_FAIL("a String nested in a tuple did not fill its slot");
 
     for (int gc = 0; gc < 3; ++gc) {
@@ -222,7 +223,7 @@ void test_literal_fills() {
                                            static_cast<u32>(lit.size()));
     void* o = Allocator::instance().resolve(h.toHPointer());
     eco_hash_string(h);
-    if (loadStringHashSlot(o) != stringHashUncached(o)) TEST_FAIL("literal's slot not filled");
+    if (loadStringHashSlot(o) != stringRawUncached(o)) TEST_FAIL("literal's slot not filled");
 }
 
 // A rope's height saturates at kRopeHeightMax instead of overflowing header.unboxed.
@@ -304,7 +305,7 @@ void test_fill_after_survival() {
     Allocator::instance().majorGC();
     Allocator::instance().minorGC();
     for (unsigned i : ids) {
-        if (loadStringHashSlot(p.obj(i)) != stringHashUncached(p.obj(i))) TEST_FAIL("slot lost after survival");
+        if (loadStringHashSlot(p.obj(i)) != stringRawUncached(p.obj(i))) TEST_FAIL("slot lost after survival");
         if (const char* bad = checkStringHashSlot(p.obj(i))) TEST_FAIL(bad);
     }
 }

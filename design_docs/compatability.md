@@ -32,7 +32,13 @@ identically to static executables, dynamic `.so`/`.node`, and `eco`'s own C++.
 
 Consequence: on a pre-2013 CPU, a low-end Atom/Celeron without AVX2, or a VM / cloud
 instance that does not expose AVX2 to the guest, the binary **SIGILLs** (illegal
-instruction) — there is no runtime fallback. "Runs on any Linux" therefore means "any Linux
+instruction) — there is no runtime fallback.
+
+One runtime routine looks past the floor at run time: the String hash (value-hash definition v4,
+`runtime/src/allocator/Crc32c.cpp`) uses the SSE4.2 `crc32` instruction and PCLMULQDQ when CPUID
+reports both (PCLMULQDQ is not part of x86-64-v3, though every v3-class CPU has it), and a
+table-driven CRC with the same results otherwise. It is compiled with per-function target
+attributes, so it adds no requirement to the floor. "Runs on any Linux" therefore means "any Linux
 on a v3-capable x86-64 CPU". The pin is deliberate: host-CPU detection
 (`getHostCPUName`/`getHostCPUFeatures`) previously bootstrapped AVX-512 on a build machine
 and SIGILL'd on plain v3 hosts (`EcoBackend.h:45-51`).

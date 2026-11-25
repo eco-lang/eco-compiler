@@ -1,4 +1,4 @@
-module SeqLargeKeys exposing (benchCollide, benchIntern, benchLongKey, benchLongKeyReuse, benchMultiLookup, benchPrefixKey, benchPrefixKeyFresh, benchSetPrefixRounds)
+module SeqLargeKeys exposing (benchBuiltKeys, benchCollide, benchIntern, benchLongKey, benchLongKeyReuse, benchMultiLookup, benchPrefixKey, benchPrefixKeyFresh, benchSetPrefixRounds)
 
 {-| `TypeKeys`' large-key workloads on eco/system's `SeqDict`, where every operation hashes the
 whole key with `FNV.hash` (up to its bounds) instead of comparing it.
@@ -38,6 +38,12 @@ whole key with `FNV.hash` (up to its bounds) instead of comparing it.
     but their last six (`StringCompare.prefixKey`) into a `SeqSet String`, then tests membership of
     every present key and as many absent ones in 32 rounds: hashing-dominated reuse at a moderate
     length. Checked in closed form.
+  - `benchBuiltKeys` (seqdict-built-keys) builds every key as `prefix ++ middle ++ code`, from a
+    1,000-character prefix and one of 16 middles of 400 characters, all of which are themselves keys
+    of a `SeqSet` (as a program that interns its names). Each lookup builds its key again (half of them
+    absent), so natively a key whose parts are already hashed can be given its hash by composing
+    theirs (plans/hash-reuse-explicit-vs-cached.md B5c) instead of reading its 1,400 units. Checked in
+    closed form.
 
 -}
 
@@ -353,3 +359,58 @@ benchSetPrefixRounds n =
             List.foldl (\_ acc -> count absent (count present acc)) 0 (List.range 1 setRounds)
     in
     (SeqSet.size set == n) && (hits == setRounds * n)
+
+
+benchBuiltKeys : Int -> Bool
+benchBuiltKeys n =
+    let
+        prefix =
+            StringCompare.prefixOf 1000
+
+        middles =
+            Array.fromList (List.map (\m -> String.repeat 100 (String.fromInt (1000 + m))) (List.range 0 15))
+
+        middleAt i =
+            Maybe.withDefault "" (Array.get (modBy 16 i) middles)
+
+        parts =
+            Array.foldl SeqSet.insert (SeqSet.insert prefix SeqSet.empty) middles
+
+        key i =
+            prefix ++ middleAt i ++ String.fromInt i
+
+        codes =
+            permutation n
+
+        d =
+            List.foldl (\c acc -> SeqDict.insert (key c) c acc) SeqDict.empty codes
+
+        hits =
+            List.foldl
+                (\_ acc ->
+                    List.foldl
+                        (\code c ->
+                            let
+                                c1 =
+                                    if SeqDict.member (key code) d then
+                                        c + 1
+
+                                    else
+                                        c
+                            in
+                            if SeqDict.member (key (code + n)) d then
+                                c1 + 1
+
+                            else
+                                c1
+                        )
+                        acc
+                        codes
+                )
+                0
+                (List.range 1 rounds)
+    in
+    (SeqSet.size parts == 17)
+        && (SeqDict.size d == n)
+        && (hits == rounds * n)
+        && (SeqDict.foldl (\_ v s -> s + v) 0 d == TypeKeys.triangle n)

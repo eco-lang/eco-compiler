@@ -14,9 +14,9 @@ skip JavaScript.
 -- CHECK: floats: [1251439042,1251439042,593676089,2902364805,2409162822]
 -- CHECK: chars: [2277228005,583401031,2642981514]
 -- CHECK: bools: [311195553,601926293]
--- CHECK: strings: [92598572,3742794350,2092909604,991594886]
--- CHECK: collide: [3789589045,3789589045,3789589045]
--- CHECK: values: [686438709,866040821,3732251940,2612630852,2240964614]
+-- CHECK: strings: [92598572,1263390026,770305177,816104831]
+-- CHECK: collide: [2998167067,2998167067,2998167067]
+-- CHECK: values: [2963535345,866040821,3732251940,2612630852,2240964614]
 import Hash
 import System
 import Task
@@ -51,10 +51,10 @@ report () =
         _ =
             Debug.log "strings" ([ Hash.hash (""), Hash.hash ("a"), Hash.hash ("hello world"), Hash.hash (String.repeat 5000 "xy") ])
 
-        -- Three Strings found by search to share a String hash (two of at most 8 units, one longer):
-        -- SeqDictCollisionTest and SeqDictMapTest use them.
+        -- Three Strings with one raw CRC32C, so one String hash (built by solving the CRC's linear system:
+        -- experiments/string-hash-lab/v4ref.py collide 8): SeqDictCollisionTest and SeqDictMapTest use them.
         _ =
-            Debug.log "collide" [ Hash.hash "c600662", Hash.hash "c5330492", Hash.hash "c11005860" ]
+            Debug.log "collide" [ Hash.hash "collisio", Hash.hash "klsygdlo", Hash.hash "fskwtmhm" ]
 
         _ =
             Debug.log "values"

@@ -1,7 +1,7 @@
 ---
 status: partial
-updated: 2026-11-24
-remaining: "Part A on branch hash-explicit (not gated); Part B implemented on hash-cache (B0-B4; B5 v4 skipped, B6 not done, B8 not done); owed: full gate and the full ECO_HEAP_VALIDATE gate (B7: only targeted validate tests run), compiler self-build cost check, A-vs-B choice (USER)"
+updated: 2026-11-25
+remaining: "Part A on branch hash-explicit (not gated); Part B on hash-cache: B0-B5c implemented (v4 CRC32C, propagation, composition), B6 measured and removed (no site pays), B8 not done; owed: full gate and the full ECO_HEAP_VALIDATE gate (B7: only targeted validate tests run), compiler self-build cost check, A-vs-B choice (USER)"
 ---
 
 # Hash reuse: explicit `Hashed` keys against a transparent String hash cache
@@ -16,8 +16,11 @@ base. It measures both the same way and picks one.
   and a `...Hashed` twin of every exposed SeqDict/SeqSet operation that hashes a key. A program
   opts in.
 - **Part B, transparent:** Strings of length ≥ T carry a cached per-String hash in the heap. It is
-  filled on demand, at creation where that is free (literals), or by combining the hashes of the
-  two sides of a `++` (only with a composable hash, v4). No program changes. Strings only.
+  filled on demand, at creation where that is free (literals; a copy of a String with a known hash),
+  by composing the hashes of the Strings a new String is built from (`++`, `concat`, `join`, ropes),
+  and by hashing a String as it is built where that is measured to pay. Composition needs a
+  composable hash: v4, CRC32C computed as crc32c-fold128 (§4.2, design_docs/string-hash-algorithm.md).
+  No program changes. Strings only.
 
 The user creates the branches and makes the commits at the points marked **USER**. Do not create
 branches or commits yourself.
@@ -89,6 +92,17 @@ branches or commits yourself.
       measure the base's code.
   17. eco/system's normative API (the `ecosyskernel` stubs repo, memory of Oct 19) is not in this
       tree. Adding `Hashed` and the twins to it is a **USER** item.
+- **2026-11-24 amendment (user): v4 is CRC32C as crc32c-fold128; compose wherever the parts' hashes
+  are known; hash at build where that is efficient.** The String hash lab
+  (`experiments/string-hash-lab/`, report design_docs/string-hash-algorithm.md) measured composable
+  hashes against v3 and chose crc32c-fold128 (§4.2). Changes: §1.3 (superseded by the lab); §4.1.5
+  (five fill policies: on demand, literals, propagation, composition, hash at build, with a table of
+  build sites); §4.2 (the v4 definition, implementation, CPU support, quality); §4.3 (B5 split into
+  B5a v4, B5b propagation, B5c composition; B6 hash at build for per-unit builders); §5 (rows for
+  the composition workloads). The B0 decision "v4 not built" (§7) is overridden: composition was
+  skipped because no workload hashed both sides of a `++` first, but the amended composition also
+  hashes a short or unknown part as the build reads it and stores a part's hash in its own slot, so
+  that later builds from the same part compose without reading it.
 
 ## 1. Where things stand (verified 2026-11-24)
 
@@ -176,6 +190,11 @@ shorter than that makes a flat copy. `LARGE_OBJECT_THRESHOLD` 8 KiB (:117), so a
   must be finalised (`fmix32`, a bijection) before SeqDict reads 5-bit groups. Finalising does not
   remove a collision of the raw value, so B0 must check its collisions on structured keys. The
   state cached for composition is the raw 32-bit CRC (the length is in the header).
+- **Superseded (2026-11-24) by the String hash lab** (design_docs/string-hash-algorithm.md): the table
+  above is scalar code. Vectorised, CRC32C with 16-byte PCLMULQDQ folding (crc32c-fold128) is faster
+  than v3 below ~64 units and ~1.2× slower on long Strings at x86-64-v3 (2.4-3.4× faster with AVX-512
+  folding); `combine` takes 3.4-4.3 ns at any length; its quality equals v3's on collisions,
+  avalanche, every-window distribution and sparse differentials. It is v4 (§4.2).
 
 ## 2. Method
 
@@ -502,7 +521,8 @@ the slot holds the raw CRC, and a String whose raw CRC is 0 is simply never cach
 No header bit is used, because a bit written after publication would race with the colour stores
 (§1.2).
 
-**4.1.5 When the slot is filled.** Four policies, built in this order and measured one at a time:
+**4.1.5 When the slot is filled.** Five policies. 1-2 are built (B2, B3); 3-5 need v4 (§4.2) except
+3, which works with any definition. Each is built and measured on its own (§4.3).
 
 1. **On demand (B2, the core).** In ValueHash.cpp, `Hasher::string(void* s, bool top)` (:334)
    becomes:
@@ -517,15 +537,75 @@ No header bit is used, because a bit written after publication would race with t
    ```
    `eco_hash_string`, `eco_hash_mix_string`, `eco_hash_walk` and `eco_hash_value` all reach it. The
    census (`census::note`) stays before the slot check and counts a hit separately
-   (`census::noteHit`), so `ECO_HASH_CENSUS=1` shows the hit rate.
+   (`census::noteHit`), so `ECO_HASH_CENSUS=1` shows the hit rate. Under v4 the slot holds the raw
+   CRC and the walker mixes `nonZero(fmix32(raw ^ n))`. **A rope is hashed by composition (B5c):**
+   its raw is `combine(raw(left), raw(right), |right|)`, each child's raw taken from its slot or
+   computed the same way and **stored in the child's slot**, so that ropes sharing a child compose
+   without reading it again. The walk uses an explicit stack (a rope's height saturates at 63 in
+   `unboxed`, so its real depth is unbounded). Slices and views are hashed from their units: there
+   is no algebra that gives a substring's CRC from its base's.
 2. **Literals (B3).** In `eco_alloc_string_literal[_utf8]`'s lambdas (RuntimeExports.cpp:792, :805),
-   for a String ≥ T, store `stringHash` into the slot before returning (before publication).
-3. **Composition at `++` (B5, v4 only).** In `makeRope`, and in `concat`/`append`'s flattening
-   paths, read both sides' raw CRC. A side with a slot uses its slot if non-zero. A side shorter
-   than T (no slot) is computed on the spot (cheap). If both are known, write
-   `crc32c_combine(left, right, byteLength(right))` into the new String's slot before it is
-   published. Otherwise write 0.
-4. **Eager at creation (B6, experiment, expected to lose):** hash every String ≥ T as it is made.
+   for a String ≥ T, store the hash (v4: the raw CRC) into the slot before returning (before
+   publication).
+3. **Propagation (B5b).** Where the runtime copies a String's units unchanged into a new object (a new
+   form of the same String), the new object's slot takes the source's slot value: same units, same
+   hash, no unit read. Sites: `flattenToLeaf` (StringOps.cpp:215, also reached from `ensureFlat`),
+   `healAsciiResult` (:487), `append`'s all-ASCII re-encode of a UTF-16 copy (StringOps.hpp:526-534;
+   its source is a fresh copy, so this applies only when the copy's raw was composed, policy 4), and
+   any other site the grep `toStdU16String\|forEachSegment` shows copying one whole String into a new
+   one. The GC copies already keep the slot (§4.1.6).
+4. **Composition at build (B5c).** A String built from parts p₁…p_k (in order) gets
+   `raw = combine(…combine(raw(p₁), raw(p₂), |p₂|)…, raw(p_k), |p_k|)` written into its slot before
+   publication. A part's raw is **known** when the part is Empty (raw 0xFFFFFFFF, the identity), has a
+   filled slot, or has fewer than T units (no slot: its raw is computed from its ≤ T−1 units, at most
+   a few ns). A part of T or more units with an empty slot is **unknown**. Rules:
+   - **Copy paths** (the result is a flat copy, length ≤ `string_flatten_limit`, 128 Ki units by
+     default, so almost every `++`): the build reads every part anyway. Unknown parts and short parts
+     are hashed from their own units in the same call (the data is in cache), and an unknown part's
+     raw is **stored into that part's slot** (a content-determined write after publication, covered
+     by HEAP_088's carve-out exactly as policy 1), so the next build from the same part composes
+     without reading it. Two settings (`StringOps::BuildHashConfig`), set by B5c's measurements to
+     `shortBudget` = 32 and `hashUnknown` = true:
+     `shortBudget` (the most units of short parts hashed directly per build; above it the
+     result's slot stays 0, which bounds the cost of `join` over many short Strings, where composing
+     costs as much as hashing the whole result) and `hashUnknown` (whether unknown long
+     parts are hashed and stored, or the result's slot is left 0).
+   - **Decided before any part is hashed** (`ComposeCheck`, added in B5c, §7): compose only when at
+     least one part is long or already hashed, every long part's raw state is known or may be
+     computed, and the short parts fit the budget, stopping at the first part over it. Without it, a
+     `String.concat` of many short fragments composed part of the way and gave up (+11-38 %), and an
+     `append` hashed its long side before failing on the short one, every time (+29 %).
+   - **Rope paths** (`makeRope` from `append` above the limit, `buildBalancedRope` in `concat`/`join`,
+     the rope `slice` makes when a range spans both children): combine only when both children are
+     known; never read a long child at build time (a rope exists so as not to read it).
+   - Separators: `join` computes the separator's raw once per call.
+   - `String.repeat` is Elm code that doubles with `++`, so it composes through `append`.
+5. **Hash at build for per-unit builders (B6; measured and removed, §7: no site's Strings are hashed
+   later).** Builders that produce a String one unit at a time
+   (`fromList`, `map`, `filter`, `toUpper`/`toLower`, `reverse`, UTF-8 decoding: Bytes `read_string`,
+   JSON string decoding, and the eco/system and eco-kernel text reads that the grep
+   `allocString\|allocStringBlank\|allocAsciiOut\|makeUtf8LeafFromBytes\|tryMakeAsciiString` lists)
+   could hash the finished buffer while it is in cache. That pays only if enough of those Strings are
+   hashed later: with c_b the cost of hashing at build (cache-warm) and c_d the cost on demand
+   (usually cache-cold, so larger), a site pays when the fraction p of its Strings hashed later
+   exceeds c_b / c_d. B6 measures p per site (census) and c_b, c_d (microbenchmark), and keeps only
+   the sites where p > c_b / c_d. Expected: few or none.
+
+Where each build site lands:
+
+| site | builds | hash of the result |
+|---|---|---|
+| `append` copy (StringOps.hpp:489, both UTF-8 and UTF-16 paths) | flat copy of a ++ b | compose (policy 4, copy rules) |
+| `append` rope (above 128 Ki units) | `makeRope(a, b)` | compose if both known |
+| `concat`, `join` copy paths (StringOps.cpp:505, :588) | flat copy of the parts | compose, fold over the parts (and separators) |
+| `concat`, `join` rope paths, `buildBalancedRope` (:439) | balanced ropes | each `makeRope` composes if both known |
+| `slice` of a rope spanning both children (:417-425) | rope of two new slices | the pieces are new slices (unknown): slot 0 |
+| `slice`, `makeSlice`, `makeUtf8View`, `tinyFromFlat` | substrings | on demand only |
+| `flattenToLeaf`, `ensureFlat`, `healAsciiResult`, the all-ASCII re-encode | the same units in a new form | copy the source's slot (policy 3) |
+| literals ≥ T | | filled at intern (policy 2) |
+| `cons` (StringOps `cons`) | c ++ s | compose: the char is a short part |
+| per-unit builders (policy 5) | a new buffer | B6: only sites measured to pay |
+| GC copies | | keep the slot (§4.1.6) |
 
 **4.1.6 Concurrency and the collectors.** Policy 1 writes the slot of an object that may have
 survived a collection. Keys built in bulk are hashed after surviving: in the D4 census only 2,642 of
@@ -533,7 +613,10 @@ survived a collection. Keys built in bulk are hashed after surviving: in the D4 
 (PermanentSpace immutable). The carve-out, as argued here and checked in B2:
 
 - **Content-determined, write-once.** The slot goes once from 0 to a value that depends only on the
-  String's units. Every writer writes the same value. Reads and writes are relaxed 32-bit atomics,
+  String's units. Every writer writes the same value. Under v4 the writers are policy 1 (on demand,
+  including a rope's children), policy 4 (a build storing an unknown part's raw into that part) and
+  the GC copies; policies 2-5 write the new String's own slot before publication, which needs no
+  carve-out. Reads and writes are relaxed 32-bit atomics,
   so they cannot tear. A lost write only costs a recomputation.
 - **Minor and major STW copies** (NurserySpace, NurseryParallel, NurseryRegion, OldGenSpace
   compaction, which only unit tests start) run with the mutator stopped. They copy the slot
@@ -584,21 +667,51 @@ both slots (relaxed). If both are non-zero and differ, return false. `equal` nev
 This is valid because the slot is a function of the units, and every form gives the same number
 for the same units.
 
-### 4.2 Hash definition for Part B
+### 4.2 Hash definition for Part B: v4 = CRC32C, computed as crc32c-fold128
 
-- Policies 1, 2 and 4 work with v3 unchanged.
-- Policy 3 needs a composable definition, **v4**: CRC32C (init `0xFFFFFFFF`) over the UTF-16 units
-  as little-endian byte pairs (a UTF-8 form's bytes widened to units first), in three interleaved
-  streams for speed, with `crc32c_combine` for `++`. The final `stringHash` is
-  `nonZero(fmix32(crc ^ n))` and the slot stores the raw `crc`. A software fallback (slicing-by-8
-  tables) covers hosts without the instruction. The JS backend keeps its own hash.
-- v4 replaces v3 on this branch only if B0 shows all of the following. It must be at least as fast
-  as v3 on the String workloads of the suite (microbenchmark at 8, 32, 192, 2,016 and 4,096 units).
-  Its collision and 5-bit-uniformity figures must be as good as v3's (1 M short keys: v3 had 120
-  equal-hash pairs, random expectation 116; every 5-bit group passed chi² at 99.9 %) on: 1 M short
-  keys; keys sharing long prefixes; sparse edits; and structured sets (one fixed pattern XORed in at
-  many offsets, which a linear hash maps to fixed output differences). Those structured sets must
-  show no excess collisions over random and no 5-bit group bias.
+- Policies 1-3 and 5 work with any definition; composition (policy 4, and a rope hashed from its
+  children under policy 1) needs v4. v3 stays until B5a.
+- **Decision** (user, 2026-11-24), on the evidence of the String hash lab
+  (design_docs/string-hash-algorithm.md, code `experiments/string-hash-lab/`).
+- **Definition v4:**
+  - `raw(s)` = the CRC32C register (Castagnoli, reflected polynomial 0x82F63B78) after the String's
+    UTF-16 units as little-endian byte pairs, starting from 0xFFFFFFFF, without the final
+    inversion. A UTF-8 form's bytes are its units. `raw("")` = 0xFFFFFFFF.
+  - `stringHash(s)` = `nonZero(fmix32(raw ^ n))`, n the length in units; the walker mixes it as
+    before (`mix(kString); mix(stringHash)`).
+  - The slot holds `raw`. 0 means "not computed", so a String whose raw is 0 is never cached (one in
+    2^32).
+  - `combine(ra, rb, nb)` = `(ra ^ 0xFFFFFFFF) · x^(16·nb) ^ rb` mod P. Multiplication is one
+    carry-less multiply reduced by the `crc32` instruction: `M(a, b)` = `crc32(0, clmul(a, b))` =
+    a·b·x³³, with a table `hatPow[k]` = x^(2^k − 33); popcount(16·nb) + 1 multiplies, 3.4-4.3 ns.
+- **Implementation:** port the lab's `crc` namespace (`raw3b` and its stride tiers, `fold128Core`,
+  `fold128Raw`, `M`, `shiftBits`, `combine`, and `init`'s constants, baked into `constexpr` tables)
+  into new `runtime/src/allocator/Crc32c.{hpp,cpp}`:
+  - a contiguous UTF-16 run: 16-byte folding from 64 units, the 3-stream `crc32` path below;
+  - a UTF-8 run: the same with each 8 bytes widened to 16 (`pmovzxbw`). The lab did not build this
+    path; B5a does and measures it;
+  - an update form, `crc32cUpdate(state, run)`, so that a String of several segments
+    (`forEachSegmentEx`) continues one register across them; a rope composes its children instead
+    (policy 1).
+- **CPU support:** x86-64-v3 (eco's floor) has the SSE4.2 `crc32` instruction; 16-byte PCLMULQDQ is on
+  every x86-64-v3 CPU in practice but not in the level's definition. Either
+  design_docs/compatability.md says so, or a start-up check falls back to the 3-stream `crc32` path
+  (SSE4.2 only), with combine on a software carry-less multiply. AArch64 (`mac-build`, apple-m1):
+  `__crc32cd` and `vmull_p64` (PMULL), the same values. A table-driven software CRC is the test
+  reference and the fallback for any other target. Faster variants (32-byte VPCLMULQDQ, 512-bit
+  AVX-512 folding) give the same values and may be selected at start-up later (the static musl build
+  has no IFUNC: a function pointer set at start-up).
+- **Speed** (lab, x86-64-v3 build): 6.9 ns at 1 unit (v3 11.5), 12.3 at 33 (v3 16.4), 133 at 2,016
+  (v3 110), 4,020 at 65,536 (v3 3,440). On Skylake-class CPUs long Strings may lose by 1.3-1.6×
+  (estimate: slower PCLMULQDQ). With AVX-512 folding: 45.8 ns at 2,016 units. The old acceptance
+  rule (v4 at least as fast as v3 at every length) is replaced by the user's decision; B5a reports
+  the long-String cost on the suite.
+- **Quality** (lab §4): equal to v3 on collisions over structured key sets, avalanche, every-window
+  distribution and sparse differentials; 0 collisions where keys differ within 32 bits (better than
+  random). It is linear over GF(2) with a fixed polynomial: equal-length Strings whose XOR is a
+  multiple of P (for example P·x^s) collide by construction, and no key can remove that. v3 has its
+  own constructible family (lab §5.2), which v4 retires for Strings.
+- The JS backend keeps its own hash.
 
 ### 4.3 Steps
 
@@ -648,15 +761,47 @@ for the same units.
   slots compare equal; different Strings with filled slots compare unequal without reading units
   (check with a String whose units were altered in a test-only copy: the fast path must answer
   before memcmp). Measure string-eq-prefix and the String compare workloads.
-- **B5. v4 and composition** (only if B0 chose v4). Switch `stringHash` (ValueHash.cpp:191) to v4.
-  Recompute the pins in HashIdentityTest/-GenericTest with an independent Python reference, as v3
-  did (plans/seq-data-structures-performance.md log, 2026-11-24 v3). Re-check the colliding-key
-  triple: under v4, `c600662`/`c5330492`/`c11005860` no longer collide, so search new colliding
-  Strings for SeqDictCollisionTest and SeqDictMapTest. Add value-hash.md "Definition v4". Then add
-  the combine at `makeRope` and the flattening concat. Add a workload `seqdict-built-keys`
-  (keys built by `++` from long hashed parts) to measure it. Tests: `hash (a ++ b)` equals the
-  directly computed hash for every pair of forms and lengths around T (HashTest `forms`).
-- **B6. Eager creation hashing** (experiment). Measure, then remove the code unless it wins.
+- **B5a. v4** (§4.2). `Crc32c.{hpp,cpp}`, with a unit test against the table-driven reference on
+  lengths 0-1,100 and some large ones, unit offsets 0-7, UTF-16 and UTF-8 runs and multi-segment
+  Strings, and on composition (pairs with empty sides and every block boundary; many-piece joins left
+  to right, right to left and as a tree, as the lab's `test` mode). Switch `stringHash`,
+  `Elm::stringHashUncached`, `Elm::checkStringHashSlot` (compares the slot with the raw CRC),
+  `fillLiteralHashSlot` and `Hasher::string` (slot raw, then finish).
+  - Pins: recompute HashIdentityTest/-GenericTest with an independent Python reference (bitwise
+    CRC32C, `fmix32`, the walker's FNV mix), as v3 did (plans/seq-data-structures-performance.md log,
+    2026-11-24 v3).
+  - Colliding keys: constructed, not searched. For a key k, k ⊕ P·x^s and k ⊕ P·x^t (two shifts,
+    chosen so every changed unit stays a non-surrogate BMP unit) have k's raw CRC and length, so the
+    three collide fully. They replace `c600662`/`c5330492`/`c11005860` in SeqDictCollisionTest and
+    SeqDictMapTest.
+  - Docs: value-hash.md "Definition v4"; the HEAP_088 row (the slot holds the raw CRC32C);
+    compatability.md (PCLMULQDQ, or the fallback).
+  - If a file the kernel license manifest or the TLA canary pins changes, follow Part B's procedure
+    (§7, B2 paperwork).
+  - Measure the suite and the String microbenchmarks: the definition's own cost, before any
+    composition. **USER** checkpoint commit.
+- **B5b. Propagation** (policy 3). Tests: at each site, a source with a filled slot gives a result
+  with the same slot, and the validate pre-walk agrees. Measure (expected flat).
+- **B5c. Composition** (policy 4, and policy 1's rope walk).
+  - Census first: extend `ECO_HASH_CENSUS` with per-site build counters (results of T+ units, parts
+    known / short / unknown, units hashed at build) and a census-only table of results that are
+    hashed before the next minor GC (as the existing repeat table). Run it on the suite and the
+    compiler self-build; record it in §7.
+  - Build the rules with the two settings; measure `hashUnknown` off and on, and
+    `shortBudget` at 0, T and 4T: the gain on seqdict-prefixkey-fresh and a new
+    seqdict-built-keys (keys `prefix ++ middle ++ code`, where `prefix` and `middle` are long Strings
+    also used as keys, looked up in 4 rounds); the cost on string-concat, string-join, csv-split,
+    the String compare workloads and the self-build. Keep the variant that passes §5 rule (1) with the
+    best gain, and record the trade-off for the user.
+  - Tests: for every build site of the table in §4.1.5, every pair of forms and lengths around T,
+    empty sides, separators, and both sides of the 128 Ki limit (copy and rope paths), the result's
+    slot equals the directly computed raw. A rope hashed on demand fills its children's slots. The
+    validate pre-walk (`checkStringHashSlot`) covers it all under `ECO_NURSERY_POISON=1`. Negative
+    control (by hand, recorded in §7): a wrong shift in `combine` makes the validate check abort.
+  - **USER** checkpoint commit.
+- **B6. Hash at build for per-unit builders** (policy 5). Per site: the census fraction p of its
+  Strings hashed later, and microbenchmarks of c_b and c_d. Keep only sites with p > c_b / c_d, each
+  with a test that its slot equals the raw CRC; remove the rest.
 - **B7. Validate gate** (`build-validate` tree, `cmake --build build-validate` in full first, then
   unit + E2E + pressure stress, as in /tmp/seqwork/final.sh's validate lines, `ulimit -c 0`).
   Run it once at the end of Part B: memory "ECO_HEAP_VALIDATE ONCE AT PLAN END".
@@ -665,7 +810,7 @@ for the same units.
   `mix64(seed, stringHash(s))` natively. That changes bucket numbers only: `Data.HashMap` iterates
   in insertion order, so compiler output cannot change (verify: bootstrap fixed point byte-equal).
   JS keeps its own definition (agreement was a nicety, Eco/Hash.elm:23-26). Only Strings ≥ T gain,
-  and most compiler Strings are short. Do it only if B2-B5 are kept, and measure the self-build.
+  and most compiler Strings are short. Do it only if B2-B5c are kept, and measure the self-build.
 
 Exit: targeted tests and the validate gate green; full gate before the final **USER** commit.
 
@@ -679,6 +824,8 @@ One table, each branch against `local-dev/hashreuse-base-bench.json`:
 | seqdict-intern (control: expected flat on both) | | `-hashed` | plain |
 | seqdict-shortkey-reuse, seqdict-string (overhead) | | | |
 | string-eq-prefix | | plain | plain |
+| seqdict-prefixkey-fresh, seqdict-built-keys (composition) | | plain | plain |
+| string-concat, string-join, csv-split (cost of v4 and composition) | | | |
 | whole suite, workloads moving > 5 % (A/B-confirmed) | | | |
 | compiler cold self-build wall / peak RSS | | | |
 | String allocation (`dev` build: bytes_allocated, histogram) | | | |
@@ -832,4 +979,116 @@ choice between them is the user's: the table states both gains and both costs si
     (1) only if the 6 % on seqdict-prefixkey-fresh and 4.5 % on string-concat are accepted (the rule
     says 3 %). Not measured: compiler self-build (B's 8 bytes per 32+-unit String do apply there);
     String bytes allocated (`dev` build).
+- **2026-11-24 plan amended (user): v4 = crc32c-fold128, composition and hash at build.** The String
+  hash lab (`experiments/string-hash-lab/`, design_docs/string-hash-algorithm.md) compared v3 with
+  CRC32C, a 64-bit Rabin fingerprint and polynomials mod 2^61−1 and 2^52−47, vectorised (PCLMULQDQ,
+  VPCLMULQDQ, AVX2, AVX-512, IFMA), on speed, composition and quality (avalanche, every-window
+  distribution, differentials). The user chose crc32c-fold128. §4.1.5 now has five policies (on
+  demand with ropes composed, literals, propagation, composition at build, hash at build), §4.2 the v4
+  definition, §4.3 steps B5a-B5c and B6. The lab also found that v3's tail costs ~6 ns at lengths not
+  a multiple of 32 (a store-forwarding stall; a masked load fixes it with the same values) and that a
+  16-unit block equal to v3's K erases all four lanes (a constructible collision family); v4 retires
+  v3 for Strings.
+- **2026-11-24 B5a-B5c implemented, B6 measured and removed** (branch `hash-cache`, ungated).
+  - **B5a v4.** New `runtime/src/allocator/Crc32c.{hpp,cpp}`: the lab's crc32c-fold128 (16-byte
+    PCLMULQDQ folding from 64 units, three `crc32` streams below; UTF-8 runs widened with `pmovzxbw`;
+    `combine` by one carry-less multiply per set bit of 16·|b|) behind per-function
+    `target("sse4.2,pclmul")` attributes and a CPUID check, so the `build` preset (no `-march`) is
+    unaffected; a slicing-by-8 portable path gives the same numbers elsewhere. `ValueHash.cpp`:
+    `stringHash` = `nonZero(fmix32(raw ^ n))`, the slot holds the raw CRC, `rawFill` composes a rope
+    from its children and fills their slots; `stringRawUncached`/`stringRaw` exported;
+    `checkStringHashSlot` compares with the raw CRC; `fillLiteralHashSlot` stores the raw CRC. Pins:
+    `experiments/string-hash-lab/v4ref.py` (bit-by-bit CRC32C plus the walker's mixing) first
+    reproduced every v3 pin, then gave the v4 ones (HashIdentityTest/-GenericTest strings, collide,
+    values[0]). Colliding keys are constructed, not searched: `collisio`, `klsygdlo`, `fskwtmhm`
+    (one raw CRC, found by solving the CRC's linear system over the low 5 bits of each letter), in
+    HashIdentity*, SeqDictCollisionTest, SeqDictMapTest and SeqDictHashOnceTest. Docs: value-hash.md
+    "Definition v4" and the cache section; HEAP_088; compatability.md (the CPUID check adds no
+    requirement). Kernel license manifest and TLA canary: no pinned file touched, both pass.
+  - **v4 alone** (`post-v4-only-bench.json`, composition and propagation off): suite geomean 0.999
+    against Part B (v3); seqdict-prefixkey-fresh 155 -> 120 ms and seqdict-prefixkey 71 -> 64 (UTF-8
+    leaf keys: v3 widened bytes four at a time in scalar code, the CRC path eight per `pmovzxbw`).
+  - **B5b propagation:** `flattenToLeaf` copies the source's slot; `healAsciiResult` carries the
+    composed raw state to its re-encoded result.
+  - **B5c composition:** `append` (both copy paths), `concat`, `join` (separator once), `cons` and
+    `makeRope` (so every rope path) give the result `combine` of its parts' raw states before
+    publication (`giveBuiltHash`); a long part with an empty slot is hashed during the build and its
+    own slot filled (`partRaw`). Two traps found by measurement and fixed with a decision taken before
+    any part is hashed (`ComposeCheck`: at least one long or hashed part, every long part known or
+    storable, short parts within `kStringHashSlotMinUnits` units, stopping at the first part over
+    budget): (1) a `String.concat` of many short fragments composed part of the way and gave up,
+    costing seqdict-longkey/-reuse and dict-longkey +11 % at budget 32 and +38 % at 128; (2) with
+    budget 0, `append` hashed the long side, failed on the short one, and the next append hashed the
+    whole accumulator again (string-append +29 %). The env switches used to measure
+    (`ECO_STRING_COMPOSE`, `_BUDGET`, `_PROPAGATE`, `_HASH_AT_BUILD`) were removed afterwards; the
+    defaults are constants in `StringOps::BuildHashConfig`. Settings, interleaved on one binary
+    (`local-dev/hashreuse/ab-env-results-c.txt`, ms, change against v4 alone):
 
+    | workload | v4 alone | known parts, 32 | store, 0 | **store, 32** | store, 128 |
+    |---|--:|--:|--:|--:|--:|
+    | seqdict-prefixkey | 63 | +1.6 % | +1.6 % | **−22.2 %** | −20.6 % |
+    | seqdict-prefixkey-fresh | 120 | −2.5 % | −0.8 % | **−20.8 %** | −13.3 % |
+    | seqdict-built-keys (new) | 89 | −24.7 % | −21.3 % | **−19.1 %** | −13.5 % |
+    | string-eq-prefix | 116 | −2.6 % | −1.7 % | **−91.4 %** | −91.4 % |
+    | seqdict-longkey | 250 | +3.2 % | 0.0 % | **+3.2 %** | +12.8 % |
+    | dict-longkey | 286 | +4.2 % | +0.3 % | **+3.1 %** | +10.8 % |
+    | string-concat / string-join / csv-split | | ±1 % | ±1 % | **±1 %** | ±1 % |
+
+    string-eq-prefix is the B4 fast-reject paying at last: its keys are built as `prefix ++ code`, so
+    they now carry slots and `==` on two different keys reads two words.
+  - **Census** (`ECO_HASH_CENSUS=1`, new build-site rows; `local-dev/hashreuse/census-build-sites*.txt`):
+    every key of seqdict-prefixkey-fresh (180,017 of 180,021), seqdict-built-keys and seqdict-prefixkey
+    is given its hash at build and every one is hashed later; seqdict-longkey's keys (`String.concat`
+    of short fragments) are never composed (over budget) and all hashed later; in csv-split,
+    string-append and string-compare-prefix composition gives hashes nothing reads (cost measured:
+    ≤ 2 %, string-compare-prefix +2.0 %, string-concat +1.4 %, csv-split +0.3 %, word-freq 0 %).
+  - **B6 hash at build: removed.** The census found almost no 32+-unit Strings built by the per-unit
+    builders in the suite (reverse 6, toUpper 3) and none hashed later (p = 0 at every site); with the
+    hook on, revcomp +0.8 %, unicode-string 0 %, string-callbacks −0.6 %, k-nucleotide 0 %. By §4.3's
+    rule (keep a site only if p > c_b / c_d) no site stays, so the hooks, their census rows and their
+    test were removed. Not measured: `fromList` and the Bytes/JSON decoders, whose files the kernel
+    license manifest pins.
+  - **Tests.** New `test/allocator/StringHashComposeTest.cpp` (5 tests: the CRC module against a
+    bit-by-bit CRC32C for UTF-16 and UTF-8 runs, every offset, continued states, pairs and
+    many-piece joins left/right/tree; every form follows v4; a hashed rope fills its children; every
+    build site's slot is the raw CRC of its units or 0 as the settings say, for each form, empty parts,
+    separators, both sides of the 128 Ki limit; propagation). `--filter HEAP_088` 12/12;
+    `--filter eco-system/` 256/256 (the new pins and colliding keys); `--filter String` 209/209.
+    Negative control (by hand, reverted, rebuilt): `composeRaw` with |b| + 1 fails the two composition
+    tests ("slot is not the raw CRC32C of its units"). Validate tree (`build-validate`, rebuilt in full) with
+    `ECO_NURSERY_POISON=1`: `--filter HEAP_088` 12/12, `--filter eco-system/` 256/256: the
+    pre-evacuation walk recomputes every slot, composed ones included, at every minor. The final code
+    (after `ComposeCheck` and the B6 removal) also passes `--filter String` and `--filter eco-system/`
+    in the normal build. Not run: the full gate, the full validate gate (B7), the self-build.
+  - **Benchmarks.** Suite (`local-dev/hashreuse/post-v4-final-bench.json`, native only: the JS backend
+    has its own hash and none of this code; all 110 ok): geomean against the base 0.971 (non-Seq/String
+    1.005), against Part B (v3) 0.968 (0.996). Interleaved, base / Part A / Part B (v3) / final, 3
+    alternations (`local-dev/hashreuse/ab4-results.txt`), native ms:
+
+    | workload | base | Part A plain | Part A `-hashed` | Part B (v3) | **final** | final vs base |
+    |---|--:|--:|--:|--:|--:|--:|
+    | seqdict-prefixkey | 130 | 132 | 55 | 67 | **51** | −61 % |
+    | seqset-prefixkey-rounds | 184 | 185 | 47 | 62 | **61** | −67 % |
+    | seqdict-longkey-reuse | 292 | 289 | 264 | 268 | **280** | −4 % |
+    | seqdict-intern (control) | 316 | 316 | 322 | 324 | **319** | +1 % |
+    | seqdict-prefixkey-fresh | 150 | 148 | – | 155 | **105** | −30 % |
+    | string-eq-prefix | 117 | 113 | – | 114 | **10** | −92 % |
+    | seqdict-longkey | 254 | 247 | – | 250 | **256** | +1 % |
+    | dict-longkey | 283 | 286 | – | 283 | **291** | +3 % |
+    | string-concat | 202 | 202 | – | 210 | **215** | +6 % |
+    | string-join | 251 | 250 | – | 262 | **267** | +6 % |
+    | string-append | 325 | 339 | – | 339 | **349** | +7 % |
+    | csv-split | 342 | 341 | – | 352 | **364** | +6 % |
+    | string-compare-prefix | 96 | 100 | – | 99 | **107** | +11 % |
+    | fib (layout control) | 75 | 87 | – | 75 | **88** | +17 % |
+
+    The String-building costs against the base are mostly Part B's slot word (B: +2-4 %, §7 above);
+    composition adds ≤ 2 % (above); v4 itself, from the suite runs (not interleaved), moved
+    string-concat +0.5 %, string-join +0.8 % and csv-split +5 % against Part B.
+    string-compare-prefix's +8 % against B is mostly layout: the same code paths measure 101 ms in the
+    measurement binary (v4 alone 99) and 107 in the final one, as fib's +17 % is (Part A has it too).
+  - **Verdict.** Composition is an improvement: with no program change, Part B now beats Part A's
+    opt-in on seqdict-prefixkey (51 vs 55 ms), gives keys built from hashed parts their hash for free
+    (prefixkey-fresh −30 %, built-keys −20 % against v4 alone), and makes `==` on such keys answer from
+    the slots (string-eq-prefix −92 %); it costs ≤ 2 % where the hashes go unread. Hash at build for
+    per-unit builders is not: nothing in the suite hashes what they build.

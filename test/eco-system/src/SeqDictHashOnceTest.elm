@@ -109,7 +109,7 @@ report () =
             List.map (\i -> { name = long ++ String.fromInt (modBy 7 i), n = modBy 7 i }) (List.range 0 34)
 
         strings =
-            [ "c600662", "c5330492", "c11005860", "a", "c600662", "b", "c11005860" ]
+            [ "collisio", "klsygdlo", "fskwtmhm", "a", "collisio", "b", "fskwtmhm" ]
 
         subset m =
             List.foldl
@@ -161,6 +161,6 @@ report () =
             Debug.log "sets" (List.map addThenHas strings)
 
         _ =
-            Debug.log "absent" (SeqSet.member "zzz" (SeqSet.insert "c600662" SeqSet.empty))
+            Debug.log "absent" (SeqSet.member "zzz" (SeqSet.insert "collisio" SeqSet.empty))
     in
     ()

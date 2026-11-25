@@ -311,6 +311,16 @@ slot (if rarely, composition cannot pay, whatever the hash costs), then joining 
 into the new String's slot in `makeRope` and `concat`, measured on seqdict-prefixkey-fresh and the
 String-building workloads.
 
+## 7a. Outcome in eco (2026-11-25)
+
+crc32c-fold128 became value-hash definition v4 (`runtime/src/allocator/Crc32c.cpp`, with a CPUID check
+and a portable fallback), and Strings built from parts are given their hash by composition
+(plans/hash-reuse-explicit-vs-cached.md B5a-B5c, results in its §7). Measured against the base, with no
+program change: seqdict-prefixkey −61 % (ahead of Part A's opt-in `Hashed` keys), seqdict-prefixkey-fresh
+−30 %, string-eq-prefix −92 % (built keys carry hashes, so `==` rejects from them); composing hashes no
+one reads costs ≤ 2 %. Hashing at build in the per-unit builders was measured and removed: nothing in
+the benchmark suite hashes what they build.
+
 ## 8. Reproducing
 
 `experiments/string-hash-lab/run.sh` builds both binaries (into `/tmp/string-hash-lab` unless `OUT` is

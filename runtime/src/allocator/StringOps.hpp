@@ -45,6 +45,8 @@
 
 #include "Allocator.hpp"
 #include "CaseMap.hpp"
+#include "Crc32c.hpp"
+#include "ValueHash.hpp"
 #include "HeapHelpers.hpp"
 #include "Utf8.hpp"
 #include <algorithm>
@@ -479,6 +481,57 @@ inline u32 codePointAt(void* str, size_t len, size_t& i) {
 // Concatenation
 // ============================================================================
 
+// ===== Hashes given at build (plans/hash-reuse-explicit-vs-cached.md §4.1.5 policies 3 and 4) =====
+//
+// A String's hash slot (HEAP_088) holds the raw state of value-hash.md definition v4 (CRC32C, Crc32c.hpp),
+// which composes: a String built from parts can be given its raw state from theirs, without reading them.
+// These write the new String's slot before it is published.
+
+// How Strings get their hash at build. The defaults are the ones B5c measured best
+// (plans/hash-reuse-explicit-vs-cached.md §7); tests change them.
+struct BuildHashConfig {
+    bool propagate = true;    // policy 3: a new form of a String keeps its slot
+    bool compose = true;      // policy 4: a String built from parts gets its raw state from theirs
+    bool hashUnknown = true;  // policy 4: a long part with an empty slot is hashed, and its slot filled
+    u32 shortBudget = kStringHashSlotMinUnits; // policy 4: units of short parts hashed per build, at most
+};
+BuildHashConfig& buildHashConfig();
+
+// The raw-state work of one build: what a part's raw state may cost, and what it did cost.
+struct BuildHashing {
+    u32 budget;          // units of short parts (no slot) that may still be hashed
+    bool hashUnknown;    // whether a long part with an empty slot may be hashed
+    u64 hashed = 0;      // units read
+    explicit BuildHashing(const BuildHashConfig& c) : budget(c.shortBudget), hashUnknown(c.hashUnknown) {}
+};
+
+// Whether a build from given parts should compose, decided before any part is hashed: it should when at
+// least one part is long or already hashed (otherwise hashing the result on demand costs no more than
+// composing it), every long part with an empty slot may be hashed, and the short parts' units fit the
+// budget. Add every part, then ask `ok`.
+struct ComposeCheck {
+    u32 anchors = 0;    // parts with a filled slot, or long
+    u64 shortUnits = 0; // units of short parts with an empty slot
+    bool blocked = false; // nothing will compose: a part cannot be known, or the budget is spent
+    void add(void* s, const BuildHashConfig& hc);
+    bool ok(const BuildHashConfig& hc) const { return !blocked && anchors > 0 && shortUnits <= hc.shortBudget; }
+};
+
+// The raw state of the part `s` (null or empty: the state of no units), or 0 when it is not known: a
+// filled slot; a short part hashed within the budget; a long part with an empty slot hashed and its
+// slot filled, if allowed. Does not allocate.
+u32 partRaw(void* s, BuildHashing& bh);
+
+// raw(x ++ y) from raw(x) = `a`, raw(y) = `b` and |y| = `nb`; 0 if either is 0.
+u32 composeRaw(u32 a, u32 b, u64 nb);
+
+// The slot of `s`, or 0 (no slot, not filled, or null).
+u32 slotRaw(void* s);
+
+// Writes `raw` (if not 0) into the slot of the new String `r` built at census site `site` (`hashed`:
+// units read to compute it), and returns `r`.
+HPointer giveBuiltHash(HPointer r, u32 raw, int site, u64 hashed);
+
 // Returns `a` followed by `b`.
 //
 // When either is null or empty, the other is returned as it is. When the total length is at most
@@ -499,6 +552,21 @@ inline HPointer append(void* a, void* b) {
 
     size_t total_len = len_a + len_b;
     if (total_len <= Allocator::instance().getConfig().string_flatten_limit) {
+        // The result's raw state from the parts' (policy 4), computed before anything allocates.
+        u32 raw = 0;
+        u64 hashed = 0;
+        const BuildHashConfig& hc = buildHashConfig();
+        if (hc.compose && total_len >= kStringHashSlotMinUnits) {
+            ComposeCheck cc;
+            cc.add(a, hc);
+            cc.add(b, hc);
+            if (cc.ok(hc)) {
+                BuildHashing bh(hc);
+                const u32 ra = partRaw(a, bh);
+                raw = ra ? composeRaw(ra, partRaw(b, bh), len_b) : 0;
+                hashed = bh.hashed;
+            }
+        }
         // Both UTF-8: join the bytes. Mixed forms fall through to the UTF-16 copy below.
         if (isUtf8(a) && isUtf8(b) &&
             Allocator::instance().getConfig().utf8_strings_enabled) {
@@ -511,7 +579,7 @@ inline HPointer append(void* a, void* b) {
             auto pb = utf8Bytes(allocator.resolve(bHp));
             std::memcpy(out.dst, pa.first, pa.second);
             std::memcpy(out.dst + pa.second, pb.first, pb.second);
-            return finishAsciiOut(out);
+            return giveBuiltHash(finishAsciiOut(out), raw, kBuildAppend, hashed);
         }
         if (isUtf8(a)) GC_STATS_UTF8_WIDEN_SITE(UTF8_WIDEN_APPEND_MIXED, len_a);
         if (isUtf8(b)) GC_STATS_UTF8_WIDEN_SITE(UTF8_WIDEN_APPEND_MIXED, len_b);
@@ -530,10 +598,10 @@ inline HPointer append(void* a, void* b) {
                 AsciiOut out = allocAsciiOut(total_len);
                 for (size_t i = 0; i < total_len; ++i)
                     out.dst[i] = static_cast<u8>(data[i]);
-                return finishAsciiOut(out);
+                return giveBuiltHash(finishAsciiOut(out), raw, kBuildAppend, hashed);
             }
         }
-        return alloc::allocString(data.data(), total_len);
+        return giveBuiltHash(alloc::allocString(data.data(), total_len), raw, kBuildAppend, hashed);
     }
 
     // makeRope keeps its HPointer arguments alive across its allocation; the raw `a` and `b`
@@ -1402,6 +1470,20 @@ inline HPointer cons(u32 c, void* str) {
 
     auto& allocator = Allocator::instance();
 
+    // The result's raw state: the Char's units composed with `str`'s (policy 4).
+    u32 raw = 0;
+    u64 hashed = 0;
+    const BuildHashConfig& hc = buildHashConfig();
+    if (hc.compose && total_len >= kStringHashSlotMinUnits) {
+        ComposeCheck cc;
+        cc.add(str, hc);
+        if (cc.ok(hc)) {
+            BuildHashing bh(hc);
+            raw = composeRaw(crc32c::update16(crc32c::kEmpty, units, n), partRaw(str, bh), len);
+            hashed = bh.hashed + n;
+        }
+    }
+
     if (c < 0x80 && isUtf8(str) && allocator.getConfig().utf8_strings_enabled) {
         HPointer srcHp = allocator.wrap(str);
         AsciiOut out;
@@ -1409,7 +1491,7 @@ inline HPointer cons(u32 c, void* str) {
         out.dst[0] = static_cast<u8>(c);
         auto pr = utf8Bytes(allocator.resolve(srcHp));
         std::memcpy(out.dst + 1, pr.first, pr.second);
-        return finishAsciiOut(out);
+        return giveBuiltHash(finishAsciiOut(out), raw, kBuildCons, hashed);
     }
 
     HPointer srcHp = allocator.wrap(str);
@@ -1420,7 +1502,7 @@ inline HPointer cons(u32 c, void* str) {
     }
     for (u32 k = 0; k < n; ++k) out.chars[k] = units[k];
     if (len > 0) copyInto(allocator.resolve(srcHp), out.chars + n);
-    return out.hp;
+    return giveBuiltHash(out.hp, raw, kBuildCons, hashed);
 }
 
 // Returns `Just (c, rest)`, where `c` is the first code point of `str` and `rest` the units after

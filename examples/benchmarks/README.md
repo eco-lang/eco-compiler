@@ -155,4 +155,6 @@ with each node's hash stored when it is built, or recomputed by walking it at ev
 `src/SeqLargeKeys.elm` is their eco-only twin on `SeqDict`: seqdict-longkey, seqdict-longkey-reuse
 (the same key String objects looked up again, the case a cached String hash serves) and
 seqdict-intern (the trees themselves as `SeqDict` keys). seqset-prefixkey-rounds tests membership
-of 500-character keys in a `SeqSet` 32 times over.
+of 500-character keys in a `SeqSet` 32 times over. seqdict-built-keys builds each key, at every
+lookup, as `prefix ++ middle ++ code` from long parts that are keys themselves, the case where a
+String built from hashed parts can be given its hash by composing theirs.

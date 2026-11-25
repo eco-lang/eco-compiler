@@ -515,6 +515,7 @@ add_llvm_executable(ecoc
     ../allocator/GCStats.cpp
     ../allocator/StringOps.cpp
     ../allocator/ValueHash.cpp
+    ../allocator/Crc32c.cpp
     ../allocator/ListOps.cpp
     ../allocator/BytesOps.cpp
     ../allocator/ElmBytesRuntime.cpp
@@ -620,6 +621,7 @@ add_mlir_library(EcoRunner
     ../allocator/GCStats.cpp
     ../allocator/StringOps.cpp
     ../allocator/ValueHash.cpp
+    ../allocator/Crc32c.cpp
     ../allocator/ListOps.cpp
     ../allocator/BytesOps.cpp
     ../allocator/ElmBytesRuntime.cpp
@@ -707,6 +709,7 @@ add_library(EcoRuntimeStatic STATIC
     ../allocator/StackUnwind.cpp
     ../allocator/StringOps.cpp
     ../allocator/ValueHash.cpp
+    ../allocator/Crc32c.cpp
     ../allocator/ListOps.cpp
     ../allocator/BytesOps.cpp
     ../allocator/ElmBytesRuntime.cpp
