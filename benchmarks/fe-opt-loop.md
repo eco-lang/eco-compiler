@@ -1357,6 +1357,32 @@ phase R0 split out of `monomorphization`. Every row is at its fixed point; every
   the qualified whitelist lookups, both small. The rest is the moved tree (source +0.3 % out.mlir,
   +0.6 % `.ecot`). Single run, so unattributed between those.
 
+### hashcrc: the tree of 2026-11-25 (String hash v4, CRC32C composed at build; plans/hash-reuse-explicit-vs-cached.md Part B, B0-B5c): **regression check, single run: wall −1.72 s (−2.2 % vs hashonce), FLAT; out.mlir byte-identical**
+
+| run | wall (s) | parse/check/build (s) | mono (s) | representation (s) | MLIR codegen (s) | GC time (s) | minor GC | major GC | promoted MiB | max RSS (kB) | out.mlir (B) | fixed point |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| r1 | 76.85 | 29.2 | 29.9 | 1.5 | 9.7 | 3.39 | 1517 | 8 | 7812 | 7644156 | 13438258 | same |
+| Δ vs hashonce (one run each) | −1.72 (−2.2 %) | −0.8 | −0.5 | 0.0 | +0.2 | −0.19 | +1 | 0 | +1 | −17,328 (−0.2 %) | 0 (byte-identical) | |
+
+- **What:** not a front-end step: the `hash-cache` tree (Part B of plans/hash-reuse-explicit-vs-cached.md):
+  every String of 32+ units has a hash slot (HEAP_088); String hash definition v4 (CRC32C,
+  `runtime/src/allocator/Crc32c.cpp`); `++`, `concat`, `join`, `cons` and ropes compose their parts'
+  hashes as they build; `String` `==` rejects on two filled, differing slots. Also in the tree since
+  `hashonce`: an `InlineSimplify.elm` edit and kernel license manifest updates. Full bootstrap turn:
+  `ecoHO.mlir` lowered by the current `eco-boot-native` to `eco-optHC0`, which compiled today's source
+  to `ecoHC.mlir` (untimed, cold `eco-stuff`); that was lowered to `eco-optHC` and timed once under §2
+  (`ECO_MONO_ENGINE=solver ECO_MONO_LSS=1`, cold `eco-stuff`, `~/.eco/0.2.0/packages/registry.dat`
+  touched). **One timed run only, by request.**
+- **Checks:** rc 0, no `[gc-stats] SIG`, r1 equals `ecoHC.mlir` (fixed point), and `ecoHC.mlir`
+  equals `ecoHO.mlir` byte for byte, so the workload did not move. `.ecot` 8,883,403 B (identical
+  to hashonce).
+- **Verdict:** FLAT. −1.72 s is past the ~1.3 % band but a single run, and GC counters are within
+  one cycle and 1 MiB of `hashonce`, so no extra allocation or retention shows. The slot word and
+  composition at build cost nothing visible here: the compiler's hash maps use `Eco.Hash`
+  (`Hash::stringWithSeed`, its own seeded hash, not the HEAP_088 slot), so it gains nothing from the
+  cache either, and its long Strings are mostly built by emission, not compared. Single run, so the
+  −0.8 s front end and −0.5 s mono are not attributed.
+
 ## 6a. Batched end-of-series gates (run once each, after S8)
 
 - **G5 `TypedOptimizedCodecTest` (new):** 135/135 standard-suite modules round-trip the v2 codec
@@ -1656,3 +1682,4 @@ same-sitting control run, not the `ref` row's recorded wall. Details live in eac
 | now | 73.86 | +4.14 | 1448 | 8 | 7506 | 7400224 | — (regression check, ONE run, across a moved tree: constructor follow-ups F1–F5 + knownCtorCase, ctor compile-time pass, stage hints; REGRESSION +5.9 %, parse/check/build +2.0 s, mono +1.6 s, representation −0.3 s; out.mlir +1.3 %; fixed point) | R4i |
 | cq | 77.30 | +3.44 | 1525 | 8 | 7700 | 7552708 | — (regression check, ONE run, across a moved tree: capture-qualified lambda members (LSS_042), lambda arguments translated last (LSS_043), runtime-first native link; +4.7 %, inside the 5 % flag; parse/check/build +0.4 s, mono +2.2 s, representation +0.2 s, codegen +0.4 s; out.mlir +4.7 % (per-capture HOF specialization); same-input A/B in the plan §9.6: C 68.36 vs B 68.66 s; fixed point) | now |
 | hashonce | 78.57 | +1.27 | 1516 | 8 | 7811 | 7661484 | — (regression check, ONE run, across a moved tree: SeqDict/SeqSet plan, whole-String hash v3, hash-once per function (qualified inliner whitelist names, FNV.hash KernelFacts row, inlined SeqDict/SeqSet wrappers, default-on Mono hash CSE); +1.6 %, inside the 5 % flag; parse/check/build +0.6 s, mono +0.3 s, representation −0.1 s, codegen 0.0 s; out.mlir +0.3 %; fixed point) | cq |
+| hashcrc | 76.85 | -1.72 | 1517 | 8 | 7812 | 7644156 | — (regression check, ONE run, across a moved tree: String hash v4 (CRC32C) + HEAP_088 slot composed at build (++/concat/join/cons/ropes) + == slot fast-reject; FLAT, −2.2 %; parse/check/build −0.8 s, mono −0.5 s, codegen +0.2 s, GC −0.19 s; out.mlir byte-identical to hashonce; fixed point) | hashonce |

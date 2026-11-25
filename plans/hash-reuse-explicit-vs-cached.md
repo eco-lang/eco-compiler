@@ -1,7 +1,7 @@
 ---
 status: partial
 updated: 2026-11-25
-remaining: "Part A on branch hash-explicit (not gated); Part B on hash-cache: B0-B5c implemented (v4 CRC32C, propagation, composition), B6 measured and removed (no site pays), B8 not done; owed: full gate and the full ECO_HEAP_VALIDATE gate (B7: only targeted validate tests run), compiler self-build cost check, A-vs-B choice (USER)"
+remaining: "Part A on branch hash-explicit (not gated); Part B on hash-cache: B0-B5c implemented (v4 CRC32C, propagation, composition), B6 measured and removed (no site pays), B8 not done; self-build check done (fe-opt-loop hashcrc: 76.85 s, -1.72 s vs hashonce, FLAT); owed: full gate and the full ECO_HEAP_VALIDATE gate (B7: only targeted validate tests run), A-vs-B choice (USER)"
 ---
 
 # Hash reuse: explicit `Hashed` keys against a transparent String hash cache
