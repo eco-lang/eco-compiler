@@ -556,7 +556,9 @@ rows =
         }
       )
     , ( ( "Eco", "FNV", "value" )
-        -- Hash.value: the Hashed's value field.
+        -- Hash.value: the Hashed's value field. Called at a known type it is the
+        -- eco.hashed.value op instead (GenerateMlir.Expr, F4); this row covers
+        -- the kernel as a function value.
       , { auditedPure
             | params = [ PBorrowed ]
             , resultAliases = [ 0 ]
@@ -565,7 +567,8 @@ rows =
         }
       )
     , ( ( "Eco", "FNV", "hashOf" )
-        -- Hash.hashOf: the Hashed's hash field, an Int.
+        -- Hash.hashOf: the Hashed's hash field, an Int. Called at a known type
+        -- it is eco.hash of kind "hashed" instead (GenerateMlir.Expr, F4).
       , { auditedPure
             | params = [ PBorrowed ]
             , gcAlloc = GcNone

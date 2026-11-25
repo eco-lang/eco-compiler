@@ -33,6 +33,7 @@
 #include "EcoToLLVMInternal.h"
 #include "../EcoDialect.h"
 #include "../EcoOps.h"
+#include "../../allocator/Heap.hpp"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 
@@ -1007,6 +1008,23 @@ Value finish(OpBuilder &b, Location loc, Value h) {
     return arith::ExtUIOp::create(b, loc, b.getI64Type(), h).getResult();
 }
 
+constexpr uint32_t kHashed = 18;
+
+// An ElmHashed's fields (Heap.hpp, HEAP_089), which `eco.hash`, `eco.hash.mix` of kind `hashed` and
+// `eco.hashed.value` read inline.
+constexpr int64_t kHashedHashOffset = 8, kHashedValueOffset = 16;
+static_assert(offsetof(Elm::ElmHashed, hash) == kHashedHashOffset, "ElmHashed.hash moved");
+static_assert(offsetof(Elm::ElmHashed, value) == kHashedValueOffset, "ElmHashed.value moved");
+
+// Loads the `ty` field at byte `offset` of the Hashed `hptr` (a heap pointer, never a constant),
+// through the forwarding check (HEAP_030).
+Value loadHashedField(OpBuilder &b, Location loc, Value hptr, int64_t offset, Type ty, const EcoRuntime &runtime) {
+    Value base = inlineResolvedBase(b, loc, hptr, runtime);
+    Value off = LLVM::ConstantOp::create(b, loc, b.getI64Type(), offset);
+    Value fieldPtr = LLVM::GEPOp::create(b, loc, base.getType(), b.getI8Type(), base, ValueRange{off});
+    return LLVM::LoadOp::create(b, loc, ty, fieldPtr, offset == kHashedHashOffset ? 4 : 8).getResult();
+}
+
 bool inlineEnabled() {
     static const bool on = [] {
         const char *v = std::getenv("ECO_HASH_INLINE");
@@ -1021,7 +1039,8 @@ bool inlineEnabled() {
  * Lowers `eco.hash` (plans/seq-data-structures-performance.md D1).
  *
  * An Int, Float, Char or Bool operand is hashed inline exactly as the runtime walker hashes the value
- * (`valuehash`). A String calls `eco_hash_string`, any other value `eco_hash_value`. With
+ * (`valuehash`). A Hashed (kind `hashed`, HEAP_089) is its stored hash, loaded inline. A String calls
+ * `eco_hash_string`, any other value `eco_hash_value`. With
  * ECO_HASH_INLINE=0 in the environment at lowering time every kind calls the runtime (`eco_hash_i64`
  * etc.) instead: the switch the HashIdentity tests use to compare the inline code with the walker.
  */
@@ -1049,8 +1068,15 @@ struct HashOpLowering : public OpConversionPattern<HashOp> {
             rewriter.replaceOp(op, call(runtime.getOrCreateHashString(rewriter), v));
             return success();
         }
-        if (kind == "value") {
+        if (kind == "value" || (kind == "hashed" && !valuehash::inlineEnabled())) {
             rewriter.replaceOp(op, call(runtime.getOrCreateHashValue(rewriter), v));
+            return success();
+        }
+        if (kind == "hashed") {
+            // A Hashed on its own hashes as its stored hash (HEAP_089), already in [1, 2^32).
+            Value h = valuehash::loadHashedField(rewriter, loc, v, valuehash::kHashedHashOffset,
+                                                 rewriter.getI32Type(), runtime);
+            rewriter.replaceOpWithNewOp<arith::ExtUIOp>(op, i64Ty, h);
             return success();
         }
         if (!valuehash::inlineEnabled()) {
@@ -1076,7 +1102,8 @@ struct HashOpLowering : public OpConversionPattern<HashOp> {
 
 /**
  * Lowers `eco.hash.mix` (D2): the walker's step for one field applied to the running state, inline for
- * an Int, Float, Char or Bool, through `eco_hash_mix_string` for a String; a bare marker for kind
+ * an Int, Float, Char or Bool, through `eco_hash_mix_string` for a String, from the stored hash for a
+ * Hashed (kind `hashed`; through `eco_hash_walk` with ECO_HASH_INLINE=0); a bare marker for kind
  * `marker`.
  */
 struct HashMixOpLowering : public OpConversionPattern<HashMixOp> {
@@ -1099,6 +1126,19 @@ struct HashMixOpLowering : public OpConversionPattern<HashMixOp> {
                                        .getResult());
             return success();
         }
+        if (kind == "hashed" && !valuehash::inlineEnabled()) {
+            // The walker's own step (`eco_hash_walk`), which ignores depth and items for a Hashed: the
+            // reference the HashedIdentity tests compare the inline step with.
+            Type i64Ty = rewriter.getI64Type();
+            Value one = arith::ConstantIntOp::create(rewriter, loc, i64Ty, 1).getResult();
+            Value zero = arith::ConstantIntOp::create(rewriter, loc, i64Ty, 0).getResult();
+            Value packed = LLVM::CallOp::create(rewriter, loc, runtime.getOrCreateHashWalk(rewriter),
+                                                ValueRange{adaptor.getState(), one, adaptor.getValue(), zero})
+                               .getResult();
+            Value mask = arith::ConstantIntOp::create(rewriter, loc, i64Ty, 0xFFFFFFFFLL).getResult();
+            rewriter.replaceOpWithNewOp<arith::AndIOp>(op, packed, mask);
+            return success();
+        }
         Value h = valuehash::lo32(rewriter, loc, adaptor.getState());
         if (kind == "boolword") {
             // The True or False constant word (0x5 or 0x4), hashed as the walker hashes a constant:
@@ -1113,6 +1153,12 @@ struct HashMixOpLowering : public OpConversionPattern<HashMixOp> {
         }
         if (kind == "marker")
             h = valuehash::mix(rewriter, loc, h, valuehash::c32(rewriter, loc, static_cast<uint32_t>(*op.getMarker())));
+        else if (kind == "hashed") {
+            // The walker's step for a nested Hashed: `kHashed`, then the stored hash; the value is not walked.
+            Value stored = valuehash::loadHashedField(rewriter, loc, adaptor.getValue(),
+                                                      valuehash::kHashedHashOffset, rewriter.getI32Type(), runtime);
+            h = valuehash::mix(rewriter, loc, valuehash::mix(rewriter, loc, h, valuehash::c32(rewriter, loc, valuehash::kHashed)), stored);
+        }
         else
             h = valuehash::mixPrimitive(rewriter, loc, h, adaptor.getValue(), kind);
         rewriter.replaceOpWithNewOp<arith::ExtUIOp>(op, rewriter.getI64Type(), h);
@@ -1149,6 +1195,29 @@ struct HashWalkOpLowering : public OpConversionPattern<HashWalkOp> {
         // is arithmetic.
         Value items = arith::ShRSIOp::create(rewriter, loc, packed, c32);
         rewriter.replaceOp(op, ValueRange{state, items});
+        return success();
+    }
+};
+
+/**
+ * Lowers `eco.hashed.value` (HEAP_089): the Hashed's `value` slot, one inline load through the forwarding
+ * check.
+ */
+struct HashedValueOpLowering : public OpConversionPattern<HashedValueOp> {
+    // Declares the forwarding-check marker this pattern calls.
+    const EcoRuntime &runtime;
+
+    // Creates the pattern. It keeps references to `typeConverter` and `runtime`, which must outlive it.
+    HashedValueOpLowering(EcoTypeConverter &typeConverter, MLIRContext *ctx, const EcoRuntime &runtime)
+        : OpConversionPattern(typeConverter, ctx), runtime(runtime) {}
+
+    LogicalResult
+    matchAndRewrite(HashedValueOp op, OpAdaptor adaptor,
+                    ConversionPatternRewriter &rewriter) const override {
+        Location loc = op.getLoc();
+        Value word = valuehash::loadHashedField(rewriter, loc, adaptor.getHashed(), valuehash::kHashedValueOffset,
+                                                rewriter.getI64Type(), runtime);
+        rewriter.replaceOp(op, heapLoadI64ToValue(rewriter, loc, word));
         return success();
     }
 };
@@ -1843,6 +1912,7 @@ void eco::detail::populateEcoArithPatternsWithRuntime(
     patterns.add<HashOpLowering>(typeConverter, ctx, runtime);
     patterns.add<HashMixOpLowering>(typeConverter, ctx, runtime);
     patterns.add<HashWalkOpLowering>(typeConverter, ctx, runtime);
+    patterns.add<HashedValueOpLowering>(typeConverter, ctx, runtime);
     patterns.add<FloatAsinOpLowering>(typeConverter, ctx, runtime);
     patterns.add<FloatAcosOpLowering>(typeConverter, ctx, runtime);
     patterns.add<FloatAtanOpLowering>(typeConverter, ctx, runtime);

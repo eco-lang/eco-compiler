@@ -1,15 +1,17 @@
 module HashedTest exposing (main)
 
 {-| eco/system's `Hash.Hashed` (plans/hashed-values-and-hash-consing.md): `hashOf` is `Hash.hash` of the
-value, a `Hashed` hashes as its value does, `value` gives the value back, `==` on two `Hashed` is `==`
-on their values (NaN included: built through different routes, so that no identical-object shortcut
-answers), and `Debug.toString` and `Debug.log` print the value alone. The same on both backends.
+value, a `Hashed` hashes as its value does, `value` gives the value back (an Int, Float or Char
+unboxed from it), `==` on two `Hashed` is `==` on their values (NaN included: built through different
+routes, so that no identical-object shortcut answers), and `Debug.toString` and `Debug.log` print the
+value alone. The same on both backends.
 
 -}
 
 -- CHECK: hashOf: [True,True,True,True,True,True]
 -- CHECK: transparent: [True,True,True,True,True,True]
 -- CHECK: value: [True,True]
+-- CHECK: unboxed: [True,True,True,True]
 -- CHECK: equality: [True,True,True]
 -- CHECK: nan: False
 -- CHECK: toString: [True,True,True]
@@ -85,6 +87,14 @@ report () =
 
         _ =
             Debug.log "value" [ value (hashed listA) == listA, value (hashed "s") == "s" ]
+
+        _ =
+            Debug.log "unboxed"
+                [ value (hashed 42) + 1 == 43
+                , value (hashed 2.5) * 2 == 5
+                , Char.toCode (value (hashed 'a')) == 97
+                , hashOf (hashed 7) == Hash.hash 7
+                ]
 
         _ =
             Debug.log "equality"

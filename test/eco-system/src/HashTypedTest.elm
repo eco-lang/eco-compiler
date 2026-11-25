@@ -7,8 +7,10 @@ plans/seq-data-structures-performance.md D2). It must give the number the runtim
 the same value, bounds included: `viaKernel` passes `Hash.hash` as a function value, which calls the
 kernel and so the walker. `nested` mixes lists, tagged and nullary constructors, Maybe of a record and
 records in tuples; `bounds` nests tuples past depth 16 and puts a 300-element list (which uses up the
-walker's 256 items) before fields that must then be skipped. Every comparison must be `True`. On
-JavaScript both sides are the JavaScript kernel.
+walker's 256 items) before fields that must then be skipped; `hashed` hashes `Hash.Hashed` values on
+their own and as fields, read inline from the object's stored hash (eco.hash and eco.hash.mix of kind
+`hashed`), its last check a negative control. Every comparison must be `True`. On JavaScript both sides
+are the JavaScript kernel.
 
 -}
 
@@ -17,8 +19,9 @@ JavaScript both sides are the JavaScript kernel.
 -- CHECK: built: [True,True]
 -- CHECK: nested: [True,True,True,True,True,True,True]
 -- CHECK: bounds: [True,True,True,True]
+-- CHECK: hashed: [True,True,True,True,True]
 
-import Hash
+import Hash exposing (hashed)
 import System
 import Task
 
@@ -54,6 +57,15 @@ report () =
     let
         negZero =
             -0.0
+
+        _ =
+            Debug.log "hashed"
+                [ Hash.hash (hashed [ 1, 2, 3 ]) == viaKernel (hashed [ 1, 2, 3 ])
+                , Hash.hash ( hashed "k", 1 ) == viaKernel ( hashed "k", 1 )
+                , Hash.hash { k = hashed (Just 2.5), n = 3 } == viaKernel { k = hashed (Just 2.5), n = 3 }
+                , Hash.hash ( 1, ( hashed [ 'a' ], hashed () ) ) == viaKernel ( 1, ( hashed [ 'a' ], hashed () ) )
+                , Hash.hash ( hashed 1, 1 ) /= Hash.hash ( hashed 2, 1 )
+                ]
 
         _ =
             Debug.log "tuples"

@@ -48,7 +48,7 @@ LogicalResult HashMixOp::verify() {
     }
     bool ok = (kind == "int" && t.isInteger(64)) || (kind == "float" && t.isF64()) ||
               (kind == "char" && t.isInteger(32)) || (kind == "bool" && t.isInteger(1)) ||
-              ((kind == "string" || kind == "boolword") && isa<ValueType>(t));
+              ((kind == "string" || kind == "boolword" || kind == "hashed") && isa<ValueType>(t));
     if (!ok)
         return emitOpError("operand type ") << t << " does not match kind '" << kind << "'";
     return success();
@@ -60,7 +60,7 @@ LogicalResult HashOp::verify() {
     llvm::StringRef kind = getKind();
     bool ok = (kind == "int" && t.isInteger(64)) || (kind == "float" && t.isF64()) ||
               (kind == "char" && t.isInteger(32)) || (kind == "bool" && t.isInteger(1)) ||
-              ((kind == "string" || kind == "value") && isa<ValueType>(t));
+              ((kind == "string" || kind == "value" || kind == "hashed") && isa<ValueType>(t));
     if (!ok)
         return emitOpError("operand type ") << t << " does not match kind '" << kind << "'";
     return success();

@@ -2738,8 +2738,10 @@ def Eco_HashOp : Eco_Op<"hash", [Pure]> {
     `FNV.hash`), emitted by the front end where the hash kernel is called at a known type
     (plans/seq-data-structures-performance.md D1). `kind` says how the operand is held: `int` (i64),
     `float` (f64), `char` (i32) and `bool` (i1) are hashed inline exactly as the runtime walker hashes
-    them; `string` and `value` (`!eco.value`) call `eco_hash_string` and `eco_hash_value`. The result is
-    in [1, 2^32). With ECO_HASH_INLINE=0 at lowering time every kind calls the runtime instead.
+    them; `string` and `value` (`!eco.value`) call `eco_hash_string` and `eco_hash_value`; `hashed`
+    (`!eco.value`, an eco/system `Hash.Hashed`, HEAP_089) is the object's stored hash, one inline load.
+    The result is in [1, 2^32). With ECO_HASH_INLINE=0 at lowering time every kind calls the runtime
+    instead.
 
     ```mlir
     %h = eco.hash %k <{kind = "int"}> : i64 -> i64
@@ -2757,8 +2759,9 @@ def Eco_HashMixOp : Eco_Op<"hash.mix", [Pure]> {
     The runtime walker's step for one field of a tuple or record (design_docs/theory/runtime/
     value-hash.md), applied to the running 32-bit FNV state `state` (held in an i64), for a field of
     kind `int` (i64), `float` (f64), `char` (i32), `bool` (i1), `boolword` (a Bool as its True or False
-    constant word, `!eco.value`) or `string` (`!eco.value`, through `eco_hash_mix_string`), or the bare
-    marker `marker` when `kind` is `marker` (operand unused, i64).
+    constant word, `!eco.value`), `string` (`!eco.value`, through `eco_hash_mix_string`) or `hashed`
+    (`!eco.value`, a `Hash.Hashed`: the walker's `kHashed` marker, then the stored hash, loaded inline),
+    or the bare marker `marker` when `kind` is `marker` (operand unused, i64).
     The front end emits a chain of these for `eco.hash` of a tuple or record of such fields, ending in
     `eco.hash.finish` (plans/seq-data-structures-performance.md D2).
   }];
@@ -2780,6 +2783,22 @@ def Eco_HashWalkOp : Eco_Op<"hash.walk", [Pure]> {
   let arguments = (ins Eco_Int:$state, Eco_Int:$items, Eco_Value:$value, I64Attr:$depth);
   let results = (outs Eco_Int:$newState, Eco_Int:$newItems);
   let assemblyFormat = "$state `,` $items `,` $value prop-dict attr-dict `:` type($value)";
+}
+
+def Eco_HashedValueOp : Eco_Op<"hashed.value", [Pure]> {
+  let summary = "The value of a Hash.Hashed";
+  let description = [{
+    The `value` field of an eco/system `Hash.Hashed` object (an ElmHashed, HEAP_089): eco/system's
+    `Hash.value`, read inline through the forwarding check instead of calling `Eco_Kernel_FNV_value`.
+    The object is never written after it is made, so the op is pure. The result is the value boxed.
+
+    ```mlir
+    %v = eco.hashed.value %h : !eco.value -> !eco.value
+    ```
+  }];
+  let arguments = (ins Eco_Value:$hashed);
+  let results = (outs Eco_Value:$result);
+  let assemblyFormat = "$hashed attr-dict `:` type($hashed) `->` type($result)";
 }
 
 def Eco_HashFinishOp : Eco_Op<"hash.finish", [Pure]> {

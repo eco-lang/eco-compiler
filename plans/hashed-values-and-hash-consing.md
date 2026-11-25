@@ -189,7 +189,7 @@ hashOf =
   - `Eco_Kernel_FNV_value(HPtr hd) -> HPtr`: the `value` field.
   - `Eco_Kernel_FNV_hashOf(HPtr hd) -> int64_t`: the `hash` field.
   - JavaScript twins in `system-kernel-cpp/src/Eco/Kernel/FNV.js` (§2.5).
-  Native calls of `value` and `hashOf` are kernel calls; making them inline loads is follow-up F4.
+  Native calls of `value` and `hashOf` at a known type are inline loads (F4, done 2026-11-25).
 - **`==`:** `eqHelp` (`elm-kernel-cpp/src/core/Utils.cpp`) gets a `Tag_Hashed` arm: two `Hashed` are
   equal when their hashes are equal and their values are `==` (the same-pointer shortcut at the top
   of `eqHelp` covers identical objects). Its default arm returns `false` for an unknown tag, so the
@@ -784,8 +784,14 @@ build's. No timing assertions.
   replacement as done "under the registry lock"; the lock evidently does not serialise these processes.
 - **F5.** License the Debug kernels (`Debug.log` scope `Transports`, `toString`, `todo`), weighing the
   small precision gain against pinning `RuntimeExports.cpp` (D4).
-- **F4.** Inline `value` / `hashOf` (and the hash of a `Hashed` in a typed chain) as field loads
-  (`KernelIntrinsics` or an MLIR op) instead of kernel calls, if H8(d) shows the calls.
+- **F4. DONE (2026-11-25).** Inline `value` / `hashOf` (and the hash of a `Hashed` in a typed chain) as field loads
+  (`KernelIntrinsics` or an MLIR op) instead of kernel calls, if H8(d) shows the calls. Built without
+  the profile, at the user's request: `eco.hash` and `eco.hash.mix` take kind `hashed` and the new
+  `eco.hashed.value` op loads the value slot, all through `__eco_resolve_fwd` (CGEN_095); the front
+  end's hash planner has a `HashHashed` case, and `FNV.hashOf` / `FNV.value` calls at a known type
+  emit the ops. Tests: `test/codegen/hash_hashed_inline.mlir`, the `HashedIdentityTest` /
+  `HashedIdentityGenericTest` pair (inline against the walker; negative control with `kHashed` = 19
+  failed as it should), extra groups in `HashTypedTest` and `HashedTest`.
 
 ## 10. Review record (adversarial review, 2026-11-25)
 
@@ -872,4 +878,21 @@ with H2's heap object, H3's kernels and H4's licenses for them.
   on small terms). Reusing `Hashed` structured keys still saves 70 %. The compiler self-build row `hashed`
   in benchmarks/fe-opt-loop.md was measured on the unbounded tree; the compiler uses `Eco.Hash`, so it is
   unaffected either way.
-
+- 2026-11-25: **F4 built** (inline `Hashed` reads, CGEN_095). Tests: codegen 2/2, native Hash* 10/10 (with
+  the new `HashedIdentity` pair 2/2), SeqDict/SeqSet 13/13, JS HashTypedTest/HashedTest 2/2, elm-tests
+  22,136; bootstrap rebuilt. The benchmark binary has 7 `eco_hash_value` call sites instead of 10.
+  Interleaved A/B (local-dev/hashreuse/ab-f4.sh, 5 rounds, bench-hv against bench-f4):
+  hasheddict-structkeys 40 -> 39 ms (-2.5 %), hashcons-hashed 122 -> 118 (-3.3 %); controls
+  seqdict-structkeys +1.4 %, hashcons-plain 0.0 %, seqdict-intern +0.6 %, seqdict-tuple +1.3 % (noise).
+  Found on the way, not fixed: HashTypedTest's `viaKernel` (`List.map Hash.hash [ x ]`) is now
+  specialised to the inline hash, so its typed-chain-against-walker comparisons no longer reach the
+  walker.
+- 2026-11-25: **F4's `Hash.value` measured** with new workloads traverse-plain / traverse-hashed
+  (examples/benchmarks/src/HashCons.elm: a 2^14-leaf tree built once, its leaves summed `size` times,
+  the second through `Hash.value` on `Hashed` children). Baseline = the same compiler with
+  ECO_HASH_INTRINSIC=0 (`value` a kernel call; the timed part hashes nothing). Interleaved A/B
+  (local-dev/hashreuse/ab-val.sh, 5 rounds): traverse-hashed 30 -> 16 ms at size 200, 144 -> 75 ms at
+  1000 (-47.9 %, about 2 ns per call over 32.8 M calls); the control traverse-plain moved -8.3 % / -7.1 %
+  (12 -> 11, 56 -> 52 ms) though it has no hash or `value` in it, read as layout between the two
+  binaries. So the inline `value` is worth about 45 % on a traversal of `Hashed` children, where the
+  hash path (above) gave 2-3 %.

@@ -4108,6 +4108,36 @@ generateSaturatedCallNoFusion ctx kind func args resultType callInfo =
                     else
                         genericKernelCall ()
 
+                ( "FNV", "hashOf", [ ( _, ( hashedVar, hashedType ) ) ] ) ->
+                    -- Hash.hashOf: the Hashed's stored hash, one inline load (eco.hash of kind
+                    -- "hashed", HEAP_089), unless `hashIntrinsic` is off.
+                    if ctx1.ecoConfig.hashIntrinsic && Types.isEcoValueType hashedType then
+                        hashOpOfKind ctx1 argOps "hashed" hashedVar
+
+                    else
+                        genericKernelCall ()
+
+                ( "FNV", "value", [ ( _, ( hashedVar, hashedType ) ) ] ) ->
+                    -- Hash.value: the Hashed's value slot, one inline load (eco.hashed.value,
+                    -- HEAP_089), unless `hashIntrinsic` is off. The value is boxed, as the kernel's
+                    -- `a` result is.
+                    if ctx1.ecoConfig.hashIntrinsic && Types.isEcoValueType hashedType then
+                        let
+                            ( resVar, ctx2 ) =
+                                Ctx.freshVar ctx1
+
+                            ( ctx3, valueOp ) =
+                                Ops.ecoUnaryOp ctx2 "eco.hashed.value" resVar ( hashedVar, Types.ecoValue ) Types.ecoValue
+                        in
+                        { ops = argOps ++ [ valueOp ]
+                        , resultVar = resVar
+                        , resultType = Types.ecoValue
+                        , ctx = ctx3
+                        }
+
+                    else
+                        genericKernelCall ()
+
                 ( "Debug", "toString", [ ( valueExpr, ( valueVar, valueType ) ) ] ) ->
                     -- The type id lets the typed kernel print constructor
                     -- names. A Debug.toString closure value calls the
@@ -7755,6 +7785,9 @@ generateHashOp ctx argOps valueExpr valueVar valueType =
     False constant word) or a String, mixed by one `eco.hash.mix` of that kind;
   - `HashTuple` / `HashRecord`: the fields, each with its path from the value, a record's in heap slot
     order; unrolled inline;
+  - `HashHashed`: an eco/system `Hash.Hashed` (HEAP_089), its stored hash loaded inline: on its own
+    the hash itself, in a chain the walker's `kHashed` marker and then the hash (`eco.hash.mix` of kind
+    `hashed`);
   - `HashWalk`: anything else (a list, a custom type in any representation, unit, a function), read as
     its boxed word and handed to the walker resumed from the chain's state (`eco.hash.walk`).
 
@@ -7763,6 +7796,7 @@ type HashPlan
     = HashPrim String MlirType
     | HashTuple (List ( Mono.MonoPath -> Mono.MonoPath, HashPlan ))
     | HashRecord (List ( Mono.MonoPath -> Mono.MonoPath, HashPlan ))
+    | HashHashed
     | HashWalk
 
 
@@ -7816,8 +7850,22 @@ hashPlanFor monoType =
                             |> List.map (\f -> ( \root -> Mono.MonoField f.name f.monoType root, hashPlanFor f.monoType ))
                             |> HashRecord
 
+                Mono.MCustom _ home "Hashed" _ ->
+                    if home == hashModule then
+                        HashHashed
+
+                    else
+                        HashWalk
+
                 _ ->
                     HashWalk
+
+
+{-| eco/system's `Hash`, the home of `Hashed`.
+-}
+hashModule : ModuleName.Canonical
+hashModule =
+    ModuleName.Canonical Pkg.ecoSystem "Hash"
 
 
 {-| The number of nodes of a plan, which bounds the code a typed chain emits.
@@ -7940,6 +7988,16 @@ hashNodeOps ctx path plan depth ( h, items ) =
                         |> Ops.opBuilder.build
             in
             ( projOps ++ [ walkOp ], ( h1, items1 ), ctx4 )
+
+        HashHashed ->
+            let
+                ( projOps, fieldVar, ctx1 ) =
+                    Patterns.generateMonoPath ctx path Types.ecoValue
+
+                ( mixOp, h1, ctx2 ) =
+                    hashMixOp ctx1 h fieldVar Types.ecoValue "hashed" []
+            in
+            ( projOps ++ [ mixOp ], ( h1, items ), ctx2 )
 
         HashTuple fields ->
             hashAggregateOps ctx path 7 False fields depth ( h, items )
@@ -8076,7 +8134,35 @@ hashMixOp ctx state operand operandType kind extraAttrs =
     ( op, resVar, ctxB )
 
 
-{-| `eco.hash` of the whole value: inline for an Int, Float, Char or Bool, the runtime otherwise.
+{-| `eco.hash` of kind `kind` of the `!eco.value` `operandVar`, after `argOps`.
+-}
+hashOpOfKind : Ctx.Context -> List MlirOp -> String -> String -> ExprResult
+hashOpOfKind ctx argOps kind operandVar =
+    let
+        ( resultVar, ctx1 ) =
+            Ctx.freshVar ctx
+
+        ( ctx2, hashOp ) =
+            Ops.mlirOp ctx1 "eco.hash"
+                |> Ops.opBuilder.withOperands [ operandVar ]
+                |> Ops.opBuilder.withResults [ ( resultVar, I64 ) ]
+                |> Ops.opBuilder.withAttrs
+                    (Dict.fromList
+                        [ ( "_operand_types", ArrayAttr Nothing [ TypeAttr Types.ecoValue ] )
+                        , ( "kind", StringAttr kind )
+                        ]
+                    )
+                |> Ops.opBuilder.build
+    in
+    { ops = argOps ++ [ hashOp ]
+    , resultVar = resultVar
+    , resultType = I64
+    , ctx = ctx2
+    }
+
+
+{-| `eco.hash` of the whole value: inline for an Int, Float, Char or Bool and a `Hash.Hashed`, the
+runtime otherwise.
 -}
 generateHashOpWhole : Ctx.Context -> List MlirOp -> Mono.MonoExpr -> String -> MlirType -> ExprResult
 generateHashOpWhole ctx argOps valueExpr valueVar valueType =
@@ -8128,11 +8214,15 @@ generateHashOpWhole ctx argOps valueExpr valueVar valueType =
                     k
 
                 Nothing ->
-                    if Mono.typeOf valueExpr == Mono.MString then
-                        "string"
+                    case hashPlanFor (Mono.typeOf valueExpr) of
+                        HashPrim "string" _ ->
+                            "string"
 
-                    else
-                        "value"
+                        HashHashed ->
+                            "hashed"
+
+                        _ ->
+                            "value"
 
         ( resultVar, ctx2 ) =
             Ctx.freshVar ctx1

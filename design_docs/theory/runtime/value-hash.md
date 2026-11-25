@@ -144,7 +144,9 @@ and measured on 2026-11-25 and rolled back: plans/hashed-values-and-hash-consing
 `Hash.hashed : a -> Hashed a` (the kernel `Eco_Kernel_FNV_hashed`) hashes its argument once and
 allocates a `Tag_Hashed` object, `ElmHashed` in `Heap.hpp`: the header, the u32 hash, a reserved u32
 and the value, boxed. It is never written after it is created. `Hash.value` and `Hash.hashOf` read its
-fields. `==` on two `Hashed` compares the hashes first and then the values (`eqHelp`), and
+fields; in compiled code at a known type they, and `Hash.hash` of a `Hashed`, are inline loads through
+the forwarding check rather than calls (`eco.hashed.value`, and `eco.hash` of kind `hashed`, CGEN_095;
+plans/hashed-values-and-hash-consing.md F4). `==` on two `Hashed` compares the hashes first and then the values (`eqHelp`), and
 `Debug.toString` prints the value alone, natively (`RuntimeExports.cpp`) and on JavaScript (the kernel
 override `compiler/kernel-overrides/HashedDebug.js`). On JavaScript a `Hashed` is the object
 `{ $: 'Hashed_elm_builtin', a: hash, b: value }`, and FNV.js gives it the same treatment as row 2.
@@ -183,13 +185,16 @@ merge changes no hash value, only how many times one is computed.
 
 `Hash.hash` at a known tuple or record type is compiled to a chain that computes exactly the walker's
 number. The value's type gives a plan: an Int, Float, Char, Bool or String field is one `eco.hash.mix`;
-a nested tuple or record is unrolled (its marker, then its fields one level deeper); anything else (a
-list, a custom type in any representation, a `Hashed`, unit) is `eco.hash.walk`, the walker's
+a nested tuple or record is unrolled (its marker, then its fields one level deeper); a `Hashed` field is
+one `eco.hash.mix` of kind `hashed` (`kHashed`, then its stored hash, loaded inline); anything else (a
+list, a custom type in any representation, unit) is `eco.hash.walk`, the walker's
 `boxed(value, depth)` resumed from the chain's state and item budget (`eco_hash_walk`). The bounds follow
 the walker: depth is known statically, so an aggregate at depth 16 or more contributes nothing; the items
 left are an `i64` threaded through the chain, starting at 256, and an aggregate with none left, or a
 record field with none left, keeps the old state through an `arith.select` (a record field uses an item
 up even when it took the last one, so the count can go negative). Primitives and Strings are mixed
 whatever the bounds, as in the walker. A plan of more than 64 nodes, and any value that is not a tuple or
-record, is hashed whole (`eco.hash` of kind `value`). `test/eco-system/src/HashTypedTest.elm` compares
-the chains with the walker, bounds included.
+record, is hashed whole (`eco.hash` of kind `value`, or of kind `hashed` for a `Hashed`, its stored
+hash loaded inline). `test/eco-system/src/HashTypedTest.elm` compares the chains with the walker, bounds
+included, and the `HashedIdentityTest.elm` / `HashedIdentityGenericTest.elm` pair compares the inline
+`hashed` kinds with the walker (the second runs with ECO_HASH_INLINE=0).

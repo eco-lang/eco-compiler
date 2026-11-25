@@ -161,4 +161,6 @@ String built from hashed parts can be given its hash by composing theirs.
 `src/HashCons.elm` measures eco/system's `Hash.Hashed` (plans/hashed-values-and-hash-consing.md):
 hashcons-plain and hashcons-hashed hash-cons the same type terms through a `SeqDict PTy PTy` table
 and through `Hashed` children with `HashedSet.intern`; seqdict-structkeys and hasheddict-structkeys
-look up `( List Int, String )` keys in a `SeqDict` and, made `Hashed` once, in a `HashedDict`.
+look up `( List Int, String )` keys in a `SeqDict` and, made `Hashed` once, in a `HashedDict`;
+traverse-plain and traverse-hashed sum the leaves of one balanced tree many times over, the second
+reaching each child of a `Hashed`-children tree through `Hash.value`.
