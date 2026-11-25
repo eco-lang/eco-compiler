@@ -1144,6 +1144,7 @@ defaultWhitelist =
     -- eco/system SeqDict and SeqSet wrappers that hash their key (see the docstring)
     , "eco/system:SeqDict.get"
     , "eco/system:SeqDict.member"
+    , "eco/system:SeqDict.lookup"
     , "eco/system:SeqDict.insert"
     , "eco/system:SeqDict.remove"
     , "eco/system:SeqSet.member"

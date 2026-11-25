@@ -543,6 +543,9 @@ inline size_t getObjectSizeFromHeader(const Header *hdr) {
         case Tag_ByteBufferSlice:
             size = sizeof(ElmByteBufferSlice);
             break;
+        case Tag_Hashed:
+            size = sizeof(ElmHashed);
+            break;
         case Tag_StringUtf8View:
             size = sizeof(ElmStringUtf8View);
             break;

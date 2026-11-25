@@ -55,7 +55,7 @@ namespace Elm::minorwork {
 // The mask of the tag, bits 0..4 of a header or forward word.
 constexpr uint64_t kTagMask    = 31;
 // The tag of a forward word. It must equal the heap's `Tag_Forward`, which this header cannot check.
-constexpr uint64_t kTagForward = 26;
+constexpr uint64_t kTagForward = 27;
 // The position of the 2-bit colour field.
 constexpr unsigned kColorShift = 5;
 // The position of the forward word's address field, which holds the address divided by 8.

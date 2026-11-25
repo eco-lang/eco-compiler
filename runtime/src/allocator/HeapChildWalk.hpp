@@ -147,6 +147,9 @@ inline bool visitHeapChildren(void *obj, F &&visit) {
         case Tag_ByteBufferSlice:
             visit(static_cast<ElmByteBufferSlice *>(obj)->base);
             return true;
+        case Tag_Hashed:
+            visit(static_cast<ElmHashed *>(obj)->value);
+            return true;
         case Tag_StringRope: {
             ElmStringRope *r = static_cast<ElmStringRope *>(obj);
             visit(r->left);

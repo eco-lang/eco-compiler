@@ -158,3 +158,7 @@ seqdict-intern (the trees themselves as `SeqDict` keys). seqset-prefixkey-rounds
 of 500-character keys in a `SeqSet` 32 times over. seqdict-built-keys builds each key, at every
 lookup, as `prefix ++ middle ++ code` from long parts that are keys themselves, the case where a
 String built from hashed parts can be given its hash by composing theirs.
+`src/HashCons.elm` measures eco/system's `Hash.Hashed` (plans/hashed-values-and-hash-consing.md):
+hashcons-plain and hashcons-hashed hash-cons the same type terms through a `SeqDict PTy PTy` table
+and through `Hashed` children with `HashedSet.intern`; seqdict-structkeys and hasheddict-structkeys
+look up `( List Int, String )` keys in a `SeqDict` and, made `Hashed` once, in a `HashedDict`.

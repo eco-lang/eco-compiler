@@ -311,19 +311,19 @@ Testing::TestCase testLosChunkChurnReusesBlocks(
 
 Testing::TestCase testLosHeaderlessForwardingHazard(
     "LOS: header-less bodies whose first byte reads as Tag_Forward survive minors and majors", []() {
-    // 'Z' = 0x5A and 0x1A: low 5 bits 26 = Tag_Forward. Allocator::resolve on
+    // '[' = 0x5B and 0x1B: low 5 bits 27 = Tag_Forward. Allocator::resolve on
     // such a body would follow a bogus forwarding pointer; every reader must
     // go through the raw accessors.
-    static_assert(Tag_Forward == 26, "the hazard needs Tag_Forward == 26");
+    static_assert(Tag_Forward == 27, "the hazard needs Tag_Forward == 27");
     auto& a = initAllocator(losHeapConfig());
     std::u16string zs(20000, u'y');
-    zs[0] = u'Z';
+    zs[0] = u'[';
     zs[1] = u'z';
     HPointer s = alloc::allocString(zs);
     a.getRootSet().addRoot(&s);
     std::vector<u8> zb(70000, 0x77);
-    zb[0] = 0x1A;
-    zb[1] = 0x3A;
+    zb[0] = 0x1B;
+    zb[1] = 0x3B;
     HPointer b = alloc::allocByteBuffer(zb.data(), zb.size());
     a.getRootSet().addRoot(&b);
     for (int round = 0; round < 3; ++round) {
@@ -332,7 +332,7 @@ Testing::TestCase testLosHeaderlessForwardingHazard(
         void* so = a.resolve(s);
         TEST_ASSERT(getHeader(so)->tag == Tag_LargeStringHeader);
         TEST_ASSERT(StringOps::toStdU16String(so) == zs);
-        TEST_ASSERT(StringOps::charAt(so, 0) == u'Z');
+        TEST_ASSERT(StringOps::charAt(so, 0) == u'[');
         void* bo = a.resolve(b);
         TEST_ASSERT(getHeader(bo)->tag == Tag_LargeByteHeader);
         const alloc::ByteBufferView v = alloc::byteBufferView(bo);
@@ -341,7 +341,7 @@ Testing::TestCase testLosHeaderlessForwardingHazard(
         // A slice over the large Bytes and a String slice/upper-case read through it.
         HPointer sl = alloc::makeByteBufferSlice(b, 0, 64);
         const alloc::ByteBufferView sv = alloc::byteBufferView(a.resolve(sl));
-        TEST_ASSERT(sv.length == 64 && sv.data[0] == 0x1A && sv.data[1] == 0x3A);
+        TEST_ASSERT(sv.length == 64 && sv.data[0] == 0x1B && sv.data[1] == 0x3B);
         HPointer up = StringOps::toUpper(a.resolve(s));
         TEST_ASSERT(StringOps::charAt(a.resolve(up), 1) == u'Z');
     }

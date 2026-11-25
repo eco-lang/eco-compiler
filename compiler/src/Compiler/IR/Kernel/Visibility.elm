@@ -96,6 +96,9 @@ kernelOwned =
         , ( "eco/system:FileSystem.Handle", "Handle" )
         , ( "eco/system:FileSystem.Handle", "ReadAccess" )
         , ( "eco/system:FileSystem.Handle", "WriteAccess" )
+        -- Hash.Hashed is a Tag_Hashed heap object (HEAP_089) that FNVExports.cpp builds and reads;
+        -- ValueHash.cpp, Utils.cpp (eqHelp) and RuntimeExports.cpp (Debug.toString) read it by its tag.
+        , ( "eco/system:Hash", "Hashed" )
         , ( "eco/system:Html.Dom", "Handler" )
         , ( "eco/system:Html.Dom", "Tagger" )
         , ( "eco/system:Http.Server", "Error" )
@@ -353,6 +356,9 @@ inspectingKernels =
       List.map (\n -> ( ( "HttpStream", n ), Inspects [ ( "elm/bytes:Bytes", "Bytes" ), ( "elm/http:Http", "Header" ) ] )) [ "send" ]
     , -- JsArray: elm-kernel-cpp/src/core/JsArrayExports.cpp
       List.map (\n -> ( ( "JsArray", n ), Inspects [ ( "elm/core:Elm.JsArray", "JsArray" ) ] )) [ "appendN", "empty", "foldl", "foldr", "indexedMap", "initialize", "initializeFromList", "length", "map", "push", "singleton", "slice", "unsafeGet", "unsafeSet" ]
+    , -- FNV: system-kernel-cpp/src/eco-system/FNV/FNVExports.cpp builds and reads Hash.Hashed (HEAP_089);
+      -- its value is a type-variable value only moved.
+      List.map (\n -> ( ( "FNV", n ), Inspects [ ( "eco/system:Hash", "Hashed" ) ] )) [ "hashOf", "hashed", "value" ]
     , -- JsArray2: system-kernel-cpp/src/eco-system/JsArray2/JsArray2Exports.cpp
       List.map (\n -> ( ( "JsArray2", n ), Inspects [ ( "eco/system:JsArray2", "JsArray2" ) ] )) [ "appendN", "empty", "foldl", "foldr", "indexedMap", "initialize", "initializeFromList", "length", "map", "push", "removeIndex", "singleton", "slice", "unsafeGet", "unsafeInsert", "unsafeSet" ]
     , -- Json: elm-kernel-cpp/src/json/JsonExports.cpp

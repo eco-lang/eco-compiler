@@ -119,6 +119,7 @@ inline void forEachChildSlot(void* obj, F&& f) {
         case Tag_StringSlice: f(static_cast<ElmStringSlice*>(obj)->base); break;
         case Tag_StringUtf8View: f(static_cast<ElmStringUtf8View*>(obj)->base); break;
         case Tag_ByteBufferSlice: f(static_cast<ElmByteBufferSlice*>(obj)->base); break;
+        case Tag_Hashed: f(static_cast<ElmHashed*>(obj)->value); break;
         case Tag_StringRope: {
             ElmStringRope* r = static_cast<ElmStringRope*>(obj);
             f(r->left);
@@ -139,7 +140,7 @@ inline bool nurseryTagHasChildren(uint32_t tag) {
         case Tag_DynRecord: case Tag_Closure: case Tag_Cons: case Tag_ConsChunk:
         case Tag_ListBacking: case Tag_Task: case Tag_Process: case Tag_Array:
         case Tag_StringSlice: case Tag_StringUtf8View: case Tag_ByteBufferSlice:
-        case Tag_StringRope:
+        case Tag_StringRope: case Tag_Hashed:
             return true;
         default:
             return false;

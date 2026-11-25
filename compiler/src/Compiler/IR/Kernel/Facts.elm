@@ -534,14 +534,42 @@ rows =
         }
       )
     , ( ( "Eco", "FNV", "hash" )
-        -- The value hash (design_docs/theory/runtime/value-hash.md): a bounded
-        -- read-only walk (depth 16, 256 items, every String unit once) that
-        -- allocates nothing and never runs Elm code. Only the ECO_HASH_CENSUS=1
-        -- diagnostic path uses a std::vector; cppAlloc describes normal runs.
+        -- The value hash (design_docs/theory/runtime/value-hash.md, definition
+        -- v5): a bounded read-only walk (depth 16, 256 items, every String unit
+        -- and Bytes byte once) that allocates nothing and never runs Elm code.
+        -- Only the ECO_HASH_CENSUS=1 diagnostic path uses a std::vector;
+        -- cppAlloc describes normal runs.
       , { auditedPure
             | params = [ PBorrowed ]
             , gcAlloc = GcNone
-            , evidence = "system-kernel-cpp/src/eco-system/FNV/FNVExports.cpp:14-16; runtime/src/allocator/ValueHash.cpp:464-468 (eco_hash_value), :307 (Hasher), :224-233 (census only)"
+            , evidence = "system-kernel-cpp/src/eco-system/FNV/FNVExports.cpp:25-27; runtime/src/allocator/ValueHash.cpp (eco_hash_value, Hasher)"
+        }
+      )
+    , ( ( "Eco", "FNV", "hashed" )
+        -- Hash.hashed (HEAP_089): hashes the argument (as FNV.hash) and stores
+        -- it in one new Tag_Hashed object, so it is owned.
+      , { auditedPure
+            | params = [ POwned ]
+            , gcAlloc = GcFixed 1
+            , cppAlloc = True
+            , evidence = "system-kernel-cpp/src/eco-system/FNV/FNVExports.cpp:29-42 (eco_hash_value, then one eco_alloc_with_roots of Tag_Hashed with the value rooted)"
+        }
+      )
+    , ( ( "Eco", "FNV", "value" )
+        -- Hash.value: the Hashed's value field.
+      , { auditedPure
+            | params = [ PBorrowed ]
+            , resultAliases = [ 0 ]
+            , gcAlloc = GcNone
+            , evidence = "system-kernel-cpp/src/eco-system/FNV/FNVExports.cpp:44-48"
+        }
+      )
+    , ( ( "Eco", "FNV", "hashOf" )
+        -- Hash.hashOf: the Hashed's hash field, an Int.
+      , { auditedPure
+            | params = [ PBorrowed ]
+            , gcAlloc = GcNone
+            , evidence = "system-kernel-cpp/src/eco-system/FNV/FNVExports.cpp:50-54"
         }
       )
     , ( ( "Elm", "Utils", "notEqual" )

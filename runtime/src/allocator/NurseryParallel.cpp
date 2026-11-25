@@ -51,7 +51,7 @@ inline bool tagHasChildren(uint32_t tag) {
         case Tag_DynRecord: case Tag_Closure: case Tag_Cons: case Tag_ConsChunk:
         case Tag_ListBacking: case Tag_Task: case Tag_Process: case Tag_Array:
         case Tag_StringSlice: case Tag_StringUtf8View: case Tag_ByteBufferSlice:
-        case Tag_StringRope:
+        case Tag_StringRope: case Tag_Hashed:
             return true;
         default:
             return false;
@@ -594,6 +594,9 @@ void NurserySpace::scanEntryP(MinorWorker& w, uint64_t e) {
             break;
         case Tag_ByteBufferSlice:
             evacuateP(w, static_cast<ElmByteBufferSlice*>(obj)->base, parent_old);
+            break;
+        case Tag_Hashed:
+            evacuateP(w, static_cast<ElmHashed*>(obj)->value, parent_old);
             break;
         case Tag_StringRope: {
             ElmStringRope* r = static_cast<ElmStringRope*>(obj);

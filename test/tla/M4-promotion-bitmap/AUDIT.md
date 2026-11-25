@@ -801,3 +801,14 @@ Pins fired: file `runtime/src/allocator/MinorWork.hpp` (**e16cf056dff2**); file 
 Change: comments and whitespace only, from the C++ re-commenting pass. `P6.M16` and `F.gc_phase` lost comment lines in `OldGenSpace.cpp` (`live_bytes` attribution and the `gc_phase_ == Sweeping` note); the code they audit is unchanged. No atomic step, lock, shared location or memory order changed. Method: the snapshot `snapshots/pre-repro-fixes-2026-10-28.tgz` reproduces every one of these pins' recorded hashes, so it is the audited baseline. Each file was compared with it after stripping comments (`gcc -fpreprocessed -dD -E -P`) and collapsing whitespace: the code is identical. Grep pins that fired matched comment lines only. MAPPING.md cites the tree of 2026-09-28/29 by line number and names functions because lines drift; no function or variable named here was renamed. `tla-trace` was re-run after the change (see the entry's last line). **Verdict: no model change needed.**
 
 `tla-trace` 2026-10-29, after the two standalone harness projects were given `ECO_CHAR_CASE_EXPANSION` (their builds had failed since the flag landed on 2026-10-28): 141 rows as expected. The 9 `M6:TraceGangs` baseline rows are rejected at the first gang event: the fork harness now also runs a tenure gang (`eco-tenure0`, region mode default since 2026-10-09), which `TraceGangs` does not model. That is independent of this change, which alters comments only; see M6's entry.
+
+## 2026-11-25 — Tag_Hashed heap object (HEAP_089, plans/hashed-values-and-hash-consing.md H2)
+
+Pins fired: file `runtime/src/allocator/MinorWork.hpp` (**405cf52e4d81**).
+
+Change: a new heap tag, `Tag_Hashed` (eco/system's `Hash.Hashed`: a hash and one boxed `value` field), is inserted
+before `Tag_Free`, so `Tag_Free` moves from 25 to 26 and `Tag_Forward` from 26 to 27. `MinorWork.hpp`'s
+`kTagForward` copy of `Tag_Forward` follows (26 -> 27; the `static_assert` in NurseryParallel.cpp checks it). The
+forward word's layout, the claim and the publish are unchanged: only the constant naming the tag value moves.
+No atomic step, lock, shared location of a modelled protocol or memory order is added, removed or reordered.
+**Verdict: no model change needed.**

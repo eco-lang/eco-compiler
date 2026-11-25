@@ -53,6 +53,7 @@ import DictOps
 import Dijkstra
 import ExprParser
 import FannkuchRedux
+import HashCons
 import Fasta
 import Fib
 import FloatSum
@@ -257,6 +258,10 @@ ecoOnlyWorkloads =
     , Workload "seqdict-collide" "size 4,200-character keys differing only after unit 4,096, past a prefix-only String hash" SeqLargeKeys.benchCollide 1500 Nothing
     , Workload "seqdict-multi-lookup" "size type-tree keys, each looked up in three dicts and then got-or-inserted: one key, several operations per function" SeqLargeKeys.benchMultiLookup 40000 Nothing
     , Workload "seqdict-built-keys" "size keys built as prefix ++ middle ++ code from long parts that are keys themselves, each lookup building its key again" SeqLargeKeys.benchBuiltKeys 20000 Nothing
+    , Workload "hashcons-plain" "size type terms hash-consed twice through a SeqDict PTy PTy table: every lookup hashes the node's whole subtree" HashCons.benchHashConsPlain 100000 Nothing
+    , Workload "hashcons-hashed" "the same terms with Hashed children and HashedSet.intern: every node hashes from its children's stored hashes" HashCons.benchHashConsHashed 100000 Nothing
+    , Workload "seqdict-structkeys" "size keys (List Int, String) with 50-element lists in a SeqDict, each looked up 20 times: every lookup hashes the list" HashCons.benchStructKeysPlain 20000 Nothing
+    , Workload "hasheddict-structkeys" "the same keys made Hashed once in a HashedDict, every lookup probing with the same Hashed objects" HashCons.benchStructKeysHashed 20000 Nothing
     , Workload "seqset-prefixkey-rounds" "size 500-character keys sharing all but their last 6 in a SeqSet, member-tested 32 times over" SeqLargeKeys.benchSetPrefixRounds 15000 Nothing
     ]
 

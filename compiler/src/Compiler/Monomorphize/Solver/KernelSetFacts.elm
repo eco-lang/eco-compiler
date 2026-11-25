@@ -856,6 +856,26 @@ facts =
                 { scope = Inert
                 }
           )
+        , ( ( "Eco", "FNV", "hash" )
+          , TypeFaithful
+                { scope = Transports
+                }
+          )
+        , ( ( "Eco", "FNV", "hashOf" )
+          , TypeFaithful
+                { scope = Transports
+                }
+          )
+        , ( ( "Eco", "FNV", "hashed" )
+          , TypeFaithful
+                { scope = Transports
+                }
+          )
+        , ( ( "Eco", "FNV", "value" )
+          , TypeFaithful
+                { scope = Transports
+                }
+          )
         , ( ( "Eco", "File", "appDataDir" )
           , TypeFaithful
                 { scope = Inert

@@ -1,7 +1,7 @@
 module SeqDict exposing
     ( SeqDict
     , empty, singleton, insert, update, updateIfExists, remove
-    , get, isEmpty, member, size, unorderedEquals
+    , get, lookup, isEmpty, member, size, unorderedEquals
     , union, intersect, diff, merge
     , toList, fromList, keys, values
     , foldl, foldr, map, filter, filterMap, partition
@@ -16,6 +16,9 @@ Each operation hashes its key with `Hash.hash`. In native code a function that u
 several of `get`, `member`, `insert` and `remove` (on one dict or several) hashes it once: the
 compiler inlines those operations and merges the repeated hashes of the key.
 
+A structured key (a list, a record, a tree) costs a walk of up to 256 parts on every operation;
+`HashedDict` keeps keys as `Hash.Hashed` values, hashed once.
+
 
 # Seq Dictionary
 
@@ -29,7 +32,7 @@ compiler inlines those operations and merges the repeated hashes of the key.
 
 # Query
 
-@docs get, isEmpty, member, size, unorderedEquals
+@docs get, lookup, isEmpty, member, size, unorderedEquals
 
 
 # Combine
@@ -183,6 +186,23 @@ get key (SeqDict_elm_builtin root _) =
     case getEntry (FNV.hash key) key root of
         Just (Entry _ _ _ value) ->
             Just value
+
+        Nothing ->
+            Nothing
+
+
+{-| The key stored in the dictionary that equals `key`, with its value. The stored key may be a
+different object from `key`, which matters when keys are shared or canonical: `HashedSet.find` and
+`HashedSet.intern` hand back the stored element.
+
+    lookup "Tom" (fromList [ ( "Tom", 1 ) ]) == Just ( "Tom", 1 )
+
+-}
+lookup : k -> SeqDict k v -> Maybe ( k, v )
+lookup key (SeqDict_elm_builtin root _) =
+    case getEntry (FNV.hash key) key root of
+        Just (Entry _ _ storedKey value) ->
+            Just ( storedKey, value )
 
         Nothing ->
             Nothing

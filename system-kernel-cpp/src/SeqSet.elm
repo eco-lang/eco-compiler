@@ -9,6 +9,9 @@ module SeqSet exposing
 
 {-| A set of unique values.
 
+Each operation hashes its element with `Hash.hash`; `HashedSet` keeps elements as `Hash.Hashed`
+values, hashed once, and can hand back the stored element (`HashedSet.intern`).
+
 
 # Sets
 

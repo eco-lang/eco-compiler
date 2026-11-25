@@ -591,3 +591,17 @@ Pins fired: region `NR.minorGCRegion` (**41a2e6dcdb60**).
 Change: the region minor's validate-only eden pre-walk (`#if ECO_HEAP_VALIDATE`) also calls `checkStringHashSlot` on each young object: reads only, in the exclusive pause. Full argument in test/tla/M5-tenuring/AUDIT.md (same date): the hash slot is a non-pointer
 word outside this model's state; no atomic step, lock, shared location of a modelled protocol or memory order
 is added, removed or reordered. **Verdict: no model change needed.**
+
+## 2026-11-25 — Tag_Hashed heap object (HEAP_089, plans/hashed-values-and-hash-consing.md H2)
+
+Pins fired: file `runtime/src/allocator/MinorWork.hpp` (**405cf52e4d81**); region `NP.scanEntryP` (**799a0f09e7a3**).
+
+Change: a new heap tag, `Tag_Hashed` (eco/system's `Hash.Hashed`: a hash and one boxed `value` field), is inserted
+before `Tag_Free`, so `Tag_Free` moves from 25 to 26 and `Tag_Forward` from 26 to 27. `MinorWork.hpp`'s
+`kTagForward` copy of `Tag_Forward` follows (26 -> 27; the `static_assert` in NurseryParallel.cpp checks it). The
+forward word's layout, the claim and the publish are unchanged: only the constant naming the tag value moves.
+`NP.scanEntryP`: `evacuateP`'s per-tag switch gains `case Tag_Hashed`, which evacuates the object's one pointer field
+(`value`) exactly as `Tag_StringSlice` evacuates `base`; `tagHasChildren` (outside the region) lists the tag. A
+`Hashed` is written once, before publication, and never again (HEAP_089), so it adds no mutator write to race with.
+No atomic step, lock, shared location of a modelled protocol or memory order is added, removed or reordered.
+**Verdict: no model change needed.**

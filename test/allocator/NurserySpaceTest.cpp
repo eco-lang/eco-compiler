@@ -495,15 +495,15 @@ Testing::TestCase testDeepListLocalityCopying("Deep list with two-pass spine cop
 
 // The post-minor-GC old-gen integrity walk parses [start, end_of_objects) by
 // header. Tag_Int == 0, so classifying `tag == 0` as skippable filler steps
-// INTO a promoted boxed Int's value word; a value of 25 then decodes as
-// Tag_Free (enum value 25) with size 0, and the zero stride hangs the walk.
+// INTO a promoted boxed Int's value word; a value of 26 then decodes as
+// Tag_Free (enum value 26) with size 0, and the zero stride hangs the walk.
 // The values below are that adversarial payload. In non-validate builds the
 // walk is compiled out and this is a plain promotion roundtrip.
 Testing::UnitTest testPromotedBoxedIntsValidateWalk(
     "Promoted boxed Ints with adversarial values survive the old-gen validate walk", []() {
         auto& alloc = initLegacyAllocator();
 
-        std::vector<i64> values(64, 25);
+        std::vector<i64> values(64, 26);
         RootedInts ints = createRootedIntsWithValues(alloc, values);
         TEST_ASSERT(ints.size() == values.size());
         ints.registerRoots(alloc);
@@ -520,7 +520,7 @@ Testing::UnitTest testPromotedBoxedIntsValidateWalk(
             TEST_ASSERT(obj != nullptr);
             TEST_ASSERT(alloc.isInOldGen(obj));
             TEST_ASSERT(getHeader(obj)->tag == Tag_Int);
-            TEST_ASSERT(static_cast<ElmInt*>(obj)->value == 25);
+            TEST_ASSERT(static_cast<ElmInt*>(obj)->value == 26);
         }
 
         ints.unregisterRoots(alloc);

@@ -1383,6 +1383,25 @@ phase R0 split out of `monomorphization`. Every row is at its fixed point; every
   cache either, and its long Strings are mostly built by emission, not compared. Single run, so the
   −0.8 s front end and −0.5 s mono are not attributed.
 
+### hashed: eco/system `Hash.Hashed`, value-hash definition v5, HashedDict/HashedSet (plans/hashed-values-and-hash-consing.md, 2026-11-25): **regression check, single run: wall +1.14 s (+1.5 % vs hashcrc), FLAT**
+
+| run | wall (s) | parse/check/build (s) | mono (s) | representation (s) | MLIR codegen (s) | GC time (s) | minor GC | major GC | promoted MiB | max RSS (kB) | out.mlir (B) | fixed point |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| r1 | 77.99 | 29.8 | 29.8 | 1.5 | 10.0 | 3.50 | 1513 | 8 | 7794 | 7646628 | 13439379 | (bootstrap) |
+| Δ vs hashcrc (one run each) | +1.14 (+1.5 %) | +0.6 | −0.1 | 0.0 | +0.3 | +0.11 | −4 | 0 | −18 | +2,472 | +1,121 (workload moved) | |
+
+- **What:** not a front-end step: the tree after plans/hashed-values-and-hash-consing.md: a new heap tag
+  `Tag_Hashed` (Tag_Free and Tag_Forward renumbered), the unbounded value hash v5 on an explicit stack, the
+  typed hash chains without bounds, `Hash.Hashed`, `SeqDict.lookup`, `HashedDict`/`HashedSet`, and kernel
+  licenses for `FNV.hash`/`hashed`/`value`/`hashOf`. The candidate is the `--target bootstrap` compiler of the
+  same tree (`build-kernel/bin/eco`, copied to `eco-optHV`; the bootstrap checked its own fixed points), timed
+  once under §2 (`ECO_MONO_ENGINE=solver ECO_MONO_LSS=1`, cold `eco-stuff`, registry touched). **One timed run
+  only.**
+- **Checks:** rc 0, no `[gc-stats] SIG`. out.mlir +1,121 B: the compiler's own source grew (the typed-chain
+  generator and kernel tables changed).
+- **Verdict:** FLAT, inside the ~1.3-2 % single-run noise. The compiler hashes with `Eco.Hash`, not
+  `FNV.hash`, so v5 does not reach its maps; the GC's new switch cases trace no object the compiler builds.
+
 ## 6a. Batched end-of-series gates (run once each, after S8)
 
 - **G5 `TypedOptimizedCodecTest` (new):** 135/135 standard-suite modules round-trip the v2 codec
@@ -1683,3 +1702,4 @@ same-sitting control run, not the `ref` row's recorded wall. Details live in eac
 | cq | 77.30 | +3.44 | 1525 | 8 | 7700 | 7552708 | — (regression check, ONE run, across a moved tree: capture-qualified lambda members (LSS_042), lambda arguments translated last (LSS_043), runtime-first native link; +4.7 %, inside the 5 % flag; parse/check/build +0.4 s, mono +2.2 s, representation +0.2 s, codegen +0.4 s; out.mlir +4.7 % (per-capture HOF specialization); same-input A/B in the plan §9.6: C 68.36 vs B 68.66 s; fixed point) | now |
 | hashonce | 78.57 | +1.27 | 1516 | 8 | 7811 | 7661484 | — (regression check, ONE run, across a moved tree: SeqDict/SeqSet plan, whole-String hash v3, hash-once per function (qualified inliner whitelist names, FNV.hash KernelFacts row, inlined SeqDict/SeqSet wrappers, default-on Mono hash CSE); +1.6 %, inside the 5 % flag; parse/check/build +0.6 s, mono +0.3 s, representation −0.1 s, codegen 0.0 s; out.mlir +0.3 %; fixed point) | cq |
 | hashcrc | 76.85 | -1.72 | 1517 | 8 | 7812 | 7644156 | — (regression check, ONE run, across a moved tree: String hash v4 (CRC32C) + HEAP_088 slot composed at build (++/concat/join/cons/ropes) + == slot fast-reject; FLAT, −2.2 %; parse/check/build −0.8 s, mono −0.5 s, codegen +0.2 s, GC −0.19 s; out.mlir byte-identical to hashonce; fixed point) | hashonce |
+| hashed | 77.99 | +1.14 | 1513 | 8 | 7794 | 7646628 | — (regression check, ONE run, across a moved tree: Tag_Hashed heap object + value hash v5 (unbounded, explicit stack) + Hash.Hashed + HashedDict/HashedSet + FNV licenses; FLAT, +1.5 %; parse/check/build +0.6 s, mono −0.1 s, codegen +0.3 s; out.mlir +1,121 B from grown source) | hashcrc |

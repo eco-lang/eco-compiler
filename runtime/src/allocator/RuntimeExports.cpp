@@ -3582,6 +3582,12 @@ static void print_value(uint64_t val, int depth) {
             break;
         }
 
+        case Tag_Hashed: {
+            // eco/system's Hash.Hashed (HEAP_089) prints as its value.
+            print_value(hpBits(static_cast<ElmHashed*>(ptr)->value), depth);
+            break;
+        }
+
         case Tag_Array: {
             ElmArray* array = static_cast<ElmArray*>(ptr);
             print_array(array, depth);
@@ -4297,6 +4303,23 @@ static void print_typed_value(uint64_t value, uint32_t type_id, int depth) {
         if (builtin != BuiltinContainer::None) {
             print_builtin_container(value, type_id, builtin, depth);
             break;
+        }
+
+        // eco/system's Hash.Hashed (HEAP_089) prints as its value: its type is declared with one constructor
+        // whose one field is the value's type, which the type graph records.
+        if (!isConstantBits(value)) {
+            void* hp = hpointerToPtr(value);
+            if (hp && static_cast<Header*>(hp)->tag == Tag_Hashed) {
+                const uint64_t inner = hpBits(static_cast<ElmHashed*>(hp)->value);
+                const Elm::EcoCtorInfo* hInfo = (ctor_count == 1 && g_type_graph->ctors && g_type_graph->fields)
+                    ? &g_type_graph->ctors[first_ctor] : nullptr;
+                if (hInfo && hInfo->field_count == 1) {
+                    print_typed_value(inner, g_type_graph->fields[hInfo->first_field].type_id, depth);
+                } else {
+                    print_value(inner, depth);
+                }
+                break;
+            }
         }
 
         // A constant of a custom type is a nullary constructor. A null-cons word carries the constructor's

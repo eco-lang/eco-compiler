@@ -5,15 +5,18 @@
 // with `==`. Its result is in [1, 2^32), because SeqDict reads it 5 bits at a time and 0 is kept free
 // for "not computed".
 //
-// design_docs/theory/runtime/value-hash.md defines it exactly (definition v2). The walk follows
+// design_docs/theory/runtime/value-hash.md defines it exactly (definition v5). The walk follows
 // content, never representation, so that equal values hash alike whatever form they are stored in:
 //   - Int, Float and Char hash their value, whether boxed or unboxed in their container;
 //   - a String is hashed on its own (`stringHash`: CRC32C of its UTF-16 units and its length, whatever
 //     its form, definition v4) and mixed in as one word, and the Empty constant hashes as the String ""
 //     does;
+//   - Bytes are hashed by their content (CRC32C of the bytes, and the length), whatever their form;
 //   - a list hashes its elements, whatever mix of cells and chunk views its spine is;
 //   - a Dict hashes its key-value pairs in key order, as `==` compares Dicts by content, not tree shape;
-//   - a SeqDict hashes its key-value pairs in insertion order, as `==` compares them (SeqDictLayout.hpp).
+//   - a SeqDict hashes its key-value pairs in insertion order, as `==` compares them (SeqDictLayout.hpp);
+//   - a Hashed (eco/system's `Hash.Hashed`, HEAP_089) contributes its stored hash, and its value is not
+//     walked; a Hashed hashed on its own is its stored hash.
 //
 // The walk is bounded so that a hash costs O(1) in the size of a large structure: at most `kMaxDepth`
 // levels of nesting, and `kMaxItems` list elements, Dict entries and fields in all. Every String is
@@ -56,10 +59,13 @@ constexpr u16 kCtorDictNode = 0xFFFF;
 constexpr int kMaxDepth = 16;
 constexpr int kMaxItems = 256;
 
+
 // Markers mixed in before a value of each kind, so that, for example, a Char and a one-unit String differ.
 enum Marker : u32 {
     kInt = 1, kFloat, kChar, kString, kEmpty, kConst, kTuple, kList, kListEnd, kCustom, kRecord,
-    kArray, kDict, kSeqDict, kOther, kTag
+    kArray, kDict, kSeqDict, kOther, kTag,
+    // Appended by definition v5; never renumber the ones above.
+    kBytes = 17, kHashed = 18
 };
 
 // MurmurHash3's finalizer: spreads every input bit over every output bit.
@@ -366,11 +372,24 @@ struct Hasher {
         }
         void* o = Allocator::instance().resolve(p);
         if (alloc::isString(o)) { string(o, depth == 0); return; }
+        if (alloc::isByteBuffer(o)) {
+            // Bytes by content, as `==` compares them, whatever the form (definition v5).
+            const alloc::ByteBufferView v = alloc::byteBufferView(o);
+            mix(kBytes);
+            mix(static_cast<u32>(v.length));
+            mix(v.length == 0 ? crc32c::kEmpty : crc32c::update8(crc32c::kEmpty, v.data, v.length));
+            return;
+        }
         Header* hdr = static_cast<Header*>(o);
         switch (hdr->tag) {
             case Tag_Int: mix(kInt); mix64(static_cast<u64>(static_cast<ElmInt*>(o)->value)); return;
             case Tag_Float: floatValue(static_cast<ElmFloat*>(o)->value); return;
             case Tag_Char: mix(kChar); mix(static_cast<ElmChar*>(o)->value); return;
+            case Tag_Hashed:
+                // The stored hash stands for the value, which is not walked (HEAP_089, definition v5).
+                mix(kHashed);
+                mix(static_cast<ElmHashed*>(o)->hash);
+                return;
             default: break;
         }
         if (depth >= kMaxDepth || items <= 0) return;
@@ -443,7 +462,7 @@ struct Hasher {
                 return;
             }
             default:
-                // Bytes, closures and the like: `==` does not compare them by content, or not at all.
+                // Closures and the like: `==` does not compare them by content, or not at all.
                 mix(kOther);
                 mix(hdr->tag);
                 return;
@@ -496,8 +515,14 @@ const char* Elm::checkStringHashSlot(void* obj) {
 }
 
 extern "C" int64_t eco_hash_value(HPtr value) {
+    const HPointer p = value.toHPointer();
+    // A Hashed is its stored hash (HEAP_089): `Hash.hash (Hash.hashed x) == Hash.hash x`.
+    if (!alloc::isConstant(p) && wordTag(hpBits(p)) == 0) {
+        void* o = Allocator::instance().resolve(p);
+        if (static_cast<Header*>(o)->tag == Tag_Hashed) return static_cast<int64_t>(static_cast<ElmHashed*>(o)->hash);
+    }
     Hasher hasher;
-    hasher.boxed(value.toHPointer(), 0);
+    hasher.boxed(p, 0);
     return static_cast<int64_t>(finish(hasher));
 }
 

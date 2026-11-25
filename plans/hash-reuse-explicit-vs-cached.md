@@ -1,7 +1,7 @@
 ---
 status: partial
 updated: 2026-11-25
-remaining: "Part A on branch hash-explicit (not gated); Part B on hash-cache: B0-B5c implemented (v4 CRC32C, propagation, composition), B6 measured and removed (no site pays), B8 not done; self-build check done (fe-opt-loop hashcrc: 76.85 s, -1.72 s vs hashonce, FLAT); gates: full + bootstrap PASSED 2026-11-25 (native 3,184/3,184, JS E2E eco-system 248/248 + conformance 35/35; fixed check-large-body-access in checkStringHashSlot); the full ECO_HEAP_VALIDATE gate (B7) deferred by the user to a much later date (only targeted validate tests run); A-vs-B decided 2026-11-25: B for Strings, structures in plans/hashed-values-and-hash-consing.md"
+remaining: "Part A on branch hash-explicit (not gated); Part B on hash-cache: B0-B5c implemented (v4 CRC32C, propagation, composition), B6 measured and removed (no site pays), B8 not done; self-build check done (fe-opt-loop hashcrc: 76.85 s, -1.72 s vs hashonce, FLAT); gates: full + bootstrap PASSED 2026-11-25 (native 3,184/3,184, JS E2E eco-system 248/248 + conformance 35/35; fixed check-large-body-access in checkStringHashSlot); the full ECO_HEAP_VALIDATE gate (B7) deferred by the user to a much later date (only targeted validate tests run); A-vs-B decided 2026-11-25: B for Strings; Part A superseded by plans/hashed-values-and-hash-consing.md (implemented 2026-11-25)"
 ---
 
 # Hash reuse: explicit `Hashed` keys against a transparent String hash cache

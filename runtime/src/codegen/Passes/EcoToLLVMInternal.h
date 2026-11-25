@@ -371,7 +371,7 @@ constexpr unsigned TagBits = 5;
 
 // The value of `Tag_Forward`, the tag of a word that has replaced the header of
 // an object a collector has moved.
-constexpr int64_t TagForward = 26;
+constexpr int64_t TagForward = 27;
 
 // The value of `Tag_Cons`.
 constexpr int64_t TagCons = 6;

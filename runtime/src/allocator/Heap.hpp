@@ -118,6 +118,10 @@ typedef enum {
     // The two chunked-list forms. A list spine may mix `Cons` cells and `ConsChunk` nodes.
     Tag_ConsChunk,   // A `ConsChunk`.
     Tag_ListBacking, // A `ListBacking`.
+    // eco/system's `Hash.Hashed`. The runtime creates it; compiled code does not. Added 2026-11-25 before
+    // `Tag_Free`, which moved from 25 to 26 and `Tag_Forward` from 26 to 27: compiled code compares only
+    // with `Tag_Forward`, through `value_enc::TagForward` (EcoToLLVMInternal.h, static_assert-checked).
+    Tag_Hashed,      // An `ElmHashed`.
     Tag_Free,        // A free cell in the old generation; `header.size` is its size in bytes.
     Tag_Forward,     // A `Forward` word replacing the header of an object a collector has moved.
 } Tag;
@@ -598,6 +602,23 @@ struct ALIGN(8) elm_bytebuffer_slice {
 };
 typedef struct elm_bytebuffer_slice ElmByteBufferSlice;
 static_assert(sizeof(ElmByteBufferSlice) == 24, "ElmByteBufferSlice must be 24 bytes");
+
+/**
+ * A value paired with its value hash: eco/system's `Hash.Hashed` (`Hash.hashed`, HEAP_089).
+ *
+ * Only the runtime creates one (`Eco_Kernel_FNV_hashed`), fully written before it is published, and it
+ * is never written again. `hash` is `Hash.hash value` (design_docs/theory/runtime/value-hash.md,
+ * definition v5), never 0. `value` is always boxed (`FNV.hashed` has no unboxed variant) and is the only
+ * field a collector traces; `header.unboxed` and `header.size` are 0.
+ */
+struct ALIGN(8) elm_hashed {
+    Header header;
+    u32 hash;
+    u32 reserved; // 0; keeps `value` 8-byte aligned.
+    HPointer value;
+};
+typedef struct elm_hashed ElmHashed;
+static_assert(sizeof(ElmHashed) == 24, "ElmHashed must be 24 bytes");
 
 /**
  * A pair. `header.unboxed` holds the kinds of `a` and `b`.

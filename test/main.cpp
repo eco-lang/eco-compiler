@@ -55,6 +55,7 @@
 #include "allocator/BytesOpsTest.hpp"
 #include "allocator/StringHashSlotTest.hpp"
 #include "allocator/StringHashComposeTest.hpp"
+#include "allocator/HashedValueTest.hpp"
 #include "allocator/RuntimeExportsTest.hpp"
 #include "allocator/GenericApplyBoxingTest.hpp"
 #include "allocator/WideObjectPinsTest.hpp"
@@ -1261,6 +1262,10 @@ int main(int argc, char* argv[]) {
     Testing::TestSuite stringHashComposeTests("StringHashCompose");
     registerStringHashComposeTests(stringHashComposeTests);
 
+    // eco/system's Hash.Hashed (HEAP_089) and value-hash definition v5
+    Testing::TestSuite hashedValueTests("HashedValue");
+    registerHashedValueTests(hashedValueTests);
+
     // Runtime exports tests (C-linkage functions for JIT)
     Testing::TestSuite runtimeExportsTests("RuntimeExports");
     registerRuntimeExportsTests(runtimeExportsTests);
@@ -1478,6 +1483,7 @@ int main(int argc, char* argv[]) {
     suite.add(std::move(bytesOpsTests));
     suite.add(std::move(stringHashSlotTests));
     suite.add(std::move(stringHashComposeTests));
+    suite.add(std::move(hashedValueTests));
     suite.add(std::move(runtimeExportsTests));
     suite.add(std::move(genericApplyBoxingTests));
     suite.add(std::move(wideObjectPinsTests));

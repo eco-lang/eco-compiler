@@ -617,6 +617,18 @@ static bool eqHelp(void* a, void* b, int depth, EqDeferred& deferred) {
                                     Elm::tupleFieldKind(bhdr->unboxed, 1), depth, deferred);
         }
 
+        case Tag_Hashed: {
+            // eco/system's Hash.Hashed (HEAP_089): equal when the values are. The stored hashes are compared
+            // first: unequal hashes mean unequal values, without walking them.
+            ElmHashed* ah = static_cast<ElmHashed*>(a);
+            ElmHashed* bh = static_cast<ElmHashed*>(b);
+            if (ah->hash != bh->hash) return false;
+            Elm::Unboxable av, bv;
+            av.p = ah->value;
+            bv.p = bh->value;
+            return eqUnboxableSlot(allocator, av, bv, 0, 0, depth, deferred);
+        }
+
         case Tag_Tuple3: {
             Elm::Tuple3* atup = static_cast<Elm::Tuple3*>(a);
             Elm::Tuple3* btup = static_cast<Elm::Tuple3*>(b);

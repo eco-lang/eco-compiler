@@ -19,7 +19,30 @@ var _FNV_prime = 16777619;
 var _FNV_offset = 2166136261;
 
 function _FNV_hash(object) {
+    // A Hashed is its stored hash, as natively: Hash.hash (Hash.hashed x) == Hash.hash x.
+    if (_FNV_isHashed(object)) return object.a;
     return _FNV_hashHelp(_FNV_offset, object, 0) >>> 0;
+}
+
+// eco/system's Hash.Hashed (HEAP_089 natively): a value with its hash, built only here. Its `$` is a string
+// in both build modes (it is not compiled from a constructor), which no compiled value has in an --optimize
+// build and no constructor is named in a development build (`_elm_builtin` names are reserved), and which
+// elm/core's production `==` does not mistake for a Dict (it tests `x.$ < 0`). `==` compares `$`, then the
+// hash `a`, then the value `b`; compiler/kernel-overrides/HashedDebug.js prints it as its value.
+function _FNV_hashed(value) {
+    return { $: 'Hashed_elm_builtin', a: _FNV_hash(value), b: value };
+}
+
+function _FNV_value(hashed) {
+    return hashed.b;
+}
+
+function _FNV_hashOf(hashed) {
+    return hashed.a;
+}
+
+function _FNV_isHashed(value) {
+    return typeof value === 'object' && value !== null && value.$ === 'Hashed_elm_builtin';
 }
 
 function _FNV_mix(h, x) {
@@ -42,6 +65,8 @@ function _FNV_hashHelp(h, value, depth) {
     case 'object':
         if (value === null || depth > 16) return h;
         if (value instanceof String) return _FNV_hashHelp(h, value.valueOf(), depth);
+        // A Hashed contributes its stored hash; its value is not walked (as natively, marker 18).
+        if (value.$ === 'Hashed_elm_builtin') return _FNV_mix(_FNV_mix(h, 18), value.a);
         if (value.$ === 'RBNode_elm_builtin' || value.$ === -1) {
             return _FNV_hashDict(_FNV_mix(h, 5), value, depth);
         }

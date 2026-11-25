@@ -94,7 +94,7 @@ The padding is told apart from real zero units by `n`. A String costs time linea
 implementation streams the String's contiguous segments (`forEachSegmentEx`) through a 32-unit
 buffer, widening UTF-8 bytes four at a time, so every form gives the same number.
 
-## Definition v4 (current since 2026-11-24)
+## Definition v4 (2026-11-24, until v5)
 
 One change to v3: `stringHash(s)` is CRC32C, which composes, so that a String built from parts can be
 given its hash from theirs (plans/hash-reuse-explicit-vs-cached.md §4.2; the choice and its
@@ -116,6 +116,40 @@ runs three `crc32` instruction streams below 64 units, on x86-64 CPUs that have 
 Strings of one length whose XOR is a multiple of P (for example P·x^s) have one hash, which the
 SeqDict collision tests use to build colliding keys (`experiments/string-hash-lab/v4ref.py`); no
 two Strings of one length that differ only within 32 consecutive bits collide.
+
+## Definition v5 (current since 2026-11-25)
+
+plans/hashed-values-and-hash-consing.md. v5 is v4, bounds included (16 levels of nesting, 256 list
+elements, Dict and SeqDict entries and fields in all), with two rows changed and two markers added:
+
+1. **Bytes** (`Tag_ByteBuffer`, `Tag_ByteBufferSlice`, `Tag_LargeByteHeader`, which `==` compares by
+   content across forms): `mix(kBytes); mix(n); mix(CRC32C register of the n bytes from 0xFFFFFFFF)`,
+   mixed whatever the bounds, as a String is. v4 mixed `kOther` and the heap tag, so a buffer and a
+   slice with equal bytes, which `==` finds equal, hashed differently: a v4 bug.
+2. **`Hashed`** (eco/system's `Hash.Hashed`, a `Tag_Hashed` object holding `hash` = `Hash.hash value`
+   and the value, HEAP_089): nested anywhere, it contributes `mix(kHashed); mix(hash)`, whatever the
+   bounds, and its value is not walked; hashed on its own, the result is `hash` itself, so
+   `Hash.hash (hashed x) == Hash.hash x`.
+3. **New markers** `kBytes = 17` and `kHashed = 18`, appended after `kTag = 16`.
+
+Every value with no Bytes or `Hashed` in it has its v4 number. Row 2 is sound because a `Hashed`'s hash
+is its value's (equal values, equal hashes), and it is consistent with the bounds: a `Hashed` is mixed as
+its own number, never as a stand-in for a walk of its value. So a recursive type that keeps its parts as
+`Hashed` hashes each node in time proportional to its own fields, however deep the structure, and the
+bounds still cap the cost of hashing a large plain value. (An unbounded v5 with canonical NaN was built
+and measured on 2026-11-25 and rolled back: plans/hashed-values-and-hash-consing.md §11.)
+
+## `Hashed` values (HEAP_089)
+
+`Hash.hashed : a -> Hashed a` (the kernel `Eco_Kernel_FNV_hashed`) hashes its argument once and
+allocates a `Tag_Hashed` object, `ElmHashed` in `Heap.hpp`: the header, the u32 hash, a reserved u32
+and the value, boxed. It is never written after it is created. `Hash.value` and `Hash.hashOf` read its
+fields. `==` on two `Hashed` compares the hashes first and then the values (`eqHelp`), and
+`Debug.toString` prints the value alone, natively (`RuntimeExports.cpp`) and on JavaScript (the kernel
+override `compiler/kernel-overrides/HashedDebug.js`). On JavaScript a `Hashed` is the object
+`{ $: 'Hashed_elm_builtin', a: hash, b: value }`, and FNV.js gives it the same treatment as row 2.
+A recursive type that keeps its parts as `Hashed` hashes each node in time proportional to its own
+fields, and `HashedSet.intern` hash-conses it.
 
 ## Cached String hashes (HEAP_088)
 
@@ -150,12 +184,12 @@ merge changes no hash value, only how many times one is computed.
 `Hash.hash` at a known tuple or record type is compiled to a chain that computes exactly the walker's
 number. The value's type gives a plan: an Int, Float, Char, Bool or String field is one `eco.hash.mix`;
 a nested tuple or record is unrolled (its marker, then its fields one level deeper); anything else (a
-list, a custom type in any representation, unit) is `eco.hash.walk`, the walker's `boxed(value, depth)`
-resumed from the chain's state and item budget (`eco_hash_walk`). The bounds follow the walker: depth
-is known statically, so an aggregate at depth 16 or more contributes nothing; the items left are an
-`i64` threaded through the chain, starting at 256, and an aggregate with none left, or a record field
-with none left, keeps the old state through an `arith.select` (a record field uses an item up even
-when it took the last one, so the count can go negative). Primitives and Strings are mixed whatever
-the bounds, as in the walker. A plan of more than 64 nodes, and any value that is not a tuple or
+list, a custom type in any representation, a `Hashed`, unit) is `eco.hash.walk`, the walker's
+`boxed(value, depth)` resumed from the chain's state and item budget (`eco_hash_walk`). The bounds follow
+the walker: depth is known statically, so an aggregate at depth 16 or more contributes nothing; the items
+left are an `i64` threaded through the chain, starting at 256, and an aggregate with none left, or a
+record field with none left, keeps the old state through an `arith.select` (a record field uses an item
+up even when it took the last one, so the count can go negative). Primitives and Strings are mixed
+whatever the bounds, as in the walker. A plan of more than 64 nodes, and any value that is not a tuple or
 record, is hashed whole (`eco.hash` of kind `value`). `test/eco-system/src/HashTypedTest.elm` compares
 the chains with the walker, bounds included.

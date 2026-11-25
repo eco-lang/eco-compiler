@@ -105,6 +105,7 @@ Directory `compiler/kernel-overrides/`, one file per override, named `<Name>.js`
 | `BytesForPorts.js` | kernel; `requires Elm.Kernel.Json`; `package elm/json 1.1.4` | `var _Json_decodeBytes = ...; var _Json_encodeBytes = ...;`, text from `G`'s `bytesForPorts` |
 | `BytesReadString.js` | kernel; `requires Elm.Kernel.Bytes`, `requires Elm.Kernel.Utils`; `package elm/bytes 1.0.8` | `_Bytes_read_string = F3(...)`, the second argument of `R`'s first `.replace`, with `var ` removed |
 | `MVarStash.js`, `MVarUnstashing.js`, `MVarUnstashingTaken.js` | value; `group mvar-stash` | `R`'s `replaceDefinition` texts for `stash`, `unstashing`, `unstashingTaken` (expand `unstashingDefinition(name, taken)` into two literal files) |
+| `HashedDebug.js` (added 2026-11-25, plans/hashed-values-and-hash-consing.md) | kernel; `requires Elm.Kernel.Debug`, `requires Eco.Kernel.FNV`; `package elm/core 1.0.5` | rebinds `_Debug_toAnsiString` so that eco/system's `Hash.Hashed` (the JS kernel's `{ $: 'Hashed_elm_builtin', a, b }`) prints as its value `b`, as natively |
 
 ## 3. eco's JS backend
 

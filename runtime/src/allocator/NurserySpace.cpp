@@ -797,6 +797,14 @@ void NurserySpace::minorGC(OldGenSpace &oldgen, const StackMapRoots& stackmap_ro
                         checkChild(slc->base, "byte-slice-base", 0);
                         break;
                     }
+                    case Tag_Hashed: {
+                        ElmHashed* hd = static_cast<ElmHashed*>(static_cast<void*>(scan));
+                        checkChild(hd->value, "hashed-value", 0);
+                        if (hd->hash == 0 || hd->reserved != 0)
+                            std::fprintf(stderr, "[gc-heap-check] BAD HASHED obj=%p hash=%u reserved=%u (HEAP_089)\n",
+                                (void*)scan, (unsigned)hd->hash, (unsigned)hd->reserved);
+                        break;
+                    }
                     case Tag_StringRope: {
                         ElmStringRope* r = static_cast<ElmStringRope*>(static_cast<void*>(scan));
                         checkChild(r->left, "rope-left", 0);
@@ -971,6 +979,11 @@ void NurserySpace::minorGC(OldGenSpace &oldgen, const StackMapRoots& stackmap_ro
                     case Tag_ByteBufferSlice: {
                         ElmByteBufferSlice* slc = static_cast<ElmByteBufferSlice*>(static_cast<void*>(scan));
                         checkOGChild(slc->base, scan, "byte-slice-base", 0);
+                        break;
+                    }
+                    case Tag_Hashed: {
+                        ElmHashed* hd = static_cast<ElmHashed*>(static_cast<void*>(scan));
+                        checkOGChild(hd->value, scan, "hashed-value", 0);
                         break;
                     }
                     case Tag_StringRope: {
@@ -1760,6 +1773,12 @@ void NurserySpace::scanObject(void *obj, OldGenSpace &oldgen, std::vector<void*>
         case Tag_ByteBufferSlice: {
             ElmByteBufferSlice *slc = static_cast<ElmByteBufferSlice *>(obj);
             evacuate(slc->base, oldgen, promoted_objects);
+            break;
+        }
+
+        case Tag_Hashed: {
+            ElmHashed *hd = static_cast<ElmHashed *>(obj);
+            evacuate(hd->value, oldgen, promoted_objects);
             break;
         }
 

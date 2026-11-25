@@ -3319,6 +3319,11 @@ void OldGenSpace::scanChildren(MarkWorker& w, void* obj) {
             greyH(slc->base);
             break;
         }
+        case Tag_Hashed: {
+            ElmHashed *hd = static_cast<ElmHashed *>(obj);
+            greyH(hd->value);
+            break;
+        }
         case Tag_StringRope: {
             ElmStringRope *r = static_cast<ElmStringRope *>(obj);
             greyH(r->left);
@@ -6760,6 +6765,11 @@ void OldGenSpace::fixPointersInObject(void* obj) {
         case Tag_ByteBufferSlice: {
             ElmByteBufferSlice* slc = static_cast<ElmByteBufferSlice*>(obj);
             fixHPointer(slc->base);
+            break;
+        }
+        case Tag_Hashed: {
+            ElmHashed* hd = static_cast<ElmHashed*>(obj);
+            fixHPointer(hd->value);
             break;
         }
         case Tag_StringRope: {

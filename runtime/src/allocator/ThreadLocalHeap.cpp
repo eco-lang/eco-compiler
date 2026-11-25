@@ -128,6 +128,10 @@ void initHeaderForTag(Header* hdr, Tag tag, size_t size) {
             // The constructors set header.size to the logical UTF-16 length, which the byte size does not give.
             h.size = 0;
             break;
+        case Tag_Hashed:
+            // A fixed-size object (sizeof(ElmHashed)); header.size and header.unboxed stay 0 (HEAP_089).
+            h.size = 0;
+            break;
         case Tag_StringUtf8Leaf:
             // One unit per payload byte, as an upper bound and with the hash slot word, as for Tag_String.
             h.size = (size >= 16 && size - 16 >= kStringHashSlotMinUnits)

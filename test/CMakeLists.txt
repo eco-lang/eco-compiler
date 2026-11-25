@@ -148,6 +148,7 @@ add_executable(test
         allocator/BytesOpsTest.cpp
         allocator/StringHashSlotTest.cpp
         allocator/StringHashComposeTest.cpp
+        allocator/HashedValueTest.cpp
         allocator/RuntimeExportsTest.cpp
         allocator/GenericApplyBoxingTest.cpp
         allocator/WideObjectPinsTest.cpp

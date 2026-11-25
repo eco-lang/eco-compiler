@@ -1,6 +1,7 @@
 ---
-status: not-started
+status: partial
 updated: 2026-11-25
+remaining: "H10 gates (USER): cmake --build build --target full and --target bootstrap after the commit (bootstrap already passed once on the implemented tree); ECO_HEAP_VALIDATE deferred by the user"
 ---
 
 # Hashed values and hash-consing: explicit `Hashed` for structures, automatic hashes for Strings
@@ -26,8 +27,11 @@ The compiler's own code does not adopt any of this (D5); its hash-consing
 
 - **D1.** Strings: automatic (Part B). Other structures: explicit `Hashed`. No hash slot or cache
   in Custom, Record or Tuple objects, and no value that secretly carries a hash.
-- **D2.** One unbounded hash definition for all values; large keys hash in time proportional to
-  their size ("don't use them as keys", or wrap them in `Hashed`).
+- **D2 (revised by the user after implementation, 2026-11-25).** Keep v4's bounds (16 levels, 256
+  items): v5 is v4 plus the Bytes-by-content fix and the `Hashed` row. The unbounded walk (with an
+  explicit stack and canonical NaN) was implemented first and rolled back (§11). The bounds do not
+  interfere with `Hashed`, which is mixed as its own number, never as a stand-in for a walk of its
+  value.
 - **D3.** `Debug.toString` of a `Hashed` prints its value only, on both backends; the JavaScript
   side through `compiler/kernel-overrides`.
 - **D4.** A kernel license (plans/kernel-parametricity-license.md) for every new kernel and every
@@ -68,39 +72,28 @@ The compiler's own code does not adopt any of this (D5); its hash-consing
 ### 2.1 Definition v5
 
 v5 is v4 (design_docs/theory/runtime/value-hash.md, `Hasher` in `runtime/src/allocator/ValueHash.cpp`:
-one FNV-1a state from the offset basis, walked in pre-order, finished with `nonZero(fmix32(h))`)
-with these changes and nothing else:
+one FNV-1a state from the offset basis, walked in pre-order, finished with `nonZero(fmix32(h))`, bounded
+by 16 levels of nesting and 256 elements, entries and fields in all) with these changes and nothing
+else:
 
-1. **No bounds.** `kMaxDepth` and `kMaxItems` are gone: every element, entry and field is walked.
-2. **Floats:** after `-0.0 → 0.0`, every NaN becomes `0x7FF8000000000000` before its bits are mixed
-   (in the walker and in the inline `eco.hash` / `eco.hash.mix` of kind `float` alike).
-3. **Bytes** (`Tag_ByteBuffer`, `Tag_ByteBufferSlice`, `Tag_LargeByteHeader`: the three forms
+1. **Bytes** (`Tag_ByteBuffer`, `Tag_ByteBufferSlice`, `Tag_LargeByteHeader`: the three forms
    `alloc::isByteBuffer` accepts and `eqHelp` compares by content): `mix(kBytes); mix(n);
-   mix(crc32c::update8(crc32c::kEmpty, data, n))` over `alloc::byteBufferView(obj)`. (v4 mixes
-   `kOther ·tag`, so a slice and a buffer with equal bytes, which `==` finds equal, hash differently.)
-4. **`Hashed`** (a `Tag_Hashed` object, §2.2) with stored hash `h`: nested anywhere, it contributes
-   `mix(kHashed); mix(h)` and its value is not walked. As the whole hashed value (`eco_hash_value`
-   called on it) the result is `h` itself, so `Hash.hash (hashed x) == Hash.hash x`.
-5. **New markers** appended to `enum Marker` (never renumber the existing ones): `kBytes = 17`,
+   mix(crc32c::update8(crc32c::kEmpty, data, n))` over `alloc::byteBufferView(obj)`, whatever the
+   bounds. (v4 mixes `kOther ·tag`, so a slice and a buffer with equal bytes hash differently.)
+2. **`Hashed`** (a `Tag_Hashed` object, §2.2) with stored hash `h`: nested anywhere, it contributes
+   `mix(kHashed); mix(h)`, whatever the bounds, and its value is not walked. As the whole hashed value
+   (`eco_hash_value` called on it) the result is `h` itself, so `Hash.hash (hashed x) == Hash.hash x`.
+3. **New markers** appended to `enum Marker` (never renumber the existing ones): `kBytes = 17`,
    `kHashed = 18`.
 
-Why it is sound (equal values hash equal): rows 1 and 2 read the same content as v4; row 3 hashes
-the bytes `eqHelp` compares; row 4 holds because `h = Hash.hash v` and equal values have equal
-hashes, and `==` on two `Hashed` is `==` on their values (§2.2). The NaN and closure (`kOther ·tag`)
-rows also stay sound if `==` is later made reflexive (NaN equal to NaN, closures compared by code and
-captures), so that fix will need no hash change.
+Sound: row 1 hashes the bytes `eqHelp` compares; row 2 holds because `h = Hash.hash v` and equal values
+have equal hashes. Every value with no Bytes or `Hashed` in it keeps its v4 number, so **no pin in
+HashIdentityTest moves**. Because a `Hashed` is mixed as its own number, the bounds do not interfere with
+composition: a structure built from `Hashed` parts is told apart by them however deep it is, and the
+bounds still cap the cost of hashing a large plain value.
 
-What stays the same: every value v4 hashed within its bounds, with no NaN, Bytes or `Hashed` in it,
-has the same number under v5. **No pin in HashIdentityTest moves** (its corpus is small and has none
-of those), which makes the identity tests a strong check of the rewrite.
-
-Costs:
-
-- A value hashes in time proportional to its size. **A value with shared substructure (a DAG)
-  hashes in time proportional to its unfolded tree size**, which can be exponential in its depth.
-  That is what `Hashed` is for; the docs say so (H9).
-- No recursion limit means the walker must not recurse on the C stack (a 10⁶-deep user list type
-  would overflow it): it walks with an explicit stack (H5).
+(History: the first implementation removed the bounds, walked with an explicit stack and canonicalised
+NaN; it was measured and rolled back by the user's revised D2. §11 has both sets of numbers.)
 
 ### 2.2 `Hashed a`: the `Tag_Hashed` heap object
 
@@ -504,11 +497,13 @@ Per plans/kernel-parametricity-license.md §2 (procedure §2.1, checklists A-C) 
    - `Eco.FNV.hashed : a -> Hashed a`: stores its argument in the result, never applies it; scope
      `Transports` (as `Elm.Utils.equal`'s row shows the form). B2: no global write; B3: no closure.
    - `Eco.FNV.value : Hashed a -> a`: returns the stored value; scope `Transports`.
-   - `Eco.FNV.hashOf : Hashed a -> Int`: reads an Int; scope `Inert`.
+   - `Eco.FNV.hashOf : Hashed a -> Int`: reads an Int; scope `Transports` (the `a` inside `Hashed a` is a
+     function-capable position, so `Inert`, which needs none, does not apply).
 2. **Changed kernel `Eco.FNV.hash : a -> Int`** (behaviour changes in H5), unlicensed today: audit
    (B1 the argument is read, never applied, retained or returned; B2 no global write Elm can reach:
    the `ECO_HASH_CENSUS=1` tables hold addresses for diagnostics only, and the `thread_local` frame
-   vector holds raw pointers only during one call; B3 no closure); scope `Inert`. Pins:
+   vector holds raw pointers only during one call; B3 no closure); scope `Transports` (as
+   `Elm.Utils.equal : a -> a -> Bool`: `a` is function-capable, so not `Inert`). Pins:
    `FNVExports.cpp`, `ValueHash.cpp`, `Heap.hpp`.
 3. **Re-audits:** `Utils.cpp` changed (H2.4), so every kernel pinned to it (`Elm.Utils.equal`,
    `compare`, `append`, `Elm.List.sortBy`, ...: the manifest check names them) gets a re-audit note
@@ -523,6 +518,14 @@ Per plans/kernel-parametricity-license.md §2 (procedure §2.1, checklists A-C) 
    it would need a re-audit. Follow-up F5.
 
 ### H5. Definition v5: runtime walker and typed chains (one step: they must agree)
+
+> **Rolled back in part (D2 revised, 2026-11-25; §11).** What stands from H5: the Bytes row, the
+> `Hashed` row and the top-level `Hashed` shortcut in the walker, and the H5c tests that check those
+> (HashBytesTest, HashDeepTest's `big` and `nested` groups, the unit tests `Hash v5 ...` for `Hashed`,
+> deep values and Bytes). Reverted to v4: the bounds (H5a.4), the explicit-stack walker (H5a.2), the
+> canonical NaN (H5a.3, H5b.4), the new `eco_hash_walk` / `eco.hash.walk` signature (H5a.6, H5b.2-3) and
+> the chain changes (H5b.1), with the tests that relied on them (HashTypedTest is back to its `bounds`
+> group; the NaN and no-bounds tests are gone).
 
 **H5a. Runtime (`runtime/src/allocator/ValueHash.cpp`, `ValueHash.hpp`).**
 
@@ -754,8 +757,7 @@ build's. No timing assertions.
 - **A missed per-tag site** shows as a GC crash or a validator failure: the unit test (H2.8) and the
   validate gate (H10) are the nets.
 - **TLA+ canary:** H2 changes pinned regions; follow the README procedure (audit entries first).
-- **DAG blow-up** (§2.1): an unbounded hash of a heavily shared plain value is exponential.
-  Documented; `hashcons-plain` is sized to stay bounded.
+- **DAG blow-up:** moot with the bounds kept (D2 revised); it applied to the unbounded walk.
 - **A pin moves:** v5 is mis-implemented (§2.1 says none moves). Never re-pin to make it pass.
 - **Two implementations of the hash:** the walker and the typed chains (plus the inline primitive
   hashes). HashTypedTest, the identity pair (ECO_HASH_INLINE=0) and `hash_inline_matches_runtime.mlir`
@@ -774,6 +776,12 @@ build's. No timing assertions.
   kernel-owned types that are always heap objects (`Hashed`, `SeqDict`), if H8(d) shows the costs.
 - **F2.** The compiler adopting `Hashed` for its own hash-consing (D5).
 - **F3.** A fully bottom-up hash definition, as an experiment (D8).
+- **F6.** Local-package cache race (found while testing H6): parallel E2E compiles that see a changed
+  eco/system fingerprint each replace `~/.eco/<ver>/packages/eco/system/1.0.0`; two can interleave so that
+  one writes `eco-local-fingerprint` while the other is deleting, leaving a copy that has the fingerprint but
+  no `elm.json` or `src/`, which is then never repaired (every compile fails "file not found: .../elm.json").
+  Seen when the eco/system sources were edited during a run. `Builder/Deps/Details.elm` describes the
+  replacement as done "under the registry lock"; the lock evidently does not serialise these processes.
 - **F5.** License the Debug kernels (`Debug.log` scope `Transports`, `toString`, `todo`), weighing the
   small precision gain against pinning `RuntimeExports.cpp` (D4).
 - **F4.** Inline `value` / `hashOf` (and the hash of a `Hashed` in a typed chain) as field loads
@@ -808,3 +816,60 @@ with H2's heap object, H3's kernels and H4's licenses for them.
 
 - 2026-11-25: plan written; adversarial review (§10) applied; D7 changed to `Tag_Hashed` and D8
   confirmed by the user; lowered to steps H0-H10.
+- 2026-11-25: **implemented H1-H9** (H10 gates owed to the USER). Notes against the plan:
+  - Tests: the unit tests are one file, `test/allocator/HashedValueTest.cpp` (suite `HashedValue`, tests named
+    `HEAP_089 ...` and `Hash v5 ...`), not two. A negative control (the walker hashing a `Hashed` as `kOther`)
+    first passed the suite: no check that `Hashed` values with different stored hashes make different
+    containers. That check was added to the unit test and to `HashDeepTest`; the control then failed as it
+    should.
+  - Licenses: all four FNV kernels are `Transports`, not `Inert` (their types have a function-capable `a`).
+    The `Utils.cpp` re-audits covered nine licensed kernels.
+  - `SeqDict.insert` of a key equal to a stored one stores the NEW key object, so `HashedSet.insert`
+    replaces the canonical element; its doc says so and points to `intern`.
+  - `docs.json` is a git-ignored build product (`compiler/CMakeLists.txt` regenerates it); no manual step.
+  - The TLA+ canary fired on `MinorWork.hpp` (M3, M4, W3, W5) and `NP.scanEntryP` (M3): audited, no model
+    change, pins updated.
+  - Tests run: unit `HEAP_089` 2/2, `Hash v5` 5/5, `HEAP_088` 12/12, `LOS:` 12/12, `TaggedWordGc` 7/7, the
+    retuned boxed-Int walk 1/1, codegen `hash_inline_matches_runtime.mlir` (NaN cases added); E2E native
+    `eco-system/Hash*` 10/10, `SeqDict*` 12/12, `SeqSet*` 1/1; E2E JS 20/20 (3 native-only skipped);
+    `elm-tests` 22,136 passed (`FactsTest` expectations updated for the three new KernelFacts rows);
+    `--target bootstrap` passed. No HashIdentity pin moved.
+  - Benchmarks, interleaved against Part B's final binary (`local-dev/hashreuse/ab-hv-results.txt`, native ms):
+
+    | workload | Part B | this plan | change |
+    |---|--:|--:|--:|
+    | seqdict-multi-lookup | 252 | 318 | +26.2 % |
+    | seqdict-intern | 321 | 390 | +21.5 % |
+    | seqdict-prefixkey-fresh / built-keys | 103 / 76 | 95 / 71 | -7.8 / -6.6 % |
+    | other 22 hash workloads | | | -4.1 % to +2.2 % (seqdict-update +8.7 % re-measured at -2.6 %: noise) |
+    | hashcons-plain / hashcons-hashed (100,000) | - | 159 / 131 | hashed -18 % |
+    | seqdict-structkeys / hasheddict-structkeys | - | 140 / 39 | hashed -72 % |
+
+    The two regressions key a SeqDict on type trees of roughly 250-300 fields and elements, past v4's
+    256-item cap: v5 walks all of each key (D2's accepted cost; such keys belong in `Hashed`). Hash-consing
+    gains only 18 % because these terms are small and table work dominates; structured keys reused through
+    `HashedDict` gain 72 %. Compiler self-build (benchmarks/fe-opt-loop.md row `hashed`): 77.99 s, +1.5 %,
+    FLAT.
+- 2026-11-25: **D2 revised by the user: bounds kept, rolled back to v4 + the Bytes and `Hashed` rows.** The
+  unbounded walker, its explicit stack, canonical NaN and the new walk signature were reverted (H5 note);
+  the licenses pinned to ValueHash.cpp (`FNV.hash`, `FNV.hashed`) got re-audit rows. Tests re-run: unit
+  `HEAP_089` 2/2, `Hash v5` 3/3, `HEAP_088` 12/12, `TaggedWordGc` 7/7, `LOS:` 12/12, the boxed-Int walk 1/1,
+  codegen `hash_inline_matches_runtime.mlir`; `elm-tests` 22,136 passed; E2E native `Hash*` 10/10,
+  `SeqDict*` 12/12, `SeqSet*` 1/1, JS 21/21 (HashDeepTest now runs on JS too); `--target bootstrap`
+  passed; no HashIdentity pin moved. Benchmarks against Part B's final binary, interleaved
+  (`local-dev/hashreuse/ab-hv-results.txt`; the unbounded run is `ab-hv-results-unbounded.txt`), native ms:
+
+  | workload | Part B | unbounded v5 | bounded v5 (kept) |
+  |---|--:|--:|--:|
+  | seqdict-multi-lookup | 246-252 | 318 | 240 |
+  | seqdict-intern | 321-322 | 390 | 315 |
+  | other 24 hash workloads | | -8 % to +2 % | -10 % to +5 % (seqdict-update swings -14 % to +9 % between runs: noise) |
+  | hashcons-plain / hashcons-hashed (100,000) | - | 159 / 131 | 117 / 121 |
+  | seqdict-structkeys / hasheddict-structkeys | - | 140 / 39 | 135 / 40 |
+
+  With the bounds back, a plain small term hashes in bounded time, so `hashcons-hashed` no longer beats
+  `hashcons-plain` (+3 %: the `Hashed` objects, kernel calls and boxed `Just`s cost about what they save
+  on small terms). Reusing `Hashed` structured keys still saves 70 %. The compiler self-build row `hashed`
+  in benchmarks/fe-opt-loop.md was measured on the unbounded tree; the compiler uses `Eco.Hash`, so it is
+  unaffected either way.
+
