@@ -358,7 +358,7 @@ inspectingKernels =
       List.map (\n -> ( ( "JsArray", n ), Inspects [ ( "elm/core:Elm.JsArray", "JsArray" ) ] )) [ "appendN", "empty", "foldl", "foldr", "indexedMap", "initialize", "initializeFromList", "length", "map", "push", "singleton", "slice", "unsafeGet", "unsafeSet" ]
     , -- FNV: system-kernel-cpp/src/eco-system/FNV/FNVExports.cpp builds and reads Hash.Hashed (HEAP_089);
       -- its value is a type-variable value only moved.
-      List.map (\n -> ( ( "FNV", n ), Inspects [ ( "eco/system:Hash", "Hashed" ) ] )) [ "hashOf", "hashed", "value" ]
+      List.map (\n -> ( ( "FNV", n ), Inspects [ ( "eco/system:Hash", "Hashed" ) ] )) [ "hashed", "value" ]
     , -- JsArray2: system-kernel-cpp/src/eco-system/JsArray2/JsArray2Exports.cpp
       List.map (\n -> ( ( "JsArray2", n ), Inspects [ ( "eco/system:JsArray2", "JsArray2" ) ] )) [ "appendN", "empty", "foldl", "foldr", "indexedMap", "initialize", "initializeFromList", "length", "map", "push", "removeIndex", "singleton", "slice", "unsafeGet", "unsafeInsert", "unsafeSet" ]
     , -- Json: elm-kernel-cpp/src/json/JsonExports.cpp

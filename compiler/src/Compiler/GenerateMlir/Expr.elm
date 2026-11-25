@@ -4108,15 +4108,6 @@ generateSaturatedCallNoFusion ctx kind func args resultType callInfo =
                     else
                         genericKernelCall ()
 
-                ( "FNV", "hashOf", [ ( _, ( hashedVar, hashedType ) ) ] ) ->
-                    -- Hash.hashOf: the Hashed's stored hash, one inline load (eco.hash of kind
-                    -- "hashed", HEAP_089), unless `hashIntrinsic` is off.
-                    if ctx1.ecoConfig.hashIntrinsic && Types.isEcoValueType hashedType then
-                        hashOpOfKind ctx1 argOps "hashed" hashedVar
-
-                    else
-                        genericKernelCall ()
-
                 ( "FNV", "value", [ ( _, ( hashedVar, hashedType ) ) ] ) ->
                     -- Hash.value: the Hashed's value slot, one inline load (eco.hashed.value,
                     -- HEAP_089), unless `hashIntrinsic` is off. The value is boxed, as the kernel's
@@ -8132,33 +8123,6 @@ hashMixOp ctx state operand operandType kind extraAttrs =
                 |> Ops.opBuilder.build
     in
     ( op, resVar, ctxB )
-
-
-{-| `eco.hash` of kind `kind` of the `!eco.value` `operandVar`, after `argOps`.
--}
-hashOpOfKind : Ctx.Context -> List MlirOp -> String -> String -> ExprResult
-hashOpOfKind ctx argOps kind operandVar =
-    let
-        ( resultVar, ctx1 ) =
-            Ctx.freshVar ctx
-
-        ( ctx2, hashOp ) =
-            Ops.mlirOp ctx1 "eco.hash"
-                |> Ops.opBuilder.withOperands [ operandVar ]
-                |> Ops.opBuilder.withResults [ ( resultVar, I64 ) ]
-                |> Ops.opBuilder.withAttrs
-                    (Dict.fromList
-                        [ ( "_operand_types", ArrayAttr Nothing [ TypeAttr Types.ecoValue ] )
-                        , ( "kind", StringAttr kind )
-                        ]
-                    )
-                |> Ops.opBuilder.build
-    in
-    { ops = argOps ++ [ hashOp ]
-    , resultVar = resultVar
-    , resultType = I64
-    , ctx = ctx2
-    }
 
 
 {-| `eco.hash` of the whole value: inline for an Int, Float, Char or Bool and a `Hash.Hashed`, the

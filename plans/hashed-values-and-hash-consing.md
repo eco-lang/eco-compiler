@@ -189,7 +189,8 @@ hashOf =
   - `Eco_Kernel_FNV_value(HPtr hd) -> HPtr`: the `value` field.
   - `Eco_Kernel_FNV_hashOf(HPtr hd) -> int64_t`: the `hash` field.
   - JavaScript twins in `system-kernel-cpp/src/Eco/Kernel/FNV.js` (§2.5).
-  Native calls of `value` and `hashOf` at a known type are inline loads (F4, done 2026-11-25).
+  Native calls of `value` at a known type are inline loads (F4, done 2026-11-25). `hashOf` was removed
+  from the API on 2026-11-25 (§11): `Hash.hash` of a `Hashed` gives the same number, also inline.
 - **`==`:** `eqHelp` (`elm-kernel-cpp/src/core/Utils.cpp`) gets a `Tag_Hashed` arm: two `Hashed` are
   equal when their hashes are equal and their values are `==` (the same-pointer shortcut at the top
   of `eqHelp` covers identical objects). Its default arm returns `false` for an unknown tag, so the
@@ -788,8 +789,8 @@ build's. No timing assertions.
   (`KernelIntrinsics` or an MLIR op) instead of kernel calls, if H8(d) shows the calls. Built without
   the profile, at the user's request: `eco.hash` and `eco.hash.mix` take kind `hashed` and the new
   `eco.hashed.value` op loads the value slot, all through `__eco_resolve_fwd` (CGEN_095); the front
-  end's hash planner has a `HashHashed` case, and `FNV.hashOf` / `FNV.value` calls at a known type
-  emit the ops. Tests: `test/codegen/hash_hashed_inline.mlir`, the `HashedIdentityTest` /
+  end's hash planner has a `HashHashed` case, and `FNV.value` calls at a known type emit the op
+  (`FNV.hashOf` did too until it was removed). Tests: `test/codegen/hash_hashed_inline.mlir`, the `HashedIdentityTest` /
   `HashedIdentityGenericTest` pair (inline against the walker; negative control with `kHashed` = 19
   failed as it should), extra groups in `HashTypedTest` and `HashedTest`.
 
@@ -896,3 +897,10 @@ with H2's heap object, H3's kernels and H4's licenses for them.
   (12 -> 11, 56 -> 52 ms) though it has no hash or `value` in it, read as layout between the two
   binaries. So the inline `value` is worth about 45 % on a traversal of `Hashed` children, where the
   hash path (above) gave 2-3 %.
+- 2026-11-25: **`Hash.hashOf` removed from the API** (user decision): `Hash.hash h` gives the same number
+  for a `Hashed` (its stored hash, inline natively). Gone: the export and `Eco_Kernel_FNV_hashOf`,
+  `_FNV_hashOf`, its Facts / KernelSetFacts / Visibility rows (Facts table 81 -> 80), its license and
+  elm_kernel_functions.csv rows, and its F4 intrinsic; `FNV.hash`, `hashed` and `value` got re-audit
+  rows for the FNVExports.cpp edit. Tests use `Hash.hash` instead (HashedTest's `transparent` group took
+  over the long-String and `Circle` cases of the removed `hashOf` group). The API sketches above still
+  show `hashOf` as it was planned.

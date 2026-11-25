@@ -1,17 +1,16 @@
 module HashedTest exposing (main)
 
-{-| eco/system's `Hash.Hashed` (plans/hashed-values-and-hash-consing.md): `hashOf` is `Hash.hash` of the
-value, a `Hashed` hashes as its value does, `value` gives the value back (an Int, Float or Char
-unboxed from it), `==` on two `Hashed` is `==` on their values (NaN included: built through different
-routes, so that no identical-object shortcut answers), and `Debug.toString` and `Debug.log` print the
-value alone. The same on both backends.
+{-| eco/system's `Hash.Hashed` (plans/hashed-values-and-hash-consing.md): a `Hashed` hashes as its value
+does, `value` gives the value back (an Int, Float or Char unboxed from it), `==` on two `Hashed` is
+`==` on their values (NaN included: built through different routes, so that no identical-object
+shortcut answers), and `Debug.toString` and `Debug.log` print the value alone. The same on both
+backends.
 
 -}
 
--- CHECK: hashOf: [True,True,True,True,True,True]
--- CHECK: transparent: [True,True,True,True,True,True]
+-- CHECK: transparent: [True,True,True,True,True,True,True,True]
 -- CHECK: value: [True,True]
--- CHECK: unboxed: [True,True,True,True]
+-- CHECK: unboxed: [True,True,True]
 -- CHECK: equality: [True,True,True]
 -- CHECK: nan: False
 -- CHECK: toString: [True,True,True]
@@ -21,7 +20,7 @@ value alone. The same on both backends.
 -- CHECK: show4: [(1,'c')]
 -- CHECK: show5: { k = [1] }
 
-import Hash exposing (Hashed, hashOf, hashed, value)
+import Hash exposing (Hashed, hashed, value)
 import System
 import Task
 
@@ -35,11 +34,6 @@ type Shape
 main : Platform.Program System.Environment () ()
 main =
     System.simpleProgram (\_ -> Task.succeed (report ()))
-
-
-hashOfIsHash : a -> Bool
-hashOfIsHash x =
-    hashOf (hashed x) == Hash.hash x
 
 
 transparent : a -> Bool
@@ -66,16 +60,6 @@ report () =
             [ 1, 2, 3 ]
 
         _ =
-            Debug.log "hashOf"
-                [ hashOfIsHash 42
-                , hashOfIsHash "a string of more than thirty-two units, so it has a slot"
-                , hashOfIsHash ( 1, "a" )
-                , hashOfIsHash listA
-                , hashOfIsHash (Box { w = 1, h = 2 })
-                , hashOfIsHash (Circle 2.5)
-                ]
-
-        _ =
             Debug.log "transparent"
                 [ transparent 42
                 , transparent "s"
@@ -83,6 +67,8 @@ report () =
                 , transparent listA
                 , transparent (Box { w = 1, h = 2 })
                 , transparent Dot
+                , transparent "a string of more than thirty-two units, so it has a slot"
+                , transparent (Circle 2.5)
                 ]
 
         _ =
@@ -93,7 +79,6 @@ report () =
                 [ value (hashed 42) + 1 == 43
                 , value (hashed 2.5) * 2 == 5
                 , Char.toCode (value (hashed 'a')) == 97
-                , hashOf (hashed 7) == Hash.hash 7
                 ]
 
         _ =

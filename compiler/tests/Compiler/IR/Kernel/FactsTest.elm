@@ -45,11 +45,11 @@ The tests establish:
     `gcLeafEligibleFor` and `droppableFor` of its key agree with
     `gcLeafEligible` and `droppable` of its record, and all three key forms
     (with `hoistableFor`) are False for the unlisted `( "Elm", "Platform", "sendToApp" )`.
-  - Test 7: the table has 81 rows and 81 distinct keys (57, plus the 18 audited
+  - Test 7: the table has 80 rows and 80 distinct keys (57, plus the 18 audited
     `VirtualDom` rows of plans/elm-html-native-kernel.md P8, plus eco/system's two `Bitmap` rows of
     plans/seq-data-structures-performance.md A1, plus eco/system's `FNV.hash` row of
-    plans/seqdict-hash-once-per-function.md A2, plus its `FNV.hashed`, `FNV.value` and `FNV.hashOf`
-    rows of plans/hashed-values-and-hash-consing.md H3).
+    plans/seqdict-hash-once-per-function.md A2, plus its `FNV.hashed` and `FNV.value` rows of
+    plans/hashed-values-and-hash-consing.md H3).
   - Test 8: the kernel prefix is part of the key (SD-16,
     plans/kernel-table-prefix-keys.md). A row is found only under its own
     kernel's prefix, by `lookup` and by `lookupSymbol` alike: `Utils.equal` and
@@ -151,7 +151,7 @@ suite =
                     ]
                     ()
         , Test.test "7. the table has the expected size and no duplicate keys" <|
-            \_ -> Expect.equal ( 81, 81 ) ( List.length KF.rows, List.length (uniqueKeys KF.rows) )
+            \_ -> Expect.equal ( 80, 80 ) ( List.length KF.rows, List.length (uniqueKeys KF.rows) )
         , Test.test "8. the kernel prefix is part of the key (SD-16)" <|
             \_ ->
                 Expect.all
@@ -212,8 +212,8 @@ that `not` returns one of the embedded `True` and `False` constants and that
 The two `VirtualDom` URI filters return their argument or the embedded empty
 string, copying it only into C++ memory, so they do not allocate either.
 eco/system's two `Bitmap` kernels count bits of raw Ints, its `FNV.hash` walks its
-argument without allocating (plans/seqdict-hash-once-per-function.md A2), and its `FNV.value` and
-`FNV.hashOf` read a field of a `Hash.Hashed` (plans/hashed-values-and-hash-consing.md H3).
+argument without allocating (plans/seqdict-hash-once-per-function.md A2), and its `FNV.value` reads a
+field of a `Hash.Hashed` (plans/hashed-values-and-hash-consing.md H3).
 
 -}
 stampable : List ( String, String, String )
@@ -221,7 +221,6 @@ stampable =
     [ ( "Eco", "Bitmap", "index" )
     , ( "Eco", "Bitmap", "popCount32" )
     , ( "Eco", "FNV", "hash" )
-    , ( "Eco", "FNV", "hashOf" )
     , ( "Eco", "FNV", "value" )
     , ( "Elm", "Basics", "not" )
     , ( "Elm", "Basics", "round" )
@@ -259,7 +258,6 @@ wave3BorrowAdditions =
     [ ( "Eco", "Bitmap", "index" )
     , ( "Eco", "Bitmap", "popCount32" )
     , ( "Eco", "FNV", "hash" )
-    , ( "Eco", "FNV", "hashOf" )
     , ( "Eco", "FNV", "hashed" )
     , ( "Eco", "FNV", "value" )
     , ( "Elm", "Basics", "not" )

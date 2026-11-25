@@ -861,11 +861,6 @@ facts =
                 { scope = Transports
                 }
           )
-        , ( ( "Eco", "FNV", "hashOf" )
-          , TypeFaithful
-                { scope = Transports
-                }
-          )
         , ( ( "Eco", "FNV", "hashed" )
           , TypeFaithful
                 { scope = Transports

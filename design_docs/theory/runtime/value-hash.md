@@ -143,10 +143,11 @@ and measured on 2026-11-25 and rolled back: plans/hashed-values-and-hash-consing
 
 `Hash.hashed : a -> Hashed a` (the kernel `Eco_Kernel_FNV_hashed`) hashes its argument once and
 allocates a `Tag_Hashed` object, `ElmHashed` in `Heap.hpp`: the header, the u32 hash, a reserved u32
-and the value, boxed. It is never written after it is created. `Hash.value` and `Hash.hashOf` read its
-fields; in compiled code at a known type they, and `Hash.hash` of a `Hashed`, are inline loads through
-the forwarding check rather than calls (`eco.hashed.value`, and `eco.hash` of kind `hashed`, CGEN_095;
-plans/hashed-values-and-hash-consing.md F4). `==` on two `Hashed` compares the hashes first and then the values (`eqHelp`), and
+and the value, boxed. It is never written after it is created. `Hash.value` reads its value and
+`Hash.hash` its stored hash; in compiled code at a known type both are inline loads through the
+forwarding check rather than calls (`eco.hashed.value`, and `eco.hash` of kind `hashed`, CGEN_095;
+plans/hashed-values-and-hash-consing.md F4). `==` on two `Hashed` compares the hashes first and then
+the values (`eqHelp`), and
 `Debug.toString` prints the value alone, natively (`RuntimeExports.cpp`) and on JavaScript (the kernel
 override `compiler/kernel-overrides/HashedDebug.js`). On JavaScript a `Hashed` is the object
 `{ $: 'Hashed_elm_builtin', a: hash, b: value }`, and FNV.js gives it the same treatment as row 2.

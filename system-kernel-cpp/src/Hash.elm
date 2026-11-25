@@ -1,6 +1,6 @@
 module Hash exposing
     ( hash
-    , Hashed, hashed, value, hashOf
+    , Hashed, hashed, value
     )
 
 {-| Hash any value, and pair a value with its hash.
@@ -15,7 +15,7 @@ it, costs no walk of the value. Keep the parts of a recursive structure as `Hash
 hashes in time proportional to its own number of fields: the basis of hash-consing (sharing one
 copy of each distinct structure, with `HashedSet.intern`).
 
-@docs Hashed, hashed, value, hashOf
+@docs Hashed, hashed, value
 
 -}
 
@@ -68,10 +68,3 @@ hashed =
 value : Hashed a -> a
 value =
     Eco.Kernel.FNV.value
-
-
-{-| The stored hash: `hash (value h)`.
--}
-hashOf : Hashed a -> Int
-hashOf =
-    Eco.Kernel.FNV.hashOf

@@ -21,7 +21,6 @@
 
 extern "C" Elm::HPtr Eco_Kernel_FNV_hashed(Elm::HPtr value);
 extern "C" Elm::HPtr Eco_Kernel_FNV_value(Elm::HPtr hashedValue);
-extern "C" int64_t Eco_Kernel_FNV_hashOf(Elm::HPtr hashedValue);
 
 using namespace Elm;
 
@@ -30,7 +29,7 @@ namespace {
 HPtr hp(HPointer p) { return HPtr::fromHPointer(p); }
 HPointer ptr(HPtr h) { return h.toHPointer(); }
 
-int64_t hashOf(HPointer p) { return eco_hash_value(hp(p)); }
+int64_t valueHash(HPointer p) { return eco_hash_value(hp(p)); }
 
 bool equal(HPointer a, HPointer b) { return boolValueBits(Elm_Kernel_Utils_equal(hp(a), hp(b)).toBits()) != 0; }
 
@@ -70,12 +69,12 @@ void test_hashed_survives_collections() {
     RootSet& roots = a.getRootSet();
     HPointer list = intList(1, 1000);
     roots.addRoot(&list);
-    const int64_t expected = hashOf(list);
+    const int64_t expected = valueHash(list);
     HPointer h = ptr(Eco_Kernel_FNV_hashed(hp(list)));
     roots.removeRoot(&list); // only the Hashed keeps the list alive now
     roots.addRoot(&h);
     TEST_ASSERT(getHeader(a.resolve(h))->tag == Tag_Hashed);
-    TEST_ASSERT(Eco_Kernel_FNV_hashOf(hp(h)) == expected);
+    TEST_ASSERT(static_cast<ElmHashed*>(a.resolve(h))->hash == static_cast<u32>(expected));
     for (int round = 0; round < 3; ++round) {
         for (int i = 0; i < 4; ++i) {
             intList(1, 200); // garbage, so the minors have work
@@ -88,7 +87,7 @@ void test_hashed_survives_collections() {
         TEST_ASSERT(obj->reserved == 0);
         HPointer v = ptr(Eco_Kernel_FNV_value(hp(h)));
         TEST_ASSERT(sumList(v) == 1000 * 1001 / 2);
-        TEST_ASSERT(hashOf(v) == expected);
+        TEST_ASSERT(valueHash(v) == expected);
     }
     roots.removeRoot(&h);
 }
@@ -112,10 +111,10 @@ void test_hashed_equality() {
     TEST_ASSERT(!equal(h1, h3)); // different values
     // The hash is compared first: equal values under different (impossible) hashes are unequal, and the
     // same hash over different values is decided by the values.
-    HPointer fakeDiffHash = handHashed(static_cast<u32>(hashOf(l1)) ^ 1u, l1);
+    HPointer fakeDiffHash = handHashed(static_cast<u32>(valueHash(l1)) ^ 1u, l1);
     roots.addRoot(&fakeDiffHash);
     TEST_ASSERT(!equal(h1, fakeDiffHash));
-    HPointer fakeSameHash = handHashed(static_cast<u32>(hashOf(l1)), l3);
+    HPointer fakeSameHash = handHashed(static_cast<u32>(valueHash(l1)), l3);
     roots.addRoot(&fakeSameHash);
     TEST_ASSERT(!equal(h1, fakeSameHash));
     for (HPointer* r : {&fakeSameHash, &fakeDiffHash, &h3, &h2, &h1, &l3, &l2, &l1}) roots.removeRoot(r);
@@ -133,10 +132,10 @@ void test_hashed_stands_for_its_value() {
     HPointer h = ptr(Eco_Kernel_FNV_hashed(hp(list)));
     roots.addRoot(&h);
     // On its own a Hashed is its stored hash, which is the value's hash.
-    TEST_ASSERT(hashOf(h) == hashOf(list));
+    TEST_ASSERT(valueHash(h) == valueHash(list));
     // Nested, it contributes its stored hash: a hand-made Hashed with the same hash over another value
     // hashes alike (the value is not walked), and the pair differs from the pair holding the plain value.
-    HPointer fake = handHashed(static_cast<u32>(hashOf(list)), other);
+    HPointer fake = handHashed(static_cast<u32>(valueHash(list)), other);
     roots.addRoot(&fake);
     HPointer t1 = alloc::tuple2(alloc::boxed(h), alloc::unboxedInt(1), 0x4);
     roots.addRoot(&t1);
@@ -144,14 +143,14 @@ void test_hashed_stands_for_its_value() {
     roots.addRoot(&t2);
     HPointer t3 = alloc::tuple2(alloc::boxed(list), alloc::unboxedInt(1), 0x4);
     roots.addRoot(&t3);
-    TEST_ASSERT(hashOf(t1) == hashOf(t2));
-    TEST_ASSERT(hashOf(t1) != hashOf(t3));
+    TEST_ASSERT(valueHash(t1) == valueHash(t2));
+    TEST_ASSERT(valueHash(t1) != valueHash(t3));
     // And its stored hash counts: a pair holding the Hashed of another value hashes differently.
     HPointer hOther = ptr(Eco_Kernel_FNV_hashed(hp(other)));
     roots.addRoot(&hOther);
     HPointer t4 = alloc::tuple2(alloc::boxed(hOther), alloc::unboxedInt(1), 0x4);
     roots.addRoot(&t4);
-    TEST_ASSERT(hashOf(t1) != hashOf(t4));
+    TEST_ASSERT(valueHash(t1) != valueHash(t4));
     for (HPointer* r : {&t4, &hOther, &t3, &t2, &t1, &fake, &h, &other, &list}) roots.removeRoot(r);
 }
 
@@ -172,9 +171,9 @@ void test_deep_values_hash() {
     roots.addRoot(&c1);
     HPointer c2 = chain(1000000);
     roots.addRoot(&c2);
-    const int64_t h1 = hashOf(c1);
-    TEST_ASSERT(h1 == hashOf(c1));
-    TEST_ASSERT(h1 == hashOf(c2));
+    const int64_t h1 = valueHash(c1);
+    TEST_ASSERT(h1 == valueHash(c1));
+    TEST_ASSERT(h1 == valueHash(c2));
     roots.removeRoot(&c2);
     roots.removeRoot(&c1);
 }
@@ -192,10 +191,10 @@ void test_bytes_by_content() {
     roots.addRoot(&slice);
     TEST_ASSERT(getHeader(a.resolve(slice))->tag == Tag_ByteBufferSlice);
     TEST_ASSERT(equal(whole, slice));
-    TEST_ASSERT(hashOf(whole) == hashOf(slice));
+    TEST_ASSERT(valueHash(whole) == valueHash(slice));
     HPointer other = alloc::makeByteBufferSlice(larger, 9, 64);
     roots.addRoot(&other);
-    TEST_ASSERT(hashOf(whole) != hashOf(other));
+    TEST_ASSERT(valueHash(whole) != valueHash(other));
     for (HPointer* r : {&other, &slice, &larger, &whole}) roots.removeRoot(r);
 }
 

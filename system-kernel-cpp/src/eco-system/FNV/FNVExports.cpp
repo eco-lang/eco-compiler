@@ -6,9 +6,10 @@
 // compiled code's `eco.hash` op can share it; this export serves the calls the compiler does not turn
 // into that op, such as `FNV.hash` used as a function value.
 //
-// `hashed`, `value` and `hashOf` are eco/system's `Hash.Hashed` (HEAP_089): a `Tag_Hashed` object
+// `hashed` and `value` are eco/system's `Hash.Hashed` (HEAP_089): a `Tag_Hashed` object
 // (`ElmHashed`) holding a value and its hash. The value hash reads a `Hashed`'s stored hash instead of
-// walking its value, so a structure built from `Hashed` parts hashes in O(1) per part.
+// walking its value, so a structure built from `Hashed` parts hashes in O(1) per part, and `Hash.hash`
+// of a `Hashed` is its stored hash.
 //
 //===----------------------------------------------------------------------===//
 
@@ -45,10 +46,4 @@ extern "C" Elm::HPtr Eco_Kernel_FNV_hashed(Elm::HPtr value) {
 extern "C" Elm::HPtr Eco_Kernel_FNV_value(Elm::HPtr hashedValue) {
     auto* hd = static_cast<ElmHashed*>(Allocator::instance().resolve(hashedValue.toHPointer()));
     return Elm::HPtr::fromBits(hpBits(hd->value));
-}
-
-// Returns the stored hash of the `Hashed` `hashedValue`: `Hash.hash` of its value.
-extern "C" int64_t Eco_Kernel_FNV_hashOf(Elm::HPtr hashedValue) {
-    auto* hd = static_cast<ElmHashed*>(Allocator::instance().resolve(hashedValue.toHPointer()));
-    return static_cast<int64_t>(hd->hash);
 }

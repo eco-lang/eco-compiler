@@ -37,10 +37,6 @@ function _FNV_value(hashed) {
     return hashed.b;
 }
 
-function _FNV_hashOf(hashed) {
-    return hashed.a;
-}
-
 function _FNV_isHashed(value) {
     return typeof value === 'object' && value !== null && value.$ === 'Hashed_elm_builtin';
 }

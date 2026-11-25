@@ -566,15 +566,6 @@ rows =
             , evidence = "system-kernel-cpp/src/eco-system/FNV/FNVExports.cpp:44-48"
         }
       )
-    , ( ( "Eco", "FNV", "hashOf" )
-        -- Hash.hashOf: the Hashed's hash field, an Int. Called at a known type
-        -- it is eco.hash of kind "hashed" instead (GenerateMlir.Expr, F4).
-      , { auditedPure
-            | params = [ PBorrowed ]
-            , gcAlloc = GcNone
-            , evidence = "system-kernel-cpp/src/eco-system/FNV/FNVExports.cpp:50-54"
-        }
-      )
     , ( ( "Elm", "Utils", "notEqual" )
         -- The export is the negation of `equal`'s, so the audited fields of
         -- this row must match the `equal` row's.

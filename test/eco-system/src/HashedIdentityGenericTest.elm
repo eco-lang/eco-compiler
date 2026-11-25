@@ -11,7 +11,7 @@ CHECK lines must stay identical to HashedIdentityTest.elm's.
 -- CHECK: fields: [611092403,2044774761,3596694188,1482168284,4122524957,4164087311]
 -- CHECK: value: 43
 -- ENV: ECO_HASH_INLINE=0
-import Hash exposing (hashOf, hashed, value)
+import Hash exposing (hashed, value)
 import System
 import Task
 
@@ -28,7 +28,7 @@ report () =
             Debug.log "alone"
                 [ Hash.hash (hashed 42)
                 , Hash.hash (hashed "abc")
-                , hashOf (hashed [ 1, 2, 3 ])
+                , Hash.hash (hashed [ 1, 2, 3 ])
                 , Hash.hash (hashed ( 1, "a" ))
                 ]
 
