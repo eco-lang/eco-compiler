@@ -360,8 +360,8 @@ gates run once, at the end (H10), and only on the USER's go-ahead.
 
 ### H0. Preconditions (USER)
 
-1. Part B (`hash-cache`) committed; its owed gates run (the full gate and the full ECO_HEAP_VALIDATE
-   gate: plans/hash-reuse-explicit-vs-cached.md header).
+1. Part B (`hash-cache`) committed; its owed full gate run (`full` and `bootstrap`). The
+   ECO_HEAP_VALIDATE gate is not a precondition: the user deferred it to a much later date (2026-11-25).
 2. A branch for this plan, from `hash-cache`.
 3. H8's baseline is the Part B final binary `local-dev/hashreuse/bench-final` (and
    `post-v4-final-bench.json`); comparisons with it are interleaved, never across sessions.
@@ -740,8 +740,9 @@ build's. No timing assertions.
 
 - `cmake --build build --target full` and `--target bootstrap`.
 - `cmake --build build --target elm-tests`.
-- The ECO_HEAP_VALIDATE gate once (build-validate unit tests, E2E, stress), with `ulimit -c 0`: it
-  exercises H2's validator cases.
+- The ECO_HEAP_VALIDATE gate (build-validate unit tests, E2E, stress, `ulimit -c 0`) is deferred by
+  the user to a much later date (2026-11-25), not part of this plan's gates. H2's validator cases are
+  exercised when it runs; until then the HashedObject unit test (H2.8) is the GC net.
 - `test/scripts/check-kernel-license-manifest.sh`, the TLA+ canary.
 
 ## 5. Risks and traps

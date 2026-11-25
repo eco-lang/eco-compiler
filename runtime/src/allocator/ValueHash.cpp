@@ -488,7 +488,7 @@ const char* Elm::checkStringHashSlot(void* obj) {
         return "the high half of a flat String's hash slot word is not 0 (an allocation left it unwritten)";
     const u32 v = __atomic_load_n(slot, __ATOMIC_RELAXED);
     if (v == 0) return nullptr;
-    if (tag == Tag_LargeStringHeader && static_cast<LargeStringHeader*>(obj)->body.ptr == 0)
+    if (tag == Tag_LargeStringHeader && largeBodyAddr(static_cast<LargeStringHeader*>(obj)) == nullptr)
         return "a large String header without a body has a filled hash slot";
     if (v != rawFromUnits(obj))
         return "a String's hash slot holds a number that is not the raw CRC32C of its units";
