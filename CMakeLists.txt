@@ -1632,7 +1632,8 @@ set(_full_js_e2e)
 set(_full_casemap_check)
 if(NOT WIN32)
     set(_full_js_e2e COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR} --target run-js-e2e
-        COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR} --target run-js-kernel-override-tests)
+        COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR} --target run-js-kernel-override-tests
+        COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR} --target run-compiler-io-tests)
     # The case tables must be what the vendored UCD generates, and node's Unicode version must be
     # theirs (plans/char-simple-case-mapping.md).
     set(_full_casemap_check COMMAND sh ${CMAKE_SOURCE_DIR}/test/scripts/check-casemap-tables.sh

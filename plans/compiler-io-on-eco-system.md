@@ -1,6 +1,6 @@
 ---
 status: done
-updated: 2026-11-25
+updated: 2026-11-26
 ---
 
 # Plan: the compiler's IO on eco/system, and the IO functions removed from eco/kernel
@@ -894,6 +894,29 @@ is what the code does; the sections above are kept as the reviewed plan.
   fired for the removed `Eco.Runtime` scanner registration, audited in M1's AUDIT.md (no model
   change) and re-pinned.
 
+### 10.2a Corrections after review (2026-11-26)
+
+Three of the old kernels' behaviours that §6 restored were wrong, and are corrected, each with a
+test that failed first (test/scripts/compiler-io.test.js, which builds test/compiler-io/IoProbe.elm
+from compiler/src with Stage 1 to run the `Utils.Main` wrappers on a real file system):
+
+- **`readLine` at the end of input** (R8, §6.2) gave `""`, which `Reporting.ask` reads as yes, so
+  `eco install` with stdin closed changed elm.json unasked. `IO.readLine` is now
+  `Task IOError (Maybe String)`, `Nothing` at the end of input, and `ask` answers no, saying so.
+- **`canonicalize`** (§6.3) fell back to text on any failure, and could not resolve links before a
+  `..`: eco/system's `Path` cancels `..` against the entry before it as text, so `realPath` never
+  saw one. `dirCanonicalizePath` now resolves the path an entry at a time from its root, with
+  `realPath` on each prefix and `..` taking the parent of the resolved prefix. A missing entry (or
+  one under a file) is appended as written, as GHC's `canonicalizePath` does; any other failure,
+  as a loop of links, crashes.
+- **`removeDir`** (R7) treated a missing path as success without saying so. Its one caller,
+  `refreshLocalPackageIfStale`, clears a cache copy that may not exist yet, so the wrapper is now
+  `dirRemoveDirectoryRecursiveIfExists`, which names the tolerance; any other failure crashes. A
+  strict variant had no caller and was dropped.
+
+Other file operations given a path holding `..` are still resolved as text by `Path`; the compiler
+canonicalizes its roots and source directories first, so this rarely matters (follow-up below).
+
 ### 10.3 Follow-ups
 
 - libzip (and the eco/kernel-side libcurl/OpenSSL detection) is unused by any kernel; drop its
@@ -902,3 +925,6 @@ is what the code does; the sections above are kept as the reviewed plan.
 - Real cross-process locking of the package cache, if wanted, is D3(b): `FileSystem.Handle.lock`.
 - `Codec.Sha1` is checked natively only by a one-off run and by real installs; a native E2E test
   would need the E2E harnesses to mirror nested source directories.
+- eco/system's `Path` cancels `..` as text, which is wrong across symbolic links for every
+  operation, not only `canonicalize` (§10.2a). Keeping `..` as an entry, as Haskell's `filepath`
+  and Rust's `Path` do, is an eco/system API change.

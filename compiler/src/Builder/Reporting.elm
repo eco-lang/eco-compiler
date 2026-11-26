@@ -291,7 +291,8 @@ ignorer =
 from standard input.
 
 An empty line, `y` or `Y` answers yes and `n` answers no. Anything else,
-including `N`, prints a reminder and asks again.
+including `N`, prints a reminder and asks again. The end of input answers no,
+so a run with nothing to read from changes nothing.
 
 -}
 ask : D.Doc -> Task Never Bool
@@ -301,13 +302,22 @@ ask doc =
 
 
 {-| Reads one line of input and returns the yes/no answer it gives, asking
-again until the line is a valid answer.
+again until the line is a valid answer. The end of input answers no.
 -}
 askHelp : Task Never Bool
 askHelp =
     IO.flush
         |> Task.andThen (\_ -> IO.readLine |> IO.crashOnError)
-        |> Task.andThen parseYesNoResponse
+        |> Task.andThen
+            (\line ->
+                case line of
+                    Just input ->
+                        parseYesNoResponse input
+
+                    Nothing ->
+                        IO.printLn "\nThere is no input left to answer with, so I take that as a no."
+                            |> Task.map (\_ -> False)
+            )
 
 
 {-| Returns the answer `input` gives: yes for an empty line, `y` or `Y`, no for

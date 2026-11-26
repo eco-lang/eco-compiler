@@ -277,18 +277,19 @@ printLn s =
     print (s ++ "\n")
 
 
-{-| Reads the next line of standard input, without its line ending. At the end
-of input it gives `""`: there is no separate value for the end of input.
+{-| Reads the next line of standard input, without its line ending, or `Nothing`
+at the end of input, so an empty line and the end of input differ.
 -}
-readLine : Task IOError String
+readLine : Task IOError (Maybe String)
 readLine =
     environment
         |> Task.andThen (\env -> Stream.readLine env.stdin)
+        |> Task.map Just
         |> Task.onError
             (\err ->
                 case err of
                     Stream.Closed ->
-                        Task.succeed ""
+                        Task.succeed Nothing
 
                     _ ->
                         Task.fail (IOErr.fromStream err)

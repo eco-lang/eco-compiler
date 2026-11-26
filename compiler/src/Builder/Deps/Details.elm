@@ -1296,7 +1296,7 @@ refreshLocalPackageIfStale ctx source fingerprint =
 
         refresh : Task Never ()
         refresh =
-            Utils.dirRemoveDirectoryRecursive cacheDir
+            Utils.dirRemoveDirectoryRecursiveIfExists cacheDir
                 |> Task.andThen (\_ -> File.copyPackageSource source cacheDir)
                 |> Task.andThen (\_ -> File.writeUtf8 (localFingerprintPath cacheDir) fingerprint)
     in

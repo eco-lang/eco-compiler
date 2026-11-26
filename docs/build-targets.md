@@ -19,6 +19,7 @@ This reference was verified against the project's `CMakeLists.txt` files.
 | `mlir-timing-report` | Emit an MLIR compile-timing report |
 | `elm-tests` | Run the Elm-side compiler tests (front, middle and MLIR-generation stages) via `elm-test-rs` |
 | `run-js-e2e` | Run the eco-system E2E suite on the JS target (Stage 1 `guida.js` + node; not on Windows) |
+| `run-compiler-io-tests` | Run the compiler's IO wrapper tests (`test/scripts/compiler-io.test.js`, Stage 1 + node; not on Windows; `full` runs it) |
 | `eco-system-elm-tests` | Run the pure-Elm `eco/system` tests (`system-kernel-cpp/tests`) via `elm-test-rs` |
 | `eco-system-docs` | Build `system-kernel-cpp/docs.json` with stock elm (in ALL) |
 | `eco-system-examples` | Compile (not run) the example programs and benchmarks against `eco/system` |

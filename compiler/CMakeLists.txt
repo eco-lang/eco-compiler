@@ -313,6 +313,19 @@ if(NOT WIN32)
         COMMENT "Running the JS kernel override tests (node)"
         USES_TERMINAL
     )
+    # The compiler's IO wrappers over eco/system on a real file system (plans/compiler-io-on-eco-system.md
+    # §10.2a): canonicalize through links, directory removal, and `eco install` answering no at the end
+    # of input. test/scripts/compiler-io.test.js builds test/compiler-io/IoProbe.elm from compiler/src
+    # with Stage 1, and its local-package test adds and removes its own entry in the eco home's package
+    # cache. `full` runs it after run-js-kernel-override-tests.
+    add_custom_target(run-compiler-io-tests
+        COMMAND ${CMAKE_COMMAND} -E env GUIDA_JS_PATH=${BUILD_XHR_DIR}/bin/guida.js
+            ECO_BUILD_DIR=${CMAKE_BINARY_DIR}
+            ${NODE_EXECUTABLE} --test ${CMAKE_SOURCE_DIR}/test/scripts/compiler-io.test.js
+        DEPENDS guida
+        COMMENT "Running the compiler IO tests (node)"
+        USES_TERMINAL
+    )
 endif()
 
 add_custom_target(elm-tests

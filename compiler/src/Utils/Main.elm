@@ -4,7 +4,7 @@ module Utils.Main exposing
     , fpPathSeparator, fpIsRelative, fpTakeFileName, fpTakeExtension, fpTakeDirectory
     , dirDoesFileExist, dirDoesDirectoryExist, dirCreateDirectoryIfMissing
     , dirGetCurrentDirectory, dirGetAppUserDataDirectory, dirGetModificationTime, dirListDirectory
-    , dirRemoveFile, dirRemoveDirectoryRecursive, dirGetFileSize, dirCanonicalizePath, dirTouch
+    , dirRemoveFile, dirRemoveDirectoryRecursiveIfExists, dirGetFileSize, dirCanonicalizePath, dirTouch
     , appDataDirFor
     , envLookupEnv, envGetProgName, envGetArgs
     , lockWithFileLock
@@ -79,7 +79,7 @@ here are defined in `System.IO`.
 
 @docs dirDoesFileExist, dirDoesDirectoryExist, dirCreateDirectoryIfMissing
 @docs dirGetCurrentDirectory, dirGetAppUserDataDirectory, dirGetModificationTime, dirListDirectory
-@docs dirRemoveFile, dirRemoveDirectoryRecursive, dirGetFileSize, dirCanonicalizePath, dirTouch
+@docs dirRemoveFile, dirRemoveDirectoryRecursiveIfExists, dirGetFileSize, dirCanonicalizePath, dirTouch
 @docs appDataDirFor
 
 
@@ -1150,11 +1150,12 @@ dirRemoveFile path =
         |> IO.crashOnError
 
 
-{-| Removes the directory at `path` together with everything in it. Nothing at
-`path` is not a failure; any other failure crashes the program.
+{-| Removes the directory at `path` together with everything in it, if there is
+anything at `path`. Nothing there is not a failure; any other failure crashes
+the program.
 -}
-dirRemoveDirectoryRecursive : FilePath -> Task Never ()
-dirRemoveDirectoryRecursive path =
+dirRemoveDirectoryRecursiveIfExists : FilePath -> Task Never ()
+dirRemoveDirectoryRecursiveIfExists path =
     onPath path (FileSystem.remove { recursive = True })
         |> Task.map (\_ -> ())
         |> Task.onError
@@ -1187,46 +1188,161 @@ dirDoesDirectoryExist path =
         |> Task.map (\t -> t == Just FileSystem.Directory)
 
 
-{-| Returns `path` made absolute, with its symbolic links resolved. A path that
-cannot be resolved, as one that does not exist, is only made absolute, against
-the current directory, and normalized. Crashes the program for an empty path,
-and when the current directory is needed and cannot be read.
+{-| Returns `path` made absolute, with its symbolic links resolved, as GHC's
+`canonicalizePath` does. A path whose end does not exist is resolved as far as
+it exists, and the rest is appended as written, without `.` entries. Crashes
+the program for an empty path, when the current directory is needed and cannot
+be read, and when resolving fails for any other reason, as a loop of links.
+
+The path is resolved one entry at a time, from its root: eco/system's `Path`
+cancels `..` against the entry before it as text, so a path holding `..` never
+reaches it. A `..` takes the parent of what is resolved so far, which has no
+links left in it, so `link/../x` names the `x` beside the link's target.
+
 -}
 dirCanonicalizePath : FilePath -> Task Never FilePath
 dirCanonicalizePath path =
-    IO.environment
-        |> Task.andThen
-            (\env ->
-                onPath path FileSystem.realPath
-                    |> Task.map (OsPath.fromPath env.platform)
-                    |> Task.onError
-                        (\_ ->
-                            if String.isEmpty path then
-                                Task.fail (IOErr.FileNotFound path)
+    (if String.isEmpty path then
+        Task.fail (IOErr.FileNotFound path)
 
-                            else
-                                currentDirectory
-                                    |> Task.map (\cwd -> canonicalizeMissing env.platform cwd path)
-                        )
-            )
+     else
+        IO.environment
+            |> Task.andThen
+                (\env ->
+                    (if fpIsRelative path then
+                        currentDirectory |> Task.map (\cwd -> joinEntry cwd path)
+
+                     else
+                        Task.succeed path
+                    )
+                        |> Task.andThen
+                            (\absolute ->
+                                let
+                                    ( root, entries ) =
+                                        splitRoot env.platform absolute
+                                in
+                                canonicalizeEntries env.platform root entries
+                            )
+                )
+    )
         |> IO.crashOnError
 
 
-{-| The absolute, normalized form of `path`, which could not be resolved, against
-the current directory `cwd`.
+{-| Resolves `entries` one by one below `resolved`, a path with no links or `..`
+left in it, as `dirCanonicalizePath` describes. An entry that does not exist,
+or that is under a file, is appended as written.
 -}
-canonicalizeMissing : System.Platform -> String -> FilePath -> FilePath
-canonicalizeMissing platform cwd path =
+canonicalizeEntries : System.Platform -> FilePath -> List String -> Task IOError FilePath
+canonicalizeEntries platform resolved entries =
+    case entries of
+        [] ->
+            Task.succeed resolved
+
+        ".." :: rest ->
+            canonicalizeEntries platform (parentOfResolved resolved) rest
+
+        name :: rest ->
+            let
+                candidate : FilePath
+                candidate =
+                    joinEntry resolved name
+            in
+            onPath candidate FileSystem.realPath
+                |> Task.map (OsPath.fromPath platform)
+                |> Task.onError
+                    (\err ->
+                        case err of
+                            IOErr.FileNotFound _ ->
+                                Task.succeed candidate
+
+                            IOErr.NotADirectory _ ->
+                                Task.succeed candidate
+
+                            _ ->
+                                Task.fail err
+                    )
+                |> Task.andThen (\next -> canonicalizeEntries platform next rest)
+
+
+{-| Splits the absolute path `absolute` into its root (`/`, a drive's `C:/`, or a
+share's `//server/share`) and its entries, leaving out empty and `.` entries.
+On Windows `\` separates entries as well as `/`.
+-}
+splitRoot : System.Platform -> FilePath -> ( FilePath, List String )
+splitRoot platform absolute =
     let
-        absolute : FilePath
-        absolute =
-            if fpIsRelative path then
-                fpCombine cwd path
+        text : String
+        text =
+            case platform of
+                System.Win32 ->
+                    String.replace "\\" "/" absolute
+
+                _ ->
+                    absolute
+
+        entriesOf : String -> List String
+        entriesOf rest =
+            List.filter (\entry -> entry /= "" && entry /= ".") (String.split "/" rest)
+    in
+    case String.toList (String.left 3 text) of
+        letter :: ':' :: '/' :: _ ->
+            ( String.fromChar letter ++ ":/", entriesOf (String.dropLeft 3 text) )
+
+        _ ->
+            if String.startsWith "//" text then
+                case entriesOf (String.dropLeft 2 text) of
+                    server :: share :: rest ->
+                        ( "//" ++ server ++ "/" ++ share, rest )
+
+                    rest ->
+                        ( "/", rest )
 
             else
-                path
-    in
-    OsPath.fromPath platform (OsPath.toPath absolute)
+                ( "/", entriesOf text )
+
+
+{-| The parent of `resolved`, a path from `canonicalizeEntries`; a root is its
+own parent.
+-}
+parentOfResolved : FilePath -> FilePath
+parentOfResolved resolved =
+    case List.reverse (String.indexes "/" resolved) of
+        [] ->
+            resolved
+
+        last :: _ ->
+            let
+                before : String
+                before =
+                    String.left last resolved
+            in
+            if last == String.length resolved - 1 then
+                -- Only a root (`/`, `C:/`) ends with a separator.
+                resolved
+
+            else if String.startsWith "//" resolved && List.length (String.indexes "/" resolved) <= 3 then
+                -- A share's root, `//server/share`.
+                resolved
+
+            else if String.isEmpty before then
+                "/"
+
+            else if String.length before == 2 && String.endsWith ":" before then
+                before ++ "/"
+
+            else
+                before
+
+
+{-| `dir` and `entry` joined by one separator.
+-}
+joinEntry : FilePath -> String -> FilePath
+joinEntry dir entry =
+    if String.endsWith "/" dir then
+        dir ++ entry
+
+    else
+        dir ++ "/" ++ entry
 
 
 {-| Returns the names of the entries in the directory at `path`, sorted, and
