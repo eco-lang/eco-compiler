@@ -887,7 +887,10 @@ unsigned choosePartitionCountForCount(unsigned numDefinedFns, unsigned request,
     unsigned cores = std::max(1u, std::thread::hardware_concurrency());
     // Auto uses every core, with no fixed cap.
     unsigned want = (request == 0) ? cores : request;
-    // ~1 partition per 2000 functions, at least 2 once we've decided to split.
+    // An explicit count is taken as given. Auto makes ~1 partition per 2000
+    // functions, at least 2 once we've decided to split.
+    if (request != 0)
+        return want;
     unsigned bySize = std::max(2u, numDefinedFns / 2000u);
     return std::min(want, bySize);
 }

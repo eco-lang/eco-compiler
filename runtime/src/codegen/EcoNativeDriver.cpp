@@ -174,6 +174,36 @@ bool pathEndsWith(const std::string &path, const char *suffix) {
            path.compare(path.size() - n, n, suffix) == 0;
 }
 
+// Joins `objectFiles` into the one object `outputPath` with a relocatable
+// link: `$ECO_LD -r` if that variable is set, otherwise the ld.lld in the
+// installation's lib/eco-runtime if there is one, otherwise the host linker
+// found at configure time. Returns 0 on success and 1 on failure.
+int relocatableLink(const std::vector<std::string> &objectFiles,
+                    const std::string &outputPath) {
+    std::string linker;
+    if (const char *e = ::getenv("ECO_LD"); e && *e) {
+        linker = e;
+    } else {
+        std::string dir = eco::config::runtimeDir();
+        if (!dir.empty() && llvm::sys::fs::exists(dir + "/ld.lld"))
+            linker = dir + "/ld.lld";
+        else
+            linker = eco::config::systemLinker;
+    }
+    llvm::SmallVector<llvm::StringRef> args = {linker, "-r", "-o", outputPath};
+    for (const std::string &f : objectFiles)
+        args.push_back(f);
+    std::string errMsg;
+    int rc = llvm::sys::ExecuteAndWait(linker, args, std::nullopt, {}, 0, 0,
+                                       &errMsg);
+    if (rc != 0) {
+        llvm::errs() << "Error: relocatable link with " << linker
+                     << " failed (rc=" << rc << "): " << errMsg << "\n";
+        return 1;
+    }
+    return 0;
+}
+
 // Lowers the parsed `module` and links it at `outputPath`, as
 // `compileMlirFileToExecutable` describes, and returns 0 or 1. Takes
 // ownership of `module` and frees it before returning; its MLIRContext must
@@ -204,7 +234,9 @@ int pipelineFromMlirModule(OwningOpRef<ModuleOp> module,
     }
 
     // EcoSplit: partition in MLIR and translate and lower every
-    // partition in parallel. Only executables are split-eligible.
+    // partition in parallel. Executables are split-eligible, and so are
+    // objects outside Windows: their partitions are joined into the one
+    // object asked for by a relocatable link (`ld -r`), as eco-boot does.
     {
         const bool objOnly = pathEndsWith(outputPath, ".o");
         const bool shared = pathEndsWith(outputPath, ".so") ||
@@ -219,7 +251,11 @@ int pipelineFromMlirModule(OwningOpRef<ModuleOp> module,
         job.preRS4GCDumpPath = opts.preRS4GCDumpPath;
         job.postRS4GCDumpPath = opts.postRS4GCDumpPath;
         job.splitCodegen = opts.splitCodegen;
+#if defined(_WIN32)
         job.splitEligible = !objOnly && !shared;
+#else
+        job.splitEligible = !shared;
+#endif
         job.capClosedWorld = !objOnly && !shared;
         job.parallelOpt = opts.parallelOpt == 1   ? eco::ParallelOpt::Dev
                           : opts.parallelOpt == 2 ? eco::ParallelOpt::Cgu
@@ -256,7 +292,15 @@ int pipelineFromMlirModule(OwningOpRef<ModuleOp> module,
             }
             module = nullptr;
             int rc;
-            {
+            if (objOnly) {
+                std::unique_ptr<eco::LoweringStats::Scope> scope;
+                if (opts.stats)
+                    scope = std::make_unique<eco::LoweringStats::Scope>(
+                        *opts.stats, "Relocatable link (ld -r)");
+                rc = relocatableLink(backendResult.objectFiles, outputPath);
+                for (const std::string &f : backendResult.objectFiles)
+                    llvm::sys::fs::remove(f);
+            } else {
                 std::unique_ptr<eco::LoweringStats::Scope> scope;
                 if (opts.stats)
                     scope = std::make_unique<eco::LoweringStats::Scope>(
@@ -1417,10 +1461,35 @@ int linkExecutable(const std::vector<std::string> &objectFiles,
 // C ABI implementation: default EcoNativeOptions, plus `rootModule` if given.
 //===----------------------------------------------------------------------===//
 
+// The options `eco make` lowers with: the defaults, changed by environment
+// variables, since `eco make` has no flags for them.
+//
+//   ECO_OPT_LEVEL=0..3     the LLVM optimization level (default 2)
+//   ECO_SPLIT_CODEGEN=N    the partition count: 0 automatic (default), 1 none
+//   ECO_PARALLEL_OPT=dev   the Dev parallel-optimization tier (no cross-
+//                          function inlining), `none`, or `cgu` (default)
+//   ECO_DEV_OPT_O1=1       under the Dev tier, optimize each partition at O1
+static eco::EcoNativeOptions envNativeOptions() {
+    eco::EcoNativeOptions opts;
+    auto num = [](const char *name, unsigned &out) {
+        if (const char *e = ::getenv(name); e && *e)
+            out = (unsigned)strtoul(e, nullptr, 10);
+    };
+    num("ECO_OPT_LEVEL", opts.optLevel);
+    num("ECO_SPLIT_CODEGEN", opts.splitCodegen);
+    if (const char *e = ::getenv("ECO_PARALLEL_OPT"); e && *e) {
+        std::string_view v(e);
+        opts.parallelOpt = v == "dev" ? 1 : v == "cgu" ? 2 : 0;
+    }
+    if (const char *e = ::getenv("ECO_DEV_OPT_O1"); e && *e && *e != '0')
+        opts.devOptO1 = true;
+    return opts;
+}
+
 extern "C" int eco_native_lower_and_link(const char *mlirPath,
                                           const char *outputPath,
                                           const char *rootModule) {
-    eco::EcoNativeOptions opts;
+    eco::EcoNativeOptions opts = envNativeOptions();
     if (rootModule != nullptr)
         opts.rootModule = rootModule;
     return eco::compileMlirFileToExecutable(mlirPath, outputPath, opts);
@@ -1429,7 +1498,7 @@ extern "C" int eco_native_lower_and_link(const char *mlirPath,
 extern "C" int eco_native_lower_and_link_bytes(const char *mlirBytes,
                                                 size_t mlirLen,
                                                 const char *outputPath) {
-    eco::EcoNativeOptions opts;
+    eco::EcoNativeOptions opts = envNativeOptions();
     return eco::compileMlirBytesToExecutable(mlirBytes, mlirLen, outputPath,
                                               opts);
 }
