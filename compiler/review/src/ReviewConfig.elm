@@ -38,6 +38,13 @@ import Simplify
 
 config : List Rule
 config =
+    -- src-system/ is generated from eco/system's sources for Stage 1 (compiler/scripts/make-stage1-system.js);
+    -- it is reviewed as eco/system, not here.
+    List.map (Rule.ignoreErrorsForDirectories [ "src-system/" ]) rules
+
+
+rules : List Rule
+rules =
     [ NoConfusingPrefixOperator.rule
     , NoDebug.Log.rule
     , NoDebug.TodoOrToString.rule

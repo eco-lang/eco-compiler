@@ -52,13 +52,12 @@ import Compiler.Lexer.Primitives as P
 import Compiler.Parse.Error as E
 import Compiler.Parse.Module as M
 import Compiler.Reporting.Render.Code as Code
-import Eco.Console
-import Eco.Env
-import Eco.Process
 import Json.Decode as Decode
 import Json.Encode as Encode
+import System.Exit as SysExit
 import System.IO as IO
 import Task exposing (Task)
+import Utils.Main as Utils
 
 
 {-| The program: it runs `app` once.
@@ -165,7 +164,7 @@ never reported as one.
 -}
 getArgs : Task Never Args
 getArgs =
-    Eco.Env.rawArgs
+    Utils.envGetArgs
         |> Task.map
             (\rawArgsList ->
                 case rawArgsList of
@@ -190,9 +189,8 @@ response was not written.
 -}
 exitWithResponse : Encode.Value -> Task Never ()
 exitWithResponse value =
-    Eco.Console.write Eco.Console.stdout (Encode.encode 0 value)
-        |> Task.onError (\_ -> Task.succeed ())
-        |> Task.andThen (\_ -> Eco.Process.exit Eco.Process.ExitSuccess)
+    IO.write IO.stdout (Encode.encode 0 value)
+        |> Task.andThen (\_ -> SysExit.exitWith SysExit.ExitSuccess)
 
 
 

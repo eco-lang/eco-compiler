@@ -1,0 +1,108 @@
+#!/usr/bin/env node
+// make-stage1-system.js — the eco/system modules the Stage 1 compiler is built with
+// (plans/compiler-io-on-eco-system.md §5).
+//
+// Stage 1 (guida.js) is built by stock `elm make`, which rejects eco/system's sources as they are:
+// they import `Eco.Kernel.*` and some are `effect module`s. This script writes stock-Elm copies of the
+// eco/system modules the compiler imports, and of every eco/system module those import, rewritten by
+// system-kernel-cpp/scripts/stock-elm-rewrite.js (the rewrite docs.json is built with). Every kernel
+// reference becomes `(Debug.todo "eco/system kernel <Home>.<fn>")`. Each such reference is the whole body
+// of a top-level kernel wrapper (`kRead = Eco.Kernel.Stream.read`), and the wrappers are listed in
+// kernels.json; after `elm make`, link-stage1-system-kernels.js replaces each wrapper's compiled
+// definition with the real eco/system JavaScript kernel, so Stage 1 runs the kernels Stages 2-5 run.
+//
+//   node compiler/scripts/make-stage1-system.js <outDir>
+//
+// Writes <outDir>/<Module/Path>.elm, <outDir>/kernels.json and <outDir>/GENERATED (the build's stamp, always
+// rewritten). The modules and kernels.json are rewritten only when their text changes, so `elm make` does
+// not recompile them needlessly, and generated modules no longer produced are deleted.
+"use strict";
+
+const fs = require("node:fs");
+const path = require("node:path");
+const { rewrite } = require("../../system-kernel-cpp/scripts/stock-elm-rewrite.js");
+
+const SYSTEM_SRC = path.resolve(__dirname, "../../system-kernel-cpp/src");
+
+// The eco/system modules compiler/src imports. Their imports are followed to complete the set.
+const ROOTS = ["System", "Stream", "FileSystem", "FileSystem.Handle", "Path", "Terminal", "Http.Stream", "Http.Method"];
+
+const STUB = "eco/system kernel";
+
+function moduleFile(name) {
+    return path.join(SYSTEM_SRC, ...name.split(".")) + ".elm";
+}
+
+// The eco/system modules `source` imports (kernel imports and other packages' modules excluded).
+function systemImports(source) {
+    const out = [];
+    for (const m of source.matchAll(/^import\s+([A-Z][\w.]*)/gm)) {
+        const name = m[1];
+        if (!name.startsWith("Eco.Kernel.") && fs.existsSync(moduleFile(name))) out.push(name);
+    }
+    return out;
+}
+
+// The wrappers of `source` (module `name`) whose body is a kernel reference, as kernels.json lists them.
+function kernelWrappers(name, source) {
+    const out = [];
+    for (const m of source.matchAll(/^(k\w*)\s*=\s*\n\s+Eco\.Kernel\.([A-Z]\w*)\.([a-z]\w*)\s*$/gm)) {
+        out.push({ global: "$author$project$" + name.replace(/\./g, "$") + "$" + m[1], home: m[2], fn: m[3] });
+    }
+    return out;
+}
+
+function writeIfChanged(file, text) {
+    if (fs.existsSync(file) && fs.readFileSync(file, "utf8") === text) return;
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, text);
+}
+
+function main() {
+    const outDir = process.argv[2];
+    if (!outDir) {
+        console.error("usage: make-stage1-system.js <outDir>");
+        process.exit(2);
+    }
+    const seen = new Set();
+    const queue = [...ROOTS];
+    const written = new Set();
+    const wrappers = [];
+    while (queue.length > 0) {
+        const name = queue.shift();
+        if (seen.has(name)) continue;
+        seen.add(name);
+        const source = fs.readFileSync(moduleFile(name), "utf8");
+        queue.push(...systemImports(source));
+        const found = kernelWrappers(name, source);
+        // Each kernel reference in code must be a wrapper body, the one shape the linker can replace.
+        const stubbed = rewrite(source, { kernelRef: (home, fn) => `(Debug.todo "${STUB} ${home}.${fn}")` });
+        const stubs = (stubbed.match(new RegExp(STUB, "g")) || []).length;
+        if (stubs !== found.length) {
+            console.error(`make-stage1-system: ${name}: ${stubs} kernel references in code, but ${found.length} ` +
+                "are whole bodies of `kName =` wrappers; the linker can only replace wrappers");
+            process.exit(1);
+        }
+        wrappers.push(...found);
+        const rel = path.join(...name.split(".")) + ".elm";
+        writeIfChanged(path.join(outDir, rel), stubbed);
+        written.add(rel);
+    }
+    // Delete generated modules that are no longer produced.
+    const walk = (dir, rel) => {
+        if (!fs.existsSync(dir)) return;
+        for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+            const r = path.join(rel, e.name);
+            if (e.isDirectory()) walk(path.join(dir, e.name), r);
+            else if (e.name.endsWith(".elm") && !written.has(r)) fs.unlinkSync(path.join(dir, e.name));
+        }
+    };
+    walk(outDir, "");
+    writeIfChanged(path.join(outDir, "kernels.json"), JSON.stringify(wrappers, null, 2) + "\n");
+    // Always rewritten: it is the build's stamp for this step.
+    fs.writeFileSync(path.join(outDir, "GENERATED"),
+        "Generated by compiler/scripts/make-stage1-system.js from system-kernel-cpp/src; do not edit.\n" +
+        "The build regenerates this directory when eco/system's sources change.\n");
+}
+
+main();

@@ -50,8 +50,8 @@ path.
 [watch](#watch) and [watchRecursive](#watchRecursive) are subscriptions to changes at a path.
 While a subscription to a path that could be watched exists, it keeps the program running.
 
-On the native backend under Windows the file system is not supported: every task here that can
-fail fails with [NotSupported](#ErrorKind), and a watch subscription stops the program with a
+On the native backend under Windows only part of the file system is supported: the tasks that
+[NotSupported](#ErrorKind) lists fail with it, and a watch subscription stops the program with a
 fatal error.
 
 
@@ -158,8 +158,13 @@ parentheses are the ones each kind stands for, errno names except where noted; t
   - `InvalidInput` (`EINVAL`): an argument was not valid for the operation, as when
     [readLink](#readLink) is given a path that is not a symbolic link.
   - `IOError` (`EIO`): a low-level input or output error, such as a failing storage device.
-  - `NotSupported` (`ENOTSUP`, `EOPNOTSUPP`): the operation is not supported here, as for every
-    task of this module on the native backend under Windows.
+  - `NotSupported` (`ENOTSUP`, `EOPNOTSUPP`): the operation is not supported here, as for the
+    tasks not yet implemented on the native backend under Windows: [checkAccess](#checkAccess),
+    [changeAccess](#changeAccess), [changeOwner](#changeOwner), [copyFile](#copyFile),
+    [truncateFile](#truncateFile), [makeTempDirectory](#makeTempDirectory), the links
+    ([hardLink](#hardLink), [softLink](#softLink), [readLink](#readLink), [unlink](#unlink)),
+    the file streams, and, in [FileSystem.Handle](FileSystem-Handle), `metadata`,
+    `changeAccess`, `changeOwner`, `changeTimes`, the reads, `truncate` and `syncData`.
   - `CrossDevice` (`EXDEV`): the operation cannot cross from one file system to another, as when
     [move](#move) is given paths on two different file systems.
   - `HandleClosed` (`EBADF`): a [FileSystem.Handle](FileSystem-Handle) was used after it was

@@ -7,10 +7,9 @@
 // ElmKernel_Http (a CMake option, ON in the `dev` preset), so traces elsewhere
 // are compiled out.
 //
-// It is a copy of eco-kernel-cpp/src/eco-kernel/KernelDebug.hpp, not an
-// include of it, because neither kernel package has the other on its include
-// path. The definitions of ECO_KLOG here, in that header, and in
-// runtime/src/platform/HttpService.cpp must stay identical.
+// The definitions of ECO_KLOG here and in runtime/src/platform/HttpService.cpp
+// must stay identical. (eco-kernel-cpp had a copy for its File and Http
+// modules, removed with them: plans/compiler-io-on-eco-system.md.)
 //
 //===----------------------------------------------------------------------===//
 #ifndef ELM_KERNEL_DEBUG_HPP

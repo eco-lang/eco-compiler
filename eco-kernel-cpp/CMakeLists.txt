@@ -7,7 +7,10 @@ project(eco-kernel LANGUAGES CXX)
 # Runtime include directory (for allocator headers)
 set(RUNTIME_INCLUDE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../runtime/src)
 
-# Find optional dependencies for Http module.
+# libcurl, OpenSSL and libzip. No eco/kernel module uses them since EcoKernel_Http was removed
+# (plans/compiler-io-on-eco-system.md); they are still found or vendored here because the AOT and
+# bundle link lines and the static builds name them (ECO_KERNEL_LIBZIP_* below), which a follow-up
+# can drop.
 #
 # Under ECO_STATIC (Stage A in plans/static-link-eco-binary.md):
 #   - OpenSSL via OPENSSL_USE_STATIC_LIBS=TRUE → libssl.a / libcrypto.a
@@ -111,55 +114,6 @@ endif()
 # Per-module static libraries
 #------------------------------------------------------------------------------
 
-# File module (file I/O, directory ops, handles, locks)
-add_library(EcoKernel_File STATIC
-    src/eco-kernel/File.cpp
-    src/eco-kernel/FileExports.cpp
-)
-target_include_directories(EcoKernel_File PUBLIC
-    ${CMAKE_CURRENT_SOURCE_DIR}/src
-    ${RUNTIME_INCLUDE_DIR}
-)
-target_compile_features(EcoKernel_File PUBLIC cxx_std_20)
-
-# Console module (stdout/stderr write, stdin read)
-add_library(EcoKernel_Console STATIC
-    src/eco-kernel/Console.cpp
-    src/eco-kernel/ConsoleExports.cpp
-)
-target_include_directories(EcoKernel_Console PUBLIC
-    ${CMAKE_CURRENT_SOURCE_DIR}/src
-    ${RUNTIME_INCLUDE_DIR}
-)
-target_compile_features(EcoKernel_Console PUBLIC cxx_std_20)
-
-# Env module (environment variables, CLI args)
-add_library(EcoKernel_Env STATIC
-    src/eco-kernel/Env.cpp
-    src/eco-kernel/EnvExports.cpp
-)
-target_include_directories(EcoKernel_Env PUBLIC
-    ${CMAKE_CURRENT_SOURCE_DIR}/src
-    ${RUNTIME_INCLUDE_DIR}
-)
-target_compile_features(EcoKernel_Env PUBLIC cxx_std_20)
-
-# Process module (exit, spawn, wait)
-add_library(EcoKernel_Process STATIC
-    src/eco-kernel/Process.cpp
-    src/eco-kernel/ProcessExports.cpp
-)
-target_include_directories(EcoKernel_Process PUBLIC
-    ${CMAKE_CURRENT_SOURCE_DIR}/src
-    ${RUNTIME_INCLUDE_DIR}
-)
-target_compile_features(EcoKernel_Process PUBLIC cxx_std_20)
-
-# Console.write and File.close use Process's table of spawnProcess stdin handles
-# (Process::streamHandleFd / forgetStreamHandle), so both link after it.
-target_link_libraries(EcoKernel_Console PUBLIC EcoKernel_Process)
-target_link_libraries(EcoKernel_File PUBLIC EcoKernel_Process)
-
 # MVar module (concurrency primitives)
 add_library(EcoKernel_MVar STATIC
     src/eco-kernel/MVar.cpp
@@ -181,17 +135,6 @@ target_include_directories(EcoKernel_Hash PUBLIC
     ${RUNTIME_INCLUDE_DIR}
 )
 target_compile_features(EcoKernel_Hash PUBLIC cxx_std_20)
-
-# Runtime module (dirname, random, REPL state)
-add_library(EcoKernel_Runtime STATIC
-    src/eco-kernel/Runtime.cpp
-    src/eco-kernel/RuntimeExports.cpp
-)
-target_include_directories(EcoKernel_Runtime PUBLIC
-    ${CMAKE_CURRENT_SOURCE_DIR}/src
-    ${RUNTIME_INCLUDE_DIR}
-)
-target_compile_features(EcoKernel_Runtime PUBLIC cxx_std_20)
 
 # GC module (explicit collections, plans/frontend-heap-release.md §4, HEAP_076)
 add_library(EcoKernel_GC STATIC
@@ -234,75 +177,27 @@ target_include_directories(EcoKernel_NativeDriver PRIVATE
 )
 target_compile_features(EcoKernel_NativeDriver PUBLIC cxx_std_20)
 
-# Http module (HTTP requests, archive downloads)
-add_library(EcoKernel_Http STATIC
-    src/eco-kernel/Http.cpp
-    src/eco-kernel/HttpExports.cpp
-)
-target_include_directories(EcoKernel_Http PUBLIC
-    ${CMAKE_CURRENT_SOURCE_DIR}/src
-    ${RUNTIME_INCLUDE_DIR}
-)
-if(WIN32)
-    # Windows: vendored libcurl (schannel TLS) + vendored libzip. OpenSSL
-    # is eliminated — see plans/build-on-windows.md (Dependency stack).
-    # ws2_32 / crypt32 / bcrypt / secur32 are pulled in by curl's schannel
-    # backend through its CMakeLists, so we don't list them explicitly.
-    target_link_libraries(EcoKernel_Http PRIVATE libcurl_static zip)
-elseif(ECO_STATIC)
-    # Vendored libcurl exports the `libcurl_static` CMake target (its ALIAS
-    # for the static archive); vendored libzip exports the `zip` target.
-    # OpenSSL was picked up via OPENSSL_USE_STATIC_LIBS before any subdir's
-    # find_package.
-    target_link_libraries(EcoKernel_Http PRIVATE
-        libcurl_static OpenSSL::SSL OpenSSL::Crypto zip)
-elseif(APPLE)
-    # Darwin: libcurl from the SDK (system .tbd stub, dynamic at runtime);
-    # libzip vendored via FetchContent so the `zip` target replaces what
-    # would otherwise be PkgConfig::LIBZIP — the brew formula ships only
-    # libzip.dylib and we want a static archive for the AOT bundle.
-    target_link_libraries(EcoKernel_Http PRIVATE
-        CURL::libcurl OpenSSL::SSL OpenSSL::Crypto zip)
-else()
-    target_link_libraries(EcoKernel_Http PRIVATE
-        CURL::libcurl OpenSSL::SSL OpenSSL::Crypto PkgConfig::LIBZIP)
-endif()
-target_compile_features(EcoKernel_Http PUBLIC cxx_std_20)
-
 #------------------------------------------------------------------------------
 # Combined convenience library
 #------------------------------------------------------------------------------
 
 add_library(EcoKernel INTERFACE)
 target_link_libraries(EcoKernel INTERFACE
-    EcoKernel_File
-    EcoKernel_Console
-    EcoKernel_Env
-    EcoKernel_Process
     EcoKernel_MVar
     EcoKernel_Hash
     EcoKernel_NativeDriver
-    EcoKernel_Runtime
     EcoKernel_GC
-    EcoKernel_Http
     EcoKernel_Crash
 )
 
 # Asserts on iff ECO_ASSERTS_ON (default ON for non-Release).
 if(ECO_ASSERTS_ON)
     foreach(target
-        EcoKernel_File EcoKernel_Console EcoKernel_Env
-        EcoKernel_Process EcoKernel_MVar EcoKernel_Hash
-        EcoKernel_NativeDriver EcoKernel_Runtime EcoKernel_GC
-        EcoKernel_Http EcoKernel_Crash
+        EcoKernel_MVar EcoKernel_Hash
+        EcoKernel_NativeDriver EcoKernel_GC
+        EcoKernel_Crash
     )
         target_compile_options(${target} PRIVATE -UNDEBUG)
     endforeach()
 endif()
 
-# ECO_KERNEL_DEBUG: stderr tracing in HTTP and File kernel paths. See
-# src/eco-kernel/KernelDebug.hpp for the ECO_KLOG macro.
-if(ECO_KERNEL_DEBUG)
-    target_compile_definitions(EcoKernel_Http PRIVATE ECO_KERNEL_DEBUG)
-    target_compile_definitions(EcoKernel_File PRIVATE ECO_KERNEL_DEBUG)
-endif()

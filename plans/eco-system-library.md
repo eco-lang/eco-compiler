@@ -2071,6 +2071,7 @@ endSimpleProgram : Task Never a -> Cmd msg
 
 exit : Cmd msg
 exitWithCode : Int -> Cmd msg
+exitWithCodeTask : Int -> Task x ()   -- added 2026-11-25 (compiler-io-on-eco-system P1.2)
 setExitCode : Int -> Task x ()
 
 onEmptyEventLoop : msg -> Sub msg
@@ -2384,7 +2385,7 @@ task :
 
 | Kernel fn | Elm type | Mode | Notes |
 |---|---|---|---|
-| `environment` | `Task Never ( ( String, String, String ), List String, ( Int, Int, Int ) )` | S | Returns `((platform, arch, applicationPath), argv, (stdin, stdout, stderr) pair ids)`. platform is Node's spelling: `"linux"`, `"darwin"`, `"win32"`, `"freebsd"`, `"openbsd"`, `"sunos"`, `"aix"`. arch: §3.8. argv: full (§3.7). Stdio pairs are created once per process and cached. The id tuple is all Int, so its mask is `0b010101`. |
+| `environment` | `Task Never ( ( String, String, String ), ( List String, Int ), ( Int, Int, Int ) )` | S | Re-added 2026-11-25 (plans/compiler-io-on-eco-system.md P1.1) as the Task form of `environmentNow` (`Json.Value -> …`, the flags decoder's non-Task kernel): `((platform, arch, applicationPath), (argv, startMillis), (stdin, stdout, stderr) ids)`, built when the Task runs. Backs `System.environment : Task x Environment`. platform is Node's spelling: `"linux"`, `"darwin"`, `"win32"`, `"freebsd"`, `"openbsd"`, `"sunos"`, `"aix"`. arch: §3.8. argv: full (§3.7). Stdio pairs are made once per heap generation and reused. `System.exitWithCodeTask : Int -> Task x ()` (same date) wraps `exitWithCode` with no new kernel. |
 | `getPlatform` | `Task Never String` | S | |
 | `getCpuArchitecture` | `Task Never String` | S | |
 | `getEnvironmentVariables` | `Task Never (List ( String, String ))` | S | Iterates `environ` and splits each entry at the first `=`. |

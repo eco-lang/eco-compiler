@@ -9,11 +9,12 @@ hands back when it ends to say whether it succeeded.
 By convention 0 means success and any other number means failure. `ExitCode`
 names the two cases, and the names follow Haskell's `System.Exit`.
 
-Ending the process is not something an Elm program can do itself, so `exitWith`
-asks `Eco.Process.exit` to do it, and that module describes how the request is
-carried out. The tasks here are typed to succeed with any value, which they can
-only honour by never succeeding: if `Eco.Process.exit` ever completes instead
-of ending the process, `exitWith` crashes the program.
+`exitWith` ends the process at once through eco/system's
+`System.exitWithCodeTask`. Output whose write has completed is not lost, and the
+compiler awaits every write before it moves on. The tasks here are typed to
+succeed with any value, which they can only honour by never succeeding: if
+`System.exitWithCodeTask` ever completes instead of ending the process (it does
+when the program is embedded in a host), `exitWith` crashes the program.
 
 
 # Exit Codes
@@ -27,7 +28,7 @@ of ending the process, `exitWith` crashes the program.
 
 -}
 
-import Eco.Process
+import System
 import System.Crash exposing (crash)
 import Task exposing (Task)
 
@@ -44,25 +45,25 @@ type ExitCode
     | ExitFailure Int
 
 
-{-| Ends the process with `exitCode`, through `Eco.Process.exit`.
+{-| Ends the process with `exitCode`, through `System.exitWithCodeTask`.
 
-The task never succeeds: if `Eco.Process.exit` completes instead of ending the
-process, this crashes the program.
+The task never succeeds: if `System.exitWithCodeTask` completes instead of
+ending the process, this crashes the program.
 
 -}
 exitWith : ExitCode -> Task Never a
 exitWith exitCode =
     let
-        ecoExitCode : Eco.Process.ExitCode
-        ecoExitCode =
+        code : Int
+        code =
             case exitCode of
                 ExitSuccess ->
-                    Eco.Process.ExitSuccess
+                    0
 
                 ExitFailure int ->
-                    Eco.Process.ExitFailure int
+                    int
     in
-    Eco.Process.exit ecoExitCode
+    System.exitWithCodeTask code
         |> Task.map (\_ -> crash "exitWith: process should have exited")
 
 

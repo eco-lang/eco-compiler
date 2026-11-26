@@ -6,7 +6,7 @@
 // from the ENVIRONMENT: prepare() publishes them in this process's
 // environment, which every spawned test child inherits (SpawnedChildren.hpp,
 // SYS_008), and each package's checked-in `TestServerConfig` module reads them
-// at run time (Eco.Env.lookup / System.getEnvironmentVariables).
+// at run time (System.environmentVariables).
 //
 // Nothing is written into the source tree and no source is touched, so a run
 // recompiles nothing because of the server, and the test binaries of

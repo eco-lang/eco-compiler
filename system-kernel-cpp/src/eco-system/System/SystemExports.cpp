@@ -21,6 +21,14 @@ uint64_t Eco_Kernel_System_environmentNow(uint64_t /*json*/) {
     )
 }
 
+// environment : Task Never ( ( String, String, String ), ( List String, Int ), ( Int, Int, Int ) )
+// Returns a Task that builds the value `environmentNow` returns each time it runs.
+uint64_t Eco_Kernel_System_environment() {
+    ECO_KERNEL_GUARD(
+        return enc(makeBinding<systemEnvironmentBody>(alloc::unit()));
+    )
+}
+
 // getEnvironmentVariables : Task Never (List ( String, String ))
 // Returns a Task that reads the environment variables each time it runs.
 uint64_t Eco_Kernel_System_getEnvironmentVariables() {

@@ -31,9 +31,10 @@
 // finished, then closes the fd and removes the id. So a handle can act only on the fd its own `open` returned,
 // and never after its close, even when the system has since given the same fd number to another file.
 //
-// The worker operations are defined in FileSystemOps.cpp, and on Windows in FileSystemOpsWin32.cpp, where
-// every one fails with ENOTSUP. The `C` exports are in FileSystemExports.cpp, and the `FileSystem` effect
-// manager and the watcher are separate components (FileSystemManager, WatchService).
+// The worker operations are defined in FileSystemOps.cpp, and on Windows in FileSystemOpsWin32.cpp, which
+// implements those the eco compiler reaches and fails the rest with ENOTSUP. The `C` exports are in
+// FileSystemExports.cpp, and the `FileSystem` effect manager and the watcher are separate components
+// (FileSystemManager, WatchService).
 //
 //===----------------------------------------------------------------------===//
 
@@ -157,6 +158,15 @@ std::string currentWorkingDirectoryString();
 std::string tmpDirectoryString();
 /// Returns the path of the null device: "/dev/null", or "//./nul" on Windows.
 std::string devNullString();
+
+#if defined(_WIN32)
+/// Windows: returns the current directory, from GetCurrentDirectoryW, as UTF-8, or "" when it cannot be read.
+/// Defined in FileSystemOpsWin32.cpp.
+std::string win32CurrentDirectoryUtf8();
+/// Windows: returns environment variable `name`, read as UTF-16, as UTF-8, or "" when it is unset or empty.
+/// Defined in FileSystemOpsWin32.cpp.
+std::string win32EnvUtf8(const wchar_t* name);
+#endif
 
 // --- Export side -------------------------------------------------------------
 

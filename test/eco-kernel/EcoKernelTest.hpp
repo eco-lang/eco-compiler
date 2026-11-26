@@ -30,21 +30,22 @@ inline std::unique_ptr<ElmE2EBase::ElmE2EParallelTestSuite> buildEcoKernelTestSu
 #else
 
 // Start the shared in-process server (a singleton, also used by elm-http and
-// eco-system) and publish its URLs to the test children, so the Eco.Http
-// getArchive test can hit /package.zip (TestServerConfig.hpp).
+// eco-system) and publish its URLs to the test children (TestServerConfig.hpp).
 inline void prepareServer() {
     TestServerConfig::prepare();
 }
 
 inline std::unique_ptr<ElmE2EBase::ElmE2EParallelTestSuite> buildEcoKernelTestSuite() {
-    // These tests import `Eco.MVar` / `Eco.Http` from the eco/kernel package.
+    // These tests import `Eco.MVar`, `Eco.GC` and friends from the eco/kernel package, and
+    // eco/system for the files one of them reads.
     // The compiler needs --local-package so it can resolve the import to the
     // in-tree kernel package under the repo's eco-kernel-cpp/ directory.
     // REPO_ROOT comes from target_compile_definitions in test/CMakeLists.txt
     // (= CMAKE_SOURCE_DIR), so this works regardless of the CWD.
     prepareServer();
     std::string extraFlags =
-        std::string(" --local-package eco/kernel=") + REPO_ROOT + "/eco-kernel-cpp";
+        std::string(" --local-package eco/kernel=") + REPO_ROOT + "/eco-kernel-cpp" +
+        " --local-package eco/system=" + REPO_ROOT + "/system-kernel-cpp";
     return ElmE2EBase::buildTestSuite("eco-kernel", "Eco Kernel E2E",
                                       "eco-kernel/", extraFlags);
 }

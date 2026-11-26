@@ -179,10 +179,7 @@ checkedSafe =
     , ( ( "elm/core:String", "String" ), "primitive" )
     , ( ( "elm/parser:Parser.Advanced", "Parser" ), "Elm.Kernel.Parser takes and returns strings, ints and tuples only (ParserExports.cpp)" )
     , ( ( "elm/parser:Parser.Advanced", "Token" ), "built and read by Elm code only" )
-    , ( ( "eco/kernel:Eco.Console", "Handle" ), "the kernel takes and returns the raw Int id; Elm code wraps it" )
-    , ( ( "eco/kernel:Eco.File", "Handle" ), "the kernel takes and returns the raw Int id; Elm code wraps it" )
     , ( ( "eco/kernel:Eco.MVar", "MVar" ), "MVarExports.cpp:30 takes the raw Int id; Elm code wraps it" )
-    , ( ( "eco/kernel:Eco.Process", "ProcessHandle" ), "the kernel takes and returns the raw Int id; Elm code wraps it" )
     ]
 
 
@@ -228,8 +225,6 @@ transparentKernels =
       ( "Bytes", [ "decodeFailure", "getStringWidth" ] )
     , -- Char: elm-kernel-cpp/src/core/CharExports.cpp
       ( "Char", [ "fromCode", "toCode", "toLocaleLower", "toLocaleUpper", "toLower", "toUpper" ] )
-    , -- Console: eco-kernel-cpp/src/eco-kernel/ConsoleExports.cpp
-      ( "Console", [ "isTerminal", "log", "readAll", "readLine", "write" ] )
     , -- Crash: eco-kernel-cpp/src/eco-kernel/CrashExports.cpp
       -- Never returns: reports and exits without touching a value of the type variable.
       ( "Crash", [ "crash" ] )
@@ -239,23 +234,21 @@ transparentKernels =
       ( "Debug", [ "log", "toString", "todo" ] )
     , -- Debugger: elm-kernel-cpp/src/browser/BrowserExports.cpp
       ( "Debugger", [ "download", "init", "isOpen", "messageToString", "open", "scroll", "upload" ] )
-    , -- Env: eco-kernel-cpp/src/eco-kernel/EnvExports.cpp
-      ( "Env", [ "rawArgs" ] )
     , -- FNV: system-kernel-cpp/src/eco-system/FNV/FNVExports.cpp
       ( "FNV", [ "hash" ] )
     , -- SeqDictTrie: system-kernel-cpp/src/eco-system/SeqDictTrie/SeqDictTrieExports.cpp
       -- copies a SeqDict trie reading every representation of Slot and Maybe (Entry k v), and builds
       -- slots in the form of a probe slot compiled code passes, so it pins no representation.
       ( "SeqDictTrie", [ "remap" ] )
-    , -- File: eco-kernel-cpp/src/eco-kernel/FileExports.cpp, elm-kernel-cpp/src/file/FileExports.cpp
-      ( "File", [ "appDataDir", "canonicalize", "close", "createDir", "decoder", "dirExists", "download", "downloadUrl", "fileExists", "getCwd", "hWriteString", "lastModified", "list", "lock", "makeBytesSafeForInternetExplorer", "mime", "modificationTime", "name", "open", "readString", "removeDir", "removeFile", "setCwd", "size", "toBytes", "toString", "toUrl", "touch", "unlock", "uploadOne", "uploadOneOrMore", "writeString" ] )
+    , -- File: elm-kernel-cpp/src/file/FileExports.cpp
+      ( "File", [ "decoder", "download", "downloadUrl", "lastModified", "makeBytesSafeForInternetExplorer", "mime", "name", "size", "toBytes", "toString", "toUrl", "uploadOne", "uploadOneOrMore" ] )
     , -- FileSystem: system-kernel-cpp/src/eco-system/FileSystem/FileSystemExports.cpp
       ( "FileSystem", [ "access", "chmod", "chown", "close", "copyFile", "currentWorkingDirectory", "devNull", "fchmod", "fchown", "fdatasync", "fstat", "fsync", "ftruncate", "futimes", "homeDirectory", "link", "listDirectory", "makeDirectory", "makeTempDirectory", "open", "readFileStream", "readLink", "realpath", "remove", "rename", "stat", "symlink", "tmpDirectory", "truncate", "unlink", "utimes", "writeFileStream" ] )
     , -- GC: eco-kernel-cpp/src/eco-kernel/GCExports.cpp
       ( "GC", [ "majorGC", "minorGC" ] )
     , -- Hash: eco-kernel-cpp/src/eco-kernel/HashExports.cpp
       ( "Hash", [ "string64", "stringWithSeed" ] )
-    , -- Http: eco-kernel-cpp/src/eco-kernel/HttpExports.cpp, elm-kernel-cpp/src/http/HttpExports.cpp
+    , -- Http: elm-kernel-cpp/src/http/HttpExports.cpp
       ( "Http", [ "bytesToBlob", "toDataView", "toFormData" ] )
     , -- HttpServer: system-kernel-cpp/src/eco-system/HttpServer/HttpServerExports.cpp
       ( "HttpServer", [ "closeServer", "createServer", "takeUpgrade" ] )
@@ -271,12 +264,8 @@ transparentKernels =
       ( "NativeDriver", [ "lowerAndLink" ] )
     , -- Parser: elm-kernel-cpp/src/parser/ParserExports.cpp
       ( "Parser", [ "chompBase10", "consumeBase", "consumeBase16", "findSubString", "isAsciiCode", "isSubChar", "isSubString" ] )
-    , -- Process: eco-kernel-cpp/src/eco-kernel/ProcessExports.cpp, elm-kernel-cpp/src/core/ProcessExports.cpp
-      ( "Process", [ "exit", "spawn", "wait" ] )
     , -- Regex: elm-kernel-cpp/src/regex/RegexExports.cpp
       ( "Regex", [ "infinity" ] )
-    , -- Runtime: eco-kernel-cpp/src/eco-kernel/RuntimeExports.cpp
-      ( "Runtime", [ "dirname", "random", "saveState" ] )
     , -- Socket: system-kernel-cpp/src/eco-system/Socket/SocketExports.cpp, system-kernel-cpp/src/eco-system/Socket/UdpExports.cpp
       ( "Socket", [ "accept", "close", "closeListener", "lookup", "peerCredentials", "reset", "setKeepAlive", "setNoDelay", "tcpConnect", "tcpListen", "udpBind", "udpClose", "udpMembership", "unixConnect", "unixListen" ] )
     , -- Stream: system-kernel-cpp/src/eco-system/Stream/StreamExports.cpp
@@ -284,7 +273,7 @@ transparentKernels =
     , -- String: elm-kernel-cpp/src/core/StringExports.cpp
       ( "String", [ "all", "any", "append", "cons", "contains", "endsWith", "filter", "foldl", "foldr", "fromList", "fromNumber", "indexes", "join", "length", "lines", "map", "reverse", "slice", "split", "startsWith", "toLower", "toUpper", "trim", "trimLeft", "trimRight", "words" ] )
     , -- System: system-kernel-cpp/src/eco-system/System/SystemExports.cpp
-      ( "System", [ "environmentNow", "exitWithCode", "getEnvironmentVariables", "rearmEmptyEventLoop", "setExitCode" ] )
+      ( "System", [ "environment", "environmentNow", "exitWithCode", "getEnvironmentVariables", "rearmEmptyEventLoop", "setExitCode" ] )
     , -- Terminal: system-kernel-cpp/src/eco-system/Terminal/TerminalExports.cpp
       ( "Terminal", [ "isTerminal", "setStdInRawMode", "setTitle" ] )
     , -- Tls: system-kernel-cpp/src/eco-system/Tls/TlsExports.cpp
@@ -326,25 +315,17 @@ inspectingKernels =
       List.map (\n -> ( ( "Dom", n ), Inspects [ ( "eco/system:Html.Dom", "Node" ), ( "elm/virtual-dom:VirtualDom", "Node" ) ] )) [ "fromNode" ]
     , -- Dom: system-kernel-cpp/src/eco-system/Dom/DomExports.cpp
       List.map (\n -> ( ( "Dom", n ), Inspects [ ( "elm/core:Maybe", "Maybe" ), ( "elm/json:Json.Encode", "Value" ), ( "elm/virtual-dom:VirtualDom", "Attribute" ), ( "elm/virtual-dom:VirtualDom", "Node" ) ] )) [ "toString" ]
-    , -- Env: eco-kernel-cpp/src/eco-kernel/EnvExports.cpp
-      List.map (\n -> ( ( "Env", n ), Inspects [ ( "elm/core:Maybe", "Maybe" ) ] )) [ "lookup" ]
-    , -- File: eco-kernel-cpp/src/eco-kernel/FileExports.cpp, elm-kernel-cpp/src/file/FileExports.cpp
-      List.map (\n -> ( ( "File", n ), Inspects [ ( "elm/bytes:Bytes", "Bytes" ) ] )) [ "readBytes", "writeBytes", "writeBytesAtomic" ]
-    , -- File: eco-kernel-cpp/src/eco-kernel/FileExports.cpp, elm-kernel-cpp/src/file/FileExports.cpp
-      List.map (\n -> ( ( "File", n ), Inspects [ ( "elm/core:Maybe", "Maybe" ) ] )) [ "findExecutable" ]
     , -- FileSystem: system-kernel-cpp/src/eco-system/FileSystem/FileSystemExports.cpp
       List.map (\n -> ( ( "FileSystem", n ), Inspects [ ( "elm/bytes:Bytes", "Bytes" ) ] )) [ "appendFile", "readFile", "readFromOffset", "writeFile", "writeFromOffset" ]
-    , -- Http: eco-kernel-cpp/src/eco-kernel/HttpExports.cpp, elm-kernel-cpp/src/http/HttpExports.cpp
+    , -- Http: elm-kernel-cpp/src/http/HttpExports.cpp
       List.map (\n -> ( ( "Http", n ), Inspects [ ( "elm/core:Dict", "Dict" ), ( "elm/core:Maybe", "Maybe" ), ( "elm/core:Platform", "Task" ), ( "elm/http:Http", "Body" ), ( "elm/http:Http", "Expect" ), ( "elm/http:Http", "Header" ), ( "elm/http:Http", "Part" ), ( "elm/http:Http", "Progress" ), ( "elm/http:Http", "Resolver" ), ( "elm/http:Http", "Response" ) ] )) [ "toTask" ]
-    , -- Http: eco-kernel-cpp/src/eco-kernel/HttpExports.cpp, elm-kernel-cpp/src/http/HttpExports.cpp
-      List.map (\n -> ( ( "Http", n ), Inspects [ ( "elm/core:Result", "Result" ) ] )) [ "fetch", "getArchive" ]
-    , -- Http: eco-kernel-cpp/src/eco-kernel/HttpExports.cpp, elm-kernel-cpp/src/http/HttpExports.cpp
+    , -- Http: elm-kernel-cpp/src/http/HttpExports.cpp
       List.map (\n -> ( ( "Http", n ), Inspects [ ( "elm/http:Http", "Body" ) ] )) [ "emptyBody" ]
-    , -- Http: eco-kernel-cpp/src/eco-kernel/HttpExports.cpp, elm-kernel-cpp/src/http/HttpExports.cpp
+    , -- Http: elm-kernel-cpp/src/http/HttpExports.cpp
       List.map (\n -> ( ( "Http", n ), Inspects [ ( "elm/http:Http", "Body" ), ( "elm/http:Http", "Part" ) ] )) [ "pair" ]
-    , -- Http: eco-kernel-cpp/src/eco-kernel/HttpExports.cpp, elm-kernel-cpp/src/http/HttpExports.cpp
+    , -- Http: elm-kernel-cpp/src/http/HttpExports.cpp
       List.map (\n -> ( ( "Http", n ), Inspects [ ( "elm/http:Http", "Expect" ) ] )) [ "mapExpect" ]
-    , -- Http: eco-kernel-cpp/src/eco-kernel/HttpExports.cpp, elm-kernel-cpp/src/http/HttpExports.cpp
+    , -- Http: elm-kernel-cpp/src/http/HttpExports.cpp
       List.map (\n -> ( ( "Http", n ), Inspects [ ( "elm/http:Http", "Expect" ), ( "elm/http:Http", "Resolver" ), ( "elm/http:Http", "Response" ) ] )) [ "expect" ]
     , -- HttpServer: system-kernel-cpp/src/eco-system/HttpServer/HttpServerExports.cpp
       List.map (\n -> ( ( "HttpServer", n ), Inspects [ ( "eco/system:Html.Dom", "Fact" ), ( "eco/system:Html.Dom", "Node" ), ( "elm/core:Maybe", "Maybe" ), ( "elm/json:Json.Encode", "Value" ) ] )) [ "respondHtml" ]
@@ -377,16 +358,12 @@ inspectingKernels =
       List.map (\n -> ( ( "Platform", n ), Inspects [ ( "elm/core:Platform", "Router" ), ( "elm/core:Platform", "Task" ) ] )) [ "sendToApp", "sendToSelf" ]
     , -- Platform: elm-kernel-cpp/src/core/PlatformExports.cpp
       List.map (\n -> ( ( "Platform", n ), Inspects [ ( "elm/core:Platform.Cmd", "Cmd" ), ( "elm/core:Platform.Sub", "Sub" ) ] )) [ "batch", "map" ]
-    , -- Process: eco-kernel-cpp/src/eco-kernel/ProcessExports.cpp, elm-kernel-cpp/src/core/ProcessExports.cpp
-      List.map (\n -> ( ( "Process", n ), Inspects [ ( "elm/core:Maybe", "Maybe" ) ] )) [ "spawnProcess" ]
-    , -- Process: eco-kernel-cpp/src/eco-kernel/ProcessExports.cpp, elm-kernel-cpp/src/core/ProcessExports.cpp
+    , -- Process: elm-kernel-cpp/src/core/ProcessExports.cpp
       List.map (\n -> ( ( "Process", n ), Inspects [ ( "elm/core:Platform", "Task" ) ] )) [ "sleep" ]
     , -- Regex: elm-kernel-cpp/src/regex/RegexExports.cpp
       List.map (\n -> ( ( "Regex", n ), Inspects [ ( "elm/core:Maybe", "Maybe" ), ( "elm/regex:Regex", "Regex" ) ] )) [ "findAtMost", "fromStringWith", "replaceAtMost" ]
     , -- Regex: elm-kernel-cpp/src/regex/RegexExports.cpp
       List.map (\n -> ( ( "Regex", n ), Inspects [ ( "elm/regex:Regex", "Regex" ) ] )) [ "contains", "never", "splitAtMost" ]
-    , -- Runtime: eco-kernel-cpp/src/eco-kernel/RuntimeExports.cpp
-      List.map (\n -> ( ( "Runtime", n ), Inspects [ ( "elm/json:Json.Encode", "Value" ) ] )) [ "loadState" ]
     , -- Scheduler: elm-kernel-cpp/src/core/SchedulerExports.cpp
       List.map (\n -> ( ( "Scheduler", n ), Inspects [ ( "elm/core:Platform", "ProcessId" ), ( "elm/core:Platform", "Task" ) ] )) [ "kill", "spawn" ]
     , -- Scheduler: elm-kernel-cpp/src/core/SchedulerExports.cpp

@@ -24,8 +24,14 @@
 // when the last reference goes, so a wake-up never writes to a reused fd
 // either. Destroying the handle therefore never waits for the thread.
 //
-// On Windows the channel is a stub: every request is answered with `ENOTSUP`,
-// `shutdown` does nothing and the fd is never closed.
+// On Windows there is no poll on arbitrary handles, so the channel serves the
+// fd's OS handle (`GetStdHandle` for fds 0 to 2) with blocking calls on two
+// threads: a reader thread for reads (`ReadFile`, or `ReadConsoleW` on a
+// console) and a writer thread for writes (`WriteFile`, or `WriteConsoleW` on
+// a console, converting UTF-8 to UTF-16) that also finishes the channel. A
+// read blocked in the system is interrupted with `CancelSynchronousIo` only
+// when the fd must be closed (above 2); for stdio the reader is left blocked
+// and its result dropped. Pipes cannot be made on Windows (`makeCloexecPipe`).
 //
 //===----------------------------------------------------------------------===//
 
@@ -151,6 +157,13 @@ private:
 /// pipe is close-on-exec for every child only if children are spawned from the
 /// calling thread. On Windows it returns `ENOTSUP`.
 int makeCloexecPipe(int fds[2], bool nonBlocking);
+
+#ifdef _WIN32
+/// Returns the errno that best names Win32 error `code` (a `GetLastError()`
+/// value), or 0 when none fits, in which case the caller reports EIO. Any
+/// thread.
+int errnoFromWin32Error(unsigned long code);
+#endif
 
 } // namespace Eco::System
 

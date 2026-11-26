@@ -9,7 +9,8 @@
 //   - every `Eco.Kernel.<Home>.<fn>` reference in code becomes `(Debug.todo "kernel")`;
 //   - in former effect modules, code uses of the built-in `command` / `subscription` functions become
 //     `(\_ -> Debug.todo "effect")`.
-// The exposed API and its doc comments are untouched, so the generated docs equal the real ones.
+// The exposed API and its doc comments are untouched, so the generated docs equal the real ones. The rewrite
+// itself is stock-elm-rewrite.js, shared with the Stage 1 compiler's copy (compiler/scripts/make-xhr-system.js).
 //
 // Usage: node scripts/make-docs-package.js [outDir]   (default: .docs-package, next to elm.json)
 "use strict";
@@ -19,66 +20,11 @@ const path = require("path");
 const pkg = path.resolve(__dirname, "..");
 const out = path.resolve(pkg, process.argv[2] || ".docs-package");
 
-// Split Elm source into code and non-code (comments, string and char literals) segments, so the
-// rewrites below only touch code: doc comments mention `command` and `Eco.Kernel.*` in prose.
-function segments(source) {
-    const out = [];
-    let code = "";
-    let i = 0;
-    const n = source.length;
-    const flush = () => { if (code) { out.push({ code: true, text: code }); code = ""; } };
-    while (i < n) {
-        const start = i;
-        if (source.startsWith("{-", i)) {
-            let depth = 0;
-            while (i < n) {
-                if (source.startsWith("{-", i)) { depth++; i += 2; }
-                else if (source.startsWith("-}", i)) { depth--; i += 2; if (depth === 0) break; }
-                else i++;
-            }
-        } else if (source.startsWith("--", i)) {
-            while (i < n && source[i] !== "\n") i++;
-        } else if (source.startsWith('"""', i)) {
-            i += 3;
-            while (i < n && !source.startsWith('"""', i)) i += source[i] === "\\" ? 2 : 1;
-            i += 3;
-        } else if (source[i] === '"') {
-            i++;
-            while (i < n && source[i] !== '"' && source[i] !== "\n") i += source[i] === "\\" ? 2 : 1;
-            i++;
-        } else if (source[i] === "'") {
-            i++;
-            while (i < n && source[i] !== "'" && source[i] !== "\n") i += source[i] === "\\" ? 2 : 1;
-            i++;
-        } else {
-            code += source[i++];
-            continue;
-        }
-        flush();
-        out.push({ code: false, text: source.slice(start, Math.min(i, n)) });
-    }
-    flush();
-    return out;
-}
+const { rewrite: stockRewrite } = require("./stock-elm-rewrite.js");
 
-function rewriteCode(code, effect) {
-    let s = code.replace(/\bEco\.Kernel\.[A-Z]\w*\.[a-z]\w*/g, '(Debug.todo "kernel")');
-    if (effect) {
-        // A use, not a definition (`command =` / `command :`), record field (`.command`,
-        // `{ command =`) or the effect-module header (already rewritten).
-        s = s.replace(/(^|[^.\w])(command|subscription)\b(?!\s*[=:])/gm,
-            (m, pre) => `${pre}(\\_ -> Debug.todo "effect")`);
-    }
-    return s;
-}
-
+// Every kernel reference becomes a Debug.todo: docs only need the types.
 function rewrite(source) {
-    let effect = false;
-    let s = source.replace(
-        /^effect\s+module\s+([A-Z][\w.]*)\s+where\s*\{[^}]*\}\s*exposing/m,
-        (_, name) => { effect = true; return `module ${name} exposing`; });
-    s = s.replace(/^import\s+Eco\.Kernel\.[\w.]*.*\n/gm, "");
-    return segments(s).map(seg => seg.code ? rewriteCode(seg.text, effect) : seg.text).join("");
+    return stockRewrite(source, { kernelRef: () => '(Debug.todo "kernel")' });
 }
 
 function copyTree(from, to) {

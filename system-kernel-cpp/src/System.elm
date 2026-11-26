@@ -1,7 +1,7 @@
 effect module System where { command = MyCmd, subscription = MySub } exposing
     ( program, simpleProgram
-    , Environment, environmentVariables, Platform(..), CpuArchitecture(..)
-    , exit, exitWithCode, setExitCode
+    , Environment, environment, environmentVariables, Platform(..), CpuArchitecture(..)
+    , exit, exitWithCode, exitWithCodeTask, setExitCode
     , onEmptyEventLoop, rearmEmptyEventLoop, onSignalInterrupt, onSignalTerminate
     )
 
@@ -62,6 +62,10 @@ application, which then owns the process. An embedded program does not end when 
 work: it runs until the host stops it or it calls [`exitWithCode`](#exitWithCode). Embedding
 also changes what exiting and signals do, as the functions below describe.
 
+A program that is not made with [`program`](#program) or [`simpleProgram`](#simpleProgram), such
+as a `Platform.worker` with other flags, gets the same environment from the task
+[`environment`](#environment).
+
 
 # Programs
 
@@ -70,12 +74,12 @@ also changes what exiting and signals do, as the functions below describe.
 
 # Environment information
 
-@docs Environment, environmentVariables, Platform, CpuArchitecture
+@docs Environment, environment, environmentVariables, Platform, CpuArchitecture
 
 
 # Exit
 
-@docs exit, exitWithCode, setExitCode
+@docs exit, exitWithCode, exitWithCodeTask, setExitCode
 
 
 # Subscriptions
@@ -106,7 +110,7 @@ started, and its standard streams.
 
   - `applicationPath` is the path of the running program. On the native backend it is the
     executable, with symbolic links resolved where the system allows it, or `Path.empty` where
-    it cannot be read, which includes every system other than Linux and macOS. On the
+    it cannot be read, which includes every system other than Linux, macOS and Windows. On the
     JavaScript backend it is the path of the compiled JavaScript file, with symbolic links
     resolved where possible, or of the `node` executable when the program is not loaded as a
     CommonJS module. The text is read with [`Path.fromPosixString`](Path#fromPosixString) on every
@@ -252,6 +256,21 @@ archFromString arch =
             UnknownArchitecture arch
 
 
+{-| A task that gives the program's [`Environment`](#Environment), as a program made with
+[`program`](#program) or [`simpleProgram`](#simpleProgram) receives it as its flags.
+
+Everything in it is the same as in the flags, including the three standard streams, except
+`startTime`, which is the time the task ran. It works in any program, whatever its flags, so a
+`Platform.worker` can reach its standard streams and arguments through it.
+
+-}
+environment : Task x Environment
+environment =
+    kEnvironment
+        |> Task.map fromKernel
+        |> Task.mapError never
+
+
 {-| Reads the environment variables of the running process, mapping each variable's name to
 its value.
 
@@ -284,10 +303,14 @@ pass it on.
 -}
 toEnvironment : Json.Decode.Value -> Environment
 toEnvironment json =
-    let
-        ( ( platform, arch, applicationPath ), ( args, startMillis ), ( stdin, stdout, stderr ) ) =
-            kEnvironmentNow json
-    in
+    fromKernel (kEnvironmentNow json)
+
+
+{-| Builds the `Environment` from the kernel's report: the platform and architecture names and
+the application path, the arguments and start time, and the ids of the three standard streams.
+-}
+fromKernel : ( ( String, String, String ), ( List String, Int ), ( Int, Int, Int ) ) -> Environment
+fromKernel ( ( platform, arch, applicationPath ), ( args, startMillis ), ( stdin, stdout, stderr ) ) =
     { platform = platformFromString platform
     , cpuArchitecture = archFromString arch
     , applicationPath = Path.fromPosixString applicationPath
@@ -390,6 +413,25 @@ ended: the program stops and the host receives `code`.
 exitWithCode : Int -> Cmd msg
 exitWithCode code =
     command (Execute (kExitWithCode code))
+
+
+{-| Ends the program at once with exit `code`, as [`exitWithCode`](#exitWithCode) does, but as a
+`Task`, so that code deep inside a chain of tasks can end the program.
+
+The task does not complete: the program ends while it runs. On the native backend, when the
+program is embedded in a host application, the program is stopped instead, the host receives
+`code`, and the task succeeds.
+
+    failWith : String -> Environment -> Task x ()
+    failWith message env =
+        Stream.logLine message env.stderr
+            |> Task.andThen (\_ -> System.exitWithCodeTask 1)
+
+-}
+exitWithCodeTask : Int -> Task x ()
+exitWithCodeTask code =
+    kExitWithCode code
+        |> Task.mapError never
 
 
 {-| Sets the exit code the program ends with, without ending it.
@@ -704,6 +746,13 @@ exist.
 kEnvironmentNow : Json.Decode.Value -> ( ( String, String, String ), ( List String, Int ), ( Int, Int, Int ) )
 kEnvironmentNow =
     Eco.Kernel.System.environmentNow
+
+
+{-| A task that reports, when it runs, what `kEnvironmentNow` reports.
+-}
+kEnvironment : Task Never ( ( String, String, String ), ( List String, Int ), ( Int, Int, Int ) )
+kEnvironment =
+    Eco.Kernel.System.environment
 
 
 {-| A task that reads the process's environment variables as name and value pairs.

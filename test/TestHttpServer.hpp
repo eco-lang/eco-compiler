@@ -21,7 +21,7 @@
 // Request bodies with `Transfer-Encoding: chunked` (Http.Stream stream
 // bodies) are de-chunked before routing.
 //   /package.zip     -> 200 application/zip, a canned 2-entry STORED zip
-//                       (for the Eco.Http.getArchive E2E test)
+//                       (once for eco/kernel's removed Eco.Http.getArchive test)
 //   /package-short.zip -> the same zip, but the first central-directory
 //                       entry's uncompressed size is 16 instead of 34, so it
 //                       disagrees with the local header and the stored data
@@ -74,8 +74,8 @@ namespace ElmHttpTestServer {
 // A minimal STORED (uncompressed) ZIP with two entries:
 //   pkg-1.0.0/elm.json     -> {"name":"dummy","version":"1.0.0"}
 //   pkg-1.0.0/src/Main.elm -> module Main exposing (..)
-// Served at /package.zip for Eco.Http.getArchive. getArchive strips the leading
-// directory, so entries appear as elm.json / src/Main.elm.
+// Served at /package.zip (written for eco/kernel's removed Eco.Http.getArchive test, whose
+// getArchive stripped the leading directory, so entries appeared as elm.json / src/Main.elm).
 static const unsigned char kDummyPackageZip[] = {
     0x50,0x4b,0x03,0x04,0x14,0x00,0x00,0x00,0x00,0x00,0x4e,0x73,0xbc,0x5c,0xe1,0x9f,
     0x7c,0x15,0x22,0x00,0x00,0x00,0x22,0x00,0x00,0x00,0x12,0x00,0x00,0x00,0x70,0x6b,

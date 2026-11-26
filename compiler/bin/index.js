@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 const { newServer } = require("mock-xmlhttprequest");
-const { handleEcoIO, handleEcoIOBinary, markHandlerFailed } = require("./eco-io-handler");
+const { handleEcoIO, handleEcoIOBinary, markHandlerFailed, handlerFailedFlag } = require("./eco-io-handler");
 
 const server = newServer();
 
@@ -27,6 +27,14 @@ server.post("eco-io", (request) => {
 });
 
 server.install();
+
+// The compiler ends through eco/system's System.exitWithCodeTask, which calls process.exit itself.
+// A failed eco-io handler may have left a truncated output behind, so an exit with success becomes
+// a failure then, as the old eco-io "Process.exit" op made it (process.exitCode set in an 'exit'
+// listener is the code the process ends with).
+process.on("exit", (code) => {
+  if (handlerFailedFlag() && code === 0) process.exitCode = 1;
+});
 
 // guida.js is the Stage 1 output now produced under ${CMAKE_BINARY_DIR}/compiler/build-xhr/bin/.
 // CMake passes the absolute path via GUIDA_JS_PATH when invoking index.js; the

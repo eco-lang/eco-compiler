@@ -351,13 +351,14 @@ int fdOfHandleForTest(int64_t id) {
 // ---------------------------------------------------------------------------
 
 std::string homeDirectoryString() {
+#if defined(_WIN32)
+    // Read as UTF-16, so a path outside the ANSI code page comes back intact.
+    std::string h = win32EnvUtf8(L"HOME");
+    if (!h.empty()) return h;
+    return win32EnvUtf8(L"USERPROFILE");
+#else
     const char* h = std::getenv("HOME");
     if (h && *h) return h;
-#if defined(_WIN32)
-    const char* up = std::getenv("USERPROFILE");
-    if (up && *up) return up;
-    return "";
-#else
     struct passwd* pw = ::getpwuid(::getuid());
     if (pw && pw->pw_dir) return pw->pw_dir;
     return "";
@@ -365,18 +366,20 @@ std::string homeDirectoryString() {
 }
 
 std::string currentWorkingDirectoryString() {
+#if defined(_WIN32)
+    // Read as UTF-16, so a path outside the ANSI code page comes back intact.
+    std::string cwd = win32CurrentDirectoryUtf8();
+    return cwd.empty() ? std::string(".") : cwd;
+#else
     // The buffer doubles from 4096 bytes while the path does not fit, at most eight tries.
     std::vector<char> buf(4096);
     for (int i = 0; i < 8; ++i) {
-#if defined(_WIN32)
-        if (::_getcwd(buf.data(), static_cast<int>(buf.size()))) return buf.data();
-#else
         if (::getcwd(buf.data(), buf.size())) return buf.data();
-#endif
         if (errno != ERANGE) break;
         buf.resize(buf.size() * 2);
     }
     return ".";
+#endif
 }
 
 std::string tmpDirectoryString() {

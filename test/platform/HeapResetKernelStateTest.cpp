@@ -9,11 +9,6 @@
 // The scheduler and the platform runtime start afresh on the first use in a new generation (D21), so the
 // cases may run processes after the reset; none resumes a closure parked before it.
 //
-//   runtime-load-state    Eco.Kernel.Runtime.loadState after a reset must give the JSON-null constant a fresh
-//                         heap gives, not the value saved in the OLD heap (RESET-01: `s_hasState` was never
-//                         cleared).
-//   runtime-saved-state   After a reset, a value saved in the new heap must survive minor GCs: the saved-state
-//                         scanner is registered again by `saveState` (RESET-01: it was gone with the old RootSet).
 //   time-effects-scanner  After a reset the Time manager's "time-effects" scanner must be on the new RootSet and
 //                         the post-reset onEffects must schedule a fresh tick (RESET-02: the scanner was
 //                         registered under std::call_once, and the stale `g_intervals` entry took the "already
@@ -32,7 +27,6 @@
 #include "../allocator/TestHelpers.hpp"
 
 #include "../../eco-kernel-cpp/src/eco-kernel/MVar.hpp"
-#include "../../eco-kernel-cpp/src/eco-kernel/Runtime.hpp"
 #include "../../runtime/src/allocator/Allocator.hpp"
 #include "../../runtime/src/allocator/Heap.hpp"
 #include "../../runtime/src/allocator/HeapHelpers.hpp"
@@ -102,81 +96,10 @@ std::string scannerNames() {
     return out.empty() ? std::string("(none)") : out;
 }
 
-// ---- RESET-01 a: loadState after a reset ------------------------------------------------------------------
-
-void testRuntimeLoadStateAfterReset() {
-    initAllocator();
-    (void)Scheduler::instance();
-    Eco_Kernel_register_all_gc_roots();
-
-    HPointer str = Elm::alloc::allocStringFromUTF8("x");
-    Elm::StackRootGuard g(&str);
-    (void)runTask(decodeBits(Eco::Kernel::Runtime::saveState(encodeBits(str))));
-    TEST_ASSERT(g_taskDone);
-    const uint64_t savedBits = runTask(decodeBits(Eco::Kernel::Runtime::loadState()));
-    TEST_ASSERT(g_taskDone);
-    TEST_ASSERT(savedBits == encodeBits(str));   // precondition: the save worked in the first heap
-
-    initAllocator();                     // the heap reset
-    Eco_Kernel_register_all_gc_roots();  // what a test must do after a reset
-
-    const uint64_t got = runTask(decodeBits(Eco::Kernel::Runtime::loadState()));
-    TEST_ASSERT(g_taskDone);
-    const uint64_t nullBits = Elm::nullConsWordFor(0);
-    const bool defect = got != nullBits;
-    if (defect)
-        TEST_FAIL("RESET-01: loadState after reset returned word " + std::to_string(got) +
-                  (got == savedBits ? " (the pre-reset saved HPointer)" : "") +
-                  ", expected the JSON-null constant " + std::to_string(nullBits));
-}
-
-// ---- RESET-01 b: the saved-state scanner after a reset -----------------------------------------------------
-
 // Whether `tag` is one of the String representations (allocStringFromUTF8 gives an all-ASCII Utf8Leaf).
 bool isStringTag(unsigned tag) {
     return tag == Elm::Tag_String || tag == Elm::Tag_StringRope || tag == Elm::Tag_StringSlice ||
            tag == Elm::Tag_StringUtf8View || tag == Elm::Tag_StringUtf8Leaf || tag == Elm::Tag_LargeStringHeader;
-}
-
-void testRuntimeSavedStateRootedAfterReset() {
-    // The legacy semispace nursery: two minors return allocation to the semispace the saved string was born in.
-    Elm::Allocator& a0 = initLegacyAllocator();
-    (void)a0;
-    (void)Scheduler::instance();
-    Eco_Kernel_register_all_gc_roots();   // registers the scanner on the first heap's RootSet
-    const size_t scannersBefore = Elm::Allocator::instance().getRootSet().getExternalRootScannerNames().size();
-    TEST_ASSERT(scannersBefore > 0);
-
-    Elm::Allocator& alloc = initLegacyAllocator();   // the heap reset; the hook is NOT called again
-    const std::string namesAfterReset = scannerNames();
-
-    {
-        HPointer str = Elm::alloc::allocStringFromUTF8("x");
-        Elm::StackRootGuard g(&str);
-        (void)runTask(decodeBits(Eco::Kernel::Runtime::saveState(encodeBits(str))));
-        TEST_ASSERT(g_taskDone);
-    }
-    alloc.minorGC();   // must evacuate the saved string
-    alloc.minorGC();
-    for (int j = 0; j < 4096; j++) (void)Elm::alloc::allocInt(-1);   // overwrite the old semispace
-
-    const uint64_t got = runTask(decodeBits(Eco::Kernel::Runtime::loadState()));
-    TEST_ASSERT(g_taskDone);
-    std::string what;
-    bool intact = false;
-    void* obj = alloc.resolve(decodeBits(got));
-    if (obj == nullptr) {
-        what = "the saved word no longer resolves";
-    } else if (!isStringTag(Elm::getHeader(obj)->tag)) {
-        what = "the saved word now points at an object with tag " + std::to_string(Elm::getHeader(obj)->tag);
-    } else {
-        std::string s = Elm::StringOps::toStdString(obj);
-        intact = s == "x";
-        what = "the saved string reads \"" + s + "\"";
-    }
-    if (!intact)
-        TEST_FAIL("RESET-01: " + what + " after a reset, two minor GCs and garbage (scanners after the reset: " +
-                  namesAfterReset + ")");
 }
 
 // ---- RESET-02: the Time manager after a reset -------------------------------------------------------------
@@ -314,8 +237,6 @@ void testMVarAfterReset() {
 
 void registerHeapResetKernelStateTests(IsolatedTestRunner::IsolatedTestCaseSuite& suite) {
     // Each case resets the heap, so each runs in its own spawned process.
-    suite.add(Testing::TestCase("heap-reset/runtime-load-state-gives-null", testRuntimeLoadStateAfterReset));
-    suite.add(Testing::TestCase("heap-reset/runtime-saved-state-rooted", testRuntimeSavedStateRootedAfterReset));
     suite.add(Testing::TestCase("heap-reset/time-effects-scanner", testTimeScannerAfterReset));
     suite.add(Testing::TestCase("heap-reset/http-effects-scanner", testHttpScannerAfterReset));
     suite.add(Testing::TestCase("heap-reset/mvar-scanner-and-old-mvars-gone", testMVarAfterReset));

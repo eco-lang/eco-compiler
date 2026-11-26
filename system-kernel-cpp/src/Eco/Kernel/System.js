@@ -70,6 +70,13 @@ var _System_environmentNow = function(json)
 	);
 };
 
+// environment : Task Never ( ( String, String, String ), ( List String, Int ), ( Int, Int, Int ) )
+// The value environmentNow returns, built when the Task runs (System.environment).
+var _System_environment = __Scheduler_binding(function(callback)
+{
+	callback(__Scheduler_succeed(_System_environmentNow(null)));
+});
+
 // getEnvironmentVariables : Task Never (List ( String, String ))
 var _System_getEnvironmentVariables = __Scheduler_binding(function(callback)
 {

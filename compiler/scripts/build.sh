@@ -32,6 +32,10 @@ esac
 
 js="$filepath.js"
 
+# The stock-Elm eco/system modules (plans/compiler-io-on-eco-system.md §5); CMake keeps them current, this
+# regenerates them for a tree built before they changed.
+node "$COMPILER_DIR/scripts/make-stage1-system.js" "$BUILD_XHR_DIR/src-system"
 cd "$BUILD_XHR_DIR"
 $ELM make --output=$js $elm_entry
 node "$COMPILER_DIR/scripts/apply-overrides.js" $js
+node "$COMPILER_DIR/scripts/link-stage1-system-kernels.js" $js "$BUILD_XHR_DIR/src-system"

@@ -223,8 +223,8 @@ eco_system_module(HttpStream   POSIX
 # Response bodies are ChannelSources and stream request bodies are piped into
 # a ChannelSink (Phase 8).
 target_link_libraries(EcoSystem_HttpStream PUBLIC EcoSystem_Stream)
-# libcurl, with the same per-platform selection as EcoKernel_Http
-# (eco-kernel-cpp/CMakeLists.txt): the vendored `libcurl_static` target under
+# libcurl, with the same per-platform selection as ElmKernel_Http
+# (elm-kernel-cpp/CMakeLists.txt): the vendored `libcurl_static` target under
 # WIN32 (schannel) and ECO_STATIC (created by the top-level CMakeLists before
 # any subdirectory), the SDK / system libcurl (CURL::libcurl) otherwise.
 # find_package's imported target is directory-scoped, so it is looked up

@@ -23,6 +23,9 @@
 #include <utility>
 #include <vector>
 
+#if defined(_WIN32)
+#include "platform/PlatformPaths.hpp"
+#endif
 #if defined(__APPLE__)
 #include <crt_externs.h>
 #include <mach-o/dyld.h>
@@ -93,8 +96,9 @@ const char* archName() {
 }
 
 // Returns the path of the running executable, or "" if it cannot be read. On macOS the path is resolved
-// with `realpath`, falling back to the unresolved one; on Linux it is the /proc/self/exe link; on other
-// platforms it is always "".
+// with `realpath`, falling back to the unresolved one; on Linux it is the /proc/self/exe link; on Windows
+// it is GetModuleFileNameW's answer (eco::platform::currentExecutablePath); on other platforms it is
+// always "".
 std::string applicationPath() {
 #if defined(__APPLE__)
     uint32_t size = 0;
@@ -105,6 +109,8 @@ std::string applicationPath() {
     char resolved[PATH_MAX];
     if (::realpath(raw.c_str(), resolved)) return resolved;
     return raw;
+#elif defined(_WIN32)
+    return eco::platform::currentExecutablePath();
 #elif defined(__linux__)
     std::vector<char> buf(PATH_MAX);
     for (;;) {
@@ -249,6 +255,12 @@ HPointer systemEnvironmentNow() {
                                    alloc::unboxedInt(ids[2]), 0x15);
     // `stdio` is fresh and goes straight into tuple3, which roots its boxed fields.
     return alloc::tuple3(alloc::boxed(names), alloc::boxed(argsTime), alloc::boxed(stdio), 0);
+}
+
+HPointer systemEnvironmentBody(HPointer /*captured*/) {
+    ECO_SYSTEM_BODY_GUARD(Never,
+        return succeed(systemEnvironmentNow());
+    )
 }
 
 HPointer systemGetEnvironmentVariablesBody(HPointer /*captured*/) {

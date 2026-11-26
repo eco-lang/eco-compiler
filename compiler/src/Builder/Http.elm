@@ -9,10 +9,11 @@ module Builder.Http exposing
 {-| Gives the package-manager code one way to make HTTP requests, and one
 error type for their failures.
 
-The requests themselves are made by `Eco.Http`, whose docstring says which
-failures come back as an `Err` and which crash the program. This module adds
-two request headers to every `get` and `post`, hands the response body to the
-caller's continuation, and turns a failure into an `Error`. `get`, `post` and
+The requests themselves are made by eco/system's `Http.Stream`, and every
+failure comes back as an `Err`. This module adds two request headers to every
+`get` and `post`, reads the whole response body, decompresses it as its
+`Content-Encoding` says (`gzip` or `deflate`), decodes it as UTF-8, hands it to
+the caller's continuation, and turns a failure into an `Error`. `get`, `post` and
 `getArchive` return `Task Never (Result e a)`. `get` and `post` take a
 function from `Error` to the caller's error type, while `getArchive` takes a
 fixed error value that it returns for any failure.
@@ -20,8 +21,9 @@ fixed error value that it returns for any failure.
 A _manager_ is the value a caller threads through to every request. It carries
 nothing, and no function here reads it.
 
-Archives are fetched by `getArchive`, which returns the archive's SHA and its
-entries as a `Codec.Archive.Zip.Archive`.
+Archives are fetched by `getArchive`, which returns the archive's SHA-1 and its
+entries as a `Codec.Archive.Zip.Archive`, unpacked in Elm by
+`Codec.Archive.ZipReader` and hashed by `Codec.Sha1`.
 
 @docs Manager, getManager, managerEncoder, managerDecoder
 @docs get, post
@@ -31,12 +33,20 @@ entries as a `Codec.Archive.Zip.Archive`.
 
 -}
 
+import Bytes exposing (Bytes)
 import Bytes.Decode
 import Bytes.Encode
 import Codec.Archive.Zip as Zip
+import Codec.Archive.ZipReader as ZipReader
+import Codec.Sha1 as Sha1
+import Codec.Utf8 as Utf8
 import Compiler.Elm.Version_Build as Version_Build
-import Eco.Http
-import Eco.Http.Error as HttpErr exposing (HttpError)
+import Dict
+import Flate
+import Http
+import Http.Method
+import Http.Stream
+import Stream
 import Task exposing (Task)
 import Utils.Bytes.Decode as BD
 import Utils.Bytes.Encode as BE
@@ -106,48 +116,113 @@ received.
 -}
 get : Manager -> String -> List Header -> (Error -> e) -> (String -> Task Never (Result e a)) -> Task Never (Result e a)
 get =
-    fetch "GET"
+    fetch Http.Method.GET
 
 
 {-| Sends a POST request with no body, otherwise exactly as `get` does.
 -}
 post : Manager -> String -> List Header -> (Error -> e) -> (String -> Task Never (Result e a)) -> Task Never (Result e a)
 post =
-    fetch "POST"
+    fetch Http.Method.POST
 
 
 {-| Sends a request with `method`, adding the default headers, and returns
 the continuation's result on success or the converted `Error` on failure.
 -}
-fetch : String -> Manager -> String -> List Header -> (Error -> e) -> (String -> Task Never (Result e a)) -> Task Never (Result e a)
+fetch : Http.Method.Method -> Manager -> String -> List Header -> (Error -> e) -> (String -> Task Never (Result e a)) -> Task Never (Result e a)
 fetch method _ url headers onError onSuccess =
-    Eco.Http.fetch method url (addDefaultHeaders headers)
+    download method url (addDefaultHeaders headers)
+        |> Task.map
+            (\( encoding, body ) ->
+                case decompress encoding body of
+                    Just bytes ->
+                        Ok (Utf8.decode bytes)
+
+                    Nothing ->
+                        Err (BadHttp url 0 "unable to decompress the response body")
+            )
+        |> Task.onError (\err -> Task.succeed (Err err))
         |> Task.andThen
             (\result ->
                 case result of
-                    Ok body ->
-                        onSuccess body
+                    Ok text ->
+                        onSuccess text
 
-                    Err httpErr ->
-                        Task.succeed (Err (onError (fromHttpError url httpErr)))
+                    Err err ->
+                        Task.succeed (Err (onError err))
             )
 
 
-{-| Converts a failure of the request to `url` into an `Error`.
+{-| Sends a request with no body and gives the response's `Content-Encoding`
+header (`""` for none) and its whole body, as sent.
 
-A bad status keeps its code and text. A network failure becomes status code 0
-with the failure's detail as the status text, meaning that no HTTP response was
-received.
+A response with a status outside 200 to 299 fails with a `BadHttp` that keeps
+its status code and text, and its body is not read. A failure without a
+response fails with status code 0 and a short description as the text:
+`bad URL: <url>`, `timeout` or `network error`, or the stream's error when the
+body could not be read to its end.
 
 -}
-fromHttpError : String -> HttpError -> Error
-fromHttpError url httpErr =
-    case httpErr of
-        HttpErr.BadStatus r ->
-            BadHttp url r.statusCode r.statusText
+download : Http.Method.Method -> String -> List Header -> Task Error ( String, Bytes )
+download method url headers =
+    Http.Stream.task
+        { method = method
+        , headers = List.map (\( name, value ) -> Http.header name value) headers
+        , url = url
+        , body = Http.Stream.emptyBody
+        , resolver = Http.Stream.streamResolver Ok
+        , timeout = Nothing
+        }
+        |> Task.andThen
+            (\response ->
+                case response of
+                    Http.GoodStatus_ meta body ->
+                        readAll body
+                            |> Task.map (\bytes -> ( Dict.get "content-encoding" meta.headers |> Maybe.withDefault "", bytes ))
+                            |> Task.mapError (\err -> BadHttp url 0 (Stream.errorToString err))
 
-        HttpErr.Network r ->
-            BadHttp url 0 r.detail
+                    Http.BadStatus_ meta body ->
+                        Stream.cancelReadable "unused" body
+                            |> Task.onError (\_ -> Task.succeed ())
+                            |> Task.andThen (\_ -> Task.fail (BadHttp url meta.statusCode meta.statusText))
+
+                    Http.BadUrl_ badUrl ->
+                        Task.fail (BadHttp url 0 ("bad URL: " ++ badUrl))
+
+                    Http.Timeout_ ->
+                        Task.fail (BadHttp url 0 "timeout")
+
+                    Http.NetworkError_ ->
+                        Task.fail (BadHttp url 0 "network error")
+            )
+
+
+{-| Reads a body stream to its end and gives all of it.
+-}
+readAll : Stream.Readable Bytes -> Task Stream.Error Bytes
+readAll body =
+    Stream.readUntilClosed (\chunk acc -> Ok (chunk :: acc)) [] body
+        |> Task.map
+            (\chunks ->
+                Bytes.Encode.encode (Bytes.Encode.sequence (List.map Bytes.Encode.bytes (List.reverse chunks)))
+            )
+
+
+{-| Undoes the `Content-Encoding` a server applied: `gzip`, and `deflate` (zlib
+wrapped), as the old kernels' Node `zlib` did, and nothing for any other.
+`Nothing` if the body does not decompress.
+-}
+decompress : String -> Bytes -> Maybe Bytes
+decompress encoding body =
+    case String.toLower (String.trim encoding) of
+        "gzip" ->
+            Flate.inflateGZip body
+
+        "deflate" ->
+            Flate.inflateZlib body
+
+        _ ->
+            Just body
 
 
 {-| Returns `headers` with the `User-Agent` and `Accept-Encoding: gzip`
@@ -207,23 +282,26 @@ shaToChars =
 and its entries.
 
 Any failure gives `Err defaultError`; the cause of the failure is discarded.
-No headers are added. The meaning of the SHA is as `Eco.Http.getArchive`
-describes.
+No headers are added. The SHA is the SHA-1 of the archive as downloaded, in 40
+lowercase hexadecimal digits. The entries are in the order of the archive's
+central directory, each with its contents decoded as UTF-8 text.
 
 -}
 getArchive : String -> e -> (( Sha, Zip.Archive ) -> Task Never (Result e a)) -> Task Never (Result e a)
 getArchive url defaultError onSuccess =
-    Eco.Http.getArchive url
+    download Http.Method.GET url []
+        |> Task.map (\( _, bytes ) -> Maybe.map (Tuple.pair (Sha1.hex bytes)) (ZipReader.entries bytes))
+        |> Task.onError (\_ -> Task.succeed Nothing)
         |> Task.andThen
             (\result ->
                 case result of
-                    Ok { sha, archive } ->
+                    Just ( sha, entries ) ->
                         onSuccess
                             ( sha
-                            , List.map (\entry -> Zip.Entry entry.relativePath entry.data) archive
+                            , List.map (\entry -> Zip.Entry entry.name (Utf8.decode entry.data)) entries
                             )
 
-                    Err _ ->
+                    Nothing ->
                         Task.succeed (Err defaultError)
             )
 

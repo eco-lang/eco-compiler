@@ -309,10 +309,10 @@ option(ECO_LINK_WITH_BFD
        "Link the eco binary with GNU ld (bfd) instead of the preset's default linker"
        ON)
 
-# Kernel-side stderr tracing for HTTP requests/responses, zip extraction, and
-# file operations. Defined as ECO_KERNEL_DEBUG in the affected kernel libs
-# (Http, File, NativeDriver, HttpService runtime). See the ECO_KLOG macro in
-# eco-kernel-cpp/src/eco-kernel/KernelDebug.hpp. Default OFF — the `dev` preset
+# Kernel-side stderr tracing for HTTP requests and responses. Defined as
+# ECO_KERNEL_DEBUG in the affected kernel libs (ElmKernel_Http, the HttpService
+# runtime). See the ECO_KLOG macro in elm-kernel-cpp/src/KernelDebug.hpp.
+# Default OFF — the `dev` preset
 # flips it back ON for diagnostic builds; the `build` and `release` presets
 # inherit OFF so user-visible binaries stay quiet on stderr.
 option(ECO_KERNEL_DEBUG
@@ -359,7 +359,7 @@ if(ECO_STATIC OR WIN32)
     #
     # Vendored at the TOP level (not inside eco-kernel-cpp) so the
     # `libcurl_static` target exists before elm-kernel-cpp is added — both
-    # subdirs link ElmKernel_Http / EcoKernel_Http against it.
+    # subdirs link ElmKernel_Http / EcoSystem_HttpStream against it.
     include(FetchContent)
 
     # Vendor zlib FIRST so curl's find_package(ZLIB) and libzip's
@@ -696,7 +696,7 @@ if(ECO_STATIC_MUSL)
             COMPONENT Bundle)
 
     # eco/kernel Elm package — the source the bundled `eco` resolves when
-    # user code does `import Eco.Console`/`Eco.File`/etc. via the
+    # user code does `import Eco.MVar`/`Eco.Hash`/etc. via the
     # `--local-package eco/kernel=<path>` flag. FILES_MATCHING with positive
     # patterns is sufficient to drop the in-tree C++ siblings under src/eco-kernel/
     # (lowercase) and any stale elm-stuff/ cache — neither matches *.elm /

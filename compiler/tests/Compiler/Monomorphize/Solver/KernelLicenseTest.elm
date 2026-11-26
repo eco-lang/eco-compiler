@@ -68,9 +68,10 @@ What the tests establish:
   - Test 14: a `TransportsAs` license with the shape `a -> a` accepts `p -> p`
     and refuses `p -> q`.
   - Test 15: the kernel prefix is part of the key (SD-16,
-    plans/kernel-table-prefix-keys.md). `File.size` has one row for elm/file and
-    one for eco/kernel, and `Elm.Kernel.File.open`, which only eco/kernel has,
-    has no row.
+    plans/kernel-table-prefix-keys.md). `File.size` has a row for elm/file and
+    none under the `Eco` prefix, and `MVar.new` a row for eco/kernel and none
+    under the `Elm` prefix. (eco/kernel's own `File.size`, which shared the home
+    with elm/file, was removed: plans/compiler-io-on-eco-system.md.)
 
 The audit records and file pins kept beside the table
 (`kernel-license-audit.csv`, `kernel-license-files.csv`) are checked by
@@ -394,14 +395,15 @@ suite =
                     , \() -> Expect.equal False (KernelSetFacts.licenseApplies noScalars tunnel (cFun (cVar "p") (cVar "q")))
                     ]
                     ()
-        , Test.test "15. the kernel prefix is part of the key (SD-16): File.size has one row per kernel" <|
+        , Test.test "15. the kernel prefix is part of the key (SD-16): a row is found only under its own prefix" <|
             \() ->
-                -- elm/file and eco/kernel both have a kernel `File.size`, with
-                -- different types and C++. Each prefix gets its own row, and a
-                -- name only one kernel has is not found under the other prefix.
+                -- elm/file has a kernel `File.size` and eco/kernel a kernel `MVar.new`; neither
+                -- row is found under the other prefix.
                 Expect.equal
-                    ( isLicensed "Elm" "File" "size", isLicensed "Eco" "File" "size", KernelSetFacts.factFor "Elm" "File" "open" )
-                    ( True, True, Nothing )
+                    ( ( isLicensed "Elm" "File" "size", KernelSetFacts.factFor "Eco" "File" "size" )
+                    , ( isLicensed "Eco" "MVar" "new", KernelSetFacts.factFor "Elm" "MVar" "new" )
+                    )
+                    ( ( True, Nothing ), ( True, Nothing ) )
         ]
 
 

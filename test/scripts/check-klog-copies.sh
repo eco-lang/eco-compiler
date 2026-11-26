@@ -1,12 +1,12 @@
 #!/bin/sh
-# The debug-log macro ECO_KLOG is defined in elm-kernel-cpp/src/KernelDebug.hpp,
-# eco-kernel-cpp/src/eco-kernel/KernelDebug.hpp and runtime/src/platform/HttpService.cpp (the layers cannot share
-# a header). This extracts each file's `#define ECO_KLOG` lines (with their continuation lines,
+# The debug-log macro ECO_KLOG is defined in elm-kernel-cpp/src/KernelDebug.hpp and
+# runtime/src/platform/HttpService.cpp (the layers cannot share a header; eco-kernel-cpp's copy went with its
+# File and Http modules, plans/compiler-io-on-eco-system.md). This extracts each file's `#define ECO_KLOG` lines (with their continuation lines,
 # whitespace-normalised) and fails when the copies differ. A file that includes a shared header instead defines
 # nothing and is skipped; at least one definition must remain.
 # Exit 0 = the copies agree (or there is one), 1 = they differ.
 root=${1:-.}
-files="elm-kernel-cpp/src/KernelDebug.hpp eco-kernel-cpp/src/eco-kernel/KernelDebug.hpp runtime/src/platform/HttpService.cpp"
+files="elm-kernel-cpp/src/KernelDebug.hpp runtime/src/platform/HttpService.cpp"
 tmp=$(mktemp -d /tmp/check-klog-copies.XXXXXX)
 trap 'rm -rf "$tmp"' EXIT
 ref=""

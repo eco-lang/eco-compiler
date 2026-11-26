@@ -651,7 +651,7 @@ void eco_closure_call_saturated_eval(
 
 // Ends the process with status `code`, after flushing `std::cout`, `std::cerr` and every C stdio stream. The one
 // way the runtime and the kernels end a program that has not returned from `main` (a crash, `Debug.todo`,
-// `Eco.Process.exit`, `Eco.Crash.crash`).
+// `Eco.Crash.crash`).
 //
 // On POSIX it calls `std::exit(code)`, so `atexit` handlers (statistics, the GC gang shutdown) still run. On
 // Windows it calls `TerminateProcess` and never returns: the scheduler's detached service threads are never told

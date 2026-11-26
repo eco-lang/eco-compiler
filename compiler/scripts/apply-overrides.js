@@ -128,6 +128,6 @@ function main(argv) {
   }
 }
 
-module.exports = { apply, ApplyError };
+module.exports = { apply, ApplyError, definitionSpan };
 
 if (require.main === module) process.exit(main(process.argv.slice(2)));

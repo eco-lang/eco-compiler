@@ -110,7 +110,7 @@ Flag syntax, from `compiler/src/Terminal/Terminal/Chomp.elm:404-442`: a value fl
 | `test --fuzz` (disabled) | int; default 100 | Runs per fuzz test (parsed into `maybeRuns`) | compiler/src/Terminal/Main.elm:666,703 |
 | `test --report` (disabled) | `json` \| `junit` \| `console`; default console | Test report format | compiler/src/Terminal/Main.elm:668; compiler/src/Terminal/Test.elm:1307 |
 
-**Library API** (`API.Main`, which reads a JSON argument through `Eco.Env.rawArgs`; its JS driver `compiler/lib/index.js` has since been removed, so nothing in the tree ships a driver for it)
+**Library API** (`API.Main`, which reads a JSON argument through `Utils.envGetArgs`, eco/system's `System.environment`; its JS driver `compiler/lib/index.js` has since been removed, so nothing in the tree ships a driver for it)
 
 | Name | Values / default | Effect | Source |
 |---|---|---|---|
@@ -124,7 +124,7 @@ Flag syntax, from `compiler/src/Terminal/Terminal/Chomp.elm:404-442`: a value fl
 
 Every `ECO_*` variable except `ECO_HOME` and `ECO_STAMP_GUARD_CENSUS` is read once per `make`, in `applyEnvOverrides` (`compiler/src/Builder/Eco/Config.elm:115-458`). The overrides apply **on top of** `eco-config.json` or the built-in defaults, in the listed order, so a later variable wins over an earlier broadcast. The value then feeds `Config.hash`, which keys the Details/artifact cache. Rows tagged **(hash)** add a cache token when non-default or enabled. Rows tagged **(no-hash)** are output-only or failure-only.
 
-All reads go through `Utils.envLookupEnv`, then `Eco.Env.lookup`, then the XHR `Env.lookup` or the native kernel.
+All reads go through `Utils.envLookupEnv`, which reads eco/system's `System.environmentVariables` (natively the process environment, on JS `process.env`; Stage 1 runs eco/system's JS kernels).
 
 Parsing classes (inputs are trimmed and lower-cased unless stated otherwise):
 - **B4**: `1|true|yes|on` turns on, `0|off` turns off, anything else is ignored. **`false`/`no` are NOT recognized as off.**
@@ -488,10 +488,9 @@ These are read by the runtime (`runtime/src/allocator/RuntimeExports.cpp`) when 
 | `ECO_SEQDICT_VALIDATE` | `1` | Before comparing two SeqDicts with `==`, checks both for the layout invariants of plans/seq-data-structures-performance.md §4.2 (order array, trie reachability, bitmaps, canonical form) and aborts with the broken one; the eco-system SeqDict tests set it | `elm-kernel-cpp/src/core/Utils.cpp` (`seqDictEq`), `elm-kernel-cpp/src/core/SeqDict.hpp` (`validateSeqDict`) |
 | `TZ` | IANA name, optional leading `:` | `Time.here`/zone name: used before `/etc/localtime` on Linux, macOS and Windows | `elm-kernel-cpp/src/time/TimeExports.cpp:92`, `:130`, `:151` |
 | `CURL_CA_BUNDLE` | path | CA bundle for HTTPS when the request has no explicit `caInfo` (libcurl does not read this itself). The AOT E2E runner sets it to its test server's cert | `runtime/src/platform/HttpService.cpp:229`, `test/aot_e2e_main.cpp:127` |
-| `PATH` (Windows also `Path`) | standard | `Eco.File.findExecutable` search path | `eco-kernel-cpp/src/eco-kernel/File.cpp:190` |
-| `HOME`; Windows `APPDATA` -> `USERPROFILE` -> `HOME` | standard | `Eco.File.appDataDir` base (`~/.name`, `~/Library/Application Support/name` on macOS, `%APPDATA%/name` on Windows) | `eco-kernel-cpp/src/eco-kernel/File.cpp:350-361` |
-| any name (`Eco.Env.lookup`) | arbitrary | Elm programs read any variable through `Eco.Kernel.Env.lookup` (evaluated at task-step time) | `eco-kernel-cpp/src/eco-kernel/Env.cpp:32` |
-| `ECO_KERNEL_DEBUG` (compile-time macro / CMake option) | CMake option default **OFF**; the `dev` preset turns it ON | Enables `ECO_KLOG` `[eco-kernel:<tag>]` stderr traces in the ElmKernel_Http, EcoKernel_Http and EcoKernel_File targets. The header comment in `KernelDebug.hpp` says "defaults ON", which is stale | `CMakeLists.txt:247`, `eco-kernel-cpp/src/eco-kernel/KernelDebug.hpp:17`, `elm-kernel-cpp/src/KernelDebug.hpp:15`, `elm-kernel-cpp/CMakeLists.txt:343`, `eco-kernel-cpp/CMakeLists.txt:300` |
+| `HOME`; Windows `APPDATA`, then the home directory (`HOME`, `USERPROFILE`) | standard | The compiler's application data directory (`~/.name`, `~/Library/Application Support/name` on macOS, `%APPDATA%/name` on Windows); an unset or empty `HOME` falls back to the user database | `compiler/src/Utils/Main.elm` (`appDataDirFor`), `system-kernel-cpp/src/eco-system/FileSystem/FileSystem.cpp` (`homeDirectoryString`) |
+| any name (`System.environmentVariables`) | arbitrary | Elm programs read any variable through eco/system's `System.environmentVariables` (read when the task runs) | `system-kernel-cpp/src/eco-system/System/System.cpp` |
+| `ECO_KERNEL_DEBUG` (compile-time macro / CMake option) | CMake option default **OFF**; the `dev` preset turns it ON | Enables `ECO_KLOG` `[eco-kernel:<tag>]` stderr traces in the ElmKernel_Http target | `CMakeLists.txt`, `elm-kernel-cpp/src/KernelDebug.hpp:15`, `elm-kernel-cpp/CMakeLists.txt:343` |
 
 ### Test runners (`test/`)
 
@@ -923,7 +922,7 @@ The only `ECO_*` / `ENABLE_*` feature macros in `runtime/`, `elm-kernel-cpp/` an
 | `P1_CENSUS_COMPILED` | derived | `ENABLE_P1_CENSUS \|\| ECO_HEAP_VALIDATE`. Gates the census code (30 sites). | `runtime/src/allocator/P1Census.hpp:36` |
 | `ECO_LOWERING_VALIDATION` | undefined | `#ifndef` ⇒ disables the after-each-pass MLIR verifier; `#if` ⇒ enables the verifier passes. | `runtime/src/codegen/eco-boot.cpp:365`, `EcoNativeDriver.cpp:97`, `Passes/EcoBoxedStoreVerify.cpp:53` |
 | `ECO_HEAP_TRACE` | undefined | Compiles `Allocator::heapTraceEnabled()` to read the environment. | `runtime/src/allocator/Allocator.cpp:79` |
-| `ECO_KERNEL_DEBUG` | undefined | Defines `ECO_KLOG` as an `fprintf` to stderr (a no-op otherwise). | `eco-kernel-cpp/src/eco-kernel/KernelDebug.hpp:17`, `elm-kernel-cpp/src/KernelDebug.hpp:14`, `runtime/src/platform/HttpService.cpp:9` |
+| `ECO_KERNEL_DEBUG` | undefined | Defines `ECO_KLOG` as an `fprintf` to stderr (a no-op otherwise). | `elm-kernel-cpp/src/KernelDebug.hpp:14`, `runtime/src/platform/HttpService.cpp:9` |
 | `NDEBUG` | set by build type / flags | Besides `assert`, root-stack overflow checks run when `!NDEBUG \|\| ECO_HEAP_VALIDATE`. | `runtime/src/allocator/RootSet.hpp:145,166` |
 | `RUSAGE_THREAD` | platform (Linux) | Per-thread fault and context-switch counters in the GC phase profile. They read 0 on Darwin. | `runtime/src/allocator/ThreadLocalHeap.cpp:823`, `NurserySpace.cpp:555` |
 | `__SANITIZE_THREAD__` | compiler (TSan) | Reserves the heap in TSan's low application range. | `runtime/src/allocator/PlatformVirtualMemory_posix.cpp:39` |

@@ -73,3 +73,23 @@ extern "C" void Eco_Kernel_MVar_register_gc_roots() {
 }
 
 } // extern "C"
+
+// elm-kernel-cpp's hook that registers the scanner for its Order values, defined in its core Utils exports. Off
+// Windows it is declared weak, so the aggregate hook below still links without elm-kernel-cpp, and the address test
+// there skips it. clang-cl turns a weak declaration into a weak definition that lld-link reports as a duplicate
+// under /WHOLEARCHIVE, so on Windows the declaration is strong, and the runtime's
+// `eco_order_weak_stub_win32.cpp` supplies a no-op default through /alternatename when no real definition is linked.
+#if defined(_WIN32)
+extern "C" void Eco_Kernel_Order_register_gc_roots();
+#else
+extern "C" __attribute__((weak)) void Eco_Kernel_Order_register_gc_roots();
+#endif
+
+// The aggregate GC root hook every native program calls once its allocator is up (eco_entry.cpp, eco_embed.cpp,
+// EcoRunner.cpp). It lived with Eco.Runtime's saved state until that module was removed
+// (plans/compiler-io-on-eco-system.md); MVar is now the only eco/kernel module that keeps values off the heap.
+extern "C" void Eco_Kernel_register_all_gc_roots() {
+    Eco_Kernel_MVar_register_gc_roots();
+    if (Eco_Kernel_Order_register_gc_roots)
+        Eco_Kernel_Order_register_gc_roots();
+}

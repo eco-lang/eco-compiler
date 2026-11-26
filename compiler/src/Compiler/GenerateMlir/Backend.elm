@@ -74,7 +74,6 @@ import Compiler.MonoOpt.InlineSimplify as MonoInlineSimplify
 import Compiler.MonoOpt.MapTemplate as MapTemplate
 import Data.NonEmptyList as NE
 import Dict
-import Eco.File
 import Mlir.Bytecode.StreamEncode as StreamEncode
 import Mlir.Loc as Loc
 import Mlir.Mlir exposing (MlirOp, MlirType)
@@ -424,7 +423,7 @@ finishBytecode main ports flagsDecoder target ( ctxAfterNodes, tablesAfterNodes 
             StreamEncode.assembleModule "eco" finalTables Loc.unknown
     in
     Utils.dirCreateDirectoryIfMissing True (Utils.fpTakeDirectory target)
-        |> Task.andThen (\_ -> Eco.File.writeBytes target bytecodeBytes |> IO.crashOnError)
+        |> Task.andThen (\_ -> IO.writeBytes target bytecodeBytes |> IO.crashOnError)
 
 
 {-| What the result-promotion rules need to know about constructors: the

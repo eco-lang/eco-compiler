@@ -3,7 +3,7 @@ module NativeDriverEmptyBytesTest exposing (main)
 {-| HEAP-02 (plans/kernel-lib-bug-fixes.md, group 10): `Eco.NativeDriver.lowerAndLinkBytes` with
 an empty `Bytes`.
 
-A 0-byte file read with `Eco.File.readBytes` is the embedded empty-Bytes constant (HEAP_014).
+A 0-byte file read with `FileSystem.readFile` is the embedded empty-Bytes constant (HEAP_014).
 `lowerAndLinkBytesBody` (eco-kernel-cpp/src/eco-kernel/NativeDriver.cpp) passes it straight to
 `Allocator::resolve`, which must never see an embedded constant: an assertion abort (asserts on)
 or a wild read. Fixed, the Task fails cleanly (empty MLIR, or the weak stub's rc=-1). The JS
@@ -22,8 +22,10 @@ wrong reason that stays one after the fix.
 
 
 import Bytes
-import Eco.File as File
+import Bytes.Encode
 import Eco.NativeDriver as NativeDriver
+import FileSystem
+import Path
 import Platform
 import Task exposing (Task)
 
@@ -39,9 +41,9 @@ type Msg
 
 run : Task Never (List String)
 run =
-    File.createDir True dir
-        |> Task.andThen (\_ -> File.writeString (dir ++ "/empty.mlir") "")
-        |> Task.andThen (\_ -> File.readBytes (dir ++ "/empty.mlir"))
+    FileSystem.makeDirectory { recursive = True } (Path.fromPosixString dir)
+        |> Task.andThen (\_ -> FileSystem.writeFile (Bytes.Encode.encode (Bytes.Encode.sequence [])) (Path.fromPosixString (dir ++ "/empty.mlir")))
+        |> Task.andThen (\_ -> FileSystem.readFile (Path.fromPosixString (dir ++ "/empty.mlir")))
         |> Task.mapError (\_ -> "setup failed")
         |> Task.andThen
             (\bytes ->

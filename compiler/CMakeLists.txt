@@ -136,6 +136,11 @@ eco_create_dir_link(${COMPILER_DIR}/src     ${BUILD_XHR_DIR}/src)
 eco_create_dir_link(${COMPILER_DIR}/src-xhr ${BUILD_XHR_DIR}/src-xhr)
 eco_create_dir_link(${COMPILER_DIR}/tests   ${BUILD_XHR_DIR}/tests)
 eco_create_dir_link(${ECO_VERSION_GEN_DIR}  ${BUILD_XHR_DIR}/version)
+# The stock-Elm copy of the eco/system modules the compiler imports (plans/compiler-io-on-eco-system.md
+# §5), generated into ${BUILD_XHR_DIR}/src-system by the Stage 1 rule below. compiler/src-system links to
+# it so that compiler/elm.json (plain compiles, editor tooling) sees the same modules; it is git-ignored.
+file(MAKE_DIRECTORY ${BUILD_XHR_DIR}/src-system)
+eco_create_dir_link(${BUILD_XHR_DIR}/src-system ${COMPILER_DIR}/src-system)
 
 set(COMPILER_OUTPUT "${BUILD_XHR_DIR}/bin/guida.js")
 set(ELM_ENTRY "${COMPILER_DIR}/src/Terminal/Main.elm")
@@ -175,13 +180,32 @@ add_custom_command(
     COMMENT "Installing Node runtime libs via pnpm"
 )
 
-# Step 1: Build the compiler with stock Elm (XHR IO)
+# Step 0: the eco/system modules Stage 1 compiles (plans/compiler-io-on-eco-system.md §5): stock-Elm
+# copies of system-kernel-cpp/src whose kernel wrappers are stubs, and kernels.json listing the wrappers.
+set(ECO_SYSTEM_DIR ${CMAKE_SOURCE_DIR}/system-kernel-cpp)
+set(STAGE1_SYSTEM_DIR ${BUILD_XHR_DIR}/src-system)
+file(GLOB_RECURSE _stage1_system_elm CONFIGURE_DEPENDS ${ECO_SYSTEM_DIR}/src/*.elm)
+file(GLOB _stage1_system_kernels CONFIGURE_DEPENDS ${ECO_SYSTEM_DIR}/src/Eco/Kernel/*.js)
+add_custom_command(
+    OUTPUT ${STAGE1_SYSTEM_DIR}/GENERATED ${STAGE1_SYSTEM_DIR}/kernels.json
+    COMMAND ${NODE_EXECUTABLE} ${COMPILER_DIR}/scripts/make-stage1-system.js ${STAGE1_SYSTEM_DIR}
+    DEPENDS ${_stage1_system_elm}
+        ${COMPILER_DIR}/scripts/make-stage1-system.js
+        ${ECO_SYSTEM_DIR}/scripts/stock-elm-rewrite.js
+    COMMENT "Generating the stock-Elm eco/system modules for Stage 1"
+)
+
+# Step 1: Build the compiler with stock Elm (XHR IO for eco/kernel, eco/system's own JS kernels)
 add_custom_command(
     OUTPUT ${COMPILER_OUTPUT}
     COMMAND ${ELM_EXECUTABLE} make --output=${COMPILER_OUTPUT} ${ELM_ENTRY}
     # Stock elm knows nothing about kernel overrides; eco's backend emits them for every later stage.
     COMMAND ${NODE_EXECUTABLE} ${COMPILER_DIR}/scripts/apply-overrides.js ${COMPILER_OUTPUT}
+    # Nor about eco/system's kernels: link the ones the compiler reaches, as eco's JS backend would.
+    COMMAND ${NODE_EXECUTABLE} ${COMPILER_DIR}/scripts/link-stage1-system-kernels.js ${COMPILER_OUTPUT} ${STAGE1_SYSTEM_DIR}
     DEPENDS ${NPM_STAMP} ${ELM_SOURCES} ${COMPILER_CONFIG_FILES}
+        ${STAGE1_SYSTEM_DIR}/GENERATED ${_stage1_system_kernels}
+        ${COMPILER_DIR}/scripts/link-stage1-system-kernels.js
     WORKING_DIRECTORY ${BUILD_XHR_DIR}
     COMMENT "Building guida compiler (step 1: XHR)"
 )
@@ -216,7 +240,6 @@ add_custom_target(eco-system-elm-tests
 # Phase 9.1). Built with stock elm 0.19.1 from the generated stock-elm copy (D12, D13): the real
 # package uses kernel imports and effect modules, which stock elm rejects. Written into the source
 # tree (system-kernel-cpp/docs.json is git-ignored), where the bundle install rules pick it up.
-set(ECO_SYSTEM_DIR ${CMAKE_SOURCE_DIR}/system-kernel-cpp)
 set(ECO_SYSTEM_DOCS_PKG ${CMAKE_BINARY_DIR}/eco-system-docs-package)
 file(GLOB_RECURSE _eco_system_docs_srcs CONFIGURE_DEPENDS ${ECO_SYSTEM_DIR}/src/*.elm)
 add_custom_command(
@@ -225,7 +248,7 @@ add_custom_command(
     COMMAND ${CMAKE_COMMAND} -E chdir ${ECO_SYSTEM_DOCS_PKG}
         ${ELM_EXECUTABLE} make --docs=${ECO_SYSTEM_DIR}/docs.json
     DEPENDS ${_eco_system_docs_srcs} ${ECO_SYSTEM_DIR}/elm.json ${ECO_SYSTEM_DIR}/README.md
-        ${ECO_SYSTEM_DIR}/scripts/make-docs-package.js
+        ${ECO_SYSTEM_DIR}/scripts/make-docs-package.js ${ECO_SYSTEM_DIR}/scripts/stock-elm-rewrite.js
     COMMENT "Building eco/system docs.json with stock elm (generated docs package)"
     VERBATIM
 )
@@ -335,42 +358,10 @@ eco_create_dir_link(${CMAKE_SOURCE_DIR}/eco-kernel-cpp ${BUILD_KERNEL_DIR}/share
 # also probes dirname(exe)/../share/eco/system/system-kernel-cpp.
 file(MAKE_DIRECTORY ${BUILD_KERNEL_DIR}/share/eco/system)
 eco_create_dir_link(${CMAKE_SOURCE_DIR}/system-kernel-cpp ${BUILD_KERNEL_DIR}/share/eco/system/system-kernel-cpp)
-# Eco.Kernel.Http.js does `require('adm-zip')` when downloading package
-# archives. Without this link, node walks up from eco-boot.js's location
-# (.../build-kernel/bin/) and never reaches ${COMPILER_DIR}/node_modules,
-# so the require throws → compiler reports "unable to unzip the data" for
-# every package download.
-#
-# POSIX: create the link eagerly at configure time. ${COMPILER_DIR}/node_modules
-# may not exist yet (pnpm installs it at build time) and that's fine — POSIX
-# symlinks may be dangling and become live once the target appears.
-#
-# Windows: NTFS junctions (the privilege-free alternative to symlinks)
-# require the target to exist at creation time, so the link is deferred to
-# a post-step of the pnpm-install custom command below; see ${NPM_STAMP}.
-if(NOT WIN32)
-    file(REMOVE ${BUILD_KERNEL_DIR}/node_modules)
-    file(CREATE_LINK ${COMPILER_DIR}/node_modules ${BUILD_KERNEL_DIR}/node_modules SYMBOLIC)
-endif()
-
-# Build-time link of ${COMPILER_DIR}/node_modules into the build-kernel
-# shadow. On POSIX this is a defensive idempotent re-link (the eager
-# configure-time symlink above already works); on Windows it is the only
-# place the junction is created — mklink /J refuses if the source dir
-# doesn't exist, and ${COMPILER_DIR}/node_modules only materializes after
-# pnpm install completes. Stamped so re-running is cheap.
-set(KERNEL_NODE_MODULES_STAMP "${BUILD_KERNEL_DIR}/node_modules.stamp")
-add_custom_command(
-    OUTPUT ${KERNEL_NODE_MODULES_STAMP}
-    COMMAND ${CMAKE_COMMAND}
-        "-DECO_TARGET=${COMPILER_DIR}/node_modules"
-        "-DECO_LINK=${BUILD_KERNEL_DIR}/node_modules"
-        "-DECO_SOURCE_DIR=${CMAKE_SOURCE_DIR}"
-        -P "${CMAKE_SOURCE_DIR}/cmake/EcoLinkNodeModules.cmake"
-    COMMAND ${CMAKE_COMMAND} -E touch ${KERNEL_NODE_MODULES_STAMP}
-    DEPENDS ${NPM_STAMP}
-    COMMENT "Linking build-kernel/node_modules → compiler/node_modules"
-)
+# Stages 2+ run with no npm packages: eco/kernel's and eco/system's JS kernels use only Node's
+# built-in modules. (build-kernel/node_modules used to link to compiler/node_modules for
+# Eco.Kernel.Http.js's `require('adm-zip')`; that kernel is gone, plans/compiler-io-on-eco-system.md.)
+file(REMOVE ${BUILD_KERNEL_DIR}/node_modules)
 
 set(ECO_BOOT_OUTPUT        "${BUILD_KERNEL_DIR}/bin/eco-boot.js")
 set(ECO_BOOT_RUNNER_OUTPUT "${BUILD_KERNEL_DIR}/bin/eco-boot-runner.js")
@@ -379,6 +370,10 @@ set(ECO_BOOT_RUNNER_OUTPUT "${BUILD_KERNEL_DIR}/bin/eco-boot-runner.js")
 file(GLOB_RECURSE KERNEL_SOURCES
     "${COMPILER_DIR}/../eco-kernel-cpp/src/Eco/*.elm"
     "${COMPILER_DIR}/../eco-kernel-cpp/src/Eco/Kernel/*.js"
+    # eco/system: the compiler does its file, console, environment and HTTP IO through it
+    # (plans/compiler-io-on-eco-system.md).
+    "${ECO_SYSTEM_DIR}/src/*.elm"
+    "${ECO_SYSTEM_DIR}/src/Eco/Kernel/*.js"
 )
 
 # The Elm compiler caches compiled package artifacts at <local-package>/artifacts.dat
@@ -392,6 +387,8 @@ file(GLOB_RECURSE KERNEL_SOURCES
 set_property(DIRECTORY APPEND PROPERTY ADDITIONAL_CLEAN_FILES
     "${COMPILER_DIR}/../eco-kernel-cpp/artifacts.dat"
     "${COMPILER_DIR}/../eco-kernel-cpp/typed-artifacts.dat"
+    "${ECO_SYSTEM_DIR}/artifacts.dat"
+    "${ECO_SYSTEM_DIR}/typed-artifacts.dat"
 )
 
 # Pre-baked runner contents — written at configure time into the CMake build
@@ -421,15 +418,12 @@ add_custom_command(
         --optimize
         --kernel-package eco/compiler
         --local-package eco/kernel=${COMPILER_DIR}/../eco-kernel-cpp
+        --local-package eco/system=${ECO_SYSTEM_DIR}
         --output=${ECO_BOOT_OUTPUT}
         ${ELM_ENTRY}
     COMMAND ${CMAKE_COMMAND} -E copy ${ECO_BOOT_RUNNER_TEMPLATE} ${ECO_BOOT_RUNNER_OUTPUT}
-    # KERNEL_NODE_MODULES_STAMP: the kernel-shadow node_modules link must
-    # exist before Stage 2 runs — Eco.Kernel.Http.js requires 'adm-zip' and
-    # node's resolver walks up from .../build-kernel/bin/ to find it.
     DEPENDS ${COMPILER_OUTPUT} ${ELM_SOURCES} ${KERNEL_SOURCES}
         ${ECO_BOOT_RUNNER_TEMPLATE} "${BUILD_KERNEL_DIR}/elm.json"
-        ${KERNEL_NODE_MODULES_STAMP}
     WORKING_DIRECTORY ${BUILD_KERNEL_DIR}
     COMMENT "Building eco-boot compiler (step 2: kernel)"
 )
@@ -449,6 +443,7 @@ add_custom_command(
         --optimize
         --kernel-package eco/compiler
         --local-package eco/kernel=${COMPILER_DIR}/../eco-kernel-cpp
+        --local-package eco/system=${ECO_SYSTEM_DIR}
         --output=bin/eco-boot-2.js
         ${ELM_ENTRY}
     COMMAND ${CMAKE_COMMAND} -E copy ${ECO_BOOT_2_RUNNER_TEMPLATE} ${ECO_BOOT_2_RUNNER_OUTPUT}
@@ -479,6 +474,7 @@ add_custom_command(
         --optimize
         --kernel-package eco/compiler
         --local-package eco/kernel=${COMPILER_DIR}/../eco-kernel-cpp
+        --local-package eco/system=${ECO_SYSTEM_DIR}
         --output=bin/eco-boot-3.js
         ${ELM_ENTRY}
     DEPENDS ${ECO_BOOT_2_OUTPUT} ${ECO_BOOT_2_RUNNER_OUTPUT}
@@ -556,6 +552,7 @@ add_custom_command(
         --optimize
         --kernel-package eco/compiler
         --local-package eco/kernel=${COMPILER_DIR}/../eco-kernel-cpp
+        --local-package eco/system=${ECO_SYSTEM_DIR}
         --output=bin/eco-compiler.mlir
         ${ELM_ENTRY}
     BYPRODUCTS ${_stage5_byproducts}
@@ -618,6 +615,7 @@ add_custom_command(
         --optimize
         --kernel-package eco/compiler
         --local-package eco/kernel=${COMPILER_DIR}/../eco-kernel-cpp
+        --local-package eco/system=${ECO_SYSTEM_DIR}
         --output=bin/eco-compiler-boot.mlir
         ${ELM_ENTRY}
     BYPRODUCTS ${_stage7a_byproducts}
@@ -661,6 +659,7 @@ add_custom_command(
         --optimize
         --kernel-package eco/compiler
         --local-package eco/kernel=${COMPILER_DIR}/../eco-kernel-cpp
+        --local-package eco/system=${ECO_SYSTEM_DIR}
         --output=bin/eco-compiler-boot-2.mlir
         ${ELM_ENTRY}
     DEPENDS ${ECO_COMPILER_BOOT_ELF} ${ELM_SOURCES} ${KERNEL_SOURCES}
@@ -841,12 +840,14 @@ set_source_files_properties(${ECO_STAGE9_OBJ} PROPERTIES
 # FetchContent libzip target). Adding bare `-lstdc++ -lcurl …` here under
 # ECO_STATIC would re-resolve to the .so siblings and defeat the static link.
 function(eco_apply_unified_link target)
-    # The eco/system kernels (EcoSystem_*) are not linked into eco itself; eco
-    # passes them to the AOT link of user programs (EcoBootConfig.h). Build
-    # them whenever eco is built so those paths exist.
+    # The eco/system kernels (EcoSystem_*): eco does its own file, console,
+    # environment and HTTP IO through eco/system (plans/compiler-io-on-eco-system.md),
+    # so every module library is linked into eco itself, and eco also passes
+    # them to the AOT link of user programs (EcoBootConfig.h).
+    set(_eco_system_libs)
     foreach(mod ${ECO_SYSTEM_MODS})
         if(TARGET EcoSystem_${mod})
-            add_dependencies(${target} EcoSystem_${mod})
+            list(APPEND _eco_system_libs EcoSystem_${mod})
         endif()
     endforeach()
 
@@ -904,9 +905,9 @@ function(eco_apply_unified_link target)
             ElmKernel_Browser ElmKernel_Bytes ElmKernel_File ElmKernel_Http
             ElmKernel_Parser ElmKernel_Regex ElmKernel_Time ElmKernel_Url
             ElmKernel_EffectRegistry
-            EcoKernel_File EcoKernel_Console EcoKernel_Env EcoKernel_Process
-            EcoKernel_MVar EcoKernel_Hash EcoKernel_NativeDriver EcoKernel_Runtime EcoKernel_GC EcoKernel_Http
+            EcoKernel_MVar EcoKernel_Hash EcoKernel_NativeDriver EcoKernel_GC
             EcoKernel_Crash
+            ${_eco_system_libs}
             # Vendored libzip (FetchContent target) + brew openssl@3 statics.
             # Both not in the SDK; mirrored from the AOT link in
             # runtime/src/codegen/EcoNativeDriver.cpp::linkExecutableDarwin.
@@ -964,9 +965,9 @@ function(eco_apply_unified_link target)
             ElmKernel_Browser ElmKernel_Bytes ElmKernel_File ElmKernel_Http
             ElmKernel_Parser ElmKernel_Regex ElmKernel_Time ElmKernel_Url
             ElmKernel_EffectRegistry
-            EcoKernel_File EcoKernel_Console EcoKernel_Env EcoKernel_Process
-            EcoKernel_MVar EcoKernel_Hash EcoKernel_NativeDriver EcoKernel_Runtime EcoKernel_GC EcoKernel_Http
+            EcoKernel_MVar EcoKernel_Hash EcoKernel_NativeDriver EcoKernel_GC
             EcoKernel_Crash
+            ${_eco_system_libs}
             # Vendored statics: libcurl (schannel TLS), libzip, zlib. No
             # OpenSSL on Windows (SHA via BCrypt). Same set as the AOT link.
             libcurl_static zip zlibstatic
@@ -999,9 +1000,9 @@ function(eco_apply_unified_link target)
         ElmKernel_Browser ElmKernel_Bytes ElmKernel_File ElmKernel_Http
         ElmKernel_Parser ElmKernel_Regex ElmKernel_Time ElmKernel_Url
         ElmKernel_EffectRegistry
-        EcoKernel_File EcoKernel_Console EcoKernel_Env EcoKernel_Process
-        EcoKernel_MVar EcoKernel_Hash EcoKernel_NativeDriver EcoKernel_Runtime EcoKernel_GC EcoKernel_Http
+        EcoKernel_MVar EcoKernel_Hash EcoKernel_NativeDriver EcoKernel_GC
         EcoKernel_Crash
+        ${_eco_system_libs}
         # --whole-archive forces every object in EcoNativeDriverStatic into
         # the link so the strong eco_native_lower_and_link overrides the weak
         # stub in EcoEntryStatic. Required for lld (ECO_STATIC_MUSL preset),
@@ -1142,6 +1143,7 @@ add_custom_command(
         --optimize
         --kernel-package eco/compiler
         --local-package eco/kernel=${COMPILER_DIR}/../eco-kernel-cpp
+        --local-package eco/system=${ECO_SYSTEM_DIR}
         --output=bin/eco-2
         ${ELM_ENTRY}
     DEPENDS ${ECO_STAGE9_OUTPUT} ${ELM_SOURCES} ${KERNEL_SOURCES}

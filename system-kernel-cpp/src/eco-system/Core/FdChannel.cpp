@@ -4,7 +4,9 @@
 // `State`. Requests are pushed and flags set under `State::m` by the eco
 // thread, which then writes a byte to the wake pipe; the thread snapshots what
 // it wants under the lock, polls without it, and pops a request only after
-// its IO call, so a request's data stays put while the call runs.
+// its IO call, so a request's data stays put while the call runs. On Windows
+// the same requests are served by blocking calls on a reader thread and a
+// writer thread instead, which wait on a condition variable, not a pipe.
 //
 //===----------------------------------------------------------------------===//
 
@@ -28,6 +30,17 @@
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#else
+#include <chrono>
+#include <condition_variable>
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#include <io.h>
 #endif
 
 namespace Eco::System {
@@ -49,11 +62,110 @@ void postSimple(uint64_t chanId, uint64_t token, ChannelResult::Op op, int err) 
 #ifdef _WIN32
 
 // ---------------------------------------------------------------------------
-// Windows stub: every request completes with ENOTSUP.
+// Windows: blocking calls on a reader thread and a writer thread.
+//
+// The handle and both threads share one `State`. The writer thread serves the
+// writes and, as on POSIX, finishes the channel after `shutdown`, or after
+// `close` once the queued writes are done. The reader thread serves the reads
+// until the channel has finished. Each takes the oldest request under the lock,
+// makes its blocking call without it, and pops the request after the call,
+// unless the channel finished meanwhile: the finish then answered it with
+// ECANCELED and the call's result is dropped.
 // ---------------------------------------------------------------------------
 
+int errnoFromWin32Error(unsigned long code) {
+    switch (code) {
+    case ERROR_FILE_NOT_FOUND:
+    case ERROR_PATH_NOT_FOUND:
+    case ERROR_INVALID_DRIVE:
+    case ERROR_BAD_NETPATH:
+    case ERROR_BAD_NET_NAME:
+    case ERROR_INVALID_NAME:
+    case ERROR_BAD_PATHNAME:
+        return ENOENT;
+    case ERROR_FILE_EXISTS:
+    case ERROR_ALREADY_EXISTS:
+        return EEXIST;
+    case ERROR_ACCESS_DENIED:
+    case ERROR_SHARING_VIOLATION:
+    case ERROR_LOCK_VIOLATION:
+        return EACCES;
+    case ERROR_DIR_NOT_EMPTY:
+        return ENOTEMPTY;
+    case ERROR_DIRECTORY:
+        return ENOTDIR;
+    case ERROR_DISK_FULL:
+    case ERROR_HANDLE_DISK_FULL:
+        return ENOSPC;
+    case ERROR_TOO_MANY_OPEN_FILES:
+        return EMFILE;
+    case ERROR_INVALID_HANDLE:
+        return EBADF;
+    case ERROR_NOT_SAME_DEVICE:
+        return EXDEV;
+    case ERROR_FILENAME_EXCED_RANGE:
+        return ENAMETOOLONG;
+    case ERROR_BROKEN_PIPE:
+    case ERROR_NO_DATA:
+        return EPIPE;
+    case ERROR_OPERATION_ABORTED:
+        return ECANCELED;
+    case ERROR_NOT_SUPPORTED:
+    case ERROR_CALL_NOT_IMPLEMENTED:
+        return ENOTSUP;
+    case ERROR_INVALID_PARAMETER:
+        return EINVAL;
+    case ERROR_WRITE_PROTECT:
+        return EROFS;
+    case ERROR_CANT_RESOLVE_FILENAME:
+        return ELOOP;
+    case ERROR_NOT_ENOUGH_MEMORY:
+    case ERROR_OUTOFMEMORY:
+        return ENOMEM;
+    default:
+        return 0;
+    }
+}
+
 struct FdChannel::State {
-    int fd = -1;
+    struct ReadReq {
+        uint64_t token;
+        size_t maxBytes;
+    };
+    struct WriteReq {
+        uint64_t token;
+        std::string bytes;
+    };
+
+    // Set by the constructor before the threads start; unguarded after.
+    int fd = -1;                        // the CRT fd; 0 to 2 are stdio
+    HANDLE h = INVALID_HANDLE_VALUE;    // its OS handle, not owned: closing `fd` closes it
+    bool console = false;               // `h` is a console: ReadConsoleW / WriteConsoleW
+    uint64_t chanId = 0;
+    bool truncateOnClose = false;       // FdChannelOptions::truncateOnClose
+    bool syncOnClose = false;           // FdChannelOptions::syncOnClose
+
+    int64_t readRemaining = -1;         // reader thread only: bytes left under FdChannelOptions::readLimit
+    std::string readCarry;              // reader thread only: console text converted but not yet returned
+    wchar_t pendingHigh = 0;            // reader thread only: a high surrogate whose low half is still to come
+    std::string writeCarry;             // writer thread only: an incomplete UTF-8 sequence ending a console write
+
+    std::mutex m;                       // guards everything below
+    std::condition_variable cv;         // signalled on every change below
+    std::deque<ReadReq> reads;
+    std::deque<WriteReq> writes;
+    bool closeRequested = false;
+    uint64_t closeToken = 0;
+    bool stop = false;                  // shutdown() requested
+    bool finished = false;              // the channel is finished (or never started)
+    int deadErr = ECANCELED;            // error for requests made once finished
+    bool readerInCall = false;          // the reader thread is in a blocking read call
+    bool readerExited = true;           // the reader thread is not running (set false when it starts)
+    HANDLE readerThread = nullptr;      // a real handle to the reader thread, for CancelSynchronousIo
+
+    ~State() {
+        if (readerThread) ::CloseHandle(readerThread);
+    }
 };
 
 int makeCloexecPipe(int fds[2], bool) {
@@ -61,19 +173,390 @@ int makeCloexecPipe(int fds[2], bool) {
     return ENOTSUP;
 }
 
-FdChannel::FdChannel(int fd, FdChannelOptions opts) : st_(std::make_shared<State>()), origin_(opts.origin) { st_->fd = fd; }
-FdChannel::~FdChannel() = default;
+namespace {
 
-void FdChannel::requestRead(uint64_t token, size_t) {
-    postSimple(id(), token, ChannelResult::Op::Read, ENOTSUP);
+using State = FdChannel::State;
+
+// The largest number of bytes one Read result carries.
+constexpr size_t kMaxReadChunk = 1u << 20;
+// The most UTF-16 units one console call reads or writes.
+constexpr DWORD kConsoleChunk = 8192;
+
+// Returns the errno for Win32 error `code`, or EIO when none fits.
+int errnoOr(DWORD code) {
+    int e = errnoFromWin32Error(code);
+    return e ? e : EIO;
 }
-void FdChannel::requestWrite(uint64_t token, std::string) {
-    postSimple(id(), token, ChannelResult::Op::Write, ENOTSUP);
+
+// Returns the OS handle of `fd`: the process's standard handle for 0 to 2, and otherwise the CRT's. Returns
+// INVALID_HANDLE_VALUE when there is none.
+HANDLE osHandleOf(int fd) {
+    HANDLE h = INVALID_HANDLE_VALUE;
+    if (fd == 0) h = ::GetStdHandle(STD_INPUT_HANDLE);
+    else if (fd == 1) h = ::GetStdHandle(STD_OUTPUT_HANDLE);
+    else if (fd == 2) h = ::GetStdHandle(STD_ERROR_HANDLE);
+    else if (fd > 2) h = reinterpret_cast<HANDLE>(::_get_osfhandle(fd));
+    return h == nullptr ? INVALID_HANDLE_VALUE : h;   // GetStdHandle gives NULL when there is no such handle
 }
+
+// Appends UTF-16 `w[0..n)` to `out` as UTF-8; unpaired surrogates become U+FFFD.
+void appendUtf8(std::string& out, const wchar_t* w, int n) {
+    if (n <= 0) return;
+    int len = ::WideCharToMultiByte(CP_UTF8, 0, w, n, nullptr, 0, nullptr, nullptr);
+    if (len <= 0) return;
+    size_t at = out.size();
+    out.resize(at + static_cast<size_t>(len));
+    ::WideCharToMultiByte(CP_UTF8, 0, w, n, &out[at], len, nullptr, nullptr);
+}
+
+// Makes one read call on a console for up to `maxBytes` bytes of UTF-8, into `out`. Text converted beyond
+// `maxBytes` waits in `readCarry` for the next read. Sets `eof` when the input begins with Ctrl+Z, as at an
+// end of input typed on Windows. Returns 0 or an errno. Reader thread, without the lock.
+int consoleRead(State& st, size_t maxBytes, std::string& out, bool& eof) {
+    while (st.readCarry.empty()) {
+        wchar_t wbuf[kConsoleChunk + 1];
+        DWORD start = 0;
+        if (st.pendingHigh) {
+            wbuf[0] = st.pendingHigh;
+            st.pendingHigh = 0;
+            start = 1;
+        }
+        DWORD got = 0;
+        if (!::ReadConsoleW(st.h, wbuf + start, kConsoleChunk, &got, nullptr)) return errnoOr(::GetLastError());
+        if (got == 0) {
+            // Nothing read, as after Ctrl+C; read again unless the channel finished meanwhile.
+            std::lock_guard<std::mutex> lk(st.m);
+            if (st.finished) return ECANCELED;
+            continue;
+        }
+        if (start == 0 && wbuf[0] == L'\x1a') {
+            eof = true;
+            return 0;
+        }
+        DWORD n = start + got;
+        if (wbuf[n - 1] >= 0xD800 && wbuf[n - 1] <= 0xDBFF) st.pendingHigh = wbuf[--n];
+        appendUtf8(st.readCarry, wbuf, static_cast<int>(n));
+    }
+    size_t take = st.readCarry.size() < maxBytes ? st.readCarry.size() : maxBytes;
+    out.assign(st.readCarry, 0, take);
+    st.readCarry.erase(0, take);
+    return 0;
+}
+
+// Makes one read call for up to `maxBytes` bytes into `out`, setting `eof` at the end of the input. Returns 0
+// or an errno. Reader thread, without the lock.
+int readOnce(State& st, size_t maxBytes, std::vector<char>& buf, std::string& out, bool& eof) {
+    if (st.h == INVALID_HANDLE_VALUE) return EBADF;
+    if (st.console) return consoleRead(st, maxBytes, out, eof);
+    if (buf.size() < maxBytes) buf.resize(maxBytes);
+    DWORD got = 0;
+    if (!::ReadFile(st.h, buf.data(), static_cast<DWORD>(maxBytes), &got, nullptr)) {
+        DWORD code = ::GetLastError();
+        if (code == ERROR_BROKEN_PIPE || code == ERROR_HANDLE_EOF) {   // the writing end closed: EOF
+            eof = true;
+            return 0;
+        }
+        return errnoOr(code);
+    }
+    if (got == 0) eof = true;
+    else out.assign(buf.data(), got);
+    return 0;
+}
+
+// Returns how many bytes at the end of `s` form an incomplete UTF-8 sequence, 0 to 3.
+size_t incompleteUtf8Tail(const std::string& s) {
+    size_t n = s.size();
+    for (size_t back = 1; back <= 3 && back <= n; ++back) {
+        unsigned char c = static_cast<unsigned char>(s[n - back]);
+        if ((c & 0xC0) == 0x80) continue;   // continuation byte: keep looking for the lead
+        size_t need = (c & 0xE0) == 0xC0 ? 2 : (c & 0xF0) == 0xE0 ? 3 : (c & 0xF8) == 0xF0 ? 4 : 1;
+        return back < need ? back : 0;
+    }
+    return 0;
+}
+
+// Writes all `len` bytes at `data` to a console as UTF-16, keeping an incomplete trailing UTF-8 sequence in
+// `writeCarry` for the next write. Returns 0 or an errno. Writer thread, without the lock.
+int consoleWrite(State& st, const char* data, size_t len) {
+    std::string text = std::move(st.writeCarry);
+    st.writeCarry.clear();
+    text.append(data, len);
+    size_t tail = incompleteUtf8Tail(text);
+    st.writeCarry.assign(text, text.size() - tail, tail);
+    text.resize(text.size() - tail);
+    if (text.empty()) return 0;
+    std::wstring w;
+    // Converted in pieces, so the count fits an int.
+    for (size_t at = 0; at < text.size();) {
+        size_t piece = text.size() - at;
+        if (piece > (1u << 28)) {
+            piece = 1u << 28;
+            while (piece > 0 && (static_cast<unsigned char>(text[at + piece]) & 0xC0) == 0x80) --piece;
+        }
+        int wl = ::MultiByteToWideChar(CP_UTF8, 0, text.data() + at, static_cast<int>(piece), nullptr, 0);
+        if (wl <= 0) return errnoOr(::GetLastError());
+        size_t wat = w.size();
+        w.resize(wat + static_cast<size_t>(wl));
+        ::MultiByteToWideChar(CP_UTF8, 0, text.data() + at, static_cast<int>(piece), &w[wat], wl);
+        at += piece;
+    }
+    for (size_t off = 0; off < w.size();) {
+        DWORD chunk = static_cast<DWORD>(w.size() - off < kConsoleChunk ? w.size() - off : kConsoleChunk);
+        // Never split a surrogate pair between two calls.
+        if (chunk > 1 && off + chunk < w.size() && w[off + chunk - 1] >= 0xD800 && w[off + chunk - 1] <= 0xDBFF)
+            --chunk;
+        DWORD put = 0;
+        if (!::WriteConsoleW(st.h, w.data() + off, chunk, &put, nullptr)) return errnoOr(::GetLastError());
+        if (put == 0) return EIO;
+        off += put;
+    }
+    return 0;
+}
+
+// Writes all `len` bytes at `data`, setting `written` to how many went out. Returns 0 or an errno. Writer
+// thread, without the lock.
+int writeAllWin(State& st, const char* data, size_t len, size_t& written) {
+    written = 0;
+    if (st.h == INVALID_HANDLE_VALUE) return EBADF;
+    if (st.console) {
+        int e = consoleWrite(st, data, len);
+        if (e == 0) written = len;
+        return e;
+    }
+    while (written < len) {
+        size_t rest = len - written;
+        DWORD chunk = static_cast<DWORD>(rest > (1u << 30) ? (1u << 30) : rest);
+        DWORD put = 0;
+        if (!::WriteFile(st.h, data + written, chunk, &put, nullptr)) return errnoOr(::GetLastError());
+        if (put == 0) return EIO;
+        written += put;
+    }
+    return 0;
+}
+
+// The reader thread's body: serves reads in order until the channel finishes.
+void readerThreadMain(std::shared_ptr<State> sp) {
+    State& st = *sp;
+    HANDLE self = nullptr;
+    ::DuplicateHandle(::GetCurrentProcess(), ::GetCurrentThread(), ::GetCurrentProcess(), &self, 0, FALSE,
+                      DUPLICATE_SAME_ACCESS);
+    {
+        std::lock_guard<std::mutex> lk(st.m);
+        st.readerThread = self;
+    }
+    std::vector<char> buf;
+    for (;;) {
+        uint64_t token;
+        size_t maxBytes;
+        {
+            std::unique_lock<std::mutex> lk(st.m);
+            st.cv.wait(lk, [&] { return st.finished || !st.reads.empty(); });
+            if (st.finished) break;
+            token = st.reads.front().token;
+            maxBytes = st.reads.front().maxBytes;
+            st.readerInCall = true;
+        }
+        if (maxBytes == 0) maxBytes = 1;
+        if (maxBytes > kMaxReadChunk) maxBytes = kMaxReadChunk;
+        if (st.readRemaining >= 0 && maxBytes > static_cast<uint64_t>(st.readRemaining))
+            maxBytes = static_cast<size_t>(st.readRemaining);
+
+        ChannelResult res;
+        res.channelId = st.chanId;
+        res.token = token;
+        res.op = ChannelResult::Op::Read;
+        bool eof = false;
+        int e = 0;
+        if (maxBytes == 0) eof = true;   // the read limit is used up
+        else e = readOnce(st, maxBytes, buf, res.bytes, eof);
+        if (e) {
+            res.err = e;
+            res.bytes.clear();
+        } else if (eof) {
+            res.eof = true;
+            res.bytes.clear();
+        } else if (st.readRemaining >= 0) {
+            st.readRemaining -= static_cast<int64_t>(res.bytes.size());
+        }
+        {
+            std::lock_guard<std::mutex> lk(st.m);
+            st.readerInCall = false;
+            if (st.finished) break;   // the finish answered this read already
+            st.reads.pop_front();
+        }
+        postChannelResult(std::move(res));
+    }
+    {
+        std::lock_guard<std::mutex> lk(st.m);
+        st.readerInCall = false;
+        st.readerExited = true;
+    }
+    st.cv.notify_all();
+}
+
+// The writer thread's body. Serves writes until `stop`, or until a close is requested and no write is queued,
+// then finishes the channel as FdChannel::close and FdChannel::shutdown describe.
+void writerThreadMain(std::shared_ptr<State> sp) {
+    State& st = *sp;
+    for (;;) {
+        uint64_t token;
+        const char* data;
+        size_t len;
+        {
+            std::unique_lock<std::mutex> lk(st.m);
+            st.cv.wait(lk, [&] { return st.stop || st.closeRequested || !st.writes.empty(); });
+            if (st.stop) break;
+            if (st.closeRequested && st.writes.empty()) break;
+            // Only this thread pops, so the front element and its bytes stay put during the call.
+            auto& w = st.writes.front();
+            token = w.token;
+            data = w.bytes.data();
+            len = w.bytes.size();
+        }
+        ChannelResult res;
+        res.channelId = st.chanId;
+        res.token = token;
+        res.op = ChannelResult::Op::Write;
+        res.err = writeAllWin(st, data, len, res.written);
+        {
+            std::lock_guard<std::mutex> lk(st.m);
+            st.writes.pop_front();
+        }
+        postChannelResult(std::move(res));
+    }
+
+    // Finish: cancel what is left, close the fd (never 0-2), report the close.
+    std::deque<State::ReadReq> reads;
+    std::deque<State::WriteReq> writes;
+    bool closeRequested;
+    uint64_t closeToken;
+    {
+        std::lock_guard<std::mutex> lk(st.m);
+        st.finished = true;
+        reads.swap(st.reads);
+        writes.swap(st.writes);
+        closeRequested = st.closeRequested;
+        closeToken = st.closeToken;
+    }
+    st.cv.notify_all();   // the reader thread exits once out of its call
+    for (auto& r : reads) postSimple(st.chanId, r.token, ChannelResult::Op::Read, ECANCELED);
+    for (auto& w : writes) postSimple(st.chanId, w.token, ChannelResult::Op::Write, ECANCELED);
+
+    int closeErr = 0;
+    if (st.fd > 2) {
+        // The fd is closed only once the reader thread can no longer use its handle: a blocking read is
+        // cancelled, again every 20 ms in case the cancel came just before the call began.
+        std::unique_lock<std::mutex> lk(st.m);
+        while (!st.readerExited) {
+            if (st.readerInCall && st.readerThread) ::CancelSynchronousIo(st.readerThread);
+            st.cv.wait_for(lk, std::chrono::milliseconds(20));
+        }
+    }
+    if (closeRequested && st.truncateOnClose && st.fd > 2 && st.h != INVALID_HANDLE_VALUE) {
+        if (!::SetEndOfFile(st.h)) closeErr = errnoOr(::GetLastError());   // at the file pointer
+    }
+    if (closeRequested && st.syncOnClose && st.fd > 2 && st.h != INVALID_HANDLE_VALUE) {
+        if (!::FlushFileBuffers(st.h) && closeErr == 0) closeErr = errnoOr(::GetLastError());
+    }
+    if (st.fd > 2) {
+        if (::_close(st.fd) != 0 && closeErr == 0) closeErr = errno;
+    }
+    if (closeRequested) postSimple(st.chanId, closeToken, ChannelResult::Op::Close, closeErr);
+}
+
+} // namespace
+
+FdChannel::FdChannel(int fd, FdChannelOptions opts) : st_(std::make_shared<State>()), origin_(opts.origin) {
+    st_->fd = fd;
+    st_->h = osHandleOf(fd);
+    st_->chanId = id();
+    st_->readRemaining = opts.readLimit;
+    st_->truncateOnClose = opts.truncateOnClose;
+    st_->syncOnClose = opts.syncOnClose;
+    DWORD mode = 0;
+    st_->console = st_->h != INVALID_HANDLE_VALUE && ::GetFileType(st_->h) == FILE_TYPE_CHAR &&
+                   ::GetConsoleMode(st_->h, &mode) != 0;
+
+    int e = 0;
+    bool readerStarted = false;
+    try {
+        st_->readerExited = false;
+        std::thread(readerThreadMain, st_).detach();
+        readerStarted = true;
+        std::thread(writerThreadMain, st_).detach();
+        return;
+    } catch (const std::system_error& se) {
+        e = se.code().value() ? se.code().value() : EAGAIN;
+    }
+    // No writer thread will run, so the channel is finished here. A reader thread that did start has no read to
+    // serve, so it never touches the handle, and leaves once it sees `finished`.
+    {
+        std::lock_guard<std::mutex> lk(st_->m);
+        st_->finished = true;
+        st_->deadErr = e;
+        if (!readerStarted) st_->readerExited = true;
+    }
+    st_->cv.notify_all();
+    if (fd > 2) ::_close(fd);
+}
+
+FdChannel::~FdChannel() {
+    bool closing;
+    {
+        std::lock_guard<std::mutex> lk(st_->m);
+        closing = st_->closeRequested || st_->finished || st_->stop;
+    }
+    if (!closing) shutdown();   // otherwise the writer thread finishes on its own
+}
+
+void FdChannel::requestRead(uint64_t token, size_t maxBytes) {
+    int err = 0;
+    {
+        std::lock_guard<std::mutex> lk(st_->m);
+        if (st_->finished) err = st_->deadErr;
+        else if (st_->stop || st_->closeRequested) err = ECANCELED;
+        else st_->reads.push_back(State::ReadReq{token, maxBytes});
+    }
+    if (err) postSimple(id(), token, ChannelResult::Op::Read, err);
+    else st_->cv.notify_all();
+}
+
+void FdChannel::requestWrite(uint64_t token, std::string bytes) {
+    int err = 0;
+    {
+        std::lock_guard<std::mutex> lk(st_->m);
+        if (st_->finished) err = st_->deadErr;
+        else if (st_->stop || st_->closeRequested) err = ECANCELED;
+        else st_->writes.push_back(State::WriteReq{token, std::move(bytes)});
+    }
+    if (err) postSimple(id(), token, ChannelResult::Op::Write, err);
+    else st_->cv.notify_all();
+}
+
 void FdChannel::close(uint64_t token) {
-    postSimple(id(), token, ChannelResult::Op::Close, ENOTSUP);
+    int err = 0;
+    {
+        std::lock_guard<std::mutex> lk(st_->m);
+        if (st_->finished) err = st_->deadErr;
+        else if (st_->stop || st_->closeRequested) err = ECANCELED;
+        else {
+            st_->closeRequested = true;
+            st_->closeToken = token;
+        }
+    }
+    if (err) postSimple(id(), token, ChannelResult::Op::Close, err);
+    else st_->cv.notify_all();
 }
-void FdChannel::shutdown() {}
+
+void FdChannel::shutdown() {
+    {
+        std::lock_guard<std::mutex> lk(st_->m);
+        if (st_->stop || st_->finished) return;
+        st_->stop = true;
+    }
+    st_->cv.notify_all();
+}
+
 int FdChannel::fd() const { return st_->fd; }
 
 #else // POSIX

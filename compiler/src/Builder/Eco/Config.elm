@@ -28,10 +28,10 @@ read first, so a per-field value wins.
 
 -}
 
+import Builder.File as File
 import Builder.Reporting.Exit as Exit
 import Compiler.Config as Config exposing (EcoConfig, InlineConfig)
 import Compiler.Json.Decode as D
-import Eco.File
 import System.IO as IO exposing (FilePath)
 import Task exposing (Task)
 import Utils.Main as Utils
@@ -80,7 +80,7 @@ loadBase maybeExplicit root =
                             Task.succeed Config.default
 
                 else
-                    (Eco.File.readString path |> Task.mapError Exit.MakeFileIO)
+                    (File.readUtf8OrError path |> Task.mapError Exit.MakeFileIO)
                         |> Task.andThen
                             (\contents ->
                                 case D.fromByteString Config.decoder contents of

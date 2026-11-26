@@ -29,7 +29,6 @@
 #include "../allocator/GCStats.hpp"
 #include "../allocator/RuntimeExports.h"
 #include "../platform/StackMapSection.hpp"
-#include "../../eco-kernel-cpp/src/eco-kernel/Env.hpp"
 
 #include <cstdlib>
 #include <cstdio>
@@ -129,8 +128,8 @@ struct MainArgs {
 // `arg` must point to a `MainArgs`. Returns null, so that it fits the thread
 // entry shape. The steps run in this order: the allocator and the thread's
 // heap; the kernel's GC roots, before any Elm code can collect; the stack
-// map; the module globals, if any; the arguments for
-// `Eco::Kernel::Env::init`; the effect managers; and then `eco_main`. The
+// map; the module globals, if any; the effect managers; and then
+// `eco_main`. The
 // exit code is `eco_get_exit_code()`, read after the heap is destroyed. A
 // program that calls `exit` leaves before any step after `eco_main`.
 //
@@ -150,8 +149,6 @@ static void *eco_main_thread(void *arg) {
 
     if (__eco_init_globals)
         __eco_init_globals();
-
-    Eco::Kernel::Env::init(args->argc, args->argv);
 
     eco_register_all_effect_managers();
 

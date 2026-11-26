@@ -66,12 +66,12 @@ import Compiler.Elm.Version as V
 import Compiler.Json.Decode as D
 import Compiler.Lexer.Primitives as P
 import Dict exposing (Dict)
-import Eco.File
 import System.IO as IO
 import Task exposing (Task)
 import Time
 import Utils.Bytes.Decode as BD
 import Utils.Bytes.Encode as BE
+import Utils.Main as Utils
 
 
 
@@ -233,7 +233,7 @@ update manager cache policy ((Registry size packages) as oldRegistry) =
                 \news ->
                     case news of
                         [] ->
-                            (Eco.File.touch registryPath |> IO.crashOnError)
+                            Utils.dirTouch registryPath
                                 |> Task.map (\_ -> oldRegistry)
 
                         _ :: _ ->
@@ -258,7 +258,7 @@ update manager cache policy ((Registry size packages) as oldRegistry) =
             doFetch
 
         Normal ->
-            (Eco.File.modificationTime registryPath |> IO.crashOnError)
+            Utils.dirGetModificationTime registryPath
                 |> Task.andThen
                     (\mtime ->
                         Time.now

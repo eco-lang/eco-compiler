@@ -859,3 +859,20 @@ Pins fired: region `NR.minorGCRegion` (**41a2e6dcdb60**).
 Change: the region minor's validate-only eden pre-walk (`#if ECO_HEAP_VALIDATE`) also calls `checkStringHashSlot` on each young object: reads only, in the exclusive pause. Full argument in test/tla/M5-tenuring/AUDIT.md (same date): the hash slot is a non-pointer
 word outside this model's state; no atomic step, lock, shared location of a modelled protocol or memory order
 is added, removed or reordered. **Verdict: no model change needed.**
+
+
+## 2026-11-25 — Eco.Runtime removed (plans/compiler-io-on-eco-system.md P7)
+
+Pins fired: grep `F.externalRoots` (**c19c6595ad18**, was **4c5ed5ff4c9e**).
+
+Change: eco/kernel's `Eco.Runtime` module was deleted with the rest of the compiler's eco/kernel IO
+(the compiler's IO is eco/system's now). Its `Runtime.cpp` held one `addExternalRootScanner` call:
+the scanner for the REPL state that `Eco.Runtime.saveState` kept off the heap. That scanner and the
+state it rooted are gone; no other registration changed. The aggregate hook
+`Eco_Kernel_register_all_gc_roots` moved unchanged from `RuntimeExports.cpp` to `MVarExports.cpp` and
+now registers the MVar scanner and elm-kernel-cpp's Order scanner only.
+
+In the model an external root scanner is one `cell[c]` (MAPPING.md, `CellSlots`): an off-heap store
+read at t0. One fewer store means one fewer cell instance; the remaining scanners are registered, read
+and overwritten exactly as before. No atomic step, lock, shared location of a modelled protocol or memory
+order is added, removed or reordered. **Verdict: no model change needed.**

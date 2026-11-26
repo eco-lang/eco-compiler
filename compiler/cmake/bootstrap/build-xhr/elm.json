@@ -3,6 +3,7 @@
     "source-directories": [
         "src",
         "src-xhr",
+        "src-system",
         "version"
     ],
     "elm-version": "0.19.1",
@@ -23,6 +24,7 @@
             "elm/regex": "1.0.0",
             "elm/time": "1.0.0",
             "elm/url": "1.0.0",
+            "folkertdev/elm-flate": "2.0.6",
             "guida-lang/glsl": "1.0.0",
             "j-maas/elm-ordered-containers": "1.0.0",
             "jxxcarlson/hex": "4.0.1",

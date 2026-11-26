@@ -140,19 +140,15 @@ eco-quick` while iterating on code under `runtime/` or `*-kernel-cpp/`.
 
 | Target | Purpose |
 |---|---|
-| `EcoKernel_Console` | `Eco.Console` IO |
 | `EcoKernel_Crash` | `Eco.Crash` (Stage 2+ replacement for `Debug.todo`) |
-| `EcoKernel_Env` | `Eco.Env` environment variables |
-| `EcoKernel_File` | `Eco.File` IO |
 | `EcoKernel_GC` | Explicit collections (HEAP_076) |
 | `EcoKernel_Hash` | Allocation-free native string hashing |
-| `EcoKernel_Http` | `Eco.Http` IO |
-| `EcoKernel_MVar` | `Eco.MVar` synchronization |
+| `EcoKernel_MVar` | `Eco.MVar` synchronization, and the eco/kernel GC root hooks |
 | `EcoKernel_NativeDriver` | In-process MLIR → ELF lowering intrinsic for the unified `eco` |
-| `EcoKernel_Process` | `Eco.Process` IO |
-| `EcoKernel_Runtime` | `Eco.Runtime` glue |
 
-(`EcoKernel` is an `INTERFACE` umbrella aggregating the above.)
+(`EcoKernel` is an `INTERFACE` umbrella aggregating the above.) The compiler's file, console,
+environment, exit and HTTP IO is eco/system's (`EcoSystem_*` below); the eco/kernel modules that
+did it were removed (plans/compiler-io-on-eco-system.md).
 
 ## Eco system libraries
 

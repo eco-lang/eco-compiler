@@ -13,7 +13,8 @@
             "elm/http": "2.0.0",
             "elm/json": "1.1.3",
             "elm/time": "1.0.0",
-            "elm/virtual-dom": "1.0.3"
+            "elm/virtual-dom": "1.0.3",
+            "folkertdev/elm-flate": "2.0.6"
         },
         "indirect": {
             "elm/file": "1.0.5",

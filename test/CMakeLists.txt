@@ -187,7 +187,6 @@ add_executable(test
         allocator/ResolveConstantTest.cpp
         kernel/BrowserKernelTest.cpp
         kernel/BytesKernelTest.cpp
-        kernel/ConsoleKernelTest.cpp
         kernel/DebugKernelTest.cpp
         kernel/IntArithTest.cpp
         kernel/JsArrayKernelTest.cpp
@@ -248,14 +247,11 @@ target_compile_definitions(test PRIVATE
 # Use --whole-archive for EcoRunner so that Scheduler/PlatformRuntime symbols
 # are available when ElmKernel transitive dependencies are processed by the linker.
 #
-# Also whole-archive EcoKernel_MVar + EcoKernel_Runtime so the JIT's
+# Also whole-archive EcoKernel_MVar (which also holds the eco/kernel GC root hook) so the JIT's
 # DynamicLibrarySearchGenerator can dlsym the `Eco_Kernel_MVar_*` kernel
 # symbols (test/eco-kernel E2E suite drives the MVar kernel directly).
 # EcoKernel_GC: test/eco-kernel/src/GcReportTest.elm calls Eco.GC.
-# EcoKernel_File: test/eco-kernel/src/File{WriteBytesAtomic,ReadBytesRoundtrip}Test.elm call Eco.File.
-# EcoKernel_Process: test/eco-kernel/src/ProcessSpawnWaitTest.elm calls Eco.Process (plans/spawn-not-fork.md).
-# EcoKernel_Env: the elm-http and eco-kernel TestServerConfig modules read the test server's URLs with Eco.Env.
-# EcoKernel_Console, EcoKernel_Crash: the eco-kernel Console and Crash E2E tests (plans/kernel-lib-bug-fixes.md).
+# EcoKernel_Crash: the eco-kernel Crash E2E tests (plans/kernel-lib-bug-fixes.md).
 # EcoKernel_NativeDriver (POSIX): test/eco-kernel/src/NativeDriverEmptyBytesTest.elm (HEAP-02). The driver itself
 # is not linked; runtime/src/codegen/eco_native_stub.cpp's weak stand-ins (return -1) satisfy its references.
 if(APPLE)
@@ -266,25 +262,13 @@ if(APPLE)
         -Wl,-force_load,$<TARGET_FILE:EcoRunner>
         -Wl,-force_load,$<TARGET_FILE:EcoKernel_MVar>
         -Wl,-force_load,$<TARGET_FILE:EcoKernel_Hash>
-        -Wl,-force_load,$<TARGET_FILE:EcoKernel_Runtime>
-        -Wl,-force_load,$<TARGET_FILE:EcoKernel_Http>
         -Wl,-force_load,$<TARGET_FILE:EcoKernel_GC>
-        -Wl,-force_load,$<TARGET_FILE:EcoKernel_File>
-        -Wl,-force_load,$<TARGET_FILE:EcoKernel_Process>
-        -Wl,-force_load,$<TARGET_FILE:EcoKernel_Env>
-        -Wl,-force_load,$<TARGET_FILE:EcoKernel_Console>
         -Wl,-force_load,$<TARGET_FILE:EcoKernel_Crash>
         -Wl,-force_load,$<TARGET_FILE:EcoKernel_NativeDriver>
         EcoRunner
         EcoKernel_MVar
         EcoKernel_Hash
-        EcoKernel_Runtime
-        EcoKernel_Http
         EcoKernel_GC
-        EcoKernel_File
-        EcoKernel_Process
-        EcoKernel_Env
-        EcoKernel_Console
         EcoKernel_Crash
         EcoKernel_NativeDriver
     )
@@ -298,26 +282,14 @@ elseif(WIN32)
         EcoRunner
         EcoKernel_MVar
         EcoKernel_Hash
-        EcoKernel_Runtime
-        EcoKernel_Http
         EcoKernel_GC
-        EcoKernel_File
-        EcoKernel_Process
-        EcoKernel_Env
-        EcoKernel_Console
         EcoKernel_Crash
     )
     target_link_options(test PRIVATE
         /WHOLEARCHIVE:$<TARGET_FILE:EcoRunner>
         /WHOLEARCHIVE:$<TARGET_FILE:EcoKernel_MVar>
         /WHOLEARCHIVE:$<TARGET_FILE:EcoKernel_Hash>
-        /WHOLEARCHIVE:$<TARGET_FILE:EcoKernel_Runtime>
-        /WHOLEARCHIVE:$<TARGET_FILE:EcoKernel_Http>
         /WHOLEARCHIVE:$<TARGET_FILE:EcoKernel_GC>
-        /WHOLEARCHIVE:$<TARGET_FILE:EcoKernel_File>
-        /WHOLEARCHIVE:$<TARGET_FILE:EcoKernel_Process>
-        /WHOLEARCHIVE:$<TARGET_FILE:EcoKernel_Env>
-        /WHOLEARCHIVE:$<TARGET_FILE:EcoKernel_Console>
         /WHOLEARCHIVE:$<TARGET_FILE:EcoKernel_Crash>
     )
 else()
@@ -326,13 +298,7 @@ else()
             EcoRunner
             EcoKernel_MVar
             EcoKernel_Hash
-            EcoKernel_Runtime
-            EcoKernel_Http
             EcoKernel_GC
-            EcoKernel_File
-            EcoKernel_Process
-            EcoKernel_Env
-            EcoKernel_Console
             EcoKernel_Crash
             EcoKernel_NativeDriver
         -Wl,--no-whole-archive
@@ -401,11 +367,9 @@ if(APPLE)
         -Wl,-force_load,$<TARGET_FILE:EcoRunner>
         -Wl,-force_load,$<TARGET_FILE:EcoKernel_MVar>
         -Wl,-force_load,$<TARGET_FILE:EcoKernel_Hash>
-        -Wl,-force_load,$<TARGET_FILE:EcoKernel_Runtime>
         EcoRunner
         EcoKernel_MVar
         EcoKernel_Hash
-        EcoKernel_Runtime
     )
 else()
     target_link_libraries(stress-test
@@ -413,7 +377,6 @@ else()
             EcoRunner
             EcoKernel_MVar
             EcoKernel_Hash
-            EcoKernel_Runtime
         -Wl,--no-whole-archive
     )
 endif()
@@ -536,11 +499,10 @@ target_compile_definitions(aot-e2e-runner PRIVATE
 find_package(OpenSSL REQUIRED)
 target_link_libraries(aot-e2e-runner PRIVATE OpenSSL::SSL OpenSSL::Crypto)
 # The JIT `test` binary includes the same TestHttpServer.hpp (via
-# EcoKernelTest.hpp). It links EcoKernel_Http, but that archive's OpenSSL
-# dependency is PRIVATE so its include path does not propagate — fine on Linux
-# where openssl headers sit in the default search path, but brew's openssl@3 is
-# keg-only on macOS. Link the imported targets so OpenSSL's INTERFACE include
-# dir reaches test/main.cpp on both platforms. On Windows there is no
+# EcoKernelTest.hpp), and no archive it links carries OpenSSL's include path
+# (brew's openssl@3 is keg-only on macOS). Link the imported targets so
+# OpenSSL's INTERFACE include dir and libraries reach test/main.cpp on both
+# platforms. On Windows there is no
 # OpenSSL — TestHttpServer.hpp is stubbed out behind `#if !defined(_WIN32)`
 # (see ElmHttpTest.hpp and EcoKernelTest.hpp) so the test binary does not
 # pull in any libcrypto symbols.

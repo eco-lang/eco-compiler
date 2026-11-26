@@ -1,8 +1,9 @@
 module System.IO exposing
     ( Program, Model, Msg, run
+    , environment
     , FilePath, Handle(..)
     , stdout, stderr
-    , writeString
+    , writeString, writeBytes
     , LockSharedExclusive(..)
     , write
     , writeLn, print, printLn, readLine, flush, isTerminal
@@ -13,26 +14,28 @@ module System.IO exposing
 
 {-| The compiler is a headless Elm program whose every effect is a `Task`, and
 this module turns such a task into a program that can be run. It also gives the
-rest of the compiler a few console and file operations, built on the `Eco.*`
-modules that do the IO, and defines some types that other modules share.
+rest of the compiler a few console and file operations, built on eco/system's
+`System`, `Stream`, `Terminal` and `FileSystem` modules, and defines some types
+that other modules share.
 
 `run` builds the program. Its model holds nothing and each of its messages is a
 task to perform. Once the task it was given completes, the program goes on
 performing the empty task `Task.succeed ()` without end, so completing the task
 does not end the program.
 
-A _handle_ is a number naming a stream or an open file. Writing to a handle goes
-through `Eco.Console.write`, and closing one through `Eco.File.close`, with the
-number passed on as it is. `stdout` and `stderr` are the two handles defined
-here.
+The program reaches its standard streams through `environment`, eco/system's
+`System.environment`: the program is a `Platform.worker` whose flags are `()`
+(stock Elm, which builds the first stage of the compiler, accepts no other), so
+it is not handed the `System.Environment` as flags. A _handle_ names standard
+output or standard error, and `stdout` and `stderr` are the two there are.
 
 Console output is best-effort. `write`, `writeLn`, `print` and `printLn` cannot
-fail: an error from the write is discarded and the task succeeds. `readLine`
-and `writeString` fail with an `IOError`, as `Eco.IO.Error` describes,
-and `crashOnError` turns such a failure into a crash. `flush` asks the host
-nothing and does nothing. `isTerminal` asks the host, through
-`Eco.Console.isTerminal`, whether a handle is a terminal; it cannot fail, and
-answers `False` when the host cannot tell.
+fail: an error from the write is discarded and the task succeeds. Each write
+has reached the stream when its task completes, so output written before the
+program exits is not lost. `readLine` and `writeString` fail with an `IOError`,
+as `System.IOError` describes, and `crashOnError` turns such a failure into a
+crash. `flush` does nothing, since nothing here holds output back. `isTerminal`
+asks `Terminal.isTerminal` whether a handle is a terminal; it cannot fail.
 
 `LockSharedExclusive`, `MVar`, `ChItem` and `Stream` are defined here, but this
 module has no operations on them. The operations on MVars, channels
@@ -43,13 +46,14 @@ between concurrent tasks, built from MVars by `Utils.Main`.
 # Running a program
 
 @docs Program, Model, Msg, run
+@docs environment
 
 
 # Handles and files
 
 @docs FilePath, Handle
 @docs stdout, stderr
-@docs writeString
+@docs writeString, writeBytes
 @docs LockSharedExclusive
 
 
@@ -71,11 +75,16 @@ between concurrent tasks, built from MVars by `Utils.Main`.
 
 -}
 
-import Eco.Console
-import Eco.File
-import Eco.IO.Error as IOErr exposing (IOError)
+import Bytes exposing (Bytes)
+import Codec.Utf8 as Utf8
+import FileSystem
+import Stream
+import System
 import System.Crash exposing (crash)
+import System.IOError as IOErr exposing (IOError)
+import System.OsPath as OsPath
 import Task exposing (Task)
+import Terminal
 
 
 
@@ -125,6 +134,14 @@ update msg () =
     ( (), Task.perform Task.succeed msg )
 
 
+{-| A task that gives the program's environment: its platform, arguments,
+application path and standard streams, as `System.environment` gives them.
+-}
+environment : Task x System.Environment
+environment =
+    System.environment
+
+
 
 -- ====== FILES AND HANDLES ======
 
@@ -139,42 +156,69 @@ type alias FilePath =
     String
 
 
-{-| A stream or open file, named by a number.
-
-The constructor is exposed, so a handle can be made from any `Int`, and nothing
-here checks that the number names anything. `write` passes the number to
-`Eco.Console.write` and `close` passes it to `Eco.File.close`, so what a number
-names is decided by the host behind those modules.
-
+{-| One of the program's two standard output streams.
 -}
 type Handle
-    = Handle Int
+    = Stdout
+    | Stderr
 
 
 {-| The handle of standard output.
 -}
 stdout : Handle
 stdout =
-    Handle 1
+    Stdout
 
 
 {-| The handle of standard error.
 -}
 stderr : Handle
 stderr =
-    Handle 2
+    Stderr
+
+
+{-| The eco/system stream a handle names, in the program's environment.
+-}
+streamOf : Handle -> System.Environment -> Stream.Writable Bytes
+streamOf handle env =
+    case handle of
+        Stdout ->
+            env.stdout
+
+        Stderr ->
+            env.stderr
 
 
 
 -- ====== FILE OPERATIONS ======
 
 
-{-| Writes `content` as text to the file at `path`, as `Eco.File.writeString`
-does.
+{-| Writes `content` as UTF-8 text to the file at `path`, creating the file or
+replacing what it held. An empty `path` fails with `FileNotFound ""`.
 -}
 writeString : FilePath -> String -> Task IOError ()
 writeString path content =
-    Eco.File.writeString path content
+    if String.isEmpty path then
+        Task.fail (IOErr.FileNotFound path)
+
+    else
+        FileSystem.writeFile (Utf8.encode content) (OsPath.toPath path)
+            |> Task.map (\_ -> ())
+            |> Task.mapError (IOErr.fromFileSystem path)
+
+
+{-| Writes `bytes` to the file at `path`, creating the file or replacing what it
+held. An empty `path` fails with `FileNotFound ""`.
+-}
+writeBytes : FilePath -> Bytes -> Task IOError ()
+writeBytes path bytes =
+    if String.isEmpty path then
+        Task.fail (IOErr.FileNotFound path)
+
+    else
+        FileSystem.writeFile bytes (OsPath.toPath path)
+            |> Task.map (\_ -> ())
+            |> Task.mapError (IOErr.fromFileSystem path)
 
 
 
@@ -195,17 +239,18 @@ type LockSharedExclusive
 -- ====== CONSOLE I/O ======
 
 
-{-| Writes `content` to the stream the handle names, with no newline added.
+{-| Writes `content` to the stream the handle names, with no newline added, and
+completes once the stream has taken it.
 
-The write cannot fail. Any error from `Eco.Console.write`, a broken pipe
-included, is discarded and the task succeeds, so a caller cannot learn that
-the output was lost.
+The write cannot fail. Any error from the stream, a broken pipe included, is
+discarded and the task succeeds, so a caller cannot learn that the output was
+lost.
 
 -}
 write : Handle -> String -> Task Never ()
-write (Handle fd) content =
-    Eco.Console.write (Eco.Console.Handle fd) content
-        |> Task.onError (\_ -> Task.succeed ())
+write handle content =
+    environment
+        |> Task.andThen (\env -> Stream.logString content (streamOf handle env))
 
 
 {-| Writes `content` followed by a newline to the stream the handle names. Like
@@ -232,12 +277,22 @@ printLn s =
     print (s ++ "\n")
 
 
-{-| Reads the next line of standard input, as `Eco.Console.readLine` does.
-There is no separate value for the end of input.
+{-| Reads the next line of standard input, without its line ending. At the end
+of input it gives `""`: there is no separate value for the end of input.
 -}
 readLine : Task IOError String
 readLine =
-    Eco.Console.readLine
+    environment
+        |> Task.andThen (\env -> Stream.readLine env.stdin)
+        |> Task.onError
+            (\err ->
+                case err of
+                    Stream.Closed ->
+                        Task.succeed ""
+
+                    _ ->
+                        Task.fail (IOErr.fromStream err)
+            )
 
 
 {-| Does nothing and succeeds, whatever the handle. Nothing in this module
@@ -248,19 +303,24 @@ flush =
     Task.succeed ()
 
 
-{-| Asks the host whether `handle` is a terminal. Answers `False` when the host
-cannot tell, and for a handle that is not one of the standard streams.
+{-| Asks whether the stream `handle` names is a terminal. Answers `False` when
+that cannot be told.
 -}
 isTerminal : Handle -> Task Never Bool
-isTerminal (Handle fd) =
-    Eco.Console.isTerminal (Eco.Console.Handle fd)
+isTerminal handle =
+    case handle of
+        Stdout ->
+            Terminal.isTerminal Terminal.Stdout
+
+        Stderr ->
+            Terminal.isTerminal Terminal.Stderr
 
 
 {-| Turns a task that can fail with an `IOError` into one that cannot, by
 crashing the program when it fails.
 
 The crash message is `"IO error: "` followed by the error as
-`Eco.IO.Error.toString` renders it, and the crash is `System.Crash.crash`.
+`System.IOError.toString` renders it, and the crash is `System.Crash.crash`.
 
 -}
 crashOnError : Task IOError a -> Task Never a

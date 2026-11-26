@@ -1,7 +1,7 @@
 module Builder.File exposing
     ( Time(..), getTime, zeroTime, timeEncoder, timeDecoder
     , readBinary, writeBinary
-    , readUtf8, writeUtf8
+    , readUtf8, readUtf8OrError, writeUtf8
     , writePackage, copyPackageSource, fingerprintPackageSource
     , exists, remove
     , withStreamingWriter
@@ -33,7 +33,7 @@ cache files as a count of milliseconds since the epoch.
 
 # UTF-8 File Operations
 
-@docs readUtf8, writeUtf8
+@docs readUtf8, readUtf8OrError, writeUtf8
 
 
 # Package Management
@@ -55,9 +55,13 @@ cache files as a count of milliseconds since the epoch.
 import Bytes.Decode
 import Bytes.Encode
 import Codec.Archive.Zip as Zip
-import Eco.File
+import Codec.Utf8 as Utf8
 import Eco.Hash
+import FileSystem
+import FileSystem.Handle as Handle
 import System.IO as IO exposing (FilePath)
+import System.IOError as IOErr exposing (IOError)
+import System.OsPath as OsPath
 import Task exposing (Task)
 import Time
 import Utils.Bytes.Decode as BD
@@ -193,8 +197,23 @@ error, including when the file does not exist.
 -}
 readUtf8 : FilePath -> Task Never String
 readUtf8 path =
-    Eco.File.readString path
+    readUtf8OrError path
         |> IO.crashOnError
+
+
+{-| Reads the file at `path` as a UTF-8 string, failing with the `IOError` when it
+cannot be read. An invalid UTF-8 sequence reads as U+FFFD, as `Codec.Utf8.decode`
+describes.
+-}
+readUtf8OrError : FilePath -> Task IOError String
+readUtf8OrError path =
+    if String.isEmpty path then
+        Task.fail (IOErr.FileNotFound path)
+
+    else
+        FileSystem.readFile (OsPath.toPath path)
+            |> Task.map Utf8.decode
+            |> Task.mapError (IOErr.fromFileSystem path)
 
 
 
@@ -438,13 +457,22 @@ withStreamingWriter :
     -> ((String -> Task Never ()) -> Task Never a)
     -> Task Never a
 withStreamingWriter path callback =
-    (Eco.File.open path Eco.File.WriteMode |> IO.crashOnError)
+    let
+        orCrash : Task FileSystem.Error value -> Task Never value
+        orCrash task =
+            task
+                |> Task.mapError (IOErr.fromFileSystem path)
+                |> IO.crashOnError
+    in
+    orCrash (Handle.openForWrite Handle.EnsureEmpty (OsPath.toPath path))
         |> Task.andThen
             (\handle ->
-                callback (\chunk -> Eco.File.hWriteString handle chunk |> IO.crashOnError)
+                -- Offset -1 writes at the file's current position, so the chunks follow one
+                -- another; Handle.write would write each at the start of the file.
+                callback (\chunk -> orCrash (Handle.writeFromOffset handle -1 (Utf8.encode chunk)) |> Task.map (\_ -> ()))
                     |> Task.andThen
                         (\result ->
-                            (Eco.File.close handle |> IO.crashOnError)
+                            orCrash (Handle.close handle)
                                 |> Task.map (\_ -> result)
                         )
             )

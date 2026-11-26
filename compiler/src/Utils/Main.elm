@@ -4,7 +4,8 @@ module Utils.Main exposing
     , fpPathSeparator, fpIsRelative, fpTakeFileName, fpTakeExtension, fpTakeDirectory
     , dirDoesFileExist, dirDoesDirectoryExist, dirCreateDirectoryIfMissing
     , dirGetCurrentDirectory, dirGetAppUserDataDirectory, dirGetModificationTime, dirListDirectory
-    , dirRemoveFile, dirRemoveDirectoryRecursive, dirGetFileSize, dirCanonicalizePath
+    , dirRemoveFile, dirRemoveDirectoryRecursive, dirGetFileSize, dirCanonicalizePath, dirTouch
+    , appDataDirFor
     , envLookupEnv, envGetProgName, envGetArgs
     , lockWithFileLock
     , binaryDecodeFileOrFail, binaryEncodeFile, builderHPutBuilder
@@ -25,8 +26,9 @@ module Utils.Main exposing
     )
 
 {-| Stands in for the parts of Haskell's libraries that the compiler was ported
-from, so that code written in their shape runs on the `Eco.*` modules that do
-this program's IO.
+from, so that code written in their shape runs on eco/system, which does this
+program's IO, and on the `Eco.*` modules of eco/kernel that the compiler still
+uses (MVars).
 
 Most names here are a Haskell name with a prefix saying where it comes from:
 `fp` for file paths, `dir` for directories, `env` for the environment, `repl`
@@ -40,11 +42,14 @@ they never ask the file system anything. They take `/` as the only separator.
 `fpIsRelative`, which `fpCombine` uses, is the one place that also recognises
 the Windows forms of an absolute path.
 
-The `dir` and `env` functions, `lockWithFileLock` and the binary file functions
-are tasks over `Eco.File` and `Eco.Env`, and none of them can fail. Where the
-operation underneath can fail with an `IOError`, the failure crashes the program through
-`System.IO.crashOnError`. `binaryDecodeFileOrFail` is the exception: there, a
-failure to read the file becomes an `Err`.
+The `dir` and `env` functions and the binary file functions are tasks over
+eco/system's `FileSystem` and `System`, and none of them can fail. Where the operation underneath
+can fail, the failure, as a `System.IOError.IOError`, crashes the program
+through `System.IO.crashOnError`. `binaryDecodeFileOrFail` is the exception:
+there, a failure to read the file becomes an `Err`. Paths are converted with
+`System.OsPath`, and an empty path, which eco/system would read as the current
+directory, fails as a missing file does (or is no file, for the existence
+queries).
 
 An _MVar_ is a cell, held outside the program, that is either empty or holds
 one value, as `Eco.MVar` describes. The MVar functions here take an encoder or
@@ -74,7 +79,8 @@ here are defined in `System.IO`.
 
 @docs dirDoesFileExist, dirDoesDirectoryExist, dirCreateDirectoryIfMissing
 @docs dirGetCurrentDirectory, dirGetAppUserDataDirectory, dirGetModificationTime, dirListDirectory
-@docs dirRemoveFile, dirRemoveDirectoryRecursive, dirGetFileSize, dirCanonicalizePath
+@docs dirRemoveFile, dirRemoveDirectoryRecursive, dirGetFileSize, dirCanonicalizePath, dirTouch
+@docs appDataDirFor
 
 
 # Environment Operations
@@ -151,21 +157,23 @@ here are defined in `System.IO`.
 
 -}
 
+import Bytes exposing (Bytes)
 import Bytes.Decode
 import Bytes.Encode
 import Data.Map as Map
 import Data.NonEmptyList as NE
 import Dict exposing (Dict)
-import Eco.Env
-import Eco.File
-import Eco.IO.Error as IOErr
 import Eco.MVar
-import Eco.Runtime
+import FileSystem
 import Maybe.Extra as Maybe
+import Path
 import Prelude
 import Process
+import System
 import System.Crash exposing (crash)
 import System.IO as IO exposing (ChItem(..), FilePath, LockSharedExclusive(..), MVar(..), Stream)
+import System.IOError as IOErr exposing (IOError)
+import System.OsPath as OsPath
 import Task exposing (Task)
 import Time
 import Utils.Bytes.Decode as BD
@@ -917,95 +925,180 @@ fpTakeDirectory filename =
 -- System.FileLock
 
 
-{-| Returns a task that locks the file at `path`, performs `ioFunc`, unlocks the
-file, and succeeds with what `ioFunc` gave.
+{-| Returns a task that performs `ioFunc` and succeeds with what it gave.
 
-Locking and unlocking are done by `Eco.File.lock` and `Eco.File.unlock`, whose
-docstrings say what a lock achieves. A failure of either crashes the program.
+No lock is taken, whatever `path` and the mode: the compiler's native and
+JavaScript builds never locked anything here (eco/kernel's `Eco.File.lock` did
+nothing), and the operation was dropped with eco/kernel's file IO
+(plans/compiler-io-on-eco-system.md §10). Exclusion between concurrent `eco`
+processes would need a lock on eco/system's `FileSystem.Handle`.
 
 -}
 lockWithFileLock : String -> LockSharedExclusive -> (() -> Task Never a) -> Task Never a
-lockWithFileLock path mode ioFunc =
+lockWithFileLock _ mode ioFunc =
     case mode of
         LockExclusive ->
-            lockFile path
-                |> Task.andThen ioFunc
-                |> Task.andThen
-                    (\a ->
-                        unlockFile path
-                            |> Task.map (\_ -> a)
-                    )
-
-
-{-| Locks the file at `path` with `Eco.File.lock`, and crashes the program if
-that fails.
--}
-lockFile : FilePath -> Task Never ()
-lockFile path =
-    Eco.File.lock path
-        |> IO.crashOnError
-
-
-{-| Unlocks the file at `path` with `Eco.File.unlock`, and crashes the program if
-that fails.
--}
-unlockFile : FilePath -> Task Never ()
-unlockFile path =
-    Eco.File.unlock path
-        |> IO.crashOnError
+            ioFunc ()
 
 
 
 -- System.Directory
 
 
-{-| Returns whether `filename` names a file, as `Eco.File.fileExists` decides. A
-directory is not a file here.
+{-| Runs the file system task `toTask` on the path `path`, as eco/system reads it,
+with a failure as an `IOError` about `path`. An empty `path` fails with
+`FileNotFound ""` instead, since eco/system would read it as the current
+directory.
+-}
+onPath : FilePath -> (Path.Path -> Task FileSystem.Error a) -> Task IOError a
+onPath path toTask =
+    if String.isEmpty path then
+        Task.fail (IOErr.FileNotFound path)
+
+    else
+        toTask (OsPath.toPath path)
+            |> Task.mapError (IOErr.fromFileSystem path)
+
+
+{-| Returns the entity type of what `path` names, following symbolic links, or
+`Nothing` if that cannot be read (nothing there, no permission, an empty path).
+-}
+entityType : FilePath -> Task Never (Maybe FileSystem.EntityType)
+entityType path =
+    onPath path (FileSystem.metadata { resolveLink = True })
+        |> Task.map (\meta -> Just meta.entityType)
+        |> Task.onError (\_ -> Task.succeed Nothing)
+
+
+{-| Returns whether `filename` names a file, following symbolic links. A directory
+is not a file here, and anything that cannot be read is not one either.
 -}
 dirDoesFileExist : FilePath -> Task Never Bool
 dirDoesFileExist filename =
-    Eco.File.fileExists filename
+    entityType filename
+        |> Task.map (\t -> t == Just FileSystem.File)
 
 
 {-| Creates the directory `filename`, and its missing parents too when
 `createParents` is `True`. An empty `filename` does nothing.
 
-Any failure crashes the program. As `Eco.File.createDir` describes, an existing
-directory is not a failure when `createParents` is `True`; with `False` it can
-be.
+Any failure crashes the program. An existing directory is not a failure when
+`createParents` is `True`; with `False` it is.
 
 -}
 dirCreateDirectoryIfMissing : Bool -> FilePath -> Task Never ()
 dirCreateDirectoryIfMissing createParents filename =
     -- A directory computed from a bare file name, as fpDropFileName
-    -- computes it, is "", and the layer below fails to create "".
+    -- computes it, is "", which names no directory to create.
     if String.length filename == 0 then
         Task.succeed ()
 
     else
-        Eco.File.createDir createParents filename
+        onPath filename (FileSystem.makeDirectory { recursive = createParents })
+            |> Task.map (\_ -> ())
             |> IO.crashOnError
 
 
-{-| A task that gives the current working directory, as `Eco.File.getCwd` reads
-it, and crashes the program if it cannot be read (for instance after the
-directory was removed).
+{-| A task that gives the current working directory, and crashes the program if
+it cannot be read (for instance after the directory was removed).
 -}
 dirGetCurrentDirectory : Task Never String
 dirGetCurrentDirectory =
-    Eco.File.getCwd
+    currentDirectory
         |> IO.crashOnError
+
+
+{-| The current working directory, with `/` separators, or `FileNotFound ""` when
+it cannot be read: eco/system reports that as `Path.empty`.
+-}
+currentDirectory : Task IOError String
+currentDirectory =
+    IO.environment
+        |> Task.andThen
+            (\env ->
+                FileSystem.currentWorkingDirectory
+                    |> Task.andThen
+                        (\cwd ->
+                            if cwd == Path.empty then
+                                Task.fail (IOErr.FileNotFound "")
+
+                            else
+                                Task.succeed (OsPath.fromPath env.platform cwd)
+                        )
+            )
 
 
 {-| Returns the directory where the application called `filename` keeps its data
-for the current user, as `Eco.File.appDataDir` gives it. The directory need not
-exist. Crashes the program when no home directory can be found, with a message
-that says to set `HOME`.
+for the current user. The directory need not exist.
+
+It is `<home>/.<filename>` on Linux and other POSIX systems,
+`<home>/Library/Application Support/<filename>` on macOS, and
+`<APPDATA>/<filename>` on Windows, or `<home>/<filename>` there when `APPDATA`
+is not set. `<home>` is `FileSystem.homeDirectory`: `HOME` when it is set and
+not empty, otherwise the user's home directory as the system records it.
+Crashes the program, with the error `FileNotFound ""`, when there is no home
+directory.
+
 -}
 dirGetAppUserDataDirectory : FilePath -> Task Never FilePath
 dirGetAppUserDataDirectory filename =
-    Eco.File.appDataDir filename
+    IO.environment
+        |> Task.andThen
+            (\env ->
+                Task.map2
+                    (\home vars ->
+                        appDataDirFor env.platform vars (OsPath.fromPath env.platform home) filename
+                    )
+                    FileSystem.homeDirectory
+                    System.environmentVariables
+            )
+        |> Task.andThen
+            (\result ->
+                case result of
+                    Ok dir ->
+                        Task.succeed dir
+
+                    Err err ->
+                        Task.fail err
+            )
         |> IO.crashOnError
+
+
+{-| The application data directory of `name` on `platform`, given the
+environment variables and the home directory (`""` for none), as
+`dirGetAppUserDataDirectory` describes it.
+-}
+appDataDirFor : System.Platform -> Dict String String -> String -> String -> Result IOError String
+appDataDirFor platform vars home name =
+    let
+        appData : String
+        appData =
+            Dict.get "APPDATA" vars |> Maybe.withDefault ""
+    in
+    case platform of
+        System.Win32 ->
+            if appData /= "" then
+                Ok (fpCombine (String.replace "\\" "/" appData) name)
+
+            else if home /= "" && home /= "." then
+                Ok (fpCombine home name)
+
+            else
+                Err (IOErr.FileNotFound "")
+
+        System.Darwin ->
+            if home /= "" && home /= "." then
+                Ok (fpCombine home ("Library/Application Support/" ++ name))
+
+            else
+                Err (IOErr.FileNotFound "")
+
+        _ ->
+            if home /= "" && home /= "." then
+                Ok (fpCombine home ("." ++ name))
+
+            else
+                Err (IOErr.FileNotFound "")
 
 
 {-| Returns when the file at `filename` was last modified, and crashes the program
@@ -1013,7 +1106,38 @@ if that cannot be read.
 -}
 dirGetModificationTime : FilePath -> Task Never Time.Posix
 dirGetModificationTime filename =
-    Eco.File.modificationTime filename
+    onPath filename (FileSystem.metadata { resolveLink = True })
+        |> Task.map .lastModified
+        |> IO.crashOnError
+
+
+{-| Sets the access and modification times of the file at `path` to now,
+creating an empty file there first if there is none. Crashes the program if
+that fails.
+-}
+dirTouch : FilePath -> Task Never ()
+dirTouch path =
+    Time.now
+        |> Task.andThen
+            (\now ->
+                let
+                    setTimes : Task IOError ()
+                    setTimes =
+                        onPath path (FileSystem.changeTimes { lastAccessed = now, lastModified = now, resolveLink = True })
+                            |> Task.map (\_ -> ())
+                in
+                setTimes
+                    |> Task.onError
+                        (\err ->
+                            case err of
+                                IOErr.FileNotFound _ ->
+                                    onPath path (FileSystem.appendToFile (Bytes.Encode.encode (Bytes.Encode.sequence [])))
+                                        |> Task.andThen (\_ -> setTimes)
+
+                                _ ->
+                                    Task.fail err
+                        )
+            )
         |> IO.crashOnError
 
 
@@ -1021,63 +1145,97 @@ dirGetModificationTime filename =
 -}
 dirRemoveFile : FilePath -> Task Never ()
 dirRemoveFile path =
-    Eco.File.removeFile path
+    onPath path (FileSystem.remove { recursive = False })
+        |> Task.map (\_ -> ())
         |> IO.crashOnError
 
 
-{-| Removes the directory at `path` together with everything in it, as
-`Eco.File.removeDir` does on every backend (the native kernel, the eco/kernel
-JS kernel and the eco-io server). Nothing at `path` is not a failure; any other
-failure crashes the program.
+{-| Removes the directory at `path` together with everything in it. Nothing at
+`path` is not a failure; any other failure crashes the program.
 -}
 dirRemoveDirectoryRecursive : FilePath -> Task Never ()
 dirRemoveDirectoryRecursive path =
-    Eco.File.removeDir path
+    onPath path (FileSystem.remove { recursive = True })
+        |> Task.map (\_ -> ())
+        |> Task.onError
+            (\err ->
+                case err of
+                    IOErr.FileNotFound _ ->
+                        Task.succeed ()
+
+                    _ ->
+                        Task.fail err
+            )
         |> IO.crashOnError
 
 
-{-| Returns the size in bytes of the file at `path`, by opening it for reading,
-asking for its size and closing it again. Crashes the program if the file
-cannot be opened or its size cannot be read, so check that it exists first.
+{-| Returns the size in bytes of the file at `path`. Crashes the program if it
+cannot be read, so check that it exists first.
 -}
 dirGetFileSize : FilePath -> Task Never Int
 dirGetFileSize path =
-    Eco.File.open path Eco.File.ReadMode
+    onPath path (FileSystem.metadata { resolveLink = True })
+        |> Task.map .byteSize
+        |> IO.crashOnError
+
+
+{-| Returns whether `path` names a directory, following symbolic links.
+-}
+dirDoesDirectoryExist : FilePath -> Task Never Bool
+dirDoesDirectoryExist path =
+    entityType path
+        |> Task.map (\t -> t == Just FileSystem.Directory)
+
+
+{-| Returns `path` made absolute, with its symbolic links resolved. A path that
+cannot be resolved, as one that does not exist, is only made absolute, against
+the current directory, and normalized. Crashes the program for an empty path,
+and when the current directory is needed and cannot be read.
+-}
+dirCanonicalizePath : FilePath -> Task Never FilePath
+dirCanonicalizePath path =
+    IO.environment
         |> Task.andThen
-            (\handle ->
-                Eco.File.size handle
-                    |> Task.andThen
-                        (\n ->
-                            Eco.File.close handle
-                                |> Task.map (\_ -> n)
+            (\env ->
+                onPath path FileSystem.realPath
+                    |> Task.map (OsPath.fromPath env.platform)
+                    |> Task.onError
+                        (\_ ->
+                            if String.isEmpty path then
+                                Task.fail (IOErr.FileNotFound path)
+
+                            else
+                                currentDirectory
+                                    |> Task.map (\cwd -> canonicalizeMissing env.platform cwd path)
                         )
             )
         |> IO.crashOnError
 
 
-{-| Returns whether `path` names a directory, as `Eco.File.dirExists` decides.
+{-| The absolute, normalized form of `path`, which could not be resolved, against
+the current directory `cwd`.
 -}
-dirDoesDirectoryExist : FilePath -> Task Never Bool
-dirDoesDirectoryExist path =
-    Eco.File.dirExists path
+canonicalizeMissing : System.Platform -> String -> FilePath -> FilePath
+canonicalizeMissing platform cwd path =
+    let
+        absolute : FilePath
+        absolute =
+            if fpIsRelative path then
+                fpCombine cwd path
+
+            else
+                path
+    in
+    OsPath.fromPath platform (OsPath.toPath absolute)
 
 
-{-| Returns `path` made absolute, as `Eco.File.canonicalize` gives it, with its
-symbolic links resolved where that can resolve them: a path that does not exist
-is only made absolute and normalized. Crashes the program if the request fails.
--}
-dirCanonicalizePath : FilePath -> Task Never FilePath
-dirCanonicalizePath path =
-    Eco.File.canonicalize path
-        |> IO.crashOnError
-
-
-{-| Returns the names of the entries in the directory at `path`, as
-`Eco.File.list` gives them, and crashes the program if it cannot be listed.
+{-| Returns the names of the entries in the directory at `path`, sorted, and
+crashes the program if it cannot be listed.
 -}
 dirListDirectory : FilePath -> Task Never (List FilePath)
 dirListDirectory path =
-    Eco.File.list path
+    onPath path FileSystem.listDirectory
+        |> Task.map (List.map (\entry -> Path.toPosixString entry.path))
         |> IO.crashOnError
 
 
@@ -1090,7 +1248,8 @@ set.
 -}
 envLookupEnv : String -> Task Never (Maybe String)
 envLookupEnv name =
-    Eco.Env.lookup name
+    System.environmentVariables
+        |> Task.map (Dict.get name)
 
 
 {-| A task that gives the program's name, which is always `"eco"`. Nothing is read
@@ -1101,12 +1260,13 @@ envGetProgName =
     Task.succeed "eco"
 
 
-{-| A task that gives the command-line arguments, as `Eco.Env.rawArgs` reports
-them.
+{-| A task that gives the command-line arguments, without the program's own
+name (on the JavaScript backend, without the script).
 -}
 envGetArgs : Task Never (List String)
 envGetArgs =
-    Eco.Env.rawArgs
+    IO.environment
+        |> Task.map (\env -> List.drop 1 env.args)
 
 
 
@@ -1152,6 +1312,7 @@ while the MVar is empty. Crashes the program if the MVar was dropped.
 readMVar : Bytes.Decode.Decoder a -> MVar a -> Task Never a
 readMVar decoder (MVar ref) =
     Eco.MVar.read decoder (Eco.MVar.MVar ref)
+        |> Task.mapError IOErr.fromKernel
         |> IO.crashOnError
 
 
@@ -1177,6 +1338,7 @@ Waits while the MVar is empty. Crashes the program if the MVar was dropped.
 takeMVar : Bytes.Decode.Decoder a -> MVar a -> Task Never a
 takeMVar decoder (MVar ref) =
     Eco.MVar.take decoder (Eco.MVar.MVar ref)
+        |> Task.mapError IOErr.fromKernel
         |> IO.crashOnError
 
 
@@ -1186,6 +1348,7 @@ full. Crashes the program if the MVar was dropped.
 putMVar : (a -> Bytes.Encode.Encoder) -> MVar a -> a -> Task Never ()
 putMVar encoder (MVar ref) value =
     Eco.MVar.put encoder (Eco.MVar.MVar ref) value
+        |> Task.mapError IOErr.fromKernel
         |> IO.crashOnError
 
 
@@ -1304,13 +1467,13 @@ position and a message.
 
 The position is always 0. A file `decoder` cannot read gives the message
 `"binary decode failed"`. A failure to read the file is an `Err` too, not a
-crash, with the `IOError` as `Eco.IO.Error.toString` renders it. Bytes left
+crash, with the `IOError` as `System.IOError.toString` renders it. Bytes left
 over after the value are ignored.
 
 -}
 binaryDecodeFileOrFail : Bytes.Decode.Decoder a -> FilePath -> Task Never (Result ( Int, String ) a)
 binaryDecodeFileOrFail decoder filename =
-    Eco.File.readBytes filename
+    onPath filename FileSystem.readFile
         |> Task.map
             (\bytes ->
                 case Bytes.Decode.decode decoder bytes of
@@ -1323,13 +1486,76 @@ binaryDecodeFileOrFail decoder filename =
         |> Task.onError (\err -> Task.succeed (Err ( 0, IOErr.toString err )))
 
 
-{-| Writes `value`, encoded with `toEncoder`, to the file at `path` with
-`Eco.File.writeBytesAtomic`, and crashes the program if that fails.
+{-| Writes `value`, encoded with `toEncoder`, to the file at `path`, replacing it
+in one step, and crashes the program if that fails.
 -}
 binaryEncodeFile : (a -> Bytes.Encode.Encoder) -> FilePath -> a -> Task Never ()
 binaryEncodeFile toEncoder path value =
-    Eco.File.writeBytesAtomic path (Bytes.Encode.encode (toEncoder value))
+    writeBytesAtomic path (Bytes.Encode.encode (toEncoder value))
         |> IO.crashOnError
+
+
+{-| Writes `bytes` to the file at `path` so that a reader sees either the old file
+or the whole new one, never part of it.
+
+The bytes go to a new temporary file next to it, `<path>.tmp-<n>`, created only
+if nothing is there (so two processes never share one) and flushed to the
+storage device, which is then moved over `path`. `n` starts from the program's
+start time and goes up past any name already taken. If the move fails, the
+temporary file is removed.
+
+-}
+writeBytesAtomic : FilePath -> Bytes -> Task IOError ()
+writeBytesAtomic path bytes =
+    IO.environment
+        |> Task.andThen
+            (\env ->
+                Time.now
+                    |> Task.andThen
+                        (\now ->
+                            writeBytesAtomicFrom path
+                                bytes
+                                (Time.posixToMillis env.startTime * 1000 + modBy 1000 (Time.posixToMillis now))
+                                100
+                        )
+            )
+
+
+{-| Tries `writeBytesAtomic` with the temporary name number `n`, and up to
+`triesLeft - 1` higher numbers while the name is taken.
+-}
+writeBytesAtomicFrom : FilePath -> Bytes -> Int -> Int -> Task IOError ()
+writeBytesAtomicFrom path bytes n triesLeft =
+    let
+        tmp : FilePath
+        tmp =
+            path ++ ".tmp-" ++ String.fromInt n
+    in
+    onPath tmp (FileSystem.writeFileWith { createNew = True, sync = True } bytes)
+        |> Task.andThen
+            (\_ ->
+                onPath path (\target -> FileSystem.move target (OsPath.toPath tmp))
+                    |> Task.map (\_ -> ())
+                    |> Task.onError
+                        (\err ->
+                            onPath tmp (FileSystem.remove { recursive = False })
+                                |> Task.onError (\_ -> Task.succeed (OsPath.toPath tmp))
+                                |> Task.andThen (\_ -> Task.fail err)
+                        )
+            )
+        |> Task.onError
+            (\err ->
+                case err of
+                    IOErr.AlreadyExists _ ->
+                        if triesLeft > 1 then
+                            writeBytesAtomicFrom path bytes (n + 1) (triesLeft - 1)
+
+                        else
+                            Task.fail err
+
+                    _ ->
+                        Task.fail err
+            )
 
 
 
@@ -1337,12 +1563,28 @@ binaryEncodeFile toEncoder path value =
 -- ====== NODE ======
 
 
-{-| A task that gives the directory `Eco.Runtime.dirname` returns, standing in for
-Node's `__dirname`.
+{-| A task that gives the directory that holds the running program, standing in
+for Node's `__dirname`: the directory of the executable on the native backend,
+and of the compiled JavaScript file on the JavaScript backend (with symbolic
+links resolved). Crashes the program, with the error `FileNotFound ""`, when the
+program's path cannot be read.
 -}
 nodeGetDirname : Task Never String
 nodeGetDirname =
-    Eco.Runtime.dirname
+    IO.environment
+        |> Task.andThen
+            (\env ->
+                let
+                    application : String
+                    application =
+                        OsPath.fromPath env.platform env.applicationPath
+                in
+                if application == "" || application == "." then
+                    Task.fail (IOErr.FileNotFound "")
+
+                else
+                    Task.succeed (fpTakeDirectory application)
+            )
         |> IO.crashOnError
 
 

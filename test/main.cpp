@@ -83,7 +83,6 @@
 #include "allocator/ResolveConstantTest.hpp"
 #include "kernel/BrowserKernelTest.hpp"
 #include "kernel/BytesKernelTest.hpp"
-#include "kernel/ConsoleKernelTest.hpp"
 #include "kernel/DebugKernelTest.hpp"
 #include "kernel/IntArithTest.hpp"
 #include "kernel/JsArrayKernelTest.hpp"
@@ -681,7 +680,6 @@ static IsolatedSuites buildIsolatedSuites() {
     registerIntArithIsolatedTests(*s.kernelIsolated);
     registerTaskEffectManagerTests(*s.kernelIsolated);
     registerJsArrayKernelTests(*s.kernelIsolated);
-    registerConsoleKernelTests(*s.kernelIsolated);
     registerRegexKernelTests(*s.kernelIsolated);
     registerBrowserKernelTests(*s.kernelIsolated);
     registerDebugKernelTests(*s.kernelIsolated);

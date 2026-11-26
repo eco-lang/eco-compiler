@@ -28,7 +28,7 @@ namespace Eco::System {
 ///
 /// `platform` and `arch` are fixed when this file is compiled, spelled as Node's `process.platform` and
 /// `process.arch` are, or "unknown". `appPath` is the executable's path, or "" where it cannot be found or
-/// the platform is neither Linux nor macOS. `argv` is the whole C argv of the process, the program name
+/// the platform is none of Linux, macOS and Windows. `argv` is the whole C argv of the process, the program name
 /// included; in a process that embeds the program it is the host's. `argv` is empty on platforms other than
 /// Linux, macOS and Windows, and on Linux when /proc/self/cmdline cannot be read. `startMillis` is the
 /// wall-clock time of this call in milliseconds since the Unix epoch, held unboxed, as are the three stream
@@ -38,6 +38,9 @@ namespace Eco::System {
 /// later calls return the same ids while all three ids are nonzero and still in the stream table. An id is 0
 /// when its pair could not be made. They never close fds 0 to 2. Allocates.
 HPointer systemEnvironmentNow();
+/// Returns a Task that succeeds with `systemEnvironmentNow()`, built when the Task runs, so its
+/// `startMillis` is the time it ran. `captured` is unused.
+HPointer systemEnvironmentBody(HPointer captured);
 /// Returns a Task that succeeds with the process's environment variables as a list of `( name, value )`
 /// pairs, in the order the environment holds them. Each entry is split at its first '='; an entry with no
 /// '=' gives an empty value. `captured` is unused.

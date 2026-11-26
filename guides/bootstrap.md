@@ -24,7 +24,13 @@ export NODE_OPTIONS="--max-old-space-size=16384"
 
 ### Stage 1: Stock Elm compiler → `guida.js`
 
-The stock Elm compiler (a SHA256-pinned 0.19.1 binary fetched by `compiler/cmake/toolchain.cmake` into `build/toolchain/bin/`) compiles the Eco compiler source using XHR-based IO.
+The stock Elm compiler (a SHA256-pinned 0.19.1 binary fetched by `compiler/cmake/toolchain.cmake` into `build/toolchain/bin/`) compiles the Eco compiler source.
+The compiler does its file, console, environment and HTTP IO through eco/system: Stage 1 compiles a
+stock-Elm copy of the eco/system modules it imports (`compiler/scripts/make-stage1-system.js`, into
+`build/compiler/build-xhr/src-system`), and `compiler/scripts/link-stage1-system-kernels.js` then links
+eco/system's own JavaScript kernels into `guida.js`, as eco's JS backend does for Stages 2–5. Only the
+eco/kernel modules the compiler still uses (MVars, GC, crashes) go over XHR to `compiler/bin/eco-io-handler.js`
+(plans/compiler-io-on-eco-system.md).
 This stage builds **without** `--optimize` because the XHR variant of `Eco.Crash` uses
 `Debug.todo` (which is forbidden by `--optimize`). Starting from Stage 2, the kernel
 variant of `Eco.Crash` (via `Eco.Kernel.Crash`) is used instead, enabling `--optimize`.

@@ -33,9 +33,9 @@ inline void prepareServer() {
 
 inline std::unique_ptr<ElmE2EBase::ElmE2EParallelTestSuite> buildElmHttpTestSuite() {
     prepareServer();
-    // TestServerConfig reads the server's URLs with Eco.Env (eco/kernel).
+    // TestServerConfig reads the server's URLs with System.environmentVariables (eco/system).
     std::string extraFlags =
-        std::string(" --local-package eco/kernel=") + REPO_ROOT + "/eco-kernel-cpp";
+        std::string(" --local-package eco/system=") + REPO_ROOT + "/system-kernel-cpp";
     return ElmE2EBase::buildTestSuite("elm-http", "Elm Http E2E", "elm-http/", extraFlags);
 }
 

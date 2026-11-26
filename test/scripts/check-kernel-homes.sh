@@ -6,9 +6,9 @@
 #
 # Since SD-16 the prefix is part of every kernel key: the JS backend keys and names an Eco kernel
 # with it (`elm/kernel:Eco.Kernel.File.$`, `_Eco_File_size`), and KernelTypes, KernelFacts and
-# KernelSetFacts key rows by (prefix, home, name) (plans/kernel-table-prefix-keys.md). So the
-# eco/kernel homes File, Http and Process, which elm/file, elm/http and elm/core also have, are
-# safe there. What still keys by home alone are the hard-coded elm/core dispatches
+# KernelSetFacts key rows by (prefix, home, name) (plans/kernel-table-prefix-keys.md). So an
+# eco/kernel home that an Elm package also has would be safe there; the eco/kernel homes File,
+# Http and Process were such homes until they were removed (plans/compiler-io-on-eco-system.md). What still keys by home alone are the hard-coded elm/core dispatches
 # (GenerateMlir/Intrinsics, both KernelAbi modules, BytesFusion/Reify), which match kernels by
 # (home, name) and none of which names a shared home today. A new shared home must be added to
 # SHARED_ELM_ECO deliberately, after checking those dispatches for its home.
@@ -51,7 +51,7 @@ fi
 
 # C: Elm kernel homes (elm/core and the elm/* packages): the Elm module list and the C symbol
 # prefixes of elm-kernel-cpp.
-SHARED_ELM_ECO="File Http Process"
+SHARED_ELM_ECO=""
 {
     awk '/^set\(ECO_ELM_KERNEL_MODS/{on=1} on{print} on&&/\)/{on=0}' \
         "$root/runtime/src/codegen/CMakeLists.txt" \

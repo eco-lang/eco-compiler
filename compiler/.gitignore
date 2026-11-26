@@ -21,3 +21,6 @@ examples/index.html
 .coverage/
 eco-stuff/
 eco-example-projects/
+
+# Generated eco/system modules for Stage 1 (link to build/compiler/build-xhr/src-system)
+src-system

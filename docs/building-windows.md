@@ -147,8 +147,9 @@ The Windows port is staged across the plan's W1–W5 milestones; the
 following are *not yet implemented* in v1 and surface as runtime errors
 when invoked:
 
-- **`Eco.Process.spawn` / `spawnProcess`** — returns `ENOSYS`. Real
-  CreateProcessW + pipe plumbing is plan item W2 #9.
+- **eco/system's native file system** implements on Windows only the operations
+  the compiler uses (plans/compiler-io-on-eco-system.md P1.5); the rest fail
+  with `NotSupported`, as `FileSystem.ErrorKind` lists.
 - **Symbolic links via `file(CREATE_LINK ... SYMBOLIC)`** — replaced by
   NTFS junctions (`mklink /J`) which require no privileges. See
   `cmake/EcoCreateDirLink.cmake`.

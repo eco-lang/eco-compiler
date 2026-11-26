@@ -821,39 +821,9 @@ facts =
                 { scope = Inert
                 }
           )
-        , ( ( "Eco", "Console", "log" )
-          , TypeFaithful
-                { scope = Transports
-                }
-          )
-        , ( ( "Eco", "Console", "readAll" )
-          , TypeFaithful
-                { scope = Inert
-                }
-          )
-        , ( ( "Eco", "Console", "readLine" )
-          , TypeFaithful
-                { scope = Inert
-                }
-          )
-        , ( ( "Eco", "Console", "write" )
-          , TypeFaithful
-                { scope = Inert
-                }
-          )
         , ( ( "Eco", "Crash", "crash" )
           , TypeFaithful
                 { scope = Transports
-                }
-          )
-        , ( ( "Eco", "Env", "lookup" )
-          , TypeFaithful
-                { scope = Inert
-                }
-          )
-        , ( ( "Eco", "Env", "rawArgs" )
-          , TypeFaithful
-                { scope = Inert
                 }
           )
         , ( ( "Eco", "FNV", "hash" )
@@ -871,67 +841,7 @@ facts =
                 { scope = Transports
                 }
           )
-        , ( ( "Eco", "File", "appDataDir" )
-          , TypeFaithful
-                { scope = Inert
-                }
-          )
-        , ( ( "Eco", "File", "canonicalize" )
-          , TypeFaithful
-                { scope = Inert
-                }
-          )
-        , ( ( "Eco", "File", "close" )
-          , TypeFaithful
-                { scope = Inert
-                }
-          )
-        , ( ( "Eco", "File", "createDir" )
-          , TypeFaithful
-                { scope = Inert
-                }
-          )
-        , ( ( "Eco", "File", "dirExists" )
-          , TypeFaithful
-                { scope = Inert
-                }
-          )
-        , ( ( "Eco", "File", "fileExists" )
-          , TypeFaithful
-                { scope = Inert
-                }
-          )
-        , ( ( "Eco", "File", "findExecutable" )
-          , TypeFaithful
-                { scope = Inert
-                }
-          )
-        , ( ( "Eco", "File", "getCwd" )
-          , TypeFaithful
-                { scope = Inert
-                }
-          )
-        , ( ( "Eco", "File", "hWriteString" )
-          , TypeFaithful
-                { scope = Inert
-                }
-          )
-        , ( ( "Eco", "File", "list" )
-          , TypeFaithful
-                { scope = Inert
-                }
-          )
-        , ( ( "Eco", "File", "lock" )
-          , TypeFaithful
-                { scope = Inert
-                }
-          )
         , ( ( "Elm", "File", "mime" )
-          , TypeFaithful
-                { scope = Inert
-                }
-          )
-        , ( ( "Eco", "File", "modificationTime" )
           , TypeFaithful
                 { scope = Inert
                 }
@@ -941,82 +851,12 @@ facts =
                 { scope = Inert
                 }
           )
-        , ( ( "Eco", "File", "open" )
-          , TypeFaithful
-                { scope = Inert
-                }
-          )
-        , ( ( "Eco", "File", "readBytes" )
-          , TypeFaithful
-                { scope = Inert
-                }
-          )
-        , ( ( "Eco", "File", "readString" )
-          , TypeFaithful
-                { scope = Inert
-                }
-          )
-        , ( ( "Eco", "File", "removeDir" )
-          , TypeFaithful
-                { scope = Inert
-                }
-          )
-        , ( ( "Eco", "File", "removeFile" )
-          , TypeFaithful
-                { scope = Inert
-                }
-          )
-        , ( ( "Eco", "File", "setCwd" )
-          , TypeFaithful
-                { scope = Inert
-                }
-          )
         , ( ( "Elm", "File", "size" )
           , TypeFaithful
                 { scope = Inert
                 }
           )
-        , ( ( "Eco", "File", "size" )
-          , TypeFaithful
-                { scope = Inert
-                }
-          )
-        , ( ( "Eco", "File", "touch" )
-          , TypeFaithful
-                { scope = Inert
-                }
-          )
-        , ( ( "Eco", "File", "unlock" )
-          , TypeFaithful
-                { scope = Inert
-                }
-          )
-        , ( ( "Eco", "File", "writeBytes" )
-          , TypeFaithful
-                { scope = Inert
-                }
-          )
-        , ( ( "Eco", "File", "writeBytesAtomic" )
-          , TypeFaithful
-                { scope = Inert
-                }
-          )
-        , ( ( "Eco", "File", "writeString" )
-          , TypeFaithful
-                { scope = Inert
-                }
-          )
         , ( ( "Elm", "Http", "emptyBody" )
-          , TypeFaithful
-                { scope = Inert
-                }
-          )
-        , ( ( "Eco", "Http", "fetch" )
-          , TypeFaithful
-                { scope = Inert
-                }
-          )
-        , ( ( "Eco", "Http", "getArchive" )
           , TypeFaithful
                 { scope = Inert
                 }
@@ -1369,29 +1209,9 @@ facts =
                 { scope = Transports
                 }
           )
-        , ( ( "Eco", "Process", "exit" )
-          , TypeFaithful
-                { scope = Inert
-                }
-          )
         , ( ( "Elm", "Process", "sleep" )
           , TypeFaithful
                 { scope = Transports
-                }
-          )
-        , ( ( "Eco", "Process", "spawn" )
-          , TypeFaithful
-                { scope = Inert
-                }
-          )
-        , ( ( "Eco", "Process", "spawnProcess" )
-          , TypeFaithful
-                { scope = Inert
-                }
-          )
-        , ( ( "Eco", "Process", "wait" )
-          , TypeFaithful
-                { scope = Inert
                 }
           )
         , ( ( "Elm", "Regex", "contains" )
@@ -1425,26 +1245,6 @@ facts =
                 }
           )
         , ( ( "Elm", "Regex", "splitAtMost" )
-          , TypeFaithful
-                { scope = Inert
-                }
-          )
-        , ( ( "Eco", "Runtime", "dirname" )
-          , TypeFaithful
-                { scope = Inert
-                }
-          )
-        , ( ( "Eco", "Runtime", "loadState" )
-          , TypeFaithful
-                { scope = Inert
-                }
-          )
-        , ( ( "Eco", "Runtime", "random" )
-          , TypeFaithful
-                { scope = Inert
-                }
-          )
-        , ( ( "Eco", "Runtime", "saveState" )
           , TypeFaithful
                 { scope = Inert
                 }

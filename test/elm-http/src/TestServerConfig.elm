@@ -9,7 +9,8 @@ checked-in source: nothing is generated or recompiled per run.
 
 -}
 
-import Eco.Env
+import Dict
+import System
 import Task exposing (Task)
 
 
@@ -24,9 +25,8 @@ visibly instead of reaching some other server.
 -}
 lookup : String -> Task x String
 lookup name =
-    Eco.Env.lookup name
-        |> Task.mapError never
-        |> Task.map (Maybe.withDefault ("http://127.0.0.1:9/" ++ name ++ "-unset"))
+    System.environmentVariables
+        |> Task.map (Dict.get name >> Maybe.withDefault ("http://127.0.0.1:9/" ++ name ++ "-unset"))
 
 
 server : Task x Server

@@ -97,12 +97,6 @@ void eco_register_all_effect_managers();
 void Eco_Kernel_register_all_gc_roots();
 }  // extern "C"
 
-namespace Eco::Kernel::Env {
-// Records `argc` and `argv` as the program's command line. `argv` is kept and read later, while the program
-// runs.
-void init(int argc, char** argv);
-}
-
 namespace {
 
 // Parses the stack map section of the loaded module, executable or shared object, whose image contains
@@ -228,7 +222,6 @@ void* ecoEmbedThread(void* /*arg*/) {
     Eco_Kernel_register_all_gc_roots();
     initStackMapForModuleContaining(reinterpret_cast<void*>(&eco_main));
     if (__eco_init_globals) __eco_init_globals();
-    Eco::Kernel::Env::init(s.argc, s.argv);
     eco_register_all_effect_managers();
 
     // The first uses of PlatformRuntime and Scheduler, so they are constructed on this thread.

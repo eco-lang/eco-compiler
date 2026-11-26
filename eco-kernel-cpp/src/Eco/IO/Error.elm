@@ -6,8 +6,9 @@ module Eco.IO.Error exposing
     , toString
     )
 
-{-| Structured IO error types shared by Eco.File, Eco.Console, parts of
-Eco.Process, Eco.Runtime, and Eco.MVar.
+{-| Structured IO error types of Eco.MVar, which fails with them. (Eco.File,
+Eco.Console, Eco.Process and Eco.Runtime shared them until they were removed:
+the compiler's IO is eco/system's now.)
 
 Kernel IO primitives fail with a neutral fixed-layout tuple
 `( classificationTag, path, message )` (see IO_ERR_002). The `Raw*` record is

@@ -138,7 +138,7 @@ import Compiler.Reporting.Doc as D
 import Compiler.Reporting.Render.Code as Code
 import Data.NonEmptyList as NE
 import Dict exposing (Dict)
-import Eco.IO.Error as IOErr exposing (IOError)
+import System.IOError as IOErr exposing (IOError)
 import System.IO exposing (FilePath)
 import Task exposing (Task)
 import Utils.Bytes.Decode as BD
