@@ -295,12 +295,10 @@ test("a program without SeqDict gets no _Utils_eqHelp rebinding", () => {
 // ====== apply-overrides.js on small synthetic stock-Elm outputs ======
 
 const lib = require("../../compiler/scripts/kernel-overrides-lib.js");
-const { apply, ApplyError } = require("../../compiler/scripts/apply-overrides.js");
+const { apply, ApplyError, definitionSpan } = require("../../compiler/scripts/apply-overrides.js");
 
 const KERNEL = lib.parse("K.js", "/*\nkind kernel\nrequires Elm.Kernel.Foo\npackage elm/core 1.0.5\n*/\n_Foo_f = 2;\n");
 const NEEDS_BAR = lib.parse("N.js", "/*\nkind kernel\nrequires Elm.Kernel.Bar\npackage elm/core 1.0.5\n*/\n_Bar_g = 3;\n");
-const value = (name, group = "g") =>
-  lib.parse(name + ".js", `/*\nkind value\nvalue $author$project$M$${name}\ngroup ${group}\n*/\nvar $author$project$M$${name} = 'new ${name}';\n`);
 
 const STOCK = [
   "(function(scope){",
@@ -315,20 +313,13 @@ const STOCK = [
   "}(this));",
 ].join("\n");
 
-test("apply-overrides inserts kernel overrides at the boundary and replaces a value group", () => {
-  const out = apply(STOCK, [KERNEL, NEEDS_BAR, value("a"), value("b")]).split("\n");
+test("apply-overrides inserts kernel overrides at the boundary, only those whose kernels are present", () => {
+  const out = apply(STOCK, [KERNEL, NEEDS_BAR]).split("\n");
   const marker = out.indexOf(lib.MARKER.trimEnd());
   assert.ok(marker > out.indexOf("function _Foo_h(x) { return x; }"), "after the kernel code");
   assert.strictEqual(out[marker + 1], "_Foo_f = 2;");
   assert.ok(out[marker + 2].startsWith("var $"), "right before the first Elm definition");
   assert.ok(!out.includes("_Bar_g = 3;"), "an override whose kernel is absent is left out");
-  assert.ok(out.includes("var $author$project$M$a = 'new a';") && !out.includes("\treturn x;"), "a is replaced whole");
-  assert.ok(out.includes("var $author$project$M$b = 'new b';") && !out.includes("var $author$project$M$b = 'old b';"));
-});
-
-test("apply-overrides leaves a value group whose definitions are all absent", () => {
-  const out = apply(STOCK, [value("x", "other"), value("y", "other")]);
-  assert.ok(!out.includes("'new x'") && !out.includes(lib.MARKER), "nothing to apply");
 });
 
 const rejects = (name, text, overrides, pattern) =>
@@ -341,17 +332,24 @@ rejects("an output without a boundary", STOCK.replace(/var \$/g, "var x"), [KERN
 rejects("an assignment to a name no kernel defines",
   STOCK, [lib.parse("U.js", "/*\nkind kernel\nrequires Elm.Kernel.Foo\npackage elm/core 1.0.5\n*/\n_Foo_missing = 1;\n")],
   /assigns _Foo_missing/);
-rejects("a value group with a member missing", STOCK, [value("a"), value("zzz")], /only some definitions.*zzz/);
-rejects("a value defined twice", STOCK + "\nvar $author$project$M$b = 'again';\nvar $end = 1;", [value("b")], /defined 2 times/);
-rejects("a definition that runs into another statement",
-  STOCK.replace("var $author$project$M$b = 'old b';", "var $author$project$M$b = 'old b';\nconsole.log(1);"),
-  [value("b")], /runs into another statement/);
+
+// definitionSpan finds the definition the link pass (link-stock-elm-kernels.js) replaces.
+test("definitionSpan spans a definition up to the next var, and refuses odd ones", () => {
+  const lines = STOCK.split("\n");
+  assert.deepStrictEqual(definitionSpan(lines, "$author$project$M$a", "t"), [4, 7]);
+  assert.strictEqual(definitionSpan(lines, "$author$project$M$zzz", "t"), null);
+  const twice = (STOCK + "\nvar $author$project$M$b = 'again';\nvar $end = 1;").split("\n");
+  assert.throws(() => definitionSpan(twice, "$author$project$M$b", "t"), (e) => e instanceof ApplyError && /defined 2 times/.test(e.message));
+  const runsOn = STOCK.replace("var $author$project$M$b = 'old b';", "var $author$project$M$b = 'old b';\nconsole.log(1);").split("\n");
+  assert.throws(() => definitionSpan(runsOn, "$author$project$M$b", "t"),
+    (e) => e instanceof ApplyError && /runs into another statement/.test(e.message));
+});
 
 test("an override file that breaks the header grammar is refused", () => {
   assert.throws(() => lib.parse("Bad.js", "/*\nkind kernel\nrequire Elm.Kernel.Foo\n*/\nx;\n"),
     (e) => e instanceof lib.OverrideError && /Bad\.js:3: unknown directive `require`/.test(e.message));
-  assert.throws(() => lib.parse("NoVar.js", "/*\nkind value\nvalue $a$b\ngroup g\n*/\n$a$b = 1;\n"),
-    (e) => e instanceof lib.OverrideError && /must define `var \$a\$b = \.\.\.`/.test(e.message));
+  assert.throws(() => lib.parse("Value.js", "/*\nkind value\n*/\nvar $a$b = 1;\n"),
+    (e) => e instanceof lib.OverrideError && /`kind` is `kernel`/.test(e.message));
 });
 
 module.exports = { compile, decodeMappings };

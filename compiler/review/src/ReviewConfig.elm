@@ -38,9 +38,9 @@ import Simplify
 
 config : List Rule
 config =
-    -- src-system/ is generated from eco/system's sources for Stage 1 (compiler/scripts/make-stage1-system.js);
-    -- it is reviewed as eco/system, not here.
-    List.map (Rule.ignoreErrorsForDirectories [ "src-system/" ]) rules
+    -- src-stage1/ is generated from eco/system's and eco/kernel's sources for stock-Elm builds
+    -- (compiler/scripts/make-stage1-kernels.js); it is reviewed with those packages, not here.
+    List.map (Rule.ignoreErrorsForDirectories [ "src-stage1/" ]) rules
 
 
 rules : List Rule
@@ -49,7 +49,7 @@ rules =
     , NoDebug.Log.rule
     , NoDebug.TodoOrToString.rule
         |> Rule.ignoreErrorsForDirectories [ "tests/" ]
-        |> Rule.ignoreErrorsForFiles [ "src/System/Crash.elm", "src-xhr/Eco/Crash.elm" ]
+        |> Rule.ignoreErrorsForFiles [ "src/System/Crash.elm" ]
     , NoExposingEverything.rule
     , NoImportingEverything.rule []
     , NoMissingTypeAnnotation.rule
@@ -59,24 +59,15 @@ rules =
     , NoUnused.Variables.rule
     , NoUnused.Patterns.rule
     , NoUnused.Exports.rule
-        |> Rule.ignoreErrorsForDirectories [ "src-xhr/" ]
 
     -- , Simplify.rule Simplify.defaults
     , NoUnused.CustomTypeConstructors.rule []
         |> Rule.ignoreErrorsForFiles [ "src/Compiler/IR/Mono.elm" ]
-        |> Rule.ignoreErrorsForDirectories [ "src-xhr/" ]
     , Docs.ReviewAtDocs.rule
 
     --, NoUnused.CustomTypeConstructorArgs.rule
     , NoUnused.Parameters.rule
-        |> Rule.ignoreErrorsForFiles
-            [ "src/System/Crash.elm"
-
-            -- Stock-Elm twins of eco-kernel-cpp modules: their signatures must
-            -- match the kernel versions, which do use these parameters.
-            , "src-xhr/Eco/Console.elm"
-            , "src-xhr/Eco/NativeDriver.elm"
-            ]
+        |> Rule.ignoreErrorsForFiles [ "src/System/Crash.elm" ]
     , EnforceBoundaries.rule moduleLayerRule
         |> Rule.ignoreErrorsForDirectories [ "tests/" ]
     , NoCrossBranchImports.rule branchSeparation

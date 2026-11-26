@@ -108,8 +108,11 @@ The `elm-test-rs` binary is fetched by CMake into `build/toolchain/bin/`
 (see `compiler/cmake/toolchain.cmake`). For manual filtering:
 
 ```bash
-build/toolchain/bin/elm-test-rs --project build/compiler/build-xhr --fuzz 1
+build/toolchain/bin/elm-test-rs --project build/compiler/build-xhr --compiler compiler/scripts/elm-stock-post-processed --fuzz 1
 ```
+
+Keep the `--compiler` wrapper: it links eco's JS kernels into the test bundle and applies the kernel
+overrides, as Stage 1 gets them; without it the bundle crashes when it loads.
 
 Full E2E tests including the backend and runtime:
 

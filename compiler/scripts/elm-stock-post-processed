@@ -1,0 +1,4 @@
+#!/bin/sh
+# Launcher of elm-stock-post-processed.js (plans/stage1-direct-kernel-linking.md, D2): stock elm, then the
+# post-processing every stock-Elm build of the compiler gets. Give it to elm-test-rs with --compiler.
+exec node "$(dirname "$0")/elm-stock-post-processed.js" "$@"

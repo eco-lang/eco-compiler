@@ -48,7 +48,7 @@ These are the places where a setting does not do what its name suggests. Each is
 
 ## Elm front-end
 
-Scope: `compiler/src/**`, `compiler/src-xhr/**`, and the shipped JS glue `compiler/bin/*.js` (`compiler/lib/` has since been removed). All paths are repo-relative. Line numbers were checked against the tree on 2026-09-28.
+Scope: `compiler/src/**`, and the shipped JS glue `compiler/bin/*.js` and the stock-Elm build scripts `compiler/scripts/*.js` (`compiler/src-xhr/` and `compiler/lib/` have since been removed). All paths are repo-relative. Line numbers were checked against the tree on 2026-09-28.
 
 ### 1. CLI commands and flags (`eco <command>`)
 
@@ -229,11 +229,12 @@ Parsing classes (inputs are trimmed and lower-cased unless stated otherwise):
 
 | Name | Values / default | Effect | Source |
 |---|---|---|---|
-| `ECO_HOME` | path; default is the app-data dir for `eco` (`~/.eco` on Linux in the Node XHR handler; the native kernel resolves it separately) | Package cache and home directory | compiler/src/Builder/Stuff.elm:411 |
+| `ECO_HOME` | path; default is the app-data dir for `eco` (`~/.eco` on Linux, `Utils.Main.appDataDirFor`) | Package cache and home directory | compiler/src/Builder/Stuff.elm:483 |
 | `GUIDA_REGISTRY` | URL; `https://package.elm-lang.org` | Package registry base URL (inherited from Guida) | compiler/src/Builder/Deps/Website.elm:25 |
-| `GUIDA_JS_PATH` | path; `../../build/compiler/build-xhr/bin/guida.js` | `bin/index.js` (the npm `guida` bin) loads the compiled compiler JS from here | compiler/bin/index.js:34 |
-| `APPDATA` | Windows only | Base for `File.appDataDir` in the XHR IO handler | compiler/bin/eco-io-handler.js:363 |
-| (any name) | none | Generic `Env.lookup` passthrough: `process.env[name]` in the Node XHR handler | compiler/bin/eco-io-handler.js:471 |
+| `GUIDA_JS_PATH` | path; `../../build/compiler/build-xhr/bin/guida.js` | `bin/index.js` (the npm `guida` bin) loads the compiled compiler JS from here | compiler/bin/index.js:7 |
+| `APPDATA` | Windows only | Base for the app-data dir (`<APPDATA>/eco`; the home directory when unset or empty) | compiler/src/Utils/Main.elm:1071 |
+| `ECO_STOCK_ELM` | path; `build/toolchain/bin/elm` (`elm.exe` on Windows) | The real stock `elm` that `compiler/scripts/elm-stock-post-processed` runs before post-processing (the `elm-tests` target and `cov.py` set it); never looked up on `PATH` | compiler/scripts/elm-stock-post-processed.js |
+| `ECO_STAGE1_GENERATED` | path; `build/compiler/build-xhr/src-stage1` | The generated stub directory whose `kernels.json` `post-process-stock-elm.js` links against | compiler/scripts/post-process-stock-elm.js |
 
 **Mentioned in front-end comments but NOT read by the front-end:** `ECO_KERNEL_GCLEAF` and `ECO_STRING_LEN_INLINE` (backend knobs), `ECO_DISPATCH_STATS` (runtime), `ECO_VERSION_OVERRIDE` (a CMake `-D` define that feeds the generated `Version_Build.elm`), and `ECO_MONO_DIFF` (a stderr message prefix, not a variable). None of the 70 variables that are read is dead: each one flows into an EcoConfig field or a Task that is used.
 

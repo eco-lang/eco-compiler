@@ -32,7 +32,7 @@ FORMAT_ROOTS = [("test/elm/src", None), ("test/elm-core/src", None), ("test/elm-
                 ("test/eco-system/src", None), ("test/elm-conformance/src", None),
                 ("test/elm-parser/src", None), ("test/elm-json/src", None),
                 ("test/elm-compile-errors", None),
-                ("test/eco-mlir/src", None), ("test/eco-elm/src", None), ("test/eco-elm-bytes/src", None), ("test/eco-elm-core/src", None), ("test/eco-elm-json/src", None), ("test/eco-elm-regex/src", None), ("test/eco-elm-conformance/src", None), ("compiler/src", 6000), ("compiler/mlir/src", 6000), ("compiler/src-xhr", 6000),
+                ("test/eco-mlir/src", None), ("test/eco-elm/src", None), ("test/eco-elm-bytes/src", None), ("test/eco-elm-core/src", None), ("test/eco-elm-json/src", None), ("test/eco-elm-regex/src", None), ("test/eco-elm-conformance/src", None), ("compiler/src", 6000), ("compiler/mlir/src", 6000),
                 ("eco-kernel-cpp/src", 6000), ("system-kernel-cpp/src", 6000)]
 FORMAT_TIMEOUT = 30
 # The module text travels in argv, and Linux caps one argument at 128 KiB.
@@ -65,10 +65,7 @@ def runner_js(tmp, main):
     path = f"{tmp}/run-{main.replace('.', '_')}.js"
     with open(f"{BIN}/index.js") as f:
         text = f.read()
-    text = (text.replace('require("./eco-io-handler")', f'require({json.dumps(BIN + "/eco-io-handler")})')
-                .replace('require("mock-xmlhttprequest")',
-                         f'require({json.dumps(REPO + "/compiler/node_modules/mock-xmlhttprequest")})')
-                .replace("Elm.Terminal.Main.init();", f"Elm.{main}.init();"))
+    text = text.replace("Elm.Terminal.Main.init();", f"Elm.{main}.init();")
     with open(path, "w") as f:
         f.write(text)
     return path
@@ -138,7 +135,11 @@ def cmd_format(out):
                       "src/API/Main.elm"], shadow)
     if code != 0:
         sys.exit(text.decode())
-    run(["node", f"{REPO}/compiler/scripts/apply-overrides.js", f"{tmp}/api.js"], tmp)
+    # Stock elm links no Eco kernel and applies no kernel override (plans/stage1-direct-kernel-linking.md).
+    code, text = run(["node", f"{REPO}/compiler/scripts/post-process-stock-elm.js", f"{tmp}/api.js",
+                      f"{shadow}/src-stage1"], tmp)
+    if code != 0:
+        sys.exit(text.decode())
     runner = runner_js(tmp, "API.Main")
     env = dict(os.environ, GUIDA_JS_PATH=f"{tmp}/api.js")
     files = []

@@ -5,8 +5,8 @@
 //     node compiler/scripts/gen-kernel-overrides.mjs > compiler/src/Compiler/GenerateJs/KernelOverride/Files.elm
 //     node compiler/scripts/gen-kernel-overrides.mjs --check compiler/src/Compiler/GenerateJs/KernelOverride/Files.elm
 //
-// Only kernel overrides go into the module; value overrides are for Stage 1 (apply-overrides.js). Every
-// `package` line must name the version that compiler/cmake/bootstrap/build-xhr/elm.json pins, so that a
+// The module holds every override (all are `kind kernel`); stock-Elm builds get the same files through
+// post-process-stock-elm.js. Every `package` line must name the version that compiler/cmake/bootstrap/build-xhr/elm.json pins, so that a
 // package bump forces a look at its overrides. `--check` exits 1 when the file differs from what would be
 // written, or when the overrides do not parse.
 import fs from "node:fs";
@@ -53,8 +53,7 @@ function checkPins(overrides) {
 function generate() {
   const all = lib.load();
   checkPins(all);
-  const kernel = all.filter((o) => o.kind === "kernel");
-  const entries = kernel.map((o) => {
+  const entries = all.map((o) => {
     const requires = "[ " + o.requires.map(([p, h]) => `( ${elmString(p)}, ${elmString(h)} )`).join(", ") + " ]";
     return `{ file = ${elmString(o.file)}\n      , requires = ${requires}\n      , text = ${elmString(o.body)}\n      }`;
   });

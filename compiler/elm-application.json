@@ -273,7 +273,6 @@
         "Eco.IO.Error",
         "Eco.MVar",
         "Eco.NativeDriver",
-        "Eco.XHR",
         "Mlir.Bytecode.AttrType",
         "Mlir.Bytecode.DialectSection",
         "Mlir.Bytecode.IrSection",

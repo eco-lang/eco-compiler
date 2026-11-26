@@ -4,7 +4,7 @@ The Eco compiler bootstraps through 9 stages. Stages 1–4 produce a fixed-point
 
 Each stage has a dedicated CMake target. Building any later stage's target transitively builds all preceding stages, so a clean tree can run the whole chain with a single `cmake --build build --target bootstrap`.
 
-Two E2E test gates fail-fast on backend regressions: **Gate A** after Stage 1 runs the JIT E2E suite through Stage 1's `guida.js` (driven by `compiler/bin/index.js` with the XHR mock + `eco-io-handler.js`); **Gate B** after Stages 3+4 runs the AOT E2E suite. Either gate's failure pins the regression to the stages preceding it, before further self-compile cycles burn.
+Two E2E test gates fail-fast on backend regressions: **Gate A** after Stage 1 runs the JIT E2E suite through Stage 1's `guida.js` (driven by `compiler/bin/index.js`); **Gate B** after Stages 3+4 runs the AOT E2E suite. Either gate's failure pins the regression to the stages preceding it, before further self-compile cycles burn.
 
 ## Prerequisites
 
@@ -25,15 +25,16 @@ export NODE_OPTIONS="--max-old-space-size=16384"
 ### Stage 1: Stock Elm compiler → `guida.js`
 
 The stock Elm compiler (a SHA256-pinned 0.19.1 binary fetched by `compiler/cmake/toolchain.cmake` into `build/toolchain/bin/`) compiles the Eco compiler source.
-The compiler does its file, console, environment and HTTP IO through eco/system: Stage 1 compiles a
-stock-Elm copy of the eco/system modules it imports (`compiler/scripts/make-stage1-system.js`, into
-`build/compiler/build-xhr/src-system`), and `compiler/scripts/link-stage1-system-kernels.js` then links
-eco/system's own JavaScript kernels into `guida.js`, as eco's JS backend does for Stages 2–5. Only the
-eco/kernel modules the compiler still uses (MVars, GC, crashes) go over XHR to `compiler/bin/eco-io-handler.js`
-(plans/compiler-io-on-eco-system.md).
-This stage builds **without** `--optimize` because the XHR variant of `Eco.Crash` uses
-`Debug.todo` (which is forbidden by `--optimize`). Starting from Stage 2, the kernel
-variant of `Eco.Crash` (via `Eco.Kernel.Crash`) is used instead, enabling `--optimize`.
+The compiler does its IO through eco/system and uses eco/kernel for MVars, GC, hashing and crashes. Stock
+Elm cannot compile either package's kernel code, so Stage 1 compiles stock-Elm copies of the modules the
+compiler and its tests import (`compiler/scripts/make-stage1-kernels.js`, into
+`build/compiler/build-xhr/src-stage1`), whose kernel references are `Debug.todo` stubs.
+`compiler/scripts/post-process-stock-elm.js` then links both packages' own JavaScript kernels into
+`guida.js` in place of the stubs, as eco's JS backend does for Stages 2–5, and applies the kernel overrides
+(plans/stage1-direct-kernel-linking.md). The elm-test bundle gets the same post-processing, through
+`compiler/scripts/elm-stock-post-processed`, which the `elm-tests` target gives elm-test-rs as its compiler.
+This stage builds **without** `--optimize` because the stubs use `Debug.todo` (which is forbidden by
+`--optimize`). From Stage 2 the packages are compiled directly, so `--optimize` is on.
 
 ```bash
 cmake --build build --target guida
@@ -43,7 +44,7 @@ Output: `build/compiler/build-xhr/bin/guida.js`
 
 ### Gate A: JIT E2E test suite
 
-With `guida.js` built, run the JIT E2E suite. The JIT runner compiles each Elm test through Stage 1's `compiler/bin/index.js` — a Node wrapper that loads `guida.js` under `mock-xmlhttprequest` and routes IO through `eco-io-handler.js` — then JITs the resulting MLIR. This validates Stage 1's frontend plus the entire MLIR-codegen + runtime + JIT stack BEFORE we burn cycles on Stages 2–5's self-compiles. A failure here is localised to Stage 1 or the runtime, not a downstream self-compile interaction.
+With `guida.js` built, run the JIT E2E suite. The JIT runner compiles each Elm test through Stage 1's `compiler/bin/index.js` — a Node wrapper that loads `guida.js` — then JITs the resulting MLIR. This validates Stage 1's frontend plus the entire MLIR-codegen + runtime + JIT stack BEFORE we burn cycles on Stages 2–5's self-compiles. A failure here is localised to Stage 1 or the runtime, not a downstream self-compile interaction.
 
 The `full` target wraps clean + default-ALL rebuild (which includes Stage 1) + JIT E2E, so it is the one-shot equivalent of running Gate A from a dirty tree:
 
@@ -53,7 +54,7 @@ cmake --build build --target full
 
 ### Stage 2: `guida.js` self-compiles → `eco-boot.js`
 
-The XHR-based compiler compiles itself with kernel IO enabled, producing a compiler that uses `Eco.Kernel.*` directly.
+The stock-Elm-built compiler compiles itself, now compiling eco/system and eco/kernel as packages, producing a compiler that uses `Eco.Kernel.*` directly.
 
 ```bash
 cmake --build build --target eco-boot
@@ -169,13 +170,13 @@ Output: `build/compiler/build-kernel/bin/eco-2`
 
 ## All stages in sequence
 
-Stage 1 builds **without** `--optimize` (the XHR `Eco.Crash` uses `Debug.todo`). Stages 2–5 use `--optimize` (enabled by the kernel `Eco.Crash` which delegates to `Eco.Kernel.Crash` instead of `Debug.todo`). Stages 6–8 produce and verify a fully bootstrapped native compiler; the native self-compiles (Stages 7a, 8a and the Stage 9b `eco-2` check) also use `--optimize`. Stage 9 fuses everything into the user-facing `eco` binary.
+Stage 1 builds **without** `--optimize` (its kernel stubs use `Debug.todo`). Stages 2–5 use `--optimize`. Stages 6–8 produce and verify a fully bootstrapped native compiler; the native self-compiles (Stages 7a, 8a and the Stage 9b `eco-2` check) also use `--optimize`. Stage 9 fuses everything into the user-facing `eco` binary.
 
 ```bash
 export NODE_OPTIONS="--max-old-space-size=16384"
 
 cmake --build build --target guida                # Stage 1
-cmake --build build --target full                 # Gate A: JIT E2E suite via guida.js (XHR)
+cmake --build build --target full                 # Gate A: JIT E2E suite via guida.js
 cmake --build build --target eco-boot             # Stage 2
 cmake --build build --target eco-boot-verify      # Stages 3+4 + JS fixed-point check
 cmake --build build --target run-aot-e2e          # Gate B: AOT E2E suite

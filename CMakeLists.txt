@@ -1528,8 +1528,8 @@ add_custom_target(rebuild
 # Gate A in guides/bootstrap.md: build the default ALL graph (which
 # includes Stage 1 / guida) and run the JIT E2E suite. The JIT runner
 # compiles each Elm test through Stage 1's `compiler/bin/index.js`
-# (guida.js via the XHR mock + eco-io-handler), so only Stage 1 is
-# needed — no Stage 2+ build.
+# (guida.js, built by stock elm with eco's JS kernels linked in), so only
+# Stage 1 is needed — no Stage 2+ build.
 add_custom_target(check
     # No GC root push may grow with the input
     # (plans/kernel-root-stack-bounded-rooting.md step 9).
@@ -1596,8 +1596,8 @@ add_custom_target(stress
 # Gate A in guides/bootstrap.md (from-clean): clean, rebuild the default
 # ALL graph (which includes Stage 1 / guida), then run the JIT E2E suite.
 # The JIT runner compiles each Elm test through Stage 1's
-# `compiler/bin/index.js` (guida.js via the XHR mock + eco-io-handler),
-# so only Stage 1 is needed — no Stage 2+ build.
+# `compiler/bin/index.js` (guida.js, built by stock elm with eco's JS
+# kernels linked in), so only Stage 1 is needed — no Stage 2+ build.
 # run-js-e2e (compiler/CMakeLists.txt) exists on POSIX hosts only.
 # run-node-addon-tests: builds test/elm/src/PortEchoTest.elm as a `.node` addon and runs the Node hosts
 # against it (test/embed/run-node-addon-tests.sh): the port round trip, app.stop()'s Promise, and no

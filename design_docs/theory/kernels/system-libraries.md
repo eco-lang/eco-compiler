@@ -16,9 +16,9 @@ The library code lives in three top-level directories, all of which take part in
 
 ## The compiler's IO layer
 
-`eco/kernel` exists because the compiler needs IO that no Elm package offers. Its modules fall into three groups: plain IO (files, the console and HTTP), the process and its environment (environment variables, child processes, runtime information, crash reporting), and services the compiler uses internally (shared variables, hashing, collector controls and the call into the native back end).
+`eco/kernel` holds the services only the compiler needs: shared variables (MVars), hashing, collector controls, crash reporting and the call into the native back end. The compiler does its files, console, environment, processes and HTTP through `eco/system` like any program.
 
-Its API is fixed by a second implementation of the same `Eco.*` modules that runs under stock Elm by sending browser-style HTTP requests to a local handler. The same compiler sources therefore build through the stock Elm compiler early in bootstrap and through Eco once Eco can compile itself; the JavaScript kernels of `eco/kernel` serve those early stages. This is also why `eco/kernel` cannot become the public API. Every change to it must be matched in the stock-Elm implementation and must suit the compiler, and a public API that moved with the compiler would break programs.
+The same compiler sources build through the stock Elm compiler early in bootstrap and through Eco once Eco can compile itself. Stock Elm compiles generated copies of both packages' modules whose kernel references are placeholders, and a script links the packages' JavaScript kernels into the output (`plans/stage1-direct-kernel-linking.md`), so the JavaScript kernels serve every JavaScript stage. `eco/kernel` cannot become the public API: it must suit the compiler and changes with it, and a public API that moved with the compiler would break programs.
 
 Every task-returning function in `eco/kernel` follows the deferral rule from [kernels.md](kernels.md): calling it builds a task binding and nothing else, and the body does the IO on the eco thread when the scheduler runs it. Fallible functions return a tuple of an error tag, a path and a message, which the Elm wrapper turns into a typed error.
 
@@ -125,7 +125,7 @@ A change fits when it leaves heap access on the eco thread, passes only neutral 
 - A new fallible operation adds an error code and decodes it in the module that owns it, alongside that module's other failure kinds.
 - A new long-lived wait takes a hold for the wait and releases it exactly once on every path, including kill and cancel.
 - A new blocking system call goes to the worker pool. A new socket-like protocol is a layer on the reactor's connection abstraction, as HTTP/1.1, HTTP/2 and WebSocket are.
-- A function the compiler needs goes into `eco/kernel` as an Elm wrapper, a JavaScript kernel and a C++ export, with its body in a binding and its errors as tuples, and with a matching function in the stock-Elm implementation.
+- A function the compiler needs goes into `eco/kernel` as an Elm wrapper, a JavaScript kernel and a C++ export, with its body in a binding and its errors as tuples. The stock-Elm build links the JavaScript kernel with no further work.
 - A platform fix maps an operating system's error onto the documented one on both targets.
 
 ### Examples of changes that would break the theory
@@ -133,7 +133,7 @@ A change fits when it leaves heap access on the eco thread, passes only neutral 
 - Doing IO when the kernel is called. Tasks built together would then run as they were built, and a slow call would stall the eco thread. Put the work in the binding's body or hand it to a service.
 - Reading a heap argument after parking or submitting, or giving a service thread a heap pointer. The collector may move the object first, and only the eco thread may touch the heap. Copy the arguments out first and give the service plain data.
 - Changing the pending-work counter directly, or holding a program open for a resource's lifetime rather than for a wait. Exit then depends on the resource and the target rather than on what the program waits for. Take a hold for the wait.
-- Calling `eco/kernel` from an application, or making `eco/system` depend on it. `eco/kernel` changes with the compiler and with its stock-Elm implementation, and those changes would reach programs. Add the function to `eco/system`.
+- Calling `eco/kernel` from an application, or making `eco/system` depend on it. `eco/kernel` changes with the compiler, and those changes would reach programs. Add the function to `eco/system`.
 - Hiding target-specific behavior in an Elm wrapper. The shared test suite stops being a specification of both targets. Keep the wrapper identical and mark the difference in the tests.
 - Giving a kernel home the same name as one in another package. The compiler's kernel tables key homes without their prefix, so the two would silently share facts. A guard script in the full test target rejects a colliding `eco/system` home; choose a distinct one rather than working around it.
 - Starting a child with `fork`. It copies the heap and runs the collector's fork handler. Use the runtime's spawn primitive.
@@ -155,7 +155,7 @@ Code and documents:
 - `scripts/make-docs-package.js`: the documentation copy.
 - `test/scripts/check-kernel-homes.sh`: rejects `eco/system` kernel homes that collide with other kernel homes.
 - `eco-kernel-cpp/src/Eco/`, `eco-kernel-cpp/src/eco-kernel/File.cpp`, `TaskBinding.hpp`, `KernelHelpers.hpp`, `ExportHelpers.hpp`: the `eco/kernel` pattern (`makeBinding`, `makeAsyncBinding`).
-- `compiler/src-xhr/Eco/`: the stock-Elm implementation of the `Eco.*` modules.
+- `compiler/scripts/make-stage1-kernels.js`, `compiler/scripts/post-process-stock-elm.js`: how a compiler built by stock `elm make` (stage 1, the elm-test bundle) gets these packages: generated stock-Elm copies whose kernel references are stubs, then the real JavaScript kernels linked in (`plans/stage1-direct-kernel-linking.md`).
 - `runtime/src/platform/Liveness.hpp` (`LivenessHold`), `TaskBinding.hpp`, `Spawn.hpp`: runtime pieces these libraries use. Setting `ECO_LIVENESS_REPORT=1` prints the holds still open.
 - `compiler/src/Compiler/GenerateMlir/Functions.elm` (`ecoSystemManagers`, manager registration), `compiler/src/Compiler/IR/Runtime/EcoEnvironment.elm` (environment flags), `compiler/src/Compiler/Elm/Package.elm` (`isKernel`: which packages may hold kernels).
 - `examples/system/`, `examples/benchmarks/`, `examples/cpp-ports/`: example programs, benchmarks and an embedding example.

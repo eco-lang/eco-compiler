@@ -15,7 +15,7 @@ Each stage is a CMake custom command with declared inputs and outputs, and each 
 The order in which files are produced, and which file feeds which stage, carries most of the design:
 
 ```text
-1   guida.js                  = stock elm make  (HTTP-based IO, unoptimized)
+1   guida.js                  = stock elm make, kernels linked in after  (unoptimized)
 2   eco-boot.js               = guida.js builds the compiler  (kernel IO, optimized)
 3   eco-boot-2.js             = eco-boot.js builds the compiler
 4a  eco-boot-3.js             = eco-boot-2.js builds the compiler
@@ -36,15 +36,13 @@ Checked against `compiler/CMakeLists.txt`. Every comparison is byte for byte. No
 
 ## Two input and output layers: stages 1 and 2
 
-The compiler reads files, writes to the console and reports crashes through a small set of Eco modules, such as the file, console and crash modules. Two source trees supply those modules under the same names, and the difference between them is why stages 1 and 2 are separate.
+The compiler reads files, writes to the console, shares values between tasks and reports crashes through two Eco packages, `eco/system` and `eco/kernel`, whose functions end in kernels. Kernel code is the JavaScript or C++ that implements functions Elm itself cannot express, such as reading a file: JavaScript kernels in the JavaScript stages and C++ kernels in the native stages.
 
-Kernel code is the JavaScript or C++ that implements functions Elm itself cannot express, such as reading a file. Stock Elm links kernel code only from the Elm project's own packages, so a compiler built by stock Elm cannot touch the file system through kernels. The first tree works around that by expressing all input and output in plain Elm, as HTTP requests that a small Node server answers. The second tree implements the same modules as kernel functions: JavaScript kernels in the JavaScript stages and C++ kernels in the native stages.
+Stock Elm accepts kernel code only from Elm's own packages, so stage 1 cannot compile these packages as they are. It compiles generated copies of the modules the compiler imports, in which each kernel reference is a placeholder, and a script then puts the real JavaScript kernels into the output where the placeholders were, rendered as eco's own JavaScript back end renders them. Stage 1 therefore runs the same kernel code as stages 2 to 5. Stage 2 has that compiler build the compiler again, now compiling the packages themselves. Two compiler features exist for this hop: building a program whose kernel code belongs to an author other than the Elm project, and resolving a package from a directory on disk instead of the package registry.
 
-Stage 1 builds the compiler with the HTTP-based tree. Stage 2 has that compiler build the compiler again with the kernel tree, and from then on no stage needs the Node server. Two compiler features exist for this hop: building a program whose kernel code belongs to an author other than the Elm project, and resolving a package from a directory on disk instead of the package registry.
+Stage 1 is the only stage built without optimization. The placeholders are Elm's placeholder for unfinished code, and Elm's optimizing mode forbids it. From stage 2 the compiler compiles the kernels directly, so optimization is on.
 
-Stage 1 is the only stage built without optimization. The HTTP-based crash function is Elm's placeholder for unfinished code, and Elm's optimizing mode forbids that placeholder. The kernel crash function has no such restriction, so stage 2 turns optimization on. A crash function written as an endless self-call would compile under optimization, but its generated JavaScript would need patching to behave, and dropping optimization in one throwaway stage costs less than maintaining a patch.
-
-Every generated JavaScript file passes through exactly one post-processing script. It replaces the generated code that builds a string while reading bytes, because that code uses too much of V8's memory during a self-compile.
+The same script is the only post-processing any output of stock Elm gets: stage 1, and the compiler's elm-test bundle, which elm-test-rs builds through a stand-in for `elm` that runs it. It links the kernels first, then adds the kernel overrides: small pieces of JavaScript that change stock kernel functions, such as the code that builds a string while reading bytes, which uses too much of V8's memory during a self-compile. eco's own back end emits the same overrides itself, in the same order, so its outputs need no post-processing.
 
 ## The two fixed points
 
@@ -96,7 +94,7 @@ A configuration that builds only stages 1 to 5 lets a platform without a working
 A change fits when every stage can still rebuild it from source and both fixed points still hold at full strength.
 
 - Adding an Elm source file or a kernel function. The stage inputs are globs, so the chain reruns itself. An added kernel function needs both its JavaScript and its C++ implementation, or the native stages diverge from the JavaScript ones.
-- Adding an input or output capability the compiler needs. It goes into both layers and into the Node server's handler, so that stage 1 and stage 2 both still work.
+- Adding an input or output capability the compiler needs. It goes into `eco/system` or `eco/kernel` with a JavaScript and a C++ kernel; stage 1 picks up a module the compiler imports and links its JavaScript kernel without further work.
 - Adding a test gate or check at the earliest stage that can run it, where both existing gates sit.
 - Tuning memory for one stage: its heap settings, its Node heap or stage 5's engine. Each is local to one custom command.
 - Porting to a platform whose linker is not deterministic, by comparing the MLIR as macOS and Windows do.
@@ -116,10 +114,11 @@ Parent: [build-and-workflow.md](workflow.md). Sibling: [build-system.md](build-s
 - `compiler/CMakeLists.txt`: every stage as a custom command, with its comments, the `compare_files` checks in stages 4b and 8c, the stamp dependencies (`ECO_BOOT_VERIFY_STAMP`, `BOOTSTRAP_STAMP`), the source globs (`ELM_SOURCES`, `KERNEL_SOURCES`), and the `bootstrap`, `eco`, `eco-verify` and `eco-quick` targets. It labels stages 1 to 3 as steps. Treat it as the truth where documents disagree.
 - `compiler/cmake/bootstrap/`: the `build-xhr` and `build-kernel` shadow roots, and `build-kernel/heap-config.json`.
 - `compiler/cmake/toolchain.cmake`: the pinned stock `elm` binary.
-- `compiler/src-xhr/Eco/` and `eco-kernel-cpp/src/Eco/`: the HTTP-based and kernel-based layers. `eco-kernel-cpp/src/Eco/Kernel/*.js` and `eco-kernel-cpp/src/eco-kernel/*.cpp`: the paired kernels.
-- `compiler/bin/index.js`, `compiler/bin/eco-io-handler.js`: the Node server for stage 1.
-- `compiler/kernel-overrides/`, `compiler/scripts/apply-overrides.js`: JS kernel overrides (`plans/js-kernel-overrides.md`). eco's JS back end emits the kernel overrides itself (`_Bytes_read_string`, the Bytes-port helpers); `apply-overrides.js` applies them, and the Stage-1-only `Eco.MVar` stash value overrides, to the stage 1 `guida.js`, which stock `elm make` builds and which must stay buildable with it.
-- `compiler/scripts/build.sh`: a script inherited from Guida, the compiler Eco's front end is forked from, that builds the npm interface bundle (into `compiler/lib/`, which is no longer committed). It is not part of the chain.
+- `eco-kernel-cpp/src/Eco/` and `system-kernel-cpp/src/`: the two packages. `Eco/Kernel/*.js` and the C++ sources beside them: the paired kernels.
+- `compiler/scripts/make-stage1-kernels.js`: the generated stock-Elm copies (`build/compiler/build-xhr/src-stage1`). `compiler/scripts/post-process-stock-elm.js`, with `link-stock-elm-kernels.js` and `apply-overrides.js`: the post-processing (`plans/stage1-direct-kernel-linking.md`). `compiler/scripts/elm-stock-post-processed` (and `.cmd`): the stand-in for `elm` that elm-test-rs runs.
+- `compiler/kernel-overrides/`: JS kernel overrides (`plans/js-kernel-overrides.md`). eco's JS back end emits them itself (`_Bytes_read_string`, the Bytes-port helpers, SeqDict equality); the post-processing applies them to stock Elm's outputs, which must stay buildable with stock `elm make`.
+- `compiler/bin/index.js`: runs stage 1's `guida.js`.
+- `compiler/scripts/build.sh`: a script inherited from Guida, the compiler Eco's front end is forked from, that builds stage 1 or the npm interface bundle (into `compiler/lib/`, which is not committed) outside CMake, with the same post-processing. It is not part of the chain.
 - `runtime/src/codegen/`: the native back end (`eco-boot-native`) used from stage 6.
 - `ECO_FRONTEND_ONLY`: the stages 1 to 5 configuration. `ECO_MONO_ENGINE=subst`: the light engine in stage 5. `--kernel-package`, `--local-package`: the stage 2 compiler options. `--text-mlir`: text MLIR output.
 - `docs/bootstrap.md`: stage narrative and test gates. `guides/bootstrap.md`, `guides/bootstrap-fix-loop.md`, `guides/bootstrap-fails.md`: running the chain, the repair loop and recorded failures.

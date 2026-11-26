@@ -22,5 +22,5 @@ examples/index.html
 eco-stuff/
 eco-example-projects/
 
-# Generated eco/system modules for Stage 1 (link to build/compiler/build-xhr/src-system)
-src-system
+# Generated eco/system and eco/kernel modules for stock-Elm builds (link to build/compiler/build-xhr/src-stage1)
+src-stage1

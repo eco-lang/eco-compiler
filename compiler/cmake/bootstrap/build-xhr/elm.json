@@ -2,8 +2,7 @@
     "type": "application",
     "source-directories": [
         "src",
-        "src-xhr",
-        "src-system",
+        "src-stage1",
         "version"
     ],
     "elm-version": "0.19.1",

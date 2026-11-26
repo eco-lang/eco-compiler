@@ -10,8 +10,8 @@ Both return a `GCReport`. Its values are observations for logging only: no
 code may branch on them (HEAP_076).
 
 The kernel returns the report as a JSON string whose keys are the field names
-below and whose values are integers (`kind` is `"minor"` or `"major"`). The
-same API exists in `compiler/src-xhr/Eco/GC.elm` (bootstrap stage 1).
+below and whose values are integers (`kind` is `"minor"` or `"major"`), in the
+native, JS and bootstrap stage 1 builds alike.
 
 
 # Collections
@@ -85,7 +85,7 @@ majorRaw =
 
 
 
--- DECODING (identical in compiler/src-xhr/Eco/GC.elm)
+-- DECODING
 
 
 decode : String -> GCReport

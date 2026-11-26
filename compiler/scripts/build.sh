@@ -7,7 +7,7 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 COMPILER_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 PROJECT_ROOT="$(cd "$COMPILER_DIR/.." && pwd)"
-# Shadow root for the Stage 1 XHR application is materialized by CMake under
+# Shadow root for the Stage 1 application is materialized by CMake under
 # ${CMAKE_BINARY_DIR}/compiler/build-xhr/; override via env if you point at a
 # non-default build tree (e.g. debug/ or build-profile/).
 BUILD_XHR_DIR="${BUILD_XHR_DIR:-$PROJECT_ROOT/build/compiler/build-xhr}"
@@ -32,10 +32,10 @@ esac
 
 js="$filepath.js"
 
-# The stock-Elm eco/system modules (plans/compiler-io-on-eco-system.md §5); CMake keeps them current, this
-# regenerates them for a tree built before they changed.
-node "$COMPILER_DIR/scripts/make-stage1-system.js" "$BUILD_XHR_DIR/src-system"
+# The stock-Elm eco/system and eco/kernel modules (plans/stage1-direct-kernel-linking.md §6); CMake keeps them
+# current, this regenerates them for a tree built before they changed.
+node "$COMPILER_DIR/scripts/make-stage1-kernels.js" "$BUILD_XHR_DIR/src-stage1" "$BUILD_XHR_DIR/elm.json"
 cd "$BUILD_XHR_DIR"
 $ELM make --output=$js $elm_entry
-node "$COMPILER_DIR/scripts/apply-overrides.js" $js
-node "$COMPILER_DIR/scripts/link-stage1-system-kernels.js" $js "$BUILD_XHR_DIR/src-system"
+# Stock elm links no Eco kernel and applies no kernel override: do both, as eco's JS backend would.
+node "$COMPILER_DIR/scripts/post-process-stock-elm.js" $js "$BUILD_XHR_DIR/src-stage1"

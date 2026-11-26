@@ -14,7 +14,7 @@ Kernel IO primitives fail with a neutral fixed-layout tuple
 `( classificationTag, path, message )` (see IO_ERR_002). The `Raw*` record is
 the Elm-facing neutral representation assembled from that tuple; `decodeIOError`
 maps it into the typed `IOError` ADT. The classification tag is computed at each
-kernel (native C++ maps `errno`; JS/XHR map `err.code`) so this single decode
+kernel (native C++ maps `errno`; JS maps `err.code`) so this single decode
 covers all backends.
 
 @docs IOError, RawIOError
@@ -106,9 +106,9 @@ ofKernelTuple =
 
 
 {-| Map a Node/libuv-style errno code string (e.g. "ENOENT") to the stable
-classification tag. Used by the XHR path, where the eco-io server forwards the
-error `code` string rather than a numeric errno. Keep in sync with the C++ and
-JS kernel errno classification (see IO_ERR_002).
+classification tag, for a host that reports a failure by its `code` string
+rather than a numeric errno. Keep in sync with the C++ and JS kernel errno
+classification (see IO_ERR_002).
 -}
 tagFromCode : String -> Int
 tagFromCode code =

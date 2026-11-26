@@ -115,7 +115,7 @@ Code and documents:
 - `system-kernel-cpp/src/eco-system/Core/`, `system-kernel-cpp/README.md`: shared services for the public library.
 - `runtime/src/platform/TaskBinding.hpp`: task bindings.
 - `runtime/src/codegen/EcoNativeDriver.cpp`, `CMakeLists.txt`, `elm-kernel-cpp/CMakeLists.txt`: linking the kernel libraries.
-- `compiler/src-xhr/Eco/`: the stock-Elm implementation of the `Eco.*` modules.
+- `compiler/scripts/make-stage1-kernels.js`, `compiler/scripts/post-process-stock-elm.js`: how a compiler built by stock `elm make` (stage 1, the elm-test bundle) gets these packages: generated stock-Elm copies whose kernel references are stubs, then the real JavaScript kernels linked in (`plans/stage1-direct-kernel-linking.md`).
 - `design_docs/kernel-boundary-reduction.md`, `design_docs/kernel-boundary/audit-06-eco-kernel.md`, `design_docs/elm_kernel_functions.csv`.
 - Tests: `test/kernel/`, `test/eco-kernel/`, `test/eco-system/`, `test/elm-core/`.
 

@@ -2,13 +2,13 @@ module HashNegativeSeedTest exposing (main)
 
 {-| HASH-01 (plans/kernel-lib-bug-fixes.md): `Eco.Hash.stringWithSeed` with a
     negative seed. The narrow hash is documented to be in `[0, 2^26)` for
-    every seed, the seed reduced with `modBy 2^26` as the pure twin
-    (compiler/src-xhr/Eco/Hash.elm) does. The native kernel (K/Hash.cpp) and
-    the JS twin (Eco/Kernel/Hash.js) reduce the seed with C++ `%` / JS `%`,
-    which keeps its sign, so a negative seed gave a negative hash (fixed:
-    both now reduce the seed as `modBy` does).
+    every seed, the seed reduced with `modBy 2^26`. The native kernel
+    (K/Hash.cpp) and the JS kernel (Eco/Kernel/Hash.js) reduced the seed with
+    C++ `%` / JS `%`, which keeps its sign, so a negative seed gave a negative
+    hash (fixed: both now reduce the seed as `modBy` does).
 
-    Expected values: the `modBy` formula, checked against the pure twin
+    Expected values: the `modBy` formula, checked against the pure-Elm twin
+    that Stage 1 then used (retired by plans/stage1-direct-kernel-linking.md),
     compiled with stock Elm 0.19.1. Before the fix the native build printed
     -1000000, -32999896, -15254639, -60029390 and `inRange: False`. The seed 23 row is
     a control that is right today.

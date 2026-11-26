@@ -4,9 +4,9 @@
 // (plans/eco-system-library.md D12). Two scripts turn the sources into stock-Elm modules with this one
 // rewrite, so that what they produce cannot drift apart:
 //   - make-docs-package.js (docs.json, D13): every kernel reference becomes `(Debug.todo "kernel")`;
-//   - compiler/scripts/make-xhr-system.js (the Stage 1 compiler, plans/compiler-io-on-eco-system.md §5): a
-//     kernel reference becomes a call into the hand-written `Eco.XhrKernel.<Home>` module when that module
-//     provides it, and a `Debug.todo` otherwise.
+//   - compiler/scripts/make-stage1-kernels.js (every stock-Elm build of the compiler,
+//     plans/stage1-direct-kernel-linking.md §6): every kernel reference becomes a stub that
+//     post-process-stock-elm.js later replaces with the real kernel.
 //
 // The rewrite:
 //   - `effect module X where { ... } exposing` becomes `module X exposing`;

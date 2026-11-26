@@ -2,11 +2,10 @@
 // gen-kernel-overrides.mjs (eco's JS backend) and apply-overrides.js (Stage 1).
 //
 // An override file is a `/* ... */` header, one directive per line, then the body:
-//   kind kernel | kind value               required, first line
-//   requires <Prefix>.Kernel.<Home>        kernel: one or more; used only when every one is in the program
-//   package <author>/<name> <version>      kernel: one or more; the stock package the body was written against
-//   value <js global>                      value: exactly one; the Elm top-level value the body replaces
-//   group <name>                           value: exactly one; a group applies all-or-none
+//   kind kernel                            required, first line (the only kind; plans/stage1-direct-kernel-linking.md
+//                                          retired the Stage-1-only `kind value`)
+//   requires <Prefix>.Kernel.<Home>        one or more; used only when every one is in the program
+//   package <author>/<name> <version>      one or more; the stock package the body was written against
 // The body is plain JavaScript, emitted as written (no kernel `__` tags, no record fields). Files are
 // printable ASCII, tabs and newlines only.
 "use strict";
@@ -36,7 +35,7 @@ function parse(file, text) {
   const close = text.indexOf("\n*/\n");
   if (close < 0) fail(1, "no `*/` line closing the header");
   const lines = text.slice(3, close + 1).split("\n").slice(0, -1);
-  const o = { file, kind: null, requires: [], packages: [], value: null, group: null };
+  const o = { file, kind: null, requires: [], packages: [] };
   lines.forEach((line, i) => {
     const n = i + 2;
     const m = line.match(/^(\S+) (.+)$/);
@@ -46,7 +45,7 @@ function parse(file, text) {
     switch (key) {
       case "kind":
         if (i !== 0) fail(n, "`kind` must be the first directive, once");
-        if (arg !== "kernel" && arg !== "value") fail(n, "`kind` is `kernel` or `value`");
+        if (arg !== "kernel") fail(n, "`kind` is `kernel`");
         o.kind = arg;
         break;
       case "requires": {
@@ -61,34 +60,15 @@ function parse(file, text) {
         o.packages.push([p[1], p[2]]);
         break;
       }
-      case "value":
-        if (o.value !== null) fail(n, "only one `value`");
-        if (!/^\$[A-Za-z0-9_$]+$/.test(arg)) fail(n, "`value` names a JavaScript global such as `$author$project$M$f`");
-        o.value = arg;
-        break;
-      case "group":
-        if (o.group !== null) fail(n, "only one `group`");
-        if (!/^[a-z0-9-]+$/.test(arg)) fail(n, "`group` is a lower-case name");
-        o.group = arg;
-        break;
       default:
         fail(n, `unknown directive \`${key}\``);
     }
   });
   if (o.kind === null) fail(1, "no `kind`");
-  if (o.kind === "kernel") {
-    if (o.requires.length === 0) fail(1, "a kernel override needs at least one `requires`");
-    if (o.packages.length === 0) fail(1, "a kernel override needs at least one `package`");
-    if (o.value !== null || o.group !== null) fail(1, "`value` and `group` are for value overrides");
-  } else {
-    if (o.value === null || o.group === null) fail(1, "a value override needs one `value` and one `group`");
-    if (o.requires.length || o.packages.length) fail(1, "`requires` and `package` are for kernel overrides");
-  }
+  if (o.requires.length === 0) fail(1, "a kernel override needs at least one `requires`");
+  if (o.packages.length === 0) fail(1, "a kernel override needs at least one `package`");
   let body = text.slice(close + 4);
   if (!body.endsWith("\n")) body += "\n";
-  if (o.kind === "value" && !new RegExp("^var " + o.value.replace(/\$/g, "\\$") + " = ", "m").test(body)) {
-    fail(1, `the body must define \`var ${o.value} = ...\``);
-  }
   o.body = body;
   return o;
 }

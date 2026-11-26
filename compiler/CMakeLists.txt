@@ -122,7 +122,7 @@ configure_file(
     @ONLY)
 
 # Build-tree shadow root for the Stage 1 XHR Elm application. We materialize
-# elm.json + src/src-xhr/tests symlinks here at configure time so stock Elm
+# elm.json + src/tests symlinks here at configure time so stock Elm
 # and the bootstrap chain emit bin/, elm-stuff/, eco-stuff/ inside the CMake
 # binary directory rather than into the source tree.
 set(BUILD_XHR_DIR "${CMAKE_BINARY_DIR}/compiler/build-xhr")
@@ -133,14 +133,15 @@ file(COPY ${COMPILER_DIR}/elm-application.json
     DESTINATION ${BUILD_XHR_DIR})
 include(${CMAKE_SOURCE_DIR}/cmake/EcoCreateDirLink.cmake)
 eco_create_dir_link(${COMPILER_DIR}/src     ${BUILD_XHR_DIR}/src)
-eco_create_dir_link(${COMPILER_DIR}/src-xhr ${BUILD_XHR_DIR}/src-xhr)
 eco_create_dir_link(${COMPILER_DIR}/tests   ${BUILD_XHR_DIR}/tests)
 eco_create_dir_link(${ECO_VERSION_GEN_DIR}  ${BUILD_XHR_DIR}/version)
-# The stock-Elm copy of the eco/system modules the compiler imports (plans/compiler-io-on-eco-system.md
-# §5), generated into ${BUILD_XHR_DIR}/src-system by the Stage 1 rule below. compiler/src-system links to
-# it so that compiler/elm.json (plain compiles, editor tooling) sees the same modules; it is git-ignored.
-file(MAKE_DIRECTORY ${BUILD_XHR_DIR}/src-system)
-eco_create_dir_link(${BUILD_XHR_DIR}/src-system ${COMPILER_DIR}/src-system)
+# The stock-Elm copies of the eco/system and eco/kernel modules the compiler and its tests import
+# (plans/stage1-direct-kernel-linking.md §6), generated into ${BUILD_XHR_DIR}/src-stage1 by the rule below.
+# compiler/src-stage1 links to it so that compiler/elm.json (plain compiles, editor tooling) sees the same
+# modules; it is git-ignored.
+set(STAGE1_KERNELS_DIR ${BUILD_XHR_DIR}/src-stage1)
+file(MAKE_DIRECTORY ${STAGE1_KERNELS_DIR})
+eco_create_dir_link(${STAGE1_KERNELS_DIR} ${COMPILER_DIR}/src-stage1)
 
 set(COMPILER_OUTPUT "${BUILD_XHR_DIR}/bin/guida.js")
 set(ELM_ENTRY "${COMPILER_DIR}/src/Terminal/Main.elm")
@@ -149,7 +150,6 @@ set(ELM_ENTRY "${COMPILER_DIR}/src/Terminal/Main.elm")
 # Collect all Elm source files for dependency tracking
 file(GLOB_RECURSE ELM_SOURCES
     "${COMPILER_DIR}/src/*.elm"
-    "${COMPILER_DIR}/src-xhr/*.elm"
 )
 list(APPEND ELM_SOURCES "${ECO_VERSION_BUILD_ELM}")
 
@@ -158,10 +158,12 @@ set(COMPILER_CONFIG_FILES
     "${BUILD_XHR_DIR}/elm.json"
     "${COMPILER_DIR}/package.json"
     "${COMPILER_DIR}/pnpm-lock.yaml"
+    "${COMPILER_DIR}/scripts/post-process-stock-elm.js"
+    "${COMPILER_DIR}/scripts/link-stock-elm-kernels.js"
     "${COMPILER_DIR}/scripts/apply-overrides.js"
     "${COMPILER_DIR}/scripts/kernel-overrides-lib.js"
 )
-# The JS kernel overrides (plans/js-kernel-overrides.md): apply-overrides.js applies them to Stage 1.
+# The JS kernel overrides (plans/js-kernel-overrides.md): post-process-stock-elm.js applies them to Stage 1.
 file(GLOB _kernel_override_files CONFIGURE_DEPENDS "${COMPILER_DIR}/kernel-overrides/*.js")
 list(APPEND COMPILER_CONFIG_FILES ${_kernel_override_files})
 
@@ -180,34 +182,34 @@ add_custom_command(
     COMMENT "Installing Node runtime libs via pnpm"
 )
 
-# Step 0: the eco/system modules Stage 1 compiles (plans/compiler-io-on-eco-system.md §5): stock-Elm
-# copies of system-kernel-cpp/src whose kernel wrappers are stubs, and kernels.json listing the wrappers.
+# Step 0: the stock-Elm copies of the eco/system and eco/kernel modules (plans/stage1-direct-kernel-linking.md
+# §6), whose kernel references are stubs, and kernels.json listing the stubs. The modules are those that
+# compiler/src and compiler/tests import, so the rule also depends on those sources.
 set(ECO_SYSTEM_DIR ${CMAKE_SOURCE_DIR}/system-kernel-cpp)
-set(STAGE1_SYSTEM_DIR ${BUILD_XHR_DIR}/src-system)
-file(GLOB_RECURSE _stage1_system_elm CONFIGURE_DEPENDS ${ECO_SYSTEM_DIR}/src/*.elm)
-file(GLOB _stage1_system_kernels CONFIGURE_DEPENDS ${ECO_SYSTEM_DIR}/src/Eco/Kernel/*.js)
+set(ECO_KERNEL_DIR ${CMAKE_SOURCE_DIR}/eco-kernel-cpp)
+file(GLOB_RECURSE _stage1_package_elm CONFIGURE_DEPENDS ${ECO_SYSTEM_DIR}/src/*.elm ${ECO_KERNEL_DIR}/src/*.elm)
+file(GLOB_RECURSE _stage1_scanned_elm CONFIGURE_DEPENDS ${COMPILER_DIR}/src/*.elm ${COMPILER_DIR}/tests/*.elm)
+file(GLOB _stage1_kernel_js CONFIGURE_DEPENDS ${ECO_SYSTEM_DIR}/src/Eco/Kernel/*.js ${ECO_KERNEL_DIR}/src/Eco/Kernel/*.js)
 add_custom_command(
-    OUTPUT ${STAGE1_SYSTEM_DIR}/GENERATED ${STAGE1_SYSTEM_DIR}/kernels.json
-    COMMAND ${NODE_EXECUTABLE} ${COMPILER_DIR}/scripts/make-stage1-system.js ${STAGE1_SYSTEM_DIR}
-    DEPENDS ${_stage1_system_elm}
-        ${COMPILER_DIR}/scripts/make-stage1-system.js
+    OUTPUT ${STAGE1_KERNELS_DIR}/GENERATED ${STAGE1_KERNELS_DIR}/kernels.json
+    COMMAND ${NODE_EXECUTABLE} ${COMPILER_DIR}/scripts/make-stage1-kernels.js ${STAGE1_KERNELS_DIR} ${BUILD_XHR_DIR}/elm.json
+    DEPENDS ${_stage1_package_elm} ${_stage1_scanned_elm}
+        ${BUILD_XHR_DIR}/elm.json
+        ${COMPILER_DIR}/scripts/make-stage1-kernels.js
         ${ECO_SYSTEM_DIR}/scripts/stock-elm-rewrite.js
-    COMMENT "Generating the stock-Elm eco/system modules for Stage 1"
+    COMMENT "Generating the stock-Elm eco/system and eco/kernel modules"
 )
 
-# Step 1: Build the compiler with stock Elm (XHR IO for eco/kernel, eco/system's own JS kernels)
+# Step 1: Build the compiler with stock Elm, then post-process it into what eco's JS backend would emit: the
+# Eco kernels it reaches, then the kernel overrides (post-process-stock-elm.js).
 add_custom_command(
     OUTPUT ${COMPILER_OUTPUT}
     COMMAND ${ELM_EXECUTABLE} make --output=${COMPILER_OUTPUT} ${ELM_ENTRY}
-    # Stock elm knows nothing about kernel overrides; eco's backend emits them for every later stage.
-    COMMAND ${NODE_EXECUTABLE} ${COMPILER_DIR}/scripts/apply-overrides.js ${COMPILER_OUTPUT}
-    # Nor about eco/system's kernels: link the ones the compiler reaches, as eco's JS backend would.
-    COMMAND ${NODE_EXECUTABLE} ${COMPILER_DIR}/scripts/link-stage1-system-kernels.js ${COMPILER_OUTPUT} ${STAGE1_SYSTEM_DIR}
+    COMMAND ${NODE_EXECUTABLE} ${COMPILER_DIR}/scripts/post-process-stock-elm.js ${COMPILER_OUTPUT} ${STAGE1_KERNELS_DIR}
     DEPENDS ${NPM_STAMP} ${ELM_SOURCES} ${COMPILER_CONFIG_FILES}
-        ${STAGE1_SYSTEM_DIR}/GENERATED ${_stage1_system_kernels}
-        ${COMPILER_DIR}/scripts/link-stage1-system-kernels.js
+        ${STAGE1_KERNELS_DIR}/GENERATED ${_stage1_kernel_js}
     WORKING_DIRECTORY ${BUILD_XHR_DIR}
-    COMMENT "Building guida compiler (step 1: XHR)"
+    COMMENT "Building guida compiler (step 1: stock Elm)"
 )
 
 # Create target for the compiler
@@ -305,10 +307,14 @@ if(NOT WIN32)
     )
     # The JS kernel overrides (plans/js-kernel-overrides.md): what the JS backend emits between the
     # kernel code and the Elm code, the source-map offset that counts it, and apply-overrides.js on
-    # small synthetic stock-Elm outputs. `full` runs it after run-js-e2e.
+    # small synthetic stock-Elm outputs; and the post-processing of stock-Elm builds
+    # (plans/stage1-direct-kernel-linking.md): post-process-stock-elm.js and make-stage1-kernels.js.
+    # `full` runs it after run-js-e2e.
     add_custom_target(run-js-kernel-override-tests
         COMMAND ${CMAKE_COMMAND} -E env GUIDA_JS_PATH=${BUILD_XHR_DIR}/bin/guida.js
             ${NODE_EXECUTABLE} --test ${CMAKE_SOURCE_DIR}/test/scripts/js-kernel-overrides.test.js
+                ${CMAKE_SOURCE_DIR}/test/scripts/stock-elm-post-process.test.js
+                ${CMAKE_SOURCE_DIR}/test/scripts/stage1-kernels-generator.test.js
         DEPENDS guida
         COMMENT "Running the JS kernel override tests (node)"
         USES_TERMINAL
@@ -328,12 +334,21 @@ if(NOT WIN32)
     )
 endif()
 
+# The test bundle is built by stock elm like Stage 1, so elm-test-rs compiles it through
+# scripts/elm-stock-post-processed, which post-processes it as Stage 1 is (plans/stage1-direct-kernel-linking.md
+# D2, D8): the .cmd launcher on Windows, the sh one elsewhere.
+if(WIN32)
+    set(_elm_stock_post_processed ${COMPILER_DIR}/scripts/elm-stock-post-processed.cmd)
+else()
+    set(_elm_stock_post_processed ${COMPILER_DIR}/scripts/elm-stock-post-processed)
+endif()
 add_custom_target(elm-tests
     # The harness must compile through Compiler.Pipeline.Steps, as a build does
     # (plans/staging-honesty-and-production-test-pipeline.md P1.3).
     COMMAND sh ${CMAKE_SOURCE_DIR}/test/scripts/check-test-pipeline-production.sh ${CMAKE_SOURCE_DIR}
     COMMAND ${CMAKE_COMMAND} -E env "PATH=${TOOLCHAIN_BIN}${_path_sep}$ENV{PATH}"
-        ${ELM_TEST_RS_EXECUTABLE} --project ${BUILD_XHR_DIR} --fuzz 1
+        "ECO_STOCK_ELM=${ELM_EXECUTABLE}" "ECO_STAGE1_GENERATED=${STAGE1_KERNELS_DIR}"
+        ${ELM_TEST_RS_EXECUTABLE} --project ${BUILD_XHR_DIR} --compiler ${_elm_stock_post_processed} --fuzz 1
     DEPENDS guida eco-system-elm-tests
     WORKING_DIRECTORY ${COMPILER_DIR}
     COMMENT "Running elm-test-rs against build-xhr shadow root"
@@ -1218,7 +1233,7 @@ endif() # NOT ECO_FRONTEND_ONLY (Stages 6-9)
 # wipes build-kernel/bin/ but leaves eco-stuff/ behind — the next Stage 2
 # build then mixes the freshly rebuilt guida.js against the prior run's
 # cached .eci/.eco/.ecot artifacts and crashes with "Map.! given key is not
-# an element in the map" via the XHR Eco.Crash.crash → Debug.todo path.
+# an element in the map" via Eco.Crash.crash.
 # Cleaning eco-stuff/ along with bin/ keeps the bootstrap chain re-runnable
 # after `--target full` at the cost of re-doing a clean cache from scratch.
 # (build-xhr/elm-stuff/ is left alone — Stage 1 uses stock Elm, whose cache

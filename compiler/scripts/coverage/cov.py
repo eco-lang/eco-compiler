@@ -108,9 +108,26 @@ def run(cmd, **kw):
     return subprocess.run(cmd, **kw)
 
 
+def elm_shim_dir():
+    """A directory holding an `elm` that runs compiler/scripts/elm-stock-post-processed.js: stock elm, then
+    the post-processing every stock-Elm build of the compiler gets (plans/stage1-direct-kernel-linking.md,
+    D2). elm-coverage's fake-elm runs the `elm` it finds on PATH, so this one must come first."""
+    shim = f"{BUILD}/compiler/coverage-elm-shim"
+    os.makedirs(shim, exist_ok=True)
+    text = f'#!/bin/sh\nexec node "{COMPILER}/scripts/elm-stock-post-processed.js" "$@"\n'
+    path = f"{shim}/elm"
+    if not os.path.exists(path) or open(path).read() != text:
+        with open(path, "w") as f:
+            f.write(text)
+        os.chmod(path, 0o755)
+    return shim
+
+
 def tool_env(extra=None):
     env = dict(os.environ)
-    env["PATH"] = TOOLCHAIN + os.pathsep + env.get("PATH", "")
+    env["PATH"] = elm_shim_dir() + os.pathsep + TOOLCHAIN + os.pathsep + env.get("PATH", "")
+    env["ECO_STOCK_ELM"] = f"{TOOLCHAIN}/elm"
+    env["ECO_STAGE1_GENERATED"] = f"{BUILD}/compiler/build-xhr/src-stage1"
     if extra:
         env.update(extra)
     return env
@@ -204,15 +221,16 @@ def build_instrumented_guida(root, out_dir, data_dir):
     os.makedirs(os.path.join(out_dir, "bin"))
     os.makedirs(data_dir, exist_ok=True)
     shutil.copytree(os.path.join(inst, "src"), os.path.join(out_dir, "src"), symlinks=True)
-    shutil.copytree(os.path.join(inst, "src-xhr"), os.path.join(out_dir, "src-xhr"), symlinks=True)
+    shutil.copytree(f"{BUILD}/compiler/build-xhr/src-stage1", os.path.join(out_dir, "src-stage1"), symlinks=True)
     shutil.copytree(f"{BUILD}/compiler/version", os.path.join(out_dir, "version"), symlinks=True)
     shutil.copy(f"{BUILD}/compiler/build-xhr/elm.json", out_dir)
     guida = os.path.join(out_dir, "bin", "guida.js")
     r = run(["node", f"{ELM_COVERAGE}/bin/fake-elm", "make", f"--output={guida}", "src/Terminal/Main.elm"],
             cwd=out_dir, env=tool_env({"ELM_COVERAGE_DIR": data_dir}))
+    # fake-elm runs the `elm` of tool_env's PATH, which post-processes the output before fake-elm injects
+    # its counters.
     if r.returncode != 0 or not os.path.exists(guida):
         sys.exit("building the instrumented guida.js failed")
-    run(["node", f"{COMPILER}/scripts/apply-overrides.js", guida], check=True)
     with open(guida) as f:
         if "INJECTED COVERAGE FIXTURE" not in f.read():
             sys.exit("the coverage hook was not injected into guida.js")
@@ -989,7 +1007,7 @@ def workspace_root(name):
 
 
 def cmd_workspace(a):
-    """Creates (or, with --reset, recreates) /tmp/eco-cov-agents/NAME/compiler: src, src-xhr and
+    """Creates (or, with --reset, recreates) /tmp/eco-cov-agents/NAME/compiler: src, src-stage1 and
     src-version are symlinks to /work/compiler (agents of the loop do not edit the compiler), tests/
     and elm.json are copies the agent edits. Its quick runs are tagged NAME."""
     root = workspace_root(a.name)
@@ -999,7 +1017,7 @@ def cmd_workspace(a):
             return
         shutil.rmtree(os.path.dirname(root))
     os.makedirs(root)
-    for d in ("src", "src-xhr", "src-version"):
+    for d in ("src", "src-stage1", "src-version"):
         os.symlink(f"{COMPILER}/{d}", f"{root}/{d}")
     shutil.copy(f"{COMPILER}/elm.json", root)
     shutil.copytree(f"{COMPILER}/tests", f"{root}/tests", symlinks=True,

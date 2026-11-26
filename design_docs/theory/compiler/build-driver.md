@@ -80,9 +80,9 @@ Writes go to a temporary file that is then renamed into place, so a crash or a c
 
 The compiler runs on three hosts. Stock Elm builds it first, and that build runs under Node. The compiler then builds itself as JavaScript with Eco's own kernels, and finally as native code. Fixed-point checks between the stages compare what successive compilers produce, so all three must behave alike.
 
-Every host facility is therefore one Elm module in a family that covers files, processes, the console, the environment, HTTP, MVars, the garbage collector, hashing and the native back end. Each module exists twice with the same exports. One version is a kernel module with JavaScript and C++ implementations, used when Eco compiles the compiler. The other is plain Elm, used when stock Elm compiles it. Stock Elm cannot touch the host, so this version sends each operation as an HTTP request to a local endpoint. A Node handler answers the requests, and a small loader stands in for the browser's request object and starts the compiled compiler. A build picks one version or the other through its source directories, which is why the compiler has two build roots, one for the stock-Elm build and one for the kernel build.
+Every host facility therefore goes through an Eco package whose functions end in kernels with JavaScript and C++ implementations: `eco/system` for files, the console, the environment, processes and HTTP, and `eco/kernel` for MVars, the garbage collector, hashing, crashes and the native back end. Eco compiles these packages directly. Stock Elm cannot compile kernel code outside Elm's own packages, so the stock-Elm build compiles generated copies of the modules the compiler imports, whose kernel references are placeholders, and a script then links the same JavaScript kernels into its output. All three hosts therefore run one implementation of each facility. The compiler still has two build roots, one for the stock-Elm build and one for the Eco build, because the two compile the packages in different forms.
 
-The handler mirrors the kernel modules' behavior, and that mirroring is the contract between the two versions. A failure crosses the boundary as a neutral triple of a tag, a path and a message, and the handler reports it with an error status and a JSON body. A structured error record will not work there: the compiler decides how records are laid out, so neither the handler nor kernel code can build one that matches.
+A failure crosses the kernel boundary as a neutral tuple, such as a tag, a path and a message, which the package's Elm code turns into a typed error. A structured error record will not work there: the compiler decides how records are laid out, so kernel code cannot build one that matches.
 
 The compiler's version is stamped into a file generated in the build tree from a checked-in baseline, so configuring a build never rewrites a tracked source file.
 
@@ -92,14 +92,14 @@ A change fits when the driver still decides what to rebuild while the phases dec
 
 ### Examples of changes that fit the theory
 - A command line option is threaded from the build command's flags to the build or generation code that reads it. Separate build directories, one-shot builds, the settings file and local packages all take this route.
-- A host operation goes into the kernel module, its plain-Elm twin and the Node handler in one change, with failures reported as the neutral triple.
+- A host operation goes into `eco/system` (or, if only the compiler needs it, `eco/kernel`) with its JavaScript and C++ kernels in one change, failures reported as a neutral tuple; the stock-Elm build picks it up through the generated copies.
 - A bundled package joins the list the driver probes beside the installation, and the install rules. The system package has this shape.
 - A change to the typed artifact format bumps the format version and updates the artifact rules, and old caches recompile.
 - A tunable value extends the settings record and contributes to the hash only if it changes generated artifacts.
 - A more precise error goes through the driver's reporting module, so every command reports it the same way.
 
 ### Examples of changes that would break the theory
-- Calling a host facility directly from compiler code, instead of through a paired module, leaves the stock-Elm build with no way to perform it, so the self-compilation chain cannot start. Add the operation to the module family and its twin.
+- Calling a host facility from compiler code other than through `eco/system` or `eco/kernel`, for example through a Node-only module, leaves the native stages with no way to perform it, so the self-compilation chain breaks. Add the operation to a package, with both kernels.
 - Building a cache path by hand, instead of through the driver's path helpers for the current build directory, makes side-by-side builds share and corrupt one cache. Use the helpers.
 - Reusing a cached module or package without checking that the artifact for the current form exists lets a JavaScript build's cache reach the native path. Keep the check in every reuse decision.
 - A setting that changes artifacts but stays out of the hash leaves stale caches, and an unrelated setting in the hash forces cold builds. Decide the setting's hash contribution when it is added.
@@ -120,7 +120,7 @@ Code:
 - `compiler/src/Builder/Stuff.elm`: `eco-stuff/<version>` paths, the `*WithBuildDir` helpers, `withRootLockBuildDir`, `writeBytesAtomic`, `bundledPackages`. Per-module files `.eci` (interface), `.eco` (untyped), `.ecot` (typed); package files `artifacts.dat` and `typed-artifacts.dat` under `~/.eco/<version>/packages/`.
 - `compiler/src/Builder/Eco/Config.elm`: reads `eco-config.json` and the developer environment overrides. `compiler/src/Builder/GcPoints.elm`: `preLink` and `Eco.GC.majorGC`.
 - `compiler/src/Builder/Reporting/Exit.elm`: error reports.
-- `compiler/src-xhr/Eco/XHR.elm` and the other `compiler/src-xhr/Eco/*` modules: the plain-Elm twins. `compiler/bin/eco-io-handler.js` and `compiler/bin/index.js`: the Node handler and loader. The kernel twins are in `eco-kernel-cpp/`.
+- `compiler/bin/index.js`: the loader of stage 1, which stock `elm make` builds and `compiler/scripts/post-process-stock-elm.js` links eco's JavaScript kernels into (`plans/stage1-direct-kernel-linking.md`).
 - `compiler/src-version/`: the version baseline. `compiler/CMakeLists.txt`: the self-compilation stages and the `build-xhr` and `build-kernel` roots.
 - Options: `--builddir`, `--no-cache`, `--config`, `--local-package`, `--kernel-package`.
 
